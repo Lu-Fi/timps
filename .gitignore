@@ -1,0 +1,17 @@
+# Build artifacts
+build/
+timps
+
+# SDK (vendor files, not committed)
+sdk/
+
+# Editor temp files
+*.swp
+*.swo
+*~
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

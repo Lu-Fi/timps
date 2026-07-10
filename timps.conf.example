@@ -1,0 +1,105 @@
+# timps.conf — Tiny IMP Streamer configuration
+# Lines starting with # or ; are comments.
+# Values may optionally have inline # comments.
+# Restart timps after editing.
+
+# ---------------------------------------------------------------------------
+# Sensor
+# ---------------------------------------------------------------------------
+# Camera sensor driver name (must match kernel module name).
+# Common values: gc2053, gc4653, imx307, imx335, sc2232, sc4236, os04b10
+sensor = gc2053
+
+# Path to the ISP binary calibration file for your sensor.
+sensor_bin = /etc/sensor/gc2053.bin
+
+# ---------------------------------------------------------------------------
+# Video — main stream (stream0)
+# ---------------------------------------------------------------------------
+stream0.enabled = 1
+stream0.codec   = h264       # h264 or h265
+stream0.width   = 1920
+stream0.height  = 1080
+stream0.fps     = 25
+stream0.gop     = 50         # I-frame interval in frames (2× fps typical)
+stream0.bitrate = 2048       # kbps
+
+# ---------------------------------------------------------------------------
+# Video — sub stream (stream1)
+# ---------------------------------------------------------------------------
+stream1.enabled = 1
+stream1.codec   = h264
+stream1.width   = 640
+stream1.height  = 360
+stream1.fps     = 15
+stream1.gop     = 30
+stream1.bitrate = 512
+
+# ---------------------------------------------------------------------------
+# Audio
+# ---------------------------------------------------------------------------
+# audio_codec: none | g711a | g711u | aac
+audio_codec       = g711a
+audio_sample_rate = 8000     # Hz — 8000 or 16000
+audio_volume      = 70       # 0–100
+
+# ---------------------------------------------------------------------------
+# RTSP server
+# ---------------------------------------------------------------------------
+rtsp_port = 554              # standard RTSP port (requires root); use 8554 otherwise
+rtsp_auth = 1                # 0=no auth  1=Digest MD5
+rtsp_user = admin
+rtsp_pass = admin
+
+# URLs:
+#   rtsp://<host>:554/        or /stream0  — main stream
+#   rtsp://<host>:554/stream1              — sub stream
+
+# ---------------------------------------------------------------------------
+# HTTP server  (fMP4 / MJPEG / snapshot)
+# ---------------------------------------------------------------------------
+http_port = 8080
+http_auth = 1                # 0=no auth  1=Basic
+http_user = admin
+http_pass = admin
+
+# Endpoints:
+#   http://<host>:8080/           — info page
+#   http://<host>:8080/stream     — fragmented-MP4 (MSE, for browser preview)
+#   http://<host>:8080/stream1    — fragmented-MP4 sub stream
+#   http://<host>:8080/mjpeg      — MJPEG stream
+#   http://<host>:8080/snapshot.jpg
+
+# ---------------------------------------------------------------------------
+# OSD — on-screen display overlay
+# ---------------------------------------------------------------------------
+osd_enabled   = 1
+# Path to a TrueType font file.
+osd_font      = /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
+osd_font_size = 24
+# Label template — supports strftime(3) specifiers plus:
+#   %{host}     hostname
+#   %{uptime}   uptime h:mm:ss
+#   %{viewers}  active viewer count
+#   %{fps}      stream0 FPS
+#   %{bitrate}  stream0 bitrate (kbps)
+osd_label     = %Y-%m-%d %H:%M:%S  %{host}
+osd_x         = 10          # top-left corner X position (pixels)
+osd_y         = 10          # top-left corner Y position (pixels)
+
+# ---------------------------------------------------------------------------
+# Motion detection (IMP_IVS)
+# ---------------------------------------------------------------------------
+motion_enabled     = 0
+motion_sensitivity = 5       # 0 (least) – 9 (most)
+# Optional shell script to run when motion is detected.
+# The script is executed asynchronously with system().
+# motion_script = /etc/timps/motion.sh
+
+# ---------------------------------------------------------------------------
+# Miscellaneous
+# ---------------------------------------------------------------------------
+# Log verbosity: 0=error  1=warn  2=info  3=debug
+log_level  = 2
+# Daemonize (fork into background): 0=no  1=yes
+daemonize  = 0
