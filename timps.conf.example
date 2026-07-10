@@ -1,0 +1,185 @@
+# timps configuration (plain key = value, replaces libconfig)
+# Copy to /etc/timps.conf and adjust for your camera.
+
+# ---- general ----
+general.loglevel            = 2      # 0=err 1=warn 2=info 3=debug
+general.imp_polling_timeout = 500    # ms, encoder poll timeout
+general.osd_pool_size       = 1000   # KB, IMP OSD pool
+
+# ---- sensor ----
+sensor.model    = gc2053
+sensor.i2c_addr = 0x37
+sensor.fps      = 25
+sensor.width    = 1920
+sensor.height   = 1080
+
+# ---- image / ISP tuning (all 0..255 unless noted; 128 = neutral) ----
+image.brightness             = 128
+image.contrast               = 128
+image.saturation             = 128
+image.sharpness              = 128
+image.hue                    = 128
+image.hflip                  = 0
+image.vflip                  = 0
+image.anti_flicker           = 2     # 0 off, 1 = 50Hz, 2 = 60Hz
+image.running_mode           = 0     # 0 day, 1 night
+image.ae_compensation        = 128
+image.max_again              = 160
+image.max_dgain              = 80
+image.sinter_strength        = 128   # spatial NR
+image.temper_strength        = 128   # temporal NR
+image.dpc_strength           = 128
+image.defog_strength         = 128
+image.drc_strength           = 128
+image.highlight_depress      = 0
+image.backlight_compensation = 0
+image.core_wb_mode           = 0     # 0 auto
+image.wb_rgain               = 0
+image.wb_bgain               = 0
+
+# ---- SECURITY --------------------------------------------------------------
+# Authentication is OFF only while user/pass are empty. Set credentials to lock
+# the device: RTSP then requires Digest auth, HTTP requires Basic auth. Nothing
+# can be viewed or controlled without them. Strongly recommended.
+# NOTE: HTTP Basic sends credentials base64-encoded; use it on a trusted LAN or
+# behind a TLS reverse proxy.
+
+# ---- RTSP server (video + audio, no live555) ----
+rtsp.enabled = 1
+rtsp.port    = 8554
+rtsp.user    =            # set to enable RTSP Digest auth
+rtsp.pass    =
+
+# ---- HTTP preview (fMP4 + JPEG/MJPEG) ----
+http.enabled     = 1
+http.port        = 8080
+http.preview_chn = 1
+http.user        =        # set to enable HTTP Basic auth (empty = reuse rtsp.user/pass)
+http.pass        =
+
+# ---- JPEG / MJPEG stream (the old streamer's "stream2") ----
+# HTTP endpoints:  /snapshot.jpg (single frame)   /stream.mjpeg (motion JPEG)
+jpeg.enabled       = 1
+jpeg.width         = 640
+jpeg.height        = 360
+jpeg.quality       = 75          # 1..100
+jpeg.fps           = 5           # max MJPEG frame rate
+jpeg.imp_chn       = 2           # JPEG encoder channel
+# jpeg.snapshot_path = /tmp/snapshot.jpg   # also write a periodic file snapshot
+#
+# Additional JPEG resolutions: an extra JPEG encoder can piggyback on any
+# video stream. It shares that stream's framesource (no extra rmem, unlike a
+# second dedicated jpeg channel) and delivers JPEGs at the stream resolution.
+# Fetch with:  /snapshot.jpg?chn=0   /stream.mjpeg?chn=1   (no ?chn= = jpeg.*)
+# video0.jpeg         = true      # JPEG at video0 resolution (e.g. 1920x1080)
+# video0.jpeg_quality = 75
+# video0.jpeg_fps     = 5
+# video0.jpeg_chn     = 3         # unique IMP encoder channel
+# video1.jpeg         = true      # JPEG at video1 resolution (e.g. 640x360)
+# video1.jpeg_chn     = 4
+
+# ---- main video stream (channel 0) ----
+video0.enabled   = 1
+video0.codec     = h264      # h264 | h265
+video0.width     = 1920
+video0.height    = 1080
+video0.fps       = 25
+video0.bitrate   = 3000      # kbps
+video0.rc_mode   = cbr       # cbr | vbr | fixqp | smart | capped_vbr | capped_quality
+video0.gop       = 50
+video0.max_gop   = 60
+video0.profile   = 2         # 0 baseline 1 main 2 high
+video0.qp        = 35
+video0.min_qp    = 20
+video0.max_qp    = 45
+video0.rotation  = 0         # 0 | 90 | 270  (SoC dependent)
+video0.buffers   = 2
+video0.rtsp_path = /ch0
+video0.imp_chn   = 0
+
+# ---- sub video stream (channel 1) ----
+video1.enabled   = 1
+video1.codec     = h264
+video1.width     = 640
+video1.height    = 360
+video1.fps       = 25
+video1.bitrate   = 512
+video1.rc_mode   = cbr
+video1.gop       = 50
+video1.profile   = 2
+video1.rotation  = 0
+video1.rtsp_path = /ch1
+video1.imp_chn   = 1
+
+# ---- audio ----
+audio.enabled    = 1
+audio.codec      = aac       # aac | pcmu | pcma | none
+audio.samplerate = 16000
+audio.channels   = 1
+audio.bitrate    = 32        # kbps (aac)
+audio.volume     = 0         # IMP AI gain
+audio.high_pass  = 0         # high-pass filter
+audio.agc        = 0         # automatic gain control
+audio.ns         = 0         # noise suppression 0..3
+
+# ---- OSD (up to 8 overlays; own TrueType rasterizer) ----
+osd.enabled        = 1
+osd.monitor_stream = 0                        # which stream the OSD is drawn on
+osd.font_path      = /usr/share/fonts/DejaVuSansMono.ttf   # default TTF; empty = bitmap font
+osd.vars_file      = /tmp/timps_osd.vars                  # custom placeholder source
+#
+# Each overlay is osd0.. osd7. and is either type=text or type=logo.
+# Text placeholders:
+#   time:    strftime tokens, e.g. %Y-%m-%d %H:%M:%S  %F %T
+#   builtin: {hostname} {ip} {mac} {fps} {uptime}
+#   custom:  any {name} is read from osd.vars_file (key = value lines),
+#            so a script can write e.g.  site = Frontdoor  into that file.
+#
+osd0.enabled   = 1
+osd0.type      = text
+osd0.text      = {hostname}  %Y-%m-%d %H:%M:%S
+osd0.x         = 16
+osd0.y         = 16
+osd0.font_size = 32
+osd0.color     = 0xFFFFFFFF                   # ARGB
+osd0.transparency = 255
+# osd0.font_path =                            # optional per-item TTF override
+
+osd1.enabled   = 1
+osd1.type      = text
+osd1.text      = {fps} fps  {ip}
+osd1.x         = 16
+osd1.y         = 56
+osd1.font_size = 24
+osd1.color     = 0xFFFFFF00
+
+# osd2.enabled   = 1
+# osd2.type      = logo
+# osd2.logo      = /etc/logo.bgra            # raw BGRA pixels
+# osd2.logo_w    = 100
+# osd2.logo_h    = 30
+# osd2.x         = 1780
+# osd2.y         = 16
+# osd2.transparency = 200
+
+# ---- motion detection (Ingenic IMP_IVS) ----
+motion.enabled        = 0
+motion.monitor_stream = 0
+motion.sensitivity    = 128           # 0..255 (mapped to IMP 0..4)
+motion.roi_x          = 0
+motion.roi_y          = 0
+motion.roi_w          = 0             # 0 = full frame
+motion.roi_h          = 0
+motion.cooldown_ms    = 5000
+# motion.on_motion    = /etc/scripts/on_motion.sh
+
+# ---- on-demand ----
+# All streams (H264/H265, audio, JPEG/MJPEG) are only captured and encoded
+# while at least one client is connected. No CPU is spent when nobody watches.
+# This is automatic; there is nothing to configure.
+
+# ---- simulation backend (host testing only, ignored on device) ----
+# sim.video0 = /tmp/ch0.h264
+# sim.video1 = /tmp/ch1.h264
+# sim.audio  = /tmp/aud.aac
+# sim.jpeg   = /tmp/snap.jpg

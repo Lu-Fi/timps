@@ -1,0 +1,5 @@
+timpsd
+timpsd-sim
+*-sim
+*.o
+outputs/

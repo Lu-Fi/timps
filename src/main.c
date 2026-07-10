@@ -1,0 +1,77 @@
+/* main.c - timps (Tiny IMP Streamer): minimal-dependency RTSP + fMP4 streamer for Ingenic SoCs */
+#include "config.h"
+#include "log.h"
+#include "hub.h"
+#include "hal/hal.h"
+#include "rtsp/rtsp.h"
+#include "mp4/httpd.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <signal.h>
+#include <unistd.h>
+
+#define MOD "MAIN"
+#define MS_VERSION "0.1.0"
+
+static volatile int g_run = 1;
+static const hal_backend *g_hal;
+
+static void hard_exit(int s){ (void)s; _exit(0); }
+static void on_signal(int s)
+{
+    (void)s;
+    g_run = 0;
+    /* guarantee the process actually stops even if vendor teardown stalls:
+     * a second Ctrl-C, or 3 s without a clean exit, forces termination. */
+    signal(SIGINT,  hard_exit);
+    signal(SIGTERM, hard_exit);
+    signal(SIGALRM, hard_exit);
+    alarm(3);
+}
+static void idr_trampoline(int src){ if (g_hal && g_hal->request_idr) g_hal->request_idr(src); }
+static void act_trampoline(int src, int on){ if (g_hal && g_hal->set_active) g_hal->set_active(src, on); }
+
+int main(int argc, char **argv)
+{
+    const char *cfgpath = "/etc/timps.conf";
+    for (int i=1;i<argc;i++){
+        if (!strcmp(argv[i],"-c") && i+1<argc) cfgpath=argv[++i];
+        else if (!strcmp(argv[i],"-v")) log_set_level(LOG_DEBUG);
+        else if (!strcmp(argv[i],"-h")){
+            printf("timps %s\nusage: %s [-c config] [-v]\n",MS_VERSION,argv[0]);
+            return 0;
+        }
+    }
+
+    config_load(&g_cfg, cfgpath);
+    LOGI(MOD,"timps %s starting (backend=%s)", MS_VERSION, hal_get()->name);
+
+    hub_init();
+    hub_set_idr_cb(idr_trampoline);
+    hub_set_activity_cb(act_trampoline);
+
+    g_hal = hal_get();
+    if (g_hal->init(&g_cfg)!=0){ LOGE(MOD,"HAL init failed"); return 1; }
+    if (g_hal->start(&g_cfg)!=0){ LOGE(MOD,"HAL start failed"); return 1; }
+
+    rtsp_server *rtsp = NULL;
+    httpd       *http = NULL;
+    if (g_cfg.rtsp_enabled) rtsp = rtsp_start(&g_cfg);
+    if (g_cfg.http_enabled) http = httpd_start(&g_cfg);
+
+    signal(SIGINT,  on_signal);
+    signal(SIGTERM, on_signal);
+    signal(SIGPIPE, SIG_IGN);
+
+    LOGI(MOD,"running. rtsp://<ip>:%d%s  http://<ip>:%d/",
+         g_cfg.rtsp_port, g_cfg.video[0].rtsp_path, g_cfg.http_port);
+
+    while (g_run) sleep(1);
+
+    LOGI(MOD,"shutting down");
+    if (rtsp) rtsp_stop(rtsp);
+    if (http) httpd_stop(http);
+    g_hal->stop();
+    return 0;
+}
