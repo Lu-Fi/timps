@@ -100,7 +100,75 @@ binary. Vendor libs are linked via `IMPLIBS` (default static
 | Flag | Effect |
 | --- | --- |
 | `USE_FAAC=1` | software AAC audio via `libfaac` (browser + RTSP sound) |
-| `USE_CONTROL=1` | small local `/control` endpoint for live web-UI settings |
+| `USE_CONTROL` | `/control` endpoint: live settings + persistence (see below). **On by default**; `USE_CONTROL=0` to leave it out |
+| `USE_DAYNIGHT` | native automatic day/night detection (see below). **On by default**; `USE_DAYNIGHT=0` to leave it out |
+
+## Live control API
+
+On by default (`USE_CONTROL=1`); build with `USE_CONTROL=0` to leave it out
+entirely. `POST /control` takes a nested JSON blob; every recognized setting is
+**applied live via IMP and written back to the config file**
+(`/etc/timps.conf` — only the changed keys, comments/order preserved, atomic
+tmp+rename). `GET /control` returns the current values as JSON.
+
+Requests from localhost bypass auth (for an on-device web UI); remote access
+is only allowed when HTTP/RTSP credentials are configured (Basic auth),
+otherwise `403`.
+
+```sh
+curl -X POST http://127.0.0.1:8080/control -d '{
+  "image": {"brightness":140,"contrast":128,"saturation":128,"sharpness":128,
+            "hue":128,"hflip":0,"vflip":0,"running_mode":1},
+  "audio": {"volume":90,"gain":30},
+  "osd":   {"0":{"enabled":1,"text":"%Y-%m-%d %H:%M:%S","x":10,"y":10,
+                 "font_size":32,"color":"0xFFFFFFFF"},
+            "3":{"enabled":0}},
+  "video": {"0":{"bitrate":3500},"1":{"bitrate":600}}
+}'
+curl http://127.0.0.1:8080/control        # read back the current values
+```
+
+Schema overview (all fields optional, unknown keys ignored):
+
+| Section | Keys | Live effect |
+| --- | --- | --- |
+| `image` | `brightness contrast saturation sharpness hue hflip vflip running_mode` | immediate (`hue` only on T23/T31/C100) |
+| `audio` | `volume gain` | immediate |
+| `osd.N` (0–7) | `enabled text x y font_size color transparency` | immediate for items that had a region at startup; *enabling* an item that started disabled only persists (applies after restart) |
+| `video.N` | `bitrate` (kbps) | persisted only — applies on restart (no live encoder reconfig) |
+| `daynight` | `enabled` | immediate — toggles the automatic day/night detection (see below) |
+
+The legacy flat form (`{"brightness":140,"running_mode":1}` /
+`{"force_mode":"night"}`) still works and maps to `image.*`.
+
+## Automatic day/night
+
+Built in with `USE_DAYNIGHT=1` (default): a small thread samples the Ingenic
+ISP exposure state (integration time + analog/ISP digital gain from
+`/proc/jz/isp/isp-m0`), derives a scene brightness in percent — the exact
+formula, thresholds and hysteresis of thingino's `daynightd` daemon — and on a
+change runs the board switch script (`daynight day|night` on thingino, which
+toggles the IR-cut filter, IR LEDs and the `color` hook; `color` then sets
+timps's `image.running_mode` back through `/control`). timps never sets the
+ISP mode directly, so the whole board stays in sync. On thingino the timps
+package **disables the separate `daynightd` daemon** — timps is the detector.
+
+Rules: in day mode it switches to night when the (10-sample smoothed)
+brightness drops below `threshold_low`; in night mode to day above
+`threshold_high`; the very first decision uses a band narrowed by
+`(high-low)*hysteresis` on both sides; `transition_s` is the minimum dwell
+between switches. If the ISP file is absent (host sim), the thread idles.
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `daynight.enabled` | `1` | auto detection on/off (runtime-toggleable via `/control`: `{"daynight":{"enabled":false}}` = manual mode) |
+| `daynight.threshold_low` | `25` | % — below this (in day) → night |
+| `daynight.threshold_high` | `75` | % — above this (in night) → day |
+| `daynight.hysteresis` | `0.1` | band factor for the initial decision |
+| `daynight.interval_ms` | `500` | sample interval |
+| `daynight.transition_s` | `5` | min seconds between switches |
+| `daynight.switch_cmd` | `daynight` | run as `<cmd> day\|night` on a switch |
+| `daynight.isp_path` | `/proc/jz/isp/isp-m0` | ISP exposure proc file |
 
 ### Host simulation (no hardware)
 

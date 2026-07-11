@@ -44,6 +44,18 @@ static const ms_config *g_hcfg;
 static msttf_font       g_shared; static int g_shared_ok;
 static volatile int     g_run;   static pthread_t g_thr;
 
+/* live control (imp_osd_apply) touches the regions from the HTTP thread, so
+ * region access is serialized against the updater thread. Zero-cost in a
+ * minimal build (no USE_CONTROL -> no second toucher, macros empty). */
+#ifdef USE_CONTROL
+static pthread_mutex_t  g_osd_lock = PTHREAD_MUTEX_INITIALIZER;
+#define OSD_LOCK()   pthread_mutex_lock(&g_osd_lock)
+#define OSD_UNLOCK() pthread_mutex_unlock(&g_osd_lock)
+#else
+#define OSD_LOCK()   do{}while(0)
+#define OSD_UNLOCK() do{}while(0)
+#endif
+
 /* position a w x h region in a W x H frame using the old-streamer convention:
  * x/y > 0 : from the left/top edge
  * x/y < 0 : from the right/bottom edge
@@ -117,7 +129,11 @@ static void setup_logo(osd_stream *s, osd_region *rg)
     a.fmt=PIX_FMT_BGRA;
     a.data.picData.pData=b;
     IMP_OSD_SetRgnAttr(rg->rgn, &a);
-    rg->buf=b;
+    /* same double buffering as refresh_text: keep the buffer that was just
+     * replaced around for one more update (in-flight frames may reference it) */
+    free(rg->retired);
+    rg->retired = rg->buf;
+    rg->buf = b;
 }
 
 int imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height)
@@ -173,12 +189,15 @@ static void *osd_thread(void *arg)
     (void)arg;
     while (g_run){
         osd_vars_set_fps(hub_get_fps(g_hcfg->osd.monitor_stream));
+        OSD_LOCK();
         for (int si=0; si<MS_MAX_VSTREAM; si++){
             if (!g_os[si].used) continue;
             for (int i=0;i<MS_MAX_OSD;i++)
-                if (g_os[si].r[i].rgn>=0 && g_os[si].r[i].is_text)
+                if (g_os[si].r[i].rgn>=0 && g_os[si].r[i].is_text &&
+                    g_hcfg->osd.items[i].enabled)
                     refresh_text(&g_os[si], &g_os[si].r[i]);
         }
+        OSD_UNLOCK();
         for (int k=0;k<10 && g_run;k++) usleep(100000);
     }
     return NULL;
@@ -190,6 +209,47 @@ void imp_osd_start_updater(void)
     g_run=1;
     pthread_create(&g_thr,NULL,osd_thread,NULL);
 }
+
+#ifdef USE_CONTROL
+/* Live re-apply of one osd item (g_cfg->osd.items[item] was already updated
+ * by /control) on ALL streams: visibility via ShowRgn/group attr, position/
+ * text/color/size by invalidating the render cache and re-rendering, logos by
+ * reloading. Limitation: an item that was disabled at startup has no region
+ * (regions are only created in imp_osd_setup) - enabling it live is refused
+ * and takes effect after a restart. */
+void imp_osd_apply(int item)
+{
+    if (!g_hcfg || item<0 || item>=MS_MAX_OSD) return;
+    const ms_osd_item *it=&g_hcfg->osd.items[item];
+    OSD_LOCK();
+    for (int si=0; si<MS_MAX_VSTREAM; si++){
+        osd_stream *s=&g_os[si];
+        if (!s->used) continue;
+        osd_region *rg=&s->r[item];
+        if (rg->rgn<0){
+            if (it->enabled)
+                LOGW(MOD,"osd item %d: no region on stream %d (disabled at "
+                         "startup) - enable persisted, applies on restart",
+                     item, si);
+            continue;
+        }
+        IMPOSDGrpRgnAttr g; memset(&g,0,sizeof g);
+        g.show=it->enabled?1:0; g.gAlphaEn=1; g.fgAlhpa=(uint8_t)it->transparency;
+        IMP_OSD_SetGrpRgnAttr(rg->rgn, s->grp, &g);
+        IMP_OSD_ShowRgn(rg->rgn, s->grp, it->enabled?1:0);
+        if (!it->enabled) continue;
+        if (rg->is_text){
+            rg->last[0]=0;              /* invalidate -> full re-render */
+            refresh_text(s, rg);
+        } else {
+            setup_logo(s, rg);          /* reload + reposition (retires old buf) */
+        }
+    }
+    OSD_UNLOCK();
+    LOGI(MOD,"osd item %d re-applied (enabled=%d x=%d y=%d)",
+         item, it->enabled, it->x, it->y);
+}
+#endif /* USE_CONTROL */
 
 void imp_osd_stop(void)
 {
@@ -217,4 +277,7 @@ void imp_osd_stop(void)
 int  imp_osd_setup(const ms_config *cfg, int s, int w, int h){ (void)cfg;(void)s;(void)w;(void)h; return -1; }
 void imp_osd_start_updater(void){}
 void imp_osd_stop(void){}
+#ifdef USE_CONTROL
+void imp_osd_apply(int item){ (void)item; }
+#endif
 #endif

@@ -5,6 +5,9 @@
 #include "hal/hal.h"
 #include "rtsp/rtsp.h"
 #include "mp4/httpd.h"
+#ifdef USE_DAYNIGHT
+#include "daynight.h"
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -59,6 +62,9 @@ int main(int argc, char **argv)
     httpd       *http = NULL;
     if (g_cfg.rtsp_enabled) rtsp = rtsp_start(&g_cfg);
     if (g_cfg.http_enabled) http = httpd_start(&g_cfg);
+#ifdef USE_DAYNIGHT
+    daynight_start();
+#endif
 
     signal(SIGINT,  on_signal);
     signal(SIGTERM, on_signal);
@@ -70,6 +76,9 @@ int main(int argc, char **argv)
     while (g_run) sleep(1);
 
     LOGI(MOD,"shutting down");
+#ifdef USE_DAYNIGHT
+    daynight_stop();
+#endif
     if (rtsp) rtsp_stop(rtsp);
     if (http) httpd_stop(http);
     g_hal->stop();

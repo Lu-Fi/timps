@@ -23,7 +23,8 @@ PLATFORM      ?= T31
 IMP_LIB       ?=            # directory containing libimp.a/.so (adds -L)
 SYSROOT       ?=            # optional --sysroot for the cross toolchain
 USE_FAAC      ?= 0          # 1 = software AAC audio via libfaac (browser audio)
-USE_CONTROL   ?= 0          # 1 = optional live control endpoint (/control, web UI sliders)
+USE_CONTROL   ?= 1          # live control endpoint (/control); optional, on by default (0 = off)
+USE_DAYNIGHT  ?= 1          # native automatic day/night detection thread; on by default (0 = off)
 HOSTCC        ?= cc
 
 # Vendored Ingenic IMP headers (from gtxaspec/ingenic-headers) live under
@@ -60,8 +61,8 @@ BASE := src/util.c src/log.c src/config.c src/frame.c src/fanqueue.c src/net.c \
         src/rtsp/rtp.c src/rtsp/rtsp.c src/mp4/fmp4.c src/mp4/httpd.c src/main.c
 
 TARGET_SRC := $(BASE) src/hal/osd_text.c src/hal/msttf.c src/hal/osd_vars.c src/hal/hal_ingenic.c \
-              src/hal/imp_osd.c src/hal/imp_motion.c src/control.c
-SIM_SRC    := $(BASE) src/hal/osd_text.c src/hal/hal_sim.c src/control.c
+              src/hal/imp_osd.c src/hal/imp_motion.c src/control.c src/daynight.c
+SIM_SRC    := $(BASE) src/hal/osd_text.c src/hal/hal_sim.c src/control.c src/daynight.c
 
 # -Os + gc-sections keeps the binary small; static libimp for a single dropin.
 CFLAGS  ?= -std=c11 -D_GNU_SOURCE -Os -Wall -Wextra -Wno-unused-parameter -Wno-misleading-indentation \
@@ -80,14 +81,17 @@ target:
 	$(CC) $(CFLAGS) $(if $(SYSROOT),--sysroot=$(SYSROOT)) \
 	  $(if $(filter 1,$(USE_FAAC)),-DUSE_FAAC) \
 	  $(if $(filter 1,$(USE_CONTROL)),-DUSE_CONTROL) \
+	  $(if $(filter 1,$(USE_DAYNIGHT)),-DUSE_DAYNIGHT) \
 	  -DHAL_INGENIC -DPLATFORM_$(PLATFORM) -Isrc -I$(IMP_INC) \
 	  $(TARGET_SRC) $(LDFLAGS) $(if $(IMP_LIB),-L$(IMP_LIB)) $(IMPLIBS) \
 	  $(if $(filter 1,$(USE_FAAC)),-l:libfaac.a) $(LIBS) -o $(BIN)
-	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_CONTROL=$(USE_CONTROL))"
+	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT))"
 
 sim:
-	$(HOSTCC) $(CFLAGS) -Isrc $(SIM_SRC) $(LDFLAGS) -lpthread -o $(BIN)-sim
-	@echo "built $(BIN)-sim (host simulation backend)"
+	$(HOSTCC) $(CFLAGS) $(if $(filter 1,$(USE_CONTROL)),-DUSE_CONTROL) \
+	  $(if $(filter 1,$(USE_DAYNIGHT)),-DUSE_DAYNIGHT) \
+	  -Isrc $(SIM_SRC) $(LDFLAGS) -lpthread -o $(BIN)-sim
+	@echo "built $(BIN)-sim (host simulation backend, USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT))"
 
 strip: target
 	$(CROSS_COMPILE)strip $(BIN)

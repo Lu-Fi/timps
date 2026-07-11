@@ -48,9 +48,9 @@ int hub_video_subs(void)
     return total;
 }
 
-static void (*g_control_cb)(const char*,int) = NULL;
-void hub_set_control_cb(void (*cb)(const char *key, int val)){ g_control_cb = cb; }
-void hub_control(const char *key, int val){ if (g_control_cb) g_control_cb(key, val); }
+static void (*g_control_cb)(const char*,const char*) = NULL;
+void hub_set_control_cb(void (*cb)(const char *key, const char *val)){ g_control_cb = cb; }
+void hub_control(const char *key, const char *val){ if (g_control_cb) g_control_cb(key, val); }
 
 void hub_init(void)
 {

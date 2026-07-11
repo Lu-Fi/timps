@@ -8,6 +8,7 @@
 
 #define MOD "CONFIG"
 ms_config g_cfg;
+const char *g_cfg_path = NULL;   /* config file in use, set by config_load() */
 
 static void copystr(char *dst, const char *src, size_t n)
 {
@@ -16,6 +17,7 @@ static void copystr(char *dst, const char *src, size_t n)
 
 static int  pbool(const char *v){ return (!strcasecmp(v,"1")||!strcasecmp(v,"true")||!strcasecmp(v,"on")||!strcasecmp(v,"yes")); }
 static int  pint(const char *v){ return (int)strtol(v, NULL, 0); }
+static float pflt(const char *v){ return (float)strtod(v, NULL); }
 static uint32_t phex(const char *v){ return (uint32_t)strtoul(v, NULL, 0); }
 static int  pvcodec(const char *v){ return (!strcasecmp(v,"h265")||!strcasecmp(v,"hevc")) ? MS_VC_H265 : MS_VC_H264; }
 static int  pacodec(const char *v){
@@ -111,6 +113,14 @@ void config_defaults(ms_config *c)
 
     c->motion.enabled=0; c->motion.monitor_stream=0; c->motion.sensitivity=128;
     c->motion.cooldown_ms=5000;
+
+    /* automatic day/night: defaults mirror thingino's daynightd.json */
+    c->daynight.enabled=1;
+    c->daynight.threshold_low=25.0f; c->daynight.threshold_high=75.0f;
+    c->daynight.hysteresis=0.1f;
+    c->daynight.interval_ms=500; c->daynight.transition_s=5;
+    copystr(c->daynight.switch_cmd,"daynight",sizeof c->daynight.switch_cmd);
+    copystr(c->daynight.isp_path,"/proc/jz/isp/isp-m0",sizeof c->daynight.isp_path);
 
     c->sim_video0[0]=0; c->sim_video1[0]=0; c->sim_audio[0]=0;
 }
@@ -280,6 +290,19 @@ static void set_kv(ms_config *c, const char *key, const char *val)
         else LOGW(MOD,"unknown key %s",key);
         return;
     }
+    if (!strncmp(key,"daynight.",9)){
+        const char *k=key+9;
+        if(!strcmp(k,"enabled"))c->daynight.enabled=pbool(val);
+        else if(!strcmp(k,"threshold_low"))c->daynight.threshold_low=pflt(val);
+        else if(!strcmp(k,"threshold_high"))c->daynight.threshold_high=pflt(val);
+        else if(!strcmp(k,"hysteresis"))c->daynight.hysteresis=pflt(val);
+        else if(!strcmp(k,"interval_ms"))c->daynight.interval_ms=pint(val);
+        else if(!strcmp(k,"transition_s"))c->daynight.transition_s=pint(val);
+        else if(!strcmp(k,"switch_cmd"))copystr(c->daynight.switch_cmd,val,sizeof c->daynight.switch_cmd);
+        else if(!strcmp(k,"isp_path"))copystr(c->daynight.isp_path,val,sizeof c->daynight.isp_path);
+        else LOGW(MOD,"unknown key %s",key);
+        return;
+    }
     if (!strncmp(key,"general.",8)){
         const char *k=key+8;
         if(!strcmp(k,"loglevel"))c->loglevel=pint(val);
@@ -300,6 +323,75 @@ static void set_kv(ms_config *c, const char *key, const char *val)
     LOGW(MOD,"unknown key %s", key);
 }
 
+/* public: apply one key=value pair (same keys as the config file). Used by the
+ * config loader and by the optional /control endpoint for live changes. */
+void config_apply_kv(ms_config *c, const char *key, const char *val)
+{
+    set_kv(c, key, val);
+}
+
+/* public: read back a key's current value as a normalized string, matching the
+ * form set_kv() stores. Only the keys the /control endpoint can change are
+ * covered; anything else returns 0 (change-detection then falls back to always
+ * applying). Keep in sync with the image/audio/video/osd branches of set_kv(). */
+int config_get_kv(const ms_config *c, const char *key, char *out, size_t cap)
+{
+    if (!out || cap==0) return 0;
+    out[0]=0;
+
+    int oi = osd_index(key);
+    if (oi>=0){
+        const ms_osd_item *o=&c->osd.items[oi]; const char *k=key+5;
+        if(!strcmp(k,"enabled")) snprintf(out,cap,"%d",o->enabled);
+        else if(!strcmp(k,"text")) snprintf(out,cap,"%s",o->text);
+        else if(!strcmp(k,"x")) snprintf(out,cap,"%d",o->x);
+        else if(!strcmp(k,"y")) snprintf(out,cap,"%d",o->y);
+        else if(!strcmp(k,"font_size")) snprintf(out,cap,"%d",o->font_size);
+        else if(!strcmp(k,"color")||!strcmp(k,"font_color")) snprintf(out,cap,"0x%08X",o->color);
+        else if(!strcmp(k,"transparency")) snprintf(out,cap,"%d",o->transparency);
+        else return 0;
+        return 1;
+    }
+    if (!strncmp(key,"image.",6)){
+        const ms_image_cfg *m=&c->image; const char *k=key+6;
+        if(!strcmp(k,"brightness")) snprintf(out,cap,"%d",m->brightness);
+        else if(!strcmp(k,"contrast")) snprintf(out,cap,"%d",m->contrast);
+        else if(!strcmp(k,"saturation")) snprintf(out,cap,"%d",m->saturation);
+        else if(!strcmp(k,"sharpness")) snprintf(out,cap,"%d",m->sharpness);
+        else if(!strcmp(k,"hue")) snprintf(out,cap,"%d",m->hue);
+        else if(!strcmp(k,"hflip")) snprintf(out,cap,"%d",m->hflip);
+        else if(!strcmp(k,"vflip")) snprintf(out,cap,"%d",m->vflip);
+        else if(!strcmp(k,"running_mode")) snprintf(out,cap,"%d",m->running_mode);
+        else return 0;
+        return 1;
+    }
+    if (!strncmp(key,"audio.",6)){
+        const char *k=key+6;
+        if(!strcmp(k,"volume")) snprintf(out,cap,"%d",c->audio.volume);
+        else if(!strcmp(k,"gain")) snprintf(out,cap,"%d",c->audio.gain);
+        else return 0;
+        return 1;
+    }
+    if (!strncmp(key,"video0.",7) || !strncmp(key,"video1.",7)){
+        const ms_vstream_cfg *v = (key[5]=='0') ? &c->video[0] : &c->video[1];
+        if(!strcmp(key+7,"bitrate")) snprintf(out,cap,"%d",v->bitrate_kbps);
+        else return 0;
+        return 1;
+    }
+    if (!strncmp(key,"daynight.",9)){
+        const ms_daynight_cfg *d=&c->daynight; const char *k=key+9;
+        if(!strcmp(k,"enabled")) snprintf(out,cap,"%d",d->enabled);
+        else if(!strcmp(k,"threshold_low")) snprintf(out,cap,"%g",(double)d->threshold_low);
+        else if(!strcmp(k,"threshold_high")) snprintf(out,cap,"%g",(double)d->threshold_high);
+        else if(!strcmp(k,"hysteresis")) snprintf(out,cap,"%g",(double)d->hysteresis);
+        else if(!strcmp(k,"interval_ms")) snprintf(out,cap,"%d",d->interval_ms);
+        else if(!strcmp(k,"transition_s")) snprintf(out,cap,"%d",d->transition_s);
+        else return 0;
+        return 1;
+    }
+    return 0;
+}
+
 static char *trim(char *s)
 {
     while (*s && isspace((unsigned char)*s)) s++;
@@ -312,6 +404,7 @@ static char *trim(char *s)
 int config_load(ms_config *c, const char *path)
 {
     config_defaults(c);
+    g_cfg_path = path;               /* remember for config_write_keys() */
     FILE *f = fopen(path, "r");
     if (!f) { LOGW(MOD,"config %s not found, using defaults", path); return -1; }
     char line[512];
@@ -334,5 +427,80 @@ int config_load(ms_config *c, const char *path)
     fclose(f);
     log_set_level(c->loglevel);
     LOGI(MOD,"loaded %d settings from %s", n, path);
+    return 0;
+}
+
+/* write one "key = value" line, quoting values that would not survive the
+ * loader's whitespace trimming */
+static void write_kv_line(FILE *f, const char *k, const char *vin)
+{
+    /* defensively strip anything that could break the flat key=value file:
+     * control chars (a newline would inject a new config line) and the double
+     * quote used for our own quoting */
+    char v[256]; size_t o=0;
+    for (const char *p=vin; *p && o+1<sizeof v; p++){
+        unsigned char ch=(unsigned char)*p;
+        v[o++] = (ch<0x20) ? ' ' : (ch=='"' ? '\'' : (char)ch);
+    }
+    v[o]=0;
+    size_t l = o;
+    int quote = (l==0) || isspace((unsigned char)v[0]) ||
+                (l>0 && isspace((unsigned char)v[l-1])) || v[0]=='#';
+    if (!quote && strchr(v,' ')) quote = 1;      /* keep multi-word values intact */
+    if (quote) fprintf(f, "%s = \"%s\"\n", k, v);
+    else       fprintf(f, "%s = %s\n", k, v);
+}
+
+/* Persist n key/value pairs into the config file: existing "key = ..." lines
+ * are replaced in place (comments, order and unknown lines are preserved),
+ * missing keys are appended at the end, later duplicates of a replaced key are
+ * dropped. The file is written atomically (tmp file + rename). Returns 0 on
+ * success. A missing source file is fine (it is created). */
+int config_write_keys(const char *path, const char *const *keys,
+                      const char *const *vals, int n)
+{
+    if (!path || !path[0] || n<=0) return -1;
+    unsigned char done[64];
+    if (n > (int)sizeof done) n = (int)sizeof done;
+    memset(done, 0, sizeof done);
+
+    char tmp[280];
+    if (snprintf(tmp, sizeof tmp, "%s.tmp", path) >= (int)sizeof tmp) return -1;
+    FILE *out = fopen(tmp, "w");
+    if (!out){ LOGW(MOD,"cannot write %s", tmp); return -1; }
+
+    FILE *in = fopen(path, "r");
+    if (in){
+        char line[512];
+        while (fgets(line, sizeof line, in)){
+            int handled = 0;
+            char cpy[512];
+            snprintf(cpy, sizeof cpy, "%s", line);
+            char *s = trim(cpy);
+            if (*s && *s!='#' && *s!=';'){
+                char *eq = strchr(s, '=');
+                if (eq){
+                    *eq = 0;
+                    char *k = trim(s);
+                    for (int i=0;i<n;i++){
+                        if (strcmp(k, keys[i])) continue;
+                        if (!done[i]){ write_kv_line(out, keys[i], vals[i]); done[i]=1; }
+                        /* else: duplicate line of an already replaced key -> drop */
+                        handled = 1;
+                        break;
+                    }
+                }
+            }
+            if (!handled) fputs(line, out);
+        }
+        fclose(in);
+    }
+    for (int i=0;i<n;i++)
+        if (!done[i]) write_kv_line(out, keys[i], vals[i]);
+
+    if (fflush(out)!=0 || ferror(out)){ fclose(out); remove(tmp); return -1; }
+    fclose(out);
+    if (rename(tmp, path)!=0){ LOGW(MOD,"rename %s -> %s failed", tmp, path); remove(tmp); return -1; }
+    LOGI(MOD,"persisted %d setting(s) to %s", n, path);
     return 0;
 }

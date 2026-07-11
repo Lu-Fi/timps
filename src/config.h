@@ -3,6 +3,7 @@
 #define MS_CONFIG_H
 
 #include <stdint.h>
+#include <stddef.h>   /* size_t */
 
 #define MS_MAX_VSTREAM 2
 #define MS_MAX_OSD     8
@@ -106,6 +107,20 @@ typedef struct {
     ms_osd_item items[MS_MAX_OSD];
 } ms_osd_cfg;
 
+/* native automatic day/night detection (thread compiled with -DUSE_DAYNIGHT;
+ * keys are always parsed so a config with daynight.* loads warning-free).
+ * Semantics/defaults match thingino's daynightd. */
+typedef struct {
+    int      enabled;            /* 0 = manual mode (thread idles) */
+    float    threshold_low;      /* %: below this (in day) -> night */
+    float    threshold_high;     /* %: above this (in night) -> day */
+    float    hysteresis;         /* factor for the unknown-state band */
+    int      interval_ms;        /* sample interval */
+    int      transition_s;       /* min dwell between switches */
+    char     switch_cmd[64];     /* board script, run as "<cmd> day|night" */
+    char     isp_path[128];      /* ISP exposure proc file */
+} ms_daynight_cfg;
+
 typedef struct {
     int      enabled;            /* IMP_IVS motion detection */
     int      monitor_stream;
@@ -142,6 +157,7 @@ typedef struct {
     ms_jpeg_cfg    jpeg;
     ms_osd_cfg     osd;
     ms_motion_cfg  motion;
+    ms_daynight_cfg daynight;
 
     /* sim backend (x86 testing) */
     char           sim_video0[256];
@@ -151,8 +167,20 @@ typedef struct {
 } ms_config;
 
 extern ms_config g_cfg;
+extern const char *g_cfg_path;   /* config file in use (set by config_load) */
 
 void config_defaults(ms_config *c);
 int  config_load(ms_config *c, const char *path); /* 0 ok, <0 file err (defaults kept) */
+/* apply a single key=value (same keys as the config file) to c */
+void config_apply_kv(ms_config *c, const char *key, const char *val);
+/* read the current value of a key back as a normalized string (the same form
+ * config_apply_kv would store). Covers the keys the /control endpoint touches
+ * (image.*, audio.volume/gain, videoN.bitrate, osdN.*). Returns 1 if the key
+ * is known (out filled), 0 otherwise. Used for change-detection. */
+int  config_get_kv(const ms_config *c, const char *key, char *out, size_t cap);
+/* replace/append "key = value" lines in the config file (atomic, keeps
+ * comments/order). Returns 0 on success. */
+int  config_write_keys(const char *path, const char *const *keys,
+                       const char *const *vals, int n);
 
 #endif

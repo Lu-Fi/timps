@@ -61,8 +61,10 @@ int         hub_active(int src);   /* nonzero if the source has subscribers */
 int         hub_video_subs(void);
 
 /* optional live control: HAL registers a handler; the control endpoint forwards
- * parsed (key,value) settings. No-op if no handler is registered. */
-void        hub_set_control_cb(void (*cb)(const char *key, int val));
-void        hub_control(const char *key, int val);
+ * parsed settings as dotted config keys with the raw value string (e.g.
+ * "image.brightness"/"140", "osd0.text"/"cam1", "video0.bitrate"/"3500").
+ * The handler parses numbers itself. No-op if no handler is registered. */
+void        hub_set_control_cb(void (*cb)(const char *key, const char *val));
+void        hub_control(const char *key, const char *val);
 
 #endif

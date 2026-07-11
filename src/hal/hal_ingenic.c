@@ -72,7 +72,11 @@
 static IMPSensorInfo    g_sensor;
 static const ms_config *g_hcfg;
 
-typedef struct { int chn, grp, codec, w, h; volatile int run, active, idr_req; pthread_t thr; } vchan;
+typedef struct {
+    int chn, grp, codec, w, h;
+    volatile int run, active, idr_req;
+    pthread_t thr;
+} vchan;
 static vchan g_v[MS_MAX_VSTREAM];
 static int   g_nv;
 static volatile int g_arun, g_aactive;
@@ -608,27 +612,72 @@ static void *audio_thread(void *arg)
 }
 
 #ifdef USE_CONTROL
-/* Apply a live setting from the web UI (via /control -> hub_control). ISP tuning
- * calls are runtime-safe but we serialize them under a mutex. Optional feature,
- * compiled only with -DUSE_CONTROL. */
+/* Apply a live setting from /control (via hub_control). Keys are the config
+ * file keys: image.*, audio.volume/gain, osdN.*. The value arrives as a string;
+ * numbers are parsed here. ISP/AI calls are runtime-safe but serialized under a
+ * mutex; OSD goes through imp_osd_apply(). videoN.bitrate is NOT applied live
+ * (persisted only, takes effect on restart). Compiled only with -DUSE_CONTROL. */
 static pthread_mutex_t g_isp_lock = PTHREAD_MUTEX_INITIALIZER;
-static void ing_control(const char *key, int val)
+static void ing_control(const char *key, const char *val)
 {
-    pthread_mutex_lock(&g_isp_lock);
-    if (!strcmp(key,"running_mode")){
+    int v = (int)strtol(val, NULL, 0);
+
+    if (!strncmp(key,"image.",6)){
+        const char *k = key+6;
+        pthread_mutex_lock(&g_isp_lock);
+        if (!strcmp(k,"running_mode")){
 #ifdef IMPISP_RUNNING_MODE_DAY
-        IMP_ISP_Tuning_SetISPRunningMode(val ? IMPISP_RUNNING_MODE_NIGHT
-                                             : IMPISP_RUNNING_MODE_DAY);
+            IMP_ISP_Tuning_SetISPRunningMode(v ? IMPISP_RUNNING_MODE_NIGHT
+                                               : IMPISP_RUNNING_MODE_DAY);
 #endif
+        }
+        else if (!strcmp(k,"brightness")) IMP_ISP_Tuning_SetBrightness(v);
+        else if (!strcmp(k,"contrast"))   IMP_ISP_Tuning_SetContrast(v);
+        else if (!strcmp(k,"saturation")) IMP_ISP_Tuning_SetSaturation(v);
+        else if (!strcmp(k,"sharpness"))  IMP_ISP_Tuning_SetSharpness(v);
+        else if (!strcmp(k,"hue")){
+#if defined(PLATFORM_T23)||defined(PLATFORM_T31)||defined(PLATFORM_C100)
+            IMP_ISP_Tuning_SetBcshHue((unsigned char)v);
+#else
+            LOGW(MOD,"image.hue not supported on this platform (persisted only)");
+#endif
+        }
+        else if (!strcmp(k,"hflip")) IMP_ISP_Tuning_SetISPHflip((IMPISPTuningOpsMode)(v?1:0));
+        else if (!strcmp(k,"vflip")) IMP_ISP_Tuning_SetISPVflip((IMPISPTuningOpsMode)(v?1:0));
+        pthread_mutex_unlock(&g_isp_lock);
+        LOGI(MOD,"control %s=%d", key, v);
+        return;
     }
-    else if (!strcmp(key,"brightness")) IMP_ISP_Tuning_SetBrightness(val);
-    else if (!strcmp(key,"contrast"))   IMP_ISP_Tuning_SetContrast(val);
-    else if (!strcmp(key,"saturation")) IMP_ISP_Tuning_SetSaturation(val);
-    else if (!strcmp(key,"sharpness"))  IMP_ISP_Tuning_SetSharpness(val);
-    else if (!strcmp(key,"hflip"))      IMP_ISP_Tuning_SetISPHflip((IMPISPTuningOpsMode)(val?1:0));
-    else if (!strcmp(key,"vflip"))      IMP_ISP_Tuning_SetISPVflip((IMPISPTuningOpsMode)(val?1:0));
-    pthread_mutex_unlock(&g_isp_lock);
-    LOGI(MOD,"control %s=%d", key, val);
+
+    if (!strncmp(key,"audio.",6)){
+        const char *k = key+6;                 /* dev 0 / chn 0 as in audio_thread */
+        pthread_mutex_lock(&g_isp_lock);
+        if      (!strcmp(k,"volume")) IMP_AI_SetVol(0, 0, v);
+        else if (!strcmp(k,"gain"))   IMP_AI_SetGain(0, 0, v);
+        pthread_mutex_unlock(&g_isp_lock);
+        LOGI(MOD,"control %s=%d", key, v);
+        return;
+    }
+
+    /* videoN.bitrate: encoder settings are not applied live (would need a
+     * stream-killing channel reconfig). It is persisted to the config by the
+     * control layer and takes effect on the next restart. */
+    if (!strncmp(key,"video",5) && key[5]>='0' && key[5]<'0'+MS_MAX_VSTREAM
+        && key[6]=='.' && !strcmp(key+7,"bitrate")){
+        LOGI(MOD,"%s persisted, applies on restart", key);
+        return;
+    }
+
+    /* daynight.*: config-only (the detection thread polls g_cfg), no HAL
+     * action - the actual ISP mode change comes in as image.running_mode
+     * via the board's color script. */
+    if (!strncmp(key,"daynight.",9)) return;
+
+    /* osdN.*: config (g_cfg) is already updated -> re-apply the whole item */
+    if (!strncmp(key,"osd",3) && key[3]>='0' && key[3]<'0'+MS_MAX_OSD && key[4]=='.'){
+        imp_osd_apply(key[3]-'0');
+        return;
+    }
 }
 #endif
 

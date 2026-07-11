@@ -363,7 +363,11 @@ static void serve_player(hconn *c, const char *path)
 static void *conn_thread(void *arg)
 {
     hconn *c = (hconn*)arg;
+#ifdef USE_CONTROL
+    char buf[4096];               /* room for a full nested /control JSON body */
+#else
     char buf[1024];
+#endif
     int n = recv(c->fd, buf, sizeof(buf)-1, 0);
     if (n>0) {
         buf[n]=0;
@@ -390,11 +394,32 @@ static void *conn_thread(void *arg)
             }
 #ifdef USE_CONTROL
             else if (!strncmp(path,"/control",8)) {
-                /* live settings from the local web UI only */
-                if (!c->local) http_send(c->fd,"403 Forbidden","text/plain","local only",10);
-                else {
-                    const char *body=strstr(buf,"\r\n\r\n");
-                    control_apply_json(body?body+4:"");
+                /* live settings: localhost always; remote only when credentials
+                 * are configured (then Basic auth was already enforced above) */
+                const char *user = c->cfg->http_user[0] ? c->cfg->http_user
+                                                        : c->cfg->rtsp_user;
+                if (!c->local && !user[0])
+                    http_send(c->fd,"403 Forbidden","text/plain","local only",10);
+                else if (!strcmp(method,"GET")) {
+                    char js[4096];   /* worst case: 8 OSD items with long texts */
+                    int jn = control_get_json(js, sizeof js);
+                    http_send(c->fd,"200 OK","application/json",js,jn);
+                } else {
+                    char *body = strstr(buf,"\r\n\r\n");
+                    if (body) {
+                        body += 4;
+                        /* body may arrive split: finish per Content-Length */
+                        int have = n - (int)(body - buf), clen = 0;
+                        const char *cl = strcasestr(buf,"Content-Length:");
+                        if (cl) clen = atoi(cl+15);
+                        if (clen > (int)sizeof(buf)) clen = (int)sizeof(buf);
+                        while (have < clen && n < (int)sizeof(buf)-1) {
+                            int r = recv(c->fd, buf+n, sizeof(buf)-1-n, 0);
+                            if (r <= 0) break;
+                            n += r; have += r; buf[n] = 0;
+                        }
+                    }
+                    control_apply_json(body ? body : "");
                     http_send(c->fd,"200 OK","application/json","{\"ok\":true}",11);
                 }
             }

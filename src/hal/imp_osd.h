@@ -15,4 +15,12 @@ void imp_osd_start_updater(void);
 /* Tear down all OSD groups and stop the updater. */
 void imp_osd_stop(void);
 
+#ifdef USE_CONTROL
+/* Live control: re-apply cfg->osd.items[item] (already updated in g_cfg) on
+ * all streams - enable/disable, position, text, color, size, transparency,
+ * logo reload. Items that were disabled at startup have no region and can
+ * only be enabled after a restart. Thread-safe vs. the updater. */
+void imp_osd_apply(int item);
+#endif
+
 #endif

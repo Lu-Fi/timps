@@ -173,6 +173,19 @@ motion.roi_h          = 0
 motion.cooldown_ms    = 5000
 # motion.on_motion    = /etc/scripts/on_motion.sh
 
+# ---- automatic day/night (needs timps built with USE_DAYNIGHT) ----
+# timps samples the ISP exposure state, computes a scene brightness (0..100%)
+# and switches via the board's daynight script (ircut / IR LEDs / color).
+# Semantics and defaults match thingino's daynightd.
+daynight.enabled        = 1                    # 0 = manual mode (WebUI/`/control` only)
+daynight.threshold_low  = 25                   # %: below this (in day) -> night
+daynight.threshold_high = 75                   # %: above this (in night) -> day
+daynight.hysteresis     = 0.1                  # band factor for the initial decision
+daynight.interval_ms    = 500                  # sample interval
+daynight.transition_s   = 5                    # min seconds between switches
+daynight.switch_cmd     = daynight             # run as "<cmd> day|night"
+daynight.isp_path       = /proc/jz/isp/isp-m0  # ISP exposure proc file
+
 # ---- on-demand ----
 # All streams (H264/H265, audio, JPEG/MJPEG) are only captured and encoded
 # while at least one client is connected. No CPU is spent when nobody watches.
