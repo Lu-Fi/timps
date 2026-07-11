@@ -401,7 +401,10 @@ static void *conn_thread(void *arg)
                 if (!c->local && !user[0])
                     http_send(c->fd,"403 Forbidden","text/plain","local only",10);
                 else if (!strcmp(method,"GET")) {
-                    char js[4096];   /* worst case: 8 OSD items with long texts */
+                    /* worst case: caps + full image/audio/sensor blocks +
+                     * 2 full video stream blocks + 2 per-stream OSD sets
+                     * (2 x 8 items) with long texts */
+                    char js[16384];
                     int jn = control_get_json(js, sizeof js);
                     http_send(c->fd,"200 OK","application/json",js,jn);
                 } else {

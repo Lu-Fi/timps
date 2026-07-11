@@ -3,9 +3,10 @@
  * of thingino's daynightd (package/thingino-daynightd/files/daynightd.c) so
  * an existing daynightd tuning translates 1:1. Compiled only with
  * -DUSE_DAYNIGHT; uses nothing but libc + pthread. */
-#ifdef USE_DAYNIGHT
 #include "daynight.h"
 #include "config.h"
+
+#ifdef USE_DAYNIGHT
 #include "log.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -13,6 +14,7 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <time.h>
+#include <math.h>
 
 #define MOD "DAYNIGHT"
 
@@ -25,19 +27,46 @@ static pthread_t    g_thr;
 static volatile int g_stop;
 static int          g_started;
 
+/* latest measurement, shared with control.c via daynight_get_status() */
+static pthread_mutex_t g_st_mu = PTHREAD_MUTEX_INITIALIZER;
+static float g_st_brightness = -1.0f;      /* % or <0 = unknown */
+static float g_st_gain       = -1.0f;      /* [24.8] linear or <0 = unknown */
+static int   g_st_mode       = DN_UNKNOWN; /* mode as switched by the thread */
+
+static void dn_status_update(float brightness, float total_gain, int mode)
+{
+    pthread_mutex_lock(&g_st_mu);
+    g_st_brightness = brightness;
+    g_st_gain       = total_gain;
+    g_st_mode       = mode;
+    pthread_mutex_unlock(&g_st_mu);
+}
+
 /* Scene brightness 0..100% from the ISP proc file, or <0 if unavailable.
  * Port of daynightd's calculate_brightness_from_isp(): the integration-time
  * ratio (low integration = bright scene) damped by sensor analog gain
  * (/160 max) and ISP digital gain (/80 max); fallbacks: the ISP "Brightness"
- * setting, then the reported running mode. */
-static float dn_brightness(const char *path)
+ * setting, then the reported running mode.
+ *
+ * total_gain (out, may be NULL): the combined sensor+ISP gain in the IMP
+ * [24.8] linear format (256 = 1x) - the same scale as
+ * IMP_ISP_Tuning_GetTotalGain and the prudynt/raptor "total_gain" the WebUI
+ * plots (photosensing thresholds: day 300, night 3000). The isp-m0 gain
+ * fields are in the IMP log2 unit (0 = 1x, 32 = 2x, per the SetMaxAgain/
+ * SetMaxDgain docs), so linear = 2^(units/32); analog + sensor digital +
+ * ISP digital add up in log space. -1 when no gain field was found.
+ * NOTE: sscanf on the exact-prefix format quietly skips the "MAX SENSOR
+ * analog gain" style maximum lines that strstr also matches. */
+static float dn_brightness(const char *path, float *total_gain)
 {
+    if (total_gain) *total_gain = -1.0f;
     FILE *fp = fopen(path, "r");
     if (!fp) return -1.0f;
 
     char line[256];
     int  integration_time = -1, max_integration_time = -1;
-    int  analog_gain = -1, isp_digital_gain = -1, cur_brightness = -1;
+    int  analog_gain = -1, digital_gain = -1, isp_digital_gain = -1;
+    int  cur_brightness = -1;
     char mode[32] = {0};
 
     while (fgets(line, sizeof line, fp)) {
@@ -49,12 +78,23 @@ static float dn_brightness(const char *path)
             sscanf(line, "SENSOR Max Integration Time : %d lines", &max_integration_time);
         else if (strstr(line, "SENSOR analog gain :"))
             sscanf(line, "SENSOR analog gain : %d", &analog_gain);
+        else if (strstr(line, "SENSOR digital gain :"))
+            sscanf(line, "SENSOR digital gain : %d", &digital_gain);
         else if (strstr(line, "ISP digital gain :"))
             sscanf(line, "ISP digital gain : %d", &isp_digital_gain);
         else if (strstr(line, "Brightness :"))
             sscanf(line, "Brightness : %d", &cur_brightness);
     }
     fclose(fp);
+
+    if (total_gain &&
+        (analog_gain >= 0 || digital_gain >= 0 || isp_digital_gain >= 0)) {
+        float units = 0.0f;                 /* log2 gain, 32 units per stop */
+        if (analog_gain      > 0) units += (float)analog_gain;
+        if (digital_gain     > 0) units += (float)digital_gain;
+        if (isp_digital_gain > 0) units += (float)isp_digital_gain;
+        *total_gain = 256.0f * exp2f(units / 32.0f);   /* -> [24.8] linear */
+    }
 
     float b = -1.0f;
     if (integration_time >= 0 && max_integration_time > 0) {
@@ -123,8 +163,15 @@ static void *dn_thread(void *arg)
         const ms_daynight_cfg *dn = &g_cfg.daynight;
         int interval = dn->interval_ms > 0 ? dn->interval_ms : 500;
 
-        if (!dn->enabled) {             /* manual mode: idle, force nothing */
+        /* sample even in manual mode so GET /control always reports the live
+         * brightness/total_gain (WebUI gain display + data collector) */
+        float tg = -1.0f;
+        float b  = dn_brightness(dn->isp_path, &tg);
+
+        if (!dn->enabled) {             /* manual mode: measure, force nothing */
             was_enabled = 0;
+            cur = DN_UNKNOWN;           /* mode may be forced manually now */
+            dn_status_update(b, tg, DN_UNKNOWN);
             dn_sleep(interval);
             continue;
         }
@@ -135,12 +182,12 @@ static void *dn_thread(void *arg)
             LOGI(MOD, "auto day/night enabled");
         }
 
-        float b = dn_brightness(dn->isp_path);
         if (b < 0.0f) {                 /* no ISP (sim/host): skip silently */
             if (!warned_noisp) {
                 LOGD(MOD, "%s not readable, detection idle", dn->isp_path);
                 warned_noisp = 1;
             }
+            dn_status_update(b, tg, cur);
             dn_sleep(interval);
             continue;
         }
@@ -180,6 +227,7 @@ static void *dn_thread(void *arg)
             }
         }
 
+        dn_status_update(b, tg, cur);
         dn_sleep(interval);
     }
     LOGI(MOD, "detection thread stopped");
@@ -204,4 +252,36 @@ void daynight_stop(void)
     pthread_join(g_thr, NULL);
     g_started = 0;
 }
+
+/* see daynight.h: latest measurement for GET /control */
+void daynight_get_status(int *enabled, int *mode,
+                         float *brightness, float *total_gain)
+{
+    pthread_mutex_lock(&g_st_mu);
+    float b  = g_st_brightness;
+    float tg = g_st_gain;
+    int   m  = g_st_mode;
+    pthread_mutex_unlock(&g_st_mu);
+    if (m == DN_UNKNOWN)   /* manual mode / before the first auto switch */
+        m = g_cfg.image.running_mode ? DN_NIGHT : DN_DAY;
+    if (enabled)    *enabled    = g_cfg.daynight.enabled ? 1 : 0;
+    if (mode)       *mode       = m;
+    if (brightness) *brightness = b;
+    if (total_gain) *total_gain = tg;
+}
+
+#else /* !USE_DAYNIGHT */
+
+/* stub so control.c always links: no detection thread -> auto is off, no
+ * measurement -> brightness/gain unknown, mode from the persisted/live ISP
+ * running mode */
+void daynight_get_status(int *enabled, int *mode,
+                         float *brightness, float *total_gain)
+{
+    if (enabled)    *enabled    = 0;
+    if (mode)       *mode       = g_cfg.image.running_mode ? 1 : 0;
+    if (brightness) *brightness = -1.0f;
+    if (total_gain) *total_gain = -1.0f;
+}
+
 #endif /* USE_DAYNIGHT */

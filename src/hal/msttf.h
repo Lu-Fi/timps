@@ -16,8 +16,12 @@ int  msttf_load(msttf_font *f, const char *path);
 void msttf_free(msttf_font *f);
 
 /* Render an ASCII/Latin-1 string into a newly allocated BGRA buffer.
- * pixel_h = cap height in pixels. fg/bg are 0xAARRGGBB. Caller frees *out. */
+ * pixel_h = cap height in pixels. fg/bg are 0xAARRGGBB.
+ * outline = stroke width in px (0 = none): the glyph coverage is dilated by
+ * that many pixels and blended in 'oc' (0xAARRGGBB) UNDER the fill; the
+ * canvas grows by outline px on every side. Caller frees *out. */
 int  msttf_render(msttf_font *f, const char *s, int pixel_h,
-                  uint32_t fg, uint32_t bg, uint8_t **out, int *w, int *h);
+                  uint32_t fg, uint32_t bg, int outline, uint32_t oc,
+                  uint8_t **out, int *w, int *h);
 
 #endif

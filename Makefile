@@ -90,7 +90,7 @@ target:
 sim:
 	$(HOSTCC) $(CFLAGS) $(if $(filter 1,$(USE_CONTROL)),-DUSE_CONTROL) \
 	  $(if $(filter 1,$(USE_DAYNIGHT)),-DUSE_DAYNIGHT) \
-	  -Isrc $(SIM_SRC) $(LDFLAGS) -lpthread -o $(BIN)-sim
+	  -Isrc $(SIM_SRC) $(LDFLAGS) -lpthread -lm -o $(BIN)-sim
 	@echo "built $(BIN)-sim (host simulation backend, USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT))"
 
 strip: target

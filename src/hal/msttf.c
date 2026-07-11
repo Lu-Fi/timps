@@ -221,13 +221,33 @@ static int advance(msttf_font *f, int gid)
 
 /* ---------- scanline fill with supersampling ---------- */
 #define SS 4
+
+/* blend 'color' onto img[idx] with additional alpha factor 'a' (0..1) */
+static void px_blend(uint32_t *img, int idx, uint32_t color, float a)
+{
+    a *= ((color>>24)&0xFF)/255.0f;
+    if (a<=0.0f) return;
+    int fr=(color>>16)&0xFF, fgn=(color>>8)&0xFF, fb=color&0xFF;
+    uint32_t bgp=img[idx];
+    int br=(bgp>>16)&0xFF, bgc=(bgp>>8)&0xFF, bb=bgp&0xFF, ba=(bgp>>24)&0xFF;
+    uint32_t rr=(uint32_t)(fr*a+br*(1-a));
+    uint32_t gg=(uint32_t)(fgn*a+bgc*(1-a));
+    uint32_t bbb=(uint32_t)(fb*a+bb*(1-a));
+    uint32_t aa=(uint32_t)(255*a+ba*(1-a));
+    img[idx]=(aa<<24)|(rr<<16)|(gg<<8)|bbb;
+}
+
 int msttf_render(msttf_font *f, const char *s, int pixel_h,
-                 uint32_t fg, uint32_t bg, uint8_t **out, int *w, int *h)
+                 uint32_t fg, uint32_t bg, int outline, uint32_t oc,
+                 uint8_t **out, int *w, int *h)
 {
     float scale = (float)pixel_h / f->units_per_em;
     int ascent = (int)(f->units_per_em*1.0f);   /* use em box */
     (void)ascent;
-    int pad = pixel_h/4 + 1;
+    if (outline<0) outline=0;
+    if (outline>pixel_h/4+1) outline=pixel_h/4+1;   /* keep the stroke sane */
+    if (((oc>>24)&0xFF)==0) outline=0;              /* fully transparent = off */
+    int pad = pixel_h/4 + 1 + outline;   /* outline enlarges the canvas */
     /* first pass: total advance width */
     int totalAdv=0; const char *q=s;
     for (; *q; q++){ int gid=glyph_index(f,(unsigned char)*q); totalAdv+=advance(f,gid); }
@@ -238,6 +258,11 @@ int msttf_render(msttf_font *f, const char *s, int pixel_h,
     uint32_t *img=malloc((size_t)W*H*4);
     if(!img) return -1;
     for (int i=0;i<W*H;i++) img[i]=bg;
+    /* whole-string coverage plane (0..SS*SS): glyphs rasterize into this and
+     * the composite runs ONCE afterwards, so an outline can be drawn under
+     * the complete fill (no later glyph stroking over its neighbour's fill) */
+    uint8_t *gcov=calloc((size_t)W*H,1);
+    if(!gcov){ free(img); return -1; }
 
     /* baseline near bottom (leave descent room) */
     float penx = pad;
@@ -298,19 +323,10 @@ int msttf_render(msttf_font *f, const char *s, int pixel_h,
                         }
                     }
                 }
-                /* composite coverage onto image */
-                int fa=(fg>>24)&0xFF, fr=(fg>>16)&0xFF, fgn=(fg>>8)&0xFF, fb=fg&0xFF;
+                /* accumulate coverage into the whole-string plane */
                 for (int py=y0;py<y1;py++) for(int px=x0;px<x1;px++){
-                    int c=cov[(py-y0)*bw+(px-x0)];
-                    if (!c) continue;
-                    float a=(float)c/(SS*SS)*(fa/255.0f);
-                    uint32_t bgp=img[py*W+px];
-                    int br=(bgp>>16)&0xFF,bgc=(bgp>>8)&0xFF,bb=bgp&0xFF,ba=(bgp>>24)&0xFF;
-                    int rr=(int)(fr*a+br*(1-a));
-                    int gg=(int)(fgn*a+bgc*(1-a));
-                    int bbb=(int)(fb*a+bb*(1-a));
-                    int aa=(int)(255*a+ba*(1-a));
-                    img[py*W+px]=(aa<<24)|(rr<<16)|(gg<<8)|bbb;
+                    int c=gcov[py*W+px] + cov[(py-y0)*bw+(px-x0)];
+                    gcov[py*W+px]=(uint8_t)(c>SS*SS ? SS*SS : c);
                 }
                 free(cov);
             }
@@ -319,6 +335,40 @@ int msttf_render(msttf_font *f, const char *s, int pixel_h,
         free(polys);
         penx += advance(f,gid)*scale;
     }
+
+    /* outline: dilate the coverage by 'outline' px (separable max filter,
+     * O(W*H*outline)) and blend it in the outline color UNDER the fill */
+    if (outline>0){
+        uint8_t *d1=malloc((size_t)W*H), *d2=malloc((size_t)W*H);
+        if (d1 && d2){
+            for (int y=0;y<H;y++){          /* horizontal max */
+                for (int x=0;x<W;x++){
+                    int m=0;
+                    int a=x-outline; if(a<0)a=0;
+                    int b=x+outline; if(b>=W)b=W-1;
+                    for (int k=a;k<=b;k++){ int c=gcov[y*W+k]; if(c>m)m=c; }
+                    d1[y*W+x]=(uint8_t)m;
+                }
+            }
+            for (int x=0;x<W;x++){          /* vertical max */
+                for (int y=0;y<H;y++){
+                    int m=0;
+                    int a=y-outline; if(a<0)a=0;
+                    int b=y+outline; if(b>=H)b=H-1;
+                    for (int k=a;k<=b;k++){ int c=d1[k*W+x]; if(c>m)m=c; }
+                    d2[y*W+x]=(uint8_t)m;
+                }
+            }
+            for (int i=0;i<W*H;i++)
+                if (d2[i]) px_blend(img, i, oc, (float)d2[i]/(SS*SS));
+        }
+        free(d1); free(d2);
+    }
+    /* fill on top of (a possible) outline */
+    for (int i=0;i<W*H;i++)
+        if (gcov[i]) px_blend(img, i, fg, (float)gcov[i]/(SS*SS));
+    free(gcov);
+
     *out=(uint8_t*)img; *w=W; *h=H;
     return 0;
 }

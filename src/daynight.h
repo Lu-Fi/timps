@@ -11,7 +11,8 @@
  * - timps does NOT touch image.running_mode itself, the color hook does.
  *
  * daynight.enabled can be flipped at runtime (config or /control): while
- * disabled the thread idles (manual mode); re-enabling restarts detection
+ * disabled the thread keeps sampling (so the status below stays live for the
+ * WebUI) but forces nothing (manual mode); re-enabling restarts detection
  * from a clean state. Missing/unreadable ISP file (host sim, non-Ingenic)
  * just skips the cycle. */
 #ifndef MS_DAYNIGHT_H
@@ -21,5 +22,21 @@
 void daynight_start(void);
 void daynight_stop(void);
 #endif
+
+/* Latest day/night measurement for GET /control (always linkable: without
+ * USE_DAYNIGHT a stub answers "unknown"). Values:
+ *   enabled     0/1  auto detection on (always 0 without USE_DAYNIGHT)
+ *   mode        0 day / 1 night: the mode last switched by the detection
+ *               thread, falling back to image.running_mode (manual mode,
+ *               before the first switch, or without USE_DAYNIGHT)
+ *   brightness  scene brightness 0..100 %, or -1 when the ISP proc file is
+ *               unreadable / no sample was taken yet
+ *   total_gain  total sensor+ISP gain in the IMP [24.8] linear format
+ *               (256 = 1x, like IMP_ISP_Tuning_GetTotalGain and the
+ *               prudynt/raptor "total_gain" the WebUI plots), derived from
+ *               the isp-m0 gain fields (log2 units, 32 = 2x); -1 = unknown
+ * NULL pointers are allowed for outputs the caller does not need. */
+void daynight_get_status(int *enabled, int *mode,
+                         float *brightness, float *total_gain);
 
 #endif

@@ -51,7 +51,19 @@ typedef struct {
     int      gain;           /* IMP_AI_SetGain level */
     int      high_pass;      /* HPF on/off */
     int      agc;            /* automatic gain control on/off */
-    int      ns;             /* noise suppression 0..3 */
+    int      ns;             /* noise suppression: 0 off, 1..3 = level */
+    int      alc_gain;       /* IMP_AI_SetAlcGain PGA level 0..7 (T21/T31/C100) */
+    int      agc_target_dbfs;    /* AGC TargetLevelDbfs 0..31 */
+    int      agc_compression_db; /* AGC CompressionGaindB 0..90 */
+    int      mute;           /* live mic mute: 1 = captured frames are dropped
+                              * before the encoder/hub (no audio to any client);
+                              * toggled at runtime via /control, no restart */
+    /* persist-only (no runtime path in timps yet): kept so the WebUI audio
+     * page can store them; capture is mono and there is no AO pipeline */
+    int      force_stereo;
+    int      spk_enabled;
+    int      spk_volume;
+    int      spk_gain;
 } ms_audio_cfg;
 
 typedef struct {
@@ -96,15 +108,26 @@ typedef struct {
     int      font_size;
     uint32_t color;                 /* 0xAARRGGBB */
     int      transparency;          /* 0..255 group alpha */
+    int      outline;               /* text outline width in px (0 = off) */
+    uint32_t outline_color;         /* 0xAARRGGBB outline/stroke color */
     char     font_path[128];        /* optional per-item TTF override */
 } ms_osd_item;
 
+/* OSD config. Each video stream has its OWN independent item set
+ * (items[stream][item]); the master switch, monitor stream and the font/vars
+ * paths stay global.
+ * Config keys:
+ *   canonical (per stream): osd<S>.<N>.<field>   e.g. osd0.0.text (stream 0,
+ *     item 0), osd1.3.enabled (stream 1, item 3)
+ *   legacy (pre-per-stream): osd<N>.<field>      e.g. osd0.text - still
+ *     parsed for backward compatibility and applied to item N on EVERY
+ *     stream (old configs keep drawing the same overlays on both streams) */
 typedef struct {
-    int         enabled;            /* master switch */
-    int         monitor_stream;     /* video stream the OSD is drawn on */
+    int         enabled;            /* master switch (global, restart) */
+    int         monitor_stream;     /* stream whose fps feeds the {fps} var */
     char        font_path[128];     /* default TTF for text items */
     char        vars_file[128];     /* custom placeholder source (e.g. /tmp/..) */
-    ms_osd_item items[MS_MAX_OSD];
+    ms_osd_item items[MS_MAX_VSTREAM][MS_MAX_OSD];  /* per-stream item sets */
 } ms_osd_cfg;
 
 /* native automatic day/night detection (thread compiled with -DUSE_DAYNIGHT;
@@ -175,8 +198,11 @@ int  config_load(ms_config *c, const char *path); /* 0 ok, <0 file err (defaults
 void config_apply_kv(ms_config *c, const char *key, const char *val);
 /* read the current value of a key back as a normalized string (the same form
  * config_apply_kv would store). Covers the keys the /control endpoint touches
- * (image.*, audio.volume/gain, videoN.bitrate, osdN.*). Returns 1 if the key
- * is known (out filled), 0 otherwise. Used for change-detection. */
+ * (image.*, audio.*, videoN.*, sensor.*, osdS.N.*, legacy osdN.*, osd.*).
+ * Returns 1 if the key is known (out filled), 0 otherwise. Used for change-
+ * detection. (audio/video/sensor coverage includes the persist-only restart
+ * keys. A legacy osdN.* key reads back only while all streams agree on the
+ * value - otherwise it reports unknown so a legacy write always applies.) */
 int  config_get_kv(const ms_config *c, const char *key, char *out, size_t cap);
 /* replace/append "key = value" lines in the config file (atomic, keeps
  * comments/order). Returns 0 on success. */

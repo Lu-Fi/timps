@@ -4,6 +4,7 @@
  * Honors on-demand activation: a source only emits while it has consumers. */
 #include "hal.h"
 #include "../hub.h"
+#include "../config.h"
 #include "../log.h"
 #include "../util.h"
 #include "../codec/nal.h"
@@ -118,7 +119,10 @@ static void *aud_thread(void *arg)
             if (fl<7||off+fl>flen) break;
             int64_t now=ms_now_us();
             if (next>now){ usleep(next-now); now=ms_now_us(); }
-            hub_publish(HUB_AUDIO_SRC,file+off,fl,now-g_epoch,0,MS_MEDIA_AUDIO);
+            /* live mic mute (audio.mute via /control): keep pacing but do
+             * not publish - mirrors the gate in hal_ingenic's audio_thread */
+            if (!g_cfg.audio.mute)
+                hub_publish(HUB_AUDIO_SRC,file+off,fl,now-g_epoch,0,MS_MEDIA_AUDIO);
             off+=fl; next+=step;
         }
     }

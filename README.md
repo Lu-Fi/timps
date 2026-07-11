@@ -71,10 +71,14 @@ video0.codec = h264      # main:  1080p
 video1.codec = h264      # sub:   360p
 audio.codec  = aac       # needs timps built with libfaac; else pcmu (G.711u)
 
-# OSD overlays (drawn on every stream). x/y: 0 = centered,
-# >0 = from left/top, <0 = from right/bottom. Placeholders:
+# OSD overlays: an independent set per video stream. Keys osd<S>.<N>.<field>
+# (stream S, item N); legacy osd<N>.<field> keys still load and apply to
+# every stream. x/y: 0 = centered, >0 = from left/top, <0 = from right/
+# bottom. Optional text outline: outline = <px>, outline_color = 0xAARRGGBB.
+# Placeholders:
 # {hostname} {ip} {mac} {fps} {uptime} {net} {cpu} {mem} {clients} + strftime
-osd0.text = %Y-%m-%d %H:%M:%S
+osd0.0.text = %Y-%m-%d %H:%M:%S    # stream 0, item 0
+osd1.0.text = %H:%M                # stream 1 has its own items
 
 # rtsp.user / rtsp.pass  → enable auth (empty = open)
 ```
@@ -120,9 +124,12 @@ curl -X POST http://127.0.0.1:8080/control -d '{
   "image": {"brightness":140,"contrast":128,"saturation":128,"sharpness":128,
             "hue":128,"hflip":0,"vflip":0,"running_mode":1},
   "audio": {"volume":90,"gain":30},
-  "osd":   {"0":{"enabled":1,"text":"%Y-%m-%d %H:%M:%S","x":10,"y":10,
-                 "font_size":32,"color":"0xFFFFFFFF"},
+  "osd":   {"enabled":1},
+  "osd0":  {"0":{"enabled":1,"text":"%Y-%m-%d %H:%M:%S","x":10,"y":10,
+                 "font_size":32,"color":"0xFFFFFFFF",
+                 "outline":1,"outline_color":"0xFF000000"},
             "3":{"enabled":0}},
+  "osd1":  {"0":{"text":"sub cam"}},
   "video": {"0":{"bitrate":3500},"1":{"bitrate":600}}
 }'
 curl http://127.0.0.1:8080/control        # read back the current values
@@ -134,9 +141,19 @@ Schema overview (all fields optional, unknown keys ignored):
 | --- | --- | --- |
 | `image` | `brightness contrast saturation sharpness hue hflip vflip running_mode` | immediate (`hue` only on T23/T31/C100) |
 | `audio` | `volume gain` | immediate |
-| `osd.N` (0–7) | `enabled text x y font_size color transparency` | immediate for items that had a region at startup; *enabling* an item that started disabled only persists (applies after restart) |
-| `video.N` | `bitrate` (kbps) | persisted only — applies on restart (no live encoder reconfig) |
+| `osdS.N` (`osd0`/`osd1` objects, items 0–7) | `enabled text x y font_size color transparency outline outline_color` | immediate for items that had a region at startup; *enabling* an item that started disabled only persists (applies after restart). Every video stream has its **own independent item set** (`osd0` = stream 0, `osd1` = stream 1) |
+| `osd.N` (legacy shared form, items 0–7) | same leaf keys | still parsed; the item is mirrored onto **every** stream (pre-per-stream behavior) |
+| `osd` | `enabled` (master switch, global for all streams) | persisted only — the OSD groups are built once at startup |
+| `video.N` | `enabled codec width height fps bitrate rc_mode gop max_gop profile qp min_qp max_qp rotation buffers rtsp_path` | persisted only — applies on restart (encoder/FrameSource are never reconfigured live) |
+| `sensor` | `model i2c_addr fps width height` | persisted only — applies on restart (sensor is probed at ISP init) |
 | `daynight` | `enabled` | immediate — toggles the automatic day/night detection (see below) |
+
+`GET /control` marks the persist-only sections in
+`"caps":{"restart":["video","sensor"]}` so clients can prompt for a restart,
+and lists the accepted OSD item leaf keys in `"caps":{"osd":[...]}`. The OSD
+dump carries the global master switch as `"osd":{"enabled":..}` followed by
+one full item set per stream (`"osd0"`, `"osd1"`), each item incl. its `type`
+(`text`/`logo`) so UIs can tell text overlays from the logo.
 
 The legacy flat form (`{"brightness":140,"running_mode":1}` /
 `{"force_mode":"night"}`) still works and maps to `image.*`.

@@ -12,6 +12,8 @@
 #include "../util.h"
 #include "../codec/nal.h"
 #include "../codec/g711.h"
+#include "../isp_caps.h"
+#include "../audio_caps.h"
 #include "imp_osd.h"
 #include "imp_motion.h"
 
@@ -29,11 +31,16 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <time.h>
 
 #define MOD "HAL_ING"
 
 #if defined(PLATFORM_T31)||defined(PLATFORM_C100)||defined(PLATFORM_T40)||defined(PLATFORM_T41)
 #define ENC_NEW_API 1
+#else
+/* classic encoder headers (T10..T30) spell the channel attr type with a
+ * capitalized CHN; alias it so enc_create() reads the same on every SoC */
+typedef IMPEncoderCHNAttr IMPEncoderChnAttr;
 #endif
 
 /* Debounce for on-demand StartRecvPic/StopRecvPic: with several clients that
@@ -83,11 +90,14 @@ static volatile int g_arun, g_aactive;
 static pthread_t    g_athr;
 static int          g_acodec = MS_AC_PCMU;   /* effective audio codec */
 static int          g_asr    = 8000;         /* effective audio sample rate */
+static IMPAudioIOAttr g_aio;                 /* attr accepted by IMP_AI_SetPubAttr */
+static volatile int   g_ai_up = 0;           /* AI dev 0/chn 0 enabled (audio_thread) */
 /* JPEG channels: [0] = dedicated jpeg.* channel (own framesource), further
  * entries = optional encoders piggybacked on a video stream's encoder group
  * (videoN.jpeg = true) which share that stream's framesource (no extra rmem) */
 typedef struct {
     int          chn;        /* IMP encoder channel */
+    int          fs_chn;     /* framesource feeding it (own or the video's) */
     int          src;        /* hub source id (HUB_JPEG_SRC / HUB_JPEG_SRC_N) */
     int          w, h, fps;
     int          snapshot;   /* periodic file snapshot (dedicated chn only) */
@@ -97,51 +107,204 @@ typedef struct {
 static jchan g_j[1+MS_MAX_VSTREAM];
 static int   g_nj;
 
-/* ================= system / sensor / ISP ================= */
-/* apply the image.* (ISP) tuning block */
-static void apply_image_tuning(void)
+/* ---- idle blocking + on-demand framesource ----
+ * Idle producer threads block on g_act_cond instead of usleep-polling.
+ * ing_set_active() broadcasts on every activation; the 1 s timeout is only a
+ * safety net against lost wakeups and bounds the shutdown join latency. */
+static pthread_mutex_t g_act_mtx  = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_act_cond = PTHREAD_COND_INITIALIZER;
+static void act_wake(void)
 {
-    const ms_image_cfg *im = &g_hcfg->image;
-#if !defined(NO_TUNINGS)
-    IMP_ISP_Tuning_SetBrightness(im->brightness);
-    IMP_ISP_Tuning_SetContrast(im->contrast);
-    IMP_ISP_Tuning_SetSaturation(im->saturation);
-    IMP_ISP_Tuning_SetSharpness(im->sharpness);
-    IMP_ISP_Tuning_SetISPHflip((IMPISPTuningOpsMode)(im->hflip?1:0));
-    IMP_ISP_Tuning_SetISPVflip((IMPISPTuningOpsMode)(im->vflip?1:0));
-    IMP_ISP_Tuning_SetMaxAgain(im->max_again);
-    IMP_ISP_Tuning_SetMaxDgain(im->max_dgain);
-    IMP_ISP_Tuning_SetTemperStrength(im->temper_strength);
-#if !defined(PLATFORM_T21)
-    IMP_ISP_Tuning_SetSinterStrength(im->sinter_strength);
-    IMP_ISP_Tuning_SetAeComp(im->ae_compensation);
-#endif
-    {
-        IMPISPAntiflickerAttr fl = (IMPISPAntiflickerAttr)im->anti_flicker;
-        IMP_ISP_Tuning_SetAntiFlickerAttr(fl);
+    pthread_mutex_lock(&g_act_mtx);
+    pthread_cond_broadcast(&g_act_cond);
+    pthread_mutex_unlock(&g_act_mtx);
+}
+static void act_wait(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += 1;
+    pthread_mutex_lock(&g_act_mtx);
+    pthread_cond_timedwait(&g_act_cond, &g_act_mtx, &ts);
+    pthread_mutex_unlock(&g_act_mtx);
+}
+
+/* A FrameSource channel is enabled only while someone consumes its frames.
+ * An enabled FS keeps the whole bound pipeline (FS -> OSD -> encoder group)
+ * pumping frames at sensor fps inside libimp's worker threads even when the
+ * encoder channel has StopRecvPic'd - that was ~19 % idle CPU with zero
+ * clients. Refcounted because a video stream and its piggybacked JPEG
+ * encoder share one FS (and motion detection pins the monitored stream). */
+#define MS_FS_MAXCHN 8
+static pthread_mutex_t g_fs_mtx = PTHREAD_MUTEX_INITIALIZER;
+static int g_fs_users[MS_FS_MAXCHN];
+static void fs_use(int chn)
+{
+    if (chn < 0 || chn >= MS_FS_MAXCHN) return;
+    pthread_mutex_lock(&g_fs_mtx);
+    if (g_fs_users[chn]++ == 0) {
+        IMP_FrameSource_EnableChn(chn);
+        LOGI(MOD,"framesource %d enabled", chn);
     }
-    {
+    pthread_mutex_unlock(&g_fs_mtx);
+}
+static void fs_unuse(int chn)
+{
+    if (chn < 0 || chn >= MS_FS_MAXCHN) return;
+    pthread_mutex_lock(&g_fs_mtx);
+    if (g_fs_users[chn] > 0 && --g_fs_users[chn] == 0) {
+        IMP_FrameSource_DisableChn(chn);
+        LOGI(MOD,"framesource %d disabled (idle)", chn);
+    }
+    pthread_mutex_unlock(&g_fs_mtx);
+}
+
+/* ================= system / sensor / ISP ================= */
+/* Apply one image.* (ISP tuning) key from the current config (g_hcfg->image).
+ * Returns 1 when the key is wired on this PLATFORM's IMP SDK, 0 when the SoC
+ * cannot do it (the value is still parsed/persisted by the config layer).
+ * The per-SoC guards come from ../isp_caps.h - keep them in sync with the
+ * caps.image list control.c reports. Callers serialize ISP access (g_isp_lock
+ * for live control; init is single-threaded). */
+static int isp_apply_image(const char *k)
+{
+#if defined(NO_TUNINGS)
+    (void)k;
+    return 1;
+#else
+    const ms_image_cfg *im = &g_hcfg->image;
+#ifdef ISP_NEW_TUNING_API           /* T40/T41: IMPVI_NUM + pointer args */
+    if (!strcmp(k,"brightness")){ unsigned char u=(unsigned char)im->brightness;
+        IMP_ISP_Tuning_SetBrightness(IMPVI_MAIN,&u); return 1; }
+    if (!strcmp(k,"contrast")){ unsigned char u=(unsigned char)im->contrast;
+        IMP_ISP_Tuning_SetContrast(IMPVI_MAIN,&u); return 1; }
+    if (!strcmp(k,"saturation")){ unsigned char u=(unsigned char)im->saturation;
+        IMP_ISP_Tuning_SetSaturation(IMPVI_MAIN,&u); return 1; }
+    if (!strcmp(k,"sharpness")){ unsigned char u=(unsigned char)im->sharpness;
+        IMP_ISP_Tuning_SetSharpness(IMPVI_MAIN,&u); return 1; }
+    if (!strcmp(k,"hue")){ unsigned char u=(unsigned char)im->hue;
+        IMP_ISP_Tuning_SetBcshHue(IMPVI_MAIN,&u); return 1; }
+    if (!strcmp(k,"hflip") || !strcmp(k,"vflip")){
+        IMPISPHVFLIP m = im->hflip
+            ? (im->vflip ? IMPISP_FLIP_HV_MODE : IMPISP_FLIP_H_MODE)
+            : (im->vflip ? IMPISP_FLIP_V_MODE  : IMPISP_FLIP_NORMAL_MODE);
+#if defined(PLATFORM_T41)
+        /* T41 wraps the mode in IMPISPHVFLIPAttr (sensor + per-channel ISP);
+         * flip at the sensor, leave the ISP channels at NORMAL */
+        IMPISPHVFLIPAttr fa; memset(&fa,0,sizeof fa);
+        fa.sensor_mode = m;
+        IMP_ISP_Tuning_SetHVFLIP(IMPVI_MAIN,&fa);
+#else
+        IMP_ISP_Tuning_SetHVFLIP(IMPVI_MAIN,&m);
+#endif
+        return 1;
+    }
+    if (!strcmp(k,"running_mode")){
+        IMPISPRunningMode m = im->running_mode ? IMPISP_RUNNING_MODE_NIGHT
+                                               : IMPISP_RUNNING_MODE_DAY;
+        IMP_ISP_Tuning_SetISPRunningMode(IMPVI_MAIN,&m); return 1;
+    }
+    if (!strcmp(k,"anti_flicker")){ /* 0 off, 1 = 50 Hz, 2 = 60 Hz */
+        IMPISPAntiflickerAttr fl; memset(&fl,0,sizeof fl);
+        fl.mode = im->anti_flicker ? IMPISP_ANTIFLICKER_NORMAL_MODE
+                                   : IMPISP_ANTIFLICKER_DISABLE_MODE;
+        fl.freq = (im->anti_flicker==2) ? 60 : 50;
+        IMP_ISP_Tuning_SetAntiFlickerAttr(IMPVI_MAIN,&fl); return 1;
+    }
+#else                               /* classic API (T10..T31, C100) */
+    if (!strcmp(k,"brightness")){ IMP_ISP_Tuning_SetBrightness((unsigned char)im->brightness); return 1; }
+    if (!strcmp(k,"contrast")){   IMP_ISP_Tuning_SetContrast((unsigned char)im->contrast);     return 1; }
+    if (!strcmp(k,"saturation")){ IMP_ISP_Tuning_SetSaturation((unsigned char)im->saturation); return 1; }
+    if (!strcmp(k,"sharpness")){  IMP_ISP_Tuning_SetSharpness((unsigned char)im->sharpness);   return 1; }
+    if (!strcmp(k,"hue")){
+#ifdef ISP_HAS_HUE
+        IMP_ISP_Tuning_SetBcshHue((unsigned char)im->hue); return 1;
+#else
+        return 0;
+#endif
+    }
+    if (!strcmp(k,"hflip")){ IMP_ISP_Tuning_SetISPHflip((IMPISPTuningOpsMode)(im->hflip?1:0)); return 1; }
+    if (!strcmp(k,"vflip")){ IMP_ISP_Tuning_SetISPVflip((IMPISPTuningOpsMode)(im->vflip?1:0)); return 1; }
+    if (!strcmp(k,"running_mode")){
+        IMP_ISP_Tuning_SetISPRunningMode(im->running_mode ? IMPISP_RUNNING_MODE_NIGHT
+                                                          : IMPISP_RUNNING_MODE_DAY);
+        return 1;
+    }
+    if (!strcmp(k,"anti_flicker")){ /* enum: 0 off, 1 = 50 Hz, 2 = 60 Hz */
+        IMP_ISP_Tuning_SetAntiFlickerAttr((IMPISPAntiflickerAttr)im->anti_flicker);
+        return 1;
+    }
+    if (!strcmp(k,"ae_compensation")){
+#ifdef ISP_HAS_AECOMP
+        IMP_ISP_Tuning_SetAeComp(im->ae_compensation); return 1;
+#else
+        return 0;
+#endif
+    }
+    if (!strcmp(k,"max_again")){ IMP_ISP_Tuning_SetMaxAgain((uint32_t)im->max_again); return 1; }
+    if (!strcmp(k,"max_dgain")){ IMP_ISP_Tuning_SetMaxDgain((uint32_t)im->max_dgain); return 1; }
+    if (!strcmp(k,"sinter_strength")){ IMP_ISP_Tuning_SetSinterStrength((uint32_t)im->sinter_strength); return 1; }
+    if (!strcmp(k,"temper_strength")){ IMP_ISP_Tuning_SetTemperStrength((uint32_t)im->temper_strength); return 1; }
+    if (!strcmp(k,"dpc_strength")){
+#ifdef ISP_HAS_DPC
+        IMP_ISP_Tuning_SetDPC_Strength((unsigned int)im->dpc_strength); return 1;
+#else
+        return 0;
+#endif
+    }
+    if (!strcmp(k,"defog_strength")){
+#ifdef ISP_HAS_DEFOG
+        uint8_t d=(uint8_t)im->defog_strength;
+        IMP_ISP_Tuning_SetDefog_Strength(&d); return 1;
+#else
+        return 0;
+#endif
+    }
+    if (!strcmp(k,"drc_strength")){
+#ifdef ISP_HAS_DRC
+        IMP_ISP_Tuning_SetDRC_Strength((unsigned int)im->drc_strength); return 1;
+#else
+        return 0;
+#endif
+    }
+    if (!strcmp(k,"highlight_depress")){ /* 0 disables */
+        IMP_ISP_Tuning_SetHiLightDepress((uint32_t)im->highlight_depress); return 1;
+    }
+    if (!strcmp(k,"backlight_compensation")){
+#ifdef ISP_HAS_BACKLIGHT
+        IMP_ISP_Tuning_SetBacklightComp((uint32_t)im->backlight_compensation); return 1;
+#else
+        return 0;
+#endif
+    }
+    /* white balance: mode + gains are one IMPISPWB, applied on any of them */
+    if (!strcmp(k,"core_wb_mode")||!strcmp(k,"wb_rgain")||!strcmp(k,"wb_bgain")){
         IMPISPWB wb; memset(&wb,0,sizeof wb);
         wb.mode=(enum isp_core_wb_mode)im->core_wb_mode;
-        wb.rgain=im->wb_rgain; wb.bgain=im->wb_bgain;
-        IMP_ISP_Tuning_SetWB(&wb);
+        wb.rgain=(uint16_t)im->wb_rgain; wb.bgain=(uint16_t)im->wb_bgain;
+        IMP_ISP_Tuning_SetWB(&wb); return 1;
     }
-#if defined(PLATFORM_T23)||defined(PLATFORM_T31)||defined(PLATFORM_C100)
-    IMP_ISP_Tuning_SetBcshHue(im->hue);
-    IMP_ISP_Tuning_SetDPC_Strength(im->dpc_strength);
-    { uint8_t d=(uint8_t)im->defog_strength; IMP_ISP_Tuning_SetDefog_Strength(&d); }
-#endif
-#if defined(PLATFORM_T21)||defined(PLATFORM_T23)||defined(PLATFORM_T31)||defined(PLATFORM_C100)
-    IMP_ISP_Tuning_SetDRC_Strength(im->drc_strength);
-#endif
-#if defined(PLATFORM_T23)||defined(PLATFORM_T31)||defined(PLATFORM_C100)
-    /* SetBacklightComp only exists in the T23/T31/C100 SDKs */
-    if (im->backlight_compensation>0)
-        IMP_ISP_Tuning_SetBacklightComp(im->backlight_compensation);
-    else
-#endif
-    if (im->highlight_depress>0)
-        IMP_ISP_Tuning_SetHiLightDepress(im->highlight_depress);
+#endif /* ISP_NEW_TUNING_API */
+    return 0;
+#endif /* NO_TUNINGS */
+}
+
+/* apply the whole image.* (ISP) tuning block (boot + config reload).
+ * "core_wb_mode" stands in for the whole WB triple (one SetWB call). */
+static void apply_image_tuning(void)
+{
+#if !defined(NO_TUNINGS)
+    static const char *const keys[] = {
+        "brightness","contrast","saturation","sharpness","hue",
+        "hflip","vflip","running_mode","anti_flicker","ae_compensation",
+        "max_again","max_dgain","sinter_strength","temper_strength",
+        "dpc_strength","defog_strength","drc_strength","highlight_depress",
+        "backlight_compensation","core_wb_mode"
+    };
+    for (size_t i=0;i<sizeof keys/sizeof keys[0];i++)
+        if (!isp_apply_image(keys[i]))
+            LOGD(MOD,"image.%s unsupported on this platform (skipped)",keys[i]);
+    const ms_image_cfg *im = &g_hcfg->image;
     LOGI(MOD,"image tuning applied (bri=%d con=%d sat=%d sharp=%d)",
          im->brightness,im->contrast,im->saturation,im->sharpness);
 #endif
@@ -174,10 +337,15 @@ static int isp_init(void)
 #endif
     if (IMP_System_Init()<0){ LOGE(MOD,"IMP_System_Init failed"); return -1; }
     IMP_ISP_EnableTuning();
-    apply_image_tuning();
+    apply_image_tuning();   /* full image.* block incl. running_mode */
+#if defined(PLATFORM_T41)
+    { IMPISPSensorFps fps={ .num=(uint32_t)g_hcfg->sensor.fps, .den=1 };
+      IMP_ISP_Tuning_SetSensorFPS(IMPVI_MAIN,&fps); }
+#elif defined(ISP_NEW_TUNING_API)   /* T40 */
+    { uint32_t fn=(uint32_t)g_hcfg->sensor.fps, fd=1;
+      IMP_ISP_Tuning_SetSensorFPS(IMPVI_MAIN,&fn,&fd); }
+#else
     IMP_ISP_Tuning_SetSensorFPS(g_hcfg->sensor.fps, 1);
-#ifdef IMPISP_RUNNING_MODE_DAY
-    IMP_ISP_Tuning_SetISPRunningMode(IMPISP_RUNNING_MODE_DAY);
 #endif
     IMP_System_GetVersion(NULL);
     LOGI(MOD,"ISP up, sensor=%s fps=%d", g_hcfg->sensor.model, g_hcfg->sensor.fps);
@@ -294,13 +462,17 @@ static void *video_thread(void *arg)
          * "inactive" flag can never stop a stream that still has clients. */
         int want = vc->active || hub_active(vc->chn);
         if (!want) {
-            if (!receiving){ usleep(50000); continue; }
+            /* fully idle: block until ing_set_active() wakes us (1 s safety
+             * timeout). No polling, no frame flow - the framesource is off. */
+            if (!receiving){ act_wait(); continue; }
             /* debounce the stop: only shut the encoder down after a sustained
              * idle period; rapid client churn must not toggle Start/StopRecvPic */
             int64_t now = ms_now_us();
             if (idle_since==0) idle_since = now;
             if (now - idle_since >= MS_IDLE_STOP_US) {
-                IMP_Encoder_StopRecvPic(vc->chn); receiving=0; idle_since=0;
+                IMP_Encoder_StopRecvPic(vc->chn);
+                fs_unuse(vc->chn);            /* stop the frame flow entirely */
+                receiving=0; idle_since=0;
                 LOGI(MOD,"video chn%d idle",vc->chn);
                 continue;
             }
@@ -308,7 +480,8 @@ static void *video_thread(void *arg)
              * the pipeline never backs up (publish is a no-op with 0 subs) */
         } else {
             idle_since = 0;
-            if (!receiving){ IMP_Encoder_StartRecvPic(vc->chn); receiving=1;
+            if (!receiving){ fs_use(vc->chn);
+                             IMP_Encoder_StartRecvPic(vc->chn); receiving=1;
                              vc->idr_req=0; IMP_Encoder_RequestIDR(vc->chn);
                              LOGI(MOD,"video chn%d streaming",vc->chn); }
         }
@@ -338,7 +511,7 @@ static void *video_thread(void *arg)
         hub_publish(vc->chn, au, aulen, ms_now_us(), key, MS_MEDIA_VIDEO);
         IMP_Encoder_ReleaseStream(vc->chn,&st);
     }
-    if (receiving) IMP_Encoder_StopRecvPic(vc->chn);
+    if (receiving){ IMP_Encoder_StopRecvPic(vc->chn); fs_unuse(vc->chn); }
     free(au);
     return NULL;
 }
@@ -362,15 +535,19 @@ static void *jpeg_thread(void *arg)
          * MS_IDLE_STOP_US) to avoid Start/StopRecvPic churn. */
         int jwant = jc->active || jc->snapshot || hub_active(jc->src);
         if (!jwant) {
-            if (!receiving){ usleep(50000); continue; }
+            /* fully idle: block until reactivated (see act_wait) */
+            if (!receiving){ act_wait(); continue; }
             int64_t nowi = ms_now_us();
             if (idle_since==0) idle_since = nowi;
             if (nowi - idle_since >= MS_IDLE_STOP_US) {
-                IMP_Encoder_StopRecvPic(jc->chn); receiving=0; idle_since=0;
+                IMP_Encoder_StopRecvPic(jc->chn);
+                fs_unuse(jc->fs_chn);         /* stop the frame flow entirely */
+                receiving=0; idle_since=0;
                 continue;
             }
         } else idle_since = 0;
-        if (!receiving){ IMP_Encoder_StartRecvPic(jc->chn); receiving=1; }
+        if (!receiving){ fs_use(jc->fs_chn);
+                         IMP_Encoder_StartRecvPic(jc->chn); receiving=1; }
         int64_t now=ms_now_us();
         if (now<next){ usleep(next-now); }
         next=ms_now_us()+period;
@@ -383,7 +560,7 @@ static void *jpeg_thread(void *arg)
 #ifdef ENC_NEW_API
             const uint8_t *p=(const uint8_t*)(uintptr_t)st.virAddr + st.pack[i].offset;
 #else
-            const uint8_t *p=(const uint8_t*)st.pack[i].virAddr;
+            const uint8_t *p=(const uint8_t*)(uintptr_t)st.pack[i].virAddr;
 #endif
             size_t l=st.pack[i].length;
             if (jlen+l<=jcap){ memcpy(jbuf+jlen,p,l); jlen+=l; }
@@ -397,7 +574,7 @@ static void *jpeg_thread(void *arg)
         }
         IMP_Encoder_ReleaseStream(jc->chn,&st);
     }
-    if (receiving) IMP_Encoder_StopRecvPic(jc->chn);
+    if (receiving){ IMP_Encoder_StopRecvPic(jc->chn); fs_unuse(jc->fs_chn); }
     free(jbuf);
     return NULL;
 }
@@ -421,10 +598,11 @@ static int jpeg_enc_create(int chn, int w, int h, int quality)
     return 0;
 }
 
-static void jpeg_chan_start(int chn, int src, int w, int h, int fps, int snapshot)
+static void jpeg_chan_start(int chn, int fs_chn, int src, int w, int h,
+                            int fps, int snapshot)
 {
     jchan *jc=&g_j[g_nj++];
-    jc->chn=chn; jc->src=src; jc->w=w; jc->h=h;
+    jc->chn=chn; jc->fs_chn=fs_chn; jc->src=src; jc->w=w; jc->h=h;
     jc->fps=fps>0?fps:5; jc->snapshot=snapshot;
     jc->run=1; jc->active=0;
     pthread_create(&jc->thr,NULL,jpeg_thread,jc);
@@ -443,8 +621,8 @@ static int jpeg_setup(const ms_config *cfg)
     IMP_Encoder_RegisterChn(chn, chn);
     IMPCell fs={DEV_ID_FS,chn,0}, enc={DEV_ID_ENC,chn,0};
     IMP_System_Bind(&fs,&enc);
-    IMP_FrameSource_EnableChn(chn);
-    jpeg_chan_start(chn, HUB_JPEG_SRC, cfg->jpeg.width, cfg->jpeg.height,
+    /* framesource is enabled on demand by jpeg_thread (fs_use/fs_unuse) */
+    jpeg_chan_start(chn, chn, HUB_JPEG_SRC, cfg->jpeg.width, cfg->jpeg.height,
                     cfg->jpeg.fps, cfg->jpeg.snapshot_path[0]!=0);
     LOGI(MOD,"JPEG channel %d ready (%dx%d q%d)",chn,cfg->jpeg.width,cfg->jpeg.height,cfg->jpeg.quality);
     return 0;
@@ -464,7 +642,7 @@ static int jpeg_attach(const ms_config *cfg, int vi, int grp)
         IMP_Encoder_DestroyChn(chn);
         return -1;
     }
-    jpeg_chan_start(chn, HUB_JPEG_SRC_N(vi), v->width, v->height, v->jpeg_fps, 0);
+    jpeg_chan_start(chn, grp, HUB_JPEG_SRC_N(vi), v->width, v->height, v->jpeg_fps, 0);
     LOGI(MOD,"JPEG-on-video%d: encoder chn %d in group %d (%dx%d q%d)",
          vi,chn,grp,v->width,v->height,q);
     return 0;
@@ -478,6 +656,55 @@ static int ai_rate_enum(int sr)
         case 16000: return AUDIO_SAMPLE_RATE_16000;
         default:    return AUDIO_SAMPLE_RATE_8000;
     }
+}
+
+/* Apply one live audio.* key from the current config (g_hcfg->audio) to the
+ * running audio input (dev 0 / chn 0, opened by audio_thread). Returns 1 when
+ * the key is wired on this PLATFORM's IMP SDK, 0 when the SoC cannot do it
+ * (the value is still parsed/persisted by the config layer). The per-SoC
+ * guards come from ../audio_caps.h - keep them in sync with the caps.audio
+ * list control.c reports. The HPF/AGC/NS hooks are runtime toggles in the
+ * libimp capture path (they take the SetPubAttr attr, g_aio). Callers
+ * serialize via g_isp_lock (boot-apply runs before live control can race).
+ * NOT here: codec/samplerate/bitrate/channels/enabled (+ force_stereo and
+ * the spk_* speaker keys - timps has no AO pipeline): those are init-time
+ * attributes, persist-only, applied on the next restart. */
+static int ai_apply_key(const char *k)
+{
+    const ms_audio_cfg *a = &g_hcfg->audio;
+    if (!strcmp(k,"volume")){ IMP_AI_SetVol(0, 0, a->volume); return 1; }
+    if (!strcmp(k,"gain"))  { IMP_AI_SetGain(0, 0, a->gain);  return 1; }
+    if (!strcmp(k,"alc_gain")){
+#ifdef AUDIO_HAS_ALC_GAIN
+        IMP_AI_SetAlcGain(0, 0, a->alc_gain); return 1;
+#else
+        return 0;
+#endif
+    }
+    if (!strcmp(k,"high_pass")){
+        if (a->high_pass) IMP_AI_EnableHpf(&g_aio);
+        else              IMP_AI_DisableHpf();
+        return 1;
+    }
+    /* the two agc_* values parameterize the AGC -> re-enable with new config */
+    if (!strcmp(k,"agc")||!strcmp(k,"agc_target_dbfs")||!strcmp(k,"agc_compression_db")){
+        if (a->agc){
+            IMPAudioAgcConfig agc;
+            agc.TargetLevelDbfs   = a->agc_target_dbfs;
+            agc.CompressionGaindB = a->agc_compression_db;
+            IMP_AI_EnableAgc(&g_aio, agc);
+        } else IMP_AI_DisableAgc();
+        return 1;
+    }
+    if (!strcmp(k,"ns")){                    /* 0 = off, 1..3 = level */
+        if (a->ns > 0) IMP_AI_EnableNs(&g_aio, a->ns);
+        else           IMP_AI_DisableNs();
+        return 1;
+    }
+    if (!strcmp(k,"mute"))                   /* live mic mute: no IMP call - */
+        return 1;                            /* audio_thread gates the publish
+                                              * on g_hcfg->audio.mute per frame */
+    return 0;
 }
 
 static void *audio_thread(void *arg)
@@ -515,8 +742,20 @@ static void *audio_thread(void *arg)
     chnp.usrFrmDepth = MS_AI_FRM_DEPTH;   /* low depth = low audio latency */
     IMP_AI_SetChnParam(dev,chnid,&chnp);
     IMP_AI_EnableChn(dev,chnid);
-    IMP_AI_SetVol(dev,chnid, g_hcfg->audio.volume);
-    IMP_AI_SetGain(dev,chnid, g_hcfg->audio.gain);
+    /* boot-apply the live audio set from the config (same ai_apply_key path
+     * the /control endpoint uses at runtime); the off-state features are
+     * simply not enabled instead of calling the IMP_AI_Disable* hooks.
+     * g_ai_up is raised only afterwards: until then ing_control() leaves the
+     * AI alone (the value lands in g_cfg first, so it is picked up here). */
+    g_aio = aio;
+    ai_apply_key("volume");
+    ai_apply_key("gain");
+    if (g_hcfg->audio.alc_gain > 0 && !ai_apply_key("alc_gain"))
+        LOGW(MOD,"audio.alc_gain unsupported on this platform (ignored)");
+    if (g_hcfg->audio.high_pass) ai_apply_key("high_pass");
+    if (g_hcfg->audio.agc)       ai_apply_key("agc");
+    if (g_hcfg->audio.ns > 0)    ai_apply_key("ns");
+    g_ai_up = 1;
 
     /* --- now open faac at the samplerate the AI actually accepted --- */
 #ifdef USE_FAAC
@@ -560,13 +799,22 @@ static void *audio_thread(void *arg)
 #endif
 
     while (g_arun) {
-        if (!g_aactive){ usleep(50000); continue; }   /* on-demand */
+        if (!g_aactive){ act_wait(); continue; }   /* on-demand: block idle */
         int64_t a_t0 = ms_now_us();
         /* sleep on the no-frame path so a non-blocking/failing PollingFrame
          * can never spin the CPU (audio input may be idle on some boards) */
         if (IMP_AI_PollingFrame(dev,chnid, g_hcfg->imp_polling_timeout)!=0){ usleep(10000); continue; }
         IMPAudioFrame frm;
         if (IMP_AI_GetFrame(dev,chnid,&frm,1)!=0) continue;
+        /* live mic mute (audio.mute via /control): keep draining the AI so
+         * nothing backs up, but never feed the encoder/hub - RTSP and MP4
+         * clients simply receive no audio frames until unmuted */
+        if (g_hcfg->audio.mute){
+            IMP_AI_ReleaseFrame(dev,chnid,&frm);
+            int64_t m_dt = ms_now_us() - a_t0;
+            if (m_dt < 15000) usleep(15000 - m_dt);
+            continue;
+        }
         const int16_t *pcm=(const int16_t*)frm.virAddr;
         size_t samples=frm.len/2;
         if (use_aac) {
@@ -606,6 +854,7 @@ static void *audio_thread(void *arg)
 #ifdef USE_FAAC
     if (faac) faacEncClose(faac);
 #endif
+    g_ai_up = 0;
     IMP_AI_DisableChn(dev,chnid);
     IMP_AI_Disable(dev);
     return NULL;
@@ -613,57 +862,63 @@ static void *audio_thread(void *arg)
 
 #ifdef USE_CONTROL
 /* Apply a live setting from /control (via hub_control). Keys are the config
- * file keys: image.*, audio.volume/gain, osdN.*. The value arrives as a string;
- * numbers are parsed here. ISP/AI calls are runtime-safe but serialized under a
- * mutex; OSD goes through imp_osd_apply(). videoN.bitrate is NOT applied live
- * (persisted only, takes effect on restart). Compiled only with -DUSE_CONTROL. */
+ * file keys: image.*, audio.* (live: volume/gain/alc_gain/high_pass/agc/
+ * agc_target_dbfs/agc_compression_db/ns), osdS.N.* (per-stream) and legacy
+ * osdN.* (all streams). The value arrives as a string; numbers are parsed
+ * here. ISP/AI calls are runtime-safe but serialized under a mutex; OSD goes
+ * through imp_osd_apply(stream,item). ALL videoN.*
+ * and sensor.* keys plus the attribute-level audio keys (enabled/codec/
+ * samplerate/bitrate/channels/force_stereo/spk_*) are NOT applied live
+ * (persisted only, take effect on restart). Compiled only with
+ * -DUSE_CONTROL. */
 static pthread_mutex_t g_isp_lock = PTHREAD_MUTEX_INITIALIZER;
 static void ing_control(const char *key, const char *val)
 {
     int v = (int)strtol(val, NULL, 0);
 
     if (!strncmp(key,"image.",6)){
+        /* the control layer already stored the value in g_cfg (config_apply_kv
+         * runs before hub_control), so the HAL applies from the config */
         const char *k = key+6;
         pthread_mutex_lock(&g_isp_lock);
-        if (!strcmp(k,"running_mode")){
-#ifdef IMPISP_RUNNING_MODE_DAY
-            IMP_ISP_Tuning_SetISPRunningMode(v ? IMPISP_RUNNING_MODE_NIGHT
-                                               : IMPISP_RUNNING_MODE_DAY);
-#endif
-        }
-        else if (!strcmp(k,"brightness")) IMP_ISP_Tuning_SetBrightness(v);
-        else if (!strcmp(k,"contrast"))   IMP_ISP_Tuning_SetContrast(v);
-        else if (!strcmp(k,"saturation")) IMP_ISP_Tuning_SetSaturation(v);
-        else if (!strcmp(k,"sharpness"))  IMP_ISP_Tuning_SetSharpness(v);
-        else if (!strcmp(k,"hue")){
-#if defined(PLATFORM_T23)||defined(PLATFORM_T31)||defined(PLATFORM_C100)
-            IMP_ISP_Tuning_SetBcshHue((unsigned char)v);
-#else
-            LOGW(MOD,"image.hue not supported on this platform (persisted only)");
-#endif
-        }
-        else if (!strcmp(k,"hflip")) IMP_ISP_Tuning_SetISPHflip((IMPISPTuningOpsMode)(v?1:0));
-        else if (!strcmp(k,"vflip")) IMP_ISP_Tuning_SetISPVflip((IMPISPTuningOpsMode)(v?1:0));
+        int ok = isp_apply_image(k);
         pthread_mutex_unlock(&g_isp_lock);
-        LOGI(MOD,"control %s=%d", key, v);
+        if (ok) LOGI(MOD,"control %s=%d", key, v);
+        else    LOGD(MOD,"image.%s unsupported on this platform (persisted only)", k);
         return;
     }
 
     if (!strncmp(key,"audio.",6)){
-        const char *k = key+6;                 /* dev 0 / chn 0 as in audio_thread */
-        pthread_mutex_lock(&g_isp_lock);
-        if      (!strcmp(k,"volume")) IMP_AI_SetVol(0, 0, v);
-        else if (!strcmp(k,"gain"))   IMP_AI_SetGain(0, 0, v);
+        const char *k = key+6;
+        /* persist-only keys: encoder/SetPubAttr-level attributes (plus the
+         * speaker/stereo keys timps has no runtime path for). The control
+         * layer already stored them in g_cfg and persists them to the config
+         * file; they take effect when timps is restarted. */
+        if (!strcmp(k,"enabled")   || !strcmp(k,"codec")    ||
+            !strcmp(k,"samplerate")|| !strcmp(k,"bitrate")  ||
+            !strcmp(k,"channels")  || !strcmp(k,"force_stereo") ||
+            !strncmp(k,"spk_",4)){
+            LOGI(MOD,"%s persisted, applies on restart", key);
+            return;
+        }
+        if (!g_ai_up){                         /* audio input not running */
+            LOGD(MOD,"%s persisted (audio input not running)", key);
+            return;
+        }
+        pthread_mutex_lock(&g_isp_lock);       /* dev 0 / chn 0 as in audio_thread */
+        int ok = ai_apply_key(k);
         pthread_mutex_unlock(&g_isp_lock);
-        LOGI(MOD,"control %s=%d", key, v);
+        if (ok) LOGI(MOD,"control %s=%d", key, v);
+        else    LOGD(MOD,"audio.%s unsupported on this platform (persisted only)", k);
         return;
     }
 
-    /* videoN.bitrate: encoder settings are not applied live (would need a
-     * stream-killing channel reconfig). It is persisted to the config by the
-     * control layer and takes effect on the next restart. */
-    if (!strncmp(key,"video",5) && key[5]>='0' && key[5]<'0'+MS_MAX_VSTREAM
-        && key[6]=='.' && !strcmp(key+7,"bitrate")){
+    /* videoN.* / sensor.*: encoder, FrameSource and sensor settings are
+     * config-only - never applied live (a live change would need a stream-
+     * killing channel/ISP reconfig). The control layer already stored and
+     * persisted the value; it takes effect on the next daemon restart. */
+    if ((!strncmp(key,"video",5) && key[5]>='0' && key[5]<'0'+MS_MAX_VSTREAM
+         && key[6]=='.') || !strncmp(key,"sensor.",7)){
         LOGI(MOD,"%s persisted, applies on restart", key);
         return;
     }
@@ -673,9 +928,22 @@ static void ing_control(const char *key, const char *val)
      * via the board's color script. */
     if (!strncmp(key,"daynight.",9)) return;
 
-    /* osdN.*: config (g_cfg) is already updated -> re-apply the whole item */
+    /* osdS.N.* (per-stream) / legacy osdN.* (all streams): config (g_cfg) is
+     * already updated -> re-apply the whole item on the right stream(s) */
     if (!strncmp(key,"osd",3) && key[3]>='0' && key[3]<'0'+MS_MAX_OSD && key[4]=='.'){
-        imp_osd_apply(key[3]-'0');
+        if (key[5]>='0' && key[5]<'0'+MS_MAX_OSD && key[6]=='.' &&
+            key[3]<'0'+MS_MAX_VSTREAM)
+            imp_osd_apply(key[3]-'0', key[5]-'0');   /* osdS.N.* */
+        else
+            imp_osd_apply(-1, key[3]-'0');           /* legacy osdN.* */
+        return;
+    }
+
+    /* osd.* (master switch/global font/vars file): config-only - the OSD
+     * groups are built once in imp_osd_setup at startup, so these take
+     * effect on the next daemon restart */
+    if (!strncmp(key,"osd.",4)){
+        LOGI(MOD,"%s persisted, applies on restart", key);
         return;
     }
 }
@@ -717,7 +985,8 @@ static int ing_start(const ms_config *cfg)
         } else {
             IMP_System_Bind(&fs,&enc);
         }
-        IMP_FrameSource_EnableChn(chn);
+        /* NOT enabled here: the framesource runs on demand (fs_use/fs_unuse
+         * from the consumer threads) so an idle timps pumps no frames at all */
 
         hub_set_video_params(i, v->codec, v->width, v->height, v->fps);
         g_v[g_nv].chn=chn; g_v[g_nv].grp=grp; g_v[g_nv].codec=v->codec;
@@ -746,18 +1015,24 @@ static int ing_start(const ms_config *cfg)
     }
 
     if (cfg->jpeg.enabled) jpeg_setup(cfg);
-    if (cfg->motion.enabled) imp_motion_start(cfg);
+    if (cfg->motion.enabled){
+        imp_motion_start(cfg);
+        /* IVS needs the monitored stream's frames independent of clients:
+         * pin that framesource so the idle logic never turns it off */
+        fs_use(cfg->video[cfg->motion.monitor_stream].imp_chn);
+    }
     return 0;
 }
 
 static void ing_set_active(int src, int on)
 {
-    if (src==HUB_AUDIO_SRC){ g_aactive=on; return; }
-    if (src>=HUB_JPEG_SRC && src<HUB_JPEG_SRC+HUB_NJPEG){
-        for (int i=0;i<g_nj;i++) if (g_j[i].src==src){ g_j[i].active=on; return; }
-        return;
+    if (src==HUB_AUDIO_SRC){ g_aactive=on; }
+    else if (src>=HUB_JPEG_SRC && src<HUB_JPEG_SRC+HUB_NJPEG){
+        for (int i=0;i<g_nj;i++) if (g_j[i].src==src){ g_j[i].active=on; break; }
+    } else {
+        for (int i=0;i<g_nv;i++) if (g_v[i].chn==src){ g_v[i].active=on; break; }
     }
-    for (int i=0;i<g_nv;i++) if (g_v[i].chn==src){ g_v[i].active=on; return; }
+    if (on) act_wake();   /* unblock idle producer threads immediately */
 }
 
 static void ing_request_idr(int src)
@@ -770,10 +1045,20 @@ static void ing_request_idr(int src)
 
 static void ing_stop(void)
 {
-    if (g_hcfg->motion.enabled) imp_motion_stop();
-    for (int i=0;i<g_nv;i++){ g_v[i].run=0; pthread_join(g_v[i].thr,NULL); }
-    if (g_arun){ g_arun=0; pthread_join(g_athr,NULL); }
-    for (int i=0;i<g_nj;i++){ g_j[i].run=0; pthread_join(g_j[i].thr,NULL); }
+    if (g_hcfg->motion.enabled){
+        imp_motion_stop();
+        fs_unuse(g_hcfg->video[g_hcfg->motion.monitor_stream].imp_chn);
+    }
+    /* raise all stop flags first, then wake the idle-blocked threads once so
+     * every join returns promptly (act_wait also times out after 1 s) */
+    int had_audio = g_arun;
+    for (int i=0;i<g_nv;i++) g_v[i].run=0;
+    for (int i=0;i<g_nj;i++) g_j[i].run=0;
+    g_arun=0;
+    act_wake();
+    for (int i=0;i<g_nv;i++) pthread_join(g_v[i].thr,NULL);
+    if (had_audio) pthread_join(g_athr,NULL);
+    for (int i=0;i<g_nj;i++) pthread_join(g_j[i].thr,NULL);
     for (int i=0;i<g_nj;i++){
         jchan *jc=&g_j[i];
         if (jc->src==HUB_JPEG_SRC){

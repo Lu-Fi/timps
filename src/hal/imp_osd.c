@@ -1,8 +1,11 @@
 /* imp_osd.c - on-screen display via IMP_OSD.
  * One OSD group per video stream, each with up to MS_MAX_OSD overlays (TEXT or
- * BGRA LOGO). Items are placed by x/y (0=center, +from left/top, -from right/
- * resolution) and re-rendered only when its expanded value changes.
- * Compiled for target only (-DHAL_INGENIC). */
+ * BGRA LOGO) from that stream's OWN item set (cfg->osd.items[stream][..]), so
+ * main and sub stream carry independent overlays. Items are placed by x/y
+ * (0=center, +from left/top, -from right/resolution) and re-rendered only when
+ * their expanded value changes. Region handles never collide between streams:
+ * every enabled item gets its own IMP_OSD_CreateRgn handle, registered only
+ * into its stream's group. Compiled for target only (-DHAL_INGENIC). */
 #include "imp_osd.h"
 #include "osd_text.h"
 #include "osd_vars.h"
@@ -23,7 +26,7 @@
 typedef struct {
     int         rgn;         /* IMP region handle, -1 = unused */
     int         is_text;
-    int         item;        /* index into cfg->osd.items */
+    int         item;        /* index into cfg->osd.items[stream] */
     uint8_t    *buf;         /* current BGRA buffer */
     uint8_t    *retired;     /* previous buffer, freed on the NEXT update:
                               * OSD_REG_PIC keeps a pointer and the hardware
@@ -34,6 +37,7 @@ typedef struct {
 
 typedef struct {
     int         used;
+    int         si;          /* video stream index (owns items[si][..]) */
     int         grp;         /* OSD group number */
     int         width, height;
     osd_region  r[MS_MAX_OSD];
@@ -83,7 +87,7 @@ static uint8_t *load_bgra(const char *path, int w, int h)
 
 static void refresh_text(osd_stream *s, osd_region *rg)
 {
-    const ms_osd_item *it=&g_hcfg->osd.items[rg->item];
+    const ms_osd_item *it=&g_hcfg->osd.items[s->si][rg->item];
     char txt[256];
     osd_expand(it->text, g_hcfg->osd.vars_file, txt, sizeof txt);
     if (strcmp(txt, rg->last)==0) return;               /* unchanged: skip render */
@@ -97,10 +101,12 @@ static void refresh_text(osd_stream *s, osd_region *rg)
 
     uint8_t *bgra; int w,h;
     if (rg->font){
-        if (msttf_render(rg->font, txt, fs, it->color, 0x00000000, &bgra,&w,&h)!=0) return;
+        if (msttf_render(rg->font, txt, fs, it->color, 0x00000000,
+                         it->outline, it->outline_color, &bgra,&w,&h)!=0) return;
     } else {
         int scale=fs/16; if(scale<1)scale=1;
-        if (osd_text_render(txt, scale, it->color, 0x00000000, &bgra,&w,&h)!=0) return;
+        if (osd_text_render(txt, scale, it->color, 0x00000000,
+                            it->outline, it->outline_color, &bgra,&w,&h)!=0) return;
     }
     int x,y; resolve_pos(s->width, s->height, w, h, it->x, it->y, &x,&y);
     IMPOSDRgnAttr a; memset(&a,0,sizeof a);
@@ -119,7 +125,7 @@ static void refresh_text(osd_stream *s, osd_region *rg)
 
 static void setup_logo(osd_stream *s, osd_region *rg)
 {
-    const ms_osd_item *it=&g_hcfg->osd.items[rg->item];
+    const ms_osd_item *it=&g_hcfg->osd.items[s->si][rg->item];
     uint8_t *b=load_bgra(it->logo_path, it->logo_w, it->logo_h);
     if (!b){ LOGW(MOD,"logo %s (%dx%d) not loaded", it->logo_path, it->logo_w, it->logo_h); return; }
     int x,y; resolve_pos(s->width, s->height, it->logo_w, it->logo_h, it->x, it->y, &x,&y);
@@ -149,14 +155,14 @@ int imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height)
     }
 
     osd_stream *s=&g_os[stream_idx];
-    s->used=1; s->grp=stream_idx; s->width=width; s->height=height;
+    s->used=1; s->si=stream_idx; s->grp=stream_idx; s->width=width; s->height=height;
     for (int i=0;i<MS_MAX_OSD;i++) s->r[i].rgn=-1;
 
     if (IMP_OSD_CreateGroup(s->grp)<0){ LOGE(MOD,"CreateGroup %d failed",s->grp); s->used=0; return -1; }
 
     int active=0;
     for (int i=0;i<MS_MAX_OSD;i++){
-        const ms_osd_item *it=&cfg->osd.items[i];
+        const ms_osd_item *it=&cfg->osd.items[stream_idx][i];
         if (!it->enabled) continue;
         osd_region *rg=&s->r[i];
         rg->item=i; rg->last[0]=0;
@@ -184,21 +190,42 @@ int imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height)
     return s->grp;
 }
 
+/* OSD text only needs re-rendering while frames are actually encoded: any
+ * video stream (or a JPEG encoder piggybacked on one) with subscribers. The
+ * dedicated jpeg.* channel is not bound through OSD. With zero clients the
+ * updater keeps sleeping - re-rasterizing the TTF timestamp every second on
+ * every stream was pure idle CPU on the SoC. */
+static int osd_needed(void)
+{
+    if (hub_video_subs() > 0) return 1;
+    for (int i=0; i<MS_MAX_VSTREAM; i++)
+        if (hub_active(HUB_JPEG_SRC_N(i))) return 1;
+    return 0;
+}
+
 static void *osd_thread(void *arg)
 {
     (void)arg;
     while (g_run){
-        osd_vars_set_fps(hub_get_fps(g_hcfg->osd.monitor_stream));
-        OSD_LOCK();
-        for (int si=0; si<MS_MAX_VSTREAM; si++){
-            if (!g_os[si].used) continue;
-            for (int i=0;i<MS_MAX_OSD;i++)
-                if (g_os[si].r[i].rgn>=0 && g_os[si].r[i].is_text &&
-                    g_hcfg->osd.items[i].enabled)
-                    refresh_text(&g_os[si], &g_os[si].r[i]);
+        int need = osd_needed();
+        if (need){
+            osd_vars_set_fps(hub_get_fps(g_hcfg->osd.monitor_stream));
+            OSD_LOCK();
+            for (int si=0; si<MS_MAX_VSTREAM; si++){
+                if (!g_os[si].used) continue;
+                for (int i=0;i<MS_MAX_OSD;i++)
+                    if (g_os[si].r[i].rgn>=0 && g_os[si].r[i].is_text &&
+                        g_hcfg->osd.items[si][i].enabled)
+                        refresh_text(&g_os[si], &g_os[si].r[i]);
+            }
+            OSD_UNLOCK();
         }
-        OSD_UNLOCK();
-        for (int k=0;k<10 && g_run;k++) usleep(100000);
+        for (int k=0;k<10 && g_run;k++){
+            usleep(100000);
+            /* a client just connected while we were idle: refresh the (stale)
+             * timestamp right away instead of up to 1 s later */
+            if (!need && osd_needed()) break;
+        }
     }
     return NULL;
 }
@@ -211,20 +238,23 @@ void imp_osd_start_updater(void)
 }
 
 #ifdef USE_CONTROL
-/* Live re-apply of one osd item (g_cfg->osd.items[item] was already updated
- * by /control) on ALL streams: visibility via ShowRgn/group attr, position/
- * text/color/size by invalidating the render cache and re-rendering, logos by
+/* Live re-apply of one osd item (g_cfg->osd.items[stream][item] was already
+ * updated by /control) on ONE stream (or all streams for stream<0, the legacy
+ * shared osdN.* keys): visibility via ShowRgn/group attr, position/text/color/
+ * size/outline by invalidating the render cache and re-rendering, logos by
  * reloading. Limitation: an item that was disabled at startup has no region
  * (regions are only created in imp_osd_setup) - enabling it live is refused
  * and takes effect after a restart. */
-void imp_osd_apply(int item)
+void imp_osd_apply(int stream, int item)
 {
     if (!g_hcfg || item<0 || item>=MS_MAX_OSD) return;
-    const ms_osd_item *it=&g_hcfg->osd.items[item];
+    if (stream>=MS_MAX_VSTREAM) return;
     OSD_LOCK();
     for (int si=0; si<MS_MAX_VSTREAM; si++){
+        if (stream>=0 && si!=stream) continue;
         osd_stream *s=&g_os[si];
         if (!s->used) continue;
+        const ms_osd_item *it=&g_hcfg->osd.items[si][item];
         osd_region *rg=&s->r[item];
         if (rg->rgn<0){
             if (it->enabled)
@@ -237,6 +267,9 @@ void imp_osd_apply(int item)
         g.show=it->enabled?1:0; g.gAlphaEn=1; g.fgAlhpa=(uint8_t)it->transparency;
         IMP_OSD_SetGrpRgnAttr(rg->rgn, s->grp, &g);
         IMP_OSD_ShowRgn(rg->rgn, s->grp, it->enabled?1:0);
+        LOGI(MOD,"osd stream %d item %d re-applied (enabled=%d x=%d y=%d "
+                 "outline=%d)", si, item, it->enabled, it->x, it->y,
+             it->outline);
         if (!it->enabled) continue;
         if (rg->is_text){
             rg->last[0]=0;              /* invalidate -> full re-render */
@@ -246,8 +279,6 @@ void imp_osd_apply(int item)
         }
     }
     OSD_UNLOCK();
-    LOGI(MOD,"osd item %d re-applied (enabled=%d x=%d y=%d)",
-         item, it->enabled, it->x, it->y);
 }
 #endif /* USE_CONTROL */
 
@@ -278,6 +309,6 @@ int  imp_osd_setup(const ms_config *cfg, int s, int w, int h){ (void)cfg;(void)s
 void imp_osd_start_updater(void){}
 void imp_osd_stop(void){}
 #ifdef USE_CONTROL
-void imp_osd_apply(int item){ (void)item; }
+void imp_osd_apply(int stream, int item){ (void)stream; (void)item; }
 #endif
 #endif

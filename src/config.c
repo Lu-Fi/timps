@@ -27,6 +27,19 @@ static int  pacodec(const char *v){
     if (!strcasecmp(v,"none")||!strcasecmp(v,"off")) return MS_AC_NONE;
     return MS_AC_AAC;
 }
+/* canonical config-file spelling of an audio codec (inverse of pacodec) */
+static const char *acodec_name(int c){
+    switch (c){
+        case MS_AC_AAC:  return "aac";
+        case MS_AC_PCMU: return "pcmu";
+        case MS_AC_PCMA: return "pcma";
+        default:         return "none";
+    }
+}
+/* canonical config-file spelling of a video codec (inverse of pvcodec) */
+static const char *vcodec_name(int c){
+    return (c==MS_VC_H265) ? "h265" : "h264";
+}
 static int prc(const char *v){
     if(!strcasecmp(v,"cbr"))return MS_RC_CBR;
     if(!strcasecmp(v,"vbr"))return MS_RC_VBR;
@@ -35,6 +48,17 @@ static int prc(const char *v){
     if(!strcasecmp(v,"capped_vbr"))return MS_RC_CAPPED_VBR;
     if(!strcasecmp(v,"capped_quality"))return MS_RC_CAPPED_QUALITY;
     return MS_RC_CBR;
+}
+/* canonical config-file spelling of a rate-control mode (inverse of prc) */
+static const char *rc_name(int m){
+    switch (m){
+        case MS_RC_VBR:            return "vbr";
+        case MS_RC_FIXQP:          return "fixqp";
+        case MS_RC_SMART:          return "smart";
+        case MS_RC_CAPPED_VBR:     return "capped_vbr";
+        case MS_RC_CAPPED_QUALITY: return "capped_quality";
+        default:                   return "cbr";
+    }
 }
 
 void config_defaults(ms_config *c)
@@ -84,32 +108,44 @@ void config_defaults(ms_config *c)
     c->audio.channels=1; c->audio.bitrate_kbps=32;
     c->audio.volume=80; c->audio.gain=25;   /* audible defaults */
     c->audio.high_pass=0; c->audio.agc=0; c->audio.ns=0;
+    c->audio.alc_gain=0;                                   /* PGA off */
+    c->audio.agc_target_dbfs=10; c->audio.agc_compression_db=0;
+    c->audio.mute=0;                                       /* mic live */
+    c->audio.force_stereo=0;
+    c->audio.spk_enabled=0; c->audio.spk_volume=80; c->audio.spk_gain=25;
 
     c->jpeg.enabled=0; c->jpeg.width=640; c->jpeg.height=360;
     c->jpeg.quality=75; c->jpeg.fps=5; c->jpeg.imp_chn=2;
     c->jpeg.snapshot_path[0]=0;
 
-    /* OSD: array of overlays; one default timestamp item enabled */
+    /* OSD: per-stream arrays of overlays; same sensible default layout on
+     * every stream (time / hostname / uptime / logo) */
     c->osd.enabled=1; c->osd.monitor_stream=0;
     copystr(c->osd.font_path,"/usr/share/fonts/DejaVuSansMono.ttf",128);
     copystr(c->osd.vars_file,"/tmp/timps_osd.vars",128);
-    for (int i=0;i<MS_MAX_OSD;i++){
-        ms_osd_item *o=&c->osd.items[i];
-        o->enabled=0; o->type=MS_OSD_TEXT; o->x=10; o->y=10;
-        o->font_size=32; o->color=0xFFFFFFFF; o->transparency=255;
+    for (int s=0;s<MS_MAX_VSTREAM;s++){
+        ms_osd_item *it=c->osd.items[s];
+        for (int i=0;i<MS_MAX_OSD;i++){
+            ms_osd_item *o=&it[i];
+            o->enabled=0; o->type=MS_OSD_TEXT; o->x=10; o->y=10;
+            o->font_size=32; o->color=0xFFFFFFFF; o->transparency=255;
+            /* text outline: off by default (matches the pre-outline look);
+             * the default color is a solid black stroke when enabled */
+            o->outline=0; o->outline_color=0xFF000000;
+        }
+        /* default layout per stream. x/y: 0 = centered,
+         * positive = from left/top, negative = from right/bottom. */
+        it[0].enabled=1; it[0].x=10;  it[0].y=10;   /* top-left   */
+        copystr(it[0].text,"%Y-%m-%d %H:%M:%S",128);
+        it[1].enabled=1; it[1].x=0;   it[1].y=10;   /* top-center */
+        copystr(it[1].text,"{hostname}",128);
+        it[2].enabled=1; it[2].x=-10; it[2].y=10;   /* top-right  */
+        copystr(it[2].text,"{uptime}",128);
+        it[3].enabled=1; it[3].type=MS_OSD_LOGO;
+        it[3].x=-10; it[3].y=-10;                   /* bottom-right */
+        copystr(it[3].logo_path,"/usr/share/images/thingino_100x30.bgra",128);
+        it[3].logo_w=100; it[3].logo_h=30;
     }
-    /* default layout, drawn on every stream. x/y: 0 = centered,
-     * positive = from left/top, negative = from right/bottom. */
-    c->osd.items[0].enabled=1; c->osd.items[0].x=10;  c->osd.items[0].y=10;   /* top-left   */
-    copystr(c->osd.items[0].text,"%Y-%m-%d %H:%M:%S",128);
-    c->osd.items[1].enabled=1; c->osd.items[1].x=0;   c->osd.items[1].y=10;   /* top-center */
-    copystr(c->osd.items[1].text,"{hostname}",128);
-    c->osd.items[2].enabled=1; c->osd.items[2].x=-10; c->osd.items[2].y=10;   /* top-right  */
-    copystr(c->osd.items[2].text,"{uptime}",128);
-    c->osd.items[3].enabled=1; c->osd.items[3].type=MS_OSD_LOGO;
-    c->osd.items[3].x=-10; c->osd.items[3].y=-10;                             /* bottom-right */
-    copystr(c->osd.items[3].logo_path,"/usr/share/images/thingino_100x30.bgra",128);
-    c->osd.items[3].logo_w=100; c->osd.items[3].logo_h=30;
 
     c->motion.enabled=0; c->motion.monitor_stream=0; c->motion.sensitivity=128;
     c->motion.cooldown_ms=5000;
@@ -125,12 +161,24 @@ void config_defaults(ms_config *c)
     c->sim_video0[0]=0; c->sim_video1[0]=0; c->sim_audio[0]=0;
 }
 
-/* returns osd item index for keys "osd0.".."osd7.", else -1 */
-static int osd_index(const char *key)
+/* Parse an OSD item key and return a pointer to its field name, or NULL.
+ * Canonical per-stream form:  "osd<S>.<N>.<field>"  -> *stream=S, *item=N
+ * Legacy shared form:         "osd<N>.<field>"      -> *stream=-1 (all
+ * streams), *item=N. Kept so pre-per-stream configs still load. */
+static const char *osd_key(const char *key, int *stream, int *item)
 {
-    if (strncmp(key,"osd",3)==0 && key[3]>='0' && key[3]<='7' && key[4]=='.')
-        return key[3]-'0';
-    return -1;
+    if (strncmp(key,"osd",3) || key[3]<'0' || key[3]>'0'+MS_MAX_OSD-1 ||
+        key[4]!='.')
+        return NULL;
+    int a = key[3]-'0';
+    if (key[5]>='0' && key[5]<='0'+MS_MAX_OSD-1 && key[6]=='.'){
+        /* per-stream: first digit is the stream index */
+        if (a >= MS_MAX_VSTREAM) return NULL;
+        *stream = a; *item = key[5]-'0';
+        return key+7;
+    }
+    *stream = -1; *item = a;      /* legacy: item index, applies to all */
+    return key+5;
 }
 
 static void set_video(ms_vstream_cfg *v, const char *k, const char *val)
@@ -172,14 +220,23 @@ static void set_osd_item(ms_osd_item *o, const char *k, const char *val)
     else if (!strcmp(k,"font_size")) o->font_size=pint(val);
     else if (!strcmp(k,"color")||!strcmp(k,"font_color")) o->color=phex(val);
     else if (!strcmp(k,"transparency")) o->transparency=pint(val);
+    else if (!strcmp(k,"outline")||!strcmp(k,"stroke")) o->outline=pint(val);
+    else if (!strcmp(k,"outline_color")||!strcmp(k,"stroke_color")) o->outline_color=phex(val);
     else if (!strcmp(k,"font_path")) copystr(o->font_path,val,128);
     else LOGW(MOD,"unknown osd item key %s", k);
 }
 
 static void set_kv(ms_config *c, const char *key, const char *val)
 {
-    int oi = osd_index(key);
-    if (oi>=0){ set_osd_item(&c->osd.items[oi], key+5, val); return; }
+    int osi, oii;
+    const char *ok = osd_key(key, &osi, &oii);
+    if (ok){
+        if (osi>=0) set_osd_item(&c->osd.items[osi][oii], ok, val);
+        else        /* legacy osdN.*: mirror onto every stream's item N */
+            for (int s=0;s<MS_MAX_VSTREAM;s++)
+                set_osd_item(&c->osd.items[s][oii], ok, val);
+        return;
+    }
 
     if (!strncmp(key,"video0.",7)){ set_video(&c->video[0], key+7, val); return; }
     if (!strncmp(key,"video1.",7)){ set_video(&c->video[1], key+7, val); return; }
@@ -233,6 +290,14 @@ static void set_kv(ms_config *c, const char *key, const char *val)
         else if(!strcmp(k,"high_pass"))c->audio.high_pass=pbool(val);
         else if(!strcmp(k,"agc"))c->audio.agc=pbool(val);
         else if(!strcmp(k,"ns"))c->audio.ns=pint(val);
+        else if(!strcmp(k,"alc_gain"))c->audio.alc_gain=pint(val);
+        else if(!strcmp(k,"agc_target_dbfs"))c->audio.agc_target_dbfs=pint(val);
+        else if(!strcmp(k,"agc_compression_db"))c->audio.agc_compression_db=pint(val);
+        else if(!strcmp(k,"mute"))c->audio.mute=pbool(val);
+        else if(!strcmp(k,"force_stereo"))c->audio.force_stereo=pbool(val);
+        else if(!strcmp(k,"spk_enabled"))c->audio.spk_enabled=pbool(val);
+        else if(!strcmp(k,"spk_volume"))c->audio.spk_volume=pint(val);
+        else if(!strcmp(k,"spk_gain"))c->audio.spk_gain=pint(val);
         else LOGW(MOD,"unknown key %s",key);
         return;
     }
@@ -308,6 +373,7 @@ static void set_kv(ms_config *c, const char *key, const char *val)
         if(!strcmp(k,"loglevel"))c->loglevel=pint(val);
         else if(!strcmp(k,"imp_polling_timeout"))c->imp_polling_timeout=pint(val);
         else if(!strcmp(k,"osd_pool_size"))c->osd_pool_size=pint(val);
+        else if(!strcmp(k,"syslog"))log_set_syslog(pbool(val));  /* to logread; default on */
         else LOGW(MOD,"unknown key %s",key);
         return;
     }
@@ -333,22 +399,54 @@ void config_apply_kv(ms_config *c, const char *key, const char *val)
 /* public: read back a key's current value as a normalized string, matching the
  * form set_kv() stores. Only the keys the /control endpoint can change are
  * covered; anything else returns 0 (change-detection then falls back to always
- * applying). Keep in sync with the image/audio/video/osd branches of set_kv(). */
+ * applying). Keep in sync with the image/audio/video/sensor/osd branches of
+ * set_kv(). */
 int config_get_kv(const ms_config *c, const char *key, char *out, size_t cap)
 {
     if (!out || cap==0) return 0;
     out[0]=0;
 
-    int oi = osd_index(key);
-    if (oi>=0){
-        const ms_osd_item *o=&c->osd.items[oi]; const char *k=key+5;
+    int osi, oii;
+    const char *ok = osd_key(key, &osi, &oii);
+    if (ok){
+        /* legacy osdN.* keys write to EVERY stream, so they only read back
+         * while all streams still agree on the value - once the sets have
+         * diverged the key reports unknown and a legacy write always
+         * applies (no false dedup-skip). */
+        if (osi<0){
+            const ms_osd_item *a=&c->osd.items[0][oii];
+            for (int s=1;s<MS_MAX_VSTREAM;s++){
+                const ms_osd_item *b=&c->osd.items[s][oii];
+                if (a->enabled!=b->enabled || a->type!=b->type ||
+                    a->x!=b->x || a->y!=b->y || a->font_size!=b->font_size ||
+                    a->color!=b->color || a->transparency!=b->transparency ||
+                    a->outline!=b->outline ||
+                    a->outline_color!=b->outline_color ||
+                    strcmp(a->text,b->text))
+                    return 0;
+            }
+            osi = 0;
+        }
+        const ms_osd_item *o=&c->osd.items[osi][oii]; const char *k=ok;
         if(!strcmp(k,"enabled")) snprintf(out,cap,"%d",o->enabled);
+        else if(!strcmp(k,"type")) snprintf(out,cap,"%s",o->type==MS_OSD_LOGO?"logo":"text");
         else if(!strcmp(k,"text")) snprintf(out,cap,"%s",o->text);
         else if(!strcmp(k,"x")) snprintf(out,cap,"%d",o->x);
         else if(!strcmp(k,"y")) snprintf(out,cap,"%d",o->y);
         else if(!strcmp(k,"font_size")) snprintf(out,cap,"%d",o->font_size);
         else if(!strcmp(k,"color")||!strcmp(k,"font_color")) snprintf(out,cap,"0x%08X",o->color);
         else if(!strcmp(k,"transparency")) snprintf(out,cap,"%d",o->transparency);
+        else if(!strcmp(k,"outline")||!strcmp(k,"stroke")) snprintf(out,cap,"%d",o->outline);
+        else if(!strcmp(k,"outline_color")||!strcmp(k,"stroke_color")) snprintf(out,cap,"0x%08X",o->outline_color);
+        else return 0;
+        return 1;
+    }
+    if (!strncmp(key,"osd.",4)){
+        const char *k=key+4;
+        if(!strcmp(k,"enabled")) snprintf(out,cap,"%d",c->osd.enabled);
+        else if(!strcmp(k,"monitor_stream")) snprintf(out,cap,"%d",c->osd.monitor_stream);
+        else if(!strcmp(k,"font_path")) snprintf(out,cap,"%s",c->osd.font_path);
+        else if(!strcmp(k,"vars_file")) snprintf(out,cap,"%s",c->osd.vars_file);
         else return 0;
         return 1;
     }
@@ -362,19 +460,75 @@ int config_get_kv(const ms_config *c, const char *key, char *out, size_t cap)
         else if(!strcmp(k,"hflip")) snprintf(out,cap,"%d",m->hflip);
         else if(!strcmp(k,"vflip")) snprintf(out,cap,"%d",m->vflip);
         else if(!strcmp(k,"running_mode")) snprintf(out,cap,"%d",m->running_mode);
+        else if(!strcmp(k,"anti_flicker")) snprintf(out,cap,"%d",m->anti_flicker);
+        else if(!strcmp(k,"ae_compensation")) snprintf(out,cap,"%d",m->ae_compensation);
+        else if(!strcmp(k,"max_again")) snprintf(out,cap,"%d",m->max_again);
+        else if(!strcmp(k,"max_dgain")) snprintf(out,cap,"%d",m->max_dgain);
+        else if(!strcmp(k,"sinter_strength")) snprintf(out,cap,"%d",m->sinter_strength);
+        else if(!strcmp(k,"temper_strength")) snprintf(out,cap,"%d",m->temper_strength);
+        else if(!strcmp(k,"dpc_strength")) snprintf(out,cap,"%d",m->dpc_strength);
+        else if(!strcmp(k,"defog_strength")) snprintf(out,cap,"%d",m->defog_strength);
+        else if(!strcmp(k,"drc_strength")) snprintf(out,cap,"%d",m->drc_strength);
+        else if(!strcmp(k,"highlight_depress")) snprintf(out,cap,"%d",m->highlight_depress);
+        else if(!strcmp(k,"backlight_compensation")) snprintf(out,cap,"%d",m->backlight_compensation);
+        else if(!strcmp(k,"core_wb_mode")) snprintf(out,cap,"%d",m->core_wb_mode);
+        else if(!strcmp(k,"wb_rgain")) snprintf(out,cap,"%d",m->wb_rgain);
+        else if(!strcmp(k,"wb_bgain")) snprintf(out,cap,"%d",m->wb_bgain);
         else return 0;
         return 1;
     }
     if (!strncmp(key,"audio.",6)){
-        const char *k=key+6;
-        if(!strcmp(k,"volume")) snprintf(out,cap,"%d",c->audio.volume);
-        else if(!strcmp(k,"gain")) snprintf(out,cap,"%d",c->audio.gain);
+        const char *k=key+6; const ms_audio_cfg *a=&c->audio;
+        if(!strcmp(k,"volume")) snprintf(out,cap,"%d",a->volume);
+        else if(!strcmp(k,"gain")) snprintf(out,cap,"%d",a->gain);
+        else if(!strcmp(k,"alc_gain")) snprintf(out,cap,"%d",a->alc_gain);
+        else if(!strcmp(k,"high_pass")) snprintf(out,cap,"%d",a->high_pass);
+        else if(!strcmp(k,"agc")) snprintf(out,cap,"%d",a->agc);
+        else if(!strcmp(k,"ns")) snprintf(out,cap,"%d",a->ns);
+        else if(!strcmp(k,"agc_target_dbfs")) snprintf(out,cap,"%d",a->agc_target_dbfs);
+        else if(!strcmp(k,"agc_compression_db")) snprintf(out,cap,"%d",a->agc_compression_db);
+        else if(!strcmp(k,"mute")) snprintf(out,cap,"%d",a->mute);
+        else if(!strcmp(k,"enabled")) snprintf(out,cap,"%d",a->enabled);
+        else if(!strcmp(k,"codec")) snprintf(out,cap,"%s",acodec_name(a->codec));
+        else if(!strcmp(k,"samplerate")) snprintf(out,cap,"%d",a->samplerate);
+        else if(!strcmp(k,"channels")) snprintf(out,cap,"%d",a->channels);
+        else if(!strcmp(k,"bitrate")) snprintf(out,cap,"%d",a->bitrate_kbps);
+        else if(!strcmp(k,"force_stereo")) snprintf(out,cap,"%d",a->force_stereo);
+        else if(!strcmp(k,"spk_enabled")) snprintf(out,cap,"%d",a->spk_enabled);
+        else if(!strcmp(k,"spk_volume")) snprintf(out,cap,"%d",a->spk_volume);
+        else if(!strcmp(k,"spk_gain")) snprintf(out,cap,"%d",a->spk_gain);
         else return 0;
         return 1;
     }
     if (!strncmp(key,"video0.",7) || !strncmp(key,"video1.",7)){
         const ms_vstream_cfg *v = (key[5]=='0') ? &c->video[0] : &c->video[1];
-        if(!strcmp(key+7,"bitrate")) snprintf(out,cap,"%d",v->bitrate_kbps);
+        const char *k = key+7;
+        if(!strcmp(k,"enabled")) snprintf(out,cap,"%d",v->enabled);
+        else if(!strcmp(k,"codec")) snprintf(out,cap,"%s",vcodec_name(v->codec));
+        else if(!strcmp(k,"width")) snprintf(out,cap,"%d",v->width);
+        else if(!strcmp(k,"height")) snprintf(out,cap,"%d",v->height);
+        else if(!strcmp(k,"fps")) snprintf(out,cap,"%d",v->fps);
+        else if(!strcmp(k,"bitrate")) snprintf(out,cap,"%d",v->bitrate_kbps);
+        else if(!strcmp(k,"rc_mode")||!strcmp(k,"mode")) snprintf(out,cap,"%s",rc_name(v->rc_mode));
+        else if(!strcmp(k,"gop")) snprintf(out,cap,"%d",v->gop);
+        else if(!strcmp(k,"max_gop")) snprintf(out,cap,"%d",v->max_gop);
+        else if(!strcmp(k,"profile")) snprintf(out,cap,"%d",v->profile);
+        else if(!strcmp(k,"qp")) snprintf(out,cap,"%d",v->qp);
+        else if(!strcmp(k,"min_qp")) snprintf(out,cap,"%d",v->min_qp);
+        else if(!strcmp(k,"max_qp")) snprintf(out,cap,"%d",v->max_qp);
+        else if(!strcmp(k,"rotation")) snprintf(out,cap,"%d",v->rotation);
+        else if(!strcmp(k,"buffers")) snprintf(out,cap,"%d",v->buffers);
+        else if(!strcmp(k,"rtsp_path")) snprintf(out,cap,"%s",v->rtsp_path);
+        else return 0;
+        return 1;
+    }
+    if (!strncmp(key,"sensor.",7)){
+        const ms_sensor_cfg *s=&c->sensor; const char *k=key+7;
+        if(!strcmp(k,"model")) snprintf(out,cap,"%s",s->model);
+        else if(!strcmp(k,"i2c_addr")||!strcmp(k,"i2c_address")) snprintf(out,cap,"%d",s->i2c_addr);
+        else if(!strcmp(k,"fps")) snprintf(out,cap,"%d",s->fps);
+        else if(!strcmp(k,"width")) snprintf(out,cap,"%d",s->width);
+        else if(!strcmp(k,"height")) snprintf(out,cap,"%d",s->height);
         else return 0;
         return 1;
     }

@@ -71,12 +71,15 @@ jpeg.imp_chn       = 2           # JPEG encoder channel
 # video stream. It shares that stream's framesource (no extra rmem, unlike a
 # second dedicated jpeg channel) and delivers JPEGs at the stream resolution.
 # Fetch with:  /snapshot.jpg?chn=0   /stream.mjpeg?chn=1   (no ?chn= = jpeg.*)
-# video0.jpeg         = true      # JPEG at video0 resolution (e.g. 1920x1080)
-# video0.jpeg_quality = 75
-# video0.jpeg_fps     = 5
-# video0.jpeg_chn     = 3         # unique IMP encoder channel
-# video1.jpeg         = true      # JPEG at video1 resolution (e.g. 640x360)
-# video1.jpeg_chn     = 4
+# On-demand like everything else: no CPU/encoder cost until a client fetches.
+# The thingino WebUI preview proxies (/x/chN.mjpg, /x/chN.jpg) use ?chn=N,
+# so keep these enabled when timps runs under thingino.
+video0.jpeg         = true      # JPEG at video0 resolution (e.g. 1920x1080)
+video0.jpeg_quality = 75
+video0.jpeg_fps     = 5
+video0.jpeg_chn     = 3         # unique IMP encoder channel
+video1.jpeg         = true      # JPEG at video1 resolution (e.g. 640x360)
+video1.jpeg_chn     = 4
 
 # ---- main video stream (channel 0) ----
 video0.enabled   = 1
@@ -121,46 +124,66 @@ audio.volume     = 0         # IMP AI gain
 audio.high_pass  = 0         # high-pass filter
 audio.agc        = 0         # automatic gain control
 audio.ns         = 0         # noise suppression 0..3
+audio.mute       = 0         # live mic mute (toggled via /control; 1 = drop
+                             # captured frames, clients receive no audio)
 
-# ---- OSD (up to 8 overlays; own TrueType rasterizer) ----
+# ---- OSD (up to 8 overlays PER video stream; own TrueType rasterizer) ----
 osd.enabled        = 1
-osd.monitor_stream = 0                        # which stream the OSD is drawn on
+osd.monitor_stream = 0                        # stream whose fps feeds {fps}
 osd.font_path      = /usr/share/fonts/DejaVuSansMono.ttf   # default TTF; empty = bitmap font
 osd.vars_file      = /tmp/timps_osd.vars                  # custom placeholder source
 #
-# Each overlay is osd0.. osd7. and is either type=text or type=logo.
+# Every video stream carries its OWN independent overlay set.
+# Canonical keys:  osd<S>.<N>.<field>  = stream S (0 = main, 1 = sub), item N
+#                  e.g. osd0.0.text (stream 0 item 0), osd1.2.x (stream 1 item 2)
+# Legacy keys:     osd<N>.<field>  (pre-per-stream) still load and apply the
+#                  item to EVERY stream, so old configs keep looking the same.
+# Each item is either type=text or type=logo.
 # Text placeholders:
 #   time:    strftime tokens, e.g. %Y-%m-%d %H:%M:%S  %F %T
 #   builtin: {hostname} {ip} {mac} {fps} {uptime}
 #   custom:  any {name} is read from osd.vars_file (key = value lines),
 #            so a script can write e.g.  site = Frontdoor  into that file.
+# Text outline (readability stroke, drawn under the fill):
+#   outline       = width in px (0 = off, default)
+#   outline_color = 0xAARRGGBB (default 0xFF000000 black)
 #
-osd0.enabled   = 1
-osd0.type      = text
-osd0.text      = {hostname}  %Y-%m-%d %H:%M:%S
-osd0.x         = 16
-osd0.y         = 16
-osd0.font_size = 32
-osd0.color     = 0xFFFFFFFF                   # ARGB
-osd0.transparency = 255
-# osd0.font_path =                            # optional per-item TTF override
+osd0.0.enabled   = 1
+osd0.0.type      = text
+osd0.0.text      = {hostname}  %Y-%m-%d %H:%M:%S
+osd0.0.x         = 16
+osd0.0.y         = 16
+osd0.0.font_size = 32
+osd0.0.color     = 0xFFFFFFFF                 # ARGB
+osd0.0.transparency = 255
+# osd0.0.outline       = 1                    # 1 px black stroke
+# osd0.0.outline_color = 0xFF000000
+# osd0.0.font_path =                          # optional per-item TTF override
 
-osd1.enabled   = 1
-osd1.type      = text
-osd1.text      = {fps} fps  {ip}
-osd1.x         = 16
-osd1.y         = 56
-osd1.font_size = 24
-osd1.color     = 0xFFFFFF00
+osd0.1.enabled   = 1
+osd0.1.type      = text
+osd0.1.text      = {fps} fps  {ip}
+osd0.1.x         = 16
+osd0.1.y         = 56
+osd0.1.font_size = 24
+osd0.1.color     = 0xFFFFFF00
 
-# osd2.enabled   = 1
-# osd2.type      = logo
-# osd2.logo      = /etc/logo.bgra            # raw BGRA pixels
-# osd2.logo_w    = 100
-# osd2.logo_h    = 30
-# osd2.x         = 1780
-# osd2.y         = 16
-# osd2.transparency = 200
+# substream: its own set, e.g. just a timestamp
+osd1.0.enabled   = 1
+osd1.0.type      = text
+osd1.0.text      = %Y-%m-%d %H:%M:%S
+osd1.0.x         = 16
+osd1.0.y         = 16
+osd1.0.font_size = 32
+
+# osd0.2.enabled   = 1
+# osd0.2.type      = logo
+# osd0.2.logo      = /etc/logo.bgra          # raw BGRA pixels
+# osd0.2.logo_w    = 100
+# osd0.2.logo_h    = 30
+# osd0.2.x         = 1780
+# osd0.2.y         = 16
+# osd0.2.transparency = 200
 
 # ---- motion detection (Ingenic IMP_IVS) ----
 motion.enabled        = 0
