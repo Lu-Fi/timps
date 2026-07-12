@@ -3,6 +3,10 @@
 
 # ---- general ----
 general.loglevel            = 2      # 0=err 1=warn 2=info 3=debug
+general.syslog              = 1      # 1 = also log to syslog so messages show up
+                                     #     in `logread` (the init script backgrounds
+                                     #     timpsd, so its stderr is discarded);
+                                     #     0 = stderr only (foreground / host sim)
 general.imp_polling_timeout = 500    # ms, encoder poll timeout
 general.osd_pool_size       = 1000   # KB, IMP OSD pool
 
@@ -52,10 +56,65 @@ rtsp.pass    =
 
 # ---- HTTP preview (fMP4 + JPEG/MJPEG) ----
 http.enabled     = 1
-http.port        = 8080
+http.port        = 8880
 http.preview_chn = 1
 http.user        =        # set to enable HTTP Basic auth (empty = reuse rtsp.user/pass)
 http.pass        =
+#
+# Token auth (USE_CONTROL builds). /control, /events and the HTTP media
+# endpoints (/stream.mp4, /stream.mjpeg, /snapshot.jpg, incl. ?chn=N) accept,
+# besides localhost and HTTP Basic, a token sent as
+#     X-Timps-Token: <token>          header (preferred), or
+#     ?token=<token>                  query string - the only form <img>/
+#                                     <video src>/EventSource can use
+#                                     (CAUTION: query strings can end up in
+#                                     proxy/access logs; fine on a LAN)
+# Two tokens are valid:
+#   1. a random PER-BOOT token, regenerated on every start and written to
+#      http.token_file (mode 0640) so a local privileged helper (the thingino
+#      WebUI) can read it and let the browser talk to :8880 directly;
+#   2. the optional PERSISTENT secret http.token below - a stable credential
+#      for remote automation. It is NEVER written to http.token_file.
+# The token unlocks /control + /events + HTTP media VIEWING - never RTSP,
+# and nothing else on the port. Like Basic auth, tokens travel in cleartext:
+# put TLS in front before exposing the port to the internet.
+http.token       =
+http.token_file  = /run/timps.token
+
+# ---- optional TLS: HTTPS + RTSPS (USE_TLS builds, mbedTLS) ----
+# Only present when timps is built with mbedTLS (BR2_PACKAGE_MBEDTLS). Without
+# it these keys are parsed but ignored and timps stays plain HTTP/RTSP.
+# Uses thingino's httpd cert (mbedtls-certgen); S95timps generates it on first
+# boot if missing. NOTE: with a SELF-SIGNED cert the browser blocks the WebUI's
+# cross-origin media fetches to :8880 until you visit https://<ip>:8880/ once
+# and trust it - so https is opt-in, not on by default.
+# http.https    = 1                       # serve the HTTP port over TLS
+http.tls_cert   = /etc/ssl/certs/httpd.crt
+http.tls_key    = /etc/ssl/private/httpd.key
+# rtsp.tls      = 1                       # additionally run an RTSPS listener
+# rtsp.tls_port = 322                     # RTSPS port
+
+# ---- SRT output (USE_SRT builds, libsrt) ----
+# MPEG-TS over SRT in listener mode: ffplay srt://<ip>:9000
+srt.enabled    = 1
+srt.port       = 9000
+# srt.channel    = 0
+# srt.latency_ms = 120
+# srt.streamid   =                        # optional required STREAMID
+# srt.passphrase =                        # optional AES passphrase
+
+# ---- /events push stream (SSE, USE_CONTROL builds) ----
+# GET /events on the HTTP port is a long-lived text/event-stream that PUSHES
+# JSON state as it changes instead of being polled: "motion" (grid cells),
+# "daynight" (mode/brightness/gain) and a periodic "stats" event (clients,
+# per-stream fps, uptime). ?stream=motion,daynight,stats filters the types.
+# Access rules are the /control ones (localhost / token / Basic); browsers
+# use ?token= because EventSource cannot send headers (query strings can end
+# up in logs - accepted on the LAN, the token never unlocks RTSP).
+# Startup settings, deliberately not settable via /control.
+events.enabled     = 1
+events.stats_ms    = 2000    # "stats" event period in ms (0 = no stats events)
+events.max_clients = 8       # concurrent /events connections (above -> 503)
 
 # ---- JPEG / MJPEG stream (the old streamer's "stream2") ----
 # HTTP endpoints:  /snapshot.jpg (single frame)   /stream.mjpeg (motion JPEG)
@@ -72,8 +131,9 @@ jpeg.imp_chn       = 2           # JPEG encoder channel
 # second dedicated jpeg channel) and delivers JPEGs at the stream resolution.
 # Fetch with:  /snapshot.jpg?chn=0   /stream.mjpeg?chn=1   (no ?chn= = jpeg.*)
 # On-demand like everything else: no CPU/encoder cost until a client fetches.
-# The thingino WebUI preview proxies (/x/chN.mjpg, /x/chN.jpg) use ?chn=N,
-# so keep these enabled when timps runs under thingino.
+# The thingino WebUI previews fetch /stream.mjpeg?chn=N + /snapshot.jpg?chn=N
+# directly from this port (with ?token=, see above - no proxy CGIs), so keep
+# these enabled when timps runs under thingino.
 video0.jpeg         = true      # JPEG at video0 resolution (e.g. 1920x1080)
 video0.jpeg_quality = 75
 video0.jpeg_fps     = 5
@@ -115,17 +175,31 @@ video1.rtsp_path = /ch1
 video1.imp_chn   = 1
 
 # ---- audio ----
-audio.enabled    = 1
-audio.codec      = aac       # aac | pcmu | pcma | none
-audio.samplerate = 16000
-audio.channels   = 1
-audio.bitrate    = 32        # kbps (aac)
-audio.volume     = 0         # IMP AI gain
-audio.high_pass  = 0         # high-pass filter
-audio.agc        = 0         # automatic gain control
-audio.ns         = 0         # noise suppression 0..3
-audio.mute       = 0         # live mic mute (toggled via /control; 1 = drop
-                             # captured frames, clients receive no audio)
+# Mic (AI) processing keys marked "live" apply immediately via /control; which
+# ones a given SoC supports is reported in caps.audio (alc_gain only on
+# T21/T31/C100). codec/samplerate/bitrate/channels are encoder-init attributes:
+# they persist and take effect on restart. timps has no audio-OUT (AO) pipeline,
+# so the speaker/stereo keys are stored for the WebUI but currently do nothing.
+audio.enabled            = 1
+audio.codec              = aac    # aac | pcmu | pcma | none  (persist + restart)
+audio.samplerate         = 16000  # 8000 | 16000              (persist + restart)
+audio.channels           = 1      #                           (persist + restart)
+audio.bitrate            = 32     # kbps, aac                 (persist + restart)
+audio.volume             = 80     # live — IMP_AI_SetVol
+audio.gain               = 25     # live — IMP_AI_SetGain
+audio.alc_gain           = 0      # live — IMP_AI_SetAlcGain PGA 0..7 (T21/T31/C100)
+audio.high_pass          = 0      # live — high-pass filter on/off
+audio.agc                = 0      # live — automatic gain control on/off
+audio.agc_target_dbfs    = 10     # live — AGC target level 0..31
+audio.agc_compression_db = 0      # live — AGC compression gain 0..90
+audio.ns                 = 0      # live — noise suppression 0 off, 1..3
+audio.mute               = 0      # live — mic mute (1 = drop captured frames,
+                                  #        clients receive no audio; no restart)
+# speaker / stereo: no AO path in timps yet (stored only, no effect)
+# audio.spk_enabled  = 0
+# audio.spk_volume   = 80
+# audio.spk_gain     = 25
+# audio.force_stereo = 0
 
 # ---- OSD (up to 8 overlays PER video stream; own TrueType rasterizer) ----
 osd.enabled        = 1
@@ -185,15 +259,56 @@ osd1.0.font_size = 32
 # osd0.2.y         = 16
 # osd0.2.transparency = 200
 
+# ---- privacy masks (solid cover rectangles) ----
+# Up to MS_MAX_PRIVACY (4) rectangles per video stream, drawn as IMP OSD cover
+# regions to black out sensitive areas. Applied live via /control and here.
+# Keys: privacy<S>.<N>.{enabled,x,y,w,h,color}. x/y/w/h in the stream's pixels;
+# color is 0xAARRGGBB (default opaque black). caps.privacy in GET /control
+# reports {available, max_regions}.
+# privacy0.0.enabled = 1
+# privacy0.0.x       = 100
+# privacy0.0.y       = 80
+# privacy0.0.w       = 320
+# privacy0.0.h       = 180
+# privacy0.0.color   = 0xFF000000
+
+# ---- local recording (fragmented MP4 to SD, like raptor's RMR) ----
+# Records one video stream to <dir>/<hostname>/records/<name>.mp4, rotating
+# every segment_s at a keyframe. mode: continuous | motion (record around
+# motion with pre/post roll; needs motion.enabled). Old segments are pruned to
+# keep min_free_mb free. The /control "record" action (WebUI record button)
+# is a manual start/stop override on top of this.
+# record.enabled     = 1
+# record.channel      = 0
+# record.mode         = motion          # or: continuous
+# record.dir          = /mnt/mmcblk0p1  # SD mount
+# record.name         = %Y%m%d/%H/%Y%m%dT%H%M%S   # strftime, under <host>/records/
+# record.segment_s    = 60
+# record.pre_roll_s   = 3
+# record.post_roll_s  = 10
+# record.min_free_mb  = 200
+# record.audio        = 1               # mux AAC audio when available
+
 # ---- motion detection (Ingenic IMP_IVS) ----
+# The detection area is a cols x rows GRID over the monitor stream's frame;
+# each cell reports motion separately (GET /control exposes the live per-cell
+# state, the thingino WebUI draws it as a preview overlay). cols*rows is
+# clamped to the SDK's ROI budget (IMP_IVS_MOVE_MAX_ROI_CNT: 52 on most SDKs,
+# 4 on the old T10/T20 3.9.0 SDK; reported as caps.motion.max_cells).
+# enabled/sensitivity/cols/rows/monitor_stream are live via /control;
+# cooldown_ms and on_motion are config-file only (on_motion runs through
+# system() and is deliberately not settable over HTTP).
 motion.enabled        = 0
 motion.monitor_stream = 0
 motion.sensitivity    = 128           # 0..255 (mapped to IMP 0..4)
-motion.roi_x          = 0
-motion.roi_y          = 0
-motion.roi_w          = 0             # 0 = full frame
-motion.roi_h          = 0
+motion.cols           = 5             # grid columns
+motion.rows           = 5             # grid rows
 motion.cooldown_ms    = 5000
+motion.hold_ms        = 800           # keep a cell lit this long (ms) after its
+                                      # last hit so the grid overlay reliably
+                                      # shows single-frame motion (0 = raw)
+motion.skip_frames    = 5             # analyse every Nth frame: higher = cheaper
+                                      # + more latency, lower (2-3) = snappier
 # motion.on_motion    = /etc/scripts/on_motion.sh
 
 # ---- automatic day/night (needs timps built with USE_DAYNIGHT) ----

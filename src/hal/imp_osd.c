@@ -41,6 +41,7 @@ typedef struct {
     int         grp;         /* OSD group number */
     int         width, height;
     osd_region  r[MS_MAX_OSD];
+    int         pr_rgn[MS_MAX_PRIVACY]; /* privacy cover region handles, -1 unused */
 } osd_stream;
 
 static osd_stream       g_os[MS_MAX_VSTREAM];
@@ -142,13 +143,51 @@ static void setup_logo(osd_stream *s, osd_region *rg)
     rg->buf = b;
 }
 
+/* (Re)apply one privacy cover region (a solid filled rectangle) on a stream.
+ * The region handle must already be created+registered. x/y/w/h are clamped to
+ * the frame; a zero/empty rect or a disabled region is simply hidden.
+ * NOTE: the IMP cover API varies slightly between SDK versions - this uses the
+ * common form (OSD_REG_COVER + IMPOSDRgnAttr.data.coverData.color, 0xAARRGGBB).
+ * If a build fails here, check <imp/imp_osd.h> for the exact coverData layout. */
+static void setup_cover(osd_stream *s, int n)
+{
+    int rgn = s->pr_rgn[n];
+    if (rgn < 0) return;
+    const ms_privacy_region *p=&g_hcfg->privacy[s->si][n];
+    int W=s->width, H=s->height;
+    int x=p->x, y=p->y, w=p->w, h=p->h;
+    if (x<0) x=0; if (y<0) y=0;
+    if (w>0 && x+w>W) w=W-x;
+    if (h>0 && y+h>H) h=H-y;
+    if (!p->enabled || w<=0 || h<=0){
+        IMP_OSD_ShowRgn(rgn, s->grp, 0);
+        return;
+    }
+    IMPOSDRgnAttr a; memset(&a,0,sizeof a);
+    a.type=OSD_REG_COVER;
+    a.rect.p0.x=x; a.rect.p0.y=y; a.rect.p1.x=x+w-1; a.rect.p1.y=y+h-1;
+    a.fmt=PIX_FMT_BGRA;
+    a.data.coverData.color = p->color;      /* 0xAARRGGBB fill */
+    IMP_OSD_SetRgnAttr(rgn, &a);
+    IMPOSDGrpRgnAttr g; memset(&g,0,sizeof g);
+    g.show=1; g.gAlphaEn=1; g.fgAlhpa=(uint8_t)((p->color>>24)&0xFF);
+    IMP_OSD_SetGrpRgnAttr(rgn, s->grp, &g);
+    IMP_OSD_ShowRgn(rgn, s->grp, 1);
+}
+
 int imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height)
 {
     g_hcfg = cfg;
-    if (!cfg->osd.enabled) return -1;
     if (stream_idx<0 || stream_idx>=MS_MAX_VSTREAM) return -1;
 
-    if (!g_shared_ok){
+    /* the OSD group is also the carrier for privacy cover masks, so build it
+     * when EITHER OSD text/logo overlays OR any privacy region is wanted */
+    int want_priv=0;
+    for (int i=0;i<MS_MAX_PRIVACY;i++)
+        if (cfg->privacy[stream_idx][i].enabled) want_priv=1;
+    if (!cfg->osd.enabled && !want_priv) return -1;
+
+    if (cfg->osd.enabled && !g_shared_ok){
         if (cfg->osd.font_path[0] && msttf_load(&g_shared,cfg->osd.font_path)==0){
             g_shared_ok=1; LOGI(MOD,"OSD TrueType font %s",cfg->osd.font_path);
         } else LOGI(MOD,"OSD embedded bitmap font");
@@ -157,10 +196,12 @@ int imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height)
     osd_stream *s=&g_os[stream_idx];
     s->used=1; s->si=stream_idx; s->grp=stream_idx; s->width=width; s->height=height;
     for (int i=0;i<MS_MAX_OSD;i++) s->r[i].rgn=-1;
+    for (int i=0;i<MS_MAX_PRIVACY;i++) s->pr_rgn[i]=-1;
 
     if (IMP_OSD_CreateGroup(s->grp)<0){ LOGE(MOD,"CreateGroup %d failed",s->grp); s->used=0; return -1; }
 
     int active=0;
+    if (cfg->osd.enabled)
     for (int i=0;i<MS_MAX_OSD;i++){
         const ms_osd_item *it=&cfg->osd.items[stream_idx][i];
         if (!it->enabled) continue;
@@ -184,9 +225,21 @@ int imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height)
         }
         active++;
     }
+
+    /* privacy cover masks: pre-create ALL region handles (hidden if disabled)
+     * so masks can be toggled/moved LIVE without a restart, as long as the
+     * group exists (OSD or privacy was on at startup) */
+    int priv=0;
+    for (int n=0;n<MS_MAX_PRIVACY;n++){
+        s->pr_rgn[n]=IMP_OSD_CreateRgn(NULL);
+        IMP_OSD_RegisterRgn(s->pr_rgn[n], s->grp, NULL);
+        setup_cover(s, n);
+        if (cfg->privacy[stream_idx][n].enabled) priv++;
+    }
+
     IMP_OSD_Start(s->grp);
-    LOGI(MOD,"OSD stream %d: %d overlay(s), group %d (%dx%d)",
-         stream_idx, active, s->grp, width, height);
+    LOGI(MOD,"OSD stream %d: %d overlay(s), %d privacy mask(s), group %d (%dx%d)",
+         stream_idx, active, priv, s->grp, width, height);
     return s->grp;
 }
 
@@ -234,7 +287,8 @@ void imp_osd_start_updater(void)
 {
     if (!g_hcfg || !g_hcfg->osd.enabled || g_run) return;
     g_run=1;
-    pthread_create(&g_thr,NULL,osd_thread,NULL);
+    if (pthread_create(&g_thr,NULL,osd_thread,NULL)!=0)
+        g_run=0;                     /* imp_osd_stop must not join a non-thread */
 }
 
 #ifdef USE_CONTROL
@@ -280,6 +334,32 @@ void imp_osd_apply(int stream, int item)
     }
     OSD_UNLOCK();
 }
+
+/* Live re-apply of one privacy cover region (g_cfg->privacy[stream][item] was
+ * already updated by /control): enable/disable, move, resize, recolor. Regions
+ * are pre-created in imp_osd_setup, so this works without a restart AS LONG AS
+ * the group exists (OSD or at least one privacy region was on at startup). If
+ * OSD and all privacy were off at startup there is no group/region - the change
+ * persists and applies on the next restart. */
+void imp_osd_privacy_apply(int stream, int item)
+{
+    if (!g_hcfg || item<0 || item>=MS_MAX_PRIVACY) return;
+    if (stream<0 || stream>=MS_MAX_VSTREAM) return;
+    OSD_LOCK();
+    osd_stream *s=&g_os[stream];
+    if (s->used){
+        if (s->pr_rgn[item] < 0){
+            if (g_hcfg->privacy[stream][item].enabled)
+                LOGW(MOD,"privacy %d: no region on stream %d (OSD+privacy off at "
+                         "startup) - persisted, applies on restart", item, stream);
+        } else {
+            setup_cover(s, item);
+            LOGI(MOD,"privacy stream %d region %d re-applied (enabled=%d)",
+                 stream, item, g_hcfg->privacy[stream][item].enabled);
+        }
+    }
+    OSD_UNLOCK();
+}
 #endif /* USE_CONTROL */
 
 void imp_osd_stop(void)
@@ -299,6 +379,13 @@ void imp_osd_stop(void)
             if (rg->font && rg->font!=&g_shared){ msttf_free(rg->font); free(rg->font); }
             rg->rgn=-1;
         }
+        for (int n=0;n<MS_MAX_PRIVACY;n++){
+            if (s->pr_rgn[n]<0) continue;
+            IMP_OSD_ShowRgn(s->pr_rgn[n], s->grp, 0);
+            IMP_OSD_UnRegisterRgn(s->pr_rgn[n], s->grp);
+            IMP_OSD_DestroyRgn(s->pr_rgn[n]);
+            s->pr_rgn[n]=-1;
+        }
         IMP_OSD_DestroyGroup(s->grp);
         s->used=0;
     }
@@ -310,5 +397,6 @@ void imp_osd_start_updater(void){}
 void imp_osd_stop(void){}
 #ifdef USE_CONTROL
 void imp_osd_apply(int stream, int item){ (void)stream; (void)item; }
+void imp_osd_privacy_apply(int stream, int item){ (void)stream; (void)item; }
 #endif
 #endif

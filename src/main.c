@@ -5,14 +5,22 @@
 #include "hal/hal.h"
 #include "rtsp/rtsp.h"
 #include "mp4/httpd.h"
+#include "record.h"
+#include "srt.h"
 #ifdef USE_DAYNIGHT
 #include "daynight.h"
+#endif
+#ifdef USE_CONTROL
+#include "auth.h"
+#include <fcntl.h>
+#include <sys/stat.h>
 #endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
 #include <unistd.h>
+#include <time.h>
 
 #define MOD "MAIN"
 #define MS_VERSION "0.1.0"
@@ -35,6 +43,27 @@ static void on_signal(int s)
 static void idr_trampoline(int src){ if (g_hal && g_hal->request_idr) g_hal->request_idr(src); }
 static void act_trampoline(int src, int on){ if (g_hal && g_hal->set_active) g_hal->set_active(src, on); }
 
+#ifdef USE_CONTROL
+/* Publish the per-boot /control token for local privileged readers (the
+ * thingino WebUI reads it server-side and hands it only to authenticated
+ * sessions). Rewritten on every start; fchmod pins the mode to 0640
+ * regardless of the process umask. Only the random per-boot token goes
+ * here - a configured http.token secret is NEVER written to disk. */
+static void write_token_file(const ms_config *cfg)
+{
+    if (!cfg->http_token_file[0]) return;            /* "" = disabled */
+    int fd = open(cfg->http_token_file, O_CREAT|O_WRONLY|O_TRUNC, 0640);
+    if (fd < 0){ LOGW(MOD,"cannot write token file %s", cfg->http_token_file); return; }
+    fchmod(fd, 0640);
+    size_t l = strlen(g_ctl_token);
+    if (write(fd, g_ctl_token, l) != (ssize_t)l || write(fd, "\n", 1) != 1)
+        LOGW(MOD,"short write on token file %s", cfg->http_token_file);
+    else
+        LOGI(MOD,"/control token published to %s", cfg->http_token_file);
+    close(fd);
+}
+#endif
+
 int main(int argc, char **argv)
 {
     const char *cfgpath = "/etc/timps.conf";
@@ -48,7 +77,14 @@ int main(int argc, char **argv)
     }
 
     config_load(&g_cfg, cfgpath);
+    srand((unsigned)(time(NULL) ^ getpid()));   /* rtsp.c session IDs / UDP port picks */
     LOGI(MOD,"timps %s starting (backend=%s)", MS_VERSION, hal_get()->name);
+
+#ifdef USE_CONTROL
+    /* per-boot /control token: valid alongside Basic auth (httpd.c) */
+    auth_gen_token(g_ctl_token);
+    if (g_cfg.http_enabled) write_token_file(&g_cfg);
+#endif
 
     hub_init();
     hub_set_idr_cb(idr_trampoline);
@@ -65,6 +101,8 @@ int main(int argc, char **argv)
 #ifdef USE_DAYNIGHT
     daynight_start();
 #endif
+    record_start(&g_cfg);
+    srt_start(&g_cfg);
 
     signal(SIGINT,  on_signal);
     signal(SIGTERM, on_signal);
@@ -76,6 +114,8 @@ int main(int argc, char **argv)
     while (g_run) sleep(1);
 
     LOGI(MOD,"shutting down");
+    srt_stop();
+    record_stop();
 #ifdef USE_DAYNIGHT
     daynight_stop();
 #endif

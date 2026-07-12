@@ -57,6 +57,7 @@ int         hub_get_audio(int *acodec, int *samplerate, int *channels);
  * subscriber leaves, so the HAL can start/stop capture+encode on demand. */
 void        hub_set_activity_cb(void (*cb)(int src, int active));
 int         hub_active(int src);   /* nonzero if the source has subscribers */
+int         hub_subs(int src);     /* subscriber count of one source */
 /* total subscribers across all video streams (rough "viewer" count for OSD) */
 int         hub_video_subs(void);
 

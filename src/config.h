@@ -7,6 +7,7 @@
 
 #define MS_MAX_VSTREAM 2
 #define MS_MAX_OSD     8
+#define MS_MAX_PRIVACY 4
 #define MS_MAX_STR     64
 
 enum ms_vcodec { MS_VC_H264=0, MS_VC_H265=1 };
@@ -130,6 +131,18 @@ typedef struct {
     ms_osd_item items[MS_MAX_VSTREAM][MS_MAX_OSD];  /* per-stream item sets */
 } ms_osd_cfg;
 
+/* privacy mask: a solid filled rectangle drawn over the video (IMP OSD cover
+ * region) to black out a sensitive area. Each video stream has its own set of
+ * up to MS_MAX_PRIVACY regions. Applied LIVE via /control (created/shown/moved
+ * at runtime, like OSD items) - no restart required.
+ * Config keys (per stream): privacy<S>.<N>.<field>, e.g. privacy0.0.enabled,
+ * privacy1.2.w. Fields: enabled, x, y, w, h, color (0xAARRGGBB fill). */
+typedef struct {
+    int      enabled;
+    int      x, y, w, h;            /* rect in the stream's frame, pixels */
+    uint32_t color;                 /* 0xAARRGGBB fill color */
+} ms_privacy_region;
+
 /* native automatic day/night detection (thread compiled with -DUSE_DAYNIGHT;
  * keys are always parsed so a config with daynight.* loads warning-free).
  * Semantics/defaults match thingino's daynightd. */
@@ -147,11 +160,52 @@ typedef struct {
 typedef struct {
     int      enabled;            /* IMP_IVS motion detection */
     int      monitor_stream;
-    int      sensitivity;        /* 0..255 */
-    int      roi_x, roi_y, roi_w, roi_h;  /* 0 => full frame */
+    int      sensitivity;        /* 0..255 (mapped to IMP's 0..4 in the HAL) */
+    int      cols, rows;         /* detection GRID over the monitor stream's
+                                  * frame; cols*rows is clamped to the SDK's
+                                  * IMP_IVS_MOVE_MAX_ROI_CNT (motion_caps.h:
+                                  * 52 on most SDKs, 4 on T10/T20 3.9.0) */
+    int      roi_x, roi_y, roi_w, roi_h;  /* legacy single-ROI keys: still
+                                  * parsed (old configs load warning-free)
+                                  * but unused since the grid replaced them */
     int      cooldown_ms;        /* min gap between motion events */
-    char     on_motion[128];     /* command/script to run on motion ("" = none) */
+    int      hold_ms;            /* keep a cell "active" this long after its last
+                                  * retRoi hit so async /events + /control readers
+                                  * reliably observe single-frame motion instead
+                                  * of racing the clear back to 0 (0 = no hold) */
+    int      skip_frames;        /* IMP_IVS_MoveParam.skipFrameCnt: analyse every
+                                  * Nth frame. Higher = cheaper but more latency;
+                                  * lower = snappier but more CPU (>=1, default 5) */
+    char     on_motion[128];     /* command/script to run on motion ("" = none).
+                                  * Config-file only, NOT settable via /control
+                                  * (it is executed through system()). */
 } ms_motion_cfg;
+
+/* local recording to SD (fragmented MP4 segments, like raptor's RMR). Reuses
+ * the fMP4 muxer; motion-triggered or continuous. */
+typedef struct {
+    int      enabled;            /* master enable (also gates on-boot start) */
+    int      channel;            /* video stream to record (0..MS_MAX_VSTREAM-1) */
+    int      mode;               /* 0 = continuous, 1 = motion-triggered */
+    char     dir[128];           /* SD base dir, e.g. /mnt/mmcblk0p1 */
+    char     name[96];           /* strftime path template (under <dir>/<host>/records/) */
+    int      segment_s;          /* max segment length (seconds), 0 = single file */
+    int      pre_roll_s;         /* motion: seconds of buffered video kept before the trigger */
+    int      post_roll_s;        /* motion: keep recording this long after the last motion */
+    int      min_free_mb;        /* delete oldest segments until at least this much is free */
+    int      audio;              /* 1 = mux audio into the recording when available */
+} ms_record_cfg;
+
+/* optional SRT output (USE_SRT builds only, libsrt): serves one video stream
+ * (+audio) as MPEG-TS over SRT in listener mode. */
+typedef struct {
+    int      enabled;
+    int      port;                  /* SRT listener port (default 9000) */
+    int      channel;               /* video stream to serve */
+    int      latency_ms;            /* SRT receive/peer latency */
+    char     streamid[64];          /* optional required STREAMID */
+    char     passphrase[64];        /* optional AES passphrase ("" = none) */
+} ms_srt_cfg;
 
 typedef struct {
     /* general */
@@ -174,12 +228,34 @@ typedef struct {
     int            http_preview_chn;   /* which video stream to expose */
     char           http_user[MS_MAX_STR];  /* empty = fall back to rtsp creds */
     char           http_pass[MS_MAX_STR];
+    /* /control token auth (startup/security settings, NOT settable via
+     * /control): http_token = optional persistent remote secret (also
+     * accepted as a valid token, for automation); http_token_file = where
+     * the random per-boot token is published for local privileged readers
+     * ("" = don't write). The configured secret is NEVER written there. */
+    char           http_token[MS_MAX_STR];
+    char           http_token_file[128];
+    /* GET /events SSE push stream (USE_CONTROL builds only; startup
+     * settings, deliberately NOT settable via /control) */
+    int            events_enabled;      /* 0 = endpoint answers 404 */
+    int            events_stats_ms;     /* "stats" event period, 0 = none */
+    int            events_max_clients;  /* concurrent /events conns -> 503 */
+    /* optional TLS (USE_TLS builds only): HTTPS for the http port + RTSPS for a
+     * second RTSP port. Plain HTTP/RTSP still run as before. */
+    int            http_https;          /* 1 = serve the http port over TLS */
+    char           http_tls_cert[128];  /* PEM cert file */
+    char           http_tls_key[128];   /* PEM private key file */
+    int            rtsp_tls;            /* 1 = also run an RTSPS (TLS) listener */
+    int            rtsp_tls_port;       /* RTSPS port (default 322) */
 
     ms_vstream_cfg video[MS_MAX_VSTREAM];
     ms_audio_cfg   audio;
     ms_jpeg_cfg    jpeg;
     ms_osd_cfg     osd;
+    ms_privacy_region privacy[MS_MAX_VSTREAM][MS_MAX_PRIVACY]; /* cover masks */
     ms_motion_cfg  motion;
+    ms_record_cfg  record;
+    ms_srt_cfg     srt;
     ms_daynight_cfg daynight;
 
     /* sim backend (x86 testing) */

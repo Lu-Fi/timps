@@ -22,6 +22,10 @@ void imp_osd_stop(void);
  * osdN.* keys). Items that were disabled at startup have no region and can
  * only be enabled after a restart. Thread-safe vs. the updater. */
 void imp_osd_apply(int stream, int item);
+
+/* Live re-apply of one privacy cover region (g_cfg->privacy[stream][item],
+ * already updated by /control). See imp_osd.c for the restart caveat. */
+void imp_osd_privacy_apply(int stream, int item);
 #endif
 
 #endif

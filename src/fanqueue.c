@@ -10,7 +10,13 @@ int fanqueue_init(fanqueue *q, int cap)
     q->cap = cap; q->head=q->tail=q->count=0;
     q->closed = 0; q->dropped = 0; q->dropped_key = 0;
     pthread_mutex_init(&q->lock, NULL);
-    pthread_cond_init(&q->cond, NULL);
+    /* condvar on CLOCK_MONOTONIC: a wall-clock step (NTP sync on boot) must
+     * never stretch a consumer's pop timeout (like events.c does) */
+    pthread_condattr_t a;
+    pthread_condattr_init(&a);
+    pthread_condattr_setclock(&a, CLOCK_MONOTONIC);
+    pthread_cond_init(&q->cond, &a);
+    pthread_condattr_destroy(&a);
     return 0;
 }
 
@@ -57,7 +63,7 @@ ms_pkt *fanqueue_pop(fanqueue *q, int timeout_ms)
             pthread_cond_wait(&q->cond, &q->lock);
         } else {
             struct timespec ts;
-            clock_gettime(CLOCK_REALTIME, &ts);
+            clock_gettime(CLOCK_MONOTONIC, &ts);
             ts.tv_sec  += timeout_ms/1000;
             ts.tv_nsec += (long)(timeout_ms%1000)*1000000L;
             if (ts.tv_nsec >= 1000000000L){ ts.tv_sec++; ts.tv_nsec-=1000000000L; }

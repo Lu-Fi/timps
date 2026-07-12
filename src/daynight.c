@@ -7,6 +7,7 @@
 #include "config.h"
 
 #ifdef USE_DAYNIGHT
+#include "events.h"   /* wake /events SSE subscribers on real changes */
 #include "log.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -35,11 +36,26 @@ static int   g_st_mode       = DN_UNKNOWN; /* mode as switched by the thread */
 
 static void dn_status_update(float brightness, float total_gain, int mode)
 {
+    /* last values that woke /events (only touched by the sampling thread) */
+    static float nfy_b = -1000.0f, nfy_g = -1000.0f;
+    static int   nfy_m = -1000;
+
     pthread_mutex_lock(&g_st_mu);
     g_st_brightness = brightness;
     g_st_gain       = total_gain;
     g_st_mode       = mode;
     pthread_mutex_unlock(&g_st_mu);
+
+    /* wake /events subscribers only on a REAL change - brightness/gain
+     * jitter every sample, so require a mode flip, >= 1% brightness or a
+     * >= 5% gain move (same thresholds as the /events consumer dedup) */
+    float db = brightness - nfy_b; if (db < 0) db = -db;
+    float dg = total_gain - nfy_g; if (dg < 0) dg = -dg;
+    if (mode != nfy_m || db >= 1.0f ||
+        dg >= (nfy_g > 0.0f ? nfy_g * 0.05f : 8.0f)) {
+        nfy_b = brightness; nfy_g = total_gain; nfy_m = mode;
+        events_notify();
+    }
 }
 
 /* Scene brightness 0..100% from the ISP proc file, or <0 if unavailable.

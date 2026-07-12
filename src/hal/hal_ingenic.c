@@ -159,6 +159,39 @@ static void fs_unuse(int chn)
     pthread_mutex_unlock(&g_fs_mtx);
 }
 
+/* ================= motion detection lifecycle ================= */
+/* Bring the IVS motion grid in sync with the current config. ANY runtime
+ * change (enable/disable, cols/rows, sensitivity, monitor_stream) goes
+ * through a clean stop + recreate: the move parameters (grid ROIs, sense)
+ * are create-time attributes of the IVS interface, so live geometry or
+ * sensitivity changes rebuild the channel. While motion runs, the monitored
+ * stream's FrameSource is pinned (fs_use) so the idle logic never turns off
+ * the frames the IVS group feeds on. Serialized: called from ing_start/
+ * ing_stop (main thread) and from /control connection threads. */
+static pthread_mutex_t g_motion_mtx = PTHREAD_MUTEX_INITIALIZER;
+static int g_motion_pin = -1;    /* pinned FS channel while motion runs */
+static void motion_sync(const ms_config *cfg)
+{
+    pthread_mutex_lock(&g_motion_mtx);
+    if (g_motion_pin >= 0) {                     /* running -> stop first */
+        imp_motion_stop();
+        fs_unuse(g_motion_pin);
+        g_motion_pin = -1;
+    }
+    if (cfg->motion.enabled) {
+        int mon = cfg->motion.monitor_stream;
+        if (mon < 0 || mon >= MS_MAX_VSTREAM || !cfg->video[mon].enabled)
+            mon = 0;
+        if (imp_motion_start(cfg) == 0) {
+            /* IVS needs the monitored stream's frames independent of
+             * clients: pin that framesource until motion stops */
+            g_motion_pin = cfg->video[mon].imp_chn;
+            fs_use(g_motion_pin);
+        }
+    }
+    pthread_mutex_unlock(&g_motion_mtx);
+}
+
 /* ================= system / sensor / ISP ================= */
 /* Apply one image.* (ISP tuning) key from the current config (g_hcfg->image).
  * Returns 1 when the key is wired on this PLATFORM's IMP SDK, 0 when the SoC
@@ -335,7 +368,16 @@ static int isp_init(void)
     IMP_ISP_AddSensor(&g_sensor);
     IMP_ISP_EnableSensor();
 #endif
-    if (IMP_System_Init()<0){ LOGE(MOD,"IMP_System_Init failed"); return -1; }
+    /* on a fast restart the previous instance's IMP/rmem may not be released
+     * yet - retry a few times before giving up instead of exiting the daemon */
+    {
+        int si_tries = 0;
+        while (IMP_System_Init() < 0) {
+            if (++si_tries >= 5) { LOGE(MOD,"IMP_System_Init failed after %d tries", si_tries); return -1; }
+            LOGW(MOD,"IMP_System_Init busy, retry %d/5 in 1s (ISP still releasing?)", si_tries);
+            usleep(1000000);
+        }
+    }
     IMP_ISP_EnableTuning();
     apply_image_tuning();   /* full image.* block incl. running_mode */
 #if defined(PLATFORM_T41)
@@ -605,7 +647,10 @@ static void jpeg_chan_start(int chn, int fs_chn, int src, int w, int h,
     jc->chn=chn; jc->fs_chn=fs_chn; jc->src=src; jc->w=w; jc->h=h;
     jc->fps=fps>0?fps:5; jc->snapshot=snapshot;
     jc->run=1; jc->active=0;
-    pthread_create(&jc->thr,NULL,jpeg_thread,jc);
+    if (pthread_create(&jc->thr,NULL,jpeg_thread,jc)!=0){
+        jc->run=0; g_nj--;           /* drop the slot: stop() must not join */
+        LOGE(MOD,"jpeg chn%d thread create failed",chn);
+    }
 }
 
 /* dedicated JPEG channel: own framesource + own encoder group (jpeg.*) */
@@ -928,6 +973,20 @@ static void ing_control(const char *key, const char *val)
      * via the board's color script. */
     if (!strncmp(key,"daynight.",9)) return;
 
+    /* motion.*: enabled/cols/rows/sensitivity/monitor_stream are applied
+     * LIVE by cleanly stopping and recreating the IVS grid (move params are
+     * create-time attributes - see motion_sync). cooldown_ms/on_motion are
+     * config-only: the polling thread reads them from g_cfg per event. */
+    if (!strncmp(key,"motion.",7)){
+        const char *k = key+7;
+        if (!strcmp(k,"enabled") || !strcmp(k,"cols") || !strcmp(k,"rows") ||
+            !strcmp(k,"sensitivity") || !strcmp(k,"monitor_stream")){
+            motion_sync(g_hcfg);
+            LOGI(MOD,"control %s applied (IVS grid re-synced)", key);
+        }
+        return;
+    }
+
     /* osdS.N.* (per-stream) / legacy osdN.* (all streams): config (g_cfg) is
      * already updated -> re-apply the whole item on the right stream(s) */
     if (!strncmp(key,"osd",3) && key[3]>='0' && key[3]<'0'+MS_MAX_OSD && key[4]=='.'){
@@ -936,6 +995,14 @@ static void ing_control(const char *key, const char *val)
             imp_osd_apply(key[3]-'0', key[5]-'0');   /* osdS.N.* */
         else
             imp_osd_apply(-1, key[3]-'0');           /* legacy osdN.* */
+        return;
+    }
+
+    /* privacy<S>.<N>.* cover masks: config (g_cfg) already updated -> re-apply
+     * the region LIVE (create/show/hide/move) on that stream */
+    if (!strncmp(key,"privacy",7) && key[7]>='0' && key[7]<'0'+MS_MAX_VSTREAM &&
+        key[8]=='.' && key[9]>='0' && key[9]<'0'+MS_MAX_PRIVACY && key[10]=='.'){
+        imp_osd_privacy_apply(key[7]-'0', key[9]-'0');
         return;
     }
 
@@ -991,8 +1058,10 @@ static int ing_start(const ms_config *cfg)
         hub_set_video_params(i, v->codec, v->width, v->height, v->fps);
         g_v[g_nv].chn=chn; g_v[g_nv].grp=grp; g_v[g_nv].codec=v->codec;
         g_v[g_nv].w=v->width; g_v[g_nv].h=v->height; g_v[g_nv].run=1;
-        pthread_create(&g_v[g_nv].thr,NULL,video_thread,&g_v[g_nv]);
-        g_nv++;
+        /* count the slot only with a live thread: ing_stop must never join a
+         * pthread_t that was never created */
+        if (pthread_create(&g_v[g_nv].thr,NULL,video_thread,&g_v[g_nv])==0) g_nv++;
+        else { g_v[g_nv].run=0; LOGE(MOD,"video chn%d thread create failed",chn); }
     }
 
     imp_osd_start_updater();   /* one thread refreshes OSD on all streams */
@@ -1011,16 +1080,14 @@ static int ing_start(const ms_config *cfg)
         g_asr = (g_acodec==MS_AC_AAC) ? cfg->audio.samplerate : 8000; /* G.711 = 8 kHz */
         hub_set_audio_params(g_acodec, g_asr, cfg->audio.channels);
         g_arun=1;
-        pthread_create(&g_athr,NULL,audio_thread,NULL);
+        if (pthread_create(&g_athr,NULL,audio_thread,NULL)!=0){
+            g_arun=0;                /* had_audio stays 0 -> no join in stop */
+            LOGE(MOD,"audio thread create failed");
+        }
     }
 
     if (cfg->jpeg.enabled) jpeg_setup(cfg);
-    if (cfg->motion.enabled){
-        imp_motion_start(cfg);
-        /* IVS needs the monitored stream's frames independent of clients:
-         * pin that framesource so the idle logic never turns it off */
-        fs_use(cfg->video[cfg->motion.monitor_stream].imp_chn);
-    }
+    motion_sync(cfg);      /* start the IVS motion grid if motion.enabled */
     return 0;
 }
 
@@ -1045,10 +1112,15 @@ static void ing_request_idr(int src)
 
 static void ing_stop(void)
 {
-    if (g_hcfg->motion.enabled){
+    /* stop the IVS motion grid (uses the pinned channel recorded at start,
+     * so a runtime monitor_stream change can never unpin the wrong FS) */
+    pthread_mutex_lock(&g_motion_mtx);
+    if (g_motion_pin >= 0){
         imp_motion_stop();
-        fs_unuse(g_hcfg->video[g_hcfg->motion.monitor_stream].imp_chn);
+        fs_unuse(g_motion_pin);
+        g_motion_pin = -1;
     }
+    pthread_mutex_unlock(&g_motion_mtx);
     /* raise all stop flags first, then wake the idle-blocked threads once so
      * every join returns promptly (act_wait also times out after 1 s) */
     int had_audio = g_arun;

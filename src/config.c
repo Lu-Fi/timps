@@ -1,5 +1,6 @@
 #include "config.h"
 #include "log.h"
+#include "motion_caps.h"   /* MOTION_MAX_CELLS/MOTION_CELL_LIMIT (grid clamp) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -85,8 +86,21 @@ void config_defaults(ms_config *c)
     im->core_wb_mode=0; im->wb_rgain=0; im->wb_bgain=0;
 
     c->rtsp_enabled = 1; c->rtsp_port = 8554; c->rtsp_user[0]=0; c->rtsp_pass[0]=0;
-    c->http_enabled = 1; c->http_port = 8080; c->http_preview_chn = 1;
+    c->http_enabled = 1; c->http_port = 8880; c->http_preview_chn = 1;
     c->http_user[0]=0; c->http_pass[0]=0;
+    c->http_token[0]=0;
+    copystr(c->http_token_file, "/run/timps.token", sizeof c->http_token_file);
+    c->events_enabled=1; c->events_stats_ms=2000; c->events_max_clients=8;
+    /* optional TLS (USE_TLS builds): off by default */
+    c->http_https=0;
+    /* reuse thingino's httpd cert (mbedtls-certgen writes it here); S95timps
+     * generates it on first boot when https is enabled and it is missing */
+    copystr(c->http_tls_cert,"/etc/ssl/certs/httpd.crt",128);
+    copystr(c->http_tls_key,"/etc/ssl/private/httpd.key",128);
+    c->rtsp_tls=0; c->rtsp_tls_port=322;
+    /* optional SRT output (USE_SRT builds): off by default */
+    c->srt.enabled=0; c->srt.port=9000; c->srt.channel=0; c->srt.latency_ms=120;
+    c->srt.streamid[0]=0; c->srt.passphrase[0]=0;
 
     for (int i=0;i<MS_MAX_VSTREAM;i++){
         ms_vstream_cfg *v=&c->video[i];
@@ -147,8 +161,32 @@ void config_defaults(ms_config *c)
         it[3].logo_w=100; it[3].logo_h=30;
     }
 
+    /* privacy cover masks: all off by default; default fill = opaque black so
+     * enabling a region without setting a color still masks the area */
+    for (int s=0;s<MS_MAX_VSTREAM;s++)
+        for (int i=0;i<MS_MAX_PRIVACY;i++)
+            c->privacy[s][i].color=0xFF000000;
+
     c->motion.enabled=0; c->motion.monitor_stream=0; c->motion.sensitivity=128;
-    c->motion.cooldown_ms=5000;
+    c->motion.cooldown_ms=5000; c->motion.hold_ms=800; c->motion.skip_frames=5;
+    /* detection grid default: 5x5 where the SDK's ROI budget allows it,
+     * 2x2 on small-budget SDKs (T10/T20 3.9.0: MOTION_MAX_CELLS = 4) */
+#if MOTION_MAX_CELLS >= 25
+    c->motion.cols=5; c->motion.rows=5;
+#elif MOTION_MAX_CELLS >= 4
+    c->motion.cols=2; c->motion.rows=2;
+#else
+    c->motion.cols=1; c->motion.rows=1;
+#endif
+
+    /* local recording (fMP4 to SD): off by default; thingino path conventions
+     * (SD at /mnt/mmcblk0p1, <host>/records/ tree, strftime segment names),
+     * motion-triggered with a short pre/post roll like raptor's RMR */
+    c->record.enabled=0; c->record.channel=0; c->record.mode=1;
+    copystr(c->record.dir,"/mnt/mmcblk0p1",sizeof c->record.dir);
+    copystr(c->record.name,"%Y%m%d/%H/%Y%m%dT%H%M%S",sizeof c->record.name);
+    c->record.segment_s=60; c->record.pre_roll_s=3; c->record.post_roll_s=10;
+    c->record.min_free_mb=200; c->record.audio=1;
 
     /* automatic day/night: defaults mirror thingino's daynightd.json */
     c->daynight.enabled=1;
@@ -226,6 +264,28 @@ static void set_osd_item(ms_osd_item *o, const char *k, const char *val)
     else LOGW(MOD,"unknown osd item key %s", k);
 }
 
+/* Parse a privacy region key "privacy<S>.<N>.<field>" -> *stream=S, *item=N,
+ * returns the field name, or NULL. */
+static const char *privacy_key(const char *key, int *stream, int *item)
+{
+    if (strncmp(key,"privacy",7) || key[7]<'0' || key[7]>'0'+MS_MAX_VSTREAM-1 ||
+        key[8]!='.' || key[9]<'0' || key[9]>'0'+MS_MAX_PRIVACY-1 || key[10]!='.')
+        return NULL;
+    *stream = key[7]-'0'; *item = key[9]-'0';
+    return key+11;
+}
+
+static void set_privacy_region(ms_privacy_region *p, const char *k, const char *val)
+{
+    if (!strcmp(k,"enabled")) p->enabled=pbool(val);
+    else if (!strcmp(k,"x")) p->x=pint(val);
+    else if (!strcmp(k,"y")) p->y=pint(val);
+    else if (!strcmp(k,"w")||!strcmp(k,"width")) p->w=pint(val);
+    else if (!strcmp(k,"h")||!strcmp(k,"height")) p->h=pint(val);
+    else if (!strcmp(k,"color")||!strcmp(k,"fill_color")) p->color=phex(val);
+    else LOGW(MOD,"unknown privacy key %s", k);
+}
+
 static void set_kv(ms_config *c, const char *key, const char *val)
 {
     int osi, oii;
@@ -237,6 +297,10 @@ static void set_kv(ms_config *c, const char *key, const char *val)
                 set_osd_item(&c->osd.items[s][oii], ok, val);
         return;
     }
+
+    int psi, pii;
+    const char *pk = privacy_key(key, &psi, &pii);
+    if (pk){ set_privacy_region(&c->privacy[psi][pii], pk, val); return; }
 
     if (!strncmp(key,"video0.",7)){ set_video(&c->video[0], key+7, val); return; }
     if (!strncmp(key,"video1.",7)){ set_video(&c->video[1], key+7, val); return; }
@@ -319,6 +383,19 @@ static void set_kv(ms_config *c, const char *key, const char *val)
         else if(!strcmp(k,"port"))c->rtsp_port=pint(val);
         else if(!strcmp(k,"user")||!strcmp(k,"username"))copystr(c->rtsp_user,val,MS_MAX_STR);
         else if(!strcmp(k,"pass")||!strcmp(k,"password"))copystr(c->rtsp_pass,val,MS_MAX_STR);
+        else if(!strcmp(k,"tls")||!strcmp(k,"tls_enabled"))c->rtsp_tls=pbool(val);
+        else if(!strcmp(k,"tls_port"))c->rtsp_tls_port=pint(val);
+        else LOGW(MOD,"unknown key %s",key);
+        return;
+    }
+    if (!strncmp(key,"srt.",4)){
+        const char *k=key+4; ms_srt_cfg *s=&c->srt;
+        if(!strcmp(k,"enabled"))s->enabled=pbool(val);
+        else if(!strcmp(k,"port"))s->port=pint(val);
+        else if(!strcmp(k,"channel"))s->channel=pint(val);
+        else if(!strcmp(k,"latency_ms")||!strcmp(k,"latency"))s->latency_ms=pint(val);
+        else if(!strcmp(k,"streamid"))copystr(s->streamid,val,sizeof s->streamid);
+        else if(!strcmp(k,"passphrase"))copystr(s->passphrase,val,sizeof s->passphrase);
         else LOGW(MOD,"unknown key %s",key);
         return;
     }
@@ -329,6 +406,21 @@ static void set_kv(ms_config *c, const char *key, const char *val)
         else if(!strcmp(k,"preview_chn"))c->http_preview_chn=pint(val);
         else if(!strcmp(k,"user")||!strcmp(k,"username"))copystr(c->http_user,val,MS_MAX_STR);
         else if(!strcmp(k,"pass")||!strcmp(k,"password"))copystr(c->http_pass,val,MS_MAX_STR);
+        else if(!strcmp(k,"token"))copystr(c->http_token,val,MS_MAX_STR);
+        else if(!strcmp(k,"token_file"))copystr(c->http_token_file,val,sizeof c->http_token_file);
+        else if(!strcmp(k,"https")||!strcmp(k,"tls"))c->http_https=pbool(val);
+        else if(!strcmp(k,"tls_cert")||!strcmp(k,"cert"))copystr(c->http_tls_cert,val,128);
+        else if(!strcmp(k,"tls_key")||!strcmp(k,"key"))copystr(c->http_tls_key,val,128);
+        else LOGW(MOD,"unknown key %s",key);
+        return;
+    }
+    if (!strncmp(key,"events.",7)){
+        /* /events SSE push stream (startup settings, like the http.token*
+         * keys deliberately not settable via /control) */
+        const char *k=key+7;
+        if(!strcmp(k,"enabled"))c->events_enabled=pbool(val);
+        else if(!strcmp(k,"stats_ms"))c->events_stats_ms=pint(val);
+        else if(!strcmp(k,"max_clients"))c->events_max_clients=pint(val);
         else LOGW(MOD,"unknown key %s",key);
         return;
     }
@@ -344,14 +436,62 @@ static void set_kv(ms_config *c, const char *key, const char *val)
     if (!strncmp(key,"motion.",7)){
         const char *k=key+7;
         if(!strcmp(k,"enabled"))c->motion.enabled=pbool(val);
-        else if(!strcmp(k,"monitor_stream"))c->motion.monitor_stream=pint(val);
-        else if(!strcmp(k,"sensitivity"))c->motion.sensitivity=pint(val);
+        else if(!strcmp(k,"monitor_stream")){
+            int v2=pint(val);
+            if (v2<0||v2>=MS_MAX_VSTREAM) v2=0;
+            c->motion.monitor_stream=v2;
+        }
+        else if(!strcmp(k,"sensitivity")){
+            int v2=pint(val);
+            c->motion.sensitivity = v2<0 ? 0 : v2>255 ? 255 : v2;
+        }
+        else if(!strcmp(k,"cols")||!strcmp(k,"rows")){
+            /* grid geometry: >=1 per axis and cols*rows clamped to the SDK's
+             * ROI budget (MOTION_CELL_LIMIT). The value BEING SET is clamped
+             * against the current other axis (never the other way around),
+             * so re-applying the same pair is idempotent - the /control
+             * dedup then skips repeated posts instead of rewriting flash. */
+            int v2=pint(val);
+            if (v2<1) v2=1;
+            if (v2>MOTION_CELL_LIMIT) v2=MOTION_CELL_LIMIT;
+            if (c->motion.cols<1) c->motion.cols=1;
+            if (c->motion.rows<1) c->motion.rows=1;
+            if (k[0]=='c'){
+                int other = c->motion.rows;
+                if (v2 > MOTION_CELL_LIMIT/other) v2 = MOTION_CELL_LIMIT/other;
+                c->motion.cols = v2;
+            } else {
+                int other = c->motion.cols;
+                if (v2 > MOTION_CELL_LIMIT/other) v2 = MOTION_CELL_LIMIT/other;
+                c->motion.rows = v2;
+            }
+        }
         else if(!strcmp(k,"roi_x"))c->motion.roi_x=pint(val);
         else if(!strcmp(k,"roi_y"))c->motion.roi_y=pint(val);
         else if(!strcmp(k,"roi_w"))c->motion.roi_w=pint(val);
         else if(!strcmp(k,"roi_h"))c->motion.roi_h=pint(val);
         else if(!strcmp(k,"cooldown_ms"))c->motion.cooldown_ms=pint(val);
+        else if(!strcmp(k,"hold_ms")){ int v2=pint(val); c->motion.hold_ms = v2<0?0:v2; }
+        else if(!strcmp(k,"skip_frames")){ int v2=pint(val); c->motion.skip_frames = v2<1?1:v2; }
         else if(!strcmp(k,"on_motion"))copystr(c->motion.on_motion,val,128);
+        else LOGW(MOD,"unknown key %s",key);
+        return;
+    }
+    if (!strncmp(key,"record.",7)){
+        const char *k=key+7; ms_record_cfg *rc=&c->record;
+        if(!strcmp(k,"enabled"))rc->enabled=pbool(val);
+        else if(!strcmp(k,"channel")){
+            int v2=pint(val); rc->channel=(v2<0||v2>=MS_MAX_VSTREAM)?0:v2;
+        }
+        else if(!strcmp(k,"mode"))
+            rc->mode=(!strcasecmp(val,"motion"))?1:(!strcasecmp(val,"continuous"))?0:pint(val);
+        else if(!strcmp(k,"dir"))copystr(rc->dir,val,sizeof rc->dir);
+        else if(!strcmp(k,"name"))copystr(rc->name,val,sizeof rc->name);
+        else if(!strcmp(k,"segment_s")||!strcmp(k,"segment"))rc->segment_s=pint(val);
+        else if(!strcmp(k,"pre_roll_s")||!strcmp(k,"pre_roll"))rc->pre_roll_s=pint(val);
+        else if(!strcmp(k,"post_roll_s")||!strcmp(k,"post_roll"))rc->post_roll_s=pint(val);
+        else if(!strcmp(k,"min_free_mb"))rc->min_free_mb=pint(val);
+        else if(!strcmp(k,"audio"))rc->audio=pbool(val);
         else LOGW(MOD,"unknown key %s",key);
         return;
     }
@@ -450,6 +590,21 @@ int config_get_kv(const ms_config *c, const char *key, char *out, size_t cap)
         else return 0;
         return 1;
     }
+    {   /* privacy<S>.<N>.<field> */
+        int psi, pii;
+        const char *pk = privacy_key(key, &psi, &pii);
+        if (pk){
+            const ms_privacy_region *p=&c->privacy[psi][pii];
+            if(!strcmp(pk,"enabled")) snprintf(out,cap,"%d",p->enabled);
+            else if(!strcmp(pk,"x")) snprintf(out,cap,"%d",p->x);
+            else if(!strcmp(pk,"y")) snprintf(out,cap,"%d",p->y);
+            else if(!strcmp(pk,"w")||!strcmp(pk,"width")) snprintf(out,cap,"%d",p->w);
+            else if(!strcmp(pk,"h")||!strcmp(pk,"height")) snprintf(out,cap,"%d",p->h);
+            else if(!strcmp(pk,"color")||!strcmp(pk,"fill_color")) snprintf(out,cap,"0x%08X",p->color);
+            else return 0;
+            return 1;
+        }
+    }
     if (!strncmp(key,"image.",6)){
         const ms_image_cfg *m=&c->image; const char *k=key+6;
         if(!strcmp(k,"brightness")) snprintf(out,cap,"%d",m->brightness);
@@ -540,6 +695,19 @@ int config_get_kv(const ms_config *c, const char *key, char *out, size_t cap)
         else if(!strcmp(k,"hysteresis")) snprintf(out,cap,"%g",(double)d->hysteresis);
         else if(!strcmp(k,"interval_ms")) snprintf(out,cap,"%d",d->interval_ms);
         else if(!strcmp(k,"transition_s")) snprintf(out,cap,"%d",d->transition_s);
+        else return 0;
+        return 1;
+    }
+    if (!strncmp(key,"motion.",7)){
+        const ms_motion_cfg *m=&c->motion; const char *k=key+7;
+        if(!strcmp(k,"enabled")) snprintf(out,cap,"%d",m->enabled);
+        else if(!strcmp(k,"monitor_stream")) snprintf(out,cap,"%d",m->monitor_stream);
+        else if(!strcmp(k,"sensitivity")) snprintf(out,cap,"%d",m->sensitivity);
+        else if(!strcmp(k,"cols")) snprintf(out,cap,"%d",m->cols);
+        else if(!strcmp(k,"rows")) snprintf(out,cap,"%d",m->rows);
+        else if(!strcmp(k,"cooldown_ms")) snprintf(out,cap,"%d",m->cooldown_ms);
+        else if(!strcmp(k,"hold_ms")) snprintf(out,cap,"%d",m->hold_ms);
+        else if(!strcmp(k,"skip_frames")) snprintf(out,cap,"%d",m->skip_frames);
         else return 0;
         return 1;
     }

@@ -25,6 +25,8 @@ SYSROOT       ?=            # optional --sysroot for the cross toolchain
 USE_FAAC      ?= 0          # 1 = software AAC audio via libfaac (browser audio)
 USE_CONTROL   ?= 1          # live control endpoint (/control); optional, on by default (0 = off)
 USE_DAYNIGHT  ?= 1          # native automatic day/night detection thread; on by default (0 = off)
+USE_TLS       ?= 0          # 1 = HTTPS + RTSPS via mbedTLS (needs -lmbedtls...); off unless the lib is present
+USE_SRT       ?= 0          # 1 = MPEG-TS over SRT output via libsrt; off unless the lib is present
 HOSTCC        ?= cc
 
 # Vendored Ingenic IMP headers (from gtxaspec/ingenic-headers) live under
@@ -58,11 +60,11 @@ BIN := timpsd
 
 BASE := src/util.c src/log.c src/config.c src/frame.c src/fanqueue.c src/net.c \
         src/hub.c src/md5.c src/auth.c src/codec/nal.c src/codec/vparam.c src/codec/aac.c src/codec/g711.c \
-        src/rtsp/rtp.c src/rtsp/rtsp.c src/mp4/fmp4.c src/mp4/httpd.c src/main.c
+        src/rtsp/rtp.c src/rtsp/rtsp.c src/mp4/fmp4.c src/mp4/httpd.c src/record.c src/srt.c src/main.c
 
 TARGET_SRC := $(BASE) src/hal/osd_text.c src/hal/msttf.c src/hal/osd_vars.c src/hal/hal_ingenic.c \
-              src/hal/imp_osd.c src/hal/imp_motion.c src/control.c src/daynight.c
-SIM_SRC    := $(BASE) src/hal/osd_text.c src/hal/hal_sim.c src/control.c src/daynight.c
+              src/hal/imp_osd.c src/hal/imp_motion.c src/control.c src/events.c src/daynight.c
+SIM_SRC    := $(BASE) src/hal/osd_text.c src/hal/hal_sim.c src/hal/imp_motion.c src/control.c src/events.c src/daynight.c
 
 # -Os + gc-sections keeps the binary small; static libimp for a single dropin.
 CFLAGS  ?= -std=c11 -D_GNU_SOURCE -Os -Wall -Wextra -Wno-unused-parameter -Wno-misleading-indentation \
@@ -82,10 +84,13 @@ target:
 	  $(if $(filter 1,$(USE_FAAC)),-DUSE_FAAC) \
 	  $(if $(filter 1,$(USE_CONTROL)),-DUSE_CONTROL) \
 	  $(if $(filter 1,$(USE_DAYNIGHT)),-DUSE_DAYNIGHT) \
-	  -DHAL_INGENIC -DPLATFORM_$(PLATFORM) -Isrc -I$(IMP_INC) \
-	  $(TARGET_SRC) $(LDFLAGS) $(if $(IMP_LIB),-L$(IMP_LIB)) $(IMPLIBS) \
+	  $(if $(filter 1,$(USE_TLS)),-DUSE_TLS) \
+	  $(if $(filter 1,$(USE_SRT)),-DUSE_SRT) \
+	  -DHAL_INGENIC -DPLATFORM_$(PLATFORM) -Isrc -I$(IMP_INC) -I$(IMP_INC)/imp \
+	  $(TARGET_SRC) $(if $(filter 1,$(USE_TLS)),src/tls.c) \
+	  $(LDFLAGS) $(if $(IMP_LIB),-L$(IMP_LIB)) $(IMPLIBS) \
 	  $(if $(filter 1,$(USE_FAAC)),-l:libfaac.a) $(LIBS) -o $(BIN)
-	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT))"
+	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT))"
 
 sim:
 	$(HOSTCC) $(CFLAGS) $(if $(filter 1,$(USE_CONTROL)),-DUSE_CONTROL) \

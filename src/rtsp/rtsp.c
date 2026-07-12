@@ -6,6 +6,10 @@
 #include "../util.h"
 #include "../codec/aac.h"
 #include "../auth.h"
+#include "../tls.h"
+#ifdef USE_TLS
+#include <fcntl.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +41,11 @@ struct rtsp_server {
     int              lfd;
     pthread_t        thr;
     volatile int     run;
+#ifdef USE_TLS
+    int              lfd_tls;   /* RTSPS listener, -1 = none */
+    pthread_t        thr_tls;
+    void            *tls_ctx;   /* ms_tls_ctx*, same cert/key as HTTPS */
+#endif
 };
 
 /* RTP output sink (UDP or TCP-interleaved) */
@@ -45,6 +54,9 @@ typedef struct {
     int                fd;           /* udp socket or control fd */
     struct sockaddr_in dst, dst_rtcp;
     int                chan_rtp, chan_rtcp;
+#ifdef USE_TLS
+    void              *tls;          /* ms_tls_conn* when interleaved over RTSPS */
+#endif
 } rtp_sink;
 
 static int sink_send(void *ctx, const uint8_t *pkt, int len, int rtcp)
@@ -61,8 +73,15 @@ static int sink_send(void *ctx, const uint8_t *pkt, int len, int rtcp)
         buf[2] = (uint8_t)(len >> 8);
         buf[3] = (uint8_t)len;
         memcpy(buf + 4, pkt, len);
+#ifdef USE_TLS
+        /* interleaved packets ride the control connection: over RTSPS they
+         * must go through TLS like every other byte on that connection */
+        if (s->tls) return ms_tls_write((ms_tls_conn*)s->tls, buf, 4+len) < 0 ? -1 : len;
+#endif
         return net_sendall(s->fd, buf, 4 + len) < 0 ? -1 : len;
     } else {
+        /* UDP media stays plaintext even for RTSPS clients: RTSPS secures the
+         * control channel (and interleaved-TCP media) only - no SRTP here */
         struct sockaddr_in *d = rtcp ? &s->dst_rtcp : &s->dst;
         return (int)sendto(s->fd, pkt, len, 0, (struct sockaddr*)d, sizeof(*d));
     }
@@ -85,7 +104,44 @@ typedef struct {
     rtp_track           vtrack, atrack;
     int                 playing;
     int                 play_cseq;     /* CSeq of PLAY; 200 sent after subscribe */
+#ifdef USE_TLS
+    void               *tls;           /* ms_tls_conn*, NULL = plain RTSP */
+    void               *tls_ctx;       /* listener's ms_tls_ctx* (RTSPS), else NULL */
+#endif
 } session;
+
+/* control-channel I/O: transparently TLS when this is an RTSPS connection
+ * (s->tls set), otherwise the plain socket. Without USE_TLS these are exactly
+ * the old net_sendall(s->fd,...) / recv(s->fd,...) calls. */
+static int r_send(session *s, const void *buf, int len)
+{
+#ifdef USE_TLS
+    if (s->tls) return ms_tls_write((ms_tls_conn*)s->tls, buf, len);
+#endif
+    return net_sendall(s->fd, buf, len);
+}
+static int r_recv(session *s, void *buf, int len, int nonblock)
+{
+#ifdef USE_TLS
+    if (s->tls) {
+        if (nonblock) {
+            /* control poll during PLAY: toggle O_NONBLOCK so ms_tls_read
+             * returns 0 (WANT_READ = no data now, retry) instead of blocking,
+             * and map that to the plain-recv EAGAIN convention - callers must
+             * never mistake it for an orderly peer-close */
+            int fl = fcntl(s->fd, F_GETFL, 0);
+            fcntl(s->fd, F_SETFL, fl | O_NONBLOCK);
+            int n = ms_tls_read((ms_tls_conn*)s->tls, buf, len);
+            fcntl(s->fd, F_SETFL, fl);
+            if (n == 0) { errno = EAGAIN; return -1; }      /* no data yet */
+            if (n < 0)  { errno = ECONNRESET; return -1; }  /* closed/error */
+            return n;
+        }
+        return ms_tls_read((ms_tls_conn*)s->tls, buf, len); /* blocking fd */
+    }
+#endif
+    return recv(s->fd, buf, len, nonblock ? MSG_DONTWAIT : 0);
+}
 
 /* ---- request parsing helpers ---- */
 static const char *hdr_find(const char *req, const char *name)
@@ -190,7 +246,7 @@ static void gen_sdp(session *s, const ms_config *c, int vchn, char *sdp, int sdp
     snprintf(sdp, sdpsz, "%s", body);
 }
 
-static void send_resp(int fd, int cseq, const char *extra, const char *body)
+static void send_resp(session *s, int cseq, const char *extra, const char *body)
 {
     char hdr[3072];
     int bl = body ? (int)strlen(body) : 0;
@@ -201,7 +257,7 @@ static void send_resp(int fd, int cseq, const char *extra, const char *body)
             "Content-Type: application/sdp\r\nContent-Length: %d\r\n\r\n%s", bl, body);
     else
         n += snprintf(hdr+n, sizeof(hdr)-n, "\r\n");
-    net_sendall(fd, hdr, n);
+    r_send(s, hdr, n);
 }
 
 /* copy the Authorization header value (up to CRLF) into out */
@@ -240,7 +296,7 @@ static void rtsp_send_401(session *s, int cseq)
         "WWW-Authenticate: Digest realm=\"%s\", nonce=\"%s\"\r\n"
         "WWW-Authenticate: Basic realm=\"%s\"\r\n\r\n",
         cseq, AUTH_REALM, s->nonce, AUTH_REALM);
-    net_sendall(s->fd, hdr, n);
+    r_send(s, hdr, n);
 }
 
 /* returns 0 to keep connection, <0 to close, 1 = start playing */
@@ -250,7 +306,7 @@ static int handle_request(session *s, char *req)
     char path[256]; extract_path(req, path, sizeof path);
 
     if (!strncmp(req, "OPTIONS", 7)) {
-        send_resp(s->fd, cseq,
+        send_resp(s, cseq,
             "Public: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, GET_PARAMETER\r\n", NULL);
         return 0;
     }
@@ -258,14 +314,14 @@ static int handle_request(session *s, char *req)
     if (!rtsp_check_auth(s, req)) { rtsp_send_401(s, cseq); return 0; }
     if (!strncmp(req, "DESCRIBE", 8)) {
         int vchn = find_video_by_path(s->cfg, path);
-        if (vchn < 0) { net_sendall(s->fd,"RTSP/1.0 404 Not Found\r\n\r\n",26); return -1; }
+        if (vchn < 0) { r_send(s,"RTSP/1.0 404 Not Found\r\n\r\n",26); return -1; }
         s->vchn = vchn;
         /* ensure params exist quickly */
         hub_request_idr(vchn);
         for (int i=0;i<50;i++){ vparam vp; if(hub_get_vparam(vchn,&vp)&&vparam_ready(&vp))break; usleep(10000);}
         char sdp[2600]; gen_sdp(s, s->cfg, vchn, sdp, sizeof sdp);
         /* players use the request URL as Content-Base */
-        send_resp(s->fd, cseq, "", sdp);
+        send_resp(s, cseq, "", sdp);
         return 0;
     }
     if (!strncmp(req, "SETUP", 5)) {
@@ -276,7 +332,7 @@ static int handle_request(session *s, char *req)
          * c->video[-1] (OOB) later in stream_loop */
         if (s->vchn < 0) {
             const char *e404 = "RTSP/1.0 404 Not Found\r\n\r\n";
-            net_sendall(s->fd, e404, (int)strlen(e404));
+            r_send(s, e404, (int)strlen(e404));
             return -1;
         }
         if (!s->session[0]) snprintf(s->session,sizeof s->session,"%08X",(unsigned)rand());
@@ -289,6 +345,9 @@ static int handle_request(session *s, char *req)
             if (il) sscanf(il+12,"%d-%d",&rc,&cc);
             rtp_sink *snk = is_audio ? &s->asink : &s->vsink;
             snk->tcp=1; snk->fd=s->fd; snk->chan_rtp=rc; snk->chan_rtcp=cc;
+#ifdef USE_TLS
+            snk->tls=s->tls;   /* interleaved media rides the (TLS?) control conn */
+#endif
             s->tcp=1;
             if (is_audio) s->have_audio=1; else s->have_video=1;
             snprintf(extra,sizeof extra,
@@ -309,7 +368,7 @@ static int handle_request(session *s, char *req)
                 bound = net_bind_udp_pair(&udp[0], &udp[1], base);
             }
             if (bound < 0){
-                net_sendall(s->fd,"RTSP/1.0 500 Internal\r\n\r\n",25); return -1; }
+                r_send(s,"RTSP/1.0 500 Internal\r\n\r\n",25); return -1; }
             rtp_sink *snk = is_audio ? &s->asink : &s->vsink;
             snk->tcp=0; snk->fd=udp[0];
             snk->dst=s->peer; snk->dst.sin_port=htons((uint16_t)cp);
@@ -319,7 +378,7 @@ static int handle_request(session *s, char *req)
                 "Transport: RTP/AVP;unicast;client_port=%d-%d;server_port=%d-%d\r\nSession: %s\r\n",
                 cp,cp2, base,base+1, s->session);
         }
-        send_resp(s->fd, cseq, extra, NULL);
+        send_resp(s, cseq, extra, NULL);
         return 0;
     }
     if (!strncmp(req, "PLAY", 4)) {
@@ -327,7 +386,7 @@ static int handle_request(session *s, char *req)
         if ((!s->have_video && !s->have_audio) ||
             (s->have_video && s->vchn < 0)) {
             const char *e = "RTSP/1.0 455 Method Not Valid in This State\r\n\r\n";
-            net_sendall(s->fd, e, (int)strlen(e));
+            r_send(s, e, (int)strlen(e));
             return -1;
         }
         /* the 200 OK is sent from stream_loop once hub_subscribe succeeded */
@@ -336,14 +395,14 @@ static int handle_request(session *s, char *req)
     }
     if (!strncmp(req, "GET_PARAMETER", 13)) {
         char extra[64]; snprintf(extra,sizeof extra,"Session: %s\r\n",s->session);
-        send_resp(s->fd, cseq, extra, NULL);
+        send_resp(s, cseq, extra, NULL);
         return 0;
     }
     if (!strncmp(req, "TEARDOWN", 8)) {
-        send_resp(s->fd, cseq, "", NULL);
+        send_resp(s, cseq, "", NULL);
         return -1;
     }
-    net_sendall(s->fd,"RTSP/1.0 405 Method Not Allowed\r\n\r\n",35);
+    r_send(s,"RTSP/1.0 405 Method Not Allowed\r\n\r\n",35);
     return 0;
 }
 
@@ -354,7 +413,7 @@ static void stream_loop(session *s)
     if (s->have_video &&
         (s->vchn < 0 || s->vchn >= MS_MAX_VSTREAM || !c->video[s->vchn].enabled)) {
         const char *e404 = "RTSP/1.0 404 Not Found\r\n\r\n";
-        net_sendall(s->fd, e404, (int)strlen(e404));
+        r_send(s, e404, (int)strlen(e404));
         return;
     }
     int vc = s->have_video ? c->video[s->vchn].codec : MS_VC_H264;
@@ -380,7 +439,7 @@ static void stream_loop(session *s)
     {
         char extra[128];
         snprintf(extra,sizeof extra,"Session: %s\r\nRange: npt=0.000-\r\n",s->session);
-        send_resp(s->fd, s->play_cseq, extra, NULL);
+        send_resp(s, s->play_cseq, extra, NULL);
     }
 
     /* keep the socket blocking so TCP-interleaved writes are never partial
@@ -414,8 +473,10 @@ static void stream_loop(session *s)
         if (s->have_video) rtp_maybe_sr(&s->vtrack, now);
         if (s->have_audio) rtp_maybe_sr(&s->atrack, now);
 
-        /* poll control socket for TEARDOWN/keepalive/close */
-        int n = recv(s->fd, ctl, sizeof(ctl)-1, MSG_DONTWAIT);
+        /* poll control socket for TEARDOWN/keepalive/close; over TLS r_recv
+         * maps "no data yet" to -1/EAGAIN, so n==0 only ever means a plain
+         * socket's orderly close */
+        int n = r_recv(s, ctl, (int)sizeof(ctl)-1, 1);
         if (n==0) break;                         /* peer closed */
         if (n>0) {
             ctl[n]=0;
@@ -424,7 +485,7 @@ static void stream_loop(session *s)
             else if (!strncmp(ctl,"GET_PARAMETER",13)||!strncmp(ctl,"OPTIONS",7)) {
                 int cseq=hdr_int(ctl,"CSeq",0);
                 char e[64]; snprintf(e,sizeof e,"Session: %s\r\n",s->session);
-                send_resp(s->fd,cseq,e,NULL);
+                send_resp(s,cseq,e,NULL);
             }
         } else if (errno!=EAGAIN && errno!=EWOULDBLOCK) {
             break;
@@ -440,7 +501,7 @@ full:
     if (sub_v) hub_unsubscribe(s->vchn, &s->q);
     {
         const char *e503 = "RTSP/1.0 503 Service Unavailable\r\n\r\n";
-        net_sendall(s->fd, e503, (int)strlen(e503));
+        r_send(s, e503, (int)strlen(e503));
     }
     LOGW(MOD,"subscribe failed (source full), closing session=%s", s->session);
 }
@@ -449,12 +510,20 @@ static void *client_thread(void *arg)
 {
     session *s = (session*)arg;
     net_set_nodelay(s->fd);
+#ifdef USE_TLS
+    /* RTSPS: run the TLS handshake before any request I/O. From here on all
+     * control and interleaved-TCP I/O uses r_send/r_recv (s->tls aware). */
+    if (s->tls_ctx) {
+        s->tls = ms_tls_accept((ms_tls_ctx*)s->tls_ctx, s->fd);
+        if (!s->tls) goto done;
+    }
+#endif
     char buf[4096];
     int have=0, playing=0;
 
     /* control phase: read requests until PLAY */
     while (!playing) {
-        int n = recv(s->fd, buf+have, sizeof(buf)-1-have, 0);
+        int n = r_recv(s, buf+have, (int)sizeof(buf)-1-have, 0);
         if (n<=0) goto done;
         have += n; buf[have]=0;
         char *end;
@@ -478,6 +547,9 @@ static void *client_thread(void *arg)
 
 done:
     LOGI(MOD,"client disconnect session=%s", s->session[0]?s->session:"-");
+#ifdef USE_TLS
+    if (s->tls) ms_tls_close((ms_tls_conn*)s->tls);
+#endif
     close(s->fd);
     if (s->v_udp[0]>0) close(s->v_udp[0]);
     if (s->v_udp[1]>0) close(s->v_udp[1]);
@@ -488,13 +560,14 @@ done:
     return NULL;
 }
 
-static void *accept_thread(void *arg)
+/* shared accept loop for the plain and (USE_TLS) RTSPS listeners; the TLS
+ * handshake itself runs in client_thread so a slow client cannot stall it */
+static void accept_loop(rtsp_server *sv, int lfd, int port, void *tls_ctx)
 {
-    rtsp_server *sv = (rtsp_server*)arg;
-    LOGI(MOD,"listening on port %d", sv->cfg->rtsp_port);
+    LOGI(MOD,"listening on port %d%s", port, tls_ctx?" (RTSPS)":"");
     while (sv->run) {
         struct sockaddr_in peer; socklen_t pl=sizeof peer;
-        int cfd = accept(sv->lfd, (struct sockaddr*)&peer, &pl);
+        int cfd = accept(lfd, (struct sockaddr*)&peer, &pl);
         if (cfd<0){ if(sv->run) usleep(50000); continue; }
         /* global client cap: each client costs a thread + bounded queue */
         if (g_nclients >= RTSP_MAX_CLIENTS) {
@@ -507,22 +580,59 @@ static void *accept_thread(void *arg)
         session *s = (session*)calloc(1,sizeof(session));
         if (!s){ close(cfd); continue; }
         s->fd=cfd; s->peer=peer; s->cfg=sv->cfg; s->vchn=-1;
+#ifdef USE_TLS
+        s->tls_ctx = tls_ctx;   /* non-NULL on the RTSPS listener */
+#endif
         __sync_fetch_and_add(&g_nclients, 1);
         pthread_t t;
         if (pthread_create(&t,NULL,client_thread,s)==0) pthread_detach(t);
         else { close(cfd); free(s); __sync_fetch_and_sub(&g_nclients, 1); }
     }
+}
+
+static void *accept_thread(void *arg)
+{
+    rtsp_server *sv = (rtsp_server*)arg;
+    accept_loop(sv, sv->lfd, sv->cfg->rtsp_port, NULL);
     return NULL;
 }
+#ifdef USE_TLS
+static void *accept_tls_thread(void *arg)
+{
+    rtsp_server *sv = (rtsp_server*)arg;
+    accept_loop(sv, sv->lfd_tls, sv->cfg->rtsp_tls_port, sv->tls_ctx);
+    return NULL;
+}
+#endif
 
 rtsp_server *rtsp_start(const ms_config *cfg)
 {
     rtsp_server *s = (rtsp_server*)calloc(1,sizeof(*s));
+    if (!s) return NULL;
     s->cfg = cfg;
     s->lfd = net_listen_tcp(cfg->rtsp_port, 8);
     if (s->lfd < 0){ LOGE(MOD,"cannot bind rtsp port %d",cfg->rtsp_port); free(s); return NULL; }
     s->run = 1;
     pthread_create(&s->thr, NULL, accept_thread, s);
+#ifdef USE_TLS
+    s->lfd_tls = -1;
+    if (cfg->rtsp_tls) {
+        /* RTSPS shares the HTTPS cert/key */
+        s->tls_ctx = ms_tls_ctx_new(cfg->http_tls_cert, cfg->http_tls_key);
+        if (!s->tls_ctx)
+            LOGE(MOD,"RTSPS requested but TLS context failed - plain RTSP only");
+        else {
+            s->lfd_tls = net_listen_tcp(cfg->rtsp_tls_port, 8);
+            if (s->lfd_tls < 0)
+                LOGE(MOD,"cannot bind rtsps port %d",cfg->rtsp_tls_port);
+            else if (pthread_create(&s->thr_tls, NULL, accept_tls_thread, s) != 0){
+                close(s->lfd_tls); s->lfd_tls = -1;
+            }
+        }
+    }
+#else
+    if (cfg->rtsp_tls) LOGW(MOD,"RTSPS requested but built without USE_TLS");
+#endif
     return s;
 }
 
@@ -530,7 +640,16 @@ void rtsp_stop(rtsp_server *s)
 {
     if (!s) return;
     s->run = 0;
+    shutdown(s->lfd, SHUT_RDWR);   /* close() alone does not wake accept() */
     close(s->lfd);
     pthread_join(s->thr, NULL);
+#ifdef USE_TLS
+    if (s->lfd_tls >= 0) {
+        shutdown(s->lfd_tls, SHUT_RDWR);
+        close(s->lfd_tls);
+        pthread_join(s->thr_tls, NULL);
+    }
+    if (s->tls_ctx) ms_tls_ctx_free((ms_tls_ctx*)s->tls_ctx);
+#endif
     free(s);
 }

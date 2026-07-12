@@ -13,10 +13,14 @@
 #include "control.h"
 #include "config.h"
 #include "daynight.h"
+#include "events.h"
 #include "hub.h"
 #include "log.h"
 #include "isp_caps.h"
 #include "audio_caps.h"
+#include "motion_caps.h"
+#include "hal/imp_motion.h"
+#include "record.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -150,6 +154,12 @@ static void timps_apply_setting(ctrl_changes *ch, const char *key, const char *r
     }
 
     hub_control(key, val);               /* live via the HAL */
+    /* wake /events subscribers when a pushed-status source changed: the
+     * motion/daynight status objects reflect these settings immediately
+     * (grid geometry, enabled flags, the day/night mode fallback) */
+    if (!strncmp(key,"motion.",7) || !strncmp(key,"daynight.",9) ||
+        !strcmp(key,"image.running_mode"))
+        events_notify();
     if (ch->n < CTRL_MAX_CHG){
         snprintf(ch->key[ch->n], sizeof ch->key[0], "%s", key);
         snprintf(ch->val[ch->n], sizeof ch->val[0], "%s", val);
@@ -302,11 +312,68 @@ void control_apply_json(const char *json)
         }
     }
 
+    /* privacy: {"privacy":{"<s>":{"<n>":{enabled,x,y,w,h,color}}}} -> the
+     * privacy<S>.<N>.* cover-mask keys. Applied LIVE (the HAL creates/shows/
+     * moves the IMP OSD cover region on that stream) and persisted. */
+    sb = find_obj(json, end, "privacy", &se);
+    if (sb){
+        static const char *const PRIV_KEYS[] = {"enabled","x","y","w","h","color"};
+        for (int s=0;s<MS_MAX_VSTREAM;s++){
+            char sidx[4]; snprintf(sidx,sizeof sidx,"%d",s);
+            const char *sse, *ssb = find_obj(sb, se, sidx, &sse);
+            if (!ssb) continue;
+            for (int n=0;n<MS_MAX_PRIVACY;n++){
+                char nidx[4]; snprintf(nidx,sizeof nidx,"%d",n);
+                const char *ne, *nb = find_obj(ssb, sse, nidx, &ne);
+                if (!nb) continue;
+                char pre[16]; snprintf(pre,sizeof pre,"privacy%d.%d",s,n);
+                apply_section(&ch, pre, nb, ne, PRIV_KEYS,
+                              (int)(sizeof PRIV_KEYS/sizeof PRIV_KEYS[0]));
+            }
+        }
+    }
+
     /* sensor: {"sensor":{"model":"gc2053","fps":25,...}} -> sensor.*
      * (persist-only, applied at the next ISP init) */
     sb = find_obj(json, end, "sensor", &se);
     if (sb)
         apply_section(&ch, "sensor", sb, se, SENSOR, (int)(sizeof SENSOR/sizeof SENSOR[0]));
+
+    /* motion: {"motion":{"enabled":..,"sensitivity":..,"cols":..,"rows":..,
+     * "monitor_stream":..}} -> motion.*. ALL applied LIVE: the HAL stops and
+     * recreates the IVS grid on any of these (move params are create-time
+     * attributes), then the values persist. cols/rows are clamped to the
+     * SDK's cell budget by the config layer (caps.motion.max_cells).
+     * motion.cooldown_ms/on_motion are deliberately NOT settable over HTTP:
+     * on_motion is executed via system() and stays config-file-only. */
+    sb = find_obj(json, end, "motion", &se);
+    if (sb){
+        if (get_val(sb, se, "enabled", v, sizeof v))
+            timps_apply_setting(&ch, "motion.enabled",
+                                (!strcmp(v,"true")||!strcmp(v,"1")) ? "1" :
+                                (!strcmp(v,"false")||!strcmp(v,"0")) ? "0" : v);
+        static const char *const MOTION_KEYS[] = {
+            "sensitivity","cols","rows","monitor_stream"
+        };
+        apply_section(&ch, "motion", sb, se,
+                      MOTION_KEYS, (int)(sizeof MOTION_KEYS/sizeof MOTION_KEYS[0]));
+    }
+
+    /* record: {"record":{"active":1|0}} = manual start/stop override (the
+     * control-bar record button); active omitted or <0 returns to config mode.
+     * record.* config keys persist and the running recorder reads them live. */
+    sb = find_obj(json, end, "record", &se);
+    if (sb){
+        if (get_val(sb, se, "active", v, sizeof v))
+            record_set_active((!strcmp(v,"true")||!strcmp(v,"1")) ? 1 :
+                              (!strcmp(v,"false")||!strcmp(v,"0")) ? 0 : -1);
+        static const char *const REC_KEYS[] = {
+            "enabled","channel","mode","dir","name","segment_s",
+            "pre_roll_s","post_roll_s","min_free_mb","audio"
+        };
+        apply_section(&ch, "record", sb, se,
+                      REC_KEYS, (int)(sizeof REC_KEYS/sizeof REC_KEYS[0]));
+    }
 
     /* persist all changed keys back into the config file */
     if (ch.n > 0 && g_cfg_path && g_cfg_path[0]){
@@ -382,6 +449,55 @@ static const char *const AUD_CAPS[] = {
     "mute",   /* live mic mute: publish gate in the HAL, works on every SoC */
 };
 
+/* Read-only day/night status object (shared /control + /events shape, see
+ * control.h): "enabled" is the auto-detection flag (kept as the FIRST key:
+ * the CGI bridges match "daynight":{"enabled":N), mode 0 day / 1 night,
+ * brightness in %, total_gain in the IMP [24.8] linear scale (256 = 1x,
+ * like GetTotalGain and the prudynt/raptor value the WebUI plots);
+ * -1 = unknown. Measured by daynight.c; a stub answers unknowns when built
+ * without USE_DAYNIGHT. */
+int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
+                          float brightness, float total_gain)
+{
+    return snprintf(buf, cap,
+        "{\"enabled\":%d,\"mode\":%d,\"brightness\":%.1f,\"total_gain\":%.0f}",
+        enabled, mode, (double)brightness, (double)total_gain);
+}
+
+/* Read-only motion status object (shared /control + /events shape, see
+ * control.h). Never persisted from here; the settable motion.* keys go
+ * through the "motion" POST section. "available" is kept as the FIRST key
+ * so the CGI bridges can match the object by "motion":{"available". Fields:
+ *   available 0/1  build has the IMP_IVS move API (caps.motion too)
+ *   enabled   0/1  detection currently running
+ *   cols/rows      grid geometry in use (active[] is row-major,
+ *                  index = row*cols+col, length = cols*rows)
+ *   max_cells      SDK budget (= caps.motion.max_cells, convenience)
+ *   sensitivity    0..255 UI value in use
+ *   monitor_stream stream whose FrameSource feeds the IVS grid
+ *   active         per-cell 0/1 from the latest IVS result (empty
+ *                  when unavailable or not running)
+ *   last_ms        ms since the last motion event, -1 = never */
+int control_motion_json(char *buf, size_t cap, const ms_motion_status *st)
+{
+    size_t o = 0;
+    #define APP(...) do { \
+        int _n = snprintf(buf+o, o<cap?cap-o:0, __VA_ARGS__); \
+        if (_n>0) o += (size_t)_n; \
+    } while (0)
+    APP("{\"available\":%d,\"enabled\":%d,\"cols\":%d,"
+        "\"rows\":%d,\"max_cells\":%d,\"sensitivity\":%d,"
+        "\"monitor_stream\":%d,\"active\":[",
+        st->available, st->enabled, st->cols, st->rows,
+        MOTION_MAX_CELLS, st->sensitivity, g_cfg.motion.monitor_stream);
+    int mcells = st->cells;
+    if (mcells > MOTION_STATUS_MAX) mcells = MOTION_STATUS_MAX;
+    for (int i=0;i<mcells;i++) APP("%s%d", i?",":"", st->active[i]);
+    APP("],\"last_ms\":%lld}", (long long)st->last_ms);
+    #undef APP
+    return (int)o;
+}
+
 int control_get_json(char *buf, size_t cap)
 {
     const ms_config *c = &g_cfg;
@@ -408,7 +524,16 @@ int control_get_json(char *buf, size_t cap)
     /* restart-required sections: every key under these objects is persist-
      * only (config + restart, never applied to the running pipeline). The
      * WebUI bridge reads this to flag such changes as "restart_required". */
-    APP("],\"restart\":[\"video\",\"sensor\"]},");
+    APP("],\"restart\":[\"video\",\"sensor\"],");
+    /* motion capability: available = this build has the IMP_IVS move API,
+     * max_cells = the SDK's compile-time IMP_IVS_MOVE_MAX_ROI_CNT (the WebUI
+     * limits the grid selectors so cols*rows never exceeds it) */
+    APP("\"motion\":{\"available\":%d,\"max_cells\":%d},",
+        MOTION_AVAILABLE, MOTION_MAX_CELLS);
+    /* privacy cover masks: available on any build with IMP_OSD; max_regions =
+     * the per-stream cover-region budget the WebUI limits itself to */
+    APP("\"privacy\":{\"available\":1,\"max_regions\":%d},", MS_MAX_PRIVACY);
+    APP("\"record\":{\"available\":1}},");
     APP("\"image\":{\"brightness\":%d,\"contrast\":%d,\"saturation\":%d,"
         "\"sharpness\":%d,\"hue\":%d,\"hflip\":%d,\"vflip\":%d,\"running_mode\":%d,",
         c->image.brightness,c->image.contrast,c->image.saturation,
@@ -487,20 +612,46 @@ int control_get_json(char *buf, size_t cap)
         }
         APP("}");
     }
-    {   /* read-only day/night status (never persisted): "enabled" is the
-         * auto-detection flag (kept as the FIRST key: the CGI bridges match
-         * "daynight":{"enabled":N), mode 0 day / 1 night, brightness in %,
-         * total_gain in the IMP [24.8] linear scale (256 = 1x, like
-         * GetTotalGain and the prudynt/raptor value the WebUI plots);
-         * -1 = unknown. Measured by daynight.c; a stub answers unknowns
-         * when built without USE_DAYNIGHT. */
+    /* privacy cover masks per stream: privacy.<s>.<n>.{enabled,x,y,w,h,color} */
+    APP(",\"privacy\":{");
+    for (int s=0;s<MS_MAX_VSTREAM;s++){
+        APP("%s\"%d\":{", s?",":"", s);
+        for (int n=0;n<MS_MAX_PRIVACY;n++){
+            const ms_privacy_region *p=&c->privacy[s][n];
+            APP("%s\"%d\":{\"enabled\":%d,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,"
+                "\"color\":\"0x%08X\"}",
+                n?",":"", n, p->enabled, p->x, p->y, p->w, p->h, p->color);
+        }
+        APP("}");
+    }
+    APP("}");
+    {   /* read-only day/night status (never persisted); shape/docs in
+         * control_daynight_json above (shared with the /events push) */
         int dn_en = 0, dn_mode = 0;
         float dn_b = -1.0f, dn_tg = -1.0f;
         daynight_get_status(&dn_en, &dn_mode, &dn_b, &dn_tg);
-        APP(",\"daynight\":{\"enabled\":%d,\"mode\":%d,\"brightness\":%.1f,"
-            "\"total_gain\":%.0f}}",
-            dn_en, dn_mode, (double)dn_b, (double)dn_tg);
+        APP(",\"daynight\":");
+        int _dn = control_daynight_json(buf+o, o<cap?cap-o:0,
+                                        dn_en, dn_mode, dn_b, dn_tg);
+        if (_dn>0) o += (size_t)_dn;
     }
+    {   /* read-only motion status; shape/docs in control_motion_json above
+         * (shared with the /events push) */
+        ms_motion_status mst;
+        motion_get_status(&mst);
+        APP(",\"motion\":");
+        int _mn = control_motion_json(buf+o, o<cap?cap-o:0, &mst);
+        if (_mn>0) o += (size_t)_mn;
+    }
+    {   /* local recording status */
+        ms_record_status rst; record_get_status(&rst);
+        char jf[200]; jesc(rst.file, jf, sizeof jf);
+        APP(",\"record\":{\"available\":%d,\"enabled\":%d,\"recording\":%d,"
+            "\"channel\":%d,\"mode\":%d,\"bytes\":%lld,\"free_mb\":%lld,\"file\":\"%s\"}",
+            rst.available, rst.enabled, rst.recording, rst.channel, rst.mode,
+            (long long)rst.bytes, (long long)rst.free_mb, jf);
+    }
+    APP("}");
     #undef APP
     if (o >= cap){ buf[cap-1]=0; return (int)cap-1; }   /* truncated */
     return (int)o;

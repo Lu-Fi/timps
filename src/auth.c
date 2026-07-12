@@ -6,6 +6,8 @@
 #include <time.h>
 #include <stdio.h>
 #include <strings.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 int auth_http_basic(const char *value, const char *user, const char *pass)
 {
@@ -63,4 +65,47 @@ void auth_make_nonce(char out[33])
     char seed[64];
     snprintf(seed,sizeof seed,"%ld-%d-%lu",(long)time(NULL),rand(),ctr++);
     md5_hex(seed,out);
+}
+
+/* per-boot /control token (see auth.h); "" until main() generates it */
+char g_ctl_token[33] = "";
+
+int auth_token_eq(const char *a, const char *b)
+{
+    size_t la = strlen(a), lb = strlen(b);
+    unsigned char d = 0;
+    for (size_t i = 0; i < la && i < lb; i++)
+        d |= (unsigned char)a[i] ^ (unsigned char)b[i];
+    return la == lb && d == 0;
+}
+
+void auth_gen_token(char out[33])
+{
+    uint8_t rnd[16];
+    int got = 0, fd = open("/dev/urandom", O_RDONLY);
+    if (fd >= 0) {
+        int off = 0;
+        while (off < (int)sizeof rnd) {
+            ssize_t r = read(fd, rnd + off, sizeof rnd - off);
+            if (r <= 0) break;
+            off += (int)r;
+        }
+        close(fd);
+        got = (off == (int)sizeof rnd);
+    }
+    if (got) {
+        static const char hx[] = "0123456789abcdef";
+        for (int i = 0; i < 16; i++) {
+            out[2*i]   = hx[rnd[i] >> 4];
+            out[2*i+1] = hx[rnd[i] & 15];
+        }
+        out[32] = 0;
+        return;
+    }
+    /* last resort (no /dev/urandom): hash a time/pid mix - far weaker,
+     * but never leaves the token empty/predictably constant */
+    char seed[96];
+    snprintf(seed, sizeof seed, "%ld-%ld-%d-%ld",
+             (long)time(NULL), (long)getpid(), rand(), (long)clock());
+    md5_hex(seed, out);
 }

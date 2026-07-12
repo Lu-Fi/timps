@@ -50,10 +50,20 @@
 #ifndef MS_CONTROL_H
 #define MS_CONTROL_H
 #include <stddef.h>
+#include "hal/imp_motion.h"   /* ms_motion_status for control_motion_json */
 
 /* Apply + persist the settings found in a JSON text. No-op for unknown keys.
  * Safe to call with a partial/empty string. */
 void control_apply_json(const char *json);
+
+/* Shared read-only status object builders: GET /control embeds these and the
+ * /events SSE stream pushes them stand-alone, so both endpoints emit the
+ * IDENTICAL shape by construction. Each writes one complete {...} object and
+ * returns the would-be length like snprintf (>= cap means truncated). The
+ * caller provides the snapshot so dedup compares exactly what was sent. */
+int  control_motion_json(char *buf, size_t cap, const ms_motion_status *st);
+int  control_daynight_json(char *buf, size_t cap, int enabled, int mode,
+                           float brightness, float total_gain);
 
 /* Serialize the current (in-memory) controllable values as JSON into buf.
  * The dump starts with a per-build capability list

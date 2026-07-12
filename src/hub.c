@@ -38,6 +38,13 @@ int hub_active(int src)
     return n>0;
 }
 
+int hub_subs(int src)
+{
+    hub_source *s = hub_get(src); if(!s) return 0;
+    int n; pthread_mutex_lock(&s->lock); n=s->nsub; pthread_mutex_unlock(&s->lock);
+    return n;
+}
+
 int hub_video_subs(void)
 {
     int total=0;

@@ -17,6 +17,7 @@ static size_t box_open(ms_buf *b, const char *type)
 }
 static void box_close(ms_buf *b, size_t pos)
 {
+    if (!b->data) return;    /* allocation failed: buffer is empty, no patch */
     wr_be32(b->data + pos, (uint32_t)(b->len - pos));
 }
 static void put_fullbox(ms_buf *b, uint8_t ver, uint32_t flags)
@@ -380,7 +381,7 @@ static int fragment(fmp4_mux *m, int track_id, const uint8_t *sample, size_t sle
 
     /* data offset from start of moof = moof size + 8 (mdat header) */
     uint32_t data_off = (uint32_t)(out->len - moof) + 8;
-    wr_be32(out->data + data_off_pos, data_off);
+    if (out->data) wr_be32(out->data + data_off_pos, data_off);
 
     size_t mdat = box_open(out, "mdat");
     ms_buf_put(out, sample, slen);
