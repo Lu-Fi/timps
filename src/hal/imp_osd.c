@@ -89,8 +89,14 @@ static uint8_t *load_bgra(const char *path, int w, int h)
 static void refresh_text(osd_stream *s, osd_region *rg)
 {
     const ms_osd_item *it=&g_hcfg->osd.items[s->si][rg->item];
+    /* it->text is runtime-mutable via /control (copystr in config_apply_kv):
+     * snapshot it under the config string lock before expanding */
+    char tmpl[sizeof it->text];
+    config_str_lock();
+    snprintf(tmpl, sizeof tmpl, "%s", it->text);
+    config_str_unlock();
     char txt[256];
-    osd_expand(it->text, g_hcfg->osd.vars_file, txt, sizeof txt);
+    osd_expand(tmpl, g_hcfg->osd.vars_file, txt, sizeof txt);
     if (strcmp(txt, rg->last)==0) return;               /* unchanged: skip render */
     strncpy(rg->last, txt, sizeof rg->last - 1); rg->last[sizeof rg->last - 1]=0;
 

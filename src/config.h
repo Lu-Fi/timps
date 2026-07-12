@@ -284,5 +284,12 @@ int  config_get_kv(const ms_config *c, const char *key, char *out, size_t cap);
  * comments/order). Returns 0 on success. */
 int  config_write_keys(const char *path, const char *const *keys,
                        const char *const *vals, int n);
+/* Serializes /control's runtime writes of g_cfg STRINGS (copystr inside
+ * config_apply_kv) against concurrent readers (OSD updater, recorder, RTSP
+ * path match, GET /control). Leaf lock: hold it only for a short copy/compare,
+ * never across HAL/status/blocking calls. Ints are not covered (aligned word
+ * reads, no tearing to worry about). */
+void config_str_lock(void);
+void config_str_unlock(void);
 
 #endif

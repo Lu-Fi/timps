@@ -115,10 +115,16 @@ static int find_oldest(const char *base, char *out, size_t cap, time_t *oldest)
 static void prune_free(void)
 {
     if (g_rc->record.min_free_mb<=0) return;
+    /* record.dir is runtime-mutable via /control: snapshot it under the
+     * config string lock (never hold the lock across statfs/unlink) */
+    char dir[128];
+    config_str_lock();
+    snprintf(dir,sizeof dir,"%s",g_rc->record.dir);
+    config_str_unlock();
     char base[200]; char host[64]="camera"; gethostname(host,sizeof host);
-    snprintf(base,sizeof base,"%s/%s/records",g_rc->record.dir,host);
+    snprintf(base,sizeof base,"%s/%s/records",dir,host);
     for (int guard=0; guard<10000; guard++){
-        long long fm=free_mb(g_rc->record.dir);
+        long long fm=free_mb(dir);
         if (fm<0 || fm>=g_rc->record.min_free_mb) return;
         char victim[336]=""; time_t oldest=0;
         if (!find_oldest(base,victim,sizeof victim,&oldest) || !victim[0]) return;
@@ -148,12 +154,19 @@ static void status_set(int rec, long long bytes, const char *file)
 static int seg_open(int chn)
 {
     prune_free();
+    /* record.dir/name are runtime-mutable via /control: snapshot them under
+     * the config string lock before strftime/path building */
+    char dir[128], name[96];
+    config_str_lock();
+    snprintf(dir,sizeof dir,"%s",g_rc->record.dir);
+    snprintf(name,sizeof name,"%s",g_rc->record.name);
+    config_str_unlock();
     char rel[160]; time_t t=time(NULL); struct tm tmv; localtime_r(&t,&tmv);
-    if (strftime(rel,sizeof rel,g_rc->record.name,&tmv)==0)
+    if (strftime(rel,sizeof rel,name,&tmv)==0)
         snprintf(rel,sizeof rel,"%ld",(long)t);
     char host[64]="camera"; gethostname(host,sizeof host);
     char path[512];
-    snprintf(path,sizeof path,"%s/%s/records/%s.mp4",g_rc->record.dir,host,rel);
+    snprintf(path,sizeof path,"%s/%s/records/%s.mp4",dir,host,rel);
     mkdirs(path);
     w_fp=fopen(path,"wb");
     if (!w_fp){ LOGE(MOD,"open %s: %s",path,strerror(errno)); return -1; }
@@ -353,7 +366,16 @@ void record_get_status(ms_record_status *st)
     st->enabled=g_rc?g_rc->record.enabled:0;
     st->channel=g_rc?g_rc->record.channel:0;
     st->mode=g_rc?g_rc->record.mode:0;
-    st->free_mb=g_rc?free_mb(g_rc->record.dir):-1;
+    st->free_mb=-1;
+    if (g_rc){
+        /* record.dir is runtime-mutable via /control: snapshot it under the
+         * config string lock, statfs outside it */
+        char dir[128];
+        config_str_lock();
+        snprintf(dir,sizeof dir,"%s",g_rc->record.dir);
+        config_str_unlock();
+        st->free_mb=free_mb(dir);
+    }
     pthread_mutex_lock(&g_lock);
     st->recording=g_recording; st->bytes=g_curbytes;
     snprintf(st->file,sizeof st->file,"%s",g_curfile);

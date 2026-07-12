@@ -35,6 +35,9 @@ static SRTSOCKET        g_ls = SRT_INVALID_SOCK; /* listener; srt_stop closes
                                                   * it to break the blocking
                                                   * srt_accept (else the join
                                                   * hangs forever) */
+static volatile int     g_srt_clients;  /* in-flight client threads (sync
+                                         * builtins): drained before the global
+                                         * srt_cleanup() on shutdown */
 
 typedef struct {
     SRTSOCKET sock;
@@ -197,8 +200,10 @@ static void *client_thread(void *arg)
     if (chn < 0 || chn >= MS_MAX_VSTREAM) chn = 0;
 
     fanqueue q;
-    if (fanqueue_init(&q, SRT_QCAP)) { srt_close(m->sock); free(m); return NULL; }
-    if (hub_subscribe(chn, &q) != 0) { fanqueue_free(&q); srt_close(m->sock); free(m); return NULL; }
+    if (fanqueue_init(&q, SRT_QCAP)) { srt_close(m->sock); free(m);
+        __sync_fetch_and_sub(&g_srt_clients, 1); return NULL; }
+    if (hub_subscribe(chn, &q) != 0) { fanqueue_free(&q); srt_close(m->sock); free(m);
+        __sync_fetch_and_sub(&g_srt_clients, 1); return NULL; }
 
     int ac = MS_AC_NONE, asr = 0, ach = 0, sub_a = 0;
     if (hub_get_audio(&ac, &asr, &ach) && ac == MS_AC_AAC)
@@ -238,6 +243,7 @@ static void *client_thread(void *arg)
     fanqueue_free(&q);
     srt_close(m->sock);
     free(m);
+    __sync_fetch_and_sub(&g_srt_clients, 1);
     return NULL;
 }
 
@@ -275,11 +281,16 @@ static void *listen_thread(void *arg)
         ts_mux *m = calloc(1, sizeof *m);
         if (!m) { srt_close(cs); continue; }
         m->sock = cs;
+        __sync_fetch_and_add(&g_srt_clients, 1);
         pthread_t t;
         if (pthread_create(&t, NULL, client_thread, m) == 0) pthread_detach(t);
-        else { srt_close(cs); free(m); }
+        else { srt_close(cs); free(m); __sync_fetch_and_sub(&g_srt_clients, 1); }
     }
     srt_close(ls);
+    /* detached client threads may still be inside srt_sendmsg2(): give them a
+     * bounded window to drain (g_run=0 pops them out of fanqueue_pop within
+     * ~200 ms) before the global libsrt teardown - else use-after-cleanup */
+    for (int i = 0; i < 50 && g_srt_clients > 0; i++) usleep(10000);
     srt_cleanup();
     return NULL;
 }

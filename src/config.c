@@ -6,10 +6,16 @@
 #include <string.h>
 #include <ctype.h>
 #include <strings.h>
+#include <pthread.h>
 
 #define MOD "CONFIG"
 ms_config g_cfg;
 const char *g_cfg_path = NULL;   /* config file in use, set by config_load() */
+
+/* see config.h: guards runtime g_cfg string mutation vs concurrent readers */
+static pthread_mutex_t g_str_lock = PTHREAD_MUTEX_INITIALIZER;
+void config_str_lock(void)   { pthread_mutex_lock(&g_str_lock); }
+void config_str_unlock(void) { pthread_mutex_unlock(&g_str_lock); }
 
 static void copystr(char *dst, const char *src, size_t n)
 {

@@ -166,14 +166,18 @@ static int hdr_int(const char *req, const char *name, int def)
 
 static int find_video_by_path(const ms_config *c, const char *path)
 {
+    /* videoN.rtsp_path is runtime-mutable via /control: match under the
+     * config string lock (short strcmps, per-request only, not per-frame) */
+    config_str_lock();
     for (int i=0;i<MS_MAX_VSTREAM;i++){
         if (!c->video[i].enabled) continue;
         const char *rp = c->video[i].rtsp_path;
         /* match "/ch0" possibly followed by /trackID or end */
         size_t l = strlen(rp);
         if (strncmp(path, rp, l)==0 && (path[l]==0||path[l]=='/'||path[l]=='?'))
-            return i;
+            { config_str_unlock(); return i; }
     }
+    config_str_unlock();
     /* default to first enabled */
     for (int i=0;i<MS_MAX_VSTREAM;i++) if (c->video[i].enabled) return i;
     return -1;
@@ -649,7 +653,12 @@ void rtsp_stop(rtsp_server *s)
         close(s->lfd_tls);
         pthread_join(s->thr_tls, NULL);
     }
-    if (s->tls_ctx) ms_tls_ctx_free((ms_tls_ctx*)s->tls_ctx);
+    if (s->tls_ctx) {
+        /* detached client threads may still hold a ms_tls_conn from this ctx;
+         * drain them (bounded) before freeing it, like httpd_stop() does */
+        for (int i=0; i<50 && g_nclients>0; i++) usleep(10000);
+        ms_tls_ctx_free((ms_tls_ctx*)s->tls_ctx);
+    }
 #endif
     free(s);
 }

@@ -143,14 +143,14 @@ static void timps_apply_setting(ctrl_changes *ch, const char *key, const char *r
      * the same value every couple of seconds from hammering the ISP and, worse,
      * rewriting /etc/timps.conf on flash over and over. */
     char before[96], after[96];
+    config_str_lock();     /* g_cfg strings are read by other threads */
     int known = config_get_kv(&g_cfg, key, before, sizeof before);
     config_apply_kv(&g_cfg, key, val);
-    if (known){
-        config_get_kv(&g_cfg, key, after, sizeof after);
-        if (!strcmp(before, after)){
-            LOGD(MOD,"unchanged %s = %s (skipped)", key, val);
-            return;
-        }
+    if (known) config_get_kv(&g_cfg, key, after, sizeof after);
+    config_str_unlock();
+    if (known && !strcmp(before, after)){
+        LOGD(MOD,"unchanged %s = %s (skipped)", key, val);
+        return;
     }
 
     hub_control(key, val);               /* live via the HAL */
@@ -566,7 +566,10 @@ int control_get_json(char *buf, size_t cap)
             c->audio.spk_enabled, c->audio.spk_volume, c->audio.spk_gain);
     }
     {   /* sensor (all persist-only / restart-required) */
-        char sm[136]; jesc(c->sensor.model, sm, sizeof sm);
+        char sm[136];
+        config_str_lock();     /* sensor.model is runtime-mutable via POST */
+        jesc(c->sensor.model, sm, sizeof sm);
+        config_str_unlock();
         APP("\"sensor\":{\"model\":\"%s\",\"i2c_addr\":%d,\"fps\":%d,"
             "\"width\":%d,\"height\":%d},",
             sm, c->sensor.i2c_addr, c->sensor.fps,
@@ -582,7 +585,9 @@ int control_get_json(char *buf, size_t cap)
         config_get_kv(c, key, cod, sizeof cod);
         snprintf(key,sizeof key,"video%d.rc_mode",i);
         config_get_kv(c, key, rc, sizeof rc);
+        config_str_lock();     /* rtsp_path is runtime-mutable via POST */
         jesc(vs->rtsp_path, rp, sizeof rp);
+        config_str_unlock();
         APP("%s\"%d\":{\"enabled\":%d,\"codec\":\"%s\",\"width\":%d,"
             "\"height\":%d,\"fps\":%d,\"bitrate\":%d,\"rc_mode\":\"%s\","
             "\"gop\":%d,\"max_gop\":%d,\"profile\":%d,\"qp\":%d,"
@@ -601,7 +606,10 @@ int control_get_json(char *buf, size_t cap)
         APP(",\"osd%d\":{", s);
         for (int i=0;i<MS_MAX_OSD;i++){
             const ms_osd_item *it=&c->osd.items[s][i];
-            char t[256]; jesc(it->text, t, sizeof t);
+            char t[256];
+            config_str_lock();     /* osd text is runtime-mutable via POST */
+            jesc(it->text, t, sizeof t);
+            config_str_unlock();
             APP("%s\"%d\":{\"enabled\":%d,\"type\":\"%s\",\"text\":\"%s\","
                 "\"x\":%d,\"y\":%d,\"font_size\":%d,\"color\":\"0x%08X\","
                 "\"transparency\":%d,\"outline\":%d,\"outline_color\":\"0x%08X\"}",
@@ -643,13 +651,25 @@ int control_get_json(char *buf, size_t cap)
         int _mn = control_motion_json(buf+o, o<cap?cap-o:0, &mst);
         if (_mn>0) o += (size_t)_mn;
     }
-    {   /* local recording status */
+    {   /* local recording: live status + the persisted config keys, so the
+         * WebUI record page can read the current settings back (dir/name/
+         * segment/roll/min_free/audio); enabled/channel/mode already mirror
+         * the config via record_get_status */
         ms_record_status rst; record_get_status(&rst);
         char jf[200]; jesc(rst.file, jf, sizeof jf);
+        char jd[200], jn[200];
+        config_str_lock();     /* record.dir/name are runtime-mutable via POST */
+        jesc(c->record.dir, jd, sizeof jd);
+        jesc(c->record.name, jn, sizeof jn);
+        config_str_unlock();
         APP(",\"record\":{\"available\":%d,\"enabled\":%d,\"recording\":%d,"
-            "\"channel\":%d,\"mode\":%d,\"bytes\":%lld,\"free_mb\":%lld,\"file\":\"%s\"}",
+            "\"channel\":%d,\"mode\":%d,\"bytes\":%lld,\"free_mb\":%lld,\"file\":\"%s\","
+            "\"dir\":\"%s\",\"name\":\"%s\",\"segment_s\":%d,\"pre_roll_s\":%d,"
+            "\"post_roll_s\":%d,\"min_free_mb\":%d,\"audio\":%d}",
             rst.available, rst.enabled, rst.recording, rst.channel, rst.mode,
-            (long long)rst.bytes, (long long)rst.free_mb, jf);
+            (long long)rst.bytes, (long long)rst.free_mb, jf,
+            jd, jn, c->record.segment_s, c->record.pre_roll_s,
+            c->record.post_roll_s, c->record.min_free_mb, c->record.audio);
     }
     APP("}");
     #undef APP

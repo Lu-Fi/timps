@@ -851,7 +851,14 @@ void httpd_stop(httpd *h)
     close(h->lfd);
     pthread_join(h->thr,NULL);
 #ifdef USE_TLS
-    if (h->tls_ctx) ms_tls_ctx_free((ms_tls_ctx *)h->tls_ctx);
+    if (h->tls_ctx) {
+        /* detached conn_threads may still hold tls_ctx (handshake/read/write):
+         * give them a bounded window to drain before freeing it. Today stop
+         * only runs at process exit; this keeps a future restart-without-exit
+         * from freeing the ctx under a live connection. */
+        for (int i = 0; i < 50 && g_nconn > 0; i++) usleep(10000);
+        ms_tls_ctx_free((ms_tls_ctx *)h->tls_ctx);
+    }
 #endif
     free(h);
 }
