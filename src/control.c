@@ -21,6 +21,7 @@
 #include "motion_caps.h"
 #include "hal/imp_motion.h"
 #include "record.h"
+#include "timelapse.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -375,6 +376,18 @@ void control_apply_json(const char *json)
                       REC_KEYS, (int)(sizeof REC_KEYS/sizeof REC_KEYS[0]));
     }
 
+    /* timelapse: {"timelapse":{"enabled":..,"channel":..,"dir":..,"name":..,
+     * "interval_s":..,"keep_days":..}} -> timelapse.*. All persist; the
+     * running timelapse thread reads them live (no restart). */
+    sb = find_obj(json, end, "timelapse", &se);
+    if (sb){
+        static const char *const TL_KEYS[] = {
+            "enabled","channel","dir","name","interval_s","keep_days"
+        };
+        apply_section(&ch, "timelapse", sb, se,
+                      TL_KEYS, (int)(sizeof TL_KEYS/sizeof TL_KEYS[0]));
+    }
+
     /* persist all changed keys back into the config file */
     if (ch.n > 0 && g_cfg_path && g_cfg_path[0]){
         const char *keys[CTRL_MAX_CHG], *vals[CTRL_MAX_CHG];
@@ -533,7 +546,8 @@ int control_get_json(char *buf, size_t cap)
     /* privacy cover masks: available on any build with IMP_OSD; max_regions =
      * the per-stream cover-region budget the WebUI limits itself to */
     APP("\"privacy\":{\"available\":1,\"max_regions\":%d},", MS_MAX_PRIVACY);
-    APP("\"record\":{\"available\":1}},");
+    APP("\"record\":{\"available\":1},");
+    APP("\"timelapse\":{\"available\":1}},");
     APP("\"image\":{\"brightness\":%d,\"contrast\":%d,\"saturation\":%d,"
         "\"sharpness\":%d,\"hue\":%d,\"hflip\":%d,\"vflip\":%d,\"running_mode\":%d,",
         c->image.brightness,c->image.contrast,c->image.saturation,
@@ -670,6 +684,24 @@ int control_get_json(char *buf, size_t cap)
             (long long)rst.bytes, (long long)rst.free_mb, jf,
             jd, jn, c->record.segment_s, c->record.pre_roll_s,
             c->record.post_roll_s, c->record.min_free_mb, c->record.audio);
+    }
+    {   /* native timelapse: live status + the persisted config keys, so the
+         * WebUI timelapse page can read the settings back (dir/name/channel/
+         * interval_s/keep_days) */
+        ms_timelapse_status tst; timelapse_get_status(&tst);
+        char jf[200]; jesc(tst.file, jf, sizeof jf);
+        char jd[200], jn[200];
+        config_str_lock();  /* timelapse.dir/name are runtime-mutable via POST */
+        jesc(c->timelapse.dir, jd, sizeof jd);
+        jesc(c->timelapse.name, jn, sizeof jn);
+        config_str_unlock();
+        APP(",\"timelapse\":{\"available\":%d,\"enabled\":%d,\"channel\":%d,"
+            "\"interval_s\":%d,\"keep_days\":%d,\"count\":%lld,\"last_t\":%lld,"
+            "\"free_mb\":%lld,\"last_file\":\"%s\",\"dir\":\"%s\",\"name\":\"%s\"}",
+            tst.available, tst.enabled, c->timelapse.channel,
+            c->timelapse.interval_s, c->timelapse.keep_days,
+            (long long)tst.count, (long long)tst.last_t,
+            (long long)tst.free_mb, jf, jd, jn);
     }
     APP("}");
     #undef APP

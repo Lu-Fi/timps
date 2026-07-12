@@ -196,6 +196,18 @@ typedef struct {
     int      audio;              /* 1 = mux audio into the recording when available */
 } ms_record_cfg;
 
+/* native timelapse: periodic JPEG snapshots from a stream's piggyback JPEG
+ * encoder (falls back to the dedicated jpeg.* channel), written under
+ * <dir>/<host>/timelapses/. Shots older than keep_days are pruned. */
+typedef struct {
+    int      enabled;            /* master enable (also gates on-boot start) */
+    int      channel;            /* video stream whose JPEG is captured (0..MS_MAX_VSTREAM-1) */
+    char     dir[128];           /* base dir, any writable path (SD, NFS, ...) */
+    char     name[96];           /* strftime path template (under <dir>/<host>/timelapses/) */
+    int      interval_s;         /* seconds between shots */
+    int      keep_days;          /* delete shots older than this (0 = keep forever) */
+} ms_timelapse_cfg;
+
 /* optional SRT output (USE_SRT builds only, libsrt): serves one video stream
  * (+audio) as MPEG-TS over SRT in listener mode. */
 typedef struct {
@@ -255,6 +267,7 @@ typedef struct {
     ms_privacy_region privacy[MS_MAX_VSTREAM][MS_MAX_PRIVACY]; /* cover masks */
     ms_motion_cfg  motion;
     ms_record_cfg  record;
+    ms_timelapse_cfg timelapse;
     ms_srt_cfg     srt;
     ms_daynight_cfg daynight;
 

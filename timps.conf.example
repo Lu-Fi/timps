@@ -289,6 +289,21 @@ osd1.0.font_size = 32
 # record.min_free_mb  = 200
 # record.audio        = 1               # mux AAC audio when available
 
+# ---- native timelapse (periodic JPEG snapshots) ----
+# Every interval_s the newest JPEG frame is written to
+# <dir>/<hostname>/timelapses/<name>.jpg (mkdir -p, atomic tmp+rename).
+# channel picks the video stream whose piggyback JPEG encoder is captured
+# (videoN.jpeg = true; falls back to the dedicated jpeg.* channel). dir may be
+# ANY writable path (SD, NFS, ...). Shots older than keep_days are pruned
+# (0 = keep forever). All keys are live via /control ("timelapse" section);
+# the control-bar timelapse button toggles timelapse.enabled.
+# timelapse.enabled    = 1
+# timelapse.channel    = 0
+# timelapse.dir        = /mnt/mmcblk0p1
+# timelapse.name       = %Y%m%d/%H/%Y%m%dT%H%M%S   # strftime, .jpg appended
+# timelapse.interval_s = 60
+# timelapse.keep_days  = 7
+
 # ---- motion detection (Ingenic IMP_IVS) ----
 # The detection area is a cols x rows GRID over the monitor stream's frame;
 # each cell reports motion separately (GET /control exposes the live per-cell

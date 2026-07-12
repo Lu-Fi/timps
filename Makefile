@@ -60,7 +60,7 @@ BIN := timpsd
 
 BASE := src/util.c src/log.c src/config.c src/frame.c src/fanqueue.c src/net.c \
         src/hub.c src/md5.c src/auth.c src/codec/nal.c src/codec/vparam.c src/codec/aac.c src/codec/g711.c \
-        src/rtsp/rtp.c src/rtsp/rtsp.c src/mp4/fmp4.c src/mp4/httpd.c src/record.c src/srt.c src/main.c
+        src/rtsp/rtp.c src/rtsp/rtsp.c src/mp4/fmp4.c src/mp4/httpd.c src/record.c src/timelapse.c src/srt.c src/main.c
 
 TARGET_SRC := $(BASE) src/hal/osd_text.c src/hal/msttf.c src/hal/osd_vars.c src/hal/hal_ingenic.c \
               src/hal/imp_osd.c src/hal/imp_motion.c src/control.c src/events.c src/daynight.c

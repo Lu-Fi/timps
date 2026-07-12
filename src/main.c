@@ -6,6 +6,7 @@
 #include "rtsp/rtsp.h"
 #include "mp4/httpd.h"
 #include "record.h"
+#include "timelapse.h"
 #include "srt.h"
 #ifdef USE_DAYNIGHT
 #include "daynight.h"
@@ -102,6 +103,7 @@ int main(int argc, char **argv)
     daynight_start();
 #endif
     record_start(&g_cfg);
+    timelapse_start(&g_cfg);
     srt_start(&g_cfg);
 
     signal(SIGINT,  on_signal);
@@ -115,6 +117,7 @@ int main(int argc, char **argv)
 
     LOGI(MOD,"shutting down");
     srt_stop();
+    timelapse_stop();
     record_stop();
 #ifdef USE_DAYNIGHT
     daynight_stop();

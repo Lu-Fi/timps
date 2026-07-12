@@ -46,7 +46,16 @@
  * pipeline (the HAL just logs "applies on restart"); GET /control marks these
  * sections in "caps":{"restart":["video","sensor"]}. Unknown keys and missing
  * fields are ignored. The legacy flat form ({"brightness":140,
- * "running_mode":1, "force_mode":"night"}) still works and maps to image.*. */
+ * "running_mode":1, "force_mode":"night"}) still works and maps to image.*.
+ *
+ * Further sections (applied live + persisted, see control.c):
+ *   "record":    {"active":1|0} manual override + the record.* config keys
+ *                (enabled/channel/mode/dir/name/segment_s/pre_roll_s/
+ *                post_roll_s/min_free_mb/audio)
+ *   "timelapse": the timelapse.* config keys (enabled/channel/dir/name/
+ *                interval_s/keep_days); the running timelapse thread reads
+ *                them live. GET /control echoes both sections with live
+ *                status (recording/free_mb/last_file/...). */
 #ifndef MS_CONTROL_H
 #define MS_CONTROL_H
 #include <stddef.h>

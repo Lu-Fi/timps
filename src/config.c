@@ -194,6 +194,13 @@ void config_defaults(ms_config *c)
     c->record.segment_s=60; c->record.pre_roll_s=3; c->record.post_roll_s=10;
     c->record.min_free_mb=200; c->record.audio=1;
 
+    /* native timelapse (periodic JPEG snapshots): off by default; same path
+     * conventions as the recorder (<dir>/<host>/timelapses/ tree) */
+    c->timelapse.enabled=0; c->timelapse.channel=0;
+    copystr(c->timelapse.dir,"/mnt/mmcblk0p1",sizeof c->timelapse.dir);
+    copystr(c->timelapse.name,"%Y%m%d/%H/%Y%m%dT%H%M%S",sizeof c->timelapse.name);
+    c->timelapse.interval_s=60; c->timelapse.keep_days=7;
+
     /* automatic day/night: defaults mirror thingino's daynightd.json */
     c->daynight.enabled=1;
     c->daynight.threshold_low=25.0f; c->daynight.threshold_high=75.0f;
@@ -501,6 +508,21 @@ static void set_kv(ms_config *c, const char *key, const char *val)
         else LOGW(MOD,"unknown key %s",key);
         return;
     }
+    if (!strncmp(key,"timelapse.",10)){
+        const char *k=key+10; ms_timelapse_cfg *tc=&c->timelapse;
+        if(!strcmp(k,"enabled"))tc->enabled=pbool(val);
+        else if(!strcmp(k,"channel")){
+            int v2=pint(val); tc->channel=(v2<0||v2>=MS_MAX_VSTREAM)?0:v2;
+        }
+        else if(!strcmp(k,"dir"))copystr(tc->dir,val,sizeof tc->dir);
+        else if(!strcmp(k,"name"))copystr(tc->name,val,sizeof tc->name);
+        else if(!strcmp(k,"interval_s")||!strcmp(k,"interval")){
+            int v2=pint(val); tc->interval_s=v2<1?1:v2;
+        }
+        else if(!strcmp(k,"keep_days")){ int v2=pint(val); tc->keep_days=v2<0?0:v2; }
+        else LOGW(MOD,"unknown key %s",key);
+        return;
+    }
     if (!strncmp(key,"daynight.",9)){
         const char *k=key+9;
         if(!strcmp(k,"enabled"))c->daynight.enabled=pbool(val);
@@ -717,6 +739,17 @@ int config_get_kv(const ms_config *c, const char *key, char *out, size_t cap)
         else return 0;
         return 1;
     }
+    if (!strncmp(key,"timelapse.",10)){
+        const ms_timelapse_cfg *t=&c->timelapse; const char *k=key+10;
+        if(!strcmp(k,"enabled")) snprintf(out,cap,"%d",t->enabled);
+        else if(!strcmp(k,"channel")) snprintf(out,cap,"%d",t->channel);
+        else if(!strcmp(k,"dir")) snprintf(out,cap,"%s",t->dir);
+        else if(!strcmp(k,"name")) snprintf(out,cap,"%s",t->name);
+        else if(!strcmp(k,"interval_s")) snprintf(out,cap,"%d",t->interval_s);
+        else if(!strcmp(k,"keep_days")) snprintf(out,cap,"%d",t->keep_days);
+        else return 0;
+        return 1;
+    }
     return 0;
 }
 
@@ -727,6 +760,19 @@ static char *trim(char *s)
     char *e = s + strlen(s) - 1;
     while (e > s && isspace((unsigned char)*e)) *e-- = 0;
     return s;
+}
+
+/* cut an inline "# comment" from a value. The '#' must be preceded by
+ * whitespace (so a '#' that is part of the value survives) and the value must
+ * not be quoted (quote it to keep a literal "# ..."). Without this a line like
+ * "key = true   # note" parsed the value as "true   # note" -> pbool() false
+ * and pacodec()/paths broke; numeric keys survived by luck (strtol stops at
+ * the space). */
+static void strip_inline_comment(char *val)
+{
+    if (*val=='"' || *val=='\'') return;          /* quoted: keep literal */
+    for (char *p=val; *p; p++)
+        if (*p=='#' && (p==val || p[-1]==' ' || p[-1]=='\t')) { *p=0; break; }
 }
 
 int config_load(ms_config *c, const char *path)
@@ -745,6 +791,8 @@ int config_load(ms_config *c, const char *path)
         *eq = 0;
         char *key = trim(s);
         char *val = trim(eq+1);
+        strip_inline_comment(val);
+        val = trim(val);                 /* drop the space left before the '#' */
         size_t vl = strlen(val);
         if (vl>=2 && ((val[0]=='"'&&val[vl-1]=='"')||(val[0]=='\''&&val[vl-1]=='\''))) {
             val[vl-1]=0; val++;

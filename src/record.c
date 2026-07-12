@@ -280,21 +280,33 @@ static int want_write(void)
 static void *rec_thread(void *arg)
 {
     (void)arg;
-    fanqueue q; int subscribed=0, chn=g_rc->record.channel, sub_audio=0;
-    if (chn<0||chn>=MS_MAX_VSTREAM) chn=0;
-    int64_t pre_us=(int64_t)g_rc->record.pre_roll_s*1000000;
-    int motion_mode=(g_rc->record.mode==1);
+    fanqueue q; int subscribed=0, sub_audio=0, sub_chn=-1;
 
     while (g_run){
+        /* read the live config every pass so channel / mode / pre-roll changes
+         * from /control take effect WITHOUT a daemon restart (the thread used to
+         * freeze these at start, so picking "Substream" or switching mode in the
+         * WebUI silently kept the boot-time values). */
+        int chn=g_rc->record.channel; if (chn<0||chn>=MS_MAX_VSTREAM) chn=0;
+        int motion_mode=(g_rc->record.mode==1);
+        int64_t pre_us=(int64_t)g_rc->record.pre_roll_s*1000000;
+
         if (!want_run()){
             if (w_fp) seg_close();
             if (subscribed){
-                hub_unsubscribe(chn,&q); if (sub_audio) hub_unsubscribe(HUB_AUDIO_SRC,&q);
-                fanqueue_free(&q); subscribed=0; sub_audio=0;
+                hub_unsubscribe(sub_chn,&q); if (sub_audio) hub_unsubscribe(HUB_AUDIO_SRC,&q);
+                fanqueue_free(&q); subscribed=0; sub_audio=0; sub_chn=-1;
             }
             ring_clear();
             usleep(300000);
             continue;
+        }
+        /* channel switched live -> drop the old subscription, re-open below */
+        if (subscribed && chn!=sub_chn){
+            if (w_fp) seg_close();
+            hub_unsubscribe(sub_chn,&q); if (sub_audio) hub_unsubscribe(HUB_AUDIO_SRC,&q);
+            fanqueue_free(&q); subscribed=0; sub_audio=0; sub_chn=-1;
+            ring_clear();
         }
         if (!subscribed){
             if (fanqueue_init(&q,REC_QCAP)){ usleep(300000); continue; }
@@ -302,7 +314,7 @@ static void *rec_thread(void *arg)
             int ac=MS_AC_NONE,asr=0,ach=0;
             if (g_rc->record.audio && hub_get_audio(&ac,&asr,&ach) && ac==MS_AC_AAC)
                 sub_audio = (hub_subscribe(HUB_AUDIO_SRC,&q)==0);
-            hub_request_idr(chn); subscribed=1;
+            hub_request_idr(chn); subscribed=1; sub_chn=chn;
         }
 
         ms_pkt *p=fanqueue_pop(&q,200);
@@ -333,7 +345,7 @@ static void *rec_thread(void *arg)
 
     if (w_fp) seg_close();
     if (subscribed){
-        hub_unsubscribe(chn,&q); if (sub_audio) hub_unsubscribe(HUB_AUDIO_SRC,&q);
+        hub_unsubscribe(sub_chn,&q); if (sub_audio) hub_unsubscribe(HUB_AUDIO_SRC,&q);
         fanqueue_free(&q);
     }
     ring_clear();
