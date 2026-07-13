@@ -78,6 +78,7 @@ int main(int argc, char **argv)
     }
 
     config_load(&g_cfg, cfgpath);
+    config_sensor_finalize(&g_cfg);   /* auto-detect sensor from /proc/jz/sensor */
     srand((unsigned)(time(NULL) ^ getpid()));   /* rtsp.c session IDs / UDP port picks */
     LOGI(MOD,"timps %s starting (backend=%s)", MS_VERSION, hal_get()->name);
 

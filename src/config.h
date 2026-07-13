@@ -298,6 +298,9 @@ extern const char *g_cfg_path;   /* config file in use (set by config_load) */
 
 void config_defaults(ms_config *c);
 int  config_load(ms_config *c, const char *path); /* 0 ok, <0 file err (defaults kept) */
+/* auto-detect unset sensor.* from /proc/jz/sensor/sensor0/ (config wins, then a
+ * safe fallback); call once after config_load(), before the HAL starts */
+void config_sensor_finalize(ms_config *c);
 /* apply a single key=value (same keys as the config file) to c */
 void config_apply_kv(ms_config *c, const char *key, const char *val);
 /* read the current value of a key back as a normalized string (the same form

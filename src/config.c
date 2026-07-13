@@ -75,11 +75,14 @@ void config_defaults(ms_config *c)
     c->imp_polling_timeout = 500;
     c->osd_pool_size = 1024;   /* max on T-series; holds small OSD regions */
 
-    copystr(c->sensor.model, "gc2053", MS_MAX_STR);
-    c->sensor.i2c_addr = 0x37;
-    c->sensor.fps = 25;
-    c->sensor.width = 1920;
-    c->sensor.height = 1080;
+    /* sensor.* start UNSET so config_sensor_finalize() can auto-detect them
+     * from /proc/jz/sensor/sensor0/ (raptor/prudynt style); a config value or,
+     * failing that, a safe fallback fills whatever the sensor registry lacks */
+    c->sensor.model[0] = 0;
+    c->sensor.i2c_addr = 0;
+    c->sensor.fps = 0;
+    c->sensor.width = 0;
+    c->sensor.height = 0;
 
     /* ISP image defaults (128 = neutral, like the old streamer) */
     ms_image_cfg *im = &c->image;
@@ -816,6 +819,82 @@ int config_load(ms_config *c, const char *path)
     log_set_level(c->loglevel);
     LOGI(MOD,"loaded %d settings from %s", n, path);
     return 0;
+}
+
+/* read one trimmed line from a file into out; returns 0 on non-empty success */
+static int read_proc_line(const char *path, char *out, size_t cap)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) return -1;
+    int ok = fgets(out, (int)cap, f) != NULL;
+    fclose(f);
+    if (!ok) return -1;
+    char *nl = strchr(out, '\n'); if (nl) *nl = 0;
+    size_t l = strlen(out);
+    while (l && (out[l-1]=='\r' || out[l-1]==' ' || out[l-1]=='\t')) out[--l]=0;
+    return out[0] ? 0 : -1;
+}
+/* read /proc/jz/sensor/sensor0/<key> as a number (base 0 = 0x.. hex or decimal);
+ * <0 on missing/unparseable */
+static long read_sensor_proc(const char *key, int base)
+{
+    char path[80], buf[64];
+    snprintf(path, sizeof path, "/proc/jz/sensor/sensor0/%s", key);
+    if (read_proc_line(path, buf, sizeof buf) != 0) return -1;
+    return strtol(buf, NULL, base);
+}
+
+/* raptor/prudynt-style sensor auto-detect: fill any sensor.* field left unset
+ * (empty/0 - i.e. not given in the config) from the Ingenic kernel sensor
+ * registry /proc/jz/sensor/sensor0/, which the board's sensor .ko populates
+ * with name/i2c_addr/width/height/max_fps after probing the chip. Config values
+ * always win; whatever is still unset gets a safe fallback. On the host sim and
+ * on T40/T41 (no /proc/jz/sensor) the reads fail, so only the fallback applies.
+ * Call once after config_load(), before the HAL is started. */
+void config_sensor_finalize(ms_config *c)
+{
+    /* The loaded kernel sensor driver (/proc/jz/sensor/sensor0) is authoritative
+     * for the sensor NAME and I2C address: IMP_ISP_AddSensor must be told the
+     * sensor that is actually loaded. A mismatching name makes the ISP/sensor
+     * kernel module work from a zero attr table (pclk/line_time == 0) and divide
+     * by zero -> SIGFPE in the kernel. So the registry overrides a stale config
+     * value here (resolution/fps stay config-first below - the registry often
+     * reports 0 for them). */
+    { char name[MS_MAX_STR];
+      if (read_proc_line("/proc/jz/sensor/sensor0/name", name, sizeof name) == 0 && name[0]){
+          if (c->sensor.model[0] && strcasecmp(c->sensor.model, name) != 0)
+              LOGW(MOD,"config sensor.model '%s' != loaded driver '%s' - using '%s' "
+                       "(the config value would crash the ISP)", c->sensor.model, name, name);
+          copystr(c->sensor.model, name, MS_MAX_STR);
+      }
+    }
+    { long v=read_sensor_proc("i2c_addr",0);
+      if(v>0){
+          if(c->sensor.i2c_addr && c->sensor.i2c_addr!=(int)v)
+              LOGW(MOD,"config sensor.i2c 0x%02x != loaded driver 0x%02lx - using 0x%02lx",
+                   c->sensor.i2c_addr,v,v);
+          c->sensor.i2c_addr=(int)v;
+      }
+    }
+    if (c->sensor.width   == 0){ long v=read_sensor_proc("width",10);    if(v>0) c->sensor.width  =(int)v; }
+    if (c->sensor.height  == 0){ long v=read_sensor_proc("height",10);   if(v>0) c->sensor.height =(int)v; }
+    if (c->sensor.fps     == 0){ long v=read_sensor_proc("max_fps",10);
+                                 if(v<=0) v=read_sensor_proc("fps",10);  if(v>0) c->sensor.fps    =(int)v; }
+
+    /* safe fallbacks when neither the config nor the sensor registry had it */
+    if (!c->sensor.model[0]) copystr(c->sensor.model, "gc2053", MS_MAX_STR);
+    if (c->sensor.i2c_addr == 0) c->sensor.i2c_addr = 0x37;
+    /* Resolution: like raptor, when neither config nor the sensor registry
+     * report it (some drivers, e.g. sc2336, expose no width/height in /proc),
+     * derive the sensor resolution from the main stream (video0) so a 2K/4MP
+     * camera whose driver reports 0 still crops/scales correctly; final safety
+     * net is 1080p. */
+    if (c->sensor.width   == 0)  c->sensor.width  = c->video[0].width  > 0 ? c->video[0].width  : 1920;
+    if (c->sensor.height  == 0)  c->sensor.height = c->video[0].height > 0 ? c->video[0].height : 1080;
+    if (c->sensor.fps     == 0)  c->sensor.fps    = c->video[0].fps    > 0 ? c->video[0].fps    : 25;
+
+    LOGI(MOD, "sensor: %s i2c=0x%02x %dx%d @%dfps", c->sensor.model,
+         c->sensor.i2c_addr, c->sensor.width, c->sensor.height, c->sensor.fps);
 }
 
 /* write one "key = value" line, quoting values that would not survive the

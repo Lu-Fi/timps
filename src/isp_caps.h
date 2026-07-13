@@ -78,4 +78,15 @@
 #define ISP_HAS_AELUMA 1
 #endif
 
+/* IMP_ISP_Tuning_GetSensorAttr (real sensor output resolution) - T23 T31 T32
+ * T33 T40 T41 C100. Used to declare the framesource input resolution when the
+ * sensor driver reports 0x0 to the framesource (e.g. sc2336). T40/T41 take an
+ * extra IMPVI_NUM arg (ISP_NEW_TUNING_API); the others use the plain form.
+ * Absent on T10/T20/T21/T30. */
+#if defined(PLATFORM_T23)||defined(PLATFORM_T31)||defined(PLATFORM_T32)|| \
+    defined(PLATFORM_T33)||defined(PLATFORM_T40)||defined(PLATFORM_T41)|| \
+    defined(PLATFORM_C100)||!defined(ISP_PLATFORM_KNOWN)
+#define ISP_HAS_SENSOR_ATTR 1
+#endif
+
 #endif /* MS_ISP_CAPS_H */

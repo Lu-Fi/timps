@@ -11,6 +11,11 @@ general.imp_polling_timeout = 500    # ms, encoder poll timeout
 general.osd_pool_size       = 1000   # KB, IMP OSD pool
 
 # ---- sensor ----
+# OPTIONAL: leave any of these out (or empty/0) and timps auto-detects it from
+# the Ingenic kernel sensor registry /proc/jz/sensor/sensor0/ (name/i2c_addr/
+# width/height/max_fps), like raptor/prudynt - so one config works across
+# cameras. A value set here always wins; a safe fallback applies if neither the
+# config nor the registry has it (host sim / T40/T41 have no registry).
 sensor.model    = gc2053
 sensor.i2c_addr = 0x37
 sensor.fps      = 25

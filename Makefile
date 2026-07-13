@@ -40,7 +40,13 @@ IMP_INC ?= $(INC_ROOT)/C100/2.1.0/en
 else ifeq ($(PLATFORM),T21)
 IMP_INC ?= $(INC_ROOT)/T21/1.0.33/zh
 else ifeq ($(PLATFORM),T23)
-IMP_INC ?= $(INC_ROOT)/T23/1.1.0/zh
+# MUST be 1.1.2+ to match the libimp thingino ships for T23 (SDK 1.3.0, see
+# ingenic-lib.mk). The 1.1.0 header lacks the trailing 'fcrop' member of
+# IMPFSChnAttr (added in 1.1.2); building with it makes the struct 20 bytes
+# short, libimp 1.3.0 then reads stack garbage as the frame-crop and the
+# framesource silently delivers NO frames (encoder PollingStream times out
+# forever). fs_create() has a compile-time tripwire against this.
+IMP_INC ?= $(INC_ROOT)/T23/1.3.0/en
 else ifeq ($(PLATFORM),T30)
 IMP_INC ?= $(INC_ROOT)/T30/1.0.5/zh
 else ifeq ($(PLATFORM),T40)
@@ -56,7 +62,19 @@ IMP_INC ?= $(INC_ROOT)/T31/1.1.6/en
 endif
 
 CC  := $(CROSS_COMPILE)gcc
+CXX := $(CROSS_COMPILE)g++
 BIN := timpsd
+
+# SRT (libsrt) is C++: compile the C sources to .o with gcc (correct C), then
+# LINK the final binary with g++ so libstdc++ is resolved and static-linked
+# (-static-libstdc++, passed via IMPLIBS) reliably. A single gcc pass left
+# libstdc++.so.6 dynamic (-Bstatic / -l:libstdc++.a both did), and a single g++
+# pass mis-compiled the C as C++. Non-SRT builds link with gcc.
+ifeq ($(USE_SRT),1)
+LINK_DRV := $(CXX)
+else
+LINK_DRV := $(CC)
+endif
 
 BASE := src/util.c src/log.c src/config.c src/frame.c src/fanqueue.c src/net.c \
         src/hub.c src/md5.c src/auth.c src/codec/nal.c src/codec/vparam.c src/codec/aac.c src/codec/g711.c \
@@ -65,6 +83,11 @@ BASE := src/util.c src/log.c src/config.c src/frame.c src/fanqueue.c src/net.c \
 TARGET_SRC := $(BASE) src/hal/osd_text.c src/hal/msttf.c src/hal/osd_vars.c src/hal/hal_ingenic.c \
               src/hal/imp_osd.c src/hal/imp_motion.c src/control.c src/events.c src/daynight.c
 SIM_SRC    := $(BASE) src/hal/osd_text.c src/hal/hal_sim.c src/hal/imp_motion.c src/control.c src/events.c src/daynight.c
+
+# full target source list (+ optional tls.c) and the .o names (unique basenames)
+# for the compile-then-link two-step
+TARGET_ALLSRC := $(TARGET_SRC) $(if $(filter 1,$(USE_TLS)),src/tls.c)
+TARGET_OBJS   := $(notdir $(TARGET_ALLSRC:.c=.o))
 
 # -Os + gc-sections keeps the binary small; static libimp for a single dropin.
 CFLAGS  ?= -std=c11 -D_GNU_SOURCE -Os -Wall -Wextra -Wno-unused-parameter -Wno-misleading-indentation \
@@ -87,9 +110,11 @@ target:
 	  $(if $(filter 1,$(USE_TLS)),-DUSE_TLS) \
 	  $(if $(filter 1,$(USE_SRT)),-DUSE_SRT) \
 	  -DHAL_INGENIC -DPLATFORM_$(PLATFORM) -Isrc -I$(IMP_INC) -I$(IMP_INC)/imp \
-	  $(TARGET_SRC) $(if $(filter 1,$(USE_TLS)),src/tls.c) \
+	  -c $(TARGET_ALLSRC)
+	$(LINK_DRV) $(TARGET_OBJS) \
 	  $(LDFLAGS) $(if $(IMP_LIB),-L$(IMP_LIB)) $(IMPLIBS) \
 	  $(if $(filter 1,$(USE_FAAC)),-l:libfaac.a) $(LIBS) -o $(BIN)
+	@rm -f $(TARGET_OBJS)
 	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT))"
 
 sim:

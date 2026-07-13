@@ -78,6 +78,8 @@ typedef IMPEncoderCHNAttr IMPEncoderChnAttr;
 
 static IMPSensorInfo    g_sensor;
 static const ms_config *g_hcfg;
+static int              g_isp_sensor_w, g_isp_sensor_h;  /* real sensor res from
+                                                          * the ISP (0 = unknown) */
 
 typedef struct {
     int chn, grp, codec, w, h;
@@ -390,6 +392,26 @@ static int isp_init(void)
     IMP_ISP_Tuning_SetSensorFPS(g_hcfg->sensor.fps, 1);
 #endif
     IMP_System_GetVersion(NULL);
+
+    /* Ask the ISP for the sensor's REAL output resolution (chip-independent).
+     * Some sensor drivers report 0x0 to the framesource, which makes IMP reject
+     * a non-cropped/non-scaled channel; using this for the crop/scale decision
+     * in fs_create fixes video for ANY sensor. Falls back to the configured
+     * resolution when the API is absent (T10/T20/T21/T30) or returns 0. */
+#ifdef ISP_HAS_SENSOR_ATTR
+    { IMPISPSENSORAttr sa; memset(&sa,0,sizeof sa);
+#if defined(PLATFORM_T40)||defined(PLATFORM_T41)
+      int sret = IMP_ISP_Tuning_GetSensorAttr(IMPVI_MAIN, &sa);
+#else
+      int sret = IMP_ISP_Tuning_GetSensorAttr(&sa);
+#endif
+      if (sret==0 && sa.width>0 && sa.height>0){
+          g_isp_sensor_w=(int)sa.width; g_isp_sensor_h=(int)sa.height;
+          LOGI(MOD,"ISP sensor resolution %ux%u", sa.width, sa.height);
+      }
+    }
+#endif
+
     LOGI(MOD,"ISP up, sensor=%s fps=%d", g_hcfg->sensor.model, g_hcfg->sensor.fps);
     return 0;
 }
@@ -402,12 +424,39 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
     a.outFrmRateNum = v->fps; a.outFrmRateDen = 1;
     a.nrVBs = v->buffers>0 ? v->buffers : 2;
     a.type  = FS_PHY_CHANNEL;
-    int scale = (g_hcfg->sensor.width!=v->width)||(g_hcfg->sensor.height!=v->height);
-    a.crop.enable = 0;
-    a.crop.width  = g_hcfg->sensor.width;  a.crop.height = g_hcfg->sensor.height;
+    /* Use the ISP-reported real sensor resolution when known (works for any
+     * chip), else the configured/detected one. This drives both the scale
+     * decision and the crop dimensions, so a full-FOV downscale stays correct
+     * even on a 4MP sensor whose /proc reports nothing. */
+    int sw = g_isp_sensor_w>0 ? g_isp_sensor_w : g_hcfg->sensor.width;
+    int sh = g_isp_sensor_h>0 ? g_isp_sensor_h : g_hcfg->sensor.height;
+    int scale = (sw!=v->width)||(sh!=v->height);
+    /* When crop AND scaler are both disabled, IMP requires the framesource
+     * output to equal the ISP-reported sensor resolution. Some sensor drivers
+     * (e.g. sc2336 on T23) report 0x0, so IMP then rejects the channel:
+     * "invalid picture resolution WxH, but sensor resolution 0x0 when crop and
+     * scaler all disabled" -> no frames -> no video. Declare the input
+     * resolution explicitly via crop on the full-res (non-scaled) stream, like
+     * raptor does; the scaled sub-streams already carry it via the scaler. */
+    a.crop.enable = !scale;
+    a.crop.width  = sw;  a.crop.height = sh;
     a.scaler.enable = scale;
     a.scaler.outwidth = v->width; a.scaler.outheight = v->height;
     a.picWidth = v->width; a.picHeight = v->height;
+#if defined(PLATFORM_T23)
+    /* T23 ABI tripwire: thingino ships libimp SDK 1.3.0 for the T23, whose
+     * IMPFSChnAttr carries a trailing 'fcrop' (frame crop) member (added in
+     * SDK 1.1.2). Building against the older 1.1.0 header makes this struct
+     * 20 bytes short: libimp then reads stack garbage as the frame-crop and
+     * the framesource delivers NO frames at all (attr validation still passes
+     * and VBMCreatePool succeeds, but the pool stays empty and the encoder's
+     * PollingStream times out forever - exactly the sc2336/Cinnado D1 bug).
+     * The memset above already zeroes fcrop with a matching header; this
+     * explicit store exists so a build against a header without 'fcrop'
+     * FAILS TO COMPILE instead of producing a silently broken binary.
+     * (T31 is unaffected: its 1.1.6 header/lib pair matches and has fcrop.) */
+    a.fcrop.enable = 0;
+#endif
 #if defined(PLATFORM_T31) && !defined(KERNEL_VERSION_4)
     if (v->rotation!=0){
         /* swap output dims for 90/270 and request rotation */
@@ -498,6 +547,7 @@ static void *video_thread(void *arg)
     if (!au){ LOGE(MOD,"chn%d: no memory for AU buffer (%zu)",vc->chn,au_cap); return NULL; }
     int receiving=0;
     int64_t idle_since=0;
+    int dbg_first=0, dbg_pollfail=0;   /* one-shot encoder diagnostics */
     while (vc->run) {
         /* on-demand: encode while there are consumers. The hub subscriber
          * count is the truth source (level, not edge), so a racing stale
@@ -529,9 +579,17 @@ static void *video_thread(void *arg)
         }
         /* honor IDR requests from RTSP/HTTP threads here (single-thread IMP) */
         if (vc->idr_req){ vc->idr_req=0; IMP_Encoder_RequestIDR(vc->chn); }
-        if (IMP_Encoder_PollingStream(vc->chn, g_hcfg->imp_polling_timeout)!=0) continue;
+        int pr = IMP_Encoder_PollingStream(vc->chn, g_hcfg->imp_polling_timeout);
+        if (pr!=0){
+            if (receiving && (dbg_pollfail++ % 20)==0)
+                LOGW(MOD,"chn%d: PollingStream idle (rc=%d, miss#%d) - encoder emits no frames",
+                     vc->chn, pr, dbg_pollfail);
+            continue;
+        }
         IMPEncoderStream st;
-        if (IMP_Encoder_GetStream(vc->chn,&st,1)!=0) continue;
+        if (IMP_Encoder_GetStream(vc->chn,&st,1)!=0){
+            LOGW(MOD,"chn%d: GetStream failed after PollingStream OK",vc->chn); continue; }
+        dbg_pollfail=0;
         size_t aulen=0;
         for (uint32_t i=0;i<st.packCount;i++){
 #ifdef ENC_NEW_API
@@ -550,6 +608,9 @@ static void *video_thread(void *arg)
             if (aulen+l<=au_cap){ memcpy(au+aulen,p,l); aulen+=l; }
         }
         int key = au_is_key(vc->codec, au, aulen);
+        if (!dbg_first){ dbg_first=1;
+            LOGI(MOD,"chn%d: first encoded frame packCount=%u aulen=%zu key=%d",
+                 vc->chn, st.packCount, aulen, key); }
         hub_publish(vc->chn, au, aulen, ms_now_us(), key, MS_MEDIA_VIDEO);
         IMP_Encoder_ReleaseStream(vc->chn,&st);
     }
@@ -1035,8 +1096,14 @@ static int ing_start(const ms_config *cfg)
         const ms_vstream_cfg *v=&cfg->video[i];
         int chn=v->imp_chn, grp=v->imp_chn;
         if (fs_create(chn,v)!=0) return -1;
-        if (enc_create(chn,grp,v)!=0) return -1;
+        /* The encoder GROUP must exist before enc_create's
+         * IMP_Encoder_RegisterChn(grp,chn): the canonical Ingenic order is
+         * CreateGroup -> CreateChn -> RegisterChn. Older libimp (T23 and other
+         * pre-ENC_NEW_API SoCs) rejects RegisterChn into a not-yet-created group,
+         * so the channel stays unregistered and never emits a stream (no video,
+         * no SPS). T31's newer libimp happened to tolerate the wrong order. */
         IMP_Encoder_CreateGroup(grp);
+        if (enc_create(chn,grp,v)!=0) return -1;
         /* optional per-stream JPEG encoder in the same group (videoN.jpeg) */
         if (v->jpeg_enabled) jpeg_attach(cfg, i, grp);
 
@@ -1197,7 +1264,10 @@ int hal_isp_ae_luma(uint32_t *luma)
 {
 #ifdef ISP_HAS_AELUMA
     if (!luma) return -1;
-    return IMP_ISP_Tuning_GetAeLuma(luma) < 0 ? -1 : 0;
+    int v = 0;                     /* IMP_ISP_Tuning_GetAeLuma takes int* */
+    if (IMP_ISP_Tuning_GetAeLuma(&v) < 0) return -1;
+    *luma = (uint32_t)v;
+    return 0;
 #else
     (void)luma; return -1;
 #endif
