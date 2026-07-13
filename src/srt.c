@@ -14,6 +14,7 @@
 #include "fanqueue.h"
 #include "log.h"
 #include "util.h"
+#include "codec/aac.h"
 
 #include <srt/srt.h>
 #include <pthread.h>
@@ -44,7 +45,30 @@ typedef struct {
     uint8_t   cc_pat, cc_pmt, cc_v, cc_a;
     int       vcodec;      /* MS_VC_H264 / MS_VC_H265 */
     int       have_audio;
+    int       a_sr, a_ch;  /* AAC samplerate/channels for the ADTS header */
+    int       a_idx;       /* sampling_frequency_index (cached) */
 } ts_mux;
+
+/* faac emits RAW AAC (no ADTS); MPEG-TS stream_type 0x0F needs each frame
+ * framed with a 7-byte ADTS header. Build it from the actual sr/ch so the
+ * decoder gets the right rate/layout (else it mis-syncs -> "7.1 / 32000 Hz"). */
+static int aac_adts_wrap(const ts_mux *m, const uint8_t *aac, int aac_len,
+                         uint8_t *out, int out_cap)
+{
+    int frame_len = aac_len + 7;                /* header + payload, no CRC */
+    if (aac_len <= 0 || frame_len > out_cap || frame_len > 0x1FFF) return -1;
+    int idx = m->a_idx;                         /* sampling_frequency_index */
+    int ch  = (m->a_ch > 0 && m->a_ch < 8) ? m->a_ch : 1;
+    out[0] = 0xFF;
+    out[1] = 0xF1;                              /* MPEG-4, layer 0, no CRC */
+    out[2] = (uint8_t)((1 << 6) | ((idx & 0x0F) << 2) | ((ch >> 2) & 0x01));
+    out[3] = (uint8_t)(((ch & 0x03) << 6) | ((frame_len >> 11) & 0x03));
+    out[4] = (uint8_t)((frame_len >> 3) & 0xFF);
+    out[5] = (uint8_t)(((frame_len & 0x07) << 5) | 0x1F);   /* buf fullness hi */
+    out[6] = 0xFC;                              /* buf fullness lo + 0 blocks */
+    memcpy(out + 7, aac, (size_t)aac_len);
+    return frame_len;
+}
 
 static uint32_t crc32_mpeg(const uint8_t *d, int len)
 {
@@ -209,6 +233,9 @@ static void *client_thread(void *arg)
     if (hub_get_audio(&ac, &asr, &ach) && ac == MS_AC_AAC)
         sub_a = (hub_subscribe(HUB_AUDIO_SRC, &q) == 0);
     m->have_audio = sub_a;
+    m->a_sr = asr; m->a_ch = (ach > 0 ? ach : 1);
+    m->a_idx = aac_srate_index(asr);
+    if (m->a_idx < 0) m->a_idx = 8;   /* 16 kHz fallback */
     m->vcodec = g_scfg->video[chn].codec;
     hub_request_idr(chn);
 
@@ -231,8 +258,12 @@ static void *client_thread(void *arg)
             rc = send_pes(m, VPID, &m->cc_v, 0xE0, p->data, (int)p->len,
                           p->pts_us, 1, p->keyframe);
         } else if (p->media == MS_MEDIA_AUDIO && m->have_audio && got_key) {
-            rc = send_pes(m, APID, &m->cc_a, 0xC0, p->data, (int)p->len,
-                          p->pts_us, 0, 0);
+            /* wrap the raw AAC access unit in an ADTS header for TS */
+            uint8_t adts[8192];
+            int alen = aac_adts_wrap(m, p->data, (int)p->len, adts, sizeof adts);
+            if (alen > 0)
+                rc = send_pes(m, APID, &m->cc_a, 0xC0, adts, alen,
+                              p->pts_us, 0, 0);
         }
         pkt_unref(p);
         if (rc < 0) break;                               /* client gone */
