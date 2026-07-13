@@ -72,7 +72,7 @@ void control_apply_json(const char *json);
  * caller provides the snapshot so dedup compares exactly what was sent. */
 int  control_motion_json(char *buf, size_t cap, const ms_motion_status *st);
 int  control_daynight_json(char *buf, size_t cap, int enabled, int mode,
-                           float brightness, float total_gain);
+                           float brightness, float total_gain, float ae_luma);
 
 /* Serialize the current (in-memory) controllable values as JSON into buf.
  * The dump starts with a per-build capability list

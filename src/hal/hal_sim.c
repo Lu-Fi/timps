@@ -201,3 +201,7 @@ static const hal_backend g_sim = {
 };
 
 const hal_backend *hal_get(void){ return &g_sim; }
+
+/* no ISP on the host: daynight uses its proc-scrape / brightness fallback */
+int hal_isp_total_gain(uint32_t *gain){ (void)gain; return -1; }
+int hal_isp_ae_luma(uint32_t *luma){ (void)luma; return -1; }

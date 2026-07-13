@@ -436,9 +436,12 @@ static int http_cors(const char *buf, char *out, int cap)
  * the /control rules (conn_thread); note EventSource cannot send headers, so
  * browsers pass the token as ?token= (accepted by http_check_token). Each
  * connection blocks on the events condvar (events_wait, woken by
- * imp_motion.c/daynight.c/control.c) and re-sends an event only when its
- * payload differs from what IT last sent (per-connection dedup snapshots),
- * plus the full state once on connect; stats tick every events.stats_ms.
+ * imp_motion.c/daynight.c/control.c). Motion is QUEUE-driven: each
+ * connection drains the events.c snapshot ring with a private cursor and
+ * emits every queued grid change (lossless; a lapped slow client just loses
+ * the oldest), with a resample+dedup pass only as initial-state/resync.
+ * daynight/stats stay level-sampled with per-connection dedup; the full
+ * state goes out once on connect and stats tick every events.stats_ms.
  * A ": ping" comment goes out when nothing happened for a while so dead
  * clients are detected promptly and proxies keep the stream open. */
 
@@ -534,35 +537,49 @@ static void events_stream(hconn *c, const char *path, const char *cors)
     int64_t next_stats = (want_stats && stats_ms > 0) ? ms_now_us() : INT64_MAX;
     int64_t last_write = ms_now_us();
     unsigned gen = events_generation();
+    unsigned mq_cur = events_motion_cursor();     /* private snapshot cursor */
     char js[1024];                                /* fits max_cells active[] */
 
     memset(&lm, 0, sizeof lm);
     for (;;){
         int rc = 0;
         if (want_motion){
-            ms_motion_status m; motion_get_status(&m);
-            /* dedup: emit only when the payload would differ; last_ms just
-             * counts up, so it is deliberately NOT compared */
-            if (!have_m || m.available != lm.available ||
-                m.enabled != lm.enabled || m.cols != lm.cols ||
-                m.rows != lm.rows || m.cells != lm.cells ||
-                m.sensitivity != lm.sensitivity ||
-                memcmp(m.active, lm.active, sizeof m.active)){
+            ms_motion_status m;
+            /* drain the snapshot ring first: the producer queued EVERY grid
+             * change, so none can coalesce away between two wakeups (the old
+             * resample+dedup here dropped paired transitions) */
+            while (rc >= 0 && events_motion_pop(&mq_cur, &m)){
                 lm = m; have_m = 1;
                 if (control_motion_json(js, sizeof js, &m) < (int)sizeof js)
                     rc = sse_emit(c, "motion", js, &last_write);
             }
+            /* level resync: the initial full state on connect, plus changes
+             * that never enter the ring (config edits via /control, the host
+             * sim stub). Dedup vs the last-sent snapshot; last_ms just counts
+             * up, so it is deliberately NOT compared. */
+            if (rc >= 0){
+                motion_get_status(&m);
+                if (!have_m || m.available != lm.available ||
+                    m.enabled != lm.enabled || m.cols != lm.cols ||
+                    m.rows != lm.rows || m.cells != lm.cells ||
+                    m.sensitivity != lm.sensitivity ||
+                    memcmp(m.active, lm.active, sizeof m.active)){
+                    lm = m; have_m = 1;
+                    if (control_motion_json(js, sizeof js, &m) < (int)sizeof js)
+                        rc = sse_emit(c, "motion", js, &last_write);
+                }
+            }
         }
         if (rc >= 0 && want_dn){
-            int en = 0, mode = 0; float b = -1.0f, g = -1.0f;
-            daynight_get_status(&en, &mode, &b, &g);
+            int en = 0, mode = 0; float b = -1.0f, g = -1.0f, lu = -1.0f;
+            daynight_get_status(&en, &mode, &b, &g, &lu);
             float db = b - ld_b; if (db < 0) db = -db;
             float dg = g - ld_g; if (dg < 0) dg = -dg;
             /* change thresholds match the producer filter in daynight.c */
             if (!have_d || en != ld_en || mode != ld_mode || db >= 1.0f ||
                 dg >= (ld_g > 0.0f ? ld_g * 0.05f : 8.0f)){
                 ld_en = en; ld_mode = mode; ld_b = b; ld_g = g; have_d = 1;
-                if (control_daynight_json(js, sizeof js, en, mode, b, g) < (int)sizeof js)
+                if (control_daynight_json(js, sizeof js, en, mode, b, g, lu) < (int)sizeof js)
                     rc = sse_emit(c, "daynight", js, &last_write);
             }
         }

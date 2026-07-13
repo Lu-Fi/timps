@@ -31,7 +31,7 @@
 
 #define CTRL_MAX_CHG 48
 typedef struct {
-    char key[CTRL_MAX_CHG][32];
+    char key[CTRL_MAX_CHG][40];  /* fits daynight.total_gain_night_threshold */
     char val[CTRL_MAX_CHG][160];
     int  n;
 } ctrl_changes;
@@ -173,7 +173,7 @@ static void apply_section(ctrl_changes *ch, const char *prefix,
                           const char *s, const char *e,
                           const char *const *keys, int nkeys)
 {
-    char v[160], full[32];
+    char v[160], full[40];
     for (int i=0;i<nkeys;i++){
         if (!get_val(s, e, keys[i], v, sizeof v)) continue;
         snprintf(full, sizeof full, "%s.%s", prefix, keys[i]);
@@ -249,15 +249,24 @@ void control_apply_json(const char *json)
         apply_section(&ch, "audio", sb, se, AUD_REST, (int)(sizeof AUD_REST/sizeof AUD_REST[0]));
     }
 
-    /* daynight: {"daynight":{"enabled":true|false}} toggles the native
-     * automatic day/night detection (config-only key: the detection thread
-     * polls g_cfg, the HAL ignores it). Parsed even in a USE_DAYNIGHT=0
-     * build, where it just persists. */
+    /* daynight: {"daynight":{"enabled":..,"total_gain_day_threshold":..,
+     * "total_gain_night_threshold":..}} - the native automatic day/night
+     * detection switch + its gain thresholds (config-only keys: the detection
+     * thread polls g_cfg, the HAL ignores them). Parsed even in a
+     * USE_DAYNIGHT=0 build, where they just persist. */
     sb = find_obj(json, end, "daynight", &se);
-    if (sb && get_val(sb, se, "enabled", v, sizeof v))
-        timps_apply_setting(&ch, "daynight.enabled",
-                            (!strcmp(v,"true")||!strcmp(v,"1")) ? "1" :
-                            (!strcmp(v,"false")||!strcmp(v,"0")) ? "0" : v);
+    if (sb){
+        if (get_val(sb, se, "enabled", v, sizeof v))
+            timps_apply_setting(&ch, "daynight.enabled",
+                                (!strcmp(v,"true")||!strcmp(v,"1")) ? "1" :
+                                (!strcmp(v,"false")||!strcmp(v,"0")) ? "0" : v);
+        static const char *const DN_KEYS[] = {
+            "total_gain_day_threshold","total_gain_night_threshold",
+            "day_gain_pct","baseline_delay_s"
+        };
+        apply_section(&ch, "daynight", sb, se,
+                      DN_KEYS, (int)(sizeof DN_KEYS/sizeof DN_KEYS[0]));
+    }
 
     /* osd, legacy shared form: {"osd":{"enabled":true,"0":{...},..,"7":{...}}}
      * -> osd.enabled + legacy osdN.* keys (each item is applied to EVERY
@@ -468,13 +477,20 @@ static const char *const AUD_CAPS[] = {
  * brightness in %, total_gain in the IMP [24.8] linear scale (256 = 1x,
  * like GetTotalGain and the prudynt/raptor value the WebUI plots);
  * -1 = unknown. Measured by daynight.c; a stub answers unknowns when built
- * without USE_DAYNIGHT. */
+ * without USE_DAYNIGHT. The configured gain thresholds ride along (from
+ * g_cfg) so the photosensing page can load and edit them. */
 int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
-                          float brightness, float total_gain)
+                          float brightness, float total_gain, float ae_luma)
 {
     return snprintf(buf, cap,
-        "{\"enabled\":%d,\"mode\":%d,\"brightness\":%.1f,\"total_gain\":%.0f}",
-        enabled, mode, (double)brightness, (double)total_gain);
+        "{\"enabled\":%d,\"mode\":%d,\"brightness\":%.1f,\"total_gain\":%.0f,"
+        "\"ae_luma\":%.0f,\"total_gain_day_threshold\":%g,"
+        "\"total_gain_night_threshold\":%g,\"day_gain_pct\":%d,"
+        "\"baseline_delay_s\":%d}",
+        enabled, mode, (double)brightness, (double)total_gain, (double)ae_luma,
+        (double)g_cfg.daynight.total_gain_day_threshold,
+        (double)g_cfg.daynight.total_gain_night_threshold,
+        g_cfg.daynight.day_gain_pct, g_cfg.daynight.baseline_delay_s);
 }
 
 /* Read-only motion status object (shared /control + /events shape, see
@@ -650,11 +666,11 @@ int control_get_json(char *buf, size_t cap)
     {   /* read-only day/night status (never persisted); shape/docs in
          * control_daynight_json above (shared with the /events push) */
         int dn_en = 0, dn_mode = 0;
-        float dn_b = -1.0f, dn_tg = -1.0f;
-        daynight_get_status(&dn_en, &dn_mode, &dn_b, &dn_tg);
+        float dn_b = -1.0f, dn_tg = -1.0f, dn_lu = -1.0f;
+        daynight_get_status(&dn_en, &dn_mode, &dn_b, &dn_tg, &dn_lu);
         APP(",\"daynight\":");
         int _dn = control_daynight_json(buf+o, o<cap?cap-o:0,
-                                        dn_en, dn_mode, dn_b, dn_tg);
+                                        dn_en, dn_mode, dn_b, dn_tg, dn_lu);
         if (_dn>0) o += (size_t)_dn;
     }
     {   /* read-only motion status; shape/docs in control_motion_json above

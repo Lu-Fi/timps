@@ -201,10 +201,14 @@ void config_defaults(ms_config *c)
     copystr(c->timelapse.name,"%Y%m%d/%H/%Y%m%dT%H%M%S",sizeof c->timelapse.name);
     c->timelapse.interval_s=60; c->timelapse.keep_days=7;
 
-    /* automatic day/night: defaults mirror thingino's daynightd.json */
+    /* automatic day/night: gain thresholds mirror prudynt (day 300, night
+     * 3000), the brightness fallback mirrors thingino's daynightd.json */
     c->daynight.enabled=1;
+    c->daynight.total_gain_day_threshold=300.0f;
+    c->daynight.total_gain_night_threshold=3000.0f;
     c->daynight.threshold_low=25.0f; c->daynight.threshold_high=75.0f;
     c->daynight.hysteresis=0.1f;
+    c->daynight.day_gain_pct=60; c->daynight.baseline_delay_s=30;
     c->daynight.interval_ms=500; c->daynight.transition_s=5;
     copystr(c->daynight.switch_cmd,"daynight",sizeof c->daynight.switch_cmd);
     copystr(c->daynight.isp_path,"/proc/jz/isp/isp-m0",sizeof c->daynight.isp_path);
@@ -526,9 +530,13 @@ static void set_kv(ms_config *c, const char *key, const char *val)
     if (!strncmp(key,"daynight.",9)){
         const char *k=key+9;
         if(!strcmp(k,"enabled"))c->daynight.enabled=pbool(val);
+        else if(!strcmp(k,"total_gain_day_threshold"))c->daynight.total_gain_day_threshold=pflt(val);
+        else if(!strcmp(k,"total_gain_night_threshold"))c->daynight.total_gain_night_threshold=pflt(val);
         else if(!strcmp(k,"threshold_low"))c->daynight.threshold_low=pflt(val);
         else if(!strcmp(k,"threshold_high"))c->daynight.threshold_high=pflt(val);
         else if(!strcmp(k,"hysteresis"))c->daynight.hysteresis=pflt(val);
+        else if(!strcmp(k,"day_gain_pct"))c->daynight.day_gain_pct=pint(val);
+        else if(!strcmp(k,"baseline_delay_s"))c->daynight.baseline_delay_s=pint(val);
         else if(!strcmp(k,"interval_ms"))c->daynight.interval_ms=pint(val);
         else if(!strcmp(k,"transition_s"))c->daynight.transition_s=pint(val);
         else if(!strcmp(k,"switch_cmd"))copystr(c->daynight.switch_cmd,val,sizeof c->daynight.switch_cmd);
@@ -718,9 +726,13 @@ int config_get_kv(const ms_config *c, const char *key, char *out, size_t cap)
     if (!strncmp(key,"daynight.",9)){
         const ms_daynight_cfg *d=&c->daynight; const char *k=key+9;
         if(!strcmp(k,"enabled")) snprintf(out,cap,"%d",d->enabled);
+        else if(!strcmp(k,"total_gain_day_threshold")) snprintf(out,cap,"%g",(double)d->total_gain_day_threshold);
+        else if(!strcmp(k,"total_gain_night_threshold")) snprintf(out,cap,"%g",(double)d->total_gain_night_threshold);
         else if(!strcmp(k,"threshold_low")) snprintf(out,cap,"%g",(double)d->threshold_low);
         else if(!strcmp(k,"threshold_high")) snprintf(out,cap,"%g",(double)d->threshold_high);
         else if(!strcmp(k,"hysteresis")) snprintf(out,cap,"%g",(double)d->hysteresis);
+        else if(!strcmp(k,"day_gain_pct")) snprintf(out,cap,"%d",d->day_gain_pct);
+        else if(!strcmp(k,"baseline_delay_s")) snprintf(out,cap,"%d",d->baseline_delay_s);
         else if(!strcmp(k,"interval_ms")) snprintf(out,cap,"%d",d->interval_ms);
         else if(!strcmp(k,"transition_s")) snprintf(out,cap,"%d",d->transition_s);
         else return 0;

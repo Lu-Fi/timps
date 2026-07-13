@@ -327,13 +327,27 @@ motion.skip_frames    = 5             # analyse every Nth frame: higher = cheape
 # motion.on_motion    = /etc/scripts/on_motion.sh
 
 # ---- automatic day/night (needs timps built with USE_DAYNIGHT) ----
-# timps samples the ISP exposure state, computes a scene brightness (0..100%)
-# and switches via the board's daynight script (ircut / IR LEDs / color).
-# Semantics and defaults match thingino's daynightd.
+# timps samples the ISP exposure state and switches via the board's daynight
+# script (ircut / IR LEDs / color). The decision is GAIN-based like
+# prudynt/raptor: total_gain is the combined sensor+ISP gain in the IMP
+# [24.8] linear scale (256 = 1x). Lower gain = brighter scene = day.
+# Day when total_gain < total_gain_day_threshold, night when
+# total_gain > total_gain_night_threshold; the big gap between the two is
+# the hysteresis dead-zone (no flapping in between). threshold_low/high are
+# the brightness-% fallback (daynightd semantics), used only when the ISP
+# proc file exposes no gain fields.
 daynight.enabled        = 1                    # 0 = manual mode (WebUI/`/control` only)
-daynight.threshold_low  = 25                   # %: below this (in day) -> night
-daynight.threshold_high = 75                   # %: above this (in night) -> day
-daynight.hysteresis     = 0.1                  # band factor for the initial decision
+daynight.total_gain_day_threshold   = 300      # (in night) gain below -> day
+daynight.total_gain_night_threshold = 3000     # (in day) gain above -> night
+# adaptive night baseline (raptor-style, robust against IR flicker): a while
+# after switching to night (IR LEDs settled) the current gain is sampled as the
+# baseline, and night->day then triggers when gain < day_gain_pct% of it instead
+# of the fixed day threshold. day_gain_pct = 0 disables (fixed threshold only).
+daynight.day_gain_pct     = 60                 # night->day at this % of baseline
+daynight.baseline_delay_s = 30                 # wait this long in night to sample it
+daynight.threshold_low  = 25                   # fallback %: below this (in day) -> night
+daynight.threshold_high = 75                   # fallback %: above this (in night) -> day
+daynight.hysteresis     = 0.1                  # fallback band factor, initial decision
 daynight.interval_ms    = 500                  # sample interval
 daynight.transition_s   = 5                    # min seconds between switches
 daynight.switch_cmd     = daynight             # run as "<cmd> day|night"

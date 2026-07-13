@@ -71,4 +71,11 @@
 #define ISP_HAS_AECOMP 1
 #endif
 
+/* IMP_ISP_Tuning_GetAeLuma (AE average luminance) - T21 T23 T31 C100 only;
+ * used by daynight as a secondary photosensing metric (raptor's ae_luma) */
+#if defined(PLATFORM_T21)||defined(PLATFORM_T23)||defined(PLATFORM_T31)|| \
+    defined(PLATFORM_C100)||!defined(ISP_PLATFORM_KNOWN)
+#define ISP_HAS_AELUMA 1
+#endif
+
 #endif /* MS_ISP_CAPS_H */

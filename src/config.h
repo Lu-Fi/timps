@@ -145,9 +145,24 @@ typedef struct {
 
 /* native automatic day/night detection (thread compiled with -DUSE_DAYNIGHT;
  * keys are always parsed so a config with daynight.* loads warning-free).
- * Semantics/defaults match thingino's daynightd. */
+ * Decision is gain-based like prudynt/raptor; the brightness fallback keeps
+ * thingino daynightd semantics. */
 typedef struct {
     int      enabled;            /* 0 = manual mode (thread idles) */
+    /* primary metric: ISP total_gain, IMP [24.8] linear (256 = 1x), the same
+     * scale as prudynt/raptor and the WebUI photosensing page. INVERTED vs
+     * brightness: low gain = bright = day. Day when gain < day_threshold,
+     * night when gain > night_threshold; the wide gap between them is the
+     * hysteresis dead-zone. */
+    float    total_gain_day_threshold;   /* (in night) gain below -> day */
+    float    total_gain_night_threshold; /* (in day) gain above -> night */
+    /* adaptive night baseline (raptor's ric_daynight): after baseline_delay_s in
+     * night (IR LEDs settled) the current gain is sampled as the night baseline;
+     * day is then triggered when gain < day_gain_pct% of it (relative, robust
+     * against IR flicker) instead of the fixed day_threshold. 0 = disable. */
+    int      day_gain_pct;       /* night->day at this % of the night baseline */
+    int      baseline_delay_s;   /* wait this long in night before sampling it */
+    /* brightness fallback (only when no gain field is readable) */
     float    threshold_low;      /* %: below this (in day) -> night */
     float    threshold_high;     /* %: above this (in night) -> day */
     float    hysteresis;         /* factor for the unknown-state band */

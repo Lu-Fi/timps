@@ -1179,4 +1179,27 @@ static const hal_backend g_ingenic = {
     .request_idr=ing_request_idr, .set_active=ing_set_active, .stop=ing_stop
 };
 const hal_backend *hal_get(void){ return &g_ingenic; }
+
+/* daynight gain source: the ISP's own total gain (see hal.h). GetTotalGain is
+ * absent from the T40/T41 new tuning API - return unavailable there so daynight
+ * falls back to the /proc scrape. IMP returns <0 if the ISP is not yet up. */
+int hal_isp_total_gain(uint32_t *gain)
+{
+#ifndef ISP_NEW_TUNING_API
+    if (!gain) return -1;
+    return IMP_ISP_Tuning_GetTotalGain(gain) < 0 ? -1 : 0;
+#else
+    (void)gain; return -1;
+#endif
+}
+
+int hal_isp_ae_luma(uint32_t *luma)
+{
+#ifdef ISP_HAS_AELUMA
+    if (!luma) return -1;
+    return IMP_ISP_Tuning_GetAeLuma(luma) < 0 ? -1 : 0;
+#else
+    (void)luma; return -1;
+#endif
+}
 #endif /* HAL_INGENIC */

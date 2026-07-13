@@ -35,8 +35,10 @@ void daynight_stop(void);
  *               (256 = 1x, like IMP_ISP_Tuning_GetTotalGain and the
  *               prudynt/raptor "total_gain" the WebUI plots), derived from
  *               the isp-m0 gain fields (log2 units, 32 = 2x); -1 = unknown
+ *   ae_luma     ISP AE average luminance (raptor's ae_luma), a secondary
+ *               photosensing metric; -1 when the SoC/build has no GetAeLuma
  * NULL pointers are allowed for outputs the caller does not need. */
 void daynight_get_status(int *enabled, int *mode,
-                         float *brightness, float *total_gain);
+                         float *brightness, float *total_gain, float *ae_luma);
 
 #endif

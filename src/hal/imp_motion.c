@@ -56,7 +56,11 @@ static int64_t g_last_event = -1;            /* CLOCK_MONOTONIC ms, -1 never */
  * event arrives but every segment is 0". Latch each cell as active for a short
  * hold window after its last hit so any reader reliably catches the motion; the
  * client overlay's afterglow then just smooths the fade. The window is
- * configurable via motion.hold_ms (default 800, 0 = off); read once at start. */
+ * configurable via motion.hold_ms (default 800, 0 = off); read once at start.
+ * The latch alone is NOT enough for /events (two transitions between two SSE
+ * samples still collapse into a net-unchanged level), so every changed grid is
+ * ALSO pushed as a snapshot into the events.c motion ring - /events drains the
+ * ring, only GET /control still samples the latched level here. */
 #define MOTION_HOLD_MS_DEFAULT 800
 static int     g_hold_ms = MOTION_HOLD_MS_DEFAULT;
 static int64_t g_cell_hit[MOTION_STATUS_MAX]; /* last retRoi=1 per cell, mono ms */
@@ -87,6 +91,7 @@ static void *motion_thread(void *arg)
         int cells = g_st.cells;              /* fixed while the thread runs */
         int detected = 0, changed = 0, any_held = 0;
         int64_t nowm = now_ms();
+        ms_motion_status snap;
         pthread_mutex_lock(&g_st_lock);
         for (int i=0;i<cells;i++){
             /* raw = motion on THIS frame; drives the on_motion trigger and the
@@ -104,8 +109,14 @@ static void *motion_thread(void *arg)
         }
         g_st.any = any_held;
         if (detected) g_last_event = nowm;
+        if (changed){                        /* snapshot under the lock ... */
+            snap = g_st;
+            snap.last_ms = (g_last_event < 0) ? -1 : nowm - g_last_event;
+            snap.available = 1;
+        }
         pthread_mutex_unlock(&g_st_lock);
-        if (changed) events_notify();        /* push the new grid to /events */
+        if (changed) events_motion_push(&snap);  /* ... queue outside it:
+             every grid change reaches /events, none can coalesce away */
         if (detected) {
             int64_t t = now_ms();
             if (t - last_fire >= g_hcfg->motion.cooldown_ms) {
@@ -201,7 +212,14 @@ int imp_motion_start(const ms_config *cfg)
         IMP_IVS_StopRecvPic(g_chn);
         goto err_bind;
     }
-    events_notify();                         /* status flipped to enabled */
+    {   /* status flipped to enabled: queue it like any grid change */
+        ms_motion_status snap;
+        pthread_mutex_lock(&g_st_lock);
+        snap = g_st;
+        snap.last_ms = (g_last_event < 0) ? -1 : now_ms() - g_last_event;
+        pthread_mutex_unlock(&g_st_lock);
+        events_motion_push(&snap);
+    }
     LOGI(MOD,"motion detection started (%dx%d grid %dx%d=%d cells, sense=%d/4, max %d, hold=%dms)",
          w, h, cols, rows, cells, sense, MOTION_MAX_CELLS, g_hold_ms);
     return 0;
@@ -235,11 +253,15 @@ void imp_motion_stop(void)
     IMP_IVS_DestroyChn(g_chn);
     if (g_intf){ IMP_IVS_DestroyMoveInterface(g_intf); g_intf=NULL; }
     IMP_IVS_DestroyGroup(g_grp);
+    ms_motion_status snap;
     pthread_mutex_lock(&g_st_lock);
     g_st.enabled = 0; g_st.any = 0;
     memset(g_st.active, 0, sizeof g_st.active);
+    snap = g_st;
+    snap.last_ms = (g_last_event < 0) ? -1 : now_ms() - g_last_event;
+    snap.available = 1;
     pthread_mutex_unlock(&g_st_lock);
-    events_notify();                         /* status flipped to disabled */
+    events_motion_push(&snap);               /* status flipped to disabled */
     LOGI(MOD,"motion detection stopped");
 }
 
