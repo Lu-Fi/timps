@@ -98,6 +98,11 @@ LIBS    ?= -lpthread -lrt -lm
 # vendor libs: static drop-in by default (adjust to your SDK: alog/sysutils/muslshim)
 IMPLIBS ?= -l:libimp.a -l:libalog.a -l:libsysutils.a
 
+# software AAC (libfaac) link flag: static archive by default for a single
+# self-contained drop-in; override to shared (e.g. FAACLIB=-lfaac) when building
+# against a distro/buildroot that only ships libfaac.so.
+FAACLIB ?= -l:libfaac.a
+
 .PHONY: all target sim clean strip
 
 all: target
@@ -113,7 +118,7 @@ target:
 	  -c $(TARGET_ALLSRC)
 	$(LINK_DRV) $(TARGET_OBJS) \
 	  $(LDFLAGS) $(if $(IMP_LIB),-L$(IMP_LIB)) $(IMPLIBS) \
-	  $(if $(filter 1,$(USE_FAAC)),-l:libfaac.a) $(LIBS) -o $(BIN)
+	  $(if $(filter 1,$(USE_FAAC)),$(FAACLIB)) $(LIBS) -o $(BIN)
 	@rm -f $(TARGET_OBJS)
 	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT))"
 

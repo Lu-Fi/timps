@@ -865,22 +865,32 @@ static void *audio_thread(void *arg)
 
     /* --- now open faac at the samplerate the AI actually accepted --- */
 #ifdef USE_FAAC
-    faacEncHandle faac = NULL;
-    unsigned long faac_in = 1024, faac_max = 8192;
+    /* modern libfaac API: the legacy faacEnc* API (faacEncOpen/…/faacEncClose)
+     * was removed upstream, so we drive faac_encoder_* instead. */
+    faac_encoder *faac = NULL;
+    uint32_t faac_in = 1024, faac_max = 8192;   /* filled from encoder info below */
     if (use_aac) {
-        faac = faacEncOpen(g_asr, 1, &faac_in, &faac_max);
-        if (faac) {
-            faacEncConfigurationPtr fc = faacEncGetCurrentConfiguration(faac);
-            fc->inputFormat   = FAAC_INPUT_16BIT;
-            fc->outputFormat  = 0;             /* raw AAC (no ADTS) */
-            fc->mpegVersion   = MPEG4;
-            fc->aacObjectType = LOW;
-            fc->useTns = 0; fc->useLfe = 0;
-            if (g_hcfg->audio.bitrate_kbps>0) fc->bitRate = g_hcfg->audio.bitrate_kbps*1000;
-            faacEncSetConfiguration(faac, fc);
-            LOGI(MOD,"faac AAC encoder: %dHz in=%lu max=%lu",g_asr,faac_in,faac_max);
+        faac_params fp; faac_params_init(&fp);
+        fp.sample_rate   = (uint32_t)g_asr;
+        fp.num_channels  = 1;
+        fp.mpeg_version  = FAAC_MPEG4;
+        fp.object_type   = FAAC_OBJ_LOW;        /* AAC-LC */
+        fp.input_format  = FAAC_INPUT_16BIT;
+        fp.output_format = FAAC_STREAM_RAW;     /* raw AAC (no ADTS) */
+        fp.use_tns = false; fp.use_lfe = false;
+        if (g_hcfg->audio.bitrate_kbps>0)
+            fp.bit_rate = (uint32_t)g_hcfg->audio.bitrate_kbps*1000;
+        faac_status st = faac_encoder_open(&fp, &faac);
+        if (st==FAAC_OK && faac) {
+            faac_encoder_info fi; fi.struct_size = sizeof fi;
+            if (faac_encoder_get_info(faac, &fi)==FAAC_OK) {
+                faac_in  = fi.frame_samples;    /* samples/channel per frame (mono) */
+                faac_max = fi.max_output_bytes;
+            }
+            LOGI(MOD,"faac AAC encoder: %dHz frame=%u max=%u",g_asr,faac_in,faac_max);
         } else {
-            LOGW(MOD,"faacEncOpen failed -> PCMU");
+            LOGW(MOD,"faac_encoder_open failed (%s) -> PCMU", faac_strerror(st));
+            faac = NULL;
             use_aac=0; g_acodec=MS_AC_PCMU;
         }
     }
@@ -933,10 +943,14 @@ static void *audio_thread(void *arg)
                 acc_n += take; off += take;
                 while (acc_n >= faac_in){
                     static __thread uint8_t aac[8192];
-                    int n = faacEncEncode(faac, (int32_t*)(void*)acc, (unsigned)faac_in, aac, sizeof aac);
-                    if (n<0) LOGW(MOD,"faacEncEncode returned %d",n);
+                    uint32_t n = 0;
+                    /* FAAC_INPUT_16BIT: pass the int16 PCM directly; in_samples is
+                     * the interleaved count (== faac_in for mono). */
+                    faac_status st = faac_encoder_encode(faac, acc, (uint32_t)faac_in,
+                                                         aac, sizeof aac, &n);
+                    if (st!=FAAC_OK) LOGW(MOD,"faac_encoder_encode: %s",faac_strerror(st));
                     if (n>0){
-                        if (!dbg_logged){ LOGI(MOD,"AAC encoder producing (%d bytes/frame)",n); dbg_logged=1; }
+                        if (!dbg_logged){ LOGI(MOD,"AAC encoder producing (%u bytes/frame)",n); dbg_logged=1; }
                         hub_publish(HUB_AUDIO_SRC, aac, (size_t)n, ms_now_us(), 0, MS_MEDIA_AUDIO);
                     }
                     acc_n -= faac_in;
@@ -958,7 +972,7 @@ static void *audio_thread(void *arg)
         if (a_dt < 15000) usleep(15000 - a_dt);
     }
 #ifdef USE_FAAC
-    if (faac) faacEncClose(faac);
+    if (faac) faac_encoder_close(&faac);
 #endif
     g_ai_up = 0;
     IMP_AI_DisableChn(dev,chnid);
