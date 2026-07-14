@@ -209,7 +209,7 @@ audio.mute               = 0      # live — mic mute (1 = drop captured frames,
 # ---- OSD (up to 8 overlays PER video stream; own TrueType rasterizer) ----
 osd.enabled        = 1
 osd.monitor_stream = 0                        # stream whose fps feeds {fps}
-osd.font_path      = /usr/share/fonts/DejaVuSansMono.ttf   # default TTF; empty = bitmap font
+osd.font_path      = /usr/share/fonts/default.ttf   # default TTF; empty = bitmap font
 osd.vars_file      = /tmp/timps_osd.vars                  # custom placeholder source
 #
 # Every video stream carries its OWN independent overlay set.
