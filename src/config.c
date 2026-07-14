@@ -94,7 +94,7 @@ void config_defaults(ms_config *c)
     im->highlight_depress=0; im->backlight_compensation=0;
     im->core_wb_mode=0; im->wb_rgain=0; im->wb_bgain=0;
 
-    c->rtsp_enabled = 1; c->rtsp_port = 8554; c->rtsp_user[0]=0; c->rtsp_pass[0]=0;
+    c->rtsp_enabled = 1; c->rtsp_port = 554; c->rtsp_user[0]=0; c->rtsp_pass[0]=0;
     c->http_enabled = 1; c->http_port = 8880; c->http_preview_chn = 1;
     c->http_user[0]=0; c->http_pass[0]=0;
     c->http_token[0]=0;

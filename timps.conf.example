@@ -55,7 +55,7 @@ image.wb_bgain               = 0
 
 # ---- RTSP server (video + audio, no live555) ----
 rtsp.enabled = 1
-rtsp.port    = 8554
+rtsp.port    = 554
 rtsp.user    =            # set to enable RTSP Digest auth
 rtsp.pass    =
 
