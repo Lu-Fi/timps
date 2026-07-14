@@ -14,6 +14,8 @@ typedef struct {
     uint16_t   seq;
     uint32_t   clock_rate;
     uint32_t   ts_base;        /* random start offset */
+    int64_t    pts0;           /* first pts_us on this track (relative base) */
+    int        have_pts0;
     /* RTCP SR bookkeeping */
     uint32_t   pkt_count;
     uint32_t   octet_count;

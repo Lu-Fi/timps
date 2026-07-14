@@ -10,7 +10,18 @@
 
 static uint32_t pts_to_ts(rtp_track *t, int64_t pts_us)
 {
-    return t->ts_base + (uint32_t)((pts_us * (int64_t)t->clock_rate) / 1000000);
+    /* RTP timestamps must be RELATIVE to the stream start, not the absolute
+     * monotonic clock. pts_us is ms_now_us() (CLOCK_MONOTONIC = uptime), so the
+     * old code made the 32-bit RTP ts encode uptime*clock_rate: video (90 kHz)
+     * and audio (16 kHz) then diverged and wrapped at different periods (~13 h
+     * vs ~74 h). Players saw a huge A/V offset and non-monotonic/invalid
+     * timestamps, which made ffmpeg/go2rtc (Frigate) drop and reconnect every
+     * few minutes. Anchor each track to its first pts so the values stay small
+     * and correlated; the RTCP SR still maps them to wall-clock for A/V sync. */
+    if (!t->have_pts0){ t->pts0 = pts_us; t->have_pts0 = 1; }
+    int64_t rel = pts_us - t->pts0;
+    if (rel < 0) rel = 0;
+    return t->ts_base + (uint32_t)((rel * (int64_t)t->clock_rate) / 1000000);
 }
 
 void rtp_track_init(rtp_track *t, int pt, uint32_t clock_rate,
