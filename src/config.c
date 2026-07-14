@@ -144,7 +144,7 @@ void config_defaults(ms_config *c)
     /* OSD: per-stream arrays of overlays; same sensible default layout on
      * every stream (time / hostname / uptime / logo) */
     c->osd.enabled=1; c->osd.monitor_stream=0;
-    copystr(c->osd.font_path,"/usr/share/fonts/DejaVuSansMono.ttf",128);
+    copystr(c->osd.font_path,"/usr/share/fonts/default.ttf",128);
     copystr(c->osd.vars_file,"/tmp/timps_osd.vars",128);
     for (int s=0;s<MS_MAX_VSTREAM;s++){
         ms_osd_item *it=c->osd.items[s];
