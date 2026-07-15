@@ -24,4 +24,11 @@ int  vparam_mp4_config(const vparam *v, ms_buf *out);
 /* Build the SDP a=fmtp payload string (without "a=fmtp:<pt> " prefix). */
 int  vparam_sdp_fmtp(const vparam *v, int payload_type, char *dst, int dstsz);
 
+/* Build the ISO/IEC 14496-15 MSE/RFC6381 codecs string ("hvc1.<profile>.
+ * <compat>.<tier+level>.<constraints>") from the live SPS profile_tier_level,
+ * so MediaSource.isTypeSupported() sees the stream's real profile/tier/level
+ * instead of a guess. Returns -1 (dst untouched) if the SPS isn't parseable
+ * yet (e.g. too short) - caller should keep its own fallback string. */
+int  vparam_hevc_codecs(const vparam *v, char *dst, int dstsz);
+
 #endif

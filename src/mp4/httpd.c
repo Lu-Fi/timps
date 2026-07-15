@@ -79,12 +79,22 @@ static const char *PLAYER_HEAD =
 "video{max-width:96%;background:#000;display:block}"
 /* embed mode (in an iframe): no chrome, video fills the frame */
 "body.embed #wrap{margin:0;display:block}body.embed video{max-width:100%;width:100%}"
+"#msg{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);"
+"color:#f88;font-size:.85em;max-width:90%;display:none}"
 "</style></head>";
 static const char *PLAYER_TAIL =
-"if(window.MediaSource&&MediaSource.isTypeSupported(mime)){"
-"const ms=new MediaSource();v.src=URL.createObjectURL(ms);"
+"const msg=document.getElementById('msg');"
+"const showMsg=(t)=>{if(msg){msg.textContent=t;msg.style.display='block';}};"
+/* iOS Safari never exposes window.MediaSource; since iOS 17.1 it exposes
+ * window.ManagedMediaSource instead (requires disableRemotePlayback, set on
+ * the <video> tag below). Desktop browsers keep using plain MediaSource. */
+"const MS=window.ManagedMediaSource||window.MediaSource;"
+"if(MS&&MS.isTypeSupported(mime)){"
+"const ms=new MS();v.src=URL.createObjectURL(ms);"
 "ms.addEventListener('sourceopen',async()=>{"
-"let sb;try{sb=ms.addSourceBuffer(mime);}catch(e){v.src=src;return;}"
+"try{ms.duration=Infinity;}catch(e){}"          /* Safari live-MSE hint */
+"let sb;try{sb=ms.addSourceBuffer(mime);}"
+"catch(e){showMsg('Preview: codec not supported by this browser.');v.src=src;return;}"
 "sb.mode='sequence';let dead=false;const q=[];let busy=false;"
 "const stop=()=>{dead=true;try{if(ms.readyState==='open')ms.endOfStream();}catch(e){}};"
 /* drop buffered data older than ~10s behind playback so the SourceBuffer
@@ -103,7 +113,7 @@ static const char *PLAYER_TAIL =
 "const res=await fetch(src);const rd=res.body.getReader();"
 "try{while(true){const{done,value}=await rd.read();if(done||dead)break;q.push(value);pump();}}"
 "catch(e){}stop();"
-"});}else{v.src=src;}"
+"});}else{showMsg('Live preview needs a browser with Media Source support.');v.src=src;}"
 "</script></body></html>";
 
 /* like http_send but with extra response headers ("Name: v\r\n" lines),
@@ -630,15 +640,19 @@ static void serve_player(hconn *c, const char *path)
     int chn = path_chn(path, cfg, cfg->http_preview_chn);
     if (chn<0||chn>=MS_MAX_VSTREAM||!cfg->video[chn].enabled) chn=0;
 
-    char vcodec[24] = "avc1.640028";               /* High@4.0 fallback */
+    char vcodec[48] = "avc1.640028";               /* High@4.0 fallback */
     hub_request_idr(chn);
     for (int i=0;i<100;i++){
         vparam vp;
         if (hub_get_vparam(chn,&vp) && vparam_ready(&vp)){
             if (vp.codec==MS_VC_H264 && vp.sps_len>=4)
                 snprintf(vcodec,sizeof vcodec,"avc1.%02X%02X%02X",vp.sps[1],vp.sps[2],vp.sps[3]);
-            else if (vp.codec==MS_VC_H265)
-                snprintf(vcodec,sizeof vcodec,"hvc1.1.6.L123.B0");
+            else if (vp.codec==MS_VC_H265) {
+                /* derive from the real SPS profile_tier_level; keep the old
+                 * guessed string only if the SPS isn't parseable yet */
+                if (vparam_hevc_codecs(&vp, vcodec, sizeof vcodec) < 0)
+                    snprintf(vcodec,sizeof vcodec,"hvc1.1.6.L123.B0");
+            }
             break;
         }
         usleep(10000);
@@ -653,7 +667,8 @@ static void serve_player(hconn *c, const char *path)
     char html[4096];
     int n = snprintf(html, sizeof html,
         "%s<body class=\"%s\">%s"
-        "<div id=wrap><video id=v autoplay muted controls playsinline></video></div>"
+        "<div id=wrap><video id=v autoplay muted controls playsinline disableremoteplayback>"
+        "</video><div id=msg></div></div>"
         "<script>const v=document.getElementById('v');"
         "const mime='video/mp4; codecs=\"%s%s\"';const src='/stream.mp4?chn=%d';%s",
         PLAYER_HEAD,

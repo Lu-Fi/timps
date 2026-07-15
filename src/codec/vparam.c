@@ -110,6 +110,41 @@ int vparam_mp4_config(const vparam *v, ms_buf *out)
     return v->codec==MS_VC_H264 ? avcc(v,out) : hvcc(v,out);
 }
 
+/* general_profile_tier_level, as read by hvcc() above: byte0 = profile_space
+ * (u2) | tier_flag (u1) | profile_idc (u5); bytes1-4 = 32-bit
+ * profile_compatibility_flags; bytes5-10 = 48-bit constraint indicator flags;
+ * byte11 = general_level_idc. */
+int vparam_hevc_codecs(const vparam *v, char *dst, int dstsz)
+{
+    if (v->codec != MS_VC_H265 || v->sps_len < 2+13) return -1;
+    uint8_t rbsp[192];
+    int rn = deemulate(v->sps+2, v->sps_len-2, rbsp, sizeof rbsp); /* skip 2B nal hdr */
+    if (rn < 1+12) return -1;
+    const uint8_t *ptl = rbsp+1;
+
+    int space   = (ptl[0] >> 6) & 0x3;
+    int tier    = (ptl[0] >> 5) & 0x1;
+    int profile = ptl[0] & 0x1F;
+
+    /* general_profile_compatibility_flags: the codecs string wants it with
+     * bit order reversed (flag[0] as the LSB of the printed hex number) */
+    uint32_t compat = ((uint32_t)ptl[1]<<24)|((uint32_t)ptl[2]<<16)|
+                       ((uint32_t)ptl[3]<<8)|ptl[4];
+    uint32_t rev = 0;
+    for (int i = 0; i < 32; i++) if (compat & (1u<<i)) rev |= 1u << (31-i);
+
+    /* 6-byte constraint indicator flags, trailing zero bytes omitted */
+    int nconstraint = 0;
+    for (int i = 5; i >= 0; i--) if (ptl[5+i]) { nconstraint = i+1; break; }
+    char constraints[24] = ""; int co = 0;
+    for (int i = 0; i < nconstraint && co < (int)sizeof(constraints)-4; i++)
+        co += snprintf(constraints+co, sizeof(constraints)-co, ".%X", ptl[5+i]);
+
+    return snprintf(dst, dstsz, "hvc1.%s%d.%X.%c%d%s",
+                    space==1?"A":space==2?"B":space==3?"C":"",
+                    profile, rev, tier?'H':'L', ptl[11], constraints);
+}
+
 int vparam_sdp_fmtp(const vparam *v, int pt, char *dst, int dstsz)
 {
     char b64a[512], b64b[512], b64c[512];
