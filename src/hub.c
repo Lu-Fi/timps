@@ -97,7 +97,11 @@ int hub_get_vparam(int src, vparam *out)
 double hub_get_fps(int src)
 {
     hub_source *s = hub_get(src); if(!s) return 0.0;
-    return s->mfps;
+    double fps;
+    pthread_mutex_lock(&s->lock);
+    fps = s->mfps;
+    pthread_mutex_unlock(&s->lock);
+    return fps;
 }
 
 void hub_set_audio_params(int acodec, int samplerate, int channels)
