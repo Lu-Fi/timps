@@ -18,6 +18,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <poll.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 
@@ -695,7 +696,28 @@ static void *conn_thread(void *arg)
 #else
     char buf[1024];
 #endif
-    int n = crecv(c, buf, sizeof(buf)-1, 0);
+    /* Accumulate until the header block is complete (CRLFCRLF), the buffer
+     * fills, or a bounded deadline elapses. A single recv() can return a
+     * partial request line/headers under TCP segmentation, TLS record
+     * boundaries, or slow clients/proxies, which broke auth/path parsing
+     * below (RTSP's client_thread already loops like this). The deadline
+     * is needed here because these sockets carry no SO_RCVTIMEO: without
+     * it, a client that trickles bytes in would park this thread forever
+     * instead of just getting whatever arrived in the first read. */
+    int n = 0;
+    int64_t hdr_deadline = ms_now_us() + 5*1000000LL;
+    for (;;) {
+        struct pollfd pfd; pfd.fd = c->fd; pfd.events = POLLIN; pfd.revents = 0;
+        int64_t left_us = hdr_deadline - ms_now_us();
+        if (left_us <= 0) break;
+        int pr = poll(&pfd, 1, (int)(left_us/1000)+1);
+        if (pr <= 0) break;                    /* timeout or poll error */
+        int r = crecv(c, buf+n, sizeof(buf)-1-n, 0);
+        if (r <= 0) break;
+        n += r;
+        buf[n] = 0;
+        if (strstr(buf,"\r\n\r\n") || n >= (int)sizeof(buf)-1) break;
+    }
     if (n>0) {
         buf[n]=0;
         char method[8], path[256];
