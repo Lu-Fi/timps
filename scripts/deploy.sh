@@ -2,9 +2,12 @@
 # Deploy timps to the camera and run it live. Requires an installed SSH key.
 # The camera IP is REQUIRED via CAM=<ip>.
 #
-#   CAM=<ip> ./scripts/deploy.sh            # copy last-built binary + config, run (live log)
+#   CAM=<ip> ./scripts/deploy.sh            # copy last-built binary + camera.conf, run (live log)
 #   CAM=<ip> ./scripts/deploy.sh --build    # rebuild in thingino first, then deploy + run
-#   CAM=<ip> ./scripts/deploy.sh --no-conf  # keep the camera's existing /tmp/timps.conf
+#   CAM=<ip> ./scripts/deploy.sh --no-conf  # run against the camera's own /etc/timps.conf
+#                                            # (production config baked in by the firmware
+#                                            # build, incl. its own http.port etc.) instead
+#                                            # of pushing scripts/camera.conf to /tmp
 #
 # Env overrides: CAM (camera IP, required), THINGINO (firmware tree)
 set -euo pipefail
@@ -54,9 +57,18 @@ ssh root@"$CAM" '/etc/init.d/S31raptor stop 2>/dev/null; killall -9 timpsd 2>/de
 
 echo ">> copying to $CAM:/tmp ..."
 scp -O "$BIN" root@"$CAM":/tmp/timpsd
+
+# --no-conf: run against the camera's own production config (baked into the
+# firmware image at /etc/timps.conf, see thingino package/timps/timps.mk) so
+# a stale dev http.port/etc. in scripts/camera.conf can't diverge from what
+# the on-device WebUI actually expects. Default: push our dev config to /tmp
+# and run isolated from /etc, as before.
 if [ "$PUSH_CONF" = 1 ]; then
     scp -O "$SRCDIR/scripts/camera.conf" root@"$CAM":/tmp/timps.conf
+    CONF=/tmp/timps.conf
+else
+    CONF=/etc/timps.conf
 fi
 
-echo ">> starting timps (Ctrl-C stops it) ..."
-ssh -t root@"$CAM" 'chmod +x /tmp/timpsd; exec /tmp/timpsd -c /tmp/timps.conf -v'
+echo ">> starting timps against $CONF (Ctrl-C stops it) ..."
+ssh -t root@"$CAM" "chmod +x /tmp/timpsd; exec /tmp/timpsd -c $CONF -v"
