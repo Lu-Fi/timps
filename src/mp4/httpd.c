@@ -766,10 +766,20 @@ static void *conn_thread(void *arg)
                     /* worst case: caps + full image/audio/sensor blocks +
                      * 2 full video stream blocks + 2 per-stream OSD sets
                      * (2 x 8 items) with long texts + the motion status
-                     * (up to MOTION_MAX_CELLS "active" entries) */
-                    char js[18432];
-                    int jn = control_get_json(js, sizeof js);
-                    http_send_ex(c,"200 OK","application/json",cors,js,jn);
+                     * (up to MOTION_MAX_CELLS "active" entries). Heap, not
+                     * stack: this buffer would otherwise sit in every
+                     * conn_thread's frame, which is tight on small embedded
+                     * libc thread-stack defaults. */
+                    #define CONTROL_JSON_CAP 18432
+                    char *js = (char *)malloc(CONTROL_JSON_CAP);
+                    if (js) {
+                        int jn = control_get_json(js, CONTROL_JSON_CAP);
+                        http_send_ex(c,"200 OK","application/json",cors,js,jn);
+                        free(js);
+                    } else {
+                        http_send_ex(c,"503 Service Unavailable","text/plain",cors,"oom",3);
+                    }
+                    #undef CONTROL_JSON_CAP
                 } else {
                     char *body = strstr(buf,"\r\n\r\n");
                     if (body) {
