@@ -116,10 +116,11 @@ void config_defaults(ms_config *c)
         v->codec=MS_VC_H264; v->fps=25; v->rc_mode=MS_RC_CBR;
         v->gop=50; v->max_gop=60; v->profile=2; v->qp=35; v->min_qp=20; v->max_qp=45;
         v->rotation=0; v->buffers=2; v->imp_chn=i;
-        /* piggyback JPEG encoder: off by default (no extra memory/CPU).
+        /* piggyback JPEG encoder: on by default (snapshot.jpg/MJPEG preview
+         * and the thingino WebUI thumbnail both expect it to just work).
          * channels 0..MS_MAX_VSTREAM-1 = video, MS_MAX_VSTREAM = dedicated
          * jpeg channel, so the piggyback encoders start after those. */
-        v->jpeg_enabled=0; v->jpeg_quality=75; v->jpeg_fps=5;
+        v->jpeg_enabled=1; v->jpeg_quality=75; v->jpeg_fps=5;
         v->jpeg_chn=MS_MAX_VSTREAM+1+i;
     }
     c->video[0].enabled=1; c->video[0].width=1920; c->video[0].height=1080;
