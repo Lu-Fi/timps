@@ -450,14 +450,39 @@ static void stream_loop(session *s)
 
     /* subscriptions succeeded -> confirm PLAY now */
     {
-        char extra[128];
-        snprintf(extra,sizeof extra,"Session: %s\r\nRange: npt=0.000-\r\n",s->session);
+        char extra[320];
+        int n = snprintf(extra,sizeof extra,
+                         "Session: %s\r\nRange: npt=0.000-\r\n",s->session);
+        /* RFC 2326 12.33: RTP-Info maps the (random) initial seq/rtptime a
+         * client will see to the stream start, so it can detect sequence
+         * gaps and compute presentation time correctly before the first
+         * RTCP SR arrives. Both values are exact even though no packet has
+         * been sent yet: seq is rtp_hdr()'s current t->seq (it post-
+         * increments on use, so this IS the first packet's seq), and
+         * rtptime is exactly t->ts_base (pts_to_ts() anchors rel=0 on its
+         * very first call). VLC/ffplay tolerate its absence; some
+         * ONVIF/live555-derived NVR stacks wait for it or mis-seed their
+         * jitter buffer without it. */
+        if ((sub_v || sub_a) && n>0 && n<(int)sizeof extra) {
+            n += snprintf(extra+n, sizeof(extra)-n, "RTP-Info: ");
+            if (sub_v && n>0 && n<(int)sizeof extra)
+                n += snprintf(extra+n, sizeof(extra)-n,
+                              "url=trackID=0;seq=%u;rtptime=%u",
+                              (unsigned)s->vtrack.seq, (unsigned)s->vtrack.ts_base);
+            if (sub_v && sub_a && n>0 && n<(int)sizeof extra)
+                n += snprintf(extra+n, sizeof(extra)-n, ",");
+            if (sub_a && n>0 && n<(int)sizeof extra)
+                n += snprintf(extra+n, sizeof(extra)-n,
+                              "url=trackID=1;seq=%u;rtptime=%u",
+                              (unsigned)s->atrack.seq, (unsigned)s->atrack.ts_base);
+            if (n>0 && n<(int)sizeof extra) snprintf(extra+n, sizeof(extra)-n, "\r\n");
+        }
         send_resp(s, s->play_cseq, extra, NULL);
     }
 
     /* keep the socket blocking so TCP-interleaved writes are never partial
      * (we poll for control input with MSG_DONTWAIT instead) */
-    char ctl[1024];
+    char ctl[2048]; int ctlhave = 0;
     int got_key = 0;   /* start clients on a keyframe for clean decode */
     LOGI(MOD,"PLAY session=%s vchn=%d %s v=%d a=%d", s->session, s->vchn,
          s->tcp?"TCP":"UDP", s->have_video, s->have_audio);
@@ -488,18 +513,49 @@ static void stream_loop(session *s)
 
         /* poll control socket for TEARDOWN/keepalive/close; over TLS r_recv
          * maps "no data yet" to -1/EAGAIN, so n==0 only ever means a plain
-         * socket's orderly close */
-        int n = r_recv(s, ctl, (int)sizeof(ctl)-1, 1);
+         * socket's orderly close. ctl/ctlhave persist across polls (unlike
+         * a single-shot per-recv buffer) so a request split across TCP
+         * segments is correctly reassembled, and a client-sent interleaved
+         * '$' RTCP frame is skipped by its own declared length instead of
+         * discarding the whole recv() chunk - which used to also silently
+         * eat a TEARDOWN (or any other request) concatenated right after
+         * it in the same read. */
+        int n = r_recv(s, ctl+ctlhave, (int)sizeof(ctl)-1-ctlhave, 1);
         if (n==0) break;                         /* peer closed */
         if (n>0) {
-            ctl[n]=0;
-            if (ctl[0]=='$') { /* interleaved RTCP from client - ignore */ }
-            else if (!strncmp(ctl,"TEARDOWN",8)) { break; }
-            else if (!strncmp(ctl,"GET_PARAMETER",13)||!strncmp(ctl,"OPTIONS",7)) {
-                int cseq=hdr_int(ctl,"CSeq",0);
-                char e[64]; snprintf(e,sizeof e,"Session: %s\r\n",s->session);
-                send_resp(s,cseq,e,NULL);
-            }
+            ctlhave += n; ctl[ctlhave]=0;
+            int close_conn = 0, progressed;
+            do {
+                progressed = 0;
+                if (ctlhave >= 4 && ctl[0]=='$') {
+                    int flen = ((unsigned char)ctl[2]<<8)|(unsigned char)ctl[3];
+                    int total = 4 + flen;
+                    if (total > (int)sizeof(ctl)-1) { close_conn = 1; break; } /* bogus length */
+                    if (ctlhave < total) break;              /* wait for the rest */
+                    memmove(ctl, ctl+total, (size_t)(ctlhave-total+1));
+                    ctlhave -= total; progressed = 1;
+                    continue;
+                }
+                if (ctlhave > 0 && ctl[0]!='$') {
+                    char *end = strstr(ctl, "\r\n\r\n");
+                    if (!end) break;                          /* incomplete request, wait */
+                    size_t reqlen = (size_t)(end-ctl) + 4;
+                    if (!strncmp(ctl,"TEARDOWN",8)) { close_conn = 1; break; }
+                    if (!strncmp(ctl,"GET_PARAMETER",13)||!strncmp(ctl,"OPTIONS",7)) {
+                        int cseq=hdr_int(ctl,"CSeq",0);
+                        char e[64]; snprintf(e,sizeof e,"Session: %s\r\n",s->session);
+                        send_resp(s,cseq,e,NULL);
+                    }
+                    memmove(ctl, ctl+reqlen, ctlhave-reqlen+1);
+                    ctlhave -= (int)reqlen; progressed = 1;
+                }
+            } while (progressed);
+            if (close_conn) break;
+            /* buffer full with no complete frame/request drained: either a
+             * bogus/oversized interleaved length or a request line longer
+             * than we're willing to buffer - drop the connection rather
+             * than spin forever unable to make progress */
+            if (ctlhave >= (int)sizeof(ctl)-1) break;
         } else if (errno!=EAGAIN && errno!=EWOULDBLOCK) {
             break;
         }
