@@ -36,6 +36,14 @@
 #define MOD "REC"
 #define REC_QCAP   256
 #define RING_CAP   256          /* pre-roll ring: recent packets */
+/* pre-roll ring is otherwise bounded only by count (RING_CAP) and time
+ * (pre_roll_s) - neither bounds BYTES. At modest fps a long pre_roll_s and a
+ * high bitrate can hold far fewer than RING_CAP packets while each one is
+ * large, so total memory referenced (these are pkt_ref()'d, not copied, but
+ * still real bytes kept alive) is otherwise unbounded. Hard safety backstop,
+ * independent of config: even the most generous realistic pre_roll_s/bitrate
+ * combination fits comfortably under this. */
+#define RING_MAX_BYTES (8*1024*1024)
 
 static const ms_config *g_rc;
 static volatile int     g_run;
@@ -52,22 +60,32 @@ static char             g_curfile[160];
 /* ---- pre-roll ring (motion mode) ---- */
 static ms_pkt *r_buf[RING_CAP];
 static int     r_head, r_count;
+static size_t  r_bytes;                /* sum of r_buf[*]->len currently held */
 
 static void ring_clear(void)
 {
     for (int i=0;i<r_count;i++) pkt_unref(r_buf[(r_head+i)%RING_CAP]);
-    r_head=r_count=0;
+    r_head=r_count=0; r_bytes=0;
 }
 static void ring_push(ms_pkt *p, int64_t pre_us)
 {
-    if (r_count==RING_CAP){ pkt_unref(r_buf[r_head]); r_head=(r_head+1)%RING_CAP; r_count--; }
-    r_buf[(r_head+r_count)%RING_CAP]=pkt_ref(p); r_count++;
+    if (r_count==RING_CAP){
+        r_bytes-=r_buf[r_head]->len;
+        pkt_unref(r_buf[r_head]); r_head=(r_head+1)%RING_CAP; r_count--;
+    }
+    r_buf[(r_head+r_count)%RING_CAP]=pkt_ref(p); r_count++; r_bytes+=p->len;
     /* trim by time (keep ~pre_us), correctness of the keyframe start is handled
      * at flush time */
     while (r_count>1){
         ms_pkt *f=r_buf[r_head];
         if (p->pts_us - f->pts_us <= pre_us) break;
-        pkt_unref(f); r_head=(r_head+1)%RING_CAP; r_count--;
+        r_bytes-=f->len; pkt_unref(f); r_head=(r_head+1)%RING_CAP; r_count--;
+    }
+    /* hard byte backstop, independent of the time trim above (see
+     * RING_MAX_BYTES) */
+    while (r_count>1 && r_bytes>RING_MAX_BYTES){
+        ms_pkt *f=r_buf[r_head];
+        r_bytes-=f->len; pkt_unref(f); r_head=(r_head+1)%RING_CAP; r_count--;
     }
 }
 
