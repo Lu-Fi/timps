@@ -7,6 +7,9 @@
 #include <ctype.h>
 #include <strings.h>
 #include <pthread.h>
+#include <unistd.h>
+#include <fcntl.h>
+#include <errno.h>
 
 #define MOD "CONFIG"
 ms_config g_cfg;
@@ -967,8 +970,29 @@ int config_write_keys(const char *path, const char *const *keys,
         if (!done[i]) write_kv_line(out, keys[i], vals[i]);
 
     if (fflush(out)!=0 || ferror(out)){ fclose(out); remove(tmp); return -1; }
+    /* fflush() only moves data from libc's buffer into the OS page cache -
+     * on jffs2/ubifs (this file's usual home) that is not durable yet. A
+     * power cut right after "success" here (this is called on nearly every
+     * /control POST) can leave the config file empty/zero-length. */
+    if (fsync(fileno(out))!=0)
+        LOGW(MOD,"fsync %s failed: %s", tmp, strerror(errno));
     fclose(out);
     if (rename(tmp, path)!=0){ LOGW(MOD,"rename %s -> %s failed", tmp, path); remove(tmp); return -1; }
+    /* the rename()'s directory-entry update needs its own durability flush
+     * too - otherwise a power cut right after a successful rename() can
+     * still leave the directory pointing at the old (or no) file even
+     * though the new file's data already landed. Best-effort: if this
+     * fails there is nothing more constructive to do than log it. */
+    {
+        char dir[280]; snprintf(dir, sizeof dir, "%s", path);
+        char *slash = strrchr(dir, '/');
+        if (slash) *slash = 0; else snprintf(dir, sizeof dir, ".");
+        int dfd = open(dir, O_RDONLY);
+        if (dfd >= 0){
+            if (fsync(dfd)!=0) LOGW(MOD,"fsync dir %s failed: %s", dir, strerror(errno));
+            close(dfd);
+        }
+    }
     LOGI(MOD,"persisted %d setting(s) to %s", n, path);
     return 0;
 }
