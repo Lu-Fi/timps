@@ -3,6 +3,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <stddef.h>   /* ptrdiff_t, used for bounds checks below */
 
 /* ---------- big-endian readers ---------- */
 static uint16_t u16(const uint8_t *p){ return (uint16_t)((p[0]<<8)|p[1]); }
@@ -14,17 +15,23 @@ int msttf_load(msttf_font *f, const char *path)
     memset(f,0,sizeof *f);
     FILE *fp=fopen(path,"rb"); if(!fp) return -1;
     fseek(fp,0,SEEK_END); long n=ftell(fp); fseek(fp,0,SEEK_SET);
-    f->data=(uint8_t*)malloc(n); if(!f->data){fclose(fp);return -1;}
-    if(fread(f->data,1,n,fp)!=(size_t)n){fclose(fp);free(f->data);return -1;}
+    /* smaller than any usable sfnt header (version+numTables+3 shorts) -
+     * also rejects ftell() returning -1/0 on a weird fopen */
+    if (n < 12){ fclose(fp); return -1; }
+    f->data=(uint8_t*)malloc((size_t)n); if(!f->data){fclose(fp);return -1;}
+    if(fread(f->data,1,(size_t)n,fp)!=(size_t)n){fclose(fp);free(f->data);f->data=NULL;return -1;}
     fclose(fp); f->size=n;
 
     const uint8_t *d=f->data;
     uint32_t ver=u32(d);
-    if (ver!=0x00010000 && ver!=0x74727565 /*true*/ && ver!=0x4F54544F/*OTTO*/){
-        /* OTTO (CFF) not supported by this glyf rasterizer */
-        if (ver==0x4F54544F){ free(f->data); return -2; }
-    }
+    if (ver==0x4F54544F/*OTTO*/){ free(f->data); f->data=NULL; return -2; } /* CFF: not supported by this glyf rasterizer */
+    if (ver!=0x00010000 && ver!=0x74727565 /*true*/){ free(f->data); f->data=NULL; return -2; }
     int numTables=u16(d+4);
+    /* the table directory itself (12 + 16 bytes/entry) must fit before any
+     * entry is read - a truncated/corrupt font (bad flash, wrong file
+     * configured) used to read past the buffer here and crash the daemon
+     * instead of failing cleanly. */
+    if (numTables<0 || 12+16*(long)numTables > n){ free(f->data); f->data=NULL; return -3; }
     uint32_t cmap=0,glyf=0,loca=0,head=0,hhea=0,hmtx=0,maxp=0;
     for (int i=0;i<numTables;i++){
         const uint8_t *r=d+12+16*i;
@@ -34,13 +41,35 @@ int msttf_load(msttf_font *f, const char *path)
         else if(!memcmp(r,"hhea",4))hhea=off; else if(!memcmp(r,"hmtx",4))hmtx=off;
         else if(!memcmp(r,"maxp",4))maxp=off;
     }
-    if(!cmap||!glyf||!loca||!head||!maxp) { free(f->data); return -3; }
+    /* every table offset the fixed field reads below dereference must
+     * itself be in-bounds, with room for the specific field: head needs 54
+     * bytes (loca_fmt at +50), maxp needs 6 (num_glyphs at +4), hhea needs
+     * 36 (num_hmetrics at +34); cmap/glyf/loca just need to exist inside
+     * the file at all (their own parsers bounds-check further reads). */
+    if (!cmap||!glyf||!loca||!head||!maxp ||
+        cmap>=f->size || glyf>=f->size || loca>=f->size ||
+        (uint64_t)head+54 > (uint64_t)f->size ||
+        (uint64_t)maxp+6  > (uint64_t)f->size ||
+        (hhea && (uint64_t)hhea+36 > (uint64_t)f->size)) {
+        free(f->data); f->data=NULL; return -3;
+    }
     f->off_cmap=cmap; f->off_glyf=glyf; f->off_loca=loca; f->off_head=head;
     f->off_hhea=hhea; f->off_hmtx=hmtx; f->off_maxp=maxp;
     f->units_per_em=u16(d+head+18);
     f->loca_fmt=s16(d+head+50);
     f->num_glyphs=u16(d+maxp+4);
     f->num_hmetrics=hhea?u16(d+hhea+34):1;
+    if (f->units_per_em==0){ free(f->data); f->data=NULL; return -3; } /* msttf_render divides by this */
+    /* glyf_offset()/advance() trust loca/hmtx to have room for every
+     * gid/hmetric they're asked about without their own bounds check -
+     * verify that room actually exists for the declared num_glyphs /
+     * num_hmetrics now, once, instead of at every render call. */
+    uint64_t loca_need = (f->loca_fmt==0)
+        ? 2ULL*((uint64_t)f->num_glyphs+1) : 4ULL*((uint64_t)f->num_glyphs+1);
+    if ((uint64_t)loca + loca_need > (uint64_t)f->size){ free(f->data); f->data=NULL; return -3; }
+    if (hmtx && (uint64_t)hmtx + 4ULL*(uint64_t)f->num_hmetrics > (uint64_t)f->size){
+        free(f->data); f->data=NULL; return -3;
+    }
     return 0;
 }
 
@@ -49,18 +78,31 @@ void msttf_free(msttf_font *f){ free(f->data); f->data=NULL; }
 /* ---------- cmap format 4 lookup ---------- */
 static int glyph_index(msttf_font *f, int cp)
 {
-    const uint8_t *d=f->data, *c=d+f->off_cmap;
+    const uint8_t *d=f->data;
+    uint64_t fsize=(uint64_t)f->size;
+    if ((uint64_t)f->off_cmap+4 > fsize) return 0;
+    const uint8_t *c=d+f->off_cmap;
     int nt=u16(c+2); uint32_t sub=0;
+    if (nt<0 || (uint64_t)f->off_cmap+4+8ULL*(uint32_t)nt > fsize) return 0;
     for (int i=0;i<nt;i++){
         const uint8_t *r=c+4+8*i;
         int plat=u16(r), enc=u16(r+2);
         uint32_t off=u32(r+4);
         if ((plat==3&&(enc==1||enc==0))||plat==0){ sub=f->off_cmap+off; if(plat==3&&enc==1)break; }
     }
-    if(!sub) return 0;
+    /* sub is itself a font-data-controlled offset (table directory entry),
+     * not validated by msttf_load(); every subsequent read must be bounds-
+     * checked against it - a corrupt/adversarial cmap used to read
+     * arbitrarily far past the buffer (crash) with no checks at all here. */
+    if(!sub || (uint64_t)sub+14 > fsize) return 0;
     const uint8_t *s=d+sub;
     if (u16(s)!=4) return 0;
-    int segX2=u16(s+6), seg=segX2/2;
+    int segX2=u16(s+6);
+    if (segX2<=0 || segX2%2) return 0;
+    int seg=segX2/2;
+    /* endCode[seg] + pad(2) + startCode[seg] + idDelta[seg] + idRangeOffset[seg] */
+    uint64_t need = 14ULL + 4ULL*(uint32_t)segX2 + 2ULL;
+    if ((uint64_t)sub + need > fsize) return 0;
     const uint8_t *endC=s+14, *startC=endC+segX2+2, *idD=startC+segX2, *idR=idD+segX2;
     for (int i=0;i<seg;i++){
         int end=u16(endC+2*i);
@@ -69,8 +111,13 @@ static int glyph_index(msttf_font *f, int cp)
             if (cp<st) return 0;
             int delta=s16(idD+2*i), ro=u16(idR+2*i);
             if (ro==0) return (cp+delta)&0xFFFF;
-            const uint8_t *gp=idR+2*i+ro+2*(cp-st);
-            int g=u16(gp); return g?((g+delta)&0xFFFF):0;
+            /* compute the target offset numerically first (rather than
+             * forming a pointer that may already be far out of bounds)
+             * before bounds-checking and dereferencing it */
+            uint64_t idr_off = (uint64_t)(idR-d) + 2ULL*i;
+            uint64_t goff = idr_off + (uint32_t)ro + 2ULL*(uint32_t)(cp-st);
+            if (goff+2 > fsize) return 0;
+            int g=u16(d+goff); return g?((g+delta)&0xFFFF):0;
         }
     }
     return 0;
@@ -82,6 +129,14 @@ static uint32_t glyf_offset(msttf_font *f, int gid, uint32_t *len)
     uint32_t a,b;
     if (f->loca_fmt==0){ a=2*u16(l+2*gid); b=2*u16(l+2*gid+2); }
     else { a=u32(l+4*gid); b=u32(l+4*gid+4); }
+    /* loca entries come straight from font data (msttf_load only checked
+     * the loca *table* has room for num_glyphs entries, not that the
+     * offsets it contains are sane) - a corrupt/malicious b<a or an
+     * a/b pointing past the glyf table used to be handed straight to
+     * callers as a valid (offset,len), which then read glyf data OOB.
+     * Treat any such entry as "no outline" - parse_glyph()/callers
+     * already handle len==0 as empty. */
+    if (b<a || (uint64_t)f->off_glyf+b > (uint64_t)f->size){ *len=0; return f->off_glyf; }
     *len=b-a; return f->off_glyf+a;
 }
 
@@ -90,7 +145,16 @@ typedef struct { float x,y; } pt;
 typedef struct { pt *p; int n, cap; } poly;   /* flattened polyline (one contour) */
 
 static void poly_add(poly *pl, float x, float y){
-    if (pl->n>=pl->cap){ pl->cap=pl->cap?pl->cap*2:64; pl->p=realloc(pl->p,pl->cap*sizeof(pt)); }
+    if (pl->n>=pl->cap){
+        int ncap=pl->cap?pl->cap*2:64;
+        pt *np=realloc(pl->p,(size_t)ncap*sizeof(pt));
+        /* on OOM, drop the point rather than overwrite pl->p with NULL
+         * while pl->cap already reflects the larger (unrealized) capacity -
+         * that combination used to cause a NULL-pointer write on the very
+         * next poly_add() call */
+        if (!np) return;
+        pl->p=np; pl->cap=ncap;
+    }
     pl->p[pl->n].x=x; pl->p[pl->n].y=y; pl->n++;
 }
 static void quad(poly *pl, pt a, pt c, pt b){
@@ -112,36 +176,71 @@ static int parse_simple(msttf_font *f, const uint8_t *g, uint32_t len,
                         poly **polys, int *npoly, int *cappoly,
                         float ox, float oy, float sx, float sy)
 {
-    (void)len;
+    (void)f;
+    /* g/len come from glyf_offset(), which is now bounds-checked against
+     * f->size, but every field inside the glyph record is still attacker-
+     * controlled - previously this function trusted the declared contour
+     * count/point count/instruction length completely and read straight
+     * off the end of the buffer for any corrupt glyph. pend is the hard
+     * upper bound for every read of p from here on. */
+    const uint8_t *pend = g + len;
+    int *ends=NULL; uint8_t *flags=NULL; int16_t *xs=NULL, *ys=NULL;
+    if (len < 10) return 0;
     int nc=s16(g);
+    if (nc<0) return 0;
     const uint8_t *p=g+10;
-    int *ends=malloc(nc*sizeof(int));
+    if (pend - p < (ptrdiff_t)(2*(uint32_t)nc)) goto fail;
+    ends = nc ? malloc((size_t)nc*sizeof(int)) : NULL;
+    if (nc>0 && !ends) goto fail;
     for (int i=0;i<nc;i++){ ends[i]=u16(p); p+=2; }
     int npts=nc?ends[nc-1]+1:0;
-    int insLen=u16(p); p+=2+insLen;
-    uint8_t *flags=malloc(npts);
+    if (npts<0 || npts>20000) goto fail;
+    if (pend-p < 2) goto fail;
+    int insLen=u16(p); p+=2;
+    if (pend-p < insLen) goto fail;
+    p+=insLen;
+    flags = npts ? malloc((size_t)npts) : NULL;
+    if (npts>0 && !flags) goto fail;
     for (int i=0;i<npts;){
+        if (pend-p < 1) goto fail;
         uint8_t fl=*p++; flags[i++]=fl;
-        if (fl&8){ int r=*p++; while(r-- && i<npts) flags[i++]=fl; }
+        if (fl&8){
+            if (pend-p < 1) goto fail;
+            int r=*p++; while(r-- && i<npts) flags[i++]=fl;
+        }
     }
-    int16_t *xs=malloc(npts*sizeof(int16_t)),*ys=malloc(npts*sizeof(int16_t));
+    xs = npts ? malloc((size_t)npts*sizeof(int16_t)) : NULL;
+    ys = npts ? malloc((size_t)npts*sizeof(int16_t)) : NULL;
+    if (npts>0 && (!xs || !ys)) goto fail;
     int xacc=0;
     for (int i=0;i<npts;i++){ uint8_t fl=flags[i];
-        if (fl&2){ int dx=*p++; xacc+=(fl&16)?dx:-dx; }
-        else if(!(fl&16)){ xacc+=s16(p); p+=2; }
+        if (fl&2){ if (pend-p<1) goto fail; int dx=*p++; xacc+=(fl&16)?dx:-dx; }
+        else if(!(fl&16)){ if (pend-p<2) goto fail; xacc+=s16(p); p+=2; }
         xs[i]=xacc;
     }
     int yacc=0;
     for (int i=0;i<npts;i++){ uint8_t fl=flags[i];
-        if (fl&4){ int dy=*p++; yacc+=(fl&32)?dy:-dy; }
-        else if(!(fl&32)){ yacc+=s16(p); p+=2; }
+        if (fl&4){ if (pend-p<1) goto fail; int dy=*p++; yacc+=(fl&32)?dy:-dy; }
+        else if(!(fl&32)){ if (pend-p<2) goto fail; yacc+=s16(p); p+=2; }
         ys[i]=yacc;
+    }
+    /* ends[] is expected non-decreasing with ends[nc-1]==npts-1 (that's
+     * how npts was derived above); a corrupt/adversarial font can violate
+     * that, which would otherwise let idx run past npts-1 below and read
+     * flags[]/xs[]/ys[] out of bounds. Reject rather than guess. */
+    for (int i=0;i<nc;i++){
+        if (ends[i]<0 || ends[i]>=npts || (i>0 && ends[i]<ends[i-1])) goto fail;
     }
     int start=0;
     for (int ci=0;ci<nc;ci++){
         int end=ends[ci], cnt=end-start+1;
         if (cnt<=0){ start=end+1; continue; }
-        if (*npoly>=*cappoly){ *cappoly=*cappoly?*cappoly*2:8; *polys=realloc(*polys,*cappoly*sizeof(poly)); }
+        if (*npoly>=*cappoly){
+            int ncap=*cappoly?*cappoly*2:8;
+            poly *np=realloc(*polys,(size_t)ncap*sizeof(poly));
+            if (!np) goto fail;
+            *polys=np; *cappoly=ncap;
+        }
         poly *pl=&(*polys)[*npoly]; memset(pl,0,sizeof *pl);
         /* build on-curve point list, inserting implied midpoints */
         #define PX(i) (ox + sx*xs[i])
@@ -181,6 +280,9 @@ static int parse_simple(msttf_font *f, const uint8_t *g, uint32_t len,
     }
     free(ends);free(flags);free(xs);free(ys);
     return nc;
+fail:
+    free(ends);free(flags);free(xs);free(ys);
+    return 0;
 }
 
 static int parse_glyph(msttf_font *f, int gid, poly **polys, int *npoly, int *cappoly,
@@ -192,17 +294,23 @@ static int parse_glyph(msttf_font *f, int gid, poly **polys, int *npoly, int *ca
     const uint8_t *g=f->data+off;
     int nc=s16(g);
     if (nc>=0) return parse_simple(f,g,len,polys,npoly,cappoly,ox,oy,sx,sy);
-    /* composite */
+    /* composite - previously read flags/cgid/dx/dy/scale fields with no
+     * check against the glyph's declared length at all, so a truncated or
+     * corrupt composite glyph (or one whose MORE_COMPONENTS chain never
+     * terminates) would walk p arbitrarily far past the glyf buffer. */
+    if (len < 10) return 0;
+    const uint8_t *pend = g + len;
     const uint8_t *p=g+10;
     while (1){
+        if (pend-p < 4) break;
         int flags=u16(p); int cgid=u16(p+2); p+=4;
         float dx,dy;
-        if (flags&1){ dx=s16(p); dy=s16(p+2); p+=4; }
-        else { dx=(int8_t)p[0]; dy=(int8_t)p[1]; p+=2; }
+        if (flags&1){ if (pend-p<4) break; dx=s16(p); dy=s16(p+2); p+=4; }
+        else { if (pend-p<2) break; dx=(int8_t)p[0]; dy=(int8_t)p[1]; p+=2; }
         float a=1,b2=0,c2=0,dd=1;
-        if (flags&8){ a=dd=s16(p)/16384.0f; p+=2; }
-        else if (flags&0x40){ a=s16(p)/16384.0f; dd=s16(p+2)/16384.0f; p+=4; }
-        else if (flags&0x80){ a=s16(p)/16384.0f; b2=s16(p+2)/16384.0f; c2=s16(p+4)/16384.0f; dd=s16(p+6)/16384.0f; p+=8; }
+        if (flags&8){ if (pend-p<2) break; a=dd=s16(p)/16384.0f; p+=2; }
+        else if (flags&0x40){ if (pend-p<4) break; a=s16(p)/16384.0f; dd=s16(p+2)/16384.0f; p+=4; }
+        else if (flags&0x80){ if (pend-p<8) break; a=s16(p)/16384.0f; b2=s16(p+2)/16384.0f; c2=s16(p+4)/16384.0f; dd=s16(p+6)/16384.0f; p+=8; }
         /* only ARGS_ARE_XY_VALUES supported for placement */
         float nox=ox+sx*dx, noy=oy+sy*dy;
         parse_glyph(f,cgid,polys,npoly,cappoly,nox,noy,sx*a,sy*dd,depth+1);
