@@ -7,6 +7,8 @@
 #ifdef USE_CONTROL
 #include <pthread.h>
 #include <time.h>
+#include <stdio.h>
+#include <string.h>
 
 static pthread_mutex_t g_mu   = PTHREAD_MUTEX_INITIALIZER;
 static pthread_once_t  g_once = PTHREAD_ONCE_INIT;
@@ -86,6 +88,90 @@ int events_motion_pop(unsigned *cursor, ms_motion_status *out)
     return got;
 }
 
+/* config table: settings are LEVEL state (not edges like motion), so a
+ * fixed table keyed by name - pushing an already-tracked key overwrites it
+ * in place, coalescing bursts (a dragged slider keeps exactly one slot).
+ * g_cfg_seq is a global counter, bumped on every push; each slot remembers
+ * the seq it was last written at so subscribers can ask "anything with
+ * seq > mine?" without a ring. Only when a genuinely new key needs a slot
+ * and all EV_CFG_SLOTS are held by other still-live keys does the oldest
+ * get evicted - g_cfg_evict_seq then marks the newest evicted seq so a
+ * subscriber that hadn't caught up to it yet knows it lost a key and must
+ * resync (one GET /control) instead of silently missing that update.
+ * Sized at 24 (~4.9KB BSS, 204B/slot) so the most common bulk save - the
+ * Image Quality page, ~22 keys in one POST (see control.c IMG[]) - fits in
+ * one push without forcing every other open tab through the resync/refetch
+ * fallback path; 8 slots made that the common case instead of the rare
+ * one. */
+#define EV_CFG_SLOTS 24
+typedef struct {
+    char     key[40];
+    char     val[160];
+    unsigned seq;      /* 0 = slot never used */
+} ev_cfg_slot;
+static ev_cfg_slot g_cfgtab[EV_CFG_SLOTS];
+static unsigned    g_cfg_seq;
+static unsigned    g_cfg_evict_seq;
+
+void events_config_push(const char *key, const char *val)
+{
+    pthread_once(&g_once, cv_init);
+    pthread_mutex_lock(&g_mu);
+    int slot = -1, empty = -1, oldest = -1;
+    for (int i = 0; i < EV_CFG_SLOTS; i++) {
+        if (g_cfgtab[i].seq && !strcmp(g_cfgtab[i].key, key)) { slot = i; break; }
+        if (!g_cfgtab[i].seq && empty < 0) empty = i;
+        if (g_cfgtab[i].seq && (oldest < 0 || g_cfgtab[i].seq < g_cfgtab[oldest].seq)) oldest = i;
+    }
+    if (slot < 0) {
+        slot = (empty >= 0) ? empty : oldest;
+        /* evicting a DIFFERENT, still-live key: mark it lost */
+        if (slot == oldest && g_cfgtab[oldest].seq && strcmp(g_cfgtab[oldest].key, key) &&
+            g_cfgtab[oldest].seq > g_cfg_evict_seq)
+            g_cfg_evict_seq = g_cfgtab[oldest].seq;
+    }
+    snprintf(g_cfgtab[slot].key, sizeof g_cfgtab[slot].key, "%s", key);
+    snprintf(g_cfgtab[slot].val, sizeof g_cfgtab[slot].val, "%s", val);
+    g_cfgtab[slot].seq = ++g_cfg_seq;
+    g_gen++;                             /* implies events_notify() */
+    pthread_cond_broadcast(&g_cv);
+    pthread_mutex_unlock(&g_mu);
+}
+
+unsigned events_config_cursor(void)
+{
+    pthread_mutex_lock(&g_mu);
+    unsigned s = g_cfg_seq;
+    pthread_mutex_unlock(&g_mu);
+    return s;
+}
+
+int events_config_resync(unsigned *cursor)
+{
+    int need = 0;
+    pthread_mutex_lock(&g_mu);
+    if (*cursor < g_cfg_evict_seq) { *cursor = g_cfg_evict_seq; need = 1; }
+    pthread_mutex_unlock(&g_mu);
+    return need;
+}
+
+int events_config_pop(unsigned *cursor, char *key, int keycap, char *val, int valcap)
+{
+    int got = 0, best = -1;
+    pthread_mutex_lock(&g_mu);
+    for (int i = 0; i < EV_CFG_SLOTS; i++)
+        if (g_cfgtab[i].seq > *cursor && (best < 0 || g_cfgtab[i].seq < g_cfgtab[best].seq))
+            best = i;
+    if (best >= 0) {
+        snprintf(key, keycap, "%s", g_cfgtab[best].key);
+        snprintf(val, valcap, "%s", g_cfgtab[best].val);
+        *cursor = g_cfgtab[best].seq;
+        got = 1;
+    }
+    pthread_mutex_unlock(&g_mu);
+    return got;
+}
+
 unsigned events_wait(unsigned last_gen, int timeout_ms)
 {
     pthread_once(&g_once, cv_init);
@@ -107,5 +193,6 @@ unsigned events_wait(unsigned last_gen, int timeout_ms)
 
 void events_notify(void) {}
 void events_motion_push(const ms_motion_status *st) { (void)st; }
+void events_config_push(const char *key, const char *val) { (void)key; (void)val; }
 
 #endif

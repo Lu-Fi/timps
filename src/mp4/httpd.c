@@ -522,7 +522,7 @@ static void events_stream(hconn *c, const char *path, const char *cors)
     const ms_config *cfg = c->cfg;
 
     /* ?stream= filter: absent = all; present = only the listed types */
-    int want_motion = 1, want_dn = 1, want_stats = 1;
+    int want_motion = 1, want_dn = 1, want_stats = 1, want_config = 1;
     const char *f = strstr(path, "stream=");
     if (f){
         char fl[80]; int i = 0;
@@ -531,6 +531,7 @@ static void events_stream(hconn *c, const char *path, const char *cors)
         want_motion = strstr(fl, "motion")   != NULL;
         want_dn     = strstr(fl, "daynight") != NULL;
         want_stats  = strstr(fl, "stats")    != NULL;
+        want_config = strstr(fl, "config")   != NULL;
     }
 
     /* own cap below the global HTTP_MAX_CLIENTS: a flood of /events
@@ -566,6 +567,7 @@ static void events_stream(hconn *c, const char *path, const char *cors)
     int64_t last_write = ms_now_us();
     unsigned gen = events_generation();
     unsigned mq_cur = events_motion_cursor();     /* private snapshot cursor */
+    unsigned cfg_cur = events_config_cursor();    /* private config-table cursor */
     char js[1024];                                /* fits max_cells active[] */
 
     memset(&lm, 0, sizeof lm);
@@ -615,6 +617,23 @@ static void events_stream(hconn *c, const char *path, const char *cors)
             next_stats = ms_now_us() + (int64_t)stats_ms * 1000;
             if (stats_json(cfg, js, sizeof js) < (int)sizeof js)
                 rc = sse_emit(c, "stats", js, &last_write);
+        }
+        if (rc >= 0 && want_config){
+            /* settings changed elsewhere (another client's /control POST):
+             * a lapped eviction first (rare - many distinct keys changed
+             * while this client was off the condvar), then every key this
+             * client hasn't seen the latest value of yet. Values are
+             * already sanitize_val()-cleaned in control.c (no raw quotes/
+             * control bytes), safe to splice into the JSON string as-is. */
+            if (events_config_resync(&cfg_cur))
+                rc = sse_emit(c, "config", "{\"resync\":true}", &last_write);
+            char ck[40], cv[160];
+            while (rc >= 0 && events_config_pop(&cfg_cur, ck, sizeof ck, cv, sizeof cv)){
+                int jl = snprintf(js, sizeof js,
+                    "{\"key\":\"%s\",\"value\":\"%s\"}", ck, cv);
+                if (jl < (int)sizeof js)
+                    rc = sse_emit(c, "config", js, &last_write);
+            }
         }
         if (rc < 0) break;                        /* client gone (EPIPE) */
 

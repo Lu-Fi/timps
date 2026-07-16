@@ -114,7 +114,14 @@ static int get_val(const char *s, const char *e, const char *name,
 /* Make a value safe to store in the flat config file: no control chars (a
  * newline would inject a new config line on the next load) and no double quote
  * (would break the "key = \"value\"" quoting). Defense-in-depth even though
- * /control is only reachable from localhost or with valid credentials. */
+ * /control is only reachable from localhost or with valid credentials.
+ *
+ * Also no backslash: this sanitized value is spliced unescaped straight into
+ * a JSON string for the /events "config" push (httpd.c events_stream), and a
+ * raw backslash there produces an invalid (or, worse, a maliciously
+ * reinterpreted) escape sequence - a lone '\"' at the end would even escape
+ * the closing quote. Replacing it here keeps both consumers (config file,
+ * JSON event) safe without a second escaping pass. */
 static void sanitize_val(const char *in, char *out, size_t cap)
 {
     size_t o=0;
@@ -122,6 +129,7 @@ static void sanitize_val(const char *in, char *out, size_t cap)
         unsigned char ch=(unsigned char)*in;
         if (ch < 0x20) ch=' ';
         else if (ch=='"') ch='\'';
+        else if (ch=='\\') ch='/';
         out[o++]=(char)ch;
     }
     out[o]=0;
@@ -143,7 +151,12 @@ static void timps_apply_setting(ctrl_changes *ch, const char *key, const char *r
      * live HAL call and the config-file write. This stops clients that re-post
      * the same value every couple of seconds from hammering the ISP and, worse,
      * rewriting /etc/timps.conf on flash over and over. */
-    char before[96], after[96];
+    /* sized to match val[]/the general 160-char value cap (config_get_kv's
+     * snprintf(out,cap,...) truncates to fit) - a 96-byte cap here let two
+     * long values (e.g. OSD text, up to ~127 chars) that only differ past
+     * byte 95 compare as "unchanged", silently skipping hub_control()/the
+     * /events push/the config-file persist for a real change. */
+    char before[160], after[160];
     config_str_lock();     /* g_cfg strings are read by other threads */
     int known = config_get_kv(&g_cfg, key, before, sizeof before);
     config_apply_kv(&g_cfg, key, val);
@@ -155,12 +168,12 @@ static void timps_apply_setting(ctrl_changes *ch, const char *key, const char *r
     }
 
     hub_control(key, val);               /* live via the HAL */
-    /* wake /events subscribers when a pushed-status source changed: the
-     * motion/daynight status objects reflect these settings immediately
-     * (grid geometry, enabled flags, the day/night mode fallback) */
-    if (!strncmp(key,"motion.",7) || !strncmp(key,"daynight.",9) ||
-        !strcmp(key,"image.running_mode"))
-        events_notify();
+    /* echo to every other /events subscriber ("config" SSE event) so other
+     * open WebUI tabs/clients reflect this change instead of only seeing it
+     * on next poll. motion- and daynight-prefixed keys additionally still
+     * drive their own richer status events from imp_motion.c/daynight.c -
+     * this is just the raw settings echo, for everything else too. */
+    events_config_push(key, val);
     if (ch->n < CTRL_MAX_CHG){
         snprintf(ch->key[ch->n], sizeof ch->key[0], "%s", key);
         snprintf(ch->val[ch->n], sizeof ch->val[0], "%s", val);
@@ -185,7 +198,13 @@ void control_apply_json(const char *json)
 {
     if (!json || !json[0]) return;
     const char *end = json + strlen(json);
-    ctrl_changes ch; ch.n = 0;
+    /* heap, not stack: 48*(40+160) = 9.6 KB is the largest single frame in
+     * the daemon's hottest request path (a dragged slider posts often) and
+     * this sits under buf[] in conn_thread too - same reasoning as the
+     * /control GET json[] buffer. */
+    ctrl_changes *ch = (ctrl_changes *)malloc(sizeof *ch);
+    if (!ch) { LOGW(MOD,"control_apply_json: OOM"); return; }
+    ch->n = 0;
     char v[160];
 
     /* every numeric image.* key (accepted regardless of SoC support: the HAL
@@ -235,18 +254,18 @@ void control_apply_json(const char *json)
     /* image: nested "image":{...} preferred; the legacy flat keys of the old
      * /control (top-level brightness/... ) keep working via a whole-body scan */
     const char *se, *sb = find_obj(json, end, "image", &se);
-    apply_section(&ch, "image", sb?sb:json, sb?se:end,
+    apply_section(ch, "image", sb?sb:json, sb?se:end,
                   IMG, (int)(sizeof IMG/sizeof IMG[0]));
     /* legacy day/night: {"force_mode":"night"|"day"} */
     if (get_val(json, end, "force_mode", v, sizeof v)){
-        if      (!strcmp(v,"night")) timps_apply_setting(&ch,"image.running_mode","1");
-        else if (!strcmp(v,"day"))   timps_apply_setting(&ch,"image.running_mode","0");
+        if      (!strcmp(v,"night")) timps_apply_setting(ch,"image.running_mode","1");
+        else if (!strcmp(v,"day"))   timps_apply_setting(ch,"image.running_mode","0");
     }
 
     sb = find_obj(json, end, "audio", &se);
     if (sb){
-        apply_section(&ch, "audio", sb, se, AUD_LIVE, (int)(sizeof AUD_LIVE/sizeof AUD_LIVE[0]));
-        apply_section(&ch, "audio", sb, se, AUD_REST, (int)(sizeof AUD_REST/sizeof AUD_REST[0]));
+        apply_section(ch, "audio", sb, se, AUD_LIVE, (int)(sizeof AUD_LIVE/sizeof AUD_LIVE[0]));
+        apply_section(ch, "audio", sb, se, AUD_REST, (int)(sizeof AUD_REST/sizeof AUD_REST[0]));
     }
 
     /* daynight: {"daynight":{"enabled":..,"total_gain_day_threshold":..,
@@ -257,14 +276,14 @@ void control_apply_json(const char *json)
     sb = find_obj(json, end, "daynight", &se);
     if (sb){
         if (get_val(sb, se, "enabled", v, sizeof v))
-            timps_apply_setting(&ch, "daynight.enabled",
+            timps_apply_setting(ch, "daynight.enabled",
                                 (!strcmp(v,"true")||!strcmp(v,"1")) ? "1" :
                                 (!strcmp(v,"false")||!strcmp(v,"0")) ? "0" : v);
         static const char *const DN_KEYS[] = {
             "total_gain_day_threshold","total_gain_night_threshold",
             "day_gain_pct","baseline_delay_s"
         };
-        apply_section(&ch, "daynight", sb, se,
+        apply_section(ch, "daynight", sb, se,
                       DN_KEYS, (int)(sizeof DN_KEYS/sizeof DN_KEYS[0]));
     }
 
@@ -280,7 +299,7 @@ void control_apply_json(const char *json)
         const char *fe = sb;
         while (fe<se && *fe!='{') fe++;
         if (get_val(sb, fe, "enabled", v, sizeof v))
-            timps_apply_setting(&ch, "osd.enabled",
+            timps_apply_setting(ch, "osd.enabled",
                                 (!strcmp(v,"true")||!strcmp(v,"1")) ? "1" :
                                 (!strcmp(v,"false")||!strcmp(v,"0")) ? "0" : v);
         for (int i=0;i<MS_MAX_OSD;i++){
@@ -288,7 +307,7 @@ void control_apply_json(const char *json)
             const char *ie, *ib = find_obj(sb, se, idx, &ie);
             if (!ib) continue;
             char pre[8]; snprintf(pre,sizeof pre,"osd%d",i);
-            apply_section(&ch, pre, ib, ie, OSD, (int)(sizeof OSD/sizeof OSD[0]));
+            apply_section(ch, pre, ib, ie, OSD, (int)(sizeof OSD/sizeof OSD[0]));
         }
     }
 
@@ -304,7 +323,7 @@ void control_apply_json(const char *json)
             const char *ie, *ib = find_obj(sb, se, idx, &ie);
             if (!ib) continue;
             char pre[12]; snprintf(pre,sizeof pre,"osd%d.%d",s,i);
-            apply_section(&ch, pre, ib, ie, OSD, (int)(sizeof OSD/sizeof OSD[0]));
+            apply_section(ch, pre, ib, ie, OSD, (int)(sizeof OSD/sizeof OSD[0]));
         }
     }
 
@@ -318,7 +337,7 @@ void control_apply_json(const char *json)
             const char *ie, *ib = find_obj(sb, se, idx, &ie);
             if (!ib) continue;
             char pre[8]; snprintf(pre,sizeof pre,"video%d",i);
-            apply_section(&ch, pre, ib, ie, VID_REST, (int)(sizeof VID_REST/sizeof VID_REST[0]));
+            apply_section(ch, pre, ib, ie, VID_REST, (int)(sizeof VID_REST/sizeof VID_REST[0]));
         }
     }
 
@@ -337,7 +356,7 @@ void control_apply_json(const char *json)
                 const char *ne, *nb = find_obj(ssb, sse, nidx, &ne);
                 if (!nb) continue;
                 char pre[16]; snprintf(pre,sizeof pre,"privacy%d.%d",s,n);
-                apply_section(&ch, pre, nb, ne, PRIV_KEYS,
+                apply_section(ch, pre, nb, ne, PRIV_KEYS,
                               (int)(sizeof PRIV_KEYS/sizeof PRIV_KEYS[0]));
             }
         }
@@ -347,7 +366,7 @@ void control_apply_json(const char *json)
      * (persist-only, applied at the next ISP init) */
     sb = find_obj(json, end, "sensor", &se);
     if (sb)
-        apply_section(&ch, "sensor", sb, se, SENSOR, (int)(sizeof SENSOR/sizeof SENSOR[0]));
+        apply_section(ch, "sensor", sb, se, SENSOR, (int)(sizeof SENSOR/sizeof SENSOR[0]));
 
     /* motion: {"motion":{"enabled":..,"sensitivity":..,"cols":..,"rows":..,
      * "monitor_stream":..}} -> motion.*. ALL applied LIVE: the HAL stops and
@@ -359,13 +378,13 @@ void control_apply_json(const char *json)
     sb = find_obj(json, end, "motion", &se);
     if (sb){
         if (get_val(sb, se, "enabled", v, sizeof v))
-            timps_apply_setting(&ch, "motion.enabled",
+            timps_apply_setting(ch, "motion.enabled",
                                 (!strcmp(v,"true")||!strcmp(v,"1")) ? "1" :
                                 (!strcmp(v,"false")||!strcmp(v,"0")) ? "0" : v);
         static const char *const MOTION_KEYS[] = {
             "sensitivity","cols","rows","monitor_stream"
         };
-        apply_section(&ch, "motion", sb, se,
+        apply_section(ch, "motion", sb, se,
                       MOTION_KEYS, (int)(sizeof MOTION_KEYS/sizeof MOTION_KEYS[0]));
     }
 
@@ -381,7 +400,7 @@ void control_apply_json(const char *json)
             "enabled","channel","mode","dir","name","segment_s",
             "pre_roll_s","post_roll_s","min_free_mb","audio"
         };
-        apply_section(&ch, "record", sb, se,
+        apply_section(ch, "record", sb, se,
                       REC_KEYS, (int)(sizeof REC_KEYS/sizeof REC_KEYS[0]));
     }
 
@@ -393,16 +412,17 @@ void control_apply_json(const char *json)
         static const char *const TL_KEYS[] = {
             "enabled","channel","dir","name","interval_s","keep_days"
         };
-        apply_section(&ch, "timelapse", sb, se,
+        apply_section(ch, "timelapse", sb, se,
                       TL_KEYS, (int)(sizeof TL_KEYS/sizeof TL_KEYS[0]));
     }
 
     /* persist all changed keys back into the config file */
-    if (ch.n > 0 && g_cfg_path && g_cfg_path[0]){
+    if (ch->n > 0 && g_cfg_path && g_cfg_path[0]){
         const char *keys[CTRL_MAX_CHG], *vals[CTRL_MAX_CHG];
-        for (int i=0;i<ch.n;i++){ keys[i]=ch.key[i]; vals[i]=ch.val[i]; }
-        config_write_keys(g_cfg_path, keys, vals, ch.n);
+        for (int i=0;i<ch->n;i++){ keys[i]=ch->key[i]; vals[i]=ch->val[i]; }
+        config_write_keys(g_cfg_path, keys, vals, ch->n);
     }
+    free(ch);
 }
 
 /* ---------- GET /control: dump the current (in-memory) values ---------- */

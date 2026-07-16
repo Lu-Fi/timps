@@ -32,6 +32,20 @@ void events_notify(void);
  * subscribers (implies events_notify; O(cells) copy, never blocks) */
 void events_motion_push(const ms_motion_status *st);
 
+/* producer (control.c): record a changed setting for the /events "config"
+ * push AND wake all subscribers (implies events_notify).
+ *
+ * Unlike motion, a setting is LEVEL state, not an edge: while a subscriber
+ * is off the condvar, three updates to the same key coalesce into one -
+ * that is exactly right (a dragged slider need not replay every intermediate
+ * value, only the latest). So this is a small fixed table keyed by name,
+ * not a ring: pushing an already-present key overwrites it in place. Only
+ * when a truly new, distinct key needs a slot and the table is full does an
+ * still-undelivered *different* key get evicted - subscribers behind that
+ * point are told to resync (one GET /control) instead of silently losing
+ * that key's update. */
+void events_config_push(const char *key, const char *val);
+
 #ifdef USE_CONTROL
 /* subscribers (httpd.c /events connections): read the current generation,
  * then block until it moves past last_gen or timeout_ms elapsed (whichever
@@ -47,6 +61,16 @@ unsigned events_wait(unsigned last_gen, int timeout_ms);
  * the oldest retained snapshot (bounded memory, drop-oldest overflow). */
 unsigned events_motion_cursor(void);
 int events_motion_pop(unsigned *cursor, ms_motion_status *out);
+
+/* config table, per-subscriber cursor: seed with events_config_cursor() on
+ * connect (only FUTURE changes are delivered - the initial values come from
+ * the client's own GET /control on page load), then each wakeup first call
+ * events_config_resync() (returns 1 exactly once if this subscriber lapped
+ * an eviction - emit one "please refetch /control" event), then drain
+ * events_config_pop() until it returns 0. */
+unsigned events_config_cursor(void);
+int events_config_resync(unsigned *cursor);
+int events_config_pop(unsigned *cursor, char *key, int keycap, char *val, int valcap);
 #endif
 
 #endif
