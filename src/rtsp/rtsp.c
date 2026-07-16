@@ -51,7 +51,8 @@ struct rtsp_server {
 /* RTP output sink (UDP or TCP-interleaved) */
 typedef struct {
     int                tcp;          /* 1 = interleaved on control fd */
-    int                fd;           /* udp socket or control fd */
+    int                fd;           /* udp RTP socket (or control fd, TCP) */
+    int                fd_rtcp;      /* udp RTCP socket (UDP only, else unused) */
     struct sockaddr_in dst, dst_rtcp;
     int                chan_rtp, chan_rtcp;
 #ifdef USE_TLS
@@ -81,9 +82,13 @@ static int sink_send(void *ctx, const uint8_t *pkt, int len, int rtcp)
         return net_sendall(s->fd, buf, 4 + len) < 0 ? -1 : len;
     } else {
         /* UDP media stays plaintext even for RTSPS clients: RTSPS secures the
-         * control channel (and interleaved-TCP media) only - no SRTP here */
+         * control channel (and interleaved-TCP media) only - no SRTP here.
+         * RTCP must originate from the RTCP socket (server_port+1), not the
+         * RTP one - some port-strict receivers drop a Sender Report whose
+         * source port doesn't match the SETUP-negotiated server_port pair. */
         struct sockaddr_in *d = rtcp ? &s->dst_rtcp : &s->dst;
-        return (int)sendto(s->fd, pkt, len, 0, (struct sockaddr*)d, sizeof(*d));
+        int fd = rtcp ? s->fd_rtcp : s->fd;
+        return (int)sendto(fd, pkt, len, 0, (struct sockaddr*)d, sizeof(*d));
     }
 }
 
@@ -378,7 +383,7 @@ static int handle_request(session *s, char *req)
             if (bound < 0){
                 r_send(s,"RTSP/1.0 500 Internal\r\n\r\n",25); return -1; }
             rtp_sink *snk = is_audio ? &s->asink : &s->vsink;
-            snk->tcp=0; snk->fd=udp[0];
+            snk->tcp=0; snk->fd=udp[0]; snk->fd_rtcp=udp[1];
             snk->dst=s->peer; snk->dst.sin_port=htons((uint16_t)cp);
             snk->dst_rtcp=s->peer; snk->dst_rtcp.sin_port=htons((uint16_t)cp2);
             if (is_audio) s->have_audio=1; else s->have_video=1;
