@@ -328,7 +328,18 @@ static int advance(msttf_font *f, int gid)
 }
 
 /* ---------- scanline fill with supersampling ---------- */
-#define SS 4
+/* Runtime-configurable AA quality (samples/axis/pixel), default 2. Used to
+ * be a hardcoded #define SS 4; benchmarked (host x86, real OSD strings from
+ * camera.conf) at ~2x the raster CPU cost of 2 for no visible difference at
+ * typical OSD text sizes (12-32px) - see msttf_set_ss()/osd.supersample. */
+static int g_ss = 2;
+
+void msttf_set_ss(int ss)
+{
+    if (ss < 1) ss = 1;
+    if (ss > 4) ss = 4;   /* coverage counters are uint8_t (0..ss*ss); ss=4 -> 16, plenty of margin under 255 */
+    g_ss = ss;
+}
 
 /* blend 'color' onto img[idx] with additional alpha factor 'a' (0..1) */
 static void px_blend(uint32_t *img, int idx, uint32_t color, float a)
@@ -349,6 +360,10 @@ int msttf_render(msttf_font *f, const char *s, int pixel_h,
                  uint32_t fg, uint32_t bg, int outline, uint32_t oc,
                  uint8_t **out, int *w, int *h)
 {
+    /* snapshot once: keeps one render call internally consistent even if
+     * msttf_set_ss() were ever called concurrently (it isn't today - set
+     * once at startup from osd.supersample - but this is free either way) */
+    const int ss = g_ss;
     float scale = (float)pixel_h / f->units_per_em;
     int ascent = (int)(f->units_per_em*1.0f);   /* use em box */
     (void)ascent;
@@ -366,7 +381,7 @@ int msttf_render(msttf_font *f, const char *s, int pixel_h,
     uint32_t *img=malloc((size_t)W*H*4);
     if(!img) return -1;
     for (int i=0;i<W*H;i++) img[i]=bg;
-    /* whole-string coverage plane (0..SS*SS): glyphs rasterize into this and
+    /* whole-string coverage plane (0..ss*ss): glyphs rasterize into this and
      * the composite runs ONCE afterwards, so an outline can be drawn under
      * the complete fill (no later glyph stroking over its neighbour's fill) */
     uint8_t *gcov=calloc((size_t)W*H,1);
@@ -400,8 +415,8 @@ int msttf_render(msttf_font *f, const char *s, int pixel_h,
                 /* supersample scanlines */
                 float xint[128];
                 for (int py=y0;py<y1;py++){
-                    for (int sub=0;sub<SS;sub++){
-                        float yc=py+(sub+0.5f)/SS;
+                    for (int sub=0;sub<ss;sub++){
+                        float yc=py+(sub+0.5f)/ss;
                         int nx=0;
                         for (int i=0;i<npoly;i++){
                             poly *pl=&polys[i];
@@ -418,13 +433,13 @@ int msttf_render(msttf_font *f, const char *s, int pixel_h,
                             if (xint[b]<xint[a]){ float tmp=xint[a];xint[a]=xint[b];xint[b]=tmp; }
                         for (int a=0;a+1<nx;a+=2){
                             float xa=xint[a], xb=xint[a+1];
-                            for (int sx2=0;sx2<SS;sx2++){
+                            for (int sx2=0;sx2<ss;sx2++){
                                 /* sub-pixel columns */
                                 for (int px=x0;px<x1;px++){
-                                    float xc=px+(sx2+0.5f)/SS;
+                                    float xc=px+(sx2+0.5f)/ss;
                                     if (xc>=xa&&xc<xb){
                                         uint8_t *cc=&cov[(py-y0)*bw+(px-x0)];
-                                        if (*cc<SS*SS) (*cc)++;
+                                        if (*cc<ss*ss) (*cc)++;
                                     }
                                 }
                             }
@@ -434,7 +449,7 @@ int msttf_render(msttf_font *f, const char *s, int pixel_h,
                 /* accumulate coverage into the whole-string plane */
                 for (int py=y0;py<y1;py++) for(int px=x0;px<x1;px++){
                     int c=gcov[py*W+px] + cov[(py-y0)*bw+(px-x0)];
-                    gcov[py*W+px]=(uint8_t)(c>SS*SS ? SS*SS : c);
+                    gcov[py*W+px]=(uint8_t)(c>ss*ss ? ss*ss : c);
                 }
                 free(cov);
             }
@@ -468,13 +483,13 @@ int msttf_render(msttf_font *f, const char *s, int pixel_h,
                 }
             }
             for (int i=0;i<W*H;i++)
-                if (d2[i]) px_blend(img, i, oc, (float)d2[i]/(SS*SS));
+                if (d2[i]) px_blend(img, i, oc, (float)d2[i]/(ss*ss));
         }
         free(d1); free(d2);
     }
     /* fill on top of (a possible) outline */
     for (int i=0;i<W*H;i++)
-        if (gcov[i]) px_blend(img, i, fg, (float)gcov[i]/(SS*SS));
+        if (gcov[i]) px_blend(img, i, fg, (float)gcov[i]/(ss*ss));
     free(gcov);
 
     *out=(uint8_t*)img; *w=W; *h=H;

@@ -15,6 +15,13 @@ typedef struct {
 int  msttf_load(msttf_font *f, const char *path);
 void msttf_free(msttf_font *f);
 
+/* Set the rasterizer's antialiasing quality: samples per axis per pixel
+ * (1-4, clamped; default 2 if never called). Cost scales ~quadratically
+ * (4 = 16 samples/px, 2 = 4 samples/px, roughly 2x the raster CPU cost of
+ * 2 for text this small) with no visible difference at typical OSD sizes.
+ * Global, not per-font: matches the single osd.supersample config knob. */
+void msttf_set_ss(int ss);
+
 /* Render an ASCII/Latin-1 string into a newly allocated BGRA buffer.
  * pixel_h = cap height in pixels. fg/bg are 0xAARRGGBB.
  * outline = stroke width in px (0 = none): the glyph coverage is dilated by

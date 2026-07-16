@@ -211,6 +211,13 @@ osd.enabled        = 1
 osd.monitor_stream = 0                        # stream whose fps feeds {fps}
 osd.font_path      = /usr/share/fonts/default.ttf   # default TTF; empty = bitmap font
 osd.vars_file      = /tmp/timps_osd.vars                  # custom placeholder source
+osd.supersample    = 2                        # TTF rasterizer AA: samples/axis/pixel
+                                               # (1-4). 2 = default, visually identical
+                                               # to 4 at typical OSD sizes but ~2x
+                                               # cheaper to render; 4 = old default,
+                                               # higher CPU; 1 = cheapest, visibly
+                                               # rougher edges. No effect on the
+                                               # embedded bitmap font (font_path empty).
 #
 # Every video stream carries its OWN independent overlay set.
 # Canonical keys:  osd<S>.<N>.<field>  = stream S (0 = main, 1 = sub), item N

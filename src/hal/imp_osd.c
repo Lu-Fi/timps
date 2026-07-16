@@ -86,8 +86,27 @@ static uint8_t *load_bgra(const char *path, int w, int h)
     return b;
 }
 
+/* MS_OSD_TEST_STATIC=1: freezes every text region after its very first
+ * render (never re-rasterizes again, even if the expanded text keeps
+ * changing) - used to isolate the software rasterizer's own CPU cost from
+ * the driver/hardware-side per-frame OSD compositing cost. Compare CPU load
+ * across three runs: OSD off entirely / OSD on normally / OSD on with this
+ * set. If "static" tracks close to "off", the rasterizer (msttf_render /
+ * osd_text_render, ~1x/s) is the cost; if it tracks close to "normal", the
+ * per-frame compositing is the cost. TEST-ONLY KNOB - remove once done. */
+static int osd_test_static_mode(void)
+{
+    static int v=-1;
+    if (v<0){
+        v = getenv("MS_OSD_TEST_STATIC") ? 1 : 0;
+        if (v) LOGI(MOD,"MS_OSD_TEST_STATIC=1: OSD text frozen after first render (CPU test mode)");
+    }
+    return v;
+}
+
 static void refresh_text(osd_stream *s, osd_region *rg)
 {
+    if (osd_test_static_mode() && rg->buf) return;  /* test mode: only the very first render counts */
     const ms_osd_item *it=&g_hcfg->osd.items[s->si][rg->item];
     /* it->text is runtime-mutable via /control (copystr in config_apply_kv):
      * snapshot it under the config string lock before expanding */
@@ -184,6 +203,7 @@ static void setup_cover(osd_stream *s, int n)
 int imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height)
 {
     g_hcfg = cfg;
+    msttf_set_ss(cfg->osd.supersample);   /* global TTF rasterizer AA quality */
     if (stream_idx<0 || stream_idx>=MS_MAX_VSTREAM) return -1;
 
     /* the OSD group is also the carrier for privacy cover masks, so build it

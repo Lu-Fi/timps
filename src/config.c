@@ -147,7 +147,7 @@ void config_defaults(ms_config *c)
 
     /* OSD: per-stream arrays of overlays; same sensible default layout on
      * every stream (time / hostname / uptime / logo) */
-    c->osd.enabled=1; c->osd.monitor_stream=0;
+    c->osd.enabled=1; c->osd.monitor_stream=0; c->osd.supersample=2;
     copystr(c->osd.font_path,"/usr/share/fonts/default.ttf",128);
     copystr(c->osd.vars_file,"/tmp/timps_osd.vars",128);
     for (int s=0;s<MS_MAX_VSTREAM;s++){
@@ -454,6 +454,10 @@ static void set_kv(ms_config *c, const char *key, const char *val)
         else if(!strcmp(k,"monitor_stream"))c->osd.monitor_stream=pint(val);
         else if(!strcmp(k,"font_path"))copystr(c->osd.font_path,val,128);
         else if(!strcmp(k,"vars_file"))copystr(c->osd.vars_file,val,128);
+        else if(!strcmp(k,"supersample")){
+            int v2=pint(val); if(v2<1)v2=1; if(v2>4)v2=4;
+            c->osd.supersample=v2;
+        }
         else LOGW(MOD,"unknown key %s",key);
         return;
     }
@@ -630,6 +634,7 @@ int config_get_kv(const ms_config *c, const char *key, char *out, size_t cap)
         else if(!strcmp(k,"monitor_stream")) snprintf(out,cap,"%d",c->osd.monitor_stream);
         else if(!strcmp(k,"font_path")) snprintf(out,cap,"%s",c->osd.font_path);
         else if(!strcmp(k,"vars_file")) snprintf(out,cap,"%s",c->osd.vars_file);
+        else if(!strcmp(k,"supersample")) snprintf(out,cap,"%d",c->osd.supersample);
         else return 0;
         return 1;
     }

@@ -9,7 +9,10 @@
 #                                            # build, incl. its own http.port etc.) instead
 #                                            # of pushing scripts/camera.conf to /tmp
 #
-# Env overrides: CAM (camera IP, required), THINGINO (firmware tree)
+# Env overrides: CAM (camera IP, required), THINGINO (firmware tree),
+# MS_OSD_TEST_STATIC=1 (forwarded to the camera: freezes OSD text after the
+# first render, for isolating the TTF/bitmap rasterizer's CPU cost from
+# IMP_OSD's per-frame hardware compositing cost - see imp_osd.c)
 set -euo pipefail
 
 CAM="${CAM:-}"
@@ -70,5 +73,12 @@ else
     CONF=/etc/timps.conf
 fi
 
+# forward the OSD CPU-test knob if set locally (see comment above)
+ENV_PREFIX=""
+if [ -n "${MS_OSD_TEST_STATIC:-}" ]; then
+    ENV_PREFIX="MS_OSD_TEST_STATIC=$MS_OSD_TEST_STATIC "
+    echo ">> MS_OSD_TEST_STATIC=$MS_OSD_TEST_STATIC (OSD text will freeze after the first render)"
+fi
+
 echo ">> starting timps against $CONF (Ctrl-C stops it) ..."
-ssh -t root@"$CAM" "chmod +x /tmp/timpsd; exec /tmp/timpsd -c $CONF -v"
+ssh -t root@"$CAM" "chmod +x /tmp/timpsd; exec ${ENV_PREFIX}/tmp/timpsd -c $CONF -v"

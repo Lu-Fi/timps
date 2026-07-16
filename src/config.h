@@ -128,6 +128,12 @@ typedef struct {
     int         monitor_stream;     /* stream whose fps feeds the {fps} var */
     char        font_path[128];     /* default TTF for text items */
     char        vars_file[128];     /* custom placeholder source (e.g. /tmp/..) */
+    int         supersample;        /* TTF rasterizer AA quality: samples/axis
+                                      * per pixel (1-4, default 2). Cost scales
+                                      * ~quadratically (4=16 samples/px, 2=4);
+                                      * 2 is visually indistinguishable from 4
+                                      * at typical OSD text sizes but roughly
+                                      * halves the rasterizer's CPU cost. */
     ms_osd_item items[MS_MAX_VSTREAM][MS_MAX_OSD];  /* per-stream item sets */
 } ms_osd_cfg;
 
