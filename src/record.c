@@ -186,7 +186,16 @@ static int seg_open(int chn)
     }
     ms_buf seg;
     if (ms_buf_init(&seg,4096)){ fclose(w_fp); w_fp=NULL; return -1; }
-    fmp4_init_segment(&w_mux,&seg);
+    /* fails when the track isn't warmed up yet (no vparam from a keyframe
+     * through the hub, e.g. right at cold start / a live channel switch) or
+     * on OOM mid-build. Writing anyway would produce a moov-less segment
+     * file that no player can open - bail and let the writer loop above
+     * retry seg_open() on the next packet instead. */
+    if (fmp4_init_segment(&w_mux,&seg)!=0){
+        ms_buf_free(&seg); fclose(w_fp); w_fp=NULL;
+        unlink(path);
+        return -1;
+    }
     size_t n=seg.len?fwrite(seg.data,1,seg.len,w_fp):0;
     if (seg.len && n!=seg.len){
         LOGE(MOD,"write %s: %s",path,strerror(errno));
@@ -204,11 +213,22 @@ static void seg_write(ms_pkt *p)
     if (!w_fp) return;
     ms_buf frag;
     if (ms_buf_init(&frag,p->len+256)) return;   /* OOM: drop this packet */
+    int frag_ok=1;
     if (p->media==MS_MEDIA_VIDEO){
         if (!w_got_key){ if (!p->keyframe){ ms_buf_free(&frag); return; } w_got_key=1; }
-        fmp4_video_fragment(&w_mux,p->data,p->len,p->keyframe,p->pts_us,&frag);
+        frag_ok = fmp4_video_fragment(&w_mux,p->data,p->len,p->keyframe,p->pts_us,&frag)==0;
     } else if (p->media==MS_MEDIA_AUDIO && w_mux.has_audio && w_got_key){
-        fmp4_audio_fragment(&w_mux,p->data,p->len,p->pts_us,&frag);
+        frag_ok = fmp4_audio_fragment(&w_mux,p->data,p->len,p->pts_us,&frag)==0;
+    }
+    /* a failed fragment (OOM mid-build) can hold partial, non-box-tree bytes
+     * - writing those to the file would corrupt the rest of this segment,
+     * same reasoning as the /stream.mp4 path in mp4/httpd.c. Drop just this
+     * packet instead; the next successful fragment keeps the file going. */
+    if (!frag_ok){
+        LOGW(MOD,"dropped a corrupt %s fragment while recording (OOM?)",
+             p->media==MS_MEDIA_VIDEO?"video":"audio");
+        ms_buf_free(&frag);
+        return;
     }
     if (frag.len){
         size_t wn=fwrite(frag.data,1,frag.len,w_fp);

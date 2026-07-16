@@ -29,6 +29,11 @@ typedef struct {
     uint8_t *data;
     size_t   len;
     size_t   cap;
+    int      err;   /* sticky: set once any ms_buf_* call fails to grow the
+                      * buffer (OOM). Once set, box_close()/fragment() must
+                      * not patch size/offset fields into it - the buffer's
+                      * content is short some bytes, so `pos` no longer
+                      * points at what the caller thinks it does. */
 } ms_buf;
 
 int  ms_buf_init(ms_buf *b, size_t cap);

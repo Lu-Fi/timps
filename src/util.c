@@ -7,6 +7,7 @@ int ms_buf_init(ms_buf *b, size_t cap)
     b->data = (uint8_t*)malloc(cap);
     b->len = 0;
     b->cap = b->data ? cap : 0;
+    b->err = b->data ? 0 : 1;
     return b->data ? 0 : -1;
 }
 
@@ -16,7 +17,7 @@ int ms_buf_reserve(ms_buf *b, size_t extra)
     size_t nc = b->cap ? b->cap : 64;
     while (nc < b->len + extra) nc *= 2;
     uint8_t *nd = (uint8_t*)realloc(b->data, nc);
-    if (!nd) return -1;
+    if (!nd) { b->err = 1; return -1; }
     b->data = nd; b->cap = nc;
     return 0;
 }

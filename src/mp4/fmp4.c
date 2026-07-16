@@ -17,7 +17,14 @@ static size_t box_open(ms_buf *b, const char *type)
 }
 static void box_close(ms_buf *b, size_t pos)
 {
-    if (!b->data) return;    /* allocation failed: buffer is empty, no patch */
+    /* b->err covers both "never allocated" and "a later append silently
+     * failed to grow" - in the latter case b->data is still a valid (old,
+     * smaller) block, but `pos` no longer reliably points inside it, so
+     * patching would be an out-of-bounds write. Once err is set the whole
+     * buffer is corrupt/truncated anyway; the caller (fragment() /
+     * fmp4_init_segment()) checks b->err and reports failure instead of
+     * handing a malformed box tree to a client. */
+    if (!b->data || b->err) return;
     wr_be32(b->data + pos, (uint32_t)(b->len - pos));
 }
 static void put_fullbox(ms_buf *b, uint8_t ver, uint32_t flags)
@@ -340,7 +347,7 @@ int fmp4_init_segment(fmp4_mux *m, ms_buf *out)
     if (m->has_audio) write_trex(out, TRK_AUDIO, 0);
     box_close(out, mx);
     box_close(out, mv);
-    return 0;
+    return out->err ? -1 : 0;
 }
 
 static int fragment(fmp4_mux *m, int track_id, const uint8_t *sample, size_t slen,
@@ -381,12 +388,16 @@ static int fragment(fmp4_mux *m, int track_id, const uint8_t *sample, size_t sle
 
     /* data offset from start of moof = moof size + 8 (mdat header) */
     uint32_t data_off = (uint32_t)(out->len - moof) + 8;
-    if (out->data) wr_be32(out->data + data_off_pos, data_off);
+    if (out->data && !out->err) wr_be32(out->data + data_off_pos, data_off);
 
     size_t mdat = box_open(out, "mdat");
     ms_buf_put(out, sample, slen);
     box_close(out, mdat);
-    return 0;
+    /* any append above (box_open/ms_buf_put/box_close) may have silently
+     * failed to grow the buffer under memory pressure; err is sticky, so
+     * checking it once here catches every one of those sites. Report
+     * failure instead of handing the caller a truncated/corrupt fragment. */
+    return out->err ? -1 : 0;
 }
 
 int fmp4_video_fragment(fmp4_mux *m, const uint8_t *au, size_t len,
@@ -395,8 +406,11 @@ int fmp4_video_fragment(fmp4_mux *m, const uint8_t *au, size_t len,
     ms_buf s; ms_buf_init(&s, len+32);
     annexb_to_sample(m, au, len, &s);
     /* parameter-set-only AU (no VCL data): emit nothing and do not advance
-     * the timeline - a 0-byte sample would make MSE choke */
-    if (s.len == 0) { ms_buf_free(&s); return 0; }
+     * the timeline - a 0-byte sample would make MSE choke. s.err covers the
+     * OOM case (annexb_to_sample's ms_buf_put failed partway through, or
+     * the initial ms_buf_init itself) - treat it the same as "nothing to
+     * emit" rather than muxing a truncated sample. */
+    if (s.err || s.len == 0) { ms_buf_free(&s); return s.err ? -1 : 0; }
     uint32_t dur = m->fps>0 ? m->v_timescale/(uint32_t)m->fps : 3000; /* nominal */
     uint64_t dts = pts_track_time(m, pts_us, &m->v_last_pts_us,
                                   &m->v_dts, m->v_timescale, &dur);

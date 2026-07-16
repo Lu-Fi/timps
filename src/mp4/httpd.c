@@ -217,7 +217,12 @@ static void stream_mp4(hconn *c, int chn)
 
     ms_buf seg;
     if (ms_buf_init(&seg, 4096)) goto out;
-    fmp4_init_segment(&mux, &seg);
+    /* fmp4_init_segment fails when the video track isn't warmed up yet or on
+     * OOM mid-build (ms_buf sets seg.err, box_close()/box-size patches then
+     * skip themselves, leaving seg with some bytes but not a valid box
+     * tree) - either way sending it would hand the client a corrupt moov,
+     * so bail instead of csend()-ing whatever partial bytes accumulated. */
+    if (fmp4_init_segment(&mux, &seg) != 0){ ms_buf_free(&seg); goto out; }
     if (csend(c, seg.data, seg.len)<0){ ms_buf_free(&seg); goto out; }
     ms_buf_free(&seg);
     LOGI(MOD,"mp4 client streaming chn=%d",chn);
@@ -236,14 +241,26 @@ static void stream_mp4(hconn *c, int chn)
         if (fanqueue_take_dropped_key(&q)) hub_request_idr(chn);
         ms_buf frag;
         if (ms_buf_init(&frag, p->len+256)){ pkt_unref(p); break; }  /* OOM */
+        int frag_ok = 1;
         if (p->media==MS_MEDIA_VIDEO) {
             if (!got_key){ if(!p->keyframe){ pkt_unref(p); ms_buf_free(&frag); continue; } got_key=1; }
-            fmp4_video_fragment(&mux, p->data, p->len, p->keyframe, p->pts_us, &frag);
+            frag_ok = fmp4_video_fragment(&mux, p->data, p->len, p->keyframe, p->pts_us, &frag) == 0;
         } else if (want_audio && got_key) {
-            fmp4_audio_fragment(&mux, p->data, p->len, p->pts_us, &frag);
+            frag_ok = fmp4_audio_fragment(&mux, p->data, p->len, p->pts_us, &frag) == 0;
         }
+        /* a failed fragment (OOM mid-build) can still have partial bytes in
+         * frag - never send those, they're not a valid moof/mdat and would
+         * desync the client's SourceBuffer for the rest of the session. If
+         * we dropped a keyframe's fragment this way, ask for a fresh IDR so
+         * the stream can resync as soon as memory pressure clears. */
         int rc = 0;
-        if (frag.len) rc = csend(c, frag.data, frag.len);
+        if (!frag_ok) {
+            LOGW(MOD,"dropped a corrupt %s fragment (OOM?)",
+                 p->media==MS_MEDIA_VIDEO?"video":"audio");
+            if (p->media==MS_MEDIA_VIDEO && p->keyframe) hub_request_idr(chn);
+        } else if (frag.len) {
+            rc = csend(c, frag.data, frag.len);
+        }
         ms_buf_free(&frag);
         pkt_unref(p);
         if (rc<0) break;
