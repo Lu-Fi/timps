@@ -15,6 +15,7 @@
 #include "log.h"
 #include "util.h"
 #include "codec/aac.h"
+#include "config.h"
 
 #include <srt/srt.h>
 #include <pthread.h>
@@ -40,6 +41,9 @@ static volatile int     g_srt_clients;  /* in-flight client threads (sync
                                          * builtins): drained before the global
                                          * srt_cleanup() on shutdown */
 
+#define TS_BATCH_PKTS 7          /* 7*188 = 1316B, the conventional TS-over-SRT
+                                  * payload size (fits one SRT/UDP datagram
+                                  * without fragmenting) */
 typedef struct {
     SRTSOCKET sock;
     uint8_t   cc_pat, cc_pmt, cc_v, cc_a;
@@ -47,6 +51,8 @@ typedef struct {
     int       have_audio;
     int       a_sr, a_ch;  /* AAC samplerate/channels for the ADTS header */
     int       a_idx;       /* sampling_frequency_index (cached) */
+    uint8_t   batch[TS_BATCH_PKTS * 188];  /* accumulated, not-yet-sent packets */
+    int       batch_n;                     /* packets currently in batch[] */
 } ts_mux;
 
 /* faac emits RAW AAC (no ADTS); MPEG-TS stream_type 0x0F needs each frame
@@ -81,9 +87,28 @@ static uint32_t crc32_mpeg(const uint8_t *d, int len)
     return crc;
 }
 
+/* flush any packets accumulated in m->batch as a single srt_sendmsg2() call */
+static int ts_flush(ts_mux *m)
+{
+    if (m->batch_n == 0) return 0;
+    int n = m->batch_n; m->batch_n = 0;   /* reset before sending: on error
+                                            * the caller tears the client
+                                            * down anyway, and we must not
+                                            * resend stale packets on retry */
+    return srt_sendmsg2(m->sock, (const char *)m->batch, n * 188, NULL) < 0 ? -1 : 0;
+}
+
+/* Previously issued one srt_sendmsg2() syscall per 188-byte TS packet - a
+ * single AAC/H.264 access unit can span many packets, so a busy stream did
+ * one send(2)-class syscall per 188 bytes. Batch up to TS_BATCH_PKTS packets
+ * (1316B, the standard TS-over-UDP/SRT payload size) into one call instead;
+ * ts_flush() is called at natural boundaries (end of each PSI/PES write) so
+ * packets never linger unsent for more than one access unit. */
 static int ts_send(ts_mux *m, const uint8_t *pkt188)
 {
-    return srt_sendmsg2(m->sock, (const char *)pkt188, 188, NULL) < 0 ? -1 : 0;
+    memcpy(m->batch + (size_t)m->batch_n * 188, pkt188, 188);
+    if (++m->batch_n >= TS_BATCH_PKTS) return ts_flush(m);
+    return 0;
 }
 
 static int send_section(ts_mux *m, int pid, uint8_t *cc, const uint8_t *sec, int n)
@@ -221,7 +246,13 @@ static void *client_thread(void *arg)
 {
     ts_mux *m = (ts_mux *)arg;
     int chn = g_scfg->srt.channel;
-    if (chn < 0 || chn >= MS_MAX_VSTREAM) chn = 0;
+    /* matches the validation httpd.c/timelapse.c use for the same config
+     * field: a channel index that's in range but not actually enabled
+     * (e.g. left over after the user disabled that stream) used to be
+     * accepted as-is here, subscribing to a hub source with no publisher -
+     * the client would then just hang with no video ever arriving instead
+     * of falling back to the first enabled stream. */
+    if (chn < 0 || chn >= MS_MAX_VSTREAM || !g_scfg->video[chn].enabled) chn = 0;
 
     fanqueue q;
     if (fanqueue_init(&q, SRT_QCAP)) { srt_close(m->sock); free(m);
@@ -258,13 +289,32 @@ static void *client_thread(void *arg)
             rc = send_pes(m, VPID, &m->cc_v, 0xE0, p->data, (int)p->len,
                           p->pts_us, 1, p->keyframe);
         } else if (p->media == MS_MEDIA_AUDIO && m->have_audio && got_key) {
-            /* wrap the raw AAC access unit in an ADTS header for TS */
+            /* Publishers aren't guaranteed to hand us bare raw AAC: the real
+             * HW encoder path (hal_ingenic.c, FAAC_STREAM_RAW) does, but
+             * hal_sim.c's test source plays back an already ADTS-framed
+             * file straight into the hub. rtp.c/fmp4.c already strip any
+             * existing ADTS header before doing their own framing; this
+             * path didn't, so under the sim (or any future raw-vs-ADTS
+             * source mismatch) it wrapped an ADTS frame in a second ADTS
+             * header, corrupting the stream for every AAC decoder. */
+            size_t raw_len;
+            int strip_off = aac_adts_strip(p->data, p->len, &raw_len);
             uint8_t adts[8192];
-            int alen = aac_adts_wrap(m, p->data, (int)p->len, adts, sizeof adts);
+            int alen = aac_adts_wrap(m, p->data + strip_off, (int)raw_len,
+                                     adts, sizeof adts);
             if (alen > 0)
                 rc = send_pes(m, APID, &m->cc_a, 0xC0, adts, alen,
                               p->pts_us, 0, 0);
         }
+        /* flush at the end of every access unit: ts_send() only flushes
+         * once TS_BATCH_PKTS packets have piled up, which would otherwise
+         * let a partial batch (e.g. a small audio AU, or a video AU whose
+         * packet count isn't a multiple of 7) sit unsent - potentially for
+         * a long time on a low-bitrate stream - defeating live/low-latency
+         * SRT playback. This keeps the batching syscall win for the common
+         * multi-packet AU case while still bounding added latency to at
+         * most one AU. */
+        if (rc == 0) rc = ts_flush(m);
         pkt_unref(p);
         if (rc < 0) break;                               /* client gone */
     }
