@@ -548,6 +548,7 @@ static void *video_thread(void *arg)
     int receiving=0;
     int64_t idle_since=0;
     int dbg_first=0, dbg_pollfail=0;   /* one-shot encoder diagnostics */
+    int dbg_ovf=0;                     /* rate-limits the AU-overflow warning */
     while (vc->run) {
         /* on-demand: encode while there are consumers. The hub subscriber
          * count is the truth source (level, not edge), so a racing stale
@@ -591,6 +592,7 @@ static void *video_thread(void *arg)
             LOGW(MOD,"chn%d: GetStream failed after PollingStream OK",vc->chn); continue; }
         dbg_pollfail=0;
         size_t aulen=0;
+        int overflow=0;
         for (uint32_t i=0;i<st.packCount;i++){
 #ifdef ENC_NEW_API
             const uint8_t *p=(const uint8_t*)(uintptr_t)st.virAddr + st.pack[i].offset;
@@ -602,10 +604,29 @@ static void *video_thread(void *arg)
             /* guarantee Annex-B: prepend a start code if the pack lacks one */
             int has_sc = (l>=3 && p[0]==0 && p[1]==0 &&
                           (p[2]==1 || (l>=4 && p[2]==0 && p[3]==1)));
-            if (!has_sc && aulen+4<=au_cap){
-                au[aulen++]=0; au[aulen++]=0; au[aulen++]=0; au[aulen++]=1;
+            if (!has_sc){
+                if (aulen+4<=au_cap){ au[aulen++]=0; au[aulen++]=0; au[aulen++]=0; au[aulen++]=1; }
+                else overflow=1;
             }
             if (aulen+l<=au_cap){ memcpy(au+aulen,p,l); aulen+=l; }
+            else overflow=1;
+        }
+        /* au_cap is a generous (~0.5 byte/pixel) estimate, not a hard
+         * guarantee - a complex scene or a misconfigured bitrate can still
+         * produce a pack set that doesn't fit. Silently truncating used to
+         * publish a syntactically-corrupt AU (worst case: a truncated IDR)
+         * straight to every client/recorder with no signal anything was
+         * wrong. Drop the whole frame instead and force the next one to be
+         * a fresh IDR, matching how a dropped/corrupt frame is already
+         * recovered from elsewhere (fanqueue_take_dropped_key + hub_request_idr). */
+        if (overflow){
+            if ((dbg_ovf++ % 20)==0)
+                LOGW(MOD,"chn%d: AU buffer overflow (cap=%zu, packCount=%u) - "
+                     "dropping truncated frame, forcing IDR",
+                     vc->chn, au_cap, st.packCount);
+            IMP_Encoder_RequestIDR(vc->chn);
+            IMP_Encoder_ReleaseStream(vc->chn,&st);
+            continue;
         }
         int key = au_is_key(vc->codec, au, aulen);
         if (!dbg_first){ dbg_first=1;
@@ -659,6 +680,7 @@ static void *jpeg_thread(void *arg)
         IMPEncoderStream st;
         if (IMP_Encoder_GetStream(jc->chn,&st,1)!=0) continue;
         size_t jlen=0;
+        int overflow=0;
         for (uint32_t i=0;i<st.packCount;i++){
 #ifdef ENC_NEW_API
             const uint8_t *p=(const uint8_t*)(uintptr_t)st.virAddr + st.pack[i].offset;
@@ -667,6 +689,19 @@ static void *jpeg_thread(void *arg)
 #endif
             size_t l=st.pack[i].length;
             if (jlen+l<=jcap){ memcpy(jbuf+jlen,p,l); jlen+=l; }
+            else overflow=1;
+        }
+        /* same failure mode as video_thread's AU buffer: a JPEG bigger than
+         * the (resolution-derived, bounded) jcap estimate used to be
+         * silently truncated and then handed to clients / written to the
+         * snapshot file as if it were a complete, valid JPEG. Drop it
+         * instead - a truncated JPEG is just as useless as none, but
+         * pretending it's valid is worse than skipping a frame. */
+        if (overflow){
+            LOGW(MOD,"chn%d: JPEG buffer overflow (cap=%zu) - dropping truncated frame",
+                 jc->chn, jcap);
+            IMP_Encoder_ReleaseStream(jc->chn,&st);
+            continue;
         }
         if (jc->active || hub_active(jc->src))
             hub_publish(jc->src, jbuf, jlen, ms_now_us(), 1, MS_MEDIA_JPEG);
