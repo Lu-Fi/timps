@@ -283,7 +283,7 @@ static int rtsp_check_auth(session *s, char *req)
     char method[16]={0}; sscanf(req,"%15s",method);
     char av[512]; get_auth_hdr(req, av, sizeof av);
     if (av[0]) {
-        if (auth_rtsp_digest(method, av, s->cfg->rtsp_user, s->cfg->rtsp_pass) ||
+        if (auth_rtsp_digest(method, av, s->cfg->rtsp_user, s->cfg->rtsp_pass, s->nonce) ||
             auth_http_basic(av, s->cfg->rtsp_user, s->cfg->rtsp_pass)) {
             s->authed = 1; return 1;
         }
@@ -293,7 +293,11 @@ static int rtsp_check_auth(session *s, char *req)
 
 static void rtsp_send_401(session *s, int cseq)
 {
-    if (!s->nonce[0]) auth_make_nonce(s->nonce);
+    /* a fresh nonce on every challenge (not just the first): a client
+     * retrying with a stale/forged Authorization header now gets a new
+     * nonce to authenticate against instead of s->nonce staying valid
+     * (and replayable) for the rest of the TCP connection's lifetime. */
+    auth_make_nonce(s->nonce);
     char hdr[512];
     int n=snprintf(hdr,sizeof hdr,
         "RTSP/1.0 401 Unauthorized\r\nCSeq: %d\r\n"

@@ -38,7 +38,8 @@ static int field(const char *hdr, const char *key, char *out, int outsz)
 }
 
 int auth_rtsp_digest(const char *method, const char *value,
-                     const char *user, const char *pass)
+                     const char *user, const char *pass,
+                     const char *server_nonce)
 {
     if (!value) return 0;
     while (*value==' ') value++;
@@ -51,6 +52,14 @@ int auth_rtsp_digest(const char *method, const char *value,
     if (!field(d,"uri",uri,sizeof uri)) return 0;
     if (!field(d,"response",resp,sizeof resp)) return 0;
     if (strcmp(u,user)!=0) return 0;
+    /* the client's nonce must be one THIS server actually issued (via a
+     * prior 401 on this session) - otherwise the digest response is fully
+     * reproducible offline from a single sniffed Authorization header and
+     * replayable forever against any connection, defeating the one thing
+     * digest auth buys over Basic. An empty server_nonce (none issued yet
+     * this session) never matches, so a forged first-request Authorization
+     * header is rejected too. */
+    if (!server_nonce || !server_nonce[0] || strcmp(nonce,server_nonce)!=0) return 0;
 
     char buf[512], ha1[33], ha2[33], expect[33];
     snprintf(buf,sizeof buf,"%s:%s:%s",user,realm,pass);        md5_hex(buf,ha1);
@@ -61,10 +70,13 @@ int auth_rtsp_digest(const char *method, const char *value,
 
 void auth_make_nonce(char out[33])
 {
-    static unsigned long ctr=0;
-    char seed[64];
-    snprintf(seed,sizeof seed,"%ld-%d-%lu",(long)time(NULL),rand(),ctr++);
-    md5_hex(seed,out);
+    /* was time(NULL)+rand()+counter - rand() is seeded from time^pid
+     * (main.c), so at boot the nonce is only as unpredictable as an
+     * attacker's uncertainty about the exact boot time, making it
+     * brute-forceable. Reuse auth_gen_token()'s /dev/urandom-backed
+     * generator (falls back to the same weak time/pid mix only if
+     * /dev/urandom is unavailable). */
+    auth_gen_token(out);
 }
 
 /* per-boot /control token (see auth.h); "" until main() generates it */

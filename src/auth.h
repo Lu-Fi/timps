@@ -7,10 +7,16 @@
 /* HTTP Basic: 'value' is the text after "Authorization: ". Returns 1 if valid. */
 int  auth_http_basic(const char *value, const char *user, const char *pass);
 
-/* RTSP Digest: validate an "Authorization: Digest ..." value against method+creds.
- * Returns 1 if valid. */
+/* RTSP Digest: validate an "Authorization: Digest ..." value against
+ * method+creds AND the nonce this server actually issued to this session
+ * (server_nonce, from auth_make_nonce()) - without that check, a sniffed
+ * Authorization header can be replayed indefinitely against any
+ * connection using any nonce the client cares to supply, since the digest
+ * response is fully reproducible from (user, realm, pass, method, uri,
+ * nonce). Returns 1 if valid. */
 int  auth_rtsp_digest(const char *method, const char *value,
-                      const char *user, const char *pass);
+                      const char *user, const char *pass,
+                      const char *server_nonce);
 
 /* generate a fresh opaque nonce (32 hex chars + NUL) */
 void auth_make_nonce(char out[33]);
