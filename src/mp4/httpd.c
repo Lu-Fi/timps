@@ -846,7 +846,19 @@ static void *conn_thread(void *arg)
                         int have = n - (int)(body - buf), clen = 0;
                         const char *cl = strcasestr(buf,"Content-Length:");
                         if (cl) clen = atoi(cl+15);
-                        if (clen > (int)sizeof(buf)) clen = (int)sizeof(buf);
+                        /* how many body bytes this fixed buffer can hold
+                         * alongside the headers already consumed. A clen
+                         * bigger than that used to get silently clamped and
+                         * the truncated prefix applied as if it were the
+                         * whole JSON - some keys take effect, others in the
+                         * dropped tail just vanish, yet the client still
+                         * gets 200 OK. Reject loudly instead. */
+                        int cap = (int)sizeof(buf) - 1 - (int)(body - buf);
+                        if (clen > cap) {
+                            http_send_ex(c,"413 Payload Too Large","text/plain",cors,
+                                        "body too large",14);
+                            goto done;
+                        }
                         while (have < clen && n < (int)sizeof(buf)-1) {
                             int r = crecv(c, buf+n, sizeof(buf)-1-n, 0);
                             if (r <= 0) break;
