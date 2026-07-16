@@ -12,7 +12,13 @@ void vparam_init(vparam *v, int codec)
 
 static void store(uint8_t *dst, int *dlen, const uint8_t *s, size_t n, int cap)
 {
-    if ((int)n > cap) n = cap;
+    /* an oversized parameter set used to be silently clipped, producing a
+     * corrupt (truncated-NAL) avcC/hvcC/sprop-parameter-sets that no client
+     * can parse. Not reachable with the Ingenic encoders this targets
+     * (SPS/PPS are always small), but skip-on-overflow - keep whatever
+     * valid set was cached before, if any - is a safer failure mode than
+     * emitting truncated data. */
+    if ((int)n > cap) return;
     memcpy(dst, s, n);
     *dlen = (int)n;
 }
@@ -56,6 +62,40 @@ static int deemulate(const uint8_t *in, int n, uint8_t *out, int outcap)
     return o;
 }
 
+/* minimal MSB-first Exp-Golomb bit reader over a de-emulated RBSP buffer;
+ * reads past the end return 0 bits (deterministic, not a crash) rather than
+ * assuming callers only ever hand it well-formed, long-enough data. */
+typedef struct { const uint8_t *d; int nbits; int pos; } eg_reader;
+static void eg_init(eg_reader *r, const uint8_t *d, int n){ r->d=d; r->nbits=n*8; r->pos=0; }
+static int eg_bit(eg_reader *r)
+{
+    if (r->pos >= r->nbits) return 0;
+    int byte=r->pos>>3, bit=7-(r->pos&7);
+    r->pos++;
+    return (r->d[byte]>>bit)&1;
+}
+static uint32_t eg_ue(eg_reader *r)
+{
+    int zeros=0;
+    while (r->pos<r->nbits && eg_bit(r)==0 && zeros<32) zeros++;
+    uint32_t val=0;
+    for (int i=0;i<zeros;i++) val=(val<<1)|(uint32_t)eg_bit(r);
+    return ((uint32_t)1<<zeros)-1+val;
+}
+
+/* H.264 profile_idc values whose SPS carries the chroma_format_idc/
+ * bit_depth_*_minus8 fields (spec 7.3.2.1.1) - the "High profile family".
+ * timps' default encoder profile is High (100), but cover the full set. */
+static int is_h264_high_family(int profile_idc)
+{
+    switch (profile_idc){
+        case 100: case 110: case 122: case 244: case 44: case 83:
+        case 86: case 118: case 128: case 138: case 139: case 134: case 135:
+            return 1;
+        default: return 0;
+    }
+}
+
 static int avcc(const vparam *v, ms_buf *o)
 {
     if (v->sps_len<4) return -1;
@@ -68,6 +108,38 @@ static int avcc(const vparam *v, ms_buf *o)
     ms_buf_be16(o,(uint16_t)v->sps_len); ms_buf_put(o,v->sps,v->sps_len);
     ms_buf_u8(o,1);              /* numPPS=1 */
     ms_buf_be16(o,(uint16_t)v->pps_len); ms_buf_put(o,v->pps,v->pps_len);
+
+    /* ISO/IEC 14496-15 5.3.3.1.2: for the High-profile family the record
+     * must carry chroma_format/bit_depth fields after the SPS/PPS arrays.
+     * Browsers/ffmpeg tolerate the omission, but strict parsers (Bento4,
+     * some hardware demuxers/smart TVs) reject a High-profile avcC without
+     * them. Parse them out of the SPS itself (Exp-Golomb, right after
+     * seq_parameter_set_id) instead of hardcoding 4:2:0/8-bit, so this
+     * stays correct if the encoder config ever changes. */
+    if (is_h264_high_family(v->sps[1])){
+        uint8_t rbsp[192];
+        /* skip the 1-byte NAL header (H.264 has a 1-byte header, unlike
+         * H.265's 2 bytes); rbsp[0..2] are profile_idc/constraints/level_idc
+         * (already known from sps[1..3]), so start the bit reader at bit 24 */
+        int rn = deemulate(v->sps+1, v->sps_len-1, rbsp, sizeof rbsp);
+        if (rn >= 4){
+            eg_reader r; eg_init(&r, rbsp, rn); r.pos = 24;
+            eg_ue(&r);                          /* seq_parameter_set_id */
+            uint32_t chroma = eg_ue(&r);        /* chroma_format_idc */
+            if (chroma == 3) eg_bit(&r);        /* separate_colour_plane_flag */
+            uint32_t bd_luma   = eg_ue(&r);     /* bit_depth_luma_minus8 */
+            uint32_t bd_chroma = eg_ue(&r);     /* bit_depth_chroma_minus8 */
+            ms_buf_u8(o, (uint8_t)(0xFC | (chroma   & 0x3)));
+            ms_buf_u8(o, (uint8_t)(0xF8 | (bd_luma  & 0x7)));
+            ms_buf_u8(o, (uint8_t)(0xF8 | (bd_chroma& 0x7)));
+            ms_buf_u8(o, 0);                   /* numOfSequenceParameterSetExt=0 */
+        } else {
+            /* SPS too short to reach these fields (shouldn't happen with a
+             * real encoder) - fall back to the spec's implied 4:2:0/8-bit
+             * defaults rather than omitting the extension entirely. */
+            ms_buf_u8(o, 0xFC | 1); ms_buf_u8(o, 0xF8); ms_buf_u8(o, 0xF8); ms_buf_u8(o, 0);
+        }
+    }
     return 0;
 }
 
@@ -76,9 +148,15 @@ static int hvcc(const vparam *v, ms_buf *o)
     /* extract 12-byte general profile_tier_level from SPS RBSP */
     uint8_t rbsp[192];
     int rn = deemulate(v->sps+2, v->sps_len-2, rbsp, sizeof rbsp); /* skip 2B nal hdr */
-    uint8_t ptl[12]; memset(ptl,0,sizeof ptl);
+    /* an SPS too short to reach the profile_tier_level would otherwise
+     * silently produce an all-zero PTL (profile_space=0/tier=0/profile=0/
+     * level=0) - a bogus-but-well-formed-looking hvcC that lies about the
+     * stream's actual profile/level instead of failing loudly, matching
+     * vparam_hevc_codecs()'s same guard. */
+    if (rn < 1+12) return -1;
+    uint8_t ptl[12];
     /* after 1 byte (sps_vps_id u4, max_sub_layers_minus1 u3, nesting u1) */
-    if (rn >= 1+12) memcpy(ptl, rbsp+1, 12);
+    memcpy(ptl, rbsp+1, 12);
 
     ms_buf_u8(o,1);                 /* configurationVersion */
     ms_buf_u8(o,ptl[0]);            /* profile_space|tier|profile_idc */
@@ -93,14 +171,21 @@ static int hvcc(const vparam *v, ms_buf *o)
     ms_buf_be16(o,0);               /* avgFrameRate */
     ms_buf_u8(o,0x03);              /* cfr=0|numTempLayers=0..|nested|lengthSizeMinusOne=3 */
     ms_buf_u8(o,3);                 /* numOfArrays: VPS,SPS,PPS */
+    /* array_completeness=1 (top bit set: 0xA_ not 0x20/0x21/0x22) - ISO/IEC
+     * 14496-15 8.3.3.1 constrains this to 1 for an hvc1 sample entry (all
+     * parameter sets are in the array, none arrive in-band in samples,
+     * which matches what annexb_to_sample() actually does: it strips
+     * VPS/SPS/PPS out of every sample). completeness=0 is only valid for
+     * hev1; browsers ignore the flag either way, but strict validators
+     * (Bento4, Apple's HLS tools) flag the mismatch. */
     /* VPS */
-    ms_buf_u8(o,0x20); ms_buf_be16(o,1);
+    ms_buf_u8(o,0xA0); ms_buf_be16(o,1);
     ms_buf_be16(o,(uint16_t)v->vps_len); ms_buf_put(o,v->vps,v->vps_len);
     /* SPS */
-    ms_buf_u8(o,0x21); ms_buf_be16(o,1);
+    ms_buf_u8(o,0xA1); ms_buf_be16(o,1);
     ms_buf_be16(o,(uint16_t)v->sps_len); ms_buf_put(o,v->sps,v->sps_len);
     /* PPS */
-    ms_buf_u8(o,0x22); ms_buf_be16(o,1);
+    ms_buf_u8(o,0xA2); ms_buf_be16(o,1);
     ms_buf_be16(o,(uint16_t)v->pps_len); ms_buf_put(o,v->pps,v->pps_len);
     return 0;
 }
