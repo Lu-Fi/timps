@@ -69,6 +69,8 @@ static void wait_active(volatile int *active, volatile int *run)
     while (*run && !*active) usleep(50000);
 }
 
+#define SIM_AU_CAP (512*1024)
+
 static void *vid_thread(void *arg)
 {
     sim_vid *v=(sim_vid*)arg;
@@ -77,12 +79,21 @@ static void *vid_thread(void *arg)
     LOGI(MOD,"sim video chn%d %s (%zu bytes) %dfps (on-demand)",v->chn,v->path,flen,v->fps);
     int64_t step=1000000/(v->fps?v->fps:25);
 
+    /* host-only test code, but a 512KB array on a pthread stack is still
+     * needless risk (default pthread stacks can be smaller than the main
+     * thread's, and this was re-"declared" - i.e. its space claimed - on
+     * every outer while-iteration). Heap-allocate once instead, matching
+     * the heap-buffer pattern already used for the real per-stream AU/JPEG
+     * buffers in hal_ingenic.c. */
+    uint8_t *au = (uint8_t*)malloc(SIM_AU_CAP);
+    if (!au){ LOGE(MOD,"no memory for sim AU buffer"); free(file); return NULL; }
+
     while (v->run) {
         wait_active(&v->active,&v->run);
         if (!v->run) break;
         int64_t next=ms_now_us();
         nal_iter it; nal_unit u; nal_iter_init(&it,file,flen);
-        uint8_t au[512*1024]; size_t aulen=0; int have_vcl=0, key=0;
+        size_t aulen=0; int have_vcl=0, key=0;
         while (v->run && v->active && nal_iter_next(&it,&u)) {
             int vcl = is_vcl(v->codec,u.data);
             if (vcl && have_vcl) {
@@ -91,13 +102,14 @@ static void *vid_thread(void *arg)
                 hub_publish(v->src,au,aulen,now-g_epoch,key,MS_MEDIA_VIDEO);
                 next+=step; aulen=0; have_vcl=0; key=0;
             }
-            if (aulen+4+u.len < sizeof au){
+            if (aulen+4+u.len < SIM_AU_CAP){
                 au[aulen++]=0;au[aulen++]=0;au[aulen++]=0;au[aulen++]=1;
                 memcpy(au+aulen,u.data,u.len); aulen+=u.len;
             }
             if (vcl){ have_vcl=1; if(is_key(v->codec,u.data)) key=1; }
         }
     }
+    free(au);
     free(file);
     return NULL;
 }
