@@ -75,7 +75,7 @@ static void send_h264_nal(rtp_track *t, const uint8_t *nal, size_t n,
     int first = 1;
     while (left > 0) {
         size_t chunk = left;
-        if (chunk > RTP_MTU - 2) chunk = RTP_MTU - 2;
+        if (chunk > RTP_MTU - 12 - 2) chunk = RTP_MTU - 12 - 2; /* -12 RTP hdr, -2 FU ind+hdr */
         int end = (chunk == left);
         int h = rtp_hdr(pkt, t, (end && last_in_au), ts);
         pkt[h]   = nri | 28;                          /* FU indicator */
@@ -89,13 +89,17 @@ static void send_h264_nal(rtp_track *t, const uint8_t *nal, size_t n,
 void rtp_send_h264(rtp_track *t, const uint8_t *au, size_t len, int64_t pts_us)
 {
     uint32_t ts = pts_to_ts(t, pts_us);
-    /* collect NAL list to know which is last (for marker bit) */
-    nal_iter it; nal_unit u;
+    /* one-NAL lookahead to know which is last (for the marker bit) without
+     * a fixed-size NAL list - the old list[64] cap silently dropped any
+     * NAL past the 64th (unreachable with the Ingenic encoder's single-
+     * slice AUs today, but a real correctness bug for any AU that isn't). */
+    nal_iter it; nal_unit u, pending; int have_pending = 0;
     nal_iter_init(&it, au, len);
-    nal_unit list[64]; int cnt=0;
-    while (cnt<64 && nal_iter_next(&it, &u)) list[cnt++]=u;
-    for (int i=0;i<cnt;i++)
-        send_h264_nal(t, list[i].data, list[i].len, ts, i==cnt-1);
+    while (nal_iter_next(&it, &u)) {
+        if (have_pending) send_h264_nal(t, pending.data, pending.len, ts, 0);
+        pending = u; have_pending = 1;
+    }
+    if (have_pending) send_h264_nal(t, pending.data, pending.len, ts, 1);
 }
 
 /* ---- H265 (RFC 7798) ---- */
@@ -118,7 +122,7 @@ static void send_h265_nal(rtp_track *t, const uint8_t *nal, size_t n,
     int first = 1;
     while (left > 0) {
         size_t chunk = left;
-        if (chunk > RTP_MTU - 3) chunk = RTP_MTU - 3;
+        if (chunk > RTP_MTU - 12 - 3) chunk = RTP_MTU - 12 - 3; /* -12 RTP hdr, -3 FU hdr */
         int end = (chunk == left);
         int h = rtp_hdr(pkt, t, (end && last_in_au), ts);
         pkt[h]   = (uint8_t)((49<<1) | (lid>>5));
@@ -133,30 +137,60 @@ static void send_h265_nal(rtp_track *t, const uint8_t *nal, size_t n,
 void rtp_send_h265(rtp_track *t, const uint8_t *au, size_t len, int64_t pts_us)
 {
     uint32_t ts = pts_to_ts(t, pts_us);
-    nal_iter it; nal_unit u;
+    /* one-NAL lookahead, see rtp_send_h264() for why (no fixed-size cap) */
+    nal_iter it; nal_unit u, pending; int have_pending = 0;
     nal_iter_init(&it, au, len);
-    nal_unit list[64]; int cnt=0;
-    while (cnt<64 && nal_iter_next(&it, &u)) list[cnt++]=u;
-    for (int i=0;i<cnt;i++)
-        send_h265_nal(t, list[i].data, list[i].len, ts, i==cnt-1);
+    while (nal_iter_next(&it, &u)) {
+        if (have_pending) send_h265_nal(t, pending.data, pending.len, ts, 0);
+        pending = u; have_pending = 1;
+    }
+    if (have_pending) send_h265_nal(t, pending.data, pending.len, ts, 1);
 }
 
-/* ---- AAC (RFC 3640 mpeg4-generic, single AU per packet) ---- */
+/* ---- AAC (RFC 3640 mpeg4-generic) ---- */
 void rtp_send_aac(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us)
 {
     size_t plen; int off = aac_adts_strip(frame, len, &plen);
     const uint8_t *au = frame + off;
+    if (plen == 0 || plen > 0x1FFF) return; /* AU-size field is 13 bits */
     uint32_t ts = pts_to_ts(t, pts_us);
     uint8_t pkt[RTP_MTU + 32];
-    if (plen + 12 + 4 > RTP_MTU) plen = RTP_MTU - 16; /* clamp (rare) */
-    int h = rtp_hdr(pkt, t, 1, ts);
-    /* AU-headers-length = 16 bits; one AU header of 16 bits:
-     * 13 bits size + 3 bits index(0) */
-    wr_be16(pkt+h, 16);
-    uint16_t auh = (uint16_t)((plen & 0x1FFF) << 3);
-    wr_be16(pkt+h+2, auh);
-    memcpy(pkt+h+4, au, plen);
-    emit(t, pkt, h+4+(int)plen, ts);
+
+    if (plen + 12 + 4 <= RTP_MTU) {
+        /* common case: whole AU in one packet. AU-headers-length = 16 bits;
+         * one AU header of 16 bits: 13 bits size + 3 bits index(0) */
+        int h = rtp_hdr(pkt, t, 1, ts);
+        wr_be16(pkt+h, 16);
+        uint16_t auh = (uint16_t)((plen & 0x1FFF) << 3);
+        wr_be16(pkt+h+2, auh);
+        memcpy(pkt+h+4, au, plen);
+        emit(t, pkt, h+4+(int)plen, ts);
+        return;
+    }
+
+    /* RFC 3640 3.2.3.2: an AU exceeding the MTU (high bitrate + a transient
+     * frame) is split across multiple RTP packets. The AU-header-section -
+     * carrying the FULL, unfragmented AU size - is present ONLY in the
+     * first packet; later fragments of the same AU carry raw AU bytes with
+     * no AU-header at all. The old code instead silently truncated the
+     * frame and still advertised the truncated size, handing the decoder a
+     * corrupt AU (audible glitch/decoder reset) on every occurrence. */
+    size_t sent = 0; int first = 1;
+    while (sent < plen) {
+        size_t hdrlen = first ? 4 : 0;
+        size_t chunk = RTP_MTU - 12 - hdrlen;
+        if (chunk > plen - sent) chunk = plen - sent;
+        int end = (sent + chunk >= plen);
+        int h = rtp_hdr(pkt, t, end, ts);
+        if (first) {
+            wr_be16(pkt+h, 16);
+            uint16_t auh = (uint16_t)((plen & 0x1FFF) << 3);
+            wr_be16(pkt+h+2, auh);
+        }
+        memcpy(pkt+h+hdrlen, au+sent, chunk);
+        emit(t, pkt, h+(int)hdrlen+(int)chunk, ts);
+        sent += chunk; first = 0;
+    }
 }
 
 /* ---- G.711 (raw, fragment if needed) ---- */
@@ -168,7 +202,11 @@ void rtp_send_g711(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_u
     while (off < len) {
         size_t chunk = len - off;
         if (chunk > RTP_MTU) chunk = RTP_MTU;
-        int h = rtp_hdr(pkt, t, 1, (uint32_t)(ts + off));
+        /* RFC 3551 4.1: marker bit belongs at the start of a talkspurt
+         * (after silence). This track has no silence suppression - it's
+         * one continuous talkspurt for the whole session - so that's just
+         * the very first packet ever sent on it, not every packet. */
+        int h = rtp_hdr(pkt, t, t->pkt_count==0, (uint32_t)(ts + off));
         memcpy(pkt+h, frame+off, chunk);
         emit(t, pkt, h+(int)chunk, ts);
         off += chunk;
@@ -178,18 +216,36 @@ void rtp_send_g711(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_u
 /* ---- RTCP Sender Report ---- */
 void rtp_maybe_sr(rtp_track *t, int64_t now_us)
 {
+    /* pts_to_ts() anchors pts0/ts_base on the FIRST packet sent - before
+     * that there's no valid RTP-time <-> wall-clock mapping to report.
+     * Skip without touching last_sr_us, so the first real SR still goes
+     * out promptly once packets start flowing instead of waiting up to
+     * another full second because this call "used up" the 1s gate below. */
+    if (!t->have_pts0) return;
     if (t->last_sr_us && now_us - t->last_sr_us < 1000000) return;
     t->last_sr_us = now_us;
     /* NTP from realtime clock */
     struct timespec rt; clock_gettime(CLOCK_REALTIME, &rt);
     uint64_t ntp = ((uint64_t)(rt.tv_sec + 2208988800ULL) << 32) |
                    (uint32_t)((double)rt.tv_nsec * 4.294967296);
+    /* RTP timestamp for "now", using the SAME pts0/ts_base anchor pts_to_ts()
+     * uses for sample timestamps - not t->last_rtp_ts (the last *sent
+     * packet*'s ts, which is up to one frame/AAC-frame stale, and
+     * unboundedly stale if the track stalls). ffmpeg/go2rtc/Frigate-style
+     * NVRs derive A/V sync from exactly this NTP<->RTP pair, so a stale
+     * pairing here makes lip-sync jitter every SR interval. now_us is
+     * CLOCK_MONOTONIC (ms_now_us(), see rtsp.c's caller), the same clock
+     * pts_us values are on, so this stays consistent with pts_to_ts(). */
+    int64_t rel = now_us - t->pts0;
+    if (rel < 0) rel = 0;
+    uint32_t rtp_ts_now = t->ts_base +
+        (uint32_t)((rel * (int64_t)t->clock_rate) / 1000000);
     uint8_t sr[28];
     sr[0]=0x80; sr[1]=200; wr_be16(sr+2, 6);
     wr_be32(sr+4, t->ssrc);
     wr_be32(sr+8,  (uint32_t)(ntp>>32));
     wr_be32(sr+12, (uint32_t)ntp);
-    wr_be32(sr+16, t->last_rtp_ts);
+    wr_be32(sr+16, rtp_ts_now);
     wr_be32(sr+20, t->pkt_count);
     wr_be32(sr+24, t->octet_count);
     t->out(t->ctx, sr, sizeof sr, 1);
