@@ -112,6 +112,14 @@ void hub_set_audio_params(int acodec, int samplerate, int channels)
     pthread_mutex_unlock(&s->lock);
 }
 
+void hub_clear_audio_params(void)
+{
+    hub_source *s = hub_get(HUB_AUDIO_SRC); if(!s) return;
+    pthread_mutex_lock(&s->lock);
+    s->active=0;
+    pthread_mutex_unlock(&s->lock);
+}
+
 int hub_get_audio(int *acodec, int *samplerate, int *channels)
 {
     hub_source *s = hub_get(HUB_AUDIO_SRC); if(!s) return 0;

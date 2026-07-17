@@ -75,6 +75,13 @@ typedef IMPEncoderCHNAttr IMPEncoderChnAttr;
 #ifndef MS_AI_FRM_DEPTH
 #define MS_AI_FRM_DEPTH 2
 #endif
+/* Watchdog: IMP_AI_EnableChn can appear to succeed yet the channel never
+ * actually yields a frame (same failure class as an unchecked EnableChn
+ * error - seen on some T-series + sensor combos). PollingFrame is polled
+ * every 10 ms on the no-frame path, so this many consecutive misses is ~5 s. */
+#ifndef MS_AI_WATCHDOG_ITERS
+#define MS_AI_WATCHDOG_ITERS 500
+#endif
 
 static IMPSensorInfo    g_sensor;
 static const ms_config *g_hcfg;
@@ -874,15 +881,45 @@ static void *audio_thread(void *arg)
         if (IMP_AI_SetPubAttr(dev,&aio)==0){ g_asr=sr; ai_ok=1; break; }
         LOGW(MOD,"IMP_AI_SetPubAttr %dHz failed%s", sr, (r+1<nsr)?" -> trying 8000":"");
     }
-    if (!ai_ok){ LOGE(MOD,"audio input unavailable"); return NULL; }
+    if (!ai_ok){
+        /* ing_start already called hub_set_audio_params before this thread was
+         * even created (so RTSP/SDP could describe the stream without waiting
+         * on hardware bring-up) - undo that now, or every client that connects
+         * from here on gets an audio track advertised that will never carry
+         * any data. */
+        LOGE(MOD,"audio input unavailable");
+        hub_clear_audio_params();
+        return NULL;
+    }
 
-    IMP_AI_Enable(dev);
+    /* Bring up dev 0 / chn 0. None of these three calls were previously
+     * return-checked: on some T-series + sensor combos (e.g. sc2336 on T23,
+     * see the prudynt-t report for the same chip on a Sonoff board) one of
+     * them fails, yet the old code fell through to g_ai_up=1 and
+     * hub_set_audio_params() regardless - RTSP then advertises a live-looking
+     * audio track that silently never carries a single frame, with no error
+     * anywhere in the log to explain why. */
+    if (IMP_AI_Enable(dev)!=0){
+        LOGE(MOD,"IMP_AI_Enable failed");
+        hub_clear_audio_params();
+        return NULL;
+    }
     /* REQUIRED on T-series: without a channel frame depth the AI delivers no
      * frames (PollingFrame then returns empty -> silent audio) */
     IMPAudioIChnParam chnp; memset(&chnp,0,sizeof chnp);
     chnp.usrFrmDepth = MS_AI_FRM_DEPTH;   /* low depth = low audio latency */
-    IMP_AI_SetChnParam(dev,chnid,&chnp);
-    IMP_AI_EnableChn(dev,chnid);
+    if (IMP_AI_SetChnParam(dev,chnid,&chnp)!=0){
+        LOGE(MOD,"IMP_AI_SetChnParam failed");
+        IMP_AI_Disable(dev);
+        hub_clear_audio_params();
+        return NULL;
+    }
+    if (IMP_AI_EnableChn(dev,chnid)!=0){
+        LOGE(MOD,"IMP_AI_EnableChn failed");
+        IMP_AI_Disable(dev);
+        hub_clear_audio_params();
+        return NULL;
+    }
     /* boot-apply the live audio set from the config (same ai_apply_key path
      * the /control endpoint uses at runtime); the off-state features are
      * simply not enabled instead of calling the IMP_AI_Disable* hooks.
@@ -949,12 +986,25 @@ static void *audio_thread(void *arg)
     int dbg_logged = 0;
 #endif
 
+    int ai_fail_streak = 0;
     while (g_arun) {
         if (!g_aactive){ act_wait(); continue; }   /* on-demand: block idle */
         int64_t a_t0 = ms_now_us();
         /* sleep on the no-frame path so a non-blocking/failing PollingFrame
          * can never spin the CPU (audio input may be idle on some boards) */
-        if (IMP_AI_PollingFrame(dev,chnid, g_hcfg->imp_polling_timeout)!=0){ usleep(10000); continue; }
+        if (IMP_AI_PollingFrame(dev,chnid, g_hcfg->imp_polling_timeout)!=0){
+            if (++ai_fail_streak >= MS_AI_WATCHDOG_ITERS){
+                /* the channel never delivered a single frame since it was
+                 * (apparently) enabled - stop advertising it and let the
+                 * thread exit through the normal teardown below instead of
+                 * spinning forever with a dead-but-described audio track */
+                LOGE(MOD,"no audio frames received - disabling audio input");
+                hub_clear_audio_params();
+                break;
+            }
+            usleep(10000); continue;
+        }
+        ai_fail_streak = 0;
         IMPAudioFrame frm;
         if (IMP_AI_GetFrame(dev,chnid,&frm,1)!=0) continue;
         /* live mic mute (audio.mute via /control): keep draining the AI so

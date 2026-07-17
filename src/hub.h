@@ -51,6 +51,11 @@ double      hub_get_fps(int src);
 void        hub_set_audio_params(int acodec, int samplerate, int channels);
 /* read back the audio params the producer actually set; returns 1 if active. */
 int         hub_get_audio(int *acodec, int *samplerate, int *channels);
+/* Mark the audio source inactive again (e.g. the HAL failed to actually bring
+ * up the capture channel after hub_set_audio_params was called at start-of-day
+ * config time). Clients that (re)connect after this point no longer see an
+ * audio track advertised; already-open sessions are unaffected. */
+void        hub_clear_audio_params(void);
 
 /* On-demand: HAL registers an activity callback. The hub invokes it with
  * active=1 when a source gets its first subscriber and active=0 when the last
