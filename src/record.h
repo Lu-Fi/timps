@@ -25,6 +25,10 @@ void record_get_status(ms_record_status *st);
 /* manual override from /control: on=1 forces recording, on=0 forces it off,
  * on<0 returns to config-driven (auto). Returns 0. */
 int  record_set_active(int on);
+/* on-demand clip: capture ~seconds of the record channel to `path` (must be
+ * under /tmp/) as an fMP4 file, forward from the next keyframe. Blocks until
+ * done. Returns 0 on success. Used by send2 for Telegram/motion video clips. */
+int  record_clip(const char *path, int seconds);
 #endif
 
 #endif

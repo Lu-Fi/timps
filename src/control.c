@@ -396,6 +396,14 @@ void control_apply_json(const char *json)
         if (get_val(sb, se, "active", v, sizeof v))
             record_set_active((!strcmp(v,"true")||!strcmp(v,"1")) ? 1 :
                               (!strcmp(v,"false")||!strcmp(v,"0")) ? 0 : -1);
+        {   /* {"record":{"clip":"/tmp/x.mp4","seconds":6}} -> capture an
+             * on-demand fMP4 clip (blocks ~seconds); used by send2 video. */
+            char clip[160];
+            if (get_val(sb, se, "clip", clip, sizeof clip)){
+                int secs = get_val(sb, se, "seconds", v, sizeof v) ? atoi(v) : 6;
+                record_clip(clip, secs);
+            }
+        }
         static const char *const REC_KEYS[] = {
             "enabled","channel","mode","dir","name","segment_s",
             "pre_roll_s","post_roll_s","min_free_mb","audio"

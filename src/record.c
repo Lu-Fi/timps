@@ -455,4 +455,85 @@ int record_set_active(int on)
     LOGI(MOD,"manual override -> %s", on<0?"auto":on?"on":"off");
     return 0;
 }
+
+/* On-demand clip for send2 (Telegram/motion video). Self-contained: its own hub
+ * subscription + fmp4 muxer, independent of the rotating SD recorder above, so
+ * it works whether or not record.enabled is set (subscribing wakes the encoder
+ * on demand). Captures forward from the next keyframe for `seconds` into a
+ * finalized-enough fMP4 (same format the SD segments use). Blocks. Path is
+ * restricted to /tmp/ (send2 uses mktemp there) so a /control caller can't
+ * overwrite arbitrary files. */
+int record_clip(const char *path, int seconds)
+{
+    if (!path || strncmp(path,"/tmp/",5)!=0 || !g_rc) return -1;
+    if (seconds<=0) seconds=6;
+    if (seconds>30) seconds=30;
+    int chn=g_rc->record.channel; if (chn<0||chn>=MS_MAX_VSTREAM) chn=0;
+
+    fanqueue q;
+    if (fanqueue_init(&q,REC_QCAP)) return -1;
+    if (hub_subscribe(chn,&q)!=0){ fanqueue_free(&q); return -1; }
+    int ac=MS_AC_NONE,asr=0,ach=0,sub_audio=0;
+    if (g_rc->record.audio && hub_get_audio(&ac,&asr,&ach) && ac==MS_AC_AAC)
+        sub_audio=(hub_subscribe(HUB_AUDIO_SRC,&q)==0);
+    hub_request_idr(chn);
+
+    ms_buf frag;
+    if (ms_buf_init(&frag,4096)){
+        hub_unsubscribe(chn,&q); if(sub_audio) hub_unsubscribe(HUB_AUDIO_SRC,&q);
+        fanqueue_free(&q); return -1;
+    }
+
+    FILE *fp=NULL; fmp4_mux mux; int rc=-1;
+    int64_t deadline=0;
+    int64_t giveup=ms_now_us()+(int64_t)(seconds+5)*1000000;
+
+    while (g_run){
+        ms_pkt *p=fanqueue_pop(&q,200);
+        int64_t now=ms_now_us();
+        if (!p){
+            if (fp ? now>=deadline : now>=giveup) break;
+            continue;
+        }
+        if (fanqueue_take_dropped_key(&q)) hub_request_idr(chn);
+
+        if (!fp){
+            /* open on the first keyframe with a ready parameter set */
+            if (!(p->media==MS_MEDIA_VIDEO && p->keyframe)){ pkt_unref(p); continue; }
+            vparam vp;
+            if (!(hub_get_vparam(chn,&vp) && vparam_ready(&vp))){ pkt_unref(p); continue; }
+            mkdirs(path);
+            fp=fopen(path,"wb");
+            if (!fp){ pkt_unref(p); break; }
+            fmp4_init(&mux);
+            mux.has_video=1; mux.vcodec=g_rc->video[chn].codec;
+            mux.width=g_rc->video[chn].width; mux.height=g_rc->video[chn].height;
+            mux.fps=g_rc->video[chn].fps;
+            mux.vp=vp; mux.vp_ready=1;
+            if (sub_audio){ mux.has_audio=1; mux.a_timescale=asr; mux.a_channels=ach;
+                            aac_asc(asr,ach,mux.asc); }
+            frag.len=0; frag.err=0;
+            if (fmp4_init_segment(&mux,&frag)!=0){ pkt_unref(p); break; }
+            if (frag.len) fwrite(frag.data,1,frag.len,fp);
+            deadline=now+(int64_t)seconds*1000000;
+        }
+
+        frag.len=0; frag.err=0;
+        int wrote=0;
+        if (p->media==MS_MEDIA_VIDEO)
+            wrote=(fmp4_video_fragment(&mux,p->data,p->len,p->keyframe,p->pts_us,&frag)==0);
+        else if (p->media==MS_MEDIA_AUDIO && mux.has_audio)
+            wrote=(fmp4_audio_fragment(&mux,p->data,p->len,p->pts_us,&frag)==0);
+        if (wrote && frag.len) fwrite(frag.data,1,frag.len,fp);
+        pkt_unref(p);
+        if (now>=deadline) break;
+    }
+
+    if (fp){ fclose(fp); rc=0; LOGI(MOD,"clip -> %s (%ds)",path,seconds); }
+    else LOGW(MOD,"clip: no frames for %s",path);
+    ms_buf_free(&frag);
+    hub_unsubscribe(chn,&q); if(sub_audio) hub_unsubscribe(HUB_AUDIO_SRC,&q);
+    fanqueue_free(&q);
+    return rc;
+}
 #endif
