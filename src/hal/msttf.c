@@ -47,7 +47,8 @@ int msttf_load(msttf_font *f, const char *path)
      * 36 (num_hmetrics at +34); cmap/glyf/loca just need to exist inside
      * the file at all (their own parsers bounds-check further reads). */
     if (!cmap||!glyf||!loca||!head||!maxp ||
-        cmap>=f->size || glyf>=f->size || loca>=f->size ||
+        (uint64_t)cmap>=(uint64_t)f->size || (uint64_t)glyf>=(uint64_t)f->size ||
+        (uint64_t)loca>=(uint64_t)f->size ||
         (uint64_t)head+54 > (uint64_t)f->size ||
         (uint64_t)maxp+6  > (uint64_t)f->size ||
         (hhea && (uint64_t)hhea+36 > (uint64_t)f->size)) {
