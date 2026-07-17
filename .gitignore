@@ -3,3 +3,5 @@ timpsd-sim
 *-sim
 *.o
 outputs/
+3rdparty/
+toolchain/
