@@ -160,7 +160,12 @@ void rtp_send_aac(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us
     size_t plen; int off = aac_adts_strip(frame, len, &plen);
     const uint8_t *au = frame + off;
     if (plen == 0 || plen > 0x1FFF) return; /* AU-size field is 13 bits */
-    uint32_t ts = pts_to_ts(t, pts_us);
+    /* Sample-count-driven timestamp (see rtp_send_g711): AAC-LC is a fixed 1024
+     * samples per AU, so advance by that instead of the jittery publish
+     * wall-clock. pts0 is still anchored for the RTCP SR. */
+    if (!t->have_pts0){ t->pts0 = pts_us; t->have_pts0 = 1; }
+    uint32_t ts = t->ts_base + (uint32_t)t->audio_samples;
+    t->audio_samples += 1024;
     uint8_t pkt[RTP_MTU + 32];
 
     if (plen + 12 + 4 <= RTP_MTU) {
@@ -203,7 +208,18 @@ void rtp_send_aac(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us
 /* ---- G.711 (raw, fragment if needed) ---- */
 void rtp_send_g711(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us)
 {
-    uint32_t ts = pts_to_ts(t, pts_us);
+    /* G.711 is sample-exact (1 byte == 1 sample @ 8 kHz) and captured in hard
+     * real time, so derive the RTP timestamp from a cumulative SAMPLE counter,
+     * not the publish wall-clock (pts_to_ts). The audio thread stamps frames
+     * with ms_now_us() at hub-publish time; scheduling jitter plus the 15 ms
+     * catch-up pacing made those stamps advance unevenly while every packet
+     * still carried a fixed 40 ms of samples -> overlapping / jumping audio
+     * timeline -> player stutter + rebuffering. A sample counter advances at
+     * exactly clock_rate/s, staying consistent with the wall-clock-based RTCP
+     * SR to within capture-crystal ppm. pts0 is still anchored so
+     * rtp_maybe_sr() has its NTP<->RTP reference. */
+    if (!t->have_pts0){ t->pts0 = pts_us; t->have_pts0 = 1; }
+    uint32_t ts = t->ts_base + (uint32_t)t->audio_samples;
     uint8_t pkt[RTP_MTU + 32];
     size_t off = 0;
     while (off < len) {
@@ -218,6 +234,7 @@ void rtp_send_g711(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_u
         emit(t, pkt, h+(int)chunk, ts);
         off += chunk;
     }
+    t->audio_samples += len;   /* mono 8-bit: bytes == samples */
 }
 
 /* ---- RTCP Sender Report ---- */

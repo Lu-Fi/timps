@@ -9,6 +9,7 @@
 #include <pthread.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <sys/stat.h>   /* fchmod on the mkstemp'd config tmp */
 #include <errno.h>
 
 #define MOD "CONFIG"
@@ -999,11 +1000,28 @@ int config_write_keys(const char *path, const char *const *keys,
     if (n > (int)sizeof done) n = (int)sizeof done;
     memset(done, 0, sizeof done);
 
-    char tmp[280];
-    if (snprintf(tmp, sizeof tmp, "%s.tmp", path) >= (int)sizeof tmp) return -1;
-    FILE *out = fopen(tmp, "w");
-    if (!out){ LOGW(MOD,"cannot write %s", tmp); return -1; }
+    /* Serialize writers. /control POSTs run in detached per-connection threads
+     * with no lock around this file, so two rapid changes (e.g. AGC on then
+     * off) used to run here concurrently on the same inode: one truncated /
+     * renamed the tmp while the other was mid-write, leaving the live config
+     * ending mid-line, onto which the next append glued the following key
+     * ("audio.volume = 100audio.agc = 1") and the duplicate that followed. */
+    static pthread_mutex_t wlock = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&wlock);
+    int rc = -1;
 
+    /* Unique tmp in the same directory (mkstemp), so no two writers can ever
+     * share the tmp inode; must stay on the same filesystem for rename(). */
+    char tmp[300];
+    if (snprintf(tmp, sizeof tmp, "%s.tmpXXXXXX", path) >= (int)sizeof tmp)
+        goto unlock;
+    int tfd = mkstemp(tmp);
+    if (tfd < 0){ LOGW(MOD,"cannot create tmp for %s: %s", path, strerror(errno)); goto unlock; }
+    fchmod(tfd, 0644);                       /* mkstemp makes it 0600; match a normal conf */
+    FILE *out = fdopen(tfd, "w");
+    if (!out){ LOGW(MOD,"fdopen tmp failed"); close(tfd); unlink(tmp); goto unlock; }
+
+    int last_nl = 1;                         /* does the copied body end in '\n'? */
     FILE *in = fopen(path, "r");
     if (in){
         char line[512];
@@ -1026,14 +1044,19 @@ int config_write_keys(const char *path, const char *const *keys,
                     }
                 }
             }
-            if (!handled) fputs(line, out);
+            if (handled) { last_nl = 1; }     /* write_kv_line always ends in '\n' */
+            else { fputs(line, out); size_t ll=strlen(line); last_nl = (ll==0)||line[ll-1]=='\n'; }
         }
         fclose(in);
     }
+    /* Never let an appended key glue onto an unterminated last line. This also
+     * self-heals a file an older (racy) build already left mid-line: the merged
+     * text is split off cleanly on the next save that rewrites its lead key. */
+    if (!last_nl) fputc('\n', out);
     for (int i=0;i<n;i++)
         if (!done[i]) write_kv_line(out, keys[i], vals[i]);
 
-    if (fflush(out)!=0 || ferror(out)){ fclose(out); remove(tmp); return -1; }
+    if (fflush(out)!=0 || ferror(out)){ fclose(out); remove(tmp); goto unlock; }
     /* fflush() only moves data from libc's buffer into the OS page cache -
      * on jffs2/ubifs (this file's usual home) that is not durable yet. A
      * power cut right after "success" here (this is called on nearly every
@@ -1041,7 +1064,7 @@ int config_write_keys(const char *path, const char *const *keys,
     if (fsync(fileno(out))!=0)
         LOGW(MOD,"fsync %s failed: %s", tmp, strerror(errno));
     fclose(out);
-    if (rename(tmp, path)!=0){ LOGW(MOD,"rename %s -> %s failed", tmp, path); remove(tmp); return -1; }
+    if (rename(tmp, path)!=0){ LOGW(MOD,"rename %s -> %s failed", tmp, path); remove(tmp); goto unlock; }
     /* the rename()'s directory-entry update needs its own durability flush
      * too - otherwise a power cut right after a successful rename() can
      * still leave the directory pointing at the old (or no) file even
@@ -1058,5 +1081,8 @@ int config_write_keys(const char *path, const char *const *keys,
         }
     }
     LOGI(MOD,"persisted %d setting(s) to %s", n, path);
-    return 0;
+    rc = 0;
+unlock:
+    pthread_mutex_unlock(&wlock);
+    return rc;
 }

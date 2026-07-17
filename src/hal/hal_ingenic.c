@@ -80,12 +80,16 @@ typedef IMPEncoderCHNAttr IMPEncoderChnAttr;
 /* Audio input buffering. The Ingenic AI delivers a frame only once usrFrmDepth
  * frames are cached, so this depth IS the audio latency (depth x 40 ms). It was
  * 30 (~1.2 s) which made browser/RTSP audio audibly lag the video; keep it small
- * for low latency (must stay > 0 or the AI delivers no frames). */
+ * for low latency (must stay > 0 or the AI delivers no frames). Depth 2 (~80 ms)
+ * gave too little slack: whenever audio_thread was starved by the H.264/H.265
+ * encoder on a single-core SoC for >80 ms, the driver dropped captured frames ->
+ * audible G.711 gaps. Depth 4 (~160 ms) absorbs that jitter; correct
+ * sample-count RTP timestamps (see rtp.c) keep A/V sync exact despite the slack. */
 #ifndef MS_AI_FRM_NUM
 #define MS_AI_FRM_NUM   6
 #endif
 #ifndef MS_AI_FRM_DEPTH
-#define MS_AI_FRM_DEPTH 2
+#define MS_AI_FRM_DEPTH 4
 #endif
 /* Watchdog: IMP_AI_EnableChn can appear to succeed yet the channel never
  * actually yields a frame (same failure class as an unchecked EnableChn
@@ -913,6 +917,11 @@ static void *audio_thread(void *arg)
     int dev=0, chnid=0;
     int use_aac = (g_acodec==MS_AC_AAC);
 
+    /* G.711 (PCMA/PCMU) is ALWAYS 8 kHz. Pin it here so a stray samplerate in
+     * the config can't bring the AI up at 16 kHz for a stream that SDP then
+     * tags as 8 kHz (2x-speed / unbounded buffering). AAC keeps its rate. */
+    if (!use_aac && g_asr != 8000) g_asr = 8000;
+
     /* --- configure the audio input FIRST, with a samplerate fallback ---
      * The AI frame size is decoupled from the AAC encoder: the SoC only accepts
      * "natural" frame sizes (a 40 ms frame here), so 16 kHz/1024 was rejected.
@@ -1023,8 +1032,40 @@ static void *audio_thread(void *arg)
     if (g_acodec==MS_AC_AAC) g_acodec=MS_AC_PCMU;
 #endif
 
-    /* the codec/rate the HAL actually produces must be what SDP/ASC advertise */
-    if (!use_aac && g_acodec==MS_AC_PCMU && g_asr!=8000) g_asr=8000;
+    /* the codec/rate the HAL actually produces must be what SDP/ASC advertise.
+     * If AAC was configured but faac failed, we fell back to PCMU while the AI
+     * is still running at the AAC rate (e.g. 16 kHz). Relabeling g_asr alone
+     * would ship 16 kHz samples tagged 8 kHz -> 2x speed, A/V drift, unbounded
+     * player buffering. So reconfigure the AI to 8 kHz for real. */
+    if (!use_aac && (g_acodec==MS_AC_PCMU || g_acodec==MS_AC_PCMA) && g_asr!=8000) {
+        LOGW(MOD,"faac fallback: reconfiguring AI %dHz -> 8000 for G.711", g_asr);
+        g_ai_up = 0;                       /* keep /control off the AI mid-rebuild */
+        IMP_AI_DisableChn(dev,chnid);
+        IMP_AI_Disable(dev);
+        memset(&aio,0,sizeof aio);
+        aio.samplerate = ai_rate_enum(8000);
+        aio.bitwidth   = AUDIO_BIT_WIDTH_16;
+        aio.soundmode  = AUDIO_SOUND_MODE_MONO;
+        aio.frmNum     = MS_AI_FRM_NUM;
+        aio.numPerFrm  = 8000*40/1000;     /* 320 samples / 40 ms */
+        aio.chnCnt     = 1;
+        if (IMP_AI_SetPubAttr(dev,&aio)!=0 || IMP_AI_Enable(dev)!=0 ||
+            IMP_AI_SetChnParam(dev,chnid,&chnp)!=0 || IMP_AI_EnableChn(dev,chnid)!=0) {
+            LOGE(MOD,"AI re-init at 8000 failed");
+            hub_clear_audio_params();
+            return NULL;
+        }
+        g_asr = 8000;
+        g_aio = aio;
+        /* re-apply the live audio settings to the fresh channel */
+        ai_apply_key("volume");
+        ai_apply_key("gain");
+        if (g_hcfg->audio.alc_gain > 0) ai_apply_key("alc_gain");
+        if (g_hcfg->audio.high_pass)    ai_apply_key("high_pass");
+        if (g_hcfg->audio.agc)          ai_apply_key("agc");
+        if (g_hcfg->audio.ns > 0)       ai_apply_key("ns");
+        g_ai_up = 1;
+    }
     hub_set_audio_params(g_acodec, g_asr, 1);
 
     LOGI(MOD,"audio in: %dHz %s vol=%d gain=%d numPerFrm=%d", g_asr,
