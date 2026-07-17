@@ -24,7 +24,9 @@
 #include <time.h>
 
 #define MOD "MAIN"
+#ifndef MS_VERSION
 #define MS_VERSION "0.1.0"
+#endif
 
 static volatile int g_run = 1;
 static const hal_backend *g_hal;

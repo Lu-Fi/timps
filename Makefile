@@ -95,6 +95,10 @@ CFLAGS  ?= -std=c11 -D_GNU_SOURCE -Os -Wall -Wextra -Wno-unused-parameter -Wno-m
 LDFLAGS ?= -Wl,--gc-sections
 LIBS    ?= -lpthread -lrt -lm
 
+# Version baked into the binary (timps -v / startup log). git-describe for local
+# builds; the buildroot package overrides it with VERSION=$(TIMPS_VERSION).
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.1.0)
+
 # vendor libs: static drop-in by default (adjust to your SDK: alog/sysutils/muslshim)
 IMPLIBS ?= -l:libimp.a -l:libalog.a -l:libsysutils.a
 
@@ -114,7 +118,7 @@ target:
 	  $(if $(filter 1,$(USE_DAYNIGHT)),-DUSE_DAYNIGHT) \
 	  $(if $(filter 1,$(USE_TLS)),-DUSE_TLS) \
 	  $(if $(filter 1,$(USE_SRT)),-DUSE_SRT) \
-	  -DHAL_INGENIC -DPLATFORM_$(PLATFORM) -Isrc -I$(IMP_INC) -I$(IMP_INC)/imp \
+	  -DHAL_INGENIC -DPLATFORM_$(PLATFORM) -DMS_VERSION='"$(VERSION)"' -Isrc -I$(IMP_INC) -I$(IMP_INC)/imp \
 	  -c $(TARGET_ALLSRC)
 	$(LINK_DRV) $(TARGET_OBJS) \
 	  $(LDFLAGS) $(if $(IMP_LIB),-L$(IMP_LIB)) $(IMPLIBS) \
@@ -123,7 +127,7 @@ target:
 	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT))"
 
 sim:
-	$(HOSTCC) $(CFLAGS) $(if $(filter 1,$(USE_CONTROL)),-DUSE_CONTROL) \
+	$(HOSTCC) $(CFLAGS) -DMS_VERSION='"$(VERSION)"' $(if $(filter 1,$(USE_CONTROL)),-DUSE_CONTROL) \
 	  $(if $(filter 1,$(USE_DAYNIGHT)),-DUSE_DAYNIGHT) \
 	  -Isrc $(SIM_SRC) $(LDFLAGS) -lpthread -lm -o $(BIN)-sim
 	@echo "built $(BIN)-sim (host simulation backend, USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT))"
