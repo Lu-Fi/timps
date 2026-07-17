@@ -59,11 +59,28 @@ static void (*g_control_cb)(const char*,const char*) = NULL;
 void hub_set_control_cb(void (*cb)(const char *key, const char *val)){ g_control_cb = cb; }
 void hub_control(const char *key, const char *val){ if (g_control_cb) g_control_cb(key, val); }
 
+/* hub_publish() snapshots s->subs[] under s->lock and then pushes to those
+ * queues AFTER releasing s->lock (see hub_publish). Since hub_unsubscribe()
+ * callers destroy/free their fanqueue right after it returns, a push that
+ * already snapshotted a queue must be allowed to finish before unsubscribe
+ * for that queue returns - otherwise fanqueue_push() could run against a
+ * queue whose mutex/cond has just been destroyed (use-after-free).
+ * hub_publish() has exactly one producer thread per source (one video/jpeg/
+ * audio thread per hub_source), so a plain per-source busy flag - not a
+ * counter - is enough to track "a push for this source is in flight".
+ * Kept as hub.c-local arrays (not fields on hub_source in hub.h) since this
+ * is purely an internal publish/unsubscribe handshake; protected by the
+ * same per-source s->lock as the rest of hub_source. */
+static int             g_pushing[HUB_NSRC];
+static pthread_cond_t  g_push_done[HUB_NSRC];
+
 void hub_init(void)
 {
     for (int i=0;i<HUB_NSRC;i++){
         memset(&g_src[i], 0, sizeof(hub_source));
         pthread_mutex_init(&g_src[i].lock, NULL);
+        g_pushing[i] = 0;
+        pthread_cond_init(&g_push_done[i], NULL);
     }
 }
 
@@ -157,6 +174,11 @@ void hub_unsubscribe(int src, fanqueue *q)
             break;
         }
     }
+    /* Wait out any hub_publish() push already in flight for this source: it
+     * may have snapshotted subs[] (possibly including q) before we removed
+     * q above, and our caller frees/destroys q right after we return. */
+    while (g_pushing[src])
+        pthread_cond_wait(&g_push_done[src], &s->lock);
     pthread_mutex_unlock(&s->lock);
     LOGD(MOD,"unsubscribe src=%d nsub=%d", src, s->nsub);
     hub_notify_activity(src);          /* level based, not edge based */
@@ -166,6 +188,24 @@ void hub_publish(int src, const uint8_t *data, size_t len,
                  int64_t pts_us, int keyframe, int media)
 {
     hub_source *s = hub_get(src); if(!s) return;
+
+    /* Build the refcounted packet (malloc + full-frame memcpy, up to ~1MB for
+     * an IDR) BEFORE taking s->lock. Holding the lock across the copy AND
+     * the fan-out push stalls every other s->lock user (hub_active/
+     * hub_get_vparam/hub_get_fps/hub_subscribe, incl. the producer threads
+     * themselves, OSD, SSE stats) behind a single slow subscriber. */
+    ms_pkt *p = pkt_new(data, len, pts_us, keyframe, media);
+    if (!p) return;
+
+    /* Under the lock: only update the cached vparam/fps state and snapshot
+     * the current subscriber list into a small local array. No malloc/memcpy
+     * and no queue pushes happen while s->lock is held. g_pushing[src] is
+     * raised while a snapshot is "out" so a concurrent hub_unsubscribe()
+     * knows to wait for our push loop below before letting its caller
+     * destroy the fanqueue (see hub_unsubscribe / g_pushing comment). */
+    fanqueue *subs_snap[HUB_MAX_SUBS];
+    int nsub_snap;
+    int pushing = 0;
     pthread_mutex_lock(&s->lock);
     if (media == MS_MEDIA_VIDEO) {
         if (keyframe || !s->vp_ready) {
@@ -179,11 +219,22 @@ void hub_publish(int src, const uint8_t *data, size_t len,
             s->fcount = 0; s->fwin = now;
         }
     }
-    if (s->nsub == 0) { pthread_mutex_unlock(&s->lock); return; }
-    ms_pkt *p = pkt_new(data, len, pts_us, keyframe, media);
-    if (!p){ pthread_mutex_unlock(&s->lock); return; }
-    for (int i=0;i<s->nsub;i++)
-        fanqueue_push(s->subs[i], pkt_ref(p));
+    nsub_snap = s->nsub;
+    for (int i=0;i<nsub_snap;i++) subs_snap[i] = s->subs[i];
+    if (nsub_snap > 0) { g_pushing[src] = 1; pushing = 1; }
     pthread_mutex_unlock(&s->lock);
+
+    /* Push to the (snapshotted) subscriber queues after releasing s->lock.
+     * Each push takes its own ref; the builder's own reference (from
+     * pkt_new) is released once below - same net refcount as before. */
+    for (int i=0;i<nsub_snap;i++)
+        fanqueue_push(subs_snap[i], pkt_ref(p));
     pkt_unref(p);
+
+    if (pushing) {
+        pthread_mutex_lock(&s->lock);
+        g_pushing[src] = 0;
+        pthread_cond_broadcast(&g_push_done[src]);
+        pthread_mutex_unlock(&s->lock);
+    }
 }

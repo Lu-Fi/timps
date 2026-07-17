@@ -412,6 +412,15 @@ int msttf_render(msttf_font *f, const char *s, int pixel_h,
             int bw=x1-x0, bh=y1-y0;
             if (bw>0&&bh>0){
                 uint8_t *cov=calloc((size_t)bw*bh,1);
+                /* calloc can legitimately fail here (runs ~1x/s per text
+                 * item, under whatever memory pressure the daemon is under
+                 * at that moment) - the sibling allocations in this function
+                 * are all NULL-checked, this one wasn't; skip just this
+                 * glyph's coverage cleanly instead of dereferencing NULL
+                 * below (polys are still freed and rendering continues with
+                 * the next character, same as if the glyph rasterized to
+                 * empty coverage). */
+                if (cov){
                 /* supersample scanlines */
                 float xint[128];
                 for (int py=y0;py<y1;py++){
@@ -433,9 +442,22 @@ int msttf_render(msttf_font *f, const char *s, int pixel_h,
                             if (xint[b]<xint[a]){ float tmp=xint[a];xint[a]=xint[b];xint[b]=tmp; }
                         for (int a=0;a+1<nx;a+=2){
                             float xa=xint[a], xb=xint[a+1];
-                            for (int sx2=0;sx2<ss;sx2++){
-                                /* sub-pixel columns */
-                                for (int px=x0;px<x1;px++){
+                            /* bound the pixel columns directly from xa/xb
+                             * instead of scanning every column of the whole
+                             * glyph bbox for every span: xc=px+(sx2+0.5)/ss
+                             * has a fractional part in [0,1), so no column
+                             * below floor(xa) can ever satisfy xc>=xa, and
+                             * none at/above ceil(xb) can ever satisfy xc<xb.
+                             * The inner per-sample compare is unchanged, so
+                             * coverage output is identical - this only
+                             * shrinks the (previously x0..x1, i.e. the full
+                             * bbox width) range down to the span's own
+                             * width. */
+                            int pxa=(int)floorf(xa); if (pxa<x0) pxa=x0;
+                            int pxb=(int)ceilf(xb);  if (pxb>x1) pxb=x1;
+                            for (int px=pxa;px<pxb;px++){
+                                for (int sx2=0;sx2<ss;sx2++){
+                                    /* sub-pixel columns */
                                     float xc=px+(sx2+0.5f)/ss;
                                     if (xc>=xa&&xc<xb){
                                         uint8_t *cc=&cov[(py-y0)*bw+(px-x0)];
@@ -452,6 +474,7 @@ int msttf_render(msttf_font *f, const char *s, int pixel_h,
                     gcov[py*W+px]=(uint8_t)(c>ss*ss ? ss*ss : c);
                 }
                 free(cov);
+                }
             }
         }
         for (int i=0;i<npoly;i++) free(polys[i].p);

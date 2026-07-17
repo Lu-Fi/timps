@@ -50,6 +50,18 @@ typedef IMPEncoderCHNAttr IMPEncoderChnAttr;
 #ifndef MS_IDLE_STOP_US
 #define MS_IDLE_STOP_US 2000000   /* 2 s */
 #endif
+/* jpeg.snapshot_path periodic file-snapshot cadence (M8): without this, a
+ * configured snapshot path alone pins jwant=true in jpeg_thread forever, so
+ * the JPEG pipeline (framesource + HW encoder) runs 24/7 and rewrites the
+ * file at the full jc->fps drain rate. Gating on an interval lets the
+ * existing on-demand idle-stop logic (MS_IDLE_STOP_US) shut the pipeline
+ * back down between snapshots, matching the just-in-time pattern used
+ * elsewhere. No dedicated config key yet (out of scope for this file) - this
+ * is a sane fixed default; a jpeg.snapshot_interval_s config key would
+ * replace it. */
+#ifndef MS_SNAPSHOT_INTERVAL_US
+#define MS_SNAPSHOT_INTERVAL_US 60000000LL   /* 60 s */
+#endif
 /* AU assembly buffer bounds (was a fixed 1 MB static per video thread; now
  * sized from the stream resolution to fit small-RAM SoCs like the T10) */
 #ifndef MS_AU_BUF_MIN
@@ -110,6 +122,7 @@ typedef struct {
     int          src;        /* hub source id (HUB_JPEG_SRC / HUB_JPEG_SRC_N) */
     int          w, h, fps;
     int          snapshot;   /* periodic file snapshot (dedicated chn only) */
+    int64_t      last_snapshot_us; /* ms_now_us() of the last file write (M8) */
     volatile int run, active;
     pthread_t    thr;
 } jchan;
@@ -356,12 +369,16 @@ static int isp_init(void)
 {
     int ret;
     memset(&g_sensor,0,sizeof g_sensor);
-    /* bounded copies: sensor.model (64) is larger than name (32) / i2c.type (20) */
+    /* bounded copies: sensor.model (64) is larger than name (32) / i2c.type (20).
+     * sensor.model is runtime-mutable via /control, so read it under
+     * config_str_lock rather than directly off g_hcfg (M3). */
+    config_str_lock();
     snprintf(g_sensor.name, sizeof g_sensor.name, "%.*s",
              (int)sizeof(g_sensor.name)-1, g_hcfg->sensor.model);
     g_sensor.cbus_type = TX_SENSOR_CONTROL_INTERFACE_I2C;
     snprintf(g_sensor.i2c.type, sizeof g_sensor.i2c.type, "%.*s",
              (int)sizeof(g_sensor.i2c.type)-1, g_hcfg->sensor.model);
+    config_str_unlock();
     g_sensor.i2c.addr = g_hcfg->sensor.i2c_addr;
 
 #if !(defined(PLATFORM_T40)||defined(PLATFORM_T41))
@@ -419,7 +436,9 @@ static int isp_init(void)
     }
 #endif
 
+    config_str_lock();
     LOGI(MOD,"ISP up, sensor=%s fps=%d", g_hcfg->sensor.model, g_hcfg->sensor.fps);
+    config_str_unlock();
     return 0;
 }
 
@@ -661,10 +680,22 @@ static void *jpeg_thread(void *arg)
     int64_t next=0, idle_since=0;
     int64_t period = 1000000/(jc->fps>0?jc->fps:5);
     while (jc->run) {
-        /* run when an MJPEG/snapshot client is connected, or when a periodic
-         * file snapshot is configured. Stop is debounced like video (see
-         * MS_IDLE_STOP_US) to avoid Start/StopRecvPic churn. */
-        int jwant = jc->active || jc->snapshot || hub_active(jc->src);
+        /* run when an MJPEG/snapshot client is connected, hub_active() sees
+         * a subscriber, or a periodic file snapshot is configured AND due
+         * (M8): a bare configured snapshot_path no longer pins the pipeline
+         * on 24/7 - between snapshots the existing idle-stop debounce below
+         * (MS_IDLE_STOP_US) shuts framesource+encoder back down, same as the
+         * on-demand client path. snapshot_path is runtime-mutable via
+         * /control, so it's read under config_str_lock, not directly off
+         * g_hcfg (M3). Stop is debounced like video to avoid Start/
+         * StopRecvPic churn. */
+        int64_t nowj = ms_now_us();
+        config_str_lock();
+        int snap_configured = jc->snapshot && g_hcfg->jpeg.snapshot_path[0]!=0;
+        config_str_unlock();
+        int snap_due = snap_configured &&
+                        (nowj - jc->last_snapshot_us >= MS_SNAPSHOT_INTERVAL_US);
+        int jwant = jc->active || snap_due || hub_active(jc->src);
         if (!jwant) {
             /* fully idle: block until reactivated (see act_wait) */
             if (!receiving){ act_wait(); continue; }
@@ -712,10 +743,19 @@ static void *jpeg_thread(void *arg)
         }
         if (jc->active || hub_active(jc->src))
             hub_publish(jc->src, jbuf, jlen, ms_now_us(), 1, MS_MEDIA_JPEG);
-        if (jc->snapshot && g_hcfg->jpeg.snapshot_path[0]){
-            char tmp[160]; snprintf(tmp,sizeof tmp,"%s.tmp",g_hcfg->jpeg.snapshot_path);
+        if (snap_configured &&
+            ms_now_us() - jc->last_snapshot_us >= MS_SNAPSHOT_INTERVAL_US) {
+            /* copy the path under config_str_lock, then do the (blocking)
+             * file I/O against the local copy - never hold the lock across
+             * fopen/fwrite/rename (M3). */
+            char path[128], tmp[160];
+            config_str_lock();
+            snprintf(path, sizeof path, "%s", g_hcfg->jpeg.snapshot_path);
+            config_str_unlock();
+            snprintf(tmp,sizeof tmp,"%s.tmp",path);
             FILE *f=fopen(tmp,"wb");
-            if (f){ fwrite(jbuf,1,jlen,f); fclose(f); rename(tmp,g_hcfg->jpeg.snapshot_path); }
+            if (f){ fwrite(jbuf,1,jlen,f); fclose(f); rename(tmp,path); }
+            jc->last_snapshot_us = ms_now_us();
         }
         IMP_Encoder_ReleaseStream(jc->chn,&st);
     }
@@ -724,18 +764,27 @@ static void *jpeg_thread(void *arg)
     return NULL;
 }
 
-/* create one JPEG encoder channel (not yet registered to a group) */
-static int jpeg_enc_create(int chn, int w, int h, int quality)
+/* create one JPEG encoder channel (not yet registered to a group).
+ * fps: target encode rate for this channel (<=0 falls back to the old
+ * hardcoded 24). For a channel piggybacked on a video group (jpeg_attach)
+ * the group's framesource runs at the video fps, but jpeg_thread only
+ * drains at jc->fps - passing that same rate here makes the HW encoder
+ * itself skip down to the drain rate instead of encoding (and mostly
+ * discarding) a JPEG on every video frame (see M7). The dedicated jpeg.*
+ * channel has its own framesource already running at cfg->jpeg.fps, so this
+ * is a no-op for it. */
+static int jpeg_enc_create(int chn, int w, int h, int quality, int fps)
 {
     IMPEncoderChnAttr a; memset(&a,0,sizeof a);
+    if (fps <= 0) fps = 24;
 #ifdef ENC_NEW_API
     /* exact JPEG params from prudynt: frmRate 24/1, gop 0, maxSameScene 0,
      * iInitialQP = quality, targetBitRate = 0. (Putting quality into the
      * bitrate slot with iInitialQP=-1 caused the div-by-zero SIGFPE.) */
     IMP_Encoder_SetDefaultParam(&a, IMP_ENC_PROFILE_JPEG, IMP_ENC_RC_MODE_FIXQP,
-        w, h, 24, 1, 0, 0, quality, 0);
+        w, h, fps, 1, 0, 0, quality, 0);
 #else
-    (void)quality;
+    (void)quality; (void)fps;
     a.encAttr.enType=PT_JPEG;
     a.encAttr.picWidth=w; a.encAttr.picHeight=h;
 #endif
@@ -749,6 +798,7 @@ static void jpeg_chan_start(int chn, int fs_chn, int src, int w, int h,
     jchan *jc=&g_j[g_nj++];
     jc->chn=chn; jc->fs_chn=fs_chn; jc->src=src; jc->w=w; jc->h=h;
     jc->fps=fps>0?fps:5; jc->snapshot=snapshot;
+    jc->last_snapshot_us=0;  /* due immediately: first loop iteration takes one */
     jc->run=1; jc->active=0;
     if (pthread_create(&jc->thr,NULL,jpeg_thread,jc)!=0){
         jc->run=0; g_nj--;           /* drop the slot: stop() must not join */
@@ -764,7 +814,8 @@ static int jpeg_setup(const ms_config *cfg)
     jv.width=cfg->jpeg.width; jv.height=cfg->jpeg.height; jv.fps=cfg->jpeg.fps>0?cfg->jpeg.fps:5;
     jv.buffers=2; jv.codec=MS_VC_H264; /* framesource is codec-agnostic */
     if (fs_create(chn,&jv)!=0) return -1;
-    if (jpeg_enc_create(chn, cfg->jpeg.width, cfg->jpeg.height, cfg->jpeg.quality)!=0) return -1;
+    if (jpeg_enc_create(chn, cfg->jpeg.width, cfg->jpeg.height, cfg->jpeg.quality,
+                        cfg->jpeg.fps)!=0) return -1;
     IMP_Encoder_CreateGroup(chn);
     IMP_Encoder_RegisterChn(chn, chn);
     IMPCell fs={DEV_ID_FS,chn,0}, enc={DEV_ID_ENC,chn,0};
@@ -784,13 +835,14 @@ static int jpeg_attach(const ms_config *cfg, int vi, int grp)
     const ms_vstream_cfg *v=&cfg->video[vi];
     int chn = v->jpeg_chn;
     int q   = (v->jpeg_quality>0 && v->jpeg_quality<=100) ? v->jpeg_quality : 75;
-    if (jpeg_enc_create(chn, v->width, v->height, q)!=0) return -1;
+    int jfps = v->jpeg_fps>0 ? v->jpeg_fps : 5;
+    if (jpeg_enc_create(chn, v->width, v->height, q, jfps)!=0) return -1;
     if (IMP_Encoder_RegisterChn(grp, chn)!=0){
         LOGE(MOD,"JPEG RegisterChn %d to group %d failed",chn,grp);
         IMP_Encoder_DestroyChn(chn);
         return -1;
     }
-    jpeg_chan_start(chn, grp, HUB_JPEG_SRC_N(vi), v->width, v->height, v->jpeg_fps, 0);
+    jpeg_chan_start(chn, grp, HUB_JPEG_SRC_N(vi), v->width, v->height, jfps, 0);
     LOGI(MOD,"JPEG-on-video%d: encoder chn %d in group %d (%dx%d q%d)",
          vi,chn,grp,v->width,v->height,q);
     return 0;

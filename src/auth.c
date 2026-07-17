@@ -8,6 +8,7 @@
 #include <strings.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <ctype.h>
 
 int auth_http_basic(const char *value, const char *user, const char *pass)
 {
@@ -17,9 +18,20 @@ int auth_http_basic(const char *value, const char *user, const char *pass)
     const char *tok=value+6; while(*tok==' ')tok++;
     char creds[160]; snprintf(creds,sizeof creds,"%s:%s",user,pass);
     char expect[256]; ms_base64(expect,(const uint8_t*)creds,(int)strlen(creds));
-    /* compare up to whitespace/end of provided token */
+    /* compare up to whitespace/end of provided token, constant-time (no
+     * early exit on a CONTENT mismatch, like auth_token_eq below) so a
+     * timing side-channel cannot be used to recover the expected base64
+     * blob byte-by-byte. el/tl are both attacker-observable lengths, not
+     * secret, so branching on the length compare itself is fine - and it
+     * keeps the loop below (and the tok[el] access after it) in-bounds: it
+     * only runs, and only reads tok[el], when tok is at least el bytes. */
     size_t el=strlen(expect);
-    if (strncmp(tok,expect,el)!=0) return 0;
+    size_t tl=strlen(tok);
+    size_t n=(tl<el)?tl:el;
+    unsigned char diff=(tl<el)?1:0;
+    for (size_t i=0;i<n;i++)
+        diff |= (unsigned char)tok[i] ^ (unsigned char)expect[i];
+    if (diff) return 0;
     char t=tok[el];
     return (t==0||t=='\r'||t=='\n'||t==' ');
 }
@@ -65,7 +77,18 @@ int auth_rtsp_digest(const char *method, const char *value,
     snprintf(buf,sizeof buf,"%s:%s:%s",user,realm,pass);        md5_hex(buf,ha1);
     snprintf(buf,sizeof buf,"%s:%s",method,uri);                md5_hex(buf,ha2);
     snprintf(buf,sizeof buf,"%s:%s:%s",ha1,nonce,ha2);          md5_hex(buf,expect);
-    return strcasecmp(resp,expect)==0;
+    /* both sides are hex-digest strings (case-insensitive per RFC 2617), so
+     * lowercase-normalize into fixed buffers and use the same constant-time
+     * equal-length compare as auth_token_eq instead of strcasecmp, which
+     * short-circuits on the first mismatching byte and leaks timing info
+     * about how many leading hex digits of the secret-derived digest the
+     * client guessed correctly. */
+    char rlow[64], elow[64]; size_t i;
+    for (i=0; resp[i] && i+1<sizeof rlow; i++) rlow[i]=(char)tolower((unsigned char)resp[i]);
+    rlow[i]=0;
+    for (i=0; expect[i] && i+1<sizeof elow; i++) elow[i]=(char)tolower((unsigned char)expect[i]);
+    elow[i]=0;
+    return auth_token_eq(rlow, elow);
 }
 
 void auth_make_nonce(char out[33])

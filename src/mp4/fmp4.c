@@ -3,6 +3,8 @@
 #include "../codec/nal.h"
 #include "../codec/aac.h"
 #include <string.h>
+#include <stdlib.h>
+#include <pthread.h>
 
 #define TRK_VIDEO 1
 #define TRK_AUDIO 2
@@ -56,9 +58,14 @@ void fmp4_init(fmp4_mux *m)
  *   *dts_io:      accumulator = tfdt to use for this sample (advanced here)
  *   *last_pts_io: previous sample PTS (<0 = first sample of this track)
  *   *dur_io:      nominal duration in, actual duration out
+ *   fixed_dur:    1 = never re-derive the duration from PTS deltas (AAC:
+ *                 always the nominal 1024 samples/frame - deriving it from
+ *                 capture PTS jitter instead made the MSE audio timeline
+ *                 drift); 0 = video keeps following the real PTS deltas
  *   returns:      the tfdt (baseMediaDecodeTime) for this fragment */
 static uint64_t pts_track_time(fmp4_mux *m, int64_t pts_us, int64_t *last_pts_io,
-                               uint64_t *dts_io, uint32_t timescale, uint32_t *dur_io)
+                               uint64_t *dts_io, uint32_t timescale, uint32_t *dur_io,
+                               int fixed_dur)
 {
     uint32_t nominal = *dur_io;
     if (nominal == 0) nominal = 1;     /* a 0-duration sample stalls MSE */
@@ -85,8 +92,10 @@ static uint64_t pts_track_time(fmp4_mux *m, int64_t pts_us, int64_t *last_pts_io
     uint64_t dts = *dts_io;
     uint32_t dur = nominal;
     if (pts_us > 0 && pts_us > *last_pts_io) {
-        uint64_t d = (uint64_t)(pts_us - *last_pts_io) * timescale / 1000000u;
-        if (d > 0 && d < (uint64_t)timescale * 10) dur = (uint32_t)d; /* clamp jitter/gaps */
+        if (!fixed_dur) {
+            uint64_t d = (uint64_t)(pts_us - *last_pts_io) * timescale / 1000000u;
+            if (d > 0 && d < (uint64_t)timescale * 10) dur = (uint32_t)d; /* clamp jitter/gaps */
+        }
         *last_pts_io = pts_us;
     }
     *dur_io = dur;
@@ -400,24 +409,66 @@ static int fragment(fmp4_mux *m, int track_id, const uint8_t *sample, size_t sle
     return out->err ? -1 : 0;
 }
 
+/* fmp4_video_fragment's Annex-B -> AVCC conversion needs a staging buffer:
+ * the sample's total length (parameter sets stripped out) is only known
+ * once every NAL has been copied, but the trun box must record that length
+ * BEFORE the mdat bytes are written, so the sample cannot be built directly
+ * into the caller's `out` fragment buffer. This used to be ms_buf_init()'d
+ * and ms_buf_free()'d on every single video frame of every client/recorder
+ * (M1: per-frame heap churn on the 24/7 musl heap). Each caller of
+ * fmp4_video_fragment already runs on its own dedicated, long-lived thread
+ * (one per HTTP client in httpd.c's stream_mp4, one for the whole recorder
+ * in record.c's rec_thread), so a pthread-TLS buffer gives every one of
+ * them a persistent scratch buffer: reset to len=0 per frame (no realloc
+ * once it reaches that stream's steady-state frame size) and reclaimed via
+ * the key destructor when the thread exits (client disconnect / recorder
+ * shutdown), so nothing leaks over the life of the daemon. */
+static pthread_key_t  g_scratch_key;
+static pthread_once_t g_scratch_once = PTHREAD_ONCE_INIT;
+
+static void scratch_destroy(void *p)
+{
+    ms_buf *b = (ms_buf*)p;
+    ms_buf_free(b);
+    free(b);
+}
+static void scratch_key_make(void)
+{
+    pthread_key_create(&g_scratch_key, scratch_destroy);
+}
+/* per-thread scratch ms_buf, reset to len=0/err=0; NULL only on OOM (the tiny
+ * struct allocation itself, not the buffer growth, which ms_buf_put reports
+ * via ->err as usual) */
+static ms_buf *scratch_get(void)
+{
+    pthread_once(&g_scratch_once, scratch_key_make);
+    ms_buf *b = (ms_buf*)pthread_getspecific(g_scratch_key);
+    if (!b) {
+        b = (ms_buf*)calloc(1, sizeof(*b));
+        if (!b) return NULL;
+        if (pthread_setspecific(g_scratch_key, b) != 0) { free(b); return NULL; }
+    }
+    b->len = 0; b->err = 0;
+    return b;
+}
+
 int fmp4_video_fragment(fmp4_mux *m, const uint8_t *au, size_t len,
                         int keyframe, int64_t pts_us, ms_buf *out)
 {
-    ms_buf s; ms_buf_init(&s, len+32);
-    annexb_to_sample(m, au, len, &s);
+    ms_buf *s = scratch_get();
+    if (!s) return -1;                             /* OOM: drop this frame */
+    annexb_to_sample(m, au, len, s);
     /* parameter-set-only AU (no VCL data): emit nothing and do not advance
-     * the timeline - a 0-byte sample would make MSE choke. s.err covers the
-     * OOM case (annexb_to_sample's ms_buf_put failed partway through, or
-     * the initial ms_buf_init itself) - treat it the same as "nothing to
-     * emit" rather than muxing a truncated sample. */
-    if (s.err || s.len == 0) { ms_buf_free(&s); return s.err ? -1 : 0; }
+     * the timeline - a 0-byte sample would make MSE choke. s->err covers the
+     * OOM case (annexb_to_sample's ms_buf_put failed partway through) -
+     * treat it the same as "nothing to emit" rather than muxing a truncated
+     * sample. */
+    if (s->err || s->len == 0) return s->err ? -1 : 0;
     uint32_t dur = m->fps>0 ? m->v_timescale/(uint32_t)m->fps : 3000; /* nominal */
     uint64_t dts = pts_track_time(m, pts_us, &m->v_last_pts_us,
-                                  &m->v_dts, m->v_timescale, &dur);
+                                  &m->v_dts, m->v_timescale, &dur, 0);
     uint32_t flags = keyframe ? 0x02000000 : 0x01010000;
-    int r = fragment(m, TRK_VIDEO, s.data, s.len, dur, dts, flags, 1, out);
-    ms_buf_free(&s);
-    return r;
+    return fragment(m, TRK_VIDEO, s->data, s->len, dur, dts, flags, 1, out);
 }
 
 int fmp4_audio_fragment(fmp4_mux *m, const uint8_t *frame, size_t len,
@@ -425,8 +476,10 @@ int fmp4_audio_fragment(fmp4_mux *m, const uint8_t *frame, size_t len,
 {
     size_t plen; int off = aac_adts_strip(frame, len, &plen);
     if (plen == 0) return 0;                      /* nothing to emit */
-    uint32_t dur = 1024;                          /* nominal: AAC frame size */
+    uint32_t dur = 1024;                          /* fixed: AAC frame size (M5 -
+                                                     * never re-derived from PTS
+                                                     * jitter, see pts_track_time) */
     uint64_t dts = pts_track_time(m, pts_us, &m->a_last_pts_us,
-                                  &m->a_dts, m->a_timescale, &dur);
+                                  &m->a_dts, m->a_timescale, &dur, 1);
     return fragment(m, TRK_AUDIO, frame+off, plen, dur, dts, 0, 0, out);
 }

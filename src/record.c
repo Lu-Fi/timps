@@ -34,7 +34,14 @@
 #include <dirent.h>
 
 #define MOD "REC"
-#define REC_QCAP   256
+/* fanqueue capacity (packet pointers; retained packet payloads are the real
+ * cost) - a stalled recorder consumer otherwise pins every queued ms_pkt's
+ * full frame alive via refcount. At roughly 2K@4-6 Mbit/s, 256 slots could
+ * pin several MB per stall; 128 halves that worst case while still giving a
+ * slow SD card/segment-rotation stall plenty of headroom (M10). */
+#ifndef REC_QCAP
+#define REC_QCAP   128
+#endif
 #define RING_CAP   256          /* pre-roll ring: recent packets */
 /* pre-roll ring is otherwise bounded only by count (RING_CAP) and time
  * (pre_roll_s) - neither bounds BYTES. At modest fps a long pre_roll_s and a
@@ -42,8 +49,11 @@
  * large, so total memory referenced (these are pkt_ref()'d, not copied, but
  * still real bytes kept alive) is otherwise unbounded. Hard safety backstop,
  * independent of config: even the most generous realistic pre_roll_s/bitrate
- * combination fits comfortably under this. */
+ * combination fits comfortably under this. -D-overridable like the other
+ * small-RAM knobs (default unchanged, L17). */
+#ifndef RING_MAX_BYTES
 #define RING_MAX_BYTES (8*1024*1024)
+#endif
 
 static const ms_config *g_rc;
 static volatile int     g_run;
@@ -110,17 +120,19 @@ static void mkdirs(const char *path)
 }
 
 /* recursively find the oldest regular file under base (by mtime); returns 1 and
- * fills out on success */
-static int find_oldest(const char *base, char *out, size_t cap, time_t *oldest)
+ * fills out on success. lstat (not stat) so a symlink is never followed out of
+ * the records tree, and depth-bounded like timelapse.c's prune_old (L8). */
+static int find_oldest(const char *base, char *out, size_t cap, time_t *oldest, int depth)
 {
+    if (depth>8) return 0;
     DIR *d=opendir(base); if(!d) return 0;
     int found=0; struct dirent *e;
     while ((e=readdir(d))){
         if (!strcmp(e->d_name,".")||!strcmp(e->d_name,"..")) continue;
         char p[336]; snprintf(p,sizeof p,"%s/%s",base,e->d_name);
-        struct stat s; if (stat(p,&s)!=0) continue;
+        struct stat s; if (lstat(p,&s)!=0) continue;
         if (S_ISDIR(s.st_mode)){
-            if (find_oldest(p,out,cap,oldest)) found=1;
+            if (find_oldest(p,out,cap,oldest,depth+1)) found=1;
         } else if (S_ISREG(s.st_mode)){
             if (*oldest==0 || s.st_mtime<*oldest){ *oldest=s.st_mtime; snprintf(out,cap,"%s",p); found=1; }
         }
@@ -145,7 +157,7 @@ static void prune_free(void)
         long long fm=free_mb(dir);
         if (fm<0 || fm>=g_rc->record.min_free_mb) return;
         char victim[336]=""; time_t oldest=0;
-        if (!find_oldest(base,victim,sizeof victim,&oldest) || !victim[0]) return;
+        if (!find_oldest(base,victim,sizeof victim,&oldest,0) || !victim[0]) return;
         if (unlink(victim)!=0) return;
         LOGI(MOD,"pruned %s (free %lld MB < %d)",victim,fm,g_rc->record.min_free_mb);
     }
@@ -229,11 +241,16 @@ static int seg_open(int chn)
 static void seg_write(ms_pkt *p)
 {
     if (!w_fp) return;
-    ms_buf frag;
-    if (ms_buf_init(&frag,p->len+256)) return;   /* OOM: drop this packet */
+    /* persistent per-recorder fragment buffer (M1): reset to len=0/err=0
+     * each packet instead of ms_buf_init()/ms_buf_free() per packet. Only
+     * rec_thread ever calls seg_write, so a function-local static is safe
+     * without locking; it grows once to the steady-state fragment size via
+     * ms_buf_reserve and is then reused for the life of the process. */
+    static ms_buf frag;
+    frag.len = 0; frag.err = 0;
     int frag_ok=1;
     if (p->media==MS_MEDIA_VIDEO){
-        if (!w_got_key){ if (!p->keyframe){ ms_buf_free(&frag); return; } w_got_key=1; }
+        if (!w_got_key){ if (!p->keyframe){ return; } w_got_key=1; }
         frag_ok = fmp4_video_fragment(&w_mux,p->data,p->len,p->keyframe,p->pts_us,&frag)==0;
     } else if (p->media==MS_MEDIA_AUDIO && w_mux.has_audio && w_got_key){
         frag_ok = fmp4_audio_fragment(&w_mux,p->data,p->len,p->pts_us,&frag)==0;
@@ -245,7 +262,6 @@ static void seg_write(ms_pkt *p)
     if (!frag_ok){
         LOGW(MOD,"dropped a corrupt %s fragment while recording (OOM?)",
              p->media==MS_MEDIA_VIDEO?"video":"audio");
-        ms_buf_free(&frag);
         return;
     }
     if (frag.len){
@@ -255,11 +271,10 @@ static void seg_write(ms_pkt *p)
              * 'recording'. The writer loop reopens (fopen then fails -> retries
              * per packet) instead of silently looking healthy. */
             LOGE(MOD,"segment write failed (%s), closing",strerror(errno));
-            ms_buf_free(&frag); seg_close(); return;
+            seg_close(); return;
         }
         pthread_mutex_lock(&g_lock); g_curbytes+=frag.len; pthread_mutex_unlock(&g_lock);
     }
-    ms_buf_free(&frag);
 }
 
 static void seg_close(void)

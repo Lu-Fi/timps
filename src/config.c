@@ -15,9 +15,40 @@
 ms_config g_cfg;
 const char *g_cfg_path = NULL;   /* config file in use, set by config_load() */
 
-/* see config.h: guards runtime g_cfg string mutation vs concurrent readers */
-static pthread_mutex_t g_str_lock = PTHREAD_MUTEX_INITIALIZER;
-void config_str_lock(void)   { pthread_mutex_lock(&g_str_lock); }
+/* see config.h: guards runtime g_cfg string mutation vs concurrent readers.
+ *
+ * Lock-protected fields (written under this lock by config_apply_kv()'s
+ * copystr(), via control.c's /control POST handling - every read of them,
+ * direct struct access or through config_get_kv() below, must also happen
+ * under the lock, or a reader can observe a torn/non-terminated string
+ * mid-strncpy and run strlen() off the end of it):
+ *   - osd.items[][].text            (osd<S>.<N>.text / legacy osd<N>.text)
+ *   - video[].rtsp_path             (video<N>.rtsp_path)
+ *   - sensor.model                  (sensor.model)
+ *   - record.dir, record.name       (record.dir / record.name)
+ *   - timelapse.dir, timelapse.name (timelapse.dir / timelapse.name)
+ * Everything else in g_cfg is either an int/enum (aligned word reads, no
+ * tearing) or only ever written at startup (config_load/
+ * config_sensor_finalize, single-threaded before any other thread runs), so
+ * it needs no lock.
+ *
+ * Recursive on purpose: config_get_kv() takes this lock itself around the
+ * fields above so callers outside this file (OSD updater, recorder, RTSP
+ * path match, GET /control, ...) get safe reads without having to know the
+ * convention, but control.c's timps_apply_setting() ALSO wraps a whole
+ * get-apply-get sequence in this same lock (for atomic change-detection) -
+ * a plain, non-recursive mutex would self-deadlock in that nested case. */
+static pthread_mutex_t g_str_lock;
+static pthread_once_t  g_str_lock_once = PTHREAD_ONCE_INIT;
+static void g_str_lock_init(void)
+{
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&g_str_lock, &attr);
+    pthread_mutexattr_destroy(&attr);
+}
+void config_str_lock(void)   { pthread_once(&g_str_lock_once, g_str_lock_init); pthread_mutex_lock(&g_str_lock); }
 void config_str_unlock(void) { pthread_mutex_unlock(&g_str_lock); }
 
 static void copystr(char *dst, const char *src, size_t n)
@@ -602,6 +633,10 @@ int config_get_kv(const ms_config *c, const char *key, char *out, size_t cap)
          * applies (no false dedup-skip). */
         if (osi<0){
             const ms_osd_item *a=&c->osd.items[0][oii];
+            /* .text is runtime-mutable (see g_str_lock comment above); the
+             * strcmp() below must not race a concurrent copystr() into it */
+            config_str_lock();
+            int agree = 1;
             for (int s=1;s<MS_MAX_VSTREAM;s++){
                 const ms_osd_item *b=&c->osd.items[s][oii];
                 if (a->enabled!=b->enabled || a->type!=b->type ||
@@ -609,15 +644,23 @@ int config_get_kv(const ms_config *c, const char *key, char *out, size_t cap)
                     a->color!=b->color || a->transparency!=b->transparency ||
                     a->outline!=b->outline ||
                     a->outline_color!=b->outline_color ||
-                    strcmp(a->text,b->text))
-                    return 0;
+                    strcmp(a->text,b->text)){
+                    agree = 0;
+                    break;
+                }
             }
+            config_str_unlock();
+            if (!agree) return 0;
             osi = 0;
         }
         const ms_osd_item *o=&c->osd.items[osi][oii]; const char *k=ok;
         if(!strcmp(k,"enabled")) snprintf(out,cap,"%d",o->enabled);
         else if(!strcmp(k,"type")) snprintf(out,cap,"%s",o->type==MS_OSD_LOGO?"logo":"text");
-        else if(!strcmp(k,"text")) snprintf(out,cap,"%s",o->text);
+        else if(!strcmp(k,"text")){
+            config_str_lock();
+            snprintf(out,cap,"%s",o->text);
+            config_str_unlock();
+        }
         else if(!strcmp(k,"x")) snprintf(out,cap,"%d",o->x);
         else if(!strcmp(k,"y")) snprintf(out,cap,"%d",o->y);
         else if(!strcmp(k,"font_size")) snprintf(out,cap,"%d",o->font_size);
@@ -721,13 +764,21 @@ int config_get_kv(const ms_config *c, const char *key, char *out, size_t cap)
         else if(!strcmp(k,"max_qp")) snprintf(out,cap,"%d",v->max_qp);
         else if(!strcmp(k,"rotation")) snprintf(out,cap,"%d",v->rotation);
         else if(!strcmp(k,"buffers")) snprintf(out,cap,"%d",v->buffers);
-        else if(!strcmp(k,"rtsp_path")) snprintf(out,cap,"%s",v->rtsp_path);
+        else if(!strcmp(k,"rtsp_path")){
+            config_str_lock();
+            snprintf(out,cap,"%s",v->rtsp_path);
+            config_str_unlock();
+        }
         else return 0;
         return 1;
     }
     if (!strncmp(key,"sensor.",7)){
         const ms_sensor_cfg *s=&c->sensor; const char *k=key+7;
-        if(!strcmp(k,"model")) snprintf(out,cap,"%s",s->model);
+        if(!strcmp(k,"model")){
+            config_str_lock();
+            snprintf(out,cap,"%s",s->model);
+            config_str_unlock();
+        }
         else if(!strcmp(k,"i2c_addr")||!strcmp(k,"i2c_address")) snprintf(out,cap,"%d",s->i2c_addr);
         else if(!strcmp(k,"fps")) snprintf(out,cap,"%d",s->fps);
         else if(!strcmp(k,"width")) snprintf(out,cap,"%d",s->width);
@@ -767,8 +818,16 @@ int config_get_kv(const ms_config *c, const char *key, char *out, size_t cap)
         const ms_timelapse_cfg *t=&c->timelapse; const char *k=key+10;
         if(!strcmp(k,"enabled")) snprintf(out,cap,"%d",t->enabled);
         else if(!strcmp(k,"channel")) snprintf(out,cap,"%d",t->channel);
-        else if(!strcmp(k,"dir")) snprintf(out,cap,"%s",t->dir);
-        else if(!strcmp(k,"name")) snprintf(out,cap,"%s",t->name);
+        else if(!strcmp(k,"dir")){
+            config_str_lock();
+            snprintf(out,cap,"%s",t->dir);
+            config_str_unlock();
+        }
+        else if(!strcmp(k,"name")){
+            config_str_lock();
+            snprintf(out,cap,"%s",t->name);
+            config_str_unlock();
+        }
         else if(!strcmp(k,"interval_s")) snprintf(out,cap,"%d",t->interval_s);
         else if(!strcmp(k,"keep_days")) snprintf(out,cap,"%d",t->keep_days);
         else return 0;

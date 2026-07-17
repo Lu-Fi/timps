@@ -27,7 +27,20 @@
 #define VPID   0x0100
 #define APID   0x0101
 #define PMTPID 0x1000
-#define SRT_QCAP 256
+/* global limit on concurrent SRT clients (each costs a thread + a bounded
+ * fanqueue), matching RTSP_MAX_CLIENTS/HTTP_MAX_CLIENTS - previously
+ * unbounded (M9), so a flood of callers could exhaust threads/memory on
+ * small-RAM SoCs */
+#ifndef SRT_MAX_CLIENTS
+#define SRT_MAX_CLIENTS 8
+#endif
+/* fanqueue capacity (packet pointers; retained packet payloads are the real
+ * cost, same reasoning as record.c's REC_QCAP) - at ~2K@4-6 Mbit/s, 256
+ * slots could pin several MB per stalled SRT client; 128 halves that worst
+ * case (M10) */
+#ifndef SRT_QCAP
+#define SRT_QCAP 128
+#endif
 
 static const ms_config *g_scfg;
 static volatile int     g_run;
@@ -359,6 +372,16 @@ static void *listen_thread(void *arg)
         /* srt_accept blocks; srt_stop closes g_ls to break it */
         SRTSOCKET cs = srt_accept(ls, (struct sockaddr *)&peer, &plen);
         if (cs == SRT_INVALID_SOCK) { if (g_run) usleep(100000); continue; }
+        /* concurrent-client cap (M9): each client costs a thread + bounded
+         * fanqueue, same reasoning as RTSP/HTTP's caps. libsrt has already
+         * completed the connection by the time srt_accept() returns it, so
+         * "reject" here means accept-then-close, same pattern rtsp.c/httpd.c
+         * use for their own accept-time caps. */
+        if (g_srt_clients >= SRT_MAX_CLIENTS) {
+            LOGW(MOD, "client limit (%d) reached, rejecting", SRT_MAX_CLIENTS);
+            srt_close(cs);
+            continue;
+        }
         ts_mux *m = calloc(1, sizeof *m);
         if (!m) { srt_close(cs); continue; }
         m->sock = cs;

@@ -20,16 +20,24 @@ static long find_start(const uint8_t *b, size_t n, size_t from, int *sc_len)
 
 int nal_iter_next(nal_iter *it, nal_unit *out)
 {
-    if (it->pos >= it->au_len) return 0;
-    int sc;
-    long s = find_start(it->au, it->au_len, it->pos, &sc);
-    if (s < 0) return 0;
-    size_t nal_start = (size_t)s + sc;
-    int sc2;
-    long e = find_start(it->au, it->au_len, nal_start, &sc2);
-    size_t nal_end = (e < 0) ? it->au_len : (size_t)e;
-    out->data = it->au + nal_start;
-    out->len  = nal_end - nal_start;
-    it->pos   = nal_end;
-    return out->len > 0;
+    /* a zero-length NAL (two start codes back-to-back) used to make this
+     * return 0, which the caller (annexb_to_sample's while loop) reads as
+     * "end of access unit" - silently dropping every NAL after the empty
+     * one instead of just skipping it. Keep scanning past empty NALs so the
+     * rest of the AU still gets emitted. */
+    while (it->pos < it->au_len) {
+        int sc;
+        long s = find_start(it->au, it->au_len, it->pos, &sc);
+        if (s < 0) { it->pos = it->au_len; return 0; }
+        size_t nal_start = (size_t)s + sc;
+        int sc2;
+        long e = find_start(it->au, it->au_len, nal_start, &sc2);
+        size_t nal_end = (e < 0) ? it->au_len : (size_t)e;
+        it->pos = nal_end;
+        if (nal_end == nal_start) continue;   /* empty NAL: skip, keep scanning */
+        out->data = it->au + nal_start;
+        out->len  = nal_end - nal_start;
+        return 1;
+    }
+    return 0;
 }

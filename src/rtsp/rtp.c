@@ -21,6 +21,13 @@ static uint32_t pts_to_ts(rtp_track *t, int64_t pts_us)
     if (!t->have_pts0){ t->pts0 = pts_us; t->have_pts0 = 1; }
     int64_t rel = pts_us - t->pts0;
     if (rel < 0) rel = 0;
+    /* L13 (deferred): `rel * clock_rate` is an int64 product; at the 90 kHz
+     * video clock it overflows INT64_MAX after roughly INT64_MAX/90000 us of
+     * continuous uptime without a process restart, i.e. ~2.8-3 years, at
+     * which point this timestamp math (and rtp_maybe_sr()'s identical
+     * computation) goes wrong. A correct fix needs the track to periodically
+     * rebase pts0/ts_base rather than a one-line clamp here, so it's left
+     * for a follow-up rather than patched in this pass. */
     return t->ts_base + (uint32_t)((rel * (int64_t)t->clock_rate) / 1000000);
 }
 
@@ -168,28 +175,28 @@ void rtp_send_aac(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us
         return;
     }
 
-    /* RFC 3640 3.2.3.2: an AU exceeding the MTU (high bitrate + a transient
-     * frame) is split across multiple RTP packets. The AU-header-section -
-     * carrying the FULL, unfragmented AU size - is present ONLY in the
-     * first packet; later fragments of the same AU carry raw AU bytes with
-     * no AU-header at all. The old code instead silently truncated the
-     * frame and still advertised the truncated size, handing the decoder a
-     * corrupt AU (audible glitch/decoder reset) on every occurrence. */
-    size_t sent = 0; int first = 1;
+    /* RFC 3640 3.2.3.1 + 3.2.1.1 ("AU-size"): an AU exceeding the MTU (high
+     * bitrate + a transient frame) is split across multiple RTP packets, one
+     * fragment per packet. Per the AU-size field definition, EVERY packet
+     * carrying a fragment - not just the first - has its own AU-header, and
+     * that AU-header's size field always reports the size of the COMPLETE,
+     * unfragmented AU (a receiver tells "whole AU" from "fragment" by
+     * comparing that size to the actual AU-data-section length). Omitting
+     * the AU-header on continuation fragments (as an earlier version of this
+     * function did) is not RFC 3640 conformant and breaks payload parsing
+     * for any receiver that isn't lenient about it. */
+    size_t sent = 0;
+    uint16_t auh = (uint16_t)((plen & 0x1FFF) << 3);   /* full AU size, AU-Index=0 */
     while (sent < plen) {
-        size_t hdrlen = first ? 4 : 0;
-        size_t chunk = RTP_MTU - 12 - hdrlen;
+        size_t chunk = RTP_MTU - 12 - 4;
         if (chunk > plen - sent) chunk = plen - sent;
         int end = (sent + chunk >= plen);
         int h = rtp_hdr(pkt, t, end, ts);
-        if (first) {
-            wr_be16(pkt+h, 16);
-            uint16_t auh = (uint16_t)((plen & 0x1FFF) << 3);
-            wr_be16(pkt+h+2, auh);
-        }
-        memcpy(pkt+h+hdrlen, au+sent, chunk);
-        emit(t, pkt, h+(int)hdrlen+(int)chunk, ts);
-        sent += chunk; first = 0;
+        wr_be16(pkt+h, 16);
+        wr_be16(pkt+h+2, auh);
+        memcpy(pkt+h+4, au+sent, chunk);
+        emit(t, pkt, h+4+(int)chunk, ts);
+        sent += chunk;
     }
 }
 

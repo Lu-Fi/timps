@@ -75,6 +75,57 @@ static void resolve_pos(int W, int H, int w, int h, int x, int y, int *ox, int *
     if (*oy+h>H) *oy = (H-h>0) ? (H-h) : 0;
 }
 
+/* per-path font cache (L7): items configured with the same font_path (e.g.
+ * every OSD item on a stream pointed at the operator's chosen TTF) used to
+ * each malloc+parse+keep their own full in-RAM copy of the identical file.
+ * Share one loaded msttf_font per distinct path instead, refcounted so it's
+ * released once the last item referencing it is torn down (imp_osd_stop).
+ * Sized to the theoretical worst case (every item on every stream using a
+ * distinct path) so the cache can never be "full" in practice; a full cache
+ * falls back to the pre-existing behaviour (use the shared default font),
+ * same as any other font-load failure. */
+#define MS_FONT_CACHE_MAX (MS_MAX_VSTREAM*MS_MAX_OSD)
+typedef struct {
+    char        path[128];
+    msttf_font  font;
+    int         refcount;   /* 0 = free slot */
+} font_cache_entry;
+static font_cache_entry g_font_cache[MS_FONT_CACHE_MAX];
+
+static msttf_font *font_cache_get(const char *path)
+{
+    int free_slot=-1;
+    for (int i=0;i<MS_FONT_CACHE_MAX;i++){
+        font_cache_entry *e=&g_font_cache[i];
+        if (e->refcount>0 && !strcmp(e->path,path)){
+            e->refcount++;
+            return &e->font;
+        }
+        if (free_slot<0 && e->refcount==0) free_slot=i;
+    }
+    if (free_slot<0) return NULL;
+    font_cache_entry *e=&g_font_cache[free_slot];
+    if (msttf_load(&e->font, path)!=0) return NULL;
+    snprintf(e->path, sizeof e->path, "%s", path);
+    e->refcount=1;
+    return &e->font;
+}
+
+static void font_cache_put(msttf_font *f)
+{
+    for (int i=0;i<MS_FONT_CACHE_MAX;i++){
+        font_cache_entry *e=&g_font_cache[i];
+        if (&e->font==f){
+            if (--e->refcount<=0){
+                msttf_free(&e->font);
+                e->path[0]=0;
+                e->refcount=0;
+            }
+            return;
+        }
+    }
+}
+
 static uint8_t *load_bgra(const char *path, int w, int h)
 {
     if (w<=0||h<=0) return NULL;
@@ -241,9 +292,8 @@ int imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height)
         rg->is_text=(it->type==MS_OSD_TEXT);
         if (rg->is_text){
             if (it->font_path[0]){
-                msttf_font *pf=malloc(sizeof(msttf_font));
-                if (pf && msttf_load(pf,it->font_path)==0) rg->font=pf;
-                else { free(pf); rg->font=g_shared_ok?&g_shared:NULL; }
+                msttf_font *pf=font_cache_get(it->font_path);
+                rg->font = pf ? pf : (g_shared_ok?&g_shared:NULL);
             } else rg->font=g_shared_ok?&g_shared:NULL;
             refresh_text(s,rg);
         } else {
@@ -285,9 +335,11 @@ static int osd_needed(void)
 static void *osd_thread(void *arg)
 {
     (void)arg;
+    int idle_cycles = 0;
     while (g_run){
         int need = osd_needed();
         if (need){
+            idle_cycles = 0;
             osd_vars_set_fps(hub_get_fps(g_hcfg->osd.monitor_stream));
             OSD_LOCK();
             for (int si=0; si<MS_MAX_VSTREAM; si++){
@@ -296,6 +348,25 @@ static void *osd_thread(void *arg)
                     if (g_os[si].r[i].rgn>=0 && g_os[si].r[i].is_text &&
                         g_hcfg->osd.items[si][i].enabled)
                         refresh_text(&g_os[si], &g_os[si].r[i]);
+            }
+            OSD_UNLOCK();
+        } else if (++idle_cycles == 2){
+            /* L16: 'retired' (the BGRA buffer replaced by the last update) is
+             * normally only freed on the NEXT refresh_text()/setup_logo(),
+             * so it sits there holding RAM for as long as a stream stays
+             * idle (no more updates = never freed). After ~2s idle (well
+             * past any frame that could still be in flight referencing it,
+             * same reasoning as the double-buffering itself) it's safe to
+             * release it outright; it gets naturally replaced again the next
+             * time this item re-renders. */
+            OSD_LOCK();
+            for (int si=0; si<MS_MAX_VSTREAM; si++){
+                if (!g_os[si].used) continue;
+                for (int i=0;i<MS_MAX_OSD;i++){
+                    osd_region *rg=&g_os[si].r[i];
+                    if (rg->rgn<0) continue;
+                    free(rg->retired); rg->retired=NULL;
+                }
             }
             OSD_UNLOCK();
         }
@@ -402,7 +473,8 @@ void imp_osd_stop(void)
             IMP_OSD_DestroyRgn(rg->rgn);
             free(rg->buf); rg->buf=NULL;
             free(rg->retired); rg->retired=NULL;
-            if (rg->font && rg->font!=&g_shared){ msttf_free(rg->font); free(rg->font); }
+            if (rg->font && rg->font!=&g_shared) font_cache_put(rg->font);
+            rg->font=NULL;
             rg->rgn=-1;
         }
         for (int n=0;n<MS_MAX_PRIVACY;n++){

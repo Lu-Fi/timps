@@ -46,12 +46,34 @@ int fanqueue_push(fanqueue *q, ms_pkt *p)
         pkt_unref(old);
         q->dropped++;
         dropped = 1;
+
+        /* Once a keyframe has been lost, any video packets still queued
+         * belong to a now-headless GOP: undecodable until the next keyframe.
+         * Rather than trickle those out to the consumer one overflow at a
+         * time, drop forward through consecutive non-keyframe video packets
+         * at the head right now, leaving any interleaved audio packets in
+         * place (audio decodes independently of the video GOP). Stops as
+         * soon as a keyframe (fresh or otherwise) reaches the head, so this
+         * never discards packets belonging to an already-valid GOP.
+         * dropped_key is cleared by the consumer via
+         * fanqueue_take_dropped_key(); until then this is a no-op once the
+         * head is back at a keyframe or non-video packet. */
+        if (q->dropped_key) {
+            while (q->count > 0) {
+                ms_pkt *h = q->slots[q->head];
+                if (h->media != MS_MEDIA_VIDEO || h->keyframe) break;
+                q->head = (q->head+1)%q->cap;
+                q->count--;
+                pkt_unref(h);
+                q->dropped++;
+            }
+        }
     }
     q->slots[q->tail] = p;
     q->tail = (q->tail+1)%q->cap;
     q->count++;
-    pthread_cond_signal(&q->cond);
     pthread_mutex_unlock(&q->lock);
+    pthread_cond_signal(&q->cond);
     return dropped;
 }
 

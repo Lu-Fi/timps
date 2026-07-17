@@ -210,26 +210,39 @@ static void gen_sdp(session *s, const ms_config *c, int vchn, char *sdp, int sdp
 {
     char body[2048]; int n=0;
     struct sockaddr_in local; socklen_t sl=sizeof local;
-    getsockname(s->fd, (struct sockaddr*)&local, &sl);
     char ip[INET_ADDRSTRLEN];
-    inet_ntop(AF_INET, &local.sin_addr, ip, sizeof ip);
+    /* L12: getsockname() can fail (e.g. fd race on a fast disconnect); its
+     * return was previously ignored, which could feed an uninitialized
+     * `local` into inet_ntop() and emit a garbage IP in the SDP o=/c= lines.
+     * Fall back to a safe, well-defined value instead. */
+    if (getsockname(s->fd, (struct sockaddr*)&local, &sl) == 0)
+        inet_ntop(AF_INET, &local.sin_addr, ip, sizeof ip);
+    else
+        strcpy(ip, "0.0.0.0");
 
-    n += snprintf(body+n, sizeof(body)-n,
-        "v=0\r\no=- 0 0 IN IP4 %s\r\ns=timps\r\nc=IN IP4 %s\r\nt=0 0\r\n",
-        ip, ip);
+    /* M2: guard every accumulation step so `sizeof(body)-n` (size_t) can
+     * never underflow if an earlier snprintf() reported it would have
+     * written past the buffer (n > sizeof(body)). Mirrors the n>=0/n<sizeof
+     * guard already used for the RTP-Info header in stream_loop(). */
+    if (n>=0 && n<(int)sizeof(body))
+        n += snprintf(body+n, sizeof(body)-n,
+            "v=0\r\no=- 0 0 IN IP4 %s\r\ns=timps\r\nc=IN IP4 %s\r\nt=0 0\r\n",
+            ip, ip);
 
     /* video */
     const ms_vstream_cfg *v = &c->video[vchn];
     int isH265 = (v->codec==MS_VC_H265);
-    n += snprintf(body+n, sizeof(body)-n,
-        "m=video 0 RTP/AVP %d\r\na=rtpmap:%d %s/90000\r\n"
-        "a=control:trackID=0\r\n",
-        VIDEO_PT, VIDEO_PT, isH265?"H265":"H264");
+    if (n>=0 && n<(int)sizeof(body))
+        n += snprintf(body+n, sizeof(body)-n,
+            "m=video 0 RTP/AVP %d\r\na=rtpmap:%d %s/90000\r\n"
+            "a=control:trackID=0\r\n",
+            VIDEO_PT, VIDEO_PT, isH265?"H265":"H264");
     vparam vp;
     if (hub_get_vparam(vchn, &vp) && vparam_ready(&vp)) {
         char fmtp[1600];
         vparam_sdp_fmtp(&vp, VIDEO_PT, fmtp, sizeof fmtp);
-        n += snprintf(body+n, sizeof(body)-n, "%s", fmtp);
+        if (n>=0 && n<(int)sizeof(body))
+            n += snprintf(body+n, sizeof(body)-n, "%s", fmtp);
     }
 
     /* audio - use the codec the HAL actually produces (from the hub) */
@@ -237,18 +250,20 @@ static void gen_sdp(session *s, const ms_config *c, int vchn, char *sdp, int sdp
     if (hub_get_audio(&acodec, &asr, &ach) && acodec != MS_AC_NONE) {
         if (acodec==MS_AC_AAC) {
             uint8_t asc[2]; aac_asc(asr, ach, asc);
-            n += snprintf(body+n, sizeof(body)-n,
-                "m=audio 0 RTP/AVP %d\r\na=rtpmap:%d mpeg4-generic/%d/%d\r\n"
-                "a=fmtp:%d streamtype=5;profile-level-id=1;mode=AAC-hbr;"
-                "sizelength=13;indexlength=3;indexdeltalength=3;config=%02X%02X\r\n"
-                "a=control:trackID=1\r\n",
-                AUDIO_PT, AUDIO_PT, asr, ach, AUDIO_PT, asc[0], asc[1]);
+            if (n>=0 && n<(int)sizeof(body))
+                n += snprintf(body+n, sizeof(body)-n,
+                    "m=audio 0 RTP/AVP %d\r\na=rtpmap:%d mpeg4-generic/%d/%d\r\n"
+                    "a=fmtp:%d streamtype=5;profile-level-id=1;mode=AAC-hbr;"
+                    "sizelength=13;indexlength=3;indexdeltalength=3;config=%02X%02X\r\n"
+                    "a=control:trackID=1\r\n",
+                    AUDIO_PT, AUDIO_PT, asr, ach, AUDIO_PT, asc[0], asc[1]);
         } else {
             int pt = (acodec==MS_AC_PCMA)?8:0;   /* static PTs */
             const char *nm = (acodec==MS_AC_PCMA)?"PCMA":"PCMU";
-            n += snprintf(body+n, sizeof(body)-n,
-                "m=audio 0 RTP/AVP %d\r\na=rtpmap:%d %s/8000\r\n"
-                "a=control:trackID=1\r\n", pt, pt, nm);
+            if (n>=0 && n<(int)sizeof(body))
+                n += snprintf(body+n, sizeof(body)-n,
+                    "m=audio 0 RTP/AVP %d\r\na=rtpmap:%d %s/8000\r\n"
+                    "a=control:trackID=1\r\n", pt, pt, nm);
         }
     }
     (void)sdpsz;
@@ -372,6 +387,17 @@ static int handle_request(session *s, char *req)
             const char *cpp = tr?strstr(tr,"client_port="):NULL;
             if (cpp) sscanf(cpp+12,"%d-%d",&cp,&cp2);
             int *udp = is_audio ? s->a_udp : s->v_udp;
+            /* H1: a repeated SETUP for the same track (re-SETUP, or an
+             * unauthenticated client just hammering SETUP before ever
+             * PLAYing) used to overwrite udp[0]/udp[1] via
+             * net_bind_udp_pair() below without closing the pair already
+             * bound for this track, leaking 2 fds per repeat until the
+             * whole process ran out of sockets for every client. Close any
+             * previously bound pair for this track first; net_bind_udp_pair()
+             * only ever writes udp[0]/udp[1] on success, so leaving them at
+             * -1 here is safe even if the rebind below fails. */
+            if (udp[0] >= 0) { close(udp[0]); udp[0] = -1; }
+            if (udp[1] >= 0) { close(udp[1]); udp[1] = -1; }
             /* pick a free even/odd port pair from a wide range with retries.
              * The old tiny random window (6000 + chn*4 + rand()&0x3E) collided
              * as soon as a few clients streamed concurrently -> bind failed. */
@@ -620,10 +646,11 @@ done:
     if (s->tls) ms_tls_close((ms_tls_conn*)s->tls);
 #endif
     close(s->fd);
-    if (s->v_udp[0]>0) close(s->v_udp[0]);
-    if (s->v_udp[1]>0) close(s->v_udp[1]);
-    if (s->a_udp[0]>0) close(s->a_udp[0]);
-    if (s->a_udp[1]>0) close(s->a_udp[1]);
+    /* L15: fd 0 is a valid bound socket; only -1 means "not bound". */
+    if (s->v_udp[0]>=0) close(s->v_udp[0]);
+    if (s->v_udp[1]>=0) close(s->v_udp[1]);
+    if (s->a_udp[0]>=0) close(s->a_udp[0]);
+    if (s->a_udp[1]>=0) close(s->a_udp[1]);
     free(s);
     __sync_fetch_and_sub(&g_nclients, 1);
     return NULL;
@@ -649,6 +676,10 @@ static void accept_loop(rtsp_server *sv, int lfd, int port, void *tls_ctx)
         session *s = (session*)calloc(1,sizeof(session));
         if (!s){ close(cfd); continue; }
         s->fd=cfd; s->peer=peer; s->cfg=sv->cfg; s->vchn=-1;
+        /* L15: fds are 0 (calloc), not "unbound", after this - a bound fd
+         * can legitimately be 0 (stdin closed at startup) or overlap with
+         * PID/fd reuse, so unbound MUST be a value no real fd ever has. */
+        s->v_udp[0]=s->v_udp[1]=s->a_udp[0]=s->a_udp[1]=-1;
 #ifdef USE_TLS
         s->tls_ctx = tls_ctx;   /* non-NULL on the RTSPS listener */
 #endif

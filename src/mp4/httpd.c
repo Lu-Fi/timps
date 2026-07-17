@@ -228,6 +228,15 @@ static void stream_mp4(hconn *c, int chn)
     LOGI(MOD,"mp4 client streaming chn=%d",chn);
 
     int got_key=0;
+    /* persistent per-connection fragment buffer (M1): reset to len=0/err=0
+     * each frame instead of ms_buf_init()/ms_buf_free() per packet - avoids
+     * a malloc+free (plus the full-AU copy that was already unavoidable) on
+     * every single video/audio frame of every connected client. Grows once
+     * to this stream's steady-state fragment size via ms_buf_reserve and is
+     * then reused for the life of the connection; freed once when the loop
+     * below exits. */
+    ms_buf frag;
+    if (ms_buf_init(&frag, 4096)) goto out;        /* OOM */
     /* blocking socket: net_sendall must never write a partial fragment */
     while (1) {
         ms_pkt *p = fanqueue_pop(&q, 200);
@@ -239,11 +248,10 @@ static void stream_mp4(hconn *c, int chn)
         /* if the queue overflowed and dropped a keyframe, ask for a fresh IDR
          * so the client doesn't decode garbage until the next GOP */
         if (fanqueue_take_dropped_key(&q)) hub_request_idr(chn);
-        ms_buf frag;
-        if (ms_buf_init(&frag, p->len+256)){ pkt_unref(p); break; }  /* OOM */
+        frag.len = 0; frag.err = 0;
         int frag_ok = 1;
         if (p->media==MS_MEDIA_VIDEO) {
-            if (!got_key){ if(!p->keyframe){ pkt_unref(p); ms_buf_free(&frag); continue; } got_key=1; }
+            if (!got_key){ if(!p->keyframe){ pkt_unref(p); continue; } got_key=1; }
             frag_ok = fmp4_video_fragment(&mux, p->data, p->len, p->keyframe, p->pts_us, &frag) == 0;
         } else if (want_audio && got_key) {
             frag_ok = fmp4_audio_fragment(&mux, p->data, p->len, p->pts_us, &frag) == 0;
@@ -261,10 +269,10 @@ static void stream_mp4(hconn *c, int chn)
         } else if (frag.len) {
             rc = csend(c, frag.data, frag.len);
         }
-        ms_buf_free(&frag);
         pkt_unref(p);
         if (rc<0) break;
     }
+    ms_buf_free(&frag);
 out:
     hub_unsubscribe(chn, &q);
     if (can_audio) hub_unsubscribe(HUB_AUDIO_SRC, &q);
@@ -308,7 +316,9 @@ static void snapshot_jpg(hconn *c, int src)
         int n=snprintf(hdr,sizeof hdr,
             "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: %zu\r\n"
             "Cache-Control: no-cache\r\nConnection: close\r\n" MEDIA_CORS "\r\n", p->len);
-        if (csend(c,hdr,n)>=0) csend(c,p->data,(int)p->len);
+        /* never send a truncated header (n >= sizeof hdr means snprintf's
+         * would-be length overran the buffer) - same guard as http_send_ex */
+        if (n < (int)sizeof hdr && csend(c,hdr,n)>=0) csend(c,p->data,(int)p->len);
         pkt_unref(p);
     } else {
         http_send_ex(c,"503 Unavailable","text/plain",MEDIA_CORS,"no frame",8);
@@ -357,7 +367,10 @@ static void stream_mjpeg(hconn *c, int src, const char *bnd)
         int hn=snprintf(part,sizeof part,
             "\r\n--%s\r\nContent-Type: image/jpeg\r\nContent-Length: %zu\r\n\r\n",
             BND, p->len);
-        int rc = csend(c,part,hn);
+        /* a truncated multipart header would desync the boundary framing for
+         * the rest of the stream - never send it, tear the stream down like
+         * any other write failure (n >= sizeof part = snprintf overran) */
+        int rc = (hn >= (int)sizeof part) ? -1 : csend(c,part,hn);
         if (rc>=0) rc = csend(c,p->data,(int)p->len);
         pkt_unref(p);
         if (rc<0) break;
@@ -854,7 +867,10 @@ static void *conn_thread(void *arg)
                          * dropped tail just vanish, yet the client still
                          * gets 200 OK. Reject loudly instead. */
                         int cap = (int)sizeof(buf) - 1 - (int)(body - buf);
-                        if (clen > cap) {
+                        /* a negative Content-Length (e.g. "-1") used to slip
+                         * past this guard entirely (clen > cap is false for
+                         * any negative clen against a positive cap) */
+                        if (clen < 0 || clen > cap) {
                             http_send_ex(c,"413 Payload Too Large","text/plain",cors,
                                         "body too large",14);
                             goto done;

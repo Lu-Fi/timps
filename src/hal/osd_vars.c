@@ -13,6 +13,10 @@
 static double g_fps = 0.0;
 void osd_vars_set_fps(double fps){ g_fps = fps; }
 
+static int64_t mono_us(void);   /* defined below get_uptime(); used by the
+                                  * ~1s-TTL caches added to the /proc /sys
+                                  * readers in this file (L6) */
+
 /* first non-loopback interface name + IPv4 into ip[] (>=INET_ADDRSTRLEN) */
 static int primary_iface(char *ifname, int ifnsz, char *ip, int ipsz)
 {
@@ -30,23 +34,46 @@ static int primary_iface(char *ifname, int ifnsz, char *ip, int ipsz)
     return ok?0:-1;
 }
 
+/* MAC doesn't change at runtime, but keep the same ~1s-TTL cache pattern as
+ * the other /proc//sys readers below rather than special-casing it. */
 static void get_mac(const char *ifname, char *out, int outsz)
 {
-    char path[128];
-    snprintf(path,sizeof path,"/sys/class/net/%s/address", ifname);
-    FILE *f=fopen(path,"r");
-    if (f){ if(!fgets(out,outsz,f)) out[0]=0; fclose(f);
-            char *nl=strchr(out,'\n'); if(nl)*nl=0; }
-    else snprintf(out,outsz,"00:00:00:00:00:00");
+    static char cached[32]="00:00:00:00:00:00"; static int64_t last_us=0;
+    int64_t now=mono_us();
+    if (last_us==0 || now-last_us >= 1000000){
+        char path[128];
+        snprintf(path,sizeof path,"/sys/class/net/%s/address", ifname);
+        FILE *f=fopen(path,"r");
+        if (f){
+            char buf[32];
+            if (fgets(buf,sizeof buf,f)){
+                char *nl=strchr(buf,'\n'); if(nl)*nl=0;
+                snprintf(cached,sizeof cached,"%s",buf);
+            }
+            fclose(f);
+        }
+        last_us=now;
+    }
+    snprintf(out,outsz,"%s",cached);
 }
 
+/* resolve() used to fopen() these /proc files fresh for every placeholder in
+ * every OSD text item, every ~1s tick (osd_thread) - across multiple items/
+ * streams that's several redundant fopen+read+fclose per second for a value
+ * that's already refreshed at most once a second. Cache like get_net_tx. */
 static void get_uptime(char *out, int outsz)
 {
-    FILE *f=fopen("/proc/uptime","r");
-    double up=0;
-    if (f){ if(fscanf(f,"%lf",&up)!=1) up=0; fclose(f); }
-    int s=(int)up;
-    snprintf(out,outsz,"%d:%02d:%02d", s/86400, (s%86400)/3600, (s%3600)/60); /* d:hh:mm */
+    static char cached[24]="0:00:00"; static int64_t last_us=0;
+    int64_t now=mono_us();
+    if (last_us==0 || now-last_us >= 1000000){
+        FILE *f=fopen("/proc/uptime","r");
+        double up=0;
+        if (f){ if(fscanf(f,"%lf",&up)!=1) up=0; fclose(f); }
+        int s=(int)up;
+        snprintf(cached,sizeof cached,"%d:%02d:%02d", s/86400, (s%86400)/3600, (s%3600)/60); /* d:hh:mm */
+        last_us=now;
+    }
+    snprintf(out,outsz,"%s",cached);
 }
 
 static int64_t mono_us(void)
@@ -80,22 +107,36 @@ static void get_net_tx(const char *ifname, char *out, int outsz)
 
 static void get_cpu(char *out, int outsz)   /* 1-min load average */
 {
-    FILE *f=fopen("/proc/loadavg","r"); double la=0;
-    if (f){ if(fscanf(f,"%lf",&la)!=1) la=0; fclose(f); }
-    snprintf(out,outsz,"%.2f",la);
+    static char cached[16]="0.00"; static int64_t last_us=0;
+    int64_t now=mono_us();
+    if (last_us==0 || now-last_us >= 1000000){
+        FILE *f=fopen("/proc/loadavg","r"); double la=0;
+        if (f){ if(fscanf(f,"%lf",&la)!=1) la=0; fclose(f); }
+        snprintf(cached,sizeof cached,"%.2f",la);
+        last_us=now;
+    }
+    snprintf(out,outsz,"%s",cached);
 }
 
 static void get_mem(char *out, int outsz)   /* free RAM in MB */
 {
-    FILE *f=fopen("/proc/meminfo","r"); if(!f){ snprintf(out,outsz,"?"); return; }
-    char line[128]; long avail=-1, freek=-1;
-    while (fgets(line,sizeof line,f)){
-        if (sscanf(line,"MemAvailable: %ld kB",&avail)==1) break;
-        sscanf(line,"MemFree: %ld kB",&freek);
+    static char cached[16]="?"; static int64_t last_us=0;
+    int64_t now=mono_us();
+    if (last_us==0 || now-last_us >= 1000000){
+        FILE *f=fopen("/proc/meminfo","r");
+        if (f){
+            char line[128]; long avail=-1, freek=-1;
+            while (fgets(line,sizeof line,f)){
+                if (sscanf(line,"MemAvailable: %ld kB",&avail)==1) break;
+                sscanf(line,"MemFree: %ld kB",&freek);
+            }
+            fclose(f);
+            long kb = avail>=0 ? avail : (freek>=0?freek:0);
+            snprintf(cached,sizeof cached,"%ldMB", kb/1024);
+        }
+        last_us=now;
     }
-    fclose(f);
-    long kb = avail>=0 ? avail : (freek>=0?freek:0);
-    snprintf(out,outsz,"%ldMB", kb/1024);
+    snprintf(out,outsz,"%s",cached);
 }
 
 
