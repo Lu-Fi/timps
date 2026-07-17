@@ -43,6 +43,10 @@ int  ms_buf_u8(ms_buf *b, uint8_t v);
 int  ms_buf_be16(ms_buf *b, uint16_t v);
 int  ms_buf_be32(ms_buf *b, uint32_t v);
 void ms_buf_free(ms_buf *b);
+/* reuse a persistent buffer: len=0, err=0, and shrink the backing store back to
+ * `soft` if a rare huge frame grew it past that, so per-connection/-recorder
+ * buffers don't stay ballooned. Normal frames fit under `soft` -> no realloc. */
+void ms_buf_reset(ms_buf *b, size_t soft);
 
 #endif
 

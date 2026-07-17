@@ -80,6 +80,30 @@ static void grid_geom(const ms_config *cfg, int *cols, int *rows)
     *cols = c; *rows = r;
 }
 
+/* Privacy-masked cells are dropped from the IVS ROI list: motion and the OSD
+ * privacy cover share the same zero-copy FrameSource buffer, and the cover is
+ * drawn IN-PLACE, so an unmasked cell over the cover sees raw/fill flicker and
+ * fires permanently. g_roi_cell maps each surviving ROI SLOT (the index IMP
+ * returns retRoi[] in) back to its row-major GRID cell (what status.active[]
+ * uses). Rebuilt on every imp_motion_start(); read only by motion_thread, which
+ * is created after the build and joined before any rebuild - no lock needed. */
+static int g_roi_cell[MOTION_STATUS_MAX];
+static int g_roi_cnt;
+
+/* grid cell [x0,y0]-[x1,y1] intersects any enabled privacy region on stream
+ * mon? privacy ints are read lock-free like the rest of the motion config. */
+static int cell_masked(const ms_config *cfg, int mon, int x0, int y0, int x1, int y1)
+{
+    for (int n=0;n<MS_MAX_PRIVACY;n++){
+        const ms_privacy_region *p=&cfg->privacy[mon][n];
+        if (!p->enabled || p->w<=0 || p->h<=0) continue;
+        int px0=p->x<0?0:p->x, py0=p->y<0?0:p->y;
+        int px1=p->x+p->w-1,   py1=p->y+p->h-1;
+        if (px0<=x1 && px1>=x0 && py0<=y1 && py1>=y0) return 1;
+    }
+    return 0;
+}
+
 static void *motion_thread(void *arg)
 {
     (void)arg;
@@ -88,24 +112,25 @@ static void *motion_thread(void *arg)
     while (g_run) {
         if (IMP_IVS_PollingResult(g_chn, 1000) < 0) continue;
         if (IMP_IVS_GetResult(g_chn, (void**)&result) < 0) continue;
-        int cells = g_st.cells;              /* fixed while the thread runs */
         int detected = 0, changed = 0, any_held = 0;
         int64_t nowm = now_ms();
         ms_motion_status snap;
         pthread_mutex_lock(&g_st_lock);
-        for (int i=0;i<cells;i++){
+        /* retRoi[i] is per ROI SLOT; map back to the grid cell. Privacy-masked
+         * cells have no slot, so they stay 0 in active[] (memset at start). */
+        for (int i=0;i<g_roi_cnt;i++){
+            int cell = g_roi_cell[i];
             /* raw = motion on THIS frame; drives the on_motion trigger and the
              * last-event clock. held = latched view (raw or within HOLD_MS of
              * the last hit) - that is what readers see, so single-frame motion
              * is never lost to the async sampling race. */
             unsigned char raw = result->retRoi[i] ? 1 : 0;
-            if (raw) { g_cell_hit[i] = nowm; detected = 1; }
-            /* raw = this frame; extend it for g_hold_ms (0 = pure passthrough) */
+            if (raw) { g_cell_hit[cell] = nowm; detected = 1; }
             unsigned char held = raw;
-            if (!held && g_hold_ms > 0 && g_cell_hit[i] > 0 &&
-                nowm - g_cell_hit[i] < g_hold_ms) held = 1;
+            if (!held && g_hold_ms > 0 && g_cell_hit[cell] > 0 &&
+                nowm - g_cell_hit[cell] < g_hold_ms) held = 1;
             if (held) any_held = 1;
-            if (held != g_st.active[i]){ g_st.active[i] = held; changed = 1; }
+            if (held != g_st.active[cell]){ g_st.active[cell] = held; changed = 1; }
         }
         g_st.any = any_held;
         if (detected) g_last_event = nowm;
@@ -162,17 +187,26 @@ int imp_motion_start(const ms_config *cfg)
     mp.skipFrameCnt = cfg->motion.skip_frames >= 1 ? cfg->motion.skip_frames : 5;
     mp.frameInfo.width  = w;
     mp.frameInfo.height = h;
+    /* build ROIs for the UNMASKED cells only; privacy zones are excluded so the
+     * OSD cover (drawn in-place into the shared FS buffer) can't trip motion */
+    int nroi = 0;
     for (int r=0;r<rows;r++){
         for (int c=0;c<cols;c++){
-            int i = r*cols + c;
-            mp.sense[i] = sense;
-            mp.roiRect[i].p0.x = c*w/cols;
-            mp.roiRect[i].p0.y = r*h/rows;
-            mp.roiRect[i].p1.x = (c+1)*w/cols - 1;
-            mp.roiRect[i].p1.y = (r+1)*h/rows - 1;
+            int x0=c*w/cols, y0=r*h/rows, x1=(c+1)*w/cols-1, y1=(r+1)*h/rows-1;
+            if (cell_masked(cfg, mon, x0,y0,x1,y1)) continue;
+            mp.sense[nroi] = sense;
+            mp.roiRect[nroi].p0.x = x0; mp.roiRect[nroi].p0.y = y0;
+            mp.roiRect[nroi].p1.x = x1; mp.roiRect[nroi].p1.y = y1;
+            g_roi_cell[nroi] = r*cols + c;
+            nroi++;
         }
     }
-    mp.roiRectCnt = cells;
+    mp.roiRectCnt = nroi;
+    g_roi_cnt = nroi;
+    if (nroi == 0){
+        LOGW(MOD,"all %d cells privacy-masked - motion not started", cells);
+        goto err_grp;
+    }
 
     g_intf = IMP_IVS_CreateMoveInterface(&mp);
     if (!g_intf){ LOGE(MOD,"CreateMoveInterface failed"); goto err_grp; }

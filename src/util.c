@@ -36,6 +36,15 @@ int ms_buf_be32(ms_buf *b, uint32_t v){ uint8_t t[4]; wr_be32(t,v); return ms_bu
 
 void ms_buf_free(ms_buf *b){ free(b->data); b->data=NULL; b->len=b->cap=0; }
 
+void ms_buf_reset(ms_buf *b, size_t soft)
+{
+    b->len = 0; b->err = 0;
+    if (soft && b->cap > soft) {
+        uint8_t *nd = (uint8_t*)realloc(b->data, soft);
+        if (nd) { b->data = nd; b->cap = soft; }   /* shrink failure is harmless */
+    }
+}
+
 int ms_base64(char *dst, const uint8_t *src, int n)
 {
     static const char t[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";

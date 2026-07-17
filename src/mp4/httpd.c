@@ -248,7 +248,7 @@ static void stream_mp4(hconn *c, int chn)
         /* if the queue overflowed and dropped a keyframe, ask for a fresh IDR
          * so the client doesn't decode garbage until the next GOP */
         if (fanqueue_take_dropped_key(&q)) hub_request_idr(chn);
-        frag.len = 0; frag.err = 0;
+        ms_buf_reset(&frag, 256*1024);   /* reuse, shrink an outlier IDR buffer back */
         int frag_ok = 1;
         if (p->media==MS_MEDIA_VIDEO) {
             if (!got_key){ if(!p->keyframe){ pkt_unref(p); continue; } got_key=1; }

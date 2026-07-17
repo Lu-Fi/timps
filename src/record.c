@@ -32,6 +32,7 @@
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 #include <dirent.h>
+#include <fcntl.h>
 
 #define MOD "REC"
 /* fanqueue capacity (packet pointers; retained packet payloads are the real
@@ -52,7 +53,7 @@
  * combination fits comfortably under this. -D-overridable like the other
  * small-RAM knobs (default unchanged, L17). */
 #ifndef RING_MAX_BYTES
-#define RING_MAX_BYTES (8*1024*1024)
+#define RING_MAX_BYTES (4*1024*1024)
 #endif
 
 static const ms_config *g_rc;
@@ -247,7 +248,7 @@ static void seg_write(ms_pkt *p)
      * without locking; it grows once to the steady-state fragment size via
      * ms_buf_reserve and is then reused for the life of the process. */
     static ms_buf frag;
-    frag.len = 0; frag.err = 0;
+    ms_buf_reset(&frag, 256*1024);   /* reuse, shrink an outlier IDR buffer back */
     int frag_ok=1;
     if (p->media==MS_MEDIA_VIDEO){
         if (!w_got_key){ if (!p->keyframe){ return; } w_got_key=1; }
@@ -377,8 +378,9 @@ static void *rec_thread(void *arg)
 
         if (writing){
             if (!w_fp){
-                if (seg_open(chn)==0 && motion_mode) flush_ring();
-                ring_clear();
+                /* only drop the pre-roll once recording actually started; a
+                 * transient seg_open failure keeps the ring for the retry */
+                if (seg_open(chn)==0){ if (motion_mode) flush_ring(); ring_clear(); }
             }
             if (w_fp){
                 /* rotate at a keyframe once the segment is long enough */
@@ -465,36 +467,38 @@ int record_set_active(int on)
  * overwrite arbitrary files. */
 int record_clip(const char *path, int seconds)
 {
-    if (!path || strncmp(path,"/tmp/",5)!=0 || !g_rc) return -1;
+    /* /tmp/ only AND no ".." component: strncmp alone lets "/tmp/../etc/x"
+     * through, which mkdirs()+open() would then overwrite. */
+    if (!path || strncmp(path,"/tmp/",5)!=0 || strstr(path,"..") || !g_rc) return -1;
     if (seconds<=0) seconds=6;
     if (seconds>30) seconds=30;
     int chn=g_rc->record.channel; if (chn<0||chn>=MS_MAX_VSTREAM) chn=0;
 
-    fanqueue q;
-    if (fanqueue_init(&q,REC_QCAP)) return -1;
-    if (hub_subscribe(chn,&q)!=0){ fanqueue_free(&q); return -1; }
-    int ac=MS_AC_NONE,asr=0,ach=0,sub_audio=0;
+    /* one clip at a time: capture runs on the /control HTTP thread and pins an
+     * encoder + fanqueue + a tmpfs (RAM) file for its whole duration. Without a
+     * cap, rapid motion events park every HTTP worker and stack parallel clips
+     * in RAM. Extra requests are dropped (return -1). */
+    static pthread_mutex_t clip_lock = PTHREAD_MUTEX_INITIALIZER;
+    if (pthread_mutex_trylock(&clip_lock)!=0){ LOGW(MOD,"clip busy, skipped %s",path); return -1; }
+
+    fanqueue q; int have_q=0, sub_v=0, sub_audio=0;
+    ms_buf frag;  int have_frag=0;
+    fmp4_mux mux; FILE *fp=NULL; int rc=-1;
+    int ac=MS_AC_NONE,asr=0,ach=0;
+    int64_t deadline=0, giveup=ms_now_us()+(int64_t)(seconds+5)*1000000;
+
+    if (fanqueue_init(&q,REC_QCAP)) goto out; have_q=1;
+    if (hub_subscribe(chn,&q)!=0) goto out; sub_v=1;
     if (g_rc->record.audio && hub_get_audio(&ac,&asr,&ach) && ac==MS_AC_AAC)
         sub_audio=(hub_subscribe(HUB_AUDIO_SRC,&q)==0);
     hub_request_idr(chn);
-
-    ms_buf frag;
-    if (ms_buf_init(&frag,4096)){
-        hub_unsubscribe(chn,&q); if(sub_audio) hub_unsubscribe(HUB_AUDIO_SRC,&q);
-        fanqueue_free(&q); return -1;
-    }
-
-    FILE *fp=NULL; fmp4_mux mux; int rc=-1;
-    int64_t deadline=0;
-    int64_t giveup=ms_now_us()+(int64_t)(seconds+5)*1000000;
+    if (ms_buf_init(&frag,4096)) goto out; have_frag=1;
 
     while (g_run){
-        ms_pkt *p=fanqueue_pop(&q,200);
         int64_t now=ms_now_us();
-        if (!p){
-            if (fp ? now>=deadline : now>=giveup) break;
-            continue;
-        }
+        if (!fp && now>=giveup) break;           /* no start point ever arrived */
+        ms_pkt *p=fanqueue_pop(&q,200);
+        if (!p){ if (fp && now>=deadline) break; continue; }
         if (fanqueue_take_dropped_key(&q)) hub_request_idr(chn);
 
         if (!fp){
@@ -503,8 +507,12 @@ int record_clip(const char *path, int seconds)
             vparam vp;
             if (!(hub_get_vparam(chn,&vp) && vparam_ready(&vp))){ pkt_unref(p); continue; }
             mkdirs(path);
-            fp=fopen(path,"wb");
-            if (!fp){ pkt_unref(p); break; }
+            /* O_EXCL|O_NOFOLLOW: never follow a pre-planted symlink or clobber an
+             * existing file (send2 hands us a fresh mktemp -u name). */
+            int fd=open(path,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0600);
+            if (fd<0){ LOGW(MOD,"clip open %s: %s",path,strerror(errno)); pkt_unref(p); break; }
+            fp=fdopen(fd,"wb");
+            if (!fp){ close(fd); unlink(path); pkt_unref(p); break; }
             fmp4_init(&mux);
             mux.has_video=1; mux.vcodec=g_rc->video[chn].codec;
             mux.width=g_rc->video[chn].width; mux.height=g_rc->video[chn].height;
@@ -513,8 +521,10 @@ int record_clip(const char *path, int seconds)
             if (sub_audio){ mux.has_audio=1; mux.a_timescale=asr; mux.a_channels=ach;
                             aac_asc(asr,ach,mux.asc); }
             frag.len=0; frag.err=0;
-            if (fmp4_init_segment(&mux,&frag)!=0){ pkt_unref(p); break; }
-            if (frag.len) fwrite(frag.data,1,frag.len,fp);
+            if (fmp4_init_segment(&mux,&frag)!=0 ||
+                (frag.len && fwrite(frag.data,1,frag.len,fp)!=frag.len)){
+                fclose(fp); fp=NULL; unlink(path); pkt_unref(p); break;
+            }
             deadline=now+(int64_t)seconds*1000000;
         }
 
@@ -524,16 +534,23 @@ int record_clip(const char *path, int seconds)
             wrote=(fmp4_video_fragment(&mux,p->data,p->len,p->keyframe,p->pts_us,&frag)==0);
         else if (p->media==MS_MEDIA_AUDIO && mux.has_audio)
             wrote=(fmp4_audio_fragment(&mux,p->data,p->len,p->pts_us,&frag)==0);
-        if (wrote && frag.len) fwrite(frag.data,1,frag.len,fp);
+        if (wrote && frag.len && fwrite(frag.data,1,frag.len,fp)!=frag.len){
+            LOGE(MOD,"clip write failed (%s), dropping",strerror(errno));
+            fclose(fp); fp=NULL; unlink(path); pkt_unref(p); break;
+        }
         pkt_unref(p);
         if (now>=deadline) break;
     }
 
     if (fp){ fclose(fp); rc=0; LOGI(MOD,"clip -> %s (%ds)",path,seconds); }
     else LOGW(MOD,"clip: no frames for %s",path);
-    ms_buf_free(&frag);
-    hub_unsubscribe(chn,&q); if(sub_audio) hub_unsubscribe(HUB_AUDIO_SRC,&q);
-    fanqueue_free(&q);
+
+out:
+    if (have_frag) ms_buf_free(&frag);
+    if (sub_v) hub_unsubscribe(chn,&q);
+    if (sub_audio) hub_unsubscribe(HUB_AUDIO_SRC,&q);
+    if (have_q) fanqueue_free(&q);
+    pthread_mutex_unlock(&clip_lock);
     return rc;
 }
 #endif

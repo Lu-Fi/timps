@@ -1214,7 +1214,15 @@ static void ing_control(const char *key, const char *val)
      * the region LIVE (create/show/hide/move) on that stream */
     if (!strncmp(key,"privacy",7) && key[7]>='0' && key[7]<'0'+MS_MAX_VSTREAM &&
         key[8]=='.' && key[9]>='0' && key[9]<'0'+MS_MAX_PRIVACY && key[10]=='.'){
-        imp_osd_privacy_apply(key[7]-'0', key[9]-'0');
+        int s = key[7]-'0';
+        imp_osd_privacy_apply(s, key[9]-'0');
+        /* privacy zones are excluded from the IVS motion grid (they share the
+         * FrameSource with the cover, which would otherwise trip motion). If this
+         * region is on the monitored stream and motion is running, rebuild the
+         * grid so the mask takes/loses effect live. */
+        int mon = g_hcfg->motion.monitor_stream;
+        if (mon<0 || mon>=MS_MAX_VSTREAM || !g_hcfg->video[mon].enabled) mon=0;
+        if (g_hcfg->motion.enabled && s==mon) motion_sync(g_hcfg);
         return;
     }
 
