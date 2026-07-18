@@ -965,12 +965,18 @@ static int jpeg_attach(const ms_config *cfg, int vi, int grp)
 }
 
 /* ================= audio ================= */
+/* Map a config samplerate to the IMP enum, or -1 when the AI capture path
+ * does not support it. Only 8/16 kHz are kept: they are the rates this AI
+ * bring-up (mono, 40 ms frames) is known to run on the T-series. Returning
+ * -1 (instead of silently coercing to 8 kHz as before) makes the caller's
+ * fallback loop pick a real rate, so g_asr - and with it SDP/faac/fMP4/SRT -
+ * always matches the rate the AI is actually programmed at. */
 static int ai_rate_enum(int sr)
 {
     switch (sr) {
         case 8000:  return AUDIO_SAMPLE_RATE_8000;
         case 16000: return AUDIO_SAMPLE_RATE_16000;
-        default:    return AUDIO_SAMPLE_RATE_8000;
+        default:    return -1;   /* unsupported: caller must fall back */
     }
 }
 
@@ -1037,29 +1043,39 @@ static void *audio_thread(void *arg)
     /* --- configure the audio input FIRST, with a samplerate fallback ---
      * The AI frame size is decoupled from the AAC encoder: the SoC only accepts
      * "natural" frame sizes (a 40 ms frame here), so 16 kHz/1024 was rejected.
-     * We capture 40 ms frames and re-block them into faac's 1024-sample units. */
-    int want_sr[2] = { g_asr, 8000 };
-    int nsr = (g_asr==8000) ? 1 : 2;
+     * We capture 40 ms frames and re-block them into faac's 1024-sample units.
+     * Fallback order (deduped): configured rate, then 16 kHz (AAC only - the
+     * better degrade for e.g. a 48 kHz request), then 8 kHz. A rate
+     * ai_rate_enum() rejects counts as a failed attempt, so g_asr is ONLY ever
+     * set to the rate the AI was really programmed at. */
+    int want_sr[3]; int nsr = 0;
+    want_sr[nsr++] = g_asr;
+    if (use_aac && g_asr != 16000) want_sr[nsr++] = 16000;
+    if (g_asr != 8000)             want_sr[nsr++] = 8000;
     int ai_ok = 0;
     IMPAudioIOAttr aio;
     for (int r=0; r<nsr && !ai_ok; r++){
         int sr = want_sr[r];
+        int re = ai_rate_enum(sr);
+        if (re < 0){
+            LOGW(MOD,"audio.samplerate %dHz unsupported by AI%s", sr,
+                 (r+1<nsr)?" -> falling back":"");
+            continue;
+        }
         memset(&aio,0,sizeof aio);
-        aio.samplerate = ai_rate_enum(sr);
+        aio.samplerate = re;
         aio.bitwidth   = AUDIO_BIT_WIDTH_16;
         aio.soundmode  = AUDIO_SOUND_MODE_MONO;
         aio.frmNum     = MS_AI_FRM_NUM;
         aio.numPerFrm  = sr*40/1000;          /* 40 ms: 320@8k, 640@16k */
         aio.chnCnt     = 1;
         if (IMP_AI_SetPubAttr(dev,&aio)==0){ g_asr=sr; ai_ok=1; break; }
-        LOGW(MOD,"IMP_AI_SetPubAttr %dHz failed%s", sr, (r+1<nsr)?" -> trying 8000":"");
+        LOGW(MOD,"IMP_AI_SetPubAttr %dHz failed%s", sr, (r+1<nsr)?" -> falling back":"");
     }
     if (!ai_ok){
-        /* ing_start already called hub_set_audio_params before this thread was
-         * even created (so RTSP/SDP could describe the stream without waiting
-         * on hardware bring-up) - undo that now, or every client that connects
-         * from here on gets an audio track advertised that will never carry
-         * any data. */
+        /* Nothing was advertised yet (ing_start no longer pre-publishes the
+         * hub audio params); the clear is kept as a belt-and-braces reset of
+         * any state left from a previous start/stop cycle. */
         LOGE(MOD,"audio input unavailable");
         hub_clear_audio_params();
         return NULL;
@@ -1487,7 +1503,13 @@ static int ing_start(const ms_config *cfg)
         }
 #endif
         g_asr = (g_acodec==MS_AC_AAC) ? cfg->audio.samplerate : 8000; /* G.711 = 8 kHz */
-        hub_set_audio_params(g_acodec, g_asr, cfg->audio.channels);
+        /* NO hub_set_audio_params here: the hub audio params are published
+         * ONCE, by audio_thread, after the AI is validated and the final
+         * codec/rate is known (samplerate fallback, faac->PCMU fallback). An
+         * early publish let a client DESCRIBE AAC@cfg-rate and then receive
+         * the fallback codec on PLAY - and fMP4/SRT/record latch the codec
+         * once, muxing G.711 bytes as AAC. The cost is only that DESCRIBE in
+         * the sub-second bring-up window sees no audio track yet. */
         g_arun=1;
         if (pthread_create(&g_athr,NULL,audio_thread,NULL)!=0){
             g_arun=0;                /* had_audio stays 0 -> no join in stop */

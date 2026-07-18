@@ -299,7 +299,32 @@ static int jpeg_src_from_path(const char *path, const ms_config *cfg)
     return -1;
 }
 
-/* single latest JPEG snapshot */
+/* single latest JPEG snapshot.
+ *
+ * On-demand: timps encodes nothing while idle, so subscribing to the JPEG
+ * hub source is what WAKES that encoder (hub_notify_activity -> HAL
+ * jpeg_thread: fs_use + StartRecvPic). The wait is split in two bounded
+ * halves of MS_SNAP_WAIT_MS each:
+ *   1st half - the plain JPEG subscription. Fast path unchanged: on an
+ *   active stream the next frame arrives within one JPEG frame interval
+ *   (<=200 ms at the default 5 fps) and is returned immediately.
+ *   2nd half - only reached when the first half timed out (idle camera
+ *   whose piggyback JPEG did not come up from the JPEG subscription
+ *   alone). For a piggyback source (videoN.jpeg shares video N's
+ *   framesource/encoder group) additionally subscribe the parent VIDEO
+ *   source for the remainder: that is the exact on-demand start the
+ *   RTSP/fMP4 clients use (proven to bring the whole framesource->group
+ *   pipeline up on every platform), and with the group pumping the JPEG
+ *   channel delivers. The helper subscription is dropped again before
+ *   returning, so the HAL's idle-stop debounce (MS_IDLE_STOP_US, 2 s)
+ *   shuts everything back down - a snapshot never leaves the encoder
+ *   running.
+ * Only when both bounded halves elapse frameless does the old 503
+ * "no frame" remain (total worst case 2 x MS_SNAP_WAIT_MS = 3 s, the same
+ * bound as before - never hangs the connection). */
+#ifndef MS_SNAP_WAIT_MS
+#define MS_SNAP_WAIT_MS 1500
+#endif
 static void snapshot_jpg(hconn *c, int src)
 {
     if (src < 0){ http_send_ex(c,"404 Not Found","text/plain",MEDIA_CORS,"no jpeg",7); return; }
@@ -310,7 +335,22 @@ static void snapshot_jpg(hconn *c, int src)
         fanqueue_free(&q);
         return;
     }
-    ms_pkt *p = fanqueue_pop(&q, 3000);
+    ms_pkt *p = fanqueue_pop(&q, MS_SNAP_WAIT_MS);
+    int vsrc = -1;                 /* helper video subscription (2nd half) */
+    fanqueue vq;
+    if (!p) {
+        if (src > HUB_JPEG_SRC) {  /* piggyback: HUB_JPEG_SRC_N(n) -> video n */
+            vsrc = src - (HUB_JPEG_SRC + 1);
+            /* tiny queue: the video frames themselves are discarded (drop-
+             * oldest on overflow); the subscription only exists to wake the
+             * parent video pipeline like any RTSP/fMP4 viewer would */
+            if (fanqueue_init(&vq, 2) != 0) vsrc = -1;
+            else if (hub_subscribe(vsrc, &vq) != 0) { fanqueue_free(&vq); vsrc = -1; }
+        }
+        /* dedicated jpeg.* channel (own framesource): no parent video to
+         * wake - the 2nd half is simply more time for a cold start */
+        p = fanqueue_pop(&q, MS_SNAP_WAIT_MS);
+    }
     if (p) {
         char hdr[224];
         int n=snprintf(hdr,sizeof hdr,
@@ -323,6 +363,11 @@ static void snapshot_jpg(hconn *c, int src)
     } else {
         http_send_ex(c,"503 Unavailable","text/plain",MEDIA_CORS,"no frame",8);
     }
+    /* release the helper video subscription FIRST (it was taken last), then
+     * the JPEG one; hub_unsubscribe waits out any in-flight publish before
+     * its fanqueue is freed (no UAF), and once both are gone the HAL's
+     * activity callback + idle-stop debounce return the camera to idle. */
+    if (vsrc >= 0) { hub_unsubscribe(vsrc, &vq); fanqueue_free(&vq); }
     hub_unsubscribe(src, &q);
     fanqueue_free(&q);
 }

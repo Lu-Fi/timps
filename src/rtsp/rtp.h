@@ -19,6 +19,11 @@ typedef struct {
     uint64_t   audio_samples;  /* cumulative samples sent on an audio track; the
                                 * RTP timestamp is ts_base + this, so it's exact
                                 * and immune to publish-time wall-clock jitter */
+    int64_t    last_pts;       /* last publish pts_us seen on this audio track
+                                * (0 = none yet); used to detect real gaps
+                                * (mute/stall/drop) and jump audio_samples
+                                * forward so the media timeline stays aligned
+                                * with the wall-clock RTCP SR mapping (M-1) */
     /* RTCP SR bookkeeping */
     uint32_t   pkt_count;
     uint32_t   octet_count;

@@ -192,6 +192,43 @@ int rtp_send_h265(rtp_track *t, const uint8_t *au, size_t len, int64_t pts_us)
     return 0;
 }
 
+/* M-1: the sample-count-driven audio timestamp (audio_samples) only advances
+ * when a frame is actually SENT, while rtp_maybe_sr() maps "now" to RTP time
+ * via the wall clock. Any gap in published audio (audio.mute via /control, an
+ * AI stall/watchdog retry, fanqueue overflow drops) therefore froze the media
+ * timeline while the SR mapping kept advancing: after e.g. a 10 s mute, audio
+ * resumed with contiguous timestamps the next SR declared to be 10 s in the
+ * PAST, and SR-honoring receivers (ffmpeg/go2rtc/Frigate) shifted audio by
+ * the accumulated gap - permanently, growing with every gap.
+ *
+ * Fix: before stamping a frame, compare its publish pts against the previous
+ * one. If the delta exceeds 2 nominal frame durations (a real discontinuity,
+ * not scheduling jitter), advance audio_samples by the missed time, rounded
+ * to whole frames, so the media timeline jumps forward to match wall-clock.
+ * For a continuous stream the delta is ~1 frame duration, the condition never
+ * fires, and the counter advances exactly as before (jitter immunity kept).
+ * frame_samples: samples per frame at clock_rate (G.711: len bytes == samples;
+ * AAC-LC: 1024). */
+static void audio_gap_resync(rtp_track *t, int64_t pts_us, uint32_t frame_samples)
+{
+    if (t->last_pts != 0 && frame_samples > 0 && t->clock_rate > 0) {
+        int64_t frame_us = ((int64_t)frame_samples * 1000000) /
+                           (int64_t)t->clock_rate;
+        int64_t delta = pts_us - t->last_pts;
+        if (frame_us > 0 && delta > 2 * frame_us) {
+            /* expected_pts = last_pts + frame_us; missed whole frames =
+             * round((pts_us - expected_pts) / frame_us), each worth
+             * frame_samples samples ( == gap * clock_rate / 1e6 rounded
+             * to whole frames). The current frame's own advance still
+             * happens in the caller as usual. */
+            int64_t missed = (delta - frame_us + frame_us / 2) / frame_us;
+            if (missed > 0)
+                t->audio_samples += (uint64_t)missed * frame_samples;
+        }
+    }
+    t->last_pts = pts_us;
+}
+
 /* ---- AAC (RFC 3640 mpeg4-generic) ---- */
 int rtp_send_aac(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us)
 {
@@ -203,6 +240,7 @@ int rtp_send_aac(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us)
      * samples per AU, so advance by that instead of the jittery publish
      * wall-clock. pts0 is still anchored for the RTCP SR. */
     if (!t->have_pts0){ t->pts0 = pts_us; t->have_pts0 = 1; }
+    audio_gap_resync(t, pts_us, 1024);          /* M-1: jump over real gaps */
     uint32_t ts = t->ts_base + (uint32_t)t->audio_samples;
     t->audio_samples += 1024;
     uint8_t pkt[RTP_MTU + 32];
@@ -258,6 +296,7 @@ int rtp_send_g711(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us
      * SR to within capture-crystal ppm. pts0 is still anchored so
      * rtp_maybe_sr() has its NTP<->RTP reference. */
     if (!t->have_pts0){ t->pts0 = pts_us; t->have_pts0 = 1; }
+    audio_gap_resync(t, pts_us, (uint32_t)len); /* M-1: jump over real gaps */
     uint32_t ts = t->ts_base + (uint32_t)t->audio_samples;
     uint8_t pkt[RTP_MTU + 32];
     size_t off = 0;

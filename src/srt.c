@@ -77,6 +77,7 @@ static int aac_adts_wrap(const ts_mux *m, const uint8_t *aac, int aac_len,
     int frame_len = aac_len + 7;                /* header + payload, no CRC */
     if (aac_len <= 0 || frame_len > out_cap || frame_len > 0x1FFF) return -1;
     int idx = m->a_idx;                         /* sampling_frequency_index */
+    if (idx < 0) return -1;                     /* L2: never emit reserved idx 15 */
     int ch  = (m->a_ch > 0 && m->a_ch < 8) ? m->a_ch : 1;
     out[0] = 0xFF;
     out[1] = 0xF1;                              /* MPEG-4, layer 0, no CRC */
@@ -276,10 +277,21 @@ static void *client_thread(void *arg)
     int ac = MS_AC_NONE, asr = 0, ach = 0, sub_a = 0;
     if (hub_get_audio(&ac, &asr, &ach) && ac == MS_AC_AAC)
         sub_a = (hub_subscribe(HUB_AUDIO_SRC, &q) == 0);
-    m->have_audio = sub_a;
     m->a_sr = asr; m->a_ch = (ach > 0 ? ach : 1);
     m->a_idx = aac_srate_index(asr);
-    if (m->a_idx < 0) m->a_idx = 8;   /* 16 kHz fallback */
+    if (m->a_idx < 0 && sub_a) {
+        /* L2: the configured rate has no ADTS sampling_frequency_index.
+         * Emitting a header anyway (the old "assume 16 kHz" fallback, or
+         * letting aac_adts_wrap mask -1 to the reserved index 15) makes
+         * decoders reject or mis-sync the TS audio, so serve this session
+         * video-only - the same shape as the no-audio case below. */
+        static int warned;
+        if (!warned) { warned = 1;
+            LOGW(MOD, "AAC rate %d Hz has no ADTS index, SRT audio disabled", asr); }
+        hub_unsubscribe(HUB_AUDIO_SRC, &q);
+        sub_a = 0;
+    }
+    m->have_audio = sub_a;
     m->vcodec = g_scfg->video[chn].codec;
     hub_request_idr(chn);
 
