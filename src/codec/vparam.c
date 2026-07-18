@@ -169,7 +169,7 @@ static int hvcc(const vparam *v, ms_buf *o)
     ms_buf_u8(o,0xF8);              /* reserved|bitDepthLumaMinus8=0 */
     ms_buf_u8(o,0xF8);              /* reserved|bitDepthChromaMinus8=0 */
     ms_buf_be16(o,0);               /* avgFrameRate */
-    ms_buf_u8(o,0x03);              /* cfr=0|numTempLayers=0..|nested|lengthSizeMinusOne=3 */
+    ms_buf_u8(o,0x0B);              /* cfr=0|numTempLayers=1|nested=0|lengthSizeMinusOne=3 */
     ms_buf_u8(o,3);                 /* numOfArrays: VPS,SPS,PPS */
     /* array_completeness=1 (top bit set: 0xA_ not 0x20/0x21/0x22) - ISO/IEC
      * 14496-15 8.3.3.1 constrains this to 1 for an hvc1 sample entry (all

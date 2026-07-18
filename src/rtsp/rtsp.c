@@ -410,6 +410,8 @@ static int handle_request(session *s, char *req)
             int rc=0, cc=1;
             const char *il = strstr(tr,"interleaved=");
             if (il) sscanf(il+12,"%d-%d",&rc,&cc);
+            if (rc<0||rc>255) rc=0;          /* N4: reject out-of-range channels */
+            if (cc<0||cc>255) cc = rc<255 ? rc+1 : 0;
             rtp_sink *snk = is_audio ? &s->asink : &s->vsink;
             snk->tcp=1; snk->fd=s->fd; snk->chan_rtp=rc; snk->chan_rtcp=cc;
 #ifdef USE_TLS
@@ -425,6 +427,8 @@ static int handle_request(session *s, char *req)
             int cp=0, cp2=0;
             const char *cpp = tr?strstr(tr,"client_port="):NULL;
             if (cpp) sscanf(cpp+12,"%d-%d",&cp,&cp2);
+            if (cp<0||cp>65535) cp=0;        /* N4: reject out-of-range ports */
+            if (cp2<0||cp2>65535) cp2=0;
             int *udp = is_audio ? s->a_udp : s->v_udp;
             /* H1: a repeated SETUP for the same track (re-SETUP, or an
              * unauthenticated client just hammering SETUP before ever

@@ -558,7 +558,7 @@ static int stats_json(const ms_config *cfg, char *buf, size_t cap)
 {
     size_t o = 0;
     #define APP(...) do { \
-        int _n = snprintf(buf+o, o<cap?cap-o:0, __VA_ARGS__); \
+        int _n = snprintf(o<cap?buf+o:buf, o<cap?cap-o:0, __VA_ARGS__); \
         if (_n>0) o += (size_t)_n; \
     } while (0)
     APP("{\"uptime_s\":%lld,\"clients\":%d,\"video\":[",
