@@ -31,13 +31,19 @@ typedef struct {
 void rtp_track_init(rtp_track *t, int pt, uint32_t clock_rate,
                     rtp_out_fn out, void *ctx);
 
-/* pts_us: presentation time in microseconds (shared A/V timeline) */
-void rtp_send_h264(rtp_track *t, const uint8_t *au, size_t len, int64_t pts_us);
-void rtp_send_h265(rtp_track *t, const uint8_t *au, size_t len, int64_t pts_us);
-void rtp_send_aac (rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us);
-void rtp_send_g711(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us);
+/* pts_us: presentation time in microseconds (shared A/V timeline).
+ * Return 0 on success, <0 if the sink reported a send failure (client gone /
+ * timed-out partial write). On <0 over TCP-interleaved transport the framing
+ * may be torn mid-packet, so the caller MUST stop sending on that connection
+ * (H-1): any further '$'-framed byte would permanently desync the stream. */
+int rtp_send_h264(rtp_track *t, const uint8_t *au, size_t len, int64_t pts_us);
+int rtp_send_h265(rtp_track *t, const uint8_t *au, size_t len, int64_t pts_us);
+int rtp_send_aac (rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us);
+int rtp_send_g711(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us);
 
-/* emit an RTCP Sender Report if >= ~1s since the last one */
-void rtp_maybe_sr(rtp_track *t, int64_t now_us);
+/* emit an RTCP Sender Report if >= ~1s since the last one.
+ * Returns 0 on success or when no SR was due, <0 on send failure (same
+ * stop-sending contract as rtp_send_*). */
+int rtp_maybe_sr(rtp_track *t, int64_t now_us);
 
 #endif

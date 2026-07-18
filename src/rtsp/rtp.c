@@ -5,8 +5,26 @@
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
+#include <unistd.h>
+#include <fcntl.h>
 
 #define RTP_MTU 1400
+
+/* M6: fill out with kernel randomness (same /dev/urandom pattern as
+ * auth_gen_token in auth.c); <0 = unavailable, caller falls back */
+static int urand_bytes(void *out, size_t n)
+{
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd < 0) return -1;
+    size_t off = 0;
+    while (off < n) {
+        ssize_t r = read(fd, (uint8_t *)out + off, n - off);
+        if (r <= 0) { close(fd); return -1; }
+        off += (size_t)r;
+    }
+    close(fd);
+    return 0;
+}
 
 static uint32_t pts_to_ts(rtp_track *t, int64_t pts_us)
 {
@@ -38,9 +56,20 @@ void rtp_track_init(rtp_track *t, int pt, uint32_t clock_rate,
     t->payload_type = pt;
     t->clock_rate   = clock_rate;
     t->out = out; t->ctx = ctx;
-    t->ssrc = ((uint32_t)rand()<<16) ^ (uint32_t)rand() ^ (uint32_t)time(NULL);
-    t->seq  = (uint16_t)rand();
-    t->ts_base = (uint32_t)rand();
+    /* M6: SSRC/start-seq/ts_base from /dev/urandom, not rand() - rand() is
+     * seeded time^pid (main.c), making off-path RTP injection/guessing
+     * feasible; RFC 3550 wants an unpredictable SSRC anyway. The old weak
+     * mix stays only as a fallback for a system without /dev/urandom. */
+    struct { uint32_t ssrc, ts; uint16_t seq; } rnd;
+    if (urand_bytes(&rnd, sizeof rnd) == 0) {
+        t->ssrc    = rnd.ssrc;
+        t->seq     = rnd.seq;
+        t->ts_base = rnd.ts;
+    } else {
+        t->ssrc = ((uint32_t)rand()<<16) ^ (uint32_t)rand() ^ (uint32_t)time(NULL);
+        t->seq  = (uint16_t)rand();
+        t->ts_base = (uint32_t)rand();
+    }
     t->last_sr_us = 0;
 }
 
@@ -55,6 +84,9 @@ static int rtp_hdr(uint8_t *p, rtp_track *t, int marker, uint32_t ts)
     return 12;
 }
 
+/* L3: emit's <0 (sink says client is gone) is threaded up through every
+ * packetizer so the rest of the access unit is abandoned instead of burning
+ * CPU fragmenting/copying packets a dead socket will only reject again. */
 static int emit(rtp_track *t, uint8_t *pkt, int len, uint32_t ts)
 {
     t->pkt_count++;
@@ -64,15 +96,14 @@ static int emit(rtp_track *t, uint8_t *pkt, int len, uint32_t ts)
 }
 
 /* ---- H264 (RFC 6184) ---- */
-static void send_h264_nal(rtp_track *t, const uint8_t *nal, size_t n,
-                          uint32_t ts, int last_in_au)
+static int send_h264_nal(rtp_track *t, const uint8_t *nal, size_t n,
+                         uint32_t ts, int last_in_au)
 {
     uint8_t pkt[RTP_MTU + 32];
     if (n + 12 <= RTP_MTU) {
         int h = rtp_hdr(pkt, t, last_in_au, ts);
         memcpy(pkt+h, nal, n);
-        emit(t, pkt, h+(int)n, ts);
-        return;
+        return emit(t, pkt, h+(int)n, ts) < 0 ? -1 : 0;
     }
     /* FU-A */
     uint8_t nri = nal[0] & 0x60;
@@ -88,12 +119,13 @@ static void send_h264_nal(rtp_track *t, const uint8_t *nal, size_t n,
         pkt[h]   = nri | 28;                          /* FU indicator */
         pkt[h+1] = (uint8_t)((first?0x80:0)|(end?0x40:0)|typ); /* FU header */
         memcpy(pkt+h+2, p, chunk);
-        emit(t, pkt, h+2+(int)chunk, ts);
+        if (emit(t, pkt, h+2+(int)chunk, ts) < 0) return -1;
         p += chunk; left -= chunk; first = 0;
     }
+    return 0;
 }
 
-void rtp_send_h264(rtp_track *t, const uint8_t *au, size_t len, int64_t pts_us)
+int rtp_send_h264(rtp_track *t, const uint8_t *au, size_t len, int64_t pts_us)
 {
     uint32_t ts = pts_to_ts(t, pts_us);
     /* one-NAL lookahead to know which is last (for the marker bit) without
@@ -103,22 +135,24 @@ void rtp_send_h264(rtp_track *t, const uint8_t *au, size_t len, int64_t pts_us)
     nal_iter it; nal_unit u, pending; int have_pending = 0;
     nal_iter_init(&it, au, len);
     while (nal_iter_next(&it, &u)) {
-        if (have_pending) send_h264_nal(t, pending.data, pending.len, ts, 0);
+        if (have_pending &&
+            send_h264_nal(t, pending.data, pending.len, ts, 0) < 0) return -1;
         pending = u; have_pending = 1;
     }
-    if (have_pending) send_h264_nal(t, pending.data, pending.len, ts, 1);
+    if (have_pending)
+        return send_h264_nal(t, pending.data, pending.len, ts, 1);
+    return 0;
 }
 
 /* ---- H265 (RFC 7798) ---- */
-static void send_h265_nal(rtp_track *t, const uint8_t *nal, size_t n,
-                          uint32_t ts, int last_in_au)
+static int send_h265_nal(rtp_track *t, const uint8_t *nal, size_t n,
+                         uint32_t ts, int last_in_au)
 {
     uint8_t pkt[RTP_MTU + 32];
     if (n + 12 <= RTP_MTU) {
         int h = rtp_hdr(pkt, t, last_in_au, ts);
         memcpy(pkt+h, nal, n);
-        emit(t, pkt, h+(int)n, ts);
-        return;
+        return emit(t, pkt, h+(int)n, ts) < 0 ? -1 : 0;
     }
     /* FU (type 49) - 2-byte payload hdr + 1-byte FU header */
     uint8_t typ = (nal[0] >> 1) & 0x3F;
@@ -136,30 +170,35 @@ static void send_h265_nal(rtp_track *t, const uint8_t *nal, size_t n,
         pkt[h+1] = (uint8_t)((lid<<3) | tid);
         pkt[h+2] = (uint8_t)((first?0x80:0)|(end?0x40:0)|typ);
         memcpy(pkt+h+3, p, chunk);
-        emit(t, pkt, h+3+(int)chunk, ts);
+        if (emit(t, pkt, h+3+(int)chunk, ts) < 0) return -1;
         p += chunk; left -= chunk; first = 0;
     }
+    return 0;
 }
 
-void rtp_send_h265(rtp_track *t, const uint8_t *au, size_t len, int64_t pts_us)
+int rtp_send_h265(rtp_track *t, const uint8_t *au, size_t len, int64_t pts_us)
 {
     uint32_t ts = pts_to_ts(t, pts_us);
     /* one-NAL lookahead, see rtp_send_h264() for why (no fixed-size cap) */
     nal_iter it; nal_unit u, pending; int have_pending = 0;
     nal_iter_init(&it, au, len);
     while (nal_iter_next(&it, &u)) {
-        if (have_pending) send_h265_nal(t, pending.data, pending.len, ts, 0);
+        if (have_pending &&
+            send_h265_nal(t, pending.data, pending.len, ts, 0) < 0) return -1;
         pending = u; have_pending = 1;
     }
-    if (have_pending) send_h265_nal(t, pending.data, pending.len, ts, 1);
+    if (have_pending)
+        return send_h265_nal(t, pending.data, pending.len, ts, 1);
+    return 0;
 }
 
 /* ---- AAC (RFC 3640 mpeg4-generic) ---- */
-void rtp_send_aac(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us)
+int rtp_send_aac(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us)
 {
     size_t plen; int off = aac_adts_strip(frame, len, &plen);
     const uint8_t *au = frame + off;
-    if (plen == 0 || plen > 0x1FFF) return; /* AU-size field is 13 bits */
+    if (plen == 0 || plen > 0x1FFF) return 0; /* AU-size field is 13 bits;
+                                               * malformed frame, client fine */
     /* Sample-count-driven timestamp (see rtp_send_g711): AAC-LC is a fixed 1024
      * samples per AU, so advance by that instead of the jittery publish
      * wall-clock. pts0 is still anchored for the RTCP SR. */
@@ -176,8 +215,7 @@ void rtp_send_aac(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us
         uint16_t auh = (uint16_t)((plen & 0x1FFF) << 3);
         wr_be16(pkt+h+2, auh);
         memcpy(pkt+h+4, au, plen);
-        emit(t, pkt, h+4+(int)plen, ts);
-        return;
+        return emit(t, pkt, h+4+(int)plen, ts) < 0 ? -1 : 0;
     }
 
     /* RFC 3640 3.2.3.1 + 3.2.1.1 ("AU-size"): an AU exceeding the MTU (high
@@ -200,13 +238,14 @@ void rtp_send_aac(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us
         wr_be16(pkt+h, 16);
         wr_be16(pkt+h+2, auh);
         memcpy(pkt+h+4, au+sent, chunk);
-        emit(t, pkt, h+4+(int)chunk, ts);
+        if (emit(t, pkt, h+4+(int)chunk, ts) < 0) return -1; /* client gone (L3) */
         sent += chunk;
     }
+    return 0;
 }
 
 /* ---- G.711 (raw, fragment if needed) ---- */
-void rtp_send_g711(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us)
+int rtp_send_g711(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us)
 {
     /* G.711 is sample-exact (1 byte == 1 sample @ 8 kHz) and captured in hard
      * real time, so derive the RTP timestamp from a cumulative SAMPLE counter,
@@ -231,22 +270,23 @@ void rtp_send_g711(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_u
          * the very first packet ever sent on it, not every packet. */
         int h = rtp_hdr(pkt, t, t->pkt_count==0, (uint32_t)(ts + off));
         memcpy(pkt+h, frame+off, chunk);
-        emit(t, pkt, h+(int)chunk, ts);
+        if (emit(t, pkt, h+(int)chunk, ts) < 0) return -1; /* client gone (L3) */
         off += chunk;
     }
     t->audio_samples += len;   /* mono 8-bit: bytes == samples */
+    return 0;
 }
 
 /* ---- RTCP Sender Report ---- */
-void rtp_maybe_sr(rtp_track *t, int64_t now_us)
+int rtp_maybe_sr(rtp_track *t, int64_t now_us)
 {
     /* pts_to_ts() anchors pts0/ts_base on the FIRST packet sent - before
      * that there's no valid RTP-time <-> wall-clock mapping to report.
      * Skip without touching last_sr_us, so the first real SR still goes
      * out promptly once packets start flowing instead of waiting up to
      * another full second because this call "used up" the 1s gate below. */
-    if (!t->have_pts0) return;
-    if (t->last_sr_us && now_us - t->last_sr_us < 1000000) return;
+    if (!t->have_pts0) return 0;
+    if (t->last_sr_us && now_us - t->last_sr_us < 1000000) return 0;
     t->last_sr_us = now_us;
     /* NTP from realtime clock */
     struct timespec rt; clock_gettime(CLOCK_REALTIME, &rt);
@@ -272,5 +312,7 @@ void rtp_maybe_sr(rtp_track *t, int64_t now_us)
     wr_be32(sr+16, rtp_ts_now);
     wr_be32(sr+20, t->pkt_count);
     wr_be32(sr+24, t->octet_count);
-    t->out(t->ctx, sr, sizeof sr, 1);
+    /* H-1: over TCP-interleaved a failed/timed-out send can leave a torn
+     * '$'-framed packet; report it so the caller stops the session. */
+    return t->out(t->ctx, sr, sizeof sr, 1) < 0 ? -1 : 0;
 }

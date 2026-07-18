@@ -20,6 +20,9 @@ ms_tls_conn *ms_tls_accept(ms_tls_ctx *ctx, int fd);
  * Write: writes all len bytes; returns len, or <0 on error. */
 int          ms_tls_read(ms_tls_conn *c, void *buf, int len);
 int          ms_tls_write(ms_tls_conn *c, const void *buf, int len);
+/* bytes already decrypted/buffered inside the TLS layer (invisible to poll()
+ * on the raw fd); check before any poll()-gated read on a TLS connection */
+int          ms_tls_pending(ms_tls_conn *c);
 void         ms_tls_close(ms_tls_conn *c);
 
 #endif /* USE_TLS */

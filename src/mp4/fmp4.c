@@ -258,7 +258,11 @@ static void write_audio_sample_entry(ms_buf *b, fmp4_mux *m)
     ms_buf_be16(b, (uint16_t)m->a_channels);
     ms_buf_be16(b, 16);                          /* sample size */
     ms_buf_be16(b, 0); ms_buf_be16(b, 0);        /* predefined/reserved */
-    ms_buf_be32(b, m->a_timescale << 16);        /* sample rate 16.16 */
+    /* L14: the stsd sample rate is 16.16 fixed point - only 16 integer bits.
+     * This pipeline never produces >48000 Hz, but clamp defensively so a
+     * hypothetical rate >65535 Hz can't shift into the fraction field. */
+    { uint32_t sr = m->a_timescale > 0xFFFFu ? 0xFFFFu : m->a_timescale;
+      ms_buf_be32(b, sr << 16); }                /* sample rate 16.16 */
     write_esds(b, m->asc);
     box_close(b, p);
 }
@@ -366,6 +370,10 @@ static int fragment(fmp4_mux *m, int track_id, const uint8_t *sample, size_t sle
     size_t moof = box_open(out, "moof");
     size_t mfhd = box_open(out, "mfhd");
     put_fullbox(out, 0, 0);
+    /* L14: mfhd sequence_number is 32-bit by spec; m->seq (uint32_t) simply
+     * wraps after 2^32 fragments (>2 years of continuous fragments at 60/s).
+     * Players treat it as an opaque increasing counter, so the natural
+     * unsigned wrap-around is the intended behavior - no extra guard. */
     ms_buf_be32(out, ++m->seq);
     box_close(out, mfhd);
 

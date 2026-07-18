@@ -153,12 +153,14 @@ int hub_get_audio(int *acodec, int *samplerate, int *channels)
 int hub_subscribe(int src, fanqueue *q)
 {
     hub_source *s = hub_get(src); if(!s) return -1;
-    int rc=-1;
+    int rc=-1, nsnap=0;
     pthread_mutex_lock(&s->lock);
     if (s->nsub < HUB_MAX_SUBS){ s->subs[s->nsub++]=q; rc=0; }
+    nsnap = s->nsub;   /* L11: snapshot for logging - nsub can change again
+                        * the moment the lock is released */
     pthread_mutex_unlock(&s->lock);
     if (rc==0){
-        LOGD(MOD,"subscribe src=%d nsub=%d", src, s->nsub);
+        LOGD(MOD,"subscribe src=%d nsub=%d", src, nsnap);
         hub_notify_activity(src);      /* level based, not edge based */
     }
     return rc;
@@ -179,8 +181,9 @@ void hub_unsubscribe(int src, fanqueue *q)
      * q above, and our caller frees/destroys q right after we return. */
     while (g_pushing[src])
         pthread_cond_wait(&g_push_done[src], &s->lock);
+    int nsnap = s->nsub;   /* L11: snapshot for logging (see hub_subscribe) */
     pthread_mutex_unlock(&s->lock);
-    LOGD(MOD,"unsubscribe src=%d nsub=%d", src, s->nsub);
+    LOGD(MOD,"unsubscribe src=%d nsub=%d", src, nsnap);
     hub_notify_activity(src);          /* level based, not edge based */
 }
 

@@ -13,9 +13,9 @@
 #endif
 #ifdef USE_CONTROL
 #include "auth.h"
-#include <fcntl.h>
 #include <sys/stat.h>
 #endif
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -44,6 +44,22 @@ static void on_signal(int s)
     alarm(3);
 }
 static void idr_trampoline(int src){ if (g_hal && g_hal->request_idr) g_hal->request_idr(src); }
+/* rand() seed for the remaining non-secret rand() users (UDP port picks
+ * etc.). Seeding from time^pid made every rand()-derived value guessable
+ * from the approximate boot time; pull the seed from /dev/urandom instead
+ * (same source auth_gen_token uses). The weak mix stays only as a last
+ * resort when /dev/urandom is unavailable. */
+static unsigned rand_seed(void)
+{
+    unsigned s = 0;
+    int fd = open("/dev/urandom", O_RDONLY);
+    if (fd >= 0) {
+        ssize_t r = read(fd, &s, sizeof s);
+        close(fd);
+        if (r == (ssize_t)sizeof s) return s;
+    }
+    return (unsigned)(time(NULL) ^ getpid());
+}
 static void act_trampoline(int src, int on){ if (g_hal && g_hal->set_active) g_hal->set_active(src, on); }
 
 #ifdef USE_CONTROL
@@ -81,7 +97,7 @@ int main(int argc, char **argv)
 
     config_load(&g_cfg, cfgpath);
     config_sensor_finalize(&g_cfg);   /* auto-detect sensor from /proc/jz/sensor */
-    srand((unsigned)(time(NULL) ^ getpid()));   /* rtsp.c session IDs / UDP port picks */
+    srand(rand_seed());               /* non-secret rand() users (UDP port picks) */
     LOGI(MOD,"timps %s starting (backend=%s)", MS_VERSION, hal_get()->name);
 
 #ifdef USE_CONTROL
@@ -89,6 +105,16 @@ int main(int argc, char **argv)
     auth_gen_token(g_ctl_token);
     if (g_cfg.http_enabled) write_token_file(&g_cfg);
 #endif
+
+    /* Install the shutdown handlers BEFORE the HAL/IMP bring-up: a SIGINT/
+     * SIGTERM during the (potentially slow) init used to abort the process
+     * with no HAL teardown at all. With the handlers in place, an interrupt
+     * during init just clears g_run - init/start complete, the main loop is
+     * skipped and the normal orderly teardown below runs (the handler's 3 s
+     * alarm still force-exits if a vendor call wedges). */
+    signal(SIGINT,  on_signal);
+    signal(SIGTERM, on_signal);
+    signal(SIGPIPE, SIG_IGN);
 
     hub_init();
     hub_set_idr_cb(idr_trampoline);
@@ -108,10 +134,6 @@ int main(int argc, char **argv)
     record_start(&g_cfg);
     timelapse_start(&g_cfg);
     srt_start(&g_cfg);
-
-    signal(SIGINT,  on_signal);
-    signal(SIGTERM, on_signal);
-    signal(SIGPIPE, SIG_IGN);
 
     LOGI(MOD,"running. rtsp://<ip>:%d%s  http://<ip>:%d/",
          g_cfg.rtsp_port, g_cfg.video[0].rtsp_path, g_cfg.http_port);

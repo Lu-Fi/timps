@@ -59,6 +59,19 @@ static void copystr(char *dst, const char *src, size_t n)
 
 static int  pbool(const char *v){ return (!strcasecmp(v,"1")||!strcasecmp(v,"true")||!strcasecmp(v,"on")||!strcasecmp(v,"yes")); }
 static int  pint(const char *v){ return (int)strtol(v, NULL, 0); }
+/* M11: pint with a documented sane range. Values a broken client/script
+ * persists via /control used to reach the HAL unchecked - a nonsense fps/
+ * width/port makes HAL init fail, main exit and the respawn loop crash
+ * forever. Clamping (as the motion and osd.supersample keys already do)
+ * keeps a bad value from bricking the stream; the clamped value is what is
+ * read back and persisted, so /control dedup stays idempotent. */
+static int  pint_cl(const char *v, int lo, int hi)
+{
+    int x = pint(v);
+    if (x < lo) x = lo;
+    if (x > hi) x = hi;
+    return x;
+}
 static float pflt(const char *v){ return (float)strtod(v, NULL); }
 static uint32_t phex(const char *v){ return (uint32_t)strtoul(v, NULL, 0); }
 static int  pvcodec(const char *v){ return (!strcasecmp(v,"h265")||!strcasecmp(v,"hevc")) ? MS_VC_H265 : MS_VC_H264; }
@@ -277,26 +290,31 @@ static const char *osd_key(const char *key, int *stream, int *item)
 
 static void set_video(ms_vstream_cfg *v, const char *k, const char *val)
 {
+    /* M11: numeric ranges clamped on parse (conservative bounds well past
+     * anything a T-series SoC supports, so no legitimate config is altered):
+     * width/height 64..4096 px, fps 1..120, bitrate 16..50000 kbps,
+     * gop/max_gop 1..1000 frames, profile 0..2, qp 1..51 (H.264/H.265 QP
+     * range), buffers 1..8 VBs. */
     if (!strcmp(k,"enabled")) v->enabled=pbool(val);
     else if (!strcmp(k,"codec")) v->codec=pvcodec(val);
-    else if (!strcmp(k,"width")) v->width=pint(val);
-    else if (!strcmp(k,"height")) v->height=pint(val);
-    else if (!strcmp(k,"fps")) v->fps=pint(val);
-    else if (!strcmp(k,"bitrate")) v->bitrate_kbps=pint(val);
+    else if (!strcmp(k,"width")) v->width=pint_cl(val,64,4096);
+    else if (!strcmp(k,"height")) v->height=pint_cl(val,64,4096);
+    else if (!strcmp(k,"fps")) v->fps=pint_cl(val,1,120);
+    else if (!strcmp(k,"bitrate")) v->bitrate_kbps=pint_cl(val,16,50000);
     else if (!strcmp(k,"rc_mode")||!strcmp(k,"mode")) v->rc_mode=prc(val);
-    else if (!strcmp(k,"gop")) v->gop=pint(val);
-    else if (!strcmp(k,"max_gop")) v->max_gop=pint(val);
-    else if (!strcmp(k,"profile")) v->profile=pint(val);
-    else if (!strcmp(k,"qp")) v->qp=pint(val);
-    else if (!strcmp(k,"min_qp")) v->min_qp=pint(val);
-    else if (!strcmp(k,"max_qp")) v->max_qp=pint(val);
+    else if (!strcmp(k,"gop")) v->gop=pint_cl(val,1,1000);
+    else if (!strcmp(k,"max_gop")) v->max_gop=pint_cl(val,1,1000);
+    else if (!strcmp(k,"profile")) v->profile=pint_cl(val,0,2);
+    else if (!strcmp(k,"qp")) v->qp=pint_cl(val,1,51);
+    else if (!strcmp(k,"min_qp")) v->min_qp=pint_cl(val,1,51);
+    else if (!strcmp(k,"max_qp")) v->max_qp=pint_cl(val,1,51);
     else if (!strcmp(k,"rotation")) v->rotation=pint(val);
-    else if (!strcmp(k,"buffers")) v->buffers=pint(val);
+    else if (!strcmp(k,"buffers")) v->buffers=pint_cl(val,1,8);
     else if (!strcmp(k,"rtsp_path")) copystr(v->rtsp_path,val,MS_MAX_STR);
     else if (!strcmp(k,"imp_chn")) v->imp_chn=pint(val);
     else if (!strcmp(k,"jpeg")||!strcmp(k,"jpeg_enabled")) v->jpeg_enabled=pbool(val);
-    else if (!strcmp(k,"jpeg_quality")) v->jpeg_quality=pint(val);
-    else if (!strcmp(k,"jpeg_fps")) v->jpeg_fps=pint(val);
+    else if (!strcmp(k,"jpeg_quality")) v->jpeg_quality=pint_cl(val,1,100);
+    else if (!strcmp(k,"jpeg_fps")) v->jpeg_fps=pint_cl(val,1,120);
     else if (!strcmp(k,"jpeg_chn")) v->jpeg_chn=pint(val);
     else LOGW(MOD,"unknown video key %s", k);
 }
@@ -311,7 +329,10 @@ static void set_osd_item(ms_osd_item *o, const char *k, const char *val)
     else if (!strcmp(k,"logo_h")||!strcmp(k,"logo_height")) o->logo_h=pint(val);
     else if (!strcmp(k,"x")) o->x=pint(val);
     else if (!strcmp(k,"y")) o->y=pint(val);
-    else if (!strcmp(k,"font_size")) o->font_size=pint(val);
+    /* H4: font_size feeds the OSD canvas allocation (msttf_render); clamp at
+     * parse so a bad /control write can never request an absurd raster. The
+     * rasterizer additionally hard-clamps its own pixel height (8..512). */
+    else if (!strcmp(k,"font_size")) o->font_size=pint_cl(val,8,256);
     else if (!strcmp(k,"color")||!strcmp(k,"font_color")) o->color=phex(val);
     else if (!strcmp(k,"transparency")) o->transparency=pint(val);
     else if (!strcmp(k,"outline")||!strcmp(k,"stroke")) o->outline=pint(val);
@@ -424,10 +445,10 @@ static void set_kv(ms_config *c, const char *key, const char *val)
     if (!strncmp(key,"jpeg.",5)){
         const char *k=key+5;
         if(!strcmp(k,"enabled"))c->jpeg.enabled=pbool(val);
-        else if(!strcmp(k,"width"))c->jpeg.width=pint(val);
-        else if(!strcmp(k,"height"))c->jpeg.height=pint(val);
-        else if(!strcmp(k,"quality"))c->jpeg.quality=pint(val);
-        else if(!strcmp(k,"fps"))c->jpeg.fps=pint(val);
+        else if(!strcmp(k,"width"))c->jpeg.width=pint_cl(val,64,4096);   /* M11 */
+        else if(!strcmp(k,"height"))c->jpeg.height=pint_cl(val,64,4096);
+        else if(!strcmp(k,"quality"))c->jpeg.quality=pint_cl(val,1,100);
+        else if(!strcmp(k,"fps"))c->jpeg.fps=pint_cl(val,1,120);
         else if(!strcmp(k,"imp_chn"))c->jpeg.imp_chn=pint(val);
         else if(!strcmp(k,"snapshot_path"))copystr(c->jpeg.snapshot_path,val,128);
         else LOGW(MOD,"unknown key %s",key);
@@ -436,18 +457,18 @@ static void set_kv(ms_config *c, const char *key, const char *val)
     if (!strncmp(key,"rtsp.",5)){
         const char *k=key+5;
         if(!strcmp(k,"enabled"))c->rtsp_enabled=pbool(val);
-        else if(!strcmp(k,"port"))c->rtsp_port=pint(val);
+        else if(!strcmp(k,"port"))c->rtsp_port=pint_cl(val,1,65535);   /* M11 */
         else if(!strcmp(k,"user")||!strcmp(k,"username"))copystr(c->rtsp_user,val,MS_MAX_STR);
         else if(!strcmp(k,"pass")||!strcmp(k,"password"))copystr(c->rtsp_pass,val,MS_MAX_STR);
         else if(!strcmp(k,"tls")||!strcmp(k,"tls_enabled"))c->rtsp_tls=pbool(val);
-        else if(!strcmp(k,"tls_port"))c->rtsp_tls_port=pint(val);
+        else if(!strcmp(k,"tls_port"))c->rtsp_tls_port=pint_cl(val,1,65535);
         else LOGW(MOD,"unknown key %s",key);
         return;
     }
     if (!strncmp(key,"srt.",4)){
         const char *k=key+4; ms_srt_cfg *s=&c->srt;
         if(!strcmp(k,"enabled"))s->enabled=pbool(val);
-        else if(!strcmp(k,"port"))s->port=pint(val);
+        else if(!strcmp(k,"port"))s->port=pint_cl(val,1,65535);   /* M11 */
         else if(!strcmp(k,"channel"))s->channel=pint(val);
         else if(!strcmp(k,"latency_ms")||!strcmp(k,"latency"))s->latency_ms=pint(val);
         else if(!strcmp(k,"streamid"))copystr(s->streamid,val,sizeof s->streamid);
@@ -458,7 +479,7 @@ static void set_kv(ms_config *c, const char *key, const char *val)
     if (!strncmp(key,"http.",5)){
         const char *k=key+5;
         if(!strcmp(k,"enabled"))c->http_enabled=pbool(val);
-        else if(!strcmp(k,"port"))c->http_port=pint(val);
+        else if(!strcmp(k,"port"))c->http_port=pint_cl(val,1,65535);   /* M11 */
         else if(!strcmp(k,"preview_chn"))c->http_preview_chn=pint(val);
         else if(!strcmp(k,"user")||!strcmp(k,"username"))copystr(c->http_user,val,MS_MAX_STR);
         else if(!strcmp(k,"pass")||!strcmp(k,"password"))copystr(c->http_pass,val,MS_MAX_STR);
@@ -815,6 +836,34 @@ int config_get_kv(const ms_config *c, const char *key, char *out, size_t cap)
         else return 0;
         return 1;
     }
+    if (!strncmp(key,"record.",7)){
+        /* M13: control.c sets record.* via /control, but without this branch
+         * change-detection reported every record key "unknown" and each
+         * record-page POST rewrote /etc/timps.conf (flash wear). Mirrors the
+         * record.* branch of set_kv(); mode reads back numerically (0/1),
+         * which the get-apply-get dedup compares against itself. */
+        const ms_record_cfg *r=&c->record; const char *k=key+7;
+        if(!strcmp(k,"enabled")) snprintf(out,cap,"%d",r->enabled);
+        else if(!strcmp(k,"channel")) snprintf(out,cap,"%d",r->channel);
+        else if(!strcmp(k,"mode")) snprintf(out,cap,"%d",r->mode);
+        else if(!strcmp(k,"dir")){
+            config_str_lock();
+            snprintf(out,cap,"%s",r->dir);
+            config_str_unlock();
+        }
+        else if(!strcmp(k,"name")){
+            config_str_lock();
+            snprintf(out,cap,"%s",r->name);
+            config_str_unlock();
+        }
+        else if(!strcmp(k,"segment_s")||!strcmp(k,"segment")) snprintf(out,cap,"%d",r->segment_s);
+        else if(!strcmp(k,"pre_roll_s")||!strcmp(k,"pre_roll")) snprintf(out,cap,"%d",r->pre_roll_s);
+        else if(!strcmp(k,"post_roll_s")||!strcmp(k,"post_roll")) snprintf(out,cap,"%d",r->post_roll_s);
+        else if(!strcmp(k,"min_free_mb")) snprintf(out,cap,"%d",r->min_free_mb);
+        else if(!strcmp(k,"audio")) snprintf(out,cap,"%d",r->audio);
+        else return 0;
+        return 1;
+    }
     if (!strncmp(key,"timelapse.",10)){
         const ms_timelapse_cfg *t=&c->timelapse; const char *k=key+10;
         if(!strcmp(k,"enabled")) snprintf(out,cap,"%d",t->enabled);
@@ -868,6 +917,21 @@ int config_load(ms_config *c, const char *path)
     char line[512];
     int n=0;
     while (fgets(line, sizeof line, f)) {
+        /* L9: a physical line longer than the buffer used to be silently
+         * chopped into two logical lines (truncated value + a garbage "key").
+         * Detect the missing trailing '\n', drop the whole line and warn. */
+        size_t ll = strlen(line);
+        if (ll+1 == sizeof line && line[ll-1] != '\n'){
+            int ch = fgetc(f);
+            if (ch != EOF){        /* genuinely longer than the buffer: drop rest + warn */
+                while (ch!=EOF && ch!='\n') ch=fgetc(f);
+                LOGW(MOD,"config: line longer than %zu chars skipped (starts \"%.40s...\")",
+                     sizeof line - 2, line);
+                continue;
+            }
+            /* L-1: EOF right after a full buffer = a legit final line with no
+             * trailing '\n' (exactly sizeof-1 chars) - parse it, don't skip. */
+        }
         char *s = trim(line);
         if (!*s || *s=='#' || *s==';') continue;
         char *eq = strchr(s, '=');

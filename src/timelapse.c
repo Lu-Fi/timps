@@ -43,6 +43,25 @@ static char             g_lastfile[160];
 
 /* ---- filesystem helpers (same shape as record.c) ---- */
 
+/* timelapse.dir/name are runtime-mutable via /control by an authenticated
+ * caller; a ".." component (or an absolute name spliced into the path) would
+ * let the shot writer/pruner escape the timelapses tree (L10, same check as
+ * record.c). */
+/* L-2: reject ".." only as a path COMPONENT (legit names may contain "..") */
+static int tl_has_dotdot(const char *s)
+{
+    if (!s) return 0;
+    if (!strcmp(s, "..") || !strncmp(s, "../", 3) || strstr(s, "/../")) return 1;
+    size_t n = strlen(s);
+    return (n >= 3 && !strcmp(s + n - 3, "/.."));
+}
+static int tl_path_unsafe(const char *dir, const char *name)
+{
+    if (tl_has_dotdot(dir)) return 1;
+    if (name && (tl_has_dotdot(name) || name[0] == '/')) return 1;
+    return 0;
+}
+
 static long long free_mb(const char *dir)
 {
     struct statvfs vf;
@@ -95,6 +114,7 @@ static void prune(void)
     config_str_lock();
     snprintf(dir,sizeof dir,"%s",g_tc->timelapse.dir);
     config_str_unlock();
+    if (tl_path_unsafe(dir,NULL)) return;  /* never prune outside the tree (L10) */
     char host[64]="camera"; gethostname(host,sizeof host);
     char base[208]; snprintf(base,sizeof base,"%s/%s/timelapses",dir,host);
     prune_old(base, time(NULL)-(time_t)days*86400, 0);
@@ -126,6 +146,10 @@ static int shot_write(const ms_pkt *p)
     snprintf(dir,sizeof dir,"%s",g_tc->timelapse.dir);
     snprintf(name,sizeof name,"%s",g_tc->timelapse.name);
     config_str_unlock();
+    if (tl_path_unsafe(dir,name)){
+        LOGE(MOD,"unsafe timelapse.dir/name ('..' or absolute name), skipping shot");
+        return -1;
+    }
     char rel[160]; time_t t=time(NULL); struct tm tmv; localtime_r(&t,&tmv);
     if (strftime(rel,sizeof rel,name,&tmv)==0)
         snprintf(rel,sizeof rel,"%ld",(long)t);

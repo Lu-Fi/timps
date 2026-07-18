@@ -1,5 +1,6 @@
 #include "net.h"
 #include <sys/socket.h>
+#include <sys/time.h>
 #include <arpa/inet.h>
 #include <netinet/tcp.h>
 #include <fcntl.h>
@@ -19,6 +20,26 @@ int net_set_nodelay(int fd)
 {
     int one = 1;
     return setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
+}
+
+/* H1/H2: bounded socket I/O for accepted control connections. Without these,
+ * a client that connects and then goes silent (or stops reading) parks the
+ * per-connection thread forever in recv()/send(), pinning one of the few
+ * client slots until process restart (trivial slot-exhaustion DoS). Legit
+ * clients read/write continuously and never hit these. 0 = leave unset. */
+int net_set_timeouts(int fd, int rcv_s, int snd_s)
+{
+    struct timeval tv;
+    int rc = 0;
+    if (rcv_s > 0) {
+        tv.tv_sec = rcv_s; tv.tv_usec = 0;
+        rc |= setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    }
+    if (snd_s > 0) {
+        tv.tv_sec = snd_s; tv.tv_usec = 0;
+        rc |= setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof tv);
+    }
+    return rc;
 }
 
 int net_listen_tcp(int port, int backlog)

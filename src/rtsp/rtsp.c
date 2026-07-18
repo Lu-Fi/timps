@@ -36,6 +36,31 @@
 
 static volatile int g_nclients;   /* current client count (sync builtins) */
 
+/* M3: control fds of live accepted clients (stored as fd+1; 0 = free slot) so
+ * rtsp_stop() can shutdown() them and unblock detached client threads parked
+ * in recv()/TLS handshake/send before the TLS ctx is freed. The mutex orders
+ * every stop-side shutdown() strictly before the owning thread's close(), so
+ * a slot can never be shut down after its fd number was reused elsewhere. */
+static pthread_mutex_t g_clients_mx = PTHREAD_MUTEX_INITIALIZER;
+static int g_client_fd1[RTSP_MAX_CLIENTS];
+
+static int client_fd_reg(int fd)
+{
+    int slot = -1;
+    pthread_mutex_lock(&g_clients_mx);
+    for (int i = 0; i < RTSP_MAX_CLIENTS; i++)
+        if (!g_client_fd1[i]) { g_client_fd1[i] = fd + 1; slot = i; break; }
+    pthread_mutex_unlock(&g_clients_mx);
+    return slot;
+}
+static void client_fd_unreg(int slot)
+{
+    if (slot < 0) return;
+    pthread_mutex_lock(&g_clients_mx);
+    g_client_fd1[slot] = 0;
+    pthread_mutex_unlock(&g_clients_mx);
+}
+
 struct rtsp_server {
     const ms_config *cfg;
     int              lfd;
@@ -94,6 +119,7 @@ static int sink_send(void *ctx, const uint8_t *pkt, int len, int rtcp)
 
 typedef struct {
     int                 fd;
+    int                 slot;          /* g_client_fd1[] index (M3), -1 none */
     struct sockaddr_in  peer;
     const ms_config    *cfg;
     char                session[16];
@@ -276,11 +302,19 @@ static void send_resp(session *s, int cseq, const char *extra, const char *body)
     int bl = body ? (int)strlen(body) : 0;
     int n = snprintf(hdr, sizeof hdr,
         "RTSP/1.0 200 OK\r\nCSeq: %d\r\n%s", cseq, extra?extra:"");
+    /* L2: snprintf returns the WOULD-BE length; clamp so hdr+n below never
+     * points past the buffer and r_send's length matches what's in it */
+    if (n < 0) return;
+    if (n >= (int)sizeof hdr) n = (int)sizeof hdr - 1;
+    int m;
     if (body)
-        n += snprintf(hdr+n, sizeof(hdr)-n,
+        m = snprintf(hdr+n, sizeof(hdr)-n,
             "Content-Type: application/sdp\r\nContent-Length: %d\r\n\r\n%s", bl, body);
     else
-        n += snprintf(hdr+n, sizeof(hdr)-n, "\r\n");
+        m = snprintf(hdr+n, sizeof(hdr)-n, "\r\n");
+    if (m < 0) return;
+    n += m;
+    if (n >= (int)sizeof hdr) n = (int)sizeof hdr - 1;
     r_send(s, hdr, n);
 }
 
@@ -363,7 +397,12 @@ static int handle_request(session *s, char *req)
             r_send(s, e404, (int)strlen(e404));
             return -1;
         }
-        if (!s->session[0]) snprintf(s->session,sizeof s->session,"%08X",(unsigned)rand());
+        if (!s->session[0]) {
+            /* M6: session id from auth_gen_token()'s /dev/urandom generator,
+             * not rand() - rand() is seeded time^pid (main.c) and guessable */
+            char tok[33]; auth_gen_token(tok);
+            snprintf(s->session, sizeof s->session, "%.8s", tok);
+        }
 
         char extra[256];
         if (tr && strstr(tr,"TCP")) {
@@ -519,23 +558,34 @@ static void stream_loop(session *s)
         if (sub_v && fanqueue_take_dropped_key(&s->q)) hub_request_idr(s->vchn);
         ms_pkt *p = fanqueue_pop(&s->q, 100);
         if (p) {
+            int sendrc = 0;
             if (p->media==MS_MEDIA_VIDEO && s->have_video) {
                 if (!got_key) {
                     if (!p->keyframe) { pkt_unref(p); goto after_pkt; }
                     got_key = 1;
                 }
-                if (vc==MS_VC_H265) rtp_send_h265(&s->vtrack,p->data,p->len,p->pts_us);
-                else                rtp_send_h264(&s->vtrack,p->data,p->len,p->pts_us);
+                if (vc==MS_VC_H265) sendrc = rtp_send_h265(&s->vtrack,p->data,p->len,p->pts_us);
+                else                sendrc = rtp_send_h264(&s->vtrack,p->data,p->len,p->pts_us);
             } else if (p->media==MS_MEDIA_AUDIO && s->have_audio) {
-                if (ac==MS_AC_AAC) rtp_send_aac(&s->atrack,p->data,p->len,p->pts_us);
-                else               rtp_send_g711(&s->atrack,p->data,p->len,p->pts_us);
+                if (ac==MS_AC_AAC) sendrc = rtp_send_aac(&s->atrack,p->data,p->len,p->pts_us);
+                else               sendrc = rtp_send_g711(&s->atrack,p->data,p->len,p->pts_us);
             }
             pkt_unref(p);
+            /* H-1: a failed send (SO_SNDTIMEO expired after 15s of zero
+             * progress, or client gone) may have left a PARTIAL '$'-framed
+             * interleaved packet (or torn TLS write) on the wire. One more
+             * byte would permanently desync the framing for a client that
+             * later drains its window - and looping forever on a stalled
+             * client would pin this slot (defeats the DoS timeout). Stop
+             * the play loop now; teardown below closes the fd. */
+            if (sendrc < 0) { s->playing = 0; break; }
         }
     after_pkt:;
         int64_t now = ms_now_us();
-        if (s->have_video) rtp_maybe_sr(&s->vtrack, now);
-        if (s->have_audio) rtp_maybe_sr(&s->atrack, now);
+        if ((s->have_video && rtp_maybe_sr(&s->vtrack, now) < 0) ||
+            (s->have_audio && rtp_maybe_sr(&s->atrack, now) < 0)) {
+            s->playing = 0; break;      /* H-1: torn RTCP frame, see above */
+        }
 
         /* poll control socket for TEARDOWN/keepalive/close; over TLS r_recv
          * maps "no data yet" to -1/EAGAIN, so n==0 only ever means a plain
@@ -645,6 +695,9 @@ done:
 #ifdef USE_TLS
     if (s->tls) ms_tls_close((ms_tls_conn*)s->tls);
 #endif
+    /* M3: unregister BEFORE close() - once closed, the fd number can be
+     * reused, and rtsp_stop() must never shutdown() a reused fd */
+    client_fd_unreg(s->slot);
     close(s->fd);
     /* L15: fd 0 is a valid bound socket; only -1 means "not bound". */
     if (s->v_udp[0]>=0) close(s->v_udp[0]);
@@ -665,8 +718,16 @@ static void accept_loop(rtsp_server *sv, int lfd, int port, void *tls_ctx)
         struct sockaddr_in peer; socklen_t pl=sizeof peer;
         int cfd = accept(lfd, (struct sockaddr*)&peer, &pl);
         if (cfd<0){ if(sv->run) usleep(50000); continue; }
-        /* global client cap: each client costs a thread + bounded queue */
-        if (g_nclients >= RTSP_MAX_CLIENTS) {
+        /* H1: bounded control I/O - a client that connects and goes silent
+         * (or stops reading) must time out instead of pinning this slot's
+         * thread forever in recv()/TLS-handshake/send. Streaming clients
+         * read/write continuously and never trip these. */
+        net_set_timeouts(cfd, 30, 15);
+        /* global client cap: each client costs a thread + bounded queue.
+         * L1: reserve the slot atomically (add-then-check) - the old plain
+         * read of g_nclients let two racing accepts both pass the cap. */
+        if (__sync_add_and_fetch(&g_nclients, 1) > RTSP_MAX_CLIENTS) {
+            __sync_fetch_and_sub(&g_nclients, 1);
             const char *e503 = "RTSP/1.0 503 Service Unavailable\r\n\r\n";
             net_sendall(cfd, e503, (int)strlen(e503));
             close(cfd);
@@ -674,8 +735,9 @@ static void accept_loop(rtsp_server *sv, int lfd, int port, void *tls_ctx)
             continue;
         }
         session *s = (session*)calloc(1,sizeof(session));
-        if (!s){ close(cfd); continue; }
+        if (!s){ close(cfd); __sync_fetch_and_sub(&g_nclients, 1); continue; }
         s->fd=cfd; s->peer=peer; s->cfg=sv->cfg; s->vchn=-1;
+        s->slot = client_fd_reg(cfd);   /* M3: visible to rtsp_stop() */
         /* L15: fds are 0 (calloc), not "unbound", after this - a bound fd
          * can legitimately be 0 (stdin closed at startup) or overlap with
          * PID/fd reuse, so unbound MUST be a value no real fd ever has. */
@@ -683,10 +745,10 @@ static void accept_loop(rtsp_server *sv, int lfd, int port, void *tls_ctx)
 #ifdef USE_TLS
         s->tls_ctx = tls_ctx;   /* non-NULL on the RTSPS listener */
 #endif
-        __sync_fetch_and_add(&g_nclients, 1);
         pthread_t t;
         if (pthread_create(&t,NULL,client_thread,s)==0) pthread_detach(t);
-        else { close(cfd); free(s); __sync_fetch_and_sub(&g_nclients, 1); }
+        else { client_fd_unreg(s->slot); close(cfd); free(s);
+               __sync_fetch_and_sub(&g_nclients, 1); }
     }
 }
 
@@ -749,10 +811,23 @@ void rtsp_stop(rtsp_server *s)
         close(s->lfd_tls);
         pthread_join(s->thr_tls, NULL);
     }
+#endif
+    /* M3: both accept loops are joined (no new clients can register). Wake
+     * detached client threads parked in recv()/TLS handshake/send by
+     * shutting their control fds down - shutdown() only, the owning thread
+     * still does the close(); the registry mutex guarantees we never touch
+     * an fd number after its thread closed (and the kernel reused) it.
+     * With the H1/M1 socket timeouts this is belt-and-suspenders, but it
+     * makes the bounded drain below actually effective at shutdown time. */
+    pthread_mutex_lock(&g_clients_mx);
+    for (int i = 0; i < RTSP_MAX_CLIENTS; i++)
+        if (g_client_fd1[i]) shutdown(g_client_fd1[i] - 1, SHUT_RDWR);
+    pthread_mutex_unlock(&g_clients_mx);
+    for (int i = 0; i < 100 && g_nclients > 0; i++) usleep(10000);
+#ifdef USE_TLS
     if (s->tls_ctx) {
-        /* detached client threads may still hold a ms_tls_conn from this ctx;
-         * drain them (bounded) before freeing it, like httpd_stop() does */
-        for (int i=0; i<50 && g_nclients>0; i++) usleep(10000);
+        /* detached client threads referenced conf/cert/drbg from this ctx;
+         * only free it after the drain above (use-after-free at shutdown) */
         ms_tls_ctx_free((ms_tls_ctx*)s->tls_ctx);
     }
 #endif

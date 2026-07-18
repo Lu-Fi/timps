@@ -341,6 +341,32 @@ static void *client_thread(void *arg)
     return NULL;
 }
 
+/* close the listener exactly once (L4): both listen_thread's teardown and
+ * srt_stop() want to close it (srt_stop must, to break the blocking
+ * srt_accept), and libsrt reuses socket ids - a double srt_close could hit an
+ * unrelated newer socket. Atomically swap g_ls to invalid so whichever side
+ * gets there first does the close and the other is a no-op. */
+static void srt_close_listener(void)
+{
+    SRTSOCKET s = (SRTSOCKET)__sync_lock_test_and_set(&g_ls, SRT_INVALID_SOCK);
+    if (s != SRT_INVALID_SOCK) srt_close(s);
+}
+
+/* accept-time hook (M4): SRTO_STREAMID on a LISTENER is not access control -
+ * it's a caller-side option, and the accepted socket's streamid was never
+ * checked, so any caller connected regardless of the configured id. When
+ * srt.streamid is set, require the incoming caller's streamid to match and
+ * reject the handshake otherwise (nonzero return = reject). */
+static int listen_cb(void *opaq, SRTSOCKET ns, int hsversion,
+                     const struct sockaddr *peeraddr, const char *streamid)
+{
+    (void)opaq; (void)ns; (void)hsversion; (void)peeraddr;
+    if (!g_scfg->srt.streamid[0]) return 0;           /* not configured */
+    if (streamid && strcmp(streamid, g_scfg->srt.streamid) == 0) return 0;
+    LOGW(MOD, "rejecting caller with missing/wrong streamid");
+    return -1;
+}
+
 static void *listen_thread(void *arg)
 {
     (void)arg;
@@ -351,9 +377,18 @@ static void *listen_thread(void *arg)
     int lat = g_scfg->srt.latency_ms;
     srt_setsockflag(ls, SRTO_LATENCY, &lat, sizeof lat);
     if (g_scfg->srt.streamid[0])
-        srt_setsockflag(ls, SRTO_STREAMID, g_scfg->srt.streamid, (int)strlen(g_scfg->srt.streamid));
+        srt_listen_callback(ls, listen_cb, NULL);     /* enforce streamid (M4) */
     if (g_scfg->srt.passphrase[0]) {
-        srt_setsockflag(ls, SRTO_PASSPHRASE, g_scfg->srt.passphrase, (int)strlen(g_scfg->srt.passphrase));
+        /* MUST be checked (H3): libsrt requires a 10..79 char passphrase and
+         * fails SRTO_PASSPHRASE on anything shorter - ignoring that ran the
+         * listener silently UNENCRYPTED with no access control. Refuse to
+         * start instead, same as the bind/listen error path. */
+        if (srt_setsockflag(ls, SRTO_PASSPHRASE, g_scfg->srt.passphrase,
+                            (int)strlen(g_scfg->srt.passphrase)) == SRT_ERROR) {
+            LOGE(MOD, "SRTO_PASSPHRASE rejected (need 10-79 chars): %s - "
+                      "refusing to start unencrypted", srt_getlasterror_str());
+            srt_close(ls); srt_cleanup(); return NULL;
+        }
     }
 
     struct sockaddr_in sa; memset(&sa, 0, sizeof sa);
@@ -390,7 +425,7 @@ static void *listen_thread(void *arg)
         if (pthread_create(&t, NULL, client_thread, m) == 0) pthread_detach(t);
         else { srt_close(cs); free(m); __sync_fetch_and_sub(&g_srt_clients, 1); }
     }
-    srt_close(ls);
+    srt_close_listener();      /* no-op if srt_stop() already closed it (L4) */
     /* detached client threads may still be inside srt_sendmsg2(): give them a
      * bounded window to drain (g_run=0 pops them out of fanqueue_pop within
      * ~200 ms) before the global libsrt teardown - else use-after-cleanup */
@@ -410,9 +445,8 @@ void srt_stop(void)
 {
     if (!g_started) return;
     g_run = 0;
-    if (g_ls != SRT_INVALID_SOCK) srt_close(g_ls);  /* unblock srt_accept */
+    srt_close_listener();      /* unblock srt_accept; closes at most once (L4) */
     pthread_join(g_thr, NULL);
-    g_ls = SRT_INVALID_SOCK;
     g_started = 0;
 }
 

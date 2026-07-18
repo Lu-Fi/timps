@@ -14,6 +14,7 @@
 #ifdef USE_DAYNIGHT
 #include "events.h"   /* wake /events SSE subscribers on real changes */
 #include "log.h"
+#include "util.h"     /* ms_now_us(): monotonic clock for dwell/baseline (M12) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -282,8 +283,11 @@ static void *dn_thread(void *arg)
         }
 
         if (target != cur && target != DN_UNKNOWN) {
-            /* minimum dwell between switches (first switch is immediate) */
-            int64_t now_ms = (int64_t)time(NULL) * 1000;
+            /* minimum dwell between switches (first switch is immediate).
+             * CLOCK_MONOTONIC, not time(NULL): an NTP step after boot (typical
+             * on cameras) would make wall-clock deltas negative (switching
+             * stuck for the step size) or jump straight past the dwell (M12) */
+            int64_t now_ms = ms_now_us() / 1000;
             if (cur != DN_UNKNOWN &&
                 now_ms - last_switch_ms < (int64_t)dn->transition_s * 1000) {
                 LOGD(MOD, "transition delay not met, waiting");
@@ -301,7 +305,7 @@ static void *dn_thread(void *arg)
         /* sample the night gain baseline once, after the IR LEDs settle */
         if (cur == DN_NIGHT && night_baseline < 0.0f && tg >= 0.0f &&
             dn->baseline_delay_s > 0 && night_entered_ms > 0 &&
-            (int64_t)time(NULL) * 1000 - night_entered_ms >=
+            ms_now_us() / 1000 - night_entered_ms >=      /* monotonic (M12) */
                 (int64_t)dn->baseline_delay_s * 1000) {
             night_baseline = tg;
             LOGI(MOD, "night gain baseline = %.0f (day trigger < %d%% = %.0f)",

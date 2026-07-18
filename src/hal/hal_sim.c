@@ -32,7 +32,7 @@ typedef struct {
 } sim_aud;
 
 typedef struct {
-    int          fps;
+    int          src, fps;   /* hub source: HUB_JPEG_SRC or HUB_JPEG_SRC_N(i) */
     char         path[256];
     pthread_t    thr;
     volatile int run, active;
@@ -40,7 +40,11 @@ typedef struct {
 
 static sim_vid  g_vid[MS_MAX_VSTREAM];
 static sim_aud  g_aud;
-static sim_jpeg g_jpg;
+/* [0] = dedicated jpeg.* channel, further slots = piggyback videoN.jpeg
+ * sources - mirrors hal_ingenic's jchan layout so `make sim` exercises the
+ * piggyback-JPEG hub paths too (all fed from the same sim.jpeg file) */
+static sim_jpeg g_jpg[1+MS_MAX_VSTREAM];
+static int      g_njpg;
 static int      g_nvid;
 static int64_t  g_epoch;
 
@@ -147,23 +151,33 @@ static void *jpg_thread(void *arg)
     sim_jpeg *j=(sim_jpeg*)arg;
     size_t flen; uint8_t *file=read_file(j->path,&flen);
     if (!file){ LOGE(MOD,"cannot open sim jpeg %s",j->path); return NULL; }
-    LOGI(MOD,"sim jpeg %s (%zu bytes) %dfps (on-demand)",j->path,flen,j->fps);
+    LOGI(MOD,"sim jpeg src%d %s (%zu bytes) %dfps (on-demand)",j->src,j->path,flen,j->fps);
     int64_t step=1000000/(j->fps?j->fps:5);
     while (j->run) {
         wait_active(&j->active,&j->run);
         if (!j->run) break;
-        hub_publish(HUB_JPEG_SRC,file,flen,ms_now_us()-g_epoch,1,MS_MEDIA_JPEG);
+        hub_publish(j->src,file,flen,ms_now_us()-g_epoch,1,MS_MEDIA_JPEG);
         usleep(step);
     }
     free(file);
     return NULL;
 }
 
+static void jpg_start(const char *path, int src, int fps)
+{
+    sim_jpeg *j=&g_jpg[g_njpg];
+    j->src=src; j->fps=fps;
+    strncpy(j->path,path,sizeof j->path-1);
+    j->run=1; j->active=0;
+    if (pthread_create(&j->thr,NULL,jpg_thread,j)==0) g_njpg++;
+    else j->run=0;
+}
+
 static int sim_init(const ms_config *cfg){ (void)cfg; return 0; }
 
 static int sim_start(const ms_config *cfg)
 {
-    g_nvid=0; g_epoch=ms_now_us();
+    g_nvid=0; g_njpg=0; g_epoch=ms_now_us();
     for (int i=0;i<MS_MAX_VSTREAM;i++){
         if (!cfg->video[i].enabled) continue;
         const char *path = (i==0)?cfg->sim_video0:cfg->sim_video1;
@@ -182,10 +196,16 @@ static int sim_start(const ms_config *cfg)
         g_aud.samplerate=cfg->audio.samplerate; g_aud.run=1; g_aud.active=0;
         pthread_create(&g_aud.thr,NULL,aud_thread,&g_aud);
     }
-    if (cfg->jpeg.enabled && cfg->sim_jpeg[0]) {
-        strncpy(g_jpg.path,cfg->sim_jpeg,sizeof g_jpg.path-1);
-        g_jpg.fps=cfg->jpeg.fps; g_jpg.run=1; g_jpg.active=0;
-        pthread_create(&g_jpg.thr,NULL,jpg_thread,&g_jpg);
+    if (cfg->jpeg.enabled && cfg->sim_jpeg[0])
+        jpg_start(cfg->sim_jpeg, HUB_JPEG_SRC, cfg->jpeg.fps);
+    /* piggyback JPEG (videoN.jpeg = true): feature-parity with hal_ingenic's
+     * per-stream JPEG encoders so the HUB_JPEG_SRC_N paths (MJPEG/snapshot
+     * per stream) are exercised in `make sim` too */
+    for (int i=0;i<MS_MAX_VSTREAM;i++){
+        if (!cfg->video[i].enabled || !cfg->video[i].jpeg_enabled) continue;
+        if (!cfg->sim_jpeg[0]){ LOGW(MOD,"video%d.jpeg set but sim.jpeg missing",i); continue; }
+        jpg_start(cfg->sim_jpeg, HUB_JPEG_SRC_N(i),
+                  cfg->video[i].jpeg_fps>0?cfg->video[i].jpeg_fps:5);
     }
     return 0;
 }
@@ -196,7 +216,10 @@ static void sim_set_active(int src, int on)
 {
     LOGI(MOD,"source %d -> %s", src, on?"ACTIVE":"idle");
     if (src==HUB_AUDIO_SRC){ g_aud.active=on; return; }
-    if (src==HUB_JPEG_SRC){ g_jpg.active=on; return; }
+    if (src>=HUB_JPEG_SRC && src<HUB_JPEG_SRC+HUB_NJPEG){
+        for (int i=0;i<g_njpg;i++) if (g_jpg[i].src==src){ g_jpg[i].active=on; break; }
+        return;
+    }
     for (int i=0;i<g_nvid;i++) if (g_vid[i].src==src){ g_vid[i].active=on; return; }
 }
 
@@ -204,7 +227,8 @@ static void sim_stop(void)
 {
     for (int i=0;i<g_nvid;i++){ g_vid[i].run=0; pthread_join(g_vid[i].thr,NULL); }
     if (g_aud.run){ g_aud.run=0; pthread_join(g_aud.thr,NULL); }
-    if (g_jpg.run){ g_jpg.run=0; pthread_join(g_jpg.thr,NULL); }
+    for (int i=0;i<g_njpg;i++){ g_jpg[i].run=0; pthread_join(g_jpg[i].thr,NULL); }
+    g_njpg=0;
 }
 
 static const hal_backend g_sim = {
