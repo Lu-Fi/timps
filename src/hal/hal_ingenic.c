@@ -128,6 +128,20 @@ static int          g_acodec = MS_AC_PCMU;   /* effective audio codec */
 static int          g_asr    = 8000;         /* effective audio sample rate */
 static IMPAudioIOAttr g_aio;                 /* attr accepted by IMP_AI_SetPubAttr */
 static volatile int   g_ai_up = 0;           /* AI dev 0/chn 0 enabled (audio_thread) */
+#ifdef USE_CONTROL
+/* AI runtime module toggles (HPF/AGC/NS) create/destroy libimp state that the
+ * capture path processes *inside* IMP_AI_GetFrame. Flipping them from a
+ * /control thread while audio_thread is mid-frame frees state the frame path
+ * is still using -> SIGSEGV in libimp (epc=0, ra in libimp). /control only
+ * flags the change here; audio_thread re-applies it (from g_hcfg) at a
+ * frame-free point. g_ai_lock serializes the AI runtime calls (audio_thread's
+ * deferred apply vs /control's direct volume/gain writes). */
+#define AI_RE_HPF 1
+#define AI_RE_AGC 2
+#define AI_RE_NS  4
+static volatile int    g_ai_reapply = 0;     /* bitmask: /control sets, audio_thread consumes */
+static pthread_mutex_t g_ai_lock = PTHREAD_MUTEX_INITIALIZER;
+#endif
 /* JPEG channels: [0] = dedicated jpeg.* channel (own framesource), further
  * entries = optional encoders piggybacked on a video stream's encoder group
  * (videoN.jpeg = true) which share that stream's framesource (no extra rmem) */
@@ -987,7 +1001,9 @@ static int ai_rate_enum(int sr)
  * guards come from ../audio_caps.h - keep them in sync with the caps.audio
  * list control.c reports. The HPF/AGC/NS hooks are runtime toggles in the
  * libimp capture path (they take the SetPubAttr attr, g_aio). Callers
- * serialize via g_isp_lock (boot-apply runs before live control can race).
+ * serialize via g_ai_lock; the AGC/NS/HPF module enable/disable toggles are
+ * deferred to the audio thread (never run while a frame is being processed).
+ * boot-apply runs before live control can race.
  * NOT here: codec/samplerate/bitrate/channels/enabled (+ force_stereo and
  * the spk_* speaker keys - timps has no AO pipeline): those are init-time
  * attributes, persist-only, applied on the next restart. */
@@ -1210,6 +1226,19 @@ static void *audio_thread(void *arg)
     int ai_fail_streak = 0;
     while (g_arun) {
         if (!g_aactive){ act_wait(); continue; }   /* on-demand: block idle */
+#ifdef USE_CONTROL
+        /* apply any AI module toggles queued by /control at this frame-free
+         * point (no frame held, libimp not mid-GetFrame) so Enable/Disable of
+         * AGC/NS/HPF can never free state the capture path is processing */
+        if (g_ai_reapply){
+            pthread_mutex_lock(&g_ai_lock);
+            int r = g_ai_reapply; g_ai_reapply = 0;
+            if (r & AI_RE_HPF) ai_apply_key("high_pass");
+            if (r & AI_RE_AGC) ai_apply_key("agc");
+            if (r & AI_RE_NS)  ai_apply_key("ns");
+            pthread_mutex_unlock(&g_ai_lock);
+        }
+#endif
         int64_t a_t0 = ms_now_us();
         /* sleep on the no-frame path so a non-blocking/failing PollingFrame
          * can never spin the CPU (audio input may be idle on some boards) */
@@ -1291,7 +1320,8 @@ static void *audio_thread(void *arg)
  * file keys: image.*, audio.* (live: volume/gain/alc_gain/high_pass/agc/
  * agc_target_dbfs/agc_compression_db/ns), osdS.N.* (per-stream) and legacy
  * osdN.* (all streams). The value arrives as a string; numbers are parsed
- * here. ISP/AI calls are runtime-safe but serialized under a mutex; OSD goes
+ * here. ISP calls serialize under g_isp_lock, AI runtime calls under g_ai_lock
+ * (AGC/NS/HPF module toggles deferred to the audio thread); OSD goes
  * through imp_osd_apply(stream,item). ALL videoN.*
  * and sensor.* keys plus the attribute-level audio keys (enabled/codec/
  * samplerate/bitrate/channels/force_stereo/spk_*) are NOT applied live
@@ -1331,9 +1361,25 @@ static void ing_control(const char *key, const char *val)
             LOGD(MOD,"%s persisted (audio input not running)", key);
             return;
         }
-        pthread_mutex_lock(&g_isp_lock);       /* dev 0 / chn 0 as in audio_thread */
+        /* HPF/AGC/NS enable/disable create or destroy libimp modules; running
+         * that here (a /control thread) while audio_thread is inside GetFrame
+         * frees state the frame path is using -> SIGSEGV in libimp. Flag the
+         * change; audio_thread re-applies it from g_hcfg at a frame-free point.
+         * volume/gain/alc_gain are plain parameter writes and stay direct. */
+        int reflag = !strcmp(k,"high_pass") ? AI_RE_HPF :
+                     (!strcmp(k,"agc") || !strcmp(k,"agc_target_dbfs") ||
+                      !strcmp(k,"agc_compression_db")) ? AI_RE_AGC :
+                     !strcmp(k,"ns") ? AI_RE_NS : 0;
+        if (reflag){
+            pthread_mutex_lock(&g_ai_lock);
+            g_ai_reapply |= reflag;
+            pthread_mutex_unlock(&g_ai_lock);
+            LOGI(MOD,"control %s=%d (queued for audio thread)", key, v);
+            return;
+        }
+        pthread_mutex_lock(&g_ai_lock);        /* dev 0 / chn 0 as in audio_thread */
         int ok = ai_apply_key(k);
-        pthread_mutex_unlock(&g_isp_lock);
+        pthread_mutex_unlock(&g_ai_lock);
         if (ok) LOGI(MOD,"control %s=%d", key, v);
         else    LOGD(MOD,"audio.%s unsupported on this platform (persisted only)", k);
         return;
