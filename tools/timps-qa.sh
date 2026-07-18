@@ -15,7 +15,8 @@
 #   7. Audio .......... codec/rate, silence-gap scan
 #   8. /control API ... status JSON, caps, safe write+persist round-trip
 #   9. /events ........ SSE stream emits events
-#  10. ONVIF .......... device_service reachable + /onvif/image.cgi snapshot
+#  10. ONVIF .......... both snapshot proxies + GetProfiles (resolution/codec vs
+#                       real stream, fps/bitrate surfaced with template note)
 #  11. Recording ..... on-demand clip via /control record.clip
 #  12. Reliability ... reconnect churn (TCP+UDP), time-to-first-frame
 #  13. Load .......... concurrent-client ramp, per-client fps/drops, max stable
@@ -45,6 +46,9 @@ RTSP_USER="${RTSP_USER:-thingino}"
 RTSP_PASS="${RTSP_PASS:-thingino}"
 HTTP_USER="${HTTP_USER:-thingino}"
 HTTP_PASS="${HTTP_PASS:-thingino}"
+# ONVIF WS-Security creds — S96onvif_discovery sources these from timps rtsp.user/pass
+ONVIF_USER="${ONVIF_USER:-$RTSP_USER}"
+ONVIF_PASS="${ONVIF_PASS:-$RTSP_PASS}"
 
 # RTSP endpoints (main + sub). Adjust if your rtsp_path config differs.
 PATH_MAIN="${PATH_MAIN:-ch0}"
@@ -174,6 +178,25 @@ PY
 	fi
 }
 
+# ONVIF SOAP call with WS-Security UsernameToken (PasswordDigest =
+# base64(sha1(nonce + created + password))). $1 = service (e.g. media_service),
+# $2 = SOAP body. Prints the response. Needs openssl for the digest; without it
+# the call goes unauthenticated (fine for GetSystemDateAndTime, likely 401 else).
+onvif_call() {
+	local svc="$1" body="$2" created nb nonce_b64 digest sec=""
+	created=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+	if have openssl; then
+		nb=$(mktemp); head -c16 /dev/urandom > "$nb"
+		nonce_b64=$(base64 < "$nb" 2>/dev/null | tr -d '\n')
+		digest=$(cat "$nb" <(printf '%s%s' "$created" "$ONVIF_PASS") | openssl dgst -sha1 -binary 2>/dev/null | base64 | tr -d '\n')
+		rm -f "$nb"
+		sec='<wsse:Security s:mustUnderstand="1" xmlns:wsse="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-secext-1.0.xsd" xmlns:wsu="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-wssecurity-utility-1.0.xsd"><wsse:UsernameToken><wsse:Username>'"$ONVIF_USER"'</wsse:Username><wsse:Password Type="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-username-token-profile-1.0#PasswordDigest">'"$digest"'</wsse:Password><wsse:Nonce EncodingType="http://docs.oasis-open.org/wss/2004/01/oasis-200401-wss-soap-message-security-1.0#Base64Binary">'"$nonce_b64"'</wsse:Nonce><wsu:Created>'"$created"'</wsu:Created></wsse:UsernameToken></wsse:Security>'
+	fi
+	curl -s --max-time 10 -H 'Content-Type: application/soap+xml; charset=utf-8' \
+		-d '<?xml version="1.0" encoding="UTF-8"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Header>'"$sec"'</s:Header><s:Body>'"$body"'</s:Body></s:Envelope>' \
+		"http://$CAM:$ONVIF_PORT/onvif/$svc" 2>/dev/null
+}
+
 # --------------------------------------------------- stream integrity + A/V sync core
 # analyze_stream <url> <label> <dur> <input-opts...>
 analyze_stream() {
@@ -233,14 +256,20 @@ analyze_stream() {
 	}' "$probe")
 
 	info "$label: wall=${wall}s ffmpeg-warnings=$ffe"
-	local vrate=""
+	local vrate="" v_rt ratio
+	v_rt=$(awk '$1=="video"{print $5}' <<<"$rep")
 	while read -r ct n span rate rt maxgap nonmono; do
 		case "$ct" in
 		video)
 			vrate="$rate"
 			info "  video: pkts=$n span=${span}s fps=${rate} rt=${rt}x maxgap=${maxgap}s nonmono=$nonmono"
-			fcmp "$rt" ge 0.93 && fcmp "$rt" le 1.07 && ok "$label video real-time rate ${rt}x (~1.0 = healthy)" \
-				|| bad "$label video real-time rate ${rt}x deviates from 1.0 (stall/burst)"
+			# rt = media_span / wall. rt<1 is almost always RTSP connect + keyframe
+			# SETUP overhead (benign, largest on short captures); rt>1 means media
+			# arrives FASTER than real time = a wrong-clock / fast-forward bug.
+			if fcmp "$rt" gt 1.20; then bad "$label video real-time rate ${rt}x >1.2 (fast-forward / wrong clock)"
+			elif fcmp "$rt" lt 0.50; then bad "$label video real-time rate ${rt}x <0.5 (severe stall / packet loss)"
+			elif fcmp "$rt" ge 0.80; then ok "$label video real-time rate ${rt}x (healthy; <1 = capture setup overhead)"
+			else warn "$label video real-time rate ${rt}x (marginal - setup overhead or mild stall)"; fi
 			fcmp "$maxgap" le 1.0 && ok "$label video max frame gap ${maxgap}s" \
 				|| warn "$label video max frame gap ${maxgap}s (possible freeze)"
 			[ "${nonmono:-0}" -eq 0 ] && ok "$label video timestamps monotonic" \
@@ -248,8 +277,18 @@ analyze_stream() {
 			;;
 		audio)
 			info "  audio: pkts=$n span=${span}s pkts/s=${rate} rt=${rt}x maxgap=${maxgap}s nonmono=$nonmono"
-			fcmp "$rt" ge 0.93 && fcmp "$rt" le 1.07 && ok "$label audio real-time rate ${rt}x (~1.0)" \
-				|| bad "$label audio real-time rate ${rt}x != 1.0 (e.g. 2.0 = PCM-at-wrong-rate bug)"
+			# The audio sample-rate bug (e.g. 2x) makes AUDIO advance at a DIFFERENT
+			# pace than video; connection/setup overhead cancels in the audio/video
+			# ratio, so compare paces instead of audio rt vs 1.0 (which is setup-noisy).
+			ratio=$(awk -v a="$rt" -v v="${v_rt:-0}" 'BEGIN{ if(v>0) printf "%.3f", a/v; else print "0" }')
+			if [ "$ratio" = "0" ]; then
+				fcmp "$rt" le 1.20 && fcmp "$rt" ge 0.50 && ok "$label audio real-time rate ${rt}x" \
+					|| bad "$label audio real-time rate ${rt}x (rate mismatch?)"
+			elif fcmp "$ratio" ge 0.85 && fcmp "$ratio" le 1.15; then
+				ok "$label audio pace matches video (a/v ratio ${ratio}x) - no sample-rate mismatch"
+			else
+				bad "$label audio/video pace ratio ${ratio}x (audio at a different rate = sample-rate mismatch, e.g. the 2x bug)"
+			fi
 			fcmp "$maxgap" le 0.5 && ok "$label audio max gap ${maxgap}s" \
 				|| warn "$label audio max gap ${maxgap}s (dropouts)"
 			[ "${nonmono:-0}" -eq 0 ] && ok "$label audio timestamps monotonic" \
@@ -421,15 +460,77 @@ else warn "/events produced no data in 8s (may be idle - no config changes)"; fi
 hdr "10. ONVIF"
 if (exec 3<>"/dev/tcp/$CAM/$ONVIF_PORT") 2>/dev/null; then
 	exec 3>&- 2>/dev/null
-	soap='<?xml version="1.0"?><s:Envelope xmlns:s="http://www.w3.org/2003/05/soap-envelope"><s:Body><GetSystemDateAndTime xmlns="http://www.onvif.org/ver10/device/wsdl"/></s:Body></s:Envelope>'
-	resp=$(curl -s --max-time 8 -H 'Content-Type: application/soap+xml' \
-		-d "$soap" "http://$CAM:$ONVIF_PORT/onvif/device_service" 2>/dev/null)
-	if grep -qiE 'SystemDateAndTime|Envelope' <<<"$resp"; then ok "ONVIF device_service responds to GetSystemDateAndTime"
-	else warn "ONVIF port open but device_service gave no SOAP reply (auth or not installed)"; fi
-	# onvif snapshot proxy
-	code=$(curl -s -o "$OUTDIR/onvif_snap.jpg" -w '%{http_code}' --max-time 8 -u "$HTTP_USER:$HTTP_PASS" "http://$CAM:$ONVIF_PORT/onvif/image.cgi")
-	m=$(head -c2 "$OUTDIR/onvif_snap.jpg" 2>/dev/null | od -An -tx1 | tr -d ' \n')
-	[ "$m" = "ffd8" ] && ok "/onvif/image.cgi returns JPEG" || warn "/onvif/image.cgi HTTP $code (not a JPEG)"
+
+	# 10a: snapshot proxies for BOTH streams (the auth-free loopback-proxy fix)
+	for pair in "0:image.cgi" "1:image1.cgi"; do
+		chn=${pair%%:*}; pth=${pair##*:}
+		f="$OUTDIR/onvif_snap_${chn}.jpg"
+		code=$(curl -s -o "$f" -w '%{http_code}' --max-time 8 -u "$HTTP_USER:$HTTP_PASS" "http://$CAM:$ONVIF_PORT/onvif/$pth")
+		m=$(head -c2 "$f" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+		if [ "$m" = "ffd8" ]; then
+			ok "ONVIF snapshot chn$chn (/onvif/$pth) -> JPEG ($(wc -c <"$f")B)"
+		elif [ "$code" = "401" ]; then
+			# 401 = the /x snapshot CGI IS present and enforces WebUI auth (good;
+			# means the symlink-into-/x works). An ONVIF NVR gets the JPEG because
+			# onvif_simple_server appends ?token=<thingino-api.key> to the snapurl,
+			# which the CGI accepts. Verify with that token when we have SSH.
+			if [ -n "$SSH_TARGET" ]; then
+				key=$(sshx "cat /etc/thingino-api.key 2>/dev/null")
+				if [ -n "$key" ]; then
+					code2=$(curl -s -o "$f" -w '%{http_code}' --max-time 8 "http://$CAM:$ONVIF_PORT/onvif/$pth?token=$key")
+					m2=$(head -c2 "$f" 2>/dev/null | od -An -tx1 | tr -d ' \n')
+					[ "$m2" = "ffd8" ] && ok "ONVIF snapshot chn$chn via ?token= -> JPEG ($(wc -c <"$f")B)" \
+						|| warn "ONVIF chn$chn even with api-key token: HTTP $code2 (idle 'no frame' or CGI issue)"
+				else warn "ONVIF chn$chn 401 (CGI present, auth-enforced); couldn't read /etc/thingino-api.key via SSH"; fi
+			else
+				info "ONVIF chn$chn /onvif/$pth: 401 = CGI present + auth-enforced (an ONVIF NVR authenticates via ?token=<api-key>; verify in ODM, or run with --ssh to test the token here)"
+			fi
+		elif [ "$code" = "200" ]; then
+			warn "ONVIF /onvif/$pth HTTP 200 but not a JPEG (CGI/symlink missing? uhttpd fell through to the SPA)"
+		else
+			warn "ONVIF /onvif/$pth HTTP $code"
+		fi
+	done
+
+	# 10b: device liveness
+	resp=$(onvif_call device_service '<GetSystemDateAndTime xmlns="http://www.onvif.org/ver10/device/wsdl"/>')
+	grep -qiE 'SystemDateAndTime|Envelope' <<<"$resp" && ok "ONVIF device_service responds (GetSystemDateAndTime)" \
+		|| warn "ONVIF device_service gave no SOAP reply"
+
+	# 10c: profiles - resolution/codec must match the real streams; fps/bitrate
+	# are known-static in onvif_simple_server's XML templates (surfaced, not failed)
+	have openssl || info "openssl absent -> ONVIF GetProfiles unauthenticated (may 401)"
+	pr=$(onvif_call media_service '<GetProfiles xmlns="http://www.onvif.org/ver10/media/wsdl"/>')
+	[ -z "$pr" ] && pr=$(onvif_call media '<GetProfiles xmlns="http://www.onvif.org/ver10/media/wsdl"/>')
+	if grep -qiE 'Resolution|VideoEncoderConfiguration|Profiles' <<<"$pr"; then
+		o_res=$(grep -oiE 'Width>[0-9]+</[a-z0-9:]*Width><[a-z0-9:]*Height>[0-9]+' <<<"$pr" \
+			| sed -E 's/.*Width>([0-9]+).*Height>([0-9]+)/\1x\2/' | tr '\n' ' ')
+		o_enc=$(grep -oiE '<[a-z0-9:]*Encoding>(H264|H265|JPEG|MPEG4)' <<<"$pr" | grep -oiE 'H264|H265|JPEG|MPEG4' | sort -u | tr '\n' ' ')
+		o_fps=$(grep -oiE 'FrameRateLimit>[0-9.]+' <<<"$pr" | grep -oE '[0-9.]+' | tr '\n' ' ')
+		o_br=$(grep -oiE 'BitrateLimit>[0-9]+'    <<<"$pr" | grep -oE '[0-9]+'   | tr '\n' ' ')
+		info "ONVIF advertises: resolutions=[${o_res}] codecs=[${o_enc}] FrameRateLimit=[${o_fps}] BitrateLimit=[${o_br}]"
+		# compare resolution + codec to the actual live streams
+		for l in "main:$PATH_MAIN" "sub:$PATH_SUB"; do
+			nm=${l%%:*}; pth=${l##*:}
+			rl=$(ffprobe -v error -rtsp_transport "$RTSP_TRANSPORT" -select_streams v:0 \
+				-show_entries stream=codec_name,width,height -of csv=p=0 "$(rtsp_url "$pth")" 2>/dev/null)
+			cc=$(echo "$rl" | cut -d, -f1); cw=$(echo "$rl" | cut -d, -f2); ch=$(echo "$rl" | cut -d, -f3)
+			[ -n "$cw" ] && { grep -qi "${cw}x${ch}" <<<"$o_res" \
+				&& ok "ONVIF $nm resolution ${cw}x${ch} matches the real stream" \
+				|| warn "ONVIF $nm resolution mismatch: real ${cw}x${ch}, advertised [${o_res}]"; }
+			[ -n "$cc" ] && { grep -qi "$cc" <<<"$(echo "$o_enc" | tr 'A-Z' 'a-z' | sed 's/h26/h26/')" \
+				&& ok "ONVIF $nm codec ($cc) advertised" \
+				|| warn "ONVIF $nm codec mismatch: real $cc, advertised [${o_enc}]"; }
+		done
+		# fps/bitrate: expected to be the daemon template defaults, not the real rate
+		if grep -qE '(^| )30( |$)' <<<" $o_fps " || grep -qE '(^| )5000( |$)' <<<" $o_br "; then
+			warn "ONVIF FrameRateLimit/BitrateLimit are the onvif_simple_server template defaults (30/5000), NOT the real encoder rate - needs a daemon-side patch (ffprobe shows the true fps)"
+		else
+			info "ONVIF fps/bitrate: [${o_fps}] / [${o_br}] (daemon now surfaces real values)"
+		fi
+	else
+		warn "ONVIF GetProfiles returned nothing/401 (WS-Security? needs openssl + ONVIF creds ${ONVIF_USER}/***)"
+	fi
 else skip "ONVIF port $ONVIF_PORT closed (ONVIF not built? add BR2_PACKAGE_THINGINO_ONVIF=y)"; fi
 
 # --- 11. Recording clip -----------------------------------------------------

@@ -191,9 +191,14 @@ static int sim_start(const ms_config *cfg)
         pthread_create(&v->thr,NULL,vid_thread,v);
     }
     if (cfg->audio.enabled && cfg->sim_audio[0]) {
-        hub_set_audio_params(cfg->audio.codec,cfg->audio.samplerate,cfg->audio.channels);
+        /* G.711 (PCMA/PCMU) is always 8 kHz - mirror hal_ingenic's pinning so
+         * a sim config of pcmu+16000 cannot advertise 16 kHz while RTSP tags
+         * the stream as PCMU/8000 */
+        int asr = cfg->audio.samplerate;
+        if (cfg->audio.codec==MS_AC_PCMA || cfg->audio.codec==MS_AC_PCMU) asr = 8000;
+        hub_set_audio_params(cfg->audio.codec,asr,cfg->audio.channels);
         strncpy(g_aud.path,cfg->sim_audio,sizeof g_aud.path-1);
-        g_aud.samplerate=cfg->audio.samplerate; g_aud.run=1; g_aud.active=0;
+        g_aud.samplerate=asr; g_aud.run=1; g_aud.active=0;
         pthread_create(&g_aud.thr,NULL,aud_thread,&g_aud);
     }
     if (cfg->jpeg.enabled && cfg->sim_jpeg[0])

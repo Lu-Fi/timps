@@ -95,6 +95,20 @@ static uint64_t pts_track_time(fmp4_mux *m, int64_t pts_us, int64_t *last_pts_io
         if (!fixed_dur) {
             uint64_t d = (uint64_t)(pts_us - *last_pts_io) * timescale / 1000000u;
             if (d > 0 && d < (uint64_t)timescale * 10) dur = (uint32_t)d; /* clamp jitter/gaps */
+        } else if (m->base_pts_us >= 0 && pts_us >= m->base_pts_us) {
+            /* M2: a fixed-duration (audio) track otherwise advances by
+             * exactly `nominal` per sample, so any input gap (audio.mute
+             * toggle, AI stall, dropped fragment) leaves the audio timeline
+             * permanently behind the PTS-following video track. If the real
+             * media time implied by this PTS has run more than 2 nominal
+             * durations AHEAD of the accumulator, re-anchor to it (same
+             * offset-from-shared-base math as the first-sample branch).
+             * Only forward jumps are possible (`off > dts` by the guard),
+             * so tfdt stays strictly monotonic; contiguous audio (delta of
+             * about one frame) never trips the threshold and keeps the
+             * exact fixed-1024 behavior. */
+            uint64_t off = (uint64_t)(pts_us - m->base_pts_us) * timescale / 1000000u;
+            if (off > dts + 2ull * nominal) dts = off;
         }
         *last_pts_io = pts_us;
     }
