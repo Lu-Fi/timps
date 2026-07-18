@@ -71,6 +71,7 @@ LOAD_DUR="${LOAD_DUR:-30}"         # seconds per load step
 SOAK_DUR="${SOAK_DUR:-0}"          # seconds of soak (0 = skip unless profile sets it)
 SOAK_SAMPLE="${SOAK_SAMPLE:-60}"   # health sample interval during soak
 DO_RESTART="${DO_RESTART:-0}"      # 1 = exercise streamer restart
+ONLY=""                            # comma-sep section names/numbers to run (empty = all)
 
 usage() {
 	sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
@@ -85,6 +86,8 @@ Options (also settable as env vars):
   --ssh TARGET        e.g. root@IP  -> enables on-device checks
   --integ-dur S       --load-dur S  --load-clients "1 2 4 8"
   --reconnects N      --snaps N     --soak-dur S       --restart
+  --only LIST         run only these sections (names or numbers, comma-sep),
+                      e.g. --only onvif  or  --only 3,10 ; preflight always runs
   --out DIR           output directory
 
 Profiles:
@@ -116,6 +119,7 @@ while [ $# -gt 0 ]; do
 		--snaps) SNAP_COUNT="$2"; shift 2;;
 		--soak-dur) SOAK_DUR="$2"; shift 2;;
 		--restart) DO_RESTART=1; shift;;
+		--only) ONLY="$2"; shift 2;;
 		--out) OUTDIR="$2"; shift 2;;
 		-h|--help) usage;;
 		*) echo "unknown option: $1" >&2; usage;;
@@ -148,6 +152,18 @@ skip() { SKIP=$((SKIP+1)); printf '  [skip] %s\n' "$*" | tee -a "$SUMMARY"; }
 info() { printf '  %s\n' "$*" | tee -a "$SUMMARY"; }
 
 have() { command -v "$1" >/dev/null 2>&1; }
+
+# section gate: want <num> <name...>  -> true if --only unset or matches num/any name
+want() {
+	[ -z "$ONLY" ] && return 0
+	local tok
+	for tok in $(echo "$ONLY" | tr ',' ' '); do
+		for a in "$@"; do
+			[ "$tok" = "$a" ] && return 0
+		done
+	done
+	return 1
+}
 
 # float compare: fcmp A OP B  (OP: lt le gt ge)  -> exit 0 if true
 fcmp() { awk -v a="$1" -v b="$3" -v op="$2" 'BEGIN{
@@ -313,6 +329,10 @@ analyze_stream() {
 }
 ANALYZE_VFPS=0
 
+# nominal fps per stream, populated in section 2; declared here so sections 3/13
+# still resolve ${NOM_FPS[...]} when section 2 is skipped via --only
+declare -A NOM_FPS
+
 # ============================================================================= run
 log "timps-qa  cam=$CAM  profile=$PROFILE  out=$OUTDIR  $(date)"
 log "streams: rtsp://$CAM:$RTSP_PORT/{$PATH_MAIN,$PATH_SUB}  http://$CAM:$HTTP_PORT"
@@ -336,9 +356,9 @@ done
 
 have ffprobe || { bad "ffprobe missing - aborting stream tests"; }
 
+if want 2 discovery; then
 # --- 2. discovery -----------------------------------------------------------
 hdr "2. Discovery (ffprobe)"
-declare -A NOM_FPS
 for pair in "main:$PATH_MAIN" "sub:$PATH_SUB"; do
 	lbl="${pair%%:*}"; pth="${pair##*:}"
 	url="$(rtsp_url "$pth")"
@@ -360,6 +380,8 @@ for pair in "main:$PATH_MAIN" "sub:$PATH_SUB"; do
 	fi
 done
 
+fi
+if want 3 integrity; then
 # --- 3. integrity + A/V sync ------------------------------------------------
 hdr "3. Stream integrity + A/V sync (record ${INTEG_DUR}s each, transport=$RTSP_TRANSPORT)"
 for pair in "main:$PATH_MAIN" "sub:$PATH_SUB"; do
@@ -374,6 +396,8 @@ for pair in "main:$PATH_MAIN" "sub:$PATH_SUB"; do
 	fi
 done
 
+fi
+if want 4 fmp4; then
 # --- 4. HTTP fMP4 -----------------------------------------------------------
 hdr "4. HTTP fMP4 (/stream.mp4)"
 murl="$(http_base)/stream.mp4?chn=0"
@@ -381,6 +405,8 @@ murl="$(http_base)/stream.mp4?chn=0"
 AUTH_HDR="Authorization: Basic $(printf '%s:%s' "$HTTP_USER" "$HTTP_PASS" | base64)"
 analyze_stream "$murl" "fmp4_main" "$INTEG_DUR" -headers "$AUTH_HDR"$'\r\n'
 
+fi
+if want 5 mjpeg; then
 # --- 5. MJPEG ---------------------------------------------------------------
 hdr "5. MJPEG (/stream.mjpeg)"
 mjurl="$(http_base)/stream.mjpeg?chn=0"
@@ -393,6 +419,8 @@ if [ -n "${frames:-}" ] && [ "$frames" -gt 0 ]; then
 	ok "MJPEG delivered $frames frames (~${fps} fps)"
 else bad "MJPEG produced no frames (see $mjlog)"; fi
 
+fi
+if want 6 snapshot; then
 # --- 6. Snapshot ------------------------------------------------------------
 hdr "6. Snapshot (/snapshot.jpg) x$SNAP_COUNT"
 for chn in 0 1; do
@@ -417,6 +445,8 @@ for chn in 0 1; do
 	else bad "chn$chn snapshots all $SNAP_COUNT failed"; fi
 done
 
+fi
+if want 7 audio; then
 # --- 7. Audio continuity ----------------------------------------------------
 hdr "7. Audio (codec + silence scan)"
 aurl="$(rtsp_url "$PATH_MAIN")"
@@ -431,6 +461,8 @@ if [ -n "$acodec" ]; then
 		|| warn "$sil silence gap(s) >1.5s detected (see $sl - may be real quiet, or dropouts)"
 else warn "no audio stream on $PATH_MAIN (set the codec in the WebUI + restart timps)"; fi
 
+fi
+if want 8 control; then
 # --- 8. /control API --------------------------------------------------------
 hdr "8. /control API (status, caps, write round-trip)"
 cj="$OUTDIR/control.json"
@@ -449,6 +481,8 @@ if curlq 10 "$(http_base)/control" -o "$cj" && [ -s "$cj" ]; then
 	else info "  brightness not found; skipped write round-trip"; fi
 else bad "/control not reachable (auth? http.user/pass=$HTTP_USER) - see $cj"; fi
 
+fi
+if want 9 events; then
 # --- 9. /events SSE ---------------------------------------------------------
 hdr "9. /events (SSE)"
 ev="$OUTDIR/events.log"
@@ -456,6 +490,8 @@ timeout 8 curl -s -N -u "$HTTP_USER:$HTTP_PASS" "$(http_base)/events" > "$ev" 2>
 if [ -s "$ev" ]; then ok "/events streamed $(wc -l <"$ev") line(s) in 8s"
 else warn "/events produced no data in 8s (may be idle - no config changes)"; fi
 
+fi
+if want 10 onvif; then
 # --- 10. ONVIF --------------------------------------------------------------
 hdr "10. ONVIF"
 if (exec 3<>"/dev/tcp/$CAM/$ONVIF_PORT") 2>/dev/null; then
@@ -533,6 +569,8 @@ if (exec 3<>"/dev/tcp/$CAM/$ONVIF_PORT") 2>/dev/null; then
 	fi
 else skip "ONVIF port $ONVIF_PORT closed (ONVIF not built? add BR2_PACKAGE_THINGINO_ONVIF=y)"; fi
 
+fi
+if want 11 clip record; then
 # --- 11. Recording clip -----------------------------------------------------
 hdr "11. On-demand recording clip (/control record.clip)"
 clip="/tmp/timps_qa_$$.mp4"
@@ -546,6 +584,8 @@ if [ "$code" = "200" ]; then
 	else ok "record.clip accepted (HTTP 200); enable --ssh to verify the file on device"; fi
 else warn "record.clip returned HTTP $code"; fi
 
+fi
+if want 12 reliability reconnect; then
 # --- 12. Reliability: reconnect churn --------------------------------------
 hdr "12. Reliability - reconnect churn ($RECONNECT_CYCLES cycles)"
 for tr in tcp udp; do
@@ -565,6 +605,8 @@ for tr in tcp udp; do
 	else bad "reconnect/$tr all $RECONNECT_CYCLES failed"; fi
 done
 
+fi
+if want 13 load; then
 # --- 13. Load: concurrent-client ramp --------------------------------------
 hdr "13. Load - concurrent client ramp [$LOAD_CLIENTS] x ${LOAD_DUR}s each"
 max_stable=0
@@ -607,8 +649,9 @@ for n in $LOAD_CLIENTS; do
 done
 info "max stable concurrent clients (full fps, no failures): $max_stable"
 
+fi
 # --- 14. Restart resilience -------------------------------------------------
-if [ "$DO_RESTART" = "1" ]; then
+if [ "$DO_RESTART" = "1" ] && want 14 restart; then
 	hdr "14. Restart resilience"
 	if [ -n "$SSH_TARGET" ]; then
 		sshx "service timps restart >/dev/null 2>&1 || /etc/init.d/S95timps restart >/dev/null 2>&1" &
@@ -623,7 +666,7 @@ if [ "$DO_RESTART" = "1" ]; then
 fi
 
 # --- 15. Soak ---------------------------------------------------------------
-if [ "${SOAK_DUR:-0}" -gt 0 ]; then
+if [ "${SOAK_DUR:-0}" -gt 0 ] && want 15 soak; then
 	hdr "15. Soak (${SOAK_DUR}s continuous, ${SOAK_SAMPLE}s slices)"
 	soaklog="$OUTDIR/soak.log"; : > "$soaklog"
 	slice="$SOAK_SAMPLE"; n_slices=$(( SOAK_DUR / slice )); [ "$n_slices" -lt 1 ] && n_slices=1
@@ -658,7 +701,7 @@ if [ "${SOAK_DUR:-0}" -gt 0 ]; then
 fi
 
 # --- 16. On-device (SSH) ----------------------------------------------------
-if [ -n "$SSH_TARGET" ]; then
+if [ -n "$SSH_TARGET" ] && want 16 ssh; then
 	hdr "16. On-device checks (SSH)"
 	ver=$(sshx "logread 2>/dev/null | grep -oE 'timps v[0-9.]+' | tail -1")
 	[ -n "$ver" ] && ok "running $ver" || info "version string not found in logread"
