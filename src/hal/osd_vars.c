@@ -195,8 +195,24 @@ int osd_expand(const char *tmpl, const char *vars_file, char *out, int outsz)
         stage1[o++]=*p++;
     }
     stage1[o]=0;
-    /* stage 2: strftime for time placeholders */
+    /* stage 2: strftime for time placeholders. L13: the template is partly
+     * user-controlled (osd text via /control), so whitelist the '%'
+     * conversions we intend to support and neutralize everything else into a
+     * literal '%<char>' (no memory issue either way, but unvetted
+     * conversions give locale/implementation-dependent surprises). */
+    static const char strf_ok[] = "aAbBcCdDeFgGhHIjklmMnpPrRsSTuUVwWxXyYzZ%";
+    char stage2[512]; int o2=0;
+    for (const char *p=stage1; *p && o2<(int)sizeof(stage2)-3; p++){
+        if (*p=='%'){
+            if (p[1] && strchr(strf_ok, p[1])){
+                stage2[o2++]='%'; stage2[o2++]=*++p;
+            } else {
+                stage2[o2++]='%'; stage2[o2++]='%';   /* literal '%' */
+            }
+        } else stage2[o2++]=*p;
+    }
+    stage2[o2]=0;
     time_t t=time(NULL); struct tm tm; localtime_r(&t,&tm);
-    if (strftime(out,outsz,stage1,&tm)==0 && stage1[0]) snprintf(out,outsz,"%s",stage1);
+    if (strftime(out,outsz,stage2,&tm)==0 && stage2[0]) snprintf(out,outsz,"%s",stage2);
     return 0;
 }

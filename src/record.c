@@ -102,6 +102,26 @@ static void ring_push(ms_pkt *p, int64_t pre_us)
 
 /* ---- filesystem helpers ---- */
 
+/* record.dir/record.name are runtime-mutable via /control by an authenticated
+ * caller; a ".." component (or an absolute/rooted name spliced into the path)
+ * would let recording write or prune OUTSIDE the records tree (L10). Same
+ * validation idea as record_clip()'s path check below. */
+/* L-2: reject ".." only as a path COMPONENT, so legitimate names that merely
+ * contain the substring (e.g. "cam..front-%Y") are allowed. */
+static int has_dotdot(const char *s)
+{
+    if (!s) return 0;
+    if (!strcmp(s, "..") || !strncmp(s, "../", 3) || strstr(s, "/../")) return 1;
+    size_t n = strlen(s);
+    return (n >= 3 && !strcmp(s + n - 3, "/.."));
+}
+static int rec_path_unsafe(const char *dir, const char *name)
+{
+    if (has_dotdot(dir)) return 1;
+    if (name && (has_dotdot(name) || name[0] == '/')) return 1;
+    return 0;
+}
+
 static long long free_mb(const char *dir)
 {
     struct statvfs vf;
@@ -152,6 +172,7 @@ static void prune_free(void)
     config_str_lock();
     snprintf(dir,sizeof dir,"%s",g_rc->record.dir);
     config_str_unlock();
+    if (rec_path_unsafe(dir,NULL)) return;   /* never prune outside the tree (L10) */
     char base[200]; char host[64]="camera"; gethostname(host,sizeof host);
     snprintf(base,sizeof base,"%s/%s/records",dir,host);
     for (int guard=0; guard<10000; guard++){
@@ -171,6 +192,13 @@ static fmp4_mux  w_mux;
 static int       w_got_key;
 static int64_t   w_start_us;
 static int       w_chn;
+static int64_t   w_sync_us;    /* last fflush+fsync (M7 periodic durability) */
+
+/* how often the open segment is flushed+fsync'd to media; without this a
+ * power cut loses up to segment_s of recording from the page cache (M7) */
+#ifndef REC_SYNC_US
+#define REC_SYNC_US (5*1000000LL)
+#endif
 
 static void seg_close(void);   /* fwd: seg_write closes on a write error */
 
@@ -192,6 +220,10 @@ static int seg_open(int chn)
     snprintf(dir,sizeof dir,"%s",g_rc->record.dir);
     snprintf(name,sizeof name,"%s",g_rc->record.name);
     config_str_unlock();
+    if (rec_path_unsafe(dir,name)){
+        LOGE(MOD,"unsafe record.dir/name ('..' or absolute name), not recording");
+        return -1;
+    }
     char rel[160]; time_t t=time(NULL); struct tm tmv; localtime_r(&t,&tmv);
     if (strftime(rel,sizeof rel,name,&tmv)==0)
         snprintf(rel,sizeof rel,"%ld",(long)t);
@@ -216,7 +248,7 @@ static int seg_open(int chn)
         aac_asc(asr,ach,w_mux.asc);
     }
     ms_buf seg;
-    if (ms_buf_init(&seg,4096)){ fclose(w_fp); w_fp=NULL; return -1; }
+    if (ms_buf_init(&seg,4096)){ fclose(w_fp); w_fp=NULL; unlink(path); return -1; }
     /* fails when the track isn't warmed up yet (no vparam from a keyframe
      * through the hub, e.g. right at cold start / a live channel switch) or
      * on OOM mid-build. Writing anyway would produce a moov-less segment
@@ -230,10 +262,12 @@ static int seg_open(int chn)
     size_t n=seg.len?fwrite(seg.data,1,seg.len,w_fp):0;
     if (seg.len && n!=seg.len){
         LOGE(MOD,"write %s: %s",path,strerror(errno));
-        ms_buf_free(&seg); fclose(w_fp); w_fp=NULL; return -1;
+        ms_buf_free(&seg); fclose(w_fp); w_fp=NULL;
+        unlink(path);                    /* don't leave a moov-less stub (L6) */
+        return -1;
     }
     ms_buf_free(&seg);
-    w_got_key=0; w_start_us=ms_now_us(); w_chn=chn;
+    w_got_key=0; w_start_us=ms_now_us(); w_chn=chn; w_sync_us=w_start_us;
     status_set(1,(long long)n,path);
     LOGI(MOD,"recording -> %s",path);
     return 0;
@@ -275,13 +309,36 @@ static void seg_write(ms_pkt *p)
             seg_close(); return;
         }
         pthread_mutex_lock(&g_lock); g_curbytes+=frag.len; pthread_mutex_unlock(&g_lock);
+        /* periodic durability (M7) without stalling the record thread (M-3):
+         * fflush hands libc's buffer to the kernel (a real short-write error
+         * still surfaces here and closes the segment), then kick ASYNC writeback
+         * with sync_file_range() instead of a blocking fsync() - a slow SD card
+         * can no longer park this thread for seconds and drop frames. The
+         * durable fsync happens at seg_close(). */
+        int64_t now=ms_now_us();
+        if (now - w_sync_us >= REC_SYNC_US){
+            if (fflush(w_fp)!=0){
+                LOGE(MOD,"segment flush failed (%s), closing",strerror(errno));
+                seg_close(); return;
+            }
+            sync_file_range(fileno(w_fp), 0, 0, SYNC_FILE_RANGE_WRITE);
+            w_sync_us=now;
+        }
     }
 }
 
 static void seg_close(void)
 {
     if (!w_fp) return;
-    fclose(w_fp); w_fp=NULL;
+    FILE *fp=w_fp; w_fp=NULL;
+    /* fclose/fsync results matter (M7): buffered data is only handed to the
+     * kernel at fclose, and only reaches media after fsync - ignoring both
+     * silently truncated the tail of the segment on error/power cut. */
+    int err=0;
+    if (fflush(fp)!=0) err=errno;
+    else if (fsync(fileno(fp))!=0) err=errno;
+    if (fclose(fp)!=0 && !err) err=errno;
+    if (err) LOGE(MOD,"segment close/sync failed: %s (tail may be truncated)",strerror(err));
     LOGI(MOD,"segment closed (%lld bytes)",g_curbytes);
     status_set(0,0,"");
 }
@@ -542,7 +599,14 @@ int record_clip(const char *path, int seconds)
         if (now>=deadline) break;
     }
 
-    if (fp){ fclose(fp); rc=0; LOGI(MOD,"clip -> %s (%ds)",path,seconds); }
+    if (fp){
+        /* fclose flushes the last buffered fragment - if THAT write fails the
+         * clip is truncated and must not be reported as success (L5) */
+        if (fclose(fp)!=0){
+            LOGE(MOD,"clip close %s: %s",path,strerror(errno));
+            unlink(path);
+        } else { rc=0; LOGI(MOD,"clip -> %s (%ds)",path,seconds); }
+    }
     else LOGW(MOD,"clip: no frames for %s",path);
 
 out:

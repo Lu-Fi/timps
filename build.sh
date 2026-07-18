@@ -53,11 +53,15 @@ parse_flags() {
 
 # Apply libc-specific compile flags. The thingino uClibc toolchain is built
 # with --disable-libssp, so SSP symbols (__stack_chk_*) are unavailable -
-# disable stack-protector globally for uclibc builds.
+# disable stack-protector globally for uclibc builds. musl builds CAN carry
+# compiler defense-in-depth for this root-running network daemon (M14):
+# stack-protector-strong + _FORTIFY_SOURCE (needs the -Os/-O we already pass).
 LIBC_EXTRA_CFLAGS=""
 apply_libc_env() {
 	if [[ "$LIBC_TYPE" == "uclibc" ]]; then
 		LIBC_EXTRA_CFLAGS="-fno-stack-protector"
+	else
+		LIBC_EXTRA_CFLAGS="-fstack-protector-strong -D_FORTIFY_SOURCE=2"
 	fi
 }
 
@@ -98,6 +102,15 @@ ensure_toolchain() {
 			wget -q --show-progress "${TOOLCHAIN_URL}" -O "${TOP}/toolchain/${TOOLCHAIN_ARCHIVE}"
 		else
 			curl -L --progress-bar "${TOOLCHAIN_URL}" -o "${TOP}/toolchain/${TOOLCHAIN_ARCHIVE}"
+		fi
+		# M15: integrity-check the downloaded toolchain (supply-chain). Set
+		# TOOLCHAIN_SHA256 (env or here) to the hash published with the thingino
+		# release to enforce it; unset only warns so first-time users aren't blocked.
+		if [[ -n "${TOOLCHAIN_SHA256:-}" ]]; then
+			echo "${TOOLCHAIN_SHA256}  ${TOP}/toolchain/${TOOLCHAIN_ARCHIVE}" | sha256sum -c - \
+				|| { echo "ERROR: toolchain SHA256 mismatch - aborting"; rm -f "${TOP}/toolchain/${TOOLCHAIN_ARCHIVE}"; exit 1; }
+		else
+			echo "WARNING: toolchain not integrity-checked (export TOOLCHAIN_SHA256=<hash> to pin)"
 		fi
 		echo "Extracting toolchain to ${xburst_dir}/ ..."
 		tar -xf "${TOP}/toolchain/${TOOLCHAIN_ARCHIVE}" -C "${xburst_dir}"
@@ -280,7 +293,9 @@ timps() {
 
 	# -no-pie: the vendor static archives are non-PIC; the thingino toolchain
 	# defaults to PIE, which cannot link them (R_MIPS_26 relocation errors).
-	local ldflags="-Wl,--gc-sections -no-pie"
+	# RELRO+BIND_NOW (M14): read-only GOT after relocation - linker-only, safe
+	# with -no-pie and both libcs.
+	local ldflags="-Wl,--gc-sections -no-pie -Wl,-z,relro,-z,now"
 	if [[ $STATIC_BUILD -eq 1 ]]; then
 		ldflags="$ldflags -static -static-libgcc"
 	fi

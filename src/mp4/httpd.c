@@ -756,11 +756,18 @@ static void *conn_thread(void *arg)
     int n = 0;
     int64_t hdr_deadline = ms_now_us() + 5*1000000LL;
     for (;;) {
-        struct pollfd pfd; pfd.fd = c->fd; pfd.events = POLLIN; pfd.revents = 0;
         int64_t left_us = hdr_deadline - ms_now_us();
         if (left_us <= 0) break;
-        int pr = poll(&pfd, 1, (int)(left_us/1000)+1);
-        if (pr <= 0) break;                    /* timeout or poll error */
+#ifdef USE_TLS
+        /* L7: bytes already decrypted into the TLS layer's buffer are
+         * invisible to poll() on the raw fd - skip the wait when pending */
+        if (!(c->tls && ms_tls_pending((ms_tls_conn *)c->tls) > 0))
+#endif
+        {
+            struct pollfd pfd; pfd.fd = c->fd; pfd.events = POLLIN; pfd.revents = 0;
+            int pr = poll(&pfd, 1, (int)(left_us/1000)+1);
+            if (pr <= 0) break;                /* timeout or poll error */
+        }
         int r = crecv(c, buf+n, sizeof(buf)-1-n, 0);
         if (r <= 0) break;
         n += r;
@@ -875,7 +882,23 @@ static void *conn_thread(void *arg)
                                         "body too large",14);
                             goto done;
                         }
+                        /* H2: same bounded-deadline poll as the header
+                         * phase above - without it a client announcing a
+                         * Content-Length but never sending the body parked
+                         * this thread in recv() indefinitely */
+                        int64_t body_deadline = ms_now_us() + 5*1000000LL;
                         while (have < clen && n < (int)sizeof(buf)-1) {
+                            int64_t left_us = body_deadline - ms_now_us();
+                            if (left_us <= 0) break;
+#ifdef USE_TLS
+                            /* L7: see the header loop */
+                            if (!(c->tls && ms_tls_pending((ms_tls_conn *)c->tls) > 0))
+#endif
+                            {
+                                struct pollfd pfd;
+                                pfd.fd = c->fd; pfd.events = POLLIN; pfd.revents = 0;
+                                if (poll(&pfd, 1, (int)(left_us/1000)+1) <= 0) break;
+                            }
                             int r = crecv(c, buf+n, sizeof(buf)-1-n, 0);
                             if (r <= 0) break;
                             n += r; have += r; buf[n] = 0;
@@ -922,6 +945,10 @@ static void *accept_thread(void *arg)
         struct sockaddr_in peer; socklen_t pl=sizeof peer;
         int fd = accept(h->lfd,(struct sockaddr*)&peer,&pl);
         if (fd<0){ if(h->run) usleep(50000); continue; }
+        /* H2: bounded I/O - a silent client (or one that stops reading) must
+         * time out in recv()/send() instead of pinning this slot's thread
+         * forever; streaming clients read continuously and never trip these */
+        net_set_timeouts(fd, 30, 15);
         /* global connection cap: each client costs a thread + queue */
         if (g_nconn >= HTTP_MAX_CLIENTS) {
             const char *r="HTTP/1.1 503 Service Unavailable\r\n"

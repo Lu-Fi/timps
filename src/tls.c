@@ -13,6 +13,8 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <sys/socket.h>
+#include <sys/time.h>
 
 #define MOD "TLS"
 
@@ -59,6 +61,12 @@ ms_tls_ctx *ms_tls_ctx_new(const char *cert_file, const char *key_file)
     if (mbedtls_ssl_config_defaults(&c->conf, MBEDTLS_SSL_IS_SERVER,
                                     MBEDTLS_SSL_TRANSPORT_STREAM,
                                     MBEDTLS_SSL_PRESET_DEFAULT) != 0) goto fail;
+#if MBEDTLS_VERSION_MAJOR < 3
+    /* M2: mbedTLS 2.x's PRESET_DEFAULT still negotiates TLS 1.0/1.1 - require
+     * TLS 1.2 (3.x already defaults to >=1.2 and drops this API in 3.2+) */
+    mbedtls_ssl_conf_min_version(&c->conf, MBEDTLS_SSL_MAJOR_VERSION_3,
+                                 MBEDTLS_SSL_MINOR_VERSION_3);
+#endif
     mbedtls_ssl_conf_rng(&c->conf, mbedtls_ctr_drbg_random, &c->drbg);
     if (mbedtls_ssl_conf_own_cert(&c->conf, &c->cert, &c->key) != 0) goto fail;
     LOGI(MOD, "TLS server context ready (cert %s)", cert_file);
@@ -88,6 +96,16 @@ ms_tls_conn *ms_tls_accept(ms_tls_ctx *ctx, int fd)
     c->net.fd = fd;
     if (mbedtls_ssl_setup(&c->ssl, &ctx->conf) != 0) goto fail;
     mbedtls_ssl_set_bio(&c->ssl, &c->net, mbedtls_net_send, mbedtls_net_recv, NULL);
+    /* M1: bound the handshake. A client that connects and never speaks used
+     * to park this thread in recv() inside mbedtls_ssl_handshake() forever.
+     * On a blocking fd with SO_RCVTIMEO, a timed-out read surfaces as
+     * MBEDTLS_ERR_NET_RECV_FAILED (not WANT_READ), so the loop below exits.
+     * Callers (rtsp/httpd accept paths) set the same-magnitude timeout via
+     * net_set_timeouts() already; this keeps the guarantee local to tls.c. */
+    {
+        struct timeval tv = { 30, 0 };
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
+    }
     int r;
     while ((r = mbedtls_ssl_handshake(&c->ssl)) != 0) {
         if (r != MBEDTLS_ERR_SSL_WANT_READ && r != MBEDTLS_ERR_SSL_WANT_WRITE) {
@@ -123,6 +141,13 @@ int ms_tls_write(ms_tls_conn *c, const void *buf, int len)
         off += r;
     }
     return off;
+}
+
+int ms_tls_pending(ms_tls_conn *c)
+{
+    /* bytes already decrypted into the TLS layer's buffer: invisible to
+     * poll() on the raw fd, so poll-based loops must check this first (L7) */
+    return (int)mbedtls_ssl_get_bytes_avail(&c->ssl);
 }
 
 void ms_tls_close(ms_tls_conn *c)

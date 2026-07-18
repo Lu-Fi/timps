@@ -23,14 +23,22 @@
 
 #define MOD "OSD"
 
+/* M9: depth of the retired-buffer ring. One retained buffer was not always
+ * enough: under load SetRgnAttr can swap in a new picture while the hardware
+ * is still compositing a frame that references the buffer retired TWO updates
+ * ago - freeing that one on the very next update was a latent use-after-free.
+ * Keep the last few instead (bounded; freed oldest-first). */
+#define MS_OSD_RETIRE 3
+
 typedef struct {
     int         rgn;         /* IMP region handle, -1 = unused */
     int         is_text;
     int         item;        /* index into cfg->osd.items[stream] */
     uint8_t    *buf;         /* current BGRA buffer */
-    uint8_t    *retired;     /* previous buffer, freed on the NEXT update:
+    uint8_t    *retired[MS_OSD_RETIRE]; /* previously active buffers, newest
+                              * first, freed oldest-first on later updates:
                               * OSD_REG_PIC keeps a pointer and the hardware
-                              * may still read it for an in-flight frame */
+                              * may still read them for in-flight frames */
     msttf_font *font;        /* per-item font, or shared */
     char        last[256];   /* last rendered text (change detection) */
 } osd_region;
@@ -155,68 +163,98 @@ static int osd_test_static_mode(void)
     return v;
 }
 
+/* M9: rotate a freshly-applied buffer into the retired ring. The oldest
+ * retained buffer (replaced MS_OSD_RETIRE updates ago) can no longer be
+ * referenced by any in-flight frame -> free it; everything newer is kept. */
+static void osd_retire(osd_region *rg, uint8_t *newbuf)
+{
+    free(rg->retired[MS_OSD_RETIRE-1]);
+    for (int ri=MS_OSD_RETIRE-1; ri>0; ri--) rg->retired[ri]=rg->retired[ri-1];
+    rg->retired[0] = rg->buf;
+    rg->buf = newbuf;
+}
+
 static void refresh_text(osd_stream *s, osd_region *rg)
 {
     if (osd_test_static_mode() && rg->buf) return;  /* test mode: only the very first render counts */
-    const ms_osd_item *it=&g_hcfg->osd.items[s->si][rg->item];
-    /* it->text is runtime-mutable via /control (copystr in config_apply_kv):
-     * snapshot it under the config string lock before expanding */
-    char tmpl[sizeof it->text];
+    /* M10: EVERY field of the item is runtime-mutable via /control (which
+     * applies changes under the config string lock) - snapshot the whole item
+     * once, then work from the snapshot, so one render never mixes e.g. a new
+     * font_size with an old x/y or outline (previously only ->text was
+     * snapshotted and the numeric fields were read lock-free mid-update). */
+    ms_osd_item it;
     config_str_lock();
-    snprintf(tmpl, sizeof tmpl, "%s", it->text);
+    it = g_hcfg->osd.items[s->si][rg->item];
     config_str_unlock();
     char txt[256];
-    osd_expand(tmpl, g_hcfg->osd.vars_file, txt, sizeof txt);
+    osd_expand(it.text, g_hcfg->osd.vars_file, txt, sizeof txt);
     if (strcmp(txt, rg->last)==0) return;               /* unchanged: skip render */
-    strncpy(rg->last, txt, sizeof rg->last - 1); rg->last[sizeof rg->last - 1]=0;
+    /* L-3: rg->last is latched only AFTER a successful apply (below), so a
+     * discarded/failed render (oversize, msttf OOM) doesn't mark this text as
+     * "done" - fixing font_size then re-renders on the next tick. */
 
     /* scale the font with the stream height (font_size is for 1080p) so the
      * same layout stays readable and non-overlapping on smaller sub-streams */
-    int fs = it->font_size * s->height / 1080;
+    int fs = it.font_size * s->height / 1080;
     if (fs < 12) fs = 12;
-    if (fs > it->font_size) fs = it->font_size;
+    if (fs > it.font_size) fs = it.font_size;
 
     uint8_t *bgra; int w,h;
     if (rg->font){
-        if (msttf_render(rg->font, txt, fs, it->color, 0x00000000,
-                         it->outline, it->outline_color, &bgra,&w,&h)!=0) return;
+        if (msttf_render(rg->font, txt, fs, it.color, 0x00000000,
+                         it.outline, it.outline_color, &bgra,&w,&h)!=0) return;
     } else {
         int scale=fs/16; if(scale<1)scale=1;
-        if (osd_text_render(txt, scale, it->color, 0x00000000,
-                            it->outline, it->outline_color, &bgra,&w,&h)!=0) return;
+        if (osd_text_render(txt, scale, it.color, 0x00000000,
+                            it.outline, it.outline_color, &bgra,&w,&h)!=0) return;
     }
-    int x,y; resolve_pos(s->width, s->height, w, h, it->x, it->y, &x,&y);
+    /* H5: a bitmap larger than the frame cannot be composited safely -
+     * resolve_pos() clamps the origin to 0 but the far edge (x+w-1) would
+     * still land outside the frame, and on several T-SoCs IMP_OSD then
+     * writes past the frame buffer. Mirror setup_cover(): discard. */
+    if (w > s->width || h > s->height){
+        LOGW(MOD,"osd stream %d item %d: rendered %dx%d exceeds frame %dx%d - "
+                 "skipped (reduce font_size/text length)",
+             s->si, rg->item, w, h, s->width, s->height);
+        free(bgra);
+        return;
+    }
+    int x,y; resolve_pos(s->width, s->height, w, h, it.x, it.y, &x,&y);
     IMPOSDRgnAttr a; memset(&a,0,sizeof a);
     a.type=OSD_REG_PIC;
     a.rect.p0.x=x; a.rect.p0.y=y; a.rect.p1.x=x+w-1; a.rect.p1.y=y+h-1;
     a.fmt=PIX_FMT_BGRA;
     a.data.picData.pData=bgra;
     IMP_OSD_SetRgnAttr(rg->rgn, &a);
-    /* double buffering: the buffer replaced two updates ago can no longer be
-     * referenced by in-flight frames -> free it now; the one just replaced is
-     * kept as "retired" until the next update (prevents use-after-free) */
-    free(rg->retired);
-    rg->retired = rg->buf;
-    rg->buf = bgra;
+    strncpy(rg->last, txt, sizeof rg->last - 1); rg->last[sizeof rg->last - 1]=0;  /* L-3 */
+    osd_retire(rg, bgra);   /* keep replaced buffers alive for in-flight frames */
 }
 
 static void setup_logo(osd_stream *s, osd_region *rg)
 {
-    const ms_osd_item *it=&g_hcfg->osd.items[s->si][rg->item];
-    uint8_t *b=load_bgra(it->logo_path, it->logo_w, it->logo_h);
-    if (!b){ LOGW(MOD,"logo %s (%dx%d) not loaded", it->logo_path, it->logo_w, it->logo_h); return; }
-    int x,y; resolve_pos(s->width, s->height, it->logo_w, it->logo_h, it->x, it->y, &x,&y);
+    /* M10: same whole-item snapshot as refresh_text (logo_path/logo_w/logo_h/
+     * x/y are runtime-mutable via /control) */
+    ms_osd_item it;
+    config_str_lock();
+    it = g_hcfg->osd.items[s->si][rg->item];
+    config_str_unlock();
+    /* H5: a logo larger than the frame would place its far edge outside the
+     * frame (SDK-dependent OOB in compositing) - discard, like setup_cover */
+    if (it.logo_w > s->width || it.logo_h > s->height){
+        LOGW(MOD,"logo %s (%dx%d) exceeds frame %dx%d - skipped",
+             it.logo_path, it.logo_w, it.logo_h, s->width, s->height);
+        return;
+    }
+    uint8_t *b=load_bgra(it.logo_path, it.logo_w, it.logo_h);
+    if (!b){ LOGW(MOD,"logo %s (%dx%d) not loaded", it.logo_path, it.logo_w, it.logo_h); return; }
+    int x,y; resolve_pos(s->width, s->height, it.logo_w, it.logo_h, it.x, it.y, &x,&y);
     IMPOSDRgnAttr a; memset(&a,0,sizeof a);
     a.type=OSD_REG_PIC;
-    a.rect.p0.x=x; a.rect.p0.y=y; a.rect.p1.x=x+it->logo_w-1; a.rect.p1.y=y+it->logo_h-1;
+    a.rect.p0.x=x; a.rect.p0.y=y; a.rect.p1.x=x+it.logo_w-1; a.rect.p1.y=y+it.logo_h-1;
     a.fmt=PIX_FMT_BGRA;
     a.data.picData.pData=b;
     IMP_OSD_SetRgnAttr(rg->rgn, &a);
-    /* same double buffering as refresh_text: keep the buffer that was just
-     * replaced around for one more update (in-flight frames may reference it) */
-    free(rg->retired);
-    rg->retired = rg->buf;
-    rg->buf = b;
+    osd_retire(rg, b);   /* keep replaced buffers alive for in-flight frames */
 }
 
 /* (Re)apply one privacy cover region (a solid filled rectangle) on a stream.
@@ -365,7 +403,9 @@ static void *osd_thread(void *arg)
                 for (int i=0;i<MS_MAX_OSD;i++){
                     osd_region *rg=&g_os[si].r[i];
                     if (rg->rgn<0) continue;
-                    free(rg->retired); rg->retired=NULL;
+                    for (int ri=0;ri<MS_OSD_RETIRE;ri++){
+                        free(rg->retired[ri]); rg->retired[ri]=NULL;
+                    }
                 }
             }
             OSD_UNLOCK();
@@ -472,7 +512,9 @@ void imp_osd_stop(void)
             IMP_OSD_UnRegisterRgn(rg->rgn, s->grp);
             IMP_OSD_DestroyRgn(rg->rgn);
             free(rg->buf); rg->buf=NULL;
-            free(rg->retired); rg->retired=NULL;
+            for (int ri=0;ri<MS_OSD_RETIRE;ri++){
+                free(rg->retired[ri]); rg->retired[ri]=NULL;
+            }
             if (rg->font && rg->font!=&g_shared) font_cache_put(rg->font);
             rg->font=NULL;
             rg->rgn=-1;

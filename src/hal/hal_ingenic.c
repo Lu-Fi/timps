@@ -106,6 +106,17 @@ static int              g_isp_sensor_w, g_isp_sensor_h;  /* real sensor res from
 
 typedef struct {
     int chn, grp, codec, w, h;
+    int og;                      /* OSD group id spliced between fs and enc for
+                                  * this stream (imp_osd_setup), -1 = none: fs is
+                                  * bound straight to enc. Teardown must unbind
+                                  * the pairs that actually exist (M-1). */
+    int nbound;                  /* successful IMP_System_Bind calls for this
+                                  * slot (0..2) so teardown never unbinds a
+                                  * pair that was never bound */
+    int has_thr;                 /* pthread_create succeeded: join in stop.
+                                  * Slots are counted in g_nv as soon as their
+                                  * IMP channels exist (M8) so teardown frees
+                                  * them even when the thread never started. */
     volatile int run, active, idr_req;
     pthread_t thr;
 } vchan;
@@ -126,6 +137,7 @@ typedef struct {
     int          src;        /* hub source id (HUB_JPEG_SRC / HUB_JPEG_SRC_N) */
     int          w, h, fps;
     int          snapshot;   /* periodic file snapshot (dedicated chn only) */
+    int          has_thr;    /* pthread_create succeeded: join in stop (M8) */
     int64_t      last_snapshot_us; /* ms_now_us() of the last file write (M8) */
     volatile int run, active;
     pthread_t    thr;
@@ -391,24 +403,59 @@ static int isp_init(void)
     ret = IMP_ISP_Open();
     if (ret<0){ LOGE(MOD,"IMP_ISP_Open failed"); return -1; }
 
+    /* AddSensor/EnableSensor were not return-checked: with a wrong sensor
+     * model/i2c address they fail, yet init used to march on and bring up a
+     * pipeline that could never deliver a frame (silent no-video). Fail hard
+     * here instead, unwinding exactly what was already opened. */
 #if defined(PLATFORM_T40)||defined(PLATFORM_T41)
-    IMP_ISP_AddSensor(IMPVI_MAIN, &g_sensor);
-    IMP_ISP_EnableSensor(IMPVI_MAIN, &g_sensor);
+    if (IMP_ISP_AddSensor(IMPVI_MAIN, &g_sensor) < 0){
+        LOGE(MOD,"IMP_ISP_AddSensor failed (sensor=%s)", g_sensor.name);
+        IMP_ISP_Close();
+        return -1;
+    }
+    if (IMP_ISP_EnableSensor(IMPVI_MAIN, &g_sensor) < 0){
+        LOGE(MOD,"IMP_ISP_EnableSensor failed (sensor=%s)", g_sensor.name);
+        IMP_ISP_DelSensor(IMPVI_MAIN, &g_sensor);
+        IMP_ISP_Close();
+        return -1;
+    }
 #else
-    IMP_ISP_AddSensor(&g_sensor);
-    IMP_ISP_EnableSensor();
+    if (IMP_ISP_AddSensor(&g_sensor) < 0){
+        LOGE(MOD,"IMP_ISP_AddSensor failed (sensor=%s)", g_sensor.name);
+        IMP_ISP_Close();
+        return -1;
+    }
+    if (IMP_ISP_EnableSensor() < 0){
+        LOGE(MOD,"IMP_ISP_EnableSensor failed (sensor=%s)", g_sensor.name);
+        IMP_ISP_DelSensor(&g_sensor);
+        IMP_ISP_Close();
+        return -1;
+    }
 #endif
     /* on a fast restart the previous instance's IMP/rmem may not be released
      * yet - retry a few times before giving up instead of exiting the daemon */
     {
         int si_tries = 0;
         while (IMP_System_Init() < 0) {
-            if (++si_tries >= 5) { LOGE(MOD,"IMP_System_Init failed after %d tries", si_tries); return -1; }
+            if (++si_tries >= 5) {
+                LOGE(MOD,"IMP_System_Init failed after %d tries", si_tries);
+#if defined(PLATFORM_T40)||defined(PLATFORM_T41)
+                IMP_ISP_DisableSensor(IMPVI_MAIN);
+                IMP_ISP_DelSensor(IMPVI_MAIN, &g_sensor);
+#else
+                IMP_ISP_DisableSensor();
+                IMP_ISP_DelSensor(&g_sensor);
+#endif
+                IMP_ISP_Close();
+                return -1;
+            }
             LOGW(MOD,"IMP_System_Init busy, retry %d/5 in 1s (ISP still releasing?)", si_tries);
             usleep(1000000);
         }
     }
-    IMP_ISP_EnableTuning();
+    /* non-fatal: without tuning the image.* keys won't apply, but frames flow */
+    if (IMP_ISP_EnableTuning() < 0)
+        LOGW(MOD,"IMP_ISP_EnableTuning failed - image tuning unavailable");
     apply_image_tuning();   /* full image.* block incl. running_mode */
 #if defined(PLATFORM_T41)
     { IMPISPSensorFps fps={ .num=(uint32_t)g_hcfg->sensor.fps, .den=1 };
@@ -496,7 +543,13 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
     }
 #endif
     if (IMP_FrameSource_CreateChn(chn,&a)<0){ LOGE(MOD,"FS_CreateChn %d",chn); return -1; }
-    IMP_FrameSource_SetChnAttr(chn,&a);
+    if (IMP_FrameSource_SetChnAttr(chn,&a)<0){
+        /* attr rejected -> the channel would run with whatever defaults
+         * CreateChn left behind (wrong fps/size) or deliver nothing at all */
+        LOGE(MOD,"FS_SetChnAttr %d failed",chn);
+        IMP_FrameSource_DestroyChn(chn);
+        return -1;
+    }
     return 0;
 }
 
@@ -548,7 +601,13 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
     a.rcAttr.attrRcMode.attrH264Cbr.gopRelation  = 0;
 #endif
     if (IMP_Encoder_CreateChn(chn,&a)<0){ LOGE(MOD,"Encoder_CreateChn %d",chn); return -1; }
-    IMP_Encoder_RegisterChn(grp, chn);
+    if (IMP_Encoder_RegisterChn(grp, chn)!=0){
+        /* an unregistered channel never emits a stream (no SPS, no video) -
+         * fail loudly instead of leaving a dead-but-running pipeline */
+        LOGE(MOD,"Encoder_RegisterChn %d to group %d failed",chn,grp);
+        IMP_Encoder_DestroyChn(chn);
+        return -1;
+    }
     return 0;
 }
 
@@ -578,6 +637,7 @@ static void *video_thread(void *arg)
     int receiving=0;
     int64_t idle_since=0;
     int dbg_first=0, dbg_pollfail=0;   /* one-shot encoder diagnostics */
+    int dbg_startfail=0;               /* rate-limits StartRecvPic failures */
     int dbg_ovf=0;                     /* rate-limits the AU-overflow warning */
     while (vc->run) {
         /* on-demand: encode while there are consumers. The hub subscriber
@@ -603,10 +663,23 @@ static void *video_thread(void *arg)
              * the pipeline never backs up (publish is a no-op with 0 subs) */
         } else {
             idle_since = 0;
-            if (!receiving){ fs_use(vc->chn);
-                             IMP_Encoder_StartRecvPic(vc->chn); receiving=1;
-                             vc->idr_req=0; IMP_Encoder_RequestIDR(vc->chn);
-                             LOGI(MOD,"video chn%d streaming",vc->chn); }
+            if (!receiving){
+                fs_use(vc->chn);
+                /* an unchecked StartRecvPic failure used to flip receiving=1
+                 * anyway: the pipeline looked "streaming" but delivered
+                 * nothing (H6). Back off and retry while consumers remain. */
+                if (IMP_Encoder_StartRecvPic(vc->chn)!=0){
+                    if ((dbg_startfail++ % 20)==0)
+                        LOGE(MOD,"chn%d: StartRecvPic failed (attempt %d)",
+                             vc->chn, dbg_startfail);
+                    fs_unuse(vc->chn);
+                    usleep(200000);
+                    continue;
+                }
+                dbg_startfail=0; receiving=1;
+                vc->idr_req=0; IMP_Encoder_RequestIDR(vc->chn);
+                LOGI(MOD,"video chn%d streaming",vc->chn);
+            }
         }
         /* honor IDR requests from RTSP/HTTP threads here (single-thread IMP) */
         if (vc->idr_req){ vc->idr_req=0; IMP_Encoder_RequestIDR(vc->chn); }
@@ -681,6 +754,7 @@ static void *jpeg_thread(void *arg)
     uint8_t *jbuf = (uint8_t*)malloc(jcap);
     if (!jbuf){ LOGE(MOD,"no memory for JPEG buffer (%zu)",jcap); return NULL; }
     int receiving=0;
+    int dbg_jstartfail=0;              /* rate-limits StartRecvPic failures */
     int64_t next=0, idle_since=0;
     int64_t period = 1000000/(jc->fps>0?jc->fps:5);
     while (jc->run) {
@@ -712,8 +786,20 @@ static void *jpeg_thread(void *arg)
                 continue;
             }
         } else idle_since = 0;
-        if (!receiving){ fs_use(jc->fs_chn);
-                         IMP_Encoder_StartRecvPic(jc->chn); receiving=1; }
+        if (!receiving){
+            fs_use(jc->fs_chn);
+            /* same failure class as video_thread: never mark the channel
+             * receiving when StartRecvPic was rejected (H6) */
+            if (IMP_Encoder_StartRecvPic(jc->chn)!=0){
+                if ((dbg_jstartfail++ % 20)==0)
+                    LOGE(MOD,"jpeg chn%d: StartRecvPic failed (attempt %d)",
+                         jc->chn, dbg_jstartfail);
+                fs_unuse(jc->fs_chn);
+                usleep(200000);
+                continue;
+            }
+            dbg_jstartfail=0; receiving=1;
+        }
         int64_t now=ms_now_us();
         if (now<next){ usleep(next-now); }
         next=ms_now_us()+period;
@@ -803,11 +889,14 @@ static void jpeg_chan_start(int chn, int fs_chn, int src, int w, int h,
     jc->chn=chn; jc->fs_chn=fs_chn; jc->src=src; jc->w=w; jc->h=h;
     jc->fps=fps>0?fps:5; jc->snapshot=snapshot;
     jc->last_snapshot_us=0;  /* due immediately: first loop iteration takes one */
-    jc->run=1; jc->active=0;
+    jc->run=1; jc->active=0; jc->has_thr=0;
     if (pthread_create(&jc->thr,NULL,jpeg_thread,jc)!=0){
-        jc->run=0; g_nj--;           /* drop the slot: stop() must not join */
-        LOGE(MOD,"jpeg chn%d thread create failed",chn);
-    }
+        /* keep the slot (the IMP channel exists and must be destroyed in
+         * stop) but mark it thread-less so stop() never joins a pthread_t
+         * that was never created (M8) */
+        jc->run=0;
+        LOGE(MOD,"jpeg chn%d thread create failed (channel kept for teardown)",chn);
+    } else jc->has_thr=1;
 }
 
 /* dedicated JPEG channel: own framesource + own encoder group (jpeg.*) */
@@ -819,11 +908,34 @@ static int jpeg_setup(const ms_config *cfg)
     jv.buffers=2; jv.codec=MS_VC_H264; /* framesource is codec-agnostic */
     if (fs_create(chn,&jv)!=0) return -1;
     if (jpeg_enc_create(chn, cfg->jpeg.width, cfg->jpeg.height, cfg->jpeg.quality,
-                        cfg->jpeg.fps)!=0) return -1;
-    IMP_Encoder_CreateGroup(chn);
-    IMP_Encoder_RegisterChn(chn, chn);
+                        cfg->jpeg.fps)!=0){
+        IMP_FrameSource_DestroyChn(chn);
+        return -1;
+    }
+    /* the group/register/bind chain must succeed or the channel never emits
+     * a frame - unwind exactly what was created on each failure (H6/M8) */
+    if (IMP_Encoder_CreateGroup(chn)<0){
+        LOGE(MOD,"JPEG CreateGroup %d failed",chn);
+        IMP_Encoder_DestroyChn(chn);
+        IMP_FrameSource_DestroyChn(chn);
+        return -1;
+    }
+    if (IMP_Encoder_RegisterChn(chn, chn)!=0){
+        LOGE(MOD,"JPEG RegisterChn %d failed",chn);
+        IMP_Encoder_DestroyGroup(chn);
+        IMP_Encoder_DestroyChn(chn);
+        IMP_FrameSource_DestroyChn(chn);
+        return -1;
+    }
     IMPCell fs={DEV_ID_FS,chn,0}, enc={DEV_ID_ENC,chn,0};
-    IMP_System_Bind(&fs,&enc);
+    if (IMP_System_Bind(&fs,&enc)<0){
+        LOGE(MOD,"JPEG Bind fs%d->enc%d failed",chn,chn);
+        IMP_Encoder_UnRegisterChn(chn);
+        IMP_Encoder_DestroyGroup(chn);
+        IMP_Encoder_DestroyChn(chn);
+        IMP_FrameSource_DestroyChn(chn);
+        return -1;
+    }
     /* framesource is enabled on demand by jpeg_thread (fs_use/fs_unuse) */
     jpeg_chan_start(chn, chn, HUB_JPEG_SRC, cfg->jpeg.width, cfg->jpeg.height,
                     cfg->jpeg.fps, cfg->jpeg.snapshot_path[0]!=0);
@@ -1290,45 +1402,75 @@ static int ing_init(const ms_config *cfg)
 
 static int ing_start(const ms_config *cfg)
 {
-    g_nv=0;
+    g_nv=0; g_nj=0;
     for (int i=0;i<MS_MAX_VSTREAM;i++){
         if (!cfg->video[i].enabled) continue;
         const ms_vstream_cfg *v=&cfg->video[i];
         int chn=v->imp_chn, grp=v->imp_chn;
-        if (fs_create(chn,v)!=0) return -1;
+        if (fs_create(chn,v)!=0) goto fail;
         /* The encoder GROUP must exist before enc_create's
          * IMP_Encoder_RegisterChn(grp,chn): the canonical Ingenic order is
          * CreateGroup -> CreateChn -> RegisterChn. Older libimp (T23 and other
          * pre-ENC_NEW_API SoCs) rejects RegisterChn into a not-yet-created group,
          * so the channel stays unregistered and never emits a stream (no video,
          * no SPS). T31's newer libimp happened to tolerate the wrong order. */
-        IMP_Encoder_CreateGroup(grp);
-        if (enc_create(chn,grp,v)!=0) return -1;
-        /* optional per-stream JPEG encoder in the same group (videoN.jpeg) */
+        if (IMP_Encoder_CreateGroup(grp)<0){
+            LOGE(MOD,"Encoder_CreateGroup %d failed",grp);
+            IMP_FrameSource_DestroyChn(chn);
+            goto fail;
+        }
+        if (enc_create(chn,grp,v)!=0){
+            IMP_Encoder_DestroyGroup(grp);
+            IMP_FrameSource_DestroyChn(chn);
+            goto fail;
+        }
+        /* record the slot as soon as its IMP channels exist: g_nv drives the
+         * channel teardown (stop AND the failure path below), independent of
+         * whether the drain thread ever starts (M8) */
+        vchan *vc=&g_v[g_nv++];
+        vc->chn=chn; vc->grp=grp; vc->codec=v->codec;
+        vc->w=v->width; vc->h=v->height;
+        vc->og=-1; vc->nbound=0;
+        vc->run=0; vc->active=0; vc->idr_req=0; vc->has_thr=0;
+
+        /* optional per-stream JPEG encoder in the same group (videoN.jpeg);
+         * non-fatal: the video stream works without it (logged inside) */
         if (v->jpeg_enabled) jpeg_attach(cfg, i, grp);
 
         /* pipeline: FrameSource -> [OSD] -> Encoder. Every stream gets its
-         * own OSD group so overlays appear on all streams. */
+         * own OSD group so overlays appear on all streams. An unchecked
+         * failed bind used to leave a "running" pipeline that never moves a
+         * single frame (H6). */
         IMPCell fs  = { DEV_ID_FS,  chn, 0 };
         IMPCell enc = { DEV_ID_ENC, grp, 0 };
         int og = imp_osd_setup(cfg, i, v->width, v->height);
+        vc->og = og;                   /* teardown must unbind the REAL pairs */
         if (og >= 0) {
             IMPCell osd = { DEV_ID_OSD, og, 0 };
-            IMP_System_Bind(&fs,&osd);
-            IMP_System_Bind(&osd,&enc);
+            if (IMP_System_Bind(&fs,&osd)<0){
+                LOGE(MOD,"Bind fs%d->osd%d failed",chn,og);
+                goto fail;             /* slot recorded: teardown handles it */
+            }
+            vc->nbound=1;
+            if (IMP_System_Bind(&osd,&enc)<0){
+                LOGE(MOD,"Bind osd%d->enc%d failed",og,grp);
+                goto fail;
+            }
+            vc->nbound=2;
         } else {
-            IMP_System_Bind(&fs,&enc);
+            if (IMP_System_Bind(&fs,&enc)<0){
+                LOGE(MOD,"Bind fs%d->enc%d failed",chn,grp);
+                goto fail;
+            }
+            vc->nbound=1;
         }
         /* NOT enabled here: the framesource runs on demand (fs_use/fs_unuse
          * from the consumer threads) so an idle timps pumps no frames at all */
 
         hub_set_video_params(i, v->codec, v->width, v->height, v->fps);
-        g_v[g_nv].chn=chn; g_v[g_nv].grp=grp; g_v[g_nv].codec=v->codec;
-        g_v[g_nv].w=v->width; g_v[g_nv].h=v->height; g_v[g_nv].run=1;
-        /* count the slot only with a live thread: ing_stop must never join a
-         * pthread_t that was never created */
-        if (pthread_create(&g_v[g_nv].thr,NULL,video_thread,&g_v[g_nv])==0) g_nv++;
-        else { g_v[g_nv].run=0; LOGE(MOD,"video chn%d thread create failed",chn); }
+        vc->run=1;
+        if (pthread_create(&vc->thr,NULL,video_thread,vc)==0) vc->has_thr=1;
+        else { vc->run=0; LOGE(MOD,"video chn%d thread create failed",chn); }
     }
 
     imp_osd_start_updater();   /* one thread refreshes OSD on all streams */
@@ -1353,9 +1495,60 @@ static int ing_start(const ms_config *cfg)
         }
     }
 
-    if (cfg->jpeg.enabled) jpeg_setup(cfg);
+    /* non-fatal: video streams work without the dedicated JPEG channel;
+     * jpeg_setup unwinds its own partial state on failure */
+    if (cfg->jpeg.enabled && jpeg_setup(cfg)!=0)
+        LOGW(MOD,"dedicated JPEG channel unavailable");
     motion_sync(cfg);      /* start the IVS motion grid if motion.enabled */
     return 0;
+
+fail:
+    /* A stream's bring-up failed: tear down everything created so far so a
+     * failed start leaves NO IMP channels bound/created (M8). Only video
+     * slots and piggybacked JPEG channels can exist at this point (audio and
+     * the dedicated JPEG channel start after the loop). Threads first, then
+     * channels, mirroring ing_stop; the IMP UnBind/UnRegister calls are
+     * tolerated on never-bound/never-started objects. */
+    LOGE(MOD,"video pipeline bring-up failed - tearing down partial state");
+    for (int k=0;k<g_nv;k++) g_v[k].run=0;
+    for (int k=0;k<g_nj;k++) g_j[k].run=0;
+    act_wake();
+    for (int k=0;k<g_nv;k++) if (g_v[k].has_thr) pthread_join(g_v[k].thr,NULL);
+    for (int k=0;k<g_nj;k++) if (g_j[k].has_thr) pthread_join(g_j[k].thr,NULL);
+    for (int k=0;k<g_nj;k++){          /* piggybacks: encoder channel only */
+        IMP_Encoder_UnRegisterChn(g_j[k].chn);
+        IMP_Encoder_DestroyChn(g_j[k].chn);
+    }
+    g_nj=0;
+    int had_osd=0;
+    for (int k=0;k<g_nv;k++){
+        int c=g_v[k].chn, g=g_v[k].grp, og=g_v[k].og;
+        IMPCell f={DEV_ID_FS,c,0}, e={DEV_ID_ENC,g,0};
+        IMP_FrameSource_DisableChn(c);
+        /* unbind the pairs that were REALLY bound, downstream pair first.
+         * With OSD the pipeline is fs->osd->enc (M-1) - unbinding fs->enc
+         * there would leave both real bindings in place and the Destroy
+         * calls below would run against still-bound objects. */
+        if (og>=0){
+            had_osd=1;
+            IMPCell o={DEV_ID_OSD,og,0};
+            if (g_v[k].nbound>=2) IMP_System_UnBind(&o,&e);
+            if (g_v[k].nbound>=1) IMP_System_UnBind(&f,&o);
+        } else if (g_v[k].nbound>=1){
+            IMP_System_UnBind(&f,&e);
+        }
+        IMP_Encoder_UnRegisterChn(c);
+        IMP_Encoder_DestroyChn(c);
+        IMP_Encoder_DestroyGroup(g);
+        IMP_FrameSource_DestroyChn(c);
+    }
+    g_nv=0;
+    /* OSD groups/regions/fonts built by imp_osd_setup: destroy them AFTER
+     * the unbinds above (a bound group must not be destroyed). imp_osd_stop
+     * is global, skips streams that were never set up, and the updater
+     * thread only starts after the loop, so there is nothing to join. */
+    if (had_osd) imp_osd_stop();
+    return -1;
 }
 
 static void ing_set_active(int src, int on)
@@ -1395,9 +1588,11 @@ static void ing_stop(void)
     for (int i=0;i<g_nj;i++) g_j[i].run=0;
     g_arun=0;
     act_wake();
-    for (int i=0;i<g_nv;i++) pthread_join(g_v[i].thr,NULL);
+    /* join only slots whose pthread_create succeeded; the channels of
+     * thread-less slots are still destroyed below (M8) */
+    for (int i=0;i<g_nv;i++) if (g_v[i].has_thr) pthread_join(g_v[i].thr,NULL);
     if (had_audio) pthread_join(g_athr,NULL);
-    for (int i=0;i<g_nj;i++) pthread_join(g_j[i].thr,NULL);
+    for (int i=0;i<g_nj;i++) if (g_j[i].has_thr) pthread_join(g_j[i].thr,NULL);
     for (int i=0;i<g_nj;i++){
         jchan *jc=&g_j[i];
         if (jc->src==HUB_JPEG_SRC){
@@ -1417,18 +1612,37 @@ static void ing_stop(void)
         }
     }
     g_nj=0;
-    if (g_hcfg->osd.enabled) imp_osd_stop();
+
+    /* unbind the pipelines FIRST, downstream pair before upstream pair: with
+     * OSD the real bindings are fs->osd and osd->enc, not fs->enc (M-1), and
+     * imp_osd_stop below destroys the OSD groups - they must be unbound by
+     * then, as must the encoder/framesource channels destroyed after it. */
+    int had_osd = 0;
+    for (int i=0;i<g_nv;i++){
+        int chn=g_v[i].chn, grp=g_v[i].grp, og=g_v[i].og;
+        IMPCell fs={DEV_ID_FS,chn,0}, enc={DEV_ID_ENC,grp,0};
+        IMP_FrameSource_DisableChn(chn);
+        if (og>=0){
+            had_osd=1;
+            IMPCell osd={DEV_ID_OSD,og,0};
+            IMP_System_UnBind(&osd,&enc);
+            IMP_System_UnBind(&fs,&osd);
+        } else {
+            IMP_System_UnBind(&fs,&enc);
+        }
+    }
+    /* OSD groups also exist for privacy-only configs (osd.enabled==0), so key
+     * the teardown off the recorded group ids, not just the master switch */
+    if (g_hcfg->osd.enabled || had_osd) imp_osd_stop();
 
     for (int i=0;i<g_nv;i++){
         int chn=g_v[i].chn, grp=g_v[i].grp;
-        IMPCell fs={DEV_ID_FS,chn,0}, enc={DEV_ID_ENC,grp,0};
-        IMP_FrameSource_DisableChn(chn);
-        IMP_System_UnBind(&fs,&enc);
         IMP_Encoder_UnRegisterChn(chn);
         IMP_Encoder_DestroyChn(chn);
         IMP_Encoder_DestroyGroup(grp);
         IMP_FrameSource_DestroyChn(chn);
     }
+    g_nv=0;
     IMP_System_Exit();
 #if defined(PLATFORM_T40)||defined(PLATFORM_T41)
     IMP_ISP_DisableSensor(IMPVI_MAIN);

@@ -343,7 +343,7 @@ void msttf_set_ss(int ss)
 }
 
 /* blend 'color' onto img[idx] with additional alpha factor 'a' (0..1) */
-static void px_blend(uint32_t *img, int idx, uint32_t color, float a)
+static void px_blend(uint32_t *img, size_t idx, uint32_t color, float a)
 {
     a *= ((color>>24)&0xFF)/255.0f;
     if (a<=0.0f) return;
@@ -365,6 +365,12 @@ int msttf_render(msttf_font *f, const char *s, int pixel_h,
      * msttf_set_ss() were ever called concurrently (it isn't today - set
      * once at startup from osd.supersample - but this is free either way) */
     const int ss = g_ss;
+    /* H4: pixel_h derives from config font_size (live-settable via /control)
+     * scaled by the stream height - hard-clamp it HERE too, independent of
+     * any caller-side clamp, so the canvas math below can never be pushed
+     * toward overflow by a bad config value. */
+    if (pixel_h < 8)   pixel_h = 8;
+    if (pixel_h > 512) pixel_h = 512;
     float scale = (float)pixel_h / f->units_per_em;
     int ascent = (int)(f->units_per_em*1.0f);   /* use em box */
     (void)ascent;
@@ -375,17 +381,27 @@ int msttf_render(msttf_font *f, const char *s, int pixel_h,
     /* first pass: total advance width */
     int totalAdv=0; const char *q=s;
     for (; *q; q++){ int gid=glyph_index(f,(unsigned char)*q); totalAdv+=advance(f,gid); }
-    int W = (int)(totalAdv*scale) + 2*pad;
+    /* H4: bound the canvas. totalAdv is summed per character with no limit,
+     * so a long string at a big font size used to size W past any sane frame
+     * - and (size_t)W*H*4 on 32-bit could wrap and under-allocate, after
+     * which the (previously int-indexed) fill loops corrupted the heap.
+     * Compute in double/uint64_t and clamp both axes; 4096 comfortably
+     * covers every frame size this daemon can produce. */
+    double Wf = (double)totalAdv*scale + 2.0*pad;
+    int W = (Wf < 1.0) ? 1 : (Wf > 4096.0 ? 4096 : (int)Wf);
     int H = pixel_h + 2*pad;
-    if (W<1) W=1; if (H<1) H=1;
+    if (H<1) H=1; if (H>4096) H=4096;
     W = (W + 1) & ~1;   /* IMP_OSD needs an even picture width (avoids row shear) */
-    uint32_t *img=malloc((size_t)W*H*4);
+    uint64_t npx = (uint64_t)W * (uint64_t)H;
+    if (npx == 0 || npx > (uint64_t)4096*4096 ||
+        npx*4 > (uint64_t)SIZE_MAX) return -1;    /* keep the guard explicit */
+    uint32_t *img=malloc((size_t)(npx*4));
     if(!img) return -1;
-    for (int i=0;i<W*H;i++) img[i]=bg;
+    for (size_t i=0;i<(size_t)npx;i++) img[i]=bg;
     /* whole-string coverage plane (0..ss*ss): glyphs rasterize into this and
      * the composite runs ONCE afterwards, so an outline can be drawn under
      * the complete fill (no later glyph stroking over its neighbour's fill) */
-    uint8_t *gcov=calloc((size_t)W*H,1);
+    uint8_t *gcov=calloc((size_t)npx,1);
     if(!gcov){ free(img); return -1; }
 
     /* baseline near bottom (leave descent room) */
@@ -421,9 +437,19 @@ int msttf_render(msttf_font *f, const char *s, int pixel_h,
                  * below (polys are still freed and rendering continues with
                  * the next character, same as if the glyph rasterized to
                  * empty coverage). */
-                if (cov){
+                /* M16: the scanline crossing buffer used to be a fixed
+                 * float[128]; a glyph outline with more than 128 edge
+                 * crossings on one scanline silently dropped the excess,
+                 * and an odd RETAINED count then mis-paired every following
+                 * even-odd span (visual corruption, no memory error). Size
+                 * it to the worst case instead: one crossing per polyline
+                 * segment, i.e. the total point count of all contours. */
+                int maxint=0;
+                for (int i=0;i<npoly;i++) maxint+=polys[i].n;
+                float *xint = (cov && maxint>0)
+                            ? malloc((size_t)maxint*sizeof(float)) : NULL;
+                if (cov && xint){
                 /* supersample scanlines */
-                float xint[128];
                 for (int py=y0;py<y1;py++){
                     for (int sub=0;sub<ss;sub++){
                         float yc=py+(sub+0.5f)/ss;
@@ -434,7 +460,7 @@ int msttf_render(msttf_font *f, const char *s, int pixel_h,
                                 pt A=pl->p[j], B=pl->p[(j+1)%pl->n];
                                 if ((A.y<=yc&&B.y>yc)||(B.y<=yc&&A.y>yc)){
                                     float t=(yc-A.y)/(B.y-A.y);
-                                    if (nx<128) xint[nx++]=A.x+t*(B.x-A.x);
+                                    if (nx<maxint) xint[nx++]=A.x+t*(B.x-A.x);
                                 }
                             }
                         }
@@ -474,8 +500,9 @@ int msttf_render(msttf_font *f, const char *s, int pixel_h,
                     int c=gcov[py*W+px] + cov[(py-y0)*bw+(px-x0)];
                     gcov[py*W+px]=(uint8_t)(c>ss*ss ? ss*ss : c);
                 }
-                free(cov);
                 }
+                free(xint);
+                free(cov);
             }
         }
         for (int i=0;i<npoly;i++) free(polys[i].p);
@@ -486,7 +513,7 @@ int msttf_render(msttf_font *f, const char *s, int pixel_h,
     /* outline: dilate the coverage by 'outline' px (separable max filter,
      * O(W*H*outline)) and blend it in the outline color UNDER the fill */
     if (outline>0){
-        uint8_t *d1=malloc((size_t)W*H), *d2=malloc((size_t)W*H);
+        uint8_t *d1=malloc((size_t)npx), *d2=malloc((size_t)npx);
         if (d1 && d2){
             for (int y=0;y<H;y++){          /* horizontal max */
                 for (int x=0;x<W;x++){
@@ -506,13 +533,13 @@ int msttf_render(msttf_font *f, const char *s, int pixel_h,
                     d2[y*W+x]=(uint8_t)m;
                 }
             }
-            for (int i=0;i<W*H;i++)
+            for (size_t i=0;i<(size_t)npx;i++)
                 if (d2[i]) px_blend(img, i, oc, (float)d2[i]/(ss*ss));
         }
         free(d1); free(d2);
     }
     /* fill on top of (a possible) outline */
-    for (int i=0;i<W*H;i++)
+    for (size_t i=0;i<(size_t)npx;i++)
         if (gcov[i]) px_blend(img, i, fg, (float)gcov[i]/(ss*ss));
     free(gcov);
 

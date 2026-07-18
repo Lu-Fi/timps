@@ -92,7 +92,7 @@ TARGET_OBJS   := $(notdir $(TARGET_ALLSRC:.c=.o))
 # -Os + gc-sections keeps the binary small; static libimp for a single dropin.
 CFLAGS  ?= -std=c11 -D_GNU_SOURCE -Os -Wall -Wextra -Wno-unused-parameter -Wno-misleading-indentation \
            -Wno-stringop-truncation -ffunction-sections -fdata-sections
-LDFLAGS ?= -Wl,--gc-sections
+LDFLAGS ?= -Wl,--gc-sections -Wl,-z,relro,-z,now
 LIBS    ?= -lpthread -lrt -lm
 
 # Version baked into the binary (timps -v / startup log). git-describe for local

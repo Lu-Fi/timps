@@ -48,8 +48,8 @@ void ms_buf_free(ms_buf *b);
  * buffers don't stay ballooned. Normal frames fit under `soft` -> no realloc. */
 void ms_buf_reset(ms_buf *b, size_t soft);
 
-#endif
-
 /* base64 encode; returns bytes written (excludes NUL). dst must hold
  * >= ((n+2)/3)*4 + 1 bytes. */
 int ms_base64(char *dst, const uint8_t *src, int n);
+
+#endif
