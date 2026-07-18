@@ -710,7 +710,7 @@ if [ -n "$SSH_TARGET" ] && want 16 ssh; then
 	errs=$(sshx "logread 2>/dev/null | grep -icE 'error|fail|assert|segfault|oom|IMP_.*failed'")
 	[ "${errs:-0}" -le 2 ] && ok "logread: ${errs:-0} error-ish lines" || warn "logread: ${errs} error-ish lines (review with: logread | grep -iE 'error|fail')"
 	# config integrity: glued lines (two '=') or duplicate keys
-	glued=$(sshx "grep -cE '=[^#]*=' /etc/timps.conf 2>/dev/null")
+	glued=$(sshx "sed 's/#.*//' /etc/timps.conf 2>/dev/null | grep -cE '=[^=]*='")
 	dup=$(sshx "grep -vE '^[[:space:]]*#' /etc/timps.conf 2>/dev/null | sed 's/=.*//; s/[[:space:]]//g' | sort | uniq -d | grep -c .")
 	[ "${glued:-0}" -eq 0 ] && ok "/etc/timps.conf: no glued 'a=b c=d' lines" || bad "/etc/timps.conf has ${glued} glued line(s) - config-write bug"
 	[ "${dup:-0}" -eq 0 ] && ok "/etc/timps.conf: no duplicate keys" || warn "/etc/timps.conf has ${dup} duplicate key(s)"
@@ -720,7 +720,7 @@ if [ -n "$SSH_TARGET" ] && want 16 ssh; then
 		curl -s -o /dev/null --max-time 5 -u "$HTTP_USER:$HTTP_PASS" -X POST "$(http_base)/control" \
 			-d "{\"audio\":{\"agc\":$((i%2))}}" &
 	done; wait 2>/dev/null
-	glued2=$(sshx "grep -cE '=[^#]*=' /etc/timps.conf 2>/dev/null")
+	glued2=$(sshx "sed 's/#.*//' /etc/timps.conf 2>/dev/null | grep -cE '=[^=]*='")
 	[ "${glued2:-0}" -eq 0 ] && ok "after 20 rapid writes: config still clean (no glued lines)" || bad "rapid writes corrupted /etc/timps.conf (${glued2} glued) - config race not fixed"
 fi
 
