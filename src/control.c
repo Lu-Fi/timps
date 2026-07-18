@@ -221,8 +221,7 @@ void control_apply_json(const char *json)
      * "mute" is the live mic mute: the HAL audio thread stops publishing
      * captured frames while it is set (no IMP call needed). */
     static const char *const AUD_LIVE[] = {
-        "volume","gain","alc_gain","high_pass","agc",
-        "agc_target_dbfs","agc_compression_db","ns","mute"
+        "volume","gain","alc_gain","mute"
     };
     /* audio.* persist-only keys: SetPubAttr/encoder-init attributes (plus
      * speaker/stereo keys without a runtime path). They go through the same
@@ -230,6 +229,7 @@ void control_apply_json(const char *json)
      * them as "applies on restart" instead of touching the running input. */
     static const char *const AUD_REST[] = {
         "enabled","codec","samplerate","channels","bitrate",
+        "high_pass","agc","agc_target_dbfs","agc_compression_db","ns",
         "force_stereo","spk_enabled","spk_volume","spk_gain"
     };
     static const char *const OSD[] = {
@@ -495,7 +495,10 @@ static const char *const AUD_CAPS[] = {
 #ifdef AUDIO_HAS_ALC_GAIN
     "alc_gain",
 #endif
-    "high_pass","agc","agc_target_dbfs","agc_compression_db","ns",
+    /* NOTE: high_pass/agc/agc_target_dbfs/agc_compression_db/ns are NOT here:
+     * they are restart-required (libimp runs them on its own record thread and
+     * frees them unlocked, so a live toggle races the vendor thread -> UAF).
+     * The WebUI shows them as "applies on restart" like codec/samplerate. */
     "mute",   /* live mic mute: publish gate in the HAL, works on every SoC */
 };
 
@@ -539,7 +542,7 @@ int control_motion_json(char *buf, size_t cap, const ms_motion_status *st)
 {
     size_t o = 0;
     #define APP(...) do { \
-        int _n = snprintf(buf+o, o<cap?cap-o:0, __VA_ARGS__); \
+        int _n = snprintf(o<cap?buf+o:buf, o<cap?cap-o:0, __VA_ARGS__); \
         if (_n>0) o += (size_t)_n; \
     } while (0)
     APP("{\"available\":%d,\"enabled\":%d,\"cols\":%d,"
@@ -560,7 +563,7 @@ int control_get_json(char *buf, size_t cap)
     const ms_config *c = &g_cfg;
     size_t o = 0;
     #define APP(...) do { \
-        int _n = snprintf(buf+o, o<cap?cap-o:0, __VA_ARGS__); \
+        int _n = snprintf(o<cap?buf+o:buf, o<cap?cap-o:0, __VA_ARGS__); \
         if (_n>0) o += (size_t)_n; \
     } while (0)
     /* caps FIRST: the CGI bridges scan for the *last* occurrence of a key,
@@ -697,7 +700,7 @@ int control_get_json(char *buf, size_t cap)
         float dn_b = -1.0f, dn_tg = -1.0f, dn_lu = -1.0f;
         daynight_get_status(&dn_en, &dn_mode, &dn_b, &dn_tg, &dn_lu);
         APP(",\"daynight\":");
-        int _dn = control_daynight_json(buf+o, o<cap?cap-o:0,
+        int _dn = control_daynight_json(o<cap?buf+o:buf, o<cap?cap-o:0,
                                         dn_en, dn_mode, dn_b, dn_tg, dn_lu);
         if (_dn>0) o += (size_t)_dn;
     }
@@ -706,7 +709,7 @@ int control_get_json(char *buf, size_t cap)
         ms_motion_status mst;
         motion_get_status(&mst);
         APP(",\"motion\":");
-        int _mn = control_motion_json(buf+o, o<cap?cap-o:0, &mst);
+        int _mn = control_motion_json(o<cap?buf+o:buf, o<cap?cap-o:0, &mst);
         if (_mn>0) o += (size_t)_mn;
     }
     {   /* local recording: live status + the persisted config keys, so the
@@ -749,7 +752,7 @@ int control_get_json(char *buf, size_t cap)
     }
     APP("}");
     #undef APP
-    if (o >= cap){ buf[cap-1]=0; return (int)cap-1; }   /* truncated */
+    if (o >= cap){ if (cap) buf[cap-1]=0; return cap ? (int)cap-1 : 0; }   /* truncated */
     return (int)o;
 }
 #endif /* USE_CONTROL */

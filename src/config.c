@@ -568,10 +568,12 @@ static void set_kv(ms_config *c, const char *key, const char *val)
             rc->mode=(!strcasecmp(val,"motion"))?1:(!strcasecmp(val,"continuous"))?0:pint(val);
         else if(!strcmp(k,"dir"))copystr(rc->dir,val,sizeof rc->dir);
         else if(!strcmp(k,"name"))copystr(rc->name,val,sizeof rc->name);
-        else if(!strcmp(k,"segment_s")||!strcmp(k,"segment"))rc->segment_s=pint(val);
-        else if(!strcmp(k,"pre_roll_s")||!strcmp(k,"pre_roll"))rc->pre_roll_s=pint(val);
-        else if(!strcmp(k,"post_roll_s")||!strcmp(k,"post_roll"))rc->post_roll_s=pint(val);
-        else if(!strcmp(k,"min_free_mb"))rc->min_free_mb=pint(val);
+        /* clamp: 0 keeps "no rotation" (documented), negative/absurd is rejected
+         * so a garbage value can't silently disable rotation or set wild rolls */
+        else if(!strcmp(k,"segment_s")||!strcmp(k,"segment"))rc->segment_s=pint_cl(val,0,86400);
+        else if(!strcmp(k,"pre_roll_s")||!strcmp(k,"pre_roll"))rc->pre_roll_s=pint_cl(val,0,60);
+        else if(!strcmp(k,"post_roll_s")||!strcmp(k,"post_roll"))rc->post_roll_s=pint_cl(val,0,300);
+        else if(!strcmp(k,"min_free_mb"))rc->min_free_mb=pint_cl(val,0,1048576);
         else if(!strcmp(k,"audio"))rc->audio=pbool(val);
         else LOGW(MOD,"unknown key %s",key);
         return;
