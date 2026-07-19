@@ -146,6 +146,31 @@ video0.jpeg_chn     = 3         # unique IMP encoder channel
 video1.jpeg         = true      # JPEG at video1 resolution (e.g. 640x360)
 video1.jpeg_chn     = 4
 
+# ---- image rotation (videoN.rotation) -------------------------------------
+# 0 | 90 | 180 | 270. 90 = clockwise. Restart-required (applied at build time
+# of the pipeline). The advertised/recorded dimensions swap for 90/270 (a
+# rotated 1920x1080 becomes 1080x1920). See docs/rotation.md for full detail.
+#
+# OFF BY DEFAULT - must be enabled at build time (menuconfig), like AAC/TLS:
+#   BR2_PACKAGE_TIMPS_ROTATE      -> 180 on all SoCs + HW 90/270 on T31/T40/T41
+#   BR2_PACKAGE_TIMPS_SW_ROTATE   -> software 90/270 on T23 (needs the above)
+# Without these, 90/180/270 in this file are ignored (coerced to 0 with a warn).
+#
+# What each chip supports:
+#   T40, T41 : 90/180/270 in HARDWARE (I2D) - full fps, OSD+privacy work, any res
+#   T31      : 90/180/270 - 90/270 is libimp SOFTWARE rotate: <=1280x704 @ <=15fps,
+#              64-px aligned, extra rmem, no soft-zoom
+#   T23      : 180 in HW; 90/270 only with SW_ROTATE = CPU transpose + software
+#              H.264 encode. H264 only, SW text-OSD only (no logo/privacy),
+#              substream-class res (~<=704x576 @ <=15fps). Snapshot+MJPEG work,
+#              but JPEG needs the rotated width (= source HEIGHT) %32==0: use
+#              e.g. 1280x704 -> 704x1280, not 1280x720.
+#   T10/T20/T21/T30/C100 : 180 only (no 90/270 primitive)
+#
+# Cost: 180 + HW 90/270 add ~none (binary +<1KB, no runtime cost). The T23 SW
+# path adds ~7KB binary AND ~6MB of frame buffers + ~1 CPU core per rotated
+# 720x1280 stream - hence the substream-class recommendation.
+
 # ---- main video stream (channel 0) ----
 video0.enabled   = 1
 video0.codec     = h264      # h264 | h265
@@ -160,7 +185,7 @@ video0.profile   = 2         # 0 baseline 1 main 2 high
 video0.qp        = 35
 video0.min_qp    = 20
 video0.max_qp    = 45
-video0.rotation  = 0         # 0 | 90 | 270  (SoC dependent)
+video0.rotation  = 0         # 0|90|180|270 - build-gated & SoC-dependent (see block above)
 video0.buffers   = 2
 video0.rtsp_path = /ch0
 video0.imp_chn   = 0

@@ -27,6 +27,16 @@ USE_CONTROL   ?= 1          # live control endpoint (/control); optional, on by 
 USE_DAYNIGHT  ?= 1          # native automatic day/night detection thread; on by default (0 = off)
 USE_TLS       ?= 0          # 1 = HTTPS + RTSPS via mbedTLS (needs -lmbedtls...); off unless the lib is present
 USE_SRT       ?= 0          # 1 = MPEG-TS over SRT output via libsrt; off unless the lib is present
+USE_ROTATE    ?= 0          # 1 = image rotation feature (180 on all SoCs; HW 90/270 on
+                            #     T40/T41 + T31). Default off = no ROT_HAS_* macros defined,
+                            #     so all rotation code compiles out (byte-identical build).
+USE_SW_ROTATE ?= 0          # 1 = opt-in software 90/270 rotation on T23 (CPU transpose +
+                            #     unbound YuvEncode; no HW OSD/privacy on rotated streams).
+                            #     Only effective with PLATFORM=T23; default off = byte-identical build.
+                            #     Implies USE_ROTATE (the SW path is part of the rotation feature).
+ifeq ($(USE_SW_ROTATE),1)
+USE_ROTATE    := 1
+endif
 HOSTCC        ?= cc
 
 # Vendored Ingenic IMP headers (from gtxaspec/ingenic-headers) live under
@@ -81,7 +91,8 @@ BASE := src/util.c src/log.c src/config.c src/frame.c src/fanqueue.c src/net.c \
         src/rtsp/rtp.c src/rtsp/rtsp.c src/mp4/fmp4.c src/mp4/httpd.c src/record.c src/timelapse.c src/srt.c src/main.c
 
 TARGET_SRC := $(BASE) src/hal/osd_text.c src/hal/msttf.c src/hal/osd_vars.c src/hal/hal_ingenic.c \
-              src/hal/imp_osd.c src/hal/imp_motion.c src/control.c src/events.c src/daynight.c
+              src/hal/imp_osd.c src/hal/imp_motion.c src/control.c src/events.c src/daynight.c \
+              $(if $(filter 1,$(USE_SW_ROTATE)),src/hal/nv12_rot.c)
 SIM_SRC    := $(BASE) src/hal/osd_text.c src/hal/hal_sim.c src/hal/imp_motion.c src/control.c src/events.c src/daynight.c
 
 # full target source list (+ optional tls.c) and the .o names (unique basenames)
@@ -151,19 +162,22 @@ target:
 	  $(if $(filter 1,$(USE_DAYNIGHT)),-DUSE_DAYNIGHT) \
 	  $(if $(filter 1,$(USE_TLS)),-DUSE_TLS) \
 	  $(if $(filter 1,$(USE_SRT)),-DUSE_SRT) \
+	  $(if $(filter 1,$(USE_ROTATE)),-DUSE_ROTATE) \
+	  $(if $(filter 1,$(USE_SW_ROTATE)),-DMS_ENABLE_SW_ROTATE) \
 	  -DHAL_INGENIC -DPLATFORM_$(PLATFORM) -DMS_VERSION='"$(VERSION)"' -Isrc -I$(IMP_INC) -I$(IMP_INC)/imp \
 	  -c $(TARGET_ALLSRC)
 	$(LINK_DRV) $(TARGET_OBJS) \
 	  $(LDFLAGS) $(if $(IMP_LIB),-L$(IMP_LIB)) $(IMPLIBS) \
 	  $(if $(filter 1,$(USE_FAAC)),$(FAACLIB)) $(LIBS) -o $(BIN)
 	@rm -f $(TARGET_OBJS)
-	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT))"
+	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT) USE_ROTATE=$(USE_ROTATE) USE_SW_ROTATE=$(USE_SW_ROTATE))"
 
 sim:
 	$(HOSTCC) $(CFLAGS) -DMS_VERSION='"$(VERSION)"' $(if $(filter 1,$(USE_CONTROL)),-DUSE_CONTROL) \
 	  $(if $(filter 1,$(USE_DAYNIGHT)),-DUSE_DAYNIGHT) \
+	  $(if $(filter 1,$(USE_ROTATE)),-DUSE_ROTATE) \
 	  -Isrc $(SIM_SRC) $(LDFLAGS) -lpthread -lm -o $(BIN)-sim
-	@echo "built $(BIN)-sim (host simulation backend, USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT))"
+	@echo "built $(BIN)-sim (host simulation backend, USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_ROTATE=$(USE_ROTATE))"
 
 strip: target
 	$(CROSS_COMPILE)strip $(BIN)
