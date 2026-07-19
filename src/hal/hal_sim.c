@@ -196,7 +196,11 @@ static int sim_start(const ms_config *cfg)
          * the stream as PCMU/8000 */
         int asr = cfg->audio.samplerate;
         if (cfg->audio.codec==MS_AC_PCMA || cfg->audio.codec==MS_AC_PCMU) asr = 8000;
-        hub_set_audio_params(cfg->audio.codec,asr,cfg->audio.channels);
+        /* mirror hal_ingenic's channel rule: 2 = simulated stereo (dual-mono),
+         * AAC only - G.711 has no standard stereo payload and stays mono */
+        int ach = (cfg->audio.channels==2 || cfg->audio.force_stereo) ? 2 : 1;
+        if (cfg->audio.codec!=MS_AC_AAC) ach = 1;
+        hub_set_audio_params(cfg->audio.codec,asr,ach);
         strncpy(g_aud.path,cfg->sim_audio,sizeof g_aud.path-1);
         g_aud.samplerate=asr; g_aud.run=1; g_aud.active=0;
         pthread_create(&g_aud.thr,NULL,aud_thread,&g_aud);

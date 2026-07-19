@@ -423,8 +423,22 @@ static void *rec_thread(void *arg)
             if (fanqueue_init(&q,REC_QCAP)){ usleep(300000); continue; }
             if (hub_subscribe(chn,&q)!=0){ fanqueue_free(&q); usleep(500000); continue; }
             int ac=MS_AC_NONE,asr=0,ach=0;
-            if (g_rc->record.audio && hub_get_audio(&ac,&asr,&ach) && ac==MS_AC_AAC)
+            int have_a = hub_get_audio(&ac,&asr,&ach);
+            if (g_rc->record.audio && have_a && ac==MS_AC_AAC)
                 sub_audio = (hub_subscribe(HUB_AUDIO_SRC,&q)==0);
+            else if (g_rc->record.audio){
+                /* B5: the fMP4 muxer only carries AAC. With G.711 or audio off
+                 * (USE_FAAC=0 falls back to G.711) recordings come out video-
+                 * only - say so once instead of silently dropping the track. */
+                static int aac_warned;
+                if (!aac_warned){
+                    aac_warned=1;
+                    LOGW(MOD,"record.audio=1 but audio codec is %s - recordings "
+                             "are video-only; AAC (build with USE_FAAC=1) required",
+                         ac==MS_AC_PCMU?"g711u":ac==MS_AC_PCMA?"g711a":
+                         have_a?"unknown":"none/disabled");
+                }
+            }
             hub_request_idr(chn); subscribed=1; sub_chn=chn;
         }
 

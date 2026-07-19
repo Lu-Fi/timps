@@ -497,6 +497,19 @@ void imp_osd_privacy_apply(int stream, int item)
     }
     OSD_UNLOCK();
 }
+
+/* B3: /control caps honesty - lets control.c report privacy.available=1 only
+ * when a group actually exists to apply masks onto (see imp_osd.h). Locked:
+ * a live streamer restart tears groups down while /control keeps serving. */
+int imp_osd_group_active(int stream)
+{
+    int on;
+    if (stream<0 || stream>=MS_MAX_VSTREAM) return 0;
+    OSD_LOCK();
+    on = g_os[stream].used ? 1 : 0;
+    OSD_UNLOCK();
+    return on;
+}
 #endif /* USE_CONTROL */
 
 void imp_osd_stop(void)
@@ -538,5 +551,6 @@ void imp_osd_stop(void){}
 #ifdef USE_CONTROL
 void imp_osd_apply(int stream, int item){ (void)stream; (void)item; }
 void imp_osd_privacy_apply(int stream, int item){ (void)stream; (void)item; }
+int  imp_osd_group_active(int stream){ (void)stream; return 0; }
 #endif
 #endif

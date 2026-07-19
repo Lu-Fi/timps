@@ -334,7 +334,9 @@ static void set_osd_item(ms_osd_item *o, const char *k, const char *val)
      * rasterizer additionally hard-clamps its own pixel height (8..512). */
     else if (!strcmp(k,"font_size")) o->font_size=pint_cl(val,8,256);
     else if (!strcmp(k,"color")||!strcmp(k,"font_color")) o->color=phex(val);
-    else if (!strcmp(k,"transparency")) o->transparency=pint(val);
+    /* imp_osd.c feeds this straight into the group attr's uint8_t fgAlhpa:
+     * clamp so e.g. 300 doesn't wrap to 44 while the config echoes 300 */
+    else if (!strcmp(k,"transparency")) o->transparency=pint_cl(val,0,255);
     else if (!strcmp(k,"outline")||!strcmp(k,"stroke")) o->outline=pint(val);
     else if (!strcmp(k,"outline_color")||!strcmp(k,"stroke_color")) o->outline_color=phex(val);
     else if (!strcmp(k,"font_path")) copystr(o->font_path,val,128);
@@ -393,29 +395,38 @@ static void set_kv(ms_config *c, const char *key, const char *val)
         return;
     }
     if (!strncmp(key,"image.",6)){
+        /* continuous ISP knobs clamped at parse to the IMP consumer's domain
+         * (hal_ingenic.c casts them to unsigned char / uint32_t / uint16_t):
+         * without the clamp an out-of-range value wraps at the cast while the
+         * config keeps echoing the raw number - applied != persisted.
+         * Ranges from the T31/T23 imp_isp.h docs: 0..255 for the uchar knobs
+         * and the strength/gain fields, 0..10 for highlight_depress/
+         * backlight_compensation ([0-10], 0 = off), 0..65535 for the uint16_t
+         * manual WB gains. Enums/bools (running_mode/anti_flicker/
+         * core_wb_mode/hflip/vflip) are validated by their consumers. */
         const char *k=key+6; ms_image_cfg *m=&c->image;
-        if(!strcmp(k,"brightness"))m->brightness=pint(val);
-        else if(!strcmp(k,"contrast"))m->contrast=pint(val);
-        else if(!strcmp(k,"saturation"))m->saturation=pint(val);
-        else if(!strcmp(k,"sharpness"))m->sharpness=pint(val);
-        else if(!strcmp(k,"hue"))m->hue=pint(val);
+        if(!strcmp(k,"brightness"))m->brightness=pint_cl(val,0,255);
+        else if(!strcmp(k,"contrast"))m->contrast=pint_cl(val,0,255);
+        else if(!strcmp(k,"saturation"))m->saturation=pint_cl(val,0,255);
+        else if(!strcmp(k,"sharpness"))m->sharpness=pint_cl(val,0,255);
+        else if(!strcmp(k,"hue"))m->hue=pint_cl(val,0,255);
         else if(!strcmp(k,"vflip"))m->vflip=pbool(val);
         else if(!strcmp(k,"hflip"))m->hflip=pbool(val);
         else if(!strcmp(k,"running_mode"))m->running_mode=pint(val);
         else if(!strcmp(k,"anti_flicker"))m->anti_flicker=pint(val);
-        else if(!strcmp(k,"ae_compensation"))m->ae_compensation=pint(val);
-        else if(!strcmp(k,"max_again"))m->max_again=pint(val);
-        else if(!strcmp(k,"max_dgain"))m->max_dgain=pint(val);
-        else if(!strcmp(k,"sinter_strength"))m->sinter_strength=pint(val);
-        else if(!strcmp(k,"temper_strength"))m->temper_strength=pint(val);
-        else if(!strcmp(k,"dpc_strength"))m->dpc_strength=pint(val);
-        else if(!strcmp(k,"defog_strength"))m->defog_strength=pint(val);
-        else if(!strcmp(k,"drc_strength"))m->drc_strength=pint(val);
-        else if(!strcmp(k,"highlight_depress"))m->highlight_depress=pint(val);
-        else if(!strcmp(k,"backlight_compensation"))m->backlight_compensation=pint(val);
+        else if(!strcmp(k,"ae_compensation"))m->ae_compensation=pint_cl(val,0,255);
+        else if(!strcmp(k,"max_again"))m->max_again=pint_cl(val,0,255);
+        else if(!strcmp(k,"max_dgain"))m->max_dgain=pint_cl(val,0,255);
+        else if(!strcmp(k,"sinter_strength"))m->sinter_strength=pint_cl(val,0,255);
+        else if(!strcmp(k,"temper_strength"))m->temper_strength=pint_cl(val,0,255);
+        else if(!strcmp(k,"dpc_strength"))m->dpc_strength=pint_cl(val,0,255);
+        else if(!strcmp(k,"defog_strength"))m->defog_strength=pint_cl(val,0,255);
+        else if(!strcmp(k,"drc_strength"))m->drc_strength=pint_cl(val,0,255);
+        else if(!strcmp(k,"highlight_depress"))m->highlight_depress=pint_cl(val,0,10);
+        else if(!strcmp(k,"backlight_compensation"))m->backlight_compensation=pint_cl(val,0,10);
         else if(!strcmp(k,"core_wb_mode"))m->core_wb_mode=pint(val);
-        else if(!strcmp(k,"wb_rgain"))m->wb_rgain=pint(val);
-        else if(!strcmp(k,"wb_bgain"))m->wb_bgain=pint(val);
+        else if(!strcmp(k,"wb_rgain"))m->wb_rgain=pint_cl(val,0,65535);
+        else if(!strcmp(k,"wb_bgain"))m->wb_bgain=pint_cl(val,0,65535);
         else LOGW(MOD,"unknown key %s",key);
         return;
     }
@@ -424,16 +435,23 @@ static void set_kv(ms_config *c, const char *key, const char *val)
         if(!strcmp(k,"enabled"))c->audio.enabled=pbool(val);
         else if(!strcmp(k,"codec"))c->audio.codec=pacodec(val);
         else if(!strcmp(k,"samplerate"))c->audio.samplerate=pint(val);
-        else if(!strcmp(k,"channels"))c->audio.channels=pint(val);
+        /* 1 = mono (native), 2 = simulated stereo (mono mic duplicated to
+         * L=R, AAC only) - anything else would put a bogus channel count in
+         * the AAC ASC / SDP / fMP4 stsd */
+        else if(!strcmp(k,"channels"))c->audio.channels=pint_cl(val,1,2);
         else if(!strcmp(k,"bitrate"))c->audio.bitrate_kbps=pint(val);
         else if(!strcmp(k,"volume"))c->audio.volume=pint(val);
         else if(!strcmp(k,"gain"))c->audio.gain=pint(val);
         else if(!strcmp(k,"high_pass"))c->audio.high_pass=pbool(val);
         else if(!strcmp(k,"agc"))c->audio.agc=pbool(val);
-        else if(!strcmp(k,"ns"))c->audio.ns=pint(val);
+        /* clamped to the IMP domains (imp_audio.h): IMP_AI_EnableNs mode
+         * [0-3], IMPAudioAgcConfig TargetLevelDbfs [0-31] /
+         * CompressionGaindB [0-90] - out-of-range used to be silently
+         * rejected by libimp while the config kept the raw value */
+        else if(!strcmp(k,"ns"))c->audio.ns=pint_cl(val,0,3);
         else if(!strcmp(k,"alc_gain"))c->audio.alc_gain=pint(val);
-        else if(!strcmp(k,"agc_target_dbfs"))c->audio.agc_target_dbfs=pint(val);
-        else if(!strcmp(k,"agc_compression_db"))c->audio.agc_compression_db=pint(val);
+        else if(!strcmp(k,"agc_target_dbfs"))c->audio.agc_target_dbfs=pint_cl(val,0,31);
+        else if(!strcmp(k,"agc_compression_db"))c->audio.agc_compression_db=pint_cl(val,0,90);
         else if(!strcmp(k,"mute"))c->audio.mute=pbool(val);
         else if(!strcmp(k,"force_stereo"))c->audio.force_stereo=pbool(val);
         else if(!strcmp(k,"spk_enabled"))c->audio.spk_enabled=pbool(val);
@@ -547,10 +565,26 @@ static void set_kv(ms_config *c, const char *key, const char *val)
                 c->motion.rows = v2;
             }
         }
-        else if(!strcmp(k,"roi_x"))c->motion.roi_x=pint(val);
-        else if(!strcmp(k,"roi_y"))c->motion.roi_y=pint(val);
-        else if(!strcmp(k,"roi_w"))c->motion.roi_w=pint(val);
-        else if(!strcmp(k,"roi_h"))c->motion.roi_h=pint(val);
+        else if(!strcmp(k,"roi_x")||!strcmp(k,"roi_y")||
+                !strcmp(k,"roi_w")||!strcmp(k,"roi_h")){
+            /* B6: legacy single-ROI keys - still parsed/persisted for compat
+             * but NOTHING consumes them anymore (the cell grid replaced them).
+             * Warn once when a non-default (non-zero) value is set so a user
+             * isn't silently losing an ROI restriction they think is active. */
+            int v2=pint(val);
+            if      (k[4]=='x') c->motion.roi_x=v2;
+            else if (k[4]=='y') c->motion.roi_y=v2;
+            else if (k[4]=='w') c->motion.roi_w=v2;
+            else                c->motion.roi_h=v2;
+            if (v2!=0){
+                static int roi_warned;
+                if (!roi_warned){
+                    roi_warned=1;
+                    LOGW(MOD,"motion.roi_* is deprecated and IGNORED - use the "
+                             "motion grid (motion.cols/rows + cells) instead");
+                }
+            }
+        }
         else if(!strcmp(k,"cooldown_ms"))c->motion.cooldown_ms=pint(val);
         else if(!strcmp(k,"hold_ms")){ int v2=pint(val); c->motion.hold_ms = v2<0?0:v2; }
         else if(!strcmp(k,"skip_frames")){ int v2=pint(val); c->motion.skip_frames = v2<1?1:v2; }
