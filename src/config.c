@@ -439,7 +439,7 @@ static void set_kv(ms_config *c, const char *key, const char *val)
          * L=R, AAC only) - anything else would put a bogus channel count in
          * the AAC ASC / SDP / fMP4 stsd */
         else if(!strcmp(k,"channels"))c->audio.channels=pint_cl(val,1,2);
-        else if(!strcmp(k,"bitrate"))c->audio.bitrate_kbps=pint(val);
+        else if(!strcmp(k,"bitrate"))c->audio.bitrate_kbps=pint_cl(val,8,320);
         else if(!strcmp(k,"volume"))c->audio.volume=pint(val);
         else if(!strcmp(k,"gain"))c->audio.gain=pint(val);
         else if(!strcmp(k,"high_pass"))c->audio.high_pass=pbool(val);

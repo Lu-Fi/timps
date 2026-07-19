@@ -515,6 +515,7 @@ int imp_osd_group_active(int stream)
 void imp_osd_stop(void)
 {
     if (g_run){ g_run=0; pthread_join(g_thr,NULL); }
+    OSD_LOCK();                     /* schliesst /control-Leser (imp_osd_group_active) aus */
     for (int si=0; si<MS_MAX_VSTREAM; si++){
         osd_stream *s=&g_os[si];
         if (!s->used) continue;
@@ -542,6 +543,7 @@ void imp_osd_stop(void)
         IMP_OSD_DestroyGroup(s->grp);
         s->used=0;
     }
+    OSD_UNLOCK();
     if (g_shared_ok){ msttf_free(&g_shared); g_shared_ok=0; }
 }
 #else
