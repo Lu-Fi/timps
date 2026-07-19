@@ -14,6 +14,7 @@
 #include "../codec/g711.h"
 #include "../isp_caps.h"
 #include "../audio_caps.h"
+#include "../rotate_caps.h"   /* ms_vstream_eff_dims (post-rotation dims) */
 #include "imp_osd.h"
 #include "imp_motion.h"
 
@@ -566,6 +567,7 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
 static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
 {
     IMPEncoderChnAttr a; memset(&a,0,sizeof a);
+    int ew, eh; ms_vstream_eff_dims(v,&ew,&eh);   /* post-rotation picture dims */
 #ifdef ENC_NEW_API
     IMPEncoderProfile prof = (v->codec==MS_VC_H265)
         ? IMP_ENC_PROFILE_HEVC_MAIN
@@ -581,7 +583,7 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
         default:                   rc=IMP_ENC_RC_MODE_CBR; break;
     }
     IMP_Encoder_SetDefaultParam(&a, prof, rc,
-        v->width, v->height, v->fps, 1, v->gop, 2, -1, v->bitrate_kbps);
+        ew, eh, v->fps, 1, v->gop, 2, -1, v->bitrate_kbps);
 #else
     /* older platforms: manual attribute setup (H264 only path shown) */
 #if defined(PLATFORM_T10)||defined(PLATFORM_T20)
@@ -591,8 +593,8 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
 #endif
     a.encAttr.bufSize  = 0;
     a.encAttr.profile  = v->profile;
-    a.encAttr.picWidth = v->width;
-    a.encAttr.picHeight= v->height;
+    a.encAttr.picWidth = ew;
+    a.encAttr.picHeight= eh;
     a.rcAttr.outFrmRate.frmRateNum = v->fps;
     a.rcAttr.outFrmRate.frmRateDen = 1;
     a.rcAttr.maxGop = v->gop;
@@ -961,15 +963,16 @@ static int jpeg_attach(const ms_config *cfg, int vi, int grp)
     int chn = v->jpeg_chn;
     int q   = (v->jpeg_quality>0 && v->jpeg_quality<=100) ? v->jpeg_quality : 75;
     int jfps = v->jpeg_fps>0 ? v->jpeg_fps : 5;
-    if (jpeg_enc_create(chn, v->width, v->height, q, jfps)!=0) return -1;
+    int ew, eh; ms_vstream_eff_dims(v,&ew,&eh);   /* shares the stream's (rotated) frame */
+    if (jpeg_enc_create(chn, ew, eh, q, jfps)!=0) return -1;
     if (IMP_Encoder_RegisterChn(grp, chn)!=0){
         LOGE(MOD,"JPEG RegisterChn %d to group %d failed",chn,grp);
         IMP_Encoder_DestroyChn(chn);
         return -1;
     }
-    jpeg_chan_start(chn, grp, HUB_JPEG_SRC_N(vi), v->width, v->height, jfps, 0);
+    jpeg_chan_start(chn, grp, HUB_JPEG_SRC_N(vi), ew, eh, jfps, 0);
     LOGI(MOD,"JPEG-on-video%d: encoder chn %d in group %d (%dx%d q%d)",
-         vi,chn,grp,v->width,v->height,q);
+         vi,chn,grp,ew,eh,q);
     return 0;
 }
 
@@ -1465,9 +1468,10 @@ static int ing_start(const ms_config *cfg)
         /* record the slot as soon as its IMP channels exist: g_nv drives the
          * channel teardown (stop AND the failure path below), independent of
          * whether the drain thread ever starts (M8) */
+        int ew, eh; ms_vstream_eff_dims(v,&ew,&eh);   /* post-rotation stream dims */
         vchan *vc=&g_v[g_nv++];
         vc->chn=chn; vc->grp=grp; vc->codec=v->codec;
-        vc->w=v->width; vc->h=v->height;
+        vc->w=ew; vc->h=eh;
         vc->og=-1; vc->nbound=0;
         vc->run=0; vc->active=0; vc->idr_req=0; vc->has_thr=0;
 
@@ -1481,7 +1485,7 @@ static int ing_start(const ms_config *cfg)
          * single frame (H6). */
         IMPCell fs  = { DEV_ID_FS,  chn, 0 };
         IMPCell enc = { DEV_ID_ENC, grp, 0 };
-        int og = imp_osd_setup(cfg, i, v->width, v->height);
+        int og = imp_osd_setup(cfg, i, ew, eh);
         vc->og = og;                   /* teardown must unbind the REAL pairs */
         if (og >= 0) {
             IMPCell osd = { DEV_ID_OSD, og, 0 };
@@ -1505,7 +1509,7 @@ static int ing_start(const ms_config *cfg)
         /* NOT enabled here: the framesource runs on demand (fs_use/fs_unuse
          * from the consumer threads) so an idle timps pumps no frames at all */
 
-        hub_set_video_params(i, v->codec, v->width, v->height, v->fps);
+        hub_set_video_params(i, v->codec, ew, eh, v->fps);
         vc->run=1;
         if (pthread_create(&vc->thr,NULL,video_thread,vc)==0) vc->has_thr=1;
         else { vc->run=0; LOGE(MOD,"video chn%d thread create failed",chn); }

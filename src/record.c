@@ -18,6 +18,7 @@
 #include "fanqueue.h"
 #include "mp4/fmp4.h"
 #include "codec/aac.h"
+#include "rotate_caps.h"   /* ms_vstream_eff_dims (post-rotation mux dims) */
 #include "hal/imp_motion.h"
 #include "log.h"
 #include "util.h"
@@ -237,8 +238,9 @@ static int seg_open(int chn)
     fmp4_init(&w_mux);
     w_mux.has_video=1;
     w_mux.vcodec=g_rc->video[chn].codec;
-    w_mux.width =g_rc->video[chn].width;
-    w_mux.height=g_rc->video[chn].height;
+    int ew, eh; ms_vstream_eff_dims(&g_rc->video[chn], &ew, &eh);
+    w_mux.width =ew;
+    w_mux.height=eh;
     w_mux.fps   =g_rc->video[chn].fps;
     vparam vp;
     if (hub_get_vparam(chn,&vp) && vparam_ready(&vp)){ w_mux.vp=vp; w_mux.vp_ready=1; }
@@ -572,7 +574,8 @@ int record_clip(const char *path, int seconds)
             if (!fp){ close(fd); unlink(path); pkt_unref(p); break; }
             fmp4_init(&mux);
             mux.has_video=1; mux.vcodec=g_rc->video[chn].codec;
-            mux.width=g_rc->video[chn].width; mux.height=g_rc->video[chn].height;
+            int ew, eh; ms_vstream_eff_dims(&g_rc->video[chn], &ew, &eh);
+            mux.width=ew; mux.height=eh;
             mux.fps=g_rc->video[chn].fps;
             mux.vp=vp; mux.vp_ready=1;
             if (sub_audio){ mux.has_audio=1; mux.a_timescale=asr; mux.a_channels=ach;

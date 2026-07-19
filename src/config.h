@@ -28,7 +28,7 @@ typedef struct {
     int      profile;        /* 0 baseline,1 main,2 high */
     int      qp;             /* fixed qp / init qp */
     int      min_qp, max_qp;
-    int      rotation;       /* 0,90,270 (0/1/2) */
+    int      rotation;       /* 0,90,180,270 */
     int      buffers;        /* IMP nrVBs */
     char     rtsp_path[MS_MAX_STR];
     int      imp_chn;        /* encoder channel */
@@ -41,6 +41,16 @@ typedef struct {
     int      jpeg_fps;       /* max snapshot/MJPEG publish rate */
     int      jpeg_chn;       /* IMP encoder channel (must be unique) */
 } ms_vstream_cfg;
+
+/* Effective (post-rotation) frame dimensions for a video stream: a 90/270
+ * rotation swaps width/height, everything else keeps the raw dims. All
+ * downstream consumers (encoder attrs, OSD, hub, muxers, JPEG piggyback) use
+ * this instead of raw v->width/height so the geometry stays consistent once an
+ * apply path is enabled. With rotation==0 (the default) eff dims == raw dims. */
+static inline void ms_vstream_eff_dims(const ms_vstream_cfg *v, int *w, int *h){
+    if (v->rotation==90 || v->rotation==270){ *w=v->height; *h=v->width; }
+    else                                    { *w=v->width;  *h=v->height; }
+}
 
 typedef struct {
     int      enabled;
