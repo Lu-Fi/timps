@@ -17,6 +17,15 @@
 #include "../rotate_caps.h"   /* ms_vstream_eff_dims (post-rotation dims) */
 #include "imp_osd.h"
 #include "imp_motion.h"
+#ifdef ROT_HAS_SW_90
+/* Batch 5 (T23 + USE_SW_ROTATE=1 only): software 90/270 rotate + unbound
+ * IMP_Encoder_Yuv* encode + software OSD compositing. Everything below that
+ * is guarded by ROT_HAS_SW_90 is compiled out on every other build. */
+#include "nv12_rot.h"
+#include "osd_text.h"    /* embedded bitmap-font fallback rasterizer */
+#include "osd_vars.h"    /* {hostname}/{timestamp}/... placeholder expansion */
+#include "msttf.h"       /* TTF rasterizer (same one imp_osd.c uses) */
+#endif
 
 #include <imp/imp_system.h>
 #include <imp/imp_isp.h>
@@ -104,6 +113,46 @@ static IMPSensorInfo    g_sensor;
 static const ms_config *g_hcfg;
 static int              g_isp_sensor_w, g_isp_sensor_h;  /* real sensor res from
                                                           * the ISP (0 = unknown) */
+/* 180 rotation is realised as a global ISP Hflip+Vflip (all FS channels + JPEG
+ * + IVS), which is exactly what a physically upside-down camera needs. It is
+ * derived once from cfg at init (rotation is restart-only, so this is stable at
+ * runtime) and XOR-composed with the live image.hflip/vflip keys in
+ * isp_apply_image() so rotating 180 then toggling a flip flips once, not
+ * cancels. Classic-API SoCs only; T40/T41 (ISP_NEW_TUNING_API) get 180 via
+ * per-channel I2D in a later batch and leave this out of their flip path.
+ * Gated on ROT_HAS_180 (i.e. USE_ROTATE): with rotation compiled out the
+ * flag, its derivation and the XOR below all vanish and the flip path is
+ * byte-identical to a no-rotation build. */
+#ifdef ROT_HAS_180
+static int              g_rot180 = 0;
+#endif
+
+#ifdef ROT_HAS_SW_90
+/* Software OSD state for the unbound SW-rotate path (Batch 5b). There is no
+ * IMP_OSD on an unbound stream (nothing to splice a hardware OSD group into),
+ * so enabled TEXT items are rasterized in software (same msttf/osd_text
+ * rasterizers imp_osd.c uses) and alpha-blended onto the rotated bounce
+ * buffer's Y plane before YuvEncode. All OSD coordinates here are in the
+ * ROTATED frame space (eff_w x eff_h) - the same space the operator sees.
+ * NOT handled on this path (documented limitations):
+ *   - logo (BGRA picture) items: skipped with a warning (text only in v1)
+ *   - privacy cover masks: NOT composited (future item; lower priority)
+ *   - chroma: luma-only blend in v1 (text tints toward the scene's hue) */
+typedef struct {
+    int         used;       /* item was an enabled TEXT item at startup */
+    uint8_t    *bgra;       /* cached rendered BGRA text bitmap */
+    int         w, h;       /* bitmap dims */
+    msttf_font *font;       /* per-item TTF (owned) / shared TTF / NULL=bitmap font */
+    int         font_owned; /* 1 = malloc'd + msttf_load'd here: free on teardown */
+    char        last[256];  /* last expanded text (change detection) */
+} sw_osd_slot;
+typedef struct {
+    int         active;           /* any usable text item on this stream */
+    int64_t     next_refresh_us;  /* 1 Hz re-expand/re-render cadence (matches
+                                   * imp_osd.c's updater thread period) */
+    sw_osd_slot it[MS_MAX_OSD];
+} sw_osd_state;
+#endif
 
 typedef struct {
     int chn, grp, codec, w, h;
@@ -120,6 +169,42 @@ typedef struct {
                                   * them even when the thread never started. */
     volatile int run, active, idr_req;
     pthread_t thr;
+#ifdef ROT_HAS_SW_90
+    /* Unbound SW-rotate path (Batch 5, T23 only): when sw_rot != 0 this slot
+     * has NO encoder group/channel, NO OSD group and NO IMP_System_Bind - a
+     * dedicated sw_rot_thread pulls raw NV12 frames off the (unbound)
+     * framesource, rotates them in software into 'bounce' and feeds the
+     * unbound IMP_Encoder_Yuv* encoder. grp/og/nbound stay -1/-1/0 so the
+     * generic teardown never touches encoder/bind state for these slots. */
+    int          sw_rot;      /* 0 = normal bound path, else 90 (CW) / 270 (CCW) */
+    int          si;          /* video stream index (OSD item set owner) */
+    int          src_w, src_h;/* PRE-rotation framesource dims */
+    void        *yuv_h;       /* IMP_Encoder_YuvInit handle */
+    uint8_t     *bounce;      /* rotated NV12 frame (IMP_Encoder_VbmAlloc:
+                               * encoder input must be phys-contiguous; plain
+                               * malloc memory is rejected/DMA-garbled) */
+    uint32_t     bounce_phys; /* physical addr of bounce (VbmV2P) */
+    uint32_t     bounce_size; /* eff_w*eff_h*3/2 */
+    uint8_t     *ybuf;        /* CALLER-OWNED YuvEncode output buffer: on this
+                               * libimp IMPEncoderYuvOut is IN/OUT - outAddr/
+                               * outLen must carry a valid buffer + capacity IN
+                               * (see contract note at the YuvEncode call) */
+    uint32_t     ybuf_cap;    /* capacity handed to libimp in out.outLen */
+    sw_osd_state osd;         /* software OSD compositing state (5b) */
+    /* Batch 7: standalone JPEG for the SW-rotate stream. This unbound path has
+     * NO encoder group, so the normal piggyback JPEG (jpeg_attach) cannot
+     * register onto it. Instead sw_rot_thread feeds the already-rotated NV12
+     * bounce frame to the documented standalone encoder IMP_Encoder_InputJpege
+     * (T23 1.3.0 imp_encoder.h:1501) and publishes to HUB_JPEG_SRC_N(si) - the
+     * same hub source id, media type (MS_MEDIA_JPEG) and on-demand contract as
+     * jpeg_attach, so /snapshot.jpg?chn=N and /stream.mjpeg?chn=N work here too. */
+    int          jpeg_on;     /* v->jpeg_enabled: emit JPEGs for this stream */
+    int          jpeg_q;      /* v->jpeg_quality (1..100, default 75) */
+    uint8_t     *jbuf;        /* standalone-JPEG output buffer (malloc'd once) */
+    uint32_t     jbuf_cap;    /* capacity of jbuf */
+    int64_t      jpeg_period; /* min us between JPEGs (1e6 / jpeg_fps) */
+    int64_t      jpeg_next;   /* next allowed JPEG timestamp (throttle) */
+#endif
 } vchan;
 static vchan g_v[MS_MAX_VSTREAM];
 static int   g_nv;
@@ -266,6 +351,10 @@ static int isp_apply_image(const char *k)
     if (!strcmp(k,"hue")){ unsigned char u=(unsigned char)im->hue;
         IMP_ISP_Tuning_SetBcshHue(IMPVI_MAIN,&u); return 1; }
     if (!strcmp(k,"hflip") || !strcmp(k,"vflip")){
+        /* NOTE: T40/T41 do NOT XOR g_rot180 here. On these SoCs 180 is realised
+         * per-channel via I2D (Batch 3), so the raw image.hflip/vflip drive the
+         * ISP flip and the 180 rotation is applied downstream - XOR-ing here
+         * would double-apply. Classic-API SoCs compose 180 in their flip path. */
         IMPISPHVFLIP m = im->hflip
             ? (im->vflip ? IMPISP_FLIP_HV_MODE : IMPISP_FLIP_H_MODE)
             : (im->vflip ? IMPISP_FLIP_V_MODE  : IMPISP_FLIP_NORMAL_MODE);
@@ -304,8 +393,17 @@ static int isp_apply_image(const char *k)
         return 0;
 #endif
     }
+    /* XOR the live flip with the global 180 (=Hflip+Vflip): rotation is
+     * restart-only, so g_rot180 is stable and composing it here means a 180
+     * rotation plus a live image.hflip toggle flips once, not cancels. With
+     * rotation==0 g_rot180 is 0 and the args are the raw flip values. */
+#ifdef ROT_HAS_180
+    if (!strcmp(k,"hflip")){ int hf=(im->hflip?1:0)^g_rot180; IMP_ISP_Tuning_SetISPHflip((IMPISPTuningOpsMode)(hf?1:0)); return 1; }
+    if (!strcmp(k,"vflip")){ int vf=(im->vflip?1:0)^g_rot180; IMP_ISP_Tuning_SetISPVflip((IMPISPTuningOpsMode)(vf?1:0)); return 1; }
+#else
     if (!strcmp(k,"hflip")){ IMP_ISP_Tuning_SetISPHflip((IMPISPTuningOpsMode)(im->hflip?1:0)); return 1; }
     if (!strcmp(k,"vflip")){ IMP_ISP_Tuning_SetISPVflip((IMPISPTuningOpsMode)(im->vflip?1:0)); return 1; }
+#endif
     if (!strcmp(k,"running_mode")){
         IMP_ISP_Tuning_SetISPRunningMode(im->running_mode ? IMPISP_RUNNING_MODE_NIGHT
                                                           : IMPISP_RUNNING_MODE_DAY);
@@ -544,12 +642,63 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
      * (T31 is unaffected: its 1.1.6 header/lib pair matches and has fcrop.) */
     a.fcrop.enable = 0;
 #endif
-#if defined(PLATFORM_T31) && !defined(KERNEL_VERSION_4)
+#ifdef ROT_HAS_HW_I2D
+    /* T40/T41 (Batch 3): true hardware I2D rotate via the IMPFSI2DAttr that is
+     * the FIRST member of IMPFSChnAttr (a.i2dattr; imp_framesource.h struct
+     * i2dattr -> IMPFSI2DAttr {i2d_enable,flip_enable,mirr_enable,rotate_enable,
+     * rotate_angle}). 180 is done per-channel here (keeps the ISP flip pure -
+     * Batch 2 deliberately leaves T40/T41 un-XORed for exactly this); 90/270 is
+     * a real rotate with swapped FS output dims. */
     if (v->rotation!=0){
-        /* swap output dims for 90/270 and request rotation */
-        a.scaler.outwidth = v->height; a.scaler.outheight = v->width;
+        a.i2dattr.i2d_enable = 1;
+        if (v->rotation==180){
+            /* per-channel 180 = Hflip + Vflip (flip + mirror) */
+            a.i2dattr.flip_enable = 1;
+            a.i2dattr.mirr_enable = 1;
+        } else { /* 90 or 270 */
+            a.i2dattr.rotate_enable = 1;
+            /* ON-DEVICE VERIFY (no T40/T41 hardware here): rotate_angle units are
+             * UNDOCUMENTED in the header. This sets DEGREES {90,270}; if on-device
+             * the output is unrotated or CreateChn rejects the attr, try the enum
+             * form {1,2,3}. */
+            a.i2dattr.rotate_angle = v->rotation;
+            /* FS output picture is post-rotation (swapped); the scaler stays at
+             * the pre-rotation geometry set above. Which of picWidth/picHeight
+             * vs scaler is pre- vs post-rotation is underdocumented - this
+             * mirrors the T31 split (swap picWidth/picHeight, keep scaler).
+             * ON-DEVICE VERIFY: if stride-garbled/green frames or SetChnAttr
+             * rejects, flip that one knob. */
+            a.picWidth = v->height; a.picHeight = v->width;
+        }
+    }
+#endif
+#ifdef ROT_HAS_FS_ROTATE
+    /* T31 (Batch 4): FrameSource 90/270 rotate. IMP_FrameSource_SetChnRotate's
+     * rotTo90 arg is an ENUM {0=off,1=90 CCW,2=90 CW} (imp_framesource.h:574-576),
+     * NOT raw degrees - the previous code passed 90/270 verbatim, which the
+     * driver read as garbage, and it also wrongly swapped the SetChnRotate dims.
+     * 180 is handled by the ISP flip (Batch 2); do nothing here for it. */
+    if (v->rotation==90 || v->rotation==270){
+        /* config 90 = clockwise -> 2 (CW); 270 -> 1 (CCW).
+         * ON-DEVICE VERIFY: if the picture comes out rotated the wrong way,
+         * swap this mapping (90->1, 270->2). */
+        uint8_t r90 = (v->rotation==90) ? 2 : 1;
+        if ((v->width|v->height) & 63)
+            LOGW(MOD,"rotate: %dx%d not 64-aligned; T31 FS-rotate wants 64-alignment",
+                 v->width, v->height);
+        if ((long)v->width*v->height > 1280*704 || v->fps > 15)
+            LOGW(MOD,"rotate: %dx%d@%d exceeds vendor FS-rotate cap (<=1280x704, <=15fps); "
+                 "libimp rotates in SOFTWARE - expect fps drop, high CPU and extra rmem",
+                 v->width, v->height, v->fps);
+        /* Args are the PRE-rotation dims per header :575-576 (NOT swapped) and
+         * this must run BEFORE CreateChn (header :581). */
+        IMP_FrameSource_SetChnRotate(chn, r90, v->width, v->height);
+        /* FS output picture is post-rotation (swapped); keep the scaler at the
+         * pre-rotation geometry set above. The pre/post split across
+         * picWidth/picHeight vs scaler is underdocumented. ON-DEVICE VERIFY: if
+         * frames come out stride-garbled/green or SetChnAttr rejects the attr,
+         * flip this one knob (swap the scaler instead of picWidth/picHeight). */
         a.picWidth = v->height; a.picHeight = v->width;
-        IMP_FrameSource_SetChnRotate(chn, v->rotation, v->height, v->width);
     }
 #endif
     if (IMP_FrameSource_CreateChn(chn,&a)<0){ LOGE(MOD,"FS_CreateChn %d",chn); return -1; }
@@ -560,6 +709,14 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
         IMP_FrameSource_DestroyChn(chn);
         return -1;
     }
+#ifdef ROT_HAS_HW_I2D
+    /* Belt-and-braces: some libimp builds only latch the I2D config via this
+     * explicit call, not through CreateChn's attr. Signature confirmed in
+     * imp_framesource.h: int IMP_FrameSource_SetI2dAttr(int chnNum, IMPFSI2DAttr*).
+     * ON-DEVICE VERIFY: if unneeded/harmful, drop it. */
+    if (v->rotation!=0 && IMP_FrameSource_SetI2dAttr(chn,&a.i2dattr)<0)
+        LOGW(MOD,"FS_SetI2dAttr %d failed (rotation may stay inactive)",chn);
+#endif
     return 0;
 }
 
@@ -753,6 +910,503 @@ static void *video_thread(void *arg)
     free(au);
     return NULL;
 }
+
+#ifdef ROT_HAS_SW_90
+/* ================= software 90/270 rotate (Batch 5, T23 opt-in) =============
+ * The T23 has no I2D block and its libimp has no FrameSource rotate, but the
+ * shipped libimp 1.3.0 EXPORTS the unbound YUV encode API (IMP_Encoder_YuvInit/
+ * YuvEncode/YuvExit/YuvRequestIDR + VbmAlloc/VbmFree/VbmV2P - verified against
+ * dl/ingenic-lib T23 1.3.0 and include/T23/1.3.0/en/imp/imp_encoder.h). So a
+ * 90/270 stream runs UNBOUND: framesource at the pre-rotation dims with a user
+ * frame depth, sw_rot_thread GetFrame -> nv12_rotate90 into a phys-contiguous
+ * bounce buffer -> software OSD -> IMP_Encoder_YuvEncode -> hub_publish.
+ * Everything downstream (RTSP/fMP4/hub/record) already works from the eff
+ * (rotated) dims + SPS-derived params, so nothing else changes.
+ *
+ * Costs/limitations of this path (all logged at start):
+ *   - CPU: a full NV12 transpose per frame on the single MIPS core. Anything
+ *     beyond ~704x576@15 (substream class) will eat the core - warned, not
+ *     refused (the build knob is the operator's opt-in to that cost).
+ *   - no HARDWARE OSD or privacy covers (no OSD group to splice in). Text OSD
+ *     is composited in software below (5b); privacy covers are NOT drawn on
+ *     this stream (future item).
+ *   - no piggyback JPEG (videoN.jpeg) on this stream: the piggyback encoder
+ *     registers into the video's encoder GROUP, which does not exist here.
+ *   - IVS motion on this stream sees the UNROTATED frame (grid coords are
+ *     pre-rotation).
+ * OUTPUT-BUFFER CONTRACT (established by disassembling the T23 1.3.0
+ * libimp.so, dl/ingenic-lib): IMPEncoderYuvOut is an IN/OUT parameter. The
+ * CALLER must pass a valid 4-byte-aligned buffer in out.outAddr and its
+ * capacity in out.outLen. Per frame, i264e_update_fenc (@0x3484c) sets the
+ * raw bitstream area to outAddr+0x1080 / outLen-0x1080 (the Yuv path sets the
+ * "external buffer" flag, so i264e_init allocates NO internal bitstream buf,
+ * @0x3aa48), and i264e_encoder_encapsulate_nals (@0x38664, ext branch
+ * @0x38840) escapes the final Annex-B AU contiguously to outAddr+0. On return
+ * YuvEncode overwrites out.outLen with the AU length (sum of NAL sizes,
+ * @0x58fb8) and leaves out.outAddr untouched. Passing a zeroed struct makes
+ * libimp deref NULL+0x1080 -> SIGSEGV at load-offset 0x3d8dc (bs init in
+ * i264e_encode, delay slot of the jalr). The AU in ybuf stays valid until the
+ * next YuvEncode call (hub_publish copies it out immediately). Also per
+ * disasm: the encode is pure SOFTWARE (i264e) and reads the input frame via
+ * frame.virAddr only (frame.phyAddr is never read, @0x58f24), and the Yuv API
+ * accepts PT_H264 ONLY - PT_H265 is a log-and-fail stub in both YuvInit
+ * (@0x5874c) and YuvEncode (@0x5901c). */
+
+/* ---- 5b: software OSD onto the rotated frame -------------------------------
+ * Same position convention as imp_osd.c resolve_pos(), but applied against the
+ * EFF (rotated) frame dims, so "top-right" is the portrait frame's top-right:
+ * x/y > 0 from left/top, < 0 from right/bottom, 0 = centered. */
+static void sw_resolve_pos(int W, int H, int w, int h, int x, int y,
+                           int *ox, int *oy)
+{
+    *ox = (x>0) ? x : (x<0 ? W-w+x : (W-w)/2);
+    *oy = (y>0) ? y : (y<0 ? H-h+y : (H-h)/2);
+    if (*ox<0) *ox=0;
+    if (*oy<0) *oy=0;
+    if (*ox+w>W) *ox = (W-w>0) ? (W-w) : 0;
+    if (*oy+h>H) *oy = (H-h>0) ? (H-h) : 0;
+}
+
+/* shared default TTF for the SW-OSD path (imp_osd.c's g_shared is static
+ * there; loading our own copy keeps the modules decoupled). 0 = not tried
+ * yet, 1 = loaded, -1 = failed (-> embedded bitmap font fallback). */
+static msttf_font g_swrot_font;
+static int        g_swrot_font_state = 0;
+
+/* Alpha-blit a BGRA text bitmap onto the NV12 Y plane at (x0,y0), clipped to
+ * the frame. Luma-only v1: the text color's BT.601 luma is blended by the
+ * per-pixel alpha scaled with the item's group transparency; CbCr is left
+ * untouched (the glyph tints toward the scene hue - acceptable, half the
+ * work; full-chroma blit is a follow-up if wanted). */
+static void sw_osd_blit_y(uint8_t *nv12, int fw, int fh, const uint8_t *bgra,
+                          int w, int h, int x0, int y0, int galpha)
+{
+    if (galpha <= 0) return;
+    if (galpha > 255) galpha = 255;
+    for (int y=0; y<h; y++){
+        int fy = y0 + y;
+        if (fy < 0 || fy >= fh) continue;
+        const uint8_t *sp = bgra + (size_t)y * (size_t)w * 4;
+        uint8_t       *dp = nv12 + (size_t)fy * (size_t)fw;
+        for (int x=0; x<w; x++){
+            int fx = x0 + x;
+            if (fx < 0 || fx >= fw) continue;
+            const uint8_t *p = sp + (size_t)x * 4;  /* B,G,R,A (LE 0xAARRGGBB) */
+            unsigned a = (unsigned)p[3] * (unsigned)galpha / 255u;
+            if (!a) continue;
+            unsigned ty = ((66u*p[2] + 129u*p[1] + 25u*p[0] + 128u) >> 8) + 16u;
+            dp[fx] = (uint8_t)((a*ty + (255u-a)*dp[fx] + 127u) / 255u);
+        }
+    }
+}
+
+/* record which items this stream composites and load their fonts. Mirrors
+ * imp_osd_setup's item scan: only items enabled at startup get a slot (same
+ * "enable live -> applies on restart" limitation as the HW OSD path). */
+static void sw_osd_init(vchan *vc, const ms_config *cfg, int si)
+{
+    memset(&vc->osd, 0, sizeof vc->osd);
+    if (!cfg->osd.enabled) return;
+    if (g_swrot_font_state == 0)
+        g_swrot_font_state = (cfg->osd.font_path[0] &&
+                              msttf_load(&g_swrot_font, cfg->osd.font_path)==0)
+                             ? 1 : -1;
+    for (int i=0; i<MS_MAX_OSD; i++){
+        const ms_osd_item *it = &cfg->osd.items[si][i];
+        if (!it->enabled) continue;
+        if (it->type != MS_OSD_TEXT){
+            LOGW(MOD,"sw-rot stream %d: OSD item %d is a logo - not composited "
+                     "on the SW-rotate path (text only)", si, i);
+            continue;
+        }
+        sw_osd_slot *sl = &vc->osd.it[i];
+        sl->used = 1;
+        if (it->font_path[0]){
+            msttf_font *pf = (msttf_font*)malloc(sizeof *pf);
+            if (pf && msttf_load(pf, it->font_path)==0){
+                sl->font = pf; sl->font_owned = 1;
+            } else {
+                free(pf);
+                sl->font = (g_swrot_font_state==1) ? &g_swrot_font : NULL;
+            }
+        } else
+            sl->font = (g_swrot_font_state==1) ? &g_swrot_font : NULL;
+        vc->osd.active = 1;
+    }
+    if (vc->osd.active)
+        LOGI(MOD,"sw-rot stream %d: software OSD active (text items, "
+                 "coordinates in ROTATED %dx%d frame space; no privacy covers)",
+             si, vc->w, vc->h);
+}
+
+static void sw_osd_free(vchan *vc)
+{
+    for (int i=0; i<MS_MAX_OSD; i++){
+        sw_osd_slot *sl = &vc->osd.it[i];
+        free(sl->bgra); sl->bgra = NULL;
+        if (sl->font_owned && sl->font){ msttf_free(sl->font); free(sl->font); }
+        sl->font = NULL; sl->font_owned = 0;
+        sl->used = 0;
+    }
+    vc->osd.active = 0;
+}
+
+/* free the shared SW-OSD font (ing_stop, after all sw slots are gone) */
+static void sw_osd_global_shutdown(void)
+{
+    if (g_swrot_font_state == 1) msttf_free(&g_swrot_font);
+    g_swrot_font_state = 0;
+}
+
+/* Composite the enabled text items onto the rotated bounce buffer. Called per
+ * frame from sw_rot_thread; the (expensive) placeholder expansion + rasterize
+ * runs at most once per second (imp_osd.c's updater cadence - keeps the
+ * {timestamp} fresh at second granularity), the (cheap) Y-plane blit runs per
+ * frame. Item fields are runtime-mutable via /control, so each pass snapshots
+ * the item under config_str_lock (same M10 pattern as imp_osd.c). */
+static void sw_osd_compose(vchan *vc)
+{
+    if (!vc->osd.active) return;
+    int64_t now = ms_now_us();
+    int refresh = (now >= vc->osd.next_refresh_us);
+    if (refresh){
+        vc->osd.next_refresh_us = now + 1000000;
+        /* keep {fps} fresh even when no bound stream runs imp_osd's updater
+         * (all-sw-rotated config -> imp_osd_setup never ran) */
+        osd_vars_set_fps(hub_get_fps(g_hcfg->osd.monitor_stream));
+    }
+    int fw = vc->w, fh = vc->h;                  /* EFF (rotated) frame dims */
+    for (int i=0; i<MS_MAX_OSD; i++){
+        sw_osd_slot *sl = &vc->osd.it[i];
+        if (!sl->used) continue;
+        ms_osd_item it;
+        config_str_lock();
+        it = g_hcfg->osd.items[vc->si][i];
+        config_str_unlock();
+        if (!it.enabled){                        /* runtime-disabled: hide */
+            if (sl->bgra){ free(sl->bgra); sl->bgra=NULL; sl->last[0]=0; }
+            continue;
+        }
+        if (refresh || !sl->bgra){
+            char txt[256];
+            osd_expand(it.text, g_hcfg->osd.vars_file, txt, sizeof txt);
+            if (!sl->bgra || strcmp(txt, sl->last)!=0){
+                /* scale font with stream height like imp_osd.c refresh_text
+                 * (font_size is calibrated for 1080p) */
+                int fs = it.font_size * fh / 1080;
+                if (fs < 12) fs = 12;
+                if (fs > it.font_size) fs = it.font_size;
+                uint8_t *bgra=NULL; int w=0, h=0, ok;
+                if (sl->font)
+                    ok = msttf_render(sl->font, txt, fs, it.color, 0x00000000,
+                                      it.outline, it.outline_color,
+                                      &bgra,&w,&h)==0;
+                else {
+                    int scale = fs/16; if (scale<1) scale=1;
+                    ok = osd_text_render(txt, scale, it.color, 0x00000000,
+                                         it.outline, it.outline_color,
+                                         &bgra,&w,&h)==0;
+                }
+                if (ok){
+                    if (w > fw || h > fh){       /* same H5 discard as imp_osd */
+                        LOGW(MOD,"sw-rot stream %d item %d: rendered %dx%d "
+                                 "exceeds frame %dx%d - skipped",
+                             vc->si, i, w, h, fw, fh);
+                        free(bgra);
+                    } else {
+                        free(sl->bgra);
+                        sl->bgra=bgra; sl->w=w; sl->h=h;
+                        snprintf(sl->last, sizeof sl->last, "%s", txt);
+                    }
+                }
+            }
+        }
+        if (!sl->bgra) continue;
+        int x, y;
+        sw_resolve_pos(fw, fh, sl->w, sl->h, it.x, it.y, &x, &y);
+        sw_osd_blit_y(vc->bounce, fw, fh, sl->bgra, sl->w, sl->h, x, y,
+                      it.transparency);
+    }
+}
+
+/* ---- 5a: the unbound rotate+encode thread ---------------------------------
+ * Mirrors video_thread's on-demand/publish structure, minus everything that
+ * needs an encoder channel: there is no Start/StopRecvPic (WE push frames, so
+ * "not pulling" == "not encoding") and no GetStream/pack loop (YuvEncode
+ * returns one contiguous AU). Idle gating is identical: block on act_wait()
+ * with no consumers, debounced fs_unuse after MS_IDLE_STOP_US. */
+static void *sw_rot_thread(void *arg)
+{
+    vchan *vc = (vchan*)arg;
+    int receiving=0;
+    int64_t idle_since=0;
+    int dbg_first=0, dbg_getfail=0, dbg_encfail=0;
+    while (vc->run) {
+        int want = vc->active || hub_active(vc->chn);
+        if (!want) {
+            if (!receiving){ act_wait(); continue; }
+            int64_t now = ms_now_us();
+            if (idle_since==0) idle_since = now;
+            if (now - idle_since >= MS_IDLE_STOP_US) {
+                fs_unuse(vc->chn);            /* stop the frame flow entirely */
+                receiving=0; idle_since=0;
+                LOGI(MOD,"sw-rot chn%d idle",vc->chn);
+                continue;
+            }
+            /* debounce window: keep encoding below (publish no-ops, 0 subs) */
+        } else {
+            idle_since = 0;
+            if (!receiving){
+                fs_use(vc->chn);                 /* EnableChn (refcounted) */
+                /* depth for GetFrame must be set AFTER EnableChn on this libimp;
+                 * re-set on every re-enable (DisableChn on idle clears it) */
+                if (IMP_FrameSource_SetFrameDepth(vc->chn, 2)!=0)
+                    LOGW(MOD,"sw-rot chn%d: SetFrameDepth failed",vc->chn);
+                receiving=1;
+                vc->idr_req=0; IMP_Encoder_YuvRequestIDR(vc->yuv_h);
+                LOGI(MOD,"sw-rot chn%d streaming",vc->chn);
+            }
+        }
+        if (vc->idr_req){ vc->idr_req=0; IMP_Encoder_YuvRequestIDR(vc->yuv_h); }
+        /* GetFrame blocks up to the channel's frame period once the FS is
+         * enabled; on a disabled/empty channel it fails fast -> pace the retry */
+        IMPFrameInfo *frm = NULL;
+        if (IMP_FrameSource_GetFrame(vc->chn, &frm)!=0 || !frm){
+            if (receiving && (dbg_getfail++ % 100)==0)
+                LOGW(MOD,"sw-rot chn%d: GetFrame delivered nothing (miss#%d)",
+                     vc->chn, dbg_getfail);
+            usleep(10000);
+            continue;
+        }
+        dbg_getfail=0;
+        int64_t ts = frm->timeStamp;
+        /* transpose into the phys-contiguous bounce buffer, then release the
+         * source frame BEFORE encoding so the FS depth-2 pool never starves */
+        nv12_rotate90((const uint8_t*)(uintptr_t)frm->virAddr,
+                      vc->src_w, vc->src_h, vc->bounce, vc->sw_rot);
+        IMP_FrameSource_ReleaseFrame(vc->chn, frm);
+        sw_osd_compose(vc);                   /* 5b: text OSD in eff coords */
+        IMPFrameInfo f; memset(&f,0,sizeof f);
+        f.width    = (uint32_t)vc->w;         /* EFF (rotated) dims */
+        f.height   = (uint32_t)vc->h;
+        f.pixfmt   = PIX_FMT_NV12;
+        f.size     = vc->bounce_size;
+        f.phyAddr  = vc->bounce_phys;
+        f.virAddr  = (uint32_t)(uintptr_t)vc->bounce;
+        f.timeStamp= ts;
+        /* IN/OUT contract (see block comment above sw_osd section): hand
+         * libimp OUR output buffer + capacity; it clobbers out.outLen with
+         * the AU length on return, so BOTH fields are re-armed every call. */
+        IMPEncoderYuvOut out;
+        out.outAddr = vc->ybuf;
+        out.outLen  = vc->ybuf_cap;
+        if (IMP_Encoder_YuvEncode(vc->yuv_h, f, &out)!=0){
+            if ((dbg_encfail++ % 100)==0)
+                LOGW(MOD,"sw-rot chn%d: YuvEncode failed (miss#%d)",
+                     vc->chn, dbg_encfail);
+            continue;
+        }
+        dbg_encfail=0;
+        if (!out.outAddr || out.outLen==0) continue;
+        int key = au_is_key(vc->codec, (const uint8_t*)out.outAddr,
+                            (size_t)out.outLen);
+        if (!dbg_first){ dbg_first=1;
+            LOGI(MOD,"sw-rot chn%d: first encoded frame len=%u key=%d",
+                 vc->chn, out.outLen, key); }
+        /* hub_publish copies the AU into its own refcounted pkt, so the
+         * encoder-owned out.outAddr is done with by the time we loop */
+        hub_publish(vc->chn, (const uint8_t*)out.outAddr, (size_t)out.outLen,
+                    ms_now_us(), key, MS_MEDIA_VIDEO);
+
+        /* ---- Batch 7: standalone JPEG on the SW-rotate stream ----------------
+         * On-demand + throttled, mirroring jpeg_thread's contract:
+         *   - only when jpeg is enabled for this stream (vc->jpeg_on) AND a
+         *     JPEG subscriber is present (hub_active(HUB_JPEG_SRC_N(si))): an
+         *     MJPEG/snapshot client. No subscriber -> no encode, zero cost.
+         *   - throttled to the stream's jpeg_fps cadence (vc->jpeg_period), so
+         *     the CPU-heavy T23 doesn't JPEG every rotated video frame.
+         * We already hold the rotated NV12 frame (post-OSD) in vc->bounce at eff
+         * dims vc->w x vc->h, so feed it straight to IMP_Encoder_InputJpege and
+         * publish jbuf[0..len] to the per-channel JPEG hub source.
+         *
+         * ON-DEVICE VERIFY: IMP_Encoder_InputJpege's src pixel format is assumed
+         * NV12 here (that is exactly what the transpose + OSD leave in bounce).
+         * If the resulting JPEG is garbled or colour-swapped on the T23, the
+         * expected input format / plane order differs and this call needs the
+         * pixels converted (e.g. NV12 vs NV21, or a packed layout) first. Also
+         * unverified on this SoC: whether InputJpege is blocking and whether it
+         * is safe to call from this thread while HW encoders run elsewhere - if
+         * it serialises against the VPU it may add latency to the video cadence. */
+        if (vc->jpeg_on && vc->jbuf &&
+            hub_active(HUB_JPEG_SRC_N(vc->si))) {
+            int64_t jn = ms_now_us();
+            if (jn >= vc->jpeg_next) {
+                vc->jpeg_next = jn + vc->jpeg_period;
+                int jlen = 0;
+                if (IMP_Encoder_InputJpege(vc->bounce, vc->jbuf,
+                                           vc->w, vc->h, vc->jpeg_q, &jlen)==0
+                    && jlen > 0 && (uint32_t)jlen <= vc->jbuf_cap) {
+                    hub_publish(HUB_JPEG_SRC_N(vc->si), vc->jbuf, (size_t)jlen,
+                                ms_now_us(), 1, MS_MEDIA_JPEG);
+                } else if (jlen > 0 && (uint32_t)jlen > vc->jbuf_cap) {
+                    LOGW(MOD,"sw-rot chn%d: JPEG (%d) exceeds buf (%u) - dropped",
+                         vc->chn, jlen, vc->jbuf_cap);
+                }
+            }
+        }
+    }
+    if (receiving) fs_unuse(vc->chn);
+    return NULL;
+}
+
+/* teardown of one sw-rotate slot (thread must already be stopped+joined by
+ * the caller). No encoder group/chn, no OSD group, no binds to undo. */
+static void sw_rot_teardown(vchan *vc)
+{
+    IMP_FrameSource_DisableChn(vc->chn);
+    if (vc->yuv_h){ IMP_Encoder_YuvExit(vc->yuv_h); vc->yuv_h=NULL; }
+    if (vc->bounce){ IMP_Encoder_VbmFree(vc->bounce); vc->bounce=NULL; }
+    if (vc->ybuf){ free(vc->ybuf); vc->ybuf=NULL; }
+    if (vc->jbuf){ free(vc->jbuf); vc->jbuf=NULL; }   /* Batch 7 JPEG buffer */
+    sw_osd_free(vc);
+    IMP_FrameSource_DestroyChn(vc->chn);
+    vc->sw_rot=0;
+}
+
+/* bring up one 90/270 stream on the unbound SW-rotate path. On failure all
+ * partial state is unwound here and no g_v slot is consumed (the caller's
+ * generic fail path then only has to deal with fully-recorded slots). */
+static int sw_rot_start(const ms_config *cfg, int i)
+{
+    const ms_vstream_cfg *v = &cfg->video[i];
+    int chn = v->imp_chn;
+    int ew, eh; ms_vstream_eff_dims(v, &ew, &eh);   /* post-rotation dims */
+    /* CAPS-GATE (warn, don't refuse - the USE_SW_ROTATE build knob is the
+     * operator's explicit opt-in to the CPU cost): beyond substream class the
+     * per-frame transpose + software encode feed will eat the single core. */
+    if ((long)ew*eh > 704L*576L || v->fps > 15)
+        LOGW(MOD,"video%d: SW rotate at %dx%d@%dfps is CPU-HEAVY on this SoC - "
+                 "strongly consider a substream-class setting (<=704x576, <=15fps)",
+             i, ew, eh, v->fps);
+    if ((v->width|v->height)&1){
+        LOGE(MOD,"video%d: SW rotate needs even dims (got %dx%d)",
+             i, v->width, v->height);
+        return -1;
+    }
+    /* framesource at the PRE-rotation dims, never bound to anything; the
+     * ROT_HAS_FS_ROTATE/ROT_HAS_HW_I2D blocks in fs_create are compiled out
+     * on T23, so fs_create sets no rotation attrs here. */
+    if (fs_create(chn, v)!=0) return -1;
+    /* NOTE: SetFrameDepth is deferred to the thread, AFTER fs_use()/EnableChn.
+     * This libimp (T23 1.3.0) rejects SetFrameDepth(depth>0) on a not-yet-
+     * enabled channel: "Please use IMP_FrameSource_EnableChn first". */
+    /* unbound encoder: header T23/1.3.0 imp_encoder.h:534-549 (IMPEncoderYuvIn/
+     * Out) + :1710-1763 (YuvInit/YuvEncode/YuvExit). Rc fill mirrors
+     * enc_create()'s classic CBR block exactly (same defaults/clamps). */
+    IMPEncoderYuvIn yin; memset(&yin,0,sizeof yin);
+    yin.type = (v->codec==MS_VC_H265) ? PT_H265 : PT_H264;
+    yin.outFrmRate.frmRateNum = (uint32_t)v->fps;
+    yin.outFrmRate.frmRateDen = 1;
+    yin.maxGop = (uint32_t)v->gop;
+    yin.mode.rcMode = ENC_RC_MODE_CBR;
+    yin.mode.attrH264Cbr.maxQp        = (v->max_qp>0)?(uint32_t)v->max_qp:45;
+    yin.mode.attrH264Cbr.minQp        = (v->min_qp>0)?(uint32_t)v->min_qp:15;
+    yin.mode.attrH264Cbr.outBitRate   = (uint32_t)v->bitrate_kbps;
+    yin.mode.attrH264Cbr.iBiasLvl     = 0;
+    yin.mode.attrH264Cbr.frmQPStep    = 3;
+    yin.mode.attrH264Cbr.gopQPStep    = 15;
+    yin.mode.attrH264Cbr.adaptiveMode = 0;
+    yin.mode.attrH264Cbr.gopRelation  = 0;
+    void *h = NULL;
+    if (IMP_Encoder_YuvInit(&h, ew, eh, &yin)!=0 || !h){
+        LOGE(MOD,"sw-rot chn%d: IMP_Encoder_YuvInit %dx%d failed",chn,ew,eh);
+        IMP_FrameSource_DestroyChn(chn);
+        return -1;
+    }
+    /* phys-contiguous bounce frame for the encoder input (VbmAlloc, page
+     * aligned); VbmV2P yields the physical addr YuvEncode's DMA needs */
+    uint32_t bsz = (uint32_t)((size_t)ew*(size_t)eh*3/2);
+    uint8_t *bv = (uint8_t*)IMP_Encoder_VbmAlloc(bsz, 4096);
+    if (!bv){
+        LOGE(MOD,"sw-rot chn%d: VbmAlloc %u failed (rmem exhausted?)",chn,bsz);
+        IMP_Encoder_YuvExit(h);
+        IMP_FrameSource_DestroyChn(chn);
+        return -1;
+    }
+    uint32_t bp = (uint32_t)IMP_Encoder_VbmV2P((intptr_t)bv);
+    if (!bp){
+        LOGE(MOD,"sw-rot chn%d: VbmV2P failed",chn);
+        IMP_Encoder_VbmFree(bv);
+        IMP_Encoder_YuvExit(h);
+        IMP_FrameSource_DestroyChn(chn);
+        return -1;
+    }
+    /* caller-owned YuvEncode OUTPUT buffer (IN/OUT contract, see block
+     * comment above): plain heap is fine - the i264e encode path is pure
+     * software (no DMA touches the output; input is read via virAddr) and
+     * libimp only requires 4-byte alignment of outAddr (checked at
+     * i264e_update_fenc @0x34840; malloc gives >=8). Capacity = 0x1080
+     * bytes libimp reserves as raw-bitstream headroom + 1 byte/pixel for
+     * the worst-case escaped Annex-B AU (far above any CBR IDR here). */
+    uint32_t ycap = (uint32_t)((size_t)ew*(size_t)eh) + 0x1080u;
+    uint8_t *yb = (uint8_t*)malloc(ycap);
+    if (!yb){
+        LOGE(MOD,"sw-rot chn%d: no memory for YuvEncode out buf (%u)",chn,ycap);
+        IMP_Encoder_VbmFree(bv);
+        IMP_Encoder_YuvExit(h);
+        IMP_FrameSource_DestroyChn(chn);
+        return -1;
+    }
+    vchan *vc = &g_v[g_nv++];
+    vc->chn=chn; vc->grp=-1; vc->codec=v->codec;
+    vc->w=ew; vc->h=eh;                      /* EFF dims (AU sizing unused here) */
+    vc->og=-1; vc->nbound=0;
+    vc->run=0; vc->active=0; vc->idr_req=0; vc->has_thr=0;
+    vc->sw_rot=(v->rotation==270)?270:90;    /* 90 = clockwise (config semantics) */
+    vc->si=i; vc->src_w=v->width; vc->src_h=v->height;
+    vc->yuv_h=h; vc->bounce=bv; vc->bounce_phys=bp; vc->bounce_size=bsz;
+    vc->ybuf=yb; vc->ybuf_cap=ycap;
+    sw_osd_init(vc, cfg, i);                 /* 5b: text OSD in eff coords */
+    /* Batch 7: standalone JPEG for this stream (fed from the rotated bounce via
+     * IMP_Encoder_InputJpege in sw_rot_thread). Allocate the output buffer once,
+     * sized generously - a JPEG of an eff_w*eff_h NV12 frame is well under one
+     * byte/pixel, so eff_w*eff_h + 64 KiB is a safe cap. A JPEG alloc failure
+     * only disables JPEG for this stream; the video path is unaffected. */
+    vc->jpeg_on=0; vc->jbuf=NULL; vc->jbuf_cap=0; vc->jpeg_next=0;
+    vc->jpeg_q = (v->jpeg_quality>0 && v->jpeg_quality<=100) ? v->jpeg_quality : 75;
+    { int jfps = v->jpeg_fps>0 ? v->jpeg_fps : 5;
+      vc->jpeg_period = 1000000/jfps; }
+    if (v->jpeg_enabled && ((ew & 31) || (eh & 7))){
+        /* IMP_Encoder_InputJpege requires width%32==0 and height%8==0. For a
+         * 90/270 stream the rotated width is the source HEIGHT, so make the
+         * source height a multiple of 32 (e.g. 704, not 720). Disable JPEG
+         * rather than fail every frame. */
+        LOGW(MOD,"video%d.jpeg: rotated %dx%d not 32/8-aligned for InputJpege "
+                 "(need width%%32==0, height%%8==0; make source height a "
+                 "multiple of 32, e.g. 704) - JPEG disabled on this stream",
+             i, ew, eh);
+    } else if (v->jpeg_enabled){
+        uint32_t jcap = (uint32_t)((size_t)ew*(size_t)eh) + 65536u;
+        vc->jbuf = (uint8_t*)malloc(jcap);
+        if (vc->jbuf){ vc->jbuf_cap=jcap; vc->jpeg_on=1;
+            LOGI(MOD,"video%d.jpeg: standalone JPEG on SW-rotate stream "
+                     "(%dx%d q%d, <=%d fps) -> /snapshot.jpg /stream.mjpeg",
+                 i, ew, eh, vc->jpeg_q, v->jpeg_fps>0?v->jpeg_fps:5);
+        } else
+            LOGW(MOD,"video%d.jpeg: no memory for SW-rotate JPEG buf (%u) - "
+                     "JPEG disabled on this stream", i, jcap);
+    }
+    hub_set_video_params(i, v->codec, ew, eh, v->fps);
+    vc->run=1;
+    if (pthread_create(&vc->thr,NULL,sw_rot_thread,vc)==0) vc->has_thr=1;
+    else { vc->run=0; LOGE(MOD,"sw-rot chn%d thread create failed",chn); }
+    LOGI(MOD,"video%d: SOFTWARE rotate %d (%dx%d -> %dx%d) via unbound "
+             "YuvEncode - no HW OSD/privacy; JPEG via standalone InputJpege%s",
+         i, vc->sw_rot, v->width, v->height, ew, eh,
+         vc->jpeg_on ? "" : " (disabled)");
+    return 0;
+}
+#endif /* ROT_HAS_SW_90 */
 
 /* ================= JPEG / MJPEG ================= */
 static void *jpeg_thread(void *arg)
@@ -1434,6 +2088,22 @@ static void ing_control(const char *key, const char *val)
 static int ing_init(const ms_config *cfg)
 {
     g_hcfg=cfg;
+#ifdef ROT_HAS_180
+    /* Derive the global 180 flag before isp_init() applies ISP tuning. 180 is a
+     * SoC-global ISP Hflip+Vflip, so if some enabled streams request 180 and
+     * others don't, all streams follow (warn once). Restart-only, so stable.
+     * Compiled out entirely when USE_ROTATE is off (prot() coerces 180->0). */
+    g_rot180 = 0;
+    { int any180=0, anyplain=0;
+      for (int i=0;i<MS_MAX_VSTREAM;i++){
+          if (!cfg->video[i].enabled) continue;
+          if (cfg->video[i].rotation==180) any180=1; else anyplain=1;
+      }
+      g_rot180 = any180;
+      if (any180 && anyplain)
+          LOGW(MOD,"rotation 180 is global on this SoC: all streams will be rotated");
+    }
+#endif
     int r = isp_init();
 #ifdef USE_CONTROL
     if (r==0) hub_set_control_cb(ing_control);
@@ -1447,6 +2117,15 @@ static int ing_start(const ms_config *cfg)
     for (int i=0;i<MS_MAX_VSTREAM;i++){
         if (!cfg->video[i].enabled) continue;
         const ms_vstream_cfg *v=&cfg->video[i];
+#ifdef ROT_HAS_SW_90
+        /* T23 + USE_SW_ROTATE: 90/270 streams take the unbound SW-rotate path
+         * (no encoder group, no binds - see sw_rot_start). 0/180 streams stay
+         * on the normal bound pipeline below (180 = ISP flip, Batch 2). */
+        if (v->rotation==90 || v->rotation==270){
+            if (sw_rot_start(cfg,i)!=0) goto fail;
+            continue;
+        }
+#endif
         int chn=v->imp_chn, grp=v->imp_chn;
         if (fs_create(chn,v)!=0) goto fail;
         /* The encoder GROUP must exist before enc_create's
@@ -1474,6 +2153,11 @@ static int ing_start(const ms_config *cfg)
         vc->w=ew; vc->h=eh;
         vc->og=-1; vc->nbound=0;
         vc->run=0; vc->active=0; vc->idr_req=0; vc->has_thr=0;
+#ifdef ROT_HAS_SW_90
+        /* slots are static + reused across start/stop cycles: make sure a
+         * bound-path slot never carries stale sw-rotate state into teardown */
+        vc->sw_rot=0; vc->si=i; vc->yuv_h=NULL; vc->bounce=NULL;
+#endif
 
         /* optional per-stream JPEG encoder in the same group (videoN.jpeg);
          * non-fatal: the video stream works without it (logged inside) */
@@ -1570,6 +2254,11 @@ fail:
     g_nj=0;
     int had_osd=0;
     for (int k=0;k<g_nv;k++){
+#ifdef ROT_HAS_SW_90
+        /* sw-rotate slots have no encoder chn/group, no OSD group, no binds -
+         * their whole teardown is FS + YuvExit + VbmFree (thread joined above) */
+        if (g_v[k].sw_rot){ sw_rot_teardown(&g_v[k]); continue; }
+#endif
         int c=g_v[k].chn, g=g_v[k].grp, og=g_v[k].og;
         IMPCell f={DEV_ID_FS,c,0}, e={DEV_ID_ENC,g,0};
         IMP_FrameSource_DisableChn(c);
@@ -1667,6 +2356,9 @@ static void ing_stop(void)
      * then, as must the encoder/framesource channels destroyed after it. */
     int had_osd = 0;
     for (int i=0;i<g_nv;i++){
+#ifdef ROT_HAS_SW_90
+        if (g_v[i].sw_rot) continue;   /* nothing bound - torn down whole below */
+#endif
         int chn=g_v[i].chn, grp=g_v[i].grp, og=g_v[i].og;
         IMPCell fs={DEV_ID_FS,chn,0}, enc={DEV_ID_ENC,grp,0};
         IMP_FrameSource_DisableChn(chn);
@@ -1684,6 +2376,11 @@ static void ing_stop(void)
     if (g_hcfg->osd.enabled || had_osd) imp_osd_stop();
 
     for (int i=0;i<g_nv;i++){
+#ifdef ROT_HAS_SW_90
+        /* sw-rotate slot: FS disable/destroy + YuvExit + VbmFree, no encoder
+         * chn/group ever existed (thread was joined above) */
+        if (g_v[i].sw_rot){ sw_rot_teardown(&g_v[i]); continue; }
+#endif
         int chn=g_v[i].chn, grp=g_v[i].grp;
         IMP_Encoder_UnRegisterChn(chn);
         IMP_Encoder_DestroyChn(chn);
@@ -1691,6 +2388,9 @@ static void ing_stop(void)
         IMP_FrameSource_DestroyChn(chn);
     }
     g_nv=0;
+#ifdef ROT_HAS_SW_90
+    sw_osd_global_shutdown();   /* shared SW-OSD TTF (per-item fonts freed above) */
+#endif
     IMP_System_Exit();
 #if defined(PLATFORM_T40)||defined(PLATFORM_T41)
     IMP_ISP_DisableSensor(IMPVI_MAIN);

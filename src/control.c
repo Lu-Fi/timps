@@ -596,7 +596,9 @@ int control_get_json(char *buf, size_t cap)
     APP("\"privacy\":{\"available\":1,\"max_regions\":%d},", MS_MAX_PRIVACY);
     /* image rotation: the set of values this SoC's build can actually apply
      * (0 always; 90/270 need a dim-swapping apply path, 180 an ISP flip).
-     * The WebUI greys out the rest. */
+     * The WebUI greys out the rest. Only reported when USE_ROTATE compiled the
+     * feature in; otherwise the key is omitted (the WebUI hides the control). */
+#ifdef USE_ROTATE
     APP("\"rotation\":[0"
 #ifdef ROT_HAS_90
         ",90"
@@ -608,6 +610,7 @@ int control_get_json(char *buf, size_t cap)
         ",270"
 #endif
         "],");
+#endif /* USE_ROTATE */
     APP("\"record\":{\"available\":1},");
     APP("\"timelapse\":{\"available\":1}},");
     APP("\"image\":{\"brightness\":%d,\"contrast\":%d,\"saturation\":%d,"
@@ -664,6 +667,7 @@ int control_get_json(char *buf, size_t cap)
         config_str_lock();     /* rtsp_path is runtime-mutable via POST */
         jesc(vs->rtsp_path, rp, sizeof rp);
         config_str_unlock();
+#ifdef USE_ROTATE
         int ew, eh; ms_vstream_eff_dims(vs, &ew, &eh);   /* post-rotation dims */
         APP("%s\"%d\":{\"enabled\":%d,\"codec\":\"%s\",\"width\":%d,"
             "\"height\":%d,\"eff_width\":%d,\"eff_height\":%d,"
@@ -674,6 +678,19 @@ int control_get_json(char *buf, size_t cap)
             i?",":"", i, vs->enabled, cod, vs->width, vs->height, ew, eh, vs->fps,
             vs->bitrate_kbps, rc, vs->gop, vs->max_gop, vs->profile,
             vs->qp, vs->min_qp, vs->max_qp, vs->rotation, vs->buffers, rp);
+#else
+        /* rotation compiled out: omit eff_width/eff_height and the rotation
+         * value is always 0 (prot() coerced it), so eff == raw dims anyway. */
+        APP("%s\"%d\":{\"enabled\":%d,\"codec\":\"%s\",\"width\":%d,"
+            "\"height\":%d,"
+            "\"fps\":%d,\"bitrate\":%d,\"rc_mode\":\"%s\","
+            "\"gop\":%d,\"max_gop\":%d,\"profile\":%d,\"qp\":%d,"
+            "\"min_qp\":%d,\"max_qp\":%d,\"rotation\":%d,\"buffers\":%d,"
+            "\"rtsp_path\":\"%s\"}",
+            i?",":"", i, vs->enabled, cod, vs->width, vs->height, vs->fps,
+            vs->bitrate_kbps, rc, vs->gop, vs->max_gop, vs->profile,
+            vs->qp, vs->min_qp, vs->max_qp, vs->rotation, vs->buffers, rp);
+#endif /* USE_ROTATE */
     }
     /* osd: master switch as its own tiny object (kept directly after "video"
      * - the CGI bridge scopes its video scan up to the "osd" marker), then
