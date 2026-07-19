@@ -89,10 +89,43 @@ SIM_SRC    := $(BASE) src/hal/osd_text.c src/hal/hal_sim.c src/hal/imp_motion.c 
 TARGET_ALLSRC := $(TARGET_SRC) $(if $(filter 1,$(USE_TLS)),src/tls.c)
 TARGET_OBJS   := $(notdir $(TARGET_ALLSRC:.c=.o))
 
+# --- Build hardening (M14) --------------------------------------------------
+# Compiler/linker defense-in-depth for the root-running network daemon. All of
+# it flows through two central switches so a stubborn target toolchain can dial
+# it back without touching the recipes:
+#
+#   HARDEN=0    turn off ALL compiler hardening (bare build)
+#   FORTIFY=0   keep the rest but drop only _FORTIFY_SOURCE
+#
+# Notes on the individual flags:
+#   * -D_FORTIFY_SOURCE=2 needs an optimising build to do anything; we compile
+#     with -Os here, so it is effective. It also needs libc _*_chk wrappers -
+#     glibc/musl have them, uClibc's are incomplete (see build.sh), hence the
+#     FORTIFY switch.
+#   * -fstack-protector-strong needs libssp in the toolchain. The host and the
+#     thingino musl toolchain have it; the thingino uClibc toolchain is built
+#     --disable-libssp (build.sh disables SSP there and manages this itself).
+#   * -Wl,-z,relro -Wl,-z,now (full RELRO) and -Wl,-z,noexecstack (NX stack)
+#     are linker-only and safe with -no-pie under both libcs.
+#
+# build.sh drives the MIPS cross build and passes its own CFLAGS/LDFLAGS (which
+# override the defaults below), so it carries an equivalent, libc-aware copy of
+# this logic. These defaults cover `make sim` and any direct `make target`.
+HARDEN  ?= 1
+FORTIFY ?= 1
+
+ifeq ($(HARDEN),1)
+HARDEN_CFLAGS  := -fstack-protector-strong $(if $(filter 1,$(FORTIFY)),-D_FORTIFY_SOURCE=2)
+HARDEN_LDFLAGS := -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack
+else
+HARDEN_CFLAGS  :=
+HARDEN_LDFLAGS := -Wl,-z,noexecstack
+endif
+
 # -Os + gc-sections keeps the binary small; static libimp for a single dropin.
 CFLAGS  ?= -std=c11 -D_GNU_SOURCE -Os -Wall -Wextra -Wno-unused-parameter -Wno-misleading-indentation \
-           -Wno-stringop-truncation -ffunction-sections -fdata-sections
-LDFLAGS ?= -Wl,--gc-sections -Wl,-z,relro,-z,now
+           -Wno-stringop-truncation -ffunction-sections -fdata-sections $(HARDEN_CFLAGS)
+LDFLAGS ?= -Wl,--gc-sections $(HARDEN_LDFLAGS)
 LIBS    ?= -lpthread -lrt -lm
 
 # Version baked into the binary (timps -v / startup log). git-describe for local

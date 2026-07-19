@@ -51,17 +51,36 @@ parse_flags() {
 	done
 }
 
-# Apply libc-specific compile flags. The thingino uClibc toolchain is built
-# with --disable-libssp, so SSP symbols (__stack_chk_*) are unavailable -
-# disable stack-protector globally for uclibc builds. musl builds CAN carry
-# compiler defense-in-depth for this root-running network daemon (M14):
-# stack-protector-strong + _FORTIFY_SOURCE (needs the -Os/-O we already pass).
+# Compiler defense-in-depth for this root-running network daemon (M14). Two
+# central switches let a stubborn target toolchain dial it back:
+#   HARDEN=0   -> no compiler hardening at all (bare build)
+#   FORTIFY=0  -> keep stack-protector but drop only _FORTIFY_SOURCE
+# (RELRO/BIND_NOW + noexecstack are linker-only and applied unconditionally in
+# the ldflags below.)
+#
+# Why the libc split:
+#   * The thingino uClibc toolchain is built --disable-libssp, so the SSP
+#     symbols (__stack_chk_*) are unavailable, AND its headers lack the full
+#     set of _FORTIFY_SOURCE *_chk wrappers - enabling either fails to link or
+#     silently no-ops. So uClibc gets neither; use --libc-musl (or a
+#     libssp-enabled toolchain) for full compiler hardening.
+#   * musl carries SSP + FORTIFY; _FORTIFY_SOURCE needs the -Os/-O we pass.
+HARDEN=${HARDEN:-1}
+FORTIFY=${FORTIFY:-1}
 LIBC_EXTRA_CFLAGS=""
 apply_libc_env() {
+	if [[ "$HARDEN" != "1" ]]; then
+		LIBC_EXTRA_CFLAGS="-fno-stack-protector"
+		return
+	fi
 	if [[ "$LIBC_TYPE" == "uclibc" ]]; then
+		# uClibc: --disable-libssp + incomplete *_chk -> no SSP/FORTIFY here.
 		LIBC_EXTRA_CFLAGS="-fno-stack-protector"
 	else
-		LIBC_EXTRA_CFLAGS="-fstack-protector-strong -D_FORTIFY_SOURCE=2"
+		LIBC_EXTRA_CFLAGS="-fstack-protector-strong"
+		if [[ "$FORTIFY" == "1" ]]; then
+			LIBC_EXTRA_CFLAGS="$LIBC_EXTRA_CFLAGS -D_FORTIFY_SOURCE=2"
+		fi
 	fi
 }
 
@@ -293,9 +312,9 @@ timps() {
 
 	# -no-pie: the vendor static archives are non-PIC; the thingino toolchain
 	# defaults to PIE, which cannot link them (R_MIPS_26 relocation errors).
-	# RELRO+BIND_NOW (M14): read-only GOT after relocation - linker-only, safe
-	# with -no-pie and both libcs.
-	local ldflags="-Wl,--gc-sections -no-pie -Wl,-z,relro,-z,now"
+	# RELRO+BIND_NOW + noexecstack (M14): read-only GOT after relocation and a
+	# non-executable stack - linker-only, safe with -no-pie and both libcs.
+	local ldflags="-Wl,--gc-sections -no-pie -Wl,-z,relro,-z,now -Wl,-z,noexecstack"
 	if [[ $STATIC_BUILD -eq 1 ]]; then
 		ldflags="$ldflags -static -static-libgcc"
 	fi
@@ -348,7 +367,9 @@ usage() {
 	echo "  --clean-all:    (deps) wipe 3rdparty/ first"
 	echo ""
 	echo "Env: TIMPS_CROSS overrides the cross prefix (skips toolchain download),"
-	echo "     USE_CONTROL/USE_DAYNIGHT (default 1) forwarded to make."
+	echo "     USE_CONTROL/USE_DAYNIGHT (default 1) forwarded to make,"
+	echo "     HARDEN=0 disables compiler hardening, FORTIFY=0 drops only"
+	echo "     _FORTIFY_SOURCE (M14; RELRO/NOW/noexecstack stay on regardless)."
 	exit 1
 }
 
