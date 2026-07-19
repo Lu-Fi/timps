@@ -26,6 +26,13 @@ void imp_osd_apply(int stream, int item);
 /* Live re-apply of one privacy cover region (g_cfg->privacy[stream][item],
  * already updated by /control). See imp_osd.c for the restart caveat. */
 void imp_osd_privacy_apply(int stream, int item);
+
+/* 1 if the OSD group for 'stream' exists in the running pipeline (built at
+ * startup by imp_osd_setup because OSD or a privacy region was enabled), so
+ * privacy masks CAN be toggled/moved live on it. 0 otherwise (sim build,
+ * stream off, or OSD+privacy fully off at boot - changes then only persist
+ * and apply on restart). Used by /control to report honest caps. */
+int  imp_osd_group_active(int stream);
 #endif
 
 #endif

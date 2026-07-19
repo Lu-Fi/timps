@@ -20,6 +20,7 @@
 #include "audio_caps.h"
 #include "motion_caps.h"
 #include "hal/imp_motion.h"
+#include "hal/imp_osd.h"
 #include "record.h"
 #include "timelapse.h"
 #include <stdio.h>
@@ -223,10 +224,13 @@ void control_apply_json(const char *json)
     static const char *const AUD_LIVE[] = {
         "volume","gain","alc_gain","mute"
     };
-    /* audio.* persist-only keys: SetPubAttr/encoder-init attributes (plus
-     * speaker/stereo keys without a runtime path). They go through the same
-     * timps_apply_setting (config + persist); the HAL audio branch only logs
-     * them as "applies on restart" instead of touching the running input. */
+    /* audio.* persist-only keys: SetPubAttr/encoder-init attributes. They go
+     * through the same timps_apply_setting (config + persist); the HAL audio
+     * branch only logs them as "applies on restart" instead of touching the
+     * running input. channels=2/force_stereo enable simulated stereo (mono
+     * mic duplicated to L=R, dual-mono AAC) at the next restart. The spk_*
+     * keys are accepted and persisted for the WebUI round-trip only: timps
+     * has no speaker/AO pipeline, the HAL logs them as ignored. */
     static const char *const AUD_REST[] = {
         "enabled","codec","samplerate","channels","bitrate",
         "high_pass","agc","agc_target_dbfs","agc_compression_db","ns",
@@ -574,25 +578,46 @@ int control_get_json(char *buf, size_t cap)
     APP("],\"audio\":[");
     for (size_t i=0;i<sizeof AUD_CAPS/sizeof AUD_CAPS[0];i++)
         APP("%s\"%s\"", i?",":"", AUD_CAPS[i]);
-    /* osd item leaf keys /control accepts (per-stream osdS.N.* and legacy
-     * osdN.*; the master switch "osd.enabled" is restart-only). Every video
-     * stream has its own independent item set, dumped as "osd0"/"osd1" below;
-     * outline/outline_color are the per-item text stroke. The WebUI bridge
-     * maps the prudynt OSD tree onto these. */
-    APP("],\"osd\":[\"enabled\",\"text\",\"x\",\"y\","
+    /* osd item leaf keys /control accepts AND applies live (per-stream
+     * osdS.N.* and legacy osdN.*; the master switch "osd.enabled" is
+     * restart-only). Every video stream has its own independent item set,
+     * dumped as "osd0"/"osd1" below; outline/outline_color are the per-item
+     * text stroke. The WebUI bridge maps the prudynt OSD tree onto these.
+     * B2: per-item "enabled" is deliberately NOT in this live list: an item
+     * that was disabled at boot has no IMP region (imp_osd_setup only builds
+     * regions for boot-enabled items), so enabling it live is a silent no-op
+     * until restart - the bridge must treat enable toggles as save+restart
+     * like every key outside this list. */
+    APP("],\"osd\":[\"text\",\"x\",\"y\","
         "\"font_size\",\"color\",\"transparency\",\"outline\",\"outline_color\"");
     /* restart-required sections: every key under these objects is persist-
      * only (config + restart, never applied to the running pipeline). The
-     * WebUI bridge reads this to flag such changes as "restart_required". */
-    APP("],\"restart\":[\"video\",\"sensor\"],");
+     * WebUI bridge reads this to flag such changes as "restart_required".
+     * "osd.enabled" (the master switch) rides along explicitly: it lives in
+     * the osd.* section whose other keys are live, but itself only takes
+     * effect on restart (groups are built once in imp_osd_setup). */
+    APP("],\"restart\":[\"video\",\"sensor\",\"osd.enabled\"],");
     /* motion capability: available = this build has the IMP_IVS move API,
      * max_cells = the SDK's compile-time IMP_IVS_MOVE_MAX_ROI_CNT (the WebUI
      * limits the grid selectors so cols*rows never exceeds it) */
     APP("\"motion\":{\"available\":%d,\"max_cells\":%d},",
         MOTION_AVAILABLE, MOTION_MAX_CELLS);
-    /* privacy cover masks: available on any build with IMP_OSD; max_regions =
-     * the per-stream cover-region budget the WebUI limits itself to */
-    APP("\"privacy\":{\"available\":1,\"max_regions\":%d},", MS_MAX_PRIVACY);
+    /* privacy cover masks: B3 - "available" is no longer hardcoded 1 but
+     * reflects whether an OSD group actually exists in the running pipeline
+     * (imp_osd_setup builds one per stream only when OSD or a privacy region
+     * was enabled at boot; sim builds never have one). Region handles are
+     * pre-created with the group, so when a group exists masks really can be
+     * enabled/moved live; without one a /control write would persist but
+     * silently change nothing until restart - the WebUI now knows. */
+    {
+        int pav = 0;
+#ifdef HAL_INGENIC   /* sim has no imp_osd backend (not even the stub linked) */
+        for (int s = 0; s < MS_MAX_VSTREAM; s++)
+            if (imp_osd_group_active(s)) pav = 1;
+#endif
+        APP("\"privacy\":{\"available\":%d,\"max_regions\":%d},",
+            pav, MS_MAX_PRIVACY);
+    }
     APP("\"record\":{\"available\":1},");
     APP("\"timelapse\":{\"available\":1}},");
     APP("\"image\":{\"brightness\":%d,\"contrast\":%d,\"saturation\":%d,"

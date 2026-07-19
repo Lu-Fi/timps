@@ -183,12 +183,17 @@ video1.imp_chn   = 1
 # Mic (AI) processing keys marked "live" apply immediately via /control; which
 # ones a given SoC supports is reported in caps.audio (alc_gain only on
 # T21/T31/C100). codec/samplerate/bitrate/channels are encoder-init attributes:
-# they persist and take effect on restart. timps has no audio-OUT (AO) pipeline,
-# so the speaker/stereo keys are stored for the WebUI but currently do nothing.
+# they persist and take effect on restart. The SoC mic is mono; channels = 2
+# (or force_stereo = 1) enables SIMULATED stereo: the mono capture is duplicated
+# to L=R and encoded as 2-channel dual-mono AAC for clients that require a
+# stereo track. AAC only - G.711 (pcmu/pcma) has no standard stereo and stays
+# mono. timps has no audio-OUT (AO) pipeline, so the spk_* speaker keys are
+# stored for the WebUI but ignored (logged as such).
 audio.enabled            = 1
 audio.codec              = aac    # aac | pcmu | pcma | none  (persist + restart)
 audio.samplerate         = 16000  # 8000 | 16000              (persist + restart)
-audio.channels           = 1      #                           (persist + restart)
+audio.channels           = 1      # 1 mono | 2 = simulated stereo (dual-mono),
+                                  # AAC only               (persist + restart)
 audio.bitrate            = 32     # kbps, aac                 (persist + restart)
 audio.volume             = 80     # live — IMP_AI_SetVol
 audio.gain               = 25     # live — IMP_AI_SetGain
@@ -200,10 +205,13 @@ audio.agc_compression_db = 0      # live — AGC compression gain 0..90
 audio.ns                 = 0      # live — noise suppression 0 off, 1..3
 audio.mute               = 0      # live — mic mute (1 = drop captured frames,
                                   #        clients receive no audio; no restart)
-# speaker / stereo: no AO path in timps yet (stored only, no effect)
+# speaker: no AO path in timps (stored for the WebUI only, IGNORED - the
+# daemon logs "no speaker/AO pipeline" when set via /control)
 # audio.spk_enabled  = 0
 # audio.spk_volume   = 80
 # audio.spk_gain     = 25
+# alias for audio.channels = 2: simulated stereo (dual-mono), AAC only,
+# applies on restart
 # audio.force_stereo = 0
 
 # ---- OSD (up to 8 overlays PER video stream; own TrueType rasterizer) ----

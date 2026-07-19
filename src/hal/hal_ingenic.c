@@ -126,6 +126,11 @@ static volatile int g_arun, g_aactive;
 static pthread_t    g_athr;
 static int          g_acodec = MS_AC_PCMU;   /* effective audio codec */
 static int          g_asr    = 8000;         /* effective audio sample rate */
+static int          g_ach    = 1;            /* effective channel count published
+                                              * to the hub: 2 = SIMULATED stereo
+                                              * (the mono AI capture duplicated
+                                              * to L=R, encoded as 2-ch AAC).
+                                              * AAC only - G.711 stays mono. */
 static IMPAudioIOAttr g_aio;                 /* attr accepted by IMP_AI_SetPubAttr */
 static volatile int   g_ai_up = 0;           /* AI dev 0/chn 0 enabled (audio_thread) */
 #ifdef USE_CONTROL
@@ -1000,9 +1005,11 @@ static int ai_rate_enum(int sr)
  * libimp processes those modules on its own record thread and frees them
  * unlocked, so a live toggle would race the vendor thread -> UAF. ing_control
  * therefore treats agc/ns/high_pass as persist-only (restart-required).
- * NOT here either: codec/samplerate/bitrate/channels/enabled (+ force_stereo
- * and the spk_* speaker keys - timps has no AO pipeline): init-time
- * attributes, persist-only, applied on the next restart. */
+ * NOT here either: codec/samplerate/bitrate/channels/force_stereo/enabled are
+ * init-time attributes, persist-only, applied on the next restart (channels=2/
+ * force_stereo = simulated dual-mono stereo, read by audio_thread at init).
+ * The spk_* speaker keys are parsed/persisted but IGNORED outright - timps
+ * has no AO pipeline, so they cannot take effect even after a restart. */
 static int ai_apply_key(const char *k)
 {
     const ms_audio_cfg *a = &g_hcfg->audio;
@@ -1145,31 +1152,40 @@ static void *audio_thread(void *arg)
     if (use_aac) {
         faac_params fp; faac_params_init(&fp);
         fp.sample_rate   = (uint32_t)g_asr;
-        fp.num_channels  = 1;
+        fp.num_channels  = (uint32_t)g_ach;     /* 2 = simulated stereo (dual-mono) */
         fp.mpeg_version  = FAAC_MPEG4;
         fp.object_type   = FAAC_OBJ_LOW;        /* AAC-LC */
         fp.input_format  = FAAC_INPUT_16BIT;
         fp.output_format = FAAC_STREAM_RAW;     /* raw AAC (no ADTS) */
         fp.use_tns = false; fp.use_lfe = false;
+        /* faac's bit_rate is PER CHANNEL; audio.bitrate is the total stream
+         * rate, so a dual-mono stereo stream keeps the configured total */
         if (g_hcfg->audio.bitrate_kbps>0)
-            fp.bit_rate = (uint32_t)g_hcfg->audio.bitrate_kbps*1000;
+            fp.bit_rate = (uint32_t)g_hcfg->audio.bitrate_kbps*1000/(uint32_t)g_ach;
         faac_status st = faac_encoder_open(&fp, &faac);
         if (st==FAAC_OK && faac) {
             faac_encoder_info fi; fi.struct_size = sizeof fi;
             if (faac_encoder_get_info(faac, &fi)==FAAC_OK) {
-                faac_in  = fi.frame_samples;    /* samples/channel per frame (mono) */
+                faac_in  = fi.frame_samples;    /* samples/channel per frame */
                 faac_max = fi.max_output_bytes;
             }
-            LOGI(MOD,"faac AAC encoder: %dHz frame=%u max=%u",g_asr,faac_in,faac_max);
+            /* faac_encoder_encode() takes the TOTAL interleaved sample count,
+             * so the re-blocking unit is frame_samples * channels (AAC-LC:
+             * 1024 mono, 2048 stereo interleaved) */
+            faac_in *= (uint32_t)g_ach;
+            LOGI(MOD,"faac AAC encoder: %dHz ch=%d frame=%u max=%u",
+                 g_asr,g_ach,faac_in,faac_max);
         } else {
             LOGW(MOD,"faac_encoder_open failed (%s) -> PCMU", faac_strerror(st));
             faac = NULL;
             use_aac=0; g_acodec=MS_AC_PCMU;
+            g_ach=1;                            /* stereo simulation is AAC-only */
         }
     }
 #else
     use_aac = 0;   /* built without USE_FAAC: no software AAC */
     if (g_acodec==MS_AC_AAC) g_acodec=MS_AC_PCMU;
+    g_ach = 1;     /* stereo simulation is AAC-only (G.711 fallback = mono) */
 #endif
 
     /* the codec/rate the HAL actually produces must be what SDP/ASC advertise.
@@ -1206,14 +1222,19 @@ static void *audio_thread(void *arg)
         if (g_hcfg->audio.ns > 0)       ai_apply_key("ns");
         g_ai_up = 1;
     }
-    hub_set_audio_params(g_acodec, g_asr, 1);
+    hub_set_audio_params(g_acodec, g_asr, g_ach);
 
-    LOGI(MOD,"audio in: %dHz %s vol=%d gain=%d numPerFrm=%d", g_asr,
-         use_aac?"AAC":(g_acodec==MS_AC_PCMA?"PCMA":"PCMU"),
+    LOGI(MOD,"audio in: %dHz %s ch=%d%s vol=%d gain=%d numPerFrm=%d", g_asr,
+         use_aac?"AAC":(g_acodec==MS_AC_PCMA?"PCMA":"PCMU"), g_ach,
+         g_ach==2?" (simulated stereo)":"",
          g_hcfg->audio.volume, g_hcfg->audio.gain, aio.numPerFrm);
 
 #ifdef USE_FAAC
-    /* re-blocking buffer: accumulate 40 ms AI frames, feed faac_in-sized units */
+    /* re-blocking buffer: accumulate 40 ms AI frames, feed faac_in-sized units.
+     * acc counts INTERLEAVED samples: with simulated stereo the mono capture is
+     * duplicated to L=R on append, so acc_n and faac_in use the same unit.
+     * Capacity check: worst case is faac_in-1 leftover (stereo LC: 2047) plus
+     * one doubled 40 ms frame (16 kHz: 2*640=1280) = 3327 < 4096. */
     int16_t   acc[4096];
     size_t    acc_n = 0;
     int dbg_logged = 0;
@@ -1253,17 +1274,29 @@ static void *audio_thread(void *arg)
         size_t samples=frm.len/2;
         if (use_aac) {
 #ifdef USE_FAAC
-            /* append into the accumulator, then drain in faac_in blocks */
+            /* append into the accumulator, then drain in faac_in blocks.
+             * Simulated stereo (g_ach==2): each mono AI sample is duplicated
+             * to L=R HERE, before accumulation, so acc_n always counts
+             * interleaved samples - the same unit as faac_in. */
             for (size_t off=0; off<samples; ){
-                size_t take = samples-off;
-                if (acc_n+take > sizeof(acc)/sizeof(acc[0])) take = sizeof(acc)/sizeof(acc[0]) - acc_n;
-                memcpy(acc+acc_n, pcm+off, take*sizeof(int16_t));
-                acc_n += take; off += take;
+                size_t take = samples-off;                       /* mono samples */
+                size_t room = sizeof(acc)/sizeof(acc[0]) - acc_n; /* interleaved */
+                if (take*(size_t)g_ach > room) take = room/(size_t)g_ach;
+                if (g_ach==2){
+                    for (size_t i=0;i<take;i++){
+                        acc[acc_n+2*i]   = pcm[off+i];           /* L */
+                        acc[acc_n+2*i+1] = pcm[off+i];           /* R = L (dual-mono) */
+                    }
+                } else {
+                    memcpy(acc+acc_n, pcm+off, take*sizeof(int16_t));
+                }
+                acc_n += take*(size_t)g_ach; off += take;
                 while (acc_n >= faac_in){
                     static __thread uint8_t aac[8192];
                     uint32_t n = 0;
-                    /* FAAC_INPUT_16BIT: pass the int16 PCM directly; in_samples is
-                     * the interleaved count (== faac_in for mono). */
+                    /* FAAC_INPUT_16BIT: pass the int16 PCM directly; in_samples
+                     * is the TOTAL interleaved count (frame_samples * channels
+                     * == faac_in: 1024 mono, 2048 stereo). */
                     faac_status st = faac_encoder_encode(faac, acc, (uint32_t)faac_in,
                                                          aac, sizeof aac, &n);
                     if (st!=FAAC_OK) LOGW(MOD,"faac_encoder_encode: %s",faac_strerror(st));
@@ -1307,8 +1340,9 @@ static void *audio_thread(void *arg)
  * (AGC/NS/HPF module toggles deferred to the audio thread); OSD goes
  * through imp_osd_apply(stream,item). ALL videoN.*
  * and sensor.* keys plus the attribute-level audio keys (enabled/codec/
- * samplerate/bitrate/channels/force_stereo/spk_*) are NOT applied live
- * (persisted only, take effect on restart). Compiled only with
+ * samplerate/bitrate/channels/force_stereo) are NOT applied live
+ * (persisted only, take effect on restart); the spk_* speaker keys are
+ * persisted but ignored - timps has no AO pipeline. Compiled only with
  * -DUSE_CONTROL. */
 static pthread_mutex_t g_isp_lock = PTHREAD_MUTEX_INITIALIZER;
 static void ing_control(const char *key, const char *val)
@@ -1329,8 +1363,17 @@ static void ing_control(const char *key, const char *val)
 
     if (!strncmp(key,"audio.",6)){
         const char *k = key+6;
+        /* speaker keys: timps has no audio-output (AO) pipeline at all, so
+         * spk_* can never take effect - not even after a restart. They are
+         * still parsed/persisted (harmless, keeps the WebUI round-trip
+         * intact), but say so honestly instead of promising a restart-apply. */
+        if (!strncmp(k,"spk_",4)){
+            LOGW(MOD,"audio.%s: timps has no speaker/AO pipeline - ignored", k);
+            return;
+        }
         /* persist-only keys (take effect on restart): encoder/SetPubAttr-level
-         * attributes, the speaker/stereo keys timps has no runtime path for,
+         * attributes - including channels/force_stereo, which audio_thread
+         * reads at the next init to enable simulated stereo (dual-mono AAC) -
          * AND the DSP module toggles high_pass/agc/ns. The latter are
          * restart-required by necessity: libimp runs AGC/NS/HPF on its OWN
          * internal record thread, and IMP_AI_Disable{Agc,Ns,Hpf} frees that
@@ -1343,7 +1386,7 @@ static void ing_control(const char *key, const char *val)
             !strcmp(k,"channels")  || !strcmp(k,"force_stereo") ||
             !strcmp(k,"high_pass") || !strcmp(k,"agc")      ||
             !strcmp(k,"agc_target_dbfs") || !strcmp(k,"agc_compression_db") ||
-            !strcmp(k,"ns")        || !strncmp(k,"spk_",4)){
+            !strcmp(k,"ns")){
             LOGI(MOD,"%s persisted, applies on restart", key);
             return;
         }
@@ -1525,6 +1568,21 @@ static int ing_start(const ms_config *cfg)
         }
 #endif
         g_asr = (g_acodec==MS_AC_AAC) ? cfg->audio.samplerate : 8000; /* G.711 = 8 kHz */
+        /* simulated stereo: audio.channels=2 (or force_stereo) duplicates the
+         * mono AI capture to L=R and encodes 2-channel AAC (dual-mono) for
+         * clients that require a stereo track. The RTP payload spec for G.711
+         * (PCMA/PCMU) is mono-only, so a stereo request with G.711 - including
+         * an AAC request that already degraded to PCMU above - stays mono.
+         * audio_thread drops g_ach back to 1 if faac fails at runtime and the
+         * codec falls back to PCMU. */
+        {
+            int want_stereo = (cfg->audio.channels==2 || cfg->audio.force_stereo);
+            if (want_stereo && g_acodec!=MS_AC_AAC){
+                LOGW(MOD,"audio.channels=2/force_stereo requires AAC - G.711 has no standard stereo, staying mono");
+                want_stereo = 0;
+            }
+            g_ach = want_stereo ? 2 : 1;
+        }
         /* NO hub_set_audio_params here: the hub audio params are published
          * ONCE, by audio_thread, after the AI is validated and the final
          * codec/rate is known (samplerate fallback, faac->PCMU fallback). An

@@ -275,8 +275,20 @@ static void *client_thread(void *arg)
         __sync_fetch_and_sub(&g_srt_clients, 1); return NULL; }
 
     int ac = MS_AC_NONE, asr = 0, ach = 0, sub_a = 0;
-    if (hub_get_audio(&ac, &asr, &ach) && ac == MS_AC_AAC)
+    int have_a = hub_get_audio(&ac, &asr, &ach);
+    if (have_a && ac == MS_AC_AAC)
         sub_a = (hub_subscribe(HUB_AUDIO_SRC, &q) == 0);
+    else if (g_scfg->audio.enabled) {
+        /* B5: the MPEG-TS mux here only carries AAC. With G.711 (the
+         * USE_FAAC=0 fallback) the SRT stream is video-only - say so once
+         * instead of silently serving no audio. */
+        static int aac_warned;
+        if (!aac_warned) { aac_warned = 1;
+            LOGW(MOD, "audio.enabled=1 but codec is %s - SRT/MPEG-TS carries "
+                      "AAC only, stream is video-only",
+                 ac == MS_AC_PCMU ? "g711u" : ac == MS_AC_PCMA ? "g711a" :
+                 have_a ? "unknown" : "none"); }
+    }
     m->a_sr = asr; m->a_ch = (ach > 0 ? ach : 1);
     m->a_idx = aac_srate_index(asr);
     if (m->a_idx < 0 && sub_a) {
