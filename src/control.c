@@ -19,6 +19,7 @@
 #include "isp_caps.h"
 #include "audio_caps.h"
 #include "motion_caps.h"
+#include "rotate_caps.h"   /* ROT_HAS_90/ROT_HAS_180 (rotation caps + eff dims) */
 #include "hal/imp_motion.h"
 #include "record.h"
 #include "timelapse.h"
@@ -593,6 +594,20 @@ int control_get_json(char *buf, size_t cap)
     /* privacy cover masks: available on any build with IMP_OSD; max_regions =
      * the per-stream cover-region budget the WebUI limits itself to */
     APP("\"privacy\":{\"available\":1,\"max_regions\":%d},", MS_MAX_PRIVACY);
+    /* image rotation: the set of values this SoC's build can actually apply
+     * (0 always; 90/270 need a dim-swapping apply path, 180 an ISP flip).
+     * The WebUI greys out the rest. */
+    APP("\"rotation\":[0"
+#ifdef ROT_HAS_90
+        ",90"
+#endif
+#ifdef ROT_HAS_180
+        ",180"
+#endif
+#ifdef ROT_HAS_90
+        ",270"
+#endif
+        "],");
     APP("\"record\":{\"available\":1},");
     APP("\"timelapse\":{\"available\":1}},");
     APP("\"image\":{\"brightness\":%d,\"contrast\":%d,\"saturation\":%d,"
@@ -649,12 +664,14 @@ int control_get_json(char *buf, size_t cap)
         config_str_lock();     /* rtsp_path is runtime-mutable via POST */
         jesc(vs->rtsp_path, rp, sizeof rp);
         config_str_unlock();
+        int ew, eh; ms_vstream_eff_dims(vs, &ew, &eh);   /* post-rotation dims */
         APP("%s\"%d\":{\"enabled\":%d,\"codec\":\"%s\",\"width\":%d,"
-            "\"height\":%d,\"fps\":%d,\"bitrate\":%d,\"rc_mode\":\"%s\","
+            "\"height\":%d,\"eff_width\":%d,\"eff_height\":%d,"
+            "\"fps\":%d,\"bitrate\":%d,\"rc_mode\":\"%s\","
             "\"gop\":%d,\"max_gop\":%d,\"profile\":%d,\"qp\":%d,"
             "\"min_qp\":%d,\"max_qp\":%d,\"rotation\":%d,\"buffers\":%d,"
             "\"rtsp_path\":\"%s\"}",
-            i?",":"", i, vs->enabled, cod, vs->width, vs->height, vs->fps,
+            i?",":"", i, vs->enabled, cod, vs->width, vs->height, ew, eh, vs->fps,
             vs->bitrate_kbps, rc, vs->gop, vs->max_gop, vs->profile,
             vs->qp, vs->min_qp, vs->max_qp, vs->rotation, vs->buffers, rp);
     }

@@ -21,6 +21,7 @@
  * sensitivity for now; per-cell later). */
 #include "imp_motion.h"
 #include "../motion_caps.h"
+#include "../rotate_caps.h"  /* ms_vstream_eff_dims (post-rotation frame dims) */
 #include "../events.h"     /* wake /events SSE subscribers on grid changes */
 #include "../log.h"
 #include <string.h>
@@ -171,7 +172,7 @@ int imp_motion_start(const ms_config *cfg)
     g_hcfg = cfg;
     int mon = cfg->motion.monitor_stream;
     if (mon < 0 || mon >= MS_MAX_VSTREAM || !cfg->video[mon].enabled) mon = 0;
-    int w = cfg->video[mon].width, h = cfg->video[mon].height;
+    int w, h; ms_vstream_eff_dims(&cfg->video[mon], &w, &h);  /* IVS sees the rotated frame */
     int cols, rows;
     grid_geom(cfg, &cols, &rows);
     int cells = cols * rows;
