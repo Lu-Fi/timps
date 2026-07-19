@@ -707,7 +707,10 @@ if [ -n "$SSH_TARGET" ] && want 16 ssh; then
 	[ -n "$ver" ] && ok "running $ver" || info "version string not found in logread"
 	up=$(sshx "pidof timpsd >/dev/null && echo yes")
 	[ "$up" = "yes" ] && ok "timpsd process alive" || bad "timpsd not running"
-	errs=$(sshx "logread 2>/dev/null | grep -icE 'error|fail|assert|segfault|oom|IMP_.*failed'")
+	# error-ish lines, minus unrelated-daemon noise (dropbear connection churn
+	# from our own SSH probes, telegrambot with no config, etc.) so a real timps
+	# fault isn't buried under benign matches
+	errs=$(sshx "logread 2>/dev/null | grep -iE 'error|fail|assert|segfault|oom|IMP_.*failed' | grep -cviE 'dropbear|telegrambot|Exited normally|before auth|[0-9]+ fails'")
 	[ "${errs:-0}" -le 2 ] && ok "logread: ${errs:-0} error-ish lines" || warn "logread: ${errs} error-ish lines (review with: logread | grep -iE 'error|fail')"
 	# config integrity: glued lines (two '=') or duplicate keys
 	glued=$(sshx "sed 's/#.*//' /etc/timps.conf 2>/dev/null | grep -cE '=[^=]*='")
@@ -722,6 +725,20 @@ if [ -n "$SSH_TARGET" ] && want 16 ssh; then
 	done; wait 2>/dev/null
 	glued2=$(sshx "sed 's/#.*//' /etc/timps.conf 2>/dev/null | grep -cE '=[^=]*='")
 	[ "${glued2:-0}" -eq 0 ] && ok "after 20 rapid writes: config still clean (no glued lines)" || bad "rapid writes corrupted /etc/timps.conf (${glued2} glued) - config race not fixed"
+	# The agc toggles above are the exact live-DSP-toggle crash reproducer.
+	# v1.4.5 made agc/ns/high_pass restart-required (persist-only) because
+	# toggling them live raced libimp's internal audio thread -> UAF/SIGSEGV in
+	# libaudioProcess.so. Confirm the daemon survived and treats them as
+	# persist-only (no live-apply), not the removed v1.4.4 "queued" deferral.
+	up2=$(sshx "pidof timpsd >/dev/null && echo yes")
+	[ "$up2" = "yes" ] && ok "timpsd alive after AGC-toggle/config-write stress" \
+		|| bad "timpsd DIED during rapid agc /control writes - live-DSP-toggle UAF regression"
+	seg=$(sshx "dmesg 2>/dev/null | grep -cE 'libaudioProcess|SIGSEGV to timpsd|do_page_fault[^\n]*timpsd'")
+	[ "${seg:-0}" -eq 0 ] && ok "no timpsd segfault signature in dmesg" \
+		|| bad "dmesg shows timpsd segfault (${seg} lines) - libimp AGC/NS/HPF race back?"
+	q=$(sshx "logread 2>/dev/null | grep -c 'queued for audio thread'")
+	[ "${q:-0}" -eq 0 ] && ok "agc/ns/high_pass are persist-only (no live 'queued' applies)" \
+		|| warn "${q} 'queued for audio thread' lines - build predates v1.4.5 (buggy deferred path)"
 fi
 
 # ----------------------------------------------------------------------------- summary
