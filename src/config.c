@@ -200,10 +200,12 @@ void config_defaults(ms_config *c)
         for (int i=0;i<MS_MAX_OSD;i++){
             ms_osd_item *o=&it[i];
             o->enabled=0; o->type=MS_OSD_TEXT; o->x=10; o->y=10;
-            o->font_size=32; o->color=0xFFFFFFFF; o->transparency=255;
-            /* text outline: off by default (matches the pre-outline look);
-             * the default color is a solid black stroke when enabled */
-            o->outline=0; o->outline_color=0xFF000000;
+            /* font_size is absolute px (no per-stream auto-scale): main stream
+             * 32, sub-streams a smaller default that still stays legible */
+            o->font_size=(s==0)?32:24; o->color=0xFFFFFFFF; o->transparency=255;
+            /* text outline ON by default (1px solid-black stroke) so overlays
+             * stay readable on light backgrounds without extra config */
+            o->outline=1; o->outline_color=0xFF000000;
         }
         /* default layout per stream. x/y: 0 = centered,
          * positive = from left/top, negative = from right/bottom. */
