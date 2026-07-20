@@ -8,6 +8,7 @@
 #   1. Preflight ...... ping, ports, tool detection
 #   2. Discovery ...... ffprobe every stream (codec/res/fps/audio)
 #   2b. Auth .......... no-auth + wrong-pass must be blocked (RTSP + HTTP surfaces)
+#   2c. Backchannel ... optional ONVIF audio backchannel advertised in SDP
 #   3. Integrity+Sync . record each stream, measure fps, real-time rate,
 #                       A/V drift, timestamp monotonicity, decode errors
 #   4. HTTP fMP4 ...... /stream.mp4 (MSE feed) plays, fps/bitrate, errors
@@ -15,6 +16,7 @@
 #   6. Snapshot ....... /snapshot.jpg?chn=N validity + latency + success rate
 #   7. Audio .......... codec/rate, silence-gap scan
 #   8. /control API ... status JSON, caps, safe write+persist round-trip
+#   8b. Live settings . POST every live setting, read it back, verify applied
 #   9. /events ........ SSE stream emits events
 #  10. ONVIF .......... both snapshot proxies + GetProfiles (resolution/codec vs
 #                       real stream, fps/bitrate surfaced with template note)
@@ -190,7 +192,9 @@ import json,sys
 try:
     d=json.load(open(sys.argv[1]))
     for k in sys.argv[2].split('.'):
-        d=d[int(k)] if k.isdigit() else d[k]
+        if isinstance(d,list):        d=d[int(k)]
+        elif isinstance(d,dict) and k in d: d=d[k]      # object with numeric string keys ("osd0":{"0":{..}})
+        else:                          d=d[int(k)]
     print(d if not isinstance(d,(dict,list)) else json.dumps(d))
 except Exception: pass
 PY
@@ -425,6 +429,27 @@ else
 fi
 
 fi
+if want 2c backchannel bc; then
+# --- 2c. ONVIF audio backchannel (SDP advertise) ----------------------------
+hdr "2c. Audio backchannel (optional)"
+# A DESCRIBE carrying the ONVIF Require header must yield an m=audio backchannel
+# media (a=sendonly, trackID=2) IFF the feature is built+enabled AND /bin/iac is
+# present. Optional feature -> a missing backchannel is info, not FAIL.
+bcsdp="$OUTDIR/backchannel.sdp"
+if curl -s --max-time 10 -u "$RTSP_USER:$RTSP_PASS" \
+        --request DESCRIBE --header "Require: www.onvif.org/ver20/backchannel" \
+        "rtsp://$CAM:$RTSP_PORT/$PATH_MAIN" > "$bcsdp" 2>/dev/null && [ -s "$bcsdp" ]; then
+	if grep -q "a=sendonly" "$bcsdp" && grep -q "trackID=2" "$bcsdp"; then
+		bcname=$(grep -oE 'a=rtpmap:[0-9]+ [A-Za-z0-9-]+' "$bcsdp" | tail -1 | awk '{print $2}')
+		ok "backchannel advertised (${bcname:-?}, trackID=2, a=sendonly)"
+	else
+		info "no backchannel in SDP (feature off, not built, or /bin/iac absent) - optional"
+	fi
+else
+	info "DESCRIBE+Require not answered by curl (RTSP auth/curl-RTSP?) - skipped"
+fi
+
+fi
 if want 3 integrity; then
 # --- 3. integrity + A/V sync ------------------------------------------------
 hdr "3. Stream integrity + A/V sync (record ${INTEG_DUR}s each, transport=$RTSP_TRANSPORT)"
@@ -542,6 +567,181 @@ if curlq 10 "$(http_base)/control" -o "$cj" && [ -s "$cj" ]; then
 			|| warn "/control write returned HTTP $code"
 	else info "  brightness not found; skipped write round-trip"; fi
 else bad "/control not reachable (auth? http.user/pass=$HTTP_USER) - see $cj"; fi
+
+fi
+if want 8b live livesettings; then
+# --- 8b. Live settings apply + read-back verify -----------------------------
+# For every LIVE-applicable /control setting: POST a changed (still-valid)
+# value, GET /control back and assert the daemon reports the new value, then
+# restore the original and confirm it reverts. This proves the whole path -
+# JSON parse -> config_apply_kv -> hub_control (HAL live-apply) -> the value
+# the daemon reports. Persist-only keys (video/sensor/osd.enabled) apply on
+# restart, so they are checked separately as a config round-trip, not "live".
+#
+# What "applied" means here: the daemon's own reported state changes. For
+# motion this is read from the live IVS status (real live-apply proof on HW);
+# for the ISP image knobs the daemon reports g_cfg (accepted+persisted) - the
+# physical sensor effect (e.g. a real hflip) is not observable host-side and
+# is out of scope. Everything is posted in ONE request per section and
+# restored in one, so a real camera sees just 2 config writes per section.
+hdr "8b. Live settings apply + read-back verify"
+if ! have python3; then
+	skip "live-settings verify needs python3 (nested JSON read-back) - not found"
+else
+	LV_BASE="$OUTDIR/lv_base.json"
+	if ! curlq 12 "$(http_base)/control" -o "$LV_BASE" || [ ! -s "$LV_BASE" ]; then
+		bad "cannot GET /control baseline - skipping live-settings tests"
+	else
+
+	# POST a JSON body, echo the HTTP status
+	lv_post() { curl -s -o /dev/null -w '%{http_code}' --max-time 12 \
+		-u "$HTTP_USER:$HTTP_PASS" -X POST "$(http_base)/control" -d "$1"; }
+	lv_get()  { curlq 12 "$(http_base)/control" -o "$1"; }
+	# pick a valid value != cur within [lo,hi]
+	flip_int()  { awk -v lo="$1" -v hi="$2" -v c="$3" 'BEGIN{
+		m=int((lo+hi)/2); if(m!=c){print m} else if(m<hi){print m+1} else{print m-1}}'; }
+	flip_bool() { [ "${1:-0}" = "1" ] && echo 0 || echo 1; }
+
+	# lv_section <label> <wrap-open> <wrap-close> <read-prefix> <spec...>
+	#   spec = "key type [lo hi]"   type: int|bool|hex|str
+	# Reads each key's current value from $LV_BASE, computes a distinct valid
+	# new value, POSTs them all at once, verifies the read-back, then restores.
+	lv_section() {
+		local label="$1" wo="$2" wc="$3" rp="$4"; shift 4
+		local body="" rbody="" spec key type lo hi cur new q
+		local -a P N O
+		for spec in "$@"; do
+			# shellcheck disable=SC2086
+			set -- $spec; key="$1"; type="$2"; lo="${3:-0}"; hi="${4:-1}"
+			cur=$(jget "$LV_BASE" "$rp.$key")
+			if [ -z "$cur" ] && [ "$type" != str ]; then
+				info "  $label.$key not present - skipped"; continue; fi
+			q=0
+			case "$type" in
+				int)  new=$(flip_int "$lo" "$hi" "$cur");;
+				bool) new=$(flip_bool "$cur");;
+				hex)  new="0x40C08000"; [ "$cur" = "$new" ] && new="0x80C04000"; q=1;;
+				str)  new="qa_probe";  [ "$cur" = "$new" ] && new="qa_probe2"; q=1;;
+				*) continue;;
+			esac
+			if [ "$q" = 1 ]; then
+				body="$body${body:+,}\"$key\":\"$new\""
+				rbody="$rbody${rbody:+,}\"$key\":\"$cur\""
+			else
+				body="$body${body:+,}\"$key\":$new"
+				rbody="$rbody${rbody:+,}\"$key\":$cur"
+			fi
+			P+=("$rp.$key"); N+=("$new"); O+=("$cur")
+		done
+		local n=${#P[@]}
+		[ "$n" -gt 0 ] || { skip "$label: no testable keys"; return; }
+		local code gf rf i got pass=0
+		code=$(lv_post "${wo}{$body}${wc}")
+		if [ "$code" != "200" ]; then bad "$label: POST(new) HTTP $code"; return; fi
+		gf="$OUTDIR/lv_${label}_new.json"; lv_get "$gf"
+		for ((i=0;i<n;i++)); do
+			got=$(jget "$gf" "${P[i]}")
+			if [ "$got" = "${N[i]}" ]; then pass=$((pass+1))
+			else bad "$label: ${P[i]##*.} not applied (got '$got', want '${N[i]}')"; fi
+		done
+		[ "$pass" = "$n" ] && ok "$label: all $n live key(s) applied & read back (${P[*]##*.})"
+		# restore originals and confirm they revert
+		code=$(lv_post "${wo}{$rbody}${wc}")
+		rf="$OUTDIR/lv_${label}_restore.json"; lv_get "$rf"
+		local rok=0
+		for ((i=0;i<n;i++)); do [ "$(jget "$rf" "${P[i]}")" = "${O[i]}" ] && rok=$((rok+1)); done
+		if [ "$rok" = "$n" ]; then
+			info "  $label: restored $n/$n to original (HTTP $code)"
+		elif [ "${LV_RESTORE_SOFT:-0}" = 1 ]; then
+			# Some keys are read from LIVE subsystem state (not g_cfg) and become
+			# unobservable once that subsystem is turned back off on restore - the
+			# config IS restored (POST $code), the read-back source just goes stale.
+			info "  $label: config restored (HTTP $code); $((n-rok)) key(s) read from live state, unobservable once disabled"
+		else
+			warn "$label: restored only $rok/$n keys to original"
+		fi
+	}
+
+	# --- image: every ISP knob (accepted + persisted on any SoC; live where the
+	# HAL supports it). uchar knobs 0..255, highlight/backlight 0..10, WB gains
+	# 0..65535, hflip/vflip/running_mode bool, anti_flicker 0..2, core_wb 0..1 ---
+	lv_section image '{"image":' '}' image \
+		"brightness int 0 255" "contrast int 0 255" "saturation int 0 255" \
+		"sharpness int 0 255" "hue int 0 255" "ae_compensation int 0 255" \
+		"max_again int 0 255" "max_dgain int 0 255" "sinter_strength int 0 255" \
+		"temper_strength int 0 255" "dpc_strength int 0 255" "defog_strength int 0 255" \
+		"drc_strength int 0 255" "highlight_depress int 0 10" \
+		"backlight_compensation int 0 10" "wb_rgain int 0 65535" "wb_bgain int 0 65535" \
+		"hflip bool" "vflip bool" "running_mode bool" "anti_flicker int 0 2" \
+		"core_wb_mode int 0 1"
+
+	# --- audio: only the keys the HAL applies LIVE (caps.audio). volume/gain/
+	# alc_gain are raw ints; mute is the live publish gate. The restart-only
+	# audio keys (codec/samplerate/agc/ns/...) are covered by the persist check ---
+	lv_section audio '{"audio":' '}' audio \
+		"volume int 0 100" "gain int 0 100" "alc_gain int 0 100" "mute bool"
+
+	# --- osd stream 0 item 0: the live text-overlay leaf keys (caps.osd).
+	# font_size clamps 8..256, transparency 0..255, colors are 0xAARRGGBB hex ---
+	lv_section osd0.0 '{"osd0":{"0":' '}}' osd0.0 \
+		"text str" "x int 0 200" "y int 0 200" "font_size int 8 256" \
+		"transparency int 0 255" "outline int 0 4" "color hex" "outline_color hex"
+
+	# --- privacy cover mask stream 0 region 0: applied live when an OSD group
+	# exists (else persisted). enabled bool, geometry px, color hex ---
+	lv_section privacy.0.0 '{"privacy":{"0":{"0":' '}}}' privacy.0.0 \
+		"enabled bool" "x int 0 200" "y int 0 200" "w int 1 200" "h int 1 200" "color hex"
+
+	# --- motion: all applied live (the HAL recreates the IVS grid). sensitivity
+	# 0..255, monitor_stream 0..1, enabled bool. cols/rows are omitted: they are
+	# clamped to the SDK cell budget, which would look like a mismatch here.
+	# LV_RESTORE_SOFT: on hardware motion.sensitivity is reported from the live
+	# IVS status, not g_cfg - after restoring motion to disabled the grid is torn
+	# down and that read-back goes stale (config is still correctly restored), so
+	# a partial restore here is expected and reported as info, not a warning ---
+	LV_RESTORE_SOFT=1
+	lv_section motion '{"motion":' '}' motion \
+		"sensitivity int 0 255" "monitor_stream int 0 1" "enabled bool"
+	LV_RESTORE_SOFT=0
+
+	# --- daynight: the detection thread reads these live from config. Test the
+	# numeric thresholds + tunables (day/night gain thresholds, gain %, delay);
+	# "enabled" reflects the thread's own state (poll lag) so it is left out ---
+	lv_section daynight '{"daynight":' '}' daynight \
+		"total_gain_day_threshold int 100 900" \
+		"total_gain_night_threshold int 2000 8000" \
+		"day_gain_pct int 0 100" "baseline_delay_s int 0 60"
+
+	# --- record: the running recorder reads these live. enabled/mode/channel are
+	# left out (they would start/stop capture or depend on stream count); the
+	# rolls/segment/min-free/audio/name round-trip live. seg 0..86400, pre 0..60,
+	# post 0..300, min_free 0..1048576 ---
+	lv_section record '{"record":' '}' record \
+		"segment_s int 10 600" "pre_roll_s int 0 60" "post_roll_s int 0 300" \
+		"min_free_mb int 50 2000" "audio bool" "name str"
+
+	# --- timelapse: the running timelapse thread reads these live. interval_s
+	# >=1, keep_days >=0; enabled/channel left out for the same reason as record ---
+	lv_section timelapse '{"timelapse":' '}' timelapse \
+		"interval_s int 1 3600" "keep_days int 0 365" "name str"
+
+	# --- persist-only (restart-required) sanity: these must NOT be advertised as
+	# live but MUST still round-trip through the config. One representative key
+	# each; the daemon reports the new value (persisted) even though the running
+	# pipeline is untouched until restart. ---
+	pv_cur=$(jget "$LV_BASE" video.0.bitrate)
+	if [ -n "$pv_cur" ]; then
+		pv_new=$(flip_int 512 8000 "$pv_cur")
+		code=$(lv_post "{\"video\":{\"0\":{\"bitrate\":$pv_new}}}")
+		lv_get "$OUTDIR/lv_persist.json"
+		got=$(jget "$OUTDIR/lv_persist.json" video.0.bitrate)
+		[ "$got" = "$pv_new" ] && ok "persist-only video0.bitrate round-trips through config ($pv_new, applies on restart)" \
+			|| bad "persist-only video0.bitrate did not persist (got '$got', want '$pv_new')"
+		lv_post "{\"video\":{\"0\":{\"bitrate\":$pv_cur}}}" >/dev/null   # restore
+	fi
+
+	fi
+fi
 
 fi
 if want 9 events; then

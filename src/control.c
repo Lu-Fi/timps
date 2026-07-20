@@ -19,6 +19,7 @@
 #include "isp_caps.h"
 #include "audio_caps.h"
 #include "motion_caps.h"
+#include "rtsp/backchannel.h"
 #include "hal/imp_motion.h"
 #include "hal/imp_osd.h"
 #include "record.h"
@@ -234,7 +235,8 @@ void control_apply_json(const char *json)
     static const char *const AUD_REST[] = {
         "enabled","codec","samplerate","channels","bitrate",
         "high_pass","agc","agc_target_dbfs","agc_compression_db","ns",
-        "force_stereo","spk_enabled","spk_volume","spk_gain"
+        "force_stereo","spk_enabled","spk_volume","spk_gain",
+        "backchannel","backchannel_codec","backchannel_rate"
     };
     static const char *const OSD[] = {
         "enabled","text","x","y","font_size","color","transparency",
@@ -619,6 +621,13 @@ int control_get_json(char *buf, size_t cap)
             pav, MS_MAX_PRIVACY);
     }
     APP("\"record\":{\"available\":1},");
+    /* audio backchannel: available only if the feature is compiled AND the
+     * ingenic-audiodaemon client (/bin/iac) is present on the device */
+#ifdef USE_BACKCHANNEL
+    APP("\"backchannel\":{\"available\":%d},", bc_available());
+#else
+    APP("\"backchannel\":{\"available\":0},");
+#endif
     APP("\"timelapse\":{\"available\":1}},");
     APP("\"image\":{\"brightness\":%d,\"contrast\":%d,\"saturation\":%d,"
         "\"sharpness\":%d,\"hue\":%d,\"hflip\":%d,\"vflip\":%d,\"running_mode\":%d,",
@@ -646,10 +655,12 @@ int control_get_json(char *buf, size_t cap)
             c->audio.agc_compression_db, c->audio.ns, c->audio.mute);
         APP("\"enabled\":%d,\"codec\":\"%s\",\"samplerate\":%d,"
             "\"channels\":%d,\"bitrate\":%d,\"force_stereo\":%d,"
-            "\"spk_enabled\":%d,\"spk_volume\":%d,\"spk_gain\":%d},",
+            "\"spk_enabled\":%d,\"spk_volume\":%d,\"spk_gain\":%d,"
+            "\"backchannel\":%d,\"backchannel_codec\":%d,\"backchannel_rate\":%d},",
             c->audio.enabled, cod, c->audio.samplerate,
             c->audio.channels, c->audio.bitrate_kbps, c->audio.force_stereo,
-            c->audio.spk_enabled, c->audio.spk_volume, c->audio.spk_gain);
+            c->audio.spk_enabled, c->audio.spk_volume, c->audio.spk_gain,
+            c->audio.backchannel, c->audio.backchannel_codec, c->audio.backchannel_rate);
     }
     {   /* sensor (all persist-only / restart-required) */
         char sm[136];
