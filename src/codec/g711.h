@@ -7,4 +7,8 @@
 void g711_ulaw_encode(const int16_t *pcm, size_t n, uint8_t *out);
 void g711_alaw_encode(const int16_t *pcm, size_t n, uint8_t *out);
 
+/* decode (backchannel): n G.711 bytes -> n PCM16 samples */
+void g711_ulaw_decode(const uint8_t *in, size_t n, int16_t *out);
+void g711_alaw_decode(const uint8_t *in, size_t n, int16_t *out);
+
 #endif

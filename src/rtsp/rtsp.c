@@ -7,7 +7,8 @@
 #include "../codec/aac.h"
 #include "../auth.h"
 #include "../tls.h"
-#ifdef USE_TLS
+#include "backchannel.h"
+#if defined(USE_TLS) || defined(USE_BACKCHANNEL)
 #include <fcntl.h>
 #endif
 #include <stdio.h>
@@ -135,6 +136,11 @@ typedef struct {
     rtp_track           vtrack, atrack;
     int                 playing;
     int                 play_cseq;     /* CSeq of PLAY; 200 sent after subscribe */
+#ifdef USE_BACKCHANNEL
+    int                 have_bc;               /* client SETUP the backchannel (trackID=2) */
+    int                 bc_udp[2];             /* server rtp,rtcp recv fds (UDP), -1 none */
+    int                 bc_chan_rtp;           /* TCP-interleaved rtp channel id, -1 UDP */
+#endif
 #ifdef USE_TLS
     void               *tls;           /* ms_tls_conn*, NULL = plain RTSP */
     void               *tls_ctx;       /* listener's ms_tls_ctx* (RTSPS), else NULL */
@@ -232,8 +238,9 @@ static void extract_path(const char *req, char *out, int outsz)
     strncpy(out, p, outsz-1); out[outsz-1]=0;
 }
 
-static void gen_sdp(session *s, const ms_config *c, int vchn, char *sdp, int sdpsz)
+static void gen_sdp(session *s, const ms_config *c, int vchn, char *sdp, int sdpsz, int want_bc)
 {
+    (void)want_bc;
     char body[2048]; int n=0;
     struct sockaddr_in local; socklen_t sl=sizeof local;
     char ip[INET_ADDRSTRLEN];
@@ -292,6 +299,28 @@ static void gen_sdp(session *s, const ms_config *c, int vchn, char *sdp, int sdp
                     "a=control:trackID=1\r\n", pt, pt, nm);
         }
     }
+#ifdef USE_BACKCHANNEL
+    /* ONVIF audio backchannel (client -> speaker). Only advertised when the
+     * client asked for it via `Require: www.onvif.org/ver20/backchannel` and
+     * /bin/iac is present. a=sendonly + own trackID mirror prudynt/live555. */
+    if (want_bc && c->audio.backchannel && bc_available()){
+        int pt = bc_payload_type(), clk = bc_clock_rate();
+        char fmtp[192]; fmtp[0]=0;
+        if (pt==97){   /* AAC (mpeg4-generic): config= is a required RFC3640 param */
+            uint8_t asc[2]; aac_asc(clk, 1, asc);
+            snprintf(fmtp,sizeof fmtp,
+                "a=fmtp:%d streamtype=5;profile-level-id=1;mode=AAC-hbr;"
+                "sizelength=13;indexlength=3;indexdeltalength=3;config=%02X%02X\r\n",
+                pt, asc[0], asc[1]);
+        }
+        if (n>=0 && n<(int)sizeof(body))
+            n += snprintf(body+n, sizeof(body)-n,
+                "m=audio 0 RTP/AVP %d\r\nc=IN IP4 0.0.0.0\r\nb=AS:%d\r\n"
+                "a=rtpmap:%d %s/%d/1\r\n%s"
+                "a=control:trackID=2\r\na=sendonly\r\n",
+                pt, (pt==97?clk/667:64), pt, bc_rtpmap_name(), clk, fmtp);
+    }
+#endif
     (void)sdpsz;
     snprintf(sdp, sdpsz, "%s", body);
 }
@@ -381,7 +410,18 @@ static int handle_request(session *s, char *req)
         /* ensure params exist quickly */
         hub_request_idr(vchn);
         for (int i=0;i<50;i++){ vparam vp; if(hub_get_vparam(vchn,&vp)&&vparam_ready(&vp))break; usleep(10000);}
-        char sdp[2600]; gen_sdp(s, s->cfg, vchn, sdp, sizeof sdp);
+        int want_bc = 0;
+#ifdef USE_BACKCHANNEL
+        { const char *rq = hdr_find(req, "Require"); want_bc = rq && strstr(rq,"backchannel"); }
+        /* RFC2326 12.32 / ONVIF: a required feature we can't honour -> 551 */
+        if (want_bc && !(s->cfg->audio.backchannel && bc_available())){
+            char h[160]; int hn=snprintf(h,sizeof h,
+                "RTSP/1.0 551 Option not supported\r\nCSeq: %d\r\n"
+                "Unsupported: www.onvif.org/ver20/backchannel\r\n\r\n", cseq);
+            r_send(s, h, hn); return 0;
+        }
+#endif
+        char sdp[2600]; gen_sdp(s, s->cfg, vchn, sdp, sizeof sdp, want_bc);
         /* players use the request URL as Content-Base */
         send_resp(s, cseq, "", sdp);
         return 0;
@@ -404,6 +444,48 @@ static int handle_request(session *s, char *req)
             snprintf(s->session, sizeof s->session, "%.8s", tok);
         }
 
+#ifdef USE_BACKCHANNEL
+        if (strstr(path,"trackID=2")){        /* ONVIF audio backchannel (we receive) */
+            if (!s->cfg->audio.backchannel || !bc_available()){
+                /* refuse just this track, keep the connection (video/audio may
+                 * already be SETUP on it) */
+                char e406[96]; int en=snprintf(e406,sizeof e406,
+                    "RTSP/1.0 406 Not Acceptable\r\nCSeq: %d\r\n\r\n", cseq);
+                r_send(s, e406, en); return 0;
+            }
+            char bextra[256];
+            if (tr && strstr(tr,"TCP")){
+                int rc=0, cc=1; const char *il=strstr(tr,"interleaved=");
+                if (il) sscanf(il+12,"%d-%d",&rc,&cc);
+                if (rc<0||rc>255) rc=0;
+                if (cc<0||cc>255) cc = rc<255 ? rc+1 : 0;
+                s->bc_chan_rtp = rc; s->tcp=1; s->have_bc=1;
+                snprintf(bextra,sizeof bextra,
+                    "Transport: RTP/AVP/TCP;unicast;interleaved=%d-%d\r\nSession: %s\r\n",
+                    rc,cc,s->session);
+            } else {
+                int cp=0,cp2=0; const char *cpp=tr?strstr(tr,"client_port="):NULL;
+                if (cpp) sscanf(cpp+12,"%d-%d",&cp,&cp2);
+                if (cp<0||cp>65535) cp=0; if (cp2<0||cp2>65535) cp2=0;
+                if (s->bc_udp[0]>=0){ close(s->bc_udp[0]); s->bc_udp[0]=-1; }
+                if (s->bc_udp[1]>=0){ close(s->bc_udp[1]); s->bc_udp[1]=-1; }
+                int base=0, bound=-1;
+                for (int t=0;t<64 && bound<0;t++){
+                    base = 6000 + ((rand()%8192)&~1);
+                    bound = net_bind_udp_pair(&s->bc_udp[0], &s->bc_udp[1], base);
+                }
+                if (bound<0){ r_send(s,"RTSP/1.0 500 Internal\r\n\r\n",25); return -1; }
+                int fl=fcntl(s->bc_udp[0],F_GETFL,0);   /* poll without blocking PLAY */
+                if (fl>=0) fcntl(s->bc_udp[0],F_SETFL,fl|O_NONBLOCK);
+                s->have_bc=1;
+                snprintf(bextra,sizeof bextra,
+                    "Transport: RTP/AVP;unicast;client_port=%d-%d;server_port=%d-%d\r\nSession: %s\r\n",
+                    cp,cp2, base,base+1, s->session);
+            }
+            send_resp(s, cseq, bextra, NULL);
+            return 0;
+        }
+#endif
         char extra[256];
         if (tr && strstr(tr,"TCP")) {
             /* interleaved */
@@ -465,7 +547,11 @@ static int handle_request(session *s, char *req)
     }
     if (!strncmp(req, "PLAY", 4)) {
         /* PLAY without a successful SETUP (or without a video source) */
-        if ((!s->have_video && !s->have_audio) ||
+        int any_track = s->have_video || s->have_audio;
+#ifdef USE_BACKCHANNEL
+        any_track = any_track || s->have_bc;
+#endif
+        if ((!any_track) ||
             (s->have_video && s->vchn < 0)) {
             const char *e = "RTSP/1.0 455 Method Not Valid in This State\r\n\r\n";
             r_send(s, e, (int)strlen(e));
@@ -553,6 +639,12 @@ static void stream_loop(session *s)
      * (we poll for control input with MSG_DONTWAIT instead) */
     char ctl[2048]; int ctlhave = 0;
     int got_key = 0;   /* start clients on a keyframe for clean decode */
+    int pop_ms = 100;
+#ifdef USE_BACKCHANNEL
+    /* poll faster when receiving a backchannel so speaker audio isn't delayed
+     * by up to a full 100ms media-idle tick (~one G.711 packet interval) */
+    if (s->have_bc) pop_ms = 20;
+#endif
     LOGI(MOD,"PLAY session=%s vchn=%d %s v=%d a=%d", s->session, s->vchn,
          s->tcp?"TCP":"UDP", s->have_video, s->have_audio);
 
@@ -560,7 +652,7 @@ static void stream_loop(session *s)
         /* if the queue overflowed and dropped a keyframe, request a fresh IDR
          * so the client doesn't decode garbage until the next GOP */
         if (sub_v && fanqueue_take_dropped_key(&s->q)) hub_request_idr(s->vchn);
-        ms_pkt *p = fanqueue_pop(&s->q, 100);
+        ms_pkt *p = fanqueue_pop(&s->q, pop_ms);
         if (p) {
             int sendrc = 0;
             if (p->media==MS_MEDIA_VIDEO && s->have_video) {
@@ -585,6 +677,21 @@ static void stream_loop(session *s)
             if (sendrc < 0) { s->playing = 0; break; }
         }
     after_pkt:;
+#ifdef USE_BACKCHANNEL
+        /* drain any received backchannel RTP (UDP). Only accept from the RTSP
+         * peer's address so a stranger can't inject audio into the speaker. */
+        if (s->have_bc && s->bc_udp[0] >= 0){
+            uint8_t bpkt[1600];
+            for (int k=0;k<16;k++){
+                struct sockaddr_in from; socklen_t fl=sizeof from;
+                ssize_t bn = recvfrom(s->bc_udp[0], bpkt, sizeof bpkt, MSG_DONTWAIT,
+                                      (struct sockaddr*)&from, &fl);
+                if (bn <= 0) break;
+                if (from.sin_addr.s_addr != s->peer.sin_addr.s_addr) continue;
+                bc_feed_rtp(s, bpkt, (int)bn);
+            }
+        }
+#endif
         int64_t now = ms_now_us();
         if ((s->have_video && rtp_maybe_sr(&s->vtrack, now) < 0) ||
             (s->have_audio && rtp_maybe_sr(&s->atrack, now) < 0)) {
@@ -612,6 +719,12 @@ static void stream_loop(session *s)
                     int total = 4 + flen;
                     if (total > (int)sizeof(ctl)-1) { close_conn = 1; break; } /* bogus length */
                     if (ctlhave < total) break;              /* wait for the rest */
+#ifdef USE_BACKCHANNEL
+                    /* interleaved backchannel RTP arrives on the control conn */
+                    if (s->have_bc && s->bc_chan_rtp>=0 &&
+                        (unsigned char)ctl[1]==(unsigned char)s->bc_chan_rtp)
+                        bc_feed_rtp(s, (uint8_t*)ctl+4, flen);
+#endif
                     memmove(ctl, ctl+total, (size_t)(ctlhave-total+1));
                     ctlhave -= total; progressed = 1;
                     continue;
@@ -708,6 +821,11 @@ done:
     if (s->v_udp[1]>=0) close(s->v_udp[1]);
     if (s->a_udp[0]>=0) close(s->a_udp[0]);
     if (s->a_udp[1]>=0) close(s->a_udp[1]);
+#ifdef USE_BACKCHANNEL
+    bc_release(s);
+    if (s->bc_udp[0]>=0) close(s->bc_udp[0]);
+    if (s->bc_udp[1]>=0) close(s->bc_udp[1]);
+#endif
     free(s);
     __sync_fetch_and_sub(&g_nclients, 1);
     return NULL;
@@ -746,6 +864,9 @@ static void accept_loop(rtsp_server *sv, int lfd, int port, void *tls_ctx)
          * can legitimately be 0 (stdin closed at startup) or overlap with
          * PID/fd reuse, so unbound MUST be a value no real fd ever has. */
         s->v_udp[0]=s->v_udp[1]=s->a_udp[0]=s->a_udp[1]=-1;
+#ifdef USE_BACKCHANNEL
+        s->bc_udp[0]=s->bc_udp[1]=-1; s->bc_chan_rtp=-1;
+#endif
 #ifdef USE_TLS
         s->tls_ctx = tls_ctx;   /* non-NULL on the RTSPS listener */
 #endif
