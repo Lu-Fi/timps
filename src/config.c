@@ -1,6 +1,7 @@
 #include "config.h"
 #include "log.h"
 #include "motion_caps.h"   /* MOTION_MAX_CELLS/MOTION_CELL_LIMIT (grid clamp) */
+#include "rotate_caps.h"   /* ROT_HAS_90/ROT_HAS_180 (rotation whitelist) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -71,6 +72,22 @@ static int  pint_cl(const char *v, int lo, int hi)
     if (x < lo) x = lo;
     if (x > hi) x = hi;
     return x;
+}
+/* rotation parser: accepts degrees (0/90/180/270) and the legacy T31 rotTo90
+ * enum (0/1/2 -> 0/90/270), then whitelists against this SoC's caps. Anything
+ * unsupported coerces to 0 (with a warning) so the streamer stays behaviour-
+ * neutral until an apply path exists. */
+static int prot(const char *val){
+    int r = pint(val);
+    if (r==1) r=90; else if (r==2) r=270;        /* legacy T31 rotTo90 0/1/2 */
+    if (r!=0 && r!=90 && r!=180 && r!=270){ LOGW(MOD,"rotation %d invalid -> 0",r); return 0; }
+#ifndef ROT_HAS_90
+    if (r==90||r==270){ LOGW(MOD,"rotation %d unsupported on this SoC -> 0",r); return 0; }
+#endif
+#ifndef ROT_HAS_180
+    if (r==180){ LOGW(MOD,"rotation 180 unsupported -> 0"); return 0; }
+#endif
+    return r;
 }
 static float pflt(const char *v){ return (float)strtod(v, NULL); }
 static uint32_t phex(const char *v){ return (uint32_t)strtoul(v, NULL, 0); }
@@ -311,7 +328,7 @@ static void set_video(ms_vstream_cfg *v, const char *k, const char *val)
     else if (!strcmp(k,"qp")) v->qp=pint_cl(val,1,51);
     else if (!strcmp(k,"min_qp")) v->min_qp=pint_cl(val,1,51);
     else if (!strcmp(k,"max_qp")) v->max_qp=pint_cl(val,1,51);
-    else if (!strcmp(k,"rotation")) v->rotation=pint(val);
+    else if (!strcmp(k,"rotation")) v->rotation=prot(val);
     else if (!strcmp(k,"buffers")) v->buffers=pint_cl(val,1,8);
     else if (!strcmp(k,"rtsp_path")) copystr(v->rtsp_path,val,MS_MAX_STR);
     else if (!strcmp(k,"imp_chn")) v->imp_chn=pint(val);

@@ -31,10 +31,23 @@ for a in "$@"; do
     esac
 done
 
-# locate the package build dir / detect the camera profile from the output tree
-OUTDIR="$(ls -d "$THINGINO"/output/*/*/build 2>/dev/null | head -1 | xargs -r dirname || true)"
-[ -n "$OUTDIR" ] || { echo "!! no thingino output dir found under $THINGINO/output"; exit 1; }
-PROFILE="$(basename "$OUTDIR" | sed -E 's/-[0-9].*$//')"
+# Select the camera profile. With several cameras in output/, don't blindly take
+# the first dir (that picked the wrong camera): disambiguate by the CAM IP
+# suffix, and let CAMERA=<profile> force one explicitly.
+if [ -n "${CAMERA:-}" ]; then
+    PROFILE="$CAMERA"
+else
+    PROFILE="$(for d in "$THINGINO"/output/*/*-"$CAM"; do
+                   [ -d "$d" ] && basename "$d" | sed -E 's/-[0-9].*$//'
+               done | sort -u)"
+    if [ "$(printf '%s\n' "$PROFILE" | grep -c .)" -gt 1 ]; then
+        echo "!! multiple camera profiles for IP $CAM:"; printf '     %s\n' $PROFILE
+        echo "   pick one:  CAMERA=<profile> CAM=$CAM $0 $*"
+        exit 1
+    fi
+fi
+[ -n "$PROFILE" ] || { echo "!! no thingino output for IP $CAM under $THINGINO/output - build the image once first"; exit 1; }
+echo ">> camera profile: $PROFILE"
 
 if [ "$DO_BUILD" = 1 ]; then
     # Build the libfaac dependency first: 'rebuild-timps' only rebuilds
@@ -48,9 +61,9 @@ if [ "$DO_BUILD" = 1 ]; then
     make -C "$THINGINO" CAMERA="$PROFILE" IP="$CAM" rebuild-timps
 fi
 
-# newest timpsd across all output dirs (IP-suffixed or not)
-BIN="$(ls -t "$THINGINO"/output/*/*/build/timps-*/timpsd 2>/dev/null | head -1 || true)"
-[ -n "$BIN" ] || { echo "!! binary not found - run once with --build"; exit 1; }
+# newest timpsd for THIS camera profile (not some other camera's build)
+BIN="$(ls -t "$THINGINO"/output/*/"$PROFILE"-*/build/timps-*/timpsd 2>/dev/null | head -1 || true)"
+[ -n "$BIN" ] || { echo "!! binary not found for $PROFILE - run once with --build"; exit 1; }
 echo ">> binary: $BIN"
 
 # stop the running streamer FIRST (raptor is thingino's default now; it also
