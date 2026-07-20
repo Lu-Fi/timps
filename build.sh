@@ -344,6 +344,8 @@ timps() {
 		${HELIXLIB:+HELIXLIB="$HELIXLIB"} \
 		USE_CONTROL=${USE_CONTROL:-1} \
 		USE_DAYNIGHT=${USE_DAYNIGHT:-1} \
+		USE_ROTATE=${USE_ROTATE:-0} \
+		USE_SW_ROTATE=${USE_SW_ROTATE:-0} \
 		-C "$TOP" target
 
 	if [[ $DEBUG_BUILD -eq 0 ]]; then

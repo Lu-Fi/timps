@@ -9,6 +9,7 @@
 #include "../util.h"
 #include "../codec/nal.h"
 #include "../codec/aac.h"
+#include "../rotate_caps.h"   /* ms_vstream_eff_dims (post-rotation dims) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -185,8 +186,8 @@ static int sim_start(const ms_config *cfg)
         sim_vid *v=&g_vid[g_nvid++];
         v->src=i; v->chn=i; v->fps=cfg->video[i].fps; v->codec=cfg->video[i].codec;
         strncpy(v->path,path,sizeof v->path-1);
-        hub_set_video_params(i,cfg->video[i].codec,cfg->video[i].width,
-                             cfg->video[i].height,cfg->video[i].fps);
+        int ew, eh; ms_vstream_eff_dims(&cfg->video[i], &ew, &eh);
+        hub_set_video_params(i,cfg->video[i].codec,ew,eh,cfg->video[i].fps);
         v->run=1; v->active=0;
         pthread_create(&v->thr,NULL,vid_thread,v);
     }

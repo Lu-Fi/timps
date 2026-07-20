@@ -4,6 +4,7 @@
 #include "../hub.h"
 #include "../log.h"
 #include "../util.h"
+#include "../rotate_caps.h"  /* ms_vstream_eff_dims (post-rotation mux dims) */
 #include "../codec/aac.h"
 #include "../auth.h"
 #include "../tls.h"
@@ -171,8 +172,9 @@ static void stream_mp4(hconn *c, int chn)
     fmp4_mux mux; fmp4_init(&mux);
     mux.has_video = 1;
     mux.vcodec = cfg->video[chn].codec;
-    mux.width  = cfg->video[chn].width;
-    mux.height = cfg->video[chn].height;
+    int ew, eh; ms_vstream_eff_dims(&cfg->video[chn], &ew, &eh);
+    mux.width  = ew;
+    mux.height = eh;
     mux.fps    = cfg->video[chn].fps;
     int ok=0;
     for (int i=0;i<200;i++){
