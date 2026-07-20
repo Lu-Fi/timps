@@ -8,7 +8,7 @@
 #   1. Preflight ...... ping, ports, tool detection
 #   2. Discovery ...... ffprobe every stream (codec/res/fps/audio)
 #   2b. Auth .......... no-auth + wrong-pass must be blocked (RTSP + HTTP surfaces)
-#   2c. Backchannel ... optional ONVIF audio backchannel advertised in SDP
+#   2c. Backchannel ... optional ONVIF backchannel: handshake + short PCMU tone
 #   3. Integrity+Sync . record each stream, measure fps, real-time rate,
 #                       A/V drift, timestamp monotonicity, decode errors
 #   4. HTTP fMP4 ...... /stream.mp4 (MSE feed) plays, fps/bitrate, errors
@@ -430,23 +430,35 @@ fi
 
 fi
 if want 2c backchannel bc; then
-# --- 2c. ONVIF audio backchannel (SDP advertise) ----------------------------
+# --- 2c. ONVIF audio backchannel (real handshake + short tone) --------------
 hdr "2c. Audio backchannel (optional)"
-# A DESCRIBE carrying the ONVIF Require header must yield an m=audio backchannel
-# media (a=sendonly, trackID=2) IFF the feature is built+enabled AND /bin/iac is
-# present. Optional feature -> a missing backchannel is info, not FAIL.
-bcsdp="$OUTDIR/backchannel.sdp"
-if curl -s --max-time 10 -u "$RTSP_USER:$RTSP_PASS" \
-        --request DESCRIBE --header "Require: www.onvif.org/ver20/backchannel" \
-        "rtsp://$CAM:$RTSP_PORT/$PATH_MAIN" > "$bcsdp" 2>/dev/null && [ -s "$bcsdp" ]; then
-	if grep -q "a=sendonly" "$bcsdp" && grep -q "trackID=2" "$bcsdp"; then
-		bcname=$(grep -oE 'a=rtpmap:[0-9]+ [A-Za-z0-9-]+' "$bcsdp" | tail -1 | awk '{print $2}')
-		ok "backchannel advertised (${bcname:-?}, trackID=2, a=sendonly)"
+# Uses bc-send.py (same dir): DESCRIBE+Require -> SETUP trackID=2 -> PLAY, then
+# streams a short PCMU tone to the camera speaker. Optional feature, so a
+# missing/disabled backchannel is info, not FAIL. With --ssh we also confirm
+# timps actually received it (opened the /bin/iac pipe).
+bcpy="$(dirname "$0")/bc-send.py"
+bclog="$OUTDIR/backchannel.log"
+if ! have python3; then
+	info "backchannel test skipped (needs python3)"
+elif [ ! -f "$bcpy" ]; then
+	info "backchannel test skipped (tools/bc-send.py not found)"
+elif python3 "$bcpy" --host "$CAM" --port "$RTSP_PORT" --path "$PATH_MAIN" \
+        --user "$RTSP_USER" --pw "$RTSP_PASS" --secs 2 > "$bclog" 2>&1; then
+	bcname=$(grep -oE 'rtpmap:[0-9]+ [A-Za-z0-9-]+' "$bclog" | tail -1 | awk '{print $2}')
+	ok "backchannel handshake ok (SDP trackID=2, SETUP+PLAY) - sent 2s ${bcname:-PCMU} tone"
+	if [ -n "$SSH_TARGET" ]; then
+		if sshx "logread 2>/dev/null | grep -q 'speaker owner acquired'"; then
+			ok "camera received backchannel audio (speaker owner acquired / iac pipe opened)"
+		else
+			warn "tone sent but no 'speaker owner acquired' in logread - not confirmed received"
+		fi
 	else
-		info "no backchannel in SDP (feature off, not built, or /bin/iac absent) - optional"
+		info "  pass --ssh root@$CAM to confirm the camera opened the /bin/iac pipe"
 	fi
+elif grep -q "no backchannel" "$bclog"; then
+	info "no backchannel advertised (audio.backchannel off / not built / no iac) - optional"
 else
-	info "DESCRIBE+Require not answered by curl (RTSP auth/curl-RTSP?) - skipped"
+	warn "backchannel handshake failed (see $bclog)"
 fi
 
 fi
