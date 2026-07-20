@@ -87,8 +87,14 @@ make target PLATFORM=T31 USE_BC_AAC=1 HELIX_INC=/path/to/helix/include HELIXLIB=
 `HELIXLIB` in the environment).
 
 In thingino, enable `BR2_PACKAGE_TIMPS_BACKCHANNEL` (and optionally
-`BR2_PACKAGE_TIMPS_BC_AAC`) in menuconfig; the package pulls in
-`ingenic-audiodaemon` and, for AAC, `libhelix-aac`.
+`BR2_PACKAGE_TIMPS_BC_AAC`, which pulls in `libhelix-aac`).
+
+`BR2_PACKAGE_TIMPS_BACKCHANNEL` deliberately does **not** select
+`ingenic-audiodaemon` — timps only runtime-execs `/bin/iac`, it never links the
+daemon (prudynt/raptor do the same). Forcing it would drag in `libwebsockets`,
+which fails to build on some uClibc toolchains. So for a working speaker you
+must **also enable `BR2_PACKAGE_INGENIC_AUDIODAEMON` yourself** (or already have
+`/bin/iac` on the device). Without it the backchannel just reports unavailable.
 
 ## Config
 
