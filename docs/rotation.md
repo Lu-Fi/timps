@@ -43,12 +43,30 @@ memory or CPU** — the rotation happens in the ISP/I2D hardware.
 |-----|------|---------|----------------------|-------------|
 | T10, T20, T21, T30, C100 | ✅ | ❌ | none (no rotate primitive in libimp) | 90/270 in config is coerced to 0 with a warning |
 | **T23** | ✅ | ✅ *(opt-in)* | CPU NV12 transpose → unbound software H.264 encoder (`IMP_Encoder_YuvEncode`, SDK 1.3.0) | build with `USE_SW_ROTATE=1`; **H.264 only**; substream-class res (~≤704×576 @ ≤15 fps); real CPU cost on the single core; **software text-OSD only** (no logos, no privacy covers); snapshot + MJPEG work via the standalone JPEG encoder, but it needs the rotated width (= source height) to be a multiple of 32 and height a multiple of 8 (use e.g. 1280×704 → 704×1280, not 1280×720); motion grid stays pre-rotation |
-| **T31** | ✅ | ✅ | `IMP_FrameSource_SetChnRotate` (software inside libimp) | libimp SDK ≥ 1.1.6; 64-px-aligned resolution; **≤1280×704 @ ≤15 fps** recommended; extra rmem; not combinable with encoder soft-zoom |
+| **T31** | ✅ | ✅ | `IMP_FrameSource_SetChnRotate` (software inside libimp) | libimp SDK ≥ 1.1.6; 64-px-aligned resolution; **≤1280×704 @ ≤15 fps** recommended; extra rmem; not combinable with encoder soft-zoom; **hardware OSD/privacy do NOT work on 90/270-rotated streams** (see limitation below) |
 | **T40, T41** | ✅ | ✅ | true **hardware** I2D rotate (`IMPFSI2DAttr` + `IMP_FrameSource_SetI2dAttr`) | full frame rate, all resolutions, OSD + privacy keep working. `rotate_angle` units await on-device confirmation (degrees) |
 
 180° is realised as ISP Hflip+Vflip, **XOR-composed** with the live
 `image.hflip`/`image.vflip` keys (180 + a manual flip flips once, not cancels).
 On T40/T41 the 180 is done per-channel in the I2D unit instead.
+
+### Known limitation: no OSD/privacy on 90/270-rotated T31 streams
+
+On **T31**, a 90/270-rotated stream **cannot carry a hardware OSD or privacy
+mask** (verified on-device). The video itself is clean; the overlay renders as
+scattered pixels ("dots"). Root cause: `IMP_FrameSource_SetChnRotate` produces a
+704×1280 frame, but the bound hardware IPU-OSD miscomputes that buffer's stride
+(the encoder reads it correctly, the OSD does not) — a libimp-internal issue.
+
+It is **not** fixable from timps' config/setup, and a software-OSD fallback (as
+on T23) is impossible on T31: its libimp exports no unbound encode API
+(`IMP_Encoder_YuvEncode`/`SendFrame` are T23-SDK-1.3.0-only), so there is no
+software step between the hardware rotate and the hardware encoder to render an
+overlay into. 180° rotation is unaffected (OSD works). T40/T41 (I2D) are
+unaffected (OSD + privacy keep working).
+
+**Workaround:** put the OSD on a non-rotated stream (e.g. the sub-stream `ch1`)
+and keep the rotated main stream overlay-free; or use 180° instead of 90/270.
 
 ## How the other thingino streamers handle rotation (for reference)
 
