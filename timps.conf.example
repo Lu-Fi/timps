@@ -255,6 +255,9 @@ osd.supersample    = 2                        # TTF rasterizer AA: samples/axis/
 # Text outline (readability stroke, drawn under the fill):
 #   outline       = width in px (0 = off, default)
 #   outline_color = 0xAARRGGBB (default 0xFF000000 black)
+# font_size is an ABSOLUTE pixel height and is NOT auto-scaled per stream, so
+# set the sub-stream (osd1.*) size directly for legibility - a small sub-stream
+# needs a proportionally similar px size, not a smaller number.
 #
 osd0.0.enabled   = 1
 osd0.0.type      = text
@@ -264,8 +267,8 @@ osd0.0.y         = 16
 osd0.0.font_size = 32
 osd0.0.color     = 0xFFFFFFFF                 # ARGB
 osd0.0.transparency = 255
-# osd0.0.outline       = 1                    # 1 px black stroke
-# osd0.0.outline_color = 0xFF000000
+osd0.0.outline       = 1                      # 1 px black stroke (on by default)
+osd0.0.outline_color = 0xFF000000
 # osd0.0.font_path =                          # optional per-item TTF override
 
 osd0.1.enabled   = 1
@@ -282,7 +285,9 @@ osd1.0.type      = text
 osd1.0.text      = %Y-%m-%d %H:%M:%S
 osd1.0.x         = 16
 osd1.0.y         = 16
-osd1.0.font_size = 32
+osd1.0.font_size = 24                         # absolute px on the sub-stream
+osd1.0.outline       = 1
+osd1.0.outline_color = 0xFF000000
 
 # osd0.2.enabled   = 1
 # osd0.2.type      = logo

@@ -193,11 +193,12 @@ static void refresh_text(osd_stream *s, osd_region *rg)
      * discarded/failed render (oversize, msttf OOM) doesn't mark this text as
      * "done" - fixing font_size then re-renders on the next tick. */
 
-    /* scale the font with the stream height (font_size is for 1080p) so the
-     * same layout stays readable and non-overlapping on smaller sub-streams */
-    int fs = it.font_size * s->height / 1080;
-    if (fs < 12) fs = 12;
-    if (fs > it.font_size) fs = it.font_size;
+    /* font_size is an ABSOLUTE pixel height, per stream (osd0.* / osd1.* ...).
+     * No auto-scaling: sub-stream OSD used to be shrunk by stream_height/1080,
+     * which made it tiny/illegible; since OSD is configured per stream you set
+     * the size you want directly. Just a small sanity floor. */
+    int fs = it.font_size;
+    if (fs < 8) fs = 8;
 
     uint8_t *bgra; int w,h;
     if (rg->font){
