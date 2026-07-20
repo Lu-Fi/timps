@@ -8,6 +8,15 @@
 #include <unistd.h>
 #include <errno.h>
 
+/* Mark a fd close-on-exec so child processes we spawn (e.g. the backchannel's
+ * popen("/bin/iac")) don't inherit our listen/media sockets - otherwise a
+ * timps restart during a talk session can't rebind its ports. */
+static void net_cloexec(int fd)
+{
+    int f = fcntl(fd, F_GETFD, 0);
+    if (f >= 0) fcntl(fd, F_SETFD, f | FD_CLOEXEC);
+}
+
 int net_set_nonblock(int fd, int on)
 {
     int fl = fcntl(fd, F_GETFL, 0);
@@ -55,12 +64,15 @@ int net_listen_tcp(int port, int backlog)
     sa.sin_port = htons((uint16_t)port);
     if (bind(fd, (struct sockaddr*)&sa, sizeof sa) < 0) { close(fd); return -1; }
     if (listen(fd, backlog) < 0) { close(fd); return -1; }
+    net_cloexec(fd);
     return fd;
 }
 
 int net_udp_socket(void)
 {
-    return socket(AF_INET, SOCK_DGRAM, 0);
+    int fd = socket(AF_INET, SOCK_DGRAM, 0);
+    if (fd >= 0) net_cloexec(fd);
+    return fd;
 }
 
 int net_sendall(int fd, const void *buf, int len)
