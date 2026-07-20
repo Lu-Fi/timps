@@ -7,6 +7,7 @@
 #
 #   1. Preflight ...... ping, ports, tool detection
 #   2. Discovery ...... ffprobe every stream (codec/res/fps/audio)
+#   2b. Auth .......... no-auth + wrong-pass must be blocked (RTSP + HTTP surfaces)
 #   3. Integrity+Sync . record each stream, measure fps, real-time rate,
 #                       A/V drift, timestamp monotonicity, decode errors
 #   4. HTTP fMP4 ...... /stream.mp4 (MSE feed) plays, fps/bitrate, errors
@@ -46,6 +47,8 @@ RTSP_USER="${RTSP_USER:-thingino}"
 RTSP_PASS="${RTSP_PASS:-thingino}"
 HTTP_USER="${HTTP_USER:-thingino}"
 HTTP_PASS="${HTTP_PASS:-thingino}"
+# expected audio channel count for a hard stereo/mono assertion (empty = report only)
+EXPECT_CHANNELS="${EXPECT_CHANNELS:-}"
 # ONVIF WS-Security creds — S96onvif_discovery sources these from timps rtsp.user/pass
 ONVIF_USER="${ONVIF_USER:-$RTSP_USER}"
 ONVIF_PASS="${ONVIF_PASS:-$RTSP_PASS}"
@@ -81,6 +84,7 @@ Options (also settable as env vars):
   --cam IP            camera address (required)
   --profile P         quick | standard | load | soak   (default: standard)
   --rtsp-user U       --rtsp-pass P    --http-user U   --http-pass P
+  --expect-channels N assert audio channel count (e.g. 2 = stereo); FAIL on mismatch
   --main PATH         RTSP main path (default ch0)   --sub PATH (default ch1)
   --transport tcp|udp default tcp
   --ssh TARGET        e.g. root@IP  -> enables on-device checks
@@ -108,6 +112,7 @@ while [ $# -gt 0 ]; do
 		--rtsp-pass) RTSP_PASS="$2"; shift 2;;
 		--http-user) HTTP_USER="$2"; shift 2;;
 		--http-pass) HTTP_PASS="$2"; shift 2;;
+		--expect-channels) EXPECT_CHANNELS="$2"; shift 2;;
 		--main) PATH_MAIN="$2"; shift 2;;
 		--sub) PATH_SUB="$2"; shift 2;;
 		--transport) RTSP_TRANSPORT="$2"; shift 2;;
@@ -381,6 +386,45 @@ for pair in "main:$PATH_MAIN" "sub:$PATH_SUB"; do
 done
 
 fi
+if want 2b auth; then
+# --- 2b. Auth enforcement (no/wrong credentials must be blocked) -------------
+hdr "2b. Auth enforcement (unauthenticated must be blocked)"
+# HTTP surfaces: a request with NO Authorization header must get 401/403.
+check_noauth() { # <url> <label>
+	local code
+	code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$1")
+	case "$code" in
+		401|403) ok "$2 blocks no-auth (HTTP $code)";;
+		000)     warn "$2 unreachable (HTTP 000) - cannot judge";;
+		*)       bad "$2 served WITHOUT auth (HTTP $code) - NOT protected";;
+	esac
+}
+check_noauth "$(http_base)/control"            "/control"
+check_noauth "$(http_base)/events"             "/events"
+check_noauth "$(http_base)/snapshot.jpg?chn=0" "/snapshot.jpg"
+check_noauth "$(http_base)/stream.mp4?chn=0"   "/stream.mp4"
+check_noauth "$(http_base)/stream.mjpeg?chn=0" "/stream.mjpeg"
+
+# wrong password must also be rejected (proves it is not "any credential passes")
+wcode=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 -u "$HTTP_USER:wrong_$$" "$(http_base)/control")
+case "$wcode" in
+	401|403) ok "/control rejects WRONG password (HTTP $wcode)";;
+	000)     warn "/control unreachable for wrong-pass test (HTTP 000)";;
+	*)       bad "/control accepted WRONG password (HTTP $wcode)";;
+esac
+
+# RTSP: DESCRIBE without credentials must not open the stream
+rerr="$OUTDIR/auth_rtsp.err"
+if timeout 12 ffprobe -v error -rtsp_transport "$RTSP_TRANSPORT" -show_streams \
+		"rtsp://$CAM:$RTSP_PORT/$PATH_MAIN" >/dev/null 2>"$rerr"; then
+	bad "RTSP $PATH_MAIN opened WITHOUT credentials - NOT protected"
+elif grep -qiE '401|unauthor' "$rerr"; then
+	ok "RTSP $PATH_MAIN blocks no-auth (401)"
+else
+	warn "RTSP $PATH_MAIN did not open without creds, but no explicit 401 (see $rerr)"
+fi
+
+fi
 if want 3 integrity; then
 # --- 3. integrity + A/V sync ------------------------------------------------
 hdr "3. Stream integrity + A/V sync (record ${INTEG_DUR}s each, transport=$RTSP_TRANSPORT)"
@@ -453,6 +497,24 @@ aurl="$(rtsp_url "$PATH_MAIN")"
 acodec=$(ffprobe -v error -rtsp_transport "$RTSP_TRANSPORT" -select_streams a:0 -show_entries stream=codec_name,sample_rate,channels -of csv=p=0 "$aurl" 2>/dev/null)
 if [ -n "$acodec" ]; then
 	info "audio stream: $acodec"
+	# acodec csv = codec_name,sample_rate,channels
+	ach=$(printf '%s' "$acodec" | awk -F, '{print $3}')
+	if [ -n "$EXPECT_CHANNELS" ]; then
+		if [ "${ach:-0}" = "$EXPECT_CHANNELS" ]; then
+			ok "audio channels=$ach matches expected ($EXPECT_CHANNELS)"
+		else
+			bad "audio channels=${ach:-?} but expected $EXPECT_CHANNELS (channel config not active?)"
+		fi
+		# simulated stereo is dual-mono AAC only
+		if [ "$EXPECT_CHANNELS" = "2" ]; then
+			case "$acodec" in
+				aac*) ok "stereo carried by AAC (dual-mono sim path)";;
+				*)    warn "channels=2 but codec is '${acodec%%,*}' - simulated stereo is AAC-only";;
+			esac
+		fi
+	else
+		info "  (channels=${ach:-?}; pass --expect-channels N for a hard assertion)"
+	fi
 	sl="$OUTDIR/silence.log"
 	timeout -k 5 "$((INTEG_DUR+5))" ffmpeg -hide_banner -nostdin -loglevel info -rtsp_transport "$RTSP_TRANSPORT" \
 		-i "$aurl" -t "$INTEG_DUR" -map a:0 -af silencedetect=n=-45dB:d=1.5 -f null - </dev/null 2>"$sl" || true
