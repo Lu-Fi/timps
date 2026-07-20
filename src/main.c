@@ -4,6 +4,7 @@
 #include "hub.h"
 #include "hal/hal.h"
 #include "rtsp/rtsp.h"
+#include "rtsp/backchannel.h"
 #include "mp4/httpd.h"
 #include "record.h"
 #include "timelapse.h"
@@ -124,6 +125,16 @@ int main(int argc, char **argv)
     if (g_hal->init(&g_cfg)!=0){ LOGE(MOD,"HAL init failed"); return 1; }
     if (g_hal->start(&g_cfg)!=0){ LOGE(MOD,"HAL start failed"); return 1; }
 
+#ifdef USE_BACKCHANNEL
+    if (g_cfg.audio.backchannel){
+        bc_configure(g_cfg.audio.backchannel_codec, g_cfg.audio.backchannel_rate);
+        if (!bc_available())
+            LOGW(MOD,"audio.backchannel on but /bin/iac missing - backchannel disabled");
+        else
+            LOGI(MOD,"audio backchannel enabled (codec=%d rate=%d)",
+                 g_cfg.audio.backchannel_codec, g_cfg.audio.backchannel_rate);
+    }
+#endif
     rtsp_server *rtsp = NULL;
     httpd       *http = NULL;
     if (g_cfg.rtsp_enabled) rtsp = rtsp_start(&g_cfg);

@@ -65,6 +65,11 @@ typedef struct {
     int      spk_enabled;
     int      spk_volume;
     int      spk_gain;
+    /* ONVIF audio backchannel (client -> speaker via /bin/iac). Compiled only
+     * when USE_BACKCHANNEL; decode is pure-C G.711, AAC needs USE_BC_AAC. */
+    int      backchannel;        /* master on/off for the RTSP backchannel */
+    int      backchannel_codec;  /* 0=PCMU 1=PCMA 2=AAC (advertised format) */
+    int      backchannel_rate;   /* speaker sample rate fed to iac (Hz) */
 } ms_audio_cfg;
 
 typedef struct {

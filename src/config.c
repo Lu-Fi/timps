@@ -185,6 +185,7 @@ void config_defaults(ms_config *c)
     c->audio.mute=0;                                       /* mic live */
     c->audio.force_stereo=0;
     c->audio.spk_enabled=0; c->audio.spk_volume=80; c->audio.spk_gain=25;
+    c->audio.backchannel=0; c->audio.backchannel_codec=0; c->audio.backchannel_rate=16000;
 
     c->jpeg.enabled=0; c->jpeg.width=640; c->jpeg.height=360;
     c->jpeg.quality=75; c->jpeg.fps=5; c->jpeg.imp_chn=2;
@@ -459,6 +460,14 @@ static void set_kv(ms_config *c, const char *key, const char *val)
         else if(!strcmp(k,"spk_enabled"))c->audio.spk_enabled=pbool(val);
         else if(!strcmp(k,"spk_volume"))c->audio.spk_volume=pint(val);
         else if(!strcmp(k,"spk_gain"))c->audio.spk_gain=pint(val);
+        else if(!strcmp(k,"backchannel"))c->audio.backchannel=pbool(val);
+        else if(!strcmp(k,"backchannel_codec")){
+            if(!strcasecmp(val,"pcmu"))c->audio.backchannel_codec=0;
+            else if(!strcasecmp(val,"pcma"))c->audio.backchannel_codec=1;
+            else if(!strcasecmp(val,"aac"))c->audio.backchannel_codec=2;
+            else c->audio.backchannel_codec=pint_cl(val,0,2);
+        }
+        else if(!strcmp(k,"backchannel_rate"))c->audio.backchannel_rate=pint_cl(val,8000,48000);
         else LOGW(MOD,"unknown key %s",key);
         return;
     }
@@ -803,6 +812,9 @@ int config_get_kv(const ms_config *c, const char *key, char *out, size_t cap)
         else if(!strcmp(k,"spk_enabled")) snprintf(out,cap,"%d",a->spk_enabled);
         else if(!strcmp(k,"spk_volume")) snprintf(out,cap,"%d",a->spk_volume);
         else if(!strcmp(k,"spk_gain")) snprintf(out,cap,"%d",a->spk_gain);
+        else if(!strcmp(k,"backchannel")) snprintf(out,cap,"%d",a->backchannel);
+        else if(!strcmp(k,"backchannel_codec")) snprintf(out,cap,"%d",a->backchannel_codec);
+        else if(!strcmp(k,"backchannel_rate")) snprintf(out,cap,"%d",a->backchannel_rate);
         else return 0;
         return 1;
     }

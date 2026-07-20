@@ -214,6 +214,20 @@ audio.mute               = 0      # live — mic mute (1 = drop captured frames,
 # applies on restart
 # audio.force_stereo = 0
 
+# ---- ONVIF audio backchannel (client speaks -> camera speaker) -----------
+# OPTIONAL, compile-time gated (USE_BACKCHANNEL; AAC needs USE_BC_AAC). The
+# decoded audio is piped to thingino's audio daemon client /bin/iac, exactly
+# like prudynt/raptor - timps never opens IMP_AO itself, so there is NO device
+# conflict with portal/motion sounds. Requires the ingenic-audiodaemon package
+# (/bin/iac) AND a camera that actually has a speaker wired.
+#   codec  pcmu (default, 8 kHz, lowest latency, universal ONVIF support)
+#          pcma (8 kHz A-law)
+#          aac  (better quality, needs USE_BC_AAC + libhelix-aac, more latency)
+# Half/one-talker: one RTSP client owns the speaker at a time. Restart-required.
+# audio.backchannel        = 0      # master on/off
+# audio.backchannel_codec  = pcmu   # pcmu | pcma | aac
+# audio.backchannel_rate   = 16000  # speaker sample rate fed to iac (Hz)
+
 # ---- OSD (up to 8 overlays PER video stream; own TrueType rasterizer) ----
 osd.enabled        = 1
 osd.monitor_stream = 0                        # stream whose fps feeds {fps}

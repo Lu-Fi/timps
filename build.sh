@@ -32,6 +32,8 @@ LIBC_TYPE="uclibc"
 
 # Option flags (filled by parse_flags)
 USE_FAAC=0
+USE_BACKCHANNEL=0
+USE_BC_AAC=0
 DEBUG_BUILD=0
 STATIC_BUILD=0
 KERNEL4=0
@@ -43,6 +45,8 @@ parse_flags() {
 			--libc-uclibc) LIBC_TYPE="uclibc" ;;
 			--libc-musl)   LIBC_TYPE="musl" ;;
 			-faac)         USE_FAAC=1 ;;
+			-backchannel)  USE_BACKCHANNEL=1 ;;
+			-bc-aac)       USE_BACKCHANNEL=1; USE_BC_AAC=1 ;;
 			-debug)        DEBUG_BUILD=1 ;;
 			-static)       STATIC_BUILD=1 ;;
 			--kernel-4)    KERNEL4=1 ;;
@@ -334,6 +338,10 @@ timps() {
 		CFLAGS="$cflags" \
 		LDFLAGS="$ldflags" \
 		USE_FAAC=$USE_FAAC \
+		USE_BACKCHANNEL=$USE_BACKCHANNEL \
+		USE_BC_AAC=$USE_BC_AAC \
+		${HELIX_INC:+HELIX_INC="$HELIX_INC"} \
+		${HELIXLIB:+HELIXLIB="$HELIXLIB"} \
 		USE_CONTROL=${USE_CONTROL:-1} \
 		USE_DAYNIGHT=${USE_DAYNIGHT:-1} \
 		-C "$TOP" target
