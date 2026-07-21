@@ -33,6 +33,10 @@ static int16_t g_rs[16384];     /* resampled PCM */
 
 #ifdef USE_BC_AAC
 static HAACDecoder g_aac = NULL;
+/* worst-case samples a single AACDecode can emit into g_pcm (libhelix:
+ * AAC_MAX_NCHANS * AAC_MAX_NSAMPS = 2 * 1024). Used as the M-B1 headroom guard
+ * so the decoder can never write past g_pcm[] before `total` is clamped. */
+#define BC_AAC_MAX_BLK 2048
 #endif
 
 void bc_configure(int codec, int out_rate)
@@ -168,7 +172,12 @@ static int decode_aac(const uint8_t *pl, int plen, int *out_rate)
 
     int cap = (int)(sizeof g_pcm / sizeof g_pcm[0]);
     int total = 0, rate = g_out_rate;
-    for (int a=0; a<naus && data_off < plen && total < cap; a++){
+    /* M-B1: AACDecode writes up to AAC_MAX_NCHANS*AAC_MAX_NSAMPS (2*1024) int16
+     * per call into g_pcm+total BEFORE we can clamp `total`. A packet carrying
+     * many AU-headers (naus is derived from the network payload) could otherwise
+     * drive total near cap and let one more decode write past g_pcm[8192].
+     * Gate the loop on room for a FULL worst-case block, not just total<cap. */
+    for (int a=0; a<naus && data_off < plen && total + BC_AAC_MAX_BLK <= cap; a++){
         int sz = ((pl[2+2*a]<<8) | pl[3+2*a]) >> 3;   /* 13-bit AU-size */
         if (sz <= 0 || data_off + sz > plen) sz = plen - data_off;
         if (sz <= 0) break;
