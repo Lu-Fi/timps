@@ -160,7 +160,7 @@ IMPLIBS ?= -l:libimp.a -l:libalog.a -l:libsysutils.a
 # against a distro/buildroot that only ships libfaac.so.
 FAACLIB ?= -l:libfaac.a
 
-.PHONY: all target sim clean strip
+.PHONY: all target sim clean strip test-auth
 
 all: target
 
@@ -189,6 +189,26 @@ sim:
 	  $(if $(filter 1,$(USE_ROTATE)),-DUSE_ROTATE) \
 	  -Isrc $(SIM_SRC) $(LDFLAGS) -lpthread -lm -o $(BIN)-sim
 	@echo "built $(BIN)-sim (host simulation backend, USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_ROTATE=$(USE_ROTATE))"
+
+# Self-contained authentication fail-closed test: build the host sim (with
+# /control), start it on unprivileged ports, run scripts/test_auth.sh against
+# it, then stop it. Exit code propagates (non-zero if any surface leaked
+# unauthenticated access). NOTE: over loopback the HTTP negative tests are
+# skipped by design (httpd trusts 127.0.0.0/8) - RTSP is fully exercised here;
+# point scripts/test_auth.sh at a real device's LAN IP for the HTTP negatives.
+test-auth:
+	$(MAKE) sim USE_CONTROL=1
+	@echo "== starting $(BIN)-sim for auth test =="
+	@./$(BIN)-sim -c scripts/test_auth.conf >/tmp/timps-test-auth-sim.log 2>&1 & \
+	 simpid=$$!; \
+	 trap 'kill $$simpid 2>/dev/null; wait $$simpid 2>/dev/null' EXIT; \
+	 sleep 2; \
+	 HOST=127.0.0.1 RTSP_PORT=8554 HTTP_PORT=8880 \
+	   RTSP_USER=thingino RTSP_PASS=thingino HTTP_USER=webuser HTTP_PASS=webpass \
+	   PATH_MAIN=ch0 scripts/test_auth.sh; \
+	 rc=$$?; \
+	 kill $$simpid 2>/dev/null; wait $$simpid 2>/dev/null; \
+	 exit $$rc
 
 strip: target
 	$(CROSS_COMPILE)strip $(BIN)
