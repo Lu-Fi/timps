@@ -428,6 +428,49 @@ else
 	warn "RTSP $PATH_MAIN did not open without creds, but no explicit 401 (see $rerr)"
 fi
 
+# RTSP: a WRONG password must be rejected too (not "any credential passes")
+rwerr="$OUTDIR/auth_rtsp_wrong.err"
+if timeout 12 ffprobe -v error -rtsp_transport "$RTSP_TRANSPORT" -show_streams \
+		"rtsp://$RU:wrong_$$@$CAM:$RTSP_PORT/$PATH_MAIN" >/dev/null 2>"$rwerr"; then
+	bad "RTSP $PATH_MAIN opened with WRONG password - NOT protected"
+elif grep -qiE '401|unauthor' "$rwerr"; then
+	ok "RTSP $PATH_MAIN rejects WRONG password (401)"
+else
+	warn "RTSP $PATH_MAIN did not open with wrong pass, but no explicit 401 (see $rwerr)"
+fi
+
+# --- positive counter-tests: prove the checks above are SHARP, i.e. the
+# CORRECT credentials are actually accepted (else "everything is blocked"
+# would pass the negatives for the wrong reason). -----------------------------
+# HTTP: correct creds must NOT be rejected (2xx expected; a 5xx still proves
+# auth was accepted before any body, which is all we assert here).
+check_auth_ok() { # <url> <label>
+	local code
+	code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 -u "$HTTP_USER:$HTTP_PASS" "$1")
+	case "$code" in
+		401|403) bad "$2 REJECTS correct credentials (HTTP $code) - auth misconfigured / test not sharp";;
+		000)     warn "$2 unreachable for positive auth test (HTTP 000)";;
+		*)       ok "$2 accepts correct credentials (HTTP $code)";;
+	esac
+}
+check_auth_ok "$(http_base)/control"            "/control"
+check_auth_ok "$(http_base)/snapshot.jpg?chn=0" "/snapshot.jpg"
+
+# RTSP: correct creds must open the stream (401 here = broken/misconfigured)
+rgerr="$OUTDIR/auth_rtsp_good.err"
+if timeout 12 ffprobe -v error -rtsp_transport "$RTSP_TRANSPORT" -show_streams \
+		"$(rtsp_url "$PATH_MAIN")" >/dev/null 2>"$rgerr"; then
+	ok "RTSP $PATH_MAIN opens with correct credentials (test is sharp)"
+elif grep -qiE '401|unauthor' "$rgerr"; then
+	bad "RTSP $PATH_MAIN REJECTS correct credentials (401) - auth misconfigured / test not sharp"
+else
+	warn "RTSP $PATH_MAIN with correct creds did not open (non-auth error, see $rgerr)"
+fi
+
+# Deep, transport-level negatives (RTSP SETUP, HTTP POST /control, per-endpoint
+# wrong-pass) live in scripts/test_auth.sh - run it for a focused fail-closed
+# audit:  scripts/test_auth.sh --host $CAM --rtsp-port $RTSP_PORT --http-port $HTTP_PORT
+
 fi
 if want 2c backchannel bc; then
 # --- 2c. ONVIF audio backchannel (real handshake + short tone) --------------
