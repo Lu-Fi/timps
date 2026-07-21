@@ -6,3 +6,10 @@ outputs/
 3rdparty/
 toolchain/
 timps-qa-*/
+
+# logs (mpv-timps.log etc.)
+*.log
+
+# T31 OSD/rotation investigation notes - keep local, not for the repo yet
+T31_OSD_*.md
+docs/T31-OSD-*.md
