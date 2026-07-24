@@ -351,8 +351,8 @@ static void set_osd_item(ms_osd_item *o, const char *k, const char *val)
     else if (!strcmp(k,"type")) o->type=(!strcasecmp(val,"logo"))?MS_OSD_LOGO:MS_OSD_TEXT;
     else if (!strcmp(k,"text")) copystr(o->text,val,128);
     else if (!strcmp(k,"logo")||!strcmp(k,"logo_path")) copystr(o->logo_path,val,128);
-    else if (!strcmp(k,"logo_w")||!strcmp(k,"logo_width")) o->logo_w=pint(val);
-    else if (!strcmp(k,"logo_h")||!strcmp(k,"logo_height")) o->logo_h=pint(val);
+    else if (!strcmp(k,"logo_w")||!strcmp(k,"logo_width")) o->logo_w=pint_cl(val,0,4096);  /* F-04 */
+    else if (!strcmp(k,"logo_h")||!strcmp(k,"logo_height")) o->logo_h=pint_cl(val,0,4096); /* F-04 */
     else if (!strcmp(k,"x")) o->x=pint(val);
     else if (!strcmp(k,"y")) o->y=pint(val);
     /* H4: font_size feeds the OSD canvas allocation (msttf_render); clamp at
@@ -363,7 +363,7 @@ static void set_osd_item(ms_osd_item *o, const char *k, const char *val)
     /* imp_osd.c feeds this straight into the group attr's uint8_t fgAlhpa:
      * clamp so e.g. 300 doesn't wrap to 44 while the config echoes 300 */
     else if (!strcmp(k,"transparency")) o->transparency=pint_cl(val,0,255);
-    else if (!strcmp(k,"outline")||!strcmp(k,"stroke")) o->outline=pint(val);
+    else if (!strcmp(k,"outline")||!strcmp(k,"stroke")) o->outline=pint_cl(val,0,64); /* F-04 */
     else if (!strcmp(k,"outline_color")||!strcmp(k,"stroke_color")) o->outline_color=phex(val);
     else if (!strcmp(k,"font_path")) copystr(o->font_path,val,128);
     else LOGW(MOD,"unknown osd item key %s", k);
@@ -466,8 +466,8 @@ static void set_kv(ms_config *c, const char *key, const char *val)
          * the AAC ASC / SDP / fMP4 stsd */
         else if(!strcmp(k,"channels"))c->audio.channels=pint_cl(val,1,2);
         else if(!strcmp(k,"bitrate"))c->audio.bitrate_kbps=pint_cl(val,8,320);
-        else if(!strcmp(k,"volume"))c->audio.volume=pint(val);
-        else if(!strcmp(k,"gain"))c->audio.gain=pint(val);
+        else if(!strcmp(k,"volume"))c->audio.volume=pint_cl(val,0,100);   /* F-03 */
+        else if(!strcmp(k,"gain"))c->audio.gain=pint_cl(val,0,100);       /* F-03 */
         else if(!strcmp(k,"high_pass"))c->audio.high_pass=pbool(val);
         else if(!strcmp(k,"agc"))c->audio.agc=pbool(val);
         /* clamped to the IMP domains (imp_audio.h): IMP_AI_EnableNs mode
@@ -475,14 +475,14 @@ static void set_kv(ms_config *c, const char *key, const char *val)
          * CompressionGaindB [0-90] - out-of-range used to be silently
          * rejected by libimp while the config kept the raw value */
         else if(!strcmp(k,"ns"))c->audio.ns=pint_cl(val,0,3);
-        else if(!strcmp(k,"alc_gain"))c->audio.alc_gain=pint(val);
+        else if(!strcmp(k,"alc_gain"))c->audio.alc_gain=pint_cl(val,0,7);  /* F-03: PGA 0..7 */
         else if(!strcmp(k,"agc_target_dbfs"))c->audio.agc_target_dbfs=pint_cl(val,0,31);
         else if(!strcmp(k,"agc_compression_db"))c->audio.agc_compression_db=pint_cl(val,0,90);
         else if(!strcmp(k,"mute"))c->audio.mute=pbool(val);
         else if(!strcmp(k,"force_stereo"))c->audio.force_stereo=pbool(val);
         else if(!strcmp(k,"spk_enabled"))c->audio.spk_enabled=pbool(val);
-        else if(!strcmp(k,"spk_volume"))c->audio.spk_volume=pint(val);
-        else if(!strcmp(k,"spk_gain"))c->audio.spk_gain=pint(val);
+        else if(!strcmp(k,"spk_volume"))c->audio.spk_volume=pint_cl(val,0,100); /* F-03 */
+        else if(!strcmp(k,"spk_gain"))c->audio.spk_gain=pint_cl(val,0,100);     /* F-03 */
         else if(!strcmp(k,"backchannel"))c->audio.backchannel=pbool(val);
         else if(!strcmp(k,"backchannel_codec")){
             if(!strcasecmp(val,"pcmu"))c->audio.backchannel_codec=0;

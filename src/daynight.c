@@ -18,6 +18,10 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>       /* F-01: fork/execlp/dup2 instead of system() */
+#include <sys/wait.h>
+#include <fcntl.h>
+#include <errno.h>
 #include <unistd.h>
 #include <pthread.h>
 #include <time.h>
@@ -143,15 +147,26 @@ static float dn_brightness(const char *path, float *total_gain)
 static void dn_switch(int mode, const char *why)
 {
     const char *arg = (mode == DN_NIGHT) ? "night" : "day";
-    char cmd[192];
-    snprintf(cmd, sizeof cmd, "%s %s >/dev/null 2>&1",
-             g_cfg.daynight.switch_cmd, arg);
-    LOGI(MOD, "switching to %s (%s): %s %s",
-         arg, why, g_cfg.daynight.switch_cmd, arg);
-    int rc = system(cmd);
+    const char *cmd = g_cfg.daynight.switch_cmd;
+    LOGI(MOD, "switching to %s (%s): %s %s", arg, why, cmd, arg);
+    /* F-01: run "<switch_cmd> day|night" via fork()+execlp() instead of
+     * system(). switch_cmd comes from the config file; system() would let a
+     * value like "reboot; nc ..." inject shell commands (as root). exec'ing it
+     * as a single program with the fixed arg "day"/"night" removes the shell
+     * entirely - a malicious value just fails to exec, it can't inject. */
+    pid_t pid = fork();
+    if (pid < 0){ LOGW(MOD,"daynight: fork failed: %s", strerror(errno)); return; }
+    if (pid == 0){
+        int nul = open("/dev/null", O_WRONLY);
+        if (nul >= 0){ dup2(nul,1); dup2(nul,2); if (nul>2) close(nul); }
+        execlp(cmd, cmd, arg, (char*)NULL);
+        _exit(127);              /* exec failed (e.g. script missing / not a program) */
+    }
+    int st = 0;
+    while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+    int rc = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
     if (rc != 0)
-        LOGW(MOD, "'%s %s' failed (rc=%d) - is the script installed?",
-             g_cfg.daynight.switch_cmd, arg, rc);
+        LOGW(MOD, "'%s %s' failed (rc=%d) - is the script installed?", cmd, arg, rc);
 }
 
 /* sleep interval_ms in small slices so daynight_stop() joins promptly */
