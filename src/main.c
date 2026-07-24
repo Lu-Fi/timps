@@ -122,6 +122,7 @@ int main(int argc, char **argv)
     hub_set_activity_cb(act_trampoline);
 
     g_hal = hal_get();
+    if (!g_hal){ LOGE(MOD,"no HAL backend available"); return 1; }   /* F-08 */
     if (g_hal->init(&g_cfg)!=0){ LOGE(MOD,"HAL init failed"); return 1; }
     if (g_hal->start(&g_cfg)!=0){ LOGE(MOD,"HAL start failed"); return 1; }
 
