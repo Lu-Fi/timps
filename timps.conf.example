@@ -147,9 +147,14 @@ video1.jpeg         = true      # JPEG at video1 resolution (e.g. 640x360)
 video1.jpeg_chn     = 4
 
 # ---- image rotation (videoN.rotation) -------------------------------------
-# 0 | 90 | 180 | 270. 90 = clockwise. Restart-required (applied at build time
-# of the pipeline). The advertised/recorded dimensions swap for 90/270 (a
-# rotated 1920x1080 becomes 1080x1920). See docs/rotation.md for full detail.
+# 0 | 90 | 180 | 270. 90 = clockwise on T23/T40/T41; on T31, 90 = counter-
+# clockwise instead (kept numerically aligned with prudynt-t/raptor's raw
+# rotation=1|2 config values - see docs/rotation.md "Notes on direction").
+# NOTE: on T31, hardware OSD/privacy currently do NOT work on 90 or 270 when
+# the stream is downscaled from the sensor - see docs/rotation.md "Known
+# limitation". Restart-required (applied at build time of the pipeline). The
+# advertised/recorded dimensions swap for 90/270 (a rotated 1920x1080 becomes
+# 1080x1920). See docs/rotation.md for full detail.
 #
 # OFF BY DEFAULT - must be enabled at build time (menuconfig), like AAC/TLS:
 #   BR2_PACKAGE_TIMPS_ROTATE      -> 180 on all SoCs + HW 90/270 on T31/T40/T41

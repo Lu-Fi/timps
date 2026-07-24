@@ -484,7 +484,7 @@ bclog="$OUTDIR/backchannel.log"
 if ! have python3; then
 	info "backchannel test skipped (needs python3)"
 elif [ ! -f "$bcpy" ]; then
-	info "backchannel test skipped (tools/bc-send.py not found)"
+	info "backchannel test skipped (scripts/bc-send.py not found)"
 elif python3 "$bcpy" --host "$CAM" --port "$RTSP_PORT" --path "$PATH_MAIN" \
         --user "$RTSP_USER" --pw "$RTSP_PASS" --secs 2 > "$bclog" 2>&1; then
 	bcname=$(grep -oE 'rtpmap:[0-9]+ [A-Za-z0-9-]+' "$bclog" | tail -1 | awk '{print $2}')

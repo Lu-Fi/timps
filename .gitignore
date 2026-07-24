@@ -13,3 +13,10 @@ timps-qa-*/
 # T31 OSD/rotation investigation notes - keep local, not for the repo yet
 T31_OSD_*.md
 docs/T31-OSD-*.md
+
+# rotation/OSD test artifacts (logs, dmesg, grabbed frames)
+osd-test-out/
+
+# python bytecode
+__pycache__/
+*.pyc

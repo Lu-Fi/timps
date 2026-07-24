@@ -8,8 +8,8 @@ server port. Prints the SDP + SETUP/PLAY responses so you can see exactly what
 timps advertises.
 
 Usage:
-  python3 tools/bc-send.py                          # 440 Hz tone, 10 s
-  python3 tools/bc-send.py --host 192.168.241.190 --secs 20 --freq 800
+  python3 scripts/bc-send.py                          # 440 Hz tone, 10 s
+  python3 scripts/bc-send.py --host 192.168.241.190 --secs 20 --freq 800
 """
 import socket, base64, sys, time, math, struct, random, argparse, re
 
