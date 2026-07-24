@@ -76,7 +76,13 @@ static int  pint_cl(const char *v, int lo, int hi)
 /* rotation parser: accepts degrees (0/90/180/270) and the legacy T31 rotTo90
  * enum (0/1/2 -> 0/90/270), then whitelists against this SoC's caps. Anything
  * unsupported coerces to 0 (with a warning) so the streamer stays behaviour-
- * neutral until an apply path exists. */
+ * neutral until an apply path exists.
+ * IMPORTANT: legacy 1/2 here must round-trip to the SAME rotTo90 value in
+ * hal_ingenic.c's fs_create() (currently 90->1, 270->2, see the 2026-07-21
+ * comment there) so that a prudynt.cfg/raptor-style `rotation=1|2` (which is
+ * literally the raw libimp enum, not degrees - verified against prudynt-t's
+ * Config.cpp) lands on the same physical direction it did in that config,
+ * not the inverted one. */
 static int prot(const char *val){
     int r = pint(val);
     if (r==1) r=90; else if (r==2) r=270;        /* legacy T31 rotTo90 0/1/2 */

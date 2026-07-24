@@ -8,6 +8,12 @@
 #                                            # (production config baked in by the firmware
 #                                            # build, incl. its own http.port etc.) instead
 #                                            # of pushing scripts/camera.conf to /tmp
+#   CAM=<ip> ./scripts/deploy.sh --no-run    # build + copy binary (+ conf), stop the old
+#                                            # streamer, but do NOT start timps - no
+#                                            # interactive Ctrl-C. Combine with --build to
+#                                            # just rebuild+push, then use osd-rot-test.sh
+#                                            # (which starts timps headless itself) or run
+#                                            # it manually.
 #
 # Env overrides: CAM (camera IP, required), THINGINO (firmware tree),
 # MS_OSD_TEST_STATIC=1 (forwarded to the camera: freezes OSD text after the
@@ -22,10 +28,12 @@ SRCDIR="$(cd "$(dirname "$0")/.." && pwd)"
 
 DO_BUILD=0
 PUSH_CONF=1
+DO_RUN=1
 for a in "$@"; do
     case "$a" in
         --build)   DO_BUILD=1 ;;
         --no-conf) PUSH_CONF=0 ;;
+        --no-run)  DO_RUN=0 ;;
         -h|--help) grep '^#' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown option: $a (see --help)"; exit 1 ;;
     esac
@@ -73,6 +81,7 @@ ssh root@"$CAM" '/etc/init.d/S31raptor stop 2>/dev/null; killall -9 timpsd 2>/de
 
 echo ">> copying to $CAM:/tmp ..."
 scp -O "$BIN" root@"$CAM":/tmp/timpsd
+ssh root@"$CAM" 'chmod +x /tmp/timpsd'   # so --no-run leaves a runnable binary
 
 # --no-conf: run against the camera's own production config (baked into the
 # firmware image at /etc/timps.conf, see thingino package/timps/timps.mk) so
@@ -89,9 +98,24 @@ fi
 # forward the OSD CPU-test knob if set locally (see comment above)
 ENV_PREFIX=""
 if [ -n "${MS_OSD_TEST_STATIC:-}" ]; then
-    ENV_PREFIX="MS_OSD_TEST_STATIC=$MS_OSD_TEST_STATIC "
+    ENV_PREFIX="${ENV_PREFIX}MS_OSD_TEST_STATIC=$MS_OSD_TEST_STATIC "
     echo ">> MS_OSD_TEST_STATIC=$MS_OSD_TEST_STATIC (OSD text will freeze after the first render)"
+fi
+if [ -n "${MS_ROTATE_PICHEIGHT_MAX:-}" ]; then
+    ENV_PREFIX="${ENV_PREFIX}MS_ROTATE_PICHEIGHT_MAX=$MS_ROTATE_PICHEIGHT_MAX "
+    echo ">> MS_ROTATE_PICHEIGHT_MAX=$MS_ROTATE_PICHEIGHT_MAX (picHeight=max diagnostic)"
+fi
+if [ -n "${MS_ROTATE_PRUDYNT_STYLE:-}" ]; then
+    ENV_PREFIX="${ENV_PREFIX}MS_ROTATE_PRUDYNT_STYLE=$MS_ROTATE_PRUDYNT_STYLE "
+    echo ">> MS_ROTATE_PRUDYNT_STYLE=$MS_ROTATE_PRUDYNT_STYLE (prudynt-style attrs diagnostic)"
+fi
+
+if [ "$DO_RUN" = 0 ]; then
+    echo ">> deployed (NOT started; --no-run): /tmp/timpsd + $CONF on $CAM"
+    echo ">>   headless test:   CAM=$CAM CAMERA=<profile> ./scripts/osd-rot-test.sh <conf>"
+    echo ">>   or run manually:  ssh root@$CAM '${ENV_PREFIX}/tmp/timpsd -c $CONF -v'"
+    exit 0
 fi
 
 echo ">> starting timps against $CONF (Ctrl-C stops it) ..."
-ssh -t root@"$CAM" "chmod +x /tmp/timpsd; exec ${ENV_PREFIX}/tmp/timpsd -c $CONF -v"
+ssh -t root@"$CAM" "chmod +x /tmp/timpsd; exec env ${ENV_PREFIX}/tmp/timpsd -c $CONF -v"
