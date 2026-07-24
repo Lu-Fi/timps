@@ -163,6 +163,50 @@ static int osd_test_static_mode(void)
     return v;
 }
 
+/* The IPU OSD compositor on these SoCs wants EVEN region dimensions: an odd
+ * width or height makes the per-frame OSD composite pass fail ("ipu: error ipu
+ * start ret=-1") on a 90/270-rotated frame and poisons the WHOLE group pass
+ * (one bad region blanks every overlay). prudynt guards this by rounding text
+ * width up to even (OSD.cpp:259). Round BOTH w and h up to even by padding with
+ * transparent pixels. Called on the rotated path only. */
+static void osd_even_pad(uint8_t **bgra, int *w, int *h)
+{
+    if (!*bgra) return;
+    int ow=*w, oh=*h;
+    int nw=(ow+1)&~1, nh=(oh+1)&~1;
+    if (nw==ow && nh==oh) return;
+    uint8_t *nb = calloc((size_t)nw*nh, 4);
+    if (!nb) return;                       /* keep the odd bitmap rather than lose it */
+    for (int y=0; y<oh; y++)
+        memcpy(nb + (size_t)y*nw*4, *bgra + (size_t)y*ow*4, (size_t)ow*4);
+    free(*bgra); *bgra = nb; *w = nw; *h = nh;
+}
+
+/* Rotated-stream OSD placement (T31 OSD-on-rotation fix, see
+ * docs/T31-OSD-rotation-handoff.md). KEY on-device finding: libimp composites
+ * the OSD UPRIGHT in portrait space (the frame rotation does NOT rotate the
+ * overlay), but range-checks the rect against the PRE-rotation LANDSCAPE dims
+ * (w,h)=(picWidth,picHeight) (logcat: osd_draw_cover_pic rejects p0(594,1240)
+ * against (1280,704) "keep within picture range"). So the usable OSD area on a
+ * 704x1280 rotated portrait is the TOP band of height = picHeight = s->width
+ * (=704); a region with y+h beyond that is rejected (invisible + a per-frame
+ * IPU error). Raising picHeight to 1280 lifts the check but corrupts the video
+ * buffer (proven). So keep the overlay upright and CLAMP it into the top band,
+ * even-aligning the origin. Non-rotated = pure identity (unchanged). */
+static void osd_rot_place(osd_stream *s, int Px, int Py,
+                          uint8_t **bgra, int *w, int *h, int *ox, int *oy)
+{
+    (void)bgra;
+    *ox = Px; *oy = Py;
+    int rot = g_hcfg->video[s->si].rotation;
+    if (rot != 90 && rot != 270) return;     /* non-rotated: identity (unchanged) */
+    int cap = s->width;                      /* = picHeight = OSD y range limit */
+    if (*oy + *h > cap) *oy = (cap - *h > 0) ? cap - *h : 0;
+    if (*ox < 0) *ox = 0;
+    if (*oy < 0) *oy = 0;
+    *ox &= ~1; *oy &= ~1;                     /* IPU wants even origin on rotated composite */
+}
+
 /* M9: rotate a freshly-applied buffer into the retired ring. The oldest
  * retained buffer (replaced MS_OSD_RETIRE updates ago) can no longer be
  * referenced by any in-flight frame -> free it; everything newer is kept. */
@@ -209,18 +253,29 @@ static void refresh_text(osd_stream *s, osd_region *rg)
         if (osd_text_render(txt, scale, it.color, 0x00000000,
                             it.outline, it.outline_color, &bgra,&w,&h)!=0) return;
     }
+    int rotated = (g_hcfg->video[s->si].rotation==90 || g_hcfg->video[s->si].rotation==270);
+    if (rotated) osd_even_pad(&bgra, &w, &h);   /* even dims only for the rotated IPU-OSD path */
     /* H5: a bitmap larger than the frame cannot be composited safely -
      * resolve_pos() clamps the origin to 0 but the far edge (x+w-1) would
      * still land outside the frame, and on several T-SoCs IMP_OSD then
-     * writes past the frame buffer. Mirror setup_cover(): discard. */
-    if (w > s->width || h > s->height){
-        LOGW(MOD,"osd stream %d item %d: rendered %dx%d exceeds frame %dx%d - "
+     * writes past the frame buffer. Mirror setup_cover(): discard. On a rotated
+     * stream the usable OSD height is only the top picHeight band (= s->width);
+     * a taller bitmap can't be clamped in and would re-trigger the libimp
+     * range-check IPU error every frame, so discard it there too. */
+    int hlim = rotated ? s->width : s->height;
+    if (w > s->width || h > hlim){
+        LOGW(MOD,"osd stream %d item %d: rendered %dx%d exceeds usable %dx%d%s - "
                  "skipped (reduce font_size/text length)",
-             s->si, rg->item, w, h, s->width, s->height);
+             s->si, rg->item, w, h, s->width, hlim,
+             rotated?" (rotated: OSD limited to top band)":"");
         free(bgra);
         return;
     }
-    int x,y; resolve_pos(s->width, s->height, w, h, it.x, it.y, &x,&y);
+    int Px,Py; resolve_pos(s->width, s->height, w, h, it.x, it.y, &Px,&Py);
+    int x=Px, y=Py;
+    osd_rot_place(s, Px, Py, &bgra, &w, &h, &x, &y);   /* rotated: clamp into top band + even origin */
+    LOGD(MOD,"osd s%d i%d TEXT portrait(%d,%d) -> place(%d,%d)-(%d,%d) %dx%d",
+         s->si, rg->item, Px, Py, x, y, x+w-1, y+h-1, w, h);
     IMPOSDRgnAttr a; memset(&a,0,sizeof a);
     a.type=OSD_REG_PIC;
     a.rect.p0.x=x; a.rect.p0.y=y; a.rect.p1.x=x+w-1; a.rect.p1.y=y+h-1;
@@ -240,18 +295,29 @@ static void setup_logo(osd_stream *s, osd_region *rg)
     it = g_hcfg->osd.items[s->si][rg->item];
     config_str_unlock();
     /* H5: a logo larger than the frame would place its far edge outside the
-     * frame (SDK-dependent OOB in compositing) - discard, like setup_cover */
-    if (it.logo_w > s->width || it.logo_h > s->height){
-        LOGW(MOD,"logo %s (%dx%d) exceeds frame %dx%d - skipped",
-             it.logo_path, it.logo_w, it.logo_h, s->width, s->height);
+     * frame (SDK-dependent OOB in compositing) - discard, like setup_cover. On
+     * a rotated stream the usable height is only the top picHeight band
+     * (= s->width), else it re-triggers the per-frame range-check IPU error. */
+    int lrot = (g_hcfg->video[s->si].rotation==90 || g_hcfg->video[s->si].rotation==270);
+    int lhlim = lrot ? s->width : s->height;
+    if (it.logo_w > s->width || it.logo_h > lhlim){
+        LOGW(MOD,"logo %s (%dx%d) exceeds usable %dx%d%s - skipped",
+             it.logo_path, it.logo_w, it.logo_h, s->width, lhlim,
+             lrot?" (rotated: OSD limited to top band)":"");
         return;
     }
     uint8_t *b=load_bgra(it.logo_path, it.logo_w, it.logo_h);
     if (!b){ LOGW(MOD,"logo %s (%dx%d) not loaded", it.logo_path, it.logo_w, it.logo_h); return; }
-    int x,y; resolve_pos(s->width, s->height, it.logo_w, it.logo_h, it.x, it.y, &x,&y);
+    int lw=it.logo_w, lh=it.logo_h;
+    if (lrot) osd_even_pad(&b, &lw, &lh);   /* even dims only for the rotated IPU-OSD path */
+    int Px,Py; resolve_pos(s->width, s->height, lw, lh, it.x, it.y, &Px,&Py);
+    int x=Px, y=Py;
+    osd_rot_place(s, Px, Py, &b, &lw, &lh, &x, &y);   /* rotated: clamp into top band + even origin */
+    LOGD(MOD,"osd s%d i%d LOGO portrait(%d,%d) -> place(%d,%d)-(%d,%d) %dx%d",
+         s->si, rg->item, Px, Py, x, y, x+lw-1, y+lh-1, lw, lh);
     IMPOSDRgnAttr a; memset(&a,0,sizeof a);
     a.type=OSD_REG_PIC;
-    a.rect.p0.x=x; a.rect.p0.y=y; a.rect.p1.x=x+it.logo_w-1; a.rect.p1.y=y+it.logo_h-1;
+    a.rect.p0.x=x; a.rect.p0.y=y; a.rect.p1.x=x+lw-1; a.rect.p1.y=y+lh-1;
     a.fmt=PIX_FMT_BGRA;
     a.data.picData.pData=b;
     IMP_OSD_SetRgnAttr(rg->rgn, &a);
@@ -274,13 +340,25 @@ static void setup_cover(osd_stream *s, int n)
     if (x<0) x=0; if (y<0) y=0;
     if (w>0 && x+w>W) w=W-x;
     if (h>0 && y+h>H) h=H-y;
+    /* even-align origin+size ONLY on the rotated IPU-OSD path (non-rotated
+     * privacy behaves exactly as before); a solid cover taller than the top
+     * picHeight band (= s->width) is shortened to fit rather than flooding the
+     * range-check IPU error (osd_rot_place then clamps its y into the band). */
+    if (g_hcfg->video[s->si].rotation==90 || g_hcfg->video[s->si].rotation==270){
+        if (h > s->width) h = s->width;
+        x&=~1; y&=~1; w&=~1; h&=~1;
+    }
     if (!p->enabled || w<=0 || h<=0){
         IMP_OSD_ShowRgn(rgn, s->grp, 0);
         return;
     }
+    int ox=x, oy=y; uint8_t *nobmp=NULL;
+    osd_rot_place(s, x, y, &nobmp, &w, &h, &ox, &oy);   /* rotated: clamp into top band */
+    LOGD(MOD,"privacy s%d n%d COVER portrait(%d,%d) -> place(%d,%d)-(%d,%d) %dx%d",
+         s->si, n, x, y, ox, oy, ox+w-1, oy+h-1, w, h);
     IMPOSDRgnAttr a; memset(&a,0,sizeof a);
     a.type=OSD_REG_COVER;
-    a.rect.p0.x=x; a.rect.p0.y=y; a.rect.p1.x=x+w-1; a.rect.p1.y=y+h-1;
+    a.rect.p0.x=ox; a.rect.p0.y=oy; a.rect.p1.x=ox+w-1; a.rect.p1.y=oy+h-1;
     a.fmt=PIX_FMT_BGRA;
     a.data.coverData.color = p->color;      /* 0xAARRGGBB fill */
     IMP_OSD_SetRgnAttr(rgn, &a);
@@ -313,6 +391,18 @@ int imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height)
     s->used=1; s->si=stream_idx; s->grp=stream_idx; s->width=width; s->height=height;
     for (int i=0;i<MS_MAX_OSD;i++) s->r[i].rgn=-1;
     for (int i=0;i<MS_MAX_PRIVACY;i++) s->pr_rgn[i]=-1;
+    /* libimp range-checks OSD coords against the PRE-rotation (landscape) dims,
+     * so on a NON-square 90/270-rotated stream overlays only fit the top
+     * `width` (=picHeight) px of the taller portrait frame; lower ones are
+     * clamped up (osd_rot_place). Warn once so the operator isn't surprised. */
+    {
+        int rot = g_hcfg->video[stream_idx].rotation;
+        if ((rot==90 || rot==270) && height > width)
+            LOGW(MOD,"stream %d rotated %d: hardware OSD/privacy limited to the top "
+                     "%d px of the %dx%d frame (libimp picHeight range-check); lower "
+                     "overlays are clamped up. Use a square stream, 180, or ch1 for "
+                     "full coverage.", stream_idx, rot, width, width, height);
+    }
 
     if (IMP_OSD_CreateGroup(s->grp)<0){ LOGE(MOD,"CreateGroup %d failed",s->grp); s->used=0; return -1; }
 

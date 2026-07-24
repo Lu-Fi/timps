@@ -684,10 +684,10 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
      * driver read as garbage, and it also wrongly swapped the SetChnRotate dims.
      * 180 is handled by the ISP flip (Batch 2); do nothing here for it. */
     if (v->rotation==90 || v->rotation==270){
-        /* config 90 = clockwise -> 2 (CW); 270 -> 1 (CCW).
-         * ON-DEVICE VERIFY: if the picture comes out rotated the wrong way,
-         * swap this mapping (90->1, 270->2). */
-        uint8_t r90 = (v->rotation==90) ? 2 : 1;
+        /* rotTo90 enum: 1 = 90 CCW, 2 = 90 CW. Mapped so config 90 -> CCW(1),
+         * 270 -> CW(2), matching prudynt/raptor's raw rotation=1|2 semantics
+         * (see src/config.c). */
+        uint8_t r90 = (v->rotation==90) ? 1 : 2;
         if ((v->width|v->height) & 63)
             LOGW(MOD,"rotate: %dx%d not 64-aligned; T31 FS-rotate wants 64-alignment",
                  v->width, v->height);
@@ -695,15 +695,17 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
             LOGW(MOD,"rotate: %dx%d@%d exceeds vendor FS-rotate cap (<=1280x704, <=15fps); "
                  "libimp rotates in SOFTWARE - expect fps drop, high CPU and extra rmem",
                  v->width, v->height, v->fps);
-        /* Args are the PRE-rotation dims per header :575-576 (NOT swapped) and
-         * this must run BEFORE CreateChn (header :581). */
+        /* Args are the PRE-rotation dims per header :575-576, run BEFORE
+         * CreateChn (header :581). */
         IMP_FrameSource_SetChnRotate(chn, r90, v->width, v->height);
-        /* FS output picture is post-rotation (swapped); keep the scaler at the
-         * pre-rotation geometry set above. The pre/post split across
-         * picWidth/picHeight vs scaler is underdocumented. ON-DEVICE VERIFY: if
-         * frames come out stride-garbled/green or SetChnAttr rejects the attr,
-         * flip this one knob (swap the scaler instead of picWidth/picHeight). */
-        a.picWidth = v->height; a.picHeight = v->width;
+        /* CRUCIAL (T31 OSD-on-rotation fix, see docs/T31-OSD-rotation-handoff.md):
+         * the whole FS chnAttr stays at the PRE-rotation (landscape) geometry -
+         * scaler (line ~444) AND picWidth/picHeight. Only the ENCODER is
+         * post-rotation (via ms_vstream_eff_dims). Swapping the FS picWidth to
+         * the portrait dim gives the bound IPU-OSD the wrong stride -> scattered
+         * "dots" on every overlay; prudynt-t marks that exact swap "// Breaks
+         * OSD" in IMPFramesource.cpp. So do NOT swap here. */
+        a.picWidth = v->width; a.picHeight = v->height;
     }
 #endif
     if (IMP_FrameSource_CreateChn(chn,&a)<0){ LOGE(MOD,"FS_CreateChn %d",chn); return -1; }
