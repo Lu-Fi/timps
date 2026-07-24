@@ -18,6 +18,28 @@ und **8 niedrig/informativ**.
 
 ---
 
+## Verifikation & Fix-Status (2026-07-24)
+
+Die Findings wurden gegen den echten Code gegengeprüft. Ergebnis:
+
+| Finding | Verifikation | Status |
+|---|---|---|
+| **F-01** `switch_cmd`→`system()` | ✅ real (aber Precondition: Schreibzugriff auf `/etc/timps.conf` = bereits privilegiert). Praktisch **Mittel**, nicht Kritisch. | **BEHOBEN** — `daynight.c` nutzt jetzt `fork()`+`execlp()` (kein Shell, keine Injection). |
+| **F-02** `isp_path` file read | ⚠️ **über-bewertet**: `dn_brightness()` parst nur ISP-Status-Zahlen, gibt **keinen Datei-Inhalt** zurück → kein Info-Leak. Precondition = Config-Schreibzugriff. | **auf NIEDRIG abgestuft** (Präfix-Check `/proc/jz/isp/` optional; kein Notfall). |
+| **F-03** Audio-Params ungeclampt | ✅ real (`volume/gain/alc_gain/spk_*` = `pint`, nur `ns` geclampt). Felder sind `int` (kein Wrap im Struct), aber Clamp gegen absurde IMP-Werte sinnvoll. | **BEHOBEN** — `pint_cl` (volume/gain/spk 0..100, alc_gain 0..7). |
+| **F-04** OSD `logo_w/h`/`outline` | ✅ `pint`, **aber Impact bereits abgefangen** (`setup_logo` H5-Discard + `load_bgra` `w/h≤0`→NULL). | **BEHOBEN** (defensiv) — `logo_w/h` 0..4096, `outline` 0..64. |
+| **F-05** `record_clip` Traversal | ❌ **FALSCH** — `record_clip` validiert stark: `/tmp/`-Präfix + `strstr("..")` + `open(O_EXCL\|O_NOFOLLOW,0600)`. | **kein Issue** (aus Liste gestrichen). |
+| **F-06** `daynight.*` fehlt in `set_kv` | ❌ **FALSCH** — `config.c:664-674` hat den vollen `daynight.`-Zweig in `set_kv`, `config_get_kv` ebenso. | **kein Issue** (aus Liste gestrichen). |
+| **F-08** `hal_get()` NULL-Deref | ✅ theoretisch (Backend ist statisch, nie NULL), aber billig. | **BEHOBEN** — NULL-Check in `main.c`. |
+| **F-07, F-09–F-14** | korrekt als niedrig/informativ bzw. „kein Risiko"/„positiv" eingestuft. | unverändert (bewusstes Design / akzeptabel). |
+
+**Netto:** Von 2 „kritischen" ist eines ein legitimes Hardening (F-01, behoben),
+das andere über-bewertet (F-02, kein Leak). Zwei „mittlere" Findings (F-05, F-06)
+waren **falsch** — der Code macht es bereits richtig. Die vier sinnvollen Fixes
+(F-01/F-03/F-04/F-08) sind eingebaut und mit `make sim` verifiziert.
+
+---
+
 ## Findings
 
 ### 🔴 F-01 – Command Injection via `daynight.switch_cmd` in `system()`
