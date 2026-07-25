@@ -37,6 +37,8 @@
 #include <unistd.h>
 #include <stdlib.h>
 #include <time.h>
+#include <sys/wait.h>   /* NEU-01: fork/execlp instead of system() */
+#include <errno.h>
 
 static volatile int   g_run;
 static pthread_t      g_thr;
@@ -149,16 +151,31 @@ static void *motion_thread(void *arg)
                 last_fire = t;
                 LOGI(MOD,"motion detected");
                 if (g_hcfg->motion.on_motion[0]) {
-                    /* SECURITY: on_motion is passed to system() and therefore
-                     * runs through /bin/sh with the daemon's privileges. The
-                     * value comes ONLY from the local config file (it is
-                     * deliberately NOT settable via /control) - keep it that
-                     * way. Anyone who can edit the config can already run
-                     * arbitrary commands, but never feed user/remote-
-                     * controlled strings into this field. */
-                    char cmd[160];
-                    snprintf(cmd,sizeof cmd,"%s &", g_hcfg->motion.on_motion);
-                    if (system(cmd)!=0) LOGW(MOD,"on_motion cmd failed");
+                    /* NEU-01 (same class as daynight.c F-01): run via
+                     * fork()+execlp() instead of system(), so a malicious
+                     * on_motion value (config-file only, NOT settable via
+                     * /control - keep it that way) can only fail to exec, it
+                     * can never inject shell commands. Double-fork so this
+                     * analysis thread never blocks on the triggered script
+                     * (matches the old "cmd &" backgrounding): the immediate
+                     * child forks the real worker and exits right away: the
+                     * grandchild is reparented to init and reaped there, no
+                     * zombies and no wait() on the actual script runtime. */
+                    const char *cmd = g_hcfg->motion.on_motion;
+                    pid_t pid = fork();
+                    if (pid < 0){
+                        LOGW(MOD,"on_motion: fork failed: %s", strerror(errno));
+                    } else if (pid == 0){
+                        pid_t gp = fork();
+                        if (gp == 0){
+                            execlp(cmd, cmd, (char*)NULL);
+                            _exit(127);          /* exec failed */
+                        }
+                        _exit(0);
+                    } else {
+                        int st = 0;
+                        while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+                    }
                 }
             }
         }

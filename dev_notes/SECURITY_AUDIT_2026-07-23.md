@@ -40,6 +40,28 @@ waren **falsch** — der Code macht es bereits richtig. Die vier sinnvollen Fixe
 
 ---
 
+## Re-Verifikation der Fixes (2026-07-26)
+
+Die vier Fixes aus dem 2026-07-24-Durchlauf wurden gegengeprüft (Fable 5,
+unabhängig von der Selbsteinschätzung oben) und zusätzlich ein kompletter
+Pfad-/Funktions-Sweep über alle ~30 Quelldateien gefahren (Sonnet), um
+Findings zu suchen, die der ursprüngliche Audit übersehen hat. Ergebnis:
+
+| # | Befund | Status |
+|---|---|---|
+| F-01 | `execlp()`-Fix korrekt: kein Shell, sauberes Kind (`/dev/null`-Redirect, `_exit`, `waitpid`-EINTR-Loop), keine Zombies. Verhaltensänderung: `switch_cmd` mit eingebetteten Argumenten funktioniert nicht mehr (war aber nie so dokumentiert — Contract war immer `<cmd> day\|night`). | bestätigt, kein Fix nötig |
+| F-03 | `audio.gain` war mit `pint_cl(val,0,100)` zu locker geclampt — IMP dokumentiert `gain` als 0..31 (PGA-Range), nicht 0..100. | **BEHOBEN** — `config.c` clamp jetzt `0..31`. |
+| F-04 | Clamps korrekt, rein defensiv, keine Regression. | bestätigt |
+| F-08 | NULL-Check war zwar in `main.c` vorhanden, aber `hal_get()->name` wurde in der Log-Zeile davor bereits ungeprüft dereferenziert. | **BEHOBEN** — `g_hal = hal_get()` + NULL-Check laufen jetzt vor der ersten Nutzung; die Log-Zeile nutzt `g_hal->name`. |
+| **NEU-01** | `motion.on_motion` (`src/hal/imp_motion.c`) lief weiterhin über `system()` — exakt dieselbe Fundklasse wie F-01, aber der `fork()`/`execlp()`-Fix war nur in `daynight.c` ausgerollt. Von beiden unabhängigen Reviews (Fable 5 und Sonnet) übereinstimmend gefunden. | **BEHOBEN** — gleiches Muster wie F-01, per Doppel-Fork (damit der Motion-Analyse-Thread nicht auf das Script wartet, wie es das alte `"cmd &"` tat); Grandchild wird von init reaped. |
+
+Sonst nichts Neues gefunden — RTSP/RTP/HTTP/SRT-Parser, Codec-Puffer
+(`nal.c`/`vparam.c`/`aac.c`/`g711.c`), Font-Rendering (`msttf.c`), Auth
+(`auth.c`/`control.c`) und Thread-Safety (`hub.c`/`fanqueue.c`) wurden beim
+Sweep erneut geprüft und sind weiterhin sauber.
+
+---
+
 ## Findings
 
 ### 🔴 F-01 – Command Injection via `daynight.switch_cmd` in `system()`

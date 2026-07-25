@@ -212,9 +212,10 @@ typedef struct {
     int      skip_frames;        /* IMP_IVS_MoveParam.skipFrameCnt: analyse every
                                   * Nth frame. Higher = cheaper but more latency;
                                   * lower = snappier but more CPU (>=1, default 5) */
-    char     on_motion[128];     /* command/script to run on motion ("" = none).
-                                  * Config-file only, NOT settable via /control
-                                  * (it is executed through system()). */
+    char     on_motion[128];     /* script/program to run on motion ("" = none),
+                                  * no arguments (fork()+execlp(), not a shell
+                                  * command line). Config-file only, NOT
+                                  * settable via /control. */
 } ms_motion_cfg;
 
 /* local recording to SD (fragmented MP4 segments, like raptor's RMR). Reuses
