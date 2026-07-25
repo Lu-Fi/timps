@@ -226,7 +226,7 @@ void config_defaults(ms_config *c)
             o->enabled=0; o->type=MS_OSD_TEXT; o->x=10; o->y=10;
             /* font_size is absolute px (no per-stream auto-scale): main stream
              * 32, sub-streams a smaller default that still stays legible */
-            o->font_size=(s==0)?32:24; o->color=0xFFFFFFFF; o->transparency=255;
+            o->font_size=(s==0)?32:12; o->color=0xFFFFFFFF; o->transparency=255;
             /* text outline ON by default (1px solid-black stroke) so overlays
              * stay readable on light backgrounds without extra config */
             o->outline=1; o->outline_color=0xFF000000;
@@ -467,7 +467,7 @@ static void set_kv(ms_config *c, const char *key, const char *val)
         else if(!strcmp(k,"channels"))c->audio.channels=pint_cl(val,1,2);
         else if(!strcmp(k,"bitrate"))c->audio.bitrate_kbps=pint_cl(val,8,320);
         else if(!strcmp(k,"volume"))c->audio.volume=pint_cl(val,0,100);   /* F-03 */
-        else if(!strcmp(k,"gain"))c->audio.gain=pint_cl(val,0,100);       /* F-03 */
+        else if(!strcmp(k,"gain"))c->audio.gain=pint_cl(val,0,31);        /* F-03: IMP_AI mic gain 0..31 */
         else if(!strcmp(k,"high_pass"))c->audio.high_pass=pbool(val);
         else if(!strcmp(k,"agc"))c->audio.agc=pbool(val);
         /* clamped to the IMP domains (imp_audio.h): IMP_AI_EnableNs mode

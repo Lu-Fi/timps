@@ -315,7 +315,7 @@ osd1.0.type      = text
 osd1.0.text      = %Y-%m-%d %H:%M:%S
 osd1.0.x         = 16
 osd1.0.y         = 16
-osd1.0.font_size = 24                         # absolute px on the sub-stream
+osd1.0.font_size = 12                         # absolute px on the sub-stream
 osd1.0.outline       = 1
 osd1.0.outline_color = 0xFF000000
 
@@ -380,8 +380,8 @@ osd1.0.outline_color = 0xFF000000
 # clamped to the SDK's ROI budget (IMP_IVS_MOVE_MAX_ROI_CNT: 52 on most SDKs,
 # 4 on the old T10/T20 3.9.0 SDK; reported as caps.motion.max_cells).
 # enabled/sensitivity/cols/rows/monitor_stream are live via /control;
-# cooldown_ms and on_motion are config-file only (on_motion runs through
-# system() and is deliberately not settable over HTTP).
+# cooldown_ms and on_motion are config-file only (on_motion is exec'd
+# directly, no shell, no arguments - deliberately not settable over HTTP).
 motion.enabled        = 0
 motion.monitor_stream = 0
 motion.sensitivity    = 128           # 0..255 (mapped to IMP 0..4)

@@ -99,7 +99,9 @@ int main(int argc, char **argv)
     config_load(&g_cfg, cfgpath);
     config_sensor_finalize(&g_cfg);   /* auto-detect sensor from /proc/jz/sensor */
     srand(rand_seed());               /* non-secret rand() users (UDP port picks) */
-    LOGI(MOD,"timps %s starting (backend=%s)", MS_VERSION, hal_get()->name);
+    g_hal = hal_get();
+    if (!g_hal){ LOGE(MOD,"no HAL backend available"); return 1; }   /* F-08 */
+    LOGI(MOD,"timps %s starting (backend=%s)", MS_VERSION, g_hal->name);
 
 #ifdef USE_CONTROL
     /* per-boot /control token: valid alongside Basic auth (httpd.c) */
@@ -121,8 +123,6 @@ int main(int argc, char **argv)
     hub_set_idr_cb(idr_trampoline);
     hub_set_activity_cb(act_trampoline);
 
-    g_hal = hal_get();
-    if (!g_hal){ LOGE(MOD,"no HAL backend available"); return 1; }   /* F-08 */
     if (g_hal->init(&g_cfg)!=0){ LOGE(MOD,"HAL init failed"); return 1; }
     if (g_hal->start(&g_cfg)!=0){ LOGE(MOD,"HAL start failed"); return 1; }
 
