@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.5.0] - 2026-07-26
+
 ### Changed
 - **Default `http.port` moved 8080 → 8880.** Port 8080 clashed with the
   ONVIF daemon (`onvif_srvd`), which also listens there; whichever bound
@@ -13,8 +15,27 @@ semantic versioning.
   defaults to `8880`, leaving 8080 to ONVIF. The port is still configurable
   via `http.port`; the WebUI reads the live port from `/x/timps-token.cgi`,
   so browser pages follow automatically.
+- **Sub-stream OSD default `font_size` 24 → 12 px.** Better fit on typical
+  sub-stream resolutions; still an absolute px value, not auto-scaled — see
+  `osd1.*` in `timps.conf.example`.
 
 ### Added
+- **Optional image rotation** (`USE_ROTATE`/`USE_SW_ROTATE` build flags,
+  `videoN.rotation` config key: `0|90|180|270`). 180° works on every SoC;
+  hardware 90/270 on T31/T40/T41; software 90/270 (CPU transpose + SW
+  JPEG/OSD) on T23. Restart-required; downstream (encoder, RTSP SDP,
+  fMP4/MP4, OSD, snapshots) all use the post-rotation dimensions via one
+  helper. Off by default, ~0.2 KB when disabled. Known limitation: on T31,
+  90/270 can't carry a hardware OSD/privacy overlay (libimp IPU-OSD stride
+  bug) — see `docs/rotation.md`.
+- **Optional ONVIF audio backchannel** (`USE_BACKCHANNEL`/`USE_BC_AAC` build
+  flags, `audio.backchannel`/`backchannel_codec`/`backchannel_rate` config
+  keys, `caps.backchannel.available`). Implements ONVIF Profile T two-way
+  audio: an RTSP client streams RTP audio (PCMU/PCMA pure-C, or AAC via
+  libhelix-aac) to the camera; timps decodes + resamples it to PCM16 and
+  pipes it to `/bin/iac -s` (thingino's `ingenic-audiodaemon`) — timps itself
+  never opens `IMP_AO`, so it works identically on every SoC as long as the
+  audiodaemon is installed. See `docs/backchannel.md`.
 - **Optional HTTPS + SRT (compile-time gated).** New `USE_TLS` (mbedTLS) and
   `USE_SRT` (libsrt) build flags, auto-enabled by the buildroot package
   selection (`BR2_PACKAGE_MBEDTLS` / `BR2_PACKAGE_LIBSRT`) - if the lib isn't in
@@ -136,6 +157,21 @@ semantic versioning.
 - Target builds now pass `-I$(IMP_INC)/imp` too: the T10/T20 3.12.0 IVS
   headers include `<imp_ivs.h>` without the `imp/` prefix and did not resolve
   with `-I$(IMP_INC)` alone.
+- **Command injection hardening**: `daynight.switch_cmd` (day/night switch
+  script) and `motion.on_motion` (motion-trigger script) now run via
+  `fork()`+`execlp()` instead of `system()` — no shell, so a value containing
+  shell metacharacters just fails to exec instead of running as injected
+  commands. Both keys were already config-file-only (never settable via
+  `/control`), but this closes the gap for anyone with config-file write
+  access. See `dev_notes/SECURITY_AUDIT_2026-07-23.md`.
+- **Value clamping**: `audio.gain` now clamps to the IMP-documented mic PGA
+  range (0..31, was 0..100); `audio.volume`/`alc_gain`/`spk_volume`/
+  `spk_gain` and OSD `logo_w`/`logo_h`/`outline` are clamped against their
+  real IMP/rendering limits so out-of-range `/control` values can't wrap or
+  blow up an allocation.
+- `hal_get()`'s return value is now NULL-checked before its first use at
+  startup (previously dereferenced once, in the startup log line, before the
+  existing check further down).
 
 ## [1.2.0] - 2026-07-11
 
