@@ -730,11 +730,13 @@ else
 		"hflip bool" "vflip bool" "running_mode bool" "anti_flicker int 0 2" \
 		"core_wb_mode int 0 1"
 
-	# --- audio: only the keys the HAL applies LIVE (caps.audio). volume/gain/
-	# alc_gain are raw ints; mute is the live publish gate. The restart-only
-	# audio keys (codec/samplerate/agc/ns/...) are covered by the persist check ---
+	# --- audio: only the keys the HAL applies LIVE (caps.audio). volume is
+	# 0..100; gain is clamped server-side to the IMP mic PGA range 0..31
+	# (F-03); alc_gain to the PGA 0..7; mute is the live publish gate. The
+	# restart-only audio keys (codec/samplerate/agc/ns/...) are covered by
+	# the persist check ---
 	lv_section audio '{"audio":' '}' audio \
-		"volume int 0 100" "gain int 0 100" "alc_gain int 0 100" "mute bool"
+		"volume int 0 100" "gain int 0 31" "alc_gain int 0 7" "mute bool"
 
 	# --- osd stream 0 item 0: the live text-overlay leaf keys (caps.osd).
 	# font_size clamps 8..256, transparency 0..255, colors are 0xAARRGGBB hex ---
