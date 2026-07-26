@@ -254,14 +254,25 @@ analyze_stream() {
 		-of csv=p=0 "$seg" 2>/dev/null > "$probe"
 
 	# awk: per codec_type -> count, first/last pts, max gap, non-monotonic count
+	#
+	# WARMUP_S excludes the connection/first-keyframe startup transient from
+	# maxgap and A/V skew: a lone leading video keyframe (sent immediately so
+	# the player has something to decode) followed by a real gap before audio
+	# and steady video both start is NORMAL, not a freeze or growing drift -
+	# fMP4 anchors both tracks to a shared t=0 at that first keyframe (unlike
+	# RTSP, which gives each track its own independent PTS zero), so a client
+	# that attaches mid-warmup sees a one-time skew that LOCKS once real media
+	# starts, not one that grows. Judge freeze/skew from steady state
+	# (first packet at/after WARMUP_S) instead of the raw first packet.
 	local rep
-	rep=$(awk -F, -v wall="$wall" '
+	rep=$(awk -F, -v wall="$wall" -v warmup="${QA_WARMUP_S:-2}" '
 	{
 		ct=$1; p=$2+0;
 		if(ct=="video"||ct=="audio"){
 			n[ct]++;
 			if(!(ct in first)){first[ct]=p; last[ct]=p; prev[ct]=p}
-			g=p-prev[ct]; if(g>maxgap[ct])maxgap[ct]=g;
+			if(!(ct in first_ss) && p>=warmup){first_ss[ct]=p}
+			if(prev[ct]>=warmup){g=p-prev[ct]; if(g>maxgap[ct])maxgap[ct]=g}
 			if(p<prev[ct]-0.0005)nonmono[ct]++;
 			prev[ct]=p; last[ct]=p;
 		}
@@ -273,8 +284,12 @@ analyze_stream() {
 			rt=(wall>0)?span/wall:0;
 			printf "%s %d %.3f %.3f %.3f %.3f %d\n", ct, n[ct], span, rate, rt, maxgap[ct], nonmono[ct];
 		}
-		# A/V skew drift
-		if(("audio" in first)&&("video" in first)){
+		# A/V skew drift, measured from steady state (post-warmup) so the
+		# one-time fMP4 startup transient does not read as growing drift
+		if(("audio" in first_ss)&&("video" in first_ss)){
+			ss=first_ss["audio"]-first_ss["video"]; se=last["audio"]-last["video"];
+			printf "SKEW %.3f %.3f %.3f\n", ss, se, se-ss;
+		} else if(("audio" in first)&&("video" in first)){
 			ss=first["audio"]-first["video"]; se=last["audio"]-last["video"];
 			printf "SKEW %.3f %.3f %.3f\n", ss, se, se-ss;
 		}
