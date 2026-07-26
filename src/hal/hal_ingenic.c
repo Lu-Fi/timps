@@ -633,9 +633,21 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
      * Confirmed on a Cinnado D1 T31L/SC2336 board 2026-07-26. Scoped to
      * PLATFORM_T31 (covers T31 and T31L, which share SOC_FAMILY=t31) since
      * that's the only family this kernel constraint has been observed on;
-     * other chips keep the normal 2-buffer default untouched. */
+     * other chips keep the normal 2-buffer default untouched.
+     * Only auto-clamps the *default*; an explicit "buffers" line in
+     * timps.conf (v->buffers_explicit) is trusted as-is, same as raptor's
+     * per-stream nr_vbs override - lets a board/sensor combo that doesn't
+     * hit this limit (or wants to probe it, e.g. against more rmem) opt out
+     * without a code change. */
 #if defined(PLATFORM_T31)
-    if (!scale && a.nrVBs > 1) a.nrVBs = 1;
+    if (!scale && a.nrVBs > 1) {
+        if (v->buffers_explicit)
+            LOGW(MOD,"chn%d: non-scaled channel with explicit buffers=%d overrides the "
+                 "known T31 nrVBs=1 default - if frames stop (check dmesg for "
+                 "'one buffer schedule'), drop the override", chn, a.nrVBs);
+        else
+            a.nrVBs = 1;
+    }
 #endif
     /* When crop AND scaler are both disabled, IMP requires the framesource
      * output to equal the ISP-reported sensor resolution. Some sensor drivers

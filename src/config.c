@@ -335,7 +335,7 @@ static void set_video(ms_vstream_cfg *v, const char *k, const char *val)
     else if (!strcmp(k,"min_qp")) v->min_qp=pint_cl(val,1,51);
     else if (!strcmp(k,"max_qp")) v->max_qp=pint_cl(val,1,51);
     else if (!strcmp(k,"rotation")) v->rotation=prot(val);
-    else if (!strcmp(k,"buffers")) v->buffers=pint_cl(val,1,8);
+    else if (!strcmp(k,"buffers")) { v->buffers=pint_cl(val,1,8); v->buffers_explicit=1; }
     else if (!strcmp(k,"rtsp_path")) copystr(v->rtsp_path,val,MS_MAX_STR);
     else if (!strcmp(k,"imp_chn")) v->imp_chn=pint(val);
     else if (!strcmp(k,"jpeg")||!strcmp(k,"jpeg_enabled")) v->jpeg_enabled=pbool(val);
