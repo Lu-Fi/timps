@@ -630,8 +630,13 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
      * dmesg) and the channel never produces a frame - PollingStream spins at
      * rc=-1 forever with no error surfaced above the kernel log. The scaled
      * (sub-stream) path uses the normal multi-buffer ring and is unaffected.
-     * Confirmed on a Cinnado D1 T31L/SC2336 board 2026-07-26. */
+     * Confirmed on a Cinnado D1 T31L/SC2336 board 2026-07-26. Scoped to
+     * PLATFORM_T31 (covers T31 and T31L, which share SOC_FAMILY=t31) since
+     * that's the only family this kernel constraint has been observed on;
+     * other chips keep the normal 2-buffer default untouched. */
+#if defined(PLATFORM_T31)
     if (!scale && a.nrVBs > 1) a.nrVBs = 1;
+#endif
     /* When crop AND scaler are both disabled, IMP requires the framesource
      * output to equal the ISP-reported sensor resolution. Some sensor drivers
      * (e.g. sc2336 on T23) report 0x0, so IMP then rejects the channel:
