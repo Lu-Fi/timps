@@ -2621,14 +2621,16 @@ void hal_ao_close(int drain)
 {
     if (!g_ao_up) return;
     if (drain){
-        /* IMP_AO_SendFrame(BLOCK) only waits for ring-buffer space, not for
-         * the audio to actually reach the DAC, so up to a full ring buffer
-         * (MS_AI_FRM_NUM periods) can still be queued when the last write
-         * returns. Sleep that out instead of clearing it, so a clip's tail
-         * isn't cut off on normal end-of-file close. */
-        int per_ms = g_ao_npf > 0 && g_ao_rate > 0
-                   ? (g_ao_npf * 1000) / g_ao_rate : 40;
-        usleep((useconds_t)per_ms * MS_AI_FRM_NUM * 1000);
+        /* IMP_AO_SendFrame(BLOCK) only waits for ring-buffer space, not for the
+         * audio to actually reach the DAC. Worse, the AO keeps its own playback
+         * cache on top of the MS_AI_FRM_NUM-period ring, so the residual still
+         * queued when the last write returns is well over a ring's worth (~0.7s
+         * on this board, not the ~0.24s a ring implies) - a fixed sleep sized to
+         * the ring therefore still lops ~0.5s off a clip's tail. IMP_AO_FlushChnBuf
+         * is the SDK's "wait for the last segment to finish playing" primitive
+         * (present in every SoC's shipped libimp); it blocks until the whole
+         * cache has actually played out, however deep it is. */
+        IMP_AO_FlushChnBuf(0, 0);
     } else {
         /* ClearChnBuf (discard): the preempt/stop path, where backchannel
          * must take the speaker immediately - a queued play tail must not
