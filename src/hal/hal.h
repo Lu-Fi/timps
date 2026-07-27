@@ -43,8 +43,12 @@ int  hal_ao_open(int want_rate);
  * the AO's own buffering as backpressure. Returns 0 on success, <0 on error. */
 int  hal_ao_write(const int16_t *pcm, int nsamp);
 
-/* Tear down AO dev/chn 0. Idempotent (no-op if not open). */
-void hal_ao_close(void);
+/* Tear down AO dev/chn 0. Idempotent (no-op if not open). drain=1: wait for
+ * the ring buffer to actually finish playing out before disabling (use at
+ * the natural end of a clip). drain=0: discard whatever is still queued and
+ * disable immediately (use when preempting/stopping - e.g. backchannel must
+ * take the speaker without waiting out a play tail). */
+void hal_ao_close(int drain);
 
 void hal_ao_set_vol(int vol);    /* IMP_AO_SetVol, clamped to the SDK range */
 void hal_ao_set_gain(int gain);  /* IMP_AO_SetGain, clamped to the SDK range */

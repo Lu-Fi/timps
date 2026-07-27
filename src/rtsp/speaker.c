@@ -54,10 +54,10 @@ static int ao_ensure(void)
     hal_ao_set_gain(g_cfg.audio.spk_gain);
     return 0;
 }
-/* caller holds g_lock */
-static void ao_drop(void)
+/* caller holds g_lock. drain: see hal_ao_close(). */
+static void ao_drop(int drain)
 {
-    if (g_ao_open){ hal_ao_close(); g_ao_open = 0; g_ao_rate = 0; }
+    if (g_ao_open){ hal_ao_close(drain); g_ao_open = 0; g_ao_rate = 0; }
 }
 
 void speaker_configure(int out_rate)
@@ -92,7 +92,7 @@ void speaker_release(const void *owner)
     pthread_mutex_lock(&g_lock);
     if (g_owner == owner){
         g_owner = NULL; g_bc_active = 0;
-        ao_drop();
+        ao_drop(0);                     /* call hangup: discard, don't wait out a tail */
         LOGI(MOD, "speaker owner released (backchannel)");
     }
     pthread_mutex_unlock(&g_lock);
@@ -323,10 +323,12 @@ static int play_write(int frames, int src_rate, int vol, int gain)
     return rc;
 }
 
-static void play_release(void)
+/* drain: 1 = clip ran to its natural end, wait for the tail to actually play
+ * before closing; 0 = stopped/preempted mid-clip, discard and close now. */
+static void play_release(int drain)
 {
     pthread_mutex_lock(&g_lock);
-    if (g_owner == &g_play_tok){ g_owner = NULL; ao_drop(); LOGI(MOD,"speaker owner released (play)"); }
+    if (g_owner == &g_play_tok){ g_owner = NULL; ao_drop(drain); LOGI(MOD,"speaker owner released (play)"); }
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -416,7 +418,11 @@ static void play_job(const struct pjob *j)
             }
         }
     }
-    play_release();
+    /* g_stop_play: STOP / new PLAY / backchannel preempted us mid-clip -
+     * discard immediately. Otherwise every rep finished on its own - the
+     * last write is likely still draining out of the AO ring buffer, so
+     * wait for it instead of cutting the tail off. */
+    play_release(!g_stop_play);
 }
 
 static void *play_thread(void *arg)
