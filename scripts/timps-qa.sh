@@ -387,7 +387,12 @@ else info "no --ssh target (on-device checks skipped)"; fi
 
 ping -c1 -W2 "$CAM" >/dev/null 2>&1 && ok "camera $CAM reachable (ping)" || warn "ping $CAM failed (may be firewalled)"
 for p in "$RTSP_PORT" "$HTTP_PORT"; do
-	if (exec 3<>"/dev/tcp/$CAM/$p") 2>/dev/null; then ok "tcp port $p open"; exec 3>&- 2>/dev/null
+	# NOTE: fd 3 is opened inside the (subshell) probe only, so it never leaks
+	# into this shell - no cleanup needed. Do NOT write `exec 3>&- 2>/dev/null`
+	# here: with no command, that `exec` applies its redirection to THIS shell
+	# permanently, silently sending all later stderr (and any `set -x` trace) to
+	# /dev/null for the rest of the run.
+	if (exec 3<>"/dev/tcp/$CAM/$p") 2>/dev/null; then ok "tcp port $p open"
 	else bad "tcp port $p closed/unreachable"; fi
 done
 
@@ -1094,7 +1099,11 @@ if [ "${SOAK_DUR:-0}" -gt 0 ] && want 15 soak; then
 		timeout -k 5 "$((slice+6))" ffmpeg -hide_banner -nostdin -y -loglevel warning -rtsp_transport "$RTSP_TRANSPORT" \
 			-i "$(rtsp_url "$PATH_MAIN")" -t "$slice" -c copy "$rec" </dev/null 2>"$rlog" || true
 		[ -s "$rec" ] || bad_slices=$((bad_slices+1))
-		e=$(grep -icE 'non-monotonous|discontinuit|corrupt|error while|concealing|invalid data' "$rlog" 2>/dev/null || echo 0)
+		# grep -c already prints "0" on no match (and exits 1); do NOT chain
+		# "|| echo 0" here - that fires on the exit-1 and yields a two-line "0\n0",
+		# which then makes err_total=$((err_total+e)) a fatal arithmetic SYNTAX
+		# error that tears out of the whole soak loop (zero slices logged).
+		e=$(grep -icE 'non-monotonous|discontinuit|corrupt|error while|concealing|invalid data' "$rlog" 2>/dev/null); e=${e:-0}
 		err_total=$((err_total+e))
 		rss=""
 		if [ -n "$SSH_TARGET" ]; then
