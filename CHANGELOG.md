@@ -6,6 +6,18 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+- **Play-file tail no longer cut short (~0.5 s) on normal end-of-clip.** The
+  end-of-file drain in `hal_ao_close(drain=1)` slept for a fixed
+  `MS_AI_FRM_NUM`-period ring's worth (~0.24 s), but the IMP AO keeps its own
+  playback cache on top of that ring, so ~0.7 s could still be queued when the
+  last `IMP_AO_SendFrame` returned — the fixed sleep therefore closed the
+  channel ~0.5 s early and lopped the tail off system sounds (e.g. "Configuration
+  portal is down" stopped after "portal"). Now uses `IMP_AO_FlushChnBuf`, the
+  SDK's "wait for the last segment to finish playing" primitive, which blocks
+  until the whole cache has actually reached the DAC regardless of depth.
+  Verified acoustically via RTSP mic loopback across clips of 0.6/2.5/2.7 s.
+
 ## [1.5.0] - 2026-07-26
 
 ### Changed
