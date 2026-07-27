@@ -2522,4 +2522,110 @@ int hal_isp_ae_luma(uint32_t *luma)
     (void)luma; return -1;
 #endif
 }
+
+#if defined(USE_BACKCHANNEL) || defined(USE_PLAY)
+/* ---- speaker output (IMP_AO) -------------------------------------------------
+ * Sole owner of AO dev/chn 0. Brought up lazily by speaker.c on the first
+ * backchannel or play request and torn down when both are idle, mirroring the
+ * lazy IMP_AI capture lifecycle above. Mono int16 only (the AI/encoder side is
+ * mono too); everything upstream resamples to the rate we report from open. */
+static int g_ao_up   = 0;
+static int g_ao_rate = 0;
+
+static int ao_rate_enum(int sr)
+{
+    switch (sr){
+        case 8000: case 16000: case 24000: case 32000:
+        case 44100: case 48000: case 96000: return sr;
+        default: return -1;
+    }
+}
+
+int hal_ao_open(int want_rate)
+{
+    if (g_ao_up) return g_ao_rate;
+    const int dev = 0, chn = 0;
+    /* try the requested rate first, then 16k/8k - same fallback shape as the AI
+     * bring-up, since a given codec/board may not accept every rate. */
+    int want[3]; int nw = 0;
+    if (ao_rate_enum(want_rate) > 0) want[nw++] = want_rate;
+    if (want_rate != 16000) want[nw++] = 16000;
+    if (want_rate != 8000)  want[nw++] = 8000;
+
+    IMPAudioIOAttr aio;
+    int ok = 0, rate = 0;
+    for (int i = 0; i < nw && !ok; i++){
+        int sr = want[i];
+        memset(&aio, 0, sizeof aio);
+        aio.samplerate = sr;
+        aio.bitwidth   = AUDIO_BIT_WIDTH_16;
+        aio.soundmode  = AUDIO_SOUND_MODE_MONO;
+        aio.frmNum     = MS_AI_FRM_NUM;
+        aio.numPerFrm  = sr * 40 / 1000;      /* 40 ms: 320@8k, 640@16k */
+        aio.chnCnt     = 1;
+        if (IMP_AO_SetPubAttr(dev, &aio) != 0){
+            LOGW(MOD, "IMP_AO_SetPubAttr %dHz failed%s", sr, (i+1<nw)?" -> falling back":"");
+            continue;
+        }
+        if (IMP_AO_Enable(dev) != 0){ LOGW(MOD, "IMP_AO_Enable failed"); continue; }
+        if (IMP_AO_EnableChn(dev, chn) != 0){
+            LOGW(MOD, "IMP_AO_EnableChn failed");
+            IMP_AO_Disable(dev);
+            continue;
+        }
+        rate = sr; ok = 1;
+    }
+    if (!ok){ LOGE(MOD, "audio output (speaker) unavailable"); return -1; }
+    g_ao_up = 1; g_ao_rate = rate;
+    LOGI(MOD, "speaker (IMP_AO) up: %dHz mono", rate);
+    return rate;
+}
+
+int hal_ao_write(const int16_t *pcm, int nsamp)
+{
+    if (!g_ao_up || nsamp <= 0) return -1;
+    IMPAudioFrame frm; memset(&frm, 0, sizeof frm);
+    frm.bitwidth  = AUDIO_BIT_WIDTH_16;
+    frm.soundmode = AUDIO_SOUND_MODE_MONO;
+    frm.virAddr   = (uint32_t*)pcm;              /* AO reads, never writes */
+    frm.len       = nsamp * (int)sizeof(int16_t);
+    /* BLOCK: the AO's ring buffer backpressure is our playback clock, so a
+     * producer that outruns real time is throttled here instead of overrunning. */
+    if (IMP_AO_SendFrame(0, 0, &frm, BLOCK) != 0){
+        LOGW(MOD, "IMP_AO_SendFrame failed");
+        return -1;
+    }
+    return 0;
+}
+
+void hal_ao_close(void)
+{
+    if (!g_ao_up) return;
+    /* ClearChnBuf (discard) not Flush (drain): close is also the preempt path
+     * where backchannel must take the speaker immediately - a half-second of
+     * queued play tail must not delay it. */
+    IMP_AO_ClearChnBuf(0, 0);
+    IMP_AO_DisableChn(0, 0);
+    IMP_AO_Disable(0);
+    g_ao_up = 0; g_ao_rate = 0;
+    LOGI(MOD, "speaker (IMP_AO) down");
+}
+
+void hal_ao_set_vol(int vol)
+{
+    if (!g_ao_up) return;
+    /* map the play wrapper's 0..100 onto IMP_AO's [-30..120] (0.5 dB steps,
+     * 60 = unity): 0 -> mute, 100 -> +30 dB. */
+    int v = (vol <= 0) ? -30 : (vol >= 100) ? 120 : -30 + (int)(vol * 1.5);
+    IMP_AO_SetVol(0, 0, v);
+}
+
+void hal_ao_set_gain(int gain)
+{
+    if (!g_ao_up) return;
+    if (gain < 0) gain = 0;
+    if (gain > 31) gain = 31;
+    IMP_AO_SetGain(0, 0, gain);
+}
+#endif /* USE_BACKCHANNEL || USE_PLAY */
 #endif /* HAL_INGENIC */

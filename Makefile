@@ -27,10 +27,14 @@ USE_CONTROL   ?= 1          # live control endpoint (/control); optional, on by 
 USE_DAYNIGHT  ?= 1          # native automatic day/night detection thread; on by default (0 = off)
 USE_TLS       ?= 0          # 1 = HTTPS + RTSPS via mbedTLS (needs -lmbedtls...); off unless the lib is present
 USE_SRT       ?= 0          # 1 = MPEG-TS over SRT output via libsrt; off unless the lib is present
-USE_BACKCHANNEL ?= 0        # 1 = ONVIF audio backchannel (client->speaker via /bin/iac); G.711 pure-C
+USE_BACKCHANNEL ?= 0        # 1 = ONVIF audio backchannel (client->speaker via native IMP_AO); G.711 pure-C
 USE_BC_AAC    ?= 0          # 1 = also decode AAC backchannel (needs libhelix-aac); implies USE_BACKCHANNEL
 HELIXLIB      ?= -lhelix-aac # link flag for the helix AAC decoder (USE_BC_AAC)
 HELIX_INC     ?=            # optional -I dir for aacdec.h/aaccommon.h (USE_BC_AAC)
+USE_PLAY      ?= 0          # 1 = /run/timps/audio_out play-FIFO queue (system sounds via native IMP_AO); WAV + raw PCM16
+USE_PLAY_OPUS ?= 0          # 1 = also decode Ogg-Opus in the play queue (needs opusfile); implies USE_PLAY
+OPUSLIB       ?= -lopusfile -lopus -logg  # link flags for opusfile (USE_PLAY_OPUS)
+OPUS_INC      ?=            # optional -I dir for <opus/opusfile.h> (USE_PLAY_OPUS)
 USE_ROTATE    ?= 0          # 1 = image rotation feature (180 on all SoCs; HW 90/270 on
                             #     T40/T41 + T31). Default off = no ROT_HAS_* macros defined,
                             #     so all rotation code compiles out (byte-identical build).
@@ -101,12 +105,25 @@ SIM_SRC    := $(BASE) src/hal/osd_text.c src/hal/hal_sim.c src/hal/imp_motion.c 
 
 # full target source list (+ optional tls.c) and the .o names (unique basenames)
 # for the compile-then-link two-step
-# USE_BC_AAC implies the backchannel feature
+# USE_BC_AAC implies the backchannel feature; USE_PLAY_OPUS implies the play queue
 ifeq ($(USE_BC_AAC),1)
 USE_BACKCHANNEL := 1
 endif
+ifeq ($(USE_PLAY_OPUS),1)
+USE_PLAY := 1
+endif
+# speaker.c (native IMP_AO owner) + the shared resampler are pulled in whenever
+# either audio-output producer is built.
+USE_AUDIO_OUT :=
+ifeq ($(USE_BACKCHANNEL),1)
+USE_AUDIO_OUT := 1
+endif
+ifeq ($(USE_PLAY),1)
+USE_AUDIO_OUT := 1
+endif
 TARGET_ALLSRC := $(TARGET_SRC) $(if $(filter 1,$(USE_TLS)),src/tls.c) \
-                 $(if $(filter 1,$(USE_BACKCHANNEL)),src/rtsp/backchannel.c)
+                 $(if $(filter 1,$(USE_BACKCHANNEL)),src/rtsp/backchannel.c) \
+                 $(if $(filter 1,$(USE_AUDIO_OUT)),src/rtsp/speaker.c src/codec/resample.c)
 TARGET_OBJS   := $(notdir $(TARGET_ALLSRC:.c=.o))
 
 # --- Build hardening (M14) --------------------------------------------------
@@ -173,15 +190,18 @@ target:
 	  $(if $(filter 1,$(USE_SRT)),-DUSE_SRT) \
 	  $(if $(filter 1,$(USE_BACKCHANNEL)),-DUSE_BACKCHANNEL) \
 	  $(if $(filter 1,$(USE_BC_AAC)),-DUSE_BC_AAC $(if $(HELIX_INC),-I$(HELIX_INC))) \
+	  $(if $(filter 1,$(USE_PLAY)),-DUSE_PLAY) \
+	  $(if $(filter 1,$(USE_PLAY_OPUS)),-DUSE_PLAY_OPUS $(if $(OPUS_INC),-I$(OPUS_INC) -I$(OPUS_INC)/opus)) \
 	  $(if $(filter 1,$(USE_ROTATE)),-DUSE_ROTATE) \
 	  $(if $(filter 1,$(USE_SW_ROTATE)),-DMS_ENABLE_SW_ROTATE) \
 	  -DHAL_INGENIC -DPLATFORM_$(PLATFORM) -DMS_VERSION='"$(VERSION)"' -Isrc -I$(IMP_INC) -I$(IMP_INC)/imp \
 	  -c $(TARGET_ALLSRC)
 	$(LINK_DRV) $(TARGET_OBJS) \
 	  $(LDFLAGS) $(if $(IMP_LIB),-L$(IMP_LIB)) $(IMPLIBS) \
-	  $(if $(filter 1,$(USE_FAAC)),$(FAACLIB)) $(if $(filter 1,$(USE_BC_AAC)),$(HELIXLIB)) $(LIBS) -o $(BIN)
+	  $(if $(filter 1,$(USE_FAAC)),$(FAACLIB)) $(if $(filter 1,$(USE_BC_AAC)),$(HELIXLIB)) \
+	  $(if $(filter 1,$(USE_PLAY_OPUS)),$(OPUSLIB)) $(LIBS) -o $(BIN)
 	@rm -f $(TARGET_OBJS)
-	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT) USE_BACKCHANNEL=$(USE_BACKCHANNEL) USE_BC_AAC=$(USE_BC_AAC) USE_ROTATE=$(USE_ROTATE) USE_SW_ROTATE=$(USE_SW_ROTATE))"
+	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT) USE_BACKCHANNEL=$(USE_BACKCHANNEL) USE_BC_AAC=$(USE_BC_AAC) USE_PLAY=$(USE_PLAY) USE_PLAY_OPUS=$(USE_PLAY_OPUS) USE_ROTATE=$(USE_ROTATE) USE_SW_ROTATE=$(USE_SW_ROTATE))"
 
 sim:
 	$(HOSTCC) $(CFLAGS) -DMS_VERSION='"$(VERSION)"' $(if $(filter 1,$(USE_CONTROL)),-DUSE_CONTROL) \

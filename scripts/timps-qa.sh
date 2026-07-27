@@ -77,6 +77,11 @@ SOAK_DUR="${SOAK_DUR:-0}"          # seconds of soak (0 = skip unless profile se
 SOAK_SAMPLE="${SOAK_SAMPLE:-60}"   # health sample interval during soak
 DO_RESTART="${DO_RESTART:-0}"      # 1 = exercise streamer restart
 ONLY=""                            # comma-sep section names/numbers to run (empty = all)
+# Optional backchannel acoustic-loopback test (default OFF, never in a profile):
+# plays a tone into the speaker via backchannel and checks the mic picks it up.
+TEST_BACKCHANNEL="${TEST_BACKCHANNEL:-0}"
+BC_TEST_FREQ="${BC_TEST_FREQ:-1500}"   # test-tone frequency (Hz), narrow + mid-band
+BC_TEST_SECS="${BC_TEST_SECS:-4}"      # tone duration (s)
 
 usage() {
 	sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
@@ -95,6 +100,11 @@ Options (also settable as env vars):
   --only LIST         run only these sections (names or numbers, comma-sep),
                       e.g. --only onvif  or  --only 3,10 ; preflight always runs
   --out DIR           output directory
+  --test-backchannel  run the acoustic-loopback backchannel test (section 2d):
+                      play a tone into the speaker, confirm the mic hears it.
+                      Default OFF, never part of a profile (environmental).
+  --bc-test-freq HZ   test-tone frequency (default 1500)
+  --bc-test-secs S    test-tone duration (default 4)
 
 Profiles:
   quick     ~3 min  : short integrity + snapshot + tiny load, no soak
@@ -128,6 +138,9 @@ while [ $# -gt 0 ]; do
 		--restart) DO_RESTART=1; shift;;
 		--only) ONLY="$2"; shift 2;;
 		--out) OUTDIR="$2"; shift 2;;
+		--test-backchannel) TEST_BACKCHANNEL=1; shift;;
+		--bc-test-freq) BC_TEST_FREQ="$2"; shift 2;;
+		--bc-test-secs) BC_TEST_SECS="$2"; shift 2;;
 		-h|--help) usage;;
 		*) echo "unknown option: $1" >&2; usage;;
 	esac
@@ -493,7 +506,7 @@ hdr "2c. Audio backchannel (optional)"
 # Uses bc-send.py (same dir): DESCRIBE+Require -> SETUP trackID=2 -> PLAY, then
 # streams a short PCMU tone to the camera speaker. Optional feature, so a
 # missing/disabled backchannel is info, not FAIL. With --ssh we also confirm
-# timps actually received it (opened the /bin/iac pipe).
+# timps actually received it (acquired the speaker / native IMP_AO).
 bcpy="$(dirname "$0")/bc-send.py"
 bclog="$OUTDIR/backchannel.log"
 if ! have python3; then
@@ -506,17 +519,88 @@ elif python3 "$bcpy" --host "$CAM" --port "$RTSP_PORT" --path "$PATH_MAIN" \
 	ok "backchannel handshake ok (SDP trackID=2, SETUP+PLAY) - sent 2s ${bcname:-PCMU} tone"
 	if [ -n "$SSH_TARGET" ]; then
 		if sshx "logread 2>/dev/null | grep -q 'speaker owner acquired'"; then
-			ok "camera received backchannel audio (speaker owner acquired / iac pipe opened)"
+			ok "camera received backchannel audio (speaker owner acquired, native IMP_AO)"
 		else
 			warn "tone sent but no 'speaker owner acquired' in logread - not confirmed received"
 		fi
 	else
-		info "  pass --ssh root@$CAM to confirm the camera opened the /bin/iac pipe"
+		info "  pass --ssh root@$CAM to confirm the camera acquired the speaker (IMP_AO)"
 	fi
 elif grep -q "no backchannel" "$bclog"; then
-	info "no backchannel advertised (audio.backchannel off / not built / no iac) - optional"
+	info "no backchannel advertised (audio.backchannel off / not built) - optional"
 else
 	warn "backchannel handshake failed (see $bclog)"
+fi
+
+fi
+if [ "$TEST_BACKCHANNEL" = "1" ]; then
+# --- 2d. Backchannel acoustic loopback (opt-in: --test-backchannel) ----------
+hdr "2d. Backchannel acoustic loopback (optional)"
+# End-to-end check WITHOUT a human listening: drive a clean sine into the camera
+# speaker over the backchannel; because the speaker and mic share one enclosure,
+# the tone should couple acoustically into timps' own outgoing audio. We record
+# that outgoing audio and measure band energy at the tone frequency vs a control
+# band - a clear excess means the loop closed (speaker played + mic heard it).
+#
+# This depends on PHYSICAL acoustics (mic/speaker proximity, playback volume,
+# ambient noise), so it is far less deterministic than the digital checks and is
+# therefore OFF by default and never part of quick/standard/load/soak. A FAIL
+# here can be environmental (too quiet, muted amp) rather than a code defect.
+bcpy="$(dirname "$0")/bc-send.py"
+rec="$OUTDIR/bc_loopback.wav"
+sendlog="$OUTDIR/bc_loopback_send.log"
+reclog="$OUTDIR/bc_loopback_rec.log"
+aurl="$(rtsp_url "$PATH_MAIN")"
+F="$BC_TEST_FREQ"
+CTRL=$(awk -v f="$F" 'BEGIN{print (f>=2500)? f-1200 : f+1500}')   # a quiet control band
+DUR="$BC_TEST_SECS"
+
+# ffmpeg mean level (dBFS, negative) of a narrow band around <freq> in <file>
+band_db() {
+	ffmpeg -nostdin -hide_banner -loglevel info -i "$1" \
+		-af "bandpass=f=$2:width_type=h:w=140,volumedetect" -f null - 2>&1 \
+		| grep -oE 'mean_volume: *-?[0-9.]+ dB' | grep -oE '\-?[0-9.]+' | head -1
+}
+
+if ! have python3; then skip "acoustic loopback: needs python3"
+elif [ ! -f "$bcpy" ]; then skip "acoustic loopback: scripts/bc-send.py not found"
+elif ! have ffmpeg; then skip "acoustic loopback: needs ffmpeg"
+elif [ -z "$(ffprobe -v error -rtsp_transport "$RTSP_TRANSPORT" -select_streams a:0 \
+		-show_entries stream=codec_name -of csv=p=0 "$aurl" 2>/dev/null)" ]; then
+	warn "acoustic loopback: no outgoing audio stream on $PATH_MAIN (enable mic codec + restart)"
+else
+	info "tone=${F}Hz control=${CTRL}Hz dur=${DUR}s - recording outgoing audio while playing"
+	# record the mic (outgoing) audio, forced mono/16k, for the tone window + margin
+	timeout -k 5 "$((DUR+6))" ffmpeg -hide_banner -nostdin -y -loglevel warning \
+		-rtsp_transport "$RTSP_TRANSPORT" -i "$aurl" -t "$((DUR+2))" \
+		-map a:0 -ac 1 -ar 16000 "$rec" </dev/null >"$reclog" 2>&1 &
+	recpid=$!
+	sleep 1   # let the recording establish before the tone starts
+	python3 "$bcpy" --host "$CAM" --port "$RTSP_PORT" --path "$PATH_MAIN" \
+		--user "$RTSP_USER" --pw "$RTSP_PASS" --freq "$F" --secs "$DUR" \
+		> "$sendlog" 2>&1 || true
+	wait "$recpid" 2>/dev/null || true
+
+	if [ ! -s "$rec" ]; then
+		warn "acoustic loopback: no audio captured (see $reclog) - inconclusive"
+	elif grep -q "no backchannel" "$sendlog"; then
+		info "acoustic loopback: backchannel not advertised - skipped"
+	else
+		et=$(band_db "$rec" "$F"); ec=$(band_db "$rec" "$CTRL")
+		if [ -z "$et" ] || [ -z "$ec" ]; then
+			warn "acoustic loopback: could not measure band energy (see $reclog)"
+		else
+			delta=$(awk -v a="$et" -v b="$ec" 'BEGIN{printf "%.1f", a-b}')
+			info "tone-band ${et}dB, control-band ${ec}dB, delta ${delta}dB"
+			if fcmp "$delta" ge 12; then
+				ok "acoustic loopback: tone clearly detected in mic (delta ${delta}dB >= 12) - speaker+mic loop verified"
+			elif fcmp "$delta" ge 5; then
+				warn "acoustic loopback: tone weakly present (delta ${delta}dB) - raise volume / quieter room to confirm"
+			else
+				bad "acoustic loopback: tone NOT detected (delta ${delta}dB < 5) - speaker silent, muted, or too quiet (env-dependent)"
+			fi
+		fi
+	fi
 fi
 
 fi
