@@ -2617,13 +2617,24 @@ int hal_ao_write(const int16_t *pcm, int nsamp)
     return 0;
 }
 
-void hal_ao_close(void)
+void hal_ao_close(int drain)
 {
     if (!g_ao_up) return;
-    /* ClearChnBuf (discard) not Flush (drain): close is also the preempt path
-     * where backchannel must take the speaker immediately - a half-second of
-     * queued play tail must not delay it. */
-    IMP_AO_ClearChnBuf(0, 0);
+    if (drain){
+        /* IMP_AO_SendFrame(BLOCK) only waits for ring-buffer space, not for
+         * the audio to actually reach the DAC, so up to a full ring buffer
+         * (MS_AI_FRM_NUM periods) can still be queued when the last write
+         * returns. Sleep that out instead of clearing it, so a clip's tail
+         * isn't cut off on normal end-of-file close. */
+        int per_ms = g_ao_npf > 0 && g_ao_rate > 0
+                   ? (g_ao_npf * 1000) / g_ao_rate : 40;
+        usleep((useconds_t)per_ms * MS_AI_FRM_NUM * 1000);
+    } else {
+        /* ClearChnBuf (discard): the preempt/stop path, where backchannel
+         * must take the speaker immediately - a queued play tail must not
+         * delay it. */
+        IMP_AO_ClearChnBuf(0, 0);
+    }
     IMP_AO_DisableChn(0, 0);
     IMP_AO_Disable(0);
     g_ao_up = 0; g_ao_rate = 0; g_ao_npf = 0;
