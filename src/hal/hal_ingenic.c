@@ -2539,6 +2539,7 @@ int hal_isp_ae_luma(uint32_t *luma)
  * mono too); everything upstream resamples to the rate we report from open. */
 static int g_ao_up   = 0;
 static int g_ao_rate = 0;
+static int g_ao_npf  = 0;   /* samples per SendFrame period (numPerFrm the AO was opened with) */
 
 static int ao_rate_enum(int sr)
 {
@@ -2584,7 +2585,7 @@ int hal_ao_open(int want_rate)
         rate = sr; ok = 1;
     }
     if (!ok){ LOGE(MOD, "audio output (speaker) unavailable"); return -1; }
-    g_ao_up = 1; g_ao_rate = rate;
+    g_ao_up = 1; g_ao_rate = rate; g_ao_npf = rate * 40 / 1000;
     LOGI(MOD, "speaker (IMP_AO) up: %dHz mono", rate);
     return rate;
 }
@@ -2592,16 +2593,26 @@ int hal_ao_open(int want_rate)
 int hal_ao_write(const int16_t *pcm, int nsamp)
 {
     if (!g_ao_up || nsamp <= 0) return -1;
-    IMPAudioFrame frm; memset(&frm, 0, sizeof frm);
-    frm.bitwidth  = AUDIO_BIT_WIDTH_16;
-    frm.soundmode = AUDIO_SOUND_MODE_MONO;
-    frm.virAddr   = (uint32_t*)pcm;              /* AO reads, never writes */
-    frm.len       = nsamp * (int)sizeof(int16_t);
-    /* BLOCK: the AO's ring buffer backpressure is our playback clock, so a
-     * producer that outruns real time is throttled here instead of overrunning. */
-    if (IMP_AO_SendFrame(0, 0, &frm, BLOCK) != 0){
-        LOGW(MOD, "IMP_AO_SendFrame failed");
-        return -1;
+    /* Send in numPerFrm-sized periods: IMP_AO_SendFrame rejects a frame larger
+     * than the channel's configured period (and a whole play-decode block,
+     * e.g. 8192 samples resampled from a 4096-sample 8k mu-law read, dwarfs it).
+     * Backchannel already delivers sub-period chunks, so it sends as one pass. */
+    int npf = g_ao_npf > 0 ? g_ao_npf : nsamp;
+    for (int off = 0; off < nsamp; ){
+        int chunk = nsamp - off;
+        if (chunk > npf) chunk = npf;
+        IMPAudioFrame frm; memset(&frm, 0, sizeof frm);
+        frm.bitwidth  = AUDIO_BIT_WIDTH_16;
+        frm.soundmode = AUDIO_SOUND_MODE_MONO;
+        frm.virAddr   = (uint32_t*)(pcm + off);      /* AO reads, never writes */
+        frm.len       = chunk * (int)sizeof(int16_t);
+        /* BLOCK: the AO's ring buffer backpressure is our playback clock, so a
+         * producer that outruns real time is throttled here instead of overrunning. */
+        if (IMP_AO_SendFrame(0, 0, &frm, BLOCK) != 0){
+            LOGW(MOD, "IMP_AO_SendFrame failed");
+            return -1;
+        }
+        off += chunk;
     }
     return 0;
 }
@@ -2615,7 +2626,7 @@ void hal_ao_close(void)
     IMP_AO_ClearChnBuf(0, 0);
     IMP_AO_DisableChn(0, 0);
     IMP_AO_Disable(0);
-    g_ao_up = 0; g_ao_rate = 0;
+    g_ao_up = 0; g_ao_rate = 0; g_ao_npf = 0;
     LOGI(MOD, "speaker (IMP_AO) down");
 }
 
