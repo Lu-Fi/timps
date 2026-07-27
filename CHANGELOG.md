@@ -6,17 +6,89 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.6.0] - 2026-07-27
+
+### Added
+- **Native speaker output (`IMP_AO`) — timps now owns the camera speaker
+  directly, no more `/bin/iac`.** New `src/rtsp/speaker.c` is the sole
+  `IMP_AO` owner and arbitrates two producers: the ONVIF **backchannel**
+  (live RTP → PCM, always preempts) and a **system-sound play queue**
+  driven by a FIFO at `/run/timps/audio_out` taking `PLAY url=<path>
+  [vol= gain= rate= format= loop= delay=]` / `STOP` lines — the same
+  protocol prudynt/raptor's `/usr/sbin/play` wrapper already speaks, so
+  the WiFi captive-portal prompts, the post-upgrade chime and the ESPHome
+  `media_player`/TTS integration all get a working speaker on a timps
+  image for free. The play queue decodes Ogg-Opus (`opusfile`, gated on
+  new `USE_PLAY_OPUS` like `USE_BC_AAC` gates the AAC backchannel), WAV,
+  raw PCM16 and G.711 µ/A-law. New `USE_PLAY`/`USE_PLAY_OPUS` build flags
+  (off by default; `USE_BACKCHANNEL` no longer needs `/bin/iac` present at
+  all — `bc_available()` is always true once built in). New
+  `hal_ao_open/write/close/set_vol/set_gain` in the HAL mirror the
+  existing `IMP_AI` bring-up (rate-fallback loop, lazy open/close); a new
+  `src/codec/resample.c` (extracted from `backchannel.c`) is shared by
+  both producers.
+- **Live speaker volume/gain + WebUI-driven system-sound play.**
+  `audio.spk_volume`/`spk_gain` were parsed and persisted but never
+  actually reached the hardware before; now every `IMP_AO` open applies
+  them, and `POST /control {"audio":{"spk_volume":..,"spk_gain":..}}`
+  writes through live (`caps.audio` gains the two keys, gated on an AO
+  pipeline being compiled in). `GET /control` gains
+  `caps.play={available,sounds:[...]}`, enumerated from
+  `/usr/share/sounds` (`.wav` always listed since the µ-law/PCM decoder
+  needs no library; `.opus` only when `USE_PLAY_OPUS` is actually built,
+  so the list never offers a file this exact build can't decode).
+  `POST {"speaker":{"play":"<file>"}}` / `{"stop":1}` enqueues on the FIFO
+  after validating the name against that directory (rejects `/`, `..`,
+  non-regular files) — this is what drives the thingino WebUI's
+  test-sound dropdown and live speaker volume slider.
+- **Day/night: time-window and sunrise/sunset override modes.** The
+  native detector could previously only decide from the ISP sensor
+  (`total_gain`/brightness). `daynight.mode` (`sensor`/`time`/`sun`, a
+  string token) adds two sensor-independent modes: **`time`** forces by
+  the local wall clock — a fixed `[time_night_start .. time_day_start]`
+  `"HH:MM"` window, wrapping past midnight (e.g. night 20:00, day 06:30).
+  **`sun`** forces by today's real sunrise/sunset for
+  `sun_latitude`/`sun_longitude` via the standard low-precision sunrise
+  equation (pure math, UTC epoch throughout), each edge shiftable by
+  `sun_sunrise_offset_min`/`sun_sunset_offset_min` (negative allowed);
+  polar day/night degenerate cases fall back to permanent day/night
+  instead of NaN. `sensor` stays the default and its gain/brightness
+  branch is untouched; `time`/`sun` reuse the existing switch + minimum-
+  dwell machinery, and `daynight.enabled=0` (manual) still suppresses
+  forcing in all three modes. `GET /control` exposes the new config
+  fields plus today's computed sunrise/sunset (`sun_computed_sunrise`/
+  `sunset`, local `"HH:MM"`) so a UI can sanity-check the configured
+  lat/long before trusting it.
+- **T31(L) `nrVBs` buffer-count override** (`video.buffers`, raptor-style):
+  the T31 non-scaled-channel safety clamp (see Fixed below) now only
+  applies to the *default* buffer count — an explicit `buffers=` in
+  `timps.conf` is trusted as-is (with a warning, since a bad value fails
+  silently down in the kernel/dmesg), letting a board/sensor combination
+  that doesn't hit the constraint opt out without patching code.
+
 ### Fixed
-- **Play-file tail no longer cut short (~0.5 s) on normal end-of-clip.** The
-  end-of-file drain in `hal_ao_close(drain=1)` slept for a fixed
-  `MS_AI_FRM_NUM`-period ring's worth (~0.24 s), but the IMP AO keeps its own
-  playback cache on top of that ring, so ~0.7 s could still be queued when the
-  last `IMP_AO_SendFrame` returned — the fixed sleep therefore closed the
-  channel ~0.5 s early and lopped the tail off system sounds (e.g. "Configuration
-  portal is down" stopped after "portal"). Now uses `IMP_AO_FlushChnBuf`, the
-  SDK's "wait for the last segment to finish playing" primitive, which blocks
-  until the whole cache has actually reached the DAC regardless of depth.
-  Verified acoustically via RTSP mic loopback across clips of 0.6/2.5/2.7 s.
+- **Play-file tail no longer cut short on normal end-of-clip.** Two
+  layered bugs, both in `hal_ao_close()`'s drain path: (1) it
+  unconditionally discarded the AO ring buffer (`IMP_AO_ClearChnBuf`) on
+  every close, including a clip finishing normally, not just on
+  stop/preempt — a `drain` flag now distinguishes the two, discarding
+  immediately only on stop/preempt/backchannel-takeover. (2) the drain
+  path's fixed sleep (one `MS_AI_FRM_NUM`-period ring's worth, ~0.24 s)
+  assumed that was the whole story, but the IMP AO keeps its own
+  playback cache on top of that ring — the real residual is ~0.7 s, so
+  the fixed sleep still closed the channel ~0.5 s early (e.g.
+  "Configuration portal is down" stopped after "portal"). Now uses
+  `IMP_AO_FlushChnBuf`, the SDK's "wait for the last segment to finish
+  playing" primitive, which blocks until the whole cache has actually
+  reached the DAC regardless of depth. Verified acoustically via RTSP
+  mic loopback across clips from 0.6 s to 2.7 s, before/after audible
+  span matched against each source clip's real content window.
+- **T31(L) `nrVBs=1` clamp scoped to `PLATFORM_T31` only.** The non-
+  scaled-channel buffer-count safety clamp in `fs_create()` (shared
+  across every SoC family) fired for any chip's channel requesting >1
+  buffer at native sensor resolution, but the kernel constraint requiring
+  it was only ever observed on T31(L) — T10/T20/T21/T23/T30/T40/T41/C100
+  now keep their untouched 2-buffer default.
 
 ## [1.5.0] - 2026-07-26
 
