@@ -169,6 +169,94 @@ static void dn_switch(int mode, const char *why)
         LOGW(MOD, "'%s %s' failed (rc=%d) - is the script installed?", cmd, arg, rc);
 }
 
+/* ------------------------------------------------------------------ *
+ * Non-sensor decision modes (DN_MODE_TIME / DN_MODE_SUN). Both return
+ * DN_DAY / DN_NIGHT / DN_UNKNOWN and feed the SAME switch machinery as the
+ * sensor mode (dwell guard included). enabled=0 short-circuits before any of
+ * this, so manual mode still forces nothing regardless of mode.             */
+
+/* parse "HH:MM" -> minutes since local midnight [0..1439], or -1 if unset/bad */
+static int dn_hhmm_min(const char *s)
+{
+    if (!s || !s[0]) return -1;
+    int h = -1, m = -1;
+    if (sscanf(s, "%d:%d", &h, &m) != 2) return -1;
+    if (h < 0 || h > 23 || m < 0 || m > 59) return -1;
+    return h * 60 + m;
+}
+
+/* DN_MODE_TIME: force by the local wall clock. Night runs from hhmm_night
+ * until hhmm_day; the window may wrap past midnight (night 20:00, day 06:30 =>
+ * night start > day start). Both edges must be set, else DN_UNKNOWN. */
+static int dn_time_target(const char *hhmm_night, const char *hhmm_day,
+                          const struct tm *now)
+{
+    int n = dn_hhmm_min(hhmm_night);
+    int d = dn_hhmm_min(hhmm_day);
+    if (n < 0 || d < 0 || n == d) return DN_UNKNOWN;
+    int cur = now->tm_hour * 60 + now->tm_min;
+    int is_night;
+    if (n > d)                          /* wraps midnight: [n..24) U [0..d) */
+        is_night = (cur >= n || cur < d);
+    else                                /* same day window: [n..d)          */
+        is_night = (cur >= n && cur < d);
+    return is_night ? DN_NIGHT : DN_DAY;
+}
+
+/* Today's sunrise/sunset for lat/lon as epoch time_t (UTC), via the standard
+ * low-precision "sunrise equation" (NOAA/Meeus). Everything stays in one time
+ * base (epoch seconds); gmtime_r is used ONLY to locate the UTC calendar day
+ * of `now` (floored to UTC midnight - a few minutes of skew right at UTC
+ * midnight is acceptable for light scheduling). Returns 0 with sr_out/ss_out set on
+ * a normal day, +1 for polar day (sun never sets), -1 for polar night (sun
+ * never rises) - degenerate cases fall back sanely instead of NaN. */
+static int dn_sun_times(float lat, float lon, time_t now,
+                        time_t *sr_out, time_t *ss_out)
+{
+    struct tm g;
+    gmtime_r(&now, &g);
+    /* floor to UTC midnight without timegm(): subtract the UTC time-of-day */
+    time_t midnight = now - (g.tm_hour * 3600 + g.tm_min * 60 + g.tm_sec);
+
+    const double D2R = M_PI / 180.0, R2D = 180.0 / M_PI;
+    /* Julian date at that UTC midnight (JD at Unix epoch = 2440587.5) */
+    double jd_mid = 2440587.5 + (double)midnight / 86400.0;
+    /* integer day count since J2000, corrected toward the day's solar transit */
+    double n = floor(jd_mid - 2451545.0 + 0.0008 + 0.5);
+    double Jstar = n - lon / 360.0;                    /* lon east-positive */
+    double M  = fmod(357.5291 + 0.98560028 * Jstar, 360.0); if (M < 0) M += 360;
+    double Mr = M * D2R;
+    double C  = 1.9148 * sin(Mr) + 0.0200 * sin(2 * Mr) + 0.0003 * sin(3 * Mr);
+    double lambda = fmod(M + C + 180.0 + 102.9372, 360.0); if (lambda < 0) lambda += 360;
+    double lr = lambda * D2R;
+    double Jtransit = 2451545.0 + Jstar + 0.0053 * sin(Mr) - 0.0069 * sin(2 * lr);
+    double decl = asin(sin(lr) * sin(23.44 * D2R));    /* solar declination */
+    double latr = lat * D2R;
+    /* hour angle at the standard -0.833 deg sunrise/sunset altitude */
+    double cosw = (sin(-0.833 * D2R) - sin(latr) * sin(decl)) /
+                  (cos(latr) * cos(decl));
+    if (cosw < -1.0) return +1;        /* sun always up  -> permanent day   */
+    if (cosw >  1.0) return -1;        /* sun always down -> permanent night */
+    double w0 = acos(cosw) * R2D;      /* degrees */
+    double jrise = Jtransit - w0 / 360.0;
+    double jset  = Jtransit + w0 / 360.0;
+    if (sr_out) *sr_out = (time_t)((jrise - 2440587.5) * 86400.0 + 0.5);
+    if (ss_out) *ss_out = (time_t)((jset  - 2440587.5) * 86400.0 + 0.5);
+    return 0;
+}
+
+/* DN_MODE_SUN: day between (sunrise+off) and (sunset+off), else night. */
+static int dn_sun_target(const ms_daynight_cfg *dn, time_t now)
+{
+    time_t sr, ss;
+    int r = dn_sun_times(dn->sun_latitude, dn->sun_longitude, now, &sr, &ss);
+    if (r > 0) return DN_DAY;          /* polar day   */
+    if (r < 0) return DN_NIGHT;        /* polar night */
+    sr += (time_t)dn->sun_sunrise_offset_min * 60;
+    ss += (time_t)dn->sun_sunset_offset_min  * 60;
+    return (now >= sr && now < ss) ? DN_DAY : DN_NIGHT;
+}
+
 /* sleep interval_ms in small slices so daynight_stop() joins promptly */
 static void dn_sleep(int ms)
 {
@@ -196,6 +284,14 @@ static void *dn_thread(void *arg)
 
     for (int i = 0; i < DN_SAMPLES; i++) hist[i] = 50.0f;  /* neutral start */
 
+    { int m = g_cfg.daynight.mode;
+      const char *ms = m==DN_MODE_TIME ? "time" : m==DN_MODE_SUN ? "sun" : "sensor";
+      LOGI(MOD, "detection thread started (mode=%s, time night=%s day=%s, "
+                "sun lat=%g lon=%g off rise=%d set=%d min)",
+           ms, g_cfg.daynight.time_night_start[0]?g_cfg.daynight.time_night_start:"-",
+           g_cfg.daynight.time_day_start[0]?g_cfg.daynight.time_day_start:"-",
+           (double)g_cfg.daynight.sun_latitude, (double)g_cfg.daynight.sun_longitude,
+           g_cfg.daynight.sun_sunrise_offset_min, g_cfg.daynight.sun_sunset_offset_min); }
     LOGI(MOD, "detection thread started (gain day<%g night>%g, "
               "brightness fallback %.1f/%.1f hyst %.2f, "
               "interval %dms, dwell %ds, isp=%s, cmd=%s)",
@@ -238,7 +334,10 @@ static void *dn_thread(void *arg)
             LOGI(MOD, "auto day/night enabled");
         }
 
-        if (b < 0.0f && tg < 0.0f) {    /* no ISP (sim/host): skip silently */
+        if (dn->mode == DN_MODE_SENSOR && b < 0.0f && tg < 0.0f) {
+                                        /* no ISP (sim/host): skip silently.
+                                         * time/sun modes don't need the ISP,
+                                         * so only the sensor path idles here. */
             if (!warned_noisp) {
                 LOGD(MOD, "%s not readable, detection idle", dn->isp_path);
                 warned_noisp = 1;
@@ -251,7 +350,18 @@ static void *dn_thread(void *arg)
 
         int  target = cur;
         char why[64];
-        if (tg >= 0.0f) {
+        if (dn->mode == DN_MODE_TIME) {
+            /* fixed local-clock window (localtime_r: this IS the user's wall
+             * clock). Reuses the same switch/dwell machinery below. */
+            time_t now = time(NULL); struct tm lt; localtime_r(&now, &lt);
+            target = dn_time_target(dn->time_night_start, dn->time_day_start, &lt);
+            snprintf(why, sizeof why, "clock %02d:%02d", lt.tm_hour, lt.tm_min);
+        } else if (dn->mode == DN_MODE_SUN) {
+            /* today's real sunrise/sunset (+offsets) for the configured location */
+            time_t now = time(NULL);
+            target = dn_sun_target(dn, now);
+            snprintf(why, sizeof why, "sun schedule");
+        } else if (tg >= 0.0f) {
             /* PRIMARY: total_gain, prudynt/raptor semantics. INVERTED vs
              * brightness: high gain = dark = night. The day..night threshold
              * gap (300..3000 by default) is the hysteresis dead-zone, so no
@@ -373,6 +483,26 @@ void daynight_get_status(int *enabled, int *mode,
     if (ae_luma)    *ae_luma    = lu;
 }
 
+/* see daynight.h: today's computed sunrise/sunset for the configured
+ * lat/long+offsets, as local "HH:MM" strings (for the WebUI SUN readout). */
+int daynight_sun_status(char *sr_hhmm, char *ss_hhmm, size_t cap)
+{
+    const ms_daynight_cfg *dn = &g_cfg.daynight;
+    time_t now = time(NULL), sr, ss;
+    int r = dn_sun_times(dn->sun_latitude, dn->sun_longitude, now, &sr, &ss);
+    if (r != 0) {                       /* polar day/night: no rise/set today */
+        if (sr_hhmm && cap) snprintf(sr_hhmm, cap, "%s", r > 0 ? "--:--" : "--:--");
+        if (ss_hhmm && cap) snprintf(ss_hhmm, cap, "%s", "--:--");
+        return 0;
+    }
+    sr += (time_t)dn->sun_sunrise_offset_min * 60;
+    ss += (time_t)dn->sun_sunset_offset_min  * 60;
+    struct tm lt;
+    if (sr_hhmm && cap) { localtime_r(&sr, &lt); snprintf(sr_hhmm, cap, "%02d:%02d", lt.tm_hour, lt.tm_min); }
+    if (ss_hhmm && cap) { localtime_r(&ss, &lt); snprintf(ss_hhmm, cap, "%02d:%02d", lt.tm_hour, lt.tm_min); }
+    return 1;
+}
+
 #else /* !USE_DAYNIGHT */
 
 /* stub so control.c always links: no detection thread -> auto is off, no
@@ -386,6 +516,13 @@ void daynight_get_status(int *enabled, int *mode,
     if (brightness) *brightness = -1.0f;
     if (total_gain) *total_gain = -1.0f;
     if (ae_luma)    *ae_luma    = -1.0f;
+}
+
+int daynight_sun_status(char *sr_hhmm, char *ss_hhmm, size_t cap)
+{
+    if (sr_hhmm && cap) snprintf(sr_hhmm, cap, "%s", "--:--");
+    if (ss_hhmm && cap) snprintf(ss_hhmm, cap, "%s", "--:--");
+    return 0;
 }
 
 #endif /* USE_DAYNIGHT */
