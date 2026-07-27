@@ -17,6 +17,7 @@
 #include "../rotate_caps.h"   /* ms_vstream_eff_dims (post-rotation dims) */
 #include "imp_osd.h"
 #include "imp_motion.h"
+#include "../rtsp/speaker.h"   /* speaker_set_volume/gain (spk_* live apply) */
 #ifdef ROT_HAS_SW_90
 /* Batch 5 (T23 + USE_SW_ROTATE=1 only): software 90/270 rotate + unbound
  * IMP_Encoder_Yuv* encode + software OSD compositing. Everything below that
@@ -1695,8 +1696,8 @@ static int ai_rate_enum(int sr)
  * NOT here either: codec/samplerate/bitrate/channels/force_stereo/enabled are
  * init-time attributes, persist-only, applied on the next restart (channels=2/
  * force_stereo = simulated dual-mono stereo, read by audio_thread at init).
- * The spk_* speaker keys are parsed/persisted but IGNORED outright - timps
- * has no AO pipeline, so they cannot take effect even after a restart. */
+ * The spk_* speaker keys are not handled here (they drive the AO, not the AI):
+ * ing_control routes them to speaker_set_volume/gain directly. */
 static int ai_apply_key(const char *k)
 {
     const ms_audio_cfg *a = &g_hcfg->audio;
@@ -2050,12 +2051,19 @@ static void ing_control(const char *key, const char *val)
 
     if (!strncmp(key,"audio.",6)){
         const char *k = key+6;
-        /* speaker keys: timps has no audio-output (AO) pipeline at all, so
-         * spk_* can never take effect - not even after a restart. They are
-         * still parsed/persisted (harmless, keeps the WebUI round-trip
-         * intact), but say so honestly instead of promising a restart-apply. */
+        /* speaker keys: spk_volume/spk_gain are live AO parameter writes -
+         * applied now if a play/backchannel session holds the speaker, and
+         * re-applied from the config at every AO open (speaker.c ao_ensure),
+         * so they also become the default for the next session. spk_enabled is
+         * config-only. Without an AO pipeline compiled in they just persist. */
         if (!strncmp(k,"spk_",4)){
-            LOGW(MOD,"audio.%s: timps has no speaker/AO pipeline - ignored", k);
+#if defined(USE_BACKCHANNEL) || defined(USE_PLAY)
+            if      (!strcmp(k,"spk_volume")) speaker_set_volume(g_hcfg->audio.spk_volume);
+            else if (!strcmp(k,"spk_gain"))   speaker_set_gain(g_hcfg->audio.spk_gain);
+            LOGI(MOD,"control %s=%d", key, v);
+#else
+            LOGD(MOD,"audio.%s persisted (no speaker/AO in this build)", k);
+#endif
             return;
         }
         /* persist-only keys (take effect on restart): encoder/SetPubAttr-level
@@ -2618,6 +2626,7 @@ void hal_ao_set_vol(int vol)
      * 60 = unity): 0 -> mute, 100 -> +30 dB. */
     int v = (vol <= 0) ? -30 : (vol >= 100) ? 120 : -30 + (int)(vol * 1.5);
     IMP_AO_SetVol(0, 0, v);
+    LOGI(MOD, "IMP_AO_SetVol %d (spk_volume=%d)", v, vol);
 }
 
 void hal_ao_set_gain(int gain)
@@ -2626,6 +2635,7 @@ void hal_ao_set_gain(int gain)
     if (gain < 0) gain = 0;
     if (gain > 31) gain = 31;
     IMP_AO_SetGain(0, 0, gain);
+    LOGI(MOD, "IMP_AO_SetGain %d", gain);
 }
 #endif /* USE_BACKCHANNEL || USE_PLAY */
 #endif /* HAL_INGENIC */

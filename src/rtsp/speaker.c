@@ -4,6 +4,7 @@
 #include "../hal/hal.h"
 #include "../codec/resample.h"
 #include "../codec/g711.h"
+#include "../config.h"
 #include "../log.h"
 
 #include <stdio.h>
@@ -47,6 +48,10 @@ static int ao_ensure(void)
     int r = hal_ao_open(g_out_rate);
     if (r < 0) return -1;
     g_ao_rate = r; g_ao_open = 1;
+    /* global default; a per-PLAY vol=/gain= overrides it after ownership is
+     * taken (play_write), backchannel keeps it. */
+    hal_ao_set_vol(g_cfg.audio.spk_volume);
+    hal_ao_set_gain(g_cfg.audio.spk_gain);
     return 0;
 }
 /* caller holds g_lock */
@@ -90,6 +95,20 @@ void speaker_release(const void *owner)
         ao_drop();
         LOGI(MOD, "speaker owner released (backchannel)");
     }
+    pthread_mutex_unlock(&g_lock);
+}
+
+void speaker_set_volume(int vol)
+{
+    pthread_mutex_lock(&g_lock);
+    if (g_ao_open) hal_ao_set_vol(vol);
+    pthread_mutex_unlock(&g_lock);
+}
+
+void speaker_set_gain(int gain)
+{
+    pthread_mutex_lock(&g_lock);
+    if (g_ao_open) hal_ao_set_gain(gain);
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -452,6 +471,22 @@ void speaker_stop(void)
     if (g_fifo_fd >= 0){ close(g_fifo_fd); g_fifo_fd = -1; }
     unlink(SPK_FIFO);
     g_play_started = 0;
+}
+
+int speaker_play_line(const char *line)
+{
+    if (!line || !line[0]) return -1;
+    /* the reader holds the FIFO O_RDWR, so this write side never blocks on a
+     * missing reader; one line stays under PIPE_BUF, so the write is atomic. */
+    int fd = open(SPK_FIFO, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) return -1;
+    char b[600];
+    int n = snprintf(b, sizeof b, "%s\n", line);
+    if (n < 0){ close(fd); return -1; }
+    if (n > (int)sizeof b) n = (int)sizeof b;
+    ssize_t w = write(fd, b, (size_t)n);
+    close(fd);
+    return (w == n) ? 0 : -1;
 }
 
 #endif /* USE_PLAY */
