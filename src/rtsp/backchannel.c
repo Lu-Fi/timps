@@ -1,6 +1,7 @@
 /* backchannel.c - see backchannel.h. Compiled only when USE_BACKCHANNEL. */
 #ifdef USE_BACKCHANNEL
 #include "backchannel.h"
+#include "speaker.h"
 #include "../log.h"
 #include "../codec/g711.h"
 
@@ -8,8 +9,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <fcntl.h>
-#include <errno.h>
 #include <pthread.h>
 
 #ifdef USE_BC_AAC
@@ -17,19 +16,19 @@
 #endif
 
 #define MOD "bc"
-#define BC_PIPE_BUF 4096         /* Linux PIPE_BUF: writes <= this are atomic */
 
-/* -------- config + shared speaker state ---------------------------------- */
+/* -------- config + backchannel session election -------------------------- */
+/* g_lock/g_owner elect ONE backchannel session as the RTP->PCM decoder (other
+ * sessions' frames are dropped until it releases); that session then hands the
+ * decoded PCM to speaker.c, which arbitrates the physical speaker (IMP_AO)
+ * between backchannel and the play queue. */
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
-static const void *g_owner   = NULL;   /* session that owns the speaker */
-static FILE       *g_pipe    = NULL;   /* popen("/bin/iac -s","w") */
-static int         g_pipe_fd = -1;
+static const void *g_owner   = NULL;   /* backchannel session that owns decode */
 static int         g_codec   = BC_CODEC_PCMU;
 static int         g_out_rate = 16000;
 
-/* scratch buffers - only ever touched under g_lock */
+/* scratch buffer - only ever touched by the elected owner under g_lock */
 static int16_t g_pcm[8192];     /* decoded PCM (mono) */
-static int16_t g_rs[16384];     /* resampled PCM */
 
 #ifdef USE_BC_AAC
 static HAACDecoder g_aac = NULL;
@@ -51,7 +50,11 @@ void bc_configure(int codec, int out_rate)
 
 int bc_available(void)
 {
-    return access("/bin/iac", X_OK) == 0;
+    /* Native IMP_AO now: the feature is available whenever it is compiled in
+     * (no external /bin/iac dependency). The AO device itself is opened lazily
+     * on the first frame; a bring-up failure there just yields silence, same as
+     * a busy speaker did before. */
+    return 1;
 }
 
 int bc_payload_type(void)
@@ -65,72 +68,6 @@ const char *bc_rtpmap_name(void)
 int bc_clock_rate(void)
 {
     return (g_codec == BC_CODEC_AAC) ? g_out_rate : 8000;
-}
-
-/* -------- speaker pipe --------------------------------------------------- */
-static int pipe_open(void)   /* caller holds g_lock */
-{
-    if (g_pipe) return 0;
-    g_pipe = popen("/bin/iac -s", "w");
-    if (!g_pipe){ LOGW(MOD,"popen /bin/iac failed: %s", strerror(errno)); g_pipe_fd=-1; return -1; }
-    g_pipe_fd = fileno(g_pipe);
-    if (g_pipe_fd >= 0){
-        int fl = fcntl(g_pipe_fd, F_GETFL, 0);
-        if (fl >= 0) fcntl(g_pipe_fd, F_SETFL, fl | O_NONBLOCK);
-        fcntl(g_pipe_fd, F_SETFD, FD_CLOEXEC);   /* don't leak the pipe to future exec */
-    }
-    LOGI(MOD,"speaker pipe opened (/bin/iac -s, %d Hz)", g_out_rate);
-    return 0;
-}
-static void pipe_close(void)  /* caller holds g_lock */
-{
-    if (g_pipe){ pclose(g_pipe); g_pipe=NULL; g_pipe_fd=-1; LOGI(MOD,"speaker pipe closed"); }
-#ifdef USE_BC_AAC
-    if (g_aac){ AACFreeDecoder(g_aac); g_aac=NULL; }
-#endif
-}
-/* Write PCM16 to the pipe in <=PIPE_BUF chunks. A non-blocking write of
- * <=PIPE_BUF bytes is atomic (all-or-EAGAIN), so we never emit a partial,
- * odd-byte fragment - the 16-bit sample framing to iac can never desync.
- * On a fatal error the pipe is closed AND ownership released so the next
- * frame re-acquires and reopens (else the speaker would stay dead). */
-static void pipe_write(const int16_t *pcm, int nsamp)  /* holds g_lock */
-{
-    if (!g_pipe || g_pipe_fd < 0 || nsamp <= 0) return;
-    const uint8_t *d = (const uint8_t*)pcm;
-    int left = nsamp * (int)sizeof(int16_t);
-    while (left > 0){
-        int chunk = left > BC_PIPE_BUF ? (BC_PIPE_BUF & ~1) : left;   /* keep even */
-        ssize_t w = write(g_pipe_fd, d, (size_t)chunk);
-        if (w == chunk){ d += chunk; left -= chunk; continue; }
-        if (w < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) return; /* clogged: drop rest (even boundary) */
-        if (w < 0){
-            LOGW(MOD,"speaker write failed (%s) - closing pipe, releasing owner", strerror(errno));
-            pipe_close(); g_owner = NULL; return;
-        }
-        return;   /* short atomic write shouldn't happen; drop rest to stay aligned */
-    }
-}
-
-/* linear resample mono int16 src_rate -> g_out_rate into g_rs[]; returns count */
-static int resample(const int16_t *in, int n, int src_rate)
-{
-    int cap = (int)(sizeof g_rs / sizeof g_rs[0]);
-    if (src_rate == g_out_rate || src_rate <= 0){
-        int c = n; if (c > cap) c = cap;
-        memcpy(g_rs, in, (size_t)c*sizeof(int16_t)); return c;
-    }
-    double ratio = (double)g_out_rate / (double)src_rate;
-    int out = (int)(n * ratio);
-    if (out > cap) out = cap;
-    for (int i=0;i<out;i++){
-        double pos = i / ratio;
-        int i0 = (int)pos; if (i0 >= n) i0 = n-1;
-        int i1 = (i0+1 < n) ? i0+1 : i0;
-        double f = pos - i0;
-        g_rs[i] = (int16_t)(in[i0]*(1.0-f) + in[i1]*f);
-    }
-    return out;
 }
 
 /* -------- RTP + decode --------------------------------------------------- */
@@ -198,10 +135,9 @@ static int decode_aac(const uint8_t *pl, int plen, int *out_rate)
 void bc_feed_rtp(const void *owner, const uint8_t *rtp, int len)
 {
     pthread_mutex_lock(&g_lock);
-    if (g_owner == NULL){                 /* first talker becomes owner */
-        if (pipe_open() != 0){ pthread_mutex_unlock(&g_lock); return; }
+    if (g_owner == NULL){                 /* first talker becomes decode owner */
         g_owner = owner;
-        LOGI(MOD,"speaker owner acquired");
+        LOGI(MOD,"backchannel decode owner acquired");
     }
     if (g_owner != owner){ pthread_mutex_unlock(&g_lock); return; }  /* not the owner */
 
@@ -234,22 +170,27 @@ void bc_feed_rtp(const void *owner, const uint8_t *rtp, int len)
             nsamp = plen > cap ? cap : plen;
             g711_ulaw_decode(pl, (size_t)nsamp, g_pcm); src_rate = 8000; break;
     }
-    if (nsamp > 0){
-        int rn = resample(g_pcm, nsamp, src_rate);
-        pipe_write(g_rs, rn);
-    }
     pthread_mutex_unlock(&g_lock);
+    /* Hand the decoded PCM to speaker.c OUTSIDE g_lock: only the elected owner
+     * reaches here and its RTP frames arrive serially (one session = one
+     * thread), so g_pcm is stable across the unlock. speaker.c does the resample
+     * to the AO rate and owns the physical IMP_AO arbitration/preemption. */
+    if (nsamp > 0)
+        speaker_write_pcm(owner, g_pcm, nsamp, src_rate);
 }
 
 void bc_release(const void *owner)
 {
     pthread_mutex_lock(&g_lock);
     if (g_owner == owner){
-        pipe_close();
         g_owner = NULL;
-        LOGI(MOD,"speaker owner released");
+        LOGI(MOD,"backchannel decode owner released");
+#ifdef USE_BC_AAC
+        if (g_aac){ AACFreeDecoder(g_aac); g_aac=NULL; }
+#endif
     }
     pthread_mutex_unlock(&g_lock);
+    speaker_release(owner);
 }
 
 #endif /* USE_BACKCHANNEL */

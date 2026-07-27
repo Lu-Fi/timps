@@ -1,11 +1,9 @@
 /* backchannel.h - ONVIF audio backchannel (client speaks -> camera speaker).
  *
- * Optional feature (USE_BACKCHANNEL). The output path is deliberately HAL-free:
- * received RTP is decoded to PCM16 in pure C (G.711) or via libhelix-aac
- * (USE_BC_AAC), linearly resampled, and piped to thingino's audio daemon client
- * `/bin/iac -s` - exactly like prudynt/raptor. That daemon owns IMP_AO, so timps
- * never opens the speaker device itself (no device-exclusivity conflicts, works
- * the same on every SoC as long as ingenic-audiodaemon is present).
+ * Optional feature (USE_BACKCHANNEL). Received RTP is decoded to PCM16 in pure
+ * C (G.711) or via libhelix-aac (USE_BC_AAC), then handed to speaker.c, which
+ * resamples it and drives IMP_AO directly (see speaker.h). timps now owns the
+ * speaker natively - no external /bin/iac (ingenic-audiodaemon) dependency.
  */
 #ifndef MS_BACKCHANNEL_H
 #define MS_BACKCHANNEL_H
@@ -18,7 +16,8 @@ enum { BC_CODEC_PCMU = 0, BC_CODEC_PCMA = 1, BC_CODEC_AAC = 2 };
 /* Configure the advertised codec + speaker sample rate. Call once at startup. */
 void bc_configure(int codec, int out_rate);
 
-/* 1 if the feature is compiled+enabled AND /bin/iac is present, else 0. */
+/* 1 whenever the feature is compiled in (speaker output is native IMP_AO now,
+ * no external dependency to probe for). */
 int  bc_available(void);
 
 /* SDP helpers for the m=audio backchannel line (trackID=2). */

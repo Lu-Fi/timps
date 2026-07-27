@@ -28,4 +28,26 @@ int hal_isp_total_gain(uint32_t *gain);
  * *luma on success, <0 when unavailable (other SoCs, sim, ISP down). */
 int hal_isp_ae_luma(uint32_t *luma);
 
+#if defined(USE_BACKCHANNEL) || defined(USE_PLAY)
+/* Speaker output (IMP_AO). The HAL is the sole owner of the AO device; speaker.c
+ * (backchannel + play queue) drives these, opening lazily on first use and
+ * closing when idle, mirroring the IMP_AI capture lifecycle. */
+
+/* Bring up AO dev/chn 0 at (or near) want_rate. Returns the sample rate the AO
+ * was actually programmed at (>0, may differ if want_rate was unsupported and a
+ * fallback was used) or -1 on failure. Idempotent while open (returns the live
+ * rate). */
+int  hal_ao_open(int want_rate);
+
+/* Send nsamp mono int16 samples (at the rate hal_ao_open returned). Blocks with
+ * the AO's own buffering as backpressure. Returns 0 on success, <0 on error. */
+int  hal_ao_write(const int16_t *pcm, int nsamp);
+
+/* Tear down AO dev/chn 0. Idempotent (no-op if not open). */
+void hal_ao_close(void);
+
+void hal_ao_set_vol(int vol);    /* IMP_AO_SetVol, clamped to the SDK range */
+void hal_ao_set_gain(int gain);  /* IMP_AO_SetGain, clamped to the SDK range */
+#endif
+
 #endif

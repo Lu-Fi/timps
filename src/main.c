@@ -5,6 +5,7 @@
 #include "hal/hal.h"
 #include "rtsp/rtsp.h"
 #include "rtsp/backchannel.h"
+#include "rtsp/speaker.h"
 #include "mp4/httpd.h"
 #include "record.h"
 #include "timelapse.h"
@@ -126,14 +127,21 @@ int main(int argc, char **argv)
     if (g_hal->init(&g_cfg)!=0){ LOGE(MOD,"HAL init failed"); return 1; }
     if (g_hal->start(&g_cfg)!=0){ LOGE(MOD,"HAL start failed"); return 1; }
 
+#if defined(USE_BACKCHANNEL) || defined(USE_PLAY)
+    {
+        int spk_rate = 16000;   /* default AO rate for a play-only build */
 #ifdef USE_BACKCHANNEL
-    if (g_cfg.audio.backchannel){
-        bc_configure(g_cfg.audio.backchannel_codec, g_cfg.audio.backchannel_rate);
-        if (!bc_available())
-            LOGW(MOD,"audio.backchannel on but /bin/iac missing - backchannel disabled");
-        else
-            LOGI(MOD,"audio backchannel enabled (codec=%d rate=%d)",
+        if (g_cfg.audio.backchannel){
+            bc_configure(g_cfg.audio.backchannel_codec, g_cfg.audio.backchannel_rate);
+            spk_rate = g_cfg.audio.backchannel_rate;
+            LOGI(MOD,"audio backchannel enabled (codec=%d rate=%d, native IMP_AO)",
                  g_cfg.audio.backchannel_codec, g_cfg.audio.backchannel_rate);
+        }
+#endif
+        speaker_configure(spk_rate);
+#ifdef USE_PLAY
+        speaker_start();   /* /run/timps/audio_out play-FIFO thread */
+#endif
     }
 #endif
     rtsp_server *rtsp = NULL;
@@ -161,6 +169,9 @@ int main(int argc, char **argv)
 #endif
     if (rtsp) rtsp_stop(rtsp);
     if (http) httpd_stop(http);
+#ifdef USE_PLAY
+    speaker_stop();
+#endif
     g_hal->stop();
     return 0;
 }
