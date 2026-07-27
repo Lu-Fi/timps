@@ -23,7 +23,12 @@ or libschrift. A lightweight alternative to prudynt / raptor for the
 - **Event push stream** — `GET /events` (SSE): subscribe to `motion` / `daynight` / `stats` instead of polling
 - **Per-stream TrueType OSD** — independent overlay set per stream, placeholders (time, hostname, uptime, fps…), optional text outline/stroke
 - **Grid motion detection** — configurable `IMP_IVS` ROI grid with live per-cell state for a preview overlay
-- **Automatic day/night** — native ISP-brightness detection (replaces thingino's `daynightd`)
+- **Automatic day/night** — native ISP-brightness detection (replaces thingino's `daynightd`), or force by a fixed time window or real sunrise/sunset for a lat/long
+- **Native speaker output** — timps owns `IMP_AO` directly: ONVIF audio backchannel (two-way audio) and a system-sound play queue (WAV/Opus/PCM/G.711), no `/bin/iac` dependency
+- **Local recording** — continuous or motion-triggered fragmented-MP4 segments to SD, with pre/post-roll and free-space pruning
+- **Privacy masks** — solid cover rectangles per stream, live-adjustable
+- **Image rotation** — 180° on every SoC; hardware 90/270 on T31/T40/T41, software 90/270 on T23
+- **Optional HTTPS/RTSPS (mbedTLS) and MPEG-TS/SRT output**
 - **Authentication** — RTSP Digest / HTTP Basic (own MD5) + a `/control` token (per-boot + optional remote secret) with CORS
 - **Logging** — leveled logger to stderr and syslog (visible in `logread`)
 - **Tiny footprint** — small enough for a T10
@@ -111,6 +116,14 @@ binary. Vendor libs are linked via `IMPLIBS` (default static
 | `USE_FAAC=1` | software AAC audio via `libfaac` (browser + RTSP sound) |
 | `USE_CONTROL` | `/control` endpoint: live settings + persistence (see below). **On by default**; `USE_CONTROL=0` to leave it out |
 | `USE_DAYNIGHT` | native automatic day/night detection (see below). **On by default**; `USE_DAYNIGHT=0` to leave it out |
+| `USE_BACKCHANNEL` | ONVIF audio backchannel (client → speaker), native `IMP_AO`. Off by default |
+| `USE_BC_AAC` | also accept AAC on the backchannel (needs `libhelix-aac`); G.711 always works without it |
+| `USE_PLAY` | system-sound play queue (`/usr/sbin/play` protocol via a FIFO), native `IMP_AO`. Off by default |
+| `USE_PLAY_OPUS` | also decode Ogg-Opus in the play queue (needs `opusfile`); WAV/PCM/G.711 always work without it |
+| `USE_ROTATE` | image rotation (`videoN.rotation = 0\|90\|180\|270`, see below). Off by default |
+| `USE_SW_ROTATE` | software 90/270 rotation on SoCs without a hardware path (T23); needs `USE_ROTATE` |
+| `USE_TLS` | HTTPS (`http.https`) + RTSPS (`rtsp.tls`) via mbedTLS. Auto-enabled when `libmbedtls` is linked |
+| `USE_SRT` | MPEG-TS over SRT output (listener mode). Auto-enabled when `libsrt` is linked |
 
 ## Live control API
 
@@ -160,21 +173,27 @@ Schema overview (all fields optional, unknown keys ignored):
 | Section | Keys | Live effect |
 | --- | --- | --- |
 | `image` | `brightness contrast saturation sharpness hue hflip vflip running_mode anti_flicker ae_compensation max_again max_dgain sinter_strength temper_strength dpc_strength defog_strength drc_strength highlight_depress backlight_compensation core_wb_mode wb_rgain wb_bgain` | immediate via the matching `IMP_ISP_Tuning_*` call; **per-SoC** — `caps.image` lists what this chip supports (e.g. `hue`/WDR/defog/WB only on some SoCs), unsupported keys still persist |
-| `audio` (live) | `volume gain alc_gain high_pass agc agc_target_dbfs agc_compression_db ns mute` | immediate; `caps.audio` lists support (`alc_gain` only T21/T31/C100). `mute` = live mic mute |
-| `audio` (persist) | `codec samplerate bitrate channels` | persisted only — applies on restart. Speaker/stereo keys have no AO path (stored only) |
+| `audio` (live) | `volume gain alc_gain high_pass agc agc_target_dbfs agc_compression_db ns mute spk_volume spk_gain` | immediate; `caps.audio` lists support (`alc_gain` only T21/T31/C100; `spk_volume`/`spk_gain` gated on an `IMP_AO` pipeline being built in). `mute` = live mic mute; speaker keys apply to whichever producer currently holds `IMP_AO` and persist as the default for the next one |
+| `audio` (persist) | `codec samplerate bitrate channels backchannel backchannel_codec backchannel_rate spk_enabled force_stereo` | persisted only — applies on restart |
+| `speaker` | `play` (filename), `stop` (`1`) | not persisted — a transient action enqueued on the play FIFO (`USE_PLAY`); `play` is validated against `/usr/share/sounds` (no `/` or `..`) |
 | `osdS.N` (`osd0`/`osd1` objects, items 0–7) | `enabled text x y font_size color transparency outline outline_color` | immediate for items that had a region at startup; *enabling* an item that started disabled only persists (applies after restart). Every video stream has its **own independent item set** (`osd0` = stream 0, `osd1` = stream 1) |
 | `osd.N` (legacy shared form, items 0–7) | same leaf keys | still parsed; the item is mirrored onto **every** stream (pre-per-stream behavior) |
 | `osd` | `enabled` (master switch, global for all streams) | persisted only — the OSD groups are built once at startup |
 | `video.N` | `enabled codec width height fps bitrate rc_mode gop max_gop profile qp min_qp max_qp rotation buffers rtsp_path` | persisted only — applies on restart (encoder/FrameSource are never reconfigured live) |
 | `sensor` | `model i2c_addr fps width height` | persisted only — applies on restart (sensor is probed at ISP init) |
-| `daynight` | `enabled` | immediate — toggles the automatic day/night detection (see below) |
+| `daynight` | `enabled mode time_night_start time_day_start sun_latitude sun_longitude sun_sunrise_offset_min sun_sunset_offset_min` | immediate — toggles/reconfigures the automatic day/night detection, including the `time`/`sun` override modes (see below) |
 | `motion` | `enabled sensitivity cols rows monitor_stream` | immediate — the IMP_IVS grid is cleanly stopped and recreated (`cooldown_ms`/`on_motion` are config-file only) |
+| `privacy.S.N` | `enabled x y w h color` | immediate — cover region created/shown/hidden/moved live (as long as OSD or a privacy region was on at startup) |
+| `record` | `mode segment_s pre_roll_s post_roll_s min_free_mb dir` + `{"active":1\|0}` | `active` is an immediate manual start/stop override; the rest applies on the next recording cycle |
 
 `GET /control` reports a `"caps"` object so a UI can present exactly what this
 build/SoC supports: `caps.image` / `caps.audio` (live-capable leaf keys for this
 chip — grey out the rest), `caps.osd` (accepted OSD item leaf keys),
-`caps.motion` (`{available, max_cells}`) and `caps.restart` (`["video","sensor"]`
-— the persist-only sections, so clients can prompt for a restart). The OSD
+`caps.motion` (`{available, max_cells}`), `caps.backchannel`/`caps.play`
+(speaker features, see *Speaker* below), `caps.privacy`
+(`{available, max_regions}`), `caps.record` and `caps.restart`
+(`["video","sensor"]` — the persist-only sections, so clients can prompt for
+a restart). The OSD
 dump carries the global master switch as `"osd":{"enabled":..}` followed by
 one full item set per stream (`"osd0"`, `"osd1"`), each item incl. its `type`
 (`text`/`logo`) so UIs can tell text overlays from the logo.
@@ -265,6 +284,7 @@ between switches. If the ISP file is absent (host sim), the thread idles.
 | Key | Default | Meaning |
 | --- | --- | --- |
 | `daynight.enabled` | `1` | auto detection on/off (runtime-toggleable via `/control`: `{"daynight":{"enabled":false}}` = manual mode) |
+| `daynight.mode` | `sensor` | `sensor` (below) / `time` / `sun` — see **Override modes** |
 | `daynight.threshold_low` | `25` | % — below this (in day) → night |
 | `daynight.threshold_high` | `75` | % — above this (in night) → day |
 | `daynight.hysteresis` | `0.1` | band factor for the initial decision |
@@ -272,6 +292,133 @@ between switches. If the ISP file is absent (host sim), the thread idles.
 | `daynight.transition_s` | `5` | min seconds between switches |
 | `daynight.switch_cmd` | `daynight` | run as `<cmd> day\|night` on a switch |
 | `daynight.isp_path` | `/proc/jz/isp/isp-m0` | ISP exposure proc file |
+
+### Override modes (`daynight.mode`)
+
+The sensor isn't always the right signal — an IR-blocked lens, a scene
+that's naturally dark/bright, or simply wanting the schedule to match a
+person's routine instead of the camera's exposure. `daynight.mode` swaps
+the decision source entirely; `sensor`/`total_gain`/brightness are still
+sampled every cycle either way, so the WebUI's live gain/brightness readout
+stays populated, and `daynight.enabled=0` (manual) suppresses forcing in
+all three modes the same way.
+
+| Mode | Forces a switch by |
+| --- | --- |
+| `sensor` (default) | ISP `total_gain`/brightness, as above |
+| `time` | the local wall clock against a fixed `[time_night_start .. time_day_start]` window, wrapping past midnight |
+| `sun` | today's real sunrise/sunset for `sun_latitude`/`sun_longitude`, each edge shiftable by an offset |
+
+| Key | Default | Meaning |
+| --- | --- | --- |
+| `daynight.time_night_start` | `` | `"HH:MM"` — switch to night at this local time (`time` mode) |
+| `daynight.time_day_start` | `` | `"HH:MM"` — switch to day at this local time (`time` mode) |
+| `daynight.sun_latitude` / `sun_longitude` | `0` | decimal degrees (`sun` mode) |
+| `daynight.sun_sunrise_offset_min` | `0` | minutes added to computed sunrise before switching to day (negative allowed) |
+| `daynight.sun_sunset_offset_min` | `0` | minutes added to computed sunset before switching to night (negative allowed) |
+
+```sh
+curl -X POST http://127.0.0.1:8880/control -d '{
+  "daynight": {"mode":"sun", "sun_latitude":52.52, "sun_longitude":13.40,
+               "sun_sunset_offset_min":-30}
+}'
+curl http://127.0.0.1:8880/control | jq .daynight
+# -> {"mode":"sun", ..., "sun_computed_sunrise":"05:17", "sun_computed_sunset":"21:07"}
+```
+
+`GET /control`'s `daynight` object always includes today's computed
+`sun_computed_sunrise`/`sun_computed_sunset` (local `"HH:MM"`), so a UI can
+sanity-check a configured lat/long before trusting it, even while another
+mode is active. Polar latitudes where the sun genuinely doesn't rise/set
+that day fall back to permanent day or permanent night for the `sun`
+decision, rather than producing an invalid time.
+
+## Speaker: backchannel + system-sound play
+
+`src/rtsp/speaker.c` is the sole owner of `IMP_AO` (the camera speaker) and
+arbitrates two independent producers — timps drives the hardware directly,
+no external audio daemon (`/bin/iac`) needed:
+
+- **ONVIF audio backchannel** (`USE_BACKCHANNEL=1`, off by default) — an
+  RTSP client `SETUP`s track 2 and streams RTP audio (PCMU/PCMA, pure C; AAC
+  too with `USE_BC_AAC=1` via `libhelix-aac`) that plays through the
+  speaker. Backchannel always **preempts**: it takes the speaker mid-play
+  if it has to, since it's the real-time conversational path.
+- **System-sound play queue** (`USE_PLAY=1`, off by default) — a FIFO at
+  `/run/timps/audio_out` accepts `PLAY url=<path> [vol=N] [gain=N]
+  [rate=N] [format=wav|pcm|opus] [loop=N] [delay=ms]` / `STOP` lines, the
+  same protocol prudynt/raptor's `/usr/sbin/play` wrapper speaks — so the
+  WiFi captive-portal prompt, the post-upgrade chime and the Home Assistant
+  ESPHome `media_player`/TTS integration all get a working speaker for
+  free once this is built in. Decodes WAV, raw PCM16 and G.711 µ/A-law out
+  of the box; add `USE_PLAY_OPUS=1` for Ogg-Opus (`opusfile`) too — that's
+  what thingino's own `thingino-sounds` package ships.
+
+| Key | Meaning |
+| --- | --- |
+| `audio.backchannel` | enable the backchannel (persist-only, restart-required) |
+| `audio.backchannel_codec` | `pcmu`/`pcma`/`aac` |
+| `audio.backchannel_rate` | 8000–48000 Hz |
+| `audio.spk_volume` / `spk_gain` | speaker volume/gain — **live** via `/control`, applied to whichever producer currently holds `IMP_AO` and persisted as the default for the next one |
+
+```sh
+# live speaker volume/gain
+curl -X POST http://127.0.0.1:8880/control -d '{"audio":{"spk_volume":80,"spk_gain":25}}'
+
+# play a system sound (path validated against /usr/share/sounds - no / or ..)
+curl -X POST http://127.0.0.1:8880/control -d '{"speaker":{"play":"chime_1.wav"}}'
+curl -X POST http://127.0.0.1:8880/control -d '{"speaker":{"stop":1}}'
+```
+
+`GET /control` reports `caps.backchannel = {available}` and
+`caps.play = {available, sounds:[...]}` — the latter enumerated live from
+`/usr/share/sounds`, listing `.wav` unconditionally (the µ-law/PCM decoder
+needs no library) and `.opus` only when `USE_PLAY_OPUS` is actually built,
+so a UI never offers a file this exact build can't decode. This is what
+drives the thingino WebUI's speaker volume slider and test-sound dropdown.
+
+## Recording, privacy masks, rotation, TLS/SRT
+
+### Local recording (to SD)
+
+`record` section + `/control`: records one video stream (+ AAC audio) to
+`<dir>/<hostname>/records/<strftime>.mp4` as fragmented MP4, reusing the
+`/stream.mp4` muxer. `record.mode` is `continuous` or `motion` (pre-roll
+ring from the keyframe before the trigger, plus `record.post_roll_s` after
+the last motion); segments rotate every `record.segment_s` at a keyframe,
+oldest files pruned to keep `record.min_free_mb` free. `GET /control`
+reports a `record` status object (recording/channel/mode/bytes/free_mb/
+file) and `caps.record`; `{"record":{"active":1|0}}` is a manual start/stop
+override (the WebUI record button).
+
+### Privacy masks
+
+`privacy<S>.<N>.{enabled,x,y,w,h,color}` (up to `MS_MAX_PRIVACY` per
+stream) — solid filled rectangles over sensitive areas, implemented as IMP
+OSD cover regions. Applied **live** (create/show/hide/move without a
+restart, as long as OSD or a privacy region was on at startup) and
+persisted. `GET /control` dumps the `privacy` tree and advertises
+`caps.privacy = {available, max_regions}`.
+
+### Image rotation
+
+`videoN.rotation = 0|90|180|270` (`USE_ROTATE`, off by default;
+restart-required). 180° is a global ISP H+V flip and works on every SoC;
+hardware 90/270 needs T31/T40/T41 (FrameSource/I2D rotate); software 90/270
+(`USE_SW_ROTATE`) works on SoCs without a hardware path (T23) at the cost
+of CPU (per-frame transpose) and H.264-only, software-OSD-only encoding.
+Known limitation on T31: 90/270 can't carry a hardware OSD/privacy overlay
+(libimp IPU-OSD stride bug) — see `docs/rotation.md`.
+
+### HTTPS / RTSPS (mbedTLS) and SRT output
+
+`USE_TLS=1` (auto-enabled when `libmbedtls` is linked) lets the HTTP server
+run **HTTPS** (`http.https` + `http.tls_cert`/`http.tls_key`) and RTSP run
+**RTSPS** (`rtsp.tls`/`rtsp.tls_port`); the same code path serves plain
+HTTP/RTSP byte-for-byte when TLS is off. `USE_SRT=1` (auto-enabled when
+`libsrt` is linked) adds MPEG-TS over SRT in listener mode
+(`srt.enabled`/`port`/`channel`/`latency_ms`/`streamid`/`passphrase`,
+played back with e.g. `ffplay srt://<ip>:9000`).
 
 ### Host simulation (no hardware)
 
