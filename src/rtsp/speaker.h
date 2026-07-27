@@ -29,10 +29,20 @@ void speaker_write_pcm(const void *owner, const int16_t *pcm, int nsamp, int src
 /* Release the speaker if this owner holds it (call at backchannel teardown). */
 void speaker_release(const void *owner);
 
+/* Apply the global speaker volume/gain (g_cfg.audio.spk_volume/spk_gain, 0..100
+ * and 0..31) to the AO. No-op unless the AO is currently open; when it is not,
+ * these values are re-applied automatically at the next AO open. */
+void speaker_set_volume(int vol);
+void speaker_set_gain(int gain);
+
 #ifdef USE_PLAY
 /* Start/stop the /run/timps/audio_out play-FIFO thread. */
 void speaker_start(void);
 void speaker_stop(void);
+
+/* Enqueue one command line ("PLAY url=... [vol= gain= ...]" / "STOP") on the
+ * play FIFO, the same protocol /usr/sbin/play writes. Returns 0 on success. */
+int  speaker_play_line(const char *line);
 #endif
 
 #endif /* USE_BACKCHANNEL || USE_PLAY */

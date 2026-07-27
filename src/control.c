@@ -20,6 +20,7 @@
 #include "audio_caps.h"
 #include "motion_caps.h"
 #include "rtsp/backchannel.h"
+#include "rtsp/speaker.h"
 #include "rotate_caps.h"   /* ROT_HAS_90/ROT_HAS_180 (rotation caps + eff dims) */
 #include "hal/imp_motion.h"
 #include "hal/imp_osd.h"
@@ -29,8 +30,30 @@
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
+#ifdef USE_PLAY
+#include <dirent.h>
+#include <sys/stat.h>
+#endif
 
 #define MOD "CTRL"
+
+#ifdef USE_PLAY
+#define SOUNDS_DIR "/usr/share/sounds"
+
+/* Resolve a test-sound name to its full path under SOUNDS_DIR, rejecting path
+ * traversal and anything that is not a regular file actually present there
+ * (the same set the caps.play "sounds" list reports). Returns 1 on success. */
+static int sound_path(const char *name, char *out, size_t cap)
+{
+    if (!name || !name[0] || strchr(name,'/') || strstr(name,"..")) return 0;
+    char p[300];
+    if ((size_t)snprintf(p,sizeof p,"%s/%s",SOUNDS_DIR,name) >= sizeof p) return 0;
+    struct stat st;
+    if (stat(p,&st)!=0 || !S_ISREG(st.st_mode)) return 0;
+    snprintf(out,cap,"%s",p);
+    return 1;
+}
+#endif
 
 #define CTRL_MAX_CHG 48
 typedef struct {
@@ -222,21 +245,21 @@ void control_apply_json(const char *json)
     /* audio.* live keys (accepted regardless of SoC support, like IMG: the
      * HAL skips what the platform cannot do, the value still persists).
      * "mute" is the live mic mute: the HAL audio thread stops publishing
-     * captured frames while it is set (no IMP call needed). */
+     * captured frames while it is set (no IMP call needed). spk_volume/spk_gain
+     * drive the speaker AO live (applied now if a play/backchannel session
+     * holds it, else at the next AO open) and persist as the AO default. */
     static const char *const AUD_LIVE[] = {
-        "volume","gain","alc_gain","mute"
+        "volume","gain","alc_gain","mute","spk_volume","spk_gain"
     };
     /* audio.* persist-only keys: SetPubAttr/encoder-init attributes. They go
      * through the same timps_apply_setting (config + persist); the HAL audio
      * branch only logs them as "applies on restart" instead of touching the
      * running input. channels=2/force_stereo enable simulated stereo (mono
-     * mic duplicated to L=R, dual-mono AAC) at the next restart. The spk_*
-     * keys are accepted and persisted for the WebUI round-trip only: timps
-     * has no speaker/AO pipeline, the HAL logs them as ignored. */
+     * mic duplicated to L=R, dual-mono AAC) at the next restart. */
     static const char *const AUD_REST[] = {
         "enabled","codec","samplerate","channels","bitrate",
         "high_pass","agc","agc_target_dbfs","agc_compression_db","ns",
-        "force_stereo","spk_enabled","spk_volume","spk_gain",
+        "force_stereo","spk_enabled",
         "backchannel","backchannel_codec","backchannel_rate"
     };
     static const char *const OSD[] = {
@@ -274,6 +297,26 @@ void control_apply_json(const char *json)
         apply_section(ch, "audio", sb, se, AUD_LIVE, (int)(sizeof AUD_LIVE/sizeof AUD_LIVE[0]));
         apply_section(ch, "audio", sb, se, AUD_REST, (int)(sizeof AUD_REST/sizeof AUD_REST[0]));
     }
+
+#ifdef USE_PLAY
+    /* speaker: {"speaker":{"play":"<file>"}} plays a system sound (validated
+     * against SOUNDS_DIR), {"speaker":{"stop":1}} stops it. Not persisted - a
+     * transient action that just enqueues on the play FIFO speaker.c reads. */
+    sb = find_obj(json, end, "speaker", &se);
+    if (sb){
+        if (get_val(sb, se, "stop", v, sizeof v)){
+            speaker_play_line("STOP");
+            LOGI(MOD,"speaker stop");
+        } else if (get_val(sb, se, "play", v, sizeof v)){
+            char full[320], line[400];
+            if (sound_path(v, full, sizeof full)){
+                snprintf(line, sizeof line, "PLAY url=%s", full);
+                speaker_play_line(line);
+                LOGI(MOD,"speaker play %s", full);
+            } else LOGW(MOD,"speaker play: rejected '%s'", v);
+        }
+    }
+#endif
 
     /* daynight: {"daynight":{"enabled":..,"total_gain_day_threshold":..,
      * "total_gain_night_threshold":..}} - the native automatic day/night
@@ -502,6 +545,11 @@ static const char *const AUD_CAPS[] = {
 #ifdef AUDIO_HAS_ALC_GAIN
     "alc_gain",
 #endif
+#if defined(USE_PLAY) || defined(USE_BACKCHANNEL)
+    /* speaker AO volume/gain: live only when an audio-output pipeline (play
+     * queue or backchannel) is compiled in - it owns the IMP_AO device. */
+    "spk_volume","spk_gain",
+#endif
     /* NOTE: high_pass/agc/agc_target_dbfs/agc_compression_db/ns are NOT here:
      * they are restart-required (libimp runs them on its own record thread and
      * frees them unlocked, so a live toggle races the vendor thread -> UAF).
@@ -645,6 +693,34 @@ int control_get_json(char *buf, size_t cap)
     APP("\"backchannel\":{\"available\":%d},", bc_available());
 #else
     APP("\"backchannel\":{\"available\":0},");
+#endif
+    /* play queue: available = the play-FIFO feature is compiled in. "sounds"
+     * enumerates the *.opus files under SOUNDS_DIR so the WebUI test-sound
+     * control can offer them (built like every other caps.* list; the play
+     * POST re-validates the chosen name against this same directory). */
+#ifdef USE_PLAY
+    APP("\"play\":{\"available\":1,\"sounds\":[");
+    {
+        DIR *dh = opendir(SOUNDS_DIR);
+        if (dh){
+            struct dirent *de; int first = 1;
+            while ((de = readdir(dh))){
+                const char *nm = de->d_name;
+                size_t l = strlen(nm);
+                if (l < 6 || strcmp(nm+l-5,".opus")) continue;
+                if (strchr(nm,'"') || strchr(nm,'\\')) continue;
+                char pp[300]; struct stat st;
+                snprintf(pp,sizeof pp,"%s/%s",SOUNDS_DIR,nm);
+                if (stat(pp,&st)!=0 || !S_ISREG(st.st_mode)) continue;
+                APP("%s\"%s\"", first?"":",", nm);
+                first = 0;
+            }
+            closedir(dh);
+        }
+    }
+    APP("]},");
+#else
+    APP("\"play\":{\"available\":0},");
 #endif
     APP("\"timelapse\":{\"available\":1}},");
     APP("\"image\":{\"brightness\":%d,\"contrast\":%d,\"saturation\":%d,"
