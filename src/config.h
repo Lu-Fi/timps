@@ -171,8 +171,28 @@ typedef struct {
  * keys are always parsed so a config with daynight.* loads warning-free).
  * Decision is gain-based like prudynt/raptor; the brightness fallback keeps
  * thingino daynightd semantics. */
+/* day/night decision source (daynight.mode). SENSOR = the original
+ * gain/brightness detection (default, fully intact). TIME = force by the local
+ * wall clock (fixed window). SUN = force by today's computed sunrise/sunset for
+ * a lat/long, each shifted by an offset. mode only matters when enabled=1;
+ * enabled=0 (manual) still suppresses forcing in all three. Stored/parsed as a
+ * string token ("sensor"/"time"/"sun") at the config-file and JSON boundary. */
+enum { DN_MODE_SENSOR = 0, DN_MODE_TIME = 1, DN_MODE_SUN = 2 };
+
 typedef struct {
     int      enabled;            /* 0 = manual mode (thread idles) */
+    int      mode;               /* DN_MODE_SENSOR/TIME/SUN, see above */
+    /* fixed-time window (DN_MODE_TIME): local wall-clock "HH:MM" boundaries.
+     * night from time_night_start until time_day_start; the window may wrap
+     * past midnight (night 20:00, day 06:30). Empty = that edge is unset. */
+    char     time_night_start[6];  /* "HH:MM" local: switch to night at/after */
+    char     time_day_start[6];    /* "HH:MM" local: switch to day  at/after */
+    /* sunrise/sunset (DN_MODE_SUN): today's real sun times for a location,
+     * each nudged by an offset in minutes (may be negative). */
+    float    sun_latitude;         /* degrees, +N / -S */
+    float    sun_longitude;        /* degrees, +E / -W */
+    int      sun_sunrise_offset_min; /* minutes added to sunrise before -> day */
+    int      sun_sunset_offset_min;  /* minutes added to sunset  before -> night */
     /* primary metric: ISP total_gain, IMP [24.8] linear (256 = 1x), the same
      * scale as prudynt/raptor and the WebUI photosensing page. INVERTED vs
      * brightness: low gain = bright = day. Day when gain < day_threshold,

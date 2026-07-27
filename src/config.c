@@ -282,6 +282,10 @@ void config_defaults(ms_config *c)
     /* automatic day/night: gain thresholds mirror prudynt (day 300, night
      * 3000), the brightness fallback mirrors thingino's daynightd.json */
     c->daynight.enabled=1;
+    c->daynight.mode=DN_MODE_SENSOR;   /* sensor-driven detection is the default */
+    c->daynight.time_night_start[0]=0; c->daynight.time_day_start[0]=0;
+    c->daynight.sun_latitude=0.0f; c->daynight.sun_longitude=0.0f;
+    c->daynight.sun_sunrise_offset_min=0; c->daynight.sun_sunset_offset_min=0;
     c->daynight.total_gain_day_threshold=300.0f;
     c->daynight.total_gain_night_threshold=3000.0f;
     c->daynight.threshold_low=25.0f; c->daynight.threshold_high=75.0f;
@@ -664,6 +668,18 @@ static void set_kv(ms_config *c, const char *key, const char *val)
     if (!strncmp(key,"daynight.",9)){
         const char *k=key+9;
         if(!strcmp(k,"enabled"))c->daynight.enabled=pbool(val);
+        else if(!strcmp(k,"mode")){
+            if(!strcmp(val,"sensor")) c->daynight.mode=DN_MODE_SENSOR;
+            else if(!strcmp(val,"time")) c->daynight.mode=DN_MODE_TIME;
+            else if(!strcmp(val,"sun")) c->daynight.mode=DN_MODE_SUN;
+            else { LOGW(MOD,"daynight.mode: unknown '%s', keeping sensor",val); c->daynight.mode=DN_MODE_SENSOR; }
+        }
+        else if(!strcmp(k,"time_night_start"))copystr(c->daynight.time_night_start,val,sizeof c->daynight.time_night_start);
+        else if(!strcmp(k,"time_day_start"))copystr(c->daynight.time_day_start,val,sizeof c->daynight.time_day_start);
+        else if(!strcmp(k,"sun_latitude"))c->daynight.sun_latitude=pflt(val);
+        else if(!strcmp(k,"sun_longitude"))c->daynight.sun_longitude=pflt(val);
+        else if(!strcmp(k,"sun_sunrise_offset_min"))c->daynight.sun_sunrise_offset_min=pint(val);
+        else if(!strcmp(k,"sun_sunset_offset_min"))c->daynight.sun_sunset_offset_min=pint(val);
         else if(!strcmp(k,"total_gain_day_threshold"))c->daynight.total_gain_day_threshold=pflt(val);
         else if(!strcmp(k,"total_gain_night_threshold"))c->daynight.total_gain_night_threshold=pflt(val);
         else if(!strcmp(k,"threshold_low"))c->daynight.threshold_low=pflt(val);
@@ -884,6 +900,14 @@ int config_get_kv(const ms_config *c, const char *key, char *out, size_t cap)
     if (!strncmp(key,"daynight.",9)){
         const ms_daynight_cfg *d=&c->daynight; const char *k=key+9;
         if(!strcmp(k,"enabled")) snprintf(out,cap,"%d",d->enabled);
+        else if(!strcmp(k,"mode")) snprintf(out,cap,"%s",
+            d->mode==DN_MODE_TIME?"time":d->mode==DN_MODE_SUN?"sun":"sensor");
+        else if(!strcmp(k,"time_night_start")) snprintf(out,cap,"%s",d->time_night_start);
+        else if(!strcmp(k,"time_day_start")) snprintf(out,cap,"%s",d->time_day_start);
+        else if(!strcmp(k,"sun_latitude")) snprintf(out,cap,"%g",(double)d->sun_latitude);
+        else if(!strcmp(k,"sun_longitude")) snprintf(out,cap,"%g",(double)d->sun_longitude);
+        else if(!strcmp(k,"sun_sunrise_offset_min")) snprintf(out,cap,"%d",d->sun_sunrise_offset_min);
+        else if(!strcmp(k,"sun_sunset_offset_min")) snprintf(out,cap,"%d",d->sun_sunset_offset_min);
         else if(!strcmp(k,"total_gain_day_threshold")) snprintf(out,cap,"%g",(double)d->total_gain_day_threshold);
         else if(!strcmp(k,"total_gain_night_threshold")) snprintf(out,cap,"%g",(double)d->total_gain_night_threshold);
         else if(!strcmp(k,"threshold_low")) snprintf(out,cap,"%g",(double)d->threshold_low);

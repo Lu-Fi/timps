@@ -329,9 +329,27 @@ void control_apply_json(const char *json)
             timps_apply_setting(ch, "daynight.enabled",
                                 (!strcmp(v,"true")||!strcmp(v,"1")) ? "1" :
                                 (!strcmp(v,"false")||!strcmp(v,"0")) ? "0" : v);
+        /* mode: string token, validated here so garbage never corrupts state
+         * (config_apply_kv would coerce an unknown token to sensor, but reject
+         * it up front and log rather than silently persisting nonsense). */
+        if (get_val(sb, se, "mode", v, sizeof v)){
+            if (!strcmp(v,"sensor")||!strcmp(v,"time")||!strcmp(v,"sun"))
+                timps_apply_setting(ch, "daynight.mode", v);
+            else
+                LOGW(MOD,"ignoring daynight.mode = '%s' (not sensor/time/sun)", v);
+        }
+        /* string fields (time window "HH:MM") go through get_val explicitly;
+         * the numeric ones (incl. negative offsets) ride apply_section, which
+         * feeds get_val -> timps_apply_setting -> config_apply_kv unchanged. */
+        if (get_val(sb, se, "time_night_start", v, sizeof v))
+            timps_apply_setting(ch, "daynight.time_night_start", v);
+        if (get_val(sb, se, "time_day_start", v, sizeof v))
+            timps_apply_setting(ch, "daynight.time_day_start", v);
         static const char *const DN_KEYS[] = {
             "total_gain_day_threshold","total_gain_night_threshold",
-            "day_gain_pct","baseline_delay_s"
+            "day_gain_pct","baseline_delay_s",
+            "sun_latitude","sun_longitude",
+            "sun_sunrise_offset_min","sun_sunset_offset_min"
         };
         apply_section(ch, "daynight", sb, se,
                       DN_KEYS, (int)(sizeof DN_KEYS/sizeof DN_KEYS[0]));
@@ -568,15 +586,31 @@ static const char *const AUD_CAPS[] = {
 int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
                           float brightness, float total_gain, float ae_luma)
 {
+    const ms_daynight_cfg *d = &g_cfg.daynight;
+    const char *dnmode = d->mode==DN_MODE_TIME ? "time" :
+                         d->mode==DN_MODE_SUN  ? "sun"  : "sensor";
+    /* computed sunrise/sunset feedback for the SUN mode (local HH:MM) so the
+     * WebUI can show today's real switch times and the user can sanity-check
+     * lat/long before trusting the math. "--:--" for polar day/night. */
+    char sun_sr[8]="--:--", sun_ss[8]="--:--";
+    daynight_sun_status(sun_sr, sun_ss, sizeof sun_sr);
     return snprintf(buf, cap,
         "{\"enabled\":%d,\"mode\":%d,\"brightness\":%.1f,\"total_gain\":%.0f,"
         "\"ae_luma\":%.0f,\"total_gain_day_threshold\":%g,"
         "\"total_gain_night_threshold\":%g,\"day_gain_pct\":%d,"
-        "\"baseline_delay_s\":%d}",
+        "\"baseline_delay_s\":%d,\"dn_mode\":\"%s\","
+        "\"time_night_start\":\"%s\",\"time_day_start\":\"%s\","
+        "\"sun_latitude\":%g,\"sun_longitude\":%g,"
+        "\"sun_sunrise_offset_min\":%d,\"sun_sunset_offset_min\":%d,"
+        "\"sun_computed_sunrise\":\"%s\",\"sun_computed_sunset\":\"%s\"}",
         enabled, mode, (double)brightness, (double)total_gain, (double)ae_luma,
-        (double)g_cfg.daynight.total_gain_day_threshold,
-        (double)g_cfg.daynight.total_gain_night_threshold,
-        g_cfg.daynight.day_gain_pct, g_cfg.daynight.baseline_delay_s);
+        (double)d->total_gain_day_threshold,
+        (double)d->total_gain_night_threshold,
+        d->day_gain_pct, d->baseline_delay_s, dnmode,
+        d->time_night_start, d->time_day_start,
+        (double)d->sun_latitude, (double)d->sun_longitude,
+        d->sun_sunrise_offset_min, d->sun_sunset_offset_min,
+        sun_sr, sun_ss);
 }
 
 /* Read-only motion status object (shared /control + /events shape, see
