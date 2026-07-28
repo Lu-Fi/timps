@@ -109,6 +109,20 @@ typedef IMPEncoderCHNAttr IMPEncoderChnAttr;
 #ifndef MS_AI_WATCHDOG_ITERS
 #define MS_AI_WATCHDOG_ITERS 500
 #endif
+/* Watchdog: same failure class as MS_AI_WATCHDOG_ITERS above, but for video -
+ * IMP_Encoder_StartRecvPic can succeed while the underlying framesource
+ * enable silently didn't take (fs_use()'s EnableChn is unchecked and only
+ * fires on the 0->1 user-count edge), leaving PollingStream returning
+ * nothing forever with a client still attached - the idle-stop debounce
+ * never fires while a client is subscribed, so the framesource never gets a
+ * fresh Enable attempt on its own. Unlike audio, giving up isn't acceptable
+ * here (video is the primary feature), so after this many consecutive
+ * misses, force a real Stop/Disable/Enable/Start cycle instead. PollingStream
+ * blocks up to general.imp_polling_timeout per miss (default 500 ms), so
+ * this is ~5 s at the default. */
+#ifndef MS_VIDEO_WATCHDOG_ITERS
+#define MS_VIDEO_WATCHDOG_ITERS 10
+#endif
 
 static IMPSensorInfo    g_sensor;
 static const ms_config *g_hcfg;
@@ -282,8 +296,10 @@ static void fs_use(int chn)
     if (chn < 0 || chn >= MS_FS_MAXCHN) return;
     pthread_mutex_lock(&g_fs_mtx);
     if (g_fs_users[chn]++ == 0) {
-        IMP_FrameSource_EnableChn(chn);
-        LOGI(MOD,"framesource %d enabled", chn);
+        if (IMP_FrameSource_EnableChn(chn) != 0)
+            LOGE(MOD,"framesource %d: EnableChn failed", chn);
+        else
+            LOGI(MOD,"framesource %d enabled", chn);
     }
     pthread_mutex_unlock(&g_fs_mtx);
 }
@@ -890,9 +906,29 @@ static void *video_thread(void *arg)
         if (vc->idr_req){ vc->idr_req=0; IMP_Encoder_RequestIDR(vc->chn); }
         int pr = IMP_Encoder_PollingStream(vc->chn, g_hcfg->imp_polling_timeout);
         if (pr!=0){
-            if (receiving && (dbg_pollfail++ % 20)==0)
-                LOGW(MOD,"chn%d: PollingStream idle (rc=%d, miss#%d) - encoder emits no frames",
-                     vc->chn, pr, dbg_pollfail);
+            if (receiving){
+                dbg_pollfail++;
+                if ((dbg_pollfail % 20)==1)
+                    LOGW(MOD,"chn%d: PollingStream idle (rc=%d, miss#%d) - encoder emits no frames",
+                         vc->chn, pr, dbg_pollfail);
+                if (dbg_pollfail >= MS_VIDEO_WATCHDOG_ITERS){
+                    LOGE(MOD,"chn%d: encoder dead after %d consecutive misses - "
+                         "forcing a framesource disable/enable cycle to recover",
+                         vc->chn, dbg_pollfail);
+                    IMP_Encoder_StopRecvPic(vc->chn);
+                    fs_unuse(vc->chn);
+                    fs_use(vc->chn);
+                    if (IMP_Encoder_StartRecvPic(vc->chn)==0){
+                        vc->idr_req=0; IMP_Encoder_RequestIDR(vc->chn);
+                        dbg_first=0;             /* log the recovered first frame */
+                    } else {
+                        fs_unuse(vc->chn);        /* fully release; top-of-loop's
+                                                    * !receiving path fs_use()s fresh */
+                        receiving=0;
+                    }
+                    dbg_pollfail=0;
+                }
+            }
             continue;
         }
         IMPEncoderStream st;
