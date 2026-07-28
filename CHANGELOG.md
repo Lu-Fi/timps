@@ -6,6 +6,31 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.6.1] - 2026-07-28
+
+### Fixed
+- **Sub-stream permanent stall on a large (e.g. complex-scene) IDR frame.**
+  `video_thread()`'s AU assembly buffer starts at a ~0.5 byte/pixel
+  estimate, clamped to `[MS_AU_BUF_MIN 128KB, MS_AU_BUF_MAX 1MB]`. For a
+  small sub-stream (e.g. 640x360) that estimate sits at the 128KB floor,
+  which a complex-scene IDR can exceed. The overflow handler used to drop
+  the oversized frame and force a fresh IDR — but an IDR is the *largest*
+  frame type, so the forced replacement overflowed too, forced another
+  IDR, overflowed again: a permanent self-reinforcing stall that delivered
+  zero decodable video on that stream from the first oversized frame
+  onward (found as "only one stream works" — main stayed fine on its
+  larger 1MB cap). Now sums the pack lengths before assembly and grows the
+  buffer (bounded by `MS_AU_BUF_MAX`) to fit the real frame instead of
+  truncating it; the `IMP_Encoder_RequestIDR()` call on the (now
+  last-resort, >1MB-AU-or-failed-realloc-only) overflow path is dropped,
+  since forcing an IDR there was the actual cause of the stall — a dropped
+  frame already recovers via the existing
+  `fanqueue_take_dropped_key`/`hub_request_idr` path on a real client.
+  Verified on real hardware (Galayou Y4, T23n): the sub stream went from
+  zero video across 20+ minutes and every reconnect to streaming
+  correctly (640x360 h264@25+aac, IDR ~99KB) alongside the main stream,
+  with zero overflow events since boot.
+
 ## [1.6.0] - 2026-07-27
 
 ### Added
