@@ -13,6 +13,9 @@
 static double g_fps = 0.0;
 void osd_vars_set_fps(double fps){ g_fps = fps; }
 
+static double g_bitrate = 0.0;   /* live stream bitrate, kbit/s */
+void osd_vars_set_bitrate(double kbps){ g_bitrate = kbps; }
+
 static int64_t mono_us(void);   /* defined below get_uptime(); used by the
                                   * ~1s-TTL caches added to the /proc /sys
                                   * readers in this file (L6) */
@@ -168,6 +171,7 @@ static void resolve(const char *name, const char *vars_file, char *out, int outs
     else if (!strcmp(name,"ip"))       snprintf(out,outsz,"%s",ip);
     else if (!strcmp(name,"mac"))      get_mac(ifname,out,outsz);
     else if (!strcmp(name,"fps"))      snprintf(out,outsz,"%.1f",g_fps);
+    else if (!strcmp(name,"bitrate"))  snprintf(out,outsz,"%.0f",g_bitrate);
     else if (!strcmp(name,"uptime"))   get_uptime(out,outsz);
     else if (!strcmp(name,"net")||!strcmp(name,"tx"))  get_net_tx(ifname,out,outsz);
     else if (!strcmp(name,"cpu"))      get_cpu(out,outsz);

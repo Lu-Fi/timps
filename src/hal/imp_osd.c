@@ -470,6 +470,7 @@ static void *osd_thread(void *arg)
         if (need){
             idle_cycles = 0;
             osd_vars_set_fps(hub_get_fps(g_hcfg->osd.monitor_stream));
+            osd_vars_set_bitrate(hub_get_bitrate(g_hcfg->osd.monitor_stream));
             OSD_LOCK();
             for (int si=0; si<MS_MAX_VSTREAM; si++){
                 if (!g_os[si].used) continue;

@@ -30,6 +30,8 @@ typedef struct hub_source {
     int              samplerate, channels;    /* audio */
     double           mfps;                     /* measured video fps */
     uint32_t         fcount; int64_t fwin;     /* fps window */
+    double           mkbps;                    /* measured video bitrate, kbit/s */
+    uint64_t         bcount; int64_t bwin;     /* bitrate window: bytes so far */
 } hub_source;
 
 void        hub_init(void);
@@ -48,6 +50,9 @@ int         hub_get_vparam(int src, vparam *out);
 void        hub_set_idr_cb(void (*cb)(int src));
 void        hub_request_idr(int src);
 double      hub_get_fps(int src);
+/* measured video throughput of the stream in kbit/s; 0 when idle (no producer,
+ * i.e. the last 1s measurement window is stale). */
+double      hub_get_bitrate(int src);
 void        hub_set_audio_params(int acodec, int samplerate, int channels);
 /* read back the audio params the producer actually set; returns 1 if active. */
 int         hub_get_audio(int *acodec, int *samplerate, int *channels);
