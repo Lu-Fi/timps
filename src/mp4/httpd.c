@@ -108,8 +108,16 @@ static const char *PLAYER_TAIL =
 "catch(e){busy=false;if(e.name==='QuotaExceededError')evict();else stop();}};"
 "sb.addEventListener('updateend',()=>{busy=false;"
 "if(v.buffered.length){if(v.currentTime<v.buffered.start(0))v.currentTime=v.buffered.start(0);"
-/* keep close to the live edge; if we drift >6s behind, jump forward */
-"const end=v.buffered.end(v.buffered.length-1);if(end-v.currentTime>6)v.currentTime=end-1;}"
+/* Stay near the live edge so a PTZ move shows with minimal delay. A MediaSource
+ * <video> otherwise plays wherever autoplay happened to start (often 1-3s of
+ * accumulated buffer) and never catches up unless it falls seconds behind.
+ * Hard-seek only on a big drift (post-stall); otherwise nudge playbackRate to
+ * gently drain the buffer down to ~0.5s behind live (kept as jitter margin so
+ * we don't stall), scaling the rate with how far behind we are so a large
+ * startup buffer drains in a few seconds and steady state settles at 1x. */
+"const end=v.buffered.end(v.buffered.length-1),behind=end-v.currentTime;"
+"if(behind>4)v.currentTime=end-0.5;"
+"else v.playbackRate=behind>0.5?Math.min(1.3,1+(behind-0.5)*0.5):1;}"
 "evict();pump();});"
 "sb.addEventListener('error',stop);"
 "const res=await fetch(src);const rd=res.body.getReader();"
@@ -996,6 +1004,13 @@ static void *accept_thread(void *arg)
          * time out in recv()/send() instead of pinning this slot's thread
          * forever; streaming clients read continuously and never trip these */
         net_set_timeouts(fd, 30, 15);
+        /* live media is latency-sensitive: without TCP_NODELAY, Nagle holds a
+         * small fMP4 fragment until the previous one is ACKed, which combined
+         * with client delayed-ACK adds tens to ~200 ms per fragment. The RTSP
+         * path already sets this (rtsp.c); each fragment is one send() here so
+         * the syscall-batching tradeoff that made RTSP interleave carefully
+         * does not apply. */
+        net_set_nodelay(fd);
         /* global connection cap: each client costs a thread + queue */
         if (g_nconn >= HTTP_MAX_CLIENTS) {
             const char *r="HTTP/1.1 503 Service Unavailable\r\n"
