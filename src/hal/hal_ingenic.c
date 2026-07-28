@@ -1168,6 +1168,7 @@ static void sw_osd_compose(vchan *vc)
         /* keep {fps} fresh even when no bound stream runs imp_osd's updater
          * (all-sw-rotated config -> imp_osd_setup never ran) */
         osd_vars_set_fps(hub_get_fps(g_hcfg->osd.monitor_stream));
+        osd_vars_set_bitrate(hub_get_bitrate(g_hcfg->osd.monitor_stream));
     }
     int fw = vc->w, fh = vc->h;                  /* EFF (rotated) frame dims */
     for (int i=0; i<MS_MAX_OSD; i++){

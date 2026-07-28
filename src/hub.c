@@ -121,6 +121,19 @@ double hub_get_fps(int src)
     return fps;
 }
 
+double hub_get_bitrate(int src)
+{
+    hub_source *s = hub_get(src); if(!s) return 0.0;
+    double kbps;
+    pthread_mutex_lock(&s->lock);
+    /* bwin only advances while the producer publishes; if the last window is
+     * stale the stream is idle (on-demand encoder stopped) - report 0 rather
+     * than a frozen last-seen rate. */
+    kbps = (ms_now_us() - s->bwin < 2000000) ? s->mkbps : 0.0;
+    pthread_mutex_unlock(&s->lock);
+    return kbps;
+}
+
 void hub_set_audio_params(int acodec, int samplerate, int channels)
 {
     hub_source *s = hub_get(HUB_AUDIO_SRC); if(!s) return;
@@ -213,6 +226,13 @@ void hub_publish(int src, const uint8_t *data, size_t len,
         if (now - s->fwin >= 1000000) {
             s->mfps = s->fcount * 1000000.0 / (now - s->fwin);
             s->fcount = 0; s->fwin = now;
+        }
+        if (s->bwin == 0) s->bwin = now;
+        s->bcount += len;
+        if (now - s->bwin >= 1000000) {
+            /* bytes -> kbit/s: bytes*8/1000 over (now-bwin)/1e6 seconds */
+            s->mkbps = s->bcount * 8000.0 / (now - s->bwin);
+            s->bcount = 0; s->bwin = now;
         }
     }
     nsub_snap = s->nsub;
