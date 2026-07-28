@@ -843,6 +843,7 @@ static void *video_thread(void *arg)
     int dbg_first=0, dbg_pollfail=0;   /* one-shot encoder diagnostics */
     int dbg_startfail=0;               /* rate-limits StartRecvPic failures */
     int dbg_ovf=0;                     /* rate-limits the AU-overflow warning */
+    int dbg_grow=0;                    /* rate-limits the AU-buffer-grow notice */
     while (vc->run) {
         /* on-demand: encode while there are consumers. The hub subscriber
          * count is the truth source (level, not edge), so a racing stale
@@ -898,6 +899,29 @@ static void *video_thread(void *arg)
         if (IMP_Encoder_GetStream(vc->chn,&st,1)!=0){
             LOGW(MOD,"chn%d: GetStream failed after PollingStream OK",vc->chn); continue; }
         dbg_pollfail=0;
+        /* Pre-size the AU buffer to the actual frame. au_cap starts as a
+         * (~0.5 byte/pixel) estimate: fine for P-frames, but a complex IDR -
+         * especially on the substream, whose estimate is pinned at the
+         * MS_AU_BUF_MIN floor - routinely exceeds it. Summing the pack lengths
+         * up front lets us grow (bounded by MS_AU_BUF_MAX) so any real frame is
+         * assembled intact. The old path instead dropped the frame AND forced
+         * an IDR on overflow; since an IDR is the *largest* frame type, a single
+         * size-overflow made every subsequent forced IDR overflow too - a
+         * permanent stall in which the stream delivered nothing (the observed
+         * "only ch0 works": ch1's first IDR > the 128 KB floor, then locked). */
+        size_t need=0;
+        for (uint32_t i=0;i<st.packCount;i++)
+            if (st.pack[i].length) need += (size_t)st.pack[i].length + 4; /* +startcode */
+        if (need > au_cap && au_cap < MS_AU_BUF_MAX){
+            size_t ncap = (need > MS_AU_BUF_MAX) ? MS_AU_BUF_MAX : need;
+            uint8_t *na = (uint8_t*)realloc(au, ncap);
+            if (na){
+                au = na; au_cap = ncap;
+                if ((dbg_grow++ % 50)==0)
+                    LOGI(MOD,"chn%d: grew AU buffer to %zu (frame needs %zu, packCount=%u)",
+                         vc->chn, au_cap, need, st.packCount);
+            } /* realloc failure: keep old buffer, overflow guard below drops the frame */
+        }
         size_t aulen=0;
         int overflow=0;
         for (uint32_t i=0;i<st.packCount;i++){
@@ -918,20 +942,18 @@ static void *video_thread(void *arg)
             if (aulen+l<=au_cap){ memcpy(au+aulen,p,l); aulen+=l; }
             else overflow=1;
         }
-        /* au_cap is a generous (~0.5 byte/pixel) estimate, not a hard
-         * guarantee - a complex scene or a misconfigured bitrate can still
-         * produce a pack set that doesn't fit. Silently truncating used to
-         * publish a syntactically-corrupt AU (worst case: a truncated IDR)
-         * straight to every client/recorder with no signal anything was
-         * wrong. Drop the whole frame instead and force the next one to be
-         * a fresh IDR, matching how a dropped/corrupt frame is already
-         * recovered from elsewhere (fanqueue_take_dropped_key + hub_request_idr). */
+        /* Last-resort guard: the frame still didn't fit even after growing to
+         * MS_AU_BUF_MAX (a genuinely > 1 MB access unit, or a realloc failure).
+         * Drop it rather than publish a truncated, syntactically-corrupt AU.
+         * Do NOT force an IDR here: on a size overflow the next IDR is only
+         * larger, which is exactly what turned a one-frame overflow into a
+         * permanent stall. A dropped frame is recovered downstream anyway
+         * (fanqueue_take_dropped_key + hub_request_idr on real clients). */
         if (overflow){
             if ((dbg_ovf++ % 20)==0)
-                LOGW(MOD,"chn%d: AU buffer overflow (cap=%zu, packCount=%u) - "
-                     "dropping truncated frame, forcing IDR",
-                     vc->chn, au_cap, st.packCount);
-            IMP_Encoder_RequestIDR(vc->chn);
+                LOGW(MOD,"chn%d: AU exceeds max buffer (cap=%zu, need=%zu, packCount=%u) - "
+                     "dropping frame",
+                     vc->chn, au_cap, need, st.packCount);
             IMP_Encoder_ReleaseStream(vc->chn,&st);
             continue;
         }
