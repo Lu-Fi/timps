@@ -6,6 +6,30 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.6.2] - 2026-07-28
+
+### Fixed
+- **Video encoder permanent stall when a framesource enable silently
+  fails.** `fs_use()` never checked `IMP_FrameSource_EnableChn()`'s return
+  value, and the enable only fires on the 0→1 user-count edge. If it fails
+  once — or "succeeds" without actually arming the channel, a failure
+  class this file already documents twice (the AI watchdog, and the T31
+  `nrVBs` case) — `video_thread()`'s `StartRecvPic` still reports success
+  and `PollingStream` spins at `rc=-1` forever: the encoder never produces
+  another frame. With a client still subscribed, the idle-stop debounce
+  never fires, so the framesource never gets a fresh enable attempt — a
+  permanent stall recoverable only by restarting the daemon. Observed live
+  on a T31L main channel (`nrVBs=1`, i.e. no buffer slack) after streaming
+  correctly for hours; the sub-stream (independent framesource, ≥2
+  buffers) kept working the whole time. Now mirrors the existing AI
+  watchdog for video: after `MS_VIDEO_WATCHDOG_ITERS` (~5s) consecutive
+  `PollingStream` misses, force a real Stop/Disable/Enable/Start cycle
+  instead of spinning; `EnableChn` failures are now logged instead of
+  silently swallowed. Verified on real hardware (Cinnado D1 T31L): full QA
+  pass (77 PASS / 0 FAIL) after the fix, including 20/20 clean TCP and
+  20/20 clean UDP reconnect cycles through the previously-fragile
+  enable/disable edge.
+
 ## [1.6.1] - 2026-07-28
 
 ### Fixed
