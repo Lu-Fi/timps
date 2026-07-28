@@ -745,13 +745,21 @@ int control_get_json(char *buf, size_t cap)
             while ((de = readdir(dh))){
                 const char *nm = de->d_name;
                 size_t l = strlen(nm);
+                /* .wav: any RIFF/WAVE this build can decode (PCM/A-law/mu-law -
+                 * a real user-dropped file, e.g. for the ESPHome media_player
+                 * integration). .ulaw: thingino-sounds' own G.711 mu-law
+                 * asset format (still a WAV container internally, wav_open()
+                 * sniffs the RIFF header regardless of extension - the
+                 * distinct extension is just so it isn't mistaken for a
+                 * generic playable-anywhere .wav on disk). */
                 int is_wav  = l >= 5 && !strcmp(nm+l-4,".wav");
+                int is_ulaw = l >= 6 && !strcmp(nm+l-5,".ulaw");
 #ifdef USE_PLAY_OPUS
                 int is_opus = l >= 6 && !strcmp(nm+l-5,".opus");
 #else
                 int is_opus = 0;   /* can't decode it - don't offer a sound that always fails */
 #endif
-                if (!is_opus && !is_wav) continue;
+                if (!is_opus && !is_wav && !is_ulaw) continue;
                 if (strchr(nm,'"') || strchr(nm,'\\')) continue;
                 char pp[300]; struct stat st;
                 snprintf(pp,sizeof pp,"%s/%s",SOUNDS_DIR,nm);
