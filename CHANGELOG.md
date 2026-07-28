@@ -6,6 +6,34 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.6.3] - 2026-07-28
+
+### Fixed
+- **1-3s browser preview lag behind the physical camera (noticeable during
+  PTZ).** Two independent contributors on the encoder→browser path:
+  - The embedded MSE player JS (`src/mp4/httpd.c`) only corrected its
+    live-edge position once it drifted more than 6s behind, jumping back
+    to just 1s behind even then. With `autoplay`, the browser starts
+    playback wherever it first had enough buffered data (typically 1-3s)
+    and then plays at a flat 1x forever — that initial gap never shrunk on
+    its own. Replaced the dead-zone jump with active drain:
+    `playbackRate` now scales 1.0→1.3x with how far behind live the
+    player is, settling at a steady-state ~0.5s behind live (kept as
+    jitter margin), with a hard seek reserved for a large post-stall
+    drift (>4s).
+  - The HTTP/fMP4 listener never set `TCP_NODELAY` (the RTSP listener
+    already did) — Nagle's algorithm held small fragments until the prior
+    write was ACKed, adding up to ~200ms of pure transport latency per
+    fragment, compounding across every video/audio fragment sent.
+  GOP size/B-frames/rate-control and the encoder polling loop were
+  reviewed and ruled out: no B-frames are used (no look-ahead latency),
+  the poll timeout only bounds idle-wait and never delays an
+  already-produced frame, and the fanqueue has no steady-state queuing
+  delay. GOP interval affects only startup/post-drop recovery, not
+  in-progress PTZ framing, so it was left unchanged (shrinking it further
+  would trade bandwidth/quality for no benefit here). Verified on real
+  hardware (Cinnado D1 T31L x2).
+
 ## [1.6.2] - 2026-07-28
 
 ### Fixed
