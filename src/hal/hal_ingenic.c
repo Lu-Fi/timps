@@ -1567,6 +1567,24 @@ static void *jpeg_thread(void *arg)
         if (IMP_Encoder_PollingStream(jc->chn, g_hcfg->imp_polling_timeout)!=0) continue;
         IMPEncoderStream st;
         if (IMP_Encoder_GetStream(jc->chn,&st,1)!=0) continue;
+        /* Pre-size to the actual frame, same fix as video_thread's AU buffer
+         * (see that function's comment for the full story): jcap starts as a
+         * ~0.5 byte/pixel estimate, fine for most frames, but a
+         * detail-heavy daytime scene at q75 routinely exceeds it - that used
+         * to mean every such frame was dropped forever (a static/low-detail
+         * scene never re-triggers the overflow, so once the daily
+         * light/detail level crosses the estimate, JPEG output - snapshots,
+         * MJPEG, WebUI preview - simply stops). Sum the pack lengths up
+         * front and grow (bounded by MS_JPEG_BUF_MAX) so any real frame is
+         * assembled intact. */
+        size_t jneed=0;
+        for (uint32_t i=0;i<st.packCount;i++) jneed += (size_t)st.pack[i].length;
+        if (jneed > jcap && jcap < MS_JPEG_BUF_MAX){
+            size_t ncap = (jneed > MS_JPEG_BUF_MAX) ? MS_JPEG_BUF_MAX : jneed;
+            uint8_t *nb = (uint8_t*)realloc(jbuf, ncap);
+            if (nb){ jbuf = nb; jcap = ncap; }
+            /* realloc failure: keep old buffer, overflow guard below drops the frame */
+        }
         size_t jlen=0;
         int overflow=0;
         for (uint32_t i=0;i<st.packCount;i++){
@@ -1579,15 +1597,13 @@ static void *jpeg_thread(void *arg)
             if (jlen+l<=jcap){ memcpy(jbuf+jlen,p,l); jlen+=l; }
             else overflow=1;
         }
-        /* same failure mode as video_thread's AU buffer: a JPEG bigger than
-         * the (resolution-derived, bounded) jcap estimate used to be
-         * silently truncated and then handed to clients / written to the
-         * snapshot file as if it were a complete, valid JPEG. Drop it
-         * instead - a truncated JPEG is just as useless as none, but
-         * pretending it's valid is worse than skipping a frame. */
+        /* Last-resort guard: still didn't fit even after growing to
+         * MS_JPEG_BUF_MAX (a genuinely huge frame, or a realloc failure). A
+         * truncated JPEG is just as useless as none, but pretending it's
+         * valid (old behavior) is worse than skipping a frame. */
         if (overflow){
-            LOGW(MOD,"chn%d: JPEG buffer overflow (cap=%zu) - dropping truncated frame",
-                 jc->chn, jcap);
+            LOGW(MOD,"chn%d: JPEG exceeds max buffer (cap=%zu, need=%zu) - dropping frame",
+                 jc->chn, jcap, jneed);
             IMP_Encoder_ReleaseStream(jc->chn,&st);
             continue;
         }
