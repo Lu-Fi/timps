@@ -6,6 +6,31 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.6.4] - 2026-07-29
+
+### Added
+- **`{bitrate}` OSD text placeholder.** Reports the live measured
+  throughput (kbit/s) of the monitored stream, mirroring the existing
+  `{fps}` placeholder's mechanism and style. Shows `0` when the encoder
+  has no active consumer rather than a frozen last-seen value.
+
+### Fixed
+- **JPEG snapshot/MJPEG/WebUI preview going permanently dark once a scene
+  crosses a detail threshold.** `jpeg_thread()`'s buffer starts at a
+  ~0.5 byte/pixel estimate, bounded to `[MS_JPEG_BUF_MIN, MS_JPEG_BUF_MAX]`
+  — same class of bug as the `[1.6.1]` AU buffer fix, but unlike a video
+  frame, nothing here shrinks a JPEG scene back down once it crosses the
+  estimate (e.g. daylight bringing out more detail than a dawn/dusk
+  scene), so every frame overflowed and got dropped forever from that
+  point on: snapshots returned "no frame", MJPEG and the WebUI preview
+  went dark, while day/night switching and RTSP video kept working fine
+  (different codec/buffer entirely) — easy to mistake for a day/night bug
+  from the WebUI. Now sums the pack lengths before assembly and grows the
+  buffer (bounded by `MS_JPEG_BUF_MAX`) to fit the real frame, same as the
+  AU buffer. Verified on real hardware (Galayou Y4, T23n): `/snapshot.jpg`
+  went from HTTP 503 "no frame" with continuous buffer-overflow log spam
+  to a valid ~450KB daytime JPEG, no overflow since.
+
 ## [1.6.3] - 2026-07-28
 
 ### Fixed
