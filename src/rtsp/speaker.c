@@ -25,7 +25,10 @@
 #endif
 
 #define MOD "spk"
-#define SPK_RS_CAP 16384
+#define SPK_RS_CAP 16384             /* initial resample scratch (samples) */
+/* growth ceiling: the largest legitimate resample output is an 8192-sample
+ * backchannel block (bc's g_pcm) stretched 8 kHz -> 48 kHz */
+#define SPK_RS_MAX (8192*6)
 
 /* -------- ownership + AO device state (the single arbiter) ---------------- */
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -34,7 +37,30 @@ static int   g_out_rate   = 16000;   /* preferred AO rate */
 static int   g_ao_rate    = 0;       /* rate the AO was actually opened at */
 static int   g_ao_open    = 0;       /* HAL AO is up */
 static int   g_bc_active  = 0;       /* backchannel currently owns/preempts */
-static int16_t g_rs[SPK_RS_CAP];     /* resample scratch, only touched under g_lock */
+static int16_t *g_rs      = NULL;    /* resample scratch, only touched under g_lock */
+static int      g_rs_cap  = 0;       /* samples */
+
+/* Size the scratch to the ACTUAL resample output before converting - same fix
+ * pattern as the AU/JPEG assembly buffers (commits 8128201/cdf0eff):
+ * ms_resample() silently clamps its output to the buffer, so a fixed 16384
+ * cap dropped the tail of EVERY block once out_rate > 4x src_rate (e.g. an
+ * 8 kHz ulaw sound played with audio.backchannel_rate=48000: each 4096-frame
+ * decode block needs 24576 samples) - systematically garbled audio that never
+ * self-corrects. Grow (bounded by SPK_RS_MAX) to fit; on OOM keep the old
+ * buffer and accept the clamp as the last resort. Caller holds g_lock. */
+static int rs_fit(int nsamp, int src_rate, int out_rate)
+{
+    size_t need = (size_t)nsamp;
+    if (src_rate > 0 && out_rate > src_rate)
+        need = (size_t)nsamp * (size_t)out_rate / (size_t)src_rate + 2;
+    if (need < SPK_RS_CAP) need = SPK_RS_CAP;
+    if (need > SPK_RS_MAX) need = SPK_RS_MAX;
+    if ((int)need > g_rs_cap){
+        int16_t *nb = (int16_t*)realloc(g_rs, need * sizeof(int16_t));
+        if (nb){ g_rs = nb; g_rs_cap = (int)need; }
+    }
+    return g_rs_cap;
+}
 
 #ifdef USE_PLAY
 static const char g_play_tok = 0;    /* sentinel owner value for the play queue */
@@ -82,8 +108,9 @@ void speaker_write_pcm(const void *owner, const int16_t *pcm, int nsamp, int src
         g_owner = owner; g_bc_active = 1;
         LOGI(MOD, "speaker owner acquired (backchannel, %d Hz)", g_ao_rate);
     }
-    int rn = ms_resample(pcm, nsamp, src_rate, g_ao_rate, g_rs, SPK_RS_CAP);
-    hal_ao_write(g_rs, rn);
+    int rcap = rs_fit(nsamp, src_rate, g_ao_rate);
+    int rn = ms_resample(pcm, nsamp, src_rate, g_ao_rate, g_rs, rcap);
+    if (rn > 0) hal_ao_write(g_rs, rn);
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -317,7 +344,8 @@ static int play_write(int frames, int src_rate, int vol, int gain)
         if (gain >= 0) hal_ao_set_gain(gain);
         LOGI(MOD, "speaker owner acquired (play, %d Hz)", g_ao_rate);
     }
-    int rn = ms_resample(g_dec, frames, src_rate, g_ao_rate, g_rs, SPK_RS_CAP);
+    int rcap = rs_fit(frames, src_rate, g_ao_rate);
+    int rn = ms_resample(g_dec, frames, src_rate, g_ao_rate, g_rs, rcap);
     int rc = hal_ao_write(g_rs, rn);
     pthread_mutex_unlock(&g_lock);
     return rc;
