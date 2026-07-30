@@ -267,6 +267,17 @@ static void dn_sleep(int ms)
     }
 }
 
+/* Grace period after the thread (or a re-enable) starts sampling, before the
+ * very first day/night decision is trusted. IMP_ISP's AE hasn't converged
+ * yet at cold start, so total_gain can read a wild transient (observed:
+ * 15000-20000, easily over any reasonable night threshold) for the first
+ * fraction of a second - and since the first-ever switch bypasses the normal
+ * transition_s dwell (see below), that single bad sample used to commit
+ * straight to night on every boot/reboot regardless of actual light. */
+#ifndef DN_SETTLE_MS
+#define DN_SETTLE_MS 5000
+#endif
+
 static void *dn_thread(void *arg)
 {
     (void)arg;
@@ -276,6 +287,7 @@ static void *dn_thread(void *arg)
     float  hist[DN_SAMPLES];
     int    hidx = 0;
     int64_t last_switch_ms = 0;
+    int64_t settle_until_ms = ms_now_us() / 1000 + DN_SETTLE_MS;
     /* adaptive night baseline (raptor-style): gain sampled once, baseline_delay_s
      * after entering night (IR LEDs settled); night->day then triggers relative
      * to it. -1 = not sampled yet. */
@@ -330,6 +342,7 @@ static void *dn_thread(void *arg)
             was_enabled = 1;
             cur = DN_UNKNOWN;           /* mode may have been set manually */
             night_baseline = -1.0f;
+            settle_until_ms = ms_now_us() / 1000 + DN_SETTLE_MS;
             for (int i = 0; i < DN_SAMPLES; i++) hist[i] = 50.0f;
             LOGI(MOD, "auto day/night enabled");
         }
@@ -408,12 +421,15 @@ static void *dn_thread(void *arg)
         }
 
         if (target != cur && target != DN_UNKNOWN) {
-            /* minimum dwell between switches (first switch is immediate).
-             * CLOCK_MONOTONIC, not time(NULL): an NTP step after boot (typical
-             * on cameras) would make wall-clock deltas negative (switching
-             * stuck for the step size) or jump straight past the dwell (M12) */
+            /* minimum dwell between switches (first switch is immediate once
+             * past the AE-settle window below). CLOCK_MONOTONIC, not
+             * time(NULL): an NTP step after boot (typical on cameras) would
+             * make wall-clock deltas negative (switching stuck for the step
+             * size) or jump straight past the dwell (M12) */
             int64_t now_ms = ms_now_us() / 1000;
-            if (cur != DN_UNKNOWN &&
+            if (cur == DN_UNKNOWN && now_ms < settle_until_ms) {
+                LOGD(MOD, "AE settling, ignoring transient reading");
+            } else if (cur != DN_UNKNOWN &&
                 now_ms - last_switch_ms < (int64_t)dn->transition_s * 1000) {
                 LOGD(MOD, "transition delay not met, waiting");
             } else {
