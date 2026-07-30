@@ -399,7 +399,13 @@ static int isp_apply_image(const char *k)
     if (!strcmp(k,"running_mode")){
         IMPISPRunningMode m = im->running_mode ? IMPISP_RUNNING_MODE_NIGHT
                                                : IMPISP_RUNNING_MODE_DAY;
-        IMP_ISP_Tuning_SetISPRunningMode(IMPVI_MAIN,&m); return 1;
+        /* the SDK returns a status; a drop at the dusk day->night crossover left
+         * the sensor colour under IR while the config claimed night. It used to
+         * be ignored - surface it so an apply failure is visible, not silent. */
+        int rc = IMP_ISP_Tuning_SetISPRunningMode(IMPVI_MAIN,&m);
+        if (rc) LOGW(MOD,"SetISPRunningMode(%s) failed (rc=%d)",
+                     im->running_mode?"night":"day", rc);
+        return 1;
     }
     if (!strcmp(k,"anti_flicker")){ /* 0 off, 1 = 50 Hz, 2 = 60 Hz */
         IMPISPAntiflickerAttr fl; memset(&fl,0,sizeof fl);
@@ -432,8 +438,13 @@ static int isp_apply_image(const char *k)
     if (!strcmp(k,"vflip")){ IMP_ISP_Tuning_SetISPVflip((IMPISPTuningOpsMode)(im->vflip?1:0)); return 1; }
 #endif
     if (!strcmp(k,"running_mode")){
-        IMP_ISP_Tuning_SetISPRunningMode(im->running_mode ? IMPISP_RUNNING_MODE_NIGHT
-                                                          : IMPISP_RUNNING_MODE_DAY);
+        /* the SDK returns a status; a drop at the dusk day->night crossover left
+         * the sensor colour under IR while the config claimed night. It used to
+         * be ignored - surface it so an apply failure is visible, not silent. */
+        int rc = IMP_ISP_Tuning_SetISPRunningMode(im->running_mode ? IMPISP_RUNNING_MODE_NIGHT
+                                                                   : IMPISP_RUNNING_MODE_DAY);
+        if (rc) LOGW(MOD,"SetISPRunningMode(%s) failed (rc=%d)",
+                     im->running_mode?"night":"day", rc);
         return 1;
     }
     if (!strcmp(k,"anti_flicker")){ /* enum: 0 off, 1 = 50 Hz, 2 = 60 Hz */

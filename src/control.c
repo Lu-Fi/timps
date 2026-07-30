@@ -189,7 +189,24 @@ static void timps_apply_setting(ctrl_changes *ch, const char *key, const char *r
     if (known) config_get_kv(&g_cfg, key, after, sizeof after);
     config_str_unlock();
     if (known && !strcmp(before, after)){
-        LOGD(MOD,"unchanged %s = %s (skipped)", key, val);
+        /* image.running_mode is a hardware-SYNC command to the ISP, not just a
+         * stored value: the ISP's actual day/night state can drift from our
+         * config model. A SetISPRunningMode issued at the dusk day->night
+         * crossover (while AE is still ramping) is accepted but does not always
+         * latch, leaving the sensor in colour mode under IR (magenta cast) even
+         * though our config - and the board day/night script's "color off",
+         * which re-POSTs the SAME running_mode=1 - already say night. Plain
+         * change-detection then swallowed that re-POST, so re-asserting the mode
+         * (manually or from the script) was impossible: the only way to recover
+         * was a full toggle. Re-drive the ISP on a no-change running_mode POST so
+         * a repeat call actually re-asserts the mode, but skip the flash persist
+         * (nothing changed) so a client re-posting it every few seconds still
+         * cannot hammer the config file. Every other key keeps the plain skip. */
+        if (!strcmp(key,"image.running_mode")){
+            hub_control(key, val);       /* re-assert to the ISP, no re-persist */
+            LOGD(MOD,"re-applied %s = %s to HAL (unchanged, not persisted)", key, val);
+        } else
+            LOGD(MOD,"unchanged %s = %s (skipped)", key, val);
         return;
     }
 
