@@ -81,12 +81,17 @@ typedef IMPEncoderCHNAttr IMPEncoderChnAttr;
 #ifndef MS_AU_BUF_MAX
 #define MS_AU_BUF_MAX (1024*1024)
 #endif
-/* JPEG assembly buffer (was a fixed 512 KB static) */
+/* JPEG assembly buffer (was a fixed 512 KB static). MAX matches MS_AU_BUF_MAX:
+ * a real detail-heavy 1920x1080 q75 outdoor daytime scene was observed
+ * needing ~800-820 KB (Galayou Y4), consistently exceeding the old 512 KB
+ * cap on every single frame - the v1.6.4 growth fix correctly reported and
+ * dropped each one instead of corrupting output, but the cap itself was too
+ * low to ever succeed for this camera's actual content. */
 #ifndef MS_JPEG_BUF_MIN
 #define MS_JPEG_BUF_MIN (96*1024)
 #endif
 #ifndef MS_JPEG_BUF_MAX
-#define MS_JPEG_BUF_MAX (512*1024)
+#define MS_JPEG_BUF_MAX (1024*1024)
 #endif
 /* Audio input buffering. The Ingenic AI delivers a frame only once usrFrmDepth
  * frames are cached, so this depth IS the audio latency (depth x 40 ms). It was
