@@ -611,6 +611,14 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
      * lat/long before trusting the math. "--:--" for polar day/night. */
     char sun_sr[8]="--:--", sun_ss[8]="--:--";
     daynight_sun_status(sun_sr, sun_ss, sizeof sun_sr);
+    /* time_night_start/time_day_start are runtime-mutable via POST: snapshot
+     * them under the config string lock (recursive, so safe even when the
+     * caller already holds it for a get-apply-get sequence) */
+    char tns[sizeof d->time_night_start], tds[sizeof d->time_day_start];
+    config_str_lock();
+    snprintf(tns, sizeof tns, "%s", d->time_night_start);
+    snprintf(tds, sizeof tds, "%s", d->time_day_start);
+    config_str_unlock();
     return snprintf(buf, cap,
         "{\"enabled\":%d,\"mode\":%d,\"brightness\":%.1f,\"total_gain\":%.0f,"
         "\"ae_luma\":%.0f,\"total_gain_day_threshold\":%g,"
@@ -624,7 +632,7 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
         (double)d->total_gain_day_threshold,
         (double)d->total_gain_night_threshold,
         d->day_gain_pct, d->baseline_delay_s, dnmode,
-        d->time_night_start, d->time_day_start,
+        tns, tds,
         (double)d->sun_latitude, (double)d->sun_longitude,
         d->sun_sunrise_offset_min, d->sun_sunset_offset_min,
         sun_sr, sun_ss);

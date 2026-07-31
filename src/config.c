@@ -29,6 +29,8 @@ const char *g_cfg_path = NULL;   /* config file in use, set by config_load() */
  *   - sensor.model                  (sensor.model)
  *   - record.dir, record.name       (record.dir / record.name)
  *   - timelapse.dir, timelapse.name (timelapse.dir / timelapse.name)
+ *   - daynight.time_night_start,    (daynight.time_night_start /
+ *     daynight.time_day_start        daynight.time_day_start)
  * Everything else in g_cfg is either an int/enum (aligned word reads, no
  * tearing) or only ever written at startup (config_load/
  * config_sensor_finalize, single-threaded before any other thread runs), so
@@ -902,8 +904,16 @@ int config_get_kv(const ms_config *c, const char *key, char *out, size_t cap)
         if(!strcmp(k,"enabled")) snprintf(out,cap,"%d",d->enabled);
         else if(!strcmp(k,"mode")) snprintf(out,cap,"%s",
             d->mode==DN_MODE_TIME?"time":d->mode==DN_MODE_SUN?"sun":"sensor");
-        else if(!strcmp(k,"time_night_start")) snprintf(out,cap,"%s",d->time_night_start);
-        else if(!strcmp(k,"time_day_start")) snprintf(out,cap,"%s",d->time_day_start);
+        else if(!strcmp(k,"time_night_start")){
+            config_str_lock();
+            snprintf(out,cap,"%s",d->time_night_start);
+            config_str_unlock();
+        }
+        else if(!strcmp(k,"time_day_start")){
+            config_str_lock();
+            snprintf(out,cap,"%s",d->time_day_start);
+            config_str_unlock();
+        }
         else if(!strcmp(k,"sun_latitude")) snprintf(out,cap,"%g",(double)d->sun_latitude);
         else if(!strcmp(k,"sun_longitude")) snprintf(out,cap,"%g",(double)d->sun_longitude);
         else if(!strcmp(k,"sun_sunrise_offset_min")) snprintf(out,cap,"%d",d->sun_sunrise_offset_min);
