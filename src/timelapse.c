@@ -6,8 +6,11 @@
  * JPEG source (same mapping as /snapshot.jpg?chn=N in mp4/httpd.c): prefer
  * the JPEG encoder piggybacked on timelapse.channel, fall back to the
  * dedicated jpeg.* channel, then to any stream with a piggyback encoder.
- * Subscribing keeps that JPEG encoder running (hub_active), so shots cost no
- * extra pipeline beyond the encoder that /snapshot.jpg would use anyway.
+ * Shots subscribe just-in-time like snapshot_jpg(): the pipeline is woken
+ * only long enough to deliver one fresh frame per interval, then released
+ * so the HAL idle-stop debounce shuts encoder + framesource back down -
+ * the old always-subscribed loop kept them running 24/7 and discarded
+ * interval_s*fps encodes per kept frame.
  * Retention: after each shot, *.jpg older than keep_days are pruned (emptied
  * directories are removed). */
 #include "timelapse.h"
@@ -178,12 +181,74 @@ static int shot_write(const ms_pkt *p)
 
 /* ---- thread ---- */
 
+/* Just-in-time frame grab, mirroring snapshot_jpg() (mp4/httpd.c:338):
+ * timps encodes nothing while idle, so subscribing to the JPEG hub source
+ * is what WAKES that encoder. The wait is split in two bounded halves of
+ * TL_SNAP_WAIT_MS each: the 1st covers an already-warm pipeline (next frame
+ * <= one JPEG frame interval away); the 2nd is only reached on a cold start
+ * and, for a piggyback source, additionally subscribes the parent VIDEO
+ * source - the exact on-demand start RTSP/fMP4 clients use - to bring the
+ * shared framesource/encoder group up. All subscriptions are dropped before
+ * returning, so the HAL idle-stop debounce (MS_IDLE_STOP_US, 2 s) shuts the
+ * pipeline back down between shots (encoder/framesource/ISP load between
+ * shots = 0, instead of interval_s*fps discarded encodes per kept frame;
+ * intervals below ~5 s stay within the debounce window, so short intervals
+ * do not churn start/stop). Freshness is inherent: the fanqueue only ever
+ * receives frames published AFTER the subscribe, and every JPEG is
+ * standalone - no keyframe wait needed. */
+#ifndef TL_SNAP_WAIT_MS
+#define TL_SNAP_WAIT_MS 1500
+#endif
+
+static ms_pkt *tl_pop_jpeg(fanqueue *q, int wait_ms)
+{
+    int64_t deadline = ms_now_us() + (int64_t)wait_ms*1000;
+    for (;;){
+        int64_t left_ms = (deadline - ms_now_us())/1000;
+        if (left_ms <= 0) return NULL;
+        ms_pkt *p = fanqueue_pop(q,(int)left_ms);
+        if (!p) return NULL;                       /* timed out */
+        if (p->media==MS_MEDIA_JPEG) return p;
+        pkt_unref(p);
+    }
+}
+
+static ms_pkt *tl_grab(int src)
+{
+    fanqueue q;
+    if (fanqueue_init(&q,TL_QCAP)) return NULL;
+    if (hub_subscribe(src,&q)!=0){ fanqueue_free(&q); return NULL; }
+    ms_pkt *p = tl_pop_jpeg(&q,TL_SNAP_WAIT_MS);
+    int vsrc=-1;                   /* helper video subscription (2nd half) */
+    fanqueue vq;
+    if (!p){
+        if (src > HUB_JPEG_SRC){   /* piggyback: HUB_JPEG_SRC_N(n) -> video n */
+            vsrc = src - (HUB_JPEG_SRC + 1);
+            /* tiny queue: the video frames themselves are discarded; the
+             * subscription only exists to wake the parent video pipeline */
+            if (fanqueue_init(&vq,2)!=0) vsrc=-1;
+            else if (hub_subscribe(vsrc,&vq)!=0){ fanqueue_free(&vq); vsrc=-1; }
+        }
+        p = tl_pop_jpeg(&q,TL_SNAP_WAIT_MS);
+    }
+    /* release the helper video subscription FIRST (taken last), then the
+     * JPEG one; once both are gone the HAL activity callback + idle-stop
+     * debounce return the camera to idle. */
+    if (vsrc>=0){ hub_unsubscribe(vsrc,&vq); fanqueue_free(&vq); }
+    hub_unsubscribe(src,&q);
+    fanqueue_free(&q);
+    return p;
+}
+
+/* re-try delay after a frameless grab (encoder cold-start hiccup); a failed
+ * WRITE (SD yanked/full) still waits the full interval like it always did */
+#define TL_RETRY_US (5*1000000LL)
+
 static void *tl_thread(void *arg)
 {
     (void)arg;
-    fanqueue q; int subscribed=0, sub_src=-1;
-    ms_pkt *latest=NULL;
     int64_t next_us=0;
+    int cur_src=-1;                 /* last announced source, -1 = idle */
 
     while (g_run){
         /* read the live config every pass so channel/interval changes from
@@ -192,45 +257,41 @@ static void *tl_thread(void *arg)
         int src = g_tc->timelapse.enabled ? jpeg_src(chn) : -1;
 
         if (src<0){
-            if (subscribed){
-                hub_unsubscribe(sub_src,&q); fanqueue_free(&q);
-                subscribed=0; sub_src=-1;
-            }
-            if (latest){ pkt_unref(latest); latest=NULL; }
+            if (cur_src>=0){ LOGI(MOD,"timelapse idle"); cur_src=-1; }
             next_us=0;
             usleep(300000);
             continue;
         }
-        /* source switched live -> drop the old subscription, re-open below */
-        if (subscribed && src!=sub_src){
-            hub_unsubscribe(sub_src,&q); fanqueue_free(&q);
-            subscribed=0; sub_src=-1;
-            if (latest){ pkt_unref(latest); latest=NULL; }
-        }
-        if (!subscribed){
-            if (fanqueue_init(&q,TL_QCAP)){ usleep(300000); continue; }
-            if (hub_subscribe(src,&q)!=0){ fanqueue_free(&q); usleep(500000); continue; }
-            subscribed=1; sub_src=src;
-            LOGI(MOD,"timelapse active (src=%d interval=%ds)",src,g_tc->timelapse.interval_s);
+        if (src!=cur_src){
+            LOGI(MOD,"timelapse active (src=%d interval=%ds, just-in-time)",
+                 src,g_tc->timelapse.interval_s);
+            cur_src=src;
         }
 
-        ms_pkt *p=fanqueue_pop(&q,200);
-        if (p){
-            if (p->media==MS_MEDIA_JPEG){ if (latest) pkt_unref(latest); latest=p; }
-            else pkt_unref(p);
+        int64_t now=ms_now_us();
+        if (!next_us) next_us=now;   /* first shot right after enable */
+        if (now < next_us){
+            /* sleep in <=300 ms slices: stays responsive to stop/config */
+            int64_t left=next_us-now;
+            usleep(left>300000 ? 300000 : (useconds_t)left);
+            continue;
         }
 
         int iv=g_tc->timelapse.interval_s; if (iv<1) iv=1;
-        int64_t now=ms_now_us();
-        if (!next_us) next_us=now;      /* first shot as soon as a frame is in */
-        if (latest && now>=next_us){
-            if (shot_write(latest)==0) prune();
+        int64_t retry = TL_RETRY_US < (int64_t)iv*1000000 ? TL_RETRY_US
+                                                          : (int64_t)iv*1000000;
+        ms_pkt *p=tl_grab(src);
+        if (p){
+            int ok = (shot_write(p)==0);
+            pkt_unref(p);
+            if (ok) prune();
             next_us = now + (int64_t)iv*1000000;
+        } else {
+            LOGW(MOD,"no frame from src=%d within %d ms - retrying in %ds",
+                 src, 2*TL_SNAP_WAIT_MS, (int)(retry/1000000));
+            next_us = now + retry;
         }
     }
-
-    if (subscribed){ hub_unsubscribe(sub_src,&q); fanqueue_free(&q); }
-    if (latest) pkt_unref(latest);
     return NULL;
 }
 
