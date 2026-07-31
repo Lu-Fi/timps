@@ -1,6 +1,7 @@
 /* fanqueue.h - bounded single-consumer queue of packet pointers.
- * Producer (HAL thread) never blocks: on overflow the oldest packet is
- * dropped. This guarantees a slow client can never stall the encoder. */
+ * Producer (HAL thread) never blocks: on overflow (slot cap or byte budget,
+ * FQ_MAX_BYTES) the oldest packet is dropped. This guarantees a slow client
+ * can never stall the encoder nor pin unbounded payload bytes. */
 #ifndef MS_FANQUEUE_H
 #define MS_FANQUEUE_H
 #include "frame.h"
@@ -10,6 +11,8 @@ typedef struct {
     ms_pkt        **slots;
     int             cap;
     int             head, tail, count;
+    size_t          bytes;         /* sum of slots[*]->len currently queued
+                                    * (byte budget, see FQ_MAX_BYTES) */
     pthread_mutex_t lock;
     pthread_cond_t  cond;
     int             closed;
