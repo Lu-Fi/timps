@@ -12,6 +12,7 @@
 #include "hal/hal.h"   /* hal_isp_total_gain(): ISP gain via the IMP API */
 
 #ifdef USE_DAYNIGHT
+#include "hub.h"       /* hub_control(): re-assert running_mode into the ISP */
 #include "events.h"   /* wake /events SSE subscribers on real changes */
 #include "log.h"
 #include "util.h"     /* ms_now_us(): monotonic clock for dwell/baseline (M12) */
@@ -278,6 +279,46 @@ static void dn_sleep(int ms)
 #define DN_SETTLE_MS 5000
 #endif
 
+/* Pre-switch hysteresis (raptor ric_poll_exposure style): the PRIMARY fix for
+ * the stuck-mode class of bug. WHY: image.running_mode is pushed into the ISP by
+ * the board 'color' script at the instant we switch. If we switch on the very
+ * first reading that crosses the threshold, that Set lands while the ISP is still
+ * mid its own gain-based day/night transition (the AE gain is ramping fast right
+ * at the crossover), and IMP_ISP_Tuning_SetISPRunningMode can be silently dropped
+ * (returns 0, config + GET /control + isp-m0 all keep claiming the requested
+ * mode, yet the ISP stays in the wrong colour pipeline for hours - grey scene in
+ * daylight, or IR-magenta at night). Fix it at the DECISION point: require the
+ * target to hold for DN_HYSTERESIS_MS of continuous polling before switching, so
+ * by the time we issue the Set the gain has already been stable in the new regime
+ * for several seconds and the fast part of the ramp is over. Applied uniformly to
+ * both directions and to the day_gain_pct adaptive-baseline night->day trigger
+ * (it operates on target!=cur, so it covers every trigger path). Composes with -
+ * does not replace - DN_SETTLE_MS (ignore the cold-start transient right after
+ * thread start/re-enable) and transition_s (minimum dwell between switches):
+ * cold-start-settle gates seeding the candidate, dwell gates the switch, and the
+ * hysteresis confirms the reading is stable, all three ANDed before dn_switch. */
+#ifndef DN_HYSTERESIS_MS
+#define DN_HYSTERESIS_MS  5000   /* target must hold this long before switching */
+#endif
+
+/* Post-switch re-assert, now DEFENSE-IN-DEPTH only (reduced). The pre-switch
+ * hysteresis above should keep the Set from landing mid-ramp in the first place;
+ * this is a small idempotent safety net kept because the stuck state could not be
+ * reproduced on the bench (so hysteresis alone is not yet PROVEN sufficient on
+ * this ISP) and the exact timing of the ISP's internal mode flip vs our delayed
+ * Set is not fully known. A couple of extra re-drives after the switch cost
+ * nothing (SetISPRunningMode is idempotent; hub_control re-applies to the HAL
+ * only, no config write). Remove once real dusk/dawn transitions confirm the
+ * hysteresis alone holds. Each re-assert reads the CURRENT desired mode from
+ * g_cfg (ing_control applies image.* from g_cfg, not the passed value) so apply,
+ * value and log agree and a manual override during the window wins. */
+#ifndef DN_REASSERT_MS
+#define DN_REASSERT_MS    8000   /* interval between re-asserts */
+#endif
+#ifndef DN_REASSERT_COUNT
+#define DN_REASSERT_COUNT 2      /* small safety net -> ~16 s post-switch */
+#endif
+
 static void *dn_thread(void *arg)
 {
     (void)arg;
@@ -288,6 +329,14 @@ static void *dn_thread(void *arg)
     int    hidx = 0;
     int64_t last_switch_ms = 0;
     int64_t settle_until_ms = ms_now_us() / 1000 + DN_SETTLE_MS;
+    /* pre-switch hysteresis (see DN_HYSTERESIS_MS): the candidate target we are
+     * currently confirming and when it first appeared. DN_UNKNOWN = no candidate. */
+    int     pending_target  = DN_UNKNOWN;
+    int64_t pending_since_ms = 0;
+    /* pending post-switch running-mode re-asserts (see DN_REASSERT_MS). The next
+     * one fires at reassert_at_ms (0 = none pending); reassert_left counts down. */
+    int64_t reassert_at_ms = 0;
+    int     reassert_left  = 0;
     /* adaptive night baseline (raptor-style): gain sampled once, baseline_delay_s
      * after entering night (IR LEDs settled); night->day then triggers relative
      * to it. -1 = not sampled yet. */
@@ -318,6 +367,26 @@ static void *dn_thread(void *arg)
         const ms_daynight_cfg *dn = &g_cfg.daynight;
         int interval = dn->interval_ms > 0 ? dn->interval_ms : 500;
 
+        /* fire a pending post-switch running-mode re-assert once it comes due,
+         * then re-arm the next one until the series is exhausted (see
+         * DN_REASSERT_MS / DN_REASSERT_COUNT). Dropped if auto was turned off in
+         * the meantime - the user may have taken manual control of the mode. */
+        if (reassert_at_ms && ms_now_us() / 1000 >= reassert_at_ms) {
+            if (dn->enabled) {
+                /* apply the CURRENT desired mode: ing_control applies image.*
+                 * from g_cfg, so read it here too (N3) - value, apply and log all
+                 * agree, and a manual override during the window is honoured. */
+                int rm = g_cfg.image.running_mode ? 1 : 0;
+                hub_control("image.running_mode", rm ? "1" : "0");
+                LOGI(MOD, "re-asserting running_mode=%d after switch (%d left)",
+                     rm, reassert_left - 1);
+            }
+            if (--reassert_left > 0)
+                reassert_at_ms = ms_now_us() / 1000 + DN_REASSERT_MS;
+            else
+                reassert_at_ms = 0;
+        }
+
         /* sample even in manual mode so GET /control always reports the live
          * brightness/total_gain (WebUI gain display + data collector).
          * total_gain: prefer the ISP's own IMP_ISP_Tuning_GetTotalGain (robust,
@@ -334,6 +403,7 @@ static void *dn_thread(void *arg)
             was_enabled = 0;
             cur = DN_UNKNOWN;           /* mode may be forced manually now */
             night_baseline = -1.0f;
+            pending_target = DN_UNKNOWN; pending_since_ms = 0;
             dn_status_update(b, tg, luma, DN_UNKNOWN);
             dn_sleep(interval);
             continue;
@@ -342,6 +412,7 @@ static void *dn_thread(void *arg)
             was_enabled = 1;
             cur = DN_UNKNOWN;           /* mode may have been set manually */
             night_baseline = -1.0f;
+            pending_target = DN_UNKNOWN; pending_since_ms = 0;
             settle_until_ms = ms_now_us() / 1000 + DN_SETTLE_MS;
             for (int i = 0; i < DN_SAMPLES; i++) hist[i] = 50.0f;
             LOGI(MOD, "auto day/night enabled");
@@ -421,26 +492,54 @@ static void *dn_thread(void *arg)
         }
 
         if (target != cur && target != DN_UNKNOWN) {
-            /* minimum dwell between switches (first switch is immediate once
-             * past the AE-settle window below). CLOCK_MONOTONIC, not
-             * time(NULL): an NTP step after boot (typical on cameras) would
-             * make wall-clock deltas negative (switching stuck for the step
-             * size) or jump straight past the dwell (M12) */
+            /* CLOCK_MONOTONIC, not time(NULL): an NTP step after boot (typical on
+             * cameras) would make wall-clock deltas negative (switching stuck for
+             * the step size) or jump straight past the timers (M12). */
             int64_t now_ms = ms_now_us() / 1000;
+
+            /* pre-switch hysteresis: track how long THIS candidate target has
+             * held continuously; a change of candidate restarts the clock. */
+            if (target != pending_target) {
+                pending_target  = target;
+                pending_since_ms = now_ms;
+            }
+
+            /* three guards, ANDed, each solving a distinct problem:
+             *  - cold-start settle: ignore the AE transient right after thread
+             *    start/re-enable, and do NOT let it seed the hysteresis candidate;
+             *  - dwell: minimum time between switches (transition_s);
+             *  - hysteresis: the candidate must have held DN_HYSTERESIS_MS so the
+             *    Set is not issued mid AE ramp. */
             if (cur == DN_UNKNOWN && now_ms < settle_until_ms) {
                 LOGD(MOD, "AE settling, ignoring transient reading");
+                pending_target  = DN_UNKNOWN;   /* don't confirm from a transient */
+                pending_since_ms = 0;
             } else if (cur != DN_UNKNOWN &&
                 now_ms - last_switch_ms < (int64_t)dn->transition_s * 1000) {
                 LOGD(MOD, "transition delay not met, waiting");
+            } else if (now_ms - pending_since_ms < (int64_t)DN_HYSTERESIS_MS) {
+                LOGD(MOD, "%s candidate, confirming (%lld/%d ms)", why,
+                     (long long)(now_ms - pending_since_ms), DN_HYSTERESIS_MS);
             } else {
                 dn_switch(target, why);
                 cur = target;
-                last_switch_ms = now_ms;
+                last_switch_ms  = now_ms;
+                pending_target  = DN_UNKNOWN;   /* candidate consumed */
+                pending_since_ms = 0;
+                /* arm the small post-switch re-assert safety net (defense-in-
+                 * depth, see DN_REASSERT_MS/COUNT). */
+                reassert_left  = DN_REASSERT_COUNT;
+                reassert_at_ms = now_ms + DN_REASSERT_MS;
                 /* (re)arm the adaptive baseline: sample it a while after we
                  * enter night, once the IR LEDs have settled; clear on day */
                 night_baseline = -1.0f;
                 night_entered_ms = (target == DN_NIGHT) ? now_ms : 0;
             }
+        } else {
+            /* reading is back in (or never left) the current regime: abandon any
+             * half-confirmed candidate so a brief excursion never accumulates. */
+            pending_target  = DN_UNKNOWN;
+            pending_since_ms = 0;
         }
 
         /* sample the night gain baseline once, after the IR LEDs settle */

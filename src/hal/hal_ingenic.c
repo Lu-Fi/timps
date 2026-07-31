@@ -445,6 +445,15 @@ static int isp_apply_image(const char *k)
                                                                    : IMPISP_RUNNING_MODE_DAY);
         if (rc) LOGW(MOD,"SetISPRunningMode(%s) failed (rc=%d)",
                      im->running_mode?"night":"day", rc);
+        /* DIAGNOSTIC (LOGD, off by default): read the mode straight back. NOTE
+         * GetISPRunningMode is a libimp userspace value (no kernel read path on
+         * T23) - it echoes the last Set, so this can NOT prove the pipeline
+         * latched; it only helps spot a gross SDK disagreement if one ever shows
+         * up during a stuck recurrence with debug logging enabled. */
+        { IMPISPRunningMode gm = (IMPISPRunningMode)-1;
+          int gr = IMP_ISP_Tuning_GetISPRunningMode(&gm);
+          LOGD(MOD,"running_mode set=%d GetISPRunningMode->%d (rc=%d, cached echo)",
+               im->running_mode?1:0, (gr==0)?(int)gm:-1, gr); }
         return 1;
     }
     if (!strcmp(k,"anti_flicker")){ /* enum: 0 off, 1 = 50 Hz, 2 = 60 Hz */
