@@ -34,6 +34,16 @@
 #ifndef MS_RTSP_QCAP
 #define MS_RTSP_QCAP 64
 #endif
+/* A3: RTSP session keepalive timeout, advertised as ";timeout=" in every
+ * SETUP response's Session header (RFC 2326 12.37; 60 s is also the RFC
+ * default when the parameter is absent, so this only makes explicit what
+ * clients already assume - ffmpeg/live555/VLC read it and send keepalives
+ * at timeout/2). Enforcement is UDP-transport only and deliberately lax at
+ * 2x the advertised value: a well-behaved client pings every 30 s, so it
+ * gets four missed keepalives of grace before the session is reaped. */
+#ifndef RTSP_SESSION_TIMEOUT_S
+#define RTSP_SESSION_TIMEOUT_S 60
+#endif
 
 static volatile int g_nclients;   /* current client count (sync builtins) */
 
@@ -474,8 +484,8 @@ static int handle_request(session *s, char *req)
                 if (cc<0||cc>255) cc = rc<255 ? rc+1 : 0;
                 s->bc_chan_rtp = rc; s->tcp=1; s->have_bc=1;
                 snprintf(bextra,sizeof bextra,
-                    "Transport: RTP/AVP/TCP;unicast;interleaved=%d-%d\r\nSession: %s\r\n",
-                    rc,cc,s->session);
+                    "Transport: RTP/AVP/TCP;unicast;interleaved=%d-%d\r\nSession: %s;timeout=%d\r\n",
+                    rc,cc,s->session,RTSP_SESSION_TIMEOUT_S);
             } else {
                 int cp=0,cp2=0; const char *cpp=tr?strstr(tr,"client_port="):NULL;
                 if (cpp) sscanf(cpp+12,"%d-%d",&cp,&cp2);
@@ -492,8 +502,8 @@ static int handle_request(session *s, char *req)
                 if (fl>=0) fcntl(s->bc_udp[0],F_SETFL,fl|O_NONBLOCK);
                 s->have_bc=1;
                 snprintf(bextra,sizeof bextra,
-                    "Transport: RTP/AVP;unicast;client_port=%d-%d;server_port=%d-%d\r\nSession: %s\r\n",
-                    cp,cp2, base,base+1, s->session);
+                    "Transport: RTP/AVP;unicast;client_port=%d-%d;server_port=%d-%d\r\nSession: %s;timeout=%d\r\n",
+                    cp,cp2, base,base+1, s->session,RTSP_SESSION_TIMEOUT_S);
             }
             send_resp(s, cseq, bextra, NULL);
             return 0;
@@ -515,8 +525,8 @@ static int handle_request(session *s, char *req)
             s->tcp=1;
             if (is_audio) s->have_audio=1; else s->have_video=1;
             snprintf(extra,sizeof extra,
-                "Transport: RTP/AVP/TCP;unicast;interleaved=%d-%d\r\nSession: %s\r\n",
-                rc,cc,s->session);
+                "Transport: RTP/AVP/TCP;unicast;interleaved=%d-%d\r\nSession: %s;timeout=%d\r\n",
+                rc,cc,s->session,RTSP_SESSION_TIMEOUT_S);
         } else {
             /* UDP */
             int cp=0, cp2=0;
@@ -552,8 +562,8 @@ static int handle_request(session *s, char *req)
             snk->dst_rtcp=s->peer; snk->dst_rtcp.sin_port=htons((uint16_t)cp2);
             if (is_audio) s->have_audio=1; else s->have_video=1;
             snprintf(extra,sizeof extra,
-                "Transport: RTP/AVP;unicast;client_port=%d-%d;server_port=%d-%d\r\nSession: %s\r\n",
-                cp,cp2, base,base+1, s->session);
+                "Transport: RTP/AVP;unicast;client_port=%d-%d;server_port=%d-%d\r\nSession: %s;timeout=%d\r\n",
+                cp,cp2, base,base+1, s->session,RTSP_SESSION_TIMEOUT_S);
         }
         send_resp(s, cseq, extra, NULL);
         return 0;
@@ -653,6 +663,18 @@ static void stream_loop(session *s)
     char ctl[2048]; int ctlhave = 0;
     int got_key = 0;   /* start clients on a keyframe for clean decode */
     int pop_ms = 100;
+    /* A3: last proof-of-life from the client. UDP-transport sessions are
+     * otherwise undetectably dead: sendto() on an unconnected UDP socket
+     * never fails (no ICMP errors delivered), so a client that vanished
+     * without TEARDOWN (crash, power loss, network partition) would stream
+     * into the void forever and pin one of RTSP_MAX_CLIENTS slots until a
+     * daemon restart. Any control-channel bytes (requests, interleaved '$'
+     * frames), received backchannel RTP, or an RTCP packet from the peer
+     * counts as activity. TCP-interleaved sessions are exempt: a dead TCP
+     * peer already trips SO_SNDTIMEO (15 s) on the media writes, while an
+     * alive-but-silent one (ffmpeg over TCP sends nothing after PLAY) must
+     * NOT be reaped for never sending keepalives. */
+    int64_t last_act_us = ms_now_us();
 #ifdef USE_BACKCHANNEL
     /* poll faster when receiving a backchannel so speaker audio isn't delayed
      * by up to a full 100ms media-idle tick (~one G.711 packet interval) */
@@ -701,6 +723,7 @@ static void stream_loop(session *s)
                                       (struct sockaddr*)&from, &fl);
                 if (bn <= 0) break;
                 if (from.sin_addr.s_addr != s->peer.sin_addr.s_addr) continue;
+                last_act_us = ms_now_us();   /* A3: talk-only UDP sessions */
                 bc_feed_rtp(s, bpkt, (int)bn);
             }
         }
@@ -723,6 +746,7 @@ static void stream_loop(session *s)
         int n = r_recv(s, ctl+ctlhave, (int)sizeof(ctl)-1-ctlhave, 1);
         if (n==0) break;                         /* peer closed */
         if (n>0) {
+            last_act_us = now;                   /* A3: client is alive */
             ctlhave += n; ctl[ctlhave]=0;
             int close_conn = 0, progressed;
             do {
@@ -777,6 +801,32 @@ static void stream_loop(session *s)
             if (ctlhave >= (int)sizeof(ctl)-1) break;
         } else if (errno!=EAGAIN && errno!=EWOULDBLOCK) {
             break;
+        }
+
+        /* A3: UDP-transport liveness. Drain the server RTCP sockets - the
+         * kernel otherwise just fills and drops (B3), and a receiver report
+         * from the peer is the natural "still listening" signal for clients
+         * that keep RTCP running but skip RTSP keepalives. Contents are not
+         * parsed; a datagram from the peer's address is proof enough. */
+        if (!s->tcp) {
+            for (int t = 0; t < 2; t++) {
+                int rfd = t ? s->a_udp[1] : s->v_udp[1];
+                if (rfd < 0) continue;
+                uint8_t rr[512];
+                struct sockaddr_in from; socklen_t fl = sizeof from;
+                while (recvfrom(rfd, rr, sizeof rr, MSG_DONTWAIT,
+                                (struct sockaddr*)&from, &fl) > 0) {
+                    if (from.sin_addr.s_addr == s->peer.sin_addr.s_addr)
+                        last_act_us = now;
+                    fl = sizeof from;
+                }
+            }
+            if (now - last_act_us >
+                (int64_t)RTSP_SESSION_TIMEOUT_S * 2 * 1000000) {
+                LOGW(MOD,"session=%s idle >%ds (UDP client gone without "
+                     "TEARDOWN), reaping", s->session, RTSP_SESSION_TIMEOUT_S*2);
+                break;
+            }
         }
     }
 
