@@ -998,7 +998,7 @@ static void *accept_thread(void *arg)
     LOGI(MOD,"listening on port %d", h->cfg->http_port);
     while (h->run) {
         struct sockaddr_in peer; socklen_t pl=sizeof peer;
-        int fd = accept(h->lfd,(struct sockaddr*)&peer,&pl);
+        int fd = net_accept_cloexec(h->lfd,(struct sockaddr*)&peer,&pl);
         if (fd<0){ if(h->run) usleep(50000); continue; }
         /* H2: bounded I/O - a silent client (or one that stops reading) must
          * time out in recv()/send() instead of pinning this slot's thread
