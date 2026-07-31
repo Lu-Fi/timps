@@ -347,6 +347,23 @@ static void send_resp(session *s, int cseq, const char *extra, const char *body)
     r_send(s, hdr, n);
 }
 
+/* A1: error twin of send_resp() - every response, including 4xx/5xx, must
+ * echo the client's CSeq (RFC 2326 12.17). live555-derived stacks match
+ * responses to requests via CSeq and time out instead of failing cleanly
+ * when it's missing. extra (optional) carries additional headers, each
+ * CRLF-terminated, e.g. "Allow: ...\r\n". */
+static void send_err(session *s, int cseq, int code, const char *reason,
+                     const char *extra)
+{
+    char hdr[512];
+    int n = snprintf(hdr, sizeof hdr,
+        "RTSP/1.0 %d %s\r\nCSeq: %d\r\n%s\r\n",
+        code, reason, cseq, extra?extra:"");
+    if (n < 0) return;
+    if (n >= (int)sizeof hdr) n = (int)sizeof hdr - 1;
+    r_send(s, hdr, n);
+}
+
 /* copy the Authorization header value (up to CRLF) into out */
 static void get_auth_hdr(const char *req, char *out, int outsz)
 {
@@ -405,7 +422,7 @@ static int handle_request(session *s, char *req)
     if (!rtsp_check_auth(s, req)) { rtsp_send_401(s, cseq); return 0; }
     if (!strncmp(req, "DESCRIBE", 8)) {
         int vchn = find_video_by_path(s->cfg, path);
-        if (vchn < 0) { r_send(s,"RTSP/1.0 404 Not Found\r\n\r\n",26); return -1; }
+        if (vchn < 0) { send_err(s, cseq, 404, "Not Found", NULL); return -1; }
         s->vchn = vchn;
         /* ensure params exist quickly */
         hub_request_idr(vchn);
@@ -415,10 +432,9 @@ static int handle_request(session *s, char *req)
         { const char *rq = hdr_find(req, "Require"); want_bc = rq && strstr(rq,"backchannel"); }
         /* RFC2326 12.32 / ONVIF: a required feature we can't honour -> 551 */
         if (want_bc && !(s->cfg->audio.backchannel && bc_available())){
-            char h[160]; int hn=snprintf(h,sizeof h,
-                "RTSP/1.0 551 Option not supported\r\nCSeq: %d\r\n"
-                "Unsupported: www.onvif.org/ver20/backchannel\r\n\r\n", cseq);
-            r_send(s, h, hn); return 0;
+            send_err(s, cseq, 551, "Option not supported",
+                "Unsupported: www.onvif.org/ver20/backchannel\r\n");
+            return 0;
         }
 #endif
         char sdp[2600]; gen_sdp(s, s->cfg, vchn, sdp, sizeof sdp, want_bc);
@@ -433,8 +449,7 @@ static int handle_request(session *s, char *req)
         /* no valid video source -> refuse; otherwise vchn==-1 would index
          * c->video[-1] (OOB) later in stream_loop */
         if (s->vchn < 0) {
-            const char *e404 = "RTSP/1.0 404 Not Found\r\n\r\n";
-            r_send(s, e404, (int)strlen(e404));
+            send_err(s, cseq, 404, "Not Found", NULL);
             return -1;
         }
         if (!s->session[0]) {
@@ -449,9 +464,7 @@ static int handle_request(session *s, char *req)
             if (!s->cfg->audio.backchannel || !bc_available()){
                 /* refuse just this track, keep the connection (video/audio may
                  * already be SETUP on it) */
-                char e406[96]; int en=snprintf(e406,sizeof e406,
-                    "RTSP/1.0 406 Not Acceptable\r\nCSeq: %d\r\n\r\n", cseq);
-                r_send(s, e406, en); return 0;
+                send_err(s, cseq, 406, "Not Acceptable", NULL); return 0;
             }
             char bextra[256];
             if (tr && strstr(tr,"TCP")){
@@ -474,7 +487,7 @@ static int handle_request(session *s, char *req)
                     base = 6000 + ((rand()%8192)&~1);
                     bound = net_bind_udp_pair(&s->bc_udp[0], &s->bc_udp[1], base);
                 }
-                if (bound<0){ r_send(s,"RTSP/1.0 500 Internal\r\n\r\n",25); return -1; }
+                if (bound<0){ send_err(s, cseq, 500, "Internal Server Error", NULL); return -1; }
                 int fl=fcntl(s->bc_udp[0],F_GETFL,0);   /* poll without blocking PLAY */
                 if (fl>=0) fcntl(s->bc_udp[0],F_SETFL,fl|O_NONBLOCK);
                 s->have_bc=1;
@@ -532,7 +545,7 @@ static int handle_request(session *s, char *req)
                 bound = net_bind_udp_pair(&udp[0], &udp[1], base);
             }
             if (bound < 0){
-                r_send(s,"RTSP/1.0 500 Internal\r\n\r\n",25); return -1; }
+                send_err(s, cseq, 500, "Internal Server Error", NULL); return -1; }
             rtp_sink *snk = is_audio ? &s->asink : &s->vsink;
             snk->tcp=0; snk->fd=udp[0]; snk->fd_rtcp=udp[1];
             snk->dst=s->peer; snk->dst.sin_port=htons((uint16_t)cp);
@@ -553,8 +566,7 @@ static int handle_request(session *s, char *req)
 #endif
         if ((!any_track) ||
             (s->have_video && s->vchn < 0)) {
-            const char *e = "RTSP/1.0 455 Method Not Valid in This State\r\n\r\n";
-            r_send(s, e, (int)strlen(e));
+            send_err(s, cseq, 455, "Method Not Valid in This State", NULL);
             return -1;
         }
         /* the 200 OK is sent from stream_loop once hub_subscribe succeeded */
@@ -570,7 +582,9 @@ static int handle_request(session *s, char *req)
         send_resp(s, cseq, "", NULL);
         return -1;
     }
-    r_send(s,"RTSP/1.0 405 Method Not Allowed\r\n\r\n",35);
+    /* RFC 2326: 405 responses must carry Allow with the methods we accept */
+    send_err(s, cseq, 405, "Method Not Allowed",
+        "Allow: OPTIONS, DESCRIBE, SETUP, PLAY, TEARDOWN, GET_PARAMETER\r\n");
     return 0;
 }
 
@@ -580,8 +594,7 @@ static void stream_loop(session *s)
     /* guard against an invalid video channel (would read c->video[-1]) */
     if (s->have_video &&
         (s->vchn < 0 || s->vchn >= MS_MAX_VSTREAM || !c->video[s->vchn].enabled)) {
-        const char *e404 = "RTSP/1.0 404 Not Found\r\n\r\n";
-        r_send(s, e404, (int)strlen(e404));
+        send_err(s, s->play_cseq, 404, "Not Found", NULL);
         return;
     }
     int vc = s->have_video ? c->video[s->vchn].codec : MS_VC_H264;
@@ -738,6 +751,19 @@ static void stream_loop(session *s)
                         int cseq=hdr_int(ctl,"CSeq",0);
                         char e[64]; snprintf(e,sizeof e,"Session: %s\r\n",s->session);
                         send_resp(s,cseq,e,NULL);
+                    } else {
+                        /* A2: anything else (PAUSE, SET_PARAMETER, mid-session
+                         * DESCRIBE, ...) used to be dropped without ANY
+                         * response - RTSP is strictly request/response, so
+                         * VLC's pause button hung until its timeout and
+                         * SET_PARAMETER-keepalive NVRs declared the session
+                         * dead. Answer 405 listing what IS supported here;
+                         * the media session keeps running. */
+                        int cseq=hdr_int(ctl,"CSeq",0);
+                        char e[128]; snprintf(e,sizeof e,
+                            "Allow: OPTIONS, GET_PARAMETER, TEARDOWN\r\n"
+                            "Session: %s\r\n", s->session);
+                        send_err(s, cseq, 405, "Method Not Allowed", e);
                     }
                     memmove(ctl, ctl+reqlen, ctlhave-reqlen+1);
                     ctlhave -= (int)reqlen; progressed = 1;
@@ -761,10 +787,7 @@ static void stream_loop(session *s)
 full:
     /* source subscriber table full (> HUB_MAX_SUBS consumers) */
     if (sub_v) hub_unsubscribe(s->vchn, &s->q);
-    {
-        const char *e503 = "RTSP/1.0 503 Service Unavailable\r\n\r\n";
-        r_send(s, e503, (int)strlen(e503));
-    }
+    send_err(s, s->play_cseq, 503, "Service Unavailable", NULL);
     LOGW(MOD,"subscribe failed (source full), closing session=%s", s->session);
 }
 
