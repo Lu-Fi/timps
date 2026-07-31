@@ -346,7 +346,11 @@ static int play_write(int frames, int src_rate, int vol, int gain)
     }
     int rcap = rs_fit(frames, src_rate, g_ao_rate);
     int rn = ms_resample(g_dec, frames, src_rate, g_ao_rate, g_rs, rcap);
-    int rc = hal_ao_write(g_rs, rn);
+    /* N4: same rn>0 guard as speaker_write_pcm() - a zero/negative resample
+     * result is an empty block, not data; skip it instead of handing a bogus
+     * length to hal_ao_write(). */
+    int rc = 0;
+    if (rn > 0) rc = hal_ao_write(g_rs, rn);
     pthread_mutex_unlock(&g_lock);
     return rc;
 }
