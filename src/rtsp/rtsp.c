@@ -838,7 +838,7 @@ static void accept_loop(rtsp_server *sv, int lfd, int port, void *tls_ctx)
     LOGI(MOD,"listening on port %d%s", port, tls_ctx?" (RTSPS)":"");
     while (sv->run) {
         struct sockaddr_in peer; socklen_t pl=sizeof peer;
-        int cfd = accept(lfd, (struct sockaddr*)&peer, &pl);
+        int cfd = net_accept_cloexec(lfd, (struct sockaddr*)&peer, &pl);
         if (cfd<0){ if(sv->run) usleep(50000); continue; }
         /* H1: bounded control I/O - a client that connects and goes silent
          * (or stops reading) must time out instead of pinning this slot's

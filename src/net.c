@@ -51,6 +51,23 @@ int net_set_timeouts(int fd, int rcv_s, int snd_s)
     return rc;
 }
 
+/* accept() a TCP client with FD_CLOEXEC set (F2): the listeners and UDP media
+ * sockets above are already close-on-exec, but plain accept() does not inherit
+ * the flag, so board scripts forked by daynight/motion kept copies of every
+ * live RTSP/HTTP client socket (a closed client then stayed half-open, no FIN,
+ * for the script's lifetime). accept4(SOCK_CLOEXEC) sets it atomically - no
+ * window for another thread's fork() to slip between accept() and fcntl() -
+ * with a plain accept()+fcntl() fallback for kernels without accept4. */
+int net_accept_cloexec(int lfd, struct sockaddr *sa, socklen_t *sl)
+{
+    int fd = accept4(lfd, sa, sl, SOCK_CLOEXEC);
+    if (fd < 0 && (errno == ENOSYS || errno == EINVAL)) {
+        fd = accept(lfd, sa, sl);
+        if (fd >= 0) net_cloexec(fd);
+    }
+    return fd;
+}
+
 int net_listen_tcp(int port, int backlog)
 {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
