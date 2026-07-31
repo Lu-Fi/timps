@@ -118,7 +118,10 @@ static void prune(void)
     snprintf(dir,sizeof dir,"%s",g_tc->timelapse.dir);
     config_str_unlock();
     if (tl_path_unsafe(dir,NULL)) return;  /* never prune outside the tree (L10) */
-    char host[64]="camera"; gethostname(host,sizeof host);
+    /* F4: gethostname() may fail (fall back to a safe default) and on an
+     * overlong hostname is not guaranteed to NUL-terminate - force both. */
+    char host[64]; if (gethostname(host,sizeof host)!=0) strcpy(host,"camera");
+    host[sizeof host-1]=0;
     char base[208]; snprintf(base,sizeof base,"%s/%s/timelapses",dir,host);
     prune_old(base, time(NULL)-(time_t)days*86400, 0);
 }
@@ -156,7 +159,8 @@ static int shot_write(const ms_pkt *p)
     char rel[160]; time_t t=time(NULL); struct tm tmv; localtime_r(&t,&tmv);
     if (strftime(rel,sizeof rel,name,&tmv)==0)
         snprintf(rel,sizeof rel,"%ld",(long)t);
-    char host[64]="camera"; gethostname(host,sizeof host);
+    char host[64]; if (gethostname(host,sizeof host)!=0) strcpy(host,"camera");
+    host[sizeof host-1]=0;                     /* F4: see prune path above */
     char path[512], tmp[520];
     snprintf(path,sizeof path,"%s/%s/timelapses/%s.jpg",dir,host,rel);
     snprintf(tmp,sizeof tmp,"%s.tmp",path);

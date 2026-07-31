@@ -174,7 +174,11 @@ static void prune_free(void)
     snprintf(dir,sizeof dir,"%s",g_rc->record.dir);
     config_str_unlock();
     if (rec_path_unsafe(dir,NULL)) return;   /* never prune outside the tree (L10) */
-    char base[200]; char host[64]="camera"; gethostname(host,sizeof host);
+    /* F4: gethostname() may fail (fall back to a safe default) and on an
+     * overlong hostname is not guaranteed to NUL-terminate - force both. */
+    char base[200]; char host[64];
+    if (gethostname(host,sizeof host)!=0) strcpy(host,"camera");
+    host[sizeof host-1]=0;
     snprintf(base,sizeof base,"%s/%s/records",dir,host);
     for (int guard=0; guard<10000; guard++){
         long long fm=free_mb(dir);
@@ -228,7 +232,8 @@ static int seg_open(int chn)
     char rel[160]; time_t t=time(NULL); struct tm tmv; localtime_r(&t,&tmv);
     if (strftime(rel,sizeof rel,name,&tmv)==0)
         snprintf(rel,sizeof rel,"%ld",(long)t);
-    char host[64]="camera"; gethostname(host,sizeof host);
+    char host[64]; if (gethostname(host,sizeof host)!=0) strcpy(host,"camera");
+    host[sizeof host-1]=0;                     /* F4: see prune path above */
     char path[512];
     snprintf(path,sizeof path,"%s/%s/records/%s.mp4",dir,host,rel);
     mkdirs(path);
