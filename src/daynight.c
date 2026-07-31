@@ -347,10 +347,18 @@ static void *dn_thread(void *arg)
 
     { int m = g_cfg.daynight.mode;
       const char *ms = m==DN_MODE_TIME ? "time" : m==DN_MODE_SUN ? "sun" : "sensor";
+      /* the /control server is already up here: snapshot the runtime-mutable
+       * time window strings under the config string lock (see config.c) */
+      char tns[sizeof g_cfg.daynight.time_night_start];
+      char tds[sizeof g_cfg.daynight.time_day_start];
+      config_str_lock();
+      snprintf(tns, sizeof tns, "%s", g_cfg.daynight.time_night_start);
+      snprintf(tds, sizeof tds, "%s", g_cfg.daynight.time_day_start);
+      config_str_unlock();
       LOGI(MOD, "detection thread started (mode=%s, time night=%s day=%s, "
                 "sun lat=%g lon=%g off rise=%d set=%d min)",
-           ms, g_cfg.daynight.time_night_start[0]?g_cfg.daynight.time_night_start:"-",
-           g_cfg.daynight.time_day_start[0]?g_cfg.daynight.time_day_start:"-",
+           ms, tns[0]?tns:"-",
+           tds[0]?tds:"-",
            (double)g_cfg.daynight.sun_latitude, (double)g_cfg.daynight.sun_longitude,
            g_cfg.daynight.sun_sunrise_offset_min, g_cfg.daynight.sun_sunset_offset_min); }
     LOGI(MOD, "detection thread started (gain day<%g night>%g, "
@@ -436,9 +444,18 @@ static void *dn_thread(void *arg)
         char why[64];
         if (dn->mode == DN_MODE_TIME) {
             /* fixed local-clock window (localtime_r: this IS the user's wall
-             * clock). Reuses the same switch/dwell machinery below. */
+             * clock). Reuses the same switch/dwell machinery below.
+             * time_night_start/time_day_start are runtime-mutable via /control:
+             * snapshot them under the config string lock (see config.c
+             * g_str_lock comment), or a read racing copystr() can see a
+             * non-terminated buffer and sscanf() past the 6-byte field. */
             time_t now = time(NULL); struct tm lt; localtime_r(&now, &lt);
-            target = dn_time_target(dn->time_night_start, dn->time_day_start, &lt);
+            char tns[sizeof dn->time_night_start], tds[sizeof dn->time_day_start];
+            config_str_lock();
+            snprintf(tns, sizeof tns, "%s", dn->time_night_start);
+            snprintf(tds, sizeof tds, "%s", dn->time_day_start);
+            config_str_unlock();
+            target = dn_time_target(tns, tds, &lt);
             snprintf(why, sizeof why, "clock %02d:%02d", lt.tm_hour, lt.tm_min);
         } else if (dn->mode == DN_MODE_SUN) {
             /* today's real sunrise/sunset (+offsets) for the configured location */
