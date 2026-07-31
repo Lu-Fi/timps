@@ -871,12 +871,15 @@ static int au_is_key(int codec, const uint8_t *au, size_t len)
 static void *video_thread(void *arg)
 {
     vchan *vc = (vchan*)arg;
-    /* AU buffer sized from the resolution (~0.5 byte/pixel is generous for an
-     * IDR), bounded to [MS_AU_BUF_MIN, MS_AU_BUF_MAX]. Heap instead of a fixed
-     * 1 MB __thread array so small-RAM SoCs are not penalized per stream. */
-    size_t au_cap = (size_t)vc->w * (size_t)vc->h / 2;
-    if (au_cap < MS_AU_BUF_MIN) au_cap = MS_AU_BUF_MIN;
-    if (au_cap > MS_AU_BUF_MAX) au_cap = MS_AU_BUF_MAX;
+    /* AU buffer starts at MS_AU_BUF_MIN and grows on demand: the pre-size
+     * pass below reallocs from the actual pack lengths BEFORE copying, so a
+     * small start loses no frames - it only costs a few reallocs in the
+     * first seconds. The old w*h/2 estimate made a 1080p stream malloc the
+     * full 1 MB cap up front and hold it forever, ~3x the observed IDR peak
+     * (256-400 KB); now the buffer settles at that observed peak instead.
+     * Heap instead of a fixed __thread array so small-RAM SoCs are not
+     * penalized per stream. */
+    size_t au_cap = MS_AU_BUF_MIN;
     uint8_t *au = (uint8_t*)malloc(au_cap);
     if (!au){ LOGE(MOD,"chn%d: no memory for AU buffer (%zu)",vc->chn,au_cap); return NULL; }
     int receiving=0;
@@ -960,10 +963,9 @@ static void *video_thread(void *arg)
         if (IMP_Encoder_GetStream(vc->chn,&st,1)!=0){
             LOGW(MOD,"chn%d: GetStream failed after PollingStream OK",vc->chn); continue; }
         dbg_pollfail=0;
-        /* Pre-size the AU buffer to the actual frame. au_cap starts as a
-         * (~0.5 byte/pixel) estimate: fine for P-frames, but a complex IDR -
-         * especially on the substream, whose estimate is pinned at the
-         * MS_AU_BUF_MIN floor - routinely exceeds it. Summing the pack lengths
+        /* Pre-size the AU buffer to the actual frame. au_cap starts at the
+         * MS_AU_BUF_MIN floor: fine for P-frames, but a complex IDR (on the
+         * mainstream even a typical one) routinely exceeds it. Summing the pack lengths
          * up front lets us grow (bounded by MS_AU_BUF_MAX) so any real frame is
          * assembled intact. The old path instead dropped the frame AND forced
          * an IDR on overflow; since an IDR is the *largest* frame type, a single
