@@ -1,4 +1,4 @@
-/* auth.h - HTTP Basic + RTSP Digest authentication (no OpenSSL) */
+/* auth.h - HTTP Basic/Digest + RTSP Digest authentication (no OpenSSL) */
 #ifndef MS_AUTH_H
 #define MS_AUTH_H
 
@@ -17,6 +17,18 @@ int  auth_http_basic(const char *value, const char *user, const char *pass);
 int  auth_rtsp_digest(const char *method, const char *value,
                       const char *user, const char *pass,
                       const char *server_nonce);
+
+/* HTTP Digest (RFC 7616 qop="auth" and legacy RFC 2069 no-qop responses):
+ * validate an "Authorization: Digest ..." value against method+creds. On
+ * success the client-supplied nonce (and nc, empty for no-qop) are copied
+ * out - the CALLER must additionally verify that nonce is one it recently
+ * issued and that nc is fresh (httpd's nonce table), otherwise a sniffed
+ * Authorization header would verify forever. Returns 1 if the digest is
+ * cryptographically valid for user/pass. */
+int  auth_http_digest(const char *method, const char *value,
+                      const char *user, const char *pass,
+                      char *nonce_out, int nonce_cap,
+                      char *nc_out, int nc_cap);
 
 /* generate a fresh opaque nonce (32 hex chars + NUL) */
 void auth_make_nonce(char out[33]);
