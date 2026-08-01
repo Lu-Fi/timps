@@ -36,13 +36,23 @@ int auth_http_basic(const char *value, const char *user, const char *pass)
     return (t==0||t=='\r'||t=='\n'||t==' ');
 }
 
-/* extract key="value" (or key=value) from a digest header into out */
+/* extract key="value" (or key=value) from a digest header into out.
+ * The key must start at a parameter boundary (start of string or after
+ * space/comma/tab) and be followed by '=': plain strstr would let "nonce"
+ * match inside "cnonce=..." when a client orders cnonce first (parameter
+ * order is not fixed by the RFC), silently hashing the wrong value. */
 static int field(const char *hdr, const char *key, char *out, int outsz)
 {
-    char pat[32]; snprintf(pat,sizeof pat,"%s=",key);
-    const char *p=strstr(hdr,pat);
-    if (!p) return 0;
-    p+=strlen(pat);
+    size_t kl = strlen(key);
+    const char *p = hdr;
+    for (;;) {
+        p = strstr(p, key);
+        if (!p) return 0;
+        if ((p==hdr || p[-1]==' ' || p[-1]==',' || p[-1]=='\t') && p[kl]=='=')
+            break;
+        p += kl;
+    }
+    p += kl + 1;
     if (*p=='"'){ p++; const char *e=strchr(p,'"'); if(!e)return 0;
         int n=(int)(e-p); if(n>=outsz)n=outsz-1; memcpy(out,p,n); out[n]=0; return 1; }
     const char *e=p; while(*e&&*e!=','&&*e!=' '&&*e!='\r'&&*e!='\n')e++;
@@ -89,6 +99,57 @@ int auth_rtsp_digest(const char *method, const char *value,
     for (i=0; expect[i] && i+1<sizeof elow; i++) elow[i]=(char)tolower((unsigned char)expect[i]);
     elow[i]=0;
     return auth_token_eq(rlow, elow);
+}
+
+int auth_http_digest(const char *method, const char *value,
+                     const char *user, const char *pass,
+                     char *nonce_out, int nonce_cap,
+                     char *nc_out, int nc_cap)
+{
+    if (nonce_cap > 0) nonce_out[0] = 0;
+    if (nc_cap > 0) nc_out[0] = 0;
+    if (!value) return 0;
+    while (*value==' ') value++;
+    if (strncasecmp(value,"Digest ",7)!=0) return 0;
+    const char *d=value+7;
+    char u[64],realm[64],nonce[64],uri[256],resp[64],qop[16],nc[16],cnonce[128];
+    if (!field(d,"username",u,sizeof u)) return 0;
+    if (!field(d,"realm",realm,sizeof realm)) return 0;
+    if (!field(d,"nonce",nonce,sizeof nonce)) return 0;
+    if (!field(d,"uri",uri,sizeof uri)) return 0;
+    if (!field(d,"response",resp,sizeof resp)) return 0;
+    int has_qop = field(d,"qop",qop,sizeof qop);
+    if (has_qop) {
+        /* we only ever offer qop="auth" (never auth-int); nc + cnonce are
+         * mandatory companions of qop per RFC 7616 3.4 */
+        if (strcasecmp(qop,"auth")!=0) return 0;
+        if (!field(d,"nc",nc,sizeof nc)) return 0;
+        if (!field(d,"cnonce",cnonce,sizeof cnonce)) return 0;
+    }
+    if (strcmp(u,user)!=0) return 0;
+
+    char buf[768], ha1[33], ha2[33], expect[33];
+    snprintf(buf,sizeof buf,"%s:%s:%s",user,realm,pass);        md5_hex(buf,ha1);
+    snprintf(buf,sizeof buf,"%s:%s",method,uri);                md5_hex(buf,ha2);
+    if (has_qop)
+        snprintf(buf,sizeof buf,"%s:%s:%s:%s:auth:%s",ha1,nonce,nc,cnonce,ha2);
+    else                                            /* legacy RFC 2069 form */
+        snprintf(buf,sizeof buf,"%s:%s:%s",ha1,nonce,ha2);
+    md5_hex(buf,expect);
+    /* same constant-time hex-digest comparison as auth_rtsp_digest above
+     * (no strcasecmp early-exit timing leak on the secret-derived digest) */
+    char rlow[64], elow[64]; size_t i;
+    for (i=0; resp[i] && i+1<sizeof rlow; i++) rlow[i]=(char)tolower((unsigned char)resp[i]);
+    rlow[i]=0;
+    for (i=0; expect[i] && i+1<sizeof elow; i++) elow[i]=(char)tolower((unsigned char)expect[i]);
+    elow[i]=0;
+    if (!auth_token_eq(rlow, elow)) return 0;
+    /* hand the client-supplied nonce (+nc when qop) to the caller, which
+     * must still verify the nonce is one IT recently issued - without that
+     * a sniffed Authorization header verifies forever (see auth_rtsp_digest) */
+    snprintf(nonce_out,(size_t)nonce_cap,"%s",nonce);
+    if (has_qop) snprintf(nc_out,(size_t)nc_cap,"%s",nc);
+    return 1;
 }
 
 void auth_make_nonce(char out[33])

@@ -434,8 +434,84 @@ static void stream_mjpeg(hconn *c, int src, const char *bnd)
     fanqueue_free(&q);
 }
 
-/* returns 1 if the request carries valid Basic credentials (or auth disabled) */
-static int http_check_auth(const ms_config *cfg, const char *buf)
+/* --- Digest-auth nonce table --------------------------------------------
+ * HTTP here is one-connection-per-request ("Connection: close"), so a
+ * digest nonce cannot live in per-connection state the way the RTSP
+ * session's s->nonce does: the 401 that issues the nonce and the
+ * authenticated retry arrive on different connections. Track recently
+ * issued nonces in a small global ring instead (bounded memory; overflow
+ * just evicts the oldest outstanding challenge, whose client then gets a
+ * fresh 401 with stale=true and retries silently). Replay protection:
+ *   - qop=auth clients (RFC 7616/2617): nc must strictly increase per
+ *     nonce, so a sniffed (nonce,nc,response) triple is rejected on
+ *     replay while a legitimate client keeps reusing the nonce with
+ *     nc++ (NVR snapshot pollers) until the TTL expires;
+ *   - legacy RFC 2069 clients (no qop): the nonce is one-shot -
+ *     consumed by its first successful use, replays always fail.
+ * A stateless signed-timestamp nonce was rejected: replay REJECTION
+ * inherently needs per-nonce state (nc high-water / consumed flag); a
+ * pure MAC'd timestamp would accept a sniffed response for the whole
+ * validity window. Nonce values themselves come from auth_make_nonce()
+ * (/dev/urandom-backed, 128 bit). */
+#ifndef HTTP_NONCE_MAX
+#define HTTP_NONCE_MAX 32
+#endif
+#define HTTP_NONCE_TTL_US (300*1000000LL)          /* 5 min challenge life */
+
+static struct hnonce { char n[33]; int64_t born; uint64_t nc_hi; }
+                       g_nonces[HTTP_NONCE_MAX];
+static int             g_nonce_next;
+static pthread_mutex_t g_nonce_mx = PTHREAD_MUTEX_INITIALIZER;
+
+/* mint + remember a fresh challenge nonce for a 401 */
+static void http_new_nonce(char out[33])
+{
+    auth_make_nonce(out);
+    pthread_mutex_lock(&g_nonce_mx);
+    struct hnonce *e = &g_nonces[g_nonce_next];
+    g_nonce_next = (g_nonce_next + 1) % HTTP_NONCE_MAX;
+    snprintf(e->n, sizeof e->n, "%s", out);
+    e->born  = ms_now_us();
+    e->nc_hi = 0;
+    pthread_mutex_unlock(&g_nonce_mx);
+}
+
+/* nonce/nc freshness check for an already crypto-valid Digest response;
+ * consumes (no-qop) or advances (qop=auth) the entry under the lock.
+ * strcmp on the nonce is fine timing-wise: nonces are public values,
+ * sent in clear in every 401. */
+static int http_nonce_check(const char *nonce, const char *nc)
+{
+    int64_t now = ms_now_us();
+    int ok = 0;
+    pthread_mutex_lock(&g_nonce_mx);
+    for (int i = 0; i < HTTP_NONCE_MAX; i++) {
+        struct hnonce *e = &g_nonces[i];
+        if (!e->n[0]) continue;
+        if (now - e->born > HTTP_NONCE_TTL_US) { e->n[0] = 0; continue; }
+        if (strcmp(e->n, nonce) != 0) continue;
+        if (nc && nc[0]) {                         /* qop=auth: nc must grow */
+            char *end = NULL;
+            uint64_t v = strtoull(nc, &end, 16);
+            if (v > 0 && end && *end == 0 && v > e->nc_hi) { e->nc_hi = v; ok = 1; }
+        } else {                                   /* RFC 2069: one-shot */
+            e->n[0] = 0;
+            ok = 1;
+        }
+        break;
+    }
+    pthread_mutex_unlock(&g_nonce_mx);
+    return ok;
+}
+
+/* returns 1 if the request carries valid Basic or Digest credentials (or
+ * auth disabled). When a Digest response is cryptographically valid for
+ * the configured credentials but its nonce is not one we recently issued
+ * (expired/evicted/replayed), *digest_stale is set so the 401 advertises
+ * stale=true and the client re-handshakes without re-prompting the user
+ * (per RFC 7616 3.3 stale MUST only be sent when the creds were right). */
+static int http_check_auth(const ms_config *cfg, const char *buf,
+                           const char *method, int *digest_stale)
 {
     const char *user = cfg->http_user[0] ? cfg->http_user : cfg->rtsp_user;
     const char *pass = cfg->http_user[0] ? cfg->http_pass : cfg->rtsp_pass;
@@ -448,6 +524,15 @@ static int http_check_auth(const ms_config *cfg, const char *buf)
             char line[512]; int i=0;
             while (*p && *p!='\r' && *p!='\n' && i<(int)sizeof(line)-1) line[i++]=*p++;
             line[i]=0;
+            if (strncasecmp(line,"Digest",6)==0) {
+                char cn[64], nc[16];
+                if (!auth_http_digest(method, line, user, pass,
+                                      cn, sizeof cn, nc, sizeof nc))
+                    return 0;                      /* wrong user/pass/format */
+                if (http_nonce_check(cn, nc)) return 1;
+                if (digest_stale) *digest_stale = 1;
+                return 0;
+            }
             return auth_http_basic(line, user, pass);
         }
         const char *e=strchr(p,'\n'); if(!e)break; p=e+1;
@@ -865,15 +950,24 @@ static void *conn_thread(void *arg)
             }
 #endif
             /* global gate: localhost, a valid token (tok_ok is only ever
-             * set for /control, /events and the media endpoints), or Basic */
-            if (!c->local && !tok_ok && !http_check_auth(c->cfg, buf)) {
-                char r[768];
+             * set for /control, /events and the media endpoints), Digest
+             * or Basic. The 401 offers Digest first (with a fresh tracked
+             * nonce + qop="auth") and Basic second, so digest-capable
+             * clients upgrade while plain Basic pollers keep working. */
+            int stale = 0;
+            if (!c->local && !tok_ok &&
+                !http_check_auth(c->cfg, buf, method, &stale)) {
+                char nonce[33];
+                http_new_nonce(nonce);
+                char r[1024];
                 int rn = snprintf(r, sizeof r,
                     "HTTP/1.1 401 Unauthorized\r\n"
+                    "WWW-Authenticate: Digest realm=\"" AUTH_REALM "\", "
+                        "nonce=\"%s\", qop=\"auth\"%s\r\n"
                     "WWW-Authenticate: Basic realm=\"" AUTH_REALM "\"\r\n%s"
                     "Content-Length: 12\r\nConnection: close\r\n\r\nUnauthorized",
-                    cors);
-                csend(c, r, rn);
+                    nonce, stale ? ", stale=true" : "", cors);
+                if (rn < (int)sizeof r) csend(c, r, rn);
                 goto done;
             }
             if (!strcmp(path,"/") || !strncmp(path,"/?",2) || !strncmp(path,"/index.html",11))
@@ -1030,7 +1124,7 @@ static void *accept_thread(void *arg)
         c->tls_ctx = h->tls_ctx;   /* NULL unless http.https (USE_TLS) */
         __sync_fetch_and_add(&g_nconn, 1);
         pthread_t t;
-        if (pthread_create(&t,NULL,conn_thread,c)==0) pthread_detach(t);
+        if (ms_thread_create(&t,MS_STACK_CONN,conn_thread,c)==0) pthread_detach(t);
         else { close(fd); free(c); __sync_fetch_and_sub(&g_nconn, 1); }
     }
     return NULL;
@@ -1056,7 +1150,7 @@ httpd *httpd_start(const ms_config *cfg)
     }
 #endif
     h->run=1;
-    pthread_create(&h->thr,NULL,accept_thread,h);
+    ms_thread_create(&h->thr,MS_STACK_UTIL,accept_thread,h);
     return h;
 }
 
