@@ -18,6 +18,10 @@ typedef struct {
     int             closed;
     unsigned        dropped;
     int             dropped_key;   /* a video keyframe was dropped on overflow */
+    int             dropped_any;   /* ANY packet was dropped on overflow (incl.
+                                    * P-frames), read-and-clear separately from
+                                    * dropped_key so consumers can self-heal a
+                                    * mid-GOP P-frame gap too */
 } fanqueue;
 
 int   fanqueue_init(fanqueue *q, int cap);
@@ -33,6 +37,15 @@ void  fanqueue_close(fanqueue *q);
  * hub source) should call hub_request_idr() when this returns nonzero, so
  * clients don't decode garbage until the next natural GOP boundary. */
 int   fanqueue_take_dropped_key(fanqueue *q);
+/* read-and-clear the "any packet dropped" flag (keyframe OR P-frame). Mirrors
+ * fanqueue_take_dropped_key() but fires on any overflow eviction. A dropped
+ * P-frame silently corrupts the rest of the GOP for a frame-by-frame consumer
+ * just like a dropped keyframe does, but leaves no keyframe to trip
+ * dropped_key - so a consumer that decodes/displays every frame (RTSP) should
+ * also request an IDR here, RATE-LIMITED, since IDR requests are global to the
+ * shared encoder and a chronically slow client must not spike the bitrate for
+ * every other subscriber. */
+int   fanqueue_take_dropped(fanqueue *q);
 /* snapshot the current backlog under the lock: queued slot count, capacity
  * and queued payload bytes (any of the out-pointers may be NULL). Lets a
  * consumer detect its OWN sustained backlog (this client can't keep up) and
