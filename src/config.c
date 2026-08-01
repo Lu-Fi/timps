@@ -99,6 +99,17 @@ static int prot(const char *val){
     return r;
 }
 static float pflt(const char *v){ return (float)strtod(v, NULL); }
+/* F3: pflt with a sane range, same rationale as pint_cl() above. The !(x>=lo)
+ * form also catches NaN (all comparisons with NaN are false), so "nan" from a
+ * broken client lands on the lower rail instead of poisoning every float
+ * comparison in the consumer. */
+static float pflt_cl(const char *v, float lo, float hi)
+{
+    float x = pflt(v);
+    if (!(x >= lo))     x = lo;
+    else if (x > hi)    x = hi;
+    return x;
+}
 static uint32_t phex(const char *v){ return (uint32_t)strtoul(v, NULL, 0); }
 static int  pvcodec(const char *v){ return (!strcasecmp(v,"h265")||!strcasecmp(v,"hevc")) ? MS_VC_H265 : MS_VC_H264; }
 static int  pacodec(const char *v){
@@ -351,14 +362,15 @@ static const char *privacy_key(const char *key, int *stream, int *item)
  * F-03 (audio volume/gain/PGA/spk), F-04 (OSD logo dims/outline), H4
  * (font_size), L-1/L-2 (audio.bitrate 8..320), imp_isp.h domains (image.*
  * knobs 0..255, highlight/backlight 0..10, WB gains 0..65535), imp_audio.h
- * domains (ns 0..3, agc_target_dbfs 0..31, agc_compression_db 0..90).
+ * domains (ns 0..3, agc_target_dbfs 0..31, agc_compression_db 0..90),
+ * F3 2026-07-31 (daynight.* numerics, see daynight_fields).
  */
 enum {
     T_BOOL,     /* int:      pbool()                        <-> "%d"     */
     T_INT,      /* int:      pint(), clamped lo..hi if lo<hi <-> "%d"     */
     T_CHAN,     /* int:      video stream idx, bad -> 0      <-> "%d"     */
     T_HEX,      /* uint32_t: phex()                          <-> "0x%08X" */
-    T_FLT,      /* float:    pflt()                          <-> "%g"     */
+    T_FLT,      /* float:    pflt(), clamped lo..hi if lo<hi <-> "%g"     */
     T_STR,      /* char[hi]: copystr()   <-> "%s" under config_str_lock   */
     T_VCODEC,   /* int: pvcodec()  <-> vcodec_name()                      */
     T_ACODEC,   /* int: pacodec()  <-> acodec_name()                      */
@@ -383,7 +395,7 @@ typedef struct {
     unsigned short off;     /* byte offset from the section base struct */
     unsigned char  type;    /* T_* */
     unsigned char  flags;   /* F_* */
-    int lo, hi;             /* T_INT: clamp when lo<hi; T_STR: buf size in hi */
+    int lo, hi;             /* T_INT/T_FLT: clamp when lo<hi; T_STR: buf size in hi */
 } cfg_field;
 
 /* entry helpers: F = generic field, FS = string field (size from the struct) */
@@ -582,24 +594,35 @@ static const cfg_field timelapse_fields[] = {
 #undef TT
 
 #define TT ms_daynight_cfg
+/* F3: the numeric keys used to reach the detection thread unclamped via
+ * /control (pint/pflt raw). Nothing crashed (daynight.c guards interval_ms>0
+ * and day_gain_pct>0), but a negative transition_s silently disabled the
+ * dwell and a day_gain_pct>100 made the adaptive night->day trigger fire
+ * inside gain jitter. Ranges: lat/lon geographic; sun offsets +-1 day;
+ * gain thresholds in the IMP [24.8] linear scale (256=1x, defaults 300/3000,
+ * cold-start transients ~20000 - 1e6 = ~3900x is far beyond any sensor);
+ * threshold_low/high are brightness %; hysteresis is a 0..1 fraction of the
+ * low..high band; day_gain_pct<=100 keeps the adaptive day trigger BELOW the
+ * night baseline (0 = feature off, as before); interval_ms floor 100 keeps
+ * the sampling loop from busy-spinning. */
 static const cfg_field daynight_fields[] = {
     F ("enabled",                    0, enabled,                    T_BOOL,  0, 0,0),
     F ("mode",                       0, mode,                       T_DNMODE,0, 0,0),
     FS("time_night_start",           0, time_night_start,           0),
     FS("time_day_start",             0, time_day_start,             0),
-    F ("sun_latitude",               0, sun_latitude,               T_FLT,   0, 0,0),
-    F ("sun_longitude",              0, sun_longitude,              T_FLT,   0, 0,0),
-    F ("sun_sunrise_offset_min",     0, sun_sunrise_offset_min,     T_INT,   0, 0,0),
-    F ("sun_sunset_offset_min",      0, sun_sunset_offset_min,      T_INT,   0, 0,0),
-    F ("total_gain_day_threshold",   0, total_gain_day_threshold,   T_FLT,   0, 0,0),
-    F ("total_gain_night_threshold", 0, total_gain_night_threshold, T_FLT,   0, 0,0),
-    F ("threshold_low",              0, threshold_low,              T_FLT,   0, 0,0),
-    F ("threshold_high",             0, threshold_high,             T_FLT,   0, 0,0),
-    F ("hysteresis",                 0, hysteresis,                 T_FLT,   0, 0,0),
-    F ("day_gain_pct",               0, day_gain_pct,               T_INT,   0, 0,0),
-    F ("baseline_delay_s",           0, baseline_delay_s,           T_INT,   0, 0,0),
-    F ("interval_ms",                0, interval_ms,                T_INT,   0, 0,0),
-    F ("transition_s",               0, transition_s,               T_INT,   0, 0,0),
+    F ("sun_latitude",               0, sun_latitude,               T_FLT,   0, -90,90),
+    F ("sun_longitude",              0, sun_longitude,              T_FLT,   0, -180,180),
+    F ("sun_sunrise_offset_min",     0, sun_sunrise_offset_min,     T_INT,   0, -1440,1440),
+    F ("sun_sunset_offset_min",      0, sun_sunset_offset_min,      T_INT,   0, -1440,1440),
+    F ("total_gain_day_threshold",   0, total_gain_day_threshold,   T_FLT,   0, 1,1000000),
+    F ("total_gain_night_threshold", 0, total_gain_night_threshold, T_FLT,   0, 1,1000000),
+    F ("threshold_low",              0, threshold_low,              T_FLT,   0, 0,100),
+    F ("threshold_high",             0, threshold_high,             T_FLT,   0, 0,100),
+    F ("hysteresis",                 0, hysteresis,                 T_FLT,   0, 0,1),
+    F ("day_gain_pct",               0, day_gain_pct,               T_INT,   0, 0,100),
+    F ("baseline_delay_s",           0, baseline_delay_s,           T_INT,   0, 0,3600),
+    F ("interval_ms",                0, interval_ms,                T_INT,   0, 100,60000),
+    F ("transition_s",               0, transition_s,               T_INT,   0, 0,3600),
     FS("switch_cmd",                 0, switch_cmd,                 F_NOGET),
     FS("isp_path",                   0, isp_path,                   F_NOGET),
 };
@@ -733,7 +756,8 @@ static void field_set(void *base, const cfg_field *f, const char *val)
     case T_CHAN: { int v = pint(val);
                    *(int*)p = (v<0 || v>=MS_MAX_VSTREAM) ? 0 : v; break; }
     case T_HEX:    *(uint32_t*)p = phex(val); break;
-    case T_FLT:    *(float*)p = pflt(val); break;
+    case T_FLT:    *(float*)p = (f->lo < f->hi) ? pflt_cl(val,(float)f->lo,(float)f->hi)
+                                                : pflt(val); break;
     case T_STR:    copystr((char*)p, val, (size_t)f->hi); break;
     case T_VCODEC: *(int*)p = pvcodec(val); break;
     case T_ACODEC: *(int*)p = pacodec(val); break;
