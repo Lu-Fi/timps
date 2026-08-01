@@ -46,6 +46,15 @@
 #endif
 
 static volatile int g_nconn;   /* current connection count (sync builtins) */
+/* adaptive-drop visibility (http.adaptive_drop): frames a client-side fanqueue
+ * discarded while frozen waiting for a keyframe (see the dropping state in
+ * mp4_stream below). Per-channel, summed across every mp4 client on that
+ * channel - not per-connection, since a single struggling client's drops are
+ * the interesting signal regardless of how many other clients are healthy. */
+/* plain int, not int64: MIPS32 has no native 64-bit atomic instruction, so
+ * __sync_fetch_and_add on a wider type would need libatomic (not linked) */
+static volatile unsigned g_drop_frames[MS_MAX_VSTREAM];
+static volatile unsigned g_drop_bytes[MS_MAX_VSTREAM];
 
 struct httpd {
     const ms_config *cfg;
@@ -121,12 +130,14 @@ static const char *PLAYER_TAIL =
  * <video> otherwise plays wherever autoplay happened to start (often 1-3s of
  * accumulated buffer) and never catches up unless it falls seconds behind.
  * Hard-seek only on a big drift (post-stall); otherwise nudge playbackRate to
- * gently drain the buffer down to ~0.5s behind live (kept as jitter margin so
- * we don't stall), scaling the rate with how far behind we are so a large
+ * gently drain the buffer down to ~1.5s behind live (a larger jitter margin
+ * than the previous 0.5s - measured WiFi-loss stalls on some cameras run up
+ * to ~1.8s, and 0.5s of cushion wasn't enough to absorb them without a
+ * visible freeze), scaling the rate with how far behind we are so a large
  * startup buffer drains in a few seconds and steady state settles at 1x. */
 "const end=v.buffered.end(v.buffered.length-1),behind=end-v.currentTime;"
-"if(behind>4)v.currentTime=end-0.5;"
-"else v.playbackRate=behind>0.5?Math.min(1.3,1+(behind-0.5)*0.5):1;}"
+"if(behind>5)v.currentTime=end-1.5;"
+"else v.playbackRate=behind>1.5?Math.min(1.3,1+(behind-1.5)*0.5):1;}"
 "evict();pump();});"
 "sb.addEventListener('error',stop);"
 "const res=await fetch(src);const rd=res.body.getReader();"
@@ -317,6 +328,8 @@ static void stream_mp4(hconn *c, int chn)
                         hub_request_idr(chn);
                         drop_idr_us = now;
                     }
+                    __sync_fetch_and_add(&g_drop_frames[chn], 1u);
+                    __sync_fetch_and_add(&g_drop_bytes[chn], (unsigned)p->len);
                     pkt_unref(p);
                     continue;
                 }
@@ -687,7 +700,8 @@ static int http_cors(const char *buf, char *out, int cap)
  * that PUSHES JSON state instead of being polled. Event types:
  *   motion   - the /control "motion" status object (grid + active cells)
  *   daynight - the /control "daynight" status object (mode/brightness/gain)
- *   stats    - {"uptime_s","clients","video":[{"chn","subs","fps"},..]}
+ *   stats    - {"uptime_s","clients","video":[{"chn","subs","fps","kbps",
+ *              "width","height","codec","drop_frames","drop_bytes"},..]}
  * ?stream=motion,daynight,stats selects types (default: all). Auth/CORS are
  * the /control rules (conn_thread); note EventSource cannot send headers, so
  * browsers pass the token as ?token= (accepted by http_check_token). Each
@@ -722,8 +736,10 @@ static int sse_emit(hconn *c, const char *type, const char *json, int64_t *last_
 }
 
 /* the periodic "stats" payload: what timps actually tracks - subscriber
- * counts and the measured per-stream fps (the OSD {clients}/{fps} sources);
- * per-stream bitrate is not measured anywhere, so it is not invented here */
+ * counts, the measured per-stream fps/bitrate (the OSD {fps}/{bitrate}
+ * sources, see hub_get_fps/hub_get_bitrate), and cumulative adaptive-drop
+ * counters (0/0 unless http.adaptive_drop=1 and a client's link is actually
+ * struggling - see g_drop_frames/g_drop_bytes). */
 static int stats_json(const ms_config *cfg, char *buf, size_t cap)
 {
     size_t o = 0;
@@ -736,8 +752,13 @@ static int stats_json(const ms_config *cfg, char *buf, size_t cap)
     int first = 1;
     for (int i=0;i<MS_MAX_VSTREAM;i++){
         if (!cfg->video[i].enabled) continue;
-        APP("%s{\"chn\":%d,\"subs\":%d,\"fps\":%.1f}",
-            first?"":",", i, hub_subs(i), hub_get_fps(i));
+        int w, h; ms_vstream_eff_dims(&cfg->video[i], &w, &h);
+        APP("%s{\"chn\":%d,\"subs\":%d,\"fps\":%.1f,\"kbps\":%.0f,"
+            "\"width\":%d,\"height\":%d,\"codec\":\"%s\","
+            "\"drop_frames\":%u,\"drop_bytes\":%u}",
+            first?"":",", i, hub_subs(i), hub_get_fps(i), hub_get_bitrate(i),
+            w, h, cfg->video[i].codec==MS_VC_H265?"h265":"h264",
+            g_drop_frames[i], g_drop_bytes[i]);
         first = 0;
     }
     APP("]}");
