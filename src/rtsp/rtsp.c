@@ -84,6 +84,22 @@ struct rtsp_server {
 #endif
 };
 
+/* P3: batch buffer for UDP RTP - collect the packets of one access unit and
+ * hand them to the kernel in a single sendmmsg() instead of one sendto()
+ * each. A 200 KB IDR is ~170 packets at the 1200-byte default MTU; on this
+ * no-vDSO 3.10/MIPS platform each avoided syscall is ~2-5 us. Availability
+ * verified against the actual toolchain: uClibc-ng exports sendmmsg (checked
+ * in the buildroot sysroot libc.so) and kernel 3.10 has the syscall (since
+ * 3.0); glibc/musl (sim builds) have it too. ENOSYS still falls back at
+ * runtime, so an exotic kernel degrades to the old per-packet path. */
+#define RTP_BATCH_N 16
+typedef struct {
+    int             n;
+    struct mmsghdr  msgs[RTP_BATCH_N];
+    struct iovec    iov[RTP_BATCH_N];
+    uint8_t         buf[RTP_BATCH_N][RTP_MTU_MAX];
+} rtp_batch;
+
 /* RTP output sink (UDP or TCP-interleaved) */
 typedef struct {
     int                tcp;          /* 1 = interleaved on control fd */
@@ -91,10 +107,38 @@ typedef struct {
     int                fd_rtcp;      /* udp RTCP socket (UDP only, else unused) */
     struct sockaddr_in dst, dst_rtcp;
     int                chan_rtp, chan_rtcp;
+    rtp_batch         *batch;        /* P3: UDP video only; NULL = send direct */
 #ifdef USE_TLS
     void              *tls;          /* ms_tls_conn* when interleaved over RTSPS */
 #endif
 } rtp_sink;
+
+/* flush the pending sendmmsg batch; 0 = ok (or nothing pending), <0 = error
+ * (same contract as a failed sendto: caller stops the session) */
+static int sink_flush(rtp_sink *s)
+{
+    rtp_batch *b = s->batch;
+    if (!b || b->n == 0) return 0;
+    int off = 0;
+    while (off < b->n) {
+        int r = (int)sendmmsg(s->fd, b->msgs + off, (unsigned)(b->n - off), 0);
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            if (errno == ENOSYS) {           /* kernel without sendmmsg */
+                for (; off < b->n; off++)
+                    if (sendto(s->fd, b->iov[off].iov_base, b->iov[off].iov_len,
+                               0, (struct sockaddr*)&s->dst, sizeof s->dst) < 0)
+                        { b->n = 0; return -1; }
+                break;
+            }
+            b->n = 0;
+            return -1;
+        }
+        off += r;
+    }
+    b->n = 0;
+    return 0;
+}
 
 static int sink_send(void *ctx, const uint8_t *pkt, int len, int rtcp)
 {
@@ -122,6 +166,25 @@ static int sink_send(void *ctx, const uint8_t *pkt, int len, int rtcp)
          * RTCP must originate from the RTCP socket (server_port+1), not the
          * RTP one - some port-strict receivers drop a Sender Report whose
          * source port doesn't match the SETUP-negotiated server_port pair. */
+        if (!rtcp && s->batch) {
+            /* P3: stage into the batch; the play loop flushes after every
+             * access unit (and this flushes itself when a big IDR fills a
+             * whole batch mid-AU) */
+            rtp_batch *b = s->batch;
+            if (len > (int)sizeof b->buf[0]) return -1;
+            memcpy(b->buf[b->n], pkt, (size_t)len);
+            struct iovec *iv = &b->iov[b->n];
+            iv->iov_base = b->buf[b->n];
+            iv->iov_len  = (size_t)len;
+            struct mmsghdr *m = &b->msgs[b->n];
+            memset(m, 0, sizeof *m);
+            m->msg_hdr.msg_name    = &s->dst;
+            m->msg_hdr.msg_namelen = sizeof s->dst;
+            m->msg_hdr.msg_iov     = iv;
+            m->msg_hdr.msg_iovlen  = 1;
+            if (++b->n == RTP_BATCH_N && sink_flush(s) < 0) return -1;
+            return len;
+        }
         struct sockaddr_in *d = rtcp ? &s->dst_rtcp : &s->dst;
         int fd = rtcp ? s->fd_rtcp : s->fd;
         return (int)sendto(fd, pkt, len, 0, (struct sockaddr*)d, sizeof(*d));
@@ -760,6 +823,11 @@ static void stream_loop(session *s)
     if (s->have_video) {
         rtp_track_init(&s->vtrack, VIDEO_PT, 90000, c->rtsp_mtu, cname,
                        sink_send, &s->vsink);
+        /* P3: batch UDP video packets into sendmmsg; audio stays direct
+         * (one packet per frame - nothing to batch). Allocation failure
+         * just keeps the per-packet path. */
+        if (!s->vsink.tcp)
+            s->vsink.batch = (rtp_batch*)calloc(1, sizeof(rtp_batch));
         if (hub_subscribe(s->vchn, &s->q) != 0) goto full;
         sub_v = 1;
         hub_request_idr(s->vchn);
@@ -844,6 +912,9 @@ static void stream_loop(session *s)
                 }
                 if (vc==MS_VC_H265) sendrc = rtp_send_h265(&s->vtrack,p->data,p->len,p->pts_us);
                 else                sendrc = rtp_send_h264(&s->vtrack,p->data,p->len,p->pts_us);
+                /* P3: one access unit done - push the whole batch out in a
+                 * single sendmmsg (no-op on TCP / unbatched sinks) */
+                if (sendrc >= 0 && sink_flush(&s->vsink) < 0) sendrc = -1;
             } else if (p->media==MS_MEDIA_AUDIO && s->have_audio) {
                 if (ac==MS_AC_AAC) sendrc = rtp_send_aac(&s->atrack,p->data,p->len,p->pts_us);
                 else               sendrc = rtp_send_g711(&s->atrack,p->data,p->len,p->pts_us);
@@ -1000,11 +1071,13 @@ static void stream_loop(session *s)
 
     if (sub_v) hub_unsubscribe(s->vchn, &s->q);
     if (sub_a) hub_unsubscribe(HUB_AUDIO_SRC, &s->q);
+    free(s->vsink.batch); s->vsink.batch = NULL;   /* P3 */
     return;
 
 full:
     /* source subscriber table full (> HUB_MAX_SUBS consumers) */
     if (sub_v) hub_unsubscribe(s->vchn, &s->q);
+    free(s->vsink.batch); s->vsink.batch = NULL;   /* P3 */
     send_err(s, s->play_cseq, 503, "Service Unavailable", NULL);
     LOGW(MOD,"subscribe failed (source full), closing session=%s", s->session);
 }
