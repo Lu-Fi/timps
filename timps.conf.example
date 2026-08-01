@@ -72,8 +72,10 @@ http.preview_chn = 1
 # its last frame and resumes cleanly at the next keyframe (no decode corruption)
 # instead of forwarding a headless GOP. Strictly per-client: never touches the
 # encoder or any other subscriber (Frigate, recording, other viewers).
-# 1 = on (default), 0 = always forward every frame (legacy all-or-bust).
-http.adaptive_drop = 1
+# 0 = off (default; forward every frame - the pre-feature behavior), 1 = enable.
+# EXPERIMENTAL / opt-in: default OFF until verified on real hardware (an early
+# build could hang the stream on a slow SoC). Only enable for controlled tests.
+http.adaptive_drop = 0
 http.user        =        # set to enable HTTP Basic auth (empty = reuse rtsp.user/pass)
 http.pass        =
 #
