@@ -319,6 +319,23 @@ static void dn_sleep(int ms)
 #define DN_REASSERT_COUNT 2      /* small safety net -> ~16 s post-switch */
 #endif
 
+/* P2 (optimization review 2026-07-31): how often the /proc ISP dump is
+ * scraped when the gain comes from the IMP API. dn_brightness() (fopen +
+ * ~7 strstr/sscanf per line over the whole isp-m0 dump, incl. kernel-side
+ * ISP register reads) used to run EVERY tick, yet whenever
+ * hal_isp_total_gain() works (the normal case outside T40/T41) its gain
+ * result was immediately overwritten and only the brightness % survived -
+ * and that feeds nothing but the /control//events status readout, never the
+ * decision. So: poll the cheap gain API every interval_ms as before (the
+ * DECISION cadence and the settle/hysteresis/dwell mechanism are untouched
+ * by this), and throttle the scrape to a status refresh. When the gain API
+ * is unavailable (host sim, T40/T41, ISP down) the scrape IS the decision
+ * input (gain, or the averaged-brightness fallback) and keeps running every
+ * tick exactly as before. */
+#ifndef DN_SCRAPE_MS
+#define DN_SCRAPE_MS 5000        /* status-only brightness refresh interval */
+#endif
+
 static void *dn_thread(void *arg)
 {
     (void)arg;
@@ -342,6 +359,10 @@ static void *dn_thread(void *arg)
      * to it. -1 = not sampled yet. */
     float   night_baseline = -1.0f;
     int64_t night_entered_ms = 0;
+    /* P2: last /proc-scraped brightness (status readout only when the gain
+     * API works) and when the next scrape is due. 0 = scrape on first tick. */
+    float   scraped_b = -1.0f;
+    int64_t next_scrape_ms = 0;
 
     for (int i = 0; i < DN_SAMPLES; i++) hist[i] = 50.0f;  /* neutral start */
 
@@ -400,10 +421,20 @@ static void *dn_thread(void *arg)
          * total_gain: prefer the ISP's own IMP_ISP_Tuning_GetTotalGain (robust,
          * like prudynt/raptor) and fall back to the /proc/isp-m0 scrape only
          * when the API is unavailable (host sim, T40/T41, ISP down). Brightness
-         * still comes from the scrape (no direct luma API used yet). */
+         * still comes from the scrape (no direct luma API used yet), but that
+         * scrape is throttled to DN_SCRAPE_MS while the gain API works (P2) -
+         * the gain the DECISION uses is still sampled every tick either way. */
         float tg = -1.0f;
-        float b  = dn_brightness(dn->isp_path, &tg);
-        { uint32_t hg; if (hal_isp_total_gain(&hg) == 0) tg = (float)hg; }
+        int   api_gain = 0;
+        { uint32_t hg;
+          if (hal_isp_total_gain(&hg) == 0) { tg = (float)hg; api_gain = 1; } }
+        float b = scraped_b;
+        if (!api_gain || ms_now_us() / 1000 >= next_scrape_ms) {
+            float stg = -1.0f;
+            b = scraped_b = dn_brightness(dn->isp_path, &stg);
+            if (!api_gain) tg = stg;
+            next_scrape_ms = ms_now_us() / 1000 + DN_SCRAPE_MS;
+        }
         float luma = -1.0f;
         { uint32_t al; if (hal_isp_ae_luma(&al) == 0) luma = (float)al; }
 
