@@ -256,6 +256,7 @@ static void stream_mp4(hconn *c, int chn)
     int got_key=0;
     int adaptive = cfg->http_adaptive_drop;
     int dropping = 0;      /* adaptive: skipping this client's frames until a keyframe */
+    int64_t drop_idr_us = 0;   /* rate-limit the safety IDR request while dropping */
     /* persistent per-connection fragment buffer (M1): reset to len=0/err=0
      * each frame instead of ms_buf_init()/ms_buf_free() per packet - avoids
      * a malloc+free (plus the full-AU copy that was already unavoidable) on
@@ -300,7 +301,23 @@ static void stream_mp4(hconn *c, int chn)
                 if (p->media == MS_MEDIA_VIDEO && p->keyframe) {
                     dropping = 0;                /* clean boundary: resume here */
                 } else {
-                    pkt_unref(p);                /* freeze + drain the backlog */
+                    /* Freeze on the last good frame and drain the backlog until
+                     * the next keyframe. 'dropping' MUST NOT be able to starve
+                     * the client: on a slow SoC under sustained overflow the
+                     * fanqueue can evict natural keyframes before this consumer
+                     * pops them, so a keyframe might otherwise never arrive at
+                     * the head and the stream would hang forever (the v1 bug).
+                     * Guarantee progress by asking the encoder for a fresh IDR,
+                     * rate-limited to once per second so a chronically weak
+                     * client cannot spam global IDR requests and spike the
+                     * shared encoder for every other subscriber. Recovery is
+                     * then bounded to ~1s + one IDR latency, never unbounded. */
+                    int64_t now = ms_now_us();
+                    if (now - drop_idr_us > 1000000) {
+                        hub_request_idr(chn);
+                        drop_idr_us = now;
+                    }
+                    pkt_unref(p);
                     continue;
                 }
             }

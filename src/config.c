@@ -184,7 +184,7 @@ void config_defaults(ms_config *c)
      * tunnel overhead; raise to 1400 for LAN-only setups if desired */
     c->rtsp_mtu = 1200;
     c->http_enabled = 1; c->http_port = 8880; c->http_preview_chn = 1;
-    c->http_adaptive_drop = 1;
+    c->http_adaptive_drop = 0;   /* opt-in: OFF until hardware-verified (see httpd.c) */
     c->http_user[0]=0; c->http_pass[0]=0;
     c->http_token[0]=0;
     copystr(c->http_token_file, "/run/timps.token", sizeof c->http_token_file);
