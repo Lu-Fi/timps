@@ -184,6 +184,7 @@ void config_defaults(ms_config *c)
      * tunnel overhead; raise to 1400 for LAN-only setups if desired */
     c->rtsp_mtu = 1200;
     c->http_enabled = 1; c->http_port = 8880; c->http_preview_chn = 1;
+    c->http_adaptive_drop = 1;
     c->http_user[0]=0; c->http_pass[0]=0;
     c->http_token[0]=0;
     copystr(c->http_token_file, "/run/timps.token", sizeof c->http_token_file);
@@ -500,6 +501,7 @@ static const cfg_field http_fields[] = {
     F ("enabled",     0,          http_enabled,     T_BOOL, 0, 0,0),
     F ("port",        0,          http_port,        T_INT,  0, 1,65535),
     F ("preview_chn", 0,          http_preview_chn, T_INT,  0, 0,0),
+    F ("adaptive_drop", 0,        http_adaptive_drop, T_BOOL, 0, 0,0),
     FS("user",        "username", http_user,        0),
     FS("pass",        "password", http_pass,        0),
     FS("token",       0,          http_token,       0),

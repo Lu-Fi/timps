@@ -35,6 +35,15 @@
 #ifndef MS_MP4_QCAP
 #define MS_MP4_QCAP 64
 #endif
+/* per-client adaptive-drop high-water mark (http.adaptive_drop): the fanqueue
+ * is this client's private buffer, kept near-empty by a healthy consumer.
+ * Crossing 3/4 of capacity means ~1.5-2s of video (at 25fps over 64 slots)
+ * has piled up unsent - a genuinely struggling link, not a momentary IDR
+ * burst (a keyframe plus a few P-frames is <10 packets). -D overridable like
+ * MS_MP4_QCAP itself. */
+#ifndef MS_MP4_DROP_HIWAT
+#define MS_MP4_DROP_HIWAT (MS_MP4_QCAP*3/4)
+#endif
 
 static volatile int g_nconn;   /* current connection count (sync builtins) */
 
@@ -245,6 +254,8 @@ static void stream_mp4(hconn *c, int chn)
     LOGI(MOD,"mp4 client streaming chn=%d",chn);
 
     int got_key=0;
+    int adaptive = cfg->http_adaptive_drop;
+    int dropping = 0;      /* adaptive: skipping this client's frames until a keyframe */
     /* persistent per-connection fragment buffer (M1): reset to len=0/err=0
      * each frame instead of ms_buf_init()/ms_buf_free() per packet - avoids
      * a malloc+free (plus the full-AU copy that was already unavoidable) on
@@ -262,9 +273,43 @@ static void stream_mp4(hconn *c, int chn)
             if (n==0) break;
             continue;
         }
-        /* if the queue overflowed and dropped a keyframe, ask for a fresh IDR
-         * so the client doesn't decode garbage until the next GOP */
-        if (fanqueue_take_dropped_key(&q)) hub_request_idr(chn);
+        int lost_key = fanqueue_take_dropped_key(&q);
+        if (adaptive) {
+            /* Per-client adaptive frame-dropping. This client's fanqueue is
+             * its own private buffer; if it backs up (a weak link that can't
+             * keep up) or the producer already had to evict a keyframe to make
+             * room, the queued GOP tail is (or is about to become) a headless,
+             * undecodable H.264 GOP. Naively forwarding those P-frames would
+             * make the decoder build on references it never got - visible
+             * corruption/drift for up to a full GOP (2s). Instead we FREEZE
+             * this client on its last good frame and drop forward through the
+             * backlog until the next NATURAL keyframe, then resume cleanly at
+             * that fresh, self-contained GOP boundary. Draining pops (no mux,
+             * no send) also let this client catch back up to the live edge.
+             * Crucially we never call hub_request_idr() here: an IDR request
+             * is global to the shared encoder and would spike the bitrate for
+             * every other subscriber (Frigate, recording, healthy viewers)
+             * just because one link is weak. Worst case this client gets a
+             * keyframe-only slideshow - honest degradation, never corruption. */
+            if (lost_key) dropping = 1;
+            if (!dropping) {
+                int cnt = 0; fanqueue_depth(&q, &cnt, NULL, NULL);
+                if (cnt >= MS_MP4_DROP_HIWAT) dropping = 1;
+            }
+            if (dropping) {
+                if (p->media == MS_MEDIA_VIDEO && p->keyframe) {
+                    dropping = 0;                /* clean boundary: resume here */
+                } else {
+                    pkt_unref(p);                /* freeze + drain the backlog */
+                    continue;
+                }
+            }
+        } else if (lost_key) {
+            /* legacy (adaptive_drop off): the queue overflowed and dropped a
+             * keyframe - ask the encoder for a fresh IDR so the client doesn't
+             * decode garbage until the next natural GOP */
+            hub_request_idr(chn);
+        }
         ms_buf_reset(&frag, 256*1024);   /* reuse, shrink an outlier IDR buffer back */
         int frag_ok = 1;
         if (p->media==MS_MEDIA_VIDEO) {
