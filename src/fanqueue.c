@@ -131,6 +131,15 @@ int fanqueue_take_dropped_key(fanqueue *q)
     return k;
 }
 
+void fanqueue_depth(fanqueue *q, int *count, int *cap, size_t *bytes)
+{
+    pthread_mutex_lock(&q->lock);
+    if (count) *count = q->count;
+    if (cap)   *cap   = q->cap;
+    if (bytes) *bytes = q->bytes;
+    pthread_mutex_unlock(&q->lock);
+}
+
 void fanqueue_close(fanqueue *q)
 {
     pthread_mutex_lock(&q->lock);

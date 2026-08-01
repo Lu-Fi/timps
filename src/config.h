@@ -302,6 +302,14 @@ typedef struct {
     int            http_enabled;
     int            http_port;
     int            http_preview_chn;   /* which video stream to expose */
+    /* per-client adaptive frame-dropping for the fMP4 preview path: when a
+     * specific /stream.mp4 client's own fanqueue backs up (a weak link that
+     * can't keep up), that client freezes on its last frame and resumes
+     * cleanly at the next natural keyframe instead of decoding a corrupted
+     * headless GOP. Purely a per-client delivery-layer decision - never
+     * touches the shared encoder nor any other subscriber. 1 = on (default),
+     * 0 = strictly forward every frame (legacy all-or-bust). */
+    int            http_adaptive_drop;
     char           http_user[MS_MAX_STR];  /* empty = fall back to rtsp creds */
     char           http_pass[MS_MAX_STR];
     /* /control token auth (startup/security settings, NOT settable via

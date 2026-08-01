@@ -67,6 +67,13 @@ rtsp.pass    =
 http.enabled     = 1
 http.port        = 8880
 http.preview_chn = 1
+# Per-client adaptive frame-dropping for the fMP4 (/stream.mp4) preview path.
+# When one preview client's link can't keep up, that client alone freezes on
+# its last frame and resumes cleanly at the next keyframe (no decode corruption)
+# instead of forwarding a headless GOP. Strictly per-client: never touches the
+# encoder or any other subscriber (Frigate, recording, other viewers).
+# 1 = on (default), 0 = always forward every frame (legacy all-or-bust).
+http.adaptive_drop = 1
 http.user        =        # set to enable HTTP Basic auth (empty = reuse rtsp.user/pass)
 http.pass        =
 #

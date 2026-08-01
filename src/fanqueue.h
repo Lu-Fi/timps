@@ -33,5 +33,10 @@ void  fanqueue_close(fanqueue *q);
  * hub source) should call hub_request_idr() when this returns nonzero, so
  * clients don't decode garbage until the next natural GOP boundary. */
 int   fanqueue_take_dropped_key(fanqueue *q);
+/* snapshot the current backlog under the lock: queued slot count, capacity
+ * and queued payload bytes (any of the out-pointers may be NULL). Lets a
+ * consumer detect its OWN sustained backlog (this client can't keep up) and
+ * react per-client, without touching the producer or other subscribers. */
+void  fanqueue_depth(fanqueue *q, int *count, int *cap, size_t *bytes);
 
 #endif
