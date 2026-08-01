@@ -10,6 +10,7 @@
 #include "osd_text.h"
 #include "osd_vars.h"
 #include "msttf.h"
+#include "../util.h"
 #ifdef HAL_INGENIC
 #include "../hub.h"
 #include "../log.h"
@@ -516,7 +517,7 @@ void imp_osd_start_updater(void)
 {
     if (!g_hcfg || !g_hcfg->osd.enabled || g_run) return;
     g_run=1;
-    if (pthread_create(&g_thr,NULL,osd_thread,NULL)!=0)
+    if (ms_thread_create(&g_thr,MS_STACK_STREAM,osd_thread,NULL)!=0)
         g_run=0;                     /* imp_osd_stop must not join a non-thread */
 }
 

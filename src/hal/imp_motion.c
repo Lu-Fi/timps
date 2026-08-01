@@ -24,6 +24,7 @@
 #include "../rotate_caps.h"  /* ms_vstream_eff_dims (post-rotation frame dims) */
 #include "../events.h"     /* wake /events SSE subscribers on grid changes */
 #include "../log.h"
+#include "../util.h"
 #include <string.h>
 
 #define MOD "MOTION"
@@ -254,7 +255,7 @@ int imp_motion_start(const ms_config *cfg)
     pthread_mutex_unlock(&g_st_lock);
 
     g_run = 1;
-    if (pthread_create(&g_thr, NULL, motion_thread, NULL) != 0){
+    if (ms_thread_create(&g_thr, MS_STACK_STREAM, motion_thread, NULL) != 0){
         /* no thread -> full rollback; g_run stays 0 so stop() never joins */
         LOGE(MOD,"motion thread create failed");
         g_run = 0;

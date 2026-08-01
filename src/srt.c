@@ -446,7 +446,7 @@ static void *listen_thread(void *arg)
         m->sock = cs;
         __sync_fetch_and_add(&g_srt_clients, 1);
         pthread_t t;
-        if (pthread_create(&t, NULL, client_thread, m) == 0) pthread_detach(t);
+        if (ms_thread_create(&t, MS_STACK_CONN, client_thread, m) == 0) pthread_detach(t);
         else { srt_close(cs); free(m); __sync_fetch_and_sub(&g_srt_clients, 1); }
     }
     srt_close_listener();      /* no-op if srt_stop() already closed it (L4) */
@@ -462,7 +462,7 @@ void srt_start(const ms_config *cfg)
 {
     if (g_started || !cfg->srt.enabled) return;
     g_scfg = cfg; g_run = 1; g_started = 1;
-    if (pthread_create(&g_thr, NULL, listen_thread, NULL) != 0) { g_started = 0; g_run = 0; }
+    if (ms_thread_create(&g_thr, MS_STACK_STREAM, listen_thread, NULL) != 0) { g_started = 0; g_run = 0; }
 }
 
 void srt_stop(void)

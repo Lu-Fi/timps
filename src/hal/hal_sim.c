@@ -170,7 +170,7 @@ static void jpg_start(const char *path, int src, int fps)
     j->src=src; j->fps=fps;
     strncpy(j->path,path,sizeof j->path-1);
     j->run=1; j->active=0;
-    if (pthread_create(&j->thr,NULL,jpg_thread,j)==0) g_njpg++;
+    if (ms_thread_create(&j->thr,MS_STACK_STREAM,jpg_thread,j)==0) g_njpg++;
     else j->run=0;
 }
 
@@ -189,7 +189,7 @@ static int sim_start(const ms_config *cfg)
         int ew, eh; ms_vstream_eff_dims(&cfg->video[i], &ew, &eh);
         hub_set_video_params(i,cfg->video[i].codec,ew,eh,cfg->video[i].fps);
         v->run=1; v->active=0;
-        pthread_create(&v->thr,NULL,vid_thread,v);
+        ms_thread_create(&v->thr,MS_STACK_STREAM,vid_thread,v);
     }
     if (cfg->audio.enabled && cfg->sim_audio[0]) {
         /* G.711 (PCMA/PCMU) is always 8 kHz - mirror hal_ingenic's pinning so
@@ -204,7 +204,7 @@ static int sim_start(const ms_config *cfg)
         hub_set_audio_params(cfg->audio.codec,asr,ach);
         strncpy(g_aud.path,cfg->sim_audio,sizeof g_aud.path-1);
         g_aud.samplerate=asr; g_aud.run=1; g_aud.active=0;
-        pthread_create(&g_aud.thr,NULL,aud_thread,&g_aud);
+        ms_thread_create(&g_aud.thr,MS_STACK_STREAM,aud_thread,&g_aud);
     }
     if (cfg->jpeg.enabled && cfg->sim_jpeg[0])
         jpg_start(cfg->sim_jpeg, HUB_JPEG_SRC, cfg->jpeg.fps);
