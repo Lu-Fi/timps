@@ -25,6 +25,8 @@ SYSROOT       ?=            # optional --sysroot for the cross toolchain
 USE_FAAC      ?= 0          # 1 = software AAC audio via libfaac (browser audio)
 USE_CONTROL   ?= 1          # live control endpoint (/control); optional, on by default (0 = off)
 USE_DAYNIGHT  ?= 1          # native automatic day/night detection thread; on by default (0 = off)
+USE_RECORD    ?= 1          # local SD recording (fMP4 segments + /control clips); on by default (0 = off, saves ~11KB)
+USE_TIMELAPSE ?= 1          # native timelapse (periodic JPEG shots to SD); on by default (0 = off, saves ~4KB)
 USE_TLS       ?= 0          # 1 = HTTPS + RTSPS via mbedTLS (needs -lmbedtls...); off unless the lib is present
 USE_SRT       ?= 0          # 1 = MPEG-TS over SRT output via libsrt; off unless the lib is present
 USE_BACKCHANNEL ?= 0        # 1 = ONVIF audio backchannel (client->speaker via native IMP_AO); G.711 pure-C
@@ -186,6 +188,8 @@ target:
 	  $(if $(filter 1,$(USE_FAAC)),-DUSE_FAAC) \
 	  $(if $(filter 1,$(USE_CONTROL)),-DUSE_CONTROL) \
 	  $(if $(filter 1,$(USE_DAYNIGHT)),-DUSE_DAYNIGHT) \
+	  $(if $(filter 1,$(USE_RECORD)),-DUSE_RECORD) \
+	  $(if $(filter 1,$(USE_TIMELAPSE)),-DUSE_TIMELAPSE) \
 	  $(if $(filter 1,$(USE_TLS)),-DUSE_TLS) \
 	  $(if $(filter 1,$(USE_SRT)),-DUSE_SRT) \
 	  $(if $(filter 1,$(USE_BACKCHANNEL)),-DUSE_BACKCHANNEL) \
@@ -201,14 +205,16 @@ target:
 	  $(if $(filter 1,$(USE_FAAC)),$(FAACLIB)) $(if $(filter 1,$(USE_BC_AAC)),$(HELIXLIB)) \
 	  $(if $(filter 1,$(USE_PLAY_OPUS)),$(OPUSLIB)) $(LIBS) -o $(BIN)
 	@rm -f $(TARGET_OBJS)
-	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT) USE_BACKCHANNEL=$(USE_BACKCHANNEL) USE_BC_AAC=$(USE_BC_AAC) USE_PLAY=$(USE_PLAY) USE_PLAY_OPUS=$(USE_PLAY_OPUS) USE_ROTATE=$(USE_ROTATE) USE_SW_ROTATE=$(USE_SW_ROTATE))"
+	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT) USE_BACKCHANNEL=$(USE_BACKCHANNEL) USE_BC_AAC=$(USE_BC_AAC) USE_PLAY=$(USE_PLAY) USE_PLAY_OPUS=$(USE_PLAY_OPUS) USE_ROTATE=$(USE_ROTATE) USE_SW_ROTATE=$(USE_SW_ROTATE))"
 
 sim:
 	$(HOSTCC) $(CFLAGS) -DMS_VERSION='"$(VERSION)"' $(if $(filter 1,$(USE_CONTROL)),-DUSE_CONTROL) \
 	  $(if $(filter 1,$(USE_DAYNIGHT)),-DUSE_DAYNIGHT) \
+	  $(if $(filter 1,$(USE_RECORD)),-DUSE_RECORD) \
+	  $(if $(filter 1,$(USE_TIMELAPSE)),-DUSE_TIMELAPSE) \
 	  $(if $(filter 1,$(USE_ROTATE)),-DUSE_ROTATE) \
 	  -Isrc $(SIM_SRC) $(LDFLAGS) -lpthread -lm -o $(BIN)-sim
-	@echo "built $(BIN)-sim (host simulation backend, USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_ROTATE=$(USE_ROTATE))"
+	@echo "built $(BIN)-sim (host simulation backend, USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_ROTATE=$(USE_ROTATE))"
 
 # Self-contained authentication fail-closed test: build the host sim (with
 # /control), start it on unprivileged ports, run scripts/test_auth.sh against

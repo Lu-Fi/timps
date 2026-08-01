@@ -1,5 +1,6 @@
 /* record.h - local recording to SD as fragmented-MP4 segments (raptor-RMR
- * style, reusing the fmp4 muxer). Continuous or motion-triggered. */
+ * style, reusing the fmp4 muxer). Continuous or motion-triggered.
+ * Only built with USE_RECORD (default on); stubs otherwise. */
 #ifndef MS_RECORD_H
 #define MS_RECORD_H
 #include "config.h"
