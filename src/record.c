@@ -403,6 +403,7 @@ static void *rec_thread(void *arg)
 {
     (void)arg;
     fanqueue q; int subscribed=0, sub_audio=0, sub_chn=-1;
+    int64_t drop_idr_us=0;   /* rate-limit the safety IDR request on any drop */
 
     while (g_run){
         /* read the live config every pass so channel / mode / pre-roll changes
@@ -456,7 +457,21 @@ static void *rec_thread(void *arg)
         ms_pkt *p=fanqueue_pop(&q,200);
         int writing=want_write();
         if (!p){ if (w_fp && !writing) seg_close(); continue; }
-        if (fanqueue_take_dropped_key(&q)) hub_request_idr(chn);
+        /* a dropped keyframe corrupts the GOP outright; a dropped P-frame is
+         * silent but breaks it just the same for anyone decoding this
+         * recording later. Self-heal both, P-frame drops rate-limited to
+         * once/sec since the IDR request is global to the shared encoder
+         * (see src/rtsp/rtsp.c for the same pattern and its rationale). */
+        if (fanqueue_take_dropped_key(&q)) {
+            hub_request_idr(chn);
+            drop_idr_us = ms_now_us();
+        } else if (fanqueue_take_dropped(&q)) {
+            int64_t now = ms_now_us();
+            if (now - drop_idr_us > 1000000) {
+                hub_request_idr(chn);
+                drop_idr_us = now;
+            }
+        }
 
         if (writing){
             if (!w_fp){
@@ -568,6 +583,7 @@ int record_clip(const char *path, int seconds)
     fmp4_mux mux; FILE *fp=NULL; int rc=-1;
     int ac=MS_AC_NONE,asr=0,ach=0;
     int64_t deadline=0, giveup=ms_now_us()+(int64_t)(seconds+5)*1000000;
+    int64_t drop_idr_us=0;   /* rate-limit the safety IDR request on any drop */
 
     if (fanqueue_init(&q,REC_QCAP)) goto out; have_q=1;
     if (hub_subscribe(chn,&q)!=0) goto out; sub_v=1;
@@ -581,7 +597,17 @@ int record_clip(const char *path, int seconds)
         if (!fp && now>=giveup) break;           /* no start point ever arrived */
         ms_pkt *p=fanqueue_pop(&q,200);
         if (!p){ if (fp && now>=deadline) break; continue; }
-        if (fanqueue_take_dropped_key(&q)) hub_request_idr(chn);
+        /* see the matching comment in rec_thread() above / src/rtsp/rtsp.c:
+         * self-heal a dropped P-frame too, rate-limited (global IDR request). */
+        if (fanqueue_take_dropped_key(&q)) {
+            hub_request_idr(chn);
+            drop_idr_us = now;
+        } else if (fanqueue_take_dropped(&q)) {
+            if (now - drop_idr_us > 1000000) {
+                hub_request_idr(chn);
+                drop_idr_us = now;
+            }
+        }
 
         if (!fp){
             /* open on the first keyframe with a ready parameter set */
