@@ -46,7 +46,7 @@ struct httpd {
     void            *tls_ctx;   /* ms_tls_ctx* when http.https (USE_TLS), else NULL */
 };
 
-typedef struct { int fd; const ms_config *cfg; int local; void *tls; void *tls_ctx; } hconn;
+typedef struct { int fd; const ms_config *cfg; int local; int head; void *tls; void *tls_ctx; } hconn;
 
 /* connection I/O that transparently uses TLS when this is an HTTPS connection
  * (c->tls set), otherwise the plain socket. Without USE_TLS these are exactly
@@ -138,7 +138,9 @@ static void http_send_ex(hconn *c, const char *status, const char *ctype,
         status, ctype, bodylen, extra ? extra : "");
     if (n >= (int)sizeof hdr) return;      /* never send a truncated header */
     csend(c, hdr, n);
-    if (body && bodylen) csend(c, body, bodylen);
+    /* HEAD (RFC 7231 4.3.2): same headers a GET would send - including the
+     * Content-Length of the body a GET would have returned - but no body */
+    if (body && bodylen && !c->head) csend(c, body, bodylen);
 }
 
 static void http_send(hconn *c, const char *status, const char *ctype,
@@ -156,10 +158,20 @@ static void http_send(hconn *c, const char *status, const char *ctype,
  * preview loads /stream.mp4 via fetch). */
 #define MEDIA_CORS "Access-Control-Allow-Origin: *\r\n"
 
+/* HTTP response headers for /stream.mp4 (streamed body, no length) */
+static const char MP4_RESP_HDR[] =
+    "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\n"
+    "Cache-Control: no-cache\r\nConnection: close\r\n"
+    MEDIA_CORS "\r\n";
+
 static void stream_mp4(hconn *c, int chn)
 {
     const ms_config *cfg = c->cfg;
     if (chn<0 || chn>=MS_MAX_VSTREAM || !cfg->video[chn].enabled) chn = 0;
+
+    /* HEAD: the headers a GET would send, no body - and no encoder
+     * pipeline wake-up for a mere probe */
+    if (c->head) { csend(c, MP4_RESP_HDR, (int)sizeof MP4_RESP_HDR - 1); return; }
 
     fanqueue q;
     if (fanqueue_init(&q, MS_MP4_QCAP)) return;
@@ -218,12 +230,7 @@ static void stream_mp4(hconn *c, int chn)
     }
     hub_request_idr(chn);                               /* fresh keyframe after warmup */
 
-    /* HTTP response headers (streamed body, no length) */
-    const char *rh =
-        "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\n"
-        "Cache-Control: no-cache\r\nConnection: close\r\n"
-        MEDIA_CORS "\r\n";
-    if (csend(c, rh, strlen(rh))<0) goto out;
+    if (csend(c, MP4_RESP_HDR, (int)sizeof MP4_RESP_HDR - 1)<0) goto out;
 
     ms_buf seg;
     if (ms_buf_init(&seg, 4096)) goto out;
@@ -367,8 +374,10 @@ static void snapshot_jpg(hconn *c, int src)
             "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: %zu\r\n"
             "Cache-Control: no-cache\r\nConnection: close\r\n" MEDIA_CORS "\r\n", p->len);
         /* never send a truncated header (n >= sizeof hdr means snprintf's
-         * would-be length overran the buffer) - same guard as http_send_ex */
-        if (n < (int)sizeof hdr && csend(c,hdr,n)>=0) csend(c,p->data,(int)p->len);
+         * would-be length overran the buffer) - same guard as http_send_ex.
+         * HEAD gets the true Content-Length of the grabbed frame, no body. */
+        if (n < (int)sizeof hdr && csend(c,hdr,n)>=0 && !c->head)
+            csend(c,p->data,(int)p->len);
         pkt_unref(p);
     } else {
         http_send_ex(c,"503 Unavailable","text/plain",MEDIA_CORS,"no frame",8);
@@ -397,6 +406,14 @@ static void stream_mjpeg(hconn *c, int src, const char *bnd)
         if (!BND[0]) snprintf(BND,sizeof BND,"msmjpeg");
     } else snprintf(BND,sizeof BND,"msmjpeg");
 
+    char rh[288];
+    int n=snprintf(rh,sizeof rh,
+        "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=%s\r\n"
+        "Cache-Control: no-cache\r\nConnection: close\r\n" MEDIA_CORS "\r\n", BND);
+    /* HEAD: same headers a GET would send (incl. the boundary), no body,
+     * no encoder wake-up */
+    if (c->head){ csend(c,rh,n); return; }
+
     /* subscribe BEFORE sending headers so a full source can answer 503 */
     fanqueue q;
     if (fanqueue_init(&q,8)) return;
@@ -405,10 +422,6 @@ static void stream_mjpeg(hconn *c, int src, const char *bnd)
         fanqueue_free(&q);
         return;
     }
-    char rh[288];
-    int n=snprintf(rh,sizeof rh,
-        "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=%s\r\n"
-        "Cache-Control: no-cache\r\nConnection: close\r\n" MEDIA_CORS "\r\n", BND);
     if (csend(c,rh,n)<0){ hub_unsubscribe(src,&q); fanqueue_free(&q); return; }
     LOGI(MOD,"mjpeg client streaming");
     while (1) {
@@ -674,6 +687,17 @@ static void events_stream(hconn *c, const char *path, const char *cors)
 {
     const ms_config *cfg = c->cfg;
 
+    /* HEAD: headers only, no SSE body, no client-slot consumed */
+    if (c->head) {
+        char hh[768];
+        int hhn = snprintf(hh, sizeof hh,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+            "Cache-Control: no-store\r\nConnection: close\r\n"
+            "X-Accel-Buffering: no\r\n%s\r\n", cors);
+        if (hhn < (int)sizeof hh) csend(c, hh, hhn);
+        return;
+    }
+
     /* ?stream= filter: absent = all; present = only the listed types */
     int want_motion = 1, want_dn = 1, want_stats = 1, want_config = 1;
     const char *f = strstr(path, "stream=");
@@ -918,6 +942,9 @@ static void *conn_thread(void *arg)
         buf[n]=0;
         char method[8], path[256];
         if (sscanf(buf,"%7s %255s",method,path)==2) {
+            /* HEAD = GET semantics with the body suppressed everywhere
+             * (http_send_ex + the per-handler checks below) */
+            c->head = (strcmp(method,"HEAD")==0);
             /* /control + /events + media extras: CORS reflection + token
              * auth. tok_ok grants access to these paths ONLY (it is never
              * computed for others); everything else keeps the localhost/
@@ -965,8 +992,9 @@ static void *conn_thread(void *arg)
                     "WWW-Authenticate: Digest realm=\"" AUTH_REALM "\", "
                         "nonce=\"%s\", qop=\"auth\"%s\r\n"
                     "WWW-Authenticate: Basic realm=\"" AUTH_REALM "\"\r\n%s"
-                    "Content-Length: 12\r\nConnection: close\r\n\r\nUnauthorized",
-                    nonce, stale ? ", stale=true" : "", cors);
+                    "Content-Length: 12\r\nConnection: close\r\n\r\n%s",
+                    nonce, stale ? ", stale=true" : "", cors,
+                    c->head ? "" : "Unauthorized");
                 if (rn < (int)sizeof r) csend(c, r, rn);
                 goto done;
             }
@@ -989,7 +1017,9 @@ static void *conn_thread(void *arg)
                                                         : c->cfg->rtsp_user;
                 if (!c->local && !tok_ok && !user[0])
                     http_send_ex(c,"403 Forbidden","text/plain",cors,"local only",10);
-                else if (!strcmp(method,"GET")) {
+                else if (!strcmp(method,"GET") || c->head) {
+                    /* HEAD previously fell into the POST branch below and
+                     * ran control_apply_json("") - GET semantics instead */
                     /* worst case: caps + full image/audio/sensor blocks +
                      * 2 full video stream blocks + 2 per-stream OSD sets
                      * (2 x 8 items) with long texts + the motion status
