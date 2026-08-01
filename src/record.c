@@ -11,7 +11,11 @@
  * A manual override (/control record start/stop, the control-bar button) wins
  * over the config mode. Segments rotate every record.segment_s at a keyframe
  * boundary; before each new segment the oldest files are pruned until at least
- * record.min_free_mb is free. */
+ * record.min_free_mb is free.
+ *
+ * Only built with USE_RECORD (default on); without it the stubs at the bottom
+ * keep the call sites (main.c/control.c) unconditional, exactly like srt.c. */
+#ifdef USE_RECORD
 #include "record.h"
 #include "hub.h"
 #include "frame.h"
@@ -640,3 +644,17 @@ out:
     return rc;
 }
 #endif
+
+#else /* !USE_RECORD */
+#include "record.h"
+#include <string.h>
+void record_start(const ms_config *cfg) { (void)cfg; }
+void record_stop(void) {}
+#ifdef USE_CONTROL
+/* available=0 tells /control (and the WebUI record page) the feature is not
+ * compiled in; the manual override and clip capture report failure. */
+void record_get_status(ms_record_status *st) { memset(st, 0, sizeof *st); st->free_mb = -1; }
+int  record_set_active(int on) { (void)on; return -1; }
+int  record_clip(const char *path, int seconds) { (void)path; (void)seconds; return -1; }
+#endif
+#endif /* USE_RECORD */

@@ -745,7 +745,11 @@ int control_get_json(char *buf, size_t cap)
 #endif
         "],");
 #endif /* USE_ROTATE */
+#ifdef USE_RECORD
     APP("\"record\":{\"available\":1},");
+#else
+    APP("\"record\":{\"available\":0},");
+#endif
     /* audio backchannel: available only if the feature is compiled AND the
      * ingenic-audiodaemon client (/bin/iac) is present on the device */
 #ifdef USE_BACKCHANNEL
@@ -799,7 +803,11 @@ int control_get_json(char *buf, size_t cap)
 #else
     APP("\"play\":{\"available\":0},");
 #endif
+#ifdef USE_TIMELAPSE
     APP("\"timelapse\":{\"available\":1}},");
+#else
+    APP("\"timelapse\":{\"available\":0}},");
+#endif
     APP("\"image\":{\"brightness\":%d,\"contrast\":%d,\"saturation\":%d,"
         "\"sharpness\":%d,\"hue\":%d,\"hflip\":%d,\"vflip\":%d,\"running_mode\":%d,",
         c->image.brightness,c->image.contrast,c->image.saturation,

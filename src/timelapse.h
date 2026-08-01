@@ -1,5 +1,6 @@
 /* timelapse.h - native timelapse: periodic JPEG snapshots from the hub's
- * JPEG source to <timelapse.dir>/<host>/timelapses/, pruned after keep_days. */
+ * JPEG source to <timelapse.dir>/<host>/timelapses/, pruned after keep_days.
+ * Only built with USE_TIMELAPSE (default on); stubs otherwise. */
 #ifndef MS_TIMELAPSE_H
 #define MS_TIMELAPSE_H
 #include "config.h"

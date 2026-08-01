@@ -12,7 +12,11 @@
  * the old always-subscribed loop kept them running 24/7 and discarded
  * interval_s*fps encodes per kept frame.
  * Retention: after each shot, *.jpg older than keep_days are pruned (emptied
- * directories are removed). */
+ * directories are removed).
+ *
+ * Only built with USE_TIMELAPSE (default on); without it the stubs at the
+ * bottom keep the call sites (main.c/control.c) unconditional, like srt.c. */
+#ifdef USE_TIMELAPSE
 #include "timelapse.h"
 #include "hub.h"
 #include "frame.h"
@@ -341,3 +345,15 @@ void timelapse_get_status(ms_timelapse_status *st)
     pthread_mutex_unlock(&g_lock);
 }
 #endif
+
+#else /* !USE_TIMELAPSE */
+#include "timelapse.h"
+#include <string.h>
+void timelapse_start(const ms_config *cfg) { (void)cfg; }
+void timelapse_stop(void) {}
+#ifdef USE_CONTROL
+/* available=0 tells /control (and the WebUI timelapse page) the feature is
+ * not compiled in. */
+void timelapse_get_status(ms_timelapse_status *st) { memset(st, 0, sizeof *st); st->free_mb = -1; }
+#endif
+#endif /* USE_TIMELAPSE */
