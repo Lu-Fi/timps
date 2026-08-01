@@ -171,6 +171,16 @@ static void resolve(const char *name, const char *vars_file, char *out, int outs
     else if (!strcmp(name,"ip"))       snprintf(out,outsz,"%s",ip);
     else if (!strcmp(name,"mac"))      get_mac(ifname,out,outsz);
     else if (!strcmp(name,"fps"))      snprintf(out,outsz,"%.1f",g_fps);
+    /* {fpsN}: measured encoder OUTPUT fps of video stream N specifically
+     * (0..MS_MAX_VSTREAM-1), independent of osd.monitor_stream. Like {fps}
+     * this is the rate the hub is actually publishing on that channel - the
+     * SAME for every viewer of that encoder (OSD is burned in before fanout),
+     * a real diagnostic for e.g. a daynight-mode fps switch or an ISP hiccup.
+     * NOT any per-viewer post-drop rate (that isn't an OSD-expressible thing). */
+    else if (!strncmp(name,"fps",3) && name[3]>='0' && name[3]<='9' && name[4]==0){
+        int ch = name[3]-'0';
+        snprintf(out,outsz,"%.1f", ch<MS_MAX_VSTREAM ? hub_get_fps(ch) : 0.0);
+    }
     else if (!strcmp(name,"bitrate"))  snprintf(out,outsz,"%.0f",g_bitrate);
     else if (!strcmp(name,"uptime"))   get_uptime(out,outsz);
     else if (!strcmp(name,"net")||!strcmp(name,"tx"))  get_net_tx(ifname,out,outsz);
