@@ -877,6 +877,7 @@ static void stream_loop(session *s)
      * (we poll for control input with MSG_DONTWAIT instead) */
     char ctl[2048]; int ctlhave = 0;
     int got_key = 0;   /* start clients on a keyframe for clean decode */
+    int64_t drop_idr_us = 0;   /* rate-limit the safety IDR request on any drop */
     int pop_ms = 100;
     /* A3: last proof-of-life from the client. UDP-transport sessions are
      * otherwise undetectably dead: sendto() on an unconnected UDP socket
@@ -901,7 +902,27 @@ static void stream_loop(session *s)
     while (s->playing) {
         /* if the queue overflowed and dropped a keyframe, request a fresh IDR
          * so the client doesn't decode garbage until the next GOP */
-        if (sub_v && fanqueue_take_dropped_key(&s->q)) hub_request_idr(s->vchn);
+        if (sub_v && fanqueue_take_dropped_key(&s->q)) {
+            hub_request_idr(s->vchn);
+            drop_idr_us = ms_now_us();
+        }
+        /* a dropped P-frame is silent (no keyframe lost) but still breaks the
+         * rest of the GOP for this client: subsequent P-frames reference an AU
+         * the decoder never got. Observed as a subject (a cat walking) flicker/
+         * vanish mid-motion in a Frigate recording when a weak-WiFi RTSP/TCP
+         * session backs up and hits the fanqueue byte cap. Self-heal by asking
+         * for a fresh IDR too, but RATE-LIMITED to once/sec (mirrors httpd.c's
+         * adaptive-drop): the IDR request is global to the shared encoder, so a
+         * chronically slow client must not spike the bitrate for every other
+         * subscriber. The keyframe-drop path above resets the timer, so it
+         * won't double-fire. */
+        else if (sub_v && fanqueue_take_dropped(&s->q)) {
+            int64_t now = ms_now_us();
+            if (now - drop_idr_us > 1000000) {
+                hub_request_idr(s->vchn);
+                drop_idr_us = now;
+            }
+        }
         ms_pkt *p = fanqueue_pop(&s->q, pop_ms);
         if (p) {
             int sendrc = 0;
