@@ -319,6 +319,32 @@ static void fs_unuse(int chn)
     pthread_mutex_unlock(&g_fs_mtx);
 }
 
+/* running_mode (day/night) latch kick. The ISP core only PROCESSES a pending
+ * SetISPRunningMode while framesource chn0 is delivering frames: with chn0
+ * idle-stopped (on-demand FS above) the SDK call still returns 0 but the mode
+ * change sits queued in the driver indefinitely - even when a scaled channel
+ * (chn1) is streaming the whole time. Root-caused on Galayou Y4
+ * (T23 / sc2336, ISP H20241028a / isp_20250722a) 2026-08-01: the dusk
+ * switch-to-night plus BOTH daynight re-asserts returned rc=0 with chn0 idle,
+ * /proc/jz/isp/isp-m0 stayed "Runing Mode : Day", and the always-on ch1
+ * substream showed the magenta IR-in-colour-mode image all evening. Merely
+ * enabling chn0 (a snapshot request) latched the queued mode within a couple
+ * of frames, with no further Set call.
+ * So: after every running_mode apply, run chn0 for a few frames if it is
+ * idle. Refcounted fs_use makes this a cheap ref bump / no-op when chn0 is
+ * already streaming. ~500 ms = ~12 frames @25fps, generous margin over the
+ * 1-2 frames the latch needs. Callers must NOT hold g_isp_lock. */
+#define FS0_MODE_KICK_US 500000
+static void fs_kick_running_mode(void)
+{
+    /* the latch belongs to the ISP's direct-output channel 0; per-stream
+     * imp_chn maps stream 0 -> fs chn 0 (see fs_create) */
+    if (!g_hcfg || !g_hcfg->video[0].enabled) return;
+    fs_use(0);
+    usleep(FS0_MODE_KICK_US);
+    fs_unuse(0);
+}
+
 /* ================= motion detection lifecycle ================= */
 /* Bring the IVS motion grid in sync with the current config. ANY runtime
  * change (enable/disable, cols/rows, sensitivity, monitor_stream) goes
@@ -2148,6 +2174,10 @@ static void ing_control(const char *key, const char *val)
         pthread_mutex_unlock(&g_isp_lock);
         if (ok) LOGI(MOD,"control %s=%d", key, v);
         else    LOGD(MOD,"image.%s unsupported on this platform (persisted only)", k);
+        /* day/night: the ISP only latches a running-mode change while fs chn0
+         * runs - kick it if idle (see fs_kick_running_mode; blocks ~500 ms,
+         * fine for /control connection threads and the daynight thread) */
+        if (ok && !strcmp(k,"running_mode")) fs_kick_running_mode();
         return;
     }
 
