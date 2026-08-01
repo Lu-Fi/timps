@@ -291,6 +291,10 @@ typedef struct {
     /* rtsp */
     int            rtsp_enabled;
     int            rtsp_port;
+    int            rtsp_mtu;       /* max RTP packet size (header+payload) for
+                                    * UDP packetization; default 1200 so the
+                                    * resulting IP packets survive WireGuard/
+                                    * OpenVPN/PPPoE paths without fragmenting */
     char           rtsp_user[MS_MAX_STR];
     char           rtsp_pass[MS_MAX_STR];
 

@@ -294,24 +294,45 @@ static void gen_sdp(session *s, const ms_config *c, int vchn, char *sdp, int sdp
     else
         strcpy(ip, "0.0.0.0");
 
+    /* C2: RFC 4566 5.2 wants a globally unique (sess-id, sess-version)
+     * pair, NTP-timestamp format recommended - not the fixed "0 0" this
+     * used to emit. One process-wide boot timestamp is enough: timps never
+     * re-announces an SDP, so the version only needs to be valid, not
+     * incrementing. Static init is thread-safe here in practice and the
+     * worst race outcome is two clients seeing the same (valid) id. */
+    static long long sdp_sid;
+    if (!sdp_sid) sdp_sid = (long long)time(NULL) + 2208988800LL;
+
     /* M2: guard every accumulation step so `sizeof(body)-n` (size_t) can
      * never underflow if an earlier snprintf() reported it would have
      * written past the buffer (n > sizeof(body)). Mirrors the n>=0/n<sizeof
-     * guard already used for the RTP-Info header in stream_loop(). */
+     * guard already used for the RTP-Info header in stream_loop().
+     * C3: a=range:npt=now- marks the stream live/unbounded (RFC 2326 A.3);
+     * without it some players assume a seekable VOD range. */
     if (n>=0 && n<(int)sizeof(body))
         n += snprintf(body+n, sizeof(body)-n,
-            "v=0\r\no=- 0 0 IN IP4 %s\r\ns=timps\r\nc=IN IP4 %s\r\nt=0 0\r\n"
+            "v=0\r\no=- %lld %lld IN IP4 %s\r\ns=timps\r\nc=IN IP4 %s\r\n"
+            "t=0 0\r\na=range:npt=now-\r\n"
             "a=control:*\r\n",   /* A6: aggregate control = Content-Base */
-            ip, ip);
+            sdp_sid, sdp_sid, ip, ip);
 
-    /* video */
+    /* video. C3: advertise what the daemon already knows from its own
+     * config - b=AS (kbps, RFC 4566 5.8), a=framerate (RFC 4566 6),
+     * a=framesize (3GPP TS 26.234; the attribute older ONVIF NVR auto-
+     * configurators read) - so clients get bitrate/fps/geometry without
+     * having to parse the SPS. */
     const ms_vstream_cfg *v = &c->video[vchn];
     int isH265 = (v->codec==MS_VC_H265);
+    int vw, vh; ms_vstream_eff_dims(v, &vw, &vh);
     if (n>=0 && n<(int)sizeof(body))
         n += snprintf(body+n, sizeof(body)-n,
-            "m=video 0 RTP/AVP %d\r\na=rtpmap:%d %s/90000\r\n"
+            "m=video 0 RTP/AVP %d\r\nb=AS:%d\r\n"
+            "a=rtpmap:%d %s/90000\r\n"
+            "a=framerate:%d\r\na=framesize:%d %d-%d\r\n"
             "a=control:trackID=0\r\n",
-            VIDEO_PT, VIDEO_PT, isH265?"H265":"H264");
+            VIDEO_PT, v->bitrate_kbps,
+            VIDEO_PT, isH265?"H265":"H264",
+            v->fps, VIDEO_PT, vw, vh);
     vparam vp;
     if (hub_get_vparam(vchn, &vp) && vparam_ready(&vp)) {
         char fmtp[1600];
@@ -325,19 +346,22 @@ static void gen_sdp(session *s, const ms_config *c, int vchn, char *sdp, int sdp
     if (hub_get_audio(&acodec, &asr, &ach) && acodec != MS_AC_NONE) {
         if (acodec==MS_AC_AAC) {
             uint8_t asc[2]; aac_asc(asr, ach, asc);
+            int akbps = c->audio.bitrate_kbps > 0 ? c->audio.bitrate_kbps : 32;
             if (n>=0 && n<(int)sizeof(body))
                 n += snprintf(body+n, sizeof(body)-n,
-                    "m=audio 0 RTP/AVP %d\r\na=rtpmap:%d mpeg4-generic/%d/%d\r\n"
+                    "m=audio 0 RTP/AVP %d\r\nb=AS:%d\r\n"
+                    "a=rtpmap:%d mpeg4-generic/%d/%d\r\n"
                     "a=fmtp:%d streamtype=5;profile-level-id=1;mode=AAC-hbr;"
                     "sizelength=13;indexlength=3;indexdeltalength=3;config=%02X%02X\r\n"
                     "a=control:trackID=1\r\n",
-                    AUDIO_PT, AUDIO_PT, asr, ach, AUDIO_PT, asc[0], asc[1]);
+                    AUDIO_PT, akbps, AUDIO_PT, asr, ach, AUDIO_PT, asc[0], asc[1]);
         } else {
             int pt = (acodec==MS_AC_PCMA)?8:0;   /* static PTs */
             const char *nm = (acodec==MS_AC_PCMA)?"PCMA":"PCMU";
             if (n>=0 && n<(int)sizeof(body))
                 n += snprintf(body+n, sizeof(body)-n,
-                    "m=audio 0 RTP/AVP %d\r\na=rtpmap:%d %s/8000\r\n"
+                    "m=audio 0 RTP/AVP %d\r\nb=AS:64\r\n"   /* G.711 is 64 kbps */
+                    "a=rtpmap:%d %s/8000\r\n"
                     "a=control:trackID=1\r\n", pt, pt, nm);
         }
     }
@@ -472,9 +496,37 @@ static int handle_request(session *s, char *req)
         int vchn = find_video_by_path(s->cfg, path);
         if (vchn < 0) { send_err(s, cseq, 404, "Not Found", NULL); return -1; }
         s->vchn = vchn;
-        /* ensure params exist quickly */
+        /* C1: never ship an SDP without the a=fmtp line (sprop-parameter-
+         * sets/profile-level-id). The old code waited 500 ms and then sent
+         * whatever it had - formally valid per RFC 6184 8.1, but hardware-
+         * decoder NVRs and some mobile SDKs init their decoder strictly
+         * from the SDP and stay black. Worse, waiting alone cannot help on
+         * a fresh boot: encoding is on-demand, so with no subscriber the
+         * encoder never runs and SPS/PPS never appear. Briefly subscribe
+         * (same wake-up PLAY would do moments later) so the encoder spins
+         * up and the hub captures the parameter sets from the first IDR,
+         * then release it again - the activity callback keeps the encoder
+         * running only if someone else is still consuming. Only if that
+         * fails within 2 s (encoder wedged) answer 503 + Retry-After
+         * instead of a degraded SDP the client would cache all session. */
         hub_request_idr(vchn);
-        for (int i=0;i<50;i++){ vparam vp; if(hub_get_vparam(vchn,&vp)&&vparam_ready(&vp))break; usleep(10000);}
+        int vready = 0;
+        { vparam vp; vready = hub_get_vparam(vchn,&vp) && vparam_ready(&vp); }
+        if (!vready) {
+            fanqueue wq; int winit = fanqueue_init(&wq, 4) == 0;
+            int wsub = winit && hub_subscribe(vchn, &wq) == 0;
+            for (int i=0;i<200 && !vready;i++){
+                vparam vp;
+                if (hub_get_vparam(vchn,&vp) && vparam_ready(&vp)) { vready=1; break; }
+                usleep(10000);
+            }
+            if (wsub)  hub_unsubscribe(vchn, &wq);
+            if (winit) fanqueue_free(&wq);
+        }
+        if (!vready) {
+            send_err(s, cseq, 503, "Service Unavailable", "Retry-After: 1\r\n");
+            return 0;
+        }
         int want_bc = 0;
 #ifdef USE_BACKCHANNEL
         { const char *rq = hdr_find(req, "Require"); want_bc = rq && strstr(rq,"backchannel"); }
@@ -690,9 +742,24 @@ static void stream_loop(session *s)
     int ac = MS_AC_AAC, asr = c->audio.samplerate, ach = c->audio.channels;
     hub_get_audio(&ac, &asr, &ach);      /* actual audio codec from the HAL */
 
+    /* B2: one CNAME for both tracks (RFC 3550 6.5.1 - receivers correlate
+     * the session's A/V pair by it): timps@<local-ip>, falling back to the
+     * RTSP session id if the socket is already gone. */
+    char cname[RTP_CNAME_MAX+1];
+    {
+        struct sockaddr_in loc; socklen_t sl = sizeof loc;
+        char ip[INET_ADDRSTRLEN];
+        if (getsockname(s->fd, (struct sockaddr*)&loc, &sl) == 0 &&
+            inet_ntop(AF_INET, &loc.sin_addr, ip, sizeof ip))
+            snprintf(cname, sizeof cname, "timps@%s", ip);
+        else
+            snprintf(cname, sizeof cname, "timps@%s", s->session);
+    }
+
     int sub_v = 0, sub_a = 0;
     if (s->have_video) {
-        rtp_track_init(&s->vtrack, VIDEO_PT, 90000, sink_send, &s->vsink);
+        rtp_track_init(&s->vtrack, VIDEO_PT, 90000, c->rtsp_mtu, cname,
+                       sink_send, &s->vsink);
         if (hub_subscribe(s->vchn, &s->q) != 0) goto full;
         sub_v = 1;
         hub_request_idr(s->vchn);
@@ -700,7 +767,8 @@ static void stream_loop(session *s)
     if (s->have_audio) {
         int apt = (ac==MS_AC_AAC)?AUDIO_PT : (ac==MS_AC_PCMA?8:0);
         int arate = (ac==MS_AC_AAC)?asr:8000;
-        rtp_track_init(&s->atrack, apt, arate, sink_send, &s->asink);
+        rtp_track_init(&s->atrack, apt, arate, c->rtsp_mtu, cname,
+                       sink_send, &s->asink);
         if (hub_subscribe(HUB_AUDIO_SRC, &s->q) != 0) goto full;
         sub_a = 1;
     }
@@ -857,9 +925,15 @@ static void stream_loop(session *s)
                                  "Session Not Found", NULL);
                     } else
                     if (!strncmp(ctl,"TEARDOWN",8)) {
-                        /* answer before closing - RTSP is strictly
-                         * request/response, and live555-derived clients wait
-                         * for the 200 instead of treating the close as one */
+                        /* B3: clean teardown - tell RTCP-aware receivers the
+                         * sender is leaving (RFC 3550 6.3.7, compound
+                         * SR|RR+SDES+BYE), then answer before closing - RTSP
+                         * is strictly request/response, and live555-derived
+                         * clients wait for the 200 instead of treating the
+                         * close as one. Best-effort either way. */
+                        int64_t bnow = ms_now_us();
+                        if (s->have_video) rtp_send_bye(&s->vtrack, bnow);
+                        if (s->have_audio) rtp_send_bye(&s->atrack, bnow);
                         char e[64]; snprintf(e,sizeof e,"Session: %s\r\n",s->session);
                         send_resp(s, hdr_int(ctl,"CSeq",0), e, NULL);
                         close_conn = 1; break;

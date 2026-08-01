@@ -180,6 +180,9 @@ void config_defaults(ms_config *c)
     im->core_wb_mode=0; im->wb_rgain=0; im->wb_bgain=0;
 
     c->rtsp_enabled = 1; c->rtsp_port = 554; c->rtsp_user[0]=0; c->rtsp_pass[0]=0;
+    /* 1200 (WebRTC's choice) leaves room for WireGuard/OpenVPN/PPPoE/IPv6
+     * tunnel overhead; raise to 1400 for LAN-only setups if desired */
+    c->rtsp_mtu = 1200;
     c->http_enabled = 1; c->http_port = 8880; c->http_preview_chn = 1;
     c->http_user[0]=0; c->http_pass[0]=0;
     c->http_token[0]=0;
@@ -487,6 +490,7 @@ static const cfg_field jpeg_fields[] = {
 static const cfg_field rtsp_fields[] = {   /* fields live directly in ms_config */
     F ("enabled",  0,             rtsp_enabled,  T_BOOL, 0, 0,0),
     F ("port",     0,             rtsp_port,     T_INT,  0, 1,65535),
+    F ("mtu",      0,             rtsp_mtu,      T_INT,  0, 548,1472),
     FS("user",     "username",    rtsp_user,     0),
     FS("pass",     "password",    rtsp_pass,     0),
     F ("tls",      "tls_enabled", rtsp_tls,      T_BOOL, 0, 0,0),
