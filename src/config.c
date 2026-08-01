@@ -12,6 +12,7 @@
 #include <fcntl.h>
 #include <sys/stat.h>   /* fchmod on the mkstemp'd config tmp */
 #include <errno.h>
+#include <limits.h>  /* INT_MAX for open-ended lo-only clamps in the tables */
 
 #define MOD "CONFIG"
 ms_config g_cfg;
@@ -320,61 +321,6 @@ static const char *osd_key(const char *key, int *stream, int *item)
     return key+5;
 }
 
-static void set_video(ms_vstream_cfg *v, const char *k, const char *val)
-{
-    /* M11: numeric ranges clamped on parse (conservative bounds well past
-     * anything a T-series SoC supports, so no legitimate config is altered):
-     * width/height 64..4096 px, fps 1..120, bitrate 16..50000 kbps,
-     * gop/max_gop 1..1000 frames, profile 0..2, qp 1..51 (H.264/H.265 QP
-     * range), buffers 1..8 VBs. */
-    if (!strcmp(k,"enabled")) v->enabled=pbool(val);
-    else if (!strcmp(k,"codec")) v->codec=pvcodec(val);
-    else if (!strcmp(k,"width")) v->width=pint_cl(val,64,4096);
-    else if (!strcmp(k,"height")) v->height=pint_cl(val,64,4096);
-    else if (!strcmp(k,"fps")) v->fps=pint_cl(val,1,120);
-    else if (!strcmp(k,"bitrate")) v->bitrate_kbps=pint_cl(val,16,50000);
-    else if (!strcmp(k,"rc_mode")||!strcmp(k,"mode")) v->rc_mode=prc(val);
-    else if (!strcmp(k,"gop")) v->gop=pint_cl(val,1,1000);
-    else if (!strcmp(k,"max_gop")) v->max_gop=pint_cl(val,1,1000);
-    else if (!strcmp(k,"profile")) v->profile=pint_cl(val,0,2);
-    else if (!strcmp(k,"qp")) v->qp=pint_cl(val,1,51);
-    else if (!strcmp(k,"min_qp")) v->min_qp=pint_cl(val,1,51);
-    else if (!strcmp(k,"max_qp")) v->max_qp=pint_cl(val,1,51);
-    else if (!strcmp(k,"rotation")) v->rotation=prot(val);
-    else if (!strcmp(k,"buffers")) { v->buffers=pint_cl(val,1,8); v->buffers_explicit=1; }
-    else if (!strcmp(k,"rtsp_path")) copystr(v->rtsp_path,val,MS_MAX_STR);
-    else if (!strcmp(k,"imp_chn")) v->imp_chn=pint(val);
-    else if (!strcmp(k,"jpeg")||!strcmp(k,"jpeg_enabled")) v->jpeg_enabled=pbool(val);
-    else if (!strcmp(k,"jpeg_quality")) v->jpeg_quality=pint_cl(val,1,100);
-    else if (!strcmp(k,"jpeg_fps")) v->jpeg_fps=pint_cl(val,1,120);
-    else if (!strcmp(k,"jpeg_chn")) v->jpeg_chn=pint(val);
-    else LOGW(MOD,"unknown video key %s", k);
-}
-
-static void set_osd_item(ms_osd_item *o, const char *k, const char *val)
-{
-    if (!strcmp(k,"enabled")) o->enabled=pbool(val);
-    else if (!strcmp(k,"type")) o->type=(!strcasecmp(val,"logo"))?MS_OSD_LOGO:MS_OSD_TEXT;
-    else if (!strcmp(k,"text")) copystr(o->text,val,128);
-    else if (!strcmp(k,"logo")||!strcmp(k,"logo_path")) copystr(o->logo_path,val,128);
-    else if (!strcmp(k,"logo_w")||!strcmp(k,"logo_width")) o->logo_w=pint_cl(val,0,4096);  /* F-04 */
-    else if (!strcmp(k,"logo_h")||!strcmp(k,"logo_height")) o->logo_h=pint_cl(val,0,4096); /* F-04 */
-    else if (!strcmp(k,"x")) o->x=pint(val);
-    else if (!strcmp(k,"y")) o->y=pint(val);
-    /* H4: font_size feeds the OSD canvas allocation (msttf_render); clamp at
-     * parse so a bad /control write can never request an absurd raster. The
-     * rasterizer additionally hard-clamps its own pixel height (8..512). */
-    else if (!strcmp(k,"font_size")) o->font_size=pint_cl(val,8,256);
-    else if (!strcmp(k,"color")||!strcmp(k,"font_color")) o->color=phex(val);
-    /* imp_osd.c feeds this straight into the group attr's uint8_t fgAlhpa:
-     * clamp so e.g. 300 doesn't wrap to 44 while the config echoes 300 */
-    else if (!strcmp(k,"transparency")) o->transparency=pint_cl(val,0,255);
-    else if (!strcmp(k,"outline")||!strcmp(k,"stroke")) o->outline=pint_cl(val,0,64); /* F-04 */
-    else if (!strcmp(k,"outline_color")||!strcmp(k,"stroke_color")) o->outline_color=phex(val);
-    else if (!strcmp(k,"font_path")) copystr(o->font_path,val,128);
-    else LOGW(MOD,"unknown osd item key %s", k);
-}
-
 /* Parse a privacy region key "privacy<S>.<N>.<field>" -> *stream=S, *item=N,
  * returns the field name, or NULL. */
 static const char *privacy_key(const char *key, int *stream, int *item)
@@ -386,15 +332,465 @@ static const char *privacy_key(const char *key, int *stream, int *item)
     return key+11;
 }
 
-static void set_privacy_region(ms_privacy_region *p, const char *k, const char *val)
+/* ------------------------------------------------------------------------
+ * Descriptor-driven key tables (B2, review 2026-07-31).
+ *
+ * set_kv() and config_get_kv() used to be two hand-maintained ~230-key
+ * strcmp cascades (~21 KB .text - the two largest functions in the whole
+ * binary). Every key now has ONE table entry describing where it lives in
+ * ms_config, how it parses/clamps and how it reads back, so setter and
+ * getter cannot drift apart. Keys whose behaviour does not fit the generic
+ * {name, offset, type, clamp} shape stay explicit code in set_kv() below:
+ * motion.cols/rows (cross-axis ROI-budget clamp), the deprecated
+ * motion.roi_* (parse + one-shot warning), general.syslog (side effect
+ * only, not stored in g_cfg) and videoN.buffers (extra buffers_explicit
+ * flag).
+ *
+ * Clamp provenance (values unchanged from the old cascades, see git history
+ * for the full rationale): M11 (dims/fps/ports/bitrates/gop/qp/buffers),
+ * F-03 (audio volume/gain/PGA/spk), F-04 (OSD logo dims/outline), H4
+ * (font_size), L-1/L-2 (audio.bitrate 8..320), imp_isp.h domains (image.*
+ * knobs 0..255, highlight/backlight 0..10, WB gains 0..65535), imp_audio.h
+ * domains (ns 0..3, agc_target_dbfs 0..31, agc_compression_db 0..90).
+ */
+enum {
+    T_BOOL,     /* int:      pbool()                        <-> "%d"     */
+    T_INT,      /* int:      pint(), clamped lo..hi if lo<hi <-> "%d"     */
+    T_CHAN,     /* int:      video stream idx, bad -> 0      <-> "%d"     */
+    T_HEX,      /* uint32_t: phex()                          <-> "0x%08X" */
+    T_FLT,      /* float:    pflt()                          <-> "%g"     */
+    T_STR,      /* char[hi]: copystr()   <-> "%s" under config_str_lock   */
+    T_VCODEC,   /* int: pvcodec()  <-> vcodec_name()                      */
+    T_ACODEC,   /* int: pacodec()  <-> acodec_name()                      */
+    T_RC,       /* int: prc()      <-> rc_name()                          */
+    T_ROT,      /* int: prot() (degrees/legacy + SoC whitelist) <-> "%d"  */
+    T_OSDTYPE,  /* int: "logo"/"text"          <-> same                   */
+    T_DNMODE,   /* int: "sensor"/"time"/"sun"  <-> same                   */
+    T_RECMODE,  /* int: "motion"/"continuous"/number <-> "%d"             */
+    T_BCCODEC,  /* int: "pcmu"/"pcma"/"aac"/number   <-> "%d"             */
+};
+
+/* Set/persist-only key: config_get_kv() keeps reporting it unknown, exactly
+ * like the old hand-written getter did, so /control change-detection falls
+ * back to always applying it. Making one of these readable would newly let
+ * the get-apply-get dedup SKIP an unchanged re-POST - a behaviour change -
+ * so don't drop the flag without checking the /control consumers. */
+#define F_NOGET 0x01
+
+typedef struct {
+    const char    *name;    /* canonical key name (after the section prefix) */
+    const char    *alias;   /* optional legacy/alternate spelling, or NULL */
+    unsigned short off;     /* byte offset from the section base struct */
+    unsigned char  type;    /* T_* */
+    unsigned char  flags;   /* F_* */
+    int lo, hi;             /* T_INT: clamp when lo<hi; T_STR: buf size in hi */
+} cfg_field;
+
+/* entry helpers: F = generic field, FS = string field (size from the struct) */
+#define F(nm,al,fld,ty,fl,LO,HI) \
+    { nm, al, (unsigned short)offsetof(TT,fld), ty, fl, LO, HI }
+#define FS(nm,al,fld,fl) \
+    { nm, al, (unsigned short)offsetof(TT,fld), T_STR, fl, 0, \
+      (int)sizeof ((TT*)0)->fld }
+
+#define TT ms_sensor_cfg
+static const cfg_field sensor_fields[] = {
+    FS("model",     0,             model, 0),
+    F ("i2c_addr",  "i2c_address", i2c_addr, T_INT, 0, 0,0),
+    F ("fps",       0,             fps,      T_INT, 0, 0,0),
+    F ("width",     0,             width,    T_INT, 0, 0,0),
+    F ("height",    0,             height,   T_INT, 0, 0,0),
+};
+#undef TT
+
+#define TT ms_image_cfg
+static const cfg_field image_fields[] = {
+    F("brightness",             0, brightness,             T_INT, 0, 0,255),
+    F("contrast",               0, contrast,               T_INT, 0, 0,255),
+    F("saturation",             0, saturation,             T_INT, 0, 0,255),
+    F("sharpness",              0, sharpness,              T_INT, 0, 0,255),
+    F("hue",                    0, hue,                    T_INT, 0, 0,255),
+    F("vflip",                  0, vflip,                  T_BOOL,0, 0,0),
+    F("hflip",                  0, hflip,                  T_BOOL,0, 0,0),
+    F("running_mode",           0, running_mode,           T_INT, 0, 0,0),
+    F("anti_flicker",           0, anti_flicker,           T_INT, 0, 0,0),
+    F("ae_compensation",        0, ae_compensation,        T_INT, 0, 0,255),
+    F("max_again",              0, max_again,              T_INT, 0, 0,255),
+    F("max_dgain",              0, max_dgain,              T_INT, 0, 0,255),
+    F("sinter_strength",        0, sinter_strength,        T_INT, 0, 0,255),
+    F("temper_strength",        0, temper_strength,        T_INT, 0, 0,255),
+    F("dpc_strength",           0, dpc_strength,           T_INT, 0, 0,255),
+    F("defog_strength",         0, defog_strength,         T_INT, 0, 0,255),
+    F("drc_strength",           0, drc_strength,           T_INT, 0, 0,255),
+    F("highlight_depress",      0, highlight_depress,      T_INT, 0, 0,10),
+    F("backlight_compensation", 0, backlight_compensation, T_INT, 0, 0,10),
+    F("core_wb_mode",           0, core_wb_mode,           T_INT, 0, 0,0),
+    F("wb_rgain",               0, wb_rgain,               T_INT, 0, 0,65535),
+    F("wb_bgain",               0, wb_bgain,               T_INT, 0, 0,65535),
+};
+#undef TT
+
+#define TT ms_audio_cfg
+static const cfg_field audio_fields[] = {
+    F ("enabled",            0, enabled,            T_BOOL,   0, 0,0),
+    F ("codec",              0, codec,              T_ACODEC, 0, 0,0),
+    F ("samplerate",         0, samplerate,         T_INT,    0, 0,0),
+    /* 1 = mono (native), 2 = simulated stereo (mono mic duplicated to L=R,
+     * AAC only) - anything else would put a bogus channel count in the AAC
+     * ASC / SDP / fMP4 stsd */
+    F ("channels",           0, channels,           T_INT,    0, 1,2),
+    F ("bitrate",            0, bitrate_kbps,       T_INT,    0, 8,320),
+    F ("volume",             0, volume,             T_INT,    0, 0,100),
+    F ("gain",               0, gain,               T_INT,    0, 0,31),
+    F ("high_pass",          0, high_pass,          T_BOOL,   0, 0,0),
+    F ("agc",                0, agc,                T_BOOL,   0, 0,0),
+    F ("ns",                 0, ns,                 T_INT,    0, 0,3),
+    F ("alc_gain",           0, alc_gain,           T_INT,    0, 0,7),
+    F ("agc_target_dbfs",    0, agc_target_dbfs,    T_INT,    0, 0,31),
+    F ("agc_compression_db", 0, agc_compression_db, T_INT,    0, 0,90),
+    F ("mute",               0, mute,               T_BOOL,   0, 0,0),
+    F ("force_stereo",       0, force_stereo,       T_BOOL,   0, 0,0),
+    F ("spk_enabled",        0, spk_enabled,        T_BOOL,   0, 0,0),
+    F ("spk_volume",         0, spk_volume,         T_INT,    0, 0,100),
+    F ("spk_gain",           0, spk_gain,           T_INT,    0, 0,100),
+    F ("backchannel",        0, backchannel,        T_BOOL,   0, 0,0),
+    F ("backchannel_codec",  0, backchannel_codec,  T_BCCODEC,0, 0,0),
+    F ("backchannel_rate",   0, backchannel_rate,   T_INT,    0, 8000,48000),
+};
+#undef TT
+
+#define TT ms_jpeg_cfg
+static const cfg_field jpeg_fields[] = {
+    F ("enabled",       0, enabled, T_BOOL, 0, 0,0),
+    F ("width",         0, width,   T_INT,  0, 64,4096),
+    F ("height",        0, height,  T_INT,  0, 64,4096),
+    F ("quality",       0, quality, T_INT,  0, 1,100),
+    F ("fps",           0, fps,     T_INT,  0, 1,120),
+    F ("imp_chn",       0, imp_chn, T_INT,  0, 0,0),
+    FS("snapshot_path", 0, snapshot_path, 0),
+};
+#undef TT
+
+#define TT ms_config
+static const cfg_field rtsp_fields[] = {   /* fields live directly in ms_config */
+    F ("enabled",  0,             rtsp_enabled,  T_BOOL, 0, 0,0),
+    F ("port",     0,             rtsp_port,     T_INT,  0, 1,65535),
+    FS("user",     "username",    rtsp_user,     0),
+    FS("pass",     "password",    rtsp_pass,     0),
+    F ("tls",      "tls_enabled", rtsp_tls,      T_BOOL, 0, 0,0),
+    F ("tls_port", 0,             rtsp_tls_port, T_INT,  0, 1,65535),
+};
+static const cfg_field http_fields[] = {
+    F ("enabled",     0,          http_enabled,     T_BOOL, 0, 0,0),
+    F ("port",        0,          http_port,        T_INT,  0, 1,65535),
+    F ("preview_chn", 0,          http_preview_chn, T_INT,  0, 0,0),
+    FS("user",        "username", http_user,        0),
+    FS("pass",        "password", http_pass,        0),
+    FS("token",       0,          http_token,       0),
+    FS("token_file",  0,          http_token_file,  0),
+    F ("https",       "tls",      http_https,       T_BOOL, 0, 0,0),
+    FS("tls_cert",    "cert",     http_tls_cert,    0),
+    FS("tls_key",     "key",      http_tls_key,     0),
+};
+/* /events SSE push stream (startup settings, like the http.token* keys
+ * deliberately not settable via /control) */
+static const cfg_field events_fields[] = {
+    F("enabled",     0, events_enabled,     T_BOOL, 0, 0,0),
+    F("stats_ms",    0, events_stats_ms,    T_INT,  0, 0,0),
+    F("max_clients", 0, events_max_clients, T_INT,  0, 0,0),
+};
+static const cfg_field general_fields[] = {   /* + general.syslog in set_kv() */
+    F("loglevel",            0, loglevel,            T_INT, 0, 0,0),
+    F("imp_polling_timeout", 0, imp_polling_timeout, T_INT, 0, 0,0),
+    F("osd_pool_size",       0, osd_pool_size,       T_INT, 0, 0,0),
+};
+static const cfg_field sim_fields[] = {
+    FS("video0", 0, sim_video0, 0),
+    FS("video1", 0, sim_video1, 0),
+    FS("audio",  0, sim_audio,  0),
+    FS("jpeg",   0, sim_jpeg,   0),
+};
+#undef TT
+
+#define TT ms_srt_cfg
+static const cfg_field srt_fields[] = {
+    F ("enabled",    0,         enabled,    T_BOOL, 0, 0,0),
+    F ("port",       0,         port,       T_INT,  0, 1,65535),
+    F ("channel",    0,         channel,    T_INT,  0, 0,0),
+    F ("latency_ms", "latency", latency_ms, T_INT,  0, 0,0),
+    FS("streamid",   0,         streamid,   0),
+    FS("passphrase", 0,         passphrase, 0),
+};
+#undef TT
+
+#define TT ms_osd_cfg
+static const cfg_field osd_fields[] = {
+    F ("enabled",        0, enabled,        T_BOOL, 0, 0,0),
+    F ("monitor_stream", 0, monitor_stream, T_INT,  0, 0,0),
+    FS("font_path",      0, font_path,      0),
+    FS("vars_file",      0, vars_file,      0),
+    F ("supersample",    0, supersample,    T_INT,  0, 1,4),
+};
+#undef TT
+
+#define TT ms_motion_cfg
+/* motion.cols/rows SET goes through explicit code in set_kv() (cross-axis
+ * MOTION_CELL_LIMIT clamp); their table entries below only serve the GET
+ * side. The deprecated motion.roi_* keys are entirely outside the table
+ * (parse + one-shot warning in set_kv(), never readable). */
+static const cfg_field motion_fields[] = {
+    F ("enabled",        0, enabled,        T_BOOL, 0, 0,0),
+    F ("monitor_stream", 0, monitor_stream, T_CHAN, 0, 0,0),
+    F ("sensitivity",    0, sensitivity,    T_INT,  0, 0,255),
+    F ("cols",           0, cols,           T_INT,  0, 0,0),
+    F ("rows",           0, rows,           T_INT,  0, 0,0),
+    F ("cooldown_ms",    0, cooldown_ms,    T_INT,  0, 0,0),
+    F ("hold_ms",        0, hold_ms,        T_INT,  0, 0,INT_MAX),
+    F ("skip_frames",    0, skip_frames,    T_INT,  0, 1,INT_MAX),
+    FS("on_motion",      0, on_motion,      F_NOGET),
+};
+#undef TT
+
+#define TT ms_record_cfg
+/* clamp notes: segment_s 0 keeps "no rotation" (documented); negative/absurd
+ * rolls are rejected so a garbage value can't silently disable rotation.
+ * The whole section is readable (M13): without get coverage every
+ * record-page POST re-wrote /etc/timps.conf (flash wear). */
+static const cfg_field record_fields[] = {
+    F ("enabled",     0,           enabled,     T_BOOL,    0, 0,0),
+    F ("channel",     0,           channel,     T_CHAN,    0, 0,0),
+    F ("mode",        0,           mode,        T_RECMODE, 0, 0,0),
+    FS("dir",         0,           dir,         0),
+    FS("name",        0,           name,        0),
+    F ("segment_s",   "segment",   segment_s,   T_INT,     0, 0,86400),
+    F ("pre_roll_s",  "pre_roll",  pre_roll_s,  T_INT,     0, 0,60),
+    F ("post_roll_s", "post_roll", post_roll_s, T_INT,     0, 0,300),
+    F ("min_free_mb", 0,           min_free_mb, T_INT,     0, 0,1048576),
+    F ("audio",       0,           audio,       T_BOOL,    0, 0,0),
+};
+#undef TT
+
+#define TT ms_timelapse_cfg
+static const cfg_field timelapse_fields[] = {
+    F ("enabled",    0,          enabled,    T_BOOL, 0, 0,0),
+    F ("channel",    0,          channel,    T_CHAN, 0, 0,0),
+    FS("dir",        0,          dir,        0),
+    FS("name",       0,          name,       0),
+    F ("interval_s", "interval", interval_s, T_INT,  0, 1,INT_MAX),
+    F ("keep_days",  0,          keep_days,  T_INT,  0, 0,INT_MAX),
+};
+#undef TT
+
+#define TT ms_daynight_cfg
+static const cfg_field daynight_fields[] = {
+    F ("enabled",                    0, enabled,                    T_BOOL,  0, 0,0),
+    F ("mode",                       0, mode,                       T_DNMODE,0, 0,0),
+    FS("time_night_start",           0, time_night_start,           0),
+    FS("time_day_start",             0, time_day_start,             0),
+    F ("sun_latitude",               0, sun_latitude,               T_FLT,   0, 0,0),
+    F ("sun_longitude",              0, sun_longitude,              T_FLT,   0, 0,0),
+    F ("sun_sunrise_offset_min",     0, sun_sunrise_offset_min,     T_INT,   0, 0,0),
+    F ("sun_sunset_offset_min",      0, sun_sunset_offset_min,      T_INT,   0, 0,0),
+    F ("total_gain_day_threshold",   0, total_gain_day_threshold,   T_FLT,   0, 0,0),
+    F ("total_gain_night_threshold", 0, total_gain_night_threshold, T_FLT,   0, 0,0),
+    F ("threshold_low",              0, threshold_low,              T_FLT,   0, 0,0),
+    F ("threshold_high",             0, threshold_high,             T_FLT,   0, 0,0),
+    F ("hysteresis",                 0, hysteresis,                 T_FLT,   0, 0,0),
+    F ("day_gain_pct",               0, day_gain_pct,               T_INT,   0, 0,0),
+    F ("baseline_delay_s",           0, baseline_delay_s,           T_INT,   0, 0,0),
+    F ("interval_ms",                0, interval_ms,                T_INT,   0, 0,0),
+    F ("transition_s",               0, transition_s,               T_INT,   0, 0,0),
+    FS("switch_cmd",                 0, switch_cmd,                 F_NOGET),
+    FS("isp_path",                   0, isp_path,                   F_NOGET),
+};
+#undef TT
+
+#define TT ms_vstream_cfg
+/* videoN.buffers additionally sets buffers_explicit=1 in set_kv() */
+static const cfg_field video_fields[] = {
+    F ("enabled",      0,              enabled,      T_BOOL,  0,       0,0),
+    F ("codec",        0,              codec,        T_VCODEC,0,       0,0),
+    F ("width",        0,              width,        T_INT,   0,       64,4096),
+    F ("height",       0,              height,       T_INT,   0,       64,4096),
+    F ("fps",          0,              fps,          T_INT,   0,       1,120),
+    F ("bitrate",      0,              bitrate_kbps, T_INT,   0,       16,50000),
+    F ("rc_mode",      "mode",         rc_mode,      T_RC,    0,       0,0),
+    F ("gop",          0,              gop,          T_INT,   0,       1,1000),
+    F ("max_gop",      0,              max_gop,      T_INT,   0,       1,1000),
+    F ("profile",      0,              profile,      T_INT,   0,       0,2),
+    F ("qp",           0,              qp,           T_INT,   0,       1,51),
+    F ("min_qp",       0,              min_qp,       T_INT,   0,       1,51),
+    F ("max_qp",       0,              max_qp,       T_INT,   0,       1,51),
+    F ("rotation",     0,              rotation,     T_ROT,   0,       0,0),
+    F ("buffers",      0,              buffers,      T_INT,   0,       1,8),
+    FS("rtsp_path",    0,              rtsp_path,    0),
+    F ("imp_chn",      0,              imp_chn,      T_INT,   F_NOGET, 0,0),
+    F ("jpeg",         "jpeg_enabled", jpeg_enabled, T_BOOL,  F_NOGET, 0,0),
+    F ("jpeg_quality", 0,              jpeg_quality, T_INT,   F_NOGET, 1,100),
+    F ("jpeg_fps",     0,              jpeg_fps,     T_INT,   F_NOGET, 1,120),
+    F ("jpeg_chn",     0,              jpeg_chn,     T_INT,   F_NOGET, 0,0),
+};
+#undef TT
+
+#define TT ms_osd_item
+static const cfg_field osd_item_fields[] = {
+    F ("enabled",       0,              enabled,       T_BOOL,   0,       0,0),
+    F ("type",          0,              type,          T_OSDTYPE,0,       0,0),
+    FS("text",          0,              text,          0),
+    FS("logo",          "logo_path",    logo_path,     F_NOGET),
+    F ("logo_w",        "logo_width",   logo_w,        T_INT,    F_NOGET, 0,4096),
+    F ("logo_h",        "logo_height",  logo_h,        T_INT,    F_NOGET, 0,4096),
+    F ("x",             0,              x,             T_INT,    0,       0,0),
+    F ("y",             0,              y,             T_INT,    0,       0,0),
+    /* H4: font_size feeds the OSD canvas allocation (msttf_render); clamped
+     * at parse so a bad /control write can never request an absurd raster
+     * (the rasterizer additionally hard-clamps its own pixel height) */
+    F ("font_size",     0,              font_size,     T_INT,    0,       8,256),
+    F ("color",         "font_color",   color,         T_HEX,    0,       0,0),
+    /* imp_osd.c feeds this straight into the group attr's uint8_t fgAlhpa:
+     * clamp so e.g. 300 doesn't wrap to 44 while the config echoes 300 */
+    F ("transparency",  0,              transparency,  T_INT,    0,       0,255),
+    F ("outline",       "stroke",       outline,       T_INT,    0,       0,64),
+    F ("outline_color", "stroke_color", outline_color, T_HEX,    0,       0,0),
+    FS("font_path",     0,              font_path,     F_NOGET),
+};
+#undef TT
+
+#define TT ms_privacy_region
+static const cfg_field privacy_fields[] = {
+    F("enabled", 0,            enabled, T_BOOL, 0, 0,0),
+    F("x",       0,            x,       T_INT,  0, 0,0),
+    F("y",       0,            y,       T_INT,  0, 0,0),
+    F("w",       "width",      w,       T_INT,  0, 0,0),
+    F("h",       "height",     h,       T_INT,  0, 0,0),
+    F("color",   "fill_color", color,   T_HEX,  0, 0,0),
+};
+#undef TT
+#undef F
+#undef FS
+
+/* prefix -> {base struct, field table}. Linear scan: ~16 sections and ~10
+ * fields/section on a path that runs on startup parse and /control POSTs
+ * only - not hot. noget marks whole set/persist-only sections (the old
+ * getter had no branch for them at all; same dedup rationale as F_NOGET). */
+typedef struct {
+    const char     *prefix;    /* includes the trailing dot */
+    unsigned char   plen;
+    unsigned char   noget;
+    unsigned short  base_off;  /* offset of the section base in ms_config */
+    const cfg_field *fields;
+    unsigned char   nfields;
+} cfg_section;
+
+#define NF(t) (unsigned char)(sizeof t / sizeof t[0])
+#define SEC(pfx, ng, boff, tbl) \
+    { pfx, (unsigned char)(sizeof pfx - 1), ng, (unsigned short)(boff), tbl, NF(tbl) }
+
+static const cfg_section g_sections[] = {
+    SEC("sensor.",    0, offsetof(ms_config,sensor),    sensor_fields),
+    SEC("image.",     0, offsetof(ms_config,image),     image_fields),
+    SEC("audio.",     0, offsetof(ms_config,audio),     audio_fields),
+    SEC("jpeg.",      1, offsetof(ms_config,jpeg),      jpeg_fields),
+    SEC("rtsp.",      1, 0,                             rtsp_fields),
+    SEC("srt.",       1, offsetof(ms_config,srt),       srt_fields),
+    SEC("http.",      1, 0,                             http_fields),
+    SEC("events.",    1, 0,                             events_fields),
+    SEC("osd.",       0, offsetof(ms_config,osd),       osd_fields),
+    SEC("motion.",    0, offsetof(ms_config,motion),    motion_fields),
+    SEC("record.",    0, offsetof(ms_config,record),    record_fields),
+    SEC("timelapse.", 0, offsetof(ms_config,timelapse), timelapse_fields),
+    SEC("daynight.",  0, offsetof(ms_config,daynight),  daynight_fields),
+    SEC("general.",   1, 0,                             general_fields),
+    SEC("sim.",       1, 0,                             sim_fields),
+};
+#undef SEC
+
+static const cfg_field *field_find(const cfg_field *t, int n, const char *k)
 {
-    if (!strcmp(k,"enabled")) p->enabled=pbool(val);
-    else if (!strcmp(k,"x")) p->x=pint(val);
-    else if (!strcmp(k,"y")) p->y=pint(val);
-    else if (!strcmp(k,"w")||!strcmp(k,"width")) p->w=pint(val);
-    else if (!strcmp(k,"h")||!strcmp(k,"height")) p->h=pint(val);
-    else if (!strcmp(k,"color")||!strcmp(k,"fill_color")) p->color=phex(val);
-    else LOGW(MOD,"unknown privacy key %s", k);
+    for (int i=0;i<n;i++)
+        if (!strcmp(k,t[i].name) || (t[i].alias && !strcmp(k,t[i].alias)))
+            return &t[i];
+    return NULL;
+}
+
+static const cfg_section *section_find(const char *key, const char **field)
+{
+    for (size_t i=0;i<sizeof g_sections/sizeof g_sections[0];i++)
+        if (!strncmp(key, g_sections[i].prefix, g_sections[i].plen)){
+            *field = key + g_sections[i].plen;
+            return &g_sections[i];
+        }
+    return NULL;
+}
+
+static void field_set(void *base, const cfg_field *f, const char *val)
+{
+    void *p = (char*)base + f->off;
+    switch (f->type){
+    case T_BOOL:   *(int*)p = pbool(val); break;
+    case T_INT:    *(int*)p = (f->lo < f->hi) ? pint_cl(val,f->lo,f->hi)
+                                              : pint(val); break;
+    case T_CHAN: { int v = pint(val);
+                   *(int*)p = (v<0 || v>=MS_MAX_VSTREAM) ? 0 : v; break; }
+    case T_HEX:    *(uint32_t*)p = phex(val); break;
+    case T_FLT:    *(float*)p = pflt(val); break;
+    case T_STR:    copystr((char*)p, val, (size_t)f->hi); break;
+    case T_VCODEC: *(int*)p = pvcodec(val); break;
+    case T_ACODEC: *(int*)p = pacodec(val); break;
+    case T_RC:     *(int*)p = prc(val); break;
+    case T_ROT:    *(int*)p = prot(val); break;
+    case T_OSDTYPE:*(int*)p = (!strcasecmp(val,"logo")) ? MS_OSD_LOGO
+                                                        : MS_OSD_TEXT; break;
+    case T_DNMODE:
+        if      (!strcmp(val,"sensor")) *(int*)p = DN_MODE_SENSOR;
+        else if (!strcmp(val,"time"))   *(int*)p = DN_MODE_TIME;
+        else if (!strcmp(val,"sun"))    *(int*)p = DN_MODE_SUN;
+        else { LOGW(MOD,"daynight.mode: unknown '%s', keeping sensor",val);
+               *(int*)p = DN_MODE_SENSOR; }
+        break;
+    case T_RECMODE:
+        *(int*)p = (!strcasecmp(val,"motion"))     ? 1 :
+                   (!strcasecmp(val,"continuous")) ? 0 : pint(val);
+        break;
+    case T_BCCODEC:
+        if      (!strcasecmp(val,"pcmu")) *(int*)p = 0;
+        else if (!strcasecmp(val,"pcma")) *(int*)p = 1;
+        else if (!strcasecmp(val,"aac"))  *(int*)p = 2;
+        else *(int*)p = pint_cl(val,0,2);
+        break;
+    }
+}
+
+/* read one field back as its normalized string; 0 = not readable (F_NOGET) */
+static int field_get(const void *base, const cfg_field *f, char *out, size_t cap)
+{
+    if (f->flags & F_NOGET) return 0;
+    const void *p = (const char*)base + f->off;
+    switch (f->type){
+    case T_BOOL: case T_INT: case T_CHAN: case T_ROT:
+    case T_RECMODE: case T_BCCODEC:
+        snprintf(out,cap,"%d",*(const int*)p); break;
+    case T_HEX:    snprintf(out,cap,"0x%08X",*(const uint32_t*)p); break;
+    case T_FLT:    snprintf(out,cap,"%g",(double)*(const float*)p); break;
+    case T_STR:
+        /* several strings are runtime-mutable via /control (see the
+         * g_str_lock comment at the top); taking the recursive lock
+         * uniformly for EVERY string read is cheap and keeps the mutable
+         * set covered by construction */
+        config_str_lock();
+        snprintf(out,cap,"%s",(const char*)p);
+        config_str_unlock();
+        break;
+    case T_VCODEC: snprintf(out,cap,"%s",vcodec_name(*(const int*)p)); break;
+    case T_ACODEC: snprintf(out,cap,"%s",acodec_name(*(const int*)p)); break;
+    case T_RC:     snprintf(out,cap,"%s",rc_name(*(const int*)p)); break;
+    case T_OSDTYPE:snprintf(out,cap,"%s",
+                       (*(const int*)p==MS_OSD_LOGO)?"logo":"text"); break;
+    case T_DNMODE: { int m = *(const int*)p;
+        snprintf(out,cap,"%s",
+                 m==DN_MODE_TIME?"time":m==DN_MODE_SUN?"sun":"sensor"); break; }
+    }
+    return 1;
 }
 
 static void set_kv(ms_config *c, const char *key, const char *val)
@@ -402,195 +798,45 @@ static void set_kv(ms_config *c, const char *key, const char *val)
     int osi, oii;
     const char *ok = osd_key(key, &osi, &oii);
     if (ok){
-        if (osi>=0) set_osd_item(&c->osd.items[osi][oii], ok, val);
+        const cfg_field *f = field_find(osd_item_fields, NF(osd_item_fields), ok);
+        if (!f){ LOGW(MOD,"unknown osd item key %s", ok); return; }
+        if (osi>=0) field_set(&c->osd.items[osi][oii], f, val);
         else        /* legacy osdN.*: mirror onto every stream's item N */
             for (int s=0;s<MS_MAX_VSTREAM;s++)
-                set_osd_item(&c->osd.items[s][oii], ok, val);
+                field_set(&c->osd.items[s][oii], f, val);
         return;
     }
 
     int psi, pii;
     const char *pk = privacy_key(key, &psi, &pii);
-    if (pk){ set_privacy_region(&c->privacy[psi][pii], pk, val); return; }
+    if (pk){
+        const cfg_field *f = field_find(privacy_fields, NF(privacy_fields), pk);
+        if (f) field_set(&c->privacy[psi][pii], f, val);
+        else   LOGW(MOD,"unknown privacy key %s", pk);
+        return;
+    }
 
-    if (!strncmp(key,"video0.",7)){ set_video(&c->video[0], key+7, val); return; }
-    if (!strncmp(key,"video1.",7)){ set_video(&c->video[1], key+7, val); return; }
+    if (!strncmp(key,"video0.",7) || !strncmp(key,"video1.",7)){
+        ms_vstream_cfg *v = &c->video[key[5]-'0'];
+        const cfg_field *f = field_find(video_fields, NF(video_fields), key+7);
+        if (!f){ LOGW(MOD,"unknown video key %s", key+7); return; }
+        field_set(v, f, val);
+        /* buffers given explicitly: HAL safety clamps (e.g. T31 non-scaled
+         * channel) trust it as-is instead of overriding */
+        if (f->off == offsetof(ms_vstream_cfg,buffers)) v->buffers_explicit = 1;
+        return;
+    }
 
-    if (!strncmp(key,"sensor.",7)){
-        const char *k=key+7;
-        if(!strcmp(k,"model"))copystr(c->sensor.model,val,MS_MAX_STR);
-        else if(!strcmp(k,"i2c_addr")||!strcmp(k,"i2c_address"))c->sensor.i2c_addr=pint(val);
-        else if(!strcmp(k,"fps"))c->sensor.fps=pint(val);
-        else if(!strcmp(k,"width"))c->sensor.width=pint(val);
-        else if(!strcmp(k,"height"))c->sensor.height=pint(val);
-        else LOGW(MOD,"unknown key %s",key);
-        return;
-    }
-    if (!strncmp(key,"image.",6)){
-        /* continuous ISP knobs clamped at parse to the IMP consumer's domain
-         * (hal_ingenic.c casts them to unsigned char / uint32_t / uint16_t):
-         * without the clamp an out-of-range value wraps at the cast while the
-         * config keeps echoing the raw number - applied != persisted.
-         * Ranges from the T31/T23 imp_isp.h docs: 0..255 for the uchar knobs
-         * and the strength/gain fields, 0..10 for highlight_depress/
-         * backlight_compensation ([0-10], 0 = off), 0..65535 for the uint16_t
-         * manual WB gains. Enums/bools (running_mode/anti_flicker/
-         * core_wb_mode/hflip/vflip) are validated by their consumers. */
-        const char *k=key+6; ms_image_cfg *m=&c->image;
-        if(!strcmp(k,"brightness"))m->brightness=pint_cl(val,0,255);
-        else if(!strcmp(k,"contrast"))m->contrast=pint_cl(val,0,255);
-        else if(!strcmp(k,"saturation"))m->saturation=pint_cl(val,0,255);
-        else if(!strcmp(k,"sharpness"))m->sharpness=pint_cl(val,0,255);
-        else if(!strcmp(k,"hue"))m->hue=pint_cl(val,0,255);
-        else if(!strcmp(k,"vflip"))m->vflip=pbool(val);
-        else if(!strcmp(k,"hflip"))m->hflip=pbool(val);
-        else if(!strcmp(k,"running_mode"))m->running_mode=pint(val);
-        else if(!strcmp(k,"anti_flicker"))m->anti_flicker=pint(val);
-        else if(!strcmp(k,"ae_compensation"))m->ae_compensation=pint_cl(val,0,255);
-        else if(!strcmp(k,"max_again"))m->max_again=pint_cl(val,0,255);
-        else if(!strcmp(k,"max_dgain"))m->max_dgain=pint_cl(val,0,255);
-        else if(!strcmp(k,"sinter_strength"))m->sinter_strength=pint_cl(val,0,255);
-        else if(!strcmp(k,"temper_strength"))m->temper_strength=pint_cl(val,0,255);
-        else if(!strcmp(k,"dpc_strength"))m->dpc_strength=pint_cl(val,0,255);
-        else if(!strcmp(k,"defog_strength"))m->defog_strength=pint_cl(val,0,255);
-        else if(!strcmp(k,"drc_strength"))m->drc_strength=pint_cl(val,0,255);
-        else if(!strcmp(k,"highlight_depress"))m->highlight_depress=pint_cl(val,0,10);
-        else if(!strcmp(k,"backlight_compensation"))m->backlight_compensation=pint_cl(val,0,10);
-        else if(!strcmp(k,"core_wb_mode"))m->core_wb_mode=pint(val);
-        else if(!strcmp(k,"wb_rgain"))m->wb_rgain=pint_cl(val,0,65535);
-        else if(!strcmp(k,"wb_bgain"))m->wb_bgain=pint_cl(val,0,65535);
-        else LOGW(MOD,"unknown key %s",key);
-        return;
-    }
-    if (!strncmp(key,"audio.",6)){
-        const char *k=key+6;
-        if(!strcmp(k,"enabled"))c->audio.enabled=pbool(val);
-        else if(!strcmp(k,"codec"))c->audio.codec=pacodec(val);
-        else if(!strcmp(k,"samplerate"))c->audio.samplerate=pint(val);
-        /* 1 = mono (native), 2 = simulated stereo (mono mic duplicated to
-         * L=R, AAC only) - anything else would put a bogus channel count in
-         * the AAC ASC / SDP / fMP4 stsd */
-        else if(!strcmp(k,"channels"))c->audio.channels=pint_cl(val,1,2);
-        else if(!strcmp(k,"bitrate"))c->audio.bitrate_kbps=pint_cl(val,8,320);
-        else if(!strcmp(k,"volume"))c->audio.volume=pint_cl(val,0,100);   /* F-03 */
-        else if(!strcmp(k,"gain"))c->audio.gain=pint_cl(val,0,31);        /* F-03: IMP_AI mic gain 0..31 */
-        else if(!strcmp(k,"high_pass"))c->audio.high_pass=pbool(val);
-        else if(!strcmp(k,"agc"))c->audio.agc=pbool(val);
-        /* clamped to the IMP domains (imp_audio.h): IMP_AI_EnableNs mode
-         * [0-3], IMPAudioAgcConfig TargetLevelDbfs [0-31] /
-         * CompressionGaindB [0-90] - out-of-range used to be silently
-         * rejected by libimp while the config kept the raw value */
-        else if(!strcmp(k,"ns"))c->audio.ns=pint_cl(val,0,3);
-        else if(!strcmp(k,"alc_gain"))c->audio.alc_gain=pint_cl(val,0,7);  /* F-03: PGA 0..7 */
-        else if(!strcmp(k,"agc_target_dbfs"))c->audio.agc_target_dbfs=pint_cl(val,0,31);
-        else if(!strcmp(k,"agc_compression_db"))c->audio.agc_compression_db=pint_cl(val,0,90);
-        else if(!strcmp(k,"mute"))c->audio.mute=pbool(val);
-        else if(!strcmp(k,"force_stereo"))c->audio.force_stereo=pbool(val);
-        else if(!strcmp(k,"spk_enabled"))c->audio.spk_enabled=pbool(val);
-        else if(!strcmp(k,"spk_volume"))c->audio.spk_volume=pint_cl(val,0,100); /* F-03 */
-        else if(!strcmp(k,"spk_gain"))c->audio.spk_gain=pint_cl(val,0,100);     /* F-03 */
-        else if(!strcmp(k,"backchannel"))c->audio.backchannel=pbool(val);
-        else if(!strcmp(k,"backchannel_codec")){
-            if(!strcasecmp(val,"pcmu"))c->audio.backchannel_codec=0;
-            else if(!strcasecmp(val,"pcma"))c->audio.backchannel_codec=1;
-            else if(!strcasecmp(val,"aac"))c->audio.backchannel_codec=2;
-            else c->audio.backchannel_codec=pint_cl(val,0,2);
-        }
-        else if(!strcmp(k,"backchannel_rate"))c->audio.backchannel_rate=pint_cl(val,8000,48000);
-        else LOGW(MOD,"unknown key %s",key);
-        return;
-    }
-    if (!strncmp(key,"jpeg.",5)){
-        const char *k=key+5;
-        if(!strcmp(k,"enabled"))c->jpeg.enabled=pbool(val);
-        else if(!strcmp(k,"width"))c->jpeg.width=pint_cl(val,64,4096);   /* M11 */
-        else if(!strcmp(k,"height"))c->jpeg.height=pint_cl(val,64,4096);
-        else if(!strcmp(k,"quality"))c->jpeg.quality=pint_cl(val,1,100);
-        else if(!strcmp(k,"fps"))c->jpeg.fps=pint_cl(val,1,120);
-        else if(!strcmp(k,"imp_chn"))c->jpeg.imp_chn=pint(val);
-        else if(!strcmp(k,"snapshot_path"))copystr(c->jpeg.snapshot_path,val,128);
-        else LOGW(MOD,"unknown key %s",key);
-        return;
-    }
-    if (!strncmp(key,"rtsp.",5)){
-        const char *k=key+5;
-        if(!strcmp(k,"enabled"))c->rtsp_enabled=pbool(val);
-        else if(!strcmp(k,"port"))c->rtsp_port=pint_cl(val,1,65535);   /* M11 */
-        else if(!strcmp(k,"user")||!strcmp(k,"username"))copystr(c->rtsp_user,val,MS_MAX_STR);
-        else if(!strcmp(k,"pass")||!strcmp(k,"password"))copystr(c->rtsp_pass,val,MS_MAX_STR);
-        else if(!strcmp(k,"tls")||!strcmp(k,"tls_enabled"))c->rtsp_tls=pbool(val);
-        else if(!strcmp(k,"tls_port"))c->rtsp_tls_port=pint_cl(val,1,65535);
-        else LOGW(MOD,"unknown key %s",key);
-        return;
-    }
-    if (!strncmp(key,"srt.",4)){
-        const char *k=key+4; ms_srt_cfg *s=&c->srt;
-        if(!strcmp(k,"enabled"))s->enabled=pbool(val);
-        else if(!strcmp(k,"port"))s->port=pint_cl(val,1,65535);   /* M11 */
-        else if(!strcmp(k,"channel"))s->channel=pint(val);
-        else if(!strcmp(k,"latency_ms")||!strcmp(k,"latency"))s->latency_ms=pint(val);
-        else if(!strcmp(k,"streamid"))copystr(s->streamid,val,sizeof s->streamid);
-        else if(!strcmp(k,"passphrase"))copystr(s->passphrase,val,sizeof s->passphrase);
-        else LOGW(MOD,"unknown key %s",key);
-        return;
-    }
-    if (!strncmp(key,"http.",5)){
-        const char *k=key+5;
-        if(!strcmp(k,"enabled"))c->http_enabled=pbool(val);
-        else if(!strcmp(k,"port"))c->http_port=pint_cl(val,1,65535);   /* M11 */
-        else if(!strcmp(k,"preview_chn"))c->http_preview_chn=pint(val);
-        else if(!strcmp(k,"user")||!strcmp(k,"username"))copystr(c->http_user,val,MS_MAX_STR);
-        else if(!strcmp(k,"pass")||!strcmp(k,"password"))copystr(c->http_pass,val,MS_MAX_STR);
-        else if(!strcmp(k,"token"))copystr(c->http_token,val,MS_MAX_STR);
-        else if(!strcmp(k,"token_file"))copystr(c->http_token_file,val,sizeof c->http_token_file);
-        else if(!strcmp(k,"https")||!strcmp(k,"tls"))c->http_https=pbool(val);
-        else if(!strcmp(k,"tls_cert")||!strcmp(k,"cert"))copystr(c->http_tls_cert,val,128);
-        else if(!strcmp(k,"tls_key")||!strcmp(k,"key"))copystr(c->http_tls_key,val,128);
-        else LOGW(MOD,"unknown key %s",key);
-        return;
-    }
-    if (!strncmp(key,"events.",7)){
-        /* /events SSE push stream (startup settings, like the http.token*
-         * keys deliberately not settable via /control) */
-        const char *k=key+7;
-        if(!strcmp(k,"enabled"))c->events_enabled=pbool(val);
-        else if(!strcmp(k,"stats_ms"))c->events_stats_ms=pint(val);
-        else if(!strcmp(k,"max_clients"))c->events_max_clients=pint(val);
-        else LOGW(MOD,"unknown key %s",key);
-        return;
-    }
-    if (!strncmp(key,"osd.",4)){
-        const char *k=key+4;
-        if(!strcmp(k,"enabled"))c->osd.enabled=pbool(val);
-        else if(!strcmp(k,"monitor_stream"))c->osd.monitor_stream=pint(val);
-        else if(!strcmp(k,"font_path"))copystr(c->osd.font_path,val,128);
-        else if(!strcmp(k,"vars_file"))copystr(c->osd.vars_file,val,128);
-        else if(!strcmp(k,"supersample")){
-            int v2=pint(val); if(v2<1)v2=1; if(v2>4)v2=4;
-            c->osd.supersample=v2;
-        }
-        else LOGW(MOD,"unknown key %s",key);
-        return;
-    }
+    /* per-key logic that doesn't fit the generic table */
     if (!strncmp(key,"motion.",7)){
-        const char *k=key+7;
-        if(!strcmp(k,"enabled"))c->motion.enabled=pbool(val);
-        else if(!strcmp(k,"monitor_stream")){
-            int v2=pint(val);
-            if (v2<0||v2>=MS_MAX_VSTREAM) v2=0;
-            c->motion.monitor_stream=v2;
-        }
-        else if(!strcmp(k,"sensitivity")){
-            int v2=pint(val);
-            c->motion.sensitivity = v2<0 ? 0 : v2>255 ? 255 : v2;
-        }
-        else if(!strcmp(k,"cols")||!strcmp(k,"rows")){
+        const char *k = key+7;
+        if (!strcmp(k,"cols")||!strcmp(k,"rows")){
             /* grid geometry: >=1 per axis and cols*rows clamped to the SDK's
              * ROI budget (MOTION_CELL_LIMIT). The value BEING SET is clamped
              * against the current other axis (never the other way around),
              * so re-applying the same pair is idempotent - the /control
              * dedup then skips repeated posts instead of rewriting flash. */
-            int v2=pint(val);
+            int v2 = pint(val);
             if (v2<1) v2=1;
             if (v2>MOTION_CELL_LIMIT) v2=MOTION_CELL_LIMIT;
             if (c->motion.cols<1) c->motion.cols=1;
@@ -604,14 +850,15 @@ static void set_kv(ms_config *c, const char *key, const char *val)
                 if (v2 > MOTION_CELL_LIMIT/other) v2 = MOTION_CELL_LIMIT/other;
                 c->motion.rows = v2;
             }
+            return;
         }
-        else if(!strcmp(k,"roi_x")||!strcmp(k,"roi_y")||
-                !strcmp(k,"roi_w")||!strcmp(k,"roi_h")){
+        if (!strcmp(k,"roi_x")||!strcmp(k,"roi_y")||
+            !strcmp(k,"roi_w")||!strcmp(k,"roi_h")){
             /* B6: legacy single-ROI keys - still parsed/persisted for compat
              * but NOTHING consumes them anymore (the cell grid replaced them).
              * Warn once when a non-default (non-zero) value is set so a user
              * isn't silently losing an ROI restriction they think is active. */
-            int v2=pint(val);
+            int v2 = pint(val);
             if      (k[4]=='x') c->motion.roi_x=v2;
             else if (k[4]=='y') c->motion.roi_y=v2;
             else if (k[4]=='w') c->motion.roi_w=v2;
@@ -624,94 +871,21 @@ static void set_kv(ms_config *c, const char *key, const char *val)
                              "motion grid (motion.cols/rows + cells) instead");
                 }
             }
+            return;
         }
-        else if(!strcmp(k,"cooldown_ms"))c->motion.cooldown_ms=pint(val);
-        else if(!strcmp(k,"hold_ms")){ int v2=pint(val); c->motion.hold_ms = v2<0?0:v2; }
-        else if(!strcmp(k,"skip_frames")){ int v2=pint(val); c->motion.skip_frames = v2<1?1:v2; }
-        else if(!strcmp(k,"on_motion"))copystr(c->motion.on_motion,val,128);
-        else LOGW(MOD,"unknown key %s",key);
+        /* every other motion.* key: generic table below */
+    }
+    if (!strcmp(key,"general.syslog")){          /* to logread; default on */
+        log_set_syslog(pbool(val));
         return;
     }
-    if (!strncmp(key,"record.",7)){
-        const char *k=key+7; ms_record_cfg *rc=&c->record;
-        if(!strcmp(k,"enabled"))rc->enabled=pbool(val);
-        else if(!strcmp(k,"channel")){
-            int v2=pint(val); rc->channel=(v2<0||v2>=MS_MAX_VSTREAM)?0:v2;
-        }
-        else if(!strcmp(k,"mode"))
-            rc->mode=(!strcasecmp(val,"motion"))?1:(!strcasecmp(val,"continuous"))?0:pint(val);
-        else if(!strcmp(k,"dir"))copystr(rc->dir,val,sizeof rc->dir);
-        else if(!strcmp(k,"name"))copystr(rc->name,val,sizeof rc->name);
-        /* clamp: 0 keeps "no rotation" (documented), negative/absurd is rejected
-         * so a garbage value can't silently disable rotation or set wild rolls */
-        else if(!strcmp(k,"segment_s")||!strcmp(k,"segment"))rc->segment_s=pint_cl(val,0,86400);
-        else if(!strcmp(k,"pre_roll_s")||!strcmp(k,"pre_roll"))rc->pre_roll_s=pint_cl(val,0,60);
-        else if(!strcmp(k,"post_roll_s")||!strcmp(k,"post_roll"))rc->post_roll_s=pint_cl(val,0,300);
-        else if(!strcmp(k,"min_free_mb"))rc->min_free_mb=pint_cl(val,0,1048576);
-        else if(!strcmp(k,"audio"))rc->audio=pbool(val);
-        else LOGW(MOD,"unknown key %s",key);
-        return;
-    }
-    if (!strncmp(key,"timelapse.",10)){
-        const char *k=key+10; ms_timelapse_cfg *tc=&c->timelapse;
-        if(!strcmp(k,"enabled"))tc->enabled=pbool(val);
-        else if(!strcmp(k,"channel")){
-            int v2=pint(val); tc->channel=(v2<0||v2>=MS_MAX_VSTREAM)?0:v2;
-        }
-        else if(!strcmp(k,"dir"))copystr(tc->dir,val,sizeof tc->dir);
-        else if(!strcmp(k,"name"))copystr(tc->name,val,sizeof tc->name);
-        else if(!strcmp(k,"interval_s")||!strcmp(k,"interval")){
-            int v2=pint(val); tc->interval_s=v2<1?1:v2;
-        }
-        else if(!strcmp(k,"keep_days")){ int v2=pint(val); tc->keep_days=v2<0?0:v2; }
-        else LOGW(MOD,"unknown key %s",key);
-        return;
-    }
-    if (!strncmp(key,"daynight.",9)){
-        const char *k=key+9;
-        if(!strcmp(k,"enabled"))c->daynight.enabled=pbool(val);
-        else if(!strcmp(k,"mode")){
-            if(!strcmp(val,"sensor")) c->daynight.mode=DN_MODE_SENSOR;
-            else if(!strcmp(val,"time")) c->daynight.mode=DN_MODE_TIME;
-            else if(!strcmp(val,"sun")) c->daynight.mode=DN_MODE_SUN;
-            else { LOGW(MOD,"daynight.mode: unknown '%s', keeping sensor",val); c->daynight.mode=DN_MODE_SENSOR; }
-        }
-        else if(!strcmp(k,"time_night_start"))copystr(c->daynight.time_night_start,val,sizeof c->daynight.time_night_start);
-        else if(!strcmp(k,"time_day_start"))copystr(c->daynight.time_day_start,val,sizeof c->daynight.time_day_start);
-        else if(!strcmp(k,"sun_latitude"))c->daynight.sun_latitude=pflt(val);
-        else if(!strcmp(k,"sun_longitude"))c->daynight.sun_longitude=pflt(val);
-        else if(!strcmp(k,"sun_sunrise_offset_min"))c->daynight.sun_sunrise_offset_min=pint(val);
-        else if(!strcmp(k,"sun_sunset_offset_min"))c->daynight.sun_sunset_offset_min=pint(val);
-        else if(!strcmp(k,"total_gain_day_threshold"))c->daynight.total_gain_day_threshold=pflt(val);
-        else if(!strcmp(k,"total_gain_night_threshold"))c->daynight.total_gain_night_threshold=pflt(val);
-        else if(!strcmp(k,"threshold_low"))c->daynight.threshold_low=pflt(val);
-        else if(!strcmp(k,"threshold_high"))c->daynight.threshold_high=pflt(val);
-        else if(!strcmp(k,"hysteresis"))c->daynight.hysteresis=pflt(val);
-        else if(!strcmp(k,"day_gain_pct"))c->daynight.day_gain_pct=pint(val);
-        else if(!strcmp(k,"baseline_delay_s"))c->daynight.baseline_delay_s=pint(val);
-        else if(!strcmp(k,"interval_ms"))c->daynight.interval_ms=pint(val);
-        else if(!strcmp(k,"transition_s"))c->daynight.transition_s=pint(val);
-        else if(!strcmp(k,"switch_cmd"))copystr(c->daynight.switch_cmd,val,sizeof c->daynight.switch_cmd);
-        else if(!strcmp(k,"isp_path"))copystr(c->daynight.isp_path,val,sizeof c->daynight.isp_path);
-        else LOGW(MOD,"unknown key %s",key);
-        return;
-    }
-    if (!strncmp(key,"general.",8)){
-        const char *k=key+8;
-        if(!strcmp(k,"loglevel"))c->loglevel=pint(val);
-        else if(!strcmp(k,"imp_polling_timeout"))c->imp_polling_timeout=pint(val);
-        else if(!strcmp(k,"osd_pool_size"))c->osd_pool_size=pint(val);
-        else if(!strcmp(k,"syslog"))log_set_syslog(pbool(val));  /* to logread; default on */
-        else LOGW(MOD,"unknown key %s",key);
-        return;
-    }
-    if (!strncmp(key,"sim.",4)){
-        const char *k=key+4;
-        if(!strcmp(k,"video0"))copystr(c->sim_video0,val,sizeof c->sim_video0);
-        else if(!strcmp(k,"video1"))copystr(c->sim_video1,val,sizeof c->sim_video1);
-        else if(!strcmp(k,"audio"))copystr(c->sim_audio,val,sizeof c->sim_audio);
-        else if(!strcmp(k,"jpeg"))copystr(c->sim_jpeg,val,sizeof c->sim_jpeg);
-        else LOGW(MOD,"unknown key %s",key);
+
+    const char *k;
+    const cfg_section *s = section_find(key, &k);
+    if (s){
+        const cfg_field *f = field_find(s->fields, s->nfields, k);
+        if (f) field_set((char*)c + s->base_off, f, val);
+        else   LOGW(MOD,"unknown key %s", key);
         return;
     }
     LOGW(MOD,"unknown key %s", key);
@@ -725,10 +899,10 @@ void config_apply_kv(ms_config *c, const char *key, const char *val)
 }
 
 /* public: read back a key's current value as a normalized string, matching the
- * form set_kv() stores. Only the keys the /control endpoint can change are
- * covered; anything else returns 0 (change-detection then falls back to always
- * applying). Keep in sync with the image/audio/video/sensor/osd branches of
- * set_kv(). */
+ * form set_kv() stores. Coverage comes from the same descriptor tables set_kv()
+ * writes through; keys/sections the old hand-written getter did not cover stay
+ * unreadable via F_NOGET / section noget (change-detection then falls back to
+ * always applying them). Returns 0 for anything unknown. */
 int config_get_kv(const ms_config *c, const char *key, char *out, size_t cap)
 {
     if (!out || cap==0) return 0;
@@ -763,232 +937,27 @@ int config_get_kv(const ms_config *c, const char *key, char *out, size_t cap)
             if (!agree) return 0;
             osi = 0;
         }
-        const ms_osd_item *o=&c->osd.items[osi][oii]; const char *k=ok;
-        if(!strcmp(k,"enabled")) snprintf(out,cap,"%d",o->enabled);
-        else if(!strcmp(k,"type")) snprintf(out,cap,"%s",o->type==MS_OSD_LOGO?"logo":"text");
-        else if(!strcmp(k,"text")){
-            config_str_lock();
-            snprintf(out,cap,"%s",o->text);
-            config_str_unlock();
-        }
-        else if(!strcmp(k,"x")) snprintf(out,cap,"%d",o->x);
-        else if(!strcmp(k,"y")) snprintf(out,cap,"%d",o->y);
-        else if(!strcmp(k,"font_size")) snprintf(out,cap,"%d",o->font_size);
-        else if(!strcmp(k,"color")||!strcmp(k,"font_color")) snprintf(out,cap,"0x%08X",o->color);
-        else if(!strcmp(k,"transparency")) snprintf(out,cap,"%d",o->transparency);
-        else if(!strcmp(k,"outline")||!strcmp(k,"stroke")) snprintf(out,cap,"%d",o->outline);
-        else if(!strcmp(k,"outline_color")||!strcmp(k,"stroke_color")) snprintf(out,cap,"0x%08X",o->outline_color);
-        else return 0;
-        return 1;
+        const cfg_field *f = field_find(osd_item_fields, NF(osd_item_fields), ok);
+        return f ? field_get(&c->osd.items[osi][oii], f, out, cap) : 0;
     }
-    if (!strncmp(key,"osd.",4)){
-        const char *k=key+4;
-        if(!strcmp(k,"enabled")) snprintf(out,cap,"%d",c->osd.enabled);
-        else if(!strcmp(k,"monitor_stream")) snprintf(out,cap,"%d",c->osd.monitor_stream);
-        else if(!strcmp(k,"font_path")) snprintf(out,cap,"%s",c->osd.font_path);
-        else if(!strcmp(k,"vars_file")) snprintf(out,cap,"%s",c->osd.vars_file);
-        else if(!strcmp(k,"supersample")) snprintf(out,cap,"%d",c->osd.supersample);
-        else return 0;
-        return 1;
+
+    int psi, pii;
+    const char *pk = privacy_key(key, &psi, &pii);
+    if (pk){
+        const cfg_field *f = field_find(privacy_fields, NF(privacy_fields), pk);
+        return f ? field_get(&c->privacy[psi][pii], f, out, cap) : 0;
     }
-    {   /* privacy<S>.<N>.<field> */
-        int psi, pii;
-        const char *pk = privacy_key(key, &psi, &pii);
-        if (pk){
-            const ms_privacy_region *p=&c->privacy[psi][pii];
-            if(!strcmp(pk,"enabled")) snprintf(out,cap,"%d",p->enabled);
-            else if(!strcmp(pk,"x")) snprintf(out,cap,"%d",p->x);
-            else if(!strcmp(pk,"y")) snprintf(out,cap,"%d",p->y);
-            else if(!strcmp(pk,"w")||!strcmp(pk,"width")) snprintf(out,cap,"%d",p->w);
-            else if(!strcmp(pk,"h")||!strcmp(pk,"height")) snprintf(out,cap,"%d",p->h);
-            else if(!strcmp(pk,"color")||!strcmp(pk,"fill_color")) snprintf(out,cap,"0x%08X",p->color);
-            else return 0;
-            return 1;
-        }
-    }
-    if (!strncmp(key,"image.",6)){
-        const ms_image_cfg *m=&c->image; const char *k=key+6;
-        if(!strcmp(k,"brightness")) snprintf(out,cap,"%d",m->brightness);
-        else if(!strcmp(k,"contrast")) snprintf(out,cap,"%d",m->contrast);
-        else if(!strcmp(k,"saturation")) snprintf(out,cap,"%d",m->saturation);
-        else if(!strcmp(k,"sharpness")) snprintf(out,cap,"%d",m->sharpness);
-        else if(!strcmp(k,"hue")) snprintf(out,cap,"%d",m->hue);
-        else if(!strcmp(k,"hflip")) snprintf(out,cap,"%d",m->hflip);
-        else if(!strcmp(k,"vflip")) snprintf(out,cap,"%d",m->vflip);
-        else if(!strcmp(k,"running_mode")) snprintf(out,cap,"%d",m->running_mode);
-        else if(!strcmp(k,"anti_flicker")) snprintf(out,cap,"%d",m->anti_flicker);
-        else if(!strcmp(k,"ae_compensation")) snprintf(out,cap,"%d",m->ae_compensation);
-        else if(!strcmp(k,"max_again")) snprintf(out,cap,"%d",m->max_again);
-        else if(!strcmp(k,"max_dgain")) snprintf(out,cap,"%d",m->max_dgain);
-        else if(!strcmp(k,"sinter_strength")) snprintf(out,cap,"%d",m->sinter_strength);
-        else if(!strcmp(k,"temper_strength")) snprintf(out,cap,"%d",m->temper_strength);
-        else if(!strcmp(k,"dpc_strength")) snprintf(out,cap,"%d",m->dpc_strength);
-        else if(!strcmp(k,"defog_strength")) snprintf(out,cap,"%d",m->defog_strength);
-        else if(!strcmp(k,"drc_strength")) snprintf(out,cap,"%d",m->drc_strength);
-        else if(!strcmp(k,"highlight_depress")) snprintf(out,cap,"%d",m->highlight_depress);
-        else if(!strcmp(k,"backlight_compensation")) snprintf(out,cap,"%d",m->backlight_compensation);
-        else if(!strcmp(k,"core_wb_mode")) snprintf(out,cap,"%d",m->core_wb_mode);
-        else if(!strcmp(k,"wb_rgain")) snprintf(out,cap,"%d",m->wb_rgain);
-        else if(!strcmp(k,"wb_bgain")) snprintf(out,cap,"%d",m->wb_bgain);
-        else return 0;
-        return 1;
-    }
-    if (!strncmp(key,"audio.",6)){
-        const char *k=key+6; const ms_audio_cfg *a=&c->audio;
-        if(!strcmp(k,"volume")) snprintf(out,cap,"%d",a->volume);
-        else if(!strcmp(k,"gain")) snprintf(out,cap,"%d",a->gain);
-        else if(!strcmp(k,"alc_gain")) snprintf(out,cap,"%d",a->alc_gain);
-        else if(!strcmp(k,"high_pass")) snprintf(out,cap,"%d",a->high_pass);
-        else if(!strcmp(k,"agc")) snprintf(out,cap,"%d",a->agc);
-        else if(!strcmp(k,"ns")) snprintf(out,cap,"%d",a->ns);
-        else if(!strcmp(k,"agc_target_dbfs")) snprintf(out,cap,"%d",a->agc_target_dbfs);
-        else if(!strcmp(k,"agc_compression_db")) snprintf(out,cap,"%d",a->agc_compression_db);
-        else if(!strcmp(k,"mute")) snprintf(out,cap,"%d",a->mute);
-        else if(!strcmp(k,"enabled")) snprintf(out,cap,"%d",a->enabled);
-        else if(!strcmp(k,"codec")) snprintf(out,cap,"%s",acodec_name(a->codec));
-        else if(!strcmp(k,"samplerate")) snprintf(out,cap,"%d",a->samplerate);
-        else if(!strcmp(k,"channels")) snprintf(out,cap,"%d",a->channels);
-        else if(!strcmp(k,"bitrate")) snprintf(out,cap,"%d",a->bitrate_kbps);
-        else if(!strcmp(k,"force_stereo")) snprintf(out,cap,"%d",a->force_stereo);
-        else if(!strcmp(k,"spk_enabled")) snprintf(out,cap,"%d",a->spk_enabled);
-        else if(!strcmp(k,"spk_volume")) snprintf(out,cap,"%d",a->spk_volume);
-        else if(!strcmp(k,"spk_gain")) snprintf(out,cap,"%d",a->spk_gain);
-        else if(!strcmp(k,"backchannel")) snprintf(out,cap,"%d",a->backchannel);
-        else if(!strcmp(k,"backchannel_codec")) snprintf(out,cap,"%d",a->backchannel_codec);
-        else if(!strcmp(k,"backchannel_rate")) snprintf(out,cap,"%d",a->backchannel_rate);
-        else return 0;
-        return 1;
-    }
+
     if (!strncmp(key,"video0.",7) || !strncmp(key,"video1.",7)){
-        const ms_vstream_cfg *v = (key[5]=='0') ? &c->video[0] : &c->video[1];
-        const char *k = key+7;
-        if(!strcmp(k,"enabled")) snprintf(out,cap,"%d",v->enabled);
-        else if(!strcmp(k,"codec")) snprintf(out,cap,"%s",vcodec_name(v->codec));
-        else if(!strcmp(k,"width")) snprintf(out,cap,"%d",v->width);
-        else if(!strcmp(k,"height")) snprintf(out,cap,"%d",v->height);
-        else if(!strcmp(k,"fps")) snprintf(out,cap,"%d",v->fps);
-        else if(!strcmp(k,"bitrate")) snprintf(out,cap,"%d",v->bitrate_kbps);
-        else if(!strcmp(k,"rc_mode")||!strcmp(k,"mode")) snprintf(out,cap,"%s",rc_name(v->rc_mode));
-        else if(!strcmp(k,"gop")) snprintf(out,cap,"%d",v->gop);
-        else if(!strcmp(k,"max_gop")) snprintf(out,cap,"%d",v->max_gop);
-        else if(!strcmp(k,"profile")) snprintf(out,cap,"%d",v->profile);
-        else if(!strcmp(k,"qp")) snprintf(out,cap,"%d",v->qp);
-        else if(!strcmp(k,"min_qp")) snprintf(out,cap,"%d",v->min_qp);
-        else if(!strcmp(k,"max_qp")) snprintf(out,cap,"%d",v->max_qp);
-        else if(!strcmp(k,"rotation")) snprintf(out,cap,"%d",v->rotation);
-        else if(!strcmp(k,"buffers")) snprintf(out,cap,"%d",v->buffers);
-        else if(!strcmp(k,"rtsp_path")){
-            config_str_lock();
-            snprintf(out,cap,"%s",v->rtsp_path);
-            config_str_unlock();
-        }
-        else return 0;
-        return 1;
+        const cfg_field *f = field_find(video_fields, NF(video_fields), key+7);
+        return f ? field_get(&c->video[key[5]-'0'], f, out, cap) : 0;
     }
-    if (!strncmp(key,"sensor.",7)){
-        const ms_sensor_cfg *s=&c->sensor; const char *k=key+7;
-        if(!strcmp(k,"model")){
-            config_str_lock();
-            snprintf(out,cap,"%s",s->model);
-            config_str_unlock();
-        }
-        else if(!strcmp(k,"i2c_addr")||!strcmp(k,"i2c_address")) snprintf(out,cap,"%d",s->i2c_addr);
-        else if(!strcmp(k,"fps")) snprintf(out,cap,"%d",s->fps);
-        else if(!strcmp(k,"width")) snprintf(out,cap,"%d",s->width);
-        else if(!strcmp(k,"height")) snprintf(out,cap,"%d",s->height);
-        else return 0;
-        return 1;
-    }
-    if (!strncmp(key,"daynight.",9)){
-        const ms_daynight_cfg *d=&c->daynight; const char *k=key+9;
-        if(!strcmp(k,"enabled")) snprintf(out,cap,"%d",d->enabled);
-        else if(!strcmp(k,"mode")) snprintf(out,cap,"%s",
-            d->mode==DN_MODE_TIME?"time":d->mode==DN_MODE_SUN?"sun":"sensor");
-        else if(!strcmp(k,"time_night_start")){
-            config_str_lock();
-            snprintf(out,cap,"%s",d->time_night_start);
-            config_str_unlock();
-        }
-        else if(!strcmp(k,"time_day_start")){
-            config_str_lock();
-            snprintf(out,cap,"%s",d->time_day_start);
-            config_str_unlock();
-        }
-        else if(!strcmp(k,"sun_latitude")) snprintf(out,cap,"%g",(double)d->sun_latitude);
-        else if(!strcmp(k,"sun_longitude")) snprintf(out,cap,"%g",(double)d->sun_longitude);
-        else if(!strcmp(k,"sun_sunrise_offset_min")) snprintf(out,cap,"%d",d->sun_sunrise_offset_min);
-        else if(!strcmp(k,"sun_sunset_offset_min")) snprintf(out,cap,"%d",d->sun_sunset_offset_min);
-        else if(!strcmp(k,"total_gain_day_threshold")) snprintf(out,cap,"%g",(double)d->total_gain_day_threshold);
-        else if(!strcmp(k,"total_gain_night_threshold")) snprintf(out,cap,"%g",(double)d->total_gain_night_threshold);
-        else if(!strcmp(k,"threshold_low")) snprintf(out,cap,"%g",(double)d->threshold_low);
-        else if(!strcmp(k,"threshold_high")) snprintf(out,cap,"%g",(double)d->threshold_high);
-        else if(!strcmp(k,"hysteresis")) snprintf(out,cap,"%g",(double)d->hysteresis);
-        else if(!strcmp(k,"day_gain_pct")) snprintf(out,cap,"%d",d->day_gain_pct);
-        else if(!strcmp(k,"baseline_delay_s")) snprintf(out,cap,"%d",d->baseline_delay_s);
-        else if(!strcmp(k,"interval_ms")) snprintf(out,cap,"%d",d->interval_ms);
-        else if(!strcmp(k,"transition_s")) snprintf(out,cap,"%d",d->transition_s);
-        else return 0;
-        return 1;
-    }
-    if (!strncmp(key,"motion.",7)){
-        const ms_motion_cfg *m=&c->motion; const char *k=key+7;
-        if(!strcmp(k,"enabled")) snprintf(out,cap,"%d",m->enabled);
-        else if(!strcmp(k,"monitor_stream")) snprintf(out,cap,"%d",m->monitor_stream);
-        else if(!strcmp(k,"sensitivity")) snprintf(out,cap,"%d",m->sensitivity);
-        else if(!strcmp(k,"cols")) snprintf(out,cap,"%d",m->cols);
-        else if(!strcmp(k,"rows")) snprintf(out,cap,"%d",m->rows);
-        else if(!strcmp(k,"cooldown_ms")) snprintf(out,cap,"%d",m->cooldown_ms);
-        else if(!strcmp(k,"hold_ms")) snprintf(out,cap,"%d",m->hold_ms);
-        else if(!strcmp(k,"skip_frames")) snprintf(out,cap,"%d",m->skip_frames);
-        else return 0;
-        return 1;
-    }
-    if (!strncmp(key,"record.",7)){
-        /* M13: control.c sets record.* via /control, but without this branch
-         * change-detection reported every record key "unknown" and each
-         * record-page POST rewrote /etc/timps.conf (flash wear). Mirrors the
-         * record.* branch of set_kv(); mode reads back numerically (0/1),
-         * which the get-apply-get dedup compares against itself. */
-        const ms_record_cfg *r=&c->record; const char *k=key+7;
-        if(!strcmp(k,"enabled")) snprintf(out,cap,"%d",r->enabled);
-        else if(!strcmp(k,"channel")) snprintf(out,cap,"%d",r->channel);
-        else if(!strcmp(k,"mode")) snprintf(out,cap,"%d",r->mode);
-        else if(!strcmp(k,"dir")){
-            config_str_lock();
-            snprintf(out,cap,"%s",r->dir);
-            config_str_unlock();
-        }
-        else if(!strcmp(k,"name")){
-            config_str_lock();
-            snprintf(out,cap,"%s",r->name);
-            config_str_unlock();
-        }
-        else if(!strcmp(k,"segment_s")||!strcmp(k,"segment")) snprintf(out,cap,"%d",r->segment_s);
-        else if(!strcmp(k,"pre_roll_s")||!strcmp(k,"pre_roll")) snprintf(out,cap,"%d",r->pre_roll_s);
-        else if(!strcmp(k,"post_roll_s")||!strcmp(k,"post_roll")) snprintf(out,cap,"%d",r->post_roll_s);
-        else if(!strcmp(k,"min_free_mb")) snprintf(out,cap,"%d",r->min_free_mb);
-        else if(!strcmp(k,"audio")) snprintf(out,cap,"%d",r->audio);
-        else return 0;
-        return 1;
-    }
-    if (!strncmp(key,"timelapse.",10)){
-        const ms_timelapse_cfg *t=&c->timelapse; const char *k=key+10;
-        if(!strcmp(k,"enabled")) snprintf(out,cap,"%d",t->enabled);
-        else if(!strcmp(k,"channel")) snprintf(out,cap,"%d",t->channel);
-        else if(!strcmp(k,"dir")){
-            config_str_lock();
-            snprintf(out,cap,"%s",t->dir);
-            config_str_unlock();
-        }
-        else if(!strcmp(k,"name")){
-            config_str_lock();
-            snprintf(out,cap,"%s",t->name);
-            config_str_unlock();
-        }
-        else if(!strcmp(k,"interval_s")) snprintf(out,cap,"%d",t->interval_s);
-        else if(!strcmp(k,"keep_days")) snprintf(out,cap,"%d",t->keep_days);
-        else return 0;
-        return 1;
+
+    const char *k;
+    const cfg_section *s = section_find(key, &k);
+    if (s && !s->noget){
+        const cfg_field *f = field_find(s->fields, s->nfields, k);
+        if (f) return field_get((const char*)c + s->base_off, f, out, cap);
     }
     return 0;
 }
