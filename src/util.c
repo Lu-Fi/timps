@@ -1,5 +1,23 @@
 #include "util.h"
 #include <stdlib.h>
+#include <limits.h>
+
+int ms_thread_create(pthread_t *t, size_t stack, void *(*fn)(void *), void *arg)
+{
+    pthread_attr_t a;
+    if (pthread_attr_init(&a) != 0)
+        return pthread_create(t, NULL, fn, arg);
+#ifdef PTHREAD_STACK_MIN
+    if (stack < (size_t)PTHREAD_STACK_MIN) stack = (size_t)PTHREAD_STACK_MIN;
+#endif
+    /* a rejected size (EINVAL) leaves the attr at its default - still valid */
+    (void)pthread_attr_setstacksize(&a, stack);
+    int r = pthread_create(t, &a, fn, arg);
+    pthread_attr_destroy(&a);
+    if (r != 0)
+        r = pthread_create(t, NULL, fn, arg);   /* belt and braces */
+    return r;
+}
 
 int ms_buf_init(ms_buf *b, size_t cap)
 {

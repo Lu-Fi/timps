@@ -491,7 +491,7 @@ void record_start(const ms_config *cfg)
 {
     if (g_started) return;
     g_rc=cfg; g_run=1; g_started=1;
-    if (pthread_create(&g_thr,NULL,rec_thread,NULL)!=0){ g_started=0; g_run=0; LOGE(MOD,"thread"); return; }
+    if (ms_thread_create(&g_thr,MS_STACK_STREAM,rec_thread,NULL)!=0){ g_started=0; g_run=0; LOGE(MOD,"thread"); return; }
     LOGI(MOD,"recorder ready (mode=%s dir=%s)",
          cfg->record.mode==1?"motion":"continuous", cfg->record.dir);
 }

@@ -1038,7 +1038,7 @@ static void accept_loop(rtsp_server *sv, int lfd, int port, void *tls_ctx)
         s->tls_ctx = tls_ctx;   /* non-NULL on the RTSPS listener */
 #endif
         pthread_t t;
-        if (pthread_create(&t,NULL,client_thread,s)==0) pthread_detach(t);
+        if (ms_thread_create(&t,MS_STACK_CONN,client_thread,s)==0) pthread_detach(t);
         else { client_fd_unreg(s->slot); close(cfd); free(s);
                __sync_fetch_and_sub(&g_nclients, 1); }
     }
@@ -1067,7 +1067,7 @@ rtsp_server *rtsp_start(const ms_config *cfg)
     s->lfd = net_listen_tcp(cfg->rtsp_port, 8);
     if (s->lfd < 0){ LOGE(MOD,"cannot bind rtsp port %d",cfg->rtsp_port); free(s); return NULL; }
     s->run = 1;
-    pthread_create(&s->thr, NULL, accept_thread, s);
+    ms_thread_create(&s->thr, MS_STACK_UTIL, accept_thread, s);
 #ifdef USE_TLS
     s->lfd_tls = -1;
     if (cfg->rtsp_tls) {
@@ -1079,7 +1079,7 @@ rtsp_server *rtsp_start(const ms_config *cfg)
             s->lfd_tls = net_listen_tcp(cfg->rtsp_tls_port, 8);
             if (s->lfd_tls < 0)
                 LOGE(MOD,"cannot bind rtsps port %d",cfg->rtsp_tls_port);
-            else if (pthread_create(&s->thr_tls, NULL, accept_tls_thread, s) != 0){
+            else if (ms_thread_create(&s->thr_tls, MS_STACK_UTIL, accept_tls_thread, s) != 0){
                 close(s->lfd_tls); s->lfd_tls = -1;
             }
         }

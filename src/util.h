@@ -52,4 +52,31 @@ void ms_buf_reset(ms_buf *b, size_t soft);
  * >= ((n+2)/3)*4 + 1 bytes. */
 int ms_base64(char *dst, const uint8_t *src, int n);
 
+/* ---- thread creation with an explicit stack size (S3) --------------------
+ * Without an attribute, uClibc-ng NPTL sizes every thread stack from
+ * RLIMIT_STACK (typically 8 MB of VA each). Measured stack peaks across the
+ * daemon's threads are ~16 KB, so give each thread type an explicit, still
+ * generous budget instead. Note the stack also hosts the static TLS block
+ * (__thread data, ~8 KB worst case here) and a guard page.
+ *
+ *   MS_STACK_UTIL   accept loops and light periodic workers (timelapse,
+ *                   daynight): small locals, no codecs, no vendor libs.
+ *   MS_STACK_STREAM encoder/mux/vendor-lib threads (video/JPEG/audio/OSD/
+ *                   motion/rotate/record/SRT): IMP SDK + faac calls; raptor
+ *                   runs the same vendor SDK on 128 KB stacks in production.
+ *   MS_STACK_CONN   per-connection and codec-heavy threads (RTSP/HTTP
+ *                   clients with an in-thread mbedTLS handshake, speaker
+ *                   playback with libopus decode, whose VAR_ARRAYS build
+ *                   can use tens of KB of stack).
+ */
+#define MS_STACK_UTIL   (64 * 1024)
+#define MS_STACK_STREAM (128 * 1024)
+#define MS_STACK_CONN   (256 * 1024)
+
+#include <pthread.h>
+/* pthread_create with an explicit stack size; falls back to default
+ * attributes if the sized create fails. Returns 0 on success (like
+ * pthread_create). Detach handling stays with the caller. */
+int ms_thread_create(pthread_t *t, size_t stack, void *(*fn)(void *), void *arg);
+
 #endif

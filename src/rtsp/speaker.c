@@ -6,6 +6,7 @@
 #include "../codec/g711.h"
 #include "../config.h"
 #include "../log.h"
+#include "../util.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -493,7 +494,8 @@ void speaker_start(void)
         return;
     }
     g_play_run = 1;
-    if (pthread_create(&g_play_thr, NULL, play_thread, NULL) != 0){
+    /* MS_STACK_CONN: Opus decode (libopus VAR_ARRAYS) runs on this stack */
+    if (ms_thread_create(&g_play_thr, MS_STACK_CONN, play_thread, NULL) != 0){
         LOGW(MOD, "cannot start play-FIFO thread");
         g_play_run = 0; close(g_fifo_fd); g_fifo_fd = -1;
         return;

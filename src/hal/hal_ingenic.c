@@ -1520,7 +1520,7 @@ static int sw_rot_start(const ms_config *cfg, int i)
     }
     hub_set_video_params(i, v->codec, ew, eh, v->fps);
     vc->run=1;
-    if (pthread_create(&vc->thr,NULL,sw_rot_thread,vc)==0) vc->has_thr=1;
+    if (ms_thread_create(&vc->thr,MS_STACK_STREAM,sw_rot_thread,vc)==0) vc->has_thr=1;
     else { vc->run=0; LOGE(MOD,"sw-rot chn%d thread create failed",chn); }
     LOGI(MOD,"video%d: SOFTWARE rotate %d (%dx%d -> %dx%d) via unbound "
              "YuvEncode - no HW OSD/privacy; JPEG via standalone InputJpege%s",
@@ -1693,7 +1693,7 @@ static void jpeg_chan_start(int chn, int fs_chn, int src, int w, int h,
     jc->fps=fps>0?fps:5; jc->snapshot=snapshot;
     jc->last_snapshot_us=0;  /* due immediately: first loop iteration takes one */
     jc->run=1; jc->active=0; jc->has_thr=0;
-    if (pthread_create(&jc->thr,NULL,jpeg_thread,jc)!=0){
+    if (ms_thread_create(&jc->thr,MS_STACK_STREAM,jpeg_thread,jc)!=0){
         /* keep the slot (the IMP channel exists and must be destroyed in
          * stop) but mark it thread-less so stop() never joins a pthread_t
          * that was never created (M8) */
@@ -2378,7 +2378,7 @@ static int ing_start(const ms_config *cfg)
 
         hub_set_video_params(i, v->codec, ew, eh, v->fps);
         vc->run=1;
-        if (pthread_create(&vc->thr,NULL,video_thread,vc)==0) vc->has_thr=1;
+        if (ms_thread_create(&vc->thr,MS_STACK_STREAM,video_thread,vc)==0) vc->has_thr=1;
         else { vc->run=0; LOGE(MOD,"video chn%d thread create failed",chn); }
     }
 
@@ -2419,7 +2419,7 @@ static int ing_start(const ms_config *cfg)
          * once, muxing G.711 bytes as AAC. The cost is only that DESCRIBE in
          * the sub-second bring-up window sees no audio track yet. */
         g_arun=1;
-        if (pthread_create(&g_athr,NULL,audio_thread,NULL)!=0){
+        if (ms_thread_create(&g_athr,MS_STACK_STREAM,audio_thread,NULL)!=0){
             g_arun=0;                /* had_audio stays 0 -> no join in stop */
             LOGE(MOD,"audio thread create failed");
         }

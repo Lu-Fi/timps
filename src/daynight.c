@@ -612,7 +612,7 @@ void daynight_start(void)
 {
     if (g_started) return;
     g_stop = 0;
-    if (pthread_create(&g_thr, NULL, dn_thread, NULL) != 0) {
+    if (ms_thread_create(&g_thr, MS_STACK_UTIL, dn_thread, NULL) != 0) {
         LOGW(MOD, "cannot start detection thread");
         return;
     }
