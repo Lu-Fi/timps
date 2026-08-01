@@ -184,7 +184,12 @@ void config_defaults(ms_config *c)
      * tunnel overhead; raise to 1400 for LAN-only setups if desired */
     c->rtsp_mtu = 1200;
     c->http_enabled = 1; c->http_port = 8880; c->http_preview_chn = 1;
-    c->http_adaptive_drop = 0;   /* opt-in: OFF until hardware-verified (see httpd.c) */
+    c->http_adaptive_drop = 1;   /* hardware-verified (see httpd.c): the v1 hang
+                                  * (missing IDR fallback on P-frame eviction) is
+                                  * fixed and rate-limited; confirmed clean on a
+                                  * healthy link (garage) and correctly freezing/
+                                  * recovering under genuine packet loss (a
+                                  * chronically weak-WiFi camera) */
     c->http_user[0]=0; c->http_pass[0]=0;
     c->http_token[0]=0;
     copystr(c->http_token_file, "/run/timps.token", sizeof c->http_token_file);
