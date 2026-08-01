@@ -140,6 +140,7 @@ typedef struct {
     int                 have_video, have_audio;
     /* transport */
     int                 tcp;
+    int                 next_ichan;    /* A7: next self-assigned interleaved channel */
     rtp_sink            vsink, asink;
     int                 v_udp[2], a_udp[2];   /* server rtp,rtcp fds */
     fanqueue            q;
@@ -211,6 +212,22 @@ static int hdr_int(const char *req, const char *name, int def)
     return p ? atoi(p) : def;
 }
 
+/* A5: if the client sent a Session header it must name the session this
+ * connection actually owns (RFC 2326 12.37) - anything else is 454. No
+ * header at all is fine (pre-SETUP requests, and per-connection sessions
+ * make it redundant anyway). The value may carry ";timeout=..." which some
+ * clients echo back, so compare up to the first delimiter. */
+static int session_matches(session *s, const char *req)
+{
+    const char *v = hdr_find(req, "Session");
+    if (!v) return 1;
+    size_t l = strlen(s->session);
+    if (l && !strncmp(v, s->session, l) &&
+        (v[l]==0 || v[l]=='\r' || v[l]=='\n' || v[l]==';' || v[l]==' '))
+        return 1;
+    return 0;
+}
+
 static int find_video_by_path(const ms_config *c, const char *path)
 {
     /* videoN.rtsp_path is runtime-mutable via /control: match under the
@@ -228,6 +245,20 @@ static int find_video_by_path(const ms_config *c, const char *path)
     /* default to first enabled */
     for (int i=0;i<MS_MAX_VSTREAM;i++) if (c->video[i].enabled) return i;
     return -1;
+}
+
+/* A6: the absolute request URL as the client sent it, for Content-Base */
+static void extract_url(const char *req, char *out, int outsz)
+{
+    out[0]=0;
+    const char *sp = strchr(req, ' ');
+    if (!sp) return;
+    const char *url = sp+1;
+    const char *end = strchr(url, ' ');
+    if (!end) return;
+    int n = (int)(end-url);
+    if (n >= outsz) n = outsz-1;
+    memcpy(out, url, n); out[n]=0;
 }
 
 /* extract the request path from "METHOD rtsp://host:port/path... RTSP/1.0" */
@@ -269,7 +300,8 @@ static void gen_sdp(session *s, const ms_config *c, int vchn, char *sdp, int sdp
      * guard already used for the RTP-Info header in stream_loop(). */
     if (n>=0 && n<(int)sizeof(body))
         n += snprintf(body+n, sizeof(body)-n,
-            "v=0\r\no=- 0 0 IN IP4 %s\r\ns=timps\r\nc=IN IP4 %s\r\nt=0 0\r\n",
+            "v=0\r\no=- 0 0 IN IP4 %s\r\ns=timps\r\nc=IN IP4 %s\r\nt=0 0\r\n"
+            "a=control:*\r\n",   /* A6: aggregate control = Content-Base */
             ip, ip);
 
     /* video */
@@ -430,6 +462,12 @@ static int handle_request(session *s, char *req)
     }
     /* every method except OPTIONS requires authentication */
     if (!rtsp_check_auth(s, req)) { rtsp_send_401(s, cseq); return 0; }
+    /* A5: a stale/garbage Session id must not silently act on the one
+     * session this connection owns (RFC 2326 12.37) */
+    if (!session_matches(s, req)) {
+        send_err(s, cseq, 454, "Session Not Found", NULL);
+        return 0;
+    }
     if (!strncmp(req, "DESCRIBE", 8)) {
         int vchn = find_video_by_path(s->cfg, path);
         if (vchn < 0) { send_err(s, cseq, 404, "Not Found", NULL); return -1; }
@@ -448,8 +486,17 @@ static int handle_request(session *s, char *req)
         }
 #endif
         char sdp[2600]; gen_sdp(s, s->cfg, vchn, sdp, sizeof sdp, want_bc);
-        /* players use the request URL as Content-Base */
-        send_resp(s, cseq, "", sdp);
+        /* A6: explicit Content-Base (request URL, '/'-terminated per RFC
+         * 2326 C.1.1) so strict parsers resolve the relative
+         * a=control:trackID=N against it instead of guessing a base from
+         * the request URL themselves */
+        char url[512]; extract_url(req, url, sizeof url);
+        char cb[560]; cb[0]=0;
+        size_t ul = strlen(url);
+        if (ul)
+            snprintf(cb, sizeof cb, "Content-Base: %s%s\r\n",
+                     url, url[ul-1]=='/' ? "" : "/");
+        send_resp(s, cseq, cb, sdp);
         return 0;
     }
     if (!strncmp(req, "SETUP", 5)) {
@@ -478,17 +525,20 @@ static int handle_request(session *s, char *req)
             }
             char bextra[256];
             if (tr && strstr(tr,"TCP")){
-                int rc=0, cc=1; const char *il=strstr(tr,"interleaved=");
+                int rc=-1, cc=-1; const char *il=strstr(tr,"interleaved=");
                 if (il) sscanf(il+12,"%d-%d",&rc,&cc);
-                if (rc<0||rc>255) rc=0;
+                /* A7: same self-assignment as the media tracks - the old 0-1
+                 * default collided with an interleaved video track */
+                if (rc<0||rc>255) { rc = s->next_ichan & 255; cc = -1; }
                 if (cc<0||cc>255) cc = rc<255 ? rc+1 : 0;
+                if (cc+1 > s->next_ichan) s->next_ichan = cc+1;
                 s->bc_chan_rtp = rc; s->tcp=1; s->have_bc=1;
                 snprintf(bextra,sizeof bextra,
                     "Transport: RTP/AVP/TCP;unicast;interleaved=%d-%d\r\nSession: %s;timeout=%d\r\n",
                     rc,cc,s->session,RTSP_SESSION_TIMEOUT_S);
-            } else {
-                int cp=0,cp2=0; const char *cpp=tr?strstr(tr,"client_port="):NULL;
-                if (cpp) sscanf(cpp+12,"%d-%d",&cp,&cp2);
+            } else if (tr && strstr(tr,"client_port=")) {
+                int cp=0,cp2=0; const char *cpp=strstr(tr,"client_port=");
+                sscanf(cpp+12,"%d-%d",&cp,&cp2);
                 if (cp<0||cp>65535) cp=0; if (cp2<0||cp2>65535) cp2=0;
                 if (s->bc_udp[0]>=0){ close(s->bc_udp[0]); s->bc_udp[0]=-1; }
                 if (s->bc_udp[1]>=0){ close(s->bc_udp[1]); s->bc_udp[1]=-1; }
@@ -504,6 +554,10 @@ static int handle_request(session *s, char *req)
                 snprintf(bextra,sizeof bextra,
                     "Transport: RTP/AVP;unicast;client_port=%d-%d;server_port=%d-%d\r\nSession: %s;timeout=%d\r\n",
                     cp,cp2, base,base+1, s->session,RTSP_SESSION_TIMEOUT_S);
+            } else {
+                /* A4: neither interleaved nor unicast+client_port */
+                send_err(s, cseq, 461, "Unsupported Transport", NULL);
+                return 0;
             }
             send_resp(s, cseq, bextra, NULL);
             return 0;
@@ -512,11 +566,15 @@ static int handle_request(session *s, char *req)
         char extra[256];
         if (tr && strstr(tr,"TCP")) {
             /* interleaved */
-            int rc=0, cc=1;
+            int rc=-1, cc=-1;
             const char *il = strstr(tr,"interleaved=");
             if (il) sscanf(il+12,"%d-%d",&rc,&cc);
-            if (rc<0||rc>255) rc=0;          /* N4: reject out-of-range channels */
+            /* A7: no (or bogus) interleaved= from the client -> assign the
+             * next free channel pair ourselves (0-1, then 2-3, ...); the old
+             * fixed 0-1 default collided video and audio on one channel */
+            if (rc<0||rc>255) { rc = s->next_ichan & 255; cc = -1; }
             if (cc<0||cc>255) cc = rc<255 ? rc+1 : 0;
+            if (cc+1 > s->next_ichan) s->next_ichan = cc+1;
             rtp_sink *snk = is_audio ? &s->asink : &s->vsink;
             snk->tcp=1; snk->fd=s->fd; snk->chan_rtp=rc; snk->chan_rtcp=cc;
 #ifdef USE_TLS
@@ -527,13 +585,21 @@ static int handle_request(session *s, char *req)
             snprintf(extra,sizeof extra,
                 "Transport: RTP/AVP/TCP;unicast;interleaved=%d-%d\r\nSession: %s;timeout=%d\r\n",
                 rc,cc,s->session,RTSP_SESSION_TIMEOUT_S);
-        } else {
-            /* UDP */
+        } else if (tr && strstr(tr,"client_port=")) {
+            /* UDP unicast */
             int cp=0, cp2=0;
-            const char *cpp = tr?strstr(tr,"client_port="):NULL;
-            if (cpp) sscanf(cpp+12,"%d-%d",&cp,&cp2);
+            const char *cpp = strstr(tr,"client_port=");
+            sscanf(cpp+12,"%d-%d",&cp,&cp2);
             if (cp<0||cp>65535) cp=0;        /* N4: reject out-of-range ports */
             if (cp2<0||cp2>65535) cp2=0;
+            /* A4: a client_port we can't send to (0 or unparseable) is an
+             * unusable transport - 461 now beats a "successful" SETUP that
+             * silently streams RTP to port 0 (black picture, no error) */
+            if (cp==0) {
+                send_err(s, cseq, 461, "Unsupported Transport", NULL);
+                return 0;
+            }
+            if (cp2==0) cp2 = cp<65535 ? cp+1 : 0;   /* lone port: infer RTCP */
             int *udp = is_audio ? s->a_udp : s->v_udp;
             /* H1: a repeated SETUP for the same track (re-SETUP, or an
              * unauthenticated client just hammering SETUP before ever
@@ -564,6 +630,14 @@ static int handle_request(session *s, char *req)
             snprintf(extra,sizeof extra,
                 "Transport: RTP/AVP;unicast;client_port=%d-%d;server_port=%d-%d\r\nSession: %s;timeout=%d\r\n",
                 cp,cp2, base,base+1, s->session,RTSP_SESSION_TIMEOUT_S);
+        } else {
+            /* A4: neither interleaved-TCP nor unicast-UDP with a client_port
+             * (missing Transport header, multicast-only offer, garbage).
+             * 461 lets a Milestone/Axis-style client fall back to unicast
+             * instead of "succeeding" into a black picture. Keep the
+             * connection - a retry with a supported transport may follow. */
+            send_err(s, cseq, 461, "Unsupported Transport", NULL);
+            return 0;
         }
         send_resp(s, cseq, extra, NULL);
         return 0;
@@ -584,7 +658,12 @@ static int handle_request(session *s, char *req)
         return 1;
     }
     if (!strncmp(req, "GET_PARAMETER", 13)) {
-        char extra[64]; snprintf(extra,sizeof extra,"Session: %s\r\n",s->session);
+        /* A8: before SETUP there is no session - omit the header instead of
+         * sending "Session: " with an empty value (formally legal, looks
+         * like a bug to log readers and strict parsers alike) */
+        char extra[64]; extra[0]=0;
+        if (s->session[0])
+            snprintf(extra,sizeof extra,"Session: %s\r\n",s->session);
         send_resp(s, cseq, extra, NULL);
         return 0;
     }
@@ -770,7 +849,22 @@ static void stream_loop(session *s)
                     char *end = strstr(ctl, "\r\n\r\n");
                     if (!end) break;                          /* incomplete request, wait */
                     size_t reqlen = (size_t)(end-ctl) + 4;
-                    if (!strncmp(ctl,"TEARDOWN",8)) { close_conn = 1; break; }
+                    if (!session_matches(s, ctl)) {
+                        /* A5: a request naming some OTHER session must not act
+                         * on this one - notably a mismatched TEARDOWN must not
+                         * tear the running stream down (RFC 2326 12.37) */
+                        send_err(s, hdr_int(ctl,"CSeq",0), 454,
+                                 "Session Not Found", NULL);
+                    } else
+                    if (!strncmp(ctl,"TEARDOWN",8)) {
+                        /* answer before closing - RTSP is strictly
+                         * request/response, and live555-derived clients wait
+                         * for the 200 instead of treating the close as one */
+                        char e[64]; snprintf(e,sizeof e,"Session: %s\r\n",s->session);
+                        send_resp(s, hdr_int(ctl,"CSeq",0), e, NULL);
+                        close_conn = 1; break;
+                    }
+                    else
                     if (!strncmp(ctl,"GET_PARAMETER",13)||!strncmp(ctl,"OPTIONS",7)) {
                         int cseq=hdr_int(ctl,"CSeq",0);
                         char e[64]; snprintf(e,sizeof e,"Session: %s\r\n",s->session);
