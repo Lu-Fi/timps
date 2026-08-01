@@ -3,12 +3,14 @@
 #include "../codec/aac.h"
 #include "../util.h"
 #include <string.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
 #include <unistd.h>
 #include <fcntl.h>
 
-#define RTP_MTU 1400
+/* B1: the packetization MTU is per-track at runtime now (t->mtu, from the
+ * rtsp.mtu config key); RTP_MTU_MAX (rtp.h) only sizes the stack buffers. */
 
 /* M6: fill out with kernel randomness (same /dev/urandom pattern as
  * auth_gen_token in auth.c); <0 = unavailable, caller falls back */
@@ -49,12 +51,20 @@ static uint32_t pts_to_ts(rtp_track *t, int64_t pts_us)
     return t->ts_base + (uint32_t)((rel * (int64_t)t->clock_rate) / 1000000);
 }
 
-void rtp_track_init(rtp_track *t, int pt, uint32_t clock_rate,
-                    rtp_out_fn out, void *ctx)
+void rtp_track_init(rtp_track *t, int pt, uint32_t clock_rate, int mtu,
+                    const char *cname, rtp_out_fn out, void *ctx)
 {
     memset(t, 0, sizeof(*t));
     t->payload_type = pt;
     t->clock_rate   = clock_rate;
+    /* B1: runtime MTU from rtsp.mtu. config.c already clamps the key, but
+     * clamp again here so no caller can ever size past the stack buffers. */
+    if (mtu < RTP_MTU_MIN) mtu = RTP_MTU_MIN;
+    if (mtu > RTP_MTU_MAX) mtu = RTP_MTU_MAX;
+    t->mtu = mtu;
+    /* B2: SDES CNAME; both tracks of a session get the same string */
+    snprintf(t->cname, sizeof t->cname, "%s",
+             (cname && cname[0]) ? cname : "timps");
     t->out = out; t->ctx = ctx;
     /* M6: SSRC/start-seq/ts_base from /dev/urandom, not rand() - rand() is
      * seeded time^pid (main.c), making off-path RTP injection/guessing
@@ -99,8 +109,9 @@ static int emit(rtp_track *t, uint8_t *pkt, int len, uint32_t ts)
 static int send_h264_nal(rtp_track *t, const uint8_t *nal, size_t n,
                          uint32_t ts, int last_in_au)
 {
-    uint8_t pkt[RTP_MTU + 32];
-    if (n + 12 <= RTP_MTU) {
+    uint8_t pkt[RTP_MTU_MAX + 32];
+    size_t mtu = (size_t)t->mtu;
+    if (n + 12 <= mtu) {
         int h = rtp_hdr(pkt, t, last_in_au, ts);
         memcpy(pkt+h, nal, n);
         return emit(t, pkt, h+(int)n, ts) < 0 ? -1 : 0;
@@ -113,7 +124,7 @@ static int send_h264_nal(rtp_track *t, const uint8_t *nal, size_t n,
     int first = 1;
     while (left > 0) {
         size_t chunk = left;
-        if (chunk > RTP_MTU - 12 - 2) chunk = RTP_MTU - 12 - 2; /* -12 RTP hdr, -2 FU ind+hdr */
+        if (chunk > mtu - 12 - 2) chunk = mtu - 12 - 2; /* -12 RTP hdr, -2 FU ind+hdr */
         int end = (chunk == left);
         int h = rtp_hdr(pkt, t, (end && last_in_au), ts);
         pkt[h]   = nri | 28;                          /* FU indicator */
@@ -148,8 +159,9 @@ int rtp_send_h264(rtp_track *t, const uint8_t *au, size_t len, int64_t pts_us)
 static int send_h265_nal(rtp_track *t, const uint8_t *nal, size_t n,
                          uint32_t ts, int last_in_au)
 {
-    uint8_t pkt[RTP_MTU + 32];
-    if (n + 12 <= RTP_MTU) {
+    uint8_t pkt[RTP_MTU_MAX + 32];
+    size_t mtu = (size_t)t->mtu;
+    if (n + 12 <= mtu) {
         int h = rtp_hdr(pkt, t, last_in_au, ts);
         memcpy(pkt+h, nal, n);
         return emit(t, pkt, h+(int)n, ts) < 0 ? -1 : 0;
@@ -163,7 +175,7 @@ static int send_h265_nal(rtp_track *t, const uint8_t *nal, size_t n,
     int first = 1;
     while (left > 0) {
         size_t chunk = left;
-        if (chunk > RTP_MTU - 12 - 3) chunk = RTP_MTU - 12 - 3; /* -12 RTP hdr, -3 FU hdr */
+        if (chunk > mtu - 12 - 3) chunk = mtu - 12 - 3; /* -12 RTP hdr, -3 FU hdr */
         int end = (chunk == left);
         int h = rtp_hdr(pkt, t, (end && last_in_au), ts);
         pkt[h]   = (uint8_t)((49<<1) | (lid>>5));
@@ -243,9 +255,10 @@ int rtp_send_aac(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us)
     audio_gap_resync(t, pts_us, 1024);          /* M-1: jump over real gaps */
     uint32_t ts = t->ts_base + (uint32_t)t->audio_samples;
     t->audio_samples += 1024;
-    uint8_t pkt[RTP_MTU + 32];
+    uint8_t pkt[RTP_MTU_MAX + 32];
+    size_t mtu = (size_t)t->mtu;
 
-    if (plen + 12 + 4 <= RTP_MTU) {
+    if (plen + 12 + 4 <= mtu) {
         /* common case: whole AU in one packet. AU-headers-length = 16 bits;
          * one AU header of 16 bits: 13 bits size + 3 bits index(0) */
         int h = rtp_hdr(pkt, t, 1, ts);
@@ -269,7 +282,7 @@ int rtp_send_aac(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us)
     size_t sent = 0;
     uint16_t auh = (uint16_t)((plen & 0x1FFF) << 3);   /* full AU size, AU-Index=0 */
     while (sent < plen) {
-        size_t chunk = RTP_MTU - 12 - 4;
+        size_t chunk = mtu - 12 - 4;
         if (chunk > plen - sent) chunk = plen - sent;
         int end = (sent + chunk >= plen);
         int h = rtp_hdr(pkt, t, end, ts);
@@ -298,11 +311,13 @@ int rtp_send_g711(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us
     if (!t->have_pts0){ t->pts0 = pts_us; t->have_pts0 = 1; }
     audio_gap_resync(t, pts_us, (uint32_t)len); /* M-1: jump over real gaps */
     uint32_t ts = t->ts_base + (uint32_t)t->audio_samples;
-    uint8_t pkt[RTP_MTU + 32];
+    uint8_t pkt[RTP_MTU_MAX + 32];
     size_t off = 0;
     while (off < len) {
         size_t chunk = len - off;
-        if (chunk > RTP_MTU) chunk = RTP_MTU;
+        /* budget the 12 RTP header bytes too (the old RTP_MTU check didn't
+         * - unreachable with 320-byte G.711 frames, wrong on principle) */
+        if (chunk > (size_t)t->mtu - 12) chunk = (size_t)t->mtu - 12;
         /* RFC 3551 4.1: marker bit belongs at the start of a talkspurt
          * (after silence). This track has no silence suppression - it's
          * one continuous talkspurt for the whole session - so that's just
@@ -316,17 +331,11 @@ int rtp_send_g711(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us
     return 0;
 }
 
-/* ---- RTCP Sender Report ---- */
-int rtp_maybe_sr(rtp_track *t, int64_t now_us)
+/* ---- RTCP (SR / SDES / BYE) ---- */
+
+/* write a 28-byte Sender Report at p, return its length */
+static int rtcp_wr_sr(rtp_track *t, int64_t now_us, uint8_t *p)
 {
-    /* pts_to_ts() anchors pts0/ts_base on the FIRST packet sent - before
-     * that there's no valid RTP-time <-> wall-clock mapping to report.
-     * Skip without touching last_sr_us, so the first real SR still goes
-     * out promptly once packets start flowing instead of waiting up to
-     * another full second because this call "used up" the 1s gate below. */
-    if (!t->have_pts0) return 0;
-    if (t->last_sr_us && now_us - t->last_sr_us < 1000000) return 0;
-    t->last_sr_us = now_us;
     /* NTP from realtime clock */
     struct timespec rt; clock_gettime(CLOCK_REALTIME, &rt);
     uint64_t ntp = ((uint64_t)(rt.tv_sec + 2208988800ULL) << 32) |
@@ -343,15 +352,73 @@ int rtp_maybe_sr(rtp_track *t, int64_t now_us)
     if (rel < 0) rel = 0;
     uint32_t rtp_ts_now = t->ts_base +
         (uint32_t)((rel * (int64_t)t->clock_rate) / 1000000);
-    uint8_t sr[28];
-    sr[0]=0x80; sr[1]=200; wr_be16(sr+2, 6);
-    wr_be32(sr+4, t->ssrc);
-    wr_be32(sr+8,  (uint32_t)(ntp>>32));
-    wr_be32(sr+12, (uint32_t)ntp);
-    wr_be32(sr+16, rtp_ts_now);
-    wr_be32(sr+20, t->pkt_count);
-    wr_be32(sr+24, t->octet_count);
+    p[0]=0x80; p[1]=200; wr_be16(p+2, 6);
+    wr_be32(p+4, t->ssrc);
+    wr_be32(p+8,  (uint32_t)(ntp>>32));
+    wr_be32(p+12, (uint32_t)ntp);
+    wr_be32(p+16, rtp_ts_now);
+    wr_be32(p+20, t->pkt_count);
+    wr_be32(p+24, t->octet_count);
+    return 28;
+}
+
+/* write an SDES packet (one chunk: SSRC + CNAME item, RFC 3550 6.5) at p,
+ * return its length (a multiple of 4; END octet + zero padding included) */
+static int rtcp_wr_sdes(rtp_track *t, uint8_t *p)
+{
+    int cl = (int)strlen(t->cname);
+    int content = 4 + 2 + cl + 1;          /* SSRC + item hdr + text + END */
+    int pad = (4 - (content & 3)) & 3;     /* chunk pads to 32-bit boundary */
+    int len = 4 + content + pad;
+    p[0]=0x81; p[1]=202; wr_be16(p+2, (uint16_t)(len/4 - 1));
+    wr_be32(p+4, t->ssrc);
+    p[8] = 1;                              /* item type CNAME */
+    p[9] = (uint8_t)cl;
+    memcpy(p+10, t->cname, (size_t)cl);
+    memset(p+10+cl, 0, (size_t)(1+pad));   /* END + padding */
+    return len;
+}
+
+int rtp_maybe_sr(rtp_track *t, int64_t now_us)
+{
+    /* pts_to_ts() anchors pts0/ts_base on the FIRST packet sent - before
+     * that there's no valid RTP-time <-> wall-clock mapping to report.
+     * Skip without touching last_sr_us, so the first real SR still goes
+     * out promptly once packets start flowing instead of waiting up to
+     * another full second because this call "used up" the 1s gate below. */
+    if (!t->have_pts0) return 0;
+    if (t->last_sr_us && now_us - t->last_sr_us < 1000000) return 0;
+    t->last_sr_us = now_us;
+    /* B2: RFC 3550 6.1 - every RTCP packet is a compound that includes an
+     * SDES with CNAME. The bare 28-byte SR was tolerated by ffmpeg/VLC/
+     * gstreamer but flagged by strict RTCP stacks (ONVIF conformance,
+     * Genetec-class VMS). One buffer, one send: a compound must travel in
+     * a single datagram / interleaved frame. */
+    uint8_t buf[28 + 4+4+2+RTP_CNAME_MAX+1+3];
+    int n = rtcp_wr_sr(t, now_us, buf);
+    n += rtcp_wr_sdes(t, buf + n);
     /* H-1: over TCP-interleaved a failed/timed-out send can leave a torn
      * '$'-framed packet; report it so the caller stops the session. */
-    return t->out(t->ctx, sr, sizeof sr, 1) < 0 ? -1 : 0;
+    return t->out(t->ctx, buf, n, 1) < 0 ? -1 : 0;
+}
+
+int rtp_send_bye(rtp_track *t, int64_t now_us)
+{
+    /* B3: RFC 3550 6.3.7 - a participant that leaves sends BYE. Compound
+     * order per 6.1: SR (or an empty RR when nothing was ever sent, so
+     * there is no valid NTP<->RTP mapping) + SDES + BYE. */
+    uint8_t buf[28 + 4+4+2+RTP_CNAME_MAX+1+3 + 8];
+    int n;
+    if (t->have_pts0) {
+        n = rtcp_wr_sr(t, now_us, buf);
+    } else {
+        buf[0]=0x80; buf[1]=201; wr_be16(buf+2, 1);   /* RR, RC=0 */
+        wr_be32(buf+4, t->ssrc);
+        n = 8;
+    }
+    n += rtcp_wr_sdes(t, buf + n);
+    buf[n]=0x81; buf[n+1]=203; wr_be16(buf+n+2, 1);   /* BYE, SC=1 */
+    wr_be32(buf+n+4, t->ssrc);
+    n += 8;
+    return t->out(t->ctx, buf, n, 1) < 0 ? -1 : 0;
 }

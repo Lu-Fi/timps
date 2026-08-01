@@ -56,6 +56,10 @@ image.wb_bgain               = 0
 # ---- RTSP server (video + audio, no live555) ----
 rtsp.enabled = 1
 rtsp.port    = 554
+# rtsp.mtu   = 1200         # max RTP packet size (548..1472). Default 1200
+#                           # survives WireGuard/OpenVPN/PPPoE paths without
+#                           # IP fragmentation; 1400 squeezes ~1% more payload
+#                           # efficiency on plain-Ethernet LANs
 rtsp.user    =            # set to enable RTSP Digest auth
 rtsp.pass    =
 
