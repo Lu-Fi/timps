@@ -863,7 +863,11 @@ static int handle_request(session *s, char *req)
         s->play_cseq = cseq;
         return 1;
     }
-    if (!strncmp(req, "GET_PARAMETER", 13)) {
+    if (!strncmp(req, "GET_PARAMETER", 13) || !strncmp(req, "SET_PARAMETER", 13)) {
+        /* RFC 2326 10.9: a bodyless SET_PARAMETER is a valid liveness
+         * keepalive - answer 200 like GET_PARAMETER, not 405. We inspect no
+         * parameters; any body was already consumed by the Content-Length
+         * handling before dispatch. "SET_PARAMETER" is also 13 chars. */
         /* A8: before SETUP there is no session - omit the header instead of
          * sending "Session: " with an empty value (formally legal, looks
          * like a bug to log readers and strict parsers alike) */
@@ -1137,18 +1141,21 @@ static void stream_loop(session *s)
                         close_conn = 1; break;
                     }
                     else
-                    if (!strncmp(ctl,"GET_PARAMETER",13)||!strncmp(ctl,"OPTIONS",7)) {
+                    if (!strncmp(ctl,"GET_PARAMETER",13)||!strncmp(ctl,"SET_PARAMETER",13)||!strncmp(ctl,"OPTIONS",7)) {
+                        /* RFC 2326 10.9: a bodyless SET_PARAMETER is a valid
+                         * liveness keepalive - answer 200 like GET_PARAMETER,
+                         * not 405. We inspect no parameters; any body was
+                         * already consumed by the Content-Length handling
+                         * above. "SET_PARAMETER" is also 13 chars. */
                         int cseq=hdr_int(ctl,"CSeq",0);
                         char e[64]; snprintf(e,sizeof e,"Session: %s\r\n",s->session);
                         send_resp(s,cseq,e,NULL);
                     } else {
-                        /* A2: anything else (PAUSE, SET_PARAMETER, mid-session
-                         * DESCRIBE, ...) used to be dropped without ANY
-                         * response - RTSP is strictly request/response, so
-                         * VLC's pause button hung until its timeout and
-                         * SET_PARAMETER-keepalive NVRs declared the session
-                         * dead. Answer 405 listing what IS supported here;
-                         * the media session keeps running. */
+                        /* A2: anything else (PAUSE, mid-session DESCRIBE, ...)
+                         * used to be dropped without ANY response - RTSP is
+                         * strictly request/response, so VLC's pause button
+                         * hung until its timeout. Answer 405 listing what IS
+                         * supported here; the media session keeps running. */
                         int cseq=hdr_int(ctl,"CSeq",0);
                         char e[128]; snprintf(e,sizeof e,
                             "Allow: OPTIONS, GET_PARAMETER, TEARDOWN\r\n"
