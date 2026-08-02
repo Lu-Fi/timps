@@ -59,6 +59,10 @@ static void (*g_control_cb)(const char*,const char*) = NULL;
 void hub_set_control_cb(void (*cb)(const char *key, const char *val)){ g_control_cb = cb; }
 void hub_control(const char *key, const char *val){ if (g_control_cb) g_control_cb(key, val); }
 
+static void (*g_control_commit_cb)(void) = NULL;
+void hub_set_control_commit_cb(void (*cb)(void)){ g_control_commit_cb = cb; }
+void hub_control_commit(void){ if (g_control_commit_cb) g_control_commit_cb(); }
+
 /* hub_publish() snapshots s->subs[] under s->lock and then pushes to those
  * queues AFTER releasing s->lock (see hub_publish). Since hub_unsubscribe()
  * callers destroy/free their fanqueue right after it returns, a push that

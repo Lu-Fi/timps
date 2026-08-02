@@ -77,5 +77,13 @@ int         hub_video_subs(void);
  * The handler parses numbers itself. No-op if no handler is registered. */
 void        hub_set_control_cb(void (*cb)(const char *key, const char *val));
 void        hub_control(const char *key, const char *val);
+/* Optional batch-commit hook: some HAL applies (the IVS motion-grid rebuild)
+ * are expensive stop/destroy/recreate cycles that a single /control POST can
+ * otherwise trigger once per key. The HAL registers a commit callback and just
+ * flags "needs rebuild" while keys stream through hub_control(); the control
+ * endpoint calls hub_control_commit() ONCE after all keys of a request are
+ * applied so the rebuild runs at most once. No-op if no handler is registered. */
+void        hub_set_control_commit_cb(void (*cb)(void));
+void        hub_control_commit(void);
 
 #endif

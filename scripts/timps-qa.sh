@@ -83,6 +83,12 @@ TEST_BACKCHANNEL="${TEST_BACKCHANNEL:-0}"
 BC_TEST_FREQ="${BC_TEST_FREQ:-1500}"   # test-tone frequency (Hz), narrow + mid-band
 BC_TEST_SECS="${BC_TEST_SECS:-4}"      # tone duration (s)
 
+# Optional rotation persist-only round-trip test (default OFF, never in a
+# profile): SoC-gated via caps.rotation (only present when USE_ROTATE was
+# compiled in, only advertises the degree values this SoC's rotation path
+# actually supports) - skips cleanly on a build without rotation support.
+TEST_ROTATION="${TEST_ROTATION:-0}"
+
 usage() {
 	sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
 	cat <<EOF
@@ -105,6 +111,10 @@ Options (also settable as env vars):
                       Default OFF, never part of a profile (environmental).
   --bc-test-freq HZ   test-tone frequency (default 1500)
   --bc-test-secs S    test-tone duration (default 4)
+  --test-rotation     run the persist-only video0.rotation round-trip check
+                      (section 8b): SoC-gated via caps.rotation, skips
+                      cleanly if this build has no rotation support.
+                      Default OFF, never part of a profile.
 
 Profiles:
   quick     ~3 min  : short integrity + snapshot + tiny load, no soak

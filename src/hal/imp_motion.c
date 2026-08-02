@@ -52,6 +52,11 @@ static const ms_config *g_hcfg;
 static pthread_mutex_t g_st_lock = PTHREAD_MUTEX_INITIALIZER;
 static ms_motion_status g_st;
 static int64_t g_last_event = -1;            /* CLOCK_MONOTONIC ms, -1 never */
+/* M2: cooldown clock for the on_motion hook. File-scope (not a motion_thread
+ * local) so a motion_sync() channel rebuild - which joins and recreates the
+ * poll thread - does NOT reset the cooldown to 0; otherwise a rebuild right
+ * after a real detection could re-fire on_motion before cooldown_ms elapsed. */
+static int64_t g_last_fire = 0;              /* CLOCK_MONOTONIC ms of last fire */
 
 /* IMP flags a cell in retRoi[] only on the frame(s) it moved and clears it on
  * the next processed frame. The /events SSE pusher and the /control poller read
@@ -112,7 +117,6 @@ static void *motion_thread(void *arg)
 {
     (void)arg;
     IMP_IVS_MoveOutput *result;
-    int64_t last_fire = 0;
     while (g_run) {
         if (IMP_IVS_PollingResult(g_chn, 1000) < 0) continue;
         if (IMP_IVS_GetResult(g_chn, (void**)&result) < 0) continue;
@@ -148,8 +152,8 @@ static void *motion_thread(void *arg)
              every grid change reaches /events, none can coalesce away */
         if (detected) {
             int64_t t = now_ms();
-            if (t - last_fire >= g_hcfg->motion.cooldown_ms) {
-                last_fire = t;
+            if (t - g_last_fire >= g_hcfg->motion.cooldown_ms) {
+                g_last_fire = t;
                 LOGI(MOD,"motion detected");
                 if (g_hcfg->motion.on_motion[0]) {
                     /* NEU-01 (same class as daynight.c F-01): run via

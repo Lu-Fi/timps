@@ -509,6 +509,12 @@ void control_apply_json(const char *json)
                       TL_KEYS, (int)(sizeof TL_KEYS/sizeof TL_KEYS[0]));
     }
 
+    /* M2: flush any HAL apply that was deferred/batched across the keys of this
+     * request (e.g. the IVS motion-grid rebuild) exactly once, now that every
+     * key has been applied to g_cfg. No-op when nothing motion/privacy-related
+     * changed. */
+    hub_control_commit();
+
     /* persist all changed keys back into the config file */
     if (ch->n > 0 && g_cfg_path && g_cfg_path[0]){
         const char *keys[CTRL_MAX_CHG], *vals[CTRL_MAX_CHG];
