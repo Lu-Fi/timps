@@ -461,7 +461,15 @@ static void gen_sdp(session *s, const ms_config *c, int vchn, char *sdp, int sdp
 
 static void send_resp(session *s, int cseq, const char *extra, const char *body)
 {
-    char hdr[3072];
+    /* hdr must hold: status line + extra headers + Content-Type/Length +
+     * CRLFCRLF + the body. The largest body is the DESCRIBE SDP (char
+     * sdp[2600] in handle_request); with the Content-Base extra (cb[560])
+     * the worst case is ~3.3 KB, so 3072 could truncate. Size well past
+     * that. Clamping alone is not enough: Content-Length is computed from
+     * the FULL body length, so a truncated body write would advertise more
+     * bytes than are sent and the client hangs. The explicit guard below
+     * therefore drops such a response loudly instead. */
+    char hdr[4096];
     int bl = body ? (int)strlen(body) : 0;
     int n = snprintf(hdr, sizeof hdr,
         "RTSP/1.0 200 OK\r\nCSeq: %d\r\n%s", cseq, extra?extra:"");
@@ -476,8 +484,17 @@ static void send_resp(session *s, int cseq, const char *extra, const char *body)
     else
         m = snprintf(hdr+n, sizeof(hdr)-n, "\r\n");
     if (m < 0) return;
+    /* hard bounds check: m is the would-be length; m >= remaining means the
+     * body (and thus the message) was truncated while Content-Length already
+     * promised the full bl. Never send a length-mismatched response - fail
+     * loudly so an oversized SDP surfaces instead of silently reappearing at
+     * a new, larger threshold. */
+    if (m >= (int)(sizeof(hdr) - n)) {
+        LOGE(MOD, "send_resp: response too large (hdr=%d body=%d cap=%d), dropping",
+             n, bl, (int)sizeof hdr);
+        return;
+    }
     n += m;
-    if (n >= (int)sizeof hdr) n = (int)sizeof hdr - 1;
     r_send(s, hdr, n);
 }
 
