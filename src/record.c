@@ -454,6 +454,28 @@ static void *rec_thread(void *arg)
             hub_request_idr(chn); subscribed=1; sub_chn=chn;
         }
 
+        /* record.audio is re-read live like channel/mode/pre_roll above:
+         * seg_open() already re-reads it per segment and declares (or omits)
+         * the AAC track accordingly, but the audio hub subscription was only
+         * decided once in the !subscribed block. A live 0->1 toggle therefore
+         * left new segments declaring an AAC track that received no samples
+         * (broken/empty audio track); a 1->0 toggle leaked the subscription.
+         * Reconcile the subscription with the live flag every pass so both
+         * transitions take effect without a re-subscribe. The sub_audio guard
+         * makes repeated toggling idempotent (no double-subscribe / no leak);
+         * the AAC gate matches seg_open() so a declared track is always the
+         * one we are actually subscribed to. */
+        if (subscribed){
+            int want_audio = g_rc->record.audio;
+            if (want_audio && !sub_audio){
+                int ac=MS_AC_NONE,asr=0,ach=0;
+                if (hub_get_audio(&ac,&asr,&ach) && ac==MS_AC_AAC)
+                    sub_audio = (hub_subscribe(HUB_AUDIO_SRC,&q)==0);
+            } else if (!want_audio && sub_audio){
+                hub_unsubscribe(HUB_AUDIO_SRC,&q); sub_audio=0;
+            }
+        }
+
         ms_pkt *p=fanqueue_pop(&q,200);
         int writing=want_write();
         if (!p){ if (w_fp && !writing) seg_close(); continue; }
