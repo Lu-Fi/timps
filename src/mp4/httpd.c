@@ -875,14 +875,16 @@ static void events_stream(hconn *c, const char *path, const char *cors)
         }
         if (rc >= 0 && want_dn){
             int en = 0, mode = 0; float b = -1.0f, g = -1.0f, lu = -1.0f;
-            daynight_get_status(&en, &mode, &b, &g, &lu);
+            float nb = -1.0f, dt = -1.0f;
+            daynight_get_status(&en, &mode, &b, &g, &lu, &nb, &dt);
             float db = b - ld_b; if (db < 0) db = -db;
             float dg = g - ld_g; if (dg < 0) dg = -dg;
             /* change thresholds match the producer filter in daynight.c */
             if (!have_d || en != ld_en || mode != ld_mode || db >= 1.0f ||
                 dg >= (ld_g > 0.0f ? ld_g * 0.05f : 8.0f)){
                 ld_en = en; ld_mode = mode; ld_b = b; ld_g = g; have_d = 1;
-                if (control_daynight_json(js, sizeof js, en, mode, b, g, lu) < (int)sizeof js)
+                if (control_daynight_json(js, sizeof js, en, mode, b, g, lu,
+                                          nb, dt) < (int)sizeof js)
                     rc = sse_emit(c, "daynight", js, &last_write);
             }
         }

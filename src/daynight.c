@@ -45,8 +45,29 @@ static float g_st_brightness = -1.0f;      /* % or <0 = unknown */
 static float g_st_gain       = -1.0f;      /* [24.8] linear or <0 = unknown */
 static float g_st_luma       = -1.0f;      /* AE luma or <0 = unavailable */
 static int   g_st_mode       = DN_UNKNOWN; /* mode as switched by the thread */
+static float g_st_baseline   = -1.0f;      /* night gain baseline or <0 = none */
+static float g_st_daytrig    = -1.0f;      /* effective night->day trigger */
 
-static void dn_status_update(float brightness, float total_gain, float ae_luma, int mode)
+/* Effective night->day gain trigger for a given baseline: day_gain_pct% of
+ * the baseline when one exists, floored at the fixed day threshold so the
+ * adaptive bar can never be STRICTER than the calibrated "definitely day"
+ * level (a too-low baseline otherwise yields a trigger no real light source
+ * can reach - seen live 2026-08-02, see the hardening comment above
+ * DN_BRIGHTEN_CONFIRM_MS). Without a baseline the fixed threshold applies. */
+static float dn_day_trigger(float baseline)
+{
+    const ms_daynight_cfg *dn = &g_cfg.daynight;
+    float thr = dn->total_gain_day_threshold;
+    if (baseline > 0.0f && dn->day_gain_pct > 0) {
+        thr = baseline * (float)dn->day_gain_pct / 100.0f;
+        if (thr < dn->total_gain_day_threshold)
+            thr = dn->total_gain_day_threshold;
+    }
+    return thr;
+}
+
+static void dn_status_update(float brightness, float total_gain, float ae_luma,
+                             int mode, float baseline)
 {
     /* last values that woke /events (only touched by the sampling thread) */
     static float nfy_b = -1000.0f, nfy_g = -1000.0f;
@@ -57,6 +78,8 @@ static void dn_status_update(float brightness, float total_gain, float ae_luma, 
     g_st_gain       = total_gain;
     g_st_luma       = ae_luma;
     g_st_mode       = mode;
+    g_st_baseline   = baseline;
+    g_st_daytrig    = (mode == DN_NIGHT) ? dn_day_trigger(baseline) : -1.0f;
     pthread_mutex_unlock(&g_st_mu);
 
     /* wake /events subscribers only on a REAL change - brightness/gain
@@ -368,6 +391,36 @@ static int dn_ae_stable(const float *hist, int n, int pct)
 #define DN_SCRAPE_MS 5000        /* status-only brightness refresh interval */
 #endif
 
+/* Adaptive-baseline hardening (2026-08-02, after two real stuck-in-night
+ * incidents in one evening - a basement and a kids' room, both with the room
+ * legitimately lit but the camera stuck in mono):
+ *
+ *  1. A night baseline sampled during a lighting transition is unrepresent-
+ *     atively LOW, making day_gain_pct% of it stricter than the room's real
+ *     light can ever reach. Fix: while night lasts the baseline drifts UP
+ *     toward any higher gain via a small per-tick EMA step - a bad low
+ *     sample self-corrects within a minute of true darkness, while a brief
+ *     upward transient (headlights leaving, lens shadow) barely moves it.
+ *     Downward drift is deliberately NOT done: falling gain is exactly what
+ *     the day trigger itself must detect.
+ *
+ *  2. Even a CLEANLY sampled baseline can defeat a legitimate light source:
+ *     a single utility bulb dropped one room's gain to a rock-stable 65% of
+ *     baseline - genuinely, visibly brighter - but never below the 60% bar,
+ *     so the camera stayed night indefinitely. The honest resolution is the
+ *     one night_reconfirm_s already uses: night-pipeline gain is a poor
+ *     proxy for "is it day", so PROBE the day pipeline and let its own
+ *     calibrated thresholds decide (a wrong probe self-reverts via the
+ *     night threshold). When gain holds below the halfway point between
+ *     day_gain_pct and 100% of baseline for DN_BRIGHTEN_CONFIRM_MS, fire
+ *     that probe early instead of waiting up to night_reconfirm_s. */
+#ifndef DN_BRIGHTEN_CONFIRM_MS
+#define DN_BRIGHTEN_CONFIRM_MS 60000  /* sustained-brightening probe confirm */
+#endif
+#ifndef DN_BASELINE_ALPHA
+#define DN_BASELINE_ALPHA 0.05f  /* per-tick EMA step of the upward drift */
+#endif
+
 static void *dn_thread(void *arg)
 {
     (void)arg;
@@ -402,6 +455,12 @@ static void *dn_thread(void *arg)
      * config.h): when we're in night and this fires, we probe the day
      * pipeline for real instead of trusting night-path gain. 0 = none pending. */
     int64_t night_probe_at_ms = 0;
+    /* sustained-brightening probe (see DN_BRIGHTEN_CONFIRM_MS): when gain
+     * first held below the probe bar while in night. 0 = not holding. */
+    int64_t brighten_since_ms = 0;
+    /* baseline value last reported in a log line (rate-limits the upward-
+     * drift INFO log to meaningful moves, see the EMA drift below). */
+    float   baseline_logged = -1.0f;
     /* P2: last /proc-scraped brightness (status readout only when the gain
      * API works) and when the next scrape is due. 0 = scrape on first tick. */
     float   scraped_b = -1.0f;
@@ -488,8 +547,9 @@ static void *dn_thread(void *arg)
             was_enabled = 0;
             cur = DN_UNKNOWN;           /* mode may be forced manually now */
             night_baseline = -1.0f;
+            brighten_since_ms = 0;
             pending_target = DN_UNKNOWN; pending_since_ms = 0;
-            dn_status_update(b, tg, luma, DN_UNKNOWN);
+            dn_status_update(b, tg, luma, DN_UNKNOWN, night_baseline);
             dn_sleep(interval);
             continue;
         }
@@ -499,6 +559,7 @@ static void *dn_thread(void *arg)
             night_baseline = -1.0f;
             night_entered_ms = 0;
             night_probe_at_ms = 0;
+            brighten_since_ms = 0;
             pending_target = DN_UNKNOWN; pending_since_ms = 0;
             settle_floor_ms = ms_now_us() / 1000 + (int64_t)dn->boot_settle_s * 1000;
             settle_hard_ms  = ms_now_us() / 1000 + (int64_t)dn->boot_settle_max_s * 1000;
@@ -515,26 +576,59 @@ static void *dn_thread(void *arg)
                 LOGD(MOD, "%s not readable, detection idle", dn->isp_path);
                 warned_noisp = 1;
             }
-            dn_status_update(b, tg, luma, cur);
+            dn_status_update(b, tg, luma, cur, night_baseline);
             dn_sleep(interval);
             continue;
         }
         warned_noisp = 0;
 
-        /* self-healing periodic reconfirm: gain sampled through the night/IR
+        /* self-healing reconfirm probes: gain sampled through the night/IR
          * pipeline is not a reliable proxy for "is it actually day" (IR-cut
          * changes the optical path and the ISP night tuning table can target
          * a different AE point - see night_reconfirm_s doc comment in
-         * config.h), so after a long night dwell force a real probe switch to
-         * day and let the normal hysteresis re-decide from a true day-pipeline
-         * reading instead of trusting a possibly-stuck night-path one. */
-        if (cur == DN_NIGHT && dn->mode == DN_MODE_SENSOR &&
-            dn->night_reconfirm_s > 0 && night_probe_at_ms > 0) {
+         * config.h), so force a real probe switch to day and let the normal
+         * hysteresis re-decide from a true day-pipeline reading instead of
+         * trusting a possibly-stuck night-path one. Two triggers share the
+         * probe:
+         *  - periodic: after night_reconfirm_s of continuous night dwell;
+         *  - sustained brightening: gain held below the halfway point
+         *    between day_gain_pct% and 100% of the baseline for
+         *    DN_BRIGHTEN_CONFIRM_MS (a real light came on but not enough to
+         *    cross the strict adaptive bar - see the hardening comment above
+         *    DN_BRIGHTEN_CONFIRM_MS), gated on the transition_s dwell so a
+         *    probe that reverts cannot flap. */
+        if (cur == DN_NIGHT && dn->mode == DN_MODE_SENSOR) {
             int64_t now_ms = ms_now_us() / 1000;
-            if (now_ms >= night_probe_at_ms) {
-                LOGI(MOD, "night reconfirm: probing day pipeline after %llds dwell",
-                     (long long)((now_ms - night_entered_ms) / 1000));
-                dn_switch(DN_DAY, "periodic reconfirm probe");
+            const char *probe_why = NULL;
+            if (dn->night_reconfirm_s > 0 && night_probe_at_ms > 0 &&
+                now_ms >= night_probe_at_ms)
+                probe_why = "periodic reconfirm probe";
+            if (!probe_why && night_baseline > 0.0f && tg >= 0.0f &&
+                dn->day_gain_pct > 0 && dn->day_gain_pct < 100) {
+                float probe_bar = night_baseline *
+                    (100.0f + (float)dn->day_gain_pct) / 200.0f;
+                if (tg < probe_bar) {
+                    if (!brighten_since_ms) {
+                        brighten_since_ms = now_ms;
+                        LOGI(MOD, "sustained brightening: gain %.0f below probe "
+                                  "bar %.0f (baseline %.0f), confirming %ds",
+                             (double)tg, (double)probe_bar,
+                             (double)night_baseline,
+                             DN_BRIGHTEN_CONFIRM_MS / 1000);
+                    } else if (now_ms - brighten_since_ms >=
+                                   (int64_t)DN_BRIGHTEN_CONFIRM_MS &&
+                               now_ms - last_switch_ms >=
+                                   (int64_t)dn->transition_s * 1000)
+                        probe_why = "sustained brightening probe";
+                } else
+                    brighten_since_ms = 0;
+            }
+            if (probe_why) {
+                LOGI(MOD, "night reconfirm (%s): probing day pipeline after "
+                          "%llds dwell (gain %.0f, baseline %.0f)", probe_why,
+                     (long long)((now_ms - night_entered_ms) / 1000),
+                     (double)tg, (double)night_baseline);
+                dn_switch(DN_DAY, probe_why);
                 cur = DN_DAY;
                 last_switch_ms  = now_ms;
                 pending_target  = DN_UNKNOWN; pending_since_ms = 0;
@@ -543,7 +637,8 @@ static void *dn_thread(void *arg)
                 night_baseline  = -1.0f;
                 night_entered_ms = 0;
                 night_probe_at_ms = 0;
-                dn_status_update(b, tg, luma, cur);
+                brighten_since_ms = 0;
+                dn_status_update(b, tg, luma, cur, night_baseline);
                 dn_sleep(interval);
                 continue;
             }
@@ -583,11 +678,10 @@ static void *dn_thread(void *arg)
              * averaging is needed; from UNKNOWN a mid-gap start stays put
              * until the gain leaves the dead-zone. */
             /* night->day: relative to the adaptive night baseline when we have
-             * one (day when gain < day_gain_pct% of it), else the fixed day
+             * one (day when gain < day_gain_pct% of it, floored at the fixed
+             * day threshold - see dn_day_trigger()), else the fixed day
              * threshold. day->night stays the fixed night threshold. */
-            float day_thr = dn->total_gain_day_threshold;
-            if (night_baseline > 0.0f && dn->day_gain_pct > 0)
-                day_thr = night_baseline * (float)dn->day_gain_pct / 100.0f;
+            float day_thr = dn_day_trigger(night_baseline);
             if (cur == DN_DAY) {
                 if (tg > dn->total_gain_night_threshold) target = DN_NIGHT;
             } else if (cur == DN_NIGHT) {
@@ -673,6 +767,7 @@ static void *dn_thread(void *arg)
                 /* (re)arm the adaptive baseline: sample it a while after we
                  * enter night, once the IR LEDs have settled; clear on day */
                 night_baseline = -1.0f;
+                brighten_since_ms = 0;
                 night_entered_ms = (target == DN_NIGHT) ? now_ms : 0;
                 /* (re)arm the periodic reconfirm probe alongside it, see
                  * night_reconfirm_s doc comment in config.h */
@@ -692,12 +787,29 @@ static void *dn_thread(void *arg)
             ms_now_us() / 1000 - night_entered_ms >=      /* monotonic (M12) */
                 (int64_t)dn->baseline_delay_s * 1000) {
             night_baseline = tg;
+            baseline_logged = tg;
             LOGI(MOD, "night gain baseline = %.0f (day trigger < %d%% = %.0f)",
                  (double)night_baseline, dn->day_gain_pct,
-                 (double)(night_baseline * (float)dn->day_gain_pct / 100.0f));
+                 (double)dn_day_trigger(night_baseline));
+        } else if (cur == DN_NIGHT && night_baseline > 0.0f && tg > night_baseline) {
+            /* upward-only EMA drift: a baseline that was sampled during a
+             * lighting transition (unrepresentatively LOW) self-corrects
+             * toward the true darkness level within about a minute, while a
+             * few-second transient barely moves it (see the hardening
+             * comment above DN_BRIGHTEN_CONFIRM_MS). Downward drift is
+             * deliberately absent - falling gain is what the day trigger
+             * detects. Log at INFO only on a meaningful (>=25%) rise. */
+            night_baseline += (tg - night_baseline) * DN_BASELINE_ALPHA;
+            if (baseline_logged > 0.0f && night_baseline >= baseline_logged * 1.25f) {
+                baseline_logged = night_baseline;
+                LOGI(MOD, "night gain baseline drifted up to %.0f "
+                          "(day trigger < %d%% = %.0f)",
+                     (double)night_baseline, dn->day_gain_pct,
+                     (double)dn_day_trigger(night_baseline));
+            }
         }
 
-        dn_status_update(b, tg, luma, cur);
+        dn_status_update(b, tg, luma, cur, night_baseline);
         dn_sleep(interval);
     }
     LOGI(MOD, "detection thread stopped");
@@ -725,21 +837,26 @@ void daynight_stop(void)
 
 /* see daynight.h: latest measurement for GET /control */
 void daynight_get_status(int *enabled, int *mode,
-                         float *brightness, float *total_gain, float *ae_luma)
+                         float *brightness, float *total_gain, float *ae_luma,
+                         float *night_baseline, float *day_trigger)
 {
     pthread_mutex_lock(&g_st_mu);
     float b  = g_st_brightness;
     float tg = g_st_gain;
     float lu = g_st_luma;
     int   m  = g_st_mode;
+    float nb = g_st_baseline;
+    float dt = g_st_daytrig;
     pthread_mutex_unlock(&g_st_mu);
     if (m == DN_UNKNOWN)   /* manual mode / before the first auto switch */
         m = g_cfg.image.running_mode ? DN_NIGHT : DN_DAY;
-    if (enabled)    *enabled    = g_cfg.daynight.enabled ? 1 : 0;
-    if (mode)       *mode       = m;
-    if (brightness) *brightness = b;
-    if (total_gain) *total_gain = tg;
-    if (ae_luma)    *ae_luma    = lu;
+    if (enabled)        *enabled        = g_cfg.daynight.enabled ? 1 : 0;
+    if (mode)           *mode           = m;
+    if (brightness)     *brightness     = b;
+    if (total_gain)     *total_gain     = tg;
+    if (ae_luma)        *ae_luma        = lu;
+    if (night_baseline) *night_baseline = nb;
+    if (day_trigger)    *day_trigger    = dt;
 }
 
 /* see daynight.h: today's computed sunrise/sunset for the configured
@@ -768,13 +885,16 @@ int daynight_sun_status(char *sr_hhmm, char *ss_hhmm, size_t cap)
  * measurement -> brightness/gain unknown, mode from the persisted/live ISP
  * running mode */
 void daynight_get_status(int *enabled, int *mode,
-                         float *brightness, float *total_gain, float *ae_luma)
+                         float *brightness, float *total_gain, float *ae_luma,
+                         float *night_baseline, float *day_trigger)
 {
-    if (enabled)    *enabled    = 0;
-    if (mode)       *mode       = g_cfg.image.running_mode ? 1 : 0;
-    if (brightness) *brightness = -1.0f;
-    if (total_gain) *total_gain = -1.0f;
-    if (ae_luma)    *ae_luma    = -1.0f;
+    if (enabled)        *enabled        = 0;
+    if (mode)           *mode           = g_cfg.image.running_mode ? 1 : 0;
+    if (brightness)     *brightness     = -1.0f;
+    if (total_gain)     *total_gain     = -1.0f;
+    if (ae_luma)        *ae_luma        = -1.0f;
+    if (night_baseline) *night_baseline = -1.0f;
+    if (day_trigger)    *day_trigger    = -1.0f;
 }
 
 int daynight_sun_status(char *sr_hhmm, char *ss_hhmm, size_t cap)

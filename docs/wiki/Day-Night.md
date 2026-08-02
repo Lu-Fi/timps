@@ -84,6 +84,28 @@ thingino's `daynightd` semantics.
   IR-illumination variance across different scenes rather than relying on
   one fixed number for every camera. `day_gain_pct=0` disables the
   adaptive baseline entirely.
+
+  Three hardenings (added 2026-08-02 after two real stuck-in-night
+  incidents in one evening — a basement whose single utility light only
+  pushed gain to 65% of a cleanly-sampled baseline, and a kids' room
+  whose baseline was sampled mid-lighting-transition):
+  - the computed trigger is **floored** at `total_gain_day_threshold` —
+    the adaptive bar can never be stricter than the calibrated
+    "definitely day" level;
+  - while night lasts the baseline **drifts upward** (small per-tick EMA
+    step) toward any higher gain, so an unrepresentatively-low sample
+    self-corrects to the true darkness level within about a minute,
+    while a brief transient barely moves it (downward drift is
+    deliberately absent — falling gain is what the day trigger detects);
+  - a **sustained-brightening probe**: gain holding below the halfway
+    point between `day_gain_pct`% and 100% of the baseline for a minute
+    (a real light came on, but not enough to cross the strict bar) fires
+    the same day-pipeline probe as the periodic reconfirm below, gated
+    on the `transition_s` dwell so a probe that reverts cannot flap.
+
+  The baseline currently in effect and the resulting trigger are
+  reported read-only as `night_baseline` / `day_trigger` in the
+  `GET /control` `"daynight"` object (`-1` = none / not in night).
 - The gap between the two fixed thresholds (300..3000 by default) **is**
   the hysteresis dead-zone for this mode — no separate averaging is
   applied.
@@ -258,7 +280,7 @@ the actual fix.
 | `POST /control {"daynight":{"enabled":false}}` | Switches to manual mode; the thread keeps sampling for status but stops forcing switches. |
 | `POST /control {"daynight":{"mode":"time",...}}` | Switches decision source; validated against `sensor`/`time`/`sun` before being applied. |
 | `POST /control {"image":{"running_mode":1}}` | Manually forces the ISP mode (what the board switch script itself calls). Re-posting the *same* value still re-drives the ISP (see [HTTP /control API Reference](HTTP-Control-API.md)) — necessary precisely because of the latch quirk above. |
-| `GET /control` `"daynight"` object | Read-only status: `enabled`, `mode` (0 day/1 night), `brightness` (%), `total_gain` (IMP `[24.8]` linear), `ae_luma`, the configured thresholds, and — always, regardless of active mode — today's computed `sun_computed_sunrise`/`sun_computed_sunset`. |
+| `GET /control` `"daynight"` object | Read-only status: `enabled`, `mode` (0 day/1 night), `brightness` (%), `total_gain` (IMP `[24.8]` linear), `ae_luma`, `night_baseline`/`day_trigger` (the adaptive baseline and effective night→day trigger in effect, `-1` = none), the configured thresholds, and — always, regardless of active mode — today's computed `sun_computed_sunrise`/`sun_computed_sunset`. |
 | `GET /events?stream=daynight` | Pushes the same status object whenever mode flips, brightness moves ≥1%, or gain moves ≥5% relative (or ≥8 absolute near zero) — see [HTTP /control API Reference](HTTP-Control-API.md#event-types). |
 
 See [Configuration Reference](Configuration-Reference.md#daynight--automatic-daynight)

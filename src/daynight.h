@@ -52,9 +52,16 @@ void daynight_stop(void);
  *               the isp-m0 gain fields (log2 units, 32 = 2x); -1 = unknown
  *   ae_luma     ISP AE average luminance (raptor's ae_luma), a secondary
  *               photosensing metric; -1 when the SoC/build has no GetAeLuma
+ *   night_baseline  the adaptive night gain baseline currently in effect
+ *               (sampled after baseline_delay_s in night, then drifting up
+ *               toward any higher stable night gain); -1 = none sampled
+ *   day_trigger the effective night->day gain trigger derived from it
+ *               (day_gain_pct% of the baseline, floored at
+ *               total_gain_day_threshold); -1 when not in night mode
  * NULL pointers are allowed for outputs the caller does not need. */
 void daynight_get_status(int *enabled, int *mode,
-                         float *brightness, float *total_gain, float *ae_luma);
+                         float *brightness, float *total_gain, float *ae_luma,
+                         float *night_baseline, float *day_trigger);
 
 /* Today's computed sunrise/sunset for the configured daynight.sun_* location
  * and offsets, formatted as local "HH:MM" into sr_hhmm/ss_hhmm (either may be
