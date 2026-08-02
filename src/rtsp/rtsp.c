@@ -1181,10 +1181,24 @@ static void stream_loop(session *s)
          * from the peer is the natural "still listening" signal for clients
          * that keep RTCP running but skip RTSP keepalives. Contents are not
          * parsed; a datagram from the peer's address is proof enough. */
-        if (!s->tcp) {
+        /* A TCP session carrying video/audio relies on SO_SNDTIMEO on its
+         * media writes to notice a dead peer, so it is normally exempt from
+         * idle reaping. A TCP session that SETUP *only* the backchannel never
+         * sends any server->client media (it only receives audio from the
+         * client), so that timeout never fires: a silently-dead client would
+         * pin one of RTSP_MAX_CLIENTS slots forever. Subject that session
+         * shape to the same idle reaping as UDP sessions - its last_act_us is
+         * already refreshed by control-channel reads, including interleaved
+         * backchannel RTP. */
+        int reap_check = !s->tcp;
+#ifdef USE_BACKCHANNEL
+        reap_check = reap_check ||
+            (s->tcp && s->have_bc && !s->have_video && !s->have_audio);
+#endif
+        if (reap_check) {
             for (int t = 0; t < 2; t++) {
                 int rfd = t ? s->a_udp[1] : s->v_udp[1];
-                if (rfd < 0) continue;
+                if (rfd < 0) continue;   /* -1 for TCP sessions: no-op there */
                 uint8_t rr[512];
                 struct sockaddr_in from; socklen_t fl = sizeof from;
                 while (recvfrom(rfd, rr, sizeof rr, MSG_DONTWAIT,
@@ -1196,7 +1210,7 @@ static void stream_loop(session *s)
             }
             if (now - last_act_us >
                 (int64_t)RTSP_SESSION_TIMEOUT_S * 2 * 1000000) {
-                LOGW(MOD,"session=%s idle >%ds (UDP client gone without "
+                LOGW(MOD,"session=%s idle >%ds (client gone without "
                      "TEARDOWN), reaping", s->session, RTSP_SESSION_TIMEOUT_S*2);
                 break;
             }
