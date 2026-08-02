@@ -210,6 +210,20 @@ static void timps_apply_setting(ctrl_changes *ch, const char *key, const char *r
         return;
     }
 
+    /* L1: motion.sensitivity is quantized to the SDK's 0..4 range (v*4/255 in
+     * imp_motion.c) before it reaches IVS, so a raw change that maps to the SAME
+     * level (e.g. 128->129) has zero effect on detection. The change-detection
+     * above only skips when the RAW values match; compare the MAPPED values too
+     * and, when they match, skip the expensive IVS grid rebuild (deferred via
+     * M2's g_motion_resync_pending - never flagged because hub_control() is
+     * skipped, so hub_control_commit() finds nothing to do) and the flash
+     * persist. Keep the mapping in sync with imp_motion.c. */
+    if (known && !strcmp(key,"motion.sensitivity") &&
+        atoi(before)*4/255 == atoi(after)*4/255){
+        LOGD(MOD,"unchanged %s = %s (same effective sensitivity level, skipped)", key, val);
+        return;
+    }
+
     hub_control(key, val);               /* live via the HAL */
     /* echo to every other /events subscriber ("config" SSE event) so other
      * open WebUI tabs/clients reflect this change instead of only seeing it
