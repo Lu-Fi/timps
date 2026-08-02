@@ -436,8 +436,12 @@ static void gen_sdp(session *s, const ms_config *c, int vchn, char *sdp, int sdp
 #ifdef USE_BACKCHANNEL
     /* ONVIF audio backchannel (client -> speaker). Only advertised when the
      * client asked for it via `Require: www.onvif.org/ver20/backchannel` and
-     * /bin/iac is present. a=sendonly + own trackID mirror prudynt/live555. */
-    if (want_bc && c->audio.backchannel && bc_available()){
+     * the backchannel was enabled at boot. a=sendonly + own trackID mirror
+     * prudynt/live555. bc_available() reflects the boot-time state (not the
+     * live audio.backchannel value): the key is restart-only, so a /control
+     * enable must not advertise a pipeline still running on default codec/rate
+     * until restart. */
+    if (want_bc && bc_available()){
         int pt = bc_payload_type(), clk = bc_clock_rate();
         char fmtp[192]; fmtp[0]=0;
         if (pt==97){   /* AAC (mpeg4-generic): config= is a required RFC3640 param */
@@ -580,7 +584,7 @@ static int require_unsupported(session *s, const char *req,
     if (!rq) { unsup[0]=0; return 0; }        /* no Require: -> nothing to do */
     int bc_ok = 0;
 #ifdef USE_BACKCHANNEL
-    bc_ok = s->cfg->audio.backchannel && bc_available();
+    bc_ok = bc_available();       /* boot-time state; audio.backchannel is restart-only */
 #endif
     /* isolate the header value (up to end-of-line) so we can split it */
     char list[256]; size_t li=0;
@@ -714,7 +718,7 @@ static int handle_request(session *s, char *req)
 
 #ifdef USE_BACKCHANNEL
         if (strstr(path,"trackID=2")){        /* ONVIF audio backchannel (we receive) */
-            if (!s->cfg->audio.backchannel || !bc_available()){
+            if (!bc_available()){    /* boot-time state; audio.backchannel is restart-only */
                 /* refuse just this track, keep the connection (video/audio may
                  * already be SETUP on it) */
                 send_err(s, cseq, 406, "Not Acceptable", NULL); return 0;
