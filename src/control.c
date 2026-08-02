@@ -30,6 +30,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <ctype.h>
+#include <math.h>
 #ifdef USE_PLAY
 #include <dirent.h>
 #include <sys/stat.h>
@@ -754,6 +755,11 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
                           float brightness, float total_gain, float ae_luma)
 {
     const ms_daynight_cfg *d = &g_cfg.daynight;
+    /* defence in depth: this runtime-computed gain is printed with %.0f, which
+     * emits the literal "inf"/"nan" (invalid JSON) for a non-finite value.
+     * daynight.c already rails its own computation, but guard here too since
+     * this value arrives from several call sites. -1.0f is the "unknown" value. */
+    if (!isfinite(total_gain)) total_gain = -1.0f;
     const char *dnmode = d->mode==DN_MODE_TIME ? "time" :
                          d->mode==DN_MODE_SUN  ? "sun"  : "sensor";
     /* computed sunrise/sunset feedback for the SUN mode (local HH:MM) so the
