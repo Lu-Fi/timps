@@ -830,7 +830,16 @@ int control_get_json(char *buf, size_t cap)
                 int is_opus = 0;   /* can't decode it - don't offer a sound that always fails */
 #endif
                 if (!is_opus && !is_wav && !is_ulaw) continue;
-                if (strchr(nm,'"') || strchr(nm,'\\')) continue;
+                /* skip names that can't be spliced raw into a JSON string: a
+                 * quote/backslash breaks the string, and any control byte
+                 * (< 0x20 - a literal newline in a filename is legal on Linux)
+                 * is invalid inside a JSON string per RFC 8259. Skipping keeps
+                 * this list emitted-raw (like the fixed caps.* lists) rather
+                 * than introducing an escaping pass just for filenames. */
+                int bad = 0;
+                for (const char *q = nm; *q; q++)
+                    if (*q=='"' || *q=='\\' || (unsigned char)*q < 0x20){ bad = 1; break; }
+                if (bad) continue;
                 char pp[300]; struct stat st;
                 snprintf(pp,sizeof pp,"%s/%s",SOUNDS_DIR,nm);
                 if (stat(pp,&st)!=0 || !S_ISREG(st.st_mode)) continue;
