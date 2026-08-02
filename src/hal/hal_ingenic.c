@@ -1442,21 +1442,48 @@ static void sw_rot_teardown(vchan *vc)
     vc->sw_rot=0;
 }
 
+/* SDK-safe envelope for the single-core software rotate path (substream class).
+ * Beyond this the per-frame NV12 transpose + software encode overwhelms the
+ * lone MIPS core AND (observed on T23 libimp 1.3.0) IMP_Encoder_YuvInit itself
+ * refuses the oversized geometry and fails - which used to abort the entire
+ * multi-stream pipeline bring-up and take the whole daemon down. Both the
+ * long-standing CPU-HEAVY warning and the enforcement below share these, so the
+ * numbers cited in the warning text and the numbers actually enforced can never
+ * drift apart. Values match that warning: <=704x576, <=15fps. */
+#define MS_SW_ROT_MAX_PIXELS (704L*576L)
+#define MS_SW_ROT_MAX_FPS    15
+/* sw_rot_start return code: not success and not a hard failure, but "rotation
+ * refused/failed for THIS stream - caller should bring it up UNROTATED". Kept
+ * distinct from -1 (unrecoverable) so unrelated streams and this one (minus the
+ * rotation) still come up instead of the whole pipeline aborting. */
+#define SW_ROT_FALLBACK 1
+
 /* bring up one 90/270 stream on the unbound SW-rotate path. On failure all
  * partial state is unwound here and no g_v slot is consumed (the caller's
- * generic fail path then only has to deal with fully-recorded slots). */
+ * generic fail path then only has to deal with fully-recorded slots).
+ * Returns 0 on success, SW_ROT_FALLBACK (>0) when the caller should retry this
+ * stream unrotated, or -1 on an unrecoverable failure. */
 static int sw_rot_start(const ms_config *cfg, int i)
 {
     const ms_vstream_cfg *v = &cfg->video[i];
     int chn = v->imp_chn;
     int ew, eh; ms_vstream_eff_dims(v, &ew, &eh);   /* post-rotation dims */
-    /* CAPS-GATE (warn, don't refuse - the USE_SW_ROTATE build knob is the
-     * operator's explicit opt-in to the CPU cost): beyond substream class the
-     * per-frame transpose + software encode feed will eat the single core. */
-    if ((long)ew*eh > 704L*576L || v->fps > 15)
+    /* CAPS-GATE. The USE_SW_ROTATE build knob is the operator's opt-in to the
+     * CPU cost, but beyond the substream-class envelope the T23 1.3.0
+     * IMP_Encoder_YuvInit REFUSES the geometry and fails - and that failure used
+     * to tear down the whole daemon. So: keep the accurate CPU-HEAVY warning,
+     * then REFUSE the rotation (no IMP state has been created yet at this point)
+     * and tell the caller to bring this stream up UNROTATED rather than march
+     * into a YuvInit call known to fail. */
+    if ((long)ew*eh > MS_SW_ROT_MAX_PIXELS || v->fps > MS_SW_ROT_MAX_FPS){
         LOGW(MOD,"video%d: SW rotate at %dx%d@%dfps is CPU-HEAVY on this SoC - "
                  "strongly consider a substream-class setting (<=704x576, <=15fps)",
              i, ew, eh, v->fps);
+        LOGW(MOD,"video%d: refusing SW rotate at %dx%d@%dfps (exceeds safe "
+                 "envelope <=704x576 <=15fps) - stream will run UNROTATED",
+             i, ew, eh, v->fps);
+        return SW_ROT_FALLBACK;
+    }
     if ((v->width|v->height)&1){
         LOGE(MOD,"video%d: SW rotate needs even dims (got %dx%d)",
              i, v->width, v->height);
@@ -2397,12 +2424,22 @@ static int ing_start(const ms_config *cfg)
         if (!cfg->video[i].enabled) continue;
         const ms_vstream_cfg *v=&cfg->video[i];
 #ifdef ROT_HAS_SW_90
+        ms_vstream_cfg lv;   /* local UNROTATED fallback copy (cfg is const) */
         /* T23 + USE_SW_ROTATE: 90/270 streams take the unbound SW-rotate path
          * (no encoder group, no binds - see sw_rot_start). Non-rotated (0)
          * streams stay on the normal bound pipeline below. */
         if (v->rotation==90 || v->rotation==270){
-            if (sw_rot_start(cfg,i)!=0) goto fail;
-            continue;
+            int r = sw_rot_start(cfg,i);
+            if (r==0) continue;         /* sw-rotate stream up */
+            if (r<0)  goto fail;        /* unrecoverable */
+            /* r==SW_ROT_FALLBACK: rotation refused (envelope) or its init
+             * failed for THIS stream only. Do NOT abort the whole pipeline -
+             * fall through and bring this one stream up on the normal bound
+             * path UNROTATED. cfg is const, so retarget v at a local copy with
+             * rotation zeroed (in-memory only, does not persist to the file).
+             * No IMP state survives sw_rot_start's fallback returns, so the
+             * bound path below starts clean. */
+            lv = cfg->video[i]; lv.rotation = 0; v = &lv;
         }
 #endif
         int chn=v->imp_chn, grp=v->imp_chn;

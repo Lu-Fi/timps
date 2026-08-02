@@ -61,7 +61,7 @@ touching hub internals directly.
    codec/fps from `g_cfg_boot`, not the live `g_cfg`. The one documented
    exception is `video.N.rtsp_path`, which is read live because an RTSP
    `DESCRIBE` re-matches the request path on every request — see
-   [Configuration Reference](Configuration-Reference.md#video-n--per-stream-encoder-settings).
+   [Configuration Reference](Configuration-Reference.md#videon--per-stream-encoder-settings).
 5. Seed `rand()` from `/dev/urandom` (non-secret UDP-port-pick users only —
    security-sensitive randomness, like RTSP nonces, goes straight to
    `/dev/urandom` in `auth.c`).

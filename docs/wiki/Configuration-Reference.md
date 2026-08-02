@@ -139,6 +139,7 @@ on a running capture channel).
 | `audio.backchannel` | bool | 0 | 0/1 | Restart-only | Enable the ONVIF two-way audio backchannel (`USE_BACKCHANNEL` build). |
 | `audio.backchannel_codec` | enum | `pcmu` (0) | `pcmu`(0)\|`pcma`(1)\|`aac`(2) | Restart-only | Advertised/accepted backchannel codec. |
 | `audio.backchannel_rate` | int | 16000 | 8000–48000 | Restart-only | Speaker sample rate fed by the backchannel decoder. |
+| `audio.aec` | bool | 0 | 0/1 | **Live** (only if `USE_PLAY` or `USE_BACKCHANNEL` compiled in) | Opt-in Acoustic Echo Cancellation (`IMP_AI_EnableAec`) for the backchannel — subtracts the speaker output from the mic capture. Engages only once both AI capture and AO output are actually live, applied at the next AO open (same timing contract as `spk_volume`/`spk_gain`). Off by default since AEC quality/latency varies per SoC/mic/speaker pairing. |
 
 See [Audio](Audio.md) for the backchannel/play-queue feature details.
 
@@ -347,7 +348,7 @@ config file.
 | Key | Type | Default | Range | Live? | Description |
 | --- | --- | --- | --- | --- | --- |
 | `daynight.enabled` | bool | 1 | 0/1 | **Live** | Auto-detection on/off; `0` = manual (thread still samples but forces nothing). |
-| `daynight.mode` | enum | `sensor` | `sensor`\|`time`\|`sun` | **Live** | Decision source — see [Day/Night](Day-Night.md#override-modes). |
+| `daynight.mode` | enum | `sensor` | `sensor`\|`time`\|`sun` | **Live** | Decision source — see [Day/Night](Day-Night.md#override-modes-time--sun). |
 | `daynight.time_night_start` | string(6) | `""` | `"HH:MM"` | **Live** | `time` mode: local time to switch to night. |
 | `daynight.time_day_start` | string(6) | `""` | `"HH:MM"` | **Live** | `time` mode: local time to switch to day. |
 | `daynight.sun_latitude` | float | 0.0 | -90–90 | **Live** | `sun` mode: latitude, degrees. |
