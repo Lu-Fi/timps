@@ -83,7 +83,9 @@ int  control_daynight_json(char *buf, size_t cap, int enabled, int mode,
  * outline_color; the sets are dumped per stream as "osd0"/"osd1" and the
  * master "enabled" needs a restart); "restart" lists the sections (video,
  * sensor) whose keys are persist-only and need a daemon restart.
- * Returns the number of bytes written (excluding the NUL). */
+ * Returns the number of bytes written (excluding the NUL), or -1 if the output
+ * did not fit in cap (the buffer holds a truncated, INVALID-JSON prefix - the
+ * caller must not serve it as a successful response). */
 int  control_get_json(char *buf, size_t cap);
 
 #endif
