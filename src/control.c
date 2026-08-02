@@ -24,6 +24,7 @@
 #include "rotate_caps.h"   /* ROT_HAS_90/ROT_HAS_HW_I2D (rotation caps + eff dims) */
 #include "hal/imp_motion.h"
 #include "hal/imp_osd.h"
+#include "hal/hal.h"       /* hal_enc_stats: read-only encoder telemetry */
 #include "record.h"
 #include "timelapse.h"
 #include <stdio.h>
@@ -1128,6 +1129,29 @@ int control_get_json(char *buf, size_t cap)
         APP(",\"motion\":");
         int _mn = control_motion_json(o<cap?buf+o:buf, o<cap?cap-o:0, &mst);
         if (_mn>0) o += (size_t)_mn;
+    }
+    {   /* Item-2: read-only per-channel encoder telemetry (IMP_Encoder_Query).
+         * Only channels whose query succeeds are emitted - a failed/absent
+         * channel (disabled stream, SW-rotate path, host sim) is OMITTED rather
+         * than reported as zeros. ave_bitrate appears only on T31 once frames
+         * have flowed. nemit drives the inter-channel comma. */
+        APP(",\"encoder\":{");
+        int nemit = 0;
+        for (int i=0;i<MS_MAX_VSTREAM;i++){
+            hal_enc_stat es;
+            if (hal_enc_stats(c->video[i].imp_chn, &es) != 0) continue;
+            APP("%s\"%d\":{\"registered\":%u,\"left_pics\":%u,"
+                "\"left_stream_bytes\":%u,\"left_stream_frames\":%u,"
+                "\"cur_packs\":%u,\"work_done\":%u",
+                nemit?",":"", i, es.registered, es.left_pics,
+                es.left_stream_bytes, es.left_stream_frames,
+                es.cur_packs, es.work_done);
+            if (es.ave_bitrate >= 0.0)
+                APP(",\"ave_bitrate\":%.1f", es.ave_bitrate);
+            APP("}");
+            nemit++;
+        }
+        APP("}");
     }
     {   /* local recording: live status + the persisted config keys, so the
          * WebUI record page can read the current settings back (dir/name/
