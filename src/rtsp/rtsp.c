@@ -336,9 +336,14 @@ static void extract_path(const char *req, char *out, int outsz)
     char tmp[512]; int n = (int)(end-url);
     if (n >= (int)sizeof tmp) n = sizeof(tmp)-1;
     memcpy(tmp, url, n); tmp[n]=0;
-    /* strip scheme://host[:port] */
+    /* strip scheme://host[:port] - accept both rtsp:// and the TLS listener's
+     * rtsps:// (RFC 7826 C.1), else a DESCRIBE over port 322 keeps the whole
+     * "rtsps://host:port/chN" URL as its "path", find_video_by_path() finds no
+     * prefix match and silently falls back to the first stream (wrong sub-/
+     * mainstream). host:port skipping is identical - only the scheme differs. */
     const char *p = tmp;
-    if (!strncasecmp(p,"rtsp://",7)){ p+=7; const char *slash=strchr(p,'/'); p = slash?slash:""; }
+    if (!strncasecmp(p,"rtsps://",8)){ p+=8; const char *slash=strchr(p,'/'); p = slash?slash:""; }
+    else if (!strncasecmp(p,"rtsp://",7)){ p+=7; const char *slash=strchr(p,'/'); p = slash?slash:""; }
     strncpy(out, p, outsz-1); out[outsz-1]=0;
 }
 
