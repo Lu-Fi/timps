@@ -37,9 +37,11 @@ USE_PLAY      ?= 0          # 1 = /run/timps/audio_out play-FIFO queue (system s
 USE_PLAY_OPUS ?= 0          # 1 = also decode Ogg-Opus in the play queue (needs opusfile); implies USE_PLAY
 OPUSLIB       ?= -lopusfile -lopus -logg  # link flags for opusfile (USE_PLAY_OPUS)
 OPUS_INC      ?=            # optional -I dir for <opus/opusfile.h> (USE_PLAY_OPUS)
-USE_ROTATE    ?= 0          # 1 = image rotation feature (180 on all SoCs; HW 90/270 on
-                            #     T40/T41 + T31). Default off = no ROT_HAS_* macros defined,
-                            #     so all rotation code compiles out (byte-identical build).
+USE_ROTATE    ?= 0          # 1 = image rotation feature (real 90/270 transpose: HW on
+                            #     T40/T41 + T31, opt-in SW on T23). 180 is NOT a rotation
+                            #     value (use image.hflip+image.vflip). Default off = no
+                            #     ROT_HAS_* macros defined, so all rotation code compiles
+                            #     out (byte-identical build).
 USE_SW_ROTATE ?= 0          # 1 = opt-in software 90/270 rotation on T23 (CPU transpose +
                             #     unbound YuvEncode; no HW OSD/privacy on rotated streams).
                             #     Only effective with PLATFORM=T23; default off = byte-identical build.
