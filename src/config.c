@@ -230,7 +230,7 @@ void config_defaults(ms_config *c)
     c->audio.agc_target_dbfs=10; c->audio.agc_compression_db=0;
     c->audio.mute=0;                                       /* mic live */
     c->audio.force_stereo=0;
-    c->audio.spk_enabled=0; c->audio.spk_volume=80; c->audio.spk_gain=25;
+    c->audio.spk_enabled=1; c->audio.spk_volume=80; c->audio.spk_gain=25;
     c->audio.backchannel=0; c->audio.backchannel_codec=0; c->audio.backchannel_rate=16000;
 
     c->jpeg.enabled=0; c->jpeg.width=640; c->jpeg.height=360;

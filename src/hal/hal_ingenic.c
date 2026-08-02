@@ -2187,7 +2187,9 @@ static void ing_control(const char *key, const char *val)
          * applied now if a play/backchannel session holds the speaker, and
          * re-applied from the config at every AO open (speaker.c ao_ensure),
          * so they also become the default for the next session. spk_enabled is
-         * config-only. Without an AO pipeline compiled in they just persist. */
+         * the master AO gate, also read live in ao_ensure() (0 = keep the AO
+         * closed, no output). Without an AO pipeline compiled in they just
+         * persist. */
         if (!strncmp(k,"spk_",4)){
 #if defined(USE_BACKCHANNEL) || defined(USE_PLAY)
             if      (!strcmp(k,"spk_volume")) speaker_set_volume(g_hcfg->audio.spk_volume);
