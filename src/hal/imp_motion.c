@@ -409,6 +409,47 @@ void motion_get_status(ms_motion_status *st)
     st->available = 1;
 }
 
+/* Live sensitivity update WITHOUT a stop/destroy/recreate cycle. Valid only
+ * when the IVS channel is already running and ONLY the sensitivity changed -
+ * the caller (hal_ingenic.c control-commit) guarantees geometry, monitor_stream
+ * and enabled are stable via its resync-flag classification, and a full rebuild
+ * always supersedes this fast path. Reads the running channel's move params,
+ * rewrites every configured ROI's sense[] entry to the newly-mapped 0..4 level
+ * (same v*4/255 mapping used at create time), and pushes them back atomically
+ * via IMP_IVS_SetParam.
+ *
+ * Returns 0 on success; <0 on ANY failure (channel not running, or Get/SetParam
+ * reported nonzero) so the caller falls back to the full rebuild and the channel
+ * is never left in a partially-updated state. */
+int imp_motion_set_sensitivity(const ms_config *cfg)
+{
+    if (!g_run) return -1;                 /* nothing live to update in place */
+
+    /* map the 0..255 UI value to IMP's 0..4, same as imp_motion_start */
+    int sense = cfg->motion.sensitivity * 4 / 255;
+    if (sense < 0) sense = 0;
+    if (sense > 4) sense = 4;
+
+    IMP_IVS_MoveParam mp;
+    if (IMP_IVS_GetParam(g_chn, &mp) != 0){
+        LOGW(MOD,"IMP_IVS_GetParam failed - falling back to full IVS rebuild");
+        return -1;
+    }
+    int n = mp.roiRectCnt;
+    if (n < 0) n = 0;
+    if (n > MOTION_MAX_CELLS) n = MOTION_MAX_CELLS;   /* defensive clamp */
+    for (int i = 0; i < n; i++) mp.sense[i] = sense;
+    if (IMP_IVS_SetParam(g_chn, &mp) != 0){
+        LOGW(MOD,"IMP_IVS_SetParam failed - falling back to full IVS rebuild");
+        return -1;
+    }
+    pthread_mutex_lock(&g_st_lock);
+    g_st.sensitivity = cfg->motion.sensitivity;
+    pthread_mutex_unlock(&g_st_lock);
+    LOGI(MOD,"motion sensitivity updated live to %d/4 (%d ROIs, no rebuild)", sense, n);
+    return 0;
+}
+
 #else /* !HAL_INGENIC || !MOTION_AVAILABLE: no-op + status stub */
 
 int imp_motion_start(const ms_config *cfg)
@@ -420,6 +461,7 @@ int imp_motion_start(const ms_config *cfg)
     return -1;                       /* never "running": caller pins nothing */
 }
 void imp_motion_stop(void){}
+int imp_motion_set_sensitivity(const ms_config *cfg){ (void)cfg; return -1; }
 
 void motion_get_status(ms_motion_status *st)
 {

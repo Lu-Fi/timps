@@ -30,6 +30,11 @@ typedef struct {
 
 int  imp_motion_start(const ms_config *cfg);   /* 0 ok, <0 not started */
 void imp_motion_stop(void);
+/* Live per-ROI sensitivity update on the running IVS channel via
+ * IMP_IVS_SetParam - no stop/destroy/recreate. Returns 0 on success, <0 when
+ * the caller must fall back to a full rebuild (channel not running, or the SDK
+ * Get/SetParam path failed). */
+int  imp_motion_set_sensitivity(const ms_config *cfg);
 /* thread-safe snapshot of the latest detection state (always linkable:
  * without the move API a stub answers available:0 / empty grid) */
 void motion_get_status(ms_motion_status *st);
