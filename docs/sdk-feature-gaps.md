@@ -2,6 +2,16 @@
 
 Datum: 2026-08-02. Von Fable erstellt: unabhängiger Abgleich aller `IMP_*`-Deklarationen in den vendorten SDK-Headern (`include/<SoC>/<Version>/<Sprache>/imp/*.h`, Submodul `gtxaspec/ingenic-headers`) gegen die tatsächlich in `src/` aufgerufenen IMP-Funktionen — über **alle 9 von timps unterstützten Plattformen** (T10, T20, T21, T23, T30, T31, T40, T41, C100), nicht nur T31.
 
+## Umsetzungsstatus (Priorisierungs-Pass 2026-08-02)
+
+Ein Feasibility-Pass hat aus dieser Liste **genau 3** Funde als jetzt sicher umsetzbar ausgewählt und implementiert (alles Übrige bleibt bewusst zurückgestellt):
+
+- **#3 — `IMP_IVS_SetParam`/`GetParam` (Live-Sensitivity):** ✅ IMPLEMENTIERT in `ef821a0`. Reine `motion.sensitivity`-Änderungen aktualisieren das laufende IVS-`sense[]` in-place statt Stop/Destroy/Recreate; bei jedem Fehlschlag (Get/SetParam nonzero, Kanal nicht aktiv) Fallback auf den bestehenden vollen Rebuild.
+- **#7a/#7b — Encoder-Telemetrie:** ✅ IMPLEMENTIERT in `98edd6a`. `IMP_Encoder_Query` (alle 9) als read-only `"encoder"`-Objekt in `GET /control`; auf T31 zusätzlich `IMP_Encoder_GetChnAveBitrate` (im Encode-Thread gecached, da die API einen frisch geholten Stream braucht — kein Standalone-Query). `GetChnEvalInfo` bleibt ungenutzt.
+- **#2 — `IMP_AI_EnableAec` (Backchannel-AEC):** ✅ IMPLEMENTIERT in `b5ed25d`. Neuer Opt-in-Config-Key `audio.aec` (Default OFF); wird beim nächsten AO-Open aktiviert, wenn AI und AO beide laufen. Nur der einfache `IMP_AI_EnableAec`-Pfad, nicht die `EnableAecRefFrame`-Variante.
+
+Der Rest der Liste (v.a. #1 Live-Encoder-Reconfig, #4 AE-Zonen, #5 restliche Telemetrie, #6 Belichtung, N1–N4) ist explizit NICHT Teil dieses Passes.
+
 ## Methodik
 
 Header-Version pro Plattform, exakt wie in `Makefile` (Zeilen ~54-81) gepinnt:
@@ -31,14 +41,14 @@ Jede Feature-Idee unten muss also ggf. die Zwei-Generationen-Fallunterscheidung 
 | 1a | `SetChnBitRate`/`SetChnGopLength`/`SetChnQpBounds` | ✓ | ✓ | – | – | – | ✓ | ✓ | – |
 | 1b | `SetChnFrmRate` (live fps) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | 1c | `SetChnAttrRcMode` (live rc/bitrate, altes Struct) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | – | ✓ |
-| 2 | `IMP_AI_EnableAec` (+`GetFrameAndRef`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| 3 | `IMP_IVS_SetParam`/`GetParam` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| 2 | `IMP_AI_EnableAec` (+`GetFrameAndRef`) — ✅ `b5ed25d` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| 3 | `IMP_IVS_SetParam`/`GetParam` — ✅ `ef821a0` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
 | 4a | `SetAeWeight` (AE-Zonen-Gewichtung) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓* | ✓* | ✓ |
 | 4b | `AE_SetROI` | ✓ | ✓ | ✓ | ✓ | ✓ | – | – | ✓ |
 | 5 | `SetFrontCrop`/`SetAutoZoom` (ePTZ) | ✓/✓ | ✓/✓ | –/– | ✓/✓ | –/– | –/✓ | –/✓ | –/– |
 | 6 | `SetAe_IT_MAX`/`SetAeMin` (Belichtungs-Obergrenze) | ✓/✓ | ✓/✓ | –/✓ | ✓/✓ | –/– | –/– | –/– | –/– |
-| 7a | `IMP_Encoder_Query` (Buffer/Stream-Stats) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
-| 7b | `GetChnAveBitrate`/`GetChnEvalInfo` | ✓ | – | – | – | – | – | – | – |
+| 7a | `IMP_Encoder_Query` (Buffer/Stream-Stats) — ✅ `98edd6a` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| 7b | `GetChnAveBitrate`/`GetChnEvalInfo` — ✅ `98edd6a` (nur `GetChnAveBitrate`) | ✓ | – | – | – | – | – | – | – |
 | 8 | `SetbufshareChn` | ✓ | ✓ | – | – | – | ✓ | ✓ | – |
 | 9 | `IMP_ISP_WDR_ENABLE` | ✓ | ✓ | – | – | –† | ✓ | ✓ | –† |
 | 10 | `IMP_IVS_CreateBaseMoveInterface` | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
@@ -89,4 +99,4 @@ Jede Feature-Idee unten muss also ggf. die Zwei-Generationen-Fallunterscheidung 
 
 ## Bezug zu bereits umgesetzten Fixes
 
-Die separate Motion-Detection-Tiefenprüfung (M1–M3 + Sensitivity-Dedup) wurde bereits umgesetzt (Commits `0385aca`, `2d9a66d`, `833ab73`, `8b02945`). Finding #3 dieser Liste (`IMP_IVS_SetParam`) würde M2s verbleibendes Rebuild-Problem an der Wurzel lösen (Sensitivity ändern ohne vollen Stop/Destroy/Recreate-Zyklus) — aktuell nur durch Batching gemildert, nicht eliminiert.
+Die separate Motion-Detection-Tiefenprüfung (M1–M3 + Sensitivity-Dedup) wurde bereits umgesetzt (Commits `0385aca`, `2d9a66d`, `833ab73`, `8b02945`). Finding #3 dieser Liste (`IMP_IVS_SetParam`) löst M2s verbleibendes Rebuild-Problem inzwischen an der Wurzel (Sensitivity ändern ohne vollen Stop/Destroy/Recreate-Zyklus) — ✅ umgesetzt in `ef821a0`, mit Fallback auf den Batching-Rebuild bei jedem SDK-Fehlschlag.
