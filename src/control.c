@@ -763,14 +763,17 @@ static const char *const AUD_CAPS[] = {
  * without USE_DAYNIGHT. The configured gain thresholds ride along (from
  * g_cfg) so the photosensing page can load and edit them. */
 int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
-                          float brightness, float total_gain, float ae_luma)
+                          float brightness, float total_gain, float ae_luma,
+                          float night_baseline, float day_trigger)
 {
     const ms_daynight_cfg *d = &g_cfg.daynight;
-    /* defence in depth: this runtime-computed gain is printed with %.0f, which
-     * emits the literal "inf"/"nan" (invalid JSON) for a non-finite value.
-     * daynight.c already rails its own computation, but guard here too since
-     * this value arrives from several call sites. -1.0f is the "unknown" value. */
-    if (!isfinite(total_gain)) total_gain = -1.0f;
+    /* defence in depth: these runtime-computed gains are printed with %.0f,
+     * which emits the literal "inf"/"nan" (invalid JSON) for a non-finite
+     * value. daynight.c already rails its own computation, but guard here too
+     * since these values arrive from several call sites. -1.0f = "unknown". */
+    if (!isfinite(total_gain))     total_gain     = -1.0f;
+    if (!isfinite(night_baseline)) night_baseline = -1.0f;
+    if (!isfinite(day_trigger))    day_trigger    = -1.0f;
     const char *dnmode = d->mode==DN_MODE_TIME ? "time" :
                          d->mode==DN_MODE_SUN  ? "sun"  : "sensor";
     /* computed sunrise/sunset feedback for the SUN mode (local HH:MM) so the
@@ -795,7 +798,9 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
     jesc(tds, etds, sizeof etds);
     return snprintf(buf, cap,
         "{\"enabled\":%d,\"mode\":%d,\"brightness\":%.1f,\"total_gain\":%.0f,"
-        "\"ae_luma\":%.0f,\"total_gain_day_threshold\":%g,"
+        "\"ae_luma\":%.0f,"
+        "\"night_baseline\":%.0f,\"day_trigger\":%.0f,"
+        "\"total_gain_day_threshold\":%g,"
         "\"total_gain_night_threshold\":%g,\"day_gain_pct\":%d,"
         "\"baseline_delay_s\":%d,"
         "\"boot_settle_s\":%d,\"boot_settle_max_s\":%d,"
@@ -806,6 +811,7 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
         "\"sun_sunrise_offset_min\":%d,\"sun_sunset_offset_min\":%d,"
         "\"sun_computed_sunrise\":\"%s\",\"sun_computed_sunset\":\"%s\"}",
         enabled, mode, (double)brightness, (double)total_gain, (double)ae_luma,
+        (double)night_baseline, (double)day_trigger,
         (double)d->total_gain_day_threshold,
         (double)d->total_gain_night_threshold,
         d->day_gain_pct, d->baseline_delay_s,
@@ -1129,10 +1135,13 @@ int control_get_json(char *buf, size_t cap)
          * control_daynight_json above (shared with the /events push) */
         int dn_en = 0, dn_mode = 0;
         float dn_b = -1.0f, dn_tg = -1.0f, dn_lu = -1.0f;
-        daynight_get_status(&dn_en, &dn_mode, &dn_b, &dn_tg, &dn_lu);
+        float dn_nb = -1.0f, dn_dt = -1.0f;
+        daynight_get_status(&dn_en, &dn_mode, &dn_b, &dn_tg, &dn_lu,
+                            &dn_nb, &dn_dt);
         APP(",\"daynight\":");
         int _dn = control_daynight_json(o<cap?buf+o:buf, o<cap?cap-o:0,
-                                        dn_en, dn_mode, dn_b, dn_tg, dn_lu);
+                                        dn_en, dn_mode, dn_b, dn_tg, dn_lu,
+                                        dn_nb, dn_dt);
         if (_dn>0) o += (size_t)_dn;
     }
     {   /* read-only motion status; shape/docs in control_motion_json above

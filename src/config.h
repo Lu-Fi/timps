@@ -209,7 +209,15 @@ typedef struct {
     /* adaptive night baseline (raptor's ric_daynight): after baseline_delay_s in
      * night (IR LEDs settled) the current gain is sampled as the night baseline;
      * day is then triggered when gain < day_gain_pct% of it (relative, robust
-     * against IR flicker) instead of the fixed day_threshold. 0 = disable. */
+     * against IR flicker) instead of the fixed day_threshold. 0 = disable.
+     * Hardened 2026-08-02 after two real stuck-in-night incidents (see the
+     * DN_BRIGHTEN_CONFIRM_MS comment in daynight.c):
+     *  - the trigger is floored at total_gain_day_threshold (never stricter
+     *    than the calibrated "definitely day" level);
+     *  - the baseline drifts UP toward any higher night gain (a sample taken
+     *    during a lighting transition self-corrects to true darkness);
+     *  - gain holding well below baseline but above the strict trigger for
+     *    a minute fires the night-reconfirm day-pipeline probe early. */
     int      day_gain_pct;       /* night->day at this % of the night baseline */
     int      baseline_delay_s;   /* wait this long in night before sampling it */
     /* boot/re-enable AE settle (see daynight.c dn_ae_stable()): a reflashed/

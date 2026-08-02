@@ -357,8 +357,8 @@ config file.
 | `daynight.sun_sunset_offset_min` | int | 0 | -1440–1440 | **Live** | Minutes added to computed sunset before switching to night. |
 | `daynight.total_gain_day_threshold` | float | 300 | 1–1,000,000 | **Live** | `sensor` mode: in night, switch to day when ISP total gain drops below this. |
 | `daynight.total_gain_night_threshold` | float | 3000 | 1–1,000,000 | **Live** | `sensor` mode: in day, switch to night when gain rises above this. |
-| `daynight.day_gain_pct` | int | 60 | 0–100 | **Live** | Adaptive night→day trigger as a percentage of the sampled night baseline gain (`0` disables, falls back to the fixed threshold). |
-| `daynight.baseline_delay_s` | int | 30 | 0–3600 | **Live** | Seconds into night before the adaptive baseline gain is sampled (lets IR LEDs settle). |
+| `daynight.day_gain_pct` | int | 60 | 0–100 | **Live** | Adaptive night→day trigger as a percentage of the sampled night baseline gain (`0` disables, falls back to the fixed threshold). The computed trigger is floored at `total_gain_day_threshold`, and a gain that holds below the halfway point between this percentage and 100% of the baseline for a minute fires the `night_reconfirm_s`-style day-pipeline probe early (recovers rooms whose light source cannot push gain under the strict bar). |
+| `daynight.baseline_delay_s` | int | 30 | 0–3600 | **Live** | Seconds into night before the adaptive baseline gain is sampled (lets IR LEDs settle). While night lasts the baseline also drifts upward toward any higher gain, so a sample taken during a lighting transition self-corrects to the true darkness level. |
 | `daynight.boot_settle_s` | int | 5 | 0–600 | **Live** | Minimum wait after thread start/re-enable before the first gain-based decision is trusted (floor). |
 | `daynight.boot_settle_max_s` | int | 120 | 0–3600 | **Live** | Hard cap on the boot settle wait — `sensor` mode extends past `boot_settle_s` until gain looks stable, but never past this. |
 | `daynight.boot_stable_pct` | int | 20 | 0–100 | **Live** | `sensor` mode: max spread across recent gain readings (as % of their average) to consider AE converged; `0` disables the stability wait (floor-only). |
