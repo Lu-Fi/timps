@@ -28,6 +28,25 @@ int hal_isp_total_gain(uint32_t *gain);
  * *luma on success, <0 when unavailable (other SoCs, sim, ISP down). */
 int hal_isp_ae_luma(uint32_t *luma);
 
+/* Read-only encoder queue/buffer telemetry for one encoder channel, from
+ * IMP_Encoder_Query (IMPEncoderChnStat/CHNStat, present on all 9 platforms).
+ * All counts are instantaneous. On T31, ave_bitrate is additionally filled from
+ * IMP_Encoder_GetChnAveBitrate (T31-exclusive; the raw SDK value, cached by the
+ * encode thread) - on every other platform, and on T31 before the first frame
+ * has flowed, it is left <0 (unavailable). hal_enc_stats() returns 0 and fills
+ * *out on success, <0 when the query failed or the backend has no encoder
+ * (host sim) - the caller must then OMIT the stats rather than emit zeros. */
+typedef struct {
+    unsigned registered;         /* channel registered to its encode group */
+    unsigned left_pics;          /* leftPics: images still to encode */
+    unsigned left_stream_bytes;  /* leftStreamBytes: bytes left in stream buffer */
+    unsigned left_stream_frames; /* leftStreamFrames: frames left in stream buffer */
+    unsigned cur_packs;          /* curPacks: stream packets in the current frame */
+    unsigned work_done;          /* work_done: 0 = running, 1 = not running */
+    double   ave_bitrate;        /* T31 IMP_Encoder_GetChnAveBitrate, else <0 */
+} hal_enc_stat;
+int hal_enc_stats(int enc_chn, hal_enc_stat *out);
+
 #if defined(USE_BACKCHANNEL) || defined(USE_PLAY)
 /* Speaker output (IMP_AO). The HAL is the sole owner of the AO device; speaker.c
  * (backchannel + play queue) drives these, opening lazily on first use and

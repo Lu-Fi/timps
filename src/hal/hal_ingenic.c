@@ -52,6 +52,8 @@
 /* classic encoder headers (T10..T30) spell the channel attr type with a
  * capitalized CHN; alias it so enc_create() reads the same on every SoC */
 typedef IMPEncoderCHNAttr IMPEncoderChnAttr;
+/* same capitalization split for the IMP_Encoder_Query stat struct (Item-2) */
+typedef IMPEncoderCHNStat IMPEncoderChnStat;
 #endif
 
 /* Debounce for on-demand StartRecvPic/StopRecvPic: with several clients that
@@ -175,6 +177,13 @@ typedef struct {
                                   * them even when the thread never started. */
     volatile int run, active, idr_req;
     pthread_t thr;
+    /* Item-2: T31-only average-bitrate telemetry cache. GetChnAveBitrate needs
+     * the just-fetched IMPEncoderStream (see imp_encoder.h), which only the
+     * encode thread holds, so it is computed there and cached for the read-only
+     * /control getter. ave_valid gates a torn/zero read before the first frame.
+     * Unused on non-T31 builds. */
+    volatile int ave_valid;
+    double       ave_bitrate;
 #ifdef ROT_HAS_SW_90
     /* Unbound SW-rotate path (Batch 5, T23 only): when sw_rot != 0 this slot
      * has NO encoder group/channel, NO OSD group and NO IMP_System_Bind - a
@@ -899,6 +908,17 @@ static void *video_thread(void *arg)
     int dbg_startfail=0;               /* rate-limits StartRecvPic failures */
     int dbg_ovf=0;                     /* rate-limits the AU-overflow warning */
     int dbg_grow=0;                    /* rate-limits the AU-buffer-grow notice */
+#if defined(PLATFORM_T31)
+    /* Item-2 (T31 only): IMP_Encoder_GetChnAveBitrate averages over a frame
+     * count that must be an integral multiple of the GOP length. Resolve this
+     * channel's configured GOP once (vc->chn == video[].imp_chn). */
+    int ave_gop = 1;
+    for (int i=0;i<MS_MAX_VSTREAM;i++)
+        if (g_hcfg->video[i].imp_chn == vc->chn){
+            if (g_hcfg->video[i].gop > 0) ave_gop = g_hcfg->video[i].gop;
+            break;
+        }
+#endif
     while (vc->run) {
         /* on-demand: encode while there are consumers. The hub subscriber
          * count is the truth source (level, not edge), so a racing stale
@@ -1036,6 +1056,22 @@ static void *video_thread(void *arg)
             LOGI(MOD,"chn%d: first encoded frame packCount=%u aulen=%zu key=%d",
                  vc->chn, st.packCount, aulen, key); }
         hub_publish(vc->chn, au, aulen, ms_now_us(), key, MS_MEDIA_VIDEO);
+#if defined(PLATFORM_T31)
+        /* Item-2 (T31 only): cache the running average bitrate for the read-only
+         * /control encoder-stats getter. Must run while 'st' is still held (the
+         * SDK computes over the just-fetched stream) and BEFORE ReleaseStream;
+         * calling GetStream from the control thread would steal packets from
+         * this loop. Cache on success only, publish the value before the valid
+         * flag so a concurrent lock-free reader never sees a stale/zero double
+         * as valid. Failure (<0) just keeps the previous cached value. */
+        {
+            double br = 0;
+            if (IMP_Encoder_GetChnAveBitrate(vc->chn, &st, ave_gop, &br) >= 0){
+                vc->ave_bitrate = br;
+                vc->ave_valid   = 1;
+            }
+        }
+#endif
         IMP_Encoder_ReleaseStream(vc->chn,&st);
     }
     if (receiving){ IMP_Encoder_StopRecvPic(vc->chn); fs_unuse(vc->chn); }
@@ -2384,6 +2420,7 @@ static int ing_start(const ms_config *cfg)
         vc->w=ew; vc->h=eh;
         vc->og=-1; vc->nbound=0;
         vc->run=0; vc->active=0; vc->idr_req=0; vc->has_thr=0;
+        vc->ave_valid=0; vc->ave_bitrate=-1.0;   /* Item-2: reset telemetry cache */
 #ifdef ROT_HAS_SW_90
         /* slots are static + reused across start/stop cycles: make sure a
          * bound-path slot never carries stale sw-rotate state into teardown */
@@ -2679,6 +2716,34 @@ int hal_isp_ae_luma(uint32_t *luma)
 #else
     (void)luma; return -1;
 #endif
+}
+
+/* Item-2: read-only encoder queue/buffer telemetry via IMP_Encoder_Query (all
+ * 9 platforms). Fills *out and returns 0 on success; <0 (caller omits the
+ * stats) when the query fails - e.g. a channel that doesn't exist (disabled
+ * stream) or the SW-rotate path that has no encoder channel. On T31 the average
+ * bitrate cached by the encode thread (GetChnAveBitrate) is attached too; on
+ * every other platform, and before the first frame flows, ave_bitrate is <0. */
+int hal_enc_stats(int enc_chn, hal_enc_stat *out)
+{
+    if (!out) return -1;
+    IMPEncoderChnStat s;
+    if (IMP_Encoder_Query(enc_chn, &s) != 0) return -1;
+    out->registered         = s.registered ? 1u : 0u;
+    out->left_pics          = s.leftPics;
+    out->left_stream_bytes  = s.leftStreamBytes;
+    out->left_stream_frames = s.leftStreamFrames;
+    out->cur_packs          = s.curPacks;
+    out->work_done          = s.work_done;
+    out->ave_bitrate        = -1.0;
+#if defined(PLATFORM_T31)
+    for (int i=0;i<g_nv;i++)
+        if (g_v[i].chn == enc_chn){
+            if (g_v[i].ave_valid) out->ave_bitrate = g_v[i].ave_bitrate;
+            break;
+        }
+#endif
+    return 0;
 }
 
 #if defined(USE_BACKCHANNEL) || defined(USE_PLAY)
