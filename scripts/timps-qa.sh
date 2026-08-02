@@ -1335,8 +1335,11 @@ if [ -n "$SSH_TARGET" ] && want 16 ssh; then
 	[ "$up" = "yes" ] && ok "timpsd process alive" || bad "timpsd not running"
 	# error-ish lines, minus unrelated-daemon noise (dropbear connection churn
 	# from our own SSH probes, telegrambot with no config, etc.) so a real timps
-	# fault isn't buried under benign matches
-	errs=$(sshx "logread 2>/dev/null | grep -iE 'error|fail|assert|segfault|oom|IMP_.*failed' | grep -cviE 'dropbear|telegrambot|Exited normally|before auth|[0-9]+ fails'")
+	# fault isn't buried under benign matches. "re-asserting" (the daynight
+	# ISP running_mode latch-kick retry, working exactly as designed) contains
+	# "assert" as a bare substring and must be excluded too - found by hand
+	# after this pattern flagged a perfectly healthy camera.
+	errs=$(sshx "logread 2>/dev/null | grep -iE 'error|fail|assert|segfault|oom|IMP_.*failed' | grep -cviE 'dropbear|telegrambot|Exited normally|before auth|[0-9]+ fails|re-asserting'")
 	[ "${errs:-0}" -le 2 ] && ok "logread: ${errs:-0} error-ish lines" || warn "logread: ${errs} error-ish lines (review with: logread | grep -iE 'error|fail')"
 	# config integrity: glued lines (two '=') or duplicate keys
 	glued=$(sshx "sed 's/#.*//' /etc/timps.conf 2>/dev/null | grep -cE '=[^=]*='")
