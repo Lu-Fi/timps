@@ -293,11 +293,14 @@ static int session_matches(session *s, const char *req)
 
 static int find_video_by_path(const ms_config *c, const char *path)
 {
-    /* videoN.rtsp_path is runtime-mutable via /control: match under the
-     * config string lock (short strcmps, per-request only, not per-frame) */
+    /* videoN.rtsp_path is honestly runtime-mutable via /control: match the live
+     * string under the config string lock (short strcmps, per-request only, not
+     * per-frame). But `enabled` is restart-only: gate on the BOOT snapshot so a
+     * live-enabled-but-never-published stream is not treated as servable (a
+     * subscriber would hang forever waiting for frames). See config.h. */
     config_str_lock();
     for (int i=0;i<MS_MAX_VSTREAM;i++){
-        if (!c->video[i].enabled) continue;
+        if (!g_cfg_boot.video[i].enabled) continue;
         const char *rp = c->video[i].rtsp_path;
         /* match "/ch0" possibly followed by /trackID or end */
         size_t l = strlen(rp);
@@ -305,8 +308,8 @@ static int find_video_by_path(const ms_config *c, const char *path)
             { config_str_unlock(); return i; }
     }
     config_str_unlock();
-    /* default to first enabled */
-    for (int i=0;i<MS_MAX_VSTREAM;i++) if (c->video[i].enabled) return i;
+    /* default to first enabled (boot-time) */
+    for (int i=0;i<MS_MAX_VSTREAM;i++) if (g_cfg_boot.video[i].enabled) return i;
     return -1;
 }
 
@@ -389,7 +392,10 @@ static void gen_sdp(session *s, const ms_config *c, int vchn, char *sdp, int sdp
      * a=framesize (3GPP TS 26.234; the attribute older ONVIF NVR auto-
      * configurators read) - so clients get bitrate/fps/geometry without
      * having to parse the SPS. */
-    const ms_vstream_cfg *v = &c->video[vchn];
+    /* restart-only fields (codec/bitrate/fps/geometry): describe the stream the
+     * encoder is ACTUALLY producing (boot snapshot), not a live-edited g_cfg
+     * that would make this SDP misdescribe the elementary stream. See config.h. */
+    const ms_vstream_cfg *v = &g_cfg_boot.video[vchn];
     int isH265 = (v->codec==MS_VC_H265);
     int vw, vh; ms_vstream_eff_dims(v, &vw, &vh);
     if (n>=0 && n<(int)sizeof(body))
@@ -880,13 +886,16 @@ static int handle_request(session *s, char *req)
 static void stream_loop(session *s)
 {
     const ms_config *c = s->cfg;
-    /* guard against an invalid video channel (would read c->video[-1]) */
+    /* guard against an invalid video channel (would read video[-1]). enabled/
+     * codec are restart-only -> read the boot snapshot so a live edit cannot
+     * make an unpublished channel look servable or flip the RTP packetizer to a
+     * codec the encoder is not producing. See config.h. */
     if (s->have_video &&
-        (s->vchn < 0 || s->vchn >= MS_MAX_VSTREAM || !c->video[s->vchn].enabled)) {
+        (s->vchn < 0 || s->vchn >= MS_MAX_VSTREAM || !g_cfg_boot.video[s->vchn].enabled)) {
         send_err(s, s->play_cseq, 404, "Not Found", NULL);
         return;
     }
-    int vc = s->have_video ? c->video[s->vchn].codec : MS_VC_H264;
+    int vc = s->have_video ? g_cfg_boot.video[s->vchn].codec : MS_VC_H264;
     int ac = MS_AC_AAC, asr = c->audio.samplerate, ach = c->audio.channels;
     hub_get_audio(&ac, &asr, &ach);      /* actual audio codec from the HAL */
 

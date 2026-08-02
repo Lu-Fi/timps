@@ -187,7 +187,10 @@ static const char MP4_RESP_HDR[] =
 static void stream_mp4(hconn *c, int chn)
 {
     const ms_config *cfg = c->cfg;
-    if (chn<0 || chn>=MS_MAX_VSTREAM || !cfg->video[chn].enabled) chn = 0;
+    /* enabled/codec/geometry are restart-only: read the boot snapshot so a live
+     * /control edit cannot mux this fMP4 stream with a codec/dimensions the
+     * running encoder is not producing. See config.h. */
+    if (chn<0 || chn>=MS_MAX_VSTREAM || !g_cfg_boot.video[chn].enabled) chn = 0;
 
     /* HEAD: the headers a GET would send, no body - and no encoder
      * pipeline wake-up for a mere probe */
@@ -211,11 +214,11 @@ static void stream_mp4(hconn *c, int chn)
     /* wait for parameter sets */
     fmp4_mux mux; fmp4_init(&mux);
     mux.has_video = 1;
-    mux.vcodec = cfg->video[chn].codec;
-    int ew, eh; ms_vstream_eff_dims(&cfg->video[chn], &ew, &eh);
+    mux.vcodec = g_cfg_boot.video[chn].codec;      /* restart-only: see config.h */
+    int ew, eh; ms_vstream_eff_dims(&g_cfg_boot.video[chn], &ew, &eh);
     mux.width  = ew;
     mux.height = eh;
-    mux.fps    = cfg->video[chn].fps;
+    mux.fps    = g_cfg_boot.video[chn].fps;
     int ok=0;
     for (int i=0;i<200;i++){
         vparam vp;
@@ -378,15 +381,18 @@ out:
 static int jpeg_src_from_path(const char *path, const ms_config *cfg)
 {
     const char *q = strstr(path, "chn=");
+    /* videoN.enabled is restart-only: a boot-disabled stream that was live-
+     * enabled has no publisher, so it cannot be a JPEG source - gate on the
+     * boot snapshot. See config.h. */
     if (q) {
         int n = atoi(q+4);
-        if (n>=0 && n<MS_MAX_VSTREAM && cfg->video[n].enabled && cfg->video[n].jpeg_enabled)
+        if (n>=0 && n<MS_MAX_VSTREAM && g_cfg_boot.video[n].enabled && g_cfg_boot.video[n].jpeg_enabled)
             return HUB_JPEG_SRC_N(n);
         return -1;
     }
     if (cfg->jpeg.enabled) return HUB_JPEG_SRC;
     for (int i=0;i<MS_MAX_VSTREAM;i++)
-        if (cfg->video[i].enabled && cfg->video[i].jpeg_enabled)
+        if (g_cfg_boot.video[i].enabled && g_cfg_boot.video[i].jpeg_enabled)
             return HUB_JPEG_SRC_N(i);
     return -1;
 }
@@ -755,13 +761,16 @@ static int stats_json(const ms_config *cfg, char *buf, size_t cap)
         (long long)((ms_now_us()-g_start_us)/1000000), hub_video_subs());
     int first = 1;
     for (int i=0;i<MS_MAX_VSTREAM;i++){
-        if (!cfg->video[i].enabled) continue;
-        int w, h; ms_vstream_eff_dims(&cfg->video[i], &w, &h);
+        /* report the RUNNING stream (boot snapshot) so enabled/geometry/codec
+         * stay consistent with the measured fps/kbps beside them, not a live-
+         * edited g_cfg the encoder has not picked up. See config.h. */
+        if (!g_cfg_boot.video[i].enabled) continue;
+        int w, h; ms_vstream_eff_dims(&g_cfg_boot.video[i], &w, &h);
         APP("%s{\"chn\":%d,\"subs\":%d,\"fps\":%.1f,\"kbps\":%.0f,"
             "\"width\":%d,\"height\":%d,\"codec\":\"%s\","
             "\"drop_frames\":%u,\"drop_bytes\":%u}",
             first?"":",", i, hub_subs(i), hub_get_fps(i), hub_get_bitrate(i),
-            w, h, cfg->video[i].codec==MS_VC_H265?"h265":"h264",
+            w, h, g_cfg_boot.video[i].codec==MS_VC_H265?"h265":"h264",
             g_drop_frames[i], g_drop_bytes[i]);
         first = 0;
     }
@@ -930,7 +939,8 @@ out:
 static int path_chn(const char *path, const ms_config *cfg, int def)
 {
     const char *q = strstr(path, "chn=");
-    if (q){ int n=atoi(q+4); if(n>=0 && n<MS_MAX_VSTREAM && cfg->video[n].enabled) return n; }
+    /* enabled is restart-only -> boot snapshot (see config.h) */
+    if (q){ int n=atoi(q+4); if(n>=0 && n<MS_MAX_VSTREAM && g_cfg_boot.video[n].enabled) return n; }
     return def;
 }
 
@@ -939,7 +949,7 @@ static void serve_player(hconn *c, const char *path)
 {
     const ms_config *cfg = c->cfg;
     int chn = path_chn(path, cfg, cfg->http_preview_chn);
-    if (chn<0||chn>=MS_MAX_VSTREAM||!cfg->video[chn].enabled) chn=0;
+    if (chn<0||chn>=MS_MAX_VSTREAM||!g_cfg_boot.video[chn].enabled) chn=0;  /* restart-only */
 
     char vcodec[48] = "avc1.640028";               /* High@4.0 fallback */
     hub_request_idr(chn);

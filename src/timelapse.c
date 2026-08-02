@@ -135,12 +135,15 @@ static void prune(void)
 static int jpeg_src(int chn)
 {
     const ms_config *c=g_tc;
+    /* videoN.enabled is restart-only: a boot-disabled stream that was live-
+     * enabled has no publisher, so it cannot be a JPEG source - gate on the
+     * boot snapshot (see config.h). */
     if (chn>=0 && chn<MS_MAX_VSTREAM &&
-        c->video[chn].enabled && c->video[chn].jpeg_enabled)
+        g_cfg_boot.video[chn].enabled && g_cfg_boot.video[chn].jpeg_enabled)
         return HUB_JPEG_SRC_N(chn);
     if (c->jpeg.enabled) return HUB_JPEG_SRC;
     for (int i=0;i<MS_MAX_VSTREAM;i++)
-        if (c->video[i].enabled && c->video[i].jpeg_enabled)
+        if (g_cfg_boot.video[i].enabled && g_cfg_boot.video[i].jpeg_enabled)
             return HUB_JPEG_SRC_N(i);
     return -1;
 }

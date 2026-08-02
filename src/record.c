@@ -246,11 +246,14 @@ static int seg_open(int chn)
 
     fmp4_init(&w_mux);
     w_mux.has_video=1;
-    w_mux.vcodec=g_rc->video[chn].codec;
-    int ew, eh; ms_vstream_eff_dims(&g_rc->video[chn], &ew, &eh);
+    /* codec/geometry/fps are restart-only: mux the segment as the RUNNING
+     * encoder actually produces it (boot snapshot), not a live-edited g_cfg -
+     * a mismatch yields a container that misdescribes its own samples. config.h */
+    w_mux.vcodec=g_cfg_boot.video[chn].codec;
+    int ew, eh; ms_vstream_eff_dims(&g_cfg_boot.video[chn], &ew, &eh);
     w_mux.width =ew;
     w_mux.height=eh;
-    w_mux.fps   =g_rc->video[chn].fps;
+    w_mux.fps   =g_cfg_boot.video[chn].fps;
     vparam vp;
     if (hub_get_vparam(chn,&vp) && vparam_ready(&vp)){ w_mux.vp=vp; w_mux.vp_ready=1; }
     int ac=MS_AC_NONE,asr=0,ach=0;
@@ -671,10 +674,11 @@ int record_clip(const char *path, int seconds)
             fp=fdopen(fd,"wb");
             if (!fp){ close(fd); unlink(path); pkt_unref(p); break; }
             fmp4_init(&mux);
-            mux.has_video=1; mux.vcodec=g_rc->video[chn].codec;
-            int ew, eh; ms_vstream_eff_dims(&g_rc->video[chn], &ew, &eh);
+            /* restart-only codec/geometry/fps -> boot snapshot (see config.h) */
+            mux.has_video=1; mux.vcodec=g_cfg_boot.video[chn].codec;
+            int ew, eh; ms_vstream_eff_dims(&g_cfg_boot.video[chn], &ew, &eh);
             mux.width=ew; mux.height=eh;
-            mux.fps=g_rc->video[chn].fps;
+            mux.fps=g_cfg_boot.video[chn].fps;
             mux.vp=vp; mux.vp_ready=1;
             if (sub_audio){ mux.has_audio=1; mux.a_timescale=asr; mux.a_channels=ach;
                             aac_asc(asr,ach,mux.asc); }
