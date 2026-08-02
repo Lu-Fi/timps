@@ -26,6 +26,13 @@ static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static const void *g_owner   = NULL;   /* backchannel session that owns decode */
 static int         g_codec   = BC_CODEC_PCMU;
 static int         g_out_rate = 16000;
+/* 1 once bc_configure() has run, i.e. audio.backchannel was enabled AT BOOT.
+ * main.c calls bc_configure() only when g_cfg.audio.backchannel is set at
+ * startup, so this is the honest "backchannel was configured and initialised
+ * at startup" flag: the decode pipeline's codec/rate (g_codec/g_out_rate) are
+ * only valid after that call. audio.backchannel is restart-only (AUD_REST),
+ * so rtsp.c must gate on this, not on the live config value. */
+static int         g_configured = 0;
 
 /* scratch buffer - only ever touched by the elected owner under g_lock */
 static int16_t g_pcm[8192];     /* decoded PCM (mono) */
@@ -46,15 +53,22 @@ void bc_configure(int codec, int out_rate)
 #endif
     if (out_rate < 8000 || out_rate > 48000) out_rate = 16000;
     g_codec = codec; g_out_rate = out_rate;
+    g_configured = 1;
 }
 
 int bc_available(void)
 {
-    /* Native IMP_AO now: the feature is available whenever it is compiled in
-     * (no external /bin/iac dependency). The AO device itself is opened lazily
-     * on the first frame; a bring-up failure there just yields silence, same as
-     * a busy speaker did before. */
-    return 1;
+    /* Native IMP_AO now: no external /bin/iac dependency, so the ONLY thing to
+     * probe is whether the backchannel was actually enabled AND configured at
+     * startup (bc_configure ran). audio.backchannel is restart-only: it, plus
+     * backchannel_codec/backchannel_rate, are read once at boot to set up the
+     * decode/speaker pipeline. Reporting the LIVE config value here (as rtsp.c
+     * used to) let a /control enable advertise/accept a backchannel that then
+     * ran on compile-time defaults (PCMU/16000) instead of the configured
+     * codec/rate until a real restart. Gating on the boot-time flag keeps the
+     * feature honestly restart-only. The AO device itself is still opened
+     * lazily on the first frame; a bring-up failure there yields silence. */
+    return g_configured;
 }
 
 int bc_payload_type(void)
