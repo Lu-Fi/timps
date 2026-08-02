@@ -266,7 +266,10 @@ static void *client_thread(void *arg)
      * accepted as-is here, subscribing to a hub source with no publisher -
      * the client would then just hang with no video ever arriving instead
      * of falling back to the first enabled stream. */
-    if (chn < 0 || chn >= MS_MAX_VSTREAM || !g_scfg->video[chn].enabled) chn = 0;
+    /* enabled/codec are restart-only: read the boot snapshot so a live edit
+     * cannot make an unpublished channel look servable or set a PMT codec the
+     * encoder is not producing. See config.h. */
+    if (chn < 0 || chn >= MS_MAX_VSTREAM || !g_cfg_boot.video[chn].enabled) chn = 0;
 
     fanqueue q;
     if (fanqueue_init(&q, SRT_QCAP)) { srt_close(m->sock); free(m);
@@ -304,7 +307,7 @@ static void *client_thread(void *arg)
         sub_a = 0;
     }
     m->have_audio = sub_a;
-    m->vcodec = g_scfg->video[chn].codec;
+    m->vcodec = g_cfg_boot.video[chn].codec;    /* restart-only: see config.h */
     hub_request_idr(chn);
 
     int got_key = 0, psi = 0; int64_t psi_t = 0;

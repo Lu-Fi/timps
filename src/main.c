@@ -99,6 +99,12 @@ int main(int argc, char **argv)
 
     config_load(&g_cfg, cfgpath);
     config_sensor_finalize(&g_cfg);   /* auto-detect sensor from /proc/jz/sensor */
+    /* Freeze the boot view of the config BEFORE the HAL/servers (and thus any
+     * /control thread) run. Restart-only videoN.* fields (codec/enabled/dims/
+     * fps/bitrate/rotation) are read from g_cfg_boot by the streaming consumers
+     * so a live /control edit persists for next boot without desyncing the
+     * running encoder from new RTSP/fMP4/SRT/record sessions. See config.h. */
+    config_snapshot_boot();
     srand(rand_seed());               /* non-secret rand() users (UDP port picks) */
     g_hal = hal_get();
     if (!g_hal){ LOGE(MOD,"no HAL backend available"); return 1; }   /* F-08 */

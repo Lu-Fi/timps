@@ -356,6 +356,27 @@ typedef struct {
 extern ms_config g_cfg;
 extern const char *g_cfg_path;   /* config file in use (set by config_load) */
 
+/* Boot-time snapshot of the whole config, taken once at startup by
+ * config_snapshot_boot() before any /control thread can run. It is immutable
+ * afterwards, so it is read lock-free.
+ *
+ * WHY: videoN.* encoder/geometry/codec keys (enabled/codec/width/height/fps/
+ * bitrate/rotation) are restart-only. A /control POST still updates the LIVE
+ * g_cfg.video[] (so the change persists to the config file for the next boot
+ * and is echoed by GET /control), but the RUNNING encoder keeps producing the
+ * stream it was started with. Any consumer that packetizes, describes (RTSP
+ * SDP), muxes (fMP4), records or builds an SRT PMT MUST read those fields from
+ * g_cfg_boot, NOT the live g_cfg, or a live edit desyncs every new session/
+ * segment/client from the actual elementary stream: a live codec change makes
+ * new consumers packetize/describe the wrong codec (corrupt/undecodable
+ * output), a live-enable of a boot-disabled stream is "servable" but has no
+ * publisher (client hangs), and live geometry/fps/bitrate describe values the
+ * encoder is not producing.
+ * EXCEPTION: videoN.rtsp_path is honestly live (a DESCRIBE re-matches it every
+ * request) - read it from the live g_cfg, not from here. */
+extern ms_config g_cfg_boot;
+void config_snapshot_boot(void);   /* g_cfg_boot = g_cfg; call once at startup */
+
 void config_defaults(ms_config *c);
 int  config_load(ms_config *c, const char *path); /* 0 ok, <0 file err (defaults kept) */
 /* auto-detect unset sensor.* from /proc/jz/sensor/sensor0/ (config wins, then a

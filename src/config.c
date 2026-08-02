@@ -16,7 +16,13 @@
 
 #define MOD "CONFIG"
 ms_config g_cfg;
+ms_config g_cfg_boot;            /* see config.h: immutable boot snapshot */
 const char *g_cfg_path = NULL;   /* config file in use, set by config_load() */
+
+/* Snapshot the config as the running encoder was started with. Called once at
+ * startup after config_load()/config_sensor_finalize() and before the HAL/
+ * network servers come up, i.e. before any /control thread can mutate g_cfg. */
+void config_snapshot_boot(void) { g_cfg_boot = g_cfg; }
 
 /* see config.h: guards runtime g_cfg string mutation vs concurrent readers.
  *
