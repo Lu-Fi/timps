@@ -13,8 +13,12 @@ int  auth_http_basic(const char *value, const char *user, const char *pass);
  * Authorization header can be replayed indefinitely against any
  * connection using any nonce the client cares to supply, since the digest
  * response is fully reproducible from (user, realm, pass, method, uri,
- * nonce). Returns 1 if valid. */
-int  auth_rtsp_digest(const char *method, const char *value,
+ * nonce). req_uri is the request-target from the request line: the client's
+ * digest "uri" parameter MUST equal it (RFC 2617/7616), else HA2 was computed
+ * over an attacker-chosen URI and a response captured for one URI could be
+ * replayed against another; pass NULL only to skip that check. Returns 1 if
+ * valid. */
+int  auth_rtsp_digest(const char *method, const char *req_uri, const char *value,
                       const char *user, const char *pass,
                       const char *server_nonce);
 
@@ -23,9 +27,13 @@ int  auth_rtsp_digest(const char *method, const char *value,
  * success the client-supplied nonce (and nc, empty for no-qop) are copied
  * out - the CALLER must additionally verify that nonce is one it recently
  * issued and that nc is fresh (httpd's nonce table), otherwise a sniffed
- * Authorization header would verify forever. Returns 1 if the digest is
+ * Authorization header would verify forever. req_uri is the request-target
+ * from the HTTP request line: the client's digest "uri" parameter MUST equal
+ * it (RFC 2617/7616), else HA2 was computed over an attacker-chosen URI and a
+ * response captured for one URI could be replayed against another within the
+ * nonce window; pass NULL only to skip that check. Returns 1 if the digest is
  * cryptographically valid for user/pass. */
-int  auth_http_digest(const char *method, const char *value,
+int  auth_http_digest(const char *method, const char *req_uri, const char *value,
                       const char *user, const char *pass,
                       char *nonce_out, int nonce_cap,
                       char *nc_out, int nc_cap);

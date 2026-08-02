@@ -516,8 +516,12 @@ static int rtsp_check_auth(session *s, char *req)
     if (s->authed) return 1;                       /* already validated */
     char method[16]={0}; sscanf(req,"%15s",method);
     char av[512]; get_auth_hdr(req, av, sizeof av);
+    /* the RTSP request-line target the client also puts in its digest uri=
+     * (the full "rtsp[s]://host/path" URL): the digest uri MUST match it or
+     * the response is a replay captured for a different URI */
+    char rurl[512]; extract_url(req, rurl, sizeof rurl);
     if (av[0]) {
-        if (auth_rtsp_digest(method, av, s->cfg->rtsp_user, s->cfg->rtsp_pass, s->nonce) ||
+        if (auth_rtsp_digest(method, rurl, av, s->cfg->rtsp_user, s->cfg->rtsp_pass, s->nonce) ||
             auth_http_basic(av, s->cfg->rtsp_user, s->cfg->rtsp_pass)) {
             s->authed = 1; return 1;
         }
