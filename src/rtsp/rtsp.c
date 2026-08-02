@@ -1033,8 +1033,20 @@ static void stream_loop(session *s)
                 }
                 if (ctlhave > 0 && ctl[0]!='$') {
                     char *end = strstr(ctl, "\r\n\r\n");
-                    if (!end) break;                          /* incomplete request, wait */
-                    size_t reqlen = (size_t)(end-ctl) + 4;
+                    if (!end) break;                          /* incomplete headers, wait */
+                    size_t hdrlen = (size_t)(end-ctl) + 4;
+                    /* also consume any Content-Length entity body (e.g. a
+                     * SET_PARAMETER text body) - leftover body bytes would
+                     * otherwise be read as the next request's method line and
+                     * desync every following request on this connection. Bound
+                     * the length parse to the header block so a pipelined next
+                     * request's Content-Length can't be picked up here. */
+                    int clen; { char save=ctl[hdrlen]; ctl[hdrlen]=0;
+                                clen=hdr_int(ctl,"Content-Length",0); ctl[hdrlen]=save; }
+                    if (clen < 0) clen = 0;                   /* malformed -> no body */
+                    size_t reqlen = hdrlen + (size_t)clen;
+                    if (reqlen > (size_t)sizeof(ctl)-1) { close_conn=1; break; } /* body too big */
+                    if ((size_t)ctlhave < reqlen) break;      /* body not fully arrived, wait */
                     if (!session_matches(s, ctl)) {
                         /* A5: a request naming some OTHER session must not act
                          * on this one - notably a mismatched TEARDOWN must not
@@ -1151,9 +1163,24 @@ static void *client_thread(void *arg)
         have += n; buf[have]=0;
         char *end;
         while ((end = strstr(buf, "\r\n\r\n")) != NULL) {
-            size_t reqlen = (size_t)(end - buf) + 4;
+            size_t hdrlen = (size_t)(end - buf) + 4;
+            /* A request may carry an entity body (RFC 2326 allows a body on
+             * e.g. SET_PARAMETER, which some NVR stacks send unconditionally).
+             * Consume exactly Content-Length body bytes too - otherwise the
+             * leftover body is mis-parsed as the next request's method line and
+             * every subsequent request on this connection desyncs. Parse the
+             * length from the header block only (temporarily NUL-terminating at
+             * its end) so a pipelined next request's Content-Length can't leak
+             * into this one. No Content-Length -> zero body (bodyless requests
+             * are completely unaffected). */
+            int clen; { char save=buf[hdrlen]; buf[hdrlen]=0;
+                        clen=hdr_int(buf,"Content-Length",0); buf[hdrlen]=save; }
+            if (clen < 0) clen = 0;                 /* malformed -> no body */
+            size_t reqlen = hdrlen + (size_t)clen;
+            if (reqlen > sizeof(buf)-1) goto done;  /* body too large to buffer */
+            if ((size_t)have < reqlen) break;       /* body not fully arrived yet */
             char req[4096];
-            memcpy(req, buf, reqlen); req[reqlen]=0;
+            memcpy(req, buf, hdrlen); req[hdrlen]=0; /* hand off headers only */
             int r = handle_request(s, req);
             memmove(buf, buf+reqlen, have-reqlen+1);
             have -= reqlen;
