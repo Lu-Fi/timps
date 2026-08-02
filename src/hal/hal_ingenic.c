@@ -356,6 +356,10 @@ static void fs_kick_running_mode(void)
  * ing_stop (main thread) and from /control connection threads. */
 static pthread_mutex_t g_motion_mtx = PTHREAD_MUTEX_INITIALIZER;
 static int g_motion_pin = -1;    /* pinned FS channel while motion runs */
+/* M2: set by ing_control() when a motion.* key or a monitored-stream privacy
+ * key changes during a /control request; ing_control_commit() (called once per
+ * request via hub_control_commit) does the single motion_sync() rebuild. */
+static int g_motion_resync_pending = 0;
 static void motion_sync(const ms_config *cfg)
 {
     pthread_mutex_lock(&g_motion_mtx);
@@ -2256,8 +2260,13 @@ static void ing_control(const char *key, const char *val)
         const char *k = key+7;
         if (!strcmp(k,"enabled") || !strcmp(k,"cols") || !strcmp(k,"rows") ||
             !strcmp(k,"sensitivity") || !strcmp(k,"monitor_stream")){
-            motion_sync(g_hcfg);
-            LOGI(MOD,"control %s applied (IVS grid re-synced)", key);
+            /* M2: defer the (expensive) IVS stop/destroy/recreate to a single
+             * commit at the end of the /control request. A settings-form POST
+             * naturally carries several of these keys (cols+rows+sensitivity+
+             * monitor_stream) at once; rebuilding per key would blind detection
+             * and stall the response for seconds. */
+            g_motion_resync_pending = 1;
+            LOGD(MOD,"control %s applied (IVS grid re-sync deferred to commit)", key);
         }
         return;
     }
@@ -2285,7 +2294,9 @@ static void ing_control(const char *key, const char *val)
          * grid so the mask takes/loses effect live. */
         int mon = g_hcfg->motion.monitor_stream;
         if (mon<0 || mon>=MS_MAX_VSTREAM || !g_hcfg->video[mon].enabled) mon=0;
-        if (g_hcfg->motion.enabled && s==mon) motion_sync(g_hcfg);
+        /* M2: same deferral - dragging one privacy rectangle posts x+y+w+h in a
+         * single request; rebuild the grid once at commit, not four times. */
+        if (g_hcfg->motion.enabled && s==mon) g_motion_resync_pending = 1;
         return;
     }
 
@@ -2295,6 +2306,20 @@ static void ing_control(const char *key, const char *val)
     if (!strncmp(key,"osd.",4)){
         LOGI(MOD,"%s persisted, applies on restart", key);
         return;
+    }
+}
+
+/* M2: flush deferred HAL applies after a full /control request. Currently only
+ * the IVS motion-grid rebuild is batched: any number of motion/privacy keys in
+ * one POST collapse to a single stop/destroy/recreate here instead of one per
+ * key. A request that touched no motion/privacy key leaves the flag clear and
+ * this is a no-op. */
+static void ing_control_commit(void)
+{
+    if (g_motion_resync_pending){
+        g_motion_resync_pending = 0;
+        motion_sync(g_hcfg);
+        LOGI(MOD,"IVS motion grid re-synced (batched, once per request)");
     }
 }
 #endif
@@ -2321,7 +2346,7 @@ static int ing_init(const ms_config *cfg)
 #endif
     int r = isp_init();
 #ifdef USE_CONTROL
-    if (r==0) hub_set_control_cb(ing_control);
+    if (r==0){ hub_set_control_cb(ing_control); hub_set_control_commit_cb(ing_control_commit); }
 #endif
     return r;
 }
