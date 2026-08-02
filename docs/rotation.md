@@ -81,7 +81,7 @@ no-rotation.
 
 Hardware OSD text, logos and privacy covers **work** on a 90/270-rotated T31
 stream. Two things were needed (both in `src/hal/`), and one hardware limit
-remains. Full investigation trail: `docs/T31-OSD-rotation-handoff.md`.
+remains.
 
 **Fix 1 — FrameSource picWidth (`hal_ingenic.c`).** For a rotated channel the FS
 `chnAttr` must stay at the **pre-rotation (landscape) geometry** — scaler AND
@@ -123,8 +123,7 @@ the non-rotated sub-stream `ch1`, or use a square main stream.
   T40/T41 get no rotation. Its `stream0.rotation` config key is **not
   degrees** — it's the raw libimp `rotTo90` enum (`validateInt2`, range 0-2),
   passed straight through with no CW/CCW translation. Two theories for "OSD
-  works in prudynt-t" were tested on-device (2026-07-21, see
-  `T31-OSD-rotation-handoff.md` "RESULTS OF TESTS 1–3") and both look
+  works in prudynt-t" were tested on-device (2026-07-21) and both look
   unlikely on our test camera: (a) CCW is the "good" enum value — falsified
   earlier, CCW is broken here too; (b) the scaler being inactive (`scale=0`)
   is what makes it work — also unsupported: with the scaler genuinely
