@@ -414,6 +414,33 @@ static void *rec_thread(void *arg)
         int motion_mode=(g_rc->record.mode==1);
         int64_t pre_us=(int64_t)g_rc->record.pre_roll_s*1000000;
 
+        /* config.c clamps record.pre_roll_s to 0..60s, but the pre-roll ring is
+         * hard-capped at RING_CAP packets AND RING_MAX_BYTES bytes (a deliberate
+         * embedded memory budget, NOT resized here). At a real encode bitrate
+         * the byte cap is the binding limit - e.g. ~11s at 3 Mbit/s - so a large
+         * configured pre_roll_s silently under-delivers. Warn once (per process)
+         * when the configured value cannot actually be held at THIS stream's
+         * bitrate/fps, so an operator gets a clear signal instead of silent
+         * truncation. Derivation: byte cap seconds = RING_MAX_BYTES*8 / bitrate;
+         * packet cap seconds = RING_CAP / fps; the ring holds the smaller. */
+        if (motion_mode && g_rc->record.pre_roll_s>0){
+            static int preroll_warned;
+            if (!preroll_warned){
+                int kbps=g_rc->video[chn].bitrate_kbps, fps=g_rc->video[chn].fps;
+                double cap_s=1e9;                       /* unknown bitrate -> no cap */
+                if (kbps>0) cap_s=(double)RING_MAX_BYTES*8.0/((double)kbps*1000.0);
+                if (fps>0){ double ps=(double)RING_CAP/(double)fps; if (ps<cap_s) cap_s=ps; }
+                if ((double)g_rc->record.pre_roll_s > cap_s+0.5){
+                    preroll_warned=1;
+                    LOGW(MOD,"record.pre_roll_s=%d cannot be held: the pre-roll "
+                             "ring caps at ~%.0fs for ch%d (%d kbps, %d fps, "
+                             "%d packets / %d MB max) - actual pre-roll is shorter",
+                         g_rc->record.pre_roll_s, cap_s, chn, kbps, fps,
+                         RING_CAP, RING_MAX_BYTES/(1024*1024));
+                }
+            }
+        }
+
         if (!want_run()){
             if (w_fp) seg_close();
             if (subscribed){
