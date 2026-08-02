@@ -573,7 +573,15 @@ static const cfg_field motion_fields[] = {
     F ("sensitivity",    0, sensitivity,    T_INT,  0, 0,255),
     F ("cols",           0, cols,           T_INT,  0, 0,0),
     F ("rows",           0, rows,           T_INT,  0, 0,0),
-    F ("cooldown_ms",    0, cooldown_ms,    T_INT,  0, 0,0),
+    /* M3: floor cooldown_ms so the on_motion hook cannot be re-exec'd on every
+     * IVS result. IVS emits a result about every skip_frames/fps seconds - as
+     * fast as ~200 ms at the defaults (skip_frames=5) - and the fork+exec'd hook
+     * is deliberately not tracked, so with a 0/negative cooldown a hook slower
+     * than that interval piles up unboundedly. 250 ms caps re-fires to at most
+     * ~4/s (just above the fastest detection cadence) while still allowing
+     * legitimate sub-second fast-alert use; 0 (disabled/no floor) is no longer
+     * accepted. */
+    F ("cooldown_ms",    0, cooldown_ms,    T_INT,  0, 250,INT_MAX),
     F ("hold_ms",        0, hold_ms,        T_INT,  0, 0,INT_MAX),
     F ("skip_frames",    0, skip_frames,    T_INT,  0, 1,INT_MAX),
     FS("on_motion",      0, on_motion,      F_NOGET),

@@ -117,10 +117,18 @@ static void *motion_thread(void *arg)
 {
     (void)arg;
     IMP_IVS_MoveOutput *result;
+    /* effective grid dims are constant for this thread's life (set in
+     * imp_motion_start before the thread is created); read once for the
+     * on_motion hook context (M3). */
+    int gcols, grows;
+    pthread_mutex_lock(&g_st_lock);
+    gcols = g_st.cols; grows = g_st.rows;
+    pthread_mutex_unlock(&g_st_lock);
     while (g_run) {
         if (IMP_IVS_PollingResult(g_chn, 1000) < 0) continue;
         if (IMP_IVS_GetResult(g_chn, (void**)&result) < 0) continue;
         int detected = 0, changed = 0, any_held = 0;
+        uint64_t hitmask = 0;   /* M3: cells with raw motion THIS frame, for the hook */
         int64_t nowm = now_ms();
         ms_motion_status snap;
         pthread_mutex_lock(&g_st_lock);
@@ -133,7 +141,8 @@ static void *motion_thread(void *arg)
              * the last hit) - that is what readers see, so single-frame motion
              * is never lost to the async sampling race. */
             unsigned char raw = result->retRoi[i] ? 1 : 0;
-            if (raw) { g_cell_hit[cell] = nowm; detected = 1; }
+            if (raw) { g_cell_hit[cell] = nowm; detected = 1;
+                       if (cell < 64) hitmask |= (uint64_t)1 << cell; }
             unsigned char held = raw;
             if (!held && g_hold_ms > 0 && g_cell_hit[cell] > 0 &&
                 nowm - g_cell_hit[cell] < g_hold_ms) held = 1;
@@ -165,14 +174,36 @@ static void *motion_thread(void *arg)
                      * (matches the old "cmd &" backgrounding): the immediate
                      * child forks the real worker and exits right away: the
                      * grandchild is reparented to init and reaped there, no
-                     * zombies and no wait() on the actual script runtime. */
+                     * zombies and no wait() on the actual script runtime.
+                     *
+                     * M3: hand the script context via the environment (idiomatic
+                     * for a hook, and invisible to any caller that ignores it) so
+                     * it need not poll /control and race the hold-state decay:
+                     *   MOTION_COLS/MOTION_ROWS  effective grid geometry
+                     *   MOTION_CELLS             bitmask of cells that fired this
+                     *                            frame (bit N = row-major cell N)
+                     *   MOTION_TIME              unix time of the trigger
+                     * All values are daemon-controlled numerics (grid ints, an
+                     * internally-computed mask, the clock) - no attacker-
+                     * influenced data, so this reopens no injection surface. The
+                     * strings are formatted BEFORE fork(); setenv() runs only in
+                     * the single-threaded grandchild, mutating its own env. */
                     const char *cmd = g_hcfg->motion.on_motion;
+                    char e_cols[24], e_rows[24], e_cells[32], e_time[32];
+                    snprintf(e_cols, sizeof e_cols, "%d", gcols);
+                    snprintf(e_rows, sizeof e_rows, "%d", grows);
+                    snprintf(e_cells,sizeof e_cells,"%llu",(unsigned long long)hitmask);
+                    snprintf(e_time, sizeof e_time, "%lld", (long long)time(NULL));
                     pid_t pid = fork();
                     if (pid < 0){
                         LOGW(MOD,"on_motion: fork failed: %s", strerror(errno));
                     } else if (pid == 0){
                         pid_t gp = fork();
                         if (gp == 0){
+                            setenv("MOTION_COLS",  e_cols,  1);
+                            setenv("MOTION_ROWS",  e_rows,  1);
+                            setenv("MOTION_CELLS", e_cells, 1);
+                            setenv("MOTION_TIME",  e_time,  1);
                             execlp(cmd, cmd, (char*)NULL);
                             _exit(127);          /* exec failed */
                         }
