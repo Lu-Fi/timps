@@ -27,7 +27,7 @@ or libschrift. A lightweight alternative to prudynt / raptor for the
 - **Native speaker output** — timps owns `IMP_AO` directly: ONVIF audio backchannel (two-way audio) and a system-sound play queue (WAV/Opus/PCM/G.711), no `/bin/iac` dependency
 - **Local recording** — continuous or motion-triggered fragmented-MP4 segments to SD, with pre/post-roll and free-space pruning
 - **Privacy masks** — solid cover rectangles per stream, live-adjustable
-- **Image rotation** — hardware 90/270 on T31/T40/T41, software 90/270 on T23 (for a 180° flip use `image.hflip`+`image.vflip`)
+- **Image rotation** — hardware 90/270 on T31/T40/T41, software 90/270 on T23, plus genuine per-channel 180° on T40/T41 (I2D); on other SoCs a 180° flip is `image.hflip`+`image.vflip`
 - **Optional HTTPS/RTSPS (mbedTLS) and MPEG-TS/SRT output**
 - **Authentication** — RTSP Digest / HTTP Basic (own MD5) + a `/control` token (per-boot + optional remote secret) with CORS
 - **Logging** — leveled logger to stderr and syslog (visible in `logread`)
@@ -120,7 +120,7 @@ binary. Vendor libs are linked via `IMPLIBS` (default static
 | `USE_BC_AAC` | also accept AAC on the backchannel (needs `libhelix-aac`); G.711 always works without it |
 | `USE_PLAY` | system-sound play queue (`/usr/sbin/play` protocol via a FIFO), native `IMP_AO`. Off by default |
 | `USE_PLAY_OPUS` | also decode Ogg-Opus in the play queue (needs `opusfile`); WAV/PCM/G.711 always work without it |
-| `USE_ROTATE` | image rotation (`videoN.rotation = 0\|90\|270`, see below). Off by default |
+| `USE_ROTATE` | image rotation (`videoN.rotation = 0\|90\|270`, plus `180` on T40/T41, see below). Off by default |
 | `USE_SW_ROTATE` | software 90/270 rotation on SoCs without a hardware path (T23); needs `USE_ROTATE` |
 | `USE_TLS` | HTTPS (`http.https`) + RTSPS (`rtsp.tls`) via mbedTLS. Auto-enabled when `libmbedtls` is linked |
 | `USE_SRT` | MPEG-TS over SRT output (listener mode). Auto-enabled when `libsrt` is linked |
@@ -402,13 +402,17 @@ persisted. `GET /control` dumps the `privacy` tree and advertises
 
 ### Image rotation
 
-`videoN.rotation = 0|90|270` (`USE_ROTATE`, off by default;
-restart-required). Hardware 90/270 needs T31/T40/T41 (FrameSource/I2D rotate);
-software 90/270 (`USE_SW_ROTATE`) works on SoCs without a hardware path (T23) at
-the cost of CPU (per-frame transpose) and H.264-only, software-OSD-only
-encoding. For a **180° flip**, use `image.hflip=1` + `image.vflip=1` (always
-available, independent of `USE_ROTATE`) — `rotation=180` was removed (it was a
-redundant global ISP H+V flip; see `docs/rotation.md`).
+`videoN.rotation = 0|90|270` (plus `180` on T40/T41) (`USE_ROTATE`, off by
+default; restart-required). Hardware 90/270 needs T31/T40/T41 (FrameSource/I2D
+rotate); software 90/270 (`USE_SW_ROTATE`) works on SoCs without a hardware path
+(T23) at the cost of CPU (per-frame transpose) and H.264-only, software-OSD-only
+encoding. **`rotation=180`** is a genuine per-channel capability **only on
+T40/T41**, where the hardware I2D block flips just the one requesting stream. On
+every other SoC `rotation=180` was removed (there it was only a *global* ISP H+V
+flip that also flipped every sibling stream, redundant with `image.hflip`) and
+is coerced to 0 — for a 180° flip there use `image.hflip=1` + `image.vflip=1`
+(always available, independent of `USE_ROTATE`; note this is a global flip). See
+`docs/rotation.md`.
 Known limitation on T31: 90/270 can't carry a hardware OSD/privacy overlay
 (libimp IPU-OSD stride bug) — see `docs/rotation.md`.
 
