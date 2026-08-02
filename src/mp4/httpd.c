@@ -1128,7 +1128,16 @@ static void *conn_thread(void *arg)
                     char *js = (char *)malloc(CONTROL_JSON_CAP);
                     if (js) {
                         int jn = control_get_json(js, CONTROL_JSON_CAP);
-                        http_send_ex(c,"200 OK","application/json",cors,js,jn);
+                        if (jn < 0) {
+                            /* buffer overflow: js holds a truncated, invalid-
+                             * JSON prefix. Never ship that as 200 - tell the
+                             * client generation failed so it can retry/alert
+                             * rather than choke on corrupt data silently. */
+                            http_send_ex(c,"500 Internal Server Error","text/plain",
+                                         cors,"control json too large",22);
+                        } else {
+                            http_send_ex(c,"200 OK","application/json",cors,js,jn);
+                        }
                         free(js);
                     } else {
                         http_send_ex(c,"503 Service Unavailable","text/plain",cors,"oom",3);

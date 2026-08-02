@@ -39,6 +39,18 @@
 
 #ifdef USE_PLAY
 #define SOUNDS_DIR "/usr/share/sounds"
+/* Hard cap on how many sound files caps.play.sounds will enumerate into the
+ * GET /control JSON. This is a truncation-prevention measure, NOT an arbitrary
+ * restriction: control_get_json() builds the whole document in one fixed heap
+ * buffer (CONTROL_JSON_CAP in httpd.c), and the sounds list is the only
+ * unbounded contributor - this project supports large media-player-style sound
+ * libraries (ESPHome media_player), so a directory with hundreds of files could
+ * otherwise overflow the buffer and make the API return truncated, invalid JSON.
+ * Every other caps.* list is inherently bounded (fixed arrays / SDK limits); we
+ * bound this one explicitly. A client needing the full library can read the
+ * directory another way (it is a plain filesystem path) - listing it here is a
+ * convenience for the WebUI test-sound picker, which only needs a workable set. */
+#define SOUNDS_LIST_MAX 96
 
 /* Resolve a test-sound name to its full path under SOUNDS_DIR, rejecting path
  * traversal and anything that is not a regular file actually present there
@@ -796,8 +808,11 @@ int control_get_json(char *buf, size_t cap)
     {
         DIR *dh = opendir(SOUNDS_DIR);
         if (dh){
-            struct dirent *de; int first = 1;
+            struct dirent *de; int first = 1; int emitted = 0;
             while ((de = readdir(dh))){
+                /* stop well before the JSON buffer can overflow - see the
+                 * SOUNDS_LIST_MAX comment above */
+                if (emitted >= SOUNDS_LIST_MAX) break;
                 const char *nm = de->d_name;
                 size_t l = strlen(nm);
                 /* .wav: any RIFF/WAVE this build can decode (PCM/A-law/mu-law -
@@ -820,7 +835,7 @@ int control_get_json(char *buf, size_t cap)
                 snprintf(pp,sizeof pp,"%s/%s",SOUNDS_DIR,nm);
                 if (stat(pp,&st)!=0 || !S_ISREG(st.st_mode)) continue;
                 APP("%s\"%s\"", first?"":",", nm);
-                first = 0;
+                first = 0; emitted++;
             }
             closedir(dh);
         }
@@ -1009,7 +1024,11 @@ int control_get_json(char *buf, size_t cap)
     }
     APP("}");
     #undef APP
-    if (o >= cap){ if (cap) buf[cap-1]=0; return cap ? (int)cap-1 : 0; }   /* truncated */
+    /* o is the length snprintf *would* have produced (it keeps counting past
+     * cap). If it reached/exceeded cap the document was cut off and is NOT valid
+     * JSON - signal that with a negative return so the caller can send an HTTP
+     * error instead of shipping a truncated body as 200 OK. */
+    if (o >= cap){ if (cap) buf[cap-1]=0; return -1; }   /* truncated */
     return (int)o;
 }
 #endif /* USE_CONTROL */
