@@ -72,15 +72,28 @@ status output.
 ## Live rebuild behavior
 
 `motion.enabled`, `sensitivity`, `cols`, `rows`, and `monitor_stream` are
-all live-applicable via `/control` — but every one of them requires
-tearing down and rebuilding the entire IVS group and move interface
-(these are creation-time attributes in the SDK, not per-parameter
-setters). To avoid rebuilding once per key in a multi-key POST (e.g. the
-WebUI's motion settings page saving cols/rows/sensitivity together), the
-HAL registers a batch-commit callback with the hub
-(`hub_set_control_commit_cb`): individual keys just flag "needs rebuild,"
-and the actual stop/destroy/recreate cycle runs at most **once**, after
+all live-applicable via `/control`. `enabled`/`cols`/`rows`/
+`monitor_stream` are creation-time attributes in the SDK — changing any
+of them requires tearing down and rebuilding the entire IVS group and
+move interface. To avoid rebuilding once per key in a multi-key POST
+(e.g. the WebUI's motion settings page saving cols/rows/sensitivity
+together), the HAL registers a batch-commit callback with the hub
+(`hub_set_control_commit_cb`): these keys just flag "needs rebuild," and
+the actual stop/destroy/recreate cycle runs at most **once**, after
 `/control` has applied every key in the request.
+
+**`sensitivity` alone is the one exception** and takes a cheaper fast
+path: `IMP_IVS_MoveParam.sense[]` is a runtime-updatable per-ROI
+parameter on all 9 platforms, so `imp_motion_set_sensitivity()` reads the
+running channel's move params via `IMP_IVS_GetParam`, rewrites every
+configured ROI's `sense[]` entry to the newly-mapped 0–4 level, and
+pushes it back via `IMP_IVS_SetParam` — no stop/destroy/recreate at all.
+If a geometry/`monitor_stream`/`enabled` change arrives in the **same**
+request, the full rebuild supersedes this fast path and re-applies
+sensitivity as part of it; and if the fast path itself fails for any
+reason (channel not actually running, or the SDK `Get`/`SetParam` calls
+report an error), the code falls back to the full rebuild rather than
+leaving the channel in a half-updated state.
 
 ## `cooldown_ms`, `hold_ms`, and `skip_frames`
 

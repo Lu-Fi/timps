@@ -165,7 +165,7 @@ supported` (RFC 2326 §12.32) rather than being silently ignored. See
 - **HEAD**: answered with the same headers a `GET` would send and no
   body, per RFC 7231 §4.3.2, across every route.
 
-### Authentication
+### Authentication (HTTP)
 
 `http_check_auth()` — every request except loopback (127.0.0.0/8) or a
 token-authorized `/control`/`/events`/media path needs credentials.

@@ -34,7 +34,7 @@ otherwise it gets `401`/`403`:
    back to `rtsp.user`/`rtsp.pass` if unset). The 401 challenge offers
    **Digest** first (RFC 7616 `qop="auth"`, plus legacy RFC 2069 no-qop
    support, with a tracked nonce ring — see
-   [Streaming Protocols](Streaming-Protocols.md#authentication)) then
+   [Streaming Protocols](Streaming-Protocols.md#authentication-http)) then
    **Basic**.
 
 CORS: the three media endpoints send `Access-Control-Allow-Origin: *`
@@ -64,7 +64,7 @@ build/platform actually supports.
   "video": { "0": { ... }, "1": { ... } },
   "osd": { "enabled": 1 }, "osd0": { "0": {...}, ... }, "osd1": { ... },
   "privacy": { "0": { "0": {...}, ... }, "1": { ... } },
-  "daynight": { ... }, "motion": { ... },
+  "daynight": { ... }, "motion": { ... }, "encoder": { "0": {...}, "1": {...} },
   "record": { ... }, "timelapse": { ... }
 }
 ```
@@ -77,8 +77,8 @@ cannot actually apply, instead of hardcoding a feature matrix client-side:
 | `caps.*` field | Meaning |
 | --- | --- |
 | `caps.image` | Array of `image.*` leaf keys the HAL wires **live** on this platform (from `src/isp_caps.h`'s per-SoC macros — e.g. `hue` only appears on T23/T31/T40/T41/C100). Unlisted `image.*` keys are still accepted/persisted, just have no live effect. |
-| `caps.audio` | Array of `audio.*` leaf keys applied **live** (`volume`, `gain`, `mute` always; `alc_gain` only where `AUDIO_HAS_ALC_GAIN`; `spk_volume`/`spk_gain` only when a speaker pipeline — `USE_PLAY` or `USE_BACKCHANNEL` — is compiled in). Deliberately excludes `high_pass`/`agc`/`agc_target_dbfs`/`agc_compression_db`/`ns` even though they're numeric-looking live candidates: libimp runs those on its own vendor record thread and frees state unlocked, so a live toggle would race that thread — they are restart-only by design. |
-| `caps.osd` | The per-item OSD leaf keys `/control` accepts and applies live (`text x y font_size color transparency outline outline_color`). Per-item `enabled` is deliberately **not** in this list — see the [Configuration Reference](Configuration-Reference.md#osds-n--per-stream-osd-overlay-items) note on why enabling a boot-disabled item is restart-only. |
+| `caps.audio` | Array of `audio.*` leaf keys applied **live** (`volume`, `gain`, `mute` always; `alc_gain` only where `AUDIO_HAS_ALC_GAIN`; `spk_volume`/`spk_gain`/`aec` only when a speaker pipeline — `USE_PLAY` or `USE_BACKCHANNEL` — is compiled in). Deliberately excludes `high_pass`/`agc`/`agc_target_dbfs`/`agc_compression_db`/`ns` even though they're numeric-looking live candidates: libimp runs those on its own vendor record thread and frees state unlocked, so a live toggle would race that thread — they are restart-only by design. |
+| `caps.osd` | The per-item OSD leaf keys `/control` accepts and applies live (`text x y font_size color transparency outline outline_color`). Per-item `enabled` is deliberately **not** in this list — see the [Configuration Reference](Configuration-Reference.md#osdsn--per-stream-osd-overlay-items) note on why enabling a boot-disabled item is restart-only. |
 | `caps.restart` | Sections whose keys are entirely persist-only: `["video", "sensor", "osd.enabled"]`. |
 | `caps.motion` | `{"available":0\|1, "max_cells":N}` — whether this build/SDK has the `IMP_IVS` move API, and the compile-time cell budget (`IMP_IVS_MOVE_MAX_ROI_CNT`, 52 on most SDKs, 4 on the old T10/T20 3.9.0 SDK). |
 | `caps.privacy` | `{"available":0\|1, "max_regions":N}` — `available` reflects whether an OSD group actually exists on **any** stream (it only does if OSD or a privacy region was enabled at boot), not a hardcoded 1. |
@@ -86,6 +86,36 @@ cannot actually apply, instead of hardcoding a feature matrix client-side:
 | `caps.record` / `caps.timelapse` | `{"available":0\|1}` per `USE_RECORD`/`USE_TIMELAPSE`. |
 | `caps.backchannel` | `{"available":<bc_available()>}` — whether the backchannel was actually configured at boot (restart-only master switch — see [Audio](Audio.md)). |
 | `caps.play` | `{"available":0\|1, "sounds":[...]}` — the play queue, with `sounds` live-enumerated from `/usr/share/sounds` (`.wav`/`.ulaw` always; `.opus` only when `USE_PLAY_OPUS` was actually compiled in, capped at 96 entries to bound the JSON response size). |
+
+### The `encoder` object — read-only encoder telemetry
+
+`GET /control` also carries a top-level `"encoder"` object with one entry
+per video channel that currently has a live encoder: `{"0":{...},
+"1":{...}}`. This is a read-only diagnostics addition — there is no
+matching `/control` POST surface, and no new config keys. Each entry
+comes straight from `IMP_Encoder_Query` (available on all 9 platforms):
+
+```json
+"encoder": {
+  "0": {"registered":1,"left_pics":0,"left_stream_bytes":0,
+        "left_stream_frames":0,"cur_packs":1,"work_done":1,
+        "ave_bitrate":3012.4}
+}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `registered` | Whether the channel is registered to its encode group. |
+| `left_pics` | Images still queued to encode. |
+| `left_stream_bytes` / `left_stream_frames` | Bytes/frames still sitting in the stream buffer, unread. |
+| `cur_packs` | Stream packets making up the current frame. |
+| `work_done` | `0` = still running, `1` = not running. |
+| `ave_bitrate` | **T31 only**, and only once at least one frame has flowed: the running average bitrate from `IMP_Encoder_GetChnAveBitrate` (a T31-exclusive call that needs the just-fetched stream buffer, so it's computed and cached by the encode thread itself rather than queried directly from the `/control` handler, which would otherwise steal packets from the streaming loop). |
+
+A channel whose query fails — a disabled stream, the T23 SW-rotate path
+(which has no bound encoder channel/group at all), or the host
+simulation backend — is **omitted** from the object entirely rather than
+reported with misleading zeros.
 
 ### Request/response examples
 
