@@ -59,7 +59,7 @@ static int field(const char *hdr, const char *key, char *out, int outsz)
     int n=(int)(e-p); if(n>=outsz)n=outsz-1; memcpy(out,p,n); out[n]=0; return 1;
 }
 
-int auth_rtsp_digest(const char *method, const char *value,
+int auth_rtsp_digest(const char *method, const char *req_uri, const char *value,
                      const char *user, const char *pass,
                      const char *server_nonce)
 {
@@ -74,6 +74,12 @@ int auth_rtsp_digest(const char *method, const char *value,
     if (!field(d,"uri",uri,sizeof uri)) return 0;
     if (!field(d,"response",resp,sizeof resp)) return 0;
     if (strcmp(u,user)!=0) return 0;
+    /* the client's digest "uri" must be the URI actually requested (the
+     * request-line target), else HA2 is computed over an attacker-chosen
+     * string and a response sniffed for one URI replays against another.
+     * The uri is public request data, so a plain strcmp is fine timing-wise.
+     * NULL req_uri disables the check (kept for API flexibility only). */
+    if (req_uri && strcmp(uri, req_uri)!=0) return 0;
     /* the client's nonce must be one THIS server actually issued (via a
      * prior 401 on this session) - otherwise the digest response is fully
      * reproducible offline from a single sniffed Authorization header and
@@ -101,7 +107,7 @@ int auth_rtsp_digest(const char *method, const char *value,
     return auth_token_eq(rlow, elow);
 }
 
-int auth_http_digest(const char *method, const char *value,
+int auth_http_digest(const char *method, const char *req_uri, const char *value,
                      const char *user, const char *pass,
                      char *nonce_out, int nonce_cap,
                      char *nc_out, int nc_cap)
@@ -118,6 +124,13 @@ int auth_http_digest(const char *method, const char *value,
     if (!field(d,"nonce",nonce,sizeof nonce)) return 0;
     if (!field(d,"uri",uri,sizeof uri)) return 0;
     if (!field(d,"response",resp,sizeof resp)) return 0;
+    /* the client's digest "uri" must be the request-target actually being
+     * authorized (the HTTP request line's Request-URI), else HA2 is computed
+     * over an attacker-chosen string and a response sniffed for one URI (e.g.
+     * /snapshot.jpg) replays against another (e.g. /control) inside the nonce
+     * window. The uri is public request data, so a plain strcmp is fine
+     * timing-wise. NULL req_uri disables the check (API flexibility only). */
+    if (req_uri && strcmp(uri, req_uri)!=0) return 0;
     int has_qop = field(d,"qop",qop,sizeof qop);
     if (has_qop) {
         /* we only ever offer qop="auth" (never auth-int); nc + cnonce are

@@ -599,7 +599,8 @@ static int http_nonce_check(const char *nonce, const char *nc)
  * stale=true and the client re-handshakes without re-prompting the user
  * (per RFC 7616 3.3 stale MUST only be sent when the creds were right). */
 static int http_check_auth(const ms_config *cfg, const char *buf,
-                           const char *method, int *digest_stale)
+                           const char *method, const char *path,
+                           int *digest_stale)
 {
     const char *user = cfg->http_user[0] ? cfg->http_user : cfg->rtsp_user;
     const char *pass = cfg->http_user[0] ? cfg->http_pass : cfg->rtsp_pass;
@@ -614,9 +615,12 @@ static int http_check_auth(const ms_config *cfg, const char *buf,
             line[i]=0;
             if (strncasecmp(line,"Digest",6)==0) {
                 char cn[64], nc[16];
-                if (!auth_http_digest(method, line, user, pass,
+                /* path is the request line's Request-URI (2nd token, %255s):
+                 * the client's digest uri MUST match it or the response is a
+                 * replay for a different URI - reject like any auth failure */
+                if (!auth_http_digest(method, path, line, user, pass,
                                       cn, sizeof cn, nc, sizeof nc))
-                    return 0;                      /* wrong user/pass/format */
+                    return 0;                      /* wrong user/pass/uri/format */
                 if (http_nonce_check(cn, nc)) return 1;
                 if (digest_stale) *digest_stale = 1;
                 return 0;
@@ -1066,7 +1070,7 @@ static void *conn_thread(void *arg)
              * clients upgrade while plain Basic pollers keep working. */
             int stale = 0;
             if (!c->local && !tok_ok &&
-                !http_check_auth(c->cfg, buf, method, &stale)) {
+                !http_check_auth(c->cfg, buf, method, path, &stale)) {
                 char nonce[33];
                 http_new_nonce(nonce);
                 char r[1024];
