@@ -806,6 +806,23 @@ else
 	lv_post() { curl -s -o /dev/null -w '%{http_code}' --max-time 12 \
 		-u "$HTTP_USER:$HTTP_PASS" -X POST "$(http_base)/control" -d "$1"; }
 	lv_get()  { curlq 12 "$(http_base)/control" -o "$1"; }
+	# Interruption safety: /control POSTs PERSIST to the camera's flash config.
+	# A run killed between POST(new) and POST(restore) used to strand the test
+	# values on a live camera (seen 2026-08-02: cam-wyze left with manual WB
+	# rgain/bgain=32767 -> full magenta image, surviving reboots). Track the
+	# pending restore body and flush it from EXIT/INT/TERM traps. kill -9 or a
+	# network drop still defeats this, hence also the safe-if-stranded test
+	# values below.
+	LV_PENDING=""
+	lv_restore_pending() {
+		[ -n "${LV_PENDING:-}" ] || return 0
+		warn "interrupted mid live-settings test - restoring camera settings"
+		lv_post "$LV_PENDING" >/dev/null 2>&1 || true
+		LV_PENDING=""
+	}
+	trap 'lv_restore_pending' EXIT
+	trap 'lv_restore_pending; trap - INT;  kill -INT  $$' INT
+	trap 'lv_restore_pending; trap - TERM; kill -TERM $$' TERM
 	# pick a valid value != cur within [lo,hi]
 	flip_int()  { awk -v lo="$1" -v hi="$2" -v c="$3" 'BEGIN{
 		m=int((lo+hi)/2); if(m!=c){print m} else if(m<hi){print m+1} else{print m-1}}'; }
@@ -845,8 +862,14 @@ else
 		local n=${#P[@]}
 		[ "$n" -gt 0 ] || { skip "$label: no testable keys"; return; }
 		local code gf rf i got pass=0
+		LV_PENDING="${wo}{$rbody}${wc}"     # armed until restore lands
 		code=$(lv_post "${wo}{$body}${wc}")
-		if [ "$code" != "200" ]; then bad "$label: POST(new) HTTP $code"; return; fi
+		if [ "$code" != "200" ]; then
+			bad "$label: POST(new) HTTP $code"
+			# a non-200 can still be a partial apply - restore, then disarm
+			lv_post "${wo}{$rbody}${wc}" >/dev/null; LV_PENDING=""
+			return
+		fi
 		gf="$OUTDIR/lv_${label}_new.json"; lv_get "$gf"
 		for ((i=0;i<n;i++)); do
 			got=$(jget "$gf" "${P[i]}")
@@ -856,6 +879,7 @@ else
 		[ "$pass" = "$n" ] && ok "$label: all $n live key(s) applied & read back (${P[*]##*.})"
 		# restore originals and confirm they revert
 		code=$(lv_post "${wo}{$rbody}${wc}")
+		LV_PENDING=""                       # restore POSTed - disarm the trap
 		rf="$OUTDIR/lv_${label}_restore.json"; lv_get "$rf"
 		local rok=0
 		for ((i=0;i<n;i++)); do [ "$(jget "$rf" "${P[i]}")" = "${O[i]}" ] && rok=$((rok+1)); done
@@ -872,15 +896,21 @@ else
 	}
 
 	# --- image: every ISP knob (accepted + persisted on any SoC; live where the
-	# HAL supports it). uchar knobs 0..255, highlight/backlight 0..10, WB gains
-	# 0..65535, hflip/vflip/running_mode bool, anti_flicker 0..2, core_wb 0..1 ---
+	# HAL supports it). uchar knobs 0..255, highlight/backlight 0..10,
+	# hflip/vflip/running_mode bool, anti_flicker 0..2, core_wb 0..1.
+	# WB gains: the config accepts 0..65535 but the probe range is deliberately
+	# 0..2048 so flip_int's midpoint lands on 1024 = unity gain on Ingenic ISPs.
+	# core_wb_mode DOES flip to 1 (manual) during the test, so if a run dies
+	# with the trap defeated (kill -9, network drop) the stranded state is
+	# manual WB at ~neutral gains - a usable image - instead of the magenta
+	# rgain/bgain=32767 that hit cam-wyze on 2026-08-02. ---
 	lv_section image '{"image":' '}' image \
 		"brightness int 0 255" "contrast int 0 255" "saturation int 0 255" \
 		"sharpness int 0 255" "hue int 0 255" "ae_compensation int 0 255" \
 		"max_again int 0 255" "max_dgain int 0 255" "sinter_strength int 0 255" \
 		"temper_strength int 0 255" "dpc_strength int 0 255" "defog_strength int 0 255" \
 		"drc_strength int 0 255" "highlight_depress int 0 10" \
-		"backlight_compensation int 0 10" "wb_rgain int 0 65535" "wb_bgain int 0 65535" \
+		"backlight_compensation int 0 10" "wb_rgain int 0 2048" "wb_bgain int 0 2048" \
 		"hflip bool" "vflip bool" "running_mode bool" "anti_flicker int 0 2" \
 		"core_wb_mode int 0 1"
 
@@ -945,12 +975,14 @@ else
 	pv_cur=$(jget "$LV_BASE" video.0.bitrate)
 	if [ -n "$pv_cur" ]; then
 		pv_new=$(flip_int 512 8000 "$pv_cur")
+		LV_PENDING="{\"video\":{\"0\":{\"bitrate\":$pv_cur}}}"   # armed until restore
 		code=$(lv_post "{\"video\":{\"0\":{\"bitrate\":$pv_new}}}")
 		lv_get "$OUTDIR/lv_persist.json"
 		got=$(jget "$OUTDIR/lv_persist.json" video.0.bitrate)
 		[ "$got" = "$pv_new" ] && ok "persist-only video0.bitrate round-trips through config ($pv_new, applies on restart)" \
 			|| bad "persist-only video0.bitrate did not persist (got '$got', want '$pv_new')"
 		lv_post "{\"video\":{\"0\":{\"bitrate\":$pv_cur}}}" >/dev/null   # restore
+		LV_PENDING=""
 	fi
 
 	# --- rotation (opt-in: --test-rotation) ---------------------------------
