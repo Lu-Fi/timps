@@ -1517,7 +1517,15 @@ static int sw_rot_start(const ms_config *cfg, int i)
     if (IMP_Encoder_YuvInit(&h, ew, eh, &yin)!=0 || !h){
         LOGE(MOD,"sw-rot chn%d: IMP_Encoder_YuvInit %dx%d failed",chn,ew,eh);
         IMP_FrameSource_DestroyChn(chn);
-        return -1;
+        /* Defense in depth (Fix 2): a YuvInit failure that slips past the
+         * envelope gate above (an unexpected sensor/firmware combo, a future
+         * safe-envelope miscalculation) must NOT take down the whole daemon.
+         * The framesource is already destroyed, so no IMP state survives:
+         * ask the caller to bring THIS stream up unrotated and leave every
+         * other stream's bring-up untouched. */
+        LOGW(MOD,"video%d: SW rotate init failed - disabling rotation for this "
+                 "stream, bringing it up UNROTATED",i);
+        return SW_ROT_FALLBACK;
     }
     /* phys-contiguous bounce frame for the encoder input (VbmAlloc, page
      * aligned); VbmV2P yields the physical addr YuvEncode's DMA needs */
