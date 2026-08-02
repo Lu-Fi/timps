@@ -797,7 +797,10 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
         "{\"enabled\":%d,\"mode\":%d,\"brightness\":%.1f,\"total_gain\":%.0f,"
         "\"ae_luma\":%.0f,\"total_gain_day_threshold\":%g,"
         "\"total_gain_night_threshold\":%g,\"day_gain_pct\":%d,"
-        "\"baseline_delay_s\":%d,\"dn_mode\":\"%s\","
+        "\"baseline_delay_s\":%d,"
+        "\"boot_settle_s\":%d,\"boot_settle_max_s\":%d,"
+        "\"boot_stable_pct\":%d,\"night_reconfirm_s\":%d,"
+        "\"dn_mode\":\"%s\","
         "\"time_night_start\":\"%s\",\"time_day_start\":\"%s\","
         "\"sun_latitude\":%g,\"sun_longitude\":%g,"
         "\"sun_sunrise_offset_min\":%d,\"sun_sunset_offset_min\":%d,"
@@ -805,7 +808,10 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
         enabled, mode, (double)brightness, (double)total_gain, (double)ae_luma,
         (double)d->total_gain_day_threshold,
         (double)d->total_gain_night_threshold,
-        d->day_gain_pct, d->baseline_delay_s, dnmode,
+        d->day_gain_pct, d->baseline_delay_s,
+        d->boot_settle_s, d->boot_settle_max_s,
+        d->boot_stable_pct, d->night_reconfirm_s,
+        dnmode,
         etns, etds,
         (double)d->sun_latitude, (double)d->sun_longitude,
         d->sun_sunrise_offset_min, d->sun_sunset_offset_min,
