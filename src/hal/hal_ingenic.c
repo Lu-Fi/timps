@@ -346,6 +346,12 @@ static int g_motion_pin = -1;    /* pinned FS channel while motion runs */
  * key changes during a /control request; ing_control_commit() (called once per
  * request via hub_control_commit) does the single motion_sync() rebuild. */
 static int g_motion_resync_pending = 0;
+/* Item-1: a pure sensitivity change (no geometry/monitor_stream/enabled change)
+ * can update the running IVS channel's sense[] in place via IMP_IVS_SetParam,
+ * skipping the full stop/destroy/recreate. Tracked separately so that if a
+ * geometry key ALSO changes in the same request the full rebuild
+ * (g_motion_resync_pending) supersedes and covers sensitivity too. */
+static int g_motion_sense_pending = 0;
 static void motion_sync(const ms_config *cfg)
 {
     pthread_mutex_lock(&g_motion_mtx);
@@ -2233,8 +2239,17 @@ static void ing_control(const char *key, const char *val)
      * config-only: the polling thread reads them from g_cfg per event. */
     if (!strncmp(key,"motion.",7)){
         const char *k = key+7;
-        if (!strcmp(k,"enabled") || !strcmp(k,"cols") || !strcmp(k,"rows") ||
-            !strcmp(k,"sensitivity") || !strcmp(k,"monitor_stream")){
+        if (!strcmp(k,"sensitivity")){
+            /* Item-1: a pure sensitivity change updates the running channel's
+             * per-ROI sense[] in place (IMP_IVS_SetParam) instead of the full
+             * stop/destroy/recreate. Flagged separately from the geometry keys
+             * below; if a geometry key ALSO arrives in this request the full
+             * rebuild supersedes at commit and re-applies sensitivity anyway.
+             * Deferred to commit like the rest so one POST = one apply. */
+            g_motion_sense_pending = 1;
+            LOGD(MOD,"control %s applied (IVS sensitivity update deferred to commit)", key);
+        } else if (!strcmp(k,"enabled") || !strcmp(k,"cols") || !strcmp(k,"rows") ||
+                   !strcmp(k,"monitor_stream")){
             /* M2: defer the (expensive) IVS stop/destroy/recreate to a single
              * commit at the end of the /control request. A settings-form POST
              * naturally carries several of these keys (cols+rows+sensitivity+
@@ -2293,8 +2308,25 @@ static void ing_control_commit(void)
 {
     if (g_motion_resync_pending){
         g_motion_resync_pending = 0;
+        g_motion_sense_pending = 0;     /* the full rebuild re-applies sensitivity too */
         motion_sync(g_hcfg);
         LOGI(MOD,"IVS motion grid re-synced (batched, once per request)");
+    } else if (g_motion_sense_pending){
+        g_motion_sense_pending = 0;
+        /* Item-1 fast path: sensitivity-only change - update the live channel's
+         * sense[] via IMP_IVS_SetParam instead of a stop/destroy/recreate.
+         * Serialize against motion_sync with the same mutex (same g_motion_mtx
+         * -> g_st_lock order the start/stop path already uses). On ANY failure
+         * (or if motion isn't actually running) fall back to the full rebuild so
+         * the channel is never left half-updated. */
+        pthread_mutex_lock(&g_motion_mtx);
+        int running = (g_motion_pin >= 0);
+        int rc = running ? imp_motion_set_sensitivity(g_hcfg) : 0;
+        pthread_mutex_unlock(&g_motion_mtx);
+        if (running && rc != 0){
+            motion_sync(g_hcfg);
+            LOGI(MOD,"IVS sensitivity live-update failed, full grid rebuild done");
+        }
     }
 }
 #endif
