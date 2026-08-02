@@ -151,6 +151,7 @@ while [ $# -gt 0 ]; do
 		--test-backchannel) TEST_BACKCHANNEL=1; shift;;
 		--bc-test-freq) BC_TEST_FREQ="$2"; shift 2;;
 		--bc-test-secs) BC_TEST_SECS="$2"; shift 2;;
+		--test-rotation) TEST_ROTATION=1; shift;;
 		-h|--help) usage;;
 		*) echo "unknown option: $1" >&2; usage;;
 	esac
@@ -909,6 +910,54 @@ else
 		[ "$got" = "$pv_new" ] && ok "persist-only video0.bitrate round-trips through config ($pv_new, applies on restart)" \
 			|| bad "persist-only video0.bitrate did not persist (got '$got', want '$pv_new')"
 		lv_post "{\"video\":{\"0\":{\"bitrate\":$pv_cur}}}" >/dev/null   # restore
+	fi
+
+	# --- rotation (opt-in: --test-rotation) ---------------------------------
+	# video0.rotation is persist-only like bitrate above, AND SoC-gated:
+	# caps.rotation is only present when this build has USE_ROTATE compiled
+	# in, and only lists the degree values this SoC's rotation path actually
+	# supports (0 always; 90/270 need a dim-swapping apply path - T31/T40/T41
+	# hardware or T23 USE_SW_ROTATE; 180 an ISP flip). A build without
+	# rotation support simply omits the key - that is not a failure, so this
+	# skips cleanly rather than reporting FAIL on unsupported hardware.
+	if [ "$TEST_ROTATION" = "1" ]; then
+		rot_caps=$(jget "$cj" caps.rotation)
+		if [ -z "${rot_caps:-}" ]; then
+			info "rotation: caps.rotation absent - not compiled into this build, skipping"
+		else
+			info "rotation: SoC-supported values: $rot_caps"
+			rot_caps_norm=$(echo "$rot_caps" | tr -d ' []')   # "[0, 90, 180, 270]" -> "0,90,180,270"
+			rot_cur=$(jget "$LV_BASE" video.0.rotation)
+			base_w=$(jget "$LV_BASE" video.0.width)
+			base_h=$(jget "$LV_BASE" video.0.height)
+			for rv in 90 180 270; do
+				case ",$rot_caps_norm," in
+				*",$rv,"*)
+					lv_post "{\"video\":{\"0\":{\"rotation\":$rv}}}" >/dev/null
+					lv_get "$OUTDIR/lv_rotation.json"
+					got=$(jget "$OUTDIR/lv_rotation.json" video.0.rotation)
+					if [ "$got" = "$rv" ]; then
+						ok "persist-only video0.rotation=$rv round-trips through config (applies on restart)"
+						if [ "$rv" = "90" ] || [ "$rv" = "270" ]; then
+							# 90/270 swap width<->height in ms_vstream_eff_dims();
+							# eff_width/eff_height must reflect that swap for the
+							# PENDING (persisted, not-yet-restarted) config too.
+							eff_w=$(jget "$OUTDIR/lv_rotation.json" video.0.eff_width)
+							eff_h=$(jget "$OUTDIR/lv_rotation.json" video.0.eff_height)
+							if [ "$eff_w" = "$base_h" ] && [ "$eff_h" = "$base_w" ]; then
+								ok "  eff_width/eff_height correctly swapped for rotation=$rv (${eff_w}x${eff_h})"
+							else
+								bad "  eff dims NOT swapped for rotation=$rv (got ${eff_w}x${eff_h}, want ${base_h}x${base_w})"
+							fi
+						fi
+					else
+						bad "persist-only video0.rotation=$rv did not persist (got '$got', want '$rv')"
+					fi
+					;;
+				esac
+			done
+			lv_post "{\"video\":{\"0\":{\"rotation\":${rot_cur:-0}}}}" >/dev/null   # restore
+		fi
 	fi
 
 	fi
