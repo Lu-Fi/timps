@@ -823,8 +823,19 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
             return FS_ROT_FALLBACK;
         }
         /* Args are the PRE-rotation dims per header :575-576, run BEFORE
-         * CreateChn (header :581). */
-        IMP_FrameSource_SetChnRotate(chn, r90, v->width, v->height);
+         * CreateChn (header :581).
+         * Defense in depth (Fix 2): even inside the safe envelope above, if the
+         * FS rotate-enable call itself fails for some other reason (an unexpected
+         * sensor/firmware quirk, a future envelope miscalculation), it must NOT
+         * cascade into a total HAL/daemon start failure. SetChnRotate runs BEFORE
+         * CreateChn, so no IMP channel exists yet on this path: refuse the
+         * rotation for THIS stream and let the caller bring it up UNROTATED,
+         * leaving every other stream's bring-up untouched. */
+        if (IMP_FrameSource_SetChnRotate(chn, r90, v->width, v->height) < 0){
+            LOGW(MOD,"video%d: FS-rotate enable (SetChnRotate) failed - disabling "
+                     "rotation for this stream, bringing it up UNROTATED", chn);
+            return FS_ROT_FALLBACK;
+        }
         /* CRUCIAL (T31 OSD-on-rotation fix, see docs/T31-OSD-rotation-handoff.md):
          * the whole FS chnAttr stays at the PRE-rotation (landscape) geometry -
          * scaler (line ~444) AND picWidth/picHeight. Only the ENCODER is
