@@ -28,7 +28,8 @@ typedef struct {
     int      profile;        /* 0 baseline,1 main,2 high */
     int      qp;             /* fixed qp / init qp */
     int      min_qp, max_qp;
-    int      rotation;       /* 0,90,270 (180 removed - use image.hflip+vflip) */
+    int      rotation;       /* 0,90,270 (+180 only on T40/T41 per-channel I2D;
+                              * 180 removed elsewhere - use image.hflip+vflip) */
     int      buffers;        /* IMP nrVBs */
     int      buffers_explicit; /* 1 if "buffers" was set in timps.conf, so HAL
                                  * safety clamps (e.g. T31 non-scaled channel)

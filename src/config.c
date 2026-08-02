@@ -1,7 +1,7 @@
 #include "config.h"
 #include "log.h"
 #include "motion_caps.h"   /* MOTION_MAX_CELLS/MOTION_CELL_LIMIT (grid clamp) */
-#include "rotate_caps.h"   /* ROT_HAS_90 (rotation whitelist) */
+#include "rotate_caps.h"   /* ROT_HAS_90/ROT_HAS_HW_I2D (rotation whitelist) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -82,12 +82,21 @@ static int  pint_cl(const char *v, int lo, int hi)
     if (x > hi) x = hi;
     return x;
 }
-/* rotation parser: accepts degrees (0/90/270) and the legacy T31 rotTo90
- * enum (0/1/2 -> 0/90/270), then whitelists against this SoC's caps. Anything
- * unsupported coerces to 0 (with a warning) so the streamer stays behaviour-
- * neutral until an apply path exists. 180 is NOT a rotation value any more
- * (it was a redundant global ISP Hflip+Vflip - use image.hflip+image.vflip);
- * it lands on the "invalid -> 0" rail below like any other bad value.
+/* rotation parser: accepts degrees (0/90/270, plus 180 on T40/T41) and the
+ * legacy T31 rotTo90 enum (0/1/2 -> 0/90/270), then whitelists against this
+ * SoC's caps. Anything unsupported coerces to 0 (with a warning) so the
+ * streamer stays behaviour-neutral until an apply path exists.
+ * 180 is platform-nuanced: on every classic-API SoC (T10/T20/T21/T23/T30/T31/
+ * C100) it was only ever a GLOBAL ISP Hflip+Vflip - visually and mechanically
+ * identical to (and made redundant by) the always-available image.hflip +
+ * image.vflip, and falsely modelled as per-stream - so it was removed there and
+ * still coerces to 0 below (use image.hflip+image.vflip instead). But on T40/T41
+ * (ROT_HAS_HW_I2D) 180 is a genuine PER-CHANNEL hardware I2D rotate scoped to
+ * just the requesting video channel - something the global image.hflip/vflip
+ * CANNOT replicate there (they flip every channel at the sensor/ISP). So 180 is
+ * a real, distinct capability on that platform and is accepted only when
+ * ROT_HAS_HW_I2D is defined; everywhere else it lands on the "unsupported -> 0"
+ * rail like an unsupported 90/270 request.
  * IMPORTANT: legacy 1/2 here must round-trip to the SAME rotTo90 value in
  * hal_ingenic.c's fs_create() (currently 90->1, 270->2, see the 2026-07-21
  * comment there) so that a prudynt.cfg/raptor-style `rotation=1|2` (which is
@@ -97,9 +106,14 @@ static int  pint_cl(const char *v, int lo, int hi)
 static int prot(const char *val){
     int r = pint(val);
     if (r==1) r=90; else if (r==2) r=270;        /* legacy T31 rotTo90 0/1/2 */
-    if (r!=0 && r!=90 && r!=270){ LOGW(MOD,"rotation %d invalid -> 0",r); return 0; }
+    if (r!=0 && r!=90 && r!=180 && r!=270){ LOGW(MOD,"rotation %d invalid -> 0",r); return 0; }
 #ifndef ROT_HAS_90
     if (r==90||r==270){ LOGW(MOD,"rotation %d unsupported on this SoC -> 0",r); return 0; }
+#endif
+#ifndef ROT_HAS_HW_I2D
+    /* 180 only has a real per-channel path on T40/T41; elsewhere it is the
+     * removed redundant global flip - coerce to 0 (use image.hflip+vflip). */
+    if (r==180){ LOGW(MOD,"rotation 180 unsupported on this SoC -> 0 (use image.hflip+image.vflip)"); return 0; }
 #endif
     return r;
 }
