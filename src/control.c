@@ -121,8 +121,50 @@ static const char *find_obj(const char *s, const char *e, const char *name,
     return NULL;
 }
 
-/* extract the scalar value of "name" within [s,e) into out (unquoted strings
- * get minimal unescaping). Returns 1 if found. Object values are rejected. */
+static int hexdig(char c)
+{
+    if (c>='0'&&c<='9') return c-'0';
+    if (c>='a'&&c<='f') return c-'a'+10;
+    if (c>='A'&&c<='F') return c-'A'+10;
+    return -1;
+}
+
+/* parse exactly 4 hex digits at [h,e); returns 0..0xFFFF, or -1 on short
+ * input / non-hex (so a malformed \uXX... can't read out of bounds). */
+static long hex4(const char *h, const char *e)
+{
+    long v = 0;
+    for (int i=0;i<4;i++){
+        if (h+i>=e) return -1;
+        int d = hexdig(h[i]);
+        if (d<0) return -1;
+        v = (v<<4)|d;
+    }
+    return v;
+}
+
+/* Append code point cp to out as UTF-8, starting at index o, keeping one byte
+ * reserved for the terminating NUL. Writes nothing (returns 0) if it wouldn't
+ * fit. Returns the number of bytes written (1..4). This daemon's strings are
+ * UTF-8 throughout, so decoded \uXXXX escapes are re-encoded here as UTF-8. */
+static size_t utf8_enc(unsigned cp, char *out, size_t o, size_t cap)
+{
+    unsigned char b[4]; size_t n;
+    if      (cp < 0x80)   { b[0]=(unsigned char)cp; n=1; }
+    else if (cp < 0x800)  { b[0]=0xC0|(cp>>6);  b[1]=0x80|(cp&0x3F); n=2; }
+    else if (cp < 0x10000){ b[0]=0xE0|(cp>>12); b[1]=0x80|((cp>>6)&0x3F);
+                            b[2]=0x80|(cp&0x3F); n=3; }
+    else                  { b[0]=0xF0|(cp>>18); b[1]=0x80|((cp>>12)&0x3F);
+                            b[2]=0x80|((cp>>6)&0x3F); b[3]=0x80|(cp&0x3F); n=4; }
+    if (o + n + 1 > cap) return 0;   /* +1 reserves the NUL out[o]=0 below */
+    for (size_t i=0;i<n;i++) out[o+i]=(char)b[i];
+    return n;
+}
+
+/* extract the scalar value of "name" within [s,e) into out (quoted strings get
+ * full RFC 8259 escape decoding: \" \\ \/ \b \f \n \r \t and \uXXXX incl.
+ * UTF-16 surrogate pairs, re-encoded as UTF-8). Returns 1 if found. Object
+ * values are rejected. */
 static int get_val(const char *s, const char *e, const char *name,
                    char *out, size_t cap)
 {
@@ -131,12 +173,39 @@ static int get_val(const char *s, const char *e, const char *name,
     size_t o = 0;
     if (*p=='"'){
         for (p++; p<e && *p!='"'; p++){
-            char ch = *p;
-            if (ch=='\\' && p+1<e){
+            unsigned cp;
+            if (*p=='\\' && p+1<e){
                 p++;
-                ch = (*p=='n')?'\n':(*p=='t')?'\t':*p;
-            }
-            if (o+1<cap) out[o++]=ch;
+                switch (*p){
+                case 'n': cp='\n'; break;
+                case 't': cp='\t'; break;
+                case 'r': cp='\r'; break;
+                case 'b': cp='\b'; break;
+                case 'f': cp='\f'; break;
+                case '/': cp='/';  break;   /* correct by design, not by accident */
+                case '"': cp='"';  break;
+                case '\\':cp='\\'; break;
+                case 'u': {
+                    long u = hex4(p+1, e);
+                    if (u < 0){ cp=0xFFFD; break; }   /* not 4 hex -> U+FFFD */
+                    p += 4;                            /* consumed the 4 digits */
+                    if (u>=0xD800 && u<=0xDBFF){       /* high surrogate */
+                        long lo = (p+2<e && p[1]=='\\' && p[2]=='u')
+                                    ? hex4(p+3, e) : -1;
+                        if (lo>=0xDC00 && lo<=0xDFFF){
+                            cp = 0x10000u + (unsigned)(((u-0xD800)<<10)
+                                                       + (lo-0xDC00));
+                            p += 6;                    /* consumed \uXXXX low */
+                        } else cp = 0xFFFD;            /* unpaired high */
+                    } else if (u>=0xDC00 && u<=0xDFFF){
+                        cp = 0xFFFD;                   /* lone low surrogate */
+                    } else cp = (unsigned)u;
+                    break;
+                }
+                default: cp=(unsigned char)*p; break;  /* unknown -> literal */
+                }
+            } else cp = (unsigned char)*p;
+            o += utf8_enc(cp, out, o, cap);
         }
     } else {
         for (; p<e && *p!=',' && *p!='}' && *p!=']' &&
