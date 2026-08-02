@@ -769,6 +769,13 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
     snprintf(tns, sizeof tns, "%s", d->time_night_start);
     snprintf(tds, sizeof tds, "%s", d->time_day_start);
     config_str_unlock();
+    /* These are config-file-only HH:MM strings (unvalidated), so route them
+     * through jesc like every other string field - a hand-edited config with a
+     * stray " or \ would otherwise splice raw into the JSON. Sized for jesc's
+     * worst-case expansion (up to 3 bytes out per input byte). */
+    char etns[sizeof tns * 3], etds[sizeof tds * 3];
+    jesc(tns, etns, sizeof etns);
+    jesc(tds, etds, sizeof etds);
     return snprintf(buf, cap,
         "{\"enabled\":%d,\"mode\":%d,\"brightness\":%.1f,\"total_gain\":%.0f,"
         "\"ae_luma\":%.0f,\"total_gain_day_threshold\":%g,"
@@ -782,7 +789,7 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
         (double)d->total_gain_day_threshold,
         (double)d->total_gain_night_threshold,
         d->day_gain_pct, d->baseline_delay_s, dnmode,
-        tns, tds,
+        etns, etds,
         (double)d->sun_latitude, (double)d->sun_longitude,
         d->sun_sunrise_offset_min, d->sun_sunset_offset_min,
         sun_sr, sun_ss);
