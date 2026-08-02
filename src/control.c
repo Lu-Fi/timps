@@ -363,7 +363,7 @@ void control_apply_json(const char *json)
      * drive the speaker AO live (applied now if a play/backchannel session
      * holds it, else at the next AO open) and persist as the AO default. */
     static const char *const AUD_LIVE[] = {
-        "volume","gain","alc_gain","mute","spk_volume","spk_gain"
+        "volume","gain","alc_gain","mute","spk_volume","spk_gain","aec"
     };
     /* audio.* persist-only keys: SetPubAttr/encoder-init attributes. They go
      * through the same timps_apply_setting (config + persist); the HAL audio
@@ -741,6 +741,9 @@ static const char *const AUD_CAPS[] = {
     /* speaker AO volume/gain: live only when an audio-output pipeline (play
      * queue or backchannel) is compiled in - it owns the IMP_AO device. */
     "spk_volume","spk_gain",
+    /* AEC: applied at the next AO open (same category as spk_*), needs the AO
+     * pipeline compiled in. */
+    "aec",
 #endif
     /* NOTE: high_pass/agc/agc_target_dbfs/agc_compression_db/ns are NOT here:
      * they are restart-required (libimp runs them on its own record thread and
@@ -1022,11 +1025,13 @@ int control_get_json(char *buf, size_t cap)
         APP("\"enabled\":%d,\"codec\":\"%s\",\"samplerate\":%d,"
             "\"channels\":%d,\"bitrate\":%d,\"force_stereo\":%d,"
             "\"spk_enabled\":%d,\"spk_volume\":%d,\"spk_gain\":%d,"
-            "\"backchannel\":%d,\"backchannel_codec\":%d,\"backchannel_rate\":%d},",
+            "\"backchannel\":%d,\"backchannel_codec\":%d,\"backchannel_rate\":%d,"
+            "\"aec\":%d},",
             c->audio.enabled, cod, c->audio.samplerate,
             c->audio.channels, c->audio.bitrate_kbps, c->audio.force_stereo,
             c->audio.spk_enabled, c->audio.spk_volume, c->audio.spk_gain,
-            c->audio.backchannel, c->audio.backchannel_codec, c->audio.backchannel_rate);
+            c->audio.backchannel, c->audio.backchannel_codec, c->audio.backchannel_rate,
+            c->audio.aec);
     }
     {   /* sensor (all persist-only / restart-required) */
         char sm[136];

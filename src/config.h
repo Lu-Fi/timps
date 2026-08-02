@@ -84,6 +84,11 @@ typedef struct {
     int      backchannel;        /* master on/off for the RTSP backchannel */
     int      backchannel_codec;  /* 0=PCMU 1=PCMA 2=AAC (advertised format) */
     int      backchannel_rate;   /* speaker sample rate fed to iac (Hz) */
+    /* Acoustic Echo Cancellation for the backchannel (IMP_AI_EnableAec):
+     * opt-in, default OFF - it engages a vendor DSP path whose quality/latency
+     * varies per SoC/mic/speaker pairing. Applied at the next AO open (like
+     * spk_volume/spk_gain), only while both AI capture and AO output are live. */
+    int      aec;
 } ms_audio_cfg;
 
 typedef struct {
