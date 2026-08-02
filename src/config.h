@@ -212,6 +212,26 @@ typedef struct {
      * against IR flicker) instead of the fixed day_threshold. 0 = disable. */
     int      day_gain_pct;       /* night->day at this % of the night baseline */
     int      baseline_delay_s;   /* wait this long in night before sampling it */
+    /* boot/re-enable AE settle (see daynight.c dn_ae_stable()): a reflashed/
+     * cold sensor can take far longer than a warm boot for total_gain to
+     * converge, so the very first decision waits for boot_settle_s AND (when
+     * boot_stable_pct > 0) for DN_SETTLE_SAMPLES consecutive gain readings to
+     * fall within boot_stable_pct% of each other, up to boot_settle_max_s as
+     * a hard cap so a sensor that never stabilizes still gets a decision.
+     * boot_stable_pct=0 disables the stability wait (boot_settle_s alone). */
+    int      boot_settle_s;      /* minimum settle time before trusting gain */
+    int      boot_settle_max_s;  /* hard cap on the settle wait */
+    int      boot_stable_pct;    /* max spread across samples to call it stable, 0=off */
+    /* self-healing periodic reconfirm (sensor mode only): total_gain sampled
+     * through the night/IR pipeline is not the same metric as day-pipeline
+     * gain (IR-cut changes the optical path and the ISP's night tuning table
+     * can target a different AE point), so once night_baseline itself came
+     * from a false trigger, night->day may never cross via gain alone. After
+     * night_reconfirm_s of continuous night dwell, force a probe switch back
+     * to day (same dn_switch() a real day decision would use) and let the
+     * normal day->night hysteresis flip back within one dwell+hysteresis
+     * window if the scene is genuinely still dark. 0 = disabled. */
+    int      night_reconfirm_s;
     /* brightness fallback (only when no gain field is readable) */
     float    threshold_low;      /* %: below this (in day) -> night */
     float    threshold_high;     /* %: above this (in night) -> day */

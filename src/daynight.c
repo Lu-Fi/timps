@@ -279,10 +279,36 @@ static void dn_sleep(int ms)
  * 15000-20000, easily over any reasonable night threshold) for the first
  * fraction of a second - and since the first-ever switch bypasses the normal
  * transition_s dwell (see below), that single bad sample used to commit
- * straight to night on every boot/reboot regardless of actual light. */
-#ifndef DN_SETTLE_MS
-#define DN_SETTLE_MS 5000
-#endif
+ * straight to night on every boot/reboot regardless of actual light.
+ *
+ * A flat wall-clock delay (daynight.boot_settle_s, floor only) turned out to
+ * be insufficient after a firmware reflash: reproduced twice on real T31s
+ * (bright room, ~18:00) where the very first switch fired ~90s after thread
+ * start, well past the old fixed 5s window - the AE simply took far longer
+ * to converge on a freshly-reflashed sensor than on a warm reboot. So the
+ * settle wait is now ALSO gated on gain actually being stable: once
+ * boot_settle_s has elapsed, keep waiting (up to boot_settle_max_s as a hard
+ * cap) until DN_SETTLE_SAMPLES consecutive readings fall within
+ * boot_stable_pct% of their average - see dn_ae_stable(). boot_stable_pct=0
+ * reverts to the old flat-floor-only behaviour. */
+#define DN_SETTLE_SAMPLES 6   /* consecutive readings required to call AE settled */
+
+/* true once `n` (capped at DN_SETTLE_SAMPLES) samples in `hist` (ring buffer,
+ * only the last DN_SETTLE_SAMPLES entries matter) all fall within pct% of
+ * their average - i.e. the AE loop has stopped moving total_gain around. */
+static int dn_ae_stable(const float *hist, int n, int pct)
+{
+    if (n < DN_SETTLE_SAMPLES || pct <= 0) return 0;
+    float mn = hist[0], mx = hist[0], avg = 0.0f;
+    for (int i = 0; i < DN_SETTLE_SAMPLES; i++) {
+        if (hist[i] < mn) mn = hist[i];
+        if (hist[i] > mx) mx = hist[i];
+        avg += hist[i];
+    }
+    avg /= DN_SETTLE_SAMPLES;
+    if (avg <= 0.0f) return 0;
+    return (mx - mn) <= avg * (float)pct / 100.0f;
+}
 
 /* Pre-switch hysteresis (raptor ric_poll_exposure style): the PRIMARY fix for
  * the stuck-mode class of bug. WHY: image.running_mode is pushed into the ISP by
@@ -298,8 +324,9 @@ static void dn_sleep(int ms)
  * for several seconds and the fast part of the ramp is over. Applied uniformly to
  * both directions and to the day_gain_pct adaptive-baseline night->day trigger
  * (it operates on target!=cur, so it covers every trigger path). Composes with -
- * does not replace - DN_SETTLE_MS (ignore the cold-start transient right after
- * thread start/re-enable) and transition_s (minimum dwell between switches):
+ * does not replace - the boot/re-enable settle wait (ignore the cold-start
+ * transient right after thread start/re-enable, see dn_ae_stable() below) and
+ * transition_s (minimum dwell between switches):
  * cold-start-settle gates seeding the candidate, dwell gates the switch, and the
  * hysteresis confirms the reading is stable, all three ANDed before dn_switch. */
 #ifndef DN_HYSTERESIS_MS
@@ -350,7 +377,14 @@ static void *dn_thread(void *arg)
     float  hist[DN_SAMPLES];
     int    hidx = 0;
     int64_t last_switch_ms = 0;
-    int64_t settle_until_ms = ms_now_us() / 1000 + DN_SETTLE_MS;
+    /* boot/re-enable settle: floor + gain-stability extension, see
+     * dn_ae_stable() and the DN_SETTLE_SAMPLES comment above. */
+    int64_t settle_floor_ms = ms_now_us() / 1000 +
+        (int64_t)g_cfg.daynight.boot_settle_s * 1000;
+    int64_t settle_hard_ms  = ms_now_us() / 1000 +
+        (int64_t)g_cfg.daynight.boot_settle_max_s * 1000;
+    float   settle_hist[DN_SETTLE_SAMPLES];
+    int     settle_n = 0;
     /* pre-switch hysteresis (see DN_HYSTERESIS_MS): the candidate target we are
      * currently confirming and when it first appeared. DN_UNKNOWN = no candidate. */
     int     pending_target  = DN_UNKNOWN;
@@ -364,6 +398,10 @@ static void *dn_thread(void *arg)
      * to it. -1 = not sampled yet. */
     float   night_baseline = -1.0f;
     int64_t night_entered_ms = 0;
+    /* self-healing periodic reconfirm (see night_reconfirm_s doc comment in
+     * config.h): when we're in night and this fires, we probe the day
+     * pipeline for real instead of trusting night-path gain. 0 = none pending. */
+    int64_t night_probe_at_ms = 0;
     /* P2: last /proc-scraped brightness (status readout only when the gain
      * API works) and when the next scrape is due. 0 = scrape on first tick. */
     float   scraped_b = -1.0f;
@@ -389,13 +427,16 @@ static void *dn_thread(void *arg)
            g_cfg.daynight.sun_sunrise_offset_min, g_cfg.daynight.sun_sunset_offset_min); }
     LOGI(MOD, "detection thread started (gain day<%g night>%g, "
               "brightness fallback %.1f/%.1f hyst %.2f, "
-              "interval %dms, dwell %ds, isp=%s, cmd=%s)",
+              "interval %dms, dwell %ds, isp=%s, cmd=%s, "
+              "boot settle %ds/%ds stable<%d%%, night reconfirm %ds)",
          (double)g_cfg.daynight.total_gain_day_threshold,
          (double)g_cfg.daynight.total_gain_night_threshold,
          g_cfg.daynight.threshold_low, g_cfg.daynight.threshold_high,
          g_cfg.daynight.hysteresis, g_cfg.daynight.interval_ms,
          g_cfg.daynight.transition_s, g_cfg.daynight.isp_path,
-         g_cfg.daynight.switch_cmd);
+         g_cfg.daynight.switch_cmd,
+         g_cfg.daynight.boot_settle_s, g_cfg.daynight.boot_settle_max_s,
+         g_cfg.daynight.boot_stable_pct, g_cfg.daynight.night_reconfirm_s);
 
     while (!g_stop) {
         const ms_daynight_cfg *dn = &g_cfg.daynight;
@@ -456,8 +497,12 @@ static void *dn_thread(void *arg)
             was_enabled = 1;
             cur = DN_UNKNOWN;           /* mode may have been set manually */
             night_baseline = -1.0f;
+            night_entered_ms = 0;
+            night_probe_at_ms = 0;
             pending_target = DN_UNKNOWN; pending_since_ms = 0;
-            settle_until_ms = ms_now_us() / 1000 + DN_SETTLE_MS;
+            settle_floor_ms = ms_now_us() / 1000 + (int64_t)dn->boot_settle_s * 1000;
+            settle_hard_ms  = ms_now_us() / 1000 + (int64_t)dn->boot_settle_max_s * 1000;
+            settle_n = 0;
             for (int i = 0; i < DN_SAMPLES; i++) hist[i] = 50.0f;
             LOGI(MOD, "auto day/night enabled");
         }
@@ -476,8 +521,41 @@ static void *dn_thread(void *arg)
         }
         warned_noisp = 0;
 
+        /* self-healing periodic reconfirm: gain sampled through the night/IR
+         * pipeline is not a reliable proxy for "is it actually day" (IR-cut
+         * changes the optical path and the ISP night tuning table can target
+         * a different AE point - see night_reconfirm_s doc comment in
+         * config.h), so after a long night dwell force a real probe switch to
+         * day and let the normal hysteresis re-decide from a true day-pipeline
+         * reading instead of trusting a possibly-stuck night-path one. */
+        if (cur == DN_NIGHT && dn->mode == DN_MODE_SENSOR &&
+            dn->night_reconfirm_s > 0 && night_probe_at_ms > 0) {
+            int64_t now_ms = ms_now_us() / 1000;
+            if (now_ms >= night_probe_at_ms) {
+                LOGI(MOD, "night reconfirm: probing day pipeline after %llds dwell",
+                     (long long)((now_ms - night_entered_ms) / 1000));
+                dn_switch(DN_DAY, "periodic reconfirm probe");
+                cur = DN_DAY;
+                last_switch_ms  = now_ms;
+                pending_target  = DN_UNKNOWN; pending_since_ms = 0;
+                reassert_left   = DN_REASSERT_COUNT;
+                reassert_at_ms  = now_ms + DN_REASSERT_MS;
+                night_baseline  = -1.0f;
+                night_entered_ms = 0;
+                night_probe_at_ms = 0;
+                dn_status_update(b, tg, luma, cur);
+                dn_sleep(interval);
+                continue;
+            }
+        }
+
         int  target = cur;
         char why[64];
+        if (cur == DN_UNKNOWN && dn->mode == DN_MODE_SENSOR &&
+            dn->boot_stable_pct > 0 && tg >= 0.0f) {
+            settle_hist[settle_n % DN_SETTLE_SAMPLES] = tg;
+            settle_n++;
+        }
         if (dn->mode == DN_MODE_TIME) {
             /* fixed local-clock window (localtime_r: this IS the user's wall
              * clock). Reuses the same switch/dwell machinery below.
@@ -562,8 +640,17 @@ static void *dn_thread(void *arg)
              *    start/re-enable, and do NOT let it seed the hysteresis candidate;
              *  - dwell: minimum time between switches (transition_s);
              *  - hysteresis: the candidate must have held DN_HYSTERESIS_MS so the
-             *    Set is not issued mid AE ramp. */
-            if (cur == DN_UNKNOWN && now_ms < settle_until_ms) {
+             *    Set is not issued mid AE ramp.
+             * The settle guard is floor-only outside sensor mode (or when
+             * boot_stable_pct disables the stability wait); in sensor mode it
+             * also holds past the floor, up to settle_hard_ms, until
+             * dn_ae_stable() sees the gain stop moving (see the
+             * DN_SETTLE_SAMPLES comment above dn_ae_stable()). */
+            int settle_active = (now_ms < settle_floor_ms) ||
+                (dn->mode == DN_MODE_SENSOR && dn->boot_stable_pct > 0 &&
+                 now_ms < settle_hard_ms &&
+                 !dn_ae_stable(settle_hist, settle_n, dn->boot_stable_pct));
+            if (cur == DN_UNKNOWN && settle_active) {
                 LOGD(MOD, "AE settling, ignoring transient reading");
                 pending_target  = DN_UNKNOWN;   /* don't confirm from a transient */
                 pending_since_ms = 0;
@@ -587,6 +674,10 @@ static void *dn_thread(void *arg)
                  * enter night, once the IR LEDs have settled; clear on day */
                 night_baseline = -1.0f;
                 night_entered_ms = (target == DN_NIGHT) ? now_ms : 0;
+                /* (re)arm the periodic reconfirm probe alongside it, see
+                 * night_reconfirm_s doc comment in config.h */
+                night_probe_at_ms = (target == DN_NIGHT && dn->night_reconfirm_s > 0)
+                    ? now_ms + (int64_t)dn->night_reconfirm_s * 1000 : 0;
             }
         } else {
             /* reading is back in (or never left) the current regime: abandon any

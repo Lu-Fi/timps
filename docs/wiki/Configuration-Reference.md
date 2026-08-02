@@ -359,6 +359,10 @@ config file.
 | `daynight.total_gain_night_threshold` | float | 3000 | 1–1,000,000 | **Live** | `sensor` mode: in day, switch to night when gain rises above this. |
 | `daynight.day_gain_pct` | int | 60 | 0–100 | **Live** | Adaptive night→day trigger as a percentage of the sampled night baseline gain (`0` disables, falls back to the fixed threshold). |
 | `daynight.baseline_delay_s` | int | 30 | 0–3600 | **Live** | Seconds into night before the adaptive baseline gain is sampled (lets IR LEDs settle). |
+| `daynight.boot_settle_s` | int | 5 | 0–600 | **Live** | Minimum wait after thread start/re-enable before the first gain-based decision is trusted (floor). |
+| `daynight.boot_settle_max_s` | int | 120 | 0–3600 | **Live** | Hard cap on the boot settle wait — `sensor` mode extends past `boot_settle_s` until gain looks stable, but never past this. |
+| `daynight.boot_stable_pct` | int | 20 | 0–100 | **Live** | `sensor` mode: max spread across recent gain readings (as % of their average) to consider AE converged; `0` disables the stability wait (floor-only). |
+| `daynight.night_reconfirm_s` | int | 3600 | 0–86400 | **Live** | `sensor` mode: after this long continuously in night, force a probe switch to day and let the normal hysteresis re-decide from a true day-pipeline reading. `0` disables. |
 | `daynight.threshold_low` | float | 25.0 | 0–100 (%) | File-only | Brightness-fallback: below this in day → night (used only when no gain field is readable). |
 | `daynight.threshold_high` | float | 75.0 | 0–100 (%) | File-only | Brightness-fallback: above this in night → day. |
 | `daynight.hysteresis` | float | 0.1 | 0–1 | File-only | Fraction of the low–high band used for the very first (unknown-state) brightness-fallback decision. |
