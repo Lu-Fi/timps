@@ -251,6 +251,7 @@ void config_defaults(ms_config *c)
     c->audio.force_stereo=0;
     c->audio.spk_enabled=1; c->audio.spk_volume=80; c->audio.spk_gain=25;
     c->audio.backchannel=0; c->audio.backchannel_codec=0; c->audio.backchannel_rate=16000;
+    c->audio.aec=0;                                        /* AEC opt-in, default off */
 
     c->jpeg.enabled=0; c->jpeg.width=640; c->jpeg.height=360;
     c->jpeg.quality=75; c->jpeg.fps=5; c->jpeg.imp_chn=2;
@@ -496,6 +497,7 @@ static const cfg_field audio_fields[] = {
     F ("backchannel",        0, backchannel,        T_BOOL,   0, 0,0),
     F ("backchannel_codec",  0, backchannel_codec,  T_BCCODEC,0, 0,0),
     F ("backchannel_rate",   0, backchannel_rate,   T_INT,    0, 8000,48000),
+    F ("aec",                0, aec,                T_BOOL,   0, 0,0),
 };
 #undef TT
 

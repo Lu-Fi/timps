@@ -2221,6 +2221,18 @@ static void ing_control(const char *key, const char *val)
 #endif
             return;
         }
+        /* Item-3: AEC engages inside hal_ao_open (it needs both AI capture and
+         * AO output live), so a live toggle just persists and takes effect at
+         * the next AO open - the same "applied at next AO open" contract as the
+         * spk_* keys above. No IMP call here. */
+        if (!strcmp(k,"aec")){
+#if defined(USE_BACKCHANNEL) || defined(USE_PLAY)
+            LOGI(MOD,"control %s=%d (applies at next AO open)", key, v);
+#else
+            LOGD(MOD,"audio.%s persisted (no speaker/AO in this build)", k);
+#endif
+            return;
+        }
         /* persist-only keys (take effect on restart): encoder/SetPubAttr-level
          * attributes - including channels/force_stereo, which audio_thread
          * reads at the next init to enable simulated stereo (dual-mono AAC) -
@@ -2755,6 +2767,9 @@ int hal_enc_stats(int enc_chn, hal_enc_stat *out)
 static int g_ao_up   = 0;
 static int g_ao_rate = 0;
 static int g_ao_npf  = 0;   /* samples per SendFrame period (numPerFrm the AO was opened with) */
+static int g_aec_on  = 0;   /* Item-3: IMP_AI_EnableAec actually issued (so teardown
+                             * disables exactly what was enabled, never on a chn that
+                             * had no AEC) */
 
 static int ao_rate_enum(int sr)
 {
@@ -2802,6 +2817,22 @@ int hal_ao_open(int want_rate)
     if (!ok){ LOGE(MOD, "audio output (speaker) unavailable"); return -1; }
     g_ao_up = 1; g_ao_rate = rate; g_ao_npf = rate * 40 / 1000;
     LOGI(MOD, "speaker (IMP_AO) up: %dHz mono", rate);
+
+    /* Item-3: opt-in Acoustic Echo Cancellation (audio.aec, default off). Engage
+     * only when BOTH directions are live - AEC subtracts the AO output from the
+     * AI capture, so it needs the mic (AI dev0/chn0, g_ai_up) running as well as
+     * the speaker we just brought up (AO dev0/chn0). If the AI isn't up yet (e.g.
+     * a play-only session) AEC is skipped for this AO session. g_aec_on records
+     * that we actually enabled it, so hal_ao_close disables exactly what we
+     * enabled and never calls DisableAec on a chn that never had it. */
+    if (g_hcfg && g_hcfg->audio.aec && g_ai_up){
+        if (IMP_AI_EnableAec(0, 0, 0, 0) == 0){
+            g_aec_on = 1;
+            LOGI(MOD, "AEC enabled (AI 0/0 <- AO 0/0)");
+        } else {
+            LOGW(MOD, "IMP_AI_EnableAec failed - continuing without echo cancellation");
+        }
+    }
     return rate;
 }
 
@@ -2835,6 +2866,14 @@ int hal_ao_write(const int16_t *pcm, int nsamp)
 void hal_ao_close(int drain)
 {
     if (!g_ao_up) return;
+    /* Item-3: tear down AEC before the AO it references, and only if we enabled
+     * it (matches the AO/AI teardown symmetry: never disable on a chn where AEC
+     * was never turned on). */
+    if (g_aec_on){
+        IMP_AI_DisableAec(0, 0);
+        g_aec_on = 0;
+        LOGI(MOD, "AEC disabled");
+    }
     if (drain){
         /* IMP_AO_SendFrame(BLOCK) only waits for ring-buffer space, not for the
          * audio to actually reach the DAC. Worse, the AO keeps its own playback
