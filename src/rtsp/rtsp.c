@@ -563,6 +563,51 @@ static void rtsp_send_401(session *s, int cseq)
 }
 
 /* returns 0 to keep connection, <0 to close, 1 = start playing */
+/* RFC 2326 12.32: every feature-tag a client lists in Require: is mandatory -
+ * if we don't support one we MUST answer 551 Option not supported and echo the
+ * unsupported tag(s) in an Unsupported: header, without running the method.
+ * The only tag this daemon ever supports is the ONVIF backchannel, and only in
+ * a USE_BACKCHANNEL build with backchannel actually enabled in the running
+ * config (same condition the DESCRIBE handler uses to gate the a=sendonly
+ * m-line). Parses the comma-separated tag list; returns 1 and fills `unsup`
+ * (comma-separated) with the tags we can't honour, or 0 when Require: is absent
+ * (the overwhelmingly common case, zero work) or every tag is supported. */
+static int require_unsupported(session *s, const char *req,
+                               char *unsup, size_t unsupsz)
+{
+    (void)s;
+    const char *rq = hdr_find(req, "Require");
+    if (!rq) { unsup[0]=0; return 0; }        /* no Require: -> nothing to do */
+    int bc_ok = 0;
+#ifdef USE_BACKCHANNEL
+    bc_ok = s->cfg->audio.backchannel && bc_available();
+#endif
+    /* isolate the header value (up to end-of-line) so we can split it */
+    char list[256]; size_t li=0;
+    while (rq[li] && rq[li]!='\r' && rq[li]!='\n' && li < sizeof(list)-1)
+        { list[li]=rq[li]; li++; }
+    list[li]=0;
+    size_t ol=0; unsup[0]=0;
+    char *p = list;
+    while (*p) {
+        char *comma = strchr(p, ',');
+        char *tok = p;
+        if (comma) { *comma = 0; p = comma+1; } else p += strlen(p);
+        while (*tok==' '||*tok=='\t') tok++;          /* trim leading ws */
+        char *e = tok + strlen(tok);
+        while (e>tok && (e[-1]==' '||e[-1]=='\t')) *--e = 0; /* trim trailing ws */
+        if (!*tok) continue;
+        if (bc_ok && strstr(tok, "backchannel")) continue; /* supported */
+        /* unsupported: append comma-separated to the Unsupported: list */
+        size_t tl = strlen(tok);
+        if (ol + (ol?2:0) + tl < unsupsz) {
+            if (ol) { unsup[ol++]=','; unsup[ol++]=' '; }
+            memcpy(unsup+ol, tok, tl); ol+=tl; unsup[ol]=0;
+        }
+    }
+    return ol>0;
+}
+
 static int handle_request(session *s, char *req)
 {
     int cseq = hdr_int(req, "CSeq", 0);
@@ -580,6 +625,18 @@ static int handle_request(session *s, char *req)
     if (!session_matches(s, req)) {
         send_err(s, cseq, 454, "Session Not Found", NULL);
         return 0;
+    }
+    /* RFC 2326 12.32: reject any Require: feature-tag we can't honour with 551
+     * + Unsupported before running the method (OPTIONS is answered above -
+     * capability discovery must always succeed). No Require: header is the
+     * common case and costs one hdr_find. */
+    {
+        char unsup[256];
+        if (require_unsupported(s, req, unsup, sizeof unsup)) {
+            char e[300]; snprintf(e, sizeof e, "Unsupported: %s\r\n", unsup);
+            send_err(s, cseq, 551, "Option not supported", e);
+            return 0;
+        }
     }
     if (!strncmp(req, "DESCRIBE", 8)) {
         int vchn = find_video_by_path(s->cfg, path);
@@ -618,13 +675,11 @@ static int handle_request(session *s, char *req)
         }
         int want_bc = 0;
 #ifdef USE_BACKCHANNEL
+        /* A Require: backchannel here was already validated as supported by the
+         * global 551 check above (an unsupported one never reaches this code);
+         * we only need to know whether the client asked for it, to gate the
+         * a=sendonly backchannel m-line in the SDP. */
         { const char *rq = hdr_find(req, "Require"); want_bc = rq && strstr(rq,"backchannel"); }
-        /* RFC2326 12.32 / ONVIF: a required feature we can't honour -> 551 */
-        if (want_bc && !(s->cfg->audio.backchannel && bc_available())){
-            send_err(s, cseq, 551, "Option not supported",
-                "Unsupported: www.onvif.org/ver20/backchannel\r\n");
-            return 0;
-        }
 #endif
         char sdp[2600]; gen_sdp(s, s->cfg, vchn, sdp, sizeof sdp, want_bc);
         /* A6: explicit Content-Base (request URL, '/'-terminated per RFC
