@@ -21,7 +21,7 @@
 #include "motion_caps.h"
 #include "rtsp/backchannel.h"
 #include "rtsp/speaker.h"
-#include "rotate_caps.h"   /* ROT_HAS_90 (rotation caps + eff dims) */
+#include "rotate_caps.h"   /* ROT_HAS_90/ROT_HAS_HW_I2D (rotation caps + eff dims) */
 #include "hal/imp_motion.h"
 #include "hal/imp_osd.h"
 #include "record.h"
@@ -750,14 +750,24 @@ int control_get_json(char *buf, size_t cap)
     }
     /* image rotation: the set of values this SoC's build can actually apply
      * (0 always; 90/270 need a real dim-swapping transpose apply path). 180 is
-     * no longer a rotation value - it was a redundant global ISP Hflip+Vflip;
-     * use image.hflip + image.vflip for a 180 flip. The WebUI greys out the
-     * rest. Only reported when USE_ROTATE compiled the feature in; otherwise
-     * the key is omitted (the WebUI hides the control). */
+     * only a rotation value on T40/T41 (ROT_HAS_HW_I2D), where it is a genuine
+     * per-channel hardware I2D flip; on every other SoC 180 was a redundant
+     * global ISP Hflip+Vflip and was removed (use image.hflip + image.vflip
+     * there). The WebUI greys out whatever isn't listed. Only reported when
+     * USE_ROTATE compiled the feature in; otherwise the key is omitted (the
+     * WebUI hides the control). Fragments are ordered so the array is ascending
+     * ([0,90,180,270] on T40/T41, [0,90,270] where only 90/270 exist, [0]
+     * where nothing does). */
 #ifdef USE_ROTATE
     APP("\"rotation\":[0"
 #ifdef ROT_HAS_90
-        ",90,270"
+        ",90"
+#endif
+#ifdef ROT_HAS_HW_I2D
+        ",180"
+#endif
+#ifdef ROT_HAS_90
+        ",270"
 #endif
         "],");
 #endif /* USE_ROTATE */

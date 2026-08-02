@@ -8,14 +8,21 @@
  * BR2_PACKAGE_TIMPS_ROTATE, mirroring USE_CONTROL/USE_TLS/USE_FAAC). When
  * USE_ROTATE is undefined NO ROT_HAS_* macro is defined, so every
  * `#ifdef ROT_HAS_*` block in the code compiles out and config.c's prot()
- * coerces every 90/270 request to 0 - the feature costs zero bytes.
+ * coerces every 90/180/270 request to 0 - the feature costs zero bytes.
  *
- * NOTE: rotation=180 is NO LONGER a rotation value. On every classic-API SoC
- * it was only ever a global ISP Hflip+Vflip - identical to (and made redundant
- * by) the always-available image.hflip + image.vflip, but falsely modelled as
- * per-stream (setting it on one stream silently flipped all others). It was
- * removed; users wanting a 180 flip set image.hflip=1 + image.vflip=1. So
- * `rotation` now only ever means a real transpose (90/270) or 0/absent. */
+ * NOTE on rotation=180 (platform-nuanced): on every classic-API SoC
+ * (T10/T20/T21/T23/T30/T31/C100) 180 was only ever a global ISP Hflip+Vflip -
+ * identical to (and made redundant by) the always-available image.hflip +
+ * image.vflip, but falsely modelled as per-stream (setting it on one stream
+ * silently flipped all others). It was removed there; users wanting a 180 flip
+ * set image.hflip=1 + image.vflip=1. BUT on T40/T41 (ROT_HAS_HW_I2D) 180 is a
+ * genuine PER-CHANNEL hardware I2D rotate scoped to just the requesting video
+ * channel - the global image.hflip/vflip cannot replicate that (they flip every
+ * channel), so 180 is retained there as a real, distinct capability. It is
+ * therefore gated on ROT_HAS_HW_I2D (both in prot() and the caps array), NOT on
+ * a standalone 180 macro. On classic-API SoCs and the host sim (no
+ * ROT_HAS_HW_I2D) `rotation` still only ever means a real transpose (90/270) or
+ * 0/absent. */
 #ifdef USE_ROTATE
 #if defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)|| \
     defined(PLATFORM_T23)||defined(PLATFORM_T30)||defined(PLATFORM_T31)|| \
