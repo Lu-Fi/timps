@@ -622,13 +622,62 @@ void control_apply_json(const char *json)
 /* ---------- GET /control: dump the current (in-memory) values ---------- */
 
 /* JSON-escape a string into out (bounded) */
+/* Escape a UTF-8 string for embedding in a JSON string value: backslash the "
+ * and \, drop control chars (< 0x20), and VALIDATE multi-byte UTF-8. A byte
+ * >= 0x80 that does not begin a well-formed, minimally-encoded, non-surrogate
+ * sequence (<= U+10FFFF) is replaced with U+FFFD (EF BF BD) and one byte is
+ * skipped. Raw passthrough of >= 0x80 bytes previously let a config field that
+ * had been hand-edited in Latin-1/other non-UTF-8 (POSTed values are already
+ * UTF-8) produce output that isn't valid UTF-8, which strict parsers reject
+ * (Python json raises UnicodeDecodeError, browsers mangle it). Every write is
+ * bounds-checked so the escape/replacement expansion can't overflow out[cap]. */
 static void jesc(const char *s, char *out, size_t cap)
 {
+    const unsigned char *p = (const unsigned char *)s;
     size_t o=0;
-    for (; *s && o+2<cap; s++){
-        if (*s=='"' || *s=='\\'){ out[o++]='\\'; out[o++]=*s; }
-        else if ((unsigned char)*s < 0x20) out[o++]=' ';
-        else out[o++]=*s;
+    if (!cap) return;
+    while (*p){
+        unsigned char c = *p;
+        if (c=='"' || c=='\\'){
+            if (o+2 >= cap) break;
+            out[o++]='\\'; out[o++]=(char)c; p++;
+        } else if (c < 0x20){
+            if (o+1 >= cap) break;
+            out[o++]=' '; p++;
+        } else if (c < 0x80){
+            if (o+1 >= cap) break;
+            out[o++]=(char)c; p++;
+        } else {
+            /* lead byte of a multi-byte sequence: decode + validate */
+            int n; unsigned cp=0;
+            if      ((c & 0xE0)==0xC0){ n=2; cp=c&0x1F; }
+            else if ((c & 0xF0)==0xE0){ n=3; cp=c&0x0F; }
+            else if ((c & 0xF8)==0xF0){ n=4; cp=c&0x07; }
+            else n=0;                       /* stray continuation / 0xF8+ */
+            int ok = n>0;
+            for (int i=1; ok && i<n; i++){  /* p is NUL-terminated: a short
+                                             * sequence hits \0 here and fails,
+                                             * never reading past the string */
+                if ((p[i] & 0xC0) != 0x80) ok=0;
+                else cp = (cp<<6) | (p[i]&0x3F);
+            }
+            if (ok){
+                if      (n==2 && cp<0x80)    ok=0;   /* overlong */
+                else if (n==3 && cp<0x800)   ok=0;
+                else if (n==4 && cp<0x10000) ok=0;
+                if (cp>=0xD800 && cp<=0xDFFF) ok=0; /* surrogate */
+                if (cp>0x10FFFF)              ok=0;
+            }
+            if (ok){
+                if (o+(size_t)n >= cap) break;
+                for (int i=0;i<n;i++) out[o++]=(char)p[i];
+                p += n;
+            } else {
+                if (o+3 >= cap) break;              /* emit U+FFFD, skip 1 byte */
+                out[o++]=(char)0xEF; out[o++]=(char)0xBF; out[o++]=(char)0xBD;
+                p++;
+            }
+        }
     }
     out[o]=0;
 }
