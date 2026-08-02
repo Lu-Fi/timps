@@ -1,11 +1,20 @@
 # Image rotation in timps
 
-Config key: `videoN.rotation`, values `0 | 90 | 180 | 270`. **90 = clockwise on
+Config key: `videoN.rotation`, values `0 | 90 | 270`. **90 = clockwise on
 T23 and T40/T41. On T31 specifically, 90 rotates counter-clockwise** (kept for
 consistency with prudynt-t/raptor's raw `rotation=1|2` config values, see
 "Notes on direction" below) — but **on T31, neither 90 nor 270 currently
 produce a working hardware OSD/privacy overlay** when the stream is
 downscaled from the sensor; see "Known limitation" below.
+
+> **`rotation=180` was removed** (breaking change). It only ever meant a global
+> ISP Hflip+Vflip — visually identical to, and made redundant by, the
+> always-available `image.hflip=1` + `image.vflip=1`, but falsely modelled as
+> per-stream (setting it on one stream silently flipped every other enabled
+> stream too). **For a 180° flip set `image.hflip=1` and `image.vflip=1`**
+> (independent of `USE_ROTATE`, always available on every SoC). `rotation` now
+> only ever means a real transpose (90/270) or 0. A `rotation=180` request is
+> coerced to 0 with a warning, exactly like an unsupported 90/270 request.
 Rotation is **restart-required** — it is applied when the pipeline is built, not
 live. Downstream (encoder, RTSP SDP, fMP4/MP4 recorder, OSD, snapshots) all use
 the post-rotation dimensions via one helper (`ms_vstream_eff_dims`), so a
@@ -18,15 +27,16 @@ Rotation is **off by default** and selectable like `USE_CONTROL`/`USE_TLS`/
 
 | menuconfig option | make flag | what it adds |
 |---|---|---|
-| `BR2_PACKAGE_TIMPS_ROTATE` | `USE_ROTATE=1` | 180° everywhere + hardware 90/270 on the SoCs that have it (T31, T40, T41) |
+| `BR2_PACKAGE_TIMPS_ROTATE` | `USE_ROTATE=1` | real 90/270 transpose on the SoCs that have it (T31, T40, T41; T23 via `SW_ROTATE`). No effect on SoCs without a 90/270 path — for a 180° flip use `image.hflip`+`image.vflip` instead |
 | `BR2_PACKAGE_TIMPS_SW_ROTATE` (needs `TIMPS_ROTATE`) | `USE_SW_ROTATE=1` | the **software** 90/270 path for T23 (CPU transpose + software JPEG + software OSD) — the large/CPU-heavy part |
 
 ## What it costs
 
 Binary (code, measured as object `.text`; MIPS target ≈ 1.2–1.4× these host figures):
 
-- `USE_ROTATE` alone: **~0.2 KB** for 180° on a given SoC; the hardware 90/270
-  apply adds only a few hundred bytes more on T31/T40/T41. Negligible.
+- `USE_ROTATE` alone: the config/caps plumbing plus the hardware 90/270 apply is
+  only a few hundred bytes on T31/T40/T41. Negligible. (On a SoC with no 90/270
+  path it adds nothing usable — `rotation` accepts no non-zero value there.)
 - `USE_SW_ROTATE` (T23): **~7 KB** total (CPU NV12 transpose `nv12_rot.o` ≈ 0.6 KB
   + the software encode/JPEG/OSD path in the HAL ≈ 6.2 KB).
 
@@ -39,21 +49,23 @@ the rotated resolution. For a 720×1280 stream, roughly:
 - FrameSource depth-2 pool at source dims ≈ 2.8 MB (rmem)
 - → **~6 MB of buffers** for one 720×1280 rotated stream, plus **~1 CPU core**.
 
-180° and the hardware 90/270 paths (T31/T40/T41) add **no measurable runtime
-memory or CPU** — the rotation happens in the ISP/I2D hardware.
+The hardware 90/270 paths (T31/T40/T41) add **no measurable runtime memory or
+CPU** — the rotation happens in the ISP/I2D hardware.
 
 ## What works on which camera (SoC)
 
-| SoC | 180° | 90/270° | Mechanism for 90/270 | Constraints |
-|-----|------|---------|----------------------|-------------|
-| T10, T20, T21, T30, C100 | ✅ | ❌ | none (no rotate primitive in libimp) | 90/270 in config is coerced to 0 with a warning |
-| **T23** | ✅ | ✅ *(opt-in)* | CPU NV12 transpose → unbound software H.264 encoder (`IMP_Encoder_YuvEncode`, SDK 1.3.0) | build with `USE_SW_ROTATE=1`; **H.264 only**; substream-class res (~≤704×576 @ ≤15 fps); real CPU cost on the single core; **software text-OSD only** (no logos, no privacy covers); snapshot + MJPEG work via the standalone JPEG encoder, but it needs the rotated width (= source height) to be a multiple of 32 and height a multiple of 8 (use e.g. 1280×704 → 704×1280, not 1280×720); motion grid stays pre-rotation |
-| **T31** | ✅ | ✅ | `IMP_FrameSource_SetChnRotate` (software inside libimp) | libimp SDK ≥ 1.1.6; 64-px-aligned resolution; **≤1280×704 @ ≤15 fps** recommended; extra rmem; not combinable with encoder soft-zoom; **hardware OSD/privacy DO work on 90/270** (fixed 2026-07-23) — on a **non-square** rotated stream overlays are confined to the top `picHeight` band (see note below); square streams + 180° = anywhere |
-| **T40, T41** | ✅ | ✅ | true **hardware** I2D rotate (`IMPFSI2DAttr` + `IMP_FrameSource_SetI2dAttr`) | full frame rate, all resolutions, OSD + privacy keep working. `rotate_angle` units await on-device confirmation (degrees) |
+(For a 180° flip on any SoC, use `image.hflip`+`image.vflip` — see the note at
+the top. The table below is about the real 90/270 transpose only.)
 
-180° is realised as ISP Hflip+Vflip, **XOR-composed** with the live
-`image.hflip`/`image.vflip` keys (180 + a manual flip flips once, not cancels).
-On T40/T41 the 180 is done per-channel in the I2D unit instead.
+| SoC | 90/270° | Mechanism for 90/270 | Constraints |
+|-----|---------|----------------------|-------------|
+| T10, T20, T21, T30, C100 | ❌ | none (no rotate primitive in libimp) | 90/270 in config is coerced to 0 with a warning; `rotation` accepts no non-zero value |
+| **T23** | ✅ *(opt-in)* | CPU NV12 transpose → unbound software H.264 encoder (`IMP_Encoder_YuvEncode`, SDK 1.3.0) | build with `USE_SW_ROTATE=1`; **H.264 only**; substream-class res (~≤704×576 @ ≤15 fps); real CPU cost on the single core; **software text-OSD only** (no logos, no privacy covers); snapshot + MJPEG work via the standalone JPEG encoder, but it needs the rotated width (= source height) to be a multiple of 32 and height a multiple of 8 (use e.g. 1280×704 → 704×1280, not 1280×720); motion grid stays pre-rotation |
+| **T31** | ✅ | `IMP_FrameSource_SetChnRotate` (software inside libimp) | libimp SDK ≥ 1.1.6; 64-px-aligned resolution; **≤1280×704 @ ≤15 fps** recommended; extra rmem; not combinable with encoder soft-zoom; **hardware OSD/privacy DO work on 90/270** (fixed 2026-07-23) — on a **non-square** rotated stream overlays are confined to the top `picHeight` band (see note below); square streams = anywhere |
+| **T40, T41** | ✅ | true **hardware** I2D rotate (`IMPFSI2DAttr` + `IMP_FrameSource_SetI2dAttr`) | full frame rate, all resolutions, OSD + privacy keep working. `rotate_angle` units await on-device confirmation (degrees) |
+
+Note: without `USE_ROTATE` (the default), all rotation code compiles out and
+every 90/270 request coerces to 0 — the build is byte-identical to no-rotation.
 
 ### OSD/privacy on 90/270-rotated T31 streams: works, top-band limit (fixed 2026-07-23)
 
@@ -86,13 +98,13 @@ coordinate transform that reaches the bottom of a tall portrait. Net:
 - **square rotated stream (≤704×704):** OSD/privacy work **anywhere**.
 - **non-square portrait (e.g. 704×1280):** OSD/privacy work in the **top ~704
   px**; lower overlays are clamped into that band.
-- **180°:** unaffected, OSD works everywhere. T40/T41 (I2D): unaffected.
+- T40/T41 (I2D 90/270): unaffected, OSD works everywhere.
 
 The **non-rotated path is byte-for-byte unchanged** — all of the above (even
 alignment, clamp, warning) is gated on `rotation ∈ {90,270}`.
 
 **If full-height OSD on a non-square rotated stream is required:** put the OSD on
-the non-rotated sub-stream `ch1`, use a square main stream, or use 180°.
+the non-rotated sub-stream `ch1`, or use a square main stream.
 
 ## How the other thingino streamers handle rotation (for reference)
 
@@ -118,9 +130,10 @@ the non-rotated sub-stream `ch1`, use a square main stream, or use 180°.
   are exposed.
 - **strero**: no rotation at all (ONVIF even advertises `Rotation=false`).
 
-So timps offers strictly more: 180 everywhere, hardware 90/270 on T40/T41
-(which prudynt cannot do), T31 90/270, and the T23 software path that no other
-thingino streamer has.
+So timps offers strictly more: hardware 90/270 on T40/T41 (which prudynt cannot
+do), T31 90/270, and the T23 software path that no other thingino streamer has.
+(Like prudynt-t, timps does a 180° flip via `image.hflip`/`image.vflip`, not via
+the `rotation` key.)
 
 ## Notes on direction / vendor semantics
 
@@ -144,5 +157,5 @@ thingino streamer has.
   the same physical direction in timps.
 - T31 `IMP_FrameSource_SetChnRotate` takes **pre-rotation** width/height and
   must be called **before** `CreateChn`; only the encoder gets swapped dims.
-- T40/T41 `rotate_angle` units are undocumented in every SDK header; timps and
-  raptor-hal both use plain degrees (90/180/270).
+- T40/T41 `rotate_angle` units are undocumented in every SDK header; timps uses
+  plain degrees (90/270); raptor-hal uses plain degrees too.
