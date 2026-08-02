@@ -190,7 +190,21 @@ int imp_motion_start(const ms_config *cfg)
     g_hcfg = cfg;
     int mon = cfg->motion.monitor_stream;
     if (mon < 0 || mon >= MS_MAX_VSTREAM || !cfg->video[mon].enabled) mon = 0;
-    int w, h; ms_vstream_eff_dims(&cfg->video[mon], &w, &h);  /* IVS sees the rotated frame */
+    /* Frame dims IVS actually operates on. On the T31/T40/T41 HARDWARE-rotate
+     * path (IMP_FrameSource_SetChnRotate rotates INSIDE the framesource) and
+     * with no rotation, IVS is bound downstream of the rotation and sees the
+     * ROTATED frame - use the eff (swapped) dims. On the T23 USE_SW_ROTATE path
+     * (ROT_HAS_SW_90) the rotation happens in software AFTER
+     * IMP_FrameSource_GetFrame and IVS is bound to the PRE-rotation framesource,
+     * so IVS genuinely sees the UNROTATED frame - use the raw dims (M1). */
+    int w, h;
+#ifdef ROT_HAS_SW_90
+    int swrot = (cfg->video[mon].rotation==90 || cfg->video[mon].rotation==270)
+                ? cfg->video[mon].rotation : 0;
+    if (swrot){ w = cfg->video[mon].width; h = cfg->video[mon].height; }
+    else
+#endif
+    ms_vstream_eff_dims(&cfg->video[mon], &w, &h);
     int cols, rows;
     grid_geom(cfg, &cols, &rows);
     int cells = cols * rows;
@@ -209,6 +223,39 @@ int imp_motion_start(const ms_config *cfg)
     /* build ROIs for the UNMASKED cells only; privacy zones are excluded so the
      * OSD cover (drawn in-place into the shared FS buffer) can't trip motion */
     int nroi = 0;
+#ifdef ROT_HAS_SW_90
+    if (swrot){
+        /* SW-rotate (M1): IVS runs in PRE-rotation (source) coordinates while
+         * the user sees the POST-rotation frame. Iterate the cols x rows grid
+         * over the DISPLAYED frame (the space the WebUI overlay and the user
+         * configured against), inverse-map each displayed cell to its source
+         * rectangle for the ROI, and record the DISPLAYED cell index in
+         * g_roi_cell so status.active[] (row-major, index=row*cols+col) lines up
+         * with what the user sees. The displayed frame is the swap of the source
+         * dims (dW=h, dH=w). The inverse map matches nv12_rotate90()'s direction
+         * convention (see nv12_rot.c):
+         *   90  (CW):  src.x = disp.y,          src.y = (h-1) - disp.x
+         *   270 (CCW): src.x = (w-1) - disp.y,  src.y = disp.x
+         * Privacy is compared in DISPLAYED space (privacy rects are configured
+         * against the displayed frame, matching the non-rotate path below). */
+        int dW = h, dH = w;
+        for (int r=0;r<rows;r++){
+            for (int c=0;c<cols;c++){
+                int dx0=c*dW/cols, dy0=r*dH/rows;
+                int dx1=(c+1)*dW/cols-1, dy1=(r+1)*dH/rows-1;
+                if (cell_masked(cfg, mon, dx0,dy0,dx1,dy1)) continue;
+                int sx0,sy0,sx1,sy1;
+                if (swrot==90){ sx0=dy0;     sx1=dy1;     sy0=h-1-dx1; sy1=h-1-dx0; }
+                else          { sx0=w-1-dy1; sx1=w-1-dy0; sy0=dx0;     sy1=dx1;     }
+                mp.sense[nroi] = sense;
+                mp.roiRect[nroi].p0.x = sx0; mp.roiRect[nroi].p0.y = sy0;
+                mp.roiRect[nroi].p1.x = sx1; mp.roiRect[nroi].p1.y = sy1;
+                g_roi_cell[nroi] = r*cols + c;   /* displayed cell (row-major) */
+                nroi++;
+            }
+        }
+    } else
+#endif
     for (int r=0;r<rows;r++){
         for (int c=0;c<cols;c++){
             int x0=c*w/cols, y0=r*h/rows, x1=(c+1)*w/cols-1, y1=(r+1)*h/rows-1;
