@@ -223,7 +223,46 @@ try:
 except Exception: pass
 PY
 	else
-		grep -oE "\"${2##*.}\"[[:space:]]*:[[:space:]]*[^,}]+" "$1" | head -1 | sed 's/.*:[[:space:]]*//; s/"//g'
+		# No python3 (busybox-only on-device shell): a genuinely path-aware
+		# extractor. The old fallback grepped for only the LAST dotted component
+		# and took the first hit anywhere, so on /control's JSON it returned the
+		# WRONG field by name collision (video.0.bitrate -> the earlier audio
+		# section's bitrate; video.0.width -> sensor.width) and truncated array
+		# values at the first comma (caps.rotation [0,90,270] -> "[0"), silently
+		# reporting a wrong-but-plausible value. This walks the dotted path
+		# key-by-key, descending into the matched value at each step (respecting
+		# nested {}/[] and quoted strings), so nested shapes this API emits -
+		# {"video":{"0":{"bitrate":..}}}, arrays, numeric-string object keys -
+		# resolve correctly. Not a general JSON parser, but correct for the
+		# structures this API produces, and it matches the python3 path's result
+		# (prints nothing when the path doesn't resolve, like a missing key).
+		awk -v path="$2" '
+		function skipws(s,i,  c){while(i<=length(s)){c=substr(s,i,1);if(c==" "||c=="\t"||c=="\n"||c=="\r")i++;else break}return i}
+		function valend(s,i,  c,cc,depth,instr,j){
+			c=substr(s,i,1)
+			if(c=="\""){j=i+1;while(j<=length(s)){cc=substr(s,j,1);if(cc=="\\"){j+=2;continue}if(cc=="\""){return j}j++}return length(s)}
+			if(c=="{"||c=="["){depth=0;instr=0;j=i;while(j<=length(s)){cc=substr(s,j,1);if(instr){if(cc=="\\"){j+=2;continue}if(cc=="\""){instr=0}j++;continue}if(cc=="\""){instr=1;j++;continue}if(cc=="{"||cc=="["){depth++}else if(cc=="}"||cc=="]"){depth--;if(depth==0)return j}j++}return length(s)}
+			j=i;while(j<=length(s)){cc=substr(s,j,1);if(cc==","||cc=="}"||cc=="]"||cc==" "||cc=="\t"||cc=="\n"||cc=="\r")return j-1;j++}return length(s)
+		}
+		{doc=doc $0 "\n"}
+		END{
+			n=split(path,parts,".");cur=doc;ok=1
+			for(pi=1;pi<=n;pi++){
+				k=parts[pi];i=skipws(cur,1);c=substr(cur,i,1)
+				if(c=="["){idx=0;j=i+1;found=0
+					while(j<=length(cur)){j=skipws(cur,j);cc=substr(cur,j,1);if(cc=="]")break;ve=valend(cur,j);if(idx==k+0){cur=substr(cur,j,ve-j+1);found=1;break}idx++;j=skipws(cur,ve+1);if(substr(cur,j,1)==",")j++}
+					if(!found){ok=0;break}
+				}else if(c=="{"){j=i+1;found=0
+					while(j<=length(cur)){j=skipws(cur,j);cc=substr(cur,j,1);if(cc=="}")break;if(cc!="\""){ok=0;break}ke=valend(cur,j);key=substr(cur,j+1,ke-j-1);j=skipws(cur,ke+1);if(substr(cur,j,1)!=":"){ok=0;break}j=skipws(cur,j+1);ve=valend(cur,j);if(key==k){cur=substr(cur,j,ve-j+1);found=1;break}j=skipws(cur,ve+1);if(substr(cur,j,1)==",")j++}
+					if(!found){ok=0;break}
+				}else{ok=0;break}
+			}
+			if(!ok)exit 1
+			i=skipws(cur,1);e=length(cur);while(e>=i){c=substr(cur,e,1);if(c==" "||c=="\t"||c=="\n"||c=="\r")e--;else break}
+			cur=substr(cur,i,e-i+1)
+			if(substr(cur,1,1)=="\""){cur=substr(cur,2,length(cur)-2);gsub(/\\"/,"\"",cur);gsub(/\\\\/,"\\",cur);gsub(/\\\//,"/",cur)}
+			print cur
+		}' "$1"
 	fi
 }
 
