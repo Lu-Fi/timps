@@ -1452,6 +1452,16 @@ static void sw_rot_teardown(vchan *vc)
  * drift apart. Values match that warning: <=704x576, <=15fps. */
 #define MS_SW_ROT_MAX_PIXELS (704L*576L)
 #define MS_SW_ROT_MAX_FPS    15
+/* Hardware geometry the T23 encoder demands of the ENCODED (post-rotation)
+ * frame. IMPEncoderAttr (imp_encoder.h): picWidth "must be 16 aligned,
+ * shouldn't less than 256"; picHeight ">= 16". IMP_Encoder_YuvInit feeds its
+ * inWidth/inHeight straight into those fields, so a post-rotation width that is
+ * not a multiple of 16 (or below 256) makes YuvInit fail outright - even for a
+ * geometry comfortably inside the CPU envelope above. Confirmed on real T23
+ * hardware: a 640x360 substream rotated 90 -> 360x640 fails because 360 is not
+ * 16-aligned, while the SAME stream unrotated (encoder width 640) is fine. */
+#define MS_SW_ROT_WIDTH_ALIGN 16
+#define MS_SW_ROT_MIN_WIDTH   256
 /* sw_rot_start return code: not success and not a hard failure, but "rotation
  * refused/failed for THIS stream - caller should bring it up UNROTATED". Kept
  * distinct from -1 (unrecoverable) so unrelated streams and this one (minus the
@@ -1482,6 +1492,24 @@ static int sw_rot_start(const ms_config *cfg, int i)
         LOGW(MOD,"video%d: refusing SW rotate at %dx%d@%dfps (exceeds safe "
                  "envelope <=704x576 <=15fps) - stream will run UNROTATED",
              i, ew, eh, v->fps);
+        return SW_ROT_FALLBACK;
+    }
+    /* CAPS-GATE 2 (hardware geometry, empirically confirmed on T23). The encoder
+     * requires the ENCODED (post-rotation) WIDTH to be 16-aligned and >=256
+     * (IMPEncoderAttr.picWidth). A 90/270 rotate makes the encoder width = the
+     * SOURCE HEIGHT, so a source whose height is not a multiple of 16 (or <256)
+     * drives IMP_Encoder_YuvInit into a hard failure even well inside the CPU
+     * envelope (e.g. 640x360 -> 360x640: 360 is not 16-aligned). Refuse the
+     * rotation rather than march into that failure - bring the stream up
+     * UNROTATED (where the encoder width is the source WIDTH, typically aligned).
+     * ew == v->height here (eff_dims swaps for 90/270). */
+    if ((ew % MS_SW_ROT_WIDTH_ALIGN) != 0 || ew < MS_SW_ROT_MIN_WIDTH){
+        LOGW(MOD,"video%d: SW rotate post-rotation width %d unusable for the "
+                 "encoder (needs picWidth%%16==0 and >=256; a 90/270 rotate makes "
+                 "encoder width = source height %d) - refusing rotation, stream "
+                 "will run UNROTATED (use a source HEIGHT that is a multiple of "
+                 "16 and >=256, e.g. 704x576 -> 576x704)",
+             i, ew, v->height);
         return SW_ROT_FALLBACK;
     }
     if ((v->width|v->height)&1){
