@@ -921,7 +921,9 @@ else
 	lv_section daynight '{"daynight":' '}' daynight \
 		"total_gain_day_threshold int 100 900" \
 		"total_gain_night_threshold int 2000 8000" \
-		"day_gain_pct int 0 100" "baseline_delay_s int 0 60"
+		"day_gain_pct int 0 100" "baseline_delay_s int 0 60" \
+		"boot_settle_s int 0 60" "boot_settle_max_s int 10 300" \
+		"boot_stable_pct int 0 100" "night_reconfirm_s int 0 7200"
 
 	# --- record: the running recorder reads these live. enabled/mode/channel are
 	# left out (they would start/stop capture or depend on stream count); the

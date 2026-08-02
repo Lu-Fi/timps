@@ -467,6 +467,8 @@ void control_apply_json(const char *json)
         static const char *const DN_KEYS[] = {
             "total_gain_day_threshold","total_gain_night_threshold",
             "day_gain_pct","baseline_delay_s",
+            "boot_settle_s","boot_settle_max_s","boot_stable_pct",
+            "night_reconfirm_s",
             "sun_latitude","sun_longitude",
             "sun_sunrise_offset_min","sun_sunset_offset_min"
         };

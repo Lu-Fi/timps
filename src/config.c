@@ -334,6 +334,8 @@ void config_defaults(ms_config *c)
     c->daynight.threshold_low=25.0f; c->daynight.threshold_high=75.0f;
     c->daynight.hysteresis=0.1f;
     c->daynight.day_gain_pct=60; c->daynight.baseline_delay_s=30;
+    c->daynight.boot_settle_s=5; c->daynight.boot_settle_max_s=120;
+    c->daynight.boot_stable_pct=20; c->daynight.night_reconfirm_s=3600;
     c->daynight.interval_ms=500; c->daynight.transition_s=5;
     copystr(c->daynight.switch_cmd,"daynight",sizeof c->daynight.switch_cmd);
     copystr(c->daynight.isp_path,"/proc/jz/isp/isp-m0",sizeof c->daynight.isp_path);
@@ -661,6 +663,10 @@ static const cfg_field daynight_fields[] = {
     F ("hysteresis",                 0, hysteresis,                 T_FLT,   0, 0,1),
     F ("day_gain_pct",               0, day_gain_pct,               T_INT,   0, 0,100),
     F ("baseline_delay_s",           0, baseline_delay_s,           T_INT,   0, 0,3600),
+    F ("boot_settle_s",              0, boot_settle_s,              T_INT,   0, 0,600),
+    F ("boot_settle_max_s",          0, boot_settle_max_s,          T_INT,   0, 0,3600),
+    F ("boot_stable_pct",            0, boot_stable_pct,            T_INT,   0, 0,100),
+    F ("night_reconfirm_s",          0, night_reconfirm_s,          T_INT,   0, 0,86400),
     F ("interval_ms",                0, interval_ms,                T_INT,   0, 100,60000),
     F ("transition_s",               0, transition_s,               T_INT,   0, 0,3600),
     FS("switch_cmd",                 0, switch_cmd,                 F_NOGET),

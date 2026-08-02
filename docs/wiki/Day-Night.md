@@ -88,6 +88,20 @@ thingino's `daynightd` semantics.
   the hysteresis dead-zone for this mode — no separate averaging is
   applied.
 
+**Gain read through the night/IR pipeline is not the same metric as
+gain read through the day pipeline.** IR-cut engagement changes the
+optical path, and the ISP's night tuning table can target a different AE
+point than the day table — reproduced twice on real T31s (bright room,
+right after a firmware reflash+reboot): the camera latched into night on
+an AE-convergence transient (see below), sampled its adaptive baseline
+from that same bogus reading, and then sat there indefinitely because
+live night-path gain (600–976) never dropped below the resulting
+day-trigger (387) even though the room was genuinely daylight the whole
+time — forcing `image.running_mode=0` manually made gain immediately
+settle at a sane 365–420. Because of this, no amount of night-path
+threshold tuning can recover from a bad initial trigger; see "Self-healing
+periodic reconfirm" below for how timps guards against it.
+
 If neither gain nor brightness can be read at all (proc file missing —
 host sim, or a non-Ingenic environment), `sensor`-mode's decision cycle is
 simply skipped that sample (status still updates); `time`/`sun` modes are
@@ -129,10 +143,17 @@ time, since an NTP step shortly after boot — typical for these cameras —
 could otherwise make a wall-clock delta negative or skip past a timer),
 must all pass before a switch is actually issued:
 
-1. **Cold-start settle** (~5s from thread start/re-enable): ignores the
-   AE convergence transient (observed gain spikes of 15000–20000 before
-   AE settles) so every boot doesn't immediately commit to "night"
-   regardless of actual light.
+1. **Cold-start settle** (`daynight.boot_settle_s`, default 5s floor, from
+   thread start/re-enable): ignores the AE convergence transient (observed
+   gain spikes of 15000–20000 before AE settles) so every boot doesn't
+   immediately commit to "night" regardless of actual light. A flat delay
+   turned out to be insufficient after a firmware reflash — reproduced
+   twice where AE genuinely took ~90s to converge, well past the old fixed
+   5s window — so in `sensor` mode the wait also extends **past** the
+   floor, up to `daynight.boot_settle_max_s` (default 120s) as a hard cap,
+   until `daynight.boot_stable_pct`% (default 20%) of consecutive readings
+   agree gain has actually stopped moving. `boot_stable_pct=0` reverts to
+   the flat floor-only wait.
 2. **Dwell** (`daynight.transition_s`, default 5s): minimum time since the
    last switch before another one is allowed.
 3. **Pre-switch hysteresis** (~5s, hardcoded, distinct from the config
@@ -153,6 +174,34 @@ the *current* `image.running_mode` (so a manual override during that
 window is respected) — kept because the stuck-mode failure couldn't be
 reliably reproduced on a bench, so the pre-switch hysteresis alone isn't
 *proven* sufficient on its own.
+
+## Self-healing periodic reconfirm
+
+The three anti-flap guards above stop a *bad reading* from causing a
+switch, but they can't fix a switch that already happened for the wrong
+reason — and as the sensor-mode section above describes, once
+`sensor` mode is latched into night on a bogus trigger, night-path gain
+readings don't reliably cross back over any threshold, adaptive or fixed,
+because that gain isn't measuring the same thing day-path gain measures.
+
+So, only in `sensor` mode, after `daynight.night_reconfirm_s` (default
+3600s = 1h, `0` disables) of *continuous* night dwell, timps forces a real
+probe: it runs the day switch exactly as if a normal night→day decision
+had fired (same `dn_switch()`, same post-switch re-assert, baseline reset),
+then lets the **normal** day→night hysteresis re-evaluate from a true
+day-pipeline reading on the next ticks. If the scene is genuinely still
+dark, gain will cross back above `total_gain_night_threshold` and the
+usual dwell+hysteresis window (~10–15s) flips it right back to night; if
+it isn't, the camera simply stays in day — which is exactly what manually
+forcing `image.running_mode=0` does today, just automatic. Each probe is
+logged distinctly (`"switching to day (periodic reconfirm probe): ..."`)
+so it's not confused with a real dusk/dawn transition.
+
+The default interval (1h) trades a few extra IR-cut relay cycles per night
+(roughly one per hour of darkness) for bounding how long a false latch can
+persist — worst case, a stuck-in-night camera self-corrects within one
+`night_reconfirm_s` window instead of staying wrong until someone notices
+and intervenes manually.
 
 ## The ISP running-mode latch quirk and `fs_kick_running_mode()`
 
