@@ -669,6 +669,30 @@ static int isp_init(void)
     return 0;
 }
 
+#ifdef ROT_HAS_FS_ROTATE
+/* T31 FrameSource-rotate safe envelope (Fix 1). The vendor hardware FS-rotate
+ * path only handles 64-aligned geometry within <=1280x704 <=15fps. Past either
+ * bound libimp silently falls back to a SOFTWARE rotate whose oversized/
+ * misaligned geometry then drives the downstream Encoder_CreateChn into a
+ * failure that used to abort the ENTIRE multi-stream pipeline and take the whole
+ * daemon down (reproduced live on T31/sc4336p: a 1920x1080@25 rotate request the
+ * /control API had accepted and persisted). 64-alignment and pixel area are both
+ * swap-invariant, so checking the pre-rotation v->width/v->height is equivalent
+ * to the post-rotation dims. These are named constants shared by the warning
+ * text and the enforcement so the two can never drift apart; values match the
+ * long-standing warning: <=1280x704, <=15fps, 64-aligned. */
+#define MS_FS_ROT_ALIGN       64
+#define MS_FS_ROT_MAX_PIXELS  (1280L*704L)
+#define MS_FS_ROT_MAX_FPS     15
+/* fs_create() return code: not success and not a hard failure, but "rotation
+ * refused/failed for THIS stream - caller should bring it up UNROTATED". Kept
+ * distinct from -1 (unrecoverable) so unrelated streams and this one (minus the
+ * rotation) still come up instead of the whole pipeline aborting. Positive so
+ * the shared `fs_create(...)!=0` call sites on other platforms still treat it as
+ * an error there (it can only ever be returned under ROT_HAS_FS_ROTATE). */
+#define FS_ROT_FALLBACK 1
+#endif
+
 /* ================= framesource ================= */
 static int fs_create(int chn, const ms_vstream_cfg *v)
 {
@@ -778,13 +802,26 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
          * 270 -> CW(2), matching prudynt/raptor's raw rotation=1|2 semantics
          * (see src/config.c). */
         uint8_t r90 = (v->rotation==90) ? 1 : 2;
-        if ((v->width|v->height) & 63)
-            LOGW(MOD,"rotate: %dx%d not 64-aligned; T31 FS-rotate wants 64-alignment",
-                 v->width, v->height);
-        if ((long)v->width*v->height > 1280*704 || v->fps > 15)
-            LOGW(MOD,"rotate: %dx%d@%d exceeds vendor FS-rotate cap (<=1280x704, <=15fps); "
-                 "libimp rotates in SOFTWARE - expect fps drop, high CPU and extra rmem",
-                 v->width, v->height, v->fps);
+        /* CAPS-GATE (Fix 1): the previous code only WARNED here and then marched
+         * on into a SetChnRotate + Encoder bring-up that libimp fails outside the
+         * vendor envelope - which used to tear down the whole daemon (see the
+         * MS_FS_ROT_* comment above). Now keep the accurate warning but REFUSE
+         * the rotation (no IMP channel has been created yet at this point -
+         * SetChnRotate/CreateChn are still below) and tell the caller to bring
+         * this stream up UNROTATED rather than proceed into a doomed config. */
+        if ((v->width|v->height) & (MS_FS_ROT_ALIGN-1)){
+            LOGW(MOD,"video%d: refusing FS-rotate %dx%d not %d-aligned (T31 FS-rotate "
+                     "wants %d-alignment) - stream will run UNROTATED",
+                 chn, v->width, v->height, MS_FS_ROT_ALIGN, MS_FS_ROT_ALIGN);
+            return FS_ROT_FALLBACK;
+        }
+        if ((long)v->width*v->height > MS_FS_ROT_MAX_PIXELS || v->fps > MS_FS_ROT_MAX_FPS){
+            LOGW(MOD,"video%d: refusing FS-rotate %dx%d@%d exceeds vendor FS-rotate cap "
+                     "(<=1280x704, <=15fps; past it libimp software-rotates and the "
+                     "oversized geometry fails Encoder bring-up) - stream will run UNROTATED",
+                 chn, v->width, v->height, v->fps);
+            return FS_ROT_FALLBACK;
+        }
         /* Args are the PRE-rotation dims per header :575-576, run BEFORE
          * CreateChn (header :581). */
         IMP_FrameSource_SetChnRotate(chn, r90, v->width, v->height);
@@ -2479,7 +2516,28 @@ static int ing_start(const ms_config *cfg)
         }
 #endif
         int chn=v->imp_chn, grp=v->imp_chn;
+#ifdef ROT_HAS_FS_ROTATE
+        ms_vstream_cfg flv;   /* local UNROTATED fallback copy (cfg is const) */
+        {
+            int r = fs_create(chn,v);
+            if (r<0) goto fail;             /* unrecoverable */
+            if (r==FS_ROT_FALLBACK){
+                /* T31: fs_create refused the rotation (outside the safe
+                 * envelope - Fix 1) or its FS rotate-enable call failed (Fix 2).
+                 * Either way no IMP channel was created (SetChnRotate/CreateChn
+                 * both run after the refusal points, and SetChnRotate runs
+                 * before CreateChn), so bring THIS one stream up UNROTATED on the
+                 * normal bound path instead of aborting the whole pipeline. cfg
+                 * is const, so retarget v at a local copy with rotation zeroed
+                 * (in-memory only, does not persist to the file); the encoder
+                 * dims below then follow the unrotated geometry too. */
+                flv = cfg->video[i]; flv.rotation = 0; v = &flv;
+                if (fs_create(chn,v)!=0) goto fail;
+            }
+        }
+#else
         if (fs_create(chn,v)!=0) goto fail;
+#endif
         /* The encoder GROUP must exist before enc_create's
          * IMP_Encoder_RegisterChn(grp,chn): the canonical Ingenic order is
          * CreateGroup -> CreateChn -> RegisterChn. Older libimp (T23 and other
