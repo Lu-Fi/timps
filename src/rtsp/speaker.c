@@ -72,6 +72,14 @@ static volatile int g_stop_play = 0; /* abort current playback (STOP / new PLAY 
 static int ao_ensure(void)
 {
     if (g_ao_open) return 0;
+    /* audio.spk_enabled is the master gate for the physical speaker: when 0,
+     * never open the AO device, so NEITHER the backchannel (speaker_write_pcm)
+     * NOR the play queue (play_write) produces sound - both playback paths
+     * route through here, so this one check suppresses all output. Read live
+     * from g_cfg like spk_volume/spk_gain below; because the AO is opened
+     * lazily per session, a /control toggle takes effect on the next open
+     * (same "config default at open" semantics as spk_volume/spk_gain). */
+    if (!g_cfg.audio.spk_enabled) return -1;
     int r = hal_ao_open(g_out_rate);
     if (r < 0) return -1;
     g_ao_rate = r; g_ao_open = 1;
