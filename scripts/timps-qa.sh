@@ -996,6 +996,107 @@ else
 				esac
 			done
 			lv_post "{\"video\":{\"0\":{\"rotation\":${rot_cur:-0}}}}" >/dev/null   # restore
+
+			# --- real rotation verification (needs --ssh: requires an actual
+			# daemon restart, since rotation is persist-only) ------------------
+			# The config round-trip above only proves the API layer; it can't
+			# catch a real hardware/encoder-init failure. This exact class of
+			# bug shipped once: a T23 SW-rotate config that round-tripped fine
+			# through /control but crashed the WHOLE daemon on restart via a
+			# failed IMP_Encoder_YuvInit (no video/audio at all until someone
+			# manually fixed the config file by hand). This restarts the
+			# daemon for real with two configs and asserts it survives:
+			#   1. video0 (mainstream) at its CURRENT native resolution/fps,
+			#      rotated - reproduces whatever real risk THIS camera's
+			#      actual config poses. Successfully-rotated OR safely-
+			#      refused-and-unrotated are BOTH a pass; a dead/unreachable
+			#      daemon is the only fail.
+			#   2. video1 (substream) forced to a known-16-aligned safe size
+			#      (704x576@10fps, within the documented safe envelope) -
+			#      this one SHOULD actually rotate; if it doesn't, warn
+			#      (not fail) since sw-rotate genuinely not working on a
+			#      "safe" config is a real product gap, not a crash.
+			# Restore is done via direct SSH config-file edit + restart, NOT
+			# via the HTTP API - if case 1 crashes the daemon, /control is
+			# unreachable, so the API-based restore above would silently no-op
+			# and leave the bad value on disk for case 2 (and beyond) to
+			# inherit. Editing /etc/timps.conf directly works whether or not
+			# the daemon is currently up.
+			if [ -n "$SSH_TARGET" ]; then
+				rot_restart() {
+					sshx "/etc/init.d/S95timps restart >/dev/null 2>&1 || service timps restart >/dev/null 2>&1"
+					local i
+					for i in $(seq 1 30); do
+						sshx "pidof timpsd" >/dev/null 2>&1 && return 0
+						sleep 2
+					done
+					return 1
+				}
+				rot_set_conf() {  # $1=key $2=value -> force into /etc/timps.conf via SSH, works even if the daemon is down
+					sshx "grep -q '^$1' /etc/timps.conf 2>/dev/null && sed -i 's|^$1.*|$1 = $2|' /etc/timps.conf || echo '$1 = $2' >> /etc/timps.conf"
+				}
+				rot_probe() {  # $1=rtsp path -> prints "codecxWIDTHxHEIGHT" or empty on failure
+					# pidof succeeding only means the process exists, not that the
+					# video pipeline is up yet (on-demand encoder start happens on
+					# the FIRST client connection, plus sw-rotate init can add
+					# real latency) - a couple of retries beats a fixed sleep.
+					local out i
+					for i in 1 2 3; do
+						out=$(timeout 20 ffprobe -v error -rtsp_transport tcp -select_streams v:0 \
+							-show_entries stream=codec_name,width,height -of csv=p=0 \
+							"$(rtsp_url "$1")" 2>/dev/null | tr ',' 'x')
+						[ -n "$out" ] && { echo "$out"; return; }
+						sleep 3
+					done
+				}
+
+				echo "  -- real restart test (needs --ssh, may take ~1-2 min) --"
+				sub1_cur=$(jget "$LV_BASE" video.1.rotation);  sub1_cur=${sub1_cur:-0}
+				sub1_w=$(jget "$LV_BASE" video.1.width);       sub1_w=${sub1_w:-640}
+				sub1_h=$(jget "$LV_BASE" video.1.height);      sub1_h=${sub1_h:-360}
+				sub1_fps=$(jget "$LV_BASE" video.1.fps);       sub1_fps=${sub1_fps:-25}
+
+				if echo ",$rot_caps_norm," | grep -q ",90,"; then
+					# case 1: mainstream at native size, rotated - the crash-class check
+					lv_post "{\"video\":{\"0\":{\"rotation\":90}}}" >/dev/null
+					if rot_restart; then
+						probe0=$(rot_probe "$PATH_MAIN")
+						if [ -n "$probe0" ]; then
+							ok "rotation: daemon survived + streamed video0 @ native res with rotation=90 requested ($probe0)"
+						else
+							bad "rotation: daemon came up but video0 stream unreachable after rotation=90 at native res"
+						fi
+					else
+						bad "rotation: daemon DID NOT SURVIVE restart with video0 rotation=90 at native res - this is the crash class this test exists to catch"
+					fi
+					rot_set_conf "video0.rotation" "${rot_cur:-0}"
+					rot_restart >/dev/null 2>&1
+
+					# case 2: substream forced to a known-16-aligned safe size, rotated
+					lv_post "{\"video\":{\"1\":{\"rotation\":90,\"width\":704,\"height\":576,\"fps\":10}}}" >/dev/null
+					if rot_restart; then
+						probe1=$(rot_probe "$PATH_SUB")
+						if echo "$probe1" | grep -q "576x704"; then
+							ok "rotation: video1 at a 16-aligned safe size (704x576@10fps) ACTUALLY rotated ($probe1)"
+						elif [ -n "$probe1" ]; then
+							warn "rotation: video1 survived + streamed but did NOT rotate as expected (got $probe1, want 576x704) - sw-rotate may not be functional on this SoC even within the documented safe envelope"
+						else
+							bad "rotation: daemon came up but video1 stream unreachable after a known-safe rotated config"
+						fi
+					else
+						bad "rotation: daemon DID NOT SURVIVE restart with a known-safe-aligned video1 rotation config"
+					fi
+					rot_set_conf "video1.rotation" "$sub1_cur"
+					rot_set_conf "video1.width" "$sub1_w"
+					rot_set_conf "video1.height" "$sub1_h"
+					rot_set_conf "video1.fps" "$sub1_fps"
+					rot_restart >/dev/null 2>&1 || warn "rotation: final restore-restart didn't come back within 60s on $SSH_TARGET - check the camera manually"
+				else
+					info "rotation: no 90/270 support on this SoC - skipping real restart test"
+				fi
+			else
+				info "rotation: real restart verification needs --ssh (config round-trip above already checked)"
+			fi
 		fi
 	fi
 
