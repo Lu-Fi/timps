@@ -133,20 +133,6 @@ static IMPSensorInfo    g_sensor;
 static const ms_config *g_hcfg;
 static int              g_isp_sensor_w, g_isp_sensor_h;  /* real sensor res from
                                                           * the ISP (0 = unknown) */
-/* 180 rotation is realised as a global ISP Hflip+Vflip (all FS channels + JPEG
- * + IVS), which is exactly what a physically upside-down camera needs. It is
- * derived once from cfg at init (rotation is restart-only, so this is stable at
- * runtime) and XOR-composed with the live image.hflip/vflip keys in
- * isp_apply_image() so rotating 180 then toggling a flip flips once, not
- * cancels. Classic-API SoCs only; T40/T41 (ISP_NEW_TUNING_API) get 180 via
- * per-channel I2D in a later batch and leave this out of their flip path.
- * Gated on ROT_HAS_180 (i.e. USE_ROTATE): with rotation compiled out the
- * flag, its derivation and the XOR below all vanish and the flip path is
- * byte-identical to a no-rotation build. */
-#ifdef ROT_HAS_180
-static int              g_rot180 = 0;
-#endif
-
 #ifdef ROT_HAS_SW_90
 /* Software OSD state for the unbound SW-rotate path (Batch 5b). There is no
  * IMP_OSD on an unbound stream (nothing to splice a hardware OSD group into),
@@ -408,10 +394,9 @@ static int isp_apply_image(const char *k)
     if (!strcmp(k,"hue")){ unsigned char u=(unsigned char)im->hue;
         IMP_ISP_Tuning_SetBcshHue(IMPVI_MAIN,&u); return 1; }
     if (!strcmp(k,"hflip") || !strcmp(k,"vflip")){
-        /* NOTE: T40/T41 do NOT XOR g_rot180 here. On these SoCs 180 is realised
-         * per-channel via I2D (Batch 3), so the raw image.hflip/vflip drive the
-         * ISP flip and the 180 rotation is applied downstream - XOR-ing here
-         * would double-apply. Classic-API SoCs compose 180 in their flip path. */
+        /* T40/T41: the raw image.hflip/vflip drive the ISP/sensor flip directly.
+         * (These SoCs realise per-channel rotation via I2D downstream, kept
+         * independent of this flip path.) */
         IMPISPHVFLIP m = im->hflip
             ? (im->vflip ? IMPISP_FLIP_HV_MODE : IMPISP_FLIP_H_MODE)
             : (im->vflip ? IMPISP_FLIP_V_MODE  : IMPISP_FLIP_NORMAL_MODE);
@@ -456,17 +441,8 @@ static int isp_apply_image(const char *k)
         return 0;
 #endif
     }
-    /* XOR the live flip with the global 180 (=Hflip+Vflip): rotation is
-     * restart-only, so g_rot180 is stable and composing it here means a 180
-     * rotation plus a live image.hflip toggle flips once, not cancels. With
-     * rotation==0 g_rot180 is 0 and the args are the raw flip values. */
-#ifdef ROT_HAS_180
-    if (!strcmp(k,"hflip")){ int hf=(im->hflip?1:0)^g_rot180; IMP_ISP_Tuning_SetISPHflip((IMPISPTuningOpsMode)(hf?1:0)); return 1; }
-    if (!strcmp(k,"vflip")){ int vf=(im->vflip?1:0)^g_rot180; IMP_ISP_Tuning_SetISPVflip((IMPISPTuningOpsMode)(vf?1:0)); return 1; }
-#else
     if (!strcmp(k,"hflip")){ IMP_ISP_Tuning_SetISPHflip((IMPISPTuningOpsMode)(im->hflip?1:0)); return 1; }
     if (!strcmp(k,"vflip")){ IMP_ISP_Tuning_SetISPVflip((IMPISPTuningOpsMode)(im->vflip?1:0)); return 1; }
-#endif
     if (!strcmp(k,"running_mode")){
         /* the SDK returns a status; a drop at the dusk day->night crossover left
          * the sensor colour under IR while the config claimed night. It used to
@@ -781,8 +757,7 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
     /* T31 (Batch 4): FrameSource 90/270 rotate. IMP_FrameSource_SetChnRotate's
      * rotTo90 arg is an ENUM {0=off,1=90 CCW,2=90 CW} (imp_framesource.h:574-576),
      * NOT raw degrees - the previous code passed 90/270 verbatim, which the
-     * driver read as garbage, and it also wrongly swapped the SetChnRotate dims.
-     * 180 is handled by the ISP flip (Batch 2); do nothing here for it. */
+     * driver read as garbage, and it also wrongly swapped the SetChnRotate dims. */
     if (v->rotation==90 || v->rotation==270){
         /* rotTo90 enum: 1 = 90 CCW, 2 = 90 CW. Mapped so config 90 -> CCW(1),
          * 270 -> CW(2), matching prudynt/raptor's raw rotation=1|2 semantics
@@ -2328,22 +2303,6 @@ static void ing_control_commit(void)
 static int ing_init(const ms_config *cfg)
 {
     g_hcfg=cfg;
-#ifdef ROT_HAS_180
-    /* Derive the global 180 flag before isp_init() applies ISP tuning. 180 is a
-     * SoC-global ISP Hflip+Vflip, so if some enabled streams request 180 and
-     * others don't, all streams follow (warn once). Restart-only, so stable.
-     * Compiled out entirely when USE_ROTATE is off (prot() coerces 180->0). */
-    g_rot180 = 0;
-    { int any180=0, anyplain=0;
-      for (int i=0;i<MS_MAX_VSTREAM;i++){
-          if (!cfg->video[i].enabled) continue;
-          if (cfg->video[i].rotation==180) any180=1; else anyplain=1;
-      }
-      g_rot180 = any180;
-      if (any180 && anyplain)
-          LOGW(MOD,"rotation 180 is global on this SoC: all streams will be rotated");
-    }
-#endif
     int r = isp_init();
 #ifdef USE_CONTROL
     if (r==0){ hub_set_control_cb(ing_control); hub_set_control_commit_cb(ing_control_commit); }
@@ -2359,8 +2318,8 @@ static int ing_start(const ms_config *cfg)
         const ms_vstream_cfg *v=&cfg->video[i];
 #ifdef ROT_HAS_SW_90
         /* T23 + USE_SW_ROTATE: 90/270 streams take the unbound SW-rotate path
-         * (no encoder group, no binds - see sw_rot_start). 0/180 streams stay
-         * on the normal bound pipeline below (180 = ISP flip, Batch 2). */
+         * (no encoder group, no binds - see sw_rot_start). Non-rotated (0)
+         * streams stay on the normal bound pipeline below. */
         if (v->rotation==90 || v->rotation==270){
             if (sw_rot_start(cfg,i)!=0) goto fail;
             continue;

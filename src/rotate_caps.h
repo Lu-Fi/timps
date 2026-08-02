@@ -8,19 +8,20 @@
  * BR2_PACKAGE_TIMPS_ROTATE, mirroring USE_CONTROL/USE_TLS/USE_FAAC). When
  * USE_ROTATE is undefined NO ROT_HAS_* macro is defined, so every
  * `#ifdef ROT_HAS_*` block in the code compiles out and config.c's prot()
- * coerces every 90/180/270 request to 0 - the feature costs zero bytes. */
+ * coerces every 90/270 request to 0 - the feature costs zero bytes.
+ *
+ * NOTE: rotation=180 is NO LONGER a rotation value. On every classic-API SoC
+ * it was only ever a global ISP Hflip+Vflip - identical to (and made redundant
+ * by) the always-available image.hflip + image.vflip, but falsely modelled as
+ * per-stream (setting it on one stream silently flipped all others). It was
+ * removed; users wanting a 180 flip set image.hflip=1 + image.vflip=1. So
+ * `rotation` now only ever means a real transpose (90/270) or 0/absent. */
 #ifdef USE_ROTATE
 #if defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)|| \
     defined(PLATFORM_T23)||defined(PLATFORM_T30)||defined(PLATFORM_T31)|| \
     defined(PLATFORM_T40)||defined(PLATFORM_T41)||defined(PLATFORM_C100)
 #define ROT_PLATFORM_KNOWN 1
 #endif
-
-/* 180 = ISP Hflip+Vflip (or per-channel I2D on T40/T41): all camera SoCs.
- * Enabled now because 180 needs no dim swap and Batch 2 provides the apply;
- * to stay behaviour-neutral in Batch 1 the config whitelist still coerces
- * unsupported values, and no apply path references these yet. */
-#define ROT_HAS_180 1
 
 /* 90/270 apply paths - each enabled by the batch that implements it:
  *   ROT_HAS_HW_I2D    (T40/T41, Batch 3) - true HW I2D rotate
@@ -39,7 +40,7 @@
  * IMP_Encoder_Yuv* encode path). Deliberately OPT-IN via the USE_SW_ROTATE=1
  * Makefile knob (-DMS_ENABLE_SW_ROTATE): it costs real CPU on the single-core
  * T23 and loses hardware OSD/privacy on the rotated stream. Without the knob a
- * T23 build is byte-identical to Batch 2 (180-only). */
+ * T23 build advertises no rotation values at all (ROT_HAS_90 undefined). */
 #if defined(PLATFORM_T23) && defined(MS_ENABLE_SW_ROTATE)
 #define ROT_HAS_SW_90 1
 #endif

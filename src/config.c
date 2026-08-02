@@ -1,7 +1,7 @@
 #include "config.h"
 #include "log.h"
 #include "motion_caps.h"   /* MOTION_MAX_CELLS/MOTION_CELL_LIMIT (grid clamp) */
-#include "rotate_caps.h"   /* ROT_HAS_90/ROT_HAS_180 (rotation whitelist) */
+#include "rotate_caps.h"   /* ROT_HAS_90 (rotation whitelist) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -82,10 +82,12 @@ static int  pint_cl(const char *v, int lo, int hi)
     if (x > hi) x = hi;
     return x;
 }
-/* rotation parser: accepts degrees (0/90/180/270) and the legacy T31 rotTo90
+/* rotation parser: accepts degrees (0/90/270) and the legacy T31 rotTo90
  * enum (0/1/2 -> 0/90/270), then whitelists against this SoC's caps. Anything
  * unsupported coerces to 0 (with a warning) so the streamer stays behaviour-
- * neutral until an apply path exists.
+ * neutral until an apply path exists. 180 is NOT a rotation value any more
+ * (it was a redundant global ISP Hflip+Vflip - use image.hflip+image.vflip);
+ * it lands on the "invalid -> 0" rail below like any other bad value.
  * IMPORTANT: legacy 1/2 here must round-trip to the SAME rotTo90 value in
  * hal_ingenic.c's fs_create() (currently 90->1, 270->2, see the 2026-07-21
  * comment there) so that a prudynt.cfg/raptor-style `rotation=1|2` (which is
@@ -95,12 +97,9 @@ static int  pint_cl(const char *v, int lo, int hi)
 static int prot(const char *val){
     int r = pint(val);
     if (r==1) r=90; else if (r==2) r=270;        /* legacy T31 rotTo90 0/1/2 */
-    if (r!=0 && r!=90 && r!=180 && r!=270){ LOGW(MOD,"rotation %d invalid -> 0",r); return 0; }
+    if (r!=0 && r!=90 && r!=270){ LOGW(MOD,"rotation %d invalid -> 0",r); return 0; }
 #ifndef ROT_HAS_90
     if (r==90||r==270){ LOGW(MOD,"rotation %d unsupported on this SoC -> 0",r); return 0; }
-#endif
-#ifndef ROT_HAS_180
-    if (r==180){ LOGW(MOD,"rotation 180 unsupported -> 0"); return 0; }
 #endif
     return r;
 }

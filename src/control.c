@@ -21,7 +21,7 @@
 #include "motion_caps.h"
 #include "rtsp/backchannel.h"
 #include "rtsp/speaker.h"
-#include "rotate_caps.h"   /* ROT_HAS_90/ROT_HAS_180 (rotation caps + eff dims) */
+#include "rotate_caps.h"   /* ROT_HAS_90 (rotation caps + eff dims) */
 #include "hal/imp_motion.h"
 #include "hal/imp_osd.h"
 #include "record.h"
@@ -749,19 +749,15 @@ int control_get_json(char *buf, size_t cap)
             pav, MS_MAX_PRIVACY);
     }
     /* image rotation: the set of values this SoC's build can actually apply
-     * (0 always; 90/270 need a dim-swapping apply path, 180 an ISP flip).
-     * The WebUI greys out the rest. Only reported when USE_ROTATE compiled the
-     * feature in; otherwise the key is omitted (the WebUI hides the control). */
+     * (0 always; 90/270 need a real dim-swapping transpose apply path). 180 is
+     * no longer a rotation value - it was a redundant global ISP Hflip+Vflip;
+     * use image.hflip + image.vflip for a 180 flip. The WebUI greys out the
+     * rest. Only reported when USE_ROTATE compiled the feature in; otherwise
+     * the key is omitted (the WebUI hides the control). */
 #ifdef USE_ROTATE
     APP("\"rotation\":[0"
 #ifdef ROT_HAS_90
-        ",90"
-#endif
-#ifdef ROT_HAS_180
-        ",180"
-#endif
-#ifdef ROT_HAS_90
-        ",270"
+        ",90,270"
 #endif
         "],");
 #endif /* USE_ROTATE */
