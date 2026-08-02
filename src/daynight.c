@@ -123,6 +123,11 @@ static float dn_brightness(const char *path, float *total_gain)
         if (digital_gain     > 0) units += (float)digital_gain;
         if (isp_digital_gain > 0) units += (float)isp_digital_gain;
         *total_gain = 256.0f * exp2f(units / 32.0f);   /* -> [24.8] linear */
+        /* garbage/out-of-range gain regs (sscanf from /proc/jz/isp) can push
+         * exp2f to +inf, which would later print as the literal "inf" -
+         * invalid JSON. Rail non-finite results to the -1.0f "unknown"
+         * sentinel, same class of guard pflt_cl() applies to config floats. */
+        if (!isfinite(*total_gain)) *total_gain = -1.0f;
     }
 
     float b = -1.0f;
