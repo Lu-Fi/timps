@@ -417,7 +417,12 @@ void control_apply_json(const char *json)
      * transient action that just enqueues on the play FIFO speaker.c reads. */
     sb = find_obj(json, end, "speaker", &se);
     if (sb){
-        if (get_val(sb, se, "stop", v, sizeof v)){
+        /* only stop on a TRUTHY "stop" - {"stop":false|0|null} must not stop,
+         * and (else-if below) must not shadow a "play" sent in the same object.
+         * Same truthiness idiom used for the boolean fields elsewhere here. */
+        int do_stop = get_val(sb, se, "stop", v, sizeof v) &&
+                      (!strcmp(v,"true")||!strcmp(v,"1"));
+        if (do_stop){
             speaker_play_line("STOP");
             LOGI(MOD,"speaker stop");
         } else if (get_val(sb, se, "play", v, sizeof v)){
