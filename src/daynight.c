@@ -417,8 +417,35 @@ static int dn_ae_stable(const float *hist, int n, int pct)
 #ifndef DN_BRIGHTEN_CONFIRM_MS
 #define DN_BRIGHTEN_CONFIRM_MS 60000  /* sustained-brightening probe confirm */
 #endif
+/* REGRESSION FIX (overnight logs, 4 cameras, v1.7.3): the first version of
+ * this hardening drifted the baseline UPWARD toward RAW gain ticks. With a
+ * noisy night gain (IR AGC hunting) that ratchets the baseline to the noise
+ * envelope's MAXIMUM; ordinary troughs then sit below the probe bar, fire a
+ * probe, the (correctly) failed probe reverts, the post-revert baseline is
+ * resampled off a still-settling elevated AE reading, and the settled gain
+ * again reads "brighter than baseline" - a self-sustaining flap loop every
+ * few minutes all night. Three changes break the loop:
+ *  - the baseline drifts toward a night-only SMOOTHED gain, symmetric in
+ *    both directions (a noise trough/peak cannot ratchet anything, and an
+ *    elevated post-revert sample corrects back DOWN);
+ *  - the brightening probe only arms on a fresh above-bar -> below-bar
+ *    edge of the smoothed gain: after a failed probe the system is below
+ *    the bar and DISARMED until the baseline re-converges (bar falls under
+ *    the current gain), so a failed probe buys minutes of guaranteed quiet
+ *    and only genuine NEW brightening can re-fire;
+ *  - for DN_PROBE_SETTLE_MS after a probe switch the day->night revert
+ *    candidate is only seeded from STABLE readings (dn_ae_stable): a railed
+ *    dark-room reading is stable at once (revert proceeds), but a probe
+ *    landing in a lit room can no longer be killed by the AE convergence
+ *    ramp right after the pipeline switch. */
 #ifndef DN_BASELINE_ALPHA
-#define DN_BASELINE_ALPHA 0.05f  /* per-tick EMA step of the upward drift */
+#define DN_BASELINE_ALPHA 0.002f /* per-tick baseline step toward smoothed gain */
+#endif
+#ifndef DN_SMOOTH_ALPHA
+#define DN_SMOOTH_ALPHA 0.1f     /* per-tick EMA step of the night gain smoother */
+#endif
+#ifndef DN_PROBE_SETTLE_MS
+#define DN_PROBE_SETTLE_MS 8000  /* post-probe: revert only on stable readings */
 #endif
 
 static void *dn_thread(void *arg)
@@ -458,8 +485,19 @@ static void *dn_thread(void *arg)
     /* sustained-brightening probe (see DN_BRIGHTEN_CONFIRM_MS): when gain
      * first held below the probe bar while in night. 0 = not holding. */
     int64_t brighten_since_ms = 0;
-    /* baseline value last reported in a log line (rate-limits the upward-
-     * drift INFO log to meaningful moves, see the EMA drift below). */
+    /* the probe only arms on a fresh above-bar -> below-bar edge of the
+     * smoothed gain (see the DN_BASELINE_ALPHA regression comment). */
+    int     brighten_armed = 0;
+    /* night-only smoothed gain (DN_SMOOTH_ALPHA EMA): drives the baseline
+     * drift and the brightening comparison so AGC noise cannot ratchet
+     * either. Reset on every night entry so day/probe readings (railed max
+     * gain in a dark IR-less room) never pollute it. -1 = no sample yet. */
+    float   smooth_tg = -1.0f;
+    /* when the last probe switched to day (0 = none recent): gates the
+     * day->night revert on stable readings for DN_PROBE_SETTLE_MS. */
+    int64_t probe_day_ms = 0;
+    /* baseline value last reported in a log line (rate-limits the drift
+     * INFO log to meaningful moves, see the EMA drift below). */
     float   baseline_logged = -1.0f;
     /* P2: last /proc-scraped brightness (status readout only when the gain
      * API works) and when the next scrape is due. 0 = scrape on first tick. */
@@ -547,7 +585,8 @@ static void *dn_thread(void *arg)
             was_enabled = 0;
             cur = DN_UNKNOWN;           /* mode may be forced manually now */
             night_baseline = -1.0f;
-            brighten_since_ms = 0;
+            brighten_since_ms = 0; brighten_armed = 0;
+            smooth_tg = -1.0f; probe_day_ms = 0;
             pending_target = DN_UNKNOWN; pending_since_ms = 0;
             dn_status_update(b, tg, luma, DN_UNKNOWN, night_baseline);
             dn_sleep(interval);
@@ -559,7 +598,8 @@ static void *dn_thread(void *arg)
             night_baseline = -1.0f;
             night_entered_ms = 0;
             night_probe_at_ms = 0;
-            brighten_since_ms = 0;
+            brighten_since_ms = 0; brighten_armed = 0;
+            smooth_tg = -1.0f; probe_day_ms = 0;
             pending_target = DN_UNKNOWN; pending_since_ms = 0;
             settle_floor_ms = ms_now_us() / 1000 + (int64_t)dn->boot_settle_s * 1000;
             settle_hard_ms  = ms_now_us() / 1000 + (int64_t)dn->boot_settle_max_s * 1000;
@@ -582,6 +622,15 @@ static void *dn_thread(void *arg)
         }
         warned_noisp = 0;
 
+        /* night-only smoothed gain: the baseline drift and the brightening
+         * probe read this instead of raw ticks (see the DN_BASELINE_ALPHA
+         * regression comment). Only night readings feed it - it is reset on
+         * every night entry so the railed day-pipeline gain of a failed
+         * probe can never leak in. */
+        if (dn->mode == DN_MODE_SENSOR && cur == DN_NIGHT && tg >= 0.0f)
+            smooth_tg = (smooth_tg > 0.0f)
+                ? smooth_tg + (tg - smooth_tg) * DN_SMOOTH_ALPHA : tg;
+
         /* self-healing reconfirm probes: gain sampled through the night/IR
          * pipeline is not a reliable proxy for "is it actually day" (IR-cut
          * changes the optical path and the ISP night tuning table can target
@@ -603,16 +652,24 @@ static void *dn_thread(void *arg)
             if (dn->night_reconfirm_s > 0 && night_probe_at_ms > 0 &&
                 now_ms >= night_probe_at_ms)
                 probe_why = "periodic reconfirm probe";
-            if (!probe_why && night_baseline > 0.0f && tg >= 0.0f &&
+            if (!probe_why && night_baseline > 0.0f && smooth_tg > 0.0f &&
                 dn->day_gain_pct > 0 && dn->day_gain_pct < 100) {
                 float probe_bar = night_baseline *
                     (100.0f + (float)dn->day_gain_pct) / 200.0f;
-                if (tg < probe_bar) {
+                if (smooth_tg >= probe_bar) {
+                    /* above the bar: (re)arm - only a fresh above->below
+                     * edge may start a hold. After a failed probe the scene
+                     * sits below the bar DISARMED until the baseline drift
+                     * converges and the bar drops under the current gain,
+                     * so identical darkness can never re-fire. */
+                    brighten_armed = 1;
+                    brighten_since_ms = 0;
+                } else if (brighten_armed) {
                     if (!brighten_since_ms) {
                         brighten_since_ms = now_ms;
                         LOGI(MOD, "sustained brightening: gain %.0f below probe "
                                   "bar %.0f (baseline %.0f), confirming %ds",
-                             (double)tg, (double)probe_bar,
+                             (double)smooth_tg, (double)probe_bar,
                              (double)night_baseline,
                              DN_BRIGHTEN_CONFIRM_MS / 1000);
                     } else if (now_ms - brighten_since_ms >=
@@ -620,8 +677,7 @@ static void *dn_thread(void *arg)
                                now_ms - last_switch_ms >=
                                    (int64_t)dn->transition_s * 1000)
                         probe_why = "sustained brightening probe";
-                } else
-                    brighten_since_ms = 0;
+                }
             }
             if (probe_why) {
                 LOGI(MOD, "night reconfirm (%s): probing day pipeline after "
@@ -638,6 +694,8 @@ static void *dn_thread(void *arg)
                 night_entered_ms = 0;
                 night_probe_at_ms = 0;
                 brighten_since_ms = 0;
+                brighten_armed  = 0;    /* re-arms above the bar next night */
+                probe_day_ms    = now_ms; /* gate the revert on stability */
                 dn_status_update(b, tg, luma, cur, night_baseline);
                 dn_sleep(interval);
                 continue;
@@ -646,8 +704,10 @@ static void *dn_thread(void *arg)
 
         int  target = cur;
         char why[64];
-        if (cur == DN_UNKNOWN && dn->mode == DN_MODE_SENSOR &&
-            dn->boot_stable_pct > 0 && tg >= 0.0f) {
+        /* keep the stability ring fed in sensor mode whenever gain is
+         * readable: the boot settle (cur==UNKNOWN) and the post-probe
+         * revert gate below both read it. Cheap: one ring write per tick. */
+        if (dn->mode == DN_MODE_SENSOR && tg >= 0.0f) {
             settle_hist[settle_n % DN_SETTLE_SAMPLES] = tg;
             settle_n++;
         }
@@ -748,6 +808,20 @@ static void *dn_thread(void *arg)
                 LOGD(MOD, "AE settling, ignoring transient reading");
                 pending_target  = DN_UNKNOWN;   /* don't confirm from a transient */
                 pending_since_ms = 0;
+            } else if (cur == DN_DAY && target == DN_NIGHT && probe_day_ms &&
+                       now_ms - probe_day_ms < (int64_t)DN_PROBE_SETTLE_MS &&
+                       dn->mode == DN_MODE_SENSOR &&
+                       !dn_ae_stable(settle_hist, settle_n,
+                                     dn->boot_stable_pct > 0 ? dn->boot_stable_pct : 20)) {
+                /* right after a probe switched to day, the first readings are
+                 * the AE converging on the new pipeline. A genuinely dark
+                 * room rails at max gain - STABLE at once, so its (correct)
+                 * revert proceeds - but a lit room's convergence ramp must
+                 * not seed the night candidate and kill a legitimate probe
+                 * (see the DN_BASELINE_ALPHA regression comment). */
+                LOGD(MOD, "post-probe AE settling, ignoring transient reading");
+                pending_target  = DN_UNKNOWN;
+                pending_since_ms = 0;
             } else if (cur != DN_UNKNOWN &&
                 now_ms - last_switch_ms < (int64_t)dn->transition_s * 1000) {
                 LOGD(MOD, "transition delay not met, waiting");
@@ -765,9 +839,14 @@ static void *dn_thread(void *arg)
                 reassert_left  = DN_REASSERT_COUNT;
                 reassert_at_ms = now_ms + DN_REASSERT_MS;
                 /* (re)arm the adaptive baseline: sample it a while after we
-                 * enter night, once the IR LEDs have settled; clear on day */
+                 * enter night, once the IR LEDs have settled; clear on day.
+                 * The smoothed gain restarts with the night session so a
+                 * failed probe's railed day readings never leak in. */
                 night_baseline = -1.0f;
                 brighten_since_ms = 0;
+                brighten_armed = 0;
+                smooth_tg = -1.0f;
+                probe_day_ms = 0;
                 night_entered_ms = (target == DN_NIGHT) ? now_ms : 0;
                 /* (re)arm the periodic reconfirm probe alongside it, see
                  * night_reconfirm_s doc comment in config.h */
@@ -781,28 +860,35 @@ static void *dn_thread(void *arg)
             pending_since_ms = 0;
         }
 
-        /* sample the night gain baseline once, after the IR LEDs settle */
+        /* sample the night gain baseline once, after the IR LEDs settle.
+         * Taken from the SMOOTHED gain when available so a post-revert AE
+         * still settling down cannot plant an inflated baseline. */
         if (cur == DN_NIGHT && night_baseline < 0.0f && tg >= 0.0f &&
             dn->baseline_delay_s > 0 && night_entered_ms > 0 &&
             ms_now_us() / 1000 - night_entered_ms >=      /* monotonic (M12) */
                 (int64_t)dn->baseline_delay_s * 1000) {
-            night_baseline = tg;
-            baseline_logged = tg;
+            night_baseline = (smooth_tg > 0.0f) ? smooth_tg : tg;
+            baseline_logged = night_baseline;
             LOGI(MOD, "night gain baseline = %.0f (day trigger < %d%% = %.0f)",
                  (double)night_baseline, dn->day_gain_pct,
                  (double)dn_day_trigger(night_baseline));
-        } else if (cur == DN_NIGHT && night_baseline > 0.0f && tg > night_baseline) {
-            /* upward-only EMA drift: a baseline that was sampled during a
-             * lighting transition (unrepresentatively LOW) self-corrects
-             * toward the true darkness level within about a minute, while a
-             * few-second transient barely moves it (see the hardening
-             * comment above DN_BRIGHTEN_CONFIRM_MS). Downward drift is
-             * deliberately absent - falling gain is what the day trigger
-             * detects. Log at INFO only on a meaningful (>=25%) rise. */
-            night_baseline += (tg - night_baseline) * DN_BASELINE_ALPHA;
-            if (baseline_logged > 0.0f && night_baseline >= baseline_logged * 1.25f) {
+        } else if (cur == DN_NIGHT && night_baseline > 0.0f && smooth_tg > 0.0f) {
+            /* slow SYMMETRIC drift toward the smoothed gain: an unrepresent-
+             * ative baseline (sampled mid lighting-transition, or off a
+             * post-revert AE still settling) self-corrects in a few minutes
+             * in EITHER direction, and AGC noise centers instead of
+             * ratcheting (the v1.7.3 upward-only drift chased noise peaks -
+             * see the DN_BASELINE_ALPHA regression comment). The drift is
+             * much slower than DN_BRIGHTEN_CONFIRM_MS, so a genuine sudden
+             * brightening still opens a wide baseline-vs-gain gap before
+             * the baseline can follow it down. Log at INFO on a meaningful
+             * (>=25%) move either way. */
+            night_baseline += (smooth_tg - night_baseline) * DN_BASELINE_ALPHA;
+            if (baseline_logged > 0.0f &&
+                (night_baseline >= baseline_logged * 1.25f ||
+                 night_baseline <= baseline_logged * 0.75f)) {
                 baseline_logged = night_baseline;
-                LOGI(MOD, "night gain baseline drifted up to %.0f "
+                LOGI(MOD, "night gain baseline drifted to %.0f "
                           "(day trigger < %d%% = %.0f)",
                      (double)night_baseline, dn->day_gain_pct,
                      (double)dn_day_trigger(night_baseline));

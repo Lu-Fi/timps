@@ -210,14 +210,18 @@ typedef struct {
      * night (IR LEDs settled) the current gain is sampled as the night baseline;
      * day is then triggered when gain < day_gain_pct% of it (relative, robust
      * against IR flicker) instead of the fixed day_threshold. 0 = disable.
-     * Hardened 2026-08-02 after two real stuck-in-night incidents (see the
-     * DN_BRIGHTEN_CONFIRM_MS comment in daynight.c):
+     * Hardened 2026-08-02 after two real stuck-in-night incidents, revised
+     * 2026-08-03 after the first version flapped overnight (see the
+     * DN_BRIGHTEN_CONFIRM_MS and DN_BASELINE_ALPHA comments in daynight.c):
      *  - the trigger is floored at total_gain_day_threshold (never stricter
      *    than the calibrated "definitely day" level);
-     *  - the baseline drifts UP toward any higher night gain (a sample taken
-     *    during a lighting transition self-corrects to true darkness);
-     *  - gain holding well below baseline but above the strict trigger for
-     *    a minute fires the night-reconfirm day-pipeline probe early. */
+     *  - the baseline drifts slowly toward a night-only SMOOTHED gain, in
+     *    both directions (a bad sample self-corrects, AGC noise centers
+     *    instead of ratcheting);
+     *  - smoothed gain holding well below baseline but above the strict
+     *    trigger for a minute fires the night-reconfirm day-pipeline probe
+     *    early; it only re-arms after the gain has been back above the bar,
+     *    and post-probe reverts wait for a stable day-pipeline reading. */
     int      day_gain_pct;       /* night->day at this % of the night baseline */
     int      baseline_delay_s;   /* wait this long in night before sampling it */
     /* boot/re-enable AE settle (see daynight.c dn_ae_stable()): a reflashed/

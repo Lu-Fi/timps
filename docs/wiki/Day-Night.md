@@ -88,20 +88,29 @@ thingino's `daynightd` semantics.
   Three hardenings (added 2026-08-02 after two real stuck-in-night
   incidents in one evening — a basement whose single utility light only
   pushed gain to 65% of a cleanly-sampled baseline, and a kids' room
-  whose baseline was sampled mid-lighting-transition):
+  whose baseline was sampled mid-lighting-transition; revised 2026-08-03
+  after the first version turned AGC noise into overnight probe flapping):
   - the computed trigger is **floored** at `total_gain_day_threshold` —
     the adaptive bar can never be stricter than the calibrated
     "definitely day" level;
-  - while night lasts the baseline **drifts upward** (small per-tick EMA
-    step) toward any higher gain, so an unrepresentatively-low sample
-    self-corrects to the true darkness level within about a minute,
-    while a brief transient barely moves it (downward drift is
-    deliberately absent — falling gain is what the day trigger detects);
-  - a **sustained-brightening probe**: gain holding below the halfway
-    point between `day_gain_pct`% and 100% of the baseline for a minute
-    (a real light came on, but not enough to cross the strict bar) fires
-    the same day-pipeline probe as the periodic reconfirm below, gated
-    on the `transition_s` dwell so a probe that reverts cannot flap.
+  - the baseline and the probe comparison run on a **night-only smoothed
+    gain** (EMA), and the baseline **drifts slowly toward it in both
+    directions** — an unrepresentative sample (taken mid-transition, or
+    off a post-revert AE still settling) self-corrects within minutes,
+    and gain noise centers instead of ratcheting the baseline to its
+    envelope maximum;
+  - a **sustained-brightening probe**: smoothed gain holding below the
+    halfway point between `day_gain_pct`% and 100% of the baseline for a
+    minute (a real light came on, but not enough to cross the strict
+    bar) fires the same day-pipeline probe as the periodic reconfirm
+    below. It arms only on a fresh above-bar→below-bar edge, so a failed
+    probe cannot re-fire on unchanged darkness — the baseline must first
+    re-converge and the scene newly brighten. For a few seconds after
+    any probe, the day→night revert additionally waits for a *stable*
+    day-pipeline reading, so the AE convergence ramp right after the
+    pipeline switch cannot kill a legitimate probe (a genuinely dark
+    room rails at max gain, which is stable at once, so its correct
+    revert is barely delayed).
 
   The baseline currently in effect and the resulting trigger are
   reported read-only as `night_baseline` / `day_trigger` in the
