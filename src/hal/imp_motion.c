@@ -77,6 +77,39 @@ static int64_t g_cell_hit[MOTION_STATUS_MAX]; /* last retRoi=1 per cell, mono ms
 static int64_t now_ms(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t);
                              return (int64_t)t.tv_sec*1000 + t.tv_nsec/1000000; }
 
+/* Silent-limbo hardening: PollingResult(1000ms)/GetResult failing forever
+ * (SDK/driver wedge) used to leave the thread ticking a bare `continue` with
+ * zero log output and zero recovery - motion.enabled stayed 1, the last
+ * active[] snapshot froze in place, and record.c's motion gate quietly went
+ * permanently inert. Mirrors hal_ingenic.c's video_thread poll watchdog: a
+ * run of misses past MOTION_STALL_MS triggers one StopRecvPic/StartRecvPic
+ * cycle (cheap - same class of recovery IMP_IVS already supports without a
+ * full destroy/recreate) and flags status.stalled so it's visible over
+ * /control instead of silent. Re-arms every MOTION_STALL_MS while the stall
+ * persists rather than spamming a cycle every tick. */
+#ifndef MOTION_STALL_MS
+#define MOTION_STALL_MS 10000
+#endif
+
+static void motion_note_miss(int64_t *stall_since_ms)
+{
+    int64_t nowm = now_ms();
+    if (!*stall_since_ms){
+        *stall_since_ms = nowm;
+        return;
+    }
+    if (nowm - *stall_since_ms < MOTION_STALL_MS) return;
+    LOGE(MOD,"no IVS move results for over %dms - cycling the move channel "
+             "to recover", MOTION_STALL_MS);
+    pthread_mutex_lock(&g_st_lock);
+    g_st.stalled = 1;
+    pthread_mutex_unlock(&g_st_lock);
+    IMP_IVS_StopRecvPic(g_chn);
+    if (IMP_IVS_StartRecvPic(g_chn) != 0)
+        LOGE(MOD,"IVS StartRecvPic failed during stall-recovery cycle");
+    *stall_since_ms = nowm;   /* re-arm: don't cycle again for another window */
+}
+
 /* effective grid geometry from the config: >=1x1 and cols*rows clamped to
  * MOTION_MAX_CELLS (rows gives way, mirroring the clamp in config.c) */
 static void grid_geom(const ms_config *cfg, int *cols, int *rows)
@@ -124,9 +157,23 @@ static void *motion_thread(void *arg)
     pthread_mutex_lock(&g_st_lock);
     gcols = g_st.cols; grows = g_st.rows;
     pthread_mutex_unlock(&g_st_lock);
+    int64_t stall_since_ms = 0;   /* 0 = currently receiving results fine */
     while (g_run) {
-        if (IMP_IVS_PollingResult(g_chn, 1000) < 0) continue;
-        if (IMP_IVS_GetResult(g_chn, (void**)&result) < 0) continue;
+        if (IMP_IVS_PollingResult(g_chn, 1000) < 0){
+            motion_note_miss(&stall_since_ms);
+            continue;
+        }
+        if (IMP_IVS_GetResult(g_chn, (void**)&result) < 0){
+            motion_note_miss(&stall_since_ms);
+            continue;
+        }
+        if (stall_since_ms){
+            LOGI(MOD,"IVS move results resumed after a stall");
+            stall_since_ms = 0;
+            pthread_mutex_lock(&g_st_lock);
+            g_st.stalled = 0;
+            pthread_mutex_unlock(&g_st_lock);
+        }
         int detected = 0, changed = 0, any_held = 0;
         uint64_t hitmask = 0;   /* M3: cells with raw motion THIS frame, for the hook */
         int64_t nowm = now_ms();

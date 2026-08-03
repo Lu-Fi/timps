@@ -3,6 +3,7 @@
 #include "backchannel.h"
 #include "speaker.h"
 #include "../log.h"
+#include "../util.h"
 #include "../codec/g711.h"
 
 #include <stdio.h>
@@ -33,6 +34,20 @@ static int         g_out_rate = 16000;
  * only valid after that call. audio.backchannel is restart-only (AUD_REST),
  * so rtsp.c must gate on this, not on the live config value. */
 static int         g_configured = 0;
+static int64_t     g_owner_last_us = 0;   /* mono clock of the owner's last accepted frame */
+/* F2 hardening: g_owner used to latch until the elected session's own
+ * bc_release() (session teardown) - a standing connection that SETUP the
+ * backchannel, sent a few frames, and then simply stops talking (but keeps
+ * the RTSP session open via keepalives, e.g. an ONVIF NVR that only
+ * occasionally talks) held the decode election for as long as the session
+ * stayed connected, silently dropping every other session's talk frames at
+ * the `g_owner != owner` check below with no log and no time-based recovery.
+ * Re-elect after this much silence from the current owner instead of only on
+ * an explicit release. Generous vs typical backchannel RTP packetization
+ * (20-40ms) so a mid-sentence pause never causes a spurious steal. */
+#ifndef BC_OWNER_STALE_US
+#define BC_OWNER_STALE_US (10LL*1000000)
+#endif
 
 /* scratch buffer - only ever touched by the elected owner under g_lock */
 static int16_t g_pcm[8192];     /* decoded PCM (mono) */
@@ -149,11 +164,23 @@ static int decode_aac(const uint8_t *pl, int plen, int *out_rate)
 void bc_feed_rtp(const void *owner, const uint8_t *rtp, int len)
 {
     pthread_mutex_lock(&g_lock);
+    int64_t now = ms_now_us();
     if (g_owner == NULL){                 /* first talker becomes decode owner */
         g_owner = owner;
         LOGI(MOD,"backchannel decode owner acquired");
+    } else if (g_owner != owner && now - g_owner_last_us > BC_OWNER_STALE_US){
+        /* F2: previous owner has gone quiet for a while - steal the election
+         * rather than dropping this talker forever. Reset the decoder so no
+         * AAC state from the old owner's stream leaks into the new one. */
+#ifdef USE_BC_AAC
+        if (g_aac){ AACFreeDecoder(g_aac); g_aac=NULL; }
+#endif
+        LOGI(MOD,"backchannel decode owner re-elected (previous was idle >%llds)",
+             (long long)(BC_OWNER_STALE_US/1000000));
+        g_owner = owner;
     }
     if (g_owner != owner){ pthread_mutex_unlock(&g_lock); return; }  /* not the owner */
+    g_owner_last_us = now;
 
     int off = rtp_payload_off(rtp, len);
     if (off < 0){ pthread_mutex_unlock(&g_lock); return; }
@@ -198,6 +225,7 @@ void bc_release(const void *owner)
     pthread_mutex_lock(&g_lock);
     if (g_owner == owner){
         g_owner = NULL;
+        g_owner_last_us = 0;
         LOGI(MOD,"backchannel decode owner released");
 #ifdef USE_BC_AAC
         if (g_aac){ AACFreeDecoder(g_aac); g_aac=NULL; }

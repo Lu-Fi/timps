@@ -618,7 +618,11 @@ static const cfg_field record_fields[] = {
     FS("name",        0,           name,        0),
     F ("segment_s",   "segment",   segment_s,   T_INT,     0, 0,86400),
     F ("pre_roll_s",  "pre_roll",  pre_roll_s,  T_INT,     0, 0,60),
-    F ("post_roll_s", "post_roll", post_roll_s, T_INT,     0, 0,300),
+    /* min 1, not 0: motion_recent() (record.c) gates motion-triggered
+     * recording on `last_ms < post_roll_s*1000` - at 0 that's never true even
+     * for the triggering event itself, so record.mode=1 would silently
+     * record nothing, ever, with enabled:true and zero warning (Finding 1). */
+    F ("post_roll_s", "post_roll", post_roll_s, T_INT,     0, 1,300),
     F ("min_free_mb", 0,           min_free_mb, T_INT,     0, 0,1048576),
     F ("audio",       0,           audio,       T_BOOL,    0, 0,0),
 };

@@ -6,6 +6,84 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.7.6] - 2026-08-03
+
+### Fixed
+Comprehensive audit for the same bug class as the v1.7.5 day/night fix — a
+thread reaching a state with (1) healthy-looking continued execution, (2)
+zero log output, (3) no reachable recovery path — across the rest of the
+codebase, followed by fixes for every confirmed instance:
+
+- **Motion detection could silently stall forever with `motion.enabled`
+  still reporting true.** `imp_motion.c`'s IVS poll loop treated every
+  `PollingResult`/`GetResult` failure as a bare retry with no counter, no
+  log, and no recovery: a driver/SDK wedge left the thread ticking at the
+  poll rate while `/control` kept claiming motion was live and the last
+  "active" grid snapshot froze in place — silently killing motion-triggered
+  recording downstream. Added a stall watchdog (10s of consecutive misses)
+  that cycles the IVS channel and surfaces a new `motion.stalled` status
+  field instead of failing silently.
+- **RTSP sessions could become immortal.** The idle-reap exemption keyed off
+  `session.tcp`, a flag latched at SETUP time and never cleared — but
+  several real transport combinations (UDP video + TCP-only backchannel, a
+  transport-switch re-SETUP, a SETUP-but-never-published TCP audio track, an
+  encoder wedge before the first frame) set that flag while never actually
+  writing a byte over TCP, so neither the idle reaper nor `SO_SNDTIMEO` could
+  ever catch an ungracefully-dead client on that session. The exemption now
+  tracks real per-sink TCP write success instead of the latched transport
+  choice.
+- **HTTP fMP4/MJPEG and SRT streaming loops could spin forever on an
+  encoder stall.** Disconnect detection was entirely data-driven (piggybacked
+  on send/receive of media), so a stalled encoder combined with a TLS client
+  (whose non-blocking recv can never observe an orderly close) or a client
+  that vanished without a clean TCP close left the loop spinning at its poll
+  cadence indefinitely, pinning a client slot. Added a 60s no-packet idle
+  bound to all three loops. The `stream.mp4`/`stream.mjpeg` pre-keyframe
+  discard state also only ever requested one IDR and never re-checked for a
+  disconnected client; it now retries the IDR request and probes for
+  disconnect every ~1s while waiting.
+- **Audio watchdog could never trip on a persistently failing `GetFrame`.**
+  The miss-streak counter was reset unconditionally right before calling
+  `IMP_AI_GetFrame`, so a GetFrame that kept failing after a successful
+  `PollingFrame` reset its own watchdog on every tick — audio died silently
+  and permanently (with a busy-loop risk, since that path had no `usleep`
+  either) instead of tripping the existing 500-miss teardown.
+- **JPEG (snapshot/MJPEG) encoder thread had no stall watchdog at all**,
+  unlike the video encoder thread, despite being able to pin the
+  framesource 24/7 once wedged. Added the same PollingStream-miss-counter +
+  framesource recycle cycle video_thread already had.
+- **Framesource `EnableChn` failures were never retried** once the
+  refcount left them at ≥1 (e.g. motion detection holding a pin) — every
+  subsequent user believed the channel was enabled. `fs_use()` now retries
+  the real hardware enable independent of the refcount transition, closing
+  this for the common single-holder case (co-holder cases are a documented
+  partial gap, tracked as a follow-up rather than rushed in without
+  hardware validation).
+- **Backchannel/speaker ownership had no inactivity release.** A session
+  that talked once and then went quiet (but kept its RTSP connection open)
+  held the backchannel decode election and the physical speaker
+  indefinitely — every other client's talk audio was silently dropped and
+  the play-clip queue never played. Both now re-elect/release after 10s of
+  silence from the current owner.
+- **SRT client threads had no liveness check at all** when the source
+  stopped publishing (`if (!p) continue;`), unlike the equivalent HTTP
+  path. Added the same 60s idle-stall bound.
+- Lower-severity visibility/config-trap fixes found in the same pass:
+  `record.post_roll_s=0` made motion-triggered recording silently record
+  nothing, ever (config minimum raised to 1); `/control`'s `record` status
+  now exposes whether the motion gate backing motion-mode recording is
+  actually available/enabled, and whether a manual recording override is
+  latched; the OSD updater thread's create-failure path now logs (matching
+  every sibling thread); the day/night "ISP unreadable" idle path is now a
+  visible one-shot warning instead of debug-only.
+
+Every fix independently reviewed by a second model pass against the actual
+diff (not just the diagnosis) before landing; one review finding (a
+`hal_ingenic.c` comment overclaiming the framesource-recycle fix under a
+co-holder) was corrected to accurately describe the remaining gap. Verified
+via `make sim` and a real T31 cross-build; deployed and QA-tested on one
+camera before fleet rollout.
+
 ## [1.7.5] - 2026-08-03
 
 ### Fixed

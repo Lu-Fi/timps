@@ -835,6 +835,8 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
  *   max_cells      SDK budget (= caps.motion.max_cells, convenience)
  *   sensitivity    0..255 UI value in use
  *   monitor_stream stream whose FrameSource feeds the IVS grid
+ *   stalled        1 = enabled but IVS has delivered no result for a while;
+ *                  a recovery cycle ran (or is running) - see imp_motion.c
  *   active         per-cell 0/1 from the latest IVS result (empty
  *                  when unavailable or not running)
  *   last_ms        ms since the last motion event, -1 = never */
@@ -847,9 +849,10 @@ int control_motion_json(char *buf, size_t cap, const ms_motion_status *st)
     } while (0)
     APP("{\"available\":%d,\"enabled\":%d,\"cols\":%d,"
         "\"rows\":%d,\"max_cells\":%d,\"sensitivity\":%d,"
-        "\"monitor_stream\":%d,\"active\":[",
+        "\"monitor_stream\":%d,\"stalled\":%d,\"active\":[",
         st->available, st->enabled, st->cols, st->rows,
-        MOTION_MAX_CELLS, st->sensitivity, g_cfg.motion.monitor_stream);
+        MOTION_MAX_CELLS, st->sensitivity, g_cfg.motion.monitor_stream,
+        st->stalled);
     int mcells = st->cells;
     if (mcells > MOTION_STATUS_MAX) mcells = MOTION_STATUS_MAX;
     for (int i=0;i<mcells;i++) APP("%s%d", i?",":"", st->active[i]);
@@ -1189,11 +1192,19 @@ int control_get_json(char *buf, size_t cap)
         APP(",\"record\":{\"available\":%d,\"enabled\":%d,\"recording\":%d,"
             "\"channel\":%d,\"mode\":%d,\"bytes\":%lld,\"free_mb\":%lld,\"file\":\"%s\","
             "\"dir\":\"%s\",\"name\":\"%s\",\"segment_s\":%d,\"pre_roll_s\":%d,"
-            "\"post_roll_s\":%d,\"min_free_mb\":%d,\"audio\":%d}",
+            "\"post_roll_s\":%d,\"min_free_mb\":%d,\"audio\":%d,"
+            /* Finding 1/2: distinguishes "mode=1, no motion lately" (both 1,
+             * recording still legitimately 0) from "mode=1 but motion isn't
+             * running" (motion_gate_enabled 0 - recording is structurally
+             * inert, not just quiet) - and surfaces a manual-off latch that
+             * used to have zero status visibility. */
+            "\"motion_gate_available\":%d,\"motion_gate_enabled\":%d,"
+            "\"manual_off\":%d}",
             rst.available, rst.enabled, rst.recording, rst.channel, rst.mode,
             (long long)rst.bytes, (long long)rst.free_mb, jf,
             jd, jn, c->record.segment_s, c->record.pre_roll_s,
-            c->record.post_roll_s, c->record.min_free_mb, c->record.audio);
+            c->record.post_roll_s, c->record.min_free_mb, c->record.audio,
+            rst.motion_gate_available, rst.motion_gate_enabled, rst.manual_off);
     }
     {   /* native timelapse: live status + the persisted config keys, so the
          * WebUI timelapse page can read the settings back (dir/name/channel/
