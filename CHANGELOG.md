@@ -6,6 +6,140 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.7.4] - 2026-08-03
+
+### Fixed
+- **Day/night baseline drift ratcheting into an overnight flap loop.** The
+  v1.7.3 hardening's upward-only EMA baseline drift tracked raw gain ticks;
+  noisy night AGC ratcheted the baseline to its noise ceiling, causing
+  night↔day to flap every few minutes to every hour, all night, on real
+  cameras — worse than the bug it was meant to fix. Replaced with a
+  night-only smoothed gain driving a slow, symmetric baseline drift, an
+  edge-armed brightening probe that disarms after a failed attempt, and an
+  8s post-probe AE-stability gate so a lit room's exposure-convergence
+  transient can't kill a legitimate probe. Verified against the exact
+  logged flap pattern in `timpsd-sim`: zero flaps over 3 minutes where
+  v1.7.3 flapped every 1-2 minutes.
+
+## [1.7.3] - 2026-08-02
+
+### Fixed
+- **Adaptive night→day threshold too strict for a real light source.** Two
+  live incidents: a basement whose only light dropped gain to 65% of a
+  cleanly-sampled night baseline (never crossing `day_gain_pct`'s 60% bar),
+  and a room whose baseline was sampled mid-lighting-transition
+  (unrepresentatively low). The trigger is now floored at
+  `total_gain_day_threshold`, the baseline drifts toward observed gain
+  instead of staying fixed, and a "sustained brightening" probe forces an
+  early day-pipeline recheck instead of waiting up to `night_reconfirm_s`.
+  (Superseded by the fix in 1.7.4 above once this introduced its own
+  regression.)
+- `night_baseline`/`day_trigger` (the adaptive values currently in effect)
+  are now exposed read-only in `GET /control` and the `/events` SSE push.
+
+## [1.7.2] - 2026-08-02
+
+### Fixed
+- `boot_settle_s`/`boot_settle_max_s`/`boot_stable_pct`/`night_reconfirm_s`
+  (new in 1.7.1) were live-settable but never actually appeared in the
+  `GET /control` status JSON — a separate hand-written serializer had its
+  own hardcoded field list, unrelated to the settings path.
+
+## [1.7.1] - 2026-08-02
+
+### Fixed
+- **False night-mode latch surviving a reflash into broad daylight.** A
+  fixed 5s post-boot settle window was too short for a cold/freshly-
+  reflashed sensor's AE to converge, so a transient gain spike could
+  commit straight to night regardless of real daylight and never recover.
+  `boot_settle_s`/`boot_settle_max_s`/`boot_stable_pct` now wait for
+  several consecutive gain readings to actually stabilize before trusting
+  the first decision, and a new `night_reconfirm_s` periodically forces a
+  real day-pipeline probe so an already-latched false night self-heals
+  instead of requiring a manual `/control` override.
+
+## [1.7.0] - 2026-08-02
+
+### Added
+- **HTTP Digest authentication** (RFC 7616 `qop=auth` + legacy RFC 2069)
+  alongside the existing Basic auth, for both the HTTP preview endpoints
+  and RTSP.
+- **Read-only encoder telemetry** via `IMP_Encoder_Query`: per-channel
+  queue/buffer stats (`registered`, `left_pics`, `left_stream_bytes`,
+  `left_stream_frames`, `cur_packs`, `work_done`) and, on T31,
+  `ave_bitrate` from `IMP_Encoder_GetChnAveBitrate`, exposed as a new
+  `"encoder"` object in `GET /control`.
+- **Per-client adaptive fMP4 frame-dropping** on weak links: a slow
+  `/stream.mp4` client freezes on its last frame and resumes cleanly at
+  the next keyframe instead of stalling every subscriber, with drop stats
+  (fps/kbps/resolution/drops) visible in status. Defaulted on once
+  hardware-verified.
+- **Live IVS motion sensitivity** via `IMP_IVS_SetParam` (no grid rebuild
+  needed for a sensitivity-only change), and opt-in AEC
+  (`IMP_AI_EnableAec`) for the backchannel.
+- `USE_RECORD`/`USE_TIMELAPSE` compile-time flags to shrink SD-less builds;
+  `{fpsN}`/`{bitrate}` OSD placeholders for a specific stream's measured
+  throughput.
+
+### Changed
+- **`rotation=180` removed on classic-API SoCs** (T10/T20/T21/T23/T30/T31/
+  C100), since it's mechanically identical to `image.hflip`+`image.vflip`
+  there — then **restored specifically for T40/T41**, which have a genuine
+  per-channel I2D-based 180° distinct from their (global) hflip/vflip
+  registers. Final `caps.rotation`: T31 `[0,90,270]`, T40/T41
+  `[0,90,180,270]`, no-rotation SoCs `[0]`.
+- `sendmmsg`-batched UDP video RTP per access unit, table-driven
+  `/control` key lookup (~17KB smaller `.text`), explicit per-thread-type
+  stack sizes, and a just-in-time timelapse hub subscription (was held
+  24/7) — all throughput/footprint work with no behavior change.
+
+### Fixed
+- **T31 FS-rotate / T23 SW-rotate crash safety.** A rotation request
+  outside the vendor-safe envelope (64-aligned & ≤1280x704 & ≤15fps for
+  T31; 16-aligned & ≤704x576 & ≤15fps for T23) used to silently fall back
+  to an oversized/misaligned software path that then failed encoder
+  bring-up and took the **entire multi-stream pipeline** down — reproduced
+  live via a rotation the `/control` API had itself accepted and
+  persisted. Both platforms now refuse an out-of-envelope rotation and
+  bring that one stream up unrotated instead; a `SetChnRotate`/
+  `YuvInit` failure is likewise isolated to the affected stream rather
+  than aborting the whole daemon.
+- **A batch of RTSP/RTP/RTCP/SDP conformance fixes** found across several
+  review rounds: `SET_PARAMETER` answered as a keepalive (200, RFC 2326
+  §10.9) instead of 405; idle TCP backchannel-only sessions reaped after
+  the standard timeout (previously immortal, since they never trip the
+  media-write timeout other TCP sessions rely on); `Content-Length`
+  request bodies actually consumed so the byte stream stays framed;
+  `rtsps://` scheme stripped so TLS clients resolve the right stream;
+  unsupported `Require:` feature-tags answered 551; Digest `uri=`
+  verified against the real request-target; orphaned UDP sessions reaped
+  at 2x the advertised timeout; `CSeq` echoed on every error response;
+  `HEAD` answers `GET`'s headers with no body (RFC 7231 §4.3.2); plus
+  fixes for SDP truncation/`Content-Length` mismatches, `FD_CLOEXEC` on
+  accepted sockets, and several `/control` JSON-encoding hardenings
+  (control-char/UTF-8 handling, `\uXXXX` decoding, failing closed instead
+  of shipping truncated JSON).
+- **Motion detection**: IVS grid now uses pre-rotation frame dimensions
+  with a transposed grid on the T23 SW-rotate path (was building the grid
+  in the wrong orientation), sensitivity changes that map to the same IVS
+  level are deduped, and `cooldown_ms` is floored and persisted correctly.
+- **Day/night**: a queued ISP `running_mode` change is now actively
+  latched (`fs_kick_running_mode`) instead of only taking effect on the
+  next unrelated encoder event; a pre-switch hysteresis window (raptor-
+  style) replaced blind reassertion; a transient reading during the AE
+  settle window is now ignored instead of seeding a false decision.
+- **Recording/timelapse**: `record.audio` toggles the hub subscription
+  live; a dropped packet (not just a missed keyframe) now requests a
+  rate-limited IDR; `gethostname()` results are NUL-terminated before use
+  in path templates.
+- Video/JPEG AU buffers now size from the actual frame instead of a fixed
+  estimate (fixes both the 1.6.1 sub-stream stall class and an analogous
+  JPEG/snapshot/MJPEG stall once a scene crosses a detail threshold — see
+  below), audio speaker/backchannel gating and resampling edge cases, and
+  a `/control` re-POST of an unchanged `image.running_mode` now still
+  re-drives the ISP (some SoCs need the write even when the value didn't
+  change).
+
 ## [1.6.4] - 2026-07-29
 
 ### Added
