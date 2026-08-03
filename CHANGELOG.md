@@ -6,6 +6,33 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.7.5] - 2026-08-03
+
+### Fixed
+- **Day/night thread could get permanently stuck at boot with zero self-
+  healing.** From `DN_UNKNOWN`, the decision silently stays put while gain
+  sits inside the day/night dead-zone (300..3000 default) — by original
+  design. But a camera can boot with the ISP already in a *persisted* mode
+  and a dead-zone reading (e.g. a restart in daylight with a stale night
+  config), and both self-healing probes (periodic reconfirm, sustained
+  brightening) are gated on `cur==DN_NIGHT` — which `DN_UNKNOWN` never
+  satisfies. Result: a camera could render night video (or day, in the
+  inverse case) indefinitely after a reboot, with a perfectly healthy
+  thread producing zero log lines, only discovered live on a T31 that
+  restarted at 09:23 in broad daylight and stayed dark for hours.
+  Once the boot-settle window ends still undecided, the thread now adopts
+  the persisted `image.running_mode` as its internal state (the ISP is
+  already running it, so nothing switches) so the normal in-mode triggers
+  and probes arm. Since an adopted night is a guess rather than a
+  measurement, its first day-pipeline verify probe fires within 5 minutes
+  (or sooner if `night_reconfirm_s` is set lower) — once, even when
+  periodic reconfirm is disabled. Pre-existing gap, not a v1.7.4
+  regression; v1.7.4 only happened to be the build running when a restart
+  finally landed in the dead-zone. Verified in `timpsd-sim` replaying the
+  exact incident (adopts, verifies, and reaches day in ~25s versus
+  indefinitely stuck before) plus a one-shot-probe-with-reconfirm-disabled
+  case and two clean (non-dead-zone) boots showing zero adoption noise.
+
 ## [1.7.4] - 2026-08-03
 
 ### Fixed

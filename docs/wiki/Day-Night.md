@@ -118,6 +118,18 @@ thingino's `daynightd` semantics.
 - The gap between the two fixed thresholds (300..3000 by default) **is**
   the hysteresis dead-zone for this mode — no separate averaging is
   applied.
+- **Dead-zone adoption** (added 2026-08-03 after a live incident): a
+  fresh start whose reading sits *inside* the dead-zone used to stay
+  undecided forever — silently keeping the stale persisted mode with no
+  self-healing, because both reconfirm probes only run once a mode is
+  established (a T31 restarted in broad daylight with a stale night
+  config and a mid-band gain of 731 rendered night video indefinitely).
+  Now, once the boot-settle window is over and the reading still cannot
+  decide, the thread adopts the persisted `image.running_mode` as its
+  mode (the ISP is already running it) and arms the normal triggers. An
+  adopted *night* is a guess, so its first day-pipeline verify probe
+  fires after `min(night_reconfirm_s, 300 s)` — and once even when the
+  periodic reconfirm is disabled.
 
 **Gain read through the night/IR pipeline is not the same metric as
 gain read through the day pipeline.** IR-cut engagement changes the

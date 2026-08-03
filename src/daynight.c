@@ -448,6 +448,25 @@ static int dn_ae_stable(const float *hist, int n, int pct)
 #define DN_PROBE_SETTLE_MS 8000  /* post-probe: revert only on stable readings */
 #endif
 
+/* Dead-zone adoption (live incident 2026-08-03, T31 restart in daylight):
+ * from DN_UNKNOWN the sensor decision stays put while gain sits inside the
+ * day..night dead-zone (300..3000 default) - by design, and silent. But a
+ * boot lands in UNKNOWN with the ISP already running the PERSISTED mode, so
+ * "stay put" really means "keep the stale mode with NO self-healing": both
+ * reconfirm probes are gated on cur==DN_NIGHT, which UNKNOWN never satisfies.
+ * A camera rebooted at 09:23 in broad daylight with a stale night config and
+ * a mid-band gain (731) sat rendering night video indefinitely - thread
+ * healthy, zero log lines, night_baseline never sampled. Fix: once the boot
+ * settle window is over and the reading still cannot decide, ADOPT the
+ * persisted running_mode as cur (the ISP is in that mode anyway) so the
+ * normal in-mode triggers and probes arm. An adopted NIGHT is a guess, not a
+ * measurement, so its first day-pipeline reconfirm probe fires early - after
+ * min(night_reconfirm_s, DN_ADOPT_PROBE_S) - and once even when the periodic
+ * reconfirm is disabled: a guess must be verified. */
+#ifndef DN_ADOPT_PROBE_S
+#define DN_ADOPT_PROBE_S 300     /* verify an adopted night within 5 minutes */
+#endif
+
 static void *dn_thread(void *arg)
 {
     (void)arg;
@@ -649,8 +668,10 @@ static void *dn_thread(void *arg)
         if (cur == DN_NIGHT && dn->mode == DN_MODE_SENSOR) {
             int64_t now_ms = ms_now_us() / 1000;
             const char *probe_why = NULL;
-            if (dn->night_reconfirm_s > 0 && night_probe_at_ms > 0 &&
-                now_ms >= night_probe_at_ms)
+            /* night_probe_at_ms is armed by night entry (when reconfirm is
+             * enabled) or by dead-zone adoption (one-shot, even when it is
+             * not - see DN_ADOPT_PROBE_S); honour it whenever set. */
+            if (night_probe_at_ms > 0 && now_ms >= night_probe_at_ms)
                 probe_why = "periodic reconfirm probe";
             if (!probe_why && night_baseline > 0.0f && smooth_tg > 0.0f &&
                 dn->day_gain_pct > 0 && dn->day_gain_pct < 100) {
@@ -774,6 +795,36 @@ static void *dn_thread(void *arg)
                 else if (avg > dn->threshold_high - hyst_range) target = DN_DAY;
             }
             snprintf(why, sizeof why, "avg brightness %.1f%%", (double)avg);
+        }
+
+        /* dead-zone adoption (see DN_ADOPT_PROBE_S): still undecided after
+         * the boot settle window -> adopt the persisted mode so the in-mode
+         * triggers and self-healing probes arm instead of idling forever. */
+        if (cur == DN_UNKNOWN && target == DN_UNKNOWN &&
+            dn->mode == DN_MODE_SENSOR) {
+            int64_t now_ms = ms_now_us() / 1000;
+            int settled = now_ms >= settle_floor_ms &&
+                (dn->boot_stable_pct <= 0 || now_ms >= settle_hard_ms ||
+                 dn_ae_stable(settle_hist, settle_n, dn->boot_stable_pct));
+            if (settled) {
+                cur = g_cfg.image.running_mode ? DN_NIGHT : DN_DAY;
+                night_entered_ms = (cur == DN_NIGHT) ? now_ms : 0;
+                if (cur == DN_NIGHT) {
+                    int64_t probe_s = DN_ADOPT_PROBE_S;
+                    if (dn->night_reconfirm_s > 0 &&
+                        dn->night_reconfirm_s < probe_s)
+                        probe_s = dn->night_reconfirm_s;
+                    night_probe_at_ms = now_ms + probe_s * 1000;
+                    LOGI(MOD, "reading %s inside the day/night dead-zone after "
+                              "settle - adopting persisted mode night "
+                              "(day-pipeline verify probe in %llds)",
+                         why, (long long)probe_s);
+                } else {
+                    night_probe_at_ms = 0;
+                    LOGI(MOD, "reading %s inside the day/night dead-zone after "
+                              "settle - adopting persisted mode day", why);
+                }
+            }
         }
 
         if (target != cur && target != DN_UNKNOWN) {
