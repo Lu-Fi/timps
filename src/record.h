@@ -20,6 +20,14 @@ typedef struct {
     long long bytes;         /* bytes written to the current segment */
     long long free_mb;       /* free space on the record directory */
     char      file[160];     /* current segment path ("" = idle) */
+    /* Finding 1/2: mode==1 recording can go permanently inert (motion
+     * detection dead/disabled, or - before the config.c min=1 fix - a
+     * post_roll_s=0 trap) with nothing in the fields above distinguishing it
+     * from "enabled, just no motion lately". Surface the actual gate inputs
+     * so that distinction is visible over /control instead of silent. */
+    int       motion_gate_available; /* mode==1 only: motion subsystem available */
+    int       motion_gate_enabled;   /* mode==1 only: motion detection running */
+    int       manual_off;            /* 1 = record_set_active(0) latched (Finding 2) */
 } ms_record_status;
 
 void record_get_status(ms_record_status *st);

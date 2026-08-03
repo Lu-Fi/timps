@@ -23,6 +23,9 @@ typedef struct {
     int      cells;        /* cols*rows (= length of active[]) */
     int      sensitivity;  /* 0..255 UI sensitivity in use */
     int      any;          /* any cell active in the latest result */
+    int      stalled;      /* 1 = enabled but IVS has delivered no result for
+                            * MOTION_STALL_MS; a recovery cycle is in progress
+                            * or has already run. See imp_motion.c motion_thread. */
     int64_t  last_ms;      /* ms since the last motion event, -1 = never */
     unsigned char active[MOTION_STATUS_MAX]; /* per-cell 0/1, row-major
                                               * (index = row*cols + col) */

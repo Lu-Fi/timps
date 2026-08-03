@@ -517,8 +517,14 @@ void imp_osd_start_updater(void)
 {
     if (!g_hcfg || !g_hcfg->osd.enabled || g_run) return;
     g_run=1;
-    if (ms_thread_create(&g_thr,MS_STACK_STREAM,osd_thread,NULL)!=0)
+    if (ms_thread_create(&g_thr,MS_STACK_STREAM,osd_thread,NULL)!=0){
         g_run=0;                     /* imp_osd_stop must not join a non-thread */
+        /* Finding 5: every sibling (record.c/timelapse.c/imp_motion.c) LOGEs
+         * this failure; this one didn't - overlays rendered once at setup and
+         * then froze (timestamps never updated) with zero log output and no
+         * status field exposing updater liveness. */
+        LOGE(MOD,"osd updater thread create failed - overlays will not update");
+    }
 }
 
 #ifdef USE_CONTROL

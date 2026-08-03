@@ -130,6 +130,16 @@ typedef IMPEncoderCHNStat IMPEncoderChnStat;
 #ifndef MS_VIDEO_WATCHDOG_ITERS
 #define MS_VIDEO_WATCHDOG_ITERS 10
 #endif
+/* Watchdog: same failure class as MS_VIDEO_WATCHDOG_ITERS, but jpeg_thread
+ * (snapshots/MJPEG) had no watchdog at all (J1) - PollingStream returning
+ * nothing forever produced zero log output, and when a snapshot_path is
+ * configured the snapshot-due check pins jwant true permanently (idle-stop
+ * never runs, the framesource never gets a fresh Enable attempt on its own),
+ * so the whole pipeline pumped 24/7 with no output and no recovery. Same
+ * cadence as video's watchdog since both share imp_polling_timeout. */
+#ifndef MS_JPEG_WATCHDOG_ITERS
+#define MS_JPEG_WATCHDOG_ITERS 10
+#endif
 
 static IMPSensorInfo    g_sensor;
 static const ms_config *g_hcfg;
@@ -291,15 +301,35 @@ static void act_wait(void)
 #define MS_FS_MAXCHN 8
 static pthread_mutex_t g_fs_mtx = PTHREAD_MUTEX_INITIALIZER;
 static int g_fs_users[MS_FS_MAXCHN];
+/* F-fs/V2 hardening: tracks whether EnableChn has actually SUCCEEDED for this
+ * channel, independent of the refcount. The refcount alone used to gate the
+ * EnableChn attempt (only tried on the 0->1 edge) and was kept even when
+ * EnableChn failed - callers still symmetrically fs_unuse() what they
+ * fs_use()'d regardless of whether the hardware call inside it succeeded, so
+ * unwinding the refcount on failure would desync it from callers' own
+ * bookkeeping. That meant a failed 0->1 EnableChn left the channel
+ * "logically on, physically off" until the count fully drained to 0 - which
+ * can be never, e.g. while motion detection holds its own reference (imp_
+ * motion.c pins the monitored stream's FS for as long as motion is enabled).
+ * It also made the video/jpeg watchdogs' recovery cycle (fs_unuse()+fs_use())
+ * a no-op whenever another holder kept the count above 0 across the cycle
+ * (V2) - the exact failure class those watchdogs exist to recover from.
+ * Retrying independently of the refcount transition fixes both: any fs_use()
+ * call retries the real hardware enable until it actually reports success. */
+static int g_fs_enabled[MS_FS_MAXCHN];
 static void fs_use(int chn)
 {
     if (chn < 0 || chn >= MS_FS_MAXCHN) return;
     pthread_mutex_lock(&g_fs_mtx);
-    if (g_fs_users[chn]++ == 0) {
+    int first = (g_fs_users[chn]++ == 0);
+    if (!g_fs_enabled[chn]) {
         if (IMP_FrameSource_EnableChn(chn) != 0)
-            LOGE(MOD,"framesource %d: EnableChn failed", chn);
-        else
+            LOGE(MOD,"framesource %d: EnableChn failed%s", chn,
+                 first ? "" : " (retry)");
+        else {
             LOGI(MOD,"framesource %d enabled", chn);
+            g_fs_enabled[chn] = 1;
+        }
     }
     pthread_mutex_unlock(&g_fs_mtx);
 }
@@ -309,6 +339,7 @@ static void fs_unuse(int chn)
     pthread_mutex_lock(&g_fs_mtx);
     if (g_fs_users[chn] > 0 && --g_fs_users[chn] == 0) {
         IMP_FrameSource_DisableChn(chn);
+        g_fs_enabled[chn] = 0;
         LOGI(MOD,"framesource %d disabled (idle)", chn);
     }
     pthread_mutex_unlock(&g_fs_mtx);
@@ -1023,6 +1054,22 @@ static void *video_thread(void *arg)
                          "forcing a framesource disable/enable cycle to recover",
                          vc->chn, dbg_pollfail);
                     IMP_Encoder_StopRecvPic(vc->chn);
+                    /* V2 (partial): when this is the SOLE holder of the FS
+                     * channel, this fs_unuse()+fs_use() pair now genuinely
+                     * retries EnableChn (see g_fs_enabled - F-fs), where it
+                     * used to be a permanent no-op after any failed 0->1
+                     * enable. It is STILL a no-op when another holder (e.g.
+                     * motion detection pinning this same channel) keeps the
+                     * refcount above 0 across the cycle: fs_unuse() only
+                     * calls DisableChn (and clears g_fs_enabled) on the ->0
+                     * edge, so under a co-holder neither Disable nor Enable
+                     * actually run here and this degenerates to the
+                     * Stop/StartRecvPic below only - identical to pre-fix
+                     * behavior for that specific case (reviewed 2026-08-03;
+                     * a true fix needs a refcount-independent force-recycle
+                     * primitive, tracked as a follow-up, not implemented
+                     * here to avoid disrupting the co-holder's own frame
+                     * flow without hardware validation). */
                     fs_unuse(vc->chn);
                     fs_use(vc->chn);
                     if (IMP_Encoder_StartRecvPic(vc->chn)==0){
@@ -1700,6 +1747,7 @@ static void *jpeg_thread(void *arg)
     if (!jbuf){ LOGE(MOD,"no memory for JPEG buffer (%zu)",jcap); return NULL; }
     int receiving=0;
     int dbg_jstartfail=0;              /* rate-limits StartRecvPic failures */
+    int dbg_jpollfail=0;               /* J1: PollingStream-miss watchdog */
     int64_t next=0, idle_since=0;
     int64_t period = 1000000/(jc->fps>0?jc->fps:5);
     while (jc->run) {
@@ -1749,9 +1797,33 @@ static void *jpeg_thread(void *arg)
         if (now<next){ usleep(next-now); }
         next=ms_now_us()+period;
 
-        if (IMP_Encoder_PollingStream(jc->chn, g_hcfg->imp_polling_timeout)!=0) continue;
+        if (IMP_Encoder_PollingStream(jc->chn, g_hcfg->imp_polling_timeout)!=0){
+            dbg_jpollfail++;
+            if ((dbg_jpollfail % 20)==1)
+                LOGW(MOD,"jpeg chn%d: PollingStream idle (miss#%d) - encoder emits no frames",
+                     jc->chn, dbg_jpollfail);
+            if (dbg_jpollfail >= MS_JPEG_WATCHDOG_ITERS){
+                LOGE(MOD,"jpeg chn%d: encoder dead after %d consecutive misses - "
+                     "forcing a framesource disable/enable cycle to recover",
+                     jc->chn, dbg_jpollfail);
+                IMP_Encoder_StopRecvPic(jc->chn);
+                fs_unuse(jc->fs_chn);
+                fs_use(jc->fs_chn);
+                if (IMP_Encoder_StartRecvPic(jc->chn)!=0){
+                    fs_unuse(jc->fs_chn);   /* fully release; top-of-loop's
+                                             * !receiving path fs_use()s fresh */
+                    receiving=0;
+                }
+                dbg_jpollfail=0;
+            }
+            continue;
+        }
+        dbg_jpollfail=0;
         IMPEncoderStream st;
-        if (IMP_Encoder_GetStream(jc->chn,&st,1)!=0) continue;
+        if (IMP_Encoder_GetStream(jc->chn,&st,1)!=0){
+            LOGW(MOD,"jpeg chn%d: GetStream failed after PollingStream OK", jc->chn);
+            continue;
+        }
         /* Pre-size to the actual frame, same fix as video_thread's AU buffer
          * (see that function's comment for the full story): jcap starts as a
          * ~0.5 byte/pixel estimate, fine for most frames, but a
@@ -2206,9 +2278,24 @@ static void *audio_thread(void *arg)
             }
             usleep(10000); continue;
         }
-        ai_fail_streak = 0;
         IMPAudioFrame frm;
-        if (IMP_AI_GetFrame(dev,chnid,&frm,1)!=0) continue;
+        if (IMP_AI_GetFrame(dev,chnid,&frm,1)!=0){
+            /* A1: PollingFrame reported a frame ready but GetFrame failed to
+             * fetch it - treat this exactly like a PollingFrame miss for
+             * watchdog purposes. ai_fail_streak used to be zeroed
+             * unconditionally right above, before this call, regardless of
+             * what it returned: a persistently-failing GetFrame could then
+             * never trip the watchdog (the counter was reset every tick) and
+             * this bare `continue` had no usleep, so audio died silently and
+             * permanently while potentially hot-spinning this core. */
+            if (++ai_fail_streak >= MS_AI_WATCHDOG_ITERS){
+                LOGE(MOD,"no audio frames received - disabling audio input");
+                hub_clear_audio_params();
+                break;
+            }
+            usleep(10000); continue;
+        }
+        ai_fail_streak = 0;
         /* live mic mute (audio.mute via /control): keep draining the AI so
          * nothing backs up, but never feed the encoder/hub - RTSP and MP4
          * clients simply receive no audio frames until unmuted */

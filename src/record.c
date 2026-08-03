@@ -594,8 +594,14 @@ void record_get_status(ms_record_status *st)
     }
     pthread_mutex_lock(&g_lock);
     st->recording=g_recording; st->bytes=g_curbytes;
+    st->manual_off = (g_manual==0);
     snprintf(st->file,sizeof st->file,"%s",g_curfile);
     pthread_mutex_unlock(&g_lock);
+    if (st->mode==1){
+        ms_motion_status mst; motion_get_status(&mst);
+        st->motion_gate_available = mst.available;
+        st->motion_gate_enabled = mst.enabled;
+    }
 }
 
 int record_set_active(int on)

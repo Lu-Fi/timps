@@ -41,6 +41,21 @@
 #ifndef SRT_QCAP
 #define SRT_QCAP 128
 #endif
+/* S-1 hardening: client_thread had ZERO liveness check on a source stall -
+ * `if (!p) continue;` with no idle deadline, unlike httpd.c which at least
+ * attempts a crecv() probe. If the hub source stops publishing (HAL wedge),
+ * every SRT client thread spins at the fanqueue_pop timeout cadence forever:
+ * healthy-looking thread, zero log output, the only real recovery (a send
+ * failure) requires the very packets whose absence defines the state - not
+ * even libsrt's own peer-idle detection can fire since no API call is ever
+ * made on the socket. A subscribed hub source is expected to always publish
+ * (the on-demand design's invariant, see hub.c), so a long run of zero
+ * packets is itself proof of a stall; bound the leak the same way httpd.c's
+ * H-2 fix does. Generous relative to any real bitrate/fps so it never fires
+ * on a healthy, merely slow stream. */
+#ifndef SRT_STALL_US
+#define SRT_STALL_US (60LL*1000000)
+#endif
 
 static const ms_config *g_scfg;
 static volatile int     g_run;
@@ -311,9 +326,19 @@ static void *client_thread(void *arg)
     hub_request_idr(chn);
 
     int got_key = 0, psi = 0; int64_t psi_t = 0;
+    int64_t last_pkt_us = ms_now_us();   /* S-1: encoder-stall bound, see above */
     while (g_run) {
         ms_pkt *p = fanqueue_pop(&q, 200);
-        if (!p) continue;
+        if (!p) {
+            if (ms_now_us() - last_pkt_us > SRT_STALL_US) {
+                LOGW(MOD,"chn=%d: no packets for %llds - encoder stall, "
+                         "dropping this client", chn,
+                     (long long)(SRT_STALL_US/1000000));
+                break;
+            }
+            continue;
+        }
+        last_pkt_us = ms_now_us();
         if (fanqueue_take_dropped_key(&q)) hub_request_idr(chn);
 
         /* (re)send PAT/PMT ~every second and before the first packet */

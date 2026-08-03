@@ -40,6 +40,20 @@ static int   g_ao_open    = 0;       /* HAL AO is up */
 static int   g_bc_active  = 0;       /* backchannel currently owns/preempts */
 static int16_t *g_rs      = NULL;    /* resample scratch, only touched under g_lock */
 static int      g_rs_cap  = 0;       /* samples */
+static int64_t  g_bc_last_us = 0;    /* mono clock of the last backchannel write */
+/* F2 hardening: g_bc_active used to clear only via speaker_release() (session
+ * teardown, driven by bc_release() -> the backchannel's own owner staleness
+ * fix above). If that session's RTP simply stopped arriving without a
+ * teardown, bc_feed_rtp() would still eventually re-elect a new decode owner,
+ * but until it did, g_bc_active stayed latched here with nothing at all
+ * feeding this module to reconsider it: play_thread's wait loop below parks
+ * on it indefinitely and every queued play job silently never plays, with no
+ * log output describing why. Same threshold as backchannel.c's re-election
+ * for consistency, applied independently here since play_thread has its own
+ * polling loop and no dependency on a new talker ever showing up. */
+#ifndef SPK_BC_STALE_US
+#define SPK_BC_STALE_US (10LL*1000000)
+#endif
 
 /* Size the scratch to the ACTUAL resample output before converting - same fix
  * pattern as the AU/JPEG assembly buffers (commits 8128201/cdf0eff):
@@ -117,6 +131,7 @@ void speaker_write_pcm(const void *owner, const int16_t *pcm, int nsamp, int src
         g_owner = owner; g_bc_active = 1;
         LOGI(MOD, "speaker owner acquired (backchannel, %d Hz)", g_ao_rate);
     }
+    g_bc_last_us = ms_now_us();
     int rcap = rs_fit(nsamp, src_rate, g_ao_rate);
     int rn = ms_resample(pcm, nsamp, src_rate, g_ao_rate, g_rs, rcap);
     if (rn > 0) hal_ao_write(g_rs, rn);
@@ -477,7 +492,18 @@ static void *play_thread(void *arg)
         pthread_mutex_unlock(&g_lock);
         if (!got){ fifo_drain(-1); continue; }
         /* wait out any active backchannel before starting, staying cancellable */
-        while (g_play_run && g_bc_active && !g_stop_play) fifo_drain(200);
+        while (g_play_run && g_bc_active && !g_stop_play) {
+            fifo_drain(200);
+            pthread_mutex_lock(&g_lock);
+            if (g_bc_active && ms_now_us() - g_bc_last_us > SPK_BC_STALE_US){
+                LOGW(MOD, "backchannel owner idle >%llds - releasing speaker "
+                          "for queued playback",
+                     (long long)(SPK_BC_STALE_US/1000000));
+                g_owner = NULL; g_bc_active = 0;
+                ao_drop(0);
+            }
+            pthread_mutex_unlock(&g_lock);
+        }
         if (!g_play_run || g_stop_play) continue;     /* cancelled while waiting */
         play_job(&j);
     }

@@ -108,6 +108,8 @@ typedef struct {
     struct sockaddr_in dst, dst_rtcp;
     int                chan_rtp, chan_rtcp;
     rtp_batch         *batch;        /* P3: UDP video only; NULL = send direct */
+    int                wrote_tcp;    /* 1 once a TCP interleaved write has ever
+                                      * succeeded on this sink (see reap_check) */
 #ifdef USE_TLS
     void              *tls;          /* ms_tls_conn* when interleaved over RTSPS */
 #endif
@@ -157,9 +159,15 @@ static int sink_send(void *ctx, const uint8_t *pkt, int len, int rtcp)
 #ifdef USE_TLS
         /* interleaved packets ride the control connection: over RTSPS they
          * must go through TLS like every other byte on that connection */
-        if (s->tls) return ms_tls_write((ms_tls_conn*)s->tls, buf, 4+len) < 0 ? -1 : len;
+        if (s->tls) {
+            int rc = ms_tls_write((ms_tls_conn*)s->tls, buf, 4+len) < 0 ? -1 : len;
+            if (rc >= 0) s->wrote_tcp = 1;
+            return rc;
+        }
 #endif
-        return net_sendall(s->fd, buf, 4 + len) < 0 ? -1 : len;
+        int rc = net_sendall(s->fd, buf, 4 + len) < 0 ? -1 : len;
+        if (rc >= 0) s->wrote_tcp = 1;
+        return rc;
     } else {
         /* UDP media stays plaintext even for RTSPS clients: RTSPS secures the
          * control channel (and interleaved-TCP media) only - no SRTP here.
@@ -1183,18 +1191,25 @@ static void stream_loop(session *s)
          * parsed; a datagram from the peer's address is proof enough. */
         /* A TCP session carrying video/audio relies on SO_SNDTIMEO on its
          * media writes to notice a dead peer, so it is normally exempt from
-         * idle reaping. A TCP session that SETUP *only* the backchannel never
-         * sends any server->client media (it only receives audio from the
-         * client), so that timeout never fires: a silently-dead client would
-         * pin one of RTSP_MAX_CLIENTS slots forever. Subject that session
-         * shape to the same idle reaping as UDP sessions - its last_act_us is
-         * already refreshed by control-channel reads, including interleaved
-         * backchannel RTP. */
-        int reap_check = !s->tcp;
-#ifdef USE_BACKCHANNEL
-        reap_check = reap_check ||
-            (s->tcp && s->have_bc && !s->have_video && !s->have_audio);
-#endif
+         * idle reaping - but only once a write has actually gone out over
+         * that TCP sink. s->tcp merely records which transport was
+         * NEGOTIATED at SETUP time; several session shapes negotiate TCP but
+         * never write a single byte over it and so never have anything for
+         * SO_SNDTIMEO to time out on: UDP video + TCP-only backchannel (media
+         * rides sendto(), which never fails on an unconnected UDP socket),
+         * a transport-switch re-SETUP that leaves s->tcp latched true from an
+         * earlier TCP SETUP while the track now streams over UDP, a
+         * SETUP-but-never-published TCP audio track, or an encoder wedge
+         * before the very first frame. Any of those left the old check
+         * (`!s->tcp`) permanently false - the session became immortal on an
+         * ungraceful client death. Base the exemption on real TCP write
+         * activity (rtp_sink.wrote_tcp) instead of the latched transport
+         * choice; a session with no confirmed TCP write is subject to the
+         * same idle reaping as a UDP session, using the RTCP-liveness drain
+         * below and control-channel reads to feed last_act_us. */
+        int tcp_active = (s->vsink.tcp && s->vsink.wrote_tcp) ||
+                          (s->asink.tcp && s->asink.wrote_tcp);
+        int reap_check = !tcp_active;
         if (reap_check) {
             for (int t = 0; t < 2; t++) {
                 int rfd = t ? s->a_udp[1] : s->v_udp[1];

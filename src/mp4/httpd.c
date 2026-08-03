@@ -44,6 +44,23 @@
 #ifndef MS_MP4_DROP_HIWAT
 #define MS_MP4_DROP_HIWAT (MS_MP4_QCAP*3/4)
 #endif
+/* H-2 hardening: disconnect detection in the fMP4/MJPEG streaming loops is
+ * data-driven (crecv() is only even polled once fanqueue_pop times out with
+ * no packet), so an encoder-stall (hub source pinned but the HAL stopped
+ * publishing) plus a client that vanished without an orderly TCP close (power
+ * loss, NAT drop) or is on TLS (crecv(MSG_DONTWAIT) can never observe an
+ * orderly close there, see crecv() above) left the loop spinning at the
+ * fanqueue_pop timeout cadence forever - healthy-looking thread, zero log
+ * output, connection slot pinned until restart. A subscribed hub source is
+ * expected to always publish (that is the entire on-demand design's
+ * invariant - see hub.c), so a long enough run of zero packets is itself
+ * proof of a stall independent of what crecv() can observe; bound the leak
+ * by giving up once no packet has arrived for this long. Generous relative to
+ * any real configured frame rate (even 1 fps clears it 60x over) so it never
+ * fires on a healthy, merely slow stream. */
+#ifndef MS_STREAM_STALL_US
+#define MS_STREAM_STALL_US (60LL*1000000)
+#endif
 
 static volatile int g_nconn;   /* current connection count (sync builtins) */
 /* adaptive-drop visibility (http.adaptive_drop): frames a client-side fanqueue
@@ -268,6 +285,7 @@ static void stream_mp4(hconn *c, int chn)
     LOGI(MOD,"mp4 client streaming chn=%d",chn);
 
     int got_key=0;
+    int64_t pre_key_probe_us = 0;   /* see the got_key==0 branch below (H-1) */
     int adaptive = cfg->http_adaptive_drop;
     int dropping = 0;      /* adaptive: skipping this client's frames until a keyframe */
     int64_t drop_idr_us = 0;   /* rate-limit the safety IDR request while dropping */
@@ -280,14 +298,22 @@ static void stream_mp4(hconn *c, int chn)
      * below exits. */
     ms_buf frag;
     if (ms_buf_init(&frag, 4096)) goto out;        /* OOM */
+    int64_t last_pkt_us = ms_now_us();   /* H-2: encoder-stall bound, see above */
     /* blocking socket: net_sendall must never write a partial fragment */
     while (1) {
         ms_pkt *p = fanqueue_pop(&q, 200);
         if (!p) {
             char t[8]; int n=crecv(c,t,sizeof t,MSG_DONTWAIT);
             if (n==0) break;
+            if (ms_now_us() - last_pkt_us > MS_STREAM_STALL_US) {
+                LOGW(MOD,"mp4 chn=%d: no packets for %llds - encoder stall, "
+                         "dropping this client", chn,
+                     (long long)(MS_STREAM_STALL_US/1000000));
+                break;
+            }
             continue;
         }
+        last_pkt_us = ms_now_us();
         int lost_key = fanqueue_take_dropped_key(&q);
         if (adaptive) {
             /* Per-client adaptive frame-dropping. This client's fanqueue is
@@ -346,7 +372,31 @@ static void stream_mp4(hconn *c, int chn)
         ms_buf_reset(&frag, 256*1024);   /* reuse, shrink an outlier IDR buffer back */
         int frag_ok = 1;
         if (p->media==MS_MEDIA_VIDEO) {
-            if (!got_key){ if(!p->keyframe){ pkt_unref(p); continue; } got_key=1; }
+            if (!got_key){
+                if(!p->keyframe){
+                    /* H-1: packets keep arriving here, so fanqueue_pop above
+                     * never times out and the disconnect probe at the top of
+                     * the loop is unreachable - and the encoder was only
+                     * ever asked for a keyframe once, before this loop
+                     * started. If it never delivers one (HAL wedge), this
+                     * used to discard forever: healthy-looking thread, zero
+                     * log output, no exit. Retry the IDR request and probe
+                     * for a stale/disconnected client on the same ~1s
+                     * cadence the adaptive-drop path below already uses. */
+                    int64_t now = ms_now_us();
+                    if (now - pre_key_probe_us > 1000000) {
+                        pre_key_probe_us = now;
+                        hub_request_idr(chn);
+                        char t[8];
+                        if (crecv(c, t, sizeof t, MSG_DONTWAIT) == 0){
+                            pkt_unref(p);
+                            break;
+                        }
+                    }
+                    pkt_unref(p); continue;
+                }
+                got_key=1;
+            }
             frag_ok = fmp4_video_fragment(&mux, p->data, p->len, p->keyframe, p->pts_us, &frag) == 0;
         } else if (want_audio && got_key) {
             frag_ok = fmp4_audio_fragment(&mux, p->data, p->len, p->pts_us, &frag) == 0;
@@ -505,13 +555,21 @@ static void stream_mjpeg(hconn *c, int src, const char *bnd)
     }
     if (csend(c,rh,n)<0){ hub_unsubscribe(src,&q); fanqueue_free(&q); return; }
     LOGI(MOD,"mjpeg client streaming");
+    int64_t last_pkt_us = ms_now_us();   /* H-2: encoder-stall bound, see above */
     while (1) {
         ms_pkt *p = fanqueue_pop(&q, 500);
         if (!p) {
             char t[8]; int r=crecv(c,t,sizeof t,MSG_DONTWAIT);
             if (r==0) break;
+            if (ms_now_us() - last_pkt_us > MS_STREAM_STALL_US) {
+                LOGW(MOD,"mjpeg: no frames for %llds - encoder stall, "
+                         "dropping this client",
+                     (long long)(MS_STREAM_STALL_US/1000000));
+                break;
+            }
             continue;
         }
+        last_pkt_us = ms_now_us();
         char part[160];
         int hn=snprintf(part,sizeof part,
             "\r\n--%s\r\nContent-Type: image/jpeg\r\nContent-Length: %zu\r\n\r\n",

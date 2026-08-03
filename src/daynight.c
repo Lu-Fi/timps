@@ -632,7 +632,12 @@ static void *dn_thread(void *arg)
                                          * time/sun modes don't need the ISP,
                                          * so only the sensor path idles here. */
             if (!warned_noisp) {
-                LOGD(MOD, "%s not readable, detection idle", dn->isp_path);
+                /* one-shot, so this is not spam - but it used to be LOGD
+                 * (invisible in production): a permanently wedged ISP leaves
+                 * detection idling forever with no self-heal (visible only
+                 * indirectly via /control's brightness/total_gain=-1), so
+                 * this deserves to actually reach the log at default level. */
+                LOGW(MOD, "%s not readable, detection idle", dn->isp_path);
                 warned_noisp = 1;
             }
             dn_status_update(b, tg, luma, cur, night_baseline);
