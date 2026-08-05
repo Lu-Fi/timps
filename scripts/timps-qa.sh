@@ -985,6 +985,43 @@ else
 		LV_PENDING=""
 	fi
 
+	# --- audio.codec opus (opt-in build feature, 2026-08-04): also persist-only
+	# like bitrate above. USE_STREAM_OPUS is a Buildroot-selectable option
+	# (BR2_PACKAGE_TIMPS_STREAM_OPUS, default off fleet-wide) distinct from the
+	# unrelated USE_PLAY_OPUS (local .opus sound-file playback) feature. When
+	# compiled in, pacodec() accepts "opus"; when not, it silently falls through
+	# to the AAC default - so the read-back value itself tells us whether this
+	# build has the feature, no separate capability flag needed. Either outcome
+	# is informational, not a failure: a build without the option is working
+	# exactly as intended (default off). Always restore the ORIGINAL codec
+	# afterward regardless of outcome - on a non-opus build "opus" quietly
+	# becomes "aac", which could silently change a camera's actual audio codec
+	# if the restore step were skipped. If the camera is ALREADY running opus
+	# (e.g. a manually-tuned test unit), probe in the other direction instead
+	# (away to aac and back) so the round-trip is still exercised rather than
+	# silently no-op'ing - either direction proves the same thing. ---
+	ac_cur=$(jget "$LV_BASE" audio.codec)
+	if [ -n "$ac_cur" ]; then
+		if [ "$ac_cur" = opus ]; then ac_probe=aac; else ac_probe=opus; fi
+		LV_PENDING="{\"audio\":{\"codec\":\"$ac_cur\"}}"   # armed until restore
+		code=$(lv_post "{\"audio\":{\"codec\":\"$ac_probe\"}}")
+		lv_get "$OUTDIR/lv_opus.json"
+		got=$(jget "$OUTDIR/lv_opus.json" audio.codec)
+		if [ "$got" = "$ac_probe" ]; then
+			ok "persist-only audio.codec=$ac_probe round-trips through config (USE_STREAM_OPUS compiled in, applies on restart)"
+		elif [ "$code" = 200 ] && [ "$ac_probe" = opus ]; then
+			info "  audio.codec=opus not accepted (got '$got') - USE_STREAM_OPUS not compiled into this build (expected: default off)"
+		else
+			warn "audio.codec=$ac_probe: got '$got' (HTTP $code)"
+		fi
+		lv_post "{\"audio\":{\"codec\":\"$ac_cur\"}}" >/dev/null   # restore
+		lv_get "$OUTDIR/lv_opus_restore.json"
+		[ "$(jget "$OUTDIR/lv_opus_restore.json" audio.codec)" = "$ac_cur" ] \
+			&& info "  audio.codec: restored to $ac_cur" \
+			|| warn "audio.codec: did not restore to original ($ac_cur)"
+		LV_PENDING=""
+	fi
+
 	# --- rotation (opt-in: --test-rotation) ---------------------------------
 	# video0.rotation is persist-only like bitrate above, AND SoC-gated:
 	# caps.rotation is only present when this build has USE_ROTATE compiled

@@ -66,6 +66,13 @@ int rtp_send_h264(rtp_track *t, const uint8_t *au, size_t len, int64_t pts_us);
 int rtp_send_h265(rtp_track *t, const uint8_t *au, size_t len, int64_t pts_us);
 int rtp_send_aac (rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us);
 int rtp_send_g711(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us);
+#ifdef USE_STREAM_OPUS
+/* Opus (RFC 7587): the encoded Opus packet is carried verbatim as the RTP
+ * payload (no payload header). The RTP timestamp clock is ALWAYS 48000 Hz
+ * regardless of the encoder's internal sample rate, so the track's clock_rate
+ * MUST be 48000. See rtp_send_opus() for the fixed-clock timestamp math. */
+int rtp_send_opus(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us);
+#endif
 
 /* emit an RTCP Sender Report if >= ~1s since the last one. Sent as a
  * compound packet SR+SDES(CNAME) per RFC 3550 6.1 (B2).

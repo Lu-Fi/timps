@@ -331,6 +331,52 @@ int rtp_send_g711(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us
     return 0;
 }
 
+#ifdef USE_STREAM_OPUS
+/* ---- Opus (RFC 7587) ---- */
+int rtp_send_opus(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us)
+{
+    if (len == 0) return 0;   /* nothing to send; client fine */
+    /* RFC 7587 sec 4: the entire compressed Opus packet is the RTP payload,
+     * carried VERBATIM - no payload header, no framing (unlike AAC's AU header
+     * or H264's FU-A). One published packet == one Opus frame.
+     *
+     * TIMESTAMP CLOCK (the critical, easy-to-get-wrong bit): RFC 7587 mandates
+     * the RTP timestamp clock rate for Opus is ALWAYS 48000 Hz - it is what SDP
+     * signals (a=rtpmap opus/48000/2) and what this track was init'd with
+     * (clock_rate == 48000) - REGARDLESS of the encoder's internal sample rate
+     * (this HAL captures/encodes at 16 kHz by default). The HAL encodes one
+     * native 40 ms AI capture frame per published packet, so every packet
+     * advances the media timeline by exactly 40 ms == 1920 ticks at the 48 kHz
+     * clock. Advancing by the raw PCM sample count instead (640 @ 16 kHz) would
+     * run the timeline at 1/3 speed and desync/slow every client. Frame
+     * duration is a constant 40 ms whatever rate the AI falls back to (the AI
+     * numPerFrm is always sr*40/1000), so 1920 is correct at 8/16/48 kHz alike.
+     *
+     * Sample-count-driven timestamping (see rtp_send_g711's comment for why):
+     * derive ts from a cumulative tick counter that only advances on a real
+     * send, immune to publish wall-clock jitter, with audio_gap_resync() jumping
+     * it forward over genuine gaps (mute/stall/drop) so the RTCP SR mapping
+     * stays aligned. pts0 is still anchored for the SR's NTP<->RTP reference. */
+    enum { OPUS_TS_PER_FRAME = 1920 };   /* 40 ms * 48000 Hz / 1000 */
+    if (!t->have_pts0){ t->pts0 = pts_us; t->have_pts0 = 1; }
+    audio_gap_resync(t, pts_us, OPUS_TS_PER_FRAME);   /* M-1: jump over real gaps */
+    uint32_t ts = t->ts_base + (uint32_t)t->audio_samples;
+    t->audio_samples += OPUS_TS_PER_FRAME;
+
+    /* One Opus frame at any sane VOIP bitrate is a few hundred bytes, far under
+     * the MTU. Opus has no in-band fragmentation, so if a pathological rtsp.mtu
+     * could not hold even one frame we drop it rather than emit a split payload
+     * no receiver could reassemble - the client stays valid, just misses audio. */
+    if (len + 12 > (size_t)t->mtu) return 0;
+    uint8_t pkt[RTP_MTU_MAX + 32];
+    /* RFC 3551 4.1 / 7587: marker bit at the start of a talkspurt. No silence
+     * suppression here (one continuous talkspurt), so that's the first packet. */
+    int h = rtp_hdr(pkt, t, t->pkt_count==0, ts);
+    memcpy(pkt+h, frame, len);
+    return emit(t, pkt, h+(int)len, ts) < 0 ? -1 : 0;   /* client gone (L3) */
+}
+#endif /* USE_STREAM_OPUS */
+
 /* ---- RTCP (SR / SDES / BYE) ---- */
 
 /* write a 28-byte Sender Report at p, return its length */

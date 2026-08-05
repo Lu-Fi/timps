@@ -135,6 +135,14 @@ static int  pacodec(const char *v){
     if (!strcasecmp(v,"aac")) return MS_AC_AAC;
     if (!strcasecmp(v,"pcmu")||!strcasecmp(v,"g711u")||!strcasecmp(v,"ulaw")) return MS_AC_PCMU;
     if (!strcasecmp(v,"pcma")||!strcasecmp(v,"g711a")||!strcasecmp(v,"alaw")) return MS_AC_PCMA;
+#ifdef USE_STREAM_OPUS
+    /* Opus as an RTSP/RTP streaming codec (RFC 7587). Only accepted on builds
+     * compiled with USE_STREAM_OPUS; otherwise "opus" is an unrecognized codec
+     * and falls through to the default (MS_AC_AAC) below, exactly like any other
+     * unknown string, so no opus code path is ever reached on a build without
+     * the feature. Independent of USE_PLAY_OPUS (local .opus file playback). */
+    if (!strcasecmp(v,"opus")) return MS_AC_OPUS;
+#endif
     if (!strcasecmp(v,"none")||!strcasecmp(v,"off")) return MS_AC_NONE;
     return MS_AC_AAC;
 }
@@ -144,6 +152,9 @@ static const char *acodec_name(int c){
         case MS_AC_AAC:  return "aac";
         case MS_AC_PCMU: return "pcmu";
         case MS_AC_PCMA: return "pcma";
+#ifdef USE_STREAM_OPUS
+        case MS_AC_OPUS: return "opus";
+#endif
         default:         return "none";
     }
 }
@@ -336,6 +347,7 @@ void config_defaults(ms_config *c)
     c->daynight.day_gain_pct=60; c->daynight.baseline_delay_s=30;
     c->daynight.boot_settle_s=5; c->daynight.boot_settle_max_s=120;
     c->daynight.boot_stable_pct=20; c->daynight.night_reconfirm_s=3600;
+    c->daynight.probe_max_skip_s=43200;
     c->daynight.interval_ms=500; c->daynight.transition_s=5;
     copystr(c->daynight.switch_cmd,"daynight",sizeof c->daynight.switch_cmd);
     copystr(c->daynight.isp_path,"/proc/jz/isp/isp-m0",sizeof c->daynight.isp_path);
@@ -671,6 +683,7 @@ static const cfg_field daynight_fields[] = {
     F ("boot_settle_max_s",          0, boot_settle_max_s,          T_INT,   0, 0,3600),
     F ("boot_stable_pct",            0, boot_stable_pct,            T_INT,   0, 0,100),
     F ("night_reconfirm_s",          0, night_reconfirm_s,          T_INT,   0, 0,86400),
+    F ("probe_max_skip_s",           0, probe_max_skip_s,           T_INT,   0, 3600,604800),
     F ("interval_ms",                0, interval_ms,                T_INT,   0, 100,60000),
     F ("transition_s",               0, transition_s,               T_INT,   0, 0,3600),
     FS("switch_cmd",                 0, switch_cmd,                 F_NOGET),

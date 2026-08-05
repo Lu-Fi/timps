@@ -437,6 +437,26 @@ static void gen_sdp(session *s, const ms_config *c, int vchn, char *sdp, int sdp
                     "sizelength=13;indexlength=3;indexdeltalength=3;config=%02X%02X\r\n"
                     "a=control:trackID=1\r\n",
                     AUDIO_PT, akbps, AUDIO_PT, asr, ach, AUDIO_PT, asc[0], asc[1]);
+#ifdef USE_STREAM_OPUS
+        } else if (acodec==MS_AC_OPUS) {
+            /* RFC 7587: Opus has no static RTP PT, so use a dynamic one (reuse
+             * AUDIO_PT/97, as AAC does - only one audio codec is live at a
+             * time). The rtpmap clock rate is ALWAYS 48000 and the channel count
+             * is ALWAYS 2, independent of the actual encoding rate (16 kHz) and
+             * the actual mono capture. The real (mono) channel layout is instead
+             * signaled out-of-band in the fmtp line: sprop-stereo=0 tells the
+             * receiver the sender emits mono; stereo=0 states this receiver
+             * prefers mono back (a no-op for a send-only track, included for
+             * strict clients that expect it). */
+            int akbps = c->audio.bitrate_kbps > 0 ? c->audio.bitrate_kbps : 32;
+            if (n>=0 && n<(int)sizeof(body))
+                n += snprintf(body+n, sizeof(body)-n,
+                    "m=audio 0 RTP/AVP %d\r\nb=AS:%d\r\n"
+                    "a=rtpmap:%d opus/48000/2\r\n"
+                    "a=fmtp:%d sprop-stereo=0;stereo=0\r\n"
+                    "a=control:trackID=1\r\n",
+                    AUDIO_PT, akbps, AUDIO_PT, AUDIO_PT);
+#endif
         } else {
             int pt = (acodec==MS_AC_PCMA)?8:0;   /* static PTs */
             const char *nm = (acodec==MS_AC_PCMA)?"PCMA":"PCMU";
@@ -941,6 +961,13 @@ static void stream_loop(session *s)
     if (s->have_audio) {
         int apt = (ac==MS_AC_AAC)?AUDIO_PT : (ac==MS_AC_PCMA?8:0);
         int arate = (ac==MS_AC_AAC)?asr:8000;
+#ifdef USE_STREAM_OPUS
+        /* Opus: dynamic PT (AUDIO_PT) and the mandatory 48 kHz RTP clock (RFC
+         * 7587) - NOT the 16 kHz encoding rate. rtp_send_opus() derives its
+         * timestamps against this 48 kHz clock, and rtp_maybe_sr() uses it for
+         * the SR NTP<->RTP mapping, so both must agree with the SDP rtpmap. */
+        if (ac==MS_AC_OPUS){ apt = AUDIO_PT; arate = 48000; }
+#endif
         rtp_track_init(&s->atrack, apt, arate, c->rtsp_mtu, cname,
                        sink_send, &s->asink);
         if (hub_subscribe(HUB_AUDIO_SRC, &s->q) != 0) goto full;
@@ -1044,6 +1071,9 @@ static void stream_loop(session *s)
                 if (sendrc >= 0 && sink_flush(&s->vsink) < 0) sendrc = -1;
             } else if (p->media==MS_MEDIA_AUDIO && s->have_audio) {
                 if (ac==MS_AC_AAC) sendrc = rtp_send_aac(&s->atrack,p->data,p->len,p->pts_us);
+#ifdef USE_STREAM_OPUS
+                else if (ac==MS_AC_OPUS) sendrc = rtp_send_opus(&s->atrack,p->data,p->len,p->pts_us);
+#endif
                 else               sendrc = rtp_send_g711(&s->atrack,p->data,p->len,p->pts_us);
             }
             pkt_unref(p);

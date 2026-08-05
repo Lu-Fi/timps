@@ -109,7 +109,8 @@ resulting binary is byte-identical to a build that never had the feature.
 | `USE_BACKCHANNEL` | 0 (off) | ONVIF-style two-way audio backchannel (client → camera speaker) via native `IMP_AO`. Pure-C G.711 decode built in; see [Audio](Audio.md). |
 | `USE_BC_AAC` | 0 (off) | Also accept AAC on the backchannel (`libhelix-aac`, `HELIXLIB`/`HELIX_INC`). Implies `USE_BACKCHANNEL=1`. |
 | `USE_PLAY` | 0 (off) | System-sound play queue: a FIFO at `/run/timps/audio_out` accepting the same `PLAY`/`STOP` protocol prudynt/raptor's `/usr/sbin/play` speaks, driving `IMP_AO` natively. Decodes WAV, raw PCM16, G.711 out of the box. |
-| `USE_PLAY_OPUS` | 0 (off) | Also decode Ogg-Opus in the play queue (`opusfile`, `OPUSLIB`/`OPUS_INC`). Implies `USE_PLAY=1`. |
+| `USE_PLAY_OPUS` | 0 (off) | Also decode Ogg-Opus in the play queue (`opusfile`, `OPUSLIB`/`OPUS_INC`). Implies `USE_PLAY=1`. Unrelated to `USE_STREAM_OPUS` below (that is the encode/stream side). |
+| `USE_STREAM_OPUS` | 0 (off) | Offer **Opus as a live RTSP/RTP streaming audio codec** (RFC 7587): makes `audio.codec = opus` a valid choice alongside `aac`/`pcmu`/`pcma`. The mic is encoded at its capture rate (16 kHz default) in `OPUS_APPLICATION_VOIP` mode; the RTP track is always SDP-signalled as `opus/48000/2` per the RFC (real mono/rate carried out-of-band via `sprop-stereo=0`). RTSP-only, exactly like G.711 — Opus is **not** carried by the HTTP fMP4 preview or the SRT TS mux. Links the bare `libopus` **encoder** (~337 KB, `OPUS_ENC_LIB`, default `-lopus`), **not** `opusfile`/`libogg` — RTP carries raw Opus frames with no Ogg container. Fully independent of `USE_PLAY_OPUS` (local `.opus` file playback); a board may enable either, both, or neither. Off = no Opus stream code compiled in and `opus` is not an accepted `audio.codec` value. See [Audio](Audio.md) and [Streaming Protocols](Streaming-Protocols.md). |
 
 Any combination of `USE_BACKCHANNEL`/`USE_PLAY` pulls in `src/rtsp/speaker.c`
 + `src/codec/resample.c` (the shared `IMP_AO` owner + resampler) — this is
@@ -161,6 +162,7 @@ make                 # build the firmware, flash as usual
 | Kconfig option | `USE_*` flag | Default |
 | --- | --- | --- |
 | `BR2_PACKAGE_TIMPS_FAAC` | `USE_FAAC` | y |
+| `BR2_PACKAGE_TIMPS_STREAM_OPUS` (`select`s `BR2_PACKAGE_OPUS`) | `USE_STREAM_OPUS` | n |
 | `BR2_PACKAGE_TIMPS_CONTROL` | `USE_CONTROL` | y |
 | `BR2_PACKAGE_TIMPS_DAYNIGHT` | `USE_DAYNIGHT` | y |
 | `BR2_PACKAGE_TIMPS_RECORD` | `USE_RECORD` | y |

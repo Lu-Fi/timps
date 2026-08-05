@@ -269,8 +269,25 @@ static void timps_apply_setting(ctrl_changes *ch, const char *key, const char *r
     config_str_lock();     /* g_cfg strings are read by other threads */
     int known = config_get_kv(&g_cfg, key, before, sizeof before);
     config_apply_kv(&g_cfg, key, val);
-    if (known) config_get_kv(&g_cfg, key, after, sizeof after);
+    /* Read the CANONICAL stored value back - the clamped/normalized form,
+     * exactly as GET /control (also config_get_kv) reports it. Downstream we
+     * feed THIS, not the raw pre-clamp POST string, to the HAL, the /events
+     * echo and the config-file persist, so all three agree with the daemon's
+     * in-memory g_cfg instead of leaving an out-of-range value in the file /
+     * SSE that only self-corrects on the next POST (and survives a reboot,
+     * since load re-clamps in memory but never rewrites the file). Read
+     * UNCONDITIONALLY, not gated on `known`: a legacy osdN.* write to a key
+     * whose per-stream item sets had diverged reads back unknown BEFORE the
+     * write (config_get_kv reports the legacy key only while all streams
+     * agree) but re-converges every stream, so the AFTER read now succeeds and
+     * carries the clamped value - gating on `known` would miss exactly that
+     * clamped case. `canon` is the AFTER-read success; use `after` only when it
+     * is set, else fall back to `val` (F_NOGET fields / noget sections have no
+     * readable canonical form - none of those keys are settable through this
+     * funnel today, so that fallback is never a clamped value in practice). */
+    int canon = config_get_kv(&g_cfg, key, after, sizeof after);
     config_str_unlock();
+    const char *out = canon ? after : val;   /* canonical value for consumers */
     if (known && !strcmp(before, after)){
         /* image.running_mode is a hardware-SYNC command to the ISP, not just a
          * stored value: the ISP's actual day/night state can drift from our
@@ -286,10 +303,10 @@ static void timps_apply_setting(ctrl_changes *ch, const char *key, const char *r
          * (nothing changed) so a client re-posting it every few seconds still
          * cannot hammer the config file. Every other key keeps the plain skip. */
         if (!strcmp(key,"image.running_mode")){
-            hub_control(key, val);       /* re-assert to the ISP, no re-persist */
-            LOGD(MOD,"re-applied %s = %s to HAL (unchanged, not persisted)", key, val);
+            hub_control(key, out);       /* re-assert to the ISP, no re-persist */
+            LOGD(MOD,"re-applied %s = %s to HAL (unchanged, not persisted)", key, out);
         } else
-            LOGD(MOD,"unchanged %s = %s (skipped)", key, val);
+            LOGD(MOD,"unchanged %s = %s (skipped)", key, out);
         return;
     }
 
@@ -307,19 +324,19 @@ static void timps_apply_setting(ctrl_changes *ch, const char *key, const char *r
         return;
     }
 
-    hub_control(key, val);               /* live via the HAL */
+    hub_control(key, out);               /* live via the HAL */
     /* echo to every other /events subscriber ("config" SSE event) so other
      * open WebUI tabs/clients reflect this change instead of only seeing it
      * on next poll. motion- and daynight-prefixed keys additionally still
      * drive their own richer status events from imp_motion.c/daynight.c -
      * this is just the raw settings echo, for everything else too. */
-    events_config_push(key, val);
+    events_config_push(key, out);
     if (ch->n < CTRL_MAX_CHG){
         snprintf(ch->key[ch->n], sizeof ch->key[0], "%s", key);
-        snprintf(ch->val[ch->n], sizeof ch->val[0], "%s", val);
+        snprintf(ch->val[ch->n], sizeof ch->val[0], "%s", out);
         ch->n++;
     } else LOGW(MOD,"too many settings in one request, %s not persisted", key);
-    LOGI(MOD,"set %s = %s", key, val);
+    LOGI(MOD,"set %s = %s", key, out);
 }
 
 static void apply_section(ctrl_changes *ch, const char *prefix,
@@ -468,7 +485,7 @@ void control_apply_json(const char *json)
             "total_gain_day_threshold","total_gain_night_threshold",
             "day_gain_pct","baseline_delay_s",
             "boot_settle_s","boot_settle_max_s","boot_stable_pct",
-            "night_reconfirm_s",
+            "night_reconfirm_s","probe_max_skip_s",
             "sun_latitude","sun_longitude",
             "sun_sunrise_offset_min","sun_sunset_offset_min"
         };
@@ -805,6 +822,7 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
         "\"baseline_delay_s\":%d,"
         "\"boot_settle_s\":%d,\"boot_settle_max_s\":%d,"
         "\"boot_stable_pct\":%d,\"night_reconfirm_s\":%d,"
+        "\"probe_max_skip_s\":%d,"
         "\"dn_mode\":\"%s\","
         "\"time_night_start\":\"%s\",\"time_day_start\":\"%s\","
         "\"sun_latitude\":%g,\"sun_longitude\":%g,"
@@ -817,6 +835,7 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
         d->day_gain_pct, d->baseline_delay_s,
         d->boot_settle_s, d->boot_settle_max_s,
         d->boot_stable_pct, d->night_reconfirm_s,
+        d->probe_max_skip_s,
         dnmode,
         etns, etds,
         (double)d->sun_latitude, (double)d->sun_longitude,
