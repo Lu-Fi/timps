@@ -6,6 +6,137 @@ semantic versioning.
 
 ## [Unreleased]
 
+<!-- Proposed as 1.7.7 pending coordinator review; no version bumped in code or
+     build files yet. -->
+
+### Fixed
+- **Day/night reconfirm probes were themselves the visible "periodische
+  Tag/Nacht-Umschaltungen."** Every probe switch clunks the IR-cut relay,
+  kills the IR LEDs and shows ~7–9s of dark colour video before reverting —
+  so on a genuinely dark, unchanging night the hourly `night_reconfirm_s`
+  probe flapped 8–12× per camera per night while learning nothing, and on a
+  slow pre-dawn ramp the v1.7.4 sustained-brightening probe added another
+  2–6 (each failed probe re-sampled a *lower* baseline, so the continuously
+  declining gain kept re-crossing the freshly-lowered bar every 10–40 min to
+  sunrise; fleet logs all 11 cameras 2026-08-03/04). Three pure
+  probe-scheduling measures in `daynight.c`, no config/schema change:
+  - **exponential backoff** — a probe that fails (reverts within 30s,
+    `DN_PROBE_FAIL_WINDOW_MS`) doubles the periodic interval ×1→×2→×4
+    (`DN_PROBE_BACKOFF_MAX`), bounded by `max(night_reconfirm_s,
+    DN_PROBE_BACKOFF_CAP_S=4h)`; a camera keeps its first-hour self-healing
+    probe but then stops clunking hourly. Any genuine transition (or a probe
+    that sticks in day) resets the multiplier.
+  - **brightening arming margin** (`DN_BRIGHTEN_MARGIN`, 0.97) — the hold
+    starts only clearly below the probe bar, never on a tangent graze (fleet
+    logs showed holds starting 0.2% under the bar).
+  - **failure ratchet** — after a failed probe, a new brightening hold must
+    additionally undercut `day_gain_pct`% of the level that just failed (a
+    whole further trigger-worth of new brightening), so a slow ramp can no
+    longer re-fire on a drifted bar; a real light-on step (20–35% gain drop)
+    still passes immediately. Latched on failure, cleared on any genuine
+    transition.
+
+  Verified in `timpsd-sim` (fake-ISP harness): backoff intervals stretch
+  15→30→60→60s (×2,×4,cap) under constant darkness; a clean 66% step still
+  brightening-probes and sticks in day on the first try; a forced probe
+  failure latches `backoff x2, ratchet < N`; a below-margin/above-ratchet
+  gain produces no new hold (the volley cycle); and a gain that undercuts the
+  ratchet is allowed a fresh probe again.
+- **The periodic reconfirm probe still physically clunked the IR-cut on a
+  schedule even when nothing had changed.** Backoff cut the *frequency* of the
+  probe but not its *invasiveness*: on a camera sitting in genuine, unchanging
+  darkness (cam-wyze, closet, 2026-08-04: "das klacken der IR blende nervt …
+  nachts andauernd") every backed-off probe still drove the board's IR-cut
+  relay — an audible mechanical click — only to read railed night gain and
+  revert. The periodic probe is now **gated on passive evidence**: before it
+  fires, the smoothed night gain is compared against the same probe bar the
+  sustained-brightening hold uses; if the gain is still solidly deep in night
+  (≥ `DN_BRIGHTEN_MARGIN` of the bar), the physical switch is **skipped** — no
+  `dn_switch`, no IR-cut click — and the probe silently re-arms on the same
+  backoff schedule. This is not weaker self-healing: a *false* night latch
+  (actually daytime behind an engaged IR pipeline) reads low gain, which is
+  exactly the evidence that fires the probe; only a genuinely-dark scene, where
+  a probe could only fail, is skipped. The first probe after each night entry
+  still always fires (so the stuck-forever class stays covered within the first
+  interval), and a `DN_PROBE_MAX_SKIP_S` outer bound (12h) forces a probe
+  regardless of gain once that long has passed since the last *actual* physical
+  probe — the trust-nothing safety net for a permanently-flat reading that
+  evidence alone can never clear. Net effect under permanent darkness: at most
+  ~2 physical clicks/day (vs up to 6/day at the 4h backoff cap before). Verified
+  in `timpsd-sim`: constant deep-night darkness fires one first probe then skips
+  every subsequent scheduled probe (zero further `switching to day`); and with
+  a lowered outer bound the skips interleave with a forced probe every bound
+  period, proving the safety net is never silently disabled.
+- **IR-reflection feedback loop could flip day/night every few seconds
+  indefinitely.** A camera mounted very close (~30 cm) to a reflective object
+  hits a *physical* loop the probe-economy logic above cannot see, because it
+  happens on the PRIMARY threshold crossings, not on a probe: night → IR LED
+  on → the LED reflects intensely off the close object → AGC gain reads very
+  low ("bright") → genuine night→day crossing → IR LED off + colour pipeline →
+  but it is actually still dark → gain rails back up → genuine day→night
+  crossing → IR LED on again → repeat, clunking the IR-cut every few seconds.
+  Added a general **oscillation breaker** in `daynight.c` (a backstop for ANY
+  fast day/night oscillation, not IR-specific detection): it counts *genuine*
+  (non-probe) mode flips in a rolling window (`DN_OSC_WINDOW_MS`, 60s) and, if
+  `DN_OSC_FLIPS` (3) of them land inside it, logs one warning
+  (`possible IR-reflection feedback loop detected (N flips in Ms) - camera may
+  be mounted too close to a reflective object; freezing in <mode> for Ts`) and
+  FREEZES the last-decided mode for `DN_OSC_FREEZE_MS` (10 min), suppressing
+  both switches and probes so the loop cannot continue; after the cooldown it
+  resumes and re-detects if the condition persists. Probe fire/revert flips are
+  deliberately NOT counted — a reconfirm/brightening probe cycle is a normal,
+  intentional 2-flip event under the probe-economy design above and can never
+  trip the breaker. These are compile-time `#ifndef`-overridable constants (like
+  the other `DN_*` tunables), non-configurable at runtime by design. Verified in
+  `timpsd-sim` (fake-ISP harness): a gain swing across both thresholds every ~7s
+  trips the breaker on the third genuine flip, holds the mode for the whole
+  cooldown while the gain keeps swinging (zero switches), then lifts and
+  re-detects; and — proving no regression — the reconfirm-probe fire/fail/backoff
+  scenario (reconfirm=15s, constant darkness, a probe cycle every 15–60s) never
+  emits the oscillation warning, because its flips are all probe-driven.
+- **`/control` persisted (and echoed) the raw pre-clamp POST value instead of
+  the clamped one.** In `timps_apply_setting()` (`control.c`, the single funnel
+  every `/control` key passes through) the clamped/canonical value read back
+  from `g_cfg` (`config_get_kv`) was computed but used *only* for change
+  detection: the live HAL call, the `/events` "config" SSE echo and the value
+  written to `/etc/timps.conf` all used the raw string. Posting an out-of-range
+  numeric (e.g. `daynight.probe_max_skip_s` below its 3600 floor, or
+  `image.brightness` above 255) left the daemon's in-memory value correctly
+  clamped — `GET /control` reads `g_cfg`, so it was always right — but wrote the
+  raw out-of-range text to the config file and pushed it over SSE. The file then
+  disagreed with reality indefinitely (a reboot re-clamps in memory on load but
+  never rewrites the file), and other open WebUI tabs showed the bogus value.
+  Not a live-safety bug (the running daemon is governed by the clamped in-memory
+  struct; `ing_control` re-reads `g_cfg` and only used the raw string for a log
+  line), purely a persistence/display inconsistency. Fixed by feeding the
+  canonical read-back value (exactly what `GET /control` reports) to all three
+  consumers. The read-back is now taken unconditionally after the write (not
+  gated on the *before*-write readability flag) so the legacy `osdN.*`
+  all-streams keys — unreadable while per-stream item sets have diverged, but
+  re-converged by the write — also persist their clamped value.
+  Edge case ruled out: keys whose clamp happens but whose value is *not*
+  read-back-able (`F_NOGET` fields `jpeg_quality`/`jpeg_fps`/`logo_w`/`logo_h`,
+  and clamped ints inside `noget` sections `jpeg`/`srt`/`rtsp`/`http`/`events`/
+  `general`/`sim`) would keep the old raw-value behaviour — but none of those
+  keys are settable through `control_apply_json`, so the residual gap is
+  unreachable in practice. Verified in `timpsd-sim`: for several ranged keys the
+  `GET /control` read-back, the on-disk config bytes and the `/events` config
+  push now all agree on the clamped value; QA section 8b (every live-settings
+  round-trip: image/audio/osd/privacy/motion/daynight/record/timelapse, the
+  persist-only `video0.bitrate` and `audio.codec` checks) stays 15 PASS / 0
+  WARN / 0 FAIL, and the unchanged-value skip, the `image.running_mode`
+  re-assert-without-persist and the `motion.sensitivity` quantization skip are
+  behaviourally unchanged.
+
+### Changed
+- **`daynight.probe_max_skip_s` (the passive-evidence-skip outer bound above)
+  is now a live-configurable setting** instead of a compile-time-only
+  `DN_PROBE_MAX_SKIP_S` constant, requested after confirming the skip fix on
+  real hardware overnight. Default unchanged (43200s/12h); range 3600–604800s,
+  deliberately floored at 1h in `config.c`'s validation table and clamped
+  rather than accepted below it — this stays a safety net, not a switch to
+  turn the self-healing check off outright.
+
 ## [1.7.6] - 2026-08-03
 
 ### Fixed

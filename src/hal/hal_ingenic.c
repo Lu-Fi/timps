@@ -37,6 +37,12 @@
 #ifdef USE_FAAC
 #include <faac.h>
 #endif
+#ifdef USE_STREAM_OPUS
+/* libopus ENCODER API (RFC 7587 RTP streaming of the live mic). This is the
+ * bare libopus codec, NOT opusfile - opusfile is the decode-only Ogg-Opus
+ * reader used by the unrelated USE_PLAY_OPUS local-playback feature. */
+#include <opus/opus.h>
+#endif
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -2073,11 +2079,18 @@ static void *audio_thread(void *arg)
     (void)arg;
     int dev=0, chnid=0;
     int use_aac = (g_acodec==MS_AC_AAC);
+#ifdef USE_STREAM_OPUS
+    int use_opus = (g_acodec==MS_AC_OPUS);
+#else
+    const int use_opus = 0;   /* compiled out: opus is never the effective codec */
+#endif
 
     /* G.711 (PCMA/PCMU) is ALWAYS 8 kHz. Pin it here so a stray samplerate in
      * the config can't bring the AI up at 16 kHz for a stream that SDP then
-     * tags as 8 kHz (2x-speed / unbounded buffering). AAC keeps its rate. */
-    if (!use_aac && g_asr != 8000) g_asr = 8000;
+     * tags as 8 kHz (2x-speed / unbounded buffering). AAC and Opus keep their
+     * rate (Opus encodes at the capture rate; RTP still signals 48 kHz per RFC
+     * 7587, that is a fixed clock label independent of the encoding rate). */
+    if (!use_aac && !use_opus && g_asr != 8000) g_asr = 8000;
 
     /* --- configure the audio input FIRST, with a samplerate fallback ---
      * The AI frame size is decoupled from the AAC encoder: the SoC only accepts
@@ -2089,7 +2102,9 @@ static void *audio_thread(void *arg)
      * set to the rate the AI was really programmed at. */
     int want_sr[3]; int nsr = 0;
     want_sr[nsr++] = g_asr;
-    if (use_aac && g_asr != 16000) want_sr[nsr++] = 16000;
+    /* AAC and Opus both prefer 16 kHz as the first fallback (16 kHz is a valid
+     * libopus rate; the better degrade for e.g. an unsupported 48 kHz request). */
+    if ((use_aac || use_opus) && g_asr != 16000) want_sr[nsr++] = 16000;
     if (g_asr != 8000)             want_sr[nsr++] = 8000;
     int ai_ok = 0;
     IMPAudioIOAttr aio;
@@ -2208,6 +2223,35 @@ static void *audio_thread(void *arg)
     g_ach = 1;     /* stereo simulation is AAC-only (G.711 fallback = mono) */
 #endif
 
+#ifdef USE_STREAM_OPUS
+    /* --- open the libopus encoder at the rate the AI actually accepted --- */
+    OpusEncoder *opus = NULL;
+    if (use_opus) {
+        int oerr = OPUS_OK;
+        /* Encode at the true capture rate (g_asr; 8/12/16/24/48 kHz are all
+         * valid libopus rates and the AI fallback only ever lands on 16 or 8).
+         * OPUS_APPLICATION_VOIP is the right mode for a live mic feed over IP:
+         * it tunes the encoder for speech intelligibility at low bitrate, unlike
+         * _AUDIO (music-optimized) or _RESTRICTED_LOWDELAY (drops the speech
+         * enhancement/DTX we want for a talk stream). Mono (g_ach==1 - stereo
+         * simulation stays AAC-only); the 48 kHz/2ch in the SDP rtpmap is a
+         * fixed RFC 7587 label and is independent of these encoder settings. */
+        opus = opus_encoder_create(g_asr, g_ach, OPUS_APPLICATION_VOIP, &oerr);
+        if (opus && oerr==OPUS_OK) {
+            if (g_hcfg->audio.bitrate_kbps > 0)
+                opus_encoder_ctl(opus,
+                    OPUS_SET_BITRATE(g_hcfg->audio.bitrate_kbps*1000));
+            LOGI(MOD,"opus encoder: %dHz ch=%d VOIP", g_asr, g_ach);
+        } else {
+            LOGW(MOD,"opus_encoder_create failed (%s) -> PCMU",
+                 opus_strerror(oerr));
+            if (opus){ opus_encoder_destroy(opus); opus=NULL; }
+            use_opus=0; g_acodec=MS_AC_PCMU;
+            g_ach=1;                            /* G.711 fallback is mono */
+        }
+    }
+#endif
+
     /* the codec/rate the HAL actually produces must be what SDP/ASC advertise.
      * If AAC was configured but faac failed, we fell back to PCMU while the AI
      * is still running at the AAC rate (e.g. 16 kHz). Relabeling g_asr alone
@@ -2245,7 +2289,7 @@ static void *audio_thread(void *arg)
     hub_set_audio_params(g_acodec, g_asr, g_ach);
 
     LOGI(MOD,"audio in: %dHz %s ch=%d%s vol=%d gain=%d numPerFrm=%d", g_asr,
-         use_aac?"AAC":(g_acodec==MS_AC_PCMA?"PCMA":"PCMU"), g_ach,
+         use_aac?"AAC":use_opus?"Opus":(g_acodec==MS_AC_PCMA?"PCMA":"PCMU"), g_ach,
          g_ach==2?" (simulated stereo)":"",
          g_hcfg->audio.volume, g_hcfg->audio.gain, aio.numPerFrm);
 
@@ -2258,6 +2302,9 @@ static void *audio_thread(void *arg)
     int16_t   acc[4096];
     size_t    acc_n = 0;
     int dbg_logged = 0;
+#endif
+#ifdef USE_STREAM_OPUS
+    int dbg_logged_opus = 0;
 #endif
 
     int ai_fail_streak = 0;
@@ -2344,6 +2391,25 @@ static void *audio_thread(void *arg)
                 }
             }
 #endif
+#ifdef USE_STREAM_OPUS
+        } else if (use_opus) {
+            /* Encode the whole native 40 ms AI capture frame as ONE Opus frame.
+             * 40 ms is a valid Opus frame duration at every rate the AI runs at
+             * (samples == numPerFrm == g_asr*40/1000: 320@8k, 640@16k), so no
+             * re-blocking is needed (unlike faac's fixed 1024-sample unit). Mono
+             * only, so `samples` is directly opus_encode's per-channel count. */
+            static __thread uint8_t obuf[4096];   /* >> the 1275 B/frame RFC 7587 max */
+            int on = opus_encode(opus, pcm, (int)samples, obuf, (opus_int32)sizeof obuf);
+            if (on < 0) {
+                LOGW(MOD,"opus_encode: %s", opus_strerror(on));
+            } else if (on > 0) {
+                if (!dbg_logged_opus){
+                    LOGI(MOD,"opus encoder producing (%d bytes/frame)", on);
+                    dbg_logged_opus=1;
+                }
+                hub_publish(HUB_AUDIO_SRC, obuf, (size_t)on, ms_now_us(), 0, MS_MEDIA_AUDIO);
+            }
+#endif
         } else {
             uint8_t enc[2048];
             if (samples>sizeof enc) samples=sizeof enc;
@@ -2359,6 +2425,9 @@ static void *audio_thread(void *arg)
     }
 #ifdef USE_FAAC
     if (faac) faac_encoder_close(&faac);
+#endif
+#ifdef USE_STREAM_OPUS
+    if (opus) opus_encoder_destroy(opus);
 #endif
     g_ai_up = 0;
     IMP_AI_DisableChn(dev,chnid);
@@ -2721,7 +2790,7 @@ static int ing_start(const ms_config *cfg)
             g_acodec=MS_AC_PCMU;
         }
 #endif
-        g_asr = (g_acodec==MS_AC_AAC) ? cfg->audio.samplerate : 8000; /* G.711 = 8 kHz */
+        g_asr = (g_acodec==MS_AC_AAC || g_acodec==MS_AC_OPUS) ? cfg->audio.samplerate : 8000; /* G.711 = 8 kHz */
         /* simulated stereo: audio.channels=2 (or force_stereo) duplicates the
          * mono AI capture to L=R and encodes 2-channel AAC (dual-mono) for
          * clients that require a stereo track. The RTP payload spec for G.711

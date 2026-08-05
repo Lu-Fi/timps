@@ -89,7 +89,10 @@ thingino's `daynightd` semantics.
   incidents in one evening — a basement whose single utility light only
   pushed gain to 65% of a cleanly-sampled baseline, and a kids' room
   whose baseline was sampled mid-lighting-transition; revised 2026-08-03
-  after the first version turned AGC noise into overnight probe flapping):
+  after the first version turned AGC noise into overnight probe flapping,
+  and again 2026-08-04 for probe economy — see the arming margin and
+  failure ratchet on the brightening probe below, and the reconfirm
+  backoff and passive-evidence skip further down):
   - the computed trigger is **floored** at `total_gain_day_threshold` —
     the adaptive bar can never be stricter than the calibrated
     "definitely day" level;
@@ -110,7 +113,24 @@ thingino's `daynightd` semantics.
     day-pipeline reading, so the AE convergence ramp right after the
     pipeline switch cannot kill a legitimate probe (a genuinely dark
     room rails at max gain, which is stable at once, so its correct
-    revert is barely delayed).
+    revert is barely delayed). Two further gates were added 2026-08-04
+    after the pre-dawn probe volley (fleet logs all 11 cameras
+    2026-08-03/04: on a slow dawn ramp the edge-arm alone still let the
+    probe re-fire every 10–40 min all the way to sunrise, because each
+    failed probe re-sampled a *lower* baseline and the continuously
+    declining gain kept re-crossing the freshly-lowered bar — some holds
+    starting a tangent 0.2% under it):
+    - an **arming margin** (`DN_BRIGHTEN_MARGIN`, 0.97): the hold starts
+      only when smoothed gain is clearly *below* the bar, never on a
+      graze that a tick of noise put fractionally under it;
+    - a **failure ratchet**: after a probe fails, the *next* brightening
+      hold must additionally undercut `day_gain_pct`% of the gain level
+      that just failed — i.e. a whole further trigger-worth of genuinely
+      new brightening, not just re-crossing a drifted bar. A slow ramp
+      therefore gets at most a couple of well-spaced probes across the
+      night instead of a volley, while a real light-on step (a 20–35%
+      gain drop) still clears the ratchet immediately. The ratchet is
+      latched on a failed probe and cleared on any genuine transition.
 
   The baseline currently in effect and the resulting trigger are
   reported read-only as `night_baseline` / `day_trigger` in the
@@ -245,6 +265,96 @@ The default interval (1h) trades a few extra IR-cut relay cycles per night
 persist — worst case, a stuck-in-night camera self-corrects within one
 `night_reconfirm_s` window instead of staying wrong until someone notices
 and intervenes manually.
+
+**Exponential backoff on failed probes (added 2026-08-04).** Every probe
+switch is *user-visible* — the board script clunks the IR-cut relay, kills
+the IR LEDs, and the stream shows ~7–9s of dark colour video before the
+revert. On a genuinely dark, unchanging night the hourly probe therefore
+produced 8–12 of these flips per camera per night (fleet logs all 11
+cameras 2026-08-03/04, reported as "periodische Tag/Nacht-Umschaltungen")
+while learning nothing new each time. So a probe that *fails* — reverts to
+night within 30s (`DN_PROBE_FAIL_WINDOW_MS`) of switching — now doubles the
+periodic interval for the next one: ×1→×2→×4 (`DN_PROBE_BACKOFF_MAX`),
+bounded by `max(night_reconfirm_s, DN_PROBE_BACKOFF_CAP_S=4h)`. A camera
+that is really dark all night thus still gets its first-hour self-healing
+probe but then backs off to a handful of probes instead of one every hour;
+any genuine transition (or a probe that sticks in day) resets the
+multiplier to 1. The failed-probe log line reads
+`"probe confirmed genuine night (backoff x2, brighten ratchet < N)"`.
+
+**Passive-evidence skip (added 2026-08-04).** Backoff cut how *often* the
+periodic probe fires, but each firing still drives the physical IR-cut relay —
+an audible click. On a camera in genuinely unchanging darkness (cam-wyze,
+closet, reported as "das klacken der IR blende nervt … nachts andauernd") that
+click accomplishes nothing: the passive night gain never moved, so a probe can
+only confirm what the gain already showed. So a due periodic probe is now
+**skipped entirely** — no `dn_switch`, no click — when there is no passive
+reason to suspect the state changed: if a night baseline and smoothed gain are
+available and the smoothed gain is still `≥ DN_BRIGHTEN_MARGIN` of the same
+probe bar the sustained-brightening hold uses (i.e. solidly deep in night,
+nowhere near the day trigger), the probe silently re-arms on its backoff
+schedule instead of firing. The skip log line reads `"periodic reconfirm due
+but gain N still deep in night (bar M, baseline B) - skipping IR-cut probe,
+re-arm in Ts (… since last physical probe, force at Us)"`.
+
+This does *not* weaken self-healing. A *false* night latch — actually daytime
+behind an engaged IR pipeline — reads *low* gain, which is precisely the
+evidence that makes the probe fire; only a genuinely-dark scene, where the
+probe could do nothing but fail, is skipped. Two guarantees keep the safety net
+intact: the **first** probe after each night entry always fires
+(`last_phys_probe_ms == 0`), so a stuck-forever mode is still caught within the
+first interval as before; and a **`daynight.probe_max_skip_s` outer bound**
+(default 12h) forces a physical probe regardless of gain once that long has
+passed since the last *actual* physical probe — the trust-nothing double-check
+for a permanently-flat reading that gain evidence alone can never clear. Net
+effect under permanent darkness: at most ~2 physical clicks per day, versus up
+to 6/day at the 4h backoff cap before this.
+
+Made configurable 2026-08-05 (was a compile-time-only `DN_PROBE_MAX_SKIP_S`
+constant): settable live via `/control`, range 3600–604800s. Deliberately
+floored at 1h — a POST below the floor clamps to it rather than accepting it —
+because this is the safety net for the whole passive-evidence-skip mechanism
+above, not a knob meant to switch it off; raise it if even the reduced click
+rate is still too frequent for a particular camera.
+
+**Oscillation breaker (added 2026-08-04).** The backoff/margin/ratchet above
+are all about *probe* economy — they cannot see a loop that happens on the
+PRIMARY threshold crossings themselves. A camera mounted very close (~30 cm)
+to a reflective object hits exactly such a loop: in night the IR LED turns on,
+reflects intensely off the close object, the AGC gain reads *very low* (looks
+"bright"), so a genuine night→day crossing fires; the IR LED then switches off
+and the colour pipeline takes over, but the scene is actually still dark, so
+the gain rails straight back up and a genuine day→night crossing fires, turning
+the IR LED on again — and round it goes, clunking the IR-cut every few seconds
+indefinitely. This is a general safety net for *any* fast day/night
+oscillation, not IR-specific detection: the thread counts **genuine
+(non-probe) mode flips** in a rolling `DN_OSC_WINDOW_MS` (60s) window, and once
+`DN_OSC_FLIPS` (3) of them fall inside it, it logs a single warning —
+
+```
+possible IR-reflection feedback loop detected (3 day/night flips in 14s) -
+camera may be mounted too close to a reflective object; freezing in night
+mode for 600s
+```
+
+— and **freezes** the last-decided mode for `DN_OSC_FREEZE_MS` (10 min),
+suppressing both threshold switches *and* probes so the loop cannot continue.
+After the cooldown it resumes normally and, if the physical condition still
+persists, simply re-detects and re-freezes (at most a couple of flips per
+cooldown instead of one every few seconds). The right permanent fix is to
+re-aim or shield the camera, or set a fixed mode / time-or-sun schedule; the
+breaker just stops the fleet-visible flapping in the meantime.
+
+Crucially, a reconfirm or brightening **probe** that switches to day and then
+reverts on failure is a normal, intentional *2-flip* event under the
+probe-economy design above (at most one such pair per backoff-scheduled probe),
+and its flips are **deliberately never counted** — only the genuine main-switch
+threshold crossings feed the oscillation counter. A probe cycle therefore
+contributes zero to the count and can never, by itself, trip the breaker;
+boot-time dead-zone adoption and its one-shot verify probe are likewise
+probe-driven and excluded. `DN_OSC_WINDOW_MS` / `DN_OSC_FLIPS` /
+`DN_OSC_FREEZE_MS` are compile-time `#ifndef`-overridable constants, like the
+other `DN_*` tunables; there is no runtime config key.
 
 ## The ISP running-mode latch quirk and `fs_kick_running_mode()`
 

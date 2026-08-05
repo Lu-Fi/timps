@@ -467,6 +467,111 @@ static int dn_ae_stable(const float *hist, int n, int pct)
 #define DN_ADOPT_PROBE_S 300     /* verify an adopted night within 5 minutes */
 #endif
 
+/* Probe economy (fleet logs 2026-08-03/04, all 11 cameras): every reconfirm
+ * probe is USER-VISIBLE - the board script clunks the IR-cut, kills the IR
+ * LEDs and the stream shows ~7-9 s of dark colour video before the revert.
+ * The hourly periodic probe alone produced 8-12 such flips per camera per
+ * night ("periodische Tag/Nacht-Umschaltungen"), and the sustained-
+ * brightening probe added 2-6 more on slow-ramp scenes (pre-dawn: gain
+ * declines continuously, each failed probe resamples a LOWER baseline, the
+ * ramp re-crosses the new bar, repeat every 10-40 min - with tangent starts
+ * like 4898 vs bar 4906). Three measures, all pure probe-scheduling logic:
+ *  - exponential backoff: a probe that FAILS (reverts to night within
+ *    DN_PROBE_FAIL_WINDOW_MS) doubles the periodic interval, x1 -> x2 -> x4
+ *    (DN_PROBE_BACKOFF_MAX), bounded by max(night_reconfirm_s,
+ *    DN_PROBE_BACKOFF_CAP_S); any genuine transition or a probe that STICKS
+ *    resets it. Self-healing keeps its first-hour probe; confirmed darkness
+ *    stops clunking hourly.
+ *  - arming margin: the brightening hold only starts once the smoothed gain
+ *    is below DN_BRIGHTEN_MARGIN of the bar, never on a tangent graze.
+ *  - failure ratchet: after a failed probe the next brightening probe also
+ *    requires smooth gain below day_gain_pct% of the level that just failed
+ *    - i.e. another full trigger-worth of NEW brightening. A slow ramp gets
+ *    at most a couple of well-spaced probes across the whole night; a real
+ *    light-on step still passes immediately. */
+#ifndef DN_PROBE_FAIL_WINDOW_MS
+#define DN_PROBE_FAIL_WINDOW_MS 30000 /* revert within this = failed probe */
+#endif
+#ifndef DN_PROBE_BACKOFF_MAX
+#define DN_PROBE_BACKOFF_MAX 4        /* interval multiplier cap (1h->2h->4h) */
+#endif
+#ifndef DN_PROBE_BACKOFF_CAP_S
+#define DN_PROBE_BACKOFF_CAP_S 14400  /* absolute backoff ceiling (4 h) */
+#endif
+#ifndef DN_BRIGHTEN_MARGIN
+#define DN_BRIGHTEN_MARGIN 0.97f      /* hold arms only clearly below the bar */
+#endif
+
+/* Passive-evidence gate for the PERIODIC reconfirm probe (cam-wyze, closet in
+ * constant darkness, 2026-08-04: "das klacken der IR blende nervt ... nachts
+ * andauernd"). The backoff above cut the FREQUENCY of the periodic probe, but
+ * every time it fires it still physically drives the board day/night script -
+ * the IR-cut filter is a mechanical relay whose move is AUDIBLE. On a camera
+ * that sits in genuinely unchanging darkness for hours or days, a blind
+ * scheduled probe accomplishes nothing but that clunk: the log evidence that
+ * night proved it (2026-08-04, cam-wyze: 1 h probe fired, day-pipeline gain
+ * 1002, reverted in 9 s, exactly as designed - and pointless, the passive
+ * night gain had been 988->1002 all interval, nowhere near the day bar).
+ *
+ * So the periodic probe now only physically fires when there is passive reason
+ * to suspect the state changed - the SAME signal the sustained-brightening
+ * probe already uses: is the smoothed night gain clearly below the probe bar
+ * (DN_BRIGHTEN_MARGIN of night_baseline * (100+day_gain_pct)/200)? If the gain
+ * is still solidly deep in night territory, SKIP the physical switch this
+ * cycle - no dn_switch, no IR-cut click - and silently re-arm on the same
+ * backoff schedule. This is not a weakening of self-healing: a FALSE night
+ * latch (actually daytime behind an engaged IR pipeline) reads LOW gain, which
+ * is exactly the evidence that fires the probe; only a genuinely-dark scene,
+ * where a probe could only fail anyway, is skipped.
+ *
+ * The safety net that survives a permanently-flat gain (a truly stuck reading
+ * that evidence alone can never clear) is daynight.probe_max_skip_s: once this
+ * long has passed since the last ACTUAL physical probe, fire regardless of
+ * gain - "trust nothing, double-check". Default 12h => at most ~2 physical
+ * clicks/day under permanent darkness (vs up to 6/day at the 4h backoff cap
+ * before this), while the very first probe after each night entry still
+ * always fires (skip only ever applies to a follow-up probe, so the
+ * stuck-forever class stays covered within the first interval as before).
+ * Configurable (2026-08-05, config.h doc comment) - deliberately floored well
+ * above zero in config.c's validation table; this is a safety net, not a
+ * feature meant to be switched off. */
+
+/* Oscillation breaker (feedback-loop backstop, added 2026-08-04). A camera
+ * mounted very close (~30 cm) to a reflective object hits a PHYSICAL feedback
+ * loop that none of the probe-economy logic above can see, because it happens
+ * on the PRIMARY threshold crossings, not on a probe: night -> IR LED on ->
+ * the LED reflects intensely off the close object -> AGC gain reads very low
+ * ("bright") -> genuine night->day crossing (tg < day trigger) -> IR LED off +
+ * colour pipeline -> but it is actually still dark -> gain rails back up ->
+ * genuine day->night crossing (tg > night threshold) -> IR LED on again ->
+ * repeat, flipping every few seconds indefinitely (each flip clunks the
+ * IR-cut). This is deliberately a GENERAL backstop for ANY fast day/night
+ * oscillation, not IR-specific detection: count GENUINE (non-probe) mode flips
+ * in a rolling window and, if DN_OSC_FLIPS of them land within
+ * DN_OSC_WINDOW_MS, declare an oscillation and FREEZE in the last-decided mode
+ * for DN_OSC_FREEZE_MS, suppressing both switches AND probes so the loop
+ * cannot continue during the cooldown.
+ *
+ * CRITICAL: probe-driven flips are NOT counted. A reconfirm/brightening probe
+ * that switches to day and then reverts on failure is a normal, INTENTIONAL
+ * 2-flip event under the probe-economy design above (at most one such pair per
+ * backoff-scheduled probe, i.e. once per hour+ normally); it must never look
+ * like oscillation. Only the genuine main-switch threshold crossings feed the
+ * counter (the probe fire and the probe-failure revert both bypass it), so a
+ * probe cycle contributes ZERO to the count and can never trip the breaker.
+ * With DN_OSC_FLIPS=3 even two such probe cycles inside one window stay under
+ * the bar; a real IR-reflection loop, whose crossings are all genuine, trips
+ * on the third flip (~15 s in at the 5 s hysteresis). */
+#ifndef DN_OSC_WINDOW_MS
+#define DN_OSC_WINDOW_MS 60000   /* rolling window for the genuine-flip count */
+#endif
+#ifndef DN_OSC_FLIPS
+#define DN_OSC_FLIPS 3           /* genuine flips within the window = oscillation */
+#endif
+#ifndef DN_OSC_FREEZE_MS
+#define DN_OSC_FREEZE_MS 600000  /* hold the last mode this long after detection */
+#endif
+
 static void *dn_thread(void *arg)
 {
     (void)arg;
@@ -515,6 +620,26 @@ static void *dn_thread(void *arg)
     /* when the last probe switched to day (0 = none recent): gates the
      * day->night revert on stable readings for DN_PROBE_SETTLE_MS. */
     int64_t probe_day_ms = 0;
+    /* probe economy (see DN_PROBE_FAIL_WINDOW_MS): periodic-interval
+     * multiplier, doubled on every failed probe up to DN_PROBE_BACKOFF_MAX,
+     * reset to 1 by any genuine transition or a probe that sticks. */
+    int     probe_backoff = 1;
+    /* smoothed night gain at the moment the last FAILED probe fired; a new
+     * brightening probe must undercut day_gain_pct% of this (failure
+     * ratchet). -1 = no failed probe outstanding. */
+    float   probe_fail_smooth = -1.0f;
+    /* monotonic ms of the last time a probe ACTUALLY drove the board (physical
+     * IR-cut click), periodic or brightening. Feeds the probe_max_skip_s
+     * outer bound so evidence-skipped periodic probes cannot silently disable
+     * self-healing forever. 0 = none this session (first probe always fires). */
+    int64_t last_phys_probe_ms = 0;
+    /* oscillation breaker (see DN_OSC_WINDOW_MS): monotonic timestamps of the
+     * last DN_OSC_FLIPS GENUINE (non-probe) mode flips (ring, only the last
+     * DN_OSC_FLIPS matter), and the deadline until which switches and probes
+     * are frozen after a detected feedback loop (0 = not frozen). */
+    int64_t osc_hist[DN_OSC_FLIPS];
+    int     osc_n = 0;
+    int64_t osc_freeze_until_ms = 0;
     /* baseline value last reported in a log line (rate-limits the drift
      * INFO log to meaningful moves, see the EMA drift below). */
     float   baseline_logged = -1.0f;
@@ -619,6 +744,9 @@ static void *dn_thread(void *arg)
             night_probe_at_ms = 0;
             brighten_since_ms = 0; brighten_armed = 0;
             smooth_tg = -1.0f; probe_day_ms = 0;
+            probe_backoff = 1; probe_fail_smooth = -1.0f;
+            last_phys_probe_ms = 0;
+            osc_n = 0; osc_freeze_until_ms = 0;
             pending_target = DN_UNKNOWN; pending_since_ms = 0;
             settle_floor_ms = ms_now_us() / 1000 + (int64_t)dn->boot_settle_s * 1000;
             settle_hard_ms  = ms_now_us() / 1000 + (int64_t)dn->boot_settle_max_s * 1000;
@@ -676,8 +804,48 @@ static void *dn_thread(void *arg)
             /* night_probe_at_ms is armed by night entry (when reconfirm is
              * enabled) or by dead-zone adoption (one-shot, even when it is
              * not - see DN_ADOPT_PROBE_S); honour it whenever set. */
-            if (night_probe_at_ms > 0 && now_ms >= night_probe_at_ms)
-                probe_why = "periodic reconfirm probe";
+            if (night_probe_at_ms > 0 && now_ms >= night_probe_at_ms) {
+                /* passive-evidence gate (see probe_max_skip_s in config.h): only spend
+                 * an audible IR-cut click when the passive night gain gives a
+                 * reason to suspect the state changed. If we have a baseline +
+                 * smoothed gain and the gain is still solidly deep in night
+                 * (>= DN_BRIGHTEN_MARGIN of the same probe bar the brightening
+                 * hold uses), there is nothing to resolve - skip the physical
+                 * probe and silently re-arm on the same backoff schedule.
+                 * Fire anyway when we cannot judge (no baseline yet - e.g. the
+                 * dead-zone adoption one-shot), on the first probe of the
+                 * session (last_phys_probe_ms==0), or once probe_max_skip_s
+                 * has elapsed since the last actual physical probe (the
+                 * trust-nothing safety net for a permanently-flat reading). */
+                float probe_bar = (night_baseline > 0.0f)
+                    ? night_baseline * (100.0f + (float)dn->day_gain_pct) / 200.0f
+                    : 0.0f;
+                int can_judge = (night_baseline > 0.0f && smooth_tg > 0.0f);
+                int solidly_night = can_judge &&
+                    smooth_tg >= probe_bar * DN_BRIGHTEN_MARGIN;
+                int outer_bound_due = (last_phys_probe_ms == 0) ||
+                    (now_ms - last_phys_probe_ms >=
+                     (int64_t)dn->probe_max_skip_s * 1000);
+                if (solidly_night && !outer_bound_due) {
+                    int64_t iv  = (int64_t)dn->night_reconfirm_s * probe_backoff;
+                    int64_t cap = dn->night_reconfirm_s > DN_PROBE_BACKOFF_CAP_S
+                                ? (int64_t)dn->night_reconfirm_s
+                                : (int64_t)DN_PROBE_BACKOFF_CAP_S;
+                    if (iv > cap) iv = cap;
+                    night_probe_at_ms = now_ms + iv * 1000;
+                    LOGI(MOD, "periodic reconfirm due but gain %.0f still deep "
+                              "in night (bar %.0f, baseline %.0f) - skipping "
+                              "IR-cut probe, re-arm in %llds (%llds since last "
+                              "physical probe, force at %ds)",
+                         (double)smooth_tg, (double)probe_bar,
+                         (double)night_baseline, (long long)iv,
+                         last_phys_probe_ms > 0 ?
+                             (long long)((now_ms - last_phys_probe_ms) / 1000)
+                             : 0LL, dn->probe_max_skip_s);
+                } else {
+                    probe_why = "periodic reconfirm probe";
+                }
+            }
             if (!probe_why && night_baseline > 0.0f && smooth_tg > 0.0f &&
                 dn->day_gain_pct > 0 && dn->day_gain_pct < 100) {
                 float probe_bar = night_baseline *
@@ -692,18 +860,40 @@ static void *dn_thread(void *arg)
                     brighten_since_ms = 0;
                 } else if (brighten_armed) {
                     if (!brighten_since_ms) {
-                        brighten_since_ms = now_ms;
-                        LOGI(MOD, "sustained brightening: gain %.0f below probe "
-                                  "bar %.0f (baseline %.0f), confirming %ds",
-                             (double)smooth_tg, (double)probe_bar,
-                             (double)night_baseline,
-                             DN_BRIGHTEN_CONFIRM_MS / 1000);
+                        /* hold-start gates (see the probe-economy comment):
+                         *  - margin: clearly below the bar, never a tangent
+                         *    graze (fleet logs: holds starting 0.2% under);
+                         *  - failure ratchet: after a failed probe, require
+                         *    another full trigger-worth of NEW brightening
+                         *    below the level that already failed, or a slow
+                         *    ramp re-fires every time it re-crosses the
+                         *    freshly resampled baseline's bar. */
+                        if (smooth_tg < probe_bar * DN_BRIGHTEN_MARGIN &&
+                            (probe_fail_smooth <= 0.0f ||
+                             smooth_tg < probe_fail_smooth *
+                                         (float)dn->day_gain_pct / 100.0f)) {
+                            brighten_since_ms = now_ms;
+                            LOGI(MOD, "sustained brightening: gain %.0f below probe "
+                                      "bar %.0f (baseline %.0f), confirming %ds",
+                                 (double)smooth_tg, (double)probe_bar,
+                                 (double)night_baseline,
+                                 DN_BRIGHTEN_CONFIRM_MS / 1000);
+                        }
                     } else if (now_ms - brighten_since_ms >=
                                    (int64_t)DN_BRIGHTEN_CONFIRM_MS &&
                                now_ms - last_switch_ms >=
                                    (int64_t)dn->transition_s * 1000)
                         probe_why = "sustained brightening probe";
                 }
+            }
+            /* oscillation cooldown (see DN_OSC_WINDOW_MS): while frozen,
+             * suppress probes too - a probe would flip the very mode the
+             * freeze is holding and restart the loop. */
+            if (probe_why && osc_freeze_until_ms && now_ms < osc_freeze_until_ms) {
+                LOGD(MOD, "oscillation freeze: suppressing %s (%llds left)",
+                     probe_why,
+                     (long long)((osc_freeze_until_ms - now_ms) / 1000));
+                probe_why = NULL;
             }
             if (probe_why) {
                 LOGI(MOD, "night reconfirm (%s): probing day pipeline after "
@@ -722,6 +912,7 @@ static void *dn_thread(void *arg)
                 brighten_since_ms = 0;
                 brighten_armed  = 0;    /* re-arms above the bar next night */
                 probe_day_ms    = now_ms; /* gate the revert on stability */
+                last_phys_probe_ms = now_ms; /* outer-bound clock, see probe_max_skip_s in config.h */
                 dn_status_update(b, tg, luma, cur, night_baseline);
                 dn_sleep(interval);
                 continue;
@@ -860,7 +1051,16 @@ static void *dn_thread(void *arg)
                 (dn->mode == DN_MODE_SENSOR && dn->boot_stable_pct > 0 &&
                  now_ms < settle_hard_ms &&
                  !dn_ae_stable(settle_hist, settle_n, dn->boot_stable_pct));
-            if (cur == DN_UNKNOWN && settle_active) {
+            if (osc_freeze_until_ms && now_ms < osc_freeze_until_ms) {
+                /* oscillation breaker cooldown (see DN_OSC_WINDOW_MS): hold the
+                 * last-decided mode, ignore threshold crossings until it lifts
+                 * so a feedback loop cannot keep clunking the IR-cut. */
+                LOGD(MOD, "oscillation freeze: holding %s, ignoring %s "
+                          "(%llds left)", cur == DN_NIGHT ? "night" : "day",
+                     why, (long long)((osc_freeze_until_ms - now_ms) / 1000));
+                pending_target  = DN_UNKNOWN;
+                pending_since_ms = 0;
+            } else if (cur == DN_UNKNOWN && settle_active) {
                 LOGD(MOD, "AE settling, ignoring transient reading");
                 pending_target  = DN_UNKNOWN;   /* don't confirm from a transient */
                 pending_since_ms = 0;
@@ -894,6 +1094,54 @@ static void *dn_thread(void *arg)
                  * depth, see DN_REASSERT_MS/COUNT). */
                 reassert_left  = DN_REASSERT_COUNT;
                 reassert_at_ms = now_ms + DN_REASSERT_MS;
+                /* probe economy accounting (see DN_PROBE_FAIL_WINDOW_MS),
+                 * BEFORE the state resets below - it reads probe_day_ms and
+                 * the pre-probe smoothed gain. A revert to night shortly
+                 * after a probe = the probe FAILED (found genuine darkness):
+                 * double the periodic interval and latch the failure ratchet
+                 * for the brightening probe. Every other switch is a genuine
+                 * transition: reset both. */
+                if (target == DN_NIGHT && probe_day_ms &&
+                    now_ms - probe_day_ms < (int64_t)DN_PROBE_FAIL_WINDOW_MS) {
+                    probe_fail_smooth = smooth_tg;   /* pre-probe night level */
+                    if (probe_backoff < DN_PROBE_BACKOFF_MAX)
+                        probe_backoff *= 2;
+                    LOGI(MOD, "probe confirmed genuine night (backoff x%d, "
+                              "brighten ratchet < %.0f)",
+                         probe_backoff, (double)(probe_fail_smooth > 0.0f ?
+                             probe_fail_smooth * (float)dn->day_gain_pct / 100.0f
+                             : -1.0f));
+                } else {
+                    probe_backoff = 1;
+                    probe_fail_smooth = -1.0f;
+                    /* oscillation breaker (see DN_OSC_WINDOW_MS): this is a
+                     * GENUINE (non-probe) threshold-crossing flip - the kind an
+                     * IR-reflection feedback loop produces. Probe fire/revert
+                     * flips take the if-branch above and are deliberately never
+                     * counted, so a normal reconfirm/brightening probe cycle
+                     * cannot trip this. Record it; if DN_OSC_FLIPS genuine flips
+                     * fall within DN_OSC_WINDOW_MS, freeze the last-decided mode
+                     * for DN_OSC_FREEZE_MS. */
+                    osc_hist[osc_n % DN_OSC_FLIPS] = now_ms;
+                    osc_n++;
+                    if (osc_n >= DN_OSC_FLIPS) {
+                        int64_t oldest = osc_hist[0];
+                        for (int i = 1; i < DN_OSC_FLIPS; i++)
+                            if (osc_hist[i] < oldest) oldest = osc_hist[i];
+                        if (now_ms - oldest <= (int64_t)DN_OSC_WINDOW_MS) {
+                            osc_freeze_until_ms = now_ms + DN_OSC_FREEZE_MS;
+                            osc_n = 0;   /* start counting fresh after cooldown */
+                            LOGW(MOD, "possible IR-reflection feedback loop "
+                                      "detected (%d day/night flips in %llds) - "
+                                      "camera may be mounted too close to a "
+                                      "reflective object; freezing in %s mode "
+                                      "for %ds", DN_OSC_FLIPS,
+                                 (long long)((now_ms - oldest) / 1000),
+                                 target == DN_NIGHT ? "night" : "day",
+                                 DN_OSC_FREEZE_MS / 1000);
+                        }
+                    }
+                }
                 /* (re)arm the adaptive baseline: sample it a while after we
                  * enter night, once the IR LEDs have settled; clear on day.
                  * The smoothed gain restarts with the night session so a
@@ -904,10 +1152,19 @@ static void *dn_thread(void *arg)
                 smooth_tg = -1.0f;
                 probe_day_ms = 0;
                 night_entered_ms = (target == DN_NIGHT) ? now_ms : 0;
-                /* (re)arm the periodic reconfirm probe alongside it, see
-                 * night_reconfirm_s doc comment in config.h */
-                night_probe_at_ms = (target == DN_NIGHT && dn->night_reconfirm_s > 0)
-                    ? now_ms + (int64_t)dn->night_reconfirm_s * 1000 : 0;
+                /* (re)arm the periodic reconfirm probe alongside it (see
+                 * night_reconfirm_s doc comment in config.h), stretched by
+                 * the failure backoff and bounded by
+                 * max(night_reconfirm_s, DN_PROBE_BACKOFF_CAP_S). */
+                if (target == DN_NIGHT && dn->night_reconfirm_s > 0) {
+                    int64_t iv  = (int64_t)dn->night_reconfirm_s * probe_backoff;
+                    int64_t cap = dn->night_reconfirm_s > DN_PROBE_BACKOFF_CAP_S
+                                ? (int64_t)dn->night_reconfirm_s
+                                : (int64_t)DN_PROBE_BACKOFF_CAP_S;
+                    if (iv > cap) iv = cap;
+                    night_probe_at_ms = now_ms + iv * 1000;
+                } else
+                    night_probe_at_ms = 0;
             }
         } else {
             /* reading is back in (or never left) the current regime: abandon any

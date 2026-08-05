@@ -36,7 +36,12 @@ HELIX_INC     ?=            # optional -I dir for aacdec.h/aaccommon.h (USE_BC_A
 USE_PLAY      ?= 0          # 1 = /run/timps/audio_out play-FIFO queue (system sounds via native IMP_AO); WAV + raw PCM16
 USE_PLAY_OPUS ?= 0          # 1 = also decode Ogg-Opus in the play queue (needs opusfile); implies USE_PLAY
 OPUSLIB       ?= -lopusfile -lopus -logg  # link flags for opusfile (USE_PLAY_OPUS)
-OPUS_INC      ?=            # optional -I dir for <opus/opusfile.h> (USE_PLAY_OPUS)
+OPUS_INC      ?=            # optional -I dir for <opus/opus.h> / <opus/opusfile.h> (USE_PLAY_OPUS / USE_STREAM_OPUS)
+USE_STREAM_OPUS ?= 0        # 1 = offer Opus as an RTSP/RTP streaming audio codec (RFC 7587);
+                            #     needs the bare libopus (encoder), NOT opusfile. Independent of
+                            #     USE_PLAY_OPUS (local .opus playback). Default off = no opus stream
+                            #     code compiled in and "opus" is not an accepted audio.codec value.
+OPUS_ENC_LIB  ?= -lopus     # link flag for the libopus encoder (USE_STREAM_OPUS)
 USE_ROTATE    ?= 0          # 1 = image rotation feature (real 90/270 transpose: HW on
                             #     T40/T41 + T31, opt-in SW on T23). 180 is NOT a rotation
                             #     value (use image.hflip+image.vflip). Default off = no
@@ -198,6 +203,7 @@ target:
 	  $(if $(filter 1,$(USE_BC_AAC)),-DUSE_BC_AAC $(if $(HELIX_INC),-I$(HELIX_INC))) \
 	  $(if $(filter 1,$(USE_PLAY)),-DUSE_PLAY) \
 	  $(if $(filter 1,$(USE_PLAY_OPUS)),-DUSE_PLAY_OPUS $(if $(OPUS_INC),-I$(OPUS_INC) -I$(OPUS_INC)/opus)) \
+	  $(if $(filter 1,$(USE_STREAM_OPUS)),-DUSE_STREAM_OPUS $(if $(OPUS_INC),-I$(OPUS_INC))) \
 	  $(if $(filter 1,$(USE_ROTATE)),-DUSE_ROTATE) \
 	  $(if $(filter 1,$(USE_SW_ROTATE)),-DMS_ENABLE_SW_ROTATE) \
 	  -DHAL_INGENIC -DPLATFORM_$(PLATFORM) -DMS_VERSION='"$(VERSION)"' -Isrc -I$(IMP_INC) -I$(IMP_INC)/imp \
@@ -205,9 +211,10 @@ target:
 	$(LINK_DRV) $(TARGET_OBJS) \
 	  $(LDFLAGS) $(if $(IMP_LIB),-L$(IMP_LIB)) $(IMPLIBS) \
 	  $(if $(filter 1,$(USE_FAAC)),$(FAACLIB)) $(if $(filter 1,$(USE_BC_AAC)),$(HELIXLIB)) \
-	  $(if $(filter 1,$(USE_PLAY_OPUS)),$(OPUSLIB)) $(LIBS) -o $(BIN)
+	  $(if $(filter 1,$(USE_PLAY_OPUS)),$(OPUSLIB)) \
+	  $(if $(filter 1,$(USE_STREAM_OPUS)),$(OPUS_ENC_LIB)) $(LIBS) -o $(BIN)
 	@rm -f $(TARGET_OBJS)
-	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT) USE_BACKCHANNEL=$(USE_BACKCHANNEL) USE_BC_AAC=$(USE_BC_AAC) USE_PLAY=$(USE_PLAY) USE_PLAY_OPUS=$(USE_PLAY_OPUS) USE_ROTATE=$(USE_ROTATE) USE_SW_ROTATE=$(USE_SW_ROTATE))"
+	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT) USE_BACKCHANNEL=$(USE_BACKCHANNEL) USE_BC_AAC=$(USE_BC_AAC) USE_PLAY=$(USE_PLAY) USE_PLAY_OPUS=$(USE_PLAY_OPUS) USE_STREAM_OPUS=$(USE_STREAM_OPUS) USE_ROTATE=$(USE_ROTATE) USE_SW_ROTATE=$(USE_SW_ROTATE))"
 
 sim:
 	$(HOSTCC) $(CFLAGS) -DMS_VERSION='"$(VERSION)"' $(if $(filter 1,$(USE_CONTROL)),-DUSE_CONTROL) \

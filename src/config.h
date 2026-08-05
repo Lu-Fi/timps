@@ -11,7 +11,8 @@
 #define MS_MAX_STR     64
 
 enum ms_vcodec { MS_VC_H264=0, MS_VC_H265=1 };
-enum ms_acodec { MS_AC_NONE=0, MS_AC_AAC=1, MS_AC_PCMU=2, MS_AC_PCMA=3 };
+enum ms_acodec { MS_AC_NONE=0, MS_AC_AAC=1, MS_AC_PCMU=2, MS_AC_PCMA=3,
+                 MS_AC_OPUS=4 /* RTSP/RTP streaming codec, USE_STREAM_OPUS only */ };
 enum ms_rcmode { MS_RC_CBR=0, MS_RC_VBR, MS_RC_FIXQP, MS_RC_SMART,
                  MS_RC_CAPPED_VBR, MS_RC_CAPPED_QUALITY };
 enum ms_osd_type { MS_OSD_TEXT=0, MS_OSD_LOGO=1 };
@@ -242,8 +243,26 @@ typedef struct {
      * night_reconfirm_s of continuous night dwell, force a probe switch back
      * to day (same dn_switch() a real day decision would use) and let the
      * normal day->night hysteresis flip back within one dwell+hysteresis
-     * window if the scene is genuinely still dark. 0 = disabled. */
+     * window if the scene is genuinely still dark. 0 = disabled.
+     * Each probe is user-visible (IR-cut clunk + ~8s of dark colour video),
+     * so on a genuinely dark night the hourly probe just flapped 8-12x/night
+     * learning nothing (fleet logs 2026-08-03/04, "periodische Umschaltungen").
+     * A probe that FAILS (reverts within DN_PROBE_FAIL_WINDOW_MS) therefore
+     * doubles this interval for the next one (x1->x2->x4, DN_PROBE_BACKOFF_MAX,
+     * bounded by max(night_reconfirm_s, DN_PROBE_BACKOFF_CAP_S); any genuine
+     * transition resets it) - see the probe-economy block in daynight.c. */
     int      night_reconfirm_s;
+    /* Outer bound for the passive-evidence probe skip (2026-08-05): a due
+     * periodic probe is skipped (no IR-cut click) whenever the observed gain
+     * gives no reason to suspect the state changed - see DN_PROBE_MAX_SKIP_S
+     * in daynight.c. That is deliberately still a real, physical probe once
+     * this many seconds have passed since the last one, regardless of gain,
+     * so a misleading/stuck gain reading can never suppress verification
+     * forever (the same failure class night_reconfirm_s's own self-healing
+     * exists for). Configurable so a quieter or more paranoid interval than
+     * the 12h default can be chosen; deliberately floored well above zero -
+     * this is a safety net, not a feature to disable outright. */
+    int      probe_max_skip_s;
     /* brightness fallback (only when no gain field is readable) */
     float    threshold_low;      /* %: below this (in day) -> night */
     float    threshold_high;     /* %: above this (in night) -> day */

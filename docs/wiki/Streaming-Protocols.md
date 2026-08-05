@@ -9,7 +9,7 @@ the code goes out of its way to get right.
 
 | Protocol | Default port | Transport | Video codec | Audio codec | Auth | TLS |
 | --- | --- | --- | --- | --- | --- | --- |
-| RTSP | 554 (RTSPS 322) | TCP-interleaved or UDP unicast | H.264 always; H.265 if `videoN.codec=h265` | AAC (RFC 3640) or G.711 PCMU/PCMA (RFC 3551) | RTSP Digest (no `qop`) or Basic | via `USE_TLS` + `rtsp.tls`, shares the HTTPS cert/key |
+| RTSP | 554 (RTSPS 322) | TCP-interleaved or UDP unicast | H.264 always; H.265 if `videoN.codec=h265` | AAC (RFC 3640), G.711 PCMU/PCMA (RFC 3551), or Opus (RFC 7587, `USE_STREAM_OPUS`) | RTSP Digest (no `qop`) or Basic | via `USE_TLS` + `rtsp.tls`, shares the HTTPS cert/key |
 | HTTP fMP4 | 8880 (`/stream.mp4`) | Chunked HTTP, `video/mp4`, MSE-oriented | H.264 always; H.265 if the stream's codec is H.265 | **AAC only** — the muxer has no G.711 support | localhost bypass, token, HTTP Digest (`qop=auth`) or Basic | via `USE_TLS` + `http.https` |
 | MJPEG | 8880 (`/stream.mjpeg`, `/mjpeg`) | `multipart/x-mixed-replace` | MJPEG (piggyback or dedicated `jpeg.*` channel) | n/a | same as HTTP | same as HTTP |
 | Snapshot | 8880 (`/snapshot.jpg`) | single JPEG response | MJPEG | n/a | same as HTTP | same as HTTP |
@@ -208,8 +208,8 @@ cannot be exercised in the x86 host simulation without `libsrt` linked.
   conventional TS-over-UDP/SRT payload size) and flushed at the end of
   every access unit to bound added latency.
 - **Audio limitation**: if `audio.enabled` but the configured codec isn't
-  AAC (i.e. G.711), SRT streams **video-only** with a one-time warning —
-  the TS mux here only knows how to carry AAC.
+  AAC (i.e. G.711 or Opus), SRT streams **video-only** with a one-time
+  warning — the TS mux here only knows how to carry AAC.
 - **Access control**: `srt.streamid`, if set, is enforced at accept time
   — a connecting client must present the matching `STREAMID` or is
   rejected (this was previously checked nowhere at all). `srt.passphrase`
@@ -229,6 +229,7 @@ ffplay srt://<ip>:9000
 | **H.265 (HEVC)** | Available where the SoC/SDK's encoder supports it (`videoN.codec=h265`) — see [Platform & SDK Support](Platform-SDK-Support.md). Carried over RTSP, HTTP fMP4, and SRT; **not** over MJPEG/snapshot (those are always JPEG). |
 | **AAC** | Needs `USE_FAAC` (software encode via libfaac). The only audio codec HTTP fMP4 and SRT can carry. |
 | **G.711 (PCMU/PCMA)** | Pure-C, always available, no library dependency. RTSP-only for playback purposes — cannot be muxed into fMP4 or the SRT TS mux. |
+| **Opus** | Compile-time optional (`USE_STREAM_OPUS`, bare `libopus` encoder ~337 KB, off by default). Select with `audio.codec=opus`. RTSP/RTP only (RFC 7587), like G.711 — cannot be muxed into fMP4 or the SRT TS mux. Encoded at the capture rate (16 kHz default) but RTP-advertised as `opus/48000/2` per the RFC. See [Audio](Audio.md). |
 
 See [Platform & SDK Support](Platform-SDK-Support.md) for which SoCs get
 which encoder/ISP capabilities, and `docs/rotation.md` for how rotation
