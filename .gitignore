@@ -20,3 +20,6 @@ osd-test-out/
 # python bytecode
 __pycache__/
 *.pyc
+
+# local-only: exposes room locations, private IPs, and subnets - never track
+docs/camera-fleet.md
