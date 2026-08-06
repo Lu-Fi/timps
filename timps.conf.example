@@ -47,9 +47,24 @@ image.wb_rgain               = 0
 image.wb_bgain               = 0
 
 # ---- SECURITY --------------------------------------------------------------
-# Authentication is OFF only while user/pass are empty. Set credentials to lock
-# the device: RTSP then requires Digest auth, HTTP requires Basic auth. Nothing
-# can be viewed or controlled without them. Strongly recommended.
+# Authentication is OFF while user/pass are empty (the shipped default). Set
+# credentials to lock the device: RTSP then requires Digest auth, HTTP requires
+# Basic auth. Strongly recommended.
+#
+# WARNING - what "empty credentials" actually exposes (by design):
+#   While rtsp.user AND http.user are empty, the MEDIA endpoints are reachable
+#   by ANYONE who can reach the port, with NO authentication:
+#     - the RTSP video+audio stream (rtsp://<ip>:554/chN)
+#     - HTTP snapshot   /snapshot.jpg
+#     - HTTP MJPEG      /stream.mjpeg  (and /mjpeg)
+#     - HTTP fMP4 live  /stream.mp4
+#   i.e. anyone on the network can watch and listen to the camera. Only the
+#   CONTROL surface is protected regardless of credentials: /control and
+#   /events answer 403 to any NON-loopback client while no credentials are set,
+#   so config/state can only be read or changed from the device itself (or via
+#   the per-boot/persistent token, or once real credentials are configured).
+#   To require auth for the media too, set rtsp.user/pass and/or http.user/pass
+#   below.
 # NOTE: HTTP Basic sends credentials base64-encoded; use it on a trusted LAN or
 # behind a TLS reverse proxy.
 
@@ -60,7 +75,8 @@ rtsp.port    = 554
 #                           # survives WireGuard/OpenVPN/PPPoE paths without
 #                           # IP fragmentation; 1400 squeezes ~1% more payload
 #                           # efficiency on plain-Ethernet LANs
-rtsp.user    =            # set to enable RTSP Digest auth
+rtsp.user    =            # set to enable RTSP Digest auth. EMPTY = the RTSP
+                          #   video/audio stream is open to anyone on the network
 rtsp.pass    =
 
 # ---- HTTP preview (fMP4 + JPEG/MJPEG) ----
@@ -76,7 +92,11 @@ http.preview_chn = 1
 # EXPERIMENTAL / opt-in: default OFF until verified on real hardware (an early
 # build could hang the stream on a slow SoC). Only enable for controlled tests.
 http.adaptive_drop = 0
-http.user        =        # set to enable HTTP Basic auth (empty = reuse rtsp.user/pass)
+http.user        =        # set to enable HTTP Basic auth (empty = reuse rtsp.user/pass).
+                          #   While BOTH this and rtsp.user are empty, the HTTP media
+                          #   endpoints (/snapshot.jpg, /stream.mjpeg, /stream.mp4) are
+                          #   open to anyone on the network. /control and /events stay
+                          #   loopback-only regardless. See the SECURITY note above.
 http.pass        =
 #
 # Token auth (USE_CONTROL builds). /control, /events and the HTTP media

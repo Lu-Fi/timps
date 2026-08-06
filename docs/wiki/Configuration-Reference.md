@@ -210,6 +210,17 @@ File-only. See [HTTP /control API Reference](HTTP-Control-API.md) and
 | `http.tls_cert` (alias `cert`) | string | `/etc/ssl/certs/httpd.crt` | — | File-only | PEM certificate (shared with RTSPS). |
 | `http.tls_key` (alias `key`) | string | `/etc/ssl/private/httpd.key` | — | File-only | PEM private key (shared with RTSPS). |
 
+> **Security — empty credentials expose the media (by design).** While both
+> `http.user` and `rtsp.user` are empty (the shipped default), the media
+> endpoints — the RTSP video/audio stream, `/snapshot.jpg`, `/stream.mjpeg`
+> and `/stream.mp4` — are reachable by **anyone on the network with no
+> authentication**. `/control` and `/events` are the exception: they stay
+> **loopback-only** (non-local requests get `403`) even with empty
+> credentials, so config/state is never exposed off-device without a token or
+> configured credentials. Set `rtsp.user`/`rtsp.pass` and/or
+> `http.user`/`http.pass` to require auth for the media too. See
+> [HTTP /control API Reference § Empty credentials](HTTP-Control-API.md#empty-credentials-the-shipped-default--media-is-open-control-is-not).
+
 ## `events.*` — Server-Sent-Events push stream
 
 File-only startup settings (`USE_CONTROL` builds).
@@ -230,8 +241,44 @@ overlay fields are documented separately below (`osd<S>.<N>.*`).
 | `osd.enabled` | bool | 1 | 0/1 | Restart-only | Master OSD on/off switch, global across all streams. Settable via `/control` (`{"osd":{"enabled":...}}`) and persists, but the OSD groups are only ever built once at startup (`imp_osd_setup`), so the effect needs a restart. |
 | `osd.monitor_stream` | int | 0 | — | File-only | Which stream's measured fps feeds the `{fps}` placeholder. |
 | `osd.font_path` | string | `/usr/share/fonts/default.ttf` | — | File-only | Default TTF font for text items without a per-item `font_path` override. |
-| `osd.vars_file` | string | `/tmp/timps_osd.vars` | — | File-only | Custom placeholder source file. |
+| `osd.vars_file` | string | `/tmp/timps_osd.vars` | — | File-only | Custom placeholder source file (see "Custom placeholders" below). |
 | `osd.supersample` | int | 2 | 1–4 | File-only | TTF rasterizer anti-aliasing quality (samples per axis per pixel); cost scales ~quadratically, 2 is visually close to 4 at typical OSD sizes for roughly a quarter of the CPU cost. |
+
+### Custom placeholders (show any value you want in the OSD)
+
+Any `{name}` token in an OSD `text` template that isn't one of the built-in
+placeholders (`hostname`, `ip`, `mac`, `fps`, `fpsN`, `uptime`, `net`/`tx`,
+`cpu`, `mem`, `clients`) is looked up in `osd.vars_file` instead - a plain
+`key = value` text file, one entry per line. This lets an external script
+drive OSD content with no timps code changes at all: temperature readings,
+a doorbell state, whatever.
+
+1. Pick a name and use it in the OSD text, e.g. `osd0.4.text = Temp: {room_temp}C`.
+2. From any script/cron job with filesystem access, write matching lines to
+   the configured `vars_file` (default `/tmp/timps_osd.vars`):
+   ```
+   room_temp = 21.5
+   doorbell = idle
+   ```
+3. timps re-reads the file on every OSD refresh tick (~1x/s) - no signal or
+   restart needed. There's no locking, so writing in-place (e.g. `echo ... >
+   file`, which truncates then writes) has a small window where a concurrent
+   read can land mid-write: either an empty file (blank placeholder for that
+   tick) or a partially-written value line (a truncated-but-not-garbage value
+   for that tick, e.g. `21` instead of `21.5`) - never a crash or memory
+   issue, since reads are line-bounded, just a possible one-tick display
+   glitch that self-corrects on the next read. Avoid it entirely with an
+   atomic replace: write the new content to a temp file in the same
+   directory, then `rename()`/`mv` it onto the target path - `rename()` is
+   atomic on Linux, so timps always sees either the complete old file or the
+   complete new one, never a partial write.
+
+Limits: each resolved value is capped at 127 bytes, and the whole expanded
+`text` string (all placeholders combined, before `strftime()` substitution)
+at 511 bytes - long enough for typical single-line status text, not a
+replacement for a full custom rendering pipeline. Unmatched names (typo, or
+the vars_file doesn't exist yet) resolve to an empty string rather than an
+error, so a missing file just shows blank text for that placeholder.
 
 ## `osd<S>.<N>.*` — per-stream OSD overlay items
 

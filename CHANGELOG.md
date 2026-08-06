@@ -6,8 +6,53 @@ semantic versioning.
 
 ## [Unreleased]
 
-<!-- Proposed as 1.7.7 pending coordinator review; no version bumped in code or
-     build files yet. -->
+## [1.7.8] - 2026-08-06
+
+### Fixed
+- **C11 data races on runtime-mutable config**: several live-settable fields
+  were read by a different thread than the `/control` writer without any
+  synchronization against it — a data race regardless of whether the plain
+  int read ever visibly "tears".
+  - `audio.mute`: the per-frame audio worker read it lock-free on every
+    captured frame. It's now `_Atomic int`, and a new `F_ATOMIC` field flag in
+    `config.c` routes `field_set()`/`field_get()` through `atomic_store`/
+    `atomic_load` instead of a plain assignment.
+  - **daynight thread**: was reading individual `g_cfg.daynight.*` fields
+    (and `image.running_mode`) lock-free once per ~500 ms poll. It now
+    snapshots the whole `ms_daynight_cfg` struct plus `running_mode` under
+    `config_str_lock()` once per iteration — the same whole-struct pattern
+    `imp_osd.c` already used — and threads that local snapshot through
+    `dn_day_trigger()`/`dn_status_update()`/`dn_switch()` instead of each
+    re-reading global state.
+  - **OSD `.enabled`**: the updater loop checked it lock-free before calling
+    `refresh_text()`; the check now happens inside `refresh_text()`, after its
+    own under-lock item snapshot.
+- **`aac_asc()`** now logs a warning when handed a samplerate outside the
+  standard AAC table instead of silently falling back to the 16 kHz index.
+
+### Added
+- **fMP4 CMAF brands** (`cmfc`, `cmf2`) added to the `ftyp` compatible-brands
+  list for stricter CMAF validators (Bento4, some HLS/DASH tooling).
+- **QA script** (`scripts/timps-qa.sh`):
+  - New section 8c: an SSH-based round-trip test of the `osd.vars_file`
+    custom-placeholder mechanism.
+  - Section 8b: added the missing `probe_max_skip_s` live-setting coverage,
+    and a new persist-clamp regression test (`ov_clamp_test`) that POSTs
+    out-of-range values and asserts the read-back is the clamped boundary,
+    not the raw input.
+
+### Documentation
+- Documented the `osd.vars_file` custom-OSD-placeholder mechanism
+  (Configuration Reference), including its non-atomic-write concurrency
+  caveat and the atomic-replace mitigation.
+- Documented that empty `rtsp.user`/`http.user` credentials (the shipped
+  default) leave the media endpoints open to anyone on the network while
+  `/control`/`/events` stay loopback-gated (Configuration Reference, HTTP
+  /control API Reference, `timps.conf.example`).
+- Documented a deferred RTP/RTCP timestamp overflow after ~2.8-3 years of
+  continuous uptime ("L13", Streaming Protocols § Known limitations).
+
+## [1.7.7] - 2026-08-05
 
 ### Fixed
 - **Day/night reconfirm probes were themselves the visible "periodische

@@ -16,7 +16,10 @@
 #   6. Snapshot ....... /snapshot.jpg?chn=N validity + latency + success rate
 #   7. Audio .......... codec/rate, silence-gap scan
 #   8. /control API ... status JSON, caps, safe write+persist round-trip
-#   8b. Live settings . POST every live setting, read it back, verify applied
+#   8b. Live settings . POST every live setting, read it back, verify applied,
+#                       plus clamp regression (out-of-range persists clamped)
+#   8c. OSD vars_file . optional SSH: custom {placeholder} round-trip via the
+#                       on-device osd.vars_file key=value mechanism
 #   9. /events ........ SSE stream emits events
 #  10. ONVIF .......... both snapshot proxies + GetProfiles (resolution/codec vs
 #                       real stream, fps/bitrate surfaced with template note)
@@ -63,6 +66,9 @@ RTSP_TRANSPORT="${RTSP_TRANSPORT:-tcp}"
 # Optional on-device access, e.g. SSH_TARGET="root@192.168.241.190"
 SSH_TARGET="${SSH_TARGET:-}"
 SSH_OPTS="${SSH_OPTS:--o ConnectTimeout=6 -o StrictHostKeyChecking=no -o BatchMode=yes}"
+# osd.vars_file path on the camera (only needs overriding if a camera's
+# config points it somewhere other than the compiled-in default).
+OSD_VARS_FILE="${OSD_VARS_FILE:-/tmp/timps_osd.vars}"
 
 PROFILE="${PROFILE:-standard}"
 OUTDIR="${OUTDIR:-timps-qa-$(date +%Y%m%d-%H%M%S)}"
@@ -115,6 +121,10 @@ Options (also settable as env vars):
                       (section 8b): SoC-gated via caps.rotation, skips
                       cleanly if this build has no rotation support.
                       Default OFF, never part of a profile.
+  --osd-vars-file P   override the on-device osd.vars_file path used by
+                      section 8c's custom-placeholder round-trip
+                      (default /tmp/timps_osd.vars, only needed if a camera
+                      configures a non-default path). Needs --ssh.
 
 Profiles:
   quick     ~3 min  : short integrity + snapshot + tiny load, no soak
@@ -152,6 +162,7 @@ while [ $# -gt 0 ]; do
 		--bc-test-freq) BC_TEST_FREQ="$2"; shift 2;;
 		--bc-test-secs) BC_TEST_SECS="$2"; shift 2;;
 		--test-rotation) TEST_ROTATION=1; shift;;
+		--osd-vars-file) OSD_VARS_FILE="$2"; shift 2;;
 		-h|--help) usage;;
 		*) echo "unknown option: $1" >&2; usage;;
 	esac
@@ -953,7 +964,8 @@ else
 		"total_gain_night_threshold int 2000 8000" \
 		"day_gain_pct int 0 100" "baseline_delay_s int 0 60" \
 		"boot_settle_s int 0 60" "boot_settle_max_s int 10 300" \
-		"boot_stable_pct int 0 100" "night_reconfirm_s int 0 7200"
+		"boot_stable_pct int 0 100" "night_reconfirm_s int 0 7200" \
+		"probe_max_skip_s int 3600 604800"
 
 	# --- record: the running recorder reads these live. enabled/mode/channel are
 	# left out (they would start/stop capture or depend on stream count); the
@@ -967,6 +979,37 @@ else
 	# >=1, keep_days >=0; enabled/channel left out for the same reason as record ---
 	lv_section timelapse '{"timelapse":' '}' timelapse \
 		"interval_s int 1 3600" "keep_days int 0 365" "name str"
+
+	# --- clamp regression: timps_apply_setting() must persist/echo the
+	# VALIDATED (clamped) value, not the raw pre-clamp POST body - the
+	# 2026-08-05 fix in this session's v1.7.7 release notes. Every lv_section
+	# test above only ever POSTs values already inside [lo,hi] (flip_int's
+	# midpoint), so none of them would catch a regression here. POST a
+	# generously out-of-range value for one already-covered int field per
+	# section and confirm the read-back is the clamped boundary, not the raw
+	# number we sent. ---
+	ov_clamp_test() {
+		local label="$1" wo="$2" wc="$3" rp="$4" key="$5" raw="$6" want="$7"
+		local cur code gf got
+		cur=$(jget "$LV_BASE" "$rp.$key")
+		if [ -z "$cur" ]; then skip "$label.$key clamp test: field not present"; return; fi
+		LV_PENDING="${wo}{\"$key\":$cur}${wc}"
+		code=$(lv_post "${wo}{\"$key\":$raw}${wc}")
+		gf="$OUTDIR/clamp_${label}_${key}.json"; lv_get "$gf"
+		got=$(jget "$gf" "$rp.$key")
+		if [ "$got" = "$want" ]; then
+			ok "$label.$key clamp: raw=$raw persisted/echoed as clamped $want, not the raw value (HTTP $code)"
+		else
+			bad "$label.$key clamp: raw=$raw -> got '$got', want clamped '$want' (persist-clamp regression?)"
+		fi
+		lv_post "${wo}{\"$key\":$cur}${wc}" >/dev/null
+		LV_PENDING=""
+	}
+	ov_clamp_test image      '{"image":'    '}' image      brightness       -99      0
+	ov_clamp_test image      '{"image":'    '}' image      brightness       9999     255
+	ov_clamp_test daynight   '{"daynight":' '}' daynight   day_gain_pct     -50      0
+	ov_clamp_test daynight   '{"daynight":' '}' daynight   probe_max_skip_s 1        3600
+	ov_clamp_test daynight   '{"daynight":' '}' daynight   probe_max_skip_s 99999999 604800
 
 	# --- persist-only (restart-required) sanity: these must NOT be advertised as
 	# live but MUST still round-trip through the config. One representative key
@@ -1174,6 +1217,90 @@ else
 	fi
 fi
 
+fi
+if want 8c osdvars osd-vars; then
+# --- 8c. OSD custom placeholder (vars_file) round-trip ----------------------
+hdr "8c. OSD custom placeholder (vars_file)"
+if [ -z "$SSH_TARGET" ]; then
+	info "OSD vars_file round-trip needs --ssh (writes a probe file on-device) - skipped"
+elif ! have python3; then
+	skip "OSD vars_file round-trip needs python3 (JSON read-back) - not found"
+else
+	OV_FILE="$OSD_VARS_FILE"
+	OV_NAME="qa_probe_$$"
+	OV_VAL="qa_$(date +%s)"
+	OV_BASE="$OUTDIR/osdvars_base.json"
+	if ! curlq 12 "$(http_base)/control" -o "$OV_BASE" || [ ! -s "$OV_BASE" ]; then
+		bad "OSD vars_file test: cannot GET /control baseline - skipping"
+	else
+		# find the first stream/item with a live text field (default layout has
+		# items 0-3 enabled at startup; 4-7 are disabled and restart-only to
+		# enable, so skip those rather than trying to bring one up live)
+		OV_STREAM=""; OV_ITEM=""; OV_ORIG=""
+		for s in 0 1; do
+			for i in 0 1 2 3; do
+				v=$(jget "$OV_BASE" "osd$s.$i.text")
+				if [ -n "$v" ]; then OV_STREAM=$s; OV_ITEM=$i; OV_ORIG="$v"; break 2; fi
+			done
+		done
+		if [ -z "$OV_ITEM" ]; then
+			warn "OSD vars_file test: no live text item found in /control status - skipping"
+		else
+			# Interruption safety, same pattern as section 8b: track the pending
+			# restore and flush it from EXIT/INT/TERM.
+			OV_PENDING=""
+			ov_restore_pending() {
+				[ -n "${OV_PENDING:-}" ] || return 0
+				warn "interrupted mid OSD-vars test - restoring camera OSD text + probe file"
+				curl -s -o /dev/null --max-time 12 -u "$HTTP_USER:$HTTP_PASS" \
+					-X POST "$(http_base)/control" \
+					-d "{\"osd$OV_STREAM\":{\"$OV_ITEM\":{\"text\":\"$OV_PENDING\"}}}" >/dev/null 2>&1 || true
+				sshx "grep -v '^$OV_NAME ' '$OV_FILE' > '$OV_FILE.qa_tmp' 2>/dev/null && mv '$OV_FILE.qa_tmp' '$OV_FILE'" >/dev/null 2>&1 || true
+				OV_PENDING=""
+			}
+			trap 'ov_restore_pending' EXIT
+			trap 'ov_restore_pending; trap - INT;  kill -INT  $$'  INT
+			trap 'ov_restore_pending; trap - TERM; kill -TERM $$' TERM
+			OV_PENDING="$OV_ORIG"
+
+			# Write the probe line the documented safe way: temp file + mv
+			# (atomic rename), so this test doesn't itself demonstrate the
+			# torn-read hazard it's implicitly guarding against.
+			if ! sshx "echo '$OV_NAME = $OV_VAL' > '$OV_FILE.qa_tmp' && mv '$OV_FILE.qa_tmp' '$OV_FILE'"; then
+				bad "OSD vars_file test: could not write probe file via SSH ($OV_FILE)"
+			else
+				code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 12 -u "$HTTP_USER:$HTTP_PASS" \
+					-X POST "$(http_base)/control" \
+					-d "{\"osd$OV_STREAM\":{\"$OV_ITEM\":{\"text\":\"{$OV_NAME}\"}}}")
+				if [ "$code" != "200" ]; then
+					bad "OSD vars_file test: POST(text={$OV_NAME}) HTTP $code"
+				else
+					sleep 2   # >= 1 OSD refresh tick (~1x/s)
+					gf="$OUTDIR/osdvars_new.json"; curlq 12 "$(http_base)/control" -o "$gf"
+					got=$(jget "$gf" "osd$OV_STREAM.$OV_ITEM.text")
+					if [ "$got" = "{$OV_NAME}" ]; then
+						ok "OSD vars_file: custom placeholder template stored & read back (osd$OV_STREAM.$OV_ITEM.text={$OV_NAME})"
+						info "  wrote $OV_NAME=$OV_VAL to $OV_FILE via SSH; this only confirms the template round-trips through /control, not that the rendered pixels are correct - grab a snapshot yourself for visual confirmation if needed"
+					else
+						bad "OSD vars_file: template not applied (got '$got', want '{$OV_NAME}')"
+					fi
+				fi
+				# restore original text and remove the probe line, regardless of
+				# the outcome above
+				curl -s -o /dev/null --max-time 12 -u "$HTTP_USER:$HTTP_PASS" \
+					-X POST "$(http_base)/control" \
+					-d "{\"osd$OV_STREAM\":{\"$OV_ITEM\":{\"text\":\"$OV_ORIG\"}}}" >/dev/null
+				sshx "grep -v '^$OV_NAME ' '$OV_FILE' > '$OV_FILE.qa_tmp' 2>/dev/null && mv '$OV_FILE.qa_tmp' '$OV_FILE'" >/dev/null 2>&1
+				OV_PENDING=""
+				rf="$OUTDIR/osdvars_restore.json"; curlq 12 "$(http_base)/control" -o "$rf"
+				rgot=$(jget "$rf" "osd$OV_STREAM.$OV_ITEM.text")
+				if [ "$rgot" = "$OV_ORIG" ]; then info "  restored original text ('$OV_ORIG')"
+				else warn "OSD vars_file test: original text not confirmed restored (got '$rgot', want '$OV_ORIG')"; fi
+			fi
+			trap - EXIT INT TERM
+		fi
+	fi
+fi
 fi
 if want 9 events; then
 # --- 9. /events SSE ---------------------------------------------------------

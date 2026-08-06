@@ -37,6 +37,30 @@ otherwise it gets `401`/`403`:
    [Streaming Protocols](Streaming-Protocols.md#authentication-http)) then
    **Basic**.
 
+### Empty credentials (the shipped default) — media is open, control is not
+
+When **no credentials are configured** (both `http.user` and `rtsp.user`
+empty, the shipped default), gate #3 has nothing to check, so the generic
+auth gate passes **every** request. This is deliberately **not** symmetric
+across endpoints:
+
+- **Media endpoints** (`/stream.mp4`, `/stream.mjpeg`, `/snapshot.jpg`,
+  incl. `?chn=N`) — reachable by **anyone on the network, with no
+  authentication**. The RTSP video/audio stream behaves the same way
+  (RTSP auth is off while `rtsp.user` is empty). This is by design: an
+  unconfigured camera streams on the LAN out of the box.
+- **`/control` and `/events`** — carry an **extra loopback-only gate**:
+  when no credentials are set, a **non-loopback** request is refused with
+  `403` (`if (!c->local && !tok_ok && !user[0])` in `httpd.c`). So config
+  and event state can never be read or changed from off-device unless you
+  either configure credentials or present a valid token — even though the
+  media is open.
+
+To require authentication for the media too, set `rtsp.user`/`rtsp.pass`
+and/or `http.user`/`http.pass`. See the SECURITY block in
+`timps.conf.example` and
+[Configuration Reference](Configuration-Reference.md).
+
 CORS: the three media endpoints send `Access-Control-Allow-Origin: *`
 unconditionally (safe because their auth never relies on ambient browser
 credentials); `/control` and `/events` instead **reflect** the request's

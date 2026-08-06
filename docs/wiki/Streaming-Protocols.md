@@ -235,3 +235,25 @@ See [Platform & SDK Support](Platform-SDK-Support.md) for which SoCs get
 which encoder/ISP capabilities, and `docs/rotation.md` for how rotation
 interacts with stream geometry (post-rotation dimensions are what every
 protocol above actually advertises/muxes).
+
+## Known limitations
+
+### RTP/RTCP timestamp overflow after ~2.8–3 years of continuous uptime (deferred, "L13")
+
+- **What.** The RTP timestamp math computes `rel * clock_rate` as an
+  `int64` product, where `rel` is the microseconds elapsed since the
+  track's first PTS. At the 90 kHz video clock this product overflows
+  `INT64_MAX` once `rel` reaches roughly `INT64_MAX / 90000` µs.
+- **When.** After about **2.8–3 years of continuous process uptime**
+  without a restart. A restart re-anchors the track (`pts0`/`ts_base` are
+  re-seeded), so the counter resets — in practice this is only reachable
+  by a camera that streams for years without the daemon ever restarting.
+- **Effect.** Past that point the video RTP timestamps (and the identical
+  computation in the RTCP sender report) go wrong, which would desync A/V
+  and could make strict clients drop/reconnect.
+- **Why deferred.** A correct fix needs the track to periodically
+  **rebase** `pts0`/`ts_base` rather than a one-line clamp, so it was
+  intentionally left for a follow-up rather than patched piecemeal.
+- **Where the code is.** `src/rtsp/rtp.c` — `pts_to_ts()` (the
+  `L13 (deferred)` comment) and the matching math in the RTCP SR path
+  (`rtcp_wr_sr()` / `rtp_maybe_sr()`).
