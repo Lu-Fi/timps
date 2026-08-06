@@ -13,6 +13,7 @@
 #include <sys/stat.h>   /* fchmod on the mkstemp'd config tmp */
 #include <errno.h>
 #include <limits.h>  /* INT_MAX for open-ended lo-only clamps in the tables */
+#include <stdatomic.h>  /* atomic_load/atomic_store for F_ATOMIC live-int fields */
 
 #define MOD "CONFIG"
 ms_config g_cfg;
@@ -431,6 +432,16 @@ enum {
  * the get-apply-get dedup SKIP an unchanged re-POST - a behaviour change -
  * so don't drop the flag without checking the /control consumers. */
 #define F_NOGET 0x01
+/* Live int/bool field read lock-free by a DIFFERENT thread than the /control
+ * writer (a HAL/sim worker in a hot loop), so it must be an `_Atomic int` in
+ * the struct: field_set()/field_get() then store/load it atomically instead of
+ * the plain `*(int*)p` access, which - even though the writer holds
+ * config_str_lock - would be a C11 data race against the lock-free reader (a
+ * load the compiler could legally hoist out of the reader's loop). Only for
+ * genuinely lock-free cross-thread hot-path reads; fields that readers already
+ * take config_str_lock for (OSD items, etc.) do NOT need this. Applies to
+ * T_BOOL/T_INT only. */
+#define F_ATOMIC 0x02
 
 typedef struct {
     const char    *name;    /* canonical key name (after the section prefix) */
@@ -503,7 +514,7 @@ static const cfg_field audio_fields[] = {
     F ("alc_gain",           0, alc_gain,           T_INT,    0, 0,7),
     F ("agc_target_dbfs",    0, agc_target_dbfs,    T_INT,    0, 0,31),
     F ("agc_compression_db", 0, agc_compression_db, T_INT,    0, 0,90),
-    F ("mute",               0, mute,               T_BOOL,   0, 0,0),
+    F ("mute",               0, mute,               T_BOOL,   F_ATOMIC, 0,0),
     F ("force_stereo",       0, force_stereo,       T_BOOL,   0, 0,0),
     F ("spk_enabled",        0, spk_enabled,        T_BOOL,   0, 0,0),
     F ("spk_volume",         0, spk_volume,         T_INT,    0, 0,100),
@@ -812,6 +823,15 @@ static const cfg_section *section_find(const char *key, const char **field)
 static void field_set(void *base, const cfg_field *f, const char *val)
 {
     void *p = (char*)base + f->off;
+    if (f->flags & F_ATOMIC){
+        /* _Atomic int field (T_BOOL/T_INT): store atomically so the lock-free
+         * cross-thread reader's atomic load is properly synchronized. */
+        int v = (f->type==T_BOOL) ? pbool(val)
+              : (f->lo < f->hi)   ? pint_cl(val,f->lo,f->hi)
+                                  : pint(val);
+        atomic_store((_Atomic int*)p, v);
+        return;
+    }
     switch (f->type){
     case T_BOOL:   *(int*)p = pbool(val); break;
     case T_INT:    *(int*)p = (f->lo < f->hi) ? pint_cl(val,f->lo,f->hi)
@@ -853,6 +873,10 @@ static int field_get(const void *base, const cfg_field *f, char *out, size_t cap
 {
     if (f->flags & F_NOGET) return 0;
     const void *p = (const char*)base + f->off;
+    if (f->flags & F_ATOMIC){        /* _Atomic int (T_BOOL/T_INT): atomic load */
+        snprintf(out,cap,"%d",atomic_load((const _Atomic int*)p));
+        return 1;
+    }
     switch (f->type){
     case T_BOOL: case T_INT: case T_CHAN: case T_ROT:
     case T_RECMODE: case T_BCCODEC:

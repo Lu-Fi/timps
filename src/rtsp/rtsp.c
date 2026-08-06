@@ -149,6 +149,13 @@ static int sink_send(void *ctx, const uint8_t *pkt, int len, int rtcp)
         /* one write = one TCP segment: prepend the 4-byte interleave header to
          * the RTP packet in a single buffer (avoids a tiny header segment and
          * halves the syscalls, which dominated CPU with TCP_NODELAY) */
+        /* generic interleaved-send buffer, sized independently of RTP_MTU_MAX
+         * (which only bounds the RTP *payload* packet buffers elsewhere): 1600
+         * already covers a standard 1500-byte-MTU Ethernet frame with margin
+         * for the 4-byte interleave header. Do NOT "simplify" this to
+         * RTP_MTU_MAX + 4 - RTP_MTU_MAX is 1472, which would silently SHRINK
+         * this buffer to 1476 and could truncate anything relying on the
+         * headroom (len is bounds-checked below regardless). */
         uint8_t buf[4 + 1600];
         if (len > (int)sizeof(buf) - 4) return -1;
         buf[0] = '$';

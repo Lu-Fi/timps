@@ -1,4 +1,7 @@
 #include "aac.h"
+#include "../log.h"
+
+#define MOD "AAC"
 
 static const int srates[] = {
     96000,88200,64000,48000,44100,32000,24000,22050,
@@ -14,7 +17,14 @@ int aac_srate_index(int sr)
 int aac_asc(int samplerate, int channels, uint8_t out[2])
 {
     int idx = aac_srate_index(samplerate);
-    if (idx < 0) idx = 8; /* 16k fallback */
+    if (idx < 0) {
+        /* samplerate isn't one of the standard AAC table entries: fall back to
+         * the 16 kHz index (8). Log it so a misconfigured/unexpected rate is
+         * visible instead of silently mislabelling the ASC. */
+        LOGW(MOD, "unsupported AAC samplerate %d Hz, using 16k index fallback",
+             samplerate);
+        idx = 8;
+    }
     int obj = 2; /* AAC-LC */
     out[0] = (uint8_t)((obj<<3) | (idx>>1));
     out[1] = (uint8_t)(((idx&1)<<7) | (channels<<3));

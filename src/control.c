@@ -972,7 +972,7 @@ int control_get_json(char *buf, size_t cap)
     APP("\"backchannel\":{\"available\":0},");
 #endif
     /* play queue: available = the play-FIFO feature is compiled in. "sounds"
-     * enumerates the *.opus/*.wav files under SOUNDS_DIR so the WebUI
+     * enumerates the .opus and .wav files under SOUNDS_DIR so the WebUI
      * test-sound control can offer them (built like every other caps.* list;
      * the play POST re-validates the chosen name against this same
      * directory). .opus only decodes when USE_PLAY_OPUS is also compiled in

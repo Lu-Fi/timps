@@ -2374,6 +2374,13 @@ static void *audio_thread(void *arg)
                 }
                 acc_n += take*(size_t)g_ach; off += take;
                 while (acc_n >= faac_in){
+                    /* NOTE (per-thread footprint): this 8 KB AAC output buffer
+                     * plus the 4 KB Opus obuf below are __thread statics on the
+                     * audio worker, ~12 KB of thread-local storage total. That is
+                     * an accepted tradeoff on these embedded SoCs (avoids per-
+                     * frame heap churn / a shared-buffer lock on the hot audio
+                     * path); it is not a leak. Documented here as the starting
+                     * point for any future stack/TLS size-optimization pass. */
                     static __thread uint8_t aac[8192];
                     uint32_t n = 0;
                     /* FAAC_INPUT_16BIT: pass the int16 PCM directly; in_samples

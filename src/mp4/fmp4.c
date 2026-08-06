@@ -363,6 +363,12 @@ int fmp4_init_segment(fmp4_mux *m, ms_buf *out)
     ms_buf_put(out, "iso5", 4);
     ms_buf_put(out, "dash", 4);
     ms_buf_put(out, "mp41", 4);
+    /* CMAF brands (additive): browsers already accept the set above, but strict
+     * CMAF validators (Bento4, some HLS/DASH tooling) want cmfc/cmf2 in the
+     * compatible-brands list. box_close() recomputes the ftyp size, so no size
+     * accounting is needed here. */
+    ms_buf_put(out, "cmfc", 4);
+    ms_buf_put(out, "cmf2", 4);
     box_close(out, f);
     /* moov */
     size_t mv = box_open(out, "moov");

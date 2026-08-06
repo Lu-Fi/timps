@@ -71,9 +71,16 @@ typedef struct {
     int      alc_gain;       /* IMP_AI_SetAlcGain PGA level 0..7 (T21/T31/C100) */
     int      agc_target_dbfs;    /* AGC TargetLevelDbfs 0..31 */
     int      agc_compression_db; /* AGC CompressionGaindB 0..90 */
-    int      mute;           /* live mic mute: 1 = captured frames are dropped
+    _Atomic int mute;        /* live mic mute: 1 = captured frames are dropped
                               * before the encoder/hub (no audio to any client);
-                              * toggled at runtime via /control, no restart */
+                              * toggled at runtime via /control, no restart.
+                              * _Atomic: the HAL/sim audio worker reads it
+                              * lock-free once per captured frame (hal_ingenic.c
+                              * ai loop / hal_sim.c), a DIFFERENT thread from the
+                              * /control writer, so a plain int would be a C11
+                              * data race (a load the compiler could hoist out of
+                              * the frame loop). Written atomically via F_ATOMIC
+                              * in config.c's field_set(). */
     /* persist-only (no runtime path in timps yet): kept so the WebUI audio
      * page can store them; capture is mono and there is no AO pipeline */
     int      force_stereo;
@@ -453,11 +460,20 @@ int  config_get_kv(const ms_config *c, const char *key, char *out, size_t cap);
  * comments/order). Returns 0 on success. */
 int  config_write_keys(const char *path, const char *const *keys,
                        const char *const *vals, int n);
-/* Serializes /control's runtime writes of g_cfg STRINGS (copystr inside
- * config_apply_kv) against concurrent readers (OSD updater, recorder, RTSP
- * path match, GET /control). Leaf lock: hold it only for a short copy/compare,
- * never across HAL/status/blocking calls. Ints are not covered (aligned word
- * reads, no tearing to worry about). */
+/* Serializes /control's runtime writes of g_cfg (the whole config_apply_kv
+ * runs under this lock, see timps_apply_setting) against concurrent readers
+ * (OSD updater, recorder, timelapse, day/night, RTSP path match, GET /control).
+ * Leaf lock: hold it only for a short copy/compare, never across HAL/status/
+ * blocking calls.
+ * Covers STRINGS (copystr tears) AND the live ints/enums written alongside
+ * them: a reader that takes this lock therefore sees a consistent value for
+ * BOTH, so the numeric live fields of an item read under the lock (e.g. the
+ * whole-ms_osd_item snapshot in imp_osd.c/hal_ingenic.c) are race-free too.
+ * (Aligned word reads don't TEAR, but a lock-free int read of a concurrently
+ * written field is still a C11 data race / UB regardless - so a live int must
+ * either be read under this lock or be _Atomic. The one live int read lock-free
+ * on a hot path, audio.mute in the per-frame audio worker, is _Atomic instead
+ * of taking the lock every frame; see config.h.) */
 void config_str_lock(void);
 void config_str_unlock(void);
 

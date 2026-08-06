@@ -54,9 +54,8 @@ static float g_st_daytrig    = -1.0f;      /* effective night->day trigger */
  * level (a too-low baseline otherwise yields a trigger no real light source
  * can reach - seen live 2026-08-02, see the hardening comment above
  * DN_BRIGHTEN_CONFIRM_MS). Without a baseline the fixed threshold applies. */
-static float dn_day_trigger(float baseline)
+static float dn_day_trigger(const ms_daynight_cfg *dn, float baseline)
 {
-    const ms_daynight_cfg *dn = &g_cfg.daynight;
     float thr = dn->total_gain_day_threshold;
     if (baseline > 0.0f && dn->day_gain_pct > 0) {
         thr = baseline * (float)dn->day_gain_pct / 100.0f;
@@ -66,7 +65,8 @@ static float dn_day_trigger(float baseline)
     return thr;
 }
 
-static void dn_status_update(float brightness, float total_gain, float ae_luma,
+static void dn_status_update(const ms_daynight_cfg *dn,
+                             float brightness, float total_gain, float ae_luma,
                              int mode, float baseline)
 {
     /* last values that woke /events (only touched by the sampling thread) */
@@ -79,7 +79,7 @@ static void dn_status_update(float brightness, float total_gain, float ae_luma,
     g_st_luma       = ae_luma;
     g_st_mode       = mode;
     g_st_baseline   = baseline;
-    g_st_daytrig    = (mode == DN_NIGHT) ? dn_day_trigger(baseline) : -1.0f;
+    g_st_daytrig    = (mode == DN_NIGHT) ? dn_day_trigger(dn, baseline) : -1.0f;
     pthread_mutex_unlock(&g_st_mu);
 
     /* wake /events subscribers only on a REAL change - brightness/gain
@@ -173,10 +173,9 @@ static float dn_brightness(const char *path, float *total_gain)
 /* run "<switch_cmd> day|night" (the thingino board script: ircut/light/color).
  * The mode change is committed even if the command fails so a missing script
  * warns once per switch instead of retrying every sample. */
-static void dn_switch(int mode, const char *why)
+static void dn_switch(int mode, const char *why, const char *cmd)
 {
     const char *arg = (mode == DN_NIGHT) ? "night" : "day";
-    const char *cmd = g_cfg.daynight.switch_cmd;
     LOGI(MOD, "switching to %s (%s): %s %s", arg, why, cmd, arg);
     /* F-01: run "<switch_cmd> day|night" via fork()+execlp() instead of
      * system(). switch_cmd comes from the config file; system() would let a
@@ -582,11 +581,16 @@ static void *dn_thread(void *arg)
     int    hidx = 0;
     int64_t last_switch_ms = 0;
     /* boot/re-enable settle: floor + gain-stability extension, see
-     * dn_ae_stable() and the DN_SETTLE_SAMPLES comment above. */
-    int64_t settle_floor_ms = ms_now_us() / 1000 +
-        (int64_t)g_cfg.daynight.boot_settle_s * 1000;
-    int64_t settle_hard_ms  = ms_now_us() / 1000 +
-        (int64_t)g_cfg.daynight.boot_settle_max_s * 1000;
+     * dn_ae_stable() and the DN_SETTLE_SAMPLES comment above. These live ints
+     * are runtime-mutable via /control, so read them under the config lock like
+     * every other tunable snapshot below (the values are anyway recomputed from
+     * the per-iteration snapshot in the (re)enable block before first use). */
+    config_str_lock();
+    int boot_settle_s0     = g_cfg.daynight.boot_settle_s;
+    int boot_settle_max_s0 = g_cfg.daynight.boot_settle_max_s;
+    config_str_unlock();
+    int64_t settle_floor_ms = ms_now_us() / 1000 + (int64_t)boot_settle_s0 * 1000;
+    int64_t settle_hard_ms  = ms_now_us() / 1000 + (int64_t)boot_settle_max_s0 * 1000;
     float   settle_hist[DN_SETTLE_SAMPLES];
     int     settle_n = 0;
     /* pre-switch hysteresis (see DN_HYSTERESIS_MS): the candidate target we are
@@ -650,37 +654,52 @@ static void *dn_thread(void *arg)
 
     for (int i = 0; i < DN_SAMPLES; i++) hist[i] = 50.0f;  /* neutral start */
 
-    { int m = g_cfg.daynight.mode;
-      const char *ms = m==DN_MODE_TIME ? "time" : m==DN_MODE_SUN ? "sun" : "sensor";
-      /* the /control server is already up here: snapshot the runtime-mutable
-       * time window strings under the config string lock (see config.c) */
-      char tns[sizeof g_cfg.daynight.time_night_start];
-      char tds[sizeof g_cfg.daynight.time_day_start];
+    /* the /control server is already up here: snapshot the whole runtime-
+     * mutable daynight config once under the config string lock (see config.c)
+     * and log from the local copy, so none of these tunables (numeric or the
+     * time-window strings) are read lock-free - same M10 whole-item snapshot
+     * pattern the loop below and imp_osd.c's refresh_text() use. */
+    { ms_daynight_cfg dn0;
       config_str_lock();
-      snprintf(tns, sizeof tns, "%s", g_cfg.daynight.time_night_start);
-      snprintf(tds, sizeof tds, "%s", g_cfg.daynight.time_day_start);
+      dn0 = g_cfg.daynight;
       config_str_unlock();
+      const char *ms = dn0.mode==DN_MODE_TIME ? "time"
+                     : dn0.mode==DN_MODE_SUN  ? "sun" : "sensor";
       LOGI(MOD, "detection thread started (mode=%s, time night=%s day=%s, "
                 "sun lat=%g lon=%g off rise=%d set=%d min)",
-           ms, tns[0]?tns:"-",
-           tds[0]?tds:"-",
-           (double)g_cfg.daynight.sun_latitude, (double)g_cfg.daynight.sun_longitude,
-           g_cfg.daynight.sun_sunrise_offset_min, g_cfg.daynight.sun_sunset_offset_min); }
-    LOGI(MOD, "detection thread started (gain day<%g night>%g, "
-              "brightness fallback %.1f/%.1f hyst %.2f, "
-              "interval %dms, dwell %ds, isp=%s, cmd=%s, "
-              "boot settle %ds/%ds stable<%d%%, night reconfirm %ds)",
-         (double)g_cfg.daynight.total_gain_day_threshold,
-         (double)g_cfg.daynight.total_gain_night_threshold,
-         g_cfg.daynight.threshold_low, g_cfg.daynight.threshold_high,
-         g_cfg.daynight.hysteresis, g_cfg.daynight.interval_ms,
-         g_cfg.daynight.transition_s, g_cfg.daynight.isp_path,
-         g_cfg.daynight.switch_cmd,
-         g_cfg.daynight.boot_settle_s, g_cfg.daynight.boot_settle_max_s,
-         g_cfg.daynight.boot_stable_pct, g_cfg.daynight.night_reconfirm_s);
+           ms, dn0.time_night_start[0]?dn0.time_night_start:"-",
+           dn0.time_day_start[0]?dn0.time_day_start:"-",
+           (double)dn0.sun_latitude, (double)dn0.sun_longitude,
+           dn0.sun_sunrise_offset_min, dn0.sun_sunset_offset_min);
+      LOGI(MOD, "detection thread started (gain day<%g night>%g, "
+                "brightness fallback %.1f/%.1f hyst %.2f, "
+                "interval %dms, dwell %ds, isp=%s, cmd=%s, "
+                "boot settle %ds/%ds stable<%d%%, night reconfirm %ds)",
+           (double)dn0.total_gain_day_threshold,
+           (double)dn0.total_gain_night_threshold,
+           dn0.threshold_low, dn0.threshold_high,
+           dn0.hysteresis, dn0.interval_ms,
+           dn0.transition_s, dn0.isp_path, dn0.switch_cmd,
+           dn0.boot_settle_s, dn0.boot_settle_max_s,
+           dn0.boot_stable_pct, dn0.night_reconfirm_s); }
 
     while (!g_stop) {
-        const ms_daynight_cfg *dn = &g_cfg.daynight;
+        /* M10 whole-struct snapshot (mirrors imp_osd.c refresh_text()): every
+         * daynight tunable is runtime-mutable via /control, which applies
+         * changes under the config string lock (see config.c). Snapshot the
+         * whole struct plus the live image.running_mode once per poll, then
+         * operate on the local copy for the rest of the iteration - so one
+         * decision never mixes a freshly-set threshold with a stale interval,
+         * and none of these ints/enums/strings are read lock-free mid-update
+         * (the same C11 data-race class as the audio.mute fix). One lock+copy
+         * per ~500ms poll is negligible. */
+        ms_daynight_cfg dncfg;
+        int running_mode;
+        config_str_lock();
+        dncfg        = g_cfg.daynight;
+        running_mode = g_cfg.image.running_mode;
+        config_str_unlock();
+        const ms_daynight_cfg *dn = &dncfg;
         int interval = dn->interval_ms > 0 ? dn->interval_ms : 500;
 
         /* fire a pending post-switch running-mode re-assert once it comes due,
@@ -691,8 +710,9 @@ static void *dn_thread(void *arg)
             if (dn->enabled) {
                 /* apply the CURRENT desired mode: ing_control applies image.*
                  * from g_cfg, so read it here too (N3) - value, apply and log all
-                 * agree, and a manual override during the window is honoured. */
-                int rm = g_cfg.image.running_mode ? 1 : 0;
+                 * agree, and a manual override during the window is honoured
+                 * (running_mode is this iteration's under-lock snapshot). */
+                int rm = running_mode ? 1 : 0;
                 hub_control("image.running_mode", rm ? "1" : "0");
                 LOGI(MOD, "re-asserting running_mode=%d after switch (%d left)",
                      rm, reassert_left - 1);
@@ -732,7 +752,7 @@ static void *dn_thread(void *arg)
             brighten_since_ms = 0; brighten_armed = 0;
             smooth_tg = -1.0f; probe_day_ms = 0;
             pending_target = DN_UNKNOWN; pending_since_ms = 0;
-            dn_status_update(b, tg, luma, DN_UNKNOWN, night_baseline);
+            dn_status_update(dn, b, tg, luma, DN_UNKNOWN, night_baseline);
             dn_sleep(interval);
             continue;
         }
@@ -768,7 +788,7 @@ static void *dn_thread(void *arg)
                 LOGW(MOD, "%s not readable, detection idle", dn->isp_path);
                 warned_noisp = 1;
             }
-            dn_status_update(b, tg, luma, cur, night_baseline);
+            dn_status_update(dn, b, tg, luma, cur, night_baseline);
             dn_sleep(interval);
             continue;
         }
@@ -900,7 +920,7 @@ static void *dn_thread(void *arg)
                           "%llds dwell (gain %.0f, baseline %.0f)", probe_why,
                      (long long)((now_ms - night_entered_ms) / 1000),
                      (double)tg, (double)night_baseline);
-                dn_switch(DN_DAY, probe_why);
+                dn_switch(DN_DAY, probe_why, dn->switch_cmd);
                 cur = DN_DAY;
                 last_switch_ms  = now_ms;
                 pending_target  = DN_UNKNOWN; pending_since_ms = 0;
@@ -913,7 +933,7 @@ static void *dn_thread(void *arg)
                 brighten_armed  = 0;    /* re-arms above the bar next night */
                 probe_day_ms    = now_ms; /* gate the revert on stability */
                 last_phys_probe_ms = now_ms; /* outer-bound clock, see probe_max_skip_s in config.h */
-                dn_status_update(b, tg, luma, cur, night_baseline);
+                dn_status_update(dn, b, tg, luma, cur, night_baseline);
                 dn_sleep(interval);
                 continue;
             }
@@ -931,17 +951,13 @@ static void *dn_thread(void *arg)
         if (dn->mode == DN_MODE_TIME) {
             /* fixed local-clock window (localtime_r: this IS the user's wall
              * clock). Reuses the same switch/dwell machinery below.
-             * time_night_start/time_day_start are runtime-mutable via /control:
-             * snapshot them under the config string lock (see config.c
-             * g_str_lock comment), or a read racing copystr() can see a
-             * non-terminated buffer and sscanf() past the 6-byte field. */
+             * time_night_start/time_day_start are runtime-mutable via /control,
+             * but dncfg already holds a consistent copy taken under the config
+             * string lock at the top of the loop (see the M10 snapshot comment),
+             * so they are safe to read directly here - no torn/non-terminated
+             * buffer, no need for a second lock. */
             time_t now = time(NULL); struct tm lt; localtime_r(&now, &lt);
-            char tns[sizeof dn->time_night_start], tds[sizeof dn->time_day_start];
-            config_str_lock();
-            snprintf(tns, sizeof tns, "%s", dn->time_night_start);
-            snprintf(tds, sizeof tds, "%s", dn->time_day_start);
-            config_str_unlock();
-            target = dn_time_target(tns, tds, &lt);
+            target = dn_time_target(dn->time_night_start, dn->time_day_start, &lt);
             snprintf(why, sizeof why, "clock %02d:%02d", lt.tm_hour, lt.tm_min);
         } else if (dn->mode == DN_MODE_SUN) {
             /* today's real sunrise/sunset (+offsets) for the configured location */
@@ -958,7 +974,7 @@ static void *dn_thread(void *arg)
              * one (day when gain < day_gain_pct% of it, floored at the fixed
              * day threshold - see dn_day_trigger()), else the fixed day
              * threshold. day->night stays the fixed night threshold. */
-            float day_thr = dn_day_trigger(night_baseline);
+            float day_thr = dn_day_trigger(dn, night_baseline);
             if (cur == DN_DAY) {
                 if (tg > dn->total_gain_night_threshold) target = DN_NIGHT;
             } else if (cur == DN_NIGHT) {
@@ -1003,7 +1019,7 @@ static void *dn_thread(void *arg)
                 (dn->boot_stable_pct <= 0 || now_ms >= settle_hard_ms ||
                  dn_ae_stable(settle_hist, settle_n, dn->boot_stable_pct));
             if (settled) {
-                cur = g_cfg.image.running_mode ? DN_NIGHT : DN_DAY;
+                cur = running_mode ? DN_NIGHT : DN_DAY;
                 night_entered_ms = (cur == DN_NIGHT) ? now_ms : 0;
                 if (cur == DN_NIGHT) {
                     int64_t probe_s = DN_ADOPT_PROBE_S;
@@ -1085,7 +1101,7 @@ static void *dn_thread(void *arg)
                 LOGD(MOD, "%s candidate, confirming (%lld/%d ms)", why,
                      (long long)(now_ms - pending_since_ms), DN_HYSTERESIS_MS);
             } else {
-                dn_switch(target, why);
+                dn_switch(target, why, dn->switch_cmd);
                 cur = target;
                 last_switch_ms  = now_ms;
                 pending_target  = DN_UNKNOWN;   /* candidate consumed */
@@ -1184,7 +1200,7 @@ static void *dn_thread(void *arg)
             baseline_logged = night_baseline;
             LOGI(MOD, "night gain baseline = %.0f (day trigger < %d%% = %.0f)",
                  (double)night_baseline, dn->day_gain_pct,
-                 (double)dn_day_trigger(night_baseline));
+                 (double)dn_day_trigger(dn, night_baseline));
         } else if (cur == DN_NIGHT && night_baseline > 0.0f && smooth_tg > 0.0f) {
             /* slow SYMMETRIC drift toward the smoothed gain: an unrepresent-
              * ative baseline (sampled mid lighting-transition, or off a
@@ -1204,11 +1220,11 @@ static void *dn_thread(void *arg)
                 LOGI(MOD, "night gain baseline drifted to %.0f "
                           "(day trigger < %d%% = %.0f)",
                      (double)night_baseline, dn->day_gain_pct,
-                     (double)dn_day_trigger(night_baseline));
+                     (double)dn_day_trigger(dn, night_baseline));
             }
         }
 
-        dn_status_update(b, tg, luma, cur, night_baseline);
+        dn_status_update(dn, b, tg, luma, cur, night_baseline);
         dn_sleep(interval);
     }
     LOGI(MOD, "detection thread stopped");

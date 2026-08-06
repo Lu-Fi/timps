@@ -231,6 +231,12 @@ static void refresh_text(osd_stream *s, osd_region *rg)
     config_str_lock();
     it = g_hcfg->osd.items[s->si][rg->item];
     config_str_unlock();
+    /* runtime-disabled via /control: nothing to draw. Checked HERE, off the
+     * under-lock snapshot, so the updater loop (osd_thread) never has to read
+     * .enabled lock-free - that plain-int read raced the /control writer (C11
+     * UB), same class as audio.mute. Matches the sw-rotate path's own
+     * post-snapshot it.enabled check in hal_ingenic.c. */
+    if (!it.enabled) return;
     char txt[256];
     osd_expand(it.text, g_hcfg->osd.vars_file, txt, sizeof txt);
     if (strcmp(txt, rg->last)==0) return;               /* unchanged: skip render */
@@ -476,9 +482,10 @@ static void *osd_thread(void *arg)
             for (int si=0; si<MS_MAX_VSTREAM; si++){
                 if (!g_os[si].used) continue;
                 for (int i=0;i<MS_MAX_OSD;i++)
-                    if (g_os[si].r[i].rgn>=0 && g_os[si].r[i].is_text &&
-                        g_hcfg->osd.items[si][i].enabled)
-                        refresh_text(&g_os[si], &g_os[si].r[i]);
+                    if (g_os[si].r[i].rgn>=0 && g_os[si].r[i].is_text)
+                        refresh_text(&g_os[si], &g_os[si].r[i]);  /* refresh_text
+                            snapshots the item under config_str_lock and skips
+                            disabled ones (was gated on a lock-free .enabled) */
             }
             OSD_UNLOCK();
         } else if (++idle_cycles == 2){

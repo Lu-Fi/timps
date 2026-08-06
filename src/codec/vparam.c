@@ -165,6 +165,14 @@ static int hvcc(const vparam *v, ms_buf *o)
     ms_buf_u8(o,ptl[11]);           /* general_level_idc */
     ms_buf_be16(o,0xF000);          /* reserved|min_spatial_segmentation_idc=0 */
     ms_buf_u8(o,0xFC);              /* reserved|parallelismType=0 */
+    /* chromaFormat/bit-depth are HARDCODED to 4:2:0 8-bit here rather than
+     * parsed from the SPS (unlike the avcC High-profile path above). This is
+     * intentional and safe on this hardware target: every Ingenic IMP H.265
+     * encoder on every supported SoC (T10-T41, C100) only ever emits 4:2:0
+     * 8-bit, so these values can never actually differ. Parsing them from the
+     * HEVC SPS would add real complexity (skipping the full pre-PTL/scaling-list
+     * machinery) for a case that cannot occur - not a bug, just deliberately
+     * non-portable to hypothetical 4:2:2/10-bit encoders. */
     ms_buf_u8(o,0xFD);              /* reserved|chromaFormat=1 (4:2:0) */
     ms_buf_u8(o,0xF8);              /* reserved|bitDepthLumaMinus8=0 */
     ms_buf_u8(o,0xF8);              /* reserved|bitDepthChromaMinus8=0 */
