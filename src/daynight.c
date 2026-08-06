@@ -10,13 +10,13 @@
 #include "daynight.h"
 #include "config.h"
 #include "hal/hal.h"   /* hal_isp_total_gain(): ISP gain via the IMP API */
+#include <stdio.h>     /* snprintf() - needed by both the real impl and the !USE_DAYNIGHT stub */
 
 #ifdef USE_DAYNIGHT
 #include "hub.h"       /* hub_control(): re-assert running_mode into the ISP */
 #include "events.h"   /* wake /events SSE subscribers on real changes */
 #include "log.h"
 #include "util.h"     /* ms_now_us(): monotonic clock for dwell/baseline (M12) */
-#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>       /* F-01: fork/execlp/dup2 instead of system() */
