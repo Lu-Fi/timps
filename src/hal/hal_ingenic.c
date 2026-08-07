@@ -1985,9 +1985,19 @@ static int jpeg_setup(const ms_config *cfg)
 /* optional JPEG encoder piggybacked on video stream vi: registered into the
  * SAME encoder group, so it shares the video framesource. Costs no extra rmem
  * (no new framesource buffers), only the encoder channel itself. */
-static int jpeg_attach(const ms_config *cfg, int vi, int grp)
+/* v must be the EFFECTIVE (post-safe-envelope-decision) stream config the caller
+ * is actually bringing the video channel up with - NOT the raw cfg->video[vi].
+ * When a 90/270 rotation is refused by the safe-envelope check (sw_rot_start on
+ * T23, fs_create FALLBACK on T31), the caller retargets v at a local copy with
+ * rotation zeroed and brings the video encoder up UNROTATED. This piggyback
+ * JPEG shares that same framesource, so it must size its channel from the SAME
+ * v: reading cfg->video[vi] here instead would compute the ROTATED dims (e.g.
+ * 1920x1080 -> 1080x1920) while the framesource is actually unrotated
+ * (1920x1080), and the mismatched (and typically non-16-aligned) picWidth makes
+ * IMP_Encoder_CreateChn fail - silently killing /snapshot.jpg on that channel
+ * even though the video/RTSP path fell back to unrotated cleanly. */
+static int jpeg_attach(const ms_vstream_cfg *v, int vi, int grp)
 {
-    const ms_vstream_cfg *v=&cfg->video[vi];
     int chn = v->jpeg_chn;
     int q   = (v->jpeg_quality>0 && v->jpeg_quality<=100) ? v->jpeg_quality : 75;
     int jfps = v->jpeg_fps>0 ? v->jpeg_fps : 5;
@@ -2746,7 +2756,7 @@ static int ing_start(const ms_config *cfg)
 
         /* optional per-stream JPEG encoder in the same group (videoN.jpeg);
          * non-fatal: the video stream works without it (logged inside) */
-        if (v->jpeg_enabled) jpeg_attach(cfg, i, grp);
+        if (v->jpeg_enabled) jpeg_attach(v, i, grp);
 
         /* pipeline: FrameSource -> [OSD] -> Encoder. Every stream gets its
          * own OSD group so overlays appear on all streams. An unchecked
