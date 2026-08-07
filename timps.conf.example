@@ -8,7 +8,7 @@ general.syslog              = 1      # 1 = also log to syslog so messages show u
                                      #     timpsd, so its stderr is discarded);
                                      #     0 = stderr only (foreground / host sim)
 general.imp_polling_timeout = 500    # ms, encoder poll timeout
-general.osd_pool_size       = 1000   # KB, IMP OSD pool
+general.osd_pool_size       = 1024   # KB, IMP OSD pool (this is the default)
 
 # ---- sensor ----
 # OPTIONAL: leave any of these out (or empty/0) and timps auto-detects it from
@@ -88,10 +88,10 @@ http.preview_chn = 1
 # its last frame and resumes cleanly at the next keyframe (no decode corruption)
 # instead of forwarding a headless GOP. Strictly per-client: never touches the
 # encoder or any other subscriber (Frigate, recording, other viewers).
-# 0 = off (default; forward every frame - the pre-feature behavior), 1 = enable.
-# EXPERIMENTAL / opt-in: default OFF until verified on real hardware (an early
-# build could hang the stream on a slow SoC). Only enable for controlled tests.
-http.adaptive_drop = 0
+# 1 = on (default; hardware-verified), 0 = off (forward every frame - the
+# pre-feature behavior). Leave at the default unless you have a specific reason
+# to forward every frame regardless of a slow client's link.
+http.adaptive_drop = 1
 http.user        =        # set to enable HTTP Basic auth (empty = reuse rtsp.user/pass).
                           #   While BOTH this and rtsp.user are empty, the HTTP media
                           #   endpoints (/snapshot.jpg, /stream.mjpeg, /stream.mp4) are
@@ -218,9 +218,9 @@ video0.fps       = 25
 video0.bitrate   = 3000      # kbps
 video0.rc_mode   = cbr       # cbr | vbr | fixqp | smart | capped_vbr | capped_quality
 video0.gop       = 50
-video0.max_gop   = 60
+#video0.max_gop  = 60        # reserved, no effect - see comment above video_fields' max_gop entry
 video0.profile   = 2         # 0 baseline 1 main 2 high
-video0.qp        = 35
+#video0.qp       = 35        # reserved, no effect - see comment above video_fields' qp entry
 video0.min_qp    = 20
 video0.max_qp    = 45
 video0.rotation  = 0         # 0|90|180|270 - build-gated & SoC-dependent (see block above)
@@ -250,10 +250,13 @@ video1.imp_chn   = 1
 # (or force_stereo = 1) enables SIMULATED stereo: the mono capture is duplicated
 # to L=R and encoded as 2-channel dual-mono AAC for clients that require a
 # stereo track. AAC only - G.711 (pcmu/pcma) has no standard stereo and stays
-# mono. timps has no audio-OUT (AO) pipeline, so the spk_* speaker keys are
-# stored for the WebUI but ignored (logged as such).
+# mono. On USE_PLAY / USE_BACKCHANNEL builds (the timps default) there IS an
+# audio-OUT (AO) pipeline: audio.spk_enabled is the master gate for the physical
+# speaker and audio.spk_volume/spk_gain are applied live (at the next AO open),
+# see the speaker block below.
 audio.enabled            = 1
-audio.codec              = aac    # aac | pcmu | pcma | none  (persist + restart)
+audio.codec              = aac    # aac | pcmu | pcma | opus | none  (persist +
+                                  #   restart; opus needs USE_STREAM_OPUS)
 audio.samplerate         = 16000  # 8000 | 16000              (persist + restart)
 audio.channels           = 1      # 1 mono | 2 = simulated stereo (dual-mono),
                                   # AAC only               (persist + restart)
@@ -268,8 +271,16 @@ audio.agc_compression_db = 0      # live — AGC compression gain 0..90
 audio.ns                 = 0      # live — noise suppression 0 off, 1..3
 audio.mute               = 0      # live — mic mute (1 = drop captured frames,
                                   #        clients receive no audio; no restart)
-# speaker: no AO path in timps (stored for the WebUI only, IGNORED - the
-# daemon logs "no speaker/AO pipeline" when set via /control)
+# aec: opt-in Acoustic Echo Cancellation (IMP_AI_EnableAec), default off. Only
+# engages when BOTH the mic (AI) and the speaker (AO) are live; it subtracts the
+# speaker output from the mic capture so the far end doesn't hear itself over the
+# backchannel. Applied at the next AO open.
+audio.aec                = 0      # live — 0 off, 1 on (USE_BACKCHANNEL/USE_PLAY)
+# speaker (AO) - active on USE_PLAY / USE_BACKCHANNEL builds:
+#   spk_enabled = master gate for the physical speaker; when 0 neither the
+#                 backchannel nor local playback produces any sound.
+#   spk_volume / spk_gain = applied live to the AO if a play/backchannel session
+#                 holds it, else at the next AO open; also persist as the default.
 # audio.spk_enabled  = 0
 # audio.spk_volume   = 80
 # audio.spk_gain     = 25
@@ -439,6 +450,18 @@ motion.skip_frames    = 5             # analyse every Nth frame: higher = cheape
 # the brightness-% fallback (daynightd semantics), used only when the ISP
 # proc file exposes no gain fields.
 daynight.enabled        = 1                    # 0 = manual mode (WebUI/`/control` only)
+# decision source: sensor = ISP gain (below), time = fixed clock times, sun =
+# computed sunrise/sunset for a lat/long. All three are live-settable.
+daynight.mode           = sensor               # sensor | time | sun
+# "time" mode: local HH:MM to switch (empty = unset). Ignored unless mode=time.
+# daynight.time_night_start = 19:30
+# daynight.time_day_start   = 06:30
+# "sun" mode: your location + optional offsets (minutes) applied to the computed
+# sunrise/sunset. Ignored unless mode=sun.
+# daynight.sun_latitude          = 0.0         # degrees, -90..90
+# daynight.sun_longitude         = 0.0         # degrees, -180..180
+# daynight.sun_sunrise_offset_min = 0          # minutes added to sunrise -> day
+# daynight.sun_sunset_offset_min  = 0          # minutes added to sunset  -> night
 daynight.total_gain_day_threshold   = 300      # (in night) gain below -> day
 daynight.total_gain_night_threshold = 3000     # (in day) gain above -> night
 # adaptive night baseline (raptor-style, robust against IR flicker): a while
@@ -447,6 +470,18 @@ daynight.total_gain_night_threshold = 3000     # (in day) gain above -> night
 # of the fixed day threshold. day_gain_pct = 0 disables (fixed threshold only).
 daynight.day_gain_pct     = 60                 # night->day at this % of baseline
 daynight.baseline_delay_s = 30                 # wait this long in night to sample it
+# boot settle: "sensor" mode ignores gain readings until AE has converged, to
+# avoid a wrong first decision on a cold ISP. boot_settle_s is the floor wait,
+# extended (until gain is stable within boot_stable_pct) up to boot_settle_max_s.
+daynight.boot_settle_s     = 5                 # min wait (s) before first decision
+daynight.boot_settle_max_s = 120               # hard cap (s) on the settle wait
+daynight.boot_stable_pct   = 20                # % spread across recent gains = stable (0 = floor only)
+# night reconfirm: after this long continuously in night, probe day to re-decide
+# from a true day-pipeline reading. Each probe clunks the IR-cut, so failed
+# probes back off (x2 each) and are skipped while gain is still deep in night;
+# probe_max_skip_s is the outer bound that forces a probe regardless of gain.
+daynight.night_reconfirm_s = 3600              # s in night before a day probe (0 = off)
+daynight.probe_max_skip_s  = 43200             # s: force a probe at least this often (>=3600)
 daynight.threshold_low  = 25                   # fallback %: below this (in day) -> night
 daynight.threshold_high = 75                   # fallback %: above this (in night) -> day
 daynight.hysteresis     = 0.1                  # fallback band factor, initial decision

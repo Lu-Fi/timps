@@ -933,6 +933,21 @@ else
 	lv_section audio '{"audio":' '}' audio \
 		"volume int 0 100" "gain int 0 31" "alc_gain int 0 7" "mute bool"
 
+	# --- speaker (AO) live keys (F-08): spk_volume/spk_gain/aec are live only on
+	# USE_PLAY / USE_BACKCHANNEL builds, where caps.audio lists them (they own the
+	# IMP_AO device). Gate on caps.audio so a build without an audio-output
+	# pipeline skips cleanly, matching how the rest of the script gates. spk_*
+	# are 0..100, aec is a bool; all round-trip through config. ---
+	case "$(jget "$cj" caps.audio)" in
+		*spk_volume*)
+			lv_section audio_spk '{"audio":' '}' audio \
+				"spk_volume int 0 100" "spk_gain int 0 100" "aec bool"
+			;;
+		*)
+			info "audio spk_*/aec: caps.audio has no spk_volume (no AO pipeline in this build) - skipping"
+			;;
+	esac
+
 	# --- osd stream 0 item 0: the live text-overlay leaf keys (caps.osd).
 	# font_size clamps 8..256, transparency 0..255, colors are 0xAARRGGBB hex ---
 	lv_section osd0.0 '{"osd0":{"0":' '}}' osd0.0 \
@@ -965,20 +980,55 @@ else
 		"day_gain_pct int 0 100" "baseline_delay_s int 0 60" \
 		"boot_settle_s int 0 60" "boot_settle_max_s int 10 300" \
 		"boot_stable_pct int 0 100" "night_reconfirm_s int 0 7200" \
-		"probe_max_skip_s int 3600 604800"
+		"probe_max_skip_s int 3600 604800" \
+		"sun_sunrise_offset_min int -1440 1440" \
+		"sun_sunset_offset_min int -1440 1440"
+
+	# --- daynight TIME/SUN path (F-08): the mode enum + the string/float keys the
+	# time/sun modes use. None fit the generic lv_section round-trip - "mode" is
+	# POSTed as a string but echoes back as "dn_mode"; time_*_start are <=5-char
+	# HH:MM strings (the generic "qa_probe" probe would truncate them); sun_lat/
+	# long are floats. Probe them explicitly, verify each read-back key, restore.
+	# Keys are always present (control_daynight_json emits them regardless of the
+	# USE_DAYNIGHT build), but guard on dn_mode anyway for safety. ---
+	dn_mode_cur=$(jget "$LV_BASE" daynight.dn_mode)
+	if [ -n "$dn_mode_cur" ]; then
+		tns_cur=$(jget "$LV_BASE" daynight.time_night_start)
+		tds_cur=$(jget "$LV_BASE" daynight.time_day_start)
+		lat_cur=$(jget "$LV_BASE" daynight.sun_latitude)
+		lon_cur=$(jget "$LV_BASE" daynight.sun_longitude)
+		dn_restore="{\"daynight\":{\"mode\":\"$dn_mode_cur\",\"time_night_start\":\"$tns_cur\",\"time_day_start\":\"$tds_cur\",\"sun_latitude\":${lat_cur:-0},\"sun_longitude\":${lon_cur:-0}}}"
+		LV_PENDING="$dn_restore"        # armed until restore lands
+		code=$(lv_post '{"daynight":{"mode":"sun","time_night_start":"19:30","time_day_start":"06:30","sun_latitude":52.5,"sun_longitude":13.5}}')
+		gf="$OUTDIR/lv_daynight_timesun.json"; lv_get "$gf"
+		dnp=0
+		[ "$(jget "$gf" daynight.dn_mode)" = "sun" ]              && dnp=$((dnp+1)) || bad "daynight.mode not applied (dn_mode='$(jget "$gf" daynight.dn_mode)', want 'sun')"
+		[ "$(jget "$gf" daynight.time_night_start)" = "19:30" ]  && dnp=$((dnp+1)) || bad "daynight.time_night_start not applied (got '$(jget "$gf" daynight.time_night_start)')"
+		[ "$(jget "$gf" daynight.time_day_start)" = "06:30" ]    && dnp=$((dnp+1)) || bad "daynight.time_day_start not applied (got '$(jget "$gf" daynight.time_day_start)')"
+		[ "$(jget "$gf" daynight.sun_latitude)" = "52.5" ]       && dnp=$((dnp+1)) || bad "daynight.sun_latitude not applied (got '$(jget "$gf" daynight.sun_latitude)')"
+		[ "$(jget "$gf" daynight.sun_longitude)" = "13.5" ]      && dnp=$((dnp+1)) || bad "daynight.sun_longitude not applied (got '$(jget "$gf" daynight.sun_longitude)')"
+		[ "$dnp" = 5 ] && ok "daynight TIME/SUN: mode+time_night_start+time_day_start+sun_latitude+sun_longitude applied & read back (HTTP $code)"
+		lv_post "$dn_restore" >/dev/null; LV_PENDING=""
+		rf="$OUTDIR/lv_daynight_timesun_restore.json"; lv_get "$rf"
+		[ "$(jget "$rf" daynight.dn_mode)" = "$dn_mode_cur" ] \
+			&& info "  daynight TIME/SUN: restored mode to $dn_mode_cur" \
+			|| warn "daynight TIME/SUN: mode did not restore to $dn_mode_cur"
+	fi
 
 	# --- record: the running recorder reads these live. enabled/mode/channel are
 	# left out (they would start/stop capture or depend on stream count); the
-	# rolls/segment/min-free/audio/name round-trip live. seg 0..86400, pre 0..60,
-	# post 0..300, min_free 0..1048576 ---
+	# rolls/segment/min-free/audio/name/dir round-trip live. seg 0..86400, pre
+	# 0..60, post 1..300 (F-10: floor is 1, not 0), min_free 0..1048576. dir is
+	# the path-traversal-sensitive live string (F-08) - covered alongside name ---
 	lv_section record '{"record":' '}' record \
-		"segment_s int 10 600" "pre_roll_s int 0 60" "post_roll_s int 0 300" \
-		"min_free_mb int 50 2000" "audio bool" "name str"
+		"segment_s int 10 600" "pre_roll_s int 0 60" "post_roll_s int 1 300" \
+		"min_free_mb int 50 2000" "audio bool" "name str" "dir str"
 
 	# --- timelapse: the running timelapse thread reads these live. interval_s
-	# >=1, keep_days >=0; enabled/channel left out for the same reason as record ---
+	# >=1, keep_days >=0; enabled/channel left out for the same reason as record.
+	# dir is the path-traversal-sensitive live string (F-08), covered with name ---
 	lv_section timelapse '{"timelapse":' '}' timelapse \
-		"interval_s int 1 3600" "keep_days int 0 365" "name str"
+		"interval_s int 1 3600" "keep_days int 0 365" "name str" "dir str"
 
 	# --- clamp regression: timps_apply_setting() must persist/echo the
 	# VALIDATED (clamped) value, not the raw pre-clamp POST body - the

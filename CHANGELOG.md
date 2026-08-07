@@ -6,6 +6,120 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+- **OSD read live `videoN.rotation` instead of the boot snapshot** (audit A2):
+  `imp_osd.c` read `g_cfg.video[si].rotation` in the text/logo/privacy placement
+  paths. `videoN.rotation` is restart-only, so a `/control` write to it would
+  immediately re-place the OSD for a rotation the running encoder is not
+  producing (overlay wrong until restart). All rotation reads now use
+  `g_cfg_boot`, which also removes them from the C11 data-race class below.
+- **`sensor.*` numerics were POST-able and persisted but unclamped** (config
+  audit F-01, high severity): `sensor.i2c_addr/fps/width/height` had no clamp,
+  so a garbage `/control` POST (e.g. `sensor.width=70000`) survived a reboot and
+  could feed the ISP init a value that crash-loops the camera. Now clamped like
+  `videoN.*` (`fps` 0–120, `width`/`height` 0–8192, `i2c_addr` 0–0x7F; `0` still
+  means "auto").
+- **Completed the C11 data-race sweep started in v1.7.8** (audit A1 / config
+  audit F-02/F-03): several background threads and the `GET /control` path still
+  read live-mutable `g_cfg.*` ints/enums/floats lock-free while the `/control`
+  connection thread mutates them under `config_str_lock()`. Fixed with the
+  daynight per-iteration whole-section snapshot pattern (or a point-of-use
+  lock+copy where a loop snapshot doesn't fit):
+  - `record.c`: `rec_thread` now snapshots the whole `record` section once per
+    pass and threads it through `want_run`/`want_write`/`motion_recent`/
+    `seg_open`/`prune_free`; `record_clip` and `record_get_status` snapshot the
+    live ints under the lock. (Strings were already correctly locked.)
+  - `timelapse.c`: same per-pass snapshot for `enabled/channel/interval_s/
+    keep_days`; `timelapse_get_status` reads its ints under the lock.
+  - `rtsp/speaker.c` (`ao_ensure`) and `hal_ingenic.c` (`hal_ao_open` AEC):
+    cold reads of `spk_enabled/spk_volume/spk_gain` and `audio.aec` now under
+    the lock.
+  - `rtsp/rtsp.c`: SDP/PLAY reads of `audio.bitrate_kbps/samplerate/channels`
+    now under the lock (video fields already used `g_cfg_boot`).
+  - Status/GET accessors: `daynight_get_status`/`daynight_sun_status` (incl. the
+    tearable `sun_latitude/longitude` floats), the sim `motion_get_status` stub,
+    and the numeric parts of `control_get_json`/`control_daynight_json` plus
+    `motion.monitor_stream` now snapshot under the lock.
+  - **Concurrent POSTs are now serialized**: `control_apply_json` runs its whole
+    apply-and-notify body under a single mutex so two simultaneous POSTs can no
+    longer interleave a partially-applied config (`hub_control()` still runs
+    after each field's `config_str_unlock()` as before).
+- **Doc drift** (config audit F-10): `record.post_roll_s` range is 1–300, not
+  0–300 (wiki + QA spec fixed); `general.osd_pool_size` is in KB, not bytes
+  (wiki fixed); `timps.conf.example` `osd_pool_size` now shows the real default
+  (1024).
+
+### Changed
+- **Clamp the remaining unclamped live/persist config fields** (config audit
+  F-09): `image.running_mode` 0–1, `image.anti_flicker` 0–2, `image.core_wb_mode`
+  0–1, `audio.samplerate` 8000–96000.
+- **`videoN.qp` and `videoN.max_gop` marked reserved / no-effect** (config audit
+  F-04): both are parsed, clamped, persisted and echoed for compatibility but no
+  HAL consumes them — the encoder's keyframe interval comes from `videoN.gop`
+  (`rcAttr.maxGop = v->gop`) and there is no separate init/fixed-QP wiring (the
+  pre-T31 attribute path is CBR-only). Wiring them up cleanly would need a
+  rate-control redesign that cannot be hardware-verified here, so they are
+  documented as reserved like `motion.roi_*`, with a one-shot warning when a
+  non-zero value is set. Use `videoN.min_qp`/`max_qp` + `videoN.rc_mode` for
+  quality control.
+- **Removed the `cmfc`/`cmf2` CMAF brands from the fMP4 `ftyp`** (audit A3):
+  CMAF (ISO/IEC 23000-19) requires one track per file, but this muxer always
+  writes combined video+audio into a single `moov`, so advertising CMAF
+  conformance was wrong for the A/V case (the strict validators the brands were
+  meant to satisfy would flag it). Browsers ignore compatible-brands, so this
+  was cosmetic; reverting the v1.7.8 addition.
+- **Halve `FQ_MAX_BYTES` on the small-RAM SoCs** (perf audit P-08): T10/T20/T21
+  builds now compile with `-DFQ_MAX_BYTES=1048576` (2 MB → 1 MB per queue), so
+  the all-stalled worst case (8 HTTP + 8 RTSP + 8 SRT) is ~24 MB instead of
+  ~48 MB. Added a `PLATFORM_CFLAGS` hook to the Makefile for the affected
+  platforms.
+- **RTSP play-loop syscall trimming** (perf audit P-03/P-04): `stream_loop` now
+  reads `ms_now_us()` once per iteration and reuses it (no vDSO on this MIPS
+  target — each call was a real syscall, 3–5×/iteration), and gates the
+  nonblocking control-socket poll to ~50 ms instead of once per media frame
+  (backchannel sessions still poll every iteration so interleaved speaker audio
+  is not delayed). Teardown latency stays well under the RTSP keepalive window.
+
+### Added
+- **QA coverage for previously-untested live-settable fields** (config audit
+  F-08, `scripts/timps-qa.sh` section 8b): the daynight TIME/SUN path
+  (`daynight.mode` + `time_night_start`/`time_day_start`/`sun_latitude`/
+  `sun_longitude`/`sun_sunrise_offset_min`/`sun_sunset_offset_min`), the speaker
+  keys `audio.spk_volume`/`spk_gain`/`aec` (gated on `caps.audio`, skipped
+  cleanly when no AO pipeline is compiled in), and the path-traversal-sensitive
+  live strings `record.dir`/`timelapse.dir`.
+
+### Documentation
+- **`timps.conf.example` brought back in sync with the code** (config audit
+  F-05/F-06/F-07): added the 12 missing `daynight.*` keys (`mode`, the
+  `time_*`/`sun_*` keys, `boot_settle_s`/`boot_settle_max_s`/`boot_stable_pct`,
+  `night_reconfirm_s`, `probe_max_skip_s`) with example values and comments;
+  corrected `http.adaptive_drop` (default is `1`, hardware-verified, not the
+  stale "EXPERIMENTAL, default 0" text); fixed the audio/speaker block (there IS
+  an AO pipeline on USE_PLAY/USE_BACKCHANNEL builds — `spk_enabled` gates the
+  physical speaker and `spk_volume`/`spk_gain` are live), added the missing
+  `audio.aec` key, and added `opus` to the `audio.codec` list.
+- Fixed the stale doctrine comment in `config.c` that still claimed live int
+  reads "need no lock" (it contradicted the correct `config.h` doctrine and was
+  the likely root cause of the recurring F-02/F-03 class), and the stale
+  `control.c` comment that described `on_motion` as `system()` when it is
+  `fork()+execlp()`.
+
+### Deferred (audited, not done this pass)
+- **Perf P-01** (single-copy frame publish via `hub_publish_take`) was NOT
+  attempted: it spans 11 `hub_publish` producer call sites (not the 3 the audit
+  estimated), including the T23 software-rotate path and the audio-resample
+  paths that `make sim` does not exercise, and a correct implementation needs a
+  refcounted per-source buffer pool whose reuse logic, if wrong, is a fleet-wide
+  use-after-free in the hottest path. Too risky to land without a hardware soak
+  test; recommended for a dedicated session.
+- **Perf P-02** (stop-condvar wakeup consolidation) was skipped — it is gated on
+  P-01 in the audit's own ordering, is a "nicety not a bug", and touches the
+  shutdown/wake logic of five threads (incl. the untestable `imp_osd.c`).
+- **SDK feature-gap items #5 (`GetChnEvalInfo`) and #6 (exposure ceiling)** were
+  skipped: both are new IMP features that cannot be verified without live
+  hardware.
+
 ## [1.7.8] - 2026-08-06
 
 ### Fixed

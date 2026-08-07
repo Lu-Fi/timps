@@ -362,7 +362,7 @@ within its ~300 ms poll cycle without a restart.
 | `record.name` | string(96) | `%Y%m%d/%H/%Y%m%dT%H%M%S` | `strftime` template | **Live (next cycle)** | Path template under `<dir>/<hostname>/records/`. |
 | `record.segment_s` (alias `segment`) | int | 60 | 0–86400 | **Live (next cycle)** | Max segment length in seconds; rotation only happens at a video keyframe. `0` = single file, no rotation. |
 | `record.pre_roll_s` (alias `pre_roll`) | int | 3 | 0–60 | **Live (next cycle)** | Motion mode: seconds of buffered video kept before the trigger (ring buffer). |
-| `record.post_roll_s` (alias `post_roll`) | int | 10 | 0–300 | **Live (next cycle)** | Motion mode: keep recording this long after the last motion event. |
+| `record.post_roll_s` (alias `post_roll`) | int | 10 | 1–300 | **Live (next cycle)** | Motion mode: keep recording this long after the last motion event. |
 | `record.min_free_mb` | int | 200 | 0–1048576 | **Live (next cycle)** | Prune oldest segments until at least this much free space remains. |
 | `record.audio` | bool | 1 | 0/1 | **Live (next cycle)** | Mux AAC audio into the recording when available (G.711 cannot be muxed into fMP4). |
 
@@ -427,7 +427,7 @@ File-only; no `/control` POST path.
 | --- | --- | --- | --- | --- | --- |
 | `general.loglevel` | int | `LOG_INFO` (2) | SDK log-level enum | File-only | Startup log verbosity (`-v` on the command line also forces debug). |
 | `general.imp_polling_timeout` | int | 500 | — | File-only | `IMP_Encoder_PollingStream` timeout, ms. |
-| `general.osd_pool_size` | int | 1024 | — | File-only | Max OSD pool size (bytes) reserved for small OSD regions. |
+| `general.osd_pool_size` | int | 1024 | — | File-only | Max OSD pool size (KB) reserved for small OSD regions. |
 | `general.syslog` | bool | on | 0/1 | File-only | Also mirror log output to syslog (`logread`). A side-effecting key: applied immediately at config-load time via `log_set_syslog()`, but not stored as a field, so it cannot be echoed back by any getter. |
 
 ## `sim.*` — host simulation backend
@@ -461,9 +461,9 @@ at the top of this page. `GET /control` groups this whole section under
 | `video<N>.bitrate` | int | 3000 / 512 | 16–50000 (kbps) | Restart-only | Target bitrate. |
 | `video<N>.rc_mode` (alias `mode`) | enum | `cbr` / `cbr` | `cbr`\|`vbr`\|`fixqp`\|`smart`\|`capped_vbr`\|`capped_quality` | Restart-only | Rate-control mode. |
 | `video<N>.gop` | int | 50 / 50 | 1–1000 | Restart-only | GOP length (I-frame interval). |
-| `video<N>.max_gop` | int | 60 / 60 | 1–1000 | Restart-only | Max GOP length. |
+| `video<N>.max_gop` | int | 60 / 60 | 1–1000 | Restart-only | **RESERVED / no effect** — parsed, clamped and persisted for compatibility but consumed by no HAL; the encoder's keyframe interval comes from `video<N>.gop`. Setting a non-zero value logs a one-shot warning. |
 | `video<N>.profile` | int | 2 / 2 | 0 (baseline) – 2 (high) | Restart-only | H.264/H.265 encode profile. |
-| `video<N>.qp` | int | 35 / 35 | 1–51 | Restart-only | Fixed/initial QP. |
+| `video<N>.qp` | int | 35 / 35 | 1–51 | Restart-only | **RESERVED / no effect** — parsed, clamped and persisted for compatibility but consumed by no HAL (no init/fixed-QP wiring; the pre-T31 attribute path is CBR-only). Use `video<N>.min_qp`/`max_qp` + `video<N>.rc_mode` for quality control. Setting a non-zero value logs a one-shot warning. |
 | `video<N>.min_qp` | int | 20 / 20 | 1–51 | Restart-only | Minimum QP. |
 | `video<N>.max_qp` | int | 45 / 45 | 1–51 | Restart-only | Maximum QP. |
 | `video<N>.rotation` | int | 0 / 0 | `0`\|`90`\|`270` (+`180` on T40/T41 only); legacy `1`/`2` accepted as raw `rotTo90` values | Restart-only, `USE_ROTATE` builds only | Image rotation — see [Platform & SDK Support](Platform-SDK-Support.md) and `docs/rotation.md`. Unsupported values on a given SoC are coerced to `0` with a warning. |
