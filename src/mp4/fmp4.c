@@ -363,12 +363,12 @@ int fmp4_init_segment(fmp4_mux *m, ms_buf *out)
     ms_buf_put(out, "iso5", 4);
     ms_buf_put(out, "dash", 4);
     ms_buf_put(out, "mp41", 4);
-    /* CMAF brands (additive): browsers already accept the set above, but strict
-     * CMAF validators (Bento4, some HLS/DASH tooling) want cmfc/cmf2 in the
-     * compatible-brands list. box_close() recomputes the ftyp size, so no size
-     * accounting is needed here. */
-    ms_buf_put(out, "cmfc", 4);
-    ms_buf_put(out, "cmf2", 4);
+    /* A3: the cmfc/cmf2 CMAF brands were removed here. CMAF (ISO/IEC 23000-19)
+     * requires ONE track per CMAF file, but this muxer always writes combined
+     * video+audio into a single moov (write_video_trak + write_audio_trak
+     * below), so advertising CMAF conformance is wrong for the A/V case - the
+     * strict validators the brands were meant to satisfy would flag it. Browsers
+     * ignore compatible-brands entirely, so this was purely cosmetic. */
     box_close(out, f);
     /* moov */
     size_t mv = box_open(out, "moov");

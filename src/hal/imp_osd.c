@@ -199,7 +199,12 @@ static void osd_rot_place(osd_stream *s, int Px, int Py,
 {
     (void)bgra;
     *ox = Px; *oy = Py;
-    int rot = g_hcfg->video[s->si].rotation;
+    /* A2: rotation is restart-only (VID_REST) - read the boot snapshot, not the
+     * live g_cfg. A /control write to videoN.rotation updates g_cfg but the
+     * running encoder still produces the boot rotation; using the live value
+     * here would re-place the OSD for a rotation the stream isn't in (and it is
+     * the same C11 data-race class as A1). */
+    int rot = g_cfg_boot.video[s->si].rotation;
     if (rot != 90 && rot != 270) return;     /* non-rotated: identity (unchanged) */
     int cap = s->width;                      /* = picHeight = OSD y range limit */
     if (*oy + *h > cap) *oy = (cap - *h > 0) ? cap - *h : 0;
@@ -260,7 +265,7 @@ static void refresh_text(osd_stream *s, osd_region *rg)
         if (osd_text_render(txt, scale, it.color, 0x00000000,
                             it.outline, it.outline_color, &bgra,&w,&h)!=0) return;
     }
-    int rotated = (g_hcfg->video[s->si].rotation==90 || g_hcfg->video[s->si].rotation==270);
+    int rotated = (g_cfg_boot.video[s->si].rotation==90 || g_cfg_boot.video[s->si].rotation==270);  /* A2: restart-only, use boot snapshot */
     if (rotated) osd_even_pad(&bgra, &w, &h);   /* even dims only for the rotated IPU-OSD path */
     /* H5: a bitmap larger than the frame cannot be composited safely -
      * resolve_pos() clamps the origin to 0 but the far edge (x+w-1) would
@@ -305,7 +310,7 @@ static void setup_logo(osd_stream *s, osd_region *rg)
      * frame (SDK-dependent OOB in compositing) - discard, like setup_cover. On
      * a rotated stream the usable height is only the top picHeight band
      * (= s->width), else it re-triggers the per-frame range-check IPU error. */
-    int lrot = (g_hcfg->video[s->si].rotation==90 || g_hcfg->video[s->si].rotation==270);
+    int lrot = (g_cfg_boot.video[s->si].rotation==90 || g_cfg_boot.video[s->si].rotation==270);  /* A2: restart-only, use boot snapshot */
     int lhlim = lrot ? s->width : s->height;
     if (it.logo_w > s->width || it.logo_h > lhlim){
         LOGW(MOD,"logo %s (%dx%d) exceeds usable %dx%d%s - skipped",
@@ -351,7 +356,7 @@ static void setup_cover(osd_stream *s, int n)
      * privacy behaves exactly as before); a solid cover taller than the top
      * picHeight band (= s->width) is shortened to fit rather than flooding the
      * range-check IPU error (osd_rot_place then clamps its y into the band). */
-    if (g_hcfg->video[s->si].rotation==90 || g_hcfg->video[s->si].rotation==270){
+    if (g_cfg_boot.video[s->si].rotation==90 || g_cfg_boot.video[s->si].rotation==270){  /* A2: restart-only, use boot snapshot */
         if (h > s->width) h = s->width;
         x&=~1; y&=~1; w&=~1; h&=~1;
     }
@@ -403,7 +408,7 @@ int imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height)
      * `width` (=picHeight) px of the taller portrait frame; lower ones are
      * clamped up (osd_rot_place). Warn once so the operator isn't surprised. */
     {
-        int rot = g_hcfg->video[stream_idx].rotation;
+        int rot = g_cfg_boot.video[stream_idx].rotation;   /* A2: restart-only, use boot snapshot */
         if ((rot==90 || rot==270) && height > width)
             LOGW(MOD,"stream %d rotated %d: hardware OSD/privacy limited to the top "
                      "%d px of the %dx%d frame (libimp picHeight range-check); lower "

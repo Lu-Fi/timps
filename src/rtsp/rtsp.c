@@ -431,11 +431,18 @@ static void gen_sdp(session *s, const ms_config *c, int vchn, char *sdp, int sdp
     }
 
     /* audio - use the codec the HAL actually produces (from the hub) */
+    /* F-03: audio.bitrate_kbps is written into live g_cfg by config_apply_kv
+     * (restart-only key, but still mutated) - snapshot it under the config
+     * string lock rather than reading it lock-free against the /control writer. */
+    int abitrate;
+    config_str_lock();
+    abitrate = c->audio.bitrate_kbps;
+    config_str_unlock();
     int acodec, asr, ach;
     if (hub_get_audio(&acodec, &asr, &ach) && acodec != MS_AC_NONE) {
         if (acodec==MS_AC_AAC) {
             uint8_t asc[2]; aac_asc(asr, ach, asc);
-            int akbps = c->audio.bitrate_kbps > 0 ? c->audio.bitrate_kbps : 32;
+            int akbps = abitrate > 0 ? abitrate : 32;
             if (n>=0 && n<(int)sizeof(body))
                 n += snprintf(body+n, sizeof(body)-n,
                     "m=audio 0 RTP/AVP %d\r\nb=AS:%d\r\n"
@@ -455,7 +462,7 @@ static void gen_sdp(session *s, const ms_config *c, int vchn, char *sdp, int sdp
              * receiver the sender emits mono; stereo=0 states this receiver
              * prefers mono back (a no-op for a send-only track, included for
              * strict clients that expect it). */
-            int akbps = c->audio.bitrate_kbps > 0 ? c->audio.bitrate_kbps : 32;
+            int akbps = abitrate > 0 ? abitrate : 32;
             if (n>=0 && n<(int)sizeof(body))
                 n += snprintf(body+n, sizeof(body)-n,
                     "m=audio 0 RTP/AVP %d\r\nb=AS:%d\r\n"
@@ -935,7 +942,14 @@ static void stream_loop(session *s)
         return;
     }
     int vc = s->have_video ? g_cfg_boot.video[s->vchn].codec : MS_VC_H264;
-    int ac = MS_AC_AAC, asr = c->audio.samplerate, ach = c->audio.channels;
+    /* F-03: audio.samplerate/channels are live-mutable via /control - snapshot
+     * them under the config string lock (they are only fallback defaults here;
+     * hub_get_audio overwrites them with the HAL's actual values below). */
+    int ac = MS_AC_AAC, asr, ach;
+    config_str_lock();
+    asr = c->audio.samplerate;
+    ach = c->audio.channels;
+    config_str_unlock();
     hub_get_audio(&ac, &asr, &ach);      /* actual audio codec from the HAL */
 
     /* B2: one CNAME for both tracks (RFC 3550 6.5.1 - receivers correlate
@@ -1018,6 +1032,7 @@ static void stream_loop(session *s)
     char ctl[2048]; int ctlhave = 0;
     int got_key = 0;   /* start clients on a keyframe for clean decode */
     int64_t drop_idr_us = 0;   /* rate-limit the safety IDR request on any drop */
+    int64_t last_ctl_poll_us = 0;   /* P-04: rate-limit the nonblocking ctl poll */
     int pop_ms = 100;
     /* A3: last proof-of-life from the client. UDP-transport sessions are
      * otherwise undetectably dead: sendto() on an unconnected UDP socket
@@ -1040,11 +1055,16 @@ static void stream_loop(session *s)
          s->tcp?"TCP":"UDP", s->have_video, s->have_audio);
 
     while (s->playing) {
+        /* P-03: no vDSO on this MIPS target, so every ms_now_us() is a real
+         * syscall. Read it ONCE per iteration and reuse it for the drop-IDR
+         * rate-limit, the RTCP-SR check, the liveness stamp and the control-poll
+         * gate below, instead of 3-5 clock_gettime() syscalls per media frame. */
+        int64_t now = ms_now_us();
         /* if the queue overflowed and dropped a keyframe, request a fresh IDR
          * so the client doesn't decode garbage until the next GOP */
         if (sub_v && fanqueue_take_dropped_key(&s->q)) {
             hub_request_idr(s->vchn);
-            drop_idr_us = ms_now_us();
+            drop_idr_us = now;
         }
         /* a dropped P-frame is silent (no keyframe lost) but still breaks the
          * rest of the GOP for this client: subsequent P-frames reference an AU
@@ -1057,7 +1077,6 @@ static void stream_loop(session *s)
          * subscriber. The keyframe-drop path above resets the timer, so it
          * won't double-fire. */
         else if (sub_v && fanqueue_take_dropped(&s->q)) {
-            int64_t now = ms_now_us();
             if (now - drop_idr_us > 1000000) {
                 hub_request_idr(s->vchn);
                 drop_idr_us = now;
@@ -1105,12 +1124,11 @@ static void stream_loop(session *s)
                                       (struct sockaddr*)&from, &fl);
                 if (bn <= 0) break;
                 if (from.sin_addr.s_addr != s->peer.sin_addr.s_addr) continue;
-                last_act_us = ms_now_us();   /* A3: talk-only UDP sessions */
+                last_act_us = now;           /* A3: talk-only UDP sessions */
                 bc_feed_rtp(s, bpkt, (int)bn);
             }
         }
 #endif
-        int64_t now = ms_now_us();
         if ((s->have_video && rtp_maybe_sr(&s->vtrack, now) < 0) ||
             (s->have_audio && rtp_maybe_sr(&s->atrack, now) < 0)) {
             s->playing = 0; break;      /* H-1: torn RTCP frame, see above */
@@ -1125,7 +1143,22 @@ static void stream_loop(session *s)
          * discarding the whole recv() chunk - which used to also silently
          * eat a TEARDOWN (or any other request) concatenated right after
          * it in the same read. */
-        int n = r_recv(s, ctl+ctlhave, (int)sizeof(ctl)-1-ctlhave, 1);
+        /* P-04: the nonblocking control poll is otherwise ~1 EAGAIN recv per
+         * media frame. Gate it to ~50 ms so teardown latency stays well under
+         * the RTSP keepalive window while cutting the per-frame syscall.
+         * Backchannel sessions still poll every iteration - interleaved speaker
+         * audio arrives here and must not wait up to 50 ms. */
+        int n = -1, polled = 0;
+#ifdef USE_BACKCHANNEL
+        int ctl_poll_every = s->have_bc;   /* poll every iter for interleaved audio */
+#else
+        int ctl_poll_every = 0;
+#endif
+        if (ctl_poll_every || now - last_ctl_poll_us >= 50000) {
+            last_ctl_poll_us = now;
+            polled = 1;
+            n = r_recv(s, ctl+ctlhave, (int)sizeof(ctl)-1-ctlhave, 1);
+        }
         if (n==0) break;                         /* peer closed */
         if (n>0) {
             last_act_us = now;                   /* A3: client is alive */
@@ -1217,7 +1250,7 @@ static void stream_loop(session *s)
              * than we're willing to buffer - drop the connection rather
              * than spin forever unable to make progress */
             if (ctlhave >= (int)sizeof(ctl)-1) break;
-        } else if (errno!=EAGAIN && errno!=EWOULDBLOCK) {
+        } else if (polled && errno!=EAGAIN && errno!=EWOULDBLOCK) {
             break;
         }
 

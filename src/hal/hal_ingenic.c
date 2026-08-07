@@ -3130,7 +3130,9 @@ int hal_ao_open(int want_rate)
      * a play-only session) AEC is skipped for this AO session. g_aec_on records
      * that we actually enabled it, so hal_ao_close disables exactly what we
      * enabled and never calls DisableAec on a chn that never had it. */
-    if (g_hcfg && g_hcfg->audio.aec && g_ai_up){
+    int aec_on = 0;
+    if (g_hcfg){ config_str_lock(); aec_on = g_hcfg->audio.aec; config_str_unlock(); }  /* F-02: cold read under lock */
+    if (aec_on && g_ai_up){
         if (IMP_AI_EnableAec(0, 0, 0, 0) == 0){
             g_aec_on = 1;
             LOGI(MOD, "AEC enabled (AI 0/0 <- AO 0/0)");

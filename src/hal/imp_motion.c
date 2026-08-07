@@ -517,16 +517,25 @@ void motion_get_status(ms_motion_status *st)
     st->last_ms = -1;
 #if MOTION_AVAILABLE
     /* host sim: echo the configured grid (all cells idle) so the WebUI page
-     * and preview overlay can be exercised against timpsd-sim */
-    int c = g_cfg.motion.cols > 0 ? g_cfg.motion.cols : 1;
-    int r = g_cfg.motion.rows > 0 ? g_cfg.motion.rows : 1;
+     * and preview overlay can be exercised against timpsd-sim.
+     * F-03: cols/rows/enabled/sensitivity are live-mutable via /control -
+     * snapshot them under the config string lock instead of reading lock-free. */
+    int m_cols, m_rows, m_enabled, m_sens;
+    config_str_lock();
+    m_cols = g_cfg.motion.cols;
+    m_rows = g_cfg.motion.rows;
+    m_enabled = g_cfg.motion.enabled;
+    m_sens = g_cfg.motion.sensitivity;
+    config_str_unlock();
+    int c = m_cols > 0 ? m_cols : 1;
+    int r = m_rows > 0 ? m_rows : 1;
     if (c > MOTION_MAX_CELLS) c = MOTION_MAX_CELLS;
     if (r > MOTION_MAX_CELLS) r = MOTION_MAX_CELLS;
     if (c * r > MOTION_MAX_CELLS) r = MOTION_MAX_CELLS / c;
-    st->enabled = g_cfg.motion.enabled;
+    st->enabled = m_enabled;
     st->cols = c; st->rows = r;
     st->cells = (c * r <= MOTION_STATUS_MAX) ? c * r : MOTION_STATUS_MAX;
-    st->sensitivity = g_cfg.motion.sensitivity;
+    st->sensitivity = m_sens;
 #endif
 }
 #endif

@@ -167,10 +167,12 @@ static int find_oldest(const char *base, char *out, size_t cap, time_t *oldest, 
     return found;
 }
 
-/* delete oldest segment files until at least min_free_mb is available */
-static void prune_free(void)
+/* delete oldest segment files until at least min_free_mb is available.
+ * min_free_mb comes from the caller's under-lock record snapshot (F-02), not a
+ * lock-free g_rc->record read. */
+static void prune_free(int min_free_mb)
 {
-    if (g_rc->record.min_free_mb<=0) return;
+    if (min_free_mb<=0) return;
     /* record.dir is runtime-mutable via /control: snapshot it under the
      * config string lock (never hold the lock across statfs/unlink) */
     char dir[128];
@@ -186,11 +188,11 @@ static void prune_free(void)
     snprintf(base,sizeof base,"%s/%s/records",dir,host);
     for (int guard=0; guard<10000; guard++){
         long long fm=free_mb(dir);
-        if (fm<0 || fm>=g_rc->record.min_free_mb) return;
+        if (fm<0 || fm>=min_free_mb) return;
         char victim[336]=""; time_t oldest=0;
         if (!find_oldest(base,victim,sizeof victim,&oldest,0) || !victim[0]) return;
         if (unlink(victim)!=0) return;
-        LOGI(MOD,"pruned %s (free %lld MB < %d)",victim,fm,g_rc->record.min_free_mb);
+        LOGI(MOD,"pruned %s (free %lld MB < %d)",victim,fm,min_free_mb);
     }
 }
 
@@ -219,9 +221,9 @@ static void status_set(int rec, long long bytes, const char *file)
     pthread_mutex_unlock(&g_lock);
 }
 
-static int seg_open(int chn)
+static int seg_open(int chn, const ms_record_cfg *rc)
 {
-    prune_free();
+    prune_free(rc->min_free_mb);
     /* record.dir/name are runtime-mutable via /control: snapshot them under
      * the config string lock before strftime/path building */
     char dir[128], name[96];
@@ -257,7 +259,7 @@ static int seg_open(int chn)
     vparam vp;
     if (hub_get_vparam(chn,&vp) && vparam_ready(&vp)){ w_mux.vp=vp; w_mux.vp_ready=1; }
     int ac=MS_AC_NONE,asr=0,ach=0;
-    if (g_rc->record.audio && hub_get_audio(&ac,&asr,&ach) && ac==MS_AC_AAC){
+    if (rc->audio && hub_get_audio(&ac,&asr,&ach) && ac==MS_AC_AAC){
         w_mux.has_audio=1; w_mux.a_timescale=asr; w_mux.a_channels=ach;
         aac_asc(asr,ach,w_mux.asc);
     }
@@ -372,32 +374,34 @@ static void flush_ring(void)
 
 /* ---- decision ---- */
 
-static int motion_recent(void)
+/* rc is the caller's per-pass under-lock record snapshot (F-02). */
+static int motion_recent(const ms_record_cfg *rc)
 {
 #ifdef USE_CONTROL
     ms_motion_status st; motion_get_status(&st);
     if (!st.available || !st.enabled) return 0;
-    return st.last_ms>=0 && st.last_ms < (long long)g_rc->record.post_roll_s*1000;
+    return st.last_ms>=0 && st.last_ms < (long long)rc->post_roll_s*1000;
 #else
+    (void)rc;
     return 0;
 #endif
 }
 
-static int want_run(void)
+static int want_run(const ms_record_cfg *rc)
 {
     int man; pthread_mutex_lock(&g_lock); man=g_manual; pthread_mutex_unlock(&g_lock);
     if (man==1) return 1;
     if (man==0) return 0;
-    return g_rc->record.enabled;
+    return rc->enabled;
 }
-static int want_write(void)
+static int want_write(const ms_record_cfg *rc)
 {
     int man; pthread_mutex_lock(&g_lock); man=g_manual; pthread_mutex_unlock(&g_lock);
     if (man==0) return 0;
     if (man==1) return 1;
-    if (!g_rc->record.enabled) return 0;
-    if (g_rc->record.mode==0) return 1;          /* continuous */
-    return motion_recent();                        /* motion */
+    if (!rc->enabled) return 0;
+    if (rc->mode==0) return 1;                     /* continuous */
+    return motion_recent(rc);                       /* motion */
 }
 
 /* ---- thread ---- */
@@ -412,10 +416,19 @@ static void *rec_thread(void *arg)
         /* read the live config every pass so channel / mode / pre-roll changes
          * from /control take effect WITHOUT a daemon restart (the thread used to
          * freeze these at start, so picking "Substream" or switching mode in the
-         * WebUI silently kept the boot-time values). */
-        int chn=g_rc->record.channel; if (chn<0||chn>=MS_MAX_VSTREAM) chn=0;
-        int motion_mode=(g_rc->record.mode==1);
-        int64_t pre_us=(int64_t)g_rc->record.pre_roll_s*1000000;
+         * WebUI silently kept the boot-time values).
+         * F-02: snapshot the whole record section ONCE per pass under the config
+         * string lock (the daynight.c pattern) and work from the local copy, so
+         * the /control writer never races these int/enum reads (the strings are
+         * still re-snapshotted at their own point of use in seg_open/prune_free).
+         * The lock is held only for the struct copy, never across HAL/IO. */
+        ms_record_cfg rc;
+        config_str_lock();
+        rc = g_rc->record;
+        config_str_unlock();
+        int chn=rc.channel; if (chn<0||chn>=MS_MAX_VSTREAM) chn=0;
+        int motion_mode=(rc.mode==1);
+        int64_t pre_us=(int64_t)rc.pre_roll_s*1000000;
 
         /* config.c clamps record.pre_roll_s to 0..60s, but the pre-roll ring is
          * hard-capped at RING_CAP packets AND RING_MAX_BYTES bytes (a deliberate
@@ -426,25 +439,27 @@ static void *rec_thread(void *arg)
          * bitrate/fps, so an operator gets a clear signal instead of silent
          * truncation. Derivation: byte cap seconds = RING_MAX_BYTES*8 / bitrate;
          * packet cap seconds = RING_CAP / fps; the ring holds the smaller. */
-        if (motion_mode && g_rc->record.pre_roll_s>0){
+        if (motion_mode && rc.pre_roll_s>0){
             static int preroll_warned;
             if (!preroll_warned){
-                int kbps=g_rc->video[chn].bitrate_kbps, fps=g_rc->video[chn].fps;
+                /* bitrate/fps are restart-only (VID_REST): read the boot snapshot
+                 * so the warning reflects what the encoder actually produces. */
+                int kbps=g_cfg_boot.video[chn].bitrate_kbps, fps=g_cfg_boot.video[chn].fps;
                 double cap_s=1e9;                       /* unknown bitrate -> no cap */
                 if (kbps>0) cap_s=(double)RING_MAX_BYTES*8.0/((double)kbps*1000.0);
                 if (fps>0){ double ps=(double)RING_CAP/(double)fps; if (ps<cap_s) cap_s=ps; }
-                if ((double)g_rc->record.pre_roll_s > cap_s+0.5){
+                if ((double)rc.pre_roll_s > cap_s+0.5){
                     preroll_warned=1;
                     LOGW(MOD,"record.pre_roll_s=%d cannot be held: the pre-roll "
                              "ring caps at ~%.0fs for ch%d (%d kbps, %d fps, "
                              "%d packets / %d MB max) - actual pre-roll is shorter",
-                         g_rc->record.pre_roll_s, cap_s, chn, kbps, fps,
+                         rc.pre_roll_s, cap_s, chn, kbps, fps,
                          RING_CAP, RING_MAX_BYTES/(1024*1024));
                 }
             }
         }
 
-        if (!want_run()){
+        if (!want_run(&rc)){
             if (w_fp) seg_close();
             if (subscribed){
                 hub_unsubscribe(sub_chn,&q); if (sub_audio) hub_unsubscribe(HUB_AUDIO_SRC,&q);
@@ -466,9 +481,9 @@ static void *rec_thread(void *arg)
             if (hub_subscribe(chn,&q)!=0){ fanqueue_free(&q); usleep(500000); continue; }
             int ac=MS_AC_NONE,asr=0,ach=0;
             int have_a = hub_get_audio(&ac,&asr,&ach);
-            if (g_rc->record.audio && have_a && ac==MS_AC_AAC)
+            if (rc.audio && have_a && ac==MS_AC_AAC)
                 sub_audio = (hub_subscribe(HUB_AUDIO_SRC,&q)==0);
-            else if (g_rc->record.audio){
+            else if (rc.audio){
                 /* B5: the fMP4 muxer only carries AAC. With G.711 or audio off
                  * (USE_FAAC=0 falls back to G.711) recordings come out video-
                  * only - say so once instead of silently dropping the track. */
@@ -496,7 +511,7 @@ static void *rec_thread(void *arg)
          * the AAC gate matches seg_open() so a declared track is always the
          * one we are actually subscribed to. */
         if (subscribed){
-            int want_audio = g_rc->record.audio;
+            int want_audio = rc.audio;
             if (want_audio && !sub_audio){
                 int ac=MS_AC_NONE,asr=0,ach=0;
                 if (hub_get_audio(&ac,&asr,&ach) && ac==MS_AC_AAC)
@@ -507,7 +522,7 @@ static void *rec_thread(void *arg)
         }
 
         ms_pkt *p=fanqueue_pop(&q,200);
-        int writing=want_write();
+        int writing=want_write(&rc);
         if (!p){ if (w_fp && !writing) seg_close(); continue; }
         /* a dropped keyframe corrupts the GOP outright; a dropped P-frame is
          * silent but breaks it just the same for anyone decoding this
@@ -529,14 +544,14 @@ static void *rec_thread(void *arg)
             if (!w_fp){
                 /* only drop the pre-roll once recording actually started; a
                  * transient seg_open failure keeps the ring for the retry */
-                if (seg_open(chn)==0){ if (motion_mode) flush_ring(); ring_clear(); }
+                if (seg_open(chn,&rc)==0){ if (motion_mode) flush_ring(); ring_clear(); }
             }
             if (w_fp){
                 /* rotate at a keyframe once the segment is long enough */
-                if (g_rc->record.segment_s>0 && p->media==MS_MEDIA_VIDEO && p->keyframe &&
-                    ms_now_us()-w_start_us >= (int64_t)g_rc->record.segment_s*1000000){
+                if (rc.segment_s>0 && p->media==MS_MEDIA_VIDEO && p->keyframe &&
+                    ms_now_us()-w_start_us >= (int64_t)rc.segment_s*1000000){
                     seg_close();
-                    if (seg_open(chn)!=0){ pkt_unref(p); continue; }
+                    if (seg_open(chn,&rc)!=0){ pkt_unref(p); continue; }
                 }
                 seg_write(p);
             }
@@ -579,15 +594,16 @@ void record_get_status(ms_record_status *st)
     if (!st) return;
     memset(st,0,sizeof *st);
     st->available=1;
-    st->enabled=g_rc?g_rc->record.enabled:0;
-    st->channel=g_rc?g_rc->record.channel:0;
-    st->mode=g_rc?g_rc->record.mode:0;
     st->free_mb=-1;
     if (g_rc){
-        /* record.dir is runtime-mutable via /control: snapshot it under the
-         * config string lock, statfs outside it */
+        /* F-02/F-03: record.dir (string) AND the enabled/channel/mode ints are
+         * runtime-mutable via /control - snapshot them together under the config
+         * string lock; statfs happens outside it. */
         char dir[128];
         config_str_lock();
+        st->enabled=g_rc->record.enabled;
+        st->channel=g_rc->record.channel;
+        st->mode=g_rc->record.mode;
         snprintf(dir,sizeof dir,"%s",g_rc->record.dir);
         config_str_unlock();
         st->free_mb=free_mb(dir);
@@ -627,7 +643,14 @@ int record_clip(const char *path, int seconds)
     if (!path || strncmp(path,"/tmp/",5)!=0 || strstr(path,"..") || !g_rc) return -1;
     if (seconds<=0) seconds=6;
     if (seconds>30) seconds=30;
-    int chn=g_rc->record.channel; if (chn<0||chn>=MS_MAX_VSTREAM) chn=0;
+    /* F-02: snapshot the live record ints (channel/audio) under the lock; this
+     * runs on the /control HTTP thread, racing the /control writer otherwise. */
+    int rc_channel, rc_audio;
+    config_str_lock();
+    rc_channel=g_rc->record.channel;
+    rc_audio=g_rc->record.audio;
+    config_str_unlock();
+    int chn=rc_channel; if (chn<0||chn>=MS_MAX_VSTREAM) chn=0;
 
     /* one clip at a time: capture runs on the /control HTTP thread and pins an
      * encoder + fanqueue + a tmpfs (RAM) file for its whole duration. Without a
@@ -645,7 +668,7 @@ int record_clip(const char *path, int seconds)
 
     if (fanqueue_init(&q,REC_QCAP)) goto out; have_q=1;
     if (hub_subscribe(chn,&q)!=0) goto out; sub_v=1;
-    if (g_rc->record.audio && hub_get_audio(&ac,&asr,&ach) && ac==MS_AC_AAC)
+    if (rc_audio && hub_get_audio(&ac,&asr,&ach) && ac==MS_AC_AAC)
         sub_audio=(hub_subscribe(HUB_AUDIO_SRC,&q)==0);
     hub_request_idr(chn);
     if (ms_buf_init(&frag,4096)) goto out; have_frag=1;

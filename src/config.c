@@ -39,10 +39,16 @@ void config_snapshot_boot(void) { g_cfg_boot = g_cfg; }
  *   - timelapse.dir, timelapse.name (timelapse.dir / timelapse.name)
  *   - daynight.time_night_start,    (daynight.time_night_start /
  *     daynight.time_day_start        daynight.time_day_start)
- * Everything else in g_cfg is either an int/enum (aligned word reads, no
- * tearing) or only ever written at startup (config_load/
- * config_sensor_finalize, single-threaded before any other thread runs), so
- * it needs no lock.
+ * A6: the live-mutable int/enum fields in g_cfg (the numeric part of any
+ * section a /control POST can touch - image.*, audio.*, sensor.*, record.*,
+ * timelapse.*, daynight.*, motion.*, ...) MUST ALSO be read under this lock (or
+ * be _Atomic). Aligned 32-bit loads do not TEAR on this target, but a lock-free
+ * read of a field the /control writer is concurrently mutating is still a C11
+ * data race / UB - see the doctrine in config.h. A field that is only ever
+ * written at startup (config_load/config_sensor_finalize, single-threaded
+ * before any other thread runs) genuinely needs no lock; a live-mutable one
+ * does. The one live int read lock-free on a hot path (audio.mute in the
+ * per-frame audio worker) is _Atomic instead of taking the lock every frame.
  *
  * Recursive on purpose: config_get_kv() takes this lock itself around the
  * fields above so callers outside this file (OSD updater, recorder, RTSP
@@ -462,10 +468,15 @@ typedef struct {
 #define TT ms_sensor_cfg
 static const cfg_field sensor_fields[] = {
     FS("model",     0,             model, 0),
-    F ("i2c_addr",  "i2c_address", i2c_addr, T_INT, 0, 0,0),
-    F ("fps",       0,             fps,      T_INT, 0, 0,0),
-    F ("width",     0,             width,    T_INT, 0, 0,0),
-    F ("height",    0,             height,   T_INT, 0, 0,0),
+    /* F-01: sensor.* is POSTable via /control and persists to timps.conf, so a
+     * garbage numeric (e.g. width=70000, i2c_addr=-5) would survive a reboot and
+     * feed bad values into the ISP init -> respawn crash-loop (the registry
+     * override at config_finalize only guards sensor.model, not the numerics).
+     * Clamp like videoN.*; lo=0 keeps 0 meaning "auto". */
+    F ("i2c_addr",  "i2c_address", i2c_addr, T_INT, 0, 0,0x7F),
+    F ("fps",       0,             fps,      T_INT, 0, 0,120),
+    F ("width",     0,             width,    T_INT, 0, 0,8192),
+    F ("height",    0,             height,   T_INT, 0, 0,8192),
 };
 #undef TT
 
@@ -478,8 +489,8 @@ static const cfg_field image_fields[] = {
     F("hue",                    0, hue,                    T_INT, 0, 0,255),
     F("vflip",                  0, vflip,                  T_BOOL,0, 0,0),
     F("hflip",                  0, hflip,                  T_BOOL,0, 0,0),
-    F("running_mode",           0, running_mode,           T_INT, 0, 0,0),
-    F("anti_flicker",           0, anti_flicker,           T_INT, 0, 0,0),
+    F("running_mode",           0, running_mode,           T_INT, 0, 0,1),   /* F-09 */
+    F("anti_flicker",           0, anti_flicker,           T_INT, 0, 0,2),   /* F-09 */
     F("ae_compensation",        0, ae_compensation,        T_INT, 0, 0,255),
     F("max_again",              0, max_again,              T_INT, 0, 0,255),
     F("max_dgain",              0, max_dgain,              T_INT, 0, 0,255),
@@ -490,7 +501,7 @@ static const cfg_field image_fields[] = {
     F("drc_strength",           0, drc_strength,           T_INT, 0, 0,255),
     F("highlight_depress",      0, highlight_depress,      T_INT, 0, 0,10),
     F("backlight_compensation", 0, backlight_compensation, T_INT, 0, 0,10),
-    F("core_wb_mode",           0, core_wb_mode,           T_INT, 0, 0,0),
+    F("core_wb_mode",           0, core_wb_mode,           T_INT, 0, 0,1),   /* F-09 */
     F("wb_rgain",               0, wb_rgain,               T_INT, 0, 0,65535),
     F("wb_bgain",               0, wb_bgain,               T_INT, 0, 0,65535),
 };
@@ -500,7 +511,7 @@ static const cfg_field image_fields[] = {
 static const cfg_field audio_fields[] = {
     F ("enabled",            0, enabled,            T_BOOL,   0, 0,0),
     F ("codec",              0, codec,              T_ACODEC, 0, 0,0),
-    F ("samplerate",         0, samplerate,         T_INT,    0, 0,0),
+    F ("samplerate",         0, samplerate,         T_INT,    0, 8000,96000),   /* F-09 */
     /* 1 = mono (native), 2 = simulated stereo (mono mic duplicated to L=R,
      * AAC only) - anything else would put a bogus channel count in the AAC
      * ASC / SDP / fMP4 stsd */
@@ -713,9 +724,9 @@ static const cfg_field video_fields[] = {
     F ("bitrate",      0,              bitrate_kbps, T_INT,   0,       16,50000),
     F ("rc_mode",      "mode",         rc_mode,      T_RC,    0,       0,0),
     F ("gop",          0,              gop,          T_INT,   0,       1,1000),
-    F ("max_gop",      0,              max_gop,      T_INT,   0,       1,1000),
+    F ("max_gop",      0,              max_gop,      T_INT,   0,       1,1000),   /* F-04: RESERVED/no-effect - GOP comes from videoN.gop; kept for compat only */
     F ("profile",      0,              profile,      T_INT,   0,       0,2),
-    F ("qp",           0,              qp,           T_INT,   0,       1,51),
+    F ("qp",           0,              qp,           T_INT,   0,       1,51),     /* F-04: RESERVED/no-effect - no HAL consumer; kept for compat only */
     F ("min_qp",       0,              min_qp,       T_INT,   0,       1,51),
     F ("max_qp",       0,              max_qp,       T_INT,   0,       1,51),
     F ("rotation",     0,              rotation,     T_ROT,   0,       0,0),
@@ -935,6 +946,21 @@ static void set_kv(ms_config *c, const char *key, const char *val)
         /* buffers given explicitly: HAL safety clamps (e.g. T31 non-scaled
          * channel) trust it as-is instead of overriding */
         if (f->off == offsetof(ms_vstream_cfg,buffers)) v->buffers_explicit = 1;
+        /* F-04: videoN.qp / videoN.max_gop are parsed/clamped/persisted/echoed
+         * for compat but NOTHING in any HAL consumes them - the encoder's
+         * keyframe interval comes from videoN.gop (rcAttr.maxGop = v->gop) and
+         * there is no separate init/fixed-QP wiring (the pre-T31 attr path is
+         * CBR-only). Warn once on a non-zero set so a user isn't silently losing
+         * a setting they think is active, same as motion.roi_*. */
+        if ((!strcmp(key+7,"qp") || !strcmp(key+7,"max_gop")) && pint(val)!=0){
+            static int vqp_warned;
+            if (!vqp_warned){
+                vqp_warned=1;
+                LOGW(MOD,"videoN.qp / videoN.max_gop are reserved and IGNORED - "
+                         "the GOP comes from videoN.gop; use videoN.min_qp/"
+                         "max_qp + videoN.rc_mode for quality control");
+            }
+        }
         return;
     }
 

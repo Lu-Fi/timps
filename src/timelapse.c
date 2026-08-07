@@ -111,9 +111,10 @@ static void prune_old(const char *base, time_t cutoff, int depth)
     closedir(d);
 }
 
-static void prune(void)
+/* keep_days comes from the caller's under-lock timelapse snapshot (F-02). */
+static void prune(int keep_days)
 {
-    int days=g_tc->timelapse.keep_days;
+    int days=keep_days;
     if (days<=0) return;
     /* timelapse.dir is runtime-mutable via /control: snapshot it under the
      * config string lock (never hold the lock across filesystem calls) */
@@ -263,9 +264,17 @@ static void *tl_thread(void *arg)
 
     while (g_run){
         /* read the live config every pass so channel/interval changes from
-         * /control take effect without a daemon restart (like record.c) */
-        int chn=g_tc->timelapse.channel; if (chn<0||chn>=MS_MAX_VSTREAM) chn=0;
-        int src = g_tc->timelapse.enabled ? jpeg_src(chn) : -1;
+         * /control take effect without a daemon restart (like record.c).
+         * F-02: snapshot the whole timelapse section once per pass under the
+         * config string lock (daynight.c pattern) and use the local copy, so the
+         * /control writer never races these int reads (dir is still snapshotted
+         * at its own point of use in prune()). */
+        ms_timelapse_cfg tl;
+        config_str_lock();
+        tl = g_tc->timelapse;
+        config_str_unlock();
+        int chn=tl.channel; if (chn<0||chn>=MS_MAX_VSTREAM) chn=0;
+        int src = tl.enabled ? jpeg_src(chn) : -1;
 
         if (src<0){
             if (cur_src>=0){ LOGI(MOD,"timelapse idle"); cur_src=-1; }
@@ -275,7 +284,7 @@ static void *tl_thread(void *arg)
         }
         if (src!=cur_src){
             LOGI(MOD,"timelapse active (src=%d interval=%ds, just-in-time)",
-                 src,g_tc->timelapse.interval_s);
+                 src,tl.interval_s);
             cur_src=src;
         }
 
@@ -288,14 +297,14 @@ static void *tl_thread(void *arg)
             continue;
         }
 
-        int iv=g_tc->timelapse.interval_s; if (iv<1) iv=1;
+        int iv=tl.interval_s; if (iv<1) iv=1;
         int64_t retry = TL_RETRY_US < (int64_t)iv*1000000 ? TL_RETRY_US
                                                           : (int64_t)iv*1000000;
         ms_pkt *p=tl_grab(src);
         if (p){
             int ok = (shot_write(p)==0);
             pkt_unref(p);
-            if (ok) prune();
+            if (ok) prune(tl.keep_days);
             next_us = now + (int64_t)iv*1000000;
         } else {
             LOGW(MOD,"no frame from src=%d within %d ms - retrying in %ds",
@@ -330,14 +339,15 @@ void timelapse_get_status(ms_timelapse_status *st)
     if (!st) return;
     memset(st,0,sizeof *st);
     st->available=1;
-    st->enabled=g_tc?g_tc->timelapse.enabled:0;
-    st->interval_s=g_tc?g_tc->timelapse.interval_s:0;
     st->free_mb=-1;
     if (g_tc){
-        /* timelapse.dir is runtime-mutable via /control: snapshot it under
-         * the config string lock, statfs outside it */
+        /* F-02/F-03: timelapse.dir (string) AND enabled/interval_s (ints) are
+         * runtime-mutable via /control - snapshot them together under the config
+         * string lock; statfs happens outside it. */
         char dir[128];
         config_str_lock();
+        st->enabled=g_tc->timelapse.enabled;
+        st->interval_s=g_tc->timelapse.interval_s;
         snprintf(dir,sizeof dir,"%s",g_tc->timelapse.dir);
         config_str_unlock();
         st->free_mb=free_mb(dir);

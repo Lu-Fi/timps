@@ -92,15 +92,24 @@ static int ao_ensure(void)
      * route through here, so this one check suppresses all output. Read live
      * from g_cfg like spk_volume/spk_gain below; because the AO is opened
      * lazily per session, a /control toggle takes effect on the next open
-     * (same "config default at open" semantics as spk_volume/spk_gain). */
-    if (!g_cfg.audio.spk_enabled) return -1;
+     * (same "config default at open" semantics as spk_volume/spk_gain).
+     * F-02: snapshot the three live ints under the config string lock rather
+     * than reading them lock-free against the /control writer (cold path, once
+     * per AO open). config_str_lock is a leaf lock; g_lock is already held. */
+    int spk_enabled, spk_volume, spk_gain;
+    config_str_lock();
+    spk_enabled = g_cfg.audio.spk_enabled;
+    spk_volume  = g_cfg.audio.spk_volume;
+    spk_gain    = g_cfg.audio.spk_gain;
+    config_str_unlock();
+    if (!spk_enabled) return -1;
     int r = hal_ao_open(g_out_rate);
     if (r < 0) return -1;
     g_ao_rate = r; g_ao_open = 1;
     /* global default; a per-PLAY vol=/gain= overrides it after ownership is
      * taken (play_write), backchannel keeps it. */
-    hal_ao_set_vol(g_cfg.audio.spk_volume);
-    hal_ao_set_gain(g_cfg.audio.spk_gain);
+    hal_ao_set_vol(spk_volume);
+    hal_ao_set_gain(spk_gain);
     return 0;
 }
 /* caller holds g_lock. drain: see hal_ao_close(). */

@@ -1263,9 +1263,16 @@ void daynight_get_status(int *enabled, int *mode,
     float nb = g_st_baseline;
     float dt = g_st_daytrig;
     pthread_mutex_unlock(&g_st_mu);
+    /* F-03: running_mode/daynight.enabled are live-mutable via /control -
+     * snapshot under the config string lock instead of reading lock-free. */
+    int running_mode, dn_enabled;
+    config_str_lock();
+    running_mode = g_cfg.image.running_mode;
+    dn_enabled   = g_cfg.daynight.enabled;
+    config_str_unlock();
     if (m == DN_UNKNOWN)   /* manual mode / before the first auto switch */
-        m = g_cfg.image.running_mode ? DN_NIGHT : DN_DAY;
-    if (enabled)        *enabled        = g_cfg.daynight.enabled ? 1 : 0;
+        m = running_mode ? DN_NIGHT : DN_DAY;
+    if (enabled)        *enabled        = dn_enabled ? 1 : 0;
     if (mode)           *mode           = m;
     if (brightness)     *brightness     = b;
     if (total_gain)     *total_gain     = tg;
@@ -1278,16 +1285,25 @@ void daynight_get_status(int *enabled, int *mode,
  * lat/long+offsets, as local "HH:MM" strings (for the WebUI SUN readout). */
 int daynight_sun_status(char *sr_hhmm, char *ss_hhmm, size_t cap)
 {
-    const ms_daynight_cfg *dn = &g_cfg.daynight;
+    /* F-03: sun_latitude/longitude are floats (can tear on MIPS if the compiler
+     * splits the load) and the offsets are live-mutable via /control - snapshot
+     * all four under the config string lock instead of reading lock-free. */
+    float lat, lon; int sr_off, ss_off;
+    config_str_lock();
+    lat    = g_cfg.daynight.sun_latitude;
+    lon    = g_cfg.daynight.sun_longitude;
+    sr_off = g_cfg.daynight.sun_sunrise_offset_min;
+    ss_off = g_cfg.daynight.sun_sunset_offset_min;
+    config_str_unlock();
     time_t now = time(NULL), sr, ss;
-    int r = dn_sun_times(dn->sun_latitude, dn->sun_longitude, now, &sr, &ss);
+    int r = dn_sun_times(lat, lon, now, &sr, &ss);
     if (r != 0) {                       /* polar day/night: no rise/set today */
         if (sr_hhmm && cap) snprintf(sr_hhmm, cap, "%s", r > 0 ? "--:--" : "--:--");
         if (ss_hhmm && cap) snprintf(ss_hhmm, cap, "%s", "--:--");
         return 0;
     }
-    sr += (time_t)dn->sun_sunrise_offset_min * 60;
-    ss += (time_t)dn->sun_sunset_offset_min  * 60;
+    sr += (time_t)sr_off * 60;
+    ss += (time_t)ss_off * 60;
     struct tm lt;
     if (sr_hhmm && cap) { localtime_r(&sr, &lt); snprintf(sr_hhmm, cap, "%02d:%02d", lt.tm_hour, lt.tm_min); }
     if (ss_hhmm && cap) { localtime_r(&ss, &lt); snprintf(ss_hhmm, cap, "%02d:%02d", lt.tm_hour, lt.tm_min); }
@@ -1304,7 +1320,12 @@ void daynight_get_status(int *enabled, int *mode,
                          float *night_baseline, float *day_trigger)
 {
     if (enabled)        *enabled        = 0;
-    if (mode)           *mode           = g_cfg.image.running_mode ? 1 : 0;
+    if (mode){          /* F-03: live-mutable, read under the config string lock */
+        config_str_lock();
+        int rm = g_cfg.image.running_mode;
+        config_str_unlock();
+        *mode = rm ? 1 : 0;
+    }
     if (brightness)     *brightness     = -1.0f;
     if (total_gain)     *total_gain     = -1.0f;
     if (ae_luma)        *ae_luma        = -1.0f;

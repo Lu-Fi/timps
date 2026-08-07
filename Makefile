@@ -66,6 +66,10 @@ else ifeq ($(PLATFORM),C100)
 IMP_INC ?= $(INC_ROOT)/C100/2.1.0/en
 else ifeq ($(PLATFORM),T21)
 IMP_INC ?= $(INC_ROOT)/T21/1.0.33/zh
+# P-08: smaller-RAM/older-generation SoC - halve the per-queue byte backstop
+# (default 2 MB -> 1 MB) so 8 HTTP + 8 RTSP + 8 SRT all-stalled worst case is
+# ~24 MB instead of ~48 MB. Lower bitrates on these boards fit comfortably.
+PLATFORM_CFLAGS += -DFQ_MAX_BYTES=1048576
 else ifeq ($(PLATFORM),T23)
 # MUST be 1.1.2+ to match the libimp thingino ships for T23 (SDK 1.3.0, see
 # ingenic-lib.mk). The 1.1.0 header lacks the trailing 'fcrop' member of
@@ -82,8 +86,10 @@ else ifeq ($(PLATFORM),T41)
 IMP_INC ?= $(INC_ROOT)/T41/1.2.0/zh
 else ifeq ($(PLATFORM),T20)
 IMP_INC ?= $(INC_ROOT)/T20/3.12.0/zh
+PLATFORM_CFLAGS += -DFQ_MAX_BYTES=1048576   # P-08: see T21 note above
 else ifeq ($(PLATFORM),T10)
 IMP_INC ?= $(INC_ROOT)/T20/3.12.0/zh
+PLATFORM_CFLAGS += -DFQ_MAX_BYTES=1048576   # P-08: see T21 note above
 else
 IMP_INC ?= $(INC_ROOT)/T31/1.1.6/en
 endif
@@ -206,7 +212,7 @@ target:
 	  $(if $(filter 1,$(USE_STREAM_OPUS)),-DUSE_STREAM_OPUS $(if $(OPUS_INC),-I$(OPUS_INC))) \
 	  $(if $(filter 1,$(USE_ROTATE)),-DUSE_ROTATE) \
 	  $(if $(filter 1,$(USE_SW_ROTATE)),-DMS_ENABLE_SW_ROTATE) \
-	  -DHAL_INGENIC -DPLATFORM_$(PLATFORM) -DMS_VERSION='"$(VERSION)"' -Isrc -I$(IMP_INC) -I$(IMP_INC)/imp \
+	  -DHAL_INGENIC -DPLATFORM_$(PLATFORM) $(PLATFORM_CFLAGS) -DMS_VERSION='"$(VERSION)"' -Isrc -I$(IMP_INC) -I$(IMP_INC)/imp \
 	  -c $(TARGET_ALLSRC)
 	$(LINK_DRV) $(TARGET_OBJS) \
 	  $(LDFLAGS) $(if $(IMP_LIB),-L$(IMP_LIB)) $(IMPLIBS) \

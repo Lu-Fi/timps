@@ -32,6 +32,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <math.h>
+#include <pthread.h>   /* serialize concurrent control_apply_json POSTs (A1) */
 #ifdef USE_PLAY
 #include <dirent.h>
 #include <sys/stat.h>
@@ -354,13 +355,23 @@ static void apply_section(ctrl_changes *ch, const char *prefix,
 void control_apply_json(const char *json)
 {
     if (!json || !json[0]) return;
+    /* A1 (concurrent-POST class): one HTTP worker thread per connection calls
+     * this (httpd.c), so two simultaneous POSTs would otherwise interleave their
+     * apply-to-g_cfg + hub_control + persist sequences and leave a partially
+     * applied config. Serialize the whole apply-and-notify body with a single
+     * mutex so one POST completes before the next starts. This is orthogonal to
+     * config_str_lock (which guards individual writes against background
+     * READERS); this guards apply-vs-apply. hub_control()/hub_control_commit()
+     * still run after each field's config_str_unlock() as before. */
+    static pthread_mutex_t apply_mu = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&apply_mu);
     const char *end = json + strlen(json);
     /* heap, not stack: 48*(40+160) = 9.6 KB is the largest single frame in
      * the daemon's hottest request path (a dragged slider posts often) and
      * this sits under buf[] in conn_thread too - same reasoning as the
      * /control GET json[] buffer. */
     ctrl_changes *ch = (ctrl_changes *)malloc(sizeof *ch);
-    if (!ch) { LOGW(MOD,"control_apply_json: OOM"); return; }
+    if (!ch) { LOGW(MOD,"control_apply_json: OOM"); pthread_mutex_unlock(&apply_mu); return; }
     ch->n = 0;
     char v[160];
 
@@ -580,7 +591,8 @@ void control_apply_json(const char *json)
      * attributes), then the values persist. cols/rows are clamped to the
      * SDK's cell budget by the config layer (caps.motion.max_cells).
      * motion.cooldown_ms/on_motion are deliberately NOT settable over HTTP:
-     * on_motion is executed via system() and stays config-file-only. */
+     * on_motion is run via fork()+execlp() (no shell) and stays
+     * config-file-only. */
     sb = find_obj(json, end, "motion", &se);
     if (sb){
         if (get_val(sb, se, "enabled", v, sizeof v))
@@ -643,6 +655,7 @@ void control_apply_json(const char *json)
         config_write_keys(g_cfg_path, keys, vals, ch->n);
     }
     free(ch);
+    pthread_mutex_unlock(&apply_mu);
 }
 
 /* ---------- GET /control: dump the current (in-memory) values ---------- */
@@ -783,7 +796,16 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
                           float brightness, float total_gain, float ae_luma,
                           float night_baseline, float day_trigger)
 {
-    const ms_daynight_cfg *d = &g_cfg.daynight;
+    /* F-03: snapshot the whole daynight section under the config string lock
+     * (the daynight.c thread pattern) and format from the local copy, so this
+     * GET/SSE path never races the /control writer on the numeric/string fields
+     * (recursive lock, so a get-apply-get sequence that already holds it is
+     * still safe). */
+    ms_daynight_cfg dcfg;
+    config_str_lock();
+    dcfg = g_cfg.daynight;
+    config_str_unlock();
+    const ms_daynight_cfg *d = &dcfg;
     /* defence in depth: these runtime-computed gains are printed with %.0f,
      * which emits the literal "inf"/"nan" (invalid JSON) for a non-finite
      * value. daynight.c already rails its own computation, but guard here too
@@ -798,21 +820,15 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
      * lat/long before trusting the math. "--:--" for polar day/night. */
     char sun_sr[8]="--:--", sun_ss[8]="--:--";
     daynight_sun_status(sun_sr, sun_ss, sizeof sun_sr);
-    /* time_night_start/time_day_start are runtime-mutable via POST: snapshot
-     * them under the config string lock (recursive, so safe even when the
-     * caller already holds it for a get-apply-get sequence) */
-    char tns[sizeof d->time_night_start], tds[sizeof d->time_day_start];
-    config_str_lock();
-    snprintf(tns, sizeof tns, "%s", d->time_night_start);
-    snprintf(tds, sizeof tds, "%s", d->time_day_start);
-    config_str_unlock();
-    /* These are config-file-only HH:MM strings (unvalidated), so route them
+    /* time_night_start/time_day_start already come from the under-lock snapshot
+     * (dcfg) above, so no extra copy/locking is needed - jesc straight from it.
+     * These are config-file-only HH:MM strings (unvalidated), so route them
      * through jesc like every other string field - a hand-edited config with a
      * stray " or \ would otherwise splice raw into the JSON. Sized for jesc's
      * worst-case expansion (up to 3 bytes out per input byte). */
-    char etns[sizeof tns * 3], etds[sizeof tds * 3];
-    jesc(tns, etns, sizeof etns);
-    jesc(tds, etds, sizeof etds);
+    char etns[sizeof d->time_night_start * 3], etds[sizeof d->time_day_start * 3];
+    jesc(d->time_night_start, etns, sizeof etns);
+    jesc(d->time_day_start, etds, sizeof etds);
     return snprintf(buf, cap,
         "{\"enabled\":%d,\"mode\":%d,\"brightness\":%.1f,\"total_gain\":%.0f,"
         "\"ae_luma\":%.0f,"
@@ -866,11 +882,16 @@ int control_motion_json(char *buf, size_t cap, const ms_motion_status *st)
         int _n = snprintf(o<cap?buf+o:buf, o<cap?cap-o:0, __VA_ARGS__); \
         if (_n>0) o += (size_t)_n; \
     } while (0)
+    /* F-03: motion.monitor_stream is live-mutable via /control - read it under
+     * the config string lock rather than lock-free. */
+    config_str_lock();
+    int monitor_stream = g_cfg.motion.monitor_stream;
+    config_str_unlock();
     APP("{\"available\":%d,\"enabled\":%d,\"cols\":%d,"
         "\"rows\":%d,\"max_cells\":%d,\"sensitivity\":%d,"
         "\"monitor_stream\":%d,\"stalled\":%d,\"active\":[",
         st->available, st->enabled, st->cols, st->rows,
-        MOTION_MAX_CELLS, st->sensitivity, g_cfg.motion.monitor_stream,
+        MOTION_MAX_CELLS, st->sensitivity, monitor_stream,
         st->stalled);
     int mcells = st->cells;
     if (mcells > MOTION_STATUS_MAX) mcells = MOTION_STATUS_MAX;
@@ -1034,50 +1055,66 @@ int control_get_json(char *buf, size_t cap)
 #else
     APP("\"timelapse\":{\"available\":0}},");
 #endif
+    /* F-03: image.* and audio.* hold live-mutable ints (running_mode,
+     * anti_flicker, volume, gain, ns, mute, ...) that the /control writer
+     * mutates under the config string lock - snapshot both sections here rather
+     * than reading each field lock-free. (mute is _Atomic; copying the struct
+     * copies its current value, consistent with the rest.) One-time GET/SSE
+     * read, so a plain struct copy under the lock is the idiomatic fix. */
+    ms_image_cfg img;
+    ms_audio_cfg aud;
+    config_str_lock();
+    img = c->image;
+    aud = c->audio;
+    config_str_unlock();
     APP("\"image\":{\"brightness\":%d,\"contrast\":%d,\"saturation\":%d,"
         "\"sharpness\":%d,\"hue\":%d,\"hflip\":%d,\"vflip\":%d,\"running_mode\":%d,",
-        c->image.brightness,c->image.contrast,c->image.saturation,
-        c->image.sharpness,c->image.hue,c->image.hflip,c->image.vflip,
-        c->image.running_mode);
+        img.brightness,img.contrast,img.saturation,
+        img.sharpness,img.hue,img.hflip,img.vflip,
+        img.running_mode);
     APP("\"anti_flicker\":%d,\"ae_compensation\":%d,\"max_again\":%d,"
         "\"max_dgain\":%d,\"sinter_strength\":%d,\"temper_strength\":%d,"
         "\"dpc_strength\":%d,\"defog_strength\":%d,\"drc_strength\":%d,"
         "\"highlight_depress\":%d,\"backlight_compensation\":%d,"
         "\"core_wb_mode\":%d,\"wb_rgain\":%d,\"wb_bgain\":%d},",
-        c->image.anti_flicker,c->image.ae_compensation,c->image.max_again,
-        c->image.max_dgain,c->image.sinter_strength,c->image.temper_strength,
-        c->image.dpc_strength,c->image.defog_strength,c->image.drc_strength,
-        c->image.highlight_depress,c->image.backlight_compensation,
-        c->image.core_wb_mode,c->image.wb_rgain,c->image.wb_bgain);
+        img.anti_flicker,img.ae_compensation,img.max_again,
+        img.max_dgain,img.sinter_strength,img.temper_strength,
+        img.dpc_strength,img.defog_strength,img.drc_strength,
+        img.highlight_depress,img.backlight_compensation,
+        img.core_wb_mode,img.wb_rgain,img.wb_bgain);
     {   /* full audio state: live keys + the persist-only (restart) keys */
         char cod[16]="none";
-        config_get_kv(c, "audio.codec", cod, sizeof cod);
+        config_get_kv(c, "audio.codec", cod, sizeof cod);   /* restart-only spelling */
         APP("\"audio\":{\"volume\":%d,\"gain\":%d,\"alc_gain\":%d,"
             "\"high_pass\":%d,\"agc\":%d,\"agc_target_dbfs\":%d,"
             "\"agc_compression_db\":%d,\"ns\":%d,\"mute\":%d,",
-            c->audio.volume, c->audio.gain, c->audio.alc_gain,
-            c->audio.high_pass, c->audio.agc, c->audio.agc_target_dbfs,
-            c->audio.agc_compression_db, c->audio.ns, c->audio.mute);
+            aud.volume, aud.gain, aud.alc_gain,
+            aud.high_pass, aud.agc, aud.agc_target_dbfs,
+            aud.agc_compression_db, aud.ns, aud.mute);
         APP("\"enabled\":%d,\"codec\":\"%s\",\"samplerate\":%d,"
             "\"channels\":%d,\"bitrate\":%d,\"force_stereo\":%d,"
             "\"spk_enabled\":%d,\"spk_volume\":%d,\"spk_gain\":%d,"
             "\"backchannel\":%d,\"backchannel_codec\":%d,\"backchannel_rate\":%d,"
             "\"aec\":%d},",
-            c->audio.enabled, cod, c->audio.samplerate,
-            c->audio.channels, c->audio.bitrate_kbps, c->audio.force_stereo,
-            c->audio.spk_enabled, c->audio.spk_volume, c->audio.spk_gain,
-            c->audio.backchannel, c->audio.backchannel_codec, c->audio.backchannel_rate,
-            c->audio.aec);
+            aud.enabled, cod, aud.samplerate,
+            aud.channels, aud.bitrate_kbps, aud.force_stereo,
+            aud.spk_enabled, aud.spk_volume, aud.spk_gain,
+            aud.backchannel, aud.backchannel_codec, aud.backchannel_rate,
+            aud.aec);
     }
-    {   /* sensor (all persist-only / restart-required) */
+    {   /* sensor (all persist-only / restart-required, but POST-able) */
         char sm[136];
-        config_str_lock();     /* sensor.model is runtime-mutable via POST */
+        /* F-03: model is runtime-mutable AND i2c_addr/fps/width/height are
+         * POST-able (F-01) - snapshot the string and the numerics together. */
+        int s_i2c, s_fps, s_w, s_h;
+        config_str_lock();
         jesc(c->sensor.model, sm, sizeof sm);
+        s_i2c = c->sensor.i2c_addr; s_fps = c->sensor.fps;
+        s_w = c->sensor.width; s_h = c->sensor.height;
         config_str_unlock();
         APP("\"sensor\":{\"model\":\"%s\",\"i2c_addr\":%d,\"fps\":%d,"
             "\"width\":%d,\"height\":%d},",
-            sm, c->sensor.i2c_addr, c->sensor.fps,
-            c->sensor.width, c->sensor.height);
+            sm, s_i2c, s_fps, s_w, s_h);
     }
     /* video streams (all persist-only / restart-required). codec/rc_mode go
      * through config_get_kv for the canonical config-file spelling. */
