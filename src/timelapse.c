@@ -38,7 +38,7 @@
 #define TL_QCAP 4
 
 static const ms_config *g_tc;
-static volatile int     g_run;
+static ms_stopgate      g_gate;   /* P-02: stop-condvar (was a volatile run flag + slice-sleep) */
 static pthread_t        g_thr;
 static int              g_started;
 
@@ -262,7 +262,7 @@ static void *tl_thread(void *arg)
     int64_t next_us=0;
     int cur_src=-1;                 /* last announced source, -1 = idle */
 
-    while (g_run){
+    while (!ms_stopgate_stopped(&g_gate)){
         /* read the live config every pass so channel/interval changes from
          * /control take effect without a daemon restart (like record.c).
          * F-02: snapshot the whole timelapse section once per pass under the
@@ -279,7 +279,10 @@ static void *tl_thread(void *arg)
         if (src<0){
             if (cur_src>=0){ LOGI(MOD,"timelapse idle"); cur_src=-1; }
             next_us=0;
-            usleep(300000);
+            /* P-02: disabled - one stop-aware wait instead of a 300 ms poll.
+             * The 1 s cadence only bounds how fast a /control ENABLE is picked
+             * up; shutdown is immediate (stop wakes the wait). */
+            if (ms_stopgate_wait(&g_gate, 1000)) break;
             continue;
         }
         if (src!=cur_src){
@@ -291,9 +294,14 @@ static void *tl_thread(void *arg)
         int64_t now=ms_now_us();
         if (!next_us) next_us=now;   /* first shot right after enable */
         if (now < next_us){
-            /* sleep in <=300 ms slices: stays responsive to stop/config */
+            /* P-02: wait until the next shot (or stop), capped at 1 s so a live
+             * interval/channel/disable change from /control is still picked up
+             * within ~1 s on the next pass. Stop wakes the wait immediately.
+             * One wakeup/s while waiting instead of 300 ms slices. */
             int64_t left=next_us-now;
-            usleep(left>300000 ? 300000 : (useconds_t)left);
+            int wait_ms = left > 1000000 ? 1000 : (int)(left/1000);
+            if (wait_ms < 1) wait_ms = 1;
+            if (ms_stopgate_wait(&g_gate, wait_ms)) break;
             continue;
         }
 
@@ -320,8 +328,8 @@ static void *tl_thread(void *arg)
 void timelapse_start(const ms_config *cfg)
 {
     if (g_started) return;
-    g_tc=cfg; g_run=1; g_started=1;
-    if (ms_thread_create(&g_thr,MS_STACK_UTIL,tl_thread,NULL)!=0){ g_started=0; g_run=0; LOGE(MOD,"thread"); return; }
+    g_tc=cfg; ms_stopgate_init(&g_gate); g_started=1;
+    if (ms_thread_create(&g_thr,MS_STACK_UTIL,tl_thread,NULL)!=0){ g_started=0; ms_stopgate_stop(&g_gate); LOGE(MOD,"thread"); return; }
     LOGI(MOD,"timelapse ready (%s, dir=%s interval=%ds)",
          cfg->timelapse.enabled?"enabled":"idle", cfg->timelapse.dir,
          cfg->timelapse.interval_s);
@@ -330,7 +338,7 @@ void timelapse_start(const ms_config *cfg)
 void timelapse_stop(void)
 {
     if (!g_started) return;
-    g_run=0; pthread_join(g_thr,NULL); g_started=0;
+    ms_stopgate_stop(&g_gate); pthread_join(g_thr,NULL); g_started=0;
 }
 
 #ifdef USE_CONTROL

@@ -56,7 +56,8 @@ typedef struct {
 static osd_stream       g_os[MS_MAX_VSTREAM];
 static const ms_config *g_hcfg;
 static msttf_font       g_shared; static int g_shared_ok;
-static volatile int     g_run;   static pthread_t g_thr;
+static ms_stopgate      g_gate;   static pthread_t g_thr;
+static int              g_started;   /* P-02: gate replaces the old volatile run flag */
 
 /* live control (imp_osd_apply) touches the regions from the HTTP thread, so
  * region access is serialized against the updater thread. Zero-cost in a
@@ -477,7 +478,7 @@ static void *osd_thread(void *arg)
 {
     (void)arg;
     int idle_cycles = 0;
-    while (g_run){
+    while (!ms_stopgate_stopped(&g_gate)){
         int need = osd_needed();
         if (need){
             idle_cycles = 0;
@@ -515,22 +516,27 @@ static void *osd_thread(void *arg)
             }
             OSD_UNLOCK();
         }
-        for (int k=0;k<10 && g_run;k++){
-            usleep(100000);
-            /* a client just connected while we were idle: refresh the (stale)
-             * timestamp right away instead of up to 1 s later */
-            if (!need && osd_needed()) break;
-        }
+        /* P-02: one stop-aware wait per ~1 s refresh interval instead of ten
+         * 100 ms slices (10 wakeups/s -> 1/s, whether idle or active); stop
+         * wakes it immediately for a prompt join. Trade-off vs the old slice
+         * loop: a client connecting to a previously-idle stream now sees the
+         * timestamp refreshed within ~1 s instead of ~100 ms (cosmetic; the
+         * first frame's overlay may lag real time by up to a second). Kept a
+         * plain stop-gate rather than wiring hub_set_activity_cb to wake on
+         * connect: that couples the OSD updater into the HAL on-demand path
+         * (both untestable in `make sim`) for only that sub-second nicety. */
+        (void)need;
+        if (ms_stopgate_wait(&g_gate, 1000)) break;
     }
     return NULL;
 }
 
 void imp_osd_start_updater(void)
 {
-    if (!g_hcfg || !g_hcfg->osd.enabled || g_run) return;
-    g_run=1;
+    if (!g_hcfg || !g_hcfg->osd.enabled || g_started) return;
+    ms_stopgate_init(&g_gate); g_started=1;
     if (ms_thread_create(&g_thr,MS_STACK_STREAM,osd_thread,NULL)!=0){
-        g_run=0;                     /* imp_osd_stop must not join a non-thread */
+        g_started=0;                 /* imp_osd_stop must not join a non-thread */
         /* Finding 5: every sibling (record.c/timelapse.c/imp_motion.c) LOGEs
          * this failure; this one didn't - overlays rendered once at setup and
          * then froze (timestamps never updated) with zero log output and no
@@ -625,7 +631,7 @@ int imp_osd_group_active(int stream)
 
 void imp_osd_stop(void)
 {
-    if (g_run){ g_run=0; pthread_join(g_thr,NULL); }
+    if (g_started){ ms_stopgate_stop(&g_gate); pthread_join(g_thr,NULL); g_started=0; }
     OSD_LOCK();                     /* schliesst /control-Leser (imp_osd_group_active) aus */
     for (int si=0; si<MS_MAX_VSTREAM; si++){
         osd_stream *s=&g_os[si];

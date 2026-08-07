@@ -104,7 +104,17 @@ static void *vid_thread(void *arg)
             if (vcl && have_vcl) {
                 int64_t now=ms_now_us();
                 if (next>now){ usleep(next-now); now=ms_now_us(); }
-                hub_publish(v->src,au,aulen,now-g_epoch,key,MS_MEDIA_VIDEO);
+                /* P-01: exercise the zero-second-copy publish path (hub_pkt_get
+                 * + hub_publish_take + pool recycle). On hardware the producer
+                 * assembles straight into the pooled buffer; here we keep the
+                 * NAL-accumulating scratch and copy once into the pooled packet
+                 * (host test build - the copy is irrelevant, the point is to
+                 * run the real hub/pool code under `make sim`). */
+                ms_pkt *pk = hub_pkt_get(v->src, aulen);
+                if (pk){
+                    memcpy(pk->data, au, aulen); pk->len = aulen;
+                    hub_publish_take(v->src, pk, now-g_epoch, key, MS_MEDIA_VIDEO);
+                }
                 next+=step; aulen=0; have_vcl=0; key=0;
             }
             if (aulen+4+u.len < SIM_AU_CAP){
@@ -157,7 +167,12 @@ static void *jpg_thread(void *arg)
     while (j->run) {
         wait_active(&j->active,&j->run);
         if (!j->run) break;
-        hub_publish(j->src,file,flen,ms_now_us()-g_epoch,1,MS_MEDIA_JPEG);
+        /* P-01: exercise the take path for JPEG sources too (see vid_thread). */
+        ms_pkt *pk = hub_pkt_get(j->src, flen);
+        if (pk){
+            memcpy(pk->data, file, flen); pk->len = flen;
+            hub_publish_take(j->src, pk, ms_now_us()-g_epoch, 1, MS_MEDIA_JPEG);
+        }
         usleep(step);
     }
     free(file);

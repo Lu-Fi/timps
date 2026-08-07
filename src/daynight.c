@@ -36,7 +36,7 @@ enum { DN_DAY = 0, DN_NIGHT = 1, DN_UNKNOWN = -1 };
 #define DN_SAMPLES 10
 
 static pthread_t    g_thr;
-static volatile int g_stop;
+static ms_stopgate g_gate;   /* P-02: stop-condvar (was volatile g_stop + slice-sleep) */
 static int          g_started;
 
 /* latest measurement, shared with control.c via daynight_get_status() */
@@ -285,14 +285,12 @@ static int dn_sun_target(const ms_daynight_cfg *dn, time_t now)
     return (now >= sr && now < ss) ? DN_DAY : DN_NIGHT;
 }
 
-/* sleep interval_ms in small slices so daynight_stop() joins promptly */
+/* P-02: block until the interval elapses OR daynight_stop() requests stop -
+ * one wakeup per interval instead of 200 ms slices, same prompt-join latency
+ * (the stop broadcast wakes the wait immediately). */
 static void dn_sleep(int ms)
 {
-    while (ms > 0 && !g_stop) {
-        int step = ms > 200 ? 200 : ms;
-        usleep((useconds_t)step * 1000);
-        ms -= step;
-    }
+    ms_stopgate_wait(&g_gate, ms);
 }
 
 /* Grace period after the thread (or a re-enable) starts sampling, before the
@@ -683,7 +681,7 @@ static void *dn_thread(void *arg)
            dn0.boot_settle_s, dn0.boot_settle_max_s,
            dn0.boot_stable_pct, dn0.night_reconfirm_s); }
 
-    while (!g_stop) {
+    while (!ms_stopgate_stopped(&g_gate)) {
         /* M10 whole-struct snapshot (mirrors imp_osd.c refresh_text()): every
          * daynight tunable is runtime-mutable via /control, which applies
          * changes under the config string lock (see config.c). Snapshot the
@@ -1234,7 +1232,7 @@ static void *dn_thread(void *arg)
 void daynight_start(void)
 {
     if (g_started) return;
-    g_stop = 0;
+    ms_stopgate_init(&g_gate);
     if (ms_thread_create(&g_thr, MS_STACK_UTIL, dn_thread, NULL) != 0) {
         LOGW(MOD, "cannot start detection thread");
         return;
@@ -1245,7 +1243,7 @@ void daynight_start(void)
 void daynight_stop(void)
 {
     if (!g_started) return;
-    g_stop = 1;
+    ms_stopgate_stop(&g_gate);
     pthread_join(g_thr, NULL);
     g_started = 0;
 }

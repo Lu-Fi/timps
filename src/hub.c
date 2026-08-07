@@ -78,6 +78,34 @@ void hub_control_commit(void){ if (g_control_commit_cb) g_control_commit_cb(); }
 static int             g_pushing[HUB_NSRC];
 static pthread_cond_t  g_push_done[HUB_NSRC];
 
+/* P-01: one recycling packet pool per hub source. The producer assembles each
+ * access unit straight into a pooled buffer and hands it to hub_publish_take(),
+ * so the old per-frame malloc + full-frame copy (pkt_new in hub_publish) is
+ * gone on the converted paths. Pools are process-lifetime statics (never
+ * freed): a slow subscriber can hold a packet long after the producer stopped,
+ * and the last unref must always find a live pool to return the buffer to.
+ *
+ * Sizing (per source):
+ *   HUB_POOL_MAX_FREE - idle buffers kept for reuse. The idle case needs just
+ *     1 (the producer keeps publishing with 0 subs through the stop-debounce
+ *     window, borrowing+returning the SAME buffer with zero churn). A few more
+ *     absorb the small in-flight working set of a couple of responsive clients
+ *     (build + a handful queued) without malloc churn; a genuinely slow client
+ *     or the recorder pre-roll ring pins many buffers, but those exceed the
+ *     pool and simply fall back to malloc/free - i.e. no worse than today.
+ *   HUB_POOL_KEEP_CAP - buffers that ratcheted past this (a one-off large IDR)
+ *     are freed on return rather than pinned idle, bounding worst-case idle
+ *     pool memory to HUB_POOL_MAX_FREE * HUB_POOL_KEEP_CAP per source
+ *     (~384 KB). High-frequency P-frames stay well under it and recycle for
+ *     free; the ~1/GOP oversized IDR pays a realloc-grow + free, negligible. */
+#ifndef HUB_POOL_MAX_FREE
+#define HUB_POOL_MAX_FREE 4
+#endif
+#ifndef HUB_POOL_KEEP_CAP
+#define HUB_POOL_KEEP_CAP (96*1024)
+#endif
+static pkt_pool        g_pool[HUB_NSRC];
+
 void hub_init(void)
 {
     for (int i=0;i<HUB_NSRC;i++){
@@ -85,7 +113,14 @@ void hub_init(void)
         pthread_mutex_init(&g_src[i].lock, NULL);
         g_pushing[i] = 0;
         pthread_cond_init(&g_push_done[i], NULL);
+        pkt_pool_init(&g_pool[i], HUB_POOL_MAX_FREE, HUB_POOL_KEEP_CAP);
     }
+}
+
+ms_pkt *hub_pkt_get(int src, size_t cap)
+{
+    if (src < 0 || src >= HUB_NSRC) return NULL;
+    return pkt_pool_get(&g_pool[src], cap);
 }
 
 hub_source *hub_get(int src)
@@ -204,21 +239,24 @@ void hub_unsubscribe(int src, fanqueue *q)
     hub_notify_activity(src);          /* level based, not edge based */
 }
 
-void hub_publish(int src, const uint8_t *data, size_t len,
-                 int64_t pts_us, int keyframe, int media)
+/* Shared per-frame under-lock bookkeeping for both hub_publish() (borrowed
+ * buffer, copies) and hub_publish_take() (pooled buffer, no copy). Updates the
+ * cached vparam/fps/bitrate for VIDEO and snapshots the subscriber list, all
+ * under s->lock. vparam_update() reads the AU buffer HERE, exactly as before,
+ * at the same point in the sequence relative to the push - the take path passes
+ * the same (data,len) it will hand to subscribers, and the producer's packet is
+ * still fully owned at this point, so vparam sees identical bytes. Raises
+ * g_pushing[src] while a subscriber snapshot is "out" so a concurrent
+ * hub_unsubscribe() waits for the push loop before destroying a fanqueue.
+ * Returns the snapshot count; sets *pushing (nonzero => caller must call
+ * hub_finish_push()). */
+static int hub_prepare_locked(hub_source *s, int src,
+                              const uint8_t *data, size_t len,
+                              int keyframe, int media,
+                              fanqueue **subs_snap, int *pushing)
 {
-    hub_source *s = hub_get(src); if(!s) return;
-
-    /* Under the lock: update the cached vparam/fps and snapshot the subscriber
-     * list. g_pushing[src] is raised (while a snapshot is "out") so a concurrent
-     * hub_unsubscribe() waits for our push loop before destroying a fanqueue.
-     * The big pkt_new (malloc + up to ~1MB memcpy) is done AFTER releasing the
-     * lock, and skipped ENTIRELY when nobody is subscribed - the producer keeps
-     * publishing through the whole idle-stop debounce window with 0 subs, so
-     * this avoids a per-frame malloc+full-frame copy that would be freed at once. */
-    fanqueue *subs_snap[HUB_MAX_SUBS];
     int nsub_snap;
-    int pushing = 0;
+    *pushing = 0;
     pthread_mutex_lock(&s->lock);
     if (media == MS_MEDIA_VIDEO) {
         if (keyframe || !s->vp_ready) {
@@ -241,11 +279,37 @@ void hub_publish(int src, const uint8_t *data, size_t len,
     }
     nsub_snap = s->nsub;
     for (int i=0;i<nsub_snap;i++) subs_snap[i] = s->subs[i];
-    if (nsub_snap > 0) { g_pushing[src] = 1; pushing = 1; }
+    if (nsub_snap > 0) { g_pushing[src] = 1; *pushing = 1; }
     pthread_mutex_unlock(&s->lock);
+    return nsub_snap;
+}
+
+/* Clear the in-flight-push flag and wake any hub_unsubscribe() waiting on it. */
+static void hub_finish_push(int src)
+{
+    hub_source *s = hub_get(src); if(!s) return;
+    pthread_mutex_lock(&s->lock);
+    g_pushing[src] = 0;
+    pthread_cond_broadcast(&g_push_done[src]);
+    pthread_mutex_unlock(&s->lock);
+}
+
+void hub_publish(int src, const uint8_t *data, size_t len,
+                 int64_t pts_us, int keyframe, int media)
+{
+    hub_source *s = hub_get(src); if(!s) return;
+
+    fanqueue *subs_snap[HUB_MAX_SUBS];
+    int pushing = 0;
+    int nsub_snap = hub_prepare_locked(s, src, data, len, keyframe, media,
+                                       subs_snap, &pushing);
 
     if (nsub_snap == 0) return;      /* nobody listening: skip the malloc + copy */
 
+    /* The big pkt_new (malloc + up to ~1 MB memcpy) is done AFTER releasing the
+     * lock. Prefer hub_publish_take() on the hot video/JPEG paths to avoid this
+     * copy entirely; this borrowed-buffer path stays for the audio producers
+     * (tiny frames) and any caller that cannot assemble into a pooled buffer. */
     ms_pkt *p = pkt_new(data, len, pts_us, keyframe, media);
     if (p) {
         /* push after releasing s->lock; each push takes its own ref, the
@@ -255,10 +319,39 @@ void hub_publish(int src, const uint8_t *data, size_t len,
         pkt_unref(p);
     }
 
-    if (pushing) {                    /* clear even if pkt_new failed */
-        pthread_mutex_lock(&s->lock);
-        g_pushing[src] = 0;
-        pthread_cond_broadcast(&g_push_done[src]);
-        pthread_mutex_unlock(&s->lock);
+    if (pushing) hub_finish_push(src);   /* clear even if pkt_new failed */
+}
+
+void hub_publish_take(int src, ms_pkt *p,
+                      int64_t pts_us, int keyframe, int media)
+{
+    hub_source *s = hub_get(src);
+    if (!s || !p) { pkt_unref(p); return; }   /* pkt_unref(NULL) is a no-op */
+
+    p->pts_us   = pts_us;
+    p->keyframe = keyframe;
+    p->media    = media;
+
+    fanqueue *subs_snap[HUB_MAX_SUBS];
+    int pushing = 0;
+    int nsub_snap = hub_prepare_locked(s, src, p->data, p->len, keyframe, media,
+                                       subs_snap, &pushing);
+
+    if (nsub_snap == 0) {
+        /* 0 subscribers: consume the producer's reference. This returns the
+         * buffer straight to the source pool (no copy, no free) - invariant (a):
+         * publishing through the idle-stop window stays a borrow+return of the
+         * same buffer, never a per-frame malloc/free. */
+        pkt_unref(p);
+        return;
     }
+
+    /* Zero-copy fan-out: each push takes its own ref; the producer's own
+     * reference is released once below (its buffer returns to the pool only
+     * once the last subscriber has drained it). */
+    for (int i=0;i<nsub_snap;i++)
+        fanqueue_push(subs_snap[i], pkt_ref(p));
+    pkt_unref(p);
+
+    if (pushing) hub_finish_push(src);
 }

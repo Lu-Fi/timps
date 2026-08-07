@@ -36,10 +36,22 @@ typedef struct hub_source {
 
 void        hub_init(void);
 hub_source *hub_get(int src);
-/* HAL calls this for every encoded access unit (takes a borrowed buffer,
- * copies into a refcounted pkt). */
+/* HAL calls this for every encoded access unit (takes a BORROWED buffer,
+ * copies into a refcounted pkt). Skips the malloc+copy entirely when the
+ * source has 0 subscribers. */
 void        hub_publish(int src, const uint8_t *data, size_t len,
                         int64_t pts_us, int keyframe, int media);
+/* P-01 zero-second-copy variant: the producer assembles the access unit
+ * DIRECTLY into a pooled packet obtained from hub_pkt_get(src, cap), sets
+ * p->len, and hands ownership here. No second full-frame copy is made. On a
+ * 0-subscriber source the packet is returned straight to the pool (no copy,
+ * no free), so publishing through the idle-stop debounce window stays as cheap
+ * as before. After this call the producer must NOT touch p (it may already be
+ * back in the pool or in flight to a subscriber). Passing a NULL p is a safe
+ * no-op. */
+ms_pkt     *hub_pkt_get(int src, size_t cap);
+void        hub_publish_take(int src, ms_pkt *p,
+                             int64_t pts_us, int keyframe, int media);
 /* subscribe returns 0 on success; caller supplies its own fanqueue. */
 int         hub_subscribe(int src, fanqueue *q);
 void        hub_unsubscribe(int src, fanqueue *q);

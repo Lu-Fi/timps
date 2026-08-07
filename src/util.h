@@ -79,4 +79,37 @@ int ms_base64(char *dst, const uint8_t *src, int n);
  * pthread_create). Detach handling stays with the caller. */
 int ms_thread_create(pthread_t *t, size_t stack, void *(*fn)(void *), void *arg);
 
+/* ---- stop gate (P-02) -----------------------------------------------------
+ * A one-shot "sleep until the next interval OR until stop is requested"
+ * primitive for the daemon's periodic worker threads. It replaces the old
+ * slice-sleeps (usleep in 100-300 ms chunks, re-checking a stop flag each
+ * chunk) that woke ~25x/s in aggregate purely to stay responsive to shutdown.
+ * A worker now blocks on a CLOCK_MONOTONIC pthread_cond_timedwait and wakes at
+ * most ONCE per real interval, or immediately when ms_stopgate_stop() is
+ * called - same stop latency, far fewer idle wakeups.
+ *
+ * Shutdown safety: stop() takes the SAME mutex the waiter evaluates its
+ * predicate under, sets stop=1, then broadcasts - so a stop requested BEFORE
+ * the waiter blocks is seen by the pre-wait predicate check (no wait entered),
+ * and a stop requested WHILE blocked is delivered by the broadcast. There is
+ * no window in which a stop can be missed, so a worker can never sleep past a
+ * shutdown request. Same clock as fanqueue/events so an NTP wall-clock step
+ * cannot stretch the wait. */
+typedef struct {
+    pthread_mutex_t lock;
+    pthread_cond_t  cond;
+    int             stop;
+} ms_stopgate;
+
+/* Initialise (stop cleared). Safe to call again on restart to re-arm. */
+void ms_stopgate_init(ms_stopgate *g);
+/* Block up to ms milliseconds, returning early the moment stop is requested.
+ * Returns 1 if stop has been requested (caller should exit its loop), else 0
+ * (the interval elapsed). A already-stopped gate returns 1 without waiting. */
+int  ms_stopgate_wait(ms_stopgate *g, int ms);
+/* Request stop and wake the waiter immediately. Idempotent. */
+void ms_stopgate_stop(ms_stopgate *g);
+/* Non-blocking predicate read (1 if stop requested). */
+int  ms_stopgate_stopped(ms_stopgate *g);
+
 #endif

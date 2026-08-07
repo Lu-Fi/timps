@@ -62,7 +62,7 @@
 #endif
 
 static const ms_config *g_rc;
-static volatile int     g_run;
+static ms_stopgate      g_gate;   /* P-02: stop-condvar (was a volatile run flag + slice-sleep) */
 static pthread_t        g_thr;
 static int              g_started;
 
@@ -412,7 +412,7 @@ static void *rec_thread(void *arg)
     fanqueue q; int subscribed=0, sub_audio=0, sub_chn=-1;
     int64_t drop_idr_us=0;   /* rate-limit the safety IDR request on any drop */
 
-    while (g_run){
+    while (!ms_stopgate_stopped(&g_gate)){
         /* read the live config every pass so channel / mode / pre-roll changes
          * from /control take effect WITHOUT a daemon restart (the thread used to
          * freeze these at start, so picking "Substream" or switching mode in the
@@ -466,7 +466,12 @@ static void *rec_thread(void *arg)
                 fanqueue_free(&q); subscribed=0; sub_audio=0; sub_chn=-1;
             }
             ring_clear();
-            usleep(300000);
+            /* P-02: idle (recording disabled) - one stop-aware wait instead
+             * of a 300 ms poll. 1 s poll cadence (was ~3.3 wakeups/s) only
+             * bounds how fast a /control ENABLE (or manual trigger) is noticed
+             * from the fully-idle state, which has no pre-roll to lose anyway;
+             * shutdown is still immediate (stop wakes the wait at once). */
+            if (ms_stopgate_wait(&g_gate, 1000)) break;
             continue;
         }
         /* channel switched live -> drop the old subscription, re-open below */
@@ -477,8 +482,8 @@ static void *rec_thread(void *arg)
             ring_clear();
         }
         if (!subscribed){
-            if (fanqueue_init(&q,REC_QCAP)){ usleep(300000); continue; }
-            if (hub_subscribe(chn,&q)!=0){ fanqueue_free(&q); usleep(500000); continue; }
+            if (fanqueue_init(&q,REC_QCAP)){ if (ms_stopgate_wait(&g_gate,300)) break; continue; }
+            if (hub_subscribe(chn,&q)!=0){ fanqueue_free(&q); if (ms_stopgate_wait(&g_gate,500)) break; continue; }
             int ac=MS_AC_NONE,asr=0,ach=0;
             int have_a = hub_get_audio(&ac,&asr,&ach);
             if (rc.audio && have_a && ac==MS_AC_AAC)
@@ -576,8 +581,8 @@ static void *rec_thread(void *arg)
 void record_start(const ms_config *cfg)
 {
     if (g_started) return;
-    g_rc=cfg; g_run=1; g_started=1;
-    if (ms_thread_create(&g_thr,MS_STACK_STREAM,rec_thread,NULL)!=0){ g_started=0; g_run=0; LOGE(MOD,"thread"); return; }
+    g_rc=cfg; ms_stopgate_init(&g_gate); g_started=1;
+    if (ms_thread_create(&g_thr,MS_STACK_STREAM,rec_thread,NULL)!=0){ g_started=0; ms_stopgate_stop(&g_gate); LOGE(MOD,"thread"); return; }
     LOGI(MOD,"recorder ready (mode=%s dir=%s)",
          cfg->record.mode==1?"motion":"continuous", cfg->record.dir);
 }
@@ -585,7 +590,7 @@ void record_start(const ms_config *cfg)
 void record_stop(void)
 {
     if (!g_started) return;
-    g_run=0; pthread_join(g_thr,NULL); g_started=0;
+    ms_stopgate_stop(&g_gate); pthread_join(g_thr,NULL); g_started=0;
 }
 
 #ifdef USE_CONTROL
@@ -673,7 +678,7 @@ int record_clip(const char *path, int seconds)
     hub_request_idr(chn);
     if (ms_buf_init(&frag,4096)) goto out; have_frag=1;
 
-    while (g_run){
+    while (!ms_stopgate_stopped(&g_gate)){
         int64_t now=ms_now_us();
         if (!fp && now>=giveup) break;           /* no start point ever arrived */
         ms_pkt *p=fanqueue_pop(&q,200);

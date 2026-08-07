@@ -80,6 +80,78 @@ semantic versioning.
   (backchannel sessions still poll every iteration so interleaved speaker audio
   is not delayed). Teardown latency stays well under the RTSP keepalive window.
 
+### Performance
+- **Single-copy frame publish via `hub_publish_take()` + a per-source packet
+  pool** (perf audit P-01, previously deferred): every published frame used to
+  be copied twice - once when `video_thread`/`jpeg_thread` assemble the IMP
+  packs into a scratch buffer (necessary: Annex-B start-code fix-up across
+  scattered packs), then a SECOND time when `hub_publish()` -> `pkt_new()`
+  malloc'd and copied the whole access unit into a refcounted `ms_pkt` (plus a
+  `free` after the last `unref`). At 25 fps x 2 streams that was ~50 malloc/free
+  pairs/s and up to ~1.5 MB/s of redundant memcpy, and frame-sized heap churn
+  (4 KB-400 KB) is the classic fragmentation source on the 32 MB SoCs.
+  - New `frame.c` primitives: an `ms_pkt` now carries `cap`/`pool` fields; a
+    tiny per-source recycling `pkt_pool` (`pkt_pool_get`/`pkt_pool_init`, and a
+    pool-aware `pkt_unref` that returns the buffer to the pool instead of
+    `free`ing it on the last reference). `pkt_new()` (copy constructor) is
+    unchanged, so every existing sink (fanqueue, the recorder pre-roll ring,
+    RTSP/SRT/HTTP) is byte-for-byte unaffected.
+  - New `hub_pkt_get(src, cap)` + `hub_publish_take(src, pkt, ...)`: the
+    producer assembles the AU DIRECTLY into a pooled buffer and hands ownership
+    to the hub - no second copy. `hub_publish()` and `hub_publish_take()` share
+    one under-lock helper, so the two invariants are provably preserved: (a) the
+    0-subscriber skip does NOT cause a per-frame malloc/free - a 0-sub publish
+    just returns the buffer to the pool (borrow+return of the same buffer while
+    idle); (b) `vparam_update()` still reads the AU under `s->lock` at the same
+    point in the sequence, before any push/hand-off.
+  - Pools are process-lifetime statics (a slow subscriber can hold a packet long
+    after the producer stopped), sized `HUB_POOL_MAX_FREE=4` idle buffers with a
+    `HUB_POOL_KEEP_CAP=96 KB` ceiling so a one-off large IDR is freed rather than
+    pinned idle (idle pool memory bounded to ~384 KB/source). Beyond the pool
+    (recorder pre-roll pinning many frames, or a slow client) it falls back to
+    malloc/free - never worse than before.
+  - Converted producers: the hardware `video_thread` and dedicated `jpeg_thread`
+    (`hal_ingenic.c`) and both `make sim` producers (`hal_sim.c` video + JPEG,
+    so the new path is actually exercised host-side). Left on the copy path
+    deliberately: the three audio producers (tiny `__thread`-static frames whose
+    per-frame copy is negligible and whose no-heap-churn design is intentional)
+    and the opt-in T23 software-rotate video/JPEG path (`ROT_HAS_SW_90`,
+    untestable here and flagged as extra risk by the audit). `hub_publish()`
+    stays a first-class API for those.
+  - Verified: clean `make sim`; an ASan+UBSan host build driven with concurrent
+    multi-client RTSP (TCP+UDP) fan-out, snapshot hammering and motion recording
+    (pre-roll ring pinning pooled packets) reported zero leaks / use-after-free /
+    UB across subscribe/publish/unsubscribe churn and shutdown; and
+    `hal_ingenic.c` type-checks clean against both the T31 headers (converted
+    paths) and the T23 headers (untouched sw-rotate path). Still wants the
+    on-hardware soak the audit called for before fleet rollout.
+- **Idle-wakeup consolidation via a stop-condvar** (perf audit P-02, previously
+  deferred): the periodic worker threads stayed responsive to shutdown by
+  slice-sleeping (usleep in 100-300 ms chunks, re-checking a stop flag each
+  chunk), waking ~25x/s in aggregate even fully idle. New reusable `ms_stopgate`
+  primitive (`util.c`, same CLOCK_MONOTONIC condvar pattern as `fanqueue`/
+  `events`): a worker now blocks on one `pthread_cond_timedwait` per real
+  interval and wakes immediately on stop.
+  - Converted: `daynight.c` (200 ms slices -> one wait per detection interval),
+    `record.c` and `timelapse.c` (disabled-idle poll 300 ms -> 1 s, only bounds
+    how fast a `/control` enable is noticed from the fully-idle state; motion/
+    continuous recording is unaffected - it runs in the `fanqueue_pop` path),
+    and the `imp_osd.c` updater (ten 100 ms slices -> one 1 s wait; a plain
+    stop-gate, NOT the `hub_set_activity_cb` wake the audit floated, since that
+    couples the OSD updater into the untestable HAL on-demand path for only a
+    sub-second first-connect timestamp-freshness nicety). Idle wakeups drop from
+    ~25/s to <5/s.
+  - `main.c`'s `while (g_run) sleep(1)` is intentionally left as-is: `sleep()`
+    already returns immediately on the shutdown signal (EINTR), and a condvar
+    cannot be signalled from an async signal handler.
+  - Shutdown safety (the highest priority for this item): `ms_stopgate_stop()`
+    sets the flag and broadcasts under the SAME mutex the waiter tests its
+    predicate under, and the waiter checks the predicate both before and inside
+    the wait loop - so a stop requested before OR during the wait can never be
+    missed. Traced by hand for all four threads and verified live: idle,
+    recording and mid-stream SIGTERM all shut down in 0.14-0.34 s (well under
+    the 3 s watchdog `alarm()`), ASan-clean.
+
 ### Added
 - **QA coverage for previously-untested live-settable fields** (config audit
   F-08, `scripts/timps-qa.sh` section 8b): the daynight TIME/SUN path
@@ -106,16 +178,12 @@ semantic versioning.
   `fork()+execlp()`.
 
 ### Deferred (audited, not done this pass)
-- **Perf P-01** (single-copy frame publish via `hub_publish_take`) was NOT
-  attempted: it spans 11 `hub_publish` producer call sites (not the 3 the audit
-  estimated), including the T23 software-rotate path and the audio-resample
-  paths that `make sim` does not exercise, and a correct implementation needs a
-  refcounted per-source buffer pool whose reuse logic, if wrong, is a fleet-wide
-  use-after-free in the hottest path. Too risky to land without a hardware soak
-  test; recommended for a dedicated session.
-- **Perf P-02** (stop-condvar wakeup consolidation) was skipped — it is gated on
-  P-01 in the audit's own ordering, is a "nicety not a bug", and touches the
-  shutdown/wake logic of five threads (incl. the untestable `imp_osd.c`).
+- **Perf P-01 and P-02 are now done** (see the Performance section above) - the
+  dedicated session with a "Garage" (Wuuk/T31-class) camera earmarked for the
+  soak test made it reasonable to attempt them. The T23 software-rotate publish
+  path and the three audio producers were deliberately left on the copy path
+  (rationale in the Performance section); those remain available follow-ups if a
+  T23 with rotation is ever soak-tested.
 - **SDK feature-gap items #5 (`GetChnEvalInfo`) and #6 (exposure ceiling)** were
   skipped: both are new IMP features that cannot be verified without live
   hardware.

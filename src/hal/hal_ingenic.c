@@ -976,23 +976,16 @@ static int au_is_key(int codec, const uint8_t *au, size_t len)
 static void *video_thread(void *arg)
 {
     vchan *vc = (vchan*)arg;
-    /* AU buffer starts at MS_AU_BUF_MIN and grows on demand: the pre-size
-     * pass below reallocs from the actual pack lengths BEFORE copying, so a
-     * small start loses no frames - it only costs a few reallocs in the
-     * first seconds. The old w*h/2 estimate made a 1080p stream malloc the
-     * full 1 MB cap up front and hold it forever, ~3x the observed IDR peak
-     * (256-400 KB); now the buffer settles at that observed peak instead.
-     * Heap instead of a fixed __thread array so small-RAM SoCs are not
-     * penalized per stream. */
-    size_t au_cap = MS_AU_BUF_MIN;
-    uint8_t *au = (uint8_t*)malloc(au_cap);
-    if (!au){ LOGE(MOD,"chn%d: no memory for AU buffer (%zu)",vc->chn,au_cap); return NULL; }
+    /* P-01: the AU is assembled DIRECTLY into a per-frame packet borrowed from
+     * this source's recycling pool (hub_pkt_get) and handed to the hub with
+     * hub_publish_take() - no persistent au[] scratch and no second full-frame
+     * copy at publish. The pool sizes/reuses buffers to the observed frame peak
+     * (bounded by MS_AU_BUF_MAX) exactly as the old on-demand-grown au[] did. */
     int receiving=0;
     int64_t idle_since=0;
     int dbg_first=0, dbg_pollfail=0;   /* one-shot encoder diagnostics */
     int dbg_startfail=0;               /* rate-limits StartRecvPic failures */
     int dbg_ovf=0;                     /* rate-limits the AU-overflow warning */
-    int dbg_grow=0;                    /* rate-limits the AU-buffer-grow notice */
 #if defined(PLATFORM_T31)
     /* Item-2 (T31 only): IMP_Encoder_GetChnAveBitrate averages over a frame
      * count that must be an integral multiple of the GOP length. Resolve this
@@ -1095,28 +1088,40 @@ static void *video_thread(void *arg)
         if (IMP_Encoder_GetStream(vc->chn,&st,1)!=0){
             LOGW(MOD,"chn%d: GetStream failed after PollingStream OK",vc->chn); continue; }
         dbg_pollfail=0;
-        /* Pre-size the AU buffer to the actual frame. au_cap starts at the
-         * MS_AU_BUF_MIN floor: fine for P-frames, but a complex IDR (on the
-         * mainstream even a typical one) routinely exceeds it. Summing the pack lengths
-         * up front lets us grow (bounded by MS_AU_BUF_MAX) so any real frame is
-         * assembled intact. The old path instead dropped the frame AND forced
-         * an IDR on overflow; since an IDR is the *largest* frame type, a single
-         * size-overflow made every subsequent forced IDR overflow too - a
-         * permanent stall in which the stream delivered nothing (the observed
-         * "only ch0 works": ch1's first IDR > the 128 KB floor, then locked). */
+        /* Size the packet to the actual frame: sum the pack lengths (+4 for a
+         * possible start code each) as a safe UPPER BOUND on the assembled
+         * length, then borrow a pooled buffer of exactly that size. A frame
+         * whose bound exceeds MS_AU_BUF_MAX is a genuinely >1 MB access unit -
+         * drop it rather than publish a truncated, syntactically-corrupt AU.
+         * Do NOT force an IDR on this drop: an IDR is the *largest* frame type,
+         * so forcing one after a size overflow only guarantees the next frame
+         * overflows too (the historical permanent-stall "only ch0 works" bug);
+         * a dropped frame is recovered downstream (fanqueue_take_dropped_key +
+         * hub_request_idr on real clients). */
         size_t need=0;
         for (uint32_t i=0;i<st.packCount;i++)
             if (st.pack[i].length) need += (size_t)st.pack[i].length + 4; /* +startcode */
-        if (need > au_cap && au_cap < MS_AU_BUF_MAX){
-            size_t ncap = (need > MS_AU_BUF_MAX) ? MS_AU_BUF_MAX : need;
-            uint8_t *na = (uint8_t*)realloc(au, ncap);
-            if (na){
-                au = na; au_cap = ncap;
-                if ((dbg_grow++ % 50)==0)
-                    LOGI(MOD,"chn%d: grew AU buffer to %zu (frame needs %zu, packCount=%u)",
-                         vc->chn, au_cap, need, st.packCount);
-            } /* realloc failure: keep old buffer, overflow guard below drops the frame */
+        if (need > MS_AU_BUF_MAX){
+            if ((dbg_ovf++ % 20)==0)
+                LOGW(MOD,"chn%d: AU exceeds max buffer (need=%zu, max=%d, packCount=%u) - "
+                     "dropping frame",
+                     vc->chn, need, MS_AU_BUF_MAX, st.packCount);
+            IMP_Encoder_ReleaseStream(vc->chn,&st);
+            continue;
         }
+        /* P-01: assemble straight into a pooled packet - no au[] scratch, no
+         * copy at publish. pkt_get returns cap >= need, so assembly cannot
+         * overflow (the guard below is defensive only). */
+        ms_pkt *pk = hub_pkt_get(vc->chn, need);
+        if (!pk){
+            if ((dbg_ovf++ % 20)==0)
+                LOGW(MOD,"chn%d: no memory for AU packet (need=%zu) - dropping frame",
+                     vc->chn, need);
+            IMP_Encoder_ReleaseStream(vc->chn,&st);
+            continue;
+        }
+        uint8_t *au = pk->data;
+        size_t   au_cap = pk->cap;
         size_t aulen=0;
         int overflow=0;
         for (uint32_t i=0;i<st.packCount;i++){
@@ -1137,26 +1142,24 @@ static void *video_thread(void *arg)
             if (aulen+l<=au_cap){ memcpy(au+aulen,p,l); aulen+=l; }
             else overflow=1;
         }
-        /* Last-resort guard: the frame still didn't fit even after growing to
-         * MS_AU_BUF_MAX (a genuinely > 1 MB access unit, or a realloc failure).
-         * Drop it rather than publish a truncated, syntactically-corrupt AU.
-         * Do NOT force an IDR here: on a size overflow the next IDR is only
-         * larger, which is exactly what turned a one-frame overflow into a
-         * permanent stall. A dropped frame is recovered downstream anyway
-         * (fanqueue_take_dropped_key + hub_request_idr on real clients). */
+        /* Defensive: need is a strict upper bound on aulen so this is
+         * unreachable; if a pool/SDK anomaly ever tripped it, drop the frame
+         * (and return the pooled buffer) rather than publish a truncated AU. */
         if (overflow){
             if ((dbg_ovf++ % 20)==0)
-                LOGW(MOD,"chn%d: AU exceeds max buffer (cap=%zu, need=%zu, packCount=%u) - "
+                LOGW(MOD,"chn%d: AU assembly overflow (cap=%zu, need=%zu, packCount=%u) - "
                      "dropping frame",
                      vc->chn, au_cap, need, st.packCount);
+            pkt_unref(pk);
             IMP_Encoder_ReleaseStream(vc->chn,&st);
             continue;
         }
+        pk->len = aulen;
         int key = au_is_key(vc->codec, au, aulen);
         if (!dbg_first){ dbg_first=1;
             LOGI(MOD,"chn%d: first encoded frame packCount=%u aulen=%zu key=%d",
                  vc->chn, st.packCount, aulen, key); }
-        hub_publish(vc->chn, au, aulen, ms_now_us(), key, MS_MEDIA_VIDEO);
+        hub_publish_take(vc->chn, pk, ms_now_us(), key, MS_MEDIA_VIDEO);
 #if defined(PLATFORM_T31)
         /* Item-2 (T31 only): cache the running average bitrate for the read-only
          * /control encoder-stats getter. Must run while 'st' is still held (the
@@ -1176,7 +1179,6 @@ static void *video_thread(void *arg)
         IMP_Encoder_ReleaseStream(vc->chn,&st);
     }
     if (receiving){ IMP_Encoder_StopRecvPic(vc->chn); fs_unuse(vc->chn); }
-    free(au);
     return NULL;
 }
 
@@ -1745,12 +1747,9 @@ static int sw_rot_start(const ms_config *cfg, int i)
 static void *jpeg_thread(void *arg)
 {
     jchan *jc = (jchan*)arg;
-    /* buffer sized from the JPEG resolution (~0.5 byte/pixel), bounded */
-    size_t jcap = (size_t)jc->w * (size_t)jc->h / 2;
-    if (jcap < MS_JPEG_BUF_MIN) jcap = MS_JPEG_BUF_MIN;
-    if (jcap > MS_JPEG_BUF_MAX) jcap = MS_JPEG_BUF_MAX;
-    uint8_t *jbuf = (uint8_t*)malloc(jcap);
-    if (!jbuf){ LOGE(MOD,"no memory for JPEG buffer (%zu)",jcap); return NULL; }
+    /* P-01: each JPEG frame is assembled directly into a pooled packet
+     * (hub_pkt_get) and handed off with hub_publish_take() - no persistent
+     * jbuf scratch and no copy at publish. */
     int receiving=0;
     int dbg_jstartfail=0;              /* rate-limits StartRecvPic failures */
     int dbg_jpollfail=0;               /* J1: PollingStream-miss watchdog */
@@ -1830,24 +1829,29 @@ static void *jpeg_thread(void *arg)
             LOGW(MOD,"jpeg chn%d: GetStream failed after PollingStream OK", jc->chn);
             continue;
         }
-        /* Pre-size to the actual frame, same fix as video_thread's AU buffer
-         * (see that function's comment for the full story): jcap starts as a
-         * ~0.5 byte/pixel estimate, fine for most frames, but a
-         * detail-heavy daytime scene at q75 routinely exceeds it - that used
-         * to mean every such frame was dropped forever (a static/low-detail
-         * scene never re-triggers the overflow, so once the daily
-         * light/detail level crosses the estimate, JPEG output - snapshots,
-         * MJPEG, WebUI preview - simply stops). Sum the pack lengths up
-         * front and grow (bounded by MS_JPEG_BUF_MAX) so any real frame is
-         * assembled intact. */
+        /* Size to the actual frame and assemble the JPEG straight into a
+         * pooled buffer (see video_thread for the pool rationale). Summing the
+         * pack lengths is exact - the old ~0.5 byte/pixel estimate under-sized
+         * detail-heavy daytime frames and dropped them forever. A frame beyond
+         * MS_JPEG_BUF_MAX (a genuinely huge frame or a pool failure) is dropped
+         * rather than published/saved truncated. */
         size_t jneed=0;
         for (uint32_t i=0;i<st.packCount;i++) jneed += (size_t)st.pack[i].length;
-        if (jneed > jcap && jcap < MS_JPEG_BUF_MAX){
-            size_t ncap = (jneed > MS_JPEG_BUF_MAX) ? MS_JPEG_BUF_MAX : jneed;
-            uint8_t *nb = (uint8_t*)realloc(jbuf, ncap);
-            if (nb){ jbuf = nb; jcap = ncap; }
-            /* realloc failure: keep old buffer, overflow guard below drops the frame */
+        if (jneed > MS_JPEG_BUF_MAX){
+            LOGW(MOD,"chn%d: JPEG exceeds max buffer (need=%zu, max=%d) - dropping frame",
+                 jc->chn, jneed, MS_JPEG_BUF_MAX);
+            IMP_Encoder_ReleaseStream(jc->chn,&st);
+            continue;
         }
+        ms_pkt *pk = hub_pkt_get(jc->src, jneed ? jneed : 1);
+        if (!pk){
+            LOGW(MOD,"chn%d: no memory for JPEG packet (need=%zu) - dropping frame",
+                 jc->chn, jneed);
+            IMP_Encoder_ReleaseStream(jc->chn,&st);
+            continue;
+        }
+        uint8_t *jbuf = pk->data;
+        size_t   jcap = pk->cap;
         size_t jlen=0;
         int overflow=0;
         for (uint32_t i=0;i<st.packCount;i++){
@@ -1860,18 +1864,19 @@ static void *jpeg_thread(void *arg)
             if (jlen+l<=jcap){ memcpy(jbuf+jlen,p,l); jlen+=l; }
             else overflow=1;
         }
-        /* Last-resort guard: still didn't fit even after growing to
-         * MS_JPEG_BUF_MAX (a genuinely huge frame, or a realloc failure). A
-         * truncated JPEG is just as useless as none, but pretending it's
-         * valid (old behavior) is worse than skipping a frame. */
+        /* Defensive: jneed is a strict upper bound on jlen, so unreachable;
+         * drop (and return the pooled buffer) rather than publish/save truncated. */
         if (overflow){
-            LOGW(MOD,"chn%d: JPEG exceeds max buffer (cap=%zu, need=%zu) - dropping frame",
+            LOGW(MOD,"chn%d: JPEG assembly overflow (cap=%zu, need=%zu) - dropping frame",
                  jc->chn, jcap, jneed);
+            pkt_unref(pk);
             IMP_Encoder_ReleaseStream(jc->chn,&st);
             continue;
         }
-        if (jc->active || hub_active(jc->src))
-            hub_publish(jc->src, jbuf, jlen, ms_now_us(), 1, MS_MEDIA_JPEG);
+        pk->len = jlen;
+        /* Snapshot-to-file is subscriber-independent and must read the buffer
+         * BEFORE the hand-off: after hub_publish_take() the packet may already
+         * be recycled or in flight to a subscriber. */
         if (snap_configured &&
             ms_now_us() - jc->last_snapshot_us >= MS_SNAPSHOT_INTERVAL_US) {
             /* copy the path under config_str_lock, then do the (blocking)
@@ -1886,10 +1891,13 @@ static void *jpeg_thread(void *arg)
             if (f){ fwrite(jbuf,1,jlen,f); fclose(f); rename(tmp,path); }
             jc->last_snapshot_us = ms_now_us();
         }
+        /* Hand off to the hub. A 0-subscriber publish returns the buffer
+         * straight to the pool - equivalent to the old jc->active/hub_active
+         * gate, which only ever skipped the now-eliminated malloc+copy. */
+        hub_publish_take(jc->src, pk, ms_now_us(), 1, MS_MEDIA_JPEG);
         IMP_Encoder_ReleaseStream(jc->chn,&st);
     }
     if (receiving){ IMP_Encoder_StopRecvPic(jc->chn); fs_unuse(jc->fs_chn); }
-    free(jbuf);
     return NULL;
 }
 
