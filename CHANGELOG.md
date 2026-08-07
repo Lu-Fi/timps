@@ -7,6 +7,23 @@ semantic versioning.
 ## [Unreleased]
 
 ### Fixed
+- **Piggyback JPEG (`/snapshot.jpg`, `/stream.mjpeg`) broke when a 90/270
+  rotation was refused by the SW-rotate safe envelope.** On a T23 build with
+  `USE_ROTATE`/`USE_SW_ROTATE`, requesting a rotation that exceeds the safe
+  envelope (e.g. a full-res `1920x1080@25` main stream) is correctly refused
+  by `sw_rot_start()` — the video/RTSP path falls back to running UNROTATED.
+  But `jpeg_attach()` re-read the *raw* `cfg->video[vi]` (rotation still 90)
+  instead of the caller's post-refusal effective config, so it sized the JPEG
+  encoder channel from the rotated dims (e.g. `1080x1920`). That width is not
+  16-aligned, so `IMP_Encoder_CreateChn` failed ("JPEG CreateChn N failed")
+  and `/snapshot.jpg?chn=N` returned the literal `no frame` on every affected
+  channel, even though video streamed fine. `jpeg_attach()` now takes the
+  effective `const ms_vstream_cfg *` the caller actually brought the video
+  channel up with, so the JPEG channel always shares the video channel's true
+  post-refusal dimensions. This also covers the analogous T31
+  (`ROT_HAS_FS_ROTATE`) FS-rotate fallback path, which had the same defect.
+  Pre-existing bug (introduced with the JPEG-piggyback + rotation plumbing in
+  July; unrelated to the recent C11-hardening / frame-pool changes).
 - **OSD read live `videoN.rotation` instead of the boot snapshot** (audit A2):
   `imp_osd.c` read `g_cfg.video[si].rotation` in the text/logo/privacy placement
   paths. `videoN.rotation` is restart-only, so a `/control` write to it would
@@ -187,6 +204,23 @@ semantic versioning.
 - **SDK feature-gap items #5 (`GetChnEvalInfo`) and #6 (exposure ceiling)** were
   skipped: both are new IMP features that cannot be verified without live
   hardware.
+- **Piggyback JPEG (`/snapshot.jpg`, `/stream.mjpeg`) broke when a 90/270
+  rotation was refused by the SW-rotate safe envelope.** On a T23 build with
+  `USE_ROTATE`/`USE_SW_ROTATE`, requesting a rotation that exceeds the safe
+  envelope (e.g. a full-res `1920x1080@25` main stream) is correctly refused
+  by `sw_rot_start()` — the video/RTSP path falls back to running UNROTATED.
+  But `jpeg_attach()` re-read the *raw* `cfg->video[vi]` (rotation still 90)
+  instead of the caller's post-refusal effective config, so it sized the JPEG
+  encoder channel from the rotated dims (e.g. `1080x1920`). That width is not
+  16-aligned, so `IMP_Encoder_CreateChn` failed ("JPEG CreateChn N failed")
+  and `/snapshot.jpg?chn=N` returned the literal `no frame` on every affected
+  channel, even though video streamed fine. `jpeg_attach()` now takes the
+  effective `const ms_vstream_cfg *` the caller actually brought the video
+  channel up with, so the JPEG channel always shares the video channel's true
+  post-refusal dimensions. This also covers the analogous T31
+  (`ROT_HAS_FS_ROTATE`) FS-rotate fallback path, which had the same defect.
+  Pre-existing bug (introduced with the JPEG-piggyback + rotation plumbing in
+  July; unrelated to the recent C11-hardening / frame-pool changes).
 
 ## [1.7.8] - 2026-08-06
 
