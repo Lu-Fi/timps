@@ -2170,6 +2170,80 @@ static void *jpeg_thread(void *arg)
     return NULL;
 }
 
+#ifndef ENC_NEW_API
+/* Item-2: apply jpeg.quality on the classic-API SoCs. The ENC_NEW_API path
+ * folds quality straight into iInitialQP at SetDefaultParam, but the classic
+ * encoder exposes no scalar quality knob - the only lever is a user JPEG
+ * quantization table via IMP_Encoder_SetJpegeQl. So we synthesize one from the
+ * standard JPEG Annex-K base tables scaled by the IJG (libjpeg) quality formula,
+ * exactly the 1..100 -> quant-table mapping libjpeg uses. Previously the classic
+ * branch did (void)quality and every JPEG came out at the SDK's fixed default,
+ * silently ignoring jpeg.quality / videoN.jpeg_quality. */
+#if !(defined(PLATFORM_T10) || defined(PLATFORM_T20))
+/* Standard JPEG Annex-K base quantization tables (== quality 50), natural
+ * (row-major) order. Only the 128-byte-qtable SoCs (T21/T23/T30) use these. */
+static const uint8_t k_jpeg_luma_q50[64] = {
+    16, 11, 10, 16, 24, 40, 51, 61,
+    12, 12, 14, 19, 26, 58, 60, 55,
+    14, 13, 16, 24, 40, 57, 69, 56,
+    14, 17, 22, 29, 51, 87, 80, 62,
+    18, 22, 37, 56, 68,109,103, 77,
+    24, 35, 55, 64, 81,104,113, 92,
+    49, 64, 78, 87,103,121,120,101,
+    72, 92, 95, 98,112,100,103, 99
+};
+static const uint8_t k_jpeg_chroma_q50[64] = {
+    17, 18, 24, 47, 99, 99, 99, 99,
+    18, 21, 26, 66, 99, 99, 99, 99,
+    24, 26, 56, 99, 99, 99, 99, 99,
+    47, 66, 99, 99, 99, 99, 99, 99,
+    99, 99, 99, 99, 99, 99, 99, 99,
+    99, 99, 99, 99, 99, 99, 99, 99,
+    99, 99, 99, 99, 99, 99, 99, 99,
+    99, 99, 99, 99, 99, 99, 99, 99
+};
+static uint8_t jpeg_scale_q(uint8_t base, int scale)
+{
+    int v = ((int)base * scale + 50) / 100;   /* IJG: round(base*scale/100) */
+    if (v < 1)   v = 1;                        /* 0 is illegal in a JPEG DQT  */
+    if (v > 255) v = 255;
+    return (uint8_t)v;
+}
+#endif /* !T10 && !T20 */
+
+static void jpeg_apply_quality(int chn, int quality)
+{
+    if (quality < 1)   quality = 1;
+    if (quality > 100) quality = 100;
+#if defined(PLATFORM_T10) || defined(PLATFORM_T20)
+    /* T10/T20 spell IMPEncoderJpegeQl.qmem_table as 256 bytes (vs the 128 the
+     * other classic SoCs use), and the vendor headers do not document that
+     * layout (table count / 8- vs 16-bit entries). Synthesizing a table blindly
+     * there would risk corrupting output rather than honouring quality, so
+     * report honestly instead of guessing or (as before) silently dropping it. */
+    (void)chn;
+    LOGW(MOD,"jpeg.quality=%d not applied: SetJpegeQl qtable layout unverified "
+             "on this SoC (JPEG left at SDK default)", quality);
+#else
+    /* T21/T23/T30: qmem_table is the standard 128-byte pair - 64 luma then 64
+     * chroma, 8-bit, natural order. IJG quality->scale (base tables = q50). */
+    int s = (quality < 50) ? (5000 / quality) : (200 - quality * 2);
+    IMPEncoderJpegeQl ql; memset(&ql, 0, sizeof ql);
+    _Static_assert(sizeof ql.qmem_table >= 128, "JPEG qtable smaller than 128B");
+    ql.user_ql_en = 1;
+    for (int i = 0; i < 64; i++){
+        ql.qmem_table[i]      = jpeg_scale_q(k_jpeg_luma_q50[i],   s);
+        ql.qmem_table[64 + i] = jpeg_scale_q(k_jpeg_chroma_q50[i], s);
+    }
+    if (IMP_Encoder_SetJpegeQl(chn, &ql) != 0)
+        LOGW(MOD,"IMP_Encoder_SetJpegeQl(chn%d,q%d) failed (JPEG left at default)",
+             chn, quality);
+    else
+        LOGD(MOD,"JPEG chn%d quality %d applied (user qtable)", chn, quality);
+#endif
+}
+#endif /* !ENC_NEW_API */
+
 /* create one JPEG encoder channel (not yet registered to a group).
  * fps: target encode rate for this channel (<=0 falls back to the old
  * hardcoded 24). For a channel piggybacked on a video group (jpeg_attach)
@@ -2190,11 +2264,15 @@ static int jpeg_enc_create(int chn, int w, int h, int quality, int fps)
     IMP_Encoder_SetDefaultParam(&a, IMP_ENC_PROFILE_JPEG, IMP_ENC_RC_MODE_FIXQP,
         w, h, fps, 1, 0, 0, quality, 0);
 #else
-    (void)quality; (void)fps;
+    (void)fps;
     a.encAttr.enType=PT_JPEG;
     a.encAttr.picWidth=w; a.encAttr.picHeight=h;
 #endif
     if (IMP_Encoder_CreateChn(chn,&a)!=0){ LOGE(MOD,"JPEG CreateChn %d failed",chn); return -1; }
+#ifndef ENC_NEW_API
+    /* header contract: the channel must exist before SetJpegeQl */
+    jpeg_apply_quality(chn, quality);
+#endif
     return 0;
 }
 
