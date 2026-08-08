@@ -2624,6 +2624,17 @@ static void *audio_thread(void *arg)
      * player buffering. So reconfigure the AI to 8 kHz for real. */
     if (!use_aac && (g_acodec==MS_AC_PCMU || g_acodec==MS_AC_PCMA) && g_asr!=8000) {
         LOGW(MOD,"faac fallback: reconfiguring AI %dHz -> 8000 for G.711", g_asr);
+        /* Item-6: hold g_ai_lock across the ENTIRE disable/re-enable. Clearing
+         * g_ai_up alone is not enough: a /control volume/gain write reads g_ai_up
+         * WITHOUT the lock, then takes g_ai_lock before calling ai_apply_key, so a
+         * writer that passed its g_ai_up check an instant before we clear it would
+         * otherwise land an IMP_AI parameter call on the channel mid-rebuild (an
+         * IMP call on a disabled channel -> failed live-apply). Under the lock,
+         * such a writer blocks until the channel is fully back up (or bails on the
+         * cleared g_ai_up). Same lock the /control path uses (fix Item-1). */
+#if defined(USE_CONTROL) || defined(USE_BACKCHANNEL) || defined(USE_PLAY)
+        pthread_mutex_lock(&g_ai_lock);
+#endif
         g_ai_up = 0;                       /* keep /control off the AI mid-rebuild */
         IMP_AI_DisableChn(dev,chnid);
         IMP_AI_Disable(dev);
@@ -2637,6 +2648,9 @@ static void *audio_thread(void *arg)
         if (IMP_AI_SetPubAttr(dev,&aio)!=0 || IMP_AI_Enable(dev)!=0 ||
             IMP_AI_SetChnParam(dev,chnid,&chnp)!=0 || IMP_AI_EnableChn(dev,chnid)!=0) {
             LOGE(MOD,"AI re-init at 8000 failed");
+#if defined(USE_CONTROL) || defined(USE_BACKCHANNEL) || defined(USE_PLAY)
+            pthread_mutex_unlock(&g_ai_lock);   /* g_ai_up stays 0: AI is down */
+#endif
             hub_clear_audio_params();
             return NULL;
         }
@@ -2650,6 +2664,9 @@ static void *audio_thread(void *arg)
         if (g_hcfg->audio.agc)          ai_apply_key("agc");
         if (g_hcfg->audio.ns > 0)       ai_apply_key("ns");
         g_ai_up = 1;
+#if defined(USE_CONTROL) || defined(USE_BACKCHANNEL) || defined(USE_PLAY)
+        pthread_mutex_unlock(&g_ai_lock);
+#endif
     }
     hub_set_audio_params(g_acodec, g_asr, g_ach);
 
