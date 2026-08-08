@@ -1850,6 +1850,30 @@ static int sw_rot_start(const ms_config *cfg, int i)
     if (v->rc_mode==MS_RC_FIXQP){
         yin.mode.rcMode = ENC_RC_MODE_FIXQP;
         yin.mode.attrH264FixQp.qp = (v->qp>0)?(uint32_t)v->qp:35;
+    } else if (v->rc_mode==MS_RC_VBR || v->rc_mode==MS_RC_SMART ||
+               v->rc_mode==MS_RC_CAPPED_VBR || v->rc_mode==MS_RC_CAPPED_QUALITY){
+        /* Same substitution as enc_create()'s classic path (see the comment
+         * there): the classic rc enum has no CAPPED_* mode, so capped_vbr/
+         * capped_quality fall back to VBR with a one-time warning instead of
+         * silently running as CBR. H264-only here - T23's vendored SDK marks
+         * every attrH265* rc struct unsupported, so there is no H265 side to
+         * this branch (unlike enc_create()'s classic path). */
+        static int warned_capped = 0;
+        if ((v->rc_mode==MS_RC_CAPPED_VBR || v->rc_mode==MS_RC_CAPPED_QUALITY) && !warned_capped){
+            LOGW(MOD,"rc_mode capped_vbr/capped_quality has no classic-SoC equivalent -> using vbr");
+            warned_capped = 1;
+        }
+        yin.mode.rcMode = (v->rc_mode==MS_RC_SMART) ? ENC_RC_MODE_SMART : ENC_RC_MODE_VBR;
+        yin.mode.attrH264Vbr.maxQp       = (v->max_qp>0)?(uint32_t)v->max_qp:45;
+        yin.mode.attrH264Vbr.minQp       = (v->min_qp>0)?(uint32_t)v->min_qp:15;
+        yin.mode.attrH264Vbr.staticTime  = 2;
+        yin.mode.attrH264Vbr.maxBitRate  = (uint32_t)v->bitrate_kbps;
+        yin.mode.attrH264Vbr.iBiasLvl    = 0;
+        yin.mode.attrH264Vbr.changePos   = 80;
+        yin.mode.attrH264Vbr.qualityLvl  = 2;
+        yin.mode.attrH264Vbr.frmQPStep   = 3;
+        yin.mode.attrH264Vbr.gopQPStep   = 15;
+        yin.mode.attrH264Vbr.gopRelation = 0;
     } else {
         yin.mode.rcMode = ENC_RC_MODE_CBR;
         yin.mode.attrH264Cbr.maxQp        = (v->max_qp>0)?(uint32_t)v->max_qp:45;
