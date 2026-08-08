@@ -1834,22 +1834,33 @@ static int sw_rot_start(const ms_config *cfg, int i)
      * This libimp (T23 1.3.0) rejects SetFrameDepth(depth>0) on a not-yet-
      * enabled channel: "Please use IMP_FrameSource_EnableChn first". */
     /* unbound encoder: header T23/1.3.0 imp_encoder.h:534-549 (IMPEncoderYuvIn/
-     * Out) + :1710-1763 (YuvInit/YuvEncode/YuvExit). Rc fill mirrors
-     * enc_create()'s classic CBR block exactly (same defaults/clamps). */
+     * Out) + :1710-1763 (YuvInit/YuvEncode/YuvExit). Rc fill follows
+     * enc_create()'s classic path: FIXQP when selected (post-f003655), else CBR
+     * with the same defaults/clamps. FIXQP must be set explicitly - an all-zero
+     * mode union reads back as FIXQP with qp=0 (broken stream), and before this
+     * fixqp on a sw-rotated T23 stream silently ran as CBR here. Kept H264-only
+     * on purpose (no H264/H265 branch like enc_create()): T23's vendored SDK
+     * marks every H.265 rc struct "不支持" (HEVC encode unsupported), so there
+     * is no attrH265* path worth mirroring on this SoC. */
     IMPEncoderYuvIn yin; memset(&yin,0,sizeof yin);
     yin.type = (v->codec==MS_VC_H265) ? PT_H265 : PT_H264;
     yin.outFrmRate.frmRateNum = (uint32_t)v->fps;
     yin.outFrmRate.frmRateDen = 1;
     yin.maxGop = (uint32_t)v->gop;
-    yin.mode.rcMode = ENC_RC_MODE_CBR;
-    yin.mode.attrH264Cbr.maxQp        = (v->max_qp>0)?(uint32_t)v->max_qp:45;
-    yin.mode.attrH264Cbr.minQp        = (v->min_qp>0)?(uint32_t)v->min_qp:15;
-    yin.mode.attrH264Cbr.outBitRate   = (uint32_t)v->bitrate_kbps;
-    yin.mode.attrH264Cbr.iBiasLvl     = 0;
-    yin.mode.attrH264Cbr.frmQPStep    = 3;
-    yin.mode.attrH264Cbr.gopQPStep    = 15;
-    yin.mode.attrH264Cbr.adaptiveMode = 0;
-    yin.mode.attrH264Cbr.gopRelation  = 0;
+    if (v->rc_mode==MS_RC_FIXQP){
+        yin.mode.rcMode = ENC_RC_MODE_FIXQP;
+        yin.mode.attrH264FixQp.qp = (v->qp>0)?(uint32_t)v->qp:35;
+    } else {
+        yin.mode.rcMode = ENC_RC_MODE_CBR;
+        yin.mode.attrH264Cbr.maxQp        = (v->max_qp>0)?(uint32_t)v->max_qp:45;
+        yin.mode.attrH264Cbr.minQp        = (v->min_qp>0)?(uint32_t)v->min_qp:15;
+        yin.mode.attrH264Cbr.outBitRate   = (uint32_t)v->bitrate_kbps;
+        yin.mode.attrH264Cbr.iBiasLvl     = 0;
+        yin.mode.attrH264Cbr.frmQPStep    = 3;
+        yin.mode.attrH264Cbr.gopQPStep    = 15;
+        yin.mode.attrH264Cbr.adaptiveMode = 0;
+        yin.mode.attrH264Cbr.gopRelation  = 0;
+    }
     void *h = NULL;
     if (IMP_Encoder_YuvInit(&h, ew, eh, &yin)!=0 || !h){
         LOGE(MOD,"sw-rot chn%d: IMP_Encoder_YuvInit %dx%d failed",chn,ew,eh);
