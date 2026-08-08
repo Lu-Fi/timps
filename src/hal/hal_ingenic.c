@@ -2952,10 +2952,12 @@ static void ing_control(const char *key, const char *val)
      * via the board's color script. */
     if (!strncmp(key,"daynight.",9)) return;
 
-    /* motion.*: enabled/cols/rows/sensitivity/monitor_stream are applied
-     * LIVE by cleanly stopping and recreating the IVS grid (move params are
-     * create-time attributes - see motion_sync). cooldown_ms/on_motion are
-     * config-only: the polling thread reads them from g_cfg per event. */
+    /* motion.*: enabled/cols/rows/sensitivity/monitor_stream/hold_ms/skip_frames
+     * are applied LIVE by cleanly stopping and recreating the IVS grid (see
+     * motion_sync; hold_ms is the motion_thread hold window re-read in
+     * imp_motion_start, skip_frames is the IVS create-time skipFrameCnt).
+     * cooldown_ms/on_motion are config-only: the polling thread reads them from
+     * g_cfg per event. */
     if (!strncmp(key,"motion.",7)){
         const char *k = key+7;
         if (!strcmp(k,"sensitivity")){
@@ -2968,12 +2970,19 @@ static void ing_control(const char *key, const char *val)
             g_motion_sense_pending = 1;
             LOGD(MOD,"control %s applied (IVS sensitivity update deferred to commit)", key);
         } else if (!strcmp(k,"enabled") || !strcmp(k,"cols") || !strcmp(k,"rows") ||
-                   !strcmp(k,"monitor_stream")){
+                   !strcmp(k,"monitor_stream") ||
+                   !strcmp(k,"hold_ms") || !strcmp(k,"skip_frames")){
             /* M2: defer the (expensive) IVS stop/destroy/recreate to a single
              * commit at the end of the /control request. A settings-form POST
              * naturally carries several of these keys (cols+rows+sensitivity+
              * monitor_stream) at once; rebuilding per key would blind detection
-             * and stall the response for seconds. */
+             * and stall the response for seconds.
+             * Item-4: hold_ms and skip_frames are both F_CTRL (POST-able) but
+             * used to fall through here with no action - accepted-but-silently-
+             * deferred. They take effect only through imp_motion_start (hold_ms
+             * = g_hold_ms; skip_frames = IVS create-time skipFrameCnt), which is
+             * exactly what motion_sync re-runs, so route them through the same
+             * deferred resync as the geometry keys. */
             g_motion_resync_pending = 1;
             LOGD(MOD,"control %s applied (IVS grid re-sync deferred to commit)", key);
         }
