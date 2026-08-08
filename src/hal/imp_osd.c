@@ -232,10 +232,17 @@ static void refresh_text(osd_stream *s, osd_region *rg)
      * applies changes under the config string lock) - snapshot the whole item
      * once, then work from the snapshot, so one render never mixes e.g. a new
      * font_size with an old x/y or outline (previously only ->text was
-     * snapshotted and the numeric fields were read lock-free mid-update). */
+     * snapshotted and the numeric fields were read lock-free mid-update).
+     * osd.vars_file is snapshotted in the SAME critical section: it became
+     * POST-settable alongside the other osd.* globals (control.c) but
+     * osd_expand() below reads it - without this it'd be the one lock-free
+     * live-mutable-string read left in this function, same UB class as the
+     * .enabled check this comment already fixed. */
     ms_osd_item it;
+    char vars_file[sizeof g_hcfg->osd.vars_file];
     config_str_lock();
     it = g_hcfg->osd.items[s->si][rg->item];
+    memcpy(vars_file, g_hcfg->osd.vars_file, sizeof vars_file);
     config_str_unlock();
     /* runtime-disabled via /control: nothing to draw. Checked HERE, off the
      * under-lock snapshot, so the updater loop (osd_thread) never has to read
@@ -244,7 +251,7 @@ static void refresh_text(osd_stream *s, osd_region *rg)
      * post-snapshot it.enabled check in hal_ingenic.c. */
     if (!it.enabled) return;
     char txt[256];
-    osd_expand(it.text, g_hcfg->osd.vars_file, txt, sizeof txt);
+    osd_expand(it.text, vars_file, txt, sizeof txt);
     if (strcmp(txt, rg->last)==0) return;               /* unchanged: skip render */
     /* L-3: rg->last is latched only AFTER a successful apply (below), so a
      * discarded/failed render (oversize, msttf OOM) doesn't mark this text as
