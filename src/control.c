@@ -340,14 +340,36 @@ static void timps_apply_setting(ctrl_changes *ch, const char *key, const char *r
     LOGI(MOD,"set %s = %s", key, out);
 }
 
-static void apply_section(ctrl_changes *ch, const char *prefix,
-                          const char *s, const char *e,
-                          const char *const *keys, int nkeys)
+/* Generic per-section field-table walker: replaces the 11 hand-written
+ * per-section name arrays (IMG/AUD_LIVE/AUD_REST/OSD/VID_REST/SENSOR/
+ * DN_KEYS/MOTION_KEYS/MOTION_RESTART_KEYS/REC_KEYS/TL_KEYS/PRIV_KEYS) that
+ * used to re-list ~100 field names already present in config.c's cfg_field
+ * tables - the split between them and config.c's tables was the confirmed
+ * root cause of several fields silently landing in config.c but never being
+ * wired into a control.c array (fixed in the 55ead66 commit's nine fields +
+ * osd item "type"). tbl[]/n now come straight from config.c's
+ * cfg_fields_*() accessors, so a field can no longer exist in one table but
+ * not the other.
+ *
+ * Only entries with F_CTRL set are ever applied - this is still a mandatory-
+ * per-field SECURITY ALLOWLIST, not a walk-everything default: motion.
+ * on_motion/cooldown_ms, daynight.switch_cmd/isp_path, every rtsp.* / http.*
+ * credential/token and the videoN.imp_chn / jpeg* / jpeg_chn channel-wiring
+ * fields all intentionally have no F_CTRL in config.c and so are silently
+ * skipped here even if present in the POSTed JSON - see the F_CTRL doc
+ * comment in config.h. Field names are matched using tbl[i].name only
+ * (never .alias): the JSON body has only ever recognized the canonical
+ * spellings the old arrays hard-coded (e.g. "rc_mode", not its "mode"
+ * config-file alias), and this preserves that exactly. */
+static void apply_ctrl_fields(ctrl_changes *ch, const char *prefix,
+                              const char *s, const char *e,
+                              const cfg_field *tbl, int n)
 {
     char v[160], full[40];
-    for (int i=0;i<nkeys;i++){
-        if (!get_val(s, e, keys[i], v, sizeof v)) continue;
-        snprintf(full, sizeof full, "%s.%s", prefix, keys[i]);
+    for (int i=0;i<n;i++){
+        if (!(tbl[i].flags & F_CTRL)) continue;
+        if (!get_val(s, e, tbl[i].name, v, sizeof v)) continue;
+        snprintf(full, sizeof full, "%s.%s", prefix, tbl[i].name);
         timps_apply_setting(ch, full, v);
     }
 }
@@ -375,69 +397,32 @@ void control_apply_json(const char *json)
     ch->n = 0;
     char v[160];
 
-    /* every numeric image.* key (accepted regardless of SoC support: the HAL
-     * skips what the platform cannot do, the value still persists) */
-    static const char *const IMG[] = {
-        "brightness","contrast","saturation","sharpness","hue",
-        "hflip","vflip","running_mode","anti_flicker","ae_compensation",
-        "max_again","max_dgain","sinter_strength","temper_strength",
-        "dpc_strength","defog_strength","drc_strength","highlight_depress",
-        "backlight_compensation","core_wb_mode","wb_rgain","wb_bgain"
-    };
-    /* audio.* live keys (accepted regardless of SoC support, like IMG: the
-     * HAL skips what the platform cannot do, the value still persists).
-     * "mute" is the live mic mute: the HAL audio thread stops publishing
-     * captured frames while it is set (no IMP call needed). spk_volume/spk_gain
-     * drive the speaker AO live (applied now if a play/backchannel session
-     * holds it, else at the next AO open) and persist as the AO default. */
-    static const char *const AUD_LIVE[] = {
-        "volume","gain","alc_gain","mute","spk_volume","spk_gain","aec"
-    };
-    /* audio.* persist-only keys: SetPubAttr/encoder-init attributes. They go
-     * through the same timps_apply_setting (config + persist); the HAL audio
-     * branch only logs them as "applies on restart" instead of touching the
-     * running input. channels=2/force_stereo enable simulated stereo (mono
-     * mic duplicated to L=R, dual-mono AAC) at the next restart. */
-    static const char *const AUD_REST[] = {
-        "enabled","codec","samplerate","channels","bitrate",
-        "high_pass","agc","agc_target_dbfs","agc_compression_db","ns",
-        "force_stereo","spk_enabled",
-        "backchannel","backchannel_codec","backchannel_rate"
-    };
-    static const char *const OSD[] = {
-        "enabled","type","text","x","y","font_size","color","transparency",
-        "outline","outline_color"
-    };
-    /* videoN.* encoder/stream keys: ALL persist-only (restart-required).
-     * Encoder and FrameSource attributes cannot be changed on the running
-     * pipeline, so the HAL video branch only logs them; they persist to the
-     * config file and take effect when the timps daemon restarts. */
-    static const char *const VID_REST[] = {
-        "enabled","codec","width","height","fps","bitrate","rc_mode",
-        "gop","max_gop","profile","qp","min_qp","max_qp","rotation",
-        "buffers","rtsp_path"
-    };
-    /* sensor.* keys: persist-only like VID_REST (the sensor is probed and
-     * configured once at ISP init). */
-    static const char *const SENSOR[] = {
-        "model","i2c_addr","fps","width","height"
-    };
-
     /* image: nested "image":{...} preferred; the legacy flat keys of the old
-     * /control (top-level brightness/... ) keep working via a whole-body scan */
+     * /control (top-level brightness/... ) keep working via a whole-body scan.
+     * image_fields (config.c) covers every numeric image.* key, accepted
+     * regardless of SoC support: the HAL skips what the platform cannot do,
+     * the value still persists. */
+    int nimg; const cfg_field *img_tbl = cfg_fields_image(&nimg);
     const char *se, *sb = find_obj(json, end, "image", &se);
-    apply_section(ch, "image", sb?sb:json, sb?se:end,
-                  IMG, (int)(sizeof IMG/sizeof IMG[0]));
+    apply_ctrl_fields(ch, "image", sb?sb:json, sb?se:end, img_tbl, nimg);
     /* legacy day/night: {"force_mode":"night"|"day"} */
     if (get_val(json, end, "force_mode", v, sizeof v)){
         if      (!strcmp(v,"night")) timps_apply_setting(ch,"image.running_mode","1");
         else if (!strcmp(v,"day"))   timps_apply_setting(ch,"image.running_mode","0");
     }
 
+    /* audio: audio_fields (config.c) covers both the "live" keys (volume/
+     * gain/alc_gain/mute/spk_volume/spk_gain/aec - applied immediately to
+     * the running AI/AO, see hub.c's audio branch) and the persist-only
+     * SetPubAttr/encoder-init keys (enabled/codec/samplerate/channels/
+     * bitrate/high_pass/agc/agc_target_dbfs/agc_compression_db/ns/
+     * force_stereo/spk_enabled/backchannel*), applied on the next restart -
+     * that live-vs-restart split is a HAL-side concern, not a POST-
+     * reachability one, so one table walk covers both. */
     sb = find_obj(json, end, "audio", &se);
     if (sb){
-        apply_section(ch, "audio", sb, se, AUD_LIVE, (int)(sizeof AUD_LIVE/sizeof AUD_LIVE[0]));
-        apply_section(ch, "audio", sb, se, AUD_REST, (int)(sizeof AUD_REST/sizeof AUD_REST[0]));
+        int naud; const cfg_field *aud_tbl = cfg_fields_audio(&naud);
+        apply_ctrl_fields(ch, "audio", sb, se, aud_tbl, naud);
     }
 
 #ifdef USE_PLAY
@@ -472,44 +457,21 @@ void control_apply_json(const char *json)
      * USE_DAYNIGHT=0 build, where they just persist. */
     sb = find_obj(json, end, "daynight", &se);
     if (sb){
-        if (get_val(sb, se, "enabled", v, sizeof v))
-            timps_apply_setting(ch, "daynight.enabled",
-                                (!strcmp(v,"true")||!strcmp(v,"1")) ? "1" :
-                                (!strcmp(v,"false")||!strcmp(v,"0")) ? "0" : v);
         /* mode: string token, validated here so garbage never corrupts state
          * (config_apply_kv would coerce an unknown token to sensor, but reject
-         * it up front and log rather than silently persisting nonsense). */
+         * it up front and log rather than silently persisting nonsense). This
+         * is why daynight_fields' "mode" entry (config.c) has no F_CTRL: the
+         * generic walker below must not also touch it. Every other
+         * daynight.* key (enabled, the time_* / sun_* strings and numerics,
+         * the gain thresholds, ...) rides the generic walker now. */
         if (get_val(sb, se, "mode", v, sizeof v)){
             if (!strcmp(v,"sensor")||!strcmp(v,"time")||!strcmp(v,"sun"))
                 timps_apply_setting(ch, "daynight.mode", v);
             else
                 LOGW(MOD,"ignoring daynight.mode = '%s' (not sensor/time/sun)", v);
         }
-        /* string fields (time window "HH:MM") go through get_val explicitly;
-         * the numeric ones (incl. negative offsets) ride apply_section, which
-         * feeds get_val -> timps_apply_setting -> config_apply_kv unchanged. */
-        if (get_val(sb, se, "time_night_start", v, sizeof v))
-            timps_apply_setting(ch, "daynight.time_night_start", v);
-        if (get_val(sb, se, "time_day_start", v, sizeof v))
-            timps_apply_setting(ch, "daynight.time_day_start", v);
-        static const char *const DN_KEYS[] = {
-            "total_gain_day_threshold","total_gain_night_threshold",
-            "day_gain_pct","baseline_delay_s",
-            "boot_settle_s","boot_settle_max_s","boot_stable_pct",
-            "night_reconfirm_s","probe_max_skip_s",
-            "sun_latitude","sun_longitude",
-            "sun_sunrise_offset_min","sun_sunset_offset_min",
-            /* brightness-fallback (used only when no gain field is readable)
-             * + the two sampling-loop knobs: config-only like every other key
-             * in this list (the daynight thread polls g_cfg), never F_NOGET -
-             * unlike switch_cmd/isp_path (exec'd command / scraped proc path,
-             * deliberately excluded just below), these were simply missed when
-             * the section handler was written. */
-            "threshold_low","threshold_high","hysteresis",
-            "interval_ms","transition_s"
-        };
-        apply_section(ch, "daynight", sb, se,
-                      DN_KEYS, (int)(sizeof DN_KEYS/sizeof DN_KEYS[0]));
+        int ndn; const cfg_field *dn_tbl = cfg_fields_daynight(&ndn);
+        apply_ctrl_fields(ch, "daynight", sb, se, dn_tbl, ndn);
     }
 
     /* osd, legacy shared form: {"osd":{"enabled":true,"0":{...},..,"7":{...}}}
@@ -524,25 +486,19 @@ void control_apply_json(const char *json)
     if (sb){
         const char *fe = sb;
         while (fe<se && *fe!='{') fe++;
-        if (get_val(sb, fe, "enabled", v, sizeof v))
-            timps_apply_setting(ch, "osd.enabled",
-                                (!strcmp(v,"true")||!strcmp(v,"1")) ? "1" :
-                                (!strcmp(v,"false")||!strcmp(v,"0")) ? "0" : v);
-        /* monitor_stream/font_path/vars_file/supersample/hinting: same
-         * restart-required class as "enabled" just above, just missing from
-         * this handler until now (config.c's osd_fields[] table has never
-         * marked them F_NOGET). */
-        static const char *const OSD_GLOBAL_KEYS[] = {
-            "monitor_stream","font_path","vars_file","supersample","hinting"
-        };
-        apply_section(ch, "osd", sb, fe, OSD_GLOBAL_KEYS,
-                      (int)(sizeof OSD_GLOBAL_KEYS/sizeof OSD_GLOBAL_KEYS[0]));
+        /* osd.* globals (enabled/monitor_stream/font_path/vars_file/
+         * supersample/hinting): all restart-required, all F_CTRL in
+         * osd_fields (config.c) - one generic walk covers what used to be
+         * the hand-written "enabled" special-case plus OSD_GLOBAL_KEYS[]. */
+        int nosd; const cfg_field *osd_tbl = cfg_fields_osd(&nosd);
+        apply_ctrl_fields(ch, "osd", sb, fe, osd_tbl, nosd);
+        int nitem; const cfg_field *item_tbl = cfg_fields_osd_item(&nitem);
         for (int i=0;i<MS_MAX_OSD;i++){
             char idx[4]; snprintf(idx,sizeof idx,"%d",i);
             const char *ie, *ib = find_obj(sb, se, idx, &ie);
             if (!ib) continue;
             char pre[8]; snprintf(pre,sizeof pre,"osd%d",i);
-            apply_section(ch, pre, ib, ie, OSD, (int)(sizeof OSD/sizeof OSD[0]));
+            apply_ctrl_fields(ch, pre, ib, ie, item_tbl, nitem);
         }
     }
 
@@ -553,12 +509,13 @@ void control_apply_json(const char *json)
         char sec[8]; snprintf(sec,sizeof sec,"osd%d",s);
         sb = find_obj(json, end, sec, &se);
         if (!sb) continue;
+        int nitem; const cfg_field *item_tbl = cfg_fields_osd_item(&nitem);
         for (int i=0;i<MS_MAX_OSD;i++){
             char idx[4]; snprintf(idx,sizeof idx,"%d",i);
             const char *ie, *ib = find_obj(sb, se, idx, &ie);
             if (!ib) continue;
             char pre[12]; snprintf(pre,sizeof pre,"osd%d.%d",s,i);
-            apply_section(ch, pre, ib, ie, OSD, (int)(sizeof OSD/sizeof OSD[0]));
+            apply_ctrl_fields(ch, pre, ib, ie, item_tbl, nitem);
         }
     }
 
@@ -567,12 +524,13 @@ void control_apply_json(const char *json)
      * encoder; changes apply on the next restart) */
     sb = find_obj(json, end, "video", &se);
     if (sb){
+        int nvid; const cfg_field *vid_tbl = cfg_fields_video(&nvid);
         for (int i=0;i<MS_MAX_VSTREAM;i++){
             char idx[4]; snprintf(idx,sizeof idx,"%d",i);
             const char *ie, *ib = find_obj(sb, se, idx, &ie);
             if (!ib) continue;
             char pre[8]; snprintf(pre,sizeof pre,"video%d",i);
-            apply_section(ch, pre, ib, ie, VID_REST, (int)(sizeof VID_REST/sizeof VID_REST[0]));
+            apply_ctrl_fields(ch, pre, ib, ie, vid_tbl, nvid);
         }
     }
 
@@ -581,7 +539,7 @@ void control_apply_json(const char *json)
      * moves the IMP OSD cover region on that stream) and persisted. */
     sb = find_obj(json, end, "privacy", &se);
     if (sb){
-        static const char *const PRIV_KEYS[] = {"enabled","x","y","w","h","color"};
+        int nprivf; const cfg_field *priv_tbl = cfg_fields_privacy(&nprivf);
         for (int s=0;s<MS_MAX_VSTREAM;s++){
             char sidx[4]; snprintf(sidx,sizeof sidx,"%d",s);
             const char *sse, *ssb = find_obj(sb, se, sidx, &sse);
@@ -591,8 +549,7 @@ void control_apply_json(const char *json)
                 const char *ne, *nb = find_obj(ssb, sse, nidx, &ne);
                 if (!nb) continue;
                 char pre[16]; snprintf(pre,sizeof pre,"privacy%d.%d",s,n);
-                apply_section(ch, pre, nb, ne, PRIV_KEYS,
-                              (int)(sizeof PRIV_KEYS/sizeof PRIV_KEYS[0]));
+                apply_ctrl_fields(ch, pre, nb, ne, priv_tbl, nprivf);
             }
         }
     }
@@ -600,41 +557,28 @@ void control_apply_json(const char *json)
     /* sensor: {"sensor":{"model":"gc2053","fps":25,...}} -> sensor.*
      * (persist-only, applied at the next ISP init) */
     sb = find_obj(json, end, "sensor", &se);
-    if (sb)
-        apply_section(ch, "sensor", sb, se, SENSOR, (int)(sizeof SENSOR/sizeof SENSOR[0]));
+    if (sb){
+        int nsen; const cfg_field *sen_tbl = cfg_fields_sensor(&nsen);
+        apply_ctrl_fields(ch, "sensor", sb, se, sen_tbl, nsen);
+    }
 
     /* motion: {"motion":{"enabled":..,"sensitivity":..,"cols":..,"rows":..,
-     * "monitor_stream":..}} -> motion.*. ALL applied LIVE: the HAL stops and
-     * recreates the IVS grid on any of these (move params are create-time
-     * attributes), then the values persist. cols/rows are clamped to the
-     * SDK's cell budget by the config layer (caps.motion.max_cells).
-     * motion.cooldown_ms/on_motion are deliberately NOT settable over HTTP:
-     * on_motion is run via fork()+execlp() (no shell) and stays
-     * config-file-only. */
+     * "monitor_stream":..,"hold_ms":..,"skip_frames":..}} -> motion.*. Most
+     * are applied LIVE: the HAL stops and recreates the IVS grid on any of
+     * enabled/sensitivity/cols/rows/monitor_stream (move params are create-
+     * time attributes); hold_ms/skip_frames only feed the grid at the next
+     * such rebuild or a restart. cols/rows are clamped to the SDK's cell
+     * budget by the config layer (caps.motion.max_cells).
+     * motion.cooldown_ms/on_motion are deliberately NOT settable over HTTP
+     * (no F_CTRL in motion_fields, config.c): on_motion is run via
+     * fork()+execlp() (no shell) and stays config-file-only, and cooldown_ms
+     * is the floor that bounds how often it re-fires - see the security-
+     * boundary comment on motion_fields in config.c before ever adding
+     * F_CTRL to either. */
     sb = find_obj(json, end, "motion", &se);
     if (sb){
-        if (get_val(sb, se, "enabled", v, sizeof v))
-            timps_apply_setting(ch, "motion.enabled",
-                                (!strcmp(v,"true")||!strcmp(v,"1")) ? "1" :
-                                (!strcmp(v,"false")||!strcmp(v,"0")) ? "0" : v);
-        static const char *const MOTION_KEYS[] = {
-            "sensitivity","cols","rows","monitor_stream"
-        };
-        apply_section(ch, "motion", sb, se,
-                      MOTION_KEYS, (int)(sizeof MOTION_KEYS/sizeof MOTION_KEYS[0]));
-        /* hold_ms/skip_frames: both feed IMP_IVS_MoveParam/g_hold_ms at IVS
-         * group CREATE time only (imp_motion.c) - unlike the keys above, a
-         * live POST does not itself rebuild the grid, so the new value
-         * persists and takes effect at the next enabled/cols/rows/
-         * monitor_stream-triggered resync or daemon restart (same
-         * config-only/restart-required class as the videoN and sensor
-         * sections above). Neither is F_NOGET (unlike cooldown_ms/on_motion
-         * just above) - they were simply missing from this handler. */
-        static const char *const MOTION_RESTART_KEYS[] = {
-            "hold_ms","skip_frames"
-        };
-        apply_section(ch, "motion", sb, se, MOTION_RESTART_KEYS,
-                      (int)(sizeof MOTION_RESTART_KEYS/sizeof MOTION_RESTART_KEYS[0]));
+        int nmot; const cfg_field *mot_tbl = cfg_fields_motion(&nmot);
+        apply_ctrl_fields(ch, "motion", sb, se, mot_tbl, nmot);
     }
 
     /* record: {"record":{"active":1|0}} = manual start/stop override (the
@@ -653,12 +597,8 @@ void control_apply_json(const char *json)
                 record_clip(clip, secs);
             }
         }
-        static const char *const REC_KEYS[] = {
-            "enabled","channel","mode","dir","name","segment_s",
-            "pre_roll_s","post_roll_s","min_free_mb","audio"
-        };
-        apply_section(ch, "record", sb, se,
-                      REC_KEYS, (int)(sizeof REC_KEYS/sizeof REC_KEYS[0]));
+        int nrec; const cfg_field *rec_tbl = cfg_fields_record(&nrec);
+        apply_ctrl_fields(ch, "record", sb, se, rec_tbl, nrec);
     }
 
     /* timelapse: {"timelapse":{"enabled":..,"channel":..,"dir":..,"name":..,
@@ -666,11 +606,8 @@ void control_apply_json(const char *json)
      * running timelapse thread reads them live (no restart). */
     sb = find_obj(json, end, "timelapse", &se);
     if (sb){
-        static const char *const TL_KEYS[] = {
-            "enabled","channel","dir","name","interval_s","keep_days"
-        };
-        apply_section(ch, "timelapse", sb, se,
-                      TL_KEYS, (int)(sizeof TL_KEYS/sizeof TL_KEYS[0]));
+        int ntl; const cfg_field *tl_tbl = cfg_fields_timelapse(&ntl);
+        apply_ctrl_fields(ch, "timelapse", sb, se, tl_tbl, ntl);
     }
 
     /* M2: flush any HAL apply that was deferred/batched across the keys of this

@@ -491,4 +491,57 @@ int  config_write_keys(const char *path, const char *const *keys,
 void config_str_lock(void);
 void config_str_unlock(void);
 
+/* ------------------------------------------------------------------------
+ * cfg_field: config.c's descriptor-driven key table entry (see the B2 doc
+ * comment above set_kv()'s tables in config.c for the full {name, offset,
+ * type, clamp} rationale). Exposed here - not just kept private to config.c -
+ * so control.c's /control POST handling can walk these SAME tables instead
+ * of hand-listing field names a second time; see F_CTRL below. */
+typedef struct {
+    const char    *name;    /* canonical key name (after the section prefix) */
+    const char    *alias;   /* optional legacy/alternate spelling, or NULL */
+    unsigned short off;     /* byte offset from the section base struct */
+    unsigned char  type;    /* config.c's internal T_* (opaque outside
+                             * config.c - only its field_set()/field_get()
+                             * interpret it) */
+    unsigned char  flags;   /* F_* below */
+    int lo, hi;             /* T_INT/T_FLT: clamp when lo<hi; T_STR: buf size in hi */
+} cfg_field;
+
+/* Set/persist-only key: config_get_kv() keeps reporting it unknown (full
+ * rationale in config.c, above set_kv()'s tables). */
+#define F_NOGET  0x01
+/* Live int/bool field read lock-free by a different thread than the /control
+ * writer, so it must be an `_Atomic int` in the struct (see config.c). */
+#define F_ATOMIC 0x02
+/* POST-able via /control: control.c's generic per-section field walker
+ * (apply_ctrl_fields() in control.c) only ever applies a JSON key whose
+ * matching cfg_field entry has THIS flag set - a deliberate, mandatory-per-
+ * field SECURITY ALLOWLIST, not a walk-everything default. A field missing
+ * F_CTRL is unreachable via HTTP POST even though it may be fully GET-able
+ * and settable by hand-editing the config file - e.g. motion.on_motion/
+ * cooldown_ms (fork()+execlp() hook / re-exec floor), daynight.switch_cmd/
+ * isp_path (exec'd command / scraped proc path), every rtsp.* / http.*
+ * credential/token, and the videoN.imp_chn / jpeg* / jpeg_chn internal channel-
+ * wiring fields all intentionally have NO F_CTRL. Adding F_CTRL to a field is
+ * therefore an explicit, reviewable decision to expose it over HTTP - never
+ * inferred just because a field exists in one of these tables. */
+#define F_CTRL   0x04
+
+/* Accessors handing control.c's generic /control POST walker the section
+ * field tables it needs (config.c keeps the tables themselves static - these
+ * just expose a read-only view + count). Only entries with F_CTRL set in the
+ * returned table are POST-eligible; see the flag's doc comment above. */
+const cfg_field *cfg_fields_image(int *n);
+const cfg_field *cfg_fields_audio(int *n);
+const cfg_field *cfg_fields_sensor(int *n);
+const cfg_field *cfg_fields_osd(int *n);       /* osd.* globals (not items) */
+const cfg_field *cfg_fields_osd_item(int *n);  /* one OSD overlay item */
+const cfg_field *cfg_fields_motion(int *n);
+const cfg_field *cfg_fields_record(int *n);
+const cfg_field *cfg_fields_timelapse(int *n);
+const cfg_field *cfg_fields_daynight(int *n);
+const cfg_field *cfg_fields_video(int *n);     /* one videoN stream */
+const cfg_field *cfg_fields_privacy(int *n);   /* one privacy region */
+
 #endif

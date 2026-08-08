@@ -6,6 +6,57 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Changed
+- **`src/control.c`'s `/control` POST handling no longer hand-lists field
+  names in a second place** (architecture-audit catch): 11 hand-written
+  string arrays (`IMG`, `AUD_LIVE`, `AUD_REST`, `OSD`, `OSD_GLOBAL_KEYS`,
+  `VID_REST`, `SENSOR`, `DN_KEYS`, `MOTION_KEYS`, `MOTION_RESTART_KEYS`,
+  `REC_KEYS`, `TL_KEYS`, `PRIV_KEYS`) re-listed ~100 field names already
+  present in `src/config.c`'s `cfg_field` tables — the confirmed root cause
+  of the "nine orphaned fields" bug fixed just above (a field added to
+  config.c's table but forgotten in control.c's matching array silently
+  never applied over HTTP). Added one flag, `F_CTRL`, to `cfg_field`
+  (alongside the existing `F_NOGET`/`F_ATOMIC`); config.c's tables are now
+  the single source of truth for "is this field POST-able", exposed to
+  control.c via eleven `cfg_fields_*()` accessors (image/audio/sensor/osd/
+  osd_item/motion/record/timelapse/daynight/video/privacy). control.c's new
+  generic `apply_ctrl_fields()` walks a section's table and applies any
+  entry present in the POSTed JSON with `F_CTRL` set, reusing
+  `timps_apply_setting()` exactly as before — the live-apply funnel itself
+  is untouched.
+  - `F_CTRL` is a deliberate, mandatory-per-field **security allowlist**,
+    not a walk-everything default: fields the arrays never exposed keep no
+    `F_CTRL` and stay silently unreachable via POST, matching prior
+    behavior exactly — `motion.on_motion`/`cooldown_ms` (fork()+execlp()
+    hook / re-exec floor), `daynight.switch_cmd`/`isp_path` (exec'd
+    command / scraped proc path), every `rtsp.*`/`http.*` credential and
+    token, the `videoN.imp_chn`/`jpeg`/`jpeg_quality`/`jpeg_fps`/`jpeg_chn`
+    internal channel-wiring fields, and the OSD item's `logo`/`logo_w`/
+    `logo_h`/`font_path` (never in the old per-item `OSD[]` array either).
+  - Genuinely special cases stayed hand-written, unchanged: `speaker.play`/
+    `stop` (transient actions), `record.active`/`record.clip` (actions),
+    the legacy `force_mode` alias, `daynight.mode`'s reject-on-garbage
+    validation (deliberately stricter than `config_apply_kv`'s own
+    coerce-to-sensor-and-persist), and the nested/indexed structural loops
+    for `osd`/`osd<S>`/`video`/`privacy` (each loop now calls the generic
+    per-field walker once it has located the right sub-object/sub-table,
+    rather than the top-level dispatch itself being generic across nesting
+    shapes). The `osd.enabled`/`motion.enabled`/`daynight.enabled` and
+    `daynight.time_night_start`/`time_day_start` hand-written special cases
+    were removed as genuinely redundant (their truthy-string pre-conversion
+    duplicated what `pbool()`/`copystr()` already do) rather than kept.
+  - Verified against `timpsd-sim`: representative fields from each of the
+    11 old arrays still apply/persist/round-trip identically; all 13
+    fields fixed by the immediately-preceding "nine orphaned entries + osd
+    item type" commit still work; a nested/indexed case (`osd0.0.type`)
+    still applies; and every security-excluded field above still returns
+    `{"ok":true}` with **no** `[CTRL] set` log line and **no** config-file
+    write, confirmed both by daemon log inspection and a `GET /control`
+    diff. Cross-compiled clean for T31 against real Ingenic headers/libs
+    (zero new warnings); the resulting binary is 1312 bytes smaller
+    (`.text` -940 B, `.data` -372 B, `.bss` unchanged) than before this
+    change on an otherwise-identical build.
+
 ### Fixed
 - **Nine `cfg_field` table entries were silently unreachable via `POST
   /control`** (audit catch, not intentional design like their neighbors):

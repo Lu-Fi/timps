@@ -432,31 +432,14 @@ enum {
     T_BCCODEC,  /* int: "pcmu"/"pcma"/"aac"/number   <-> "%d"             */
 };
 
-/* Set/persist-only key: config_get_kv() keeps reporting it unknown, exactly
- * like the old hand-written getter did, so /control change-detection falls
- * back to always applying it. Making one of these readable would newly let
- * the get-apply-get dedup SKIP an unchanged re-POST - a behaviour change -
- * so don't drop the flag without checking the /control consumers. */
-#define F_NOGET 0x01
-/* Live int/bool field read lock-free by a DIFFERENT thread than the /control
- * writer (a HAL/sim worker in a hot loop), so it must be an `_Atomic int` in
- * the struct: field_set()/field_get() then store/load it atomically instead of
- * the plain `*(int*)p` access, which - even though the writer holds
- * config_str_lock - would be a C11 data race against the lock-free reader (a
- * load the compiler could legally hoist out of the reader's loop). Only for
- * genuinely lock-free cross-thread hot-path reads; fields that readers already
- * take config_str_lock for (OSD items, etc.) do NOT need this. Applies to
- * T_BOOL/T_INT only. */
-#define F_ATOMIC 0x02
-
-typedef struct {
-    const char    *name;    /* canonical key name (after the section prefix) */
-    const char    *alias;   /* optional legacy/alternate spelling, or NULL */
-    unsigned short off;     /* byte offset from the section base struct */
-    unsigned char  type;    /* T_* */
-    unsigned char  flags;   /* F_* */
-    int lo, hi;             /* T_INT/T_FLT: clamp when lo<hi; T_STR: buf size in hi */
-} cfg_field;
+/* F_NOGET/F_ATOMIC/F_CTRL and the cfg_field struct itself now live in
+ * config.h (moved there so control.c's /control POST handling can walk these
+ * same tables via the cfg_fields_*() accessors near the bottom of this file,
+ * instead of hand-listing field names a second time - see the F_CTRL doc
+ * comment in config.h for the security-allowlist rationale). F_NOGET's "don't
+ * drop without checking /control" and F_ATOMIC's "T_BOOL/T_INT only,
+ * genuinely lock-free hot-path reads only" rules still apply exactly as
+ * before; nothing about their behavior changed. */
 
 /* entry helpers: F = generic field, FS = string field (size from the struct) */
 #define F(nm,al,fld,ty,fl,LO,HI) \
@@ -466,74 +449,88 @@ typedef struct {
       (int)sizeof ((TT*)0)->fld }
 
 #define TT ms_sensor_cfg
+/* every sensor.* key is F_CTRL (POST-able), matching the old SENSOR[] array
+ * in control.c verbatim: persist-only (applied at the next ISP init), like
+ * videoN.*. */
 static const cfg_field sensor_fields[] = {
-    FS("model",     0,             model, 0),
+    FS("model",     0,             model, F_CTRL),
     /* F-01: sensor.* is POSTable via /control and persists to timps.conf, so a
      * garbage numeric (e.g. width=70000, i2c_addr=-5) would survive a reboot and
      * feed bad values into the ISP init -> respawn crash-loop (the registry
      * override at config_finalize only guards sensor.model, not the numerics).
      * Clamp like videoN.*; lo=0 keeps 0 meaning "auto". */
-    F ("i2c_addr",  "i2c_address", i2c_addr, T_INT, 0, 0,0x7F),
-    F ("fps",       0,             fps,      T_INT, 0, 0,120),
-    F ("width",     0,             width,    T_INT, 0, 0,8192),
-    F ("height",    0,             height,   T_INT, 0, 0,8192),
+    F ("i2c_addr",  "i2c_address", i2c_addr, T_INT, F_CTRL, 0,0x7F),
+    F ("fps",       0,             fps,      T_INT, F_CTRL, 0,120),
+    F ("width",     0,             width,    T_INT, F_CTRL, 0,8192),
+    F ("height",    0,             height,   T_INT, F_CTRL, 0,8192),
 };
 #undef TT
 
 #define TT ms_image_cfg
+/* every image.* key is F_CTRL (POST-able): accepted regardless of SoC
+ * support, the HAL just skips what the platform cannot do at apply time (see
+ * IMG_CAPS in control.c for the per-platform live-apply subset). This is the
+ * table the old hand-written IMG[] array in control.c re-listed verbatim. */
 static const cfg_field image_fields[] = {
-    F("brightness",             0, brightness,             T_INT, 0, 0,255),
-    F("contrast",               0, contrast,               T_INT, 0, 0,255),
-    F("saturation",             0, saturation,             T_INT, 0, 0,255),
-    F("sharpness",              0, sharpness,              T_INT, 0, 0,255),
-    F("hue",                    0, hue,                    T_INT, 0, 0,255),
-    F("vflip",                  0, vflip,                  T_BOOL,0, 0,0),
-    F("hflip",                  0, hflip,                  T_BOOL,0, 0,0),
-    F("running_mode",           0, running_mode,           T_INT, 0, 0,1),   /* F-09 */
-    F("anti_flicker",           0, anti_flicker,           T_INT, 0, 0,2),   /* F-09 */
-    F("ae_compensation",        0, ae_compensation,        T_INT, 0, 0,255),
-    F("max_again",              0, max_again,              T_INT, 0, 0,255),
-    F("max_dgain",              0, max_dgain,              T_INT, 0, 0,255),
-    F("sinter_strength",        0, sinter_strength,        T_INT, 0, 0,255),
-    F("temper_strength",        0, temper_strength,        T_INT, 0, 0,255),
-    F("dpc_strength",           0, dpc_strength,           T_INT, 0, 0,255),
-    F("defog_strength",         0, defog_strength,         T_INT, 0, 0,255),
-    F("drc_strength",           0, drc_strength,           T_INT, 0, 0,255),
-    F("highlight_depress",      0, highlight_depress,      T_INT, 0, 0,10),
-    F("backlight_compensation", 0, backlight_compensation, T_INT, 0, 0,10),
-    F("core_wb_mode",           0, core_wb_mode,           T_INT, 0, 0,1),   /* F-09 */
-    F("wb_rgain",               0, wb_rgain,               T_INT, 0, 0,65535),
-    F("wb_bgain",               0, wb_bgain,               T_INT, 0, 0,65535),
+    F("brightness",             0, brightness,             T_INT, F_CTRL, 0,255),
+    F("contrast",               0, contrast,               T_INT, F_CTRL, 0,255),
+    F("saturation",             0, saturation,             T_INT, F_CTRL, 0,255),
+    F("sharpness",              0, sharpness,              T_INT, F_CTRL, 0,255),
+    F("hue",                    0, hue,                    T_INT, F_CTRL, 0,255),
+    F("vflip",                  0, vflip,                  T_BOOL,F_CTRL, 0,0),
+    F("hflip",                  0, hflip,                  T_BOOL,F_CTRL, 0,0),
+    F("running_mode",           0, running_mode,           T_INT, F_CTRL, 0,1),   /* F-09 */
+    F("anti_flicker",           0, anti_flicker,           T_INT, F_CTRL, 0,2),   /* F-09 */
+    F("ae_compensation",        0, ae_compensation,        T_INT, F_CTRL, 0,255),
+    F("max_again",              0, max_again,              T_INT, F_CTRL, 0,255),
+    F("max_dgain",              0, max_dgain,              T_INT, F_CTRL, 0,255),
+    F("sinter_strength",        0, sinter_strength,        T_INT, F_CTRL, 0,255),
+    F("temper_strength",        0, temper_strength,        T_INT, F_CTRL, 0,255),
+    F("dpc_strength",           0, dpc_strength,           T_INT, F_CTRL, 0,255),
+    F("defog_strength",         0, defog_strength,         T_INT, F_CTRL, 0,255),
+    F("drc_strength",           0, drc_strength,           T_INT, F_CTRL, 0,255),
+    F("highlight_depress",      0, highlight_depress,      T_INT, F_CTRL, 0,10),
+    F("backlight_compensation", 0, backlight_compensation, T_INT, F_CTRL, 0,10),
+    F("core_wb_mode",           0, core_wb_mode,           T_INT, F_CTRL, 0,1),   /* F-09 */
+    F("wb_rgain",               0, wb_rgain,               T_INT, F_CTRL, 0,65535),
+    F("wb_bgain",               0, wb_bgain,               T_INT, F_CTRL, 0,65535),
 };
 #undef TT
 
 #define TT ms_audio_cfg
+/* every audio.* key is F_CTRL (POST-able) - this table is the union of the
+ * old hand-written AUD_LIVE[] (applied to the running AI/AO immediately:
+ * volume/gain/alc_gain/mute/spk_volume/spk_gain/aec) and AUD_REST[] (persist-
+ * only, SetPubAttr/encoder-init attributes that apply at the next restart).
+ * That live-vs-restart distinction is a HAL-side concern (see hub.c's audio
+ * branch), not a POST-reachability one, so both classes carry the same flag
+ * here; control.c's generic walker no longer needs to know which is which. */
 static const cfg_field audio_fields[] = {
-    F ("enabled",            0, enabled,            T_BOOL,   0, 0,0),
-    F ("codec",              0, codec,              T_ACODEC, 0, 0,0),
-    F ("samplerate",         0, samplerate,         T_INT,    0, 8000,96000),   /* F-09 */
+    F ("enabled",            0, enabled,            T_BOOL,   F_CTRL, 0,0),
+    F ("codec",              0, codec,              T_ACODEC, F_CTRL, 0,0),
+    F ("samplerate",         0, samplerate,         T_INT,    F_CTRL, 8000,96000),   /* F-09 */
     /* 1 = mono (native), 2 = simulated stereo (mono mic duplicated to L=R,
      * AAC only) - anything else would put a bogus channel count in the AAC
      * ASC / SDP / fMP4 stsd */
-    F ("channels",           0, channels,           T_INT,    0, 1,2),
-    F ("bitrate",            0, bitrate_kbps,       T_INT,    0, 8,320),
-    F ("volume",             0, volume,             T_INT,    0, 0,100),
-    F ("gain",               0, gain,               T_INT,    0, 0,31),
-    F ("high_pass",          0, high_pass,          T_BOOL,   0, 0,0),
-    F ("agc",                0, agc,                T_BOOL,   0, 0,0),
-    F ("ns",                 0, ns,                 T_INT,    0, 0,3),
-    F ("alc_gain",           0, alc_gain,           T_INT,    0, 0,7),
-    F ("agc_target_dbfs",    0, agc_target_dbfs,    T_INT,    0, 0,31),
-    F ("agc_compression_db", 0, agc_compression_db, T_INT,    0, 0,90),
-    F ("mute",               0, mute,               T_BOOL,   F_ATOMIC, 0,0),
-    F ("force_stereo",       0, force_stereo,       T_BOOL,   0, 0,0),
-    F ("spk_enabled",        0, spk_enabled,        T_BOOL,   0, 0,0),
-    F ("spk_volume",         0, spk_volume,         T_INT,    0, 0,100),
-    F ("spk_gain",           0, spk_gain,           T_INT,    0, 0,100),
-    F ("backchannel",        0, backchannel,        T_BOOL,   0, 0,0),
-    F ("backchannel_codec",  0, backchannel_codec,  T_BCCODEC,0, 0,0),
-    F ("backchannel_rate",   0, backchannel_rate,   T_INT,    0, 8000,48000),
-    F ("aec",                0, aec,                T_BOOL,   0, 0,0),
+    F ("channels",           0, channels,           T_INT,    F_CTRL, 1,2),
+    F ("bitrate",            0, bitrate_kbps,       T_INT,    F_CTRL, 8,320),
+    F ("volume",             0, volume,             T_INT,    F_CTRL, 0,100),
+    F ("gain",               0, gain,               T_INT,    F_CTRL, 0,31),
+    F ("high_pass",          0, high_pass,          T_BOOL,   F_CTRL, 0,0),
+    F ("agc",                0, agc,                T_BOOL,   F_CTRL, 0,0),
+    F ("ns",                 0, ns,                 T_INT,    F_CTRL, 0,3),
+    F ("alc_gain",           0, alc_gain,           T_INT,    F_CTRL, 0,7),
+    F ("agc_target_dbfs",    0, agc_target_dbfs,    T_INT,    F_CTRL, 0,31),
+    F ("agc_compression_db", 0, agc_compression_db, T_INT,    F_CTRL, 0,90),
+    F ("mute",               0, mute,               T_BOOL,   F_ATOMIC|F_CTRL, 0,0),
+    F ("force_stereo",       0, force_stereo,       T_BOOL,   F_CTRL, 0,0),
+    F ("spk_enabled",        0, spk_enabled,        T_BOOL,   F_CTRL, 0,0),
+    F ("spk_volume",         0, spk_volume,         T_INT,    F_CTRL, 0,100),
+    F ("spk_gain",           0, spk_gain,           T_INT,    F_CTRL, 0,100),
+    F ("backchannel",        0, backchannel,        T_BOOL,   F_CTRL, 0,0),
+    F ("backchannel_codec",  0, backchannel_codec,  T_BCCODEC,F_CTRL, 0,0),
+    F ("backchannel_rate",   0, backchannel_rate,   T_INT,    F_CTRL, 8000,48000),
+    F ("aec",                0, aec,                T_BOOL,   F_CTRL, 0,0),
 };
 #undef TT
 
@@ -604,17 +601,20 @@ static const cfg_field srt_fields[] = {
 #undef TT
 
 #define TT ms_osd_cfg
+/* every osd.* global is F_CTRL (POST-able), matching the old hand-written
+ * osd.enabled special-case + OSD_GLOBAL_KEYS[] in control.c combined - all
+ * restart-required (imp_osd_setup() builds the OSD groups once at startup). */
 static const cfg_field osd_fields[] = {
-    F ("enabled",        0, enabled,        T_BOOL, 0, 0,0),
-    F ("monitor_stream", 0, monitor_stream, T_INT,  0, 0,0),
-    FS("font_path",      0, font_path,      0),
-    FS("vars_file",      0, vars_file,      0),
-    F ("supersample",    0, supersample,    T_INT,  0, 1,4),
+    F ("enabled",        0, enabled,        T_BOOL, F_CTRL, 0,0),
+    F ("monitor_stream", 0, monitor_stream, T_INT,  F_CTRL, 0,0),
+    FS("font_path",      0, font_path,      F_CTRL),
+    FS("vars_file",      0, vars_file,      F_CTRL),
+    F ("supersample",    0, supersample,    T_INT,  F_CTRL, 1,4),
     /* opt-in geometric autohint, default off: see the ms_osd_cfg.hinting
      * comment in config.h and msttf_set_hinting() for what this does and why
      * it's not a real TrueType hint-bytecode interpreter. Same File-only/
      * restart-only handling as supersample: read once by imp_osd_setup(). */
-    F ("hinting",        0, hinting,        T_BOOL, 0, 0,0),
+    F ("hinting",        0, hinting,        T_BOOL, F_CTRL, 0,0),
 };
 #undef TT
 
@@ -623,12 +623,21 @@ static const cfg_field osd_fields[] = {
  * MOTION_CELL_LIMIT clamp); their table entries below only serve the GET
  * side. The deprecated motion.roi_* keys are entirely outside the table
  * (parse + one-shot warning in set_kv(), never readable). */
+/* enabled/monitor_stream/sensitivity/cols/rows/hold_ms/skip_frames are F_CTRL
+ * (POST-able), matching the old hand-written motion.enabled special-case +
+ * MOTION_KEYS[] + MOTION_RESTART_KEYS[] in control.c combined.
+ * cooldown_ms and on_motion deliberately have NO F_CTRL - this is the
+ * security boundary the audit called out: on_motion is run via
+ * fork()+execlp() (no shell) and cooldown_ms is the floor that bounds how
+ * often it re-fires, so both stay config-file-only, never settable over
+ * HTTP. (Do not add F_CTRL to either without re-reading the M3 comment
+ * below and control.c's motion section comment.) */
 static const cfg_field motion_fields[] = {
-    F ("enabled",        0, enabled,        T_BOOL, 0, 0,0),
-    F ("monitor_stream", 0, monitor_stream, T_CHAN, 0, 0,0),
-    F ("sensitivity",    0, sensitivity,    T_INT,  0, 0,255),
-    F ("cols",           0, cols,           T_INT,  0, 0,0),
-    F ("rows",           0, rows,           T_INT,  0, 0,0),
+    F ("enabled",        0, enabled,        T_BOOL, F_CTRL, 0,0),
+    F ("monitor_stream", 0, monitor_stream, T_CHAN, F_CTRL, 0,0),
+    F ("sensitivity",    0, sensitivity,    T_INT,  F_CTRL, 0,255),
+    F ("cols",           0, cols,           T_INT,  F_CTRL, 0,0),
+    F ("rows",           0, rows,           T_INT,  F_CTRL, 0,0),
     /* M3: floor cooldown_ms so the on_motion hook cannot be re-exec'd on every
      * IVS result. IVS emits a result about every skip_frames/fps seconds - as
      * fast as ~200 ms at the defaults (skip_frames=5) - and the fork+exec'd hook
@@ -636,10 +645,11 @@ static const cfg_field motion_fields[] = {
      * than that interval piles up unboundedly. 250 ms caps re-fires to at most
      * ~4/s (just above the fastest detection cadence) while still allowing
      * legitimate sub-second fast-alert use; 0 (disabled/no floor) is no longer
-     * accepted. */
-    F ("cooldown_ms",    0, cooldown_ms,    T_INT,  0, 250,INT_MAX),
-    F ("hold_ms",        0, hold_ms,        T_INT,  0, 0,INT_MAX),
-    F ("skip_frames",    0, skip_frames,    T_INT,  0, 1,INT_MAX),
+     * accepted. NOT F_CTRL - see the security-boundary comment above. */
+    F ("cooldown_ms",    0, cooldown_ms,    T_INT,  0,      250,INT_MAX),
+    F ("hold_ms",        0, hold_ms,        T_INT,  F_CTRL, 0,INT_MAX),
+    F ("skip_frames",    0, skip_frames,    T_INT,  F_CTRL, 1,INT_MAX),
+    /* NOT F_CTRL - see the security-boundary comment above. */
     FS("on_motion",      0, on_motion,      F_NOGET),
 };
 #undef TT
@@ -649,32 +659,39 @@ static const cfg_field motion_fields[] = {
  * rolls are rejected so a garbage value can't silently disable rotation.
  * The whole section is readable (M13): without get coverage every
  * record-page POST re-wrote /etc/timps.conf (flash wear). */
+/* every record.* key is F_CTRL (POST-able), matching the old REC_KEYS[]
+ * array in control.c verbatim - the running recorder reads them live, no
+ * restart needed. record.active/record.clip are separate transient actions
+ * (not table fields at all), handled by hand-written code in control.c. */
 static const cfg_field record_fields[] = {
-    F ("enabled",     0,           enabled,     T_BOOL,    0, 0,0),
-    F ("channel",     0,           channel,     T_CHAN,    0, 0,0),
-    F ("mode",        0,           mode,        T_RECMODE, 0, 0,0),
-    FS("dir",         0,           dir,         0),
-    FS("name",        0,           name,        0),
-    F ("segment_s",   "segment",   segment_s,   T_INT,     0, 0,86400),
-    F ("pre_roll_s",  "pre_roll",  pre_roll_s,  T_INT,     0, 0,60),
+    F ("enabled",     0,           enabled,     T_BOOL,    F_CTRL, 0,0),
+    F ("channel",     0,           channel,     T_CHAN,    F_CTRL, 0,0),
+    F ("mode",        0,           mode,        T_RECMODE, F_CTRL, 0,0),
+    FS("dir",         0,           dir,         F_CTRL),
+    FS("name",        0,           name,        F_CTRL),
+    F ("segment_s",   "segment",   segment_s,   T_INT,     F_CTRL, 0,86400),
+    F ("pre_roll_s",  "pre_roll",  pre_roll_s,  T_INT,     F_CTRL, 0,60),
     /* min 1, not 0: motion_recent() (record.c) gates motion-triggered
      * recording on `last_ms < post_roll_s*1000` - at 0 that's never true even
      * for the triggering event itself, so record.mode=1 would silently
      * record nothing, ever, with enabled:true and zero warning (Finding 1). */
-    F ("post_roll_s", "post_roll", post_roll_s, T_INT,     0, 1,300),
-    F ("min_free_mb", 0,           min_free_mb, T_INT,     0, 0,1048576),
-    F ("audio",       0,           audio,       T_BOOL,    0, 0,0),
+    F ("post_roll_s", "post_roll", post_roll_s, T_INT,     F_CTRL, 1,300),
+    F ("min_free_mb", 0,           min_free_mb, T_INT,     F_CTRL, 0,1048576),
+    F ("audio",       0,           audio,       T_BOOL,    F_CTRL, 0,0),
 };
 #undef TT
 
 #define TT ms_timelapse_cfg
+/* every timelapse.* key is F_CTRL (POST-able), matching the old TL_KEYS[]
+ * array in control.c verbatim - the running timelapse thread reads them
+ * live, no restart needed. */
 static const cfg_field timelapse_fields[] = {
-    F ("enabled",    0,          enabled,    T_BOOL, 0, 0,0),
-    F ("channel",    0,          channel,    T_CHAN, 0, 0,0),
-    FS("dir",        0,          dir,        0),
-    FS("name",       0,          name,       0),
-    F ("interval_s", "interval", interval_s, T_INT,  0, 1,INT_MAX),
-    F ("keep_days",  0,          keep_days,  T_INT,  0, 0,INT_MAX),
+    F ("enabled",    0,          enabled,    T_BOOL, F_CTRL, 0,0),
+    F ("channel",    0,          channel,    T_CHAN, F_CTRL, 0,0),
+    FS("dir",        0,          dir,        F_CTRL),
+    FS("name",       0,          name,       F_CTRL),
+    F ("interval_s", "interval", interval_s, T_INT,  F_CTRL, 1,INT_MAX),
+    F ("keep_days",  0,          keep_days,  T_INT,  F_CTRL, 0,INT_MAX),
 };
 #undef TT
 
@@ -690,29 +707,41 @@ static const cfg_field timelapse_fields[] = {
  * low..high band; day_gain_pct<=100 keeps the adaptive day trigger BELOW the
  * night baseline (0 = feature off, as before); interval_ms floor 100 keeps
  * the sampling loop from busy-spinning. */
+/* Every daynight.* key is F_CTRL (POST-able) EXCEPT:
+ *  - mode: POST-able too, but NOT via the generic walker - control.c keeps
+ *    hand-written validation for it (reject an unrecognized token outright
+ *    with a warning, instead of config_apply_kv's own coerce-to-sensor-and-
+ *    persist behaviour) rather than the generic per-field apply, so it is
+ *    deliberately left without F_CTRL: the flag means "the generic walker
+ *    may apply this", not "reachable via POST at all".
+ *  - switch_cmd/isp_path: genuinely NOT settable via /control (exec'd
+ *    command / scraped proc path) - the security boundary the audit called
+ *    out, already marked F_NOGET, now also deliberately left without F_CTRL. */
 static const cfg_field daynight_fields[] = {
-    F ("enabled",                    0, enabled,                    T_BOOL,  0, 0,0),
-    F ("mode",                       0, mode,                       T_DNMODE,0, 0,0),
-    FS("time_night_start",           0, time_night_start,           0),
-    FS("time_day_start",             0, time_day_start,             0),
-    F ("sun_latitude",               0, sun_latitude,               T_FLT,   0, -90,90),
-    F ("sun_longitude",              0, sun_longitude,              T_FLT,   0, -180,180),
-    F ("sun_sunrise_offset_min",     0, sun_sunrise_offset_min,     T_INT,   0, -1440,1440),
-    F ("sun_sunset_offset_min",      0, sun_sunset_offset_min,      T_INT,   0, -1440,1440),
-    F ("total_gain_day_threshold",   0, total_gain_day_threshold,   T_FLT,   0, 1,1000000),
-    F ("total_gain_night_threshold", 0, total_gain_night_threshold, T_FLT,   0, 1,1000000),
-    F ("threshold_low",              0, threshold_low,              T_FLT,   0, 0,100),
-    F ("threshold_high",             0, threshold_high,             T_FLT,   0, 0,100),
-    F ("hysteresis",                 0, hysteresis,                 T_FLT,   0, 0,1),
-    F ("day_gain_pct",               0, day_gain_pct,               T_INT,   0, 0,100),
-    F ("baseline_delay_s",           0, baseline_delay_s,           T_INT,   0, 0,3600),
-    F ("boot_settle_s",              0, boot_settle_s,              T_INT,   0, 0,600),
-    F ("boot_settle_max_s",          0, boot_settle_max_s,          T_INT,   0, 0,3600),
-    F ("boot_stable_pct",            0, boot_stable_pct,            T_INT,   0, 0,100),
-    F ("night_reconfirm_s",          0, night_reconfirm_s,          T_INT,   0, 0,86400),
-    F ("probe_max_skip_s",           0, probe_max_skip_s,           T_INT,   0, 3600,604800),
-    F ("interval_ms",                0, interval_ms,                T_INT,   0, 100,60000),
-    F ("transition_s",               0, transition_s,               T_INT,   0, 0,3600),
+    F ("enabled",                    0, enabled,                    T_BOOL,  F_CTRL, 0,0),
+    /* NOT F_CTRL - see the comment above (hand-validated in control.c). */
+    F ("mode",                       0, mode,                       T_DNMODE,0,      0,0),
+    FS("time_night_start",           0, time_night_start,           F_CTRL),
+    FS("time_day_start",             0, time_day_start,             F_CTRL),
+    F ("sun_latitude",               0, sun_latitude,               T_FLT,   F_CTRL, -90,90),
+    F ("sun_longitude",              0, sun_longitude,              T_FLT,   F_CTRL, -180,180),
+    F ("sun_sunrise_offset_min",     0, sun_sunrise_offset_min,     T_INT,   F_CTRL, -1440,1440),
+    F ("sun_sunset_offset_min",      0, sun_sunset_offset_min,      T_INT,   F_CTRL, -1440,1440),
+    F ("total_gain_day_threshold",   0, total_gain_day_threshold,   T_FLT,   F_CTRL, 1,1000000),
+    F ("total_gain_night_threshold", 0, total_gain_night_threshold, T_FLT,   F_CTRL, 1,1000000),
+    F ("threshold_low",              0, threshold_low,              T_FLT,   F_CTRL, 0,100),
+    F ("threshold_high",             0, threshold_high,             T_FLT,   F_CTRL, 0,100),
+    F ("hysteresis",                 0, hysteresis,                 T_FLT,   F_CTRL, 0,1),
+    F ("day_gain_pct",               0, day_gain_pct,               T_INT,   F_CTRL, 0,100),
+    F ("baseline_delay_s",           0, baseline_delay_s,           T_INT,   F_CTRL, 0,3600),
+    F ("boot_settle_s",              0, boot_settle_s,              T_INT,   F_CTRL, 0,600),
+    F ("boot_settle_max_s",          0, boot_settle_max_s,          T_INT,   F_CTRL, 0,3600),
+    F ("boot_stable_pct",            0, boot_stable_pct,            T_INT,   F_CTRL, 0,100),
+    F ("night_reconfirm_s",          0, night_reconfirm_s,          T_INT,   F_CTRL, 0,86400),
+    F ("probe_max_skip_s",           0, probe_max_skip_s,           T_INT,   F_CTRL, 3600,604800),
+    F ("interval_ms",                0, interval_ms,                T_INT,   F_CTRL, 100,60000),
+    F ("transition_s",               0, transition_s,               T_INT,   F_CTRL, 0,3600),
+    /* NOT F_CTRL - see the comment above (security boundary). */
     FS("switch_cmd",                 0, switch_cmd,                 F_NOGET),
     FS("isp_path",                   0, isp_path,                   F_NOGET),
 };
@@ -720,23 +749,32 @@ static const cfg_field daynight_fields[] = {
 
 #define TT ms_vstream_cfg
 /* videoN.buffers additionally sets buffers_explicit=1 in set_kv() */
+/* enabled..rtsp_path (16 keys) are F_CTRL (POST-able), matching the old
+ * VID_REST[] array in control.c verbatim - all persist-only/restart-
+ * required (the HAL does not reconfigure the running encoder).
+ * imp_chn/jpeg/jpeg_quality/jpeg_fps/jpeg_chn deliberately have NO F_CTRL:
+ * VID_REST never listed them either - they are internal encoder-channel
+ * wiring (imp_chn: the IMP channel index; jpeg*: the piggyback JPEG
+ * encoder's own attributes), not user-facing stream settings, and were
+ * already F_NOGET. Preserve this exclusion; do not add F_CTRL here without a
+ * deliberate decision to expose channel wiring over HTTP. */
 static const cfg_field video_fields[] = {
-    F ("enabled",      0,              enabled,      T_BOOL,  0,       0,0),
-    F ("codec",        0,              codec,        T_VCODEC,0,       0,0),
-    F ("width",        0,              width,        T_INT,   0,       64,4096),
-    F ("height",       0,              height,       T_INT,   0,       64,4096),
-    F ("fps",          0,              fps,          T_INT,   0,       1,120),
-    F ("bitrate",      0,              bitrate_kbps, T_INT,   0,       16,50000),
-    F ("rc_mode",      "mode",         rc_mode,      T_RC,    0,       0,0),
-    F ("gop",          0,              gop,          T_INT,   0,       1,1000),
-    F ("max_gop",      0,              max_gop,      T_INT,   0,       1,1000),   /* F-04: RESERVED/no-effect - GOP comes from videoN.gop; kept for compat only */
-    F ("profile",      0,              profile,      T_INT,   0,       0,2),
-    F ("qp",           0,              qp,           T_INT,   0,       1,51),     /* F-04: RESERVED/no-effect - no HAL consumer; kept for compat only */
-    F ("min_qp",       0,              min_qp,       T_INT,   0,       1,51),
-    F ("max_qp",       0,              max_qp,       T_INT,   0,       1,51),
-    F ("rotation",     0,              rotation,     T_ROT,   0,       0,0),
-    F ("buffers",      0,              buffers,      T_INT,   0,       1,8),
-    FS("rtsp_path",    0,              rtsp_path,    0),
+    F ("enabled",      0,              enabled,      T_BOOL,  F_CTRL,  0,0),
+    F ("codec",        0,              codec,        T_VCODEC,F_CTRL,  0,0),
+    F ("width",        0,              width,        T_INT,   F_CTRL,  64,4096),
+    F ("height",       0,              height,       T_INT,   F_CTRL,  64,4096),
+    F ("fps",          0,              fps,          T_INT,   F_CTRL,  1,120),
+    F ("bitrate",      0,              bitrate_kbps, T_INT,   F_CTRL,  16,50000),
+    F ("rc_mode",      "mode",         rc_mode,      T_RC,    F_CTRL,  0,0),
+    F ("gop",          0,              gop,          T_INT,   F_CTRL,  1,1000),
+    F ("max_gop",      0,              max_gop,      T_INT,   F_CTRL,  1,1000),   /* F-04: RESERVED/no-effect - GOP comes from videoN.gop; kept for compat only */
+    F ("profile",      0,              profile,      T_INT,   F_CTRL,  0,2),
+    F ("qp",           0,              qp,           T_INT,   F_CTRL,  1,51),     /* F-04: RESERVED/no-effect - no HAL consumer; kept for compat only */
+    F ("min_qp",       0,              min_qp,       T_INT,   F_CTRL,  1,51),
+    F ("max_qp",       0,              max_qp,       T_INT,   F_CTRL,  1,51),
+    F ("rotation",     0,              rotation,     T_ROT,   F_CTRL,  0,0),
+    F ("buffers",      0,              buffers,      T_INT,   F_CTRL,  1,8),
+    FS("rtsp_path",    0,              rtsp_path,    F_CTRL),
     F ("imp_chn",      0,              imp_chn,      T_INT,   F_NOGET, 0,0),
     F ("jpeg",         "jpeg_enabled", jpeg_enabled, T_BOOL,  F_NOGET, 0,0),
     F ("jpeg_quality", 0,              jpeg_quality, T_INT,   F_NOGET, 1,100),
@@ -746,37 +784,46 @@ static const cfg_field video_fields[] = {
 #undef TT
 
 #define TT ms_osd_item
+/* enabled/type/text/x/y/font_size/color/transparency/outline/outline_color
+ * are F_CTRL (POST-able), matching the old OSD[] array in control.c
+ * verbatim. logo/logo_w/logo_h/font_path deliberately have NO F_CTRL - they
+ * were never in OSD[] either (the per-item logo image and its per-item TTF
+ * override are configured file-only, not exposed to the item editor); all
+ * four were already F_NOGET. Preserve this exclusion. */
 static const cfg_field osd_item_fields[] = {
-    F ("enabled",       0,              enabled,       T_BOOL,   0,       0,0),
-    F ("type",          0,              type,          T_OSDTYPE,0,       0,0),
-    FS("text",          0,              text,          0),
+    F ("enabled",       0,              enabled,       T_BOOL,   F_CTRL,  0,0),
+    F ("type",          0,              type,          T_OSDTYPE,F_CTRL,  0,0),
+    FS("text",          0,              text,          F_CTRL),
     FS("logo",          "logo_path",    logo_path,     F_NOGET),
     F ("logo_w",        "logo_width",   logo_w,        T_INT,    F_NOGET, 0,4096),
     F ("logo_h",        "logo_height",  logo_h,        T_INT,    F_NOGET, 0,4096),
-    F ("x",             0,              x,             T_INT,    0,       0,0),
-    F ("y",             0,              y,             T_INT,    0,       0,0),
+    F ("x",             0,              x,             T_INT,    F_CTRL,  0,0),
+    F ("y",             0,              y,             T_INT,    F_CTRL,  0,0),
     /* H4: font_size feeds the OSD canvas allocation (msttf_render); clamped
      * at parse so a bad /control write can never request an absurd raster
      * (the rasterizer additionally hard-clamps its own pixel height) */
-    F ("font_size",     0,              font_size,     T_INT,    0,       8,256),
-    F ("color",         "font_color",   color,         T_HEX,    0,       0,0),
+    F ("font_size",     0,              font_size,     T_INT,    F_CTRL,  8,256),
+    F ("color",         "font_color",   color,         T_HEX,    F_CTRL,  0,0),
     /* imp_osd.c feeds this straight into the group attr's uint8_t fgAlhpa:
      * clamp so e.g. 300 doesn't wrap to 44 while the config echoes 300 */
-    F ("transparency",  0,              transparency,  T_INT,    0,       0,255),
-    F ("outline",       "stroke",       outline,       T_INT,    0,       0,64),
-    F ("outline_color", "stroke_color", outline_color, T_HEX,    0,       0,0),
+    F ("transparency",  0,              transparency,  T_INT,    F_CTRL,  0,255),
+    F ("outline",       "stroke",       outline,       T_INT,    F_CTRL,  0,64),
+    F ("outline_color", "stroke_color", outline_color, T_HEX,    F_CTRL,  0,0),
     FS("font_path",     0,              font_path,     F_NOGET),
 };
 #undef TT
 
+/* every privacy region key is F_CTRL (POST-able), matching the old
+ * PRIV_KEYS[] array in control.c verbatim - applied LIVE (creates/shows/
+ * moves the IMP OSD cover region) and persisted. */
 #define TT ms_privacy_region
 static const cfg_field privacy_fields[] = {
-    F("enabled", 0,            enabled, T_BOOL, 0, 0,0),
-    F("x",       0,            x,       T_INT,  0, 0,0),
-    F("y",       0,            y,       T_INT,  0, 0,0),
-    F("w",       "width",      w,       T_INT,  0, 0,0),
-    F("h",       "height",     h,       T_INT,  0, 0,0),
-    F("color",   "fill_color", color,   T_HEX,  0, 0,0),
+    F("enabled", 0,            enabled, T_BOOL, F_CTRL, 0,0),
+    F("x",       0,            x,       T_INT,  F_CTRL, 0,0),
+    F("y",       0,            y,       T_INT,  F_CTRL, 0,0),
+    F("w",       "width",      w,       T_INT,  F_CTRL, 0,0),
+    F("h",       "height",     h,       T_INT,  F_CTRL, 0,0),
+    F("color",   "fill_color", color,   T_HEX,  F_CTRL, 0,0),
 };
 #undef TT
 #undef F
@@ -1368,3 +1415,21 @@ unlock:
     pthread_mutex_unlock(&wlock);
     return rc;
 }
+
+/* ------------------------------------------------------------------------
+ * cfg_fields_*(): hand control.c's generic /control POST walker a read-only
+ * view of the section tables above (+ field count) instead of it hand-
+ * listing field names a second time. See the F_CTRL doc comment in config.h -
+ * only entries with F_CTRL set in the returned table are POST-eligible; the
+ * caller must never walk a table's fields unconditionally. */
+const cfg_field *cfg_fields_image(int *n)     { *n = NF(image_fields);     return image_fields; }
+const cfg_field *cfg_fields_audio(int *n)     { *n = NF(audio_fields);     return audio_fields; }
+const cfg_field *cfg_fields_sensor(int *n)    { *n = NF(sensor_fields);    return sensor_fields; }
+const cfg_field *cfg_fields_osd(int *n)       { *n = NF(osd_fields);       return osd_fields; }
+const cfg_field *cfg_fields_osd_item(int *n)  { *n = NF(osd_item_fields);  return osd_item_fields; }
+const cfg_field *cfg_fields_motion(int *n)    { *n = NF(motion_fields);    return motion_fields; }
+const cfg_field *cfg_fields_record(int *n)    { *n = NF(record_fields);    return record_fields; }
+const cfg_field *cfg_fields_timelapse(int *n) { *n = NF(timelapse_fields); return timelapse_fields; }
+const cfg_field *cfg_fields_daynight(int *n)  { *n = NF(daynight_fields);  return daynight_fields; }
+const cfg_field *cfg_fields_video(int *n)     { *n = NF(video_fields);     return video_fields; }
+const cfg_field *cfg_fields_privacy(int *n)   { *n = NF(privacy_fields);   return privacy_fields; }
