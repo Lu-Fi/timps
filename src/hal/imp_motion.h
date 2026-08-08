@@ -31,7 +31,16 @@ typedef struct {
                                               * (index = row*cols + col) */
 } ms_motion_status;
 
-int  imp_motion_start(const ms_config *cfg);   /* 0 ok, <0 not started */
+/* mon = monitored stream index the caller resolved (motion.monitor_stream with
+ * the fall-back-to-0 already applied); mv = the EFFECTIVE config of that stream
+ * - i.e. the geometry/rotation the video pipeline is ACTUALLY running with, not
+ * the raw requested cfg->video[mon]. The two differ exactly when a 90/270
+ * rotation request was refused by a safe-envelope check at bring-up (T23
+ * sw_rot_start, T31 fs_create FS_ROT_FALLBACK) and the stream came up
+ * UNROTATED; the caller (hal_ingenic.c motion_sync) owns that knowledge. Same
+ * caller-passes-effective-config pattern as hal_ingenic.c's jpeg_attach(). */
+int  imp_motion_start(const ms_config *cfg, const ms_vstream_cfg *mv,
+                      int mon);               /* 0 ok, <0 not started */
 void imp_motion_stop(void);
 /* Live per-ROI sensitivity update on the running IVS channel via
  * IMP_IVS_SetParam - no stop/destroy/recreate. Returns 0 on success, <0 when

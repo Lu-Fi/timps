@@ -425,6 +425,18 @@ static void fs_kick_running_mode(void)
  * ing_stop (main thread) and from /control connection threads. */
 static pthread_mutex_t g_motion_mtx = PTHREAD_MUTEX_INITIALIZER;
 static int g_motion_pin = -1;    /* pinned FS channel while motion runs */
+/* Per-stream rotation ACTUALLY applied at bring-up, as opposed to the
+ * requested videoN.rotation. The two differ exactly when a 90/270 request was
+ * REFUSED by a rotation safe-envelope check in ing_start (T23 sw_rot_start
+ * SW_ROT_FALLBACK, T31 fs_create FS_ROT_FALLBACK) and the stream came up
+ * UNROTATED. That refusal decision exists only here in hal_ingenic.c;
+ * motion_sync() uses this record to hand IVS an EFFECTIVE copy of the
+ * monitored stream's config, so motion geometry always matches the frames
+ * the framesource really delivers - the same fix pattern as jpeg_attach()
+ * taking the caller's effective v instead of re-reading the raw config.
+ * rotation is restart-only (control.c VID_REST), so the value recorded at
+ * ing_start stays valid for every later live motion_sync() rebuild. */
+static int g_eff_rot[MS_MAX_VSTREAM];
 /* M2: set by ing_control() when a motion.* key or a monitored-stream privacy
  * key changes during a /control request; ing_control_commit() (called once per
  * request via hub_control_commit) does the single motion_sync() rebuild. */
@@ -445,12 +457,22 @@ static void motion_sync(const ms_config *cfg)
     }
     if (cfg->motion.enabled) {
         int mon = cfg->motion.monitor_stream;
-        if (mon < 0 || mon >= MS_MAX_VSTREAM || !cfg->video[mon].enabled)
+        if (mon < 0 || mon >= MS_MAX_VSTREAM || !g_cfg_boot.video[mon].enabled)
             mon = 0;
-        if (imp_motion_start(cfg) == 0) {
+        /* Hand IVS the EFFECTIVE monitored-stream config: geometry from
+         * g_cfg_boot (videoN.* is restart-only - a live /control write updates
+         * g_cfg but NOT the running pipeline, see the g_cfg_boot WHY block in
+         * config.h; a live rebuild must not pick up dims the encoder is not
+         * producing), with rotation overridden to what ing_start ACTUALLY
+         * applied (g_eff_rot), so a safe-envelope-refused 90/270 no longer
+         * makes IVS run with swapped frame dims / a rotation-mapped ROI grid
+         * against the unrotated frames the framesource really delivers. */
+        ms_vstream_cfg mv = g_cfg_boot.video[mon];
+        mv.rotation = g_eff_rot[mon];
+        if (imp_motion_start(cfg, &mv, mon) == 0) {
             /* IVS needs the monitored stream's frames independent of
              * clients: pin that framesource until motion stops */
-            g_motion_pin = cfg->video[mon].imp_chn;
+            g_motion_pin = mv.imp_chn;
             fs_use(g_motion_pin);
         }
     }
@@ -2769,6 +2791,7 @@ static int ing_init(const ms_config *cfg)
 static int ing_start(const ms_config *cfg)
 {
     g_nv=0; g_nj=0;
+    memset(g_eff_rot, 0, sizeof g_eff_rot);   /* rewritten per stream below */
     for (int i=0;i<MS_MAX_VSTREAM;i++){
         if (!cfg->video[i].enabled) continue;
         const ms_vstream_cfg *v=&cfg->video[i];
@@ -2779,7 +2802,7 @@ static int ing_start(const ms_config *cfg)
          * streams stay on the normal bound pipeline below. */
         if (v->rotation==90 || v->rotation==270){
             int r = sw_rot_start(cfg,i);
-            if (r==0) continue;         /* sw-rotate stream up */
+            if (r==0){ g_eff_rot[i]=v->rotation; continue; } /* sw-rotate up */
             if (r<0)  goto fail;        /* unrecoverable */
             /* r==SW_ROT_FALLBACK: rotation refused (envelope) or its init
              * failed for THIS stream only. Do NOT abort the whole pipeline -
@@ -2814,6 +2837,11 @@ static int ing_start(const ms_config *cfg)
 #else
         if (fs_create(chn,v)!=0) goto fail;
 #endif
+        /* v now points at the config this stream is ACTUALLY coming up with
+         * (retargeted at an unrotated local copy above if a rotation safe-
+         * envelope check refused the request): record the effective rotation
+         * for motion_sync (see g_eff_rot). */
+        g_eff_rot[i] = v->rotation;
         /* The encoder GROUP must exist before enc_create's
          * IMP_Encoder_RegisterChn(grp,chn): the canonical Ingenic order is
          * CreateGroup -> CreateChn -> RegisterChn. Older libimp (T23 and other

@@ -267,11 +267,21 @@ static void *motion_thread(void *arg)
     return NULL;
 }
 
-int imp_motion_start(const ms_config *cfg)
+int imp_motion_start(const ms_config *cfg, const ms_vstream_cfg *mv, int mon)
 {
     g_hcfg = cfg;
-    int mon = cfg->motion.monitor_stream;
-    if (mon < 0 || mon >= MS_MAX_VSTREAM || !cfg->video[mon].enabled) mon = 0;
+    /* mv is the EFFECTIVE monitored-stream config handed down by motion_sync
+     * (see imp_motion.h): geometry and - crucially - rotation as ACTUALLY
+     * applied at bring-up. Deriving these from the raw cfg->video[mon] here
+     * (as this function used to) breaks whenever a 90/270 request was REFUSED
+     * by a rotation safe-envelope check (T23 sw_rot_start, T31 fs_create
+     * FS_ROT_FALLBACK): the config still says 90 while the framesource feeding
+     * IVS really delivers the UNROTATED frame, so the move algorithm would be
+     * configured with swapped frameInfo dims (T31) or the ROI grid would be
+     * inverse-mapped for a rotation that is not happening (T23) - same defect
+     * class jpeg_attach() had (see hal_ingenic.c). cfg stays the source for
+     * motion.* and privacy[] (live-mutable, resynced via motion_sync). */
+
     /* Frame dims IVS actually operates on. On the T31/T40/T41 HARDWARE-rotate
      * path (IMP_FrameSource_SetChnRotate rotates INSIDE the framesource) and
      * with no rotation, IVS is bound downstream of the rotation and sees the
@@ -281,12 +291,11 @@ int imp_motion_start(const ms_config *cfg)
      * so IVS genuinely sees the UNROTATED frame - use the raw dims (M1). */
     int w, h;
 #ifdef ROT_HAS_SW_90
-    int swrot = (cfg->video[mon].rotation==90 || cfg->video[mon].rotation==270)
-                ? cfg->video[mon].rotation : 0;
-    if (swrot){ w = cfg->video[mon].width; h = cfg->video[mon].height; }
+    int swrot = (mv->rotation==90 || mv->rotation==270) ? mv->rotation : 0;
+    if (swrot){ w = mv->width; h = mv->height; }
     else
 #endif
-    ms_vstream_eff_dims(&cfg->video[mon], &w, &h);
+    ms_vstream_eff_dims(mv, &w, &h);
     int cols, rows;
     grid_geom(cfg, &cols, &rows);
     int cells = cols * rows;
@@ -366,10 +375,10 @@ int imp_motion_start(const ms_config *cfg)
      * The caller (hal_ingenic.c) pins that FS via fs_use() so the idle
      * logic never disables it while motion runs. */
     {
-        IMPCell fs  = { DEV_ID_FS,  cfg->video[mon].imp_chn, 0 };
+        IMPCell fs  = { DEV_ID_FS,  mv->imp_chn, 0 };
         IMPCell ivs = { DEV_ID_IVS, g_grp, 0 };
         if (IMP_System_Bind(&fs, &ivs)<0){ LOGE(MOD,"Bind FS->IVS failed"); goto err_reg; }
-        g_fs_chn = cfg->video[mon].imp_chn;
+        g_fs_chn = mv->imp_chn;
     }
     if (IMP_IVS_StartRecvPic(g_chn)<0){ LOGE(MOD,"StartRecvPic failed"); goto err_bind; }
 
@@ -499,9 +508,9 @@ int imp_motion_set_sensitivity(const ms_config *cfg)
 
 #else /* !HAL_INGENIC || !MOTION_AVAILABLE: no-op + status stub */
 
-int imp_motion_start(const ms_config *cfg)
+int imp_motion_start(const ms_config *cfg, const ms_vstream_cfg *mv, int mon)
 {
-    (void)cfg;
+    (void)cfg; (void)mv; (void)mon;
 #if !MOTION_AVAILABLE
     LOGW(MOD,"IMP_IVS move detection not available in this build - motion detection disabled");
 #endif

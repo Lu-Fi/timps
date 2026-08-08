@@ -62,6 +62,33 @@ semantic versioning.
   (`ROT_HAS_FS_ROTATE`) FS-rotate fallback path, which had the same defect.
   Pre-existing bug (introduced with the JPEG-piggyback + rotation plumbing in
   July; unrelated to the recent C11-hardening / frame-pool changes).
+- **IVS motion detection also used raw rotated dims after a refused 90/270
+  rotation** — the sibling defect flagged during the review of the JPEG fix
+  above, same root cause: `imp_motion.c`'s `imp_motion_start()` re-derived the
+  monitored stream's geometry from the raw `cfg->video[mon]` instead of the
+  effective post-refusal config. When the monitored stream's 90/270 request
+  was refused by a safe-envelope check and the stream came up UNROTATED, the
+  config still said 90, so on T31 (`ROT_HAS_FS_ROTATE`) IVS was created with
+  swapped `frameInfo` dims (e.g. `1080x1920` against a framesource really
+  delivering `1920x1080`), and on T23 (`ROT_HAS_SW_90`) the ROI grid was
+  inverse-rotation-mapped for a rotation that was not happening — grid cells
+  (and the privacy-mask exclusion, which is compared in displayed-frame space)
+  landing transposed/mirrored relative to the frame the user actually sees.
+  Fix follows the `jpeg_attach()` precedent: `ing_start()` now records the
+  rotation it ACTUALLY applied per stream (`g_eff_rot[]`; the refusal decision
+  only exists in `hal_ingenic.c`, and `videoN.rotation` is restart-only so the
+  boot-time record stays valid), and `motion_sync()` hands
+  `imp_motion_start()` an effective copy of the monitored stream's config
+  built from `g_cfg_boot.video[mon]` + that recorded rotation. Sourcing the
+  geometry from `g_cfg_boot` (per the `config.h` WHY block) also stops a live
+  `/control` write to restart-only `videoN.*` geometry from leaking into a
+  later motion-grid rebuild against the still-running old pipeline. Verified:
+  `make sim` clean; `gcc -fsyntax-only -Wall -Wextra` of `hal_ingenic.c` +
+  `imp_motion.c` against the vendored SDK headers for T31 (1.1.6, with and
+  without `USE_ROTATE`) and T23 (1.3.0, with and without
+  `MS_ENABLE_SW_ROTATE`). Needs an on-device check on a T31 with
+  `motion.enabled=1` and a refused rotation (e.g. `1920x1080@25` + rotation
+  90) confirming the IVS grid tracks the unrotated frame.
 - **OSD read live `videoN.rotation` instead of the boot snapshot** (audit A2):
   `imp_osd.c` read `g_cfg.video[si].rotation` in the text/logo/privacy placement
   paths. `videoN.rotation` is restart-only, so a `/control` write to it would
