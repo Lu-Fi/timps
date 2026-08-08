@@ -239,7 +239,7 @@ overlay fields are documented separately below (`osd<S>.<N>.*`).
 | Key | Type | Default | Range | Live? | Description |
 | --- | --- | --- | --- | --- | --- |
 | `osd.enabled` | bool | 1 | 0/1 | Restart-only | Master OSD on/off switch, global across all streams. Settable via `/control` (`{"osd":{"enabled":...}}`) and persists, but the OSD groups are only ever built once at startup (`imp_osd_setup`), so the effect needs a restart. |
-| `osd.monitor_stream` | int | 0 | — | Restart-only | Which stream's measured fps feeds the `{fps}` placeholder. Settable via `/control` (`{"osd":{"monitor_stream":...}}`), same restart-required class as `osd.enabled`. |
+| `osd.monitor_stream` | int | 0 | — | **Live** | Which stream's measured fps feeds the `{fps}` placeholder. Settable via `/control` (`{"osd":{"monitor_stream":...}}`); read directly off `g_cfg` on every OSD text refresh, so a POST applies on the next render, no restart needed. |
 | `osd.font_path` | string | `/usr/share/fonts/default.ttf` | — | Restart-only | Default TTF font for text items without a per-item `font_path` override. Settable via `/control`, same restart-required class as `osd.enabled`. |
 | `osd.vars_file` | string | `/tmp/timps_osd.vars` | — | Restart-only | Custom placeholder source file (see "Custom placeholders" below). Settable via `/control`, same restart-required class as `osd.enabled`. |
 | `osd.supersample` | int | 2 | 1–4 | Restart-only | TTF rasterizer anti-aliasing quality (samples per axis per pixel); cost scales ~quadratically, 2 is visually close to 4 at typical OSD sizes for roughly a quarter of the CPU cost. Settable via `/control`, same restart-required class as `osd.enabled`. |
