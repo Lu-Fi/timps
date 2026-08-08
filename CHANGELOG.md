@@ -321,6 +321,35 @@ semantic versioning.
   immediately re-place the OSD for a rotation the running encoder is not
   producing (overlay wrong until restart). All rotation reads now use
   `g_cfg_boot`, which also removes them from the C11 data-race class below.
+- **`imp_osd.c` was the 7th site of the raw-vs-effective-rotation-dims bug**
+  (see `jpeg_attach()`/IVS/hub-getter fixes above, commits `8cc8987`,
+  `efe94b9`, `9f71b41` - found by independent review of the latter): the
+  rotated-IPU-OSD-path gate in `refresh_text()`, `setup_logo()`,
+  `setup_cover()` and `osd_rot_place()` (text/logo/privacy placement, plus the
+  H5 oversize check and `osd_even_pad()`) all decided `rotated` from the RAW
+  `g_cfg_boot.video[si].rotation`, not whether rotation was actually applied.
+  On a refused 90/270 (T23 SW-rotate / T31 FS-rotate safe-envelope refusal -
+  stream runs unrotated, OSD still active on the bound path), `rotated` was
+  wrongly computed `true`: the H5 size check used `hlim = s->width` (the
+  narrower, rotated-frame limit) against a bitmap sized for the real, wider
+  unrotated frame, defeating the very check whose own comment warns IMP_OSD
+  "writes past the frame buffer" on several SoCs - plus needless even-padding
+  and top-band placement clamping. Fixed by a new `osd_rotated(s)` helper,
+  used at all four sites, that asks `hub_get_video_params()` for the dims the
+  HAL is ACTUALLY running and compares them against the raw configured
+  (unrotated) dims: swapped relative to raw = rotation genuinely applied,
+  unswapped despite a 90/270 request = refused. Falls back to the raw
+  `ms_vstream_eff_dims()` computation only if the hub hasn't been populated
+  yet for that stream (matches the other sites' fallback; in practice
+  unreachable here since `ing_start()` calls `hub_set_video_params()` for
+  every stream before starting the OSD updater thread). Verified: `imp_osd.c`
+  is not part of `make sim` (confirmed via the Makefile's `SIM_SRC` list, same
+  as `hal_ingenic.c`); cross-compiled clean (`-Wall -Wextra`, only pre-existing
+  unrelated warnings) against the real vendored SDK headers for T31 1.1.6
+  (`USE_ROTATE=1`) and T23 1.3.0 (`USE_ROTATE=1 USE_SW_ROTATE=1`) using
+  tonight's already-built cross toolchains; traced the refused-rotation +
+  active-OSD scenario by hand, confirming `osd_rotated()` now returns `false`
+  and every site behaves as the non-rotated (identity) case.
 - **`sensor.*` numerics were POST-able and persisted but unclamped** (config
   audit F-01, high severity): `sensor.i2c_addr/fps/width/height` had no clamp,
   so a garbage `/control` POST (e.g. `sensor.width=70000`) survived a reboot and
