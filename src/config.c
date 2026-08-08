@@ -277,7 +277,7 @@ void config_defaults(ms_config *c)
 
     /* OSD: per-stream arrays of overlays; same sensible default layout on
      * every stream (time / hostname / uptime / logo) */
-    c->osd.enabled=1; c->osd.monitor_stream=0; c->osd.supersample=2;
+    c->osd.enabled=1; c->osd.monitor_stream=0; c->osd.supersample=2; c->osd.hinting=0;
     copystr(c->osd.font_path,"/usr/share/fonts/default.ttf",128);
     copystr(c->osd.vars_file,"/tmp/timps_osd.vars",128);
     for (int s=0;s<MS_MAX_VSTREAM;s++){
@@ -610,6 +610,11 @@ static const cfg_field osd_fields[] = {
     FS("font_path",      0, font_path,      0),
     FS("vars_file",      0, vars_file,      0),
     F ("supersample",    0, supersample,    T_INT,  0, 1,4),
+    /* opt-in geometric autohint, default off: see the ms_osd_cfg.hinting
+     * comment in config.h and msttf_set_hinting() for what this does and why
+     * it's not a real TrueType hint-bytecode interpreter. Same File-only/
+     * restart-only handling as supersample: read once by imp_osd_setup(). */
+    F ("hinting",        0, hinting,        T_BOOL, 0, 0,0),
 };
 #undef TT
 

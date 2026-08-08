@@ -384,7 +384,8 @@ static void setup_cover(osd_stream *s, int n)
 int imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height)
 {
     g_hcfg = cfg;
-    msttf_set_ss(cfg->osd.supersample);   /* global TTF rasterizer AA quality */
+    msttf_set_ss(cfg->osd.supersample);        /* global TTF rasterizer AA quality */
+    msttf_set_hinting(cfg->osd.hinting);       /* opt-in geometric autohint, default off */
     if (stream_idx<0 || stream_idx>=MS_MAX_VSTREAM) return -1;
 
     /* the OSD group is also the carrier for privacy cover masks, so build it

@@ -166,6 +166,20 @@ typedef struct {
                                       * 2 is visually indistinguishable from 4
                                       * at typical OSD text sizes but roughly
                                       * halves the rasterizer's CPU cost. */
+    int         hinting;            /* opt-in lightweight geometric autohint
+                                      * (0/1, default 0 = off): snaps stem-like
+                                      * outline edges to the pixel grid before
+                                      * rasterizing, to reduce the uneven stroke
+                                      * widths unhinted glyphs show at small
+                                      * (e.g. substream 12px) OSD sizes. NOT a
+                                      * TrueType hint-bytecode interpreter -
+                                      * see msttf_set_hinting(). Off by default
+                                      * so existing installs render byte-for-
+                                      * byte identical OSD bitmaps unless this
+                                      * is explicitly enabled. Applied once via
+                                      * msttf_set_hinting() in imp_osd_setup(),
+                                      * same as osd.supersample - File-only,
+                                      * takes effect on restart. */
     ms_osd_item items[MS_MAX_VSTREAM][MS_MAX_OSD];  /* per-stream item sets */
 } ms_osd_cfg;
 

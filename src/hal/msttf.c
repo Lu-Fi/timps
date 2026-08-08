@@ -342,6 +342,54 @@ void msttf_set_ss(int ss)
     g_ss = ss;
 }
 
+/* ---------- optional autohinting (opt-in, geometric, no bytecode) ----------
+ * Real TrueType hinting executes the font's embedded per-glyph instruction
+ * bytecode (a stack-based VM: SVTCA/MDAP/MIAP/IUP/... operating on point
+ * coordinates). That is genuinely correct (it uses the font designer's own
+ * intent) but is a real interpreter with a real correctness/security surface
+ * - a malformed or merely-unexpected instruction stream must not run
+ * unbounded or read/write out of bounds, since this runs on-device with no
+ * sandboxing. Deliberately NOT implemented here.
+ *
+ * Instead: after a glyph's contours are flattened to device-pixel-space
+ * polylines (parse_glyph() has already applied ox/oy/sx/sy, so pl->p[].x/y
+ * are plain canvas pixel coordinates), snap the endpoints of any long,
+ * nearly axis-aligned edge to a common integer pixel column/row. Typical
+ * letter stems (the vertical strokes of 'l'/'H'/'i', the horizontal bars of
+ * 'e'/'t') are single straight line segments in the source outline, so they
+ * are long; the short chords quad() emits per flattened bezier (8 per curve)
+ * are excluded by the length threshold so round glyphs ('o', 'O') are not
+ * chunked up. This does not reproduce the font's authored hints and can't
+ * preserve exact stem width the way real hinting would, but it directly
+ * targets the symptom this rasterizer actually has: unhinted glyphs landing
+ * at inconsistent sub-pixel positions and rendering with uneven stroke
+ * widths at small sizes. */
+static int g_hinting = 0;
+
+void msttf_set_hinting(int enable) { g_hinting = enable ? 1 : 0; }
+
+static void autohint_contour(poly *pl)
+{
+    if (pl->n < 2) return;
+    for (int j=0;j<pl->n;j++){
+        int k=(j+1)%pl->n;
+        float dx=pl->p[k].x-pl->p[j].x, dy=pl->p[k].y-pl->p[j].y;
+        float adx=fabsf(dx), ady=fabsf(dy);
+        /* length gate: excludes short flattened-bezier chords (curves) and
+         * tiny serif nubs, keeping this to genuine stem-height edges */
+        if (dx*dx+dy*dy < 4.0f) continue;   /* len < 2px */
+        if (adx < 0.2f*ady && ady > 1.5f){
+            /* near-vertical stem edge: force both endpoints to one column */
+            float snapped = floorf((pl->p[j].x+pl->p[k].x)*0.5f + 0.5f);
+            pl->p[j].x = snapped; pl->p[k].x = snapped;
+        } else if (ady < 0.2f*adx && adx > 1.5f){
+            /* near-horizontal edge (serif/crossbar): force both to one row */
+            float snapped = floorf((pl->p[j].y+pl->p[k].y)*0.5f + 0.5f);
+            pl->p[j].y = snapped; pl->p[k].y = snapped;
+        }
+    }
+}
+
 /* blend 'color' onto img[idx] with additional alpha factor 'a' (0..1) */
 static void px_blend(uint32_t *img, size_t idx, uint32_t color, float a)
 {
@@ -365,6 +413,10 @@ int msttf_render(msttf_font *f, const char *s, int pixel_h,
      * msttf_set_ss() were ever called concurrently (it isn't today - set
      * once at startup from osd.supersample - but this is free either way) */
     const int ss = g_ss;
+    /* snapshot, same rationale as ss above: osd.hinting is a File-only config
+     * key (see config.c), applied once via msttf_set_hinting() at startup, so
+     * this never actually races a concurrent writer today either. */
+    const int hinting = g_hinting;
     /* H4: pixel_h derives from config font_size (live-settable via /control)
      * scaled by the stream height - hard-clamp it HERE too, independent of
      * any caller-side clamp, so the canvas math below can never be pushed
@@ -414,6 +466,11 @@ int msttf_render(msttf_font *f, const char *s, int pixel_h,
         poly *polys=NULL; int npoly=0, cap=0;
         /* y-up font units -> device: x = penx + sx*X ; y = baseline - scale*Y */
         parse_glyph(f,gid,&polys,&npoly,&cap, penx, baseline, scale, -scale, 0);
+        /* opt-in geometric autohinting: snap stem-like edges to the pixel
+         * grid in device space, before the bbox is measured off these same
+         * points (so the dilated outline pass and coverage rasterization
+         * below both see the snapped geometry too) */
+        if (hinting) for (int i=0;i<npoly;i++) autohint_contour(&polys[i]);
         /* rasterize into supersampled coverage over glyph bbox */
         if (npoly){
             /* bbox */

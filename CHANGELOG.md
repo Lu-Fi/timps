@@ -235,6 +235,65 @@ semantic versioning.
     the 3 s watchdog `alarm()`), ASan-clean.
 
 ### Added
+- **Opt-in geometric autohinting for the OSD TrueType rasterizer** (`osd.hinting`,
+  default `0` = off), addressing a research finding that substream OSD text
+  (12px default, `src/config.c`) looks visibly less crisp than the main
+  stream: `msttf.c`'s from-scratch `glyf` rasterizer scales outlines by a
+  plain float factor with 2x2 supersampled coverage AA but never interpreted
+  the font's embedded TrueType hint bytecode, so unhinted glyphs land at
+  inconsistent sub-pixel positions and show uneven stroke widths between
+  characters at small sizes - a real, well-known font-rendering problem, not
+  imagined, and confirmed present in the shipped `/usr/share/fonts/default.ttf`
+  (Roboto Bold). Considered two fixes: (a) a true TrueType instruction
+  interpreter (stack-based VM executing the font's own hint bytecode -
+  genuinely correct, but real interpreter-writing work with a real
+  correctness/security surface for bytecode running on-device with no
+  sandboxing) vs (b) a lightweight geometric autohinter (snap long,
+  near-vertical/near-horizontal flattened outline edges - typical letter
+  stems/serifs - to the pixel grid before rasterizing, skipping bytecode
+  execution entirely). Chose (b): this is a from-scratch, deliberately minimal
+  rasterizer in a security/stability-sensitive embedded daemon, not a
+  general-purpose font library, and a modest, safely-bounded improvement beats
+  a more "authentic" but real bytecode-execution surface. `msttf_set_hinting()`
+  (mirrors the existing `msttf_set_ss()` pattern) gates a new
+  `autohint_contour()` pass that runs after `parse_glyph()` flattens a glyph's
+  contours to device-pixel-space polylines: any edge longer than ~2px and
+  within ~11 degrees of vertical/horizontal has both endpoints forced to a
+  common rounded pixel column/row. A length gate excludes the short chords
+  `quad()` emits per flattened bezier (8/curve), so round glyphs ('O', 'o')
+  are provably untouched (verified bit-identical alpha-sum before/after in
+  testing below) while stems ('l', 'I', '1', 'i') snap cleanly. Purely
+  geometric, no bytecode execution, no new attack surface. Wired up as
+  `osd.hinting` (bool, default 0) next to the existing `osd.supersample` in
+  `config.c`'s `osd_fields`/`ms_osd_cfg` (not `general.*`: it's the same
+  category of global TTF-rasterizer tunable as supersample, and unlike
+  `general.*` the `osd.*` section is readable via `GET /control`). Same
+  File-only/restart-only handling as `supersample`: applied once via
+  `msttf_set_hinting()` in `imp_osd_setup()`, which only runs at startup, so
+  it needs a restart to take effect - no live-apply plumbing added. Default
+  off: zero behavior/output change for any existing install. Verified: `make
+  sim` clean; a standalone host-side test (`msttf.c` has no external
+  dependencies, so it links directly with a small driver) rendered strings at
+  12px with hinting off/on against a real glyf-outline TTF (DejaVu Sans Bold -
+  the shipped Roboto Bold wasn't available in the build sandbox, but both are
+  ordinary glyf-outline fonts with simple+composite glyphs) confirming: no
+  crash, no all-zero/degenerate output, canvas size stable within 2px, alpha
+  coverage within a 0.5-2x sane band; round glyphs ("OoOo0") bit-identical
+  alpha sum on vs off; a repeated-stem string ("IlIlIlIl") showed edge
+  "fuzziness" (partial-alpha-coverage variance at each stem's boundary
+  columns, the direct signature of sub-pixel-phase inconsistency) drop from
+  0.038 to exactly 0.0 with hinting on, i.e. every stem instance became fully
+  sharp-edged regardless of its accumulated sub-pixel phase; multi-word test
+  strings at 12px and 32px stayed fully legible with no garbling in both
+  modes. Caveats for review: this is a heuristic approximation, not real
+  hinting - it does not reproduce the font's authored hint intent and cannot
+  guarantee exact stem-width preservation the way a bytecode interpreter
+  would; the angle/length thresholds were tuned against one real font at OSD
+  text sizes (8-32px) and are untested against other TTF files if a user
+  swaps `osd.font_path`; `imp_osd.c`/`config.c`/`config.h` changes (the
+  `msttf_set_hinting()` call site and the new `hinting` field) could not be
+  cross-compiled in this pass (no vendored IMP SDK headers available in the
+  sandbox) and still need an on-device or cross-toolchain build check.
 - **QA coverage for previously-untested live-settable fields** (config audit
   F-08, `scripts/timps-qa.sh` section 8b): the daynight TIME/SUN path
   (`daynight.mode` + `time_night_start`/`time_day_start`/`sun_latitude`/

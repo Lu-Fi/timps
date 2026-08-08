@@ -314,6 +314,19 @@ osd.supersample    = 2                        # TTF rasterizer AA: samples/axis/
                                                # higher CPU; 1 = cheapest, visibly
                                                # rougher edges. No effect on the
                                                # embedded bitmap font (font_path empty).
+# osd.hinting      = 0                        # Opt-in lightweight geometric autohint
+                                               # (0/1). The TTF rasterizer does not
+                                               # execute the font's embedded hint
+                                               # bytecode, so small text (e.g. the
+                                               # substream default 12px) can show
+                                               # uneven stroke widths between glyphs.
+                                               # Enabling this snaps stem-like outline
+                                               # edges to the pixel grid to reduce
+                                               # that unevenness - a coarse heuristic,
+                                               # not real hinting. Default off: zero
+                                               # change to existing OSD rendering
+                                               # unless explicitly enabled. Restart-
+                                               # required, like supersample above.
 #
 # Every video stream carries its OWN independent overlay set.
 # Canonical keys:  osd<S>.<N>.<field>  = stream S (0 = main, 1 = sub), item N
