@@ -289,13 +289,22 @@ static int          g_ach    = 1;            /* effective channel count publishe
                                               * AAC only - G.711 stays mono. */
 static IMPAudioIOAttr g_aio;                 /* attr accepted by IMP_AI_SetPubAttr */
 static volatile int   g_ai_up = 0;           /* AI dev 0/chn 0 enabled (audio_thread) */
-#ifdef USE_CONTROL
+#if defined(USE_CONTROL) || defined(USE_BACKCHANNEL) || defined(USE_PLAY)
 /* g_ai_lock serializes the live AI parameter writes (volume/gain/alc_gain) that
  * /control applies directly. The DSP module toggles (HPF/AGC/NS) are NOT applied
  * live at all: libimp runs them on its own internal record thread and
  * IMP_AI_Disable{Agc,Ns,Hpf} frees that state unlocked, so any live toggle
  * races the vendor thread (-> UAF/SIGSEGV in libaudioProcess.so). They are
- * persist-only and applied once at boot before the frame loop. */
+ * persist-only and applied once at boot before the frame loop.
+ *
+ * Item-1: AEC (IMP_AI_{Enable,Disable}Aec) is the SAME free-while-recording
+ * DSP-module family, but it CANNOT be boot-only: it references the lazily-
+ * opened AO (dev0/chn0), so it is toggled live at every hal_ao_open/close
+ * (backchannel hangup / play completion) on the backchannel/play threads.
+ * Those Enable/Disable calls and audio_thread's frame fetch on the same
+ * dev0/chn0 therefore take this lock, so a DisableAec can never free the AEC
+ * module while a GetFrame is reading the AI channel it lives on. That is why
+ * the guard is broadened past USE_CONTROL to the AEC-capable builds too. */
 static pthread_mutex_t g_ai_lock = PTHREAD_MUTEX_INITIALIZER;
 #endif
 /* JPEG channels: [0] = dedicated jpeg.* channel (own framesource), further
@@ -2604,7 +2613,22 @@ static void *audio_thread(void *arg)
             usleep(10000); continue;
         }
         IMPAudioFrame frm;
-        if (IMP_AI_GetFrame(dev,chnid,&frm,1)!=0){
+#if defined(USE_BACKCHANNEL) || defined(USE_PLAY)
+        /* Item-1: serialize the frame fetch against live AEC enable/disable
+         * (hal_ao_open/close, on the backchannel/play threads). IMP_AI_
+         * {Enable,Disable}Aec create/free the AI-side AEC DSP module on this
+         * same dev0/chn0; without the lock a backchannel hangup's DisableAec
+         * could free that module mid-fetch -> UAF/SIGSEGV in libaudioProcess.so.
+         * Held ONLY across the non-blocking GetFrame (PollingFrame above already
+         * confirmed a frame is ready), never across that blocking poll, so an
+         * AO open/close never stalls waiting on a poll timeout. */
+        pthread_mutex_lock(&g_ai_lock);
+        int gf_rc = IMP_AI_GetFrame(dev,chnid,&frm,1);
+        pthread_mutex_unlock(&g_ai_lock);
+#else
+        int gf_rc = IMP_AI_GetFrame(dev,chnid,&frm,1);
+#endif
+        if (gf_rc!=0){
             /* A1: PollingFrame reported a frame ready but GetFrame failed to
              * fetch it - treat this exactly like a PollingFrame miss for
              * watchdog purposes. ai_fail_streak used to be zeroed
@@ -3433,7 +3457,12 @@ int hal_ao_open(int want_rate)
     int aec_on = 0;
     if (g_hcfg){ config_str_lock(); aec_on = g_hcfg->audio.aec; config_str_unlock(); }  /* F-02: cold read under lock */
     if (aec_on && g_ai_up){
-        if (IMP_AI_EnableAec(0, 0, 0, 0) == 0){
+        /* Item-1: serialize the AEC module create against audio_thread's
+         * concurrent GetFrame on the same AI dev0/chn0 (see g_ai_lock). */
+        pthread_mutex_lock(&g_ai_lock);
+        int aec_rc = IMP_AI_EnableAec(0, 0, 0, 0);
+        pthread_mutex_unlock(&g_ai_lock);
+        if (aec_rc == 0){
             g_aec_on = 1;
             LOGI(MOD, "AEC enabled (AI 0/0 <- AO 0/0)");
         } else {
@@ -3477,7 +3506,14 @@ void hal_ao_close(int drain)
      * it (matches the AO/AI teardown symmetry: never disable on a chn where AEC
      * was never turned on). */
     if (g_aec_on){
+        /* Item-1: DisableAec frees the AI-side AEC DSP module. audio_thread may
+         * be mid-GetFrame on the same dev0/chn0, so serialize via g_ai_lock -
+         * without it this free-while-recording races the capture thread ->
+         * UAF/SIGSEGV in libaudioProcess.so (the same hazard HPF/AGC/NS avoid by
+         * being boot-only; AEC can't be, it is AO-session-scoped). */
+        pthread_mutex_lock(&g_ai_lock);
         IMP_AI_DisableAec(0, 0);
+        pthread_mutex_unlock(&g_ai_lock);
         g_aec_on = 0;
         LOGI(MOD, "AEC disabled");
     }
