@@ -2,6 +2,8 @@
 #include "log.h"
 #include "motion_caps.h"   /* MOTION_MAX_CELLS/MOTION_CELL_LIMIT (grid clamp) */
 #include "rotate_caps.h"   /* ROT_HAS_90/ROT_HAS_HW_I2D (rotation whitelist) */
+#include "isp_caps.h"      /* ISP_HAS_* (image_fields[]'s F_CAP gating) */
+#include "audio_caps.h"    /* AUDIO_HAS_* (audio_fields[]'s F_CAP gating) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -468,33 +470,98 @@ static const cfg_field sensor_fields[] = {
 
 #define TT ms_image_cfg
 /* every image.* key is F_CTRL (POST-able): accepted regardless of SoC
- * support, the HAL just skips what the platform cannot do at apply time (see
- * IMG_CAPS in control.c for the per-platform live-apply subset). This is the
- * table the old hand-written IMG[] array in control.c re-listed verbatim. */
+ * support, the HAL just skips what the platform cannot do at apply time.
+ * F_CAP mirrors isp_caps.h's ISP_HAS_* matrix - the SAME conditions
+ * hal_ingenic.c's isp_apply_image() guards its IMP_ISP_Tuning_Set* calls
+ * with - so control.c's GET /control caps builder can walk this one table
+ * instead of re-listing every name under a second copy of these #ifdefs (the
+ * old hand-written IMG_CAPS[] array in control.c). Base fields with no
+ * platform gate (present on every SoC per isp_caps.h's header comment) get
+ * F_CAP unconditionally. */
+#ifdef ISP_HAS_HUE
+#define CAP_HUE F_CAP
+#else
+#define CAP_HUE 0
+#endif
+#ifdef ISP_HAS_AECOMP
+#define CAP_AECOMP F_CAP
+#else
+#define CAP_AECOMP 0
+#endif
+#ifdef ISP_HAS_GAINS
+#define CAP_GAINS F_CAP
+#else
+#define CAP_GAINS 0
+#endif
+#ifdef ISP_HAS_NR
+#define CAP_NR F_CAP
+#else
+#define CAP_NR 0
+#endif
+#ifdef ISP_HAS_DPC
+#define CAP_DPC F_CAP
+#else
+#define CAP_DPC 0
+#endif
+#ifdef ISP_HAS_DEFOG
+#define CAP_DEFOG F_CAP
+#else
+#define CAP_DEFOG 0
+#endif
+#ifdef ISP_HAS_DRC
+#define CAP_DRC F_CAP
+#else
+#define CAP_DRC 0
+#endif
+#ifdef ISP_HAS_HILIGHT
+#define CAP_HILIGHT F_CAP
+#else
+#define CAP_HILIGHT 0
+#endif
+#ifdef ISP_HAS_BACKLIGHT
+#define CAP_BACKLIGHT F_CAP
+#else
+#define CAP_BACKLIGHT 0
+#endif
+#ifdef ISP_HAS_WB
+#define CAP_WB F_CAP
+#else
+#define CAP_WB 0
+#endif
 static const cfg_field image_fields[] = {
-    F("brightness",             0, brightness,             T_INT, F_CTRL, 0,255),
-    F("contrast",               0, contrast,               T_INT, F_CTRL, 0,255),
-    F("saturation",             0, saturation,             T_INT, F_CTRL, 0,255),
-    F("sharpness",              0, sharpness,              T_INT, F_CTRL, 0,255),
-    F("hue",                    0, hue,                    T_INT, F_CTRL, 0,255),
-    F("vflip",                  0, vflip,                  T_BOOL,F_CTRL, 0,0),
-    F("hflip",                  0, hflip,                  T_BOOL,F_CTRL, 0,0),
-    F("running_mode",           0, running_mode,           T_INT, F_CTRL, 0,1),   /* F-09 */
-    F("anti_flicker",           0, anti_flicker,           T_INT, F_CTRL, 0,2),   /* F-09 */
-    F("ae_compensation",        0, ae_compensation,        T_INT, F_CTRL, 0,255),
-    F("max_again",              0, max_again,              T_INT, F_CTRL, 0,255),
-    F("max_dgain",              0, max_dgain,              T_INT, F_CTRL, 0,255),
-    F("sinter_strength",        0, sinter_strength,        T_INT, F_CTRL, 0,255),
-    F("temper_strength",        0, temper_strength,        T_INT, F_CTRL, 0,255),
-    F("dpc_strength",           0, dpc_strength,           T_INT, F_CTRL, 0,255),
-    F("defog_strength",         0, defog_strength,         T_INT, F_CTRL, 0,255),
-    F("drc_strength",           0, drc_strength,           T_INT, F_CTRL, 0,255),
-    F("highlight_depress",      0, highlight_depress,      T_INT, F_CTRL, 0,10),
-    F("backlight_compensation", 0, backlight_compensation, T_INT, F_CTRL, 0,10),
-    F("core_wb_mode",           0, core_wb_mode,           T_INT, F_CTRL, 0,1),   /* F-09 */
-    F("wb_rgain",               0, wb_rgain,               T_INT, F_CTRL, 0,65535),
-    F("wb_bgain",               0, wb_bgain,               T_INT, F_CTRL, 0,65535),
+    F("brightness",             0, brightness,             T_INT, F_CTRL|F_CAP,          0,255),
+    F("contrast",               0, contrast,               T_INT, F_CTRL|F_CAP,          0,255),
+    F("saturation",             0, saturation,             T_INT, F_CTRL|F_CAP,          0,255),
+    F("sharpness",              0, sharpness,              T_INT, F_CTRL|F_CAP,          0,255),
+    F("hue",                    0, hue,                    T_INT, F_CTRL|CAP_HUE,        0,255),
+    F("vflip",                  0, vflip,                  T_BOOL,F_CTRL|F_CAP,          0,0),
+    F("hflip",                  0, hflip,                  T_BOOL,F_CTRL|F_CAP,          0,0),
+    F("running_mode",           0, running_mode,           T_INT, F_CTRL|F_CAP,          0,1),   /* F-09 */
+    F("anti_flicker",           0, anti_flicker,           T_INT, F_CTRL|F_CAP,          0,2),   /* F-09 */
+    F("ae_compensation",        0, ae_compensation,        T_INT, F_CTRL|CAP_AECOMP,     0,255),
+    F("max_again",              0, max_again,              T_INT, F_CTRL|CAP_GAINS,      0,255),
+    F("max_dgain",              0, max_dgain,              T_INT, F_CTRL|CAP_GAINS,      0,255),
+    F("sinter_strength",        0, sinter_strength,        T_INT, F_CTRL|CAP_NR,         0,255),
+    F("temper_strength",        0, temper_strength,        T_INT, F_CTRL|CAP_NR,         0,255),
+    F("dpc_strength",           0, dpc_strength,           T_INT, F_CTRL|CAP_DPC,        0,255),
+    F("defog_strength",         0, defog_strength,         T_INT, F_CTRL|CAP_DEFOG,      0,255),
+    F("drc_strength",           0, drc_strength,           T_INT, F_CTRL|CAP_DRC,        0,255),
+    F("highlight_depress",      0, highlight_depress,      T_INT, F_CTRL|CAP_HILIGHT,    0,10),
+    F("backlight_compensation", 0, backlight_compensation, T_INT, F_CTRL|CAP_BACKLIGHT,  0,10),
+    F("core_wb_mode",           0, core_wb_mode,           T_INT, F_CTRL|CAP_WB,         0,1),   /* F-09 */
+    F("wb_rgain",               0, wb_rgain,               T_INT, F_CTRL|CAP_WB,         0,65535),
+    F("wb_bgain",               0, wb_bgain,               T_INT, F_CTRL|CAP_WB,         0,65535),
 };
+#undef CAP_HUE
+#undef CAP_AECOMP
+#undef CAP_GAINS
+#undef CAP_NR
+#undef CAP_DPC
+#undef CAP_DEFOG
+#undef CAP_DRC
+#undef CAP_HILIGHT
+#undef CAP_BACKLIGHT
+#undef CAP_WB
 #undef TT
 
 #define TT ms_audio_cfg
@@ -504,7 +571,30 @@ static const cfg_field image_fields[] = {
  * only, SetPubAttr/encoder-init attributes that apply at the next restart).
  * That live-vs-restart distinction is a HAL-side concern (see hub.c's audio
  * branch), not a POST-reachability one, so both classes carry the same flag
- * here; control.c's generic walker no longer needs to know which is which. */
+ * here; control.c's generic walker no longer needs to know which is which.
+ *
+ * F_CAP is a DIFFERENT, narrower axis: it marks the subset the old
+ * hand-written AUD_CAPS[] array in control.c advertised via GET /control's
+ * "caps":{"audio":[...]}. Unlike image_fields[], this is NOT just a hardware
+ * gate - codec/samplerate/bitrate/channels/enabled/force_stereo/spk_enabled/
+ * backchannel(_codec/_rate)/high_pass/agc/ns/agc_target_dbfs/agc_compression_db are all
+ * fully F_CTRL POST-able and persist correctly, but stay WITHOUT F_CAP on
+ * every platform: they are restart-required or persist-only (see hub.c's
+ * audio branch / ai_apply_key() in hal_ingenic.c), so the WebUI is meant to
+ * show them as "applies on restart", never as a live control. Only
+ * volume/gain/mute are always F_CAP; alc_gain/spk_volume/spk_gain/aec are
+ * additionally hardware/feature gated below, matching AUD_CAPS[]'s old
+ * #ifdefs exactly. */
+#ifdef AUDIO_HAS_ALC_GAIN
+#define CAP_ALC F_CAP
+#else
+#define CAP_ALC 0
+#endif
+#if defined(USE_PLAY) || defined(USE_BACKCHANNEL)
+#define CAP_SPK F_CAP
+#else
+#define CAP_SPK 0
+#endif
 static const cfg_field audio_fields[] = {
     F ("enabled",            0, enabled,            T_BOOL,   F_CTRL, 0,0),
     F ("codec",              0, codec,              T_ACODEC, F_CTRL, 0,0),
@@ -514,24 +604,26 @@ static const cfg_field audio_fields[] = {
      * ASC / SDP / fMP4 stsd */
     F ("channels",           0, channels,           T_INT,    F_CTRL, 1,2),
     F ("bitrate",            0, bitrate_kbps,       T_INT,    F_CTRL, 8,320),
-    F ("volume",             0, volume,             T_INT,    F_CTRL, 0,100),
-    F ("gain",               0, gain,               T_INT,    F_CTRL, 0,31),
+    F ("volume",             0, volume,             T_INT,    F_CTRL|F_CAP, 0,100),
+    F ("gain",               0, gain,               T_INT,    F_CTRL|F_CAP, 0,31),
     F ("high_pass",          0, high_pass,          T_BOOL,   F_CTRL, 0,0),
     F ("agc",                0, agc,                T_BOOL,   F_CTRL, 0,0),
     F ("ns",                 0, ns,                 T_INT,    F_CTRL, 0,3),
-    F ("alc_gain",           0, alc_gain,           T_INT,    F_CTRL, 0,7),
+    F ("alc_gain",           0, alc_gain,           T_INT,    F_CTRL|CAP_ALC, 0,7),
     F ("agc_target_dbfs",    0, agc_target_dbfs,    T_INT,    F_CTRL, 0,31),
     F ("agc_compression_db", 0, agc_compression_db, T_INT,    F_CTRL, 0,90),
-    F ("mute",               0, mute,               T_BOOL,   F_ATOMIC|F_CTRL, 0,0),
+    F ("mute",               0, mute,               T_BOOL,   F_ATOMIC|F_CTRL|F_CAP, 0,0),
     F ("force_stereo",       0, force_stereo,       T_BOOL,   F_CTRL, 0,0),
     F ("spk_enabled",        0, spk_enabled,        T_BOOL,   F_CTRL, 0,0),
-    F ("spk_volume",         0, spk_volume,         T_INT,    F_CTRL, 0,100),
-    F ("spk_gain",           0, spk_gain,           T_INT,    F_CTRL, 0,100),
+    F ("spk_volume",         0, spk_volume,         T_INT,    F_CTRL|CAP_SPK, 0,100),
+    F ("spk_gain",           0, spk_gain,           T_INT,    F_CTRL|CAP_SPK, 0,100),
     F ("backchannel",        0, backchannel,        T_BOOL,   F_CTRL, 0,0),
     F ("backchannel_codec",  0, backchannel_codec,  T_BCCODEC,F_CTRL, 0,0),
     F ("backchannel_rate",   0, backchannel_rate,   T_INT,    F_CTRL, 8000,48000),
-    F ("aec",                0, aec,                T_BOOL,   F_CTRL, 0,0),
+    F ("aec",                0, aec,                T_BOOL,   F_CTRL|CAP_SPK, 0,0),
 };
+#undef CAP_ALC
+#undef CAP_SPK
 #undef TT
 
 #define TT ms_jpeg_cfg
