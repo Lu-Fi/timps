@@ -78,7 +78,7 @@ SSH_OPTS="${SSH_OPTS:--o ConnectTimeout=6 -o StrictHostKeyChecking=no -o BatchMo
 OSD_VARS_FILE="${OSD_VARS_FILE:-/tmp/timps_osd.vars}"
 
 PROFILE="${PROFILE:-standard}"
-OUTDIR="${OUTDIR:-timps-qa-$(date +%Y%m%d-%H%M%S)}"
+OUTDIR="${OUTDIR:-}"
 
 # Tunables (overridable per profile below / by env)
 INTEG_DUR="${INTEG_DUR:-30}"       # seconds recorded per stream for integrity+sync
@@ -190,6 +190,17 @@ while [ $# -gt 0 ]; do
 	esac
 done
 [ -n "$CAM" ] || { echo "ERROR: --cam <ip> is required"; usage; }
+
+# Second-resolution timestamp alone collided when multiple cameras' runs were
+# launched in the same shell within the same second (parallel fleet QA) -
+# their recordings/probe files landed in the SAME directory and clobbered
+# each other, surfacing as bogus "non-monotonic timestamp" FAILs with no
+# hint anything was shared. Tag with the camera and PID so concurrent runs
+# (even against the same camera) never collide; --out still overrides.
+if [ -z "$OUTDIR" ]; then
+	_cam_tag=$(printf '%s' "$CAM" | tr -c 'A-Za-z0-9._-' '_')
+	OUTDIR="timps-qa-${_cam_tag}-$(date +%Y%m%d-%H%M%S)-$$"
+fi
 
 case "$PROFILE" in
 	quick)    INTEG_DUR=${INTEG_DUR_SET:-10}; SNAP_COUNT=10; RECONNECT_CYCLES=6;  LOAD_CLIENTS="1 2"; LOAD_DUR=15; SOAK_DUR=0;;
@@ -1268,8 +1279,25 @@ else
 		else
 			bad "$label.$key clamp: raw=$raw -> got '$got', want clamped '$want' (persist-clamp regression?)"
 		fi
-		lv_post "${wo}{\"$key\":$cur}${wc}" >/dev/null
-		LV_PENDING=""
+		# Restore and VERIFY it actually landed - a silently-dropped/failed
+		# restore POST here (network blip, concurrent-run contention) used to
+		# strand the camera at the clamped boundary (e.g. brightness=255)
+		# with zero indication in this script's output. One retry before
+		# warning: transient POST failures are the expected failure mode
+		# under load, not a persist regression worth a "bad".
+		local rcode rgf rgot
+		rcode=$(lv_post "${wo}{\"$key\":$cur}${wc}")
+		rgf="$OUTDIR/clamp_${label}_${key}_restore.json"; lv_get "$rgf"
+		rgot=$(jget "$rgf" "$rp.$key")
+		if [ "$rgot" != "$cur" ]; then
+			rcode=$(lv_post "${wo}{\"$key\":$cur}${wc}")
+			lv_get "$rgf"; rgot=$(jget "$rgf" "$rp.$key")
+		fi
+		if [ "$rgot" = "$cur" ]; then
+			LV_PENDING=""
+		else
+			warn "$label.$key clamp: restore to '$cur' did not land (got '$rgot', HTTP $rcode) - camera may still be at the clamped boundary"
+		fi
 	}
 	ov_clamp_test image      '{"image":'    '}' image      brightness       -99      0
 	ov_clamp_test image      '{"image":'    '}' image      brightness       9999     255
