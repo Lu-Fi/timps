@@ -56,6 +56,21 @@ void        hub_publish_take(int src, ms_pkt *p,
 int         hub_subscribe(int src, fanqueue *q);
 void        hub_unsubscribe(int src, fanqueue *q);
 void        hub_set_video_params(int src, int vcodec, int w, int h, int fps);
+/* Read back the video params the producer actually pushed via
+ * hub_set_video_params() - i.e. the EFFECTIVE (post-rotation, and for a
+ * 90/270 request that exceeded the T23 SW-rotate / T31 FS-rotate safe
+ * envelope, post-REFUSAL) width/height the HAL is ACTUALLY running for this
+ * stream. hal_ingenic.c only calls hub_set_video_params() after any rotation
+ * refusal has already been decided (see g_eff_rot), so this is the single
+ * source of truth for "what geometry is this stream really producing right
+ * now" - unlike ms_vstream_eff_dims() on a raw ms_vstream_cfg, which only
+ * knows the CONFIGURED rotation and has no notion of a refusal.
+ * Any output pointer may be NULL to skip that field. Returns 1 if the source
+ * has been populated (the HAL has started this stream at least once since
+ * hub_init()), 0 otherwise (e.g. very early startup before the HAL's start
+ * routine has run) - callers must fall back to a raw ms_vstream_eff_dims()
+ * computation on 0 rather than trust zeroed output params. */
+int         hub_get_video_params(int src, int *vcodec, int *w, int *h, int *fps);
 /* copy cached video parameter sets out; returns 1 if ready. */
 int         hub_get_vparam(int src, vparam *out);
 /* IDR request plumbing: HAL registers a callback; sinks call request. */

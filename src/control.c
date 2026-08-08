@@ -1174,7 +1174,25 @@ int control_get_json(char *buf, size_t cap)
         jesc(vs->rtsp_path, rp, sizeof rp);
         config_str_unlock();
 #ifdef USE_ROTATE
-        int ew, eh; ms_vstream_eff_dims(vs, &ew, &eh);   /* post-rotation dims */
+        /* ACTUAL running dims - but only when vs (the live/persist-only
+         * config, possibly POSTed-but-not-yet-restarted) still matches what
+         * actually booted: hub_get_video_params() reflects any T23 SW-rotate
+         * / T31 FS-rotate safe-envelope refusal for the BOOT config (see
+         * hub.h and the identical fix in record.c/mp4/httpd.c/rtsp.c), so it
+         * is only meaningful for the geometry that is REALLY running. A
+         * rotation/width/height just POSTed but not yet restarted (this
+         * whole block is persist-only, see above) describes a config the HAL
+         * hasn't attempted yet - there is no refusal decision to report, so
+         * fall back to the raw config-level swap preview for that case. This
+         * also keeps scripts/timps-qa.sh's --test-rotation contract intact:
+         * it checks that eff_width/eff_height swap for a PENDING, not-yet-
+         * restarted rotation POST. */
+        int ew, eh;
+        const ms_vstream_cfg *bv = &g_cfg_boot.video[i];
+        int is_booted = (vs->rotation==bv->rotation && vs->width==bv->width &&
+                          vs->height==bv->height);
+        if (!is_booted || !hub_get_video_params(i, NULL, &ew, &eh, NULL))
+            ms_vstream_eff_dims(vs, &ew, &eh);   /* pending preview / hub not up yet */
         APP("%s\"%d\":{\"enabled\":%d,\"codec\":\"%s\",\"width\":%d,"
             "\"height\":%d,\"eff_width\":%d,\"eff_height\":%d,"
             "\"fps\":%d,\"bitrate\":%d,\"rc_mode\":\"%s\","
