@@ -48,6 +48,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <pthread.h>
+#include <signal.h>
 #include <time.h>
 
 #define MOD "HAL_ING"
@@ -136,6 +137,27 @@ typedef IMPEncoderCHNStat IMPEncoderChnStat;
 #ifndef MS_VIDEO_WATCHDOG_ITERS
 #define MS_VIDEO_WATCHDOG_ITERS 10
 #endif
+/* Escalation for the recovery cycle above: a forced Stop/Disable/Enable/
+ * Start cycle can itself report success (StartRecvPic returns 0) against
+ * hardware that is genuinely gone and never deliver another frame - this is
+ * exactly what happened in the field when a second timpsd instance's
+ * IMP_ISP_Open reset the shared ISP driver state out from under an already-
+ * running instance, destroying its FrameSource channels. Retrying that cycle
+ * forever (the old behavior: dbg_pollfail unconditionally reset to 0 after
+ * every attempt, win or lose) then means an infinite, non-escalating loop
+ * producing zero video with no way to self-recover and no mechanism to give
+ * up and let init supervision (S95timps) restart the process cleanly. Track
+ * CONSECUTIVE recovery cycles that never actually yielded a frame (a cycle
+ * only counts as recovered once IMP_Encoder_GetStream succeeds afterward,
+ * not merely because StartRecvPic returned 0); after this many in a row,
+ * stop retrying and exit instead. 5 cycles at the default
+ * MS_VIDEO_WATCHDOG_ITERS/imp_polling_timeout cadence is ~25 s of total dead
+ * time - long enough to rule out a transient hiccup, short enough that the
+ * daemon isn't stuck silently for minutes like the incident that motivated
+ * this (2+ min of zero video before a human intervened). */
+#ifndef MS_VIDEO_WATCHDOG_MAX_RECOVERIES
+#define MS_VIDEO_WATCHDOG_MAX_RECOVERIES 5
+#endif
 /* Watchdog: same failure class as MS_VIDEO_WATCHDOG_ITERS, but jpeg_thread
  * (snapshots/MJPEG) had no watchdog at all (J1) - PollingStream returning
  * nothing forever produced zero log output, and when a snapshot_path is
@@ -145,6 +167,21 @@ typedef IMPEncoderCHNStat IMPEncoderChnStat;
  * cadence as video's watchdog since both share imp_polling_timeout. */
 #ifndef MS_JPEG_WATCHDOG_ITERS
 #define MS_JPEG_WATCHDOG_ITERS 10
+#endif
+/* Same infinite-retry risk as MS_VIDEO_WATCHDOG_MAX_RECOVERIES above:
+ * dbg_jpollfail used to reset to 0 after every forced recovery cycle
+ * regardless of whether it actually worked, so a dead-but-"successfully
+ * restarted" JPEG channel would retry forever too. Unlike video, JPEG/
+ * snapshot is not the primary feature (same tier as audio - see
+ * MS_AI_WATCHDOG_ITERS), so after this many consecutive failed recovery
+ * cycles the thread gives up on JUST this channel (mirrors audio_thread's
+ * "disable and exit the thread" pattern) instead of taking the whole
+ * process down: a video-only ISP fault has no business killing a still-
+ * healthy jpeg pipeline, or vice versa. If the underlying fault is actually
+ * systemic (the whole ISP is gone, as in the incident that motivated this),
+ * video_thread's own watchdog independently detects and escalates that. */
+#ifndef MS_JPEG_WATCHDOG_MAX_RECOVERIES
+#define MS_JPEG_WATCHDOG_MAX_RECOVERIES 5
 #endif
 
 static IMPSensorInfo    g_sensor;
@@ -985,6 +1022,9 @@ static void *video_thread(void *arg)
     int64_t idle_since=0;
     int dbg_first=0, dbg_pollfail=0;   /* one-shot encoder diagnostics */
     int dbg_startfail=0;               /* rate-limits StartRecvPic failures */
+    int dbg_recover_fails=0;           /* consecutive forced-recovery cycles
+                                         * that never yielded a real frame -
+                                         * see MS_VIDEO_WATCHDOG_MAX_RECOVERIES */
     int dbg_ovf=0;                     /* rate-limits the AU-overflow warning */
 #if defined(PLATFORM_T31)
     /* Item-2 (T31 only): IMP_Encoder_GetChnAveBitrate averages over a frame
@@ -1049,9 +1089,32 @@ static void *video_thread(void *arg)
                     LOGW(MOD,"chn%d: PollingStream idle (rc=%d, miss#%d) - encoder emits no frames",
                          vc->chn, pr, dbg_pollfail);
                 if (dbg_pollfail >= MS_VIDEO_WATCHDOG_ITERS){
+                    dbg_recover_fails++;
+                    if (dbg_recover_fails >= MS_VIDEO_WATCHDOG_MAX_RECOVERIES){
+                        /* N consecutive recovery cycles all reported success
+                         * (StartRecvPic==0) yet none ever produced a frame -
+                         * the hardware is genuinely gone, not just wedged.
+                         * Exit rather than spin forever: raise SIGTERM
+                         * instead of exit()ing this thread directly so the
+                         * existing on_signal path in main.c runs the normal
+                         * orderly shutdown (other channels, RTSP/HTTP
+                         * servers, record/timelapse/srt) for every other
+                         * still-live subsystem, backstopped by its own
+                         * existing 3 s hard_exit alarm if any of that wedges
+                         * against the same dead ISP. init supervision
+                         * (S95timps) is then responsible for restarting a
+                         * fresh, correctly-initialized process. */
+                        LOGE(MOD,"chn%d: %d consecutive forced-recovery cycles never "
+                             "produced a frame - encoder/ISP is not coming back on its "
+                             "own; exiting for init supervision to restart the process",
+                             vc->chn, dbg_recover_fails);
+                        raise(SIGTERM);
+                        break;
+                    }
                     LOGE(MOD,"chn%d: encoder dead after %d consecutive misses - "
-                         "forcing a framesource disable/enable cycle to recover",
-                         vc->chn, dbg_pollfail);
+                         "forcing a framesource disable/enable cycle to recover "
+                         "(recovery attempt %d/%d)",
+                         vc->chn, dbg_pollfail, dbg_recover_fails, MS_VIDEO_WATCHDOG_MAX_RECOVERIES);
                     IMP_Encoder_StopRecvPic(vc->chn);
                     /* V2 (partial): when this is the SOLE holder of the FS
                      * channel, this fs_unuse()+fs_use() pair now genuinely
@@ -1088,6 +1151,8 @@ static void *video_thread(void *arg)
         if (IMP_Encoder_GetStream(vc->chn,&st,1)!=0){
             LOGW(MOD,"chn%d: GetStream failed after PollingStream OK",vc->chn); continue; }
         dbg_pollfail=0;
+        dbg_recover_fails=0;   /* a real frame arrived: the channel has genuinely
+                                 * recovered, not just "successfully" restarted */
         /* Size the packet to the actual frame: sum the pack lengths (+4 for a
          * possible start code each) as a safe UPPER BOUND on the assembled
          * length, then borrow a pooled buffer of exactly that size. A frame
@@ -1753,6 +1818,9 @@ static void *jpeg_thread(void *arg)
     int receiving=0;
     int dbg_jstartfail=0;              /* rate-limits StartRecvPic failures */
     int dbg_jpollfail=0;               /* J1: PollingStream-miss watchdog */
+    int dbg_jrecover_fails=0;          /* consecutive forced-recovery cycles
+                                         * that never yielded a real frame -
+                                         * see MS_JPEG_WATCHDOG_MAX_RECOVERIES */
     int64_t next=0, idle_since=0;
     int64_t period = 1000000/(jc->fps>0?jc->fps:5);
     while (jc->run) {
@@ -1808,9 +1876,24 @@ static void *jpeg_thread(void *arg)
                 LOGW(MOD,"jpeg chn%d: PollingStream idle (miss#%d) - encoder emits no frames",
                      jc->chn, dbg_jpollfail);
             if (dbg_jpollfail >= MS_JPEG_WATCHDOG_ITERS){
+                dbg_jrecover_fails++;
+                if (dbg_jrecover_fails >= MS_JPEG_WATCHDOG_MAX_RECOVERIES){
+                    /* Same reasoning as video_thread's escalation, but give
+                     * up on just this channel instead of the whole process
+                     * (see MS_JPEG_WATCHDOG_MAX_RECOVERIES above) - mirrors
+                     * audio_thread's "disable and exit the thread" pattern.
+                     * receiving is still 1 here, so falling out of the loop
+                     * runs the normal StopRecvPic/fs_unuse epilogue below. */
+                    LOGE(MOD,"jpeg chn%d: %d consecutive forced-recovery cycles never "
+                         "produced a frame - giving up on this channel (MJPEG/snapshot "
+                         "output disabled until restart)",
+                         jc->chn, dbg_jrecover_fails);
+                    break;
+                }
                 LOGE(MOD,"jpeg chn%d: encoder dead after %d consecutive misses - "
-                     "forcing a framesource disable/enable cycle to recover",
-                     jc->chn, dbg_jpollfail);
+                     "forcing a framesource disable/enable cycle to recover "
+                     "(recovery attempt %d/%d)",
+                     jc->chn, dbg_jpollfail, dbg_jrecover_fails, MS_JPEG_WATCHDOG_MAX_RECOVERIES);
                 IMP_Encoder_StopRecvPic(jc->chn);
                 fs_unuse(jc->fs_chn);
                 fs_use(jc->fs_chn);
@@ -1824,6 +1907,7 @@ static void *jpeg_thread(void *arg)
             continue;
         }
         dbg_jpollfail=0;
+        dbg_jrecover_fails=0;   /* a real frame arrived: genuinely recovered */
         IMPEncoderStream st;
         if (IMP_Encoder_GetStream(jc->chn,&st,1)!=0){
             LOGW(MOD,"jpeg chn%d: GetStream failed after PollingStream OK", jc->chn);

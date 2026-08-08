@@ -7,6 +7,36 @@ semantic versioning.
 ## [Unreleased]
 
 ### Fixed
+- **Double-instance ISP collision hardening**, root-caused after a real
+  incident: a manually-launched foreground `/tmp/timpsd` test build was still
+  running when `/etc/init.d/S95timps restart` fired in another shell.
+  busybox's `start-stop-daemon -S -x /usr/bin/timpsd` matches "already
+  running" by executable PATH, not by process identity, so it never saw the
+  `/tmp/timpsd` process and started a second `/usr/bin/timpsd`. That second
+  process's `IMP_ISP_Open`/sensor-init reset the shared ISP kernel driver
+  state out from under the first, destroying its FrameSource channels; the
+  first process then spun in its encoder watchdog's recovery cycle forever
+  (every attempt "succeeded" per `StartRecvPic` but the hardware was
+  genuinely gone) producing zero video for 2+ minutes with no way to
+  self-recover and no mechanism to hand off to init supervision. Two
+  independent fixes:
+  - `src/main.c`: an exclusive `flock()` on `/run/timps.lock`, taken before
+    any ISP/HAL initialization. A second instance that loses the race logs a
+    clear fatal error and exits immediately, never touching the shared
+    hardware in the first place - this closes the actual race, independent
+    of how the double-start happens.
+  - `src/hal/hal_ingenic.c` (`video_thread`): the encoder watchdog's forced
+    recovery cycle (`fs_unuse()`/`fs_use()`/`StartRecvPic`) now tracks
+    consecutive cycles that never actually yielded a frame (via
+    `IMP_Encoder_GetStream`, not just a "successful" `StartRecvPic`). After
+    `MS_VIDEO_WATCHDOG_MAX_RECOVERIES` (default 5, ~25 s of total dead time)
+    it logs FATAL and raises `SIGTERM` on itself so the existing orderly
+    shutdown path exits the process for init supervision to restart cleanly,
+    instead of retrying forever. `jpeg_thread` had the identical infinite-
+    retry gap; it now gives up on just its own channel after the same number
+    of failed cycles (`MS_JPEG_WATCHDOG_MAX_RECOVERIES`), mirroring how
+    `audio_thread` already disables itself alone rather than taking the
+    whole process down for a non-primary stream.
 - **Piggyback JPEG (`/snapshot.jpg`, `/stream.mjpeg`) broke when a 90/270
   rotation was refused by the SW-rotate safe envelope.** On a T23 build with
   `USE_ROTATE`/`USE_SW_ROTATE`, requesting a rotation that exceeds the safe
@@ -204,23 +234,6 @@ semantic versioning.
 - **SDK feature-gap items #5 (`GetChnEvalInfo`) and #6 (exposure ceiling)** were
   skipped: both are new IMP features that cannot be verified without live
   hardware.
-- **Piggyback JPEG (`/snapshot.jpg`, `/stream.mjpeg`) broke when a 90/270
-  rotation was refused by the SW-rotate safe envelope.** On a T23 build with
-  `USE_ROTATE`/`USE_SW_ROTATE`, requesting a rotation that exceeds the safe
-  envelope (e.g. a full-res `1920x1080@25` main stream) is correctly refused
-  by `sw_rot_start()` — the video/RTSP path falls back to running UNROTATED.
-  But `jpeg_attach()` re-read the *raw* `cfg->video[vi]` (rotation still 90)
-  instead of the caller's post-refusal effective config, so it sized the JPEG
-  encoder channel from the rotated dims (e.g. `1080x1920`). That width is not
-  16-aligned, so `IMP_Encoder_CreateChn` failed ("JPEG CreateChn N failed")
-  and `/snapshot.jpg?chn=N` returned the literal `no frame` on every affected
-  channel, even though video streamed fine. `jpeg_attach()` now takes the
-  effective `const ms_vstream_cfg *` the caller actually brought the video
-  channel up with, so the JPEG channel always shares the video channel's true
-  post-refusal dimensions. This also covers the analogous T31
-  (`ROT_HAS_FS_ROTATE`) FS-rotate fallback path, which had the same defect.
-  Pre-existing bug (introduced with the JPEG-piggyback + rotation plumbing in
-  July; unrelated to the recent C11-hardening / frame-pool changes).
 
 ## [1.7.8] - 2026-08-06
 
