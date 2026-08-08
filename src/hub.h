@@ -86,4 +86,37 @@ void        hub_control(const char *key, const char *val);
 void        hub_set_control_commit_cb(void (*cb)(void));
 void        hub_control_commit(void);
 
+/* ---- JPEG source selection & on-demand grab ----------------------------
+ * Shared by mp4/httpd.c (/snapshot.jpg, /stream.mjpeg) and timelapse.c: both
+ * pick a JPEG hub source the same way and both cold-wake it the same way,
+ * and this used to be two hand-mirrored copies - a fix applied to one and
+ * forgotten on the other three times over (see CHANGELOG). */
+
+/* Priority: (1) the JPEG encoder piggybacked on video stream 'chn' (skipped
+ * if chn<0), (2) the dedicated jpeg.* channel, (3) any enabled videoN.jpeg
+ * piggyback. 'strict' (used for an explicit caller-requested channel, e.g.
+ * /snapshot.jpg?chn=N): if tier (1) isn't usable, return -1 instead of
+ * falling through (2)/(3) - silently substituting a channel the caller
+ * didn't ask for would be surprising. Returns a hub source id, or -1 if
+ * nothing suitable is enabled. */
+int         hub_pick_jpeg_src(const ms_config *cfg, int chn, int strict);
+
+/* default per-half wait for hub_grab_jpeg(); override with -D if needed. */
+#ifndef HUB_JPEG_GRAB_WAIT_MS
+#define HUB_JPEG_GRAB_WAIT_MS 1500
+#endif
+
+/* One on-demand JPEG grab: subscribe to 'src' (a HUB_JPEG_SRC/_N id), wait
+ * up to two bounded halves of 'wait_ms' each for a fresh JPEG (the 2nd half
+ * additionally subscribes the parent video source of a piggyback 'src' to
+ * force a cold pipeline up, mirroring the on-demand start RTSP/fMP4 clients
+ * use), then unsubscribe. See hub.c for the full rationale. Returns a ref'd
+ * ms_pkt (caller must pkt_unref) or NULL on timeout/subscribe failure.
+ * 'busy' is optional (pass NULL if the caller doesn't care, e.g. a bare
+ * retry loop): when non-NULL, *busy is set to 1 if the NULL return was
+ * because hub_subscribe() itself failed (source already at HUB_MAX_SUBS),
+ * vs. 0 for a plain grab timeout - callers that report the difference to a
+ * client (e.g. HTTP 503 "busy" vs. "no frame") need this distinction. */
+ms_pkt     *hub_grab_jpeg(int src, int wait_ms, int *busy);
+
 #endif

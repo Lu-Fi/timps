@@ -1,5 +1,6 @@
 #include "hub.h"
 #include "log.h"
+#include "util.h"
 #include <string.h>
 
 #define MOD "HUB"
@@ -62,6 +63,71 @@ void hub_control(const char *key, const char *val){ if (g_control_cb) g_control_
 static void (*g_control_commit_cb)(void) = NULL;
 void hub_set_control_commit_cb(void (*cb)(void)){ g_control_commit_cb = cb; }
 void hub_control_commit(void){ if (g_control_commit_cb) g_control_commit_cb(); }
+
+/* ---- JPEG source selection & on-demand grab ----------------------------
+ * See hub.h for the callers/rationale. */
+
+int hub_pick_jpeg_src(const ms_config *cfg, int chn, int strict)
+{
+    /* videoN.enabled is restart-only: a boot-disabled stream that was live-
+     * enabled has no publisher, so it cannot be a JPEG source - gate on the
+     * boot snapshot (see config.h). */
+    if (chn>=0 && chn<MS_MAX_VSTREAM &&
+        g_cfg_boot.video[chn].enabled && g_cfg_boot.video[chn].jpeg_enabled)
+        return HUB_JPEG_SRC_N(chn);
+    if (strict) return -1;
+    if (cfg->jpeg.enabled) return HUB_JPEG_SRC;
+    for (int i=0;i<MS_MAX_VSTREAM;i++)
+        if (g_cfg_boot.video[i].enabled && g_cfg_boot.video[i].jpeg_enabled)
+            return HUB_JPEG_SRC_N(i);
+    return -1;
+}
+
+/* pop the next packet, discarding anything that isn't a JPEG (defensive:
+ * every hub source publishes exactly one media type in practice, but a
+ * subscriber has no other way to be sure) within the remaining deadline. */
+static ms_pkt *jpeg_pop(fanqueue *q, int wait_ms)
+{
+    int64_t deadline = ms_now_us() + (int64_t)wait_ms*1000;
+    for (;;){
+        int64_t left_ms = (deadline - ms_now_us())/1000;
+        if (left_ms <= 0) return NULL;             /* timed out */
+        ms_pkt *p = fanqueue_pop(q,(int)left_ms);
+        if (!p) return NULL;                       /* timed out */
+        if (p->media==MS_MEDIA_JPEG) return p;
+        pkt_unref(p);
+    }
+}
+
+ms_pkt *hub_grab_jpeg(int src, int wait_ms, int *busy)
+{
+    if (busy) *busy = 0;
+    fanqueue q;
+    if (fanqueue_init(&q,4)) return NULL;
+    if (hub_subscribe(src,&q)!=0){ fanqueue_free(&q); if (busy) *busy=1; return NULL; }
+    ms_pkt *p = jpeg_pop(&q,wait_ms);
+    int vsrc=-1;                    /* helper video subscription (2nd half) */
+    fanqueue vq;
+    if (!p){
+        if (src > HUB_JPEG_SRC){    /* piggyback: HUB_JPEG_SRC_N(n) -> video n */
+            vsrc = src - (HUB_JPEG_SRC + 1);
+            /* tiny queue: the video frames themselves are discarded (drop-
+             * oldest on overflow); the subscription only exists to wake the
+             * parent video pipeline like any RTSP/fMP4 viewer would */
+            if (fanqueue_init(&vq,2)!=0) vsrc=-1;
+            else if (hub_subscribe(vsrc,&vq)!=0){ fanqueue_free(&vq); vsrc=-1; }
+        }
+        p = jpeg_pop(&q,wait_ms);
+    }
+    /* release the helper video subscription FIRST (it was taken last), then
+     * the JPEG one; hub_unsubscribe waits out any in-flight publish before
+     * its fanqueue is freed (no UAF), and once both are gone the HAL's
+     * activity callback + idle-stop debounce return the camera to idle. */
+    if (vsrc>=0){ hub_unsubscribe(vsrc,&vq); fanqueue_free(&vq); }
+    hub_unsubscribe(src,&q);
+    fanqueue_free(&q);
+    return p;
+}
 
 /* hub_publish() snapshots s->subs[] under s->lock and then pushes to those
  * queues AFTER releasing s->lock (see hub_publish). Since hub_unsubscribe()
