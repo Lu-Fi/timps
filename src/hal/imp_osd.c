@@ -461,6 +461,16 @@ int imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height)
         osd_region *rg=&s->r[i];
         rg->item=i; rg->last[0]=0;
         rg->rgn=IMP_OSD_CreateRgn(NULL);
+        /* Finding 5: CreateRgn returns <0 on failure (reachable via OSD region-
+         * pool exhaustion, osd_pool_size). Skip the rest of this region's setup
+         * rather than issuing Register/SetGrpRgnAttr/SetRgnAttr/ShowRgn against a
+         * -1 handle; rg->rgn stays negative and the later apply/teardown loops
+         * already guard on rgn<0. */
+        if (rg->rgn<0){
+            LOGE(MOD,"osd stream %d item %d: CreateRgn failed (region pool exhausted?)",
+                 stream_idx, i);
+            continue;
+        }
         IMP_OSD_RegisterRgn(rg->rgn, s->grp, NULL);
         IMPOSDGrpRgnAttr g; memset(&g,0,sizeof g);
         g.show=1; g.gAlphaEn=1; g.fgAlhpa=(uint8_t)it->transparency;
@@ -484,6 +494,14 @@ int imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height)
     int priv=0;
     for (int n=0;n<MS_MAX_PRIVACY;n++){
         s->pr_rgn[n]=IMP_OSD_CreateRgn(NULL);
+        /* Finding 5: same as the overlay regions above - a failed CreateRgn
+         * (<0, region-pool exhaustion) must not be Register/SetRgnAttr/Shown as a
+         * -1 handle. Leave pr_rgn[n] negative (apply/teardown guard on it). */
+        if (s->pr_rgn[n]<0){
+            LOGE(MOD,"osd stream %d privacy %d: CreateRgn failed (region pool exhausted?)",
+                 stream_idx, n);
+            continue;
+        }
         IMP_OSD_RegisterRgn(s->pr_rgn[n], s->grp, NULL);
         setup_cover(s, n);
         if (cfg->privacy[stream_idx][n].enabled) priv++;
