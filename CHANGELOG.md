@@ -7,6 +7,53 @@ semantic versioning.
 ## [Unreleased]
 
 ### Fixed
+- **Nine `cfg_field` table entries were silently unreachable via `POST
+  /control`** (audit catch, not intentional design like their neighbors):
+  each existed as a real, validated, clampable entry in `src/config.c` and
+  was correctly settable by hand-editing `/etc/timps.conf`, but the
+  hand-written per-section JSON handlers in `src/control.c` were never
+  extended to cover them — a POST returned `{"ok":true}` with zero effect
+  (no `[CTRL] set` log line, no config-file write, no live apply). None of
+  the nine carry an `F_NOGET`/exclusion marker, unlike the fields that
+  *are* deliberately excluded in the same tables (`motion.on_motion`,
+  `motion.cooldown_ms`, `daynight.switch_cmd`, `daynight.isp_path` — all
+  stay file-only, unchanged by this fix).
+  - `osd.monitor_stream`/`font_path`/`vars_file`/`supersample`/`hinting`:
+    added to the `osd` section's master-switch handler (same
+    restart-required class as the already-POST-able `osd.enabled` —
+    `imp_osd_setup()` only builds the OSD groups once at startup) and to
+    `GET /control`'s `osd` object.
+  - `osd<S>.<N>.type` (text vs. logo): added to the per-item POST key list
+    (it was already GET-readable and every sibling field — `text`/`x`/`y`/
+    `font_size`/`color`/etc. — was already POST-able). Persists and is
+    pushed through the existing live-reapply call, but `imp_osd_apply()`'s
+    render dispatch is fixed at region-creation time, so switching an
+    existing item's type needs a restart to actually change what's drawn
+    — same restart-required class as `enabled`.
+  - `daynight.transition_s`/`interval_ms`/`threshold_low`/`threshold_high`/
+    `hysteresis`: added to the `daynight` section's key list and to its
+    `GET`/`/events` JSON — same live class as every other numeric
+    `daynight.*` key (the detection thread polls `g_cfg` directly, no HAL
+    call involved).
+  - `motion.hold_ms`/`skip_frames`: added to the `motion` section's key
+    list and to its `GET`/`/events` JSON. Unlike their already-POST-able
+    neighbors (`enabled`/`cols`/`rows`/`sensitivity`/`monitor_stream`,
+    which trigger a live IVS grid rebuild), these two only feed
+    `IMP_IVS_MoveParam`/`g_hold_ms` at grid *create* time
+    (`imp_motion.c`), so a POST persists and takes effect at the next
+    such rebuild or a daemon restart, not immediately — documented as
+    such rather than force-added to the live-rebuild path.
+  - Verified end-to-end against `timpsd-sim`: for one field per section
+    (`osd.hinting`, `daynight.transition_s`, `motion.skip_frames`), POSTed
+    the value, confirmed the `[CTRL] set <key> = <value>` log line, the
+    `CONFIG persisted ... setting(s)` write to the conf file, and the
+    clamped/persisted value round-tripping back through `GET /control`;
+    also re-verified `daynight.switch_cmd`/`motion.cooldown_ms` remain
+    silently unreachable (no log line, no config-file write) and that an
+    out-of-range `daynight.hysteresis` POST still clamps to its
+    documented bound. `docs/wiki/Configuration-Reference.md` and
+    `docs/wiki/HTTP-Control-API.md` updated to match (File-only →
+    Restart-only/Live per field, per the corrected POST-able-key lists).
 - **`osd.hinting` autohinter could erase thin stems instead of sharpening
   them** (adversarial review catch on the autohinting feature added above,
   fixed on the second attempt after the first repair was itself caught in

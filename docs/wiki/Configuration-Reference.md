@@ -239,11 +239,11 @@ overlay fields are documented separately below (`osd<S>.<N>.*`).
 | Key | Type | Default | Range | Live? | Description |
 | --- | --- | --- | --- | --- | --- |
 | `osd.enabled` | bool | 1 | 0/1 | Restart-only | Master OSD on/off switch, global across all streams. Settable via `/control` (`{"osd":{"enabled":...}}`) and persists, but the OSD groups are only ever built once at startup (`imp_osd_setup`), so the effect needs a restart. |
-| `osd.monitor_stream` | int | 0 | — | File-only | Which stream's measured fps feeds the `{fps}` placeholder. |
-| `osd.font_path` | string | `/usr/share/fonts/default.ttf` | — | File-only | Default TTF font for text items without a per-item `font_path` override. |
-| `osd.vars_file` | string | `/tmp/timps_osd.vars` | — | File-only | Custom placeholder source file (see "Custom placeholders" below). |
-| `osd.supersample` | int | 2 | 1–4 | File-only | TTF rasterizer anti-aliasing quality (samples per axis per pixel); cost scales ~quadratically, 2 is visually close to 4 at typical OSD sizes for roughly a quarter of the CPU cost. |
-| `osd.hinting` | bool | 0 | 0/1 | File-only (only if `USE_OSD_HINTING` compiled in) | Opt-in lightweight geometric autohint for the TTF rasterizer. The rasterizer (`msttf.c`) does not execute the font's embedded TrueType hint bytecode (a real hint interpreter is real interpreter-writing work with a real correctness/security surface for an on-device, unsandboxed daemon); at small sizes (e.g. the substream OSD's default 12px) that shows up as visibly uneven stroke widths between glyphs. Enabling this snaps long, near-vertical/near-horizontal outline edges (typical letter stems/serifs) to the pixel grid before rasterizing, which measurably reduces that unevenness — it is a coarse heuristic, not real hinting, and does not preserve the font's authored hint intent. Off by default: existing installs render byte-for-byte identical OSD bitmaps unless this is explicitly enabled. Verified against the shipped UbuntuMono Regular (`/usr/share/fonts/default.ttf`); untested against other TTF files if a user swaps `osd.font_path`. Also gated at COMPILE time by `USE_OSD_HINTING` (`BR2_PACKAGE_TIMPS_OSD_HINTING` in the buildroot package, off by default — measured ~2.1KB smaller `.text` on T31/GCC 16.1.0/-Os when left off): on a build without it, setting this key is accepted but has no effect. |
+| `osd.monitor_stream` | int | 0 | — | Restart-only | Which stream's measured fps feeds the `{fps}` placeholder. Settable via `/control` (`{"osd":{"monitor_stream":...}}`), same restart-required class as `osd.enabled`. |
+| `osd.font_path` | string | `/usr/share/fonts/default.ttf` | — | Restart-only | Default TTF font for text items without a per-item `font_path` override. Settable via `/control`, same restart-required class as `osd.enabled`. |
+| `osd.vars_file` | string | `/tmp/timps_osd.vars` | — | Restart-only | Custom placeholder source file (see "Custom placeholders" below). Settable via `/control`, same restart-required class as `osd.enabled`. |
+| `osd.supersample` | int | 2 | 1–4 | Restart-only | TTF rasterizer anti-aliasing quality (samples per axis per pixel); cost scales ~quadratically, 2 is visually close to 4 at typical OSD sizes for roughly a quarter of the CPU cost. Settable via `/control`, same restart-required class as `osd.enabled`. |
+| `osd.hinting` | bool | 0 | 0/1 | Restart-only (only if `USE_OSD_HINTING` compiled in) | Opt-in lightweight geometric autohint for the TTF rasterizer. The rasterizer (`msttf.c`) does not execute the font's embedded TrueType hint bytecode (a real hint interpreter is real interpreter-writing work with a real correctness/security surface for an on-device, unsandboxed daemon); at small sizes (e.g. the substream OSD's default 12px) that shows up as visibly uneven stroke widths between glyphs. Enabling this snaps long, near-vertical/near-horizontal outline edges (typical letter stems/serifs) to the pixel grid before rasterizing, which measurably reduces that unevenness — it is a coarse heuristic, not real hinting, and does not preserve the font's authored hint intent. Off by default: existing installs render byte-for-byte identical OSD bitmaps unless this is explicitly enabled. Verified against the shipped UbuntuMono Regular (`/usr/share/fonts/default.ttf`); untested against other TTF files if a user swaps `osd.font_path`. Also gated at COMPILE time by `USE_OSD_HINTING` (`BR2_PACKAGE_TIMPS_OSD_HINTING` in the buildroot package, off by default — measured ~2.1KB smaller `.text` on T31/GCC 16.1.0/-Os when left off): on a build without it, setting this key is accepted but has no effect. Settable via `/control`, same restart-required class as `osd.enabled`. |
 
 ### Custom placeholders (show any value you want in the OSD)
 
@@ -294,7 +294,7 @@ Default layout: item 0 = timestamp (top-left), item 1 = `{hostname}`
 | Key | Type | Default | Range | Live? | Description |
 | --- | --- | --- | --- | --- | --- |
 | `enabled` | bool | item 0–3: `1`, items 4–7: `0` | 0/1 | **Restart-only** | Enabling an item that started disabled has no IMP region to attach to — only takes effect on restart. Disabling a running item also only persists (no live hide). |
-| `type` | enum | `text` (item 3: `logo`) | `text`\|`logo` | File-only | Overlay type. Not settable via `/control` at all. |
+| `type` | enum | `text` (item 3: `logo`) | `text`\|`logo` | **Restart-only** | Overlay type. Settable via `/control` and persists, but `imp_osd_apply()`'s live re-render dispatch is fixed at region-creation time (`rg->is_text`), so switching an existing item between text and logo needs a restart to actually change what's drawn (same restart-required reasoning as `enabled`). |
 | `text` | string(128) | per-item (see layout above) | — | **Live** (if the item had a region at startup) | Text template: literal text, `{placeholder}` tokens (`{hostname} {ip} {mac} {fps} {uptime} {net} {cpu} {mem} {clients}`), and `strftime()` codes. |
 | `logo` (alias `logo_path`) | string(128) | `/usr/share/images/thingino_100x30.bgra` (item 3) | — | File-only | Raw BGRA logo file path. |
 | `logo_w` (alias `logo_width`) | int | 100 (item 3) | 0–4096 | File-only | Logo width in px. |
@@ -329,11 +329,14 @@ otherwise the value persists but has no visible effect until restart.
 
 ## `motion.*` — motion detection
 
-See [Motion Detection](Motion-Detection.md) for the full grid model. Only
-`enabled`/`sensitivity`/`cols`/`rows`/`monitor_stream` are POST-able; the
-rest are config-file-only (the running IVS thread does read them, but
-there is no live-update path, so a change needs a restart to take
-effect).
+See [Motion Detection](Motion-Detection.md) for the full grid model.
+`enabled`/`sensitivity`/`cols`/`rows`/`monitor_stream` are POST-able and
+**Live**; `hold_ms`/`skip_frames` are also POST-able (persist + echo)
+but **Restart-only** — they feed the IVS grid/hold logic only at
+create/resync time, so a POST takes effect at the next
+enabled/cols/rows/monitor_stream-triggered resync or daemon restart, not
+immediately. `cooldown_ms`/`on_motion` stay config-file-only by design
+(see below).
 
 | Key | Type | Default | Range | Live? | Description |
 | --- | --- | --- | --- | --- | --- |
@@ -343,8 +346,8 @@ effect).
 | `motion.cols` | int | 5 (or 2/1 on SDKs with a smaller ROI budget) | ≥1, `cols*rows` clamped to `MOTION_CELL_LIMIT` | **Live** | Grid columns. Setting one axis clamps against the *current* value of the other, never the reverse, so re-applying the same pair is idempotent. |
 | `motion.rows` | int | 5 (or 2/1) | ≥1, same clamp | **Live** | Grid rows. |
 | `motion.cooldown_ms` | int | 5000 | 250–`INT_MAX` (floor enforced) | File-only | Minimum gap between `on_motion` hook executions. |
-| `motion.hold_ms` | int | 800 | 0–`INT_MAX` | File-only | How long a cell reports "active" after its last hit, so an async `/events`/`/control` reader reliably observes single-frame motion instead of racing IVS's own immediate clear. `0` = no hold. |
-| `motion.skip_frames` | int | 5 | 1–`INT_MAX` | File-only | `IMP_IVS_MoveParam.skipFrameCnt` — analyze every Nth frame. Higher = cheaper/higher latency. |
+| `motion.hold_ms` | int | 800 | 0–`INT_MAX` | Restart-only | How long a cell reports "active" after its last hit, so an async `/events`/`/control` reader reliably observes single-frame motion instead of racing IVS's own immediate clear. `0` = no hold. Settable via `/control`; persists and applies at the next grid create/resync (or restart), not immediately. |
+| `motion.skip_frames` | int | 5 | 1–`INT_MAX` | Restart-only | `IMP_IVS_MoveParam.skipFrameCnt` — analyze every Nth frame. Higher = cheaper/higher latency. Settable via `/control`; persists and applies at the next grid create/resync (or restart), not immediately. |
 | `motion.on_motion` | string(128) | `""` | — | File-only, **not GET-readable either** | Program to `fork()`+`execlp()` on motion (no shell, no arguments). `""` = disabled. Receives `MOTION_COLS`/`MOTION_ROWS`/`MOTION_CELLS`/`MOTION_TIME` via the environment — see [Motion Detection](Motion-Detection.md). |
 | `motion.roi_x`/`roi_y`/`roi_w`/`roi_h` | int | 0 | — | File-only, **deprecated** | Legacy single-ROI keys, still parsed for old configs but **ignored** — the grid replaced them. Setting a non-zero value logs a one-time warning. |
 
@@ -412,11 +415,11 @@ config file.
 | `daynight.boot_stable_pct` | int | 20 | 0–100 | **Live** | `sensor` mode: max spread across recent gain readings (as % of their average) to consider AE converged; `0` disables the stability wait (floor-only). |
 | `daynight.night_reconfirm_s` | int | 3600 | 0–86400 | **Live** | `sensor` mode: after this long continuously in night, force a probe switch to day and let the normal hysteresis re-decide from a true day-pipeline reading. `0` disables. Each probe is user-visible (IR-cut clunk + several seconds of dark colour video), so a probe that fails (reverts within 30s) doubles this interval for the next one — ×1→×2→×4, capped at `max(night_reconfirm_s, 4h)` — and any genuine transition resets it (exponential backoff, added 2026-08-04 after hourly probes flapped 8–12×/night on genuinely dark cameras). A due probe is additionally **skipped entirely** (no physical switch, no IR-cut click) when the smoothed night gain is still solidly deep in night — nowhere near the day bar — so a camera in unchanging darkness stops clicking altogether; it still fires the first probe after each night entry, and the `daynight.probe_max_skip_s` outer bound forces one regardless of gain as the self-healing net (added 2026-08-04 after "das klacken der IR blende nervt … nachts andauernd" on a closeted camera). |
 | `daynight.probe_max_skip_s` | int | 43200 (12h) | 3600–604800 | **Live** | `sensor` mode: outer bound for the passive-evidence probe skip above — once this long has passed since the last *actual* physical probe, force one regardless of gain ("trust nothing, double-check" for a permanently-flat reading that gain evidence alone can never clear). Deliberately floored at 3600s (1h): this is a safety net, not a feature meant to be disabled outright. Raise it for a quieter camera, or lower it (down to the floor) for more frequent verification; made configurable 2026-08-05 (was a compile-time-only constant). |
-| `daynight.threshold_low` | float | 25.0 | 0–100 (%) | File-only | Brightness-fallback: below this in day → night (used only when no gain field is readable). |
-| `daynight.threshold_high` | float | 75.0 | 0–100 (%) | File-only | Brightness-fallback: above this in night → day. |
-| `daynight.hysteresis` | float | 0.1 | 0–1 | File-only | Fraction of the low–high band used for the very first (unknown-state) brightness-fallback decision. |
-| `daynight.interval_ms` | int | 500 | 100–60000 | File-only | Sample interval. |
-| `daynight.transition_s` | int | 5 | 0–3600 | File-only | Minimum dwell time between switches. |
+| `daynight.threshold_low` | float | 25.0 | 0–100 (%) | **Live** | Brightness-fallback: below this in day → night (used only when no gain field is readable). |
+| `daynight.threshold_high` | float | 75.0 | 0–100 (%) | **Live** | Brightness-fallback: above this in night → day. |
+| `daynight.hysteresis` | float | 0.1 | 0–1 | **Live** | Fraction of the low–high band used for the very first (unknown-state) brightness-fallback decision. |
+| `daynight.interval_ms` | int | 500 | 100–60000 | **Live** | Sample interval. |
+| `daynight.transition_s` | int | 5 | 0–3600 | **Live** | Minimum dwell time between switches. |
 | `daynight.switch_cmd` | string(64) | `daynight` | — | File-only, not GET-readable | Board script run as `<cmd> day\|night` on a switch. |
 | `daynight.isp_path` | string(128) | `/proc/jz/isp/isp-m0` | — | File-only, not GET-readable | ISP exposure proc file for the brightness-fallback scrape. |
 

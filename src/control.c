@@ -405,7 +405,7 @@ void control_apply_json(const char *json)
         "backchannel","backchannel_codec","backchannel_rate"
     };
     static const char *const OSD[] = {
-        "enabled","text","x","y","font_size","color","transparency",
+        "enabled","type","text","x","y","font_size","color","transparency",
         "outline","outline_color"
     };
     /* videoN.* encoder/stream keys: ALL persist-only (restart-required).
@@ -498,7 +498,15 @@ void control_apply_json(const char *json)
             "boot_settle_s","boot_settle_max_s","boot_stable_pct",
             "night_reconfirm_s","probe_max_skip_s",
             "sun_latitude","sun_longitude",
-            "sun_sunrise_offset_min","sun_sunset_offset_min"
+            "sun_sunrise_offset_min","sun_sunset_offset_min",
+            /* brightness-fallback (used only when no gain field is readable)
+             * + the two sampling-loop knobs: config-only like every other key
+             * in this list (the daynight thread polls g_cfg), never F_NOGET -
+             * unlike switch_cmd/isp_path (exec'd command / scraped proc path,
+             * deliberately excluded just below), these were simply missed when
+             * the section handler was written. */
+            "threshold_low","threshold_high","hysteresis",
+            "interval_ms","transition_s"
         };
         apply_section(ch, "daynight", sb, se,
                       DN_KEYS, (int)(sizeof DN_KEYS/sizeof DN_KEYS[0]));
@@ -506,11 +514,12 @@ void control_apply_json(const char *json)
 
     /* osd, legacy shared form: {"osd":{"enabled":true,"0":{...},..,"7":{...}}}
      * -> osd.enabled + legacy osdN.* keys (each item is applied to EVERY
-     * stream, the pre-per-stream behavior). The master switch is only looked
-     * for in the span BEFORE the first nested item object so an item's
-     * "enabled" is never mistaken for it (the WebUI bridge emits the osd-level
-     * keys first). It is config-only: imp_osd_setup runs once at startup, so
-     * it takes effect on restart. */
+     * stream, the pre-per-stream behavior). The master switch (and the other
+     * osd.* globals below) are only looked for in the span BEFORE the first
+     * nested item object so an item's own keys (e.g. an item's "enabled") are
+     * never mistaken for them (the WebUI bridge emits the osd-level keys
+     * first). All of them are config-only: imp_osd_setup builds the OSD
+     * groups once at startup, so they take effect on restart. */
     sb = find_obj(json, end, "osd", &se);
     if (sb){
         const char *fe = sb;
@@ -519,6 +528,15 @@ void control_apply_json(const char *json)
             timps_apply_setting(ch, "osd.enabled",
                                 (!strcmp(v,"true")||!strcmp(v,"1")) ? "1" :
                                 (!strcmp(v,"false")||!strcmp(v,"0")) ? "0" : v);
+        /* monitor_stream/font_path/vars_file/supersample/hinting: same
+         * restart-required class as "enabled" just above, just missing from
+         * this handler until now (config.c's osd_fields[] table has never
+         * marked them F_NOGET). */
+        static const char *const OSD_GLOBAL_KEYS[] = {
+            "monitor_stream","font_path","vars_file","supersample","hinting"
+        };
+        apply_section(ch, "osd", sb, fe, OSD_GLOBAL_KEYS,
+                      (int)(sizeof OSD_GLOBAL_KEYS/sizeof OSD_GLOBAL_KEYS[0]));
         for (int i=0;i<MS_MAX_OSD;i++){
             char idx[4]; snprintf(idx,sizeof idx,"%d",i);
             const char *ie, *ib = find_obj(sb, se, idx, &ie);
@@ -604,6 +622,19 @@ void control_apply_json(const char *json)
         };
         apply_section(ch, "motion", sb, se,
                       MOTION_KEYS, (int)(sizeof MOTION_KEYS/sizeof MOTION_KEYS[0]));
+        /* hold_ms/skip_frames: both feed IMP_IVS_MoveParam/g_hold_ms at IVS
+         * group CREATE time only (imp_motion.c) - unlike the keys above, a
+         * live POST does not itself rebuild the grid, so the new value
+         * persists and takes effect at the next enabled/cols/rows/
+         * monitor_stream-triggered resync or daemon restart (same
+         * config-only/restart-required class as the videoN and sensor
+         * sections above). Neither is F_NOGET (unlike cooldown_ms/on_motion
+         * just above) - they were simply missing from this handler. */
+        static const char *const MOTION_RESTART_KEYS[] = {
+            "hold_ms","skip_frames"
+        };
+        apply_section(ch, "motion", sb, se, MOTION_RESTART_KEYS,
+                      (int)(sizeof MOTION_RESTART_KEYS/sizeof MOTION_RESTART_KEYS[0]));
     }
 
     /* record: {"record":{"active":1|0}} = manual start/stop override (the
@@ -843,7 +874,9 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
         "\"time_night_start\":\"%s\",\"time_day_start\":\"%s\","
         "\"sun_latitude\":%g,\"sun_longitude\":%g,"
         "\"sun_sunrise_offset_min\":%d,\"sun_sunset_offset_min\":%d,"
-        "\"sun_computed_sunrise\":\"%s\",\"sun_computed_sunset\":\"%s\"}",
+        "\"sun_computed_sunrise\":\"%s\",\"sun_computed_sunset\":\"%s\","
+        "\"threshold_low\":%g,\"threshold_high\":%g,\"hysteresis\":%g,"
+        "\"interval_ms\":%d,\"transition_s\":%d}",
         enabled, mode, (double)brightness, (double)total_gain, (double)ae_luma,
         (double)night_baseline, (double)day_trigger,
         (double)d->total_gain_day_threshold,
@@ -856,7 +889,9 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
         etns, etds,
         (double)d->sun_latitude, (double)d->sun_longitude,
         d->sun_sunrise_offset_min, d->sun_sunset_offset_min,
-        sun_sr, sun_ss);
+        sun_sr, sun_ss,
+        (double)d->threshold_low, (double)d->threshold_high,
+        (double)d->hysteresis, d->interval_ms, d->transition_s);
 }
 
 /* Read-only motion status object (shared /control + /events shape, see
@@ -874,7 +909,11 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
  *                  a recovery cycle ran (or is running) - see imp_motion.c
  *   active         per-cell 0/1 from the latest IVS result (empty
  *                  when unavailable or not running)
- *   last_ms        ms since the last motion event, -1 = never */
+ *   last_ms        ms since the last motion event, -1 = never
+ *   hold_ms/skip_frames  configured values (g_cfg, not st: baked into the
+ *                  IVS grid/hold logic only at the next create/resync, see
+ *                  imp_motion.c) - read-only feedback for the settings page,
+ *                  settable via the "motion" POST section like monitor_stream */
 int control_motion_json(char *buf, size_t cap, const ms_motion_status *st)
 {
     size_t o = 0;
@@ -883,15 +922,20 @@ int control_motion_json(char *buf, size_t cap, const ms_motion_status *st)
         if (_n>0) o += (size_t)_n; \
     } while (0)
     /* F-03: motion.monitor_stream is live-mutable via /control - read it under
-     * the config string lock rather than lock-free. */
+     * the config string lock rather than lock-free. hold_ms/skip_frames ride
+     * along under the same lock (also /control-mutable now). */
     config_str_lock();
     int monitor_stream = g_cfg.motion.monitor_stream;
+    int hold_ms = g_cfg.motion.hold_ms;
+    int skip_frames = g_cfg.motion.skip_frames;
     config_str_unlock();
     APP("{\"available\":%d,\"enabled\":%d,\"cols\":%d,"
         "\"rows\":%d,\"max_cells\":%d,\"sensitivity\":%d,"
-        "\"monitor_stream\":%d,\"stalled\":%d,\"active\":[",
+        "\"monitor_stream\":%d,\"hold_ms\":%d,\"skip_frames\":%d,"
+        "\"stalled\":%d,\"active\":[",
         st->available, st->enabled, st->cols, st->rows,
         MOTION_MAX_CELLS, st->sensitivity, monitor_stream,
+        hold_ms, skip_frames,
         st->stalled);
     int mcells = st->cells;
     if (mcells > MOTION_STATUS_MAX) mcells = MOTION_STATUS_MAX;
@@ -1154,11 +1198,24 @@ int control_get_json(char *buf, size_t cap)
             vs->qp, vs->min_qp, vs->max_qp, vs->rotation, vs->buffers, rp);
 #endif /* USE_ROTATE */
     }
-    /* osd: master switch as its own tiny object (kept directly after "video"
-     * - the CGI bridge scopes its video scan up to the "osd" marker), then
-     * one independent item set per video stream as "osd0"/"osd1", incl. the
-     * item type so the bridge can tell text overlays from the logo */
-    APP("},\"osd\":{\"enabled\":%d}", c->osd.enabled);
+    /* osd: master switch + the other osd.* globals (monitor_stream/font_path/
+     * vars_file/supersample/hinting - all restart-only, same as "enabled",
+     * and all POST-able via the "osd" section handler above) as their own
+     * tiny object (kept directly after "video" - the CGI bridge scopes its
+     * video scan up to the "osd" marker), then one independent item set per
+     * video stream as "osd0"/"osd1", incl. the item type so the bridge can
+     * tell text overlays from the logo */
+    {
+        char ofp[sizeof c->osd.font_path * 3], ovf[sizeof c->osd.vars_file * 3];
+        config_str_lock();     /* osd.font_path/vars_file are runtime-mutable via POST */
+        jesc(c->osd.font_path, ofp, sizeof ofp);
+        jesc(c->osd.vars_file, ovf, sizeof ovf);
+        config_str_unlock();
+        APP("},\"osd\":{\"enabled\":%d,\"monitor_stream\":%d,\"font_path\":\"%s\","
+            "\"vars_file\":\"%s\",\"supersample\":%d,\"hinting\":%d}",
+            c->osd.enabled, c->osd.monitor_stream, ofp, ovf,
+            c->osd.supersample, c->osd.hinting);
+    }
     for (int s=0;s<MS_MAX_VSTREAM;s++){
         APP(",\"osd%d\":{", s);
         for (int i=0;i<MS_MAX_OSD;i++){
