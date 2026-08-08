@@ -1007,16 +1007,24 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
     a.rcAttr.maxGop = v->gop;
     /* rc mode MUST be filled: an all-zero attrRcMode means FIXQP with qp=0
      * (broken stream). H264 CBR defaults, field names verified against the
-     * vendored T20/T21/T30 headers. */
-    a.rcAttr.attrRcMode.rcMode = ENC_RC_MODE_CBR;
-    a.rcAttr.attrRcMode.attrH264Cbr.maxQp        = (v->max_qp>0)?(uint32_t)v->max_qp:45;
-    a.rcAttr.attrRcMode.attrH264Cbr.minQp        = (v->min_qp>0)?(uint32_t)v->min_qp:15;
-    a.rcAttr.attrRcMode.attrH264Cbr.outBitRate   = (uint32_t)v->bitrate_kbps;
-    a.rcAttr.attrRcMode.attrH264Cbr.iBiasLvl     = 0;
-    a.rcAttr.attrRcMode.attrH264Cbr.frmQPStep    = 3;
-    a.rcAttr.attrRcMode.attrH264Cbr.gopQPStep    = 15;
-    a.rcAttr.attrRcMode.attrH264Cbr.adaptiveMode = 0;
-    a.rcAttr.attrRcMode.attrH264Cbr.gopRelation  = 0;
+     * vendored T20/T21/T30 headers. rc_mode=fixqp used to silently no-op
+     * here (hardcoded CBR regardless of v->rc_mode) instead of crashing
+     * like the ENC_NEW_API path did - same underlying gap (videoN.qp never
+     * reached the HAL), just a quieter failure mode on these SoCs. */
+    if (v->rc_mode==MS_RC_FIXQP){
+        a.rcAttr.attrRcMode.rcMode = ENC_RC_MODE_FIXQP;
+        a.rcAttr.attrRcMode.attrH264FixQp.qp = (v->qp>0)?(uint32_t)v->qp:35;
+    } else {
+        a.rcAttr.attrRcMode.rcMode = ENC_RC_MODE_CBR;
+        a.rcAttr.attrRcMode.attrH264Cbr.maxQp        = (v->max_qp>0)?(uint32_t)v->max_qp:45;
+        a.rcAttr.attrRcMode.attrH264Cbr.minQp        = (v->min_qp>0)?(uint32_t)v->min_qp:15;
+        a.rcAttr.attrRcMode.attrH264Cbr.outBitRate   = (uint32_t)v->bitrate_kbps;
+        a.rcAttr.attrRcMode.attrH264Cbr.iBiasLvl     = 0;
+        a.rcAttr.attrRcMode.attrH264Cbr.frmQPStep    = 3;
+        a.rcAttr.attrRcMode.attrH264Cbr.gopQPStep    = 15;
+        a.rcAttr.attrRcMode.attrH264Cbr.adaptiveMode = 0;
+        a.rcAttr.attrRcMode.attrH264Cbr.gopRelation  = 0;
+    }
 #endif
     if (IMP_Encoder_CreateChn(chn,&a)<0){ LOGE(MOD,"Encoder_CreateChn %d",chn); return -1; }
     if (IMP_Encoder_RegisterChn(grp, chn)!=0){
