@@ -1346,13 +1346,23 @@ void httpd_stop(httpd *h)
     shutdown(h->lfd, SHUT_RDWR);   /* close() alone does not wake accept() */
     close(h->lfd);
     pthread_join(h->thr,NULL);
+    /* Finding 3: the per-connection threads are pthread_detach'd, so the join
+     * above only reaped the accept thread - an in-flight /control POST handler
+     * can still be inside isp_apply_image / imp_osd_apply / motion_sync (direct
+     * IMP calls) when main() next runs g_hal->stop() and destroys those
+     * channels. Give the detached conn_threads a bounded window (~500 ms, same
+     * shape as the RTSP 1s drain) to return; g_nconn hits 0 once the last one
+     * does. Previously ONLY USE_TLS builds waited here, and only to protect the
+     * tls_ctx free - the same wait is needed regardless of TLS to keep handlers
+     * off the HAL, so it now runs unconditionally. This is defense in depth
+     * ALONGSIDE main()'s 3 s hard-exit alarm, not a replacement: a connection
+     * still wedged past the window (e.g. a long-lived media stream) just falls
+     * through to teardown, and the alarm remains the ultimate backstop. */
+    for (int i = 0; i < 50 && g_nconn > 0; i++) usleep(10000);
 #ifdef USE_TLS
     if (h->tls_ctx) {
-        /* detached conn_threads may still hold tls_ctx (handshake/read/write):
-         * give them a bounded window to drain before freeing it. Today stop
-         * only runs at process exit; this keeps a future restart-without-exit
-         * from freeing the ctx under a live connection. */
-        for (int i = 0; i < 50 && g_nconn > 0; i++) usleep(10000);
+        /* the drain above already let any TLS handshake/read/write conn_thread
+         * settle, so the ctx none of them still reference is safe to free. */
         ms_tls_ctx_free((ms_tls_ctx *)h->tls_ctx);
     }
 #endif
