@@ -1766,8 +1766,49 @@ mb_check "unterminated string (no closing quote)" '{"osd0":{"0":{"text":"never c
 
 # 3. huge/overflow-prone number: pint()'s strtol()+cast-to-int path (the M11
 #    hardening comment in config.c) must clamp, not misbehave, on a value
-#    that overflows long/int well past any field's [lo,hi].
-mb_check "overflow-prone number" '{"image":{"brightness":99999999999999999999999999}}'
+#    that overflows long/int well past any field's [lo,hi]. Unlike cases
+#    1/2/4/5, this body is well-formed JSON that the parser WILL apply -
+#    it just clamps image.brightness to 255 rather than rejecting it, and
+#    mb_check() (by design - it's a liveness check, not a settings test)
+#    never restores anything. That silently stranded brightness=255 on a
+#    real camera (2026-08, seen live on Garage/Wyze/Galayou after a QA run
+#    with nothing else in the log to explain it) until traced here.
+#
+#    Self-contained (own capture/POST/trap via curlq, not lv_get/lv_post/
+#    LV_PENDING) rather than depending on section 8b having run first -
+#    this section is reachable on its own via --only 8e.
+MB3_PENDING=""
+mb3_restore_pending() {
+	[ -n "${MB3_PENDING:-}" ] || return 0
+	warn "interrupted mid overflow-prone-number test - restoring image.brightness"
+	curl -s -o /dev/null --max-time 8 -u "$HTTP_USER:$HTTP_PASS" \
+		-X POST "$(http_base)/control" -d "$MB3_PENDING" >/dev/null 2>&1 || true
+	MB3_PENDING=""
+}
+trap 'mb3_restore_pending' EXIT
+trap 'mb3_restore_pending; trap - INT;  kill -INT  $$' INT
+trap 'mb3_restore_pending; trap - TERM; kill -TERM $$' TERM
+mb3_bf="$OUTDIR/mb3_before.json"; curlq 12 "$(http_base)/control" -o "$mb3_bf"
+mb3_cur=$(jget "$mb3_bf" image.brightness)
+if [ -n "$mb3_cur" ]; then
+	MB3_PENDING="{\"image\":{\"brightness\":$mb3_cur}}"
+	mb_check "overflow-prone number" '{"image":{"brightness":99999999999999999999999999}}'
+	mb3_af="$OUTDIR/mb3_after.json"
+	mb3_rcode=$(curl -s -o /dev/null -w '%{http_code}' --max-time 12 -u "$HTTP_USER:$HTTP_PASS" -X POST "$(http_base)/control" -d "$MB3_PENDING")
+	curlq 12 "$(http_base)/control" -o "$mb3_af"; mb3_rgot=$(jget "$mb3_af" image.brightness)
+	if [ "$mb3_rgot" != "$mb3_cur" ]; then
+		mb3_rcode=$(curl -s -o /dev/null -w '%{http_code}' --max-time 12 -u "$HTTP_USER:$HTTP_PASS" -X POST "$(http_base)/control" -d "$MB3_PENDING")
+		curlq 12 "$(http_base)/control" -o "$mb3_af"; mb3_rgot=$(jget "$mb3_af" image.brightness)
+	fi
+	if [ "$mb3_rgot" = "$mb3_cur" ]; then
+		MB3_PENDING=""    # restore POSTed and verified - disarm the trap
+	else
+		warn "overflow-prone number: restoring image.brightness to '$mb3_cur' did not land (got '$mb3_rgot', HTTP $mb3_rcode) - camera may still be at 255"
+	fi
+else
+	warn "overflow-prone number: could not read current image.brightness before the test - skipping (would strand the camera at the clamped boundary)"
+	mb_check "overflow-prone number" '{"image":{"brightness":99999999999999999999999999}}'
+fi
 
 # 4. completely unknown top-level section name: none of control_apply_json's
 #    find_obj(s,e,"image"/"audio"/.../ &oend) calls match it - must be a
