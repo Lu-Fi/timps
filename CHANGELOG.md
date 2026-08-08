@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.8.1] - 2026-08-09
+
 ### Added
 - **`GET /control?fields=1`** (`control.c`/`control.h`, wired in
   `mp4/httpd.c`): the authoritative inventory of every `F_CTRL`-flagged
@@ -99,6 +101,88 @@ semantic versioning.
   already uses (added after the 2026-08-02 cam-wyze WB-rgain/bgain=32767
   incident): the pending restore body is tracked and flushed from an
   EXIT/INT/TERM trap, not just the normal fall-through path.
+
+### Fixed
+- **`videoN.rc_mode=fixqp` crashed the streamer** (reported on Discord
+  against v1.7.8): `IMP_Encoder_SetDefaultParam()`'s `iInitialQP` argument
+  was hardcoded to `-1` ("auto") regardless of `rc_mode`. Fine for the
+  rate-controlled modes, fatal for FIXQP, which has no rate control to fall
+  back on. `videoN.qp` (already exposed via `/control`, previously
+  documented as "RESERVED/no-effect - no HAL consumer") now feeds
+  `iInitialQP` when `rc_mode=fixqp`, default 35 if unset. Extended to the
+  older manual-attribute SoCs (T20/T21/T23/T30), which had the same gap but
+  silently ran CBR instead of crashing, and to the T23 software-rotate
+  encoder path, which was missed in the first pass.
+- **Classic-path H265 CBR/FixQP filled the wrong union member on T30**:
+  `IMPEncoderAttrH265CBR`'s layout differs from H264's (`staticTime` sits
+  between `minQp` and `outBitRate`, `flucLvl` replaces two H264-only bools)
+  - an H265 channel was getting the bitrate written into `staticTime` and
+    garbage into `outBitRate`. Now branches on `v->codec`.
+- **`min_qp`/`max_qp` had no effect on T31/C100/T40/T41**: wired
+  `IMP_Encoder_SetChnQpBounds()` into the ENC_NEW_API path (only the
+  classic and T23 sw-rotate paths applied these before).
+- **`rc_mode=vbr/smart/capped_vbr/capped_quality` silently ran as CBR on
+  classic SoCs**: only `fixqp` was wired up going into this cycle. `vbr`/
+  `smart` now use their real classic-SDK modes; `capped_vbr`/
+  `capped_quality` (no classic equivalent) fall back to `vbr` with a
+  one-time warning instead of a silent CBR substitution.
+- **`codec=h265` on T10/T20 silently encoded H264 while advertising it as
+  H265** (no H265 encoder exists on those SoCs) - RTSP/SDP and the
+  keyframe detector both keyed off the config value, not the real stream,
+  producing a mislabeled, broken stream with no warning. Now coerced to
+  H264 at config-apply time, same pattern as the existing `rotation=180`
+  unsupported-SoC coercion.
+- **`jpeg.quality`/`videoN.jpeg_quality` had no effect on classic-API
+  SoCs**: `IMP_Encoder_SetJpegeQl()` takes a full quantization table, not a
+  scalar - synthesized one from the standard JPEG Annex-K base tables via
+  the IJG/libjpeg quality formula. Covers T20/T21/T23/T30; T10 is
+  deliberately excluded (matching prudynt-t's own T10 special-case: a
+  custom table measurably degrades JPEG quality there, not just unverified).
+- **`IMP_AI_EnableAec`/`DisableAec` raced the audio capture thread (UAF
+  class)**: same free-while-recording-thread-runs hazard already documented
+  for AGC/NS/HPF (why those are boot-only), but AEC was toggled live on
+  every backchannel hangup/play completion with no lock. Now serialized
+  under `g_ai_lock` against `audio_thread`'s frame fetch.
+- **AAC→G.711 AI re-init raced live `/control` volume/gain writes**: the
+  disable/re-enable sequence ran without `g_ai_lock`, so a write that just
+  passed a liveness check could land on a channel mid-rebuild. Now locked.
+- **HTTP shutdown drain only ran under `USE_TLS`**: non-TLS builds had no
+  wait for in-flight `/control` handler threads before `g_hal->stop()`'s
+  full IMP teardown - a narrow, exit-time-only crash window (backstopped by
+  the existing 3s hard-exit alarm, but not otherwise closed). The ~500ms
+  bounded drain now runs unconditionally.
+- **`motion.hold_ms`/`skip_frames` live `/control` POSTs were silently
+  dropped**: both are F_CTRL but only actually took effect via a full
+  `motion_sync` rebuild, which nothing triggered on their own. Now routed
+  through the same deferred-resync path the geometry keys already use.
+- **`IMP_OSD_CreateRgn`'s return value was never checked**: a pool-
+  exhaustion failure would proceed to call `RegisterRgn`/`SetGrpRgnAttr`/
+  `ShowRgn`/`SetRgnAttr` against an invalid (-1) handle before any later
+  guard caught it. Now checked immediately, logged, and that region's setup
+  is skipped on failure.
+- **`scripts/timps-qa.sh` section 8e's overflow-number robustness test
+  stranded `image.brightness=255` on a real camera**: `{"image":
+  {"brightness":99999999999999999999999999}}` is well-formed JSON that
+  `control.c` actually applies (clamped to 255) - unlike the test's other 4
+  cases, which are all rejected outright. `mb_check()` is a liveness check
+  by design and never restores anything, so the camera was left at 255
+  with a full PASS and nothing in the log to explain it. This was the
+  actual, final source of a brightness-255 incident that recurred across
+  this whole release cycle even after two earlier (real, but incomplete)
+  fixes to `ov_clamp_test()` and section 9. Now captures and restores the
+  value itself, with its own dedicated pending-var + EXIT/INT/TERM trap so
+  it works standalone via `--only 8e` too.
+- **`scripts/timps-qa.sh`'s `OUTDIR` default collided across cameras run
+  in parallel**: only second-resolution-timestamped, no camera/PID tag - a
+  fleet-wide QA invocation launching multiple cameras' runs within the
+  same second shared one output directory and clobbered each other's
+  recordings, surfacing as bogus "non-monotonic timestamp" failures with
+  no real regression behind them. Tagged with the camera IP and PID now;
+  `--out` still overrides.
+- **`ov_clamp_test()`'s restore was fire-and-forget**: the restore POST's
+  result was discarded and never re-verified, unlike `lv_section`'s
+  restore. Now re-fetches after posting, retries once, and warns (with the
+  actual HTTP code) if it still didn't land.
 
 ## [1.8.0] - 2026-08-08
 
