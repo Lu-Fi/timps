@@ -412,7 +412,12 @@ static void gen_sdp(session *s, const ms_config *c, int vchn, char *sdp, int sdp
      * that would make this SDP misdescribe the elementary stream. See config.h. */
     const ms_vstream_cfg *v = &g_cfg_boot.video[vchn];
     int isH265 = (v->codec==MS_VC_H265);
-    int vw, vh; ms_vstream_eff_dims(v, &vw, &vh);
+    /* ACTUAL running dims (hub_get_video_params reflects any T23 SW-rotate /
+     * T31 FS-rotate safe-envelope refusal - see hub.h); fall back to the raw
+     * boot-config computation only if the HAL hasn't populated the hub yet. */
+    int vw, vh;
+    if (!hub_get_video_params(vchn, NULL, &vw, &vh, NULL))
+        ms_vstream_eff_dims(v, &vw, &vh);
     if (n>=0 && n<(int)sizeof(body))
         n += snprintf(body+n, sizeof(body)-n,
             "m=video 0 RTP/AVP %d\r\nb=AS:%d\r\n"

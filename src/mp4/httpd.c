@@ -232,7 +232,12 @@ static void stream_mp4(hconn *c, int chn)
     fmp4_mux mux; fmp4_init(&mux);
     mux.has_video = 1;
     mux.vcodec = g_cfg_boot.video[chn].codec;      /* restart-only: see config.h */
-    int ew, eh; ms_vstream_eff_dims(&g_cfg_boot.video[chn], &ew, &eh);
+    /* ACTUAL running dims (hub_get_video_params reflects any T23 SW-rotate /
+     * T31 FS-rotate safe-envelope refusal - see hub.h); fall back to the raw
+     * boot-config computation only if the HAL hasn't populated the hub yet. */
+    int ew, eh;
+    if (!hub_get_video_params(chn, NULL, &ew, &eh, NULL))
+        ms_vstream_eff_dims(&g_cfg_boot.video[chn], &ew, &eh);
     mux.width  = ew;
     mux.height = eh;
     mux.fps    = g_cfg_boot.video[chn].fps;
@@ -823,7 +828,12 @@ static int stats_json(const ms_config *cfg, char *buf, size_t cap)
          * stay consistent with the measured fps/kbps beside them, not a live-
          * edited g_cfg the encoder has not picked up. See config.h. */
         if (!g_cfg_boot.video[i].enabled) continue;
-        int w, h; ms_vstream_eff_dims(&g_cfg_boot.video[i], &w, &h);
+        /* ACTUAL running dims - same fix as stream_mp4() above: prefer the
+         * hub's post-refusal effective dims, raw computation only as a
+         * pre-hub-population fallback. */
+        int w, h;
+        if (!hub_get_video_params(i, NULL, &w, &h, NULL))
+            ms_vstream_eff_dims(&g_cfg_boot.video[i], &w, &h);
         APP("%s{\"chn\":%d,\"subs\":%d,\"fps\":%.1f,\"kbps\":%.0f,"
             "\"width\":%d,\"height\":%d,\"codec\":\"%s\","
             "\"drop_frames\":%u,\"drop_bytes\":%u}",

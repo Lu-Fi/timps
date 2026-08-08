@@ -139,6 +139,20 @@ void hub_set_video_params(int src, int vcodec, int w, int h, int fps)
     pthread_mutex_unlock(&s->lock);
 }
 
+int hub_get_video_params(int src, int *vcodec, int *w, int *h, int *fps)
+{
+    hub_source *s = hub_get(src); if(!s) return 0;
+    int act;
+    pthread_mutex_lock(&s->lock);
+    act = s->active;
+    if (vcodec) *vcodec = s->vcodec;
+    if (w)      *w      = s->width;
+    if (h)      *h      = s->height;
+    if (fps)    *fps    = s->fps;
+    pthread_mutex_unlock(&s->lock);
+    return act;
+}
+
 int hub_get_vparam(int src, vparam *out)
 {
     hub_source *s = hub_get(src); if(!s) return 0;

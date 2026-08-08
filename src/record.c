@@ -252,7 +252,14 @@ static int seg_open(int chn, const ms_record_cfg *rc)
      * encoder actually produces it (boot snapshot), not a live-edited g_cfg -
      * a mismatch yields a container that misdescribes its own samples. config.h */
     w_mux.vcodec=g_cfg_boot.video[chn].codec;
-    int ew, eh; ms_vstream_eff_dims(&g_cfg_boot.video[chn], &ew, &eh);
+    /* ACTUAL running dims (hub_get_video_params reflects any T23 SW-rotate /
+     * T31 FS-rotate safe-envelope refusal - see hub.h); fall back to the raw
+     * boot-config computation only if the HAL hasn't populated the hub yet
+     * (shouldn't happen here in practice - recording starts well after HAL
+     * start - but zero/garbage dims would corrupt the mp4 track anyway). */
+    int ew, eh;
+    if (!hub_get_video_params(chn, NULL, &ew, &eh, NULL))
+        ms_vstream_eff_dims(&g_cfg_boot.video[chn], &ew, &eh);
     w_mux.width =ew;
     w_mux.height=eh;
     w_mux.fps   =g_cfg_boot.video[chn].fps;
@@ -710,7 +717,11 @@ int record_clip(const char *path, int seconds)
             fmp4_init(&mux);
             /* restart-only codec/geometry/fps -> boot snapshot (see config.h) */
             mux.has_video=1; mux.vcodec=g_cfg_boot.video[chn].codec;
-            int ew, eh; ms_vstream_eff_dims(&g_cfg_boot.video[chn], &ew, &eh);
+            /* ACTUAL running dims - see the seg_open() call site above for why
+             * hub_get_video_params() takes priority over the raw computation. */
+            int ew, eh;
+            if (!hub_get_video_params(chn, NULL, &ew, &eh, NULL))
+                ms_vstream_eff_dims(&g_cfg_boot.video[chn], &ew, &eh);
             mux.width=ew; mux.height=eh;
             mux.fps=g_cfg_boot.video[chn].fps;
             mux.vp=vp; mux.vp_ready=1;

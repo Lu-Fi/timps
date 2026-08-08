@@ -265,6 +265,56 @@ semantic versioning.
   `MS_ENABLE_SW_ROTATE`). Needs an on-device check on a T31 with
   `motion.enabled=1` and a refused rotation (e.g. `1920x1080@25` + rotation
   90) confirming the IVS grid tracks the unrotated frame.
+- **The identical raw-vs-effective-rotation-dims bug (see the `jpeg_attach()`
+  fix and the IVS fix directly above, commits `8cc8987` and `efe94b9`) was
+  still live in every OTHER consumer of a stream's post-rotation geometry**:
+  `record.c`'s fMP4 track (`tkhd`) dims (both the continuous recorder's
+  `seg_open()` and the on-demand clip muxer in `record_clip()`),
+  `mp4/httpd.c`'s live-MP4 mux dims in `stream_mp4()` AND its `/events` SSE
+  `stats` payload's `video[].width/height`, `rtsp.c`'s SDP `a=framesize`
+  attribute in `gen_sdp()`, and `/control` GET's `eff_width`/`eff_height`
+  fields all called `ms_vstream_eff_dims()` on the RAW configured rotation
+  instead of the ACTUAL post-refusal geometry - so on any T23 SW-rotate /
+  T31 FS-rotate safe-envelope refusal (the common case at typical
+  main-stream resolutions/framerates - confirmed on kinder-links and
+  Galayou, both flashed with rotation enabled tonight), a recorded MP4, a
+  live-MP4 stream, the `/events` stats feed, RTSP SDP negotiation, and the
+  `/control` status could all advertise swapped W/H for a stream that is
+  actually running unrotated. Root cause: `hal_ingenic.c` already tracks the
+  real per-stream rotation (`g_eff_rot[]`) and already pushes the
+  correspondingly correct effective width/height into the hub via
+  `hub_set_video_params()` (both the SW-rotate accept path and the bound
+  FS-rotate/no-rotate path push from the post-refusal `v`), but nothing
+  could read that back out. Added `hub_get_video_params(int src, int
+  *vcodec, int *w, int *h, int *fps)` (`src/hub.c`/`hub.h`) as that missing
+  getter; all five originally-flagged call sites plus the SSE stats block
+  now call it first and only fall back to the raw `ms_vstream_eff_dims()`
+  computation when the hub hasn't been populated yet (stream never started
+  - the getter returns 0). `/control`'s GET needed one extra bit of care:
+  its `eff_width`/`eff_height` describe the live (persist-only, possibly
+  POSTed-but-not-yet-restarted) config, not necessarily the boot config, so
+  it only trusts the hub when the live rotation/width/height still match
+  `g_cfg_boot` (i.e. nothing pending); otherwise it keeps the raw preview
+  swap, preserving `scripts/timps-qa.sh --test-rotation`'s existing
+  pending-config-preview contract. `ms_vstream_eff_dims()` itself is
+  untouched and still used for its original purpose inside
+  `hal_ingenic.c`'s pre-refusal setup (`sw_rot_start()`'s envelope checks,
+  `enc_create()`, `fs_create()`) where the raw computation is exactly what's
+  needed before the accept/refuse decision has been made. Verified: `make
+  sim` clean (`hal_sim.c` never refuses rotation, so its raw-computed hub
+  push already always equals the effective dims - no change needed there
+  for consistency); cross-compiled `hal_ingenic.c`/`record.c`/`mp4/httpd.c`/
+  `rtsp.c`/`control.c`/`hub.c` clean (`-Wall -Wextra`, zero warnings) against
+  the real vendored SDK headers for T31 1.1.6 (`USE_ROTATE=1`) and T23 1.3.0
+  (`USE_ROTATE=1 USE_SW_ROTATE=1`), using tonight's already-built
+  `wuuk_y0510_t31x...`/`galayou_y4_t23n...` cross toolchains (link step not
+  attempted - the vendor `libimp.a`/`libalog.a`/`libsysutils.a` stubs aren't
+  vendored in this checkout, only the headers). Not verified on real
+  hardware: kinder-links (192.168.10.124) and Galayou (192.168.15.129) were
+  both reachable tonight, but a live redeploy onto production cameras mid-
+  incident was judged too risky to rush safely - this relies on header-level
+  type-checking plus manual tracing of both the SW-rotate and FS-rotate
+  refusal paths instead.
 - **OSD read live `videoN.rotation` instead of the boot snapshot** (audit A2):
   `imp_osd.c` read `g_cfg.video[si].rotation` in the text/logo/privacy placement
   paths. `videoN.rotation` is restart-only, so a `/control` write to it would
