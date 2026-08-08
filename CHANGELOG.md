@@ -6,6 +6,70 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added
+- **`GET /control?fields=1`** (`control.c`/`control.h`, wired in
+  `mp4/httpd.c`): the authoritative inventory of every `F_CTRL`-flagged
+  config field, grouped by section, walking the exact same `cfg_fields_*()`
+  accessors `apply_ctrl_fields()` already uses (never a second hand-written
+  list). Exists so `scripts/timps-qa.sh` can diff its own hand-maintained
+  "fields I test" list against the daemon's real one and flag drift loudly
+  instead of silently - the same bug class (a field landing in `config.c`
+  but never reachable from a hand-written array) recurring one layer up, in
+  the QA script's own coverage. New section 8d does that diff on every run.
+- **`GET /control`'s `version` key**: exposes the existing `MS_VERSION`
+  compile-time string (git describe tag+commit+dirty flag, already used by
+  `timpsd -v`/the startup log line) over the API. Prompted by a fleet
+  incident where `fw_ota.sh`'s flash script logged "Firmware flashed
+  successfully" on multiple cameras whose running binary had demonstrably
+  NOT changed post-reboot - the flash script's own success signal only
+  proved a reboot happened, not that the new binary came back up. QA
+  section 1b now surfaces this prominently, early, alongside the local
+  checkout's own `git describe` for a quick manual eyeball-diff.
+- **`GET /control`'s `srt` status block**: `{"available","enabled","port",
+  "channel"}` for `USE_SRT` builds (`{"available":0}` otherwise) - there was
+  previously no way to discover SRT capability/state from the outside at
+  all. Backs the new QA section 4b below.
+- **`scripts/timps-qa.sh`**, informed by a coverage-gap review:
+  - Section 1b: build-identity check (see `version` above).
+  - Section 4b: SRT stream integrity, gated on both the host's `ffmpeg`
+    having `srt://` support and the camera's own `srt` capability/enabled
+    state; reuses the existing `analyze_stream` core rather than a parallel
+    analysis path. Previously zero SRT coverage despite `srt_fields`/
+    `srt.c` existing.
+  - Section 8b: added live/persist-only coverage for fields that were
+    F_CTRL-POST-able but never tested - `osd.*` globals (`monitor_stream`/
+    `font_path`/`vars_file` live; `enabled`/`supersample`/`hinting`
+    persist-only), `motion.hold_ms`/`skip_frames`, and 14 previously-untested
+    `audio.*` persist-only keys (`enabled`, `samplerate`, `channels`,
+    `bitrate`, `high_pass`, `agc`, `ns`, `agc_target_dbfs`,
+    `agc_compression_db`, `force_stereo`, `spk_enabled`, `backchannel`,
+    `backchannel_codec`, `backchannel_rate`).
+  - Section 8d: field-inventory drift check against the new
+    `GET /control?fields=1` endpoint, with a documented allowlist of
+    deliberately-untested fields (`sensor.*`, `motion.cols`/`rows`,
+    `record`/`timelapse` enable/mode/channel, risky `video.*` geometry/
+    codec/identity fields, `osd_item.enabled`/`type`, and the legacy
+    brightness-only `daynight` fallback fields) - any *other* gap now warns
+    by name instead of staying silent.
+  - Section 8e: 5 negative-case POSTs against `control.c`'s hand-rolled
+    JSON parser (truncated JSON, unterminated string, an overflow-prone
+    number, an unknown top-level section, a wrong-type value) - asserts the
+    daemon stays alive and answering, not a specific error-response shape.
+  - Section 9 (`/events`): now POSTs a harmless `image.brightness` toggle
+    mid-window and asserts the corresponding `config` SSE event actually
+    arrives, instead of passively waiting and soft-warning "may be idle"
+    forever regardless of whether the push path works.
+  - Section 14b + an always-on preflight check (opt-in `--test-crash`,
+    DESTRUCTIVE): sends a real `SIGSEGV` to the running `timpsd` over SSH to
+    exercise the production fatal-signal handler end-to-end (no special
+    build flag needed - `sigaction()` catches externally-sent signals the
+    same as a genuine fault), asserts `/run/timps.crash`'s exact format,
+    then restarts the daemon for real and confirms `/control` answers
+    again. Separately, preflight now always checks for a *stale*
+    `/run/timps.crash` left over from before this run (evaluated before the
+    opt-in test above can create a fresh one) and renames it after
+    reporting so it won't re-trigger.
+
 ## [1.8.0] - 2026-08-08
 
 ### Added

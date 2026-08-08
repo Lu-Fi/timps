@@ -89,4 +89,23 @@ int  control_daynight_json(char *buf, size_t cap, int enabled, int mode,
  * caller must not serve it as a successful response). */
 int  control_get_json(char *buf, size_t cap);
 
+/* GET /control?fields=1: the authoritative inventory of every F_CTRL-flagged
+ * config field, grouped by section (config.h's cfg_fields_*() accessor
+ * names: "image","audio","sensor","osd","osd_item","motion","record",
+ * "timelapse","daynight","video","privacy" - the only sections that have any
+ * F_CTRL fields at all; jpeg/rtsp/http/events/general/sim/srt have none).
+ * Walks the SAME tables apply_ctrl_fields() uses in control.c - never
+ * hand-lists field names a second time, so this can't itself drift from what
+ * POST /control actually accepts. Exists so an external test harness (see
+ * scripts/timps-qa.sh section 8) can diff its own hand-maintained
+ * "fields I test" list against this and flag newly-added POST-able fields
+ * that nobody wired into test coverage yet - the exact bug class the F_CTRL
+ * consolidation itself fixed one layer down (config.c fields existing but
+ * never reachable from a hand-written array), recurring one layer up in the
+ * QA script. "osd_item"/"video"/"privacy" are per-instance tables (one
+ * field-name set shared by every OSD item / video stream / privacy region,
+ * not enumerated per index) - a listed name means "instance>0" too, not just
+ * index 0. Returns the byte count like control_get_json, or -1 if truncated. */
+int  control_fields_json(char *buf, size_t cap);
+
 #endif

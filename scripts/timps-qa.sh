@@ -5,13 +5,15 @@
 # Exercises the whole streamer from a Linux host over the network and reports
 # on SYNCHRONISATION, STABILITY, RELIABILITY and LOAD:
 #
-#   1. Preflight ...... ping, ports, tool detection
+#   1. Preflight ...... ping, ports, tool detection; stale /run/timps.crash check
+#   1b. Build identity  GET /control "version" (git describe) vs local checkout
 #   2. Discovery ...... ffprobe every stream (codec/res/fps/audio)
 #   2b. Auth .......... no-auth + wrong-pass must be blocked (RTSP + HTTP surfaces)
 #   2c. Backchannel ... optional ONVIF backchannel: handshake + short PCMU tone
 #   3. Integrity+Sync . record each stream, measure fps, real-time rate,
 #                       A/V drift, timestamp monotonicity, decode errors
 #   4. HTTP fMP4 ...... /stream.mp4 (MSE feed) plays, fps/bitrate, errors
+#   4b. SRT ........... optional: srt:// integrity via the same analyze_stream core
 #   5. MJPEG .......... /stream.mjpeg frame rate + integrity
 #   6. Snapshot ....... /snapshot.jpg?chn=N validity + latency + success rate
 #   7. Audio .......... codec/rate, silence-gap scan
@@ -20,13 +22,18 @@
 #                       plus clamp regression (out-of-range persists clamped)
 #   8c. OSD vars_file . optional SSH: custom {placeholder} round-trip via the
 #                       on-device osd.vars_file key=value mechanism
-#   9. /events ........ SSE stream emits events
+#   8d. Field drift ... diff GET /control?fields=1 (F_CTRL inventory) against
+#                       8b's tested set + a documented allowlist
+#   8e. Malformed body  5 negative-case POSTs against the hand-rolled JSON
+#                       parser; asserts liveness, not a strict error contract
+#   9. /events ........ SSE stream emits events, provoked by a live-settings POST
 #  10. ONVIF .......... both snapshot proxies + GetProfiles (resolution/codec vs
 #                       real stream, fps/bitrate surfaced with template note)
 #  11. Recording ..... on-demand clip via /control record.clip
 #  12. Reliability ... reconnect churn (TCP+UDP), time-to-first-frame
 #  13. Load .......... concurrent-client ramp, per-client fps/drops, max stable
 #  14. Restart ....... optional streamer restart + recovery time
+#  14b. Fatal signal .. optional, DESTRUCTIVE: kill -SEGV + handler/restart verify
 #  15. Soak .......... long capture with periodic health sampling
 #  16. On-device ..... optional SSH: timpsd RSS/CPU, logread errors,
 #                      /etc/timps.conf integrity (glued/duplicate keys)
@@ -95,6 +102,13 @@ BC_TEST_SECS="${BC_TEST_SECS:-4}"      # tone duration (s)
 # actually supports) - skips cleanly on a build without rotation support.
 TEST_ROTATION="${TEST_ROTATION:-0}"
 
+# Optional fatal-signal-handler test (default OFF, never in a profile,
+# DESTRUCTIVE - see section 14b): sends a real SIGSEGV to the running timpsd
+# over SSH to exercise main.c's production fatal_signal_handler (no special
+# build/debug flag needed - sigaction() catches externally-sent signals the
+# same as a genuine internal fault), then restarts the daemon for real.
+TEST_CRASH="${TEST_CRASH:-0}"
+
 usage() {
 	sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
 	cat <<EOF
@@ -125,6 +139,13 @@ Options (also settable as env vars):
                       section 8c's custom-placeholder round-trip
                       (default /tmp/timps_osd.vars, only needed if a camera
                       configures a non-default path). Needs --ssh.
+  --test-crash        DESTRUCTIVE (section 14b): sends a real SIGSEGV to the
+                      running timpsd over SSH to verify the fatal-signal
+                      handler (writes/checks /run/timps.crash, format
+                      SIGSEGV+fault address), then restarts the daemon for
+                      real and confirms it comes back healthy. The daemon
+                      WILL go down and restart during this test. Needs --ssh.
+                      Default OFF, never part of a profile.
 
 Profiles:
   quick     ~3 min  : short integrity + snapshot + tiny load, no soak
@@ -163,6 +184,7 @@ while [ $# -gt 0 ]; do
 		--bc-test-secs) BC_TEST_SECS="$2"; shift 2;;
 		--test-rotation) TEST_ROTATION=1; shift;;
 		--osd-vars-file) OSD_VARS_FILE="$2"; shift 2;;
+		--test-crash) TEST_CRASH=1; shift;;
 		-h|--help) usage;;
 		*) echo "unknown option: $1" >&2; usage;;
 	esac
@@ -274,6 +296,28 @@ PY
 			if(substr(cur,1,1)=="\""){cur=substr(cur,2,length(cur)-2);gsub(/\\"/,"\"",cur);gsub(/\\\\/,"\\",cur);gsub(/\\\//,"/",cur)}
 			print cur
 		}' "$1"
+	fi
+}
+
+# jarr <file> <top-level-key> -> space-separated flat string array (e.g. the
+# GET /control?fields=1 document, section 8d). Unlike jget's generic
+# path-walker, this only ever needs to handle ONE shape - a top-level key
+# mapping straight to a flat array of quoted strings, no nesting - so a
+# simpler extractor suffices for both the python3 and busybox-awk-less paths.
+jarr() {
+	if have python3; then
+		python3 - "$1" "$2" <<'PY' 2>/dev/null
+import json,sys
+try:
+    d=json.load(open(sys.argv[1]))
+    print(' '.join(d.get(sys.argv[2],[])))
+except Exception: pass
+PY
+	else
+		local m
+		m=$(grep -oE "\"$2\":\[[^]]*\]" "$1" | head -1)
+		m=${m#*[}; m=${m%]}
+		printf '%s' "$m" | grep -oE '"[^"]*"' | tr -d '"' | tr '\n' ' '
 	fi
 }
 
@@ -446,6 +490,29 @@ if [ -n "$SSH_TARGET" ]; then
 	else warn "SSH to $SSH_TARGET failed (on-device checks skipped)"; SSH_TARGET=""; fi
 else info "no --ssh target (on-device checks skipped)"; fi
 
+# Stale crash-log check (Finding #2, always-on, no flag needed). Thematically
+# this belongs with the rest of the on-device checks (section 16), but it
+# MUST run before section 14b's own opt-in --test-crash can create a FRESH
+# /run/timps.crash (which runs much later in this script) - evaluated here
+# instead, at the earliest point SSH is confirmed usable, so a pre-existing
+# file is unambiguous evidence the daemon crashed at some earlier, UNNOTICED
+# point since last boot, never an artifact of this run's own destructive test.
+if [ -n "$SSH_TARGET" ]; then
+	stale=$(sshx "[ -s /run/timps.crash ] && echo yes" 2>/dev/null)
+	if [ "$stale" = "yes" ]; then
+		mt=$(sshx "stat -c %y /run/timps.crash 2>/dev/null || stat /run/timps.crash 2>/dev/null | grep -i modify")
+		warn "STALE /run/timps.crash found on $CAM (mtime: ${mt:-unknown}) - direct evidence timpsd crashed at some point since last boot and nobody looked. Contents:"
+		sshx "cat /run/timps.crash" 2>/dev/null | sed 's/^/    /' | tee -a "$SUMMARY"
+		# rename (not delete) so the evidence survives on-device for a human to
+		# inspect later, but won't re-trigger this same warning on the NEXT
+		# QA run against this camera
+		sshx "mv -f /run/timps.crash /run/timps.crash.qa-seen-\$(date +%s 2>/dev/null || echo 0) 2>/dev/null || rm -f /run/timps.crash" >/dev/null 2>&1
+		info "  renamed on-device to /run/timps.crash.qa-seen-* so it won't re-trigger this warning next run"
+	else
+		ok "no stale /run/timps.crash on $CAM (no unnoticed crash evidence since last boot)"
+	fi
+fi
+
 ping -c1 -W2 "$CAM" >/dev/null 2>&1 && ok "camera $CAM reachable (ping)" || warn "ping $CAM failed (may be firewalled)"
 for p in "$RTSP_PORT" "$HTTP_PORT"; do
 	# NOTE: fd 3 is opened inside the (subshell) probe only, so it never leaks
@@ -459,6 +526,42 @@ done
 
 have ffprobe || { bad "ffprobe missing - aborting stream tests"; }
 
+if want 1b version identity; then
+# --- 1b. Build identity -------------------------------------------------
+# 2026-08 fleet incident: fw_ota.sh's flash script logged "Firmware flashed
+# successfully" on multiple cameras whose /usr/bin/timpsd binary had
+# demonstrably NOT changed post-reboot (confirmed by hand via MD5 + mtime) -
+# the flash script's own success signal only proves a reboot was triggered,
+# not that the new binary is what came back up. GET /control now reports a
+# "version" key (git describe's tag+commit+dirty string, the same constant
+# `timpsd -v` prints); surface it prominently, early, before the bulk of
+# testing, so a human glancing at the run immediately sees what build is
+# actually answering - this is a visibility fix, not a pass/fail gate (there
+# is no "expected version" to compare against from the host side in general).
+hdr "1b. Build identity"
+vj="$OUTDIR/version.json"
+if curlq 8 "$(http_base)/control" -o "$vj" && [ -s "$vj" ]; then
+	dev_ver=$(jget "$vj" version)
+	if [ -n "$dev_ver" ]; then
+		info "camera $CAM reports: timps $dev_ver"
+	else
+		warn "/control reachable but has no \"version\" field (older timpsd build without this check)"
+	fi
+else
+	warn "/control unreachable for the version check (see $vj)"
+fi
+# Optional, purely informational convenience: this script lives in the same
+# repo as the firmware source, so print the LOCAL checkout's own git describe
+# alongside the device's for a quick manual eyeball-diff - exactly the
+# scenario above (does the camera's reported build match what was just
+# pushed?). Never a warn/bad: an older camera legitimately running behind
+# this checkout is normal, not a defect this script should flag.
+if have git; then
+	local_ver=$(git -C "$(dirname "$0")" describe --tags --always --dirty 2>/dev/null)
+	[ -n "$local_ver" ] && info "  (this checkout's git describe: $local_ver - compare by eye; a mismatch is often expected, not a failure)"
+fi
+
+fi
 if want 2 discovery; then
 # --- 2. discovery -----------------------------------------------------------
 hdr "2. Discovery (ffprobe)"
@@ -695,6 +798,58 @@ AUTH_HDR="Authorization: Basic $(printf '%s:%s' "$HTTP_USER" "$HTTP_PASS" | base
 analyze_stream "$murl" "fmp4_main" "$INTEG_DUR" -headers "$AUTH_HDR"$'\r\n'
 
 fi
+if want 4b srt; then
+# --- 4b. SRT (optional MPEG-TS output) --------------------------------------
+# src/config.c has had srt_fields and a live src/srt.c listener for a while,
+# but this script never opened an SRT socket - zero coverage. Two independent
+# gates before attempting anything: does THIS HOST's ffmpeg even support
+# srt:// (needs libsrt at ffmpeg build time, not universal), and does THIS
+# CAMERA have SRT compiled in + enabled (via the new "srt" status block in
+# GET /control, added alongside this test - there was previously no way to
+# discover srt.enabled/port from the outside at all). Either gate failing
+# skips cleanly rather than failing - this is a genuinely optional feature.
+hdr "4b. SRT (optional MPEG-TS output)"
+srt_proto_ok=0
+if have ffmpeg && ffmpeg -hide_banner -protocols 2>/dev/null | grep -qiE '^[[:space:]]*srt[[:space:]]*$'; then
+	srt_proto_ok=1
+fi
+if [ "$srt_proto_ok" != "1" ]; then
+	skip "SRT: this host's ffmpeg has no srt:// protocol support (built without libsrt) - cannot test even if the camera has it"
+else
+	sj="$OUTDIR/srt_caps.json"
+	if ! curlq 8 "$(http_base)/control" -o "$sj" || [ ! -s "$sj" ]; then
+		warn "SRT: cannot GET /control to check srt capability - skipping"
+	else
+		srt_avail=$(jget "$sj" srt.available)
+		if [ "${srt_avail:-0}" != "1" ]; then
+			skip "SRT: not compiled into this camera's build (srt.available=0 / absent) - USE_SRT not set"
+		else
+			srt_en=$(jget "$sj" srt.enabled)
+			srt_port=$(jget "$sj" srt.port)
+			if [ "${srt_en:-0}" != "1" ]; then
+				info "SRT: compiled in but srt.enabled=0 on this camera - skipping (enable srt.enabled + restart to test)"
+			elif [ -z "$srt_port" ]; then
+				warn "SRT: enabled but no port reported by /control - skipping"
+			else
+				# TCP-port-open (section 1's preflight loop) is not a meaningful
+				# signal for SRT - it is a UDP protocol. Just hand the srt:// URL
+				# straight to the SAME analyze_stream core sections 3/4 already
+				# use (ffprobe/ffmpeg handle srt:// like any other input URL) -
+				# no parallel bespoke analysis path. If this camera's
+				# srt.streamid/passphrase are configured (deliberately NOT
+				# exposed via /control - they are credentials, same treatment as
+				# rtsp/http passwords), an unauthenticated caller connection
+				# attempt here will legitimately fail to receive data; that
+				# surfaces as analyze_stream's normal "no data captured" bad
+				# below like any other unreachable stream, not a special case.
+				info "SRT: available, enabled, port $srt_port - connecting as an SRT caller (srt://$CAM:$srt_port)"
+				analyze_stream "srt://$CAM:$srt_port" "srt_main" "$INTEG_DUR"
+			fi
+		fi
+	fi
+fi
+
+fi
 if want 5 mjpeg; then
 # --- 5. MJPEG ---------------------------------------------------------------
 hdr "5. MJPEG (/stream.mjpeg)"
@@ -885,9 +1040,25 @@ else
 		for ((i=0;i<n;i++)); do
 			got=$(jget "$gf" "${P[i]}")
 			if [ "$got" = "${N[i]}" ]; then pass=$((pass+1))
+			elif [ "${LV_MODE:-live}" = persist ]; then
+				bad "$label: ${P[i]##*.} did not persist (got '$got', want '${N[i]}')"
 			else bad "$label: ${P[i]##*.} not applied (got '$got', want '${N[i]}')"; fi
 		done
-		[ "$pass" = "$n" ] && ok "$label: all $n live key(s) applied & read back (${P[*]##*.})"
+		if [ "$pass" = "$n" ]; then
+			if [ "${LV_MODE:-live}" = persist ]; then
+				# Finding #1: mechanically identical POST->GET->restore check as
+				# the live path above - a persist-only (restart-required) key's
+				# config value still updates immediately (GET/config_get_kv reads
+				# g_cfg, not the running pipeline), only the physical effect
+				# waits for a restart. Same contract as the video0.bitrate/
+				# audio.codec spot-checks further down, generalized here so
+				# Finding #1's newly-covered fields don't need their own copies
+				# of this block.
+				ok "persist-only $label: all $n key(s) round-trip through config, applies on restart (${P[*]##*.})"
+			else
+				ok "$label: all $n live key(s) applied & read back (${P[*]##*.})"
+			fi
+		fi
 		# restore originals and confirm they revert
 		code=$(lv_post "${wo}{$rbody}${wc}")
 		LV_PENDING=""                       # restore POSTed - disarm the trap
@@ -948,11 +1119,51 @@ else
 			;;
 	esac
 
+	# --- audio (Finding #1, field-inventory audit): the RESTART-REQUIRED /
+	# persist-only audio.* keys - hub.c's audio branch only applies these at
+	# the next AI/AO pipeline init (see the audio_fields[] doc comment in
+	# config.c: "restart-required or persist-only"), so they round-trip
+	# through config exactly like video0.bitrate/audio.codec further down,
+	# just not live. codec itself is already covered by the dedicated
+	# opt-in-aware opus check below - not repeated here. Previously entirely
+	# absent from 8b's coverage despite all being F_CTRL (confirmed missing
+	# by diffing against GET /control?fields=1, section 8d below). ---
+	LV_MODE=persist
+	lv_section audio_persist '{"audio":' '}' audio \
+		"enabled bool" "samplerate int 8000 96000" "channels int 1 2" \
+		"bitrate int 8 320" "high_pass bool" "agc bool" "ns int 0 3" \
+		"agc_target_dbfs int 0 31" "agc_compression_db int 0 90" \
+		"force_stereo bool" "spk_enabled bool" "backchannel bool" \
+		"backchannel_codec int 0 2" "backchannel_rate int 8000 48000"
+	LV_MODE=live
+
 	# --- osd stream 0 item 0: the live text-overlay leaf keys (caps.osd).
 	# font_size clamps 8..256, transparency 0..255, colors are 0xAARRGGBB hex ---
 	lv_section osd0.0 '{"osd0":{"0":' '}}' osd0.0 \
 		"text str" "x int 0 200" "y int 0 200" "font_size int 8 256" \
 		"transparency int 0 255" "outline int 0 4" "color hex" "outline_color hex"
+
+	# --- osd.* globals (Finding #1): monitor_stream/font_path/vars_file are
+	# LIVE - control.c's GET /control comment says so explicitly ("osd.font_path/
+	# vars_file are runtime-mutable via POST"), and per the caps-builder doc
+	# comment above control_get_json(), "'osd.enabled' ... lives in the osd.*
+	# section whose OTHER keys are live, but itself only takes effect on
+	# restart" - i.e. enabled is the one documented exception, not the rule.
+	# font_path/vars_file briefly point at a nonexistent "qa_probe" path during
+	# the test, same accepted risk as record.dir/timelapse.dir below. ---
+	lv_section osd '{"osd":' '}' osd \
+		"monitor_stream int 0 1" "font_path str" "vars_file str"
+
+	# --- osd.* globals, restart-required half: enabled is the documented
+	# exception above; supersample/hinting are explicitly commented in
+	# config.h as "File-only, takes effect on restart" (imp_osd_setup() only
+	# builds groups / configures the TTF rasterizer once at startup) despite
+	# being F_CTRL (POST-able + persisted). All three were entirely missing
+	# from 8b's coverage before this fix. ---
+	LV_MODE=persist
+	lv_section osd_persist '{"osd":' '}' osd \
+		"enabled bool" "supersample int 1 4" "hinting bool"
+	LV_MODE=live
 
 	# --- privacy cover mask stream 0 region 0: applied live when an OSD group
 	# exists (else persisted). enabled bool, geometry px, color hex ---
@@ -960,7 +1171,11 @@ else
 		"enabled bool" "x int 0 200" "y int 0 200" "w int 1 200" "h int 1 200" "color hex"
 
 	# --- motion: all applied live (the HAL recreates the IVS grid). sensitivity
-	# 0..255, monitor_stream 0..1, enabled bool. cols/rows are omitted: they are
+	# 0..255, monitor_stream 0..1, enabled bool. hold_ms/skip_frames (Finding
+	# #1: previously missing) are read straight from g_cfg by
+	# control_motion_json() (not the live IVS "st" struct), so they round-trip
+	# immediately like any other live key even though their EFFECT only lands
+	# at the grid's next create/resync. cols/rows are omitted: they are
 	# clamped to the SDK cell budget, which would look like a mismatch here.
 	# LV_RESTORE_SOFT: on hardware motion.sensitivity is reported from the live
 	# IVS status, not g_cfg - after restoring motion to disabled the grid is torn
@@ -968,7 +1183,8 @@ else
 	# a partial restore here is expected and reported as info, not a warning ---
 	LV_RESTORE_SOFT=1
 	lv_section motion '{"motion":' '}' motion \
-		"sensitivity int 0 255" "monitor_stream int 0 1" "enabled bool"
+		"sensitivity int 0 255" "monitor_stream int 0 1" "enabled bool" \
+		"hold_ms int 0 5000" "skip_frames int 1 30"
 	LV_RESTORE_SOFT=0
 
 	# --- daynight: the detection thread reads these live from config. Test the
@@ -1387,13 +1603,188 @@ else
 	fi
 fi
 fi
+if want 8d fields fieldinventory; then
+# --- 8d. Field-inventory drift check (Finding #1) ---------------------------
+# scripts/timps-qa.sh's own section 8b used to enumerate every live-settable
+# field with its OWN hand-written spec list (the lv_section "key type lo hi"
+# calls above) - structurally the exact same pattern as the 13 hand-written
+# per-section arrays just deleted from config.c/control.c
+# (apply_ctrl_fields()'s doc comment). A field added to config.c with F_CTRL
+# was silently never tested here unless someone remembered to ALSO update
+# this script - and that had already happened (whole POST-able sections
+# missing from 8b's coverage: osd.* globals, motion.hold_ms/skip_frames, most
+# audio.* persist keys - all fixed in 8b above by this same change).
+#
+# This can't eliminate the hand-maintained list on the SCRIPT side (something
+# has to say "8b's code tests these"), but it CAN stop it from drifting
+# silently: GET /control?fields=1 (control_fields_json() in control.c) is the
+# daemon's own authoritative F_CTRL inventory, walking the identical tables
+# apply_ctrl_fields() applies from - so diffing our tested-set + documented
+# allowlist against it turns any FUTURE gap into a loud warn instead of a
+# silent one. Keep TESTED_*/ALLOW_* below in sync whenever a lv_section call
+# above changes; that is now the ONLY place this can go stale unnoticed.
+hdr "8d. Field-inventory drift check (GET /control?fields=1 vs 8b coverage)"
+fj="$OUTDIR/fields.json"
+if ! curlq 10 "$(http_base)/control?fields=1" -o "$fj" || [ ! -s "$fj" ]; then
+	warn "field-inventory check: cannot GET /control?fields=1 - skipping (older build without this endpoint?)"
+else
+	# TESTED_<section>: every field name 8b's code above actually POSTs +
+	# verifies (live or persist-only) for that section.
+	TESTED_image="brightness contrast saturation sharpness hue vflip hflip running_mode anti_flicker ae_compensation max_again max_dgain sinter_strength temper_strength dpc_strength defog_strength drc_strength highlight_depress backlight_compensation core_wb_mode wb_rgain wb_bgain"
+	TESTED_audio="volume gain alc_gain mute spk_volume spk_gain aec codec enabled samplerate channels bitrate high_pass agc ns agc_target_dbfs agc_compression_db force_stereo spk_enabled backchannel backchannel_codec backchannel_rate"
+	TESTED_sensor=""
+	TESTED_osd="monitor_stream font_path vars_file enabled supersample hinting"
+	TESTED_osd_item="text x y font_size color transparency outline outline_color"
+	TESTED_motion="sensitivity monitor_stream enabled hold_ms skip_frames"
+	TESTED_record="segment_s pre_roll_s post_roll_s min_free_mb audio name dir"
+	TESTED_timelapse="interval_s keep_days name dir"
+	TESTED_daynight="total_gain_day_threshold total_gain_night_threshold day_gain_pct baseline_delay_s boot_settle_s boot_settle_max_s boot_stable_pct night_reconfirm_s probe_max_skip_s sun_sunrise_offset_min sun_sunset_offset_min time_night_start time_day_start sun_latitude sun_longitude"
+	TESTED_video="bitrate rotation"
+	TESTED_privacy="enabled x y w h color"
+
+	# ALLOW_<section>: F_CTRL fields DELIBERATELY not round-tripped by 8b, with
+	# why - matching the daynight.switch_cmd/motion.on_motion F_CTRL-exclusion
+	# model already used in config.c (explicit exclusions, not silent gaps).
+	# A field belongs here only because POSTing it in an unattended run is a
+	# bad idea, never just "nobody got to it yet" (that case should WARN).
+	ALLOW_image=""
+	ALLOW_audio=""
+	ALLOW_sensor="model i2c_addr fps width height"             # persist-only imaging config - risky to fuzz (all of sensor.*)
+	ALLOW_osd=""
+	ALLOW_osd_item="enabled type"                               # enabled: an item created at boot only - enabling live is a silent no-op until restart (see the caps-builder comment above control_get_json() in control.c). type: flips text<->logo live; a logo item with no configured logo_path is a real but uninteresting failure mode to induce by automated probing
+	ALLOW_motion="cols rows"                                    # risky IVS grid rebuild, clamped to the SDK cell budget - would look like a mismatch here regardless
+	ALLOW_record="enabled channel mode"                         # would start/stop capture or depend on stream count (see the comment above the record lv_section call)
+	ALLOW_timelapse="enabled channel"                           # same reasoning as record above
+	ALLOW_daynight="enabled threshold_low threshold_high hysteresis interval_ms transition_s"   # enabled reflects the detection thread's own state (poll lag), not a value to force; the rest is the legacy brightness-ONLY fallback path (only exercised when gain telemetry is unavailable) - out of scope for this gain-based test bench
+	ALLOW_video="enabled codec width height fps rc_mode gop max_gop profile qp min_qp max_qp buffers rtsp_path"   # geometry/codec/identity/routing changes carry restart-crash or active-session-disruption risk beyond a plain config round-trip; rotation (the highest-risk one) already gets the deep --test-rotation real-restart treatment and bitrate gets a representative persist round-trip above - duplicating that pattern across every remaining encoder-tuning knob isn't what this drift check is for
+	ALLOW_privacy=""
+
+	contains_word() { local n="$1"; shift; local w; for w in "$@"; do [ "$w" = "$n" ] && return 0; done; return 1; }
+
+	drift=0; total=0
+	for sec in image audio sensor osd osd_item motion record timelapse daynight video privacy; do
+		fields=$(jarr "$fj" "$sec")
+		[ -n "$fields" ] || continue
+		tvar="TESTED_$sec"; avar="ALLOW_$sec"
+		tested="${!tvar}"; allow="${!avar}"
+		for f in $fields; do
+			total=$((total+1))
+			if contains_word "$f" $tested; then :
+			elif contains_word "$f" $allow; then :
+			else
+				warn "field-inventory drift: $sec.$f is F_CTRL (POST-able) but is in neither 8b's tested set nor the documented allowlist above - add live/persist coverage or an explicit exclusion"
+				drift=$((drift+1))
+			fi
+		done
+	done
+	[ "$drift" -eq 0 ] && ok "field-inventory: all $total F_CTRL fields across 11 sections are either tested in 8b or explicitly allowlisted (no drift)"
+fi
+
+fi
+if want 8e malformed robustness; then
+# --- 8e. /control malformed-body robustness (Finding #5) --------------------
+# control.c's JSON parsing (find_obj()/get_val()) is hand-rolled - targeted
+# scanning, no library. Section 8b above only ever POSTs well-formed bodies.
+# These 5 cases were each picked by reading find_obj()/get_val() first, to
+# actually exercise a real edge in THIS implementation rather than generic
+# JSON fuzzing. This is a LIVENESS/ROBUSTNESS check (does the daemon survive
+# and keep answering), not a strict "must return exactly this HTTP status"
+# contract - the parser has no documented error-response shape to pin down.
+hdr "8e. /control malformed-body robustness"
+mb_check() {  # <label> <body>
+	local label="$1" body="$2" code gcode
+	code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 -u "$HTTP_USER:$HTTP_PASS" \
+		-X POST "$(http_base)/control" -d "$body")
+	if [ -z "$code" ] || [ "$code" = "000" ]; then
+		bad "$label: no HTTP response at all (connection dropped/timed out) - possible parser hang/crash"
+		return
+	fi
+	# liveness proof: an IMMEDIATELY following GET must still return 200 -
+	# this is the actual assertion, not the POST's own status code
+	gcode=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 -u "$HTTP_USER:$HTTP_PASS" "$(http_base)/control")
+	if [ "$gcode" = "200" ]; then
+		ok "$label: POST got HTTP $code, daemon still alive + functioning (GET /control -> 200 right after)"
+	else
+		bad "$label: POST got HTTP $code, but the FOLLOWING GET /control returned '$gcode' - daemon wedged or crashed"
+	fi
+}
+
+# 1. truncated JSON: find_obj()'s brace-depth loop never sees depth return to
+#    0 before hitting the end of the buffer - must return NULL, not run past e.
+mb_check "truncated JSON (unclosed braces)" '{"image":{"brightness":128'
+
+# 2. unterminated string: get_val()'s quoted-string scan (`for (p++; p<e &&
+#    *p!='"'; p++)`) must stop at the buffer end, not read/write past it,
+#    when the closing quote never arrives.
+mb_check "unterminated string (no closing quote)" '{"osd0":{"0":{"text":"never closes'
+
+# 3. huge/overflow-prone number: pint()'s strtol()+cast-to-int path (the M11
+#    hardening comment in config.c) must clamp, not misbehave, on a value
+#    that overflows long/int well past any field's [lo,hi].
+mb_check "overflow-prone number" '{"image":{"brightness":99999999999999999999999999}}'
+
+# 4. completely unknown top-level section name: none of control_apply_json's
+#    find_obj(s,e,"image"/"audio"/.../ &oend) calls match it - must be a
+#    silent no-op, not a crash on an unrecognized key.
+mb_check "unknown top-level section" '{"totally_bogus_section_xyz":{"foo":1,"bar":"baz"}}'
+
+# 5. wrong JSON type where an object is expected: find_obj() requires the
+#    value to start with '{' (`if (!p || p>=e || *p!='{') return NULL;`) -
+#    handing it a JSON array for a section name must be rejected cleanly,
+#    not misparsed as if it were an object.
+mb_check "array instead of object" '{"image":[1,2,3]}'
+
+fi
 if want 9 events; then
 # --- 9. /events SSE ---------------------------------------------------------
+# Previously this just waited ~8s passively and warned "may be idle" if
+# nothing arrived - a permanent soft-warn that never actually proved the
+# push mechanism works (ambient traffic on an otherwise-idle camera is not
+# guaranteed, so "nothing arrived" was indistinguishable from "broken").
+# Now: open the SSE stream, POST a small harmless reversible live-settable
+# change partway through the window (same image.brightness poke style as
+# section 8's write round-trip / section 8b's live-settings pokes) which
+# control.c's timps_apply_setting() pushes as a "config" SSE event
+# (events_config_push -> httpd.c's events_stream: `event: config` /
+# `data: {"key":"image.brightness","value":"N"}`), then assert THAT SPECIFIC
+# event actually arrived - not just "any" event - within the window. Restore
+# the original value afterward, same pattern as every other round-trip test
+# in this script.
 hdr "9. /events (SSE)"
 ev="$OUTDIR/events.log"
-timeout 8 curl -s -N -u "$HTTP_USER:$HTTP_PASS" "$(http_base)/events" > "$ev" 2>/dev/null || true
-if [ -s "$ev" ]; then ok "/events streamed $(wc -l <"$ev") line(s) in 8s"
-else warn "/events produced no data in 8s (may be idle - no config changes)"; fi
+timeout 8 curl -s -N -u "$HTTP_USER:$HTTP_PASS" "$(http_base)/events" > "$ev" 2>/dev/null &
+evpid=$!
+sleep 2   # let the SSE connection establish before poking a setting
+ev9_base="$OUTDIR/events_base.json"
+ev9_bri=""
+if curlq 8 "$(http_base)/control" -o "$ev9_base" && [ -s "$ev9_base" ]; then
+	ev9_bri=$(jget "$ev9_base" image.brightness)
+fi
+if [ -n "$ev9_bri" ]; then
+	ev9_new=$(awk -v c="$ev9_bri" 'BEGIN{m=int((0+255)/2); print (m!=c)?m:(m<255?m+1:m-1)}')
+	code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 -u "$HTTP_USER:$HTTP_PASS" \
+		-X POST "$(http_base)/control" -d "{\"image\":{\"brightness\":$ev9_new}}")
+	[ "$code" = "200" ] && info "  poked image.brightness $ev9_bri -> $ev9_new mid-window to provoke a \"config\" SSE event" \
+		|| warn "/events test: brightness poke POST returned HTTP $code"
+	# restore right away rather than waiting out the rest of the window first
+	curl -s -o /dev/null --max-time 8 -u "$HTTP_USER:$HTTP_PASS" \
+		-X POST "$(http_base)/control" -d "{\"image\":{\"brightness\":$ev9_bri}}" >/dev/null
+else
+	warn "/events test: could not read current image.brightness from /control - cannot provoke an event this run"
+fi
+wait "$evpid" 2>/dev/null
+lines=$(wc -l <"$ev" 2>/dev/null); lines=${lines:-0}
+if [ -n "$ev9_bri" ]; then
+	if grep -q '"key":"image.brightness"' "$ev" 2>/dev/null; then
+		ok "/events: provoked image.brightness config event arrived within the window ($lines line(s) total) - push mechanism proven, not just ambient traffic"
+	else
+		bad "/events: $lines line(s) received but NONE reflect the image.brightness POST we just made - config-push mechanism not confirmed"
+	fi
+elif [ "$lines" -gt 0 ]; then
+	warn "/events streamed $lines line(s) in 8s (could not provoke a change to verify against - see above; this only shows ambient traffic, not a proven push)"
+else
+	bad "/events produced no data in 8s, including after a live-settings POST that should have provoked a config event"
+fi
 
 fi
 if want 10 onvif; then
@@ -1568,6 +1959,88 @@ if [ "$DO_RESTART" = "1" ] && want 14 restart; then
 		done
 		[ "$recovered" != "0" ] && ok "streamer recovered ${recovered}s after restart" || bad "streamer did not recover within 60s"
 	else skip "restart test needs --ssh"; fi
+fi
+
+# --- 14b. Fatal-signal handler test (opt-in: --test-crash, DESTRUCTIVE) -----
+if want 14b crash fatalsignal; then
+hdr "14b. Fatal-signal handler test (opt-in, destructive)"
+if [ "$TEST_CRASH" != "1" ]; then
+	info "fatal-signal handler test needs --test-crash (DESTRUCTIVE: kills the running timpsd) - skipped"
+elif [ -z "$SSH_TARGET" ]; then
+	skip "fatal-signal handler test needs --ssh"
+else
+	echo "  -- DESTRUCTIVE: sending SIGSEGV to the running timpsd, then restarting it --"
+	# Key insight (no special build/debug flag needed): sigaction() catches
+	# externally-sent signals exactly like a genuine internal fault, so
+	# `kill -SEGV $(pidof timpsd)` over SSH exercises the REAL production
+	# fatal_signal_handler() in main.c (altstack, /run/timps.crash write,
+	# re-raise) - the same code path a real libimp/libaudioProcess crash
+	# would take, not a simulated/test-only stand-in.
+	pid0=$(sshx "pidof timpsd" 2>/dev/null)
+	if [ -z "$pid0" ]; then
+		bad "fatal-signal test: timpsd not running before the test (no pid to signal)"
+	else
+		# this run's own stale-crash check (section 1, preflight) already
+		# reported on and renamed any pre-existing /run/timps.crash; clear again here
+		# defensively so a leftover from a previous ABORTED --test-crash run
+		# can't be mistaken for evidence THIS SIGSEGV produced a crash file
+		sshx "rm -f /run/timps.crash" >/dev/null 2>&1
+		sshx "kill -SEGV $pid0" >/dev/null 2>&1
+		# bounded poll for the process to actually die - same idiom as
+		# rot_restart's pidof poll in section 8b, never a raw sleep
+		died=0
+		for i in $(seq 1 15); do
+			sshx "pidof timpsd" >/dev/null 2>&1 || { died=1; break; }
+			sleep 1
+		done
+		if [ "$died" != "1" ]; then
+			bad "fatal-signal test: timpsd (pid $pid0) still running 15s after SIGSEGV - handler did not die/re-raise as designed"
+		else
+			ok "fatal-signal test: timpsd (pid $pid0) died after SIGSEGV"
+			# bounded poll for the crash file - the handler's write() happens
+			# before the re-raise, but give the filesystem a moment regardless
+			crashed=0
+			for i in $(seq 1 10); do
+				sshx "[ -s /run/timps.crash ]" >/dev/null 2>&1 && { crashed=1; break; }
+				sleep 1
+			done
+			if [ "$crashed" != "1" ]; then
+				bad "fatal-signal test: /run/timps.crash was not written within 10s of the SIGSEGV"
+			else
+				crashtxt=$(sshx "cat /run/timps.crash" 2>/dev/null)
+				# main.c's fatal_signal_handler() format: a line containing
+				# "*** timpsd FATAL: SIGSEGV si_addr=0x... pc=0x..." followed by
+				# "fault address is in: ..." - assert the actual format, not
+				# just "the file is non-empty".
+				if printf '%s' "$crashtxt" | grep -q "SIGSEGV" && \
+				   printf '%s' "$crashtxt" | grep -qE 'si_addr=0x[0-9a-f]+'; then
+					ok "fatal-signal test: /run/timps.crash matches the handler's format (SIGSEGV + fault address)"
+					info "  $(printf '%s' "$crashtxt" | grep -m1 'fault address is in:')"
+				else
+					bad "fatal-signal test: /run/timps.crash exists but doesn't match the handler's format (got: $(printf '%s' "$crashtxt" | head -c 200))"
+				fi
+			fi
+		fi
+		# restart for real and confirm it comes back HEALTHY - the same
+		# /control-responds-not-just-pidof check rot_restart uses in 8b,
+		# matching existing script idioms rather than inventing a new one
+		sshx "/etc/init.d/S95timps restart >/dev/null 2>&1 || service timps restart >/dev/null 2>&1"
+		up=0
+		for i in $(seq 1 30); do sshx "pidof timpsd" >/dev/null 2>&1 && { up=1; break; }; sleep 2; done
+		if [ "$up" != "1" ]; then
+			bad "fatal-signal test: timpsd did not come back up after the post-crash restart"
+		else
+			healthy=0
+			for i in $(seq 1 15); do
+				[ "$(curlq 3 -o /dev/null -w '%{http_code}' "$(http_base)/control")" = "200" ] && { healthy=1; break; }
+				sleep 2
+			done
+			[ "$healthy" = "1" ] && ok "fatal-signal test: timpsd came back up and /control responds after the post-crash restart" \
+				|| bad "fatal-signal test: timpsd process is up but /control never responded within 30s post-restart"
+		fi
+		sshx "rm -f /run/timps.crash" >/dev/null 2>&1   # this run's own crash artifact - clear it so it isn't reported as "stale" on the NEXT qa run
+	fi
+fi
 fi
 
 # --- 15. Soak ---------------------------------------------------------------
