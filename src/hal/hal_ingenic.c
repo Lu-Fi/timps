@@ -1064,6 +1064,25 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
         IMP_Encoder_DestroyChn(chn);
         return -1;
     }
+#ifdef ENC_NEW_API
+    /* min_qp/max_qp have no consumer on this path: IMP_Encoder_SetDefaultParam()
+     * takes no QP bounds, so videoN.min_qp/max_qp (exposed via /control, F_CTRL,
+     * 1..51) silently did nothing on T31/C100/T40/T41 - only the classic and
+     * T23 sw-rotate paths ever applied them. Apply them explicitly now via
+     * IMP_Encoder_SetChnQpBounds(chn,min,max) (signature identical across all
+     * four new-API headers; the SDK doc requires the channel to already exist,
+     * hence after RegisterChn). Same "0 = unset -> existing default" pattern as
+     * the qp fix, reusing the 15/45 defaults the classic CBR fill uses so the
+     * effective bounds match across SoCs. Non-fatal: a rejected call just leaves
+     * the encoder's built-in QP range, so warn and carry on. */
+    {
+        int qmin = (v->min_qp>0)?v->min_qp:15;
+        int qmax = (v->max_qp>0)?v->max_qp:45;
+        if (IMP_Encoder_SetChnQpBounds(chn, qmin, qmax)!=0)
+            LOGW(MOD,"Encoder_SetChnQpBounds %d (%d..%d) failed - using SDK default range",
+                 chn, qmin, qmax);
+    }
+#endif
     return 0;
 }
 
