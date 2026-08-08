@@ -24,6 +24,8 @@
 #include <signal.h>
 #include <unistd.h>
 #include <time.h>
+#include <errno.h>
+#include <sys/file.h>
 
 #define MOD "MAIN"
 #ifndef MS_VERSION
@@ -32,6 +34,49 @@
 
 static volatile int g_run = 1;
 static const hal_backend *g_hal;
+
+/* Single-instance guard against concurrent ISP/HAL access (root cause of a
+ * real incident: a manually-launched foreground /tmp/timpsd test build was
+ * still running when `/etc/init.d/S95timps restart` fired in another shell.
+ * busybox's start-stop-daemon -S -x /usr/bin/timpsd matches "already running"
+ * by executable PATH, so it never saw the /tmp/timpsd process and happily
+ * launched a second /usr/bin/timpsd. That second process's IMP_ISP_Open/
+ * sensor-init sequence reset the shared ISP kernel driver state out from
+ * under the first, still-running process, destroying its FrameSource
+ * channels - which the first process then could not recover from (see the
+ * video/jpeg watchdog escalation in hal_ingenic.c, added to at least detect
+ * and exit that unrecoverable state instead of retrying it forever).
+ * flock() closes the actual race instead of just detecting its aftermath:
+ * whichever process loses never gets far enough to call IMP_ISP_Open in the
+ * first place. Matches the flat-file-in-/run convention already used for
+ * http_token_file ("/run/timps.token" in config.c) rather than the /run/
+ * timps/ subdirectory speaker.c mkdir()s for the audio FIFO - a lock file
+ * needs no subdirectory and must work before any other subsystem has set
+ * one up. */
+#define MS_LOCK_PATH "/run/timps.lock"
+static int g_lockfd = -1;   /* held for the process lifetime; never closed
+                             * while running - flock() releases on exit/crash */
+static int acquire_singleton_lock(void)
+{
+    int fd = open(MS_LOCK_PATH, O_CREAT|O_RDWR, 0644);
+    if (fd < 0){
+        /* Can't even open it (e.g. /run not yet mounted read-write) - warn
+         * but don't block startup over the guard itself; this is best-effort
+         * hardening, not a hard dependency of every boot path. */
+        LOGW(MOD,"cannot open %s (%s) - proceeding without the single-"
+             "instance guard", MS_LOCK_PATH, strerror(errno));
+        return 0;
+    }
+    if (flock(fd, LOCK_EX|LOCK_NB) != 0){
+        LOGE(MOD,"another timpsd instance already holds %s - refusing to "
+             "start (a second instance re-initializing the ISP would "
+             "corrupt the running instance's video pipeline)", MS_LOCK_PATH);
+        close(fd);
+        return -1;
+    }
+    g_lockfd = fd;
+    return 0;
+}
 
 static void hard_exit(int s){ (void)s; _exit(0); }
 static void on_signal(int s)
@@ -109,6 +154,12 @@ int main(int argc, char **argv)
     g_hal = hal_get();
     if (!g_hal){ LOGE(MOD,"no HAL backend available"); return 1; }   /* F-08 */
     LOGI(MOD,"timps %s starting (backend=%s)", MS_VERSION, g_hal->name);
+
+    /* Must run BEFORE any ISP/HAL init below - see acquire_singleton_lock's
+     * comment for why. A lost race means an already-live instance owns the
+     * hardware; touching it further (even just to log more) risks nothing
+     * extra, but there's also nothing useful left to do, so exit immediately. */
+    if (acquire_singleton_lock() != 0) return 1;
 
 #ifdef USE_CONTROL
     /* per-boot /control token: valid alongside Basic auth (httpd.c) */

@@ -6,6 +6,38 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+- **Double-instance ISP collision hardening**, root-caused after a real
+  incident: a manually-launched foreground `/tmp/timpsd` test build was still
+  running when `/etc/init.d/S95timps restart` fired in another shell.
+  busybox's `start-stop-daemon -S -x /usr/bin/timpsd` matches "already
+  running" by executable PATH, not by process identity, so it never saw the
+  `/tmp/timpsd` process and started a second `/usr/bin/timpsd`. That second
+  process's `IMP_ISP_Open`/sensor-init reset the shared ISP kernel driver
+  state out from under the first, destroying its FrameSource channels; the
+  first process then spun in its encoder watchdog's recovery cycle forever
+  (every attempt "succeeded" per `StartRecvPic` but the hardware was
+  genuinely gone) producing zero video for 2+ minutes with no way to
+  self-recover and no mechanism to hand off to init supervision. Two
+  independent fixes:
+  - `src/main.c`: an exclusive `flock()` on `/run/timps.lock`, taken before
+    any ISP/HAL initialization. A second instance that loses the race logs a
+    clear fatal error and exits immediately, never touching the shared
+    hardware in the first place - this closes the actual race, independent
+    of how the double-start happens.
+  - `src/hal/hal_ingenic.c` (`video_thread`): the encoder watchdog's forced
+    recovery cycle (`fs_unuse()`/`fs_use()`/`StartRecvPic`) now tracks
+    consecutive cycles that never actually yielded a frame (via
+    `IMP_Encoder_GetStream`, not just a "successful" `StartRecvPic`). After
+    `MS_VIDEO_WATCHDOG_MAX_RECOVERIES` (default 5, ~25 s of total dead time)
+    it logs FATAL and raises `SIGTERM` on itself so the existing orderly
+    shutdown path exits the process for init supervision to restart cleanly,
+    instead of retrying forever. `jpeg_thread` had the identical infinite-
+    retry gap; it now gives up on just its own channel after the same number
+    of failed cycles (`MS_JPEG_WATCHDOG_MAX_RECOVERIES`), mirroring how
+    `audio_thread` already disables itself alone rather than taking the
+    whole process down for a non-primary stream.
+
 ## [1.7.8] - 2026-08-06
 
 ### Fixed
