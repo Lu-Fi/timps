@@ -58,7 +58,15 @@ static int g_lockfd = -1;   /* held for the process lifetime; never closed
                              * while running - flock() releases on exit/crash */
 static int acquire_singleton_lock(void)
 {
-    int fd = open(MS_LOCK_PATH, O_CREAT|O_RDWR, 0644);
+    /* O_CLOEXEC: imp_motion.c's on_motion hook double-forks a detached
+     * grandchild that execlp()s a long-lived script (clip capture + upload,
+     * several seconds). Without CLOEXEC that grandchild inherits this fd and
+     * keeps the flock held after timpsd itself exits (restart/crash/this
+     * watchdog's own escalation) - the next instance then loses the race
+     * against an orphan holding the lock and refuses to start, with nothing
+     * left to respawn it. Matches the CLOEXEC convention already used for
+     * other long-lived fds (net.c, speaker.c). */
+    int fd = open(MS_LOCK_PATH, O_CREAT|O_RDWR|O_CLOEXEC, 0644);
     if (fd < 0){
         /* Can't even open it (e.g. /run not yet mounted read-write) - warn
          * but don't block startup over the guard itself; this is best-effort

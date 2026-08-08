@@ -24,19 +24,27 @@ semantic versioning.
     any ISP/HAL initialization. A second instance that loses the race logs a
     clear fatal error and exits immediately, never touching the shared
     hardware in the first place - this closes the actual race, independent
-    of how the double-start happens.
+    of how the double-start happens. The fd is opened `O_CLOEXEC` (Fable
+    review catch): `imp_motion.c`'s `on_motion` hook double-forks a detached
+    grandchild that `execlp()`s a long-lived clip-capture/upload script -
+    without `O_CLOEXEC` that grandchild would inherit the lock fd and keep it
+    held after timpsd itself exits, permanently blocking the next instance
+    from ever acquiring it.
   - `src/hal/hal_ingenic.c` (`video_thread`): the encoder watchdog's forced
     recovery cycle (`fs_unuse()`/`fs_use()`/`StartRecvPic`) now tracks
     consecutive cycles that never actually yielded a frame (via
     `IMP_Encoder_GetStream`, not just a "successful" `StartRecvPic`). After
     `MS_VIDEO_WATCHDOG_MAX_RECOVERIES` (default 5, ~25 s of total dead time)
     it logs FATAL and raises `SIGTERM` on itself so the existing orderly
-    shutdown path exits the process for init supervision to restart cleanly,
-    instead of retrying forever. `jpeg_thread` had the identical infinite-
-    retry gap; it now gives up on just its own channel after the same number
-    of failed cycles (`MS_JPEG_WATCHDOG_MAX_RECOVERIES`), mirroring how
-    `audio_thread` already disables itself alone rather than taking the
-    whole process down for a non-primary stream.
+    shutdown path exits the process, instead of retrying forever - this
+    firmware has no process supervisor/respawn beyond a console getty, so the
+    camera stays down until a manual/scheduled restart, but that is still
+    strictly better than the prior silent, unbounded zero-video hang.
+    `jpeg_thread` had the identical infinite-retry gap; it now gives up on
+    just its own channel after the same number of failed cycles
+    (`MS_JPEG_WATCHDOG_MAX_RECOVERIES`), mirroring how `audio_thread` already
+    disables itself alone rather than taking the whole process down for a
+    non-primary stream.
 - **Piggyback JPEG (`/snapshot.jpg`, `/stream.mjpeg`) broke when a 90/270
   rotation was refused by the SW-rotate safe envelope.** On a T23 build with
   `USE_ROTATE`/`USE_SW_ROTATE`, requesting a rotation that exceeds the safe
