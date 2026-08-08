@@ -368,90 +368,187 @@ static int g_hinting = 0;
 
 void msttf_set_hinting(int enable) { g_hinting = enable ? 1 : 0; }
 
-/* A stem edge, collected pre-snap: (j,k) are the endpoint indices in the
- * contour, orig is the pre-snap mid coordinate (x for a vertical edge, y for
- * a horizontal one), snapped is its independently-rounded pixel column/row. */
-typedef struct { int j, k; float orig, snapped; } stem_edge;
+/* A candidate stem edge, collected pre-snap across the WHOLE glyph:
+ * ci is the contour index, (j,k) the endpoint indices in that contour,
+ * orig the pre-snap mid coordinate along the snap axis (x for a
+ * near-vertical edge, y for a near-horizontal one), lo/hi its extent along
+ * the perpendicular axis, dir the traversal direction along the stem axis
+ * (+1/-1: the two sides of one stroke are always traversed in opposite
+ * directions by a consistently-wound outline), snapped its independently
+ * rounded pixel column/row, and fin the final resolved value applied. */
+typedef struct { int ci, j, k, dir; float orig, lo, hi, snapped, fin; } stem_edge;
 
-/* Snapping each stem-side edge independently - as the first cut of this
- * hinter did - can collapse a genuinely non-zero-width stem to zero width:
- * two edges a hair under 1px apart (e.g. UbuntuMono Regular's ~0.98px-wide
- * vertical stroke at the 12px OSD default) can each round to the SAME
- * column/row (one at -0.49px displacement, the other at +0.49px, both floor
- * to the same integer), and a zero-width path renders as nothing under
- * non-zero-winding fill - confirmed on 'I' losing its whole stem.
- *
- * Fix: sort the candidate edges of one orientation by their pre-snap
- * position and only intervene on ADJACENT pairs whose independent snaps
- * actually collided. When they did, keep the first edge's snap and push the
- * second out to at least 1 full pixel of separation (the original width,
- * rounded, floored at 1px) - preserving the stem instead of losing it.
- * Pairs whose snaps didn't collide are left exactly as the independent snap
- * computed them.
- *
- * This cannot regress an already-thick stem: for any edge pair with
- * original width w>=1px, floor(x+0.5) and floor(x+w+0.5) are provably
- * always different (a half-open interval of length>=1 always contains an
- * integer boundary), so the collision branch is structurally unreachable
- * once a stem is already a full pixel or wider - e.g. the 32px main-stream
- * case never enters the collision branch at all. */
-static void desnap_pairs(stem_edge *e, int n)
+/* Two pre-snap coordinates closer than this (device px) are the same edge
+ * line: collinear split segments of one stem side, or the aligned caps of
+ * twin stems. This is a float-identity tolerance, not a tuned font metric. */
+#define HINT_EPS_MERGED  0.05f
+/* Minimum shared perpendicular extent (device px) for two opposing edges to
+ * count as bounding the same stroke segment. */
+#define HINT_MIN_OVERLAP 0.25f
+
+/* Even-odd point-in-outline test on the pre-snap outline, same crossing
+ * rule as the scanline fill in msttf_render() below. ray_x=1 casts the ray
+ * in +x (for testing between two near-VERTICAL edges, so the ray crosses
+ * them transversally), ray_x=0 casts in +y (for near-horizontal pairs). */
+static int hint_inside(const poly *polys, int npoly, float x, float y, int ray_x)
 {
-    /* selection sort ascending by orig - n is a handful of edges per
-     * contour at most, no need for anything fancier */
-    for (int a=0;a<n;a++){
-        int m=a;
-        for (int b=a+1;b<n;b++) if (e[b].orig < e[m].orig) m=b;
-        if (m!=a){ stem_edge t=e[a]; e[a]=e[m]; e[m]=t; }
-    }
-    for (int a=0;a+1<n;a+=2){
-        if (e[a].snapped == e[a+1].snapped){
-            float width = e[a+1].orig - e[a].orig;   /* >=0, sorted ascending */
-            float sep = (width < 1.0f) ? 1.0f : floorf(width+0.5f);
-            e[a+1].snapped = e[a].snapped + sep;
+    int cnt=0;
+    for (int i=0;i<npoly;i++){
+        const poly *pl=&polys[i];
+        for (int j=0;j<pl->n;j++){
+            pt A=pl->p[j], B=pl->p[(j+1)%pl->n];
+            if (ray_x){
+                if ((A.y<=y&&B.y>y)||(B.y<=y&&A.y>y)){
+                    float t=(y-A.y)/(B.y-A.y);
+                    if (A.x+t*(B.x-A.x) > x) cnt++;
+                }
+            } else {
+                if ((A.x<=x&&B.x>x)||(B.x<=x&&A.x>x)){
+                    float t=(x-A.x)/(B.x-A.x);
+                    if (A.y+t*(B.y-A.y) > y) cnt++;
+                }
+            }
         }
+    }
+    return cnt&1;
+}
+
+/* Snapping each stem-side edge independently - the first cut of this hinter
+ * - can collapse a sub-pixel stem to zero width: two edges a hair under 1px
+ * apart (UbuntuMono Regular's ~0.98px vertical stroke at the 12px OSD
+ * default) can both round to the SAME column, and a zero-width path renders
+ * as nothing. The first repair attempt (parity-pairing sorted candidates
+ * and pushing "colliding" neighbours apart) was geometrically wrong: sorted
+ * adjacency says nothing about whether two edges actually bound the same
+ * stroke, so it forced apart edges that were legitimately collinear (twin
+ * stem caps, split stem sides) and mis-paired stems whose sides interleave
+ * with bar/bowl edges in sort order, leaving real collapses unfixed.
+ *
+ * This version pairs edges by actual stroke geometry instead. A pair is a
+ * genuine stroke iff:
+ *   - opposite traversal direction (a consistently-wound contour walks the
+ *     two sides of one stroke in opposite directions - available for free
+ *     from the point order at collection time),
+ *   - overlapping perpendicular extents (they face each other along the
+ *     stroke, not merely share a column somewhere else in the glyph),
+ *   - ink between them (even-odd midpoint test on the pre-snap outline,
+ *     same fill rule as the rasterizer - rejects sub-pixel COUNTERS, whose
+ *     bounding edges also satisfy the two conditions above; forcing those
+ *     apart is what tore '+' crossbars in the previous attempt's testing).
+ * Only such pairs whose independent snaps landed on the same column/row are
+ * touched: the lower edge keeps its snap, the upper is pushed out by the
+ * pair's own pre-snap width rounded (floored at 1px), so the stroke
+ * survives. For width>=1px, floor(x+0.5) != floor(x+w+0.5) always (a
+ * half-open interval of length>=1 contains an integer), so thick stems
+ * never even enter the collision branch.
+ *
+ * Edges at near-equal pre-snap positions are the opposite case - already
+ * merged - and are never pushed apart: the collision pass skips them
+ * (w<=eps is not a collision), and the collinearity pass moves them
+ * together if any one of them was pushed by its own opposing partner
+ * (keeps split stem sides collinear). Edges the collision pass does not
+ * touch keep their plain independent snap bit-for-bit - including a
+ * near-equal pair straddling a .5 rounding boundary, which snaps exactly
+ * as it did before this repair - so everything that rendered correctly
+ * before still renders identically.
+ *
+ * No font- or size-specific constants: widths/separations are measured per
+ * pair at render time; the two epsilons above are float-identity and
+ * degenerate-overlap tolerances in device pixel space. */
+static void resolve_snaps(stem_edge *e, int n, const poly *polys, int npoly,
+                          int vert)
+{
+    /* pass 1: resolve genuine opposing-pair snap collisions */
+    for (int i=0;i<n;i++) for (int l=i+1;l<n;l++){
+        if (e[i].dir == e[l].dir) continue;          /* same stroke side */
+        float w = fabsf(e[i].orig - e[l].orig);
+        if (w <= HINT_EPS_MERGED) continue;          /* already merged */
+        if (e[i].snapped != e[l].snapped) continue;  /* no collision */
+        float olo = fmaxf(e[i].lo, e[l].lo);
+        float ohi = fminf(e[i].hi, e[l].hi);
+        if (ohi - olo < HINT_MIN_OVERLAP) continue;  /* not the same stroke */
+        float mid = (e[i].orig + e[l].orig)*0.5f, pm = (olo + ohi)*0.5f;
+        int ink = vert ? hint_inside(polys, npoly, mid, pm, 1)
+                       : hint_inside(polys, npoly, pm, mid, 0);
+        if (!ink) continue;                          /* sub-pixel gap/counter */
+        int a = (e[i].orig < e[l].orig) ? i : l;
+        int b = (a == i) ? l : i;
+        float sep = (w < 1.0f) ? 1.0f : floorf(w + 0.5f);
+        e[b].fin = e[a].snapped + sep;
+        /* note: an edge can't be pushed inconsistently by two different
+         * partners - it would need ink on both of its sides, which an
+         * outline edge by definition doesn't have */
+    }
+
+    /* pass 2: collinearity guard - if a collision push moved one segment of
+     * a split edge line, its near-equal siblings follow (otherwise e.g. a
+     * '+' crossbar edge split by the vertical stroke tears onto two rows
+     * when only one arm's opposing pair collided). Only PUSHED edges
+     * propagate; groups nobody pushed keep their independent snaps
+     * untouched. i<l order carries a push through the whole group. */
+    for (int i=0;i<n;i++) for (int l=i+1;l<n;l++){
+        if (fabsf(e[i].orig - e[l].orig) > HINT_EPS_MERGED) continue;
+        if (e[i].fin == e[l].fin) continue;
+        if      (e[i].fin != e[i].snapped) e[l].fin = e[i].fin;
+        else if (e[l].fin != e[l].snapped) e[i].fin = e[l].fin;
     }
 }
 
-static void autohint_contour(poly *pl)
+static void autohint_glyph(poly *polys, int npoly)
 {
-    if (pl->n < 2) return;
-    /* generous fixed capacity: real glyph contours never come close to this
-     * many qualifying stem-like edges. If a pathological contour ever did,
-     * the overflow edges below still get their own independent snap applied
+    /* generous fixed capacity: real glyphs never come close to this many
+     * qualifying stem-like edges. If a pathological glyph ever did, the
+     * overflow edges below still get their own independent snap applied
      * in-place immediately (old per-edge behavior) rather than being
      * silently dropped or overflowing this array. */
-    enum { MAXE = 64 };
+    enum { MAXE = 96 };
     stem_edge vedge[MAXE]; int nv=0;
     stem_edge hedge[MAXE]; int nh=0;
 
-    for (int j=0;j<pl->n;j++){
-        int k=(j+1)%pl->n;
-        float dx=pl->p[k].x-pl->p[j].x, dy=pl->p[k].y-pl->p[j].y;
-        float adx=fabsf(dx), ady=fabsf(dy);
-        /* length gate: excludes short flattened-bezier chords (curves) and
-         * tiny serif nubs, keeping this to genuine stem-height edges */
-        if (dx*dx+dy*dy < 4.0f) continue;   /* len < 2px */
-        if (adx < 0.2f*ady && ady > 1.5f){
-            /* near-vertical stem edge */
-            float orig = (pl->p[j].x+pl->p[k].x)*0.5f;
-            float snapped = floorf(orig + 0.5f);
-            if (nv < MAXE) vedge[nv++] = (stem_edge){j,k,orig,snapped};
-            else { pl->p[j].x = snapped; pl->p[k].x = snapped; }
-        } else if (ady < 0.2f*adx && adx > 1.5f){
-            /* near-horizontal edge (serif/crossbar) */
-            float orig = (pl->p[j].y+pl->p[k].y)*0.5f;
-            float snapped = floorf(orig + 0.5f);
-            if (nh < MAXE) hedge[nh++] = (stem_edge){j,k,orig,snapped};
-            else { pl->p[j].y = snapped; pl->p[k].y = snapped; }
+    for (int ci=0; ci<npoly; ci++){
+        poly *pl = &polys[ci];
+        if (pl->n < 2) continue;
+        for (int j=0;j<pl->n;j++){
+            int k=(j+1)%pl->n;
+            float dx=pl->p[k].x-pl->p[j].x, dy=pl->p[k].y-pl->p[j].y;
+            float adx=fabsf(dx), ady=fabsf(dy);
+            /* length gate: excludes short flattened-bezier chords (curves)
+             * and tiny serif nubs, keeping this to genuine stem-height
+             * edges */
+            if (dx*dx+dy*dy < 4.0f) continue;   /* len < 2px */
+            if (adx < 0.2f*ady && ady > 1.5f){
+                /* near-vertical stem edge */
+                float orig = (pl->p[j].x+pl->p[k].x)*0.5f;
+                float snapped = floorf(orig + 0.5f);
+                if (nv < MAXE) vedge[nv++] = (stem_edge){ci,j,k, dy>0?1:-1,
+                    orig, fminf(pl->p[j].y,pl->p[k].y),
+                    fmaxf(pl->p[j].y,pl->p[k].y), snapped, snapped};
+                else { pl->p[j].x = snapped; pl->p[k].x = snapped; }
+            } else if (ady < 0.2f*adx && adx > 1.5f){
+                /* near-horizontal edge (serif/crossbar) */
+                float orig = (pl->p[j].y+pl->p[k].y)*0.5f;
+                float snapped = floorf(orig + 0.5f);
+                if (nh < MAXE) hedge[nh++] = (stem_edge){ci,j,k, dx>0?1:-1,
+                    orig, fminf(pl->p[j].x,pl->p[k].x),
+                    fmaxf(pl->p[j].x,pl->p[k].x), snapped, snapped};
+                else { pl->p[j].y = snapped; pl->p[k].y = snapped; }
+            }
         }
     }
 
-    desnap_pairs(vedge, nv);
-    desnap_pairs(hedge, nh);
+    /* resolve BOTH orientations before applying anything, so every
+     * hint_inside() ink test above sees the untouched pre-snap outline */
+    resolve_snaps(vedge, nv, polys, npoly, 1);
+    resolve_snaps(hedge, nh, polys, npoly, 0);
 
-    for (int i=0;i<nv;i++){ pl->p[vedge[i].j].x = vedge[i].snapped; pl->p[vedge[i].k].x = vedge[i].snapped; }
-    for (int i=0;i<nh;i++){ pl->p[hedge[i].j].y = hedge[i].snapped; pl->p[hedge[i].k].y = hedge[i].snapped; }
+    for (int i=0;i<nv;i++){
+        polys[vedge[i].ci].p[vedge[i].j].x = vedge[i].fin;
+        polys[vedge[i].ci].p[vedge[i].k].x = vedge[i].fin;
+    }
+    for (int i=0;i<nh;i++){
+        polys[hedge[i].ci].p[hedge[i].j].y = hedge[i].fin;
+        polys[hedge[i].ci].p[hedge[i].k].y = hedge[i].fin;
+    }
 }
 
 /* blend 'color' onto img[idx] with additional alpha factor 'a' (0..1) */
@@ -533,8 +630,10 @@ int msttf_render(msttf_font *f, const char *s, int pixel_h,
         /* opt-in geometric autohinting: snap stem-like edges to the pixel
          * grid in device space, before the bbox is measured off these same
          * points (so the dilated outline pass and coverage rasterization
-         * below both see the snapped geometry too) */
-        if (hinting) for (int i=0;i<npoly;i++) autohint_contour(&polys[i]);
+         * below both see the snapped geometry too). Glyph-level, not
+         * per-contour: a bowl wall is bounded by one outer-contour edge and
+         * one counter-contour edge, and those must be paired together. */
+        if (hinting) autohint_glyph(polys, npoly);
         /* rasterize into supersampled coverage over glyph bbox */
         if (npoly){
             /* bbox */

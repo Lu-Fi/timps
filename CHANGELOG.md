@@ -8,56 +8,83 @@ semantic versioning.
 
 ### Fixed
 - **`osd.hinting` autohinter could erase thin stems instead of sharpening
-  them** (adversarial review catch on the autohinting feature added above):
-  `autohint_contour()` snapped each edge of a stem independently to
-  `floorf(mid + 0.5)` (nearest pixel column/row). For a stem thinner than 1px
-  in device pixels - which is exactly what the shipped
+  them** (adversarial review catch on the autohinting feature added above,
+  fixed on the second attempt after the first repair was itself caught in
+  re-review): the feature as first landed snapped each stem-side edge
+  independently to `floorf(mid + 0.5)` (nearest pixel column/row). For a
+  stem thinner than 1px in device pixels - which is exactly what the shipped
   `/usr/share/fonts/default.ttf` (correctly identified below as UbuntuMono
   **Regular**, not "Roboto Bold" as originally claimed above) produces for
   its ~0.98px-wide vertical strokes at the 12px OSD default - the two edges'
   independently-rounded columns could land on the very same integer (one
   edge at -0.49px displacement, the other at +0.49px, both floor to the same
-  column), collapsing the stem to zero width. Under this rasterizer's
-  non-zero-winding fill, a zero-width path renders as nothing: 'I' lost its
-  entire vertical stem at 12px, multi-glyph strings lost strokes throughout,
-  and "IlIlIl" at 8px lost stems wholesale - the exact failure the feature
-  was meant to fix, made worse instead. Root cause: only tested against a
-  Bold-weight substitute font (see the entry above), whose stems are wide
-  enough that this collision is structurally unreachable, hiding the bug.
-  Fix in `src/hal/msttf.c`'s `autohint_contour()`/new `desnap_pairs()`: for
-  each contour, collect near-vertical (resp. near-horizontal) stem-edge
-  candidates, sort by their pre-snap position, and only intervene on
-  adjacent pairs whose independent snaps actually collided - in that case
-  keep the first edge's snap and push the second out to at least 1 full
-  pixel of separation (the original width, rounded) instead of letting both
-  land on the same column/row. Edge pairs that didn't collide are untouched.
-  This is provably a no-op for any stem already >=1px wide (for width w>=1,
-  `floor(x+0.5)` and `floor(x+w+0.5)` are always different - a half-open
-  interval of length >=1 always contains an integer boundary), so the
-  already-correct 32px/thick-stem rendering path never enters the collision
-  branch at all - confirmed empirically too (below), not just by proof.
-  The fix computes each pair's required separation from that pair's OWN
-  measured pre-snap width at render time; no font-specific constant is
-  baked in. Re-verified against the actual shipped font (byte-identical via
-  md5 to `package/thingino-fonts/files/UbuntuMono-Regular2.ttf`, and its TTF
-  `name` table confirms family "UbuntuMono", subfamily "Regular") plus 5
-  other fonts spanning Thin-to-Black weights (Roboto Regular/Bold/Black,
-  DejaVu Sans Regular/Bold) via a white-box host driver that calls
-  `autohint_contour`'s internals directly and checks, per contour, per
-  stem-edge pair, per font, across the full 8-256px `osd.font_size` clamp
-  range and 17 test glyphs (1211-1192 pairs checked per font): 0 pairs
-  end up width==0 post-snap despite hundreds of pairs per font (93-142)
-  that DID collide under the old independent-snap logic (confirming the
-  sweep isn't vacuously passing), and 0 already->=1px-wide pairs are
-  touched by the fix at all (280-429 checked per font). Also rendered the
-  reported failing cases through the real `msttf_render()` path and
-  inspected the output directly (dumped to PPM/PNG): 'I' at 12px regains
-  its full stem (pre-fix: only serifs), "WYZE-KINDERZIMMER" at 12px and
-  "IlIlIl" at 8px keep every stroke, and the 32px multi-glyph case is
-  visually unchanged. ASan+UBSan re-run against 1200 randomly-mutated
-  malformed variants of 3 seed fonts (bit flips/truncation/zero-fill/
-  0xFF-fill) with hinting forced on: 0 crashes/UB, matching the original
-  pass's clean result.
+  column), collapsing the stem to zero width, and a zero-width path renders
+  as nothing: 'I' lost its entire vertical stem at 12px, "IlIlIl" at 8px
+  lost stems wholesale - the exact failure the feature was meant to fix,
+  made worse instead. Root cause: only tested against a Bold-weight
+  substitute font, whose stems are wide enough that this collision is
+  structurally unreachable, hiding the bug. A first repair attempt (sort
+  the candidate edges by pre-snap position, push apart ADJACENT pairs whose
+  snaps collided) was geometrically wrong and never shipped past review:
+  sorted adjacency doesn't establish that two edges bound the same stroke,
+  so it forced apart edges that were legitimately collinear (the aligned
+  caps of H/U/N/M's twin stems, split segments of one stem side - new
+  regressions at sizes that had been fine), mis-paired stems whose sides
+  interleave with bar/bowl edges in sort order (57/89 sub-pixel stem pairs
+  in the shipped font still collapsed, e.g. 'b' at 8px lost its left stem),
+  and tore '+''s crossbar onto different rows at 11-13px.
+  The final fix (`src/hal/msttf.c`: `autohint_glyph()`/`resolve_snaps()`,
+  replacing the per-contour pass) pairs edges by actual stroke geometry
+  instead. Candidates are collected across the WHOLE glyph (a bowl wall is
+  bounded by one outer-contour and one counter-contour edge) together with
+  their traversal direction and perpendicular extent, and two edges form a
+  stroke pair only if ALL of: opposite traversal direction (a consistently
+  wound outline walks the two sides of one stroke in opposite directions),
+  overlapping perpendicular extents (they face each other along the stroke),
+  and ink between them (even-odd midpoint test on the pre-snap outline,
+  same fill rule as the rasterizer - rejects sub-pixel counters/gaps, whose
+  bounding edges also satisfy the first two conditions). Only such pairs
+  whose independent snaps collided are touched: the lower edge keeps its
+  snap, the upper is pushed out by the pair's own measured pre-snap width
+  rounded (floored at 1px). Edges at near-equal positions are recognized as
+  already merged (never separated), and if a push moves one segment of a
+  split edge line its near-equal siblings follow (keeps '+'-style split
+  crossbars on one row). Everything the collision pass doesn't touch keeps
+  its plain independent snap bit-for-bit. For width>=1px, `floor(x+0.5)`
+  and `floor(x+w+0.5)` are always different (a half-open interval of
+  length>=1 contains an integer boundary), so thick stems never enter the
+  collision branch at all. No font- or size-specific constants: widths and
+  separations are measured per pair at render time; the only epsilons are a
+  0.05px float-identity tolerance and a 0.25px degenerate-overlap gate in
+  device pixel space.
+  Re-verified against the actual shipped font (byte-identical via md5 to
+  `package/thingino-fonts/files/UbuntuMono-Regular2.ttf`, TTF `name` table
+  family "UbuntuMono" subfamily "Regular") plus 5 other fonts spanning
+  Regular-to-Black weights (Roboto Regular/Bold/Black, DejaVu Sans
+  Regular/Bold) via an ink-verified white-box sweep (even-odd inside test
+  against the pre-hint outline, so only pairs with real ink between them
+  count) over every ASCII glyph at every size 8-40px plus 48/64/96/128/192/
+  256px: 4568-5274 ink-verified stroke pairs per font, 0 collapse to zero
+  width (89/89 pairs that collided under independent snapping in the
+  shipped font are preserved; 70-71/70-71 and 4/4, 2/2, 0/0 in the others),
+  0 collinear splits torn apart, 0 thin strokes over-widened. Regression
+  gate at thick sizes: rendering all 94 ASCII glyphs at 32/48/64/96/128px
+  through the real `msttf_render()` path, the new pairing logic is
+  byte-for-byte identical to plain independent snapping (the pre-repair
+  semantics) in all 470 renders - and byte-identical to the ORIGINAL
+  feature commit for H/U/N/K at every thick size and every glyph at
+  32/48px except where that commit's own in-place snapping mutated later
+  edges' inputs mid-pass (a defect the collect-then-apply restructure
+  removed). Spot-verified renders: 'I'@12px full stem, "WYZE-KINDERZIMMER"
+  @12px and "IlIlIl"@8px keep every stroke, 'b'/'K'/'P'/'d'/'g'/'p'/'q'/
+  'u'@8px and 'B'/'D'/'K'/'R'/'h'@10px all keep their stems (alpha-coverage
+  on/off ratios 0.87-1.41, no collapse signature), '+'@11-13px crossbar
+  symmetric on every row. Fuzzing: 300k ASan+UBSan iterations of a direct
+  degenerate-input driver against the new pairing code (0/1/odd candidate
+  counts, all-identical positions, .5-boundary straddles, +/-1e9
+  coordinates, capacity-overflow contours) plus the 1200-mutant malformed-
+  font corpus (bit flips/truncation/zero-fill/0xFF-fill of 3 seed fonts)
+  with hinting forced on: 0 crashes/UB.
 - **Double-instance ISP collision hardening**, root-caused after a real
   incident: a manually-launched foreground `/tmp/timpsd` test build was still
   running when `/etc/init.d/S95timps restart` fired in another shell.
@@ -307,8 +334,9 @@ semantic versioning.
   rasterizer in a security/stability-sensitive embedded daemon, not a
   general-purpose font library, and a modest, safely-bounded improvement beats
   a more "authentic" but real bytecode-execution surface. `msttf_set_hinting()`
-  (mirrors the existing `msttf_set_ss()` pattern) gates a new
-  `autohint_contour()` pass that runs after `parse_glyph()` flattens a glyph's
+  (mirrors the existing `msttf_set_ss()` pattern) gates a new autohint pass
+  (now `autohint_glyph()`; see the stem-collapse fix above for the final
+  algorithm) that runs after `parse_glyph()` flattens a glyph's
   contours to device-pixel-space polylines: any edge longer than ~2px and
   within ~11 degrees of vertical/horizontal has both endpoints forced to a
   common rounded pixel column/row. A length gate excludes the short chords
