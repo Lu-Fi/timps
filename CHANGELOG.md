@@ -70,6 +70,36 @@ semantic versioning.
     opt-in test above can create a fresh one) and renames it after
     reporting so it won't re-trigger.
 
+### Fixed
+- **`scripts/timps-qa.sh` section 8d (Fable review of the field-inventory
+  drift check above)**: a pre-708ea08 daemon doesn't recognize `?fields=1`
+  at all and just serves the normal `GET /control` status document instead
+  (200 OK, non-empty, so the existing "can't even fetch it" guard never
+  fired). That document has a totally different shape from
+  `control_fields_json()`'s output - a top-level `"caps"` key the
+  field-inventory doc never has, and per-section values that are *objects*
+  (`"image":{"brightness":..}`, `"video":{"0":{...}}`) rather than flat
+  arrays of field names. Section 8d's diff didn't detect the mismatch and
+  happily iterated the normal document's object keys as if they were
+  `F_CTRL` field names, producing bogus drift warnings - confirmed: 32 false
+  warnings against a real camera on an older build, misreporting read-only
+  status keys like `motion.available`/`video.0` as "POST-able". Added a
+  shape guard (`"caps"` absent and `"image"` is an array) before the diff
+  runs; on mismatch it now `skip`s cleanly with an explanatory message,
+  same "older build lacks this capability" pattern already used for SRT
+  (section 4b) and ONVIF above.
+- **`scripts/timps-qa.sh` section 9 (`/events`)**: the `image.brightness`
+  poke used to provoke a `config` SSE event had no interruption protection,
+  unlike every other round-trip test in this script. A run interrupted
+  between the poke and its restore (external kill, SSH drop, a colliding
+  `--test-crash` run) stranded the extreme value on the real camera -
+  confirmed: `image.brightness` left at 255 (blown-out image) on Garage
+  (192.168.241.190) until fixed by hand. Section 9 now uses the same
+  `LV_PENDING`/`trap EXIT INT TERM` pattern section 8b's live-settings test
+  already uses (added after the 2026-08-02 cam-wyze WB-rgain/bgain=32767
+  incident): the pending restore body is tracked and flushed from an
+  EXIT/INT/TERM trap, not just the normal fall-through path.
+
 ## [1.8.0] - 2026-08-08
 
 ### Added

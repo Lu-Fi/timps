@@ -1627,6 +1627,24 @@ hdr "8d. Field-inventory drift check (GET /control?fields=1 vs 8b coverage)"
 fj="$OUTDIR/fields.json"
 if ! curlq 10 "$(http_base)/control?fields=1" -o "$fj" || [ ! -s "$fj" ]; then
 	warn "field-inventory check: cannot GET /control?fields=1 - skipping (older build without this endpoint?)"
+elif grep -qF '"caps"' "$fj" || ! grep -qF '"image":[' "$fj"; then
+	# Shape guard: a pre-708ea08 daemon doesn't recognize the ?fields=1 query
+	# param at all and just serves the normal GET /control status document
+	# instead (200 OK, non-empty - the curlq check above passes fine, so the
+	# branch above never fires). That document is a completely different
+	# shape from control_fields_json()'s output: it has a top-level "caps"
+	# key (the field-inventory doc never emits one), and its per-section
+	# values are OBJECTS ("image":{"brightness":..}, "video":{"0":{...}})
+	# rather than flat arrays of field names ("image":["brightness",...]).
+	# Without this guard, jarr() below would happily iterate the normal
+	# document's object KEYS as if they were F_CTRL field names - which is
+	# exactly how read-only status keys like motion.available/video.0 got
+	# misreported as "POST-able" drift (confirmed: 32 false warnings against
+	# a real camera running an older build). Checking for "image":[ (array
+	# form) plus absence of "caps" catches this before the diff ever runs -
+	# same "older build lacks this capability" skip already used for SRT
+	# (section 4b, srt.available=0) and ONVIF (port-closed) above.
+	skip "field-inventory drift check: GET /control?fields=1 returned the normal status document, not the field-inventory shape (has a \"caps\" key and/or \"image\" isn't an array) - this daemon doesn't recognize ?fields=1 (older build, pre-708ea08) - skipping"
 else
 	# TESTED_<section>: every field name 8b's code above actually POSTs +
 	# verifies (live or persist-only) for that section.
@@ -1752,6 +1770,27 @@ if want 9 events; then
 # in this script.
 hdr "9. /events (SSE)"
 ev="$OUTDIR/events.log"
+# Interruption safety (same LV_PENDING/trap pattern as section 8b's
+# lv_restore_pending, added after the 2026-08-02 cam-wyze incident: a run
+# killed between POST(new) and POST(restore) stranded manual WB rgain/bgain
+# at 32767, a full-magenta image surviving reboots). This test's own poke is
+# exactly that same shape - an extreme, visibly-wrong image.brightness value
+# on a REAL live camera - so it gets the same protection: track the pending
+# restore body and flush it from EXIT/INT/TERM, not just from the normal
+# fall-through path below. Confirmed missing here 2026-08: a real run against
+# Garage (192.168.241.190) got interrupted between the poke and the restore
+# and left image.brightness=255 (blown-out image) until fixed by hand.
+EV9_PENDING=""
+ev9_restore_pending() {
+	[ -n "${EV9_PENDING:-}" ] || return 0
+	warn "interrupted mid /events test - restoring image.brightness"
+	curl -s -o /dev/null --max-time 8 -u "$HTTP_USER:$HTTP_PASS" \
+		-X POST "$(http_base)/control" -d "$EV9_PENDING" >/dev/null 2>&1 || true
+	EV9_PENDING=""
+}
+trap 'ev9_restore_pending' EXIT
+trap 'ev9_restore_pending; trap - INT;  kill -INT  $$' INT
+trap 'ev9_restore_pending; trap - TERM; kill -TERM $$' TERM
 timeout 8 curl -s -N -u "$HTTP_USER:$HTTP_PASS" "$(http_base)/events" > "$ev" 2>/dev/null &
 evpid=$!
 sleep 2   # let the SSE connection establish before poking a setting
@@ -1762,13 +1801,15 @@ if curlq 8 "$(http_base)/control" -o "$ev9_base" && [ -s "$ev9_base" ]; then
 fi
 if [ -n "$ev9_bri" ]; then
 	ev9_new=$(awk -v c="$ev9_bri" 'BEGIN{m=int((0+255)/2); print (m!=c)?m:(m<255?m+1:m-1)}')
+	EV9_PENDING="{\"image\":{\"brightness\":$ev9_bri}}"    # armed until restore lands
 	code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 -u "$HTTP_USER:$HTTP_PASS" \
 		-X POST "$(http_base)/control" -d "{\"image\":{\"brightness\":$ev9_new}}")
 	[ "$code" = "200" ] && info "  poked image.brightness $ev9_bri -> $ev9_new mid-window to provoke a \"config\" SSE event" \
 		|| warn "/events test: brightness poke POST returned HTTP $code"
 	# restore right away rather than waiting out the rest of the window first
 	curl -s -o /dev/null --max-time 8 -u "$HTTP_USER:$HTTP_PASS" \
-		-X POST "$(http_base)/control" -d "{\"image\":{\"brightness\":$ev9_bri}}" >/dev/null
+		-X POST "$(http_base)/control" -d "$EV9_PENDING" >/dev/null
+	EV9_PENDING=""    # restore POSTed - disarm the trap
 else
 	warn "/events test: could not read current image.brightness from /control - cannot provoke an event this run"
 fi
