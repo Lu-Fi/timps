@@ -54,6 +54,12 @@ USE_SW_ROTATE ?= 0          # 1 = opt-in software 90/270 rotation on T23 (CPU tr
 ifeq ($(USE_SW_ROTATE),1)
 USE_ROTATE    := 1
 endif
+USE_OSD_HINTING ?= 0        # 1 = compile in the opt-in geometric OSD-text autohinter
+                            #     (autohint_glyph() and friends in src/hal/msttf.c).
+                            #     Still gated at runtime by the osd.hinting config key
+                            #     either way; default off = measured ~2.1KB smaller
+                            #     .text (T31/GCC 16.1.0/-Os) and osd.hinting=1 in
+                            #     timps.conf is accepted but a no-op.
 HOSTCC        ?= cc
 
 # Vendored Ingenic IMP headers (from gtxaspec/ingenic-headers) live under
@@ -212,6 +218,7 @@ target:
 	  $(if $(filter 1,$(USE_STREAM_OPUS)),-DUSE_STREAM_OPUS $(if $(OPUS_INC),-I$(OPUS_INC))) \
 	  $(if $(filter 1,$(USE_ROTATE)),-DUSE_ROTATE) \
 	  $(if $(filter 1,$(USE_SW_ROTATE)),-DMS_ENABLE_SW_ROTATE) \
+	  $(if $(filter 1,$(USE_OSD_HINTING)),-DUSE_OSD_HINTING) \
 	  -DHAL_INGENIC -DPLATFORM_$(PLATFORM) $(PLATFORM_CFLAGS) -DMS_VERSION='"$(VERSION)"' -Isrc -I$(IMP_INC) -I$(IMP_INC)/imp \
 	  -c $(TARGET_ALLSRC)
 	$(LINK_DRV) $(TARGET_OBJS) \
@@ -220,7 +227,7 @@ target:
 	  $(if $(filter 1,$(USE_PLAY_OPUS)),$(OPUSLIB)) \
 	  $(if $(filter 1,$(USE_STREAM_OPUS)),$(OPUS_ENC_LIB)) $(LIBS) -o $(BIN)
 	@rm -f $(TARGET_OBJS)
-	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT) USE_BACKCHANNEL=$(USE_BACKCHANNEL) USE_BC_AAC=$(USE_BC_AAC) USE_PLAY=$(USE_PLAY) USE_PLAY_OPUS=$(USE_PLAY_OPUS) USE_STREAM_OPUS=$(USE_STREAM_OPUS) USE_ROTATE=$(USE_ROTATE) USE_SW_ROTATE=$(USE_SW_ROTATE))"
+	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT) USE_BACKCHANNEL=$(USE_BACKCHANNEL) USE_BC_AAC=$(USE_BC_AAC) USE_PLAY=$(USE_PLAY) USE_PLAY_OPUS=$(USE_PLAY_OPUS) USE_STREAM_OPUS=$(USE_STREAM_OPUS) USE_ROTATE=$(USE_ROTATE) USE_SW_ROTATE=$(USE_SW_ROTATE) USE_OSD_HINTING=$(USE_OSD_HINTING))"
 
 sim:
 	$(HOSTCC) $(CFLAGS) -DMS_VERSION='"$(VERSION)"' $(if $(filter 1,$(USE_CONTROL)),-DUSE_CONTROL) \

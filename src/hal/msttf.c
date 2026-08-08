@@ -343,6 +343,17 @@ void msttf_set_ss(int ss)
 }
 
 /* ---------- optional autohinting (opt-in, geometric, no bytecode) ----------
+ * Compile-time gated on USE_OSD_HINTING (BR2_PACKAGE_TIMPS_OSD_HINTING in the
+ * buildroot package): when undefined, none of autohint_glyph()/resolve_snaps()/
+ * hint_inside() nor their call site below are compiled in at all (measured
+ * ~2.1KB smaller .text on T31/GCC 16.1.0/-Os). msttf_set_hinting() itself is
+ * still always defined (see the #else stub past the #endif below) so
+ * callers - and the osd.hinting config key's own parsing in config.c, which
+ * is unconditional - never need to know
+ * whether the feature was compiled in: setting osd.hinting=1 in timps.conf on
+ * a build without USE_OSD_HINTING is accepted but is a no-op, the same
+ * graceful-degradation pattern ROT_HAS_* uses for an unsupported rotation
+ * value.
  * Real TrueType hinting executes the font's embedded per-glyph instruction
  * bytecode (a stack-based VM: SVTCA/MDAP/MIAP/IUP/... operating on point
  * coordinates). That is genuinely correct (it uses the font designer's own
@@ -364,6 +375,7 @@ void msttf_set_ss(int ss)
  * targets the symptom this rasterizer actually has: unhinted glyphs landing
  * at inconsistent sub-pixel positions and rendering with uneven stroke
  * widths at small sizes. */
+#ifdef USE_OSD_HINTING
 static int g_hinting = 0;
 
 void msttf_set_hinting(int enable) { g_hinting = enable ? 1 : 0; }
@@ -550,6 +562,15 @@ static void autohint_glyph(poly *polys, int npoly)
         polys[hedge[i].ci].p[hedge[i].k].y = hedge[i].fin;
     }
 }
+#else /* !USE_OSD_HINTING */
+/* Feature compiled out: msttf_set_hinting() stays a real (empty) function so
+ * imp_osd.c's unconditional msttf_set_hinting(cfg->osd.hinting) call site
+ * doesn't need its own #ifdef, and osd.hinting's config.c parsing keeps
+ * working unmodified - the value is just discarded, matching how an
+ * unsupported ROT_HAS_* rotation value coerces to a no-op rather than a
+ * build/config error. */
+void msttf_set_hinting(int enable) { (void)enable; }
+#endif /* USE_OSD_HINTING */
 
 /* blend 'color' onto img[idx] with additional alpha factor 'a' (0..1) */
 static void px_blend(uint32_t *img, size_t idx, uint32_t color, float a)
@@ -576,8 +597,12 @@ int msttf_render(msttf_font *f, const char *s, int pixel_h,
     const int ss = g_ss;
     /* snapshot, same rationale as ss above: osd.hinting is a File-only config
      * key (see config.c), applied once via msttf_set_hinting() at startup, so
-     * this never actually races a concurrent writer today either. */
+     * this never actually races a concurrent writer today either. Compiled
+     * out entirely (along with the call site below) when USE_OSD_HINTING is
+     * not defined - see the #ifdef block above. */
+#ifdef USE_OSD_HINTING
     const int hinting = g_hinting;
+#endif
     /* H4: pixel_h derives from config font_size (live-settable via /control)
      * scaled by the stream height - hard-clamp it HERE too, independent of
      * any caller-side clamp, so the canvas math below can never be pushed
@@ -633,7 +658,9 @@ int msttf_render(msttf_font *f, const char *s, int pixel_h,
          * below both see the snapped geometry too). Glyph-level, not
          * per-contour: a bowl wall is bounded by one outer-contour edge and
          * one counter-contour edge, and those must be paired together. */
+#ifdef USE_OSD_HINTING
         if (hinting) autohint_glyph(polys, npoly);
+#endif
         /* rasterize into supersampled coverage over glyph bbox */
         if (npoly){
             /* bbox */

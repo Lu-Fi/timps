@@ -34,7 +34,14 @@ void msttf_set_ss(int ss);
  * sub-pixel offset the raw scaled outline produces - the fix for uneven
  * stroke widths between glyphs at small OSD sizes. Purely geometric, no
  * bytecode execution surface. Global, not per-font, same pattern as
- * msttf_set_ss(). Default off: zero output change unless enabled. */
+ * msttf_set_ss(). Default off: zero output change unless enabled.
+ *
+ * Also gated at COMPILE time by USE_OSD_HINTING (BR2_PACKAGE_TIMPS_OSD_HINTING
+ * in the buildroot package): when not defined, the autohinting code itself
+ * is not compiled in (measured ~2.1KB smaller .text on T31/GCC 16.1.0/-Os)
+ * and this function becomes a no-op stub - still safe to call
+ * unconditionally, so the osd.hinting config key keeps parsing normally
+ * either way; it just has no effect. */
 void msttf_set_hinting(int enable);
 
 /* Render an ASCII/Latin-1 string into a newly allocated BGRA buffer.
