@@ -1,6 +1,47 @@
 # Ingenic IMP SDK feature-gap analysis
 
-Datum: 2026-08-02. Von Fable erstellt: unabhängiger Abgleich aller `IMP_*`-Deklarationen in den vendorten SDK-Headern (`include/<SoC>/<Version>/<Sprache>/imp/*.h`, Submodul `gtxaspec/ingenic-headers`) gegen die tatsächlich in `src/` aufgerufenen IMP-Funktionen — über **alle 9 von timps unterstützten Plattformen** (T10, T20, T21, T23, T30, T31, T40, T41, C100), nicht nur T31.
+Datum: 2026-08-02, zuletzt aufgefrischt 2026-08-07. Von Fable erstellt: unabhängiger Abgleich aller `IMP_*`-Deklarationen in den vendorten SDK-Headern (`include/<SoC>/<Version>/<Sprache>/imp/*.h`, Submodul `gtxaspec/ingenic-headers`) gegen die tatsächlich in `src/` aufgerufenen IMP-Funktionen — über **alle 9 von timps unterstützten Plattformen** (T10, T20, T21, T23, T30, T31, T40, T41, C100), nicht nur T31.
+
+## Refresh 2026-08-07 (wöchentlicher Re-Check, Stand `074e8f5` / v1.7.8)
+
+Vollständige Neuprüfung gegen den aktuellen Code (Commits `f8a7b21`..`074e8f5`, d.h. alles seit dem 2026-08-02-Pass inkl. v1.7.6 Silent-Limbo-Sweep `265befb`, v1.7.7 Probe-Economy/Opus `fad4f40` und der C11-Data-Race-Härtung `10a192a` vom 2026-08-06).
+
+**1) Die 3 ✅-Implementierungen sind intakt, keine Regression:**
+
+- **#3 `IMP_IVS_SetParam` (`ef821a0`)** — `imp_motion_set_sensitivity()` (`src/hal/imp_motion.c` ~466-498) unverändert; der Commit-Deferral-Pfad (`g_motion_sense_pending` → `ing_control_commit`) in `src/hal/hal_ingenic.c` (~2566-2660) unverändert. Der v1.7.6-Stall-Watchdog (`motion_note_miss`, cycled `IMP_IVS_StopRecvPic`/`StartRecvPic`) ist orthogonal dazu und berührt den SetParam-Pfad nicht; beide neuen IVS-Aufrufe sind in allen 9 Header-Sets deklariert (verifiziert). Keine Plattform-Gates nötig (IVS universell) — korrekt.
+- **#7a/#7b Encoder-Telemetrie (`98edd6a`)** — `hal_enc_stats()` (`hal_ingenic.c` ~3038) mit dem `IMPEncoderCHNStat`-Alias für die alte Generation (Zeile ~62) unverändert; die drei T31-only-Gates für `GetChnAveBitrate` (`#if defined(PLATFORM_T31)` bei ~996, ~1160, ~3056) alle noch vorhanden und korrekt.
+- **#2 `IMP_AI_EnableAec` (`b5ed25d`)** — AEC-Block in `hal_ao_open()` (~3125-3140) samt `g_aec_on`-Teardown-Symmetrie unverändert; die v1.7.6/v1.7.7-Änderungen an `backchannel.c`/`speaker.c` haben ihn nicht angefasst.
+
+Querprobe: `git diff f8a7b21..HEAD -- src/` enthält **kein einziges** geändertes/neues `PLATFORM_`-Conditional — die gesamte Plattform-Gating-Landschaft (27 Conditionals in `hal_ingenic.c`) ist seit dem 2026-08-02-Pass unangetastet.
+
+**2) C11-Härtung (`10a192a`) ist über alle 9 SoCs plattform-sicher:**
+
+- `audio.mute` ist jetzt `_Atomic int` (`config.h`), gelesen/geschrieben nur via `atomic_load`/`atomic_store` in `config.c` (F_ATOMIC) — **keine RMW-Operationen**, nur Load/Store auf `int`-Breite.
+- Alle 9 Plattformen bauen mit derselben thingino-GCC-15-Toolchain (`build.sh`: `xburst1` für T10/T20/T21/T23/T30/T31/C100, `xburst2` für T40/T41; musl oder uClibc). `stdatomic.h` ist ein Compiler-Header (libc-unabhängig), und `_Atomic int`-Load/Store ist auf MIPS32 nativ lock-frei (sync + lw/sw, kein `-latomic` nötig). `-std=c11` war schon vorher der Makefile-Default. Einziger theoretischer Stolperstein: ein manuell via `CROSS_COMPILE` untergeschobener Uralt-Compiler (GCC < 4.9) — das war aber schon vor dieser Änderung eine unsupported Konfiguration.
+- Der Daynight-Per-Poll-Snapshot (`ms_daynight_cfg`-Struct-Copy unter `config_str_lock()`) ist reines portables C ohne Atomics — plattform-neutral. Ebenso der OSD-`refresh_text()`-Umbau.
+
+**3) Zurückgestellte Items — frische Feasibility-Einschätzung:**
+
+| Item | Neubewertung 2026-08-07 |
+|---|---|
+| #1 Live-Encoder-Reconfig | **Unverändert Kandidat Nr. 1.** `video*.*`/`sensor.*` sind weiterhin explizit restart-only (`ing_control`: "persisted, applies on restart"). Die v1.7.7-Arbeit "persist clamped values" hat nur die Control-Persistenz berührt, keinen Konflikt geschaffen. Header-Verfügbarkeit (1a/1b/1c) unverändert. |
+| #4a/#4b AE-Zonen | Unverändert verfügbar, unverändert zurückgestellt — kein neuer Code, der es leichter/schwerer macht. |
+| #5 `GetChnEvalInfo` | **Leichter geworden:** das Telemetrie-Gerüst (`hal_enc_stat` + read-only `"encoder"`-Objekt in `GET /control`) existiert jetzt; T31-only-Eval-Felder wären eine kleine, gut gegateter Erweiterung statt eines neuen Subsystems. Aufgestiegen zum besten Kleinkandidaten. |
+| #6 `SetAe_IT_MAX`/`SetAeMin` | **Relevanter geworden:** die v1.7.7-Probe-Economy (`fad4f40`) bekämpft Symptome des nächtlichen AGC-Hochlaufs (Backoff/Ratchet/Oszillation) in der Daynight-Logik — eine Belichtungs-Obergrenze würde eine Wurzelursache adressieren. Zudem liefert `src/isp_caps.h` inzwischen das etablierte Muster für saubere Caps-Gates (z.B. neues `ISP_HAS_AE_IT_MAX`). Aufwand bleibt mittel (drei API-Familien je Generation, s. Rangfolge #6). |
+| #8 `SetbufshareChn` | Unverändert (T31/C100/T40/T41), unverändert zurückgestellt. |
+| #9 `IMP_ISP_WDR_ENABLE` | Unverändert gespaltene API, unverändert zurückgestellt. |
+| #12 `SetChnEntropyMode` | Unverändert T31-only, geringer Nutzen, zurückgestellt. |
+| N1–N4 | Unverändert. N4-Doku-Nit (toter "T10/T20 3.9.0"-Kommentar zu `MOTION_MAX_CELLS=4`) besteht weiter (`config.c` ~312, `motion_caps.h`). |
+
+Frischer Declared-vs-Called-Diff (Symbol-Extraktion pro Plattform-Header-Set neu generiert, T31: 260 deklarierte-aber-ungenutzte Symbole): **keine neuen Kandidaten-Familien** jenseits der bestehenden Findings — der seit 2026-08-02 hinzugekommene Code (Opus-RTSP-Streaming via libopus, Stall-Watchdogs, Probe-Economy) nutzt keine neuen IMP-APIs außer dem bereits etablierten `IMP_IVS_Stop/StartRecvPic`-Paar.
+
+**4) Zwei-Generationen-Split weiterhin exakt korrekt:**
+
+- `ENC_NEW_API` wird unverändert bei `hal_ingenic.c:55` aus `PLATFORM_T31||C100||T40||T41` abgeleitet (5 Nutzungsstellen: 910/1123/1854/1909/2718).
+- `ISP_NEW_TUNING_API` kommt unverändert nur für T40/T41 aus `src/isp_caps.h:35-37`; die `IMPVI_*`-Sensor-Sonderpfade (`hal_ingenic.c` ~437-571, ~623-691, ~2995) sind unverändert.
+- Die Makefile-Header-Pins (Zeilen ~54-81) sind byte-identisch zum 2026-08-02-Stand; die einzigen Makefile-Änderungen seit dem Pass betreffen `USE_STREAM_OPUS` (nicht IMP-bezogen).
+
+Die Verfügbarkeitsmatrix unten gilt unverändert weiter.
 
 ## Umsetzungsstatus (Priorisierungs-Pass 2026-08-02)
 
@@ -58,7 +99,7 @@ Jede Feature-Idee unten muss also ggf. die Zwei-Generationen-Fallunterscheidung 
 \* T40/T41 brauchen die neue Signatur (`IMPVI_NUM` als erstes Argument).
 † T20/T30 haben stattdessen `SetWDRAttr` (andere API, gleiches Feature — siehe N2).
 
-## Revidierte Rangfolge (flottengewichtet: T31 = primär, T20 = Wyze, T23 = Kinderzimmer/Galayou)
+## Revidierte Rangfolge (flottengewichtet: T31 = primär, T20 = Wyze, T23 = zwei Testeinheiten)
 
 1. **Live-Encoder-Reconfig** — auf allen 9 Plattformen umsetzbar über das bereits etablierte Zwei-Generationen-Muster: neue Generation → `SetChnBitRate`/`GopLength`/`QpBounds`; alte Generation + T41-Ausnahme → `SetChnAttrRcMode`; universell → `SetChnFrmRate`. Größter ungenutzter Hebel — z.B. Substream-Bitrate drosseln, wenn die SD-Karte hinterherhinkt, ohne aktive Clients zu kappen.
 2. **AEC für den Backchannel** (`IMP_AI_EnableAec`) — alle 9 Plattformen, ein einziger Codepfad. Backchannel/Gegensprechanlage existiert bereits, aber ohne AEC hört die Gegenseite sich selbst über das Mikro zurück.
