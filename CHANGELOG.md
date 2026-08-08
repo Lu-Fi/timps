@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.8.0] - 2026-08-08
+
 ### Added
 - **Fatal-signal handler for SIGSEGV/SIGBUS/SIGFPE/SIGABRT (`main.c`)**, closing
   the gap flagged by a crash-surface research pass: timpsd links closed-source
