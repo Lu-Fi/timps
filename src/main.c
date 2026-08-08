@@ -26,6 +26,7 @@
 #include <time.h>
 #include <errno.h>
 #include <sys/file.h>
+#include <ucontext.h>
 
 #define MOD "MAIN"
 #ifndef MS_VERSION
@@ -34,6 +35,186 @@
 
 static volatile int g_run = 1;
 static const hal_backend *g_hal;
+
+/* ---- fatal-signal handler (SIGSEGV/SIGBUS/SIGFPE/SIGABRT) --------------
+ * timpsd links closed-source Ingenic vendor libraries (libimp.so for video/
+ * ISP/encoder, libaudioProcess.so for audio) that have documented crash
+ * modes elsewhere in this file's own hardening comments: a UAF in
+ * libaudioProcess.so on channel-teardown races (hal_ingenic.c ~line 2645), a
+ * div-by-zero SIGFPE from a bad encoder QP (~line 2030), and others. When one
+ * of those fires it takes the whole process down with no supervisor and no
+ * core dumps practical on this embedded target - the only diagnostic we get
+ * is whatever we capture ourselves, right here, before the process dies.
+ *
+ * Hard constraints: this runs inside a signal handler for a signal that may
+ * mean the stack/heap are already corrupt, so it must be async-signal-safe -
+ * no malloc, no LOGx (log.c's log_printf() does vsnprintf + a pthread mutex +
+ * syslog(), none of which are safe here) and no libc string functions whose
+ * signal-safety isn't guaranteed on this uClibc target. Everything below is
+ * hand-rolled on top of open/read/write/close/signal/raise/sigprocmask only -
+ * all POSIX async-signal-safe. sigaltstack() below means this still runs even
+ * on a stack-overflow SIGSEGV. */
+#define MS_CRASH_LOG_PATH "/run/timps.crash"
+#define MS_ALTSTACK_SIZE  (64*1024)
+static unsigned char g_altstack[MS_ALTSTACK_SIZE];
+static char g_maps_buf[16384];   /* static: no stack/heap use in the handler */
+
+static size_t crash_strlen(const char *s){ size_t n=0; while(s[n]) n++; return n; }
+static void   crash_write(int fd, const char *s){ if (fd>=0){ ssize_t r = write(fd, s, crash_strlen(s)); (void)r; } }
+
+static void crash_write_hex(int fd, unsigned long v)
+{
+    static const char hexd[] = "0123456789abcdef";
+    char buf[2+sizeof(unsigned long)*2+1];
+    buf[0]='0'; buf[1]='x';
+    int ndig = (int)sizeof(unsigned long)*2;
+    for (int i=0;i<ndig;i++)
+        buf[2+i] = hexd[(v >> ((ndig-1-i)*4)) & 0xf];
+    buf[2+ndig]=0;
+    crash_write(fd, buf);
+}
+
+/* pure/stateless substring search - no libc dependency, safe to call here */
+static int crash_mem_contains(const char *hay, size_t haylen, const char *needle)
+{
+    size_t nlen = crash_strlen(needle);
+    if (nlen==0 || nlen>haylen) return 0;
+    for (size_t i=0;i+nlen<=haylen;i++){
+        size_t j=0;
+        while (j<nlen && hay[i+j]==needle[j]) j++;
+        if (j==nlen) return 1;
+    }
+    return 0;
+}
+
+/* Reads /proc/self/maps once, writes the raw content to crashfd (best-effort
+ * post-mortem detail) and returns a static string classifying which mapping
+ * `addr` falls in - the single most useful fact for triage: did this die in
+ * a closed-source vendor blob (libimp.so/libaudioProcess.so) or in timps's
+ * own code. */
+static const char *crash_classify_addr(int crashfd, unsigned long addr)
+{
+    int fd = open("/proc/self/maps", O_RDONLY);
+    if (fd < 0) return "(/proc/self/maps unavailable)";
+    ssize_t n = read(fd, g_maps_buf, sizeof g_maps_buf - 1);
+    close(fd);
+    if (n <= 0) return "(/proc/self/maps empty/unreadable)";
+    g_maps_buf[n] = 0;
+
+    crash_write(crashfd, "--- /proc/self/maps ---\n");
+    crash_write(crashfd, g_maps_buf);
+    crash_write(crashfd, "--- end maps ---\n");
+
+    const char *p = g_maps_buf, *end = g_maps_buf + n;
+    while (p < end){
+        const char *eol = p;
+        while (eol < end && *eol != '\n') eol++;
+        unsigned long start=0, stop=0;
+        const char *q = p;
+        while (q < eol && *q != '-'){
+            int c=*q, d = (c>='0'&&c<='9')?c-'0':(c>='a'&&c<='f')?c-'a'+10:-1;
+            if (d<0) break;
+            start = (start<<4)|(unsigned)d; q++;
+        }
+        if (q < eol && *q=='-'){
+            q++;
+            while (q < eol && *q != ' '){
+                int c=*q, d = (c>='0'&&c<='9')?c-'0':(c>='a'&&c<='f')?c-'a'+10:-1;
+                if (d<0) break;
+                stop = (stop<<4)|(unsigned)d; q++;
+            }
+        }
+        if (addr >= start && addr < stop){
+            size_t linelen = (size_t)(eol - p);
+            if (crash_mem_contains(p, linelen, "libimp.so"))
+                return "libimp.so (Ingenic video/ISP/encoder vendor library)";
+            if (crash_mem_contains(p, linelen, "libaudioProcess.so"))
+                return "libaudioProcess.so (Ingenic audio vendor library)";
+            if (crash_mem_contains(p, linelen, "timpsd"))
+                return "timps's own code (timpsd binary)";
+            return "some other mapped region (see maps dump)";
+        }
+        p = (eol < end) ? eol+1 : end;
+    }
+    return "not inside any mapped region (wild/corrupted pointer)";
+}
+
+/* The handler itself. SA_SIGINFO gives us siginfo_t (si_addr = faulting
+ * address) and the ucontext_t (uc_mcontext holds the faulting PC, field name
+ * is architecture-specific - see below). Logs to both stderr (visible when
+ * run in the foreground / make sim) and MS_CRASH_LOG_PATH (a flat file in
+ * /run, same convention as the singleton lock and the /control token file -
+ * survives the process death so a respawn supervisor can pick it up and feed
+ * it to logread, since the init script normally backgrounds timpsd and its
+ * stderr is otherwise discarded, see log.c). Never attempts to continue past
+ * the fault: restores the signal's default disposition and re-raises it. */
+static void fatal_signal_handler(int sig, siginfo_t *info, void *ucontext_v)
+{
+    int crashfd = open(MS_CRASH_LOG_PATH, O_CREAT|O_WRONLY|O_TRUNC|O_CLOEXEC, 0644);
+
+    const char *signame = sig==SIGSEGV ? "SIGSEGV" : sig==SIGBUS ? "SIGBUS" :
+                           sig==SIGFPE  ? "SIGFPE"  : sig==SIGABRT? "SIGABRT" : "SIG?";
+    unsigned long addr = (unsigned long)(info ? info->si_addr : NULL);
+
+    unsigned long pc = 0;
+    if (ucontext_v){
+        ucontext_t *uc = (ucontext_t*)ucontext_v;
+#if defined(__mips__)
+        /* uClibc/glibc MIPS o32 sys/ucontext.h: mcontext_t has a direct
+         * `greg_t pc;` member (verified against this target's actual
+         * toolchain header, not assumed - see report). */
+        pc = (unsigned long)uc->uc_mcontext.pc;
+#elif defined(__aarch64__)
+        pc = (unsigned long)uc->uc_mcontext.pc;
+#elif defined(__x86_64__)
+        pc = (unsigned long)uc->uc_mcontext.gregs[REG_RIP];   /* host `make sim` testing only */
+#endif
+    }
+
+    int fds[2] = { 2, crashfd };
+    for (int i=0;i<2;i++){
+        int fd = fds[i];
+        if (fd < 0) continue;
+        crash_write(fd, "\n*** timpsd FATAL: ");
+        crash_write(fd, signame);
+        crash_write(fd, " si_addr=");   crash_write_hex(fd, addr);
+        crash_write(fd, " pc=");        crash_write_hex(fd, pc);
+        crash_write(fd, "\n");
+    }
+
+    const char *where = crash_classify_addr(crashfd, addr);
+    crash_write(2,       "fault address is in: "); crash_write(2,       where); crash_write(2,       "\n");
+    crash_write(crashfd, "fault address is in: "); crash_write(crashfd, where); crash_write(crashfd, "\n");
+    if (crashfd >= 0) close(crashfd);
+
+    /* Do NOT resume - restore default disposition, unblock this signal (it's
+     * currently blocked, see sa_mask in install_fatal_handlers below), and
+     * re-raise so the kernel does its normal thing. The _exit() is a
+     * last-resort fallback that should never actually execute. */
+    signal(sig, SIG_DFL);
+    sigset_t set; sigemptyset(&set); sigaddset(&set, sig);
+    sigprocmask(SIG_UNBLOCK, &set, NULL);
+    raise(sig);
+    _exit(128 + sig);
+}
+
+static void install_fatal_handlers(void)
+{
+    stack_t ss = { .ss_sp = g_altstack, .ss_size = sizeof g_altstack, .ss_flags = 0 };
+    if (sigaltstack(&ss, NULL) != 0)
+        LOGW(MOD, "sigaltstack failed (%s) - a stack-overflow fault won't be caught", strerror(errno));
+
+    struct sigaction sa;
+    memset(&sa, 0, sizeof sa);
+    sa.sa_sigaction = fatal_signal_handler;
+    sa.sa_flags = SA_SIGINFO | SA_ONSTACK;
+    sigfillset(&sa.sa_mask);  /* block other signals (incl. the other 3 fatal
+                               * ones) for the duration of the handler */
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGBUS,  &sa, NULL);
+    sigaction(SIGFPE,  &sa, NULL);
+    sigaction(SIGABRT, &sa, NULL);
+}
 
 /* Single-instance guard against concurrent ISP/HAL access (root cause of a
  * real incident: a manually-launched foreground /tmp/timpsd test build was
@@ -140,6 +321,11 @@ static void write_token_file(const ms_config *cfg)
 
 int main(int argc, char **argv)
 {
+    /* Installed before anything else: covers config parsing, HAL/IMP bring-
+     * up and the whole run loop. Depends only on the static altstack buffer
+     * above, nothing else needs to be initialized first. */
+    install_fatal_handlers();
+
     const char *cfgpath = "/etc/timps.conf";
     for (int i=1;i<argc;i++){
         if (!strcmp(argv[i],"-c") && i+1<argc) cfgpath=argv[++i];

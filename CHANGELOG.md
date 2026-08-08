@@ -6,6 +6,50 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added
+- **Fatal-signal handler for SIGSEGV/SIGBUS/SIGFPE/SIGABRT (`main.c`)**, closing
+  the gap flagged by a crash-surface research pass: timpsd links closed-source
+  Ingenic vendor libraries (`libimp.so`, `libaudioProcess.so`) with documented
+  crash modes already noted elsewhere in this codebase's own hardening
+  comments (a `libaudioProcess.so` UAF on channel-teardown races, a
+  `libimp`/encoder div-by-zero SIGFPE from a bad QP, ...). Previously a hit
+  took the whole process down silently — only SIGINT/SIGTERM/SIGPIPE had
+  handlers, and there is no core-dump story on this embedded target, so a
+  vendor-library crash left literally zero diagnostic trail. The new handler
+  installs via `sigaltstack()` (so it still runs on a stack-overflow fault)
+  and, on any of the four signals, writes to both stderr and a new
+  `/run/timps.crash` flat file (same `/run` convention as the singleton lock
+  and `/control` token file — survives the dying process for a respawn
+  supervisor to pick up, since the init script normally backgrounds timpsd
+  and its stderr is otherwise discarded): the signal number, `siginfo_t`'s
+  faulting address, the faulting PC (MIPS o32 `uc_mcontext.pc` — confirmed
+  against this project's actual T31/T23 cross-toolchain `sys/ucontext.h`,
+  not assumed), and a `/proc/self/maps` dump plus a classification of
+  whether the fault address falls inside `libimp.so`, `libaudioProcess.so`,
+  or timps's own code — the single most useful post-mortem fact for triage.
+  Entirely hand-rolled on `open`/`read`/`write`/`close`/`signal`/`raise`/
+  `sigprocmask` (no malloc, no `LOGx` — `log.c`'s `log_printf()` uses
+  `vsnprintf`/a `pthread_mutex`/`syslog()`, none async-signal-safe). Never
+  attempts to continue past the fault: restores the signal's default
+  disposition, unblocks it, and re-raises so the kernel does its normal
+  thing; `_exit()` is a last-resort fallback that should never execute.
+  Verified with a standalone test harness (real SIGSEGV/SIGFPE/SIGABRT
+  triggers) confirming the handler fires, logs correctly, classifies the
+  fault address, and the process actually terminates (128+signum exit,
+  core dumped) rather than looping or hanging; cross-compiled `main.c`
+  clean against both the real T31 and T23 toolchains to confirm the MIPS
+  `ucontext_t` field access. Adds ~2.8 KB `.text` and ~80 KB `.bss` (the
+  altstack + a static `/proc/self/maps` scratch buffer — RAM only, not
+  flash-resident) to the target binary.
+- **`_Static_assert(MOTION_MAX_CELLS <= MOTION_STATUS_MAX, ...)` in
+  `imp_motion.c`**: `MOTION_MAX_CELLS` is taken straight from whichever IMP
+  SDK header a build compiles against (52 on most, 4 on the old T10/T20
+  3.9.0 SDK), while every status array in `imp_motion.h` is fixed at
+  `MOTION_STATUS_MAX` (64) slots. A future SDK bump that raised
+  `IMP_IVS_MOVE_MAX_ROI_CNT` past 64 would have silently turned the
+  existing runtime clamps into an out-of-bounds write instead of failing to
+  build; this makes that a compile error instead.
+
 ### Changed
 - **`GET /control`'s `caps.image`/`caps.audio` no longer hand-list field
   names in a second place either** (the caps-list half of the follow-on
