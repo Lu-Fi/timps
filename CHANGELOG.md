@@ -558,6 +558,33 @@ semantic versioning.
   skipped: both are new IMP features that cannot be verified without live
   hardware.
 
+### Changed
+- **De-duplicated JPEG source selection + cold-wake grab** between
+  `mp4/httpd.c` (`/snapshot.jpg`, `/stream.mjpeg`) and `timelapse.c`.
+  `timelapse.c` hand-mirrored `httpd.c`'s `jpeg_src_from_path()` and
+  `snapshot_jpg()`'s two-phase piggyback-wake grab ever since timelapse
+  gained just-in-time subscription (`32ac430`, explicitly "ported
+  snapshot_jpg's pattern") - and every later fix to that logic had to be
+  remembered twice: `26afbee` (gethostname hardening) and `51d9325` (read
+  restart-only `videoN.*` from the boot snapshot) both touched both files.
+  Both are now `hub_pick_jpeg_src(cfg, chn, strict)` and
+  `hub_grab_jpeg(src, wait_ms, busy)` in `hub.c`/`hub.h` - hub-source-index
+  logic, so it lives with the rest of the hub source abstraction rather than
+  a new standalone file. `httpd.c` now does only HTTP response framing
+  around the grabbed packet; `timelapse.c` does only the file write.
+  Preserved a real behavioral difference between the two callers as an
+  explicit `strict` parameter: an explicit `/snapshot.jpg?chn=N` never falls
+  back to a different channel (404s instead), while timelapse's configured
+  channel always falls through to the dedicated `jpeg.*` channel / any
+  piggyback stream, same as before. Also preserved `snapshot_jpg()`'s
+  distinct 503 "busy" (subscribe failed - source full) vs. "no frame"
+  (grab timed out) responses via an optional `busy` out-param, since
+  `timelapse.c`'s copy never made that distinction and a naive merge would
+  have silently collapsed it for HTTP callers. No functional change to
+  either call site; verified with `make sim` and against `timpsd-sim`
+  (both a live timelapse capture cycle and `/snapshot.jpg`,
+  `/snapshot.jpg?chn=0`, an invalid `?chn=1`, and `/stream.mjpeg?chn=0`).
+
 ## [1.7.8] - 2026-08-06
 
 ### Fixed

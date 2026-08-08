@@ -3,13 +3,14 @@
  * (mkdir -p, tmp file + rename). Mirrors record.c: a thread gated by
  * timelapse.enabled that idles unsubscribed while off.
  *
- * JPEG source (same mapping as /snapshot.jpg?chn=N in mp4/httpd.c): prefer
- * the JPEG encoder piggybacked on timelapse.channel, fall back to the
- * dedicated jpeg.* channel, then to any stream with a piggyback encoder.
- * Shots subscribe just-in-time like snapshot_jpg(): the pipeline is woken
- * only long enough to deliver one fresh frame per interval, then released
- * so the HAL idle-stop debounce shuts encoder + framesource back down -
- * the old always-subscribed loop kept them running 24/7 and discarded
+ * JPEG source and grab: shared with /snapshot.jpg?chn=N in mp4/httpd.c via
+ * hub_pick_jpeg_src()/hub_grab_jpeg() (see hub.h/hub.c) - prefer the JPEG
+ * encoder piggybacked on timelapse.channel, fall back to the dedicated
+ * jpeg.* channel, then to any stream with a piggyback encoder. Shots
+ * subscribe just-in-time like snapshot_jpg(): the pipeline is woken only
+ * long enough to deliver one fresh frame per interval, then released so the
+ * HAL idle-stop debounce shuts encoder + framesource back down - the old
+ * always-subscribed loop kept them running 24/7 and discarded
  * interval_s*fps encodes per kept frame.
  * Retention: after each shot, *.jpg older than keep_days are pruned (emptied
  * directories are removed).
@@ -20,7 +21,6 @@
 #include "timelapse.h"
 #include "hub.h"
 #include "frame.h"
-#include "fanqueue.h"
 #include "log.h"
 #include "util.h"
 
@@ -35,7 +35,6 @@
 #include <dirent.h>
 
 #define MOD "TL"
-#define TL_QCAP 4
 
 static const ms_config *g_tc;
 static ms_stopgate      g_gate;   /* P-02: stop-condvar (was a volatile run flag + slice-sleep) */
@@ -131,24 +130,6 @@ static void prune(int keep_days)
     prune_old(base, time(NULL)-(time_t)days*86400, 0);
 }
 
-/* ---- JPEG source selection (mirror of httpd.c jpeg_src_from_path) ---- */
-
-static int jpeg_src(int chn)
-{
-    const ms_config *c=g_tc;
-    /* videoN.enabled is restart-only: a boot-disabled stream that was live-
-     * enabled has no publisher, so it cannot be a JPEG source - gate on the
-     * boot snapshot (see config.h). */
-    if (chn>=0 && chn<MS_MAX_VSTREAM &&
-        g_cfg_boot.video[chn].enabled && g_cfg_boot.video[chn].jpeg_enabled)
-        return HUB_JPEG_SRC_N(chn);
-    if (c->jpeg.enabled) return HUB_JPEG_SRC;
-    for (int i=0;i<MS_MAX_VSTREAM;i++)
-        if (g_cfg_boot.video[i].enabled && g_cfg_boot.video[i].jpeg_enabled)
-            return HUB_JPEG_SRC_N(i);
-    return -1;
-}
-
 /* ---- shot writer ---- */
 
 static int shot_write(const ms_pkt *p)
@@ -193,64 +174,18 @@ static int shot_write(const ms_pkt *p)
 
 /* ---- thread ---- */
 
-/* Just-in-time frame grab, mirroring snapshot_jpg() (mp4/httpd.c:338):
- * timps encodes nothing while idle, so subscribing to the JPEG hub source
- * is what WAKES that encoder. The wait is split in two bounded halves of
- * TL_SNAP_WAIT_MS each: the 1st covers an already-warm pipeline (next frame
- * <= one JPEG frame interval away); the 2nd is only reached on a cold start
- * and, for a piggyback source, additionally subscribes the parent VIDEO
- * source - the exact on-demand start RTSP/fMP4 clients use - to bring the
- * shared framesource/encoder group up. All subscriptions are dropped before
- * returning, so the HAL idle-stop debounce (MS_IDLE_STOP_US, 2 s) shuts the
- * pipeline back down between shots (encoder/framesource/ISP load between
- * shots = 0, instead of interval_s*fps discarded encodes per kept frame;
- * intervals below ~5 s stay within the debounce window, so short intervals
- * do not churn start/stop). Freshness is inherent: the fanqueue only ever
- * receives frames published AFTER the subscribe, and every JPEG is
- * standalone - no keyframe wait needed. */
-#ifndef TL_SNAP_WAIT_MS
-#define TL_SNAP_WAIT_MS 1500
-#endif
-
-static ms_pkt *tl_pop_jpeg(fanqueue *q, int wait_ms)
-{
-    int64_t deadline = ms_now_us() + (int64_t)wait_ms*1000;
-    for (;;){
-        int64_t left_ms = (deadline - ms_now_us())/1000;
-        if (left_ms <= 0) return NULL;
-        ms_pkt *p = fanqueue_pop(q,(int)left_ms);
-        if (!p) return NULL;                       /* timed out */
-        if (p->media==MS_MEDIA_JPEG) return p;
-        pkt_unref(p);
-    }
-}
-
-static ms_pkt *tl_grab(int src)
-{
-    fanqueue q;
-    if (fanqueue_init(&q,TL_QCAP)) return NULL;
-    if (hub_subscribe(src,&q)!=0){ fanqueue_free(&q); return NULL; }
-    ms_pkt *p = tl_pop_jpeg(&q,TL_SNAP_WAIT_MS);
-    int vsrc=-1;                   /* helper video subscription (2nd half) */
-    fanqueue vq;
-    if (!p){
-        if (src > HUB_JPEG_SRC){   /* piggyback: HUB_JPEG_SRC_N(n) -> video n */
-            vsrc = src - (HUB_JPEG_SRC + 1);
-            /* tiny queue: the video frames themselves are discarded; the
-             * subscription only exists to wake the parent video pipeline */
-            if (fanqueue_init(&vq,2)!=0) vsrc=-1;
-            else if (hub_subscribe(vsrc,&vq)!=0){ fanqueue_free(&vq); vsrc=-1; }
-        }
-        p = tl_pop_jpeg(&q,TL_SNAP_WAIT_MS);
-    }
-    /* release the helper video subscription FIRST (taken last), then the
-     * JPEG one; once both are gone the HAL activity callback + idle-stop
-     * debounce return the camera to idle. */
-    if (vsrc>=0){ hub_unsubscribe(vsrc,&vq); fanqueue_free(&vq); }
-    hub_unsubscribe(src,&q);
-    fanqueue_free(&q);
-    return p;
-}
+/* Just-in-time frame grab: timps encodes nothing while idle, so subscribing
+ * to the JPEG hub source is what WAKES that encoder. The actual two-phase
+ * cold-wake grab (including the piggyback parent-video wake on a cold
+ * start) is shared with mp4/httpd.c's snapshot_jpg() as hub_grab_jpeg() -
+ * see hub.h/hub.c for the full mechanism. All subscriptions it takes are
+ * dropped before it returns, so the HAL idle-stop debounce (MS_IDLE_STOP_US,
+ * 2 s) shuts the pipeline back down between shots (encoder/framesource/ISP
+ * load between shots = 0, instead of interval_s*fps discarded encodes per
+ * kept frame; intervals below ~5 s stay within the debounce window, so short
+ * intervals do not churn start/stop). Freshness is inherent: the fanqueue
+ * only ever receives frames published AFTER the subscribe, and every JPEG
+ * is standalone - no keyframe wait needed. */
 
 /* re-try delay after a frameless grab (encoder cold-start hiccup); a failed
  * WRITE (SD yanked/full) still waits the full interval like it always did */
@@ -274,7 +209,7 @@ static void *tl_thread(void *arg)
         tl = g_tc->timelapse;
         config_str_unlock();
         int chn=tl.channel; if (chn<0||chn>=MS_MAX_VSTREAM) chn=0;
-        int src = tl.enabled ? jpeg_src(chn) : -1;
+        int src = tl.enabled ? hub_pick_jpeg_src(g_tc,chn,0) : -1;
 
         if (src<0){
             if (cur_src>=0){ LOGI(MOD,"timelapse idle"); cur_src=-1; }
@@ -308,7 +243,7 @@ static void *tl_thread(void *arg)
         int iv=tl.interval_s; if (iv<1) iv=1;
         int64_t retry = TL_RETRY_US < (int64_t)iv*1000000 ? TL_RETRY_US
                                                           : (int64_t)iv*1000000;
-        ms_pkt *p=tl_grab(src);
+        ms_pkt *p=hub_grab_jpeg(src,HUB_JPEG_GRAB_WAIT_MS,NULL);
         if (p){
             int ok = (shot_write(p)==0);
             pkt_unref(p);
@@ -316,7 +251,7 @@ static void *tl_thread(void *arg)
             next_us = now + (int64_t)iv*1000000;
         } else {
             LOGW(MOD,"no frame from src=%d within %d ms - retrying in %ds",
-                 src, 2*TL_SNAP_WAIT_MS, (int)(retry/1000000));
+                 src, 2*HUB_JPEG_GRAB_WAIT_MS, (int)(retry/1000000));
             next_us = now + retry;
         }
     }
