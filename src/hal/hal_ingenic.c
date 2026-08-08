@@ -146,7 +146,9 @@ typedef IMPEncoderCHNStat IMPEncoderChnStat;
  * forever (the old behavior: dbg_pollfail unconditionally reset to 0 after
  * every attempt, win or lose) then means an infinite, non-escalating loop
  * producing zero video with no way to self-recover and no mechanism to give
- * up and let init supervision (S95timps) restart the process cleanly. Track
+ * up and exit so at least a manual/scheduled restart can bring the process
+ * back (S95timps is plain SysV start/stop, it does NOT respawn on its own -
+ * see the CHANGELOG entry for this fix). Track
  * CONSECUTIVE recovery cycles that never actually yielded a frame (a cycle
  * only counts as recovered once IMP_Encoder_GetStream succeeds afterward,
  * not merely because StartRecvPic returned 0); after this many in a row,
@@ -1123,12 +1125,14 @@ static void *video_thread(void *arg)
                          * servers, record/timelapse/srt) for every other
                          * still-live subsystem, backstopped by its own
                          * existing 3 s hard_exit alarm if any of that wedges
-                         * against the same dead ISP. init supervision
-                         * (S95timps) is then responsible for restarting a
-                         * fresh, correctly-initialized process. */
+                         * against the same dead ISP. S95timps does NOT
+                         * auto-respawn (plain SysV start/stop) - this exit
+                         * leaves the camera down until a human or an external
+                         * scheduler restarts it, which is still strictly
+                         * better than the prior silent, unbounded hang. */
                         LOGE(MOD,"chn%d: %d consecutive forced-recovery cycles never "
                              "produced a frame - encoder/ISP is not coming back on its "
-                             "own; exiting for init supervision to restart the process",
+                             "own; exiting (camera needs a manual/scheduled restart)",
                              vc->chn, dbg_recover_fails);
                         raise(SIGTERM);
                         break;
