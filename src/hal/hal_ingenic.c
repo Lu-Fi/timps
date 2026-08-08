@@ -1006,24 +1006,54 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
     a.rcAttr.outFrmRate.frmRateDen = 1;
     a.rcAttr.maxGop = v->gop;
     /* rc mode MUST be filled: an all-zero attrRcMode means FIXQP with qp=0
-     * (broken stream). H264 CBR defaults, field names verified against the
-     * vendored T20/T21/T30 headers. rc_mode=fixqp used to silently no-op
-     * here (hardcoded CBR regardless of v->rc_mode) instead of crashing
-     * like the ENC_NEW_API path did - same underlying gap (videoN.qp never
-     * reached the HAL), just a quieter failure mode on these SoCs. */
+     * (broken stream). Field names verified against the vendored T20/T21/T30
+     * headers. rc_mode=fixqp used to silently no-op here (hardcoded CBR
+     * regardless of v->rc_mode) instead of crashing like the ENC_NEW_API path
+     * did - same underlying gap (videoN.qp never reached the HAL), just a
+     * quieter failure mode on these SoCs.
+     *
+     * The union member filled MUST match a.encAttr.enType. The H265 CBR struct
+     * is NOT layout-compatible with H264's: staticTime sits between minQp and
+     * outBitRate, and a single flucLvl replaces H264's adaptiveMode/gopRelation
+     * bools. Filling attrH264Cbr for a PT_H265 channel therefore writes the
+     * bitrate into the staticTime slot and leaves outBitRate garbage. So branch
+     * on v->codec exactly the way the enType selection above does. The FixQP
+     * structs happen to both be a lone {uint32_t qp;}, but branch them too so
+     * correctness doesn't rest on that coincidence. T10/T20 are H264-only and
+     * their vendored headers carry no attrH265* union members at all, so those
+     * references are compiled out under the same gate used for enType. */
     if (v->rc_mode==MS_RC_FIXQP){
         a.rcAttr.attrRcMode.rcMode = ENC_RC_MODE_FIXQP;
-        a.rcAttr.attrRcMode.attrH264FixQp.qp = (v->qp>0)?(uint32_t)v->qp:35;
+#if !(defined(PLATFORM_T10)||defined(PLATFORM_T20))
+        if (v->codec==MS_VC_H265)
+            a.rcAttr.attrRcMode.attrH265FixQp.qp = (v->qp>0)?(uint32_t)v->qp:35;
+        else
+#endif
+            a.rcAttr.attrRcMode.attrH264FixQp.qp = (v->qp>0)?(uint32_t)v->qp:35;
     } else {
         a.rcAttr.attrRcMode.rcMode = ENC_RC_MODE_CBR;
-        a.rcAttr.attrRcMode.attrH264Cbr.maxQp        = (v->max_qp>0)?(uint32_t)v->max_qp:45;
-        a.rcAttr.attrRcMode.attrH264Cbr.minQp        = (v->min_qp>0)?(uint32_t)v->min_qp:15;
-        a.rcAttr.attrRcMode.attrH264Cbr.outBitRate   = (uint32_t)v->bitrate_kbps;
-        a.rcAttr.attrRcMode.attrH264Cbr.iBiasLvl     = 0;
-        a.rcAttr.attrRcMode.attrH264Cbr.frmQPStep    = 3;
-        a.rcAttr.attrRcMode.attrH264Cbr.gopQPStep    = 15;
-        a.rcAttr.attrRcMode.attrH264Cbr.adaptiveMode = 0;
-        a.rcAttr.attrRcMode.attrH264Cbr.gopRelation  = 0;
+#if !(defined(PLATFORM_T10)||defined(PLATFORM_T20))
+        if (v->codec==MS_VC_H265){
+            a.rcAttr.attrRcMode.attrH265Cbr.maxQp      = (v->max_qp>0)?(uint32_t)v->max_qp:45;
+            a.rcAttr.attrRcMode.attrH265Cbr.minQp      = (v->min_qp>0)?(uint32_t)v->min_qp:15;
+            a.rcAttr.attrRcMode.attrH265Cbr.staticTime = 2;   /* rate-stat window, seconds */
+            a.rcAttr.attrRcMode.attrH265Cbr.outBitRate = (uint32_t)v->bitrate_kbps;
+            a.rcAttr.attrRcMode.attrH265Cbr.iBiasLvl   = 0;
+            a.rcAttr.attrRcMode.attrH265Cbr.frmQPStep  = 3;
+            a.rcAttr.attrRcMode.attrH265Cbr.gopQPStep  = 15;
+            a.rcAttr.attrRcMode.attrH265Cbr.flucLvl    = 0;
+        } else
+#endif
+        {
+            a.rcAttr.attrRcMode.attrH264Cbr.maxQp        = (v->max_qp>0)?(uint32_t)v->max_qp:45;
+            a.rcAttr.attrRcMode.attrH264Cbr.minQp        = (v->min_qp>0)?(uint32_t)v->min_qp:15;
+            a.rcAttr.attrRcMode.attrH264Cbr.outBitRate   = (uint32_t)v->bitrate_kbps;
+            a.rcAttr.attrRcMode.attrH264Cbr.iBiasLvl     = 0;
+            a.rcAttr.attrRcMode.attrH264Cbr.frmQPStep    = 3;
+            a.rcAttr.attrRcMode.attrH264Cbr.gopQPStep    = 15;
+            a.rcAttr.attrRcMode.attrH264Cbr.adaptiveMode = 0;
+            a.rcAttr.attrRcMode.attrH264Cbr.gopRelation  = 0;
+        }
     }
 #endif
     if (IMP_Encoder_CreateChn(chn,&a)<0){ LOGE(MOD,"Encoder_CreateChn %d",chn); return -1; }
