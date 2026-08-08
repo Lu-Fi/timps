@@ -27,6 +27,17 @@
 #include "../util.h"
 #include <string.h>
 
+/* Compile-time guard: every array in this file sized MOTION_STATUS_MAX
+ * (g_cell_hit[], g_roi_cell[], ms_motion_status.active[] in imp_motion.h) is
+ * indexed up to MOTION_MAX_CELLS - 1 (see the clamps below). MOTION_MAX_CELLS
+ * is taken straight from whatever SDK header this build compiles against
+ * (motion_caps.h), so a future SDK bump that raises IMP_IVS_MOVE_MAX_ROI_CNT
+ * above the fixed 64-slot status array would silently turn those clamps into
+ * an out-of-bounds write instead of failing to build. */
+_Static_assert(MOTION_MAX_CELLS <= MOTION_STATUS_MAX,
+               "MOTION_MAX_CELLS exceeds MOTION_STATUS_MAX - bump "
+               "MOTION_STATUS_MAX in imp_motion.h to match the new SDK");
+
 #define MOD "MOTION"
 
 #if defined(HAL_INGENIC) && MOTION_AVAILABLE
