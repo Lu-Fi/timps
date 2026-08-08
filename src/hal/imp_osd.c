@@ -176,10 +176,13 @@ static int osd_test_static_mode(void)
  * and compare against the raw configured (unrotated) dims: swapped => rotation
  * genuinely applied, unswapped despite a 90/270 request => refused. Falls back
  * to the raw config-based (pre-refusal) computation only if the hub hasn't
- * been populated yet for this stream (shouldn't happen in practice - the OSD
- * updater starts only after every stream's hub_set_video_params() call in
- * ing_start() - but this matches the same defensive fallback as the other 6
- * sites). */
+ * been populated yet for this stream. Since ing_start() now calls
+ * hub_set_video_params(i,...) for a stream BEFORE imp_osd_setup(i,...) - i.e.
+ * before that stream's first OSD text/logo/cover render - this fallback
+ * should never actually fire for the boot-time render either; it remains only
+ * as the same defensive belt-and-braces as the other 6 sites (e.g. a future
+ * caller of osd_rotated() reached from somewhere other than ing_start's normal
+ * per-stream bring-up). */
 static int osd_rotated(const osd_stream *s)
 {
     const ms_vstream_cfg *v = &g_cfg_boot.video[s->si];

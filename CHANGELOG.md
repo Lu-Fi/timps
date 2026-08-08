@@ -112,6 +112,42 @@ semantic versioning.
     change on an otherwise-identical build.
 
 ### Fixed
+- **Boot-order gap left over from the 7th rotation-effective-dims site fix
+  (`cb4c7de`)**: independent review of that fix found it correct but
+  incomplete. `imp_osd.c`'s `osd_rotated()` asks the hub for a stream's
+  ACTUAL post-refusal dims to tell a genuinely-applied 90/270 rotation apart
+  from one refused by the T23 SW-rotate / T31 FS-rotate safe-envelope check,
+  falling back to the raw (pre-refusal) computation only if the hub isn't
+  populated yet for that stream — documented as "shouldn't happen in
+  practice" because the OSD refresh thread only starts after every stream's
+  `hub_set_video_params()` call. True for the refresh thread, but
+  `hal_ingenic.c`'s `ing_start()` also calls `imp_osd_setup()` itself
+  **before** that same stream's `hub_set_video_params()` call, and
+  `imp_osd_setup()` performs the first OSD text/logo/cover render
+  synchronously. So on every boot the hub-not-populated-yet fallback fired
+  for that first render, and on a *refused* rotation the boot-time render
+  used the pre-refusal (wrong) `rotated`/`hlim` — the exact oversized-bound
+  scenario `cb4c7de` targeted — for one render pass. Text self-heals via the
+  OSD updater (~1 s later); privacy covers are pre-clamped to width/height
+  regardless (harmless); a boot-configured **logo** with `logo_h` in
+  `(height, width]`, though, would pass the defeated H5 size check in
+  `setup_logo()` and never get re-checked until a later `/control` write.
+  Fixed by reordering `ing_start()` (`src/hal/hal_ingenic.c`) so
+  `hub_set_video_params(i,...)` for a stream is published as soon as its
+  effective (post-refusal) dims are known — right after
+  `ms_vstream_eff_dims()` — instead of after `imp_osd_setup()` and its
+  binds; `imp_osd_setup()`'s first render for that stream now always sees
+  the correct, final `osd_rotated()` answer instead of the stale fallback.
+  Confirmed safe: `hub_set_video_params()` is a pure mutex-protected struct
+  store with no dependency on OSD/bind state, the published dims are
+  already final at the new call site (computed post rotation-refusal
+  retarget), and nothing reads the hub for that stream until after
+  `ing_start()` returns. No behavior change for the accept path (dims are
+  identical either way) or for text/covers (already self-healing/harmless);
+  only the boot-logo edge case is closed. `imp_osd.c`'s `osd_rotated()`
+  comment updated to match. Cross-compiled clean (zero new warnings) for
+  T31 (`USE_ROTATE=1`) and T23 (`USE_ROTATE=1 USE_SW_ROTATE=1`) against
+  their real Ingenic headers/libs.
 - **Nine `cfg_field` table entries were silently unreachable via `POST
   /control`** (audit catch, not intentional design like their neighbors):
   each existed as a real, validated, clampable entry in `src/config.c` and
