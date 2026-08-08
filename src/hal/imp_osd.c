@@ -165,6 +165,31 @@ static int osd_test_static_mode(void)
     return v;
 }
 
+/* Is stream s ACTUALLY running rotated right now (7th site of the
+ * raw-config-vs-post-refusal-effective bug fixed at 6 other sites in
+ * hub_get_video_params()'s callers - see hub.h). g_cfg_boot.video[s->si].rotation
+ * is only the REQUESTED rotation (A2: restart-only, boot snapshot); a 90/270
+ * request can be REFUSED at start (T23 SW-rotate / T31 FS-rotate safe-envelope
+ * check, hal_ingenic.c ing_start()), in which case the stream comes up on the
+ * normal bound path UNROTATED while g_cfg_boot still shows the original
+ * 90/270. Ask the hub for the dims the HAL is ACTUALLY running (post-refusal)
+ * and compare against the raw configured (unrotated) dims: swapped => rotation
+ * genuinely applied, unswapped despite a 90/270 request => refused. Falls back
+ * to the raw config-based (pre-refusal) computation only if the hub hasn't
+ * been populated yet for this stream (shouldn't happen in practice - the OSD
+ * updater starts only after every stream's hub_set_video_params() call in
+ * ing_start() - but this matches the same defensive fallback as the other 6
+ * sites). */
+static int osd_rotated(const osd_stream *s)
+{
+    const ms_vstream_cfg *v = &g_cfg_boot.video[s->si];
+    if (v->rotation != 90 && v->rotation != 270) return 0;   /* never requested */
+    int ew, eh;
+    if (!hub_get_video_params(s->si, NULL, &ew, &eh, NULL))
+        ms_vstream_eff_dims(v, &ew, &eh);   /* hub not up yet: pre-refusal fallback */
+    return (ew == v->height && eh == v->width);   /* swapped vs raw = applied */
+}
+
 /* The IPU OSD compositor on these SoCs wants EVEN region dimensions: an odd
  * width or height makes the per-frame OSD composite pass fail ("ipu: error ipu
  * start ret=-1") on a 90/270-rotated frame and poisons the WHOLE group pass
@@ -200,13 +225,11 @@ static void osd_rot_place(osd_stream *s, int Px, int Py,
 {
     (void)bgra;
     *ox = Px; *oy = Py;
-    /* A2: rotation is restart-only (VID_REST) - read the boot snapshot, not the
-     * live g_cfg. A /control write to videoN.rotation updates g_cfg but the
-     * running encoder still produces the boot rotation; using the live value
-     * here would re-place the OSD for a rotation the stream isn't in (and it is
-     * the same C11 data-race class as A1). */
-    int rot = g_cfg_boot.video[s->si].rotation;
-    if (rot != 90 && rot != 270) return;     /* non-rotated: identity (unchanged) */
+    /* osd_rotated(): NOT just "was 90/270 requested" (g_cfg_boot, A2 restart-
+     * only) - a request can be REFUSED at start (T23 SW-rotate / T31 FS-rotate
+     * safe envelope), in which case the stream runs UNROTATED and this clamp
+     * must be an identity, not a top-band clamp against the wrong axis. */
+    if (!osd_rotated(s)) return;             /* non-rotated: identity (unchanged) */
     int cap = s->width;                      /* = picHeight = OSD y range limit */
     if (*oy + *h > cap) *oy = (cap - *h > 0) ? cap - *h : 0;
     if (*ox < 0) *ox = 0;
@@ -273,7 +296,7 @@ static void refresh_text(osd_stream *s, osd_region *rg)
         if (osd_text_render(txt, scale, it.color, 0x00000000,
                             it.outline, it.outline_color, &bgra,&w,&h)!=0) return;
     }
-    int rotated = (g_cfg_boot.video[s->si].rotation==90 || g_cfg_boot.video[s->si].rotation==270);  /* A2: restart-only, use boot snapshot */
+    int rotated = osd_rotated(s);   /* requested AND actually applied (not refused) */
     if (rotated) osd_even_pad(&bgra, &w, &h);   /* even dims only for the rotated IPU-OSD path */
     /* H5: a bitmap larger than the frame cannot be composited safely -
      * resolve_pos() clamps the origin to 0 but the far edge (x+w-1) would
@@ -318,7 +341,7 @@ static void setup_logo(osd_stream *s, osd_region *rg)
      * frame (SDK-dependent OOB in compositing) - discard, like setup_cover. On
      * a rotated stream the usable height is only the top picHeight band
      * (= s->width), else it re-triggers the per-frame range-check IPU error. */
-    int lrot = (g_cfg_boot.video[s->si].rotation==90 || g_cfg_boot.video[s->si].rotation==270);  /* A2: restart-only, use boot snapshot */
+    int lrot = osd_rotated(s);   /* requested AND actually applied (not refused) */
     int lhlim = lrot ? s->width : s->height;
     if (it.logo_w > s->width || it.logo_h > lhlim){
         LOGW(MOD,"logo %s (%dx%d) exceeds usable %dx%d%s - skipped",
@@ -364,7 +387,7 @@ static void setup_cover(osd_stream *s, int n)
      * privacy behaves exactly as before); a solid cover taller than the top
      * picHeight band (= s->width) is shortened to fit rather than flooding the
      * range-check IPU error (osd_rot_place then clamps its y into the band). */
-    if (g_cfg_boot.video[s->si].rotation==90 || g_cfg_boot.video[s->si].rotation==270){  /* A2: restart-only, use boot snapshot */
+    if (osd_rotated(s)){   /* requested AND actually applied (not refused) */
         if (h > s->width) h = s->width;
         x&=~1; y&=~1; w&=~1; h&=~1;
     }
