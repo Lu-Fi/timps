@@ -368,9 +368,63 @@ static int g_hinting = 0;
 
 void msttf_set_hinting(int enable) { g_hinting = enable ? 1 : 0; }
 
+/* A stem edge, collected pre-snap: (j,k) are the endpoint indices in the
+ * contour, orig is the pre-snap mid coordinate (x for a vertical edge, y for
+ * a horizontal one), snapped is its independently-rounded pixel column/row. */
+typedef struct { int j, k; float orig, snapped; } stem_edge;
+
+/* Snapping each stem-side edge independently - as the first cut of this
+ * hinter did - can collapse a genuinely non-zero-width stem to zero width:
+ * two edges a hair under 1px apart (e.g. UbuntuMono Regular's ~0.98px-wide
+ * vertical stroke at the 12px OSD default) can each round to the SAME
+ * column/row (one at -0.49px displacement, the other at +0.49px, both floor
+ * to the same integer), and a zero-width path renders as nothing under
+ * non-zero-winding fill - confirmed on 'I' losing its whole stem.
+ *
+ * Fix: sort the candidate edges of one orientation by their pre-snap
+ * position and only intervene on ADJACENT pairs whose independent snaps
+ * actually collided. When they did, keep the first edge's snap and push the
+ * second out to at least 1 full pixel of separation (the original width,
+ * rounded, floored at 1px) - preserving the stem instead of losing it.
+ * Pairs whose snaps didn't collide are left exactly as the independent snap
+ * computed them.
+ *
+ * This cannot regress an already-thick stem: for any edge pair with
+ * original width w>=1px, floor(x+0.5) and floor(x+w+0.5) are provably
+ * always different (a half-open interval of length>=1 always contains an
+ * integer boundary), so the collision branch is structurally unreachable
+ * once a stem is already a full pixel or wider - e.g. the 32px main-stream
+ * case never enters the collision branch at all. */
+static void desnap_pairs(stem_edge *e, int n)
+{
+    /* selection sort ascending by orig - n is a handful of edges per
+     * contour at most, no need for anything fancier */
+    for (int a=0;a<n;a++){
+        int m=a;
+        for (int b=a+1;b<n;b++) if (e[b].orig < e[m].orig) m=b;
+        if (m!=a){ stem_edge t=e[a]; e[a]=e[m]; e[m]=t; }
+    }
+    for (int a=0;a+1<n;a+=2){
+        if (e[a].snapped == e[a+1].snapped){
+            float width = e[a+1].orig - e[a].orig;   /* >=0, sorted ascending */
+            float sep = (width < 1.0f) ? 1.0f : floorf(width+0.5f);
+            e[a+1].snapped = e[a].snapped + sep;
+        }
+    }
+}
+
 static void autohint_contour(poly *pl)
 {
     if (pl->n < 2) return;
+    /* generous fixed capacity: real glyph contours never come close to this
+     * many qualifying stem-like edges. If a pathological contour ever did,
+     * the overflow edges below still get their own independent snap applied
+     * in-place immediately (old per-edge behavior) rather than being
+     * silently dropped or overflowing this array. */
+    enum { MAXE = 64 };
+    stem_edge vedge[MAXE]; int nv=0;
+    stem_edge hedge[MAXE]; int nh=0;
+
     for (int j=0;j<pl->n;j++){
         int k=(j+1)%pl->n;
         float dx=pl->p[k].x-pl->p[j].x, dy=pl->p[k].y-pl->p[j].y;
@@ -379,15 +433,25 @@ static void autohint_contour(poly *pl)
          * tiny serif nubs, keeping this to genuine stem-height edges */
         if (dx*dx+dy*dy < 4.0f) continue;   /* len < 2px */
         if (adx < 0.2f*ady && ady > 1.5f){
-            /* near-vertical stem edge: force both endpoints to one column */
-            float snapped = floorf((pl->p[j].x+pl->p[k].x)*0.5f + 0.5f);
-            pl->p[j].x = snapped; pl->p[k].x = snapped;
+            /* near-vertical stem edge */
+            float orig = (pl->p[j].x+pl->p[k].x)*0.5f;
+            float snapped = floorf(orig + 0.5f);
+            if (nv < MAXE) vedge[nv++] = (stem_edge){j,k,orig,snapped};
+            else { pl->p[j].x = snapped; pl->p[k].x = snapped; }
         } else if (ady < 0.2f*adx && adx > 1.5f){
-            /* near-horizontal edge (serif/crossbar): force both to one row */
-            float snapped = floorf((pl->p[j].y+pl->p[k].y)*0.5f + 0.5f);
-            pl->p[j].y = snapped; pl->p[k].y = snapped;
+            /* near-horizontal edge (serif/crossbar) */
+            float orig = (pl->p[j].y+pl->p[k].y)*0.5f;
+            float snapped = floorf(orig + 0.5f);
+            if (nh < MAXE) hedge[nh++] = (stem_edge){j,k,orig,snapped};
+            else { pl->p[j].y = snapped; pl->p[k].y = snapped; }
         }
     }
+
+    desnap_pairs(vedge, nv);
+    desnap_pairs(hedge, nh);
+
+    for (int i=0;i<nv;i++){ pl->p[vedge[i].j].x = vedge[i].snapped; pl->p[vedge[i].k].x = vedge[i].snapped; }
+    for (int i=0;i<nh;i++){ pl->p[hedge[i].j].y = hedge[i].snapped; pl->p[hedge[i].k].y = hedge[i].snapped; }
 }
 
 /* blend 'color' onto img[idx] with additional alpha factor 'a' (0..1) */

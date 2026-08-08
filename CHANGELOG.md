@@ -7,6 +7,57 @@ semantic versioning.
 ## [Unreleased]
 
 ### Fixed
+- **`osd.hinting` autohinter could erase thin stems instead of sharpening
+  them** (adversarial review catch on the autohinting feature added above):
+  `autohint_contour()` snapped each edge of a stem independently to
+  `floorf(mid + 0.5)` (nearest pixel column/row). For a stem thinner than 1px
+  in device pixels - which is exactly what the shipped
+  `/usr/share/fonts/default.ttf` (correctly identified below as UbuntuMono
+  **Regular**, not "Roboto Bold" as originally claimed above) produces for
+  its ~0.98px-wide vertical strokes at the 12px OSD default - the two edges'
+  independently-rounded columns could land on the very same integer (one
+  edge at -0.49px displacement, the other at +0.49px, both floor to the same
+  column), collapsing the stem to zero width. Under this rasterizer's
+  non-zero-winding fill, a zero-width path renders as nothing: 'I' lost its
+  entire vertical stem at 12px, multi-glyph strings lost strokes throughout,
+  and "IlIlIl" at 8px lost stems wholesale - the exact failure the feature
+  was meant to fix, made worse instead. Root cause: only tested against a
+  Bold-weight substitute font (see the entry above), whose stems are wide
+  enough that this collision is structurally unreachable, hiding the bug.
+  Fix in `src/hal/msttf.c`'s `autohint_contour()`/new `desnap_pairs()`: for
+  each contour, collect near-vertical (resp. near-horizontal) stem-edge
+  candidates, sort by their pre-snap position, and only intervene on
+  adjacent pairs whose independent snaps actually collided - in that case
+  keep the first edge's snap and push the second out to at least 1 full
+  pixel of separation (the original width, rounded) instead of letting both
+  land on the same column/row. Edge pairs that didn't collide are untouched.
+  This is provably a no-op for any stem already >=1px wide (for width w>=1,
+  `floor(x+0.5)` and `floor(x+w+0.5)` are always different - a half-open
+  interval of length >=1 always contains an integer boundary), so the
+  already-correct 32px/thick-stem rendering path never enters the collision
+  branch at all - confirmed empirically too (below), not just by proof.
+  The fix computes each pair's required separation from that pair's OWN
+  measured pre-snap width at render time; no font-specific constant is
+  baked in. Re-verified against the actual shipped font (byte-identical via
+  md5 to `package/thingino-fonts/files/UbuntuMono-Regular2.ttf`, and its TTF
+  `name` table confirms family "UbuntuMono", subfamily "Regular") plus 5
+  other fonts spanning Thin-to-Black weights (Roboto Regular/Bold/Black,
+  DejaVu Sans Regular/Bold) via a white-box host driver that calls
+  `autohint_contour`'s internals directly and checks, per contour, per
+  stem-edge pair, per font, across the full 8-256px `osd.font_size` clamp
+  range and 17 test glyphs (1211-1192 pairs checked per font): 0 pairs
+  end up width==0 post-snap despite hundreds of pairs per font (93-142)
+  that DID collide under the old independent-snap logic (confirming the
+  sweep isn't vacuously passing), and 0 already->=1px-wide pairs are
+  touched by the fix at all (280-429 checked per font). Also rendered the
+  reported failing cases through the real `msttf_render()` path and
+  inspected the output directly (dumped to PPM/PNG): 'I' at 12px regains
+  its full stem (pre-fix: only serifs), "WYZE-KINDERZIMMER" at 12px and
+  "IlIlIl" at 8px keep every stroke, and the 32px multi-glyph case is
+  visually unchanged. ASan+UBSan re-run against 1200 randomly-mutated
+  malformed variants of 3 seed fonts (bit flips/truncation/zero-fill/
+  0xFF-fill) with hinting forced on: 0 crashes/UB, matching the original
+  pass's clean result.
 - **Double-instance ISP collision hardening**, root-caused after a real
   incident: a manually-launched foreground `/tmp/timpsd` test build was still
   running when `/etc/init.d/S95timps restart` fired in another shell.
@@ -244,7 +295,8 @@ semantic versioning.
   inconsistent sub-pixel positions and show uneven stroke widths between
   characters at small sizes - a real, well-known font-rendering problem, not
   imagined, and confirmed present in the shipped `/usr/share/fonts/default.ttf`
-  (Roboto Bold). Considered two fixes: (a) a true TrueType instruction
+  (UbuntuMono Regular - corrected below; originally misidentified as "Roboto
+  Bold" in this entry). Considered two fixes: (a) a true TrueType instruction
   interpreter (stack-based VM executing the font's own hint bytecode -
   genuinely correct, but real interpreter-writing work with a real
   correctness/security surface for bytecode running on-device with no
@@ -275,8 +327,9 @@ semantic versioning.
   sim` clean; a standalone host-side test (`msttf.c` has no external
   dependencies, so it links directly with a small driver) rendered strings at
   12px with hinting off/on against a real glyf-outline TTF (DejaVu Sans Bold -
-  the shipped Roboto Bold wasn't available in the build sandbox, but both are
-  ordinary glyf-outline fonts with simple+composite glyphs) confirming: no
+  the shipped font's actual identity, UbuntuMono Regular, wasn't confirmed at
+  the time and a Bold-weight substitute was used instead; see the follow-up
+  fix below for why testing only a Bold weight hid a real bug) confirming: no
   crash, no all-zero/degenerate output, canvas size stable within 2px, alpha
   coverage within a 0.5-2x sane band; round glyphs ("OoOo0") bit-identical
   alpha sum on vs off; a repeated-stem string ("IlIlIlIl") showed edge
