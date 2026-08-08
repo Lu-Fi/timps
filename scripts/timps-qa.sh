@@ -1189,15 +1189,44 @@ else
 			if [ -n "$SSH_TARGET" ]; then
 				rot_restart() {
 					sshx "/etc/init.d/S95timps restart >/dev/null 2>&1 || service timps restart >/dev/null 2>&1"
-					local i
+					local i up=0
 					for i in $(seq 1 30); do
-						sshx "pidof timpsd" >/dev/null 2>&1 && return 0
+						sshx "pidof timpsd" >/dev/null 2>&1 && { up=1; break; }
+						sleep 2
+					done
+					[ "$up" = "1" ] || return 1
+					# pidof succeeding only proves the PROCESS exists - not that config
+					# was durably persisted to /etc/timps.conf before this restart
+					# re-read it, nor that the HTTP control server is listening yet.
+					# On a freshly-flashed card (still busy with wear-leveling/journal
+					# housekeeping) that gap was observed wide enough to race ahead of
+					# the daemon: a stale-config video1 false-WARN here, and section
+					# 8c's baseline GET false-FAILing right after (both reproduced
+					# 2026-08, never under hand-paced SSH timing). Poll for a real
+					# /control response before calling the daemon "back" - still
+					# bounded, so a genuine hang/crash (control server never binds)
+					# falls through to the return 1 below instead of a false pass.
+					for i in $(seq 1 15); do
+						[ "$(curlq 3 -o /dev/null -w '%{http_code}' "$(http_base)/control")" = "200" ] && return 0
 						sleep 2
 					done
 					return 1
 				}
 				rot_set_conf() {  # $1=key $2=value -> force into /etc/timps.conf via SSH, works even if the daemon is down
 					sshx "grep -q '^$1' /etc/timps.conf 2>/dev/null && sed -i 's|^$1.*|$1 = $2|' /etc/timps.conf || echo '$1 = $2' >> /etc/timps.conf"
+				}
+				rot_apply() {  # $1=JSON body $2=jget path $3=expected value -> POST, then confirm
+					# it actually landed before the caller fires a restart. This closes
+					# the race from the other end: round-tripping POST->GET both catches
+					# a genuine POST failure (instead of silently restarting into a
+					# no-op and blaming the restart for it) and, like the hand-paced SSH
+					# repro that never failed, naturally paces the POST-then-restart
+					# sequence instead of firing both back-to-back.
+					local body="$1" path="$2" want="$3" got
+					lv_post "$body" >/dev/null
+					lv_get "$OUTDIR/lv_rotation_confirm.json"
+					got=$(jget "$OUTDIR/lv_rotation_confirm.json" "$path")
+					[ "$got" = "$want" ]
 				}
 				rot_probe() {  # $1=rtsp path -> prints "codecxWIDTHxHEIGHT" or empty on failure
 					# pidof succeeding only means the process exists, not that the
@@ -1222,33 +1251,39 @@ else
 
 				if echo ",$rot_caps_norm," | grep -q ",90,"; then
 					# case 1: mainstream at native size, rotated - the crash-class check
-					lv_post "{\"video\":{\"0\":{\"rotation\":90}}}" >/dev/null
-					if rot_restart; then
-						probe0=$(rot_probe "$PATH_MAIN")
-						if [ -n "$probe0" ]; then
-							ok "rotation: daemon survived + streamed video0 @ native res with rotation=90 requested ($probe0)"
+					if rot_apply "{\"video\":{\"0\":{\"rotation\":90}}}" video.0.rotation 90; then
+						if rot_restart; then
+							probe0=$(rot_probe "$PATH_MAIN")
+							if [ -n "$probe0" ]; then
+								ok "rotation: daemon survived + streamed video0 @ native res with rotation=90 requested ($probe0)"
+							else
+								bad "rotation: daemon came up but video0 stream unreachable after rotation=90 at native res"
+							fi
 						else
-							bad "rotation: daemon came up but video0 stream unreachable after rotation=90 at native res"
+							bad "rotation: daemon DID NOT SURVIVE restart with video0 rotation=90 at native res - this is the crash class this test exists to catch"
 						fi
 					else
-						bad "rotation: daemon DID NOT SURVIVE restart with video0 rotation=90 at native res - this is the crash class this test exists to catch"
+						bad "rotation: POST video0.rotation=90 did not persist before restart - skipping restart test (config layer itself rejected/dropped the value)"
 					fi
 					rot_set_conf "video0.rotation" "${rot_cur:-0}"
 					rot_restart >/dev/null 2>&1
 
 					# case 2: substream forced to a known-16-aligned safe size, rotated
-					lv_post "{\"video\":{\"1\":{\"rotation\":90,\"width\":704,\"height\":576,\"fps\":10}}}" >/dev/null
-					if rot_restart; then
-						probe1=$(rot_probe "$PATH_SUB")
-						if echo "$probe1" | grep -q "576x704"; then
-							ok "rotation: video1 at a 16-aligned safe size (704x576@10fps) ACTUALLY rotated ($probe1)"
-						elif [ -n "$probe1" ]; then
-							warn "rotation: video1 survived + streamed but did NOT rotate as expected (got $probe1, want 576x704) - sw-rotate may not be functional on this SoC even within the documented safe envelope"
+					if rot_apply "{\"video\":{\"1\":{\"rotation\":90,\"width\":704,\"height\":576,\"fps\":10}}}" video.1.rotation 90; then
+						if rot_restart; then
+							probe1=$(rot_probe "$PATH_SUB")
+							if echo "$probe1" | grep -q "576x704"; then
+								ok "rotation: video1 at a 16-aligned safe size (704x576@10fps) ACTUALLY rotated ($probe1)"
+							elif [ -n "$probe1" ]; then
+								warn "rotation: video1 survived + streamed but did NOT rotate as expected (got $probe1, want 576x704) - sw-rotate may not be functional on this SoC even within the documented safe envelope"
+							else
+								bad "rotation: daemon came up but video1 stream unreachable after a known-safe rotated config"
+							fi
 						else
-							bad "rotation: daemon came up but video1 stream unreachable after a known-safe rotated config"
+							bad "rotation: daemon DID NOT SURVIVE restart with a known-safe-aligned video1 rotation config"
 						fi
 					else
-						bad "rotation: daemon DID NOT SURVIVE restart with a known-safe-aligned video1 rotation config"
+						bad "rotation: POST video1 rotation=90/704x576/10fps did not persist before restart - skipping restart test (config layer itself rejected/dropped the value)"
 					fi
 					rot_set_conf "video1.rotation" "$sub1_cur"
 					rot_set_conf "video1.width" "$sub1_w"
