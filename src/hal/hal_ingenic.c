@@ -2866,6 +2866,23 @@ static int ing_start(const ms_config *cfg)
          * channel teardown (stop AND the failure path below), independent of
          * whether the drain thread ever starts (M8) */
         int ew, eh; ms_vstream_eff_dims(v,&ew,&eh);   /* post-rotation stream dims */
+        /* Publish the effective (post-refusal) dims to the hub BEFORE anything
+         * that renders against them. imp_osd_setup() below performs the FIRST
+         * OSD text/logo/cover render synchronously (refresh_text/setup_logo/
+         * setup_cover), and those call osd_rotated() (imp_osd.c), which asks
+         * the hub for the ACTUAL post-rotation dims to detect a refused 90/270
+         * request. This used to run AFTER imp_osd_setup()+the binds (right
+         * before vc->run=1), so that very first render always hit the "hub not
+         * populated yet" fallback and, on a refused rotation, briefly used the
+         * pre-refusal (wrong) rotated/hlim answer for one render pass - the
+         * gap identified in review of cb4c7de. ew/eh/v are already final here
+         * (post rotation-refusal retarget), hub_set_video_params() is a pure
+         * mutex-protected struct store with no side effects on OSD/bind state,
+         * and nothing reads the hub for this stream until after ing_start()
+         * returns (imp_osd_start_updater() below only starts once every stream
+         * in this loop is done) - so moving the publish earlier is safe and
+         * makes the first OSD render see the correct answer immediately. */
+        hub_set_video_params(i, v->codec, ew, eh, v->fps);
         vchan *vc=&g_v[g_nv++];
         vc->chn=chn; vc->grp=grp; vc->codec=v->codec;
         vc->w=ew; vc->h=eh;
@@ -2912,7 +2929,6 @@ static int ing_start(const ms_config *cfg)
         /* NOT enabled here: the framesource runs on demand (fs_use/fs_unuse
          * from the consumer threads) so an idle timps pumps no frames at all */
 
-        hub_set_video_params(i, v->codec, ew, eh, v->fps);
         vc->run=1;
         if (ms_thread_create(&vc->thr,MS_STACK_STREAM,video_thread,vc)==0) vc->has_thr=1;
         else { vc->run=0; LOGE(MOD,"video chn%d thread create failed",chn); }
