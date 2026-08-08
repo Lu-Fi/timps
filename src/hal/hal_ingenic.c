@@ -1030,6 +1030,57 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
         else
 #endif
             a.rcAttr.attrRcMode.attrH264FixQp.qp = (v->qp>0)?(uint32_t)v->qp:35;
+    } else if (v->rc_mode==MS_RC_VBR || v->rc_mode==MS_RC_SMART ||
+               v->rc_mode==MS_RC_CAPPED_VBR || v->rc_mode==MS_RC_CAPPED_QUALITY){
+        /* The classic rc enum offers only FIXQP/CBR/VBR/SMART (no CAPPED_* - see
+         * ENC_RC_MODE_* in the vendored T20/T21/T30 headers). Before this, every
+         * mode except FIXQP fell through to the CBR else below and silently ran
+         * as CBR, with no hint the selection had been dropped. Now:
+         *   vbr / smart               -> their real classic modes
+         *   capped_vbr/capped_quality -> no classic equivalent; fall back to VBR
+         *                                (closest rate-bounded mode) + one warning
+         * so the running mode never silently diverges from what the user asked
+         * for. The VBR and Smart union members are layout-identical within each
+         * codec (both: maxQp,minQp,staticTime,maxBitRate,iBiasLvl,changePos,
+         * qualityLvl,frmQPStep,gopQPStep + a trailing bool/flucLvl - verified in
+         * the T21/T30 headers), so one VBR-shaped fill serves both rcModes. That
+         * is same-shape overlap of two members, NOT the cross-codec H264/H265
+         * reinterpretation that broke H265 CBR (fixed separately). */
+        int use_smart = (v->rc_mode==MS_RC_SMART);
+        if (v->rc_mode==MS_RC_CAPPED_VBR || v->rc_mode==MS_RC_CAPPED_QUALITY){
+            static int warned_capped = 0;
+            if (!warned_capped){
+                LOGW(MOD,"rc_mode capped_vbr/capped_quality has no classic-SoC equivalent -> using vbr");
+                warned_capped = 1;
+            }
+        }
+        a.rcAttr.attrRcMode.rcMode = use_smart ? ENC_RC_MODE_SMART : ENC_RC_MODE_VBR;
+#if !(defined(PLATFORM_T10)||defined(PLATFORM_T20))
+        if (v->codec==MS_VC_H265){
+            a.rcAttr.attrRcMode.attrH265Vbr.maxQp       = (v->max_qp>0)?(uint32_t)v->max_qp:45;
+            a.rcAttr.attrRcMode.attrH265Vbr.minQp       = (v->min_qp>0)?(uint32_t)v->min_qp:15;
+            a.rcAttr.attrRcMode.attrH265Vbr.staticTime  = 2;   /* rate-stat window, seconds */
+            a.rcAttr.attrRcMode.attrH265Vbr.maxBitRate  = (uint32_t)v->bitrate_kbps;
+            a.rcAttr.attrRcMode.attrH265Vbr.iBiasLvl    = 0;
+            a.rcAttr.attrRcMode.attrH265Vbr.changePos   = 80;
+            a.rcAttr.attrRcMode.attrH265Vbr.qualityLvl  = 2;
+            a.rcAttr.attrRcMode.attrH265Vbr.frmQPStep   = 3;
+            a.rcAttr.attrRcMode.attrH265Vbr.gopQPStep   = 15;
+            a.rcAttr.attrRcMode.attrH265Vbr.flucLvl     = 0;
+        } else
+#endif
+        {
+            a.rcAttr.attrRcMode.attrH264Vbr.maxQp       = (v->max_qp>0)?(uint32_t)v->max_qp:45;
+            a.rcAttr.attrRcMode.attrH264Vbr.minQp       = (v->min_qp>0)?(uint32_t)v->min_qp:15;
+            a.rcAttr.attrRcMode.attrH264Vbr.staticTime  = 2;   /* rate-stat window, seconds */
+            a.rcAttr.attrRcMode.attrH264Vbr.maxBitRate  = (uint32_t)v->bitrate_kbps;
+            a.rcAttr.attrRcMode.attrH264Vbr.iBiasLvl    = 0;
+            a.rcAttr.attrRcMode.attrH264Vbr.changePos   = 80;
+            a.rcAttr.attrRcMode.attrH264Vbr.qualityLvl  = 2;
+            a.rcAttr.attrRcMode.attrH264Vbr.frmQPStep   = 3;
+            a.rcAttr.attrRcMode.attrH264Vbr.gopQPStep   = 15;
+            a.rcAttr.attrRcMode.attrH264Vbr.gopRelation = 0;
+        }
     } else {
         a.rcAttr.attrRcMode.rcMode = ENC_RC_MODE_CBR;
 #if !(defined(PLATFORM_T10)||defined(PLATFORM_T20))
