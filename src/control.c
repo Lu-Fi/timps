@@ -38,6 +38,15 @@
 
 #define MOD "CTRL"
 
+/* Same compile-time constant main.c uses for `timpsd -v` and its startup log
+ * line - passed in via -DMS_VERSION on the whole build's command line
+ * (Makefile), so it is already defined here too on a normal build. The
+ * fallback mirrors main.c's, only for a standalone/tooling compile of this
+ * file without that flag. */
+#ifndef MS_VERSION
+#define MS_VERSION "0.1.0"
+#endif
+
 #ifdef USE_PLAY
 #define SOUNDS_DIR "/usr/share/sounds"
 /* Hard cap on how many sound files caps.play.sounds will enumerate into the
@@ -835,9 +844,25 @@ int control_get_json(char *buf, size_t cap)
         int _n = snprintf(o<cap?buf+o:buf, o<cap?cap-o:0, __VA_ARGS__); \
         if (_n>0) o += (size_t)_n; \
     } while (0)
-    /* caps FIRST: the CGI bridges scan for the *last* occurrence of a key,
-     * which must be the value in the image object below, not the caps name */
-    APP("{\"caps\":{\"image\":[");
+    /* Build identity (2026-08 fleet incident: fw_ota.sh's flash script logged
+     * "Firmware flashed successfully" on multiple cameras whose /usr/bin/
+     * timpsd binary demonstrably had NOT changed post-reboot - the flash
+     * script's own success signal only proves a reboot was triggered, not
+     * that the new binary is what came back up. MS_VERSION is git describe's
+     * tag+commit+dirty-flag string, already compiled in and used for
+     * `timpsd -v`/the startup log line (main.c) - this just exposes the same
+     * compile-time constant here too, so a one-line `curl .../control | jget
+     * version` (or scripts/timps-qa.sh's new check) catches exactly this
+     * class of "reboot happened, binary didn't" drift without needing an SSH
+     * MD5 comparison every time. "version" is a plain top-level key, first in
+     * the document (ahead of "caps" - see the note on caps below) since it
+     * is fixed, always-present metadata, not part of any capability list a
+     * CGI bridge scans into. */
+    APP("{\"version\":\"%s\",", MS_VERSION);
+    /* caps FIRST (of the REST of the document): the CGI bridges scan for the
+     * *last* occurrence of a key, which must be the value in the image
+     * object below, not the caps name */
+    APP("\"caps\":{\"image\":[");
     {
         int nf; const cfg_field *tbl = cfg_fields_image(&nf);
         int first = 1;
@@ -1251,12 +1276,74 @@ int control_get_json(char *buf, size_t cap)
             (long long)tst.count, (long long)tst.last_t,
             (long long)tst.free_mb, jf, jd, jn);
     }
+    /* SRT output (USE_SRT builds only): a minimal read-only status block, not
+     * a "caps" entry, matching the record/timelapse pattern above rather than
+     * the caps.record/caps.timelapse availability-only style - srt.* is
+     * persist-only config (no F_CTRL fields at all, see cfg_fields note),
+     * but a test harness still needs a way to tell whether THIS camera has
+     * SRT compiled in, enabled, and which port to dial without needing SSH.
+     * Added alongside scripts/timps-qa.sh's new SRT coverage (section 4b),
+     * which was previously zero despite srt.c/srt_fields existing - there was
+     * no way to discover srt.enabled/port from the outside at all before this. */
+#ifdef USE_SRT
+    APP(",\"srt\":{\"available\":1,\"enabled\":%d,\"port\":%d,\"channel\":%d}",
+        c->srt.enabled, c->srt.port, c->srt.channel);
+#else
+    APP(",\"srt\":{\"available\":0}");
+#endif
     APP("}");
     #undef APP
     /* o is the length snprintf *would* have produced (it keeps counting past
      * cap). If it reached/exceeded cap the document was cut off and is NOT valid
      * JSON - signal that with a negative return so the caller can send an HTTP
      * error instead of shipping a truncated body as 200 OK. */
+    if (o >= cap){ if (cap) buf[cap-1]=0; return -1; }   /* truncated */
+    return (int)o;
+}
+
+/* ---------- GET /control?fields=1: F_CTRL field-name inventory ---------- */
+/* See the doc comment in control.h for the full rationale (Finding #1 of the
+ * 2026-08 QA-coverage audit). This walks the exact same cfg_fields_*()
+ * accessors apply_ctrl_fields() uses above - it is intentionally NOT a new
+ * hand-written list of field names, since re-listing them a second time here
+ * would recreate the identical drift bug this endpoint exists to catch. */
+int control_fields_json(char *buf, size_t cap)
+{
+    size_t o = 0;
+    #define APP(...) do { \
+        int _n = snprintf(o<cap?buf+o:buf, o<cap?cap-o:0, __VA_ARGS__); \
+        if (_n>0) o += (size_t)_n; \
+    } while (0)
+    #define SECFIELDS(jsonname, accessor) do { \
+        int _n; const cfg_field *_t = (accessor)(&_n); \
+        APP("\"" jsonname "\":["); \
+        int _first = 1; \
+        for (int _i=0;_i<_n;_i++) \
+            if (_t[_i].flags & F_CTRL){ \
+                APP("%s\"%s\"", _first?"":",", _t[_i].name); \
+                _first = 0; \
+            } \
+        APP("],"); \
+    } while (0)
+    APP("{");
+    SECFIELDS("image",     cfg_fields_image);
+    SECFIELDS("audio",     cfg_fields_audio);
+    SECFIELDS("sensor",    cfg_fields_sensor);
+    SECFIELDS("osd",       cfg_fields_osd);
+    SECFIELDS("osd_item",  cfg_fields_osd_item);
+    SECFIELDS("motion",    cfg_fields_motion);
+    SECFIELDS("record",    cfg_fields_record);
+    SECFIELDS("timelapse", cfg_fields_timelapse);
+    SECFIELDS("daynight",  cfg_fields_daynight);
+    SECFIELDS("video",     cfg_fields_video);
+    SECFIELDS("privacy",   cfg_fields_privacy);
+    #undef SECFIELDS
+    /* drop the trailing comma left by the last SECFIELDS() - only when the
+     * document wasn't already truncated (o<=cap), same guard style as the
+     * rest of this file's APP-based builders */
+    if (o>0 && o<=cap && buf[o-1]==',') o--;
+    APP("}");
+    #undef APP
     if (o >= cap){ if (cap) buf[cap-1]=0; return -1; }   /* truncated */
     return (int)o;
 }

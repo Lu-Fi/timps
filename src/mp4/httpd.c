@@ -1139,6 +1139,32 @@ static void *conn_thread(void *arg)
                 else if (!strcmp(method,"GET") || c->head) {
                     /* HEAD previously fell into the POST branch below and
                      * ran control_apply_json("") - GET semantics instead */
+                    /* GET /control?fields=1: the F_CTRL field-name inventory
+                     * (see control_fields_json's doc comment in control.h) -
+                     * a small, separate document from the main status dump
+                     * below, so it gets its own (much smaller) heap buffer
+                     * rather than sharing CONTROL_JSON_CAP. Simple substring
+                     * match on the query string, same convention as chn=/
+                     * token= elsewhere in this file - no full query parser
+                     * in this codebase. */
+                    if (strstr(path, "fields=1")) {
+                        #define CONTROL_FIELDS_CAP 8192
+                        char *fj = (char *)malloc(CONTROL_FIELDS_CAP);
+                        if (fj) {
+                            int fn = control_fields_json(fj, CONTROL_FIELDS_CAP);
+                            if (fn < 0) {
+                                http_send_ex(c,"500 Internal Server Error","text/plain",
+                                             cors,"fields json too large",21);
+                            } else {
+                                http_send_ex(c,"200 OK","application/json",cors,fj,fn);
+                            }
+                            free(fj);
+                        } else {
+                            http_send_ex(c,"503 Service Unavailable","text/plain",cors,"oom",3);
+                        }
+                        #undef CONTROL_FIELDS_CAP
+                        goto control_get_done;
+                    }
                     /* worst case: caps + full image/audio/sensor blocks +
                      * 2 full video stream blocks + 2 per-stream OSD sets
                      * (2 x 8 items) with long texts + the motion status
@@ -1165,6 +1191,7 @@ static void *conn_thread(void *arg)
                         http_send_ex(c,"503 Service Unavailable","text/plain",cors,"oom",3);
                     }
                     #undef CONTROL_JSON_CAP
+                    control_get_done: ;
                 } else {
                     char *body = strstr(buf,"\r\n\r\n");
                     if (body) {
