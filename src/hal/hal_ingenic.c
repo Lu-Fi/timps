@@ -2179,9 +2179,14 @@ static void *jpeg_thread(void *arg)
  * exactly the 1..100 -> quant-table mapping libjpeg uses. Previously the classic
  * branch did (void)quality and every JPEG came out at the SDK's fixed default,
  * silently ignoring jpeg.quality / videoN.jpeg_quality. */
-#if !(defined(PLATFORM_T10) || defined(PLATFORM_T20))
+#if !defined(PLATFORM_T10)
 /* Standard JPEG Annex-K base quantization tables (== quality 50), natural
- * (row-major) order. Only the 128-byte-qtable SoCs (T21/T23/T30) use these. */
+ * (row-major) order. Used by every classic SoC except T10 - including T20,
+ * whose IMPEncoderJpegeQl.qmem_table is 256 bytes (vs 128 on T21/T23/T30):
+ * prudynt-t (src/IMPEncoder.cpp's MakeTables()) fills the same first 128
+ * bytes there too, leaving the rest zeroed, and that's been the field-proven
+ * behaviour across real T20 cameras - so T20 gets the same 128-byte fill as
+ * the others rather than being excluded alongside T10. */
 static const uint8_t k_jpeg_luma_q50[64] = {
     16, 11, 10, 16, 24, 40, 51, 61,
     12, 12, 14, 19, 26, 58, 60, 55,
@@ -2209,24 +2214,24 @@ static uint8_t jpeg_scale_q(uint8_t base, int scale)
     if (v > 255) v = 255;
     return (uint8_t)v;
 }
-#endif /* !T10 && !T20 */
+#endif /* !T10 */
 
 static void jpeg_apply_quality(int chn, int quality)
 {
     if (quality < 1)   quality = 1;
     if (quality > 100) quality = 100;
-#if defined(PLATFORM_T10) || defined(PLATFORM_T20)
-    /* T10/T20 spell IMPEncoderJpegeQl.qmem_table as 256 bytes (vs the 128 the
-     * other classic SoCs use), and the vendor headers do not document that
-     * layout (table count / 8- vs 16-bit entries). Synthesizing a table blindly
-     * there would risk corrupting output rather than honouring quality, so
+#if defined(PLATFORM_T10)
+    /* prudynt-t special-cases exactly T10 ("fix for bad jpeg image quality on
+     * T10 based cameras": user_ql_en=0, i.e. leave the SDK's own default table
+     * alone) - a custom table there makes JPEG WORSE, not just unconfirmed, so
      * report honestly instead of guessing or (as before) silently dropping it. */
     (void)chn;
-    LOGW(MOD,"jpeg.quality=%d not applied: SetJpegeQl qtable layout unverified "
-             "on this SoC (JPEG left at SDK default)", quality);
+    LOGW(MOD,"jpeg.quality=%d not applied: custom quantization tables are known "
+             "to degrade JPEG quality on T10 (JPEG left at SDK default)", quality);
 #else
-    /* T21/T23/T30: qmem_table is the standard 128-byte pair - 64 luma then 64
-     * chroma, 8-bit, natural order. IJG quality->scale (base tables = q50). */
+    /* T20/T21/T23/T30: fill the qtable's first 128 bytes - 64 luma then 64
+     * chroma, 8-bit, natural order (T20's is 256 bytes total; see the comment
+     * above). IJG quality->scale (base tables = q50). */
     int s = (quality < 50) ? (5000 / quality) : (200 - quality * 2);
     IMPEncoderJpegeQl ql; memset(&ql, 0, sizeof ql);
     _Static_assert(sizeof ql.qmem_table >= 128, "JPEG qtable smaller than 128B");
