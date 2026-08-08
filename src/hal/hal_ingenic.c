@@ -982,8 +982,15 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
         case MS_RC_CAPPED_QUALITY: rc=IMP_ENC_RC_MODE_CAPPED_QUALITY; break;
         default:                   rc=IMP_ENC_RC_MODE_CBR; break;
     }
+    /* iInitialQP: -1 ("auto") is fine for the rate-controlled modes, but
+     * FIXQP has no rate control to fall back on - the SDK needs a real QP
+     * here. Passing -1 for FIXQP crashed the closed-source encoder (reported
+     * against v1.7.8: selecting rc_mode=fixqp brought the whole streamer
+     * down). v->qp was already exposed via /control (F_CTRL, range 1..51)
+     * but had no HAL consumer - wire it up for exactly this case. */
+    int initial_qp = (v->rc_mode==MS_RC_FIXQP) ? (v->qp>0?v->qp:35) : -1;
     IMP_Encoder_SetDefaultParam(&a, prof, rc,
-        ew, eh, v->fps, 1, v->gop, 2, -1, v->bitrate_kbps);
+        ew, eh, v->fps, 1, v->gop, 2, initial_qp, v->bitrate_kbps);
 #else
     /* older platforms: manual attribute setup (H264 only path shown) */
 #if defined(PLATFORM_T10)||defined(PLATFORM_T20)

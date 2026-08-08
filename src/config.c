@@ -861,7 +861,7 @@ static const cfg_field video_fields[] = {
     F ("gop",          0,              gop,          T_INT,   F_CTRL,  1,1000),
     F ("max_gop",      0,              max_gop,      T_INT,   F_CTRL,  1,1000),   /* F-04: RESERVED/no-effect - GOP comes from videoN.gop; kept for compat only */
     F ("profile",      0,              profile,      T_INT,   F_CTRL,  0,2),
-    F ("qp",           0,              qp,           T_INT,   F_CTRL,  1,51),     /* F-04: RESERVED/no-effect - no HAL consumer; kept for compat only */
+    F ("qp",           0,              qp,           T_INT,   F_CTRL,  1,51),     /* only consumed when videoN.rc_mode=fixqp (enc_create's iInitialQP); no effect under CBR/VBR/etc, which rate-control instead */
     F ("min_qp",       0,              min_qp,       T_INT,   F_CTRL,  1,51),
     F ("max_qp",       0,              max_qp,       T_INT,   F_CTRL,  1,51),
     F ("rotation",     0,              rotation,     T_ROT,   F_CTRL,  0,0),
