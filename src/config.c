@@ -139,7 +139,21 @@ static float pflt_cl(const char *v, float lo, float hi)
     return x;
 }
 static uint32_t phex(const char *v){ return (uint32_t)strtoul(v, NULL, 0); }
-static int  pvcodec(const char *v){ return (!strcasecmp(v,"h265")||!strcasecmp(v,"hevc")) ? MS_VC_H265 : MS_VC_H264; }
+/* video codec parser. Like prot() above, unsupported values are coerced HERE
+ * (at parse/apply time) so the stored value - and therefore /control read-back -
+ * reflects what the encoder will actually produce. T10/T20 have no H.265
+ * encoder at all (hal_ingenic.c hardcodes PT_H264 there), so accepting h265
+ * would leave v->codec=MS_VC_H265 while the HAL emits H.264; rtsp.c then keys
+ * its isH265/rtp_send_h265/keyframe logic off the config value and streams the
+ * H.264 bytes mislabelled as H.265, which breaks players. Coerce to h264 with a
+ * warning instead of letting that mismatch surface downstream. */
+static int  pvcodec(const char *v){
+    int c = (!strcasecmp(v,"h265")||!strcasecmp(v,"hevc")) ? MS_VC_H265 : MS_VC_H264;
+#if defined(PLATFORM_T10)||defined(PLATFORM_T20)
+    if (c==MS_VC_H265){ LOGW(MOD,"codec h265 unsupported on this SoC -> h264"); c=MS_VC_H264; }
+#endif
+    return c;
+}
 static int  pacodec(const char *v){
     if (!strcasecmp(v,"aac")) return MS_AC_AAC;
     if (!strcasecmp(v,"pcmu")||!strcasecmp(v,"g711u")||!strcasecmp(v,"ulaw")) return MS_AC_PCMU;
