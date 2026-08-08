@@ -16,8 +16,6 @@
 #include "events.h"
 #include "hub.h"
 #include "log.h"
-#include "isp_caps.h"
-#include "audio_caps.h"
 #include "motion_caps.h"
 #include "rtsp/backchannel.h"
 #include "rtsp/speaker.h"
@@ -689,68 +687,15 @@ static void jesc(const char *s, char *out, size_t cap)
     out[o]=0;
 }
 
-/* image.* keys the HAL actually wires on this build's PLATFORM (guards from
- * isp_caps.h, same matrix hal_ingenic.c uses). The WebUI reads this from
- * GET /control ("caps") to grey out unsupported controls. */
-static const char *const IMG_CAPS[] = {
-    "brightness","contrast","saturation","sharpness",
-#ifdef ISP_HAS_HUE
-    "hue",
-#endif
-    "hflip","vflip","running_mode","anti_flicker",
-#ifdef ISP_HAS_AECOMP
-    "ae_compensation",
-#endif
-#ifdef ISP_HAS_GAINS
-    "max_again","max_dgain",
-#endif
-#ifdef ISP_HAS_NR
-    "sinter_strength","temper_strength",
-#endif
-#ifdef ISP_HAS_DPC
-    "dpc_strength",
-#endif
-#ifdef ISP_HAS_DEFOG
-    "defog_strength",
-#endif
-#ifdef ISP_HAS_DRC
-    "drc_strength",
-#endif
-#ifdef ISP_HAS_HILIGHT
-    "highlight_depress",
-#endif
-#ifdef ISP_HAS_BACKLIGHT
-    "backlight_compensation",
-#endif
-#ifdef ISP_HAS_WB
-    "core_wb_mode","wb_rgain","wb_bgain",
-#endif
-};
-
-/* audio.* keys the HAL can apply LIVE on this build's PLATFORM (guards from
- * audio_caps.h, same matrix ai_apply_key() in hal_ingenic.c uses). Persist-
- * only keys (codec/samplerate/bitrate/channels/enabled/force_stereo/spk_*)
- * are deliberately NOT listed: the WebUI bridge treats everything outside
- * this list as save+restart. */
-static const char *const AUD_CAPS[] = {
-    "volume","gain",
-#ifdef AUDIO_HAS_ALC_GAIN
-    "alc_gain",
-#endif
-#if defined(USE_PLAY) || defined(USE_BACKCHANNEL)
-    /* speaker AO volume/gain: live only when an audio-output pipeline (play
-     * queue or backchannel) is compiled in - it owns the IMP_AO device. */
-    "spk_volume","spk_gain",
-    /* AEC: applied at the next AO open (same category as spk_*), needs the AO
-     * pipeline compiled in. */
-    "aec",
-#endif
-    /* NOTE: high_pass/agc/agc_target_dbfs/agc_compression_db/ns are NOT here:
-     * they are restart-required (libimp runs them on its own record thread and
-     * frees them unlocked, so a live toggle races the vendor thread -> UAF).
-     * The WebUI shows them as "applies on restart" like codec/samplerate. */
-    "mute",   /* live mic mute: publish gate in the HAL, works on every SoC */
-};
+/* GET /control's "caps":{"image":[...],"audio":[...]} advertisement used to
+ * be two hand-written arrays here (IMG_CAPS/AUD_CAPS), re-listing image./
+ * audio key names under a SECOND copy of isp_caps.h's/audio_caps.h's
+ * #ifdefs. Both arrays are gone now: control_get_json() below walks
+ * config.c's image_fields[]/audio_fields[] tables directly (via
+ * cfg_fields_image()/cfg_fields_audio()) and emits every entry that carries
+ * BOTH F_CTRL and F_CAP - see F_CAP's doc comment in config.h for exactly
+ * which fields that is and why (image: pure ISP_HAS_* hardware gate; audio:
+ * hardware/feature gate PLUS a deliberate live-vs-restart curation). */
 
 /* Read-only day/night status object (shared /control + /events shape, see
  * control.h): "enabled" is the auto-detection flag (kept as the FIRST key:
@@ -893,11 +838,25 @@ int control_get_json(char *buf, size_t cap)
     /* caps FIRST: the CGI bridges scan for the *last* occurrence of a key,
      * which must be the value in the image object below, not the caps name */
     APP("{\"caps\":{\"image\":[");
-    for (size_t i=0;i<sizeof IMG_CAPS/sizeof IMG_CAPS[0];i++)
-        APP("%s\"%s\"", i?",":"", IMG_CAPS[i]);
+    {
+        int nf; const cfg_field *tbl = cfg_fields_image(&nf);
+        int first = 1;
+        for (int i=0;i<nf;i++)
+            if ((tbl[i].flags & (F_CTRL|F_CAP)) == (F_CTRL|F_CAP)) {
+                APP("%s\"%s\"", first?"":",", tbl[i].name);
+                first = 0;
+            }
+    }
     APP("],\"audio\":[");
-    for (size_t i=0;i<sizeof AUD_CAPS/sizeof AUD_CAPS[0];i++)
-        APP("%s\"%s\"", i?",":"", AUD_CAPS[i]);
+    {
+        int nf; const cfg_field *tbl = cfg_fields_audio(&nf);
+        int first = 1;
+        for (int i=0;i<nf;i++)
+            if ((tbl[i].flags & (F_CTRL|F_CAP)) == (F_CTRL|F_CAP)) {
+                APP("%s\"%s\"", first?"":",", tbl[i].name);
+                first = 0;
+            }
+    }
     /* osd item leaf keys /control accepts AND applies live (per-stream
      * osdS.N.* and legacy osdN.*; the master switch "osd.enabled" is
      * restart-only). Every video stream has its own independent item set,

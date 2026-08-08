@@ -527,6 +527,21 @@ typedef struct {
  * therefore an explicit, reviewable decision to expose it over HTTP - never
  * inferred just because a field exists in one of these tables. */
 #define F_CTRL   0x04
+/* Belongs in GET /control's "caps":{"image":[...],"audio":[...]} advertisement
+ * (control.c's caps builder only emits entries that carry BOTH F_CTRL and
+ * F_CAP). This is a SEPARATE axis from F_CTRL, not a refinement of it:
+ * F_CTRL is a fixed security allowlist (identical on every build), while
+ * F_CAP is compile-time gated per platform/feature build - image_fields[]
+ * ties it to isp_caps.h's ISP_HAS_* matrix (same one hal_ingenic.c's
+ * isp_apply_image() guards its IMP_ISP_Tuning_Set* calls with), and
+ * audio_fields[] ties it to audio_caps.h's AUDIO_HAS_* matrix / USE_PLAY
+ * /USE_BACKCHANNEL PLUS a deliberate curation: several audio fields keep
+ * F_CTRL (POST-able, persists to config) but never F_CAP, because they are
+ * restart-required or persist-only, not because the hardware lacks them
+ * (see the comment above audio_fields[] in config.c). This replaces the old
+ * hand-written IMG_CAPS/AUD_CAPS arrays in control.c, which re-listed these
+ * exact names under the exact same #ifdef conditions a second time. */
+#define F_CAP    0x08
 
 /* Accessors handing control.c's generic /control POST walker the section
  * field tables it needs (config.c keeps the tables themselves static - these

@@ -7,6 +7,60 @@ semantic versioning.
 ## [Unreleased]
 
 ### Changed
+- **`GET /control`'s `caps.image`/`caps.audio` no longer hand-list field
+  names in a second place either** (the caps-list half of the follow-on
+  architecture finding flagged alongside the `F_CTRL` consolidation above):
+  `control.c`'s `IMG_CAPS[]`/`AUD_CAPS[]` arrays re-typed every `image.*`/
+  `audio.*` key name a third time, under their own copy of `isp_caps.h`'s/
+  `audio_caps.h`'s `#ifdef` platform gates — the same "typed three times,
+  one gets forgotten" shape as the field-name duplication `F_CTRL` just
+  fixed, just in the capability-advertisement layer instead of the
+  POST-apply layer. Added a second flag, `F_CAP`, to `cfg_field` (alongside
+  `F_NOGET`/`F_ATOMIC`/`F_CTRL`): `config.c`'s `image_fields[]`/
+  `audio_fields[]` tables now carry it directly, gated by the exact same
+  `ISP_HAS_*`/`AUDIO_HAS_*`/`USE_PLAY`/`USE_BACKCHANNEL` macros the old
+  arrays used, and `control_get_json()` builds `caps.image`/`caps.audio` by
+  walking `cfg_fields_image()`/`cfg_fields_audio()` for entries carrying
+  **both** `F_CTRL` and `F_CAP`, instead of the removed `IMG_CAPS[]`/
+  `AUD_CAPS[]` arrays.
+  - `F_CAP` is a **separate axis from `F_CTRL`, not a refinement of it**:
+    every `image.*`/`audio.*` field is `F_CTRL` (POST-able) on every build,
+    but `F_CAP` is compile-time platform/feature gated. For `image.*` it is
+    a pure hardware-capability gate (identical to `isp_apply_image()`'s own
+    guards in `hal_ingenic.c`). For `audio.*` it is narrower still: several
+    fully POST-able, fully persisted fields (`codec`, `samplerate`,
+    `bitrate`, `channels`, `enabled`, `force_stereo`, `spk_enabled`,
+    `backchannel`/`_codec`/`_rate`, `high_pass`, `agc`, `ns`,
+    `agc_target_dbfs`, `agc_compression_db`) deliberately never get `F_CAP`
+    on **any** platform — not because the hardware lacks them, but because
+    they are restart-required or persist-only (libimp runs several of them
+    on its own vendor thread and frees state unlocked, so a live toggle
+    would race it), matching the old `AUD_CAPS[]` array's explicit
+    exclusions exactly.
+  - Verified by building a standalone harness against `config.c`'s
+    `cfg_fields_image()`/`cfg_fields_audio()` accessors under every
+    `PLATFORM_T10`/`T21`/`T23`/`T31`/`T40`/`T41` macro (with and without
+    `USE_PLAY`) and diffing the emitted name **set** against the old
+    hand-written arrays' `#ifdef` conditions by hand for each platform:
+    identical for every platform tested. The only difference found is
+    cosmetic — `caps.audio`'s JSON array now emits `mute` before
+    `spk_volume`/`spk_gain`/`aec` (table order) instead of after (the old
+    array's order); the array is a membership list, not positionally
+    consumed, so this reorders nothing observable. `make sim` builds clean
+    with the new `F_CAP`-gated tables.
+  - **Left alone, deliberately**: `src/hal/hal_ingenic.c`'s `isp_apply_image`/
+    `ai_apply_key` strcmp dispatch chains still hand-list field names a
+    third(now fourth) way, to route each one to its actual
+    `IMP_ISP_Tuning_Set*`/`IMP_AI_Set*` call. Unifying that would need a
+    real per-field dispatch mechanism (function pointers or tags covering
+    genuinely different SDK calls and value transforms per field), which is
+    a materially bigger, riskier change than relocating an existing,
+    already-correct set of `#ifdef` conditions — not something to invent
+    and land unreviewed in the same pass as this consolidation. The
+    duplication risk there is unchanged: a future new image/audio field
+    still needs a human to remember to wire it into `hal_ingenic.c` by
+    hand.
+
 - **`src/control.c`'s `/control` POST handling no longer hand-lists field
   names in a second place** (architecture-audit catch): 11 hand-written
   string arrays (`IMG`, `AUD_LIVE`, `AUD_REST`, `OSD`, `OSD_GLOBAL_KEYS`,
