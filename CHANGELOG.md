@@ -6,6 +6,39 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.8.3] - 2026-08-09
+
+### Fixed
+- **Audio idle-resume A/V skew** (`hal_ingenic.c`): unlike the video encoder,
+  the audio input is never stopped while idle - it keeps capturing into its
+  FIFO the whole time. Draining that stale backlog on resume could ratchet
+  the v1.8.2 audio pts sanitizer ahead of real time with no way back, showing
+  up as several seconds of A/V skew on a fresh `/stream.mp4` connection
+  (RTSP was unaffected). Fixed by flushing the stale AI backlog on
+  idle-to-active resume (mirroring the video encoder's own idle teardown)
+  and hardening the pts sanitizer's fallback so it can never run ahead of
+  the wall clock.
+- **hflip/vflip not taking effect at boot** (`hal_ingenic.c`, T23): a camera
+  configured with `image.hflip=1`/`image.vflip=1` could boot with the image
+  unflipped despite the correct config, only "fixing itself" after a live
+  `/control` toggle. Root cause: like `image.running_mode` (fixed earlier),
+  the ISP only latches a pending hflip/vflip change while framesource
+  channel 0 is actively delivering frames - and on the on-demand pipeline,
+  chn0 is idle at boot before any client connects, so the boot-time apply
+  never took effect. Generalized the existing running_mode latch-kick
+  mechanism to also cover hflip/vflip, both at boot and on every live
+  `/control` change.
+- **Non-self-correcting A/V drift after a capture stall** (`hal_ingenic.c`):
+  the v1.8.2 pts sanitizer's accept path could lock permanently to a
+  hardware-clock offset that had drifted from the wall clock by any amount
+  under its threshold - and since video and audio use different thresholds,
+  a real stall could leave one track locked to the drift while the other
+  resynced, producing a persistent A/V skew (observed as 0.9s+ after a
+  real-hardware capture stall). Added a slow, bounded self-correction
+  (NTP-style slew) so any accepted drift converges back toward zero over
+  time instead of freezing in place, without affecting legitimate
+  multi-second gap preservation or introducing visible per-frame jitter.
+
 ## [1.8.2] - 2026-08-09
 
 ### Fixed
