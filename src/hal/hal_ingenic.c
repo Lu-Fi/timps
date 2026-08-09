@@ -1256,9 +1256,10 @@ static int au_is_key(int codec, const uint8_t *au, size_t len)
  *    wall clock and is rejected. (This wall-clock cross-check replaces a raw
  *    ">N s jump" rule on purpose - a delta threshold cannot tell a real long
  *    stall, which we must preserve to stay A/V-aligned, from garbage, which we
- *    must reject.) On rejection we advance one nominal frame (frame_us) without
- *    ever falling behind the wall clock, then re-seat the offset so a later good
- *    frame re-locks the hw clock.
+ *    must reject.) On rejection we snap the pts to the wall clock (now_us, hard
+ *    ratchet-stop so a fast burst of rejected frames can never accumulate a
+ *    forward lead) and re-seat the offset so a later good frame re-locks the hw
+ *    clock.
  *
  * skew_max_us bounds the legitimate capture-vs-publish lag: video uses ~1 s
  * (encoder backlog can be large); audio uses a tighter bound sized to the AI
@@ -1293,11 +1294,18 @@ static int64_t pts_sanitize(pts_sanitizer *s, int64_t hw_us, int64_t now_us,
         s->pts_offset = now_us - hw_us;
     }
 
-    /* fallback: smooth nominal advance, but never let the media clock fall
-     * behind real time (keeps the track aligned with audio_gap_resync/M2) */
-    int64_t pts = s->last_pub_pts + frame_us;
-    if (pts < now_us)             pts = now_us;
-    if (pts <= s->last_pub_pts)   pts = s->last_pub_pts + 1;   /* strict monotonic guard */
+    /* Fallback: track real time, and NEVER run ahead of it. Snapping to now_us
+     * (not last+frame_us) makes this a hard ratchet-stop - last_pub_pts can
+     * never climb past now_us, so a fast burst of stale/rejected frames (e.g. a
+     * capture backlog drained faster than real time) cannot accumulate a growing
+     * forward lead. (frame_us is unused here now, but kept in the signature for
+     * the accept-path clamp and documentation.) Strictly monotonic: if now_us
+     * has not yet passed last_pub_pts, advance 1us and let real time catch up,
+     * bounded by skew_max. This matches the pre-A1 ms_now_us() publish behaviour
+     * in the degraded (no usable hw timestamp) case. */
+    (void)frame_us;
+    int64_t pts = now_us;
+    if (pts <= s->last_pub_pts) pts = s->last_pub_pts + 1;   /* strict monotonic guard */
     s->last_pub_pts = pts;
     return pts;
 }
@@ -2872,8 +2880,47 @@ static void *audio_thread(void *arg)
      * audio_gap_resync()/fmp4 M2 insert phantom samples -> drift. */
     pts_sanitizer apts;
     memset(&apts, 0, sizeof apts);
+    int was_idle = 1;   /* also flushes any backlog buffered between AI-enable
+                         * and the first subscriber (thread starts before them) */
     while (g_arun) {
-        if (!g_aactive){ act_wait(act_ready_audio, NULL); continue; }   /* on-demand: block idle */
+        if (!g_aactive){ act_wait(act_ready_audio, NULL); was_idle = 1; continue; }
+        if (was_idle) {
+            was_idle = 0;
+            /* Resume from idle. Unlike the video encoder (StopRecvPic +
+             * fs_unuse on idle, see video_thread ~line 1353), the AI is NEVER
+             * stopped while g_aactive==0 - it keeps capturing into its FIFO for
+             * the entire idle period. Draining that stale backlog on resume
+             * would feed pts_sanitize() a fast burst of seconds-old capture
+             * timestamps; the burst inflates its offset and (before the FIX 2
+             * ratchet-stop) drove the audio pts seconds ahead of real time. The
+             * RTSP path hides such a constant A/V offset (each RTP track
+             * re-anchors to NTP via its own RTCP SR), but the fMP4 muxer shares
+             * one base_pts_us zero across both tracks, so it rendered as a
+             * multi-second startup A/V skew (real-HW QA: fMP4 A/V drift ~-4s,
+             * audio starting late). The old ms_now_us()-at-publish stamping
+             * never exposed this because every drained frame was tagged "now"
+             * regardless of its capture age.
+             * Fix: flush the buffered backlog (drain+discard, the AI equivalent
+             * of the encoder's StopRecvPic) so publishing resumes from a fresh
+             * ~now frame, and re-anchor the sanitizer to it. */
+            IMPAudioFrame fl;
+            int drained = 0;
+            while (drained < 512) {          /* bound: never spin on a live feed */
+#if defined(USE_BACKCHANNEL) || defined(USE_PLAY)
+                pthread_mutex_lock(&g_ai_lock);
+                int rc = IMP_AI_GetFrame(dev, chnid, &fl, NOBLOCK);
+                pthread_mutex_unlock(&g_ai_lock);
+#else
+                int rc = IMP_AI_GetFrame(dev, chnid, &fl, NOBLOCK);
+#endif
+                if (rc != 0) break;          /* FIFO empty: caught up to live */
+                IMP_AI_ReleaseFrame(dev, chnid, &fl);
+                drained++;
+            }
+            memset(&apts, 0, sizeof apts);   /* fresh capture-pts anchor */
+            if (drained)
+                LOGI(MOD, "audio resume: flushed %d stale AI frame(s)", drained);
+        }
         int64_t a_t0 = ms_now_us();
         /* sleep on the no-frame path so a non-blocking/failing PollingFrame
          * can never spin the CPU (audio input may be idle on some boards) */
