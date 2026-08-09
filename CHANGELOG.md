@@ -6,6 +6,25 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.8.4] - 2026-08-09
+
+### Fixed
+- **hflip/vflip/running_mode reverting mid-run, no reboot involved**
+  (`hal_ingenic.c`): a camera could silently flip back to unflipped (or the
+  wrong day/night mode) hours after boot, with `/control` still reporting the
+  correct config the whole time - only a live re-POST of the same value (or a
+  full daemon restart) fixed the image, since nothing had actually changed the
+  config. Observed live on a T23/sc2336 board after a normal idle-viewer
+  reconnect cycle (chn0 going idle when no one is watching, then re-enabling
+  for a later viewer) with no crash or reboot in between. `fs_use()` now
+  self-heals: every genuine framesource-chn0 enable edge re-applies
+  hflip/vflip/running_mode, and a running_mode change now also re-asserts
+  hflip/vflip as a belt-and-braces measure in case a day/night switch alone
+  can trigger the same reset mid-stream. The existing boot-time and
+  `/control`-POST latch kicks (v1.8.2/v1.8.3) remain for the separate
+  "apply while chn0 is genuinely idle" case; this closes the "value already
+  applied but silently lost" gap they didn't cover.
+
 ## [1.8.3] - 2026-08-09
 
 ### Fixed

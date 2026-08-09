@@ -431,11 +431,20 @@ static int g_fs_users[MS_FS_MAXCHN];
  * Retrying independently of the refcount transition fixes both: any fs_use()
  * call retries the real hardware enable until it actually reports success. */
 static int g_fs_enabled[MS_FS_MAXCHN];
+/* ISP tuning access lock. Defined HERE (not down in the USE_CONTROL /control
+ * block alongside its only other user, ing_control()) because fs_use() below
+ * now re-applies image tuning under it on every real chn0 enable edge (see the
+ * relatch note in fs_kick_chn0's comment) and fs_use() is compiled into every
+ * build, USE_CONTROL or not. isp_apply_image() is defined further down in the
+ * ISP section; forward-declared so fs_use()'s chn0 relatch can reach it. */
+static pthread_mutex_t g_isp_lock = PTHREAD_MUTEX_INITIALIZER;
+static int isp_apply_image(const char *k);
 static void fs_use(int chn)
 {
     if (chn < 0 || chn >= MS_FS_MAXCHN) return;
     pthread_mutex_lock(&g_fs_mtx);
     int first = (g_fs_users[chn]++ == 0);
+    int just_enabled = 0;
     if (!g_fs_enabled[chn]) {
         if (IMP_FrameSource_EnableChn(chn) != 0)
             LOGE(MOD,"framesource %d: EnableChn failed%s", chn,
@@ -443,9 +452,39 @@ static void fs_use(int chn)
         else {
             LOGI(MOD,"framesource %d enabled", chn);
             g_fs_enabled[chn] = 1;
+            just_enabled = 1;
         }
     }
     pthread_mutex_unlock(&g_fs_mtx);
+    /* A real chn0 EnableChn (the genuine 0->1 hardware edge, NOT a refcount
+     * bump on an already-live channel) is suspected of wiping the ISP-side
+     * flip/running_mode latch, so an ALREADY-correct value can silently revert
+     * across an ordinary on-demand idle->active cycle - observed live on
+     * Galayou (T23/sc2336) 2026-08-09: 82 min uptime, no reboot, config still
+     * hflip=1/vflip=1 yet the image was upside-down after chn0 had idled and
+     * restarted for a reconnecting viewer, and a plain re-POST of the same
+     * values fixed it instantly. That is consistent with this theory but does
+     * NOT isolate it from other candidate causes (e.g. a running_mode/day-night
+     * switch independently resetting the flip - see the belt-and-braces
+     * re-assert in ing_control()); treat this as the leading hypothesis, not a
+     * proven root cause. Re-issuing the Set calls here is harmless either way
+     * and self-heals whichever mechanism is at play whenever chn0 genuinely
+     * re-enables: the value re-latches once this caller's frame loop (about
+     * to pull frames anyway) pumps chn0 - no synthetic sleep needed, unlike
+     * fs_kick_chn0. Done OUTSIDE g_fs_mtx and ONLY on the true enable edge, so
+     * refcount bumps on an already-streaming chn0 stay a cheap no-op. Lock order
+     * is g_fs_mtx (released just above) then g_isp_lock; the only other
+     * g_isp_lock holder, ing_control(), takes no further lock under it, so there
+     * is no cycle. Guarded on g_hcfg (NULL only very early pre-config, and even
+     * then the 0/0/day defaults are harmless). isp_apply_image() no-ops on SoCs
+     * where these keys are unwired. */
+    if (just_enabled && chn == 0 && g_hcfg) {
+        pthread_mutex_lock(&g_isp_lock);
+        isp_apply_image("hflip");
+        isp_apply_image("vflip");
+        isp_apply_image("running_mode");
+        pthread_mutex_unlock(&g_isp_lock);
+    }
 }
 static void fs_unuse(int chn)
 {
@@ -481,12 +520,33 @@ static void fs_unuse(int chn)
  *    A/V-independent orientation; the operator sees "live flip works, boot flip
  *    doesn't" for the same 1/1 values.
  *
+ * A SECOND, distinct failure mode in the same latch class: a value that DID
+ * latch can silently REVERT with no new Set involved. Observed live on Galayou
+ * 2026-08-09 (see fs_use for the incident detail) coinciding with a chn0
+ * idle->active cycle; IMP_FrameSource_DisableChn/EnableChn on chn0 - the normal
+ * on-demand idle->active cycle (last viewer leaves, chn0 idles after
+ * MS_IDLE_STOP_US, a later viewer re-enables it; also the video/jpeg watchdog
+ * recovery cycle and a motion (re)pin on stream 0) - is the leading suspect for
+ * resetting the ISP flip/running_mode latch, but a running_mode/day-night
+ * switch resetting the flip independently of any chn0 edge has not been ruled
+ * out either (hence the belt-and-braces re-assert in ing_control()). Either
+ * way this is NOT an "apply while idle" case - no new Set is issued - so the
+ * kick machinery here does not cover it. fs_use() now self-heals the chn0-edge
+ * case directly: every genuine chn0 0->1 enable edge re-applies hflip/vflip/
+ * running_mode under g_isp_lock. So the kick callers below - ing_control_commit()'s
+ * pending flag, ing_start()'s boot-time kick, ing_control()'s inline running_mode
+ * kick - remain necessary for the "apply a value while chn0 is genuinely idle
+ * with nobody about to consume frames" case (a /control POST while no one is
+ * watching); the idle->active-cycle case is now also handled automatically by
+ * fs_use().
+ *
  * So: after applying any of these, run chn0 for a few frames if it is idle.
  * Refcounted fs_use makes this a cheap ref bump / no-op when chn0 is already
  * streaming (a subscriber, or a motion pin on stream 0). ~500 ms = ~12 frames
  * @25fps, generous margin over the 1-2 frames the latch needs. Callers must NOT
  * hold g_isp_lock (fs_use -> IMP_FrameSource_EnableChn must not race an ISP Set
- * under that lock). */
+ * under that lock; and fs_use() now takes g_isp_lock itself on the chn0 enable
+ * edge, so a caller already holding it would deadlock). */
 #define FS0_KICK_US 500000
 static void fs_kick_chn0(void)
 {
@@ -3163,7 +3223,8 @@ static void *audio_thread(void *arg)
  * (persisted only, take effect on restart); the spk_* speaker keys are
  * persisted but ignored - timps has no AO pipeline. Compiled only with
  * -DUSE_CONTROL. */
-static pthread_mutex_t g_isp_lock = PTHREAD_MUTEX_INITIALIZER;
+/* g_isp_lock is defined up in the FrameSource section (fs_use() also takes it on
+ * a chn0 enable edge, and fs_use() is compiled in non-USE_CONTROL builds too). */
 /* set by ing_control() when a live hflip/vflip apply needs the ISP latch kick;
  * consumed once in ing_control_commit() so a settings POST carrying both
  * hflip+vflip collapses to a single fs_kick_chn0() (see fs_kick_chn0). flip is
@@ -3179,6 +3240,18 @@ static void ing_control(const char *key, const char *val)
         const char *k = key+6;
         pthread_mutex_lock(&g_isp_lock);
         int ok = isp_apply_image(k);
+        /* Belt-and-braces for the fs_use() chn0 relatch below: a running_mode
+         * (day/night) switch is suspected of being able to reset hflip/vflip
+         * on some ISP/driver combos even WITHOUT a chn0 Disable/Enable cycle
+         * (e.g. mid-stream, with a viewer already connected - fs_use() only
+         * self-heals on a genuine 0->1 edge, which a live viewer never
+         * produces). Re-asserting the current flip values here is a cheap,
+         * idempotent no-op when nothing actually reset, and closes that
+         * window regardless of which mechanism is the real cause. */
+        if (ok && !strcmp(k,"running_mode")){
+            isp_apply_image("hflip");
+            isp_apply_image("vflip");
+        }
         pthread_mutex_unlock(&g_isp_lock);
         if (ok) LOGI(MOD,"control %s=%d", key, v);
         else    LOGD(MOD,"image.%s unsupported on this platform (persisted only)", k);
