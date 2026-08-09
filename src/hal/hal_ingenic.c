@@ -50,6 +50,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <time.h>
+#include <errno.h>      /* ETIMEDOUT (act_wait predicate loop) */
 
 #define MOD "HAL_ING"
 
@@ -217,6 +218,18 @@ typedef struct {
 } sw_osd_state;
 #endif
 
+/* Fix 1 / A1: per-stream state for pts_sanitize() - turns the encoder/AI
+ * hardware capture timestamp into a capture-accurate, strictly-monotonic
+ * publish pts on the ms_now_us() timebase. One instance per video channel
+ * (embedded in vchan) and one for the audio thread; never shared between
+ * them. See pts_sanitize() for the algorithm. */
+typedef struct {
+    int64_t last_pub_pts;   /* last pts handed to the hub on this stream */
+    int64_t pts_offset;     /* hw capture clock -> ms_now_us() base offset */
+    int     have_pub_pts;   /* last_pub_pts is valid */
+    int     pts_have_off;   /* pts_offset established from a good hw value */
+} pts_sanitizer;
+
 typedef struct {
     int chn, grp, codec, w, h;
     int og;                      /* OSD group id spliced between fs and enc for
@@ -239,6 +252,11 @@ typedef struct {
      * Unused on non-T31 builds. */
     volatile int ave_valid;
     double       ave_bitrate;
+    /* Fix 1: capture-accurate, strictly-monotonic video presentation clock.
+     * Replaces the old ms_now_us()-at-publish stamping that jittered and
+     * burst-collapsed the RTP/fMP4 media clock. See pts_sanitize(). */
+    int           fps;           /* configured output fps (nominal frame interval) */
+    pts_sanitizer pts;           /* video capture-pts sanitizer state */
 #ifdef ROT_HAS_SW_90
     /* Unbound SW-rotate path (Batch 5, T23 only): when sw_rot != 0 this slot
      * has NO encoder group/channel, NO OSD group and NO IMP_System_Bind - a
@@ -329,22 +347,64 @@ static int   g_nj;
  * ing_set_active() broadcasts on every activation; the 1 s timeout is only a
  * safety net against lost wakeups and bounds the shutdown join latency. */
 static pthread_mutex_t g_act_mtx  = PTHREAD_MUTEX_INITIALIZER;
-static pthread_cond_t  g_act_cond = PTHREAD_COND_INITIALIZER;
+/* A2: CLOCK_MONOTONIC condvar (runtime-init, act_once) - a wall-clock/NTP step
+ * (common shortly after boot, exactly when the first viewer connects) must not
+ * stretch the 1 s safety timeout. Matches every other wait primitive here
+ * (fanqueue.c, events.c, util.c ms_stopgate). */
+static pthread_cond_t  g_act_cond;
+static pthread_once_t  g_act_once = PTHREAD_ONCE_INIT;
+static void act_once(void)
+{
+    pthread_condattr_t a;
+    pthread_condattr_init(&a);
+    pthread_condattr_setclock(&a, CLOCK_MONOTONIC);
+    pthread_cond_init(&g_act_cond, &a);
+    pthread_condattr_destroy(&a);
+}
 static void act_wake(void)
 {
+    pthread_once(&g_act_once, act_once);
     pthread_mutex_lock(&g_act_mtx);
     pthread_cond_broadcast(&g_act_cond);
     pthread_mutex_unlock(&g_act_mtx);
 }
-static void act_wait(void)
+/* A2: block an idle producer until its stream is (re)activated or ~1 s elapses.
+ * ready(arg) is the caller's wake condition (the same active-flag / hub_active
+ * level test its main loop uses), re-checked UNDER g_act_mtx in a loop. This
+ * closes the lost-wakeup race the old single unconditional wait had: a
+ * subscriber that arrives between the caller's want-check and this wait sets its
+ * active flag before ing_set_active()'s act_wake(); the predicate re-test here
+ * runs under the same mutex act_wake() takes, so it either observes the flag and
+ * returns at once, or is still blocked and is delivered the broadcast - the
+ * wakeup is never slept through. ready() only reads plain flags / hub_active()
+ * (the hub source lock); ing_set_active() releases the hub source lock before
+ * calling act_wake() (hub.c:18), so acquiring the source lock under g_act_mtx
+ * here introduces no lock-order cycle. A spurious wake or ETIMEDOUT just
+ * re-tests the predicate against the same absolute deadline, so there is no
+ * busy-loop and the total wait stays bounded at ~1 s. */
+static void act_wait(int (*ready)(void *), void *arg)
 {
+    pthread_once(&g_act_once, act_once);
     struct timespec ts;
-    clock_gettime(CLOCK_REALTIME, &ts);
+    clock_gettime(CLOCK_MONOTONIC, &ts);
     ts.tv_sec += 1;
     pthread_mutex_lock(&g_act_mtx);
-    pthread_cond_timedwait(&g_act_cond, &g_act_mtx, &ts);
+    while (!ready(arg)) {
+        if (pthread_cond_timedwait(&g_act_cond, &g_act_mtx, &ts) == ETIMEDOUT)
+            break;
+    }
     pthread_mutex_unlock(&g_act_mtx);
 }
+/* act_wait() wake predicates: the same level test each producer's main loop
+ * uses, minus the periodic/time-based parts (e.g. jpeg's snapshot-due) that get
+ * no act_wake() and are correctly served by the 1 s safety timeout re-poll.
+ * MUST also return true when the thread's run flag is cleared: ing_stop() drops
+ * run/g_arun then act_wake()s once to make every idle-blocked thread return
+ * promptly for the join - without the flag here the predicate would still be
+ * false and the thread would re-wait up to the full 1 s, delaying shutdown. */
+static int act_ready_vchan(void *a){ vchan *vc=(vchan*)a; return !vc->run  || vc->active || hub_active(vc->chn); }
+static int act_ready_jchan(void *a){ jchan *jc=(jchan*)a; return !jc->run  || jc->active || hub_active(jc->src); }
+static int act_ready_audio(void *a){ (void)a;             return !g_arun  || g_aactive; }
 
 /* A FrameSource channel is enabled only while someone consumes its frames.
  * An enabled FS keeps the whole bound pipeline (FS -> OSD -> encoder group)
@@ -1158,6 +1218,97 @@ static int au_is_key(int codec, const uint8_t *au, size_t len)
     return 0;
 }
 
+/* Fix 1 / A1: capture-accurate, strictly-monotonic publish timestamp, shared by
+ * every video channel and the audio thread (each with its own pts_sanitizer).
+ *
+ * The RTP/fMP4 media clock used to be ms_now_us() sampled at hub-publish time.
+ * That carries publish-thread scheduling jitter and, after any encoder-poll /
+ * AI-FIFO-drain hiccup, bursts several frames with near-identical stamps as the
+ * backlog drains - the non-monotonic / "No video PTS, making something up"
+ * behaviour mpv reported over RTSP on cinnado_d1_t31l. rtp.c's audio RTP layer
+ * is sample-count-driven and immune to this, but the gap-repair heuristics that
+ * consume the publish pts (audio_gap_resync() in rtp.c, fmp4.c's M2 audio
+ * re-anchor) still reacted to the jittery stamp: a publish-thread stall that
+ * lost no samples (the AI FIFO buffered and burst them) looked like a gap and
+ * inserted phantom samples -> permanent audio drift (A1).
+ *
+ * The encoder/AI hands us the true per-frame capture time
+ * (IMPEncoderPack.timestamp / IMPFrameInfo.timeStamp / IMPAudioFrame.timeStamp,
+ * unit us); its inter-frame deltas are the correct, jitter-free media clock, and
+ * those deltas ARE exactly the signal the gap heuristics need. We do NOT trust
+ * it blindly:
+ *
+ *  - Absolute base: libimp's timestamp base is not guaranteed to equal
+ *    CLOCK_MONOTONIC (ms_now_us). rtp.c's RTCP Sender Report pairs ms_now_us()
+ *    ("now") against the track's first pts (pts0); a pts0 on a foreign base
+ *    would corrupt the NTP<->RTP mapping and A/V lip-sync. So we keep the media
+ *    timeline ON the ms_now_us base: the first frame anchors at now_us and every
+ *    later frame adds the hardware DELTA via a fixed offset (now0 - hw0). Any
+ *    constant base difference cancels out; only the jitter-free deltas survive.
+ *    Because the base is unchanged, no downstream consumer (RTP SR, fMP4 tfdt,
+ *    recorder, SRT PES) sees a timebase shift - only the jitter is removed.
+ *
+ *  - Reliability: on some SoC/libimp builds the field can be 0, frozen, or
+ *    garbage. We accept the hardware-derived value only while it is strictly
+ *    monotonic AND within +/-skew_max_us of the wall clock. A genuine stall
+ *    advances BOTH clocks, so a real multi-second gap is preserved and stays
+ *    aligned with audio_gap_resync(); a frozen/garbage value diverges from the
+ *    wall clock and is rejected. (This wall-clock cross-check replaces a raw
+ *    ">N s jump" rule on purpose - a delta threshold cannot tell a real long
+ *    stall, which we must preserve to stay A/V-aligned, from garbage, which we
+ *    must reject.) On rejection we advance one nominal frame (frame_us) without
+ *    ever falling behind the wall clock, then re-seat the offset so a later good
+ *    frame re-locks the hw clock.
+ *
+ * skew_max_us bounds the legitimate capture-vs-publish lag: video uses ~1 s
+ * (encoder backlog can be large); audio uses a tighter bound sized to the AI
+ * FIFO depth (MS_AI_FRM_DEPTH frames ~160 ms) plus the AAC accumulator, since
+ * audio's hardware FIFO caps how far a legitimate burst can lag and a looser
+ * bound would only let more garbage through.
+ *
+ * Always returns a strictly-increasing pts on the ms_now_us() timebase. */
+static int64_t pts_sanitize(pts_sanitizer *s, int64_t hw_us, int64_t now_us,
+                            int64_t frame_us, int64_t skew_max_us)
+{
+    if (frame_us < 1) frame_us = 1;
+
+    if (!s->have_pub_pts) {                  /* first frame: anchor to the wall clock */
+        if (hw_us > 0) { s->pts_offset = now_us - hw_us; s->pts_have_off = 1; }
+        else           { s->pts_offset = 0;              s->pts_have_off = 0; }
+        s->have_pub_pts = 1;
+        s->last_pub_pts = now_us;
+        return now_us;
+    }
+
+    if (hw_us > 0) {
+        if (!s->pts_have_off) { s->pts_offset = now_us - hw_us; s->pts_have_off = 1; }
+        int64_t cand = hw_us + s->pts_offset;
+        int64_t skew = cand - now_us; if (skew < 0) skew = -skew;
+        if (cand > s->last_pub_pts && skew <= skew_max_us) {  /* monotonic & clock-consistent */
+            s->last_pub_pts = cand;
+            return cand;
+        }
+        /* hw unreliable here (backwards, frozen, or diverged from the wall
+         * clock): re-seat the offset so a subsequent good frame can re-lock */
+        s->pts_offset = now_us - hw_us;
+    }
+
+    /* fallback: smooth nominal advance, but never let the media clock fall
+     * behind real time (keeps the track aligned with audio_gap_resync/M2) */
+    int64_t pts = s->last_pub_pts + frame_us;
+    if (pts < now_us)             pts = now_us;
+    if (pts <= s->last_pub_pts)   pts = s->last_pub_pts + 1;   /* strict monotonic guard */
+    s->last_pub_pts = pts;
+    return pts;
+}
+
+/* video skew tolerance (encoder backlog can be ~1 s) */
+#define PTS_SKEW_VIDEO_US 1000000LL
+/* audio skew tolerance: the AI FIFO (MS_AI_FRM_DEPTH * ~40 ms) plus the AAC
+ * accumulator (<64 ms) cap a legitimate burst's lag at ~250 ms; 500 ms gives
+ * 2x margin while still rejecting garbage far tighter than video's 1 s. */
+#define PTS_SKEW_AUDIO_US 500000LL
+
 static void *video_thread(void *arg)
 {
     vchan *vc = (vchan*)arg;
@@ -1193,7 +1344,7 @@ static void *video_thread(void *arg)
         if (!want) {
             /* fully idle: block until ing_set_active() wakes us (1 s safety
              * timeout). No polling, no frame flow - the framesource is off. */
-            if (!receiving){ act_wait(); continue; }
+            if (!receiving){ act_wait(act_ready_vchan, vc); continue; }
             /* debounce the stop: only shut the encoder down after a sustained
              * idle period; rapid client churn must not toggle Start/StopRecvPic */
             int64_t now = ms_now_us();
@@ -1374,7 +1525,16 @@ static void *video_thread(void *arg)
         if (!dbg_first){ dbg_first=1;
             LOGI(MOD,"chn%d: first encoded frame packCount=%u aulen=%zu key=%d",
                  vc->chn, st.packCount, aulen, key); }
-        hub_publish_take(vc->chn, pk, ms_now_us(), key, MS_MEDIA_VIDEO);
+        /* Fix 1: use the encoder's per-frame capture timestamp (jitter-free
+         * media clock), sanitized/monotonized against the wall clock, instead
+         * of ms_now_us() at publish time. All packs of one frame share the
+         * capture time; pack[0] is representative. */
+        int64_t hw_us = (st.packCount > 0) ? st.pack[0].timestamp : 0;
+        int64_t pub_now = ms_now_us();
+        int64_t pts = pts_sanitize(&vc->pts, hw_us, pub_now,
+                                   1000000 / (vc->fps > 0 ? vc->fps : 25),
+                                   PTS_SKEW_VIDEO_US);
+        hub_publish_take(vc->chn, pk, pts, key, MS_MEDIA_VIDEO);
 #if defined(PLATFORM_T31)
         /* Item-2 (T31 only): cache the running average bitrate for the read-only
          * /control encoder-stats getter. Must run while 'st' is still held (the
@@ -1631,7 +1791,7 @@ static void *sw_rot_thread(void *arg)
     while (vc->run) {
         int want = vc->active || hub_active(vc->chn);
         if (!want) {
-            if (!receiving){ act_wait(); continue; }
+            if (!receiving){ act_wait(act_ready_vchan, vc); continue; }
             int64_t now = ms_now_us();
             if (idle_since==0) idle_since = now;
             if (now - idle_since >= MS_IDLE_STOP_US) {
@@ -1702,8 +1862,15 @@ static void *sw_rot_thread(void *arg)
                  vc->chn, out.outLen, key); }
         /* hub_publish copies the AU into its own refcounted pkt, so the
          * encoder-owned out.outAddr is done with by the time we loop */
+        /* Fix 1: use the framesource capture timestamp ('ts' = frm->timeStamp,
+         * read above), sanitized/monotonized against the wall clock, instead of
+         * ms_now_us() at publish time. */
+        int64_t pub_now = ms_now_us();
+        int64_t pts = pts_sanitize(&vc->pts, ts, pub_now,
+                                   1000000 / (vc->fps > 0 ? vc->fps : 25),
+                                   PTS_SKEW_VIDEO_US);
         hub_publish(vc->chn, (const uint8_t*)out.outAddr, (size_t)out.outLen,
-                    ms_now_us(), key, MS_MEDIA_VIDEO);
+                    pts, key, MS_MEDIA_VIDEO);
 
         /* ---- Batch 7: standalone JPEG on the SW-rotate stream ----------------
          * On-demand + throttled, mirroring jpeg_thread's contract:
@@ -1945,6 +2112,8 @@ static int sw_rot_start(const ms_config *cfg, int i)
     vchan *vc = &g_v[g_nv++];
     vc->chn=chn; vc->grp=-1; vc->codec=v->codec;
     vc->w=ew; vc->h=eh;                      /* EFF dims (AU sizing unused here) */
+    vc->fps=v->fps;                          /* Fix 1: nominal frame interval */
+    memset(&vc->pts, 0, sizeof vc->pts);     /* reset capture-pts sanitizer */
     vc->og=-1; vc->nbound=0;
     vc->run=0; vc->active=0; vc->idr_req=0; vc->has_thr=0;
     vc->sw_rot=(v->rotation==270)?270:90;    /* 90 = clockwise (config semantics) */
@@ -2026,8 +2195,9 @@ static void *jpeg_thread(void *arg)
                         (nowj - jc->last_snapshot_us >= MS_SNAPSHOT_INTERVAL_US);
         int jwant = jc->active || snap_due || hub_active(jc->src);
         if (!jwant) {
-            /* fully idle: block until reactivated (see act_wait) */
-            if (!receiving){ act_wait(); continue; }
+            /* fully idle: block until reactivated (see act_wait). snap_due is
+             * time-based (no act_wake), so it rides the 1 s timeout re-poll. */
+            if (!receiving){ act_wait(act_ready_jchan, jc); continue; }
             int64_t nowi = ms_now_us();
             if (idle_since==0) idle_since = nowi;
             if (nowi - idle_since >= MS_IDLE_STOP_US) {
@@ -2695,8 +2865,15 @@ static void *audio_thread(void *arg)
 #endif
 
     int ai_fail_streak = 0;
+    /* A1: capture-pts sanitizer for audio (own instance, never shared with a
+     * video channel). Feeds the AI hardware timeStamp through pts_sanitize() so
+     * a publish-thread stall (audio starved by the video encoders, then the AI
+     * FIFO bursts on drain) can no longer masquerade as an audio gap and make
+     * audio_gap_resync()/fmp4 M2 insert phantom samples -> drift. */
+    pts_sanitizer apts;
+    memset(&apts, 0, sizeof apts);
     while (g_arun) {
-        if (!g_aactive){ act_wait(); continue; }   /* on-demand: block idle */
+        if (!g_aactive){ act_wait(act_ready_audio, NULL); continue; }   /* on-demand: block idle */
         int64_t a_t0 = ms_now_us();
         /* sleep on the no-frame path so a non-blocking/failing PollingFrame
          * can never spin the CPU (audio input may be idle on some boards) */
@@ -2793,7 +2970,16 @@ static void *audio_thread(void *arg)
                     if (st!=FAAC_OK) LOGW(MOD,"faac_encoder_encode: %s",faac_strerror(st));
                     if (n>0){
                         if (!dbg_logged){ LOGI(MOD,"AAC encoder producing (%u bytes/frame)",n); dbg_logged=1; }
-                        hub_publish(HUB_AUDIO_SRC, aac, (size_t)n, ms_now_us(), 0, MS_MEDIA_AUDIO);
+                        /* A1: stamp with the AI capture time (frm.timeStamp),
+                         * sanitized to the ms_now_us base. At most one AAC frame
+                         * drains per AI frame (640 samples in, 1024-sample unit),
+                         * so successive drains carry distinct, increasing capture
+                         * stamps; the AAC nominal frame (1024/g_asr) is the
+                         * fallback interval. */
+                        int64_t a_pts = pts_sanitize(&apts, frm.timeStamp, ms_now_us(),
+                                                     (int64_t)1024*1000000/(g_asr>0?g_asr:16000),
+                                                     PTS_SKEW_AUDIO_US);
+                        hub_publish(HUB_AUDIO_SRC, aac, (size_t)n, a_pts, 0, MS_MEDIA_AUDIO);
                     }
                     acc_n -= faac_in;
                     memmove(acc, acc+faac_in, acc_n*sizeof(int16_t));
@@ -2816,7 +3002,12 @@ static void *audio_thread(void *arg)
                     LOGI(MOD,"opus encoder producing (%d bytes/frame)", on);
                     dbg_logged_opus=1;
                 }
-                hub_publish(HUB_AUDIO_SRC, obuf, (size_t)on, ms_now_us(), 0, MS_MEDIA_AUDIO);
+                /* A1: one Opus frame per AI frame -> stamp with this frame's
+                 * capture time; fallback interval = this frame's duration. */
+                int64_t a_pts = pts_sanitize(&apts, frm.timeStamp, ms_now_us(),
+                                             (int64_t)samples*1000000/(g_asr>0?g_asr:16000),
+                                             PTS_SKEW_AUDIO_US);
+                hub_publish(HUB_AUDIO_SRC, obuf, (size_t)on, a_pts, 0, MS_MEDIA_AUDIO);
             }
 #endif
         } else {
@@ -2824,7 +3015,11 @@ static void *audio_thread(void *arg)
             if (samples>sizeof enc) samples=sizeof enc;
             if (g_acodec==MS_AC_PCMA) g711_alaw_encode(pcm,samples,enc);
             else                      g711_ulaw_encode(pcm,samples,enc);
-            hub_publish(HUB_AUDIO_SRC,enc,samples,ms_now_us(),0,MS_MEDIA_AUDIO);
+            /* A1: one G.711 frame per AI frame -> capture time, sanitized. */
+            int64_t a_pts = pts_sanitize(&apts, frm.timeStamp, ms_now_us(),
+                                         (int64_t)samples*1000000/(g_asr>0?g_asr:8000),
+                                         PTS_SKEW_AUDIO_US);
+            hub_publish(HUB_AUDIO_SRC,enc,samples,a_pts,0,MS_MEDIA_AUDIO);
         }
         IMP_AI_ReleaseFrame(dev,chnid,&frm);
         /* adaptive pacing: if IMP_AI didn't actually block (spin), throttle to
@@ -3169,6 +3364,8 @@ static int ing_start(const ms_config *cfg)
         vchan *vc=&g_v[g_nv++];
         vc->chn=chn; vc->grp=grp; vc->codec=v->codec;
         vc->w=ew; vc->h=eh;
+        vc->fps=v->fps;                          /* Fix 1: nominal frame interval */
+        memset(&vc->pts, 0, sizeof vc->pts);     /* reset capture-pts sanitizer */
         vc->og=-1; vc->nbound=0;
         vc->run=0; vc->active=0; vc->idr_req=0; vc->has_thr=0;
         vc->ave_valid=0; vc->ave_bitrate=-1.0;   /* Item-2: reset telemetry cache */

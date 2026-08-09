@@ -122,25 +122,47 @@ static const char *PLAYER_HEAD =
 static const char *PLAYER_TAIL =
 "const msg=document.getElementById('msg');"
 "const showMsg=(t)=>{if(msg){msg.textContent=t;msg.style.display='block';}};"
+"const hideMsg=()=>{if(msg)msg.style.display='none';};"
 /* iOS Safari never exposes window.MediaSource; since iOS 17.1 it exposes
  * window.ManagedMediaSource instead (requires disableRemotePlayback, set on
  * the <video> tag below). Desktop browsers keep using plain MediaSource. */
 "const MS=window.ManagedMediaSource||window.MediaSource;"
-"if(MS&&MS.isTypeSupported(mime)){"
-"const ms=new MS();v.src=URL.createObjectURL(ms);"
-"ms.addEventListener('sourceopen',async()=>{"
+"if(!(MS&&MS.isTypeSupported(mime))){showMsg('Live preview needs a browser with Media Source support.');v.src=src;}"
+"else{"
+/* Fix 2: the whole MSE pipeline lives in connect() so it can be rebuilt.
+ * A backgrounded browser tab is throttled and stops draining TCP; the server
+ * then drops the idle socket (15s SO_SNDTIMEO in accept_thread), which ended
+ * the fetch reader and, previously, permanently killed the <video> with no
+ * recovery. Now: one connection at a time (cur), auto-reconnect on any stream
+ * end/error while visible, and rebuild on return-to-foreground. */
+"let cur=null,timer=0;"
+/* Tear one connection fully down (idempotent via c.dead): abort its fetch so
+ * the server socket closes at once instead of riding out the send timeout, end
+ * its MediaSource, and revoke ITS object URL (never a newer connection's). */
+"const teardown=(c)=>{if(!c||c.dead)return;c.dead=true;"
+"try{c.ac.abort();}catch(e){}"
+"try{if(c.ms.readyState==='open')c.ms.endOfStream();}catch(e){}"
+"try{URL.revokeObjectURL(c.url);}catch(e){}};"
+/* At most one pending reconnect; never while hidden or while a live conn exists */
+"const retry=()=>{if(timer||document.hidden||(cur&&!cur.dead))return;"
+"timer=setTimeout(()=>{timer=0;connect();},1000);};"
+"function connect(){if(timer){clearTimeout(timer);timer=0;}"
+"if(cur&&!cur.dead)return;"                     /* guard: never two live conns / fetch loops */
+"const conn={dead:false,ac:new AbortController(),ms:new MS()};cur=conn;"
+"const ms=conn.ms;conn.url=URL.createObjectURL(ms);v.src=conn.url;"
+"const fail=()=>{teardown(conn);retry();};"
+"ms.addEventListener('sourceopen',async()=>{if(conn.dead)return;"
 "try{ms.duration=Infinity;}catch(e){}"          /* Safari live-MSE hint */
 "let sb;try{sb=ms.addSourceBuffer(mime);}"
-"catch(e){showMsg('Preview: codec not supported by this browser.');v.src=src;return;}"
-"sb.mode='sequence';let dead=false;const q=[];let busy=false;"
-"const stop=()=>{dead=true;try{if(ms.readyState==='open')ms.endOfStream();}catch(e){}};"
+"catch(e){showMsg('Preview: codec not supported by this browser.');teardown(conn);return;}"
+"sb.mode='sequence';const q=[];let busy=false;"
 /* drop buffered data older than ~10s behind playback so the SourceBuffer
  * never fills up during a long-running live stream */
 "const evict=()=>{try{if(sb.buffered.length){const s=sb.buffered.start(0),e=v.currentTime-10;"
 "if(e>s+4&&!sb.updating)sb.remove(s,e);}}catch(e){}};"
-"const pump=()=>{if(dead||busy||sb.updating||ms.readyState!=='open'||!q.length)return;"
+"const pump=()=>{if(conn.dead||busy||sb.updating||ms.readyState!=='open'||!q.length)return;"
 "busy=true;const c=q[0];try{sb.appendBuffer(c);q.shift();}"
-"catch(e){busy=false;if(e.name==='QuotaExceededError')evict();else stop();}};"
+"catch(e){busy=false;if(e.name==='QuotaExceededError')evict();else fail();}};"
 "sb.addEventListener('updateend',()=>{busy=false;"
 "if(v.buffered.length){if(v.currentTime<v.buffered.start(0))v.currentTime=v.buffered.start(0);"
 /* Stay near the live edge so a PTZ move shows with minimal delay. A MediaSource
@@ -156,11 +178,16 @@ static const char *PLAYER_TAIL =
 "if(behind>5)v.currentTime=end-1.5;"
 "else v.playbackRate=behind>1.5?Math.min(1.3,1+(behind-1.5)*0.5):1;}"
 "evict();pump();});"
-"sb.addEventListener('error',stop);"
-"const res=await fetch(src);const rd=res.body.getReader();"
-"try{while(true){const{done,value}=await rd.read();if(done||dead)break;q.push(value);pump();}}"
-"catch(e){}stop();"
-"});}else{showMsg('Live preview needs a browser with Media Source support.');v.src=src;}"
+"sb.addEventListener('error',fail);"
+"try{const res=await fetch(src,{signal:conn.ac.signal});const rd=res.body.getReader();hideMsg();"
+"while(true){const{done,value}=await rd.read();if(done||conn.dead)break;q.push(value);pump();}}"
+"catch(e){}fail();"                             /* stream ended/errored/aborted -> reconnect */
+"});}"
+/* close cleanly when hidden (frees the server socket, blocks reconnect while
+ * hidden), rebuild when shown again; connect() self-guards against duplicates */
+"document.addEventListener('visibilitychange',()=>{"
+"if(document.hidden)teardown(cur);else connect();});"
+"connect();}"
 "</script></body></html>";
 
 /* like http_send but with extra response headers ("Name: v\r\n" lines),
