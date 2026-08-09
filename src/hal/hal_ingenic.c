@@ -1274,6 +1274,14 @@ static int au_is_key(int codec, const uint8_t *au, size_t len)
  *    forward lead) and re-seat the offset so a later good frame re-locks the hw
  *    clock.
  *
+ *  - Self-correction: a diverged-but-still-under-skew_max hw clock used to stay
+ *    locked in forever (the accept path froze pts_offset). Since video and audio
+ *    use different skew_max, one track could hold a drift the other rejected ->
+ *    a permanent A/V skew. The accept path now SLEWS pts_offset back toward the
+ *    zero-skew value at a tiny capped per-frame rate whenever the drift is
+ *    non-trivial (see PTS_SLEW_* below), so no track can stay locked to a
+ *    drifted clock. Convergence is gradual (invisible per frame), not a step.
+ *
  * skew_max_us bounds the legitimate capture-vs-publish lag: video uses ~1 s
  * (encoder backlog can be large); audio uses a tighter bound sized to the AI
  * FIFO depth (MS_AI_FRM_DEPTH frames ~160 ms) plus the AAC accumulator, since
@@ -1281,6 +1289,20 @@ static int au_is_key(int codec, const uint8_t *au, size_t len)
  * bound would only let more garbage through.
  *
  * Always returns a strictly-increasing pts on the ms_now_us() timebase. */
+/* Self-correction slew (accept path), shared by both streams:
+ *  - DEADBAND: only correct a genuine hw-vs-wall DRIFT, not per-frame jitter.
+ *    Steady-state skew is jitter-scale (a few ms - the offset is anchored to the
+ *    capture cadence, not the absolute latency), so 50 ms sits well above it:
+ *    the offset stays frozen in normal operation and cand keeps the smooth,
+ *    jitter-free capture clock. Only a real drift event pushes skew past this.
+ *  - MAX: per-frame offset step cap. 1 ms << any real frame interval (>=~8 ms
+ *    at 120 fps), so it is invisible per frame and always leaves a large
+ *    monotonicity margin. Convergence rate = MAX * fps (e.g. 25 ms/s at 25 fps,
+ *    ~2.5% playback deviation during recovery); a ~0.9 s drift decays to the
+ *    deadband in ~34 s. Tunable: raise MAX for faster recovery, lower for a
+ *    gentler slew. */
+#define PTS_SLEW_DEADBAND_US 50000LL
+#define PTS_SLEW_MAX_US       1000LL
 static int64_t pts_sanitize(pts_sanitizer *s, int64_t hw_us, int64_t now_us,
                             int64_t frame_us, int64_t skew_max_us)
 {
@@ -1299,11 +1321,40 @@ static int64_t pts_sanitize(pts_sanitizer *s, int64_t hw_us, int64_t now_us,
         int64_t cand = hw_us + s->pts_offset;
         int64_t skew = cand - now_us; if (skew < 0) skew = -skew;
         if (cand > s->last_pub_pts && skew <= skew_max_us) {  /* monotonic & clock-consistent */
+            /* Self-correction (NTP-style slew): the accept path used to freeze
+             * pts_offset forever, so if the hw clock ever diverged from the wall
+             * clock by an amount below skew_max the stream stayed locked at that
+             * offset permanently - and because video (1 s) and audio (500 ms)
+             * use different skew_max, one track could lock to a drift the other
+             * rejected, giving a non-self-correcting A/V skew (the ~0.9 s Garage
+             * incident). Fix: whenever the accepted skew is non-trivial (> the
+             * deadband; normal skew is jitter-scale and stays frozen so cand
+             * remains the smooth, jitter-free capture clock), nudge pts_offset a
+             * small capped step toward the zero-skew value (now_us - hw_us), i.e.
+             * by err = now_us - cand = (now_us - hw_us) - pts_offset. The step is
+             * far below one hw inter-frame delta, so it is invisible per frame and
+             * a large drift converges back to wall over time instead of forever.
+             *
+             * MONOTONICITY: the value RETURNED is `cand`, computed with the
+             * PRE-nudge offset. The nudge only changes FUTURE cand values;
+             * next frame cand' = hw' + (offset +/- step), and cand' - cand =
+             * (hw' - hw) +/- step. Since |step| <= PTS_SLEW_MAX_US << the hw
+             * inter-frame delta, cand' still exceeds cand, and the `cand >
+             * last_pub_pts` test above re-verifies it regardless (a pathological
+             * tiny hw delta just falls to the monotonic fallback). Symmetric for
+             * a hw clock running ahead (err < 0 -> negative step). */
+            if (skew > PTS_SLEW_DEADBAND_US) {
+                int64_t step = now_us - cand;                 /* toward zero skew */
+                if (step >  PTS_SLEW_MAX_US) step =  PTS_SLEW_MAX_US;
+                if (step < -PTS_SLEW_MAX_US) step = -PTS_SLEW_MAX_US;
+                s->pts_offset += step;
+            }
             s->last_pub_pts = cand;
             return cand;
         }
         /* hw unreliable here (backwards, frozen, or diverged from the wall
-         * clock): re-seat the offset so a subsequent good frame can re-lock */
+         * clock by more than skew_max): re-seat the offset so a subsequent good
+         * frame re-locks the hw clock */
         s->pts_offset = now_us - hw_us;
     }
 
