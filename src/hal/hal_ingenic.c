@@ -459,29 +459,42 @@ static void fs_unuse(int chn)
     pthread_mutex_unlock(&g_fs_mtx);
 }
 
-/* running_mode (day/night) latch kick. The ISP core only PROCESSES a pending
- * SetISPRunningMode while framesource chn0 is delivering frames: with chn0
- * idle-stopped (on-demand FS above) the SDK call still returns 0 but the mode
- * change sits queued in the driver indefinitely - even when a scaled channel
- * (chn1) is streaming the whole time. Root-caused on Galayou Y4
- * (T23 / sc2336, ISP H20241028a / isp_20250722a) 2026-08-01: the dusk
- * switch-to-night plus BOTH daynight re-asserts returned rc=0 with chn0 idle,
- * /proc/jz/isp/isp-m0 stayed "Runing Mode : Day", and the always-on ch1
- * substream showed the magenta IR-in-colour-mode image all evening. Merely
- * enabling chn0 (a snapshot request) latched the queued mode within a couple
- * of frames, with no further Set call.
- * So: after every running_mode apply, run chn0 for a few frames if it is
- * idle. Refcounted fs_use makes this a cheap ref bump / no-op when chn0 is
- * already streaming. ~500 ms = ~12 frames @25fps, generous margin over the
- * 1-2 frames the latch needs. Callers must NOT hold g_isp_lock. */
-#define FS0_MODE_KICK_US 500000
-static void fs_kick_running_mode(void)
+/* ISP latch kick. Several ISP settings only take effect while framesource chn0
+ * is delivering frames: the SDK Set call returns 0 but the change sits queued in
+ * the driver until chn0 pumps a couple of frames. With the on-demand FS above,
+ * chn0 is idle whenever nothing subscribes (and, crucially, at boot before any
+ * client connects), so the queued change never latches.
+ *
+ * Two settings in this class are known:
+ *  - running_mode (day/night): root-caused on Galayou Y4 (T23 / sc2336, ISP
+ *    H20241028a / isp_20250722a) 2026-08-01 - the dusk switch-to-night plus BOTH
+ *    daynight re-asserts returned rc=0 with chn0 idle, /proc/jz/isp/isp-m0
+ *    stayed "Runing Mode : Day", and the always-on ch1 substream showed the
+ *    magenta IR-in-colour-mode image all evening. Merely enabling chn0 (a
+ *    snapshot) latched the queued mode within a couple of frames, no further Set.
+ *  - image.hflip / image.vflip: same class, found 2026-08-09 on the same board.
+ *    apply_image_tuning() sets the flip at boot (isp_init) BEFORE any FS exists,
+ *    and it is never re-applied when the FS later starts, so with chn0 idle the
+ *    flip never latches: the sensor comes up UNFLIPPED despite hflip=1/vflip=1
+ *    (image upside-down), and only a live /control POST landing while the WebUI
+ *    preview streams chn0 makes it take effect. RTSP masks a resulting constant
+ *    A/V-independent orientation; the operator sees "live flip works, boot flip
+ *    doesn't" for the same 1/1 values.
+ *
+ * So: after applying any of these, run chn0 for a few frames if it is idle.
+ * Refcounted fs_use makes this a cheap ref bump / no-op when chn0 is already
+ * streaming (a subscriber, or a motion pin on stream 0). ~500 ms = ~12 frames
+ * @25fps, generous margin over the 1-2 frames the latch needs. Callers must NOT
+ * hold g_isp_lock (fs_use -> IMP_FrameSource_EnableChn must not race an ISP Set
+ * under that lock). */
+#define FS0_KICK_US 500000
+static void fs_kick_chn0(void)
 {
     /* the latch belongs to the ISP's direct-output channel 0; per-stream
      * imp_chn maps stream 0 -> fs chn 0 (see fs_create) */
     if (!g_hcfg || !g_hcfg->video[0].enabled) return;
     fs_use(0);
-    usleep(FS0_MODE_KICK_US);
+    usleep(FS0_KICK_US);
     fs_unuse(0);
 }
 
@@ -3100,6 +3113,11 @@ static void *audio_thread(void *arg)
  * persisted but ignored - timps has no AO pipeline. Compiled only with
  * -DUSE_CONTROL. */
 static pthread_mutex_t g_isp_lock = PTHREAD_MUTEX_INITIALIZER;
+/* set by ing_control() when a live hflip/vflip apply needs the ISP latch kick;
+ * consumed once in ing_control_commit() so a settings POST carrying both
+ * hflip+vflip collapses to a single fs_kick_chn0() (see fs_kick_chn0). flip is
+ * only ever set via /control, which always calls hub_control_commit(). */
+static int g_isp_flip_kick_pending = 0;
 static void ing_control(const char *key, const char *val)
 {
     int v = (int)strtol(val, NULL, 0);
@@ -3114,9 +3132,18 @@ static void ing_control(const char *key, const char *val)
         if (ok) LOGI(MOD,"control %s=%d", key, v);
         else    LOGD(MOD,"image.%s unsupported on this platform (persisted only)", k);
         /* day/night: the ISP only latches a running-mode change while fs chn0
-         * runs - kick it if idle (see fs_kick_running_mode; blocks ~500 ms,
-         * fine for /control connection threads and the daynight thread) */
-        if (ok && !strcmp(k,"running_mode")) fs_kick_running_mode();
+         * runs - kick it if idle (see fs_kick_chn0; blocks ~500 ms, fine for
+         * /control connection threads and the daynight thread). Kept INLINE
+         * (not deferred to commit) because daynight.c calls hub_control(
+         * "image.running_mode") directly, without a hub_control_commit(). */
+        if (ok && !strcmp(k,"running_mode")) fs_kick_chn0();
+        /* hflip/vflip are the same latch class (fs_kick_chn0): a boot-time or
+         * chn0-idle apply otherwise never takes effect. Coalesce to a single
+         * kick in ing_control_commit() so a POST carrying both hflip and vflip
+         * does not kick twice; safe because flip is only ever set via /control,
+         * which always ends in hub_control_commit(). */
+        else if (ok && (!strcmp(k,"hflip") || !strcmp(k,"vflip")))
+            g_isp_flip_kick_pending = 1;
         return;
     }
 
@@ -3302,6 +3329,14 @@ static void ing_control_commit(void)
             motion_sync(g_hcfg);
             LOGI(MOD,"IVS sensitivity live-update failed, full grid rebuild done");
         }
+    }
+    /* one ISP latch kick for the whole request if any hflip/vflip changed, so a
+     * live flip toggle takes effect immediately instead of only by luck of chn0
+     * already streaming (see fs_kick_chn0). Not under g_isp_lock. */
+    if (g_isp_flip_kick_pending){
+        g_isp_flip_kick_pending = 0;
+        fs_kick_chn0();
+        LOGI(MOD,"ISP flip latch kicked (batched, once per request)");
     }
 }
 #endif
@@ -3509,6 +3544,16 @@ static int ing_start(const ms_config *cfg)
     if (cfg->jpeg.enabled && jpeg_setup(cfg)!=0)
         LOGW(MOD,"dedicated JPEG channel unavailable");
     motion_sync(cfg);      /* start the IVS motion grid if motion.enabled */
+    /* Latch the boot-time ISP tuning that only takes effect while fs chn0 runs.
+     * apply_image_tuning() (isp_init, before any FS existed) already issued
+     * hflip/vflip/running_mode, but on the on-demand pipeline chn0 is idle at
+     * boot, so those Sets sit queued and never apply - the sensor comes up
+     * unflipped / in the wrong day-night mode until a live /control re-apply.
+     * Run chn0 briefly now (all FS channels exist at this point) to latch them.
+     * No-op ref bump when motion pinned chn0 above; ~500 ms one-time otherwise.
+     * Must run here (end of ing_start), NOT at the apply_image_tuning() call in
+     * isp_init, where fs chn0 does not yet exist. */
+    fs_kick_chn0();
     return 0;
 
 fail:
