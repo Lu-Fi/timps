@@ -6,6 +6,57 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.8.2] - 2026-08-09
+
+### Fixed
+- **Video RTP/fMP4/SRT timestamps** (`hal_ingenic.c`): the video publish path
+  stamped every frame with `ms_now_us()` (wall-clock time at the moment the
+  publish thread happened to run) instead of the encoder's actual per-frame
+  capture timestamp. This carried publish-thread scheduling jitter and, after
+  any encoder-poll hiccup, burst several frames with near-identical stamps as
+  the backlog drained - non-monotonic timestamps that made mpv report "No
+  video PTS! Making something up" / "Invalid video timestamp" over RTSP
+  (reported against `cinnado_d1_t31l_sc2336_atbm6031`). New `pts_sanitize()`
+  reprojects the encoder's real capture clock (`IMPEncoderPack.timestamp` /
+  `IMPFrameInfo.timeStamp`) onto the existing `ms_now_us()` timebase via a
+  per-stream offset, so RTCP SR / fMP4 tfdt / SRT PES see no timebase shift,
+  only jitter removal - with a monotonicity + wall-clock-skew sanity check
+  and safe fallback when the hardware value looks bad.
+- **Audio timestamps, same bug class**: audio was also stamped with
+  `ms_now_us()` at publish time. RTP's audio timeline is sample-count-driven
+  and unaffected, but the gap-repair heuristics that consume the publish
+  pts (`audio_gap_resync()`, fMP4's M2 audio re-anchor) reacted to the
+  jittery stamp - a publish-thread stall that lost no samples (the AI FIFO
+  buffered and burst them) looked like a gap and inserted phantom samples,
+  drifting the audio timeline over long uptimes. Now uses the same
+  `pts_sanitize()` helper with its own per-channel state and a tighter,
+  FIFO-sized skew tolerance.
+- **Audio idle-resume A/V skew**: fixing the above surfaced a real
+  regression, caught by hardware QA: unlike the video encoder (which stops
+  capturing while idle), the audio input is never stopped while idle - it
+  keeps capturing into its FIFO the whole time. On resume, draining that
+  stale backlog as a fast burst could ratchet the sanitized audio pts ahead
+  of real time with no way back, showing up as several seconds of A/V skew
+  on a fresh `/stream.mp4` connection (RTSP was unaffected - each RTP track
+  re-anchors to NTP independently). Fixed by flushing the stale AI backlog
+  on idle-to-active resume (mirroring the video encoder's own idle
+  teardown) and hardening `pts_sanitize()`'s fallback so the sanitized pts
+  can never run ahead of the wall clock.
+- **`act_wait()`**: the only `CLOCK_REALTIME` condition-variable wait with no
+  predicate loop in the codebase (everywhere else uses `CLOCK_MONOTONIC` for
+  exactly this reason). Closed a lost-wakeup race on the stream-start path
+  and removed a window where an NTP step (common shortly after boot, exactly
+  when the first viewer often connects) could stretch the 1s idle-wait
+  timeout, adding up to a second of avoidable latency when opening a live
+  view from idle.
+- **WebUI live-preview reconnect** (`mp4/httpd.c`): the fMP4/MSE preview
+  player had no reconnect logic at all. The server's 15s `SO_SNDTIMEO`
+  correctly kills an idle connection when a backgrounded browser tab
+  throttles the muted-autoplay `<video>` element and stops draining it, but
+  the player stayed dead until a manual page reload. Added
+  `connect()`/`teardown()`/`retry()` plus a `visibilitychange` handler,
+  mirroring the auto-reconnect the `/events` SSE endpoint already had.
+
 ## [1.8.1] - 2026-08-09
 
 ### Added
