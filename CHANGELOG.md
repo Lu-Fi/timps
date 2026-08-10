@@ -6,6 +6,35 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.8.5] - 2026-08-10
+
+### Fixed
+- **RTCP Sender Report pairs a stale RTP timestamp with a fresh NTP
+  timestamp** (`src/rtsp/rtp.c`): players that reconstruct wall-clock PTS from
+  RTCP SR data (ffmpeg, mpv) could see the video/audio timeline jump backward
+  or forward - a universal burst on every fresh connection, plus recurring
+  jumps roughly every 15-25s during playback, worse on cameras with large or
+  frequent IDR frames (noisy night scenes especially). Root cause: a 2026-08-07
+  perf change (single `ms_now_us()` read per `stream_loop()` iteration) made
+  the RTP-timestamp side of the SR use a `now_us` value that could be seconds
+  stale by the time it was written - the AU send earlier in that same
+  iteration can block for a while under TCP backpressure on a large IDR -
+  while the SR's NTP field was still sampled fresh. `rtp_maybe_sr()` now
+  re-samples the monotonic clock immediately before writing the SR, once one
+  is actually due, so both halves of the pairing are sampled back-to-back
+  again. The server's own RTP timestamps were never wrong; only the SR's
+  internal NTP<->RTP mapping was. Root-caused via a live report of mpv
+  repeatedly self-pausing, confirmed with raw TCP-interleaved packet capture,
+  independently reviewed before shipping.
+
+### Testing
+- `scripts/timps-qa.sh`: fixed a QA-script bug that let the above regression
+  through every prior QA/soak run undetected - the "no ffmpeg decode/timestamp
+  warnings" check grepped for `non-monotonous`, but ffmpeg's actual muxer
+  wording is `Non-monotonic` - the pattern never matched, so this whole class
+  of warning was silently invisible in every `analyze_stream` call (stream
+  integrity, fMP4, SRT, and the long-running soak section all reuse it).
+
 ## [1.8.4] - 2026-08-09
 
 ### Fixed

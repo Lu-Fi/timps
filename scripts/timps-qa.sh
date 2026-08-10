@@ -373,7 +373,13 @@ analyze_stream() {
 		bad "$label: no data captured (see $err)"; return 1
 	fi
 	local ffe
-	ffe=$(grep -icE 'non-monotonous|discontinuit|corrupt|error while|decode_slice|concealing|invalid data|missed' "$err" 2>/dev/null || true)
+	# "non-monotonic" (not "non-monotonous") is ffmpeg's actual muxer wording
+	# ("Non-monotonic DTS; previous: X, current: Y") - the old pattern here
+	# used the wrong spelling and silently never matched it, so this class of
+	# warning went undetected through every QA/soak run this project has ever
+	# run (root-caused 2026-08-10 investigating a real RTCP SR stale-timestamp
+	# bug in rtp.c that this exact warning would have flagged from day one).
+	ffe=$(grep -icE 'non-monoton(ous|ic)|discontinuit|corrupt|error while|decode_slice|concealing|invalid data|missed' "$err" 2>/dev/null || true)
 
 	local probe="$OUTDIR/pkts_${label}.csv"
 	# NOTE: ffprobe emits csv columns in a FIXED order (codec_type,pts_time here),

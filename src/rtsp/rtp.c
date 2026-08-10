@@ -434,6 +434,28 @@ int rtp_maybe_sr(rtp_track *t, int64_t now_us)
      * another full second because this call "used up" the 1s gate below. */
     if (!t->have_pts0) return 0;
     if (t->last_sr_us && now_us - t->last_sr_us < 1000000) return 0;
+    /* now_us is the caller's once-per-loop-iteration snapshot (rtsp.c's
+     * stream_loop, P-03: one ms_now_us() per iteration to avoid a syscall
+     * per media frame). That's fine for the cheap "is an SR due?" gate above,
+     * but it is STALE by however long this iteration blocked between the
+     * snapshot and here - the AU send can stall for seconds under TCP
+     * backpressure on a large IDR (SO_SNDTIMEO is 15s), so now_us can lag
+     * wall-clock by that much. Regression from adcd1dd (P-03): before it, now
+     * was read right here, so the SR's RTP-timestamp math and rtcp_wr_sr()'s
+     * fresh CLOCK_REALTIME NTP read were sampled back-to-back; after it they
+     * drifted apart by the stall, producing an SR whose NTP<->RTP pairing is
+     * off by the per-iteration send delay. Receivers that reconstruct
+     * wall-clock PTS from SR data (ffmpeg/mpv) turn that inconsistent pairing
+     * into visible backward/forward playback jumps - a universal burst on every
+     * fresh connection plus recurring mid-stream jumps every ~15-25s, worst on
+     * cameras with big/frequent IDRs (noisy night scenes). Fix: now that an SR
+     * is actually going out, re-sample the monotonic clock ONCE, right here,
+     * so it is paired back-to-back with rtcp_wr_sr()'s NTP read again. This
+     * costs exactly one extra clock_gettime on the rare (~1/s/track) SR path,
+     * NOT per frame, so P-03's per-frame syscall saving is preserved. Advance
+     * last_sr_us by this fresh value too, so the next "due" gate measures from
+     * the real write time, not the stale snapshot. */
+    now_us = ms_now_us();
     t->last_sr_us = now_us;
     /* B2: RFC 3550 6.1 - every RTCP packet is a compound that includes an
      * SDES with CNAME. The bare 28-byte SR was tolerated by ffmpeg/VLC/
