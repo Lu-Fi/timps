@@ -2174,7 +2174,7 @@ if [ "${SOAK_DUR:-0}" -gt 0 ] && want 15 soak; then
 		# "|| echo 0" here - that fires on the exit-1 and yields a two-line "0\n0",
 		# which then makes err_total=$((err_total+e)) a fatal arithmetic SYNTAX
 		# error that tears out of the whole soak loop (zero slices logged).
-		e=$(grep -icE 'non-monotonous|discontinuit|corrupt|error while|concealing|invalid data' "$rlog" 2>/dev/null); e=${e:-0}
+		e=$(grep -icE 'non-monotonic|discontinuit|corrupt|error while|concealing|invalid data' "$rlog" 2>/dev/null); e=${e:-0}
 		err_total=$((err_total+e))
 		rss=""
 		if [ -n "$SSH_TARGET" ]; then
