@@ -6,6 +6,135 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+- **`videoN.gop` ran at DOUBLE the configured value on every new-API SoC**
+  (`src/hal/hal_ingenic.c`, `enc_create()` `ENC_NEW_API` path - T31, C100,
+  T40, T41): the keyframe interval was accepted, clamped, persisted and
+  faithfully echoed by `/control`, while the encoder quietly used `2 * gop`.
+  `IMP_Encoder_SetDefaultParam()`'s `uMaxSameSenceCnt` argument is not a
+  "same scene" hint - every vendored new-API `imp_encoder.h` documents it as
+  `GOPLength = uGopLength * uMaxSameSenceCnt, Default is 2`, so passing the
+  documented default 2 alongside `uGopLength = v->gop` doubled it. Measured on
+  a T31 (`cinnado_d1_t31l_sc2336`, `video1.gop=50` @ 25 fps): IDRs landed
+  exactly 4.000 s apart (100 frames) instead of 2.000 s, on both the main and
+  the sub stream (the path is shared by every stream). Now passes 1 and
+  re-asserts `gopAttr.uGopLength` / `gopAttr.uMaxSameSenceCnt` explicitly, so
+  the effective GOP no longer depends on how a given libimp build folds the
+  argument into the struct. Classic-API SoCs (T10..T30) were never affected -
+  they set `rcAttr.maxGop = v->gop` directly. **Note:** cameras will now emit
+  twice as many keyframes as they did before, i.e. the delivered bitrate rises
+  toward the configured target; that is the configured behaviour, but raise
+  `videoN.gop` if you were unknowingly relying on the doubled interval.
+  Found by the new `--test-encoder` QA section (v1.8.5), +8 bytes `.text`.
+
+- **fMP4 clients could receive corrupted mid-GOP video after a queue
+  eviction** (`src/mp4/httpd.c`, `stream_mp4()`): the adaptive-drop resync
+  only triggered on an evicted *keyframe* or on the slot-count high-water
+  mark, but a fanqueue can evict without tripping either - the `FQ_MAX_BYTES`
+  byte budget binds below `MS_MP4_DROP_HIWAT` slots during a bitrate spike
+  (2 MB / 48 slots = ~43 KB/frame, an ordinary 1080p motion burst), and an
+  eviction hole shorter than one GOP need not contain a keyframe. The client
+  then resumed on mid-GOP P-frames referencing AUs it never received - the
+  silent-corruption case adaptive drop was built to prevent, and the same
+  defect rtsp.c already heals via `fanqueue_take_dropped()`. Observed in the
+  Galayou (T23, weak atbm6062 WiFi) QA capture 2026-08-11: three ~1.4-1.6 s
+  eviction holes each resuming on a non-keyframe. Any eviction now arms the
+  adaptive freeze-until-keyframe (and, with `http.adaptive_drop=0`, a
+  rate-limited IDR request, mirroring rtsp.c). Sim binary size unchanged
+  (193616 -> 193616 bytes).
+
+- **day/night: silent decision/ISP desync when the board hook chain fails**
+  (`src/daynight.c`, re-assert block): timps by design never writes
+  `image.running_mode` itself - the board `switch_cmd` script backgrounds the
+  `color` script, which curls a POST back to `/control` (fire-and-forget,
+  output discarded). A lost/failed POST left `daynight.mode` and the ISP
+  silently disagreeing until the next transition, with nothing in the logs.
+  The post-switch re-assert (8 s after a switch, long past the ~1 s hook
+  latency measured on real T20+T31 boards) now WARNs when `running_mode`
+  still contradicts the switched mode, naming the hook chain. Deliberately
+  WARN-only: re-running `switch_cmd` there would clobber a legitimate manual
+  override, which the re-assert intentionally honours. Combined `.text`
+  delta for this + the fMP4 eviction fix above: +471 bytes (sim build).
+
+### Testing
+- `scripts/timps-qa.sh` `analyze_stream()`: the ffmpeg-warning verdict for
+  **UDP** captures now separates `RTP: missed N packets` lines (inherent
+  transport loss - UDP RTSP has no retransmission by design) from real
+  decode/timestamp warnings, which keep the strict zero-tolerance ladder on
+  every transport. Loss is judged as a RATE against the estimated datagram
+  count (capture bytes / the 1200-byte default `rtsp.mtu`; undercounting
+  small audio packets errs strict): <=0.5% -> WARN naming it ordinary
+  residual WiFi loss, above -> still FAIL (genuinely degraded path).
+  Grounded in the garage 2026-08-11 run: 8 single-packet, evenly scattered
+  losses over ~6100 datagrams (0.13%) with every other metric clean and the
+  TCP capture from the same run at zero warnings - TCP retransmit masks the
+  identical underlying loss, UDP correctly surfaces it; a sender burst/
+  pacing defect would instead lose multi-packet runs clustered at IDR
+  bursts. Previously any 4th lost packet in 30s hard-FAILed the run.
+- `scripts/timps-qa.sh` **8h (`--test-daynight`)**: the first two hardware
+  runs (T31 Schuppen + T20 Wyze, 2026-08-11) each produced one FAIL -
+  seemingly "night direction broken, day fine" on both - and BOTH were test
+  artifacts, differently caused:
+  - *Wyze*: the camera sat in genuine night when the test began
+    (`control.json` at run start: `daynight.mode=1`), so the forced-night
+    phase confirmed an already-night camera vacuously - no transition, no
+    hook run - and the hook-count check FAILed a working chain. 8h now
+    reads the LIVE starting state and, when already night, forces a fresh
+    DAY state first so both directions are real edges; the hook-count
+    baselines are taken after that precondition switch.
+  - *Schuppen*: the `image.running_mode` read-back was a single-shot read
+    taken as little as ~0.2 s after `daynight.mode` flipped, racing the
+    asynchronous board hook chain (~0.3-1.5 s when idle, more under QA
+    load, up to curl's 5 s timeout legitimately) - a coin-flip false FAIL.
+    Both directions now poll `running_mode` for up to 10 s before ruling,
+    report the observed latency on PASS, and the FAIL text explains that
+    timps never writes `running_mode` itself and points at the on-camera
+    chain (`switch_cmd` script, `thingino.json` `daynight.controls.color`,
+    `/usr/sbin/color`). The day-direction verdict is also no longer
+    vacuous: if night never reached `running_mode=1`, the day phase's
+    0-read is reported as "not a real edge, no verdict" instead of PASS.
+  Also fixed: the hook-count delta now requires the *baseline* logread
+  samples too (an empty baseline plus stale history could fabricate an
+  invocation), and the restore no longer posts empty `time_night_start`/
+  `time_day_start` strings for cameras that had none (the server ignores
+  empty, which silently left the TEST windows persisted - visible in both
+  runs' post-reboot thread banners).
+- `scripts/timps-qa.sh` `av_skew()` + the A/V-skew verdict in
+  `analyze_stream()`: a transport dropout hole overlapping the 2 s warmup
+  boundary could fake a seconds-large "A/V skew". The start reference was
+  each track's *own* first post-warmup packet, so the two references could
+  land on opposite sides of a delivery hole - packets that were never
+  contemporaneous. Observed on Galayou 2026-08-11: a lone keyframe at 2.060 s
+  inside a startup dropout vs audio resuming at 3.558 s read as
+  `start=1.498s end=0.014s drift=-1.484s` -> a false `[FAIL] out of sync /
+  growing` on a stream whose tracks were locked (0.014 s) wherever both
+  flowed; the real finding (fanqueue eviction dropouts on a weak link) was
+  already correctly WARNed by the max-gap checks. The start reference is now
+  the first post-warmup *audio* packet paired with the *video packet nearest
+  to it in time* (end/drift stay last-minus-last, so genuine rate divergence
+  is still fully visible), and the verdict distinguishes the two shapes:
+  PTS are wall-locked, so dropouts shrink neither track's span while real
+  divergence opens a span difference of about the drift's size - a large
+  drift with agreeing spans plus a >1 s max-gap now downgrades to a WARN
+  naming the dropout instead of a bogus out-of-sync FAIL. Healthy-stream
+  values are unchanged (verified against the same run's three RTSP captures).
+- `scripts/timps-qa.sh` **8g (`--test-encoder`)**: the bitrate check now
+  measures what the substream actually delivers *before* changing anything and
+  then aims the new target *below* that. A bitrate target is a ceiling, so
+  raising it cannot move a stream that is already quality- or content-limited
+  (`videoN.min_qp` floor on a static scene) - the old "is the measured value
+  closer to the new number or the old one?" heuristic hard-FAILED a perfectly
+  healthy T31 encoder for that reason. A lowered ceiling always binds, so the
+  verdict is now sharp in both directions; the un-measurable upward fallback
+  can only WARN. The cbr-vs-vbr variance comparison gained the same guard.
+- `scripts/timps-qa.sh` **13b (`--test-hostile`)**: the isolation verdict now
+  compares the healthy clients against the baseline phase measured moments
+  earlier instead of against nominal fps. Isolation is a differential
+  question; comparing to nominal re-reported section 3's "this SoC does not
+  sustain its configured fps" finding as a bogus isolation FAIL (observed:
+  baseline 18.2 fps -> 18.1 fps with a stalled client attached, i.e. isolation
+  was holding).
+
 ## [1.8.5] - 2026-08-10
 
 ### Fixed
