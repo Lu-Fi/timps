@@ -12,6 +12,7 @@ ms_pkt *pkt_new(const uint8_t *data, size_t len, int64_t pts_us, int keyframe, i
     p->len = len;
     p->cap = len ? len : 1;
     p->pts_us = pts_us;
+    p->enq_us = 0;           /* stamped by hub_publish*() only while tracing */
     p->keyframe = keyframe;
     p->media = media;
     p->_ref = 1;
@@ -87,6 +88,7 @@ ms_pkt *pkt_pool_get(pkt_pool *pool, size_t cap)
     }
     p->len      = 0;
     p->pts_us   = 0;
+    p->enq_us   = 0;        /* stamped by hub_publish*() only while tracing */
     p->keyframe = 0;
     p->media    = 0;
     p->_ref     = 1;

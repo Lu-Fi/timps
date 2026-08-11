@@ -14,6 +14,15 @@ typedef struct ms_pkt {
     size_t       len;       /* payload length in use */
     size_t       cap;       /* allocated capacity of data (>= len) */
     int64_t      pts_us;    /* presentation time, microseconds */
+    /* CLOCK_MONOTONIC (ms_now_us) instant this packet was handed to the hub,
+     * i.e. "the encoder produced it". ONLY stamped while the opt-in send-
+     * pipeline trace is enabled (see trace.h); 0 otherwise, so the normal
+     * build does not pay a clock_gettime per published frame. Consumers use
+     * it purely for the `age` figure in a trace line - nothing functional
+     * reads it, so a 0 here is always safe. Deliberately NOT pts_us: pts_us
+     * is the sanitized/slewed CAPTURE timestamp, which is exactly the thing
+     * a stall investigation must not have to trust. */
+    int64_t      enq_us;
     int          keyframe;  /* video IDR */
     int          media;     /* enum ms_media */
     int          _ref;

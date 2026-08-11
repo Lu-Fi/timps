@@ -1,6 +1,7 @@
 #include "hub.h"
 #include "log.h"
 #include "util.h"
+#include "trace.h"
 #include <string.h>
 
 #define MOD "HUB"
@@ -392,6 +393,9 @@ void hub_publish(int src, const uint8_t *data, size_t len,
      * (tiny frames) and any caller that cannot assemble into a pooled buffer. */
     ms_pkt *p = pkt_new(data, len, pts_us, keyframe, media);
     if (p) {
+        /* trace.h: "encoder produced it" reference for the per-AU `age`. One
+         * clock_gettime per published frame, ONLY while tracing is on. */
+        if (ms_trace_on(MS_TR_AU)) p->enq_us = ms_now_us();
         /* push after releasing s->lock; each push takes its own ref, the
          * builder's own reference is released once below. */
         for (int i=0;i<nsub_snap;i++)
@@ -411,6 +415,9 @@ void hub_publish_take(int src, ms_pkt *p,
     p->pts_us   = pts_us;
     p->keyframe = keyframe;
     p->media    = media;
+    /* trace.h: see hub_publish(). Stamped before the fan-out so every
+     * subscriber sees the same publish instant. */
+    p->enq_us   = ms_trace_on(MS_TR_AU) ? ms_now_us() : 0;
 
     fanqueue *subs_snap[HUB_MAX_SUBS];
     int pushing = 0;

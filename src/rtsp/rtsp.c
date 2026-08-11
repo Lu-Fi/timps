@@ -7,6 +7,7 @@
 #include "../codec/aac.h"
 #include "../auth.h"
 #include "../tls.h"
+#include "../trace.h"
 #include "backchannel.h"
 #if defined(USE_TLS) || defined(USE_BACKCHANNEL)
 #include <fcntl.h>
@@ -110,6 +111,8 @@ typedef struct {
     rtp_batch         *batch;        /* P3: UDP video only; NULL = send direct */
     int                wrote_tcp;    /* 1 once a TCP interleaved write has ever
                                       * succeeded on this sink (see reap_check) */
+    ms_trace_ctx      *tr;           /* opt-in send trace (trace.h); NULL/off =
+                                      * every hook below is one global-int test */
 #ifdef USE_TLS
     void              *tls;          /* ms_tls_conn* when interleaved over RTSPS */
 #endif
@@ -121,6 +124,11 @@ static int sink_flush(rtp_sink *s)
 {
     rtp_batch *b = s->batch;
     if (!b || b->n == 0) return 0;
+    /* trace.h: one bracket around the whole batch, not per datagram - a
+     * sendmmsg IS one kernel entry, and it is the unit that can block. */
+    int64_t t_wr = ms_trace_wr_begin();
+    int bytes = 0;
+    if (t_wr) for (int i = 0; i < b->n; i++) bytes += (int)b->iov[i].iov_len;
     int off = 0;
     while (off < b->n) {
         int r = (int)sendmmsg(s->fd, b->msgs + off, (unsigned)(b->n - off), 0);
@@ -130,15 +138,17 @@ static int sink_flush(rtp_sink *s)
                 for (; off < b->n; off++)
                     if (sendto(s->fd, b->iov[off].iov_base, b->iov[off].iov_len,
                                0, (struct sockaddr*)&s->dst, sizeof s->dst) < 0)
-                        { b->n = 0; return -1; }
+                        { b->n = 0; ms_trace_wr_end(s->tr, t_wr, 0); return -1; }
                 break;
             }
             b->n = 0;
+            ms_trace_wr_end(s->tr, t_wr, 0);
             return -1;
         }
         off += r;
     }
     b->n = 0;
+    ms_trace_wr_end(s->tr, t_wr, bytes);
     return 0;
 }
 
@@ -163,16 +173,23 @@ static int sink_send(void *ctx, const uint8_t *pkt, int len, int rtcp)
         buf[2] = (uint8_t)(len >> 8);
         buf[3] = (uint8_t)len;
         memcpy(buf + 4, pkt, len);
+        /* trace.h: this is THE interesting write on a TCP-interleaved session -
+         * it is where a stalled peer / closed receive window parks us for up to
+         * SO_SNDTIMEO. Bracketing it (only while MS_TR_WR is on) is what lets a
+         * slow AU be attributed to the wire rather than to timps. */
+        int64_t t_wr = ms_trace_wr_begin();
 #ifdef USE_TLS
         /* interleaved packets ride the control connection: over RTSPS they
          * must go through TLS like every other byte on that connection */
         if (s->tls) {
             int rc = ms_tls_write((ms_tls_conn*)s->tls, buf, 4+len) < 0 ? -1 : len;
+            ms_trace_wr_end(s->tr, t_wr, rc >= 0 ? 4+len : 0);
             if (rc >= 0) s->wrote_tcp = 1;
             return rc;
         }
 #endif
         int rc = net_sendall(s->fd, buf, 4 + len) < 0 ? -1 : len;
+        ms_trace_wr_end(s->tr, t_wr, rc >= 0 ? 4+len : 0);
         if (rc >= 0) s->wrote_tcp = 1;
         return rc;
     } else {
@@ -202,7 +219,10 @@ static int sink_send(void *ctx, const uint8_t *pkt, int len, int rtcp)
         }
         struct sockaddr_in *d = rtcp ? &s->dst_rtcp : &s->dst;
         int fd = rtcp ? s->fd_rtcp : s->fd;
-        return (int)sendto(fd, pkt, len, 0, (struct sockaddr*)d, sizeof(*d));
+        int64_t t_wr = ms_trace_wr_begin();
+        int rc = (int)sendto(fd, pkt, len, 0, (struct sockaddr*)d, sizeof(*d));
+        ms_trace_wr_end(s->tr, t_wr, rc > 0 ? rc : 0);
+        return rc;
     }
 }
 
@@ -223,6 +243,8 @@ typedef struct {
     int                 v_udp[2], a_udp[2];   /* server rtp,rtcp fds */
     fanqueue            q;
     rtp_track           vtrack, atrack;
+    ms_trace_ctx        tr;            /* opt-in send trace (trace.h); inert
+                                        * and untouched unless general.trace */
     int                 playing;
     int                 play_cseq;     /* CSeq of PLAY; 200 sent after subscribe */
 #ifdef USE_BACKCHANNEL
@@ -971,6 +993,17 @@ static void stream_loop(session *s)
             snprintf(cname, sizeof cname, "timps@%s", s->session);
     }
 
+    /* trace.h: arm the per-session send trace. ms_trace_open() memsets the ctx
+     * and returns immediately when general.trace is 0, so the only cost on a
+     * normal build is this call plus two NULL-ish pointer stores. Both sinks
+     * point at the SAME ctx on purpose: video and audio share one socket (and,
+     * over TCP-interleaved, one connection), so a stall on one is a stall on
+     * the other - which is exactly the "shared pipe" hypothesis we want to be
+     * able to confirm or kill from the log alone. */
+    ms_trace_open(&s->tr, "rtsp", s->session, s->vchn);
+    s->vsink.tr = &s->tr;
+    s->asink.tr = &s->tr;
+
     int sub_v = 0, sub_a = 0;
     if (s->have_video) {
         rtp_track_init(&s->vtrack, VIDEO_PT, 90000, c->rtsp_mtu, cname,
@@ -1089,6 +1122,24 @@ static void stream_loop(session *s)
         }
         ms_pkt *p = fanqueue_pop(&s->q, pop_ms);
         if (p) {
+            /* trace.h: t_pop must be read AFTER the pop returned - `now` above
+             * predates a blocking wait of up to pop_ms and would report a
+             * producer stall as our own send time. Two clock_gettime per AU,
+             * and only while tracing. */
+            int64_t t_pop = 0, tr_enq = 0;
+            int tr_q = -1, tr_qcap = -1, tr_media = 0, tr_key = 0;
+            size_t tr_len = 0;
+            if (ms_trace_on(MS_TR_AU)) {
+                t_pop = ms_now_us();
+                ms_trace_au_begin(&s->tr);
+                if (ms_trace_on(MS_TR_Q))
+                    fanqueue_depth(&s->q, &tr_q, &tr_qcap, NULL);
+                /* p is unref'd below and may be recycled by the producer
+                 * immediately afterwards, so snapshot what the line needs. */
+                tr_media = p->media; tr_key = p->keyframe;
+                tr_len   = p->len;   tr_enq = p->enq_us;
+            }
+
             int sendrc = 0;
             if (p->media==MS_MEDIA_VIDEO && s->have_video) {
                 if (!got_key) {
@@ -1108,6 +1159,9 @@ static void stream_loop(session *s)
                 else               sendrc = rtp_send_g711(&s->atrack,p->data,p->len,p->pts_us);
             }
             pkt_unref(p);
+            if (t_pop)
+                ms_trace_au_end(&s->tr, tr_media, tr_key, tr_len, tr_enq,
+                                t_pop, ms_now_us(), tr_q, tr_qcap);
             /* H-1: a failed send (SO_SNDTIMEO expired after 15s of zero
              * progress, or client gone) may have left a PARTIAL '$'-framed
              * interleaved packet (or torn TLS write) on the wire. One more
@@ -1138,6 +1192,11 @@ static void stream_loop(session *s)
             (s->have_audio && rtp_maybe_sr(&s->atrack, now) < 0)) {
             s->playing = 0; break;      /* H-1: torn RTCP frame, see above */
         }
+        /* trace.h: periodic per-session summary. Reuses the loop's existing
+         * `now` snapshot - no extra clock read - and returns immediately
+         * unless MS_TR_SUM is set and the window has elapsed. Placed after the
+         * RTCP send so a blocked SR write is already folded into wr_us. */
+        ms_trace_window(&s->tr, now);
 
         /* poll control socket for TEARDOWN/keepalive/close; over TLS r_recv
          * maps "no data yet" to -1/EAGAIN, so n==0 only ever means a plain

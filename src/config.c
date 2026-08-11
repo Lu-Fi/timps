@@ -1,5 +1,6 @@
 #include "config.h"
 #include "log.h"
+#include "trace.h"         /* general.trace/general.trace_ms (side-effect keys) */
 #include "motion_caps.h"   /* MOTION_MAX_CELLS/MOTION_CELL_LIMIT (grid clamp) */
 #include "rotate_caps.h"   /* ROT_HAS_90/ROT_HAS_HW_I2D (rotation whitelist) */
 #include "isp_caps.h"      /* ISP_HAS_* (image_fields[]'s F_CAP gating) */
@@ -1172,6 +1173,30 @@ static void set_kv(ms_config *c, const char *key, const char *val)
     }
     if (!strcmp(key,"general.syslog")){          /* to logread; default on */
         log_set_syslog(pbool(val));
+        return;
+    }
+    /* Send-pipeline tracing (see src/trace.h). DELIBERATELY handled here as a
+     * side-effecting key rather than as a cfg_field table entry, exactly like
+     * general.syslog above: staying out of general_fields[] means it carries no
+     * F_CTRL flag, so control.c's table walker never applies it from a POST,
+     * config_get_kv() cannot echo it, and it is absent from the
+     * /control?fields=1 inventory the WebUI builds its forms from. It is also
+     * not a build-time option, so it never appears in menuconfig. This is a
+     * developer probe for a specific incident, not a user-facing feature:
+     * the only way to arm it is editing /etc/timps.conf by hand and restarting
+     * timpsd. config_write_keys() preserves lines it does not own, so a
+     * /control persist will not delete it while an investigation is running.
+     *
+     * Both keys take effect in file order; the threshold banner ms_trace_set()
+     * prints therefore shows the default when general.trace_ms is listed after
+     * general.trace. That is cosmetic - the value actually used per AU is read
+     * live from g_trace_thresh_us. */
+    if (!strcmp(key,"general.trace")){
+        ms_trace_set(pint(val));
+        return;
+    }
+    if (!strcmp(key,"general.trace_ms")){
+        ms_trace_set_threshold_ms(pint(val));
         return;
     }
 
