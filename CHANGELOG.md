@@ -7,6 +7,28 @@ semantic versioning.
 ## [Unreleased]
 
 ### Fixed
+- **Follow-up to the RTCP SR clock fix below: the SR anchor wobbled by the
+  fanqueue latency, re-timing ffmpeg's RTCP-driven timeline once per SR**
+  (`src/rtsp/rtsp.c` anchor call sites, `src/hub.c`): the first version of
+  the fix paired each sent packet's media timestamp with the sender loop's
+  ITERATION-TOP clock read. On a healthy session those coincide, but during
+  a TCP-backpressure drain the packets being sent were captured hundreds of
+  ms earlier, so each SR sent mid-drain advertised a differently-shifted
+  NTP<->RTP mapping. ffmpeg re-times the stream on every SR: the result was
+  "Non-monotonic DTS" warning waves on the plain TCP audio+video path -
+  one overshot packet, then real timestamps climbing back to the bogus
+  peak - with wave amplitude matching the capture's max delivery gap
+  (rtcpfix-schuppen: 4 warnings; rtcpfix-garage: 17, waves of ~370 ms
+  against a 0.43 s max gap; this path had been warning-free on every prior
+  run because the OLD bug's error was near-constant and receivers absorb a
+  constant offset silently). The anchor now uses the packet's hub publish
+  stamp (`p->enq_us`, stamped unconditionally in hub_publish/_take now -
+  one clock read per published frame per SOURCE, ~25-40/s, not per
+  subscriber), which is the instant the media timestamp was actually
+  current, immune to how long the packet later sat in the queue. A/B on
+  timpsd-sim with induced reader stalls (SIGSTOP bursts): pre-fix binary
+  reproduces the Non-monotonic warnings, fixed binary is clean, the benign
+  one-per-session "Timestamps are unset" line is unchanged in both.
 - **RTCP SR paired its NTP timestamp with an RTP timestamp computed on the
   wrong clock** (`src/rtsp/rtp.c` `rtcp_wr_sr()`; regression shipped in
   v1.8.5, 365162d): the stale-pairing fix was right to re-sample NTP fresh,

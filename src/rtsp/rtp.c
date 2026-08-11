@@ -390,8 +390,7 @@ static int rtcp_wr_sr(rtp_track *t, int64_t now_us, uint8_t *p)
     /* RTP timestamp for "now": extrapolate from the MEDIA timeline's last
      * true media<->wall correspondence - last_rtp_ts (the media timestamp of
      * the last sent packet, sample-exact for audio, pts-derived for video)
-     * paired with sr_ref_mono_us (the sender loop's monotonic stamp for that
-     * packet), advanced by the monotonic time elapsed since. Both
+     * paired with sr_ref_mono_us (that packet's hub publish stamp), advanced by the monotonic time elapsed since. Both
      * subtractions stay within a single clock each.
      *
      * The previous form (`now_us - t->pts0`) assumed pts_us values live on

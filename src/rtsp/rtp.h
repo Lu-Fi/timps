@@ -58,7 +58,7 @@ typedef struct {
 } rtp_track;
 
 /* Record the monotonic wall time corresponding to the media packet just sent
- * on this track (the caller's per-iteration ms_now_us() snapshot). Pairs with
+ * on this track (the packet's hub publish stamp, p->enq_us). Pairs with
  * t->last_rtp_ts to give the RTCP SR a media-timestamp <-> wall-clock
  * correspondence on consistent clocks: mono_us is on ms_now_us()'s clock,
  * while pts_us values may live on a different epoch (pts_sanitize output,

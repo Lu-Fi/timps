@@ -1152,23 +1152,31 @@ static void stream_loop(session *s)
                  * single sendmmsg (no-op on TCP / unbatched sinks) */
                 if (sendrc >= 0 && sink_flush(&s->vsink) < 0) sendrc = -1;
                 /* SR media<->wall anchor: pair this AU's media timestamp
-                 * (vtrack.last_rtp_ts) with the iteration's monotonic clock
-                 * read - the correspondence rtcp_wr_sr() extrapolates from.
-                 * NOT p->pts_us: pts values may live on a different epoch
-                 * (see rtcp_wr_sr()). `now` slightly predates the send and
-                 * postdates capture by the fanqueue latency (~0 on a healthy
-                 * session), which bounds the pairing error at queue depth -
-                 * and both tracks share the queue, so relative A/V sync is
-                 * unaffected even when backlogged. (p->enq_us would be the
-                 * exact capture stamp but is only populated while tracing.) */
-                if (sendrc >= 0) rtp_sr_anchor(&s->vtrack, now);
+                 * (vtrack.last_rtp_ts) with the packet's PUBLISH stamp
+                 * (p->enq_us, hub-side ms_now_us(), stamped unconditionally
+                 * since the rtcpfix-wave fix) - the correspondence
+                 * rtcp_wr_sr() extrapolates from. NOT p->pts_us (pts values
+                 * may live on a different epoch, see rtcp_wr_sr()), and NOT
+                 * the iteration's `now`: that pairing was off by the fanqueue
+                 * latency, which spikes to hundreds of ms during a TCP-
+                 * backpressure drain, so each SR sent mid-drain advertised a
+                 * differently-shifted timeline - ffmpeg re-timed the stream
+                 * per SR and logged "Non-monotonic DTS" waves whose amplitude
+                 * matched the capture's max delivery gap (rtcpfix-schuppen/
+                 * -garage 2026-08-11). The publish stamp is latency-immune:
+                 * it is the same instant the media timestamp was current,
+                 * whether the packet is sent 1 ms or 500 ms later. Fallback
+                 * to `now` only for a hypothetical unstamped packet. */
+                if (sendrc >= 0)
+                    rtp_sr_anchor(&s->vtrack, p->enq_us > 0 ? p->enq_us : now);
             } else if (p->media==MS_MEDIA_AUDIO && s->have_audio) {
                 if (ac==MS_AC_AAC) sendrc = rtp_send_aac(&s->atrack,p->data,p->len,p->pts_us);
 #ifdef USE_STREAM_OPUS
                 else if (ac==MS_AC_OPUS) sendrc = rtp_send_opus(&s->atrack,p->data,p->len,p->pts_us);
 #endif
                 else               sendrc = rtp_send_g711(&s->atrack,p->data,p->len,p->pts_us);
-                if (sendrc >= 0) rtp_sr_anchor(&s->atrack, now);   /* see video anchor note */
+                if (sendrc >= 0)   /* see video anchor note */
+                    rtp_sr_anchor(&s->atrack, p->enq_us > 0 ? p->enq_us : now);
             }
             pkt_unref(p);
             if (t_pop)

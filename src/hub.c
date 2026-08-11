@@ -393,9 +393,17 @@ void hub_publish(int src, const uint8_t *data, size_t len,
      * (tiny frames) and any caller that cannot assemble into a pooled buffer. */
     ms_pkt *p = pkt_new(data, len, pts_us, keyframe, media);
     if (p) {
-        /* trace.h: "encoder produced it" reference for the per-AU `age`. One
-         * clock_gettime per published frame, ONLY while tracing is on. */
-        if (ms_trace_on(MS_TR_AU)) p->enq_us = ms_now_us();
+        /* Publish-instant stamp, now UNCONDITIONAL (was trace-gated): besides
+         * trace.h's per-AU `age`, the RTCP SR pairing (rtsp.c rtp_sr_anchor)
+         * needs the capture-side wall time of each packet - pairing the media
+         * timestamp with the consumer loop's iteration clock instead is off
+         * by the fanqueue latency, which spikes to hundreds of ms during a
+         * TCP-backpressure drain and made every SR sent mid-drain claim a
+         * different bogus timeline (ffmpeg: "Non-monotonic DTS" waves on the
+         * plain TCP+audio path, rtcpfix-schuppen/-garage 2026-08-11). One
+         * clock_gettime per published frame PER SOURCE (~25-40/s), not per
+         * subscriber - well under P-03's per-session-per-frame concern. */
+        p->enq_us = ms_now_us();
         /* push after releasing s->lock; each push takes its own ref, the
          * builder's own reference is released once below. */
         for (int i=0;i<nsub_snap;i++)
@@ -415,9 +423,10 @@ void hub_publish_take(int src, ms_pkt *p,
     p->pts_us   = pts_us;
     p->keyframe = keyframe;
     p->media    = media;
-    /* trace.h: see hub_publish(). Stamped before the fan-out so every
+    /* see hub_publish(): unconditional publish-instant stamp (trace `age` +
+     * the RTCP SR media<->wall anchor). Stamped before the fan-out so every
      * subscriber sees the same publish instant. */
-    p->enq_us   = ms_trace_on(MS_TR_AU) ? ms_now_us() : 0;
+    p->enq_us   = ms_now_us();
 
     fanqueue *subs_snap[HUB_MAX_SUBS];
     int pushing = 0;
