@@ -53,13 +53,29 @@ static float g_st_daytrig    = -1.0f;      /* effective night->day trigger */
  * adaptive bar can never be STRICTER than the calibrated "definitely day"
  * level (a too-low baseline otherwise yields a trigger no real light source
  * can reach - seen live 2026-08-02, see the hardening comment above
- * DN_BRIGHTEN_CONFIRM_MS). Without a baseline the fixed threshold applies. */
+ * DN_BRIGHTEN_CONFIRM_MS). Without a baseline the fixed threshold applies.
+ *
+ * The floor only applies while it sits BELOW the baseline. Its premise -
+ * "gain under total_gain_day_threshold through the night pipeline means
+ * daylight" - is disproven the moment a STABLE night baseline itself
+ * measures at/below that threshold: cam-wyze-pan (T20/jxf22, 2026-08-11)
+ * rests at gain ~256-268 under its own IR in a genuinely dark room (extreme
+ * IR return), while the default threshold is 300. Flooring the trigger at
+ * 300 then puts it ABOVE the resting night gain, which is a perpetual
+ * false "day" verdict: flip to day, find real darkness, flip back, re-trip
+ * the oscillation breaker at every freeze expiry, forever. In that inverted
+ * regime the trigger stays purely adaptive (day_gain_pct% of the measured
+ * resting level), and the "too-low baseline" concern the floor was built
+ * for is covered by the probe machinery (periodic reconfirm + sustained
+ * brightening), which re-checks through the DAY pipeline - the only
+ * trustworthy source in this regime anyway. */
 static float dn_day_trigger(const ms_daynight_cfg *dn, float baseline)
 {
     float thr = dn->total_gain_day_threshold;
     if (baseline > 0.0f && dn->day_gain_pct > 0) {
         thr = baseline * (float)dn->day_gain_pct / 100.0f;
-        if (thr < dn->total_gain_day_threshold)
+        if (thr < dn->total_gain_day_threshold &&
+            (float)dn->total_gain_day_threshold < baseline)
             thr = dn->total_gain_day_threshold;
     }
     return thr;
@@ -924,6 +940,29 @@ static void *dn_thread(void *arg)
                         probe_why = "sustained brightening probe";
                 }
             }
+            /* Pre-baseline day-trigger PROBE: before the night baseline has
+             * been planted (adaptive mode only), a gain reading under the
+             * static day threshold must not full-switch to day - through the
+             * night/IR pipeline it is ambiguous between "lights came on" and
+             * "strong IR return in darkness" (cam-wyze-pan rests at ~256
+             * under IR vs the 300 threshold; the resulting instant full
+             * switches re-tripped the oscillation breaker forever). Fire the
+             * PROBE machinery instead: a genuine lights-on sticks in day
+             * within seconds; darkness reverts cheaply (probe pairs are
+             * excluded from the breaker) and arms the probe_fail_smooth
+             * ratchet, which blocks an identical re-fire on the next night
+             * entry - the loop terminates after one probe pair, and the
+             * baseline then plants at the true resting level. The full
+             * switch for this window is suppressed in the decision path
+             * below under the same conditions. */
+            if (!probe_why && night_baseline < 0.0f && dn->day_gain_pct > 0 &&
+                smooth_tg > 0.0f &&
+                smooth_tg < (float)dn->total_gain_day_threshold &&
+                now_ms - last_switch_ms >= (int64_t)dn->transition_s * 1000 &&
+                (probe_fail_smooth <= 0.0f ||
+                 smooth_tg < probe_fail_smooth *
+                             (float)dn->day_gain_pct / 100.0f))
+                probe_why = "pre-baseline day-trigger probe";
             /* oscillation cooldown (see DN_OSC_WINDOW_MS): while frozen,
              * suppress probes too - a probe would flip the very mode the
              * freeze is holding and restart the loop. */
@@ -996,7 +1035,17 @@ static void *dn_thread(void *arg)
             if (cur == DN_DAY) {
                 if (tg > dn->total_gain_night_threshold) target = DN_NIGHT;
             } else if (cur == DN_NIGHT) {
-                if (tg < day_thr)                        target = DN_DAY;
+                /* pre-baseline window (adaptive mode): night-pipeline gain
+                 * under the static threshold is ambiguous (see the
+                 * pre-baseline day-trigger probe above, which owns this
+                 * window) - a full switch here was the cam-wyze-pan flip
+                 * loop. Bounded: the baseline plants within
+                 * baseline_delay_s + boot_settle_max_s even when the gain
+                 * never stabilises. day_gain_pct=0 keeps the plain legacy
+                 * threshold behaviour. */
+                if (tg < day_thr &&
+                    (night_baseline > 0.0f || dn->day_gain_pct <= 0))
+                    target = DN_DAY;
             } else {
                 if      (tg > dn->total_gain_night_threshold) target = DN_NIGHT;
                 else if (tg < dn->total_gain_day_threshold)   target = DN_DAY;
@@ -1209,16 +1258,44 @@ static void *dn_thread(void *arg)
 
         /* sample the night gain baseline once, after the IR LEDs settle.
          * Taken from the SMOOTHED gain when available so a post-revert AE
-         * still settling down cannot plant an inflated baseline. */
+         * still settling down cannot plant an inflated baseline.
+         *
+         * ALSO gated on AE stability (same dn_ae_stable ring the boot settle
+         * uses), bounded by baseline_delay_s + boot_settle_max_s: a fixed
+         * 30 s delay alone plants the baseline MID-DESCENT on cameras whose
+         * AE takes much longer to converge after IR-on. Observed on
+         * cam-wyze-pan (T20/jxf22, dark room, strong IR return) 2026-08-11:
+         * night entry at railed gain, AE still collapsing toward its true
+         * IR-lit resting level (~800) when the 30 s sample planted baselines
+         * of 10856/5148 - the derived day trigger (60% = 6514/3090) then sat
+         * far ABOVE the resting gain, so finishing the descent read as
+         * "brightening", fired a full adaptive night->day switch, the day
+         * pipeline found genuine darkness, flipped back, re-planted another
+         * mid-descent baseline 30 s later, and the pair repeated until the
+         * oscillation breaker froze the camera - every ~25 min, forever.
+         * The symmetric drift below cannot save this: its ~4 min time
+         * constant loses the race to a descent that crosses the trigger
+         * seconds after the plant. Waiting for a stable reading plants the
+         * baseline at the settled level instead, the trigger lands BELOW it,
+         * and the loop terminates after at most one flip-pair.
+         * boot_stable_pct=0 (stability checks disabled) or the
+         * boot_settle_max_s cap preserve the old fixed-delay behaviour. */
         if (cur == DN_NIGHT && night_baseline < 0.0f && tg >= 0.0f &&
-            dn->baseline_delay_s > 0 && night_entered_ms > 0 &&
-            ms_now_us() / 1000 - night_entered_ms >=      /* monotonic (M12) */
-                (int64_t)dn->baseline_delay_s * 1000) {
-            night_baseline = (smooth_tg > 0.0f) ? smooth_tg : tg;
-            baseline_logged = night_baseline;
-            LOGI(MOD, "night gain baseline = %.0f (day trigger < %d%% = %.0f)",
-                 (double)night_baseline, dn->day_gain_pct,
-                 (double)dn_day_trigger(dn, night_baseline));
+            dn->baseline_delay_s > 0 && night_entered_ms > 0) {
+            int64_t since_ms = ms_now_us() / 1000 - night_entered_ms; /* monotonic (M12) */
+            if (since_ms >= (int64_t)dn->baseline_delay_s * 1000 &&
+                (dn->boot_stable_pct <= 0 ||
+                 dn_ae_stable(settle_hist, settle_n, dn->boot_stable_pct) ||
+                 since_ms >= ((int64_t)dn->baseline_delay_s +
+                              (int64_t)dn->boot_settle_max_s) * 1000)) {
+                night_baseline = (smooth_tg > 0.0f) ? smooth_tg : tg;
+                baseline_logged = night_baseline;
+                LOGI(MOD, "night gain baseline = %.0f (day trigger < %d%% = %.0f, "
+                          "sampled %llds after night entry)",
+                     (double)night_baseline, dn->day_gain_pct,
+                     (double)dn_day_trigger(dn, night_baseline),
+                     (long long)(since_ms / 1000));
+            }
         } else if (cur == DN_NIGHT && night_baseline > 0.0f && smooth_tg > 0.0f) {
             /* slow SYMMETRIC drift toward the smoothed gain: an unrepresent-
              * ative baseline (sampled mid lighting-transition, or off a

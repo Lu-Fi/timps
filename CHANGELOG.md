@@ -7,6 +7,45 @@ semantic versioning.
 ## [Unreleased]
 
 ### Fixed
+- **day/night: perpetual flip loop + oscillation-breaker freeze cycle on
+  cameras whose IR-lit night gain is at/below the static day threshold**
+  (`src/daynight.c`; observed live on cam-wyze-pan, T20/jxf22, in a
+  genuinely dark room with very strong IR return - resting night gain
+  ~256-268 vs the default `total_gain_day_threshold` 300, breaker firing
+  every ~25 min indefinitely, latterly 13 s flip cycles at every 600 s
+  freeze expiry). Three compounding causes, three fixes:
+  1. the adaptive night **baseline was planted mid-AE-descent** (fixed 30 s
+     delay; the log showed baselines of 10856/5148 while the gain was still
+     collapsing toward ~800), putting the derived day trigger above the
+     resting level - the plant is now additionally gated on the existing
+     `dn_ae_stable()` ring, bounded by `baseline_delay_s +
+     boot_settle_max_s` (and `boot_stable_pct=0` keeps the old behaviour);
+  2. `dn_day_trigger()` **floored the adaptive trigger at the static day
+     threshold even when that floor sat ABOVE the measured baseline**,
+     which is a perpetual false "day" verdict - the floor now applies only
+     while it is below the baseline; in the inverted regime the trigger
+     stays purely adaptive and day detection is owned by the probe
+     machinery (the 2026-08-02 too-low-baseline concern the floor was
+     built for is covered by exactly those probes);
+  3. before the baseline exists, a night-pipeline gain under the static
+     threshold is ambiguous between "lights on" and "strong IR return in
+     darkness" - the **full switch in that window is replaced by a probe**
+     (real light sticks in day within seconds; darkness reverts cheaply,
+     outside the oscillation-breaker's flip count, and the
+     `probe_fail_smooth` ratchet blocks an identical re-fire on the next
+     night entry), so the loop terminates after at most one probe pair.
+  NOT a state-machine timer bug: the suspicious "confirming 60s one second
+  after the baseline" log line marks the *start* of the 60 s brightening
+  hold (target duration), not its completion, and every brighten/probe/
+  smooth state is correctly reset on each switch - the flips came from the
+  trigger paths above. The breaker itself worked as designed; its
+  "IR-reflection" wording is its generic hypothesis text. Physical note:
+  gain ~1x under IR in a dark room means the sensor receives a LOT of IR -
+  after this camera's recent disassembly/reassembly, internal reflection
+  (lens smudge, baffle/IR-cut seating) is the likely physical amplifier
+  and worth a hands-on check, but the state machine must not loop on it
+  regardless. `day_gain_pct=0` disables all three changes (legacy plain
+  thresholds).
 - **Follow-up to the RTCP SR clock fix below: the SR anchor wobbled by the
   fanqueue latency, re-timing ffmpeg's RTCP-driven timeline once per SR**
   (`src/rtsp/rtsp.c` anchor call sites, `src/hub.c`): the first version of
