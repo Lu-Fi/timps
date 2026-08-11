@@ -714,6 +714,26 @@ static void *dn_thread(void *arg)
                 hub_control("image.running_mode", rm ? "1" : "0");
                 LOGI(MOD, "re-asserting running_mode=%d after switch (%d left)",
                      rm, reassert_left - 1);
+                /* Divergence check: timps itself never writes running_mode -
+                 * the board hook chain does (switch_cmd -> 'color' script ->
+                 * POST /control, see daynight.h). That chain is fire-and-
+                 * forget ('color ... &' in the board script, curl output
+                 * discarded), so a lost/failed POST leaves the decision and
+                 * the ISP silently desynced until the next transition. By
+                 * this first re-assert (DN_REASSERT_MS after the switch) the
+                 * ~1s hook latency measured on real boards has long passed:
+                 * a still-mismatched running_mode means the hook chain did
+                 * not complete (script missing, control disabled in
+                 * thingino.json, curl failed) OR the user manually overrode
+                 * the mode - either way it deserves a visible line, not
+                 * silence. Deliberately WARN-only: re-running switch_cmd
+                 * here would clobber a legitimate manual override (which the
+                 * re-assert above intentionally honours). */
+                if ((cur == DN_NIGHT && !rm) || (cur == DN_DAY && rm))
+                    LOGW(MOD, "running_mode=%d never followed the switch to "
+                              "%s - board hook chain (switch_cmd -> color -> "
+                              "POST /control) incomplete, or manual override",
+                         rm, cur == DN_NIGHT ? "night" : "day");
             }
             if (--reassert_left > 0)
                 reassert_at_ms = ms_now_us() / 1000 + DN_REASSERT_MS;
