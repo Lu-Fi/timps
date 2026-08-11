@@ -3213,6 +3213,20 @@ else
 				ok "hostile test: stalled client established (DESCRIBE/SETUP/PLAY over interleaved TCP, then deaf - no reads, no TEARDOWN)"
 				hostile_phase stalled
 				kill -9 "$stall_pid" 2>/dev/null; wait "$stall_pid" 2>/dev/null
+				# Distinguish client DEATH from client STARVATION before the
+				# fps verdicts: a fatal ffmpeg muxer abort ("Can't write
+				# packet with unknown timestamp") zeroes the frame counts
+				# exactly like starvation would, but means something entirely
+				# different - the server delivered data with a broken
+				# timestamp, the client gave up. The 2026-08-11 Galayou FAIL
+				# read "fell to 0.0 fps because ONE client stopped reading"
+				# while both healthy clients had actually aborted in ~1s on
+				# the v1.8.5 RTCP SR clock-domain regression (rtp.c) - the
+				# starvation framing sent the investigation toward locks and
+				# fanqueues first.
+				h_aborted=$(grep -l 'Error muxing a packet\|unknown timestamp' \
+					"$hdir"/stalled_c*.log 2>/dev/null | wc -l)
+				[ "${h_aborted:-0}" -gt 0 ] && warn "hostile: ${h_aborted} healthy client(s) ABORTED on a fatal muxer/timestamp error (see $hdir/stalled_c*.log) - the verdict below reflects client death, not starvation; suspect a server-side timestamp anomaly (RTCP SR pairing, PTS discontinuity) before suspecting isolation"
 				if [ -z "$HP_MINFPS" ]; then
 					bad "hostile test: healthy clients produced NO frames while one stalled client was attached - a single stuck viewer took the stream down for everybody"
 				else

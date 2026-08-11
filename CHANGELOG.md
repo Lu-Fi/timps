@@ -7,6 +7,35 @@ semantic versioning.
 ## [Unreleased]
 
 ### Fixed
+- **RTCP SR paired its NTP timestamp with an RTP timestamp computed on the
+  wrong clock** (`src/rtsp/rtp.c` `rtcp_wr_sr()`; regression shipped in
+  v1.8.5, 365162d): the stale-pairing fix was right to re-sample NTP fresh,
+  but its RTP side (`now_us - t->pts0`) assumed hub pts values live on
+  `ms_now_us()`'s clock. They do not - `hal_ingenic` publishes
+  `pts_sanitize()` output (which leads/lags the monotonic clock while the
+  sanitizer slews, perpetually on sensors whose real fps differs from the
+  configured one, e.g. Galayou's 25.42 vs 25), and `hal_sim` publishes
+  g_epoch-relative values. The SR then contradicted the media timestamps by
+  exactly that offset; ffmpeg's RTCP NTP-sync path (active whenever
+  audio+video are both SETUP) rebased the stream timeline once the SRs
+  arrived and invalidated already-queued video AUs to NOPTS. With audio
+  muxed alongside that is survivable, but a video-only (`-an`) matroska
+  `-c copy` client dies fatally ("Can't write packet with unknown
+  timestamp") when a NOPTS AU lands after the first cluster opened - QA
+  13b's "isolation not holding" FAIL: both healthy clients aborted within
+  ~1 s, 4/4 deterministic across two Galayou runs, while the stalled client
+  was innocent (T31/T20 boards with well-behaved pts passed the same
+  phase). The SR now extrapolates from the last sent packet's media
+  timestamp paired with the sender loop's monotonic stamp
+  (`rtp_sr_anchor()`, both subtractions within a single clock each), so it
+  is fresh AND consistent with the media timeline, across send stalls too.
+  Reproduced and verified against `timpsd-sim` (pre-fix: ffmpeg reported a
+  video start_time equal to host uptime, 41756 s; post-fix: sane 0-based
+  timelines, and 2 healthy `-an` clients ran a full 30 s beside a
+  deaf/stalled interleaved client with zero errors). The single benign
+  "Timestamps are unset for stream 0" first-AU warning that predates
+  v1.8.5 remains - it is inherent ffmpeg receiver behavior for any
+  two-stream RTSP server and harmless. +29 bytes `.text` (sim build).
 - **`videoN.gop` ran at DOUBLE the configured value on every new-API SoC**
   (`src/hal/hal_ingenic.c`, `enc_create()` `ENC_NEW_API` path - T31, C100,
   T40, T41): the keyframe interval was accepted, clamped, persisted and
@@ -57,6 +86,14 @@ semantic versioning.
   delta for this + the fMP4 eviction fix above: +471 bytes (sim build).
 
 ### Testing
+- `scripts/timps-qa.sh` **13b (`--test-hostile`)**: the verdict now
+  distinguishes healthy-client DEATH from STARVATION - a fatal ffmpeg muxer
+  abort zeroes the frame counts exactly like starvation, but means the
+  server delivered data with a broken timestamp and the client gave up. The
+  2026-08-11 Galayou FAIL read "fell to 0.0 fps because ONE client stopped
+  reading" while both clients had aborted in ~1 s on the RTCP SR regression
+  above; a WARN naming the abort (and pointing at timestamp anomalies
+  first) now precedes the fps verdicts whenever the client logs show one.
 - `scripts/timps-qa.sh` `analyze_stream()`: the ffmpeg-warning verdict for
   **UDP** captures now separates `RTP: missed N packets` lines (inherent
   transport loss - UDP RTSP has no retransmission by design) from real

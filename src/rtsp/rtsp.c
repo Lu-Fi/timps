@@ -1151,12 +1151,24 @@ static void stream_loop(session *s)
                 /* P3: one access unit done - push the whole batch out in a
                  * single sendmmsg (no-op on TCP / unbatched sinks) */
                 if (sendrc >= 0 && sink_flush(&s->vsink) < 0) sendrc = -1;
+                /* SR media<->wall anchor: pair this AU's media timestamp
+                 * (vtrack.last_rtp_ts) with the iteration's monotonic clock
+                 * read - the correspondence rtcp_wr_sr() extrapolates from.
+                 * NOT p->pts_us: pts values may live on a different epoch
+                 * (see rtcp_wr_sr()). `now` slightly predates the send and
+                 * postdates capture by the fanqueue latency (~0 on a healthy
+                 * session), which bounds the pairing error at queue depth -
+                 * and both tracks share the queue, so relative A/V sync is
+                 * unaffected even when backlogged. (p->enq_us would be the
+                 * exact capture stamp but is only populated while tracing.) */
+                if (sendrc >= 0) rtp_sr_anchor(&s->vtrack, now);
             } else if (p->media==MS_MEDIA_AUDIO && s->have_audio) {
                 if (ac==MS_AC_AAC) sendrc = rtp_send_aac(&s->atrack,p->data,p->len,p->pts_us);
 #ifdef USE_STREAM_OPUS
                 else if (ac==MS_AC_OPUS) sendrc = rtp_send_opus(&s->atrack,p->data,p->len,p->pts_us);
 #endif
                 else               sendrc = rtp_send_g711(&s->atrack,p->data,p->len,p->pts_us);
+                if (sendrc >= 0) rtp_sr_anchor(&s->atrack, now);   /* see video anchor note */
             }
             pkt_unref(p);
             if (t_pop)

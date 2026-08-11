@@ -44,8 +44,8 @@ static uint32_t pts_to_ts(rtp_track *t, int64_t pts_us)
     /* L13 (deferred): `rel * clock_rate` is an int64 product; at the 90 kHz
      * video clock it overflows INT64_MAX after roughly INT64_MAX/90000 us of
      * continuous uptime without a process restart, i.e. ~2.8-3 years, at
-     * which point this timestamp math (and rtp_maybe_sr()'s identical
-     * computation) goes wrong. A correct fix needs the track to periodically
+     * which point this timestamp math goes wrong (the RTCP SR is immune:
+     * it extrapolates from last_rtp_ts plus a small elapsed term). A correct fix needs the track to periodically
      * rebase pts0/ts_base rather than a one-line clamp here, so it's left
      * for a follow-up rather than patched in this pass. */
     return t->ts_base + (uint32_t)((rel * (int64_t)t->clock_rate) / 1000000);
@@ -306,8 +306,8 @@ int rtp_send_g711(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us
      * still carried a fixed 40 ms of samples -> overlapping / jumping audio
      * timeline -> player stutter + rebuffering. A sample counter advances at
      * exactly clock_rate/s, staying consistent with the wall-clock-based RTCP
-     * SR to within capture-crystal ppm. pts0 is still anchored so
-     * rtp_maybe_sr() has its NTP<->RTP reference. */
+     * SR to within capture-crystal ppm. pts0/have_pts0 are still latched:
+     * rtp_maybe_sr() gates on have_pts0 ("has anything been sent yet"). */
     if (!t->have_pts0){ t->pts0 = pts_us; t->have_pts0 = 1; }
     audio_gap_resync(t, pts_us, (uint32_t)len); /* M-1: jump over real gaps */
     uint32_t ts = t->ts_base + (uint32_t)t->audio_samples;
@@ -356,7 +356,8 @@ int rtp_send_opus(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us
      * derive ts from a cumulative tick counter that only advances on a real
      * send, immune to publish wall-clock jitter, with audio_gap_resync() jumping
      * it forward over genuine gaps (mute/stall/drop) so the RTCP SR mapping
-     * stays aligned. pts0 is still anchored for the SR's NTP<->RTP reference. */
+     * stays aligned. pts0/have_pts0 are still latched: rtp_maybe_sr() gates
+     * on have_pts0 ("has anything been sent yet"). */
     enum { OPUS_TS_PER_FRAME = 1920 };   /* 40 ms * 48000 Hz / 1000 */
     if (!t->have_pts0){ t->pts0 = pts_us; t->have_pts0 = 1; }
     audio_gap_resync(t, pts_us, OPUS_TS_PER_FRAME);   /* M-1: jump over real gaps */
@@ -386,17 +387,38 @@ static int rtcp_wr_sr(rtp_track *t, int64_t now_us, uint8_t *p)
     struct timespec rt; clock_gettime(CLOCK_REALTIME, &rt);
     uint64_t ntp = ((uint64_t)(rt.tv_sec + 2208988800ULL) << 32) |
                    (uint32_t)((double)rt.tv_nsec * 4.294967296);
-    /* RTP timestamp for "now", using the SAME pts0/ts_base anchor pts_to_ts()
-     * uses for sample timestamps - not t->last_rtp_ts (the last *sent
-     * packet*'s ts, which is up to one frame/AAC-frame stale, and
-     * unboundedly stale if the track stalls). ffmpeg/go2rtc/Frigate-style
-     * NVRs derive A/V sync from exactly this NTP<->RTP pair, so a stale
-     * pairing here makes lip-sync jitter every SR interval. now_us is
-     * CLOCK_MONOTONIC (ms_now_us(), see rtsp.c's caller), the same clock
-     * pts_us values are on, so this stays consistent with pts_to_ts(). */
-    int64_t rel = now_us - t->pts0;
+    /* RTP timestamp for "now": extrapolate from the MEDIA timeline's last
+     * true media<->wall correspondence - last_rtp_ts (the media timestamp of
+     * the last sent packet, sample-exact for audio, pts-derived for video)
+     * paired with sr_ref_mono_us (the sender loop's monotonic stamp for that
+     * packet), advanced by the monotonic time elapsed since. Both
+     * subtractions stay within a single clock each.
+     *
+     * The previous form (`now_us - t->pts0`) assumed pts_us values live on
+     * ms_now_us()'s clock. They do NOT: hal_ingenic publishes pts_sanitize()
+     * output (which can lead/lag the monotonic clock by seconds while the
+     * sanitizer slews - perpetual on sensors whose real fps != configured
+     * fps, e.g. Galayou's 25.42 vs 25), and hal_sim publishes g_epoch-
+     * relative values (hours off host uptime). The SR's RTP timestamp then
+     * contradicted the media packets' timestamps by exactly that offset;
+     * ffmpeg's RTCP NTP-sync path (active whenever audio+video are both
+     * SETUP) rebased the stream timeline once the SRs arrived and
+     * invalidated already-queued video AUs to NOPTS. With audio muxed
+     * alongside that is survivable, but a video-only (-an) matroska -c copy
+     * client dies on it ("Can't write packet with unknown timestamp") when
+     * a NOPTS AU lands after the first cluster opened - QA 13b's false
+     * "isolation not holding": both healthy clients aborted in ~1s, 4/4
+     * deterministic on Galayou, whose perpetually-slewing sanitizer made
+     * the offset seconds-large. Regression shipped in v1.8.5 (365162d): the
+     * stale-pairing fix was right to re-sample NTP fresh but moved the RTP
+     * side of the pair onto the wrong clock.
+     *
+     * Extrapolating along the wall clock is correct across send stalls too:
+     * the media/capture clock keeps ticking while frames queue, which is
+     * exactly what the elapsed monotonic term models. */
+    int64_t rel = t->sr_ref_mono_us ? (now_us - t->sr_ref_mono_us) : 0;
     if (rel < 0) rel = 0;
-    uint32_t rtp_ts_now = t->ts_base +
+    uint32_t rtp_ts_now = t->last_rtp_ts +
         (uint32_t)((rel * (int64_t)t->clock_rate) / 1000000);
     p[0]=0x80; p[1]=200; wr_be16(p+2, 6);
     wr_be32(p+4, t->ssrc);

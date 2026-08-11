@@ -48,9 +48,26 @@ typedef struct {
     uint32_t   octet_count;
     int64_t    last_sr_us;
     uint32_t   last_rtp_ts;
+    int64_t    sr_ref_mono_us; /* CLOCK_MONOTONIC stamp paired with
+                                * last_rtp_ts - the media<->wall anchor the
+                                * SR extrapolates from (see rtcp_wr_sr()).
+                                * 0 = no anchor yet (SRs are gated on
+                                * have_pts0, which implies a send anyway) */
     rtp_out_fn out;
     void      *ctx;
 } rtp_track;
+
+/* Record the monotonic wall time corresponding to the media packet just sent
+ * on this track (the caller's per-iteration ms_now_us() snapshot). Pairs with
+ * t->last_rtp_ts to give the RTCP SR a media-timestamp <-> wall-clock
+ * correspondence on consistent clocks: mono_us is on ms_now_us()'s clock,
+ * while pts_us values may live on a different epoch (pts_sanitize output,
+ * sim's g_epoch-relative clock), so the SR must never mix them. Call after
+ * each successful rtp_send_*(). */
+static inline void rtp_sr_anchor(rtp_track *t, int64_t mono_us)
+{
+    t->sr_ref_mono_us = mono_us;
+}
 
 /* mtu: max RTP packet size (rtsp.mtu, clamped internally); cname: SDES CNAME
  * for this session's RTCP (NULL/empty falls back to "timps"). */
