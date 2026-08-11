@@ -8,6 +8,7 @@
 #include "../codec/aac.h"
 #include "../auth.h"
 #include "../tls.h"
+#include "../trace.h"
 #ifdef USE_CONTROL
 #include "../control.h"
 #include "../daynight.h"
@@ -81,17 +82,32 @@ struct httpd {
     void            *tls_ctx;   /* ms_tls_ctx* when http.https (USE_TLS), else NULL */
 };
 
-typedef struct { int fd; const ms_config *cfg; int local; int head; void *tls; void *tls_ctx; } hconn;
+/* tr: opt-in send trace (trace.h). NULL for every non-streaming request; only
+ * stream_mp4() points it at its own stack-local ctx, so csend()'s hook costs a
+ * NULL test on all the short-lived endpoints. */
+typedef struct { int fd; const ms_config *cfg; int local; int head; void *tls; void *tls_ctx;
+                 ms_trace_ctx *tr; } hconn;
 
 /* connection I/O that transparently uses TLS when this is an HTTPS connection
  * (c->tls set), otherwise the plain socket. Without USE_TLS these are exactly
  * the old net_sendall(c->fd,...) / recv(c->fd,...) calls. */
 static int csend(hconn *c, const void *buf, int len)
 {
+    /* trace.h: the fMP4 body is ONE TCP connection carrying muxed A/V, so this
+     * single write is where a shared-pipe stall shows up. Bracketing it is what
+     * separates "the link blocked" from "we were slow building the fragment". */
+    int64_t t_wr = ms_trace_wr_begin();
+    int rc;
 #ifdef USE_TLS
-    if (c->tls) return ms_tls_write((ms_tls_conn *)c->tls, buf, len);
+    if (c->tls) {
+        rc = ms_tls_write((ms_tls_conn *)c->tls, buf, len);
+    } else
 #endif
-    return net_sendall(c->fd, buf, len);
+    {
+        rc = net_sendall(c->fd, buf, len);
+    }
+    ms_trace_wr_end(c->tr, t_wr, rc >= 0 ? len : 0);
+    return rc;
 }
 static int crecv(hconn *c, void *buf, int len, int flags)
 {
@@ -240,11 +256,22 @@ static void stream_mp4(hconn *c, int chn)
      * pipeline wake-up for a mere probe */
     if (c->head) { csend(c, MP4_RESP_HDR, (int)sizeof MP4_RESP_HDR - 1); return; }
 
+    /* trace.h: per-connection send trace. Lives on this thread's stack for the
+     * whole streaming request and is unhooked before returning, so csend() on
+     * any later request of this connection sees tr==NULL again. Armed before
+     * the very first csend() so the response headers and the fMP4 init segment
+     * (the biggest single write of the session) are accounted for too. */
+    ms_trace_ctx trc;
+    char trwho[16]; snprintf(trwho, sizeof trwho, "fd%d", c->fd);
+    ms_trace_open(&trc, "mp4", trwho, chn);
+    c->tr = &trc;
+
     fanqueue q;
-    if (fanqueue_init(&q, MS_MP4_QCAP)) return;
+    if (fanqueue_init(&q, MS_MP4_QCAP)) { c->tr = NULL; return; }
     if (hub_subscribe(chn, &q) != 0) {           /* source full (>HUB_MAX_SUBS) */
         http_send_ex(c,"503 Service Unavailable","text/plain",MEDIA_CORS,"busy",4);
         fanqueue_free(&q);
+        c->tr = NULL;
         return;
     }
     /* fMP4 can only carry AAC; use it only if the HAL actually produces AAC */
@@ -337,7 +364,11 @@ static void stream_mp4(hconn *c, int chn)
         if (!p) {
             char t[8]; int n=crecv(c,t,sizeof t,MSG_DONTWAIT);
             if (n==0) break;
-            if (ms_now_us() - last_pkt_us > MS_STREAM_STALL_US) {
+            int64_t idle_now = ms_now_us();
+            /* trace.h: idle tick for the periodic summary - reuses the stall
+             * check's clock read, so no extra syscall on this path */
+            ms_trace_window(&trc, idle_now);
+            if (idle_now - last_pkt_us > MS_STREAM_STALL_US) {
                 LOGW(MOD,"mp4 chn=%d: no packets for %llds - encoder stall, "
                          "dropping this client", chn,
                      (long long)(MS_STREAM_STALL_US/1000000));
@@ -346,7 +377,30 @@ static void stream_mp4(hconn *c, int chn)
             continue;
         }
         last_pkt_us = ms_now_us();
+        /* trace.h: last_pkt_us IS the pop instant, so t_pop costs nothing extra
+         * on this path - only the t_done read after the send does. */
+        int64_t t_pop = ms_trace_on(MS_TR_AU) ? last_pkt_us : 0;
+        int tr_q = -1, tr_qcap = -1;
+        if (t_pop) {
+            ms_trace_au_begin(&trc);
+            if (ms_trace_on(MS_TR_Q)) fanqueue_depth(&q, &tr_q, &tr_qcap, NULL);
+        }
+        /* self-guarded on MS_TR_SUM, so summaries work with MS_TR_AU off too */
+        ms_trace_window(&trc, last_pkt_us);
         int lost_key = fanqueue_take_dropped_key(&q);
+        /* ANY eviction breaks GOP integrity for this client, not just a lost
+         * keyframe: dropped mid-GOP P-frames leave every later P-frame of that
+         * GOP referencing AUs the decoder never got (same defect rtsp.c heals
+         * via its fanqueue_take_dropped() branch). This client's queue can
+         * evict without ever tripping the two old triggers: the FQ_MAX_BYTES
+         * byte budget binds below MS_MP4_DROP_HIWAT slots during a bitrate
+         * spike (2 MB / 48 slots = ~43 KB/frame, an ordinary motion burst at
+         * 1080p), and a hole shorter than one GOP need not contain a keyframe.
+         * Observed on Galayou (T23/atbm6062 weak WiFi) QA 2026-08-11:
+         * ~1.4-1.6 s eviction holes whose delivery resumed on mid-GOP
+         * P-frames - silent corruption the adaptive path was built to
+         * prevent. */
+        int lost_any = fanqueue_take_dropped(&q);
         if (adaptive) {
             /* Per-client adaptive frame-dropping. This client's fanqueue is
              * its own private buffer; if it backs up (a weak link that can't
@@ -364,7 +418,7 @@ static void stream_mp4(hconn *c, int chn)
              * every other subscriber (Frigate, recording, healthy viewers)
              * just because one link is weak. Worst case this client gets a
              * keyframe-only slideshow - honest degradation, never corruption. */
-            if (lost_key) dropping = 1;
+            if (lost_key || lost_any) dropping = 1;
             if (!dropping) {
                 int cnt = 0; fanqueue_depth(&q, &cnt, NULL, NULL);
                 if (cnt >= MS_MP4_DROP_HIWAT) dropping = 1;
@@ -395,11 +449,18 @@ static void stream_mp4(hconn *c, int chn)
                     continue;
                 }
             }
-        } else if (lost_key) {
-            /* legacy (adaptive_drop off): the queue overflowed and dropped a
-             * keyframe - ask the encoder for a fresh IDR so the client doesn't
-             * decode garbage until the next natural GOP */
-            hub_request_idr(chn);
+        } else if (lost_key || lost_any) {
+            /* legacy (adaptive_drop off): the queue overflowed - ask the
+             * encoder for a fresh IDR so the client doesn't decode garbage
+             * until the next natural GOP. Rate-limited like rtsp.c's
+             * equivalent branch: a non-key drop can repeat every push while a
+             * client stays behind, and the IDR request is global to the
+             * shared encoder. */
+            int64_t now = ms_now_us();
+            if (lost_key || now - drop_idr_us > 1000000) {
+                hub_request_idr(chn);
+                drop_idr_us = now;
+            }
         }
         ms_buf_reset(&frag, 256*1024);   /* reuse, shrink an outlier IDR buffer back */
         int frag_ok = 1;
@@ -446,6 +507,13 @@ static void stream_mp4(hconn *c, int chn)
         } else if (frag.len) {
             rc = csend(c, frag.data, frag.len);
         }
+        /* trace.h: read what the line needs before the packet can be recycled.
+         * Note `send - wr` here is the fMP4 mux cost (fmp4_*_fragment builds
+         * moof+mdat, which copies the whole AU) - the fMP4 analogue of the RTSP
+         * packetizer, and the thing to look at when a slow AU shows a small wr. */
+        if (t_pop)
+            ms_trace_au_end(&trc, p->media, p->keyframe, p->len, p->enq_us,
+                            t_pop, ms_now_us(), tr_q, tr_qcap);
         pkt_unref(p);
         if (rc<0) break;
     }
@@ -454,6 +522,7 @@ out:
     hub_unsubscribe(chn, &q);
     if (can_audio) hub_unsubscribe(HUB_AUDIO_SRC, &q);
     fanqueue_free(&q);
+    c->tr = NULL;           /* trc dies with this frame; unhook before return */
 }
 
 /* JPEG source selection for /snapshot.jpg and /stream.mjpeg:
