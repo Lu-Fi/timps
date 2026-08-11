@@ -1131,8 +1131,22 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
      * down). v->qp was already exposed via /control (F_CTRL, range 1..51)
      * but had no HAL consumer - wire it up for exactly this case. */
     int initial_qp = (v->rc_mode==MS_RC_FIXQP) ? (v->qp>0?v->qp:35) : -1;
+    /* uMaxSameSenceCnt is NOT a "same scene" hint here - every new-API header
+     * (T31/C100/T40/T41 imp_encoder.h, @param uMaxSameSenceCnt) spells out
+     * "GOPLength = uGopLength * uMaxSameSenceCnt, Default is 2". Passing the
+     * documented default 2 alongside uGopLength=v->gop therefore ran every
+     * ENC_NEW_API SoC at DOUBLE the configured keyframe interval: videoN.gop
+     * was accepted, clamped, persisted and echoed by /control, and the encoder
+     * quietly used 2x it - exactly the 340fb1f/ff28ee2 shape. Measured on a
+     * T31 (cinnado_d1_t31l_sc2336, video1.gop=50 @ 25fps): IDRs landed 4.000 s
+     * apart (100 frames) instead of 2.000 s, on both chn0 and chn1 (this path
+     * is shared by every stream). Pass 1 so the product is v->gop, and re-assert
+     * both gopAttr fields afterwards so the effective GOP does not depend on how
+     * a particular libimp build folds the argument into the struct. */
     IMP_Encoder_SetDefaultParam(&a, prof, rc,
-        ew, eh, v->fps, 1, v->gop, 2, initial_qp, v->bitrate_kbps);
+        ew, eh, v->fps, 1, v->gop, 1, initial_qp, v->bitrate_kbps);
+    a.gopAttr.uGopLength       = (uint16_t)v->gop;   /* config.c clamps 1..1000 */
+    a.gopAttr.uMaxSameSenceCnt = 1;
 #else
     /* older platforms: manual attribute setup (H264 only path shown) */
 #if defined(PLATFORM_T10)||defined(PLATFORM_T20)
