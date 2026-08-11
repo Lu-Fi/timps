@@ -26,16 +26,28 @@
 #                       8b's tested set + a documented allowlist
 #   8e. Malformed body  5 negative-case POSTs against the hand-rolled JSON
 #                       parser; asserts liveness, not a strict error contract
+#   8f. Flip/relatch .. optional: PIXEL-verified hflip + forced chn0 relatch
+#   8g. Encoder ....... optional SSH: persist-only bitrate/rc_mode verified by
+#                       MEASURING the substream after a real restart
+#   8h. Day/night ..... optional: forced time-window transition both ways, hook
+#                       invocation, running_mode follow-through, flap count
 #   9. /events ........ SSE stream emits events, provoked by a live-settings POST
 #  10. ONVIF .......... both snapshot proxies + GetProfiles (resolution/codec vs
 #                       real stream, fps/bitrate surfaced with template note)
 #  11. Recording ..... on-demand clip via /control record.clip
 #  12. Reliability ... reconnect churn (TCP+UDP), time-to-first-frame
+#  12b. Session reap .. optional: SIGKILLed UDP/HTTP/SRT clients must be reaped
 #  13. Load .......... concurrent-client ramp, per-client fps/drops, max stable
+#  13b. Hostile client  optional: one stalled client must not degrade the others
+#                       (fps, keyframe rate / global IDR limiter, memory)
 #  14. Restart ....... optional streamer restart + recovery time
 #  14b. Fatal signal .. optional, DESTRUCTIVE: kill -SEGV + handler/restart verify
+#  14c. Reboot ....... optional: real reboot; config/binary/version persistence
 #  15. Soak .......... long capture with periodic health sampling
-#  16. On-device ..... optional SSH: timpsd RSS/CPU, logread errors,
+#  15b. Session drift  optional: ONE unbroken RTSP session for hours, A/V skew
+#                      sampled at checkpoints, judged on TREND not snapshot
+#  16. On-device ..... optional SSH: timpsd RSS/CPU/fds/threads, logread errors,
+#                      watchdog-escalation grep, dmesg (kernel/driver) scan,
 #                      /etc/timps.conf integrity (glued/duplicate keys)
 #
 # Everything is host-side (needs ffmpeg + ffprobe + curl). SSH is optional and
@@ -86,8 +98,24 @@ SNAP_COUNT="${SNAP_COUNT:-30}"     # snapshot requests
 RECONNECT_CYCLES="${RECONNECT_CYCLES:-20}"
 LOAD_CLIENTS="${LOAD_CLIENTS:-1 2 4 8}"   # concurrent-client ramp
 LOAD_DUR="${LOAD_DUR:-30}"         # seconds per load step
+# Hard concurrent-RTSP-client cap compiled into the daemon (RTSP_MAX_CLIENTS,
+# src/rtsp/rtsp.c:32). Not reported by /control, so it is a constant here;
+# override only if a build changes the #define. Used to tell "correctly
+# enforced admission control" apart from "degrading under load".
+RTSP_CAP="${RTSP_CAP:-8}"
 SOAK_DUR="${SOAK_DUR:-0}"          # seconds of soak (0 = skip unless profile sets it)
 SOAK_SAMPLE="${SOAK_SAMPLE:-60}"   # health sample interval during soak
+# Section 15b - long-session A/V drift. Deliberately NOT covered by the soak
+# above: soak reconnects every SOAK_SAMPLE seconds, and every fresh RTSP
+# connection resets the per-session pts anchor, so drift that only accumulates
+# WITHIN one long-lived session (the class of bug fixed in rtp.c 2026-08-10,
+# stale now_us -> inconsistent NTP<->RTP pairing in the RTCP SR) is structurally
+# invisible there. 0 = skip unless a profile sets it.
+DRIFT_DUR="${DRIFT_DUR:-0}"        # seconds of ONE unbroken RTSP session (0 = skip)
+DRIFT_SEG="${DRIFT_SEG:-300}"      # checkpoint interval within that session
+# |skew| at which the session is aborted early - the bug is already proven at
+# this point and there is nothing to learn from another hour of it.
+DRIFT_ABORT="${DRIFT_ABORT:-1.0}"
 DO_RESTART="${DO_RESTART:-0}"      # 1 = exercise streamer restart
 ONLY=""                            # comma-sep section names/numbers to run (empty = all)
 # Optional backchannel acoustic-loopback test (default OFF, never in a profile):
@@ -109,13 +137,22 @@ TEST_ROTATION="${TEST_ROTATION:-0}"
 # same as a genuine internal fault), then restarts the daemon for real.
 TEST_CRASH="${TEST_CRASH:-0}"
 
+# Further opt-in tests (all default OFF, none ever part of a profile) added
+# from the 2026-08-11 coverage audit against this project's real bug history:
+TEST_LEAK="${TEST_LEAK:-0}"      # 12b: SIGKILLed clients must be reaped (6473848/265befb)
+TEST_FLIP="${TEST_FLIP:-0}"      # 8f:  pixel-verified hflip + forced chn0 relatch (8fb6fd3/9034d61)
+TEST_ENCODER="${TEST_ENCODER:-0}" # 8g: persist-only encoder settings verified after a restart
+TEST_DAYNIGHT="${TEST_DAYNIGHT:-0}" # 8h: deterministic day/night transition + flap check (0f5fc80)
+TEST_HOSTILE="${TEST_HOSTILE:-0}" # 13b: stalled client must not degrade healthy ones
+TEST_REBOOT="${TEST_REBOOT:-0}"  # 14c: real reboot, config/binary/version persistence
+
 usage() {
-	sed -n '2,40p' "$0" | sed 's/^# \{0,1\}//'
+	sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'
 	cat <<EOF
 
 Options (also settable as env vars):
   --cam IP            camera address (required)
-  --profile P         quick | standard | load | soak   (default: standard)
+  --profile P         quick | standard | load | soak | drift  (default: standard)
   --rtsp-user U       --rtsp-pass P    --http-user U   --http-pass P
   --expect-channels N assert audio channel count (e.g. 2 = stereo); FAIL on mismatch
   --main PATH         RTSP main path (default ch0)   --sub PATH (default ch1)
@@ -123,6 +160,14 @@ Options (also settable as env vars):
   --ssh TARGET        e.g. root@IP  -> enables on-device checks
   --integ-dur S       --load-dur S  --load-clients "1 2 4 8"
   --reconnects N      --snaps N     --soak-dur S       --restart
+  --drift-dur S       hold ONE RTSP connection open for S seconds and track
+                      A/V drift across it (section 15b). Default 0 = off,
+                      like --soak-dur; --profile drift sets 7200 (2h).
+                      Unlike the soak, this never reconnects, so drift that
+                      only accumulates within a single long-lived session
+                      stays visible instead of being reset every slice.
+  --drift-seg S       drift checkpoint interval in seconds (default 300).
+                      Needs >=4 checkpoints for a trend verdict.
   --only LIST         run only these sections (names or numbers, comma-sep),
                       e.g. --only onvif  or  --only 3,10 ; preflight always runs
   --out DIR           output directory
@@ -139,6 +184,37 @@ Options (also settable as env vars):
                       section 8c's custom-placeholder round-trip
                       (default /tmp/timps_osd.vars, only needed if a camera
                       configures a non-default path). Needs --ssh.
+  --test-leak         (section 12b) start a client, SIGKILL it without a
+                      TEARDOWN, and require the daemon to reap the orphaned
+                      session (RTSP-UDP <=150s, HTTP fMP4 and SRT <=90s).
+                      Takes several minutes of waiting. Default OFF.
+  --test-flip         (section 8f) PIXEL-verify image.hflip via snapshots
+                      instead of trusting the /control read-back, then force
+                      a chn0 relatch and verify the flip survived it.
+                      NEEDS A STATIC SCENE; ambiguous results WARN.
+  --test-encoder      (section 8g) needs --ssh: measure what the SUBSTREAM
+                      actually delivers, then cut its bitrate target well
+                      below that (a lower ceiling always binds), restart for
+                      real, and MEASURE again to prove the encoder honours the
+                      persisted config. Also compares cbr/vbr variance.
+                      Restores after.
+  --test-daynight     (section 8h) force a day/night transition in both
+                      directions via time windows, assert the board hook ran,
+                      that image.running_mode followed, and that it did not
+                      flap. Physically clicks the IR-cut filter twice.
+  --test-hostile      (section 13b) run healthy clients alongside one client
+                      that connects and then stops reading; assert the healthy
+                      clients keep the fps THEY MEASURED IN THE BASELINE PHASE
+                      (isolation is a differential question, not an absolute
+                      one), that keyframe rate does not spike (global IDR rate
+                      limiter) and that memory stays bounded. Needs python3.
+  --test-reboot       (section 14c) needs --ssh. REBOOTS THE CAMERA: makes a
+                      persisted config change, reboots, then verifies the
+                      change survived, that /etc/timps.conf and
+                      /usr/bin/timpsd md5s and the version string are what
+                      they should be, and that nothing else in /control
+                      silently reset at boot. Camera is offline 1-2 min.
+                      Default OFF, never part of a profile.
   --test-crash        DESTRUCTIVE (section 14b): sends a real SIGSEGV to the
                       running timpsd over SSH to verify the fatal-signal
                       handler (writes/checks /run/timps.crash, format
@@ -152,6 +228,8 @@ Profiles:
   standard  ~15 min : full integrity/sync + reliability + load ramp
   load      ~20 min : heavier + longer load ramp
   soak      hours   : standard + long soak (default 2h; set --soak-dur)
+  drift     hours   : standard + one unbroken RTSP session with A/V-drift
+                      checkpoints (default 2h; set --drift-dur/--drift-seg)
 EOF
 	exit 1
 }
@@ -176,6 +254,8 @@ while [ $# -gt 0 ]; do
 		--reconnects) RECONNECT_CYCLES="$2"; shift 2;;
 		--snaps) SNAP_COUNT="$2"; shift 2;;
 		--soak-dur) SOAK_DUR="$2"; shift 2;;
+		--drift-dur) DRIFT_DUR="$2"; shift 2;;
+		--drift-seg) DRIFT_SEG="$2"; shift 2;;
 		--restart) DO_RESTART=1; shift;;
 		--only) ONLY="$2"; shift 2;;
 		--out) OUTDIR="$2"; shift 2;;
@@ -185,6 +265,12 @@ while [ $# -gt 0 ]; do
 		--test-rotation) TEST_ROTATION=1; shift;;
 		--osd-vars-file) OSD_VARS_FILE="$2"; shift 2;;
 		--test-crash) TEST_CRASH=1; shift;;
+		--test-leak) TEST_LEAK=1; shift;;
+		--test-flip) TEST_FLIP=1; shift;;
+		--test-encoder) TEST_ENCODER=1; shift;;
+		--test-daynight) TEST_DAYNIGHT=1; shift;;
+		--test-hostile) TEST_HOSTILE=1; shift;;
+		--test-reboot) TEST_REBOOT=1; shift;;
 		-h|--help) usage;;
 		*) echo "unknown option: $1" >&2; usage;;
 	esac
@@ -207,6 +293,9 @@ case "$PROFILE" in
 	standard) : ;;
 	load)     LOAD_CLIENTS="1 2 4 8 12 16"; LOAD_DUR=45;;
 	soak)     [ "$SOAK_DUR" -gt 0 ] || SOAK_DUR=7200;;
+	# separate profile rather than folding into `soak`: both are hours long and
+	# run serially, so bundling them would silently double a soak run's wall time
+	drift)    [ "$DRIFT_DUR" -gt 0 ] || DRIFT_DUR=7200;;
 	*) echo "unknown profile: $PROFILE" >&2; usage;;
 esac
 
@@ -244,6 +333,170 @@ want() {
 fcmp() { awk -v a="$1" -v b="$3" -v op="$2" 'BEGIN{
 	if(op=="lt")exit!(a<b); if(op=="le")exit!(a<=b);
 	if(op=="gt")exit!(a>b); if(op=="ge")exit!(a>=b); exit 1}'; }
+
+# ---------------------------------------------------------------- shared patterns
+# ONE definition of "ffmpeg complained about the media" for every capture this
+# script takes. analyze_stream's copy and the soak loop's copy had already
+# drifted apart (the soak was missing decode_slice|missed), and it was exactly
+# this class of drift that let the "non-monotonous" vs "non-monotonic" typo
+# survive undetected in analyze_stream for the whole life of the project -
+# ffmpeg's actual muxer wording is "Non-monotonic DTS; previous: X, current: Y".
+# Keep it here, use it everywhere, never inline a second copy.
+FFWARN_RE='non-monoton(ous|ic)|discontinuit|corrupt|error while|decode_slice|concealing|invalid data|missed'
+# ffwarn_count <logfile> -> count of matching lines, always a bare integer.
+# NOTE the `n=$(grep -c ...)` shape: grep -c prints "0" AND exits 1 on no match,
+# so chaining `|| echo 0` (as the soak loop once did) yields a two-line "0\n0"
+# that turns the caller's $((...)) into a fatal arithmetic syntax error.
+ffwarn_count() { local n; n=$(grep -icE "$FFWARN_RE" "$1" 2>/dev/null); printf '%s' "${n:-0}"; }
+
+# ---------------------------------------------------------- on-device telemetry
+# dev_proc_sample [window_s] -> "<rss_kB> <fds> <threads> <cpu_pct>", empty
+# without SSH or if timpsd isn't running.
+#
+# Why fds/threads and not just RSS: every real leak in this codebase's history
+# (0980d05, d07b173, and the whole unreaped-session class) costs an fd pair, a
+# thread and a hub subscription per stuck session - kilobytes, which never
+# moves an RSS threshold, but which shows up immediately as a monotonically
+# rising fd/thread count. Why CPU: a hot spin (the historical httpd 5Hz
+# busy-discard, or a `continue` with no usleep) degrades nothing observable
+# from the stream side and never grows RSS - CPU is the only place it shows.
+#
+# CPU is utime+stime deltas over a real window divided by wall time; USER_HZ is
+# 100 on every Linux/MIPS build this runs against. Field 14/15 of /proc/PID/stat
+# are safe to index positionally here because the comm field ("(timpsd)")
+# contains no spaces.
+#
+# dev_snap        -> "<rss_kB> <fds> <threads> <cpu_ticks> <uptime_s>" (1 ssh,
+#                    no sleep - cheap enough to bracket any existing test)
+# dev_cpu_between A B -> %CPU between two dev_snap results
+# dev_proc_sample [w] -> "<rss> <fds> <threads> <cpu_pct>" over its own w-second
+#                    window (for when there is no existing interval to bracket)
+dev_snap() {
+	[ -n "$SSH_TARGET" ] || return 1
+	sshx "p=\$(pidof timpsd | awk '{print \$1}'); [ -n \"\$p\" ] || exit 1;
+	      r=\$(awk '/VmRSS/{print \$2}' /proc/\$p/status);
+	      t=\$(awk '/Threads/{print \$2}' /proc/\$p/status);
+	      f=\$(ls /proc/\$p/fd 2>/dev/null | wc -l);
+	      c=\$(awk '{print \$14+\$15}' /proc/\$p/stat);
+	      u=\$(awk '{print \$1}' /proc/uptime);
+	      echo \"\$r \$f \$t \$c \$u\"" 2>/dev/null
+}
+dev_cpu_between() {
+	[ -n "${1:-}" ] && [ -n "${2:-}" ] || { printf '0.0'; return 1; }
+	awk -v a="$1" -v b="$2" 'BEGIN{
+		split(a,A," "); split(b,B," "); d=B[5]-A[5];
+		printf "%.1f", (d>0)?((B[4]-A[4])/100.0/d*100.0):0 }'
+}
+dev_proc_sample() {
+	local w="${1:-3}" a b r f t
+	a=$(dev_snap) || return 1
+	sleep "$w"
+	b=$(dev_snap) || return 1
+	read -r r f t _ _ <<<"$b"
+	printf '%s %s %s %s' "$r" "$f" "$t" "$(dev_cpu_between "$a" "$b")"
+}
+
+# dmesg_capture <outfile> [lines] -> saves the kernel ring buffer tail, prints
+# the count of interesting lines. The kernel log is a genuinely DIFFERENT
+# failure surface from logread: logread is userspace syslog (timpsd's own
+# LOG*), dmesg is where the Ingenic ISP/VIC kernel driver and libimp's internal
+# diagnostics print (e.g. "wait stop q->num_buffers=..", "streamoff stop",
+# "osd_draw_cover_pic rejects .. keep within picture range" - see the comment at
+# src/hal/imp_osd.c:219). A driver-level stall or DMA error appears there and
+# nowhere else. Deliberately low-noise: embedded boot logs are full of benign
+# probe/init chatter, so the grep excludes the known-harmless traffic rather
+# than reporting a scary number on every healthy camera.
+#
+# TWO defences against false positives, both added 2026-08-11 after the first
+# hardware run of this check produced a FAIL on Schuppen and the same-class
+# WARN on Garage and Galayou - i.e. it fired on every camera, every boot, with
+# nothing actually wrong:
+#
+# 1. SCAN ONLY WHAT CAME AFTER THE SENSOR STARTED STREAMING. On these boards the
+#    ring buffer is small enough that its whole contents are usually still the
+#    boot log (all three captures topped out around t=20s), and a boot log
+#    unconditionally contains lines carrying scary words with no fault behind
+#    them - the kernel version banner embeds a BUILD-time linker message
+#    ("(collect2: error: ld returned 1 exit status)"), "CPU0 RESET ERROR PC:.."
+#    is printed by this SoC on every cold start, "panic=2" is part of the
+#    kernel command line, "jz-wdt: watchdog initialized" is the watchdog
+#    working, and the USB-OTG/SDIO/cache probes print "cgu clk gate get error",
+#    "pls check processor_id[..],sc_jz not support!" and "jzmmc..: Error
+#    status->..: cmd=52" as normal probe chatter. Anchoring on the sensor
+#    bring-up ("<sensor> stream on", "chip found @", ...) drops the entire
+#    preamble, which is also what this check is FOR: driver/DMA/ISP trouble
+#    while the camera is actually running. If no anchor is found (a busy device
+#    whose ring has wrapped past boot) everything is scanned, which is correct -
+#    in that case the buffer holds runtime messages, not boot.
+# 2. Tighter tokens. Bare "Oops" matched "lo(ops)_per_jiffy" in a cpufreq
+#    table; bare "panic"/"watchdog" matched the two benign lines above. The
+#    fatal forms are word-anchored, and the specific verified-benign strings
+#    are denylisted as well so they cannot come back through the no-anchor path.
+DMESG_BAD_RE='Kernel panic|\bOops\b|BUG:|soft lockup|oom-killer|[Oo]ut of memory|SYN flooding|segfault|do_page_fault|error|fail|timeout'
+DMESG_BENIGN_RE='collect2: error|RESET ERROR|Kernel command line|cgu clk gate get error|pls check processor_id|sc_jz not support|watchdog initialized|jz-wdt|\[atbm_log\]|NOHZ:|loops_per_jiffy|jzmmc.*Error status|streamoff|wait stop|num_buffers|done_count|link_stream|sensor_probe|probe ok|Error Recovery|failover|no error|error_code=0'
+# last boot-stage marker; everything after it is runtime. Sensor-model agnostic
+# (sc2336/sc4336p/... all print "<model> stream on").
+DMESG_BOOT_ANCHOR='stream on|chip found @|sensor driver version|sensor_detect|codec_set_device|codec_codec_ctl'
+# Prints "<findings> <lines_scanned> <anchored 0|1> <runtime_file>" and returns
+# nonzero when there is nothing to report at all (no SSH / unreadable dmesg).
+# Everything comes back on stdout rather than through globals on purpose:
+# callers use $(dmesg_capture ...), which runs in a subshell, so any variable
+# the function set would be silently lost.
+dmesg_capture() {
+	local f="$1" n="${2:-200}"
+	[ -n "$SSH_TARGET" ] || return 1
+	sshx "dmesg 2>/dev/null | tail -$n" > "$f" 2>/dev/null || return 1
+	[ -s "$f" ] || return 1
+	local anchor rt anchored scanned c
+	anchor=$(grep -nE "$DMESG_BOOT_ANCHOR" "$f" 2>/dev/null | tail -1 | cut -d: -f1)
+	rt="${f%.txt}_runtime.txt"
+	if [ -n "$anchor" ]; then
+		tail -n "+$((anchor+1))" "$f" > "$rt"; anchored=1
+	else
+		cp "$f" "$rt"; anchored=0
+	fi
+	scanned=$(grep -c . "$rt" 2>/dev/null); scanned=${scanned:-0}
+	c=$(grep -iE "$DMESG_BAD_RE" "$rt" 2>/dev/null | grep -civE "$DMESG_BENIGN_RE")
+	printf '%s %s %s %s' "${c:-0}" "$scanned" "$anchored" "$rt"
+}
+
+# hub_clients -> the daemon's own live video-subscriber count (hub_video_subs(),
+# surfaced as "clients" in the /events stats frame, httpd.c:852). Prints an
+# integer, or nothing if /events is unreachable. Each /events connection emits
+# the full state immediately on connect, so a short-lived reader is simpler and
+# less racy than tailing one long-lived stream.
+hub_clients() {
+	local f="$OUTDIR/hub_stats.txt"
+	timeout 6 curl -s -N -u "$HTTP_USER:$HTTP_PASS" "$(http_base)/events?stream=stats" > "$f" 2>/dev/null
+	grep -o '"clients":[0-9]*' "$f" 2>/dev/null | tail -1 | cut -d: -f2
+}
+
+# psnr_db <ref.jpg> <cmp.jpg> -> average PSNR in dB, "99" for identical images
+# (ffmpeg prints "inf"), empty if the two cannot be compared (size mismatch,
+# unreadable file). Used by the flip tests to answer "did the picture actually
+# change in the way we asked it to", which no /control read-back can prove -
+# the daemon reports the value it accepted, not what the ISP did with it.
+psnr_db() {
+	local v
+	v=$(ffmpeg -hide_banner -nostdin -loglevel info -i "$1" -i "$2" \
+	    -lavfi psnr -f null - </dev/null 2>&1 | grep -oE 'average:[0-9.a-z]+' | tail -1 | cut -d: -f2)
+	case "$v" in inf|INF) printf '99';; "") : ;; *) printf '%s' "$v";; esac
+}
+
+# leak_trend  (reads one number per line on stdin)
+#   -> "<n> <first> <last> <delta> <nondecreasing 0|1> <up_steps>"
+# "nondecreasing" is the leak signature: a resource that is taken and never
+# given back only ever goes up. Judge on that shape, never on an absolute
+# count - the healthy absolute number depends on client count, build and SoC.
+leak_trend() {
+	awk 'NF{n++; v[n]=$1+0}
+	END{
+		if(n<1){print "0 0 0 0 0 0"; exit}
+		nd=1; up=0;
+		for(i=2;i<=n;i++){ if(v[i]<v[i-1])nd=0; if(v[i]>v[i-1])up++ }
+		printf "%d %d %d %d %d %d\n", n, v[1], v[n], v[n]-v[1], nd, up;
+	}'
+}
 
 RU="$RTSP_USER"; RP="$RTSP_PASS"
 rtsp_url() { printf 'rtsp://%s:%s@%s:%s/%s' "$RU" "$RP" "$CAM" "$RTSP_PORT" "$1"; }
@@ -351,6 +604,72 @@ onvif_call() {
 		"http://$CAM:$ONVIF_PORT/onvif/$svc" 2>/dev/null
 }
 
+# --------------------------------------------------- A/V skew from a packet timeline
+# av_skew <pkts.csv> [warmup_s]  ->  "<start> <end> <drift>" (seconds, audio
+# minus video; drift = end-start). Prints nothing if the capture has no
+# audio+video pair. The CSV is ffprobe's `packet=codec_type,pts_time -of
+# csv=p=0` output (field 1 = codec_type, field 2 = pts_time).
+#
+# Single implementation shared by section 3's analyze_stream() and section
+# 15b's long-session drift tracker, deliberately: the tricky part here is the
+# steady-state windowing, and a second hand-rolled variant of it would drift
+# out of agreement with this one at the first tweak.
+#
+# WARMUP_S excludes the connection/first-keyframe startup transient: a lone
+# leading video keyframe (sent immediately so the player has something to
+# decode) followed by a real gap before audio and steady video both start is
+# NORMAL, not growing drift - fMP4 anchors both tracks to a shared t=0 at that
+# first keyframe (unlike RTSP, which gives each track its own independent PTS
+# zero), so a client that attaches mid-warmup sees a one-time skew that LOCKS
+# once real media starts. The start reference is the first AUDIO packet
+# at/after warmup paired with the VIDEO packet nearest to it in time, falling
+# back to the raw first packets when the capture is entirely inside the warmup
+# window. It is deliberately NOT each track's own first post-warmup packet:
+# PTS are wall-locked, so when a transport dropout hole overlaps the warmup
+# boundary the two per-track references can land on opposite sides of the hole
+# and fake a seconds-large "skew" between packets that were never
+# contemporaneous (Galayou 2026-08-11: a lone keyframe at 2.060s inside a
+# startup dropout vs audio resuming at 3.558s read as start=1.498s, end=0.014s
+# -> a false "out of sync" FAIL on a stream whose tracks were locked wherever
+# both actually flowed). Pairing the start reference by proximity measures the
+# real inter-track offset; genuine RATE divergence is still fully visible in
+# end/drift, which stay last-audio-minus-last-video.
+#
+# Note for section 15b: because its segments carry session-relative timestamps
+# (-reset_timestamps 0), every segment after the first begins well past
+# warmup, so the warmup branch is a no-op there and each checkpoint's "end"
+# value is the ABSOLUTE session A/V offset at that point - which is exactly
+# what makes those values comparable across checkpoints.
+av_skew() {
+	awk -F, -v warmup="${2:-${QA_WARMUP_S:-2}}" '
+	{
+		ct=$1; p=$2+0;
+		if(ct=="video"||ct=="audio"){
+			if(!(ct in first)) first[ct]=p;
+			if(!(ct in first_ss) && p>=warmup) first_ss[ct]=p;
+			last[ct]=p;
+			if(ct=="video") vp[nv++]=p;
+		}
+	}
+	END{
+		if(!(("audio" in first)&&("video" in first))) exit;
+		se=last["audio"]-last["video"];
+		if("audio" in first_ss){
+			# start = first post-warmup audio vs the video packet NEAREST
+			# to it in time (see the header comment: per-track independent
+			# start references sit on opposite sides of a dropout hole and
+			# fake a skew between non-contemporaneous packets)
+			a0=first_ss["audio"];
+			v0=vp[0]; best=(v0>a0)?v0-a0:a0-v0;
+			for(i=1;i<nv;i++){d=vp[i]-a0; if(d<0)d=-d; if(d<best){best=d;v0=vp[i]}}
+			ss=a0-v0;
+		} else {
+			ss=first["audio"]-first["video"];
+		}
+		printf "%.3f %.3f %.3f\n", ss, se, se-ss;
+	}' "$1"
+}
+
 # --------------------------------------------------- stream integrity + A/V sync core
 # analyze_stream <url> <label> <dur> <input-opts...>
 analyze_stream() {
@@ -373,13 +692,8 @@ analyze_stream() {
 		bad "$label: no data captured (see $err)"; return 1
 	fi
 	local ffe
-	# "non-monotonic" (not "non-monotonous") is ffmpeg's actual muxer wording
-	# ("Non-monotonic DTS; previous: X, current: Y") - the old pattern here
-	# used the wrong spelling and silently never matched it, so this class of
-	# warning went undetected through every QA/soak run this project has ever
-	# run (root-caused 2026-08-10 investigating a real RTCP SR stale-timestamp
-	# bug in rtp.c that this exact warning would have flagged from day one).
-	ffe=$(grep -icE 'non-monoton(ous|ic)|discontinuit|corrupt|error while|decode_slice|concealing|invalid data|missed' "$err" 2>/dev/null || true)
+	# shared FFWARN_RE (see the helper section) - do NOT inline a pattern here
+	ffe=$(ffwarn_count "$err")
 
 	local probe="$OUTDIR/pkts_${label}.csv"
 	# NOTE: ffprobe emits csv columns in a FIXED order (codec_type,pts_time here),
@@ -391,14 +705,9 @@ analyze_stream() {
 	# awk: per codec_type -> count, first/last pts, max gap, non-monotonic count
 	#
 	# WARMUP_S excludes the connection/first-keyframe startup transient from
-	# maxgap and A/V skew: a lone leading video keyframe (sent immediately so
-	# the player has something to decode) followed by a real gap before audio
-	# and steady video both start is NORMAL, not a freeze or growing drift -
-	# fMP4 anchors both tracks to a shared t=0 at that first keyframe (unlike
-	# RTSP, which gives each track its own independent PTS zero), so a client
-	# that attaches mid-warmup sees a one-time skew that LOCKS once real media
-	# starts, not one that grows. Judge freeze/skew from steady state
-	# (first packet at/after WARMUP_S) instead of the raw first packet.
+	# maxgap (and, in av_skew() below, from the skew start reference) - see the
+	# long note on av_skew() for why that transient is a one-time locked offset
+	# and not growing drift.
 	local rep
 	rep=$(awk -F, -v wall="$wall" -v warmup="${QA_WARMUP_S:-2}" '
 	{
@@ -406,7 +715,6 @@ analyze_stream() {
 		if(ct=="video"||ct=="audio"){
 			n[ct]++;
 			if(!(ct in first)){first[ct]=p; last[ct]=p; prev[ct]=p}
-			if(!(ct in first_ss) && p>=warmup){first_ss[ct]=p}
 			if(prev[ct]>=warmup){g=p-prev[ct]; if(g>maxgap[ct])maxgap[ct]=g}
 			if(p<prev[ct]-0.0005)nonmono[ct]++;
 			prev[ct]=p; last[ct]=p;
@@ -419,20 +727,23 @@ analyze_stream() {
 			rt=(wall>0)?span/wall:0;
 			printf "%s %d %.3f %.3f %.3f %.3f %d\n", ct, n[ct], span, rate, rt, maxgap[ct], nonmono[ct];
 		}
-		# A/V skew drift, measured from steady state (post-warmup) so the
-		# one-time fMP4 startup transient does not read as growing drift
-		if(("audio" in first_ss)&&("video" in first_ss)){
-			ss=first_ss["audio"]-first_ss["video"]; se=last["audio"]-last["video"];
-			printf "SKEW %.3f %.3f %.3f\n", ss, se, se-ss;
-		} else if(("audio" in first)&&("video" in first)){
-			ss=first["audio"]-first["video"]; se=last["audio"]-last["video"];
-			printf "SKEW %.3f %.3f %.3f\n", ss, se, se-ss;
-		}
 	}' "$probe")
+	# A/V skew comes from the shared av_skew() helper (also used by section 15b)
+	# so the two can never disagree about HOW skew is measured. Appended in the
+	# same "<field1> <field2> ..." shape the dispatch loop below already parses.
+	local skewline
+	skewline=$(av_skew "$probe")
+	[ -n "$skewline" ] && rep="$rep
+SKEW $skewline"
 
 	info "$label: wall=${wall}s ffmpeg-warnings=$ffe"
 	local vrate="" v_rt ratio
 	v_rt=$(awk '$1=="video"{print $5}' <<<"$rep")
+	# spans + max gaps of both tracks, needed by the SKEW verdict below to
+	# tell a dropout-polluted endpoint from genuine A/V divergence
+	local v_span a_span v_maxgap a_maxgap
+	read -r v_span v_maxgap <<<"$(awk '$1=="video"{print $3, $6}' <<<"$rep")"
+	read -r a_span a_maxgap <<<"$(awk '$1=="audio"{print $3, $6}' <<<"$rep")"
 	while read -r ct n span rate rt maxgap nonmono; do
 		case "$ct" in
 		video)
@@ -474,13 +785,66 @@ analyze_stream() {
 			local drift="$rate"
 			info "  A/V skew start=${n}s end=${span}s drift=${drift}s"
 			local ad; ad=$(awk -v d="$drift" 'BEGIN{printf "%.3f", (d<0?-d:d)}')
-			fcmp "$ad" le 0.15 && ok "$label A/V drift ${drift}s (in sync)" \
-				|| { fcmp "$ad" le 0.40 && warn "$label A/V drift ${drift}s (marginal)" \
-				     || bad "$label A/V drift ${drift}s (out of sync / growing)"; }
+			# Track-span disagreement: PTS are wall-locked, so a transport
+			# dropout (a hole in DELIVERY) shrinks neither track's first-to-
+			# last span, while genuine rate divergence (the growing-desync
+			# bug this check exists for) opens a span difference of about the
+			# drift's own size. A large drift with AGREEING spans therefore
+			# means a skew endpoint sat next to a dropout hole - a delivery
+			# problem (reported separately by the max-gap checks), not tracks
+			# drifting apart - and is downgraded to a WARN naming that.
+			local sd; sd=$(awk -v a="${a_span:-0}" -v v="${v_span:-0}" \
+				'BEGIN{d=a-v; printf "%.3f", (d<0?-d:d)}')
+			if fcmp "$ad" le 0.15; then
+				ok "$label A/V drift ${drift}s (in sync)"
+			elif fcmp "$sd" le 0.30 && { fcmp "${a_maxgap:-0}" gt 1.0 || fcmp "${v_maxgap:-0}" gt 1.0; }; then
+				warn "$label A/V drift ${drift}s is a dropout artifact, not divergence (track spans agree within ${sd}s; max gap a=${a_maxgap:-?}s v=${v_maxgap:-?}s put a skew endpoint beside a delivery hole - see the max-gap warnings)"
+			elif fcmp "$ad" le 0.40; then
+				warn "$label A/V drift ${drift}s (marginal)"
+			else
+				bad "$label A/V drift ${drift}s (out of sync: growing divergence, or one track stalled near the capture end)"
+			fi
 			;;
 		esac
 	done <<< "$rep"
 
+	# UDP captures only: separate RTP packet-loss lines from real decode/
+	# timestamp warnings before ruling. UDP RTSP has no retransmission by
+	# design, so some residual WiFi loss is inherent transport behaviour the
+	# daemon cannot act on - the TCP-interleaved capture minutes earlier in
+	# the same run masks the identical underlying loss via TCP retransmit
+	# (garage 2026-08-11: UDP 8 losses / TCP 0 warnings, same link). The
+	# grounding for the 0.5% line: post-L2-retry residual loss on a weak-but-
+	# working WiFi AP measures ~0.1-0.2% (that run: 8 of ~5800 datagrams =
+	# 0.14%, every event a SINGLE packet, evenly scattered = RF loss, while a
+	# sender-side burst/pacing defect would lose multi-packet runs clustered
+	# at IDR bursts), and video-over-RTP is generally considered healthy
+	# below ~0.5% loss. Loss above that = a genuinely degraded link, still a
+	# FAIL. Non-loss warnings (corrupt/monotonicity/concealment) keep the
+	# strict zero-tolerance ladder on every transport - loss tolerance must
+	# never absorb real decode trouble.
+	local rtp_lines=0 rtp_missed=0
+	case "$label" in *udp*)
+		rtp_lines=$(grep -c 'RTP: missed' "$err" 2>/dev/null || true)
+		rtp_lines=${rtp_lines:-0}
+		if [ "$rtp_lines" -gt 0 ]; then
+			rtp_missed=$(awk '/RTP: missed/{for(i=1;i<NF;i++)if($i=="missed"){s+=$(i+1)+0}}END{print s+0}' "$err")
+			ffe=$((ffe - rtp_lines)); [ "$ffe" -lt 0 ] && ffe=0
+			# estimated datagram count: capture bytes / the 1200-byte default
+			# rtsp.mtu (undercounts small audio packets -> overstates the loss
+			# fraction, i.e. errs on the strict side)
+			local est_pkts loss_pct
+			est_pkts=$(( $(stat -c %s "$seg" 2>/dev/null || echo 0) / 1200 ))
+			loss_pct=$(awk -v m="$rtp_missed" -v n="$est_pkts" \
+				'BEGIN{printf "%.2f", ((m+n)>0 ? 100.0*m/(m+n) : 0)}')
+			if fcmp "$loss_pct" le 0.50; then
+				warn "$label: $rtp_missed RTP packet(s) lost over UDP (~${loss_pct}% of ~$est_pkts - ordinary residual WiFi loss; UDP has no retransmission, the TCP capture masks the same loss)"
+			else
+				bad "$label: $rtp_missed RTP packet(s) lost over UDP (~${loss_pct}% of ~$est_pkts - above the 0.5% healthy-link line, the network path is genuinely degraded)"
+			fi
+		fi
+		;;
+	esac
 	[ "${ffe:-0}" -eq 0 ] && ok "$label: no ffmpeg decode/timestamp warnings" \
 		|| { [ "${ffe:-0}" -le 3 ] && warn "$label: $ffe ffmpeg warnings (see $err)" \
 		     || bad "$label: $ffe ffmpeg decode/timestamp warnings (see $err)"; }
@@ -804,6 +1168,18 @@ for pair in "main:$PATH_MAIN" "sub:$PATH_SUB"; do
 			|| warn "rtsp_$lbl fps ${vr} off nominal ${nf} (>10%)"
 	fi
 done
+# Explicit UDP pass on the main stream. Everything else in this script runs at
+# $RTSP_TRANSPORT (tcp by default), yet the UDP path is genuinely different
+# code: its own send batching (rtsp.c:95-101), its own orphaned-session reaping
+# (2x the advertised 60s session timeout, rtsp.c:45/1361), and - unlike TCP - no
+# SO_SNDTIMEO backstop is even possible, because sendto() on an unconnected UDP
+# socket never errors no matter what the peer does. Skipped when the run is
+# already UDP, so this never doubles the work for `--transport udp`.
+if [ "$RTSP_TRANSPORT" != "udp" ]; then
+	analyze_stream "$(rtsp_url "$PATH_MAIN")" "rtsp_main_udp" "$INTEG_DUR" -rtsp_transport udp
+else
+	skip "explicit UDP integrity pass (this run is already --transport udp)"
+fi
 
 fi
 if want 4 fmp4; then
@@ -958,6 +1334,36 @@ if curlq 10 "$(http_base)/control" -o "$cj" && [ -s "$cj" ]; then
 		[ "$code" = "200" ] && ok "/control write round-trip (brightness=$bri) accepted" \
 			|| warn "/control write returned HTTP $code"
 	else info "  brightness not found; skipped write round-trip"; fi
+
+	# --- self-reported health fields that nothing ever read ------------------
+	# These exist specifically to make a class of silent failure visible from
+	# the outside (control.c:799 / control.c:1249-1259), and until now no test
+	# looked at either of them:
+	#
+	#   motion.stalled=1        detection is enabled but IVS has delivered no
+	#                           result for a while and a recovery cycle ran -
+	#                           motion looks on, but nothing flows through it.
+	#   record.motion_gate_available=0 while record.mode=1
+	#                           motion-gated recording is configured but the
+	#                           gate isn't there - the recorder is structurally
+	#                           inert, not merely "quiet because nothing moved".
+	#                           Indistinguishable from healthy without this key.
+	m_en=$(jget "$cj" motion.enabled); m_st=$(jget "$cj" motion.stalled)
+	if [ "${m_en:-0}" = "1" ]; then
+		if [ "${m_st:-0}" = "0" ]; then ok "motion: enabled and not stalled (motion.stalled=0)"
+		else bad "motion.stalled=1 - detection is enabled but IVS stopped delivering results (a recovery cycle ran; see logread)"; fi
+	else info "  motion detection disabled (motion.stalled not applicable)"; fi
+
+	r_mode=$(jget "$cj" record.mode); r_en=$(jget "$cj" record.enabled)
+	r_ga=$(jget "$cj" record.motion_gate_available); r_ge=$(jget "$cj" record.motion_gate_enabled)
+	if [ "${r_mode:-0}" = "1" ]; then
+		if [ "${r_ga:-0}" = "1" ]; then
+			ok "record: motion-gated mode with the gate available (motion_gate_available=1, gate_enabled=${r_ge:-?})"
+			[ "${r_ge:-0}" = "1" ] || warn "record.mode=1 (motion-gated) but motion_gate_enabled=0 - motion isn't running, so this recorder can never trigger"
+		else
+			bad "record.mode=1 (motion-gated) but record.motion_gate_available=0 - recording is structurally inert (looks configured, can never fire)"
+		fi
+	else info "  record.mode=${r_mode:-?} (not motion-gated; enabled=${r_en:-?}) - gate assertions not applicable"; fi
 else bad "/control not reachable (auth? http.user/pass=$HTTP_USER) - see $cj"; fi
 
 fi
@@ -1248,6 +1654,214 @@ else
 			|| warn "daynight TIME/SUN: mode did not restore to $dn_mode_cur"
 	fi
 
+	# --- 8h. Deterministic day/night TRANSITION (opt-in: --test-daynight) ----
+	# The block above proves the time/sun KEYS round-trip. It never makes the
+	# camera actually switch, so the whole transition path - decision -> hook
+	# script -> ISP running_mode re-assert -> stability afterwards - has never
+	# been executed by this harness. That path is where the real bugs were:
+	# b3eec71/f8a7b21/bd21ce6/fad4f40/10a192a, and above all 0f5fc80, an
+	# overnight FLAP LOOP where the camera oscillated between day and night for
+	# hours. A flap is invisible to any single-sample check; the only way to
+	# see it is to force one deliberate switch in each direction and then count
+	# how many switches actually happened.
+	#
+	# Invasive but not destructive: the board hook physically drives the IR-cut
+	# filter and IR illuminator, so this test makes the camera click twice.
+	if [ "${TEST_DAYNIGHT:-0}" = "1" ]; then
+		dn_en=$(jget "$LV_BASE" daynight.enabled)
+		if [ "${dn_en:-0}" != "1" ]; then
+			skip "day/night transition test: daynight.enabled=0 on this camera (the detection thread is not running, nothing would ever switch)"
+		else
+			dn_tr_cur=$(jget "$LV_BASE" daynight.transition_s); dn_tr_cur=${dn_tr_cur:-5}
+			dn_mode_cur2=$(jget "$LV_BASE" daynight.dn_mode)
+			tns_cur2=$(jget "$LV_BASE" daynight.time_night_start)
+			tds_cur2=$(jget "$LV_BASE" daynight.time_day_start)
+			# only restore the window keys when the camera HAD original values:
+			# posting "" for an unset original is rejected/ignored server-side,
+			# and the restore then silently leaves the TEST windows persisted
+			# (observed in both 2026-08-11 runs' post-reboot thread banners)
+			dn_win_restore=""
+			[ -n "$tns_cur2" ] && [ -n "$tds_cur2" ] && \
+				dn_win_restore="\"time_night_start\":\"$tns_cur2\",\"time_day_start\":\"$tds_cur2\","
+			dn_full_restore="{\"daynight\":{\"mode\":\"$dn_mode_cur2\",${dn_win_restore}\"transition_s\":$dn_tr_cur}}"
+			LV_PENDING="$dn_full_restore"
+
+			# Windows are evaluated against the CAMERA's clock, which is not
+			# necessarily this host's - prefer the camera's own time whenever
+			# SSH is available, and say so when falling back.
+			if [ -n "$SSH_TARGET" ]; then dn_now=$(sshx "date +%H:%M" 2>/dev/null); fi
+			if [ -z "${dn_now:-}" ]; then
+				dn_now=$(date +%H:%M)
+				info "  day/night: using THIS HOST's clock ($dn_now) for the test windows - with --ssh the camera's own clock would be used"
+			else
+				info "  day/night: camera clock is $dn_now"
+			fi
+			# helper: HH:MM +/- minutes, wrapping at midnight
+			dn_shift() { awk -v t="$1" -v d="$2" 'BEGIN{
+				split(t,a,":"); m=a[1]*60+a[2]+d; m=(m%1440+1440)%1440;
+				printf "%02d:%02d", int(m/60), m%60 }'; }
+			# poll GET /control until daynight.mode (0=day, 1=night; the live
+			# state, distinct from dn_mode which is the auto/time/sun selector)
+			# reaches the wanted value. Bounded, never an unbounded wait.
+			dn_wait() {   # $1=wanted 0|1  $2=bound_s -> echoes seconds taken, or empty
+				local want="$1" bound="$2" i gf got
+				gf="$OUTDIR/lv_dn_poll.json"
+				for i in $(seq 1 "$((bound/2))"); do
+					lv_get "$gf"; got=$(jget "$gf" daynight.mode)
+					[ "${got:-}" = "$want" ] && { echo $((i*2)); return 0; }
+					sleep 2
+				done
+				return 1
+			}
+			dn_hook_count() {   # $1=day|night -> how many times the hook has fired so far
+				[ -n "$SSH_TARGET" ] || return 1
+				sshx "logread 2>/dev/null | grep -c 'switching to $1'" 2>/dev/null
+			}
+			# poll GET /control until image.running_mode reaches the wanted
+			# value. The board hook chain (timps forks switch_cmd -> the script
+			# BACKGROUNDS 'color ... &' -> color curls POST /control) is
+			# asynchronous and fire-and-forget: ~0.3-1.5s on an idle board
+			# (measured on real T20+T31, 2026-08-11), more under QA load, up
+			# to curl's own 5s timeout legitimately. A single-shot read right
+			# after daynight.mode flips is therefore a coin-flip race, not a
+			# verdict - it produced a false "ISP night mode did not follow"
+			# FAIL on a camera whose chain works (Schuppen 2026-08-11).
+			dn_wait_rm() {   # $1=wanted 0|1  $2=bound_s -> echoes seconds taken
+				local want="$1" bound="$2" i gf got
+				gf="$OUTDIR/lv_dn_rm_poll.json"
+				for i in $(seq 1 "$bound"); do
+					lv_get "$gf"; got=$(jget "$gf" image.running_mode)
+					[ "${got:-}" = "$want" ] && { echo "$i"; return 0; }
+					sleep 1
+				done
+				return 1
+			}
+			# --- precondition: a DAY starting state --------------------------
+			# Wyze 2026-08-11: the camera sat in genuine night (dark room) when
+			# this test began, so "force NIGHT" below confirmed an already-
+			# night camera (vacuously - no transition, no hook run, no
+			# running_mode edge) and the hook-count check then FAILed a
+			# perfectly working chain. Both direction verdicts below are only
+			# meaningful as REAL edges: if the camera is in night now, drive
+			# it to day first (one extra IR-cut click - this test is
+			# documented invasive). Read the LIVE state, not LV_BASE: earlier
+			# 8x subsections may have moved it since.
+			dn_pre_j="$OUTDIR/lv_dn_pre.json"; lv_get "$dn_pre_j"
+			if [ "$(jget "$dn_pre_j" daynight.mode)" = "1" ]; then
+				dn_ns0=$(dn_shift "$dn_now" 120); dn_ds0=$(dn_shift "$dn_now" -2)
+				lv_post "{\"daynight\":{\"mode\":\"time\",\"transition_s\":2,\"time_night_start\":\"$dn_ns0\",\"time_day_start\":\"$dn_ds0\"}}" >/dev/null
+				if dn_wait 0 60 >/dev/null; then
+					dn_wait_rm 0 10 >/dev/null || true
+					info "  day/night: camera started in NIGHT - forced DAY first so both transitions below are fresh edges"
+				else
+					warn "day/night: camera started in night and did not reach day within 60s - the transition verdicts below may be vacuous"
+				fi
+			fi
+			# hook-count baselines AFTER the precondition switch, so a
+			# precondition day-click is never miscounted as the test's own
+			dn_night0=$(dn_hook_count night); dn_day0=$(dn_hook_count day)
+			# snapshot for the orientation cross-check further down
+			if [ "${TEST_FLIP:-0}" = "1" ]; then
+				mkdir -p "$OUTDIR/flip"
+				curl -s --max-time 12 -u "$HTTP_USER:$HTTP_PASS" "$(http_base)/snapshot.jpg?chn=0" -o "$OUTDIR/flip/dn_before.jpg" 2>/dev/null
+			fi
+
+			# --- force NIGHT: a window that contains "now" ------------------
+			dn_ns=$(dn_shift "$dn_now" -2); dn_ds=$(dn_shift "$dn_now" 120)
+			code=$(lv_post "{\"daynight\":{\"mode\":\"time\",\"transition_s\":2,\"time_night_start\":\"$dn_ns\",\"time_day_start\":\"$dn_ds\"}}")
+			info "  day/night: night window $dn_ns -> $dn_ds (now=$dn_now is inside it), transition_s=2, HTTP $code"
+			if t_night=$(dn_wait 1 60); then
+				ok "day/night: camera switched to NIGHT within ${t_night}s of the forced time window (daynight.mode=1)"
+				dn_rm_edge=0
+				if t_rm=$(dn_wait_rm 1 10); then
+					dn_rm_edge=1
+					ok "day/night: image.running_mode followed the switch to night (=1 within ${t_rm}s - the async board hook chain landed)"
+				else
+					bad "day/night: switched to night but image.running_mode still 0 a full 10s after the decision (hook latency is ~1s) - the board hook chain never set it. NOTE timps by DESIGN never writes running_mode itself (daynight.h): switch_cmd -> 'color' script -> POST /control does. Check on the camera: the switch_cmd script, thingino.json daynight.controls.color, and /usr/sbin/color's curl target"
+				fi
+				rm_j="$OUTDIR/lv_dn_night.json"; lv_get "$rm_j"
+			else
+				bad "day/night: camera did NOT switch to night within 60s of a time window containing the current time (daynight.mode stayed $(jget "$OUTDIR/lv_dn_poll.json" daynight.mode)) - the time-mode decision path is not working"
+			fi
+
+			# --- force DAY: invert the window --------------------------------
+			dn_ns2=$(dn_shift "$dn_now" 120); dn_ds2=$(dn_shift "$dn_now" -2)
+			code=$(lv_post "{\"daynight\":{\"mode\":\"time\",\"transition_s\":2,\"time_night_start\":\"$dn_ns2\",\"time_day_start\":\"$dn_ds2\"}}")
+			info "  day/night: day window (night $dn_ns2 -> day $dn_ds2), HTTP $code"
+			if t_day=$(dn_wait 0 60); then
+				ok "day/night: camera switched back to DAY within ${t_day}s (daynight.mode=0)"
+				if t_rm2=$(dn_wait_rm 0 10); then
+					if [ "${dn_rm_edge:-0}" = "1" ]; then
+						ok "day/night: image.running_mode followed the switch back to day (=0 within ${t_rm2}s)"
+					else
+						# running_mode never reached 1 in the night phase, so
+						# 0 here is not a real 1->0 edge - don't count a PASS
+						# on the back of the night-direction failure
+						info "  day/night: image.running_mode=0 after the day switch, but it never reached 1 above - not a real edge, no verdict"
+					fi
+				else
+					bad "day/night: switched to day but image.running_mode still 1 a full 10s after the decision - the board hook chain never set it (see the night-direction note)"
+				fi
+				rm_j2="$OUTDIR/lv_dn_day.json"; lv_get "$rm_j2"
+			else
+				bad "day/night: camera did NOT switch back to day within 60s of an inverted time window"
+			fi
+
+			# --- hook fired? and exactly ONCE per direction? ------------------
+			dn_night1=$(dn_hook_count night); dn_day1=$(dn_hook_count day)
+			# require the BASELINES too: a failed baseline ssh (empty ->
+			# treated as 0) would turn any stale historical 'switching to'
+			# line in logread into a phantom invocation delta
+			if [ -z "${dn_night1:-}" ] || [ -z "${dn_night0:-}" ] || [ -z "${dn_day0:-}" ]; then
+				info "  day/night: hook-invocation check needs --ssh with working logread on both samples - skipped"
+			else
+				n_sw=$(( ${dn_night1:-0} - ${dn_night0:-0} )); d_sw=$(( ${dn_day1:-0} - ${dn_day0:-0} ))
+				[ "$n_sw" -ge 1 ] && ok "day/night: the board hook actually ran for the night switch ($n_sw invocation(s) logged)" \
+					|| bad "day/night: no 'switching to night' hook invocation in logread - the decision changed state but the board script (IR-cut/illuminator) was never run"
+				[ "$d_sw" -ge 1 ] && ok "day/night: the board hook actually ran for the day switch ($d_sw invocation(s) logged)" \
+					|| bad "day/night: no 'switching to day' hook invocation in logread"
+				# The flap regression (0f5fc80): more than one switch per
+				# direction for two deliberate, unambiguous window changes means
+				# the state machine is oscillating.
+				if [ "$n_sw" -le 1 ] && [ "$d_sw" -le 1 ]; then
+					ok "day/night: exactly one switch per direction - no flapping"
+				else
+					bad "day/night: FLAPPING - ${n_sw} night and ${d_sw} day switches for two deliberate window changes (expected 1 each). This is the 0f5fc80 overnight flap-loop signature"
+				fi
+			fi
+
+			# --- did the transition disturb the image orientation? -----------
+			# 8fb6fd3 fixed flip loss on a chn0 relatch and noted, untested,
+			# that a day/night switch might reset flip by a different route.
+			# Compare orientation only (both snapshots are equally affected by
+			# the IR-cut/lighting change, so the RELATIVE comparison survives
+			# it) and keep it a WARN - a night-mode image is a hostile subject
+			# for pixel comparison.
+			if [ "${TEST_FLIP:-0}" = "1" ] && [ -s "$OUTDIR/flip/dn_before.jpg" ]; then
+				curl -s --max-time 12 -u "$HTTP_USER:$HTTP_PASS" "$(http_base)/snapshot.jpg?chn=0" -o "$OUTDIR/flip/dn_after.jpg" 2>/dev/null
+				if [ -s "$OUTDIR/flip/dn_after.jpg" ]; then
+					ffmpeg -hide_banner -nostdin -loglevel error -y -i "$OUTDIR/flip/dn_before.jpg" -vf hflip "$OUTDIR/flip/dn_before_m.jpg" </dev/null 2>/dev/null
+					pd=$(psnr_db "$OUTDIR/flip/dn_after.jpg" "$OUTDIR/flip/dn_before.jpg")
+					pm=$(psnr_db "$OUTDIR/flip/dn_after.jpg" "$OUTDIR/flip/dn_before_m.jpg")
+					if [ -n "$pd" ] && [ -n "$pm" ] && fcmp "$pm" ge "$(awk -v x="$pd" 'BEGIN{printf "%.2f", x+3}')"; then
+						warn "day/night: the image appears MIRRORED after the transition (matches the mirrored pre-transition frame by $(awk -v a="$pm" -v b="$pd" 'BEGIN{printf "%.2f",a-b}')dB) - a day/night switch may be resetting hflip/vflip independently of a chn0 relatch (8fb6fd3's untested hypothesis)"
+					else
+						ok "day/night: image orientation unchanged across the transition (direct ${pd:-?}dB vs mirrored ${pm:-?}dB)"
+					fi
+				fi
+			fi
+
+			# --- restore -------------------------------------------------------
+			lv_post "$dn_full_restore" >/dev/null
+			dnr="$OUTDIR/lv_dn_restore.json"; lv_get "$dnr"
+			if [ "$(jget "$dnr" daynight.dn_mode)" = "$dn_mode_cur2" ] && [ "$(jget "$dnr" daynight.transition_s)" = "$dn_tr_cur" ]; then
+				LV_PENDING=""; info "  day/night: restored mode=$dn_mode_cur2, windows and transition_s=$dn_tr_cur"
+			else
+				warn "day/night: restore did not fully land (mode=$(jget "$dnr" daynight.dn_mode), transition_s=$(jget "$dnr" daynight.transition_s)) - check the camera's daynight settings by hand"
+			fi
+		fi
+	fi
+
 	# --- record: the running recorder reads these live. enabled/mode/channel are
 	# left out (they would start/stop capture or depend on stream count); the
 	# rolls/segment/min-free/audio/name/dir round-trip live. seg 0..86400, pre
@@ -1365,6 +1979,68 @@ else
 		LV_PENDING=""
 	fi
 
+	# --- shared restart/persist helpers (used by --test-rotation below and by
+	# --test-encoder): restarting the daemon, forcing a key into /etc/timps.conf
+	# over SSH even when the daemon is down, POST-then-confirm-before-restart,
+	# and probing a stream once it is back. Hoisted out of the rotation block so
+	# the encoder test reuses this exact machinery instead of growing a second,
+	# subtly different copy. They only touch SSH when called.
+	rot_restart() {
+		sshx "/etc/init.d/S95timps restart >/dev/null 2>&1 || service timps restart >/dev/null 2>&1"
+		local i up=0
+		for i in $(seq 1 30); do
+			sshx "pidof timpsd" >/dev/null 2>&1 && { up=1; break; }
+			sleep 2
+		done
+		[ "$up" = "1" ] || return 1
+		# pidof succeeding only proves the PROCESS exists - not that config
+		# was durably persisted to /etc/timps.conf before this restart
+		# re-read it, nor that the HTTP control server is listening yet.
+		# On a freshly-flashed card (still busy with wear-leveling/journal
+		# housekeeping) that gap was observed wide enough to race ahead of
+		# the daemon: a stale-config video1 false-WARN here, and section
+		# 8c's baseline GET false-FAILing right after (both reproduced
+		# 2026-08, never under hand-paced SSH timing). Poll for a real
+		# /control response before calling the daemon "back" - still
+		# bounded, so a genuine hang/crash (control server never binds)
+		# falls through to the return 1 below instead of a false pass.
+		for i in $(seq 1 15); do
+			[ "$(curlq 3 -o /dev/null -w '%{http_code}' "$(http_base)/control")" = "200" ] && return 0
+			sleep 2
+		done
+		return 1
+	}
+	rot_set_conf() {  # $1=key $2=value -> force into /etc/timps.conf via SSH, works even if the daemon is down
+		sshx "grep -q '^$1' /etc/timps.conf 2>/dev/null && sed -i 's|^$1.*|$1 = $2|' /etc/timps.conf || echo '$1 = $2' >> /etc/timps.conf"
+	}
+	rot_apply() {  # $1=JSON body $2=jget path $3=expected value -> POST, then confirm
+		# it actually landed before the caller fires a restart. This closes
+		# the race from the other end: round-tripping POST->GET both catches
+		# a genuine POST failure (instead of silently restarting into a
+		# no-op and blaming the restart for it) and, like the hand-paced SSH
+		# repro that never failed, naturally paces the POST-then-restart
+		# sequence instead of firing both back-to-back.
+		local body="$1" path="$2" want="$3" got
+		lv_post "$body" >/dev/null
+		lv_get "$OUTDIR/lv_rotation_confirm.json"
+		got=$(jget "$OUTDIR/lv_rotation_confirm.json" "$path")
+		[ "$got" = "$want" ]
+	}
+	rot_probe() {  # $1=rtsp path -> prints "codecxWIDTHxHEIGHT" or empty on failure
+		# pidof succeeding only means the process exists, not that the
+		# video pipeline is up yet (on-demand encoder start happens on
+		# the FIRST client connection, plus sw-rotate init can add
+		# real latency) - a couple of retries beats a fixed sleep.
+		local out i
+		for i in 1 2 3; do
+			out=$(timeout 20 ffprobe -v error -rtsp_transport tcp -select_streams v:0 \
+				-show_entries stream=codec_name,width,height -of csv=p=0 \
+				"$(rtsp_url "$1")" 2>/dev/null | tr ',' 'x')
+			[ -n "$out" ] && { echo "$out"; return; }
+			sleep 3
+		done
+	}
+
 	# --- rotation (opt-in: --test-rotation) ---------------------------------
 	# video0.rotation is persist-only like bitrate above, AND SoC-gated:
 	# caps.rotation is only present when this build has USE_ROTATE compiled
@@ -1437,62 +2113,6 @@ else
 			# inherit. Editing /etc/timps.conf directly works whether or not
 			# the daemon is currently up.
 			if [ -n "$SSH_TARGET" ]; then
-				rot_restart() {
-					sshx "/etc/init.d/S95timps restart >/dev/null 2>&1 || service timps restart >/dev/null 2>&1"
-					local i up=0
-					for i in $(seq 1 30); do
-						sshx "pidof timpsd" >/dev/null 2>&1 && { up=1; break; }
-						sleep 2
-					done
-					[ "$up" = "1" ] || return 1
-					# pidof succeeding only proves the PROCESS exists - not that config
-					# was durably persisted to /etc/timps.conf before this restart
-					# re-read it, nor that the HTTP control server is listening yet.
-					# On a freshly-flashed card (still busy with wear-leveling/journal
-					# housekeeping) that gap was observed wide enough to race ahead of
-					# the daemon: a stale-config video1 false-WARN here, and section
-					# 8c's baseline GET false-FAILing right after (both reproduced
-					# 2026-08, never under hand-paced SSH timing). Poll for a real
-					# /control response before calling the daemon "back" - still
-					# bounded, so a genuine hang/crash (control server never binds)
-					# falls through to the return 1 below instead of a false pass.
-					for i in $(seq 1 15); do
-						[ "$(curlq 3 -o /dev/null -w '%{http_code}' "$(http_base)/control")" = "200" ] && return 0
-						sleep 2
-					done
-					return 1
-				}
-				rot_set_conf() {  # $1=key $2=value -> force into /etc/timps.conf via SSH, works even if the daemon is down
-					sshx "grep -q '^$1' /etc/timps.conf 2>/dev/null && sed -i 's|^$1.*|$1 = $2|' /etc/timps.conf || echo '$1 = $2' >> /etc/timps.conf"
-				}
-				rot_apply() {  # $1=JSON body $2=jget path $3=expected value -> POST, then confirm
-					# it actually landed before the caller fires a restart. This closes
-					# the race from the other end: round-tripping POST->GET both catches
-					# a genuine POST failure (instead of silently restarting into a
-					# no-op and blaming the restart for it) and, like the hand-paced SSH
-					# repro that never failed, naturally paces the POST-then-restart
-					# sequence instead of firing both back-to-back.
-					local body="$1" path="$2" want="$3" got
-					lv_post "$body" >/dev/null
-					lv_get "$OUTDIR/lv_rotation_confirm.json"
-					got=$(jget "$OUTDIR/lv_rotation_confirm.json" "$path")
-					[ "$got" = "$want" ]
-				}
-				rot_probe() {  # $1=rtsp path -> prints "codecxWIDTHxHEIGHT" or empty on failure
-					# pidof succeeding only means the process exists, not that the
-					# video pipeline is up yet (on-demand encoder start happens on
-					# the FIRST client connection, plus sw-rotate init can add
-					# real latency) - a couple of retries beats a fixed sleep.
-					local out i
-					for i in 1 2 3; do
-						out=$(timeout 20 ffprobe -v error -rtsp_transport tcp -select_streams v:0 \
-							-show_entries stream=codec_name,width,height -of csv=p=0 \
-							"$(rtsp_url "$1")" 2>/dev/null | tr ',' 'x')
-						[ -n "$out" ] && { echo "$out"; return; }
-						sleep 3
-					done
-				}
-
 				echo "  -- real restart test (needs --ssh, may take ~1-2 min) --"
 				sub1_cur=$(jget "$LV_BASE" video.1.rotation);  sub1_cur=${sub1_cur:-0}
 				sub1_w=$(jget "$LV_BASE" video.1.width);       sub1_w=${sub1_w:-640}
@@ -1545,6 +2165,193 @@ else
 				fi
 			else
 				info "rotation: real restart verification needs --ssh (config round-trip above already checked)"
+			fi
+		fi
+	fi
+
+	# --- 8g. Persist-only encoder settings, verified AFTER a restart --------
+	# (opt-in: --test-encoder, substream only)
+	#
+	# Everything else in 8b proves the config layer: POST a value, GET it back,
+	# it matches. That is exactly the assertion that CANNOT catch this
+	# project's most-repeated bug shape - a value accepted and persisted and
+	# faithfully echoed, which the running encoder then ignores or silently
+	# coerces (340fb1f, ff28ee2, f003655, 0a8bb9f, 6ec766e, dd2221f, 51bf052,
+	# 30ecc74). The only proof is to restart into the new config and MEASURE
+	# what comes down the wire.
+	#
+	# Substream only, on purpose: it carries the same encoder-config path as
+	# the main stream at a fraction of the disruption if a restart goes badly.
+	if [ "${TEST_ENCODER:-0}" = "1" ]; then
+		if [ -z "$SSH_TARGET" ]; then
+			skip "encoder verification needs --ssh (these settings only apply on a daemon restart)"
+		else
+			# enc_measure <rtsp-path> <dur> <tag> -> "<kbps> <cv>"
+			#   kbps = delivered VIDEO bitrate (payload bytes over the media
+			#          timespan; audio excluded so it is comparable with the
+			#          configured video bitrate)
+			#   cv   = coefficient of variation of the per-second byte totals.
+			#          Per-FRAME variance is dominated by I-vs-P size in every
+			#          rc mode and says nothing; per-SECOND variance is what
+			#          actually separates CBR from VBR.
+			enc_measure() {
+				local pth="$1" dur="$2" tag="$3"
+				local f="$OUTDIR/enc_${tag}.mkv" c="$OUTDIR/enc_${tag}.csv"
+				timeout -k 5 "$((dur+15))" ffmpeg -hide_banner -nostdin -y -loglevel warning \
+					-rtsp_transport tcp -i "$(rtsp_url "$pth")" -t "$dur" -an -c copy "$f" \
+					</dev/null 2>"$OUTDIR/enc_${tag}.log" || true
+				[ -s "$f" ] || return 1
+				ffprobe -v error -select_streams v:0 -show_entries packet=pts_time,size \
+					-of csv=p=0 "$f" 2>/dev/null > "$c"
+				[ -s "$c" ] || return 1
+				awk -F, '{t=$1+0; s=$2+0; if(n++==0)t0=t; tl=t; sum+=s; b[int(t)]+=s}
+				END{
+					span=tl-t0; if(span<=0){print "0 0"; exit}
+					kbps=sum*8/span/1000;
+					# drop the first and last (partial) second buckets
+					m=0; c2=0; for(k in b){ ks[c2++]=k }
+					lo=1e18; hi=-1e18; for(i=0;i<c2;i++){ if(ks[i]+0<lo)lo=ks[i]+0; if(ks[i]+0>hi)hi=ks[i]+0 }
+					nn=0; for(k in b){ if(k+0>lo && k+0<hi){ v[nn++]=b[k]; m+=b[k] } }
+					if(nn<3){ printf "%.0f 0\n", kbps; exit }
+					m/=nn; sd=0; for(i=0;i<nn;i++) sd+=(v[i]-m)*(v[i]-m);
+					sd=sqrt(sd/nn);
+					printf "%.0f %.3f\n", kbps, (m>0)?sd/m:0;
+				}' "$c"
+				rm -f "$f"
+			}
+			enc_dur="${ENC_DUR:-25}"
+			enc_bcur=$(jget "$LV_BASE" video.1.bitrate)
+			enc_rcur=$(jget "$LV_BASE" video.1.rc_mode)
+			if [ -z "${enc_bcur:-}" ]; then
+				skip "encoder verification: video.1.bitrate not reported by /control"
+			else
+				# A bitrate TARGET is a ceiling, not a promise: it only binds when
+				# the scene (and the videoN.min_qp floor) would otherwise spend MORE
+				# than it. Raising the target on a stream that is already quality- or
+				# content-limited changes nothing, and the old "is the measured value
+				# closer to the new number or to the old one?" heuristic then FAILS a
+				# perfectly healthy encoder. That is exactly what happened on a T31
+				# whose 640x360 substream sat at ~238 kbps (I-frames pinned at the
+				# min_qp=20 floor, P-frames all-skip on a static scene): 384 -> 1500
+				# could not possibly move it, in a working OR a broken daemon.
+				#
+				# So: measure what the stream ACTUALLY delivers under the current
+				# config first, then aim the new target well BELOW that. A lower
+				# ceiling always binds, which makes "the encoder followed it" and
+				# "the encoder ignored it" genuinely distinguishable.
+				enc_pre_kbps=""; cv_pre=""
+				if res0=$(enc_measure "$PATH_SUB" "$enc_dur" pre); then
+					read -r enc_pre_kbps cv_pre <<<"$res0"
+					info "  encoder test: substream currently DELIVERS ${enc_pre_kbps} kbps at a configured ${enc_bcur} kbps (per-second CV ${cv_pre})"
+				fi
+				if [ -n "${enc_pre_kbps:-}" ] && fcmp "$enc_pre_kbps" ge 64; then
+					# 0.4x of what it delivers right now, floored at the config
+					# layer's own minimum (videoN.bitrate clamps to >= 16)
+					enc_bnew=$(awk -v m="$enc_pre_kbps" 'BEGIN{v=int(m*0.4); if(v<16)v=16; print v}')
+					enc_dir=down
+				else
+					# no usable reference (stream unreachable, or already so low that
+					# 0.4x lands under the clamp): fall back to the old distinct-value
+					# probe - but an unprovable direction must not produce a hard FAIL,
+					# see the verdict below.
+					enc_bnew=$(awk -v c="$enc_bcur" 'BEGIN{ print (c>700)? 400 : 1500 }')
+					enc_dir=blind
+				fi
+				info "  encoder test: substream bitrate ${enc_bcur} -> ${enc_bnew} kbps (aiming ${enc_dir}), rc_mode ${enc_rcur:-?} -> cbr, then a real restart (~1-2 min)"
+				if ! rot_apply "{\"video\":{\"1\":{\"bitrate\":$enc_bnew,\"rc_mode\":\"cbr\"}}}" video.1.bitrate "$enc_bnew"; then
+					bad "encoder: POST video1.bitrate=$enc_bnew did not persist - the config layer rejected/dropped it before we could even restart"
+				elif ! rot_restart; then
+					bad "encoder: daemon did not come back after a restart with video1.bitrate=$enc_bnew/rc_mode=cbr"
+				else
+					if res=$(enc_measure "$PATH_SUB" "$enc_dur" cbr); then
+						read -r m_kbps cv_cbr <<<"$res"
+						info "  measured substream: ${m_kbps} kbps over ${enc_dur}s (requested ${enc_bnew}, previously ${enc_bcur}), per-second CV ${cv_cbr}"
+						hi=$(awk -v n="$enc_bnew" 'BEGIN{printf "%.0f", n*1.5}')
+						if [ "$enc_dir" = down ]; then
+							# the new ceiling is 0.4x of the measured delivered rate, so a
+							# working encoder MUST come down to meet it.
+							keep=$(awk -v b="$enc_pre_kbps" 'BEGIN{printf "%.0f", b*0.8}')
+							if fcmp "$m_kbps" le "$hi"; then
+								ok "encoder: the restarted daemon actually FOLLOWS the substream bitrate target - delivered ${enc_pre_kbps} -> ${m_kbps} kbps after the target was cut to ${enc_bnew} (within 1.5x of it)"
+							elif fcmp "$m_kbps" ge "$keep"; then
+								bad "encoder: substream still delivers ${m_kbps} kbps (it delivered ${enc_pre_kbps} before) after the target was cut to ${enc_bnew} - the value was accepted, persisted and echoed but the encoder is ignoring it (the 340fb1f/ff28ee2 class)"
+							else
+								warn "encoder: delivered ${m_kbps} kbps moved toward the requested ${enc_bnew} (from ${enc_pre_kbps}) but did not get within 1.5x of it - rate control is loose on this SoC/scene"
+							fi
+						else
+							# blind (upward) probe: a raised ceiling only shows up if the
+							# scene actually wants the bits, so neither outcome PROVES
+							# anything. Report, never fail.
+							lo=$(awk -v n="$enc_bnew" 'BEGIN{printf "%.0f", n*0.6}')
+							if fcmp "$m_kbps" ge "$lo" && fcmp "$m_kbps" le "$hi"; then
+								ok "encoder: the restarted daemon actually DELIVERS the requested substream bitrate (${m_kbps} kbps vs requested ${enc_bnew}, within 0.6-1.5x)"
+							else
+								warn "encoder: delivered ${m_kbps} kbps against a requested ${enc_bnew} (was configured ${enc_bcur}) - could not measure the stream beforehand, so this cannot distinguish an ignored target from a scene/min_qp-limited one; re-run when the pre-measurement succeeds"
+							fi
+						fi
+						# --- does rc_mode do anything measurable? -------------
+						if rot_apply "{\"video\":{\"1\":{\"rc_mode\":\"vbr\"}}}" video.1.rc_mode vbr && rot_restart; then
+							if res2=$(enc_measure "$PATH_SUB" "$enc_dur" vbr); then
+								read -r m2_kbps cv_vbr <<<"$res2"
+								info "  measured substream under vbr: ${m2_kbps} kbps, per-second CV ${cv_vbr} (cbr was ${cv_cbr})"
+								if fcmp "$cv_cbr" le 0 || fcmp "$cv_vbr" le 0; then
+									warn "encoder: could not measure per-second bitrate variance in one of the modes - rc_mode effect unproven"
+								else
+									r=$(awk -v a="$cv_vbr" -v b="$cv_cbr" 'BEGIN{printf "%.2f", a/b}')
+									if fcmp "$r" ge 1.3; then
+										ok "encoder: rc_mode has a REAL effect - vbr's per-second bitrate varies ${r}x more than cbr's"
+									elif fcmp "$r" le 0.77; then
+										warn "encoder: vbr is measurably STEADIER than cbr (${r}x) - unexpected, but rc_mode is demonstrably doing something"
+									else
+										# same trap as the bitrate verdict above: if BOTH modes sit
+										# far under their shared target, rate control has nothing to
+										# do in either mode and the two are identical by physics,
+										# not by a bug.
+										if fcmp "$m_kbps" le "$(awk -v n="$enc_bnew" 'BEGIN{printf "%.0f", n*0.5}')" && \
+											fcmp "$m2_kbps" le "$(awk -v n="$enc_bnew" 'BEGIN{printf "%.0f", n*0.5}')"; then
+											info "  cbr and vbr look alike (${r}x, CV ${cv_cbr} vs ${cv_vbr}), but BOTH deliver under half the ${enc_bnew} kbps target - the stream is quality/content-limited (videoN.min_qp floor, static scene), so rate control has nothing to express in either mode. rc_mode effect unproven, not disproven."
+										else
+											warn "encoder: cbr and vbr produce statistically indistinguishable bitrate variance (${r}x, CV ${cv_cbr} vs ${cv_vbr}) - rc_mode may be accepted, persisted and ignored by the encoder"
+										fi
+									fi
+								fi
+							else
+								warn "encoder: no substream data captured under rc_mode=vbr - cannot compare rate-control behaviour"
+							fi
+						else
+							bad "encoder: could not apply/restart into rc_mode=vbr for the rate-control comparison"
+						fi
+					else
+						bad "encoder: no substream data after the restart with bitrate=$enc_bnew - the new encoder config may have broken the stream entirely"
+					fi
+				fi
+				# --- surface the daemon's own encoder telemetry ---------------
+				# control.c:1210-1231 has published left_pics/work_done/
+				# ave_bitrate (IMP_Encoder_Query) all along and nothing has ever
+				# looked at it. Informational: a growing left_pics is the
+				# encoder falling behind its consumers.
+				ej="$OUTDIR/enc_telemetry.json"
+				if curlq 10 "$(http_base)/control" -o "$ej" && [ -s "$ej" ]; then
+					for ch in 0 1; do
+						lp=$(jget "$ej" "encoder.$ch.left_pics")
+						[ -n "$lp" ] || continue
+						info "  encoder telemetry chn$ch: left_pics=$lp work_done=$(jget "$ej" "encoder.$ch.work_done") cur_packs=$(jget "$ej" "encoder.$ch.cur_packs") ave_bitrate=$(jget "$ej" "encoder.$ch.ave_bitrate")"
+					done
+				fi
+				# --- restore, the same way the rotation test does: straight
+				# into /etc/timps.conf, so it lands even if the daemon is unwell
+				rot_set_conf "video1.bitrate" "$enc_bcur"
+				rot_set_conf "video1.rc_mode" "${enc_rcur:-cbr}"
+				if rot_restart; then
+					rj="$OUTDIR/enc_restore.json"; lv_get "$rj"
+					if [ "$(jget "$rj" video.1.bitrate)" = "$enc_bcur" ] && [ "$(jget "$rj" video.1.rc_mode)" = "${enc_rcur:-cbr}" ]; then
+						ok "encoder: restored substream bitrate=${enc_bcur} rc_mode=${enc_rcur:-cbr} and the daemon came back healthy"
+					else
+						warn "encoder: restore did not read back as expected (bitrate=$(jget "$rj" video.1.bitrate), rc_mode=$(jget "$rj" video.1.rc_mode)) - check the camera's video1 settings by hand"
+					fi
+				else
+					bad "encoder: the daemon did not come back after the final restore-restart - check $SSH_TARGET by hand (video1 settings were written to /etc/timps.conf)"
+				fi
 			fi
 		fi
 	fi
@@ -1828,6 +2635,141 @@ mb_check "unknown top-level section" '{"totally_bogus_section_xyz":{"foo":1,"bar
 mb_check "array instead of object" '{"image":[1,2,3]}'
 
 fi
+# --- 8f. Pixel-verified hflip + forced chn0 relatch (opt-in) ----------------
+# Two things nothing in this script has ever proven:
+#
+#  1. that image.hflip has any VISIBLE effect. Every other flip check in here
+#     reads the value back out of /control, which only proves the daemon
+#     accepted and persisted it - the ISP could be ignoring it entirely and
+#     every test would still pass. Compare pixels instead: mirror the
+#     unflipped snapshot and check it matches the flipped one.
+#  2. that the flip SURVIVES a channel relatch. 8fb6fd3/9034d61 fixed exactly
+#     this: on the 0->1 user-count edge chn0 gets re-latched and the ISP came
+#     back with hflip/vflip/running_mode reset, so the picture silently
+#     un-flipped the moment the last viewer left and a new one arrived. Force
+#     that edge deliberately (idle past MS_IDLE_STOP_US=2s, hal_ingenic.c:72,
+#     then attach a fresh client) and re-check the pixels.
+#
+# Needs a STATIC scene - a camera pointed at moving traffic will produce
+# ambiguous PSNR deltas, which are reported as WARN, never as a false FAIL.
+if want 8f flip; then
+hdr "8f. Pixel-verified hflip + forced chn0 relatch (opt-in)"
+if [ "$TEST_FLIP" != "1" ]; then
+	info "flip/relatch test needs --test-flip (and a static scene - it compares snapshots pixel-by-pixel) - skipped"
+elif ! have ffmpeg; then
+	skip "flip/relatch test needs ffmpeg (PSNR comparison)"
+else
+	fl_dir="$OUTDIR/flip"; mkdir -p "$fl_dir"
+	fl_snap() { curl -s --max-time 12 -u "$HTTP_USER:$HTTP_PASS" "$(http_base)/snapshot.jpg?chn=0" -o "$1" 2>/dev/null; [ -s "$1" ]; }
+	fl_post() { curl -s -o /dev/null -w '%{http_code}' --max-time 12 -u "$HTTP_USER:$HTTP_PASS" -X POST "$(http_base)/control" -d "$1"; }
+	# Interruption safety, same reasoning as 8b/9: a run killed between the
+	# flip and the restore would leave the camera mirrored for good. Chain to
+	# 8b's pending-restore if that section defined one, instead of silently
+	# replacing its EXIT trap (bash keeps only one).
+	FLIP_PENDING=""
+	flip_restore_pending() {
+		[ -n "${FLIP_PENDING:-}" ] || return 0
+		warn "interrupted mid flip test - restoring image.hflip"
+		curl -s -o /dev/null --max-time 8 -u "$HTTP_USER:$HTTP_PASS" -X POST "$(http_base)/control" -d "$FLIP_PENDING" >/dev/null 2>&1 || true
+		FLIP_PENDING=""
+	}
+	trap 'flip_restore_pending; command -v lv_restore_pending >/dev/null 2>&1 && lv_restore_pending' EXIT
+
+	fj="$fl_dir/base.json"
+	if ! curlq 10 "$(http_base)/control" -o "$fj" || [ ! -s "$fj" ]; then
+		bad "flip test: cannot GET /control baseline"
+	else
+	fl_cur=$(jget "$fj" image.hflip); fl_cur=${fl_cur:-0}
+	FLIP_PENDING="{\"image\":{\"hflip\":$fl_cur}}"
+	# --- is the scene static enough for a pixel comparison to mean anything?
+	if fl_snap "$fl_dir/static_a.jpg"; then
+		sleep 2
+		fl_snap "$fl_dir/static_b.jpg"
+		st_psnr=$(psnr_db "$fl_dir/static_a.jpg" "$fl_dir/static_b.jpg")
+		if [ -z "$st_psnr" ]; then
+			warn "flip test: cannot PSNR-compare two snapshots (size mismatch or unreadable JPEG) - results below may be unreliable"
+		elif fcmp "$st_psnr" ge 28; then
+			ok "flip test: scene is static enough for pixel comparison (${st_psnr}dB between two snapshots 2s apart)"
+		else
+			warn "flip test: scene is MOVING (${st_psnr}dB between two snapshots 2s apart) - flip verdicts below may be ambiguous; point the camera at a still scene for a clean result"
+		fi
+	else
+		bad "flip test: /snapshot.jpg?chn=0 returned no data - cannot run"
+	fi
+
+	# --- does hflip visibly do anything at all? ---------------------------
+	c0=$(fl_post '{"image":{"hflip":0}}'); sleep 2
+	fl_snap "$fl_dir/r0.jpg" || bad "flip test: no snapshot after hflip=0 (HTTP $c0)"
+	c1=$(fl_post '{"image":{"hflip":1}}'); sleep 2
+	fl_snap "$fl_dir/r1.jpg" || bad "flip test: no snapshot after hflip=1 (HTTP $c1)"
+	if [ -s "$fl_dir/r0.jpg" ] && [ -s "$fl_dir/r1.jpg" ]; then
+		ffmpeg -hide_banner -nostdin -loglevel error -y -i "$fl_dir/r0.jpg" -vf hflip "$fl_dir/r0_mirrored.jpg" </dev/null 2>/dev/null
+		p_mir=$(psnr_db "$fl_dir/r0_mirrored.jpg" "$fl_dir/r1.jpg")
+		p_dir=$(psnr_db "$fl_dir/r0.jpg" "$fl_dir/r1.jpg")
+		if [ -z "$p_mir" ] || [ -z "$p_dir" ]; then
+			warn "flip test: PSNR comparison failed (mirrored=${p_mir:-?} direct=${p_dir:-?}) - cannot judge whether hflip did anything"
+		else
+			info "  hflip=1 snapshot vs mirrored-hflip=0 snapshot: ${p_mir}dB; vs the raw hflip=0 snapshot: ${p_dir}dB"
+			d=$(awk -v a="$p_mir" -v b="$p_dir" 'BEGIN{printf "%.2f", a-b}')
+			if fcmp "$d" ge 3; then
+				ok "hflip is REAL: the picture actually mirrors (mirrored match beats direct match by ${d}dB) - not just a config value being echoed back"
+			elif fcmp "$d" le -3; then
+				bad "hflip=1 did NOT change the image: the flipped snapshot still matches the UNflipped one better (by $(awk -v x="$d" 'BEGIN{printf "%.2f",-x}')dB). The daemon accepts and reports the setting, but the ISP is ignoring it"
+			else
+				warn "hflip effect ambiguous (mirrored vs direct differ by only ${d}dB) - scene may be near-symmetric or moving; re-run against a static, asymmetric scene"
+			fi
+		fi
+	fi
+
+	# --- force a chn0 relatch and re-check ---------------------------------
+	# The regression this exists for only fires on the 0->1 user-count edge,
+	# so the pipeline must first be genuinely idle: wait for the daemon's own
+	# subscriber count to reach 0, then stay idle well past MS_IDLE_STOP_US
+	# (2s, hal_ingenic.c:72) so framesource/encoder really shut down, then
+	# attach a fresh client to force the re-latch.
+	waited=0
+	while [ "$waited" -lt 20 ]; do
+		hc=$(hub_clients); [ "${hc:-0}" -le 0 ] && break
+		sleep 2; waited=$((waited+2))
+	done
+	[ "${hc:-0}" -le 0 ] && info "  relatch: zero subscribers, letting the pipeline idle-stop (>2x MS_IDLE_STOP_US)" \
+		|| warn "flip test: ${hc:-?} subscriber(s) still attached - cannot guarantee a real 0->1 edge, relatch result below is weaker evidence"
+	sleep 5
+	timeout 15 ffprobe -v error -rtsp_transport "$RTSP_TRANSPORT" -i "$(rtsp_url "$PATH_MAIN")" \
+		-select_streams v:0 -show_entries stream=width -of csv=p=0 -read_intervals '%+#2' >/dev/null 2>&1
+	sleep 5
+	if fl_snap "$fl_dir/relatch.jpg" && [ -s "$fl_dir/r1.jpg" ] && [ -s "$fl_dir/r0.jpg" ]; then
+		p_still=$(psnr_db "$fl_dir/relatch.jpg" "$fl_dir/r1.jpg")     # still flipped?
+		p_reset=$(psnr_db "$fl_dir/relatch.jpg" "$fl_dir/r0.jpg")     # back to unflipped?
+		if [ -z "$p_still" ] || [ -z "$p_reset" ]; then
+			warn "flip test: PSNR comparison after the relatch failed - cannot judge whether hflip survived"
+		else
+			d2=$(awk -v a="$p_still" -v b="$p_reset" 'BEGIN{printf "%.2f", a-b}')
+			info "  post-relatch snapshot vs flipped reference: ${p_still}dB; vs unflipped reference: ${p_reset}dB"
+			if fcmp "$d2" ge 3; then
+				ok "hflip SURVIVED a forced chn0 relatch (still matches the flipped reference by ${d2}dB) - the ISP self-heal on the 0->1 edge is working"
+			elif fcmp "$d2" le -3; then
+				bad "hflip was LOST across the chn0 relatch: the picture went back to matching the UNflipped reference. This is the 8fb6fd3/9034d61 regression - the ISP silently drops hflip/vflip when the channel re-latches on the first new viewer"
+			else
+				warn "flip-after-relatch ambiguous (${d2}dB apart) - scene likely moved between snapshots; re-run against a static scene"
+			fi
+		fi
+	else
+		warn "flip test: no snapshot after the forced relatch - cannot judge flip persistence"
+	fi
+
+	# --- restore ------------------------------------------------------------
+	rc=$(fl_post "{\"image\":{\"hflip\":$fl_cur}}")
+	rj="$fl_dir/restore.json"; curlq 10 "$(http_base)/control" -o "$rj"
+	if [ "$(jget "$rj" image.hflip)" = "$fl_cur" ]; then
+		FLIP_PENDING=""; info "  restored image.hflip=$fl_cur"
+	else
+		warn "flip test: could not restore image.hflip to $fl_cur (HTTP $rc) - the camera may be left mirrored"
+	fi
+	fi
+fi
+
+fi
 if want 9 events; then
 # --- 9. /events SSE ---------------------------------------------------------
 # Previously this just waited ~8s passively and warned "may be idle" if
@@ -2018,13 +2960,95 @@ for tr in tcp udp; do
 done
 
 fi
+# --- 12b. Session reaping after ungraceful client death (opt-in) ------------
+# Regression test for the immortal-session class (6473848 "reap orphaned UDP
+# sessions after 2x the advertised 60s session timeout", 265befb): a client
+# that dies WITHOUT sending TEARDOWN. For UDP-transport RTSP this is genuinely
+# undetectable at the socket layer - sendto() on an unconnected UDP socket
+# never errors, however dead the peer is - so the only thing standing between
+# a kill -9 and a permanently pinned session (a thread, an fd pair, a fanqueue,
+# a hub subscription, one of only RTSP_MAX_CLIENTS=8 slots) is the reaper.
+#
+# Measured through hub_video_subs(), surfaced as "clients" in the /events
+# stats frame - the daemon's own count of live video subscribers, which is
+# exactly the number that must come back down. Nothing else in this script has
+# ever asserted that a session ENDS.
+if want 12b leak reap; then
+hdr "12b. Session reaping after ungraceful client death (opt-in)"
+if [ "$TEST_LEAK" != "1" ]; then
+	info "session-reaping test needs --test-leak (holds the camera for several minutes waiting out reap timeouts) - skipped"
+else
+	# leak_phase <label> <reap_bound_s> <cmd...>
+	#   start cmd as a client, confirm the daemon SEES it, kill -9 it (never a
+	#   TEARDOWN, never a clean close), then poll until the count returns to
+	#   the pre-test baseline or the bound expires.
+	leak_phase() {
+		local label="$1" bound="$2"; shift 2
+		local base cur pid i attached=0 waited=0
+		base=$(hub_clients)
+		if [ -z "$base" ]; then
+			warn "$label: cannot read \"clients\" from /events?stream=stats - skipping this phase"
+			return
+		fi
+		"$@" </dev/null >/dev/null 2>&1 &
+		pid=$!
+		for i in $(seq 1 8); do
+			cur=$(hub_clients)
+			[ -n "$cur" ] && [ "$cur" -gt "$base" ] && { attached=1; break; }
+			sleep 2
+		done
+		if [ "$attached" != "1" ]; then
+			kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+			warn "$label: the test client never showed up in the daemon's subscriber count (baseline $base) - cannot test reaping of a session that never started"
+			return
+		fi
+		info "  $label: client attached (clients ${base} -> ${cur}), now killing it with SIGKILL - no TEARDOWN, no clean close"
+		kill -9 "$pid" 2>/dev/null; wait "$pid" 2>/dev/null
+		local t0; t0=$(date +%s)
+		while [ "$waited" -lt "$bound" ]; do
+			sleep 5
+			cur=$(hub_clients)
+			waited=$(( $(date +%s) - t0 ))
+			[ -n "$cur" ] && [ "$cur" -le "$base" ] && break
+		done
+		if [ -n "$cur" ] && [ "$cur" -le "$base" ]; then
+			ok "$label: orphaned session reaped after ~${waited}s (clients back to $cur, bound ${bound}s)"
+		else
+			bad "$label: session NOT reaped within ${bound}s - clients still ${cur:-?} vs baseline ${base}. The killed client permanently holds a thread, fds, a fanqueue and one of the ${RTSP_CAP} RTSP slots (immortal-session regression)"
+		fi
+	}
+
+	# RTSP over UDP: reaper bound is 2x RTSP_SESSION_TIMEOUT_S (rtsp.c:45,1361)
+	# = 120s; allow 150s so a slow poll cycle is not reported as a leak.
+	leak_phase "reap/rtsp-udp" 150 \
+		ffmpeg -hide_banner -nostdin -loglevel error -rtsp_transport udp \
+		-i "$(rtsp_url "$PATH_MAIN")" -f null -
+	# HTTP fMP4: a SIGKILLed curl closes its socket, so the write path should
+	# notice almost immediately; MS_STREAM_STALL_US (httpd.c:62-63, 371, 597)
+	# is the 60s backstop for the half-open case. 90s covers both.
+	leak_phase "reap/http-fmp4" 90 \
+		curl -s -o /dev/null -u "$HTTP_USER:$HTTP_PASS" "$(http_base)/stream.mp4?chn=0"
+	# SRT, only if this camera actually has it compiled in and enabled and this
+	# host's ffmpeg speaks srt://. SRT_STALL_US (srt.c:57) is also 60s.
+	lk="$OUTDIR/leak_srt_caps.json"
+	if curlq 8 "$(http_base)/control" -o "$lk" && [ -s "$lk" ] \
+	   && [ "$(jget "$lk" srt.available)" = "1" ] && [ "$(jget "$lk" srt.enabled)" = "1" ] \
+	   && have ffmpeg && ffmpeg -hide_banner -protocols 2>/dev/null | grep -qiE '^[[:space:]]*srt[[:space:]]*$'; then
+		leak_phase "reap/srt" 90 \
+			ffmpeg -hide_banner -nostdin -loglevel error -i "srt://$CAM:$(jget "$lk" srt.port)" -f null -
+	else
+		skip "reap/srt: SRT not available+enabled on this camera, or this host's ffmpeg has no srt:// support"
+	fi
+fi
+
+fi
 if want 13 load; then
 # --- 13. Load: concurrent-client ramp --------------------------------------
 hdr "13. Load - concurrent client ramp [$LOAD_CLIENTS] x ${LOAD_DUR}s each"
 max_stable=0
 for n in $LOAD_CLIENTS; do
 	pids=""; ldir="$OUTDIR/load_${n}"; mkdir -p "$ldir"
-	[ -n "$SSH_TARGET" ] && rss0=$(sshx "cat /proc/\$(pidof timpsd)/status 2>/dev/null | awk '/VmRSS/{print \$2}'")
+	lsnap0=""; [ -n "$SSH_TARGET" ] && lsnap0=$(dev_snap)
 	for c in $(seq 1 "$n"); do
 		timeout -k 5 "$((LOAD_DUR+6))" ffmpeg -hide_banner -nostdin -loglevel error -stats -rtsp_transport "$RTSP_TRANSPORT" \
 			-i "$(rtsp_url "$PATH_MAIN")" -t "$LOAD_DUR" -an -f null - </dev/null >"$ldir/c${c}.out" 2>"$ldir/c${c}.log" &
@@ -2045,21 +3069,212 @@ for n in $LOAD_CLIENTS; do
 	agg=$(awk -v f="$tf" -v d="$LOAD_DUR" 'BEGIN{printf "%.0f",f/d}')
 	extra=""
 	if [ -n "$SSH_TARGET" ]; then
-		rss1=$(sshx "cat /proc/\$(pidof timpsd)/status 2>/dev/null | awk '/VmRSS/{print \$2}'")
+		lsnap1=$(dev_snap)
 		la=$(sshx "cut -d' ' -f1 /proc/loadavg 2>/dev/null")
-		extra=" | timpsd RSS ${rss0:-?}->${rss1:-?}kB load ${la:-?}"
+		if [ -n "$lsnap1" ]; then
+			read -r l_rss l_fd l_thr _ _ <<<"$lsnap1"
+			read -r l_rss0 l_fd0 l_thr0 _ _ <<<"${lsnap0:-? ? ? 0 0}"
+			# fd/thread counts at each ramp step: per-client cost should be
+			# flat and, critically, should come back down between steps. A
+			# step-over-step ratchet here is the same leak signature the soak
+			# watches for, seen under a cleaner stimulus (every client of the
+			# previous step is provably gone by now - `wait` returned).
+			echo "$l_fd"  >> "$OUTDIR/load_fds.txt"
+			echo "$l_thr" >> "$OUTDIR/load_threads.txt"
+			extra=" | timpsd RSS ${l_rss0}->${l_rss}kB fds ${l_fd0}->${l_fd} threads ${l_thr0}->${l_thr} CPU $(dev_cpu_between "$lsnap0" "$lsnap1")% load ${la:-?}"
+		fi
 	fi
 	nf="${NOM_FPS[main]:-0}"; lo=$(awk -v x="$nf" 'BEGIN{printf "%.1f",x*0.9}')
-	if [ "$failcli" -eq 0 ] && { fcmp "$nf" le 0 || fcmp "$minfps" ge "$lo"; }; then
+	# RTSP_MAX_CLIENTS (rtsp.c:32) is a HARD cap of 8: the 9th client is
+	# rejected on purpose, with a "client limit (%d) reached, rejecting" log
+	# line, because each client costs a thread plus a fanqueue. The `load`
+	# profile ramps to 12 and 16, so those steps used to be reported as
+	# "N failed (degrading)" - describing correctly-enforced admission control
+	# as degradation, and burying a real degradation if one ever happened
+	# there. Label the two cases apart. Not exposed via /control (checked),
+	# hence the constant + citation; override with RTSP_CAP= if a build
+	# changes it.
+	if [ "$n" -gt "$RTSP_CAP" ]; then
+		if [ "$okcli" -eq "$RTSP_CAP" ] && { fcmp "$nf" le 0 || fcmp "$minfps" ge "$lo"; }; then
+			ok "load ${n} clients: at cap - exactly ${RTSP_CAP} served at full fps (min ${minfps}), ${failcli} correctly rejected by RTSP_MAX_CLIENTS=${RTSP_CAP} (rtsp.c:32)${extra}"
+		elif [ "$okcli" -eq "$RTSP_CAP" ]; then
+			warn "load ${n} clients: at cap (${RTSP_CAP} served, ${failcli} rejected as designed) but min fps ${minfps} is below 90% of nominal ${nf} - the served clients are degrading${extra}"
+		elif [ "$okcli" -gt 0 ]; then
+			warn "load ${n} clients: only ${okcli} served, expected the full cap of ${RTSP_CAP} before rejections start (${failcli} failed)${extra}"
+		else
+			bad "load ${n} clients: all failed - not cap enforcement, the server served nobody${extra}"; break
+		fi
+	elif [ "$failcli" -eq 0 ] && { fcmp "$nf" le 0 || fcmp "$minfps" ge "$lo"; }; then
 		ok "load ${n} clients: all ok, min ${minfps} fps, aggregate ${agg} fps/s${extra}"
 		max_stable="$n"
 	elif [ "$okcli" -gt 0 ]; then
-		warn "load ${n} clients: ${okcli} ok / ${failcli} failed, min fps ${minfps} (degrading)${extra}"
+		warn "load ${n} clients: ${okcli} ok / ${failcli} failed, min fps ${minfps} (degrading, and below the ${RTSP_CAP}-client cap so this is NOT admission control)${extra}"
 	else
 		bad "load ${n} clients: all failed${extra}"; break
 	fi
 done
-info "max stable concurrent clients (full fps, no failures): $max_stable"
+info "max stable concurrent clients (full fps, no failures): $max_stable (hard cap RTSP_MAX_CLIENTS=${RTSP_CAP})"
+if [ -s "$OUTDIR/load_fds.txt" ]; then
+	read -r gn gfirst glast gdelta gnondec gup <<<"$(leak_trend < "$OUTDIR/load_fds.txt")"
+	if [ "${gn:-0}" -ge 3 ] && [ "$gdelta" -gt 0 ] && [ "$gnondec" = "1" ]; then
+		bad "load ramp: timpsd fd count rose monotonically ${gfirst} -> ${glast} across $gn steps and never came back down - clients from earlier steps are not being released"
+	elif [ "${gn:-0}" -ge 3 ]; then
+		ok "load ramp: timpsd fd count returned to a stable level between steps (${gfirst} -> ${glast})"
+	fi
+fi
+
+fi
+# --- 13b. Hostile (stalled) client alongside healthy ones (opt-in) ----------
+# The ramp above only ever creates WELL-BEHAVED clients, which is the easy
+# case. The interesting one is a client that connects properly and then stops
+# reading - a wedged viewer, a suspended laptop, a saturated wifi link. Three
+# separate things must hold, and none of them were tested:
+#
+#   * healthy clients keep their frame rate (fanqueue is per-client, so one
+#     slow consumer must not stall the shared producer);
+#   * the KEYFRAME RATE for everyone else does not spike. A client whose queue
+#     overflows asks for an IDR, and IDR requests are global to the shared
+#     encoder - which is precisely why that request is rate-limited
+#     (src/fanqueue.h:38-47). If the limiter regressed, one stalled client
+#     silently doubles or triples everybody's bitrate, and nothing else in
+#     this script would notice;
+#   * memory stays bounded (perf audit P-08 estimated ~1.5-2.5 MB pinned per
+#     stalled client, never measured until now, on a 32 MB-class SoC).
+#
+# rtsp-stall.py refreshes its stalled session every 12 s (overlapping), because
+# the server reaps a TCP peer after 15 s of zero write progress - without that
+# refresh only the first half of a 30 s phase would actually be hostile.
+if want 13b hostile stalled; then
+hdr "13b. Hostile (stalled) client alongside healthy clients (opt-in)"
+if [ "$TEST_HOSTILE" != "1" ]; then
+	info "hostile-client test needs --test-hostile - skipped"
+elif ! have python3; then
+	skip "hostile-client test needs python3 (scripts/rtsp-stall.py)"
+else
+	stall_py="$(dirname "$0")/rtsp-stall.py"
+	if [ ! -f "$stall_py" ]; then
+		skip "hostile-client test: scripts/rtsp-stall.py not found next to this script"
+	else
+		hdir="$OUTDIR/hostile"; mkdir -p "$hdir"
+		HOST_N="${HOST_N:-2}"       # healthy clients per phase
+		HOST_DUR="${HOST_DUR:-$LOAD_DUR}"
+		# one measurement phase: N healthy clients, optionally with the stalled
+		# one running alongside. Sets HP_MINFPS / HP_KEY / HP_FRAMES.
+		hostile_phase() {
+			local tag="$1" pids="" c fr kf
+			for c in $(seq 1 "$HOST_N"); do
+				timeout -k 5 "$((HOST_DUR+8))" ffmpeg -hide_banner -nostdin -loglevel error -stats \
+					-rtsp_transport tcp -i "$(rtsp_url "$PATH_MAIN")" -t "$HOST_DUR" -an \
+					-c copy -f matroska "$hdir/${tag}_c${c}.mkv" </dev/null >/dev/null 2>"$hdir/${tag}_c${c}.log" &
+				pids="$pids $!"
+			done
+			# shellcheck disable=SC2086
+			wait $pids 2>/dev/null
+			HP_MINFPS=""; HP_KEY=0; HP_FRAMES=0
+			for c in $(seq 1 "$HOST_N"); do
+				fr=$(grep -oE 'frame= *[0-9]+' "$hdir/${tag}_c${c}.log" | tail -1 | grep -oE '[0-9]+')
+				[ -n "${fr:-}" ] && [ "$fr" -gt 0 ] || continue
+				local fps; fps=$(awk -v f="$fr" -v d="$HOST_DUR" 'BEGIN{printf "%.1f",f/d}')
+				[ -z "$HP_MINFPS" ] && HP_MINFPS="$fps"
+				fcmp "$fps" lt "$HP_MINFPS" && HP_MINFPS="$fps"
+				# keyframe count on this client's own recording - the direct
+				# observable for "did somebody force extra IDRs on us"
+				kf=$(ffprobe -v error -select_streams v -show_entries frame=key_frame -of csv=p=0 \
+					"$hdir/${tag}_c${c}.mkv" 2>/dev/null | grep -c '^1$')
+				HP_KEY=$((HP_KEY + ${kf:-0})); HP_FRAMES=$((HP_FRAMES + fr))
+			done
+		}
+
+		# --- baseline: healthy clients only ------------------------------
+		info "  baseline: $HOST_N healthy clients, ${HOST_DUR}s, no stalled client"
+		hsnap0=""; [ -n "$SSH_TARGET" ] && hsnap0=$(dev_snap)
+		hostile_phase base
+		base_minfps="$HP_MINFPS"; base_key="$HP_KEY"; base_frames="$HP_FRAMES"
+		if [ -z "$base_minfps" ]; then
+			bad "hostile test: the baseline healthy clients produced no frames - cannot compare anything"
+		else
+			info "  baseline: min ${base_minfps} fps, ${base_key} keyframes in ${base_frames} frames"
+
+			# --- with a deliberately stalled client alongside -------------
+			python3 "$stall_py" --host "$CAM" --port "$RTSP_PORT" --path "$PATH_MAIN" \
+				--user "$RTSP_USER" --pw "$RTSP_PASS" --secs "$((HOST_DUR+30))" \
+				> "$hdir/stall.out" 2>"$hdir/stall.err" &
+			stall_pid=$!
+			stalled=0
+			for i in $(seq 1 10); do
+				grep -q STALLED "$hdir/stall.out" 2>/dev/null && { stalled=1; break; }
+				kill -0 "$stall_pid" 2>/dev/null || break
+				sleep 1
+			done
+			if [ "$stalled" != "1" ]; then
+				kill -9 "$stall_pid" 2>/dev/null; wait "$stall_pid" 2>/dev/null
+				warn "hostile test: the stalled client never completed its RTSP handshake ($(head -1 "$hdir/stall.err" 2>/dev/null)) - nothing hostile to measure against"
+			else
+				ok "hostile test: stalled client established (DESCRIBE/SETUP/PLAY over interleaved TCP, then deaf - no reads, no TEARDOWN)"
+				hostile_phase stalled
+				kill -9 "$stall_pid" 2>/dev/null; wait "$stall_pid" 2>/dev/null
+				if [ -z "$HP_MINFPS" ]; then
+					bad "hostile test: healthy clients produced NO frames while one stalled client was attached - a single stuck viewer took the stream down for everybody"
+				else
+					nf="${NOM_FPS[main]:-0}"
+					info "  with stalled client: min ${HP_MINFPS} fps, ${HP_KEY} keyframes in ${HP_FRAMES} frames"
+					# ISOLATION is a DIFFERENTIAL question: "did the stalled
+					# client cost the healthy ones anything?" The only valid
+					# reference is the baseline phase measured moments ago on
+					# the same scene, same client count, same encoder settings.
+					# Comparing against NOMINAL fps instead conflates isolation
+					# with "does this SoC sustain its configured fps at all",
+					# which is section 3's job - and produced a bogus isolation
+					# FAIL on a T31L whose main stream simply runs at ~20 fps
+					# (baseline 18.2 -> 18.1 with the stalled client attached,
+					# i.e. isolation was holding perfectly).
+					blo=$(awk -v b="$base_minfps" 'BEGIN{printf "%.1f", b*0.9}')
+					if fcmp "$HP_MINFPS" ge "$blo"; then
+						ok "hostile: healthy clients kept their frame rate (${HP_MINFPS} fps vs baseline ${base_minfps}) with a stalled client attached - per-client isolation is holding"
+					else
+						bad "hostile: healthy clients fell from ${base_minfps} to ${HP_MINFPS} fps because ONE client stopped reading - per-client isolation is not holding"
+					fi
+					# absolute fps is a SEPARATE observation, never an isolation
+					# verdict: report it only if the baseline itself was already
+					# below nominal (so the reader knows both phases were).
+					if fcmp "$nf" gt 0 && fcmp "$base_minfps" lt "$(awk -v x="$nf" 'BEGIN{printf "%.1f",x*0.9}')"; then
+						info "  (note: the BASELINE phase itself only reached ${base_minfps} fps against a nominal ${nf} - that is a stream/SoC throughput finding from section 3, not an isolation failure)"
+					fi
+					# keyframe density, normalised (client frame counts differ
+					# slightly between phases). A forced-IDR storm shows up as a
+					# multiple, so the threshold is deliberately generous.
+					bkd=$(awk -v k="$base_key" -v f="$base_frames" 'BEGIN{printf "%.4f", (f>0)?k/f:0}')
+					skd=$(awk -v k="$HP_KEY"   -v f="$HP_FRAMES"   'BEGIN{printf "%.4f", (f>0)?k/f:0}')
+					info "  keyframe density: baseline ${bkd} vs with-stalled-client ${skd} (keyframes per frame)"
+					if fcmp "$bkd" le 0; then
+						warn "hostile: could not measure a baseline keyframe density - skipping the IDR-storm check"
+					else
+						ratio=$(awk -v a="$skd" -v b="$bkd" 'BEGIN{printf "%.2f", a/b}')
+						if fcmp "$ratio" le 1.5; then
+							ok "hostile: keyframe rate for healthy clients essentially unchanged (${ratio}x) - the global IDR-request rate limit is holding"
+						elif fcmp "$ratio" le 2.5; then
+							warn "hostile: keyframe rate for healthy clients rose ${ratio}x with one stalled client attached - the global IDR-request limiter may be leaking through (fanqueue.h:38-47)"
+						else
+							bad "hostile: keyframe rate for healthy clients rose ${ratio}x - ONE stalled client is forcing IDRs on the shared encoder and spiking everyone's bitrate (IDR rate-limit regression)"
+						fi
+					fi
+				fi
+			fi
+			if [ -n "$hsnap0" ]; then
+				hsnap1=$(dev_snap)
+				if [ -n "$hsnap1" ]; then
+					read -r h_rss0 h_fd0 h_thr0 _ _ <<<"$hsnap0"
+					read -r h_rss1 h_fd1 h_thr1 _ _ <<<"$hsnap1"
+					dr=$(( h_rss1 - h_rss0 ))
+					info "  timpsd across the hostile test: RSS ${h_rss0}->${h_rss1}kB (delta ${dr}kB), fds ${h_fd0}->${h_fd1}, threads ${h_thr0}->${h_thr1}"
+					if [ "$dr" -lt 4096 ]; then ok "hostile: timpsd memory stayed bounded (${dr}kB delta with a stalled client attached)"
+					else warn "hostile: timpsd RSS grew ${dr}kB during the stalled-client test (P-08 estimated ~1.5-2.5MB pinned per stalled client - worth checking the fanqueue cap on a 32MB-class SoC)"; fi
+				fi
+			fi
+		fi
+		rm -f "$hdir"/*.mkv
+	fi
+fi
 
 fi
 # --- 14. Restart resilience -------------------------------------------------
@@ -2159,6 +3374,184 @@ else
 fi
 fi
 
+# --- 14c. Real reboot: config / binary / version persistence (opt-in) -------
+# The sharpest available test for the 2026-08 fleet incident class: fw_ota.sh
+# reported "Firmware flashed successfully" on cameras whose /usr/bin/timpsd had
+# demonstrably not changed. Section 1b surfaces the version string, but a
+# version string is only evidence about the binary that is currently running -
+# it says nothing about whether a config write actually reached flash, or
+# whether what comes back after a power cycle is the same software at all.
+#
+# This reboots the camera for real and then asserts, across the reboot:
+#   * a deliberate config change survived  (it reached flash, not just RAM)
+#   * /etc/timps.conf's md5 is exactly what we left behind (nothing rewrote or
+#     rolled back the config during shutdown/boot)
+#   * /usr/bin/timpsd's md5 is UNCHANGED (nothing swapped the binary under us)
+#   * the reported version string is unchanged
+#   * nothing else in the whole /control document moved (a silent reset of
+#     some unrelated setting is exactly the failure that hides for months)
+if want 14c reboot; then
+hdr "14c. Reboot persistence (opt-in, reboots the camera)"
+if [ "$TEST_REBOOT" != "1" ]; then
+	info "reboot-persistence test needs --test-reboot (the camera is REBOOTED and is offline for a minute or two) - skipped"
+elif [ -z "$SSH_TARGET" ]; then
+	skip "reboot-persistence test needs --ssh"
+else
+	echo "  -- the camera will now REBOOT; expect ~1-2 minutes of downtime --"
+	rb_base="$OUTDIR/reboot_before.json"
+	if ! curlq 12 "$(http_base)/control" -o "$rb_base" || [ ! -s "$rb_base" ]; then
+		bad "reboot test: cannot GET the /control baseline - aborting before touching anything"
+	else
+		rb_ver0=$(jget "$rb_base" version)
+		rb_bin0=$(sshx "md5sum /usr/bin/timpsd 2>/dev/null | cut -d' ' -f1")
+		rb_cfg0=$(sshx "md5sum /etc/timps.conf 2>/dev/null | cut -d' ' -f1")
+		info "  before: version='${rb_ver0:-?}' timpsd md5=${rb_bin0:-?} timps.conf md5=${rb_cfg0:-?}"
+
+		# one safe, distinctive, persisted change - an OSD text if this camera
+		# has a live one (visible, harmless), else the recording filename
+		# template (equally persisted, no visual effect)
+		rb_key=""; rb_path=""; rb_orig=""; rb_val="qa_reboot_$(date +%s)"
+		for s in 0 1; do
+			for i in 0 1 2 3; do
+				v=$(jget "$rb_base" "osd$s.$i.text")
+				if [ -n "$v" ]; then
+					rb_key="{\"osd$s\":{\"$i\":{\"text\":\"$rb_val\"}}}"; rb_path="osd$s.$i.text"; rb_orig="$v"; break 2
+				fi
+			done
+		done
+		if [ -z "$rb_path" ]; then
+			rb_orig=$(jget "$rb_base" record.name)
+			rb_key="{\"record\":{\"name\":\"$rb_val\"}}"; rb_path="record.name"
+		fi
+		code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 12 -u "$HTTP_USER:$HTTP_PASS" \
+			-X POST "$(http_base)/control" -d "$rb_key")
+		sleep 2
+		rb_mid="$OUTDIR/reboot_mid.json"; curlq 12 "$(http_base)/control" -o "$rb_mid"
+		rb_cfg1=$(sshx "md5sum /etc/timps.conf 2>/dev/null | cut -d' ' -f1")
+		if [ "$(jget "$rb_mid" "$rb_path")" != "$rb_val" ]; then
+			bad "reboot test: the pre-reboot change to $rb_path did not even apply (HTTP $code) - nothing meaningful to check across a reboot"
+		else
+			ok "reboot test: set $rb_path='$rb_val' (was '$rb_orig'), /etc/timps.conf md5 ${rb_cfg0:-?} -> ${rb_cfg1:-?}"
+			[ "$rb_cfg1" != "$rb_cfg0" ] || warn "reboot test: /etc/timps.conf md5 did NOT change after a config POST - the value may be living in RAM only (it will not survive the reboot)"
+
+			# --- reboot -------------------------------------------------------
+			# detach it: `reboot` tears the ssh session down under us, and a
+			# non-zero rc from that is not a failure signal worth acting on
+			sshx "(sleep 1; reboot) >/dev/null 2>&1 &" >/dev/null 2>&1 || true
+			rb_t0=$(date +%s)
+			# first wait for it to actually GO DOWN, so a camera that ignored
+			# the reboot request is not mistaken for one that came back fast
+			went_down=0
+			for i in $(seq 1 30); do
+				curlq 3 -o /dev/null "$(http_base)/control" >/dev/null 2>&1 || { went_down=1; break; }
+				sleep 2
+			done
+			[ "$went_down" = "1" ] && info "  camera went down after $(( $(date +%s) - rb_t0 ))s, waiting for it to come back" \
+				|| warn "reboot test: the camera never stopped answering - did it reboot at all? (continuing; the checks below still apply)"
+			back=0
+			for i in $(seq 1 90); do    # up to ~3 min, a real boot is much slower than a daemon restart
+				[ "$(curlq 3 -o /dev/null -w '%{http_code}' "$(http_base)/control" 2>/dev/null)" = "200" ] && { back=1; break; }
+				sleep 2
+			done
+			if [ "$back" != "1" ]; then
+				bad "reboot test: the camera did not answer /control within ~3 minutes of the reboot - it did not come back on its own"
+			else
+				rb_secs=$(( $(date +%s) - rb_t0 ))
+				ok "reboot test: camera came back and /control answered ${rb_secs}s after the reboot was issued"
+				rb_after="$OUTDIR/reboot_after.json"; curlq 12 "$(http_base)/control" -o "$rb_after"
+				rb_ver1=$(jget "$rb_after" version)
+				rb_bin1=$(sshx "md5sum /usr/bin/timpsd 2>/dev/null | cut -d' ' -f1")
+				rb_cfg2=$(sshx "md5sum /etc/timps.conf 2>/dev/null | cut -d' ' -f1")
+				info "  after:  version='${rb_ver1:-?}' timpsd md5=${rb_bin1:-?} timps.conf md5=${rb_cfg2:-?}"
+
+				[ -n "$rb_bin0" ] && [ "$rb_bin1" = "$rb_bin0" ] \
+					&& ok "reboot: /usr/bin/timpsd is byte-identical across the reboot (md5 $rb_bin1)" \
+					|| bad "reboot: /usr/bin/timpsd CHANGED across a plain reboot (${rb_bin0:-?} -> ${rb_bin1:-?}) - something is rewriting the binary at boot (pending-flash artifact?)"
+				[ -n "$rb_ver0" ] && [ "$rb_ver1" = "$rb_ver0" ] \
+					&& ok "reboot: reported version unchanged ('$rb_ver1')" \
+					|| bad "reboot: reported version changed across a plain reboot ('${rb_ver0:-?}' -> '${rb_ver1:-?}')"
+				[ -n "$rb_cfg1" ] && [ "$rb_cfg2" = "$rb_cfg1" ] \
+					&& ok "reboot: /etc/timps.conf is byte-identical to what we left before the reboot (md5 $rb_cfg2)" \
+					|| bad "reboot: /etc/timps.conf md5 changed across the reboot (${rb_cfg1:-?} -> ${rb_cfg2:-?}) - the config was rewritten or rolled back during shutdown/boot"
+				got=$(jget "$rb_after" "$rb_path")
+				[ "$got" = "$rb_val" ] \
+					&& ok "reboot: the config change SURVIVED ($rb_path='$got') - the write really reached flash" \
+					|| bad "reboot: the config change was LOST across the reboot ($rb_path='${got:-}', expected '$rb_val') - /control accepted and echoed a value that never reached flash"
+
+				# --- whole-document diff -----------------------------------
+				# Everything except the one key we changed (and the inherently
+				# volatile status fields) must read identically. This is the
+				# check that catches an unrelated setting silently resetting at
+				# boot - the kind of thing nobody notices for months.
+				if have python3; then
+					python3 - "$rb_base" "$rb_after" "$rb_path" <<'PY' > "$OUTDIR/reboot_diff.txt" 2>/dev/null
+import json,sys
+a=json.load(open(sys.argv[1])); b=json.load(open(sys.argv[2])); changed=sys.argv[3]
+# live/status values that legitimately differ after a reboot. VOL_ANY matches
+# any path component (covers list elements, whose own last component is an
+# index); VOL_PATH is for names that are ambiguous - "mode" is a live day/night
+# state under daynight but a persisted setting under record, so only the
+# specific status paths are excused.
+VOL_ANY={"uptime_s","clients","subs","fps","kbps","bytes","free_mb","file","last_file",
+         "count","last_t","total_gain","ae_luma","night_baseline","day_trigger",
+         "stalled","active","recording","registered","left_pics","work_done",
+         "cur_packs","left_stream_bytes","left_stream_frames","ave_bitrate",
+         "drop_frames","drop_bytes","sun_computed_sunrise","sun_computed_sunset","temp"}
+VOL_PATH={"daynight.mode","daynight.enabled","daynight.brightness","motion.enabled",
+          "image.running_mode"}
+out=[]
+def walk(x,y,path=""):
+    if isinstance(x,dict) and isinstance(y,dict):
+        for k in sorted(set(x)|set(y)):
+            walk(x.get(k),y.get(k),f"{path}.{k}" if path else k)
+    elif isinstance(x,list) and isinstance(y,list):
+        for i in range(max(len(x),len(y))):
+            walk(x[i] if i<len(x) else None, y[i] if i<len(y) else None, f"{path}.{i}")
+    elif x!=y:
+        if path==changed or path in VOL_PATH: return
+        if any(c in VOL_ANY for c in path.split(".")): return
+        out.append(f"{path}: {x!r} -> {y!r}")
+walk(a,b)
+print("\n".join(out))
+PY
+					nd=$(grep -c . "$OUTDIR/reboot_diff.txt" 2>/dev/null); nd=${nd:-0}
+					if [ "$nd" -eq 0 ]; then
+						ok "reboot: the entire /control document is otherwise identical across the reboot (no setting silently reset at boot)"
+					else
+						bad "reboot: ${nd} /control field(s) changed across the reboot that we did not touch - a setting is being silently reset at boot. See $OUTDIR/reboot_diff.txt:"
+						head -10 "$OUTDIR/reboot_diff.txt" | sed 's/^/    /' | tee -a "$SUMMARY"
+					fi
+				else
+					info "  whole-document reboot diff needs python3 - skipped (the targeted checks above still ran)"
+				fi
+
+				# kernel boot log: the reboot is the one moment a driver-level
+				# problem is most likely to appear, and logread will not have it
+				rbd="$OUTDIR/reboot_dmesg.txt"
+				# NOTE this runs right after a boot, so the buffer is nothing BUT
+				# the boot preamble - which dmesg_capture excludes by design (see
+				# its comment). Expect 0 findings here on a healthy camera; the
+				# full untrimmed log is still saved for a human to read.
+				if dm_res=$(dmesg_capture "$rbd" 300); then
+					read -r kerr dm_scanned _ dm_rt <<<"$dm_res"
+					[ "${kerr:-0}" -eq 0 ] && info "  post-reboot kernel log clean (${dm_scanned} post-bring-up line(s) scanned; full log saved to $rbd)" \
+						|| warn "reboot: ${kerr} error-ish kernel log line(s) logged after sensor bring-up - see $dm_rt"
+				fi
+
+				# --- restore ------------------------------------------------
+				rcode=$(curl -s -o /dev/null -w '%{http_code}' --max-time 12 -u "$HTTP_USER:$HTTP_PASS" \
+					-X POST "$(http_base)/control" -d "$(printf '%s' "$rb_key" | sed "s|$rb_val|$rb_orig|")")
+				sleep 2
+				rrj="$OUTDIR/reboot_restore.json"; curlq 12 "$(http_base)/control" -o "$rrj"
+				[ "$(jget "$rrj" "$rb_path")" = "$rb_orig" ] \
+					&& info "  restored $rb_path='$rb_orig'" \
+					|| warn "reboot test: could not restore $rb_path to '$rb_orig' (HTTP $rcode) - the camera is left with the probe value"
+			fi
+		fi
+	fi
+fi
+
+fi
 # --- 15. Soak ---------------------------------------------------------------
 if [ "${SOAK_DUR:-0}" -gt 0 ] && want 15 soak; then
 	hdr "15. Soak (${SOAK_DUR}s continuous, ${SOAK_SAMPLE}s slices)"
@@ -2166,24 +3559,39 @@ if [ "${SOAK_DUR:-0}" -gt 0 ] && want 15 soak; then
 	slice="$SOAK_SAMPLE"; n_slices=$(( SOAK_DUR / slice )); [ "$n_slices" -lt 1 ] && n_slices=1
 	err_total=0; bad_slices=0; rss_first=""; rss_last=""
 	rec="$OUTDIR/rec_soak.mkv"; rlog="$OUTDIR/rec_soak.log"
+	# Per-slice resource series. RSS alone (the old <2MB gate) cannot see the
+	# leaks this codebase actually has: an unreaped session costs an fd pair, a
+	# thread and a hub subscription - kilobytes. Judged on SHAPE (never goes
+	# back down) rather than on any absolute count, since the healthy number
+	# depends on client count, build and SoC. CPU is measured across the slice
+	# itself by bracketing the recording, so it costs no extra wall time.
+	fd_series="$OUTDIR/soak_fds.txt"; thr_series="$OUTDIR/soak_threads.txt"
+	cpu_series="$OUTDIR/soak_cpu.txt"
+	: > "$fd_series"; : > "$thr_series"; : > "$cpu_series"
 	for s in $(seq 1 "$n_slices"); do
+		snap0=""; [ -n "$SSH_TARGET" ] && snap0=$(dev_snap)
 		timeout -k 5 "$((slice+6))" ffmpeg -hide_banner -nostdin -y -loglevel warning -rtsp_transport "$RTSP_TRANSPORT" \
 			-i "$(rtsp_url "$PATH_MAIN")" -t "$slice" -c copy "$rec" </dev/null 2>"$rlog" || true
 		[ -s "$rec" ] || bad_slices=$((bad_slices+1))
-		# grep -c already prints "0" on no match (and exits 1); do NOT chain
-		# "|| echo 0" here - that fires on the exit-1 and yields a two-line "0\n0",
-		# which then makes err_total=$((err_total+e)) a fatal arithmetic SYNTAX
-		# error that tears out of the whole soak loop (zero slices logged).
-		e=$(grep -icE 'non-monotonic|discontinuit|corrupt|error while|concealing|invalid data' "$rlog" 2>/dev/null); e=${e:-0}
+		# shared FFWARN_RE via ffwarn_count (this copy used to be missing
+		# decode_slice|missed - see the helper's comment on pattern drift)
+		e=$(ffwarn_count "$rlog")
 		err_total=$((err_total+e))
-		rss=""
+		rss=""; nfd=""; nthr=""; cpu=""
 		if [ -n "$SSH_TARGET" ]; then
-			rss=$(sshx "awk '/VmRSS/{print \$2}' /proc/\$(pidof timpsd)/status 2>/dev/null")
-			[ -z "$rss_first" ] && rss_first="$rss"; rss_last="$rss"
+			snap1=$(dev_snap)
+			if [ -n "$snap1" ]; then
+				read -r rss nfd nthr _ _ <<<"$snap1"
+				cpu=$(dev_cpu_between "${snap0:-}" "$snap1")
+				[ -z "$rss_first" ] && rss_first="$rss"; rss_last="$rss"
+				echo "$nfd"  >> "$fd_series"
+				echo "$nthr" >> "$thr_series"
+				echo "$cpu"  >> "$cpu_series"
+			fi
 		fi
-		echo "$(date +%H:%M:%S) slice $s/$n_slices err=$e rss=${rss:-?}kB empty=$([ -s "$rec" ] && echo 0 || echo 1)" >> "$soaklog"
+		echo "$(date +%H:%M:%S) slice $s/$n_slices err=$e rss=${rss:-?}kB fds=${nfd:-?} threads=${nthr:-?} cpu=${cpu:-?}% empty=$([ -s "$rec" ] && echo 0 || echo 1)" >> "$soaklog"
 		rm -f "$rec"
-		printf '\r  soak %d/%d  errors=%d  bad_slices=%d  rss=%skB     ' "$s" "$n_slices" "$err_total" "$bad_slices" "${rss:-?}"
+		printf '\r  soak %d/%d  errors=%d  bad_slices=%d  rss=%skB fd=%s thr=%s cpu=%s%%     ' "$s" "$n_slices" "$err_total" "$bad_slices" "${rss:-?}" "${nfd:-?}" "${nthr:-?}" "${cpu:-?}"
 	done
 	echo
 	[ "$bad_slices" -eq 0 ] && ok "soak: all $n_slices slices captured data" \
@@ -2196,6 +3604,201 @@ if [ "${SOAK_DUR:-0}" -gt 0 ] && want 15 soak; then
 		[ "$grow" -lt 2048 ] && ok "soak: no significant memory growth (<2MB)" \
 			|| warn "soak: timpsd RSS grew ${grow}kB (possible leak - see $soaklog)"
 	fi
+	# fd / thread leak: judged on shape, not magnitude. A descriptor+thread
+	# that is taken per session and never given back produces a series that
+	# only ever rises - a few kB of RSS, invisible to the gate above, but the
+	# exact fingerprint of every unreaped-session bug this project has had.
+	for pair in "fds:$fd_series" "threads:$thr_series"; do
+		what="${pair%%:*}"; sf="${pair##*:}"
+		[ -s "$sf" ] || continue
+		read -r ln lfirst llast ldelta lnondec lup <<<"$(leak_trend < "$sf")"
+		[ "${ln:-0}" -ge 4 ] || { info "  soak $what: only ${ln:-0} sample(s) - too few to judge a trend"; continue; }
+		if [ "$ldelta" -le 0 ]; then
+			ok "soak $what: ${lfirst} -> ${llast} over $ln slices (no growth)"
+		elif [ "$lnondec" = "1" ]; then
+			bad "soak $what: ${lfirst} -> ${llast} (+${ldelta}) and the count NEVER went back down across $ln slices - monotonic growth is the per-session leak signature (fd/thread/hub-sub never released)"
+		else
+			warn "soak $what: ${lfirst} -> ${llast} (+${ldelta}) over $ln slices, but the series fluctuates (${lup} rises) - churn rather than a clean leak; check $soaklog"
+		fi
+	done
+	if [ -s "$cpu_series" ]; then
+		read -r cn cq1 cq4 cgrowth _ _ _ _ _ _ <<<"$(awk '{n++;s[n]=$1+0}
+			END{ if(n<1){print "0 0 0 0 0 0 0 0 0 0"; exit}
+			     q=int(n/4); if(q<1)q=1;
+			     for(i=1;i<=q;i++)f+=s[i]; for(i=n-q+1;i<=n;i++)l+=s[i]; f/=q; l/=q;
+			     printf "%d %.1f %.1f %.1f 0 0 0 0 0 0\n", n, f, l, l-f }' "$cpu_series")"
+		info "timpsd CPU across soak: first-quarter avg ${cq1}% -> last-quarter avg ${cq4}% ($cn slices, see $cpu_series)"
+		if [ "${cn:-0}" -ge 4 ]; then
+			if fcmp "$cgrowth" ge 15; then bad "soak: timpsd CPU rose ${cgrowth} points across the soak (${cq1}% -> ${cq4}%) at constant load - work per client is growing (spin/backlog)"
+			elif fcmp "$cgrowth" ge 5; then warn "soak: timpsd CPU drifted up ${cgrowth} points across the soak (${cq1}% -> ${cq4}%) at constant load"
+			else ok "soak: timpsd CPU stable across the soak (${cq1}% -> ${cq4}%)"; fi
+		fi
+	fi
+	# kernel-side context, only when something already went wrong - a driver/DMA
+	# level stall shows up in dmesg and nowhere in logread or the capture logs
+	if [ -n "$SSH_TARGET" ] && { [ "$bad_slices" -gt 0 ] || [ "$err_total" -gt 0 ]; }; then
+		sk="$OUTDIR/soak_dmesg.txt"
+		if dm_res=$(dmesg_capture "$sk" 200); then
+			read -r kerr dm_scanned _ _ <<<"$dm_res"
+			info "  soak had trouble - kernel log tail saved to $sk (${kerr} error-ish line(s) in ${dm_scanned} post-bring-up line(s))"
+		fi
+	fi
+fi
+
+# --- 15b. Long-session A/V drift --------------------------------------------
+# Coverage gap this closes (found 2026-08-10 while validating the rtp.c fix
+# "re-sample fresh clock for RTCP SR"): section 3 measures A/V skew over a
+# fresh ~30s capture (too short to see slow accumulation) and section 15's soak
+# reconnects every slice, which resets the per-session pts anchor - so NEITHER
+# can observe drift that only builds up inside ONE long-lived session, which is
+# precisely the failure mode of a stale-NTP<->RTP-pairing bug.
+#
+# Method: a SINGLE unbroken ffmpeg RTSP session, chopped into checkpoints by
+# the segment muxer with -reset_timestamps 0 so each segment's packet
+# timestamps stay relative to the ORIGINAL session start. That is the whole
+# trick: without it every segment restarts near zero and each one reads ~0
+# drift forever. Segments are analysed (and deleted) as they complete, so the
+# run prints a live trend and disk use stays bounded on a multi-hour capture.
+#
+# The verdict is on the TREND, not on any single checkpoint: a drift that
+# creeps from 0.02s to 0.35s over two hours is never above section 3's 0.40s
+# "bad" line at any instant, yet it is unambiguously the bug.
+if [ "${DRIFT_DUR:-0}" -gt 0 ] && want 15b drift; then
+	hdr "15b. Long-session A/V drift (ONE ${DRIFT_DUR}s RTSP connection, ${DRIFT_SEG}s checkpoints)"
+	ddir="$OUTDIR/drift"; mkdir -p "$ddir"
+	dlog="$OUTDIR/drift_ffmpeg.log"; dseries="$OUTDIR/drift_series.txt"
+	printf '# seg t_media_end_s skew_end_s skew_delta_in_seg_s\n' > "$dseries"
+	nseg_expect=$(( DRIFT_DUR / DRIFT_SEG ))
+	[ "$nseg_expect" -ge 4 ] || warn "drift: --drift-dur $DRIFT_DUR with --drift-seg $DRIFT_SEG gives only $nseg_expect checkpoint(s); the trend verdict needs >=4 (raise --drift-dur or lower --drift-seg)"
+	info "drift: one unbroken RTSP ($RTSP_TRANSPORT) session, segmented every ${DRIFT_SEG}s with -reset_timestamps 0 so skew stays comparable ACROSS checkpoints"
+	d_t0=$(date +%s)
+	# No -copyts (same reasoning as analyze_stream): skew is a difference
+	# between two tracks on the recorded timeline, so the absolute offset is
+	# irrelevant - what matters is that the muxer does not re-zero per segment.
+	timeout -k 15 "$((DRIFT_DUR+60))" ffmpeg -hide_banner -nostdin -y -loglevel warning \
+		-rtsp_transport "$RTSP_TRANSPORT" -i "$(rtsp_url "$PATH_MAIN")" -t "$DRIFT_DUR" \
+		-map 0 -c copy -f segment -segment_time "$DRIFT_SEG" -reset_timestamps 0 \
+		-segment_format matroska "$ddir/seg_%04d.mkv" </dev/null 2>"$dlog" &
+	d_pid=$!
+	d_next=0; d_pts=0; d_noav=0; d_abort=0
+	while :; do
+		d_alive=1; kill -0 "$d_pid" 2>/dev/null || d_alive=0
+		while :; do
+			d_cur=$(printf '%s/seg_%04d.mkv' "$ddir" "$d_next")
+			d_nxt=$(printf '%s/seg_%04d.mkv' "$ddir" "$((d_next+1))")
+			[ -f "$d_cur" ] || break
+			# A segment is only complete once its SUCCESSOR exists (the muxer
+			# opens the next file at the boundary) - or once ffmpeg is gone, at
+			# which point everything on disk is closed. Never probe the file
+			# still being written to.
+			[ -f "$d_nxt" ] || [ "$d_alive" = "0" ] || break
+			d_csv="$ddir/pkts.csv"
+			ffprobe -v error -show_entries packet=codec_type,pts_time -of csv=p=0 "$d_cur" 2>/dev/null > "$d_csv"
+			read -r d_ss d_se d_dd <<<"$(av_skew "$d_csv")"
+			read -r d_nv d_na d_tend <<<"$(awk -F, '
+				$1=="video"{nv++; t=$2+0} $1=="audio"{na++}
+				END{printf "%d %d %.1f", nv, na, t}' "$d_csv")"
+			if [ "${d_nv:-0}" -eq 0 ] || [ "${d_na:-0}" -eq 0 ] || [ -z "${d_se:-}" ]; then
+				d_noav=$((d_noav+1))
+				info "  checkpoint $d_next: video=${d_nv:-0} audio=${d_na:-0} pkts - no A/V pair here, skew not measurable"
+			else
+				d_pts=$((d_pts+1))
+				printf '%d %s %s %s\n' "$d_next" "$d_tend" "$d_se" "$d_dd" >> "$dseries"
+				info "  checkpoint $d_next  t=${d_tend}s  A/V skew=${d_se}s  (moved ${d_dd}s within this segment; v=$d_nv a=$d_na pkts)"
+				d_abs=$(awk -v d="$d_se" 'BEGIN{printf "%.3f", (d<0?-d:d)}')
+				if fcmp "$d_abs" ge "${DRIFT_ABORT:-1.0}"; then
+					bad "drift: |A/V skew| hit ${d_se}s at checkpoint $d_next (t=${d_tend}s) - past the ${DRIFT_ABORT:-1.0}s abort line, ending the session early (the defect is already demonstrated)"
+					d_abort=1
+				fi
+			fi
+			rm -f "$d_cur" "$d_csv"     # analysed -> reclaim disk immediately
+			d_next=$((d_next+1))
+			[ "$d_abort" = "1" ] && break
+		done
+		[ "$d_abort" = "1" ] && { kill -TERM "$d_pid" 2>/dev/null; sleep 2; kill -KILL "$d_pid" 2>/dev/null; break; }
+		[ "$d_alive" = "0" ] && break
+		sleep 10
+	done
+	wait "$d_pid" 2>/dev/null
+	d_wall=$(( $(date +%s) - d_t0 ))
+
+	# Did the single session actually survive? A short wall time with no abort
+	# means the connection dropped - itself a finding, and it invalidates the
+	# trend below.
+	if [ "$d_abort" != "1" ] && [ "$d_wall" -lt "$((DRIFT_DUR - DRIFT_SEG))" ]; then
+		bad "drift: the session ended after ${d_wall}s of the requested ${DRIFT_DUR}s - the single RTSP connection did not stay up (see $dlog)"
+	elif [ "$d_abort" != "1" ]; then
+		ok "drift: one RTSP connection held open for ${d_wall}s without reconnecting"
+	fi
+	[ "$d_noav" -eq 0 ] || warn "drift: $d_noav checkpoint(s) had no usable audio+video pair (stream stalled there, or this stream carries no audio)"
+	d_ffe=$(ffwarn_count "$dlog")
+	[ "$d_ffe" -eq 0 ] && ok "drift: no ffmpeg decode/timestamp warnings over the whole session" \
+		|| warn "drift: $d_ffe ffmpeg decode/timestamp warning(s) during the session (see $dlog)"
+
+	if [ "$d_pts" -lt 4 ]; then
+		warn "drift: only $d_pts usable checkpoint(s) - not enough to judge a trend (need >=4); per-checkpoint values are in $dseries"
+	else
+		# Trend maths, all in one awk pass over the checkpoint series:
+		#   growth  = mean(last quarter) - mean(first quarter). Quarter means
+		#             instead of first-vs-last single values so ordinary jitter
+		#             averages out; a real accumulation survives it.
+		#   slope   = least-squares seconds-of-skew per hour of session, the
+		#             same signal expressed as a rate (comparable across runs
+		#             of different --drift-dur).
+		#   monof   = fraction of consecutive checkpoint-to-checkpoint steps
+		#             that moved in the trend's direction. This is the
+		#             practical stand-in for "monotonically growing": real
+		#             captures jitter, so demanding every single step increase
+		#             would never fire. ~0.5 = noise, ->1.0 = a ratchet.
+		#   band    = max-min, and maxabs = worst |skew| seen, for the separate
+		#             absolute-level judgement below.
+		read -r d_n d_q1 d_q4 d_growth d_agrowth d_rate d_mono d_maxabs d_band d_hours <<<"$(awk '
+			/^#/{next} {n++; t[n]=$2+0; s[n]=$3+0}
+			END{
+				if(n<2){print "0 0 0 0 0 0 0 0 0 0"; exit}
+				q=int(n/4); if(q<1)q=1;
+				for(i=1;i<=q;i++)f+=s[i];
+				for(i=n-q+1;i<=n;i++)l+=s[i];
+				f/=q; l/=q; growth=l-f; ag=(growth<0?-growth:growth);
+				for(i=1;i<=n;i++){sx+=t[i];sy+=s[i];sxx+=t[i]*t[i];sxy+=t[i]*s[i]}
+				den=n*sxx-sx*sx; slope=(den!=0)?(n*sxy-sx*sy)/den:0;
+				dir=(growth<0?-1:1); same=0;
+				for(i=2;i<=n;i++){d=s[i]-s[i-1]; if(d*dir>0)same++}
+				mono=(n>1)?same/(n-1):0;
+				mx=s[1]; mn=s[1]; mabs=0;
+				for(i=1;i<=n;i++){if(s[i]>mx)mx=s[i]; if(s[i]<mn)mn=s[i]; a=(s[i]<0?-s[i]:s[i]); if(a>mabs)mabs=a}
+				span=t[n]-t[1]; hrs=(span>0)?span/3600:0;
+				printf "%d %.3f %.3f %.3f %.3f %.3f %.2f %.3f %.3f %.2f\n", n, f, l, growth, ag, slope*3600, mono, mabs, mx-mn, hrs;
+			}' "$dseries")"
+		d_monopct=$(awk -v m="$d_mono" 'BEGIN{printf "%d", m*100}')
+		info "drift trend over ${d_hours}h / $d_n checkpoints: first-quarter avg=${d_q1}s -> last-quarter avg=${d_q4}s (growth ${d_growth}s, slope ${d_rate}s/h extrapolated from a ${d_hours}h fit, ${d_monopct}% of steps moved with the trend, band ${d_band}s, max|skew| ${d_maxabs}s)"
+		info "  per-checkpoint values: $dseries"
+		# TREND verdict - the actual signature of the RTCP-SR class of bug.
+		# Thresholds are on absolute growth over the session (what a viewer
+		# experiences) and are cross-checked against monotonicity, so a large
+		# but bursty/bounded wobble does not read the same as a slow ratchet.
+		if fcmp "$d_agrowth" ge 0.50; then
+			bad "drift TREND: A/V skew moved ${d_growth}s across the session (${d_rate}s/h) - unmistakably accumulating within one connection"
+		elif fcmp "$d_agrowth" ge 0.25 && fcmp "$d_mono" ge 0.60; then
+			bad "drift TREND: A/V skew grew ${d_growth}s and ${d_monopct}% of steps moved the same way - drift is accumulating, not jitter"
+		elif fcmp "$d_agrowth" ge 0.15 && fcmp "$d_mono" ge 0.85; then
+			bad "drift TREND: A/V skew grew only ${d_growth}s but ${d_monopct}% of steps moved the same way - a near-perfect ratchet, i.e. slow accumulation that a single-snapshot threshold would never catch"
+		elif fcmp "$d_agrowth" ge 0.10; then
+			warn "drift TREND: A/V skew moved ${d_growth}s across the session (${d_rate}s/h, ${d_monopct}% of steps with the trend) - watch it; re-run longer to tell a slow ratchet from a bounded wobble"
+		else
+			ok "drift TREND: A/V skew stayed bounded (${d_growth}s between first- and last-quarter averages, ${d_rate}s/h) - noisy but not accumulating"
+		fi
+		# ABSOLUTE-level verdict, same thresholds section 3 applies to a single
+		# capture - reported separately because a large but CONSTANT offset is a
+		# different defect from a growing one.
+		if fcmp "$d_maxabs" le 0.15; then ok "drift LEVEL: worst A/V skew ${d_maxabs}s over the whole session (in sync)"
+		elif fcmp "$d_maxabs" le 0.40; then warn "drift LEVEL: worst A/V skew ${d_maxabs}s (marginal offset; see the TREND verdict for whether it is growing)"
+		else bad "drift LEVEL: worst A/V skew ${d_maxabs}s (out of sync)"; fi
+	fi
+	# same rm discipline as the soak loop - segments are analysed and deleted as
+	# they complete, this only sweeps an aborted run's leftovers
+	rm -f "$ddir"/seg_*.mkv "$ddir"/pkts*.csv
+	rmdir "$ddir" 2>/dev/null || true
 fi
 
 # --- 16. On-device (SSH) ----------------------------------------------------
@@ -2213,6 +3816,63 @@ if [ -n "$SSH_TARGET" ] && want 16 ssh; then
 	# after this pattern flagged a perfectly healthy camera.
 	errs=$(sshx "logread 2>/dev/null | grep -iE 'error|fail|assert|segfault|oom|IMP_.*failed' | grep -cviE 'dropbear|telegrambot|Exited normally|before auth|[0-9]+ fails|re-asserting'")
 	[ "${errs:-0}" -le 2 ] && ok "logread: ${errs:-0} error-ish lines" || warn "logread: ${errs} error-ish lines (review with: logread | grep -iE 'error|fail')"
+
+	# --- watchdog escalation: SILENT LIMBO, always a FAIL ---------------------
+	# The generic error-ish grep above cannot match ANY of these: the daemon's
+	# real escalation messages contain none of error/fail/assert/segfault/oom
+	# ("chn0: encoder dead after N consecutive misses", "PollingStream idle
+	# (rc=..., miss#N) - encoder emits no frames", "N consecutive
+	# forced-recovery cycles never produced a frame - giving up on this
+	# channel", "no audio frames received - disabling audio input"). Literals
+	# verified against src/hal/hal_ingenic.c:1520,1540,1547,2363,2374,2380,
+	# 3057,3089. This is the state where timpsd is UP, /control answers 200,
+	# ports are open, and the camera produces nothing - the failure mode most
+	# likely to be reported by a human as "the camera just stopped" and the
+	# least likely to be caught by anything else in this script. Never a WARN.
+	wd=$(sshx "logread 2>/dev/null | grep -cE 'encoder dead|PollingStream idle|forced-recovery|no audio frames received|giving up on this channel'")
+	if [ "${wd:-0}" -eq 0 ]; then
+		ok "logread: no watchdog-escalation lines (no encoder-dead / PollingStream-idle / forced-recovery / audio-disabled events)"
+	else
+		bad "logread: ${wd} watchdog-escalation line(s) - the daemon hit encoder-dead / PollingStream-idle / forced-recovery / no-audio limbo. First few:"
+		sshx "logread 2>/dev/null | grep -E 'encoder dead|PollingStream idle|forced-recovery|no audio frames received|giving up on this channel' | tail -5" 2>/dev/null | sed 's/^/    /' | tee -a "$SUMMARY"
+	fi
+
+	# --- dmesg (kernel ring buffer), a surface logread does not cover ---------
+	dmg="$OUTDIR/dmesg_tail.txt"
+	if ! dm_res=$(dmesg_capture "$dmg" 300); then
+		info "  dmesg not readable on this device - kernel-level check skipped"
+	else
+		read -r kerr dm_scanned dm_anchored dm_rt <<<"$dm_res"
+		info "  kernel log tail saved to $dmg (driver/ISP-level messages; logread does not carry these)"
+		if [ "$dm_anchored" = "1" ]; then
+			info "  scanning the ${dm_scanned} line(s) logged AFTER sensor bring-up; the boot preamble is excluded by design (it always carries benign 'error'/'panic'/'watchdog' strings on these boards)"
+		else
+			info "  no boot marker in the buffer (it has wrapped past boot) - scanning all ${dm_scanned} captured line(s) as runtime messages"
+		fi
+		if [ "$kerr" -eq 0 ]; then
+			[ "$dm_scanned" -eq 0 ] \
+				&& ok "dmesg: the kernel logged NOTHING after the sensor started streaming (no driver/ISP complaints during this run)" \
+				|| ok "dmesg: no kernel/driver error lines in the ${dm_scanned} post-boot line(s)"
+		elif [ "$kerr" -le 3 ]; then warn "dmesg: ${kerr} kernel/driver error-ish line(s) logged DURING streaming - review $dm_rt"
+		else bad "dmesg: ${kerr} kernel/driver error-ish lines logged DURING streaming - review $dm_rt (driver/DMA/ISP-level trouble is invisible to logread)"; fi
+		[ "$kerr" -gt 0 ] && grep -iE "$DMESG_BAD_RE" "$dm_rt" | grep -ivE "$DMESG_BENIGN_RE" | tail -5 | sed 's/^/    /' | tee -a "$SUMMARY"
+	fi
+
+	# --- idle CPU / fd / thread baseline --------------------------------------
+	# Section 16's own banner has always claimed "timpsd RSS/CPU" but CPU was
+	# never sampled anywhere. At this point in the run every test client is
+	# gone, so this is a genuine zero-client baseline: with the on-demand
+	# pipeline stopped, timpsd should be close to idle. A hot spin (the
+	# historical httpd 5Hz busy-discard loop, or a `continue` with no usleep)
+	# shows up here and NOWHERE else - it degrades no stream and grows no RSS.
+	idle=$(dev_proc_sample 5)
+	if [ -n "$idle" ]; then
+		read -r i_rss i_fd i_thr i_cpu <<<"$idle"
+		info "timpsd at rest: RSS ${i_rss}kB, fds ${i_fd}, threads ${i_thr}, CPU ${i_cpu}% (5s window, zero clients)"
+		if fcmp "$i_cpu" le 15; then ok "timpsd idle CPU ${i_cpu}% with no clients"
+		elif fcmp "$i_cpu" le 40; then warn "timpsd idle CPU ${i_cpu}% with no clients (expected near-idle - possible busy-wait loop)"
+		else bad "timpsd idle CPU ${i_cpu}% with NO clients connected - something is spinning (busy-wait / missing usleep)"; fi
+	fi
 	# config integrity: glued lines (two '=') or duplicate keys
 	glued=$(sshx "sed 's/#.*//' /etc/timps.conf 2>/dev/null | grep -cE '=[^=]*='")
 	dup=$(sshx "grep -vE '^[[:space:]]*#' /etc/timps.conf 2>/dev/null | sed 's/=.*//; s/[[:space:]]//g' | sort | uniq -d | grep -c .")
