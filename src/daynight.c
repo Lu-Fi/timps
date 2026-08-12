@@ -68,7 +68,13 @@ static float g_st_daytrig    = -1.0f;      /* effective night->day trigger */
  * resting level), and the "too-low baseline" concern the floor was built
  * for is covered by the probe machinery (periodic reconfirm + sustained
  * brightening), which re-checks through the DAY pipeline - the only
- * trustworthy source in this regime anyway. */
+ * trustworthy source in this regime anyway.
+ *
+ * NOTE (2026-08-12): in the adaptive regime (0 < day_gain_pct < 100) this
+ * trigger no longer fires a direct night->day switch at all - night->day is
+ * probe-mediated via the brightening hold (see the decision-path comment) -
+ * so the value is informational there (status readout, baseline log lines)
+ * and only switches directly for pct<=0 (legacy) and pct>=100. */
 static float dn_day_trigger(const ms_daynight_cfg *dn, float baseline)
 {
     float thr = dn->total_gain_day_threshold;
@@ -952,9 +958,12 @@ static void *dn_thread(void *arg)
              * excluded from the breaker) and arms the probe_fail_smooth
              * ratchet, which blocks an identical re-fire on the next night
              * entry - the loop terminates after one probe pair, and the
-             * baseline then plants at the true resting level. The full
-             * switch for this window is suppressed in the decision path
-             * below under the same conditions. */
+             * baseline then plants at the true resting level. The direct
+             * switch is suppressed in the decision path below for the WHOLE
+             * adaptive regime, not just this pre-baseline window - the
+             * post-baseline crossing has the same night-pipeline ambiguity
+             * (dawn through the open IR-cut, cam-wyze-pan 2026-08-12; see
+             * the comment at the night->day decision below). */
             if (!probe_why && night_baseline < 0.0f && dn->day_gain_pct > 0 &&
                 smooth_tg > 0.0f &&
                 smooth_tg < (float)dn->total_gain_day_threshold &&
@@ -1035,16 +1044,44 @@ static void *dn_thread(void *arg)
             if (cur == DN_DAY) {
                 if (tg > dn->total_gain_night_threshold) target = DN_NIGHT;
             } else if (cur == DN_NIGHT) {
-                /* pre-baseline window (adaptive mode): night-pipeline gain
-                 * under the static threshold is ambiguous (see the
-                 * pre-baseline day-trigger probe above, which owns this
-                 * window) - a full switch here was the cam-wyze-pan flip
-                 * loop. Bounded: the baseline plants within
-                 * baseline_delay_s + boot_settle_max_s even when the gain
-                 * never stabilises. day_gain_pct=0 keeps the plain legacy
-                 * threshold behaviour. */
+                /* Adaptive mode (0 < day_gain_pct < 100): night->day is
+                 * PROBE-MEDIATED ONLY - no direct switch off night-pipeline
+                 * gain, before OR after the baseline plants. Night-pipeline
+                 * gain under the day trigger is structurally ambiguous: with
+                 * the IR-cut open the sensor sees visible+NIR, so a light
+                 * level that reads "day" through the night pipeline can read
+                 * solidly "night" through the closed-IR-cut day pipeline.
+                 * Live proof (cam-wyze-pan, T20/jxf22 basement, dawn
+                 * 2026-08-12): resting night gain a stable 10856 for hours,
+                 * dawn dips it to ~820 (< trigger 6514) -> the old direct
+                 * switch fired after just the 5s hysteresis, preempting the
+                 * sustained-brightening hold 4s into its 60s confirm; the
+                 * day pipeline then read >= 8192 (dark), reverted - and
+                 * because BOTH flips were genuine (probe_day_ms unset) the
+                 * revert took the genuine branch below, RESETTING the
+                 * failure ratchet/backoff instead of latching them. The
+                 * identical pair repeated on every dawn fluctuation (5
+                 * audible IR-cut pairs in one morning), spaced too far
+                 * apart (>60s) for the oscillation breaker. Routing the
+                 * crossing through the brightening probe fixes both halves:
+                 * the 60s hold lets smooth_tg converge to the dip floor, so
+                 * a failed probe latches probe_fail_smooth at that floor
+                 * and the ratchet (< day_gain_pct% of it) makes the same
+                 * dip unrepeatable - at most ONE probe pair per dawn, zero
+                 * if a dip lasts under 60s; a genuine lights-on/dawn probe
+                 * simply sticks in day. Cost: adaptive night->day latency
+                 * is now the probe's 60s confirm instead of 5s - the same
+                 * price the pre-baseline window (a5dae07) and the marginal-
+                 * band brightening already pay, and the day pipeline is the
+                 * only trustworthy judge here anyway.
+                 * day_gain_pct=0 keeps the plain legacy threshold; the
+                 * config cap is 100, where the brightening probe is gated
+                 * off (see the pct<100 arm above), so that edge keeps the
+                 * old post-baseline direct switch rather than losing its
+                 * night->day path entirely. */
                 if (tg < day_thr &&
-                    (night_baseline > 0.0f || dn->day_gain_pct <= 0))
+                    (dn->day_gain_pct <= 0 ||
+                     (dn->day_gain_pct >= 100 && night_baseline > 0.0f)))
                     target = DN_DAY;
             } else {
                 if      (tg > dn->total_gain_night_threshold) target = DN_NIGHT;
