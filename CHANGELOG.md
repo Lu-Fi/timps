@@ -7,6 +7,34 @@ semantic versioning.
 ## [Unreleased]
 
 ### Fixed
+- **day/night: dawn-time flip pairs surviving the adaptive baseline fix
+  below, because the direct night->day switch was still reachable AFTER
+  the baseline plants** (`src/daynight.c`; observed live on cam-wyze-pan
+  the morning after deploying the fix above: resting night gain a stable
+  10856 for hours, then dawn dipped it to ~820 - under the adaptive day
+  trigger 6514 - which fired the direct switch after just 5 s hysteresis,
+  preempting the sustained-brightening probe 4 s into its 60 s confirm.
+  The day pipeline then read gain 8192 (still dark) and reverted; because
+  both flips were genuine (non-probe) the revert took the branch that
+  RESETS the failure ratchet instead of latching it, so the identical pair
+  repeated on every dawn fluctuation - 5 audible IR-cut pairs in one
+  morning, each >60 s apart so the oscillation breaker never tripped). The
+  night/IR pipeline is structurally unreliable here regardless of baseline
+  freshness: with the IR-cut open the sensor sees visible+NIR, so a level
+  reading "day" through it can read solidly "night" through the closed-
+  IR-cut day pipeline. Fix: in the adaptive regime (`0 < day_gain_pct <
+  100`) night->day is now exclusively probe-mediated, before *and* after
+  the baseline plants - routing dawn through the 60 s brightening hold
+  lets `smooth_tg` converge to the true dip floor, so a failed probe
+  latches `probe_fail_smooth` at that floor and the ratchet then requires
+  a strictly deeper dip to re-fire, so the same dawn fluctuation can't
+  repeat (at most one audible probe pair per dawn, zero if the dip is
+  under 60 s). `day_gain_pct<=0` keeps the legacy fixed-threshold direct
+  switch; `day_gain_pct>=100` (where the brightening probe is gated off)
+  keeps the old post-baseline direct switch so that edge doesn't lose its
+  night->day path. Cost: adaptive night->day latency goes from 5 s to the
+  probe's 60 s confirm - the same price the pre-baseline window and the
+  marginal brightening band already pay.
 - **day/night: perpetual flip loop + oscillation-breaker freeze cycle on
   cameras whose IR-lit night gain is at/below the static day threshold**
   (`src/daynight.c`; observed live on cam-wyze-pan, T20/jxf22, in a
