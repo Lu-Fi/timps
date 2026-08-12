@@ -17,7 +17,6 @@
 #include <errno.h>
 #include <limits.h>  /* INT_MAX for open-ended lo-only clamps in the tables */
 #include <stdatomic.h>  /* atomic_load/atomic_store for F_ATOMIC live-int fields */
-#include <dirent.h>  /* opendir/readdir for the /proc/jz/sensor/<X> resolver below */
 
 #define MOD "CONFIG"
 ms_config g_cfg;
@@ -1364,65 +1363,66 @@ static int read_proc_line(const char *path, char *out, size_t cap)
     while (l && (out[l-1]=='\r' || out[l-1]==' ' || out[l-1]=='\t')) out[--l]=0;
     return out[0] ? 0 : -1;
 }
-/* Resolve the kernel sensor registry's subdirectory name under
- * /proc/jz/sensor/. Most tx-isp driver builds expose a fixed alias,
- * "sensor0" - but some (e.g. the T31/sc4336p combo on a newer kernel/SDK)
- * instead name it after the sensor itself ("/proc/jz/sensor/sc4336p/"),
- * with no "sensor0" entry at all. Prefer "sensor0" when present (the
- * common case, and stable if a board ever exposed more than one sensor
- * dir); otherwise fall back to the first non-hidden subdirectory found.
- * Cached after the first call - the registry is populated once at driver
- * probe time and does not change for the life of the process. Empty
- * string (cached) when /proc/jz/sensor doesn't exist at all (host sim,
- * T40/T41) or has no subdirectories, so callers' path reads just fail
- * as before and the existing config/fallback path takes over. */
-static const char *sensor_proc_dir(void)
+/* Resolve where under /proc/jz/sensor/ the kernel sensor registry's <key>
+ * files actually live. Two layouts have been observed:
+ *   - flat:   /proc/jz/sensor/<key>            (T31/sc4336p on a newer
+ *             kernel/SDK - confirmed live: cat /proc/jz/sensor/name ->
+ *             "sc4336p". A same-named /proc/jz/sensor/sc4336p/ subdirectory
+ *             also exists there with an identical copy of every <key> file,
+ *             but it is NOT the one raptor/prudynt-style tooling reads.)
+ *   - nested: /proc/jz/sensor/sensor0/<key>    (a fixed "sensor0" alias,
+ *             the layout every board seen before this one used)
+ * Probe "name" in each location once (the registry is populated at driver
+ * probe time and does not change for the life of the process), cache
+ * whichever prefix answers first, and reuse it. *available is 0 when
+ * neither exists (host sim, T40/T41) so callers' path reads just fail as
+ * before and the existing config/fallback path takes over; the returned
+ * prefix is then meaningless and must not be used. */
+static const char *sensor_proc_prefix(int *available)
 {
-    static char dir[64];
-    static int  resolved = 0;
-    if (resolved) return dir;
-    resolved = 1;
-    struct stat st;
-    if (stat("/proc/jz/sensor/sensor0", &st) == 0) {
-        copystr(dir, "sensor0", sizeof dir);
-        return dir;
-    }
-    DIR *d = opendir("/proc/jz/sensor");
-    if (d) {
-        struct dirent *e;
-        while ((e = readdir(d)) != NULL) {
-            if (e->d_name[0] == '.') continue;
-            copystr(dir, e->d_name, sizeof dir);
-            break;
+    static char prefix[16] = "";
+    static int  avail = -1;   /* -1 = not yet probed */
+    if (avail == -1) {
+        struct stat st;
+        if (stat("/proc/jz/sensor/sensor0/name", &st) == 0) {
+            copystr(prefix, "sensor0/", sizeof prefix);
+            avail = 1;
+        } else if (stat("/proc/jz/sensor/name", &st) == 0) {
+            prefix[0] = 0;   /* flat layout: no subdirectory component */
+            avail = 1;
+        } else {
+            avail = 0;
         }
-        closedir(d);
     }
-    return dir;
+    *available = avail;
+    return prefix;
 }
 
-/* read /proc/jz/sensor/<resolved>/<key> as a number (base 0 = 0x.. hex or
+/* read /proc/jz/sensor/<prefix><key> as a number (base 0 = 0x.. hex or
  * decimal); <0 on missing/unparseable */
 static long read_sensor_proc(const char *key, int base)
 {
-    const char *sdir = sensor_proc_dir();
-    if (!sdir[0]) return -1;
+    int avail;
+    const char *prefix = sensor_proc_prefix(&avail);
+    if (!avail) return -1;
     char path[80], buf[64];
-    snprintf(path, sizeof path, "/proc/jz/sensor/%s/%s", sdir, key);
+    snprintf(path, sizeof path, "/proc/jz/sensor/%s%s", prefix, key);
     if (read_proc_line(path, buf, sizeof buf) != 0) return -1;
     return strtol(buf, NULL, base);
 }
 
 /* raptor/prudynt-style sensor auto-detect: fill any sensor.* field left unset
  * (empty/0 - i.e. not given in the config) from the Ingenic kernel sensor
- * registry /proc/jz/sensor/<X>/ (see sensor_proc_dir() above for how <X> is
- * resolved), which the board's sensor .ko populates with name/i2c_addr/
- * width/height/max_fps after probing the chip. Config values always win;
- * whatever is still unset gets a safe fallback. On the host sim and on
- * T40/T41 (no /proc/jz/sensor) the reads fail, so only the fallback applies.
- * Call once after config_load(), before the HAL is started. */
+ * registry under /proc/jz/sensor/ (see sensor_proc_prefix() above for the
+ * flat-vs-"sensor0" layout it resolves), which the board's sensor .ko
+ * populates with name/i2c_addr/width/height/max_fps after probing the chip.
+ * Config values always win; whatever is still unset gets a safe fallback.
+ * On the host sim and on T40/T41 (no /proc/jz/sensor) the reads fail, so
+ * only the fallback applies. Call once after config_load(), before the HAL
+ * is started. */
 void config_sensor_finalize(ms_config *c)
 {
-    /* The loaded kernel sensor driver (/proc/jz/sensor/<X>) is authoritative
+    /* The loaded kernel sensor driver (/proc/jz/sensor/) is authoritative
      * for the sensor NAME and I2C address: IMP_ISP_AddSensor must be told the
      * sensor that is actually loaded. A mismatching name makes the ISP/sensor
      * kernel module work from a zero attr table (pclk/line_time == 0) and divide
@@ -1430,10 +1430,10 @@ void config_sensor_finalize(ms_config *c)
      * value here (resolution/fps stay config-first below - the registry often
      * reports 0 for them). */
     { char name[MS_MAX_STR];
-      const char *sdir = sensor_proc_dir();
+      int avail; const char *prefix = sensor_proc_prefix(&avail);
       char name_path[80];
-      snprintf(name_path, sizeof name_path, "/proc/jz/sensor/%s/name", sdir);
-      if (sdir[0] && read_proc_line(name_path, name, sizeof name) == 0 && name[0]){
+      snprintf(name_path, sizeof name_path, "/proc/jz/sensor/%sname", prefix);
+      if (avail && read_proc_line(name_path, name, sizeof name) == 0 && name[0]){
           if (c->sensor.model[0] && strcasecmp(c->sensor.model, name) != 0)
               LOGW(MOD,"config sensor.model '%s' != loaded driver '%s' - using '%s' "
                        "(the config value would crash the ISP)", c->sensor.model, name, name);
