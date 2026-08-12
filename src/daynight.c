@@ -722,6 +722,11 @@ static void *dn_thread(void *arg)
     /* when the last probe switched to day (0 = none recent): gates the
      * day->night revert on stable readings for DN_PROBE_SETTLE_MS. */
     int64_t probe_day_ms = 0;
+    /* one-shot deadline at which a probe's OWN outcome is classified (see the
+     * three-outcome comment at the probe fire): the day-pipeline reading has
+     * settled by then, so it either confirmed day, reverted, or landed
+     * ambiguous - only the last arms a verify. 0 = nothing outstanding. */
+    int64_t probe_verdict_at_ms = 0;
     /* probe economy (see DN_PROBE_FAIL_WINDOW_MS): periodic-interval
      * multiplier, doubled on every failed probe up to DN_PROBE_BACKOFF_MAX,
      * reset to 1 by any genuine transition or a probe that sticks. */
@@ -868,7 +873,7 @@ static void *dn_thread(void *arg)
             cur = DN_UNKNOWN;           /* mode may be forced manually now */
             night_baseline = -1.0f;
             brighten_since_ms = 0; brighten_armed = 0;
-            smooth_tg = -1.0f; probe_day_ms = 0;
+            smooth_tg = -1.0f; probe_day_ms = 0; probe_verdict_at_ms = 0;
             pending_target = DN_UNKNOWN; pending_since_ms = 0;
             dn_status_update(dn, b, tg, luma, DN_UNKNOWN, night_baseline);
             dn_sleep(interval);
@@ -881,7 +886,7 @@ static void *dn_thread(void *arg)
             night_entered_ms = 0;
             dn_verify_clear(&verify);
             brighten_since_ms = 0; brighten_armed = 0;
-            smooth_tg = -1.0f; probe_day_ms = 0;
+            smooth_tg = -1.0f; probe_day_ms = 0; probe_verdict_at_ms = 0;
             probe_backoff = 1; probe_fail_smooth = -1.0f;
             last_phys_probe_ms = 0;
             osc_n = 0; osc_freeze_until_ms = 0;
@@ -1072,13 +1077,26 @@ static void *dn_thread(void *arg)
                 reassert_at_ms  = now_ms + DN_REASSERT_MS;
                 night_baseline  = -1.0f;
                 night_entered_ms = 0;
-                /* the probe IS the verification of this night - the day
-                 * pipeline it lands in is judged by the ordinary thresholds
-                 * from here on, so nothing stays pending. */
+                /* the probe supersedes the night deadline that scheduled it;
+                 * its OWN outcome is judged by probe_verdict_at_ms below. */
                 dn_verify_clear(&verify);
                 brighten_since_ms = 0;
                 brighten_armed  = 0;    /* re-arms above the bar next night */
                 probe_day_ms    = now_ms; /* gate the revert on stability */
+                /* A probe has THREE possible outcomes, not two. It either
+                 * confirms day (day-pipeline gain below the day threshold -
+                 * it sticks, and nothing further is scheduled) or reverts
+                 * (gain above the night threshold - the ordinary crossing
+                 * below). The third is a day-pipeline reading that lands in
+                 * the dead-zone BETWEEN them: it neither confirms nor
+                 * reverts, so before this the camera simply stayed in the
+                 * probed day with nothing pending - the same stuck class the
+                 * dead-zone adoption verify exists for, reached through a
+                 * probe instead of a boot. Judge that outcome once, after the
+                 * AE has settled on the new pipeline (DN_PROBE_SETTLE_MS,
+                 * ~2x the observed post-probe convergence ramp), and only
+                 * then arm a verify for the ambiguous case. */
+                probe_verdict_at_ms = now_ms + DN_PROBE_SETTLE_MS;
                 last_phys_probe_ms = now_ms; /* outer-bound clock, see probe_max_skip_s in config.h */
                 dn_status_update(dn, b, tg, luma, cur, night_baseline);
                 dn_sleep(interval);
@@ -1088,9 +1106,11 @@ static void *dn_thread(void *arg)
 
         int  target = cur;
         char why[64];
-        /* set when an ADOPTED day failed to confirm itself by its deadline
-         * (see dn_verify): only changes the switch REASON string - the switch
-         * itself goes through the ordinary path like any other target. */
+        /* set when an UNVERIFIED day (adopted from the persisted mode, or
+         * landed on by a probe with an ambiguous outcome) failed to confirm
+         * itself by its deadline - see dn_verify. Drives the switch REASON
+         * string and the failed-probe accounting; the switch itself goes
+         * through the ordinary path like any other target. */
         int  day_unverified = 0;
         /* keep the stability ring fed in sensor mode whenever gain is
          * readable: the boot settle (cur==UNKNOWN) and the post-probe
@@ -1127,8 +1147,31 @@ static void *dn_thread(void *arg)
              * threshold. day->night stays the fixed night threshold. */
             float day_thr = dn_day_trigger(dn, night_baseline);
             if (cur == DN_DAY) {
+                int64_t dnow_ms = ms_now_us() / 1000;
+                /* classify a probe's own outcome, exactly once (see the
+                 * three-outcome comment at the probe fire). A reading that
+                 * confirms day or reverts needs nothing from us - only the
+                 * ambiguous dead-zone landing gets a verify deadline, on the
+                 * same bounded delay a dead-zone adoption uses. */
+                if (probe_verdict_at_ms && dnow_ms >= probe_verdict_at_ms) {
+                    probe_verdict_at_ms = 0;
+                    if (tg >= dn->total_gain_day_threshold &&
+                        tg <= dn->total_gain_night_threshold) {
+                        int64_t verify_s = dn_adopt_verify_s(dn);
+                        dn_verify_arm(&verify, DN_DAY,
+                                      dnow_ms + verify_s * 1000);
+                        LOGI(MOD, "probe landed on an ambiguous day-pipeline "
+                                  "gain %.0f (dead-zone %.0f..%.0f): neither "
+                                  "confirms day nor reverts - gain must "
+                                  "confirm it within %llds",
+                             (double)tg,
+                             (double)dn->total_gain_day_threshold,
+                             (double)dn->total_gain_night_threshold,
+                             (long long)verify_s);
+                    }
+                }
                 if (tg > dn->total_gain_night_threshold) target = DN_NIGHT;
-                else if (dn_verify_due(&verify, DN_DAY, ms_now_us() / 1000)) {
+                else if (dn_verify_due(&verify, DN_DAY, dnow_ms)) {
                     /* an ADOPTED day had to prove itself by now (see
                      * dn_verify). "Proved" = this day-pipeline reading would
                      * have decided day on its own from DN_UNKNOWN, i.e. it
@@ -1138,7 +1181,7 @@ static void *dn_thread(void *arg)
                      * the fixed threshold here - spelled out for clarity. */
                     if (tg < dn->total_gain_day_threshold) {
                         dn_verify_clear(&verify);
-                        LOGI(MOD, "adopted day confirmed by day-pipeline gain "
+                        LOGI(MOD, "day confirmed by day-pipeline gain "
                                   "%.0f (< %.0f)", (double)tg,
                              (double)dn->total_gain_day_threshold);
                     } else {
@@ -1150,7 +1193,7 @@ static void *dn_thread(void *arg)
                          * the guess instead); the switch clears it. */
                         day_unverified = 1;
                         target = DN_NIGHT;
-                        LOGD(MOD, "adopted day unverified: gain %.0f still "
+                        LOGD(MOD, "day never confirmed: gain %.0f still "
                                   "inside the dead-zone", (double)tg);
                     }
                 }
@@ -1199,7 +1242,7 @@ static void *dn_thread(void *arg)
                 else if (tg < dn->total_gain_day_threshold)   target = DN_DAY;
             }
             if (day_unverified)
-                snprintf(why, sizeof why, "adopted day unverified, gain %.0f",
+                snprintf(why, sizeof why, "unverified day, gain %.0f",
                          (double)tg);
             else
                 snprintf(why, sizeof why, "total_gain %.0f", (double)tg);
@@ -1218,20 +1261,36 @@ static void *dn_thread(void *arg)
 
             float hyst_range = (dn->threshold_high - dn->threshold_low) * dn->hysteresis;
             if (cur == DN_DAY) {
+                int64_t dnow_ms = ms_now_us() / 1000;
+                /* same one-shot probe-outcome classification as the gain
+                 * path, against this branch's own day/night criteria. */
+                if (probe_verdict_at_ms && dnow_ms >= probe_verdict_at_ms) {
+                    probe_verdict_at_ms = 0;
+                    if (avg <= dn->threshold_high - hyst_range &&
+                        avg >= dn->threshold_low) {
+                        int64_t verify_s = dn_adopt_verify_s(dn);
+                        dn_verify_arm(&verify, DN_DAY,
+                                      dnow_ms + verify_s * 1000);
+                        LOGI(MOD, "probe landed on an ambiguous brightness "
+                                  "%.1f%%: neither confirms day nor reverts - "
+                                  "must confirm within %llds",
+                             (double)avg, (long long)verify_s);
+                    }
+                }
                 if (avg < dn->threshold_low)  target = DN_NIGHT;
-                else if (dn_verify_due(&verify, DN_DAY, ms_now_us() / 1000)) {
+                else if (dn_verify_due(&verify, DN_DAY, dnow_ms)) {
                     /* same adopted-day verification as the gain path, against
                      * the criterion this branch would have used to decide day
                      * unaided from DN_UNKNOWN (the narrowed band below). */
                     if (avg > dn->threshold_high - hyst_range) {
                         dn_verify_clear(&verify);
-                        LOGI(MOD, "adopted day confirmed by brightness %.1f%% "
+                        LOGI(MOD, "day confirmed by brightness %.1f%% "
                                   "(> %.1f%%)", (double)avg,
                              (double)(dn->threshold_high - hyst_range));
                     } else {
                         day_unverified = 1;
                         target = DN_NIGHT;
-                        LOGD(MOD, "adopted day unverified: brightness %.1f%% "
+                        LOGD(MOD, "day never confirmed: brightness %.1f%% "
                                   "still inside the dead-zone", (double)avg);
                     }
                 }
@@ -1243,7 +1302,7 @@ static void *dn_thread(void *arg)
             }
             if (day_unverified)
                 snprintf(why, sizeof why,
-                         "adopted day unverified, brightness %.1f%%", (double)avg);
+                         "unverified day, brightness %.1f%%", (double)avg);
             else
                 snprintf(why, sizeof why, "avg brightness %.1f%%", (double)avg);
         }
@@ -1358,13 +1417,27 @@ static void *dn_thread(void *arg)
                  * double the periodic interval and latch the failure ratchet
                  * for the brightening probe. Every other switch is a genuine
                  * transition: reset both. */
+                /* An unconfirmed probe-day counts as a FAILED probe too, even
+                 * though its revert lands long after the fail window: the
+                 * probe was fired to find day and did not, so its cost must
+                 * ratchet exactly like a fast revert. Accounting it as a
+                 * genuine transition instead would reset probe_fail_smooth
+                 * and the backoff, letting the identical marginal scene
+                 * re-fire the same probe every few minutes - a slow version
+                 * of the very flap loop the ratchet exists to stop, and one
+                 * spaced too far apart for the oscillation breaker to catch.
+                 * smooth_tg still holds the pre-probe night level here (it is
+                 * only updated while cur==DN_NIGHT), so the ratchet latches at
+                 * the same value either path. */
                 if (target == DN_NIGHT && probe_day_ms &&
-                    now_ms - probe_day_ms < (int64_t)DN_PROBE_FAIL_WINDOW_MS) {
+                    (now_ms - probe_day_ms < (int64_t)DN_PROBE_FAIL_WINDOW_MS ||
+                     day_unverified)) {
                     probe_fail_smooth = smooth_tg;   /* pre-probe night level */
                     if (probe_backoff < DN_PROBE_BACKOFF_MAX)
                         probe_backoff *= 2;
-                    LOGI(MOD, "probe confirmed genuine night (backoff x%d, "
-                              "brighten ratchet < %.0f)",
+                    LOGI(MOD, "probe %s (backoff x%d, brighten ratchet < %.0f)",
+                         day_unverified ? "never confirmed day - back to night"
+                                        : "confirmed genuine night",
                          probe_backoff, (double)(probe_fail_smooth > 0.0f ?
                              probe_fail_smooth * (float)dn->day_gain_pct / 100.0f
                              : -1.0f));
@@ -1408,6 +1481,7 @@ static void *dn_thread(void *arg)
                 brighten_armed = 0;
                 smooth_tg = -1.0f;
                 probe_day_ms = 0;
+                probe_verdict_at_ms = 0;  /* a new switch supersedes it */
                 night_entered_ms = (target == DN_NIGHT) ? now_ms : 0;
                 /* (re)arm the periodic reconfirm probe alongside it (see
                  * night_reconfirm_s doc comment in config.h), stretched by
