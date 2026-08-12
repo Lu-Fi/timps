@@ -103,10 +103,10 @@ thingino's `daynightd` semantics.
     and gain noise centers instead of ratcheting the baseline to its
     envelope maximum;
   - a **sustained-brightening probe**: smoothed gain holding below the
-    halfway point between `day_gain_pct`% and 100% of the baseline for a
-    minute (a real light came on, but not enough to cross the strict
-    bar) fires the same day-pipeline probe as the periodic reconfirm
-    below. It arms only on a fresh above-bar→below-bar edge, so a failed
+    halfway point between `day_gain_pct`% and 100% of the baseline for
+    `DN_BRIGHTEN_CONFIRM_MS` (30 s; a real light came on, but not enough
+    to cross the strict bar) fires the same day-pipeline probe as the
+    periodic reconfirm below. It arms only on a fresh above-bar→below-bar edge, so a failed
     probe cannot re-fire on unchanged darkness — the baseline must first
     re-converge and the scene newly brighten. For a few seconds after
     any probe, the day→night revert additionally waits for a *stable*

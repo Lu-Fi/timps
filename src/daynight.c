@@ -433,8 +433,28 @@ static int dn_ae_stable(const float *hist, int n, int pct)
  *     night threshold). When gain holds below the halfway point between
  *     day_gain_pct and 100% of baseline for DN_BRIGHTEN_CONFIRM_MS, fire
  *     that probe early instead of waiting up to night_reconfirm_s. */
+/* 60000 -> 30000 (2026-08-12, "switching feels sluggish"): with the direct
+ * adaptive night->day switch removed (b4a54f0), this hold IS the entire
+ * night->day latency for the everyday "a light came on" event - the smoothed
+ * gain crosses the bar within ~2-11 s of the step (DN_SMOOTH_ALPHA=0.1 at a
+ * 500 ms tick), so the confirm window was ~85% of the wait. The hold does two
+ * jobs and only one of them needs 60 s worth of anything:
+ *  - reject transients (don't clunk the IR-cut for passing headlights). Cost
+ *    of halving: a brightening lasting 30..60 s now buys one probe pair where
+ *    it used to buy none. That is BOUNDED, not open-ended - probe_fail_smooth
+ *    latches on the failed probe and the ratchet then demands another full
+ *    day_gain_pct%-worth of NEW brightening, so it stays at most ONE pair per
+ *    night entry exactly as at 60 s.
+ *  - let smooth_tg converge to the dip floor before the ratchet latches on it
+ *    (see the dawn analysis at the night->day decision). This is the load-
+ *    bearing one, and it is satisfied with room to spare: the EMA residual is
+ *    0.9^N, so 30 s (60 ticks) is 99.8% converged vs 99.9998% at 60 s. Traced
+ *    against the cam-wyze-pan dawn numbers the ratchet would latch at 838
+ *    instead of ~820 - a 2% difference in a bar that sits at 60% of it.
+ * Below ~20 s that second job starts to erode (98.5% at 40 ticks), so 30 s is
+ * the floor this reasoning supports, not an arbitrary halving. */
 #ifndef DN_BRIGHTEN_CONFIRM_MS
-#define DN_BRIGHTEN_CONFIRM_MS 60000  /* sustained-brightening probe confirm */
+#define DN_BRIGHTEN_CONFIRM_MS 30000  /* sustained-brightening probe confirm */
 #endif
 /* REGRESSION FIX (overnight logs, 4 cameras, v1.7.3): the first version of
  * this hardening drifted the baseline UPWARD toward RAW gain ticks. With a
@@ -1218,13 +1238,14 @@ static void *dn_thread(void *arg)
                  * audible IR-cut pairs in one morning), spaced too far
                  * apart (>60s) for the oscillation breaker. Routing the
                  * crossing through the brightening probe fixes both halves:
-                 * the 60s hold lets smooth_tg converge to the dip floor, so
+                 * the hold lets smooth_tg converge to the dip floor, so
                  * a failed probe latches probe_fail_smooth at that floor
                  * and the ratchet (< day_gain_pct% of it) makes the same
                  * dip unrepeatable - at most ONE probe pair per dawn, zero
-                 * if a dip lasts under 60s; a genuine lights-on/dawn probe
-                 * simply sticks in day. Cost: adaptive night->day latency
-                 * is now the probe's 60s confirm instead of 5s - the same
+                 * if a dip is shorter than DN_BRIGHTEN_CONFIRM_MS; a
+                 * genuine lights-on/dawn probe simply sticks in day. Cost:
+                 * adaptive night->day latency is now that confirm instead
+                 * of 5s - the same
                  * price the pre-baseline window (a5dae07) and the marginal-
                  * band brightening already pay, and the day pipeline is the
                  * only trustworthy judge here anyway.
