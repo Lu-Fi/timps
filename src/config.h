@@ -457,7 +457,7 @@ void config_snapshot_boot(void);   /* g_cfg_boot = g_cfg; call once at startup *
 
 void config_defaults(ms_config *c);
 int  config_load(ms_config *c, const char *path); /* 0 ok, <0 file err (defaults kept) */
-/* auto-detect unset sensor.* from /proc/jz/sensor/sensor0/ (config wins, then a
+/* auto-detect unset sensor.* from /proc/jz/sensor/<X>/ (config wins, then a
  * safe fallback); call once after config_load(), before the HAL starts */
 void config_sensor_finalize(ms_config *c);
 /* apply a single key=value (same keys as the config file) to c */

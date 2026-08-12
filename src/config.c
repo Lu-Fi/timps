@@ -17,6 +17,7 @@
 #include <errno.h>
 #include <limits.h>  /* INT_MAX for open-ended lo-only clamps in the tables */
 #include <stdatomic.h>  /* atomic_load/atomic_store for F_ATOMIC live-int fields */
+#include <dirent.h>  /* opendir/readdir for the /proc/jz/sensor/<X> resolver below */
 
 #define MOD "CONFIG"
 ms_config g_cfg;
@@ -215,7 +216,7 @@ void config_defaults(ms_config *c)
     c->osd_pool_size = 1024;   /* max on T-series; holds small OSD regions */
 
     /* sensor.* start UNSET so config_sensor_finalize() can auto-detect them
-     * from /proc/jz/sensor/sensor0/ (raptor/prudynt style); a config value or,
+     * from /proc/jz/sensor/<X>/ (raptor/prudynt style); a config value or,
      * failing that, a safe fallback fills whatever the sensor registry lacks */
     c->sensor.model[0] = 0;
     c->sensor.i2c_addr = 0;
@@ -1363,26 +1364,65 @@ static int read_proc_line(const char *path, char *out, size_t cap)
     while (l && (out[l-1]=='\r' || out[l-1]==' ' || out[l-1]=='\t')) out[--l]=0;
     return out[0] ? 0 : -1;
 }
-/* read /proc/jz/sensor/sensor0/<key> as a number (base 0 = 0x.. hex or decimal);
- * <0 on missing/unparseable */
+/* Resolve the kernel sensor registry's subdirectory name under
+ * /proc/jz/sensor/. Most tx-isp driver builds expose a fixed alias,
+ * "sensor0" - but some (e.g. the T31/sc4336p combo on a newer kernel/SDK)
+ * instead name it after the sensor itself ("/proc/jz/sensor/sc4336p/"),
+ * with no "sensor0" entry at all. Prefer "sensor0" when present (the
+ * common case, and stable if a board ever exposed more than one sensor
+ * dir); otherwise fall back to the first non-hidden subdirectory found.
+ * Cached after the first call - the registry is populated once at driver
+ * probe time and does not change for the life of the process. Empty
+ * string (cached) when /proc/jz/sensor doesn't exist at all (host sim,
+ * T40/T41) or has no subdirectories, so callers' path reads just fail
+ * as before and the existing config/fallback path takes over. */
+static const char *sensor_proc_dir(void)
+{
+    static char dir[64];
+    static int  resolved = 0;
+    if (resolved) return dir;
+    resolved = 1;
+    struct stat st;
+    if (stat("/proc/jz/sensor/sensor0", &st) == 0) {
+        copystr(dir, "sensor0", sizeof dir);
+        return dir;
+    }
+    DIR *d = opendir("/proc/jz/sensor");
+    if (d) {
+        struct dirent *e;
+        while ((e = readdir(d)) != NULL) {
+            if (e->d_name[0] == '.') continue;
+            copystr(dir, e->d_name, sizeof dir);
+            break;
+        }
+        closedir(d);
+    }
+    return dir;
+}
+
+/* read /proc/jz/sensor/<resolved>/<key> as a number (base 0 = 0x.. hex or
+ * decimal); <0 on missing/unparseable */
 static long read_sensor_proc(const char *key, int base)
 {
+    const char *sdir = sensor_proc_dir();
+    if (!sdir[0]) return -1;
     char path[80], buf[64];
-    snprintf(path, sizeof path, "/proc/jz/sensor/sensor0/%s", key);
+    snprintf(path, sizeof path, "/proc/jz/sensor/%s/%s", sdir, key);
     if (read_proc_line(path, buf, sizeof buf) != 0) return -1;
     return strtol(buf, NULL, base);
 }
 
 /* raptor/prudynt-style sensor auto-detect: fill any sensor.* field left unset
  * (empty/0 - i.e. not given in the config) from the Ingenic kernel sensor
- * registry /proc/jz/sensor/sensor0/, which the board's sensor .ko populates
- * with name/i2c_addr/width/height/max_fps after probing the chip. Config values
- * always win; whatever is still unset gets a safe fallback. On the host sim and
- * on T40/T41 (no /proc/jz/sensor) the reads fail, so only the fallback applies.
+ * registry /proc/jz/sensor/<X>/ (see sensor_proc_dir() above for how <X> is
+ * resolved), which the board's sensor .ko populates with name/i2c_addr/
+ * width/height/max_fps after probing the chip. Config values always win;
+ * whatever is still unset gets a safe fallback. On the host sim and on
+ * T40/T41 (no /proc/jz/sensor) the reads fail, so only the fallback applies.
  * Call once after config_load(), before the HAL is started. */
 void config_sensor_finalize(ms_config *c)
 {
-    /* The loaded kernel sensor driver (/proc/jz/sensor/sensor0) is authoritative
+    /* The loaded kernel sensor driver (/proc/jz/sensor/<X>) is authoritative
      * for the sensor NAME and I2C address: IMP_ISP_AddSensor must be told the
      * sensor that is actually loaded. A mismatching name makes the ISP/sensor
      * kernel module work from a zero attr table (pclk/line_time == 0) and divide
@@ -1390,7 +1430,10 @@ void config_sensor_finalize(ms_config *c)
      * value here (resolution/fps stay config-first below - the registry often
      * reports 0 for them). */
     { char name[MS_MAX_STR];
-      if (read_proc_line("/proc/jz/sensor/sensor0/name", name, sizeof name) == 0 && name[0]){
+      const char *sdir = sensor_proc_dir();
+      char name_path[80];
+      snprintf(name_path, sizeof name_path, "/proc/jz/sensor/%s/name", sdir);
+      if (sdir[0] && read_proc_line(name_path, name, sizeof name) == 0 && name[0]){
           if (c->sensor.model[0] && strcasecmp(c->sensor.model, name) != 0)
               LOGW(MOD,"config sensor.model '%s' != loaded driver '%s' - using '%s' "
                        "(the config value would crash the ISP)", c->sensor.model, name, name);
