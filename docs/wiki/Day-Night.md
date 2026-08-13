@@ -317,6 +317,36 @@ because this is the safety net for the whole passive-evidence-skip mechanism
 above, not a knob meant to switch it off; raise it if even the reduced click
 rate is still too frequent for a particular camera.
 
+**Ratchet anchor (added 2026-08-13, live incident — Schuppen T31/SC2336).**
+The "false night latch reads low gain, so the skip gate would fire" argument
+above has one hole: `night_baseline` is not a fixed reference, it drifts
+toward the smoothed night gain every tick (see baseline drift above) —
+*including* the very gain the skip gate is judging. Given hours of continuous
+(wrongly-classified) night dwell, the baseline fully converges to whatever the
+current gain reads, even a genuinely day-level one, dragging the probe bar
+down in lockstep and keeping "solidly deep in night" true forever. Live case:
+a probe failed at gain 284 (latching the brighten ratchet), and over the next
+2.5h the baseline chased the actual — by then clearly daytime — gain down to
+257–266; the skip gate kept re-arming the whole time because bar and gain
+drifted down together, and only a manual service restart (which replants the
+baseline from scratch) recovered it before `probe_max_skip_s` would eventually
+have forced a probe anyway.
+
+The fix reuses `probe_fail_smooth` — the smoothed gain snapshotted at the
+*moment* a probe last failed — as a second, drift-immune anchor whenever the
+brighten ratchet is outstanding: the skip is now also revoked once gain has
+moved measurably (`DN_BRIGHTEN_MARGIN`) brighter than that frozen snapshot,
+regardless of what the baseline has since drifted to. A camera that is
+genuinely flat/unchanging after a failed probe (the closet case this gate was
+built for) still sits at or above its own `probe_fail_smooth` and keeps
+skipping exactly as before; only real further brightening past the
+last-checked point loses the skip. This does not touch the brightening-hold's
+own ratchet check (still baseline-relative, unchanged) — only the periodic
+reconfirm's decision to skip a *due* probe. The log line
+`"ratchet anchor overrides baseline evidence: gain N has drifted below M% of
+the last failed probe's level P (baseline-relative bar was B) - forcing
+periodic reconfirm"` marks the moment this anchor is what forces the probe.
+
 **Oscillation breaker (added 2026-08-04).** The backoff/margin/ratchet above
 are all about *probe* economy — they cannot see a loop that happens on the
 PRIMARY threshold crossings themselves. A camera mounted very close (~30 cm)

@@ -986,6 +986,52 @@ static void *dn_thread(void *arg)
                 int can_judge = (night_baseline > 0.0f && smooth_tg > 0.0f);
                 int solidly_night = can_judge &&
                     smooth_tg >= probe_bar * DN_BRIGHTEN_MARGIN;
+                /* Baseline-drift / failure-ratchet reinforcement loop (live
+                 * incident 2026-08-13, Schuppen T31/SC2336). night_baseline
+                 * drifts toward smooth_tg every tick regardless of whether a
+                 * failure ratchet is outstanding (DN_BASELINE_ALPHA, see the
+                 * regression comment above it) - and probe_bar above is
+                 * derived FROM night_baseline. Over hours of continuous night
+                 * dwell the baseline fully converges to whatever smooth_tg
+                 * currently reads, even a genuinely DAY-level gain if the mode
+                 * is (wrongly) still night, dragging probe_bar down in
+                 * lockstep and keeping solidly_night true indefinitely: a
+                 * failed probe at gain 284 latched the ratchet, then over the
+                 * next 2.5h the baseline chased the actual (day) gain down to
+                 * 257-266, probe_bar followed it, and "still deep in night"
+                 * kept evaluating true the whole time. Two independent
+                 * "verify before trusting" mechanisms - the ratchet and this
+                 * passive-evidence gate - ended up validating each other
+                 * instead of either being the other's escape hatch, leaving
+                 * only probe_max_skip_s (12h default) to eventually recover.
+                 *
+                 * probe_fail_smooth is immune to the chase: it is a frozen
+                 * snapshot of smooth_tg taken the moment a physical probe
+                 * last checked and found genuine night, not a value that
+                 * drifts. While a ratchet is outstanding, ALSO require gain
+                 * to not have moved meaningfully brighter than that anchor -
+                 * real brightening past a point the baseline cannot have
+                 * absorbed is exactly the "reason to suspect the state
+                 * changed" this gate exists to catch. A flat/dark scene (the
+                 * closet/quiet-night case this gate was built for) sits
+                 * at/above its own probe_fail_smooth and keeps skipping
+                 * exactly as before; only genuine further brightening loses
+                 * the skip and lets the periodic probe through - independent
+                 * of, and not weakening, the brightening-hold's own (much
+                 * stricter) ratchet requirement for ITS path. */
+                if (solidly_night && probe_fail_smooth > 0.0f) {
+                    int was_solid = solidly_night;
+                    solidly_night = smooth_tg >=
+                        probe_fail_smooth * DN_BRIGHTEN_MARGIN;
+                    if (was_solid && !solidly_night)
+                        LOGI(MOD, "ratchet anchor overrides baseline evidence: "
+                                  "gain %.0f has drifted below %.0f%% of the "
+                                  "last failed probe's level %.0f (baseline-"
+                                  "relative bar was %.0f) - forcing periodic "
+                                  "reconfirm", (double)smooth_tg,
+                             (double)(DN_BRIGHTEN_MARGIN * 100.0f),
+                             (double)probe_fail_smooth, (double)probe_bar);
+                }
                 int outer_bound_due = (last_phys_probe_ms == 0) ||
                     (now_ms - last_phys_probe_ms >=
                      (int64_t)dn->probe_max_skip_s * 1000);
