@@ -680,6 +680,43 @@ static int64_t dn_adopt_verify_s(const ms_daynight_cfg *dn)
 #define DN_BRIGHTEN_MARGIN 0.97f      /* hold arms only clearly below the bar */
 #endif
 
+/* Unsatisfiable-bar guard (design-notes generator C, 2026-08-14). Several
+ * bars in this file are derived as a FRACTION of a previously measured gain
+ * (day_gain_pct% of the night baseline; day_gain_pct% of a failed probe's
+ * latched level; the brightening probe bar halfway between them). total_gain
+ * has a hard physical floor at 256 - the IMP [24.8] linear scale's 1.0x,
+ * i.e. log2 gain units 0, below which no sensor register can go - so any
+ * derived bar that lands under it is not "strict", it is UNSATISFIABLE: the
+ * comparison it gates can never come true and the whole path it guards is
+ * silently dead. That is not an edge case but the terminal state of the
+ * ratchet's own recursion (each failure demands another day_gain_pct% below
+ * the last level; on a dawn ramp toward the floor the demand eventually
+ * crosses it - reached on cam-vorne 2026-08-14 after four probes: ratchet
+ * latched at 315, bar 60% = 189 < 256, sustained-brightening path dead,
+ * camera in IR mode for 4 h of daylight with nothing logged). Rule: any bar
+ * derived from a measurement is checked against the measurement's physical
+ * range AT THE MOMENT IT IS LATCHED, and an unsatisfiable one is warned
+ * about - the check changes no behaviour, it makes the dead path
+ * self-reporting instead of silent. */
+#ifndef DN_GAIN_FLOOR
+#define DN_GAIN_FLOOR 256.0f     /* [24.8] linear 1.0x - hard sensor floor */
+#endif
+static int dn_bar_reachable(float bar)
+{
+    return bar >= DN_GAIN_FLOOR;
+}
+/* warn when a just-derived bar is physically unsatisfiable. Called at the
+ * point a bar is LATCHED (ratchet latch, baseline plant) or meaningfully
+ * re-derived (the rate-limited >=25% baseline-drift log), so it fires once
+ * per derivation, not per tick. */
+static void dn_bar_check(const char *what, float bar)
+{
+    if (bar > 0.0f && !dn_bar_reachable(bar))
+        LOGW(MOD, "%s %.0f is below the sensor gain floor %.0f - no reading "
+                  "can ever satisfy it, the path it gates is disabled until "
+                  "it is re-derived", what, (double)bar, (double)DN_GAIN_FLOOR);
+}
+
 /* Passive-evidence gate for the PERIODIC reconfirm probe (cam-wyze, closet in
  * constant darkness, 2026-08-04: "das klacken der IR blende nervt ... nachts
  * andauernd"). The backoff above cut the FREQUENCY of the periodic probe, but
@@ -1638,6 +1675,14 @@ static void *dn_thread(void *arg)
                          probe_backoff, (double)(probe_fail_smooth > 0.0f ?
                              probe_fail_smooth * (float)dn->day_gain_pct / 100.0f
                              : -1.0f));
+                    /* generator-C guard: the ratchet bar just latched is a
+                     * fraction of a measured gain - if it landed below the
+                     * physical floor the brightening path is dead, say so
+                     * NOW (on 2026-08-14 this line was worth 4 h). */
+                    if (probe_fail_smooth > 0.0f && dn->day_gain_pct > 0)
+                        dn_bar_check("brighten ratchet bar",
+                                     probe_fail_smooth *
+                                     (float)dn->day_gain_pct / 100.0f);
                 } else {
                     probe_backoff = 1;
                     probe_fail_smooth = -1.0f;
@@ -1743,6 +1788,17 @@ static void *dn_thread(void *arg)
                      (double)night_baseline, dn->day_gain_pct,
                      (double)dn_day_trigger(dn, night_baseline),
                      (long long)(since_ms / 1000));
+                /* generator-C guard: in the adaptive regime the OPERATIVE
+                 * bar derived from this baseline is the brightening probe
+                 * bar (the day trigger is informational there - night->day
+                 * is probe-mediated). A resting baseline near the floor
+                 * (cam-wyze-pan rests at ~256-268) puts the bar under the
+                 * floor, structurally disabling the brightening path - the
+                 * ratchet anchor and the periodic reconfirm then carry the
+                 * self-healing alone, which deserves a visible line. */
+                if (dn->day_gain_pct > 0 && dn->day_gain_pct < 100)
+                    dn_bar_check("brightening probe bar", night_baseline *
+                                 (100.0f + (float)dn->day_gain_pct) / 200.0f);
             }
         } else if (cur == DN_NIGHT && night_baseline > 0.0f && smooth_tg > 0.0f) {
             /* slow SYMMETRIC drift toward the smoothed gain: an unrepresent-
@@ -1764,6 +1820,13 @@ static void *dn_thread(void *arg)
                           "(day trigger < %d%% = %.0f)",
                      (double)night_baseline, dn->day_gain_pct,
                      (double)dn_day_trigger(dn, night_baseline));
+                /* generator-C guard, drift edition: hours of baseline drift
+                 * can carry the probe bar below the floor long after a clean
+                 * plant (the 14a1d61 chase reached 257-266). Piggybacks on
+                 * this rate-limited >=25%-move log so it cannot spam. */
+                if (dn->day_gain_pct > 0 && dn->day_gain_pct < 100)
+                    dn_bar_check("brightening probe bar", night_baseline *
+                                 (100.0f + (float)dn->day_gain_pct) / 200.0f);
             }
         }
 
