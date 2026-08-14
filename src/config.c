@@ -375,6 +375,7 @@ void config_defaults(ms_config *c)
     c->daynight.interval_ms=500; c->daynight.transition_s=5;
     copystr(c->daynight.switch_cmd,"daynight",sizeof c->daynight.switch_cmd);
     copystr(c->daynight.isp_path,"/proc/jz/isp/isp-m0",sizeof c->daynight.isp_path);
+    c->daynight.trace_path[0]=0;   /* trace recorder off by default */
 
     c->sim_video0[0]=0; c->sim_video1[0]=0; c->sim_audio[0]=0;
 }
@@ -848,9 +849,12 @@ static const cfg_field daynight_fields[] = {
     F ("probe_max_skip_s",           0, probe_max_skip_s,           T_INT,   F_CTRL, 3600,604800),
     F ("interval_ms",                0, interval_ms,                T_INT,   F_CTRL, 100,60000),
     F ("transition_s",               0, transition_s,               T_INT,   F_CTRL, 0,3600),
-    /* NOT F_CTRL - see the comment above (security boundary). */
+    /* NOT F_CTRL - see the comment above (security boundary). trace_path
+     * shares it: a path the daemon writes to as root must never be POSTable
+     * (arbitrary-file-write primitive) - file-only, like the other two. */
     FS("switch_cmd",                 0, switch_cmd,                 F_NOGET),
     FS("isp_path",                   0, isp_path,                   F_NOGET),
+    FS("trace_path",                 0, trace_path,                 F_NOGET),
 };
 #undef TT
 

@@ -502,6 +502,11 @@ daynight.interval_ms    = 500                  # sample interval
 daynight.transition_s   = 5                    # min seconds between switches
 daynight.switch_cmd     = daynight             # run as "<cmd> day|night"
 daynight.isp_path       = /proc/jz/isp/isp-m0  # ISP exposure proc file
+# Opt-in decision-trace recorder (incident diagnostics / replay harness): one
+# CSV line per 10 samples of gain + baseline + probe-scheduling state. Size-
+# capped (1 MB, rotated once to <path>.1). tmpfs ONLY - never point this at
+# flash. File-only key, not settable via /control.
+# daynight.trace_path   = /tmp/daynight-trace.csv
 
 # ---- on-demand ----
 # All streams (H264/H265, audio, JPEG/MJPEG) are only captured and encoded

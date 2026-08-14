@@ -632,6 +632,88 @@ static int dn_verify_due(const dn_verify *v, int mode, int64_t now_ms)
     return v->mode == mode && v->at_ms > 0 && now_ms >= v->at_ms;
 }
 
+/* ---- decision-trace recorder (daynight.trace_path, 2026-08-14) -----------
+ * The replay harness's "step 0" (design-notes section 6): no gain recorder
+ * has ever existed on a camera, so every past "verified against timpsd-sim"
+ * was a hand-reconstructed scenario from syslog fragments - including the
+ * verification of the 2026-08-14 fix itself. This closes that: an opt-in,
+ * size-capped CSV of the full evidence + scheduling state, one line per
+ * DN_TRACE_EVERY samples, appended from the (single) detection thread only.
+ * The columns are the design notes' own list. verify_in_s is relative (the
+ * seconds until the armed deadline) rather than an absolute monotonic stamp
+ * so a trace survives reboots/restarts meaningfully.
+ * Cap/rotation: past DN_TRACE_MAX_BYTES the file rotates once to <path>.1,
+ * so the total footprint is bounded at 2x the cap while the most recent
+ * window is always intact. tmpfs only - see the config.h doc comment. */
+#ifndef DN_TRACE_EVERY
+#define DN_TRACE_EVERY 10             /* one line per N samples (5 s at 500 ms) */
+#endif
+#ifndef DN_TRACE_MAX_BYTES
+#define DN_TRACE_MAX_BYTES (1<<20)    /* rotate past 1 MB (~5 days at 5 s) */
+#endif
+static void dn_trace(const ms_daynight_cfg *dn, int64_t now_ms, int cur,
+                     float tg, float luma, float baseline, float smooth_tg,
+                     float day_trigger, float probe_fail_smooth,
+                     const dn_verify *verify, int backoff)
+{
+    /* single-caller state (detection thread only, like dn_status_update's
+     * notify statics): open file, the path it belongs to, sample decimator. */
+    static FILE *f = NULL;
+    static char  path[sizeof dn->trace_path];
+    static unsigned every = 0;
+
+    if (!dn->trace_path[0]) {                       /* off (the default) */
+        if (f) { fclose(f); f = NULL; path[0] = 0; }
+        return;
+    }
+    if (f && strcmp(path, dn->trace_path) != 0) {   /* live path change */
+        fclose(f); f = NULL;
+    }
+    if (every++ % DN_TRACE_EVERY) return;           /* decimate to 1-in-N */
+    if (!f) {
+        /* a trace is a diagnostic for tmpfs, never flash (camera eMMC/NAND
+         * wear): warn once per (re)open when the path does not look like a
+         * RAM filesystem, but still honour it - the operator may know
+         * better (NFS mount, host sim rundir). */
+        if (strncmp(dn->trace_path, "/tmp/", 5) &&
+            strncmp(dn->trace_path, "/run/", 5) &&
+            strncmp(dn->trace_path, "/dev/shm/", 9))
+            LOGW(MOD, "trace_path %s is not under /tmp, /run or /dev/shm - "
+                      "tracing to flash wears it out", dn->trace_path);
+        f = fopen(dn->trace_path, "a");
+        if (!f) {
+            LOGW(MOD, "cannot open trace_path %s: %s - tracing disabled "
+                      "until the path changes", dn->trace_path,
+                 strerror(errno));
+            /* remember the failing path so we do not retry (and re-warn)
+             * every DN_TRACE_EVERY samples; a config change re-attempts. */
+            snprintf(path, sizeof path, "%s", dn->trace_path);
+            return;
+        }
+        snprintf(path, sizeof path, "%s", dn->trace_path);
+        if (ftello(f) == 0)
+            fputs("t_mono_ms,cur,tg,luma,baseline,smooth_tg,day_trigger,"
+                  "probe_fail_smooth,verify_mode,verify_in_s,backoff\n", f);
+    }
+    int64_t verify_in_s = (verify->at_ms > 0 && verify->mode != DN_UNKNOWN)
+        ? (verify->at_ms - now_ms) / 1000 : -1;
+    fprintf(f, "%lld,%d,%.0f,%.0f,%.0f,%.0f,%.0f,%.0f,%d,%lld,%d\n",
+            (long long)now_ms, cur, (double)tg, (double)luma,
+            (double)baseline, (double)smooth_tg, (double)day_trigger,
+            (double)probe_fail_smooth, verify->mode,
+            (long long)verify_in_s, backoff);
+    fflush(f);   /* tmpfs, ~0.2 lines/s - a crash must not eat the tail */
+    if (ftello(f) > (off_t)DN_TRACE_MAX_BYTES) {
+        fclose(f); f = NULL;
+        char old[sizeof path + 2];
+        snprintf(old, sizeof old, "%s.1", path);
+        if (rename(path, old) != 0)
+            LOGW(MOD, "trace rotate %s -> %s failed: %s", path, old,
+                 strerror(errno));
+        /* next decimated sample reopens fresh (and rewrites the header) */
+    }
+}
+
 /* bounded delay before an ADOPTED (guessed) mode must have proved itself: the
  * earlier of the configured reconfirm interval and DN_ADOPT_PROBE_S, and
  * DN_ADOPT_PROBE_S flat when the periodic reconfirm is disabled entirely.
@@ -1830,6 +1912,14 @@ static void *dn_thread(void *arg)
             }
         }
 
+        /* decision trace (opt-in, see dn_trace): the loop's few `continue`
+         * paths (probe fire, disabled, unreadable ISP) skip at most one
+         * decimated sample each - the next tick records again, and a probe
+         * transition is visible in the trace as the cur flip anyway. */
+        dn_trace(dn, ms_now_us() / 1000, cur, tg, luma, night_baseline,
+                 smooth_tg,
+                 (cur == DN_NIGHT) ? dn_day_trigger(dn, night_baseline) : -1.0f,
+                 probe_fail_smooth, &verify, probe_backoff);
         dn_status_update(dn, b, tg, luma, cur, night_baseline);
         dn_sleep(interval);
     }

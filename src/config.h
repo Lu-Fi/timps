@@ -292,6 +292,24 @@ typedef struct {
     int      transition_s;       /* min dwell between switches */
     char     switch_cmd[64];     /* board script, run as "<cmd> day|night" */
     char     isp_path[128];      /* ISP exposure proc file */
+    /* Opt-in decision-trace recorder (2026-08-14, the replay harness's
+     * "step 0" - see docs/wiki/Day-Night-Design-Notes.md section 6). Empty =
+     * off (the default: zero cost, nothing written). When set, the detection
+     * thread appends one CSV line per DN_TRACE_EVERY samples (every 5 s at
+     * the default 500 ms interval): monotonic ms, mode, raw/smoothed gain,
+     * luma, baseline, effective day trigger, failure-ratchet anchor, the
+     * armed verify deadline and the probe backoff - i.e. the full evidence
+     * AND scheduling state, which is exactly what every past incident had to
+     * be hand-reconstructed from syslog fragments for. The file is size-
+     * capped (DN_TRACE_MAX_BYTES, rotated once to <path>.1, so bounded at
+     * 2x the cap) and MUST live on tmpfs (/tmp, /run) - these are
+     * camera-grade eMMC/NAND and a trace is a diagnostic to copy off on
+     * demand, not a flash-wearing log (a LOGW reminds if the path does not
+     * look like tmpfs). File-only key, deliberately NOT settable via
+     * /control: it names a path the daemon writes to as root, the same
+     * arbitrary-file-write boundary that keeps switch_cmd/isp_path out of
+     * the POST surface. */
+    char     trace_path[128];
 } ms_daynight_cfg;
 
 typedef struct {
