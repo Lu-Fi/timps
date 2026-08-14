@@ -7,6 +7,46 @@ semantic versioning.
 ## [Unreleased]
 
 ### Fixed
+- **day/night: an unverified day was reverted to night mid-dawn, because the
+  verification judged a gain LEVEL at one instant and was blind to the
+  direction that level was travelling** (`src/daynight.c`; live incident
+  cam-vorne, T23/SC2336, 2026-08-14). An unverified day - adopted at boot, or
+  landed on by a reconfirm probe whose day-pipeline reading fell inside the
+  dead-zone - is re-read once at its deadline and reverted to night if the
+  reading is still ambiguous. That rule cannot tell the scene it exists to
+  protect against (a camera booted after dark on a stale persisted day,
+  rendering black) from a scene in free fall through the dead-zone toward
+  daylight, and dawn is exactly the second one. Live: four probes down the
+  dawn ramp read day-pipeline gain 9024 -> 4813 -> 2425 -> 708, the last two
+  landing in the dead-zone and reverting five minutes later at 1436 and 452 -
+  each a 36-41% FALL since the reading that armed the deadline, i.e.
+  unmistakably dawn. Each revert is additionally accounted as a failed probe,
+  so it doubled the reconfirm backoff and latched the brightening ratchet
+  lower; the second one latched it at 315, putting its bar (189) below the
+  sensor's own night-pipeline gain floor (~256 = 1.0x) where no reading can
+  ever satisfy it. With the brightening path dead and the backoff at its x4
+  cap, the next periodic reconfirm was 4 h out and the camera rendered IR-mode
+  video in broad daylight from 06:20 until a manual service restart at 08:07 -
+  a restart that re-decided from scratch and read *day* immediately off the
+  very same gain (257), i.e. the machine was holding a belief a cold start
+  contradicts instantly. Fix: at the deadline, revert only once the
+  improvement has STOPPED. If the metric has moved at least
+  `DN_DAY_VERIFY_FALL` (10%) better than the reading that armed the deadline,
+  re-arm for another `min(night_reconfirm_s, 300 s)` and re-anchor on the new
+  reading instead. It can only ever DELAY a revert - it never causes a switch
+  and costs zero IR-cut clicks (strictly fewer than before: the incident's
+  second probe pair never happens at all); a darkening scene cannot buy an
+  extension, and a genuinely dark one rails above
+  `total_gain_night_threshold`, which is tested first and reverts within the
+  ordinary hysteresis regardless of any deadline. The anchor ratchets down on
+  every extension, so noise cannot sustain it, and the rule is
+  self-terminating rather than merely bounded: each extension moves the metric
+  >=10% closer to the day threshold, at most ~22 of them from the top of the
+  dead-zone at the default thresholds. Mirrored into the brightness-fallback
+  path. Verified in `timpsd-sim` against both shapes: a dawn ramp through the
+  dead-zone (2383 -> 1387 -> 807 -> 450 -> 279) now extends three times and
+  confirms day with **zero** board switches, while a static dead-zone reading
+  still reverts to night on the first deadline exactly as before.
 - **day/night: dawn-time flip pairs surviving the adaptive baseline fix
   below, because the direct night->day switch was still reachable AFTER
   the baseline plants** (`src/daynight.c`; observed live on cam-wyze-pan

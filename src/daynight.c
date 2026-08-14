@@ -507,6 +507,69 @@ static int dn_ae_stable(const float *hist, int n, int pct)
 #define DN_ADOPT_PROBE_S 300     /* verify an adopted mode within 5 minutes */
 #endif
 
+/* "Still brightening" extension of an UNVERIFIED day's deadline (live
+ * incident 2026-08-14, cam-vorne T23/SC2336 dawn).
+ *
+ * An unverified day (adopted at boot, or landed on by a probe whose reading
+ * fell in the dead-zone) is re-read once at its deadline and, if the reading
+ * is still ambiguous, reverted to night - the recoverable side. That rule
+ * judges a LEVEL at a single instant and is blind to the DIRECTION the level
+ * is travelling, which is precisely the information dawn provides and the
+ * only information that distinguishes the two scenes the dead-zone conflates:
+ *   - a static dim scene (the case the revert exists for - a camera booted
+ *     after dark on a stale persisted day, rendering black): the metric sits
+ *     still or gets worse. Revert, exactly as before.
+ *   - a scene mid-dawn: the metric is in free fall THROUGH the dead-zone
+ *     toward the day threshold. Reverting here is wrong at the moment it is
+ *     decided, and expensive afterwards - the revert is accounted as a failed
+ *     probe (see the DN_PROBE_FAIL_WINDOW_MS comment), which doubles the
+ *     periodic-reconfirm backoff and latches the brightening ratchet at a
+ *     level the next dawn reading must undercut by another day_gain_pct%.
+ *
+ * Live proof (cam-vorne, 2026-08-14): four probes down the dawn ramp read
+ * day-pipeline gain 9024 -> 4813 -> 2425 -> 708, the last two landing in the
+ * dead-zone and reverting 5 min later at 1436 and 452 - each time a 36-41%
+ * FALL since the reading that armed the deadline, i.e. unmistakably dawn. The
+ * second revert latched the ratchet at 315, putting its bar (189) below the
+ * sensor's own night-pipeline gain floor (~256 = 1.0x) where no reading can
+ * ever satisfy it, so the brightening path was dead; with the backoff already
+ * at x4 from two earlier genuine-night reverts, the next periodic reconfirm
+ * was 4 h out and the camera rendered IR-mode video in broad daylight from
+ * 06:20 until a manual service restart at 08:07 (a restart re-decides from
+ * DN_UNKNOWN, where the very same gain, 257, reads day at once - the machine
+ * was holding a belief a cold start contradicts instantly).
+ *
+ * So: at the deadline, only revert once the improvement has STOPPED. If the
+ * metric has moved at least DN_DAY_VERIFY_FALL better than the reading that
+ * armed the deadline, re-arm for another dn_adopt_verify_s and re-anchor on
+ * the new reading instead. Properties that make this safe rather than another
+ * open-ended hold:
+ *  - it can only ever DELAY a revert; it never causes a switch, never drives
+ *    the board, and costs zero IR-cut clicks (strictly fewer than today, in
+ *    fact: the incident's second probe pair never happens).
+ *  - a darkening scene cannot buy an extension - improvement is required, and
+ *    a genuinely dark one rails above total_gain_night_threshold, which is
+ *    tested BEFORE this and reverts within the ordinary hysteresis regardless
+ *    of any deadline.
+ *  - the anchor ratchets down on every extension, so noise cannot sustain it:
+ *    each further extension needs another full DN_DAY_VERIFY_FALL below the
+ *    already-lowered anchor, compounding.
+ *  - it is SELF-TERMINATING, not merely bounded: each extension moves the
+ *    metric >=10% closer to the day threshold, and once it crosses, day is
+ *    confirmed. From the top of the dead-zone that is at most
+ *    log(300/3000)/log(0.9) ~ 22 extensions at the default thresholds.
+ *    DN_DAY_VERIFY_EXT_MAX is a seatbelt above that self-terminating bound
+ *    (against a pathological threshold config), not the operative limit.
+ * 10% per 5 min is roughly a third of the ramp rate of even an overcast civil
+ * dawn (~10x illuminance over ~30 min) and well outside AE tick noise, so the
+ * margin runs both ways. */
+#ifndef DN_DAY_VERIFY_FALL
+#define DN_DAY_VERIFY_FALL 0.90f /* metric must improve this much to extend */
+#endif
+#ifndef DN_DAY_VERIFY_EXT_MAX
+#define DN_DAY_VERIFY_EXT_MAX 24 /* seatbelt above the self-terminating bound */
+#endif
+
 /* Deadline bookkeeping for verifying a GUESSED mode (2026-08-12). Until now
  * the "an unverified decision must be re-checked after a bounded delay" idea
  * existed for night only (a lone night_probe_at_ms deadline), so an adopted
@@ -755,6 +818,15 @@ static void *dn_thread(void *arg)
      * brightening probe must undercut day_gain_pct% of this (failure
      * ratchet). -1 = no failed probe outstanding. */
     float   probe_fail_smooth = -1.0f;
+    /* "still brightening" extension of an unverified DAY's deadline (see
+     * DN_DAY_VERIFY_FALL): the day-pipeline metric read at the moment the
+     * deadline was armed (or last extended), and how many extensions this
+     * deadline has already been granted. -1 = no anchor, so no extension is
+     * possible - set that way for the brightness-fallback adoption path
+     * (no comparable reading is in scope there) and, deliberately, once a
+     * deadline has decided to revert, so the decision stays one-shot. */
+    float   day_verify_ref = -1.0f;
+    int     day_verify_ext = 0;
     /* monotonic ms of the last time a probe ACTUALLY drove the board (physical
      * IR-cut click), periodic or brightening. Feeds the probe_max_skip_s
      * outer bound so evidence-skipped periodic probes cannot silently disable
@@ -908,6 +980,7 @@ static void *dn_thread(void *arg)
             brighten_since_ms = 0; brighten_armed = 0;
             smooth_tg = -1.0f; probe_day_ms = 0; probe_verdict_at_ms = 0;
             probe_backoff = 1; probe_fail_smooth = -1.0f;
+            day_verify_ref = -1.0f; day_verify_ext = 0;
             last_phys_probe_ms = 0;
             osc_n = 0; osc_freeze_until_ms = 0;
             pending_target = DN_UNKNOWN; pending_since_ms = 0;
@@ -1226,6 +1299,10 @@ static void *dn_thread(void *arg)
                         int64_t verify_s = dn_adopt_verify_s(dn);
                         dn_verify_arm(&verify, DN_DAY,
                                       dnow_ms + verify_s * 1000);
+                        /* anchor the "still brightening" test (see
+                         * DN_DAY_VERIFY_FALL) on the reading that armed it */
+                        day_verify_ref = tg;
+                        day_verify_ext = 0;
                         LOGI(MOD, "probe landed on an ambiguous day-pipeline "
                                   "gain %.0f (dead-zone %.0f..%.0f): neither "
                                   "confirms day nor reverts - gain must "
@@ -1247,18 +1324,42 @@ static void *dn_thread(void *arg)
                      * the fixed threshold here - spelled out for clarity. */
                     if (tg < dn->total_gain_day_threshold) {
                         dn_verify_clear(&verify);
+                        day_verify_ref = -1.0f; day_verify_ext = 0;
                         LOGI(MOD, "day confirmed by day-pipeline gain "
                                   "%.0f (< %.0f)", (double)tg,
                              (double)dn->total_gain_day_threshold);
+                    } else if (day_verify_ref > 0.0f &&
+                               day_verify_ext < DN_DAY_VERIFY_EXT_MAX &&
+                               tg < day_verify_ref * DN_DAY_VERIFY_FALL) {
+                        /* still ambiguous, but the scene is measurably
+                         * BRIGHTER than when the deadline was armed - a dawn
+                         * ramp crossing the dead-zone, not a static dim
+                         * scene. Give it another interval and re-anchor
+                         * rather than reverting mid-descent (see
+                         * DN_DAY_VERIFY_FALL). No switch, no IR-cut click. */
+                        int64_t verify_s = dn_adopt_verify_s(dn);
+                        LOGI(MOD, "day still unconfirmed but brightening: "
+                                  "gain %.0f is %.0f%% of the %.0f that armed "
+                                  "the deadline - extending %llds (#%d)",
+                             (double)tg, (double)(tg / day_verify_ref * 100.0f),
+                             (double)day_verify_ref, (long long)verify_s,
+                             day_verify_ext + 1);
+                        day_verify_ref = tg;
+                        day_verify_ext++;
+                        dn_verify_arm(&verify, DN_DAY,
+                                      dnow_ms + verify_s * 1000);
                     } else {
                         /* still ambiguous after the bounded wait: the guess is
                          * unverified, so fall to the recoverable side. The
                          * deadline stays armed so the normal hysteresis can
                          * accumulate (a reading that dips below the day
                          * threshold meanwhile drops the target and confirms
-                         * the guess instead); the switch clears it. */
+                         * the guess instead); the switch clears it. Drop the
+                         * anchor so those follow-up ticks cannot re-open the
+                         * extension - this deadline has decided. */
                         day_unverified = 1;
                         target = DN_NIGHT;
+                        day_verify_ref = -1.0f;
                         LOGD(MOD, "day never confirmed: gain %.0f still "
                                   "inside the dead-zone", (double)tg);
                     }
@@ -1338,6 +1439,8 @@ static void *dn_thread(void *arg)
                         int64_t verify_s = dn_adopt_verify_s(dn);
                         dn_verify_arm(&verify, DN_DAY,
                                       dnow_ms + verify_s * 1000);
+                        day_verify_ref = avg;
+                        day_verify_ext = 0;
                         LOGI(MOD, "probe landed on an ambiguous brightness "
                                   "%.1f%%: neither confirms day nor reverts - "
                                   "must confirm within %llds",
@@ -1351,12 +1454,31 @@ static void *dn_thread(void *arg)
                      * unaided from DN_UNKNOWN (the narrowed band below). */
                     if (avg > dn->threshold_high - hyst_range) {
                         dn_verify_clear(&verify);
+                        day_verify_ref = -1.0f; day_verify_ext = 0;
                         LOGI(MOD, "day confirmed by brightness %.1f%% "
                                   "(> %.1f%%)", (double)avg,
                              (double)(dn->threshold_high - hyst_range));
+                    } else if (day_verify_ref > 0.0f &&
+                               day_verify_ext < DN_DAY_VERIFY_EXT_MAX &&
+                               avg > day_verify_ref *
+                                     (2.0f - DN_DAY_VERIFY_FALL)) {
+                        /* same "still brightening" extension as the gain
+                         * path, mirrored for this branch's inverted metric
+                         * (higher brightness = brighter scene). */
+                        int64_t verify_s = dn_adopt_verify_s(dn);
+                        LOGI(MOD, "day still unconfirmed but brightening: "
+                                  "brightness %.1f%% vs the %.1f%% that armed "
+                                  "the deadline - extending %llds (#%d)",
+                             (double)avg, (double)day_verify_ref,
+                             (long long)verify_s, day_verify_ext + 1);
+                        day_verify_ref = avg;
+                        day_verify_ext++;
+                        dn_verify_arm(&verify, DN_DAY,
+                                      dnow_ms + verify_s * 1000);
                     } else {
                         day_unverified = 1;
                         target = DN_NIGHT;
+                        day_verify_ref = -1.0f;
                         LOGD(MOD, "day never confirmed: brightness %.1f%% "
                                   "still inside the dead-zone", (double)avg);
                     }
@@ -1397,6 +1519,14 @@ static void *dn_thread(void *arg)
                  * day-pipeline gain, no IR-cut click). */
                 int64_t verify_s = dn_adopt_verify_s(dn);
                 dn_verify_arm(&verify, cur, now_ms + verify_s * 1000);
+                /* an adopted DAY gets the same "still brightening" extension
+                 * as a probe-landed one (a camera booted mid-dawn is the same
+                 * scene as a probe fired into one). Anchored on the gain that
+                 * forced the adoption; the brightness-fallback path has no
+                 * comparable reading in scope here, and leaves the anchor at
+                 * -1 so it simply keeps the plain one-shot revert. */
+                day_verify_ref = (cur == DN_DAY && tg >= 0.0f) ? tg : -1.0f;
+                day_verify_ext = 0;
                 LOGI(MOD, "reading %s inside the day/night dead-zone after "
                           "settle - adopting persisted mode %s (%s in %llds)",
                      why, cur == DN_NIGHT ? "night" : "day",
@@ -1549,6 +1679,7 @@ static void *dn_thread(void *arg)
                 smooth_tg = -1.0f;
                 probe_day_ms = 0;
                 probe_verdict_at_ms = 0;  /* a new switch supersedes it */
+                day_verify_ref = -1.0f; day_verify_ext = 0;
                 night_entered_ms = (target == DN_NIGHT) ? now_ms : 0;
                 /* (re)arm the periodic reconfirm probe alongside it (see
                  * night_reconfirm_s doc comment in config.h), stretched by

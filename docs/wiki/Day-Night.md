@@ -150,6 +150,54 @@ thingino's `daynightd` semantics.
   adopted *night* is a guess, so its first day-pipeline verify probe
   fires after `min(night_reconfirm_s, 300 s)` — and once even when the
   periodic reconfirm is disabled.
+- **Verifying an unverified day** (symmetric side added 2026-08-12,
+  "still brightening" extension added 2026-08-14). An adopted *day* — and,
+  since the same release, a day a reconfirm probe *landed* on with a
+  dead-zone reading — is verified without any IR-cut click: day-pipeline
+  gain is the trustworthy metric already (it is what every night probe
+  switches *to*), so the deadline is settled by simply re-reading it. It
+  is **confirmed** when the reading would have decided day unaided from
+  `DN_UNKNOWN`, and otherwise the guess falls back to night through the
+  ordinary switch path — night being the recoverable side, since a wrong
+  night self-corrects within one probe cycle and a wrong day does not.
+
+  That revert judges a *level* at one instant, which cannot distinguish
+  the scene it exists for (a camera booted after dark on a stale
+  persisted day, rendering black) from a scene in free fall *through* the
+  dead-zone toward daylight — and dawn is the second one. So the revert
+  now waits for the improvement to **stop**: if the metric has moved at
+  least `DN_DAY_VERIFY_FALL` (10%) better than the reading that armed the
+  deadline, the deadline is re-armed for another interval and re-anchored
+  on the new reading (`"day still unconfirmed but brightening: gain N is
+  P% of the M that armed the deadline - extending Ts (#k)"`).
+
+  This can only ever *delay* a revert — it never causes a switch and
+  costs zero IR-cut clicks. A darkening scene cannot buy an extension
+  (improvement is required), and a genuinely dark one rails above
+  `total_gain_night_threshold`, which is tested first and reverts within
+  the ordinary hysteresis whatever the deadline says. The anchor ratchets
+  down on every extension, so gain noise cannot sustain a chain of them.
+  And the rule is *self-terminating* rather than merely bounded: each
+  extension moves the metric ≥10% closer to the day threshold, so from
+  the top of the dead-zone at most ~22 are possible at the default
+  thresholds before day is simply confirmed — `DN_DAY_VERIFY_EXT_MAX` is
+  a seatbelt above that bound, not the operative limit.
+
+  Live case it fixes (cam-vorne, T23/SC2336, 2026-08-14): four probes
+  down the dawn ramp read day-pipeline gain 9024 → 4813 → 2425 → 708, the
+  last two landing in the dead-zone and reverting five minutes later at
+  1436 and 452 — each a 36–41% *fall* since the reading that armed the
+  deadline. Because an unverified-day revert is also accounted as a
+  failed probe, each one doubled the reconfirm backoff and latched the
+  brightening ratchet lower, the second at 315 — putting its bar (189)
+  *below the sensor's own night-pipeline gain floor* (~256 = 1×), where
+  no reading can ever satisfy it. With the brightening path dead and the
+  backoff at its ×4 cap, the next periodic reconfirm was 4 h out and the
+  camera rendered IR-mode video in daylight from 06:20 until a manual
+  restart at 08:07 — a restart that read *day* at once off the very same
+  gain (257). See [Day-Night Design Notes](Day-Night-Design-Notes.md) for
+  why that "a cold start would decide differently" property is the
+  invariant this subsystem keeps violating, and what to do about it.
 
 **Gain read through the night/IR pipeline is not the same metric as
 gain read through the day pipeline.** IR-cut engagement changes the
