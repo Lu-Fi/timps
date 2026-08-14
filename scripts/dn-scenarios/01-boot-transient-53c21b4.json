@@ -1,0 +1,23 @@
+{
+  "name": "01-boot-transient-53c21b4",
+  "incident": "53c21b4",
+  "description": "Cold-start AE transient: total_gain reads a wild 15000-20000 for the first moments after boot (AE not converged), in a bright room persisted as day. The pre-fix machine committed straight to night off that single transient because the first-ever switch bypassed the dwell. The boot settle (floor + AE-stability extension) must eat the transient: no switch to night, at most the one genuine day confirmation.",
+  "scale": 60,
+  "duration_s": 180,
+  "initial_mode": "day",
+  "config": {
+    "daynight.boot_settle_s": 5
+  },
+  "interp": "log",
+  "day_gain": [[0, 18000], [15, 300], [20, 200], [180, 200]],
+  "night_gain": [[0, 4000], [180, 4000]],
+  "expect": {
+    "mode_at": [[60, "day"], [170, "day"]],
+    "expected_mode": [[0, "day"]],
+    "max_wrong_mode_s": 30,
+    "max_switches": 1,
+    "restart_equivalence_s": 120,
+    "monotonicity": "skip",
+    "forbid_log": ["switching to night"]
+  }
+}

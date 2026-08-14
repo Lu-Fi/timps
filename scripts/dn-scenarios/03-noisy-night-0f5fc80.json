@@ -1,0 +1,23 @@
+{
+  "name": "03-noisy-night-0f5fc80",
+  "incident": "0f5fc80",
+  "description": "IR AGC hunting all night (+-25% around a 3500 resting level) in genuine darkness (day pipeline railed at 8192). The pre-fix upward-only baseline drift ratcheted the baseline to the noise envelope's maximum, ordinary troughs then fired probes, post-revert resamples read elevated, and the flap loop self-sustained every few minutes - dozens of clicks a night. Current contract: raw troughs arm nothing (the EMA smoother sees through them), but the 14a1d61 ratchet ANCHOR is a level test too, so under this much noise the smoothed dips below 97% of the anchor let one probe pair through at each backoff step (x1 then x2 within this hour, converging to one pair per 4h at the cap) - 5 clicks in the first hour, quiet after. That level-not-trend sensitivity is generator E, documented as open; the budget here encodes today's contract, and tightening it is the probe_backoff revisit's job.",
+  "scale": 60,
+  "duration_s": 3600,
+  "initial_mode": "night",
+  "config": {
+    "daynight.night_reconfirm_s": 900
+  },
+  "interp": "step",
+  "noise_pct": 25,
+  "night_gain": [[0, 3500], [3600, 3500]],
+  "day_gain": [[0, 8192], [3600, 8192]],
+  "expect": {
+    "mode_at": [[600, "night"], [2000, "night"], [3500, "night"]],
+    "expected_mode": [[0, "night"]],
+    "max_wrong_mode_s": 60,
+    "max_switches": 5,
+    "restart_equivalence_s": 900,
+    "monotonicity": "warn"
+  }
+}

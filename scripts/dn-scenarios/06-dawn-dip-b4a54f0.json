@@ -1,0 +1,24 @@
+{
+  "name": "06-dawn-dip-b4a54f0",
+  "incident": "b4a54f0",
+  "description": "cam-wyze-pan basement dawn: resting night-pipeline gain a stable 10856 for hours, dawn dips it to ~820 - under the adaptive trigger - while the day pipeline still reads a railed 8192 (genuinely dark behind the closed IR-cut). Pre-fix the direct adaptive night->day switch fired after just the 5s hysteresis on every dawn fluctuation, found darkness, reverted, and repeated: 5 audible IR-cut pairs in one morning, spaced too far apart for the oscillation breaker. Post-fix night->day is probe-mediated: the brightening hold lets the smoother converge to the dip floor, ONE probe pair fires, its failure latches the ratchet at the floor (~830, bar ~500) so the same dip is unrepeatable, and the camera stays night.",
+  "scale": 60,
+  "duration_s": 2400,
+  "initial_mode": "night",
+  "config": {
+    "daynight.night_reconfirm_s": 3600
+  },
+  "interp": "log",
+  "noise_pct": 2,
+  "night_gain": [[0, 10856], [900, 10856], [960, 820], [2400, 820]],
+  "day_gain": [[0, 8192], [2400, 8192]],
+  "expect": {
+    "mode_at": [[600, "night"], [1200, "night"], [2300, "night"]],
+    "expected_mode": [[0, "night"]],
+    "max_wrong_mode_s": 60,
+    "max_switches": 3,
+    "restart_equivalence_s": 600,
+    "monotonicity": "warn",
+    "expect_log": ["sustained brightening"]
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "name": "04-deadzone-boot-bd21ce6",
+  "incident": "bd21ce6",
+  "description": "Camera rebooted at 09:23 in broad daylight with a stale persisted night and a mid-band night-pipeline gain (731, inside the 300..3000 dead-zone). Pre-fix the decision stayed DN_UNKNOWN forever - both reconfirm probes were gated on cur==NIGHT, which UNKNOWN never satisfies - and the camera rendered night video indefinitely with zero log lines. Post-fix: the dead-zone adoption must adopt the persisted night after settle, arm the verify deadline, and the (first-of-session, never-skipped) probe must find day-pipeline gain 250 and stick in day within DN_ADOPT_PROBE_S plus margin.",
+  "scale": 60,
+  "duration_s": 600,
+  "initial_mode": "night",
+  "interp": "step",
+  "noise_pct": 2,
+  "night_gain": [[0, 731], [600, 731]],
+  "day_gain": [[0, 250], [600, 250]],
+  "expect": {
+    "mode_at": [[200, "night"], [400, "day"], [580, "day"]],
+    "expected_mode": [[0, "day"]],
+    "max_wrong_mode_s": 360,
+    "max_switches": 1,
+    "restart_equivalence_s": 300,
+    "monotonicity": "warn",
+    "expect_log": ["adopting persisted mode night"]
+  }
+}

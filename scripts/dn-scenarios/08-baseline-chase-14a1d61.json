@@ -1,0 +1,28 @@
+{
+  "name": "08-baseline-chase-14a1d61",
+  "incident": "14a1d61 (Schuppen 2026-08-13)",
+  "description": "Pre-dawn: the night pipeline falls fast to ~284 while the day pipeline is still dark (4000). The brightening probe fires early and FAILS, and the post-revert pre-baseline window re-probes once more (the a5dae07 path) - two failed pairs, backoff at the x4 cap, ratchet latched near 284 with its 60% bar (~170) under the 256 floor (the unsatisfiable-bar warn must fire). The baseline then chases the day-level gain down to ~262, dragging the skip gate's 'solidly night' bar with it, so pre-14a1d61 the periodic reconfirm was skipped indefinitely - two verify-before-trusting mechanisms validating each other - and only probe_max_skip_s (pushed to 7200 here so it cannot mask the fix under test) would recover. Post-fix the ratchet ANCHOR (a frozen measurement, immune to the chase) sees gain below 97% of the failed probe's level and forces the periodic probe through at its x4 deadline (~3980s); the day pipeline reads 250 and day sticks. The restart-equivalence bound is deliberately backoff-cap-aware (3800s > 4x reconfirm): tightening it to one reconfirm interval is exactly what the dn_next_probe() collapse is for.",
+  "scale": 60,
+  "duration_s": 6000,
+  "initial_mode": "night",
+  "config": {
+    "daynight.night_reconfirm_s": 900,
+    "daynight.probe_max_skip_s": 7200
+  },
+  "interp": "log",
+  "noise_pct": 2,
+  "night_gain": [[0, 3500], [300, 3500], [360, 284], [6000, 262]],
+  "day_gain": [[0, 4000], [1200, 4000], [1500, 250], [6000, 250]],
+  "expect": {
+    "mode_at": [[300, "night"], [1200, "night"], [4500, "day"], [5900, "day"]],
+    "expected_mode": [[0, "night"], [1450, "any"], [1550, "day"]],
+    "max_wrong_mode_s": 2600,
+    "max_switches": 7,
+    "restart_equivalence_s": 3800,
+    "monotonicity": "warn",
+    "expect_log": [
+      "brighten ratchet bar 1\\d\\d is below the sensor gain floor",
+      "ratchet anchor overrides baseline evidence"
+    ]
+  }
+}

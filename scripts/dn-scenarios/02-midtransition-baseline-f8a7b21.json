@@ -1,0 +1,20 @@
+{
+  "name": "02-midtransition-baseline-f8a7b21",
+  "incident": "f8a7b21",
+  "description": "Night baseline sampled during a lighting transition is unrepresentatively LOW (here a dip to 1200 right in the baseline_delay_s window against a true resting level of 3500), making day_gain_pct% of it a bar no real light source can reach - the incident scene sat at a rock-stable 65% of baseline, visibly lit, and stayed night indefinitely. The symmetric EMA drift must self-correct the baseline back up, and the sustained-brightening probe must then get a genuinely lit scene (night pipe 900, day pipe 250) out to day.",
+  "scale": 60,
+  "duration_s": 1200,
+  "initial_mode": "night",
+  "interp": "log",
+  "night_gain": [[0, 3500], [15, 3500], [20, 1200], [90, 1200], [100, 3500], [600, 3500], [615, 900], [1200, 900]],
+  "day_gain": [[0, 8192], [600, 8192], [610, 250], [1200, 250]],
+  "expect": {
+    "mode_at": [[300, "night"], [900, "day"], [1150, "day"]],
+    "expected_mode": [[0, "night"], [615, "any"], [700, "day"]],
+    "max_wrong_mode_s": 120,
+    "max_switches": 3,
+    "restart_equivalence_s": 300,
+    "monotonicity": "warn",
+    "expect_log": ["sustained brightening"]
+  }
+}

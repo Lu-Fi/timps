@@ -1,0 +1,24 @@
+{
+  "name": "09-dawn-ramp-20260814",
+  "incident": "2026-08-14 cam-vorne (fixed by 19dcd74)",
+  "description": "The full cam-vorne dawn: both pipelines in a long exponential descent. Probes down the ramp read day-pipeline gains in the incident's own sequence (railed -> ~5600 -> ~3300 -> dead-zone ~1500), the last landing ambiguous. Pre-fix that dead-zone landing was reverted 5 minutes later despite a 36-41% fall since the reading that armed the deadline; the revert latched the ratchet at 315 (bar 189, under the 256 floor - brightening path dead) with the backoff at x4, next reconfirm 4h out: IR-mode video in broad daylight until a manual restart. Post-fix (19dcd74) the still-brightening deadline extension re-anchors down the ramp until the reading crosses the day threshold and day confirms - no revert, strictly fewer clicks. Restart-equivalence bound: one reconfirm interval (3600), the invariant the design notes state; the pre-fix build holds wrong-mode for over 4700s here and fails it.",
+  "scale": 60,
+  "duration_s": 12000,
+  "initial_mode": "night",
+  "config": {
+    "daynight.night_reconfirm_s": 3600
+  },
+  "interp": "log",
+  "noise_pct": 2,
+  "night_gain": [[0, 4000], [3600, 4000], [5000, 2000], [6200, 700], [6900, 450], [7200, 315], [7500, 290], [12000, 260]],
+  "day_gain": [[0, 16000], [3600, 9024], [5400, 4813], [6300, 2425], [6900, 708], [7500, 300], [7800, 250], [12000, 250]],
+  "expect": {
+    "mode_at": [[3000, "night"], [8000, "day"], [11800, "day"]],
+    "expected_mode": [[0, "night"], [6200, "any"], [7500, "day"]],
+    "max_wrong_mode_s": 600,
+    "max_switches": 9,
+    "restart_equivalence_s": 3600,
+    "monotonicity": "warn",
+    "expect_log": ["day confirmed by day-pipeline gain"]
+  }
+}
