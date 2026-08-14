@@ -9,6 +9,12 @@
 #
 #   make sim
 #
+# SIM_CFLAGS: extra flags for the sim build ONLY (never the target). The
+# day/night replay harness (scripts/dn-replay.py) uses it to compress time -
+# see MS_CLOCK_SCALE in src/util.h - and to override DN_* constants:
+#
+#   make sim SIM_CFLAGS="-DMS_CLOCK_SCALE=30"
+#
 # Supported PLATFORM values: T10 T20 T21 T23 T30 T31 T40 T41 C100
 #
 # Small-RAM targets (e.g. T10, 64 MB): the memory footprint can be tuned via
@@ -248,6 +254,7 @@ sim:
 	  $(if $(filter 1,$(USE_TIMELAPSE)),-DUSE_TIMELAPSE) \
 	  $(if $(filter 1,$(USE_ROTATE)),-DUSE_ROTATE) \
 	  $(if $(filter 1,$(USE_TRACE)),-DUSE_TRACE) \
+	  $(SIM_CFLAGS) \
 	  -Isrc $(SIM_SRC) $(LDFLAGS) -lpthread -lm -o $(BIN)-sim
 	@echo "built $(BIN)-sim (host simulation backend, USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_ROTATE=$(USE_ROTATE) USE_TRACE=$(USE_TRACE))"
 

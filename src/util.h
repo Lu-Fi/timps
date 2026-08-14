@@ -7,12 +7,33 @@
 #include <string.h>
 #include <time.h>
 
-/* monotonic microseconds */
+/* monotonic microseconds.
+ *
+ * MS_CLOCK_SCALE (sim builds ONLY - never define for a target build): an
+ * opt-in whole-process virtual clock for the day/night replay harness
+ * (scripts/dn-replay.py, design-notes section 6 step 2). A dawn incident
+ * spans hours; -DMS_CLOCK_SCALE=30 makes virtual time run 30x real time so
+ * a 4 h scenario replays in 8 min. This function is the single monotonic
+ * chokepoint the whole daemon reads, so multiplying here scales EVERY
+ * deadline, dwell, hysteresis window and EMA schedule coherently; the
+ * matching division in ms_stopgate_wait() (util.c) keeps the periodic
+ * threads ticking at their configured VIRTUAL cadence (500 virtual ms =
+ * 500/SCALE real ms), so the NUMBER of samples per window - what the
+ * smoothing/stability logic actually depends on - is exactly preserved.
+ * That is why no DN_* compile-time constant and no config timing needs
+ * compressing (the 2026-08-14 verification compressed config timings 15x by
+ * hand instead, which distorts tick counts and was adequate only for a
+ * targeted check). Pass via the sim target's SIM_CFLAGS hook:
+ *   make sim SIM_CFLAGS="-DMS_CLOCK_SCALE=30" */
 static inline int64_t ms_now_us(void)
 {
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
-    return (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+    int64_t us = (int64_t)ts.tv_sec * 1000000 + ts.tv_nsec / 1000;
+#ifdef MS_CLOCK_SCALE
+    us *= (int64_t)(MS_CLOCK_SCALE);
+#endif
+    return us;
 }
 
 /* big-endian writers used by RTP and MP4 muxers */

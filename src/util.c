@@ -101,6 +101,15 @@ void ms_stopgate_init(ms_stopgate *g)
 
 int ms_stopgate_wait(ms_stopgate *g, int ms)
 {
+    /* MS_CLOCK_SCALE (sim builds only, see ms_now_us() in util.h): callers
+     * pass VIRTUAL milliseconds; divide down to real ones so periodic
+     * threads keep their configured virtual cadence under a compressed
+     * clock. Floor at 1 real ms so an extreme scale degrades to a fast
+     * tick, never a busy spin. */
+#ifdef MS_CLOCK_SCALE
+    ms /= (int)(MS_CLOCK_SCALE);
+    if (ms < 1) ms = 1;
+#endif
     struct timespec ts;
     clock_gettime(CLOCK_MONOTONIC, &ts);
     ts.tv_sec  += ms / 1000;
