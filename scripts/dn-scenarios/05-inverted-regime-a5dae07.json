@@ -1,7 +1,7 @@
 {
   "name": "05-inverted-regime-a5dae07",
   "incident": "a5dae07",
-  "description": "cam-wyze-pan (T20/jxf22): a genuinely dark room with extreme IR return rests at night-pipeline gain 256-268, BELOW the 300 day threshold - the cold-start verdict is decisively wrong, the machine's probe-tested history is right. Pre-fix this was a perpetual flip loop (trigger floored above the resting gain = permanent false day). Post-fix: one exploratory flip pair plus one probe pair maximum, then quiet night. This scenario also exercises dn_bar_reachable end-to-end: the failed probe latches the ratchet at ~260, whose 60% bar (~157) and the planted baseline's probe bar (~210) are both below the 256 floor - the two unsatisfiable-bar warns must appear in the log. It is also the reason the restart-equivalence oracle carries its failed-probe freshness qualifier.",
+  "description": "cam-wyze-pan (T20/jxf22): a genuinely dark room with extreme IR return rests at night-pipeline gain 256-268, BELOW the 300 day threshold - the cold-start verdict is decisively wrong, the machine's probe-tested history is right. Pre-fix this was a perpetual flip loop (trigger floored above the resting gain = permanent false day). Post-fix: one exploratory flip pair plus one probe pair maximum, then quiet night. This scenario also exercises dn_bar_reachable end-to-end: the failed probe latches the ratchet at ~260, whose DN_RATCHET_MARGIN bar (~220) and the planted baseline's probe bar (~210) are both below the 256 floor - the two unsatisfiable-bar warns must appear in the log. It is also the reason the restart-equivalence oracle carries its failed-probe freshness qualifier.",
   "scale": 60,
   "duration_s": 1200,
   "initial_mode": "night",
@@ -17,7 +17,7 @@
     "restart_equivalence_s": 600,
     "monotonicity": "warn",
     "expect_log": [
-      "brighten ratchet bar 1\\d\\d is below the sensor gain floor",
+      "brighten ratchet bar \\d+ is below the sensor gain floor",
       "brightening probe bar 2\\d\\d is below the sensor gain floor"
     ]
   }

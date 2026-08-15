@@ -869,7 +869,7 @@ static void *dn_thread(void *arg)
      * reset to 1 by any genuine transition or a probe that sticks. */
     int     probe_backoff = 1;
     /* smoothed night gain at the moment the last FAILED probe fired; a new
-     * brightening probe must undercut day_gain_pct% of this (failure
+     * brightening probe must undercut DN_RATCHET_MARGIN of this (failure
      * ratchet). -1 = no failed probe outstanding. */
     float   probe_fail_smooth = -1.0f;
     /* running MINIMUM of smooth_tg since that anchor was frozen - "the
@@ -1386,7 +1386,7 @@ static void *dn_thread(void *arg)
                  * crossing through the brightening probe fixes both halves:
                  * the hold lets smooth_tg converge to the dip floor, so
                  * a failed probe latches probe_fail_smooth at that floor
-                 * and the ratchet (< day_gain_pct% of it) makes the same
+                 * and the ratchet (< DN_RATCHET_MARGIN of it) makes the same
                  * dip unrepeatable - at most ONE probe pair per dawn, zero
                  * if a dip is shorter than DN_BRIGHTEN_CONFIRM_MS; a
                  * genuine lights-on/dawn probe simply sticks in day. Cost:
@@ -1636,16 +1636,18 @@ static void *dn_thread(void *arg)
                          day_unverified ? "never confirmed day - back to night"
                                         : "confirmed genuine night",
                          probe_backoff, (double)(probe_fail_smooth > 0.0f ?
-                             probe_fail_smooth * (float)dn->day_gain_pct / 100.0f
-                             : -1.0f));
+                             probe_fail_smooth * DN_RATCHET_MARGIN : -1.0f));
                     /* generator-C guard: the ratchet bar just latched is a
                      * fraction of a measured gain - if it landed below the
                      * physical floor the brightening path is dead, say so
-                     * NOW (on 2026-08-14 this line was worth 4 h). */
+                     * NOW (on 2026-08-14 this line was worth 4 h). Note this
+                     * checks the bar against the SENSOR's range only; the
+                     * kinder-links case was a bar comfortably above the floor
+                     * and still unreachable by the SCENE, which is what
+                     * DN_RATCHET_MARGIN addresses at the derivation instead. */
                     if (probe_fail_smooth > 0.0f && dn->day_gain_pct > 0)
                         dn_bar_check("brighten ratchet bar",
-                                     probe_fail_smooth *
-                                     (float)dn->day_gain_pct / 100.0f);
+                                     probe_fail_smooth * DN_RATCHET_MARGIN);
                 } else {
                     probe_backoff = 1;
                     probe_fail_smooth = -1.0f;

@@ -522,6 +522,52 @@ int main(void)
             assert_dip_monotone(&forgot, &remembers);
         }
 
+        /* (B1) The failure ratchet must be reachable by a light source, not
+         * only by a pipeline change. Same anchor 1653. Turning on a second
+         * lamp takes the scene to 1300 - a 21% brightening, seven times the
+         * 3% "measurably brighter" bar and far outside AGC noise. Under the
+         * old day_gain_pct%-derived ratchet the bar was 992 (analog gain 62,
+         * below anything this room reads at night), so the sustained-
+         * brightening hold could not start no matter how long the light
+         * stayed on. Baseline 2024 puts the arming bar at 1571, so the hold's
+         * other two gates are satisfied and the ratchet is the one under
+         * test. */
+        {
+            dn_evidence lamp = e;
+            lamp.backoff = 1;
+            lamp.verify_armed = 0; lamp.verify_from_ms = 0;
+            lamp.verify_at_ms = 0;
+            lamp.smooth_tg = 1300.0f;
+            lamp.min_smooth_since_probe = 1300.0f;
+            dn_probe_plan pl = dn_next_probe(&lamp);
+            g_pairs++;
+            if (!(pl.brighten_started || pl.act == DN_PROBE_FIRE)) {
+                g_viol++;
+                printf("VIOLATION (kinder-links B1): a 21%% brightening to "
+                       "1300 against a 1653 anchor could not start a "
+                       "brightening hold - ratchet bar %.0f\n",
+                       (double)pl.ratchet_bar);
+                show("lamp on ", &lamp, &pl);
+                printf("\n");
+            }
+            /* and the incident the ratchet exists for must STILL be blocked:
+             * the cam-wyze-pan dawn dip returns to the very level the probe
+             * latched, and must not be able to re-fire the same probe. */
+            dn_evidence samedip = lamp;
+            samedip.probe_fail_smooth = 820.0f;
+            samedip.night_baseline    = 1400.0f;
+            samedip.smooth_tg = samedip.min_smooth_since_probe = 820.0f;
+            dn_probe_plan ps = dn_next_probe(&samedip);
+            g_pairs++;
+            if (ps.brighten_started || ps.act == DN_PROBE_FIRE) {
+                g_viol++;
+                printf("VIOLATION (kinder-links B1): the widened ratchet let "
+                       "an IDENTICAL dip re-fire - 820 against an anchor "
+                       "latched at 820, bar %.0f\n", (double)ps.ratchet_bar);
+                show("same dip", &samedip, &ps);
+                printf("\n");
+            }
+        }
     }
 
     printf("dn_next_probe properties: %ld base evidence points, "

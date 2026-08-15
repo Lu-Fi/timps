@@ -59,8 +59,10 @@
  *  - arming margin: the brightening hold only starts once the smoothed gain
  *    is clearly below the bar, never on a tangent graze.
  *  - failure ratchet: after a failed probe the next brightening probe also
- *    requires smooth gain below day_gain_pct% of the level that just failed
- *    - another full trigger-worth of NEW brightening. */
+ *    requires smooth gain below DN_RATCHET_MARGIN of the level that just
+ *    failed - a quarter stop of NEW brightening. (It required
+ *    day_gain_pct% until 2026-08-16; see DN_RATCHET_MARGIN for why borrowing
+ *    the day/night discriminator for this made the bar unreachable.) */
 #ifndef DN_PROBE_BACKOFF_MAX
 #define DN_PROBE_BACKOFF_MAX 4        /* interval multiplier cap (1h->2h->4h) */
 #endif
@@ -69,6 +71,42 @@
 #endif
 #ifndef DN_BRIGHTEN_MARGIN
 #define DN_BRIGHTEN_MARGIN 0.97f      /* hold arms only clearly below the bar */
+#endif
+/* RATCHET MARGIN (kinder-links 2026-08-16). The failure ratchet used to be
+ * day_gain_pct% of the frozen anchor, i.e. it borrowed the DAY/NIGHT
+ * DISCRIMINATOR as its "another full trigger-worth of NEW brightening" bar.
+ * Those are two different questions and only one of them is about pipelines:
+ *  - day_gain_pct (60%) answers "is this the day pipeline or the night
+ *    pipeline?". 60% is 0.74 stops, and it is right for that job - an IR-cut
+ *    transition moves total_gain by whole orders of magnitude (the fleet logs
+ *    show 10944 -> 2102, 4096 -> 1619).
+ *  - the ratchet answers "is this NEW evidence, distinguishable from the
+ *    evidence that already failed?". That is a noise-and-quantisation
+ *    question, and 0.74 stops is wildly more than it needs.
+ * The cost of conflating them, measured: on kinder-links the anchor latched at
+ * 1653 - the room's ORDINARY resting night level, which is where a failed
+ * reconfirm always latches it - so the ratchet demanded 992, i.e. analog gain
+ * 62 against a scene living between 85 and 100. The bar sat BELOW THE WHOLE
+ * SCENE's nightly range, so the sustained-brightening path was dead for the
+ * rest of the night for any indoor-light-sized event, and turning the room
+ * light on moved nothing. dn_bar_reachable() cannot catch this: 992 clears the
+ * 256 floor comfortably. Physically reachable, scene-wise unreachable.
+ *
+ * One quarter stop (2^-0.25) instead. Justification, not taste:
+ *  - it is ~5x the DN_BRIGHTEN_MARGIN noise bar (3% ~ 1.4 analog units ~ one
+ *    sensor gain step), so it still cannot be crossed by AGC hunting;
+ *  - it is 8 analog units, larger than any jitter in the fleet traces;
+ *  - it still makes the incidents the ratchet exists for unrepeatable, which
+ *    is the actual requirement. Both are same-LEVEL re-fires, not brighter
+ *    ones: the pre-dawn tangent re-cross (gain 4898 vs a resampled bar 4906,
+ *    a 0.16% margin) and the cam-wyze-pan dawn dip (floor ~820 against an
+ *    anchor latched at ~820) are blocked by any margin at all, and remain
+ *    blocked at 0.84 (they would need 689).
+ * So this is strictly a widening of what counts as NEW evidence, bounded well
+ * away from noise, and the arming margin + the fresh above->below edge still
+ * gate the hold behind it. */
+#ifndef DN_RATCHET_MARGIN
+#define DN_RATCHET_MARGIN 0.84f       /* one quarter stop of NEW brightening */
 #endif
 /* 60000 -> 30000 (2026-08-12, "switching feels sluggish"): with the direct
  * adaptive night->day switch removed (b4a54f0), this hold IS the entire
@@ -321,9 +359,11 @@ static inline dn_probe_plan dn_next_probe(const dn_evidence *e)
     if (e->night_baseline > 0.0f)
         p.probe_bar = e->night_baseline *
                       (100.0f + (float)e->day_gain_pct) / 200.0f;
+    /* day_gain_pct still gates whether a ratchet is MEANINGFUL here (it is a
+     * regime test - the paths that consume the bar all require the adaptive
+     * regime), but the bar itself is no longer derived from it. */
     if (e->probe_fail_smooth > 0.0f && e->day_gain_pct > 0)
-        p.ratchet_bar = e->probe_fail_smooth *
-                        (float)e->day_gain_pct / 100.0f;
+        p.ratchet_bar = e->probe_fail_smooth * DN_RATCHET_MARGIN;
 
     /* ---- 1. periodic / adopted-night reconfirm ------------------------ */
     if (dn_trend_falling(e)) p.eff_backoff = 1;
