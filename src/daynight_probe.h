@@ -159,6 +159,27 @@ typedef struct {
      * at the instant the last physical probe checked and found genuine
      * night; unlike night_baseline nothing drifts it. */
     float probe_fail_smooth;     /* <=0 = no failed probe outstanding */
+    /* The LOWEST smoothed gain seen since that anchor was frozen - i.e. the
+     * brightest the scene has been at any point since a probe last measured
+     * night. The caller maintains it as a running minimum and restarts it
+     * with the night session, exactly where probe_fail_smooth is re-frozen.
+     *
+     * Why a minimum and not the current reading (kinder-links 2026-08-16):
+     * the trend test below and the skip gate's anchor override are both
+     * "has the premise of this backoff been contradicted by MEASUREMENT?".
+     * Asking that of the instantaneous gain makes the answer un-askable
+     * again the moment the scene dims back, so a brightening that came and
+     * went leaves no trace and buys nothing. Observed: 23:21:08 the gain hit
+     * 1599 against a 1653 anchor, the suspension fired and pulled the
+     * reconfirm from 03:12 in to 00:12 - and then the room dimmed on its own,
+     * the predicate went false, and the deadline snapped back out to 03:12.
+     * The evidence had existed; the schedule simply forgot it. A running
+     * minimum cannot forget, and it is still a MEASUREMENT rather than
+     * scheduler state, so generator D's rule (anchor an is-there-evidence
+     * test on a frozen measurement) is satisfied by construction.
+     *
+     * <=0 = nothing measured since the anchor. */
+    float min_smooth_since_probe;
 
     /* --- scheduling state --- */
     int     backoff;             /* current periodic-interval multiplier */
@@ -236,17 +257,42 @@ static inline int64_t dn_reconfirm_iv_s(const dn_evidence *e, int backoff)
  *    introduced night_reconfirm_s to provide and which the backoff has been
  *    quietly eroding ever since. It cannot manufacture an extra probe beyond
  *    the un-backed-off schedule.
- *  - it costs ZERO additional clicks in the case the backoff exists for: a
- *    genuinely dark closet sits AT or above its own probe_fail_smooth, so
- *    falling is false and the multiplier applies unchanged.
+ *  - in the case the backoff exists for it costs nothing: a genuinely dark
+ *    closet sits AT or above its own probe_fail_smooth, so falling is false
+ *    and the multiplier applies unchanged. Stated exactly, since the 2026-08-16
+ *    change to a running minimum weakens it slightly: probe_fail_smooth is a
+ *    single sample of a signal that has AGC noise on it, while a minimum over
+ *    a long night is an extreme-value statistic, so a static-but-noisy scene
+ *    CAN eventually dip under the 3% bar and hold the suspension on. The bound
+ *    that survives that - and the one assert_reconfirm_bound() actually
+ *    checks - is the one above: never later than, and never more often than,
+ *    the un-backed-off schedule. Measured on the corpus, the cost of the
+ *    change is zero anyway: all nine pre-existing scenarios keep their exact
+ *    switch counts, including 03-noisy-night at 25% noise.
  * Note the two bars compose rather than duplicate: falling (< 0.97x anchor)
  * is by construction the negation of the skip gate's "solidly night"
  * (>= 0.97x anchor), so a pulled-in deadline always finds the gate open - the
- * suspension can never pull a deadline in only to skip it. */
+ * suspension can never pull a deadline in only to skip it. Both now read the
+ * same min_smooth_since_probe, so they still compose exactly.
+ *
+ * 2026-08-16: the test reads min_smooth_since_probe, not smooth_tg. As first
+ * written this was a predicate over the CURRENT reading, recomputed every
+ * tick, so it un-fired as readily as it fired: on kinder-links it suspended
+ * an x4 backoff at 23:21:08 (gain 1599 vs anchor 1653) and then handed the
+ * four hours straight back when the room dimmed again minutes later, long
+ * before the deadline it had pulled in. Over a single evidence snapshot the
+ * monotonicity property still held - which is why the property test passed -
+ * because the defect lived BETWEEN evaluations: brighter evidence had no
+ * durable effect. Keying it on the minimum since the anchor was frozen makes
+ * "the scene has been measurably brighter than confirmed night" a fact about
+ * the interval rather than about this tick, which is what the sentence
+ * always meant. Bounds are unchanged: still only ever shortens, still never
+ * below night_reconfirm_s, still zero clicks on a scene that never brightens
+ * (its minimum simply never goes below the anchor). */
 static inline int dn_trend_falling(const dn_evidence *e)
 {
-    return e->probe_fail_smooth > 0.0f && e->smooth_tg > 0.0f &&
-           e->smooth_tg < e->probe_fail_smooth * DN_BRIGHTEN_MARGIN;
+    return e->probe_fail_smooth > 0.0f && e->min_smooth_since_probe > 0.0f &&
+           e->min_smooth_since_probe < e->probe_fail_smooth * DN_BRIGHTEN_MARGIN;
 }
 
 /* The schedule. Pure: same evidence in, same plan out, always. */
@@ -319,9 +365,17 @@ static inline dn_probe_plan dn_next_probe(const dn_evidence *e)
              * frozen at a measurement. While a ratchet is outstanding, ALSO
              * require the gain not to have moved meaningfully brighter than
              * that anchor. */
+            /* Read the MINIMUM since the anchor was frozen, for the same
+             * reason dn_trend_falling() does (kinder-links 2026-08-16): the
+             * deadline is a single instant, so testing the instantaneous
+             * gain there throws away every brightening that happened between
+             * deadlines. On the incident night that is the difference
+             * between skipping (gain 1650 vs a 1603 bar, 3% short, re-arm
+             * +4 h) and firing on the 1599 the scene had actually reached. */
             if (solidly_night && e->probe_fail_smooth > 0.0f) {
-                solidly_night = e->smooth_tg >=
-                    e->probe_fail_smooth * DN_BRIGHTEN_MARGIN;
+                solidly_night = !(e->min_smooth_since_probe > 0.0f &&
+                                  e->min_smooth_since_probe <
+                                      e->probe_fail_smooth * DN_BRIGHTEN_MARGIN);
                 p.anchor_override = !solidly_night;
             }
             /* the safety net that survives a permanently-flat gain (a truly

@@ -872,6 +872,15 @@ static void *dn_thread(void *arg)
      * brightening probe must undercut day_gain_pct% of this (failure
      * ratchet). -1 = no failed probe outstanding. */
     float   probe_fail_smooth = -1.0f;
+    /* running MINIMUM of smooth_tg since that anchor was frozen - "the
+     * brightest this scene has been at any point since a probe measured
+     * night". Fed to dn_next_probe() as evidence, which reads it instead of
+     * the instantaneous gain for both the backoff suspension and the skip
+     * gate's anchor override; see min_smooth_since_probe in daynight_probe.h
+     * for the kinder-links 2026-08-16 incident that this exists for. Restarts
+     * with the night session, alongside smooth_tg and probe_fail_smooth -
+     * a fresh anchor deserves a fresh minimum. -1 = nothing measured yet. */
+    float   min_smooth_since_probe = -1.0f;
     /* edge latch for the trend-suspension log line (see dn_trend_falling() in
      * daynight_probe.h). The suspension is a CONDITION, re-evaluated on every
      * 500 ms tick and true for as long as the scene stays brighter than the
@@ -1029,7 +1038,8 @@ static void *dn_thread(void *arg)
             cur = DN_UNKNOWN;           /* mode may be forced manually now */
             night_baseline = -1.0f;
             brighten_since_ms = 0; brighten_armed = 0;
-            smooth_tg = -1.0f; probe_day_ms = 0; probe_verdict_at_ms = 0;
+            smooth_tg = -1.0f; min_smooth_since_probe = -1.0f;
+            probe_day_ms = 0; probe_verdict_at_ms = 0;
             pending_target = DN_UNKNOWN; pending_since_ms = 0;
             dn_status_update(dn, b, tg, luma, DN_UNKNOWN, night_baseline);
             dn_sleep(interval);
@@ -1042,7 +1052,8 @@ static void *dn_thread(void *arg)
             night_entered_ms = 0;
             dn_verify_clear(&verify);
             brighten_since_ms = 0; brighten_armed = 0;
-            smooth_tg = -1.0f; probe_day_ms = 0; probe_verdict_at_ms = 0;
+            smooth_tg = -1.0f; min_smooth_since_probe = -1.0f;
+            probe_day_ms = 0; probe_verdict_at_ms = 0;
             probe_backoff = 1; probe_fail_smooth = -1.0f;
             day_verify_ref = -1.0f; day_verify_ext = 0;
             last_phys_probe_ms = 0;
@@ -1079,9 +1090,18 @@ static void *dn_thread(void *arg)
          * regression comment). Only night readings feed it - it is reset on
          * every night entry so the railed day-pipeline gain of a failed
          * probe can never leak in. */
-        if (dn->mode == DN_MODE_SENSOR && cur == DN_NIGHT && tg >= 0.0f)
+        if (dn->mode == DN_MODE_SENSOR && cur == DN_NIGHT && tg >= 0.0f) {
             smooth_tg = (smooth_tg > 0.0f)
                 ? smooth_tg + (tg - smooth_tg) * DN_SMOOTH_ALPHA : tg;
+            /* ... and its running minimum. Taken from the SMOOTHED gain, not
+             * the raw tick, for the same reason everything else here is: a
+             * single AGC noise trough must not be able to latch a brightening
+             * that the scene never actually had. */
+            if (smooth_tg > 0.0f &&
+                (min_smooth_since_probe <= 0.0f ||
+                 smooth_tg < min_smooth_since_probe))
+                min_smooth_since_probe = smooth_tg;
+        }
 
         /* self-healing reconfirm probes: gain sampled through the night/IR
          * pipeline is not a reliable proxy for "is it actually day" (IR-cut
@@ -1113,6 +1133,7 @@ static void *dn_thread(void *arg)
             ev.smooth_tg          = smooth_tg;
             ev.night_baseline     = night_baseline;
             ev.probe_fail_smooth  = probe_fail_smooth;
+            ev.min_smooth_since_probe = min_smooth_since_probe;
             ev.backoff            = probe_backoff;
             /* the night deadline is armed by night entry (when reconfirm is
              * enabled) or by dead-zone adoption (one-shot, even when it is
@@ -1132,19 +1153,23 @@ static void *dn_thread(void *arg)
 
             if (plan.anchor_override)
                 LOGI(MOD, "ratchet anchor overrides baseline evidence: gain "
-                          "%.0f has drifted below %.0f%% of the last failed "
-                          "probe's level %.0f (baseline-relative bar was %.0f)"
-                          " - forcing periodic reconfirm", (double)smooth_tg,
+                          "%.0f (lowest since the last probe; now %.0f) is "
+                          "below %.0f%% of that probe's level %.0f "
+                          "(baseline-relative bar was %.0f) - forcing "
+                          "periodic reconfirm",
+                     (double)min_smooth_since_probe, (double)smooth_tg,
                      (double)(DN_BRIGHTEN_MARGIN * 100.0f),
                      (double)probe_fail_smooth, (double)plan.probe_bar);
             if (!plan.trend_pulled_in)
                 trend_suspend_logged = 0;   /* re-arm the edge */
             else if (!trend_suspend_logged++)
-                LOGI(MOD, "gain %.0f is below %.0f%% of the last failed "
-                          "probe's level %.0f - the scene is measurably "
+                LOGI(MOD, "gain %.0f (lowest since the last probe; now %.0f) "
+                          "is below %.0f%% of that probe's level "
+                          "%.0f - the scene is measurably "
                           "brighter than the darkness the x%d backoff was "
                           "granted for, suspending it (reconfirm due %llds "
-                          "after arming, not %llds)", (double)smooth_tg,
+                          "after arming, not %llds)",
+                     (double)min_smooth_since_probe, (double)smooth_tg,
                      (double)(DN_BRIGHTEN_MARGIN * 100.0f),
                      (double)probe_fail_smooth, probe_backoff,
                      (long long)dn_reconfirm_iv_s(&ev, 1),
@@ -1191,6 +1216,10 @@ static void *dn_thread(void *arg)
                 dn_verify_clear(&verify);
                 brighten_since_ms = 0;
                 brighten_armed  = 0;    /* re-arms above the bar next night */
+                /* this probe is about to answer the question the minimum was
+                 * accumulated to raise; whatever it finds re-freezes the
+                 * anchor, so the evidence has been spent either way */
+                min_smooth_since_probe = -1.0f;
                 probe_day_ms    = now_ms; /* gate the revert on stability */
                 /* A probe has THREE possible outcomes, not two. It either
                  * confirms day (day-pipeline gain below the day threshold -
@@ -1656,6 +1685,12 @@ static void *dn_thread(void *arg)
                 brighten_since_ms = 0;
                 brighten_armed = 0;
                 smooth_tg = -1.0f;
+                /* the running minimum restarts with it: whichever branch ran
+                 * above, the frozen anchor it is measured against is new
+                 * (re-latched at the pre-probe level, or cleared outright by
+                 * a genuine transition), so carrying the old night's minimum
+                 * across would compare a fresh anchor to stale evidence. */
+                min_smooth_since_probe = -1.0f;
                 probe_day_ms = 0;
                 probe_verdict_at_ms = 0;  /* a new switch supersedes it */
                 day_verify_ref = -1.0f; day_verify_ext = 0;

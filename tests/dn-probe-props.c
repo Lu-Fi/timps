@@ -37,6 +37,27 @@
  * Three incidents, one assertion, checked on every build instead of
  * re-derived by hand after each one.
  *
+ * AND ONE THE ASSERTION ABOVE CANNOT SEE (kinder-links 2026-08-16)
+ *
+ * Monotonicity and the reconfirm bound are both statements about ONE evidence
+ * snapshot. That is exactly where the trend suspension hid a bug for two days:
+ * as a predicate over the instantaneous smooth_tg it satisfied both, on every
+ * one of ~10^6 points, while still handing a four-hour deadline straight back
+ * the moment a room dimmed again after brightening. Purity bought
+ * counterfactual REACH; it did not by itself buy temporal claims. Hence
+ * PROPERTY 3 (assert_dip_monotone), stated over the SEQUENCE:
+ *
+ *   evidence once measured is never worth less later. For e1, e2 identical
+ *   except that e2 records a strictly brighter minimum since the frozen
+ *   anchor - the CURRENT readings equal:
+ *                 dn_next_probe(e2).in_ms <= dn_next_probe(e1).in_ms
+ *
+ * Note it is vacuous against a build that simply ignores min_smooth_since_probe
+ * (both plans come out identical), which is honest about its limits: the
+ * discriminating checks for that build are the two kinder-links cases asserted
+ * by name at the bottom of main(). A general property cannot notice a field
+ * nobody reads; a named incident can.
+ *
  * WHAT "IDENTICAL EXCEPT BRIGHTER" MEANS, HONESTLY
  *
  * The property is only as strong as the definition of "brighter", so it is
@@ -146,9 +167,9 @@ static void assert_reconfirm_bound(const dn_evidence *e)
     if (!e->verify_armed || e->verify_from_ms <= 0 ||
         e->night_reconfirm_s <= 0)
         return;
-    if (e->probe_fail_smooth <= 0.0f || e->smooth_tg <= 0.0f)
+    if (e->probe_fail_smooth <= 0.0f || e->min_smooth_since_probe <= 0.0f)
         return;                                  /* no frozen anchor to read */
-    if (e->smooth_tg >= e->probe_fail_smooth * DN_BRIGHTEN_MARGIN)
+    if (e->min_smooth_since_probe >= e->probe_fail_smooth * DN_BRIGHTEN_MARGIN)
         return;                       /* not measurably brighter: no promise */
     if (e->osc_freeze_until_ms && e->now_ms < e->osc_freeze_until_ms)
         return;                                  /* the freeze outranks this */
@@ -168,12 +189,48 @@ static void assert_reconfirm_bound(const dn_evidence *e)
                "it - gain %.0f is below %.0f%% of the frozen anchor %.0f, so "
                "the correction was promised by t=%lld (one reconfirm interval "
                "after arming) but is scheduled for t=%lld\n",
-               g_viol, e->backoff, (double)e->smooth_tg,
+               g_viol, e->backoff, (double)e->min_smooth_since_probe,
                (double)(DN_BRIGHTEN_MARGIN * 100.0f),
                (double)e->probe_fail_smooth, (long long)bound,
                p.in_ms == DN_PROBE_NEVER ? -1LL
                                          : (long long)(e->now_ms + p.in_ms));
         show("evidence", e, &p);
+        printf("\n");
+    }
+}
+
+/* PROPERTY 3 - evidence of a PAST brightening may not be forgotten.
+ * (kinder-links 2026-08-16, the defect this file could not see.)
+ *
+ * Properties 1 and 2 are both statements about ONE evidence snapshot, and
+ * that is exactly where the trend suspension hid its bug for two days: as a
+ * predicate over the instantaneous smooth_tg it satisfied both, on every
+ * snapshot, while still handing a four-hour deadline straight back the moment
+ * a room dimmed again after brightening. The property that was missing is the
+ * one that spans snapshots:
+ *
+ *   For evidence e1, e2 identical except that e2 records a strictly BRIGHTER
+ *   minimum since the frozen anchor (min_smooth_since_probe lower):
+ *        dn_next_probe(e2).in_ms <= dn_next_probe(e1).in_ms
+ *
+ * i.e. "the scene reached X at some point since a probe last measured night"
+ * must be worth at least as much as "the scene never got brighter than its
+ * current reading" - even when the CURRENT readings are identical. Note this
+ * is not implied by property 1: there the reading moves and the history moves
+ * with it, here the reading is pinned and only the history differs, which is
+ * precisely the counterfactual a trajectory can never present. */
+static void assert_dip_monotone(const dn_evidence *e1, const dn_evidence *e2)
+{
+    if (e2->min_smooth_since_probe >= e1->min_smooth_since_probe) return;
+    dn_probe_plan p1 = dn_next_probe(e1);
+    dn_probe_plan p2 = dn_next_probe(e2);
+    g_pairs++;
+    if (p2.in_ms <= p1.in_ms) return;
+    if (++g_viol <= 10) {
+        printf("VIOLATION %ld: a past brightening bought a LATER probe - the "
+               "schedule forgot evidence it had already been shown\n", g_viol);
+        show("no dip  ", e1, &p1);
+        show("dipped  ", e2, &p2);
         printf("\n");
     }
 }
@@ -284,6 +341,14 @@ int main(void)
         e.probe_fail_smooth  = FS[ifs];
         e.backoff            = BO[ibo];
         e.smooth_tg          = G[ig];
+        /* base case: the current reading IS the brightest the scene has been
+         * since the anchor - a night that has only ever dimmed. This is the
+         * conservative posture and it reproduces the pre-2026-08-16 semantics
+         * exactly, so the whole existing sweep keeps the coverage it had. The
+         * dipped posture (minimum strictly below the reading) is asserted
+         * separately by assert_dip_monotone() below, because it is a
+         * DIFFERENT property, not a variation of this one. */
+        e.min_smooth_since_probe = e.smooth_tg;
         g_bases++;
 
         assert_reconfirm_bound(&e);
@@ -294,7 +359,14 @@ int main(void)
              * "brighter" variant that would is not a scene the machine can
              * ever be shown - skip it rather than assert on fiction */
             if (b.smooth_tg < DN_GAIN_FLOOR) continue;
+            b.min_smooth_since_probe = b.smooth_tg;
             assert_monotone(&e, &b);
+            /* PROPERTY 3, same sweep: e with a PAST dip to b's level. The
+             * scene reads exactly as dim as e does now, but has been as
+             * bright as b at some point since the anchor was frozen. */
+            dn_evidence d = e;
+            d.min_smooth_since_probe = b.smooth_tg;
+            assert_dip_monotone(&e, &d);
         }
     }
 
@@ -324,7 +396,9 @@ int main(void)
         {
             dn_evidence dim = e, bright = e;
             dim.night_baseline = 3500.0f; dim.smooth_tg = 3400.0f;
+            dim.min_smooth_since_probe = 3400.0f;
             bright.night_baseline = 262.0f; bright.smooth_tg = 262.0f;
+            bright.min_smooth_since_probe = 262.0f;
             /* NOTE: this pair deliberately varies the baseline too - it is
              * not an instance of the sweep's property but of the stronger
              * claim the anchor rule makes, so it is asserted directly. */
@@ -353,7 +427,9 @@ int main(void)
         {
             dn_evidence still = e, falling = e;
             still.smooth_tg   = 315.0f;   /* unchanged since the probe */
+            still.min_smooth_since_probe = 315.0f;
             falling.smooth_tg = 260.0f;   /* the dawn ramp, 83% of anchor */
+            falling.min_smooth_since_probe = 260.0f;
             dn_probe_plan ps = dn_next_probe(&still);
             dn_probe_plan pf = dn_next_probe(&falling);
             g_pairs++;
@@ -390,13 +466,66 @@ int main(void)
                 if (G[j] >= G[i]) continue;
                 dn_evidence d = e, b = e;
                 d.smooth_tg = G[i]; b.smooth_tg = G[j];
+                d.min_smooth_since_probe = G[i];
+                b.min_smooth_since_probe = G[j];
                 assert_monotone(&d, &b);
             }
         }
     }
 
+    /* --- kinder-links 2026-08-16, the two defects it exposed --------------
+     * A room light switched off and back on in front of a deployed camera.
+     * The sensor saw both edges cleanly (analog gain 85->100->86, i.e.
+     * total_gain 1614 -> 2233 -> 1649, a +38%/-26% swing that held steady),
+     * and the decision logic did not react to either, in any way, at all. */
+    {
+        dn_evidence e;
+        memset(&e, 0, sizeof e);
+        e.day_gain_pct = 60; e.night_reconfirm_s = 3600;
+        e.probe_max_skip_s = 43200; e.transition_s = 5;
+        e.day_threshold = 300.0f;
+        e.brighten_armed = 1;
+        e.last_switch_ms = 1000000; e.last_phys_probe_ms = 1000000;
+
+        /* (B2) The backoff must not outlive a brightening just because the
+         * scene dimmed again afterwards. The night's real numbers: the
+         * anchor froze at 1653 when a reconfirm probe found genuine night and
+         * took the backoff to x4 (next probe 4 h out); nine minutes later the
+         * gain reached 1599 - below the 1603 bar - and the suspension pulled
+         * the deadline in to one interval. Then the room dimmed on its own to
+         * ~2024, the predicate went false and the four hours came back. The
+         * evidence still exists; the schedule must still honour it. */
+        e.probe_fail_smooth = 1653.0f;
+        e.night_baseline = 2024.0f;
+        e.backoff = 4;
+        e.verify_armed = 1;
+        e.verify_from_ms  = 2000000;                        /* probe + revert */
+        e.verify_at_ms    = 2000000 + 4 * 3600 * 1000;      /* x4 = 4 h out */
+        e.now_ms          = 2000000 + 3600 * 1000 + 1000;   /* 1 h + a tick */
+        {
+            dn_evidence forgot = e, remembers = e;
+            /* both read 2024 RIGHT NOW - the room dimmed back */
+            forgot.smooth_tg    = 2024.0f;
+            remembers.smooth_tg = 2024.0f;
+            forgot.min_smooth_since_probe    = 2024.0f;  /* never brightened */
+            remembers.min_smooth_since_probe = 1599.0f;  /* it did, at 23:21 */
+            dn_probe_plan pr = dn_next_probe(&remembers);
+            g_pairs++;
+            if (pr.act != DN_PROBE_FIRE) {
+                g_viol++;
+                printf("VIOLATION (kinder-links B2): the scene reached 1599 "
+                       "against a frozen anchor of 1653 since the last probe, "
+                       "and the x4 backoff survived it\n");
+                show("remembers", &remembers, &pr);
+                printf("\n");
+            }
+            assert_dip_monotone(&forgot, &remembers);
+        }
+
+    }
+
     printf("dn_next_probe properties: %ld base evidence points, "
-           "%ld assertions (monotonicity + reconfirm bound), "
+           "%ld assertions (monotonicity + reconfirm bound + dip memory), "
            "%ld violations\n", g_bases, g_pairs, g_viol);
     if (g_viol) {
         printf("RESULT: FAIL probe-properties\n");
