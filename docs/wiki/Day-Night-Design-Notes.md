@@ -41,7 +41,7 @@ might guess from the section headings:
 4. adaptive baseline + symmetric EMA drift
 5. sustained-brightening hold, with its arming *edge*
 6. …and its arming *margin* (`DN_BRIGHTEN_MARGIN`)
-7. failure ratchet (`probe_fail_smooth`)
+7. failure ratchet (`probe_fail_smooth` × `DN_RATCHET_MARGIN`)
 8. exponential backoff on failed probes
 9. passive-evidence skip gate
 10. `probe_max_skip_s` outer bound on the skip gate
@@ -58,25 +58,32 @@ audible IR-cut click*. That ratio is the story of this file.
 ## 2. What the incident record actually says
 
 The twelve incidents are not twelve unrelated bugs, and they are not one
-undifferentiated mass either. They sort into five generators:
+undifferentiated mass either. They sort into six generators (five, until the sixth named itself on 2026-08-16):
 
 | Generator | Incidents | Status |
 | --- | --- | --- |
 | **A. Actuation / measurement plumbing** — the Set landed mid-ramp, the AE hadn't converged | `53c21b4`, `c78dbcb`, `b3eec71` (part) | **Closed.** No recurrence since 2026-08-02. |
 | **B. A reachable state with no pending decision** | `bd21ce6` (UNKNOWN), `43c2b16` (adopted DAY), `8c8dc1f` (ambiguous probe landing) | **Closed**, and closed *checkably*: after `43c2b16`+`8c8dc1f` every reachable `(cur, verify)` pair has an armed deadline. |
-| **C. A derived bar that goes unsatisfiable** | `f8a7b21`, `a5dae07`(1), 2026-08-14 | **Open.** |
+| **C. A derived bar that goes unsatisfiable** | `f8a7b21`, `a5dae07`(1), 2026-08-14, kinder-links 2026-08-16 | **Open.** Self-reporting since `5423b79`, but kinder-links shows the guard only covers the *sensor's* range: a bar can clear the 256 floor and still sit under everything the scene ever reads. |
 | **D. Two guards validating each other** | `0f5fc80`, `14a1d61` | **Open.** |
-| **E. The evidence model is missing a dimension** | `b4a54f0`, 2026-08-14 | **Half closed.** The unverified-day revert (`19dcd74`) and `probe_backoff` (the trend suspension, item 6) are both trend-aware now; the brightening hold's ratchet is still level-only. |
+| **E. The evidence model is missing a dimension** | `b4a54f0`, 2026-08-14, kinder-links 2026-08-16 | **Half closed.** The unverified-day revert (`19dcd74`) and `probe_backoff` are trend-aware; the latter only genuinely so since 2026-08-16, when the suspension stopped being a snapshot predicate. The brightening hold's ratchet is still level-only. |
+| **F. A property stated over one snapshot** | kinder-links 2026-08-16 | **Open**, and newly named. The defect is in the oracle, not the machine: purity bought counterfactual reach, not temporal claims. See §4F. |
 
 That table is the substance of my disagreement with the "these mechanisms now
 interact combinatorially, producing edge cases faster than patches retire
-them" reading. Two of the five generators genuinely *did* close, and B closed
+them" reading. Two of the six generators genuinely *did* close, and B closed
 because someone stated a closure criterion ("every guess must have a
-deadline") rather than patching one more path. The remaining three are not
-combinatorial noise — they are three nameable, recurring mistakes, each with a
+deadline") rather than patching one more path. The remaining four are not
+combinatorial noise — they are four nameable, recurring mistakes, each with a
 statable rule that would prevent it. That is a much more tractable situation
 than "combinatorial explosion", and a much worse one than "naturally
 converging".
+
+One honest correction to the optimism above, from 2026-08-16: F was found not
+by another incident of an old kind but by *the fix for E producing a new
+instance of E*, and it took a live camera and a person flipping a light switch
+to notice. The generators are tractable; the oracle for them is still behind
+the code.
 
 ## 3. The invariant nobody wrote down
 
@@ -156,7 +163,33 @@ terminal state of the recursion, reached on cam-vorne after four probes.
 Cheapest useful action in the whole file: a `dn_bar_reachable()` helper plus a
 `LOGW` at the point a bar is latched. On 2026-08-14 that would have printed
 *"brighten ratchet 189 is below the gain floor 256 — brightening path
-disabled"* at 06:20:29, four hours before anyone noticed by eye.
+disabled"* at 06:20:29, four hours before anyone noticed by eye. Done in
+`5423b79`.
+
+**Amendment, kinder-links 2026-08-16 — the rule as written is too weak.** A
+bar can clear the sensor's floor by a wide margin and still be unreachable,
+because the range that matters is not the sensor's, it is *the scene's*. On
+that camera the ratchet latched at the room's ordinary resting night level
+(1653), demanded 60 % of it (992 — analog gain 62), and the room lives between
+analog 85 and 100 all night. 992 is nowhere near the 256 floor, so
+`dn_bar_reachable()` had nothing to say; the sustained-brightening path was
+nevertheless dead for the whole night, and turning the room light on moved
+nothing at all. The diagnosis is not that the guard failed — it is that the
+bar was derived with the wrong constant, and that a guard keyed to the
+hardware could never have caught it:
+
+> **Rule (extended): a bar derived from a measurement must be checked against
+> the range the SCENE can reach, not only the range the sensor can represent.
+> If the fraction that defines the bar was borrowed from a test answering a
+> different question, that is the bug — fix the derivation, not the guard.**
+
+Which is exactly what `DN_RATCHET_MARGIN` does: the ratchet stopped borrowing
+`day_gain_pct` (a *pipeline* discriminator, 0.74 stops, correct for the IR-cut
+transitions it was written for) and got its own constant sized for the
+question it actually asks — "is this new evidence, distinguishable from the
+evidence that already failed?" — at one quarter stop. Incidentally this also
+pushes the geometric recursion above further from the floor: the same
+2026-08-14 latch now derives 265 rather than 189.
 
 ### D. Two guards validating each other
 
@@ -198,20 +231,68 @@ Two more places are still level-only and demonstrably shouldn't be:
 
 - **`probe_backoff`.** ~~Doubling the reconfirm interval in the middle of a
   monotone descent is exactly backwards.~~ **Closed** by the trend suspension
-  in `dn_next_probe()` (`dn_trend_falling()`): while the smoothed gain sits
-  below `DN_BRIGHTEN_MARGIN` of the frozen `probe_fail_smooth`, the multiplier
-  is suspended and the deadline falls back to one plain `night_reconfirm_s`
+  in `dn_next_probe()` (`dn_trend_falling()`): while the gain sits below
+  `DN_BRIGHTEN_MARGIN` of the frozen `probe_fail_smooth`, the multiplier is
+  suspended and the deadline falls back to one plain `night_reconfirm_s`
   after arming. Note the reference point it needed was already in the file and
   already frozen — generator D's rule supplied it. On cam-vorne the backoff
   hit its ×4 cap at 05:58 *while gain was falling through three orders of
   magnitude*, and that cap is what turned a bad revert into a four-hour
   outage; corpus scenario 08 now measures the difference (recovery at 1276 s
   instead of 3976 s) and fails without it.
+
+  **Closed properly on 2026-08-16, not before.** As first written the
+  suspension read the *instantaneous* `smooth_tg`, which means it was still a
+  level test sampled at an instant — generator E's own defect, reintroduced
+  inside generator E's own fix. It therefore un-fired as readily as it fired.
+  On kinder-links it suspended an ×4 backoff at 23:21:08 (gain 1599 against a
+  1653 anchor), pulling the reconfirm from 03:12 in to 00:12; the room then
+  dimmed on its own, the predicate went false, and the four hours came
+  straight back — long before the deadline it had pulled in. The evidence had
+  been *measured* and then discarded. It now reads `min_smooth_since_probe`,
+  the lowest smoothed gain since the anchor was frozen, so "the scene has been
+  measurably brighter than confirmed night" is a fact about the interval
+  rather than about this tick. The skip gate's ratchet-anchor override reads
+  the same value for the same reason: a deadline is a single instant, so
+  testing the instantaneous gain there throws away every brightening that
+  happened between deadlines.
 - **The brightening hold**, whose ratchet asks "how far below the last failure"
   when at dawn the answer that matters is "still falling, and for how long".
+  `DN_RATCHET_MARGIN` (2026-08-16) fixed the *scale* of that question, not its
+  level-only-ness; the hold is still the one place in the file that asks it
+  purely as a threshold.
 
 > **Rule: any test that must distinguish "dim" from "getting brighter" needs a
 > reference point in time, not just a threshold.**
+
+#### F. A property stated over one snapshot cannot see a defect that lives between snapshots
+
+Worth naming separately, because it is a defect in the *oracle*, not in the
+machine, and it is the reason the 2026-08-16 bug survived a week of work aimed
+squarely at it. `dn_next_probe()` is pure over one `dn_evidence`, and both
+properties `tests/dn-probe-props.c` asserted were statements about a single
+evaluation: monotonicity compares two evidence values, the reconfirm bound
+reads one. The trend suspension satisfied both, on every one of ~10⁶ points,
+while still handing four hours back the moment a room dimmed again — because
+across a *sequence* of evaluations, brighter evidence had no durable effect.
+Purity bought counterfactual reachability, which is real and was the point;
+it did not by itself buy temporal claims.
+
+The corpus caught nothing either, and for a related reason: the nine scenarios
+all replay *monotone* transitions (dawn ramps, boots, a single dip). None of
+them contained a brightening that came and then went, which is precisely the
+trajectory that distinguishes a latched predicate from a sampled one. Scenario
+10 exists to be that trajectory.
+
+> **Rule: for every piece of state the schedule carries between ticks, state a
+> property over the SEQUENCE, not only over the snapshot — at minimum "evidence
+> once measured is never worth less later". And when adding a scenario, ask
+> what its gain curve does *non*-monotonically; a corpus of monotone traces
+> cannot falsify a memory bug.**
+
+`assert_dip_monotone()` is that property for `min_smooth_since_probe`: for two
+evidence values with identical current readings, the one that records a
+brighter past minimum must never be granted a later probe.
 
 ## 5. Verdict on a redesign
 
@@ -350,14 +431,35 @@ floor 256).
    `src/daynight_probe.h` + `tests/dn-probe-props.c`.
 6. ~~**Revisit `probe_backoff`'s trend-blindness** (generator E).~~ — done,
    `dn_trend_falling()`; see the generator-E section above.
+7. ~~**Latch the trend suspension on a measurement, not a predicate**
+   (generators E + F).~~ — done, 2026-08-16: `min_smooth_since_probe` in
+   `dn_evidence`, read by both `dn_trend_falling()` and the skip gate's
+   ratchet-anchor override, plus `assert_dip_monotone()` as the sequence
+   property that would have caught it. Corpus scenario 10.
+8. ~~**Give the failure ratchet its own margin** (generator C, extended).~~ —
+   done, 2026-08-16: `DN_RATCHET_MARGIN` (one quarter stop) instead of
+   borrowing `day_gain_pct`. Pinned by the `kinder-links B1` cases in the
+   property test — both that a 21 % brightening can now start a hold, and that
+   an identical re-dip still cannot.
 
 ### What the corpus is worth, and how to keep it worth that
 
 The corpus is only evidence if a scenario **fails against a build without the
-fix it is named for**. Two of the nine assert a *decision* rule rather than a
-new log line, and both were checked that way (08 against the anchor override
-and against the trend suspension, 09 against `19dcd74`'s extension) — each
-fails on behavioural assertions, not merely on `expect_log`.
+fix it is named for**. Three of the ten assert a *decision* rule rather than a
+new log line, and all three were checked that way (08 against the anchor
+override and against the trend suspension, 09 against `19dcd74`'s extension,
+10 against the latched suspension) — each fails on behavioural assertions, not
+merely on `expect_log`. Scenario 10 is the sharpest of the three: pre-fix it
+never leaves night at all inside the run (wrong-mode 3100 s, `mode@3500` and
+`mode@5900` both wrong), and `probe_max_skip_s` is deliberately left at its
+43200 default so the backstop cannot quietly rescue it.
+
+Scenario 10 also carries the generator-F lesson in its shape. Its gain curve
+is **non-monotone on purpose** — a brightening that comes and then goes,
+before the deadline it pulled in. Every one of the first nine replays a
+monotone transition, which is why none of them could falsify a schedule that
+forgets. When adding a scenario, ask what its curve does non-monotonically
+before asking what it asserts.
 
 Build a negative control by **reverting the fix's hunk in a copy of the
 current tree**, never by building the historical commit. Trees older than
@@ -369,5 +471,16 @@ such a binary outright (`SimRun.check_clock`), but the cheaper habit is not to
 build one.
 
 Next candidates, in the same spirit: the brightening hold's ratchet is the
-last level-only test generator E names, and `night_baseline` still feeds three
-consumers while drifting under all three (the generator-D audit).
+last level-only test generator E names — `DN_RATCHET_MARGIN` corrected its
+scale but it is still a threshold, not a trend — and `night_baseline` still
+feeds three consumers while drifting under all three (the generator-D audit).
+kinder-links put a sharper edge on that last one: on the night in question the
+hold was blocked not by the ratchet but by the *baseline-relative* arming
+margin, because the baseline had already drifted down to chase the very
+brightening the hold was meant to notice. That is `14a1d61` again, in the one
+consumer the anchor override does not cover.
+
+Also worth a pass now that generator F is named: audit the remaining
+between-tick state in `dn_thread` the same way. `brighten_since_ms`,
+`day_verify_ref` and `probe_backoff` itself are each carried across ticks and
+each has only snapshot properties asserted about it.

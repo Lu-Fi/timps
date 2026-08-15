@@ -7,6 +7,68 @@ semantic versioning.
 ## [Unreleased]
 
 ### Fixed
+- **day/night: the camera did not react to a room light being switched on**
+  (`src/daynight_probe.h`, `src/daynight.c`; live test, kinder-links
+  2026-08-16; design-notes generators E and the newly named F). Someone turned
+  a room light off and back on in front of a deployed camera while the raw
+  sensor register was polled over SSH. The sensor saw both edges perfectly -
+  analog gain 85 -> 100 and back to 86, each reached in ~5 s and then held
+  flat, which is `total_gain` 1614 -> 2233 -> 1649 (gain registers are log2,
+  32 units per stop, so a 15-unit move is a **38%** `total_gain` move, not a
+  15% one). The decision logic did not react to either edge in any way: no
+  baseline-drift line, no brightening hold, no backoff suspension, no probe -
+  and, traced through the schedule afterwards, would not have done for another
+  eleven hours, when `probe_max_skip_s` came due. Two independent defects, both
+  in `dn_next_probe()`:
+  1. **The trend suspension forgot evidence it had already been shown.**
+     `dn_trend_falling()` compared the *instantaneous* smoothed gain against
+     the frozen `probe_fail_smooth` anchor, so it un-fired as readily as it
+     fired. On the incident night it suspended an x4 backoff at 23:21:08 (gain
+     1599 against a 1653 anchor) and pulled the reconfirm in from 03:12 to
+     00:12 - and then the room dimmed on its own, the predicate went false,
+     and the four hours came straight back, long before the deadline it had
+     pulled in. The scene had been measured brighter than confirmed night; the
+     schedule simply did not keep it. Fix: the evidence struct carries
+     `min_smooth_since_probe`, the lowest smoothed gain since that anchor was
+     frozen, and both `dn_trend_falling()` and the skip gate's ratchet-anchor
+     override read it instead of the current tick. "The scene has been
+     measurably brighter than confirmed night" is now a fact about the
+     interval rather than about this instant, which is what the sentence always
+     meant. Still a measurement rather than scheduler state, so
+     `dn_next_probe()` stays pure and generator D's frozen-anchor rule still
+     holds.
+  2. **The failure ratchet borrowed a threshold calibrated for something
+     else.** Its bar was `day_gain_pct`% (60%) of the anchor - but 60% is the
+     day/night *pipeline* discriminator, 0.74 stops, sized for IR-cut
+     transitions that move `total_gain` by orders of magnitude. The ratchet
+     asks a different question ("is this new evidence, distinguishable from
+     the evidence that already failed?"), which is a noise question. Cost,
+     measured: the anchor latched at 1653 - simply where that room rests at
+     night, which is where a failed reconfirm always latches it - so the bar
+     demanded 992, i.e. analog gain 62 from a room that lives between 85 and
+     100 all night. The bar sat below the entire scene's nightly range, so the
+     sustained-brightening path was dead until dawn for any indoor-light-sized
+     event. `dn_bar_reachable()` could not catch it: 992 clears the 256 sensor
+     floor comfortably. Fix: a dedicated `DN_RATCHET_MARGIN`, one quarter stop
+     (0.84), ~5x the 3% `DN_BRIGHTEN_MARGIN` noise bar and far outside the
+     jitter in the fleet traces, but well inside what a light switch does. The
+     incidents the ratchet exists for are all *same-level* re-fires (the
+     pre-dawn tangent re-cross at 4898 against a 4906 bar; the cam-wyze-pan
+     dawn dip returning to the ~820 it was latched at) and remain blocked.
+  Verified end to end by new replay-corpus scenario 10
+  (`scripts/dn-scenarios/10-roomlight-20260816.json`), built against a copy of
+  the current tree with the fix hunks reverted: pre-fix the machine never
+  leaves night inside the run (4 board switches, longest wrong-mode run
+  3100 s, `probe_max_skip_s` left at its 43200 default so the backstop cannot
+  mask it); post-fix it recovers 489 s after the light comes on, inside one
+  `night_reconfirm_s`. All nine pre-existing scenarios keep their **exact**
+  pre-fix board-switch counts, including 03-noisy-night at 25% noise, so
+  neither change costs a click. `tests/dn-probe-props.c` gains
+  `assert_dip_monotone()` - the sequence property the old snapshot-only
+  properties could not state ("evidence once measured is never worth less
+  later") - plus the two `kinder-links` cases by name; the sweep is unchanged
+  at ~2.0 M assertions, 0 violations.
+
 - **day/night: the reconfirm backoff kept stretching the probe interval while
   the scene was measurably getting brighter** (`src/daynight_probe.h`,
   `src/daynight.c`; design-notes generator E). A failed probe doubles the
@@ -29,7 +91,13 @@ semantic versioning.
   exactly the bound `night_reconfirm_s` was introduced (b3eec71) to provide.
   It costs **zero** additional IR-cut clicks in the case the backoff exists
   for: an unchanging dark scene sits at or above its own `probe_fail_smooth`,
-  the trend test is false, and the multiplier applies unchanged. Measured on
+  the trend test is false, and the multiplier applies unchanged. (Amended
+  2026-08-16, when the test moved to a running minimum: the anchor is a single
+  sample of a noisy signal while a minimum over a whole night is an
+  extreme-value statistic, so a static-but-noisy scene *can* eventually hold
+  the suspension on. The bound that survives is the one above - never more
+  often than the un-backed-off schedule - and the measured cost on the corpus
+  is still zero clicks.) Measured on
   the replay corpus (scenario 08, one 900 s reconfirm interval): recovery at
   t=1276 s instead of t=3976 s, longest wrong-mode run 174 s instead of
   2426 s, same number of board switches.
