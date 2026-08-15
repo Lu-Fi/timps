@@ -74,6 +74,44 @@ semantic versioning.
   dead-zone (2383 -> 1387 -> 807 -> 450 -> 279) now extends three times and
   confirms day with **zero** board switches, while a static dead-zone reading
   still reverts to night on the first deadline exactly as before.
+- **day/night: periodic reconfirm's skip gate kept re-arming instead of
+  probing while a failure ratchet was outstanding, because "solidly night"
+  was judged against a baseline the same failed probe was busy dragging
+  down** (`src/daynight.c`; live incident, Schuppen T31/SC2336, 2026-08-13).
+  A sustained-brightening probe failed at gain 284, latching
+  `probe_fail_smooth=284`; over the next 2.5 h the camera was visibly
+  daytime (gain 257-266) but the periodic reconfirm's skip gate kept
+  silently re-arming instead of firing a real probe, because
+  `night_baseline` drifts toward the current (wrongly-classified) gain
+  every tick, unconditionally - two independent "verify before trusting"
+  mechanisms (the ratchet and the passive-evidence skip) ended up
+  validating each other instead of either being the other's escape hatch.
+  Only a manual service restart (replanting the baseline from scratch)
+  recovered it; the 12 h `probe_max_skip_s` backstop was the sole
+  remaining net, well inside its bound but a poor substitute for the
+  hourly-scale reconfirm that should have caught this. Fix: while a
+  ratchet is outstanding, also require gain to not have moved meaningfully
+  brighter than `probe_fail_smooth` - a frozen snapshot from the moment a
+  probe last physically checked and found genuine night, immune to the
+  baseline's ongoing chase. Reuses `DN_BRIGHTEN_MARGIN`, no new tunable; a
+  flat/dark scene still sits at or above its own `probe_fail_smooth` and
+  keeps skipping exactly as before - only genuine further brightening past
+  the last-checked point loses the skip.
+- **day/night: switching felt sluggish - the sustained-brightening confirm
+  halved, 60 s -> 30 s** (`src/daynight.c`, `DN_BRIGHTEN_CONFIRM_MS`).
+  Since b4a54f0 removed the direct adaptive night->day switch, this hold
+  *is* the entire night->day latency for the everyday "a light came on"
+  case: the smoothed gain reaches the probe bar within ~2-11 s of the
+  step, so the 60 s confirm was ~85% of the wait. The hold does two jobs
+  and only one is load-bearing at this duration: transient rejection (a
+  30-60 s brightening now buys one probe pair where it bought none,
+  bounded by the same ratchet to at most one pair per night entry, same
+  as at 60 s) and letting `smooth_tg` converge to the dip floor before the
+  ratchet latches on it - the EMA residual is 0.9^N, so 30 s = 60 ticks is
+  99.8% converged (on the cam-wyze-pan dawn numbers the ratchet latches at
+  838 instead of ~820, a 2% shift in a bar that sits at 60% of it).
+  Deliberately unchanged: `night_reconfirm_s`, which governs only the
+  worst-case self-heal backstop, not everyday switching.
 - **day/night: dawn-time flip pairs surviving the adaptive baseline fix
   below, because the direct night->day switch was still reachable AFTER
   the baseline plants** (`src/daynight.c`; observed live on cam-wyze-pan
