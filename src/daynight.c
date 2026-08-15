@@ -641,7 +641,17 @@ static int dn_verify_due(const dn_verify *v, int mode, int64_t now_ms)
 #define DN_TRACE_EVERY 10             /* one line per N samples (5 s at 500 ms) */
 #endif
 #ifndef DN_TRACE_MAX_BYTES
-#define DN_TRACE_MAX_BYTES (1<<20)    /* rotate past 1 MB (~5 days at 5 s) */
+/* Rotate past 1 MB. RETENTION, measured rather than guessed (the "~5 days"
+ * this comment claimed on landing was arithmetic nobody did): a line is
+ * 44 bytes in a short sim run and 55-70 in the field, where t_mono_ms has
+ * grown to 8-10 digits and the gains to 5, so 17280 lines/day at the 5 s
+ * default cadence is ~0.9-1.2 MB/day. One cap is therefore roughly ONE day,
+ * and with the single rotation keeping <path>.1 the window on disk is one to
+ * two days total. That is the right order for the job - a trace is pulled
+ * after an incident, not archived - but size it deliberately if you are
+ * chasing something that takes a week to recur (and remember this is tmpfs,
+ * i.e. RAM: 1 MB here is 1 MB not available to the encoder). */
+#define DN_TRACE_MAX_BYTES (1<<20)
 #endif
 static void dn_trace(const ms_daynight_cfg *dn, int64_t now_ms, int cur,
                      float tg, float luma, float baseline, float smooth_tg,
@@ -652,16 +662,27 @@ static void dn_trace(const ms_daynight_cfg *dn, int64_t now_ms, int cur,
      * notify statics): open file, the path it belongs to, sample decimator. */
     static FILE *f = NULL;
     static char  path[sizeof dn->trace_path];
+    /* the fail-closed latch. It has to be its own flag rather than "f is NULL
+     * while path is set", because ROTATION also leaves f NULL with path set
+     * and must reopen on the next sample. Cleared by a path change and by the
+     * recorder being switched off, so a config fix re-attempts immediately -
+     * which is the only retry policy that makes sense here: nothing else
+     * about a bad path changes on its own. */
+    static int   open_failed = 0;
     static unsigned every = 0;
 
     if (!dn->trace_path[0]) {                       /* off (the default) */
-        if (f) { fclose(f); f = NULL; path[0] = 0; }
+        if (f) { fclose(f); f = NULL; }
+        path[0] = 0; open_failed = 0;
         return;
     }
-    if (f && strcmp(path, dn->trace_path) != 0) {   /* live path change */
-        fclose(f); f = NULL;
+    if (strcmp(path, dn->trace_path) != 0) {        /* live path change */
+        if (f) { fclose(f); f = NULL; }
+        snprintf(path, sizeof path, "%s", dn->trace_path);
+        open_failed = 0;                            /* a new path may work */
     }
     if (every++ % DN_TRACE_EVERY) return;           /* decimate to 1-in-N */
+    if (open_failed) return;                        /* already warned once */
     if (!f) {
         /* a trace is a diagnostic for tmpfs, never flash (camera eMMC/NAND
          * wear): warn once per (re)open when the path does not look like a
@@ -677,12 +698,9 @@ static void dn_trace(const ms_daynight_cfg *dn, int64_t now_ms, int cur,
             LOGW(MOD, "cannot open trace_path %s: %s - tracing disabled "
                       "until the path changes", dn->trace_path,
                  strerror(errno));
-            /* remember the failing path so we do not retry (and re-warn)
-             * every DN_TRACE_EVERY samples; a config change re-attempts. */
-            snprintf(path, sizeof path, "%s", dn->trace_path);
+            open_failed = 1;   /* see the latch's comment above */
             return;
         }
-        snprintf(path, sizeof path, "%s", dn->trace_path);
         if (ftello(f) == 0)
             fputs("t_mono_ms,cur,tg,luma,baseline,smooth_tg,day_trigger,"
                   "probe_fail_smooth,verify_mode,verify_in_s,backoff\n", f);
