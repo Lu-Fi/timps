@@ -66,7 +66,7 @@ undifferentiated mass either. They sort into five generators:
 | **B. A reachable state with no pending decision** | `bd21ce6` (UNKNOWN), `43c2b16` (adopted DAY), `8c8dc1f` (ambiguous probe landing) | **Closed**, and closed *checkably*: after `43c2b16`+`8c8dc1f` every reachable `(cur, verify)` pair has an armed deadline. |
 | **C. A derived bar that goes unsatisfiable** | `f8a7b21`, `a5dae07`(1), 2026-08-14 | **Open.** |
 | **D. Two guards validating each other** | `0f5fc80`, `14a1d61` | **Open.** |
-| **E. The evidence model is missing a dimension** | `b4a54f0`, 2026-08-14 | **Open.** |
+| **E. The evidence model is missing a dimension** | `b4a54f0`, 2026-08-14 | **Half closed.** The unverified-day revert (`19dcd74`) and `probe_backoff` (the trend suspension, item 6) are both trend-aware now; the brightening hold's ratchet is still level-only. |
 
 That table is the substance of my disagreement with the "these mechanisms now
 interact combinatorially, producing edge cases faster than patches retire
@@ -196,10 +196,17 @@ an unverified day only once the improvement has *stopped*.
 
 Two more places are still level-only and demonstrably shouldn't be:
 
-- **`probe_backoff`.** Doubling the reconfirm interval in the middle of a
-  monotone descent is exactly backwards. On cam-vorne the backoff hit its ×4
-  cap at 05:58 *while gain was falling through three orders of magnitude*, and
-  that cap is what turned a bad revert into a four-hour outage.
+- **`probe_backoff`.** ~~Doubling the reconfirm interval in the middle of a
+  monotone descent is exactly backwards.~~ **Closed** by the trend suspension
+  in `dn_next_probe()` (`dn_trend_falling()`): while the smoothed gain sits
+  below `DN_BRIGHTEN_MARGIN` of the frozen `probe_fail_smooth`, the multiplier
+  is suspended and the deadline falls back to one plain `night_reconfirm_s`
+  after arming. Note the reference point it needed was already in the file and
+  already frozen — generator D's rule supplied it. On cam-vorne the backoff
+  hit its ×4 cap at 05:58 *while gain was falling through three orders of
+  magnitude*, and that cap is what turned a bad revert into a four-hour
+  outage; corpus scenario 08 now measures the difference (recovery at 1276 s
+  instead of 3976 s) and fails without it.
 - **The brightening hold**, whose ratchet asks "how far below the last failure"
   when at dawn the answer that matters is "still falling, and for how long".
 
@@ -332,14 +339,35 @@ floor 256).
 ## 8. Suggested order
 
 1. ~~Derivative-aware unverified-day revert~~ — done, `19dcd74`.
-2. **`dn_bar_reachable()` + a warn on an unsatisfiable bar.** Cheapest item
-   here; makes generator C self-reporting instead of silent.
-3. **Trace recorder** (tmpfs, capped). Unblocks everything below.
-4. **Replay harness + scenario corpus**, with the restart-equivalence and
-   monotonicity assertions.
-5. **`dn_next_probe()` collapse**, validated against the corpus.
-6. **Revisit `probe_backoff`'s trend-blindness** (generator E) — with the
-   corpus in place this becomes a safe change rather than a brave one.
+2. ~~**`dn_bar_reachable()` + a warn on an unsatisfiable bar.**~~ — done,
+   `5423b79`. Generator C is self-reporting instead of silent.
+3. ~~**Trace recorder** (tmpfs, capped).~~ — done, `c84fcef`
+   (`daynight.trace_path`, opt-in).
+4. ~~**Replay harness + scenario corpus**, with the restart-equivalence and
+   monotonicity assertions.~~ — done, `e06bf41` (virtual clock) + `e0c629b`
+   (`scripts/dn-replay.py`, nine scenarios).
+5. ~~**`dn_next_probe()` collapse**, validated against the corpus.~~ — done,
+   `src/daynight_probe.h` + `tests/dn-probe-props.c`.
+6. ~~**Revisit `probe_backoff`'s trend-blindness** (generator E).~~ — done,
+   `dn_trend_falling()`; see the generator-E section above.
 
-Steps 2 and 3 are each an evening's work and are worth doing before the next
-incident, not after it.
+### What the corpus is worth, and how to keep it worth that
+
+The corpus is only evidence if a scenario **fails against a build without the
+fix it is named for**. Two of the nine assert a *decision* rule rather than a
+new log line, and both were checked that way (08 against the anchor override
+and against the trend suspension, 09 against `19dcd74`'s extension) — each
+fails on behavioural assertions, not merely on `expect_log`.
+
+Build a negative control by **reverting the fix's hunk in a copy of the
+current tree**, never by building the historical commit. Trees older than
+`e06bf41` have no `MS_CLOCK_SCALE` hook: they silently ignore `SIM_CFLAGS`,
+run in real time while the harness drives them 60× faster, reach none of their
+own deadlines, and come back green on everything — a false negative that reads
+exactly like "this scenario does not discriminate". `dn-replay.py` now refuses
+such a binary outright (`SimRun.check_clock`), but the cheaper habit is not to
+build one.
+
+Next candidates, in the same spirit: the brightening hold's ratchet is the
+last level-only test generator E names, and `night_baseline` still feeds three
+consumers while drifting under all three (the generator-D audit).

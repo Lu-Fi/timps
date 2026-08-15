@@ -330,6 +330,24 @@ any genuine transition (or a probe that sticks in day) resets the
 multiplier to 1. The failed-probe log line reads
 `"probe confirmed genuine night (backoff x2, brighten ratchet < N)"`.
 
+*Trend suspension (added 2026-08-15).* The backoff rests on a premise — "the
+darkness this probe just measured is confirmed" — that it used to hold onto
+regardless of what the scene did afterwards. It is now suspended for as long
+as the measurement contradicts it: while the smoothed gain sits below 97%
+(`DN_BRIGHTEN_MARGIN`) of `probe_fail_smooth` — the gain frozen at the instant
+a physical probe last found genuine night — the multiplier is ignored and the
+deadline falls back to one plain `night_reconfirm_s` after it was armed. It
+can only ever pull a deadline *in*, never past it and never earlier than a
+plain reconfirm interval, so it cannot buy an extra probe; and it costs zero
+extra clicks in the case the backoff exists for, because an unchanging dark
+scene sits at or above its own `probe_fail_smooth` and the test is simply
+false. Logged once per suspension (on the edge, not per tick):
+`"gain N is below 97% of the last failed probe's level M — the scene is
+measurably brighter than the darkness the x4 backoff was granted for,
+suspending it (reconfirm due 900s after arming, not 3600s)"`. Before this, a
+dawn ramp could hold the ×4 cap the whole way down — the mechanism behind the
+four-hour cam-vorne window of 2026-08-14.
+
 **Passive-evidence skip (added 2026-08-04).** Backoff cut how *often* the
 periodic probe fires, but each firing still drives the physical IR-cut relay —
 an audible click. On a camera in genuinely unchanging darkness (cam-wyze,

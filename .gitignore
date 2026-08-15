@@ -1,6 +1,8 @@
 timpsd
 timpsd-sim
 *-sim
+# host-only test binary (make dn-props), built at the repo root
+dn-probe-props
 *.o
 outputs/
 3rdparty/

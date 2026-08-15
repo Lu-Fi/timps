@@ -7,6 +7,33 @@ semantic versioning.
 ## [Unreleased]
 
 ### Fixed
+- **day/night: the reconfirm backoff kept stretching the probe interval while
+  the scene was measurably getting brighter** (`src/daynight_probe.h`,
+  `src/daynight.c`; design-notes generator E). A failed probe doubles the
+  periodic-reconfirm interval, x1 -> x2 -> x4, on the premise that the
+  darkness it just measured is confirmed and there is no point clunking the
+  IR-cut hourly. That premise is a LEVEL test with no notion of direction, so
+  it survived evidence contradicting it: on cam-vorne 2026-08-14 the backoff
+  hit its x4 cap at 05:58 *while the gain was falling through three orders of
+  magnitude*, and that cap is what turned a bad revert into a four-hour
+  wrong-mode window; on Schuppen 2026-08-13 the same cap put the recovering
+  probe 4 h out while the baseline chased a day-level gain down. Fix: while
+  the smoothed gain sits below `DN_BRIGHTEN_MARGIN` (97%) of
+  `probe_fail_smooth` - the gain frozen at the instant a physical probe last
+  *measured* genuine night, the same frozen anchor 14a1d61 introduced - the
+  multiplier is SUSPENDED and the deadline falls back to one plain
+  `night_reconfirm_s` after it was armed. Deliberately a suspension, not a
+  retry ladder (design notes section 7: do not add escalation timers): it can
+  only ever SHORTEN a deadline, never below `night_reconfirm_s`, so it cannot
+  manufacture an extra probe beyond the un-backed-off schedule - it restores
+  exactly the bound `night_reconfirm_s` was introduced (b3eec71) to provide.
+  It costs **zero** additional IR-cut clicks in the case the backoff exists
+  for: an unchanging dark scene sits at or above its own `probe_fail_smooth`,
+  the trend test is false, and the multiplier applies unchanged. Measured on
+  the replay corpus (scenario 08, one 900 s reconfirm interval): recovery at
+  t=1276 s instead of t=3976 s, longest wrong-mode run 174 s instead of
+  2426 s, same number of board switches.
+
 - **day/night: an unverified day was reverted to night mid-dawn, because the
   verification judged a gain LEVEL at one instant and was blind to the
   direction that level was travelling** (`src/daynight.c`; live incident
@@ -215,6 +242,46 @@ semantic versioning.
   delta for this + the fMP4 eviction fix above: +471 bytes (sim build).
 
 ### Testing
+- **`dn_next_probe()` is now property-tested** (`tests/dn-probe-props.c`,
+  `make dn-props`, run as corpus entry `00` by
+  `scripts/dn-replay.py --all`). Collapsing the probe schedule into one pure
+  function over one typed evidence struct makes the counterfactual reachable
+  - "what would this build have done had the scene been slightly brighter at
+  that instant" - which is what every stuck-mode incident in this subsystem
+  turned on and which a replay can never ask, because a running machine only
+  visits the evidence its own decisions produce. Two properties over ~217 k
+  evidence points / ~1.0 M assertions per run, exhaustive rather than random
+  so it is reproducible: **monotonicity** (brighter evidence must never buy a
+  *later* correction - violated by `0f5fc80`, `14a1d61` and the 2026-08-14
+  incident alike) and the **reconfirm bound** (once the frozen anchor says
+  the scene is brighter than the night a probe actually measured, the
+  correction may not land later than one un-backed-off `night_reconfirm_s`
+  after the deadline was armed - monotonicity alone is satisfied by a
+  schedule that is uniformly four hours late). Runs in well under a second,
+  needs no HAL, no config and no threads.
+- **The replay corpus is now shown to discriminate, not assumed to.** Each of
+  the two scenarios whose fix is a *decision* rule rather than a new log line
+  was re-run against a build with exactly that rule disabled, and must fail
+  it on BEHAVIOURAL assertions: `08-baseline-chase-14a1d61` without the
+  ratchet-anchor override never leaves night (wrong-mode 4450 s vs the 900 s
+  bound) and without the trend suspension recovers only at the x4 deadline
+  (2426 s); `09-dawn-ramp-20260814` without 19dcd74's still-brightening
+  extension holds night for 3518 s past the point the day pipeline reads
+  daylight. Scenario 08's bounds are tightened from backoff-cap-aware
+  (3800 s) to the design notes' actual invariant, T = one `night_reconfirm_s`
+  (900 s), now that the backoff is no longer trend-blind.
+- **`scripts/dn-replay.py` refuses to run a sim binary that ignores the
+  virtual clock** (`SimRun.check_clock`, plus the scale banner the sim now
+  prints at startup). A tree older than `e06bf41` has no `MS_CLOCK_SCALE`
+  hook, silently drops `SIM_CFLAGS` and runs in REAL time while the harness
+  keeps feeding the scenario 60x faster than the machine experiences it: no
+  deadline is ever reached, the incident cascade cannot occur, and the run
+  comes back green on every behavioural assertion. That false negative reads
+  exactly like "this scenario does not discriminate" and has already been
+  mistaken for it once. The handshake is now a hard error naming the correct
+  way to build a negative control - revert the fix's hunk in a copy of the
+  CURRENT tree, which keeps the clock/trace contract while isolating the
+  behaviour under test.
 - `scripts/timps-qa.sh` **13b (`--test-hostile`)**: the verdict now
   distinguishes healthy-client DEATH from STARVATION - a fatal ffmpeg muxer
   abort zeroes the frame counts exactly like starvation, but means the

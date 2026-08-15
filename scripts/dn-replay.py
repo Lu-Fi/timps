@@ -8,6 +8,11 @@ BOTH pipelines at each instant, because which one gets read depends on the
 decision the machine under test makes - and only one is ever observable in
 the field):
 
+  (0) PROPERTY test of dn_next_probe(), run first by --all (see
+      run_properties() and tests/dn-probe-props.c). Not a replay at all: it
+      interrogates the pure probe schedule with counterfactual evidence no
+      trajectory can visit. Build it with `make dn-props`.
+
   (a) REGRESSION replay on synthetic two-pipeline scenarios (the workhorse):
         ./scripts/dn-replay.py scripts/dn-scenarios/<name>.json
         ./scripts/dn-replay.py --all scripts/dn-scenarios
@@ -44,7 +49,11 @@ Time compression: the sim binary must be built with the virtual clock -
     make sim SIM_CFLAGS="-DMS_CLOCK_SCALE=<scale>"
 and the harness must be told the same factor (per-scenario "scale" key /
 --scale). All scenario times are VIRTUAL seconds; see MS_CLOCK_SCALE in
-src/util.h for why no DN_* constant needs compressing.
+src/util.h for why no DN_* constant needs compressing. The binary's actual
+scale is verified against the scenario's at startup (SimRun.check_clock) and a
+mismatch is fatal - a binary that ignores the flag runs in real time and
+passes everything vacuously, which reads exactly like "this scenario does not
+discriminate". Read check_clock()'s comment before bisecting a historical fix.
 
 Scenario JSON (all times virtual seconds, all gains IMP [24.8] linear):
   name, incident, description   - bookkeeping (incident = commit/date)
@@ -196,6 +205,60 @@ class SimRun:
                                      stdout=logf, stderr=subprocess.STDOUT,
                                      cwd=self.dir)
         self.t0 = time.monotonic()
+        self.check_clock()
+
+    def check_clock(self):
+        """Verify the binary actually applies the virtual clock we are driving
+        it at. THIS CHECK IS LOAD-BEARING, not hygiene. A binary built without
+        the -DMS_CLOCK_SCALE hook (any tree older than e06bf41, which is every
+        pre-fix tree a negative test would want to build) silently ignores
+        SIM_CFLAGS and runs in REAL time, while this driver keeps feeding the
+        scenario `scale` times faster than the machine experiences it. The
+        machine then never reaches a single one of its own deadlines -
+        night_reconfirm_s, the backoff, the verify deadline - so the incident
+        cascade the scenario exists to reproduce cannot occur, and the run
+        comes back GREEN on every behavioural assertion. That false negative
+        is indistinguishable by eye from "this scenario does not discriminate",
+        and it has already been mistaken for exactly that once. The tell was
+        visible but subtle (first switch at t=451s instead of t=8s: 7.5 real
+        seconds of boot settle multiplied by a scale the binary never
+        applied), so we do not rely on anyone spotting it - the sim announces
+        its scale in its startup banner (see MS_CLOCK_SCALE in src/main.c) and
+        a mismatch is a hard error."""
+        want = "MS_CLOCK_SCALE=%d" % self.scale
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            try:
+                with open(self.log) as f:
+                    text = f.read()
+            except OSError:
+                text = ""
+            if want in text:
+                return
+            if "starting (backend=" in text and "MS_CLOCK_SCALE" not in text:
+                raise SystemExit(
+                    "sim binary %s runs on the REAL clock - it was built "
+                    "without -DMS_CLOCK_SCALE, so SIM_CFLAGS was silently "
+                    "dropped (no such hook before e06bf41). Driving it at "
+                    "scale %d would replay the scenario %dx faster than the "
+                    "machine experiences it: every deadline becomes "
+                    "unreachable, the incident never reproduces, and the run "
+                    "comes back falsely green. Rebuild with:\n"
+                    "  make sim SIM_CFLAGS=\"-DMS_CLOCK_SCALE=%d\"\n"
+                    "To bisect a historical fix, revert the fix's hunk in a "
+                    "copy of the CURRENT tree instead of building the old "
+                    "tree - that keeps the clock/trace contract the harness "
+                    "depends on while isolating the behaviour under test."
+                    % (self.binary, self.scale, self.scale, self.scale))
+            m = re.search(r"MS_CLOCK_SCALE=(\d+)", text)
+            if m:
+                raise SystemExit(
+                    "sim binary %s was built with MS_CLOCK_SCALE=%s but the "
+                    "scenario asks for %d - rebuild, or pass --scale %s"
+                    % (self.binary, m.group(1), self.scale, m.group(1)))
+            time.sleep(0.05)
+        raise SystemExit("sim binary %s produced no startup banner within 5s"
+                         % self.binary)
 
     def vnow(self):
         return (time.monotonic() - self.t0) * self.scale
@@ -286,6 +349,7 @@ class Report:
         self.name = name
         self.lines = []
         self.failed = False
+        self.aborted = False    # harness precondition failed: no verdict at all
 
     def check(self, ok, label, detail, warn_only=False):
         if ok:
@@ -300,6 +364,11 @@ class Report:
         self.lines.append("  info  %-24s %s" % (label, detail))
 
     def emit(self):
+        if self.aborted:
+            # a precondition (e.g. the virtual-clock handshake) failed: there
+            # is no verdict to report, and printing a bare "RESULT: PASS" with
+            # zero checks under it would be actively misleading.
+            return False
         print("scenario %s" % self.name)
         for line in self.lines:
             print(line)
@@ -399,10 +468,15 @@ def check_monotonicity(rep, trace_path, policy):
     jumping up while cur==night) and compare (evidence, granted delay)
     pairs. LIMITATION, stated honestly: only the armed verify deadline is
     visible in the trace - the brightening hold's implicit schedule is not -
-    so this observes the periodic/adopt path only. The property becomes
-    fully checkable once dn_next_probe() exists (next session's work), which
-    is also why the default policy is "warn": probe_backoff's trend-
-    blindness (generator E, known open) violates this by design today."""
+    so this observes the periodic/adopt path only, and only at the evidence
+    the run's own trajectory happened to visit.
+
+    The property is now checked properly elsewhere: dn_next_probe() is pure,
+    so tests/dn-probe-props.c asserts it exhaustively over ~10^6 evidence
+    pairs including the counterfactuals no trajectory can reach (corpus entry
+    00, run_properties()). This trace-side check stays as a cheap end-to-end
+    sanity observer and therefore stays "warn" by default - a violation here
+    is worth reading, but entry 00 is the authority."""
     if policy == "skip":
         rep.note("monotonicity", "skipped by scenario")
         return
@@ -520,11 +594,52 @@ def run_regression(scn, binary, keep=False, scale_override=None):
         for rx in exp.get("forbid_log", []):
             rep.check(re.search(rx, logtext) is None, "forbid-log",
                       repr(rx))
+    except SystemExit:
+        rep.aborted = True
+        raise
     finally:
         sim.stop()
         ok = rep.emit()
         sim.cleanup()
     return ok
+
+# ---------------------------------------------------------------- properties
+
+def run_properties(binary):
+    """Corpus entry 00: the dn_next_probe() property test (tests/
+    dn-probe-props.c, built by `make dn-props`).
+
+    It runs FIRST and deliberately fails the whole corpus when it fails,
+    because it answers a question no scenario can. A replay can only exercise
+    the evidence the machine's own decisions lead it to; the counterfactual -
+    "what would this build have done had the scene been slightly brighter at
+    that instant" - is unreachable from a trajectory and is exactly what every
+    stuck-mode incident in this subsystem turned on. The pure function makes
+    it reachable, and this binary asks it about ~10^6 evidence pairs in under
+    a second.
+
+    Missing binary is a WARN, not a failure: a checkout that has not run
+    `make dn-props` should still be able to run the scenarios."""
+    if not os.path.isfile(binary) or not os.access(binary, os.X_OK):
+        print("scenario 00-probe-properties")
+        print("  WARN  %-24s %s" % ("not built",
+              "%s missing - run `make dn-props` to include the property "
+              "test in the corpus" % binary))
+        print("RESULT: SKIP 00-probe-properties")
+        print()
+        return True
+    print("scenario 00-probe-properties")
+    r = subprocess.run([binary], stdout=subprocess.PIPE,
+                       stderr=subprocess.STDOUT)
+    text = r.stdout.decode("utf-8", "replace")
+    for line in text.strip().split("\n"):
+        if line.startswith("RESULT:"):
+            continue
+        print("  %s" % line if not line.startswith("  ") else line)
+    print("RESULT: %s 00-probe-properties"
+          % ("PASS" if r.returncode == 0 else "FAIL"))
+    print()
+    return r.returncode == 0
 
 # ---------------------------------------------------------------- incident
 
@@ -618,6 +733,9 @@ def main():
                     help="incident replay of a recorded trace CSV")
     ap.add_argument("--bin", default=os.path.join(REPO, "timpsd-sim"),
                     help="sim binary (default: repo timpsd-sim)")
+    ap.add_argument("--props", default=os.path.join(REPO, "dn-probe-props"),
+                    help="dn_next_probe property-test binary run as corpus "
+                         "entry 00 by --all (build: make dn-props)")
     ap.add_argument("--scale", type=int, default=None,
                     help="MS_CLOCK_SCALE the binary was built with "
                          "(overrides the scenario's value)")
@@ -648,9 +766,11 @@ def main():
         sys.exit(0 if ok else 1)
 
     files = []
+    prop_ok = True
     if args.all:
         files = sorted(os.path.join(args.all, f)
                        for f in os.listdir(args.all) if f.endswith(".json"))
+        prop_ok = run_properties(args.props)
     elif args.scenario:
         files = [args.scenario]
     else:
@@ -667,6 +787,10 @@ def main():
         else:
             failed += 1
         print()
+    if not prop_ok:
+        failed += 1
+    else:
+        passed += 1 if args.all else 0
     print("corpus: %d passed, %d failed" % (passed, failed))
     sys.exit(0 if failed == 0 else 1)
 

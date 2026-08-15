@@ -1,0 +1,407 @@
+/* dn-probe-props.c - property test for dn_next_probe() (design-notes s.5).
+ *
+ * The reason the probe schedule was collapsed into one pure function is this
+ * file. A scenario in scripts/dn-scenarios/ can only show that ONE evidence
+ * TRAJECTORY produces an acceptable outcome; it cannot show that the schedule
+ * is well-behaved as a function, because a running machine only ever visits
+ * the evidence its own decisions produce. The counterfactual - "what would
+ * this build have done had the scene been slightly brighter at that instant"
+ * - is exactly what every one of the twelve stuck-mode incidents turned on,
+ * and it is unreachable from a replay. It IS reachable from a pure function.
+ *
+ * THE PROPERTY
+ *
+ *   Monotonicity. For evidence e1, e2 identical except that e2 is strictly
+ *   brighter (lower smoothed gain - the metric is INVERTED, high gain = dark
+ *   scene):
+ *                 dn_next_probe(e2).in_ms <= dn_next_probe(e1).in_ms
+ *
+ *   In words: brighter evidence must never buy a LATER correction. It is
+ *   allowed to buy an earlier one, or the same one. Never a later one.
+ *
+ * This is not an abstract nicety. It is the shared shape of three of the
+ * subsystem's open incidents:
+ *
+ *   0f5fc80  - the baseline drifted toward raw gain and the brightening bar
+ *              was derived from the baseline, so noise ratcheted both
+ *              together and a brighter reading raised its own bar.
+ *   14a1d61  - the baseline drifts toward smooth_tg and the skip gate's
+ *              "solidly night" bar is derived from the baseline, so over
+ *              hours the bar chased a day-level gain downward and "still deep
+ *              in night" stayed true: brighter evidence, later probe.
+ *   2026-08-14 - an AMBIGUOUS (dead-zone, i.e. brighter) revert was accounted
+ *              identically to a confirmed-night revert and bought the same x4
+ *              backoff, i.e. a 4 h schedule. Brighter evidence, later probe,
+ *              four hours of daylight in IR mode.
+ *
+ * Three incidents, one assertion, checked on every build instead of
+ * re-derived by hand after each one.
+ *
+ * WHAT "IDENTICAL EXCEPT BRIGHTER" MEANS, HONESTLY
+ *
+ * The property is only as strong as the definition of "brighter", so it is
+ * spelled out rather than assumed:
+ *
+ *  - smooth_tg is scaled DOWN. That is the scene getting brighter.
+ *  - night_baseline is held FIXED. This is the load-bearing choice. The
+ *    baseline is not an independent measurement, it is a slow EMA that CHASES
+ *    smooth_tg (DN_BASELINE_ALPHA), and 14a1d61 is precisely the bug where
+ *    letting the bar follow the gain down made brighter evidence look
+ *    unchanged. Holding it fixed is what makes the sweep able to see that.
+ *    The sweep separately varies the baseline across its own axis, so the
+ *    chased configurations are covered too - as SEPARATE base points, each of
+ *    which must independently satisfy the property.
+ *  - probe_fail_smooth is held FIXED, because it is frozen at a measurement
+ *    by construction (generator D's rule). A test that let the frozen anchor
+ *    move with the scene would be testing a machine nobody wrote.
+ *  - every clock and every scheduling counter is held FIXED. Only the light
+ *    changes.
+ *
+ * COVERAGE
+ *
+ * The sweep is exhaustive over a cartesian product of realistic values rather
+ * than random: ~10^5 base evidence points, each compared against 7 strictly
+ * brighter variants, so ~10^6 ordered pairs per run, deterministic and
+ * reproducible. The value sets are drawn from the incident record (the gains
+ * in the corpus scenarios and the commit messages: 256/262/284/315/708/820/
+ * 1002/2425/4813/9024/10856/16000) plus the structural edges that the
+ * unsatisfiable-bar work identified (at, just under and just over the 256
+ * sensor floor).
+ *
+ * A violation prints the full evidence of BOTH points and both plans, because
+ * "monotonicity failed somewhere" is not actionable and the whole argument
+ * for the collapse is that this class of bug becomes actionable.
+ *
+ * Build/run:  make dn-props && ./dn-probe-props
+ * The replay harness runs it as corpus entry 00 (scripts/dn-replay.py --all).
+ */
+#include "daynight_probe.h"
+
+#include <stdio.h>
+#include <string.h>
+
+static long g_pairs, g_bases, g_viol;
+
+static const char *act_name(int a)
+{
+    return a == DN_PROBE_FIRE ? "FIRE"
+         : a == DN_PROBE_SKIP ? "SKIP" : "none";
+}
+
+static const char *path_name(int p)
+{
+    return p == DN_PATH_PERIODIC    ? "periodic"
+         : p == DN_PATH_BRIGHTEN    ? "brighten"
+         : p == DN_PATH_PREBASELINE ? "pre-baseline" : "-";
+}
+
+static void show(const char *tag, const dn_evidence *e, const dn_probe_plan *p)
+{
+    char in[32];
+    if (p->in_ms == DN_PROBE_NEVER) snprintf(in, sizeof in, "NEVER");
+    else snprintf(in, sizeof in, "%lldms", (long long)p->in_ms);
+    printf("  %s: smooth_tg=%.1f baseline=%.1f fail_smooth=%.1f backoff=%d\n"
+           "      pct=%d reconfirm=%ds max_skip=%ds transition=%ds "
+           "day_thr=%.0f\n"
+           "      now=%lld verify(armed=%d from=%lld at=%lld) "
+           "last_phys=%lld last_sw=%lld\n"
+           "      brighten(armed=%d since=%lld) osc_freeze=%lld\n"
+           "   -> in_ms=%s act=%s path=%s eff_backoff=%d pulled_in=%d "
+           "anchor_override=%d\n",
+           tag, (double)e->smooth_tg, (double)e->night_baseline,
+           (double)e->probe_fail_smooth, e->backoff,
+           e->day_gain_pct, e->night_reconfirm_s, e->probe_max_skip_s,
+           e->transition_s, (double)e->day_threshold,
+           (long long)e->now_ms, e->verify_armed,
+           (long long)e->verify_from_ms, (long long)e->verify_at_ms,
+           (long long)e->last_phys_probe_ms, (long long)e->last_switch_ms,
+           e->brighten_armed, (long long)e->brighten_since_ms,
+           (long long)e->osc_freeze_until_ms,
+           in, act_name(p->act), path_name(p->path), p->eff_backoff,
+           p->trend_pulled_in, p->anchor_override);
+}
+
+/* PROPERTY 2 - the bound the backoff is not allowed to erode.
+ *
+ * Monotonicity alone is necessary but not sufficient, and the 2026-08-14
+ * incident shows why: a schedule that is uniformly four hours late is
+ * perfectly monotone. The design notes state the missing half as the
+ * restart-equivalence bound - "T = night_reconfirm_s is the natural bound,
+ * one reconfirm interval, which is precisely the guarantee night_reconfirm_s
+ * was introduced (b3eec71) to provide, and which probe_backoff x the skip
+ * gate has been quietly eroding ever since."
+ *
+ * So: once the FROZEN anchor says the scene is measurably brighter than the
+ * night a physical probe actually measured, the correction may not land later
+ * than one un-backed-off reconfirm interval after the deadline was armed. The
+ * backoff may still stretch the schedule of a scene that has NOT changed -
+ * that is what it is for - but it may not outlive the evidence that
+ * contradicts its premise.
+ *
+ * Asserted only on self-consistent evidence (a deadline no later than the
+ * machine's own arming rule would produce) and never while an oscillation
+ * freeze is active, since that legitimately outranks every probe. */
+static void assert_reconfirm_bound(const dn_evidence *e)
+{
+    if (!e->verify_armed || e->verify_from_ms <= 0 ||
+        e->night_reconfirm_s <= 0)
+        return;
+    if (e->probe_fail_smooth <= 0.0f || e->smooth_tg <= 0.0f)
+        return;                                  /* no frozen anchor to read */
+    if (e->smooth_tg >= e->probe_fail_smooth * DN_BRIGHTEN_MARGIN)
+        return;                       /* not measurably brighter: no promise */
+    if (e->osc_freeze_until_ms && e->now_ms < e->osc_freeze_until_ms)
+        return;                                  /* the freeze outranks this */
+    if (e->verify_at_ms >
+        e->verify_from_ms + dn_reconfirm_iv_s(e, e->backoff) * 1000)
+        return;               /* deadline the machine would not have produced */
+
+    int64_t bound = e->verify_from_ms + dn_reconfirm_iv_s(e, 1) * 1000;
+    dn_probe_plan p = dn_next_probe(e);
+    g_pairs++;
+    if (p.in_ms == 0)
+        return;                                    /* correcting right now */
+    if (p.in_ms != DN_PROBE_NEVER && e->now_ms + p.in_ms <= bound)
+        return;
+    if (++g_viol <= 10) {
+        printf("VIOLATION %ld: the x%d backoff outlived the evidence against "
+               "it - gain %.0f is below %.0f%% of the frozen anchor %.0f, so "
+               "the correction was promised by t=%lld (one reconfirm interval "
+               "after arming) but is scheduled for t=%lld\n",
+               g_viol, e->backoff, (double)e->smooth_tg,
+               (double)(DN_BRIGHTEN_MARGIN * 100.0f),
+               (double)e->probe_fail_smooth, (long long)bound,
+               p.in_ms == DN_PROBE_NEVER ? -1LL
+                                         : (long long)(e->now_ms + p.in_ms));
+        show("evidence", e, &p);
+        printf("\n");
+    }
+}
+
+/* the one assertion: e2 is e1 with a strictly lower smoothed gain */
+static void assert_monotone(const dn_evidence *e1, const dn_evidence *e2)
+{
+    dn_probe_plan p1 = dn_next_probe(e1);
+    dn_probe_plan p2 = dn_next_probe(e2);
+    g_pairs++;
+    if (p2.in_ms <= p1.in_ms) return;
+    if (++g_viol <= 10) {
+        printf("VIOLATION %ld: brighter evidence bought a LATER probe\n",
+               g_viol);
+        show("dimmer  ", e1, &p1);
+        show("brighter", e2, &p2);
+        printf("\n");
+    }
+}
+
+int main(void)
+{
+    /* gains from the incident record + the structural edges around the
+     * physical floor (DN_GAIN_FLOOR = 256) that generator C turns on */
+    static const float G[] = {
+        255.0f, 256.0f, 257.0f, 262.0f, 268.0f, 284.0f, 300.0f, 315.0f,
+        452.0f, 708.0f, 820.0f, 1002.0f, 1436.0f, 2425.0f, 4813.0f,
+        9024.0f, 10856.0f, 16000.0f
+    };
+    static const float BL[] = { -1.0f, 256.0f, 268.0f, 315.0f, 731.0f,
+                                3500.0f, 5148.0f, 10856.0f };
+    static const float FS[] = { -1.0f, 256.0f, 284.0f, 315.0f, 820.0f,
+                                4906.0f };
+    static const int   BO[] = { 1, 2, 4 };
+    static const int   PCT[] = { 0, 60, 65, 100 };
+    static const int   RC[] = { 0, 900, 3600 };
+    /* strictly-brighter factors: from "one AE tick" to "the lights came on" */
+    static const float K[] = { 0.999f, 0.99f, 0.97f, 0.9f, 0.7f, 0.5f, 0.25f };
+
+    const int NG = (int)(sizeof G / sizeof *G);
+    const int NBL = (int)(sizeof BL / sizeof *BL);
+    const int NFS = (int)(sizeof FS / sizeof *FS);
+    const int NBO = (int)(sizeof BO / sizeof *BO);
+    const int NPCT = (int)(sizeof PCT / sizeof *PCT);
+    const int NRC = (int)(sizeof RC / sizeof *RC);
+    const int NK = (int)(sizeof K / sizeof *K);
+
+    /* Four scheduling postures, each a real situation from the record. They
+     * vary the clock-relative fields together so the sweep spends its budget
+     * on reachable states instead of on arbitrary timestamp noise. */
+    struct posture {
+        const char *name;
+        int64_t now_ms, verify_from_ms, verify_at_ms;
+        int     verify_armed;
+        int64_t last_phys_probe_ms, last_switch_ms;
+        int64_t brighten_since_ms, osc_freeze_until_ms;
+        int     brighten_armed;
+    } post[] = {
+        /* deadline still far out, hold not started (the ordinary night) */
+        { "pending",  4000000, 3000000, 10200000, 1, 3000000, 3000000,
+          0, 0, 1 },
+        /* deadline exactly due (the skip-gate decision point) */
+        { "due",      10200000, 3000000, 10200000, 1, 3000000, 3000000,
+          0, 0, 1 },
+        /* deadline long past AND probe_max_skip_s exceeded (outer bound) */
+        { "overdue",  60000000, 3000000, 10200000, 1, 3000000, 3000000,
+          0, 0, 1 },
+        /* brightening hold already running, no deadline armed */
+        { "holding",  4000000, 0, 0, 0, 3000000, 3000000,
+          3990000, 0, 1 },
+        /* first probe of the session (last_phys_probe_ms == 0) */
+        { "firstever", 4000000, 3000000, 3900000, 1, 0, 3000000,
+          0, 0, 1 },
+        /* oscillation-breaker freeze active */
+        { "frozen",   4000000, 3000000, 3900000, 1, 3000000, 3000000,
+          0, 4600000, 1 },
+        /* hold disarmed (post-failed-probe, below the bar, waiting for the
+         * baseline to re-converge) */
+        { "disarmed", 4000000, 3000000, 10200000, 1, 3000000, 3000000,
+          0, 0, 0 },
+    };
+    const int NP = (int)(sizeof post / sizeof *post);
+
+    for (int ip = 0; ip < NP; ip++)
+    for (int ibl = 0; ibl < NBL; ibl++)
+    for (int ifs = 0; ifs < NFS; ifs++)
+    for (int ibo = 0; ibo < NBO; ibo++)
+    for (int ipct = 0; ipct < NPCT; ipct++)
+    for (int irc = 0; irc < NRC; irc++)
+    for (int ig = 0; ig < NG; ig++) {
+        dn_evidence e;
+        memset(&e, 0, sizeof e);
+        e.now_ms             = post[ip].now_ms;
+        e.verify_armed       = post[ip].verify_armed;
+        e.verify_from_ms     = post[ip].verify_from_ms;
+        e.verify_at_ms       = post[ip].verify_at_ms;
+        e.last_phys_probe_ms = post[ip].last_phys_probe_ms;
+        e.last_switch_ms     = post[ip].last_switch_ms;
+        e.brighten_since_ms  = post[ip].brighten_since_ms;
+        e.brighten_armed     = post[ip].brighten_armed;
+        e.osc_freeze_until_ms = post[ip].osc_freeze_until_ms;
+        e.day_gain_pct       = PCT[ipct];
+        e.night_reconfirm_s  = RC[irc];
+        e.probe_max_skip_s   = 43200;
+        e.transition_s       = 30;
+        e.day_threshold      = 300.0f;
+        e.night_baseline     = BL[ibl];
+        e.probe_fail_smooth  = FS[ifs];
+        e.backoff            = BO[ibo];
+        e.smooth_tg          = G[ig];
+        g_bases++;
+
+        assert_reconfirm_bound(&e);
+        for (int ik = 0; ik < NK; ik++) {
+            dn_evidence b = e;
+            b.smooth_tg = e.smooth_tg * K[ik];
+            /* the sensor cannot report below its physical floor, so a
+             * "brighter" variant that would is not a scene the machine can
+             * ever be shown - skip it rather than assert on fiction */
+            if (b.smooth_tg < DN_GAIN_FLOOR) continue;
+            assert_monotone(&e, &b);
+        }
+    }
+
+    /* --- the three named historical violations, as explicit cases --------
+     * The sweep above already covers these shapes, but naming them means a
+     * regression reports WHICH incident came back rather than a coordinate
+     * in a cartesian product. */
+    {
+        dn_evidence e;
+        memset(&e, 0, sizeof e);
+        e.now_ms = 20000000; e.day_gain_pct = 60;
+        e.night_reconfirm_s = 3600; e.probe_max_skip_s = 43200;
+        e.transition_s = 30; e.day_threshold = 300.0f;
+        e.verify_armed = 1; e.verify_from_ms = 5600000;
+        e.last_phys_probe_ms = 5600000; e.last_switch_ms = 5600000;
+        e.brighten_armed = 1; e.backoff = 4;
+
+        /* 14a1d61 (Schuppen 2026-08-13): a failed probe froze the anchor at
+         * 284; over the next 2.5 h the baseline chased the actual (day-level)
+         * gain down to 257-266 and the baseline-derived "solidly night" bar
+         * followed it, so the skip gate kept skipping. The frozen anchor is
+         * what must decide: at gain 262 the scene is measurably brighter than
+         * the 284 that was MEASURED to be night, so the probe must fire now -
+         * regardless of where the drifting baseline has got to. */
+        e.probe_fail_smooth = 284.0f;
+        e.verify_at_ms = 5600000 + 14400000;
+        {
+            dn_evidence dim = e, bright = e;
+            dim.night_baseline = 3500.0f; dim.smooth_tg = 3400.0f;
+            bright.night_baseline = 262.0f; bright.smooth_tg = 262.0f;
+            /* NOTE: this pair deliberately varies the baseline too - it is
+             * not an instance of the sweep's property but of the stronger
+             * claim the anchor rule makes, so it is asserted directly. */
+            dn_probe_plan pb = dn_next_probe(&bright);
+            g_pairs++;
+            if (pb.act != DN_PROBE_FIRE) {
+                g_viol++;
+                printf("VIOLATION (14a1d61): gain 262 is below 97%% of the "
+                       "frozen anchor 284, but the schedule did not fire\n");
+                show("brighter", &bright, &pb);
+                printf("\n");
+            }
+            (void)dim;
+        }
+
+        /* 2026-08-14 (cam-vorne): the ratchet latched at 315 and the backoff
+         * was at x4, putting the next reconfirm 4 h out while the gain fell
+         * through three orders of magnitude. The trend suspension must make
+         * the deadline land one un-backed-off reconfirm interval after it was
+         * armed, not four. */
+        e.probe_fail_smooth = 315.0f;
+        e.verify_from_ms = 19000000;
+        e.verify_at_ms = 19000000 + 4 * 3600 * 1000;   /* x4 = 4 h out */
+        e.now_ms = 19000000 + 3600 * 1000 + 1000;      /* 1 h + a tick */
+        e.night_baseline = 300.0f;
+        {
+            dn_evidence still = e, falling = e;
+            still.smooth_tg   = 315.0f;   /* unchanged since the probe */
+            falling.smooth_tg = 260.0f;   /* the dawn ramp, 83% of anchor */
+            dn_probe_plan ps = dn_next_probe(&still);
+            dn_probe_plan pf = dn_next_probe(&falling);
+            g_pairs++;
+            if (pf.in_ms > ps.in_ms || pf.act != DN_PROBE_FIRE) {
+                g_viol++;
+                printf("VIOLATION (2026-08-14): a falling gain did not "
+                       "collapse the x4 backoff\n");
+                show("static  ", &still, &ps);
+                show("falling ", &falling, &pf);
+                printf("\n");
+            }
+            /* and the static scene must keep its backoff: the suspension may
+             * not cost a click in the darkness case the backoff exists for */
+            if (ps.act == DN_PROBE_FIRE) {
+                g_viol++;
+                printf("VIOLATION (2026-08-14): a STATIC dark scene lost its "
+                       "backoff - the suspension must cost zero extra "
+                       "clicks in unchanging darkness\n");
+                show("static  ", &still, &ps);
+                printf("\n");
+            }
+        }
+
+        /* 0f5fc80 (noisy night): the bar must not follow the gain, so a
+         * brighter gain against the SAME baseline must never delay. This is
+         * the sweep's property restricted to the noisy-night configuration,
+         * asserted by name. */
+        e.probe_fail_smooth = -1.0f;
+        e.night_baseline = 4906.0f;
+        e.verify_from_ms = 5600000; e.verify_at_ms = 5600000 + 3600000;
+        e.now_ms = 5600000 + 3600000;
+        for (int i = 0; i < NG; i++) {
+            for (int j = 0; j < NG; j++) {
+                if (G[j] >= G[i]) continue;
+                dn_evidence d = e, b = e;
+                d.smooth_tg = G[i]; b.smooth_tg = G[j];
+                assert_monotone(&d, &b);
+            }
+        }
+    }
+
+    printf("dn_next_probe properties: %ld base evidence points, "
+           "%ld assertions (monotonicity + reconfirm bound), "
+           "%ld violations\n", g_bases, g_pairs, g_viol);
+    if (g_viol) {
+        printf("RESULT: FAIL probe-properties\n");
+        return 1;
+    }
+    printf("RESULT: PASS probe-properties\n");
+    return 0;
+}

@@ -348,6 +348,23 @@ int main(int argc, char **argv)
     g_hal = hal_get();
     if (!g_hal){ LOGE(MOD,"no HAL backend available"); return 1; }   /* F-08 */
     LOGI(MOD,"timps %s starting (backend=%s)", MS_VERSION, g_hal->name);
+#ifdef MS_CLOCK_SCALE
+    /* Virtual clock active (sim builds only, see ms_now_us() in util.h). This
+     * line is the replay harness's HANDSHAKE, not decoration: a binary built
+     * WITHOUT the -DMS_CLOCK_SCALE hook silently ignores the flag and runs in
+     * real time, while the harness keeps driving the scenario 60x faster than
+     * the machine experiences it. Every deadline in the machine then becomes
+     * unreachable and the scenario's incident cascade simply never happens -
+     * which reads as a clean pass, i.e. a FALSE NEGATIVE that looks like
+     * evidence the scenario is toothless. (Seen for real: a 12000 s dawn
+     * scenario run against a pre-hook binary, where the tell was the first
+     * switch landing at "t=451s" instead of t=8s - 7.5 REAL seconds of boot
+     * settle multiplied by the scale the binary never applied.) So the sim
+     * announces its scale and scripts/dn-replay.py refuses to run any binary
+     * that does not announce the scale the scenario asked for. */
+    LOGI(MOD,"virtual clock: MS_CLOCK_SCALE=%d (sim replay build)",
+         (int)(MS_CLOCK_SCALE));
+#endif
 
     /* Must run BEFORE any ISP/HAL init below - see acquire_singleton_lock's
      * comment for why. A lost race means an already-live instance owns the
