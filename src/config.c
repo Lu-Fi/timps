@@ -364,8 +364,39 @@ void config_defaults(ms_config *c)
     c->daynight.time_night_start[0]=0; c->daynight.time_day_start[0]=0;
     c->daynight.sun_latitude=0.0f; c->daynight.sun_longitude=0.0f;
     c->daynight.sun_sunrise_offset_min=0; c->daynight.sun_sunset_offset_min=0;
-    c->daynight.total_gain_day_threshold=300.0f;
-    c->daynight.total_gain_night_threshold=3000.0f;
+    /* 300 -> 768 and 3000 -> 4096 (2026-08-16). Both are now expressed as
+     * multiples of the [24.8] gain floor (256 = 1.0x), which is the scale the
+     * decision actually lives on, instead of round decimals nobody could
+     * justify: day is confirmed when the DAY pipeline can hold the scene at
+     * <= 3x gain, night is entered when it needs > 16x.
+     *
+     * 300 was 1.17x - it asserted "day only when the day pipeline needs
+     * essentially no gain", i.e. outdoor daylight. Indoors that is simply
+     * wrong: a normally-lit room in daytime needs 2-3x, so the comparison
+     * `tg < total_gain_day_threshold` could never come true, every probe
+     * reverted, and the camera sat in night mode in daylight. Five of twelve
+     * fleet cameras needed a manual override on 2026-08-16, and the two
+     * diagnosed in detail measured 531 (2.07x) and 2505 (9.79x) as the BEST
+     * their day pipelines managed.
+     *
+     * 3x is deliberately modest and does not pretend to fix the extreme end.
+     * It clears the marginal cases - Wohnzimmer at 2.07x, Schlafzimmer at
+     * ~2.7x - which are the ones a default can reasonably be expected to
+     * cover, and leaves genuinely dim rooms like Wohnzimmer-Ofen (9.79x) as
+     * explicit per-camera overrides, which is honest: no single default fits
+     * a 9.79x room and a sunlit hallway. Picking the fleet's lowest observed
+     * override (800) would be fitting to five samples; 3x is a statable
+     * premise about indoor light that happens to cover them.
+     *
+     * The night threshold moves with it to keep the hysteresis band sane:
+     * 768..4096 is 5.3x, against 300..3000's 10x. Narrower, but still over
+     * two stops of dead-zone, and the band is not free - every 1x of it is
+     * a range where the machine holds its current mode on a reading it
+     * cannot classify. 16x is a defensible "colour is hopeless" point.
+     * Per-camera tuning remains the answer for any specific room; enable
+     * daynight.diagnose_thresholds to be told what to set it to. */
+    c->daynight.total_gain_day_threshold=768.0f;
+    c->daynight.total_gain_night_threshold=4096.0f;
     c->daynight.threshold_low=25.0f; c->daynight.threshold_high=75.0f;
     c->daynight.hysteresis=0.1f;
     c->daynight.day_gain_pct=60; c->daynight.baseline_delay_s=30;
@@ -376,6 +407,7 @@ void config_defaults(ms_config *c)
     copystr(c->daynight.switch_cmd,"daynight",sizeof c->daynight.switch_cmd);
     copystr(c->daynight.isp_path,"/proc/jz/isp/isp-m0",sizeof c->daynight.isp_path);
     c->daynight.trace_path[0]=0;   /* trace recorder off by default */
+    c->daynight.diagnose_thresholds=0; /* threshold warns off by default */
 
     c->sim_video0[0]=0; c->sim_video1[0]=0; c->sim_audio[0]=0;
 }
@@ -849,6 +881,7 @@ static const cfg_field daynight_fields[] = {
     F ("probe_max_skip_s",           0, probe_max_skip_s,           T_INT,   F_CTRL, 3600,604800),
     F ("interval_ms",                0, interval_ms,                T_INT,   F_CTRL, 100,60000),
     F ("transition_s",               0, transition_s,               T_INT,   F_CTRL, 0,3600),
+    F ("diagnose_thresholds",        0, diagnose_thresholds,        T_INT,   F_CTRL, 0,1),
     /* NOT F_CTRL - see the comment above (security boundary). trace_path
      * shares it: a path the daemon writes to as root must never be POSTable
      * (arbitrary-file-write primitive) - file-only, like the other two. */

@@ -5,7 +5,10 @@
   "scale": 60,
   "duration_s": 14400,
   "initial_mode": "night",
-  "config": {},
+  "config": {
+    "daynight.total_gain_day_threshold": 300,
+    "daynight.total_gain_night_threshold": 3000
+  },
   "interp": "step",
   "noise_pct": 12,
   "noise_seed": 7,

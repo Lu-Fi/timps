@@ -72,9 +72,9 @@ and gain fields and derives an equivalent brightness percentage, mirroring
 thingino's `daynightd` semantics.
 
 - From day: switch to night when gain **exceeds**
-  `daynight.total_gain_night_threshold` (default 3000).
+  `daynight.total_gain_night_threshold` (default 4096 = 16x the [24.8] gain floor).
 - From night: switch to day when gain **drops below**
-  `daynight.total_gain_day_threshold` (default 300), *or* below an
+  `daynight.total_gain_day_threshold` (default 768 = 3x the gain floor), *or* below an
   **adaptive** baseline if one has been sampled: after
   `daynight.baseline_delay_s` (default 30) of being in night — enough
   time for IR LEDs to settle — the current gain is captured once as the
@@ -135,7 +135,7 @@ thingino's `daynightd` semantics.
   The baseline currently in effect and the resulting trigger are
   reported read-only as `night_baseline` / `day_trigger` in the
   `GET /control` `"daynight"` object (`-1` = none / not in night).
-- The gap between the two fixed thresholds (300..3000 by default) **is**
+- The gap between the two fixed thresholds (768..4096 by default) **is**
   the hysteresis dead-zone for this mode — no separate averaging is
   applied.
 - **Dead-zone adoption** (added 2026-08-03 after a live incident): a

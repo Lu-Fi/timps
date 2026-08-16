@@ -6,6 +6,8 @@
   "duration_s": 880,
   "initial_mode": "day",
   "config": {
+    "daynight.total_gain_day_threshold": 300,
+    "daynight.total_gain_night_threshold": 3000,
     "daynight.night_reconfirm_s": 900
   },
   "interp": "step",
@@ -19,6 +21,8 @@
     "max_switches": 2,
     "restart_equivalence_s": 300,
     "monotonicity": "warn",
-    "expect_log": ["adopting persisted mode day"]
+    "expect_log": [
+      "adopting persisted mode day"
+    ]
   }
 }

@@ -6,7 +6,47 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Changed
+- **day/night: default `total_gain_day_threshold` 300 -> 768, and
+  `total_gain_night_threshold` 3000 -> 4096** (`src/config.c`). Both are now
+  expressed as multiples of the [24.8] gain floor (256 = 1.0x), which is the
+  scale the decision actually lives on: **day is confirmed when the day
+  pipeline can hold the scene at <= 3x gain, night is entered when it needs
+  > 16x.** 300 was 1.17x - it asserted "day only when the day pipeline needs
+  essentially no gain", i.e. outdoor daylight, which indoors is simply wrong: a
+  normally-lit room in daytime needs 2-3x, so `tg < total_gain_day_threshold`
+  could never come true, every probe reverted, and the camera sat in night mode
+  in daylight. Five of twelve fleet cameras needed a manual override on
+  2026-08-16 (800..5000); the two diagnosed in detail measured 531 (2.07x) and
+  2505 (9.79x) as the best their day pipelines managed. 3x is deliberately
+  modest and does **not** pretend to fix the extreme end - it clears the
+  marginal cases a default can reasonably cover (Wohnzimmer 2.07x, Schlafzimmer
+  ~2.7x) and leaves genuinely dim rooms like Wohnzimmer-Ofen (9.79x) as
+  explicit per-camera overrides. Picking the fleet's lowest observed override
+  (800) would be fitting to five samples; 3x is a statable premise about indoor
+  light that happens to cover them. The night default moves with it to keep the
+  hysteresis band sane - 768..4096 is 5.3x, against 300..3000's 10x: narrower,
+  but still over two stops of dead-zone, and 16x is a defensible "colour is
+  hopeless" point. **All 14 corpus scenarios now pin `total_gain_day_threshold`
+  and `total_gain_night_threshold` explicitly at the historical 300/3000**, so
+  each keeps reproducing its own incident rather than silently tracking a
+  moving default - which is also what made this change safe to measure.
+
 ### Added
+- **day/night: `daynight.diagnose_thresholds` (default 0)** - the unreachable-
+  threshold warning added earlier this session is now **opt-in**. The condition
+  it reports is a real misconfiguration and the line is worth having (it turned
+  three 2026-08-16 incidents from an SSH session each into a one-line fix), but
+  it is a WARN on a path that fires once per reconfirm interval, forever, until
+  a human edits the config: on a correctly-configured fleet that is pure log
+  growth on flash-backed syslog, and on a misconfigured camera one line an hour
+  all night makes the point many times over. Same reasoning as
+  `daynight.trace_path` - a diagnostic you switch on when you are diagnosing.
+  Unlike `trace_path` it is safe on the `/control` surface (it names no path
+  and writes no file), so it can be toggled live without a restart. Corpus
+  scenario 13 carries the key and asserts the message; new scenario 14 is its
+  default-off twin and asserts the silence, so if the gate is ever removed 13
+  keeps passing and only 14 notices.
 - **day/night: a warning when `total_gain_day_threshold` is set below anything
   the scene's day pipeline can produce** (`src/daynight.c`,
   `src/daynight_probe.h`; three live cameras on 2026-08-16 - Schlafzimmer in

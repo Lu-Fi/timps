@@ -6,6 +6,8 @@
   "duration_s": 6000,
   "initial_mode": "night",
   "config": {
+    "daynight.total_gain_day_threshold": 300,
+    "daynight.total_gain_night_threshold": 3000,
     "daynight.night_reconfirm_s": 900,
     "daynight.probe_max_skip_s": 7200
   },

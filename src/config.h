@@ -310,6 +310,23 @@ typedef struct {
      * arbitrary-file-write boundary that keeps switch_cmd/isp_path out of
      * the POST surface. */
     char     trace_path[128];
+    /* Opt-in threshold diagnostics (default 0 = off). When a day excursion
+     * ends unverified and the BEST day-pipeline gain it managed was still
+     * clear of total_gain_day_threshold, warn that the threshold is
+     * unreachable for this scene and name the value to raise it above.
+     *
+     * Off by default deliberately. The condition it reports is a genuine
+     * misconfiguration and the line is worth having - it turned three
+     * 2026-08-16 incidents from an SSH session each into a one-line fix - but
+     * it is a WARN on a path that fires once per reconfirm interval, forever,
+     * until a human edits the config. On a correctly-configured fleet that is
+     * pure log growth on flash-backed syslog, and on a misconfigured camera
+     * one warning per hour all night is more than is needed to make the point.
+     * Same reasoning as trace_path: a diagnostic you switch on when you are
+     * diagnosing, not something every camera pays for. Unlike trace_path it
+     * is safe on the /control surface (it names no path and writes no file),
+     * so it can be toggled live without a restart while investigating. */
+    int      diagnose_thresholds;
 } ms_daynight_cfg;
 
 typedef struct {

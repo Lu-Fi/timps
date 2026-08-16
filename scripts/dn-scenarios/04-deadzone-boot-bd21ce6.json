@@ -5,6 +5,10 @@
   "scale": 60,
   "duration_s": 600,
   "initial_mode": "night",
+  "config": {
+    "daynight.total_gain_day_threshold": 300,
+    "daynight.total_gain_night_threshold": 3000
+  },
   "interp": "step",
   "noise_pct": 2,
   "night_gain": [[0, 731], [600, 731]],
@@ -16,6 +20,8 @@
     "max_switches": 1,
     "restart_equivalence_s": 300,
     "monotonicity": "warn",
-    "expect_log": ["adopting persisted mode night"]
+    "expect_log": [
+      "adopting persisted mode night"
+    ]
   }
 }

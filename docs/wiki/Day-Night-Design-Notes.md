@@ -237,6 +237,14 @@ whereas this one sits there until a human edits the config.
 > satisfy is as dead as a derived one, and the machine is the only party in a
 > position to notice — it has both numbers.**
 
+The warn is **opt-in** (`daynight.diagnose_thresholds`, default 0), for the
+same reason `trace_path` is: its condition persists until a human edits the
+config, so unconditionally it is one WARN per reconfirm interval forever — pure
+log growth on a fleet that does not need it, and far more than is needed to
+make the point on one that does. Corpus 13 carries the key and asserts the
+message; corpus 14 is the default-off twin and asserts the silence, so removing
+the gate fails exactly one scenario instead of none.
+
 `DN_DAY_THR_UNREACHABLE` (1.5×) gates the warn so a dawn ramp stays quiet: a
 ramp's best reading sits just above the threshold and crosses it a probe or two
 later, while a mis-set threshold is missed by a wide factor (1.77× and 5.0×
@@ -636,6 +644,20 @@ nicety. Scenario 10 is the sharpest of the three: pre-fix it
 never leaves night at all inside the run (wrong-mode 3100 s, `mode@3500` and
 `mode@5900` both wrong), and `probe_max_skip_s` is deliberately left at its
 43200 default so the backstop cannot quietly rescue it.
+
+**Every scenario now pins `total_gain_day_threshold` and
+`total_gain_night_threshold` explicitly** (at the historical 300/3000), rather
+than inheriting the compiled defaults. This is not tidiness: the corpus encodes
+*incidents*, and an incident happened under a specific configuration. While the
+scenarios inherited the defaults, raising a default silently re-ran all thirteen
+against a configuration none of them was calibrated for — so the defaults could
+not be changed without invalidating the evidence, and the evidence could not
+show whether the change was safe. Pinning decoupled the two, which is what made
+the 300 → 768 default bump measurable at all.
+
+> **Rule: a scenario must pin every config value its incident depended on. A
+> corpus that inherits defaults cannot be used to evaluate a change to those
+> defaults — precisely when you most need it.**
 
 Scenario 10 also carries the generator-F lesson in its shape. Its gain curve
 is **non-monotone on purpose** — a brightening that comes and then goes,

@@ -1434,7 +1434,8 @@ static void *dn_thread(void *arg)
                          * approaches the threshold and crosses it a probe or
                          * two later - stays quiet; and latched once per
                          * excursion so it cannot spam. */
-                        if (!day_thr_warned && day_best_tg > 0.0f &&
+                        if (dn->diagnose_thresholds && !day_thr_warned &&
+                            day_best_tg > 0.0f &&
                             day_best_tg > dn->total_gain_day_threshold *
                                           DN_DAY_THR_UNREACHABLE) {
                             day_thr_warned = 1;

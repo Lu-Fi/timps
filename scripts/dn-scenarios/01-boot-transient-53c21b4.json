@@ -6,6 +6,8 @@
   "duration_s": 180,
   "initial_mode": "day",
   "config": {
+    "daynight.total_gain_day_threshold": 300,
+    "daynight.total_gain_night_threshold": 3000,
     "daynight.boot_settle_s": 5
   },
   "interp": "log",
@@ -18,6 +20,8 @@
     "max_switches": 1,
     "restart_equivalence_s": 120,
     "monotonicity": "skip",
-    "forbid_log": ["switching to night"]
+    "forbid_log": [
+      "switching to night"
+    ]
   }
 }

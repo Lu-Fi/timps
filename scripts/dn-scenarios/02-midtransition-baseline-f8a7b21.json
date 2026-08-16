@@ -5,6 +5,10 @@
   "scale": 60,
   "duration_s": 1200,
   "initial_mode": "night",
+  "config": {
+    "daynight.total_gain_day_threshold": 300,
+    "daynight.total_gain_night_threshold": 3000
+  },
   "interp": "log",
   "night_gain": [[0, 3500], [15, 3500], [20, 1200], [90, 1200], [100, 3500], [600, 3500], [615, 900], [1200, 900]],
   "day_gain": [[0, 8192], [600, 8192], [610, 250], [1200, 250]],
@@ -15,6 +19,8 @@
     "max_switches": 3,
     "restart_equivalence_s": 300,
     "monotonicity": "warn",
-    "expect_log": ["sustained brightening"]
+    "expect_log": [
+      "sustained brightening"
+    ]
   }
 }

@@ -1,0 +1,29 @@
+{
+  "name": "14-day-threshold-quiet-by-default",
+  "incident": "the default-off twin of 13 (daynight.diagnose_thresholds, 2026-08-16)",
+  "description": "Scenario 13's scene exactly - a dim room whose day pipeline never gets under total_gain_day_threshold, so the probe reverts and the warn's condition is TRUE - with the opt-in key absent. The only assertion is the forbid_log: a camera that has not asked for threshold diagnostics must not be told about them.\\n\\nThis pins the gate, not the message. The warn reports a genuine misconfiguration and is worth having on demand, but its condition persists until a human edits the config, so unconditionally it is one WARN per reconfirm interval, forever, on flash-backed syslog - on a correctly-configured fleet that is pure log growth, and on a misconfigured camera one line an hour all night makes the point many times over. Same reasoning as daynight.trace_path. If the gate is ever removed or inverted, 13 keeps passing and only this scenario notices.\\n\\nDuration is cut to one probe/revert cycle because that is all it takes for the condition to arise - 13 carries the content assertions.",
+  "scale": 60,
+  "duration_s": 900,
+  "initial_mode": "night",
+  "config": {
+    "daynight.total_gain_day_threshold": 300,
+    "daynight.total_gain_night_threshold": 3000,
+    "daynight.night_reconfirm_s": 900
+  },
+  "interp": "step",
+  "noise_pct": 4,
+  "noise_seed": 11,
+  "night_gain": [[0, 320], [2400, 320]],
+  "day_gain": [[0, 600], [2400, 600]],
+  "expect": {
+    "mode_at": [[200, "night"], [800, "night"]],
+    "expected_mode": [[0, "night"]],
+    "max_wrong_mode_s": 400,
+    "max_switches": 4,
+    "restart_equivalence_s": null,
+    "monotonicity": "warn",
+    "forbid_log": [
+      "day can never be confirmed here"
+    ]
+  }
+}

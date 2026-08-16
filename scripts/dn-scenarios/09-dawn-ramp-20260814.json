@@ -6,6 +6,8 @@
   "duration_s": 12000,
   "initial_mode": "night",
   "config": {
+    "daynight.total_gain_day_threshold": 300,
+    "daynight.total_gain_night_threshold": 3000,
     "daynight.night_reconfirm_s": 3600
   },
   "interp": "log",
@@ -19,6 +21,8 @@
     "max_switches": 9,
     "restart_equivalence_s": 3600,
     "monotonicity": "warn",
-    "expect_log": ["day confirmed by day-pipeline gain"]
+    "expect_log": [
+      "day confirmed by day-pipeline gain"
+    ]
   }
 }
