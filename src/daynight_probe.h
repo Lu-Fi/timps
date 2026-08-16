@@ -147,6 +147,17 @@
  * over several minutes exceeds the lead, releases the reference and is handled
  * by the periodic reconfirm instead, which is the right division of labour -
  * see corpus scenario 11. */
+/* "the day threshold is below anything this scene can produce" (2026-08-16,
+ * Schlafzimmer + both Wohnzimmer cameras in one afternoon). The margin exists
+ * so a DAWN RAMP stays quiet: a ramp approaches the threshold and crosses it a
+ * probe or two later, so its best reading sits just above it, while a
+ * mis-configured threshold is missed by a wide factor - measured, 1.77x on
+ * Wohnzimmer (best 531 against 300) and 5.0x on Wohnzimmer-Ofen (best 2250
+ * against 450). 1.5 separates them with room on both sides. */
+#ifndef DN_DAY_THR_UNREACHABLE
+#define DN_DAY_THR_UNREACHABLE 1.5f
+#endif
+
 #ifndef DN_HOLD_REF_LEAD
 #define DN_HOLD_REF_LEAD 1.06f        /* frozen ref may lead the baseline 6% */
 #endif

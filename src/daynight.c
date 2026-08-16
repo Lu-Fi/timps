@@ -919,6 +919,19 @@ static void *dn_thread(void *arg)
      * (no comparable reading is in scope there) and, deliberately, once a
      * deadline has decided to revert, so the decision stays one-shot. */
     float   day_verify_ref = -1.0f;
+    /* Lowest day-pipeline gain seen during the current day excursion, and a
+     * once-per-excursion latch for the diagnostic below. total_gain_day_
+     * threshold is a CONFIG bar, not a derived one, so dn_bar_check()'s
+     * generator-C guard never looked at it - but it fails the same way: set
+     * below what a room's day pipeline actually produces, "day" can never be
+     * confirmed, every probe reverts, and the camera sits in night mode in
+     * daylight probing once per reconfirm interval forever. Three cameras hit
+     * exactly this on 2026-08-16 (Schlafzimmer, then both Wohnzimmer), and
+     * each diagnosis needed an SSH session and a read of the day-pipeline
+     * gains in syslog, because the revert logs "unverified day" without ever
+     * naming the threshold that made it unverifiable. -1 = nothing seen. */
+    float   day_best_tg = -1.0f;
+    int     day_thr_warned = 0;
     int     day_verify_ext = 0;
     /* monotonic ms of the last time a probe ACTUALLY drove the board (physical
      * IR-cut click), periodic or brightening. Feeds the probe_max_skip_s
@@ -1078,6 +1091,7 @@ static void *dn_thread(void *arg)
             probe_day_ms = 0; probe_verdict_at_ms = 0;
             probe_backoff = 1; probe_fail_smooth = -1.0f;
             day_verify_ref = -1.0f; day_verify_ext = 0;
+            day_best_tg = -1.0f; day_thr_warned = 0;
             last_phys_probe_ms = 0;
             osc_n = 0; osc_freeze_until_ms = 0;
             pending_target = DN_UNKNOWN; pending_since_ms = 0;
@@ -1106,6 +1120,12 @@ static void *dn_thread(void *arg)
             continue;
         }
         warned_noisp = 0;
+
+        /* day-only: the best (lowest) day-pipeline reading of this excursion,
+         * for the unreachable-threshold diagnostic at the revert. */
+        if (dn->mode == DN_MODE_SENSOR && cur == DN_DAY && tg >= 0.0f &&
+            (day_best_tg <= 0.0f || tg < day_best_tg))
+            day_best_tg = tg;
 
         /* night-only smoothed gain: the baseline drift and the brightening
          * probe read this instead of raw ticks (see the DN_BASELINE_ALPHA
@@ -1403,6 +1423,36 @@ static void *dn_thread(void *arg)
                         day_verify_ref = -1.0f;
                         LOGD(MOD, "day never confirmed: gain %.0f still "
                                   "inside the dead-zone", (double)tg);
+                        /* generator C, applied to the CONFIG bar. If the best
+                         * the day pipeline managed all excursion is still
+                         * clear of the threshold, no reading this scene
+                         * produces can ever confirm day and the probe/revert
+                         * pair will repeat every reconfirm interval until
+                         * someone changes the config. Say so, with the number
+                         * to change it to. Gated on DN_DAY_THR_UNREACHABLE
+                         * rather than a bare > so a dawn ramp - which
+                         * approaches the threshold and crosses it a probe or
+                         * two later - stays quiet; and latched once per
+                         * excursion so it cannot spam. */
+                        if (!day_thr_warned && day_best_tg > 0.0f &&
+                            day_best_tg > dn->total_gain_day_threshold *
+                                          DN_DAY_THR_UNREACHABLE) {
+                            day_thr_warned = 1;
+                            LOGW(MOD, "day can never be confirmed here: the "
+                                      "best day-pipeline gain this excursion "
+                                      "was %.0f but total_gain_day_threshold "
+                                      "is %.0f - this scene is dimmer than "
+                                      "the threshold assumes, so every probe "
+                                      "will revert and the camera will stay "
+                                      "in night mode. Raise "
+                                      "daynight.total_gain_day_threshold "
+                                      "above %.0f (and keep "
+                                      "total_gain_night_threshold well above "
+                                      "that)",
+                                 (double)day_best_tg,
+                                 (double)dn->total_gain_day_threshold,
+                                 (double)day_best_tg);
+                        }
                     }
                 }
             } else if (cur == DN_NIGHT) {
@@ -1740,6 +1790,7 @@ static void *dn_thread(void *arg)
                 probe_day_ms = 0;
                 probe_verdict_at_ms = 0;  /* a new switch supersedes it */
                 day_verify_ref = -1.0f; day_verify_ext = 0;
+                day_best_tg = -1.0f; day_thr_warned = 0;
                 night_entered_ms = (target == DN_NIGHT) ? now_ms : 0;
                 /* (re)arm the periodic reconfirm probe alongside it (see
                  * night_reconfirm_s doc comment in config.h), stretched by

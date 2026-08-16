@@ -6,6 +6,33 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added
+- **day/night: a warning when `total_gain_day_threshold` is set below anything
+  the scene's day pipeline can produce** (`src/daynight.c`,
+  `src/daynight_probe.h`; three live cameras on 2026-08-16 - Schlafzimmer in
+  the morning, then Wohnzimmer 192.168.241.204 and Wohnzimmer-Ofen
+  192.168.10.224 the same afternoon). Observability only, no behaviour change.
+  `total_gain_day_threshold` is a config bar rather than a derived one, so the
+  generator-C guard never looked at it - but it fails identically. Set below
+  what a room's day pipeline actually reads, `tg < total_gain_day_threshold`
+  can never come true: every probe lands ambiguous, the verify expires, the
+  camera reverts, and it spends one audible IR-cut pair per reconfirm interval
+  sitting in night mode in daylight. Measured: Wohnzimmer's day pipeline ran
+  700 -> 591 -> 531 against a threshold of 300 (best reading 1.77x the bar);
+  Wohnzimmer-Ofen's ran 3299 -> 2629 -> 2250 against 450 (5.0x). The machine's
+  behaviour is correct in every case - the day pipeline is the trustworthy
+  judge, it judged "not day", night is the recoverable side - but the revert
+  logged only "unverified day, gain N" and never named the threshold that made
+  it unverifiable, so all three diagnoses cost an SSH session and a hand-read
+  of day-pipeline gains out of syslog. The daemon now tracks the best (lowest)
+  day-pipeline reading of each day excursion and, at an unverified revert,
+  warns with the number to change the config to. Gated on
+  `DN_DAY_THR_UNREACHABLE` (1.5x) so a dawn ramp stays quiet - a ramp's best
+  reading sits just above the threshold and crosses it a probe or two later,
+  while a mis-set threshold is missed by a wide factor - and latched once per
+  excursion so it cannot spam. Corpus 09/08/06 are the negative controls (zero
+  emissions); new corpus scenario 13 is the positive one.
+
 ### Fixed
 - **day/night: the unsatisfiable-bar guard checked a different number from the
   gate it guards, so it stayed silent on the one camera it was written for**

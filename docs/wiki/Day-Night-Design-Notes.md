@@ -208,6 +208,41 @@ them. The fix is `dn_hold_gate()`: one definition, called by both.
 > value derived alongside it. If the guard recomputes the bar, the guard is a
 > second implementation and will drift.**
 
+**Third amendment, same day, three cameras: the rule applies to CONFIG bars
+too.** `total_gain_day_threshold` is not derived from a measurement, so
+`dn_bar_check()` has never looked at it — but it fails identically. Set below
+what a room's day pipeline actually produces, the comparison it gates
+(`tg < total_gain_day_threshold` → confirm day) can never come true: every
+probe lands ambiguous, the verify expires, the camera reverts, and it spends
+one audible IR-cut pair per reconfirm interval sitting in night mode in
+daylight. Measured on 2026-08-16, all within a few hours:
+
+| camera | threshold | best day-pipeline gain | ratio |
+| --- | --- | --- | --- |
+| Schlafzimmer | 300 (default) | — (fixed by hand to 700) | — |
+| Wohnzimmer `.241.204` | 300 (default) | 531 (from 700 → 591 → 531) | 1.77× |
+| Wohnzimmer-Ofen `.10.224` | 450 | 2250 (from 3299 → 2629 → 2250) | 5.0× |
+
+The machine's *behaviour* is correct in all three: the day pipeline is the
+trustworthy judge, it judged "not day", and night is the recoverable side. What
+was wrong is that it never said why — the revert logs `unverified day, gain N`
+and never names the threshold that made it unverifiable, so each diagnosis cost
+an SSH session and a hand-read of day-pipeline gains out of syslog. There is one
+important difference from a derived bar, and it makes the diagnostic more
+valuable rather than less: a derived bar gets re-derived and may fix itself,
+whereas this one sits there until a human edits the config.
+
+> **Rule: the unsatisfiable-bar rule is about the comparison, not about where
+> the number came from. A CONFIG threshold that no reading in this scene can
+> satisfy is as dead as a derived one, and the machine is the only party in a
+> position to notice — it has both numbers.**
+
+`DN_DAY_THR_UNREACHABLE` (1.5×) gates the warn so a dawn ramp stays quiet: a
+ramp's best reading sits just above the threshold and crosses it a probe or two
+later, while a mis-set threshold is missed by a wide factor (1.77× and 5.0×
+above). Corpus 09, 08 and 06 are the negative controls and emit it zero times;
+corpus 13 is the positive one.
+
 Considered and **rejected**: refusing to plant a baseline that makes the hold
 unsatisfiable (`baseline >= floor / (0.8 · 0.97)` ≈ 1.29× floor). It is the
 more ambitious fix and it does subsume the arithmetic, but it is wrong here for
