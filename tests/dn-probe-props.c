@@ -351,6 +351,20 @@ int main(void)
         e.min_smooth_since_probe = e.smooth_tg;
         g_bases++;
 
+        /* The hold's frozen rest reference (2026-08-16). REF[0] = 0 is "not
+         * frozen yet", which falls back to the live baseline and therefore
+         * reproduces the pre-fix semantics, so the sweep keeps every bit of
+         * the coverage it had; the other two are a reference frozen ABOVE and
+         * BELOW the live baseline. The below-baseline case is the one that
+         * matters: it is unreachable on a real trajectory (the baseline drifts
+         * toward smooth_tg, so it cannot climb above a frozen rest level while
+         * the scene is brighter than it) and it is exactly the counterfactual
+         * that caught the missing max() in the first draft of this fix. */
+        static const float REF[] = { 0.0f, 1.35f, 0.6f };
+        for (int ir = 0; ir < (int)(sizeof REF / sizeof *REF); ir++) {
+        e.brighten_ref = REF[ir] == 0.0f ? 0.0f
+                       : (e.night_baseline > 0.0f ? e.night_baseline * REF[ir]
+                                                  : 0.0f);
         assert_reconfirm_bound(&e);
         for (int ik = 0; ik < NK; ik++) {
             dn_evidence b = e;
@@ -368,6 +382,8 @@ int main(void)
             d.min_smooth_since_probe = b.smooth_tg;
             assert_dip_monotone(&e, &d);
         }
+        }
+        e.brighten_ref = 0.0f;
     }
 
     /* --- the three named historical violations, as explicit cases --------
@@ -567,6 +583,93 @@ int main(void)
                 show("same dip", &samedip, &ps);
                 printf("\n");
             }
+        }
+
+        /* (B3) The hold's bar must not be dragged down by the baseline chasing
+         * the very brightening it exists to detect. The room rests at 2400; a
+         * light takes it to 1820 (24%) and stays. Over the step and the ticks
+         * after it the baseline chases down to 2300 - a 4.2% lead, the size a
+         * STEP produces and comfortably inside DN_HOLD_REF_LEAD. That is
+         * already enough to shut the gate: the LIVE bar is 0.8*2300 = 1840
+         * with a 1785 margin, so a permanent 24% brightening reads as 2%
+         * SHORT and the hold cannot start - and on the corpus 10 trajectory
+         * the bar goes on to cross smooth_tg entirely, taking the `>= bar`
+         * branch and re-arming, so the event is not merely missed but erased.
+         * Against the frozen rest level the bar is 1920, margin 1862, and the
+         * hold starts at once. */
+        {
+            dn_evidence chase;
+            memset(&chase, 0, sizeof chase);
+            chase.now_ms = 4000000; chase.day_gain_pct = 60;
+            chase.night_reconfirm_s = 3600; chase.probe_max_skip_s = 43200;
+            chase.transition_s = 5; chase.day_threshold = 300.0f;
+            chase.last_switch_ms = 3000000; chase.last_phys_probe_ms = 3000000;
+            chase.brighten_armed = 1;
+            chase.probe_fail_smooth = -1.0f;
+            chase.night_baseline = 2300.0f;    /* already chasing downward */
+            chase.brighten_ref   = 2400.0f;    /* the pre-event rest level */
+            chase.smooth_tg = chase.min_smooth_since_probe = 1820.0f;
+            dn_probe_plan pc = dn_next_probe(&chase);
+            g_pairs++;
+            if (!pc.brighten_started) {
+                g_viol++;
+                printf("VIOLATION (kinder-links B3): a 24%% brightening did "
+                       "not start the hold - bar %.0f off a frozen rest level "
+                       "of %.0f (live baseline %.0f)\n", (double)pc.hold_bar,
+                       (double)chase.brighten_ref,
+                       (double)chase.night_baseline);
+                show("chased  ", &chase, &pc);
+                printf("\n");
+            }
+            /* and the blip guard the whole debounce exists for: the moment the
+             * scene returns to its resting level the hold must be discarded,
+             * not carried. A headlight cannot bank 29 s of confirm and spend
+             * it later. */
+            dn_evidence blip = chase;
+            blip.brighten_since_ms = 3999000;   /* 1 s short of confirming */
+            blip.smooth_tg = blip.min_smooth_since_probe = 2400.0f;
+            dn_probe_plan pbl = dn_next_probe(&blip);
+            g_pairs++;
+            if (pbl.brighten_since_ms != 0 || pbl.act == DN_PROBE_FIRE) {
+                g_viol++;
+                printf("VIOLATION (kinder-links B3): a hold survived the scene "
+                       "returning to its resting level - a transient could "
+                       "bank confirm time\n");
+                show("blip    ", &blip, &pbl);
+                printf("\n");
+            }
+            /* ...and the other side of it (fad4f40, re-earned 2026-08-16):
+             * the SAME evidence shape on a dawn RAMP must NOT start a hold,
+             * or the frozen reference walks a probe volley down the descent.
+             * The only thing separating the two is how far the reference has
+             * been allowed to lead the live baseline - 4.2% for the step
+             * above, 15.4% here, straight off the corpus 09 log. */
+            dn_evidence ramp = chase;
+            ramp.night_baseline = 3398.0f;
+            ramp.brighten_ref   = 3920.0f;      /* 15.4% lead = a ramp */
+            ramp.smooth_tg = ramp.min_smooth_since_probe = 3038.0f;
+            dn_probe_plan pr2 = dn_next_probe(&ramp);
+            g_pairs++;
+            if (pr2.brighten_started) {
+                g_viol++;
+                printf("VIOLATION (kinder-links B3): a stale frozen reference "
+                       "started a hold on a dawn ramp - this is fad4f40's "
+                       "probe volley, ref %.0f leading baseline %.0f by "
+                       "%.1f%%\n", (double)ramp.brighten_ref,
+                       (double)ramp.night_baseline,
+                       (double)((ramp.brighten_ref / ramp.night_baseline - 1.0f)
+                                * 100.0f));
+                show("ramp    ", &ramp, &pr2);
+                printf("\n");
+            }
+            /* the max(): a stale reference BELOW the live baseline must never
+             * hand a brighter scene a lower bar than a dimmer one gets */
+            dn_evidence stale_dim = chase, stale_bright = chase;
+            stale_dim.brighten_ref = stale_bright.brighten_ref = 1400.0f;
+            stale_dim.smooth_tg = stale_dim.min_smooth_since_probe = 1500.0f;
+            stale_bright.smooth_tg =
+                stale_bright.min_smooth_since_probe = 1300.0f;
+            assert_monotone(&stale_dim, &stale_bright);
         }
     }
 

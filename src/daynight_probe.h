@@ -108,6 +108,48 @@
 #ifndef DN_RATCHET_MARGIN
 #define DN_RATCHET_MARGIN 0.84f       /* one quarter stop of NEW brightening */
 #endif
+/* STALE-REFERENCE RELEASE (kinder-links 2026-08-16, second order).
+ *
+ * brighten_ref freezes the baseline so a brightening cannot erode the bar it
+ * is measured against. Frozen indefinitely, though, it reintroduces exactly
+ * the pre-dawn probe volley fad4f40 removed: on a monotone descent the bar
+ * stands still, the ramp walks into it, the probe fails, the baseline
+ * replants lower, the reference re-freezes there, and the ramp walks into the
+ * NEXT one. Measured on corpus scenario 09 (the cam-vorne dawn) when the
+ * freeze was first added without this: six sustained-brightening pairs down
+ * one ramp, 14 board switches against a budget of 9. The chasing baseline had
+ * been suppressing that volley all along - accidentally, and at the cost of
+ * suppressing every genuine light-on too.
+ *
+ * So the freeze needs a release, and the discriminator is already in the two
+ * numbers: how far the frozen reference has been allowed to LEAD the live
+ * baseline. A step contaminates it by a couple of percent; a ramp slow enough
+ * for the baseline to track separates them by a lot, because the baseline has
+ * been chasing for the whole descent. Measured, same two scenarios:
+ *      corpus 10, a 23% step:      ref 2396 vs baseline 2343  = 2.3%
+ *      corpus 09, a dawn ramp:     ref 3920 vs baseline 3398  = 15.4%
+ *                                  ...and 14.8 / 10.9 / 10.1 / 10.4 / 11.7%
+ *                                  at the five successive holds after it.
+ * Derivation rather than curve-fitting: a legitimate step has to survive its
+ * approach plus one confirm window. The baseline closes (1 - e^(-T/tau)) of
+ * the gap, tau = 500 ms / DN_BASELINE_ALPHA = 250 s, and the gap is at most
+ * (100-pct)/2 = 22.4% of the reference; for T = 60 s (a 30 s approach and the
+ * 30 s confirm) that is 21.3% of 22.4% = 4.8%. A ramp the baseline can track
+ * is >= 10% by the time it reaches the bar. 6% sits between the two with 1.25x
+ * over the derived requirement and 1.7x under the measured ramp floor.
+ *
+ * Deliberately expressed as a DIVERGENCE and not as a timer, which it is
+ * otherwise equivalent to: the baseline's drift rate is fixed, so "how far has
+ * the reference led" and "how long has it been frozen" are the same
+ * measurement - and the divergence form needs no second clock field and keeps
+ * dn_next_probe() reading now_ms and nothing else. It is also the honest
+ * statement of the limit: the fast path is for STEPS. A light that ramps up
+ * over several minutes exceeds the lead, releases the reference and is handled
+ * by the periodic reconfirm instead, which is the right division of labour -
+ * see corpus scenario 11. */
+#ifndef DN_HOLD_REF_LEAD
+#define DN_HOLD_REF_LEAD 1.06f        /* frozen ref may lead the baseline 6% */
+#endif
 /* 60000 -> 30000 (2026-08-12, "switching feels sluggish"): with the direct
  * adaptive night->day switch removed (b4a54f0), this hold IS the entire
  * night->day latency for the everyday "a light came on" event - the smoothed
@@ -228,6 +270,33 @@ typedef struct {
     int64_t last_switch_ms;      /* last mode switch (dwell clock) */
     int64_t brighten_since_ms;   /* when the brightening hold started (0=no) */
     int     brighten_armed;      /* fresh above-bar -> below-bar edge seen */
+    /* FROZEN baseline the hold's bar is derived from - snapshotted on the last
+     * tick the scene was still AT or above that bar, i.e. the room's resting
+     * level as of the last moment it was not brightening. <=0 = none yet, use
+     * the live baseline.
+     *
+     * Why this cannot be night_baseline (kinder-links 2026-08-16, and it is
+     * generator D exactly): night_baseline drifts toward smooth_tg every tick,
+     * and the hold's bar is derived FROM it, so the instant a light comes on
+     * the bar starts converging on the very reading it exists to detect. The
+     * gap it has to close is only (100-pct)/2 = 22.4%, and DN_BASELINE_ALPHA
+     * closes that in ~25 s of a real step - against a DN_BRIGHTEN_CONFIRM_MS
+     * of 30 s. The debounce loses the race by construction. Traced on the
+     * corpus 10 replay, tick by tick: a 23% brightening left the margin test
+     * 2.2% short at the moment the step completed and falling from there, so
+     * it never opened on any tick; 25 s later the bar had dropped THROUGH
+     * smooth_tg, which takes the `>= bar` branch and re-arms - so a
+     * permanently brighter room reads as "nothing has changed" from then on,
+     * and the fast path is not merely slow, it is unreachable for any step
+     * whose size is comparable to the bar itself.
+     *
+     * Freezing the reference is the same move 19dcd74 made for the unverified
+     * day (day_verify_ref anchors "still brightening" on the reading that
+     * armed the deadline), and it is what generator D's rule demands: the
+     * question "is the scene brighter than its resting level?" has to be asked
+     * against what the resting level WAS, not against a number that is busy
+     * becoming the answer. */
+    float   brighten_ref;
     int64_t osc_freeze_until_ms; /* oscillation-breaker cooldown (0 = none) */
 } dn_evidence;
 
@@ -245,10 +314,13 @@ typedef struct {
      * it is computed here so the whole schedule stays in one place) */
     int     brighten_armed;
     int64_t brighten_since_ms;
+    float   brighten_ref;        /* frozen baseline the hold's bar comes from */
     int     brighten_started;    /* the hold started on THIS evaluation */
 
     /* derived, for log lines only - never re-derive these at the call site */
     float   probe_bar;           /* baseline-relative "solidly night" bar */
+    float   hold_bar;            /* the hold's bar, off the FROZEN reference;
+                                  * equals probe_bar until the scene leaves it */
     float   ratchet_bar;         /* frozen-anchor brightening bar (<0 = none) */
     int     anchor_override;     /* the frozen anchor beat the drifting bar */
     int     trend_pulled_in;     /* the backoff was suspended, see below */
@@ -344,8 +416,10 @@ static inline dn_probe_plan dn_next_probe(const dn_evidence *e)
     p.rearm_at_ms = 0;
     p.brighten_armed    = e->brighten_armed;
     p.brighten_since_ms = e->brighten_since_ms;
+    p.brighten_ref      = e->brighten_ref;
     p.brighten_started  = 0;
     p.probe_bar   = 0.0f;
+    p.hold_bar    = 0.0f;
     p.ratchet_bar = -1.0f;
     p.anchor_override = 0;
     p.trend_pulled_in = 0;
@@ -448,11 +522,62 @@ static inline dn_probe_plan dn_next_probe(const dn_evidence *e)
      * enough to cross the strict adaptive bar, so probe the day pipeline and
      * let ITS calibrated thresholds decide. The hold only arms on a fresh
      * above-bar -> below-bar EDGE of the smoothed gain, so after a failed
-     * probe the scene sits below the bar DISARMED until the baseline drift
-     * re-converges - identical darkness can never re-fire it. */
+     * probe the scene sits below the bar DISARMED until it genuinely darkens
+     * again - identical darkness can never re-fire it.
+     *
+     * The bar comes off brighten_ref, a FROZEN snapshot of the baseline taken
+     * on the last tick the scene was still at or above it, never off the live
+     * drifting baseline - see brighten_ref in dn_evidence for the measured
+     * reason. Note what this does NOT relax: the arming edge, the 30 s
+     * confirm, the failure ratchet, the transition_s dwell and the oscillation
+     * breaker are all untouched, so a passing headlight is rejected exactly as
+     * before (a 2 s blip barely moves a 5 s-tau EMA, and could not hold for
+     * 30 s if it did). What changes is only that a sustained brightening stops
+     * being erased by the reference it is measured against. */
     if (adaptive && e->night_baseline > 0.0f && e->smooth_tg > 0.0f) {
         int64_t hold_in = DN_PROBE_NEVER;
-        if (e->smooth_tg >= p.probe_bar) {
+        /* The reference is the HIGHER of the frozen rest level and the live
+         * baseline. The max is not cosmetic - without it the schedule is not
+         * monotone, and the property test finds it: a frozen ref BELOW the
+         * live baseline would hand a brighter scene a lower bar than a dimmer
+         * one gets, i.e. brighter evidence buying a later probe, the exact
+         * shape of 0f5fc80/14a1d61. It is also the physically right rule: if
+         * the baseline has risen above the frozen rest level the room has
+         * genuinely got darker since, and that newer, darker rest level is the
+         * honest thing to measure a brightening against. Freezing only ever
+         * protects the reference from being dragged DOWN by the event it is
+         * supposed to detect. */
+        float   hold_ref = e->night_baseline;
+        if (p.brighten_ref > hold_ref) {
+            hold_ref = p.brighten_ref;
+            /* ...but only while it is still a RECENT rest level. Once it leads
+             * the live baseline by more than DN_HOLD_REF_LEAD the scene has
+             * been below it long enough for the baseline to have moved on:
+             * that is a ramp, not a step, and holding the old reference would
+             * walk a probe volley down it. Fall back to the live baseline,
+             * which is what suppresses the descent. */
+            if (hold_ref > e->night_baseline * DN_HOLD_REF_LEAD)
+                hold_ref = e->night_baseline;
+        }
+        /* The reference tracks the live baseline only while the scene is AT
+         * REST - within DN_BRIGHTEN_MARGIN of it - and freezes the moment the
+         * scene is measurably brighter than that. Freezing at the BAR instead
+         * (the obvious place) is far too late: the bar is 22.4% away, so by
+         * the time the scene reaches it the descent has been under way for
+         * tens of seconds and the baseline has been chasing it the whole time.
+         * Measured on the corpus 10 replay: freezing at the bar captured 2353
+         * where the true pre-event rest level was 2397, and that 1.8% of
+         * contamination was itself enough to keep the margin shut. The 3% band
+         * is the same "measurably brighter" notion the trend test and the
+         * anchor override use, and it is wide enough that AGC noise cannot
+         * freeze the reference spuriously - and harmless if it briefly does,
+         * since the next at-rest tick resumes tracking. */
+        if (e->smooth_tg >= hold_ref * DN_BRIGHTEN_MARGIN) {
+            p.brighten_ref = e->night_baseline;
+            hold_ref       = e->night_baseline;
+        }
+        p.hold_bar = hold_ref * (100.0f + (float)e->day_gain_pct) / 200.0f;
+        if (e->smooth_tg >= p.hold_bar) {
             p.brighten_armed    = 1;
             p.brighten_since_ms = 0;
         } else if (p.brighten_armed) {
@@ -463,7 +588,7 @@ static inline dn_probe_plan dn_next_probe(const dn_evidence *e)
                  * another full trigger-worth of NEW brightening below the
                  * level that already failed, or a slow ramp re-fires every
                  * time it re-crosses the freshly resampled baseline's bar). */
-                if (e->smooth_tg < p.probe_bar * DN_BRIGHTEN_MARGIN &&
+                if (e->smooth_tg < p.hold_bar * DN_BRIGHTEN_MARGIN &&
                     (p.ratchet_bar < 0.0f || e->smooth_tg < p.ratchet_bar)) {
                     p.brighten_since_ms = e->now_ms;
                     p.brighten_started  = 1;

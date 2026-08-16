@@ -40,7 +40,8 @@ might guess from the section headings:
 3. pre-switch hysteresis (5 s)
 4. adaptive baseline + symmetric EMA drift
 5. sustained-brightening hold, with its arming *edge*
-6. …and its arming *margin* (`DN_BRIGHTEN_MARGIN`)
+6. …and its arming *margin* (`DN_BRIGHTEN_MARGIN`), against a *frozen* rest
+   reference (`brighten_ref` / `DN_HOLD_REF_LEAD`)
 7. failure ratchet (`probe_fail_smooth` × `DN_RATCHET_MARGIN`)
 8. exponential backoff on failed probes
 9. passive-evidence skip gate
@@ -202,16 +203,46 @@ confirm each other instead of either being the other's escape hatch.
 - `14a1d61`: the baseline drifts toward `smooth_tg`, and the skip gate's
   "solidly night" bar is derived from the baseline — so over hours the bar
   chased the (day-level) gain down and "still deep in night" stayed true.
+- kinder-links 2026-08-16: the same chase in the **third** consumer, the
+  sustained-brightening hold, and the fastest-acting instance of it by a wide
+  margin. The hold's bar is `(100+pct)/200` of the baseline, so it sits 22.4 %
+  away; `DN_BASELINE_ALPHA` closes 22.4 % in about **25 s**, against a
+  `DN_BRIGHTEN_CONFIRM_MS` of **30 s**. The debounce loses that race by
+  construction. Traced tick by tick on the corpus 10 replay: a 23 % light-on
+  left the margin test 2.2 % short at the instant the step completed and
+  falling from there, so it never opened on any tick — and 25 s later the bar
+  had dropped *through* `smooth_tg`, taking the `>= bar` branch, which re-arms
+  and clears the hold. A permanently brighter room therefore reads as "nothing
+  has changed" from then on. Not merely slow: **erased**.
 
-The fix in both cases was the same idea, found twice independently: anchor the
-test on a value **frozen at the moment of an actual measurement**
-(`probe_fail_smooth`) rather than one that drifts.
+The fix in all three cases was the same idea, found three times independently:
+anchor the test on a value **frozen at the moment of an actual measurement**
+(`probe_fail_smooth`, or for the hold a snapshot of the baseline taken while
+the scene was still at rest) rather than one that drifts.
 
 > **Rule: an "is there evidence of change?" test must be anchored on a frozen
 > measurement, never on a value that any other mechanism updates.**
+>
+> **Corollary (2026-08-16): where a bar is derived from a drifting value, the
+> drift rate and the confirm window are not independent knobs. If the drift
+> can close the bar's own gap faster than the confirm can elapse, the test is
+> not "strict", it is unreachable — the same failure mode as an unsatisfiable
+> bar (generator C), arriving through time rather than through range. State
+> the ratio when either constant is touched.**
 
-Worth an audit pass: `night_baseline` currently feeds the brightening bar, the
-skip gate and `dn_day_trigger()`, and drifts under all three.
+The audit that item asked for is now two-thirds done: `night_baseline` fed the
+brightening bar, the skip gate and `dn_day_trigger()` and drifted under all
+three. The skip gate got its frozen anchor in `14a1d61`, the hold got
+`brighten_ref` on 2026-08-16, and `dn_day_trigger()` is informational in the
+adaptive regime (night→day is probe-mediated since `b4a54f0`), so it is the
+one consumer where the drift is harmless. Note also **where** the hold's
+snapshot has to be taken: freezing it when the scene crosses the *bar* is far
+too late, because the bar is 22.4 % away and the baseline has been chasing for
+tens of seconds by then — measured, that late freeze captured 2353 where the
+true pre-event rest level was 2397, and 1.8 % of contamination was itself
+enough to keep the margin shut. It freezes at the 3 % `DN_BRIGHTEN_MARGIN`
+band instead: the reference stops tracking the moment the scene is *measurably*
+brighter, not once it is *decisively* brighter.
 
 ### E. The evidence model is missing a dimension
 
@@ -441,15 +472,33 @@ floor 256).
    borrowing `day_gain_pct`. Pinned by the `kinder-links B1` cases in the
    property test — both that a 21 % brightening can now start a hold, and that
    an identical re-dip still cannot.
+9. ~~**Stop the brightening hold's bar being derived from the drifting
+   baseline** (generator D, third consumer).~~ — done, 2026-08-16:
+   `brighten_ref`, released again by `DN_HOLD_REF_LEAD`. This is the one that
+   makes the fast path actually fire for the everyday event — corpus 10 goes
+   from 489 s to 35 s — and the one that most needed its second-order effect
+   caught, since the first version of it walked `fad4f40`'s probe volley down
+   corpus 09's dawn ramp.
 
 ### What the corpus is worth, and how to keep it worth that
 
 The corpus is only evidence if a scenario **fails against a build without the
-fix it is named for**. Three of the ten assert a *decision* rule rather than a
-new log line, and all three were checked that way (08 against the anchor
-override and against the trend suspension, 09 against `19dcd74`'s extension,
-10 against the latched suspension) — each fails on behavioural assertions, not
-merely on `expect_log`. Scenario 10 is the sharpest of the three: pre-fix it
+fix it is named for**. Four of the twelve assert a *decision* rule rather than
+a new log line, and all four were checked that way (08 against the anchor
+override and against the trend suspension, 09 against `19dcd74`'s extension
+*and* — newly — as the negative control for `DN_HOLD_REF_LEAD`, 10 against
+both the latched suspension and the frozen hold reference, 11 as the
+sensitivity floor via `forbid_log`) — each fails on behavioural assertions,
+not merely on `expect_log`.
+
+Scenario 09 earned a second job on 2026-08-16 and it is worth naming, because
+it is the only reason a fix that looked finished was not shipped broken: the
+first version of the frozen hold reference passed 10 and 11 and the whole
+property test, and 09 failed it instantly on the **click budget** — 14 board
+switches against 9, six sustained-brightening pairs walking down one dawn
+ramp. The mode assertions all still passed. A corpus that only checked "did it
+end up in the right mode" would have shipped it. `max_switches` is not a
+nicety. Scenario 10 is the sharpest of the three: pre-fix it
 never leaves night at all inside the run (wrong-mode 3100 s, `mode@3500` and
 `mode@5900` both wrong), and `probe_max_skip_s` is deliberately left at its
 43200 default so the backstop cannot quietly rescue it.
@@ -482,5 +531,14 @@ consumer the anchor override does not cover.
 
 Also worth a pass now that generator F is named: audit the remaining
 between-tick state in `dn_thread` the same way. `brighten_since_ms`,
-`day_verify_ref` and `probe_backoff` itself are each carried across ticks and
-each has only snapshot properties asserted about it.
+`day_verify_ref`, `brighten_ref` and `probe_backoff` itself are each carried
+across ticks and each has only snapshot properties asserted about it.
+
+And one specific piece of unfinished business from the third fix: the hold now
+distinguishes a step from a ramp by how far its frozen reference has led the
+baseline, which is a *proxy* for the derivative. The direct test — "is the
+gain still falling?" — is the open generator-E item two bullets up, and it
+would replace `DN_HOLD_REF_LEAD` with the thing that constant is standing in
+for. Do that when the hold is next opened, not before: the proxy is measured,
+bounded on both sides and has a negative control, which is more than the
+subsystem's last four constants started with.

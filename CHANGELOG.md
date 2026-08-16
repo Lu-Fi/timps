@@ -7,6 +7,67 @@ semantic versioning.
 ## [Unreleased]
 
 ### Fixed
+- **day/night: turning a room light on took up to a full `night_reconfirm_s`
+  to be noticed, instead of the ~30s the sustained-brightening path exists to
+  deliver** (`src/daynight_probe.h`, `src/daynight.c`; kinder-links
+  2026-08-16, the third gate; design-notes generator D). With the two fixes
+  below the mode did recover - but through the periodic reconfirm, i.e. up to
+  an hour on a real camera's 3600s default. The fast path never fired, and the
+  reason is generator D in its fastest-acting form yet:
+  the hold's bar is `(100+day_gain_pct)/200` of the **live** `night_baseline`,
+  and `night_baseline` drifts toward `smooth_tg`. So the instant a light comes
+  on, the bar starts converging on the very reading it exists to detect. The
+  bar is only 22.4% away and `DN_BASELINE_ALPHA` closes 22.4% in about **25s**,
+  against a `DN_BRIGHTEN_CONFIRM_MS` of **30s** - the debounce loses that race
+  by construction, for every event whose size is comparable to the bar itself.
+  Traced tick by tick on the replay: a 23% light-on left the margin test 2.2%
+  short at the instant the step completed and *falling* from there, so it never
+  opened on any tick; 25s later the bar had dropped straight *through*
+  `smooth_tg`, which takes the `>= bar` branch - and that branch re-arms and
+  clears the hold. A permanently brighter room therefore read as "nothing has
+  changed" from then on. Not merely slow: **erased**.
+  Fix: `brighten_ref`, a frozen snapshot of the baseline taken while the scene
+  is still at rest, which the hold's bar is derived from instead. Three details
+  are load-bearing and each is pinned by a named property-test case:
+  * It freezes at the 3% `DN_BRIGHTEN_MARGIN` band, not at the bar. Freezing
+    at the bar is far too late - the bar is 22.4% away, so by the time the
+    scene reaches it the baseline has been chasing for tens of seconds;
+    measured, that late freeze captured 2353 where the true pre-event rest
+    level was 2397, and 1.8% of contamination was itself enough to keep the
+    margin shut.
+  * The reference is the **max** of the frozen value and the live baseline.
+    Without the max a stale-low reference hands a brighter scene a *lower* bar
+    than a dimmer one gets - brighter evidence buying a later probe, the exact
+    shape of `0f5fc80`/`14a1d61`. The property test finds it immediately: 228
+    monotonicity violations.
+  * The freeze is released once it leads the live baseline by more than
+    `DN_HOLD_REF_LEAD` (6%). Frozen indefinitely it reintroduces `fad4f40`'s
+    pre-dawn probe volley - the bar stands still, a dawn ramp walks into it,
+    the probe fails, the baseline replants lower, the reference re-freezes
+    there, repeat. Corpus scenario 09 caught that on the first run: six
+    sustained-brightening pairs down one ramp, 14 board switches against a
+    budget of 9. The release is the step-vs-ramp discriminator and the two
+    numbers separate cleanly - a step contaminates the reference by 2.3%, a
+    ramp the baseline can track separates them by 10-15%. Expressed as a
+    divergence rather than a timer, which it is otherwise equivalent to (the
+    drift rate is fixed, so "how far has it led" and "how long has it been
+    frozen" are the same measurement), so `dn_next_probe()` still reads no
+    clock but `now_ms`.
+  Measured on corpus scenario 10: day at **t=2685, 35s** after the light-on
+  completes, against t=3089 (489s) without it; the gate-reverted build fails
+  `mode@2750` and runs 353s of wrong mode. Nothing about the debounce is
+  relaxed - the arming edge, the 30s confirm, the failure ratchet, the
+  `transition_s` dwell and the oscillation breaker are untouched, so a passing
+  headlight is rejected exactly as before, and a named property case asserts
+  that a scene returning to its resting level discards an in-progress hold
+  rather than banking it. What the fix does *not* claim is recorded too: a
+  fast, large light-on from a settled dark room (27% over 10s) was already
+  caught before this change - the freeze **widens** the catchable band rather
+  than creating it, and the band it adds is exactly where real room lights sit.
+  New corpus scenario 11 pins the other side, a light-on too small for the
+  fast path (12.5%), which must still recover via the reconfirm inside one
+  `night_reconfirm_s` and must *not* fire the hold (`forbid_log`).
+
 - **day/night: the camera did not react to a room light being switched on**
   (`src/daynight_probe.h`, `src/daynight.c`; live test, kinder-links
   2026-08-16; design-notes generators E and the newly named F). Someone turned

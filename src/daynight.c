@@ -851,6 +851,12 @@ static void *dn_thread(void *arg)
     /* the probe only arms on a fresh above-bar -> below-bar edge of the
      * smoothed gain (see the DN_BASELINE_ALPHA regression comment). */
     int     brighten_armed = 0;
+    /* frozen baseline the hold's bar is derived from: snapshotted while the
+     * scene is still at or above that bar, held fixed once it drops below, so
+     * the baseline's drift toward the new (brighter) level cannot erode the
+     * bar out from under a hold in progress. See brighten_ref in
+     * daynight_probe.h for the kinder-links measurement. 0 = none yet. */
+    float   brighten_ref = 0.0f;
     /* night-only smoothed gain (DN_SMOOTH_ALPHA EMA): drives the baseline
      * drift and the brightening comparison so AGC noise cannot ratchet
      * either. Reset on every night entry so day/probe readings (railed max
@@ -1037,7 +1043,7 @@ static void *dn_thread(void *arg)
             was_enabled = 0;
             cur = DN_UNKNOWN;           /* mode may be forced manually now */
             night_baseline = -1.0f;
-            brighten_since_ms = 0; brighten_armed = 0;
+            brighten_since_ms = 0; brighten_armed = 0; brighten_ref = 0.0f;
             smooth_tg = -1.0f; min_smooth_since_probe = -1.0f;
             probe_day_ms = 0; probe_verdict_at_ms = 0;
             pending_target = DN_UNKNOWN; pending_since_ms = 0;
@@ -1051,7 +1057,7 @@ static void *dn_thread(void *arg)
             night_baseline = -1.0f;
             night_entered_ms = 0;
             dn_verify_clear(&verify);
-            brighten_since_ms = 0; brighten_armed = 0;
+            brighten_since_ms = 0; brighten_armed = 0; brighten_ref = 0.0f;
             smooth_tg = -1.0f; min_smooth_since_probe = -1.0f;
             probe_day_ms = 0; probe_verdict_at_ms = 0;
             probe_backoff = 1; probe_fail_smooth = -1.0f;
@@ -1145,11 +1151,13 @@ static void *dn_thread(void *arg)
             ev.last_switch_ms     = last_switch_ms;
             ev.brighten_since_ms  = brighten_since_ms;
             ev.brighten_armed     = brighten_armed;
+            ev.brighten_ref       = brighten_ref;
             ev.osc_freeze_until_ms = osc_freeze_until_ms;
 
             dn_probe_plan plan = dn_next_probe(&ev);
             brighten_armed    = plan.brighten_armed;
             brighten_since_ms = plan.brighten_since_ms;
+            brighten_ref      = plan.brighten_ref;
 
             if (plan.anchor_override)
                 LOGI(MOD, "ratchet anchor overrides baseline evidence: gain "
@@ -1176,9 +1184,11 @@ static void *dn_thread(void *arg)
                      (long long)dn_reconfirm_iv_s(&ev, probe_backoff));
             if (plan.brighten_started)
                 LOGI(MOD, "sustained brightening: gain %.0f below probe bar "
-                          "%.0f (baseline %.0f), confirming %ds",
-                     (double)smooth_tg, (double)plan.probe_bar,
-                     (double)night_baseline, DN_BRIGHTEN_CONFIRM_MS / 1000);
+                          "%.0f (frozen rest level %.0f, baseline now %.0f), "
+                          "confirming %ds",
+                     (double)smooth_tg, (double)plan.hold_bar,
+                     (double)plan.brighten_ref, (double)night_baseline,
+                     DN_BRIGHTEN_CONFIRM_MS / 1000);
             if (plan.act == DN_PROBE_SKIP) {
                 /* the deadline came due but the passive evidence gives no
                  * reason to spend an audible IR-cut click: re-arm silently on
@@ -1216,6 +1226,7 @@ static void *dn_thread(void *arg)
                 dn_verify_clear(&verify);
                 brighten_since_ms = 0;
                 brighten_armed  = 0;    /* re-arms above the bar next night */
+                brighten_ref    = 0.0f;
                 /* this probe is about to answer the question the minimum was
                  * accumulated to raise; whatever it finds re-freezes the
                  * anchor, so the evidence has been spent either way */
@@ -1686,6 +1697,7 @@ static void *dn_thread(void *arg)
                 night_baseline = -1.0f;
                 brighten_since_ms = 0;
                 brighten_armed = 0;
+                brighten_ref = 0.0f;
                 smooth_tg = -1.0f;
                 /* the running minimum restarts with it: whichever branch ran
                  * above, the frozen anchor it is measured against is new
