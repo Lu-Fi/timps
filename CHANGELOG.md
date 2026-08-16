@@ -7,6 +7,87 @@ semantic versioning.
 ## [Unreleased]
 
 ### Fixed
+- **day/night: the unsatisfiable-bar guard checked a different number from the
+  gate it guards, so it stayed silent on the one camera it was written for**
+  (`src/daynight_probe.h`, `src/daynight.c`; live incident Schlafzimmer
+  192.168.241.170, 2026-08-16 ~10:03-11:28; design-notes generator C). The
+  brightening hold compares `smooth_tg` against
+  `baseline * (100+day_gain_pct)/200 * DN_BRIGHTEN_MARGIN`.
+  `dn_bar_check()` was handed that expression **without** the margin. At
+  `baseline = 326` the nominal bar is 260.8 - over the 256 sensor floor, so the
+  guard said nothing - while the operative gate is 252.98, under it, so the
+  sustained-brightening path was structurally dead. The camera sat in night
+  mode in daylight for an hour with **zero diagnostic output**, and was
+  recovered by hand by raising `total_gain_day_threshold` to 700 for that
+  camera. The silent dead band is exactly `baseline` in [320.0, 329.9), and the
+  guard fired correctly on either side of it (at 315 after a restart the
+  nominal bar is 252 and it warned) - which is why this read as a camera quirk
+  rather than an off-by-one multiplication. Fix: `dn_hold_gate()`, one
+  definition of the value the hold actually compares against, called by the
+  schedule *and* by both guard call sites - the arithmetic error was only
+  possible because the guard re-derived the bar itself and so was free to drift
+  from it. The log line now names the operative quantity ("brightening probe
+  gate"). Refusing to plant an unsatisfiable baseline outright was considered
+  and rejected with a measured reason - `night_baseline <= 0` makes the skip
+  gate's `can_judge` false, so every periodic reconfirm would fire a physical
+  probe, which on exactly the near-floor cameras this would target
+  (cam-wyze-pan and the closet, resting 256-268) re-creates the audible-clicking
+  complaint the skip gate exists to fix; see the design notes.
+
+- **day/night: `min_smooth_since_probe` was a running minimum, which defeated
+  the reconfirm backoff entirely on a static scene** (`src/daynight_probe.h`,
+  `src/daynight.c`; regression in the same-day fix below). A running minimum is
+  an **order statistic** and, uniquely in this file, has no noise rejection at
+  all: its expected depth grows without bound in the number of samples, so on a
+  perfectly static dark scene it descends until it crosses the 0.97 anchor bar
+  and suspends the backoff. The sample count is set by the reconfirm interval,
+  which is precisely what the backoff lengthens, so the error is
+  self-reinforcing in the wrong direction - longer backoff, more samples,
+  deeper spurious minimum, suspension fires, backoff defeated. Measured on a
+  static 3500 gain with realistic stochastic AGC noise and a real 3600s
+  `night_reconfirm_s`: an audible IR-cut probe **every hour, all night**, 7
+  board switches against a budget of 4, on a camera watching a room where
+  nothing changed - and emitting log lines structurally identical to the ones
+  corpus scenario 10 asserts as proof the fix works. Fix: a reading only enters
+  the minimum once the gain has held there for `DN_BRIGHTEN_CONFIRM_MS`,
+  implemented as a tumbling window whose *maximum* is what becomes eligible, so
+  a value counts only if the gain stayed at or below it for the whole window.
+  O(1) state, no ring buffer, same debounce shape and same constant the hold
+  already uses. Durability is unchanged, so property 3 says exactly what it
+  said before. A 5s AGC trough can no longer latch anything; corpus 10's dip
+  spans ten windows. Note the sensitivity floor this implies and which the
+  previous behaviour only appeared to beat: a dip must now be deeper than the
+  scene's own noise band to count, so the real kinder-links 23:21 dip (1599 vs
+  a 1653 anchor, 3.3%) would not latch under realistic AGC noise. That is the
+  correct trade - the alternative is no working backoff on any camera - and the
+  periodic reconfirm still bounds recovery at one `night_reconfirm_s`.
+
+### Changed
+- **replay harness: the noise model is stochastic** (`scripts/dn-replay.py`).
+  `noise_factor()` was a bounded sum of two sinusoids. A deterministic periodic
+  signal has a fixed, finite set of extremes, so any running minimum over it
+  converges after one period and then stops moving: **any defect whose
+  behaviour depends on a statistic of a window of samples was structurally
+  inexpressible**, at any `noise_pct`, for any duration. That is how eleven
+  green scenarios reported zero click regressions while the reconfirm backoff
+  was inoperative. Replaced with seeded gaussian noise (sigma = `noise_pct`/2)
+  plus an AR(1) term for the short autocorrelation real AGC hunting has -
+  genuinely stochastic so window statistics drift as they do in the field,
+  seeded so a corpus failure can still be bisected. New optional `noise_seed`
+  scenario key. Scenarios 11 and 12 carry a realistic 10-12%; scenario 10 stays
+  at 3% and says why (the frozen-reference band it discriminates is at most
+  `DN_HOLD_REF_LEAD` = 6% wide by construction, so it cannot both demonstrate
+  that mechanism and carry fleet-level noise - scenario 12 is the noise
+  scenario).
+- **replay corpus: new scenario 12, the null hypothesis**
+  (`scripts/dn-scenarios/12-static-night-null.json`). A static dark scene,
+  stochastic noise, real 3600s reconfirm, four hours, asserting a **click
+  floor** plus a `forbid_log` on the suspension line. Every other scenario
+  asserts that *changed* evidence is eventually acted on; not one asserted the
+  converse, and that gap shipped a bug. This is the only scenario in the corpus
+  that fails when the machine becomes too *eager*, which is the direction every
+  fix in this subsystem's record pushes.
+
 - **day/night: turning a room light on took up to a full `night_reconfirm_s`
   to be noticed, instead of the ~30s the sustained-brightening path exists to
   deliver** (`src/daynight_probe.h`, `src/daynight.c`; kinder-links

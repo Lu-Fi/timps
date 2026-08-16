@@ -9,7 +9,8 @@
     "daynight.night_reconfirm_s": 900
   },
   "interp": "log",
-  "noise_pct": 1,
+  "noise_pct": 10,
+  "noise_seed": 3,
   "night_gain": [[0, 2000], [1000, 2000], [1010, 1750], [3600, 1750]],
   "day_gain": [[0, 8000], [1000, 8000], [1010, 250], [3600, 250]],
   "expect": {

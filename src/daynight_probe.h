@@ -194,6 +194,32 @@ static inline int dn_bar_reachable(float bar)
     return bar >= DN_GAIN_FLOOR;
 }
 
+/* The value the sustained-brightening hold ACTUALLY compares smooth_tg
+ * against, given a rest reference. One definition, used both by the schedule
+ * itself and by the generator-C guard at the baseline plant/drift, because
+ * having those two derive it separately is precisely how the guard came to be
+ * checking a different number from the gate it was guarding:
+ *
+ * Schlafzimmer (192.168.241.170) 2026-08-16, ~10:03-11:28. dn_bar_check() was
+ * handed the NOMINAL bar, baseline*(100+pct)/200, while the gate is that bar
+ * times DN_BRIGHTEN_MARGIN. At baseline 326 the nominal bar is 260.8 - over
+ * the 256 floor, so the guard stayed silent - and the operative gate is
+ * 252.98, under it, so the brightening path was dead. An hour wrong-mode in
+ * daylight with zero diagnostic output, ended by a human raising
+ * total_gain_day_threshold to 700 by hand. The silent dead band is exactly
+ * baseline in [320.0, 329.9): wide enough to land in, narrow enough that four
+ * previous incidents missed it. Note the guard was RIGHT either side of it -
+ * at baseline 315 after a restart the nominal bar was 252 and it fired - which
+ * is what made the failure look like a camera-specific quirk rather than an
+ * off-by-one-multiplication.
+ *
+ * Rule this encodes, beyond the arithmetic: a guard must be handed the value
+ * the guarded comparison uses, not a value derived alongside it. */
+static inline float dn_hold_gate(float ref, int day_gain_pct)
+{
+    return ref * (100.0f + (float)day_gain_pct) / 200.0f * DN_BRIGHTEN_MARGIN;
+}
+
 /* what the plan asks the caller to do this tick */
 enum {
     DN_PROBE_NONE = 0,   /* nothing due (or an oscillation freeze holds it) */
@@ -239,10 +265,37 @@ typedef struct {
      * at the instant the last physical probe checked and found genuine
      * night; unlike night_baseline nothing drifts it. */
     float probe_fail_smooth;     /* <=0 = no failed probe outstanding */
-    /* The LOWEST smoothed gain seen since that anchor was frozen - i.e. the
-     * brightest the scene has been at any point since a probe last measured
-     * night. The caller maintains it as a running minimum and restarts it
-     * with the night session, exactly where probe_fail_smooth is re-frozen.
+    /* The lowest SUSTAINED smoothed gain since that anchor was frozen - i.e.
+     * the brightest the scene has been, for at least DN_BRIGHTEN_CONFIRM_MS
+     * together, at any point since a probe last measured night. The caller
+     * maintains it and restarts it with the night session, exactly where
+     * probe_fail_smooth is re-frozen.
+     *
+     * "Sustained" is load-bearing and was not there in the first version
+     * (35af4c9), which took a plain running minimum of smooth_tg. That is an
+     * ORDER STATISTIC, and unlike every other quantity in this file it has no
+     * noise rejection at all: the expected depth of a running minimum grows
+     * without bound in the number of samples, so on a perfectly static scene
+     * it descends forever until it crosses the 0.97 anchor bar. Worse, the
+     * number of samples is set by the reconfirm interval, which is the very
+     * thing the backoff lengthens - so the error is self-reinforcing in the
+     * wrong direction: longer backoff, more samples, deeper spurious minimum,
+     * suspension fires, backoff defeated. Reproduced on a STATIC 3500 gain
+     * with realistic stochastic AGC noise and a real 3600 s reconfirm: hourly
+     * probes all night, 7 board switches against a budget of 4, and the log
+     * lines were structurally identical to the ones corpus 10 asserts as
+     * PROOF THE FIX WORKS. The header comment below even predicted the
+     * mechanism and then dismissed it, on the strength of a corpus whose
+     * noise model is a bounded deterministic sinusoid and therefore cannot
+     * exhibit it - see noise_factor() in scripts/dn-replay.py, now stochastic,
+     * and corpus scenario 12, which exists to fail on exactly this.
+     *
+     * The fix keeps the debounce shape the rest of the file already uses: a
+     * reading only enters the minimum once the gain has held there for
+     * DN_BRIGHTEN_CONFIRM_MS, so an AGC trough a few seconds wide cannot
+     * latch anything while corpus 10's ~300 s dip latches with 10x margin.
+     * Durability is unchanged - once latched it stays until the anchor is
+     * re-frozen - so property 3 says exactly what it said before.
      *
      * Why a minimum and not the current reading (kinder-links 2026-08-16):
      * the trend test below and the skip gate's anchor override are both
@@ -258,7 +311,7 @@ typedef struct {
      * scheduler state, so generator D's rule (anchor an is-there-evidence
      * test on a frozen measurement) is satisfied by construction.
      *
-     * <=0 = nothing measured since the anchor. */
+     * <=0 = nothing sustained since the anchor. */
     float min_smooth_since_probe;
 
     /* --- scheduling state --- */
@@ -369,16 +422,22 @@ static inline int64_t dn_reconfirm_iv_s(const dn_evidence *e, int backoff)
  *    the un-backed-off schedule.
  *  - in the case the backoff exists for it costs nothing: a genuinely dark
  *    closet sits AT or above its own probe_fail_smooth, so falling is false
- *    and the multiplier applies unchanged. Stated exactly, since the 2026-08-16
- *    change to a running minimum weakens it slightly: probe_fail_smooth is a
- *    single sample of a signal that has AGC noise on it, while a minimum over
- *    a long night is an extreme-value statistic, so a static-but-noisy scene
- *    CAN eventually dip under the 3% bar and hold the suspension on. The bound
- *    that survives that - and the one assert_reconfirm_bound() actually
- *    checks - is the one above: never later than, and never more often than,
- *    the un-backed-off schedule. Measured on the corpus, the cost of the
- *    change is zero anyway: all nine pre-existing scenarios keep their exact
- *    switch counts, including 03-noisy-night at 25% noise.
+ *    and the multiplier applies unchanged.
+ *
+ *    This claim was WRONG for one day (35af4c9 -> the same-day follow-up) and
+ *    the way it was wrong is worth keeping. The comment that stood here
+ *    correctly identified that a running minimum is an extreme-value
+ *    statistic which a static-but-noisy scene can drag under the 3% bar, and
+ *    then waved it off as bounded-and-anyway-unmeasured, citing a corpus that
+ *    was structurally incapable of measuring it (bounded deterministic
+ *    sinusoid noise; a window-dependent statistic needs stochastic noise to
+ *    falsify). It was not bounded: on a static 3500 scene with realistic
+ *    stochastic noise the suspension fired every hour, all night, defeating
+ *    the backoff completely. Naming a risk is not the same as bounding it,
+ *    and "the tests are green" is worth nothing when the tests cannot express
+ *    the risk. min_smooth_since_probe now requires DN_BRIGHTEN_CONFIRM_MS of
+ *    dwell before latching, corpus 12 is the null hypothesis that fails if it
+ *    ever regresses, and the claim above is once again true as written.
  * Note the two bars compose rather than duplicate: falling (< 0.97x anchor)
  * is by construction the negation of the skip gate's "solidly night"
  * (>= 0.97x anchor), so a pulled-in deadline always finds the gate open - the
@@ -588,7 +647,7 @@ static inline dn_probe_plan dn_next_probe(const dn_evidence *e)
                  * another full trigger-worth of NEW brightening below the
                  * level that already failed, or a slow ramp re-fires every
                  * time it re-crosses the freshly resampled baseline's bar). */
-                if (e->smooth_tg < p.hold_bar * DN_BRIGHTEN_MARGIN &&
+                if (e->smooth_tg < dn_hold_gate(hold_ref, e->day_gain_pct) &&
                     (p.ratchet_bar < 0.0f || e->smooth_tg < p.ratchet_bar)) {
                     p.brighten_since_ms = e->now_ms;
                     p.brighten_started  = 1;

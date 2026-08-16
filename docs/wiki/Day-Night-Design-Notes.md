@@ -59,7 +59,7 @@ audible IR-cut click*. That ratio is the story of this file.
 ## 2. What the incident record actually says
 
 The twelve incidents are not twelve unrelated bugs, and they are not one
-undifferentiated mass either. They sort into six generators (five, until the sixth named itself on 2026-08-16):
+undifferentiated mass either. They sort into seven generators (five, until two more named themselves on 2026-08-16):
 
 | Generator | Incidents | Status |
 | --- | --- | --- |
@@ -69,13 +69,14 @@ undifferentiated mass either. They sort into six generators (five, until the six
 | **D. Two guards validating each other** | `0f5fc80`, `14a1d61` | **Open.** |
 | **E. The evidence model is missing a dimension** | `b4a54f0`, 2026-08-14, kinder-links 2026-08-16 | **Half closed.** The unverified-day revert (`19dcd74`) and `probe_backoff` are trend-aware; the latter only genuinely so since 2026-08-16, when the suspension stopped being a snapshot predicate. The brightening hold's ratchet is still level-only. |
 | **F. A property stated over one snapshot** | kinder-links 2026-08-16 | **Open**, and newly named. The defect is in the oracle, not the machine: purity bought counterfactual reach, not temporal claims. See §4F. |
+| **G. The corpus cannot falsify what its noise model cannot express** | min_smooth_since_probe 2026-08-16, Schlafzimmer 2026-08-16 | **Open**, named the day the fix for F shipped with a bug its own green corpus could not see. See §4G. |
 
 That table is the substance of my disagreement with the "these mechanisms now
 interact combinatorially, producing edge cases faster than patches retire
-them" reading. Two of the six generators genuinely *did* close, and B closed
+them" reading. Two of the seven generators genuinely *did* close, and B closed
 because someone stated a closure criterion ("every guess must have a
-deadline") rather than patching one more path. The remaining four are not
-combinatorial noise — they are four nameable, recurring mistakes, each with a
+deadline") rather than patching one more path. The remaining five are not
+combinatorial noise — they are five nameable, recurring mistakes, each with a
 statable rule that would prevent it. That is a much more tractable situation
 than "combinatorial explosion", and a much worse one than "naturally
 converging".
@@ -183,6 +184,47 @@ hardware could never have caught it:
 > the range the SCENE can reach, not only the range the sensor can represent.
 > If the fraction that defines the bar was borrowed from a test answering a
 > different question, that is the bug — fix the derivation, not the guard.**
+
+**Second amendment, Schlafzimmer 2026-08-16 (~10:03–11:28) — the guard was
+checking a different number from the gate it guards.** `dn_bar_check()` was
+handed the *nominal* bar, `baseline * (100+pct)/200`, while the comparison that
+actually gates the hold is that bar times `DN_BRIGHTEN_MARGIN`. At
+`baseline = 326` the nominal bar is 260.8 — above the 256 floor, so the guard
+stayed silent — and the operative gate is 252.98, below it, so the brightening
+path was dead. An hour in night mode in daylight with **zero diagnostic
+output**, ended by a human raising `total_gain_day_threshold` to 700 for that
+camera by hand. The silent dead band is exactly `baseline ∈ [320.0, 329.9)`,
+and the guard fired correctly either side of it (at `baseline = 315` after a
+restart the nominal bar is 252 and it warned), which is what made the failure
+read as a camera quirk rather than an off-by-one multiplication.
+
+The arithmetic is trivial; the structural cause is not, and it is the same one
+as generator F. The guard and the gate each *derived the bar themselves* from
+`baseline` and `day_gain_pct`, so nothing forced them to agree, and they
+quietly stopped agreeing when `DN_BRIGHTEN_MARGIN` was introduced into one of
+them. The fix is `dn_hold_gate()`: one definition, called by both.
+
+> **Rule: a guard must be handed the value the guarded comparison uses — not a
+> value derived alongside it. If the guard recomputes the bar, the guard is a
+> second implementation and will drift.**
+
+Considered and **rejected**: refusing to plant a baseline that makes the hold
+unsatisfiable (`baseline >= floor / (0.8 · 0.97)` ≈ 1.29× floor). It is the
+more ambitious fix and it does subsume the arithmetic, but it is wrong here for
+a measured reason. `night_baseline <= 0` is not a neutral state: the skip
+gate's `can_judge` requires a baseline, so refusing to plant makes
+`solidly_night` permanently false and *every* periodic reconfirm fire a
+physical probe. On the exact camera class this would target — cam-wyze-pan and
+the cam-wyze closet, resting at 256–268 — that converts roughly zero clicks a
+night into one per `night_reconfirm_s`, i.e. it re-creates the complaint the
+skip gate was written for (`2026-08-04`, *"das klacken der IR blende nervt"*).
+Flooring the planted baseline instead of refusing it fares no better: it
+fabricates a measurement, and at the floor the bar is satisfiable only by a
+reading strictly below 256, which no sensor produces — still dead, now with a
+lie in the log. The honest position is that near the floor **all three**
+baseline-derived bars degenerate together, the hold is legitimately dead, and
+what the machine owes the operator is to *say so* — which is what the guard now
+does correctly.
 
 Which is exactly what `DN_RATCHET_MARGIN` does: the ratchet stopped borrowing
 `day_gain_pct` (a *pipeline* discriminator, 0.74 stops, correct for the IR-cut
@@ -320,6 +362,50 @@ trajectory that distinguishes a latched predicate from a sampled one. Scenario
 > once measured is never worth less later". And when adding a scenario, ask
 > what its gain curve does *non*-monotonically; a corpus of monotone traces
 > cannot falsify a memory bug.**
+
+#### G. The corpus can only falsify what its noise model can express
+
+Named the same day as F, for the same reason: the fix for F shipped with a bug
+its own tests could not see. `min_smooth_since_probe` was a plain running
+minimum of the smoothed gain — an **order statistic**, and the only quantity in
+this file with no noise rejection whatsoever. The expected depth of a running
+minimum grows without bound in the number of samples, so on a *perfectly static
+scene* it descends until it crosses the 0.97 anchor bar and suspends the
+backoff. Worse, the sample count is set by the reconfirm interval, which is the
+very thing the backoff lengthens: longer backoff → more samples → deeper
+spurious minimum → suspension fires → backoff defeated. Self-reinforcing, in
+the wrong direction. Measured on a static 3500 scene with realistic stochastic
+noise and a real 3600 s reconfirm: an audible probe every hour all night, 7
+board switches against a budget of 4, emitting log lines *structurally
+identical to the ones corpus 10 asserts as proof the fix works*.
+
+The header comment shipped with the mechanism correctly described *and then
+dismissed* it, on the strength of a green corpus. The corpus was green because
+`noise_factor()` was a bounded sum of two sinusoids. A deterministic periodic
+signal has a fixed, finite set of extremes, so any running minimum over it
+converges after one period and stops moving — **the failure mode was
+structurally inexpressible, at any `noise_pct`, for any duration.** Eleven
+scenarios reported zero click regressions while the backoff was inoperative.
+
+Two things follow, and the second is the one worth keeping:
+
+> **Rule: if a mechanism's behaviour depends on a statistic of a *window* of
+> samples (a minimum, a maximum, a count of crossings, a time-to-first-event),
+> deterministic test noise cannot falsify it. Use stochastic noise, and say in
+> the scenario what statistic it is there to stress.**
+
+> **Rule: naming a risk in a comment is not bounding it. The comment that
+> predicted this failure and waved it off was written in the same commit as the
+> bug. If a risk is real enough to write down, it is real enough to need either
+> a test that would fail on it or a stated reason no test can — and the second
+> answer obliges you to fix the harness.**
+
+The corpus also had a hole that no amount of noise realism would have closed:
+every scenario asserted that *changed* evidence is eventually acted on, and not
+one asserted the converse. Scenario 12 is the null hypothesis — a static scene,
+stochastic noise, a real 3600 s reconfirm, and a **click floor**. It is the only
+scenario in the corpus that fails when the machine becomes too *eager*, which
+is the direction every fix in this record pushes.
 
 `assert_dip_monotone()` is that property for `min_smooth_since_probe`: for two
 evidence values with identical current readings, the one that records a
@@ -479,6 +565,19 @@ floor 256).
    from 489 s to 35 s — and the one that most needed its second-order effect
    caught, since the first version of it walked `fad4f40`'s probe volley down
    corpus 09's dawn ramp.
+10. ~~**Hand the generator-C guard the value the gate uses** (`dn_hold_gate()`).~~
+    — done, 2026-08-16 after the Schlafzimmer incident. One definition, called
+    by the schedule and both guard call sites, because the arithmetic error was
+    only possible while the guard re-derived the bar itself.
+11. ~~**Make `min_smooth_since_probe` noise-safe** (generator G).~~ — done,
+    2026-08-16: a reading must hold for `DN_BRIGHTEN_CONFIRM_MS` before it
+    enters the minimum. A running minimum is an order statistic and had no
+    business being the one unsmoothed quantity in the file.
+12. ~~**Make the harness noise stochastic, and add a null hypothesis**
+    (generator G).~~ — done, 2026-08-16: `noise_factor()` is seeded gaussian +
+    AR(1), and corpus 12 asserts a click floor on a static scene. These are the
+    two changes that would have caught items 10 and 11 before they shipped, and
+    they are the general fix rather than the two specific ones.
 
 ### What the corpus is worth, and how to keep it worth that
 
@@ -533,6 +632,23 @@ Also worth a pass now that generator F is named: audit the remaining
 between-tick state in `dn_thread` the same way. `brighten_since_ms`,
 `day_verify_ref`, `brighten_ref` and `probe_backoff` itself are each carried
 across ticks and each has only snapshot properties asserted about it.
+
+And the generator-G pass that has not been done: `min_smooth_since_probe` was
+the only *order statistic* in the file and it is now debounced, but the audit
+question generalises — for each derived quantity, is it a smoothed value, a
+frozen measurement, or a statistic of a window? The first two are safe; the
+third needs stochastic noise pointed at it and a stated reason it is bounded.
+Right now the answer is "none remaining", and the value of writing that down is
+that the next one added has to justify itself.
+
+One more sensitivity fact worth recording rather than discovering again: the
+debounce on the minimum means a dip must be deeper than the scene's own noise
+band to latch. The real kinder-links 23:21 dip (1599 against a 1653 anchor,
+3.3%) would **not** latch under realistic AGC noise. That is the correct trade —
+the alternative is no working backoff on any camera — and the periodic
+reconfirm still bounds recovery at one `night_reconfirm_s`. But it means corpus
+10's dip is deliberately deeper than the incident's, and anyone reading that
+scenario as "this is what the camera saw" will be misled about the sensitivity.
 
 And one specific piece of unfinished business from the third fix: the hold now
 distinguishes a step from a ramp by how far its frozen reference has led the

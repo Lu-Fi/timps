@@ -64,7 +64,8 @@ Scenario JSON (all times virtual seconds, all gains IMP [24.8] linear):
   day_gain / night_gain         - [[t, gain], ...] breakpoints per pipeline
   interp                        - "log" (default, geometric - gain ramps are
                                   exponential), "linear" or "step"
-  noise_pct                     - deterministic +-% jitter on the served gain
+  noise_pct                     - stochastic +-% AGC jitter (2 sigma), seeded
+  noise_seed                    - PRNG seed (default 0); vary to re-roll a run
   expect:
     mode_at                     - [[t, "day"|"night"], ...]
     expected_mode               - ground-truth timeline [[t, "day"|"night"|
@@ -133,14 +134,52 @@ def interp_gain(points, t, mode):
     return points[-1][1]
 
 
-def noise_factor(t, pct):
-    """deterministic pseudo-noise, +-pct% peak; period ~7-17 s so the EMA
-    smoother sees realistic AGC hunting, reproducible run to run."""
+def noise_factor(t, pct, seed=0):
+    """STOCHASTIC AGC noise, +-pct% (1 sigma ~ pct/2), seeded so a run is still
+    reproducible.
+
+    This was a bounded sum of two sinusoids until 2026-08-16, and that choice
+    silently disarmed the corpus against a whole class of defect. A deterministic
+    periodic signal has a fixed, finite set of extremes: the running minimum of
+    anything derived from it converges after one period and then stops moving.
+    So any bug whose behaviour depends on an ORDER STATISTIC over a long window
+    - "the lowest value seen since X" - cannot be exhibited at all, no matter how
+    long the scenario runs or how high noise_pct goes. min_smooth_since_probe
+    shipped with exactly that bug (35af4c9): on real hardware its running minimum
+    descends without bound in the number of samples, defeating the reconfirm
+    backoff completely on a static scene, and the corpus reported zero click
+    regressions across all eleven scenarios while it did so.
+
+    Two properties matter for a replacement and both are deliberate:
+      - it must be genuinely stochastic (fresh draws, unbounded tails) so
+        window-dependent statistics can drift the way they do in the field;
+      - it must be reproducible, or a corpus failure cannot be bisected. Hence a
+        seeded PRNG keyed on the sample index rather than random.random().
+
+    The AR(1) term gives it the short autocorrelation real AGC hunting has (an
+    ISP does not redraw its gain independently every 500 ms), which is what makes
+    the EMA smoother see something realistic rather than white noise it can
+    trivially average away."""
     if not pct:
         return 1.0
-    n = 0.6 * math.sin(2 * math.pi * t / 17.0) + \
-        0.4 * math.sin(2 * math.pi * t / 7.3)
-    return 1.0 + (pct / 100.0) * n
+    # deterministic per-(seed, tick) draws: splitmix64-style avalanche
+    idx = int(round(t * 2.0))            # the 500 ms sample grid
+    def draw(k):
+        x = (idx * 0x9E3779B97F4A7C15 + k * 0xBF58476D1CE4E5B9
+             + seed * 0x94D049BB133111EB) & 0xFFFFFFFFFFFFFFFF
+        x ^= x >> 30; x = (x * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF
+        x ^= x >> 27; x = (x * 0x94D049BB133111EB) & 0xFFFFFFFFFFFFFFFF
+        x ^= x >> 31
+        return x / float(1 << 64)        # uniform [0,1)
+    # Box-Muller -> gaussian, sigma = pct/2 so +-pct is about 2 sigma
+    u1 = max(draw(1), 1e-12)
+    u2 = draw(2)
+    g = math.sqrt(-2.0 * math.log(u1)) * math.cos(2.0 * math.pi * u2)
+    # AR(1) with the previous grid point, rho ~ 0.6: short-memory hunting
+    u1p = max(draw(3), 1e-12)
+    gp = math.sqrt(-2.0 * math.log(u1p)) * math.cos(2.0 * math.pi * draw(4))
+    g = 0.6 * gp + 0.8 * g
+    return 1.0 + (pct / 100.0) * 0.5 * g
 
 # ---------------------------------------------------------------- sim lifecycle
 
@@ -530,6 +569,7 @@ def run_regression(scn, binary, keep=False, scale_override=None):
     dur = scn["duration_s"]
     interp = scn.get("interp", "log")
     noise = scn.get("noise_pct", 0)
+    nseed = scn.get("noise_seed", 0)
     exp = scn.get("expect", {})
     sim = SimRun(binary, scale, scn["initial_mode"], scn.get("config"),
                  keep=keep)
@@ -545,7 +585,7 @@ def run_regression(scn, binary, keep=False, scale_override=None):
                 break
             m = sim.cur_mode()
             curve = scn["night_gain"] if m == "night" else scn["day_gain"]
-            g = interp_gain(curve, t, interp) * noise_factor(t, noise)
+            g = interp_gain(curve, t, interp) * noise_factor(t, noise, nseed)
             g = max(g, 256.0)                # sensor floor, see gain_to_units
             sim.serve(g, m)
             fed.append((t, units_to_gain(gain_to_units(g)), m))

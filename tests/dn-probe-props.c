@@ -662,6 +662,52 @@ int main(void)
                 show("ramp    ", &ramp, &pr2);
                 printf("\n");
             }
+            /* (Schlafzimmer 2026-08-16, ~10:03-11:28) The guard must be
+             * handed the value the gate uses. dn_bar_check() was given the
+             * NOMINAL bar while the hold compares against that bar times
+             * DN_BRIGHTEN_MARGIN, so at baseline 326 it saw 260.8 (over the
+             * 256 floor, silent) while the real gate was 252.98 (under it,
+             * path dead): an hour wrong-mode in daylight with no diagnostic.
+             * The silent dead band is baseline in [320.0, 329.9) - assert the
+             * whole of it, plus that the reachable side stays reachable. */
+            for (int bl = 300; bl <= 345; bl++) {
+                float gate = dn_hold_gate((float)bl, 60);
+                dn_evidence sz;
+                memset(&sz, 0, sizeof sz);
+                sz.now_ms = 4000000; sz.day_gain_pct = 60;
+                sz.night_reconfirm_s = 3600; sz.probe_max_skip_s = 43200;
+                sz.transition_s = 5; sz.day_threshold = 300.0f;
+                sz.last_switch_ms = 3000000; sz.last_phys_probe_ms = 3000000;
+                sz.brighten_armed = 1; sz.probe_fail_smooth = -1.0f;
+                sz.night_baseline = (float)bl;
+                sz.brighten_ref   = (float)bl;
+                /* the brightest reading the sensor can physically produce */
+                sz.smooth_tg = sz.min_smooth_since_probe = DN_GAIN_FLOOR;
+                dn_probe_plan pz = dn_next_probe(&sz);
+                g_pairs++;
+                /* the hold can start iff the floor itself clears the gate;
+                 * dn_bar_reachable(gate) must agree with that exactly, or the
+                 * guard is describing a different mechanism from the one that
+                 * runs */
+                int can_ever = DN_GAIN_FLOOR < gate;
+                if (can_ever != (pz.brighten_started != 0)) {
+                    g_viol++;
+                    printf("VIOLATION (Schlafzimmer): at baseline %d the guard "
+                           "and the gate disagree - dn_hold_gate=%.2f says "
+                           "%ssatisfiable, the schedule %sstarted a hold\n",
+                           bl, (double)gate, can_ever ? "" : "un",
+                           pz.brighten_started ? "" : "did not ");
+                    show("baseline", &sz, &pz);
+                    printf("\n");
+                }
+                if (bl == 326 && dn_bar_reachable(gate)) {
+                    g_viol++;
+                    printf("VIOLATION (Schlafzimmer): baseline 326 gate %.2f "
+                           "reported reachable - this is the exact silent dead "
+                           "band that cost an hour of daylight in night mode\n",
+                           (double)gate);
+                }
+            }
             /* the max(): a stale reference BELOW the live baseline must never
              * hand a brighter scene a lower bar than a dimmer one gets */
             dn_evidence stale_dim = chase, stale_bright = chase;
