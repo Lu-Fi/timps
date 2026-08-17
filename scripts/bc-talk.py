@@ -19,7 +19,7 @@ gi.require_version("Gst", "1.0")
 from gi.repository import Gst, GLib
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--url", default="rtsp://thingino:thingino@192.168.241.190:554/ch0")
+ap.add_argument("--url", default="rtsp://thingino:thingino@192.168.1.100:554/ch0")
 ap.add_argument("--mic", action="store_true", help="use microphone instead of a test tone")
 args = ap.parse_args()
 

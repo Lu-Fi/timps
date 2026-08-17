@@ -400,7 +400,7 @@ void hub_publish(int src, const uint8_t *data, size_t len,
          * by the fanqueue latency, which spikes to hundreds of ms during a
          * TCP-backpressure drain and made every SR sent mid-drain claim a
          * different bogus timeline (ffmpeg: "Non-monotonic DTS" waves on the
-         * plain TCP+audio path, rtcpfix-schuppen/-garage 2026-08-11). One
+         * plain TCP+audio path, rtcpfix-camC/-camA 2026-08-11). One
          * clock_gettime per published frame PER SOURCE (~25-40/s), not per
          * subscriber - well under P-03's per-session-per-frame concern. */
         p->enq_us = ms_now_us();

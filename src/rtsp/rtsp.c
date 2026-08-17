@@ -1162,8 +1162,8 @@ static void stream_loop(session *s)
                  * backpressure drain, so each SR sent mid-drain advertised a
                  * differently-shifted timeline - ffmpeg re-timed the stream
                  * per SR and logged "Non-monotonic DTS" waves whose amplitude
-                 * matched the capture's max delivery gap (rtcpfix-schuppen/
-                 * -garage 2026-08-11). The publish stamp is latency-immune:
+                 * matched the capture's max delivery gap (rtcpfix-camC/
+                 * -camA 2026-08-11). The publish stamp is latency-immune:
                  * it is the same instant the media timestamp was current,
                  * whether the packet is sent 1 ms or 500 ms later. Fallback
                  * to `now` only for a hypothetical unstamped packet. */

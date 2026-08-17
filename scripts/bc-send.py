@@ -9,12 +9,12 @@ timps advertises.
 
 Usage:
   python3 scripts/bc-send.py                          # 440 Hz tone, 10 s
-  python3 scripts/bc-send.py --host 192.168.241.190 --secs 20 --freq 800
+  python3 scripts/bc-send.py --host 192.168.1.100 --secs 20 --freq 800
 """
 import socket, base64, sys, time, math, struct, random, argparse, re
 
 ap = argparse.ArgumentParser()
-ap.add_argument("--host", default="192.168.241.190")
+ap.add_argument("--host", default="192.168.1.100")
 ap.add_argument("--port", type=int, default=554)
 ap.add_argument("--path", default="ch0")
 ap.add_argument("--user", default="thingino")

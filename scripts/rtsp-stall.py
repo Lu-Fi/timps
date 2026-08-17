@@ -21,7 +21,7 @@ It exists to answer questions no well-behaved client can:
 Used by scripts/timps-qa.sh section 13b (--test-hostile); also useful by hand.
 
 Usage:
-  python3 scripts/rtsp-stall.py --host 192.168.241.190 --secs 60
+  python3 scripts/rtsp-stall.py --host 192.168.1.100 --secs 60
   python3 scripts/rtsp-stall.py --host CAM --path ch0 --user U --pw P --secs 45
 
 Prints "STALLED" on stdout once PLAY has been accepted and it has gone deaf,

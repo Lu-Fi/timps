@@ -397,7 +397,7 @@ static int rtcp_wr_sr(rtp_track *t, int64_t now_us, uint8_t *p)
      * ms_now_us()'s clock. They do NOT: hal_ingenic publishes pts_sanitize()
      * output (which can lead/lag the monotonic clock by seconds while the
      * sanitizer slews - perpetual on sensors whose real fps != configured
-     * fps, e.g. Galayou's 25.42 vs 25), and hal_sim publishes g_epoch-
+     * fps, e.g. cam-L's 25.42 vs 25), and hal_sim publishes g_epoch-
      * relative values (hours off host uptime). The SR's RTP timestamp then
      * contradicted the media packets' timestamps by exactly that offset;
      * ffmpeg's RTCP NTP-sync path (active whenever audio+video are both
@@ -407,7 +407,7 @@ static int rtcp_wr_sr(rtp_track *t, int64_t now_us, uint8_t *p)
      * client dies on it ("Can't write packet with unknown timestamp") when
      * a NOPTS AU lands after the first cluster opened - QA 13b's false
      * "isolation not holding": both healthy clients aborted in ~1s, 4/4
-     * deterministic on Galayou, whose perpetually-slewing sanitizer made
+     * deterministic on cam-L, whose perpetually-slewing sanitizer made
      * the offset seconds-large. Regression shipped in v1.8.5 (365162d): the
      * stale-pairing fix was right to re-sample NTP fresh but moved the RTP
      * side of the pair onto the wrong clock.

@@ -93,7 +93,7 @@ typedef IMPEncoderCHNStat IMPEncoderChnStat;
 #endif
 /* JPEG assembly buffer (was a fixed 512 KB static). MAX matches MS_AU_BUF_MAX:
  * a real detail-heavy 1920x1080 q75 outdoor daytime scene was observed
- * needing ~800-820 KB (Galayou Y4), consistently exceeding the old 512 KB
+ * needing ~800-820 KB (cam-L Y4), consistently exceeding the old 512 KB
  * cap on every single frame - the v1.6.4 growth fix correctly reported and
  * dropped each one instead of corrupting output, but the cap itself was too
  * low to ever succeed for this camera's actual content. */
@@ -460,7 +460,7 @@ static void fs_use(int chn)
      * bump on an already-live channel) is suspected of wiping the ISP-side
      * flip/running_mode latch, so an ALREADY-correct value can silently revert
      * across an ordinary on-demand idle->active cycle - observed live on
-     * Galayou (T23/sc2336) 2026-08-09: 82 min uptime, no reboot, config still
+     * cam-L (T23/sc2336) 2026-08-09: 82 min uptime, no reboot, config still
      * hflip=1/vflip=1 yet the image was upside-down after chn0 had idled and
      * restarted for a reconnecting viewer, and a plain re-POST of the same
      * values fixed it instantly. That is consistent with this theory but does
@@ -505,7 +505,7 @@ static void fs_unuse(int chn)
  * client connects), so the queued change never latches.
  *
  * Two settings in this class are known:
- *  - running_mode (day/night): root-caused on Galayou Y4 (T23 / sc2336, ISP
+ *  - running_mode (day/night): root-caused on cam-L Y4 (T23 / sc2336, ISP
  *    H20241028a / isp_20250722a) 2026-08-01 - the dusk switch-to-night plus BOTH
  *    daynight re-asserts returned rc=0 with chn0 idle, /proc/jz/isp/isp-m0
  *    stayed "Runing Mode : Day", and the always-on ch1 substream showed the
@@ -521,7 +521,7 @@ static void fs_unuse(int chn)
  *    doesn't" for the same 1/1 values.
  *
  * A SECOND, distinct failure mode in the same latch class: a value that DID
- * latch can silently REVERT with no new Set involved. Observed live on Galayou
+ * latch can silently REVERT with no new Set involved. Observed live on cam-L
  * 2026-08-09 (see fs_use for the incident detail) coinciding with a chn0
  * idle->active cycle; IMP_FrameSource_DisableChn/EnableChn on chn0 - the normal
  * on-demand idle->active cycle (last viewer leaves, chn0 idles after
@@ -1400,7 +1400,7 @@ static int64_t pts_sanitize(pts_sanitizer *s, int64_t hw_us, int64_t now_us,
              * clock by an amount below skew_max the stream stayed locked at that
              * offset permanently - and because video (1 s) and audio (500 ms)
              * use different skew_max, one track could lock to a drift the other
-             * rejected, giving a non-self-correcting A/V skew (the ~0.9 s Garage
+             * rejected, giving a non-self-correcting A/V skew (the ~0.9 s cam-A
              * incident). Fix: whenever the accepted skew is non-trivial (> the
              * deadband; normal skew is jitter-scale and stays frozen so cand
              * remains the smooth, jitter-free capture clock), nudge pts_offset a

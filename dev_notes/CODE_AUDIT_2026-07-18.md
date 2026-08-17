@@ -2,7 +2,7 @@
 
 **Datum:** 2026-07-18
 **Prüfumfang:** Sicherheit, Stabilität, Speicher- und Lastoptimierung sowie A/V-Stream-Konformität
-**Grundlage:** vollständiges `src/` (~13.400 LOC C), drei unabhängige statische Audits, Verifikation gegen `git log`, sowie ffprobe/ffmpeg-Analyse realer QA-Aufnahmen (`timps-qa-20260718-165812`, Kamera 192.168.241.190)
+**Grundlage:** vollständiges `src/` (~13.400 LOC C), drei unabhängige statische Audits, Verifikation gegen `git log`, sowie ffprobe/ffmpeg-Analyse realer QA-Aufnahmen (`timps-qa-20260718-165812`, Kamera 192.168.1.100)
 
 Diese Prüfung ist unabhängig vom bereits vorhandenen `CODE_REVIEW.md`. Sie verifiziert dessen Befunde gegen den **aktuellen** Codestand und ergänzt eine echte Stream-Konformitätsprüfung.
 

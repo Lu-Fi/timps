@@ -99,7 +99,7 @@ Jede Feature-Idee unten muss also ggf. die Zwei-Generationen-Fallunterscheidung 
 \* T40/T41 brauchen die neue Signatur (`IMPVI_NUM` als erstes Argument).
 † T20/T30 haben stattdessen `SetWDRAttr` (andere API, gleiches Feature — siehe N2).
 
-## Revidierte Rangfolge (flottengewichtet: T31 = primär, T20 = Wyze, T23 = zwei Testeinheiten)
+## Revidierte Rangfolge (flottengewichtet: T31 = primär, T20 = die beiden aelteren Einheiten, T23 = zwei Testeinheiten)
 
 1. **Live-Encoder-Reconfig** — auf allen 9 Plattformen umsetzbar über das bereits etablierte Zwei-Generationen-Muster: neue Generation → `SetChnBitRate`/`GopLength`/`QpBounds`; alte Generation + T41-Ausnahme → `SetChnAttrRcMode`; universell → `SetChnFrmRate`. Größter ungenutzter Hebel — z.B. Substream-Bitrate drosseln, wenn die SD-Karte hinterherhinkt, ohne aktive Clients zu kappen.
 2. **AEC für den Backchannel** (`IMP_AI_EnableAec`) — alle 9 Plattformen, ein einziger Codepfad. Backchannel/Gegensprechanlage existiert bereits, aber ohne AEC hört die Gegenseite sich selbst über das Mikro zurück.
@@ -108,7 +108,7 @@ Jede Feature-Idee unten muss also ggf. die Zwei-Generationen-Fallunterscheidung 
 5. **Encoder-Telemetrie** via `IMP_Encoder_Query` (alle 9) + T31-exklusive `GetChnEvalInfo`-Extras für die `/events`-Stats.
 6. **Belichtungs-Obergrenze / Nacht-FPS-Schutz** — je Generation: `SetAe_IT_MAX` (T31/C100/T23), `SetIntegrationTime`+`SetAeStrategy` (T20/T21/T30), `SetAeScenceAttr` (T40/41).
 7. **Encoder-Paket für die Budget-Kameras (N1)** — v.a. `SetChnROI` (Motion-Grid-gesteuerte Qualität) und `SetJpegeQl` auf T20/T23.
-8. **ePTZ** (`SetFrontCrop`/`SetAutoZoom`) — T31/C100/T23 (+T40/41 Zoom); nicht auf dem Wyze verfügbar.
+8. **ePTZ** (`SetFrontCrop`/`SetAutoZoom`) — T31/C100/T23 (+T40/41 Zoom); auf T20 nicht verfügbar.
 9. **WDR** — gespaltene API: `WDR_ENABLE` (T31/C100/T40/41) vs. `SetWDRAttr` (T20/T30); T21/T23 kein WDR.
 10. **Privacy-Mosaik** (`IMP_OSD_SetMosaic`) — T23/T40/T41.
 11. **`SetbufshareChn`** (rmem-Ersparnis) — T31/C100/T40/T41.
@@ -116,7 +116,7 @@ Jede Feature-Idee unten muss also ggf. die Zwei-Generationen-Fallunterscheidung 
 
 ## Neue plattformspezifische Funde (in der ersten, T31-fokussierten Analyse übersehen)
 
-**N1 — Alte-Generation-Encoder-Features (T20/T10, T21, T23, T30 — also Wyze und die T23-Kameras), auf T31 nicht vorhanden:**
+**N1 — Alte-Generation-Encoder-Features (T20/T10, T21, T23, T30 — also die T20- und T23-Kameras), auf T31 nicht vorhanden:**
 - `IMP_Encoder_SetChnROI` — Pro-Region-QP-Boost im Encoder. Besonders wertvoll hier: timps berechnet bereits ein Motion-Grid — aktive Zellen an `SetChnROI` zu füttern würde die Bitrate genau dort priorisieren, wo Bewegung ist.
 - `IMP_Encoder_SetChnColor2Grey` — Encoder-seitiges Graustufen für Nachtmodus, entkoppelt von den ISP-Running-Mode-Latch-Problemen.
 - `IMP_Encoder_InsertUserData` — SEI-Metadaten im Stream (Uhrzeit/Motion-Info für NVRs).
@@ -124,7 +124,7 @@ Jede Feature-Idee unten muss also ggf. die Zwei-Generationen-Fallunterscheidung 
 - `SetSuperFrameCfg`, `SetChnDenoise`, `SetChnHSkip` (hierarchisches Frame-Skip für sehr schwache Verbindungen), `SetMbRC` — Bitraten-Robustheit für SD-Recording + SRT auf den Budget-Kameras.
 - **Nur T23:** `IMP_Encoder_RequestGDR`/`SetGDRCfg` (Gradual Decoder Refresh — freundlicher als IDR-Bursts auf verlustbehafteten SRT-Links), `SetChnInitQP`, `Setframelossthd`, `SetDirectModeAttr` (Low-Latency FS→Encoder), plus eine vollständige `IMP_ISP_MultiCamera_*`-API (Nische).
 
-**N2 — Alte-Generation-ISP-Features (T20/T10, T21, T30):** `SetIntegrationTime`/`GetIntegrationTime` + `SetAeStrategy` sind das Alte-Generation-Äquivalent zu Finding #6 — "Nacht-Belichtung deckeln" ist also auch auf dem Wyze umsetzbar, nur über einen anderen Aufruf. `SetSceneMode`/`SetColorfxMode` (Szenen-Presets, Farbeffekte inkl. Graustufen), `SetWDRAttr` (T20/T30-Pendant zu #9), feinere Rauschunterdrückung (`SetSinterDnsAttr`/`SetTemperDnsAttr`), `SaveAllParam`.
+**N2 — Alte-Generation-ISP-Features (T20/T10, T21, T30):** `SetIntegrationTime`/`GetIntegrationTime` + `SetAeStrategy` sind das Alte-Generation-Äquivalent zu Finding #6 — "Nacht-Belichtung deckeln" ist also auch auf T20 umsetzbar, nur über einen anderen Aufruf. `SetSceneMode`/`SetColorfxMode` (Szenen-Presets, Farbeffekte inkl. Graustufen), `SetWDRAttr` (T20/T30-Pendant zu #9), feinere Rauschunterdrückung (`SetSinterDnsAttr`/`SetTemperDnsAttr`), `SaveAllParam`.
 
 **N3 — T40/T41-Extras über T31 hinaus** (flotten-sekundär, aber "kostenlos" sobald diese Boards dazukommen):
 - `IMP_OSD_SetMosaic` — **auch auf T23** — Verpixelung statt der aktuellen opaken Privacy-Rechtecke.

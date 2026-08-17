@@ -31,8 +31,8 @@
 #   tested.
 #
 # Usage:
-#   ./scripts/test_auth.sh --host 192.168.241.190
-#   HOST=192.168.241.190 RTSP_USER=thingino RTSP_PASS=thingino ./scripts/test_auth.sh
+#   ./scripts/test_auth.sh --host 192.168.1.100
+#   HOST=192.168.1.100 RTSP_USER=thingino RTSP_PASS=thingino ./scripts/test_auth.sh
 #
 # Options (all also settable as env vars):
 #   --host H            target host/IP            (default 127.0.0.1)

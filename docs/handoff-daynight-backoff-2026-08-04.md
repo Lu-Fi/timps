@@ -109,12 +109,12 @@ iterations; it is correct behavior, not a bug).
 
 - v1.7.1/2: adaptive boot-settle + periodic `night_reconfirm_s` probe; new
   fields exposed in GET /control.
-- **Unrelated but session-relevant:** the cam-wyze magenta incident was NOT
+- **Unrelated but session-relevant:** the cam-K magenta incident was NOT
   a daynight/SDK bug — an interrupted `timps-qa.sh` run stranded manual WB
   rgain/bgain=32767 in flash config; QA script hardened (commit `98d99ed`,
   interruption-safe restore trap + WB probe values now 1024=unity). The
   ingenic-sdk bump e4313e0→7b4b0f4 is a single T23 sc2336p IQ-bin revert —
-  exonerated. Also: the kinder-rechts "blue/purple" image was *IR light
+  exonerated. Also: the cam-I "blue/purple" image was *IR light
   rendered through the color pipeline* (ISP forced day via /control while
   board ircut/IR LEDs stayed in night — split-brain; lesson: manual day/night
   overrides must go through the board `daynight`/`color` script, not raw
@@ -199,8 +199,8 @@ arming margin + failure ratchet`, presumably v1.7.7).
 - **task_16be228b** ("Harden daynight baseline sampling against mid-window
   light changes") — the symmetric drift in v1.7.4 largely supersedes it;
   suggest closing or repurposing after this fix ships.
-- **wohn-ofen custom thresholds** (450/4500 vs fleet 300/3000, set live by
-  coordinator 2026-08-04) are still in place on 192.168.10.224; revisit
+- **cam-F custom thresholds** (450/4500 vs fleet 300/3000, set live by
+  coordinator 2026-08-04) are still in place on 192.168.1.100; revisit
   whether they are still wanted once probe economy ships.
 - The **daynight no-metric idle path** (`b<0 && tg<0`) logs at WARN now
   (v1.7.6) but still never reaches dead-zone adoption; accepted as-is, noted
@@ -212,6 +212,6 @@ arming margin + failure ratchet`, presumably v1.7.7).
   fresh known_hosts or per-session `UserKnownHostsFile`).
 - QA runs against live cameras: use the hardened `scripts/timps-qa.sh`
   (post-`98d99ed`) only; older checkouts strand WB test values on
-  interruption (that is what caused the wyze magenta incident).
+  interruption (that is what caused the cam-K magenta incident).
 
 — end of handoff —

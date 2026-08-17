@@ -8,11 +8,11 @@
 
 ## Gesamturteil
 
-**Freigabe für den dedizierten Garage-Soak (T31).** Kein blockierender Befund. Die Refcount-Buchhaltung ist an allen 10 Producer-Call-Sites korrekt, beide Audit-Invarianten (0-Subscriber-Skip, `vparam_update`-Ordnung) halten der Tiefenprüfung stand, die Stopgate-Konvertierung ist an allen vier Threads race-frei. Vier neue Befunde, alle NIEDRIG/INFO, keiner soak-blockierend — R-01 (Pool-Ceiling vs. reale IDR-Größen) gehört aber ausdrücklich auf die **Soak-Messliste**.
+**Freigabe für den dedizierten cam-A-Soak (T31).** Kein blockierender Befund. Die Refcount-Buchhaltung ist an allen 10 Producer-Call-Sites korrekt, beide Audit-Invarianten (0-Subscriber-Skip, `vparam_update`-Ordnung) halten der Tiefenprüfung stand, die Stopgate-Konvertierung ist an allen vier Threads race-frei. Vier neue Befunde, alle NIEDRIG/INFO, keiner soak-blockierend — R-01 (Pool-Ceiling vs. reale IDR-Größen) gehört aber ausdrücklich auf die **Soak-Messliste**.
 
 Eigene Reproduktion: `make sim` warnungsfrei; ASan+UBSan-Lauf unter voller Last **0 Leaks / 0 UAF / 0 UB**; Shutdown-Latenzen selbst gemessen: **idle 0,28 s, mid-stream 0,28 s, Motion-Modus unter Last 0,20 s** — deckungsgleich mit Opus' Größenordnung (0,14–0,34 s), weit unter dem 3-s-Watchdog.
 
-**Nicht durch den Garage-Soak validierbar** (T23-Abschnitt unten): der `ROT_HAS_SW_90`-Software-Rotate-Pfad. Er ist im Diff **byte-identisch unangetastet** (kein Hunk zwischen hal_ingenic.c:1185–1744) und bleibt auf der unveränderten Copy-API — das Restrisiko ist ein reines Compile-Risiko, kein Logik-Risiko. Opus' behaupteter T23-`-fsyntax-only`-Lauf konnte hier mangels Toolchain **nicht** reproduziert werden → offener Punkt vor jedem T23-Rollout.
+**Nicht durch den cam-A-Soak validierbar** (T23-Abschnitt unten): der `ROT_HAS_SW_90`-Software-Rotate-Pfad. Er ist im Diff **byte-identisch unangetastet** (kein Hunk zwischen hal_ingenic.c:1185–1744) und bleibt auf der unveränderten Copy-API — das Restrisiko ist ein reines Compile-Risiko, kein Logik-Risiko. Opus' behaupteter T23-`-fsyntax-only`-Lauf konnte hier mangels Toolchain **nicht** reproduziert werden → offener Punkt vor jedem T23-Rollout.
 
 ---
 
@@ -43,7 +43,7 @@ Alle Pfade einzeln nachgerechnet:
 
 | # | Schwere | Befund |
 | --- | --- | --- |
-| R-01 | 🟡 NIEDRIG (Perf, nicht Korrektheit) | **`HUB_POOL_KEEP_CAP=96 KB` liegt UNTER der realen Mainstream-IDR-Größe.** hal_ingenic.c dokumentiert selbst „observed IDR peak 256–400 KB" (1080p @ 3000 kbps, dem Default aus `timps.conf.example`); 1080p-JPEGs überschreiten 96 KB ebenfalls regelmäßig. Folge: der für den IDR geratchte Puffer wird bei der Rückgabe IMMER ge-free()t ⇒ pro GOP (~1×/s) ein realloc-Grow + free, bei JPEG-Quellen ggf. pro Frame. **Wichtig:** Die eigentliche P-01-Ausbeute — Wegfall der zweiten Vollkopie — bleibt für IDRs vollständig erhalten (Assembly erfolgt direkt in den Pool-Puffer, Übergabe zero-copy); nur das *Recycling* ist für die Großframes ausgehebelt. Churn sinkt trotzdem von ~25 Paaren/s auf ~1/GOP. Empfehlung: auf dem Garage-Soak RSS + Fragmentierung messen und ggf. `keep_cap` für Video-Quellen anheben (per `-D` bereits möglich); der 384-KB-Idle-Deckel war ein bewusster 32-MB-SoC-Trade-off und ist als Default vertretbar. |
+| R-01 | 🟡 NIEDRIG (Perf, nicht Korrektheit) | **`HUB_POOL_KEEP_CAP=96 KB` liegt UNTER der realen Mainstream-IDR-Größe.** hal_ingenic.c dokumentiert selbst „observed IDR peak 256–400 KB" (1080p @ 3000 kbps, dem Default aus `timps.conf.example`); 1080p-JPEGs überschreiten 96 KB ebenfalls regelmäßig. Folge: der für den IDR geratchte Puffer wird bei der Rückgabe IMMER ge-free()t ⇒ pro GOP (~1×/s) ein realloc-Grow + free, bei JPEG-Quellen ggf. pro Frame. **Wichtig:** Die eigentliche P-01-Ausbeute — Wegfall der zweiten Vollkopie — bleibt für IDRs vollständig erhalten (Assembly erfolgt direkt in den Pool-Puffer, Übergabe zero-copy); nur das *Recycling* ist für die Großframes ausgehebelt. Churn sinkt trotzdem von ~25 Paaren/s auf ~1/GOP. Empfehlung: auf dem cam-A-Soak RSS + Fragmentierung messen und ggf. `keep_cap` für Video-Quellen anheben (per `-D` bereits möglich); der 384-KB-Idle-Deckel war ein bewusster 32-MB-SoC-Trade-off und ist als Default vertretbar. |
 | R-02 | 🟡 NIEDRIG (Perf) | `pkt_pool_get` wächst per `realloc()` — kopiert bis zu 96 KB **stale Payload**, obwohl `len` beim Get immer 0 ist und der Inhalt komplett überschrieben wird. `free`+`malloc` wäre strikt billiger. Kosmetisch, ~1×/GOP relevant (verstärkt R-01 minimal). |
 | R-03 | ⚪ INFO | jpeg_thread publiziert jetzt **immer** (altes `jc->active \|\| hub_active`-Gate entfernt). Zustell-Semantik nachweislich äquivalent (das Gate übersprang nur den jetzt eliminierten malloc+copy; 0-Sub-Take ist Borrow+Return), Kosten pro Idle-Frame: 1× `s->lock` + Pool-Roundtrip — vernachlässigbar. Zweitens: Snapshot-Schreiben (blockierend, SD) rückt VOR den Publish — der MJPEG-Frame des Snapshot-Ticks kommt nun ~SD-Latenz später statt der Folgeframe; neutral, gleicher Thread. |
 
@@ -74,7 +74,7 @@ Alle Pfade einzeln nachgerechnet:
 
 ---
 
-## Was der Garage-Soak NICHT abdeckt (vor T23-Rollout offen)
+## Was der cam-A-Soak NICHT abdeckt (vor T23-Rollout offen)
 
 1. **T23 `ROT_HAS_SW_90`-Pfad:** im Diff unangetastet (0 Hunks in 1185–1744, beide Sites 1488/1519 weiter auf der unveränderten Copy-API) — Logik-Risiko ≈ 0. ABER: hal_ingenic.c wurde substanziell editiert; Opus' behaupteter `-fsyntax-only`-Lauf gegen T23-Header wurde hier **nicht reproduziert** (Toolchain nicht im Worktree). ⇒ Vor jedem T23-Build: `./build.sh` bzw. `-fsyntax-only` gegen T23-Header einmal selbst laufen lassen.
 2. **R-01-Messung:** reale IDR-Größen vs. 96-KB-Ceiling auf Hardware-Bitraten — Soak-Checkliste: RSS-Verlauf, `logread` auf die `dropping frame`/OOM-Warnungen (dürfen nie feuern), ideal einmal Heap-Churn vorher/nachher.
@@ -83,4 +83,4 @@ Alle Pfade einzeln nachgerechnet:
 
 ## Soak-Empfehlung
 
-Garage (T31), Standard-QA (`scripts/timps-qa.sh --profile soak`) plus: ≥48 h mit aktivem Recording (Motion + Pre-Roll, pinnt Pool-Pakete), periodisch RSS + `dropping frame`-Grep. Abbruchkriterium: jede `AU exceeds max buffer`/`no memory for AU packet`-Meldung oder RSS-Drift >10 %.
+cam-A (T31), Standard-QA (`scripts/timps-qa.sh --profile soak`) plus: ≥48 h mit aktivem Recording (Motion + Pre-Roll, pinnt Pool-Pakete), periodisch RSS + `dropping frame`-Grep. Abbruchkriterium: jede `AU exceeds max buffer`/`no memory for AU packet`-Meldung oder RSS-Drift >10 %.

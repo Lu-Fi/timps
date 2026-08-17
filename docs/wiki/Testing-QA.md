@@ -21,9 +21,9 @@ or the `/control` API's live-apply behavior.
 ### Running it
 
 ```sh
-./scripts/timps-qa.sh --cam 192.168.241.190
-./scripts/timps-qa.sh --cam 192.168.241.190 --ssh root@192.168.241.190 --profile standard
-./scripts/timps-qa.sh --cam 192.168.241.190 --profile quick   # ~3 min smoke test
+./scripts/timps-qa.sh --cam 192.168.1.100
+./scripts/timps-qa.sh --cam 192.168.1.100 --ssh root@192.168.1.100 --profile standard
+./scripts/timps-qa.sh --cam 192.168.1.100 --profile quick   # ~3 min smoke test
 ./scripts/timps-qa.sh --help
 ```
 
