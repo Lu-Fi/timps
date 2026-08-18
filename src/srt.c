@@ -68,12 +68,41 @@ static SRTSOCKET        g_ls = SRT_INVALID_SOCK; /* listener; srt_stop closes
 static volatile int     g_srt_clients;  /* in-flight client threads (sync
                                          * builtins): drained before the global
                                          * srt_cleanup() on shutdown */
+/* M-2: every live client socket, so shutdown can CLOSE them instead of only
+ * waiting for their threads. Waiting alone is not enough - a thread blocked in
+ * srt_sendmsg2() because the receiver stopped ACKing unblocks on the configured
+ * srt.latency_ms timescale, not on the teardown's 500 ms one, and would then
+ * wake up inside an already srt_cleanup()'d library. Closing the socket wakes
+ * the blocked sender at once, so the drain below has something to drain.
+ * Ownership follows srt_close_listener's rule (libsrt reuses socket ids, so a
+ * double close could hit an unrelated newer socket): whoever atomically swaps
+ * the entry out is the one that closes it. */
+static SRTSOCKET        g_client_sock[SRT_MAX_CLIENTS];
+
+static int srt_client_reg(SRTSOCKET cs)
+{
+    for (int i = 0; i < SRT_MAX_CLIENTS; i++)
+        if (__sync_bool_compare_and_swap(&g_client_sock[i], SRT_INVALID_SOCK, cs))
+            return i;
+    return -1;                     /* full: caller keeps sole ownership */
+}
+
+/* take the socket out of the registry and close it if it was still there;
+ * a no-op when the other side got there first. */
+static void srt_client_close(int slot)
+{
+    if (slot < 0 || slot >= SRT_MAX_CLIENTS) return;
+    SRTSOCKET s = (SRTSOCKET)__sync_lock_test_and_set(&g_client_sock[slot],
+                                                      SRT_INVALID_SOCK);
+    if (s != SRT_INVALID_SOCK) srt_close(s);
+}
 
 #define TS_BATCH_PKTS 7          /* 7*188 = 1316B, the conventional TS-over-SRT
                                   * payload size (fits one SRT/UDP datagram
                                   * without fragmenting) */
 typedef struct {
     SRTSOCKET sock;
+    int       slot;        /* index in g_client_sock, -1 if unregistered */
     uint8_t   cc_pat, cc_pmt, cc_v, cc_a;
     int       vcodec;      /* MS_VC_H264 / MS_VC_H265 */
     int       have_audio;
@@ -287,9 +316,9 @@ static void *client_thread(void *arg)
     if (chn < 0 || chn >= MS_MAX_VSTREAM || !g_cfg_boot.video[chn].enabled) chn = 0;
 
     fanqueue q;
-    if (fanqueue_init(&q, SRT_QCAP)) { srt_close(m->sock); free(m);
+    if (fanqueue_init(&q, SRT_QCAP)) { srt_client_close(m->slot); free(m);
         __sync_fetch_and_sub(&g_srt_clients, 1); return NULL; }
-    if (hub_subscribe(chn, &q) != 0) { fanqueue_free(&q); srt_close(m->sock); free(m);
+    if (hub_subscribe(chn, &q) != 0) { fanqueue_free(&q); srt_client_close(m->slot); free(m);
         __sync_fetch_and_sub(&g_srt_clients, 1); return NULL; }
 
     int ac = MS_AC_NONE, asr = 0, ach = 0, sub_a = 0;
@@ -387,7 +416,7 @@ static void *client_thread(void *arg)
     hub_unsubscribe(chn, &q);
     if (sub_a) hub_unsubscribe(HUB_AUDIO_SRC, &q);
     fanqueue_free(&q);
-    srt_close(m->sock);
+    srt_client_close(m->slot);     /* no-op if the teardown already closed it */
     free(m);
     __sync_fetch_and_sub(&g_srt_clients, 1);
     return NULL;
@@ -423,6 +452,10 @@ static void *listen_thread(void *arg)
 {
     (void)arg;
     if (srt_startup() < 0) { LOGE(MOD, "srt_startup failed"); return NULL; }
+    /* SRT_INVALID_SOCK is not 0, so the static zero-init would make slot 0 look
+     * like it already held socket 0. Set the empty marker explicitly. */
+    for (int i = 0; i < SRT_MAX_CLIENTS; i++) g_client_sock[i] = SRT_INVALID_SOCK;
+
     SRTSOCKET ls = srt_create_socket();
     if (ls == SRT_INVALID_SOCK) { LOGE(MOD, "create_socket"); srt_cleanup(); return NULL; }
 
@@ -471,6 +504,7 @@ static void *listen_thread(void *arg)
         }
         ts_mux *m = calloc(1, sizeof *m);
         if (!m) { srt_close(cs); continue; }
+        m->slot = srt_client_reg(cs);   /* -1 when full: this thread stays sole owner */
         m->sock = cs;
         __sync_fetch_and_add(&g_srt_clients, 1);
         pthread_t t;
@@ -478,10 +512,20 @@ static void *listen_thread(void *arg)
         else { srt_close(cs); free(m); __sync_fetch_and_sub(&g_srt_clients, 1); }
     }
     srt_close_listener();      /* no-op if srt_stop() already closed it (L4) */
-    /* detached client threads may still be inside srt_sendmsg2(): give them a
-     * bounded window to drain (g_run=0 pops them out of fanqueue_pop within
-     * ~200 ms) before the global libsrt teardown - else use-after-cleanup */
+    /* M-2: close every live client socket BEFORE draining. g_run=0 alone only
+     * releases threads sitting in fanqueue_pop (~200 ms); one blocked in
+     * srt_sendmsg2() because its receiver stopped ACKing waits on the
+     * srt.latency_ms timescale instead and would outlive the 500 ms window
+     * below, then wake inside an already srt_cleanup()'d library. Closing the
+     * socket errors that send out immediately, so the drain has something to
+     * drain rather than a deadline it silently blows past. The swap inside
+     * srt_client_close() keeps this safe against the owning thread closing the
+     * same socket concurrently. */
+    for (int i = 0; i < SRT_MAX_CLIENTS; i++) srt_client_close(i);
     for (int i = 0; i < 50 && g_srt_clients > 0; i++) usleep(10000);
+    if (g_srt_clients > 0)
+        LOGW(MOD,"%d client thread(s) still in libsrt after the drain - "
+                 "proceeding to srt_cleanup()", g_srt_clients);
     srt_cleanup();
     return NULL;
 }
