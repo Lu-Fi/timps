@@ -96,25 +96,37 @@ static int rtp_hdr(uint8_t *p, rtp_track *t, int marker, uint32_t ts)
 
 /* L3: emit's <0 (sink says client is gone) is threaded up through every
  * packetizer so the rest of the access unit is abandoned instead of burning
- * CPU fragmenting/copying packets a dead socket will only reject again. */
-static int emit(rtp_track *t, uint8_t *pkt, int len, uint32_t ts)
+ * CPU fragmenting packets a dead socket will only reject again.
+ *
+ * hdr/hlen is this packet's header block (RTP header + payload-format header),
+ * built in a small stack buffer the caller REUSES for the next packet; pay/plen
+ * points straight into the caller's access unit and is NOT copied anywhere on
+ * the way to the kernel. See rtp_out_fn in rtp.h for the lifetime rules both
+ * halves obey - in particular why the sink may keep `pay` in a pending batch
+ * but must copy `hdr`. */
+static int emit(rtp_track *t, const uint8_t *hdr, int hlen,
+                const uint8_t *pay, int plen, uint32_t ts)
 {
     t->pkt_count++;
-    t->octet_count += (uint32_t)(len - 12);
+    /* RFC 3550 sender octet count: payload bytes only, i.e. everything after
+     * the 12-byte RTP header (unchanged - it used to be `len - 12` on the
+     * single contiguous buffer, which is exactly hlen-12 + plen). */
+    t->octet_count += (uint32_t)(hlen - 12 + plen);
     t->last_rtp_ts = ts;
-    return t->out(t->ctx, pkt, len, 0);
+    return t->out(t->ctx, hdr, hlen, pay, plen, 0);
 }
 
 /* ---- H264 (RFC 6184) ---- */
 static int send_h264_nal(rtp_track *t, const uint8_t *nal, size_t n,
                          uint32_t ts, int last_in_au)
 {
-    uint8_t pkt[RTP_MTU_MAX + 32];
+    /* header block only - the NAL bytes go to the kernel straight out of the
+     * access unit (see emit()/rtp_out_fn), so no MTU-sized packet buffer here */
+    uint8_t hdr[RTP_HDR_MAX];
     size_t mtu = (size_t)t->mtu;
     if (n + 12 <= mtu) {
-        int h = rtp_hdr(pkt, t, last_in_au, ts);
-        memcpy(pkt+h, nal, n);
-        return emit(t, pkt, h+(int)n, ts) < 0 ? -1 : 0;
+        int h = rtp_hdr(hdr, t, last_in_au, ts);
+        return emit(t, hdr, h, nal, (int)n, ts) < 0 ? -1 : 0;
     }
     /* FU-A */
     uint8_t nri = nal[0] & 0x60;
@@ -126,11 +138,10 @@ static int send_h264_nal(rtp_track *t, const uint8_t *nal, size_t n,
         size_t chunk = left;
         if (chunk > mtu - 12 - 2) chunk = mtu - 12 - 2; /* -12 RTP hdr, -2 FU ind+hdr */
         int end = (chunk == left);
-        int h = rtp_hdr(pkt, t, (end && last_in_au), ts);
-        pkt[h]   = nri | 28;                          /* FU indicator */
-        pkt[h+1] = (uint8_t)((first?0x80:0)|(end?0x40:0)|typ); /* FU header */
-        memcpy(pkt+h+2, p, chunk);
-        if (emit(t, pkt, h+2+(int)chunk, ts) < 0) return -1;
+        int h = rtp_hdr(hdr, t, (end && last_in_au), ts);
+        hdr[h]   = nri | 28;                          /* FU indicator */
+        hdr[h+1] = (uint8_t)((first?0x80:0)|(end?0x40:0)|typ); /* FU header */
+        if (emit(t, hdr, h+2, p, (int)chunk, ts) < 0) return -1;
         p += chunk; left -= chunk; first = 0;
     }
     return 0;
@@ -159,12 +170,11 @@ int rtp_send_h264(rtp_track *t, const uint8_t *au, size_t len, int64_t pts_us)
 static int send_h265_nal(rtp_track *t, const uint8_t *nal, size_t n,
                          uint32_t ts, int last_in_au)
 {
-    uint8_t pkt[RTP_MTU_MAX + 32];
+    uint8_t hdr[RTP_HDR_MAX];       /* header block only, see send_h264_nal */
     size_t mtu = (size_t)t->mtu;
     if (n + 12 <= mtu) {
-        int h = rtp_hdr(pkt, t, last_in_au, ts);
-        memcpy(pkt+h, nal, n);
-        return emit(t, pkt, h+(int)n, ts) < 0 ? -1 : 0;
+        int h = rtp_hdr(hdr, t, last_in_au, ts);
+        return emit(t, hdr, h, nal, (int)n, ts) < 0 ? -1 : 0;
     }
     /* FU (type 49) - 2-byte payload hdr + 1-byte FU header */
     uint8_t typ = (nal[0] >> 1) & 0x3F;
@@ -177,12 +187,11 @@ static int send_h265_nal(rtp_track *t, const uint8_t *nal, size_t n,
         size_t chunk = left;
         if (chunk > mtu - 12 - 3) chunk = mtu - 12 - 3; /* -12 RTP hdr, -3 FU hdr */
         int end = (chunk == left);
-        int h = rtp_hdr(pkt, t, (end && last_in_au), ts);
-        pkt[h]   = (uint8_t)((49<<1) | (lid>>5));
-        pkt[h+1] = (uint8_t)((lid<<3) | tid);
-        pkt[h+2] = (uint8_t)((first?0x80:0)|(end?0x40:0)|typ);
-        memcpy(pkt+h+3, p, chunk);
-        if (emit(t, pkt, h+3+(int)chunk, ts) < 0) return -1;
+        int h = rtp_hdr(hdr, t, (end && last_in_au), ts);
+        hdr[h]   = (uint8_t)((49<<1) | (lid>>5));
+        hdr[h+1] = (uint8_t)((lid<<3) | tid);
+        hdr[h+2] = (uint8_t)((first?0x80:0)|(end?0x40:0)|typ);
+        if (emit(t, hdr, h+3, p, (int)chunk, ts) < 0) return -1;
         p += chunk; left -= chunk; first = 0;
     }
     return 0;
@@ -255,18 +264,18 @@ int rtp_send_aac(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us)
     audio_gap_resync(t, pts_us, 1024);          /* M-1: jump over real gaps */
     uint32_t ts = t->ts_base + (uint32_t)t->audio_samples;
     t->audio_samples += 1024;
-    uint8_t pkt[RTP_MTU_MAX + 32];
+    uint8_t hdr[RTP_HDR_MAX];       /* RTP hdr + 2 B AU-headers-length + 2 B AU
+                                     * header = 16, exactly RTP_HDR_MAX */
     size_t mtu = (size_t)t->mtu;
 
     if (plen + 12 + 4 <= mtu) {
         /* common case: whole AU in one packet. AU-headers-length = 16 bits;
          * one AU header of 16 bits: 13 bits size + 3 bits index(0) */
-        int h = rtp_hdr(pkt, t, 1, ts);
-        wr_be16(pkt+h, 16);
+        int h = rtp_hdr(hdr, t, 1, ts);
+        wr_be16(hdr+h, 16);
         uint16_t auh = (uint16_t)((plen & 0x1FFF) << 3);
-        wr_be16(pkt+h+2, auh);
-        memcpy(pkt+h+4, au, plen);
-        return emit(t, pkt, h+4+(int)plen, ts) < 0 ? -1 : 0;
+        wr_be16(hdr+h+2, auh);
+        return emit(t, hdr, h+4, au, (int)plen, ts) < 0 ? -1 : 0;
     }
 
     /* RFC 3640 3.2.3.1 + 3.2.1.1 ("AU-size"): an AU exceeding the MTU (high
@@ -285,11 +294,10 @@ int rtp_send_aac(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us)
         size_t chunk = mtu - 12 - 4;
         if (chunk > plen - sent) chunk = plen - sent;
         int end = (sent + chunk >= plen);
-        int h = rtp_hdr(pkt, t, end, ts);
-        wr_be16(pkt+h, 16);
-        wr_be16(pkt+h+2, auh);
-        memcpy(pkt+h+4, au+sent, chunk);
-        if (emit(t, pkt, h+4+(int)chunk, ts) < 0) return -1; /* client gone (L3) */
+        int h = rtp_hdr(hdr, t, end, ts);
+        wr_be16(hdr+h, 16);
+        wr_be16(hdr+h+2, auh);
+        if (emit(t, hdr, h+4, au+sent, (int)chunk, ts) < 0) return -1; /* client gone (L3) */
         sent += chunk;
     }
     return 0;
@@ -311,7 +319,8 @@ int rtp_send_g711(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us
     if (!t->have_pts0){ t->pts0 = pts_us; t->have_pts0 = 1; }
     audio_gap_resync(t, pts_us, (uint32_t)len); /* M-1: jump over real gaps */
     uint32_t ts = t->ts_base + (uint32_t)t->audio_samples;
-    uint8_t pkt[RTP_MTU_MAX + 32];
+    uint8_t hdr[RTP_HDR_MAX];       /* G.711 has no payload-format header: the
+                                     * 12-byte RTP header is the whole block */
     size_t off = 0;
     while (off < len) {
         size_t chunk = len - off;
@@ -322,9 +331,8 @@ int rtp_send_g711(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us
          * (after silence). This track has no silence suppression - it's
          * one continuous talkspurt for the whole session - so that's just
          * the very first packet ever sent on it, not every packet. */
-        int h = rtp_hdr(pkt, t, t->pkt_count==0, (uint32_t)(ts + off));
-        memcpy(pkt+h, frame+off, chunk);
-        if (emit(t, pkt, h+(int)chunk, ts) < 0) return -1; /* client gone (L3) */
+        int h = rtp_hdr(hdr, t, t->pkt_count==0, (uint32_t)(ts + off));
+        if (emit(t, hdr, h, frame+off, (int)chunk, ts) < 0) return -1; /* client gone (L3) */
         off += chunk;
     }
     t->audio_samples += len;   /* mono 8-bit: bytes == samples */
@@ -369,12 +377,11 @@ int rtp_send_opus(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us
      * could not hold even one frame we drop it rather than emit a split payload
      * no receiver could reassemble - the client stays valid, just misses audio. */
     if (len + 12 > (size_t)t->mtu) return 0;
-    uint8_t pkt[RTP_MTU_MAX + 32];
+    uint8_t hdr[RTP_HDR_MAX];   /* Opus carries no payload header (RFC 7587) */
     /* RFC 3551 4.1 / 7587: marker bit at the start of a talkspurt. No silence
      * suppression here (one continuous talkspurt), so that's the first packet. */
-    int h = rtp_hdr(pkt, t, t->pkt_count==0, ts);
-    memcpy(pkt+h, frame, len);
-    return emit(t, pkt, h+(int)len, ts) < 0 ? -1 : 0;   /* client gone (L3) */
+    int h = rtp_hdr(hdr, t, t->pkt_count==0, ts);
+    return emit(t, hdr, h, frame, (int)len, ts) < 0 ? -1 : 0;   /* client gone (L3) */
 }
 #endif /* USE_STREAM_OPUS */
 
@@ -487,8 +494,10 @@ int rtp_maybe_sr(rtp_track *t, int64_t now_us)
     int n = rtcp_wr_sr(t, now_us, buf);
     n += rtcp_wr_sdes(t, buf + n);
     /* H-1: over TCP-interleaved a failed/timed-out send can leave a torn
-     * '$'-framed packet; report it so the caller stops the session. */
-    return t->out(t->ctx, buf, n, 1) < 0 ? -1 : 0;
+     * '$'-framed packet; report it so the caller stops the session.
+     * RTCP has no media payload: the whole compound goes in the header half
+     * (rtp_out_fn), so nothing here points into an access unit. */
+    return t->out(t->ctx, buf, n, NULL, 0, 1) < 0 ? -1 : 0;
 }
 
 int rtp_send_bye(rtp_track *t, int64_t now_us)
@@ -509,5 +518,5 @@ int rtp_send_bye(rtp_track *t, int64_t now_us)
     buf[n]=0x81; buf[n+1]=203; wr_be16(buf+n+2, 1);   /* BYE, SC=1 */
     wr_be32(buf+n+4, t->ssrc);
     n += 8;
-    return t->out(t->ctx, buf, n, 1) < 0 ? -1 : 0;
+    return t->out(t->ctx, buf, n, NULL, 0, 1) < 0 ? -1 : 0;   /* see rtp_maybe_sr */
 }

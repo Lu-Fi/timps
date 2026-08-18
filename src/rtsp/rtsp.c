@@ -104,8 +104,15 @@ struct rtsp_server {
 typedef struct {
     int             n;
     struct mmsghdr  msgs[RTP_BATCH_N];
-    struct iovec    iov[RTP_BATCH_N];
-    uint8_t         buf[RTP_BATCH_N][RTP_MTU_MAX];
+    /* two iovecs per datagram: [2i] the staged header, [2i+1] the payload
+     * still sitting in the encoder's access unit (never copied here) */
+    struct iovec    iov[2*RTP_BATCH_N];
+    /* Only the HEADERS are staged. They must be copied because the packetizer
+     * reuses one small stack buffer per packet (rtp_out_fn's lifetime contract
+     * in rtp.h); the payload must NOT be, and that is the whole point - this
+     * array used to be RTP_BATCH_N * RTP_MTU_MAX = 23.5 KB of per-UDP-client
+     * bounce buffer that also blew past the target's L1 D-cache. */
+    uint8_t         hdr[RTP_BATCH_N][RTP_HDR_MAX];
 } rtp_batch;
 
 /* RTP output sink (UDP or TCP-interleaved) */
@@ -135,16 +142,24 @@ static int sink_flush(rtp_sink *s)
      * sendmmsg IS one kernel entry, and it is the unit that can block. */
     int64_t t_wr = ms_trace_wr_begin();
     int bytes = 0;
-    if (t_wr) for (int i = 0; i < b->n; i++) bytes += (int)b->iov[i].iov_len;
+    if (t_wr)
+        for (int i = 0; i < b->n; i++)
+            /* msg_iovlen is size_t on glibc but int on uClibc-ng (the target
+             * libc), so count with an int and cast - a size_t loop variable
+             * warns under -Wextra on one of the two. */
+            for (int k = 0; k < (int)b->msgs[i].msg_hdr.msg_iovlen; k++)
+                bytes += (int)b->msgs[i].msg_hdr.msg_iov[k].iov_len;
     int off = 0;
     while (off < b->n) {
         int r = (int)sendmmsg(s->fd, b->msgs + off, (unsigned)(b->n - off), 0);
         if (r < 0) {
             if (errno == EINTR) continue;
             if (errno == ENOSYS) {           /* kernel without sendmmsg */
+                /* sendmsg(), not sendto(): each datagram is now header+payload
+                 * in two iovecs, so the fallback has to be scatter/gather too.
+                 * The address is already in each msg_hdr. */
                 for (; off < b->n; off++)
-                    if (sendto(s->fd, b->iov[off].iov_base, b->iov[off].iov_len,
-                               0, (struct sockaddr*)&s->dst, sizeof s->dst) < 0)
+                    if (sendmsg(s->fd, &b->msgs[off].msg_hdr, 0) < 0)
                         { b->n = 0; ms_trace_wr_end(s->tr, t_wr, 0); return -1; }
                 break;
             }
@@ -159,27 +174,48 @@ static int sink_flush(rtp_sink *s)
     return 0;
 }
 
-static int sink_send(void *ctx, const uint8_t *pkt, int len, int rtcp)
+/* Drop everything staged in the batch WITHOUT sending it.
+ * Needed because a staged entry's payload iovec points into the access unit
+ * the consumer is about to release (rtp_out_fn's lifetime contract): on the
+ * error path, where the rest of the AU is abandoned and no flush follows, the
+ * batch must be emptied BEFORE that pkt_unref rather than left holding
+ * pointers into a buffer that may go back to the pool. No-op for a sink
+ * without a batch (TCP, audio). */
+static void sink_discard(rtp_sink *s)
+{
+    if (s->batch) s->batch->n = 0;
+}
+
+/* Largest interleaved RTP/RTCP packet this sink will frame. Sized
+ * independently of RTP_MTU_MAX (which only bounds the RTP packet size the
+ * packetizer targets): 1600 already covers a standard 1500-byte-MTU Ethernet
+ * frame with margin. Do NOT "simplify" this to RTP_MTU_MAX + 4 - RTP_MTU_MAX
+ * is 1472, which would silently SHRINK the limit and could reject anything
+ * relying on the headroom. Also bounds the TLS staging buffer below. */
+#define RTSP_ILV_MAX 1600
+
+/* Send one RTP/RTCP packet, given as a header block plus a payload that points
+ * into the encoder's access unit. See rtp_out_fn (rtp.h) for the contract:
+ * `hdr` is only valid for this call (so the batch copies it), `pay` stays valid
+ * until the consumer's flush barrier (so the batch may reference it). */
+static int sink_send(void *ctx, const uint8_t *hdr, int hlen,
+                     const uint8_t *pay, int plen, int rtcp)
 {
     rtp_sink *s = (rtp_sink*)ctx;
+    int len = hlen + plen;
+    if (len > RTSP_ILV_MAX) return -1;
     if (s->tcp) {
-        /* one write = one TCP segment: prepend the 4-byte interleave header to
-         * the RTP packet in a single buffer (avoids a tiny header segment and
-         * halves the syscalls, which dominated CPU with TCP_NODELAY) */
-        /* generic interleaved-send buffer, sized independently of RTP_MTU_MAX
-         * (which only bounds the RTP *payload* packet buffers elsewhere): 1600
-         * already covers a standard 1500-byte-MTU Ethernet frame with margin
-         * for the 4-byte interleave header. Do NOT "simplify" this to
-         * RTP_MTU_MAX + 4 - RTP_MTU_MAX is 1472, which would silently SHRINK
-         * this buffer to 1476 and could truncate anything relying on the
-         * headroom (len is bounds-checked below regardless). */
-        uint8_t buf[4 + 1600];
-        if (len > (int)sizeof(buf) - 4) return -1;
-        buf[0] = '$';
-        buf[1] = (uint8_t)(rtcp ? s->chan_rtcp : s->chan_rtp);
-        buf[2] = (uint8_t)(len >> 8);
-        buf[3] = (uint8_t)len;
-        memcpy(buf + 4, pkt, len);
+        /* one write = one TCP segment: the 4-byte interleave header, the RTP
+         * header and the payload go to the kernel in ONE syscall (avoids a
+         * tiny header segment and halves the syscalls, which dominated CPU
+         * with TCP_NODELAY). This used to require memcpy'ing all three into
+         * one buffer; sendmsg's iovec gets the same single segment without
+         * copying the payload. */
+        uint8_t ilv[4];
+        ilv[0] = '$';
+        ilv[1] = (uint8_t)(rtcp ? s->chan_rtcp : s->chan_rtp);
+        ilv[2] = (uint8_t)(len >> 8);
+        ilv[3] = (uint8_t)len;
         /* trace.h: this is THE interesting write on a TCP-interleaved session -
          * it is where a stalled peer / closed receive window parks us for up to
          * SO_SNDTIMEO. Bracketing it (only while MS_TR_WR is on) is what lets a
@@ -187,15 +223,32 @@ static int sink_send(void *ctx, const uint8_t *pkt, int len, int rtcp)
         int64_t t_wr = ms_trace_wr_begin();
 #ifdef USE_TLS
         /* interleaved packets ride the control connection: over RTSPS they
-         * must go through TLS like every other byte on that connection */
+         * must go through TLS like every other byte on that connection.
+         *
+         * THE RTSPS PATH DELIBERATELY KEEPS THE COPY. ms_tls_write() takes one
+         * contiguous buffer - TLS has no scatter/gather write - and splitting
+         * the packet into two or three ms_tls_write() calls would emit two or
+         * three TLS records per RTP packet (each with its own header+MAC, more
+         * overhead than the memcpy it saves) and widen exactly the torn-frame
+         * window H-1 is about. So zero-copy applies to plain RTSP only; the
+         * limit is TLS's API, not the packet's lifetime. */
         if (s->tls) {
+            uint8_t buf[4 + RTSP_ILV_MAX];
+            memcpy(buf, ilv, 4);
+            memcpy(buf + 4, hdr, (size_t)hlen);
+            if (plen) memcpy(buf + 4 + hlen, pay, (size_t)plen);
             int rc = ms_tls_write((ms_tls_conn*)s->tls, buf, 4+len) < 0 ? -1 : len;
             ms_trace_wr_end(s->tr, t_wr, rc >= 0 ? 4+len : 0);
             if (rc >= 0) s->wrote_tcp = 1;
             return rc;
         }
 #endif
-        int rc = net_sendall(s->fd, buf, 4 + len) < 0 ? -1 : len;
+        /* net_sendmsg_all() consumes this array in place on a partial write */
+        struct iovec iov[3];
+        iov[0].iov_base = ilv;            iov[0].iov_len = 4;
+        iov[1].iov_base = (void*)hdr;     iov[1].iov_len = (size_t)hlen;
+        iov[2].iov_base = (void*)pay;     iov[2].iov_len = (size_t)plen;
+        int rc = net_sendmsg_all(s->fd, iov, plen ? 3 : 2) < 0 ? -1 : len;
         ms_trace_wr_end(s->tr, t_wr, rc >= 0 ? 4+len : 0);
         if (rc >= 0) s->wrote_tcp = 1;
         return rc;
@@ -210,24 +263,43 @@ static int sink_send(void *ctx, const uint8_t *pkt, int len, int rtcp)
              * access unit (and this flushes itself when a big IDR fills a
              * whole batch mid-AU) */
             rtp_batch *b = s->batch;
-            if (len > (int)sizeof b->buf[0]) return -1;
-            memcpy(b->buf[b->n], pkt, (size_t)len);
-            struct iovec *iv = &b->iov[b->n];
-            iv->iov_base = b->buf[b->n];
-            iv->iov_len  = (size_t)len;
+            if (hlen > (int)sizeof b->hdr[0]) return -1;   /* see RTP_HDR_MAX */
+            /* The header is copied (<= 16 B) because the packetizer reuses its
+             * stack buffer for the next packet of this AU. The PAYLOAD is not:
+             * it points into the ms_pkt the play loop still holds a reference
+             * to, and that reference outlives this batch's flush by contract
+             * (rtp_out_fn) - a flush the play loop performs before every
+             * pkt_unref. THIS is the pointer that must never outlive it. */
+            memcpy(b->hdr[b->n], hdr, (size_t)hlen);
+            struct iovec *iv = &b->iov[2*b->n];
+            iv[0].iov_base = b->hdr[b->n];
+            iv[0].iov_len  = (size_t)hlen;
+            iv[1].iov_base = (void*)pay;
+            iv[1].iov_len  = (size_t)plen;
             struct mmsghdr *m = &b->msgs[b->n];
             memset(m, 0, sizeof *m);
             m->msg_hdr.msg_name    = &s->dst;
             m->msg_hdr.msg_namelen = sizeof s->dst;
             m->msg_hdr.msg_iov     = iv;
-            m->msg_hdr.msg_iovlen  = 1;
+            m->msg_hdr.msg_iovlen  = plen ? 2 : 1;
             if (++b->n == RTP_BATCH_N && sink_flush(s) < 0) return -1;
             return len;
         }
         struct sockaddr_in *d = rtcp ? &s->dst_rtcp : &s->dst;
         int fd = rtcp ? s->fd_rtcp : s->fd;
+        struct iovec iov[2];
+        iov[0].iov_base = (void*)hdr;   iov[0].iov_len = (size_t)hlen;
+        iov[1].iov_base = (void*)pay;   iov[1].iov_len = (size_t)plen;
+        struct msghdr m;
+        memset(&m, 0, sizeof m);
+        m.msg_name    = d;
+        m.msg_namelen = sizeof(*d);
+        m.msg_iov     = iov;
+        m.msg_iovlen  = plen ? 2 : 1;
         int64_t t_wr = ms_trace_wr_begin();
-        int rc = (int)sendto(fd, pkt, len, 0, (struct sockaddr*)d, sizeof(*d));
+        /* UDP sendmsg is all-or-nothing (no partial datagram), so unlike the
+         * TCP path above this needs no resume loop. */
+        int rc = (int)sendmsg(fd, &m, 0);
         ms_trace_wr_end(s->tr, t_wr, rc > 0 ? rc : 0);
         return rc;
     }
@@ -1017,7 +1089,13 @@ static void stream_loop(session *s)
                        sink_send, &s->vsink);
         /* P3: batch UDP video packets into sendmmsg; audio stays direct
          * (one packet per frame - nothing to batch). Allocation failure
-         * just keeps the per-packet path. */
+         * just keeps the per-packet path.
+         * A batched sink DEFERS the send, and since the packets it stages
+         * reference the access unit rather than copying it (rtp_out_fn), every
+         * batch must be emptied before the play loop drops its packet
+         * reference. stream_loop's flush barrier covers any sink given a batch
+         * here, audio included, so adding one below is safe - but read that
+         * barrier before you do. */
         if (!s->vsink.tcp)
             s->vsink.batch = (rtp_batch*)calloc(1, sizeof(rtp_batch));
         if (hub_subscribe(s->vchn, &s->q) != 0) goto full;
@@ -1160,7 +1238,10 @@ static void stream_loop(session *s)
                 if (vc==MS_VC_H265) sendrc = rtp_send_h265(&s->vtrack,p->data,p->len,p->pts_us);
                 else                sendrc = rtp_send_h264(&s->vtrack,p->data,p->len,p->pts_us);
                 /* P3: one access unit done - push the whole batch out in a
-                 * single sendmmsg (no-op on TCP / unbatched sinks) */
+                 * single sendmmsg (no-op on TCP / unbatched sinks). Kept here,
+                 * ahead of the SR anchor below, because the anchor must only
+                 * be taken once the AU is really on the wire; the barrier
+                 * before pkt_unref() then finds nothing left to do. */
                 if (sendrc >= 0 && sink_flush(&s->vsink) < 0) sendrc = -1;
                 /* SR media<->wall anchor: pair this AU's media timestamp
                  * (vtrack.last_rtp_ts) with the packet's PUBLISH stamp
@@ -1189,6 +1270,31 @@ static void stream_loop(session *s)
                 if (sendrc >= 0)   /* see video anchor note */
                     rtp_sr_anchor(&s->atrack, p->enq_us > 0 ? p->enq_us : now);
             }
+            /* ---- ZERO-COPY FLUSH BARRIER (do not move below pkt_unref) ----
+             * The RTP packets just handed to the sinks do NOT carry a copy of
+             * the media payload: their iovecs point straight into p->data
+             * (rtp_out_fn's lifetime contract in rtp.h). p->data stays valid
+             * exactly as long as the reference this loop popped off the
+             * fanqueue - i.e. until the pkt_unref() below. So EVERY sink that
+             * can hold a packet back must be emptied here, between the last
+             * send and that unref.
+             *
+             * In today's shape both calls are cheap no-ops on the path that
+             * already flushed: the video branch above flushes after each AU,
+             * and the audio sink has no batch at all (only vsink gets one, and
+             * only for UDP). They are here so the invariant holds by
+             * CONSTRUCTION rather than by that coincidence - give asink a
+             * batch, or add a third media branch, and this still cannot leak a
+             * dangling payload pointer past the unref.
+             *
+             * On the failure path nothing may be flushed (the AU is abandoned
+             * mid-way and the connection is about to be torn down), so the
+             * staged entries are discarded outright instead - dropping the
+             * pointers rather than sending from a buffer that is about to go
+             * back to the packet pool. */
+            if (sendrc >= 0 && sink_flush(&s->vsink) < 0) sendrc = -1;
+            if (sendrc >= 0 && sink_flush(&s->asink) < 0) sendrc = -1;
+            if (sendrc < 0) { sink_discard(&s->vsink); sink_discard(&s->asink); }
             pkt_unref(p);
             if (t_pop)
                 ms_trace_au_end(&s->tr, tr_media, tr_key, tr_len, tr_enq,

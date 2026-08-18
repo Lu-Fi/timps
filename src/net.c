@@ -99,6 +99,43 @@ int net_sendall(int fd, const void *buf, int len)
     return off;
 }
 
+int net_sendmsg_all(int fd, struct iovec *iov, int niov)
+{
+    int total = 0;
+    for (int i = 0; i < niov; i++) total += (int)iov[i].iov_len;
+    int done = 0;
+    while (done < total) {
+        struct msghdr m;
+        memset(&m, 0, sizeof m);
+        m.msg_iov    = iov;
+        /* no cast: msg_iovlen is size_t on glibc, int on uClibc-ng */
+        m.msg_iovlen = niov;
+        /* MSG_NOSIGNAL like net_sendall(): main.c ignores SIGPIPE globally, but
+         * this helper must not depend on that staying true. */
+        ssize_t n = sendmsg(fd, &m, MSG_NOSIGNAL);
+        if (n <= 0) {
+            if (n < 0 && errno == EINTR) continue;
+            return -1;   /* incl. SO_SNDTIMEO expiry: caller treats a short
+                          * write as a torn frame and stops the session */
+        }
+        done += (int)n;
+        /* Consume the accepted bytes off the FRONT of the iovec array: whole
+         * entries drop out, the one straddling the boundary is advanced. */
+        size_t left = (size_t)n;
+        while (left > 0 && niov > 0) {
+            if (left >= iov->iov_len) {
+                left -= iov->iov_len;
+                iov++; niov--;
+            } else {
+                iov->iov_base = (uint8_t *)iov->iov_base + left;
+                iov->iov_len -= left;
+                left = 0;
+            }
+        }
+    }
+    return total;
+}
+
 int net_bind_udp_pair(int *rtp_fd, int *rtcp_fd, int base_port)
 {
     int r = net_udp_socket(), c = net_udp_socket();

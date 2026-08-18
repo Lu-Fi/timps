@@ -4,9 +4,59 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* output sink: send one RTP (or RTCP) packet. return <0 to signal the track
- * is dead (client gone / socket error). */
-typedef int (*rtp_out_fn)(void *ctx, const uint8_t *pkt, int len, int rtcp);
+/* Output sink: send one RTP (or RTCP) packet. Return <0 to signal the track is
+ * dead (client gone / socket error).
+ *
+ * The packet is handed over in TWO pieces, which is what lets the sink give the
+ * kernel a scatter/gather write instead of memcpy'ing the media payload into a
+ * contiguous buffer first (the payload is by far the bigger half):
+ *   hdr[0..hlen)  protocol headers only - the 12-byte RTP header plus any
+ *                 payload-format header (H264 FU indicator+header, H265 FU
+ *                 payload+FU header, AAC AU-headers-length + AU header). At
+ *                 most RTP_HDR_MAX bytes. For an RTCP packet (rtcp!=0) this is
+ *                 the WHOLE compound packet and pay/plen are NULL/0.
+ *   pay[0..plen)  the media payload, pointing DIRECTLY INTO the encoded access
+ *                 unit the caller was given - never a copy. May be 0-length.
+ *
+ * ---- LIFETIME CONTRACT (read before changing anything here) ----------------
+ * The two halves have DIFFERENT lifetimes, and that asymmetry is the whole
+ * point of the split signature:
+ *
+ *   hdr  lives in a small buffer on the PACKETIZER's stack that is REUSED for
+ *        the very next packet of the same access unit. It is valid ONLY for
+ *        the duration of this call. A sink that defers the actual send (the
+ *        UDP sendmmsg batch in rtsp.c) MUST copy it - hence RTP_HDR_MAX.
+ *
+ *   pay  points into the refcounted ms_pkt (frame.h) that the consumer thread
+ *        popped from its fanqueue. That reference is held by the consumer for
+ *        the whole access unit and released only AFTER it has flushed every
+ *        sink (rtsp.c stream_loop's flush barrier just above its pkt_unref).
+ *        So a sink MAY park this pointer in a pending batch until its next
+ *        flush - and MUST NOT hold it past that flush.
+ *
+ * Why the payload pointer is safe at all, i.e. what a future change must not
+ * break (each link verified, not assumed):
+ *   - fanqueue_pop() REMOVES the packet from the queue under the queue lock and
+ *     transfers the queue's reference to the popping thread (fanqueue.c) - it
+ *     does not unref. So the consumer owns a reference outright.
+ *   - the fanqueue's drop-oldest overflow eviction only ever unrefs packets
+ *     still IN slots[] (fanqueue.c fanqueue_push). A packet already popped is
+ *     unreachable from there, so a producer overrun CANNOT free a buffer a
+ *     sender is transmitting, however far behind that sender falls.
+ *   - fanqueue_close() (shutdown, via ms_creg_wake_all in util.c) only sets a
+ *     flag and broadcasts; it frees no packet. fanqueue_free() unrefs only the
+ *     still-queued remainder and runs on the consumer's OWN thread after its
+ *     loop returned (rtsp.c client_thread), never concurrently with a send.
+ *   - the buffer returns to its source pool (or is free()d) strictly on the
+ *     LAST pkt_unref, via an atomic decrement (frame.c pkt_unref), so the
+ *     producer cannot recycle and overwrite it while this reference is held.
+ *   - every subscriber gets its own pkt_ref() (hub.c hub_publish /
+ *     hub_publish_take), so a second subscriber's progress is irrelevant.
+ * Whoever moves the consumer's pkt_unref() earlier - above the sink flush, or
+ * into the send loop - breaks all of this and turns it into a use-after-free
+ * that shows up as sporadically corrupted video, not as a crash. */
+typedef int (*rtp_out_fn)(void *ctx, const uint8_t *hdr, int hlen,
+                          const uint8_t *pay, int plen, int rtcp);
 
 /* hard upper bound for one RTP packet (header + payload): 1500 Ethernet MTU
  * minus 20 B IP and 8 B UDP. The runtime rtsp.mtu config value is clamped to
@@ -15,6 +65,13 @@ typedef int (*rtp_out_fn)(void *ctx, const uint8_t *pkt, int len, int rtcp);
 /* below this, FU fragmentation overhead explodes and nothing legitimate
  * needs it (576 = IPv4 minimum reassembly size minus headers, rounded) */
 #define RTP_MTU_MIN 548
+/* Upper bound on the `hlen` a sink can ever be handed (see rtp_out_fn): the
+ * 12-byte RTP header plus the largest payload-format header any packetizer in
+ * rtp.c prepends - AAC's 2-byte AU-headers-length + 2-byte AU header (RFC 3640)
+ * is the biggest at 4; H265 FU is 3, H264 FU-A is 2, G711/Opus are 0. A sink
+ * that stages headers (rtsp.c's sendmmsg batch) sizes its slots off this, so
+ * any new packetizer that needs more must raise it here. */
+#define RTP_HDR_MAX 16
 
 /* longest RTCP compound packet this module emits: SR (28) + SDES with a
  * CNAME of up to RTP_CNAME_MAX chars (4 hdr + 4 ssrc + 2 item hdr + text +
