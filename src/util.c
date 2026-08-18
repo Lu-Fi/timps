@@ -144,3 +144,115 @@ int ms_stopgate_stopped(ms_stopgate *g)
     pthread_mutex_unlock(&g->lock);
     return stopped;
 }
+
+void ms_json_esc(const char *s, char *out, size_t cap)
+{
+    const unsigned char *p = (const unsigned char *)s;
+    size_t o=0;
+    if (!cap) return;
+    while (*p){
+        unsigned char c = *p;
+        if (c=='"' || c=='\\'){
+            if (o+2 >= cap) break;
+            out[o++]='\\'; out[o++]=(char)c; p++;
+        } else if (c < 0x20){
+            if (o+1 >= cap) break;
+            out[o++]=' '; p++;
+        } else if (c < 0x80){
+            if (o+1 >= cap) break;
+            out[o++]=(char)c; p++;
+        } else {
+            /* lead byte of a multi-byte sequence: decode + validate */
+            int n; unsigned cp=0;
+            if      ((c & 0xE0)==0xC0){ n=2; cp=c&0x1F; }
+            else if ((c & 0xF0)==0xE0){ n=3; cp=c&0x0F; }
+            else if ((c & 0xF8)==0xF0){ n=4; cp=c&0x07; }
+            else n=0;                       /* stray continuation / 0xF8+ */
+            int ok = n>0;
+            for (int i=1; ok && i<n; i++){  /* p is NUL-terminated: a short
+                                             * sequence hits \0 here and fails,
+                                             * never reading past the string */
+                if ((p[i] & 0xC0) != 0x80) ok=0;
+                else cp = (cp<<6) | (p[i]&0x3F);
+            }
+            if (ok){
+                if      (n==2 && cp<0x80)    ok=0;   /* overlong */
+                else if (n==3 && cp<0x800)   ok=0;
+                else if (n==4 && cp<0x10000) ok=0;
+                if (cp>=0xD800 && cp<=0xDFFF) ok=0; /* surrogate */
+                if (cp>0x10FFFF)              ok=0;
+            }
+            if (ok){
+                if (o+(size_t)n >= cap) break;
+                for (int i=0;i<n;i++) out[o++]=(char)p[i];
+                p += n;
+            } else {
+                if (o+3 >= cap) break;              /* emit U+FFFD, skip 1 byte */
+                out[o++]=(char)0xEF; out[o++]=(char)0xBF; out[o++]=(char)0xBD;
+                p++;
+            }
+        }
+    }
+    out[o]=0;
+}
+
+/* ---- shared media-tree filesystem helpers --------------------------------
+ * moved here from word-identical twins in record.c/timelapse.c; the WHY of
+ * each check (L10, L-2, F4) is on the declarations in util.h. */
+
+#include <stdio.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <sys/statvfs.h>
+
+int ms_has_dotdot(const char *s)
+{
+    if (!s) return 0;
+    if (!strcmp(s, "..") || !strncmp(s, "../", 3) || strstr(s, "/../")) return 1;
+    size_t n = strlen(s);
+    return (n >= 3 && !strcmp(s + n - 3, "/.."));
+}
+
+int ms_path_unsafe(const char *dir, const char *name)
+{
+    if (ms_has_dotdot(dir)) return 1;
+    if (name && (ms_has_dotdot(name) || name[0] == '/')) return 1;
+    return 0;
+}
+
+long long ms_free_mb(const char *dir)
+{
+    struct statvfs vf;
+    if (statvfs(dir, &vf) != 0) return -1;
+    return (long long)((vf.f_bavail * (unsigned long long)vf.f_frsize) / (1024*1024));
+}
+
+void ms_mkdirs(const char *path)
+{
+    char tmp[512]; snprintf(tmp, sizeof tmp, "%s", path);
+    char *slash = strrchr(tmp, '/'); if (!slash) return; *slash = 0;
+    for (char *p = tmp+1; *p; p++){
+        if (*p == '/'){ *p = 0; mkdir(tmp, 0755); *p = '/'; }
+    }
+    mkdir(tmp, 0755);
+}
+
+void ms_hostname(char *out, size_t cap)
+{
+    if (!cap) return;
+    if (gethostname(out, cap) != 0) snprintf(out, cap, "camera");
+    out[cap-1] = 0;   /* F4: an overlong hostname may come back unterminated */
+}
+
+time_t ms_media_path(char *out, size_t cap, const char *dir, const char *sub,
+                     const char *name, const char *ext)
+{
+    time_t t = time(NULL); struct tm tmv; localtime_r(&t, &tmv);
+    char rel[160];
+    if (strftime(rel, sizeof rel, name, &tmv) == 0)
+        snprintf(rel, sizeof rel, "%ld", (long)t);
+    char host[64];
+    ms_hostname(host, sizeof host);
+    snprintf(out, cap, "%s/%s/%s/%s%s", dir, host, sub, rel, ext);
+    return t;
+}

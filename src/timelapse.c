@@ -31,7 +31,6 @@
 #include <time.h>
 #include <errno.h>
 #include <sys/stat.h>
-#include <sys/statvfs.h>
 #include <dirent.h>
 
 #define MOD "TL"
@@ -47,44 +46,10 @@ static long long        g_count;
 static time_t           g_last_t;
 static char             g_lastfile[160];
 
-/* ---- filesystem helpers (same shape as record.c) ---- */
-
-/* timelapse.dir/name are runtime-mutable via /control by an authenticated
- * caller; a ".." component (or an absolute name spliced into the path) would
- * let the shot writer/pruner escape the timelapses tree (L10, same check as
- * record.c). */
-/* L-2: reject ".." only as a path COMPONENT (legit names may contain "..") */
-static int tl_has_dotdot(const char *s)
-{
-    if (!s) return 0;
-    if (!strcmp(s, "..") || !strncmp(s, "../", 3) || strstr(s, "/../")) return 1;
-    size_t n = strlen(s);
-    return (n >= 3 && !strcmp(s + n - 3, "/.."));
-}
-static int tl_path_unsafe(const char *dir, const char *name)
-{
-    if (tl_has_dotdot(dir)) return 1;
-    if (name && (tl_has_dotdot(name) || name[0] == '/')) return 1;
-    return 0;
-}
-
-static long long free_mb(const char *dir)
-{
-    struct statvfs vf;
-    if (statvfs(dir,&vf)!=0) return -1;
-    return (long long)((vf.f_bavail*(unsigned long long)vf.f_frsize)/(1024*1024));
-}
-
-/* create every parent directory of a file path (mkdir -p on dirname) */
-static void mkdirs(const char *path)
-{
-    char tmp[512]; snprintf(tmp,sizeof tmp,"%s",path);
-    char *slash=strrchr(tmp,'/'); if(!slash) return; *slash=0;
-    for (char *p=tmp+1; *p; p++){
-        if (*p=='/'){ *p=0; mkdir(tmp,0755); *p='/'; }
-    }
-    mkdir(tmp,0755);
-}
+/* ---- filesystem helpers ----
+ * ms_path_unsafe / ms_free_mb / ms_mkdirs / ms_media_path live in util.c,
+ * shared with record.c - the '..' check is a security check (L10/L-2); see
+ * util.h for the chosen component semantics. */
 
 /* delete *.jpg older than cutoff under base; rmdir prunes emptied dirs
  * (fails harmlessly on non-empty ones). Depth-bounded. */
@@ -121,11 +86,8 @@ static void prune(int keep_days)
     config_str_lock();
     snprintf(dir,sizeof dir,"%s",g_tc->timelapse.dir);
     config_str_unlock();
-    if (tl_path_unsafe(dir,NULL)) return;  /* never prune outside the tree (L10) */
-    /* F4: gethostname() may fail (fall back to a safe default) and on an
-     * overlong hostname is not guaranteed to NUL-terminate - force both. */
-    char host[64]; if (gethostname(host,sizeof host)!=0) strcpy(host,"camera");
-    host[sizeof host-1]=0;
+    if (ms_path_unsafe(dir,NULL)) return;  /* never prune outside the tree (L10) */
+    char host[64]; ms_hostname(host,sizeof host);   /* F4 handling lives in ms_hostname */
     char base[208]; snprintf(base,sizeof base,"%s/%s/timelapses",dir,host);
     prune_old(base, time(NULL)-(time_t)days*86400, 0);
 }
@@ -141,19 +103,14 @@ static int shot_write(const ms_pkt *p)
     snprintf(dir,sizeof dir,"%s",g_tc->timelapse.dir);
     snprintf(name,sizeof name,"%s",g_tc->timelapse.name);
     config_str_unlock();
-    if (tl_path_unsafe(dir,name)){
+    if (ms_path_unsafe(dir,name)){
         LOGE(MOD,"unsafe timelapse.dir/name ('..' or absolute name), skipping shot");
         return -1;
     }
-    char rel[160]; time_t t=time(NULL); struct tm tmv; localtime_r(&t,&tmv);
-    if (strftime(rel,sizeof rel,name,&tmv)==0)
-        snprintf(rel,sizeof rel,"%ld",(long)t);
-    char host[64]; if (gethostname(host,sizeof host)!=0) strcpy(host,"camera");
-    host[sizeof host-1]=0;                     /* F4: see prune path above */
     char path[512], tmp[520];
-    snprintf(path,sizeof path,"%s/%s/timelapses/%s.jpg",dir,host,rel);
+    time_t t = ms_media_path(path,sizeof path,dir,"timelapses",name,".jpg");
     snprintf(tmp,sizeof tmp,"%s.tmp",path);
-    mkdirs(path);
+    ms_mkdirs(path);
     FILE *f=fopen(tmp,"wb");
     if (!f){ LOGE(MOD,"open %s: %s",tmp,strerror(errno)); return -1; }
     /* short write = SD yanked / disk full: drop the shot, keep the loop alive */
@@ -293,7 +250,7 @@ void timelapse_get_status(ms_timelapse_status *st)
         st->interval_s=g_tc->timelapse.interval_s;
         snprintf(dir,sizeof dir,"%s",g_tc->timelapse.dir);
         config_str_unlock();
-        st->free_mb=free_mb(dir);
+        st->free_mb=ms_free_mb(dir);
     }
     pthread_mutex_lock(&g_lock);
     st->count=g_count; st->last_t=(long long)g_last_t;

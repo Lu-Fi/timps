@@ -42,8 +42,6 @@ static inline void wr_be24(uint8_t *p, uint32_t v){ p[0]=v>>16; p[1]=v>>8; p[2]=
 static inline void wr_be32(uint8_t *p, uint32_t v){ p[0]=v>>24; p[1]=v>>16; p[2]=v>>8; p[3]=v; }
 static inline void wr_be64(uint8_t *p, uint64_t v){ for(int i=0;i<8;i++) p[i]=(uint8_t)(v>>(56-8*i)); }
 
-static inline uint16_t rd_be16(const uint8_t *p){ return (uint16_t)((p[0]<<8)|p[1]); }
-static inline uint32_t rd_be32(const uint8_t *p){ return ((uint32_t)p[0]<<24)|((uint32_t)p[1]<<16)|((uint32_t)p[2]<<8)|p[3]; }
 
 /* growable byte buffer (used to assemble MP4 boxes) */
 typedef struct {
@@ -132,5 +130,57 @@ int  ms_stopgate_wait(ms_stopgate *g, int ms);
 void ms_stopgate_stop(ms_stopgate *g);
 /* Non-blocking predicate read (1 if stop requested). */
 int  ms_stopgate_stopped(ms_stopgate *g);
+
+/* Escape a string for embedding between JSON double quotes: escapes " and \\,
+ * folds control characters to spaces, and replaces invalid UTF-8 so strict
+ * parsers do not reject the document. THE one escaper - GET /control, the POST
+ * reply's "applied" echo and the SSE config stream all go through it, because a
+ * second copy is a second thing to get wrong. Bounds-checked; truncates rather
+ * than overflowing out[cap]. */
+void ms_json_esc(const char *s, char *out, size_t cap);
+
+/* ---- shared media-tree filesystem helpers (record.c + timelapse.c) --------
+ * One copy on purpose: the '..' check below is a SECURITY check and used to
+ * exist as word-identical twins in record.c and timelapse.c - a hardening had
+ * to land twice, and whoever found only one copy thought the job done. */
+
+/* Path-traversal check, COMPONENT semantics: flags ".." only as a whole path
+ * component ("..", "../x", "x/../y", "x/.."), never as a substring of a longer
+ * name. This meaning won over the older strstr(s,"..") substring test (which
+ * record_clip() and control.c's sound_path() used) for two reasons:
+ *   - L-2: legitimate strftime name patterns may contain ".." inside a
+ *     component (e.g. "cam..front-%Y") and must not be rejected;
+ *   - it is NOT weaker: pathname resolution only ever walks upward on an
+ *     exact ".." component - ".." inside a longer component names a literal
+ *     file. Symlink escapes are a separate concern, handled at the call sites
+ *     that need it (lstat in the pruners, O_NOFOLLOW in record_clip()).
+ * Every '..' check in the daemon goes through this one function, so all paths
+ * provably share one meaning. */
+int ms_has_dotdot(const char *s);
+
+/* dir/name here are runtime-mutable via /control by an authenticated caller;
+ * a ".." component (or an absolute name spliced into the path) would let a
+ * writer/pruner escape its media tree (L10). name==NULL checks dir only. */
+int ms_path_unsafe(const char *dir, const char *name);
+
+/* free space on the filesystem holding dir, in MB; -1 on error */
+long long ms_free_mb(const char *dir);
+
+/* create every parent directory of a file path (mkdir -p on dirname) */
+void ms_mkdirs(const char *path);
+
+/* F4: gethostname() may fail (fall back to a safe default) and on an overlong
+ * hostname is not guaranteed to NUL-terminate - force both. */
+void ms_hostname(char *out, size_t cap);
+
+/* Build <dir>/<hostname>/<sub>/<strftime(name)><ext> into out - the shared
+ * "where does this segment/shot go" builder for record.c and timelapse.c.
+ * Caller must have vetted dir/name with ms_path_unsafe() first; this only
+ * builds. strftime() returning 0 (overflow OR a legitimately empty expansion)
+ * falls back to the epoch seconds so the file still gets a usable name.
+ * Returns the wall time the name was built from (timelapse keeps it as the
+ * last-shot timestamp). */
+time_t ms_media_path(char *out, size_t cap, const char *dir, const char *sub,
+                     const char *name, const char *ext);
 
 #endif

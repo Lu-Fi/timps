@@ -35,7 +35,6 @@
 #include <time.h>
 #include <errno.h>
 #include <sys/stat.h>
-#include <sys/statvfs.h>
 #include <dirent.h>
 #include <fcntl.h>
 
@@ -105,45 +104,11 @@ static void ring_push(ms_pkt *p, int64_t pre_us)
     }
 }
 
-/* ---- filesystem helpers ---- */
-
-/* record.dir/record.name are runtime-mutable via /control by an authenticated
- * caller; a ".." component (or an absolute/rooted name spliced into the path)
- * would let recording write or prune OUTSIDE the records tree (L10). Same
- * validation idea as record_clip()'s path check below. */
-/* L-2: reject ".." only as a path COMPONENT, so legitimate names that merely
- * contain the substring (e.g. "cam..front-%Y") are allowed. */
-static int has_dotdot(const char *s)
-{
-    if (!s) return 0;
-    if (!strcmp(s, "..") || !strncmp(s, "../", 3) || strstr(s, "/../")) return 1;
-    size_t n = strlen(s);
-    return (n >= 3 && !strcmp(s + n - 3, "/.."));
-}
-static int rec_path_unsafe(const char *dir, const char *name)
-{
-    if (has_dotdot(dir)) return 1;
-    if (name && (has_dotdot(name) || name[0] == '/')) return 1;
-    return 0;
-}
-
-static long long free_mb(const char *dir)
-{
-    struct statvfs vf;
-    if (statvfs(dir,&vf)!=0) return -1;
-    return (long long)((vf.f_bavail*(unsigned long long)vf.f_frsize)/(1024*1024));
-}
-
-/* create every parent directory of a file path (mkdir -p on dirname) */
-static void mkdirs(const char *path)
-{
-    char tmp[512]; snprintf(tmp,sizeof tmp,"%s",path);
-    char *slash=strrchr(tmp,'/'); if(!slash) return; *slash=0;
-    for (char *p=tmp+1; *p; p++){
-        if (*p=='/'){ *p=0; mkdir(tmp,0755); *p='/'; }
-    }
-    mkdir(tmp,0755);
-}
+/* ---- filesystem helpers ----
+ * ms_path_unsafe / ms_free_mb / ms_mkdirs / ms_media_path live in util.c,
+ * shared with timelapse.c - the '..' check is a security check (L10/L-2) and
+ * used to exist as word-identical twins here and there; see util.h for the
+ * chosen component semantics. */
 
 /* recursively find the oldest regular file under base (by mtime); returns 1 and
  * fills out on success. lstat (not stat) so a symlink is never followed out of
@@ -179,15 +144,12 @@ static void prune_free(int min_free_mb)
     config_str_lock();
     snprintf(dir,sizeof dir,"%s",g_rc->record.dir);
     config_str_unlock();
-    if (rec_path_unsafe(dir,NULL)) return;   /* never prune outside the tree (L10) */
-    /* F4: gethostname() may fail (fall back to a safe default) and on an
-     * overlong hostname is not guaranteed to NUL-terminate - force both. */
+    if (ms_path_unsafe(dir,NULL)) return;   /* never prune outside the tree (L10) */
     char base[200]; char host[64];
-    if (gethostname(host,sizeof host)!=0) strcpy(host,"camera");
-    host[sizeof host-1]=0;
+    ms_hostname(host,sizeof host);           /* F4 handling lives in ms_hostname */
     snprintf(base,sizeof base,"%s/%s/records",dir,host);
     for (int guard=0; guard<10000; guard++){
-        long long fm=free_mb(dir);
+        long long fm=ms_free_mb(dir);
         if (fm<0 || fm>=min_free_mb) return;
         char victim[336]=""; time_t oldest=0;
         if (!find_oldest(base,victim,sizeof victim,&oldest,0) || !victim[0]) return;
@@ -231,18 +193,13 @@ static int seg_open(int chn, const ms_record_cfg *rc)
     snprintf(dir,sizeof dir,"%s",g_rc->record.dir);
     snprintf(name,sizeof name,"%s",g_rc->record.name);
     config_str_unlock();
-    if (rec_path_unsafe(dir,name)){
+    if (ms_path_unsafe(dir,name)){
         LOGE(MOD,"unsafe record.dir/name ('..' or absolute name), not recording");
         return -1;
     }
-    char rel[160]; time_t t=time(NULL); struct tm tmv; localtime_r(&t,&tmv);
-    if (strftime(rel,sizeof rel,name,&tmv)==0)
-        snprintf(rel,sizeof rel,"%ld",(long)t);
-    char host[64]; if (gethostname(host,sizeof host)!=0) strcpy(host,"camera");
-    host[sizeof host-1]=0;                     /* F4: see prune path above */
     char path[512];
-    snprintf(path,sizeof path,"%s/%s/records/%s.mp4",dir,host,rel);
-    mkdirs(path);
+    ms_media_path(path,sizeof path,dir,"records",name,".mp4");
+    ms_mkdirs(path);
     w_fp=fopen(path,"wb");
     if (!w_fp){ LOGE(MOD,"open %s: %s",path,strerror(errno)); return -1; }
 
@@ -618,7 +575,7 @@ void record_get_status(ms_record_status *st)
         st->mode=g_rc->record.mode;
         snprintf(dir,sizeof dir,"%s",g_rc->record.dir);
         config_str_unlock();
-        st->free_mb=free_mb(dir);
+        st->free_mb=ms_free_mb(dir);
     }
     pthread_mutex_lock(&g_lock);
     st->recording=g_recording; st->bytes=g_curbytes;
@@ -651,8 +608,12 @@ int record_set_active(int on)
 int record_clip(const char *path, int seconds)
 {
     /* /tmp/ only AND no ".." component: strncmp alone lets "/tmp/../etc/x"
-     * through, which mkdirs()+open() would then overwrite. */
-    if (!path || strncmp(path,"/tmp/",5)!=0 || strstr(path,"..") || !g_rc) return -1;
+     * through, which ms_mkdirs()+open() would then overwrite. This used to be
+     * strstr(path,"..") - a SUBSTRING test that silently diverged from the
+     * component semantics this comment already promised. ms_has_dotdot blocks
+     * every traversal the substring test blocked (only a whole ".." component
+     * ever walks upward), and now all '..' checks share one meaning. */
+    if (!path || strncmp(path,"/tmp/",5)!=0 || ms_has_dotdot(path) || !g_rc) return -1;
     if (seconds<=0) seconds=6;
     if (seconds>30) seconds=30;
     /* F-02: snapshot the live record ints (channel/audio) under the lock; this
@@ -707,7 +668,7 @@ int record_clip(const char *path, int seconds)
             if (!(p->media==MS_MEDIA_VIDEO && p->keyframe)){ pkt_unref(p); continue; }
             vparam vp;
             if (!(hub_get_vparam(chn,&vp) && vparam_ready(&vp))){ pkt_unref(p); continue; }
-            mkdirs(path);
+            ms_mkdirs(path);
             /* O_EXCL|O_NOFOLLOW: never follow a pre-planted symlink or clobber an
              * existing file (send2 hands us a fresh mktemp -u name). */
             int fd=open(path,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0600);
