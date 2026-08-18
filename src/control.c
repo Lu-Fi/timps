@@ -295,11 +295,26 @@ static void sanitize_val(const char *in, char *out, size_t cap)
 
 static void timps_apply_setting(ctrl_changes *ch, const char *key, const char *raw)
 {
-    /* Reject values that are never valid so a stray JSON null/undefined (some
-     * WebUI clients poll settings and send a null when a field is unknown) is
-     * not stored as "null" and parsed to 0. */
-    if (!raw || !raw[0] || !strcmp(raw,"null") || !strcmp(raw,"undefined")){
+    /* null/undefined stay refused, and NOT as a formality: some WebUI clients
+     * poll settings and send a null for a field they do not know, so giving it
+     * a meaning would turn a client bug into silent data loss on a field nobody
+     * meant to touch. It cannot express intent, because it also arrives by
+     * accident.
+     *
+     * The EMPTY STRING can. Nobody sends "" by accident - it only appears when
+     * someone clears a text field on purpose, which until now did nothing at
+     * all: the UI showed empty, the camera kept the old text. So "" is accepted
+     * for string fields and means "clear this". For every other type it stays
+     * refused, because there it is not an intent but an accident waiting to
+     * happen - pint("") is 0, and an empty value on a numeric field would zero
+     * a setting rather than clear it. */
+    if (!raw || !strcmp(raw,"null") || !strcmp(raw,"undefined")){
         LOGD(MOD,"ignoring %s = '%s' (not a valid value)", key, raw?raw:"");
+        g_rej++;
+        return;
+    }
+    if (!raw[0] && !config_key_is_str(key)){
+        LOGD(MOD,"ignoring empty %s (only string fields can be cleared)", key);
         g_rej++;
         return;
     }

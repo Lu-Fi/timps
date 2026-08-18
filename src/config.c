@@ -1187,6 +1187,46 @@ static int field_get(const void *base, const cfg_field *f, char *out, size_t cap
     return 1;
 }
 
+/* Resolve a key to its field DESCRIPTOR only - no target, no write. Covers the
+ * four table-driven branches of set_kv() below; the special cases it also has
+ * (motion grid, retired daynight keys, general.trace/syslog) are every one of
+ * them numeric or side-effecting, so a NULL here is the right answer for them.
+ *
+ * Yes, this repeats set_kv's dispatch prefix. Folding the two together would
+ * mean restructuring 165 lines that interleave lookup with index arithmetic and
+ * per-key special handling, and the payoff would be small: this function is
+ * read-only, and if the two ever DIVERGE the failure is fail-safe. An unknown
+ * key answers "not a string", which makes config_key_is_str() say no, which
+ * makes control.c reject an empty value it might otherwise have accepted. The
+ * cost of drift is an over-strict refusal, never a wrong write. */
+static const cfg_field *field_for_key(const char *key)
+{
+    int osi, oii;
+    const char *ok = osd_key(key, &osi, &oii);
+    if (ok) return field_find(osd_item_fields, NF(osd_item_fields), ok);
+
+    int psi, pii;
+    const char *pk = privacy_key(key, &psi, &pii);
+    if (pk) return field_find(privacy_fields, NF(privacy_fields), pk);
+
+    if (!strncmp(key,"video0.",7) || !strncmp(key,"video1.",7))
+        return field_find(video_fields, NF(video_fields), key+7);
+
+    const char *k;
+    const cfg_section *sec = section_find(key, &k);
+    if (sec) return field_find(sec->fields, sec->nfields, k);
+    return NULL;
+}
+
+/* public: is this key a string field? control.c needs it to tell "clear this
+ * text" from "zero this number" - an empty value is meaningful for the first
+ * and silently destructive for the second (pint("") is 0). */
+int config_key_is_str(const char *key)
+{
+    const cfg_field *f = field_for_key(key);
+    return f && f->type == T_STR;
+}
+
 static void set_kv(ms_config *c, const char *key, const char *val)
 {
     int osi, oii;

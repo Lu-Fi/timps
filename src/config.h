@@ -565,6 +565,9 @@ void config_apply_kv(ms_config *c, const char *key, const char *val);
  * keys. A legacy osdN.* key reads back only while all streams agree on the
  * value - otherwise it reports unknown so a legacy write always applies.) */
 int  config_get_kv(const ms_config *c, const char *key, char *out, size_t cap);
+/* 1 if `key` names a T_STR field. Lets a caller tell an empty value that MEANS
+ * something (clear this text) from one that would silently zero a number. */
+int  config_key_is_str(const char *key);
 /* replace/append "key = value" lines in the config file (atomic, keeps
  * comments/order). Returns 0 on success. */
 int  config_write_keys(const char *path, const char *const *keys,
