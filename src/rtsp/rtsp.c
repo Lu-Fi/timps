@@ -57,33 +57,28 @@
 #ifndef RTSP_SESSION_TIMEOUT_S
 #define RTSP_SESSION_TIMEOUT_S 60
 #endif
+/* Shutdown drain window (rtsp_stop): how long teardown waits for the detached
+ * per-client threads to return. -D overridable (mirrors MS_HTTP_DRAIN_MS in
+ * mp4/httpd.c) so a shutdown-latency measurement can widen it and see how long
+ * the threads really take, not just that they missed a fixed deadline. */
+#ifndef MS_RTSP_DRAIN_MS
+#define MS_RTSP_DRAIN_MS 1000
+#endif
 
 static volatile int g_nclients;   /* current client count (sync builtins) */
 
-/* M3: control fds of live accepted clients (stored as fd+1; 0 = free slot) so
- * rtsp_stop() can shutdown() them and unblock detached client threads parked
- * in recv()/TLS handshake/send before the TLS ctx is freed. The mutex orders
- * every stop-side shutdown() strictly before the owning thread's close(), so
- * a slot can never be shut down after its fd number was reused elsewhere. */
-static pthread_mutex_t g_clients_mx = PTHREAD_MUTEX_INITIALIZER;
-static int g_client_fd1[RTSP_MAX_CLIENTS];
-
-static int client_fd_reg(int fd)
-{
-    int slot = -1;
-    pthread_mutex_lock(&g_clients_mx);
-    for (int i = 0; i < RTSP_MAX_CLIENTS; i++)
-        if (!g_client_fd1[i]) { g_client_fd1[i] = fd + 1; slot = i; break; }
-    pthread_mutex_unlock(&g_clients_mx);
-    return slot;
-}
-static void client_fd_unreg(int slot)
-{
-    if (slot < 0) return;
-    pthread_mutex_lock(&g_clients_mx);
-    g_client_fd1[slot] = 0;
-    pthread_mutex_unlock(&g_clients_mx);
-}
+/* M3/M-3: live accepted clients, so rtsp_stop() can END their detached threads
+ * instead of only waiting for them - their control fd to unblock a thread in
+ * recv()/TLS handshake/send, and (once PLAY started) the fanqueue their media
+ * loop actually waits on. This used to be a private fd-only registry here;
+ * it is now the shared ms_client_reg (util.h), which mp4/httpd.c needs for the
+ * very same reason - the queue half is what M-1 turned out to hinge on, and a
+ * second hand-written copy of the locking rules is a second thing to get
+ * wrong. Same guarantees as before: the mutex orders every stop-side
+ * shutdown() strictly before the owning thread's close(), so a slot can never
+ * be shut down after its fd number was reused elsewhere. */
+static ms_client_slot g_clients[RTSP_MAX_CLIENTS];
+static ms_client_reg  g_clientreg = MS_CREG_INIT(g_clients);
 
 struct rtsp_server {
     const ms_config *cfg;
@@ -1105,6 +1100,10 @@ static void stream_loop(session *s)
          s->tcp?"TCP":"UDP", s->have_video, s->have_audio);
 
     while (s->playing) {
+        /* M-3: teardown closed our queue (rtsp_stop) - leave now. This is the
+         * only exit that works for an RTSPS and/or UDP-transport session; see
+         * the ms_creg_set_queue() call in client_thread. */
+        if (fanqueue_closed(&s->q)) break;
         /* P-03: no vDSO on this MIPS target, so every ms_now_us() is a real
          * syscall. Read it ONCE per iteration and reuse it for the drop-IDR
          * rate-limit, the RTCP-SR check, the liveness stamp and the control-poll
@@ -1470,7 +1469,16 @@ static void *client_thread(void *arg)
 
     s->playing = 1;
     if (fanqueue_init(&s->q, MS_RTSP_QCAP)==0) {
+        /* M-3: publish the queue the play loop blocks on for the whole time it
+         * exists, so rtsp_stop() can end that loop. The control-fd shutdown
+         * alone does NOT: over TLS r_recv() maps a closed peer to -1/EAGAIN
+         * (it cannot tell "closed" from "nothing yet"), so the loop's n==0
+         * exit is unreachable on RTSPS - and a UDP-transport session's media
+         * writes never fail either, so nothing else would end it. Withdrawn
+         * before fanqueue_free() so no stop-side close can reach a dead queue. */
+        ms_creg_set_queue(&g_clientreg, s->slot, &s->q);
         stream_loop(s);
+        ms_creg_set_queue(&g_clientreg, s->slot, NULL);
         fanqueue_free(&s->q);
     }
 
@@ -1481,7 +1489,7 @@ done:
 #endif
     /* M3: unregister BEFORE close() - once closed, the fd number can be
      * reused, and rtsp_stop() must never shutdown() a reused fd */
-    client_fd_unreg(s->slot);
+    ms_creg_del(&g_clientreg, s->slot);
     close(s->fd);
     /* L15: fd 0 is a valid bound socket; only -1 means "not bound". */
     if (s->v_udp[0]>=0) close(s->v_udp[0]);
@@ -1526,7 +1534,7 @@ static void accept_loop(rtsp_server *sv, int lfd, int port, void *tls_ctx)
         session *s = (session*)calloc(1,sizeof(session));
         if (!s){ close(cfd); __sync_fetch_and_sub(&g_nclients, 1); continue; }
         s->fd=cfd; s->peer=peer; s->cfg=sv->cfg; s->vchn=-1;
-        s->slot = client_fd_reg(cfd);   /* M3: visible to rtsp_stop() */
+        s->slot = ms_creg_add(&g_clientreg, cfd);   /* M3: visible to rtsp_stop() */
         /* L15: fds are 0 (calloc), not "unbound", after this - a bound fd
          * can legitimately be 0 (stdin closed at startup) or overlap with
          * PID/fd reuse, so unbound MUST be a value no real fd ever has. */
@@ -1539,7 +1547,7 @@ static void accept_loop(rtsp_server *sv, int lfd, int port, void *tls_ctx)
 #endif
         pthread_t t;
         if (ms_thread_create(&t,MS_STACK_CONN,client_thread,s)==0) pthread_detach(t);
-        else { client_fd_unreg(s->slot); close(cfd); free(s);
+        else { ms_creg_del(&g_clientreg, s->slot); close(cfd); free(s);
                __sync_fetch_and_sub(&g_nclients, 1); }
     }
 }
@@ -1610,12 +1618,27 @@ void rtsp_stop(rtsp_server *s)
      * still does the close(); the registry mutex guarantees we never touch
      * an fd number after its thread closed (and the kernel reused) it.
      * With the H1/M1 socket timeouts this is belt-and-suspenders, but it
-     * makes the bounded drain below actually effective at shutdown time. */
-    pthread_mutex_lock(&g_clients_mx);
-    for (int i = 0; i < RTSP_MAX_CLIENTS; i++)
-        if (g_client_fd1[i]) shutdown(g_client_fd1[i] - 1, SHUT_RDWR);
-    pthread_mutex_unlock(&g_clients_mx);
-    for (int i = 0; i < 100 && g_nclients > 0; i++) usleep(10000);
+     * makes the bounded drain below actually effective at shutdown time.
+     * M-3: the same call now also closes each PLAYing session's fanqueue.
+     * The fd shutdown covers plain RTSP (measured: 40 ms), but not RTSPS -
+     * r_recv() cannot report a closed TLS peer as anything but EAGAIN, so the
+     * play loop's n==0 exit never fires there and a UDP-transport session,
+     * whose media writes cannot fail either, would still be running when the
+     * tls_ctx is freed below. Closing the queue ends it regardless of
+     * transport or TLS. */
+    ms_creg_wake_all(&g_clientreg);
+    int64_t drain0 = ms_now_us();
+    for (int i = 0; i < (MS_RTSP_DRAIN_MS+9)/10 && g_nclients > 0; i++) usleep(10000);
+    /* Same reason httpd_stop() reports its drain: "still live here" is exactly
+     * the state that makes the tls_ctx free below a use-after-free, and it was
+     * previously indistinguishable from a clean shutdown in the log. */
+    if (g_nclients > 0)
+        LOGW(MOD,"%d client thread(s) still live after a %lld ms drain - "
+                 "proceeding to teardown", g_nclients,
+             (long long)((ms_now_us()-drain0)/1000));
+    else
+        LOGI(MOD,"all client threads gone after %lld ms",
+             (long long)((ms_now_us()-drain0)/1000));
 #ifdef USE_TLS
     if (s->tls_ctx) {
         /* detached client threads referenced conf/cert/drbg from this ctx;

@@ -131,6 +131,69 @@ void ms_stopgate_stop(ms_stopgate *g);
 /* Non-blocking predicate read (1 if stop requested). */
 int  ms_stopgate_stopped(ms_stopgate *g);
 
+/* ---- live client registry (M-1 / M-3) -------------------------------------
+ * A network server's stop path used to only WAIT for its detached per-client
+ * threads (httpd_stop's 500 ms drain, rtsp_stop's 1 s) and then tear down the
+ * state they share - the TLS context above all - whether or not they had
+ * actually returned. For a MEDIA stream that wait could never succeed: such a
+ * loop learns "this client is finished" only from data - a failed send, or a
+ * recv() that returns 0, which over TLS can never even be observed (see
+ * crecv()/r_recv()) - and a shutdown produces neither. It sat in
+ * fanqueue_pop() waiting for the next frame, and kept sitting there while
+ * ms_tls_ctx_free() ran underneath it. Measured before this existed: three
+ * HTTP stream threads still live 20 s into teardown.
+ *
+ * This is the address book that lets stop END them instead of outwaiting them.
+ * Every accepted connection registers its control fd; a connection that goes
+ * on to stream additionally publishes the fanqueue its loop blocks on.
+ * ms_creg_wake_all() then does the two things waiting cannot:
+ *   - fanqueue_close(q) - the ONLY wake-up that reaches a thread parked on
+ *     packets rather than on a socket, and the only one that works over TLS;
+ *   - shutdown(fd)      - reaches a thread parked in send()/recv() instead,
+ *     e.g. one blocked writing to a client that stopped reading (up to
+ *     SO_SNDTIMEO, 15 s - far past any drain window).
+ * Both are needed: neither alone covers both parking spots.
+ *
+ * Ownership: the registry NEVER closes an fd and never frees a queue, it only
+ * pokes them - the owning thread still does its own close()/fanqueue_free().
+ * The mutex is what makes that safe. A slot can only be dropped under the same
+ * lock ms_creg_wake_all() holds, so nothing is ever poked after its owner let
+ * go of it: no shutdown() on an fd number the kernel has already handed to
+ * another accept(), no fanqueue_close() on a freed queue. Lock order is
+ * registry -> queue and never the reverse (no fanqueue caller takes this
+ * lock), so wake_all cannot deadlock against a producer or consumer.
+ *
+ * Storage is caller-supplied so a server can size it by its own client cap and
+ * initialise the whole thing statically:
+ *     static ms_client_slot g_slots[HTTP_MAX_CLIENTS];
+ *     static ms_client_reg  g_reg = MS_CREG_INIT(g_slots);          */
+struct fanqueue;
+typedef struct {
+    int              fd1;  /* fd + 1, so 0 = free slot (fd 0 is a valid fd) */
+    struct fanqueue *q;    /* stream queue; NULL while this client isn't streaming */
+} ms_client_slot;
+typedef struct {
+    pthread_mutex_t lock;
+    ms_client_slot *s;
+    int             n;
+} ms_client_reg;
+#define MS_CREG_INIT(slots) \
+    { PTHREAD_MUTEX_INITIALIZER, (slots), (int)(sizeof(slots)/sizeof((slots)[0])) }
+
+/* Register fd. Returns a slot index, or -1 when the registry is full - which
+ * is not an error: that client simply gets no shutdown-side wake-up (exactly
+ * the old behaviour), and every call below is a no-op on -1. */
+int  ms_creg_add(ms_client_reg *r, int fd);
+/* Publish (or withdraw, q=NULL) the queue this client's loop blocks on. MUST
+ * be withdrawn before the queue is fanqueue_free()d or leaves scope. */
+void ms_creg_set_queue(ms_client_reg *r, int slot, struct fanqueue *q);
+/* Release the slot. MUST happen BEFORE the owner close()s the fd, or a
+ * concurrent wake_all could shutdown() a number already reused elsewhere. */
+void ms_creg_del(ms_client_reg *r, int slot);
+/* Wake every registered client so its thread runs to completion on its own:
+ * closes queues, then shuts fds down. Safe to call more than once. */
+void ms_creg_wake_all(ms_client_reg *r);
+
 /* Escape a string for embedding between JSON double quotes: escapes " and \\,
  * folds control characters to spaces, and replaces invalid UTF-8 so strict
  * parsers do not reject the document. THE one escaper - GET /control, the POST

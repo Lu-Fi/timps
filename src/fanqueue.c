@@ -154,6 +154,16 @@ void fanqueue_close(fanqueue *q)
 {
     pthread_mutex_lock(&q->lock);
     q->closed = 1;
+    /* broadcast, not signal: a queue can legitimately be popped by more than
+     * one waiter over its life, and a close must release all of them. */
     pthread_cond_broadcast(&q->cond);
     pthread_mutex_unlock(&q->lock);
+}
+
+int fanqueue_closed(fanqueue *q)
+{
+    pthread_mutex_lock(&q->lock);
+    int c = q->closed;
+    pthread_mutex_unlock(&q->lock);
+    return c;
 }

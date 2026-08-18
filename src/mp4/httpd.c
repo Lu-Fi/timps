@@ -74,8 +74,21 @@
 #ifndef MS_STREAM_STALL_US
 #define MS_STREAM_STALL_US (60LL*1000000)
 #endif
+/* Shutdown drain window (httpd_stop): how long teardown waits for the detached
+ * per-connection threads to return. -D overridable like the caps above, purely
+ * so a shutdown-latency measurement can widen it and SEE how long the threads
+ * actually take instead of only learning that they blew a fixed deadline. */
+#ifndef MS_HTTP_DRAIN_MS
+#define MS_HTTP_DRAIN_MS 500
+#endif
 
 static volatile int g_nconn;   /* current connection count (sync builtins) */
+/* M-1: every live connection, so httpd_stop() can END its thread instead of
+ * merely waiting for it - a streaming loop parked in fanqueue_pop() has no
+ * other way to learn that the daemon is going away. See ms_client_reg in
+ * util.h; rtsp.c registers its clients in the same one. */
+static ms_client_slot g_clients[HTTP_MAX_CLIENTS];
+static ms_client_reg  g_clientreg = MS_CREG_INIT(g_clients);
 /* adaptive-drop visibility (http.adaptive_drop): frames a client-side fanqueue
  * discarded while frozen waiting for a keyframe (see the dropping state in
  * mp4_stream below). Per-channel, summed across every mp4 client on that
@@ -98,7 +111,8 @@ struct httpd {
  * stream_mp4() points it at its own stack-local ctx, so csend()'s hook costs a
  * NULL test on all the short-lived endpoints. */
 typedef struct { int fd; const ms_config *cfg; int local; int head; void *tls; void *tls_ctx;
-                 ms_trace_ctx *tr; } hconn;
+                 ms_trace_ctx *tr;
+                 int slot;   /* g_clientreg index, -1 = unregistered */ } hconn;
 
 /* connection I/O that transparently uses TLS when this is an HTTPS connection
  * (c->tls set), otherwise the plain socket. Without USE_TLS these are exactly
@@ -286,6 +300,16 @@ static void stream_mp4(hconn *c, int chn)
         c->tr = NULL;
         return;
     }
+    /* M-1: publish the queue this connection is about to block on, from here
+     * to the fanqueue_free() below - EVERY wait in this function is a wait on
+     * it, including the two setup loops. Closing it is the wake-up that works
+     * unconditionally: shutting the socket down only ends this loop by the
+     * detour of crecv() returning 0, which needs a pop to time out first
+     * (measured 201 ms vs 30 ms) and, over TLS, never happens at all - crecv()
+     * cannot report an orderly close there. The socket shutdown is still worth
+     * having, but for the OTHER parking spot: a csend() blocked on a client
+     * that stopped reading, which no queue close can reach. */
+    ms_creg_set_queue(&g_clientreg, c->slot, &q);
     /* fMP4 can only carry AAC; use it only if the HAL actually produces AAC */
     int acodec=MS_AC_NONE, asr=0, ach=0;
     /* the return value is the source's "active" flag: hub_clear_audio_params()
@@ -313,12 +337,18 @@ static void stream_mp4(hconn *c, int chn)
     mux.height = eh;
     mux.fps    = g_cfg_boot.video[chn].fps;
     int ok=0;
-    for (int i=0;i<200;i++){
+    /* the fanqueue_closed() test is what makes this 2 s wait interruptible:
+     * without it a client that connected just as the daemon started shutting
+     * down would sit here sleeping past the whole teardown (M-1). */
+    for (int i=0;i<200 && !fanqueue_closed(&q);i++){
         vparam vp;
         if (hub_get_vparam(chn,&vp) && vparam_ready(&vp)){ mux.vp=vp; mux.vp_ready=1; ok=1; break; }
         usleep(10000);
     }
-    if (!ok){ LOGW(MOD,"no video params, abort mp4"); goto out; }
+    if (!ok){
+        if (fanqueue_closed(&q)) goto out;          /* shutting down, not a fault */
+        LOGW(MOD,"no video params, abort mp4"); goto out;
+    }
 
     /* Only declare an audio track if AAC frames are actually flowing. A track
      * that is announced in moov but never fed makes browsers stall the whole
@@ -327,7 +357,10 @@ static void stream_mp4(hconn *c, int chn)
      * we pop here (we re-request an IDR afterwards). */
     int want_audio = 0;
     if (can_audio) {
-        for (int i=0;i<80 && !want_audio;i++){          /* up to ~800 ms */
+        /* fanqueue_closed(): same reason as the parameter wait above - a pop on
+         * a closed queue returns NULL at once, so without the test this would
+         * spin its 80 iterations instead of leaving. */
+        for (int i=0;i<80 && !want_audio && !fanqueue_closed(&q);i++){  /* up to ~800 ms */
             ms_pkt *p = fanqueue_pop(&q, 10);
             if (!p) continue;
             if (p->media==MS_MEDIA_AUDIO) want_audio = 1;
@@ -378,6 +411,11 @@ static void stream_mp4(hconn *c, int chn)
     int64_t last_audio_us = last_pkt_us; /* see MS_MP4_AUDIO_GAP_US */
     /* blocking socket: net_sendall must never write a partial fragment */
     while (1) {
+        /* M-1: teardown closed our queue - leave NOW, before popping whatever
+         * is still buffered. Sending it out could block up to SO_SNDTIMEO
+         * (15 s) on a client that stopped reading, which is exactly the wedge
+         * the drain in httpd_stop() cannot survive. */
+        if (fanqueue_closed(&q)) break;
         ms_pkt *p = fanqueue_pop(&q, 200);
         if (!p) {
             char t[8]; int n=crecv(c,t,sizeof t,MSG_DONTWAIT);
@@ -553,6 +591,9 @@ static void stream_mp4(hconn *c, int chn)
 out:
     hub_unsubscribe(chn, &q);
     if (can_audio) hub_unsubscribe(HUB_AUDIO_SRC, &q);
+    /* withdraw before the queue dies: after this returns no stop-side
+     * fanqueue_close() can reach it any more (see ms_client_reg in util.h) */
+    ms_creg_set_queue(&g_clientreg, c->slot, NULL);
     fanqueue_free(&q);
     c->tr = NULL;           /* trc dies with this frame; unhook before return */
 }
@@ -658,8 +699,13 @@ static void stream_mjpeg(hconn *c, int src, const char *bnd)
         hub_unsubscribe(src,&q); fanqueue_free(&q); return;
     }
     LOGI(MOD,"mjpeg client streaming");
+    /* M-1: from here on this thread only ever waits on the queue, so publish
+     * it - see stream_mp4 above. The csend()s before this point are covered by
+     * the fd shutdown instead. */
+    ms_creg_set_queue(&g_clientreg, c->slot, &q);
     int64_t last_pkt_us = ms_now_us();   /* H-2: encoder-stall bound, see above */
     while (1) {
+        if (fanqueue_closed(&q)) break;             /* M-1: teardown, see stream_mp4 */
         ms_pkt *p = fanqueue_pop(&q, 500);
         if (!p) {
             char t[8]; int r=crecv(c,t,sizeof t,MSG_DONTWAIT);
@@ -689,6 +735,7 @@ static void stream_mjpeg(hconn *c, int src, const char *bnd)
         if (rc<0) break;
     }
     hub_unsubscribe(src, &q);
+    ms_creg_set_queue(&g_clientreg, c->slot, NULL);
     fanqueue_free(&q);
 }
 
@@ -1172,12 +1219,17 @@ static void serve_player(hconn *c, const char *path)
 static void *conn_thread(void *arg)
 {
     hconn *c = (hconn*)arg;
+    /* M-1: registered before the first blocking I/O of this connection (the
+     * TLS handshake already is one), so httpd_stop() can reach it from here
+     * on. Full registry -> -1 -> every ms_creg_* call below is a no-op. */
+    c->slot = ms_creg_add(&g_clientreg, c->fd);
 #ifdef USE_TLS
     /* HTTPS: run the TLS handshake before any request I/O. From here on all
      * reads/writes go through crecv/csend, which use c->tls transparently. */
     if (c->tls_ctx) {
         c->tls = ms_tls_accept((ms_tls_ctx *)c->tls_ctx, c->fd);
-        if (!c->tls) { close(c->fd); free(c); __sync_fetch_and_sub(&g_nconn, 1); return NULL; }
+        if (!c->tls) { ms_creg_del(&g_clientreg, c->slot);   /* before close(): fd reuse */
+                       close(c->fd); free(c); __sync_fetch_and_sub(&g_nconn, 1); return NULL; }
     }
 #endif
 #ifdef USE_CONTROL
@@ -1455,6 +1507,10 @@ done:
 #ifdef USE_TLS
     if (c->tls) ms_tls_close((ms_tls_conn *)c->tls);
 #endif
+    /* M-1: unregister BEFORE close() - once closed, this fd number can be
+     * handed to another accept(), and httpd_stop() must never shutdown() a
+     * reused fd (same rule as rtsp.c's registry). */
+    ms_creg_del(&g_clientreg, c->slot);
     close(c->fd);
     free(c);
     __sync_fetch_and_sub(&g_nconn, 1);
@@ -1491,7 +1547,7 @@ static void *accept_thread(void *arg)
         }
         hconn *c = (hconn*)calloc(1,sizeof(hconn));
         if (!c){ close(fd); continue; }
-        c->fd=fd; c->cfg=h->cfg;
+        c->fd=fd; c->cfg=h->cfg; c->slot=-1;   /* real slot assigned in conn_thread */
         /* loopback (127.0.0.0/8) clients skip auth: the local web UI must always
          * be able to reach the streamer, external clients still need the
          * password. This replaces prudynt's "web UI auth key". */
@@ -1544,11 +1600,35 @@ void httpd_stop(httpd *h)
      * shape as the RTSP 1s drain) to return; g_nconn hits 0 once the last one
      * does. Previously ONLY USE_TLS builds waited here, and only to protect the
      * tls_ctx free - the same wait is needed regardless of TLS to keep handlers
-     * off the HAL, so it now runs unconditionally. This is defense in depth
-     * ALONGSIDE main()'s 3 s hard-exit alarm, not a replacement: a connection
-     * still wedged past the window (e.g. a long-lived media stream) just falls
-     * through to teardown, and the alarm remains the ultimate backstop. */
-    for (int i = 0; i < 50 && g_nconn > 0; i++) usleep(10000);
+     * off the HAL, so it now runs unconditionally.
+     *
+     * M-1: the window alone was never enough, and the long-lived media stream
+     * this comment used to wave at as an acceptable casualty was in fact the
+     * common case. Such a loop waits on PACKETS, not on its socket: h->run is
+     * invisible to it, nothing in a shutdown makes a frame stop arriving, and
+     * over TLS crecv() cannot even report an orderly close. Measured: three
+     * HTTP stream threads still live 20 s into teardown - i.e. still reading
+     * the TLS context freed just below. So END them first and only then wait:
+     * ms_creg_wake_all() closes each connection's stream queue (fanqueue_pop
+     * returns at once and fanqueue_closed() tells the loop to leave) and shuts
+     * its fd down (for a thread parked in send()/recv() instead - up to
+     * SO_SNDTIMEO, 15 s, on a client that stopped reading). The drain then has
+     * something that will actually finish inside its window. main()'s hard-exit
+     * alarm stays the ultimate backstop, but is no longer what this path
+     * depends on. */
+    ms_creg_wake_all(&g_clientreg);
+    int64_t drain0 = ms_now_us();
+    for (int i = 0; i < (MS_HTTP_DRAIN_MS+9)/10 && g_nconn > 0; i++) usleep(10000);
+    /* Say whether the drain actually drained. Without this the failure mode is
+     * invisible: teardown continues either way, and "still live" is exactly the
+     * state in which the tls_ctx free below is a use-after-free. */
+    if (g_nconn > 0)
+        LOGW(MOD,"%d connection thread(s) still live after a %lld ms drain - "
+                 "proceeding to teardown", g_nconn,
+             (long long)((ms_now_us()-drain0)/1000));
+    else
+        LOGI(MOD,"all connection threads gone after %lld ms",
+             (long long)((ms_now_us()-drain0)/1000));
 #ifdef USE_TLS
     if (h->tls_ctx) {
         /* the drain above already let any TLS handshake/read/write conn_thread

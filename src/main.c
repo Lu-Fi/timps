@@ -268,16 +268,40 @@ static int acquire_singleton_lock(void)
 }
 
 static void hard_exit(int s){ (void)s; _exit(0); }
+/* L-4: hard-exit deadline for the whole shutdown path. It is a guillotine, not
+ * a timeout - it _exit()s wherever teardown happens to be, so anything still
+ * unfinished (a recording segment whose moov has not been written) is lost.
+ * Kept at 3 s deliberately: the network servers no longer NEED it (their stop
+ * paths now END their client threads instead of outwaiting them, see
+ * ms_creg_wake_all() in util.h), so what remains inside the window is
+ * record_stop()/timelapse_stop() finalising their files plus the vendor IMP
+ * teardown - and the vendor side is precisely what cannot be trusted to
+ * return, which is the reason this exists.
+ * Lengthening it to give the recorder more room would be the wrong trade in
+ * both directions. The recorder does not actually compete for the tail of this
+ * window: main() below stops it BEFORE rtsp_stop()/httpd_stop(), so it gets the
+ * front of the budget, and what used to eat the rest (stream threads that never
+ * returned - measured at >20 s, i.e. the alarm was firing every single time a
+ * client was connected) is now gone: the same measurement is 40 ms after the
+ * change. Meanwhile a longer alarm lengthens EVERY wedged-vendor shutdown on a
+ * device whose recovery path is a watchdog restart. So: unchanged at 3 s, but
+ * for a different reason than before - it is a backstop again rather than the
+ * routine exit path. -D overridable for the shutdown-latency measurements,
+ * which must outlive the deadline to be able to report what happened. */
+#ifndef MS_SHUTDOWN_ALARM_S
+#define MS_SHUTDOWN_ALARM_S 3
+#endif
 static void on_signal(int s)
 {
     (void)s;
     g_run = 0;
     /* guarantee the process actually stops even if vendor teardown stalls:
-     * a second Ctrl-C, or 3 s without a clean exit, forces termination. */
+     * a second Ctrl-C, or MS_SHUTDOWN_ALARM_S without a clean exit, forces
+     * termination. */
     signal(SIGINT,  hard_exit);
     signal(SIGTERM, hard_exit);
     signal(SIGALRM, hard_exit);
-    alarm(3);
+    alarm(MS_SHUTDOWN_ALARM_S);
 }
 static void idr_trampoline(int src){ if (g_hal && g_hal->request_idr) g_hal->request_idr(src); }
 /* rand() seed for the remaining non-secret rand() users (UDP port picks

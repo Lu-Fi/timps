@@ -1,5 +1,7 @@
 #include "util.h"
+#include "fanqueue.h"
 #include <stdlib.h>
+#include <sys/socket.h>
 #include <limits.h>
 #include <errno.h>
 
@@ -143,6 +145,56 @@ int ms_stopgate_stopped(ms_stopgate *g)
     int stopped = g->stop;
     pthread_mutex_unlock(&g->lock);
     return stopped;
+}
+
+/* ---- live client registry (M-1/M-3): see util.h for the whole rationale --- */
+int ms_creg_add(ms_client_reg *r, int fd)
+{
+    int slot = -1;
+    pthread_mutex_lock(&r->lock);
+    for (int i = 0; i < r->n; i++)
+        if (!r->s[i].fd1) {
+            r->s[i].fd1 = fd + 1;
+            r->s[i].q   = NULL;   /* a recycled slot must not inherit a queue */
+            slot = i;
+            break;
+        }
+    pthread_mutex_unlock(&r->lock);
+    return slot;
+}
+
+void ms_creg_set_queue(ms_client_reg *r, int slot, fanqueue *q)
+{
+    if (slot < 0 || slot >= r->n) return;
+    pthread_mutex_lock(&r->lock);
+    r->s[slot].q = q;
+    pthread_mutex_unlock(&r->lock);
+}
+
+void ms_creg_del(ms_client_reg *r, int slot)
+{
+    if (slot < 0 || slot >= r->n) return;
+    pthread_mutex_lock(&r->lock);
+    r->s[slot].q   = NULL;
+    r->s[slot].fd1 = 0;
+    pthread_mutex_unlock(&r->lock);
+}
+
+void ms_creg_wake_all(ms_client_reg *r)
+{
+    pthread_mutex_lock(&r->lock);
+    for (int i = 0; i < r->n; i++) {
+        /* queue first: a thread that the shutdown() below wakes out of a
+         * send()/recv() then finds the queue already closed and leaves on its
+         * next loop test, instead of going back to sleep for one more pop
+         * timeout. Closing costs nothing if it was already closed. */
+        if (r->s[i].q)   fanqueue_close(r->s[i].q);
+        /* shutdown(), never close(): the owning thread still owns this fd and
+         * will close it itself. SHUT_RDWR so a blocked send() fails too, not
+         * just a blocked recv(). */
+        if (r->s[i].fd1) shutdown(r->s[i].fd1 - 1, SHUT_RDWR);
+    }
+    pthread_mutex_unlock(&r->lock);
 }
 
 void ms_json_esc(const char *s, char *out, size_t cap)

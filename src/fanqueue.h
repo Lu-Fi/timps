@@ -7,7 +7,9 @@
 #include "frame.h"
 #include <pthread.h>
 
-typedef struct {
+/* named struct so util.h can forward-declare it (ms_client_reg) without
+ * dragging the whole packet/queue layer into the bottom-most header */
+typedef struct fanqueue {
     ms_pkt        **slots;
     int             cap;
     int             head, tail, count;
@@ -32,7 +34,18 @@ int   fanqueue_push(fanqueue *q, ms_pkt *p);
 /* pop: blocks until a packet is available or queue closed. returns NULL on
  * close. Caller must pkt_unref() the result. */
 ms_pkt *fanqueue_pop(fanqueue *q, int timeout_ms);
+/* Close the queue: wakes every consumer blocked in fanqueue_pop() at once and
+ * makes every later pop return NULL immediately. This is the ONLY way to end a
+ * consumer loop that is waiting on packets rather than on its socket - see
+ * ms_client_reg in util.h for why shutdown alone could not do it. Further
+ * pushes are dropped (the producer never blocks or fails). Idempotent; the
+ * queue must still be fanqueue_free()d by its owner afterwards. */
 void  fanqueue_close(fanqueue *q);
+/* Has fanqueue_close() been called? A closed queue makes fanqueue_pop() return
+ * NULL the instant it runs dry, which a consumer loop cannot tell apart from an
+ * ordinary timeout - so a loop that treats NULL as "nothing yet, keep going"
+ * needs this to know it should leave instead of spinning. */
+int   fanqueue_closed(fanqueue *q);
 /* read-and-clear the dropped-keyframe flag. The consumer (which knows its
  * hub source) should call hub_request_idr() when this returns nonzero, so
  * clients don't decode garbage until the next natural GOP boundary. */
