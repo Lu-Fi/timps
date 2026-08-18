@@ -1661,6 +1661,25 @@ static void *video_thread(void *arg)
         size_t   au_cap = pk->cap;
         size_t aulen=0;
         int overflow=0;
+        /* L6 (Low, hardening; the JPEG assembly loop further down has the
+         * same shape): the vendor samples (and prudynt-t) treat the new-API
+         * stream buffer as a RING and split a pack that wraps past streamSize
+         * into two memcpys. We copy contiguously from virAddr+offset and do not
+         * - which is PROVEN correct for the bundled T31 1.1.6 libimp rather
+         * than assumed: update_one_frmstrm (@0x829d8 in
+         * 3rdparty/install/lib/libimp.so) compacts the AL5 sections, pulls the
+         * header sections in front of the slice data, points virAddr at the
+         * start of that compact block (@0x82cc4) and then REWRITES the pack
+         * offsets as a running sum of the lengths (@0x82cd8-0x82cf8). A pack
+         * with offset+length > streamSize cannot come out of that.
+         *
+         * For C100/T40/T41 it stays unverified - T41 1.2.5 exports a function
+         * of the same name, which is not proof - and those libimps are not in
+         * this tree to check. The cheap remSize idiom would decouple the
+         * assumption from the libimp version; left undone because it would be
+         * an untested branch in the hot per-packet path, which is its own risk.
+         * If a wrap ever does occur the symptom is a corrupt AU, not a crash -
+         * look here first. */
         for (uint32_t i=0;i<st.packCount;i++){
 #ifdef ENC_NEW_API
             const uint8_t *p=(const uint8_t*)(uintptr_t)st.virAddr + st.pack[i].offset;
@@ -2649,6 +2668,21 @@ static int jpeg_enc_create(int chn, int w, int h, int quality, int fps)
     IMP_Encoder_SetDefaultParam(&a, IMP_ENC_PROFILE_JPEG, IMP_ENC_RC_MODE_FIXQP,
         w, h, fps, 1, 0, 0, quality, 0);
 #else
+    /* L5 (Low, classic T10..T30 only, NOT decidable from outside): the fps
+     * argument is dropped here and rcAttr is left all-zero, so the piggyback
+     * JPEG encoder in the video group most likely encodes EVERY video frame
+     * (25 fps) while jpeg_thread only drains at jpeg_fps (5) - wasted VPU work,
+     * and a snapshot that serves the OLDEST buffered frame rather than a fresh
+     * one. The encoder-side skipping that fixes this (M7, fps via
+     * SetDefaultParam) exists only on the ENC_NEW_API path above.
+     *
+     * Deliberately NOT "fixed": whether classic libimp reads outFrmRate 0/0 as
+     * "every frame" or as "encoder default" cannot be settled without a classic
+     * libimp to disassemble, and this tree bundles only the T31 and T23 ones.
+     * Guessing at rcAttr on a path no camera in this fleet runs would be a
+     * change nobody can verify. Recorded as a probable finding, not a proven
+     * one - if a T10..T30 board ever shows stale snapshots with videoN.jpeg
+     * enabled, start here. */
     (void)fps;
     a.encAttr.enType=PT_JPEG;
     a.encAttr.picWidth=w; a.encAttr.picHeight=h;
