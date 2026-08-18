@@ -200,7 +200,7 @@ static void *tl_thread(void *arg)
         int iv=tl.interval_s; if (iv<1) iv=1;
         int64_t retry = TL_RETRY_US < (int64_t)iv*1000000 ? TL_RETRY_US
                                                           : (int64_t)iv*1000000;
-        ms_pkt *p=hub_grab_jpeg(src,HUB_JPEG_GRAB_WAIT_MS,NULL);
+        ms_pkt *p=hub_grab_jpeg(src,HUB_JPEG_GRAB_WAIT_MS,NULL,NULL,NULL);
         if (p){
             int ok = (shot_write(p)==0);
             pkt_unref(p);

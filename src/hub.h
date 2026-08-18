@@ -144,6 +144,20 @@ int         hub_pick_jpeg_src(const ms_config *cfg, int chn, int strict);
  * because hub_subscribe() itself failed (source already at HUB_MAX_SUBS),
  * vs. 0 for a plain grab timeout - callers that report the difference to a
  * client (e.g. HTTP 503 "busy" vs. "no frame") need this distinction. */
-ms_pkt     *hub_grab_jpeg(int src, int wait_ms, int *busy);
+/* Optional hook, called with the grab's queue right after it is subscribed and
+ * with NULL just before it is released. hub_grab_jpeg() builds that queue on
+ * its OWN stack, so it is invisible to anything outside - which meant a
+ * shutdown could reach neither it nor the thread parked on it: /snapshot.jpg
+ * sat there for up to 2 x HUB_JPEG_GRAB_WAIT_MS (measured 2694 ms with an idle
+ * JPEG source), sailed past httpd_stop()'s drain, and then wrote its response
+ * through a TLS context that had already been freed. The hook lets a caller
+ * publish the queue somewhere a wake can find it (mp4/httpd.c registers it in
+ * its ms_client_reg slot) without hub.c having to know what that somewhere is.
+ * NULL for callers that do not need it - timelapse.c runs on its own thread,
+ * which main() stops before the servers. */
+struct fanqueue;   /* fanqueue.h; only the pointer is needed here */
+typedef void (*hub_grab_hook)(struct fanqueue *q, void *ctx);
+ms_pkt     *hub_grab_jpeg(int src, int wait_ms, int *busy,
+                          hub_grab_hook hook, void *hook_ctx);
 
 #endif

@@ -100,13 +100,23 @@ static ms_pkt *jpeg_pop(fanqueue *q, int wait_ms)
     }
 }
 
-ms_pkt *hub_grab_jpeg(int src, int wait_ms, int *busy)
+ms_pkt *hub_grab_jpeg(int src, int wait_ms, int *busy,
+                      hub_grab_hook hook, void *hook_ctx)
 {
     if (busy) *busy = 0;
     fanqueue q;
     if (fanqueue_init(&q,4)) return NULL;
     if (hub_subscribe(src,&q)!=0){ fanqueue_free(&q); if (busy) *busy=1; return NULL; }
+    /* make the queue reachable before the first wait, so a shutdown that lands
+     * between here and the release below can close it (see hub_grab_hook) */
+    if (hook) hook(&q, hook_ctx);
     ms_pkt *p = jpeg_pop(&q,wait_ms);
+    if (!p && fanqueue_closed(&q)) {            /* shutting down: do not start
+                                                 * the second half at all */
+        if (hook) hook(NULL, hook_ctx);
+        hub_unsubscribe(src,&q); fanqueue_free(&q);
+        return NULL;
+    }
     int vsrc=-1;                    /* helper video subscription (2nd half) */
     fanqueue vq;
     if (!p){
@@ -125,6 +135,7 @@ ms_pkt *hub_grab_jpeg(int src, int wait_ms, int *busy)
      * its fanqueue is freed (no UAF), and once both are gone the HAL's
      * activity callback + idle-stop debounce return the camera to idle. */
     if (vsrc>=0){ hub_unsubscribe(vsrc,&vq); fanqueue_free(&vq); }
+    if (hook) hook(NULL, hook_ctx);   /* before the free, never after */
     hub_unsubscribe(src,&q);
     fanqueue_free(&q);
     return p;

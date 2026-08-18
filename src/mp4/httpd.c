@@ -625,11 +625,18 @@ static int jpeg_src_from_path(const char *path, const ms_config *cfg)
  * only owns the HTTP side: the 404/503 responses and writing the JPEG bytes
  * out as a response. Worst-case wait is unchanged: 2 x HUB_JPEG_GRAB_WAIT_MS
  * (3 s at the default), never hangs the connection. */
+/* publish the grab's queue into this connection's registry slot, so
+ * ms_creg_wake_all() can close it on shutdown (see hub_grab_hook in hub.h) */
+static void snap_qhook(struct fanqueue *q, void *ctx)
+{
+    ms_creg_set_queue(&g_clientreg, ((hconn *)ctx)->slot, q);
+}
+
 static void snapshot_jpg(hconn *c, int src)
 {
     if (src < 0){ http_send_ex(c,"404 Not Found","text/plain",MEDIA_CORS,"no jpeg",7); return; }
     int busy = 0;
-    ms_pkt *p = hub_grab_jpeg(src, HUB_JPEG_GRAB_WAIT_MS, &busy);
+    ms_pkt *p = hub_grab_jpeg(src, HUB_JPEG_GRAB_WAIT_MS, &busy, snap_qhook, c);
     if (p) {
         char hdr[224];
         int n=snprintf(hdr,sizeof hdr,
