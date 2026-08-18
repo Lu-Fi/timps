@@ -2006,7 +2006,27 @@ static void *sw_rot_thread(void *arg)
         }
         if (vc->idr_req){ vc->idr_req=0; IMP_Encoder_YuvRequestIDR(vc->yuv_h); }
         /* GetFrame blocks up to the channel's frame period once the FS is
-         * enabled; on a disabled/empty channel it fails fast -> pace the retry */
+         * enabled; on a disabled/empty channel it fails fast -> pace the retry
+         *
+         * MEASURED GAP (cam-kinder-links, T23 1.3.0, 2026-08-18): the fps this
+         * loop actually processes is the SENSOR rate, not videoN.fps. With
+         * video1 = 640x480 @15 rotated 90, fs_create() set outFrmRateNum=15 and
+         * YuvInit was told 15 (so SPS/container advertise 15), yet the stream
+         * delivered 29.85 fps over 60 s - the full 30 fps sensor rate - while
+         * the BOUND channel 0 delivered its configured 25 (24.88 measured) at
+         * the same time. I.e. the FrameSource rate divider is applied for a
+         * bound consumer but not for a user-mode GetFrame consumer, the same
+         * class of gap as the missing HW OSD/privacy/piggyback-JPEG on this
+         * path. Consequences: (1) the transpose + software encode run at 2x
+         * the intended rate - the safe envelope in sw_rot_start gates on the
+         * CONFIGURED <=15 fps and therefore does not bound what this thread
+         * really does (measured 39% of the core for 480x640, vs ~21% total
+         * daemon CPU for the same stream unrotated); (2) rate control was
+         * parameterised for 15 fps while fed 30. NOT fixed here: the fix is a
+         * cadence gate (drop frames whose ts is inside the frame period, or
+         * IMP_FrameSource_SetFrameRate on this channel) and that is a real
+         * behaviour change on the rotated path, out of scope for the L7b
+         * review below. Recorded where it happens, as a measured finding. */
         IMPFrameInfo *frm = NULL;
         if (IMP_FrameSource_GetFrame(vc->chn, &frm)!=0 || !frm){
             if (receiving && (dbg_getfail++ % 100)==0)
@@ -2051,7 +2071,61 @@ static void *sw_rot_thread(void *arg)
             LOGI(MOD,"sw-rot chn%d: first encoded frame len=%u key=%d",
                  vc->chn, out.outLen, key); }
         /* hub_publish copies the AU into its own refcounted pkt, so the
-         * encoder-owned out.outAddr is done with by the time we loop */
+         * encoder-owned out.outAddr is done with by the time we loop.
+         *
+         * L7b - why this path is STILL on the copying publish API while
+         * video_thread/jpeg_thread assemble straight into a pooled packet and
+         * hand it over with hub_publish_take() (P-01). Not an oversight: it is
+         * the YuvEncode IN/OUT contract documented in the block comment above.
+         * Measured on real T23 hardware (cam-kinder-links, 640x480 -> 480x640
+         * @15 SW-rotate, 2026-08-18); numbers below are from that board:
+         *
+         *  - The AU length is known only AFTER the call, so a packet used as
+         *    out.outAddr must carry the WORST-CASE capacity the contract
+         *    demands (ybuf_cap = ew*eh + 0x1080 = 304 KiB here, 400 KiB at the
+         *    704x576 envelope limit) while ->len is the real AU: measured mean
+         *    2.7 KB, P-frames ~2.2 KB, IDR ~34 KB. Publishing such a packet
+         *    breaks the invariant the fan-out's only memory backstop rests on,
+         *    cap ~= len: fanqueue's FQ_MAX_BYTES budget accounts ->len, so ONE
+         *    stalled client would pin slots*cap - 64 * 304 KiB = 19 MiB
+         *    (RTSP) or 128 * 304 KiB = 38 MiB (record ring) - on a board with
+         *    37 MiB of usable RAM and ~3.4 MiB free. The budget cannot see it.
+         *  - Leaving HUB_POOL_KEEP_CAP (96 KB) alone instead frees every
+         *    returned buffer, i.e. a 304 KiB malloc+free PER FRAME: measured
+         *    96.0 us/frame = 1.44 ms/s, against the 4.3 us/frame = 64 us/s the
+         *    copy actually costs (malloc+memcpy+free at the mean AU size, same
+         *    board). The "zero-copy" variant would be 23x more expensive than
+         *    the copy it removes.
+         *  - The copy is also what lets the encoder keep ONE output buffer and
+         *    reuse it next call. Rotating out.outAddr per frame through a
+         *    black-box software encoder is unverified: the disassembly shows
+         *    the buffer being re-armed per frame (i264e_update_fenc), which is
+         *    not a guarantee that a different address per call is supported.
+         *
+         * So the copy stays: 15 fps * 2.7 KB = 40 KB/s, ~64 us/s = 0.006% of
+         * the core, against the ~39% of the core this thread measurably spends
+         * on nv12_rotate90 + the software encode. If this path ever needs CPU
+         * back, those two are the targets - not this memcpy. Same reasoning,
+         * only more so, for the JPEG publish further down (jbuf_cap is
+         * 2*ew*eh + 64 KiB = 664 KiB against a measured ~25 KiB JPEG).
+         * ORDERING GUARD for anyone revisiting this: the copy is the LAST
+         * step of the frame, long after the composition above - rotate
+         * (nv12_rotate90) -> software OSD onto the ROTATED bounce in EFF
+         * coordinates (sw_osd_compose, fw/fh = vc->w/vc->h) -> YuvEncode.
+         * Nothing about a pooled-output variant would move that: it would
+         * only change where the ENCODED BITSTREAM lands, never where or in
+         * which geometry the OSD is composited. Any future attempt here must
+         * keep that order intact - compositing before the rotate, or against
+         * pre-rotation dims, puts the timestamp sideways or in the corner
+         * that was right before the transpose. Verified on hardware with the
+         * rotation on (480x640 snapshots, 2026-08-18): the three text items
+         * read upright and are anchored to the ROTATED frame's top edge.
+         *
+         * The one part that COULD be converted without any of the above -
+         * encode into ybuf as now, then hub_pkt_get(outLen)+memcpy+
+         * hub_publish_take() to drop the per-frame malloc/free - buys
+         * 0.32 us/frame (4.8 us/s, measured) and keeps the copy. Not worth a
+         * second ownership model on the one path that has no soak history. */
         /* Fix 1: use the framesource capture timestamp ('ts' = frm->timeStamp,
          * read above), sanitized/monotonized against the wall clock, instead of
          * ms_now_us() at publish time. */
