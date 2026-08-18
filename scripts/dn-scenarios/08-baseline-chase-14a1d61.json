@@ -1,15 +1,15 @@
 {
   "name": "08-baseline-chase-14a1d61",
-  "incident": "14a1d61 (Schuppen 2026-08-13)",
-  "description": "Pre-dawn: the night pipeline falls fast to ~284 while the day pipeline is still dark (4000). The brightening probe fires early and FAILS, and the post-revert pre-baseline window re-probes once more (the a5dae07 path) - two failed pairs, backoff at the x4 cap, ratchet latched high (its DN_RATCHET_MARGIN bar is under the 256 floor, so the unsatisfiable-bar warn must fire). The baseline then chases the day-level gain down to ~262, dragging the skip gate's 'solidly night' bar with it, so pre-14a1d61 the periodic reconfirm was skipped indefinitely - two verify-before-trusting mechanisms validating each other - and only probe_max_skip_s (pushed to 7200 here so it cannot mask the fix under test) would recover.\n\nWHAT THIS SCENARIO DISCRIMINATES, checked (see the commit that tightened it). Against a build with 14a1d61's ratchet-anchor override disabled the machine never leaves night: mode@4500/@5900 fail and wrong-mode runs 4450s. Against a build with the dn_next_probe() trend suspension disabled (design-notes generator E) it recovers, but only at the x4 deadline ~3976s: mode@2000 fails and wrong-mode runs 2426s. With both, the anchor forces the periodic probe through at the trend-suspended deadline ~1276s, the day pipeline is still in the dead-zone there, and 19dcd74's still-brightening extension carries the deadline down the ramp until the reading crosses the day threshold - one probe pair, no revert.\n\nThe bounds are therefore stated as the design-notes invariant itself: T = one night_reconfirm_s (900s), not the backoff-cap-aware 3800s this scenario carried while the backoff was still trend-blind.",
+  "incident": "14a1d61 (a dim outbuilding 2026-08-13)",
+  "description": "Pre-dawn: the night pipeline falls fast to ~284 while the day pipeline is still dark (4000). The brightening probe fires early and FAILS, and the post-revert pre-baseline window re-probes once more (the a5dae07 path) - two failed pairs, backoff at the x4 cap, ratchet latched high (its DN_RATCHET_MARGIN bar is under the 256 floor, so the unsatisfiable-bar warn must fire). The baseline then chases the day-level gain down to ~262, dragging the skip gate's 'solidly night' bar with it, so pre-14a1d61 the periodic reconfirm was skipped indefinitely - two verify-before-trusting mechanisms validating each other - and only probe_max_skip_s (pushed to 7200 here so it cannot mask the fix under test) would recover.\n\nWHAT THIS SCENARIO DISCRIMINATES, checked (see the commit that tightened it). Against a build with 14a1d61's ratchet-anchor override disabled the machine never leaves night: mode@4500/@5900 fail and wrong-mode runs 4450s. Against a build with the dn_next_probe() trend suspension disabled (design-notes generator E) it recovers, but only at the x4 deadline ~3976s: mode@2000 fails and wrong-mode runs 2426s. With both, the anchor forces the periodic probe through at the trend-suspended deadline ~1276s, the day pipeline is still in the dead-zone there, and 19dcd74's still-brightening extension carries the deadline down the ramp until the reading crosses the day threshold - one probe pair, no revert.\n\nThe bounds are therefore stated as the design-notes invariant itself: T = one night_reconfirm_s (900s), not the backoff-cap-aware 3800s this scenario carried while the backoff was still trend-blind. RESTATED 2026-08-17: all three log assertions named machinery that no longer exists (the ratchet bar, the anchor override, the backoff suspension). What the incident was actually about - a derived bar chasing itself below the sensor floor until the self-healing path was dead - cannot occur now: the only derived bar is probe_jump_pct of a reference that moves solely on proof, and the heartbeat is a flat interval no accumulated history can stretch. So the assertion is that the heartbeat is what recovers this, and every behavioural bound (5 switches against a budget of 7, wrong-mode, restart-equivalence) holds unchanged.",
   "scale": 60,
   "duration_s": 6000,
   "initial_mode": "night",
   "config": {
-    "daynight.total_gain_day_threshold": 300,
-    "daynight.total_gain_night_threshold": 3000,
-    "daynight.night_reconfirm_s": 900,
-    "daynight.probe_max_skip_s": 7200
+    "daynight.day_gain": 300,
+    "daynight.night_gain": 3000,
+    "daynight.heartbeat_s": 900,
+    "daynight.heartbeat_max_s": 1800
   },
   "interp": "log",
   "noise_pct": 2,
@@ -23,9 +23,8 @@
     "restart_equivalence_s": 900,
     "monotonicity": "warn",
     "expect_log": [
-      "brighten ratchet bar \\d+ is below the sensor gain floor",
-      "ratchet anchor overrides baseline evidence",
-      "measurably brighter than the darkness the x\\d backoff was granted for"
+      "probe \\(heartbeat\\)",
+      "night reference .*proven by the probe"
     ]
   }
 }

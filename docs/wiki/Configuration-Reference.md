@@ -391,37 +391,55 @@ running thread re-reads these live.
 
 ## `daynight.*` — automatic day/night
 
-See [Day/Night](Day-Night.md) for the full decision logic, the three
-`mode` values, and the ISP running-mode latch fix. Note `switch_cmd` and
-`isp_path` are **not GET-readable** even though they are settable via the
-config file.
+See [Day/Night](Day-Night.md) for the full decision logic. The short version:
+the metric is the **exposure index** (`total_gain × integration_time /
+max_integration_time`, higher = darker — equal to `total_gain` in a dark scene
+and far below it in a bright one); day→night is a direct measurement on the
+honest day pipeline, night→day only ever happens via a **probe**; and the
+calendar, when configured, schedules probes rather than deciding anything.
+
+`switch_cmd`, `isp_path`, `trace_path` and `state_path` are **not
+GET-readable** even though they are settable via the config file — each names
+a path or program the daemon acts on as root.
+
+**Renamed 2026-08-17:** `total_gain_day_threshold` → `day_gain` and
+`total_gain_night_threshold` → `night_gain`. The old names still work as
+aliases and the units and calibration are unchanged.
+**Removed 2026-08-17** (parsed, ignored, warned about once):
+`day_gain_pct`, `baseline_delay_s`, `boot_settle_max_s`, `boot_stable_pct`,
+`night_reconfirm_s`, `probe_max_skip_s`, `threshold_low`, `threshold_high`,
+`hysteresis`.
 
 | Key | Type | Default | Range | Live? | Description |
 | --- | --- | --- | --- | --- | --- |
 | `daynight.enabled` | bool | 1 | 0/1 | **Live** | Auto-detection on/off; `0` = manual (thread still samples but forces nothing). |
-| `daynight.mode` | enum | `sensor` | `sensor`\|`time`\|`sun` | **Live** | Decision source — see [Day/Night](Day-Night.md#override-modes-time--sun). |
-| `daynight.time_night_start` | string(6) | `""` | `"HH:MM"` | **Live** | `time` mode: local time to switch to night. |
-| `daynight.time_day_start` | string(6) | `""` | `"HH:MM"` | **Live** | `time` mode: local time to switch to day. |
-| `daynight.sun_latitude` | float | 0.0 | -90–90 | **Live** | `sun` mode: latitude, degrees. |
-| `daynight.sun_longitude` | float | 0.0 | -180–180 | **Live** | `sun` mode: longitude, degrees. |
-| `daynight.sun_sunrise_offset_min` | int | 0 | -1440–1440 | **Live** | Minutes added to computed sunrise before switching to day. |
-| `daynight.sun_sunset_offset_min` | int | 0 | -1440–1440 | **Live** | Minutes added to computed sunset before switching to night. |
-| `daynight.total_gain_day_threshold` | float | 300 | 1–1,000,000 | **Live** | `sensor` mode: in night, switch to day when ISP total gain drops below this. |
-| `daynight.total_gain_night_threshold` | float | 3000 | 1–1,000,000 | **Live** | `sensor` mode: in day, switch to night when gain rises above this. |
-| `daynight.day_gain_pct` | int | 60 | 0–100 | **Live** | Adaptive night→day trigger as a percentage of the night baseline gain (`0` disables, falls back to the fixed threshold). The computed trigger is floored at `total_gain_day_threshold`, and a smoothed gain that holds below the halfway point between this percentage and 100% of the baseline for `DN_BRIGHTEN_CONFIRM_MS` (30 s) fires the `night_reconfirm_s`-style day-pipeline probe early (recovers rooms whose light source cannot push gain under the strict bar). The probe re-arms only after gain returns above that bar, so a failed probe cannot repeat on unchanged darkness. It also starts only clearly below the bar (never on a fractional graze), and after a failed probe must further undercut this percentage of the level that just failed — a "failure ratchet" that stops the pre-dawn probe volley on a slow brightening ramp (added 2026-08-04) while a real light-on step still passes at once. |
-| `daynight.baseline_delay_s` | int | 30 | 0–3600 | **Live** | Seconds into night before the adaptive baseline gain is sampled (lets IR LEDs settle). While night lasts the baseline drifts slowly toward the smoothed night gain in both directions, so an unrepresentative sample self-corrects and gain noise cannot ratchet it. |
-| `daynight.boot_settle_s` | int | 5 | 0–600 | **Live** | Minimum wait after thread start/re-enable before the first gain-based decision is trusted (floor). |
-| `daynight.boot_settle_max_s` | int | 120 | 0–3600 | **Live** | Hard cap on the boot settle wait — `sensor` mode extends past `boot_settle_s` until gain looks stable, but never past this. |
-| `daynight.boot_stable_pct` | int | 20 | 0–100 | **Live** | `sensor` mode: max spread across recent gain readings (as % of their average) to consider AE converged; `0` disables the stability wait (floor-only). |
-| `daynight.night_reconfirm_s` | int | 3600 | 0–86400 | **Live** | `sensor` mode: after this long continuously in night, force a probe switch to day and let the normal hysteresis re-decide from a true day-pipeline reading. `0` disables. Each probe is user-visible (IR-cut clunk + several seconds of dark colour video), so a probe that fails (reverts within 30s) doubles this interval for the next one — ×1→×2→×4, capped at `max(night_reconfirm_s, 4h)` — and any genuine transition resets it (exponential backoff, added 2026-08-04 after hourly probes flapped 8–12×/night on genuinely dark cameras). A due probe is additionally **skipped entirely** (no physical switch, no IR-cut click) when the smoothed night gain is still solidly deep in night — nowhere near the day bar — so a camera in unchanging darkness stops clicking altogether; it still fires the first probe after each night entry, and the `daynight.probe_max_skip_s` outer bound forces one regardless of gain as the self-healing net (added 2026-08-04 after "das klacken der IR blende nervt … nachts andauernd" on a closeted camera). |
-| `daynight.probe_max_skip_s` | int | 43200 (12h) | 3600–604800 | **Live** | `sensor` mode: outer bound for the passive-evidence probe skip above — once this long has passed since the last *actual* physical probe, force one regardless of gain ("trust nothing, double-check" for a permanently-flat reading that gain evidence alone can never clear). Deliberately floored at 3600s (1h): this is a safety net, not a feature meant to be disabled outright. Raise it for a quieter camera, or lower it (down to the floor) for more frequent verification; made configurable 2026-08-05 (was a compile-time-only constant). |
-| `daynight.threshold_low` | float | 25.0 | 0–100 (%) | **Live** | Brightness-fallback: below this in day → night (used only when no gain field is readable). |
-| `daynight.threshold_high` | float | 75.0 | 0–100 (%) | **Live** | Brightness-fallback: above this in night → day. |
-| `daynight.hysteresis` | float | 0.1 | 0–1 | **Live** | Fraction of the low–high band used for the very first (unknown-state) brightness-fallback decision. |
-| `daynight.interval_ms` | int | 500 | 100–60000 | **Live** | Sample interval. |
-| `daynight.transition_s` | int | 5 | 0–3600 | **Live** | Minimum dwell time between switches. |
+| `daynight.mode` | enum | `auto` | `auto`\|`schedule` | **Live** | `auto` = the sensor automaton (calendar optional). `schedule` = the calendar decides outright, no sensor and no probes. The pre-2026-08-17 tokens still parse: `sensor`→`auto`, `time`/`sun`→`schedule`. |
+| `daynight.time_night_start` | string(6) | `""` | `"HH:MM"` | **Live** | Calendar: local time night begins. Set together with `time_day_start`; takes precedence over the sun calendar. |
+| `daynight.time_day_start` | string(6) | `""` | `"HH:MM"` | **Live** | Calendar: local time day begins. |
+| `daynight.sun_latitude` | float | 0.0 | -90–90 | **Live** | Sun calendar: latitude. Used when no time window is set and either coordinate is non-zero. |
+| `daynight.sun_longitude` | float | 0.0 | -180–180 | **Live** | Sun calendar: longitude. |
+| `daynight.sun_sunrise_offset_min` | int | 0 | -1440–1440 | **Live** | Minutes added to computed sunrise. |
+| `daynight.sun_sunset_offset_min` | int | 0 | -1440–1440 | **Live** | Minutes added to computed sunset. |
+| `daynight.day_gain` | float | 768 | 1–1,000,000 | **Live** | Exposure index below which the **day pipeline** confirms day. 768 = 3× gain: "day is confirmed when the day pipeline can hold the scene at ≤3×". Alias: `total_gain_day_threshold`. |
+| `daynight.night_gain` | float | 4096 | 1–1,000,000 | **Live** | Exposure index above which day ends. 4096 = 16×, "colour is hopeless". Alias: `total_gain_night_threshold`. |
+| `daynight.day_confirm_s` | int | 30 | 1–3600 | **Live** | How long the index must stay above `night_gain` before day→night. |
+| `daynight.probe_min_gap_s` | int | 600 | 60–86400 | **Live** | Minimum seconds between probes. **This is the only thing rationing the audible IR-cut click**, so the worst-case click rate is a property of the config rather than of interacting heuristics. |
+| `daynight.probe_jump_pct` | int | 50 | 1–99 | **Live** | Probe when the index falls below this percentage of the *night reference* (the level at which night was last proven). 50 = one full stop of new brightening. |
+| `daynight.probe_confirm_s` | int | 15 | 1–3600 | **Live** | …and stays there this long. Long enough to reject headlights, short enough that "light on → colour" is about `probe_confirm_s + probe_settle_s`. |
+| `daynight.probe_settle_s` | int | 8 | 1–600 | **Live** | AE settling on the day pipeline before the probe verdict is taken. One verdict, binary: below `day_gain` it sticks, otherwise it reverts immediately (bypassing `transition_s`). |
+| `daynight.ref_delay_s` | int | 30 | 0–3600 | **Live** | Wait after entering night before anchoring the night reference (IR LEDs settling). A floor — the anchor also waits for the reading to stop moving. |
+| `daynight.heartbeat_s` | int | 14400 (4h) | 300–604800 | **Live** | Probe interval while the scene is moving, independent of any reading. Deliberately flat, never doubling: this is the only bound on how long a wrong night can last. |
+| `daynight.heartbeat_max_s` | int | 43200 (12h) | 300–604800 | **Live** | Interval once the scene has demonstrably not moved since the last probe (nothing new to spend a click on) — and the hard ceiling on the deferral. Only applied while the spontaneous trigger can actually see. |
+| `daynight.boot_probe` | int | 1 | 0/1 | **Live** | `1` = one probe at boot when the persisted mode is night, turning a guess into a measurement. `0` = leave it to the first heartbeat. A persisted *day* never costs a click either way. |
+| `daynight.boot_settle_s` | int | 5 | 0–600 | **Live** | Minimum wait after thread start/re-enable before the first decision (also gated on the reading having settled). |
+| `daynight.learn` | int | 0 | 0/1 | **Live** | `1` = let the median of the last 8 confirmed-day minima raise `day_gain` when the configured value is unreachable for this scene, and persist it to `state_path`. It can only ever *raise* the threshold and is clamped below `night_gain/2`. With `0` the numbers are still collected and logged once a day. |
+| `daynight.interval_ms` | int | 2000 | 100–60000 | **Live** | Sample interval. 2 s, not the pre-2026-08-17 500 ms: the exposure index needs the `/proc` scrape every tick and no confirmation window is shorter than 8 s. |
+| `daynight.transition_s` | int | 5 | 0–3600 | **Live** | Minimum dwell between switches. A failed probe's revert bypasses it. |
+| `daynight.diagnose_thresholds` | int | 0 | 0/1 | **Live** | Warn once a day when no probe has ever confirmed day and the best day-pipeline reading is still clear of `day_gain`. |
 | `daynight.switch_cmd` | string(64) | `daynight` | — | File-only, not GET-readable | Board script run as `<cmd> day\|night` on a switch. |
-| `daynight.isp_path` | string(128) | `/proc/jz/isp/isp-m0` | — | File-only, not GET-readable | ISP exposure proc file for the brightness-fallback scrape. |
+| `daynight.isp_path` | string(128) | `/proc/jz/isp/isp-m0` | — | File-only, not GET-readable | ISP exposure proc file (gain **and** integration time). |
+| `daynight.trace_path` | string(128) | `""` | — | File-only, not GET-readable | Opt-in decision-trace CSV for the replay harness. **tmpfs only**; 1 MB cap, rotated once to `<path>.1`. |
+| `daynight.state_path` | string(128) | `/etc/timps-daynight.state` | — | File-only, not GET-readable | Where `learn=1` persists the learned day levels. Written only on change and at most hourly. |
 
 ## `general.*` — daemon-wide settings
 

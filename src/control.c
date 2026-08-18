@@ -67,7 +67,11 @@
  * (the same set the caps.play "sounds" list reports). Returns 1 on success. */
 static int sound_path(const char *name, char *out, size_t cap)
 {
-    if (!name || !name[0] || strchr(name,'/') || strstr(name,"..")) return 0;
+    /* strchr rejects any '/', so the only value left that could traverse is a
+     * bare ".." - checked via THE shared component-semantics check
+     * (ms_has_dotdot, util.h) instead of a divergent strstr, so every '..'
+     * test in the tree means the same thing (L-2). */
+    if (!name || !name[0] || strchr(name,'/') || ms_has_dotdot(name)) return 0;
     char p[300];
     if ((size_t)snprintf(p,sizeof p,"%s/%s",SOUNDS_DIR,name) >= sizeof p) return 0;
     struct stat st;
@@ -83,6 +87,38 @@ typedef struct {
     char val[CTRL_MAX_CHG][160];
     int  n;
 } ctrl_changes;
+
+/* counters for the ctrl_result the caller gets back; see control.h */
+static __thread int g_acc, g_chg, g_rej;
+/* the "applied" echo, built as JSON while the values are in hand. It records a
+ * field whenever the CANONICAL stored value differs from what was POSTed - not
+ * when the value CHANGED. The two are not the same, and the difference is
+ * exactly the case the UI needs most: posting 999 to a field already clamped
+ * to 255 stores nothing new (changed stays 0) but the caller still sent a value
+ * it will never get, and a slider left showing 999 would be wrong. Building it
+ * from the change list missed that; comparing posted vs effective does not. */
+static __thread char g_echo[CTRL_ECHO_CAP];
+static __thread int  g_echo_off, g_echo_full;
+
+static void echo_add(const char *key, const char *eff)
+{
+    if (!g_echo_full) return;                       /* already overflowed */
+    /* Must go through the SAME escaper the status document uses for every
+     * string: an effective value read back from g_cfg can carry a quote or a
+     * backslash if timps.conf was hand-edited, and emitting it raw would hand
+     * the client malformed JSON - from the very reply whose job is to tell it
+     * what is true. jesc also folds invalid UTF-8, which strict parsers reject.
+     * Values are capped at 160 chars and escaping at most doubles them. */
+    char ekey[96], eval[336];
+    ms_json_esc(key, ekey, sizeof ekey);
+    ms_json_esc(eff, eval, sizeof eval);
+    int w = snprintf(g_echo + g_echo_off, sizeof g_echo - (size_t)g_echo_off,
+                     "%s\"%s\":\"%s\"", g_echo_off ? "," : "", ekey, eval);
+    if (w < 0 || g_echo_off + w >= (int)sizeof g_echo) {
+        g_echo[g_echo_off] = 0; g_echo_full = 0; return;
+    }
+    g_echo_off += w;
+}
 
 /* ---------- tiny range-based JSON scanning ---------- */
 
@@ -244,9 +280,14 @@ static void sanitize_val(const char *in, char *out, size_t cap)
     size_t o=0;
     for (; *in && o+1<cap; in++){
         unsigned char ch=(unsigned char)*in;
+        /* Control characters stay folded: a newline would inject an extra line
+         * into the flat key = value config file, and no amount of quoting helps
+         * against that. Quote and backslash used to be REPLACED here, which was
+         * itself silent data loss on every write. Both reasons for it are gone:
+         * config.c's writer now quotes what needs quoting and the round trip is
+         * proven, and all three JSON surfaces (GET /control, the POST reply's
+         * "applied" echo, the /events stream) escape through ms_json_esc. */
         if (ch < 0x20) ch=' ';
-        else if (ch=='"') ch='\'';
-        else if (ch=='\\') ch='/';
         out[o++]=(char)ch;
     }
     out[o]=0;
@@ -259,8 +300,10 @@ static void timps_apply_setting(ctrl_changes *ch, const char *key, const char *r
      * not stored as "null" and parsed to 0. */
     if (!raw || !raw[0] || !strcmp(raw,"null") || !strcmp(raw,"undefined")){
         LOGD(MOD,"ignoring %s = '%s' (not a valid value)", key, raw?raw:"");
+        g_rej++;
         return;
     }
+    g_acc++;   /* recognised and about to be applied, changed or not */
     char val[160]; sanitize_val(raw, val, sizeof val);
 
     /* Change detection: apply to the in-memory config, then compare the
@@ -296,6 +339,8 @@ static void timps_apply_setting(ctrl_changes *ch, const char *key, const char *r
     int canon = config_get_kv(&g_cfg, key, after, sizeof after);
     config_str_unlock();
     const char *out = canon ? after : val;   /* canonical value for consumers */
+    /* posted != effective -> the caller needs to know, changed or not */
+    if (strcmp(out, val) != 0) echo_add(key, out);
     if (known && !strcmp(before, after)){
         /* image.running_mode is a hardware-SYNC command to the ISP, not just a
          * stored value: the ISP's actual day/night state can drift from our
@@ -339,6 +384,7 @@ static void timps_apply_setting(ctrl_changes *ch, const char *key, const char *r
      * drive their own richer status events from imp_motion.c/daynight.c -
      * this is just the raw settings echo, for everything else too. */
     events_config_push(key, out);
+    g_chg++;
     if (ch->n < CTRL_MAX_CHG){
         snprintf(ch->key[ch->n], sizeof ch->key[0], "%s", key);
         snprintf(ch->val[ch->n], sizeof ch->val[0], "%s", out);
@@ -381,9 +427,15 @@ static void apply_ctrl_fields(ctrl_changes *ch, const char *prefix,
     }
 }
 
-void control_apply_json(const char *json)
+int control_apply_json(const char *json, ctrl_result *res)
 {
-    if (!json || !json[0]) return;
+    if (res) { res->accepted = res->changed = res->rejected = 0; }
+    if (!json || !json[0]) return -1;
+    /* Not a JSON object at all - the hand-rolled scanner would simply find
+     * nothing and the old code answered 200 to it. Say so instead. */
+    if (!strchr(json, '{')) return -1;
+    g_acc = g_chg = g_rej = 0;
+    g_echo[0] = 0; g_echo_off = 0; g_echo_full = 1;
     /* A1 (concurrent-POST class): one HTTP worker thread per connection calls
      * this (httpd.c), so two simultaneous POSTs would otherwise interleave their
      * apply-to-g_cfg + hub_control + persist sequences and leave a partially
@@ -400,7 +452,7 @@ void control_apply_json(const char *json)
      * this sits under buf[] in conn_thread too - same reasoning as the
      * /control GET json[] buffer. */
     ctrl_changes *ch = (ctrl_changes *)malloc(sizeof *ch);
-    if (!ch) { LOGW(MOD,"control_apply_json: OOM"); pthread_mutex_unlock(&apply_mu); return; }
+    if (!ch) { LOGW(MOD,"control_apply_json: OOM"); pthread_mutex_unlock(&apply_mu); return -1; }
     ch->n = 0;
     char v[160];
 
@@ -472,10 +524,14 @@ void control_apply_json(const char *json)
          * daynight.* key (enabled, the time_* / sun_* strings and numerics,
          * the gain thresholds, ...) rides the generic walker now. */
         if (get_val(sb, se, "mode", v, sizeof v)){
-            if (!strcmp(v,"sensor")||!strcmp(v,"time")||!strcmp(v,"sun"))
+            /* the pre-2026-08-17 tokens stay accepted here for the same
+             * reason the config parser accepts them: WebUI builds in the
+             * field still POST them (see the T_DNMODE case in config.c). */
+            if (!strcmp(v,"auto")||!strcmp(v,"schedule")||
+                !strcmp(v,"sensor")||!strcmp(v,"time")||!strcmp(v,"sun"))
                 timps_apply_setting(ch, "daynight.mode", v);
             else
-                LOGW(MOD,"ignoring daynight.mode = '%s' (not sensor/time/sun)", v);
+                LOGW(MOD,"ignoring daynight.mode = '%s' (not auto/schedule)", v);
         }
         int ndn; const cfg_field *dn_tbl = cfg_fields_daynight(&ndn);
         apply_ctrl_fields(ch, "daynight", sb, se, dn_tbl, ndn);
@@ -601,7 +657,15 @@ void control_apply_json(const char *json)
             char clip[160];
             if (get_val(sb, se, "clip", clip, sizeof clip)){
                 int secs = get_val(sb, se, "seconds", v, sizeof v) ? atoi(v) : 6;
-                record_clip(clip, secs);
+                /* A COMMAND, not a setting: it never goes through
+                 * timps_apply_setting, so without this it left accepted at 0
+                 * and the new grading answered 422 to a clip request that had
+                 * actually been taken - which is exactly the false alarm the
+                 * grading exists to prevent. Count it, and let its verdict
+                 * (-1 = bad path or no recorder) show up as rejected, so a
+                 * caller learns the request was refused without needing SSH. */
+                if (record_clip(clip, secs) == 0) g_acc++;
+                else                              g_rej++;
             }
         }
         int nrec; const cfg_field *rec_tbl = cfg_fields_record(&nrec);
@@ -629,8 +693,14 @@ void control_apply_json(const char *json)
         for (int i=0;i<ch->n;i++){ keys[i]=ch->key[i]; vals[i]=ch->val[i]; }
         config_write_keys(g_cfg_path, keys, vals, ch->n);
     }
+    if (res) {
+        res->accepted = g_acc; res->changed = g_chg; res->rejected = g_rej;
+        snprintf(res->echo, sizeof res->echo, "%s", g_echo);
+        res->echo_full = g_echo_full;
+    }
     free(ch);
     pthread_mutex_unlock(&apply_mu);
+    return 0;
 }
 
 /* ---------- GET /control: dump the current (in-memory) values ---------- */
@@ -645,55 +715,12 @@ void control_apply_json(const char *json)
  * UTF-8) produce output that isn't valid UTF-8, which strict parsers reject
  * (Python json raises UnicodeDecodeError, browsers mangle it). Every write is
  * bounds-checked so the escape/replacement expansion can't overflow out[cap]. */
+/* moved to util.c as ms_json_esc(): the SSE emitter in mp4/httpd.c needs the
+ * SAME escaper, and a second copy would be a second thing to get wrong. Kept as
+ * a one-line forwarder so the 17 call sites below read unchanged. */
 static void jesc(const char *s, char *out, size_t cap)
 {
-    const unsigned char *p = (const unsigned char *)s;
-    size_t o=0;
-    if (!cap) return;
-    while (*p){
-        unsigned char c = *p;
-        if (c=='"' || c=='\\'){
-            if (o+2 >= cap) break;
-            out[o++]='\\'; out[o++]=(char)c; p++;
-        } else if (c < 0x20){
-            if (o+1 >= cap) break;
-            out[o++]=' '; p++;
-        } else if (c < 0x80){
-            if (o+1 >= cap) break;
-            out[o++]=(char)c; p++;
-        } else {
-            /* lead byte of a multi-byte sequence: decode + validate */
-            int n; unsigned cp=0;
-            if      ((c & 0xE0)==0xC0){ n=2; cp=c&0x1F; }
-            else if ((c & 0xF0)==0xE0){ n=3; cp=c&0x0F; }
-            else if ((c & 0xF8)==0xF0){ n=4; cp=c&0x07; }
-            else n=0;                       /* stray continuation / 0xF8+ */
-            int ok = n>0;
-            for (int i=1; ok && i<n; i++){  /* p is NUL-terminated: a short
-                                             * sequence hits \0 here and fails,
-                                             * never reading past the string */
-                if ((p[i] & 0xC0) != 0x80) ok=0;
-                else cp = (cp<<6) | (p[i]&0x3F);
-            }
-            if (ok){
-                if      (n==2 && cp<0x80)    ok=0;   /* overlong */
-                else if (n==3 && cp<0x800)   ok=0;
-                else if (n==4 && cp<0x10000) ok=0;
-                if (cp>=0xD800 && cp<=0xDFFF) ok=0; /* surrogate */
-                if (cp>0x10FFFF)              ok=0;
-            }
-            if (ok){
-                if (o+(size_t)n >= cap) break;
-                for (int i=0;i<n;i++) out[o++]=(char)p[i];
-                p += n;
-            } else {
-                if (o+3 >= cap) break;              /* emit U+FFFD, skip 1 byte */
-                out[o++]=(char)0xEF; out[o++]=(char)0xBF; out[o++]=(char)0xBD;
-                p++;
-            }
-        }
-    }
-    out[o]=0;
+    ms_json_esc(s, out, cap);
 }
 
 /* GET /control's "caps":{"image":[...],"audio":[...]} advertisement used to
@@ -712,11 +739,24 @@ static void jesc(const char *s, char *out, size_t cap)
  * brightness in %, total_gain in the IMP [24.8] linear scale (256 = 1x,
  * like GetTotalGain and the prudynt/raptor value the WebUI plots);
  * -1 = unknown. Measured by daynight.c; a stub answers unknowns when built
- * without USE_DAYNIGHT. The configured gain thresholds ride along (from
- * g_cfg) so the photosensing page can load and edit them. */
+ * without USE_DAYNIGHT. The configured thresholds ride along (from g_cfg) so
+ * the photosensing page can load and edit them.
+ *
+ * "exposure" (2026-08-17) is the value the decision actually runs on -
+ * total_gain scaled by the AE's integration-time ratio, so it equals
+ * total_gain in a dark scene and drops far below it in a bright one, where
+ * gain alone rails at its floor. Plot that one if you are diagnosing a
+ * day/night problem; total_gain stays for continuity with existing pages.
+ *
+ * "night_baseline"/"day_trigger" keep their key names for the same
+ * continuity reason but now carry the redesign's two night-side numbers: the
+ * PROVEN night reference and the level the exposure must fall below to ask
+ * for a probe. Both are -1 outside night. The old keys for retired config
+ * (day_gain_pct, night_reconfirm_s, ...) are gone - see
+ * dev_notes/DAYNIGHT_REDESIGN_2026-08-17.md section 7.3. */
 int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
-                          float brightness, float total_gain, float ae_luma,
-                          float night_baseline, float day_trigger)
+                          float brightness, float total_gain, float exposure,
+                          float ae_luma, float night_ref, float probe_bar)
 {
     /* F-03: snapshot the whole daynight section under the config string lock
      * (the daynight.c thread pattern) and format from the local copy, so this
@@ -732,12 +772,12 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
      * which emits the literal "inf"/"nan" (invalid JSON) for a non-finite
      * value. daynight.c already rails its own computation, but guard here too
      * since these values arrive from several call sites. -1.0f = "unknown". */
-    if (!isfinite(total_gain))     total_gain     = -1.0f;
-    if (!isfinite(night_baseline)) night_baseline = -1.0f;
-    if (!isfinite(day_trigger))    day_trigger    = -1.0f;
-    const char *dnmode = d->mode==DN_MODE_TIME ? "time" :
-                         d->mode==DN_MODE_SUN  ? "sun"  : "sensor";
-    /* computed sunrise/sunset feedback for the SUN mode (local HH:MM) so the
+    if (!isfinite(total_gain)) total_gain = -1.0f;
+    if (!isfinite(exposure))   exposure   = -1.0f;
+    if (!isfinite(night_ref))  night_ref  = -1.0f;
+    if (!isfinite(probe_bar))  probe_bar  = -1.0f;
+    const char *dnmode = d->mode==DN_MODE_SCHEDULE ? "schedule" : "auto";
+    /* computed sunrise/sunset feedback for the sun calendar (local HH:MM) so the
      * WebUI can show today's real switch times and the user can sanity-check
      * lat/long before trusting the math. "--:--" for polar day/night. */
     char sun_sr[8]="--:--", sun_ss[8]="--:--";
@@ -753,36 +793,46 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
     jesc(d->time_day_start, etds, sizeof etds);
     return snprintf(buf, cap,
         "{\"enabled\":%d,\"mode\":%d,\"brightness\":%.1f,\"total_gain\":%.0f,"
-        "\"ae_luma\":%.0f,"
+        "\"exposure\":%.0f,\"ae_luma\":%.0f,"
         "\"night_baseline\":%.0f,\"day_trigger\":%.0f,"
-        "\"total_gain_day_threshold\":%g,"
-        "\"total_gain_night_threshold\":%g,\"day_gain_pct\":%d,"
-        "\"baseline_delay_s\":%d,"
-        "\"boot_settle_s\":%d,\"boot_settle_max_s\":%d,"
-        "\"boot_stable_pct\":%d,\"night_reconfirm_s\":%d,"
-        "\"probe_max_skip_s\":%d,"
+        /* the two thresholds under BOTH names: the new one, and the
+         * pre-2026-08-17 one an existing photosensing page still binds to
+         * (they are the same config field via the alias). */
+        "\"day_gain\":%g,\"night_gain\":%g,"
+        "\"total_gain_day_threshold\":%g,\"total_gain_night_threshold\":%g,"
+        "\"day_confirm_s\":%d,"
+        "\"probe_min_gap_s\":%d,\"probe_jump_pct\":%d,"
+        "\"probe_confirm_s\":%d,\"probe_settle_s\":%d,\"ref_delay_s\":%d,"
+        "\"heartbeat_s\":%d,\"heartbeat_max_s\":%d,"
+        /* the silent IR probe's verdict thresholds. They are F_CTRL, so
+         * leaving them out of the status made them settable but not
+         * readable - a POST nobody could confirm. QA's field-inventory
+         * drift check (timps-qa.sh 8d) caught exactly that. */
+        "\"ir_ratio_night\":%g,\"ir_ratio_day\":%g,\"ir_min_headroom\":%d,"
+        "\"boot_probe\":%d,\"boot_settle_s\":%d,\"learn\":%d,"
         "\"dn_mode\":\"%s\","
         "\"time_night_start\":\"%s\",\"time_day_start\":\"%s\","
         "\"sun_latitude\":%g,\"sun_longitude\":%g,"
         "\"sun_sunrise_offset_min\":%d,\"sun_sunset_offset_min\":%d,"
         "\"sun_computed_sunrise\":\"%s\",\"sun_computed_sunset\":\"%s\","
-        "\"threshold_low\":%g,\"threshold_high\":%g,\"hysteresis\":%g,"
         "\"interval_ms\":%d,\"transition_s\":%d}",
-        enabled, mode, (double)brightness, (double)total_gain, (double)ae_luma,
-        (double)night_baseline, (double)day_trigger,
-        (double)d->total_gain_day_threshold,
-        (double)d->total_gain_night_threshold,
-        d->day_gain_pct, d->baseline_delay_s,
-        d->boot_settle_s, d->boot_settle_max_s,
-        d->boot_stable_pct, d->night_reconfirm_s,
-        d->probe_max_skip_s,
+        enabled, mode, (double)brightness, (double)total_gain,
+        (double)exposure, (double)ae_luma,
+        (double)night_ref, (double)probe_bar,
+        (double)d->day_gain, (double)d->night_gain,
+        (double)d->day_gain, (double)d->night_gain,
+        d->day_confirm_s,
+        d->probe_min_gap_s, d->probe_jump_pct,
+        d->probe_confirm_s, d->probe_settle_s, d->ref_delay_s,
+        d->heartbeat_s, d->heartbeat_max_s,
+        (double)d->ir_ratio_night, (double)d->ir_ratio_day, d->ir_min_headroom,
+        d->boot_probe, d->boot_settle_s, d->learn,
         dnmode,
         etns, etds,
         (double)d->sun_latitude, (double)d->sun_longitude,
         d->sun_sunrise_offset_min, d->sun_sunset_offset_min,
         sun_sr, sun_ss,
-        (double)d->threshold_low, (double)d->threshold_high,
-        (double)d->hysteresis, d->interval_ms, d->transition_s);
+        d->interval_ms, d->transition_s);
 }
 
 /* Read-only motion status object (shared /control + /events shape, see
@@ -1189,14 +1239,14 @@ int control_get_json(char *buf, size_t cap)
     {   /* read-only day/night status (never persisted); shape/docs in
          * control_daynight_json above (shared with the /events push) */
         int dn_en = 0, dn_mode = 0;
-        float dn_b = -1.0f, dn_tg = -1.0f, dn_lu = -1.0f;
-        float dn_nb = -1.0f, dn_dt = -1.0f;
-        daynight_get_status(&dn_en, &dn_mode, &dn_b, &dn_tg, &dn_lu,
-                            &dn_nb, &dn_dt);
+        float dn_b = -1.0f, dn_tg = -1.0f, dn_ex = -1.0f, dn_lu = -1.0f;
+        float dn_rf = -1.0f, dn_pb = -1.0f;
+        daynight_get_status(&dn_en, &dn_mode, &dn_b, &dn_tg, &dn_ex, &dn_lu,
+                            &dn_rf, &dn_pb);
         APP(",\"daynight\":");
         int _dn = control_daynight_json(o<cap?buf+o:buf, o<cap?cap-o:0,
-                                        dn_en, dn_mode, dn_b, dn_tg, dn_lu,
-                                        dn_nb, dn_dt);
+                                        dn_en, dn_mode, dn_b, dn_tg, dn_ex,
+                                        dn_lu, dn_rf, dn_pb);
         if (_dn>0) o += (size_t)_dn;
     }
     {   /* read-only motion status; shape/docs in control_motion_json above

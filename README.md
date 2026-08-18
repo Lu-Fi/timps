@@ -212,12 +212,16 @@ model, sensitivity mapping and per-SDK cell limits.
 
 ### Automatic day/night
 
-A thread samples the Ingenic ISP exposure state and derives a scene
-brightness, replacing thingino's separate `daynightd` daemon; besides the
-default sensor-brightness decision, `daynight.mode` can force switching by a
-fixed time window (`time`) or real sunrise/sunset for a lat/long (`sun`). See
-[Day/Night](docs/wiki/Day-Night.md) for thresholds, hysteresis and the
-override modes.
+A thread samples the Ingenic ISP exposure state, replacing thingino's separate
+`daynightd` daemon. The two directions are not symmetric, because the two
+optical paths are not equally trustworthy: with the IR-cut closed the exposure
+is an honest measure of ambient light, so day→night is a plain measurement,
+while in night the camera is partly measuring its own illuminator, so
+night→day is only ever decided by physically probing the day pipeline. A
+calendar (fixed window or real sunrise/sunset for a lat/long) is optional and
+only schedules those probes — it never decides, which is what keeps basements
+and artificially lit rooms working. `daynight.mode=schedule` hands the
+decision to the calendar outright. See [Day/Night](docs/wiki/Day-Night.md).
 
 ### Speaker: backchannel + system-sound play
 

@@ -1,0 +1,22 @@
+{
+  "name": "18-saturated-brief-event",
+  "incident": "operator switched a garage light on 22:26:58, off 22:27:12 (14 s)",
+  "description": "MEASURED, not reconstructed. Source: cam-A.csv, 2026-08-17 22:25:30-22:28:30 local.\n\nThe camera whose exposure automation sits at ALL its ceilings - integration, analog gain and ISP digital gain all at max - and which therefore reads a constant 19840 for thirteen hours. A 14 s light drops it to 1748, a factor of 11, in a single 5 s sample, and it returns to the ceiling immediately. Two things at once: the ceiling is not blindness (the value leaves it the moment anything happens, restoring the AE headroom a differential measurement needs), and the event is far too short to react to - detection plus probe plus confirmation cannot fit in 14 s, and moving the IR-cut twice for 14 s of colour would be the worse trade.\n\nPipeline provenance - night curve: measured, day curve: inferred. A curve marked 'inferred' has no measurement behind it in this window and pins nothing about that pipeline; only the 'measured' side carries evidence. ASSERTION, sharpened: budget 2 - the boot verification only. A 14 s event MUST NOT trigger a switch: moving the filter twice to gain fourteen seconds of colour would be the worse trade. If this number rises, the machine is reacting too eagerly.",
+  "scale": 30,
+  "duration_s": 180,
+  "initial_mode": "night",
+  "config": {
+    "daynight.day_gain": 768,
+    "daynight.night_gain": 4096
+  },
+  "interp": "step",
+  "noise_pct": 0,
+  "night_gain": [[0, 19840], [3, 19840], [8, 19840], [13, 19840], [18, 19840], [23, 19840], [28, 19840], [33, 19840], [38, 19840], [43, 19840], [48, 19840], [53, 19840], [58, 19840], [63, 19840], [68, 19840], [73, 19840], [78, 19840], [83, 19840], [88, 1748], [93, 1477], [98, 1738], [103, 19840], [108, 19840], [113, 19840], [118, 19840], [123, 19840], [128, 19840], [133, 19840], [138, 19840], [143, 19840], [148, 19840], [153, 19840], [158, 19840], [163, 19840], [168, 19840], [173, 19840], [178, 19840]],
+  "day_gain": [[0, 20000], [180, 20000]],
+  "expect": {
+    "expected_mode": [[0, "night"]],
+    "max_wrong_mode_s": 60,
+    "max_switches": 2,
+    "monotonicity": "warn"
+  }
+}

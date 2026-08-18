@@ -59,6 +59,18 @@
  * by giving up once no packet has arrived for this long. Generous relative to
  * any real configured frame rate (even 1 fps clears it 60x over) so it never
  * fires on a healthy, merely slow stream. */
+/* An fMP4 presentation whose moov declares an audio trak stalls in MSE as soon
+ * as that trak stops advancing: the browser intersects the buffered ranges of
+ * all active tracks, so silent audio freezes the VIDEO. The warmup below only
+ * settles this at connect time - audio.mute via /control mutes MID-connection,
+ * and the HAL then keeps draining the AI without publishing, so the source
+ * stays "active" and nothing else notices. Drop such a client instead: on
+ * reconnect the warmup sees no AAC and serves a correct video-only moov.
+ * 5 s is well above ordinary AAC jitter (~64 ms/frame) and below the point
+ * where a frozen picture reads as a dead stream. */
+#ifndef MS_MP4_AUDIO_GAP_US
+#define MS_MP4_AUDIO_GAP_US (5LL*1000000)
+#endif
 #ifndef MS_STREAM_STALL_US
 #define MS_STREAM_STALL_US (60LL*1000000)
 #endif
@@ -276,8 +288,13 @@ static void stream_mp4(hconn *c, int chn)
     }
     /* fMP4 can only carry AAC; use it only if the HAL actually produces AAC */
     int acodec=MS_AC_NONE, asr=0, ach=0;
-    hub_get_audio(&acodec, &asr, &ach);
-    int can_audio = (acodec==MS_AC_AAC);
+    /* the return value is the source's "active" flag: hub_clear_audio_params()
+     * clears it when the HAL failed to bring the capture channel up, but
+     * LEAVES acodec at AAC. Ignoring it meant every new connection still paid
+     * the full ~800 ms warmup below (and logged a warning) on a camera whose
+     * audio can never arrive - measured 0.772 s to first header byte. */
+    int aactive = hub_get_audio(&acodec, &asr, &ach);
+    int can_audio = (aactive && acodec==MS_AC_AAC);
     if (can_audio && hub_subscribe(HUB_AUDIO_SRC, &q) != 0)
         can_audio = 0;                           /* degrade to video-only */
     hub_request_idr(chn);
@@ -358,6 +375,7 @@ static void stream_mp4(hconn *c, int chn)
     ms_buf frag;
     if (ms_buf_init(&frag, 4096)) goto out;        /* OOM */
     int64_t last_pkt_us = ms_now_us();   /* H-2: encoder-stall bound, see above */
+    int64_t last_audio_us = last_pkt_us; /* see MS_MP4_AUDIO_GAP_US */
     /* blocking socket: net_sendall must never write a partial fragment */
     while (1) {
         ms_pkt *p = fanqueue_pop(&q, 200);
@@ -377,6 +395,20 @@ static void stream_mp4(hconn *c, int chn)
             continue;
         }
         last_pkt_us = ms_now_us();
+        /* A declared-but-unfed audio trak freezes the whole presentation in
+         * MSE (see MS_MP4_AUDIO_GAP_US). Only meaningful once we committed to
+         * audio in the moov; video-only clients never reach the else branch. */
+        if (p->media == MS_MEDIA_AUDIO) {
+            last_audio_us = last_pkt_us;
+        } else if (mux.has_audio &&
+                   last_pkt_us - last_audio_us > MS_MP4_AUDIO_GAP_US) {
+            LOGW(MOD,"mp4 chn=%d: no audio for %llds but video still flowing "
+                     "(muted mid-stream?) - dropping this client so it "
+                     "reconnects video-only", chn,
+                 (long long)(MS_MP4_AUDIO_GAP_US/1000000));
+            pkt_unref(p);
+            break;
+        }
         /* trace.h: last_pkt_us IS the pop instant, so t_pop costs nothing extra
          * on this path - only the t_done read after the send does. */
         int64_t t_pop = ms_trace_on(MS_TR_AU) ? last_pkt_us : 0;
@@ -396,7 +428,7 @@ static void stream_mp4(hconn *c, int chn)
          * byte budget binds below MS_MP4_DROP_HIWAT slots during a bitrate
          * spike (2 MB / 48 slots = ~43 KB/frame, an ordinary motion burst at
          * 1080p), and a hole shorter than one GOP need not contain a keyframe.
-         * Observed on Galayou (T23/atbm6062 weak WiFi) QA 2026-08-11:
+         * Observed on cam-L (T23/atbm6062 weak WiFi) QA 2026-08-11:
          * ~1.4-1.6 s eviction holes whose delivery resumed on mid-GOP
          * P-frames - silent corruption the adaptive path was built to
          * prevent. */
@@ -607,6 +639,24 @@ static void stream_mjpeg(hconn *c, int src, const char *bnd)
         return;
     }
     if (csend(c,rh,n)<0){ hub_unsubscribe(src,&q); fanqueue_free(&q); return; }
+    /* The boundary delimiter is what tells a client that the PREVIOUS part is
+     * complete. Emitting it as the PREFIX of the next part (the old
+     * "\r\n--BND\r\nContent-Type: ..." in one write) means frame N is only
+     * declared finished once frame N+1 exists - a client that scans for the
+     * delimiter instead of trusting Content-Length therefore shows every frame
+     * one full frame period late (~200 ms at the default 5 fps). Send the
+     * delimiter immediately AFTER each body instead, and open the body with one
+     * delimiter here. Same bytes on the wire, same RFC 2046 framing (delimiter
+     * line, part headers, blank line, body) - only the instant of the write
+     * moves, from "when the next frame arrives" to "now".
+     * dlm carries the leading CRLF that terminates the preceding body; the
+     * opening delimiter is the same string without it, hence dlm+2. */
+    char dlm[80];
+    int dn = snprintf(dlm, sizeof dlm, "\r\n--%s\r\n", BND);
+    if (dn >= (int)sizeof dlm ||                      /* cannot happen: BND<=63 */
+        csend(c, dlm + 2, dn - 2) < 0) {
+        hub_unsubscribe(src,&q); fanqueue_free(&q); return;
+    }
     LOGI(MOD,"mjpeg client streaming");
     int64_t last_pkt_us = ms_now_us();   /* H-2: encoder-stall bound, see above */
     while (1) {
@@ -625,13 +675,16 @@ static void stream_mjpeg(hconn *c, int src, const char *bnd)
         last_pkt_us = ms_now_us();
         char part[160];
         int hn=snprintf(part,sizeof part,
-            "\r\n--%s\r\nContent-Type: image/jpeg\r\nContent-Length: %zu\r\n\r\n",
-            BND, p->len);
+            "Content-Type: image/jpeg\r\nContent-Length: %zu\r\n\r\n",
+            p->len);
         /* a truncated multipart header would desync the boundary framing for
          * the rest of the stream - never send it, tear the stream down like
          * any other write failure (n >= sizeof part = snprintf overran) */
         int rc = (hn >= (int)sizeof part) ? -1 : csend(c,part,hn);
         if (rc>=0) rc = csend(c,p->data,(int)p->len);
+        /* close this part and open the next one NOW, not when the next frame
+         * shows up - that is the whole point (see the comment above dlm). */
+        if (rc>=0) rc = csend(c,dlm,dn);
         pkt_unref(p);
         if (rc<0) break;
     }
@@ -991,16 +1044,16 @@ static void events_stream(hconn *c, const char *path, const char *cors)
         }
         if (rc >= 0 && want_dn){
             int en = 0, mode = 0; float b = -1.0f, g = -1.0f, lu = -1.0f;
-            float nb = -1.0f, dt = -1.0f;
-            daynight_get_status(&en, &mode, &b, &g, &lu, &nb, &dt);
+            float ex = -1.0f, nb = -1.0f, dt = -1.0f;
+            daynight_get_status(&en, &mode, &b, &g, &ex, &lu, &nb, &dt);
             float db = b - ld_b; if (db < 0) db = -db;
             float dg = g - ld_g; if (dg < 0) dg = -dg;
             /* change thresholds match the producer filter in daynight.c */
             if (!have_d || en != ld_en || mode != ld_mode || db >= 1.0f ||
                 dg >= (ld_g > 0.0f ? ld_g * 0.05f : 8.0f)){
                 ld_en = en; ld_mode = mode; ld_b = b; ld_g = g; have_d = 1;
-                if (control_daynight_json(js, sizeof js, en, mode, b, g, lu,
-                                          nb, dt) < (int)sizeof js)
+                if (control_daynight_json(js, sizeof js, en, mode, b, g, ex,
+                                          lu, nb, dt) < (int)sizeof js)
                     rc = sse_emit(c, "daynight", js, &last_write);
             }
         }
@@ -1020,8 +1073,16 @@ static void events_stream(hconn *c, const char *path, const char *cors)
                 rc = sse_emit(c, "config", "{\"resync\":true}", &last_write);
             char ck[40], cv[160];
             while (rc >= 0 && events_config_pop(&cfg_cur, ck, sizeof ck, cv, sizeof cv)){
+                /* Escape like every other JSON surface: the value here is the
+                 * CANONICAL stored one, so a quote or backslash that reached
+                 * timps.conf by hand (POSTed values are stripped of both) would
+                 * otherwise emit a broken event and desync the client's parser
+                 * mid-stream. Same escaper as GET /control and the POST reply. */
+                char eck[96], ecv[336];
+                ms_json_esc(ck, eck, sizeof eck);
+                ms_json_esc(cv, ecv, sizeof ecv);
                 int jl = snprintf(js, sizeof js,
-                    "{\"key\":\"%s\",\"value\":\"%s\"}", ck, cv);
+                    "{\"key\":\"%s\",\"value\":\"%s\"}", eck, ecv);
                 if (jl < (int)sizeof js)
                     rc = sse_emit(c, "config", js, &last_write);
             }
@@ -1173,9 +1234,14 @@ static void *conn_thread(void *arg)
              * (never RTSP), so the thingino WebUI preview <img>/players can
              * load straight from this port without on-device proxy CGIs.
              * localhost and the open-when-no-user rule stay as they are. */
+            /* NOTE: every alias the dispatcher below accepts must be listed
+             * here, or that alias silently loses BOTH the ?token= unlock and
+             * the CORS headers - "/mjpeg" did, so a valid token got a 401 on
+             * it while "/stream.mjpeg" worked (docs promise identical rules). */
             int media = !strncmp(path,"/stream.mp4",11)   ||
                         !strncmp(path,"/snapshot.jpg",13) ||
-                        !strncmp(path,"/stream.mjpeg",13);
+                        !strncmp(path,"/stream.mjpeg",13) ||
+                        !strncmp(path,"/mjpeg",6);
             if (media || !strncmp(path,"/control",8) || !strncmp(path,"/events",7)) {
                 http_cors(buf, cors, sizeof cors);
                 if (!strcmp(method,"OPTIONS")) {
@@ -1334,8 +1400,36 @@ static void *conn_thread(void *arg)
                             n += r; have += r; buf[n] = 0;
                         }
                     }
-                    control_apply_json(body ? body : "");
-                    http_send_ex(c,"200 OK","application/json",cors,"{\"ok\":true}",11);
+                    /* The old code answered {"ok":true} 200 to everything -
+                     * garbage, truncated JSON, unknown keys and real writes
+                     * alike - so no client could tell a typo from a write, and
+                     * no test could fail. Report what actually happened:
+                     *   400 - the body was not a JSON object at all
+                     *   422 - it parsed, but carried no field this build knows
+                     *         (typo, wrong section, or a key gated out of this
+                     *         build); nothing was applied
+                     *   200 - at least one known field was applied
+                     * "accepted" counts applied fields INCLUDING no-op rewrites,
+                     * so re-posting the current value is a success, not a
+                     * silent failure. Clamped writes count as accepted too -
+                     * clamping is the documented contract, not an error. */
+                    ctrl_result cr;
+                    int prc = control_apply_json(body ? body : "", &cr);
+                    char rb[CTRL_ECHO_CAP + 192];
+                    int rn = snprintf(rb, sizeof rb,
+                        "{\"ok\":%s,\"accepted\":%d,\"changed\":%d,"
+                        "\"rejected\":%d,\"applied\":{%s}%s}",
+                        (prc==0 && cr.accepted>0) ? "true" : "false",
+                        cr.accepted, cr.changed, cr.rejected,
+                        prc==0 ? cr.echo : "",
+                        (prc==0 && !cr.echo_full) ? ",\"truncated\":true" : "");
+                    if (rn >= (int)sizeof rb) rn = (int)sizeof rb - 1;
+                    if (prc != 0)
+                        http_send_ex(c,"400 Bad Request","application/json",cors,rb,rn);
+                    else if (cr.accepted == 0)
+                        http_send_ex(c,"422 Unprocessable Content","application/json",cors,rb,rn);
+                    else
+                        http_send_ex(c,"200 OK","application/json",cors,rb,rn);
                 }
             }
             else if (!strncmp(path,"/events",7)) {

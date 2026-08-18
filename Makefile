@@ -215,7 +215,7 @@ IMPLIBS ?= -l:libimp.a -l:libalog.a -l:libsysutils.a
 # against a distro/buildroot that only ships libfaac.so.
 FAACLIB ?= -l:libfaac.a
 
-.PHONY: all target sim clean strip test-auth dn-props
+.PHONY: all target sim clean strip test-auth
 
 all: target
 
@@ -257,16 +257,6 @@ sim:
 	  $(SIM_CFLAGS) \
 	  -Isrc $(SIM_SRC) $(LDFLAGS) -lpthread -lm -o $(BIN)-sim
 	@echo "built $(BIN)-sim (host simulation backend, USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_ROTATE=$(USE_ROTATE) USE_TRACE=$(USE_TRACE))"
-
-# Property test for the day/night probe schedule (design-notes section 5).
-# dn_next_probe() is pure and dependency-free by construction, so this needs
-# no HAL, no config, no threads and no sim binary - just the header and libc.
-# That is the entire point of the collapse: the schedule can be interrogated
-# with counterfactual evidence a replay can never produce. Runs in well under
-# a second; scripts/dn-replay.py runs it as corpus entry 00.
-dn-props:
-	$(HOSTCC) $(CFLAGS) -Isrc tests/dn-probe-props.c -lm -o dn-probe-props
-	@echo "built dn-probe-props (run it, or: ./scripts/dn-replay.py --all scripts/dn-scenarios)"
 
 # Self-contained authentication fail-closed test: build the host sim (with
 # /control), start it on unprivileged ports, run scripts/test_auth.sh against

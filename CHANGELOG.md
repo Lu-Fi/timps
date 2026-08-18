@@ -7,8 +7,126 @@ semantic versioning.
 ## [Unreleased]
 
 ### Changed
+- **day/night: redesigned around four independent paths and one rate limit**
+  (`src/daynight.c` 2030 -> 1290 lines, `src/daynight_probe.h` (732 lines)
+  deleted). Design: `dev_notes/DAYNIGHT_REDESIGN_2026-08-17.md`; evidence:
+  `docs/wiki/Day-Night-Design-Notes.md` (kept, now marked historical).
+
+  **The diagnosis.** The old machine had **one** path from night to day (the
+  probe) and **nine rules rationing it** - backoff, failure ratchet, anchor
+  override, passive-evidence skip, `probe_max_skip_s`, trend suspension,
+  brightening hold, oscillation breaker, verify deadlines. Each was correct
+  and each was bought with a real incident, but because they all gated the
+  *same* path their failures multiplied instead of cancelling: the 2026-08-14
+  camera rendered IR video in broad daylight for four hours while a service
+  restart fixed it in ten seconds. The redesign's construction rule is that
+  **a rationing rule may only be applied while the independent trigger it
+  defers to is working** - and that is now a runtime predicate
+  (`dn_c_sighted()`), not a design intention.
+
+  **The metric changed, and this is the load-bearing part.** The decision now
+  runs on an *exposure index*, `total_gain * integration_time /
+  max_integration_time` (higher = darker), not on bare gain. `total_gain` has
+  a hard floor at 256 (1.0x), so once the AE rails there any further
+  brightening of the scene is **invisible** - which is why a camera resting at
+  256-268 under its own IR (`a5dae07` cam-J, `14a1d61` cam-H)
+  could never have its brightening detected no matter how the probe was
+  scheduled, and why a good part of the rationing apparatus existed at all.
+  The AE keeps shortening the exposure once the gain bottoms out, so the
+  product carries the signal across the whole range. In a dark scene the
+  integration time is railed at max and the index **equals** `total_gain`, so
+  every threshold keeps its historic calibration and the whole scenario corpus
+  keeps its meaning; when the integration-time fields are unreadable the index
+  degrades to bare gain, i.e. to the old behaviour. Both fields come from the
+  `isp_path` scrape, so that scrape is back on every decision tick - paid for
+  by `interval_ms` 500 -> 2000.
+
+  **The four paths.** (A) day->night is a plain measurement on the honest day
+  pipeline, `night_gain` held for `day_confirm_s`. (C) night->day is *only*
+  ever probe-mediated, asked for when the index falls below `probe_jump_pct`%
+  of the night reference for `probe_confirm_s` - this is the path that carries
+  cameras with no location data, which is most of a fleet, and it is what makes
+  "light on -> colour in ~25 s" work without a special case. (B) a flat
+  `heartbeat_s`/`heartbeat_max_s` probe, sensor-independent, the only bound on
+  a wrong night - deliberately **not** a multiplying backoff, since a doubling
+  interval is exactly how the previous design turned a bounded guarantee into
+  an unbounded one. (D) at boot the persisted mode is measured rather than
+  believed: persisted day costs nothing (we are already in the honest
+  pipeline), persisted night costs one probe (`boot_probe`). That makes the
+  design notes' *restart-equivalence* invariant literal at t=0 and replaces
+  dead-zone adoption, both verify deadlines and the still-brightening
+  extension outright.
+
+  **One night reference instead of five.** `ref` is the level at which night
+  was last *proven* - by entering it from day, or by a probe that found
+  darkness. It never drifts. It replaces `night_baseline` (drifting),
+  `smooth_tg`, `probe_fail_smooth`, `min_smooth_since_probe` and
+  `brighten_ref`, and the failed-probe assignment *is* the entire ratchet. A
+  reference anchored too high now costs one self-correcting probe instead of
+  looping forever every 25 minutes (`a5dae07`); one anchored too low costs
+  path C until the next heartbeat re-anchors it. The oscillation breaker is
+  gone with no replacement: an IR-reflection feedback loop needs a threshold
+  crossing to flip night->day, and no threshold can do that any more.
+
+  **Calendar demoted to a scheduler.** `time`/`sun` no longer decide anything
+  in `auto` mode - they can only pull the heartbeat in to the next sunrise.
+  This is what keeps basements, windowless rooms and artificially lit spaces
+  correct, and why a camera without location data loses scheduling sharpness
+  rather than correctness. `daynight.mode` is now `auto`|`schedule`; the old
+  `sensor`/`time`/`sun` tokens still parse.
+
+  **Measured cost.** On the target architecture (`mipsel-linux-gcc -Os`, the
+  `make target` flags): **22,636 -> 18,748 bytes of text, i.e. 3,888 saved
+  (17%)**. Notably *less*
+  than the ~12 KB estimated during design - the bulk of `.text` turns out to
+  be log/format call sites and the sun math, which scale with the number of
+  messages rather than with the complexity of the algorithm, and cutting
+  further would mean cutting the log lines every one of the twelve incident
+  diagnoses rested on. BSS is unchanged
+  at 360 bytes and the thread locals drop from ~30 scalars plus three ring
+  buffers to 15 scalars and none, so **there is no meaningful RAM saving here
+  and the change should not be justified with one**. The win is the state
+  space and the bounded click budget.
+
+  **Validated against the corpus, which is what made the redesign admissible
+  at all** - the design notes' "no rewrite" verdict was explicitly conditional
+  on there being no executable oracle, and there is one now. All 15 scenarios
+  pass. The behavioural assertions (`expected_mode`, `max_wrong_mode_s`,
+  `max_switches`, `restart_equivalence_s`, `monotonicity`) survived the
+  rewrite untouched; what had to be restated is documented per scenario, and
+  falls into two kinds. Log assertions naming machinery that no longer exists
+  were retargeted at the line carrying the same behaviour. And **two `mode_at`
+  assertions were encoding the latency of the bug rather than a requirement**:
+  `04-deadzone-boot` asserted NIGHT at t=200 because the old machine adopted a
+  stale persisted night and could only correct itself when a verify deadline
+  came due; `07-stale-day-boot` asserted DAY at t=200 for the mirror-image
+  reason. The boot probe measures instead of adopting, so both are corrected
+  within ~3 s, and both now assert that.
+
+  The corpus also found three defects in the redesign before it shipped, which
+  is the argument for having built it: (1) the heartbeat's "has anything
+  happened" test was noise-naive in the first draft - `03-noisy-night`'s ±25%
+  AGC jitter defeats a running minimum and `11-dim-lightson`'s permanent 12.5%
+  step defeats a max/min range test, so the sustained-minimum tumbling window
+  from the old design had to be carried over deliberately; (2) the "path C is
+  blind on this camera" notice fired from only one of the two places a night
+  reference is set, caught by `05-inverted-regime`; (3) the unreachable-
+  threshold diagnostic, originally emitted from the daily learning line, would
+  have left a misconfigured camera silent for 24 h - it now waits for three
+  consecutive failed probes instead, which arrives in minutes and still cannot
+  be produced by one unlucky measurement.
+
+  Two scenarios are new and exist as a pair: `09-dawn-ramp` (unchanged input,
+  no integration-time channel, so the metric degrades to bare gain and its
+  night curve floors at 260) versus `15-dawn-ramp-exposure-index` (the same
+  dawn with the integration-time channel). Same scene, same thresholds,
+  same ground truth: **2926 s of wrong mode against 9 s**. That difference is
+  the entire argument for changing the metric, written as an assertion instead
+  of a claim.
 - **day/night: default `total_gain_day_threshold` 300 -> 768, and
-  `total_gain_night_threshold` 3000 -> 4096** (`src/config.c`). Both are now
+  `total_gain_night_threshold` 3000 -> 4096** (`src/config.c`, renamed to
+  `daynight.day_gain` / `daynight.night_gain` by the redesign above; the old
+  names remain as aliases). Both are now
   expressed as multiples of the [24.8] gain floor (256 = 1.0x), which is the
   scale the decision actually lives on: **day is confirmed when the day
   pipeline can hold the scene at <= 3x gain, night is entered when it needs
@@ -20,46 +138,90 @@ semantic versioning.
   2026-08-16 (800..5000); the two diagnosed in detail measured 531 (2.07x) and
   2505 (9.79x) as the best their day pipelines managed. 3x is deliberately
   modest and does **not** pretend to fix the extreme end - it clears the
-  marginal cases a default can reasonably cover (Wohnzimmer 2.07x, Schlafzimmer
-  ~2.7x) and leaves genuinely dim rooms like Wohnzimmer-Ofen (9.79x) as
+  marginal cases a default can reasonably cover (cam-E 2.07x, cam-D
+  ~2.7x) and leaves genuinely dim rooms like cam-F (9.79x) as
   explicit per-camera overrides. Picking the fleet's lowest observed override
   (800) would be fitting to five samples; 3x is a statable premise about indoor
   light that happens to cover them. The night default moves with it to keep the
   hysteresis band sane - 768..4096 is 5.3x, against 300..3000's 10x: narrower,
   but still over two stops of dead-zone, and 16x is a defensible "colour is
-  hopeless" point. **All 14 corpus scenarios now pin `total_gain_day_threshold`
-  and `total_gain_night_threshold` explicitly at the historical 300/3000**, so
+  hopeless" point. **Every corpus scenario now pins the two thresholds
+  explicitly at the historical 300/3000** (under their new names since the
+  redesign, except scenario 01 which keeps the old spelling to cover the
+  aliases), so
   each keeps reproducing its own incident rather than silently tracking a
   moving default - which is also what made this change safe to measure.
 
 ### Added
+- **day/night: `daynight.learn` (default 0) - opt-in threshold learning with a
+  daily log line either way.** Every confirmed day records its lowest exposure
+  reading; the median of the last 8 says how bright this scene actually gets.
+  With `learn=1` that median raises the effective `day_gain` when the
+  configured value turns out to be unreachable for the room - the failure that
+  had three cameras stuck in night on 2026-08-16, each needing an SSH session
+  to diagnose - and persists to `daynight.state_path` (change-only, at most
+  one write an hour, atomic rename; a state file that does not parse is
+  discarded silently). Two rules keep it from becoming the next incident
+  generator: it may only ever **raise** the threshold (a too-generous
+  `day_gain` produces a false day, which the honest day->night measurement
+  corrects within `day_confirm_s`, while a too-strict one makes day
+  unconfirmable, which is the failure with no bound), and it is clamped below
+  `night_gain/2` so the two thresholds cannot cross and oscillate.
+  Deliberately **off by default**, but the values are collected and logged
+  **once a day regardless**, so the numbers can be read off a running camera
+  before deciding to switch it on. Deliberately *not* persisted: the night
+  reference (re-anchored in 30 s anyway, and a stale one would disable the
+  spontaneous trigger) and the mode (measured at boot, not believed).
+- **day/night config keys** (see
+  `dev_notes/DAYNIGHT_REDESIGN_2026-08-17.md` section 7.3 for the mapping):
+  new `day_confirm_s`, `probe_min_gap_s`, `probe_jump_pct`, `probe_confirm_s`,
+  `probe_settle_s`, `ref_delay_s`, `heartbeat_s`, `heartbeat_max_s`,
+  `boot_probe`, `learn`, `state_path`. Retired, and now parsed with a
+  one-line warning naming the replacement rather than a bare "unknown key":
+  `day_gain_pct`, `baseline_delay_s`, `boot_settle_max_s`, `boot_stable_pct`,
+  `night_reconfirm_s`, `probe_max_skip_s`, `threshold_low`, `threshold_high`,
+  `hysteresis`. The brightness-percentage fallback is no longer a decision
+  path at all - it was a second, cruder view of the same two ISP fields the
+  exposure index now uses properly, and keeping it meant writing every
+  decision rule twice; `dn_brightness()` survives only to feed the WebUI
+  readout.
+- **day/night: `exposure` in the `/control` and `/events` status object** -
+  the value the decision actually runs on. Plot this rather than `total_gain`
+  when diagnosing: they are identical in a dark scene and only `exposure` has
+  range in a bright one. `night_baseline`/`day_trigger` keep their key names
+  (existing photosensing pages bind to them) but now carry the proven night
+  reference and the probe bar.
 - **day/night: `daynight.diagnose_thresholds` (default 0)** - the unreachable-
   threshold warning added earlier this session is now **opt-in**. The condition
   it reports is a real misconfiguration and the line is worth having (it turned
   three 2026-08-16 incidents from an SSH session each into a one-line fix), but
-  it is a WARN on a path that fires once per reconfirm interval, forever, until
-  a human edits the config: on a correctly-configured fleet that is pure log
-  growth on flash-backed syslog, and on a misconfigured camera one line an hour
-  all night makes the point many times over. Same reasoning as
+  it is a WARN that repeats, forever, until a human edits the config: on a
+  correctly-configured fleet that is pure log growth on flash-backed syslog,
+  and on a misconfigured camera it makes the point many times over. Same
+  reasoning as
   `daynight.trace_path` - a diagnostic you switch on when you are diagnosing.
   Unlike `trace_path` it is safe on the `/control` surface (it names no path
   and writes no file), so it can be toggled live without a restart. Corpus
   scenario 13 carries the key and asserts the message; new scenario 14 is its
   default-off twin and asserts the silence, so if the gate is ever removed 13
-  keeps passing and only 14 notices.
+  keeps passing and only 14 notices. **Restated by the 2026-08-17 redesign:**
+  a single failed probe cannot distinguish "the room is dark" from "the
+  threshold is too strict", so the warning is now emitted from a day's worth
+  of evidence (in the daily learning line) rather than per probe, and says
+  which of the two it might be instead of assuming.
 - **day/night: a warning when `total_gain_day_threshold` is set below anything
   the scene's day pipeline can produce** (`src/daynight.c`,
-  `src/daynight_probe.h`; three live cameras on 2026-08-16 - Schlafzimmer in
-  the morning, then Wohnzimmer 192.168.241.204 and Wohnzimmer-Ofen
-  192.168.10.224 the same afternoon). Observability only, no behaviour change.
+  `src/daynight_probe.h`; three live cameras on 2026-08-16 - cam-D in
+  the morning, then cam-E 192.168.1.100 and cam-F
+  192.168.1.100 the same afternoon). Observability only, no behaviour change.
   `total_gain_day_threshold` is a config bar rather than a derived one, so the
   generator-C guard never looked at it - but it fails identically. Set below
   what a room's day pipeline actually reads, `tg < total_gain_day_threshold`
   can never come true: every probe lands ambiguous, the verify expires, the
   camera reverts, and it spends one audible IR-cut pair per reconfirm interval
-  sitting in night mode in daylight. Measured: Wohnzimmer's day pipeline ran
+  sitting in night mode in daylight. Measured: cam-E's day pipeline ran
   700 -> 591 -> 531 against a threshold of 300 (best reading 1.77x the bar);
-  Wohnzimmer-Ofen's ran 3299 -> 2629 -> 2250 against 450 (5.0x). The machine's
+  cam-F's ran 3299 -> 2629 -> 2250 against 450 (5.0x). The machine's
   behaviour is correct in every case - the day pipeline is the trustworthy
   judge, it judged "not day", night is the recoverable side - but the revert
   logged only "unverified day, gain N" and never named the threshold that made
@@ -74,10 +236,43 @@ semantic versioning.
   emissions); new corpus scenario 13 is the positive one.
 
 ### Fixed
+- **RTSP: a partially received control request had no deadline, so a
+  byte-trickling client could hold a client slot for hours** (`src/rtsp/rtsp.c`;
+  found while assessing an external review, 2026-08-18). The control loop's
+  only bound was `SO_RCVTIMEO` (30 s, set once on accept) - but that timer
+  limits a *single* `recv()` and re-arms on every byte that arrives. A client
+  sending one byte every 29 s therefore never trips it and never completes a
+  request: the 4 KB buffer fills after ~34 h, and eight such connections occupy
+  all `RTSP_MAX_CLIENTS` slots for that long, locking out every legitimate
+  client without sending a single malformed packet. `mp4/httpd.c` had closed
+  exactly this hole with its 5 s `hdr_deadline`; RTSP had not, and none of the
+  four prior reviews flagged it. Fix: `RTSP_REQ_TIMEOUT_US` (10 s) bounds how
+  long an **incomplete** request may stay pending, measured from the arrival of
+  its first byte and re-armed whenever a complete request is consumed. Idle
+  time *between* complete requests is deliberately left unbounded - gaps are
+  normal on a control connection, and a peer that goes fully silent is already
+  covered by `SO_RCVTIMEO`. Verified on the host sim: a 1-byte-per-2 s client
+  is dropped after 12 s with a logged reason, while a connection idling 15 s
+  between two complete `OPTIONS` requests is unaffected.
+- **digest auth: the client's `realm` was used as a hash input without being
+  checked against the realm the server advertises** (`src/auth.c`, both
+  `auth_rtsp_digest()` and `auth_http_digest()`; raised by an external review,
+  2026-08-18). `realm` was parsed from the `Authorization` header and fed
+  straight into HA1 = MD5(`user:realm:pass`), while the server's own
+  `AUTH_REALM` ("timps") was only ever *sent* in the 401, never compared
+  against. This was **not** exploitable: HA1 is derived from the cleartext
+  password on every request, so a forged realm changes both sides of the
+  comparison alike and the client still needs the password - and the
+  per-session nonce check blocks replay independently. It was nonetheless the
+  server's value to state rather than the client's to choose. Fix: reject any
+  response whose `realm` is not `AUTH_REALM`. Legitimate clients echo what the
+  401 offered, so this is compatible by construction; verified against the host
+  sim (correct realm authenticates, `realm="evil"` with an otherwise valid
+  digest is rejected with 401).
 - **day/night: the unsatisfiable-bar guard checked a different number from the
   gate it guards, so it stayed silent on the one camera it was written for**
-  (`src/daynight_probe.h`, `src/daynight.c`; live incident Schlafzimmer
-  192.168.241.170, 2026-08-16 ~10:03-11:28; design-notes generator C). The
+  (`src/daynight_probe.h`, `src/daynight.c`; live incident cam-D
+  192.168.1.100, 2026-08-16 ~10:03-11:28; design-notes generator C). The
   brightening hold compares `smooth_tg` against
   `baseline * (100+day_gain_pct)/200 * DN_BRIGHTEN_MARGIN`.
   `dn_bar_check()` was handed that expression **without** the margin. At
@@ -98,7 +293,7 @@ semantic versioning.
   and rejected with a measured reason - `night_baseline <= 0` makes the skip
   gate's `can_judge` false, so every periodic reconfirm would fire a physical
   probe, which on exactly the near-floor cameras this would target
-  (cam-wyze-pan and the closet, resting 256-268) re-creates the audible-clicking
+  (cam-J and the closet, resting 256-268) re-creates the audible-clicking
   complaint the skip gate exists to fix; see the design notes.
 
 - **day/night: `min_smooth_since_probe` was a running minimum, which defeated
@@ -124,7 +319,7 @@ semantic versioning.
   said before. A 5s AGC trough can no longer latch anything; corpus 10's dip
   spans ten windows. Note the sensitivity floor this implies and which the
   previous behaviour only appeared to beat: a dip must now be deeper than the
-  scene's own noise band to count, so the real kinder-links 23:21 dip (1599 vs
+  scene's own noise band to count, so the real cam-H 23:21 dip (1599 vs
   a 1653 anchor, 3.3%) would not latch under realistic AGC noise. That is the
   correct trade - the alternative is no working backoff on any camera - and the
   periodic reconfirm still bounds recovery at one `night_reconfirm_s`.
@@ -157,7 +352,7 @@ semantic versioning.
 
 - **day/night: turning a room light on took up to a full `night_reconfirm_s`
   to be noticed, instead of the ~30s the sustained-brightening path exists to
-  deliver** (`src/daynight_probe.h`, `src/daynight.c`; kinder-links
+  deliver** (`src/daynight_probe.h`, `src/daynight.c`; cam-H
   2026-08-16, the third gate; design-notes generator D). With the two fixes
   below the mode did recover - but through the periodic reconfirm, i.e. up to
   an hour on a real camera's 3600s default. The fast path never fired, and the
@@ -217,7 +412,7 @@ semantic versioning.
   `night_reconfirm_s` and must *not* fire the hold (`forbid_log`).
 
 - **day/night: the camera did not react to a room light being switched on**
-  (`src/daynight_probe.h`, `src/daynight.c`; live test, kinder-links
+  (`src/daynight_probe.h`, `src/daynight.c`; live test, cam-H
   2026-08-16; design-notes generators E and the newly named F). Someone turned
   a room light off and back on in front of a deployed camera while the raw
   sensor register was polled over SSH. The sensor saw both edges perfectly -
@@ -262,7 +457,7 @@ semantic versioning.
      (0.84), ~5x the 3% `DN_BRIGHTEN_MARGIN` noise bar and far outside the
      jitter in the fleet traces, but well inside what a light switch does. The
      incidents the ratchet exists for are all *same-level* re-fires (the
-     pre-dawn tangent re-cross at 4898 against a 4906 bar; the cam-wyze-pan
+     pre-dawn tangent re-cross at 4898 against a 4906 bar; the cam-J
      dawn dip returning to the ~820 it was latched at) and remain blocked.
   Verified end to end by new replay-corpus scenario 10
   (`scripts/dn-scenarios/10-roomlight-20260816.json`), built against a copy of
@@ -275,7 +470,7 @@ semantic versioning.
   neither change costs a click. `tests/dn-probe-props.c` gains
   `assert_dip_monotone()` - the sequence property the old snapshot-only
   properties could not state ("evidence once measured is never worth less
-  later") - plus the two `kinder-links` cases by name; the sweep is unchanged
+  later") - plus the two `cam-H` cases by name; the sweep is unchanged
   at ~2.0 M assertions, 0 violations.
 
 - **day/night: the reconfirm backoff kept stretching the probe interval while
@@ -284,10 +479,10 @@ semantic versioning.
   periodic-reconfirm interval, x1 -> x2 -> x4, on the premise that the
   darkness it just measured is confirmed and there is no point clunking the
   IR-cut hourly. That premise is a LEVEL test with no notion of direction, so
-  it survived evidence contradicting it: on cam-vorne 2026-08-14 the backoff
+  it survived evidence contradicting it: on cam-L 2026-08-14 the backoff
   hit its x4 cap at 05:58 *while the gain was falling through three orders of
   magnitude*, and that cap is what turned a bad revert into a four-hour
-  wrong-mode window; on Schuppen 2026-08-13 the same cap put the recovering
+  wrong-mode window; on a dim outbuilding 2026-08-13 the same cap put the recovering
   probe 4 h out while the baseline chased a day-level gain down. Fix: while
   the smoothed gain sits below `DN_BRIGHTEN_MARGIN` (97%) of
   `probe_fail_smooth` - the gain frozen at the instant a physical probe last
@@ -314,7 +509,7 @@ semantic versioning.
 - **day/night: an unverified day was reverted to night mid-dawn, because the
   verification judged a gain LEVEL at one instant and was blind to the
   direction that level was travelling** (`src/daynight.c`; live incident
-  cam-vorne, T23/SC2336, 2026-08-14). An unverified day - adopted at boot, or
+  cam-L, T23/SC2336, 2026-08-14). An unverified day - adopted at boot, or
   landed on by a reconfirm probe whose day-pipeline reading fell inside the
   dead-zone - is re-read once at its deadline and reverted to night if the
   reading is still ambiguous. That rule cannot tell the scene it exists to
@@ -354,7 +549,7 @@ semantic versioning.
 - **day/night: periodic reconfirm's skip gate kept re-arming instead of
   probing while a failure ratchet was outstanding, because "solidly night"
   was judged against a baseline the same failed probe was busy dragging
-  down** (`src/daynight.c`; live incident, Schuppen T31/SC2336, 2026-08-13).
+  down** (`src/daynight.c`; live incident, a dim outbuilding T31/SC2336, 2026-08-13).
   A sustained-brightening probe failed at gain 284, latching
   `probe_fail_smooth=284`; over the next 2.5 h the camera was visibly
   daytime (gain 257-266) but the periodic reconfirm's skip gate kept
@@ -385,13 +580,13 @@ semantic versioning.
   bounded by the same ratchet to at most one pair per night entry, same
   as at 60 s) and letting `smooth_tg` converge to the dip floor before the
   ratchet latches on it - the EMA residual is 0.9^N, so 30 s = 60 ticks is
-  99.8% converged (on the cam-wyze-pan dawn numbers the ratchet latches at
+  99.8% converged (on the cam-J dawn numbers the ratchet latches at
   838 instead of ~820, a 2% shift in a bar that sits at 60% of it).
   Deliberately unchanged: `night_reconfirm_s`, which governs only the
   worst-case self-heal backstop, not everyday switching.
 - **day/night: dawn-time flip pairs surviving the adaptive baseline fix
   below, because the direct night->day switch was still reachable AFTER
-  the baseline plants** (`src/daynight.c`; observed live on cam-wyze-pan
+  the baseline plants** (`src/daynight.c`; observed live on cam-J
   the morning after deploying the fix above: resting night gain a stable
   10856 for hours, then dawn dipped it to ~820 - under the adaptive day
   trigger 6514 - which fired the direct switch after just 5 s hysteresis,
@@ -419,7 +614,7 @@ semantic versioning.
   marginal brightening band already pay.
 - **day/night: perpetual flip loop + oscillation-breaker freeze cycle on
   cameras whose IR-lit night gain is at/below the static day threshold**
-  (`src/daynight.c`; observed live on cam-wyze-pan, T20/jxf22, in a
+  (`src/daynight.c`; observed live on cam-J, T20/jxf22, in a
   genuinely dark room with very strong IR return - resting night gain
   ~256-268 vs the default `total_gain_day_threshold` 300, breaker firing
   every ~25 min indefinitely, latterly 13 s flip cycles at every 600 s
@@ -467,7 +662,7 @@ semantic versioning.
   "Non-monotonic DTS" warning waves on the plain TCP audio+video path -
   one overshot packet, then real timestamps climbing back to the bogus
   peak - with wave amplitude matching the capture's max delivery gap
-  (rtcpfix-schuppen: 4 warnings; rtcpfix-garage: 17, waves of ~370 ms
+  (rtcpfix-camC: 4 warnings; rtcpfix-camA: 17, waves of ~370 ms
   against a 0.43 s max gap; this path had been warning-free on every prior
   run because the OLD bug's error was near-constant and receivers absorb a
   constant offset silently). The anchor now uses the packet's hub publish
@@ -485,7 +680,7 @@ semantic versioning.
   `ms_now_us()`'s clock. They do not - `hal_ingenic` publishes
   `pts_sanitize()` output (which leads/lags the monotonic clock while the
   sanitizer slews, perpetually on sensors whose real fps differs from the
-  configured one, e.g. Galayou's 25.42 vs 25), and `hal_sim` publishes
+  configured one, e.g. cam-L's 25.42 vs 25), and `hal_sim` publishes
   g_epoch-relative values. The SR then contradicted the media timestamps by
   exactly that offset; ffmpeg's RTCP NTP-sync path (active whenever
   audio+video are both SETUP) rebased the stream timeline once the SRs
@@ -494,7 +689,7 @@ semantic versioning.
   `-c copy` client dies fatally ("Can't write packet with unknown
   timestamp") when a NOPTS AU lands after the first cluster opened - QA
   13b's "isolation not holding" FAIL: both healthy clients aborted within
-  ~1 s, 4/4 deterministic across two Galayou runs, while the stalled client
+  ~1 s, 4/4 deterministic across two cam-L runs, while the stalled client
   was innocent (T31/T20 boards with well-behaved pts passed the same
   phase). The SR now extrapolates from the last sent packet's media
   timestamp paired with the sender loop's monotonic stamp
@@ -537,7 +732,7 @@ semantic versioning.
   then resumed on mid-GOP P-frames referencing AUs it never received - the
   silent-corruption case adaptive drop was built to prevent, and the same
   defect rtsp.c already heals via `fanqueue_take_dropped()`. Observed in the
-  Galayou (T23, weak atbm6062 WiFi) QA capture 2026-08-11: three ~1.4-1.6 s
+  cam-L (T23, weak atbm6062 WiFi) QA capture 2026-08-11: three ~1.4-1.6 s
   eviction holes each resuming on a non-keyframe. Any eviction now arms the
   adaptive freeze-until-keyframe (and, with `http.adaptive_drop=0`, a
   rate-limited IDR request, mirroring rtsp.c). Sim binary size unchanged
@@ -601,7 +796,7 @@ semantic versioning.
   distinguishes healthy-client DEATH from STARVATION - a fatal ffmpeg muxer
   abort zeroes the frame counts exactly like starvation, but means the
   server delivered data with a broken timestamp and the client gave up. The
-  2026-08-11 Galayou FAIL read "fell to 0.0 fps because ONE client stopped
+  2026-08-11 cam-L FAIL read "fell to 0.0 fps because ONE client stopped
   reading" while both clients had aborted in ~1 s on the RTCP SR regression
   above; a WARN naming the abort (and pointing at timestamp anomalies
   first) now precedes the fps verdicts whenever the client logs show one.
@@ -613,24 +808,24 @@ semantic versioning.
   count (capture bytes / the 1200-byte default `rtsp.mtu`; undercounting
   small audio packets errs strict): <=0.5% -> WARN naming it ordinary
   residual WiFi loss, above -> still FAIL (genuinely degraded path).
-  Grounded in the garage 2026-08-11 run: 8 single-packet, evenly scattered
+  Grounded in the cam-A 2026-08-11 run: 8 single-packet, evenly scattered
   losses over ~6100 datagrams (0.13%) with every other metric clean and the
   TCP capture from the same run at zero warnings - TCP retransmit masks the
   identical underlying loss, UDP correctly surfaces it; a sender burst/
   pacing defect would instead lose multi-packet runs clustered at IDR
   bursts. Previously any 4th lost packet in 30s hard-FAILed the run.
 - `scripts/timps-qa.sh` **8h (`--test-daynight`)**: the first two hardware
-  runs (T31 Schuppen + T20 Wyze, 2026-08-11) each produced one FAIL -
+  runs (T31, a dim outbuilding + T20, cam-K, 2026-08-11) each produced one FAIL -
   seemingly "night direction broken, day fine" on both - and BOTH were test
   artifacts, differently caused:
-  - *Wyze*: the camera sat in genuine night when the test began
+  - *cam-K*: the camera sat in genuine night when the test began
     (`control.json` at run start: `daynight.mode=1`), so the forced-night
     phase confirmed an already-night camera vacuously - no transition, no
     hook run - and the hook-count check FAILed a working chain. 8h now
     reads the LIVE starting state and, when already night, forces a fresh
     DAY state first so both directions are real edges; the hook-count
     baselines are taken after that precondition switch.
-  - *Schuppen*: the `image.running_mode` read-back was a single-shot read
+  - *a dim outbuilding*: the `image.running_mode` read-back was a single-shot read
     taken as little as ~0.2 s after `daynight.mode` flipped, racing the
     asynchronous board hook chain (~0.3-1.5 s when idle, more under QA
     load, up to curl's 5 s timeout legitimately) - a coin-flip false FAIL.
@@ -652,7 +847,7 @@ semantic versioning.
   boundary could fake a seconds-large "A/V skew". The start reference was
   each track's *own* first post-warmup packet, so the two references could
   land on opposite sides of a delivery hole - packets that were never
-  contemporaneous. Observed on Galayou 2026-08-11: a lone keyframe at 2.060 s
+  contemporaneous. Observed on cam-L 2026-08-11: a lone keyframe at 2.060 s
   inside a startup dropout vs audio resuming at 3.558 s read as
   `start=1.498s end=0.014s drift=-1.484s` -> a false `[FAIL] out of sync /
   growing` on a stream whose tracks were locked (0.014 s) wherever both
@@ -904,10 +1099,10 @@ semantic versioning.
   unlike every other round-trip test in this script. A run interrupted
   between the poke and its restore (external kill, SSH drop, a colliding
   `--test-crash` run) stranded the extreme value on the real camera -
-  confirmed: `image.brightness` left at 255 (blown-out image) on Garage
-  (192.168.241.190) until fixed by hand. Section 9 now uses the same
+  confirmed: `image.brightness` left at 255 (blown-out image) on cam-A
+  (192.168.1.100) until fixed by hand. Section 9 now uses the same
   `LV_PENDING`/`trap EXIT INT TERM` pattern section 8b's live-settings test
-  already uses (added after the 2026-08-02 cam-wyze WB-rgain/bgain=32767
+  already uses (added after the 2026-08-02 cam-K WB-rgain/bgain=32767
   incident): the pending restore body is tracked and flushed from an
   EXIT/INT/TERM trap, not just the normal fall-through path.
 
@@ -1296,7 +1491,7 @@ semantic versioning.
   feature commit for H/U/N/K at every thick size and every glyph at
   32/48px except where that commit's own in-place snapping mutated later
   edges' inputs mid-pass (a defect the collect-then-apply restructure
-  removed). Spot-verified renders: 'I'@12px full stem, "WYZE-KINDERZIMMER"
+  removed). Spot-verified renders: 'I'@12px full stem, "CAM-K-CAM-H"
   @12px and "IlIlIl"@8px keep every stroke, 'b'/'K'/'P'/'d'/'g'/'p'/'q'/
   'u'@8px and 'B'/'D'/'K'/'R'/'h'@10px all keep their stems (alpha-coverage
   on/off ratios 0.87-1.41, no collapse signature), '+'@11-13px crossbar
@@ -1399,8 +1594,8 @@ semantic versioning.
   fields all called `ms_vstream_eff_dims()` on the RAW configured rotation
   instead of the ACTUAL post-refusal geometry - so on any T23 SW-rotate /
   T31 FS-rotate safe-envelope refusal (the common case at typical
-  main-stream resolutions/framerates - confirmed on kinder-links and
-  Galayou, both flashed with rotation enabled tonight), a recorded MP4, a
+  main-stream resolutions/framerates - confirmed on cam-H and
+  cam-L, both flashed with rotation enabled tonight), a recorded MP4, a
   live-MP4 stream, the `/events` stats feed, RTSP SDP negotiation, and the
   `/control` status could all advertise swapped W/H for a stream that is
   actually running unrotated. Root cause: `hal_ingenic.c` already tracks the
@@ -1430,10 +1625,10 @@ semantic versioning.
   `rtsp.c`/`control.c`/`hub.c` clean (`-Wall -Wextra`, zero warnings) against
   the real vendored SDK headers for T31 1.1.6 (`USE_ROTATE=1`) and T23 1.3.0
   (`USE_ROTATE=1 USE_SW_ROTATE=1`), using tonight's already-built
-  `wuuk_y0510_t31x...`/`galayou_y4_t23n...` cross toolchains (link step not
+  `wuuk_y0510_t31x...`/`camL_y4_t23n...` cross toolchains (link step not
   attempted - the vendor `libimp.a`/`libalog.a`/`libsysutils.a` stubs aren't
   vendored in this checkout, only the headers). Not verified on real
-  hardware: kinder-links (192.168.10.124) and Galayou (192.168.15.129) were
+  hardware: cam-H (192.168.1.100) and cam-L (192.168.1.100) were
   both reachable tonight, but a live redeploy onto production cameras mid-
   incident was judged too risky to rush safely - this relies on header-level
   type-checking plus manual tracing of both the SW-rotate and FS-rotate
@@ -1701,7 +1896,7 @@ semantic versioning.
 
 ### Deferred (audited, not done this pass)
 - **Perf P-01 and P-02 are now done** (see the Performance section above) - the
-  dedicated session with a "Garage" (Wuuk/T31-class) camera earmarked for the
+  dedicated session with a "cam-A" (Wuuk/T31-class) camera earmarked for the
   soak test made it reasonable to attempt them. The T23 software-rotate publish
   path and the three audio producers were deliberately left on the copy path
   (rationale in the Performance section); those remain available follow-ups if a
@@ -1821,7 +2016,7 @@ semantic versioning.
 - **The periodic reconfirm probe still physically clunked the IR-cut on a
   schedule even when nothing had changed.** Backoff cut the *frequency* of the
   probe but not its *invasiveness*: on a camera sitting in genuine, unchanging
-  darkness (cam-wyze, closet, 2026-08-04: "das klacken der IR blende nervt …
+  darkness (cam-K, closet, 2026-08-04: "das klacken der IR blende nervt …
   nachts andauernd") every backed-off probe still drove the board's IR-cut
   relay — an audible mechanical click — only to read railed night gain and
   revert. The periodic probe is now **gated on passive evidence**: before it
@@ -2173,7 +2368,7 @@ camera before fleet rollout.
   (different codec/buffer entirely) — easy to mistake for a day/night bug
   from the WebUI. Now sums the pack lengths before assembly and grows the
   buffer (bounded by `MS_JPEG_BUF_MAX`) to fit the real frame, same as the
-  AU buffer. Verified on real hardware (Galayou Y4, T23n): `/snapshot.jpg`
+  AU buffer. Verified on real hardware (cam-L Y4, T23n): `/snapshot.jpg`
   went from HTTP 503 "no frame" with continuous buffer-overflow log spam
   to a valid ~450KB daytime JPEG, no overflow since.
 
@@ -2249,7 +2444,7 @@ camera before fleet rollout.
   since forcing an IDR there was the actual cause of the stall — a dropped
   frame already recovers via the existing
   `fanqueue_take_dropped_key`/`hub_request_idr` path on a real client.
-  Verified on real hardware (Galayou Y4, T23n): the sub stream went from
+  Verified on real hardware (cam-L Y4, T23n): the sub stream went from
   zero video across 20+ minutes and every reconnect to streaming
   correctly (640x360 h264@25+aac, IDR ~99KB) alongside the main stream,
   with zero overflow events since boot.

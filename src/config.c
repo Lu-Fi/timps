@@ -150,7 +150,12 @@ static uint32_t phex(const char *v){ return (uint32_t)strtoul(v, NULL, 0); }
  * warning instead of letting that mismatch surface downstream. */
 static int  pvcodec(const char *v){
     int c = (!strcasecmp(v,"h265")||!strcasecmp(v,"hevc")) ? MS_VC_H265 : MS_VC_H264;
-#if defined(PLATFORM_T10)||defined(PLATFORM_T20)
+/* T23 belongs here too: its vendored SDK marks every H.265 rc struct as
+ * unsupported (see T23 1.3.0 imp_encoder.h, and hal_ingenic.c says
+ * so as well), so IMP_Encoder_CreateChn fails, ing_start() returns -1 and
+ * main() exits - one config line takes the WHOLE daemon down instead of
+ * costing one stream. Coerce and warn, exactly as T10/T20 already do. */
+#if defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T23)
     if (c==MS_VC_H265){ LOGW(MOD,"codec h265 unsupported on this SoC -> h264"); c=MS_VC_H264; }
 #endif
     return c;
@@ -241,7 +246,7 @@ void config_defaults(ms_config *c)
     c->http_adaptive_drop = 1;   /* hardware-verified (see httpd.c): the v1 hang
                                   * (missing IDR fallback on P-frame eviction) is
                                   * fixed and rate-limited; confirmed clean on a
-                                  * healthy link (garage) and correctly freezing/
+                                  * healthy link (cam-A) and correctly freezing/
                                   * recovering under genuine packet loss (a
                                   * chronically weak-WiFi camera) */
     c->http_user[0]=0; c->http_pass[0]=0;
@@ -357,10 +362,10 @@ void config_defaults(ms_config *c)
     copystr(c->timelapse.name,"%Y%m%d/%H/%Y%m%dT%H%M%S",sizeof c->timelapse.name);
     c->timelapse.interval_s=60; c->timelapse.keep_days=7;
 
-    /* automatic day/night: gain thresholds mirror prudynt (day 300, night
-     * 3000), the brightness fallback mirrors thingino's daynightd.json */
+    /* automatic day/night, see the ms_daynight_cfg doc comment in config.h
+     * and dev_notes/DAYNIGHT_REDESIGN_2026-08-17.md */
     c->daynight.enabled=1;
-    c->daynight.mode=DN_MODE_SENSOR;   /* sensor-driven detection is the default */
+    c->daynight.mode=DN_MODE_AUTO;   /* sensor + probes; calendar optional */
     c->daynight.time_night_start[0]=0; c->daynight.time_day_start[0]=0;
     c->daynight.sun_latitude=0.0f; c->daynight.sun_longitude=0.0f;
     c->daynight.sun_sunrise_offset_min=0; c->daynight.sun_sunset_offset_min=0;
@@ -380,9 +385,9 @@ void config_defaults(ms_config *c)
      * their day pipelines managed.
      *
      * 3x is deliberately modest and does not pretend to fix the extreme end.
-     * It clears the marginal cases - Wohnzimmer at 2.07x, Schlafzimmer at
+     * It clears the marginal cases - cam-E at 2.07x, cam-D at
      * ~2.7x - which are the ones a default can reasonably be expected to
-     * cover, and leaves genuinely dim rooms like Wohnzimmer-Ofen (9.79x) as
+     * cover, and leaves genuinely dim rooms like cam-F (9.79x) as
      * explicit per-camera overrides, which is honest: no single default fits
      * a 9.79x room and a sunlit hallway. Picking the fleet's lowest observed
      * override (800) would be fitting to five samples; 3x is a statable
@@ -394,16 +399,57 @@ void config_defaults(ms_config *c)
      * a range where the machine holds its current mode on a reading it
      * cannot classify. 16x is a defensible "colour is hopeless" point.
      * Per-camera tuning remains the answer for any specific room; enable
-     * daynight.diagnose_thresholds to be told what to set it to. */
-    c->daynight.total_gain_day_threshold=768.0f;
-    c->daynight.total_gain_night_threshold=4096.0f;
-    c->daynight.threshold_low=25.0f; c->daynight.threshold_high=75.0f;
-    c->daynight.hysteresis=0.1f;
-    c->daynight.day_gain_pct=60; c->daynight.baseline_delay_s=30;
-    c->daynight.boot_settle_s=5; c->daynight.boot_settle_max_s=120;
-    c->daynight.boot_stable_pct=20; c->daynight.night_reconfirm_s=3600;
-    c->daynight.probe_max_skip_s=43200;
-    c->daynight.interval_ms=500; c->daynight.transition_s=5;
+     * daynight.diagnose_thresholds to be told what to set it to, or
+     * daynight.learn to have the daemon raise it on its own.
+     *
+     * These two numbers survive the 2026-08-17 redesign unchanged in value
+     * AND in meaning: the exposure index equals total_gain whenever the AE
+     * has the integration time railed at max, which is exactly the dark end
+     * where both thresholds were calibrated. What changes is that a BRIGHT
+     * scene now reads far below 256 instead of sticking at it, so 768 has a
+     * great deal more margin under it than it used to. */
+    c->daynight.day_gain=768.0f;
+    c->daynight.night_gain=4096.0f;
+    c->daynight.day_confirm_s=30;
+    /* Probe economy. 600 s between probes bounds the audible cost at one
+     * click pair per 10 minutes under every combination of triggers; 50% is
+     * one full stop of new brightening, which no AGC noise reaches and a
+     * light switch clears instantly; 15 s of confirm rejects headlights and
+     * passing cars while keeping "light on -> colour" at roughly 25 s
+     * end to end; 8 s of settle is twice the post-switch AE convergence
+     * measured on real boards. */
+    c->daynight.probe_min_gap_s=600;
+    c->daynight.probe_jump_pct=50;
+    c->daynight.probe_confirm_s=15;
+    c->daynight.probe_settle_s=8;
+    c->daynight.ref_delay_s=30;
+    /* Silent probe OFF by default: it needs a board command that can drive the
+     * illuminator on its own, and a wrong one would leave the scene dark. Set
+     * daynight.irprobe_cmd to enable it. Thresholds: provisional, chosen with
+     * a factor of two of margin either side of the gap measured on 2026-08-17
+     * (1.41 .. 25.1) and to be re-derived once the fleet has logged r across a
+     * full dusk and dawn - the structure does not depend on the numbers. */
+    c->daynight.irprobe_cmd[0]=0;
+    c->daynight.ir_ratio_night=3.0f;
+    c->daynight.ir_ratio_day=1.5f;
+    c->daynight.ir_min_headroom=8;
+    /* The heartbeat is the only bound on a wrong night, so it is a flat
+     * interval, never a multiplier: 4 h while the scene is moving, 12 h once
+     * it demonstrably is not. A dark closet therefore costs two click pairs
+     * a day and a camera that sees anything at all costs six - both without
+     * any evidence-gating that could erode the guarantee. */
+    c->daynight.heartbeat_s=14400;
+    c->daynight.heartbeat_max_s=43200;
+    c->daynight.boot_probe=1;      /* one click per boot buys a measurement */
+    c->daynight.boot_settle_s=5;
+    c->daynight.learn=0;           /* collect and log, but do not apply */
+    copystr(c->daynight.state_path,"/etc/timps-daynight.state",
+            sizeof c->daynight.state_path);
+    /* 2000 ms, not the old 500: the exposure index needs the /proc scrape on
+     * every decision tick (the integration time has no IMP API), and no
+     * confirmation window in the automaton is shorter than 8 s. This is still
+     * well under half the scrape rate the pre-2026-07-31 code ran at. */
+    c->daynight.interval_ms=2000; c->daynight.transition_s=5;
     copystr(c->daynight.switch_cmd,"daynight",sizeof c->daynight.switch_cmd);
     copystr(c->daynight.isp_path,"/proc/jz/isp/isp-m0",sizeof c->daynight.isp_path);
     c->daynight.trace_path[0]=0;   /* trace recorder off by default */
@@ -718,8 +764,14 @@ static const cfg_field events_fields[] = {
 };
 static const cfg_field general_fields[] = {   /* + general.syslog in set_kv() */
     F("loglevel",            0, loglevel,            T_INT, 0, 0,0),
-    F("imp_polling_timeout", 0, imp_polling_timeout, T_INT, 0, 0,0),
-    F("osd_pool_size",       0, osd_pool_size,       T_INT, 0, 0,0),
+    /* 0 would make IMP_*_PollingStream return immediately: video_thread spins,
+     * the watchdog burns its MS_VIDEO_WATCHDOG_ITERS misses in under a
+     * millisecond and escalates to raise(SIGTERM) - one config line and the
+     * daemon exits seconds after the first client. Floor it well above that. */
+    F("imp_polling_timeout", 0, imp_polling_timeout, T_INT, 0, 10,10000),
+    /* 1024 is the T-series maximum (see the default above); anything larger is
+     * rejected by libimp anyway, and 0 leaves the OSD pool unusable. */
+    F("osd_pool_size",       0, osd_pool_size,       T_INT, 0, 1,1024),
 };
 static const cfg_field sim_fields[] = {
     FS("video0", 0, sim_video0, 0),
@@ -837,16 +889,17 @@ static const cfg_field timelapse_fields[] = {
 
 #define TT ms_daynight_cfg
 /* F3: the numeric keys used to reach the detection thread unclamped via
- * /control (pint/pflt raw). Nothing crashed (daynight.c guards interval_ms>0
- * and day_gain_pct>0), but a negative transition_s silently disabled the
- * dwell and a day_gain_pct>100 made the adaptive night->day trigger fire
- * inside gain jitter. Ranges: lat/lon geographic; sun offsets +-1 day;
- * gain thresholds in the IMP [24.8] linear scale (256=1x, defaults 300/3000,
- * cold-start transients ~20000 - 1e6 = ~3900x is far beyond any sensor);
- * threshold_low/high are brightness %; hysteresis is a 0..1 fraction of the
- * low..high band; day_gain_pct<=100 keeps the adaptive day trigger BELOW the
- * night baseline (0 = feature off, as before); interval_ms floor 100 keeps
- * the sampling loop from busy-spinning. */
+ * /control (pint/pflt raw). Nothing crashed, but a negative transition_s
+ * silently disabled the dwell. Ranges: lat/lon geographic; sun offsets
+ * +-1 day; both thresholds in the IMP [24.8] linear scale (256=1x, defaults
+ * 768/4096, cold-start transients ~20000 - 1e6 = ~3900x is far beyond any
+ * sensor); probe_jump_pct is capped at 99 because 100 would arm the trigger
+ * on any downward noise tick at all; probe_min_gap_s is floored at 60 s -
+ * this is the ONLY bound on the audible click rate, so it is a safety net
+ * rather than something to switch off; heartbeat_s is floored at 300 s and
+ * heartbeat_max_s cannot be set below it in practice (the automaton takes
+ * the smaller of the two when the scene is moving); interval_ms floor 100
+ * keeps the sampling loop from busy-spinning. */
 /* Every daynight.* key is F_CTRL (POST-able) EXCEPT:
  *  - mode: POST-able too, but NOT via the generic walker - control.c keeps
  *    hand-written validation for it (reject an unrecognized token outright
@@ -867,27 +920,38 @@ static const cfg_field daynight_fields[] = {
     F ("sun_longitude",              0, sun_longitude,              T_FLT,   F_CTRL, -180,180),
     F ("sun_sunrise_offset_min",     0, sun_sunrise_offset_min,     T_INT,   F_CTRL, -1440,1440),
     F ("sun_sunset_offset_min",      0, sun_sunset_offset_min,      T_INT,   F_CTRL, -1440,1440),
-    F ("total_gain_day_threshold",   0, total_gain_day_threshold,   T_FLT,   F_CTRL, 1,1000000),
-    F ("total_gain_night_threshold", 0, total_gain_night_threshold, T_FLT,   F_CTRL, 1,1000000),
-    F ("threshold_low",              0, threshold_low,              T_FLT,   F_CTRL, 0,100),
-    F ("threshold_high",             0, threshold_high,             T_FLT,   F_CTRL, 0,100),
-    F ("hysteresis",                 0, hysteresis,                 T_FLT,   F_CTRL, 0,1),
-    F ("day_gain_pct",               0, day_gain_pct,               T_INT,   F_CTRL, 0,100),
-    F ("baseline_delay_s",           0, baseline_delay_s,           T_INT,   F_CTRL, 0,3600),
+    /* the two thresholds keep their pre-2026-08-17 names as aliases: the
+     * units and the calibration are unchanged, only the metric got range at
+     * the bright end, so an existing per-camera tuning stays valid. */
+    F ("day_gain",   "total_gain_day_threshold",   day_gain,   T_FLT, F_CTRL, 1,1000000),
+    F ("night_gain", "total_gain_night_threshold", night_gain, T_FLT, F_CTRL, 1,1000000),
+    F ("day_confirm_s",              0, day_confirm_s,              T_INT,   F_CTRL, 1,3600),
+    F ("probe_min_gap_s",            0, probe_min_gap_s,            T_INT,   F_CTRL, 60,86400),
+    F ("probe_jump_pct",             0, probe_jump_pct,             T_INT,   F_CTRL, 1,99),
+    F ("probe_confirm_s",            0, probe_confirm_s,            T_INT,   F_CTRL, 1,3600),
+    F ("probe_settle_s",             0, probe_settle_s,             T_INT,   F_CTRL, 1,600),
+    F ("ref_delay_s",                0, ref_delay_s,                T_INT,   F_CTRL, 0,3600),
+    F ("ir_ratio_night",             0, ir_ratio_night,             T_FLT,   F_CTRL, 1.05,1000),
+    F ("ir_ratio_day",               0, ir_ratio_day,               T_FLT,   F_CTRL, 1.0,100),
+    F ("ir_min_headroom",            0, ir_min_headroom,            T_INT,   F_CTRL, 0,320),
+    F ("heartbeat_s",                0, heartbeat_s,                T_INT,   F_CTRL, 300,604800),
+    F ("heartbeat_max_s",            0, heartbeat_max_s,            T_INT,   F_CTRL, 300,604800),
+    F ("boot_probe",                 0, boot_probe,                 T_INT,   F_CTRL, 0,1),
     F ("boot_settle_s",              0, boot_settle_s,              T_INT,   F_CTRL, 0,600),
-    F ("boot_settle_max_s",          0, boot_settle_max_s,          T_INT,   F_CTRL, 0,3600),
-    F ("boot_stable_pct",            0, boot_stable_pct,            T_INT,   F_CTRL, 0,100),
-    F ("night_reconfirm_s",          0, night_reconfirm_s,          T_INT,   F_CTRL, 0,86400),
-    F ("probe_max_skip_s",           0, probe_max_skip_s,           T_INT,   F_CTRL, 3600,604800),
+    F ("learn",                      0, learn,                      T_INT,   F_CTRL, 0,1),
     F ("interval_ms",                0, interval_ms,                T_INT,   F_CTRL, 100,60000),
     F ("transition_s",               0, transition_s,               T_INT,   F_CTRL, 0,3600),
     F ("diagnose_thresholds",        0, diagnose_thresholds,        T_INT,   F_CTRL, 0,1),
-    /* NOT F_CTRL - see the comment above (security boundary). trace_path
-     * shares it: a path the daemon writes to as root must never be POSTable
-     * (arbitrary-file-write primitive) - file-only, like the other two. */
+    /* NOT F_CTRL - see the comment above (security boundary). trace_path and
+     * state_path share it: a path the daemon writes to as root must never be
+     * POSTable (arbitrary-file-write primitive) - file-only, like the other
+     * two. */
     FS("switch_cmd",                 0, switch_cmd,                 F_NOGET),
     FS("isp_path",                   0, isp_path,                   F_NOGET),
     FS("trace_path",                 0, trace_path,                 F_NOGET),
+    FS("state_path",                 0, state_path,                 F_NOGET),
+    /* exec'd as "<cmd> on|off" - same security boundary as switch_cmd */
+    FS("irprobe_cmd",                0, irprobe_cmd,                F_NOGET),
 };
 #undef TT
 
@@ -919,11 +983,15 @@ static const cfg_field video_fields[] = {
     F ("rotation",     0,              rotation,     T_ROT,   F_CTRL,  0,0),
     F ("buffers",      0,              buffers,      T_INT,   F_CTRL,  1,8),
     FS("rtsp_path",    0,              rtsp_path,    F_CTRL),
-    F ("imp_chn",      0,              imp_chn,      T_INT,   F_NOGET, 0,0),
+    /* libimp's own bound is chn<9 (GetStream_Impl); above MS_FS_MAXCHN fs_use()
+     * returns silently, so an out-of-range channel gives no video and no clear
+     * diagnostic. Config-file only (F_NOGET, no F_CTRL) - a footgun, not an
+     * attack surface, but a one-line one to close. */
+    F ("imp_chn",      0,              imp_chn,      T_INT,   F_NOGET, 0,8),
     F ("jpeg",         "jpeg_enabled", jpeg_enabled, T_BOOL,  F_NOGET, 0,0),
     F ("jpeg_quality", 0,              jpeg_quality, T_INT,   F_NOGET, 1,100),
     F ("jpeg_fps",     0,              jpeg_fps,     T_INT,   F_NOGET, 1,120),
-    F ("jpeg_chn",     0,              jpeg_chn,     T_INT,   F_NOGET, 0,0),
+    F ("jpeg_chn",     0,              jpeg_chn,     T_INT,   F_NOGET, 0,8),
 };
 #undef TT
 
@@ -1056,11 +1124,19 @@ static void field_set(void *base, const cfg_field *f, const char *val)
     case T_OSDTYPE:*(int*)p = (!strcasecmp(val,"logo")) ? MS_OSD_LOGO
                                                         : MS_OSD_TEXT; break;
     case T_DNMODE:
-        if      (!strcmp(val,"sensor")) *(int*)p = DN_MODE_SENSOR;
-        else if (!strcmp(val,"time"))   *(int*)p = DN_MODE_TIME;
-        else if (!strcmp(val,"sun"))    *(int*)p = DN_MODE_SUN;
-        else { LOGW(MOD,"daynight.mode: unknown '%s', keeping sensor",val);
-               *(int*)p = DN_MODE_SENSOR; }
+        /* "sensor"/"time"/"sun" are the pre-2026-08-17 tokens, still accepted
+         * so an existing config keeps working: the sensor mode IS the new
+         * auto mode, and time/sun both mean "let the calendar decide" - which
+         * of the two calendars applies is now derived from whether a time
+         * window or a lat/lon is configured, so the distinction no longer
+         * needs to be spelled out here. */
+        if      (!strcmp(val,"auto"))     *(int*)p = DN_MODE_AUTO;
+        else if (!strcmp(val,"schedule")) *(int*)p = DN_MODE_SCHEDULE;
+        else if (!strcmp(val,"sensor"))   *(int*)p = DN_MODE_AUTO;
+        else if (!strcmp(val,"time") || !strcmp(val,"sun"))
+                                          *(int*)p = DN_MODE_SCHEDULE;
+        else { LOGW(MOD,"daynight.mode: unknown '%s', keeping auto",val);
+               *(int*)p = DN_MODE_AUTO; }
         break;
     case T_RECMODE:
         *(int*)p = (!strcasecmp(val,"motion"))     ? 1 :
@@ -1106,7 +1182,7 @@ static int field_get(const void *base, const cfg_field *f, char *out, size_t cap
                        (*(const int*)p==MS_OSD_LOGO)?"logo":"text"); break;
     case T_DNMODE: { int m = *(const int*)p;
         snprintf(out,cap,"%s",
-                 m==DN_MODE_TIME?"time":m==DN_MODE_SUN?"sun":"sensor"); break; }
+                 m==DN_MODE_SCHEDULE?"schedule":"auto"); break; }
     }
     return 1;
 }
@@ -1207,6 +1283,36 @@ static void set_kv(ms_config *c, const char *key, const char *val)
             return;
         }
         /* every other motion.* key: generic table below */
+    }
+    /* daynight keys retired by the 2026-08-17 redesign. They are parsed and
+     * IGNORED with one warning each rather than dropped into the generic
+     * "unknown key" line, because every one of them names a mechanism that no
+     * longer exists (adaptive baseline, probe backoff, the brightness
+     * fallback) and a bare "unknown key" would read like a typo. The two gain
+     * thresholds are NOT here - they kept their old names as aliases, so an
+     * existing tuning still applies. See dev_notes/DAYNIGHT_REDESIGN_2026-08-17.md
+     * section 7.3 for the full mapping. */
+    if (!strncmp(key,"daynight.",9)){
+        static const struct { const char *k, *why; } gone[] = {
+          {"day_gain_pct",     "the adaptive night baseline is gone - night->day "
+                               "is probe-mediated now, see daynight.probe_jump_pct"},
+          {"baseline_delay_s", "renamed to daynight.ref_delay_s"},
+          {"boot_settle_max_s","the settle wait is bounded internally now"},
+          {"boot_stable_pct",  "the settle wait is gated on the reading having "
+                               "stopped moving, with no tunable"},
+          {"night_reconfirm_s","replaced by daynight.heartbeat_s / heartbeat_max_s"},
+          {"probe_max_skip_s", "the probe skip it bounded no longer exists"},
+          {"threshold_low",    "the brightness fallback is no longer a decision "
+                               "path - use daynight.day_gain / night_gain"},
+          {"threshold_high",   "the brightness fallback is no longer a decision "
+                               "path - use daynight.day_gain / night_gain"},
+          {"hysteresis",       "the brightness fallback is no longer a decision path"},
+        };
+        for (size_t i=0;i<sizeof gone/sizeof gone[0];i++)
+            if (!strcmp(key+9, gone[i].k)){
+                LOGW(MOD,"%s is obsolete and IGNORED - %s", key, gone[i].why);
+                return;
+            }
     }
     if (!strcmp(key,"general.syslog")){          /* to logread; default on */
         log_set_syslog(pbool(val));
@@ -1506,23 +1612,64 @@ void config_sensor_finalize(ms_config *c)
          c->sensor.i2c_addr, c->sensor.width, c->sensor.height, c->sensor.fps);
 }
 
-/* write one "key = value" line, quoting values that would not survive the
- * loader's whitespace trimming */
+/* Write one "key = value" line, quoting whenever the loader would otherwise
+ * eat part of the value.
+ *
+ * config_load() + strip_inline_comment() above do three things to a value, and
+ * each one silently DESTROYS characters unless the writer quotes:
+ *
+ *   1. an unquoted '#' at the start of the value or after a space/tab opens an
+ *      inline comment and the rest of the line is dropped. An OSD text of
+ *      "Kamera #2" written bare comes back as "Kamera" - the value is live and
+ *      correct until then, so the loss only ever surfaces after a reboot, on
+ *      every camera, at once. strip_inline_comment() deliberately exempts
+ *      quoted values; that exemption is the escape hatch used here.
+ *   2. trim() eats leading and trailing whitespace, so "  pad  " comes back as
+ *      "pad", and an empty value leaves nothing after the '=' at all.
+ *   3. when the value starts AND ends with the same quote character (' or "),
+ *      the loader strips that outer pair. A value that legitimately IS
+ *      'Kamera' or "Kamera" therefore loses its own quotes on reload - and
+ *      because the shortened form is stable, it does so invisibly from the
+ *      second load on.
+ *
+ * So the value is quoted unless it is a bare token that no loader rule can
+ * touch. The characters that force quoting, and the rule each one answers:
+ *      ' ' (and any folded whitespace)  rules 1 + 2
+ *      '#'                              rule 1
+ *      '"'  '\''                        rule 3
+ *      ';'                              a value starting with ';' would read
+ *                                       as a comment line if it ever ended up
+ *                                       at line start (e.g. a lost key name)
+ * plus the empty value, for rule 2. When in doubt we quote: a redundant pair
+ * of quotes is invisible after the next load, a missing pair is data loss.
+ *
+ * The '"' is our quoting character and is NOT escaped - it does not need to
+ * be. The loader strips exactly ONE leading and ONE trailing character, and
+ * only when the two match, so    key = "say "hi""    reads back as    say "hi"
+ * The writer therefore no longer has to substitute '"' with '\'' (it used to,
+ * which was itself a small, permanent data loss on every save).
+ *
+ * Control chars stay folded to a space unconditionally: a raw '\n' inside a
+ * value would inject an entire extra config line on the next load, and no
+ * quoting saves us from that - the flat one-line-per-key format has no
+ * multi-line form. Folding them first also means the only whitespace that can
+ * still be in v[] is a plain ' ', which is why the scan below tests for that
+ * byte instead of isspace() (locale-proof, and it cannot misfire on a UTF-8
+ * continuation byte). */
 static void write_kv_line(FILE *f, const char *k, const char *vin)
 {
-    /* defensively strip anything that could break the flat key=value file:
-     * control chars (a newline would inject a new config line) and the double
-     * quote used for our own quoting */
     char v[256]; size_t o=0;
     for (const char *p=vin; *p && o+1<sizeof v; p++){
         unsigned char ch=(unsigned char)*p;
-        v[o++] = (ch<0x20) ? ' ' : (ch=='"' ? '\'' : (char)ch);
+        v[o++] = (ch<0x20) ? ' ' : (char)ch;
     }
     v[o]=0;
-    size_t l = o;
-    int quote = (l==0) || isspace((unsigned char)v[0]) ||
-                (l>0 && isspace((unsigned char)v[l-1])) || v[0]=='#';
-    if (!quote && strchr(v,' ')) quote = 1;      /* keep multi-word values intact */
+
+    int quote = (o==0);
+    for (size_t i=0; !quote && i<o; i++){
+        char ch = v[i];
+        if (ch==' ' || ch=='#' || ch=='"' || ch=='\'' || ch==';') quote = 1;
+    }
     if (quote) fprintf(f, "%s = \"%s\"\n", k, v);
     else       fprintf(f, "%s = %s\n", k, v);
 }

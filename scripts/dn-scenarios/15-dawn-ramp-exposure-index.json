@@ -1,0 +1,31 @@
+{
+  "name": "15-dawn-ramp-exposure-index",
+  "incident": "2026-08-17 redesign - the case bare gain cannot see",
+  "description": "Scenario 09's dawn, with the integration-time channel the 2026-08-17 redesign added. Same two gain curves, same ramp, same thresholds - the only difference is that the night pipeline now reports what a real AE does once its gain rails at the [24.8] floor: it keeps shortening the exposure. The decision metric is total_gain * integration_time / max_integration_time, so the index keeps falling past 260 (0.7x, 0.25x, 0.15x of max integration) where bare gain is pinned and blind.\n\nThis is the whole justification for changing the metric, stated as an assertion. In 09 the sensor floors at 260 exactly as dawn completes, path C is structurally exhausted at that moment, and the camera waits a full heartbeat_s (~2970s of night video in daylight) for the safety net. Here the same scene keeps producing evidence, so path C fires again on its own and day is confirmed within minutes of the day pipeline actually crossing the threshold - with no extra rule, no extra timer and no extra state. The two scenarios must both stay: 09 is what the machine can do when the metric is blind, 15 is what it does when it is not.\n\nThe day pipeline deliberately carries NO integration-time curve, so the day-side index equals 09's day_gain curve exactly and the ground truth (day from t=7500, when the day pipeline crosses 300) is identical between the two. Any difference in the result is attributable to the night-side metric alone. Measured against 09 on the same dawn: 2926s of wrong mode gain-only, 9s with the integration-time channel; restart-equivalence 2925s vs 522s. The bounds here are set close to those observations on purpose - a loose bound would let the metric silently stop earning its place.",
+  "scale": 60,
+  "duration_s": 12000,
+  "initial_mode": "night",
+  "config": {
+    "daynight.day_gain": 300,
+    "daynight.night_gain": 3000,
+    "daynight.heartbeat_s": 3600,
+    "daynight.heartbeat_max_s": 7200
+  },
+  "interp": "log",
+  "noise_pct": 2,
+  "night_gain": [[0, 4000], [3600, 4000], [5000, 2000], [6200, 700], [6900, 450], [7200, 315], [7500, 290], [12000, 260]],
+  "night_int_ratio": [[0, 1.0], [6900, 1.0], [7500, 0.7], [8100, 0.25], [12000, 0.15]],
+  "day_gain": [[0, 16000], [3600, 9024], [5400, 4813], [6300, 2425], [6900, 708], [7500, 300], [7800, 250], [12000, 250]],
+  "expect": {
+    "mode_at": [[3000, "night"], [9000, "day"], [11800, "day"]],
+    "expected_mode": [[0, "night"], [7200, "any"], [8400, "day"]],
+    "max_wrong_mode_s": 120,
+    "max_switches": 12,
+    "restart_equivalence_s": 900,
+    "monotonicity": "warn",
+    "expect_log": [
+      "probe \\(brightening\\)",
+      "probe confirmed day: exposure"
+    ]
+  }
+}

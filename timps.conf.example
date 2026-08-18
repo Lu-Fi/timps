@@ -454,58 +454,79 @@ motion.skip_frames    = 5             # analyse every Nth frame: higher = cheape
 
 # ---- automatic day/night (needs timps built with USE_DAYNIGHT) ----
 # timps samples the ISP exposure state and switches via the board's daynight
-# script (ircut / IR LEDs / color). The decision is GAIN-based like
-# prudynt/raptor: total_gain is the combined sensor+ISP gain in the IMP
-# [24.8] linear scale (256 = 1x). Lower gain = brighter scene = day.
-# Day when total_gain < total_gain_day_threshold, night when
-# total_gain > total_gain_night_threshold; the big gap between the two is
-# the hysteresis dead-zone (no flapping in between). threshold_low/high are
-# the brightness-% fallback (daynightd semantics), used only when the ISP
-# proc file exposes no gain fields.
+# script (ircut / IR LEDs / color).
+#
+# The metric is the EXPOSURE INDEX: total_gain (IMP [24.8] linear, 256 = 1x)
+# scaled by the AE's integration-time ratio. Higher = darker. In a dark scene
+# the integration time is railed at max and the index IS total_gain, so the
+# thresholds below mean exactly what they always did; in a bright scene the
+# gain rails at its 256 floor and the index keeps falling, which is the range
+# bare gain does not have.
+#
+# The two directions are NOT symmetric, because the two optical paths are not
+# equally trustworthy. In day (IR-cut closed, illuminator off) the reading is
+# an honest measure of ambient light, so day -> night is a plain measurement.
+# In night the camera is partly measuring its own IR, so night -> day is only
+# ever decided by a PROBE: switch to the day pipeline, let the AE settle, judge
+# once. A probe costs an audible IR-cut click, and probe_min_gap_s is the one
+# rule rationing it.
 daynight.enabled        = 1                    # 0 = manual mode (WebUI/`/control` only)
-# decision source: sensor = ISP gain (below), time = fixed clock times, sun =
-# computed sunrise/sunset for a lat/long. All three are live-settable.
-daynight.mode           = sensor               # sensor | time | sun
-# "time" mode: local HH:MM to switch (empty = unset). Ignored unless mode=time.
-# daynight.time_night_start = 19:30
+# auto     = the automaton above; the calendar below is optional and only makes
+#            the heartbeat smarter. Works fine with no location data at all.
+# schedule = the calendar decides outright: no sensor, no probes.
+daynight.mode           = auto                 # auto | schedule
+# The calendar (optional in auto, required in schedule). An explicit time
+# window wins; otherwise a non-zero lat/lon is used; otherwise there is none.
+# daynight.time_night_start = 19:30            # local HH:MM
 # daynight.time_day_start   = 06:30
-# "sun" mode: your location + optional offsets (minutes) applied to the computed
-# sunrise/sunset. Ignored unless mode=sun.
 # daynight.sun_latitude          = 0.0         # degrees, -90..90
 # daynight.sun_longitude         = 0.0         # degrees, -180..180
 # daynight.sun_sunrise_offset_min = 0          # minutes added to sunrise -> day
 # daynight.sun_sunset_offset_min  = 0          # minutes added to sunset  -> night
-daynight.total_gain_day_threshold   = 300      # (in night) gain below -> day
-daynight.total_gain_night_threshold = 3000     # (in day) gain above -> night
-# adaptive night baseline (raptor-style, robust against IR flicker): a while
-# after switching to night (IR LEDs settled) the current gain is sampled as the
-# baseline, and night->day then triggers when gain < day_gain_pct% of it instead
-# of the fixed day threshold. day_gain_pct = 0 disables (fixed threshold only).
-daynight.day_gain_pct     = 60                 # night->day at this % of baseline
-daynight.baseline_delay_s = 30                 # wait this long in night to sample it
-# boot settle: "sensor" mode ignores gain readings until AE has converged, to
-# avoid a wrong first decision on a cold ISP. boot_settle_s is the floor wait,
-# extended (until gain is stable within boot_stable_pct) up to boot_settle_max_s.
-daynight.boot_settle_s     = 5                 # min wait (s) before first decision
-daynight.boot_settle_max_s = 120               # hard cap (s) on the settle wait
-daynight.boot_stable_pct   = 20                # % spread across recent gains = stable (0 = floor only)
-# night reconfirm: after this long continuously in night, probe day to re-decide
-# from a true day-pipeline reading. Each probe clunks the IR-cut, so failed
-# probes back off (x2 each) and are skipped while gain is still deep in night;
-# probe_max_skip_s is the outer bound that forces a probe regardless of gain.
-daynight.night_reconfirm_s = 3600              # s in night before a day probe (0 = off)
-daynight.probe_max_skip_s  = 43200             # s: force a probe at least this often (>=3600)
-daynight.threshold_low  = 25                   # fallback %: below this (in day) -> night
-daynight.threshold_high = 75                   # fallback %: above this (in night) -> day
-daynight.hysteresis     = 0.1                  # fallback band factor, initial decision
-daynight.interval_ms    = 500                  # sample interval
+# The two thresholds. Both are evaluated on the DAY pipeline only. 768 = 3x
+# gain ("day is confirmed when the day pipeline can hold the scene at <= 3x"),
+# 4096 = 16x ("colour is hopeless"). Old names total_gain_day_threshold /
+# total_gain_night_threshold still work.
+daynight.day_gain       = 768                  # index below this = day
+daynight.night_gain     = 4096                 # index above this (in day) = night
+daynight.day_confirm_s  = 30                   # how long before day -> night
+# Probe economy. jump_pct is relative to the night reference - the level at
+# which night was last PROVEN - so "someone turned a light on" is one full
+# stop of new brightening, held for probe_confirm_s. Colour comes back roughly
+# probe_confirm_s + probe_settle_s after the light goes on.
+daynight.probe_min_gap_s = 600                 # never two probes closer than this
+daynight.probe_jump_pct  = 50                  # probe when the index falls below this % of the reference
+daynight.probe_confirm_s = 15                  # ... and stays there this long
+daynight.probe_settle_s  = 8                   # AE settling before the verdict
+daynight.ref_delay_s     = 30                  # wait after entering night before anchoring the reference
+# The heartbeat: a probe regardless of any reading. This is the ONLY bound on
+# how long a wrong night can last, so it is a flat interval and never doubles.
+# A scene that has not moved since the last probe waits heartbeat_max_s instead
+# (nothing new to spend a click on) - a dark closet therefore costs two click
+# pairs a day, and never any at all if it also never changes.
+daynight.heartbeat_s     = 14400               # 4 h while the scene is moving
+daynight.heartbeat_max_s = 43200               # 12 h once it demonstrably is not
+daynight.boot_probe      = 1                   # 1 = one probe per boot when the persisted mode is night
+daynight.boot_settle_s   = 5                   # min wait (s) before the first decision
+# Learning (default off). Each confirmed day records its brightest reading;
+# with learn=1 the median of the last 8 raises day_gain when the configured
+# value turns out to be unreachable for this scene. It can only ever RAISE it
+# (a too-generous threshold self-corrects, a too-strict one does not) and is
+# clamped below night_gain/2. With learn=0 the numbers are still collected and
+# logged once a day, so you can read them off a running camera first.
+daynight.learn          = 0                    # 1 = apply and persist
+# daynight.state_path   = /etc/timps-daynight.state   # written at most hourly
+daynight.interval_ms    = 2000                 # sample interval
 daynight.transition_s   = 5                    # min seconds between switches
 daynight.switch_cmd     = daynight             # run as "<cmd> day|night"
 daynight.isp_path       = /proc/jz/isp/isp-m0  # ISP exposure proc file
+# Opt-in threshold diagnostic: warn once a day if no probe has ever confirmed
+# day and the best day-pipeline reading is still clear of day_gain.
+# daynight.diagnose_thresholds = 1
 # Opt-in decision-trace recorder (incident diagnostics / replay harness): one
-# CSV line per 10 samples of gain + baseline + probe-scheduling state. Size-
-# capped (1 MB, rotated once to <path>.1). tmpfs ONLY - never point this at
-# flash. File-only key, not settable via /control.
+# CSV line per 5 samples of the index, its two inputs and the scheduling state.
+# Size-capped (1 MB, rotated once to <path>.1). tmpfs ONLY - never point this
+# at flash. File-only key, not settable via /control.
 # daynight.trace_path   = /tmp/daynight-trace.csv
 
 # ---- on-demand ----

@@ -1,7 +1,7 @@
 {
   "name": "01-boot-transient-53c21b4",
   "incident": "53c21b4",
-  "description": "Cold-start AE transient: total_gain reads a wild 15000-20000 for the first moments after boot (AE not converged), in a bright room persisted as day. The pre-fix machine committed straight to night off that single transient because the first-ever switch bypassed the dwell. The boot settle (floor + AE-stability extension) must eat the transient: no switch to night, at most the one genuine day confirmation.",
+  "description": "Cold-start AE transient: total_gain reads a wild 15000-20000 for the first moments after boot (AE not converged), in a bright room persisted as day. The pre-fix machine committed straight to night off that single transient because the first-ever switch bypassed the dwell. The boot settle (floor + AE-stability extension) must eat the transient: no switch to night, at most the one genuine day confirmation. Deliberately still spelled with the pre-2026-08-17 key names total_gain_day_threshold/total_gain_night_threshold: they are aliases for day_gain/night_gain now, and this scenario is what keeps that alias covered - an existing per-camera tuning must not stop applying.",
   "scale": 60,
   "duration_s": 180,
   "initial_mode": "day",

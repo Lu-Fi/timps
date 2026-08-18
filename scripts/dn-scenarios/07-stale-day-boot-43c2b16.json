@@ -1,28 +1,29 @@
 {
   "name": "07-stale-day-boot-43c2b16",
   "incident": "43c2b16",
-  "description": "Camera powered off in daylight, left until after dark, then booted: it reads a dead-zone day-pipeline gain (1500 - dark but not railed, so the fixed night crossing at 3000 need never fire) and adopts the stale persisted DAY. Pre-fix that state had no deadline at all - every self-healing path was gated on cur==NIGHT - and the camera rendered a black day-pipeline scene indefinitely. Post-fix the adopted day gets the same verify deadline: still ambiguous at the deadline with no improvement (flat scene, no brightening extension), so it must fall to the recoverable side within DN_ADOPT_PROBE_S plus the ordinary switch path's hysteresis.",
+  "description": "Camera powered off in daylight, left until after dark, then booted: it reads a dead-zone day-pipeline gain (1500 - dark but not railed, so the fixed night crossing at 3000 need never fire) and adopts the stale persisted DAY. Pre-fix that state had no deadline at all - every self-healing path was gated on cur==NIGHT - and the camera rendered a black day-pipeline scene indefinitely. Post-fix the adopted day gets the same verify deadline: still ambiguous at the deadline with no improvement (flat scene, no brightening extension), so it must fall to the recoverable side within DN_ADOPT_PROBE_S plus the ordinary switch path's hysteresis. RESTATED 2026-08-17: mode@200 asserted DAY because the old machine believed the stale persisted day and rendered a black scene until its adopted-day verify deadline expired. The new boot path reads the day pipeline it is already in and decides from that reading in ~3s, so night at t=200 is correct and the old expectation was encoding the bug's latency.",
   "scale": 60,
   "duration_s": 880,
   "initial_mode": "day",
   "config": {
-    "daynight.total_gain_day_threshold": 300,
-    "daynight.total_gain_night_threshold": 3000,
-    "daynight.night_reconfirm_s": 900
+    "daynight.day_gain": 300,
+    "daynight.night_gain": 3000,
+    "daynight.heartbeat_s": 900,
+    "daynight.heartbeat_max_s": 1800
   },
   "interp": "step",
   "noise_pct": 2,
   "night_gain": [[0, 3500], [880, 3500]],
   "day_gain": [[0, 1500], [880, 1500]],
   "expect": {
-    "mode_at": [[200, "day"], [400, "night"], [860, "night"]],
+    "mode_at": [[200, "night"], [400, "night"], [860, "night"]],
     "expected_mode": [[0, "night"]],
     "max_wrong_mode_s": 420,
     "max_switches": 2,
     "restart_equivalence_s": 300,
     "monotonicity": "warn",
     "expect_log": [
-      "adopting persisted mode day"
+      "switching to night \\(boot: exposure"
     ]
   }
 }

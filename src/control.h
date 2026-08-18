@@ -63,7 +63,44 @@
 
 /* Apply + persist the settings found in a JSON text. No-op for unknown keys.
  * Safe to call with a partial/empty string. */
-void control_apply_json(const char *json);
+/* Outcome of one POST /control body. The old signature was void and httpd
+ * answered {"ok":true} unconditionally - the response did not merely omit an
+ * error, it ASSERTED success, so a client could not tell a typo from a write.
+ *
+ * What is and is not reportable follows from the parser's shape: apply_ctrl_fields
+ * walks the field TABLE and looks each name up in the body, so a key the tables
+ * do not know is never seen and cannot be listed individually. What CAN be stated
+ * exactly is how many known fields the body carried - and that is enough for a
+ * client to verify its own write: post one key, expect accepted >= 1.
+ *
+ *   accepted - fields recognised and applied, INCLUDING writes of the value a
+ *              field already had. Kept separate from `changed` on purpose: a
+ *              client re-posting the current value must not read an empty
+ *              change list as failure.
+ *   changed  - subset that actually differed; these are echoed with their
+ *              EFFECTIVE value, i.e. after clamping. Clamping is deliberate and
+ *              documented, so a clamped write is a success, not an error - the
+ *              echo is how the caller learns what it really got.
+ *   rejected - values refused outright (empty, "null", "undefined"). */
+#define CTRL_ECHO_CAP 512
+typedef struct {
+    int accepted;
+    int changed;
+    int rejected;
+    /* The changed settings as a ready-made JSON object body, e.g.
+     * "\"daynight.day_confirm_s\":\"41\"" - EFFECTIVE values, i.e. after
+     * clamping, which is the whole point: a caller that posted 999 and got 99
+     * learns so from the reply instead of having to GET the whole document
+     * again. Bounded on purpose (one connection thread's stack is already the
+     * tightest in the daemon); if more changed than fits, `echo_full` stays 0
+     * and the caller falls back to a GET. */
+    char echo[CTRL_ECHO_CAP];
+    int  echo_full;   /* 1 = echo lists every changed field */
+} ctrl_result;
+
+/* Returns 0 if the body was a JSON object, -1 if it was not parseable at all.
+ * res may be NULL. */
+int control_apply_json(const char *json, ctrl_result *res);
 
 /* Shared read-only status object builders: GET /control embeds these and the
  * /events SSE stream pushes them stand-alone, so both endpoints emit the
@@ -72,8 +109,8 @@ void control_apply_json(const char *json);
  * caller provides the snapshot so dedup compares exactly what was sent. */
 int  control_motion_json(char *buf, size_t cap, const ms_motion_status *st);
 int  control_daynight_json(char *buf, size_t cap, int enabled, int mode,
-                           float brightness, float total_gain, float ae_luma,
-                           float night_baseline, float day_trigger);
+                           float brightness, float total_gain, float exposure,
+                           float ae_luma, float night_ref, float probe_bar);
 
 /* Serialize the current (in-memory) controllable values as JSON into buf.
  * The dump starts with a per-build capability list

@@ -8,11 +8,6 @@ BOTH pipelines at each instant, because which one gets read depends on the
 decision the machine under test makes - and only one is ever observable in
 the field):
 
-  (0) PROPERTY test of dn_next_probe(), run first by --all (see
-      run_properties() and tests/dn-probe-props.c). Not a replay at all: it
-      interrogates the pure probe schedule with counterfactual evidence no
-      trajectory can visit. Build it with `make dn-props`.
-
   (a) REGRESSION replay on synthetic two-pipeline scenarios (the workhorse):
         ./scripts/dn-replay.py scripts/dn-scenarios/<name>.json
         ./scripts/dn-replay.py --all scripts/dn-scenarios
@@ -62,6 +57,31 @@ Scenario JSON (all times virtual seconds, all gains IMP [24.8] linear):
   initial_mode                  - "day"|"night" (persisted image.running_mode)
   config                        - {"daynight.<key>": value, ...} overrides
   day_gain / night_gain         - [[t, gain], ...] breakpoints per pipeline
+  night_gain_noir               - OPTIONAL [[t, gain], ...]: the NIGHT pipeline
+                                  with the IR illuminator switched OFF. This is
+                                  the third optical state the 2026-08-17
+                                  decision turns on - the daemon briefly kills
+                                  the illuminator and compares, so a scenario
+                                  that does not supply this curve cannot
+                                  exercise the ratio path at all - and so the
+                                  harness does not enable it there: without
+                                  this curve daynight.irprobe_cmd is left
+                                  unset and the scenario tests the audible
+                                  IR-cut path it was written for. Supplying
+                                  the curve is what opts a scenario in.
+  day_int_ratio / night_int_ratio
+                                - OPTIONAL [[t, ratio], ...] integration-time
+                                  ratio (integration/max, 0..1) per pipeline.
+                                  Omitted = the isp-m0 dump carries no
+                                  integration-time fields at all, which is
+                                  what the pre-2026-08-17 harness produced and
+                                  what makes the exposure index degrade to
+                                  bare gain - so every scenario written before
+                                  the redesign keeps feeding exactly what it
+                                  always fed. Supply it to exercise the range
+                                  the index has BELOW the 256 gain floor, i.e.
+                                  the IR-saturated scenes bare gain cannot
+                                  see. The decision metric is gain * ratio.
   interp                        - "log" (default, geometric - gain ramps are
                                   exponential), "linear" or "step"
   noise_pct                     - stochastic +-% AGC jitter (2 sigma), seeded
@@ -98,6 +118,13 @@ import time
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # ---------------------------------------------------------------- gain plumbing
+
+# Ceilings of the synthetic sensor, in isp-m0 log2 units (32 = one stop).
+# 320 units is ten stops of analog range, comfortably more than any scene in
+# the corpus needs, so a scenario only runs out of reserve when its own curve
+# is written to rail - which is exactly how the real pegged cameras behave.
+MAX_AGAIN, MAX_IDGAIN = 320, 64
+
 
 def gain_to_units(gain):
     """linear [24.8] gain -> isp-m0 log2 units (32/stop), clamped at the
@@ -187,7 +214,8 @@ class SimRun:
     """One timpsd-sim process in a private rundir with the fake isp-m0 file,
     the switch_cmd stub and the trace recorder wired up."""
 
-    def __init__(self, binary, scale, initial_mode, config, keep=False):
+    def __init__(self, binary, scale, initial_mode, config, keep=False,
+                 model_illuminator=False):
         # short prefix: daynight.switch_cmd is a 64-byte field on the target
         self.dir = tempfile.mkdtemp(prefix="dnrp-")
         self.keep = keep
@@ -206,6 +234,22 @@ class SimRun:
                     "echo \"$(date +%s.%N) $1\" >> " + self.switch_log + "\n"
                     "echo \"$1\" > " + self.mode_file + "\n")
         os.chmod(stub, 0o755)
+        # The illuminator stub. Deliberately a SEPARATE script from switch.sh:
+        # on real hardware these are different mechanisms - the IR-cut is a
+        # motor and audible, the illuminator is a GPIO write and silent - and
+        # conflating them in the harness would hide exactly the cost difference
+        # the redesign turns on. Every call is logged with its argument, so a
+        # scenario can assert "n silent probes, m audible clicks" separately.
+        self.ir_log = os.path.join(self.dir, "irprobe.log")
+        self.ir_file = os.path.join(self.dir, "ir.txt")
+        irstub = os.path.join(self.dir, "irprobe.sh")
+        with open(irstub, "w") as f:
+            f.write("#!/bin/sh\n"
+                    "echo \"$(date +%s.%N) $1\" >> " + self.ir_log + "\n"
+                    "echo \"$1\" > " + self.ir_file + "\n")
+        os.chmod(irstub, 0o755)
+        with open(self.ir_file, "w") as f:
+            f.write("on\n")
         base = {
             "rtsp.enabled": 0, "http.enabled": 0, "audio.enabled": 0,
             "video0.enabled": 0, "video1.enabled": 0, "jpeg.enabled": 0,
@@ -217,6 +261,17 @@ class SimRun:
             "daynight.trace_path": self.trace,
             "image.running_mode": 1 if initial_mode == "night" else 0,
         }
+        # The illuminator command is only handed to the daemon when the
+        # scenario actually models what happens when the light goes off.
+        # Enabling it otherwise is not a neutral default: the driver would
+        # keep serving the ordinary night curve, the ratio would come back
+        # exactly 1.0, and - with AE reserve available - that reads as "the
+        # room supplies the light", so every legacy scenario would switch to
+        # day on its first probe. A scenario without a night_gain_noir curve
+        # is not modelling a pegged camera, it is modelling nothing at all,
+        # and must therefore exercise the audible path it was written for.
+        if model_illuminator:
+            base["daynight.irprobe_cmd"] = irstub
         base.update(config or {})
         self.conf = os.path.join(self.dir, "run.conf")
         with open(self.conf, "w") as f:
@@ -226,19 +281,37 @@ class SimRun:
         self.proc = None
         self.t0 = None
 
-    def serve(self, gain, isp_mode):
+    def serve(self, gain, isp_mode, ratio=None):
         """write the fake isp-m0 scrape file atomically (rename: the scraper
-        sees old or new, never a torn file)."""
+        sees old or new, never a torn file).
+
+        ratio=None deliberately omits the integration-time fields entirely,
+        which is what this harness always did: the exposure index then equals
+        total_gain and every pre-2026-08-17 scenario keeps its meaning. A
+        ratio drives the other half of the metric - MAX_INT is a round 1000
+        "lines" so the served ratio is exact to a part in a thousand."""
         u = gain_to_units(gain)
         tmp = self.isp + ".tmp"
         with open(tmp, "w") as f:
             f.write("ISP Runing Mode : %s\n" % ("Night" if isp_mode == "night"
                                                 else "Day"))
             f.write("SENSOR analog gain : %d\n" % u)
+            # The ceilings. Without them the daemon cannot compute how much
+            # room the AE still has, and the ratio verdict has no way to tell
+            # "the room supplies the light" from "my meter is pegged and
+            # cannot answer" - the two look identical (r ~= 1). A synthetic
+            # camera therefore has to declare its limits like a real one.
+            f.write("MAX SENSOR analog gain : %d\n" % MAX_AGAIN)
+            f.write("MAX ISP digital gain : %d\n" % MAX_IDGAIN)
+            if ratio is not None:
+                mx = 1000
+                it = max(1, min(mx, int(round(ratio * mx))))
+                f.write("SENSOR Integration Time : %d lines\n" % it)
+                f.write("SENSOR Max Integration Time : %d lines\n" % mx)
         os.replace(tmp, self.isp)
 
-    def start(self, first_gain):
-        self.serve(first_gain, self.initial_mode)
+    def start(self, first_gain, first_ratio=None):
+        self.serve(first_gain, self.initial_mode, first_ratio)
         logf = open(self.log, "w")
         self.proc = subprocess.Popen([self.binary, "-c", self.conf],
                                      stdout=logf, stderr=subprocess.STDOUT,
@@ -253,9 +326,10 @@ class SimRun:
         pre-fix tree a negative test would want to build) silently ignores
         SIM_CFLAGS and runs in REAL time, while this driver keeps feeding the
         scenario `scale` times faster than the machine experiences it. The
-        machine then never reaches a single one of its own deadlines -
-        night_reconfirm_s, the backoff, the verify deadline - so the incident
-        cascade the scenario exists to reproduce cannot occur, and the run
+        machine then never reaches a single one of its own deadlines - the
+        heartbeat, the probe verdict, the confirmation windows (and on a
+        pre-2026-08-17 tree, night_reconfirm_s and the backoff) - so the
+        incident cascade the scenario exists to reproduce cannot occur, and the run
         comes back GREEN on every behavioural assertion. That false negative
         is indistinguishable by eye from "this scenario does not discriminate",
         and it has already been mistaken for exactly that once. The tell was
@@ -301,6 +375,26 @@ class SimRun:
 
     def vnow(self):
         return (time.monotonic() - self.t0) * self.scale
+
+    def ir_on(self):
+        """Is the illuminator currently lit, per the stub's own record?"""
+        try:
+            with open(self.ir_file) as f:
+                return f.read().strip() != "off"
+        except OSError:
+            return True
+
+    def ir_probes(self):
+        """[(t_virtual, 'off'|'on')] - every silent illuminator drive."""
+        out = []
+        try:
+            with open(self.ir_log) as f:
+                for line in f:
+                    ts, _, arg = line.strip().partition(" ")
+                    out.append((self._real_to_virtual(float(ts)), arg))
+        except (OSError, ValueError):
+            pass
+        return out
 
     def cur_mode(self):
         try:
@@ -434,59 +528,34 @@ def wrong_mode_runs(segs, expected, samples):
     return max_run, total
 
 
-def check_restart_equiv(rep, segs, fed, day_thr, night_thr, T):
-    """Restart-equivalence oracle (design-notes section 3): where the
-    evidence is DECISIVE, a decisive divergence between the cold-start
-    verdict and the machine's mode must not persist longer than T.
+def check_restart_equiv(rep, day_at, segs, samples, day_thr, night_thr, T):
+    """Restart-equivalence oracle (design-notes section 3): if a cold start
+    on the present evidence would decide mode M unambiguously, the running
+    machine must converge to M within a bounded time T.
 
-    The "unambiguously" qualifier, made concrete:
-     - machine=day, evidence > night_thr: always counts - the day pipeline
-       is the trustworthy metric and a wrong day has no other way back.
-     - machine=night, evidence < day_thr: counts only while the evidence is
-       FRESH - i.e. not already proven ambiguous by a failed physical probe
-       at (or above) this level. A failed probe at smoothed level L
-       establishes that night-pipeline readings >= 0.97*L mean darkness
-       (the ratchet-anchor rule, 14a1d61); only a reading brighter than
-       that is new evidence a cold start could act on that the running
-       machine has not already tested. Without this qualifier the oracle
-       would flag the inverted-regime cameras (a5dae07: resting night gain
-       256-268 under IR vs day threshold 300) where the cold-start verdict
-       is decisively WRONG and the machine's history is right.
-    fed: [(t, gain, machine_mode_at_t)] from the driver."""
+    Rewritten 2026-08-17 to ask the question DIRECTLY. Since the redesign a
+    cold start is a defined, mechanical act - boot into the day pipeline
+    (persisted day: read it; persisted night: probe it) and compare the
+    DAY-pipeline exposure against day_gain/night_gain - so the oracle can
+    evaluate exactly that counterfactual at every instant from the
+    scenario's own day-pipeline curve, which the harness has and the field
+    never does. That removes the previous version's ratchet-margin fudge,
+    which existed only to stop the oracle flagging inverted-regime cameras
+    where the NIGHT-pipeline reading it was forced to use was misleading.
+    The day-pipeline curve is not misleading, so no fudge is needed:
+
+      cold-start verdict at t = day  if day_curve(t) < day_thr
+                                night if day_curve(t) > night_thr
+                                (in between: not unambiguous, accrues nothing)
+
+    day_at: callable t -> the day-pipeline exposure at t."""
     run_start = None
     worst = (0.0, None)
-    fail_L = None            # last failed-probe evidence level
-    probe_pre_gain = None    # NIGHT-pipeline gain just before a probe fired
-    last_night_gain = None
-    last_mode = None
-    for t, g, m in fed:
-        if last_mode is not None and m != last_mode:
-            if m == "day":
-                # the level the machine's own ratchet latches is the
-                # PRE-probe night-pipeline reading, not the day-railed
-                # value the pipeline reports after the switch
-                probe_pre_gain = last_night_gain
-            elif m == "night":
-                # a switch back to night after a probe = the probe failed
-                # (fast revert or unconfirmed day - both latch the ratchet)
-                if probe_pre_gain is not None:
-                    fail_L = probe_pre_gain
-                probe_pre_gain = None
-        last_mode = m
-        if m == "night":
-            last_night_gain = g
-        verdict = None
-        if g > night_thr:
-            verdict = "night"
-        elif g < day_thr:
-            verdict = "day"
-        diverged = False
-        if verdict and verdict != m:
-            if m == "day":
-                diverged = True
-            elif m == "night" and verdict == "day":
-                diverged = fail_L is None or g < 0.97 * fail_L
-        if diverged:
+    for t in samples:
+        g = day_at(t)
+        verdict = ("day" if g < day_thr else
+                   "night" if g > night_thr else None)
+        if verdict and verdict != mode_at(segs, t):
             if run_start is None:
                 run_start = t
             if t - run_start > worst[0]:
@@ -503,19 +572,19 @@ def check_restart_equiv(rep, segs, fed, day_thr, night_thr, T):
 def check_monotonicity(rep, trace_path, policy):
     """Probe-time monotonicity (design-notes section 5): within one
     continuous night dwell, strictly brighter evidence must never be granted
-    a LATER correction. Read the trace's verify re-arm events (verify_in_s
-    jumping up while cur==night) and compare (evidence, granted delay)
-    pairs. LIMITATION, stated honestly: only the armed verify deadline is
-    visible in the trace - the brightening hold's implicit schedule is not -
-    so this observes the periodic/adopt path only, and only at the evidence
-    the run's own trajectory happened to visit.
+    a LATER correction.
 
-    The property is now checked properly elsewhere: dn_next_probe() is pure,
-    so tests/dn-probe-props.c asserts it exhaustively over ~10^6 evidence
-    pairs including the counterfactuals no trajectory can reach (corpus entry
-    00, run_properties()). This trace-side check stays as a cheap end-to-end
-    sanity observer and therefore stays "warn" by default - a violation here
-    is worth reading, but entry 00 is the authority."""
+    Since the redesign there is exactly ONE schedule to observe - the
+    heartbeat deadline - instead of the previous verify/backoff/ratchet
+    tangle, so this reads (smoothed exposure, seconds until the next
+    heartbeat) at every fresh re-arm and asserts the pairs are ordered. The
+    old pure-function property test that used to be the authority here
+    (tests/dn-probe-props.c over dn_next_probe) is gone with the function it
+    tested: the schedule is now three predicates over four scalars, and the
+    thing actually worth asserting is the end-to-end behaviour this observes.
+    It is therefore promoted from a sanity observer to the check, though the
+    default stays "warn" because a trajectory can only visit the evidence its
+    own decisions lead it to."""
     if policy == "skip":
         rep.note("monotonicity", "skipped by scenario")
         return
@@ -525,24 +594,24 @@ def check_monotonicity(rep, trace_path, policy):
             next(f)
             for line in f:
                 p = line.strip().split(",")
-                if len(p) == 11:
+                if len(p) == 10:
                     rows.append(p)
     except (OSError, StopIteration):
         rep.note("monotonicity", "no trace (binary without recorder?) - skipped")
         return
-    events = []     # (dwell_id, evidence smooth_tg, granted delay s)
+    events = []     # (dwell_id, evidence, granted delay s)
     dwell = 0
     prev_cur, prev_in = None, None
     for p in rows:
-        cur, smooth, vmode, vin = int(p[1]), float(p[5]), int(p[8]), int(p[9])
+        cur, smooth, hb_in = int(p[1]), float(p[5]), int(p[9])
         if cur != prev_cur:
             dwell += 1
             prev_in = None
         prev_cur = cur
-        if cur == 1 and vmode == 1 and vin >= 0 and smooth > 0:
-            if prev_in is None or vin > prev_in + 2:   # fresh (re-)arm
-                events.append((dwell, smooth, vin))
-            prev_in = vin
+        if cur == 1 and hb_in >= 0 and smooth > 0:
+            if prev_in is None or hb_in > prev_in + 2:   # fresh (re-)arm
+                events.append((dwell, smooth, hb_in))
+            prev_in = hb_in
         else:
             prev_in = None
     viol = []
@@ -572,30 +641,52 @@ def run_regression(scn, binary, keep=False, scale_override=None):
     nseed = scn.get("noise_seed", 0)
     exp = scn.get("expect", {})
     sim = SimRun(binary, scale, scn["initial_mode"], scn.get("config"),
-                 keep=keep)
+                 keep=keep,
+                 model_illuminator=bool(scn.get("night_gain_noir")))
+    def ratio_at(mode, t):
+        c = scn.get("night_int_ratio" if mode == "night" else "day_int_ratio")
+        return None if not c else max(0.0, min(1.0, interp_gain(c, t, "linear")))
+
     fed = []
     try:
-        g0 = interp_gain(scn["night_gain" if scn["initial_mode"] == "night"
-                             else "day_gain"], 0, interp)
-        sim.start(g0)
+        m0 = scn["initial_mode"]
+        g0 = interp_gain(scn["night_gain" if m0 == "night" else "day_gain"],
+                         0, interp)
+        sim.start(g0, ratio_at(m0, 0))
         step = max(0.25 / scale, 0.002)      # 250 virtual ms per driver step
         while True:
             t = sim.vnow()
             if t >= dur:
                 break
             m = sim.cur_mode()
-            curve = scn["night_gain"] if m == "night" else scn["day_gain"]
+            # THREE optical states, not two. The illuminator is independent of
+            # the IR-cut filter, so a camera in night mode with the IR switched
+            # off is a third thing entirely - and it is the state the whole
+            # ratio decision reads. Serving the ordinary night curve there
+            # would make every probe return r == 1 and quietly render the
+            # redesign untestable.
+            ir = sim.ir_on()
+            if m == "night" and not ir and scn.get("night_gain_noir"):
+                curve = scn["night_gain_noir"]
+            elif m == "night":
+                curve = scn["night_gain"]
+            else:
+                curve = scn["day_gain"]
             g = interp_gain(curve, t, interp) * noise_factor(t, noise, nseed)
             g = max(g, 256.0)                # sensor floor, see gain_to_units
-            sim.serve(g, m)
-            fed.append((t, units_to_gain(gain_to_units(g)), m))
+            r = ratio_at(m, t)
+            sim.serve(g, m, r)
+            # what the machine will actually decide on: the exposure index
+            served = units_to_gain(gain_to_units(g))
+            fed.append((t, served * (r if r is not None else 1.0), m))
             time.sleep(step)
         sim.stop()
 
         switches = sim.switches()
+        irdrives = [p for p in sim.ir_probes() if p[1] == "off"]
         segs = mode_timeline(scn["initial_mode"], switches, dur)
-        rep.note("run", "%.0f virtual s at scale %d, %d board switches"
-                 % (dur, scale, len(switches)))
+        rep.note("run", "%.0f virtual s at scale %d, %d board switches, "
+                 "%d silent IR probes" % (dur, scale, len(switches), len(irdrives)))
         for st, sm in switches:
             rep.note("switch", "t=%.0fs -> %s" % (st, sm))
 
@@ -603,6 +694,15 @@ def run_regression(scn, binary, keep=False, scale_override=None):
             got = mode_at(segs, t)
             rep.check(got == want, "mode@%ds" % t,
                       "want %s, got %s" % (want, got))
+        if "max_ir_probes" in exp:
+            # Separate budget from max_switches on purpose: a silent probe
+            # costs a few seconds of dimmer image, an audible switch costs a
+            # motor movement. Conflating them would hide the entire point of
+            # the redesign, which is trading many of the latter for a few of
+            # the former.
+            rep.check(len(irdrives) <= exp["max_ir_probes"], "ir-probe-budget",
+                      "%d silent probes (budget %d)"
+                      % (len(irdrives), exp["max_ir_probes"]))
         if "max_switches" in exp:
             rep.check(len(switches) <= exp["max_switches"], "click-budget",
                       "%d switches (budget %d)"
@@ -616,10 +716,19 @@ def run_regression(scn, binary, keep=False, scale_override=None):
         T = exp.get("restart_equivalence_s")
         if T:
             cfg = scn.get("config", {})
-            day_thr = float(cfg.get("daynight.total_gain_day_threshold", 300))
-            night_thr = float(cfg.get("daynight.total_gain_night_threshold",
-                                      3000))
-            check_restart_equiv(rep, segs, fed, day_thr, night_thr, T)
+            day_thr = float(cfg.get("daynight.day_gain",
+                            cfg.get("daynight.total_gain_day_threshold", 768)))
+            night_thr = float(cfg.get("daynight.night_gain",
+                              cfg.get("daynight.total_gain_night_threshold",
+                                      4096)))
+
+            def day_at(t):
+                g = interp_gain(scn["day_gain"], t, interp)
+                r = ratio_at("day", t)
+                return g * (r if r is not None else 1.0)
+
+            check_restart_equiv(rep, day_at, segs, [f[0] for f in fed],
+                                day_thr, night_thr, T)
         check_monotonicity(rep, sim.trace,
                            exp.get("monotonicity", "warn"))
         logtext = ""
@@ -643,44 +752,6 @@ def run_regression(scn, binary, keep=False, scale_override=None):
         sim.cleanup()
     return ok
 
-# ---------------------------------------------------------------- properties
-
-def run_properties(binary):
-    """Corpus entry 00: the dn_next_probe() property test (tests/
-    dn-probe-props.c, built by `make dn-props`).
-
-    It runs FIRST and deliberately fails the whole corpus when it fails,
-    because it answers a question no scenario can. A replay can only exercise
-    the evidence the machine's own decisions lead it to; the counterfactual -
-    "what would this build have done had the scene been slightly brighter at
-    that instant" - is unreachable from a trajectory and is exactly what every
-    stuck-mode incident in this subsystem turned on. The pure function makes
-    it reachable, and this binary asks it about ~10^6 evidence pairs in under
-    a second.
-
-    Missing binary is a WARN, not a failure: a checkout that has not run
-    `make dn-props` should still be able to run the scenarios."""
-    if not os.path.isfile(binary) or not os.access(binary, os.X_OK):
-        print("scenario 00-probe-properties")
-        print("  WARN  %-24s %s" % ("not built",
-              "%s missing - run `make dn-props` to include the property "
-              "test in the corpus" % binary))
-        print("RESULT: SKIP 00-probe-properties")
-        print()
-        return True
-    print("scenario 00-probe-properties")
-    r = subprocess.run([binary], stdout=subprocess.PIPE,
-                       stderr=subprocess.STDOUT)
-    text = r.stdout.decode("utf-8", "replace")
-    for line in text.strip().split("\n"):
-        if line.startswith("RESULT:"):
-            continue
-        print("  %s" % line if not line.startswith("  ") else line)
-    print("RESULT: %s 00-probe-properties"
-          % ("PASS" if r.returncode == 0 else "FAIL"))
-    print()
-    return r.returncode == 0
-
 # ---------------------------------------------------------------- incident
 
 def load_trace(path):
@@ -692,7 +763,7 @@ def load_trace(path):
             raise SystemExit("not a daynight trace: %s" % path)
         for line in f:
             p = line.strip().split(",")
-            if len(p) == 11:
+            if len(p) == 10:
                 rows.append((int(p[0]), int(p[1]), float(p[2])))
     if not rows:
         raise SystemExit("empty trace: %s" % path)
@@ -773,9 +844,6 @@ def main():
                     help="incident replay of a recorded trace CSV")
     ap.add_argument("--bin", default=os.path.join(REPO, "timpsd-sim"),
                     help="sim binary (default: repo timpsd-sim)")
-    ap.add_argument("--props", default=os.path.join(REPO, "dn-probe-props"),
-                    help="dn_next_probe property-test binary run as corpus "
-                         "entry 00 by --all (build: make dn-props)")
     ap.add_argument("--scale", type=int, default=None,
                     help="MS_CLOCK_SCALE the binary was built with "
                          "(overrides the scenario's value)")
@@ -806,11 +874,9 @@ def main():
         sys.exit(0 if ok else 1)
 
     files = []
-    prop_ok = True
     if args.all:
         files = sorted(os.path.join(args.all, f)
                        for f in os.listdir(args.all) if f.endswith(".json"))
-        prop_ok = run_properties(args.props)
     elif args.scenario:
         files = [args.scenario]
     else:
@@ -827,10 +893,6 @@ def main():
         else:
             failed += 1
         print()
-    if not prop_ok:
-        failed += 1
-    else:
-        passed += 1 if args.all else 0
     print("corpus: %d passed, %d failed" % (passed, failed))
     sys.exit(0 if failed == 0 else 1)
 

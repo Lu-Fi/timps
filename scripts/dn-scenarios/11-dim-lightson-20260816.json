@@ -1,14 +1,15 @@
 {
   "name": "11-dim-lightson-20260816",
-  "incident": "kinder-links 2026-08-16, run 2 (the magnitude the fast path cannot have)",
-  "description": "The backstop half of scenario 10, and the honest statement of what the sustained-brightening hold can and cannot do. The hold's bar is (100+day_gain_pct)/200 of the resting level, times the 0.97 arming margin - so it needs a 22.4% brightening before it will even start counting. That number is a design choice, not an accident: below it the machine would be spending audible IR-cut clicks on light changes it cannot distinguish from AGC drift. But it means there is a real, sustained, permanent class of light-on event that is simply too small for the fast path, and the machine must still recover from it - just not in 30s.\\n\\nThis is that event, at the incident's own magnitude. kinder-links' run 2 moved the night pipeline 2233 -> 1649, but the baseline it was measured against was NOT 2233: the light had been on before run 1, dragging the baseline down, and 75s of darkness recovers almost nothing of a 250s-tau EMA. So the effective brightening against the reference was around 12%, half of what the hold requires. Here that is replayed directly: a settled night at 2000, then a permanent step to 1750 (12.5%) while the day pipeline drops to 250 - i.e. the mode is genuinely, visibly wrong, and the fast path genuinely cannot see it.\\n\\nWHAT IT ASSERTS. The forbid_log is the point: `sustained brightening` must NOT appear. If a future change to the hold's bar, its arming margin or its frozen reference makes this fire, that is a sensitivity regression and it will show up here as a failure rather than as a fleet-wide increase in IR-cut clicking six weeks later. What must happen instead is the slow path: the step is measurably brighter than the frozen probe anchor, min_smooth_since_probe latches it, the x2 backoff is suspended, and the periodic reconfirm lands one un-backed-off night_reconfirm_s after arming - t=1212 against a light that came on at t=1000, i.e. 202s, comfortably inside the 900s the design-notes invariant promises. The day pipeline confirms day and it sticks.\\n\\nSo the two scenarios together pin the whole ladder: 10 says a 27% light-on is caught in ~34s by the hold, 11 says a 12.5% one is caught in ~200s by the reconfirm, and neither is allowed to drift into the other's job.",
+  "incident": "cam-H 2026-08-16, run 2 (the magnitude the fast path cannot have)",
+  "description": "The backstop half of scenario 10, and the honest statement of what the sustained-brightening hold can and cannot do. The hold's bar is (100+day_gain_pct)/200 of the resting level, times the 0.97 arming margin - so it needs a 22.4% brightening before it will even start counting. That number is a design choice, not an accident: below it the machine would be spending audible IR-cut clicks on light changes it cannot distinguish from AGC drift. But it means there is a real, sustained, permanent class of light-on event that is simply too small for the fast path, and the machine must still recover from it - just not in 30s.\\n\\nThis is that event, at the incident's own magnitude. cam-H' run 2 moved the night pipeline 2233 -> 1649, but the baseline it was measured against was NOT 2233: the light had been on before run 1, dragging the baseline down, and 75s of darkness recovers almost nothing of a 250s-tau EMA. So the effective brightening against the reference was around 12%, half of what the hold requires. Here that is replayed directly: a settled night at 2000, then a permanent step to 1750 (12.5%) while the day pipeline drops to 250 - i.e. the mode is genuinely, visibly wrong, and the fast path genuinely cannot see it.\\n\\nWHAT IT ASSERTS. The forbid_log is the point: `sustained brightening` must NOT appear. If a future change to the hold's bar, its arming margin or its frozen reference makes this fire, that is a sensitivity regression and it will show up here as a failure rather than as a fleet-wide increase in IR-cut clicking six weeks later. What must happen instead is the slow path: the step is measurably brighter than the frozen probe anchor, min_smooth_since_probe latches it, the x2 backoff is suspended, and the periodic reconfirm lands one un-backed-off night_reconfirm_s after arming - t=1212 against a light that came on at t=1000, i.e. 202s, comfortably inside the 900s the design-notes invariant promises. The day pipeline confirms day and it sticks.\\n\\nSo the two scenarios together pin the whole ladder: 10 says a 27% light-on is caught in ~34s by the hold, 11 says a 12.5% one is caught in ~200s by the reconfirm, and neither is allowed to drift into the other's job. RESTATED 2026-08-17: same division of labour, different mechanisms. The 12.5% night-side move is still deliberately too small for the fast path (now path C's probe_jump_pct, forbidden above), and recovery is still the periodic safety net - now the heartbeat rather than night_reconfirm_s. The recovery therefore lands one heartbeat interval after the change rather than at a fixed t=1300, so mode@1400 became mode@2000; max_wrong_mode_s (900 = one interval) is unchanged and is the assertion that actually matters. This scenario is also what proved the first draft of the heartbeat's flat-scene test wrong: a plain max/min range check called this step 'flat' and never probed at all.",
   "scale": 60,
   "duration_s": 3600,
   "initial_mode": "night",
   "config": {
-    "daynight.total_gain_day_threshold": 300,
-    "daynight.total_gain_night_threshold": 3000,
-    "daynight.night_reconfirm_s": 900
+    "daynight.day_gain": 300,
+    "daynight.night_gain": 3000,
+    "daynight.heartbeat_s": 900,
+    "daynight.heartbeat_max_s": 1800
   },
   "interp": "log",
   "noise_pct": 10,
@@ -16,18 +17,18 @@
   "night_gain": [[0, 2000], [1000, 2000], [1010, 1750], [3600, 1750]],
   "day_gain": [[0, 8000], [1000, 8000], [1010, 250], [3600, 250]],
   "expect": {
-    "mode_at": [[500, "night"], [900, "night"], [1400, "day"], [3500, "day"]],
+    "mode_at": [[500, "night"], [900, "night"], [2000, "day"], [3500, "day"]],
     "expected_mode": [[0, "night"], [1000, "any"], [1300, "day"]],
     "max_wrong_mode_s": 900,
     "max_switches": 5,
     "restart_equivalence_s": 900,
     "monotonicity": "warn",
     "expect_log": [
-      "lowest since the last probe.*suspending it",
-      "ratchet anchor overrides baseline evidence"
+      "probe \\(heartbeat\\)",
+      "probe confirmed day"
     ],
     "forbid_log": [
-      "sustained brightening"
+      "probe \\(brightening\\)"
     ]
   }
 }

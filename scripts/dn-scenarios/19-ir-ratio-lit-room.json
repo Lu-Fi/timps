@@ -1,0 +1,30 @@
+{
+  "name": "19-ir-ratio-lit-room",
+  "incident": "2026-08-17 22:17:29 - an outbuilding light, measured; the case an absolute threshold gets wrong",
+  "description": "The acceptance test for the silent probe. A lit outbuilding: the night pipeline sits at 12160 and falls to 3226 when the light comes on, and the DAY pipeline then reads ~3700 - far above any workable absolute day threshold, which is why scenario 16 fails on a build that decides night->day by threshold alone.\n\nThe third curve is what settles it. With the light on, killing the illuminator barely changes anything (3226 -> 3550, r = 1.10): the room supplies the light. In genuine darkness beforehand, killing it collapses the scene (12160 -> 45000, r = 3.7): the illuminator was doing the work. Same camera, same thresholds, opposite verdicts - and no absolute level was consulted.\n\nBudgets are split on purpose: silent probes are cheap and several are fine, audible switches are not. Two switches is the whole budget - one into day when the light comes on, one back when it goes off.",
+  "scale": 30,
+  "duration_s": 420,
+  "initial_mode": "night",
+  "config": {
+    "daynight.day_gain": 768,
+    "daynight.night_gain": 4096,
+    "daynight.heartbeat_s": 300,
+    "daynight.heartbeat_max_s": 300
+  },
+  "interp": "step",
+  "noise_pct": 0,
+  "night_gain": [[0, 12160], [88, 3226], [355, 12038]],
+  "night_gain_noir": [[0, 45000], [88, 3550], [355, 45000]],
+  "day_gain": [[0, 16000], [88, 3700], [355, 16000]],
+  "expect": {
+    "expected_mode": [[0, "night"], [88, "any"], [130, "day"], [355, "any"], [400, "night"]],
+    "max_wrong_mode_s": 90,
+    "max_switches": 4,
+    "max_ir_probes": 6,
+    "monotonicity": "warn",
+    "expect_log": [
+      "the room supplies the light",
+      "the illuminator carries this scene"
+    ]
+  }
+}

@@ -4,30 +4,51 @@
  * A small pthread decides day vs night and on a change runs
  * "<daynight.switch_cmd> day|night" (default: thingino's /sbin daynight
  * script, which drives ircut / IR LEDs / color -> ISP running_mode) - timps
- * does NOT touch image.running_mode itself, the color hook does. A minimum
- * dwell (daynight.transition_s) guards against flapping at a boundary.
+ * does NOT touch image.running_mode itself, the color hook does.
  *
- * The decision source is selectable via daynight.mode:
- *   sensor (default) - samples the Ingenic ISP exposure state
- *       (daynight.isp_path, default /proc/jz/isp/isp-m0) every
- *       daynight.interval_ms and decides from ISP total_gain (prudynt/raptor
- *       scale) with a brightness fallback (thingino daynightd formula), using
- *       the gain/brightness thresholds + hysteresis.
- *   time   - forces day/night purely by the local wall clock: a fixed window
- *       [daynight.time_night_start .. daynight.time_day_start] ("HH:MM"),
- *       independent of the scene; the window may wrap past midnight.
- *   sun    - forces day/night by today's real sunrise/sunset computed from
- *       daynight.sun_latitude/sun_longitude (standard sunrise equation, pure
- *       math), each shifted by sun_sunrise/sunset_offset_min minutes; looks
- *       natural across seasons unlike a fixed clock time.
- * The ISP is still sampled in every mode so the WebUI live gain/brightness
- * readout stays populated; only the decision branch changes.
+ * THE ONE FACT THE WHOLE DESIGN FOLLOWS FROM: the two optical paths are not
+ * equally trustworthy. With the IR-cut closed and the illuminator off (the
+ * DAY pipeline) the exposure the ISP settles on is an honest measure of
+ * ambient light. With the IR-cut open and the illuminator on (the NIGHT
+ * pipeline) the camera is measuring, in part, its own light - so an absolute
+ * night reading means nothing, and only a CHANGE in it means anything. That
+ * asymmetry produces four independent paths, none of which can block another:
  *
- * daynight.enabled can be flipped at runtime (config or /control): while
- * disabled the thread keeps sampling (so the status below stays live for the
- * WebUI) but forces nothing (manual mode) in ALL modes; re-enabling restarts
- * detection from a clean state. Missing/unreadable ISP file (host sim,
- * non-Ingenic) just skips the sensor cycle (time/sun need no ISP). */
+ *   A  day -> night   direct, from the honest day-pipeline reading. Needs no
+ *                     history and no probe: D above daynight.night_gain for
+ *                     day_confirm_s and the switch is made.
+ *   C  night -> day   ONLY via a probe: physically switch to the day pipeline,
+ *                     let the AE settle for probe_settle_s, then judge once
+ *                     against day_gain and either stay or fall straight back.
+ *                     A probe is asked for when the night reading drops below
+ *                     probe_jump_pct% of the night reference and holds there -
+ *                     i.e. when someone turns a light on. This is the path that
+ *                     carries cameras with no usable location data, which is
+ *                     most of them.
+ *   B  heartbeat      a probe every heartbeat_s regardless of any reading, or
+ *                     heartbeat_max_s once the scene demonstrably stopped
+ *                     moving. Sensor-independent, so it is the only bound on
+ *                     how long a wrong night can last - deliberately a flat
+ *                     interval, never a multiplying backoff. When a calendar
+ *                     is configured it only pulls this in to dawn.
+ *   D  boot           the persisted mode is a guess: if it says day we are in
+ *                     the honest pipeline already and one reading settles it,
+ *                     if it says night a single probe turns the guess into a
+ *                     measurement (daynight.boot_probe).
+ *
+ * The metric is the EXPOSURE INDEX D = total_gain * integration_time /
+ * max_integration_time (higher = darker), not bare gain - see the
+ * ms_daynight_cfg comment in config.h for why, and
+ * dev_notes/DAYNIGHT_REDESIGN_2026-08-17.md for the whole design.
+ *
+ * daynight.mode selects between that automaton (auto) and letting the
+ * configured calendar decide outright with no sensor and no probes at all
+ * (schedule). daynight.enabled can be flipped at runtime (config or
+ * /control): while disabled the thread keeps sampling (so the status below
+ * stays live for the WebUI) but forces nothing (manual mode) in both modes;
+ * re-enabling restarts detection from a clean state. A missing/unreadable ISP
+ * file (host sim, non-Ingenic) just skips the cycle in auto mode; schedule
+ * mode needs no ISP. */
 #ifndef MS_DAYNIGHT_H
 #define MS_DAYNIGHT_H
 
@@ -45,29 +66,34 @@ void daynight_stop(void);
  *               thread, falling back to image.running_mode (manual mode,
  *               before the first switch, or without USE_DAYNIGHT)
  *   brightness  scene brightness 0..100 %, or -1 when the ISP proc file is
- *               unreadable / no sample was taken yet
+ *               unreadable / no sample was taken yet. Status readout only -
+ *               it decides nothing.
  *   total_gain  total sensor+ISP gain in the IMP [24.8] linear format
  *               (256 = 1x, like IMP_ISP_Tuning_GetTotalGain and the
- *               prudynt/raptor "total_gain" the WebUI plots), derived from
- *               the isp-m0 gain fields (log2 units, 32 = 2x); -1 = unknown
+ *               prudynt/raptor "total_gain" the WebUI plots); -1 = unknown
+ *   exposure    THE DECISION METRIC: total_gain scaled by the AE's
+ *               integration-time ratio. Equal to total_gain in a dark scene
+ *               (integration railed at max) and far below it in a bright one,
+ *               which is the range bare gain does not have; -1 = unknown
  *   ae_luma     ISP AE average luminance (raptor's ae_luma), a secondary
  *               photosensing metric; -1 when the SoC/build has no GetAeLuma
- *   night_baseline  the adaptive night gain baseline currently in effect
- *               (sampled after baseline_delay_s in night, then drifting up
- *               toward any higher stable night gain); -1 = none sampled
- *   day_trigger the effective night->day gain trigger derived from it
- *               (day_gain_pct% of the baseline, floored at
- *               total_gain_day_threshold); -1 when not in night mode
+ *   night_ref   the night reference the spontaneous-brightening trigger
+ *               measures against - the exposure level at which night was last
+ *               PROVEN, either by entering it from day or by a probe that
+ *               found darkness. -1 = none anchored (not in night, or the AE
+ *               has not settled since entering it)
+ *   probe_bar   the level D must fall below to ask for a probe
+ *               (probe_jump_pct% of night_ref); -1 when not in night
  * NULL pointers are allowed for outputs the caller does not need. */
 void daynight_get_status(int *enabled, int *mode,
-                         float *brightness, float *total_gain, float *ae_luma,
-                         float *night_baseline, float *day_trigger);
+                         float *brightness, float *total_gain, float *exposure,
+                         float *ae_luma, float *night_ref, float *probe_bar);
 
 /* Today's computed sunrise/sunset for the configured daynight.sun_* location
  * and offsets, formatted as local "HH:MM" into sr_hhmm/ss_hhmm (either may be
  * NULL). Read-only feedback so the WebUI can sanity-check lat/long before
- * trusting the SUN mode. Returns 1 on a normal day, 0 for polar day/night or
- * without USE_DAYNIGHT (strings then read "--:--"). */
+ * trusting it. Returns 1 on a normal day, 0 for polar day/night or without
+ * USE_DAYNIGHT (strings then read "--:--"). */
 int daynight_sun_status(char *sr_hhmm, char *ss_hhmm, size_t cap);
 
 #endif

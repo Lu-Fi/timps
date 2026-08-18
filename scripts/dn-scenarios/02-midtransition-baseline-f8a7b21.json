@@ -1,13 +1,13 @@
 {
   "name": "02-midtransition-baseline-f8a7b21",
   "incident": "f8a7b21",
-  "description": "Night baseline sampled during a lighting transition is unrepresentatively LOW (here a dip to 1200 right in the baseline_delay_s window against a true resting level of 3500), making day_gain_pct% of it a bar no real light source can reach - the incident scene sat at a rock-stable 65% of baseline, visibly lit, and stayed night indefinitely. The symmetric EMA drift must self-correct the baseline back up, and the sustained-brightening probe must then get a genuinely lit scene (night pipe 900, day pipe 250) out to day.",
+  "description": "Night baseline sampled during a lighting transition is unrepresentatively LOW (here a dip to 1200 right in the baseline_delay_s window against a true resting level of 3500), making day_gain_pct% of it a bar no real light source can reach - the incident scene sat at a rock-stable 65% of baseline, visibly lit, and stayed night indefinitely. The symmetric EMA drift must self-correct the baseline back up, and the sustained-brightening probe must then get a genuinely lit scene (night pipe 900, day pipe 250) out to day. RESTATED 2026-08-17: the mechanism that recovers this is now the spontaneous-brightening probe (path C) rather than the sustained-brightening hold, so the log assertion names that. Every behavioural assertion - mode timeline, 3-switch click budget, wrong-mode bound, restart-equivalence - is unchanged and still passes.",
   "scale": 60,
   "duration_s": 1200,
   "initial_mode": "night",
   "config": {
-    "daynight.total_gain_day_threshold": 300,
-    "daynight.total_gain_night_threshold": 3000
+    "daynight.day_gain": 300,
+    "daynight.night_gain": 3000
   },
   "interp": "log",
   "night_gain": [[0, 3500], [15, 3500], [20, 1200], [90, 1200], [100, 3500], [600, 3500], [615, 900], [1200, 900]],
@@ -20,7 +20,7 @@
     "restart_equivalence_s": 300,
     "monotonicity": "warn",
     "expect_log": [
-      "sustained brightening"
+      "probe \\(brightening\\)"
     ]
   }
 }

@@ -1,0 +1,22 @@
+{
+  "name": "17-room-light-no-switch",
+  "incident": "operator switched a bedroom light on 22:15:35, off 22:17:51",
+  "description": "MEASURED, not reconstructed. Source: cam-D.csv, 2026-08-17 22:14:00-22:20:00 local.\n\nThe counter-example to scenario 16: same class of event, and the machine did NOT react. Night pipeline 9324 -> 5623 (factor 1.66) in one sample, held 136 s, back to 8478. No mode change at all, so there is no day-pipeline measurement - the day curve is INFERRED and pins nothing. What this scenario asserts is the night side: a factor-1.66 step is a real light-on event and something should notice it.\n\nPipeline provenance - night curve: measured, day curve: inferred. A curve marked 'inferred' has no measurement behind it in this window and pins nothing about that pipeline; only the 'measured' side carries evidence. ASSERTION, sharpened: the current build does NOTHING here, so the click budget is set to 2 (the boot verification only). This is deliberately an assertion about what IS, not about what should be: it trips the moment a rework starts noticing this event - and that is exactly when someone should look and raise the value on purpose.",
+  "scale": 30,
+  "duration_s": 360,
+  "initial_mode": "night",
+  "config": {
+    "daynight.day_gain": 768,
+    "daynight.night_gain": 4096
+  },
+  "interp": "step",
+  "noise_pct": 0,
+  "night_gain": [[0, 9324], [4, 9324], [9, 9324], [14, 9324], [19, 9324], [24, 9324], [29, 9324], [34, 9324], [39, 9324], [44, 9324], [49, 9324], [54, 9324], [59, 9324], [64, 9324], [69, 9324], [74, 9324], [79, 9324], [84, 9324], [89, 9324], [94, 9324], [99, 5623], [104, 5623], [109, 5623], [114, 5623], [119, 5623], [124, 5623], [129, 5623], [134, 5623], [139, 5623], [144, 5623], [149, 5623], [154, 5623], [159, 5623], [164, 5623], [169, 5623], [174, 5623], [180, 5623], [185, 5623], [190, 5623], [195, 5623], [200, 5623], [205, 5623], [210, 5623], [215, 5623], [220, 5623], [225, 5623], [230, 5623], [235, 8478], [240, 9286], [245, 9286], [250, 9286], [255, 9286], [260, 9286], [265, 9286], [270, 9286], [275, 9286], [280, 9286], [285, 9286], [290, 9286], [295, 9286], [300, 9286], [305, 9286], [310, 9286], [315, 9286], [320, 9286], [325, 9286], [330, 9286], [335, 9286], [340, 9286], [345, 9286], [350, 9286], [355, 9286], [360, 9286]],
+  "day_gain": [[0, 1200], [360, 1200]],
+  "expect": {
+    "expected_mode": [[0, "night"], [100, "any"], [130, "day"], [231, "any"], [261, "night"]],
+    "max_wrong_mode_s": 200,
+    "max_switches": 2,
+    "monotonicity": "warn"
+  }
+}

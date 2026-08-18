@@ -69,7 +69,7 @@ availability) and links to the deeper `docs/sdk-feature-gaps.md` and
 | [Motion Detection](Motion-Detection.md) | The IVS grid model, sensitivity mapping, the `on_motion` hook, and the T23 software-rotation coordinate caveat |
 | [Recording & Timelapse](Recording-Timelapse.md) | Continuous/motion-triggered SD recording with pre/post-roll, segment rotation, and periodic JPEG timelapse capture |
 | [Day/Night](Day-Night.md) | Automatic day/night switching, decision modes, and the ISP running-mode latch fix |
-| [Day/Night Design Notes](Day-Night-Design-Notes.md) | Why the day/night subsystem keeps needing fixing: the incident record, the restart-equivalence invariant, and the replay-harness plan |
+| [Day/Night Design Notes](Day-Night-Design-Notes.md) | Historical: why the day/night subsystem kept needing fixing — the incident record, the restart-equivalence invariant, and the replay-harness plan that made the 2026-08-17 redesign possible |
 | [Audio](Audio.md) | Capture codecs, the ONVIF-style two-way backchannel, and the system-sound play queue |
 | [Platform & SDK Support](Platform-SDK-Support.md) | Per-SoC capability summary; links to `docs/sdk-feature-gaps.md` and `docs/rotation.md` |
 | [Testing / QA](Testing-QA.md) | `scripts/timps-qa.sh` — what it checks and how to run it against a real camera |

@@ -6,9 +6,10 @@
   "duration_s": 3600,
   "initial_mode": "night",
   "config": {
-    "daynight.total_gain_day_threshold": 300,
-    "daynight.total_gain_night_threshold": 3000,
-    "daynight.night_reconfirm_s": 900
+    "daynight.day_gain": 300,
+    "daynight.night_gain": 3000,
+    "daynight.heartbeat_s": 900,
+    "daynight.heartbeat_max_s": 1800
   },
   "interp": "step",
   "noise_pct": 25,

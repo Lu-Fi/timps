@@ -25,3 +25,7 @@ __pycache__/
 
 # local-only: exposes room locations, private IPs, and subnets - never track
 docs/camera-fleet.md
+
+# privates Sub-Repo: Kamera-Inventar, Messreihen, alles mit Raum-/Personenbezug.
+# Eigenes Git darin; siehe private/README.md
+private/

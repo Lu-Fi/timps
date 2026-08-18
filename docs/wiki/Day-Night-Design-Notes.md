@@ -1,7 +1,21 @@
 # Day/Night — Design Notes
 
+> **Status: historical, and deliberately kept.** This page analysed the
+> machine as it stood on 2026-08-14 and argued for a targeted restructure
+> *once an executable oracle existed*. That oracle was then built (trace
+> recorder, replay harness, scenario corpus), and on **2026-08-17** the file
+> was redesigned rather than restructured — see
+> `dev_notes/DAYNIGHT_REDESIGN_2026-08-17.md` for the new design and
+> [Day/Night](Day-Night.md) for what ships. Read this page for the *evidence*:
+> the twelve incidents, the invariant they all violate (§3), the failure
+> generators (§4) and the harness design (§6) are all still the reason the
+> current code looks the way it does, and any future change should be
+> measured against them. Section 5's "no rewrite" verdict was explicitly
+> conditional on the harness being missing, and that condition no longer
+> holds; section 7's "what not to do" list still does.
+
 [Day/Night](Day-Night.md) documents what `src/daynight.c` *does*. This page
-is about why it keeps needing fixing, and what to change about that. It is a
+is about why it kept needing fixing, and what to change about that. It is a
 working document for whoever touches the file next, not user documentation.
 
 ## Why this page exists
@@ -10,7 +24,7 @@ Of the 17 `fix(daynight):` commits to date, **12 are the same behavioural
 class**: the camera latches into the wrong mode and does not get out, or it
 flips between modes. `53c21b4, c78dbcb, b3eec71, f8a7b21, 0f5fc80, bd21ce6,
 fad4f40, a5dae07, b4a54f0, 43c2b16, 8c8dc1f, 14a1d61`, plus the 2026-08-14
-cam-vorne dawn incident that produced this page.
+cam-L dawn incident that produced this page.
 
 Twelve fixes for one symptom class is a signal about the design, not about the
 fixes. Each of those commits is individually well-reasoned and each closed a
@@ -65,11 +79,11 @@ undifferentiated mass either. They sort into seven generators (five, until two m
 | --- | --- | --- |
 | **A. Actuation / measurement plumbing** — the Set landed mid-ramp, the AE hadn't converged | `53c21b4`, `c78dbcb`, `b3eec71` (part) | **Closed.** No recurrence since 2026-08-02. |
 | **B. A reachable state with no pending decision** | `bd21ce6` (UNKNOWN), `43c2b16` (adopted DAY), `8c8dc1f` (ambiguous probe landing) | **Closed**, and closed *checkably*: after `43c2b16`+`8c8dc1f` every reachable `(cur, verify)` pair has an armed deadline. |
-| **C. A derived bar that goes unsatisfiable** | `f8a7b21`, `a5dae07`(1), 2026-08-14, kinder-links 2026-08-16 | **Open.** Self-reporting since `5423b79`, but kinder-links shows the guard only covers the *sensor's* range: a bar can clear the 256 floor and still sit under everything the scene ever reads. |
+| **C. A derived bar that goes unsatisfiable** | `f8a7b21`, `a5dae07`(1), 2026-08-14, cam-H 2026-08-16 | **Open.** Self-reporting since `5423b79`, but cam-H shows the guard only covers the *sensor's* range: a bar can clear the 256 floor and still sit under everything the scene ever reads. |
 | **D. Two guards validating each other** | `0f5fc80`, `14a1d61` | **Open.** |
-| **E. The evidence model is missing a dimension** | `b4a54f0`, 2026-08-14, kinder-links 2026-08-16 | **Half closed.** The unverified-day revert (`19dcd74`) and `probe_backoff` are trend-aware; the latter only genuinely so since 2026-08-16, when the suspension stopped being a snapshot predicate. The brightening hold's ratchet is still level-only. |
-| **F. A property stated over one snapshot** | kinder-links 2026-08-16 | **Open**, and newly named. The defect is in the oracle, not the machine: purity bought counterfactual reach, not temporal claims. See §4F. |
-| **G. The corpus cannot falsify what its noise model cannot express** | min_smooth_since_probe 2026-08-16, Schlafzimmer 2026-08-16 | **Open**, named the day the fix for F shipped with a bug its own green corpus could not see. See §4G. |
+| **E. The evidence model is missing a dimension** | `b4a54f0`, 2026-08-14, cam-H 2026-08-16 | **Half closed.** The unverified-day revert (`19dcd74`) and `probe_backoff` are trend-aware; the latter only genuinely so since 2026-08-16, when the suspension stopped being a snapshot predicate. The brightening hold's ratchet is still level-only. |
+| **F. A property stated over one snapshot** | cam-H 2026-08-16 | **Open**, and newly named. The defect is in the oracle, not the machine: purity bought counterfactual reach, not temporal claims. See §4F. |
+| **G. The corpus cannot falsify what its noise model cannot express** | min_smooth_since_probe 2026-08-16, cam-D 2026-08-16 | **Open**, named the day the fix for F shipped with a bug its own green corpus could not see. See §4G. |
 
 That table is the substance of my disagreement with the "these mechanisms now
 interact combinatorially, producing edge cases faster than patches retire
@@ -94,8 +108,8 @@ remarked on:
 
 > **A service restart fixes it.**
 
-`cam-wohn` 2026-08-03. Schuppen 2026-08-13 — *"only a manual service restart
-(which replants the baseline from scratch) recovered it"*. cam-vorne
+`cam-E` 2026-08-03. A dim outbuilding 2026-08-13 — *"only a manual service restart
+(which replants the baseline from scratch) recovered it"*. cam-L
 2026-08-14 — restarted at 08:07 and switched to day within ten seconds, off
 gain **257**, the very same reading it had been calling night for four hours.
 
@@ -157,7 +171,7 @@ Note the shape: the ratchet is a *geometric* sequence. Each dawn probe latches
 demands another `day_gain_pct`% below that. On any camera whose dawn ramp
 carries the night-pipeline gain toward the floor, the ratchet **will**
 eventually demand a gain below the floor. That is not an edge case; it is the
-terminal state of the recursion, reached on cam-vorne after four probes.
+terminal state of the recursion, reached on cam-L after four probes.
 
 > **Rule: any bar derived from a measurement must be checked against the
 > measurement's physical range, and an unsatisfiable bar must be logged.**
@@ -168,7 +182,7 @@ Cheapest useful action in the whole file: a `dn_bar_reachable()` helper plus a
 disabled"* at 06:20:29, four hours before anyone noticed by eye. Done in
 `5423b79`.
 
-**Amendment, kinder-links 2026-08-16 — the rule as written is too weak.** A
+**Amendment, cam-H 2026-08-16 — the rule as written is too weak.** A
 bar can clear the sensor's floor by a wide margin and still be unreachable,
 because the range that matters is not the sensor's, it is *the scene's*. On
 that camera the ratchet latched at the room's ordinary resting night level
@@ -185,7 +199,7 @@ hardware could never have caught it:
 > If the fraction that defines the bar was borrowed from a test answering a
 > different question, that is the bug — fix the derivation, not the guard.**
 
-**Second amendment, Schlafzimmer 2026-08-16 (~10:03–11:28) — the guard was
+**Second amendment, cam-D 2026-08-16 (~10:03–11:28) — the guard was
 checking a different number from the gate it guards.** `dn_bar_check()` was
 handed the *nominal* bar, `baseline * (100+pct)/200`, while the comparison that
 actually gates the hold is that bar times `DN_BRIGHTEN_MARGIN`. At
@@ -219,9 +233,9 @@ daylight. Measured on 2026-08-16, all within a few hours:
 
 | camera | threshold | best day-pipeline gain | ratio |
 | --- | --- | --- | --- |
-| Schlafzimmer | 300 (default) | — (fixed by hand to 700) | — |
-| Wohnzimmer `.241.204` | 300 (default) | 531 (from 700 → 591 → 531) | 1.77× |
-| Wohnzimmer-Ofen `.10.224` | 450 | 2250 (from 3299 → 2629 → 2250) | 5.0× |
+| cam-D | 300 (default) | — (fixed by hand to 700) | — |
+| cam-E `192.168.1.100` | 300 (default) | 531 (from 700 → 591 → 531) | 1.77× |
+| cam-F `192.168.1.100` | 450 | 2250 (from 3299 → 2629 → 2250) | 5.0× |
 
 The machine's *behaviour* is correct in all three: the day pipeline is the
 trustworthy judge, it judged "not day", and night is the recoverable side. What
@@ -257,8 +271,8 @@ more ambitious fix and it does subsume the arithmetic, but it is wrong here for
 a measured reason. `night_baseline <= 0` is not a neutral state: the skip
 gate's `can_judge` requires a baseline, so refusing to plant makes
 `solidly_night` permanently false and *every* periodic reconfirm fire a
-physical probe. On the exact camera class this would target — cam-wyze-pan and
-the cam-wyze closet, resting at 256–268 — that converts roughly zero clicks a
+physical probe. On the exact camera class this would target — cam-J and
+the cam-K closet, resting at 256–268 — that converts roughly zero clicks a
 night into one per `night_reconfirm_s`, i.e. it re-creates the complaint the
 skip gate was written for (`2026-08-04`, *"das klacken der IR blende nervt"*).
 Flooring the planted baseline instead of refusing it fares no better: it
@@ -288,7 +302,7 @@ confirm each other instead of either being the other's escape hatch.
 - `14a1d61`: the baseline drifts toward `smooth_tg`, and the skip gate's
   "solidly night" bar is derived from the baseline — so over hours the bar
   chased the (day-level) gain down and "still deep in night" stayed true.
-- kinder-links 2026-08-16: the same chase in the **third** consumer, the
+- cam-H 2026-08-16: the same chase in the **third** consumer, the
   sustained-brightening hold, and the fastest-acting instance of it by a wide
   margin. The hold's bar is `(100+pct)/200` of the baseline, so it sits 22.4 %
   away; `DN_BASELINE_ALPHA` closes 22.4 % in about **25 s**, against a
@@ -351,7 +365,7 @@ Two more places are still level-only and demonstrably shouldn't be:
   `DN_BRIGHTEN_MARGIN` of the frozen `probe_fail_smooth`, the multiplier is
   suspended and the deadline falls back to one plain `night_reconfirm_s`
   after arming. Note the reference point it needed was already in the file and
-  already frozen — generator D's rule supplied it. On cam-vorne the backoff
+  already frozen — generator D's rule supplied it. On cam-L the backoff
   hit its ×4 cap at 05:58 *while gain was falling through three orders of
   magnitude*, and that cap is what turned a bad revert into a four-hour
   outage; corpus scenario 08 now measures the difference (recovery at 1276 s
@@ -361,7 +375,7 @@ Two more places are still level-only and demonstrably shouldn't be:
   suspension read the *instantaneous* `smooth_tg`, which means it was still a
   level test sampled at an instant — generator E's own defect, reintroduced
   inside generator E's own fix. It therefore un-fired as readily as it fired.
-  On kinder-links it suspended an ×4 backoff at 23:21:08 (gain 1599 against a
+  On cam-H it suspended an ×4 backoff at 23:21:08 (gain 1599 against a
   1653 anchor), pulling the reconfirm from 03:12 in to 00:12; the room then
   dimmed on its own, the predicate went false, and the four hours came
   straight back — long before the deadline it had pulled in. The evidence had
@@ -493,7 +507,7 @@ collapse is behaviour-preserving.
 
 ### Step 0 — there is no trace to replay
 
-Checked on cam-vorne 2026-08-14: no gain recorder exists anywhere on the
+Checked on cam-L 2026-08-14: no gain recorder exists anywhere on the
 camera, nothing but syslog lines. Every past *"verified against timpsd-sim"*
 was therefore a **hand-reconstructed scenario**, not a replay of recorded
 data — including the verification of the 2026-08-14 fix itself. That is the
@@ -598,7 +612,7 @@ floor 256).
    property that would have caught it. Corpus scenario 10.
 8. ~~**Give the failure ratchet its own margin** (generator C, extended).~~ —
    done, 2026-08-16: `DN_RATCHET_MARGIN` (one quarter stop) instead of
-   borrowing `day_gain_pct`. Pinned by the `kinder-links B1` cases in the
+   borrowing `day_gain_pct`. Pinned by the `cam-H B1` cases in the
    property test — both that a 21 % brightening can now start a hold, and that
    an identical re-dip still cannot.
 9. ~~**Stop the brightening hold's bar being derived from the drifting
@@ -609,7 +623,7 @@ floor 256).
    caught, since the first version of it walked `fad4f40`'s probe volley down
    corpus 09's dawn ramp.
 10. ~~**Hand the generator-C guard the value the gate uses** (`dn_hold_gate()`).~~
-    — done, 2026-08-16 after the Schlafzimmer incident. One definition, called
+    — done, 2026-08-16 after the cam-D incident. One definition, called
     by the schedule and both guard call sites, because the arithmetic error was
     only possible while the guard re-derived the bar itself.
 11. ~~**Make `min_smooth_since_probe` noise-safe** (generator G).~~ — done,
@@ -679,7 +693,7 @@ Next candidates, in the same spirit: the brightening hold's ratchet is the
 last level-only test generator E names — `DN_RATCHET_MARGIN` corrected its
 scale but it is still a threshold, not a trend — and `night_baseline` still
 feeds three consumers while drifting under all three (the generator-D audit).
-kinder-links put a sharper edge on that last one: on the night in question the
+cam-H put a sharper edge on that last one: on the night in question the
 hold was blocked not by the ratchet but by the *baseline-relative* arming
 margin, because the baseline had already drifted down to chase the very
 brightening the hold was meant to notice. That is `14a1d61` again, in the one
@@ -700,7 +714,7 @@ that the next one added has to justify itself.
 
 One more sensitivity fact worth recording rather than discovering again: the
 debounce on the minimum means a dip must be deeper than the scene's own noise
-band to latch. The real kinder-links 23:21 dip (1599 against a 1653 anchor,
+band to latch. The real cam-H 23:21 dip (1599 against a 1653 anchor,
 3.3%) would **not** latch under realistic AGC noise. That is the correct trade —
 the alternative is no working backoff on any camera — and the periodic
 reconfirm still bounds recovery at one `night_reconfirm_s`. But it means corpus
