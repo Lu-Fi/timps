@@ -1,0 +1,80 @@
+# Mirror docs/wiki/ into the GitHub wiki.
+#
+# WHY THIS EXISTS: the wiki was populated once, by hand, in a single import
+# commit - and then never again. It drifted silently: a page added to
+# docs/wiki/ on main sat there for days while the wiki a visitor actually
+# reads had no such page and an index that did not list it. Nothing warns you,
+# because the wiki is a separate git repository that no normal push touches.
+#
+# docs/wiki/ is the single source of truth. This job makes the wiki a copy of
+# it, including deletions - see the --delete note below.
+name: Sync wiki
+
+on:
+  push:
+    branches: [main]
+    paths: ['docs/wiki/**']
+  # Manual run, for the first sync after a drift and for testing.
+  workflow_dispatch:
+
+# One sync at a time: two concurrent runs would race on the same wiki repo and
+# the loser would fail its push. Queue instead of cancelling, so the last
+# content state always wins rather than an arbitrary interrupted one.
+concurrency:
+  group: wiki-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The default GITHUB_TOKEN cannot push to <repo>.wiki.git - wikis sit
+      # outside the permissions that token grants, so this needs a PAT stored
+      # as the WIKI_SYNC_TOKEN secret (classic token with `repo`, or a
+      # fine-grained token for this repository). Fail loudly and explain,
+      # rather than dying in `git push` with an opaque 403.
+      - name: Check the token is configured
+        env:
+          WIKI_SYNC_TOKEN: ${{ secrets.WIKI_SYNC_TOKEN }}
+        run: |
+          if [ -z "$WIKI_SYNC_TOKEN" ]; then
+            echo "::error::Secret WIKI_SYNC_TOKEN is not set."
+            echo "The built-in GITHUB_TOKEN cannot write to a wiki repository."
+            echo "Create a personal access token with repo scope and add it as"
+            echo "the repository secret WIKI_SYNC_TOKEN."
+            exit 1
+          fi
+
+      - name: Clone the wiki
+        env:
+          WIKI_SYNC_TOKEN: ${{ secrets.WIKI_SYNC_TOKEN }}
+        run: |
+          git clone --depth 1 \
+            "https://x-access-token:${WIKI_SYNC_TOKEN}@github.com/${GITHUB_REPOSITORY}.wiki.git" \
+            wiki
+
+      # --delete makes docs/wiki/ authoritative: a page removed here is removed
+      # there, and a page edited through the wiki web UI is overwritten on the
+      # next sync. That is the intended contract - a mirror that only ever adds
+      # would drift back into the state this workflow exists to prevent - but it
+      # does mean the web UI is read-only in practice. Edit docs/wiki/ instead.
+      - name: Copy docs/wiki into the wiki working tree
+        run: rsync -a --delete --exclude '.git' docs/wiki/ wiki/
+
+      - name: Commit and push if anything changed
+        working-directory: wiki
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet && git diff --cached --quiet && [ -z "$(git status --porcelain)" ]; then
+            echo "Wiki already matches docs/wiki - nothing to do."
+            exit 0
+          fi
+          git add -A
+          git commit -m "Sync wiki from docs/wiki (${GITHUB_SHA::7})"
+          git push
