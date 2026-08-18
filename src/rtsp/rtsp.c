@@ -35,6 +35,18 @@
 #ifndef MS_RTSP_QCAP
 #define MS_RTSP_QCAP 64
 #endif
+/* Bound how long a single INCOMPLETE control request may stay pending.
+ * SO_RCVTIMEO (30 s, set on accept) only limits one recv() and re-arms on
+ * every byte that arrives, so a client trickling one byte every 29 s never
+ * trips it and can pin one of RTSP_MAX_CLIENTS slots for hours without ever
+ * finishing a request - eight such connections lock RTSP out entirely.
+ * mp4/httpd.c closes the same hole with its 5 s header deadline. Idle time
+ * BETWEEN complete requests is deliberately NOT bounded here: gaps are
+ * normal on a control connection and SO_RCVTIMEO already covers a peer that
+ * goes fully silent. */
+#ifndef RTSP_REQ_TIMEOUT_US
+#define RTSP_REQ_TIMEOUT_US (10*1000000LL)
+#endif
 /* A3: RTSP session keepalive timeout, advertised as ";timeout=" in every
  * SETUP response's Session header (RFC 2326 12.37; 60 s is also the RFC
  * default when the parameter is absent, so this only makes explicit what
@@ -1413,11 +1425,13 @@ static void *client_thread(void *arg)
 #endif
     char buf[4096];
     int have=0, playing=0;
+    int64_t req_start = 0;      /* when the bytes now in buf first arrived */
 
     /* control phase: read requests until PLAY */
     while (!playing) {
         int n = r_recv(s, buf+have, (int)sizeof(buf)-1-have, 0);
         if (n<=0) goto done;
+        if (!have) req_start = ms_now_us();      /* start of a new request */
         have += n; buf[have]=0;
         char *end;
         while ((end = strstr(buf, "\r\n\r\n")) != NULL) {
@@ -1442,8 +1456,15 @@ static void *client_thread(void *arg)
             int r = handle_request(s, req);
             memmove(buf, buf+reqlen, have-reqlen+1);
             have -= reqlen;
+            req_start = ms_now_us();   /* any leftover starts its own clock */
             if (r < 0) goto done;
             if (r == 1) { playing=1; break; }
+        }
+        /* anything still buffered is an incomplete request - bound it */
+        if (have && ms_now_us() - req_start > RTSP_REQ_TIMEOUT_US) {
+            LOGW(MOD,"control request incomplete after %llds, closing",
+                 (long long)(RTSP_REQ_TIMEOUT_US/1000000LL));
+            goto done;
         }
     }
 

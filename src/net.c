@@ -17,14 +17,6 @@ static void net_cloexec(int fd)
     if (f >= 0) fcntl(fd, F_SETFD, f | FD_CLOEXEC);
 }
 
-int net_set_nonblock(int fd, int on)
-{
-    int fl = fcntl(fd, F_GETFL, 0);
-    if (fl < 0) return -1;
-    if (on) fl |= O_NONBLOCK; else fl &= ~O_NONBLOCK;
-    return fcntl(fd, F_SETFL, fl);
-}
-
 int net_set_nodelay(int fd)
 {
     int one = 1;

@@ -10,7 +10,6 @@ int  net_listen_tcp(int port, int backlog);      /* returns listening fd or -1 *
  * (daynight/motion) don't inherit live client sockets; returns fd or -1 */
 int  net_accept_cloexec(int lfd, struct sockaddr *sa, socklen_t *sl);
 int  net_udp_socket(void);                        /* unbound udp socket */
-int  net_set_nonblock(int fd, int on);
 int  net_set_nodelay(int fd);
 /* SO_RCVTIMEO/SO_SNDTIMEO in seconds (0 = leave unset); recv()/send() then
  * fail with EAGAIN after that long blocked, so silent clients get dropped */

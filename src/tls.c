@@ -11,6 +11,23 @@
 #include <mbedtls/pk.h>
 #include <mbedtls/version.h>
 
+/* One ms_tls_ctx holds ONE mbedtls_ctr_drbg_context, seeded once in
+ * ms_tls_ctx_new(). Every accepted connection then draws from that same DRBG
+ * from its own thread (handshake, key exchange, and mbedtls_pk_parse_keyfile on
+ * mbedTLS 3.x). mbedTLS only serialises its internal state when it is built
+ * with MBEDTLS_THREADING_C; without it, concurrent handshakes race on the DRBG
+ * - which corrupts the very state that is supposed to produce unpredictable
+ * output, and does so silently. There is no runtime check for this, so fail the
+ * BUILD instead of shipping a TLS server that is unsafe under exactly the load
+ * it exists for. Give the reader the two ways out rather than just a refusal.
+ * No extra include needed: <mbedtls/version.h> above already pulls in the
+ * config (mbedtls/config.h on 2.x, mbedtls/build_info.h on 3.x), so the macro
+ * is visible either way - and including build_info.h directly would break 2.x,
+ * which this file still supports via its MBEDTLS_VERSION_MAJOR branches. */
+#if !defined(MBEDTLS_THREADING_C)
+#error "timps USE_TLS needs an mbedTLS built with MBEDTLS_THREADING_C: one CTR_DRBG is shared across all connection threads and mbedTLS will not lock it otherwise. Rebuild mbedTLS with MBEDTLS_THREADING_C (plus MBEDTLS_THREADING_PTHREAD), or build timps with USE_TLS=0."
+#endif
+
 #include <string.h>
 #include <stdlib.h>
 #include <sys/socket.h>

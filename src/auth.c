@@ -74,6 +74,14 @@ int auth_rtsp_digest(const char *method, const char *req_uri, const char *value,
     if (!field(d,"uri",uri,sizeof uri)) return 0;
     if (!field(d,"response",resp,sizeof resp)) return 0;
     if (strcmp(u,user)!=0) return 0;
+    /* the realm is a hash input (HA1), so it is the server's value to state,
+     * not the client's to choose. This is not a bypass while HA1 is derived
+     * from the cleartext password per request - a forged realm changes both
+     * sides of the comparison alike, so the client still needs the password -
+     * but a client echoing a realm we never issued has no business
+     * authenticating, and every legitimate client returns exactly what the
+     * 401 offered. realm is public request data, so plain strcmp. */
+    if (strcmp(realm, AUTH_REALM)!=0) return 0;
     /* the client's digest "uri" must be the URI actually requested (the
      * request-line target), else HA2 is computed over an attacker-chosen
      * string and a response sniffed for one URI replays against another.
@@ -140,6 +148,8 @@ int auth_http_digest(const char *method, const char *req_uri, const char *value,
         if (!field(d,"cnonce",cnonce,sizeof cnonce)) return 0;
     }
     if (strcmp(u,user)!=0) return 0;
+    /* bind the realm to the one we advertise, as in auth_rtsp_digest above */
+    if (strcmp(realm, AUTH_REALM)!=0) return 0;
 
     char buf[768], ha1[33], ha2[33], expect[33];
     snprintf(buf,sizeof buf,"%s:%s:%s",user,realm,pass);        md5_hex(buf,ha1);
