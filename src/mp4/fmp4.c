@@ -229,7 +229,12 @@ static void write_avc_hev_sample_entry(ms_buf *b, fmp4_mux *m)
     /* codec config box */
     const char *cfgtype = (m->vcodec==MS_VC_H264) ? "avcC" : "hvcC";
     size_t c = box_open(b, cfgtype);
-    vparam_mp4_config(&m->vp, b);
+    /* An SPS shorter than 4 bytes makes avcc() bail, leaving an EMPTY avcC box
+     * (8 bytes, no profile/level/SPS/PPS). Without this check b->err stayed 0,
+     * fmp4_init_segment() reported success, and the client got 200 OK with a
+     * moov no decoder can start from - a silent black stream. Fold the failure
+     * into ms_buf's sticky error so the existing bail-out path handles it. */
+    if (vparam_mp4_config(&m->vp, b) != 0) b->err = 1;
     box_close(b, c);
     box_close(b, p);
 }
