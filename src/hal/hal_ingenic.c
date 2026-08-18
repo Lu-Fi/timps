@@ -1330,6 +1330,60 @@ static int au_is_key(int codec, const uint8_t *au, size_t len)
     return 0;
 }
 
+/* Assemble the packs of one encoder stream into dst (capacity cap); returns the
+ * assembled length and SETS (never clears) *overflow if a pack or its start
+ * code did not fit, in which case the caller must drop the frame rather than
+ * publish a truncated, syntactically-corrupt AU.
+ *
+ * want_start_codes is the only thing that ever differed between the video and
+ * the JPEG path: H.264/H.265 access units must come out Annex-B, JPEG must not
+ * gain four bytes it never asked for. Everything else - the address-convention
+ * #ifdef and the ring-buffer reasoning below - was duplicated verbatim in both
+ * loops, i.e. two places to keep right for one piece of libimp behaviour.
+ *
+ * L6 (Low, hardening): the vendor samples (and prudynt-t) treat the new-API
+ * stream buffer as a RING and split a pack that wraps past streamSize into two
+ * memcpys. We copy contiguously from virAddr+offset and do not - which is
+ * PROVEN correct for the bundled T31 1.1.6 libimp rather than assumed:
+ * update_one_frmstrm (@0x829d8 in 3rdparty/install/lib/libimp.so) compacts the
+ * AL5 sections, pulls the header sections in front of the slice data, points
+ * virAddr at the start of that compact block (@0x82cc4) and then REWRITES the
+ * pack offsets as a running sum of the lengths (@0x82cd8-0x82cf8). A pack with
+ * offset+length > streamSize cannot come out of that.
+ *
+ * For C100/T40/T41 it stays unverified - T41 1.2.5 exports a function of the
+ * same name, which is not proof - and those libimps are not in this tree to
+ * check. The cheap remSize idiom would decouple the assumption from the libimp
+ * version; left undone because it would be an untested branch in the hot
+ * per-packet path, which is its own risk. If a wrap ever does occur the symptom
+ * is a corrupt AU, not a crash - look here first. */
+static size_t enc_assemble_packs(const IMPEncoderStream *st, uint8_t *dst,
+                                 size_t cap, int want_start_codes, int *overflow)
+{
+    size_t len = 0;
+    for (uint32_t i=0;i<st->packCount;i++){
+#ifdef ENC_NEW_API
+        const uint8_t *p=(const uint8_t*)(uintptr_t)st->virAddr + st->pack[i].offset;
+#else
+        const uint8_t *p=(const uint8_t*)(uintptr_t)st->pack[i].virAddr;
+#endif
+        size_t l=st->pack[i].length;
+        if (l==0) continue;
+        if (want_start_codes){
+            /* guarantee Annex-B: prepend a start code if the pack lacks one */
+            int has_sc = (l>=3 && p[0]==0 && p[1]==0 &&
+                          (p[2]==1 || (l>=4 && p[2]==0 && p[3]==1)));
+            if (!has_sc){
+                if (len+4<=cap){ dst[len++]=0; dst[len++]=0; dst[len++]=0; dst[len++]=1; }
+                else *overflow=1;
+            }
+        }
+        if (len+l<=cap){ memcpy(dst+len,p,l); len+=l; }
+        else *overflow=1;
+    }
+    return len;
+}
+
 /* Fix 1 / A1: capture-accurate, strictly-monotonic publish timestamp, shared by
  * every video channel and the audio thread (each with its own pts_sanitizer).
  *
@@ -1659,45 +1713,8 @@ static void *video_thread(void *arg)
         }
         uint8_t *au = pk->data;
         size_t   au_cap = pk->cap;
-        size_t aulen=0;
         int overflow=0;
-        /* L6 (Low, hardening; the JPEG assembly loop further down has the
-         * same shape): the vendor samples (and prudynt-t) treat the new-API
-         * stream buffer as a RING and split a pack that wraps past streamSize
-         * into two memcpys. We copy contiguously from virAddr+offset and do not
-         * - which is PROVEN correct for the bundled T31 1.1.6 libimp rather
-         * than assumed: update_one_frmstrm (@0x829d8 in
-         * 3rdparty/install/lib/libimp.so) compacts the AL5 sections, pulls the
-         * header sections in front of the slice data, points virAddr at the
-         * start of that compact block (@0x82cc4) and then REWRITES the pack
-         * offsets as a running sum of the lengths (@0x82cd8-0x82cf8). A pack
-         * with offset+length > streamSize cannot come out of that.
-         *
-         * For C100/T40/T41 it stays unverified - T41 1.2.5 exports a function
-         * of the same name, which is not proof - and those libimps are not in
-         * this tree to check. The cheap remSize idiom would decouple the
-         * assumption from the libimp version; left undone because it would be
-         * an untested branch in the hot per-packet path, which is its own risk.
-         * If a wrap ever does occur the symptom is a corrupt AU, not a crash -
-         * look here first. */
-        for (uint32_t i=0;i<st.packCount;i++){
-#ifdef ENC_NEW_API
-            const uint8_t *p=(const uint8_t*)(uintptr_t)st.virAddr + st.pack[i].offset;
-#else
-            const uint8_t *p=(const uint8_t*)(uintptr_t)st.pack[i].virAddr;
-#endif
-            size_t l=st.pack[i].length;
-            if (l==0) continue;
-            /* guarantee Annex-B: prepend a start code if the pack lacks one */
-            int has_sc = (l>=3 && p[0]==0 && p[1]==0 &&
-                          (p[2]==1 || (l>=4 && p[2]==0 && p[3]==1)));
-            if (!has_sc){
-                if (aulen+4<=au_cap){ au[aulen++]=0; au[aulen++]=0; au[aulen++]=0; au[aulen++]=1; }
-                else overflow=1;
-            }
-            if (aulen+l<=au_cap){ memcpy(au+aulen,p,l); aulen+=l; }
-            else overflow=1;
-        }
+        size_t aulen = enc_assemble_packs(&st, au, au_cap, 1, &overflow);
         /* Defensive: need is a strict upper bound on aulen so this is
          * unreachable; if a pool/SDK anomaly ever tripped it, drop the frame
          * (and return the pooled buffer) rather than publish a truncated AU. */
@@ -2672,18 +2689,8 @@ static void *jpeg_thread(void *arg)
         }
         uint8_t *jbuf = pk->data;
         size_t   jcap = pk->cap;
-        size_t jlen=0;
         int overflow=0;
-        for (uint32_t i=0;i<st.packCount;i++){
-#ifdef ENC_NEW_API
-            const uint8_t *p=(const uint8_t*)(uintptr_t)st.virAddr + st.pack[i].offset;
-#else
-            const uint8_t *p=(const uint8_t*)(uintptr_t)st.pack[i].virAddr;
-#endif
-            size_t l=st.pack[i].length;
-            if (jlen+l<=jcap){ memcpy(jbuf+jlen,p,l); jlen+=l; }
-            else overflow=1;
-        }
+        size_t jlen = enc_assemble_packs(&st, jbuf, jcap, 0, &overflow);
         /* Defensive: jneed is a strict upper bound on jlen, so unreachable;
          * drop (and return the pooled buffer) rather than publish/save truncated. */
         if (overflow){
