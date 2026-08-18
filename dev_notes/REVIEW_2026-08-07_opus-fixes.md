@@ -1,81 +1,81 @@
-# Adversariales Review – Opus-Fixes zu den Audits vom 2026-08-07
+# Adversarial Review – Opus Fixes to the Audits from 2026-08-07
 
-**Datum:** 2026-08-07
-**Prüfgegenstand:** uncommitteter Diff im Worktree `agent-a879c6c77c61abd29` (Basis = `main` @ `074e8f5`, 16 Dateien, +542/−162), erstellt von Opus als Umsetzung von `CODE_AUDIT_2026-08-07.md` (A1/A2/A3/A6), `config-completeness-audit-2026-08-07.md` (F-01…F-10), `PERFORMANCE_AUDIT_2026-08-07.md` (P-03/P-04/P-08) und dem sdk-feature-gaps-Refresh.
-**Methode:** vollständige Diff-Lektüre, gezielte Hand-Nachprüfung aller fünf von Opus selbst markierten Risikostellen, Leftover-Greps auf jede Snapshot-Refaktorierung, eigener Build (`make sim`, `make test-auth`) **und** eigener `-fsyntax-only`-Lauf der drei Nicht-Sim-Dateien gegen die T31-1.1.6-Header (Behauptungen nicht geglaubt, sondern reproduziert).
-
----
-
-## Gesamturteil
-
-**Merge-fähig.** Kein blockierender Befund. Alle im Opus-Report behaupteten Fixes sind im Diff tatsächlich und korrekt vorhanden; die fünf Risikostellen halten der Tiefenprüfung stand. Die explizit übersprungenen Posten (P-01, P-02, SDK #5/#6) sind sauber übersprungen — **kein** halb angefangener Code, keine toten Reste. Zwei neue NIEDRIG/INFO-Befunde (R-01, R-02), nichts davon merge-blockierend.
-
-Builds selbst verifiziert: `make sim` **warnungsfrei** (`-Wall -Wextra`, C11), `make test-auth` **PASS=4 FAIL=0 SKIP=2** (identisch zur Audit-Baseline). `imp_osd.c`/`hal_ingenic.c`/`speaker.c` bestehen `-fsyntax-only` gegen T31-Header warnungsfrei (eigener Lauf, nicht der von Opus).
+**Date:** 2026-08-07
+**Subject:** an uncommitted diff in worktree `agent-a879c6c77c61abd29` (base = `main` @ `074e8f5`, 16 files, +542/-162), produced by Opus as the implementation of `CODE_AUDIT_2026-08-07.md` (A1/A2/A3/A6), `config-completeness-audit-2026-08-07.md` (F-01...F-10), `PERFORMANCE_AUDIT_2026-08-07.md` (P-03/P-04/P-08), and the sdk-feature-gaps refresh.
+**Method:** a full reading of the diff, targeted hand-verification of all five risk points Opus itself flagged, leftover greps for every snapshot refactor, an own build (`make sim`, `make test-auth`), **and** an own `-fsyntax-only` run of the three non-sim files against the T31 1.1.6 headers (claims were not taken on faith, but reproduced).
 
 ---
 
-## Verdikt je Posten
+## Overall Verdict
+
+**Mergeable.** No blocking finding. Every fix claimed in the Opus report is actually and correctly present in the diff; the five risk points hold up under deep inspection. The items explicitly skipped (P-01, P-02, SDK #5/#6) are cleanly skipped — **no** half-started code, no dead leftovers. Two new LOW/INFO findings (R-01, R-02), none of them merge-blocking.
+
+Builds verified independently: `make sim` **warning-free** (`-Wall -Wextra`, C11), `make test-auth` **PASS=4 FAIL=0 SKIP=2** (identical to the audit baseline). `imp_osd.c`/`hal_ingenic.c`/`speaker.c` pass `-fsyntax-only` against the T31 headers warning-free (an independent run, not Opus's).
+
+---
+
+## Verdict per Item
 
 ### Tier 1
 
-| Posten | Verdikt | Nachweis |
+| Item | Verdict | Evidence |
 | --- | --- | --- |
-| A2 – OSD-Rotation auf `g_cfg_boot` (5 Stellen) | ✅ **BESTÄTIGT** | grep: **kein** `g_hcfg->video[..].rotation`-Rest in imp_osd.c; alle 5 Stellen (osd_rot_place :207, refresh_text :268, setup_logo :313, setup_cover :359, Setup-Warnung :411) auf `g_cfg_boot`. `g_cfg_boot` via `imp_osd.h → ../config.h` sichtbar; `config_snapshot_boot()` (main.c:107) läuft vor HAL-Setup und vor `record_start`/`timelapse_start` (main.c:160-161) — keine Read-before-Snapshot-Lücke. |
-| A2-Scope-Erweiterung (5 statt 3 Stellen) | ✅ **korrekt, kein Overreach** | `setup_cover` (Privacy-Höhen-Clamp + Even-Align) und die Setup-Warnung hängen von der Rotation ab, die der **laufende** Encoder produziert — exakt dieselbe restart-only-Semantik und dieselbe Race-Klasse wie die drei im Audit genannten Stellen. Das Audit hat die zwei schlicht übersehen; die Erweiterung ist die vollständigere Umsetzung desselben Fixes. |
-| F-01 – `sensor.*`-Clamps | ✅ **BESTÄTIGT** | i2c_addr 0–0x7F (7-Bit-Adressraum vollständig), fps 0–120, width/height 0–8192; lo=0 erhält die „0 = auto“-Semantik. Clamp greift tabellengetrieben für Datei-Load **und** POST. |
-| A1/F-02/F-03 – C11-Sweep-Vervollständigung | ✅ **BESTÄTIGT** | Leftover-Greps sauber: alle verbliebenen `g_rc->record.*`/`g_tc->timelapse.*`-Reads liegen **innerhalb** von Lock-Blöcken (Strings :180/:231-232/:123/:160-161; Status/Clip-Ints in den neuen Lock-Blöcken :604-607/:650-651/:349-351). `rec_thread`-Snapshot korrekt durch `want_run`/`want_write`/`motion_recent`/`seg_open`/`prune_free` gefädelt (Signaturen an allen Aufrufstellen nachgezogen, `(void)rc` im `!USE_CONTROL`-Stub). timelapse analog. speaker.c/hal_ingenic.c/rtsp.c/Status-Accessoren: Lock+Copy vorhanden, Rest der jeweiligen Funktion nutzt konsistent die lokale Kopie. `control_get_json`: **kein** `c->image.*`/`c->audio.*`-Rest (grep leer). |
-| `apply_mu` in `control_apply_json` | ✅ **BESTÄTIGT — deadlockfrei** | Vollständige Return-Enumeration der Funktion (control.c:357-659): exakt **drei** Ausgänge — (1) `!json`-Early-Return **vor** dem Lock, (2) OOM-Pfad mit `unlock` vor `return` (:425), (3) Funktionsende mit `unlock` (:658). Kein `goto`, kein weiterer `return`. Lock-Ordnung geprüft: `apply_mu → config_str_lock` bzw. `apply_mu → speaker-g_lock → config_str_lock`; `config_str_lock` ist rekursiv und umschließt nirgends einen Call in speaker/control zurück — keine Inversion. |
-| A6 – zwei Kommentare | ✅ **BESTÄTIGT** | config.c-Doktrin-Kommentar ersetzt (widerspricht config.h nicht mehr), control.c `on_motion` jetzt korrekt fork+execlp. |
+| A2 – OSD rotation moved to `g_cfg_boot` (5 sites) | ✅ **CONFIRMED** | grep: **no** remaining `g_hcfg->video[..].rotation` in imp_osd.c; all 5 sites (osd_rot_place :207, refresh_text :268, setup_logo :313, setup_cover :359, the setup warning :411) now use `g_cfg_boot`. `g_cfg_boot` is visible via `imp_osd.h → ../config.h`; `config_snapshot_boot()` (main.c:107) runs before HAL setup and before `record_start`/`timelapse_start` (main.c:160-161) — no read-before-snapshot gap. |
+| A2 scope expansion (5 instead of 3 sites) | ✅ **correct, not overreach** | `setup_cover` (privacy-mask height clamp + even-align) and the setup warning both depend on the rotation the **running** encoder produces — exactly the same restart-only semantics and the same race class as the three sites named in the audit. The audit simply overlooked these two; the expansion is the more complete implementation of the same fix. |
+| F-01 – `sensor.*` clamps | ✅ **CONFIRMED** | i2c_addr 0-0x7F (the full 7-bit address space), fps 0-120, width/height 0-8192; lo=0 preserves the "0 = auto" semantics. The clamp applies table-driven for both file load **and** POST. |
+| A1/F-02/F-03 – completion of the C11 sweep | ✅ **CONFIRMED** | Leftover greps are clean: all remaining `g_rc->record.*`/`g_tc->timelapse.*` reads sit **inside** lock blocks (strings :180/:231-232/:123/:160-161; status/clip ints in the new lock blocks :604-607/:650-651/:349-351). The `rec_thread` snapshot is correctly threaded through `want_run`/`want_write`/`motion_recent`/`seg_open`/`prune_free` (signatures updated at every call site, `(void)rc` in the `!USE_CONTROL` stub). timelapse analogous. speaker.c/hal_ingenic.c/rtsp.c/status accessors: lock+copy present, the rest of each function consistently uses the local copy. `control_get_json`: **no** remaining `c->image.*`/`c->audio.*` (grep empty). |
+| `apply_mu` in `control_apply_json` | ✅ **CONFIRMED — deadlock-free** | A complete enumeration of the function's return paths (control.c:357-659): exactly **three** exits — (1) the `!json` early return **before** the lock, (2) the OOM path with `unlock` before `return` (:425), (3) the end of the function with `unlock` (:658). No `goto`, no further `return`. Lock ordering checked: `apply_mu → config_str_lock` and `apply_mu → speaker-g_lock → config_str_lock`; `config_str_lock` is recursive and nowhere wraps a call back into speaker/control — no inversion. |
+| A6 – two comments | ✅ **CONFIRMED** | The config.c doctrine comment has been replaced (no longer contradicts config.h), control.c's `on_motion` now correctly uses fork+execlp. |
 
 ### Tier 2
 
-| Posten | Verdikt | Nachweis |
+| Item | Verdict | Evidence |
 | --- | --- | --- |
-| F-04 – qp/max_gop als RESERVED statt Verdrahtung | ✅ **BESTÄTIGT, begründete Entscheidung** | Kein HAL-Konsument (Audit-Gegenprobe F-04 bestätigt: `rcAttr.maxGop = v->gop`), Verdrahtung bräuchte den Rate-Control-Umbau aus SDK-Gap #1 — ohne Hardware nicht verifizierbar; die `motion.roi_*`-Analogie trägt. Warn-Mechanik funktioniert: set_kv-Video-Branch, `key+7` ist für `video0.`/`video1.` (je 7 Zeichen) korrekt, One-Shot via `static`. **Aber → R-01.** |
-| F-05 – 12 daynight-Keys im Example | ✅ **BESTÄTIGT** | Alle 12 vorhanden; Beispielwerte deckungsgleich mit `config_defaults()` (5/120/20/3600/43200, mode=sensor). |
-| F-06 – adaptive_drop | ✅ **BESTÄTIGT** (Code-Default 1, config.c:224) |
-| F-07 – Speaker-Block/aec/opus | ✅ **BESTÄTIGT** |
-| F-08 – QA-Erweiterungen | ✅ **BESTÄTIGT, Custom-Block-Begründung trägt** | Der generische `lv_section` wäre für den TIME/SUN-Pfad tatsächlich falsch: `mode` wird als `mode` gePOSTet, echot aber als `dn_mode` (Read-back-Mismatch), `time_*_start` sind ≤5-Zeichen-HH:MM-Puffer (das 8-Zeichen-`qa_probe` würde trunkieren), lat/long sind Floats. Format-Kompatibilität handverifiziert: `%g` emittiert `52.5`/`13.5` → String-Vergleiche matchen; `T_DNMODE` parst/emittiert `sensor|time|sun` symmetrisch. Interruption-Safety: `LV_PENDING` wird **vor** dem Probe-POST scharfgestellt und erst nach gelandetem Restore entwaffnet; die etablierten `EXIT`/`INT`/`TERM`-Traps (`lv_restore_pending`, qa:834-836) greifen — Konvention eingehalten. spk-Gate ist echt: `caps.audio` listet `spk_volume` nur unter `USE_PLAY||USE_BACKCHANNEL` (control.c AUD_CAPS). |
-| F-09 – 4 Clamps | ✅ **BESTÄTIGT** (0–1, 0–2, 0–1, 8000–96000) |
-| F-10 – 3 Doku-Fixes | ✅ **BESTÄTIGT** (Wiki 1–300, Wiki KB, Example 1024; QA-Spec-Range auf 1–300 nachgezogen) |
+| F-04 – qp/max_gop marked RESERVED instead of wired up | ✅ **CONFIRMED, a well-founded decision** | No HAL consumer (the audit's counter-check for F-04 confirms: `rcAttr.maxGop = v->gop`), wiring it up would need the rate-control overhaul from SDK gap #1 — not verifiable without hardware; the `motion.roi_*` analogy holds. The warning mechanism works: the set_kv video branch, `key+7` is correct for `video0.`/`video1.` (7 characters each), one-shot via `static`. **But → R-01.** |
+| F-05 – 12 daynight keys in the example | ✅ **CONFIRMED** | All 12 present; example values match `config_defaults()` exactly (5/120/20/3600/43200, mode=sensor). |
+| F-06 – adaptive_drop | ✅ **CONFIRMED** (code default 1, config.c:224) |
+| F-07 – speaker block/aec/opus | ✅ **CONFIRMED** |
+| F-08 – QA extensions | ✅ **CONFIRMED, the custom-block rationale holds** | The generic `lv_section` would indeed be wrong for the TIME/SUN path: `mode` is POSTed as `mode` but echoed back as `dn_mode` (a read-back mismatch), `time_*_start` are <=5-character HH:MM buffers (the 8-character `qa_probe` would truncate), lat/long are floats. Format compatibility hand-verified: `%g` emits `52.5`/`13.5` → string comparisons match; `T_DNMODE` parses/emits `sensor|time|sun` symmetrically. Interruption safety: `LV_PENDING` is armed **before** the probe POST and only disarmed after the restore has landed; the established `EXIT`/`INT`/`TERM` traps (`lv_restore_pending`, qa:834-836) apply — convention followed. The spk gate is real: `caps.audio` lists `spk_volume` only under `USE_PLAY||USE_BACKCHANNEL` (control.c AUD_CAPS). |
+| F-09 – 4 clamps | ✅ **CONFIRMED** (0-1, 0-2, 0-1, 8000-96000) |
+| F-10 – 3 documentation fixes | ✅ **CONFIRMED** (wiki 1-300, wiki KB, example 1024; the QA spec range updated to 1-300 to match) |
 
 ### Tier 3
 
-| Posten | Verdikt |
+| Item | Verdict |
 | --- | --- |
-| A3 – cmfc/cmf2 entfernt | ✅ **BESTÄTIGT** — sauberer Revert mit korrekter Begründung im Kommentar; `box_close` rechnet die ftyp-Größe ohnehin nach, keine Size-Buchhaltung betroffen. |
+| A3 – cmfc/cmf2 removed | ✅ **CONFIRMED** — a clean revert with a correct rationale in the comment; `box_close` recomputes the ftyp size anyway, no size bookkeeping affected. |
 
 ### Tier 4
 
-| Posten | Verdikt | Nachweis |
+| Item | Verdict | Evidence |
 | --- | --- | --- |
-| P-08 – FQ_MAX_BYTES nur T10/T20/T21 | ✅ **BESTÄTIGT per `make -n`** | T20: `-DFQ_MAX_BYTES=1048576` vorhanden; **T31: 0 Treffer, T41: 0 Treffer**; T21: 1 Treffer; T10-Branch trägt die Zeile (Makefile:92). `fanqueue.c:14` hat den `#ifndef`-Guard → `-D` kollidiert nicht. `make sim` unberührt (kein `$(PLATFORM_CFLAGS)` im sim-Target). Keine Regression für T31/C100/T40/T41. |
-| P-03/P-04 – now-Cache + Ctl-Poll-Gate | ✅ **BESTÄTIGT** | `polled`-Flag schützt den `errno`-Check korrekt: ungepollt ist `n=-1, polled=0` → weder `n==0`-Break noch errno-Auswertung — der Stale-errno-Break ist konstruktionsbedingt unmöglich; eine tote Verbindung wird beim nächsten Poll (≤~150 ms) erkannt, eine lebendige nie fälschlich gekappt. TEARDOWN-Latenz worst case ~150 ms (50-ms-Gate + `now` bis zu `pop_ms`=100 ms alt, da vor dem Pop gelesen) — weit unter jedem RTSP-Keepalive-Fenster. Backchannel pollt via `ctl_poll_every` jede Iteration; `s->have_bc` nur unter `#ifdef USE_BACKCHANNEL` referenziert. Die TEARDOWN-BYE-Timestamps holen sich korrekt ein frisches `ms_now_us()` (`bnow`). |
+| P-08 – FQ_MAX_BYTES only for T10/T20/T21 | ✅ **CONFIRMED via `make -n`** | T20: `-DFQ_MAX_BYTES=1048576` present; **T31: 0 matches, T41: 0 matches**; T21: 1 match; the T10 branch carries the line (Makefile:92). `fanqueue.c:14` has the `#ifndef` guard → the `-D` does not collide. `make sim` unaffected (no `$(PLATFORM_CFLAGS)` in the sim target). No regression for T31/C100/T40/T41. |
+| P-03/P-04 – now cache + control-poll gate | ✅ **CONFIRMED** | The `polled` flag correctly guards the `errno` check: when unpolled, `n=-1, polled=0` → neither the `n==0` break nor the errno evaluation fires — the stale-errno break is structurally impossible; a dead connection is detected at the next poll (<=~150 ms), a live one is never cut off spuriously. Worst-case TEARDOWN latency is ~150 ms (the 50 ms gate plus `now` being up to `pop_ms`=100 ms stale, since it is read before the pop) — far under any RTSP keepalive window. The backchannel polls via `ctl_poll_every` every iteration; `s->have_bc` is referenced only under `#ifdef USE_BACKCHANNEL`. The TEARDOWN BYE timestamps correctly fetch a fresh `ms_now_us()` (`bnow`). |
 
-### Übersprungene Posten (Negativ-Verifikation)
+### Skipped Items (Negative Verification)
 
-| Posten | Verdikt |
+| Item | Verdict |
 | --- | --- |
-| P-01 (`hub_publish_take`) | ✅ **sauber NICHT angefasst** — kein Diff in hub.c/frame.c, keine API-Reste. Begründung (11 statt 3 Call-Sites, UAF-Risiko ohne Hardware-Soak) ist nachvollziehbar und deckt sich mit der Audit-Einstufung „mittel". |
-| P-02 (Stop-Condvar) | ✅ sauber nicht angefasst (im Audit selbst hinter P-01 einsortiert). |
-| SDK #5/#6 | ✅ sauber nicht angefasst — kein `GetChnEvalInfo`/`SetAe_IT_MAX`-Code, keine neuen `PLATFORM_`-Conditionals im Diff. |
+| P-01 (`hub_publish_take`) | ✅ **cleanly NOT touched** — no diff in hub.c/frame.c, no API leftovers. The rationale (11 instead of 3 call sites, UAF risk without a hardware soak) is plausible and matches the audit's "medium" rating. |
+| P-02 (stop condvar) | ✅ cleanly not touched (ranked behind P-01 in the audit itself). |
+| SDK #5/#6 | ✅ cleanly not touched — no `GetChnEvalInfo`/`SetAe_IT_MAX` code, no new `PLATFORM_` conditionals in the diff. |
 
 ---
 
-## Neue Befunde (durch den Fix eingeführt bzw. sichtbar geworden)
+## New Findings (introduced by, or made visible through, the fix)
 
-| ID | Schwere | Befund |
+| ID | Severity | Finding |
 | --- | --- | --- |
-| R-01 | 🟢 NIEDRIG | **Example widerspricht der neuen F-04-Warnung.** `timps.conf.example:221/223` liefert `video0.max_gop = 60` und `video0.qp = 35` weiterhin als aktive Beispielzeilen aus. Da die neue One-Shot-Warnung auch beim **Datei-Load** feuert (set_kv ist der gemeinsame Pfad), loggt jede aus dem Example abgeleitete Config bei jedem Boot „reserved and IGNORED“. Nur das Wiki wurde als RESERVED markiert, das Example nicht. *Fix (Follow-up):* beide Zeilen im Example auskommentieren bzw. mit „reserved, no effect“ annotieren. Kein Merge-Blocker (die Warnung ist inhaltlich korrekt und genau einmal pro Prozess). |
-| R-02 | ⚪ INFO | **QA-`dir`-Probe nutzt einen relativen Pfad.** `lv_section record … "dir str"` POSTet `qa_probe` als Live-`record.dir`/`timelapse.dir`. Läuft auf dem QA-Gerät währenddessen eine aktive Aufnahme in eine Segment-Rotation, entstünde kurzzeitig `/qa_probe/<host>/records/…` auf dem Rootfs (Daemon-cwd `/`). Fenster ist klein (POST→GET→Restore), Rotation nur am Keyframe — praktisch unwahrscheinlich, aber ein absoluter `/tmp/...`-Probewert wäre die sauberere Wahl. |
-| R-03 | ⚪ INFO | **Neue Lock-Kadenz im Recorder:** der Per-Pass-Snapshot nimmt `config_str_lock` einmal pro Schleifeniteration ≈ einmal pro Paket (25–75/s). Haltezeit ist eine Struct-Copy (sub-µs), Kontention nur während /control-Writes — deckungsgleich mit der P-09-Einschätzung des Perf-Audits, kein Handlungsbedarf. Nur dokumentiert, damit ein späterer Profiler-Fund nicht überrascht. |
-| R-04 | ⚪ INFO | `hal_ingenic.c:2490-2491` (`speaker_set_volume(g_hcfg->audio.spk_volume)` im Apply-Pfad) liest weiterhin lockfrei — das ist jetzt **korrekt**, weil `apply_mu` Apply-vs-Apply serialisiert und der Lesende damit derselbe Thread ist, der den Wert soeben geschrieben hat (kein nebenläufiger Writer mehr). Ein kurzer Kommentar an der Stelle („safe: serialized by apply_mu“) würde das gegen künftige Audits absichern. |
-| R-05 | ⚪ INFO | Die QA-TIME/SUN-Probe kann auf einer echten Kamera einen einmaligen IR-Cut-Toggle auslösen (mode=sun mit Berlin-Koordinaten, je nach Uhrzeit), der beim Restore zurückschwingt. Das ist die vom Audit (F-08) explizit angeforderte Abdeckung; transient und akzeptiert. |
+| R-01 | 🟢 LOW | **The example contradicts the new F-04 warning.** `timps.conf.example:221/223` still ships `video0.max_gop = 60` and `video0.qp = 35` as active example lines. Since the new one-shot warning also fires on **file load** (set_kv is the shared path), any config derived from the example logs "reserved and IGNORED" on every boot. Only the wiki was marked RESERVED, not the example. *Fix (follow-up):* comment out both lines in the example, or annotate them with "reserved, no effect". Not a merge blocker (the warning is factually correct and fires exactly once per process). |
+| R-02 | ⚪ INFO | **The QA `dir` probe uses a relative path.** `lv_section record ... "dir str"` POSTs `qa_probe` as the live `record.dir`/`timelapse.dir`. If an active recording is mid segment-rotation on the QA device at that moment, `/qa_probe/<host>/records/...` would briefly appear on the rootfs (daemon cwd `/`). The window is small (POST→GET→restore), rotation happens only at a keyframe — practically unlikely, but an absolute `/tmp/...` probe value would be the cleaner choice. |
+| R-03 | ⚪ INFO | **New lock cadence in the recorder:** the per-pass snapshot takes `config_str_lock` once per loop iteration, roughly once per packet (25-75/s). Hold time is a struct copy (sub-us), contention only during /control writes — matches the perf audit's P-09 assessment exactly, no action needed. Documented only so a later profiler finding does not come as a surprise. |
+| R-04 | ⚪ INFO | `hal_ingenic.c:2490-2491` (`speaker_set_volume(g_hcfg->audio.spk_volume)` in the apply path) still reads lock-free — this is now **correct**, because `apply_mu` serializes apply-vs-apply and the reader is thus the very same thread that just wrote the value (no more concurrent writer). A short comment at that spot ("safe: serialized by apply_mu") would future-proof this against later audits. |
+| R-05 | ⚪ INFO | The QA TIME/SUN probe can trigger a one-time IR-cut toggle on a real camera (mode=sun with Berlin coordinates, depending on time of day), which swings back on restore. This is exactly the coverage the audit (F-08) explicitly requested; transient and accepted. |
 
-Positiv hervorzuheben (über die Audits hinaus korrekt): die Pre-Roll-Warnung in `rec_thread` liest `bitrate_kbps`/`fps` jetzt aus `g_cfg_boot` statt live — für restart-only-Keys die richtige Quelle (Warnung reflektiert, was der Encoder tatsächlich produziert) und nebenbei racefrei; im Opus-Report nicht einmal erwähnt.
+Worth highlighting positively (correct beyond what the audits asked for): the pre-roll warning in `rec_thread` now reads `bitrate_kbps`/`fps` from `g_cfg_boot` instead of live — the right source for restart-only keys (the warning reflects what the encoder actually produces) and race-free as a side effect; not even mentioned in the Opus report.
 
 ---
 
-## Empfehlung
+## Recommendation
 
-**Mergen.** R-01 als Mini-Follow-up (zwei Example-Zeilen auskommentieren) direkt danach oder im nächsten Doku-Pass; R-02/R-04 nach Kapazität. Vor dem nächsten Release wie üblich ein QA-Lauf gegen eine echte Kamera (Sektion 8b inkl. der neuen TIME/SUN- und spk-Blöcke), da `imp_osd.c`/`hal_ingenic.c`/`speaker.c` bauartbedingt nur syntax-geprüft sind.
+**Merge.** R-01 as a mini follow-up (comment out two example lines) right after, or in the next documentation pass; R-02/R-04 as capacity allows. Before the next release, a QA run against a real camera as usual (section 8b, including the new TIME/SUN and spk blocks), since `imp_osd.c`/`hal_ingenic.c`/`speaker.c` were, by their nature, only syntax-checked here.

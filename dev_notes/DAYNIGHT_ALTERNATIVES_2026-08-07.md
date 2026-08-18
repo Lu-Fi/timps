@@ -1,164 +1,164 @@
-# Day/Night-Erkennung – Alternativen-Enumeration (Design-Exploration)
+# Day/Night Detection – Enumeration of Alternatives (Design Exploration)
 
-**Datum:** 2026-08-07
-**Codestand:** `074e8f5` (v1.7.8), `src/daynight.c` = 1322 Zeilen
-**Charakter:** reine Optionsraum-Kartierung, **keine Empfehlung, kein Code, kein Patch.** Grundlage für eine mögliche spätere Redesign-Entscheidung durch einen Menschen.
-**Verifikation:** gegen den tatsächlichen Code (`src/daynight.c` vollständig gelesen), `src/hal/hal.h` (verfügbare Signal-APIs), `docs/sdk-feature-gaps.md` (Plattform-Verfügbarkeitsmatrix über alle 9 SoCs), `docs/wiki/Configuration-Reference.md` (daynight-Keys) und die CHANGELOG-Historie v1.7.3–v1.7.8 (warum jede Härtung eingeführt wurde).
-
----
-
-## 0. Ausgangslage: was heute existiert und WARUM
-
-Der Ist-Stand ist ein Hintergrund-Thread (`dn_thread`), der in `interval_ms` (Default 500 ms) pollt und drei Betriebsmodi kennt:
-
-- **`sensor`** (Default): primär **ISP total_gain** über `hal_isp_total_gain()` (IMP `GetTotalGain`), Fallback = `/proc/jz/isp/isp-m0`-Scrape (Integrationszeit + Gains + Brightness). Hohe Gain = dunkel = Nacht. Der breite Totzonen-Spalt `total_gain_day_threshold`..`night_threshold` (300..3000) ist die Hysterese.
-- **`time`**: reine Wanduhr, kein Sensor, **kein Probe**.
-- **`sun`**: Sonnenstands-Berechnung (NOAA/Meeus) aus lat/lon + Offsets, kein Sensor, **kein Probe**.
-
-Die gesamte Komplexität im `sensor`-Modus existiert wegen **einer** physikalischen Grundtatsache, die man beim Vergleich der Alternativen ständig im Kopf behalten muss:
-
-> **Der einzige Umgebungslicht-Messwert des `sensor`-Modus (Gain/Luma) wird DURCH die gerade aktive optische+Tuning-Pipeline gemessen.** Im Nachtzustand ist der IR-Cut-Filter entfernt, die IR-LEDs an und die Nacht-AE-Tabelle aktiv. Ein dunkler Raum sieht dadurch für den Sensor „hell" aus (IR-Licht erreicht den Sensor). Die Gain-Messung im Nachtpfad ist also **kein verlässlicher Proxy für „ist es tatsächlich Tag"**.
-
-Daraus folgt zwingend der **Probe**: um zu erfahren, ob es wirklich Tag ist, muss die Kamera physisch kurz in die Tag-Konfiguration (IR-Cut eingeschwenkt, IR-LEDs aus, Farbpipeline) versetzt werden, einen echten Tageslicht-Wert lesen und ggf. zurückschalten. **Dieser physische Probe-Klick (mechanisches IR-Cut-Relais, hörbar; dazu ~7–9 s ausgewaschenes Farbvideo) ist die zentrale Nutzer-Ärgernis-Quelle.** Die komplette Maschinerie – exponentielles Backoff, Brightening-Margin, Failure-Ratchet, Passive-Evidence-Skip, `probe_max_skip_s`-Außengrenze, Oszillations-Breaker, Baseline-Drift – dient ausschließlich dazu, die **Frequenz** dieses Klicks zu minimieren, **ohne** die Selbstheilungs-Eigenschaft (steckt die Kamera im falschen Modus fest, korrigiert sie sich) zu verlieren. Jeder Fix wurde durch reale Fleet-Incidents getrieben (v1.7.3 Flap-Loop, v1.7.4 Probe-Economy, v1.7.5 Dead-Zone-Adoption + Oszillations-Breaker, v1.7.6 Silent-Limbo, v1.7.8 `probe_max_skip_s` konfigurierbar).
-
-Der Speicher-Footprint ist bereits **winzig**: ein paar Skalare + drei kleine Ringpuffer (`hist[10]`, `settle_hist[6]`, `osc_hist[3]` floats). Es gibt **keinen** großen Puffer zurückzugewinnen. Die 1322 Zeilen sind fast vollständig Logik + ausführliche Incident-Kommentare, **nicht** Datenstrukturen.
+**Date:** 2026-08-07
+**Code baseline:** `074e8f5` (v1.7.8), `src/daynight.c` = 1322 lines
+**Character:** pure option-space mapping, **no recommendation, no code, no patch.** Basis for a possible later redesign decision by a human.
+**Verification:** against the actual code (`src/daynight.c` read in full), `src/hal/hal.h` (available signal APIs), `docs/sdk-feature-gaps.md` (platform availability matrix across all 9 SoCs), `docs/wiki/Configuration-Reference.md` (daynight keys), and the CHANGELOG history v1.7.3-v1.7.8 (why each hardening step was introduced).
 
 ---
 
-## Teil A — Alternative MESS-SIGNALE (Ersatz für das ISP-total_gain-Reading selbst)
+## 0. Starting Point: What Exists Today and WHY
 
-Diese Sektion listet **nur das Entscheidungssignal** auf, unabhängig vom Regelalgorithmus (Teil B). Kernfrage bei jedem: *Ist das Signal downstream der IR-Pipeline (→ braucht weiterhin Probe) oder unabhängig davon (→ probe-frei möglich)?*
+The current state is a background thread (`dn_thread`) that polls at `interval_ms` (default 500 ms) and knows three operating modes:
 
-### A1 — ISP total_gain (Ist-Zustand, Referenz)
-- **Signal:** `hal_isp_total_gain()` / `/proc`-Scrape der Gains.
-- **Plattform:** IMP-API auf allen außer T40/T41 + Sim; dort greift der `/proc`-Scrape-Fallback. Faktisch fleetweit nutzbar.
-- **Pipeline-abhängig?** JA. → Probe unvermeidbar für Nacht→Tag.
-- **Komplexität/RAM/CPU:** Referenz. Sehr günstig (ein API-Call/Tick, Scrape gedrosselt auf `DN_SCRAPE_MS`).
-- **Schwäche:** AGC-Rauschen im Dunkeln (IR-AGC-Hunting) → ist die Wurzel des ganzen Smoothing/Ratchet-Apparats.
+- **`sensor`** (default): primarily **ISP total_gain** via `hal_isp_total_gain()` (IMP `GetTotalGain`), fallback = `/proc/jz/isp/isp-m0` scrape (integration time + gains + brightness). High gain = dark = night. The wide dead-zone gap `total_gain_day_threshold`..`night_threshold` (300..3000) is the hysteresis.
+- **`time`**: pure wall clock, no sensor, **no probe**.
+- **`sun`**: sun-position calculation (NOAA/Meeus) from lat/lon + offsets, no sensor, **no probe**.
 
-### A2 — AGC/Belichtungszeit (Integration Time) statt Gain
-- **Signal:** `SENSOR Integration Time` / `Max Integration Time` aus demselben `/proc`-Scrape (heute nur für den Brightness-Fallback genutzt). Idee: **Belichtungszeit sättigt bei Dunkelheit am Maximum, BEVOR die Gain hochläuft** – das kombinierte „total exposure" (Integrationszeit × Gain) ist ein monotonerer, am dunklen Ende **weniger verrauschter** Lichtproxy als Gain allein.
-- **Plattform:** Integrationszeit steht im `/proc`-Dump breit zur Verfügung; die neuen Tuning-APIs (`GetIntegrationTime`) laut Feature-Gaps auf alten Chips (T20/T21/T30) vorhanden.
-- **Pipeline-abhängig?** JA (gleiche Optik/AE wie A1). → Probe bleibt.
-- **Komplexität/RAM/CPU:** ~gleich; evtl. **weniger** Smoothing-Code nötig, weil das Signal ruhiger ist. Könnte `DN_SMOOTH_ALPHA`/Ratchet-Aufwand reduzieren.
-- **Verlust:** nichts Grundlegendes; behebt die Probe-Frage NICHT. Marginaler, aber ehrlicher Robustheitsgewinn an der Rauschquelle.
+All the complexity in `sensor` mode exists because of **one** basic physical fact that has to be kept in mind constantly when comparing the alternatives:
 
-### A3 — AE-Luma (ISP-Zielhelligkeit)
-- **Signal:** `hal_isp_ae_luma()` (raptors `ae_luma`).
-- **Plattform:** **nur T21/T23/T31/C100** (`IMP_ISP_Tuning_GetAeLuma`); fehlt auf T20/T10/T30/T40/T41 → **nicht fleetweit**.
-- **Pipeline-abhängig?** JA – und schlimmer: AE-Luma wird von der AE-Schleife **auf einen Sollwert geregelt**, ist im eingeschwungenen Zustand also ~konstant unabhängig vom Umgebungslicht. Als **Primärsignal schlechter** als Gain; taugt höchstens als Sekundär-Bestätigung.
-- **Fazit:** kein Kandidat als Primärsignal; Probe bleibt.
+> **The `sensor` mode's only ambient-light reading (gain/luma) is measured THROUGH the currently active optical+tuning pipeline.** In the night state, the IR-cut filter is removed, the IR LEDs are on, and the night AE table is active. A dark room therefore looks "bright" to the sensor (IR light reaches the sensor). The gain reading on the night path is thus **not a reliable proxy for "is it actually day"**.
 
-### A4 — Frame-Luma / Luma-Histogramm aus echtem Videoframe
-- **Signal:** `IMP_FrameSource_SnapFrame` (laut Feature-Gaps **auf allen 9 Plattformen** verfügbar) → echtes YUV-Frame greifen, Luma-Histogramm rechnen. Reicher als der eine AE-Luma-Skalar (unterscheidet „gleichmäßig dunkel" von „hell mit dunklen Regionen").
-- **Plattform:** universell (SnapFrame überall).
-- **Pipeline-abhängig?** JA – das Frame ist das Ergebnis derselben Pipeline. Im Nachtmodus ist es bereits mono/IR-beleuchtet; ein Histogramm daraus ist genauso wenig ein Tageslicht-Proxy wie A1. → Probe bleibt für Nacht→Tag.
-- **Komplexität/RAM/CPU:** **deutlich MEHR** – Frame-Grab (großer Puffer, VBM/rmem-Kosten), Y-Ebene scannen (per-Tick CPU über Zehntausende Pixel), 256-Bin-Histogramm. Erster echter Speicher-**Mehr**verbrauch im ganzen Vergleich.
-- **Verlust/Gewinn:** kein Probe-Vorteil; teuer. Nur sinnvoll als Zusatzfeature (s. A6).
+This necessarily leads to the **probe**: to find out whether it's really day, the camera must briefly be switched physically into the day configuration (IR-cut swung in, IR LEDs off, color pipeline), read a genuine daylight value, and switch back if needed. **This physical probe click (mechanical IR-cut relay, audible; plus ~7-9 s of washed-out color video) is the central source of user annoyance.** The entire machinery — exponential backoff, brightening margin, failure ratchet, passive-evidence skip, the `probe_max_skip_s` outer bound, oscillation breaker, baseline drift — exists solely to minimize the **frequency** of this click **without** losing the self-healing property (if the camera gets stuck in the wrong mode, it corrects itself). Every fix was driven by real fleet incidents (v1.7.3 flap loop, v1.7.4 probe economy, v1.7.5 dead-zone adoption + oscillation breaker, v1.7.6 silent limbo, v1.7.8 `probe_max_skip_s` made configurable).
 
-### A5 — IR-Cut-Relais-Rückmeldung (Hardware-Feedback-Pin)
-- **Signal:** ein GPIO, der die **physische IR-Cut-Filterposition** zurückliest.
-- **Plattform:** **Existiert im timps-HAL NICHT.** Der Moduswechsel ist heute fire-and-forget über ein externes Board-Skript (`switch_cmd day|night`); es gibt keine Sense-Leitung und keine HAL-Funktion dafür. Thingino-Boards treiben den IR-Cut per GPIO, exportieren aber i.d.R. keinen Readback. → praktisch **nicht verfügbar**.
-- **Was es lösen würde:** nur die Frage „steht der Filter, wo ich denke?" (könnte den `DN_REASSERT`-Safety-Net ersetzen) – **NICHT** die Frage „ist es draußen Tag?". Löst das Probe-Problem also gar nicht.
-- **Fazit:** irrelevant für die Kernfrage; zusätzlich hardware-seitig nicht vorhanden.
-
-### A6 — Farb-Sättigung / Chroma-Energie des Frames
-- **Signal:** SnapFrame → U/V-Chroma-Energie messen. Bei echtem Tag erzeugt die Farbpipeline reale Farbe (hohe Chroma); bei tatsächlich dunkler, IR-beleuchteter Szene ist das Bild selbst im Tagpfad nahezu graustufig (Chroma ≈ 0).
-- **Plattform:** universell (SnapFrame).
-- **Pipeline-abhängig?** TEILWEISE. Nützlich vor allem für die **Tag→Nacht-Richtung** (erkennt „ausgewaschenes/farbloses Tagbild" → sollte Nacht sein). Für **Nacht→Tag nutzlos**: im Nachtmodus ist der Stream ohnehin mono, Chroma immer ~0 – „Nachtpipeline bei Tageslicht" ist per Chroma nicht von „Nachtpipeline im Dunkeln" unterscheidbar. → Nacht→Tag-Probe bleibt.
-- **Komplexität/RAM/CPU:** MEHR (Frame-Grab + UV-Scan), wie A4.
-- **Verlust:** kein voller Probe-Ersatz; nur ein halbes Signal.
-
-### A7 — Unabhängiger Umgebungslichtsensor (LDR/ALS auf ADC/I2C)
-- **Signal:** ein separater Fotowiderstand/ALS, dessen Reading **NICHT** hinter der IR-Pipeline liegt. Viele Thingino-Kameras haben einen LDR an einem ADC/GPIO-Pin, den die board-eigenen daynight-Skripte lesen.
-- **Plattform:** **board-abhängig, NICHT universell** – kein einheitlicher HAL-Zugriff heute; müsste pro Board ein ADC-Read implementiert werden. Auf Boards ohne LDR gar nicht möglich.
-- **Pipeline-abhängig?** **NEIN** – das ist der springende Punkt: ein pipeline-unabhängiges Umgebungslicht-Signal.
-- **Probe?** **Entfällt komplett** – man misst das Umgebungslicht direkt, unabhängig vom aktuellen Modus. Damit fällt die gesamte Backoff/Ratchet/Skip-Maschinerie weg.
-- **Komplexität/RAM/CPU:** Entscheidungskern **viel einfacher** (simpler Schmitt-Trigger auf LDR-Wert); dafür neuer HAL-Code pro Board + Kalibrierung LDR→Schwelle.
-- **Verlust:** keine Selbstheilungs-/Oszillations-Sonderfälle mehr nötig (das LDR lügt nicht über IR). ABER: Verfügbarkeit nicht garantiert → könnte nur als **bevorzugtes Signal MIT Gain-Fallback** eingesetzt werden, nie als alleiniger Ersatz fleetweit.
-
-### A8 — Externe Zeit-/Sonnenquelle als „Signal" (kein Sensor)
-- **Signal:** Wanduhr (`time`) bzw. Sonnenstand (`sun`) – beide bereits implementiert.
-- **Pipeline-abhängig?** N/A – **komplett sensorunabhängig.**
-- **Probe?** **Nie nötig.** Selbstheilung kommt automatisch von der nächsten Zeit-/Sonnenkante.
-- **Verlust:** blind für tatsächliches Licht – Keller/Cloud/Innenraum-Kunstlicht/Verdeckung werden ignoriert. (Details unter B1/B2/B3.)
-
-### A9 — „Shadow-Read": nur IR-LEDs kurz aus, IR-Cut NICHT bewegen
-- **Signal:** kein neues Sensorsignal, sondern ein **billigerer Probe-Ersatz**. Wenn das Board die IR-LEDs getrennt vom mechanischen IR-Cut schalten kann, killt man kurz nur die IR-Beleuchtung (im Nachtpfad bleibend): im echt dunklen Raum läuft die Gain weiter hoch (bestätigt Dunkelheit), im tatsächlich hellen Raum bleibt sie moderat (sichtbares Licht vorhanden).
-- **Plattform:** **board-abhängig** – setzt getrennte LED-Steuerung im `switch_cmd`-Skript voraus.
-- **Probe?** Ersetzt den **hörbaren Relais-Klick** durch lautloses LED-Schalten – der Klick verschwindet, die kurze Bildstörung (dunkleres Bild für 1–2 s) bleibt.
-- **Komplexität:** ~gleich wie heute, aber ein zusätzlicher Board-Skript-Vertrag nötig.
-- **Verlust:** kein Robustheitsverlust; potentiell **größter Usability-Gewinn** bei kleinstem Umbau – aber nur wo Hardware/Skript mitspielt.
+The memory footprint is already **tiny**: a few scalars plus three small ring buffers (`hist[10]`, `settle_hist[6]`, `osc_hist[3]` floats). There is **no** large buffer to reclaim. The 1322 lines are almost entirely logic plus extensive incident comments, **not** data structures.
 
 ---
 
-## Teil B — Alternative ARCHITEKTUREN / ALGORITHMEN
+## Part A — Alternative MEASUREMENT SIGNALS (replacements for the ISP total_gain reading itself)
 
-### B1 — Nur Sonnenstand (`sun`), Sensor komplett aus
-- **Kernidee:** astronomische Berechnung entscheidet allein; kein Sensor, kein Probe. Bereits vorhanden.
-- **Signal:** A8 (Sonnenstand).
-- **Probe?** Nie.
-- **Code:** **massiv weniger** – der gesamte sensor-Block, Baseline, Probes, Oszillation, Boot-Settle entfielen (nur `dn_sun_times`/`dn_sun_target` + Switch-Maschinerie bleiben). Grob <200 statt 1322 Zeilen.
-- **RAM/CPU:** minimal (eine Berechnung/Tick, kein `/proc`, kein IMP-Call).
-- **Verlust:** Keller/fensterloser Raum, dichte Bewölkung, verdeckte Kamera, Innenraum mit Kunstlicht → alle falsch. Kein Reagieren auf tatsächliches Licht. Selbstheilung trivial (Uhr).
+This section lists **only the decision signal**, independent of the control algorithm (Part B). Core question for each: *Is the signal downstream of the IR pipeline (→ still needs a probe) or independent of it (→ probe-free possible)?*
 
-### B2 — Nur Uhrzeit (`time`)
-- Wie B1, noch simpler (keine Astro-Mathematik), aber ohne saisonale Anpassung. Gleiche Verluste, kein Probe.
+### A1 — ISP total_gain (current state, reference)
+- **Signal:** `hal_isp_total_gain()` / `/proc` scrape of the gains.
+- **Platform:** IMP API on all except T40/T41 + Sim; there the `/proc` scrape fallback kicks in. Effectively usable fleet-wide.
+- **Pipeline-dependent?** YES. → Probe unavoidable for night→day.
+- **Complexity/RAM/CPU:** Reference. Very cheap (one API call/tick, scrape throttled to `DN_SCRAPE_MS`).
+- **Weakness:** AGC noise in the dark (IR AGC hunting) → is the root of the entire smoothing/ratchet apparatus.
 
-### B3 — Sonne/Zeit als PRIMÄR, Sensor nur als begrenzte Korrektur (Hybrid)
-- **Kernidee:** Der Sonnen-/Zeitplan bestimmt den Basiszustand. Der Sensor darf nur **innerhalb eines Fensters** korrigieren: z. B. „Nacht erzwingen, wenn der Raum während des geplanten Tages dunkel wird" oder nahe Dämmerung feinjustieren. Tag wird zur geplanten Sonnenaufgangskante **immer** wieder betreten, egal was der Sensor sagt.
-- **Signal:** A8 primär + A1 sekundär.
-- **Probe?** **Kein periodischer Reconfirm-Probe nötig** – die Selbstheilung liefert die Uhr: ein falscher Nacht-Latch löst sich spätestens an der nächsten Sonnenkante ohne je zu proben. Ein Probe wäre höchstens optional für eine schnellere Tag-Korrektur mitten in der Nacht (selten).
-- **Code:** **deutlich weniger** als heute – Backoff/Ratchet/Skip/`probe_max_skip_s` entfallen weitgehend, weil die Uhr das „stuck forever"-Problem löst. Baseline/Oszillation nur noch im engen Korrekturfenster relevant.
-- **RAM/CPU:** ~heutig oder geringer.
-- **Verlust:** reagiert nicht mehr voll frei auf beliebiges Licht (z. B. ein Raum, der um 14:00 dunkel gemacht wird und um 15:00 wieder hell → im engen Fenster evtl. träge). Keller ohne sinnvolle Geokoordinaten bleibt problematisch. **Attraktivste probe-arme Architektur, die Sensor-Reaktivität weitgehend behält.**
+### A2 — AGC/exposure time (integration time) instead of gain
+- **Signal:** `SENSOR Integration Time` / `Max Integration Time` from the same `/proc` scrape (today used only for the brightness fallback). Idea: **exposure time saturates at its maximum in darkness BEFORE gain ramps up** – the combined "total exposure" (integration time x gain) is a more monotonic light proxy that is **less noisy** at the dark end than gain alone.
+- **Platform:** integration time is broadly available in the `/proc` dump; the new tuning APIs (`GetIntegrationTime`) are, per the feature gaps doc, present on older chips (T20/T21/T30).
+- **Pipeline-dependent?** YES (same optics/AE as A1). → Probe remains.
+- **Complexity/RAM/CPU:** ~the same; possibly **less** smoothing code needed because the signal is quieter. Could reduce `DN_SMOOTH_ALPHA`/ratchet overhead.
+- **Loss:** nothing fundamental; does NOT resolve the probe question. A marginal but honest robustness gain at the noise source.
 
-### B4 — Fester Dual-Threshold / Schmitt-Trigger, KEINE adaptive Baseline, KEIN Probe
-- **Kernidee:** Das, was `daynight.c` vor der ganzen Härtung war: feste `day`/`night`-Gain-Schwellen, breite Totzone, kein Baseline-Drift, kein Probe, kein Smoothing-Apparat.
-- **Signal:** A1 (oder A2).
-- **Probe?** **Keiner.**
-- **Code:** **drastisch weniger** (grob 200–300 Zeilen).
+### A3 — AE luma (ISP target brightness)
+- **Signal:** `hal_isp_ae_luma()` (raptor's `ae_luma`).
+- **Platform:** **only T21/T23/T31/C100** (`IMP_ISP_Tuning_GetAeLuma`); missing on T20/T10/T30/T40/T41 → **not fleet-wide**.
+- **Pipeline-dependent?** YES – and worse: AE luma is **regulated to a setpoint** by the AE loop, so in steady state it is ~constant regardless of ambient light. As a **primary signal it is worse** than gain; at best usable as a secondary confirmation.
+- **Conclusion:** not a candidate as a primary signal; probe remains.
+
+### A4 — Frame luma / luma histogram from an actual video frame
+- **Signal:** `IMP_FrameSource_SnapFrame` (per the feature gaps doc **available on all 9 platforms**) → grab a real YUV frame, compute a luma histogram. Richer than the single AE luma scalar (distinguishes "uniformly dark" from "bright with dark regions").
+- **Platform:** universal (SnapFrame everywhere).
+- **Pipeline-dependent?** YES – the frame is the output of the same pipeline. In night mode it is already mono/IR-illuminated; a histogram derived from it is just as poor a daylight proxy as A1. → Probe remains for night→day.
+- **Complexity/RAM/CPU:** **significantly MORE** – frame grab (large buffer, VBM/rmem cost), scanning the Y plane (per-tick CPU over tens of thousands of pixels), 256-bin histogram. The first genuine increase in memory usage across the whole comparison.
+- **Loss/gain:** no probe advantage; expensive. Only sensible as an add-on feature (see A6).
+
+### A5 — IR-cut relay feedback (hardware feedback pin)
+- **Signal:** a GPIO that reads back the **physical IR-cut filter position**.
+- **Platform:** **does not exist in the timps HAL.** Mode switching today is fire-and-forget via an external board script (`switch_cmd day|night`); there is no sense line and no HAL function for it. Thingino boards drive the IR-cut via GPIO but generally do not expose a readback. → practically **unavailable**.
+- **What it would solve:** only the question "is the filter where I think it is?" (could replace the `DN_REASSERT` safety net) – **NOT** the question "is it day outside?". So it does not solve the probe problem at all.
+- **Conclusion:** irrelevant to the core question; and unavailable on the hardware side to begin with.
+
+### A6 — Color saturation / chroma energy of the frame
+- **Signal:** SnapFrame → measure U/V chroma energy. In genuine daylight the color pipeline produces real color (high chroma); in an actually dark, IR-illuminated scene, the image is nearly grayscale even on the day path (chroma ≈ 0).
+- **Platform:** universal (SnapFrame).
+- **Pipeline-dependent?** PARTIALLY. Useful mainly for the **day→night direction** (detects a "washed-out/colorless day image" → should be night). **Useless for night→day**: in night mode the stream is mono anyway, chroma is always ~0 – "night pipeline in daylight" cannot be distinguished from "night pipeline in the dark" via chroma. → night→day probe remains.
+- **Complexity/RAM/CPU:** MORE (frame grab + UV scan), like A4.
+- **Loss:** no full probe replacement; only a half-signal.
+
+### A7 — Independent ambient-light sensor (LDR/ALS on ADC/I2C)
+- **Signal:** a separate photoresistor/ALS whose reading does **NOT** sit behind the IR pipeline. Many Thingino cameras have an LDR on an ADC/GPIO pin that the board's own daynight scripts read.
+- **Platform:** **board-dependent, NOT universal** – no uniform HAL access today; an ADC read would have to be implemented per board. Not possible at all on boards without an LDR.
+- **Pipeline-dependent?** **NO** – this is the crucial point: a pipeline-independent ambient-light signal.
+- **Probe?** **Eliminated entirely** – ambient light is measured directly, independent of the current mode. This removes the entire backoff/ratchet/skip machinery.
+- **Complexity/RAM/CPU:** the decision core becomes **much simpler** (a plain Schmitt trigger on the LDR value); in exchange, new HAL code is needed per board plus LDR-to-threshold calibration.
+- **Loss:** no more self-healing/oscillation special cases needed (the LDR does not lie about IR). BUT: availability is not guaranteed → could only be deployed as a **preferred signal WITH a gain fallback**, never as a sole fleet-wide replacement.
+
+### A8 — External time/sun source as a "signal" (no sensor)
+- **Signal:** wall clock (`time`) or sun position (`sun`) – both already implemented.
+- **Pipeline-dependent?** N/A – **entirely sensor-independent.**
+- **Probe?** **Never needed.** Self-healing comes automatically from the next time/sun edge.
+- **Loss:** blind to actual light – a windowless interior/cloud cover/interior artificial light/obstruction are all ignored. (Details under B1/B2/B3.)
+
+### A9 — "Shadow read": briefly turn off the IR LEDs only, do NOT move the IR-cut
+- **Signal:** not a new sensor signal, but a **cheaper probe substitute**. If the board can switch the IR LEDs independently of the mechanical IR-cut, only the IR illumination is killed briefly (while staying on the night path): in a genuinely dark room, the gain keeps climbing (confirms darkness); in an actually bright room, it stays moderate (visible light is present).
+- **Platform:** **board-dependent** – requires separate LED control in the `switch_cmd` script.
+- **Probe?** Replaces the **audible relay click** with silent LED switching – the click disappears, the brief image disturbance (darker image for 1-2 s) remains.
+- **Complexity:** ~the same as today, but an additional board-script contract is needed.
+- **Loss:** no robustness loss; potentially the **biggest usability gain** for the smallest rework – but only where the hardware/script cooperates.
+
+---
+
+## Part B — Alternative ARCHITECTURES / ALGORITHMS
+
+### B1 — Sun position only (`sun`), sensor fully off
+- **Core idea:** the astronomical calculation decides alone; no sensor, no probe. Already exists.
+- **Signal:** A8 (sun position).
+- **Probe?** Never.
+- **Code:** **massively less** – the entire sensor block, baseline, probes, oscillation, boot-settle would go away (only `dn_sun_times`/`dn_sun_target` + the switch machinery remain). Roughly <200 instead of 1322 lines.
+- **RAM/CPU:** minimal (one calculation/tick, no `/proc`, no IMP call).
+- **Loss:** a windowless interior/room, dense cloud cover, an obstructed camera, an interior room with artificial light → all get it wrong. No reacting to actual light. Self-healing is trivial (the clock).
+
+### B2 — Time of day only (`time`)
+- Like B1, even simpler (no astronomical math), but without seasonal adjustment. Same losses, no probe.
+
+### B3 — Sun/time as PRIMARY, sensor only as a bounded correction (hybrid)
+- **Core idea:** the sun/time schedule determines the base state. The sensor may only correct **within a window**: e.g., "force night if the room goes dark during the scheduled day" or fine-tune near twilight. Day is **always** re-entered at the scheduled sunrise edge, regardless of what the sensor says.
+- **Signal:** A8 primary + A1 secondary.
+- **Probe?** **No periodic reconfirmation probe needed** – the clock provides the self-healing: an incorrect night latch resolves itself at the latest at the next sun edge, without ever probing. A probe would at most be optional for a faster day correction in the middle of the night (rare).
+- **Code:** **significantly less** than today – backoff/ratchet/skip/`probe_max_skip_s` largely fall away because the clock solves the "stuck forever" problem. Baseline/oscillation are only relevant within the narrow correction window.
+- **RAM/CPU:** ~same as today or lower.
+- **Loss:** no longer reacts fully freely to arbitrary light (e.g., a room that is darkened at 14:00 and lit again at 15:00 → may be sluggish within the narrow window). A windowless interior without meaningful geocoordinates remains problematic. **The most attractive low-probe architecture that largely retains sensor reactivity.**
+
+### B4 — Fixed dual threshold / Schmitt trigger, NO adaptive baseline, NO probe
+- **Core idea:** what `daynight.c` was before all the hardening: fixed `day`/`night` gain thresholds, a wide dead zone, no baseline drift, no probe, no smoothing apparatus.
+- **Signal:** A1 (or A2).
+- **Probe?** **None.**
+- **Code:** **drastically less** (roughly 200-300 lines).
 - **RAM/CPU:** minimal.
-- **Verlust – erheblich und konkret:** (1) `day_gain_pct`-Adaptivbaseline weg → Räume mit schwachem Kunstlicht, das die feste Schwelle nie unterschreitet, bleiben ewig Nacht (genau die zwei Incidents vom 2026-08-02). (2) **Keine Selbstheilung** – ein Nacht-Latch, der wegen des Pipeline-Problems (A0) nie unter die Tag-Schwelle kommt, bleibt für immer Nacht (Dead-Zone-/Silent-Limbo-Klasse kehrt zurück). (3) IR-Reflexions-Oszillation ungebremst. Beantwortet Q2 mit „ja, ohne Probe" – aber um den Preis der Robustheit, die durch Incidents erkauft wurde.
+- **Loss – substantial and concrete:** (1) the `day_gain_pct` adaptive baseline is gone → rooms with weak artificial light that never drops below the fixed threshold stay stuck in night forever (exactly the two incidents from 2026-08-02). (2) **No self-healing** – a night latch that, because of the pipeline problem (A0), never gets below the day threshold stays night forever (the dead-zone/silent-limbo class returns). (3) IR-reflection oscillation unchecked. Answers Q2 with "yes, without a probe" – but at the price of the robustness that was bought through incidents.
 
-### B5 — Regelungstechnischer Schätzer (Tiefpass/Kalman auf log-Licht) statt Threshold+Hysterese
-- **Kernidee:** Den ad-hoc-Smoothing-Zoo (EMA `smooth_tg`, Baseline-Drift, Boot-Settle-Stabilitätsfenster, Hysterese-Kandidat) durch **einen** prinzipiellen Schätzer ersetzen, der eine Umgebungslicht-Schätzung mit Varianz führt und schaltet, wenn die Schätzung eine Schwelle mit Konfidenz kreuzt.
-- **Signal:** A1/A2 (unverändert das gain-Reading).
-- **Probe?** **Bleibt** – der Schätzer ändert das Mess-Problem (A0) nicht, nur die Filterung.
-- **Code:** der Entscheidungs-**Kern** könnte kompakter/eleganter werden (Boot-Settle + Smoothing + Hysterese in einem Filter vereint). ABER: sobald Selbstheilungs-Probe + Oszillations-Breaker + Passive-Skip wieder angeflanscht werden (die bleiben nötig), ist die Netto-LOC-Ersparnis ein Wash. Risiko: die genau auf Incidents getunten Sonderfälle gehen im „saubereren" Modell verloren und müssen neu erkämpft werden.
-- **RAM/CPU:** ~gleich (alles ist ohnehin schon float; MIPS ohne FPU ist kein Blocker, da der Ist-Code schon floatet).
-- **Verlust:** potentiell Regressionsrisiko bei den Feinheiten; kein Funktionsgewinn.
+### B5 — Control-theoretic estimator (low-pass/Kalman on log-light) instead of threshold+hysteresis
+- **Core idea:** replace the ad-hoc smoothing zoo (EMA `smooth_tg`, baseline drift, boot-settle stability window, hysteresis candidate) with **one** principled estimator that maintains an ambient-light estimate with variance and switches when the estimate crosses a threshold with confidence.
+- **Signal:** A1/A2 (the gain reading, unchanged).
+- **Probe?** **Remains** – the estimator does not change the measurement problem (A0), only the filtering.
+- **Code:** the decision **core** could become more compact/elegant (boot-settle + smoothing + hysteresis unified in one filter). BUT: once the self-healing probe + oscillation breaker + passive skip are bolted back on (they remain necessary), the net LOC savings are a wash. Risk: the special cases tuned precisely to past incidents get lost in the "cleaner" model and have to be fought for again.
+- **RAM/CPU:** ~the same (everything is already float anyway; MIPS without an FPU is not a blocker, since the current code already floats).
+- **Loss:** potential regression risk in the fine details; no functional gain.
 
-### B6 — Frame-Content-Klassifikator (Chroma + Luma-Histogramm + Gain, hand-getunt)
-- **Kernidee:** SnapFrame-Thumbnail + mehrere Merkmale (A4+A6) zu einer robusteren Tag/Nacht-Klassifikation kombinieren.
+### B6 — Frame-content classifier (chroma + luma histogram + gain, hand-tuned)
+- **Core idea:** combine a SnapFrame thumbnail + several features (A4+A6) into a more robust day/night classification.
 - **Signal:** A4+A6 (+A1).
-- **Probe?** **Bleibt** für Nacht→Tag (A0/A6-Argument).
-- **Code/RAM/CPU:** **MEHR** auf allen Achsen (Frame-Grab + Multi-Feature/Tick).
-- **Verlust/Gewinn:** kein Probe-Vorteil bei höheren Kosten. Nicht lohnend.
+- **Probe?** **Remains** for night→day (the A0/A6 argument).
+- **Code/RAM/CPU:** **MORE** on every axis (frame grab + multi-feature per tick).
+- **Loss/gain:** no probe advantage at higher cost. Not worthwhile.
 
-### B7 — Delegation an das OS (thingino `daynightd` / Board-Sensor)
-- **Kernidee:** timps macht keine Erkennung, konsumiert nur den vom OS gesetzten Modus.
-- **Probe?** Aus timps-Sicht keiner (verlagert).
-- **Code:** in timps am wenigsten.
-- **Verlust:** timps verliert Integration/Kontrolle und dupliziert genau das, wovon der native Port wegkam (`daynightd`-Formel wurde bewusst hereingeholt). Eher Delegation als Algorithmus.
+### B7 — Delegation to the OS (thingino `daynightd` / board sensor)
+- **Core idea:** timps does no detection of its own, it only consumes the mode set by the OS.
+- **Probe?** None from timps' point of view (shifted elsewhere).
+- **Code:** the least in timps.
+- **Loss:** timps loses integration/control and duplicates exactly what the native port moved away from (the `daynightd` formula was deliberately brought in-house). This is delegation rather than an algorithm.
 
 ---
 
-## Teil C — Direkte Antwort auf die zwei Leitfragen
+## Part C — Direct Answer to the Two Guiding Questions
 
-### Frage 1: Gibt es eine Alternative, die den Code MEANINGFULLY VEREINFACHT oder SIGNIFIKANT SPEICHER SPART, ohne viel echte Funktionalität zu verlieren?
+### Question 1: Is there an alternative that MEANINGFULLY SIMPLIFIES the code or SIGNIFICANTLY SAVES MEMORY, without losing much real functionality?
 
-**Speicher: praktisch nein – es gibt nichts zu sparen.** Der Ist-Footprint ist bereits vernachlässigbar (einige Skalare + drei winzige Ringpuffer, `hist[10]`/`settle_hist[6]`/`osc_hist[3]`). Kein Kandidat spart nennenswert RAM; die frame-basierten Signale (A4/A6/B6) würden als einzige den Verbrauch sogar **erhöhen** (SnapFrame-Puffer). „Signifikant Speicher sparen" ist am realen Ist-Zustand schlicht ein Nicht-Ziel.
+**Memory: practically no – there is nothing to save.** The current footprint is already negligible (a few scalars plus three tiny ring buffers, `hist[10]`/`settle_hist[6]`/`osc_hist[3]`). No candidate saves meaningful RAM; the frame-based signals (A4/A6/B6) are the only ones that would even **increase** consumption (SnapFrame buffers). "Significantly saving memory" is simply a non-goal given the real current state.
 
-**Code-Größe: ja, aber nur durch Aufgabe von incident-erkaufter Robustheit.** B4 (fester Schmitt-Trigger) und B1/B2 (nur Sonne/Zeit) sind dramatisch kürzer – opfern aber Selbstheilung, Dim-Room-Recovery und Oszillationsschutz, also genau die Funktionalität, für die die Zeilen existieren. **Der einzige Kandidat, der real vereinfacht UND wenig echte Funktion verliert, ist B3 (Sonne/Zeit primär, Sensor als begrenzte Korrektur):** die Uhr übernimmt die Selbstheilung, wodurch Backoff/Ratchet/Skip/`probe_max_skip_s` weitgehend entfallen – zum Preis geringerer freier Licht-Reaktivität und der Notwendigkeit sinnvoller Geodaten. B5 (Kalman/Tiefpass) macht den Kern eleganter, ist aber netto ein LOC-Wash und rein ein Refactor ohne Funktionsgewinn.
+**Code size: yes, but only by giving up robustness bought through incidents.** B4 (fixed Schmitt trigger) and B1/B2 (sun/time only) are dramatically shorter – but sacrifice self-healing, dim-room recovery, and oscillation protection, i.e. exactly the functionality the lines exist for. **The only candidate that genuinely simplifies AND loses little real functionality is B3 (sun/time primary, sensor as a bounded correction):** the clock takes over self-healing, which lets backoff/ratchet/skip/`probe_max_skip_s` largely fall away – at the price of reduced free light reactivity and the need for meaningful geodata. B5 (Kalman/low-pass) makes the core more elegant, but is net a LOC wash and purely a refactor without a functional gain.
 
-### Frage 2: Gibt es eine Alternative, die OHNE jeglichen Probe-Intervall (kein periodischer erzwungener physischer Moduswechsel) funktioniert?
+### Question 2: Is there an alternative that works WITHOUT any probe interval (no periodic forced physical mode switch)?
 
-**Ja – aber nur, indem das Entscheidungssignal aus einer Quelle kommt, die NICHT downstream der IR-Pipeline liegt.** Das ist der Kern: der `sensor`-Modus braucht den Probe zwingend, weil sein einziges Signal (Gain/Luma, ebenso Frame-Luma/Histogramm/Chroma) durch die aktive Nacht-Optik gemessen wird und ein dunkler Raum darin „hell" aussieht. Probe-freie Optionen:
+**Yes – but only if the decision signal comes from a source that is NOT downstream of the IR pipeline.** That is the crux: `sensor` mode necessarily needs the probe because its only signal (gain/luma, likewise frame luma/histogram/chroma) is measured through the active night optics, and a dark room looks "bright" within it. Probe-free options:
 
-1. **Sonne/Zeit** (B1/B2, bereits implementiert) – null Probe, aber blind für tatsächliches Licht (Keller/Cloud/Innenraum).
-2. **Sonne/Zeit primär + Sensor-Korrektur** (B3) – **die attraktivste probe-freie Architektur, die Sensor-Reaktivität behält:** ein Fehl-Latch löst sich an der nächsten Sonnenkante ohne je zu proben; ein dunkel werdender Raum kann direkt auf Nacht gezwungen werden.
-3. **Unabhängiger Umgebungslichtsensor (LDR/ALS, A7)** – die sauberste Lösung: pipeline-unabhängiges Signal → kein Probe, kein Backoff-Apparat – aber **nicht fleetweit verfügbar** (board-abhängig, kein HAL-Zugriff heute), also nur als bevorzugtes Signal mit Gain-Fallback denkbar.
-4. **Fester Dual-Threshold (B4)** – kein Probe, aber verliert Selbstheilung und Dim-Room-Recovery.
+1. **Sun/time** (B1/B2, already implemented) – zero probe, but blind to actual light (windowless interior/cloud cover/interior spaces).
+2. **Sun/time primary + sensor correction** (B3) – **the most attractive probe-free architecture that retains sensor reactivity:** an incorrect latch resolves itself at the next sun edge without ever probing; a room that goes dark can be forced directly to night.
+3. **Independent ambient-light sensor (LDR/ALS, A7)** – the cleanest solution: a pipeline-independent signal → no probe, no backoff apparatus – but **not available fleet-wide** (board-dependent, no HAL access today), so conceivable only as a preferred signal with a gain fallback.
+4. **Fixed dual threshold (B4)** – no probe, but loses self-healing and dim-room recovery.
 
-**Nicht probe-frei machbar** sind hingegen alle rein bild-/gain-basierten Ansätze (A1/A2/A4/A6, B5/B6): sie messen alle durch dieselbe Pipeline und können „Nachtpipeline bei Tageslicht" nicht von „Nachtpipeline im Dunkeln" trennen, ohne physisch in den Tagpfad zu schalten. Der billigste Kompromiss ohne echten Signalwechsel ist **A9 (Shadow-Read: nur IR-LEDs kurz aus)** – das eliminiert den hörbaren Relais-Klick (nicht die kurze Bildstörung) und erfordert nur board-seitig getrennte LED-Steuerung.
+**Not achievable probe-free**, on the other hand, are all purely image-/gain-based approaches (A1/A2/A4/A6, B5/B6): they all measure through the same pipeline and cannot distinguish "night pipeline in daylight" from "night pipeline in the dark" without physically switching to the day path. The cheapest compromise without a real signal change is **A9 (shadow read: briefly turn off the IR LEDs only)** – this eliminates the audible relay click (not the brief image disturbance) and only requires separate LED control on the board side.

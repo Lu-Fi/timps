@@ -1,81 +1,81 @@
-# timps – Performance- & Ressourcen-Audit 2026-08-07
+# timps – Performance & Resource Audit 2026-08-07
 
-**Datum:** 2026-08-07
-**Prüfumfang:** ausschließlich Performance, Speicher-Footprint, CPU-/Syscall-Last, Thread-/Wakeup-Budget und Binärgröße. **Kein** Security-/Korrektheits-Audit (laufen parallel, siehe `CODE_AUDIT_2026-07-18.md` / `SECURITY_AUDIT_2026-07-23.md`).
-**Grundlage:** statische Analyse des vollständigen `src/` (~19.900 LOC C) auf `main`, Stand v1.7.7. Keine Live-Messung; Kostenabschätzungen aus Code-Struktur, Allokationsmustern und den bekannten Plattformkosten (MIPS 3.10 **ohne vDSO** → jeder `clock_gettime`/`recv` ist ein echter Syscall à ~2–5 µs, vgl. Kommentar rtsp.c:87-94).
-
----
-
-## Gesamturteil
-
-Der Code ist für ein Embedded-Daemon **bereits ungewöhnlich weit durchoptimiert**. Praktisch jede „klassische“ Fundstelle eines solchen Audits ist schon adressiert und im Code als frühere Optimierungsrunde dokumentiert:
-
-- **Zero-Copy-Fanout** über refcountete Pakete (`frame.c`), Publish-Skip bei 0 Abonnenten (hub.c:247), Byte-Budget statt nur Slot-Cap pro Queue (fanqueue.c:14-16, S2).
-- **Syscall-Batching**: TCP-interleaved RTP in einem `write` (rtsp.c:148-165), UDP-RTP per `sendmmsg`-Batch (P3, rtsp.c:87-143), SRT-TS in 1316-B-Blöcken statt 188-B-Einzelsends (srt.c:130-141), Recorder über gepufferte `FILE*`-Writes mit asynchronem `sync_file_range` (record.c:326-340).
-- **On-Demand-Pipelines**: Encoder/Framesource/Audio blocken idle auf einer Condvar (`act_wait`, hal_ingenic.c:280-300), OSD-Updater rastert nur bei Konsumenten (imp_osd.c:458-469), `/events` ist condvar-getrieben statt gepollt (events.c).
-- **Allokations-Hygiene**: AU-/JPEG-Puffer wachsen bedarfsgesteuert statt Worst-Case-vorab (hal_ingenic.c:979-987), persistente Fragment-Scratchbuffer mit Soft-Shrink (record.c:298-299, fmp4.c:450, `ms_buf_reset`), Font-Cache statt Mehrfach-Parse (imp_osd.c:87-121), /proc-Leser mit 1-s-TTL-Cache (osd_vars.c:63-143), ISP-Scrape gedrosselt (P2, daynight.c:389-391).
-- **Explizite Thread-Stacks** (S3, util.h:55-74) statt 8-MB-RLIMIT-Default; Binary mit `-Os -ffunction-sections -Wl,--gc-sections` + strip (build.sh:299-352), alle schweren Abhängigkeiten (TLS/SRT/FAAC/Opus/TTF) compile-gated.
-
-Die real gemessene Basis (QA-Soak 2026-07-18: ~5 MB RSS stabil, fps-stabil bis 4 Clients) bestätigt das. **Es gibt keinen „low-hanging“ Groß-Gewinn mehr.** Die verbleibenden Punkte unten sind inkrementell: ein mittlerer struktureller Kandidat (P-01), ein Wakeup-Budget-Thema (P-02) und eine Handvoll kleiner Syscall-/Kopier-Trimmer. Nichts davon blockiert den Produktiveinsatz auf T10/T20-Klasse-Hardware.
+**Date:** 2026-08-07
+**Scope:** exclusively performance, memory footprint, CPU/syscall load, thread/wakeup budget, and binary size. **Not** a security/correctness audit (those run in parallel, see `CODE_AUDIT_2026-07-18.md` / `SECURITY_AUDIT_2026-07-23.md`).
+**Basis:** static analysis of the complete `src/` tree (~19,900 LOC of C) on `main`, at v1.7.7. No live measurement; cost estimates are derived from code structure, allocation patterns, and known platform costs (MIPS 3.10 **without vDSO** → every `clock_gettime`/`recv` is a real syscall at ~2-5 us each, cf. the comment at rtsp.c:87-94).
 
 ---
 
-## Befunde
+## Overall Verdict
 
-| ID | Sev | Thema | Datei:Zeile | Geschätzter Impact | Aufwand |
+For an embedded daemon, the code is **already unusually thoroughly optimized**. Practically every "classic" finding one would expect from such an audit has already been addressed and is documented in the code as an earlier optimization pass:
+
+- **Zero-copy fan-out** via refcounted packets (`frame.c`), publish-skip at 0 subscribers (hub.c:247), a byte budget instead of just a per-queue slot cap (fanqueue.c:14-16, S2).
+- **Syscall batching**: TCP-interleaved RTP in a single `write` (rtsp.c:148-165), UDP RTP via `sendmmsg` batching (P3, rtsp.c:87-143), SRT TS in 1316-byte blocks instead of individual 188-byte sends (srt.c:130-141), the recorder via buffered `FILE*` writes with asynchronous `sync_file_range` (record.c:326-340).
+- **On-demand pipelines**: encoder/framesource/audio block idle on a condvar (`act_wait`, hal_ingenic.c:280-300), the OSD updater rasterizes only when consumers exist (imp_osd.c:458-469), `/events` is condvar-driven rather than polled (events.c).
+- **Allocation hygiene**: AU/JPEG buffers grow on demand rather than being pre-sized for the worst case (hal_ingenic.c:979-987), persistent fragment scratch buffers with soft-shrink (record.c:298-299, fmp4.c:450, `ms_buf_reset`), a font cache instead of repeated parsing (imp_osd.c:87-121), a `/proc` reader with a 1 s TTL cache (osd_vars.c:63-143), throttled ISP scraping (P2, daynight.c:389-391).
+- **Explicit thread stacks** (S3, util.h:55-74) instead of the 8 MB RLIMIT default; the binary built with `-Os -ffunction-sections -Wl,--gc-sections` + strip (build.sh:299-352), all heavy dependencies (TLS/SRT/FAAC/Opus/TTF) compile-gated.
+
+The real measured baseline (QA soak 2026-07-18: ~5 MB RSS stable, fps-stable with up to 4 clients) confirms this. **There is no more "low-hanging" major win left.** The remaining items below are incremental: one medium structural candidate (P-01), one wakeup-budget item (P-02), and a handful of small syscall/copy trimmers. None of this blocks production use on T10/T20-class hardware.
+
+---
+
+## Findings
+
+| ID | Sev | Topic | File:Line | Estimated Impact | Effort |
 |----|-----|-------|-------------|--------------------|---------|
-| P-01 | 🟠 MITTEL | Doppelte Frame-Kopie + malloc/free pro publiziertem Frame | hal_ingenic.c:1122-1139 → hub.c:249 → frame.c:7-17 | ~0,5–1,5 MB/s memcpy + ~50–100 malloc/free/s pro aktivem Stream eingespart; grob 1–3 % CPU auf T21-Klasse, weniger Heap-Fragmentierung auf 32-MB-SoCs | mittel |
-| P-02 | 🟠 MITTEL | Idle-Wakeup-Budget ~25/s durch Slice-Sleeps statt Condvar-Stop | imp_osd.c:513, daynight.c:289-296, record.c:454, timelapse.c:273/287, main.c:167 | ~20 Wakeups/s (≈40 Kontextwechsel/s) im Leerlauf entfernbar | klein–mittel |
-| P-03 | 🟡 NIEDRIG | Mehrfache `clock_gettime`-Syscalls pro Play-Loop-Iteration (kein vDSO!) | rtsp.c:1042-1117 (`ms_now_us` 3-5×/Iter.), analog httpd.c-Streamloops | ~100–200 Syscalls/s bei 2 Clients à 25 fps → ~0,5–1 ms CPU/s | klein |
-| P-04 | 🟡 NIEDRIG | Control-Socket-Poll (`MSG_DONTWAIT`-recv) jede Iteration = 1 EAGAIN-Syscall pro Medienframe | rtsp.c:1128 | ~40–50 Syscalls/s pro RTSP-Client vermeidbar (Gate auf ~50 ms) | klein |
-| P-05 | 🟡 NIEDRIG | TS-Paketierung kopiert PES-Payload byteweise statt `memcpy` | srt.c:263-265 | ~0,5 MB/s/Client byteweise auf MIPS ≈ <1 % CPU; mit memcpy ~4–8× schneller | klein |
-| P-06 | 🟡 NIEDRIG | MJPEG-Multipart: 2 `send()` pro Frame (Part-Header + JPEG) | httpd.c:580-581 | 1 Syscall/Frame gespart (~10–25/s pro MJPEG-Client) via zusammenhängendem Puffer/`writev` | klein |
-| P-07 | ℹ️ INFO | UDP-Video-Session: 23,5 KB `rtp_batch` (16×1472) + Batch-Zwischenkopie | rtsp.c:95-101, 190 | ~24 KB Heap pro UDP-Video-Client; bewusster Tausch gegen ~170 gesparte Syscalls pro IDR – **so lassen** | – |
-| P-08 | ℹ️ INFO | Fanqueue-Worst-Case-Pinning 2 MB pro gestalltem Client | fanqueue.c:14-16 | 8 HTTP + 8 RTSP + 8 SRT gestallt = theoretisch ~48 MB; auf T10/T20/T21-Builds `-DFQ_MAX_BYTES=1048576` (und ggf. QCAP-Halbierung) empfohlen | trivial (Buildflag existiert) |
-| P-09 | ℹ️ INFO | `config_str_lock`-Kadenz nach den Daynight/OSD-Härtungen (Review-Frage) | daynight.c:696-701, imp_osd.c:230-233 | 2 Locks/s (284-B-Copy) + ≤16 Locks/s (428-B-Copies); Haltezeit sub-µs, Kontention nur während /control-Writes. **Generation-Counter lohnt nicht** | – |
-| P-10 | ℹ️ INFO | TTF-Neu-Rasterung 1×/s pro Sekunden-auflösendem Text-Item | imp_osd.c:222-294, msttf.c | Bereits gegated (osd_needed, Change-Detection, supersample=2). Minuten-Auflösung im Template macht sie quasi gratis – Doku-Hinweis, kein Codefix | – |
-| P-11 | ℹ️ INFO | Thread-Inventar: ~13–16 Basis-Threads (Vollausbau) + 1/Client, Conn-Stacks 256 KB VA | util.h:72-74, div. | RSS-Anteil gering (Stacks lazy-faulted); mbedTLS-Kontext ~30–40 KB je TLS-Conn ist der eigentliche Per-Client-Posten | – |
-| P-12 | ℹ️ INFO | Binärgröße | build.sh:299-352 | `-Os` + gc-sections + strip + Feature-Gates: keine erkennbare Bloat-Quelle; tabellenloses CRC32 (srt.c:108-117) spart bewusst 1 KB Flash gegen Zyklen nur auf PSI-Pfaden | – |
+| P-01 | 🟠 MEDIUM | Duplicate frame copy + malloc/free per published frame | hal_ingenic.c:1122-1139 → hub.c:249 → frame.c:7-17 | ~0.5-1.5 MB/s of memcpy + ~50-100 malloc/free/s saved per active stream; roughly 1-3% CPU on T21-class, less heap fragmentation on 32 MB SoCs | medium |
+| P-02 | 🟠 MEDIUM | Idle wakeup budget of ~25/s due to slice sleeps instead of a condvar stop | imp_osd.c:513, daynight.c:289-296, record.c:454, timelapse.c:273/287, main.c:167 | ~20 wakeups/s (~40 context switches/s) removable while idle | small-medium |
+| P-03 | 🟡 LOW | Multiple `clock_gettime` syscalls per play-loop iteration (no vDSO!) | rtsp.c:1042-1117 (`ms_now_us` 3-5x/iteration), analogous in httpd.c stream loops | ~100-200 syscalls/s at 2 clients at 25 fps each → ~0.5-1 ms CPU/s | small |
+| P-04 | 🟡 LOW | Control-socket poll (`MSG_DONTWAIT` recv) every iteration = 1 EAGAIN syscall per media frame | rtsp.c:1128 | ~40-50 syscalls/s per RTSP client avoidable (gate at ~50 ms) | small |
+| P-05 | 🟡 LOW | TS packetization copies the PES payload byte-by-byte instead of via `memcpy` | srt.c:263-265 | ~0.5 MB/s/client byte-by-byte on MIPS ~= <1% CPU; ~4-8x faster with memcpy | small |
+| P-06 | 🟡 LOW | MJPEG multipart: 2 `send()` calls per frame (part header + JPEG) | httpd.c:580-581 | 1 syscall/frame saved (~10-25/s per MJPEG client) via a contiguous buffer/`writev` | small |
+| P-07 | ℹ️ INFO | UDP video session: 23.5 KB `rtp_batch` (16x1472) + batch intermediate copy | rtsp.c:95-101, 190 | ~24 KB heap per UDP video client; a deliberate trade for ~170 syscalls saved per IDR – **leave as is** | – |
+| P-08 | ℹ️ INFO | Fanqueue worst-case pinning of 2 MB per stalled client | fanqueue.c:14-16 | 8 HTTP + 8 RTSP + 8 SRT stalled = theoretically ~48 MB; on T10/T20/T21 builds `-DFQ_MAX_BYTES=1048576` (and possibly halving QCAP) is recommended | trivial (build flag already exists) |
+| P-09 | ℹ️ INFO | `config_str_lock` cadence after the daynight/OSD hardening (a review question) | daynight.c:696-701, imp_osd.c:230-233 | 2 locks/s (284-byte copy) + <=16 locks/s (428-byte copies); hold time sub-us, contention only during /control writes. **A generation counter is not worthwhile** | – |
+| P-10 | ℹ️ INFO | TTF re-rasterization 1x/s per second-resolution text item | imp_osd.c:222-294, msttf.c | Already gated (osd_needed, change detection, supersample=2). Minute resolution in the template makes it essentially free – a documentation note, not a code fix | – |
+| P-11 | ℹ️ INFO | Thread inventory: ~13-16 base threads (full build) + 1/client, connection stacks 256 KB of VA | util.h:72-74, various | RSS share is small (stacks are lazily faulted in); an mbedTLS context of ~30-40 KB per TLS connection is the real per-client cost item | – |
+| P-12 | ℹ️ INFO | Binary size | build.sh:299-352 | `-Os` + gc-sections + strip + feature gates: no discernible bloat source; the table-less CRC32 (srt.c:108-117) deliberately trades 1 KB of flash for cycles, only on PSI paths | – |
 
 ---
 
-### P-01 – Frame-Publish: zweite Vollkopie + Heap-Churn pro Frame
+### P-01 – Frame publish: second full copy + heap churn per frame
 
-Der heißeste verbleibende Pfad. Pro encodiertem Frame passiert heute:
+The hottest remaining path. Today, per encoded frame:
 
-1. `video_thread` assembliert die IMP-Packs in den persistenten AU-Puffer (`memcpy`, hal_ingenic.c:1137) – **nötig** (Startcode-Fix, verstreute Packs).
-2. `hub_publish` → `pkt_new` **mallockt und kopiert die komplette AU nochmal** (frame.c:7-17), plus `free` nach dem letzten `unref`.
+1. `video_thread` assembles the IMP packs into the persistent AU buffer (`memcpy`, hal_ingenic.c:1137) – **necessary** (start-code fixup, scattered packs).
+2. `hub_publish` → `pkt_new` **mallocs and copies the entire AU again** (frame.c:7-17), plus a `free` after the last `unref`.
 
-Bei 25 fps × 2 Streams + 25 Audio-Frames/s sind das mit aktiven Clients ~75 malloc/free-Paare/s und bis ~1,5 MB/s zusätzliche memcpy-Bandbreite – auf einem 32-MB-SoC zusätzlich Dauer-Heap-Churn in Frame-Größenklasse (4 KB…400 KB), die klassische Fragmentierungsquelle für uClibc-Allocatoren.
+At 25 fps x 2 streams + 25 audio frames/s, this amounts to ~75 malloc/free pairs/s with active clients and up to ~1.5 MB/s of additional memcpy bandwidth – on a 32 MB SoC, on top of that, sustained heap churn in the frame size class (4 KB...400 KB), the classic fragmentation source for uClibc allocators.
 
-**Vorschlag:** eine `hub_publish_take()`-Variante, die einen bereits refcounteten Puffer übernimmt: der Producer assembliert die AU direkt in ein `ms_pkt` (bzw. in einen aus einem kleinen Per-Source-Pool recycelten Puffer) statt in `au[]`. Achtung auf zwei bestehende Invarianten: (a) der 0-Subscriber-Skip (hub.c:247) darf nicht zum Per-Frame-malloc-bei-0-Subs werden – der Producer-Puffer muss wiederverwendbar bleiben, wenn niemand hört; (b) `vparam_update` liest die AU unter `s->lock` vor dem Push. Darum „mittel“ und nicht „klein“: API-Änderung an hub + 3 Producer-Pfaden (Video, JPEG, Audio). Der Gewinn ist der größte noch verfügbare Einzelposten.
+**Proposal:** a `hub_publish_take()` variant that takes ownership of an already-refcounted buffer: the producer assembles the AU directly into an `ms_pkt` (or into a buffer recycled from a small per-source pool) instead of into `au[]`. Watch out for two existing invariants: (a) the 0-subscriber skip (hub.c:247) must not turn into a per-frame malloc at 0 subscribers – the producer buffer must stay reusable when nobody is listening; (b) `vparam_update` reads the AU under `s->lock` before the push. Hence "medium" rather than "small": an API change to hub plus 3 producer paths (video, JPEG, audio). The gain is the largest single item still available.
 
-### P-02 – Wakeup-Konsolidierung im Leerlauf
+### P-02 – Idle wakeup consolidation
 
-Die Stop-Responsiveness wird heute durchgehend über Slice-Sleeps erkauft: OSD 100 ms (10 Wakeups/s, **auch völlig idle**, nur um `osd_needed()` binnen 100 ms zu bemerken – das sind zusätzlich 4 Mutex-Paare pro Wake), Daynight 200-ms-Slices (~5/s bei 500-ms-Intervall), Recorder/Timelapse je 300 ms (~3,3/s auch bei disabled). Summe im Leerlauf ~25 Wakeups/s ≈ 50 Kontextwechsel/s auf dem Core, den sich timpsd mit ISP/Encoder-Firmware teilt. Kein gemessener Hotspot, aber unnötig: dieselbe Stop-Latenz liefert eine `pthread_cond_timedwait`-basierte Stop-Condvar (Muster existiert bereits in `fanqueue`/`events`) bei **einem** Wakeup pro echtem Intervall; der OSD-Idle-Fall kann den vorhandenen `hub_set_activity_cb` als Wecksignal nutzen statt zu pollen. Nutzen: Idle-Wakeups von ~25/s auf <5/s, spürbar eher im Power-/Scheduling-Verhalten als in %CPU.
+Stop responsiveness today is bought throughout via slice sleeps: OSD at 100 ms (10 wakeups/s, **even fully idle**, just to notice `osd_needed()` within 100 ms – that is an extra 4 mutex pairs per wake), daynight in 200 ms slices (~5/s at a 500 ms interval), recorder/timelapse at 300 ms each (~3.3/s even when disabled). Total while idle: ~25 wakeups/s, ~50 context switches/s on the core that timpsd shares with the ISP/encoder firmware. Not a measured hotspot, but unnecessary: the same stop latency is delivered by a `pthread_cond_timedwait`-based stop condvar (the pattern already exists in `fanqueue`/`events`) at **one** wakeup per genuine interval; the OSD idle case can use the existing `hub_set_activity_cb` as a wake signal instead of polling. Benefit: idle wakeups from ~25/s down to <5/s, noticeable more in power/scheduling behavior than in %CPU.
 
-### P-03/P-04 – Syscall-Trimmer im RTSP-Play-Loop
+### P-03/P-04 – Syscall trimmers in the RTSP play loop
 
-Ohne vDSO kostet jedes `ms_now_us()` einen echten Syscall. `stream_loop` ruft es pro Iteration mehrfach (Drop-Check, SR-Check, Aktivität) und pollt zusätzlich jede Iteration den Control-Socket nonblocking – bei laufendem Video ist das je Client und Frame ~1 EAGAIN-`recv` plus 3–5 `clock_gettime`. Ein einmal pro Iteration gecachtes `now` und ein zeitgegatetes Control-Poll (alle ~50 ms statt jede Iteration; TEARDOWN-Latenz bleibt <50 ms) sparen zusammen grob 100–150 Syscalls/s pro aktivem Client bei zwei Zeilen Änderung. Klein, aber praktisch gratis.
+Without vDSO, every `ms_now_us()` costs a real syscall. `stream_loop` calls it several times per iteration (drop check, SR check, activity), and additionally polls the control socket non-blocking every iteration – with video running, that is ~1 EAGAIN `recv` plus 3-5 `clock_gettime` calls per client and frame. A `now` cached once per iteration and a time-gated control poll (every ~50 ms instead of every iteration; TEARDOWN latency stays <50 ms) together save roughly 100-150 syscalls/s per active client for a two-line change. Small, but practically free.
 
 ---
 
-## Explizit geprüft, **kein** Handlungsbedarf
+## Explicitly checked, **no** action needed
 
-- **`snprintf` in Hot-Loops:** keine gefunden. Formatierung existiert nur in Request-/Setup-Pfaden, OSD-Expansion (1×/s, gecacht) und Logzeilen; RTP/TS/fMP4-Header werden binär über `wr_be*` gebaut.
-- **`/control`-GET-JSON:** 18-KB-Heap-Puffer + einmaliger Build pro Request (httpd.c:1187-1204) – bei WebUI-Raten irrelevant; Dauer-Poll ist durch die SSE-Push-Architektur (events.c, condvar) ohnehin obsolet.
-- **O(n²)-Muster:** keine. Alle Client-/Subscriber-Listen sind flache Arrays ≤16, Iterationen linear; Fanqueue-Drops amortisiert O(1).
-- **Recorder-I/O:** gepuffertes `fwrite` + `REC_SYNC_US`-fflush + asynchrones `sync_file_range`, fsync nur am Segmentende – korrekt dimensioniert, kein Coalescing-Bedarf.
-- **fMP4/HTTP-Streampfad:** ein `csend` pro fertigem Fragment (httpd.c:415), persistenter Scratch (fmp4.c:450-475) – bereits gebatcht.
-- **Daynight:** Gain via IMP-API 2×/s (billig), /proc-Scrape auf 5 s gedrosselt (P2), Struct-Snapshot 284 B/Poll unter Lock (siehe P-09) – die Probe-Economy-Änderungen von v1.7.7 haben keine messbare Laufzeitkostenseite.
-- **Stack/TLS-Budgets:** Audio-Worker ~12 KB `__thread` + 8 KB `acc[]` (dokumentiert, hal_ingenic.c:2377-2384), RTP-Paketpuffer ~1,5 KB/Frame auf Conn-Stacks (256 KB) – alles innerhalb der S3-Budgets; `rtsp.c` `hdr[3072]` bleibt der bekannte F-11-Nit.
+- **`snprintf` in hot loops:** none found. Formatting exists only in request/setup paths, OSD expansion (1x/s, cached), and log lines; RTP/TS/fMP4 headers are built binary via `wr_be*`.
+- **`/control` GET JSON:** an 18 KB heap buffer + a one-time build per request (httpd.c:1187-1204) – irrelevant at WebUI rates; continuous polling is obsolete anyway thanks to the SSE push architecture (events.c, condvar).
+- **O(n^2) patterns:** none. All client/subscriber lists are flat arrays of <=16 entries, iterations linear; fanqueue drops are amortized O(1).
+- **Recorder I/O:** buffered `fwrite` + `REC_SYNC_US` fflush + asynchronous `sync_file_range`, fsync only at segment end – correctly sized, no need for coalescing.
+- **fMP4/HTTP stream path:** one `csend` per completed fragment (httpd.c:415), a persistent scratch buffer (fmp4.c:450-475) – already batched.
+- **Daynight:** gain via the IMP API 2x/s (cheap), `/proc` scrape throttled to 5 s (P2), a 284-byte struct snapshot per poll under lock (see P-09) – the probe-economy changes from v1.7.7 have no measurable runtime cost.
+- **Stack/TLS budgets:** the audio worker uses ~12 KB `__thread` + 8 KB `acc[]` (documented, hal_ingenic.c:2377-2384), RTP packet buffers ~1.5 KB/frame on connection stacks (256 KB) – all within the S3 budgets; `rtsp.c`'s `hdr[3072]` remains the known F-11 nit.
 
-## Empfohlene Reihenfolge
+## Recommended Order
 
-1. **P-08** – Buildflag für kleine SoCs setzen (1 Zeile in der Plattform-Buildconfig, sofortiger Worst-Case-RAM-Gewinn).
-2. **P-03 + P-04** – Syscall-Trimmer (je wenige Zeilen, risikofrei, messbar per `strace -c`).
-3. **P-01** – `hub_publish_take()`/Pufferpool, mit `make sim` + QA-Soak verifizieren (RSS + %CPU vorher/nachher).
-4. **P-02** – Stop-Condvar-Konsolidierung, zusammen mit P-01 in einem Refactor-Fenster.
-5. P-05/P-06 nach Kapazität.
+1. **P-08** – set the build flag for small SoCs (1 line in the platform build config, immediate worst-case RAM gain).
+2. **P-03 + P-04** – syscall trimmers (a few lines each, risk-free, measurable via `strace -c`).
+3. **P-01** – `hub_publish_take()`/buffer pool, verify with `make sim` + a QA soak (RSS + %CPU before/after).
+4. **P-02** – stop-condvar consolidation, together with P-01 in one refactor window.
+5. P-05/P-06 as capacity allows.
 
-Keine dieser Positionen ist dringend; der Daemon ist in seinem heutigen Zustand für alle Zielplattformen ressourcenseitig tragfähig.
+None of these items is urgent; in its current state, the daemon is resource-viable across all target platforms.

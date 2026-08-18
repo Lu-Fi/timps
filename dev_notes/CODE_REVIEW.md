@@ -1,126 +1,126 @@
 # Code Review – microstream
 
-**Datum:** 2026-07-18
-**Umfang:** vollständiges Review aller Quellen unter `src/` (~12.500 LOC C), Build-System (`Makefile`, `build.sh`)
-**Ziel-Plattform:** Ingenic-SoCs (T31/T33/T40/T41), IMP-SDK, als root laufender, netzwerkexponierter Streaming-Daemon
+**Date:** 2026-07-18
+**Scope:** full review of all sources under `src/` (~12,500 LOC C), build system (`Makefile`, `build.sh`)
+**Target platform:** Ingenic SoCs (T31/T33/T40/T41), IMP SDK, a network-exposed streaming daemon running as root
 
-## Gesamturteil
+## Overall verdict
 
-Für hand-geschriebenen Embedded-C-Netzwerkcode ist microstream **überdurchschnittlich sorgfältig und gehärtet**. Puffergrenzen werden fast überall explizit geprüft, es wurden bereits mehrere Audit-Runden absolviert (sichtbar an M-/L-/H-Kommentaren im Code), und viele klassische Fallen sind schon geschlossen: constant-time Auth-Vergleiche, `/dev/urandom`-Token und -Nonces, atomare Config-Persistenz (`mkstemp`+`rename`+`fsync`), Symlink-/`..`-Schutz beim Clip-Export, ein korrekt konstruiertes Producer-Consumer-System mit sauberem Lebensdauer-Handshake (hub/fanqueue), und ein bemerkenswert defensiver TTF-Parser.
+For hand-written embedded C network code, microstream is **unusually careful and well-hardened**. Buffer bounds are checked explicitly almost everywhere, several rounds of auditing have already been completed (visible from the M-/L-/H- comments in the code), and many classic pitfalls are already closed off: constant-time auth comparisons, `/dev/urandom`-based tokens and nonces, atomic config persistence (`mkstemp`+`rename`+`fsync`), symlink/`..` protection on clip export, a correctly built producer-consumer system with a clean lifetime handshake (hub/fanqueue), and a remarkably defensive TTF parser.
 
-**Es wurden keine kritischen Speicherkorruptions-Bugs im direkten Netzwerk-Eingabepfad gefunden.** Die realen Restrisiken konzentrieren sich auf drei Themen:
+**No critical memory-corruption bugs were found in the direct network input path.** The real residual risks concentrate on three themes:
 
-1. **Verfügbarkeit (DoS):** durchgängig fehlende Socket-Timeouts kombiniert mit kleinen Verbindungs-Caps → billiger, dauerhafter DoS von RTSP und HTTP.
-2. **Stilles Weiterlaufen bei sicherheitsrelevanten Fehlern:** ignorierte Rückgaben bei SRT-Verschlüsselung und IMP-SDK-Aufrufen.
-3. **Ungeprüfte Wertebereiche**, die über das (authentifizierte) `/control`-Interface live gesetzt werden können — bis hin zu potenzieller Heap-Korruption im OSD-Renderer.
+1. **Availability (DoS):** socket timeouts are missing across the board, combined with small connection caps -> a cheap, persistent DoS against RTSP and HTTP.
+2. **Silent continuation on security-relevant errors:** ignored return values for SRT encryption and IMP SDK calls.
+3. **Unchecked value ranges** that can be set live via the (authenticated) `/control` interface — up to and including potential heap corruption in the OSD renderer.
 
-Priorität vor einem Internet-exponierten Einsatz: die beiden **HOCH-DoS**-Punkte (Timeouts), der **SRT-Passphrase**-Fehlerpfad und die **`font_size`/OSD-Canvas**-Grenzen.
-
----
-
-## Befunde nach Schweregrad
-
-### HOCH
-
-**H1 – Fehlende Socket-Timeouts → trivialer, dauerhafter Slot-Exhaustion-DoS (RTSP)**
-`rtsp.c` (Control-Phase, ~616–635) und `net_sendall()` (`net.c:45`) blockieren unbegrenzt. Ein unauthentifizierter Angreifer, der `RTSP_MAX_CLIENTS` TCP-Verbindungen öffnet und schweigt (bzw. das TCP-Fenster auf 0 hält), belegt alle Slots dauerhaft (globaler Zähler `g_nclients`, gilt auch für RTSPS). RTSP ist damit für alle legitimen Clients tot.
-*Fix:* `SO_RCVTIMEO`/`SO_SNDTIMEO` auf akzeptierten fds setzen (z. B. 30 s Control, 10–15 s Send), bei Timeout schließen; alternativ `poll()` mit Deadline.
-
-**H2 – Fehlende Socket-Timeouts → DoS (HTTP)**
-Zwei Stellen: der `/control`-Body-Nachlese-Loop (`httpd.c:878–882`) hat — anders als die Header-Phase — keinen Poll-Deadline; und alle `csend`-Pfade über `net_sendall` haben kein Sende-Timeout (`/stream.mp4` öffnen und nie lesen → Thread-Pinning). Bei `HTTP_MAX_CLIENTS 8` genügen 8 Verbindungen für kompletten HTTP-DoS. **Bei passwortlosem Setup unauthentifiziert erreichbar** (`http_check_auth` gibt dann 1 zurück).
-*Fix:* Body-Loop denselben Poll-Deadline geben wie der Header-Phase; `SO_SNDTIMEO`/`SO_RCVTIMEO` in `accept_thread` setzen. Legitime Streaming-Clients lesen kontinuierlich und sind nicht betroffen.
-
-**H3 – SRT: Fehler von `SRTO_PASSPHRASE` wird ignoriert → stiller Betrieb ohne Verschlüsselung**
-`srt.c:355` prüft die Rückgabe von `srt_setsockflag(..., SRTO_PASSPHRASE, ...)` nicht. libsrt verlangt 10–79 Zeichen; bei zu kurzer Passphrase schlägt der Aufruf fehl und der Listener läuft **unverschlüsselt und ohne Zugangskontrolle** weiter, obwohl der Nutzer glaubt, die Passphrase greife.
-*Fix:* Rückgabe prüfen, bei Fehler den Listener nicht starten (`LOGE` + `return`), analog zum bind/listen-Fehlerpfad.
-
-**H4 – Integer-Overflow / fehlende Obergrenze bei OSD-Canvas-Allokation → mögliche Heap-Korruption**
-`msttf_render` (`msttf.c:378–384`) berechnet `W`/`H` ohne Obergrenze und alloziert `malloc((size_t)W*H*4)`, während die Füllschleifen in `int` rechnen (signed overflow = UB). `font_size` wird beim Parsen ungeprüft übernommen (`config.c:314: o->font_size=pint(val)`) und ist per `/control` **live** setzbar. Ein sehr großer Wert (oder ein korrupter Font mit `units_per_em=1` und großen Advances) führt zu Wrap/Unterallokation und Schreiben hinter den Puffer.
-*Fix:* `pixel_h` in `msttf_render` hart klemmen (z. B. 8..512), `W`/`H` gegen ein Limit (z. B. 4096) prüfen, Größe in `uint64_t` berechnen (Überschreitung → `return -1`); `font_size` in `config.c` beim Parsen klemmen (z. B. 8..256); Schleifenindizes auf `size_t`.
-
-**H5 – OSD-Region-Koordinaten nicht gegen Framegröße geklemmt → SDK-abhängiger OOB im Compositing**
-`imp_osd.c` (~191/211/244): Ist die gerenderte OSD-Bitmap breiter/höher als der Stream (großes `font_size` auf Substream, oder `logo_w/logo_h` > Streamgröße), wird `ox=0` gesetzt, aber `rect.p1.x = x+w-1` liegt außerhalb des Frames. Auf mehreren T-SoCs schreibt IMP_OSD dann über die Bildgrenze hinaus. `setup_cover` macht den Clamp korrekt — `refresh_text`/Logo nicht.
-*Fix:* `w`/`h` vor `SetRgnAttr` auf die Framegröße begrenzen (Region verwerfen/skalieren, wenn sie nicht passt).
-
-**H6 – IMP-SDK-Rückgabewerte durchgängig ungeprüft → silent failures**
-`hal_ingenic.c` (u. a. 498–499, 551, 823–826, 1305–1320): `IMP_FrameSource_SetChnAttr`, `IMP_Encoder_RegisterChn/CreateGroup`, `IMP_System_Bind`, die meisten `IMP_ISP_*` in `isp_init`, `Start/StopRecvPic`. Bei Fehlern läuft die Pipeline scheinbar weiter, liefert aber nie Frames — genau die Klasse Fehler, die im Audio-Pfad bewusst behandelt wird.
-*Fix:* mindestens die Bind/Register/Create-Kette in `ing_start`/`jpeg_setup` prüfen und bei Fehler mit Teardown `return -1`.
-
-### MITTEL
-
-**M1 – TLS-Handshake ohne Timeout** (`tls.c:92–97`). Blockierender fd; Client, der nach TCP-Connect schweigt, hängt den Thread für immer (verschärft H1/H2). *Fix:* `SO_RCVTIMEO` vor `ms_tls_accept()` oder `mbedtls_ssl_conf_read_timeout()` + `mbedtls_net_recv_timeout`.
-
-**M2 – Keine TLS-Mindestversion** (`tls.c:59–63`). `MBEDTLS_SSL_PRESET_DEFAULT` erlaubt unter mbedTLS 2.x noch TLS 1.0/1.1. *Fix:* `mbedtls_ssl_conf_min_version(..., TLS 1.2)`.
-
-**M3 – Use-after-free auf TLS-Kontext beim Shutdown** (`rtsp.c:752–757`). `rtsp_stop()` wartet nur 500 ms bounded auf `g_nclients==0` und ruft dann `ms_tls_ctx_free()`; detachte Client-Threads (die wegen fehlender Timeouts unbegrenzt hängen können) referenzieren `conf`/`cert`/`drbg` danach weiter. *Fix:* echte Synchronisation (Refcount) oder joinbare Threads; mind. bounded sleep an ein hartes `shutdown()` der Client-fds koppeln.
-
-**M4 – SRT `SRTO_STREAMID` auf dem Listener ist wirkungslos als Zugriffskontrolle** (`srt.c:353`). Streamid ist Caller-seitig; die streamid akzeptierter Sockets wird nie geprüft. *Fix:* `srt_listen_callback()` registrieren und eingehende streamid gegen `cfg->srt.streamid` vergleichen.
-
-**M5 – Digest-Auth: `realm` und `uri` aus dem Client ungeprüft** (`auth.c:52–92`). Client-`realm` fließt in HA1 statt `AUTH_REALM` zu erzwingen; `uri` wird nie gegen die Request-URI verglichen (RFC-2617-Pflicht); kein `qop`/`cnonce`/`nc`. Praktische Auswirkung begrenzt (Nonce per-Connection zufällig, pro 401 erneuert), aber die uri-Prüfung kostet nichts. *Fix:* `strcmp(realm, AUTH_REALM)` und `strcmp(uri, request_uri)` verlangen.
-
-**M6 – Vorhersagbare Zufallswerte aus `rand()` (Seed `time^pid`)** (`main.c:84`, `rtsp.c:366`, `rtp.c:41–43`). Session-ID, SSRC, Start-Sequenznummer, ts_base vorhersagbar → senkt Hürde für Off-Path-RTP-Injection im UDP-Transport. Token/Digest-Nonces sind bereits auf urandom umgestellt. *Fix:* `getrandom()`/`auth_gen_token()` auch hierfür.
-
-**M7 – Recorder: kein `fsync`, `fclose` ungeprüft → Datenverlust bei Stromausfall** (`record.c:281–287`). `fclose(w_fp)` kann den letzten Flush nicht schreiben (SD voll/gezogen), Rückgabe ignoriert; nie `fsync()` → bis zu `segment_s` Sekunden Aufnahme im Page-Cache verlierbar. *Fix:* `fclose`-Rückgabe prüfen; periodisch `fflush`+`fsync(fileno(w_fp))` (z. B. alle 5–10 s / N Fragmente).
-
-**M8 – Ressourcen-Leak / inkonsistenter Zustand in `ing_start`/`ing_stop`-Fehlerpfaden** (`hal_ingenic.c:1298–1332`, 1394–1431). Schlägt `fs_create`/`enc_create` für Stream i>0 fehl, kehrt `ing_start` mit `-1` zurück, ohne bereits erzeugte FrameSources/Encoder/Groups/Threads abzubauen; `g_nv` zählt nur Slots mit erfolgreichem Thread, sodass zuvor angelegte IMP-Kanäle in `ing_stop` übersprungen (geleakt) werden. *Fix:* Kanal-Teardown von Thread-Existenz entkoppeln; im Fehlerfall sauber freigeben (oder `ing_stop` idempotent + aufrufen).
-
-**M9 – OSD `retired`-Doppelpufferung schützt Use-after-free nicht zuverlässig** (`imp_osd.c:158–201`). Nur genau ein alter Puffer wird zurückgehalten; ohne echtes „Puffer nicht mehr gelesen"-Signal der IMP-Pipeline kann `SetRgnAttr` unter Last einen neuen Puffer setzen, während die HW den gerade freigegebenen liest. *Fix:* Ringtiefe erhöhen (2–3) oder an Frame-Latenz koppeln.
-
-**M10 – Config-Felder in `refresh_text` lockfrei gelesen, während `/control` schreibt** (`imp_osd.c:161ff`). Nur `it->text` wird unter `config_str_lock` gesnapshottet; `font_size/x/y/color/outline/enabled` lockfrei → inkonsistente Kombinationen möglich (in Verbindung mit H4 relevant). *Fix:* gesamten Item-Snapshot unter `config_str_lock` ziehen.
-
-**M11 – Config-Parser: fehlende Bereichsvalidierung numerischer Werte** (`config.c:278–301` u. a.). `width/height/fps/gop/qp/bitrate/…/rtsp.port/http.port` via `pint()` (strtol ohne Fehlerprüfung, „abc"→0) ungeprüft; inkonsistent, da `motion.*`/`record.channel`/`osd.supersample` sauber geklemmt werden. Über `/control` persistierbar → fehlerhafter Wert kann Stream dauerhaft brechen (HAL-init-Fail → `main` return 1 → Crash-Loop unter Respawn). *Fix:* Clamping analog zu `motion.*` (fps 1..sensor-max, qp 1..51, port 1..65535).
-
-**M12 – Tag/Nacht-Logik nutzt Wanduhr statt CLOCK_MONOTONIC** (`daynight.c:286`, 302–305). `time(NULL)*1000` für Dwell/Baseline; NTP-Rücksprung nach Boot macht Deltas negativ → Umschaltung blockiert, Vorsprung hebelt Mindest-Verweilzeit aus. Rest des Codes nutzt bereits monotone Zeit. *Fix:* `ms_now_us()/1000`.
-
-**M13 – `config_get_kv` deckt `record.*` nicht ab → Dedup wirkungslos, Flash-Verschleiß** (`config.c:623–838`). control.c setzt `record.*` via `/control`, aber die Change-Detection meldet sie immer als „unknown" → jeder POST der Record-Seite schreibt `/etc/timps.conf` neu (jffs2-Verschleiß, den die Dedup eigentlich verhindern soll). *Fix:* `record.*`-Zweig in `config_get_kv` ergänzen.
-
-**M14 – Build: keine Härtungsflags** (`Makefile:93–95`, `build.sh:273–283`). Kein `-D_FORTIFY_SOURCE=2`, kein `-fstack-protector-strong`, kein `-Wl,-z,relro,-z,now`. `-no-pie` ist durch non-PIC-Vendor-Archive erzwungen (nachvollziehbar). Für einen als root laufenden Netzdienst fehlt Compiler-Defense-in-depth; `-Wno-stringop-truncation` unterdrückt zudem global eine nützliche Warnklasse. *Fix:* mind. für musl-Builds SSP + FORTIFY + RELRO aktivieren.
-
-**M15 – Toolchain-Download ohne Integritätsprüfung** (`build.sh:85–104`). Cross-Toolchain-Tarball wird von GitHub geladen und ausgeführt ohne SHA256/Signatur — im Gegensatz zu den vorbildlich commit-gepinnten Repos. Supply-Chain-Risiko. *Fix:* SHA256 pinnen und nach Download verifizieren.
-
-**M16 – msttf: Scanline-Schnittpunkte hart auf 128 begrenzt** (`msttf.c:437`). Weitere Kreuzungen werden verworfen; bei ungerader behaltener Zahl versagt das Even-Odd-Füllen → falsch gerenderte Zeile bei dichten Konturen (kein Speicherfehler). *Fix:* `xint` dynamisch wachsen lassen oder `nx` auf gerade Zahl runden.
-
-### NIEDRIG (Auswahl)
-
-- **L1 – RTSP Client-Cap check-then-act nicht atomar** (`rtsp.c:669`): Cap um 1 überschreitbar. Fix: `__sync_add_and_fetch` vor Annahme.
-- **L2 – `send_resp()` klemmt `n` nicht auf Puffergröße** (`rtsp.c:273`): latent, aktuell unerreichbar; `n` nach snprintf cappen.
-- **L3 – RTP: Sink-Fehler in `emit()` verworfen** (`rtp.c`): restliche NALs werden trotz totem Client paketiert (CPU-Verschwendung).
-- **L4 – SRT doppeltes `srt_close(g_ls)`** (`srt.c:393` vs. 413): Race auf Socket-ID-Wiederverwendung.
-- **L5 – `record_clip` `fclose` ungeprüft** (`record.c:545`): abgeschnittener Clip als Erfolg gemeldet.
-- **L6 – `seg_open` fwrite-Fehler lässt Stub-Datei liegen** (`record.c:230`): `unlink(path)` im Fehlerpfad ergänzen.
-- **L7 – TLS-gepufferte Daten unsichtbar für `poll()`** (`httpd.c:757`, nur TLS-Builds): `mbedtls_ssl_get_bytes_avail` vor poll prüfen.
-- **L8 – Signalhandler erst nach Dienst-Start installiert** (`main.c:112`): SIGINT/SIGTERM während IMP-init → Abbruch ohne HAL-Teardown. Handler vor `init()` registrieren.
-- **L9 – `config_load` zerhackt Zeilen >511 Zeichen still** (`config.c:868`): fehlendes `\n` erkennen, Rest verwerfen + `LOGW`.
-- **L10 – `record.name`/`timelapse.name`/`*.dir` via `/control` ohne `..`-Prüfung** (record.c:192, timelapse.c:126): authentifizierter Nutzer kann außerhalb des records-Baums schreiben (kein Privilegiensprung, aber Hardening — `..`-Prüfung wie in `record_clip` übernehmen).
-- **L11 – `hub->nsub` für Logging nach Lock-Freigabe gelesen** (`hub.c:161/183`): benigner Race.
-- **L12 – `ms_base64`-Deklaration außerhalb des Include-Guards** (`util.h:51`): harmlos, aber Versehen.
-- **L13 – `strftime` mit teils nutzerkontrolliertem Format** (`osd_vars.c:200`): kein Speicherfehler, aber unerwartete Ausgabe; `%`-Konversionen ggf. whitelisten.
-- **L14 – `fmp4` `mfhd`-seq (32-bit) / `a_timescale<<16`** (fmp4.c:369/261): nur bei >2 Jahren Dauerverbindung bzw. >65535 Hz relevant; dokumentieren/klemmen.
-- **L15 – `hal_sim` deckt piggyback-JPEG nicht ab** (hal_sim.c:199): Test-Backend nicht deckungsgleich mit `hal_ingenic`.
+Priority before an internet-exposed deployment: the two **HIGH DoS** items (timeouts), the **SRT passphrase** error path, and the **`font_size`/OSD canvas** bounds.
 
 ---
 
-## Explizit geprüft und in Ordnung
+## Findings by severity
 
-- **md5.c** – korrekte, saubere MD5-Implementierung.
-- **Auth-Kern** – constant-time-Vergleiche, urandom-Token/-Nonces, korrekte Puffergrößen; `/control` und `/events` hinter globalem Auth-Gate + „local only" wenn kein User konfiguriert.
-- **HTTP-Parsing** – gebundenes `sscanf`, CR/LF-Schnitt (kein Response-Splitting), Truncation-Guards; **kein Path-Traversal** (Server liefert keine Dateien vom Dateisystem).
-- **fMP4-Boxstruktur** – Box-Größen-Patching gegen OOM-Teilbäume abgesichert, esds/trun/trex/tfhd korrekt, tfdt sauber 64-bit, `aac_adts_strip` bounds-safe.
-- **hub/fanqueue/frame** – Publish/Unsubscribe-Handshake verhindert Use-after-free, konsistentes Refcounting, durchdachtes Overflow-Verhalten (drop-oldest + GOP-Pruning + IDR-Request), Producer blockiert nie.
-- **NAL/vparam/aac/g711** – bounds-sicher, defensive Exp-Golomb-Reader.
-- **config_write_keys** – atomar (mkstemp+rename, fsync auf Datei und Verzeichnis, Writer-Mutex) — vorbildlich für jffs2.
-- **msttf-Bounds-Checks** – konsequent defensiv gegen korrupte Fonts (loca/glyf/cmap-Grenzen, Rekursionslimit bei Composite-Glyphs, OOM-Behandlung). Ausnahme siehe H4/M16.
-- **record_clip** – Pfadvalidierung (`/tmp/`-Prefix + `..`-Filter), Sekunden-Clamp, Serialisierung per trylock.
-- **`on_motion`/`switch_cmd` (`system()`)** – bewusst nicht über `/control` setzbar → kein Injection-Vektor, solange die Config-Datei vertrauenswürdig ist.
+### HIGH
+
+**H1 – Missing socket timeouts -> trivial, persistent slot-exhaustion DoS (RTSP)**
+`rtsp.c` (control phase, ~616-635) and `net_sendall()` (`net.c:45`) block indefinitely. An unauthenticated attacker who opens `RTSP_MAX_CLIENTS` TCP connections and stays silent (or holds the TCP window at 0) occupies all slots permanently (global counter `g_nclients`, applies to RTSPS as well). RTSP is then dead for all legitimate clients.
+*Fix:* set `SO_RCVTIMEO`/`SO_SNDTIMEO` on accepted fds (e.g. 30 s control, 10-15 s send), close on timeout; alternatively `poll()` with a deadline.
+
+**H2 – Missing socket timeouts -> DoS (HTTP)**
+Two spots: the `/control` body follow-up loop (`httpd.c:878-882`) has no poll deadline — unlike the header phase; and all `csend` paths via `net_sendall` lack a send timeout (open `/stream.mp4` and never read -> thread pinning). With `HTTP_MAX_CLIENTS 8`, 8 connections suffice for a complete HTTP DoS. **Reachable unauthenticated on a password-less setup** (`http_check_auth` then returns 1).
+*Fix:* give the body loop the same poll deadline as the header phase; set `SO_SNDTIMEO`/`SO_RCVTIMEO` in `accept_thread`. Legitimate streaming clients read continuously and are not affected.
+
+**H3 – SRT: error from `SRTO_PASSPHRASE` is ignored -> silently runs unencrypted**
+`srt.c:355` does not check the return value of `srt_setsockflag(..., SRTO_PASSPHRASE, ...)`. libsrt requires 10-79 characters; with too short a passphrase the call fails and the listener keeps running **unencrypted and without access control**, even though the user believes the passphrase is in effect.
+*Fix:* check the return value; on error, do not start the listener (`LOGE` + `return`), analogous to the bind/listen error path.
+
+**H4 – Integer overflow / missing upper bound on OSD canvas allocation -> possible heap corruption**
+`msttf_render` (`msttf.c:378-384`) computes `W`/`H` without an upper bound and allocates `malloc((size_t)W*H*4)`, while the fill loops compute in `int` (signed overflow = UB). `font_size` is taken over unchecked while parsing (`config.c:314: o->font_size=pint(val)`) and is settable **live** via `/control`. A very large value (or a corrupt font with `units_per_em=1` and large advances) leads to wraparound/underallocation and writes past the buffer.
+*Fix:* hard-clamp `pixel_h` in `msttf_render` (e.g. 8..512), check `W`/`H` against a limit (e.g. 4096), compute the size in `uint64_t` (overflow -> `return -1`); clamp `font_size` in `config.c` while parsing (e.g. 8..256); use `size_t` for loop indices.
+
+**H5 – OSD region coordinates not clamped to frame size -> SDK-dependent OOB in compositing**
+`imp_osd.c` (~191/211/244): if the rendered OSD bitmap is wider/taller than the stream (large `font_size` on a substream, or `logo_w/logo_h` larger than the stream size), `ox=0` is set, but `rect.p1.x = x+w-1` ends up outside the frame. On several T-SoCs, IMP_OSD then writes past the image boundary. `setup_cover` clamps correctly — `refresh_text`/the logo path does not.
+*Fix:* clamp `w`/`h` to the frame size before `SetRgnAttr` (discard or scale the region if it does not fit).
+
+**H6 – IMP SDK return values consistently unchecked -> silent failures**
+`hal_ingenic.c` (among others 498-499, 551, 823-826, 1305-1320): `IMP_FrameSource_SetChnAttr`, `IMP_Encoder_RegisterChn/CreateGroup`, `IMP_System_Bind`, most `IMP_ISP_*` calls in `isp_init`, `Start/StopRecvPic`. On failure the pipeline appears to keep running but never delivers frames — exactly the class of error that is handled deliberately in the audio path.
+*Fix:* check at least the bind/register/create chain in `ing_start`/`jpeg_setup` and `return -1` with teardown on error.
+
+### MEDIUM
+
+**M1 – TLS handshake without timeout** (`tls.c:92-97`). Blocking fd; a client that stays silent after the TCP connect hangs the thread forever (compounds H1/H2). *Fix:* `SO_RCVTIMEO` before `ms_tls_accept()`, or `mbedtls_ssl_conf_read_timeout()` + `mbedtls_net_recv_timeout`.
+
+**M2 – No TLS minimum version** (`tls.c:59-63`). `MBEDTLS_SSL_PRESET_DEFAULT` still permits TLS 1.0/1.1 under mbedTLS 2.x. *Fix:* `mbedtls_ssl_conf_min_version(..., TLS 1.2)`.
+
+**M3 – Use-after-free on the TLS context during shutdown** (`rtsp.c:752-757`). `rtsp_stop()` waits only a bounded 500 ms for `g_nclients==0` and then calls `ms_tls_ctx_free()`; detached client threads (which, due to missing timeouts, can hang indefinitely) keep referencing `conf`/`cert`/`drbg` afterward. *Fix:* real synchronization (refcount) or joinable threads; at minimum, tie the bounded sleep to a hard `shutdown()` of the client fds.
+
+**M4 – SRT `SRTO_STREAMID` on the listener is ineffective as access control** (`srt.c:353`). Streamid is caller-side; the streamid of accepted sockets is never checked. *Fix:* register `srt_listen_callback()` and compare the incoming streamid against `cfg->srt.streamid`.
+
+**M5 – Digest auth: `realm` and `uri` from the client are unchecked** (`auth.c:52-92`). The client-supplied `realm` flows into HA1 instead of enforcing `AUTH_REALM`; `uri` is never compared against the request URI (an RFC 2617 requirement); no `qop`/`cnonce`/`nc`. Practical impact is limited (nonce is per-connection random, renewed on every 401), but the uri check costs nothing. *Fix:* require `strcmp(realm, AUTH_REALM)` and `strcmp(uri, request_uri)`.
+
+**M6 – Predictable random values from `rand()` (seed `time^pid`)** (`main.c:84`, `rtsp.c:366`, `rtp.c:41-43`). Session ID, SSRC, start sequence number, ts_base are predictable -> lowers the bar for off-path RTP injection over the UDP transport. Tokens/digest nonces have already been switched to urandom. *Fix:* use `getrandom()`/`auth_gen_token()` for these as well.
+
+**M7 – Recorder: no `fsync`, `fclose` unchecked -> data loss on power failure** (`record.c:281-287`). `fclose(w_fp)` may fail to write the last flush (SD full/removed), and the return value is ignored; `fsync()` is never called -> up to `segment_s` seconds of recording can be lost from the page cache. *Fix:* check the `fclose` return value; periodically `fflush`+`fsync(fileno(w_fp))` (e.g. every 5-10 s / N fragments).
+
+**M8 – Resource leak / inconsistent state in `ing_start`/`ing_stop` error paths** (`hal_ingenic.c:1298-1332`, 1394-1431). If `fs_create`/`enc_create` fails for stream i>0, `ing_start` returns `-1` without tearing down the FrameSources/encoders/groups/threads already created; `g_nv` only counts slots with a successfully started thread, so previously created IMP channels are skipped (leaked) in `ing_stop`. *Fix:* decouple channel teardown from thread existence; free cleanly on error (or make `ing_stop` idempotent and call it).
+
+**M9 – OSD `retired` double-buffering does not reliably prevent use-after-free** (`imp_osd.c:158-201`). Only exactly one old buffer is held back; without a real "buffer no longer being read" signal from the IMP pipeline, `SetRgnAttr` can, under load, set a new buffer while the hardware is still reading the one just released. *Fix:* increase ring depth (2-3) or tie it to frame latency.
+
+**M10 – Config fields read lock-free in `refresh_text` while `/control` writes** (`imp_osd.c:161ff`). Only `it->text` is snapshotted under `config_str_lock`; `font_size/x/y/color/outline/enabled` are read lock-free -> inconsistent combinations are possible (relevant in conjunction with H4). *Fix:* take the entire item snapshot under `config_str_lock`.
+
+**M11 – Config parser: missing range validation of numeric values** (`config.c:278-301` among others). `width/height/fps/gop/qp/bitrate/.../rtsp.port/http.port` go through `pint()` (strtol without error checking, "abc"->0) unchecked; inconsistent, since `motion.*`/`record.channel`/`osd.supersample` are properly clamped. Persistable via `/control` -> a bad value can permanently break the stream (HAL init fail -> `main` returns 1 -> crash loop under respawn). *Fix:* clamp analogous to `motion.*` (fps 1..sensor-max, qp 1..51, port 1..65535).
+
+**M12 – Day/night logic uses the wall clock instead of CLOCK_MONOTONIC** (`daynight.c:286`, 302-305). `time(NULL)*1000` for dwell/baseline; an NTP step-back after boot makes deltas negative -> switching blocks, while a step-forward defeats the minimum dwell time. The rest of the code already uses monotonic time. *Fix:* `ms_now_us()/1000`.
+
+**M13 – `config_get_kv` does not cover `record.*` -> dedup ineffective, flash wear** (`config.c:623-838`). control.c sets `record.*` via `/control`, but change detection always reports them as "unknown" -> every POST to the record page rewrites `/etc/timps.conf` (jffs2 wear that the dedup is supposed to prevent). *Fix:* add a `record.*` branch to `config_get_kv`.
+
+**M14 – Build: no hardening flags** (`Makefile:93-95`, `build.sh:273-283`). No `-D_FORTIFY_SOURCE=2`, no `-fstack-protector-strong`, no `-Wl,-z,relro,-z,now`. `-no-pie` is forced by non-PIC vendor archives (understandable). For a network service running as root, compiler defense-in-depth is missing; `-Wno-stringop-truncation` also globally suppresses a useful warning class. *Fix:* enable SSP + FORTIFY + RELRO at least for musl builds.
+
+**M15 – Toolchain download without integrity check** (`build.sh:85-104`). The cross-toolchain tarball is downloaded from GitHub and executed without SHA256/signature verification — unlike the otherwise exemplary commit-pinned repos. Supply-chain risk. *Fix:* pin a SHA256 and verify it after download.
+
+**M16 – msttf: scanline intersections hard-capped at 128** (`msttf.c:437`). Further crossings are discarded; with an odd number of retained crossings, even-odd fill fails, producing an incorrectly rendered scanline for dense contours (not a memory error). *Fix:* grow `xint` dynamically, or round `nx` down to an even number.
+
+### LOW (selection)
+
+- **L1 – RTSP client cap check-then-act is not atomic** (`rtsp.c:669`): the cap can be exceeded by 1. Fix: `__sync_add_and_fetch` before accepting.
+- **L2 – `send_resp()` does not clamp `n` to the buffer size** (`rtsp.c:273`): latent, currently unreachable; clamp `n` after snprintf.
+- **L3 – RTP: sink errors in `emit()` are discarded** (`rtp.c`): remaining NALs are still packetized despite a dead client (wasted CPU).
+- **L4 – SRT double `srt_close(g_ls)`** (`srt.c:393` vs. 413): race on socket-ID reuse.
+- **L5 – `record_clip` `fclose` unchecked** (`record.c:545`): a truncated clip is reported as success.
+- **L6 – `seg_open` fwrite error leaves a stub file behind** (`record.c:230`): add `unlink(path)` in the error path.
+- **L7 – TLS-buffered data invisible to `poll()`** (`httpd.c:757`, TLS builds only): check `mbedtls_ssl_get_bytes_avail` before poll.
+- **L8 – Signal handler installed only after service start** (`main.c:112`): SIGINT/SIGTERM during IMP init -> abort without HAL teardown. Register the handler before `init()`.
+- **L9 – `config_load` silently truncates lines >511 characters** (`config.c:868`): detect a missing `\n`, discard the rest + `LOGW`.
+- **L10 – `record.name`/`timelapse.name`/`*.dir` via `/control` without `..` check** (record.c:192, timelapse.c:126): an authenticated user can write outside the records tree (no privilege escalation, but a hardening gap — adopt the `..` check used in `record_clip`).
+- **L11 – `hub->nsub` read for logging after the lock is released** (`hub.c:161/183`): benign race.
+- **L12 – `ms_base64` declaration outside the include guard** (`util.h:51`): harmless, but an oversight.
+- **L13 – `strftime` with a partially user-controlled format** (`osd_vars.c:200`): not a memory error, but unexpected output; consider whitelisting `%` conversions.
+- **L14 – `fmp4` `mfhd` seq (32-bit) / `a_timescale<<16`** (fmp4.c:369/261): only relevant after >2 years of continuous connection or >65535 Hz; document/clamp.
+- **L15 – `hal_sim` does not cover piggyback JPEG** (hal_sim.c:199): test backend not on par with `hal_ingenic`.
 
 ---
 
-## Empfohlene Reihenfolge der Behebung
+## Explicitly checked and found OK
 
-1. **H1, H2, M1** – Socket-/Handshake-Timeouts (`SO_RCVTIMEO`/`SO_SNDTIMEO` + Body-Poll-Deadline). Höchster Impact bei geringstem Aufwand.
-2. **H3, M4** – SRT-Passphrase-Fehler behandeln, streamid serverseitig prüfen.
-3. **H4, H5, M10, M11** – Wertebereiche klemmen (`font_size`, Config-Numerik), OSD-Region gegen Framegröße begrenzen, Item-Snapshot unter Lock.
-4. **H6, M8** – IMP-Rückgaben prüfen und Fehlerpfade sauber aufräumen.
-5. **M7** – `fsync`/`fclose`-Prüfung im Recorder (Datenintegrität).
-6. **M14, M15** – Build-Härtung + Toolchain-Integrität.
-7. Restliche MITTEL/NIEDRIG nach Kapazität.
+- **md5.c** – a correct, clean MD5 implementation.
+- **Auth core** – constant-time comparisons, urandom tokens/nonces, correct buffer sizes; `/control` and `/events` are behind a global auth gate + "local only" when no user is configured.
+- **HTTP parsing** – bounded `sscanf`, CR/LF stripping (no response splitting), truncation guards; **no path traversal** (the server does not serve files from the filesystem).
+- **fMP4 box structure** – box-size patching guarded against OOM subtrees, esds/trun/trex/tfhd correct, tfdt cleanly 64-bit, `aac_adts_strip` bounds-safe.
+- **hub/fanqueue/frame** – the publish/unsubscribe handshake prevents use-after-free, refcounting is consistent, overflow behavior is well thought out (drop-oldest + GOP pruning + IDR request), producer never blocks.
+- **NAL/vparam/aac/g711** – bounds-safe, defensive Exp-Golomb reader.
+- **config_write_keys** – atomic (mkstemp+rename, fsync on file and directory, writer mutex) — exemplary for jffs2.
+- **msttf bounds checks** – consistently defensive against corrupt fonts (loca/glyf/cmap bounds, recursion limit on composite glyphs, OOM handling). Exception: see H4/M16.
+- **record_clip** – path validation (`/tmp/` prefix + `..` filter), seconds clamp, serialization via trylock.
+- **`on_motion`/`switch_cmd` (`system()`)** – deliberately not settable via `/control` -> no injection vector, as long as the config file is trusted.
+
+---
+
+## Recommended fix order
+
+1. **H1, H2, M1** – socket/handshake timeouts (`SO_RCVTIMEO`/`SO_SNDTIMEO` + body poll deadline). Highest impact for the least effort.
+2. **H3, M4** – handle the SRT passphrase error, check streamid server-side.
+3. **H4, H5, M10, M11** – clamp value ranges (`font_size`, config numerics), bound the OSD region to the frame size, snapshot items under lock.
+4. **H6, M8** – check IMP return values and clean up error paths properly.
+5. **M7** – `fsync`/`fclose` checking in the recorder (data integrity).
+6. **M14, M15** – build hardening + toolchain integrity.
+7. Remaining MEDIUM/LOW items as capacity allows.
