@@ -236,6 +236,74 @@ semantic versioning.
   emissions); new corpus scenario 13 is the positive one.
 
 ### Fixed
+- **SW rotate: the unbound rotate/encode thread processed the SENSOR frame rate,
+  not `videoN.fps`, so everything downstream of it ran at double the configured
+  rate** (`src/hal/hal_ingenic.c`, `sw_rot_thread`; measured on cam-kinder-links
+  192.168.10.124, T23/sc2336, libimp 1.3.0, profile
+  `cinnado_d1_t23n_sc2336_atbm6012bx`, 2026-08-18). `fs_create()` set
+  `outFrmRateNum` to the configured fps and `IMP_Encoder_YuvInit` was told the
+  same (so SPS and container correctly advertised 15), but the framesource rate
+  divider turns out to be honoured only for a **bound** consumer - not for the
+  user-mode `IMP_FrameSource_GetFrame` consumer this unbound path uses. Same
+  class of gap as the missing HW OSD / privacy / piggyback-JPEG here. With
+  `video1 = 640x480@15 rotation=90` (eff 480x640) the stream delivered **29.37
+  fps** while the bound channel 0 delivered its configured 25 (24.67 measured)
+  at the same moment, and the daemon's own instrumentation now names the split
+  outright: `framesource delivered 29.85 fps, encoded 14.97 fps (target 15)`.
+
+  Four things rode on that. The NV12 transpose and the software encode ran at 2x
+  (`sw_rot_thread` at **39.4%** of the lone core); CBR/VBR was parameterised for
+  15 fps and fed 30, so the rotated stream ran **708 kbps against a configured
+  384**; the safe envelope in `sw_rot_start` gates on the *configured* fps and
+  therefore did not bound what the thread actually did; and delivery came in
+  bursts under load.
+
+  Fix: a cadence gate immediately after `GetFrame` and **before**
+  `nv12_rotate90`, so a surplus frame costs one GetFrame/ReleaseFrame pair and
+  nothing else - transpose, software encode, OSD composite, JPEG and publish all
+  move to the configured rate. There is no SDK call to reach for instead: T23
+  1.3.0 exports no `IMP_FrameSource_SetFrameRate`, and `SetChnAttr`'s
+  `outFrmRateNum` is precisely the field already proven not to reach this
+  consumer. The gate keys off the **capture** timestamp (so kept frames are
+  evenly spaced in the media time the published pts is derived from, with
+  `ms_now_us()` substituting when libimp leaves `timeStamp` at 0, as
+  `pts_sanitize()` already does for the same field) and advances a **fixed
+  grid** by exactly one period per kept frame, so the long-run rate is capped at
+  exactly `videoN.fps` even when the source ratio is not an integer. A
+  quarter-period tolerance absorbs capture jitter - without it a frame arriving
+  a few hundred us early is dropped and its successor lands a full source
+  interval late, halving the rate in bursts. Two re-anchors keep a bad clock
+  from wedging the gate shut (a ts more than 1 s behind the deadline is a
+  reset/wrap; a deadline still in the past after the advance means the source
+  stalled). It is a ceiling and never a source of latency: if a future libimp
+  honours the divider for this consumer, nothing arrives early and the gate
+  simply stops dropping.
+
+  **Verified on the hardware above**, A/B with two binaries built from an
+  identical tree differing only in this gate, two RTSP clients (rotated ch1 +
+  bound ch0), 65 s per run:
+
+  | | before | after |
+  |---|---|---|
+  | ch1 delivered fps (configured 15) | 29.37 | **14.96** |
+  | ch1 video bitrate (configured 384 kbps) | 708 kbps | **429 kbps** |
+  | `sw_rot_thread` CPU | 39.39% | **20.21%** |
+  | daemon total CPU | 61.84% | **41.52%** |
+  | ch1 non-monotonic DTS (ffmpeg) | 8 | **0** |
+  | ch0 control (configured 25 fps) | 24.67 fps / 2160 kbps | 24.70 fps / 2191 kbps |
+
+  With **five** concurrent clients on the rotated stream: 29.09-29.10 fps each
+  and 20 non-monotonic DTS across the five before, against 14.97 fps each and
+  **zero** after (thread 39.78% -> 20.35%, daemon 66.50% -> 44.28%). The rotate
+  thread's share halved exactly as predicted. Stream metadata is unchanged and
+  now truthful (`480x640`, `avg_frame_rate=15/1`); a snapshot confirms the
+  picture is still correctly rotated with the OSD text upright and anchored to
+  the rotated frame's top edge (the compose-order guard at the YuvEncode call
+  still holds); and a client reconnect after churn resumes at 14.98 fps with
+  zero DTS warnings. NOT reproduced: the finding's ~14.6 non-monotonic DTS/s
+  under 5 clients - this baseline showed only 0.03-0.10/s per client, so that
+  particular burst magnitude was situational, though its direction (20 -> 0) is
+  confirmed.
 - **RTSP: a partially received control request had no deadline, so a
   byte-trickling client could hold a client slot for hours** (`src/rtsp/rtsp.c`;
   found while assessing an external review, 2026-08-18). The control loop's
