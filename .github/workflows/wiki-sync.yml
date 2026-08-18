@@ -50,18 +50,20 @@ jobs:
             exit 1
           fi
 
-      # The token goes in as the USERNAME with no password. The
+      # Classic PAT goes in as the USERNAME with the literal password
+      # x-oauth-basic. Both other spellings were tried and both fail: the
       # x-access-token:<token> form is for GitHub App installation tokens and
-      # is rejected for a classic PAT ("Invalid username or token") - and
-      # because a public wiki clones anonymously, that rejection does not
-      # surface until the push, after the run has already done all its work.
-      # So authenticate explicitly and prove it before touching anything.
+      # GitHub answers "Invalid username or token", while a bare
+      # https://<token>@ leaves the password field empty, so git blocks asking
+      # for one and dies with "could not read Password". Because a public wiki
+      # clones anonymously, a bad credential would otherwise stay invisible
+      # until the push - so prove write access first, before doing any work.
       - name: Clone the wiki
         env:
           WIKI_SYNC_TOKEN: ${{ secrets.WIKI_SYNC_TOKEN }}
         run: |
           git clone --depth 1 \
-            "https://${WIKI_SYNC_TOKEN}@github.com/${GITHUB_REPOSITORY}.wiki.git" \
+            "https://${WIKI_SYNC_TOKEN}:x-oauth-basic@github.com/${GITHUB_REPOSITORY}.wiki.git" \
             wiki
           # Fail here, not 40 lines later: a token without wiki write access
           # (a fine-grained PAT cannot have it - wikis sit outside that

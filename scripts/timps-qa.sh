@@ -1021,6 +1021,45 @@ fi
 if want 2 discovery; then
 # --- 2. discovery -----------------------------------------------------------
 hdr "2. Discovery (ffprobe)"
+# NOM_FPS ("nominal fps") used to be ffprobe's live r_frame_rate. Measured on
+# a real camera 2026-08-19 and every link verified: configured 25 (video1.fps
+# config default, config.c:269), sensor commanded 30 (auto-detected from
+# /proc/jz/sensor/max_fps), SPS/VUI advertises exactly 25 (num_units_in_tick=1
+# time_scale=50), delivered 24.65 - and ffprobe's r_frame_rate over that same
+# RTSP session read 29.67, matching NONE of the above. Over live RTSP, ffmpeg
+# derives r_frame_rate from the SMALLEST observed inter-frame timestamp delta
+# and rationalises it, so what it actually reports is the SENSOR TICK RATE:
+# the Ingenic framesource divider is a frame-COUNT gate (keep 25 of every 30
+# sensor frames) and the sensor undertakes slightly, so 29.6 * 25/30 = 24.7 -
+# confirmed exactly by the interval histogram (589 single-tick gaps, 147
+# double-tick gaps, nothing else). That means the old reference was wrong on
+# every correctly-configured camera whose sensor rate exceeds its configured
+# fps (most of the fleet), producing false "off nominal" warnings here, a
+# false ONVIF-advertises-template-defaults accusation in section 10, and false
+# "degrading" verdicts in section 13/13b's load tests.
+#
+# NOM_FPS is now /control's declared video.<N>.fps: authoritative, exact, an
+# integer, available with a single cheap GET, and precisely what ONVIF ought
+# to be advertising - which is what section 10 actually needs to compare
+# against. The alternative considered was reading it back out of the SPS/VUI
+# of the file section 3 records: that's real evidence too (it agreed with
+# /control in the measurement above), but it only exists AFTER section 3
+# records a stream, which breaks NOM_FPS resolving from section 2 alone per
+# the --only contract at the `declare -A NOM_FPS` above, needs its own VUI
+# parsing ffprobe doesn't expose via -show_streams, and can only ever repeat
+# what /control already states more directly - so /control is queried here
+# instead. ffprobe's r_frame_rate is still shown below for the record (it is
+# genuinely informative - e.g. it will reveal a sensor running slower than
+# expected) but it no longer feeds any pass/fail comparison.
+#
+# This does NOT weaken the check this section exists for: section 3 measures
+# the DELIVERED fps off the wire and still compares it to this same declared
+# reference, so a camera whose encoder over/under-delivers against its own
+# configured+SPS-advertised rate (real example, 2026-08-17: configured 15,
+# SPS 15, delivered 30) still fails loudly - only the reference camera 15/25
+# example above is now measured correctly too.
+n2_cj="$OUTDIR/control_nomfps.json"
+curlq 8 "$(http_base)/control" -o "$n2_cj" 2>/dev/null || true
 for pair in "main:$PATH_MAIN" "sub:$PATH_SUB"; do
 	lbl="${pair%%:*}"; pth="${pair##*:}"
 	url="$(rtsp_url "$pth")"
@@ -1035,8 +1074,28 @@ for pair in "main:$PATH_MAIN" "sub:$PATH_SUB"; do
 		fr=$(ffprobe -v error -rtsp_transport "$RTSP_TRANSPORT" -select_streams v:0 \
 			-show_entries stream=r_frame_rate -of csv=p=0 "$url" 2>/dev/null)
 		fnum=$(awk -F/ 'NF==2&&$2>0{printf "%.2f",$1/$2; next}{print $1}' <<<"$fr")
-		NOM_FPS[$lbl]="$fnum"
-		ok "$lbl advertises video + $( [ -n "$(ffprobe -v error -rtsp_transport "$RTSP_TRANSPORT" -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 "$url" 2>/dev/null)" ] && echo audio || echo 'NO audio') (nominal ${fnum} fps)"
+		# /control's video.<N> index for this label. PATH_MAIN/PATH_SUB default
+		# to ch0/ch1 but are user-overridable (--main/--sub), and rtsp_path is
+		# itself a per-channel F_CTRL field (video<N>.rtsp_path, config.c:985),
+		# so "main" is NOT reliably chn 0 - derive it from the path's trailing
+		# digit instead of hardcoding main=0/sub=1. Only fall back to that
+		# convention when the path carries no digit to derive from, and say so
+		# rather than silently comparing against chn 0 for whichever channel it
+		# actually is.
+		fb=0; [ "$lbl" = sub ] && fb=1
+		chn=$(grep -oE '[0-9]+' <<<"$pth" | tail -1)
+		if [ -z "$chn" ]; then
+			info "$lbl: RTSP path \"$pth\" has no channel digit - cannot derive its /control channel for the fps reference, falling back to the conventional chn $fb (main=0/sub=1)"
+			chn="$fb"
+		fi
+		declfps=$(jget "$n2_cj" "video.$chn.fps" 2>/dev/null)
+		if [ -n "$declfps" ] && fcmp "$declfps" gt 0; then
+			NOM_FPS[$lbl]="$declfps"
+			ok "$lbl advertises video + $( [ -n "$(ffprobe -v error -rtsp_transport "$RTSP_TRANSPORT" -select_streams a:0 -show_entries stream=codec_name -of csv=p=0 "$url" 2>/dev/null)" ] && echo audio || echo 'NO audio') (declared ${declfps} fps via /control video.$chn.fps; ffprobe's live r_frame_rate read ${fnum} - that's the RTSP sensor tick rate, not the configured rate, see comment above)"
+		else
+			NOM_FPS[$lbl]="$fnum"
+			warn "$lbl: /control video.$chn.fps unavailable (see $n2_cj) - falling back to ffprobe's r_frame_rate (${fnum}) as nominal; note that over live RTSP this is the SENSOR TICK RATE, not the configured fps (see comment above), so downstream fps checks may misfire until /control is reachable"
+		fi
 	else
 		bad "$lbl: ffprobe could not open $url (see probe_${lbl}.err)"
 	fi
@@ -3432,9 +3491,12 @@ if (exec 3<>"/dev/tcp/$CAM/$ONVIF_PORT") 2>/dev/null; then
 		# are perfectly legitimate REAL rates, so a camera actually running
 		# them was accused of advertising template defaults on the strength
 		# of a value that cannot distinguish the two cases. The references
-		# that CAN: NOM_FPS (section 2's ffprobe) and the configured
-		# bitrates from /control. Advertised==real is fine whatever the
-		# number; only a mismatch is the template lie.
+		# that CAN: NOM_FPS (section 2's /control video.<N>.fps - NOT
+		# ffprobe's r_frame_rate, which over live RTSP reports the sensor
+		# tick rate rather than the configured fps; see the comment at the
+		# top of section 2) and the configured bitrates from /control.
+		# Advertised==real is fine whatever the number; only a mismatch is
+		# the template lie.
 		o10_cj="$OUTDIR/onvif_ctrl.json"
 		curlq 8 "$(http_base)/control" -o "$o10_cj" 2>/dev/null || true
 		o10_reals_fps="${NOM_FPS[main]:-} ${NOM_FPS[sub]:-}"
