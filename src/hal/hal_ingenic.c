@@ -2048,7 +2048,7 @@ static void *sw_rot_thread(void *arg)
          * enabled; on a disabled/empty channel it fails fast -> pace the retry
          *
          * CADENCE GATE - why videoN.fps is enforced HERE, in user code, and not
-         * by the framesource. MEASURED on cam-kinder-links (T23 libimp 1.3.0,
+         * by the framesource. MEASURED on cam-H (T23 libimp 1.3.0,
          * sc2336, 2026-08-18): what this loop is handed is the SENSOR rate, not
          * videoN.fps. video1 = 640x480@15 rotated 90: fs_create() set
          * outFrmRateNum=15 and YuvInit was told 15 (so SPS and container both
@@ -2180,7 +2180,7 @@ static void *sw_rot_thread(void *arg)
          * video_thread/jpeg_thread assemble straight into a pooled packet and
          * hand it over with hub_publish_take() (P-01). Not an oversight: it is
          * the YuvEncode IN/OUT contract documented in the block comment above.
-         * Measured on real T23 hardware (cam-kinder-links, 640x480 -> 480x640
+         * Measured on real T23 hardware (cam-H, 640x480 -> 480x640
          * @15 SW-rotate, 2026-08-18); numbers below are from that board:
          *
          *  - The AU length is known only AFTER the call, so a packet used as
