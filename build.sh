@@ -314,6 +314,35 @@ timps() {
 		cflags="$cflags -DKERNEL_VERSION_4"
 	fi
 
+	# MEASURED AND REJECTED (2026-08-18) - do not add -fno-pie -mno-abicalls
+	# here, and do not add -flto either. Both work and both are smaller; that is
+	# not the question.
+	#
+	# -fno-pie -mno-abicalls: 184240 -> 154416 bytes of .text, -29.8 KB / -16.2%,
+	# plus -5.8 KB of .data (the GOT). No ASLR is given up - the link is already
+	# -no-pie below, because the vendor archives are non-PIC - so today's build
+	# emits PIE-shaped code only to link it non-PIE, which is pure overhead.
+	# With -flto on top: -38.0 KB .text (-20.6%), file -67 KB. -flto alone:
+	# -11.1 KB (-6.0%), and it built cleanly on this toolchain (GCC 15.3).
+	#
+	# Why it is not in: our objects would be non-abicalls while the Ingenic
+	# archives are abicalls, and the linker says so thirty times ("linking
+	# abicalls files with non-abicalls files"). abicalls is the MIPS convention
+	# for reaching a symbol outside the translation unit - through the GOT, so a
+	# shared library can be placed anywhere at load time. Without it the address
+	# is written straight into the jump. Mixing the two is not a warning about
+	# style: it is two halves of one binary disagreeing about which registers a
+	# call preserves and how a symbol is found, and the linker papering over the
+	# transitions. When that goes wrong it does not fault at the call site - it
+	# corrupts a register somewhere and shows up as wrong data hours later, with
+	# no path back to the cause. LTO is the same shape one level up: the
+	# compiler may rearrange across file boundaries, so assumptions that held
+	# locally need not hold afterwards.
+	#
+	# On a daemon that runs unattended for months in an outbuilding, 30 KB is
+	# not worth that unless a real soak test on real hardware says it holds.
+	# If someone runs that test, this comment is the place to record the result.
+
 	# -no-pie: the vendor static archives are non-PIC; the thingino toolchain
 	# defaults to PIE, which cannot link them (R_MIPS_26 relocation errors).
 	# RELRO+BIND_NOW + noexecstack (M14): read-only GOT after relocation and a
