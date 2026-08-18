@@ -1143,8 +1143,33 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
      * is shared by every stream). Pass 1 so the product is v->gop, and re-assert
      * both gopAttr fields afterwards so the effective GOP does not depend on how
      * a particular libimp build folds the argument into the struct. */
-    IMP_Encoder_SetDefaultParam(&a, prof, rc,
-        ew, eh, v->fps, 1, v->gop, 1, initial_qp, v->bitrate_kbps);
+    /* M4: the AU assembly buffer is capped at MS_AU_BUF_MAX (1 MB) while
+     * config.c lets videoN.bitrate reach 50000 kbps. An IDR runs roughly 8x an
+     * average frame, i.e. about bitrate*1000/fps bytes; past ~0.8 MB every
+     * keyframe is dropped at :1560, and the downstream healing path
+     * (fanqueue_take_dropped_key -> hub_request_idr) then asks for another one
+     * that is just as large - a livelock in which P-frames flow and no client
+     * ever gets a keyframe. Dropping the config clamp would forbid legitimate
+     * high-bitrate use, and growing the buffer costs RAM on every channel, so
+     * neither is decided here: SAY IT at bring-up, where the number that caused
+     * it is still in hand, instead of leaving a rate-limited drop message to be
+     * decoded later. */
+    if (v->fps > 0) {
+        unsigned long idr_est = (unsigned long)v->bitrate_kbps * 1000UL
+                              / (unsigned long)v->fps;
+        if (idr_est > (unsigned long)(MS_AU_BUF_MAX / 10 * 8))
+            LOGW(MOD,"encoder chn%d: %d kbps at %d fps implies ~%lu KB "
+                     "keyframes, near or above the %d KB AU buffer - keyframes "
+                     "will be dropped and clients may never get a decodable "
+                     "stream; lower videoN.bitrate or raise MS_AU_BUF_MAX",
+                 v->imp_chn, v->bitrate_kbps, v->fps, idr_est/1024,
+                 MS_AU_BUF_MAX/1024);
+    }
+    if (IMP_Encoder_SetDefaultParam(&a, prof, rc,
+            ew, eh, v->fps, 1, v->gop, 1, initial_qp, v->bitrate_kbps) != 0)
+        LOGW(MOD,"IMP_Encoder_SetDefaultParam(chn%d) failed - the attr struct "
+                 "below is only partly filled; CreateChn will likely reject it",
+             v->imp_chn);
     a.gopAttr.uGopLength       = (uint16_t)v->gop;   /* config.c clamps 1..1000 */
     a.gopAttr.uMaxSameSenceCnt = 1;
 #else
@@ -2286,12 +2311,38 @@ static int sw_rot_start(const ms_config *cfg, int i)
                  "multiple of 32, e.g. 704) - JPEG disabled on this stream",
              i, ew, eh);
     } else if (v->jpeg_enabled){
-        uint32_t jcap = (uint32_t)((size_t)ew*(size_t)eh) + 65536u;
+        /* M3: IMP_Encoder_InputJpege takes NO capacity argument - the T23
+         * signature is src/dst/w/h/q/len and nothing more (confirmed by
+         * disassembling the vendored 1.3.0 libimp). The size check further down
+         * therefore runs AFTER the write: by the time it says "exceeds buf", the
+         * heap past jbuf is already gone. A check cannot fix that; only the
+         * buffer size can, so make an overflow arithmetically impossible instead
+         * of merely improbable.
+         *
+         * The source is one NV12 frame, ew*eh*3/2 bytes. A JPEG cannot carry
+         * more entropy than its input, but its container can EXPAND it: every
+         * 0xFF byte in the entropy-coded stream is stuffed to 0xFF00, so the
+         * pathological worst case is ~1.25x the coded data, plus headers and
+         * tables. 2x the pixel count covers ew*eh*1.5 * 1.25 = 1.875x with room
+         * to spare, and the +64 KiB absorbs markers and quantisation tables.
+         *
+         * Cost: at 704x576 this grows the buffer from ~460 KB to ~856 KB, once
+         * per SW-rotate stream that has JPEG enabled - a T23-only opt-in path.
+         * Paying 400 KB to make heap corruption impossible is the right trade on
+         * a daemon that runs unattended for months. */
+        uint32_t jcap = (uint32_t)((size_t)ew*(size_t)eh*2u) + 65536u;
         vc->jbuf = (uint8_t*)malloc(jcap);
         if (vc->jbuf){ vc->jbuf_cap=jcap; vc->jpeg_on=1;
+            /* Deliberately NOT printing jpeg_q here: on this path the frame
+             * goes through IMP_Encoder_InputJpege, whose q parameter the T23
+             * header marks "Not supported at this time". Logging a quality
+             * that has no effect makes people tune a knob that is not
+             * connected - say so instead. */
             LOGI(MOD,"video%d.jpeg: standalone JPEG on SW-rotate stream "
-                     "(%dx%d q%d, <=%d fps) -> /snapshot.jpg /stream.mjpeg",
-                 i, ew, eh, vc->jpeg_q, v->jpeg_fps>0?v->jpeg_fps:5);
+                     "(%dx%d, <=%d fps; jpeg_quality has NO effect on this "
+                     "path - the SoC's InputJpege ignores it) "
+                     "-> /snapshot.jpg /stream.mjpeg",
+                 i, ew, eh, v->jpeg_fps>0?v->jpeg_fps:5);
         } else
             LOGW(MOD,"video%d.jpeg: no memory for SW-rotate JPEG buf (%u) - "
                      "JPEG disabled on this stream", i, jcap);
@@ -2329,9 +2380,11 @@ static void *jpeg_thread(void *arg)
          * (M8): a bare configured snapshot_path no longer pins the pipeline
          * on 24/7 - between snapshots the existing idle-stop debounce below
          * (MS_IDLE_STOP_US) shuts framesource+encoder back down, same as the
-         * on-demand client path. snapshot_path is runtime-mutable via
-         * /control, so it's read under config_str_lock, not directly off
-         * g_hcfg (M3). Stop is debounced like video to avoid Start/
+         * on-demand client path. snapshot_path carries no F_CTRL today
+         * (config.c: FS("snapshot_path", 0, snapshot_path, 0)), so it is not
+         * actually /control-mutable - the config_str_lock here is kept as
+         * cheap insurance against that changing, not because it must (M3).
+         * Stop is debounced like video to avoid Start/
          * StopRecvPic churn. */
         int64_t nowj = ms_now_us();
         config_str_lock();
@@ -2472,8 +2525,19 @@ static void *jpeg_thread(void *arg)
             snprintf(path, sizeof path, "%s", g_hcfg->jpeg.snapshot_path);
             config_str_unlock();
             snprintf(tmp,sizeof tmp,"%s.tmp",path);
+            /* Check the writes before publishing: a short fwrite or a failing
+             * fclose means a full/yanked SD card, and an unconditional rename()
+             * would then replace the last GOOD snapshot with a truncated one.
+             * Same handling timelapse.c:159-166 already does for its shots. */
             FILE *f=fopen(tmp,"wb");
-            if (f){ fwrite(jbuf,1,jlen,f); fclose(f); rename(tmp,path); }
+            if (f){
+                int werr = (fwrite(jbuf,1,jlen,f) != (size_t)jlen);
+                if (fclose(f)!=0) werr=1;
+                if (werr || rename(tmp,path)!=0){
+                    LOGW(MOD,"snapshot %s: %s", path, strerror(errno));
+                    unlink(tmp);
+                }
+            }
             jc->last_snapshot_us = ms_now_us();
         }
         /* Hand off to the hub. A 0-subscriber publish returns the buffer

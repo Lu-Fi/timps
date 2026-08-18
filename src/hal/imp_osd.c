@@ -471,10 +471,17 @@ int imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height)
                  stream_idx, i);
             continue;
         }
-        IMP_OSD_RegisterRgn(rg->rgn, s->grp, NULL);
+        /* A failed register/attr leaves an invisible region that every later
+         * refresh keeps drawing into for nothing - silent missing OSD with no
+         * hint where it went. Cheap to say out loud, once per region. */
+        if (IMP_OSD_RegisterRgn(rg->rgn, s->grp, NULL) != 0)
+            LOGW(MOD,"IMP_OSD_RegisterRgn(rgn%d,grp%d) failed - this overlay "
+                     "will stay invisible", rg->rgn, s->grp);
         IMPOSDGrpRgnAttr g; memset(&g,0,sizeof g);
         g.show=1; g.gAlphaEn=1; g.fgAlhpa=(uint8_t)it->transparency;
-        IMP_OSD_SetGrpRgnAttr(rg->rgn, s->grp, &g);
+        if (IMP_OSD_SetGrpRgnAttr(rg->rgn, s->grp, &g) != 0)
+            LOGW(MOD,"IMP_OSD_SetGrpRgnAttr(rgn%d,grp%d) failed - overlay may "
+                     "render with wrong alpha or not at all", rg->rgn, s->grp);
         rg->is_text=(it->type==MS_OSD_TEXT);
         if (rg->is_text){
             if (it->font_path[0]){
