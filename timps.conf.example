@@ -121,7 +121,14 @@ http.token_file  = /run/timps.token
 
 # ---- optional TLS: HTTPS + RTSPS (USE_TLS builds, mbedTLS) ----
 # Only present when timps is built with mbedTLS (BR2_PACKAGE_MBEDTLS). Without
-# it these keys are parsed but ignored and timps stays plain HTTP/RTSP.
+# it these keys are parsed but ignored and timps stays plain HTTP/RTSP - the
+# only other symptom is a "RTSPS requested but built without USE_TLS" line in
+# the log. To check a running camera without SSH, read the top-level "tls"
+# object of GET /control: {"available":0} means THIS binary has no TLS and
+# every key below is inert, however it is set here.  (Same idea as srt.* and
+# the caps.*.available flags: the firmware package and a standalone build.sh
+# binary are not compiled with the same feature set, and the version string
+# cannot tell them apart.)
 # Uses thingino's httpd cert (mbedtls-certgen); S95timps generates it on first
 # boot if missing. NOTE: with a SELF-SIGNED cert the browser blocks the WebUI's
 # cross-origin media fetches to :8880 until you visit https://<ip>:8880/ once
@@ -153,6 +160,9 @@ srt.port       = 9000
 events.enabled     = 1
 events.stats_ms    = 2000    # "stats" event period in ms (0 = no stats events)
 events.max_clients = 8       # concurrent /events connections (above -> 503)
+# ^ reported to clients as caps.events_max_clients in GET /control, next to the
+# compile-time RTSP/HTTP ceilings (caps.rtsp_max_clients/caps.http_max_clients),
+# so a client can see what it may open instead of finding out by being refused.
 
 # ---- JPEG / MJPEG stream (the old streamer's "stream2") ----
 # HTTP endpoints:  /snapshot.jpg (single frame)   /stream.mjpeg (motion JPEG)

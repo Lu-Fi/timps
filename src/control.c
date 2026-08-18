@@ -23,6 +23,7 @@
 #include "hal/imp_motion.h"
 #include "hal/imp_osd.h"
 #include "hal/hal.h"       /* hal_enc_stats: read-only encoder telemetry */
+#include "util.h"          /* RTSP_MAX_CLIENTS/HTTP_MAX_CLIENTS/EVENTS_MAX_CLIENTS_DEF */
 #include "record.h"
 #include "timelapse.h"
 #include <stdio.h>
@@ -467,7 +468,13 @@ int control_apply_json(const char *json, ctrl_result *res)
      * this sits under buf[] in conn_thread too - same reasoning as the
      * /control GET json[] buffer. */
     ctrl_changes *ch = (ctrl_changes *)malloc(sizeof *ch);
-    if (!ch) { LOGW(MOD,"control_apply_json: OOM"); pthread_mutex_unlock(&apply_mu); return -1; }
+    /* -2, not -1: -1 is the caller's "the body was not a JSON object", which
+     * httpd.c now turns into a 400 that TELLS the client its request was
+     * malformed. An allocation failure here is neither the client's fault nor
+     * its problem to fix, and blaming it would send someone auditing a request
+     * that was fine. Graded as 503 instead - the honest answer, and the same
+     * one every other OOM path in httpd.c gives. */
+    if (!ch) { LOGW(MOD,"control_apply_json: OOM"); pthread_mutex_unlock(&apply_mu); return -2; }
     ch->n = 0;
     char v[160];
 
@@ -966,6 +973,29 @@ int control_get_json(char *buf, size_t cap)
      * the osd.* section whose other keys are live, but itself only takes
      * effect on restart (groups are built once in imp_osd_setup). */
     APP("],\"restart\":[\"video\",\"sensor\",\"osd.enabled\"],");
+    /* Concurrent-client ceilings. These are REFUSAL points - RTSP answers 453
+     * and drops, HTTP and /events answer 503 "busy" - and until now a client
+     * had no way at all to learn them short of opening connections until one
+     * failed, which on a live camera means deliberately DoSing the thing you
+     * are monitoring. Everything else a client needs here is either fixed by
+     * the protocol or already inferable from this same document; these three
+     * are not inferable from anything.
+     *
+     * rtsp/http are compile-time bounds (util.h, -D overridable per board -
+     * the low-RAM boards in this fleet build with -DRTSP_MAX_CLIENTS=4), so
+     * they genuinely differ between two cameras running the same version
+     * string. events.max_clients is a config key instead, so it is read from
+     * the live config with the same <=0 fallback httpd.c enforces.
+     *
+     * Deliberately NOT dumped here: MS_MAX_VSTREAM / MS_MAX_OSD / SRT's client
+     * cap. The first two are already discoverable - this document dumps one
+     * object per stream and per OSD item, so a client counts them - and the
+     * SRT one belongs with the rest of srt.* below if it is ever needed. */
+    APP("\"rtsp_max_clients\":%d,\"http_max_clients\":%d,"
+        "\"events_max_clients\":%d,",
+        RTSP_MAX_CLIENTS, HTTP_MAX_CLIENTS,
+        c->events_max_clients > 0 ? c->events_max_clients
+                                  : EVENTS_MAX_CLIENTS_DEF);
     /* motion capability: available = this build has the IMP_IVS move API,
      * max_cells = the SDK's compile-time IMP_IVS_MOVE_MAX_ROI_CNT (the WebUI
      * limits the grid selectors so cols*rows never exceeds it) */
@@ -1355,6 +1385,33 @@ int control_get_json(char *buf, size_t cap)
         c->srt.enabled, c->srt.port, c->srt.channel);
 #else
     APP(",\"srt\":{\"available\":0}");
+#endif
+    /* TLS (USE_TLS builds only), same shape and same reasoning as srt.* above:
+     * an "available" flag that answers "was this BINARY built with the
+     * feature", plus - only when it was - the runtime settings needed to
+     * actually dial it.
+     *
+     * This is load-bearing on this fleet, not decoration. The two builds that
+     * exist are not compiled alike: the thingino firmware package links
+     * mbedTLS (USE_TLS=1), the standalone build.sh binary does not, and the
+     * `sim` target never has. So "does this camera speak HTTPS/RTSPS" cannot
+     * be answered from "version" - two cameras report the same git-describe
+     * string and differ. Without this the only symptom of the mismatch was
+     * rtsp.c's startup warning "RTSPS requested but built without USE_TLS"
+     * going to the log, where no HTTP client ever sees it, and a connect that
+     * simply never succeeds.
+     *
+     * The unavailable branch reports nothing but the flag - deliberately, and
+     * for the same reason srt does: http.https / rtsp.tls may well be 1 in the
+     * config file (that is exactly what produces the warning above), but they
+     * are INERT in this binary, no listener was ever opened, and echoing them
+     * would invite a client to dial a port nothing is bound to. available:0
+     * means "ignore any TLS config you may have seen elsewhere". */
+#ifdef USE_TLS
+    APP(",\"tls\":{\"available\":1,\"https\":%d,\"rtsps\":%d,\"rtsps_port\":%d}",
+        c->http_https, c->rtsp_tls, c->rtsp_tls_port);
+#else
+    APP(",\"tls\":{\"available\":0}");
 #endif
     APP("}");
     #undef APP

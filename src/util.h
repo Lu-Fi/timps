@@ -131,6 +131,34 @@ void ms_stopgate_stop(ms_stopgate *g);
 /* Non-blocking predicate read (1 if stop requested). */
 int  ms_stopgate_stopped(ms_stopgate *g);
 
+/* ---- concurrent-client ceilings -------------------------------------------
+ * Each server used to carry its own private #ifndef/#define of its limit
+ * (rtsp.c, mp4/httpd.c) - fine while nothing but the enforcing file needed the
+ * number, but GET /control now advertises them as caps.rtsp_max_clients /
+ * caps.http_max_clients / caps.events_max_clients, and a second copy of "8" in
+ * control.c would be a value that silently disagrees with the code that
+ * actually refuses the connection. One definition, included by the enforcer and
+ * the advertiser alike, cannot drift.
+ *
+ * Still -D overridable exactly as before (see the Makefile's
+ * -DRTSP_MAX_CLIENTS=4 -DHTTP_MAX_CLIENTS=4 example for low-RAM boards): the
+ * whole build shares one command line, so a -D reaches this header in every
+ * translation unit and the advertised number stays the enforced one.
+ *
+ * Each client costs a thread plus a bounded fanqueue, so these caps are what
+ * stops many/slow clients from exhausting memory (DoS). EVENTS_MAX_CLIENTS_DEF
+ * is only the FALLBACK for events.max_clients <= 0 - that one is a config key
+ * (ms_config.events_max_clients), not a compile-time bound. */
+#ifndef RTSP_MAX_CLIENTS
+#define RTSP_MAX_CLIENTS 8
+#endif
+#ifndef HTTP_MAX_CLIENTS
+#define HTTP_MAX_CLIENTS 8
+#endif
+#ifndef EVENTS_MAX_CLIENTS_DEF
+#define EVENTS_MAX_CLIENTS_DEF 8
+#endif
+
 /* ---- live client registry (M-1 / M-3) -------------------------------------
  * A network server's stop path used to only WAIT for its detached per-client
  * threads (httpd_stop's 500 ms drain, rtsp_stop's 1 s) and then tear down the

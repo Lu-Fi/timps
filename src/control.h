@@ -81,7 +81,13 @@
  *              EFFECTIVE value, i.e. after clamping. Clamping is deliberate and
  *              documented, so a clamped write is a success, not an error - the
  *              echo is how the caller learns what it really got.
- *   rejected - values refused outright (empty, "null", "undefined"). */
+ *   rejected - values refused outright (empty, "null", "undefined"), plus
+ *              COMMANDS that were understood and failed (record.clip with an
+ *              unwritable path). accepted==0 with rejected>0 is a different
+ *              answer from accepted==0 with rejected==0 and httpd.c grades it
+ *              differently (409 vs 422): the first means the key names were
+ *              right and the values were not, the second means this build does
+ *              not know the key names at all. */
 #define CTRL_ECHO_CAP 512
 typedef struct {
     int accepted;
@@ -98,8 +104,10 @@ typedef struct {
     int  echo_full;   /* 1 = echo lists every changed field */
 } ctrl_result;
 
-/* Returns 0 if the body was a JSON object, -1 if it was not parseable at all.
- * res may be NULL. */
+/* Returns 0 if the body was a JSON object, -1 if it was not parseable at all,
+ * -2 on an internal failure (OOM) - which is NOT the caller's fault and must
+ * not be reported to it as a bad request (httpd.c answers 503 to -2, 400 to
+ * -1). res may be NULL; on -2 only its counters are set, not its echo. */
 int control_apply_json(const char *json, ctrl_result *res);
 
 /* Shared read-only status object builders: GET /control embeds these and the
@@ -120,7 +128,14 @@ int  control_daynight_json(char *buf, size_t cap, int enabled, int mode,
  * "osd" lists the per-item leaf keys /control accepts (incl. outline/
  * outline_color; the sets are dumped per stream as "osd0"/"osd1" and the
  * master "enabled" needs a restart); "restart" lists the sections (video,
- * sensor) whose keys are persist-only and need a daemon restart.
+ * sensor) whose keys are persist-only and need a daemon restart;
+ * rtsp_max_clients/http_max_clients/events_max_clients are the concurrent-
+ * client ceilings each server refuses past (453 / 503 / 503) - not inferable
+ * from anywhere else, and per-board, since the first two are -D overridable.
+ * Top-level "srt" and "tls" objects report per-BUILD feature availability the
+ * same way ({"available":0} when the binary was compiled without it): the
+ * fleet's firmware and standalone builds differ in exactly these, and the
+ * version string cannot tell them apart.
  * Returns the number of bytes written (excluding the NUL), or -1 if the output
  * did not fit in cap (the buffer holds a truncated, INVALID-JSON prefix - the
  * caller must not serve it as a successful response). */

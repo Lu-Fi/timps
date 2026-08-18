@@ -26,11 +26,9 @@
 #define VIDEO_PT 96
 #define AUDIO_PT 97
 
-/* global limit on concurrent RTSP clients (each costs a thread + fanqueue);
- * prevents unbounded memory/thread growth from many or slow clients */
-#ifndef RTSP_MAX_CLIENTS
-#define RTSP_MAX_CLIENTS 8
-#endif
+/* RTSP_MAX_CLIENTS (the global limit on concurrent RTSP clients) now lives in
+ * util.h, included above: GET /control advertises it as caps.rtsp_max_clients,
+ * and one definition shared by the enforcer and the advertiser cannot drift. */
 /* per-client fanqueue capacity (packet pointers) */
 #ifndef MS_RTSP_QCAP
 #define MS_RTSP_QCAP 64

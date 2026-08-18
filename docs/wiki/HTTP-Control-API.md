@@ -80,7 +80,10 @@ build/platform actually supports.
 
 ```json
 {
+  "version": "v1.8.5-51-g5b2105f",
   "caps": { "image": [...], "audio": [...], "osd": [...], "restart": [...],
+            "rtsp_max_clients": 8, "http_max_clients": 8,
+            "events_max_clients": 8,
             "motion": {...}, "privacy": {...}, "rotation": [...],
             "record": {...}, "backchannel": {...}, "play": {...},
             "timelapse": {...} },
@@ -89,7 +92,8 @@ build/platform actually supports.
   "osd": { "enabled": 1 }, "osd0": { "0": {...}, ... }, "osd1": { ... },
   "privacy": { "0": { "0": {...}, ... }, "1": { ... } },
   "daynight": { ... }, "motion": { ... }, "encoder": { "0": {...}, "1": {...} },
-  "record": { ... }, "timelapse": { ... }
+  "record": { ... }, "timelapse": { ... },
+  "srt": { "available": 0 }, "tls": { "available": 0 }
 }
 ```
 
@@ -104,12 +108,52 @@ cannot actually apply, instead of hardcoding a feature matrix client-side:
 | `caps.audio` | Array of `audio.*` leaf keys applied **live** (`volume`, `gain`, `mute` always; `alc_gain` only where `AUDIO_HAS_ALC_GAIN`; `spk_volume`/`spk_gain`/`aec` only when a speaker pipeline — `USE_PLAY` or `USE_BACKCHANNEL` — is compiled in). Deliberately excludes `high_pass`/`agc`/`agc_target_dbfs`/`agc_compression_db`/`ns` even though they're numeric-looking live candidates: libimp runs those on its own vendor record thread and frees state unlocked, so a live toggle would race that thread — they are restart-only by design. |
 | `caps.osd` | The per-item OSD leaf keys `/control` accepts and applies live (`text x y font_size color transparency outline outline_color`). Per-item `enabled` is deliberately **not** in this list — see the [Configuration Reference](Configuration-Reference.md#osdsn--per-stream-osd-overlay-items) note on why enabling a boot-disabled item is restart-only. |
 | `caps.restart` | Sections whose keys are entirely persist-only: `["video", "sensor", "osd.enabled"]`. |
+| `caps.rtsp_max_clients` | Concurrent RTSP sessions this build accepts before refusing further ones. Compile-time (`RTSP_MAX_CLIENTS`, default 8, `-D` overridable per board — low-RAM boards are built with `-DRTSP_MAX_CLIENTS=4`), so **two cameras reporting the same `version` can differ here**. |
+| `caps.http_max_clients` | Same for concurrent HTTP connections (`HTTP_MAX_CLIENTS`, default 8, `-D` overridable). Past it the listener answers `503` with body `busy`. Note that `/stream.mp4`, `/stream.mjpeg` and each `/events` subscriber hold a connection for their whole lifetime, so a single WebUI tab can occupy several. |
+| `caps.events_max_clients` | Concurrent `/events` (SSE) subscribers before `503 busy`. Unlike the two above this is a **config** key (`events.max_clients`, default 8), so it is per-camera, not per-build. |
 | `caps.motion` | `{"available":0\|1, "max_cells":N}` — whether this build/SDK has the `IMP_IVS` move API, and the compile-time cell budget (`IMP_IVS_MOVE_MAX_ROI_CNT`, 52 on most SDKs, 4 on the old T10/T20 3.9.0 SDK). |
 | `caps.privacy` | `{"available":0\|1, "max_regions":N}` — `available` reflects whether an OSD group actually exists on **any** stream (it only does if OSD or a privacy region was enabled at boot), not a hardcoded 1. |
 | `caps.rotation` | (Only present in `USE_ROTATE` builds.) The ascending array of rotation values this SoC's build can actually apply, e.g. `[0]`, `[0,90,270]`, or `[0,90,180,270]` on T40/T41. See [Platform & SDK Support](Platform-SDK-Support.md). |
 | `caps.record` / `caps.timelapse` | `{"available":0\|1}` per `USE_RECORD`/`USE_TIMELAPSE`. |
 | `caps.backchannel` | `{"available":<bc_available()>}` — whether the backchannel was actually configured at boot (restart-only master switch — see [Audio](Audio.md)). |
 | `caps.play` | `{"available":0\|1, "sounds":[...]}` — the play queue, with `sounds` live-enumerated from `/usr/share/sounds` (`.wav`/`.ulaw` always; `.opus` only when `USE_PLAY_OPUS` was actually compiled in, capped at 96 entries to bound the JSON response size). |
+
+### Build-feature discovery — `*.available`
+
+The fleet does not run one binary. The thingino firmware package and the
+standalone `build.sh` binary are compiled with **different `USE_*` sets**
+(the firmware package links mbedTLS; the standalone build typically does
+not), and `version` — a `git describe` string — is identical across
+them. So "does this camera speak HTTPS?" is not answerable from the
+version, the config file, or anything else a client can read remotely.
+
+Every optional feature therefore reports an `available` flag, and a
+client should branch on **that**, never on a version comparison:
+
+| Where | Feature | Emitted when off |
+| --- | --- | --- |
+| `caps.record` / `caps.timelapse` / `caps.play` / `caps.backchannel` / `caps.motion` | `USE_RECORD` / `USE_TIMELAPSE` / `USE_PLAY` / `USE_BACKCHANNEL` / IVS move API | `{"available":0}` |
+| `caps.rotation` | `USE_ROTATE` | key absent entirely |
+| `srt` (top level) | `USE_SRT` | `{"available":0}` |
+| `tls` (top level) | `USE_TLS` | `{"available":0}` |
+
+`srt` and `tls` sit at the top level rather than under `caps` because,
+when the feature *is* compiled in, they also carry the runtime settings
+needed to dial it:
+
+```json
+"srt": {"available":1,"enabled":1,"port":9000,"channel":0}
+"tls": {"available":1,"https":1,"rtsps":1,"rtsps_port":322}
+```
+
+When the build lacks the feature, **only** `{"available":0}` is emitted.
+That is deliberate for `tls` in particular: `http.https`/`rtsp.tls` may
+well be `1` in `timps.conf` on a non-TLS build — that mismatch is exactly
+what logs `RTSPS requested but built without USE_TLS` at startup, where
+no HTTP client ever sees it — but no listener was opened, so echoing the
+requested flags would invite a client to dial a port nothing is bound to.
+`"available":0` means *ignore any TLS configuration you may have seen
+elsewhere; this binary cannot serve it.*
 
 ### The `encoder` object — read-only encoder telemetry
 
@@ -244,6 +288,55 @@ summary:
 | `motion` | `motion.enabled/sensitivity/cols/rows/monitor_stream` | All live — the HAL stops and recreates the whole IVS grid on any of these (a single request's several motion keys are batched into **one** rebuild via `hub_control_commit()`, not one rebuild per key). `hold_ms`/`skip_frames` are also POST-able (persist + echo) but only feed the grid/hold logic at the next such rebuild or a restart, not immediately. `cooldown_ms`/`on_motion` are deliberately **not** POST-able (config-file only). |
 | `record` | `record.*` + `{"active":1\|0}` + `{"clip":"...","seconds":N}` | Config keys apply on the recorder's next loop pass (no restart); `active` is an immediate manual start/stop override; `clip`/`seconds` triggers an independent one-shot on-demand fMP4 capture, not persisted. |
 | `timelapse` | `timelapse.*` | Applied on the timelapse thread's next loop pass, no restart. |
+
+### Response body and status codes
+
+Every `POST /control` answers `application/json` with the same body
+shape, whatever the status:
+
+```json
+{"ok":true,"accepted":2,"changed":1,"rejected":0,
+ "applied":{"image.brightness":"255"}}
+```
+
+| Field | Meaning |
+| --- | --- |
+| `ok` | `true` only when at least one known field was applied. |
+| `accepted` | Known fields applied, **including** no-op rewrites of the value a field already held — re-posting the current value is a success, not a silent failure. Clamped writes count here too: clamping is the documented contract, not an error. Also counts *commands* that were carried out (`record.clip`), which never go through the settings path at all. |
+| `changed` | The subset that actually differed and was persisted. |
+| `rejected` | Known fields whose **value** was refused (`null`, `undefined`, or an empty string on a non-string field), plus commands that were understood and failed (`record.clip` to an unwritable path). |
+| `applied` | Per-key echo of the **effective** value wherever it differs from what was posted — i.e. after clamping. This is how a caller that posted `999` learns it got `255`, without re-`GET`ting the document. |
+| `truncated` | Present (`true`) only if more keys changed than the 512-byte echo holds; fall back to a `GET`. |
+| `reason` | Present only on the error answers below — the machine-readable discriminator, so a client never has to infer the case from the status line. |
+
+| Status | `reason` | Meaning | What the client should do |
+| --- | --- | --- | --- |
+| `200 OK` | — | At least one known field was applied (or one command carried out). A partial request — some fields applied, others rejected — is a `200`; check `rejected`. | Nothing. Read `applied` for clamped values. |
+| `400 Bad Request` | `not_json` | The body was not a JSON object at all (garbage, empty, truncated before the first `{`). | Fix the caller — this is a client bug. |
+| `422 Unprocessable Content` | `unknown_fields` | It parsed, but carried **no field this build knows**: a typo, the wrong section, or a key gated out of this binary. Nothing was applied. | Check spelling — and check the `*.available` flags above, because the key may simply not exist in *this* build. Retrying the identical body will never succeed. |
+| `409 Conflict` | `values_rejected` | It parsed and every field in it **was** known, but every one of them was refused: bad values, or a command that failed. Nothing was applied. | The key names were right; re-send with valid **values**. |
+| `413 Payload Too Large` | — | `Content-Length` negative, or larger than the request buffer. | Split the request. |
+| `503 Service Unavailable` | `oom` | The daemon could not allocate to service the request. | Retry later; not a client error. |
+
+`422` and `409` were **one code until now**, and they are opposite
+instructions: `422` says *your key names are wrong for this binary*,
+`409` says *your key names were right and your values were not*. A client
+that retried the first unchanged would loop forever; a client that went
+hunting for a missing build feature on the second would be chasing
+nothing.
+
+**Compatibility note.** `422` deliberately kept the *unknown-field*
+meaning rather than the (semantically tidier) value-rejection one,
+because that is what the installed base already asserts: thingino's
+`timps-selftest.sh` probes an unknown key and fails the camera on
+anything but `422`, and the WebUI's `timps-api.js` prints its "no setting
+in this request is known to this timps build" message on a `422` with
+`rejected == 0`. Moving *that* case would have turned every fielded
+selftest red. The value-rejection case moved instead; the only casualty
+is the `rejected > 0` branch of that same WebUI message, which degrades
+to a generic "HTTP 409" line until the WebUI is updated. Clients keying
+off `res.ok` or on `2xx` are unaffected — both cases were, and remain,
+non-`2xx`.
 
 ## `GET /events` — Server-Sent Events push stream
 

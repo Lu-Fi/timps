@@ -26,11 +26,9 @@
 
 #define MOD "HTTP"
 
-/* global limit on concurrent HTTP connections (each costs a thread plus a
- * bounded fanqueue) so many/slow clients cannot exhaust memory (DoS) */
-#ifndef HTTP_MAX_CLIENTS
-#define HTTP_MAX_CLIENTS 8
-#endif
+/* HTTP_MAX_CLIENTS (the global limit on concurrent HTTP connections) now lives
+ * in util.h: GET /control advertises it as caps.http_max_clients, and one
+ * definition shared by the enforcer and the advertiser cannot drift apart. */
 /* fanqueue capacity for fMP4 streaming clients (pointers; retained packet
  * payloads are the real cost -> keep this bounded and modest) */
 #ifndef MS_MP4_QCAP
@@ -1033,7 +1031,10 @@ static void events_stream(hconn *c, const char *path, const char *cors)
     /* own cap below the global HTTP_MAX_CLIENTS: a flood of /events
      * connections must not exhaust the per-connection threads (each SSE
      * client parks one thread until it disconnects) */
-    int max = cfg->events_max_clients > 0 ? cfg->events_max_clients : 8;
+    /* the <=0 fallback is shared with control.c (util.h) so the number
+     * caps.events_max_clients advertises is the number enforced here */
+    int max = cfg->events_max_clients > 0 ? cfg->events_max_clients
+                                          : EVENTS_MAX_CLIENTS_DEF;
     if (__sync_add_and_fetch(&g_nsse, 1) > max){
         __sync_fetch_and_sub(&g_nsse, 1);
         LOGW(MOD,"sse client limit (%d) reached, rejecting", max);
@@ -1467,28 +1468,73 @@ static void *conn_thread(void *arg)
                      *   422 - it parsed, but carried no field this build knows
                      *         (typo, wrong section, or a key gated out of this
                      *         build); nothing was applied
+                     *   409 - it parsed and every field in it WAS known, but
+                     *         every one of them was refused (bad value, or a
+                     *         command that failed); nothing was applied
                      *   200 - at least one known field was applied
+                     *   503 - the daemon could not allocate to service it
+                     *
+                     * 422 used to cover BOTH of the middle two, and those are
+                     * opposite instructions to the client. "no field this build
+                     * knows" says: your key names are wrong for THIS binary -
+                     * check spelling, or check whether the feature is compiled
+                     * in at all (the fleet's two builds differ - see the tls
+                     * block in GET /control). "every field was refused" says:
+                     * your key names were right and the daemon understood you,
+                     * the VALUES are the problem - re-send with valid ones. A
+                     * client that retried the first case unchanged would loop
+                     * forever; a client that went hunting for a missing build
+                     * feature in the second would be chasing nothing. Same
+                     * status code, so neither could be automated.
+                     *
+                     * WHICH meaning kept 422 was decided by the installed base,
+                     * not by taste. The 409 case is the newer one (its counter,
+                     * cr.rejected, only started being reachable when values
+                     * began being refused outright), while "unknown field ->
+                     * 422" is what is already asserted on deployed cameras -
+                     * thingino's timps-selftest.sh probes an unknown key and
+                     * FAILS the camera on anything but 422, and the WebUI's
+                     * timps-api.js prints its "no setting in this request is
+                     * known to this timps build" message on a 422 whose
+                     * rejected==0. Moving THAT to a new code would have turned
+                     * every fielded selftest red for a purely cosmetic gain.
+                     * Moving the value-refusal case instead costs only the
+                     * rejected>0 branch of that same WebUI message, which
+                     * degrades to the generic "timps /control HTTP 409" line
+                     * until the WebUI is updated - a worse sentence, not a
+                     * broken client. 409 Conflict: a 4xx (client must change
+                     * something), not retryable as-is, and not already spoken
+                     * by this endpoint.
+                     *
+                     * "reason" is the fix for the next client, so it never has
+                     * to infer any of this from the status line. Emitted only
+                     * on the error answers: a 200 body stays byte-for-byte what
+                     * it was, and this is the hot path a dragged slider posts on.
+                     *
                      * "accepted" counts applied fields INCLUDING no-op rewrites,
                      * so re-posting the current value is a success, not a
                      * silent failure. Clamped writes count as accepted too -
                      * clamping is the documented contract, not an error. */
                     ctrl_result cr;
                     int prc = control_apply_json(body ? body : "", &cr);
-                    char rb[CTRL_ECHO_CAP + 192];
+                    const char *st, *reason;
+                    if (prc == -2)                              { st = "503 Service Unavailable"; reason = "oom"; }
+                    else if (prc != 0)                          { st = "400 Bad Request";         reason = "not_json"; }
+                    else if (cr.accepted == 0 && cr.rejected>0) { st = "409 Conflict";            reason = "values_rejected"; }
+                    else if (cr.accepted == 0)                  { st = "422 Unprocessable Content"; reason = "unknown_fields"; }
+                    else                                        { st = "200 OK";                  reason = NULL; }
+                    char rb[CTRL_ECHO_CAP + 224];
                     int rn = snprintf(rb, sizeof rb,
                         "{\"ok\":%s,\"accepted\":%d,\"changed\":%d,"
-                        "\"rejected\":%d,\"applied\":{%s}%s}",
+                        "\"rejected\":%d,\"applied\":{%s}%s%s%s%s}",
                         (prc==0 && cr.accepted>0) ? "true" : "false",
                         cr.accepted, cr.changed, cr.rejected,
                         prc==0 ? cr.echo : "",
-                        (prc==0 && !cr.echo_full) ? ",\"truncated\":true" : "");
+                        (prc==0 && !cr.echo_full) ? ",\"truncated\":true" : "",
+                        reason ? ",\"reason\":\"" : "", reason ? reason : "",
+                        reason ? "\"" : "");
                     if (rn >= (int)sizeof rb) rn = (int)sizeof rb - 1;
-                    if (prc != 0)
-                        http_send_ex(c,"400 Bad Request","application/json",cors,rb,rn);
-                    else if (cr.accepted == 0)
-                        http_send_ex(c,"422 Unprocessable Content","application/json",cors,rb,rn);
-                    else
-                        http_send_ex(c,"200 OK","application/json",cors,rb,rn);
+                    http_send_ex(c,st,"application/json",cors,rb,rn);
                 }
             }
             else if (!strncmp(path,"/events",7)) {
