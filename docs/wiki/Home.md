@@ -14,9 +14,8 @@ investigation notes, build-hardening logs and one-off code audits — those are
 linked from here where they contain relevant deep-dive detail, but this wiki
 is the place to start.
 
-> Source repository: `/mnt/NVMe/git/timps` (branch `feat/adaptive-fmp4-drop`
-> at the time of writing). Every page in this wiki is written against, and
-> verified against, the actual source in `src/`.
+> Every page in this wiki is written against, and verified against, the
+> actual source in `src/` on `main`.
 
 ## What timps does
 
@@ -38,7 +37,9 @@ is the place to start.
 - **Grid-based motion detection** built on the Ingenic IVS ("Intelligent
   Video System") hardware move-detection API.
 - **Automatic day/night switching**, replacing thingino's separate
-  `daynightd` daemon, with sensor/time/sun decision modes.
+  `daynightd` daemon: an `auto` sensor automaton (four independent
+  day/probe/heartbeat/boot paths) with an optional calendar, or a
+  calendar-only `schedule` mode. See [Day/Night](Day-Night.md).
 - **Local recording** (continuous or motion-triggered fMP4 segments to SD)
   and **timelapse** (periodic JPEG capture).
 - **Native speaker output** (`IMP_AO`) for an ONVIF-style two-way audio
