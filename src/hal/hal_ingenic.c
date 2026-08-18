@@ -1966,6 +1966,18 @@ static void sw_osd_compose(vchan *vc)
     }
 }
 
+/* Cadence-gate tuning for the unbound SW-rotate path (see the block comment at
+ * sw_rot_thread's GetFrame). RESET_US: a capture timestamp this far BEHIND the
+ * gate's deadline is a clock reset/wrap, not an early frame - re-anchor on it
+ * rather than drop frames forever. 1 s matches PTS_SKEW_VIDEO_US, the same
+ * "how far may capture legitimately lag" bound pts_sanitize() uses on the very
+ * same field. REPORT_US: length of the one-shot window over which each rotate
+ * thread measures and logs delivered-vs-encoded fps, so the gap this gate
+ * exists for stays visible on any board/SDK combination (and so it is obvious
+ * if a future libimp starts honouring the rate divider itself). */
+#define MS_SW_ROT_CAD_RESET_US   1000000LL
+#define MS_SW_ROT_CAD_REPORT_US 10000000LL
+
 /* ---- 5a: the unbound rotate+encode thread ---------------------------------
  * Mirrors video_thread's on-demand/publish structure, minus everything that
  * needs an encoder channel: there is no Start/StopRecvPic (WE push frames, so
@@ -1978,6 +1990,15 @@ static void *sw_rot_thread(void *arg)
     int receiving=0;
     int64_t idle_since=0;
     int dbg_first=0, dbg_getfail=0, dbg_encfail=0;
+    /* cadence gate (rationale at the GetFrame call below): this unbound
+     * consumer is handed every SENSOR frame regardless of videoN.fps, so the
+     * configured rate is enforced here. cad_due = the capture timestamp at
+     * which the next frame is due; 0 = unarmed (re-armed on every (re)start of
+     * the frame flow, so the first frame after an idle stop is always kept). */
+    const int64_t cad_period = 1000000 / (vc->fps > 0 ? vc->fps : 25);
+    const int64_t cad_tol    = cad_period / 4;
+    int64_t cad_due=0, cad_t0=0;
+    int cad_seen=0, cad_enc=0, cad_reported=0;
     while (vc->run) {
         int want = vc->active || hub_active(vc->chn);
         if (!want) {
@@ -2000,6 +2021,7 @@ static void *sw_rot_thread(void *arg)
                 if (IMP_FrameSource_SetFrameDepth(vc->chn, 2)!=0)
                     LOGW(MOD,"sw-rot chn%d: SetFrameDepth failed",vc->chn);
                 receiving=1;
+                cad_due=0; cad_t0=0; cad_seen=0; cad_enc=0;  /* re-arm the gate */
                 vc->idr_req=0; IMP_Encoder_YuvRequestIDR(vc->yuv_h);
                 LOGI(MOD,"sw-rot chn%d streaming",vc->chn);
             }
@@ -2008,25 +2030,41 @@ static void *sw_rot_thread(void *arg)
         /* GetFrame blocks up to the channel's frame period once the FS is
          * enabled; on a disabled/empty channel it fails fast -> pace the retry
          *
-         * MEASURED GAP (cam-kinder-links, T23 1.3.0, 2026-08-18): the fps this
-         * loop actually processes is the SENSOR rate, not videoN.fps. With
-         * video1 = 640x480 @15 rotated 90, fs_create() set outFrmRateNum=15 and
-         * YuvInit was told 15 (so SPS/container advertise 15), yet the stream
-         * delivered 29.85 fps over 60 s - the full 30 fps sensor rate - while
-         * the BOUND channel 0 delivered its configured 25 (24.88 measured) at
-         * the same time. I.e. the FrameSource rate divider is applied for a
-         * bound consumer but not for a user-mode GetFrame consumer, the same
-         * class of gap as the missing HW OSD/privacy/piggyback-JPEG on this
-         * path. Consequences: (1) the transpose + software encode run at 2x
-         * the intended rate - the safe envelope in sw_rot_start gates on the
-         * CONFIGURED <=15 fps and therefore does not bound what this thread
-         * really does (measured 39% of the core for 480x640, vs ~21% total
-         * daemon CPU for the same stream unrotated); (2) rate control was
-         * parameterised for 15 fps while fed 30. NOT fixed here: the fix is a
-         * cadence gate (drop frames whose ts is inside the frame period, or
-         * IMP_FrameSource_SetFrameRate on this channel) and that is a real
-         * behaviour change on the rotated path, out of scope for the L7b
-         * review below. Recorded where it happens, as a measured finding. */
+         * CADENCE GATE - why videoN.fps is enforced HERE, in user code, and not
+         * by the framesource. MEASURED on cam-kinder-links (T23 libimp 1.3.0,
+         * sc2336, 2026-08-18): what this loop is handed is the SENSOR rate, not
+         * videoN.fps. video1 = 640x480@15 rotated 90: fs_create() set
+         * outFrmRateNum=15 and YuvInit was told 15 (so SPS and container both
+         * advertise 15), yet the stream delivered 29.85 fps over 60 s - the full
+         * 30 fps sensor rate - while the BOUND channel 0 delivered its
+         * configured 25 (24.88 measured) at the same moment. The framesource
+         * rate divider is therefore honoured for a bound consumer but NOT for a
+         * user-mode GetFrame consumer: the same class of gap as the missing HW
+         * OSD / privacy / piggyback-JPEG on this path. There is no SDK call to
+         * reach for either - T23 1.3.0 exports no IMP_FrameSource_SetFrameRate
+         * (imp_framesource.h has CreateChn/SetChnAttr and no per-channel rate
+         * call), and SetChnAttr's outFrmRateNum is precisely the field already
+         * proven not to reach this consumer. So the rate is enforced in this
+         * loop.
+         *
+         * What it cost while unenforced, same board: the transpose and the
+         * software encode ran at 2x the intended rate (sw_rot_thread at 39% of
+         * the lone core for 480x640, against ~21% total daemon CPU for the same
+         * stream unrotated); rate control was parameterised for 15 fps and fed
+         * 30; and the safe envelope in sw_rot_start - which gates on the
+         * CONFIGURED <=704x576 / <=15 fps - did not bound what this thread
+         * actually did. Under 5 clients delivery came in bursts (ffmpeg reported
+         * ~14.6 non-monotonic DTS/s on the rotated stream against 0.03/s
+         * unrotated), consistent with a CPU-saturated path draining a capture
+         * backlog in gulps.
+         *
+         * The gate drops surplus frames immediately after GetFrame and BEFORE
+         * nv12_rotate90, so a dropped frame costs one GetFrame/ReleaseFrame pair
+         * and nothing else: the transpose, the software encode, the OSD
+         * composite, the JPEG and the publish all run at the configured rate. It
+         * is a ceiling and never a source of latency - if a future libimp ever
+         * honours the divider for this consumer, nothing arrives early and the
+         * gate simply stops dropping. */
         IMPFrameInfo *frm = NULL;
         if (IMP_FrameSource_GetFrame(vc->chn, &frm)!=0 || !frm){
             if (receiving && (dbg_getfail++ % 100)==0)
@@ -2037,6 +2075,54 @@ static void *sw_rot_thread(void *arg)
         }
         dbg_getfail=0;
         int64_t ts = frm->timeStamp;
+        /* Key the gate off the CAPTURE timestamp, not arrival time: the frames
+         * kept are then evenly spaced in MEDIA time, which is what the pts
+         * published below is derived from. ms_now_us() substitutes when libimp
+         * leaves timeStamp at 0 - pts_sanitize() distrusts this very field for
+         * the same reason.
+         *
+         * cad_due is a FIXED grid advanced by exactly one frame period per KEPT
+         * frame - not "last kept + period" - so the long-run rate is capped at
+         * exactly vc->fps even when the source ratio is not an integer (30 -> 12
+         * then keeps a 2-3-2-3 pattern rather than every 2nd frame = 15).
+         * cad_tol (a quarter period) absorbs capture jitter: without it a frame
+         * arriving a few hundred us early is dropped and its successor lands a
+         * full source interval late, halving the rate in bursts. A quarter
+         * period is always well under half a source interval while we are
+         * genuinely downsampling (period >= 2x the source interval there), so it
+         * can never let two ADJACENT source frames through.
+         * Two re-anchors keep a bad clock from wedging the gate shut: a capture
+         * ts more than MS_SW_ROT_CAD_RESET_US behind the deadline is a reset or
+         * wrap, so re-arm on it (a garbage ts far in the FUTURE passes once and
+         * pushes cad_due out; the next sane ts then trips this same re-anchor);
+         * and a deadline still not past cad_key after the advance means the
+         * source stalled longer than a period, so snap forward instead of
+         * encoding a catch-up burst against a deadline stuck in the past. */
+        int64_t cad_key = (ts > 0) ? ts : ms_now_us();
+        cad_seen++;
+        if (cad_t0 == 0)  cad_t0  = cad_key;
+        if (cad_due == 0) cad_due = cad_key;               /* first frame: due now */
+        else if (cad_key < cad_due - MS_SW_ROT_CAD_RESET_US)
+            cad_due = cad_key;                             /* clock reset/wrap */
+        if (cad_key + cad_tol < cad_due) {                 /* not due yet -> drop */
+            IMP_FrameSource_ReleaseFrame(vc->chn, frm);
+            continue;
+        }
+        cad_due += cad_period;
+        if (cad_due <= cad_key) cad_due = cad_key + cad_period;   /* after a stall */
+        cad_enc++;
+        /* one-shot delivered-vs-encoded report (integer hundredths - this is a
+         * soft-float MIPS target, no doubles in the frame path) */
+        if (!cad_reported && cad_key - cad_t0 >= MS_SW_ROT_CAD_REPORT_US) {
+            int64_t span = cad_key - cad_t0;
+            int in_x100  = (int)((int64_t)(cad_seen-1)*100*1000000/span);
+            int out_x100 = (int)((int64_t)(cad_enc -1)*100*1000000/span);
+            cad_reported = 1;
+            LOGI(MOD,"sw-rot chn%d: framesource delivered %d.%02d fps, encoded "
+                     "%d.%02d fps (target %d) over %ds",
+                 vc->chn, in_x100/100, in_x100%100, out_x100/100, out_x100%100,
+                 vc->fps, (int)(span/1000000));
+        }
         /* transpose into the phys-contiguous bounce buffer, then release the
          * source frame BEFORE encoding so the FS depth-2 pool never starves */
         nv12_rotate90((const uint8_t*)(uintptr_t)frm->virAddr,
@@ -2198,7 +2284,10 @@ static void sw_rot_teardown(vchan *vc)
  * multi-stream pipeline bring-up and take the whole daemon down. Both the
  * long-standing CPU-HEAVY warning and the enforcement below share these, so the
  * numbers cited in the warning text and the numbers actually enforced can never
- * drift apart. Values match that warning: <=704x576, <=15fps. */
+ * drift apart. Values match that warning: <=704x576, <=15fps.
+ * NOTE the fps half of this envelope only became real with the cadence gate in
+ * sw_rot_thread: it gates on the CONFIGURED fps, and until that gate existed
+ * the thread was handed - and processed - the full sensor rate regardless. */
 #define MS_SW_ROT_MAX_PIXELS (704L*576L)
 #define MS_SW_ROT_MAX_FPS    15
 /* Hardware geometry the T23 encoder demands of the ENCODED (post-rotation)
