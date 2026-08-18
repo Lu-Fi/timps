@@ -153,6 +153,63 @@ semantic versioning.
   moving default - which is also what made this change safe to measure.
 
 ### Added
+- **day/night: the TREND trigger (path T) - a dawn is a ramp, and the step
+  trigger structurally cannot see one** (`src/daynight.c`, `DN_TREND_*`;
+  decision and evidence: `dev_notes/DAYNIGHT_DECISION_2026-08-17.md`, section
+  "What shipped - 2026-08-18"). Night now keeps two further EMAs of the
+  exposure index - a fast one (tau 3 min) that follows the scene and a slow
+  one (tau 60 min) that remembers it - and asks for a probe when `fast/slow`
+  falls below **75 %** and holds there for `probe_confirm_s`. This is the
+  trigger the 2026-08-17 decision note specified and the 2026-08-17
+  implementation did not carry: the silent probe and its ratio verdict
+  shipped, the trigger that was supposed to fire it did not, so for a day the
+  fleet's mornings were found by the heartbeat or not at all.
+
+  **Why the existing trigger cannot do it.** Path C fires when the reading
+  drops below `probe_jump_pct` (50 %) of the level night was last *proven* at.
+  Natural twilight does not do that for a long time: measured on
+  `cam-C`, the dawn of 2026-08-18 fell 11839 -> 5312 over two hours, a
+  factor of 2.23, and did not reach the 50 % bar until 07:31 - 67 minutes
+  after sunrise. `ref` answers steps, `fast/slow` answers ramps, and neither
+  subsumes the other, which is why `ref` and its proof-only ratchet **stay**
+  (they are what makes the `0f5fc80` flap loop and the `b4a54f0` repeat-dip
+  impossible, and a drifting 60-minute EMA is a memory, not a proof).
+
+  **Measured, not guessed** (sweep over the fleet night of 2026-08-17/18: 12
+  cameras, 181 camera-hours *actually in night mode*, `scripts/dn-trend-eval.py`):
+
+  | tau fast/slow | bar | dawns found | false fires per camera-hour |
+  |---|---|---|---|
+  | 3 / 60 min | **75 %** | **10 of 12** | **0.22** |
+  | 3 / 60 min | 70 % | 9 of 12 | 0.15 |
+  | 3 / 15 min | 75 % | 8 of 12 | 0.19 (and 30-70 min later) |
+  | 3 / 10 min | 75 % | 6 of 12 | 0.13 |
+
+  Shorter memories fire later and find fewer, because they track the twilight
+  instead of noticing it. The two cameras nobody finds are the permanently
+  dark garage and one whose AE never leaves its rail - both heartbeat-carried
+  by construction. A **third, medium (~10 min) constant** was proposed after
+  that night and is **not** implemented: the event that motivated it (a
+  bedroom light inside the ongoing dusk, a factor of 1.54) bottoms at 0.87
+  against a 10-minute memory, still short of the bar, and the ~88 % bar it
+  would take sits inside the +-25 % AGC noise band, doubles the false-fire
+  rate to 0.44/camera-hour, and still finds fewer dawns than 3/60 alone.
+
+  **Armed only where the probe is silent** (`daynight.irprobe_cmd` set). That
+  is the affordability argument, not a portability detail: 0.22 false fires
+  per camera-hour is a few seconds of dimmer image each when the illuminator
+  can be switched on its own, and about 2.6 audible **motor movements** per
+  12-hour night when it cannot - worse than the 2 clicks a day this design
+  exists to reach. Boards without separately switchable LEDs keep jump plus
+  heartbeat, i.e. exactly their previous behaviour.
+
+  Costs three scalars (14 -> 17, still no ring buffers), two appended trace
+  columns (`trend_fast`, `trend_slow`) and **432 bytes of `.text` on MIPS**
+  (`mipsel-linux-gcc -Os`, 21,620 -> 22,052; `.bss` unchanged at 272), most of
+  it the two new log call sites. New corpus scenario
+  **20-dawn-trend-schuppen**, built on that measured dawn: the pre-change
+  build spends **2570 virtual seconds in the wrong mode**, the post-change
+  build **0**, for one audible click either way.
 - **day/night: `daynight.learn` (default 0) - opt-in threshold learning with a
   daily log line either way.** Every confirmed day records its lowest exposure
   reading; the median of the last 8 says how bright this scene actually gets.
@@ -238,8 +295,8 @@ semantic versioning.
 ### Fixed
 - **SW rotate: the unbound rotate/encode thread processed the SENSOR frame rate,
   not `videoN.fps`, so everything downstream of it ran at double the configured
-  rate** (`src/hal/hal_ingenic.c`, `sw_rot_thread`; measured on cam-kinder-links
-  192.168.10.124, T23/sc2336, libimp 1.3.0, profile
+  rate** (`src/hal/hal_ingenic.c`, `sw_rot_thread`; measured on cam-H,
+  T23/sc2336, libimp 1.3.0, profile
   `cinnado_d1_t23n_sc2336_atbm6012bx`, 2026-08-18). `fs_create()` set
   `outFrmRateNum` to the configured fps and `IMP_Encoder_YuvInit` was told the
   same (so SPS and container correctly advertised 15), but the framesource rate
@@ -820,6 +877,38 @@ semantic versioning.
   delta for this + the fMP4 eviction fix above: +471 bytes (sim build).
 
 ### Testing
+- **Scenario `16-shed-light-measured` asserted a capability it deliberately
+  withholds, and so failed on every build.** It demanded a switch to day on a
+  measured lit-shed event, but supplies no `night_gain_noir` curve - so the
+  harness leaves `daynight.irprobe_cmd` unset and the machine's only route out
+  of night is the audible probe judged against the absolute `day_gain`. The
+  measured day pipeline reads ~3700 against a 768 threshold, so that judgement
+  can only ever come back "night". That is a scenario defect, not a daemon
+  defect, and it was failing *before* the trend work as well. It is now the
+  **negative control** of the pair 16/19 on the same measured event: without a
+  third optical state, staying night is the only verdict the evidence
+  supports, and the machine must reach it quietly (2 switches, the boot
+  verification, and `probe confirmed day` forbidden). Scenario 19 hands the
+  same event a `night_gain_noir` curve and gets the opposite, correct answer
+  out of the same code - which is the whole value of the ratio, and is only
+  legible because 16 keeps the third curve away.
+- **`scripts/dn-replay.py`: a scenario that threw before its first assertion
+  reported `RESULT: PASS`.** `emit()` runs from a `finally`, and the
+  `aborted` flag only covered the virtual-clock handshake (which raises
+  `SystemExit`); anything else - a sim binary that could not be spawned, for
+  instance - printed a green scenario with no assertions under it. A run with
+  zero checks is now reported as `ABORTED` and fails. Related: the trace
+  parsers tested `len(p) == 10` for a row, so appending a diagnostic column to
+  `daynight.trace_path` would have turned every trace into "empty" and every
+  monotonicity check into a vacuous pass; both now test `>=`.
+- **`scripts/dn-trend-eval.py` measured half a verdict.** It reported the
+  false-fire floor of the two-EMA detector but never whether it *detects*
+  anything - and a threshold of zero has a perfect false-fire rate. It also
+  counted fires while the camera was in day mode, which the daemon never does,
+  and defaulted to `--slow 15`, a value the design had already rejected. It
+  now models path T as shipped (same `dt/tau` coefficient as
+  `dn_ema_alpha()`, same 3/60 constants, same 75% bar), counts fires only over
+  night-mode samples, and reports dawn detections beside the false-fire rate.
 - **`dn_next_probe()` is now property-tested** (`tests/dn-probe-props.c`,
   `make dn-props`, run as corpus entry `00` by
   `scripts/dn-replay.py --all`). Collapsing the probe schedule into one pure

@@ -12,7 +12,7 @@
  * ambient light. With the IR-cut open and the illuminator on (the NIGHT
  * pipeline) the camera is measuring, in part, its own light - so an absolute
  * night reading means nothing, and only a CHANGE in it means anything. That
- * asymmetry produces four independent paths, none of which can block another:
+ * asymmetry produces five independent paths, none of which can block another:
  *
  *   A  day -> night   direct, from the honest day-pipeline reading. Needs no
  *                     history and no probe: D above daynight.night_gain for
@@ -25,6 +25,13 @@
  *                     i.e. when someone turns a light on. This is the path that
  *                     carries cameras with no usable location data, which is
  *                     most of them.
+ *   T  night -> day   the same probe, asked for by a TREND instead of a step:
+ *                     a 3-minute EMA of the index below 75% of a 60-minute one
+ *                     means the scene is brighter than it remembers being,
+ *                     which is what a dawn looks like and what a light switch
+ *                     does not. Only armed where daynight.irprobe_cmd makes
+ *                     the probe silent - see the DN_TREND_* block in
+ *                     daynight.c for the measured reason.
  *   B  heartbeat      a probe every heartbeat_s regardless of any reading, or
  *                     heartbeat_max_s once the scene demonstrably stopped
  *                     moving. Sensor-independent, so it is the only bound on

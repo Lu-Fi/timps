@@ -85,6 +85,63 @@ enum { DN_DAY = 0, DN_NIGHT = 1, DN_UNKNOWN = -1 };
 #ifndef DN_MOVED_MARGIN
 #define DN_MOVED_MARGIN 0.90f
 #endif
+/* ---- the trend trigger (path T) ---------------------------------------- *
+ * Two further EMAs of the exposure index, on top of the tick smoother `s`:
+ * a FAST one that follows the scene and a SLOW one that is the scene's
+ * memory. Their ratio answers the one relative question the night pipeline
+ * is entitled to answer - "has this got sustainedly brighter than it has
+ * been" - which no absolute level can, because "day" spans a factor of 63
+ * across this fleet at one instant.
+ *
+ * Why not reuse `s`: its constant is DN_ALPHA at the tick, i.e. ~7 s at the
+ * 2 s default. That is a de-noiser, not a memory; divided by an hour-long
+ * EMA it would carry the AGC jitter straight into the ratio.
+ *
+ * The numbers are measured, not guessed. Sweep over the fleet night of
+ * 2026-08-17/18 (private/messungen/2026-08-18_daemmerung, 12 cameras, 181
+ * camera-hours with the camera actually in night mode, sampled at 1/min -
+ * the daemon's 2 s tick makes the fast side smoother still, so every
+ * false-fire figure here is an UPPER bound):
+ *
+ *   tau fast/slow   bar    dawns found   false fires per camera-hour
+ *   3 / 60 min      75 %   10 of 12      0.22
+ *   3 / 60 min      70 %    9 of 12      0.15
+ *   3 / 15 min      75 %    8 of 12      0.19  (and 30-70 min later)
+ *   3 / 10 min      75 %    6 of 12      0.13
+ *
+ * 3/60 at 75 % finds the most dawns and finds them earliest, and it
+ * reproduces the sweep that first chose it on the previous night (7 of 8
+ * twilights, 0.13 false fires per camera-hour). The 15- and 10-minute rows
+ * show what goes wrong on the way down: natural twilight is slow - a factor
+ * of 2.2 over 67 minutes - so the slow side has to be a real memory and not
+ * a rate measure, or it tracks the twilight instead of noticing it. The two
+ * dawns nobody finds are the permanently dark garage and a camera whose AE
+ * never leaves its rail; both are heartbeat-carried by construction.
+ *
+ * Most of that 0.22 comes from two cameras that spent the whole daylight
+ * period stuck in night mode - where a "false" fire is the correct one - so
+ * it is an over-count in the same, safe direction.
+ *
+ * NO THIRD (medium, ~10 min) CONSTANT, though one was proposed after the
+ * same night: the 21:03 bedroom light fell inside the ongoing dusk (7845 ->
+ * 5087, a factor of 1.54) and so registered against neither the jump bar
+ * (which needs a factor of 2) nor the hour-long memory, which the dusk had
+ * left far BELOW the current level - the ratio bottomed at 1.15, never
+ * anywhere near firing. The observation is real; the proposed remedy is
+ * refuted by the same measurement. On that event a 10-minute EMA bottoms at
+ * 0.87, still short of the 75 % bar, and the ~88 % bar it would take sits
+ * inside the +-25 % AGC noise band: measured, that doubles the false-fire
+ * rate to 0.44 per camera-hour while STILL finding fewer dawns (9 of 12)
+ * than 3/60 alone. A 1.54x change is what the heartbeat is for. */
+#ifndef DN_TREND_FAST_MS
+#define DN_TREND_FAST_MS   180000     /* tau 3 min  - follows the scene */
+#endif
+#ifndef DN_TREND_SLOW_MS
+#define DN_TREND_SLOW_MS  3600000     /* tau 60 min - remembers it */
+#endif
+#ifndef DN_TREND_PCT
+#define DN_TREND_PCT 75               /* fire below this much of the memory */
+#endif
 /* the [24.8] gain floor (1.0x). Only used to answer "can the trigger see?"
  * when the integration-time half of the metric is unavailable - see
  * dn_c_sighted(). */
@@ -323,6 +380,20 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
         o->d = (o->ratio > 0.0f) ? o->gain * o->ratio : o->gain;
         if (!isfinite(o->d) || o->d <= 0.0f) o->d = -1.0f;
     }
+}
+
+/* EMA coefficient for a TIME CONSTANT rather than a per-tick step: alpha =
+ * dt/tau, clamped at 1 so a tick longer than the constant simply adopts the
+ * sample. Written this way so daynight.interval_ms can be retuned without
+ * silently retuning the filter with it - the 3/60 minute pair below was swept
+ * at one sample per minute and has to mean the same thing at the 2 s default.
+ * Identical form to scripts/dn-trend-eval.py's alpha(), so the sweep and the
+ * daemon filter the same signal the same way. */
+static float dn_ema_alpha(int dt_ms, int tau_ms)
+{
+    if (tau_ms <= 0) return 1.0f;
+    float a = (float)dt_ms / (float)tau_ms;
+    return a > 1.0f ? 1.0f : a;
 }
 
 /* Whether the spontaneous-brightening trigger (path C) can actually see.
@@ -737,7 +808,8 @@ static void dn_diag_threshold(const ms_daynight_cfg *dn, int fails,
  * input; see docs/wiki/Day-Night-Design-Notes.md section 6.            */
 static void dn_trace(const ms_daynight_cfg *dn, int64_t now_ms, int cur,
                      const dn_sample *sm, float s, float ref, float bar,
-                     int64_t verdict_at, int64_t hb_at)
+                     int64_t verdict_at, int64_t hb_at,
+                     float ema_fast, float ema_slow)
 {
     static FILE *f = NULL;
     static char  path[sizeof dn->trace_path];
@@ -775,16 +847,21 @@ static void dn_trace(const ms_daynight_cfg *dn, int64_t now_ms, int cur,
             open_failed = 1;
             return;
         }
+        /* trend_fast/trend_slow are APPENDED, never inserted: every existing
+         * reader of this file indexes by column position, and the trend pair
+         * is a diagnostic rather than something the older columns depend on.
+         * -1 = not seeded (not in night, or a probe in flight). */
         if (ftello(f) == 0)
             fputs("t_mono_ms,cur,d,gain,ratio,smooth,ref,bar,"
-                  "verdict_in_s,heartbeat_in_s\n", f);
+                  "verdict_in_s,heartbeat_in_s,trend_fast,trend_slow\n", f);
     }
     int64_t v_in = verdict_at > 0 ? (verdict_at - now_ms) / 1000 : -1;
     int64_t h_in = hb_at      > 0 ? (hb_at      - now_ms) / 1000 : -1;
-    fprintf(f, "%lld,%d,%.0f,%.0f,%.4f,%.0f,%.0f,%.0f,%lld,%lld\n",
+    fprintf(f, "%lld,%d,%.0f,%.0f,%.4f,%.0f,%.0f,%.0f,%lld,%lld,%.0f,%.0f\n",
             (long long)now_ms, cur, (double)sm->d, (double)sm->gain,
             (double)sm->ratio, (double)s, (double)ref, (double)bar,
-            (long long)v_in, (long long)h_in);
+            (long long)v_in, (long long)h_in,
+            (double)ema_fast, (double)ema_slow);
     fflush(f);   /* tmpfs, a fraction of a line per second - a crash must not
                   * eat the tail */
     if (ftello(f) > (off_t)DN_TRACE_MAX_BYTES) {
@@ -806,10 +883,11 @@ static void dn_sleep(int ms) { ms_stopgate_wait(&g_gate, ms); }
 static void *dn_thread(void *arg)
 {
     (void)arg;
-    /* ---- the entire state of the automaton. Fourteen scalars, no ring
+    /* ---- the entire state of the automaton. Seventeen scalars, no ring
      * buffers, and every one of them has a single meaning that can be stated
      * in one line - which is the point of the redesign as much as the line
-     * count is. ---- */
+     * count is. (Fourteen before the trend pair; the three it costs are the
+     * only state the 2026-08-17 decision note added to this loop.) ---- */
     int     cur         = DN_UNKNOWN;  /* mode as switched by US */
     int64_t mode_since  = 0;           /* for transition_s */
     float   s           = -1.0f;       /* EMA of the exposure index */
@@ -831,6 +909,11 @@ static void *dn_thread(void *arg)
     float   sust_min    = -1.0f;       /* sustained brightest since the last probe */
     float   win_max     = -1.0f;       /* ... its tumbling window */
     int64_t win_at      = 0;
+    /* path T, the trend pair (see DN_TREND_*). -1 = needs seeding, which is
+     * also how they are re-anchored after every verdict. */
+    float   ema_fast    = -1.0f;       /* tau DN_TREND_FAST_MS  - the scene */
+    float   ema_slow    = -1.0f;       /* tau DN_TREND_SLOW_MS  - its memory */
+    int64_t trend_since = 0;           /* path T hold start */
     /* ---- bookkeeping that is not part of the decision ---- */
     int     was_enabled = 0;
     int     warned_noisp = 0, warned_nocal = 0, hb_defer_logged = 0;
@@ -932,6 +1015,7 @@ static void *dn_thread(void *arg)
             s = -1.0f; stable_n = 0; ref = -1.0f; ref_due = 0;
             trig_since = dark_since = verdict_at = hb_at = mode_since = 0;
             pre_probe = -1.0f; sust_min = win_max = -1.0f; win_at = 0;
+            ema_fast = ema_slow = -1.0f; trend_since = 0;
             ir_verdict_at = 0; d_lit = -1.0f;
             day_ok = 0; day_min = -1.0f;
             dn_status_update(sm.bright, sm.gain, sm.d, luma, DN_UNKNOWN, -1.0f, -1.0f);
@@ -946,6 +1030,7 @@ static void *dn_thread(void *arg)
             ir_verdict_at = 0; d_lit = -1.0f;
             last_probe = 0; pre_probe = -1.0f;
             sust_min = win_max = -1.0f; win_at = 0;
+            ema_fast = ema_slow = -1.0f; trend_since = 0;
             day_ok = 0; day_min = -1.0f;
             booted = 0; boot_at = now;
             warned_noisp = 0; hb_defer_logged = 0; blind_warned = 0;
@@ -970,6 +1055,23 @@ static void *dn_thread(void *arg)
             if (now - win_at >= win_ms) {
                 if (sust_min <= 0.0f || win_max < sust_min) sust_min = win_max;
                 win_max = s; win_at = now;
+            }
+            /* the trend pair. Fed the RAW sample, not `s`: two filters in
+             * series would only add lag to a measurement whose whole content
+             * is its own time constant.
+             *
+             * Only in night, and frozen while a silent probe is in flight.
+             * Both restrictions are the same point - the pair compares the
+             * scene against its own memory, and that is only a comparison
+             * between like and like while the optics stay put. With the
+             * illuminator off the camera is in a third optical state
+             * entirely, and a day excursion's levels are not commensurable
+             * with a night's at all. */
+            if (cur == DN_NIGHT && !ir_verdict_at) {
+                float af = dn_ema_alpha(interval, DN_TREND_FAST_MS);
+                float as = dn_ema_alpha(interval, DN_TREND_SLOW_MS);
+                ema_fast = (ema_fast > 0.0f) ? ema_fast + (sm.d - ema_fast) * af : sm.d;
+                ema_slow = (ema_slow > 0.0f) ? ema_slow + (sm.d - ema_slow) * as : sm.d;
             }
         }
 
@@ -1031,6 +1133,7 @@ static void *dn_thread(void *arg)
                     ref = -1.0f;
                     ref_due = now + (int64_t)dn->ref_delay_s * 1000;
                     sust_min = win_max = -1.0f; win_at = 0;
+                    ema_fast = ema_slow = -1.0f; trend_since = 0;
                     if (dn->boot_probe) {
                         want_probe = 1; probe_why = "boot verify";
                     } else {
@@ -1081,6 +1184,15 @@ static void *dn_thread(void *arg)
                     trig_since = 0;
                     hb_at = now + (int64_t)dn->heartbeat_s * 1000;
                     sust_min = win_max = -1.0f; win_at = 0;
+                    /* re-anchor the trend pair on a verdict, exactly as the
+                     * decision note specifies. A probe that has just been
+                     * answered must not be asked the same question again by
+                     * the same evidence: reseeding puts the ratio back at
+                     * 1.0, so path T has to earn a fresh 25 % of relative
+                     * move before it fires next. Across a real twilight
+                     * (factor 2.2 over 67 minutes) that is a handful of
+                     * silent probes, which is what they are cheap for. */
+                    ema_fast = ema_slow = -1.0f; trend_since = 0;
                 } else if (r <= dn->ir_ratio_day && room >= dn->ir_min_headroom) {
                     /* the room supplies the light. THIS is the one click. */
                     LOGI(MOD, "silent probe (%s): r=%.2f with %d units of AE "
@@ -1102,6 +1214,7 @@ static void *dn_thread(void *arg)
                     trig_since = 0;
                     hb_at = now + (int64_t)dn->heartbeat_s * 1000;
                     sust_min = win_max = -1.0f; win_at = 0;
+                    ema_fast = ema_slow = -1.0f; trend_since = 0;
                 } else {
                     /* between the two thresholds: the ratio genuinely could
                      * not decide. Spend the click and let the day pipeline
@@ -1186,6 +1299,35 @@ static void *dn_thread(void *arg)
             if (trig_since &&
                 now - trig_since >= (int64_t)dn->probe_confirm_s * 1000) {
                 want_probe = 1; probe_why = "brightening";
+            }
+
+            /* (3b2) path T - the TREND. Path C asks "is this much brighter
+             * than the level night was last PROVEN at", and a dawn never
+             * answers yes: the bar is a factor of 2 and natural twilight
+             * takes 67 minutes to manage 2.2 - measured on cam-C's
+             * dawn (corpus scenario 20), 106 minutes to reach the bar, all
+             * of it spent rendering IR video in daylight. This asks the
+             * other question -
+             * "is the scene brighter than it remembers being" - which is
+             * exactly what a dawn does answer, and it is why the fleet's
+             * mornings were previously found by the heartbeat or not at all.
+             *
+             * Armed ONLY where the silent probe exists. That is not a
+             * portability detail, it is the affordability argument the
+             * threshold rests on: 0.22 false fires per camera-hour is a few
+             * seconds of dimmer image each when the illuminator can be
+             * switched alone, and about 2.6 extra MOTOR movements per
+             * 12-hour night when it cannot - which would be worse than the
+             * 2 clicks a day this design exists to reach. A board without
+             * separately switchable LEDs therefore keeps jump plus
+             * heartbeat, i.e. exactly its pre-existing behaviour. */
+            if (dn->irprobe_cmd[0] && ema_fast > 0.0f && ema_slow > 0.0f &&
+                ema_fast < ema_slow * (float)DN_TREND_PCT / 100.0f) {
+                if (!trend_since) trend_since = now;
+            } else trend_since = 0;
+            if (trend_since && !want_probe &&
+                now - trend_since >= (int64_t)dn->probe_confirm_s * 1000) {
+                want_probe = 1; probe_why = "trend";
             }
 
             /* (3c) path B - the heartbeat, the ONLY bound on a wrong night.
@@ -1273,6 +1415,7 @@ static void *dn_thread(void *arg)
             trig_since = dark_since = 0; hb_at = 0;
             s = -1.0f; stable_n = 0;
             sust_min = win_max = -1.0f; win_at = 0;
+            ema_fast = ema_slow = -1.0f; trend_since = 0;
             day_ok = 0; day_min = -1.0f;
             hb_defer_logged = 0;
             reassert_left = DN_REASSERT_COUNT;
@@ -1287,6 +1430,7 @@ static void *dn_thread(void *arg)
             trig_since = dark_since = verdict_at = 0;
             ir_verdict_at = 0; d_lit = -1.0f; ir_why = NULL;
             sust_min = win_max = -1.0f; win_at = 0;
+            ema_fast = ema_slow = -1.0f; trend_since = 0;
             reassert_left = DN_REASSERT_COUNT;
             reassert_at   = now + DN_REASSERT_MS;
             hb_defer_logged = 0;
@@ -1336,7 +1480,8 @@ static void *dn_thread(void *arg)
         float st_ref = (cur == DN_NIGHT) ? ref : -1.0f;
         float st_bar = (cur == DN_NIGHT && ref > 0.0f)
                      ? ref * (float)dn->probe_jump_pct / 100.0f : -1.0f;
-        dn_trace(dn, now, cur, &sm, s, st_ref, st_bar, verdict_at, hb_at);
+        dn_trace(dn, now, cur, &sm, s, st_ref, st_bar, verdict_at, hb_at,
+                 ema_fast, ema_slow);
         dn_status_update(sm.bright, sm.gain, sm.d, luma, cur, st_ref, st_bar);
         dn_sleep(interval);
     }

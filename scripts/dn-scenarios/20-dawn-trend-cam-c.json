@@ -1,0 +1,33 @@
+{
+  "name": "20-dawn-trend-cam-c",
+  "incident": "2026-08-18 dawn on cam-C: sunrise 06:24, the camera was still in night mode at 07:45",
+  "description": "The acceptance test for the TREND trigger (path T), and the case the jump trigger structurally cannot take.\n\nPipeline provenance - night curve: MEASURED (private/messungen/2026-08-18_daemmerung/samples/cam-C.csv, 05:45-07:45 local, 1/min, decimated to its breakpoints). day curve and night_gain_noir: INFERRED; they pin nothing about those pipelines and exist only so the machine has something to probe into.\n\nWhy this dawn. It falls 11839 -> 5312 over two hours: a factor of 2.23, which is the design note's 'natural twilight is slow' in one measurement. The jump bar sits at probe_jump_pct = 50% of the proven night reference, i.e. 5920, and the scene does not reach it until 07:31 (t=6360). The trend pair crosses 75% at 06:45 (t=3600), forty-six minutes earlier. On the recorded night the real camera did neither: its mode column reads Night continuously from 02:52 past the end of the window, so this is a measured 80+ minutes of wrong mode after sunrise, not a hypothetical one.\n\nThe verdict has to come from the ratio, not from a threshold - the inferred day pipeline reads ~2400 at the moment the trend fires, three times the 768 default day_gain. Same lesson as scenario 19, reached by a different trigger.\n\nThe noir curve is anchored on this same camera's measured ratios: r = 3.7 in genuine darkness (12160 -> 45000 on 2026-08-17 22:17) and r = 1.10 once the room, not the illuminator, supplies the light (3226 -> 3550). It interpolates between the two across the twilight.\n\nBudget: zero audible clicks until the verdict, then exactly one. Everything before it is a silent probe.",
+  "scale": 60,
+  "duration_s": 7200,
+  "initial_mode": "night",
+  "config": {
+    "daynight.day_gain": 768,
+    "daynight.night_gain": 4096,
+    "daynight.heartbeat_s": 7200,
+    "daynight.heartbeat_max_s": 7200
+  },
+  "interp": "log",
+  "noise_pct": 0,
+  "night_gain": [[0, 11839], [600, 11839], [1200, 11839], [1800, 11839], [2400, 11839], [3000, 11094], [3060, 10624], [3180, 10173], [3240, 9742], [3300, 9329], [3360, 8933], [3420, 8371], [3600, 8016], [3780, 7677], [4200, 7677], [4800, 7351], [4920, 7039], [5160, 7194], [5220, 7845], [5400, 7845], [5940, 7512], [6000, 7512], [6060, 7039], [6120, 6741], [6300, 6317], [6360, 5668], [6600, 5668], [6720, 5312], [7080, 5547], [7200, 5312]],
+  "night_gain_noir": [[0, 43800], [2400, 43800], [3000, 27000], [3300, 18000], [3600, 9600], [7200, 5800]],
+  "day_gain": [[0, 16000], [2400, 16000], [3000, 6000], [3600, 2400], [4800, 1600], [6000, 1000], [7200, 700]],
+  "expect": {
+    "expected_mode": [[0, "night"], [3300, "any"], [3800, "day"]],
+    "max_wrong_mode_s": 120,
+    "max_switches": 2,
+    "max_ir_probes": 6,
+    "monotonicity": "warn",
+    "expect_log": [
+      "silent probe \\(trend\\)",
+      "the room supplies the light"
+    ],
+    "forbid_log": [
+      "probe \\(brightening\\)"
+    ]
+  }
+}

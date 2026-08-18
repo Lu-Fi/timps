@@ -71,7 +71,7 @@ correct a wrong night.
 > *same single path* their failures multiplied instead of cancelling; the
 > worst case was a camera rendering IR video in broad daylight for four
 > hours while a service restart fixed it in ten seconds. The 2026-08-17
-> redesign replaces them with four independent paths and one rate limit.
+> redesign replaces them with independent paths (five today) and one rate limit.
 > The full argument is in `dev_notes/DAYNIGHT_REDESIGN_2026-08-17.md`; the
 > incident record it came from is in
 > [Day/Night Design Notes](Day-Night-Design-Notes.md).
@@ -102,12 +102,13 @@ Both fields come from the `daynight.isp_path` scrape, so that scrape now runs
 on every decision tick — which is what the 2 s default `interval_ms` pays for
 (the gain half still prefers `IMP_ISP_Tuning_GetTotalGain` where available).
 
-## Four paths, none of which can block another
+## Five paths, none of which can block another
 
 | | Path | Signal | Covers | Cost |
 | --- | --- | --- | --- | --- |
 | **A** | day → night | day-pipeline `D` vs `night_gain`, held `day_confirm_s` | dusk, lights off | 1 click |
 | **C** | spontaneous probe | *relative* fall of `D` below `probe_jump_pct`% of the night reference, held `probe_confirm_s` | **lights on**; indoor cameras; cameras with no location data — the path that carries most of a fleet | 2 clicks if it fails |
+| **T** | trend probe | a 3-minute EMA of `D` below **75%** of a 60-minute one, held `probe_confirm_s` | **dawn** — a ramp too slow for path C's step bar (measured: a real twilight needs 106 minutes to reach it) | 0 clicks; only armed when `daynight.irprobe_cmd` makes the probe silent |
 | **B** | heartbeat probe | wall clock only, no sensor | a reference anchored too low, a scene the index cannot read | 2 clicks |
 | **D** | boot | one measurement at `t=0` | the persisted mode is a guess | 1 click per boot |
 
@@ -145,6 +146,46 @@ Nothing is load-bearing on any single sample the way `night_baseline` was:
   situation looping forever every 25 minutes.)
 * reference anchored **too low** → path C goes quiet until the heartbeat
   re-anchors it. Bounded by `heartbeat_max_s`.
+
+## The trend (path T)
+
+`ref` answers a **step**; it cannot answer a **ramp**. The bar sits at
+`probe_jump_pct` (50%) of a proven night level, and natural twilight takes an
+hour or more to get there — measured on `cam-C`, the dawn of
+2026-08-18 fell 11839 → 5312 over two hours (a factor of 2.23) and did not
+reach the bar until 07:31, 67 minutes after sunrise. Meanwhile the camera
+renders IR video in daylight.
+
+So night also keeps two EMAs of the index and compares them with each other:
+
+```
+fast = EMA, tau 3 min       (follows the scene)
+slow = EMA, tau 60 min      (remembers it)
+probe when  fast / slow < 75%,  held probe_confirm_s
+```
+
+Nothing absolute is consulted — the question is "is this scene brighter than
+it remembers being", which is the one relative question the night pipeline can
+answer honestly. Both EMAs are **re-anchored after every verdict**, so an
+answered question cannot immediately re-ask itself, and both are frozen while
+the illuminator is off (that is a third optical state, not a darker version of
+this one).
+
+Measured over 12 cameras and 181 camera-hours of night
+(`scripts/dn-trend-eval.py`): **10 of 12 dawns found, 0.22 false fires per
+camera-hour** at these constants. Shorter memories fire *later* and find
+*fewer*, because they track the twilight instead of noticing it.
+
+> **Only armed when `daynight.irprobe_cmd` is set.** That rate is affordable
+> as silent probes — a few seconds of dimmer image each — and not as audible
+> ones: it would be roughly 2.6 extra motor movements per 12-hour night. A
+> board that cannot switch its LEDs separately keeps path C plus the
+> heartbeat.
+
+The constants are compile-time (`DN_TREND_FAST_MS`, `DN_TREND_SLOW_MS`,
+`DN_TREND_PCT` in `src/daynight.c`), not config keys: they are dimensionless
+and fleet-wide by construction, which is the same property that made the IR
+ratio worth having in the first place.
 
 ## The probe
 

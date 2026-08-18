@@ -483,8 +483,10 @@ class Report:
         self.lines = []
         self.failed = False
         self.aborted = False    # harness precondition failed: no verdict at all
+        self.checks = 0
 
     def check(self, ok, label, detail, warn_only=False):
+        self.checks += 1
         if ok:
             self.lines.append("  PASS  %-24s %s" % (label, detail))
         elif warn_only:
@@ -497,10 +499,15 @@ class Report:
         self.lines.append("  info  %-24s %s" % (label, detail))
 
     def emit(self):
-        if self.aborted:
-            # a precondition (e.g. the virtual-clock handshake) failed: there
-            # is no verdict to report, and printing a bare "RESULT: PASS" with
-            # zero checks under it would be actively misleading.
+        if self.aborted or not self.checks:
+            # a precondition failed: there is no verdict to report, and
+            # printing a bare "RESULT: PASS" with zero checks under it would
+            # be actively misleading. `aborted` covers the virtual-clock
+            # handshake, which raises SystemExit; the zero-check test covers
+            # everything else that can throw out of the run - emit() is called
+            # from a finally, so a sim binary that could not even be spawned
+            # used to report a green scenario with no assertions in it.
+            print("scenario %s: ABORTED, no assertions ran" % self.name)
             return False
         print("scenario %s" % self.name)
         for line in self.lines:
@@ -594,7 +601,7 @@ def check_monotonicity(rep, trace_path, policy):
             next(f)
             for line in f:
                 p = line.strip().split(",")
-                if len(p) == 10:
+                if len(p) >= 10:          # see load_trace(): columns append
                     rows.append(p)
     except (OSError, StopIteration):
         rep.note("monotonicity", "no trace (binary without recorder?) - skipped")
@@ -763,7 +770,11 @@ def load_trace(path):
             raise SystemExit("not a daynight trace: %s" % path)
         for line in f:
             p = line.strip().split(",")
-            if len(p) == 10:
+            # ">=", not "==": the recorder APPENDS columns as the automaton
+            # grows a diagnostic (trend_fast/trend_slow, 2026-08-18). An
+            # exact-width test silently turns every newer trace into "empty
+            # trace" - or, in check_monotonicity, into a vacuous pass.
+            if len(p) >= 10:
                 rows.append((int(p[0]), int(p[1]), float(p[2])))
     if not rows:
         raise SystemExit("empty trace: %s" % path)

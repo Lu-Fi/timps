@@ -64,6 +64,12 @@ interesting happens around 1000.
 **Night** keeps two EMAs of the index (tau 3 min and 60 min) and fires the
 **silent probe** when any one of three conditions holds:
 
+> *Read "What shipped - 2026-08-18" at the end before this table.* All three
+> triggers exist in the code, but the Jump row measures against the proven
+> `ref`, not against the slow EMA, and the Trend row is armed only where the
+> probe is actually silent. Both differences are deliberate and are argued
+> there.
+
 | | Trigger | Catches | Confirmation |
 |---|---|---|---|
 | **Jump** | raw value < 50 % of the slow EMA | light switch, shutters, gate | 3 samples (~6 s) |
@@ -177,3 +183,175 @@ State: roughly **eleven scalars**, no ring buffers.
 3. **The ratio across twilight** has not yet been measured over a full
    transition, only at single instants. The running night measurement will
    supply it.
+4. **Foreign IR in frame breaks the ratio's premise.** Added 2026-08-18 after
+   inspecting night snapshots from `cam-kinder-links`: the blown-out highlight
+   in its picture is the **IR ring of the second camera in the same room**,
+   pointing roughly into the lens. The probe measures `D(own IR off) /
+   `D(own IR on)` and thereby assumes the camera's own illuminator is the
+   dominant IR source. Here it is not, and two distinct faults follow:
+
+   - **Scene contribution.** Whatever the neighbour contributes to the actual
+     illumination does not disappear during the probe. It pushes `r` towards
+     1.0, i.e. towards a false "day" verdict in the middle of the night.
+   - **Poisoned metering.** The LED ring is clipped white in frame. The AE
+     partly regulates on that spot instead of on the room and stops down,
+     lowering `D` independently of how dark the room really is. This corrupts
+     *both* halves of the ratio and the absolute day-to-night threshold as
+     well.
+
+   Measured `r` on this camera swings between **3.0 and 32.7 within forty
+   minutes**. Steady flooding would pin `r` near 1.0; a swing of that width is
+   the signature of an exposure loop oscillating between two metering states.
+   The metering fault therefore appears to dominate the illumination fault -
+   but neither is under the daemon's control.
+
+   **Mutual excitation.** If both cameras run this design, they drive each
+   other: camera A probes, camera B's scene darkens, B's jump trigger fires, B
+   probes, A darkens. Two automata sustaining each other with nothing having
+   changed in the room. This is not hypothetical - both cameras have been
+   running the measurement crons unsynchronised since 2026-08-17.
+
+   **Consequences for the threshold work:** `cam-kinder-links` is unusable as a
+   calibration input for `ir_ratio_night` / `ir_ratio_day`. Its values must be
+   excluded from the fit, not averaged in.
+
+   **Candidate mitigations**, cheapest first:
+   - *Physical:* re-aim or rotate one of the two cameras so the other's LED
+     ring leaves the frame. Costs a minute, fixes both faults at the source,
+     and needs no code. Strongly preferred.
+   - *Per-camera opt-out* (`daynight.ir_probe=0`): fall back to the audible
+     probe and the absolute threshold on affected cameras. Honest, small, and
+     on this fleet it affects exactly one pair.
+   - *Coordination between cameras* - rejected. Requires inter-camera
+     signalling for a problem that a screwdriver solves.
+
+   A region-restricted measurement excluding the bright spot is not available:
+   the index comes from the ISP's global AE, not from a per-region computation.
+
+---
+
+## What shipped - 2026-08-18
+
+Written after implementing the trend trigger, and the place to look first when
+this note and `src/daynight.c` disagree.
+
+The **silent probe and its ratio verdict** shipped with `77b67df` on
+2026-08-17 (`irprobe_cmd`, `ir_ratio_night`/`ir_ratio_day`, the headroom test,
+"being railed is an answer"). The **trend trigger did not**, and for a day the
+automaton above was two thirds implemented while this document described all
+three of it. That is now closed, with three deliberate differences from the
+text above.
+
+### 1. The trend trigger, as specified - and re-measured
+
+`fast` (tau 3 min) and `slow` (tau 60 min) EMAs of the exposure index, fired
+when `fast/slow < 75 %`, held for `probe_confirm_s`. The constants are the ones
+this note chose. They were re-swept on the *following* night's data
+(`private/messungen/2026-08-18_daemmerung`, 12 cameras, **181 camera-hours
+actually in night mode**) before being written into the source, and they
+replicate:
+
+| tau fast/slow | bar | dawns found | false fires per camera-hour |
+|---|---|---|---|
+| 3 / 60 min | **75 %** | **10 of 12** | **0.22** |
+| 3 / 60 min | 70 % | 9 of 12 | 0.15 |
+| 3 / 15 min | 75 % | 8 of 12 | 0.19 (and 30-70 min later) |
+| 3 / 10 min | 75 % | 6 of 12 | 0.13 |
+
+The first sweep's 7-of-8 and 0.13/camera-hour were a different night and a
+different subset; the shape is the same one, and the two cameras nobody finds
+are the permanently dark garage and a camera whose AE never leaves its rail -
+both heartbeat-carried by construction. `scripts/dn-trend-eval.py` produces
+this table and now reports **both** halves of the verdict: an earlier version
+reported only false fires, which is half a verdict, since a threshold of zero
+has a perfect false-fire rate and finds nothing.
+
+Acceptance test: corpus scenario **20-dawn-trend-schuppen**, built on the
+measured dawn of `cam-schuppen` (11839 -> 5312 over two hours, a factor of
+2.23 - this note's "natural twilight is slow", in one measurement). The jump
+bar is not reached until 07:31; the trend fires at 06:45. On the recorded
+night the real camera reached neither: its mode column reads Night continuously
+from 02:52 past the end of the window. Replayed, the pre-change build spends
+**2570 s in the wrong mode** and the post-change build **0**, for one audible
+click either way.
+
+### 2. The trigger is armed only where the probe is silent
+
+Not in the text above, and it follows from the text above. The affordability
+argument for a generous threshold is *"a false fire costs a few seconds of
+dimmer image, not an audible click"*. Where `daynight.irprobe_cmd` is unset
+that sentence is false: 0.22 false fires per camera-hour becomes ~2.6 **motor
+movements** per 12-hour night, against the 2 clicks a day this design exists
+to reach. So a board without separately switchable LEDs keeps jump plus
+heartbeat - which is open point 2 arriving as code rather than as a promise,
+and which is also why the fifteen pre-decision corpus scenarios are unaffected
+by this change: none of them supplies a `night_gain_noir` curve, so none of
+them gets an illuminator.
+
+### 3. `ref` and its ratchet STAY - the slow EMA does not replace them
+
+This note said the slow EMA carries `ref`, and that the ratchet and the
+staggered window minimum could go. They did not, and should not:
+
+- `ref` moves **only on proof** - entering night, or a probe that found
+  darkness. That is precisely what makes `0f5fc80` (a reference drifting into
+  a night-long flap loop) and `b4a54f0` (the same dawn dip re-firing five
+  times) structurally impossible. A 60-minute EMA drifts by construction; it
+  is a memory, not a proof, and swapping one for the other would reopen a
+  class of incident that cost twelve diagnoses to close.
+- The two answer different questions and neither subsumes the other. `ref`
+  and the jump bar catch a **step** the memory would smooth away over its own
+  time constant; `fast/slow` catches a **ramp** that never reaches the step
+  bar - measured, the shed's dawn needs 106 minutes to get there.
+- The staggered window minimum is load-bearing for the heartbeat deferral for
+  the reasons already recorded in `DAYNIGHT_REDESIGN_2026-08-17.md` §12.2, and
+  the trend pair does not answer that question at all.
+
+Cost of keeping both: three scalars (two EMAs and a hold timestamp), 14 -> 17.
+The EMAs are re-anchored on every verdict, exactly as this note specifies for
+the slow one, so an answered question cannot immediately re-ask itself.
+
+### 4. No third, medium time constant - the observation is real, the remedy is not
+
+The measurement record for that night
+(`private/messungen/2026-08-17_18/ground-truth.md`, point 2) concludes that a
+third, medium (~10 min) constant is needed, because the 21:03 bedroom light
+fell inside the ongoing dusk (7845 -> 5087, a factor of 1.54) and registered
+against neither trigger. **The observation is correct and the remedy is
+refuted by the same data.** Replayed on that camera's own samples:
+
+- against the 60-minute memory the ratio bottoms at **1.15** - the dusk had
+  left the memory far *below* the current level, so a brightening event during
+  a darkening trend cannot show up as one. Confirmed exactly as recorded.
+- against a **10-minute** memory it bottoms at **0.87** - still short of the
+  75 % bar. The third constant does not catch the event that motivated it.
+- the ~88 % bar it *would* take sits inside the +-25 % AGC noise band this
+  note already measured. At 3/10 and 88 %: **0.44 false fires per camera-hour,
+  double**, and still only 9 of 12 dawns - fewer than 3/60 alone.
+
+A factor-1.54 event is what the heartbeat is for, and the heartbeat bounds it
+at 30 minutes. Closed, not deferred.
+
+### 5. The trend constants are not config
+
+`DN_TREND_FAST_MS` / `DN_TREND_SLOW_MS` / `DN_TREND_PCT` live in
+`src/daynight.c` beside `DN_ALPHA` and `DN_MOVED_MARGIN`, not in
+`ms_daynight_cfg`. They are dimensionless and fleet-wide by the same argument
+that made the ratio worth having: the whole point is that they do not need a
+per-camera value. `day_gain`/`night_gain` are config because they vary by a
+factor of 63 across the fleet; these do not vary at all. If they ever need to
+be tunable at runtime, that is a `daynight.trend_pct` field in `config.c`'s
+table **and** a matching key in `control_daynight_json()`, and the second half
+is the one that must not be forgotten - a POST-settable key the GET does not
+report back is worse than no key.
+
+### Still not done
+
+Nothing above touches open points 1 (the motion-detection cost of the silent
+probe) or 4 (foreign IR in frame). Point 4 in particular now has a second
+edge: path T fires on a *relative* move, and `cam-kinder-links`'s measured `r`
+swing of 3.0 to 32.7 within forty minutes is exactly the kind of exposure-loop
+oscillation that produces relative moves out of nothing. On that camera the
+mitigation is still the screwdriver, or clearing `daynight.irprobe_cmd` (the
+per-camera opt-out of open point 4, spelled `ir_probe=0` there) - which, note,
+now also disarms path T, since the two are gated on the same setting.

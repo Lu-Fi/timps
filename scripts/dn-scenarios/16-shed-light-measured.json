@@ -1,7 +1,7 @@
 {
   "name": "16-shed-light-measured",
   "incident": "operator switched a shed light on 22:17:29, off 22:21:55",
-  "description": "MEASURED, not reconstructed. Source: cam-C.csv, 2026-08-17 22:16:00-22:23:00 local.\n\nAn outbuilding, light switched on for 266 s. BOTH pipelines are measured here: the machine probed into day at 22:18:05, so the day curve is real, not guessed. The night pipeline fell 12160 -> 3226 (factor 3.8) within one 5 s sample; the day pipeline then read ~3700 with the light on - well ABOVE the 768 default day_gain, which is the point: an absolute threshold calls this night while it is plainly a lit room.\n\nPipeline provenance - night curve: measured, day curve: measured. A curve marked 'inferred' has no measurement behind it in this window and pins nothing about that pipeline; only the 'measured' side carries evidence. ASSERTION, sharpened: the 266 s of light MUST produce a switch to day and back again. Four switches is the budget - the boot verification plus this one pair. More would mean the machine is oscillating; fewer would mean it missed the event.",
+  "description": "MEASURED, not reconstructed. Source: cam-C.csv, 2026-08-17 22:16:00-22:23:00 local.\n\nAn outbuilding, light switched on for 266 s. BOTH pipelines are measured here: the machine probed into day at 22:18:05, so the day curve is real, not guessed. The night pipeline fell 12160 -> 3226 (factor 3.8) within one 5 s sample; the day pipeline then read ~3700 with the light on - well ABOVE the 768 default day_gain.\n\nPipeline provenance - night curve: measured, day curve: measured. A curve marked 'inferred' has no measurement behind it in this window and pins nothing about that pipeline; only the 'measured' side carries evidence.\n\nWHAT THIS ASSERTS, and why it changed (2026-08-18). It used to demand a switch to day and back. That was unsatisfiable by construction rather than by defect: this scenario supplies no night_gain_noir curve, so the harness leaves daynight.irprobe_cmd unset and the machine has exactly one route out of night - the audible probe, judged against the absolute day_gain. The measured day pipeline reads ~3700 against a threshold of 768, so that judgement can only ever come back 'night'. Demanding day here asserted a capability the scenario deliberately withholds, and it failed on every build, before and after the trend work.\n\nSo this is now the NEGATIVE control of the pair 16/19, on the same measured event: without a third optical state, staying night is the only verdict the evidence supports, and the machine must reach it QUIETLY - the boot verification and nothing else. Scenario 19 hands the same event a night_gain_noir curve and gets the opposite, correct answer out of the same code. That difference is the whole value of the ratio, and it is only legible because 16 keeps the third curve away.",
   "scale": 30,
   "duration_s": 420,
   "initial_mode": "night",
@@ -14,9 +14,12 @@
   "night_gain": [[0, 12160], [4, 12160], [9, 12160], [14, 12160], [19, 12160], [24, 12160], [29, 12160], [34, 12160], [39, 12160], [44, 12160], [49, 12160], [54, 12160], [59, 12160], [64, 12160], [69, 12160], [74, 12160], [79, 12160], [84, 12160], [89, 6427], [94, 3226], [99, 3226], [104, 3226], [109, 3587], [114, 3263], [119, 3263], [317, 9110], [322, 4056], [327, 3672], [333, 3672], [338, 2808], [343, 3229], [348, 9057], [353, 9301], [358, 8257], [363, 12038], [368, 12038], [373, 12038], [378, 12038], [383, 12038], [388, 12038], [393, 12038], [398, 12038], [403, 12038], [408, 12038], [413, 12038], [418, 12038]],
   "day_gain": [[0, 3575], [125, 3575], [131, 3344], [136, 3344], [141, 3704], [146, 3704], [151, 3704], [156, 3704], [161, 3704], [166, 3704], [171, 3704], [176, 3704], [181, 3704], [186, 3704], [191, 3704], [196, 3244], [201, 3523], [206, 3643], [211, 3643], [216, 3360], [221, 3686], [226, 3686], [231, 3686], [236, 3686], [241, 3686], [246, 3686], [251, 3686], [256, 3686], [261, 3686], [266, 3686], [271, 3686], [276, 3686], [281, 3686], [286, 3686], [291, 3686], [296, 3686], [301, 3686], [306, 3686], [311, 18256]],
   "expect": {
-    "expected_mode": [[0, "night"], [95, "any"], [125, "day"], [355, "any"], [385, "night"]],
-    "max_wrong_mode_s": 90,
-    "max_switches": 4,
-    "monotonicity": "warn"
+    "expected_mode": [[0, "any"], [30, "night"]],
+    "max_wrong_mode_s": 30,
+    "max_switches": 2,
+    "monotonicity": "warn",
+    "forbid_log": [
+      "probe confirmed day"
+    ]
   }
 }
