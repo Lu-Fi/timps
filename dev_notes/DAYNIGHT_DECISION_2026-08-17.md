@@ -184,7 +184,7 @@ State: roughly **eleven scalars**, no ring buffers.
    transition, only at single instants. The running night measurement will
    supply it.
 4. **Foreign IR in frame breaks the ratio's premise.** Added 2026-08-18 after
-   inspecting night snapshots from `cam-kinder-links`: the blown-out highlight
+   inspecting night snapshots from `cam-H`: the blown-out highlight
    in its picture is the **IR ring of the second camera in the same room**,
    pointing roughly into the lens. The probe measures `D(own IR off) /
    `D(own IR on)` and thereby assumes the camera's own illuminator is the
@@ -211,7 +211,7 @@ State: roughly **eleven scalars**, no ring buffers.
    changed in the room. This is not hypothetical - both cameras have been
    running the measurement crons unsynchronised since 2026-08-17.
 
-   **Consequences for the threshold work:** `cam-kinder-links` is unusable as a
+   **Consequences for the threshold work:** `cam-H` is unusable as a
    calibration input for `ir_ratio_night` / `ir_ratio_day`. Its values must be
    excluded from the fit, not averaged in.
 
@@ -267,7 +267,7 @@ reported only false fires, which is half a verdict, since a threshold of zero
 has a perfect false-fire rate and finds nothing.
 
 Acceptance test: corpus scenario **20-dawn-trend-schuppen**, built on the
-measured dawn of `cam-schuppen` (11839 -> 5312 over two hours, a factor of
+measured dawn of `cam-C` (11839 -> 5312 over two hours, a factor of
 2.23 - this note's "natural twilight is slow", in one measurement). The jump
 bar is not reached until 07:31; the trend fires at 06:45. On the recorded
 night the real camera reached neither: its mode column reads Night continuously
@@ -349,7 +349,7 @@ report back is worse than no key.
 
 Nothing above touches open points 1 (the motion-detection cost of the silent
 probe) or 4 (foreign IR in frame). Point 4 in particular now has a second
-edge: path T fires on a *relative* move, and `cam-kinder-links`'s measured `r`
+edge: path T fires on a *relative* move, and `cam-H`'s measured `r`
 swing of 3.0 to 32.7 within forty minutes is exactly the kind of exposure-loop
 oscillation that produces relative moves out of nothing. On that camera the
 mitigation is still the screwdriver, or clearing `daynight.irprobe_cmd` (the
