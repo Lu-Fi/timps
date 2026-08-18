@@ -2571,6 +2571,7 @@ static void *jpeg_thread(void *arg)
     int dbg_jrecover_fails=0;          /* consecutive forced-recovery cycles
                                          * that never yielded a real frame -
                                          * see MS_JPEG_WATCHDOG_MAX_RECOVERIES */
+    int dbg_jempty=0;                  /* rate-limits the empty-stream drop */
     int64_t next=0, idle_since=0;
     int64_t period = 1000000/(jc->fps>0?jc->fps:5);
     while (jc->run) {
@@ -2700,6 +2701,23 @@ static void *jpeg_thread(void *arg)
             IMP_Encoder_ReleaseStream(jc->chn,&st);
             continue;
         }
+        /* An assembly that came out empty (packCount 0, or every pack
+         * zero-length) is not a JPEG and must not reach either consumer. The
+         * snapshot writer below checks for a SHORT write - fwrite(...,0,f) != 0
+         * is false, so a zero-length buffer sailed through it and rename()
+         * replaced the last good snapshot with a 0-byte file: exactly the
+         * outcome that check exists to prevent, arrived at from the one
+         * direction it does not cover. Drop the frame instead, and keep the
+         * previous snapshot. */
+        if (jlen == 0){
+            if ((dbg_jempty++ % 20)==0)
+                LOGW(MOD,"jpeg chn%d: empty stream (packCount=%u) - dropping frame (%d)",
+                     jc->chn, st.packCount, dbg_jempty);
+            pkt_unref(pk);
+            IMP_Encoder_ReleaseStream(jc->chn,&st);
+            continue;
+        }
+        dbg_jempty=0;
         pk->len = jlen;
         /* Snapshot-to-file is subscriber-independent and must read the buffer
          * BEFORE the hand-off: after hub_publish_take() the packet may already
