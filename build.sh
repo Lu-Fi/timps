@@ -225,6 +225,15 @@ deps() {
 	fi
 	echo "use $lib_src"
 	cp -Pf "$lib_src"/* "$TOP/3rdparty/install/lib/"
+	# Record what these libs ARE. 3rdparty/install/lib is shared state that a
+	# later `deps` for a different SoC silently overwrites, while `timps` links
+	# against it unconditionally - so without this stamp, `./build.sh timps T23`
+	# after a `deps T31` links T23 code against T31 libimp. That failed loudly
+	# here once (undefined reference to IMP_Encoder_SetJpegeQl, a classic-API
+	# symbol T31 does not export) but only by luck: between closely related
+	# SoCs the link succeeds and the mismatch first shows up as wrong behaviour
+	# on the camera, with nothing in the build output pointing back at it.
+	printf '%s %s %s\n' "$soc" "$LIBC_TYPE" "$lib_src" > "$TOP/3rdparty/install/.soc"
 	cd "$TOP"
 
 	# The vendor libs are uclibc-built; on musl the shim supplies the missing
@@ -291,6 +300,23 @@ timps() {
 	ensure_toolchain
 	apply_libc_env
 	echo "Build timps for $soc (libc: $LIBC_TYPE)"
+
+	# Refuse to link against another SoC's vendor libs (stamp written by deps).
+	local stamp="$TOP/3rdparty/install/.soc"
+	if [[ -f "$stamp" ]]; then
+		local have_soc have_libc
+		read -r have_soc have_libc _ < "$stamp"
+		if [[ "$have_soc" != "$soc" || "$have_libc" != "$LIBC_TYPE" ]]; then
+			echo "!! 3rdparty/install/lib holds $have_soc/$have_libc libs, but you asked for $soc/$LIBC_TYPE."
+			echo "!! Linking these would produce a binary for the wrong SoC. Run:"
+			echo "!!   ./build.sh deps $soc${LIBC_TYPE:+ --libc-$LIBC_TYPE}"
+			exit 1
+		fi
+	elif [[ -e "$TOP/3rdparty/install/lib/libimp.a" ]]; then
+		echo "!! 3rdparty/install/lib has vendor libs but no .soc stamp - cannot tell"
+		echo "!! which SoC they are for. Re-run: ./build.sh deps $soc"
+		exit 1
+	fi
 
 	cd "$TOP"
 	make clean
