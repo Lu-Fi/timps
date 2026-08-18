@@ -55,8 +55,8 @@
 # a final table summarises PASS / WARN / FAIL and the process exit code
 # reflects the worst result.
 #
-# Usage:   ./timps-qa.sh --cam 192.168.241.190 [--profile standard] [options]
-#          CAM=192.168.241.190 ./timps-qa.sh
+# Usage:   ./timps-qa.sh --cam 192.168.1.100 [--profile standard] [options]
+#          CAM=192.168.1.100 ./timps-qa.sh
 # Help:    ./timps-qa.sh --help
 # =============================================================================
 set -u
@@ -82,7 +82,7 @@ PATH_MAIN="${PATH_MAIN:-ch0}"
 PATH_SUB="${PATH_SUB:-ch1}"
 RTSP_TRANSPORT="${RTSP_TRANSPORT:-tcp}"
 
-# Optional on-device access, e.g. SSH_TARGET="root@192.168.241.190"
+# Optional on-device access, e.g. SSH_TARGET="root@192.168.1.100"
 SSH_TARGET="${SSH_TARGET:-}"
 SSH_OPTS="${SSH_OPTS:--o ConnectTimeout=6 -o StrictHostKeyChecking=no -o BatchMode=yes}"
 # osd.vars_file path on the camera (only needs overriding if a camera's
@@ -171,6 +171,9 @@ Options (also settable as env vars):
   --only LIST         run only these sections (names or numbers, comma-sep),
                       e.g. --only onvif  or  --only 3,10 ; preflight always runs
   --out DIR           output directory
+  (env) HTTP_TOKEN    a valid /control token for section 2b's token-acceptance
+                      test; without it (and without --ssh to read TOKEN_FILE,
+                      default /run/timps.token) only token REJECTION is tested
   --test-backchannel  run the acoustic-loopback backchannel test (section 2d):
                       play a tone into the speaker, confirm the mic hears it.
                       Default OFF, never part of a profile (environmental).
@@ -408,8 +411,8 @@ dev_proc_sample() {
 # than reporting a scary number on every healthy camera.
 #
 # TWO defences against false positives, both added 2026-08-11 after the first
-# hardware run of this check produced a FAIL on Schuppen and the same-class
-# WARN on Garage and Galayou - i.e. it fired on every camera, every boot, with
+# hardware run of this check produced a FAIL on a dim outbuilding and the same-class
+# WARN on cam-A and cam-L - i.e. it fired on every camera, every boot, with
 # nothing actually wrong:
 #
 # 1. SCAN ONLY WHAT CAME AFTER THE SENSOR STARTED STREAMING. On these boards the
@@ -502,6 +505,27 @@ RU="$RTSP_USER"; RP="$RTSP_PASS"
 rtsp_url() { printf 'rtsp://%s:%s@%s:%s/%s' "$RU" "$RP" "$CAM" "$RTSP_PORT" "$1"; }
 http_base() { printf 'http://%s:%s' "$CAM" "$HTTP_PORT"; }
 curlq() { curl -s --max-time "${1:-10}" -u "$HTTP_USER:$HTTP_PASS" "${@:2}"; }
+
+# ffmpeg's HTTP inputs need the Basic header spelled out (-headers). Defined
+# HERE, with the other always-available helpers, not inside section 4: it only
+# depends on HTTP_USER/PASS, and sections 4 AND 5 both use it - defining it in
+# 4 meant `--only 5` died under set -u on the unbound variable before ever
+# reaching a verdict (reproduced 2026-08-18; the run ended with no SUMMARY and
+# without the 8b interruption traps armed). tr -d '\n' because base64 wraps at
+# 76 chars - short creds never hit that, but a long pass would silently break
+# the header.
+AUTH_HDR="Authorization: Basic $(printf '%s:%s' "$HTTP_USER" "$HTTP_PASS" | base64 | tr -d '\n')"
+
+# is_loopback <host> - same 127.0.0.0/8 test test_auth.sh documents: httpd.c
+# trusts every loopback peer ON PURPOSE (the on-device WebUI bridge CGIs must
+# always get through), so HTTP auth NEGATIVES against a loopback target (the
+# host sim) test the deliberate bypass, not the auth code - and used to
+# produce a wall of false "served WITHOUT auth" FAILs in 2b. RTSP has no such
+# bypass and is always tested.
+is_loopback() {
+	case "$1" in 127.*|::1|localhost|localhost.localdomain) return 0;; esac
+	return 1
+}
 
 sshx() { [ -n "$SSH_TARGET" ] || return 2; ssh $SSH_OPTS "$SSH_TARGET" "$@"; }
 
@@ -628,7 +652,7 @@ onvif_call() {
 # PTS are wall-locked, so when a transport dropout hole overlaps the warmup
 # boundary the two per-track references can land on opposite sides of the hole
 # and fake a seconds-large "skew" between packets that were never
-# contemporaneous (Galayou 2026-08-11: a lone keyframe at 2.060s inside a
+# contemporaneous (cam-L 2026-08-11: a lone keyframe at 2.060s inside a
 # startup dropout vs audio resuming at 3.558s read as start=1.498s, end=0.014s
 # -> a false "out of sync" FAIL on a stream whose tracks were locked wherever
 # both actually flowed). Pairing the start reference by proximity measures the
@@ -679,6 +703,19 @@ analyze_stream() {
 	local t0 t1 wall
 	info "$label: recording ${dur}s ..."
 	t0=$(date +%s.%N)
+	# Parallel ICMP probe for the whole capture window: rt<0.5 (below) cannot
+	# by itself tell a server stall from a degraded WLAN path, and 2026-08-18
+	# that ambiguity sent a real debugging session after the daemon when the
+	# network was at fault. Ping loss measured DURING the capture is the cheap
+	# independent witness: heavy ICMP loss = the path itself was dropping, so
+	# the transport verdict must not blame the code. Best-effort - a missing
+	# ping binary or an ICMP-filtering path just leaves ping_loss empty and
+	# the verdict falls back to its old (strict) form.
+	local pingf="$OUTDIR/ping_${label}.txt" pingpid="" ping_loss=""
+	if have ping; then
+		ping -i 0.5 -w "$((dur+2))" "$CAM" > "$pingf" 2>/dev/null &
+		pingpid=$!
+	fi
 	# -nostdin + timeout -k: ffmpeg over RTSP-TCP may ignore a lone SIGTERM, so
 	# force a SIGKILL if -t doesn't self-stop. No -copyts (it breaks -t and isn't
 	# needed: fps/rate/gaps/monotonicity/drift are all measured from the recorded
@@ -686,6 +723,10 @@ analyze_stream() {
 	timeout -k 5 "$((dur+6))" ffmpeg -hide_banner -nostdin -y -loglevel warning "${inopts[@]}" \
 		-i "$url" -t "$dur" -c copy "$seg" </dev/null 2>"$err" || true
 	t1=$(date +%s.%N)
+	if [ -n "$pingpid" ]; then
+		wait "$pingpid" 2>/dev/null || true
+		ping_loss=$(grep -oE '[0-9.]+% packet loss' "$pingf" 2>/dev/null | grep -oE '^[0-9.]+' | head -1)
+	fi
 	wall=$(awk -v a="$t0" -v b="$t1" 'BEGIN{printf "%.3f", b-a}')
 
 	if [ ! -s "$seg" ]; then
@@ -753,7 +794,20 @@ SKEW $skewline"
 			# SETUP overhead (benign, largest on short captures); rt>1 means media
 			# arrives FASTER than real time = a wrong-clock / fast-forward bug.
 			if fcmp "$rt" gt 1.20; then bad "$label video real-time rate ${rt}x >1.2 (fast-forward / wrong clock)"
-			elif fcmp "$rt" lt 0.50; then bad "$label video real-time rate ${rt}x <0.5 (severe stall / packet loss)"
+			elif fcmp "$rt" lt 0.50; then
+				# rt alone cannot separate "the server stalled" from "the
+				# network path was dropping" - and per this script's own
+				# WARN/FAIL line (environment=WARN, code=FAIL) a bad link
+				# must not be reported as a defect. The parallel ping probe
+				# above is the tie-breaker: significant ICMP loss during the
+				# SAME window means the path itself was degraded (2% is an
+				# order of magnitude above the ~0.1-0.2% residual WiFi loss
+				# measured on a weak-but-working AP, see the UDP note below).
+				if [ -n "$ping_loss" ] && fcmp "$ping_loss" ge 2; then
+					warn "$label video real-time rate ${rt}x <0.5, but ${ping_loss}% ICMP loss was measured DURING the capture - the network path was degraded; this is an environment finding, not proven server stall (re-run on a clean link for a code verdict)"
+				else
+					bad "$label video real-time rate ${rt}x <0.5 (severe stall; ICMP loss during the capture: ${ping_loss:-unmeasured}% - the path looked clean, so suspect the server, not the network)"
+				fi
 			elif fcmp "$rt" ge 0.80; then ok "$label video real-time rate ${rt}x (healthy; <1 = capture setup overhead)"
 			else warn "$label video real-time rate ${rt}x (marginal - setup overhead or mild stall)"; fi
 			fcmp "$maxgap" le 1.0 && ok "$label video max frame gap ${maxgap}s" \
@@ -813,7 +867,7 @@ SKEW $skewline"
 	# design, so some residual WiFi loss is inherent transport behaviour the
 	# daemon cannot act on - the TCP-interleaved capture minutes earlier in
 	# the same run masks the identical underlying loss via TCP retransmit
-	# (garage 2026-08-11: UDP 8 losses / TCP 0 warnings, same link). The
+	# (cam-A 2026-08-11: UDP 8 losses / TCP 0 warnings, same link). The
 	# grounding for the 0.5% line: post-L2-retry residual loss on a weak-but-
 	# working WiFi AP measures ~0.1-0.2% (that run: 8 of ~5800 datagrams =
 	# 0.14%, every event a SINGLE packet, evenly scattered = RF loss, while a
@@ -837,8 +891,29 @@ SKEW $skewline"
 			est_pkts=$(( $(stat -c %s "$seg" 2>/dev/null || echo 0) / 1200 ))
 			loss_pct=$(awk -v m="$rtp_missed" -v n="$est_pkts" \
 				'BEGIN{printf "%.2f", ((m+n)>0 ? 100.0*m/(m+n) : 0)}')
+			# Concealment/corruption lines that are the DIRECT DECODER
+			# CONSEQUENCE of that same loss (a missing RTP packet means a
+			# damaged slice, which ffmpeg then reports as concealing/corrupt/
+			# error-while-decoding). The old code subtracted only the "RTP:
+			# missed" lines and left their consequences in ffe, so one
+			# tolerated WiFi loss event was simultaneously WARNed (as loss)
+			# and FAILed (as "decode trouble") - the same datagram counted
+			# twice, on both sides of the environment/code line. Attribute
+			# the consequence lines to the loss verdict AS LONG AS the loss
+			# itself is within the tolerated 0.5%; concealment with NO
+			# corresponding RTP loss stays in ffe - that really is the
+			# decoder in trouble on intact input. Monotonicity/discontinuity
+			# lines are never subtracted on any transport.
+			local conceal=0
+			conceal=$(grep -icE 'concealing|corrupt|error while|decode_slice' "$err" 2>/dev/null)
+			conceal=${conceal:-0}
 			if fcmp "$loss_pct" le 0.50; then
-				warn "$label: $rtp_missed RTP packet(s) lost over UDP (~${loss_pct}% of ~$est_pkts - ordinary residual WiFi loss; UDP has no retransmission, the TCP capture masks the same loss)"
+				local cnote=""
+				if [ "$conceal" -gt 0 ]; then
+					ffe=$((ffe - conceal)); [ "$ffe" -lt 0 ] && ffe=0
+					cnote="; $conceal concealment/corruption line(s) are that loss's decoder fallout and are counted here, not as decode failures"
+				fi
+				warn "$label: $rtp_missed RTP packet(s) lost over UDP (~${loss_pct}% of ~$est_pkts - ordinary residual WiFi loss; UDP has no retransmission, the TCP capture masks the same loss${cnote})"
 			else
 				bad "$label: $rtp_missed RTP packet(s) lost over UDP (~${loss_pct}% of ~$est_pkts - above the 0.5% healthy-link line, the network path is genuinely degraded)"
 			fi
@@ -972,28 +1047,157 @@ if want 2b auth; then
 # --- 2b. Auth enforcement (no/wrong credentials must be blocked) -------------
 hdr "2b. Auth enforcement (unauthenticated must be blocked)"
 # HTTP surfaces: a request with NO Authorization header must get 401/403.
+# Only a 2xx is a LEAK: a 404/5xx means the request was refused/failed for a
+# non-auth reason and no data was served, so it proves nothing either way -
+# the old catch-all "bad" here FAILed the sim's /snapshot.jpg 503 ("no frame")
+# as "served WITHOUT auth", i.e. claimed a leak the measurement cannot show.
+# Same 2xx-only rule test_auth.sh has always applied.
 check_noauth() { # <url> <label>
 	local code
 	code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$1")
 	case "$code" in
 		401|403) ok "$2 blocks no-auth (HTTP $code)";;
 		000)     warn "$2 unreachable (HTTP 000) - cannot judge";;
-		*)       bad "$2 served WITHOUT auth (HTTP $code) - NOT protected";;
+		2*)      bad "$2 served WITHOUT auth (HTTP $code) - NOT protected";;
+		*)       skip "$2 no-auth -> HTTP $code (not a 2xx leak, but no explicit 401/403 either - nothing proven)";;
 	esac
 }
-check_noauth "$(http_base)/control"            "/control"
-check_noauth "$(http_base)/events"             "/events"
-check_noauth "$(http_base)/snapshot.jpg?chn=0" "/snapshot.jpg"
-check_noauth "$(http_base)/stream.mp4?chn=0"   "/stream.mp4"
-check_noauth "$(http_base)/stream.mjpeg?chn=0" "/stream.mjpeg"
+if is_loopback "$CAM"; then
+	# httpd trusts 127.0.0.0/8 by design (see the is_loopback helper) - every
+	# HTTP negative below would "fail" against the intended bypass, not the
+	# auth code. The positives further down still run (they prove reachability
+	# and that correct credentials are not rejected).
+	skip "HTTP auth negatives skipped: $CAM is loopback and httpd trusts 127.0.0.0/8 on purpose - run against the camera's LAN address (or the sim via the host's LAN IP) to exercise HTTP auth"
+else
+	check_noauth "$(http_base)/control"            "/control"
+	check_noauth "$(http_base)/events"             "/events"
+	check_noauth "$(http_base)/snapshot.jpg?chn=0" "/snapshot.jpg"
+	check_noauth "$(http_base)/stream.mp4?chn=0"   "/stream.mp4"
+	check_noauth "$(http_base)/stream.mjpeg?chn=0" "/stream.mjpeg"
 
-# wrong password must also be rejected (proves it is not "any credential passes")
-wcode=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 -u "$HTTP_USER:wrong_$$" "$(http_base)/control")
-case "$wcode" in
-	401|403) ok "/control rejects WRONG password (HTTP $wcode)";;
-	000)     warn "/control unreachable for wrong-pass test (HTTP 000)";;
-	*)       bad "/control accepted WRONG password (HTTP $wcode)";;
-esac
+	# wrong password must also be rejected (proves it is not "any credential passes")
+	wcode=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 -u "$HTTP_USER:wrong_$$" "$(http_base)/control")
+	case "$wcode" in
+		401|403) ok "/control rejects WRONG password (HTTP $wcode)";;
+		000)     warn "/control unreachable for wrong-pass test (HTTP 000)";;
+		2*)      bad "/control accepted WRONG password (HTTP $wcode)";;
+		*)       skip "/control wrong-pass -> HTTP $wcode (no 2xx leak, no explicit reject)";;
+	esac
+
+	# --- Digest (httpd.c offers "WWW-Authenticate: Digest ... qop=auth" FIRST
+	# in every 401; auth.c carries a complete digest implementation with nonce
+	# tracking and realm binding). curl -u sends Basic, so nothing in this
+	# script - or in test_auth.sh - had ever exercised that code: a broken
+	# digest path would only have surfaced when a real NVR tried it. ---------
+	dcode=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 --digest -u "$HTTP_USER:wrong_$$" "$(http_base)/control")
+	case "$dcode" in
+		401|403) ok "/control rejects WRONG password via Digest (HTTP $dcode)";;
+		000)     warn "/control unreachable for the digest wrong-pass test";;
+		2*)      bad "/control accepted a WRONG password via Digest (HTTP $dcode) - digest verification broken";;
+		*)       skip "/control digest wrong-pass -> HTTP $dcode";;
+	esac
+	dcode=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 --digest -u "$HTTP_USER:$HTTP_PASS" "$(http_base)/control")
+	case "$dcode" in
+		2*)      ok "/control accepts correct credentials via Digest (HTTP $dcode) - the advertised digest path actually works";;
+		401|403) bad "/control REJECTS correct credentials via Digest (HTTP $dcode) - the 401 advertises a digest scheme that then doesn't verify";;
+		000)     warn "/control unreachable for the digest positive test";;
+		*)       skip "/control digest positive -> HTTP $dcode";;
+	esac
+
+	# --- Digest realm binding (regression test for the auth.c hardening: a
+	# client echoing a realm the server never issued must be rejected BEFORE
+	# any hash comparison, because the realm is an HA1 input - a forged realm
+	# would otherwise let a cross-service digest replay through). curl always
+	# echoes the server's realm, so this needs a hand-rolled Authorization
+	# header: compute a CORRECT RFC-2069 response over a WRONG realm (exactly
+	# what a confused/malicious client would send) and require a 401. The
+	# correct-realm twin request proves the hand-rolled digest itself is
+	# valid, so the wrong-realm 401 is attributable to the BINDING and not to
+	# a mistake in this test's own arithmetic. Fresh nonce per attempt: the
+	# server tracks nonces, and reusing one across attempts would make the
+	# second verdict about nonce state instead of the realm. -----------------
+	if have md5sum; then
+		dg_md5() { printf '%s' "$1" | md5sum | cut -d' ' -f1; }
+		dg_try() {  # <realm> -> http code for a self-computed digest GET /control
+			local realm="$1" nonce ha1 ha2 resp
+			nonce=$(curl -s -D - -o /dev/null --max-time 8 "$(http_base)/control" 2>/dev/null \
+				| grep -oiE 'nonce="[0-9a-f]+"' | head -1 | cut -d'"' -f2)
+			[ -n "$nonce" ] || { echo "nononce"; return; }
+			ha1=$(dg_md5 "$HTTP_USER:$realm:$HTTP_PASS")
+			ha2=$(dg_md5 "GET:/control")
+			resp=$(dg_md5 "$ha1:$nonce:$ha2")
+			curl -s -o /dev/null -w '%{http_code}' --max-time 8 \
+				-H "Authorization: Digest username=\"$HTTP_USER\", realm=\"$realm\", nonce=\"$nonce\", uri=\"/control\", response=\"$resp\"" \
+				"$(http_base)/control"
+		}
+		dg_good=$(dg_try "timps")     # AUTH_REALM, src/auth.h
+		if [ "$dg_good" = "nononce" ]; then
+			skip "digest realm-binding test: no Digest challenge in the 401 (older build?) - cannot craft a request"
+		elif [ "${dg_good#2}" = "$dg_good" ]; then   # not 2xx
+			warn "digest realm-binding test not sharp: even the CORRECT-realm hand-rolled digest got HTTP $dg_good (legacy RFC-2069 form no longer accepted?) - the wrong-realm verdict below would be meaningless, skipping it"
+		else
+			dg_bad=$(dg_try "qa_wrong_realm")
+			case "$dg_bad" in
+				401|403) ok "digest realm binding holds: a correctly-computed response over a FORGED realm is rejected (HTTP $dg_bad; correct realm passed with $dg_good)";;
+				2*)      bad "digest realm binding BROKEN: a response computed over a realm this server never issued was accepted (HTTP $dg_bad) - cross-service digest replay is possible";;
+				*)       skip "digest realm-binding: wrong-realm request -> HTTP $dg_bad";;
+			esac
+		fi
+	else
+		skip "digest realm-binding test needs md5sum - not found"
+	fi
+
+	# --- token surface (?token= / X-Timps-Token, httpd.c http_check_token):
+	# never exercised by anything before - neither rejection of a bad token
+	# nor acceptance of the real one. A wrong token must fall through to the
+	# normal 401; the real one (the per-boot secret in http.token_file,
+	# default /run/timps.token, readable only on-device -> needs --ssh, or
+	# hand it in via HTTP_TOKEN=) must unlock /control in BOTH transport
+	# forms, because header and query are parsed by different code paths. ----
+	tcode=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$(http_base)/control?token=qa_wrong_$$")
+	case "$tcode" in
+		401|403) ok "/control rejects a WRONG ?token= (HTTP $tcode)";;
+		000)     warn "/control unreachable for the wrong-token test";;
+		2*)      bad "/control accepted a WRONG ?token= (HTTP $tcode) - token comparison broken";;
+		*)       skip "/control wrong-token -> HTTP $tcode";;
+	esac
+	QA_TOKEN="${HTTP_TOKEN:-}"
+	if [ -z "$QA_TOKEN" ] && [ -n "$SSH_TARGET" ]; then
+		QA_TOKEN=$(sshx "cat ${TOKEN_FILE:-/run/timps.token} 2>/dev/null" | head -1 | tr -d ' \r\n')
+	fi
+	if [ -n "$QA_TOKEN" ]; then
+		for tf in "query:$(http_base)/control?token=$QA_TOKEN" "header:$(http_base)/control"; do
+			tlbl="${tf%%:*}"; turl="${tf#*:}"
+			if [ "$tlbl" = header ]; then
+				tcode=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 -H "X-Timps-Token: $QA_TOKEN" "$turl")
+			else
+				tcode=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 "$turl")
+			fi
+			case "$tcode" in
+				2*)      ok "/control accepts the real token via $tlbl (HTTP $tcode)";;
+				401|403) bad "/control REJECTS the real token via $tlbl (HTTP $tcode) - token auth broken (or the token file is stale)";;
+				*)       warn "/control real-token via $tlbl -> HTTP $tcode";;
+			esac
+		done
+	else
+		info "  token acceptance not tested: no --ssh to read ${TOKEN_FILE:-/run/timps.token} and no HTTP_TOKEN= given (rejection of a wrong token was still verified above)"
+	fi
+fi
+
+# --- OPTIONS / CORS preflight (httpd.c answers 204 BEFORE auth by design - a
+# preflight carries no credentials; a regression here silently breaks every
+# cross-origin WebUI page while all the authenticated tests keep passing).
+# Auth-free, so this runs against loopback too. --------------------------------
+pf="$OUTDIR/preflight.txt"
+pcode=$(curl -s -D "$pf" -o /dev/null -w '%{http_code}' --max-time 8 -X OPTIONS \
+	-H "Origin: http://qa.invalid" "$(http_base)/control")
+if [ "$pcode" = "204" ] && grep -qi '^Access-Control-Allow-Origin: http://qa.invalid' "$pf"; then
+	ok "OPTIONS /control preflight: 204 with the Origin reflected (CORS preflight path alive)"
+elif [ "$pcode" = "000" ]; then
+	warn "OPTIONS /control preflight unreachable (HTTP 000)"
+else
+	warn "OPTIONS /control preflight: HTTP $pcode, Origin reflected: $(grep -ci '^Access-Control-Allow-Origin:' "$pf" 2>/dev/null || echo 0) (want 204 + echo; see $pf)"
+fi
 
 # RTSP: DESCRIBE without credentials must not open the stream
 rerr="$OUTDIR/auth_rtsp.err"
@@ -1147,7 +1351,13 @@ else
 			elif fcmp "$delta" ge 5; then
 				warn "acoustic loopback: tone weakly present (delta ${delta}dB) - raise volume / quieter room to confirm"
 			else
-				bad "acoustic loopback: tone NOT detected (delta ${delta}dB < 5) - speaker silent, muted, or too quiet (env-dependent)"
+				# WARN, not FAIL: this section's own header says "a FAIL here
+				# can be environmental ... rather than a code defect", and the
+				# script's verdict rule is environment=WARN, code=FAIL. A
+				# muted amp or a quiet room must not set exit code 2 on an
+				# otherwise clean run - the measurement cannot separate
+				# "speaker code broken" from "room ate the tone".
+				warn "acoustic loopback: tone NOT detected (delta ${delta}dB < 5) - speaker silent, muted, or too quiet. Env-dependent by design (see this section's header), so this is a WARN: verify by ear / raise volume; only a repeat failure in a controlled setup points at the code"
 			fi
 		fi
 	fi
@@ -1186,8 +1396,8 @@ if want 4 fmp4; then
 # --- 4. HTTP fMP4 -----------------------------------------------------------
 hdr "4. HTTP fMP4 (/stream.mp4)"
 murl="$(http_base)/stream.mp4?chn=0"
-# fetch with auth into ffmpeg via -headers
-AUTH_HDR="Authorization: Basic $(printf '%s:%s' "$HTTP_USER" "$HTTP_PASS" | base64)"
+# AUTH_HDR (the Basic header for ffmpeg's -headers) lives with the global
+# helpers now - section 5 uses it too, and defining it here broke --only 5
 analyze_stream "$murl" "fmp4_main" "$INTEG_DUR" -headers "$AUTH_HDR"$'\r\n'
 
 fi
@@ -1248,19 +1458,39 @@ if want 5 mjpeg; then
 hdr "5. MJPEG (/stream.mjpeg)"
 mjurl="$(http_base)/stream.mjpeg?chn=0"
 mjlog="$OUTDIR/mjpeg.log"
-timeout -k 5 "$((INTEG_DUR+5))" ffmpeg -hide_banner -nostdin -stats -y -loglevel warning -headers "$AUTH_HDR"$'\r\n' \
-	-i "$mjurl" -t "$INTEG_DUR" -f null - </dev/null 2>"$mjlog" || true
-frames=$(grep -oE 'frame= *[0-9]+' "$mjlog" | tail -1 | grep -oE '[0-9]+')
-if [ -n "${frames:-}" ] && [ "$frames" -gt 0 ]; then
-	fps=$(awk -v f="$frames" -v d="$INTEG_DUR" 'BEGIN{printf "%.1f", f/d}')
-	ok "MJPEG delivered $frames frames (~${fps} fps)"
-else bad "MJPEG produced no frames (see $mjlog)"; fi
+# nojpeg configs exist ON PURPOSE (scripts/camera-portrait-nojpeg.conf): a
+# build with the JPEG pipeline disabled answers 404 "no jpeg"
+# (httpd.c jpeg_src_from_path -> src<0). That is the camera working exactly
+# as configured - "configuration unsuitable for this test", not "defect" -
+# so it must skip, not FAIL. 503 ("busy"/"no frame") means the pipeline IS
+# there but has no frame yet, which the real capture below judges properly.
+mjpre=$(curl -s -o /dev/null -w '%{http_code}' --max-time 6 -u "$HTTP_USER:$HTTP_PASS" "$(http_base)/snapshot.jpg?chn=0")
+if [ "$mjpre" = "404" ]; then
+	skip "MJPEG: no JPEG source on this config (snapshot probe -> 404 'no jpeg') - a deliberate nojpeg build/config, working as configured"
+else
+	timeout -k 5 "$((INTEG_DUR+5))" ffmpeg -hide_banner -nostdin -stats -y -loglevel warning -headers "$AUTH_HDR"$'\r\n' \
+		-i "$mjurl" -t "$INTEG_DUR" -f null - </dev/null 2>"$mjlog" || true
+	frames=$(grep -oE 'frame= *[0-9]+' "$mjlog" | tail -1 | grep -oE '[0-9]+')
+	if [ -n "${frames:-}" ] && [ "$frames" -gt 0 ]; then
+		fps=$(awk -v f="$frames" -v d="$INTEG_DUR" 'BEGIN{printf "%.1f", f/d}')
+		ok "MJPEG delivered $frames frames (~${fps} fps)"
+	else bad "MJPEG produced no frames (see $mjlog)"; fi
+fi
 
 fi
 if want 6 snapshot; then
 # --- 6. Snapshot ------------------------------------------------------------
 hdr "6. Snapshot (/snapshot.jpg) x$SNAP_COUNT"
 for chn in 0 1; do
+	# nojpeg detection, same reasoning as section 5: 404 "no jpeg" = this
+	# channel has no JPEG source BY CONFIGURATION (camera-portrait-nojpeg.conf
+	# class) - skip instead of burning $SNAP_COUNT requests into a FAIL that
+	# blames a working build for its own config.
+	pre=$(curl -s -o /dev/null -w '%{http_code}' --max-time 6 -u "$HTTP_USER:$HTTP_PASS" "$(http_base)/snapshot.jpg?chn=$chn")
+	if [ "$pre" = "404" ]; then
+		skip "chn$chn snapshots: no JPEG source on this config (404 'no jpeg') - deliberate nojpeg build/config"
+		continue
+	fi
 	okc=0; badc=0; tsum=0; minb=99999999
 	for i in $(seq 1 "$SNAP_COUNT"); do
 		f="$OUTDIR/snap_${chn}.jpg"
@@ -1274,12 +1504,32 @@ for chn in 0 1; do
 		magic=$(head -c2 "$f" 2>/dev/null | od -An -tx1 | tr -d ' \n')
 		if [ "$code" = "200" ] && [ "$magic" = "ffd8" ] && [ "$sz" -gt 1000 ]; then
 			okc=$((okc+1)); [ "$sz" -lt "$minb" ] && minb=$sz
+			# keep the FIRST good snapshot for the freshness check below;
+			# every later one keeps overwriting snap_${chn}.jpg (so the last
+			# survives as the second reference)
+			[ -s "$OUTDIR/snap_${chn}_first.jpg" ] || cp "$f" "$OUTDIR/snap_${chn}_first.jpg" 2>/dev/null
 		else badc=$((badc+1)); fi
 	done
 	avg=$(awk -v s="$tsum" -v n="$SNAP_COUNT" 'BEGIN{printf "%.3f",s/n}')
 	if [ "$badc" -eq 0 ]; then ok "chn$chn snapshots ${okc}/${SNAP_COUNT} valid JPEG, avg ${avg}s, min ${minb}B"
 	elif [ "$okc" -gt 0 ]; then warn "chn$chn snapshots ${okc} ok / ${badc} bad (avg ${avg}s)"
 	else bad "chn$chn snapshots all $SNAP_COUNT failed"; fi
+	# --- freshness: are these ACTUALLY new frames? -------------------------
+	# HTTP 200 + valid JPEG + good latency all pass on an encoder that serves
+	# the SAME buffered frame forever (the "silent limbo" state section 16
+	# only catches via SSH logread). The server hands out stored JPEG bytes,
+	# so a frozen pipeline yields BIT-IDENTICAL files (psnr_db prints 99 for
+	# identical) - while on a live camera two frames tens of seconds apart are
+	# never byte-identical (sensor noise alone, plus the OSD clock). Host-side
+	# and free, since the first and last snapshot of the loop already exist.
+	if [ "$okc" -ge 2 ] && [ -s "$OUTDIR/snap_${chn}_first.jpg" ] && [ -s "$OUTDIR/snap_${chn}.jpg" ] && have ffmpeg; then
+		fr_psnr=$(psnr_db "$OUTDIR/snap_${chn}_first.jpg" "$OUTDIR/snap_${chn}.jpg")
+		if [ -n "$fr_psnr" ] && fcmp "$fr_psnr" ge 99; then
+			warn "chn$chn snapshots FROZEN: first and last snapshot of the run are byte-identical - the pipeline is serving one stale buffered frame, not live captures (silent-limbo signature; check logread for encoder-dead/PollingStream-idle)"
+		else
+			info "  chn$chn freshness: first vs last snapshot differ (PSNR ${fr_psnr:-?}dB) - frames are live"
+		fi
+	fi
 done
 
 fi
@@ -1326,14 +1576,28 @@ if curlq 10 "$(http_base)/control" -o "$cj" && [ -s "$cj" ]; then
 	for key in video audio caps; do
 		grep -q "\"$key\"" "$cj" && info "  contains \"$key\" block" || warn "  \"$key\" block missing"
 	done
-	# safe write round-trip: read image.brightness, write same value back, re-read
-	bri=$(grep -oE '"brightness"[^,}]*' "$cj" | head -1 | grep -oE '[0-9]+' | head -1)
+	# POST transport probe ONLY - deliberately NOT called a "round-trip":
+	# POST /control answers 200 UNCONDITIONALLY (httpd.c applies the body via
+	# control_apply_json(), which has no error return, then always sends
+	# 200 {"ok":true} - verified against the sim with garbage bodies), and
+	# this writes the CURRENT value back anyway, so neither the status code
+	# nor a re-read could prove anything about the apply path. The old
+	# message ("write round-trip accepted") claimed exactly that proof and
+	# could never fail except on transport loss. The real write round-trip
+	# (distinct value, re-GET, verify, restore) is section 8b's job. Writing
+	# the unchanged value is what makes this safe to leave stranded.
+	# jget, not the old `grep '"brightness"...' | head -1`: the caps block
+	# precedes the image block in the status JSON and lists "brightness" as a
+	# bare capability NAME, so head -1 grabbed that valueless hit and the
+	# probe silently skipped itself on every build with caps (seen on the sim
+	# 2026-08-18; path-aware jget cannot take the wrong branch).
+	bri=$(jget "$cj" image.brightness)
 	if [ -n "${bri:-}" ]; then
 		code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 -u "$HTTP_USER:$HTTP_PASS" \
 			-X POST "$(http_base)/control" -d "{\"image\":{\"brightness\":$bri}}")
-		[ "$code" = "200" ] && ok "/control write round-trip (brightness=$bri) accepted" \
+		[ "$code" = "200" ] && ok "/control accepts POST (HTTP 200; transport only - the daemon answers 200 unconditionally, so value application is proven in 8b, not here)" \
 			|| warn "/control write returned HTTP $code"
-	else info "  brightness not found; skipped write round-trip"; fi
+	else info "  brightness not found; skipped the POST transport probe"; fi
 
 	# --- self-reported health fields that nothing ever read ------------------
 	# These exist specifically to make a class of silent failure visible from
@@ -1391,13 +1655,32 @@ else
 		bad "cannot GET /control baseline - skipping live-settings tests"
 	else
 
+	# --- runtime coverage ledger for section 8d ------------------------------
+	# 8d used to attest coverage from its hand-written TESTED_* lists alone -
+	# a one-way check (inventory contained in TESTED+ALLOW) that could never
+	# notice when a field IN a TESTED list was silently skipped at runtime.
+	# That is not hypothetical: video.rotation was attested "tested" in every
+	# standard run although it is only POSTed under --test-rotation, and
+	# spk_volume/spk_gain/aec were attested on builds whose caps gate skipped
+	# them (both misattestations happened live 2026-08-18, twice). So 8b now
+	# writes down, AT RUNTIME, what it really did:
+	#   lv_posted.txt  "<section> <key>"          - actually POSTed + read back
+	#   lv_gated.txt   "<section> <key> <reason>" - probe exists but a runtime
+	#                                               gate (opt-in flag, caps)
+	#                                               turned it off THIS run
+	# and 8d judges against these files instead of trusting the hand lists.
+	LV_POSTED="$OUTDIR/lv_posted.txt"; : > "$LV_POSTED"
+	LV_GATED="$OUTDIR/lv_gated.txt";   : > "$LV_GATED"
+	lv_mark()       { local s="$1"; shift; local k; for k in "$@"; do printf '%s %s\n' "$s" "$k" >> "$LV_POSTED"; done; }
+	lv_mark_gated() { local s="$1" r="$2"; shift 2; local k; for k in "$@"; do printf '%s %s %s\n' "$s" "$k" "$r" >> "$LV_GATED"; done; }
+
 	# POST a JSON body, echo the HTTP status
 	lv_post() { curl -s -o /dev/null -w '%{http_code}' --max-time 12 \
 		-u "$HTTP_USER:$HTTP_PASS" -X POST "$(http_base)/control" -d "$1"; }
 	lv_get()  { curlq 12 "$(http_base)/control" -o "$1"; }
 	# Interruption safety: /control POSTs PERSIST to the camera's flash config.
 	# A run killed between POST(new) and POST(restore) used to strand the test
-	# values on a live camera (seen 2026-08-02: cam-wyze left with manual WB
+	# values on a live camera (seen 2026-08-02: cam-K left with manual WB
 	# rgain/bgain=32767 -> full magenta image, surviving reboots). Track the
 	# pending restore body and flush it from EXIT/INT/TERM traps. kill -9 or a
 	# network drop still defeats this, hence also the safe-if-stranded test
@@ -1416,9 +1699,15 @@ else
 	flip_int()  { awk -v lo="$1" -v hi="$2" -v c="$3" 'BEGIN{
 		m=int((lo+hi)/2); if(m!=c){print m} else if(m<hi){print m+1} else{print m-1}}'; }
 	flip_bool() { [ "${1:-0}" = "1" ] && echo 0 || echo 1; }
+	# T_FLT fields (e.g. daynight.ir_ratio_*) need their own flip: flip_int's
+	# int() would collapse a 1.5..3.0 range onto a single value and the
+	# read-back compare would then pass without anything having changed.
+	flip_flt()  { awk -v lo="$1" -v hi="$2" -v c="$3" 'BEGIN{
+		m=(lo+hi)/2; m=int(m*10+0.5)/10;
+		if(m!=c+0){printf "%g", m} else {printf "%g", (m+0.1<=hi)?m+0.1:m-0.1}}'; }
 
 	# lv_section <label> <wrap-open> <wrap-close> <read-prefix> <spec...>
-	#   spec = "key type [lo hi]"   type: int|bool|hex|str
+	#   spec = "key type [lo hi]"   type: int|flt|bool|hex|str
 	# Reads each key's current value from $LV_BASE, computes a distinct valid
 	# new value, POSTs them all at once, verifies the read-back, then restores.
 	lv_section() {
@@ -1434,6 +1723,7 @@ else
 			q=0
 			case "$type" in
 				int)  new=$(flip_int "$lo" "$hi" "$cur");;
+				flt)  new=$(flip_flt "$lo" "$hi" "$cur");;
 				bool) new=$(flip_bool "$cur");;
 				hex)  new="0x40C08000"; [ "$cur" = "$new" ] && new="0x80C04000"; q=1;;
 				str)  new="qa_probe";  [ "$cur" = "$new" ] && new="qa_probe2"; q=1;;
@@ -1460,8 +1750,22 @@ else
 			return
 		fi
 		gf="$OUTDIR/lv_${label}_new.json"; lv_get "$gf"
+		# 8d-ledger section name: strip the item indices ("osd0.0" is the
+		# per-item OSD leaf set the inventory calls "osd_item"; "privacy.0.0"
+		# is "privacy") so the ledger speaks the inventory's language
+		local lsec
+		case "$rp" in
+			osd0.*|osd1.*) lsec=osd_item;;
+			privacy.*)     lsec=privacy;;
+			*)             lsec="$rp";;
+		esac
 		for ((i=0;i<n;i++)); do
 			got=$(jget "$gf" "${P[i]}")
+			# every key that reached this loop WAS POSTed (HTTP 200) and read
+			# back - record it for 8d whether or not the compare matches (a
+			# mismatch already FAILed loudly right here; the ledger answers
+			# "was it exercised", not "did it pass")
+			lv_mark "$lsec" "${P[i]##*.}"
 			if [ "$got" = "${N[i]}" ]; then pass=$((pass+1))
 			elif [ "${LV_MODE:-live}" = persist ]; then
 				bad "$label: ${P[i]##*.} did not persist (got '$got', want '${N[i]}')"
@@ -1508,7 +1812,7 @@ else
 	# core_wb_mode DOES flip to 1 (manual) during the test, so if a run dies
 	# with the trap defeated (kill -9, network drop) the stranded state is
 	# manual WB at ~neutral gains - a usable image - instead of the magenta
-	# rgain/bgain=32767 that hit cam-wyze on 2026-08-02. ---
+	# rgain/bgain=32767 that hit cam-K on 2026-08-02. ---
 	lv_section image '{"image":' '}' image \
 		"brightness int 0 255" "contrast int 0 255" "saturation int 0 255" \
 		"sharpness int 0 255" "hue int 0 255" "ae_compensation int 0 255" \
@@ -1531,14 +1835,24 @@ else
 	# USE_PLAY / USE_BACKCHANNEL builds, where caps.audio lists them (they own the
 	# IMP_AO device). Gate on caps.audio so a build without an audio-output
 	# pipeline skips cleanly, matching how the rest of the script gates. spk_*
-	# are 0..100, aec is a bool; all round-trip through config. ---
-	case "$(jget "$cj" caps.audio)" in
+	# are 0..100, aec is a bool; all round-trip through config.
+	# Caps come from $LV_BASE, NOT from section 8's $cj: $cj only exists when
+	# section 8 ran, so `--only 8b` hit an unbound variable under set -u, the
+	# expansion came up empty, and the fallback below then asserted "no AO
+	# pipeline in this build" about a build it had never looked at (reproduced
+	# against the sim 2026-08-18) - on a real AO build that silently skipped
+	# spk_*/aec while 8d still attested them. $LV_BASE is fetched
+	# unconditionally at the top of 8b, so it always exists here. ---
+	case "$(jget "$LV_BASE" caps.audio)" in
 		*spk_volume*)
 			lv_section audio_spk '{"audio":' '}' audio \
 				"spk_volume int 0 100" "spk_gain int 0 100" "aec bool"
 			;;
 		*)
 			info "audio spk_*/aec: caps.audio has no spk_volume (no AO pipeline in this build) - skipping"
+			# known-skipped, with the reason - 8d reports these as gated
+			# rather than attesting them tested (the A1 misattestation)
+			lv_mark_gated audio "caps.audio-has-no-spk_volume(no-AO-pipeline)" spk_volume spk_gain aec
 			;;
 	esac
 
@@ -1614,12 +1928,16 @@ else
 	# numeric thresholds + tunables (day/night gain thresholds, gain %, delay);
 	# "enabled" reflects the thread's own state (poll lag) so it is left out ---
 	lv_section daynight '{"daynight":' '}' daynight \
-		"total_gain_day_threshold int 100 900" \
-		"total_gain_night_threshold int 2000 8000" \
-		"day_gain_pct int 0 100" "baseline_delay_s int 0 60" \
-		"boot_settle_s int 0 60" "boot_settle_max_s int 10 300" \
-		"boot_stable_pct int 0 100" "night_reconfirm_s int 0 7200" \
-		"probe_max_skip_s int 3600 604800" \
+		"day_gain int 100 900" \
+		"night_gain int 2000 8000" \
+		"day_confirm_s int 1 120" "ref_delay_s int 0 60" \
+		"boot_settle_s int 0 60" "boot_probe int 0 1" \
+		"probe_min_gap_s int 60 3600" "probe_jump_pct int 1 99" \
+		"probe_confirm_s int 1 120" "probe_settle_s int 1 60" \
+		"heartbeat_s int 300 86400" "heartbeat_max_s int 300 604800" \
+		"learn int 0 1" \
+		"ir_ratio_night flt 1.5 8" "ir_ratio_day flt 1.1 3" \
+		"ir_min_headroom int 0 320" \
 		"sun_sunrise_offset_min int -1440 1440" \
 		"sun_sunset_offset_min int -1440 1440"
 
@@ -1641,12 +1959,20 @@ else
 		code=$(lv_post '{"daynight":{"mode":"sun","time_night_start":"19:30","time_day_start":"06:30","sun_latitude":52.5,"sun_longitude":13.5}}')
 		gf="$OUTDIR/lv_daynight_timesun.json"; lv_get "$gf"
 		dnp=0
-		[ "$(jget "$gf" daynight.dn_mode)" = "sun" ]              && dnp=$((dnp+1)) || bad "daynight.mode not applied (dn_mode='$(jget "$gf" daynight.dn_mode)', want 'sun')"
+		# The redesign collapsed sensor/time/sun into auto/schedule and accepts
+		# the legacy names on input, normalising them. POSTing "sun" must therefore
+		# read back as "schedule" - asserting that pins the compat mapping itself,
+		# which is the part that could silently rot.
+		[ "$(jget "$gf" daynight.dn_mode)" = "schedule" ]         && dnp=$((dnp+1)) || bad "daynight.mode not applied (dn_mode='$(jget "$gf" daynight.dn_mode)', want 'schedule' - legacy 'sun' must normalise to it)"
 		[ "$(jget "$gf" daynight.time_night_start)" = "19:30" ]  && dnp=$((dnp+1)) || bad "daynight.time_night_start not applied (got '$(jget "$gf" daynight.time_night_start)')"
 		[ "$(jget "$gf" daynight.time_day_start)" = "06:30" ]    && dnp=$((dnp+1)) || bad "daynight.time_day_start not applied (got '$(jget "$gf" daynight.time_day_start)')"
 		[ "$(jget "$gf" daynight.sun_latitude)" = "52.5" ]       && dnp=$((dnp+1)) || bad "daynight.sun_latitude not applied (got '$(jget "$gf" daynight.sun_latitude)')"
 		[ "$(jget "$gf" daynight.sun_longitude)" = "13.5" ]      && dnp=$((dnp+1)) || bad "daynight.sun_longitude not applied (got '$(jget "$gf" daynight.sun_longitude)')"
 		[ "$dnp" = 5 ] && ok "daynight TIME/SUN: mode+time_night_start+time_day_start+sun_latitude+sun_longitude applied & read back (HTTP $code)"
+		# ledger: the four F_CTRL keys this block just POSTed + read back
+		# ("mode" is deliberately not F_CTRL - hand-validated in control.c -
+		# so it never appears in the inventory 8d diffs against)
+		lv_mark daynight time_night_start time_day_start sun_latitude sun_longitude
 		lv_post "$dn_restore" >/dev/null; LV_PENDING=""
 		rf="$OUTDIR/lv_daynight_timesun_restore.json"; lv_get "$rf"
 		[ "$(jget "$rf" daynight.dn_mode)" = "$dn_mode_cur" ] \
@@ -1725,7 +2051,7 @@ else
 			# to curl's own 5s timeout legitimately. A single-shot read right
 			# after daynight.mode flips is therefore a coin-flip race, not a
 			# verdict - it produced a false "ISP night mode did not follow"
-			# FAIL on a camera whose chain works (Schuppen 2026-08-11).
+			# FAIL on a camera whose chain works (a dim outbuilding 2026-08-11).
 			dn_wait_rm() {   # $1=wanted 0|1  $2=bound_s -> echoes seconds taken
 				local want="$1" bound="$2" i gf got
 				gf="$OUTDIR/lv_dn_rm_poll.json"
@@ -1737,7 +2063,7 @@ else
 				return 1
 			}
 			# --- precondition: a DAY starting state --------------------------
-			# Wyze 2026-08-11: the camera sat in genuine night (dark room) when
+			# cam-K 2026-08-11: the camera sat in genuine night (dark room) when
 			# this test began, so "force NIGHT" below confirmed an already-
 			# night camera (vacuously - no transition, no hook run, no
 			# running_mode edge) and the hook-count check then FAILed a
@@ -1921,9 +2247,10 @@ else
 	}
 	ov_clamp_test image      '{"image":'    '}' image      brightness       -99      0
 	ov_clamp_test image      '{"image":'    '}' image      brightness       9999     255
-	ov_clamp_test daynight   '{"daynight":' '}' daynight   day_gain_pct     -50      0
-	ov_clamp_test daynight   '{"daynight":' '}' daynight   probe_max_skip_s 1        3600
-	ov_clamp_test daynight   '{"daynight":' '}' daynight   probe_max_skip_s 99999999 604800
+	ov_clamp_test daynight   '{"daynight":' '}' daynight   probe_jump_pct   -50      1
+	ov_clamp_test daynight   '{"daynight":' '}' daynight   probe_jump_pct   999      99
+	ov_clamp_test daynight   '{"daynight":' '}' daynight   probe_min_gap_s  1        60
+	ov_clamp_test daynight   '{"daynight":' '}' daynight   heartbeat_max_s  99999999 604800
 
 	# --- persist-only (restart-required) sanity: these must NOT be advertised as
 	# live but MUST still round-trip through the config. One representative key
@@ -1938,6 +2265,7 @@ else
 		got=$(jget "$OUTDIR/lv_persist.json" video.0.bitrate)
 		[ "$got" = "$pv_new" ] && ok "persist-only video0.bitrate round-trips through config ($pv_new, applies on restart)" \
 			|| bad "persist-only video0.bitrate did not persist (got '$got', want '$pv_new')"
+		lv_mark video bitrate
 		lv_post "{\"video\":{\"0\":{\"bitrate\":$pv_cur}}}" >/dev/null   # restore
 		LV_PENDING=""
 	fi
@@ -1971,6 +2299,9 @@ else
 		else
 			warn "audio.codec=$ac_probe: got '$got' (HTTP $code)"
 		fi
+		# ledger: codec was POSTed + read back either way (the non-opus-build
+		# outcome is a legitimate result of exercising it, not a skip)
+		lv_mark audio codec
 		lv_post "{\"audio\":{\"codec\":\"$ac_cur\"}}" >/dev/null   # restore
 		lv_get "$OUTDIR/lv_opus_restore.json"
 		[ "$(jget "$OUTDIR/lv_opus_restore.json" audio.codec)" = "$ac_cur" ] \
@@ -2011,7 +2342,18 @@ else
 		return 1
 	}
 	rot_set_conf() {  # $1=key $2=value -> force into /etc/timps.conf via SSH, works even if the daemon is down
-		sshx "grep -q '^$1' /etc/timps.conf 2>/dev/null && sed -i 's|^$1.*|$1 = $2|' /etc/timps.conf || echo '$1 = $2' >> /etc/timps.conf"
+		# Quote like the daemon's own writer does (config.c write_kv_line): the
+		# loader strips ONE leading and ONE trailing character when they match,
+		# and treats '#' after whitespace as a comment. Writing a bare value
+		# here would leave a file the daemon reads back as something else -
+		# and this helper runs when the daemon is DOWN, so nothing would
+		# rewrite it correctly afterwards. Only values that need it are
+		# quoted, so ordinary numeric settings stay readable in the file.
+		local _v="$2"
+		case "$_v" in
+			""|*" "*|*"	"*|*"#"*|*";"*|'"'*|"'"*|*'"'|*"'") _v="\"$2\"";;
+		esac
+		sshx "grep -q '^$1' /etc/timps.conf 2>/dev/null && sed -i 's|^$1.*|$1 = $_v|' /etc/timps.conf || echo '$1 = $_v' >> /etc/timps.conf"
 	}
 	rot_apply() {  # $1=JSON body $2=jget path $3=expected value -> POST, then confirm
 		# it actually landed before the caller fires a restart. This closes
@@ -2050,9 +2392,12 @@ else
 	# rotation support simply omits the key - that is not a failure, so this
 	# skips cleanly rather than reporting FAIL on unsupported hardware.
 	if [ "$TEST_ROTATION" = "1" ]; then
-		rot_caps=$(jget "$cj" caps.rotation)
+		# caps from $LV_BASE, not section 8's $cj - same --only-8b unbound-
+		# variable trap as the spk gate above
+		rot_caps=$(jget "$LV_BASE" caps.rotation)
 		if [ -z "${rot_caps:-}" ]; then
 			info "rotation: caps.rotation absent - not compiled into this build, skipping"
+			lv_mark_gated video "caps.rotation-absent(USE_ROTATE-not-built)" rotation
 		else
 			info "rotation: SoC-supported values: $rot_caps"
 			rot_caps_norm=$(echo "$rot_caps" | tr -d ' []')   # "[0, 90, 180, 270]" -> "0,90,180,270"
@@ -2086,6 +2431,13 @@ else
 				esac
 			done
 			lv_post "{\"video\":{\"0\":{\"rotation\":${rot_cur:-0}}}}" >/dev/null   # restore
+			# ledger: rotation counts as exercised only if the caps list held a
+			# value the loop above could actually POST (a [0]-only SoC posts
+			# nothing and must not be attested)
+			case ",$rot_caps_norm," in
+				*",90,"*|*",180,"*|*",270,"*) lv_mark video rotation;;
+				*) lv_mark_gated video "caps.rotation-lists-only-0" rotation;;
+			esac
 
 			# --- real rotation verification (needs --ssh: requires an actual
 			# daemon restart, since rotation is persist-only) ------------------
@@ -2167,6 +2519,12 @@ else
 				info "rotation: real restart verification needs --ssh (config round-trip above already checked)"
 			fi
 		fi
+	else
+		# --test-rotation off (the default in EVERY profile): rotation is not
+		# exercised, and 8d must say so instead of attesting it - this exact
+		# misattestation ("all F_CTRL fields tested" while rotation was never
+		# POSTed) shipped in every standard run until 2026-08-18
+		lv_mark_gated video "opt-in---test-rotation-not-set" rotation
 	fi
 
 	# --- 8g. Persist-only encoder settings, verified AFTER a restart --------
@@ -2311,7 +2669,18 @@ else
 											fcmp "$m2_kbps" le "$(awk -v n="$enc_bnew" 'BEGIN{printf "%.0f", n*0.5}')"; then
 											info "  cbr and vbr look alike (${r}x, CV ${cv_cbr} vs ${cv_vbr}), but BOTH deliver under half the ${enc_bnew} kbps target - the stream is quality/content-limited (videoN.min_qp floor, static scene), so rate control has nothing to express in either mode. rc_mode effect unproven, not disproven."
 										else
-											warn "encoder: cbr and vbr produce statistically indistinguishable bitrate variance (${r}x, CV ${cv_cbr} vs ${cv_vbr}) - rc_mode may be accepted, persisted and ignored by the encoder"
+											# 2026-08-18: on T31/libimp 1.1.6 the two modes were traced
+											# through the (unstripped) vendor library. IMP_Encoder_SetDefaultParam's
+											# CBR and VBR fills differ in exactly ONE field - VBR's
+											# uMaxBitRate = 4/3 x target - while initial QP, QP bounds,
+											# eRcOptions and uMaxPictureSize are bit-identical; timps then
+											# imposes the same videoN.min_qp/max_qp window in both modes.
+											# 33% of peak headroom is simply less than this test can
+											# resolve. So a small ratio here does NOT show the encoder
+											# ignoring rc_mode, and the wording must not claim it does -
+											# see dev_notes / the rc_mode analysis. Report it as
+											# unresolved, which is what it is.
+											warn "encoder: cbr and vbr bitrate variance too close to separate (${r}x, CV ${cv_cbr} vs ${cv_vbr}) - inconclusive, NOT evidence that rc_mode is ignored: on some SoCs the two modes differ only in peak headroom (VBR uMaxBitRate), which this metric cannot resolve. Verify via the encoder's own debug log (it dumps rcMode + attrVbr.uMaxBitRate at channel setup) rather than by measurement."
 										fi
 									fi
 								fi
@@ -2487,8 +2856,19 @@ elif grep -qF '"caps"' "$fj" || ! grep -qF '"image":[' "$fj"; then
 	# (section 4b, srt.available=0) and ONVIF (port-closed) above.
 	skip "field-inventory drift check: GET /control?fields=1 returned the normal status document, not the field-inventory shape (has a \"caps\" key and/or \"image\" isn't an array) - this daemon doesn't recognize ?fields=1 (older build, pre-708ea08) - skipping"
 else
-	# TESTED_<section>: every field name 8b's code above actually POSTs +
-	# verifies (live or persist-only) for that section.
+	# TESTED_<section>: the field names 8b's CODE contains a probe for
+	# (live or persist-only). Since 2026-08-18 this is only the DECLARED map:
+	# what 8b really did in THIS run comes from the runtime ledger
+	# (lv_posted.txt / lv_gated.txt, written by 8b itself) and the verdicts
+	# below judge against that, not against these lists. The lists earn their
+	# keep as the promise side of the comparison: a field listed here that
+	# the ledger shows neither posted nor gated is a STALE ATTESTATION -
+	# exactly the failure that let "all F_CTRL fields tested" be reported
+	# while rotation (opt-in-only) and spk_*/aec (caps-gated) were never
+	# POSTed (both observed live, twice, on 2026-08-18).
+	# rotation and spk_*/aec stay listed: their gates record them in
+	# lv_gated.txt with a reason when they are off, which satisfies the
+	# promise without attesting a test that never ran.
 	TESTED_image="brightness contrast saturation sharpness hue vflip hflip running_mode anti_flicker ae_compensation max_again max_dgain sinter_strength temper_strength dpc_strength defog_strength drc_strength highlight_depress backlight_compensation core_wb_mode wb_rgain wb_bgain"
 	TESTED_audio="volume gain alc_gain mute spk_volume spk_gain aec codec enabled samplerate channels bitrate high_pass agc ns agc_target_dbfs agc_compression_db force_stereo spk_enabled backchannel backchannel_codec backchannel_rate"
 	TESTED_sensor=""
@@ -2497,7 +2877,7 @@ else
 	TESTED_motion="sensitivity monitor_stream enabled hold_ms skip_frames"
 	TESTED_record="segment_s pre_roll_s post_roll_s min_free_mb audio name dir"
 	TESTED_timelapse="interval_s keep_days name dir"
-	TESTED_daynight="total_gain_day_threshold total_gain_night_threshold day_gain_pct baseline_delay_s boot_settle_s boot_settle_max_s boot_stable_pct night_reconfirm_s probe_max_skip_s sun_sunrise_offset_min sun_sunset_offset_min time_night_start time_day_start sun_latitude sun_longitude"
+	TESTED_daynight="day_gain night_gain day_confirm_s ref_delay_s boot_settle_s boot_probe probe_min_gap_s probe_jump_pct probe_confirm_s probe_settle_s heartbeat_s heartbeat_max_s learn ir_ratio_night ir_ratio_day ir_min_headroom sun_sunrise_offset_min sun_sunset_offset_min time_night_start time_day_start sun_latitude sun_longitude"
 	TESTED_video="bitrate rotation"
 	TESTED_privacy="enabled x y w h color"
 
@@ -2514,13 +2894,23 @@ else
 	ALLOW_motion="cols rows"                                    # risky IVS grid rebuild, clamped to the SDK cell budget - would look like a mismatch here regardless
 	ALLOW_record="enabled channel mode"                         # would start/stop capture or depend on stream count (see the comment above the record lv_section call)
 	ALLOW_timelapse="enabled channel"                           # same reasoning as record above
-	ALLOW_daynight="enabled threshold_low threshold_high hysteresis interval_ms transition_s"   # enabled reflects the detection thread's own state (poll lag), not a value to force; the rest is the legacy brightness-ONLY fallback path (only exercised when gain telemetry is unavailable) - out of scope for this gain-based test bench
+	ALLOW_daynight="enabled interval_ms transition_s diagnose_thresholds"   # enabled reflects the detection thread's own state (poll lag), not a value to force; interval_ms/transition_s/diagnose_thresholds change timing or logging rather than a readable decision value
 	ALLOW_video="enabled codec width height fps rc_mode gop max_gop profile qp min_qp max_qp buffers rtsp_path"   # geometry/codec/identity/routing changes carry restart-crash or active-session-disruption risk beyond a plain config round-trip; rotation (the highest-risk one) already gets the deep --test-rotation real-restart treatment and bitrate gets a representative persist round-trip above - duplicating that pattern across every remaining encoder-tuning knob isn't what this drift check is for
 	ALLOW_privacy=""
 
 	contains_word() { local n="$1"; shift; local w; for w in "$@"; do [ "$w" = "$n" ] && return 0; done; return 1; }
 
-	drift=0; total=0
+	# Runtime ledger from 8b (see the comment where it is written). Presence
+	# of lv_posted.txt = 8b ran in THIS invocation; without it (e.g.
+	# `--only 8d`, or 8b skipped for lack of python3) there is NOTHING this
+	# check may attest as tested - it can only compare the inventory against
+	# the declared map, and must say so.
+	LVP="$OUTDIR/lv_posted.txt"; LVG="$OUTDIR/lv_gated.txt"
+	lv_ledger=0; [ -f "$LVP" ] && lv_ledger=1
+	posted_has() { grep -q "^$1 $2\$" "$LVP" 2>/dev/null; }
+	gated_has()  { grep -q "^$1 $2 "  "$LVG" 2>/dev/null; }
+
+	drift=0; stale=0; total=0; n_post=0; n_gate=0; n_allow=0
 	for sec in image audio sensor osd osd_item motion record timelapse daynight video privacy; do
 		fields=$(jarr "$fj" "$sec")
 		[ -n "$fields" ] || continue
@@ -2528,15 +2918,40 @@ else
 		tested="${!tvar}"; allow="${!avar}"
 		for f in $fields; do
 			total=$((total+1))
-			if contains_word "$f" $tested; then :
-			elif contains_word "$f" $allow; then :
+			if [ "$lv_ledger" = 1 ]; then
+				# BOTH directions against what actually happened:
+				#   inventory ⊆ posted ∪ gated ∪ allow   (coverage, as before)
+				#   tested-claim ⊆ posted ∪ gated        (no stale attestation)
+				if posted_has "$sec" "$f"; then n_post=$((n_post+1))
+				elif gated_has "$sec" "$f"; then n_gate=$((n_gate+1))
+				elif contains_word "$f" $allow; then n_allow=$((n_allow+1))
+				elif contains_word "$f" $tested; then
+					warn "field-inventory STALE ATTESTATION: $sec.$f is declared tested by 8b, but this run neither POSTed it nor recorded a gate reason - the probe was silently skipped (or the declaration is stale). This is the exact hole that let skipped fields be reported as tested"
+					stale=$((stale+1))
+				else
+					warn "field-inventory drift: $sec.$f is F_CTRL (POST-able) but 8b neither exercised nor gate-skipped it and it is not on the documented allowlist - add live/persist coverage or an explicit exclusion"
+					drift=$((drift+1))
+				fi
 			else
-				warn "field-inventory drift: $sec.$f is F_CTRL (POST-able) but is in neither 8b's tested set nor the documented allowlist above - add live/persist coverage or an explicit exclusion"
-				drift=$((drift+1))
+				# no ledger: static map comparison only (the old, one-way check)
+				if contains_word "$f" $tested; then :
+				elif contains_word "$f" $allow; then :
+				else
+					warn "field-inventory drift: $sec.$f is F_CTRL (POST-able) but is in neither 8b's declared set nor the documented allowlist - add live/persist coverage or an explicit exclusion"
+					drift=$((drift+1))
+				fi
 			fi
 		done
 	done
-	[ "$drift" -eq 0 ] && ok "field-inventory: all $total F_CTRL fields across 11 sections are either tested in 8b or explicitly allowlisted (no drift)"
+	if [ "$lv_ledger" = 1 ]; then
+		if [ "$drift" -eq 0 ] && [ "$stale" -eq 0 ]; then
+			ok "field-inventory: $total F_CTRL fields - $n_post exercised by 8b THIS RUN, $n_gate gated off with a recorded reason, $n_allow allowlisted (no drift, no stale attestation)"
+			[ "$n_gate" -gt 0 ] && info "  gated off this run (NOT tested - see $LVG): $(awk '{printf "%s.%s(%s) ", $1, $2, $3}' "$LVG")"
+		fi
+	else
+		[ "$drift" -eq 0 ] && ok "field-inventory: all $total F_CTRL fields are on 8b's declared coverage map or the allowlist (map check only)"
+		info "  NOTE: 8b did not run in this invocation (no runtime ledger) - the line above checks the declared MAP against the inventory; it attests that nothing is missing from the map, NOT that anything was actually exercised"
+	fi
 fi
 
 fi
@@ -2581,11 +2996,16 @@ mb_check "unterminated string (no closing quote)" '{"osd0":{"0":{"text":"never c
 #    hardening comment in config.c) must clamp, not misbehave, on a value
 #    that overflows long/int well past any field's [lo,hi]. Unlike cases
 #    1/2/4/5, this body is well-formed JSON that the parser WILL apply -
-#    it just clamps image.brightness to 255 rather than rejecting it, and
-#    mb_check() (by design - it's a liveness check, not a settings test)
-#    never restores anything. That silently stranded brightness=255 on a
-#    real camera (2026-08, seen live on Garage/Wyze/Galayou after a QA run
-#    with nothing else in the log to explain it) until traced here.
+#    it just clamps image.brightness to a range boundary rather than
+#    rejecting it. WHICH boundary is platform-dependent: on 32-bit targets
+#    strtol saturates at LONG_MAX=INT_MAX and the hi-clamp lands on 255,
+#    while on the 64-bit sim the LONG_MAX->int cast wraps negative and the
+#    lo-clamp lands on 0 (verified on the sim 2026-08-18 - the old comment
+#    claimed "255" unconditionally). Either way mb_check() (by design - a
+#    liveness check, not a settings test) never restores anything. That
+#    silently stranded brightness at the boundary on a real camera
+#    (2026-08, seen live on cam-A/cam-K/cam-L after a QA run with nothing
+#    else in the log to explain it) until traced here.
 #
 #    Self-contained (own capture/POST/trap via curlq, not lv_get/lv_post/
 #    LV_PENDING) rather than depending on section 8b having run first -
@@ -2598,9 +3018,21 @@ mb3_restore_pending() {
 		-X POST "$(http_base)/control" -d "$MB3_PENDING" >/dev/null 2>&1 || true
 	MB3_PENDING=""
 }
-trap 'mb3_restore_pending' EXIT
-trap 'mb3_restore_pending; trap - INT;  kill -INT  $$' INT
-trap 'mb3_restore_pending; trap - TERM; kill -TERM $$' TERM
+# mb6 (the oversized-body regression test below) probes with a DISTINCT
+# contrast value, so it needs the same stranding protection; bash keeps only
+# one trap per signal, hence one shared trap calling both (each is a no-op
+# while unarmed)
+MB6_PENDING=""
+mb6_restore_pending() {
+	[ -n "${MB6_PENDING:-}" ] || return 0
+	warn "interrupted mid oversized-body test - restoring image.contrast"
+	curl -s -o /dev/null --max-time 8 -u "$HTTP_USER:$HTTP_PASS" \
+		-X POST "$(http_base)/control" -d "$MB6_PENDING" >/dev/null 2>&1 || true
+	MB6_PENDING=""
+}
+trap 'mb3_restore_pending; mb6_restore_pending' EXIT
+trap 'mb3_restore_pending; mb6_restore_pending; trap - INT;  kill -INT  $$' INT
+trap 'mb3_restore_pending; mb6_restore_pending; trap - TERM; kill -TERM $$' TERM
 mb3_bf="$OUTDIR/mb3_before.json"; curlq 12 "$(http_base)/control" -o "$mb3_bf"
 mb3_cur=$(jget "$mb3_bf" image.brightness)
 if [ -n "$mb3_cur" ]; then
@@ -2616,7 +3048,7 @@ if [ -n "$mb3_cur" ]; then
 	if [ "$mb3_rgot" = "$mb3_cur" ]; then
 		MB3_PENDING=""    # restore POSTed and verified - disarm the trap
 	else
-		warn "overflow-prone number: restoring image.brightness to '$mb3_cur' did not land (got '$mb3_rgot', HTTP $mb3_rcode) - camera may still be at 255"
+		warn "overflow-prone number: restoring image.brightness to '$mb3_cur' did not land (got '$mb3_rgot', HTTP $mb3_rcode) - camera may still sit at a clamp boundary (255 on 32-bit targets, 0 on the 64-bit sim)"
 	fi
 else
 	warn "overflow-prone number: could not read current image.brightness before the test - skipping (would strand the camera at the clamped boundary)"
@@ -2633,6 +3065,88 @@ mb_check "unknown top-level section" '{"totally_bogus_section_xyz":{"foo":1,"bar
 #    handing it a JSON array for a section name must be rejected cleanly,
 #    not misparsed as if it were an object.
 mb_check "array instead of object" '{"image":[1,2,3]}'
+
+# --- 6-8: regression tests for the three httpd request-handling bugs the
+# code itself documents as FIXED (httpd.c around the /control POST branch).
+# Each was a real shipped defect; none had a test, so any of them could come
+# back silently. All three are exact-status assertions, which POST /control
+# normally cannot provide (it answers 200 unconditionally) - these paths are
+# the exception, because they are rejected BEFORE control_apply_json() runs.
+
+# 6. body larger than the request buffer (httpd.c: "used to get silently
+#    clamped and the truncated prefix applied ... yet the client still gets
+#    200 OK" -> now 413). The probe body leads with a DISTINCT contrast value
+#    so the clamp regression is detectable as data: if the old behaviour
+#    returns, the truncated prefix (which contains the full contrast kv)
+#    gets applied and the re-read exposes it - a 413 status alone could be
+#    faked by an unrelated rejection. Buffer is 4096 (httpd.c conn_thread);
+#    6000 bytes of body clears it whatever the header sizes are.
+mb6_bf="$OUTDIR/mb6_before.json"; curlq 12 "$(http_base)/control" -o "$mb6_bf"
+mb6_cur=$(jget "$mb6_bf" image.contrast)
+if [ -z "$mb6_cur" ]; then
+	warn "oversized-body test: could not read current image.contrast - skipping (a clamp regression would strand a probe value)"
+else
+	mb6_new=$(( mb6_cur == 190 ? 60 : 190 ))
+	MB6_PENDING="{\"image\":{\"contrast\":$mb6_cur}}"
+	mb6_pad=$(head -c 6000 /dev/zero | tr '\0' 'A')
+	mb6_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 -u "$HTTP_USER:$HTTP_PASS" \
+		-X POST "$(http_base)/control" -d "{\"image\":{\"contrast\":$mb6_new,\"pad\":\"$mb6_pad\"}}")
+	mb6_af="$OUTDIR/mb6_after.json"; curlq 12 "$(http_base)/control" -o "$mb6_af"
+	mb6_got=$(jget "$mb6_af" image.contrast)
+	if [ "$mb6_code" = "413" ] && [ "$mb6_got" = "$mb6_cur" ]; then
+		ok "oversized body (6000B > 4096B buffer): rejected with 413 and NOTHING of the truncated prefix was applied (contrast still $mb6_got)"
+		MB6_PENDING=""
+	elif [ "$mb6_got" != "$mb6_cur" ]; then
+		bad "oversized body: HTTP $mb6_code and the TRUNCATED PREFIX WAS APPLIED (contrast $mb6_cur -> $mb6_got) - the silent-clamp bug httpd.c documents as fixed is back"
+		curl -s -o /dev/null --max-time 8 -u "$HTTP_USER:$HTTP_PASS" \
+			-X POST "$(http_base)/control" -d "$MB6_PENDING" >/dev/null; MB6_PENDING=""
+	else
+		warn "oversized body: expected 413, got HTTP $mb6_code (nothing was applied, but the explicit reject is gone - check the clen>cap guard)"
+		MB6_PENDING=""
+	fi
+fi
+
+# 7. negative Content-Length ("-1"): httpd.c documents that it "used to slip
+#    past this guard entirely" (clen > cap is false for negative clen) - the
+#    fixed guard rejects clen<0 with 413. curl won't send a broken
+#    Content-Length, so this is a raw /dev/tcp exchange (same idiom as the
+#    preflight port probe / test_auth.sh's rtsp_status); Authorization
+#    included because on a non-loopback camera the global auth gate answers
+#    before the POST branch would.
+mb7_line=$(
+	exec 2>/dev/null
+	exec 3<>"/dev/tcp/$CAM/$HTTP_PORT" || exit
+	printf 'POST /control HTTP/1.1\r\nHost: %s\r\n%s\r\nContent-Length: -1\r\nConnection: close\r\n\r\n' \
+		"$CAM" "$AUTH_HDR" >&3
+	IFS= read -r -t 8 line <&3
+	printf '%s' "$line"
+	exec 3<&- 3>&-
+)
+case "$mb7_line" in
+	*" 413 "*) ok "negative Content-Length (-1): rejected with 413 (the guard covers clen<0, daemon answered)";;
+	*" 2"[0-9][0-9]" "*) bad "negative Content-Length (-1): got '$mb7_line' - a 2xx means the negative value slipped past the guard again (the pre-fix behaviour)";;
+	"")        bad "negative Content-Length (-1): NO response within 8s - the connection may be parked in the body-read loop (worse than the original bug)";;
+	*)         warn "negative Content-Length (-1): unexpected response '$mb7_line' (not 413, not a 2xx leak)";;
+esac
+mb7_g=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 -u "$HTTP_USER:$HTTP_PASS" "$(http_base)/control")
+[ "$mb7_g" = "200" ] || bad "negative Content-Length: the FOLLOWING GET /control returned '$mb7_g' - daemon wedged"
+
+# 8. HEAD /control: httpd.c documents "HEAD previously fell into the POST
+#    branch below and ran control_apply_json(\"\")" - i.e. a HEAD used to
+#    EXECUTE an (empty) apply. The fix gives HEAD GET semantics with the
+#    body suppressed. Distinguishing signature is the Content-Length: GET
+#    semantics announce the full status document (thousands of bytes); the
+#    old POST-branch behaviour announced 11 ({"ok":true}).
+mb8_hdr="$OUTDIR/mb8_head.txt"
+mb8_code=$(curl -s -I -o "$mb8_hdr" -w '%{http_code}' --max-time 8 -u "$HTTP_USER:$HTTP_PASS" "$(http_base)/control")
+mb8_cl=$(grep -i '^Content-Length:' "$mb8_hdr" 2>/dev/null | grep -oE '[0-9]+' | head -1)
+if [ "$mb8_code" = "200" ] && [ "${mb8_cl:-0}" -gt 100 ]; then
+	ok "HEAD /control: 200 with GET semantics (announces ${mb8_cl}B of status JSON, body suppressed) - not the POST branch"
+elif [ "$mb8_code" = "200" ]; then
+	bad "HEAD /control: 200 but Content-Length=${mb8_cl:-?} - the {\"ok\":true} shape, i.e. HEAD fell into the POST branch and ran control_apply_json(\"\") again (the pre-fix behaviour)"
+else
+	warn "HEAD /control: HTTP $mb8_code (want 200 with GET semantics; see $mb8_hdr)"
+fi
 
 fi
 # --- 8f. Pixel-verified hflip + forced chn0 relatch (opt-in) ----------------
@@ -2788,14 +3302,14 @@ if want 9 events; then
 hdr "9. /events (SSE)"
 ev="$OUTDIR/events.log"
 # Interruption safety (same LV_PENDING/trap pattern as section 8b's
-# lv_restore_pending, added after the 2026-08-02 cam-wyze incident: a run
+# lv_restore_pending, added after the 2026-08-02 cam-K incident: a run
 # killed between POST(new) and POST(restore) stranded manual WB rgain/bgain
 # at 32767, a full-magenta image surviving reboots). This test's own poke is
 # exactly that same shape - an extreme, visibly-wrong image.brightness value
 # on a REAL live camera - so it gets the same protection: track the pending
 # restore body and flush it from EXIT/INT/TERM, not just from the normal
 # fall-through path below. Confirmed missing here 2026-08: a real run against
-# Garage (192.168.241.190) got interrupted between the poke and the restore
+# cam-A (192.168.1.100) got interrupted between the poke and the restore
 # and left image.brightness=255 (blown-out image) until fixed by hand.
 EV9_PENDING=""
 ev9_restore_pending() {
@@ -2912,11 +3426,43 @@ if (exec 3<>"/dev/tcp/$CAM/$ONVIF_PORT") 2>/dev/null; then
 				&& ok "ONVIF $nm codec ($cc) advertised" \
 				|| warn "ONVIF $nm codec mismatch: real $cc, advertised [${o_enc}]"; }
 		done
-		# fps/bitrate: expected to be the daemon template defaults, not the real rate
-		if grep -qE '(^| )30( |$)' <<<" $o_fps " || grep -qE '(^| )5000( |$)' <<<" $o_br "; then
-			warn "ONVIF FrameRateLimit/BitrateLimit are the onvif_simple_server template defaults (30/5000), NOT the real encoder rate - needs a daemon-side patch (ffprobe shows the true fps)"
+		# fps/bitrate: compare the ADVERTISED values against the REAL ones
+		# instead of pattern-matching on the template constants. The old
+		# check warned whenever 30 or 5000 appeared - but 30 fps / 5000 kbps
+		# are perfectly legitimate REAL rates, so a camera actually running
+		# them was accused of advertising template defaults on the strength
+		# of a value that cannot distinguish the two cases. The references
+		# that CAN: NOM_FPS (section 2's ffprobe) and the configured
+		# bitrates from /control. Advertised==real is fine whatever the
+		# number; only a mismatch is the template lie.
+		o10_cj="$OUTDIR/onvif_ctrl.json"
+		curlq 8 "$(http_base)/control" -o "$o10_cj" 2>/dev/null || true
+		o10_reals_fps="${NOM_FPS[main]:-} ${NOM_FPS[sub]:-}"
+		o10_reals_br="$(jget "$o10_cj" video.0.bitrate 2>/dev/null) $(jget "$o10_cj" video.1.bitrate 2>/dev/null)"
+		# match_any <candidate> <tolerance-fraction> <ref...> - is the
+		# candidate within tol of ANY reference?
+		o10_match() { local v="$1" tol="$2"; shift 2; local r
+			for r in "$@"; do
+				[ -n "$r" ] || continue
+				awk -v a="$v" -v b="$r" -v t="$tol" 'BEGIN{d=a-b; if(d<0)d=-d; exit !(b>0 && d/b<=t)}' && return 0
+			done; return 1; }
+		o10_fps_bad=""; o10_br_bad=""
+		if [ -n "$(echo $o10_reals_fps)" ]; then
+			for v in $o_fps; do o10_match "$v" 0.10 $o10_reals_fps || o10_fps_bad="$o10_fps_bad $v"; done
+		fi
+		if [ -n "$(echo $o10_reals_br)" ]; then
+			# 10% tolerance like fps: a daemon that surfaces the real bitrate
+			# reports the configured value, so anything looser only serves to
+			# let the 5000-template pass against a coincidentally-close config
+			# (at 20% it matched a configured 4256 - measured while testing)
+			for v in $o_br; do o10_match "$v" 0.10 $o10_reals_br || o10_br_bad="$o10_br_bad $v"; done
+		fi
+		if [ -z "$(echo $o10_reals_fps)" ] && [ -z "$(echo $o10_reals_br)" ]; then
+			info "ONVIF fps/bitrate advertised [${o_fps}] / [${o_br}] - no real reference available to compare (section 2 skipped and /control unreachable)"
+		elif [ -n "$o10_fps_bad" ] || [ -n "$o10_br_bad" ]; then
+			warn "ONVIF advertises fps [${o_fps}] / bitrate [${o_br}] but the real rates are fps [$(echo $o10_reals_fps)] / configured kbps [$(echo $o10_reals_br)] - mismatched values (${o10_fps_bad:+fps$o10_fps_bad }${o10_br_bad:+kbps$o10_br_bad}) look like onvif_simple_server template defaults, not the encoder's rate"
 		else
-			info "ONVIF fps/bitrate: [${o_fps}] / [${o_br}] (daemon now surfaces real values)"
+			ok "ONVIF FrameRateLimit/BitrateLimit match the real encoder rates (fps [${o_fps}] vs [$(echo $o10_reals_fps)], kbps [${o_br}] vs [$(echo $o10_reals_br)])"
 		fi
 	else
 		warn "ONVIF GetProfiles returned nothing/401 (WS-Security? needs openssl + ONVIF creds ${ONVIF_USER}/***)"
@@ -2935,7 +3481,17 @@ if [ "$code" = "200" ]; then
 		sz=$(sshx "wc -c < $clip 2>/dev/null || echo 0"); sz=${sz:-0}
 		[ "${sz:-0}" -gt 2000 ] && ok "record.clip wrote ${sz}B fMP4 on device" || bad "record.clip file missing/empty on device"
 		sshx "rm -f $clip" 2>/dev/null
-	else ok "record.clip accepted (HTTP 200); enable --ssh to verify the file on device"; fi
+	else
+		# NOT a pass: POST /control answers 200 unconditionally (httpd.c -
+		# record_clip()'s return code is dropped in control.c), so without
+		# SSH there is no observable that distinguishes "clip written" from
+		# "no SD card / bad path / USE_RECORD regression". The old ok here
+		# was a guaranteed PASS that could not fail, counting as proof of a
+		# recorder nobody looked at. The /control status has no clip-result
+		# field either (record.file is the continuous recorder's) - if the
+		# daemon ever surfaces one, this can become a host-side check.
+		skip "record.clip: HTTP 200 proves only transport (the daemon answers 200 unconditionally and drops record_clip's return code) - pass --ssh to verify the file actually exists on device"
+	fi
 else warn "record.clip returned HTTP $code"; fi
 
 fi
@@ -3218,7 +3774,7 @@ else
 				# packet with unknown timestamp") zeroes the frame counts
 				# exactly like starvation would, but means something entirely
 				# different - the server delivered data with a broken
-				# timestamp, the client gave up. The 2026-08-11 Galayou FAIL
+				# timestamp, the client gave up. The 2026-08-11 cam-L FAIL
 				# read "fell to 0.0 fps because ONE client stopped reading"
 				# while both healthy clients had actually aborted in ~1s on
 				# the v1.8.5 RTCP SR clock-domain regression (rtp.c) - the
@@ -3507,7 +4063,7 @@ a=json.load(open(sys.argv[1])); b=json.load(open(sys.argv[2])); changed=sys.argv
 # state under daynight but a persisted setting under record, so only the
 # specific status paths are excused.
 VOL_ANY={"uptime_s","clients","subs","fps","kbps","bytes","free_mb","file","last_file",
-         "count","last_t","total_gain","ae_luma","night_baseline","day_trigger",
+         "count","last_t","total_gain","exposure","ae_luma","night_baseline","day_trigger",
          "stalled","active","recording","registered","left_pics","work_done",
          "cur_packs","left_stream_bytes","left_stream_frames","ave_bitrate",
          "drop_frames","drop_bytes","sun_computed_sunrise","sun_computed_sunset","temp"}
@@ -3892,7 +4448,14 @@ if [ -n "$SSH_TARGET" ] && want 16 ssh; then
 	dup=$(sshx "grep -vE '^[[:space:]]*#' /etc/timps.conf 2>/dev/null | sed 's/=.*//; s/[[:space:]]//g' | sort | uniq -d | grep -c .")
 	[ "${glued:-0}" -eq 0 ] && ok "/etc/timps.conf: no glued 'a=b c=d' lines" || bad "/etc/timps.conf has ${glued} glued line(s) - config-write bug"
 	[ "${dup:-0}" -eq 0 ] && ok "/etc/timps.conf: no duplicate keys" || warn "/etc/timps.conf has ${dup} duplicate key(s)"
-	# rapid-write stress then re-check integrity
+	# rapid-write stress then re-check integrity.
+	# Baseline the toggled key FIRST: the 20 unsorted background POSTs land in
+	# arbitrary order, so whichever of agc=0/1 happens to land last gets
+	# PERSISTED - without a restore that is a stranded setting, the exact
+	# class (cam-K 2026-08-02) the LV_PENDING traps in 8b/8e/9 exist to
+	# prevent, quietly reintroduced by this section's own stress load.
+	agc_bj="$OUTDIR/agc_base.json"; curlq 8 "$(http_base)/control" -o "$agc_bj" 2>/dev/null || true
+	agc0=$(jget "$agc_bj" audio.agc)
 	info "  config-write stress: 20 rapid /control writes..."
 	for i in $(seq 1 20); do
 		curl -s -o /dev/null --max-time 5 -u "$HTTP_USER:$HTTP_PASS" -X POST "$(http_base)/control" \
@@ -3900,6 +4463,23 @@ if [ -n "$SSH_TARGET" ] && want 16 ssh; then
 	done; wait 2>/dev/null
 	glued2=$(sshx "sed 's/#.*//' /etc/timps.conf 2>/dev/null | grep -cE '=[^=]*='")
 	[ "${glued2:-0}" -eq 0 ] && ok "after 20 rapid writes: config still clean (no glued lines)" || bad "rapid writes corrupted /etc/timps.conf (${glued2} glued) - config race not fixed"
+	# restore agc to its pre-stress value and VERIFY (one retry, same
+	# transient-failure allowance as ov_clamp_test's restore)
+	if [ -n "${agc0:-}" ]; then
+		curl -s -o /dev/null --max-time 8 -u "$HTTP_USER:$HTTP_PASS" -X POST "$(http_base)/control" \
+			-d "{\"audio\":{\"agc\":$agc0}}" >/dev/null
+		agc_rj="$OUTDIR/agc_restore.json"; curlq 8 "$(http_base)/control" -o "$agc_rj" 2>/dev/null || true
+		if [ "$(jget "$agc_rj" audio.agc)" != "$agc0" ]; then
+			curl -s -o /dev/null --max-time 8 -u "$HTTP_USER:$HTTP_PASS" -X POST "$(http_base)/control" \
+				-d "{\"audio\":{\"agc\":$agc0}}" >/dev/null
+			curlq 8 "$(http_base)/control" -o "$agc_rj" 2>/dev/null || true
+		fi
+		[ "$(jget "$agc_rj" audio.agc)" = "$agc0" ] \
+			&& info "  restored audio.agc=$agc0 after the stress toggles" \
+			|| warn "config-write stress: could not restore audio.agc to $agc0 - the camera keeps whichever toggle landed last"
+	else
+		warn "config-write stress: could not read audio.agc beforehand - the last of the 20 random toggles stays persisted (0 or 1)"
+	fi
 	# The agc toggles above are the exact live-DSP-toggle crash reproducer.
 	# v1.4.5 made agc/ns/high_pass restart-required (persist-only) because
 	# toggling them live raced libimp's internal audio thread -> UAF/SIGSEGV in

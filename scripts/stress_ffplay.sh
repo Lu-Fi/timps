@@ -9,7 +9,7 @@
 #   CAM=<ip> ./scripts/stress_ffplay.sh ch0 tcp
 #
 # The other args are order-independent: ch0|ch1, tcp|udp, a number (count).
-# Env overrides: USER/PASS (RTSP credentials), PORT (554).
+# Env overrides: RTSP_USER/RTSP_PASS (RTSP credentials), PORT (554).
 set -uo pipefail
 
 CAM="${CAM:-}"
@@ -32,8 +32,12 @@ done
 
 command -v ffplay >/dev/null || { echo "ffplay not found (install ffmpeg)"; exit 1; }
 
+# RTSP_USER/RTSP_PASS (matching timps-qa.sh/test_auth.sh), NOT USER/PASS:
+# $USER is the login name and is set in effectively every shell, so the old
+# check put "<login>:@" into the URL by default and every window died on a
+# 401 although the caller never supplied credentials at all.
 AUTH=""
-if [ -n "${USER:-}" ]; then AUTH="${USER}:${PASS:-}@"; fi
+if [ -n "${RTSP_USER:-}" ]; then AUTH="${RTSP_USER}:${RTSP_PASS:-}@"; fi
 URL="rtsp://${AUTH}${CAM}:${PORT}/${CH}"
 
 # tiled windows, bordered so they stay movable + resizable. Windows are laid

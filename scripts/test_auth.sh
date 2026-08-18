@@ -44,6 +44,12 @@
 #   --srt-port N        SRT port (enables SRT test if tooling present)
 #   --timeout S         per-request timeout       (default 6)
 #   -h | --help
+#
+# Extra env (no flags):
+#   HTTP_TOKEN          a valid /control token -> also tests token ACCEPTANCE
+#                       (rejection of a wrong token is always tested)
+#   SRT_PASSPHRASE / SRT_STREAMID
+#                       the real SRT secrets -> adds the SRT positive test
 # =============================================================================
 set -u
 
@@ -262,6 +268,86 @@ test_http() {
 		*)       skip "/control wrong-pass -> HTTP $wcode";;
 	esac
 
+	# --- Digest (httpd.c's 401 offers "Digest ... qop=auth" FIRST; auth.c
+	# implements it with nonce tracking + realm binding). curl -u sends
+	# Basic, so until 2026-08-18 nothing here had ever exercised the digest
+	# verifier - a regression in it would only have surfaced on a real NVR.
+	local dcode
+	dcode=$(http_code --digest -u "${HTTP_USER}:wrong_$$" "$(http_url "/control")")
+	case "$dcode" in
+		401|403) pass "/control rejects WRONG password via Digest (HTTP $dcode)";;
+		000)     skip "/control unreachable for digest wrong-pass test";;
+		2*)      fail "/control accepted WRONG password via Digest (HTTP $dcode)";;
+		*)       skip "/control digest wrong-pass -> HTTP $dcode";;
+	esac
+	dcode=$(http_code --digest -u "${HTTP_USER}:${HTTP_PASS}" "$(http_url "/control")")
+	case "$dcode" in
+		2*)      pass "/control accepts correct credentials via Digest (HTTP $dcode)";;
+		401|403) fail "/control REJECTS correct credentials via Digest (HTTP $dcode) - the advertised digest scheme doesn't verify";;
+		000)     skip "/control unreachable for digest positive test";;
+		*)       skip "/control digest positive -> HTTP $dcode";;
+	esac
+
+	# --- Digest realm binding (auth.c: a realm the server never issued must
+	# be rejected BEFORE hashing - the realm is an HA1 input, so accepting a
+	# forged one enables cross-service digest replay). curl always echoes
+	# the server's realm; forging one needs a hand-rolled header. The
+	# correct-realm twin proves the hand-rolled arithmetic itself, so the
+	# wrong-realm 401 is attributable to the binding. Fresh nonce for each
+	# attempt - the server tracks nonces, and reuse would test nonce state
+	# instead of the realm.
+	if command -v md5sum >/dev/null 2>&1; then
+		dg_md5() { printf '%s' "$1" | md5sum | cut -d' ' -f1; }
+		dg_try() {  # <realm> -> http code of a self-computed RFC-2069 digest GET /control
+			local realm="$1" nonce ha1 ha2 resp
+			nonce=$(curl -s -D - -o /dev/null --max-time "$TIMEOUT" "$(http_url "/control")" 2>/dev/null \
+				| grep -oiE 'nonce="[0-9a-f]+"' | head -1 | cut -d'"' -f2)
+			[ -n "$nonce" ] || { echo "nononce"; return; }
+			ha1=$(dg_md5 "${HTTP_USER}:${realm}:${HTTP_PASS}")
+			ha2=$(dg_md5 "GET:/control")
+			resp=$(dg_md5 "${ha1}:${nonce}:${ha2}")
+			http_code -H "Authorization: Digest username=\"${HTTP_USER}\", realm=\"${realm}\", nonce=\"${nonce}\", uri=\"/control\", response=\"${resp}\"" \
+				"$(http_url "/control")"
+		}
+		local dg_good dg_bad
+		dg_good=$(dg_try "timps")     # AUTH_REALM, src/auth.h
+		if [ "$dg_good" = "nononce" ]; then
+			skip "digest realm-binding: no Digest challenge in the 401 - cannot craft a request"
+		elif [ "${dg_good#2}" = "$dg_good" ]; then
+			skip "digest realm-binding: even the correct-realm hand-rolled digest got HTTP $dg_good - crafting no longer matches the server, wrong-realm verdict would be meaningless"
+		else
+			dg_bad=$(dg_try "forged_realm_$$")
+			case "$dg_bad" in
+				401|403) pass "digest realm binding holds: correct response over a FORGED realm rejected (HTTP $dg_bad; correct realm passed with $dg_good)";;
+				2*)      fail "digest realm binding BROKEN: a response computed over a never-issued realm was accepted (HTTP $dg_bad)";;
+				*)       skip "digest realm-binding: forged-realm request -> HTTP $dg_bad";;
+			esac
+		fi
+	else
+		skip "digest realm-binding test needs md5sum"
+	fi
+
+	# --- token surface (?token= / X-Timps-Token, httpd.c http_check_token):
+	# a wrong token must fall through to the 401; the real one (HTTP_TOKEN
+	# env - the per-boot secret lives on-device in http.token_file) must
+	# unlock /control in both transport forms (separate parse paths).
+	http_negative "/control?token=qa_wrong_$$" "/control (wrong ?token=)"
+	if [ -n "${HTTP_TOKEN:-}" ]; then
+		local tcode
+		tcode=$(http_code "$(http_url "/control?token=${HTTP_TOKEN}")")
+		case "$tcode" in
+			2*) pass "/control accepts the real token via ?token= (HTTP $tcode)";;
+			*)  fail "/control rejects the real token via ?token= (HTTP $tcode) - token auth broken or HTTP_TOKEN stale";;
+		esac
+		tcode=$(http_code -H "X-Timps-Token: ${HTTP_TOKEN}" "$(http_url "/control")")
+		case "$tcode" in
+			2*) pass "/control accepts the real token via X-Timps-Token header (HTTP $tcode)";;
+			*)  fail "/control rejects the real token via the header (HTTP $tcode)";;
+		esac
+	else
+		skip "token acceptance: set HTTP_TOKEN=<contents of http.token_file> to test (wrong-token rejection was tested above)"
+	fi
+
 	# --- positive counter-tests (correct creds must be accepted) --------
 	http_positive "/snapshot.jpg?chn=0" "/snapshot.jpg"
 	http_positive "/control"            "/control"
@@ -282,10 +368,41 @@ test_srt() {
 	fi
 	# A caller with neither passphrase nor the configured streamid must be
 	# rejected during the handshake. Success (rc 0 = data flowing) = leak.
-	if timeout "$TIMEOUT" "$tool" -q "srt://${HOST}:${SRT_PORT}?mode=caller" /dev/null >/dev/null 2>&1; then
+	#
+	# The verdict must NOT be "any nonzero exit = protected": a closed/
+	# filtered port, a typo'd --srt-port, a timeout with no handshake at all
+	# and a tool-level error all exit nonzero too, and each of those used to
+	# count as PASS - an SRT listener that was never reached "passed" its
+	# auth test. Keep the tool's output (no -q) and require an actual
+	# REJECTION SIGNATURE in it before crediting the handshake-level reject;
+	# everything else is a SKIP, because nothing about auth was observed.
+	local srt_out srt_rc
+	srt_out=$(timeout "$TIMEOUT" "$tool" "srt://${HOST}:${SRT_PORT}?mode=caller" /dev/null 2>&1 >/dev/null)
+	srt_rc=$?
+	if [ "$srt_rc" -eq 0 ]; then
 		fail "SRT accepted a caller WITHOUT passphrase/streamid - NOT protected"
+	elif printf '%s' "$srt_out" | grep -qiE 'reject|denied|SECURITYRES|KMREQ|wrong password|bad password|Connection setup failure'; then
+		pass "SRT rejects caller without passphrase/streamid (handshake-level reject: $(printf '%s' "$srt_out" | grep -m1 -ioE '[^:]*reject[^,;]*|Connection setup failure[^,;]*' | head -c 80))"
+	elif [ "$srt_rc" -eq 124 ]; then
+		skip "SRT: no handshake response within ${TIMEOUT}s (timeout) - port closed/filtered or wrong --srt-port; nothing about auth was observed"
 	else
-		pass "SRT rejects caller without passphrase/streamid"
+		skip "SRT: caller failed without a recognizable reject signature (rc=$srt_rc: $(printf '%s' "$srt_out" | head -1 | head -c 100)) - cannot attribute the failure to auth"
+	fi
+
+	# positive counter-test, same sharpness idea as RTSP/HTTP above: only
+	# possible when the caller is given the real secrets (never stored in
+	# this repo; SRT_PASSPHRASE / SRT_STREAMID env)
+	if [ -n "${SRT_PASSPHRASE:-}" ] || [ -n "${SRT_STREAMID:-}" ]; then
+		local q="srt://${HOST}:${SRT_PORT}?mode=caller"
+		[ -n "${SRT_PASSPHRASE:-}" ] && q="$q&passphrase=${SRT_PASSPHRASE}"
+		[ -n "${SRT_STREAMID:-}" ]   && q="$q&streamid=${SRT_STREAMID}"
+		if timeout "$TIMEOUT" "$tool" "$q" /dev/null >/dev/null 2>&1; then
+			pass "SRT accepts the caller WITH the configured passphrase/streamid (test is sharp)"
+		else
+			fail "SRT rejected the caller WITH the configured passphrase/streamid - secrets wrong, or auth rejects everyone (negatives above pass for the wrong reason)"
+		fi
+	else
+		skip "SRT positive test: set SRT_PASSPHRASE/SRT_STREAMID to prove correct credentials are accepted"
 	fi
 }
 
