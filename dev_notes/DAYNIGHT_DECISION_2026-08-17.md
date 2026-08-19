@@ -129,7 +129,7 @@ both values were wrong in the same direction:
 | | r | |
 |---|---|---|
 | darkest genuine night, with AE headroom | **2.38** | cam-C, an unlit outbuilding |
-| a DIMMED bedroom light | **1.50** | cam-D, confirmed against the house's own switch log |
+| a DIMMED interior light | **1.50** | cam-D, confirmed against an independent switch log |
 
 3.0 was too high: cam-C and cam-E sit at 2.33..2.38 all night with headroom to
 spare, so the rail rule cannot rescue them - they would have landed in
@@ -300,7 +300,7 @@ replicate:
 
 The first sweep's 7-of-8 and 0.13/camera-hour were a different night and a
 different subset; the shape is the same one, and the two cameras nobody finds
-are the permanently dark garage and a camera whose AE never leaves its rail -
+are a permanently dark outbuilding and a camera whose AE never leaves its rail -
 both heartbeat-carried by construction. `scripts/dn-trend-eval.py` produces
 this table and now reports **both** halves of the verdict: an earlier version
 reported only false fires, which is half a verdict, since a threshold of zero
@@ -342,7 +342,7 @@ staggered window minimum could go. They did not, and should not:
 - The two answer different questions and neither subsumes the other. `ref`
   and the jump bar catch a **step** the memory would smooth away over its own
   time constant; `fast/slow` catches a **ramp** that never reaches the step
-  bar - measured, the shed's dawn needs 106 minutes to get there.
+  bar - measured, that camera's dawn needs 106 minutes to get there.
 - The staggered window minimum is load-bearing for the heartbeat deferral for
   the reasons already recorded in `DAYNIGHT_REDESIGN_2026-08-17.md` §12.2, and
   the trend pair does not answer that question at all.
@@ -355,7 +355,7 @@ the slow one, so an answered question cannot immediately re-ask itself.
 
 The measurement record for that night
 (`private/messungen/2026-08-17_18/ground-truth.md`, point 2) concludes that a
-third, medium (~10 min) constant is needed, because the 21:03 bedroom light
+third, medium (~10 min) constant is needed, because the mid-dusk interior light
 fell inside the ongoing dusk (7845 -> 5087, a factor of 1.54) and registered
 against neither trigger. **The observation is correct and the remedy is
 refuted by the same data.** Replayed on that camera's own samples:

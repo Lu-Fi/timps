@@ -309,7 +309,7 @@ typedef struct {
      * mean anything. A camera whose gain and integration time are both at
      * their ceilings cannot respond to the illuminator going off, so r comes
      * back ~1 and looks exactly like daylight. Measured on a pitch-dark
-     * garage: r = 1.14, which is BELOW ir_ratio_day - without this check the
+     * outbuilding: r = 1.14, which is BELOW ir_ratio_day - without this check
      * ratio would have called it day. The direction of the ceiling settles
      * it: being pegged at the DARK end is itself proof of night. */
     int      ir_min_headroom;
