@@ -4,9 +4,31 @@ All notable changes to timps are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
-## [Unreleased]
+## [1.9.0] - 2026-08-19
 
 ### Changed
+
+- **RTSP: RTP payloads are sent straight out of the packet** (`src/rtsp/rtp.c`,
+  `src/rtsp/rtsp.c`). The TCP-interleaved path built each packet by copying the
+  payload into a scratch buffer; it now hands `sendmsg` three iovecs pointing at
+  the header, the interleave prefix and the payload where it already lies. TLS
+  keeps the copying path deliberately - its API has no scatter/gather - so the
+  branch is explicit rather than accidental.
+- **The video and JPEG threads share one packet-assembly loop**
+  (`src/hal/hal_ingenic.c`, new `enc_assemble_packs()`). Both copied the vendor
+  stream's packs identically apart from whether Annex-B start codes are wanted.
+  The duplication mattered because only one copy carried the evidence for a
+  libimp-version-specific assumption about the stream buffer not wrapping; the
+  other made the same assumption silently. Costs 16 bytes of `.text`.
+- **`build.sh` refuses to link against another SoC's vendor libraries**.
+  `3rdparty/install/lib` is shared state: `deps` copies one SoC's libimp there,
+  a later `deps` overwrites it, and `timps` linked against whatever was present.
+  `deps` now stamps what it installed and `timps` refuses a mismatch. Between
+  closely related SoCs the link succeeds and the mismatch only shows up as wrong
+  behaviour on the camera.
+- **One home for the helpers `record.c` and `timelapse.c` each had a copy of**
+  (`src/util.c`, `src/util.h`). Security-relevant: the `..` path-traversal check
+  existed twice, so a fix to one copy left the other behind.
 - **day/night: redesigned around four independent paths and one rate limit**
   (`src/daynight.c` 2030 -> 1290 lines, `src/daynight_probe.h` (732 lines)
   deleted). Design: `dev_notes/DAYNIGHT_REDESIGN_2026-08-17.md`; evidence:
@@ -293,6 +315,27 @@ semantic versioning.
   emissions); new corpus scenario 13 is the positive one.
 
 ### Fixed
+
+- **Shutdown left the stream threads running and tore their state down anyway**
+  (`src/rtsp/rtsp.c`, `src/mp4/httpd.c`, `src/hub.c`, `src/util.c`). The stop
+  paths only WAITED for their detached per-client threads - 500 ms for HTTP, 1 s
+  for RTSP - and then freed what those threads were still using. Measured with a
+  client attached: teardown took 20.5 s and the threads outlived it. A live
+  client registry now wakes them, and `/snapshot.jpg`'s grab is reachable by it
+  too; the same teardown is 26-30 ms. On a TLS build the freed context was one
+  the threads were still reading from.
+- **SRT: a blocked `srt_sendmsg2` outlived the shutdown drain** (`src/srt.c`).
+  Client sockets are now closed before the drain rather than after it, so a
+  sender parked in the SRT library cannot survive teardown.
+- **fMP4: an init segment could ship with an empty codec configuration box**
+  (`src/mp4/fmp4.c`). When SPS/PPS were not yet known the `avcC` came out empty
+  and the segment was sent regardless, which a browser accepts and then renders
+  as a permanently black stream with no error anywhere. The init segment now
+  fails instead.
+- **The QA harness attested tests it had never run** (`scripts/timps-qa.sh`).
+  Its attestation check was one-directional, so a field the script never posted
+  still counted as covered. It is now bidirectional, and what it writes to
+  `timps.conf` is quoted.
 - **SW rotate: the unbound rotate/encode thread processed the SENSOR frame rate,
   not `videoN.fps`, so everything downstream of it ran at double the configured
   rate** (`src/hal/hal_ingenic.c`, `sw_rot_thread`; measured on cam-H,
