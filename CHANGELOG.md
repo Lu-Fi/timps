@@ -39,7 +39,35 @@ semantic versioning.
   scenarios armed the trend path with nothing to feed it: two of them lost
   their click budget to probes the scenario could not answer.
 
+### Added
+
+- **A failed HAL init retries instead of ending the process** (`src/main.c`).
+  Nothing supervises this daemon: `S95timps` starts it with
+  `start-stop-daemon -b`, busybox init does not respawn, and no watchdog
+  covers it - so `HAL init failed` meant the camera stayed dark until someone
+  logged in. Observed once: after a restart the vendor ISP was still held four
+  seconds after a *clean* teardown, past the five one-second attempts in the
+  HAL. The init path unwinds fully on failure, so a retry costs only the wait;
+  it backs off 5s -> 60s and stays there. A genuine misconfiguration now
+  retries forever, which is log noise rather than harm, and recovers by itself
+  once the config is fixed.
+- **A shutdown says which way it ended** (`src/main.c`). `hard_exit()` writes
+  one constant string with `write()` - the only thing safe in that context -
+  and the clean path logs `teardown complete - exiting`. Until now both ended
+  after "shutting down" with whatever subsystem happened to log last, so the
+  guillotine and a normal exit were indistinguishable. Any change to the 3s
+  alarm or the 5s HAL wait would have been guesswork without this.
+
 ### Changed
+
+- **`logcat-ship.sh` ships the event's own timestamp** (`scripts/`). It used
+  `logcat` plain, which prints no time, so every line arrived stamped with the
+  minute it was forwarded - up to 60s late, and in one measured case over two
+  hours, because the whole buffer ships at once after a restart. `logcat -t`
+  prefixes each line with its epoch time; that timestamp is now also the
+  incremental marker, which replaces the line-count-plus-text scheme and
+  survives a ring wrap, a truncation and a reboot on its own. The script got
+  smaller doing it.
 
 - **The silent probe ships enabled** (`src/config.c`): `daynight.irprobe_cmd`
   now defaults to `timps-irprobe`, so a camera gets the cheap probe without

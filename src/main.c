@@ -267,7 +267,18 @@ static int acquire_singleton_lock(void)
     return 0;
 }
 
-static void hard_exit(int s){ (void)s; _exit(0); }
+static void hard_exit(int s)
+{
+    (void)s;
+    /* async-signal-safe only: no LOGx here (stdio and syslog both take locks
+     * and may allocate). Without this line the guillotine and a clean exit are
+     * indistinguishable in the log - both end after "shutting down" with
+     * whatever subsystem logged last. */
+    static const char m[] = "timpsd: shutdown alarm fired - hard exit\n";
+    ssize_t ignored = write(STDERR_FILENO, m, sizeof m - 1);
+    (void)ignored;
+    _exit(0);
+}
 /* L-4: hard-exit deadline for the whole shutdown path. It is a guillotine, not
  * a timeout - it _exit()s wherever teardown happens to be, so anything still
  * unfinished (a recording segment whose moov has not been written) is lost.
@@ -416,7 +427,21 @@ int main(int argc, char **argv)
     hub_set_idr_cb(idr_trampoline);
     hub_set_activity_cb(act_trampoline);
 
-    if (g_hal->init(&g_cfg)!=0){ LOGE(MOD,"HAL init failed"); return 1; }
+    /* Nothing supervises this process: S95timps starts it with
+     * start-stop-daemon -b, busybox init does not respawn, and there is no
+     * watchdog for it. Exiting here therefore means the camera stays dark
+     * until someone logs in - measured once already, after a restart where
+     * the vendor ISP was still held 4 s after a CLEAN teardown. The init
+     * path unwinds fully on failure, so retrying costs nothing but the wait.
+     * A genuine misconfiguration retries forever at 60 s, which is log noise
+     * rather than harm, and it recovers by itself once the config is fixed. */
+    for (int backoff = 5; g_hal->init(&g_cfg) != 0; ) {
+        LOGE(MOD,"HAL init failed - retrying in %ds", backoff);
+        for (int i = 0; i < backoff && g_run; i++) sleep(1);
+        if (!g_run) return 1;
+        if (backoff < 60) backoff *= 2;
+        if (backoff > 60) backoff = 60;
+    }
     if (g_hal->start(&g_cfg)!=0){ LOGE(MOD,"HAL start failed"); return 1; }
 
 #if defined(USE_BACKCHANNEL) || defined(USE_PLAY)
@@ -465,5 +490,8 @@ int main(int argc, char **argv)
     speaker_stop();
 #endif
     g_hal->stop();
+    /* the counterpart to hard_exit()'s write(): its absence after "shutting
+     * down" is what identifies a shutdown the alarm cut short. */
+    LOGI(MOD,"teardown complete - exiting");
     return 0;
 }

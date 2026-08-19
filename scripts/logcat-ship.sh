@@ -1,40 +1,26 @@
 #!/bin/sh
-# Forward NEW lines of the Ingenic alog into syslog. logcat dumps the whole
-# buffer and exits, so ship only what is past the marker. Rationale: see
-# scripts/logcat-ship.sh in the timps repo history.
+# Forward NEW lines of the Ingenic alog into syslog. `logcat -t` prefixes each
+# line with the event's own epoch time, so the marker is that timestamp: it
+# survives a ring wrap, a reboot and a truncated buffer without counting lines.
+# The forwarded line keeps its prefix - syslog's own time is the shipping time,
+# which for a once-a-minute cron is up to 60 s late.
 TAG=logcat
 STATE=/tmp/.logcat-ship
 DUMP=/tmp/.logcat-dump.$$
 
 trap 'rm -f "$DUMP"' EXIT
-logcat >"$DUMP" 2>/dev/null || exit 0
-total=$(wc -l <"$DUMP" 2>/dev/null) || exit 0
-[ "$total" -gt 0 ] || exit 0
+logcat -t >"$DUMP" 2>/dev/null || exit 0
+[ -s "$DUMP" ] || exit 0
 
-sent=0
-if [ -r "$STATE" ]; then
-	read -r sent marker <"$STATE" 2>/dev/null
-	case "$sent" in ''|*[!0-9]*) sent=0 ;; esac
-	# marker must still sit at $sent, else the ring wrapped
-	if [ "$sent" -gt 0 ] && [ "$sent" -le "$total" ]; then
-		at=$(sed -n "${sent}p" "$DUMP" 2>/dev/null)
-		[ "$at" = "$marker" ] || {
-			logger -t "$TAG" "--- alog buffer wrapped or restarted; re-sending ${total} line(s) ---"
-			sent=0
-		}
-	else
-		[ "$sent" -gt "$total" ] && {
-			logger -t "$TAG" "--- alog buffer shrank (${sent} -> ${total}); re-sending ---"
-			sent=0
-		}
-	fi
-fi
+last=0
+[ -r "$STATE" ] && read -r last <"$STATE" 2>/dev/null
+case "$last" in ''|*[!0-9.]*) last=0 ;; esac
 
-[ "$total" -gt "$sent" ] || exit 0
-
-# STATE in tmpfs: a reboot re-sends the buffer once, which is what you want.
-sed -n "$((sent + 1)),\$p" "$DUMP" | while IFS= read -r line; do
+# awk keeps the numeric compare in one pass; the timestamps are epoch seconds
+# with a fractional part, so a string compare would be wrong.
+awk -v last="$last" '$1 + 0 > last + 0' "$DUMP" | while IFS= read -r line; do
 	[ -n "$line" ] && logger -t "$TAG" "$line"
 done
 
-printf '%s %s\n' "$total" "$(sed -n "${total}p" "$DUMP")" >"$STATE"
+newest=$(awk 'BEGIN{m=0} $1 + 0 > m + 0 {m = $1} END{print m}' "$DUMP")
+[ -n "$newest" ] && printf '%s\n' "$newest" >"$STATE"
