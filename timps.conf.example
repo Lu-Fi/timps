@@ -509,6 +509,32 @@ daynight.probe_jump_pct  = 50                  # probe when the index falls belo
 daynight.probe_confirm_s = 15                  # ... and stays there this long
 daynight.probe_settle_s  = 8                   # AE settling before the verdict
 daynight.ref_delay_s     = 30                  # wait after entering night before anchoring the reference
+
+# The SILENT probe. Where the board can switch its IR illuminator on its own,
+# the automaton asks the cheap question first: turn the illuminator off for a
+# few seconds and compare. r = index(off) / index(on). A high r means the
+# illuminator was carrying the scene (night); a low one means the room
+# supplies the light (day). The ratio is dimensionless, so one pair of
+# thresholds fits every camera - no absolute level does, genuine daylight
+# spans a factor of 63 across a fleet at one instant.
+#
+# This costs no motor movement at all. The audible IR-cut probe below is the
+# fallback: no irprobe_cmd, no usable reading, or a ratio between the two
+# thresholds. Clearing irprobe_cmd disables the silent probe AND the trend
+# path, leaving the jump trigger and the heartbeat.
+daynight.irprobe_cmd     = timps-irprobe       # run as "<cmd> on|off"; empty = audible probe only
+daynight.ir_ratio_night  = 2.0                 # r at or above this = night, no click
+daynight.ir_ratio_day    = 2.0                 # r at or below this = day (if the AE had room)
+daynight.ir_min_headroom = 8                   # min AE reserve in log2 units (32 = one stop)
+#
+# A low ratio says the illuminator is not earning its keep. It does NOT say
+# day mode is usable, because switching also closes the IR-cut filter, and in
+# a dim interior that filter alone can cost a factor of three. The automaton
+# measures that factor the first time a ratio verdict is undone by night_gain,
+# then requires the projected day reading to clear night_gain before it will
+# act on a ratio again. Without it a dimly lit room flaps all night. The
+# factor is measured per scene, not configured, and is re-measured after a
+# restart.
 # The heartbeat: a probe regardless of any reading. This is the ONLY bound on
 # how long a wrong night can last, so it is a flat interval and never doubles.
 # A scene that has not moved since the last probe waits heartbeat_max_s instead

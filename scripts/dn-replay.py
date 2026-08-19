@@ -270,8 +270,10 @@ class SimRun:
         # day on its first probe. A scenario without a night_gain_noir curve
         # is not modelling a pegged camera, it is modelling nothing at all,
         # and must therefore exercise the audible path it was written for.
-        if model_illuminator:
-            base["daynight.irprobe_cmd"] = irstub
+        # Setting it is not enough: since the compiled default became a real
+        # command, an unset key inherits it, and a legacy scenario would arm
+        # path T with nothing to feed it. Clear it explicitly.
+        base["daynight.irprobe_cmd"] = irstub if model_illuminator else ""
         base.update(config or {})
         self.conf = os.path.join(self.dir, "run.conf")
         with open(self.conf, "w") as f:

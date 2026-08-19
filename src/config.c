@@ -434,7 +434,7 @@ void config_defaults(ms_config *c)
      * much tighter, and both old values were wrong in the same direction:
      *
      *   darkest genuine night, with AE headroom   2.38  (an unlit outbuilding)
-     *   a DIMMED bedroom light, confirmed against
+     *   a DIMMED interior light, confirmed against
      *   Home Assistant's own switch log            1.50
      *
      * 3.0 for night was too high: two cameras sit at 2.33..2.38 all night with
@@ -456,10 +456,24 @@ void config_defaults(ms_config *c)
      * dimmed case, which is the hardest one that occurs.
      *
      * min_headroom 8 is unchanged and now has two field witnesses: a pitch-dark
-     * garage and a cellar camera both sit at r = 1.00 with headroom 1 and 0,
+     * an outbuilding and a cellar camera both sit at r = 1.00 with headroom 1 and 0,
      * i.e. railed at the dark end, and are correctly held as night rather than
      * read as daylight. */
-    c->daynight.irprobe_cmd[0]=0;
+    /* Default ON since 2026-08-19. It was empty because "a wrong command would
+     * leave the scene dark", and that risk is real - the daemon restores the
+     * illuminator after the probe but has no failsafe if it dies inside the 8 s
+     * dark window. The default now points at a helper that arms a detached
+     * 60 s watchdog before switching off, so the light comes back even then,
+     * and that exits non-zero on a board with no switchable illuminator, which
+     * timps logs and skips.
+     *
+     * Leaving it off was costing more than it saved: three cameras sat in night
+     * mode through an entire afternoon because night->day fell back to the
+     * absolute threshold, which cannot separate a dark room from night - the
+     * measured spread of genuine daylight across this fleet is a factor of 63.
+     * The IR ratio settles it in one silent probe. Set to empty to disable. */
+    snprintf(c->daynight.irprobe_cmd, sizeof c->daynight.irprobe_cmd,
+             "timps-irprobe");
     c->daynight.ir_ratio_night=2.0f;
     c->daynight.ir_ratio_day=2.0f;
     c->daynight.ir_min_headroom=8;

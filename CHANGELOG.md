@@ -4,6 +4,56 @@ All notable changes to timps are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [Unreleased]
+
+### Fixed
+
+- **A low IR ratio no longer switches to day on its own** (`src/daynight.c`).
+  The silent probe answers "is the illuminator earning its keep". Switching to
+  day also closes the IR-cut filter, which is a separate cost, and on a dim
+  interior it is the binding one. Measured on a bedroom-class scene with one
+  dimmed lamp: the probe reported `r = 1.27`, the automaton switched to day,
+  the day pipeline read 11480 against a `night_gain` of 4096, the absolute
+  rule sent it straight back, and the cycle repeated - eight audible round
+  trips in one evening. The automaton now measures what the filter costs the
+  first time a ratio verdict is undone that way (3.27x in that scene) and
+  requires the projected day reading to clear `night_gain` before acting on a
+  ratio again. One exploratory switch remains unavoidable; the repeats are
+  gone. At real dawn the night reading falls and the switch happens by itself,
+  with no special case. The factor is measured per scene rather than
+  configured, and is re-measured after a restart rather than persisted.
+  Corpus scenario `21-ir-ratio-flap-cam-sz`, built from the measured numbers,
+  holds this to two switches where the unguarded automaton spent twelve.
+- **An illuminator command that does not work retires the silent probe**
+  (`src/daynight.c`). Every failed attempt fell back to the audible IR-cut
+  probe, so a board that cannot switch its LEDs separately paid a motor
+  movement for each try - worse than never having tried. Two consecutive
+  failures now retire the silent probe for the session, and the trend trigger
+  goes with it, leaving the jump trigger and the heartbeat. That is the
+  fallback the design describes and the code did not enforce; it only became
+  visible once the probe shipped enabled.
+- **The replay harness clears `daynight.irprobe_cmd` for scenarios that do
+  not model an illuminator** (`scripts/dn-replay.py`). It set the key when a
+  scenario had a `night_gain_noir` curve but relied on the compiled default
+  being empty otherwise. Once that default became a real command, legacy
+  scenarios armed the trend path with nothing to feed it: two of them lost
+  their click budget to probes the scenario could not answer.
+
+### Changed
+
+- **The silent probe ships enabled** (`src/config.c`): `daynight.irprobe_cmd`
+  now defaults to `timps-irprobe`, so a camera gets the cheap probe without
+  per-camera configuration. Boards that cannot drive the illuminator
+  separately retire it themselves, see above.
+
+### Documentation
+
+- **The silent probe is documented** (`docs/wiki/Day-Night.md`,
+  `docs/wiki/Configuration-Reference.md`, `timps.conf.example`).
+  `irprobe_cmd`, `ir_ratio_night`, `ir_ratio_day` and `ir_min_headroom` were
+  absent from both the reference table and the example config - tolerable
+  while the feature shipped switched off, and not once it became the default.
+
 ## [1.9.0] - 2026-08-19
 
 ### Changed

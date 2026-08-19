@@ -187,6 +187,76 @@ The constants are compile-time (`DN_TREND_FAST_MS`, `DN_TREND_SLOW_MS`,
 and fleet-wide by construction, which is the same property that made the IR
 ratio worth having in the first place.
 
+## The silent probe
+
+Where the board can drive its IR illuminator without moving the IR-cut filter
+(`daynight.irprobe_cmd`), every request for a verdict tries this first:
+
+```
+turn the illuminator OFF
+wait probe_settle_s for the AE
+r = index(illuminator off) / index(illuminator on)
+turn the illuminator back ON
+```
+
+`r` is a ratio, so it is dimensionless and the same pair of thresholds fits
+every camera in a fleet. No absolute level does: genuine daylight readings
+span a factor of 63 across twelve cameras at one instant.
+
+| verdict | condition | costs |
+|---|---|---|
+| night | `r >= ir_ratio_night` | nothing — the illuminator was carrying the scene |
+| night | reserve `< ir_min_headroom` | nothing — the meter is pegged at the *dark* end, which is itself proof |
+| day | `r <= ir_ratio_day`, reserve sufficient, **and the filter-cost gate below** | one switch |
+| escalate | anything in between | one audible probe |
+
+The headroom test is not a refinement. An AE with nothing left cannot respond
+to the illuminator going off, so it returns `r ≈ 1` — indistinguishable from
+daylight. Measured on a pitch-dark scene: `r = 1.14`, below `ir_ratio_day`.
+Only the reserve separates that from a genuinely lit room.
+
+Both ratio thresholds ship at `2.0`, so with the defaults the "escalate" row
+never fires. Setting `ir_ratio_day` below `ir_ratio_night` opens a deliberate
+dead zone, trading an occasional audible click for not deciding on thin
+evidence.
+
+### What switching to day also costs
+
+A low ratio answers *is the illuminator earning its keep*. It does **not**
+answer *is there enough light to run day mode* — because switching to day also
+closes the IR-cut filter, and in a dim interior that filter alone can cost a
+factor of three.
+
+Left unguarded the two rules chase each other. Measured on a bedroom-class
+scene with one dimmed lamp: the probe reports `r = 1.27` and switches to day;
+the day pipeline, filter now closed, reads 11480 against a `night_gain` of
+4096; path A sends it straight back; the illuminator returns and the ratio
+reports 1.27 again. Eight round trips in one evening, each an audible click.
+
+So the automaton measures the filter's price the first time a ratio verdict is
+undone that way — day reading over the night reading that the verdict left,
+3.27 in that scene — and from then on requires
+
+```
+current night reading × filter_cost < night_gain
+```
+
+before it will act on a ratio at all. One exploratory switch is unavoidable:
+nothing can know the day-pipeline reading without trying it once. Every later
+pass refuses in the log and costs nothing:
+
+```
+silent probe (trend): r=1.27 - the room supplies the light, but day mode
+would read ~11500 (filter costs 3.27x) against night_gain 4096, staying night
+```
+
+At real dawn the night reading falls, the product drops below `night_gain` on
+its own, and the switch happens — no special case, no calendar. The factor is
+measured per scene rather than configured, and is deliberately not persisted:
+a quantity that moves with the scene is cheaper to re-measure once per restart
+than to keep correct in flash. Corpus scenario `21-ir-ratio-flap-cam-sz`
+holds this to two switches where the unguarded automaton spent twelve.
+
 ## The probe
 
 ```

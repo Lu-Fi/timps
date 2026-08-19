@@ -47,6 +47,7 @@ enum { DN_DAY = 0, DN_NIGHT = 1, DN_UNKNOWN = -1 };
 #endif
 #ifndef DN_STABLE_N
 #define DN_STABLE_N 4            /* consecutive on-EMA samples = AE settled */
+#define DN_IR_MAX_FAILS 2        /* failed illuminator calls before retiring it */
 #endif
 #ifndef DN_STABLE_PCT
 #define DN_STABLE_PCT 0.10f      /* ... within this fraction of the EMA */
@@ -115,7 +116,7 @@ enum { DN_DAY = 0, DN_NIGHT = 1, DN_UNKNOWN = -1 };
  * show what goes wrong on the way down: natural twilight is slow - a factor
  * of 2.2 over 67 minutes - so the slow side has to be a real memory and not
  * a rate measure, or it tracks the twilight instead of noticing it. The two
- * dawns nobody finds are the permanently dark garage and a camera whose AE
+ * dawns nobody finds are a permanently dark outbuilding and a camera whose AE
  * never leaves its rail; both are heartbeat-carried by construction.
  *
  * Most of that 0.22 comes from two cameras that spent the whole daylight
@@ -123,7 +124,7 @@ enum { DN_DAY = 0, DN_NIGHT = 1, DN_UNKNOWN = -1 };
  * it is an over-count in the same, safe direction.
  *
  * NO THIRD (medium, ~10 min) CONSTANT, though one was proposed after the
- * same night: the 21:03 bedroom light fell inside the ongoing dusk (7845 ->
+ * same night: an interior light switched on mid-dusk fell inside it (7845 ->
  * 5087, a factor of 1.54) and so registered against neither the jump bar
  * (which needs a factor of 2) nor the hour-long memory, which the dusk had
  * left far BELOW the current level - the ratio bottomed at 1.15, never
@@ -231,7 +232,7 @@ typedef struct {
      *
      * This is what makes a ratio reading trustworthy. An AE with nothing left
      * cannot respond to the illuminator going off, so it returns r ~= 1 -
-     * indistinguishable from daylight. Measured on a pitch-dark garage:
+     * indistinguishable from daylight. Measured on a pitch-dark outbuilding:
      * r = 1.14, below ir_ratio_day, and only the reserve (1 unit, i.e. none)
      * separates that from a genuinely lit room. */
     int   headroom;
@@ -480,10 +481,17 @@ static void dn_switch(int mode, const char *why, const char *cmd)
  * queue: two requests a second apart mean one probe, which is what the caller
  * wants and what the illuminator can stand. */
 static volatile int g_probe_req = 0;
+/* The silent probe is armed by configuration but only kept armed by evidence.
+ * A board that cannot switch its illuminator separately answers every attempt
+ * with a failure, and each of those costs an audible IR-cut probe instead -
+ * worse than never having tried. Two consecutive failures retire it for the
+ * session; the design's fallback (path C plus the heartbeat) is what remains.
+ * Not persisted: a restart re-tests, which is the cheap direction to be wrong in. */
+static volatile int g_ir_unusable = 0;
 
 int daynight_request_probe(void)
 {
-    if (!g_cfg.daynight.irprobe_cmd[0]) return -1;
+    if (!g_cfg.daynight.irprobe_cmd[0] || g_ir_unusable) return -1;
     g_probe_req = 1;
     return 0;
 }
@@ -936,6 +944,14 @@ static void *dn_thread(void *arg)
     int64_t boot_at     = ms_now_us() / 1000;
     int     day_ok      = 0;           /* the current day is confirmed, not probed */
     float   day_min     = -1.0f;       /* lowest exposure of this day excursion */
+    /* what the IR-cut filter costs in THIS scene, measured: the day pipeline
+     * reading divided by the night reading that the ratio verdict left. The
+     * silent probe answers "is the illuminator earning its keep"; the mode
+     * decision needs "is there light enough to run day mode", and on a dark
+     * interior those differ by this factor. -1 = not measured yet. */
+    int     ir_fails    = 0;           /* consecutive illuminator-command failures */
+    float   filter_cost = -1.0f;
+    float   ir_night_at = -1.0f;       /* night level a pending ratio verdict left */
     float   probe_best  = -1.0f;       /* best day-pipeline reading ever, for the diagnostic */
     int     day_seen    = 0;           /* has day ever been confirmed? */
     int     probe_fails = 0;           /* consecutive probes that found night */
@@ -1044,6 +1060,8 @@ static void *dn_thread(void *arg)
             sust_min = win_max = -1.0f; win_at = 0;
             ema_fast = ema_slow = -1.0f; trend_since = 0;
             day_ok = 0; day_min = -1.0f;
+            filter_cost = ir_night_at = -1.0f;   /* re-measure from scratch */
+            ir_fails = 0; g_ir_unusable = 0;     /* and re-test the illuminator */
             booted = 0; boot_at = now;
             warned_noisp = 0; hb_defer_logged = 0; blind_warned = 0;
             LOGI(MOD, "auto day/night enabled");
@@ -1206,19 +1224,41 @@ static void *dn_thread(void *arg)
                      * silent probes, which is what they are cheap for. */
                     ema_fast = ema_slow = -1.0f; trend_since = 0;
                 } else if (r <= dn->ir_ratio_day && room >= dn->ir_min_headroom) {
-                    /* the room supplies the light. THIS is the one click. */
-                    LOGI(MOD, "silent probe (%s): r=%.2f with %d units of AE "
-                              "reserve - the room supplies the light, not the "
-                              "illuminator", ir_why ? ir_why : "?",
-                         (double)r, room);
-                    target = DN_DAY;
-                    snprintf(why, sizeof why, "IR ratio %.2f", (double)r);
+                    /* the room supplies the light - but that alone does not
+                     * make day mode usable, because switching also closes the
+                     * IR-cut filter. Once its cost has been measured here,
+                     * project the day reading and refuse a verdict that is
+                     * already known to bounce straight back off night_gain.
+                     * Without this the two rules chase each other all night. */
+                    float lit = d_dark / r;
+                    if (filter_cost > 0.0f &&
+                        lit * filter_cost > dn->night_gain) {
+                        LOGI(MOD, "silent probe (%s): r=%.2f - the room "
+                                  "supplies the light, but day mode would "
+                                  "read ~%.0f (filter costs %.2fx) against "
+                                  "night_gain %.0f, staying night",
+                             ir_why ? ir_why : "?", (double)r,
+                             (double)(lit * filter_cost), (double)filter_cost,
+                             (double)dn->night_gain);
+                        trig_since = 0;
+                        hb_at = now + (int64_t)dn->heartbeat_s * 1000;
+                        sust_min = win_max = -1.0f; win_at = 0;
+                        ema_fast = ema_slow = -1.0f; trend_since = 0;
+                    } else {
+                        LOGI(MOD, "silent probe (%s): r=%.2f with %d units of "
+                                  "AE reserve - the room supplies the light, "
+                                  "not the illuminator", ir_why ? ir_why : "?",
+                             (double)r, room);
+                        ir_night_at = lit;
+                        target = DN_DAY;
+                        snprintf(why, sizeof why, "IR ratio %.2f", (double)r);
+                    }
                 } else if (room < dn->ir_min_headroom) {
                     /* r came back near 1, but the AE had nothing left to move
                      * with, so it could not have answered. Pegged at the DARK
                      * end is itself proof of night - a bright-end ceiling
                      * cannot occur in night mode. Measured: a pitch-dark
-                     * garage returns r=1.14 with 1 unit of reserve. */
+                     * outbuilding returns r=1.14 with 1 unit of reserve. */
                     LOGI(MOD, "silent probe (%s): r=%.2f but only %d units of "
                               "AE reserve - the meter is pegged at the dark "
                               "end, which is itself night", 
@@ -1279,6 +1319,20 @@ static void *dn_thread(void *arg)
                 else                    dark_since = 0;
                 if (dark_since &&
                     now - dark_since >= (int64_t)dn->day_confirm_s * 1000) {
+                    /* a ratio verdict undone by the absolute rule is the one
+                     * measurement of the filter's cost this scene ever
+                     * offers. Taking it here is what makes the next verdict
+                     * cheaper than this one was. */
+                    if (ir_night_at > 0.0f && s > ir_night_at) {
+                        filter_cost = s / ir_night_at;
+                        LOGI(MOD, "the IR-cut filter costs %.2fx here (day "
+                                  "%.0f vs night %.0f) - a ratio verdict now "
+                                  "needs the night reading below %.0f",
+                             (double)filter_cost, (double)s,
+                             (double)ir_night_at,
+                             (double)(dn->night_gain / filter_cost));
+                    }
+                    ir_night_at = -1.0f;
                     target = DN_NIGHT;
                     snprintf(why, sizeof why, "exposure %.0f > %.0f",
                              (double)s, (double)dn->night_gain);
@@ -1333,7 +1387,8 @@ static void *dn_thread(void *arg)
              * 2 clicks a day this design exists to reach. A board without
              * separately switchable LEDs therefore keeps jump plus
              * heartbeat, i.e. exactly its pre-existing behaviour. */
-            if (dn->irprobe_cmd[0] && ema_fast > 0.0f && ema_slow > 0.0f &&
+            if (dn->irprobe_cmd[0] && !g_ir_unusable &&
+                ema_fast > 0.0f && ema_slow > 0.0f &&
                 ema_fast < ema_slow * (float)DN_TREND_PCT / 100.0f) {
                 if (!trend_since) trend_since = now;
             } else trend_since = 0;
@@ -1393,7 +1448,7 @@ static void *dn_thread(void *arg)
          * separate rules existed to ration it. Making the common case free is
          * what let all nine go. */
         if (want_probe && cur == DN_NIGHT && !ir_verdict_at &&
-            dn->irprobe_cmd[0] &&
+            dn->irprobe_cmd[0] && !g_ir_unusable &&
             (!mode_since ||
              now - mode_since >= (int64_t)dn->transition_s * 1000)) {
             if (dn_irprobe(dn->irprobe_cmd, 0) == 0) {
@@ -1409,10 +1464,18 @@ static void *dn_thread(void *arg)
                 /* and nothing else happens this tick: the audible path below
                  * must not fire while a silent verdict is pending, or the
                  * cheap measurement is paid for and then thrown away. */
+                ir_fails = 0;
                 goto tail;
             }
             /* dn_irprobe() failing has already logged why; want_probe stays
              * set and the audible path below takes over this tick. */
+            if (++ir_fails >= DN_IR_MAX_FAILS) {
+                g_ir_unusable = 1;
+                LOGW(MOD, "'%s' failed %d times - retiring the silent probe "
+                          "for this session; the trend trigger goes with it, "
+                          "leaving the jump trigger and the heartbeat",
+                     dn->irprobe_cmd, ir_fails);
+            }
         }
         if (want_probe && cur == DN_NIGHT && !ir_verdict_at &&
             (!last_probe ||

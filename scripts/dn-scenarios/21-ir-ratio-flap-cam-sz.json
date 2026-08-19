@@ -13,17 +13,46 @@
   },
   "interp": "step",
   "noise_pct": 0,
-  "night_gain": [[0, 3514]],
-  "night_gain_noir": [[0, 4463]],
-  "day_gain": [[0, 11480]],
+  "night_gain": [
+    [
+      0,
+      3514
+    ]
+  ],
+  "night_gain_noir": [
+    [
+      0,
+      4463
+    ]
+  ],
+  "day_gain": [
+    [
+      0,
+      11480
+    ]
+  ],
   "expect": {
-    "expected_mode": [[0, "night"], [30, "any"], [900, "night"]],
+    "expected_mode": [
+      [
+        0,
+        "night"
+      ],
+      [
+        30,
+        "any"
+      ],
+      [
+        900,
+        "night"
+      ]
+    ],
     "max_wrong_mode_s": 300,
     "max_switches": 2,
     "max_ir_probes": 8,
     "monotonicity": "warn",
-    "forbid_log": [
-      "switching to day \\(IR ratio.*\\n(.*\\n)*.*switching to day \\(IR ratio"
+    "expect_log": [
+      "the IR-cut filter costs",
+      "day mode would read"
     ]
   }
 }
