@@ -464,6 +464,7 @@ static void dn_switch(int mode, const char *why, const char *cmd)
         LOGW(MOD, "'%s %s' failed (rc=%d) - is the script installed?", cmd, arg, rc);
 }
 
+
 /* Drive the IR illuminator alone: "<irprobe_cmd> on|off".
  *
  * Deliberately a different command from switch_cmd, because on the hardware
@@ -1158,6 +1159,17 @@ static void *dn_thread(void *arg)
                 /* mode_since stays 0 deliberately: the dwell exists to space
                  * SWITCHES apart, and there has not been one yet - leaving it
                  * armed here would block the boot probe by transition_s. */
+                /* Push image.running_mode into the ISP once, the same way a
+                 * switch does. NOT switch_cmd: that moves the IR-cut filter,
+                 * and the measurement says the board was already right - the
+                 * illuminator was on, the ISP reported Night, and only its
+                 * tuning was wrong. Re-asserting the running mode is what
+                 * repaired it; a filter movement per boot would be a real
+                 * mechanical cost the evidence does not ask for. */
+                reassert_left = DN_REASSERT_COUNT;
+                reassert_at   = now + DN_REASSERT_MS;
+                LOGI(MOD, "boot: re-asserting running_mode into the ISP - "
+                          "nothing has told it this session");
                 if (running_mode) {         /* persisted NIGHT */
                     cur = DN_NIGHT;
                     ref = -1.0f;
@@ -1211,6 +1223,29 @@ static void *dn_thread(void *arg)
                               "scene, staying night",
                          ir_why ? ir_why : "?", (double)r, (double)d_dark,
                          (double)(d_dark / r));
+                    /* The reference only ever ratcheted UPWARD, on proof
+                     * from a day probe that came back dark. A silent probe
+                     * answering "night" at a level below the bar is the same
+                     * kind of proof pointing the other way: the reference
+                     * predicted a brightening worth spending a look on, the
+                     * look said night, so the reference is describing a scene
+                     * that no longer exists. Without this there is no way
+                     * down at all. Measured: a camera whose ISP came up wrong
+                     * anchored at 131072, then read 6070 once it recovered -
+                     * seventeen probes in a row, one every fourteen seconds,
+                     * each eight seconds with the illuminator off, forever. */
+                    {
+                        float lit = d_dark / r;
+                        float bar_c = ref * (float)dn->probe_jump_pct / 100.0f;
+                        if (ref > 0.0f && lit > 0.0f && lit < bar_c) {
+                            ref = lit;
+                            LOGI(MOD, "night reference lowered to %.0f, proven "
+                                      "by the silent probe (bar %.0f)",
+                                 (double)ref,
+                                 (double)(ref * (float)dn->probe_jump_pct
+                                          / 100.0f));
+                        }
+                    }
                     trig_since = 0;
                     hb_at = now + (int64_t)dn->heartbeat_s * 1000;
                     sust_min = win_max = -1.0f; win_at = 0;

@@ -48,6 +48,31 @@ semantic versioning.
   scenarios armed the trend path with nothing to feed it: two of them lost
   their click budget to probes the scenario could not answer.
 
+### Fixed
+
+- **The persisted mode is asserted into the ISP at boot** (`src/daynight.c`).
+  Adopting a persisted mode set the automaton's own state and armed a probe,
+  but never told the hardware anything: the re-assert that follows a switch
+  was the only path that ever pushed `image.running_mode`. A T23 came up that
+  way after every single boot with 128 units of ISP digital gain and an
+  exposure index of 131072 where the scene was worth 6100 - twenty times too
+  dark, and indistinguishable in the numbers from a genuinely dark night. It
+  was only visible in the picture. Re-asserting the running mode is what
+  repaired it; `switch_cmd` is deliberately **not** run, because the board was
+  already right (illuminator on, ISP reporting Night) and a filter movement
+  per boot is a mechanical cost the evidence does not ask for. Eight corpus
+  scenarios failed their click budget when it did.
+- **The night reference can come down** (`src/daynight.c`). It only ever
+  ratcheted upward, on proof from a day probe that came back dark, so a
+  reference anchored while the ISP was misbehaving could never be corrected. A
+  silent probe answering "night" at a level *below* the probe bar is the same
+  kind of proof pointing the other way: the reference predicted a brightening
+  worth spending a look on, and the look said night. The camera above then
+  fired the jump trigger every fourteen seconds - seventeen probes in a row,
+  each eight seconds with the illuminator off, which reads from outside as an
+  IR lamp that keeps switching itself off. Corpus scenario
+  `23-stale-reference-no-way-down`.
+
 ### Added
 
 - **A failed HAL init retries instead of ending the process** (`src/main.c`).
