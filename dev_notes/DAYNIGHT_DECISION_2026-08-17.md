@@ -120,8 +120,40 @@ units, or integration time below 90 % of maximum.
 
 Every one is measured, none guessed.
 
-**r thresholds 1.5 / 3.0** - measured 25.1 against 1.41/1.27 against 1.00/0.96.
-The gap is a factor of 18; 3.0 leaves a factor of 2 of room on either side.
+**r thresholds 1.5 / 3.0 - SUPERSEDED 2026-08-19, both now 2.0.** The original
+pair came from single instants spanning 1.41..25.1, an apparent factor of 18 of
+empty space. The full dusk-to-dawn campaign this document asked for (twelve
+cameras, 2026-08-18/19, 37-62 probe pairs each) shows a much tighter night, and
+both values were wrong in the same direction:
+
+| | r | |
+|---|---|---|
+| darkest genuine night, with AE headroom | **2.38** | cam-C, an unlit outbuilding |
+| a DIMMED bedroom light | **1.50** | cam-D, confirmed against the house's own switch log |
+
+3.0 was too high: cam-C and cam-E sit at 2.33..2.38 all night with headroom to
+spare, so the rail rule cannot rescue them - they would have landed in
+"inconclusive" and fallen through to the AUDIBLE probe on every heartbeat, i.e.
+exactly the clicking this design exists to remove. 1.5 was too tight: the first
+sample of that dimmed light read 1.65 and would have been missed, delaying a lit
+room by one probe interval.
+
+Both are now 2.0 and deliberately EQUAL - the inconclusive band between them
+produced nothing but audible probes on this fleet, and one boundary separates
+1.50 from 2.38 with about 30 % of margin either side.
+
+**The threshold is not the load-bearing part.** Anything in 1.8..2.2 returns the
+same verdicts across the whole campaign. What does the work is the confirmation:
+every single sample below 2.0 during the core night was an isolated outlier, and
+the only run of consecutive ones was the real light. Four apparent outliers at
+06:20-06:40 were dawn on cameras that switched to day moments later.
+
+One cost this measured, which the morning design did not anticipate: cam-A
+produced five consecutive sub-threshold samples at 20:05-20:25 with headroom
+123..142, so the probe would switch it to day and back again half an hour later.
+That is not a threshold problem - the camera had gone to night roughly forty
+minutes too early and the probe is correcting it - but it costs two clicks at
+dusk and is worth fixing on the day-to-night side.
 
 **Jump at 50 %** - the indoor light produced 0.076 in one sample. AGC noise sits
 at +/-25 %, a single sample at 0.5 is beyond 2 sigma, and three samples of

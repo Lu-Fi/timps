@@ -425,13 +425,43 @@ void config_defaults(ms_config *c)
     c->daynight.ref_delay_s=30;
     /* Silent probe OFF by default: it needs a board command that can drive the
      * illuminator on its own, and a wrong one would leave the scene dark. Set
-     * daynight.irprobe_cmd to enable it. Thresholds: provisional, chosen with
-     * a factor of two of margin either side of the gap measured on 2026-08-17
-     * (1.41 .. 25.1) and to be re-derived once the fleet has logged r across a
-     * full dusk and dawn - the structure does not depend on the numbers. */
+     * daynight.irprobe_cmd to enable it.
+     *
+     * Thresholds re-derived 2026-08-19 from the full dusk-to-dawn campaign the
+     * previous comment asked for: twelve cameras, 2026-08-18/19, 37-62 probe
+     * pairs each. The provisional 3.0/1.5 came from single instants spanning
+     * 1.41..25.1 - a factor of 18 of apparent empty space. A whole night is
+     * much tighter, and both old values were wrong in the same direction:
+     *
+     *   darkest genuine night, with AE headroom   2.38  (an unlit outbuilding)
+     *   a DIMMED bedroom light, confirmed against
+     *   Home Assistant's own switch log            1.50
+     *
+     * 3.0 for night was too high: two cameras sit at 2.33..2.38 all night with
+     * headroom to spare, so the rail rule cannot save them - they would have
+     * landed in "inconclusive" and fallen through to the AUDIBLE probe every
+     * heartbeat, which is the clicking this design exists to remove. 1.5 for
+     * day was too tight: the first sample of that dimmed light read 1.65 and
+     * would have been missed, costing a 20-minute delay on a lit room.
+     *
+     * Both now sit at 2.0, deliberately EQUAL: the inconclusive band between
+     * them only ever produced audible probes on this fleet, and a single
+     * boundary separates 1.50 from 2.38 with ~30 % of margin either side.
+     *
+     * The value is not critical - anything in 1.8..2.2 gives the same verdicts
+     * on the whole campaign. What does the work is the confirmation, not the
+     * threshold: every single sample below 2.0 during the core night was an
+     * isolated outlier, and the only run of consecutive ones was the real
+     * light. Do not tighten this without also checking what it does to the
+     * dimmed case, which is the hardest one that occurs.
+     *
+     * min_headroom 8 is unchanged and now has two field witnesses: a pitch-dark
+     * garage and a cellar camera both sit at r = 1.00 with headroom 1 and 0,
+     * i.e. railed at the dark end, and are correctly held as night rather than
+     * read as daylight. */
     c->daynight.irprobe_cmd[0]=0;
-    c->daynight.ir_ratio_night=3.0f;
-    c->daynight.ir_ratio_day=1.5f;
+    c->daynight.ir_ratio_night=2.0f;
+    c->daynight.ir_ratio_day=2.0f;
     c->daynight.ir_min_headroom=8;
     /* The heartbeat is the only bound on a wrong night, so it is a flat
      * interval, never a multiplier: 4 h while the scene is moving, 12 h once
