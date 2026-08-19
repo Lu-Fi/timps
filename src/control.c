@@ -556,6 +556,21 @@ int control_apply_json(const char *json, ctrl_result *res)
                 LOGW(MOD,"ignoring daynight.mode = '%s' (not auto/schedule)", v);
         }
         int ndn; const cfg_field *dn_tbl = cfg_fields_daynight(&ndn);
+        {   /* {"daynight":{"probe":1}} -> run a silent IR probe on the next
+             * tick. A COMMAND, not a setting, so it is counted here the same
+             * way record.clip is - otherwise the grading would answer 422 to a
+             * probe that was actually armed.
+             *
+             * -1 means this camera has no daynight.irprobe_cmd, i.e. it cannot
+             * probe silently at all. That is a refusal the caller needs to see:
+             * without it, "nothing happened" is indistinguishable from "the
+             * probe ran and found nothing", and the operator goes looking for a
+             * fault in the automaton instead of a missing config key. */
+            if (get_val(sb, se, "probe", v, sizeof v) && atoi(v) != 0) {
+                if (daynight_request_probe() == 0) g_acc++;
+                else                               g_rej++;
+            }
+        }
         apply_ctrl_fields(ch, "daynight", sb, se, dn_tbl, ndn);
     }
 

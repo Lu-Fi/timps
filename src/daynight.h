@@ -64,6 +64,11 @@
 #ifdef USE_DAYNIGHT
 void daynight_start(void);
 void daynight_stop(void);
+
+/* Ask the automaton to run a probe on its next tick. Returns 0 if it was
+ * armed, -1 if this build/camera cannot probe silently (no irprobe_cmd) - the
+ * caller can then tell the user why nothing happened instead of guessing. */
+int  daynight_request_probe(void);
 #endif
 
 /* Latest day/night measurement for GET /control (always linkable: without

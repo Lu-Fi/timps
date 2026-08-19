@@ -476,6 +476,18 @@ static void dn_switch(int mode, const char *why, const char *cmd)
  * config value fails to exec instead of injecting. Returns 0 when the command
  * ran and succeeded; anything else means the caller must fall back to the
  * audible probe rather than assume the illuminator moved. */
+/* Set by /control, cleared by the automaton when it acts on it. One flag, no
+ * queue: two requests a second apart mean one probe, which is what the caller
+ * wants and what the illuminator can stand. */
+static volatile int g_probe_req = 0;
+
+int daynight_request_probe(void)
+{
+    if (!g_cfg.daynight.irprobe_cmd[0]) return -1;
+    g_probe_req = 1;
+    return 0;
+}
+
 static int dn_irprobe(const char *cmd, int on)
 {
     if (!cmd || !cmd[0]) return -1;
@@ -1325,6 +1337,13 @@ static void *dn_thread(void *arg)
                 ema_fast < ema_slow * (float)DN_TREND_PCT / 100.0f) {
                 if (!trend_since) trend_since = now;
             } else trend_since = 0;
+            /* Operator request from /control. Checked before the trend so a
+             * manual probe is not swallowed by a trigger that would have
+             * fired anyway - the point of asking is to get an answer NOW. */
+            if (g_probe_req && !want_probe) {
+                g_probe_req = 0;
+                want_probe = 1; probe_why = "requested";
+            }
             if (trend_since && !want_probe &&
                 now - trend_since >= (int64_t)dn->probe_confirm_s * 1000) {
                 want_probe = 1; probe_why = "trend";
