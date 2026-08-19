@@ -2061,13 +2061,19 @@ else
 			dn_mode_cur2=$(jget "$LV_BASE" daynight.dn_mode)
 			tns_cur2=$(jget "$LV_BASE" daynight.time_night_start)
 			tds_cur2=$(jget "$LV_BASE" daynight.time_day_start)
-			# only restore the window keys when the camera HAD original values:
-			# posting "" for an unset original is rejected/ignored server-side,
-			# and the restore then silently leaves the TEST windows persisted
-			# (observed in both 2026-08-11 runs' post-reboot thread banners)
-			dn_win_restore=""
-			[ -n "$tns_cur2" ] && [ -n "$tds_cur2" ] && \
-				dn_win_restore="\"time_night_start\":\"$tns_cur2\",\"time_day_start\":\"$tds_cur2\","
+			# ALWAYS restore the window keys, including back to empty. The
+			# "posting "" is rejected server-side" note this block used to
+			# carry is not true of the current daemon: time_night_start /
+			# time_day_start ride the generic apply_ctrl_fields walker
+			# (control.c), which accepts an empty string and clears the field
+			# (verified 2026-08-19: POST {"time_night_start":"",
+			# "time_day_start":""} -> accepted 2, changed 2, read-back "").
+			# Skipping the restore is what actually stranded the TEST windows
+			# on the camera (observed 2026-08-19 on the QA camera: mode
+			# restored to auto but the thread banner then read
+			# calendar="time window" 14:07..12:05, which in auto mode silently
+			# pulls the heartbeat in to a fabricated dawn).
+			dn_win_restore="\"time_night_start\":\"$tns_cur2\",\"time_day_start\":\"$tds_cur2\","
 			dn_full_restore="{\"daynight\":{\"mode\":\"$dn_mode_cur2\",${dn_win_restore}\"transition_s\":$dn_tr_cur}}"
 			LV_PENDING="$dn_full_restore"
 
@@ -2201,17 +2207,32 @@ else
 				info "  day/night: hook-invocation check needs --ssh with working logread on both samples - skipped"
 			else
 				n_sw=$(( ${dn_night1:-0} - ${dn_night0:-0} )); d_sw=$(( ${dn_day1:-0} - ${dn_day0:-0} ))
+				# A NEGATIVE delta cannot mean "the hook did not run" - it means
+				# the baseline lines scrolled out of the syslog ring between the
+				# two samples (busybox syslogd -C64 = 64 KB, ~6 min of QA-load
+				# logging on the fleet's cameras), so the counts are not
+				# comparable at all. Reporting that as "no hook invocation" is
+				# how a working chain gets failed; say what actually happened.
+				if [ "$n_sw" -lt 0 ] || [ "$d_sw" -lt 0 ]; then
+					warn "day/night: the syslog ring buffer wrapped between the hook-count samples (night ${dn_night0}->${dn_night1}, day ${dn_day0}->${dn_day1}) - hook-invocation and flap counts are not usable for this run; raise syslogd's -C size to re-enable them"
+				else
 				[ "$n_sw" -ge 1 ] && ok "day/night: the board hook actually ran for the night switch ($n_sw invocation(s) logged)" \
 					|| bad "day/night: no 'switching to night' hook invocation in logread - the decision changed state but the board script (IR-cut/illuminator) was never run"
 				[ "$d_sw" -ge 1 ] && ok "day/night: the board hook actually ran for the day switch ($d_sw invocation(s) logged)" \
 					|| bad "day/night: no 'switching to day' hook invocation in logread"
 				# The flap regression (0f5fc80): more than one switch per
 				# direction for two deliberate, unambiguous window changes means
-				# the state machine is oscillating.
-				if [ "$n_sw" -le 1 ] && [ "$d_sw" -le 1 ]; then
+				# the state machine is oscillating. EXACTLY one - a 0 delta is
+				# the hook-invocation failure above, and calling that "no
+				# flapping" in the same breath is a contradiction the reader
+				# has to untangle (it printed both on the 2026-08-11 runs).
+				if [ "$n_sw" -eq 1 ] && [ "$d_sw" -eq 1 ]; then
 					ok "day/night: exactly one switch per direction - no flapping"
+				elif [ "$n_sw" -le 1 ] && [ "$d_sw" -le 1 ]; then
+					info "  day/night: flap count not assessable (${n_sw} night / ${d_sw} day switches - see the hook-invocation failure above)"
 				else
 					bad "day/night: FLAPPING - ${n_sw} night and ${d_sw} day switches for two deliberate window changes (expected 1 each). This is the 0f5fc80 overnight flap-loop signature"
+				fi
 				fi
 			fi
 
@@ -2239,10 +2260,16 @@ else
 			# --- restore -------------------------------------------------------
 			lv_post "$dn_full_restore" >/dev/null
 			dnr="$OUTDIR/lv_dn_restore.json"; lv_get "$dnr"
-			if [ "$(jget "$dnr" daynight.dn_mode)" = "$dn_mode_cur2" ] && [ "$(jget "$dnr" daynight.transition_s)" = "$dn_tr_cur" ]; then
-				LV_PENDING=""; info "  day/night: restored mode=$dn_mode_cur2, windows and transition_s=$dn_tr_cur"
+			# verify the WINDOWS too, not just mode/transition_s: leaving the
+			# test windows behind is silent (they change nothing visible in
+			# auto mode except the heartbeat's dawn target), so nothing else
+			# would ever report it.
+			dnr_tns=$(jget "$dnr" daynight.time_night_start); dnr_tds=$(jget "$dnr" daynight.time_day_start)
+			if [ "$(jget "$dnr" daynight.dn_mode)" = "$dn_mode_cur2" ] && [ "$(jget "$dnr" daynight.transition_s)" = "$dn_tr_cur" ] &&
+			   [ "${dnr_tns:-}" = "${tns_cur2:-}" ] && [ "${dnr_tds:-}" = "${tds_cur2:-}" ]; then
+				LV_PENDING=""; info "  day/night: restored mode=$dn_mode_cur2, windows ('${tns_cur2}'..'${tds_cur2}') and transition_s=$dn_tr_cur"
 			else
-				warn "day/night: restore did not fully land (mode=$(jget "$dnr" daynight.dn_mode), transition_s=$(jget "$dnr" daynight.transition_s)) - check the camera's daynight settings by hand"
+				warn "day/night: restore did not fully land (mode=$(jget "$dnr" daynight.dn_mode), transition_s=$(jget "$dnr" daynight.transition_s), windows '${dnr_tns}'..'${dnr_tds}' want '${tns_cur2}'..'${tds_cur2}') - check the camera's daynight settings by hand"
 			fi
 		fi
 	fi
