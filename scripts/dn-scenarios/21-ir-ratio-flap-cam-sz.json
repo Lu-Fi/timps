@@ -1,0 +1,29 @@
+{
+  "name": "21-ir-ratio-flap-cam-sz",
+  "incident": "2026-08-19 - a bedroom camera flapped 8 times in one evening; the case the IR ratio gets wrong",
+  "description": "The regression test for the feedback loop the silent probe opened. A dark interior with a dimmed lamp: the probe correctly reports r = 1.27 - the illuminator earns almost nothing - and the automaton switches to day. But switching to day also closes the IR-cut filter, and that filter is worth a factor of 3.3 here: the same scene reads 3514 with it open and 11480 with it shut. 11480 is above night_gain, so the absolute check switches straight back, the illuminator returns, and the cycle repeats.\n\nScenario 19 is the same probe verdict without the loop: there the day pipeline reads 3700, below night_gain, so nothing switches back. The two scenarios differ in that one number alone - which is why an absolute day->night threshold cannot be left to decide this on its own.\n\nThe ratio answers 'is the illuminator earning its keep'. The mode decision needs 'is there enough light to run day mode'. Those are different questions and the second one is the one that is binding here.\n\nOne exploratory switch is allowed - the automaton cannot know the day-mode reading without trying it once. Repeating it is the defect: every cycle is an audible click of the IR-cut filter, and overnight that is dozens per camera.",
+  "scale": 30,
+  "duration_s": 1800,
+  "initial_mode": "night",
+  "config": {
+    "daynight.day_gain": 768,
+    "daynight.night_gain": 4096,
+    "daynight.heartbeat_s": 300,
+    "daynight.heartbeat_max_s": 300
+  },
+  "interp": "step",
+  "noise_pct": 0,
+  "night_gain": [[0, 3514]],
+  "night_gain_noir": [[0, 4463]],
+  "day_gain": [[0, 11480]],
+  "expect": {
+    "expected_mode": [[0, "night"], [30, "any"], [900, "night"]],
+    "max_wrong_mode_s": 300,
+    "max_switches": 2,
+    "max_ir_probes": 8,
+    "monotonicity": "warn",
+    "forbid_log": [
+      "switching to day \\(IR ratio.*\\n(.*\\n)*.*switching to day \\(IR ratio"
+    ]
+  }
+}

@@ -12,7 +12,10 @@ done
 # carry over whatever the earlier /tmp-only version already collected
 [ -f /tmp/dn-isp.csv ] && [ ! -f "$OUT" ] && cp /tmp/dn-isp.csv "$OUT" 2>/dev/null
 MAX=4000                      # ~66 h at one sample a minute, ~250 KB
+# T31 exposes isp-m0, T20 only isp_info; the field names match, but T20 has no
+# max integration time, so that column stays empty there.
 D=$(cat /proc/jz/isp/isp-m0 2>/dev/null)
+[ -n "$D" ] || D=$(cat /proc/jz/isp/isp_info 2>/dev/null)
 [ -n "$D" ] || exit 0
 [ -f "$OUT" ] || echo "epoch,mode,int,max_int,again,dgain,ispdgain" > "$OUT"
 [ "$(wc -l < "$OUT")" -lt "$MAX" ] || exit 0
