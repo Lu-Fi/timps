@@ -51,7 +51,7 @@
     "max_ir_probes": 8,
     "monotonicity": "warn",
     "expect_log": [
-      "the IR-cut filter costs",
+      "day mode reads",
       "day mode would read"
     ]
   }

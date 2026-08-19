@@ -1,0 +1,27 @@
+{
+  "name": "22-ir-ratio-flap-t20",
+  "incident": "2026-08-19 - a T20 cellar camera whose illuminator contributes nothing; the case where the day pipeline reads BETTER than the night one",
+  "description": "The second flap shape, and the one that slipped through the first guard. This board's illuminator does nothing measurable: the silent probe returns r = 1.00 with ample AE reserve, which reads as 'the room supplies the light'. But the day pipeline is not worse here, it is better - 6166 against a night level of 8171 - and still above night_gain, so the absolute rule sends it straight back.\n\nScenario 21 is the same loop with the factor above 1. The first version of the guard only learned when the day reading was HIGHER than the night level, on the assumption that closing the IR-cut filter can only cost light. On this board it does not, the guard never armed, and the camera stayed free to flap - measured at 11 switches in one day before the rebuild.\n\nWhat is learned is not 'what the filter costs' but 'what day mode actually reads here'. That quantity is meaningful in both directions.",
+  "scale": 30,
+  "duration_s": 1800,
+  "initial_mode": "night",
+  "config": {
+    "daynight.day_gain": 768,
+    "daynight.night_gain": 4096,
+    "daynight.heartbeat_s": 300,
+    "daynight.heartbeat_max_s": 300
+  },
+  "interp": "step",
+  "noise_pct": 0,
+  "night_gain": [[0, 8171]],
+  "night_gain_noir": [[0, 8171]],
+  "day_gain": [[0, 6166]],
+  "expect": {
+    "expected_mode": [[0, "night"], [30, "any"], [900, "night"]],
+    "max_wrong_mode_s": 300,
+    "max_switches": 2,
+    "max_ir_probes": 8,
+    "monotonicity": "warn",
+    "expect_log": ["day mode reads", "day mode would read"]
+  }
+}

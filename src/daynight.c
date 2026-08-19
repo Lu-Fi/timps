@@ -1235,7 +1235,7 @@ static void *dn_thread(void *arg)
                         lit * filter_cost > dn->night_gain) {
                         LOGI(MOD, "silent probe (%s): r=%.2f - the room "
                                   "supplies the light, but day mode would "
-                                  "read ~%.0f (filter costs %.2fx) against "
+                                  "read ~%.0f (%.2fx the night level) against "
                                   "night_gain %.0f, staying night",
                              ir_why ? ir_why : "?", (double)r,
                              (double)(lit * filter_cost), (double)filter_cost,
@@ -1320,14 +1320,21 @@ static void *dn_thread(void *arg)
                 if (dark_since &&
                     now - dark_since >= (int64_t)dn->day_confirm_s * 1000) {
                     /* a ratio verdict undone by the absolute rule is the one
-                     * measurement of the filter's cost this scene ever
-                     * offers. Taking it here is what makes the next verdict
-                     * cheaper than this one was. */
-                    if (ir_night_at > 0.0f && s > ir_night_at) {
+                     * measurement this scene ever offers of what day mode
+                     * actually reads. Taking it here is what makes the next
+                     * verdict cheaper than this one was.
+                     *
+                     * The factor may be BELOW 1: measured on a T20 whose
+                     * illuminator contributes nothing (r = 1.00), the day
+                     * pipeline read 6166 against a night level of 8171. That
+                     * is not nonsense, it is a different relationship between
+                     * the two pipelines - and rejecting it as such is what
+                     * left that camera unable to learn and free to flap. */
+                    if (ir_night_at > 0.0f && s > 0.0f) {
                         filter_cost = s / ir_night_at;
-                        LOGI(MOD, "the IR-cut filter costs %.2fx here (day "
-                                  "%.0f vs night %.0f) - a ratio verdict now "
-                                  "needs the night reading below %.0f",
+                        LOGI(MOD, "day mode reads %.2fx the night level here "
+                                  "(%.0f vs %.0f) - a ratio verdict now needs "
+                                  "the night reading below %.0f",
                              (double)filter_cost, (double)s,
                              (double)ir_night_at,
                              (double)(dn->night_gain / filter_cost));

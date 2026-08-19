@@ -22,8 +22,17 @@ semantic versioning.
   gone. At real dawn the night reading falls and the switch happens by itself,
   with no special case. The factor is measured per scene rather than
   configured, and is re-measured after a restart rather than persisted.
-  Corpus scenario `21-ir-ratio-flap-cam-sz`, built from the measured numbers,
-  holds this to two switches where the unguarded automaton spent twelve.
+  Corpus scenarios `21-ir-ratio-flap-cam-sz` and `22-ir-ratio-flap-t20`, both
+  built from measured numbers, hold this to two switches where the unguarded
+  automaton spent twelve.
+  The factor may be **below** 1, and the first version of this guard rejected
+  that as nonsense. Measured on a T20 whose illuminator contributes nothing
+  (`r = 1.00`), the day pipeline read 6166 against a night level of 8171 - and
+  still above `night_gain`, so the loop ran anyway while the guard never armed.
+  The camera flapped 11 times in a day. What is learned is not what the filter
+  costs but what day mode actually reads here, and that is meaningful in both
+  directions. Twenty scenarios did not find this; one camera did, an hour
+  after the first version shipped to it.
 - **An illuminator command that does not work retires the silent probe**
   (`src/daynight.c`). Every failed attempt fell back to the audible IR-cut
   probe, so a board that cannot switch its LEDs separately paid a motor
