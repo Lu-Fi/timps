@@ -93,13 +93,8 @@ kill $WD 2>/dev/null
 echo "$T,on,$ON"   >> "$OUT"
 [ -n "$OFF" ] && echo "$T,off,$OFF" >> "$OUT"
 
-# Also hand the rows to syslog, tagged so the central collector can split them
-# back out as CSV (see /opt/camlogs on the collector host). This is additive on
-# purpose: the local file stays the source of truth, because syslog is UDP and a
-# lost datagram costs a sample. It buys three things the local file cannot - the
-# rows survive an OTA, which wipes /etc; the cameras with no SD card stop
-# writing measurement data into /etc at all; and a night's worth of fleet data
-# no longer has to be collected from twelve devices by hand the next morning.
+# Also to syslog, tagged for the central collector. Additive: the local file
+# stays authoritative because syslog is UDP and a lost datagram costs a sample.
 logger -t dnir "$T,on,$ON" 2>/dev/null
 [ -n "$OFF" ] && logger -t dnir "$T,off,$OFF" 2>/dev/null
 EOF

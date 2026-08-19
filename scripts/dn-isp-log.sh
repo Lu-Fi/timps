@@ -18,4 +18,11 @@ D=$(cat /proc/jz/isp/isp-m0 2>/dev/null)
 [ "$(wc -l < "$OUT")" -lt "$MAX" ] || exit 0
 f() { echo "$D" | sed -n "s/^$1 : *\([0-9]*\).*/\1/p" | head -1; }
 M=$(echo "$D" | sed -n 's/.*ISP Runing Mode : *//p' | tr -d ' \r' | head -1)
-echo "$(date +%s),${M:-?},$(f 'SENSOR Integration Time'),$(f 'SENSOR Max Integration Time'),$(f 'SENSOR analog gain'),$(f 'SENSOR digital gain'),$(f 'ISP digital gain')" >> "$OUT"
+ROW="$(date +%s),${M:-?},$(f 'SENSOR Integration Time'),$(f 'SENSOR Max Integration Time'),$(f 'SENSOR analog gain'),$(f 'SENSOR digital gain'),$(f 'ISP digital gain')"
+echo "$ROW" >> "$OUT"
+
+# Optional syslog copy - OFF by default: this runs once a MINUTE.
+#   jct /etc/thingino.json set dnlog.isp_syslog true|false
+# The local CSV is written either way and stays authoritative (syslog is UDP).
+[ "$(jct /etc/thingino.json get dnlog.isp_syslog 2>/dev/null)" = "true" ] &&
+	logger -t dnisp "$ROW" 2>/dev/null
