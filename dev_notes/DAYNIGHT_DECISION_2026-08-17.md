@@ -148,12 +148,20 @@ every single sample below 2.0 during the core night was an isolated outlier, and
 the only run of consecutive ones was the real light. Four apparent outliers at
 06:20-06:40 were dawn on cameras that switched to day moments later.
 
-One cost this measured, which the morning design did not anticipate: cam-A
-produced five consecutive sub-threshold samples at 20:05-20:25 with headroom
-123..142, so the probe would switch it to day and back again half an hour later.
-That is not a threshold problem - the camera had gone to night roughly forty
-minutes too early and the probe is correcting it - but it costs two clicks at
-dusk and is worth fixing on the day-to-night side.
+One apparent cost was WITHDRAWN on closer inspection, and the way it fell apart
+is worth keeping: cam-A produced five consecutive sub-threshold samples at
+20:05-20:25 with headroom 123..142, which read as a dusk transition the probe
+would act on. It is not. That camera is the designated test camera and was being
+worked on all evening. The give-away is in the data rather than in the log: its
+headroom sits at 1 - fully railed - at 20:00, jumps to 142, and is back at 1 by
+20:30, where it stays for the rest of the night. Dusk is a slow ramp; an
+exposure automaton cannot go from railed to five stops of reserve and back
+inside twenty-five minutes on daylight alone.
+
+So the fleet-night contains exactly ONE confirmed trigger, and it is the real
+light. The lesson is about the corpus, not the design: samples from a camera
+that is being worked on are not measurements, and the test camera needs
+excluding by default rather than by noticing afterwards.
 
 **Jump at 50 %** - the indoor light produced 0.076 in one sample. AGC noise sits
 at +/-25 %, a single sample at 0.5 is beyond 2 sigma, and three samples of
