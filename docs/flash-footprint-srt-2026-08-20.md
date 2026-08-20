@@ -18,7 +18,9 @@ spare, which of the obvious levers worked, and which did not.
 | + static C++ runtime, `libstdc++`/`libaudioProcess` stubbed | 4628480 | **+614400** | 581632 |
 
 Total: **765952 bytes**, of which 76% came from the last step alone — and that
-step gave up no functionality at all.
+step was believed to give up no functionality; it does — see "…and why that
+conclusion was wrong". It costs AEC, noise suppression, AGC and the high-pass
+filter, all of which are off by default.
 
 Once the C++ runtime finding was in, the two features that had been given up
 were bought back:
@@ -71,7 +73,8 @@ off defeats the purpose.
 
 The practical consequence: the hours spent disabling rotation, backchannel and
 the speaker bought nothing. The 765952 bytes came from the two changes that
-cost no functionality at all (610304 of them) and from the sound files
+were thought to be free (610304 of them — 28672 of that genuinely is; the
+581632 costs the audio filters) and from the sound files
 (147456), and even the sound files were put back once the C++ runtime finding
 landed.
 
@@ -191,7 +194,7 @@ which has its own `package/` directory. Editing the main tree's copy has no
 effect on the build — the first attempt at this change was byte-identical
 for exactly that reason.
 
-### 2. Static C++ runtime (581632 B, fleet-wide for SRT builds, no functional cost)
+### 2. Static C++ runtime (581632 B — costs the four audio filters)
 
 `libstdc++.so.6.0.35` was the single largest file in the image — 2130 KB in
 the target, more than `libimp.so` (1175 KB), the ISP driver (1102 KB) or
@@ -307,9 +310,11 @@ was simply not repeated for this library.
 
 ### Two-way audio with both libraries stubbed
 
+**This section reached the wrong conclusion at first. Read to the end.**
+
 The open question — whether echo cancellation dlopens `libaudioProcess.so`,
 which would drag `libstdc++` back into the image and cost roughly 600 KB of
-the saving — was settled by `scripts/timps-qa.sh --only backchannel
+the saving — was first tested with `scripts/timps-qa.sh --only backchannel
 --test-backchannel`, run against the camera while
 `grep -l 'audioProcess\|libstdc' /proc/*/maps` sampled twice a second:
 
@@ -326,6 +331,47 @@ camera's own microphone in timps' outgoing stream. The full duplex path ran
 with both libraries present only as 0-byte stubs. timps drives the speaker
 through `IMP_AO` directly, as its own startup line says
 ("audio backchannel enabled (codec=0 rate=16000, native IMP_AO)").
+
+### …and why that conclusion was wrong
+
+The run above proves only that **disabled** filters load no library.
+`audio.aec`, `audio.ns`, `audio.agc` and `audio.high_pass` all default to 0
+(`config.c`: "AEC opt-in, default off"), and `libaudioProcess.so` is exactly
+the vendor library behind them — `hal_ingenic.c` says so itself, warning that
+`IMP_AI_EnableAgc/Ns/Aec` race the vendor thread "-> UAF/SIGSEGV in
+libaudioProcess.so".
+
+Repeated with all four enabled (`aec=1 ns=2 agc=1 high_pass=1`, confirmed
+parsed via `/control`), and then once more as a control with the real
+libraries copied back onto the camera:
+
+| libraries | AEC log line | `libaudioProcess` mapped | loopback tone band |
+|---|---|---|---|
+| 0-byte stubs | `IMP_AI_EnableAec failed - continuing without echo cancellation` | no | −5.0 dB |
+| real | `AEC enabled (AI 0/0 <- AO 0/0)` | **yes** | −21.3 dB |
+
+The stub silently disables echo cancellation, noise suppression, AGC and the
+high-pass filter. Nothing fails loudly: `IMP_AI_EnableAec` returns an error,
+timps logs one WARN and carries on. The 16.3 dB drop in the loopback tone band
+with the real library is the echo canceller doing its job — measurable proof
+that the feature was actually lost, not merely unreported.
+
+**So the 581632 bytes are a trade, not a free win.** They cost the four audio
+filters. And on this board the two cannot coexist:
+
+```
+image with the stubs   4784128   (458752 free)
+image without them     5365760   (122880 OVER the 5242880 partition)
+```
+
+SRT and the audio filters are mutually exclusive on a 5 MB rootfs. All four
+filters are off by default, so the shipping configuration loses nothing it was
+using — but that is a default, not an absence, and enabling any of them on a
+stubbed image produces one WARN and silently no filtering.
+
+The `-static-libstdc++` change itself remains correct and free: timpsd no
+longer needs the shared library. But *removing* `libstdc++.so` from the image
+requires removing `libaudioProcess.so` too, and that is where the cost sits.
 
 Note that `audio.backchannel` in `/etc/timps.conf` is a separate runtime
 switch from the `BACKCHANNEL` build flag; it was still off from the previous
@@ -347,7 +393,8 @@ build**. Verify by binary size (1278396) or by the SRT block in `/control`.
 
 `U` below is `user/wuuk_y0510_t31x_sc4336p_ssv6158/192.168.15.190`.
 
-Kept, fleet-wide, no functional cost:
+Kept, fleet-wide (the libsrt flags are free; the static link only pays off if
+the two libraries are also removed, which costs the audio filters):
 * `package/libsrt/libsrt.mk` section flags — **in both worktrees**;
 * `-static-libstdc++ -static-libgcc` in timps' `Makefile` for `USE_SRT=1`.
 
@@ -375,7 +422,9 @@ Do **not** stub `libgcc_s.so.1`.
 
 ## Open
 
-* (settled, see "Two-way audio" above) `libaudioProcess.so` is not needed for
-  two-way audio.
+* Whether to keep the `libaudioProcess`/`libstdc++` stubs on this camera at
+  all. They buy SRT its headroom and cost AEC/NS/AGC/high-pass, which are off
+  by default. Anyone enabling an audio filter on a stubbed image gets one WARN
+  and no filtering.
 * Why `BR2_PACKAGE_THINGINO_*` symbols resist `is not set` in a device
   fragment while `BR2_PACKAGE_TIMPS_*` symbols do not.
