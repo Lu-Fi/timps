@@ -93,6 +93,10 @@ typedef struct {
     int accepted;
     int changed;
     int rejected;
+    /* applied but NOT written to the config file: one request changed more
+     * keys than the persist list holds. Live now, gone after a reboot - and
+     * until this counter existed the caller had no way to learn that. */
+    int not_persisted;
     /* The changed settings as a ready-made JSON object body, e.g.
      * "\"daynight.day_confirm_s\":\"41\"" - EFFECTIVE values, i.e. after
      * clamping, which is the whole point: a caller that posted 999 and got 99

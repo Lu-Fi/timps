@@ -1526,9 +1526,10 @@ static void *conn_thread(void *arg)
                     char rb[CTRL_ECHO_CAP + 224];
                     int rn = snprintf(rb, sizeof rb,
                         "{\"ok\":%s,\"accepted\":%d,\"changed\":%d,"
-                        "\"rejected\":%d,\"applied\":{%s}%s%s%s%s}",
+                        "\"rejected\":%d,\"not_persisted\":%d,"
+                        "\"applied\":{%s}%s%s%s%s}",
                         (prc==0 && cr.accepted>0) ? "true" : "false",
-                        cr.accepted, cr.changed, cr.rejected,
+                        cr.accepted, cr.changed, cr.rejected, cr.not_persisted,
                         prc==0 ? cr.echo : "",
                         (prc==0 && !cr.echo_full) ? ",\"truncated\":true" : "",
                         reason ? ",\"reason\":\"" : "", reason ? reason : "",

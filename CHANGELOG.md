@@ -65,6 +65,30 @@ semantic versioning.
 
 ### Fixed
 
+- **`osd.*` globals no longer depend on where they sit in the JSON**
+  (`src/control.c`). The walk stopped at the first `{`, so
+  `{"osd":{"0":{..},"enabled":false}}` had its `enabled` thrown away and
+  answered 200 - not accepted, not rejected. Descending into the items would
+  be wrong (`osd_item` has its own `enabled`), so the globals are now read in
+  the segments between the nested objects. Object order carries no meaning in
+  JSON; our own WebUI happens to emit the globals first, and nobody else has
+  to.
+- **A POST says when it changed more than it could persist**
+  (`src/control.c`, `src/mp4/httpd.c`): the response carries `not_persisted`.
+  Past the 48-key persist list the values were applied and dropped from the
+  file with only a LOGW, so the caller learned about it after the next reboot,
+  by way of missing settings.
+- **A renamed key replaces its old spelling in the config file**
+  (`src/config.c`). `config_write_keys()` matched the exact string, so a file
+  holding a pre-rename alias kept that line and got the canonical key appended
+  instead. The loaded result was right - the later line wins - but the stale
+  line stayed forever, and editing it by hand did nothing, which is a good way
+  to lose an afternoon.
+- **`osd.hinting` says so when the build cannot do it** (`src/config.c`). It
+  parsed, clamped, persisted and echoed on every build, but the rasterizer's
+  hinting pass is compiled out unless `USE_OSD_HINTING` - the only clue was
+  that the text looked exactly as before. Warns once per session, like
+  `max_gop`.
 - **`general.*` is readable, and appears in `/control?fields=1`**
   (`src/config.c`, `src/control.c`). Making `debug_modules` POST-able exposed
   an invariant that had held across every table until then: `F_CTRL` and

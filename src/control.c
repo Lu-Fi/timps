@@ -90,7 +90,7 @@ typedef struct {
 } ctrl_changes;
 
 /* counters for the ctrl_result the caller gets back; see control.h */
-static __thread int g_acc, g_chg, g_rej;
+static __thread int g_acc, g_chg, g_rej, g_nopersist;
 /* the "applied" echo, built as JSON while the values are in hand. It records a
  * field whenever the CANONICAL stored value differs from what was POSTed - not
  * when the value CHANGED. The two are not the same, and the difference is
@@ -405,7 +405,10 @@ static void timps_apply_setting(ctrl_changes *ch, const char *key, const char *r
         snprintf(ch->key[ch->n], sizeof ch->key[0], "%s", key);
         snprintf(ch->val[ch->n], sizeof ch->val[0], "%s", out);
         ch->n++;
-    } else LOGW(MOD,"too many settings in one request, %s not persisted", key);
+    } else {
+        g_nopersist++;
+        LOGW(MOD,"too many settings in one request, %s not persisted", key);
+    }
     LOGI(MOD,"set %s = %s", key, out);
 }
 
@@ -445,12 +448,12 @@ static void apply_ctrl_fields(ctrl_changes *ch, const char *prefix,
 
 int control_apply_json(const char *json, ctrl_result *res)
 {
-    if (res) { res->accepted = res->changed = res->rejected = 0; }
+    if (res) { res->accepted = res->changed = res->rejected = 0; res->not_persisted = 0; }
     if (!json || !json[0]) return -1;
     /* Not a JSON object at all - the hand-rolled scanner would simply find
      * nothing and the old code answered 200 to it. Say so instead. */
     if (!strchr(json, '{')) return -1;
-    g_acc = g_chg = g_rej = 0;
+    g_acc = g_chg = g_rej = g_nopersist = 0;
     g_echo[0] = 0; g_echo_off = 0; g_echo_full = 1;
     /* A1 (concurrent-POST class): one HTTP worker thread per connection calls
      * this (httpd.c), so two simultaneous POSTs would otherwise interleave their
@@ -595,14 +598,38 @@ int control_apply_json(const char *json, ctrl_result *res)
      * groups once at startup, so they take effect on restart. */
     sb = find_obj(json, end, "osd", &se);
     if (sb){
-        const char *fe = sb;
-        while (fe<se && *fe!='{') fe++;
         /* osd.* globals (enabled/monitor_stream/font_path/vars_file/
          * supersample/hinting): all restart-required, all F_CTRL in
          * osd_fields (config.c) - one generic walk covers what used to be
-         * the hand-written "enabled" special-case plus OSD_GLOBAL_KEYS[]. */
+         * the hand-written "enabled" special-case plus OSD_GLOBAL_KEYS[].
+         *
+         * Walk the TOP LEVEL only, in segments between the nested item
+         * objects. Descending would be wrong - osd_item has its own
+         * "enabled", so an item's value would be read as the global - but
+         * stopping at the first '{', as this did, silently dropped every
+         * global that happened to come after an item. JSON object order
+         * carries no meaning, so {"osd":{"0":{..},"enabled":false}} was
+         * accepted with 200 and the "enabled" thrown away. Our own WebUI
+         * emits the globals first; nobody else has to. */
         int nosd; const cfg_field *osd_tbl = cfg_fields_osd(&nosd);
-        apply_ctrl_fields(ch, "osd", sb, fe, osd_tbl, nosd);
+        for (const char *seg = sb; seg < se; ) {
+            const char *q = seg;
+            while (q < se && *q != '{') {
+                if (*q == '"') { for (q++; q < se && *q != '"'; q++) if (*q=='\\' && q+1<se) q++; }
+                q++;
+            }
+            apply_ctrl_fields(ch, "osd", seg, q, osd_tbl, nosd);
+            if (q >= se) break;
+            const char *nend = NULL;
+            int d = 0;
+            for (const char *r = q; r < se; r++) {
+                if (*r == '"') { for (r++; r < se && *r != '"'; r++) if (*r=='\\' && r+1<se) r++; continue; }
+                if (*r == '{') d++;
+                else if (*r == '}' && --d == 0) { nend = r; break; }
+            }
+            if (!nend) break;                    /* unbalanced - stop here */
+            seg = nend + 1;
+        }
         int nitem; const cfg_field *item_tbl = cfg_fields_osd_item(&nitem);
         for (int i=0;i<MS_MAX_OSD;i++){
             char idx[4]; snprintf(idx,sizeof idx,"%d",i);
@@ -743,6 +770,7 @@ int control_apply_json(const char *json, ctrl_result *res)
     }
     if (res) {
         res->accepted = g_acc; res->changed = g_chg; res->rejected = g_rej;
+        res->not_persisted = g_nopersist;
         snprintf(res->echo, sizeof res->echo, "%s", g_echo);
         res->echo_full = g_echo_full;
     }

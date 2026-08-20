@@ -1135,6 +1135,15 @@ static const cfg_field *field_find(const cfg_field *t, int n, const char *k)
     return NULL;
 }
 
+/* Canonical spelling of a key, or a copy of the input when it is not a known
+ * field. Used by config_write_keys(): the file may hold a pre-rename alias
+ * (a fleet that has been upgraded in place usually does), and matching only
+ * the exact string left that line untouched and APPENDED the canonical one.
+ * The result was right - the later line wins on load - but the stale line
+ * stayed forever, and a hand edit to it did nothing, which is a good way to
+ * lose an afternoon. */
+static void key_canonical(const char *key, char *out, size_t cap);
+
 static const cfg_section *section_find(const char *key, const char **field)
 {
     for (size_t i=0;i<sizeof g_sections/sizeof g_sections[0];i++)
@@ -1143,6 +1152,17 @@ static const cfg_section *section_find(const char *key, const char **field)
             return &g_sections[i];
         }
     return NULL;
+}
+
+static void key_canonical(const char *key, char *out, size_t cap)
+{
+    const char *fname = NULL;
+    const cfg_section *sec = section_find(key, &fname);
+    if (sec){
+        const cfg_field *f = field_find(sec->fields, sec->nfields, fname);
+        if (f){ snprintf(out, cap, "%s%s", sec->prefix, f->name); return; }
+    }
+    snprintf(out, cap, "%s", key);
 }
 
 static void field_set(void *base, const cfg_field *f, const char *val)
@@ -1327,6 +1347,22 @@ static void set_kv(ms_config *c, const char *key, const char *val)
         }
         return;
     }
+
+#ifndef USE_OSD_HINTING
+    /* The key parses, clamps, persists and echoes on every build, but the
+     * rasterizer's hinting pass is compiled out here (msttf_set_hinting() is
+     * an empty stub). Without this the setting is accepted, reported back as
+     * set, and changes nothing about the picture - and the only clue is that
+     * the text looks the same as before. Once per session, like max_gop. */
+    if (!strcmp(key,"osd.hinting") && pint(val)!=0){
+        static int hint_warned;
+        if (!hint_warned){
+            hint_warned=1;
+            LOGW(MOD,"osd.hinting is stored but has no effect in this build "
+                     "(compiled without OSD text autohinting)");
+        }
+    }
+#endif
 
     /* per-key logic that doesn't fit the generic table */
     if (!strncmp(key,"motion.",7)){
@@ -1824,7 +1860,15 @@ int config_write_keys(const char *path, const char *const *keys,
                     *eq = 0;
                     char *k = trim(s);
                     for (int i=0;i<n;i++){
-                        if (strcmp(k, keys[i])) continue;
+                        if (strcmp(k, keys[i])){
+                            /* not an exact hit - try the canonical form, so a
+                             * pre-rename alias line is REPLACED rather than
+                             * left behind with the new key appended below. */
+                            char ck[80], ci[80];
+                            key_canonical(k, ck, sizeof ck);
+                            key_canonical(keys[i], ci, sizeof ci);
+                            if (strcmp(ck, ci)) continue;
+                        }
                         if (!done[i]){ write_kv_line(out, keys[i], vals[i]); done[i]=1; }
                         /* else: duplicate line of an already replaced key -> drop */
                         handled = 1;
