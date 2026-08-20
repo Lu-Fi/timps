@@ -21,10 +21,26 @@ Date: 2026-08-20. Board: wuuk_y0510_t31x_sc4336p_ssv6158 at 192.168.15.190
 > last time a **full** flash laid the partitions down. Beside it sits a 9280k
 > data partition using 408 KB, 4% of itself.
 >
-> `make ota-rootfs` writes into the *existing* partition, so it fails once the
-> new image outgrows the old one's imprint. `make ota` (mode `all`) writes
-> boot, env, kernel, rootfs and data together and installs the recomputed
-> layout. **That is the fix for "image does not fit", not shrinking the image.**
+> ## → Always flash with `make ota`, never `ota-rootfs`
+>
+> `make ota-rootfs` writes into the *existing* partitions, which came from the
+> last full flash. Two ways that bites once the image size has changed - which
+> is nearly every build:
+>
+> * rootfs is refused outright ("bigger than /dev/mtd4"), *after* the script
+>   has already freed overlay space and remounted `/` read-only;
+> * the data partition is written with **no size check at all**. Measured on
+>   2026-08-20: a freshly built `data.jffs2` of 10158080 B (for a computed
+>   9920k partition) was pushed at a camera whose data partition is 9280k —
+>   655360 bytes too large. That camera did come back with its overlay intact,
+>   so this did not corrupt anything here, but nothing in the tooling promised
+>   that.
+>
+> `make ota` (mode `all`) writes boot, env, kernel, rootfs and data together
+> and installs the recomputed layout. **That is the fix for "image does not
+> fit", not shrinking the image.** The cost is that it rewrites U-Boot (brick
+> risk if interrupted) and re-creates the data partition, so the overlay is
+> lost — configuration, certificates, wifi credentials.
 >
 > Everything below was measured against a boundary that is itself a build
 > output. The engineering findings stand on their own — the static C++ runtime,
