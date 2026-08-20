@@ -257,9 +257,10 @@ sim:
 	  $(if $(filter 1,$(USE_TIMELAPSE)),-DUSE_TIMELAPSE) \
 	  $(if $(filter 1,$(USE_ROTATE)),-DUSE_ROTATE) \
 	  $(if $(filter 1,$(USE_TRACE)),-DUSE_TRACE) \
+	  $(if $(filter 1,$(USE_SRT)),-DUSE_SRT) \
 	  $(SIM_CFLAGS) \
-	  -Isrc $(SIM_SRC) $(LDFLAGS) -lpthread -lm -o $(BIN)-sim
-	@echo "built $(BIN)-sim (host simulation backend, USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_ROTATE=$(USE_ROTATE) USE_TRACE=$(USE_TRACE))"
+	  -Isrc $(SIM_SRC) $(LDFLAGS) $(if $(filter 1,$(USE_SRT)),-lsrt) -lpthread -lm -o $(BIN)-sim
+	@echo "built $(BIN)-sim (host simulation backend, USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_ROTATE=$(USE_ROTATE) USE_TRACE=$(USE_TRACE) USE_SRT=$(USE_SRT))"
 
 # Self-contained authentication fail-closed test: build the host sim (with
 # /control), start it on unprivileged ports, run scripts/test_auth.sh against

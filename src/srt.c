@@ -1,12 +1,14 @@
-/* srt.c - MPEG-TS over SRT output (listener mode). Only built with USE_SRT
- * (libsrt selected). Serves srt.channel's video (+AAC audio) as an MPEG-TS
- * multiplex to any SRT caller. Reads the hub like the recorder/RTSP sinks.
+/* srt.c - MPEG-TS over SRT output. Only built with USE_SRT (libsrt
+ * selected). Serves srt.channel's video (+AAC audio) as an MPEG-TS multiplex,
+ * either to any SRT caller (listener mode, default) or by dialing out to
+ * srt.host:srt.port itself (srt.mode=caller, for cameras behind NAT or on
+ * unreliable links). Reads the hub like the recorder/RTSP sinks.
  *
  * NOTE: the MPEG-TS muxer here is hand-rolled and compact; it targets the
  * common case (H.264/H.265 video PID 0x100 + AAC/ADTS audio PID 0x101, PCR on
- * the video PID). It compiles standalone but SHOULD be verified on device with
- * ffplay/VLC ("srt://<ip>:<port>") - TS bit-twiddling is easy to get subtly
- * wrong and cannot be exercised in the x86 sim without libsrt. */
+ * the video PID). It SHOULD still be verified on device with ffplay/VLC
+ * ("srt://<ip>:<port>") - TS bit-twiddling is easy to get subtly wrong - but
+ * `make sim USE_SRT=1` now exercises both modes against host libsrt/ffmpeg. */
 #ifdef USE_SRT
 #include "srt.h"
 #include "hub.h"
@@ -18,10 +20,18 @@
 #include "config.h"
 
 #include <srt/srt.h>
+/* srt/srt.h drags in <syslog.h> (via logging_api.h), whose LOG_INFO/LOG_DEBUG
+ * macros (6/7) shadow log.h's enum (2/3) in every later LOGI/LOGD expansion -
+ * levels above the logger's range, so every LOGI in this file was silently
+ * dropped. Same collision log.c handles; restore the enum. */
+#undef LOG_INFO
+#undef LOG_DEBUG
 #include <pthread.h>
 #include <string.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <unistd.h>
+#include <netdb.h>     /* getaddrinfo for the caller target */
 
 #define MOD    "SRT"
 #define VPID   0x0100
@@ -56,6 +66,24 @@
 #ifndef SRT_STALL_US
 #define SRT_STALL_US (60LL*1000000)
 #endif
+/* stats cadence: 10 s. srt_bstats(clear=1) makes the counters per-interval,
+ * so one bad window shows as its own spike at this grain; ~130 B/line keeps
+ * a camera's 64 KB log ring holding ~1.5 h of link history (1 s cadence
+ * would cut that to minutes and bury every other module). */
+#ifndef SRT_STATS_PERIOD_S
+#define SRT_STATS_PERIOD_S 10
+#endif
+/* caller reconnect backoff (doubling, capped, wakeable - the shape of
+ * main.c's HAL-init retry). Min 1 s: a restarted receiver is back within
+ * seconds and one dial per second is cheap. Cap 30 s rather than HAL's 60:
+ * this outage costs live footage, and two quiet attempts per minute against
+ * a dead host are still negligible. */
+#ifndef SRT_CALLER_BACKOFF_MIN_S
+#define SRT_CALLER_BACKOFF_MIN_S 1
+#endif
+#ifndef SRT_CALLER_BACKOFF_MAX_S
+#define SRT_CALLER_BACKOFF_MAX_S 30
+#endif
 
 static const ms_config *g_scfg;
 static volatile int     g_run;
@@ -78,6 +106,14 @@ static volatile int     g_srt_clients;  /* in-flight client threads (sync
  * double close could hit an unrelated newer socket): whoever atomically swaps
  * the entry out is the one that closes it. */
 static SRTSOCKET        g_client_sock[SRT_MAX_CLIENTS];
+static SRTSOCKET        g_cs = SRT_INVALID_SOCK; /* caller-mode socket; same
+                                                  * close-once contract as g_ls
+                                                  * (srt_stop closes it to break
+                                                  * a blocking connect/send) */
+static int              g_caller;      /* resolved srt.mode, set before g_thr */
+static volatile int     g_connected;   /* receivers currently in stream_run() */
+static pthread_mutex_t  g_stats_mx = PTHREAD_MUTEX_INITIALIZER;
+static ms_srt_stats     g_stats;       /* last stats_tick() sample, /control */
 
 static int srt_client_reg(SRTSOCKET cs)
 {
@@ -111,6 +147,47 @@ typedef struct {
     uint8_t   batch[TS_BATCH_PKTS * 188];  /* accumulated, not-yet-sent packets */
     int       batch_n;                     /* packets currently in batch[] */
 } ts_mux;
+
+/* One srt_bstats() sample per SRT_STATS_PERIOD_S while a receiver is being
+ * served - the numbers SRT exists for (retransmits, loss, RTT, estimated
+ * bandwidth, sender-buffer backlog), previously never queried at all. The
+ * line is machine-readable on purpose (key=value, no spaces inside values,
+ * -1 = not measured), same contract as daynight's probe line - dashboards
+ * grep these, and a reworded line would empty them silently. Like that line
+ * it is LOGD, not LOGI: a sample every 10 s (8640 lines/day per receiver)
+ * is a measurement, not an event. A dashboard that wants the series sets
+ * general.debug_modules = srt. */
+static void stats_tick(ts_mux *m)
+{
+    SRT_TRACEBSTATS s;
+    if (srt_bstats(m->sock, &s, 1) == SRT_ERROR) return;
+    LOGD(MOD, "stats: id=%d rtt_ms=%.1f bw_mbps=%.2f rate_mbps=%.2f "
+              "sent=%lld retrans=%d loss=%d drop=%d sndbuf_ms=%d flight=%d",
+         (int)m->sock, s.msRTT, s.mbpsBandwidth, s.mbpsSendRate,
+         (long long)s.pktSent, s.pktRetrans, s.pktSndLoss, s.pktSndDrop,
+         s.msSndBuf, s.pktFlightSize);
+    pthread_mutex_lock(&g_stats_mx);
+    g_stats.t_us      = ms_now_us();
+    g_stats.rtt_ms    = s.msRTT;
+    g_stats.bw_mbps   = s.mbpsBandwidth;
+    g_stats.rate_mbps = s.mbpsSendRate;
+    g_stats.sent      = s.pktSent;
+    g_stats.retrans   = s.pktRetrans;
+    g_stats.loss      = s.pktSndLoss;
+    g_stats.drop      = s.pktSndDrop;
+    pthread_mutex_unlock(&g_stats_mx);
+}
+
+/* /control status snapshot. With several listener clients the last tick wins
+ * - acceptable, the block answers "is the link healthy", not "which one". */
+void srt_get_stats(ms_srt_stats *out)
+{
+    pthread_mutex_lock(&g_stats_mx);
+    *out = g_stats;
+    pthread_mutex_unlock(&g_stats_mx);
+    out->caller    = g_caller;
+    out->connected = g_connected;
+}
 
 /* faac emits RAW AAC (no ADTS); MPEG-TS stream_type 0x0F needs each frame
  * framed with a 7-byte ADTS header. Build it from the actual sr/ch so the
@@ -299,10 +376,12 @@ static int send_pes(ts_mux *m, int pid, uint8_t *cc, int stream_id,
     return 0;
 }
 
-/* per-client streaming thread */
-static void *client_thread(void *arg)
+/* stream the hub to m->sock until send error, encoder stall or shutdown.
+ * Shared by both modes: the listener runs it once per accepted client
+ * (client_thread below), the caller runs it on each dialed connection.
+ * Owns neither the socket nor m - the caller does. */
+static void stream_run(ts_mux *m)
 {
-    ts_mux *m = (ts_mux *)arg;
     int chn = g_scfg->srt.channel;
     /* matches the validation httpd.c/timelapse.c use for the same config
      * field: a channel index that's in range but not actually enabled
@@ -316,10 +395,9 @@ static void *client_thread(void *arg)
     if (chn < 0 || chn >= MS_MAX_VSTREAM || !g_cfg_boot.video[chn].enabled) chn = 0;
 
     fanqueue q;
-    if (fanqueue_init(&q, SRT_QCAP)) { srt_client_close(m->slot); free(m);
-        __sync_fetch_and_sub(&g_srt_clients, 1); return NULL; }
-    if (hub_subscribe(chn, &q) != 0) { fanqueue_free(&q); srt_client_close(m->slot); free(m);
-        __sync_fetch_and_sub(&g_srt_clients, 1); return NULL; }
+    if (fanqueue_init(&q, SRT_QCAP)) return;
+    if (hub_subscribe(chn, &q) != 0) { fanqueue_free(&q); return; }
+    __sync_fetch_and_add(&g_connected, 1);
 
     int ac = MS_AC_NONE, asr = 0, ach = 0, sub_a = 0;
     int have_a = hub_get_audio(&ac, &asr, &ach);
@@ -356,8 +434,15 @@ static void *client_thread(void *arg)
 
     int got_key = 0, psi = 0; int64_t psi_t = 0;
     int64_t last_pkt_us = ms_now_us();   /* S-1: encoder-stall bound, see above */
+    int64_t stats_t = last_pkt_us;
     while (g_run) {
         ms_pkt *p = fanqueue_pop(&q, 200);
+        /* before the !p bail: the link stats stay interesting (and the
+         * /control snapshot fresh) even while the encoder goes quiet */
+        int64_t snow = ms_now_us();
+        if (snow - stats_t >= SRT_STATS_PERIOD_S * 1000000LL) {
+            stats_tick(m); stats_t = snow;
+        }
         if (!p) {
             if (ms_now_us() - last_pkt_us > SRT_STALL_US) {
                 LOGW(MOD,"chn=%d: no packets for %llds - encoder stall, "
@@ -416,6 +501,14 @@ static void *client_thread(void *arg)
     hub_unsubscribe(chn, &q);
     if (sub_a) hub_unsubscribe(HUB_AUDIO_SRC, &q);
     fanqueue_free(&q);
+    __sync_fetch_and_sub(&g_connected, 1);
+}
+
+/* per-client streaming thread (listener mode) */
+static void *client_thread(void *arg)
+{
+    ts_mux *m = (ts_mux *)arg;
+    stream_run(m);
     srt_client_close(m->slot);     /* no-op if the teardown already closed it */
     free(m);
     __sync_fetch_and_sub(&g_srt_clients, 1);
@@ -431,6 +524,32 @@ static void srt_close_listener(void)
 {
     SRTSOCKET s = (SRTSOCKET)__sync_lock_test_and_set(&g_ls, SRT_INVALID_SOCK);
     if (s != SRT_INVALID_SOCK) srt_close(s);
+}
+
+/* caller-mode socket, same close-once rule: srt_stop() must be able to close
+ * it to break a blocking srt_connect()/srt_sendmsg2(), else the join hangs. */
+static void srt_close_caller(void)
+{
+    SRTSOCKET s = (SRTSOCKET)__sync_lock_test_and_set(&g_cs, SRT_INVALID_SOCK);
+    if (s != SRT_INVALID_SOCK) srt_close(s);
+}
+
+/* latency + optional passphrase, shared by both modes. The passphrase result
+ * MUST be checked (H3): libsrt requires a 10..79 char passphrase and fails
+ * SRTO_PASSPHRASE on anything shorter - ignoring that ran the socket silently
+ * UNENCRYPTED. Nonzero = refuse to run, never fall back to plaintext. */
+static int srt_common_opts(SRTSOCKET s)
+{
+    int lat = g_scfg->srt.latency_ms;
+    srt_setsockflag(s, SRTO_LATENCY, &lat, sizeof lat);
+    if (g_scfg->srt.passphrase[0] &&
+        srt_setsockflag(s, SRTO_PASSPHRASE, g_scfg->srt.passphrase,
+                        (int)strlen(g_scfg->srt.passphrase)) == SRT_ERROR) {
+        LOGE(MOD, "SRTO_PASSPHRASE rejected (need 10-79 chars): %s - "
+                  "refusing to run unencrypted", srt_getlasterror_str());
+        return -1;
+    }
+    return 0;
 }
 
 /* accept-time hook (M4): SRTO_STREAMID on a LISTENER is not access control -
@@ -459,21 +578,10 @@ static void *listen_thread(void *arg)
     SRTSOCKET ls = srt_create_socket();
     if (ls == SRT_INVALID_SOCK) { LOGE(MOD, "create_socket"); srt_cleanup(); return NULL; }
 
-    int lat = g_scfg->srt.latency_ms;
-    srt_setsockflag(ls, SRTO_LATENCY, &lat, sizeof lat);
     if (g_scfg->srt.streamid[0])
         srt_listen_callback(ls, listen_cb, NULL);     /* enforce streamid (M4) */
-    if (g_scfg->srt.passphrase[0]) {
-        /* MUST be checked (H3): libsrt requires a 10..79 char passphrase and
-         * fails SRTO_PASSPHRASE on anything shorter - ignoring that ran the
-         * listener silently UNENCRYPTED with no access control. Refuse to
-         * start instead, same as the bind/listen error path. */
-        if (srt_setsockflag(ls, SRTO_PASSPHRASE, g_scfg->srt.passphrase,
-                            (int)strlen(g_scfg->srt.passphrase)) == SRT_ERROR) {
-            LOGE(MOD, "SRTO_PASSPHRASE rejected (need 10-79 chars): %s - "
-                      "refusing to start unencrypted", srt_getlasterror_str());
-            srt_close(ls); srt_cleanup(); return NULL;
-        }
+    if (srt_common_opts(ls) < 0) {          /* H3: no unencrypted fallback */
+        srt_close(ls); srt_cleanup(); return NULL;
     }
 
     struct sockaddr_in sa; memset(&sa, 0, sizeof sa);
@@ -530,11 +638,115 @@ static void *listen_thread(void *arg)
     return NULL;
 }
 
+/* caller mode: dial srt.host:srt.port and stream, reconnecting forever with
+ * the capped backoff above. The whole point of this mode is an unreliable
+ * path, so an outage is logged exactly ONCE (on loss / first failed dial),
+ * not once per attempt - the reconnect itself then announces recovery. */
+static void *caller_thread(void *arg)
+{
+    (void)arg;
+    if (srt_startup() < 0) { LOGE(MOD, "srt_startup failed"); return NULL; }
+
+    const char *host = g_scfg->srt.host;   /* persist-only keys: stable */
+    int port = g_scfg->srt.port;
+    int backoff = SRT_CALLER_BACKOFF_MIN_S;
+    int quiet = 0;                         /* 1 = this outage already logged */
+    LOGI(MOD, "SRT caller to %s:%d (MPEG-TS, chn %d)",
+         host, port, g_scfg->srt.channel);
+
+    while (g_run) {
+        SRTSOCKET s = srt_create_socket();
+        if (s == SRT_INVALID_SOCK) {
+            LOGE(MOD, "create_socket: %s", srt_getlasterror_str());
+            break;
+        }
+        if (srt_common_opts(s) < 0) {      /* H3: no unencrypted fallback */
+            srt_close(s); break;
+        }
+        /* on a caller SRTO_STREAMID is what actually reaches the peer */
+        if (g_scfg->srt.streamid[0])
+            srt_setsockflag(s, SRTO_STREAMID, g_scfg->srt.streamid,
+                            (int)strlen(g_scfg->srt.streamid));
+
+        const char *why = NULL;
+        struct addrinfo hints, *ai = NULL;
+        memset(&hints, 0, sizeof hints);
+        hints.ai_family = AF_INET; hints.ai_socktype = SOCK_DGRAM;
+        char ps[8]; snprintf(ps, sizeof ps, "%d", port);
+        int gaerr = getaddrinfo(host, ps, &hints, &ai);
+        g_cs = s;   /* publish first: srt_stop() closing g_cs is what breaks a
+                     * blocking srt_connect (worst case the default 3 s
+                     * SRTO_CONNTIMEO bounds the join if stop wins the race) */
+        if (gaerr != 0) {
+            why = gai_strerror(gaerr);
+        } else {
+            if (srt_connect(s, ai->ai_addr, (int)ai->ai_addrlen) == SRT_ERROR)
+                why = srt_getlasterror_str();
+            freeaddrinfo(ai);
+        }
+
+        if (!why && g_run) {
+            LOGI(MOD, "connected to %s:%d", host, port);
+            quiet = 0;
+            ts_mux m; memset(&m, 0, sizeof m);
+            m.sock = s; m.slot = -1;
+            int64_t t0 = ms_now_us();
+            stream_run(&m);        /* returns on send error / stall / stop */
+            srt_close_caller();
+            /* only a session that actually held earns the fast backoff again;
+             * a peer that accepts and instantly drops keeps backing off like
+             * a failed dial, so a flapper cannot cycle (and log) at 1 s */
+            if (ms_now_us() - t0 >= 5*1000000LL)
+                backoff = SRT_CALLER_BACKOFF_MIN_S;
+            if (g_run) {
+                LOGW(MOD, "connection to %s:%d lost - reconnecting "
+                          "(quiet retries, backoff up to %ds)",
+                     host, port, SRT_CALLER_BACKOFF_MAX_S);
+                quiet = 1;
+            }
+        } else {
+            srt_close_caller();
+            if (g_run && !quiet) {
+                LOGW(MOD, "connect to %s:%d failed: %s - retrying "
+                          "(quiet retries, backoff up to %ds)",
+                     host, port, why ? why : "?", SRT_CALLER_BACKOFF_MAX_S);
+                quiet = 1;
+            }
+        }
+        /* wakeable backoff: poll g_run at 100 ms so srt_stop's join never
+         * waits out a full 30 s sleep */
+        for (int i = 0; g_run && i < backoff * 10; i++) usleep(100000);
+        if (backoff < SRT_CALLER_BACKOFF_MAX_S) {
+            backoff *= 2;
+            if (backoff > SRT_CALLER_BACKOFF_MAX_S)
+                backoff = SRT_CALLER_BACKOFF_MAX_S;
+        }
+    }
+    srt_close_caller();
+    srt_cleanup();
+    return NULL;
+}
+
 void srt_start(const ms_config *cfg)
 {
     if (g_started || !cfg->srt.enabled) return;
-    g_scfg = cfg; g_run = 1; g_started = 1;
-    if (ms_thread_create(&g_thr, MS_STACK_STREAM, listen_thread, NULL) != 0) { g_started = 0; g_run = 0; }
+    g_scfg = cfg;
+    /* unknown srt.mode falls back to listener - the pre-mode behavior */
+    g_caller = (strcmp(cfg->srt.mode, "caller") == 0);
+    if (!g_caller && cfg->srt.mode[0] && strcmp(cfg->srt.mode, "listener"))
+        LOGW(MOD, "unknown srt.mode '%s' - using listener", cfg->srt.mode);
+    if (g_caller && !cfg->srt.host[0]) {
+        LOGE(MOD, "srt.mode=caller but srt.host is empty - SRT disabled");
+        return;
+    }
+    /* /control shows -1 until the first stats tick */
+    g_stats.rtt_ms = g_stats.bw_mbps = g_stats.rate_mbps = -1;
+    g_stats.sent = g_stats.retrans = g_stats.loss = g_stats.drop = -1;
+    g_run = 1; g_started = 1;
+    if (ms_thread_create(&g_thr, MS_STACK_STREAM,
+                         g_caller ? caller_thread : listen_thread, NULL) != 0) {
+        g_started = 0; g_run = 0;
+    }
 }
 
 void srt_stop(void)
@@ -542,6 +754,7 @@ void srt_stop(void)
     if (!g_started) return;
     g_run = 0;
     srt_close_listener();      /* unblock srt_accept; closes at most once (L4) */
+    srt_close_caller();        /* unblock srt_connect/srt_sendmsg2 (caller) */
     pthread_join(g_thr, NULL);
     g_started = 0;
 }
@@ -550,4 +763,5 @@ void srt_stop(void)
 #include "srt.h"
 void srt_start(const ms_config *cfg) { (void)cfg; }
 void srt_stop(void) {}
+void srt_get_stats(ms_srt_stats *out) { *out = (ms_srt_stats){0}; }
 #endif
