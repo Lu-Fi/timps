@@ -147,6 +147,20 @@ Nothing is load-bearing on any single sample the way `night_baseline` was:
 * reference anchored **too low** → path C goes quiet until the heartbeat
   re-anchors it. Bounded by `heartbeat_max_s`.
 
+It can also be lowered directly, with no probe needed: a silent probe
+verdict of "night" (`r >= ir_ratio_night`) at a level *below* the current
+probe bar (`ref * probe_jump_pct / 100`) is proof in the other direction —
+the reference predicted a brightening worth looking at, and the look found
+darkness, so the reference described a scene that no longer exists. Without
+this a reference anchored too high while the ISP was misbehaving had no way
+down at all: measured on a camera whose ISP came up wrong and anchored at
+131072, then read 6070 once it recovered — the jump trigger fired every
+fourteen seconds, the silent probe correctly answered "the illuminator
+carries this scene," and nothing moved. Seventeen probes in a row, which
+reads from outside as an IR lamp that keeps switching itself off. Logged as
+`night reference lowered to <level>, proven by the silent probe (bar
+<level>)`. Corpus scenario `23-stale-reference-no-way-down`.
+
 ## The trend (path T)
 
 `ref` answers a **step**; it cannot answer a **ramp**. The bar sits at
@@ -220,6 +234,27 @@ never fires. Setting `ir_ratio_day` below `ir_ratio_night` opens a deliberate
 dead zone, trading an occasional audible click for not deciding on thin
 evidence.
 
+### When the illuminator command doesn't work
+
+A board that cannot switch its IR LEDs separately from the filter answers
+every attempt to run `irprobe_cmd` with a failure. Falling back to the
+audible probe on each of those tries would be worse than never having
+tried it — a motor movement paid for a command that was never going to
+succeed. **Two consecutive failures retire the silent probe for the
+session**, and the trend trigger (path T, which only exists to make silent
+probing cheap) retires with it, leaving the jump trigger (path C) and the
+heartbeat — the fleet's pre-existing behaviour on a board without a working
+`irprobe_cmd`. Not persisted: a restart re-tests it, which is the cheap
+direction to be wrong in. Logged once, at the second failure: `'<cmd>'
+failed N times - retiring the silent probe for this session; the trend
+trigger goes with it, leaving the jump trigger and the heartbeat`.
+
+`POST /control {"daynight":{"probe":1}}` asks for one silent probe on the
+next tick — useful to confirm a camera can see daylight without waiting for
+the jump trigger, the trend or the heartbeat. It is rejected (not silently
+swallowed) when there is no `irprobe_cmd` configured or the probe has
+retired itself as above; see [HTTP /control API Reference](HTTP-Control-API.md).
+
 ### What switching to day also costs
 
 A low ratio answers *is the illuminator earning its keep*. It does **not**
@@ -233,9 +268,9 @@ the day pipeline, filter now closed, reads 11480 against a `night_gain` of
 4096; path A sends it straight back; the illuminator returns and the ratio
 reports 1.27 again. Eight round trips in one evening, each an audible click.
 
-So the automaton measures the filter's price the first time a ratio verdict is
-undone that way — day reading over the night reading that the verdict left,
-3.27 in that scene — and from then on requires
+So the automaton measures `filter_cost` — the day reading over the night
+reading the verdict left, 3.27 in that scene — the first time a ratio
+verdict is undone that way, and from then on requires
 
 ```
 current night reading × filter_cost < night_gain
@@ -247,15 +282,34 @@ pass refuses in the log and costs nothing:
 
 ```
 silent probe (trend): r=1.27 - the room supplies the light, but day mode
-would read ~11500 (filter costs 3.27x) against night_gain 4096, staying night
+would read ~11500 (3.27x the night level) against night_gain 4096, staying
+night
+```
+
+**`filter_cost` may be below 1.** The first version of this guard only
+learned when the day reading came back *higher* than the night one, on the
+assumption that closing the IR-cut filter can only cost light. A T20 whose
+illuminator contributes nothing measurable disproved that: the silent probe
+returned `r = 1.00` with ample AE reserve, the day pipeline read 6166
+against a night level of 8171 — lower, not higher — and 6166 was still
+above `night_gain`, so the guard never armed and the camera flapped 11
+times in a day. What `filter_cost` captures is not "what the filter costs"
+but what day mode actually reads in this scene, and that is meaningful in
+both directions; the log line where it's first measured says so:
+
+```
+day mode reads 0.75x the night level here (6166 vs 8171) - a ratio verdict
+now needs the night reading below 5428
 ```
 
 At real dawn the night reading falls, the product drops below `night_gain` on
-its own, and the switch happens — no special case, no calendar. The factor is
-measured per scene rather than configured, and is deliberately not persisted:
-a quantity that moves with the scene is cheaper to re-measure once per restart
-than to keep correct in flash. Corpus scenario `21-ir-ratio-flap-cam-sz`
-holds this to two switches where the unguarded automaton spent twelve.
+its own, and the switch happens — no special case, no calendar. `filter_cost`
+is measured per scene rather than configured, and is deliberately not
+persisted: a quantity that moves with the scene is cheaper to re-measure once
+per restart than to keep correct in flash. Corpus scenarios
+`21-ir-ratio-flap-cam-sz` (factor above 1) and `22-ir-ratio-flap-t20` (factor
+below 1) hold this to two switches where the unguarded automaton spent
+twelve.
 
 ## The probe
 
@@ -309,6 +363,19 @@ as the one every stuck-mode incident violated ("a service restart fixes it")
 — literal at `t=0` rather than something to be derived. It is also what
 replaced dead-zone adoption, the symmetric verify deadlines and the
 still-brightening extension.
+
+Boot also pushes the persisted `image.running_mode` into the ISP directly
+(`hub_control()`), once — the only path other than a switch that ever tells
+the hardware anything, since adopting a persisted mode otherwise only set the
+automaton's own state. `switch_cmd` is deliberately **not** run for this:
+the board was already right (illuminator on, ISP already reporting Night),
+only its tuning was wrong, and a filter movement per boot would be a real
+mechanical cost the evidence doesn't ask for. Unlike a switch, this push does
+**not** arm the repeating post-switch re-assert (below) — arming it here
+raced the boot probe, which can decide within seconds: the pending re-assert
+then overwrote that fresh decision with the stale persisted value a second
+and third time, eight seconds apart, and a living room stayed in night mode
+through daylight because of it.
 
 ## Learning (`daynight.learn`, default off)
 
@@ -427,6 +494,47 @@ logged, with the caveat that this readback is a libimp *userspace* value
 pipeline actually latched — it's `fs_kick_running_mode()` that provides
 the actual fix.
 
+## Machine-readable log lines
+
+Two lines are deliberately fixed-format, columnar `key=value` text: fleet
+dashboards grep for them, and a reworded sentence would empty their count
+silently, the same failure the 2026-08-17 hand-run exposure campaign had
+when its script quietly stopped being called. Both use `-1` for "not
+measured", the same convention as the `GET /control` status fields, and both
+avoid spaces inside a value.
+
+**Every switch**, at `LOGI` on the same line as the human-readable reason:
+
+```
+switching to night (heartbeat): daynight night [mode=night exp=6182 ref=-1 bar=768]
+```
+
+The `[...]` tail: `mode` is the mode being switched *to* (`day`/`night`);
+`exp` is the exposure index at the moment of the switch; `ref` is the night
+reference at that moment (`-1` when not currently in night, e.g. a
+day→night switch); `bar` is the effective day threshold (`day_gain`, raised
+by `daynight.learn` when active) — the same value on every switch line
+regardless of direction, since it is read once per tick rather than chosen
+per branch.
+
+**Every silent probe**, once per verdict, at the point where all branches
+have decided:
+
+```
+probe: r=1.05 lit=3350 dark=3520 hr=199 verdict=day mode=night ref=12098 why=brightening
+```
+
+`r` is the IR ratio (`dark / lit`, `-1` if the probe got no usable reading);
+`lit`/`dark` are the two raw readings compared — with the illuminator on and
+off — the same pair the hand-run campaign used to collect by script (`-1`
+alongside `r=-1`); `hr` is the AE headroom in log2 units at the dark
+reading; `verdict` is `day`, `night`, or `escalate` (inconclusive — the
+audible probe was asked for instead); `mode` is the automaton's mode at the
+time of the probe; `ref` is the night reference (`-1` outside night); `why`
+is the trigger that asked for this probe (`jump`, `trend`, `heartbeat`,
+`boot verify`, `requested`, …) with spaces replaced by underscores, since a
+`key=value` value can't carry one.
+
 ## Live control and status
 
 | Action | Effect |
@@ -434,6 +542,7 @@ the actual fix.
 | `POST /control {"daynight":{"enabled":false}}` | Switches to manual mode; the thread keeps sampling for status but stops forcing switches. |
 | `POST /control {"daynight":{"mode":"schedule",...}}` | Switches decision source; validated against `auto`/`schedule` (and the legacy `sensor`/`time`/`sun` spellings) before being applied. |
 | `POST /control {"image":{"running_mode":1}}` | Manually forces the ISP mode (what the board switch script itself calls). Re-posting the *same* value still re-drives the ISP (see [HTTP /control API Reference](HTTP-Control-API.md)) — necessary precisely because of the latch quirk above. |
+| `POST /control {"daynight":{"probe":1}}` | Arms one silent IR probe for the next tick, without waiting for the jump trigger, the trend or the heartbeat. A command, not a setting — counted in `accepted`/`rejected` like `record.clip`. Rejected when there is no `daynight.irprobe_cmd` configured or the silent probe has retired itself for the session (see "When the illuminator command doesn't work" above). |
 | `GET /control` `"daynight"` object | Read-only status: `enabled`, `mode` (0 day/1 night), `brightness` (%), `total_gain` (IMP `[24.8]` linear), **`exposure`** (the index the decision actually runs on — plot this one when diagnosing), `ae_luma`, `night_baseline`/`day_trigger` (kept under their old key names, now carrying the proven night reference and the probe bar, `-1` outside night), the configured thresholds, and — always — today's computed `sun_computed_sunrise`/`sun_computed_sunset`. |
 | `GET /events?stream=daynight` | Pushes the same status object whenever mode flips, brightness moves ≥1%, or gain moves ≥5% relative (or ≥8 absolute near zero) — see [HTTP /control API Reference](HTTP-Control-API.md#event-types). |
 

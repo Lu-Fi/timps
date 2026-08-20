@@ -279,7 +279,7 @@ summary:
 | `image` | `image.*` | Every key accepted and live-applied where the SoC supports it (`caps.image`). |
 | `audio` | `audio.*` | `volume`/`gain`/`alc_gain`/`mute`/`spk_volume`/`spk_gain` live; the rest (codec/samplerate/channels/bitrate/high_pass/agc/ns/force_stereo/spk_enabled/backchannel*) persist-only. |
 | `speaker` | not persisted | `{"play":"<file>"}` enqueues a system sound on the play FIFO (validated against `/usr/share/sounds`, no `/` or `..`); `{"stop":1}` stops it. Transient action, `USE_PLAY` only — see [Audio](Audio.md). |
-| `daynight` | `daynight.*` | `enabled`/`mode`/`time_night_start`/`time_day_start`/the threshold, probe, heartbeat, boot, sun-offset and `learn` numerics plus `interval_ms`/`transition_s`/`diagnose_thresholds` are all live (the detection thread polls `g_cfg` directly rather than being pushed through a HAL call); `mode` is validated against `auto`/`schedule` (legacy `sensor`/`time`/`sun` still accepted) before being applied. `switch_cmd`/`isp_path`/`trace_path`/`state_path` are deliberately **not** POST-able (exec'd command / paths the daemon writes as root, config-file only). |
+| `daynight` | `daynight.*` + `{"probe":1}` | `enabled`/`mode`/`time_night_start`/`time_day_start`/the threshold, probe, heartbeat, boot, sun-offset and `learn` numerics plus `interval_ms`/`transition_s`/`diagnose_thresholds` are all live (the detection thread polls `g_cfg` directly rather than being pushed through a HAL call); `mode` is validated against `auto`/`schedule` (legacy `sensor`/`time`/`sun` still accepted) before being applied. `switch_cmd`/`isp_path`/`trace_path`/`state_path` are deliberately **not** POST-able (exec'd command / paths the daemon writes as root, config-file only). `probe` is a command, like `record.clip`: it arms one silent IR probe for the next tick and is rejected (not silently ignored) on a camera with no `daynight.irprobe_cmd` configured or whose silent probe has retired itself for the session — see [Day/Night](Day-Night.md#the-silent-probe). |
 | `osd` (legacy shared form) | `osd.enabled`/`monitor_stream`/`font_path`/`vars_file`/`supersample`/`hinting` + `osdN.*` mirrored onto every stream | These osd.* globals are looked for only in the JSON span *before* the first nested item object, so an item's own keys (e.g. an item's `enabled`) are never mistaken for them. All five are config-only (restart-required), same as `osd.enabled`. |
 | `osd0`/`osd1` (canonical per-stream form) | `osd<S>.<N>.*` | Applied live via `imp_osd_apply()` for items that already had a region at startup, **except** `type` (text vs. logo): the live re-render dispatch is fixed at region-creation time, so changing an existing item's type persists but needs a restart to actually change what's drawn. `logo`/`logo_w`/`logo_h`/`font_path` (per-item override) are persist-only and not GET-readable. |
 | `video` | `video<N>.*` | Entirely persist-only (the encoder/FrameSource is never reconfigured live) **except** `rtsp_path`, which is honestly live. |
@@ -295,16 +295,17 @@ Every `POST /control` answers `application/json` with the same body
 shape, whatever the status:
 
 ```json
-{"ok":true,"accepted":2,"changed":1,"rejected":0,
+{"ok":true,"accepted":2,"changed":1,"rejected":0,"not_persisted":0,
  "applied":{"image.brightness":"255"}}
 ```
 
 | Field | Meaning |
 | --- | --- |
 | `ok` | `true` only when at least one known field was applied. |
-| `accepted` | Known fields applied, **including** no-op rewrites of the value a field already held — re-posting the current value is a success, not a silent failure. Clamped writes count here too: clamping is the documented contract, not an error. Also counts *commands* that were carried out (`record.clip`), which never go through the settings path at all. |
+| `accepted` | Known fields applied, **including** no-op rewrites of the value a field already held — re-posting the current value is a success, not a silent failure. Clamped writes count here too: clamping is the documented contract, not an error. Also counts *commands* that were carried out (`record.clip`, `daynight.probe`), which never go through the settings path at all. |
 | `changed` | The subset that actually differed and was persisted. |
 | `rejected` | Known fields whose **value** was refused (`null`, `undefined`, or an empty string on a non-string field), plus commands that were understood and failed (`record.clip` to an unwritable path). |
+| `not_persisted` | Of `accepted`, the number that were applied live but **not** written to `/etc/timps.conf` because the request changed more keys than the 48-slot persist list holds. Those values are live now and gone after the next reboot; a caller changing many keys at once should split the request or re-`GET` to confirm what survived. |
 | `applied` | Per-key echo of the **effective** value wherever it differs from what was posted — i.e. after clamping. This is how a caller that posted `999` learns it got `255`, without re-`GET`ting the document. |
 | `truncated` | Present (`true`) only if more keys changed than the 512-byte echo holds; fall back to a `GET`. |
 | `reason` | Present only on the error answers below — the machine-readable discriminator, so a client never has to infer the case from the status line. |

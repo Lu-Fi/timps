@@ -1172,10 +1172,18 @@ static void *dn_thread(void *arg)
                  * tuning was wrong. Re-asserting the running mode is what
                  * repaired it; a filter movement per boot would be a real
                  * mechanical cost the evidence does not ask for. */
-                reassert_left = DN_REASSERT_COUNT;
-                reassert_at   = now + DN_REASSERT_MS;
-                LOGI(MOD, "boot: re-asserting running_mode into the ISP - "
-                          "nothing has told it this session");
+                /* Assert ONCE, here, and do not arm the repeat countdown.
+                 * Arming it was wrong in a way that only showed on a camera:
+                 * the boot probe switches within seconds, and the pending
+                 * re-asserts then kept pushing the PERSISTED value over the
+                 * decision that had just been made - a living room sat in
+                 * night mode in daylight because the switch to day was
+                 * overwritten twice, eight seconds apart. A switch arms its
+                 * own re-assert with its own value; this one only has to say
+                 * the mode out loud once. */
+                hub_control("image.running_mode", running_mode ? "1" : "0");
+                LOGI(MOD, "boot: asserted running_mode=%d into the ISP - "
+                          "nothing had told it this session", running_mode ? 1 : 0);
                 if (running_mode) {         /* persisted NIGHT */
                     cur = DN_NIGHT;
                     ref = -1.0f;

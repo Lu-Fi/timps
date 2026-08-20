@@ -237,7 +237,7 @@ video0.rc_mode   = cbr       # cbr | vbr | fixqp | smart | capped_vbr | capped_q
 video0.gop       = 50
 #video0.max_gop  = 60        # reserved, no effect - see comment above video_fields' max_gop entry
 video0.profile   = 2         # 0 baseline 1 main 2 high
-#video0.qp       = 35        # reserved, no effect - see comment above video_fields' qp entry
+#video0.qp       = 35        # only used when video0.rc_mode = fixqp; no effect under cbr/vbr/etc (see video_fields' qp entry) - use min_qp/max_qp there instead
 video0.min_qp    = 20
 video0.max_qp    = 45
 video0.rotation  = 0         # 0|90|180|270 - build-gated & SoC-dependent (see block above)

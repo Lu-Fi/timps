@@ -118,6 +118,16 @@ semantic versioning.
   already right (illuminator on, ISP reporting Night) and a filter movement
   per boot is a mechanical cost the evidence does not ask for. Eight corpus
   scenarios failed their click budget when it did.
+  The first version of this fix pushed `running_mode` the same way a switch
+  does: once immediately, then armed the same repeating re-assert
+  (`DN_REASSERT_COUNT`/`DN_REASSERT_MS`) a switch arms, to cover a lost
+  fire-and-forget POST. At boot that repeat is wrong - the boot probe can
+  decide within seconds, and the pending re-asserts then overwrote that fresh
+  decision with the stale persisted value a second and third time, eight
+  seconds apart. Measured on a camera in a living room: the switch to day was
+  overwritten twice and the room stayed in night mode through daylight. Boot
+  now pushes `running_mode` once, directly, and does not arm the repeat; a
+  switch still arms its own.
 - **The night reference can come down** (`src/daynight.c`). It only ever
   ratcheted upward, on proof from a day probe that came back dark, so a
   reference anchored while the ISP was misbehaving could never be corrected. A
@@ -128,6 +138,17 @@ semantic versioning.
   each eight seconds with the illuminator off, which reads from outside as an
   IR lamp that keeps switching itself off. Corpus scenario
   `23-stale-reference-no-way-down`.
+- **The exposure and probe logs roll over instead of ending the series**
+  (`scripts/dn-isp-log.sh`, `scripts/dn-irprobe.sh`). Both capped their CSV
+  at a line count meant to bound what the file costs an SD card, but exiting
+  once the cap was hit stopped the measurement for good rather than bounding
+  it - seven of twelve cameras had quietly stopped logging exposure after
+  about 66 hours, and `dn-irprobe.sh` stopped after about eight nights. The
+  cap sat above the syslog copy in both scripts, so hitting it silenced the
+  central collection as well, which has no line limit of its own. Both now
+  trim to the newest half and carry on. `dn-isp-probe.sh`, a frozen duplicate
+  of the exposure logger that an install run would have overwritten the fix
+  with, is gone; the installer reads the one canonical script.
 
 ### Added
 
@@ -147,6 +168,18 @@ semantic versioning.
   after "shutting down" with whatever subsystem happened to log last, so the
   guillotine and a normal exit were indistinguishable. Any change to the 3s
   alarm or the 5s HAL wait would have been guesswork without this.
+- **`/control` can ask for a probe on demand** (`src/control.c`,
+  `src/daynight.c`): `{"daynight":{"probe":1}}` arms one for the next tick.
+  The probe previously only fired on the jump trigger, the trend or the
+  heartbeat, so confirming that a camera could see daylight meant waiting up
+  to `heartbeat_s` - which is what it took to find three cameras that had sat
+  in night mode all afternoon. It is counted as a command, like
+  `record.clip`, not as a setting. The request only ever arms the silent
+  probe, never the audible one, and is rejected outright on a camera with no
+  `daynight.irprobe_cmd` configured or whose silent probe has retired itself
+  for the session - a reported rejection rather than a silent no-op, since
+  otherwise "nothing happened" would be indistinguishable from "it ran and
+  found nothing".
 
 ### Changed
 
