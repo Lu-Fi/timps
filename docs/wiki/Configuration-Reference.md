@@ -6,9 +6,9 @@ overridable with `-c <path>`) — see `timps.conf.example` /
 syntax; the "section" is simply the dotted prefix of the key (`image.`,
 `audio.`, `video0.`, ...).
 
-This page documents **every** key recognized by `src/config.c`, grouped by
-section, with type, default, valid range, and — importantly — whether the
-key can be changed **live** via `POST /control` (see
+This page documents **every** user-facing key recognized by `src/config.c`,
+grouped by section, with type, default, valid range, and — importantly —
+whether the key can be changed **live** via `POST /control` (see
 [HTTP /control API Reference](HTTP-Control-API.md)) or is **persist-only**
 (the value is stored/echoed but only takes effect the next time `timpsd`
 restarts).
@@ -62,10 +62,10 @@ trusted, because a mismatching name/i2c address would crash the ISP driver.
 | Key | Type | Default | Range | Live? | Description |
 | --- | --- | --- | --- | --- | --- |
 | `sensor.model` | string | *(unset → auto-detected, fallback `gc2053`)* | — | Restart-only | Sensor driver name; auto-filled from `/proc/jz/sensor/sensor0/name` if present. |
-| `sensor.i2c_addr` (alias `i2c_address`) | int | *(unset → auto-detected, fallback `0x37`)* | — | Restart-only | Sensor I2C address. |
-| `sensor.fps` | int | *(unset → auto/video0.fps, fallback 25)* | — | Restart-only | Sensor capture frame rate. |
-| `sensor.width` | int | *(unset → auto/video0.width, fallback 1920)* | — | Restart-only | Sensor native width. |
-| `sensor.height` | int | *(unset → auto/video0.height, fallback 1080)* | — | Restart-only | Sensor native height. |
+| `sensor.i2c_addr` (alias `i2c_address`) | int | *(unset → auto-detected, fallback `0x37`)* | 0–0x7F | Restart-only | Sensor I2C address. |
+| `sensor.fps` | int | *(unset → auto/video0.fps, fallback 25)* | 0–120 | Restart-only | Sensor capture frame rate. |
+| `sensor.width` | int | *(unset → auto/video0.width, fallback 1920)* | 0–8192 | Restart-only | Sensor native width. |
+| `sensor.height` | int | *(unset → auto/video0.height, fallback 1080)* | 0–8192 | Restart-only | Sensor native height. |
 
 `sensor.*` **is** accepted by `POST /control` (`{"sensor":{...}}`) for
 persistence — it is listed in `caps.restart` alongside `video` — but has
@@ -105,7 +105,7 @@ latch-kick this triggers.
 | `image.drc_strength` | int | 128 | 0–255 | Live | `ISP_HAS_DRC` (WDR): T21/T23/T31/C100 | Dynamic range compression (WDR) strength. |
 | `image.highlight_depress` | int | 0 | 0–10 | Live | `ISP_HAS_HILIGHT`: all except T40/T41 | Highlight suppression. |
 | `image.backlight_compensation` | int | 0 | 0–10 | Live | `ISP_HAS_BACKLIGHT`: T23/T31/C100 | Backlight compensation. |
-| `image.core_wb_mode` | int | 0 | SDK enum | Live | `ISP_HAS_WB`: all except T40/T41 | White balance mode. |
+| `image.core_wb_mode` | int | 0 | 0–1 | Live | `ISP_HAS_WB`: all except T40/T41 | White balance mode. |
 | `image.wb_rgain` | int | 0 | 0–65535 | Live | `ISP_HAS_WB` | Manual WB red gain (used when `core_wb_mode` selects manual). |
 | `image.wb_bgain` | int | 0 | 0–65535 | Live | `ISP_HAS_WB` | Manual WB blue gain. |
 
@@ -126,7 +126,7 @@ on a running capture channel).
 | `audio.spk_gain` | int | 25 | 0–100 | **Live** (same gate as `spk_volume`) | Speaker output gain. |
 | `audio.enabled` | bool | 1 | 0/1 | Restart-only | Master audio capture enable. |
 | `audio.codec` | enum | `aac` | `aac`\|`pcmu`\|`pcma`\|`opus`\|`none` (aliases `g711u`/`ulaw`→pcmu, `g711a`/`alaw`→pcma, `off`→none) | Restart-only | Audio codec. AAC needs `USE_FAAC`; `opus` needs `USE_STREAM_OPUS` (RTSP-only, RFC 7587 — see [Audio](Audio.md)/[Streaming Protocols](Streaming-Protocols.md)) and is only an accepted token on such a build. Falls back to AAC at parse time for any unrecognized token. |
-| `audio.samplerate` | int | 16000 | unclamped | Restart-only | Capture sample rate in Hz. G.711 is pinned to 8000 Hz regardless of this value (see [Audio](Audio.md)). |
+| `audio.samplerate` | int | 16000 | 8000–96000 | Restart-only | Capture sample rate in Hz. G.711 is pinned to 8000 Hz regardless of this value (see [Audio](Audio.md)). |
 | `audio.channels` | int | 1 | 1–2 | Restart-only | 1 = mono (native). 2 = "simulated stereo" — the mono mic duplicated to L=R, AAC only. |
 | `audio.bitrate` | int | 32 | 8–320 (kbps) | Restart-only | AAC encode bitrate. |
 | `audio.high_pass` | bool | 0 | 0/1 | Restart-only | High-pass filter. **Not live**: libimp runs HPF/AGC/NS on its own record thread and frees state unlocked — a live toggle would race the vendor thread (use-after-free risk), so this is restart-required by design, not merely unimplemented. |
@@ -447,11 +447,21 @@ aliases and the units and calibration are unchanged.
 
 ## `general.*` — daemon-wide settings
 
-File-only; no `/control` POST path.
+File-only except `debug_modules`, which is POST-able as
+`{"general":{"debug_modules":"HAL_ING"}}` and takes effect immediately.
+Everything else in this section is read at startup.
+
+Two keys are deliberately left out of the table below: `general.trace` and
+`general.trace_ms` are a developer probe for send-pipeline tracing (see
+`src/trace.h`), handled directly in `set_kv()` rather than as table fields —
+not POST-able, not echoed, not part of `/control?fields=1`. They are
+intentionally undocumented here; edit `/etc/timps.conf` by hand if you need
+them.
 
 | Key | Type | Default | Range | Live? | Description |
 | --- | --- | --- | --- | --- | --- |
 | `general.loglevel` | int | `LOG_INFO` (2) | SDK log-level enum | File-only | Startup log verbosity (`-v` on the command line also forces debug). |
+| `general.debug_modules` | string(64) | `""` | comma list of log tags | **Live** | Modules raised to DEBUG regardless of `loglevel` (`HAL_ING,DAYNIGHT`). Names rather than a bitmask: a mask in a config file silently means something else once a module is added, and nothing warns. It matters because the ring buffer is 64 KB and recycles in minutes under load - raising the global level to reach one subsystem loses the lines it was raised for. Case-insensitive, up to 8 names; an unknown name simply never matches. |
 | `general.imp_polling_timeout` | int | 500 | — | File-only | `IMP_Encoder_PollingStream` timeout, ms. |
 | `general.osd_pool_size` | int | 1024 | — | File-only | Max OSD pool size (KB) reserved for small OSD regions. |
 | `general.syslog` | bool | on | 0/1 | File-only | Also mirror log output to syslog (`logread`). A side-effecting key: applied immediately at config-load time via `log_set_syslog()`, but not stored as a field, so it cannot be echoed back by any getter. |
@@ -489,7 +499,7 @@ at the top of this page. `GET /control` groups this whole section under
 | `video<N>.gop` | int | 50 / 50 | 1–1000 | Restart-only | GOP length (I-frame interval). |
 | `video<N>.max_gop` | int | 60 / 60 | 1–1000 | Restart-only | **RESERVED / no effect** — parsed, clamped and persisted for compatibility but consumed by no HAL; the encoder's keyframe interval comes from `video<N>.gop`. Setting a non-zero value logs a one-shot warning. |
 | `video<N>.profile` | int | 2 / 2 | 0 (baseline) – 2 (high) | Restart-only | H.264/H.265 encode profile. |
-| `video<N>.qp` | int | 35 / 35 | 1–51 | Restart-only | **RESERVED / no effect** — parsed, clamped and persisted for compatibility but consumed by no HAL (no init/fixed-QP wiring; the pre-T31 attribute path is CBR-only). Use `video<N>.min_qp`/`max_qp` + `video<N>.rc_mode` for quality control. Setting a non-zero value logs a one-shot warning. |
+| `video<N>.qp` | int | 35 / 35 | 1–51 | Restart-only | Fixed QP, used only when `video<N>.rc_mode=fixqp` (passed as the encoder's initial/fixed QP: `iInitialQP` on the new API, `attrH264FixQp.qp`/`attrH265FixQp.qp` on the classic API). No effect under `cbr`/`vbr`/etc., which derive QP from rate control instead — use `video<N>.min_qp`/`max_qp` there. |
 | `video<N>.min_qp` | int | 20 / 20 | 1–51 | Restart-only | Minimum QP. |
 | `video<N>.max_qp` | int | 45 / 45 | 1–51 | Restart-only | Maximum QP. |
 | `video<N>.rotation` | int | 0 / 0 | `0`\|`90`\|`270` (+`180` on T40/T41 only); legacy `1`/`2` accepted as raw `rotTo90` values | Restart-only, `USE_ROTATE` builds only | Image rotation — see [Platform & SDK Support](Platform-SDK-Support.md) and `docs/rotation.md`. Unsupported values on a given SoC are coerced to `0` with a warning. |

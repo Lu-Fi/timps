@@ -19,6 +19,7 @@ static const int SYS_PRI[4] = { LOG_ERR, LOG_WARNING, LOG_INFO, LOG_DEBUG };
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
+#include <strings.h>        /* strcasecmp */
 #include <time.h>
 #include <pthread.h>
 
@@ -28,13 +29,54 @@ static int g_syslog_open = 0;
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static const char *lvl_str[] = { "ERR", "WRN", "INF", "DBG" };
 
+/* Per-module DEBUG. The device's syslog ring is 64 KB and recycles in minutes
+ * under load, so raising the global level to see one subsystem loses the very
+ * lines it was raised for. */
+#define LOG_DBGMOD_MAX 8
+#define LOG_DBGMOD_LEN 16
+static char g_dbgmod[LOG_DBGMOD_MAX][LOG_DBGMOD_LEN];
+static int  g_dbgmod_n = 0;
+
+/* Read without the lock: the list only changes on an explicit config apply,
+ * and the worst case is that one line is judged against a half-written entry.
+ * Locking the hot path of every log call to protect a diagnostic switch would
+ * be the wrong trade. */
+static int mod_is_debug(const char *module)
+{
+    if (!module || g_dbgmod_n <= 0) return 0;
+    for (int i = 0; i < g_dbgmod_n; i++)
+        if (!strcasecmp(g_dbgmod[i], module)) return 1;
+    return 0;
+}
+
+void log_set_debug_modules(const char *csv)
+{
+    pthread_mutex_lock(&g_lock);
+    g_dbgmod_n = 0;
+    for (const char *p = csv; p && *p && g_dbgmod_n < LOG_DBGMOD_MAX; ) {
+        while (*p == ',' || *p == ' ') p++;
+        const char *e = p;
+        while (*e && *e != ',') e++;
+        size_t n = (size_t)(e - p);
+        while (n && (p[n-1] == ' ')) n--;
+        if (n && n < LOG_DBGMOD_LEN) {
+            memcpy(g_dbgmod[g_dbgmod_n], p, n);
+            g_dbgmod[g_dbgmod_n][n] = 0;
+            g_dbgmod_n++;
+        }
+        p = *e ? e + 1 : e;
+    }
+    pthread_mutex_unlock(&g_lock);
+}
+
 void log_set_level(int level){ g_level = level; }
 
 void log_set_syslog(int on){ g_syslog = on; }
 
 void log_printf(int level, const char *module, const char *fmt, ...)
 {
-    if (level > g_level) return;
+    if (level > g_level && !(level == LOG_DEBUG && mod_is_debug(module)))
+        return;
 
     char msg[512];
     va_list ap; va_start(ap, fmt);

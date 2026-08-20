@@ -3,6 +3,13 @@
 
 # ---- general ----
 general.loglevel            = 2      # 0=err 1=warn 2=info 3=debug
+# Raise single modules to debug WITHOUT raising loglevel. Names, not a bitmask:
+# a mask is a magic number that quietly means something else once a module is
+# added. The device's syslog ring is 64 KB and recycles in minutes under load,
+# so a global debug level loses the very lines it was raised for.
+# Tags: MAIN CONFIG CTRL DAYNIGHT HAL_ING HTTP HUB MOTION OSD REC RTSP SRT TL
+#       HAL_SIM TLS AAC bc spk TRACE
+# general.debug_modules     = HAL_ING,DAYNIGHT
 general.syslog              = 1      # 1 = also log to syslog so messages show up
                                      #     in `logread` (the init script backgrounds
                                      #     timpsd, so its stderr is discarded);
@@ -267,7 +274,7 @@ video1.imp_chn   = 1
 audio.enabled            = 1
 audio.codec              = aac    # aac | pcmu | pcma | opus | none  (persist +
                                   #   restart; opus needs USE_STREAM_OPUS)
-audio.samplerate         = 16000  # 8000 | 16000              (persist + restart)
+audio.samplerate         = 16000  # 8000-96000 Hz              (persist + restart)
 audio.channels           = 1      # 1 mono | 2 = simulated stereo (dual-mono),
                                   # AAC only               (persist + restart)
 audio.bitrate            = 32     # kbps, aac                 (persist + restart)
@@ -291,7 +298,7 @@ audio.aec                = 0      # live — 0 off, 1 on (USE_BACKCHANNEL/USE_PL
 #                 backchannel nor local playback produces any sound.
 #   spk_volume / spk_gain = applied live to the AO if a play/backchannel session
 #                 holds it, else at the next AO open; also persist as the default.
-# audio.spk_enabled  = 0
+# audio.spk_enabled  = 1
 # audio.spk_volume   = 80
 # audio.spk_gain     = 25
 # alias for audio.channels = 2: simulated stereo (dual-mono), AAC only,

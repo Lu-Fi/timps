@@ -440,10 +440,16 @@ static void dn_blind_check(const dn_sample *sm, const ms_daynight_cfg *dn,
 /* run "<switch_cmd> day|night" (the thingino board script: ircut/light/color).
  * The mode change is committed even if the command fails so a missing script
  * warns once per switch instead of retrying every sample. */
-static void dn_switch(int mode, const char *why, const char *cmd)
+/* The tail is machine-readable on purpose. Everything in it is already in
+ * the surrounding prose, but the dashboards count these lines with a grep,
+ * and a reworded sentence would empty them silently - the same failure the
+ * exposure series had when it stopped without saying so. */
+static void dn_switch(int mode, const char *why, const char *cmd,
+                      float s, float ref, float bar)
 {
     const char *arg = (mode == DN_NIGHT) ? "night" : "day";
-    LOGI(MOD, "switching to %s (%s): %s %s", arg, why, cmd, arg);
+    LOGI(MOD, "switching to %s (%s): %s %s [mode=%s exp=%.0f ref=%.0f bar=%.0f]",
+         arg, why, cmd, arg, arg, (double)s, (double)ref, (double)bar);
     /* F-01: fork()+execlp() instead of system(). switch_cmd comes from the
      * config file; system() would let a value like "reboot; nc ..." inject
      * shell commands (as root). exec'ing it as a single program with the fixed
@@ -1532,7 +1538,7 @@ static void *dn_thread(void *arg)
                       "verdict in %ds", probe_why, (double)s, (double)ref,
                  dn->probe_settle_s);
             pre_probe = (s > 0.0f) ? s : ref;
-            dn_switch(DN_DAY, probe_why, dn->switch_cmd);
+            dn_switch(DN_DAY, probe_why, dn->switch_cmd, s, ref, bar);
             cur = DN_DAY; mode_since = now; last_probe = now;
             verdict_at = now + (int64_t)dn->probe_settle_s * 1000;
             ir_verdict_at = 0; d_lit = -1.0f; ir_why = NULL;
@@ -1548,7 +1554,7 @@ static void *dn_thread(void *arg)
                    (force || !mode_since ||
                     now - mode_since >= (int64_t)dn->transition_s * 1000)) {
             int reverted = (cur == DN_DAY && target == DN_NIGHT && pre_probe > 0.0f);
-            dn_switch(target, why[0] ? why : "?", dn->switch_cmd);
+            dn_switch(target, why[0] ? why : "?", dn->switch_cmd, s, ref, bar);
             cur = target; mode_since = now;
             s = -1.0f; stable_n = 0;
             trig_since = dark_since = verdict_at = 0;

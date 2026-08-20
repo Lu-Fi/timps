@@ -531,6 +531,17 @@ int control_apply_json(const char *json, ctrl_result *res)
     }
 #endif
 
+    {   /* general: only F_CTRL fields are reachable, which today means
+         * debug_modules alone - loglevel stays file-only. Live matters here:
+         * turning debugging on by restarting destroys the state one is trying
+         * to observe. */
+        const char *ge, *gb = find_obj(json, end, "general", &ge);
+        if (gb) {
+            int ngen; const cfg_field *gen_tbl = cfg_fields_general(&ngen);
+            apply_ctrl_fields(ch, "general", gb, ge, gen_tbl, ngen);
+        }
+    }
+
     /* daynight: {"daynight":{"enabled":..,"total_gain_day_threshold":..,
      * "total_gain_night_threshold":..}} - the native automatic day/night
      * detection switch + its gain thresholds (config-only keys: the detection
@@ -1474,6 +1485,7 @@ int control_fields_json(char *buf, size_t cap)
     SECFIELDS("daynight",  cfg_fields_daynight);
     SECFIELDS("video",     cfg_fields_video);
     SECFIELDS("privacy",   cfg_fields_privacy);
+    SECFIELDS("general",   cfg_fields_general);
     #undef SECFIELDS
     /* drop the trailing comma left by the last SECFIELDS() - only when the
      * document wasn't already truncated (o<=cap), same guard style as the

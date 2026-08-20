@@ -216,6 +216,7 @@ void config_defaults(ms_config *c)
 {
     memset(c, 0, sizeof(*c));
     c->loglevel = LOG_INFO;
+    c->debug_modules[0] = 0;
     c->imp_polling_timeout = 500;
     c->osd_pool_size = 1024;   /* max on T-series; holds small OSD regions */
 
@@ -808,6 +809,7 @@ static const cfg_field events_fields[] = {
 };
 static const cfg_field general_fields[] = {   /* + general.syslog in set_kv() */
     F("loglevel",            0, loglevel,            T_INT, 0, 0,0),
+    FS("debug_modules",      0, debug_modules,      F_CTRL),
     /* 0 would make IMP_*_PollingStream return immediately: video_thread spins,
      * the watchdog burns its MS_VIDEO_WATCHDOG_ITERS misses in under a
      * millisecond and escalates to raise(SIGTERM) - one config line and the
@@ -1116,7 +1118,11 @@ static const cfg_section g_sections[] = {
     SEC("record.",    0, offsetof(ms_config,record),    record_fields),
     SEC("timelapse.", 0, offsetof(ms_config,timelapse), timelapse_fields),
     SEC("daynight.",  0, offsetof(ms_config,daynight),  daynight_fields),
-    SEC("general.",   1, 0,                             general_fields),
+    /* readable since debug_modules became POST-able: an unreadable field
+     * defeats the change detection, and every POST would then rewrite
+     * /etc/timps.conf with an fsync - the flash wear that detection exists to
+     * prevent. loglevel and the polling/pool numbers read back harmlessly. */
+    SEC("general.",   0, 0,                             general_fields),
     SEC("sim.",       1, 0,                             sim_fields),
 };
 #undef SEC
@@ -1302,19 +1308,21 @@ static void set_kv(ms_config *c, const char *key, const char *val)
         /* buffers given explicitly: HAL safety clamps (e.g. T31 non-scaled
          * channel) trust it as-is instead of overriding */
         if (f->off == offsetof(ms_vstream_cfg,buffers)) v->buffers_explicit = 1;
-        /* F-04: videoN.qp / videoN.max_gop are parsed/clamped/persisted/echoed
-         * for compat but NOTHING in any HAL consumes them - the encoder's
-         * keyframe interval comes from videoN.gop (rcAttr.maxGop = v->gop) and
-         * there is no separate init/fixed-QP wiring (the pre-T31 attr path is
-         * CBR-only). Warn once on a non-zero set so a user isn't silently losing
-         * a setting they think is active, same as motion.roi_*. */
-        if ((!strcmp(key+7,"qp") || !strcmp(key+7,"max_gop")) && pint(val)!=0){
+        /* F-04: videoN.max_gop is parsed/clamped/persisted/echoed for compat
+         * but NOTHING in any HAL consumes it - the encoder's keyframe
+         * interval comes from videoN.gop (rcAttr.maxGop / gopAttr.uGopLength
+         * = v->gop). videoN.qp IS consumed by enc_create() (iInitialQP /
+         * attrH264FixQp.qp / attrH265FixQp.qp), but only when
+         * videoN.rc_mode=fixqp; under CBR/VBR/etc it has no HAL consumer
+         * since those modes derive QP from rate control instead. Warn once
+         * on a non-zero videoN.max_gop so a user isn't silently losing a
+         * setting they think is active, same as motion.roi_*. */
+        if (!strcmp(key+7,"max_gop") && pint(val)!=0){
             static int vqp_warned;
             if (!vqp_warned){
                 vqp_warned=1;
-                LOGW(MOD,"videoN.qp / videoN.max_gop are reserved and IGNORED - "
-                         "the GOP comes from videoN.gop; use videoN.min_qp/"
-                         "max_qp + videoN.rc_mode for quality control");
+                LOGW(MOD,"videoN.max_gop is reserved and IGNORED - "
+                         "the keyframe interval comes from videoN.gop");
             }
         }
         return;
@@ -1443,6 +1451,14 @@ static void set_kv(ms_config *c, const char *key, const char *val)
 void config_apply_kv(ms_config *c, const char *key, const char *val)
 {
     set_kv(c, key, val);
+    /* The logger keeps its own copy, so storing the value is not applying it.
+     * Without this a POST would be accepted, echoed back correctly and do
+     * nothing until the next restart - a switch that reports success and has
+     * no effect is worse than one that is missing. */
+    if (!strcmp(key, "general.debug_modules") || !strcmp(key, "debug_modules"))
+        log_set_debug_modules(c->debug_modules);
+    else if (!strcmp(key, "general.loglevel") || !strcmp(key, "loglevel"))
+        log_set_level(c->loglevel);
 }
 
 /* public: read back a key's current value as a normalized string, matching the
@@ -1573,6 +1589,7 @@ int config_load(ms_config *c, const char *path)
     }
     fclose(f);
     log_set_level(c->loglevel);
+    log_set_debug_modules(c->debug_modules);
     LOGI(MOD,"loaded %d settings from %s", n, path);
     return 0;
 }
@@ -1873,5 +1890,6 @@ const cfg_field *cfg_fields_motion(int *n)    { *n = NF(motion_fields);    retur
 const cfg_field *cfg_fields_record(int *n)    { *n = NF(record_fields);    return record_fields; }
 const cfg_field *cfg_fields_timelapse(int *n) { *n = NF(timelapse_fields); return timelapse_fields; }
 const cfg_field *cfg_fields_daynight(int *n)  { *n = NF(daynight_fields);  return daynight_fields; }
+const cfg_field *cfg_fields_general(int *n)   { *n = NF(general_fields);   return general_fields; }
 const cfg_field *cfg_fields_video(int *n)     { *n = NF(video_fields);     return video_fields; }
 const cfg_field *cfg_fields_privacy(int *n)   { *n = NF(privacy_fields);   return privacy_fields; }

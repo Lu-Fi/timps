@@ -48,8 +48,30 @@ semantic versioning.
   scenarios armed the trend path with nothing to feed it: two of them lost
   their click budget to probes the scenario could not answer.
 
+### Added
+
+- **Per-module debug logging** (`src/log.c`, `general.debug_modules`). There
+  was one global level, so reaching a single subsystem's debug lines meant
+  raising everything - on a device whose syslog ring is 64 KB and recycles in
+  minutes under load, which loses the very lines it was raised for. Names, not
+  a bitmask: a mask in a config file quietly means something else the day a
+  module is added, and nothing warns. `general.debug_modules = HAL_ING` is 10
+  extra lines; the same reach used to cost the whole ring.
+- **The day/night switch line ends in a machine-readable tail**
+  (`src/daynight.c`): `[mode=night exp=6182 ref=-1 bar=768]`. Everything in it
+  is already in the prose, but the dashboards count these lines with a grep,
+  and a reworded sentence would empty them without a word - the same silence
+  the exposure series had when it stopped collecting.
+
 ### Fixed
 
+- **`general.*` is readable, and appears in `/control?fields=1`**
+  (`src/config.c`, `src/control.c`). Making `debug_modules` POST-able exposed
+  an invariant that had held across every table until then: `F_CTRL` and
+  not-readable are mutually exclusive. Broken, the change detection can never
+  fire, so every POST of the same value rewrites `/etc/timps.conf` with an
+  fsync - the flash wear that detection exists to prevent - and the field-drift
+  watchdog that QA section 8d diffs against was blind to the section.
 - **The persisted mode is asserted into the ISP at boot** (`src/daynight.c`).
   Adopting a persisted mode set the automaton's own state and armed a probe,
   but never told the hardware anything: the re-assert that follows a switch

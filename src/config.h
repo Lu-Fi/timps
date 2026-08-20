@@ -455,6 +455,10 @@ typedef struct {
 typedef struct {
     /* general */
     int            loglevel;
+    /* Modules raised to DEBUG regardless of loglevel, comma separated
+     * ("DAYNIGHT,MAIN"). See log_set_debug_modules() for why names and not a
+     * bitmask. */
+    char           debug_modules[64];
     int            imp_polling_timeout;
     int            osd_pool_size;
 
@@ -654,6 +658,7 @@ const cfg_field *cfg_fields_motion(int *n);
 const cfg_field *cfg_fields_record(int *n);
 const cfg_field *cfg_fields_timelapse(int *n);
 const cfg_field *cfg_fields_daynight(int *n);
+const cfg_field *cfg_fields_general(int *n);
 const cfg_field *cfg_fields_video(int *n);     /* one videoN stream */
 const cfg_field *cfg_fields_privacy(int *n);   /* one privacy region */
 
