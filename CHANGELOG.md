@@ -8,6 +8,31 @@ semantic versioning.
 
 ### Fixed
 
+- **The C++ runtime is actually linked statically now** (`Makefile`). The
+  build carried a comment stating that SRT builds link the final binary with
+  g++ "so libstdc++ is resolved and static-linked (-static-libstdc++, passed
+  via IMPLIBS) reliably". `-static-libstdc++` appeared nowhere but in that
+  comment: `IMPLIBS` was `-l:libimp.a -l:libalog.a -l:libsysutils.a`, and the
+  firmware build overrides it in any case. Every SRT build therefore shipped
+  `libstdc++.so.6` - 2130 KB in the target, the single largest file in a 5 MB
+  rootfs, larger than `libimp.so`, the ISP driver or busybox, and more than
+  three times `timpsd` itself. Its only other consumer was
+  `libaudioProcess.so`, which nothing links and which was not mapped in any
+  process on a running camera. `USE_SRT=1` now links with
+  `-static-libstdc++ -static-libgcc`: `timpsd` grows 683744 -> 1278396 bytes
+  and drops `libstdc++.so.6` from its `NEEDED` list, which with the shared
+  library gone is a net 581632 bytes off the packed image. Do **not** extend
+  this to `libgcc_s.so.1` - uClibc dlopens it for `pthread_cancel` unwinding
+  with no `DT_NEEDED` entry, so a link-time dependency scan cannot see the
+  requirement, and removing it aborts the daemon right after audio init with
+  "libgcc_s.so.1 must be installed for pthread_cancel to work". Measurements
+  and the full method are in `docs/flash-footprint-srt-2026-08-20.md`.
+- **libsrt is built with section granularity** (firmware
+  `package/libsrt/libsrt.mk`). timps compiled its own sources with
+  `-ffunction-sections -fdata-sections` and linked with `--gc-sections`, but
+  `libsrt.a` was built without them, so the linker could only discard whole
+  object files while timps uses a small slice of libsrt's C API. Worth 28672
+  bytes on the packed image at no functional cost.
 - **A low IR ratio no longer switches to day on its own** (`src/daynight.c`).
   The silent probe answers "is the illuminator earning its keep". Switching to
   day also closes the IR-cut filter, which is a separate cost, and on a dim

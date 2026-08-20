@@ -121,14 +121,17 @@ CXX := $(CROSS_COMPILE)g++
 BIN := timpsd
 
 # SRT (libsrt) is C++: compile the C sources to .o with gcc (correct C), then
-# LINK the final binary with g++ so libstdc++ is resolved and static-linked
-# (-static-libstdc++, passed via IMPLIBS) reliably. A single gcc pass left
-# libstdc++.so.6 dynamic (-Bstatic / -l:libstdc++.a both did), and a single g++
-# pass mis-compiled the C as C++. Non-SRT builds link with gcc.
+# LINK the final binary with g++. A single gcc pass left libstdc++.so.6
+# dynamic (-Bstatic / -l:libstdc++.a both did), and a single g++ pass
+# mis-compiled the C as C++. Non-SRT builds link with gcc.
+# The C++ runtime is linked statically: timpsd is its only user on a timps
+# image, and the shared libstdc++.so is 2130 KB against a 5 MB rootfs.
 ifeq ($(USE_SRT),1)
 LINK_DRV := $(CXX)
+CXXRT_LDFLAGS := -static-libstdc++ -static-libgcc
 else
 LINK_DRV := $(CC)
+CXXRT_LDFLAGS :=
 endif
 
 BASE := src/util.c src/log.c src/config.c src/frame.c src/fanqueue.c src/net.c \
@@ -240,7 +243,7 @@ target:
 	  -DHAL_INGENIC -DPLATFORM_$(PLATFORM) $(PLATFORM_CFLAGS) -DMS_VERSION='"$(VERSION)"' -Isrc -I$(IMP_INC) -I$(IMP_INC)/imp \
 	  -c $(TARGET_ALLSRC)
 	$(LINK_DRV) $(TARGET_OBJS) \
-	  $(LDFLAGS) $(if $(IMP_LIB),-L$(IMP_LIB)) $(IMPLIBS) \
+	  $(LDFLAGS) $(CXXRT_LDFLAGS) $(if $(IMP_LIB),-L$(IMP_LIB)) $(IMPLIBS) \
 	  $(if $(filter 1,$(USE_FAAC)),$(FAACLIB)) $(if $(filter 1,$(USE_BC_AAC)),$(HELIXLIB)) \
 	  $(if $(filter 1,$(USE_PLAY_OPUS)),$(OPUSLIB)) \
 	  $(if $(filter 1,$(USE_STREAM_OPUS)),$(OPUS_ENC_LIB)) $(LIBS) -o $(BIN)
