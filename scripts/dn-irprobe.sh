@@ -75,7 +75,14 @@ read_isp() {
 }
 
 [ -f "$OUT" ] || echo "epoch,phase,mode,int,max_int,again,dgain,ispdgain,max_again,max_ispdgain" > "$OUT"
-[ "$(wc -l < "$OUT" 2>/dev/null || echo 0)" -lt "$MAX" ] || exit 0
+# Roll over, never stop. Exiting here ended the probing AND - because the
+# syslog copy is further down - the central record with it. The same shape
+# silenced the exposure series on seven of twelve cameras before anyone
+# noticed; see scripts/dn-isp-log.sh.
+if [ "$(wc -l < "$OUT" 2>/dev/null || echo 0)" -ge "$MAX" ]; then
+	tail -n $((MAX / 2)) "$OUT" > "$OUT.tmp" 2>/dev/null &&
+		mv "$OUT.tmp" "$OUT" || rm -f "$OUT.tmp"
+fi
 
 ON=$(read_isp) || exit 0
 # watchdog first: the light comes back even if this shell is killed outright

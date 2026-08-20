@@ -38,23 +38,14 @@ CMD="${1:-}"; shift || true
 # The on-camera sampler. Deliberately one shot per invocation with no daemon
 # and no lock: cron restarts it every minute, so there is nothing to leak,
 # nothing to supervise, and a reboot resumes it by itself.
-read -r -d '' LOGGER <<'EOF'
-#!/bin/sh
-# day/night exposure-index measurement - see scripts/dn-isp-probe.sh in timps
-OUT=/tmp/dn-isp.csv
-MAX=4000                      # ~66 h at one sample a minute, ~250 KB of tmpfs
-# isp-m0 on T31/T23, isp_info on T20 - the same split daynight.c's dn_read()
-# falls back over. Reading only the first would have collected nothing at all
-# from cam-K and cam-J, which are the two cameras this measurement
-# most needs (dark cellars, light switched on by hand).
-D=$(cat /proc/jz/isp/isp-m0 2>/dev/null || cat /proc/jz/isp/isp_info 2>/dev/null)
-[ -n "$D" ] || exit 0
-[ -f "$OUT" ] || echo "epoch,mode,int,max_int,again,dgain,ispdgain" > "$OUT"
-[ "$(wc -l < "$OUT" 2>/dev/null || echo 0)" -lt "$MAX" ] || exit 0
-f() { echo "$D" | sed -n "s/^$1 : *\([0-9]*\).*/\1/p" | head -1; }
-M=$(echo "$D" | sed -n 's/.*ISP Runing Mode : *//p' | tr -d ' \r' | head -1)
-echo "$(date +%s),${M:-?},$(f 'SENSOR Integration Time'),$(f 'SENSOR Max Integration Time'),$(f 'SENSOR analog gain'),$(f 'SENSOR digital gain'),$(f 'ISP digital gain')" >> "$OUT"
-EOF
+# The sampler is NOT duplicated here. It used to be, and the copy froze: it
+# still carried the terminating 4000-line cap and wrote only to tmpfs long
+# after scripts/dn-isp-log.sh had learned to roll over and to ship to the
+# collector. An install would have quietly undone that fix on every camera it
+# touched. One source, read at install time.
+LOGGER_SRC="$(dirname "$0")/dn-isp-log.sh"
+[ -r "$LOGGER_SRC" ] || { echo "!! $LOGGER_SRC not found - run this from the repo" >&2; exit 1; }
+LOGGER=$(cat "$LOGGER_SRC")
 
 install_one() {
     local ip="$1"
