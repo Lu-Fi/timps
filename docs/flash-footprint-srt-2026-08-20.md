@@ -238,12 +238,18 @@ is off, and stale files from the previous format remain in the target.
 This is the same mechanism already used fleet-wide in
 `user/common/overlay/usr/share/sounds/` for the portal announcements.
 
-### 4. Three timps features (8192 B, device-only, costs the features)
+### 4. Five timps features (0 B — this lever does not exist)
 
 `TIMPS_ROTATE`, `SW_ROTATE`, `BACKCHANNEL`, `BC_AAC`, `PLAY` disabled in the
-device fragment. This is the worst trade in the list: 8192 bytes for two-way
-audio and the speaker. It was applied before the C++ runtime finding made it
-unnecessary, and should be reconsidered — see "Open" below.
+device fragment. Quoted at 8192 bytes in the step table above, because that
+was the difference between the two builds that happened to bracket the change.
+Measured one flag at a time it is **zero** bytes of packed image — the whole
+group is 13480 bytes of `.text`, well under one squashfs block. See "What each
+feature actually costs".
+
+This was the worst move of the exercise: two-way audio and the speaker were
+given up, with the user's explicit sign-off, for nothing. Reverted; the
+shipping image has all five back.
 
 ## Levers that did not work
 
