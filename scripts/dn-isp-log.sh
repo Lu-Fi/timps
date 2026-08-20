@@ -18,7 +18,14 @@ D=$(cat /proc/jz/isp/isp-m0 2>/dev/null)
 [ -n "$D" ] || D=$(cat /proc/jz/isp/isp_info 2>/dev/null)
 [ -n "$D" ] || exit 0
 [ -f "$OUT" ] || echo "epoch,mode,int,max_int,again,dgain,ispdgain" > "$OUT"
-[ "$(wc -l < "$OUT")" -lt "$MAX" ] || exit 0
+# Roll over instead of stopping. The cap protects the card, not the log server
+# - that one deletes by age. Exiting here used to end the series for good, and
+# because the syslog copy sits further down it silenced the central collection
+# too: seven of twelve cameras had quietly stopped after ~66 h.
+if [ "$(wc -l < "$OUT")" -ge "$MAX" ]; then
+	tail -n $((MAX / 2)) "$OUT" > "$OUT.tmp" 2>/dev/null &&
+		mv "$OUT.tmp" "$OUT" || rm -f "$OUT.tmp"
+fi
 f() { echo "$D" | sed -n "s/^$1 : *\([0-9]*\).*/\1/p" | head -1; }
 M=$(echo "$D" | sed -n 's/.*ISP Runing Mode : *//p' | tr -d ' \r' | head -1)
 ROW="$(date +%s),${M:-?},$(f 'SENSOR Integration Time'),$(f 'SENSOR Max Integration Time'),$(f 'SENSOR analog gain'),$(f 'SENSOR digital gain'),$(f 'ISP digital gain')"
