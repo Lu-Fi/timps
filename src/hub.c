@@ -11,6 +11,18 @@ static void (*g_act_cb)(int,int) = NULL;
 
 void hub_set_idr_cb(void (*cb)(int src)){ g_idr_cb = cb; }
 void hub_request_idr(int src){ if (g_idr_cb) g_idr_cb(src); }
+
+/* queue-overflow heal events per video stream (hub.h). 32-bit + __sync,
+ * the same lock-free pattern httpd.c's g_drop_frames already uses. */
+static volatile unsigned g_qdrops[MS_MAX_VSTREAM];
+void hub_note_drop(int src)
+{
+    if ((unsigned)src < MS_MAX_VSTREAM) __sync_fetch_and_add(&g_qdrops[src], 1u);
+}
+unsigned hub_get_drops(int src)
+{
+    return (unsigned)src < MS_MAX_VSTREAM ? g_qdrops[src] : 0u;
+}
 void hub_set_activity_cb(void (*cb)(int src, int active)){ g_act_cb = cb; }
 
 /* Activity callback serialization. Notifications are LEVEL based (derived

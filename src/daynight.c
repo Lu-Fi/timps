@@ -1232,7 +1232,7 @@ static void *dn_thread(void *arg)
                 } else if (r >= dn->ir_ratio_night) {
                     /* the illuminator was doing the work: night, and it cost
                      * no click at all. */
-                    LOGI(MOD, "silent probe (%s): r=%.2f (%.0f without IR vs "
+                    LOGD(MOD, "silent probe (%s): r=%.2f (%.0f without IR vs "
                               "%.0f with) - the illuminator carries this "
                               "scene, staying night",
                          ir_why ? ir_why : "?", (double)r, (double)d_dark,
@@ -1282,7 +1282,7 @@ static void *dn_thread(void *arg)
                     float lit = d_dark / r;
                     if (filter_cost > 0.0f &&
                         lit * filter_cost > dn->night_gain) {
-                        LOGI(MOD, "silent probe (%s): r=%.2f - the room "
+                        LOGD(MOD, "silent probe (%s): r=%.2f - the room "
                                   "supplies the light, but day mode would "
                                   "read ~%.0f (%.2fx the night level) against "
                                   "night_gain %.0f, staying night",
@@ -1294,7 +1294,7 @@ static void *dn_thread(void *arg)
                         sust_min = win_max = -1.0f; win_at = 0;
                         ema_fast = ema_slow = -1.0f; trend_since = 0;
                     } else {
-                        LOGI(MOD, "silent probe (%s): r=%.2f with %d units of "
+                        LOGD(MOD, "silent probe (%s): r=%.2f with %d units of "
                                   "AE reserve - the room supplies the light, "
                                   "not the illuminator", ir_why ? ir_why : "?",
                              (double)r, room);
@@ -1308,7 +1308,7 @@ static void *dn_thread(void *arg)
                      * end is itself proof of night - a bright-end ceiling
                      * cannot occur in night mode. Measured: a pitch-dark
                      * outbuilding returns r=1.14 with 1 unit of reserve. */
-                    LOGI(MOD, "silent probe (%s): r=%.2f but only %d units of "
+                    LOGD(MOD, "silent probe (%s): r=%.2f but only %d units of "
                               "AE reserve - the meter is pegged at the dark "
                               "end, which is itself night", 
                          ir_why ? ir_why : "?", (double)r, room);
@@ -1320,7 +1320,7 @@ static void *dn_thread(void *arg)
                     /* between the two thresholds: the ratio genuinely could
                      * not decide. Spend the click and let the day pipeline
                      * judge. */
-                    LOGI(MOD, "silent probe (%s): r=%.2f is between %.2f and "
+                    LOGD(MOD, "silent probe (%s): r=%.2f is between %.2f and "
                               "%.2f - inconclusive, asking the day pipeline",
                          ir_why ? ir_why : "?", (double)r,
                          (double)dn->ir_ratio_day, (double)dn->ir_ratio_night);
@@ -1342,7 +1342,7 @@ static void *dn_thread(void *arg)
                     char whyb[24];
                     snprintf(whyb, sizeof whyb, "%s", ir_why ? ir_why : "?");
                     for (char *w = whyb; *w; w++) if (*w == ' ') *w = '_';
-                LOGI(MOD, "probe: r=%.2f lit=%.0f dark=%.0f hr=%d "
+                LOGD(MOD, "probe: r=%.2f lit=%.0f dark=%.0f hr=%d "
                           "verdict=%s mode=%s ref=%.0f why=%s",
                      (double)r,
                      (r > 0.0f) ? (double)(d_dark / r) : -1.0,
@@ -1501,6 +1501,9 @@ static void *dn_thread(void *arg)
                 if (flat && sighted &&
                     since < (int64_t)dn->heartbeat_max_s * 1000) {
                     hb_at = now + (int64_t)dn->heartbeat_s * 1000;
+                    /* INFO, not DEBUG: fires once per episode and is the
+                     * one line that answers "why did no heartbeat probe
+                     * run all day" */
                     if (!hb_defer_logged++)
                         LOGI(MOD, "heartbeat due but nothing has happened "
                                   "since the last probe (sustained brightest "
@@ -1538,7 +1541,7 @@ static void *dn_thread(void *arg)
                 d_lit = s;
                 ir_why = probe_why;
                 ir_verdict_at = now + (int64_t)dn->probe_settle_s * 1000;
-                LOGI(MOD, "silent probe (%s): illuminator off, reading in %ds "
+                LOGD(MOD, "silent probe (%s): illuminator off, reading in %ds "
                           "(lit level %.0f)", probe_why ? probe_why : "?",
                      dn->probe_settle_s, (double)s);
                 s = -1.0f; stable_n = 0;   /* the scene is about to change */
@@ -1569,7 +1572,7 @@ static void *dn_thread(void *arg)
              * probe_min_gap_s above is the only thing rationing it - so the
              * worst-case audible click rate is a property of the config
              * rather than of interacting heuristics. */
-            LOGI(MOD, "probe (%s): exposure %.0f vs night reference %.0f, "
+            LOGD(MOD, "probe (%s): exposure %.0f vs night reference %.0f, "
                       "verdict in %ds", probe_why, (double)s, (double)ref,
                  dn->probe_settle_s);
             pre_probe = (s > 0.0f) ? s : ref;

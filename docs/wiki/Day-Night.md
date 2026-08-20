@@ -278,7 +278,8 @@ current night reading × filter_cost < night_gain
 
 before it will act on a ratio at all. One exploratory switch is unavoidable:
 nothing can know the day-pipeline reading without trying it once. Every later
-pass refuses in the log and costs nothing:
+pass refuses in the log (at `LOGD`, like every per-probe line — see
+[Logging](Logging.md)) and costs nothing:
 
 ```
 silent probe (trend): r=1.27 - the room supplies the light, but day mode
@@ -517,8 +518,8 @@ by `daynight.learn` when active) — the same value on every switch line
 regardless of direction, since it is read once per tick rather than chosen
 per branch.
 
-**Every silent probe**, once per verdict, at the point where all branches
-have decided:
+**Every silent probe**, once per verdict, at `LOGD`, at the point where all
+branches have decided:
 
 ```
 probe: r=1.05 lit=3350 dark=3520 hr=199 verdict=day mode=night ref=12098 why=brightening
@@ -534,6 +535,17 @@ time of the probe; `ref` is the night reference (`-1` outside night); `why`
 is the trigger that asked for this probe (`jump`, `trend`, `heartbeat`,
 `boot verify`, `requested`, …) with spaces replaced by underscores, since a
 `key=value` value can't carry one.
+
+Since 2026-08-20 this line is `LOGD` — a measurement, not an event (see
+[Logging](Logging.md)). A collector that counts or plots it needs
+
+```
+general.debug_modules = daynight
+```
+
+in `/etc/timps.conf`; without it the line simply stops, and a counting
+dashboard reads "no probes" where it should read "not logged". The
+`switching to` line above stays at `LOGI` unconditionally.
 
 ## Live control and status
 

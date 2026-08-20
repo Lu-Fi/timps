@@ -698,6 +698,15 @@ static int rtsp_check_auth(session *s, char *req)
             auth_http_basic(av, s->cfg->rtsp_user, s->cfg->rtsp_pass)) {
             s->authed = 1; return 1;
         }
+        /* credentials were presented and rejected (not the credential-less
+         * first round-trip): feed the rate-limited brute-force report */
+        const char *ifc = "rtsp";
+#ifdef USE_TLS
+        if (s->tls) ifc = "rtsps";
+#endif
+        char ip[INET_ADDRSTRLEN];
+        if (!inet_ntop(AF_INET, &s->peer.sin_addr, ip, sizeof ip)) ip[0] = 0;
+        auth_fail_note(MOD, ifc, ip);
     }
     return 0;
 }
@@ -1153,6 +1162,7 @@ static void stream_loop(session *s)
     char ctl[2048]; int ctlhave = 0;
     int got_key = 0;   /* start clients on a keyframe for clean decode */
     int64_t drop_idr_us = 0;   /* rate-limit the safety IDR request on any drop */
+    int drop_warned = 0;   /* one WARN per session; per-drop detail stays LOGD */
     int64_t last_ctl_poll_us = 0;   /* P-04: rate-limit the nonblocking ctl poll */
     int pop_ms = 100;
     /* A3: last proof-of-life from the client. UDP-transport sessions are
@@ -1188,6 +1198,15 @@ static void stream_loop(session *s)
         /* if the queue overflowed and dropped a keyframe, request a fresh IDR
          * so the client doesn't decode garbage until the next GOP */
         if (sub_v && fanqueue_take_dropped_key(&s->q)) {
+            hub_note_drop(s->vchn);   /* /control "queue_drops" */
+            /* WARN once per session: sustained overflow was otherwise
+             * invisible below DEBUG - only the /control counter moved */
+            if (!drop_warned++)
+                LOGW(MOD,"session=%s chn=%d: send queue overflowed, dropping "
+                         "frames (client/network too slow) - details at DEBUG",
+                     s->session, s->vchn);
+            LOGD(MOD,"session=%s chn=%d: overflow dropped a keyframe - "
+                     "IDR re-requested", s->session, s->vchn);
             hub_request_idr(s->vchn);
             drop_idr_us = now;
         }
@@ -1202,7 +1221,10 @@ static void stream_loop(session *s)
          * subscriber. The keyframe-drop path above resets the timer, so it
          * won't double-fire. */
         else if (sub_v && fanqueue_take_dropped(&s->q)) {
+            hub_note_drop(s->vchn);
             if (now - drop_idr_us > 1000000) {
+                LOGD(MOD,"session=%s chn=%d: overflow dropped P-frame(s) - "
+                         "IDR re-requested", s->session, s->vchn);
                 hub_request_idr(s->vchn);
                 drop_idr_us = now;
             }

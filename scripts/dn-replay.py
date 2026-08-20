@@ -255,6 +255,13 @@ class SimRun:
             "video0.enabled": 0, "video1.enabled": 0, "jpeg.enabled": 0,
             "record.enabled": 0, "timelapse.enabled": 0, "motion.enabled": 0,
             "daynight.enabled": 1,
+            # The per-probe diagnostics (ratio verdicts, the structured probe
+            # line, the exposure-vs-reference note) are LOGD: an end user has
+            # no use for a line per tick. Scenario expect_log patterns match
+            # several of them, so the harness turns the module on explicitly
+            # rather than raising the global level and pulling in every other
+            # module's debug output.
+            "general.debug_modules": "daynight",
             "daynight.boot_settle_s": 2,
             "daynight.isp_path": self.isp,
             "daynight.switch_cmd": stub,

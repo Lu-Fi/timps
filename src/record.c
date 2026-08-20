@@ -71,6 +71,19 @@ static int              g_manual = -1;   /* -1 auto, 0 forced off, 1 forced on *
 static int              g_recording;
 static long long        g_curbytes;
 static char             g_curfile[160];
+/* write-error latch (under g_lock) for ms_record_status - see record.h */
+static long long        g_werrs;
+static long long        g_werr_us;
+static char             g_werr[64];
+
+static void note_werr(const char *op, int err)
+{
+    pthread_mutex_lock(&g_lock);
+    g_werrs++;
+    g_werr_us = ms_now_us();
+    snprintf(g_werr, sizeof g_werr, "%s: %s", op, strerror(err));
+    pthread_mutex_unlock(&g_lock);
+}
 
 /* ---- pre-roll ring (motion mode) ---- */
 static ms_pkt *r_buf[RING_CAP];
@@ -285,7 +298,9 @@ static void seg_write(ms_pkt *p)
             /* SD yanked / disk full: stop the segment so status stops claiming
              * 'recording'. The writer loop reopens (fopen then fails -> retries
              * per packet) instead of silently looking healthy. */
-            LOGE(MOD,"segment write failed (%s), closing",strerror(errno));
+            int e=errno;   /* before LOGE, which may clobber errno */
+            LOGE(MOD,"segment write failed (%s), closing",strerror(e));
+            note_werr("write", e);
             seg_close(); return;
         }
         pthread_mutex_lock(&g_lock); g_curbytes+=frag.len; pthread_mutex_unlock(&g_lock);
@@ -298,7 +313,9 @@ static void seg_write(ms_pkt *p)
         int64_t now=ms_now_us();
         if (now - w_sync_us >= REC_SYNC_US){
             if (fflush(w_fp)!=0){
-                LOGE(MOD,"segment flush failed (%s), closing",strerror(errno));
+                int e=errno;
+                LOGE(MOD,"segment flush failed (%s), closing",strerror(e));
+                note_werr("flush", e);
                 seg_close(); return;
             }
             sync_file_range(fileno(w_fp), 0, 0, SYNC_FILE_RANGE_WRITE);
@@ -318,7 +335,10 @@ static void seg_close(void)
     if (fflush(fp)!=0) err=errno;
     else if (fsync(fileno(fp))!=0) err=errno;
     if (fclose(fp)!=0 && !err) err=errno;
-    if (err) LOGE(MOD,"segment close/sync failed: %s (tail may be truncated)",strerror(err));
+    if (err){
+        LOGE(MOD,"segment close/sync failed: %s (tail may be truncated)",strerror(err));
+        note_werr("close/sync", err);
+    }
     LOGI(MOD,"segment closed (%lld bytes)",g_curbytes);
     status_set(0,0,"");
 }
@@ -499,11 +519,15 @@ static void *rec_thread(void *arg)
          * once/sec since the IDR request is global to the shared encoder
          * (see src/rtsp/rtsp.c for the same pattern and its rationale). */
         if (fanqueue_take_dropped_key(&q)) {
+            hub_note_drop(chn);   /* /control "queue_drops" */
+            LOGD(MOD,"chn=%d: overflow dropped a keyframe - IDR re-requested",chn);
             hub_request_idr(chn);
             drop_idr_us = ms_now_us();
         } else if (fanqueue_take_dropped(&q)) {
+            hub_note_drop(chn);
             int64_t now = ms_now_us();
             if (now - drop_idr_us > 1000000) {
+                LOGD(MOD,"chn=%d: overflow dropped P-frame(s) - IDR re-requested",chn);
                 hub_request_idr(chn);
                 drop_idr_us = now;
             }
@@ -581,6 +605,8 @@ void record_get_status(ms_record_status *st)
     st->recording=g_recording; st->bytes=g_curbytes;
     st->manual_off = (g_manual==0);
     snprintf(st->file,sizeof st->file,"%s",g_curfile);
+    st->write_errors=g_werrs; st->last_error_us=g_werr_us;
+    snprintf(st->last_error,sizeof st->last_error,"%s",g_werr);
     pthread_mutex_unlock(&g_lock);
     if (st->mode==1){
         ms_motion_status mst; motion_get_status(&mst);

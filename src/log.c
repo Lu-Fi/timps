@@ -37,45 +37,136 @@ static const char *lvl_str[] = { "ERR", "WRN", "INF", "DBG" };
 static char g_dbgmod[LOG_DBGMOD_MAX][LOG_DBGMOD_LEN];
 static int  g_dbgmod_n = 0;
 
-/* Read without the lock: the list only changes on an explicit config apply,
- * and the worst case is that one line is judged against a half-written entry.
- * Locking the hot path of every log call to protect a diagnostic switch would
- * be the wrong trade. */
+/* Unlocked read on the hot path (locking every log call for a diagnostic
+ * switch would be the wrong trade). The writer clears the published count
+ * before rewriting the names and republishes it (release) only after they
+ * are complete, so a scan starting mid-update sees the empty list rather
+ * than torn names; a scan already in flight judges its one line against
+ * the old list. Same __atomic style as hub.c's drop counters. */
 static int mod_is_debug(const char *module)
 {
-    if (!module || g_dbgmod_n <= 0) return 0;
-    for (int i = 0; i < g_dbgmod_n; i++)
+    int n = __atomic_load_n(&g_dbgmod_n, __ATOMIC_ACQUIRE);
+    if (!module || n <= 0) return 0;
+    for (int i = 0; i < n; i++)
         if (!strcasecmp(g_dbgmod[i], module)) return 1;
     return 0;
 }
 
 void log_set_debug_modules(const char *csv)
 {
-    pthread_mutex_lock(&g_lock);
-    g_dbgmod_n = 0;
-    for (const char *p = csv; p && *p && g_dbgmod_n < LOG_DBGMOD_MAX; ) {
-        while (*p == ',' || *p == ' ') p++;
+    /* Parse into locals first: the rejection warnings at the end must run
+     * after g_lock is released - log_printf() takes g_lock itself, so
+     * warning from inside the locked region would deadlock. */
+    char names[LOG_DBGMOD_MAX][LOG_DBGMOD_LEN];
+    int k = 0, too_long = 0, too_many = 0;
+    for (const char *p = csv; p && *p; ) {
+        while (*p == ',' || *p == ' ' || *p == '\t') p++;
+        if (!*p) break;
         const char *e = p;
         while (*e && *e != ',') e++;
         size_t n = (size_t)(e - p);
-        while (n && (p[n-1] == ' ')) n--;
-        if (n && n < LOG_DBGMOD_LEN) {
-            memcpy(g_dbgmod[g_dbgmod_n], p, n);
-            g_dbgmod[g_dbgmod_n][n] = 0;
-            g_dbgmod_n++;
+        while (n && (p[n-1] == ' ' || p[n-1] == '\t')) n--;
+        if (n >= LOG_DBGMOD_LEN)           too_long++;
+        else if (n && k >= LOG_DBGMOD_MAX) too_many++;
+        else if (n) {
+            memcpy(names[k], p, n);
+            names[k][n] = 0;
+            k++;
         }
         p = *e ? e + 1 : e;
     }
+
+    pthread_mutex_lock(&g_lock);
+    /* clear-then-fill-then-publish: see mod_is_debug() */
+    __atomic_store_n(&g_dbgmod_n, 0, __ATOMIC_RELEASE);
+    if (k) memcpy(g_dbgmod, names, (size_t)k * LOG_DBGMOD_LEN);
+    __atomic_store_n(&g_dbgmod_n, k, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&g_lock);
+
+    /* A silently dropped name makes a typo'd list indistinguishable from a
+     * working one - the failure the names-not-bitmask design (log.h) exists
+     * to catch. */
+    if (too_long)
+        LOGW("LOG", "debug_modules: %d name(s) over %d chars ignored",
+             too_long, LOG_DBGMOD_LEN - 1);
+    if (too_many)
+        LOGW("LOG", "debug_modules: at most %d names, %d ignored",
+             LOG_DBGMOD_MAX, too_many);
 }
 
 void log_set_level(int level){ g_level = level; }
 
 void log_set_syslog(int on){ g_syslog = on; }
 
+/* ---- last-error registry (log.h) ---- */
+#define LERR_SLOTS 16
+#define LERR_MSG   120
+static struct lerr {
+    char     mod[16];
+    char     msg[LERR_MSG];
+    long     t;          /* unix time of the latest capture */
+    unsigned count;      /* WARN+ lines from this module since start; 0 = free */
+    int      level;
+} g_lerr[LERR_SLOTS];
+
+static void lerr_note(int level, const char *module, const char *msg, long t)
+{
+    /* caller holds g_lock. Slot per module; table full -> evict the oldest. */
+    struct lerr *s = NULL, *fr = NULL, *old = NULL;
+    for (int i = 0; i < LERR_SLOTS; i++){
+        struct lerr *e = &g_lerr[i];
+        if (!e->count){ if (!fr) fr = e; continue; }
+        if (!strcmp(e->mod, module)){ s = e; break; }
+        if (!old || e->t < old->t) old = e;
+    }
+    if (!s && !(s = fr)) s = old;
+    if (strcmp(s->mod, module)){
+        snprintf(s->mod, sizeof s->mod, "%s", module);
+        s->count = 0;
+    }
+    s->count++;
+    s->level = level;
+    s->t = t;
+    /* sanitize while copying so the JSON accessor can embed it verbatim */
+    int j = 0;
+    for (const char *p = msg; *p && j < LERR_MSG-1; p++){
+        unsigned char ch = (unsigned char)*p;
+        s->msg[j++] = ch=='"' ? '\'' : ch=='\\' ? '/' : ch < 0x20 ? ' ' : (char)ch;
+    }
+    s->msg[j] = 0;
+}
+
+int log_last_errors_json(char *buf, size_t cap)
+{
+    size_t o = 0;
+    #define APP(...) do { \
+        int _n = snprintf(o<cap?buf+o:buf, o<cap?cap-o:0, __VA_ARGS__); \
+        if (_n>0) o += (size_t)_n; \
+    } while (0)
+    long now = (long)time(NULL);
+    APP("{");
+    pthread_mutex_lock(&g_lock);
+    int first = 1;
+    for (int i = 0; i < LERR_SLOTS; i++){
+        const struct lerr *e = &g_lerr[i];
+        if (!e->count) continue;
+        APP("%s\"%s\":{\"level\":\"%s\",\"age_s\":%ld,\"count\":%u,\"msg\":\"%s\"}",
+            first?"":",", e->mod, lvl_str[e->level & 3],
+            now - e->t, e->count, e->msg);
+        first = 0;
+    }
+    pthread_mutex_unlock(&g_lock);
+    APP("}");
+    #undef APP
+    return (int)o;
+}
+
 void log_printf(int level, const char *module, const char *fmt, ...)
 {
-    if (level > g_level && !(level == LOG_DEBUG && mod_is_debug(module)))
+    /* a module in debug_modules is raised to DEBUG outright - ALL its
+     * levels pass, not only LOG_DEBUG (log.h promises "raise to DEBUG";
+     * DEBUG-visible-but-INFO-hidden at loglevel<2 surprised everyone) */
+    if (level > g_level && !mod_is_debug(module))
         return;
 
     char msg[512];
@@ -91,6 +182,8 @@ void log_printf(int level, const char *module, const char *fmt, ...)
     strftime(tbuf, sizeof tbuf, "%H:%M:%S", &tm);
 
     pthread_mutex_lock(&g_lock);
+    if (level <= LOG_WARN)
+        lerr_note(level, module ? module : "", msg, (long)ts.tv_sec);
     fprintf(stderr, "%s.%03ld [%s] %-12s %s\n", tbuf, ts.tv_nsec/1000000,
             lvl_str[level & 3], module ? module : "", msg);
     if (g_syslog){

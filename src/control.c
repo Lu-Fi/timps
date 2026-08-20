@@ -26,6 +26,7 @@
 #include "util.h"          /* RTSP_MAX_CLIENTS/HTTP_MAX_CLIENTS/EVENTS_MAX_CLIENTS_DEF */
 #include "record.h"
 #include "timelapse.h"
+#include "srt.h"           /* ms_srt_stats for the srt.* status block */
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -1379,12 +1380,23 @@ int control_get_json(char *buf, size_t cap)
         }
         APP("}");
     }
+    {   /* cumulative fanqueue overflow-heal events per video stream, summed
+         * over all consumers (RTSP/fMP4/record) - hub_note_drop(). Nonzero
+         * and climbing = some client is behind and the shared encoder is
+         * being asked for extra IDRs on its behalf (bitrate spikes for
+         * everyone), which the log otherwise never shows. */
+        APP(",\"queue_drops\":[");
+        for (int i=0;i<MS_MAX_VSTREAM;i++)
+            APP("%s%u", i?",":"", hub_get_drops(i));
+        APP("]");
+    }
     {   /* local recording: live status + the persisted config keys, so the
          * WebUI record page can read the current settings back (dir/name/
          * segment/roll/min_free/audio); enabled/channel/mode already mirror
          * the config via record_get_status */
         ms_record_status rst; record_get_status(&rst);
         char jf[200]; jesc(rst.file, jf, sizeof jf);
+        char je[200]; jesc(rst.last_error, je, sizeof je);
         char jd[200], jn[200];
         config_str_lock();     /* record.dir/name are runtime-mutable via POST */
         jesc(c->record.dir, jd, sizeof jd);
@@ -1400,12 +1412,18 @@ int control_get_json(char *buf, size_t cap)
              * inert, not just quiet) - and surfaces a manual-off latch that
              * used to have zero status visibility. */
             "\"motion_gate_available\":%d,\"motion_gate_enabled\":%d,"
-            "\"manual_off\":%d}",
+            "\"manual_off\":%d,"
+            /* write-path health (record.h): a full/dying SD card otherwise
+             * announces itself once, in a log ring that recycles in hours */
+            "\"write_errors\":%lld,\"last_error_age_s\":%lld,\"last_error\":\"%s\"}",
             rst.available, rst.enabled, rst.recording, rst.channel, rst.mode,
             (long long)rst.bytes, (long long)rst.free_mb, jf,
             jd, jn, c->record.segment_s, c->record.pre_roll_s,
             c->record.post_roll_s, c->record.min_free_mb, c->record.audio,
-            rst.motion_gate_available, rst.motion_gate_enabled, rst.manual_off);
+            rst.motion_gate_available, rst.motion_gate_enabled, rst.manual_off,
+            rst.write_errors,
+            rst.last_error_us ? (long long)((ms_now_us()-rst.last_error_us)/1000000) : -1LL,
+            je);
     }
     {   /* native timelapse: live status + the persisted config keys, so the
          * WebUI timelapse page can read the settings back (dir/name/channel/
@@ -1435,8 +1453,20 @@ int control_get_json(char *buf, size_t cap)
      * which was previously zero despite srt.c/srt_fields existing - there was
      * no way to discover srt.enabled/port from the outside at all before this. */
 #ifdef USE_SRT
-    APP(",\"srt\":{\"available\":1,\"enabled\":%d,\"port\":%d,\"channel\":%d}",
-        c->srt.enabled, c->srt.port, c->srt.channel);
+    {   /* + the last srt.c stats tick so QA can see link health (RTT, loss,
+         * retransmits) without SSH-ing for the log. -1 / stats_age_s=-1 =
+         * no receiver has been connected long enough for a sample yet. */
+        ms_srt_stats ss; srt_get_stats(&ss);
+        APP(",\"srt\":{\"available\":1,\"enabled\":%d,\"port\":%d,\"channel\":%d,"
+            "\"mode\":\"%s\",\"connected\":%d,\"stats_age_s\":%lld,"
+            "\"rtt_ms\":%.1f,\"bw_mbps\":%.2f,\"rate_mbps\":%.2f,"
+            "\"retrans\":%lld,\"loss\":%lld,\"drop\":%lld}",
+            c->srt.enabled, c->srt.port, c->srt.channel,
+            ss.caller ? "caller" : "listener", ss.connected,
+            ss.t_us ? (long long)((ms_now_us() - ss.t_us) / 1000000) : -1LL,
+            ss.rtt_ms, ss.bw_mbps, ss.rate_mbps,
+            ss.retrans, ss.loss, ss.drop);
+    }
 #else
     APP(",\"srt\":{\"available\":0}");
 #endif
@@ -1467,6 +1497,14 @@ int control_get_json(char *buf, size_t cap)
 #else
     APP(",\"tls\":{\"available\":0}");
 #endif
+    {   /* held last WARN/ERROR per module (log.c): the 64 KB syslog ring
+         * recycles within hours, so the one line that explains a dead
+         * recording / frozen stream / desynced day-night is usually gone by
+         * the time anyone looks. This keeps it reachable without SSH. */
+        APP(",\"last_errors\":");
+        int _le = log_last_errors_json(o<cap?buf+o:buf, o<cap?cap-o:0);
+        if (_le>0) o += (size_t)_le;
+    }
     APP("}");
     #undef APP
     /* o is the length snprintf *would* have produced (it keeps counting past

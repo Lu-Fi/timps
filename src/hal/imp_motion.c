@@ -50,6 +50,7 @@ _Static_assert(MOTION_MAX_CELLS <= MOTION_STATUS_MAX,
 #include <stdlib.h>
 #include <time.h>
 #include <sys/wait.h>   /* NEU-01: fork/execlp instead of system() */
+#include <fcntl.h>      /* pipe2/O_CLOEXEC (on_motion exec-failure detection) */
 #include <errno.h>
 
 static volatile int   g_run;
@@ -256,19 +257,46 @@ static void *motion_thread(void *arg)
                     if (pid < 0){
                         LOGW(MOD,"on_motion: fork failed: %s", strerror(errno));
                     } else if (pid == 0){
+                        /* CLOEXEC pipe: a successful exec closes it silently,
+                         * a failed one writes a byte - so the exec verdict
+                         * (and only that; never the script's runtime) travels
+                         * through the middle child the daemon already waits
+                         * on. Exit code 127 = hook cannot be executed. */
+                        int pfd[2];
+                        if (pipe2(pfd, O_CLOEXEC) != 0) pfd[0] = pfd[1] = -1;
                         pid_t gp = fork();
                         if (gp == 0){
+                            if (pfd[0] >= 0) close(pfd[0]);
                             setenv("MOTION_COLS",  e_cols,  1);
                             setenv("MOTION_ROWS",  e_rows,  1);
                             setenv("MOTION_CELLS", e_cells, 1);
                             setenv("MOTION_TIME",  e_time,  1);
                             execlp(cmd, cmd, (char*)NULL);
+                            if (pfd[1] >= 0){
+                                char e = 1;
+                                while (write(pfd[1], &e, 1) < 0 && errno == EINTR) {}
+                            }
                             _exit(127);          /* exec failed */
                         }
-                        _exit(0);
+                        int failed = (gp < 0);
+                        if (pfd[1] >= 0) close(pfd[1]);
+                        if (!failed && pfd[0] >= 0){
+                            char e; ssize_t rn;
+                            while ((rn = read(pfd[0], &e, 1)) < 0 && errno == EINTR) {}
+                            failed = (rn == 1);
+                        }
+                        _exit(failed ? 127 : 0);
                     } else {
                         int st = 0;
                         while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
+                        if (WIFEXITED(st) && WEXITSTATUS(st) == 127){
+                            static int warned;   /* once: a broken hook stays broken */
+                            if (!warned){
+                                warned = 1;
+                                LOGW(MOD,"on_motion '%s' cannot be executed - "
+                                     "is the script installed and executable?", cmd);
+                            }
+                        }
                     }
                 }
             }

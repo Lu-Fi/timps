@@ -28,6 +28,11 @@ typedef struct {
     int       motion_gate_available; /* mode==1 only: motion subsystem available */
     int       motion_gate_enabled;   /* mode==1 only: motion detection running */
     int       manual_off;            /* 1 = record_set_active(0) latched (Finding 2) */
+    /* write-path health: a full/dying SD card stops recording with one log
+     * line the 64 KB ring soon overwrites - hold the evidence here instead */
+    long long write_errors;          /* failed segment write/flush/close count */
+    long long last_error_us;         /* ms_now_us() of the last one, 0 = none */
+    char      last_error[64];        /* e.g. "write: No space left on device" */
 } ms_record_status;
 
 void record_get_status(ms_record_status *st);
