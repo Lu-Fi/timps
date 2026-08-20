@@ -3,6 +3,45 @@
 Date: 2026-08-20. Board: wuuk_y0510_t31x_sc4336p_ssv6158 at 192.168.15.190
 ("garage", the designated test camera). Partition `mtd4` = 5242880 bytes.
 
+> ## ⚠ READ THIS FIRST: the 5 MB limit this document optimises against is not real
+>
+> **The rootfs partition is not a fixed size. It is cut to fit the image at
+> U-Boot build time**, by `THINGINO_PATCH_DEV_ENV` in
+> `package/thingino-uboot/thingino-uboot.mk`:
+>
+> ```
+> ROOTFS_SIZE_ALIGNED = round_up(size(rootfs.squashfs), 65536)
+> DATA_SIZE_KB        = FLASH_SIZE_KB - ROOTFS_OFFSET_KB - ROOTFS_SIZE_KB
+> MTDPARTS            = ...,${ROOTFS_SIZE_KB}k(rootfs),${DATA_SIZE_KB}k(data),...
+> ```
+>
+> The wuuk carries an **FM25Q128A, 16 MB** (`FLASH_SIZE_MB=16` in its
+> defconfig; `mtd6 "all" = 0x1000000`). Its 5120k rootfs partition is not a
+> hardware limit — it is the imprint of whatever image was on the camera the
+> last time a **full** flash laid the partitions down. Beside it sits a 9280k
+> data partition using 408 KB, 4% of itself.
+>
+> `make ota-rootfs` writes into the *existing* partition, so it fails once the
+> new image outgrows the old one's imprint. `make ota` (mode `all`) writes
+> boot, env, kernel, rootfs and data together and installs the recomputed
+> layout. **That is the fix for "image does not fit", not shrinking the image.**
+>
+> Everything below was measured against a boundary that is itself a build
+> output. The engineering findings stand on their own — the static C++ runtime,
+> the libsrt section flags, `libaudioProcess-neo`, the block-granularity
+> result, the `libgcc_s` dlopen trap. The *motivation* does not: several hours
+> were spent giving up features (backchannel, speaker, rotation, all sound
+> files) to stay under a number nobody had checked the origin of.
+>
+> The warning sign was visible early and misread: a fleet-wide survey that
+> morning showed leftovers of 4096, 20480 and 45056 bytes on all twelve
+> cameras. That is not "the fleet is tight everywhere" — it is *every partition
+> being cut to its image*, which should have prompted the question of where the
+> boundary comes from.
+>
+> **Before optimising an image for size, check what created the partition it
+> has to fit.**
+
 SRT had been switched off on this camera on 2026-08-19 because the image no
 longer fitted. This documents how it was made to fit again with 11.7% to
 spare, which of the obvious levers worked, and which did not.
@@ -254,6 +293,37 @@ This was the worst move of the exercise: two-way audio and the speaker were
 given up, with the user's explicit sign-off, for nothing. Reverted; the
 shipping image has all five back.
 
+### 5. libaudioProcess-neo — the answer to the AEC trade (user's find)
+
+`package/libaudioprocess-neo` was already in the firmware tree, fully
+packaged, and selected by nobody. It is a clean-room pure-C11 drop-in for
+Ingenic's proprietary `libaudioProcess.so` (MIT, gtxaspec), and
+`ingenic-lib/Config.in` already carries
+`depends on !BR2_PACKAGE_LIBAUDIOPROCESS_NEO`, so the two exclude each other
+cleanly. Enabling it needs one line in the device fragment.
+
+| | proprietary | 0-byte stub | **neo** |
+|---|---:|---:|---:|
+| `libaudioProcess.so` | 671472 | 0 (broken) | **75056** |
+| needs `libstdc++` | yes | — | **no, libc only** |
+| AEC | works | silently off | works |
+| exported functions | 1574 | — | 70 |
+| loopback tone band | −21.3 dB | −5.0 dB | **−22.8 dB** |
+| packed image | does not fit | 4784128 | **4816896** |
+
+With neo in place **nothing in the image links `libstdc++` at all** — removing
+it stops being a trick and becomes the removal of a library with zero
+consumers. All four audio filters cost **32768 bytes** instead of 581632, and
+`IMP_AI_EnableAec` reports `AEC enabled (AI 0/0 <- AO 0/0)` with the echo
+canceller measurably attenuating the acoustic loopback, within 1.5 dB of the
+vendor library.
+
+Caveat: 70 exported functions against the original's 1574, and the upstream
+repo has 19 commits, one star, one fork. Verified working on this camera; not
+something to push to eleven others without a stretch of real service behind
+it. The QA acoustic loopback (`--test-backchannel`) is the right acceptance
+criterion — it measures whether the filters actually do anything.
+
 ## Levers that did not work
 
 * **`# BR2_PACKAGE_THINGINO_SOUNDS is not set`** in the device fragment is
@@ -399,9 +469,13 @@ the two libraries are also removed, which costs the audio filters):
 * `-static-libstdc++ -static-libgcc` in timps' `Makefile` for `USE_SRT=1`.
 
 Kept, this camera only:
-* `$U/overlay/usr/lib/libstdc++.so.6.0.35` — 0 bytes
-* `$U/overlay/usr/lib/libaudioProcess.so` — 0 bytes
+* `BR2_PACKAGE_LIBAUDIOPROCESS_NEO=y` in `$U/local.fragment`
+* `$U/overlay/usr/lib/libstdc++.so.6.0.35` — 0 bytes, now with **zero**
+  consumers in the image rather than one
 * `$U/STUBS.txt` — why, and what to restore first
+
+Withdrawn: the `libaudioProcess.so` stub. neo ships a real 75056-byte
+library, so there is nothing to stub.
 
 Applied and then **withdrawn again**, once the C++ runtime finding made them
 unnecessary — they are no longer in the tree:
