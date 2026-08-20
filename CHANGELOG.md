@@ -57,6 +57,16 @@ semantic versioning.
   a bitmask: a mask in a config file quietly means something else the day a
   module is added, and nothing warns. `general.debug_modules = HAL_ING` is 10
   extra lines; the same reach used to cost the whole ring.
+- **Every silent probe logs its measurement in columns** (`src/daynight.c`):
+  `probe: r=1.05 lit=3350 dark=3520 hr=199 verdict=day mode=night ref=12098
+  why=brightening`. `lit` and `dark` are the two readings the probe compares -
+  with the illuminator and without - which is exactly what the 2026-08-17
+  campaign collected by hand, except this runs wherever timps runs instead of
+  needing a script installed on each camera. That campaign died silently when
+  its script stopped being called, and nobody noticed until a morning needed
+  explaining and had no curve. One line at the point where all five verdict
+  branches meet, rather than a tail on each: they word themselves differently,
+  and five places to keep in step is how a parser ends up knowing four.
 - **The day/night switch line ends in a machine-readable tail**
   (`src/daynight.c`): `[mode=night exp=6182 ref=-1 bar=768]`. Everything in it
   is already in the prose, but the dashboards count these lines with a grep,

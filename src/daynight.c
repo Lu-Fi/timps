@@ -1318,6 +1318,33 @@ static void *dn_thread(void *arg)
                          (double)dn->ir_ratio_day, (double)dn->ir_ratio_night);
                     want_probe = 1; probe_why = ir_why ? ir_why : "probe";
                 }
+                /* The measurement itself, in columns, once per probe at the
+                 * point where every branch has decided. This is what the
+                 * 2026-08-17 campaign collected by hand - a reading with the
+                 * illuminator and one without - except it runs wherever timps
+                 * runs, instead of needing a script to be installed and
+                 * surviving only as long as nobody removes it.
+                 *
+                 * A line of its own rather than a tail on each verdict: the
+                 * five branches word themselves differently, and five places
+                 * to keep in step is how a parser ends up knowing four of
+                 * them. -1 means not measured, as everywhere else here. */
+                {   /* the trigger names are prose ("boot verify"); a
+                     * key=value line must not carry a space in a value. */
+                    char whyb[24];
+                    snprintf(whyb, sizeof whyb, "%s", ir_why ? ir_why : "?");
+                    for (char *w = whyb; *w; w++) if (*w == ' ') *w = '_';
+                LOGI(MOD, "probe: r=%.2f lit=%.0f dark=%.0f hr=%d "
+                          "verdict=%s mode=%s ref=%.0f why=%s",
+                     (double)r,
+                     (r > 0.0f) ? (double)(d_dark / r) : -1.0,
+                     (double)d_dark, room,
+                     (target == DN_DAY)   ? "day"
+                     : want_probe         ? "escalate"
+                     : "night",
+                     (cur == DN_NIGHT) ? "night" : "day",
+                     (double)ref, whyb);
+                }
                 ir_why = NULL;
                 break;
             }
