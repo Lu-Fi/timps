@@ -920,3 +920,48 @@ sign-off first since it touches all six cinnado boards and trades ~3.1MB
 more rmem (plus `isp_memopt=1` is currently paired with this parameter,
 worth understanding why before removing it) for the removed frame-drop
 constraint.
+
+## RESOLVED: T31+sc2336 fps ceiling fixed, verified on cam-kinder-rechts (2026-08-22, 01:01)
+
+Full result, before/after on the same camera:
+
+    before: 203-204 frames/15s (13.5 fps), ch0_pre_dequeue_drop climbing ~45-47%
+    after:  373 frames/15s (24.9 fps), ch0_pre_dequeue_drop = 0
+
+**Fix applied** (`configs/cameras/cinnado_d1_t31l_sc2336_atbm6031_defconfig`):
+removed `BR2_ISP_CH0_PRE_DEQUEUE_TIME(_VALUE)` and
+`BR2_ISP_CH0_PRE_DEQUEUE_INTERRUPT_PROCESS(_VALUE)` (4 lines), raised
+`BR2_THINGINO_RMEM_MB` from 22 to 26 to make room for chn0's now-permitted
+second video buffer (`nrVBs` went 1 -> 2 in the boot log, confirming
+`868696b`'s clamp correctly stopped applying once the kernel condition it
+checks - `isp_ch0_pre_dequeue_time > 0` - was no longer true). Kernel cmdline
+now `mem=38M@0x0 rmem=26M@0x2600000` (was `mem=42M@0x0 rmem=22M@0x2a00000`).
+
+**Build-system gotcha found along the way, distinct from the earlier
+timps-stamp issue**: `make CAMERA=... IP=... <pkg>-dirclean <pkg>` is NOT
+enough to force a package's generated files to update in `target/` - for
+`ingenic-sdk` (which writes `/etc/modules.d/20-isp` via `$(GENERATE_MODULE_LOADER)`
+in its install-target-cmds), the file kept its old content through two
+dirclean+rebuild attempts, still timestamped from the original build. The
+project's own `rebuild-<pkg>` target (`Makefile.ota`) does
+`<pkg>-dirclean <pkg> <pkg>-reinstall target-finalize` - the missing
+`-reinstall` and `target-finalize` steps were the actual gap. **Use
+`make CAMERA=... IP=... rebuild-<pkg>` for any post-defconfig-change
+package rebuild, never manual `-dirclean pkg` alone.**
+
+**Live verification, cam-kinder-rechts, 2026-08-22 01:01**: clean boot, no
+`EnableChn failed`, no `one buffer schedule` kernel errors, PTZ preserved
+(1360,157), version `v1.9.2-21-g868696b`. `free -m`: 33440K total (Linux
+side), 2176K free + 17324K buff/cache right after boot - tighter than
+before (was ~37536K/5768K) but not exhausted. No swap. Needs sustained
+observation under real load (multiple viewers, motion detection, recording)
+before trusting the memory margin - a short boot-time reading doesn't prove
+it holds over hours.
+
+**Not yet done, needs the user's decision in the morning**: rolling this
+defconfig change to the other five cinnado_d1_t31l_sc2336_atbm6031 cameras
+in the fleet (cam-sz, cam-schuppen, cam-wohn, cam-wohn-ofen,
+cam-wintergarten). Recommend watching cam-kinder-rechts for real-world
+stability (a day of normal use, ideally including an overnight recording
+window) before touching the other five - this is the first and only unit
+running the new RMEM/buffer configuration.
