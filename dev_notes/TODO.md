@@ -893,3 +893,30 @@ whole window could in principle exhaust them and take the daemon down
 without any buffers override - the observed ~67 s window says the margin
 is not comfortable. Worth watching, not worth code changes until the
 num_buffers:2 source is identified.
+
+## Fix 868696b verified on hardware (2026-08-22, cam-kinder-rechts)
+
+Built (rebuild-timps + separate pack, version confirmed from the packed
+squashfs: v1.9.2-21-g868696b), flashed via `make ota`, PTZ preserved
+(1360,157). Boot log now shows the new deterministic line instead of the
+former failed-retry-then-self-correct pattern:
+
+    chn0: fs 1920x1080 (sensor 1920x1080, scale=0) nrVBs=1
+
+No `EnableChn failed`, no `one buffer schedule` kernel errors, no recovery
+cycling - clean boot straight to streaming. `ffprobe -count_frames`: 204
+frames/15s (13.6 fps), matching the pre-fix baseline (203/15s) within noise,
+exactly as expected: `isp_ch0_pre_dequeue_time=24` is still active on this
+board's `/etc/modules.d/20-isp`, so the fix computes the same nrVBs=1 the old
+code's lucky self-correction also arrived at - it makes the clamp *correct*
+(scoped to the real kernel condition, safe for a scaled chn0 too) and
+removes the crash trap for explicit buffers>1, but does not by itself change
+the fps ceiling.
+
+**Fleet-wide fps fix still requires the firmware defconfig change** (remove
+the four `BR2_ISP_CH0_PRE_DEQUEUE_*` lines from
+`cinnado_d1_t31l_sc2336_atbm6031_defconfig`) - not applied, needs the user's
+sign-off first since it touches all six cinnado boards and trades ~3.1MB
+more rmem (plus `isp_memopt=1` is currently paired with this parameter,
+worth understanding why before removing it) for the removed frame-drop
+constraint.
