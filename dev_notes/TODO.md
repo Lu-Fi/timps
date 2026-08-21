@@ -6,40 +6,190 @@ is still guesswork, so nobody has to re-derive it.
 Background for the encoder block:
 `dev_notes/T23_RATECONTROL_INVESTIGATION_2026-08-21.md`.
 
-## Scheduled for the fable agent (start after the usage limit resets)
+## OSD `{fps}`/`{bitrate}`: cam-kinder-rechts showing 13 instead of ~25
 
-### Live and static setting of all rate-control values, incl. WebUI
+Investigated 2026-08-21 against `src/hub.c`/`src/hub.h` (read-only — another
+agent is live-editing `hal_ingenic.c`/`hub.c`/`hub.h`/`enc_caps.h` for the
+rate-control work; this was analysis only, nothing here was applied).
 
-Every rate-control value settable both statically (timps.conf / persist) and
-live (no daemon restart), plus WebUI controls.
+**Established from source:**
 
-Static today: `bitrate`, `min_qp`, `max_qp`, `quality_lvl`, `change_pos`,
-`i_bias_lvl`. Still hardcoded and to be added: `staticTime` (2), `frmQPStep`
-(3), `gopQPStep` (15), `gopRelation` (0), `flucLvl` (0, H265 only).
+- `hub_get_fps(src)` (`src/hub.c`) returns `s->mfps`, a real 1-second running
+  average of frames actually handed to `hub_publish()`/`hub_publish_take()`
+  for that hub source — computed in `hub_prepare_locked()` regardless of
+  subscriber count (so it is not "viewer-side" and not gated by who is
+  watching).
+- `hub_get_bitrate(src)` computes the identical kind of window (`mkbps`) but
+  additionally checks staleness: `(ms_now_us() - s->bwin < 2000000) ?
+  s->mkbps : 0.0`, i.e. it reports 0 once the source has been idle >2 s
+  ("on-demand encoder stopped" — comment in `hub.c` and spelled out
+  explicitly in the commit that added it, `eda8302`: *"The getter reports 0
+  when the last window is stale (>2s) so an idle on-demand stream shows 0
+  rather than a frozen rate."*).
+- **`hub_get_fps()` has no equivalent staleness guard.** It always returns
+  the last computed `mfps`, however old. This is a provable asymmetry
+  against `hub_get_bitrate()`, which was deliberately fixed for exactly this
+  failure mode one commit later in the same file.
+- Video encoding is on-demand (`hal_ingenic.c`, `video_thread()`): a stream
+  with no subscribers and no `vc->active` is stopped
+  (`IMP_Encoder_StopRecvPic`) after a 2 s idle debounce
+  (`MS_IDLE_STOP_US`). `osd.monitor_stream` defaults to channel 0
+  (`config.c:307`); `{fps}`/`{bitrate}` always read that one channel
+  regardless of which OSD layer they're printed on (see the second item
+  below).
+- `imp_chn` (the IMP encoder channel number `hub_publish_take()` uses as hub
+  `src`) defaults to the stream index (`config.c:276: v->imp_chn=i`), so
+  under the reported config (no `imp_chn` override) channel 0 ↔ hub source 0
+  ↔ `video0` — no index-mismatch found there.
+- No clean fraction relates 13 to 25 or 30 (not 25/2, not 30·13/25), which
+  argues against a deterministic frame-skip/rounding bug in the measurement
+  itself and fits a **frozen, arbitrary transient value** better than a
+  systematic rate-conversion bug.
 
-Live today: nothing. All `videoN.*` keys are persist-only by design
-(`control.h:44`).
+**Working hypothesis (not confirmed on hardware):** `video0` on
+cam-kinder-rechts had no active subscriber (or was between the last
+subscriber leaving and the idle-stop happening) when the OSD read 13. The
+displayed 13 is very plausibly a *stale* `mfps` frozen from some earlier,
+atypical 1 s window (e.g. right after `StartRecvPic`/a forced-recovery cycle,
+or right before `StopRecvPic`), not a live measurement of a continuously
+running 25 fps stream — because `hub_get_fps()` never expires it, unlike
+`hub_get_bitrate()`.
 
-SDK support, verified in the headers 2026-08-21:
+**Quick, no-code-needed check:** what did the *bitrate* half of the OSD
+(`{fps}/{bitrate}`) show at the same moment? If it was `0`, that alone
+confirms channel 0 was idle (`hub_get_bitrate()`'s 2 s staleness check would
+have already zeroed it) while `{fps}` kept showing a leftover number — direct
+proof of this exact asymmetry, no further hardware access needed.
 
-| | SetChnAttrRcMode | GetChnAttrRcMode | SetChnBitRate | SetChnQpIPDelta |
-|---|---|---|---|---|
-| T23 | yes (H264 only) | yes | no | n/a |
-| T31 | yes | yes | yes | yes |
-| C100 | yes | yes | yes | yes |
-| T40 | yes | yes | yes | no |
-| T41 | **no** | yes | yes | no |
+**Still to check on hardware (cam-kinder-rechts) if the bitrate reading above
+isn't already conclusive:**
 
-`SetChnAttrRcMode` takes `rcMode` plus the whole attribute union, so the entire
-block goes in one call. T41 has no setter at all — everything except bitrate
-stays restart-bound there.
+- Whether `video0` currently has any subscriber (RTSP/HTTP client open on the
+  main stream specifically, not `video1`) at the moment `{fps}` reads low.
+  `GET /control`'s `"encoder"` block (`hal_enc_stats`, keyed by stream index)
+  should show channel 0 present/absent and its `work_done`/`cur_packs`
+  advancing or static across two polls a few seconds apart.
+- Actively open a viewer on `video0` (not a substream) for 10+ s and watch
+  whether `{fps}` climbs toward ~25 while watched, then re-check a few
+  seconds after closing the viewer to see if it freezes again at whatever
+  the last value was — that would be the clean live confirmation of the
+  "frozen on idle" theory.
 
-Do the readback (below) first, so a live write can be verified against what the
-encoder actually holds instead of assumed. Two header-derived hypotheses
-already failed against measurement.
+**Proposed minimal fix (not applied — sketch only):** give `hub_get_fps()`
+the same staleness guard `hub_get_bitrate()` already has, i.e. in
+`src/hub.c`:
 
-WebUI: show the per-SoC differences rather than silently ignoring them. A knob
-that does nothing on this camera should say so.
+```c
+double hub_get_fps(int src)
+{
+    hub_source *s = hub_get(src); if(!s) return 0.0;
+    double fps;
+    pthread_mutex_lock(&s->lock);
+    fps = (ms_now_us() - s->fwin < 2000000) ? s->mfps : 0.0;
+    pthread_mutex_unlock(&s->lock);
+    return fps;
+}
+```
+
+This would make an idle channel show `{fps}` = 0 (matching `{bitrate}` = 0)
+instead of a misleading frozen number, but it does **not** by itself explain
+why the *live* number, if `video0` really is continuously watched, would sit
+at 13 instead of ~25 — that branch of the investigation still needs the
+hardware check above before touching any code. `hub.c`/`hub.h` are currently
+being live-edited by another agent for the rate-control work, so this fix (if
+confirmed) should land after that lands, to avoid a merge fight.
+
+## `{bitrateN}` placeholder is missing (per-channel bitrate OSD text)
+
+Investigated 2026-08-21, read-only against `src/hal/osd_vars.c`, `src/hub.c`,
+`src/hub.h` and `git log`/`git show` on the relevant commits.
+
+**Established:**
+
+- `{fps}`/`{bitrate}` (no number) both read `osd.monitor_stream` (default
+  channel 0) via two globals `g_fps`/`g_bitrate` in `osd_vars.c`, filled once
+  a second from the OSD updater threads — same value burned into every OSD
+  layer's text regardless of which stream that layer belongs to (confirmed:
+  `osd0.1.text` and `osd1.1.text` both showing `{fps}/{bitrate}` render
+  identically).
+- `{fpsN}` (`osd_vars.c:180-183`, commit `a94379b`, 2026-08-01) is a genuine
+  per-channel diagnostic: `hub_get_fps(ch)` already takes the channel/hub
+  source as an argument, so wiring it per-N was a ~10-line, purely additive
+  change reusing the existing rolling window — no changes to `hub.c`/`hub.h`
+  were needed.
+- **`hub_get_bitrate(int src)` (`src/hub.c`, added earlier the same week in
+  `eda8302`, 2026-07-28) is *already* per-channel** — it takes a hub source
+  exactly like `hub_get_fps()` does. There is no technical blocker: nothing
+  about the bitrate measurement is global-only or unsplittable per channel.
+- The `a94379b` commit message only talks about fps ("cheap: reuses the
+  existing `hub_get_fps()` rolling window") and never mentions bitrate. There
+  is no commit, comment, or design note anywhere arguing `{bitrateN}` was
+  considered and deliberately left out. This reads as a **plain gap/oversight
+  in the `{fpsN}` commit** (added the per-channel fps placeholder, forgot the
+  bitrate counterpart that the code already supports), not an intentional
+  "no-number = main-stream alias" design.
+- `{fps}`/`{bitrate}` (no number) themselves are not a deliberate "primary
+  stream" alias either as far as the history shows — `{fps}` predates
+  multi-stream OSD support in this file and `{bitrate}` was bolted on next to
+  it later at `osd.monitor_stream` for symmetry, before `{fpsN}` introduced
+  the real per-channel idea. So the no-number forms look like a leftover
+  default rather than a designed alias, but per-channel OSD text (osd0 vs
+  osd1) existed before `{fpsN}`/`{bitrateN}` did, which is exactly the
+  scenario that motivated question 1 above (osd1 wants osd1's own numbers,
+  not channel 0's).
+
+**Proposed minimal fix (not applied — sketch only), in
+`src/hal/osd_vars.c`'s `resolve()`, mirroring the existing `{fpsN}` branch
+one-to-one:**
+
+```c
+/* {bitrateN}: measured encoder OUTPUT bitrate of video stream N specifically,
+ * independent of osd.monitor_stream. Mirrors {fpsN}. */
+else if (!strncmp(name,"bitrate",7) && name[7]>='0' && name[7]<='9' && name[8]==0){
+    int ch = name[7]-'0';
+    snprintf(out,outsz,"%.0f", ch<MS_MAX_VSTREAM ? hub_get_bitrate(ch) : 0.0);
+}
+```
+
+placed next to the existing `{fpsN}` branch (before the plain `{bitrate}`
+check so it doesn't get shadowed — same ordering issue does not actually
+arise here since `strcmp` vs `strncmp` don't collide, but keep it adjacent to
+`{fpsN}` for readability). No `hub.c`/`hub.h` change needed —
+`hub_get_bitrate()` already does the right thing per channel. Update the
+placeholder list comment in `src/hal/osd_vars.h` alongside it
+(`{hostname} {ip} {mac} {fps} {fpsN} {bitrate} {uptime}` → add `{bitrateN}`).
+
+Not applied: `hub.c`/`hub.h` are currently being live-edited by another agent;
+`osd_vars.c`/`osd_vars.h` are not touched by that work, so this one could
+actually land independently once reviewed — flagging it here rather than
+doing it opportunistically since the task was analysis-only.
+
+**Nothing to verify on hardware for this one** — it is a straightforward,
+low-risk additive placeholder mirroring code that already works
+(`{fpsN}`/`hub_get_bitrate()` both already proven in production), but it
+hasn't been written yet so it should still get the normal OSD-text smoke test
+after implementation (POST an `osd*.*.text` containing `{bitrateN}` for both
+streams, confirm the rendered text differs and matches each stream's own
+`GET /control` `encoder.N` figures).
+
+## Follow-ups from the 2026-08-21 rate-control implementation
+
+### Wiki pages are slightly stale after the implementation
+
+`docs/wiki/Rate-Control-Parameters.md` still says "the five still-hardcoded
+classic-path fields" — `fluc_lvl` is a config key now (0..4, H265 only), and
+live application + the `encoder.<n>.rc` readback + `caps.video_live` /
+`deferred_keys` exist. Deliberately NOT edited alongside the implementation to
+avoid clobbering the parallel wiki work; needs one correction pass once the
+hardware verification has confirmed the behaviour worth documenting.
+
+### frmQPStep / gopQPStep / gopRelation / staticTime stay hardcoded
+
+Confirmed during implementation, not just carried over: no vendored header
+documents a range for any of them, and nothing new was learned that would
+justify picking bounds. Revisit only with a documented domain or a
+measurement. (`gopRelation` is a bool and COULD be exposed trivially, but a
+knob with unknown semantics and no measurement is still a trap.)
 
 ## Hardware verification (mine — the agents only have the simulator)
 
@@ -113,71 +263,23 @@ follow-up, not yet placeholdered.
 
 ## Encoder
 
-### Read back the rate-control attrs via IMP_Encoder_GetChnAttrRcMode
+### Consider unifying videoN.bitrate semantics via SetChnBitRate
 
-timps calls none of the runtime rc APIs — no hits in `src/` for
-`SetChnAttrRcMode`, `GetChnAttrRcMode`, `SetChnInitQP`, `SetChnMaxPictureSize`.
-The readback is present on all five platforms and cannot change anything.
+The per-SoC meaning (classic ceiling vs new-API target) is now DOCUMENTED
+(timps.conf.example, commit 9acfcbe) and both values are observable via the
+`encoder.<n>.rc` readback. Deliberately not unified: that would change fielded
+new-API behaviour on header-only knowledge. Once the T31 readback shows what
+`uMaxBitRate` actually defaults to (and in which unit), decide whether
+`IMP_Encoder_SetChnBitRate(chn, target, max)` at bring-up (bit/s!) is worth
+it.
 
-It is the missing diagnostic: `quality_lvl` moves the operating point (1709 ->
-1243) but `change_pos` does nothing at all (1264/1264/1251 for 80/65/50), and
-nothing gets the rate below ~990 although the same scene costs 278 at a fixed
-qp. We have never verified that our writes arrive unaltered.
+### uMaxPSNR / eRcOptions / uMaxPictureSize stay read-only
 
-Cheaper check to run first, no code needed: sweep `min_qp` (20 -> 30 -> 38). If
-the rate follows, the controller is quality-seeking and `min_qp` is the real
-lever on T23 — a key we have had all along.
-
-### Warn on the silent smart -> capped_quality substitution
-
-`hal_ingenic.c:1123` lets `MS_RC_SMART` fall through into the
-`CAPPED_QUALITY` case with no log line, while the mirror-image substitution on
-the classic path (`capped_vbr`/`capped_quality` -> `vbr`) deliberately warns
-once via `warned_capped`. One direction reports itself, the other does not.
-
-### Reword the new-API warning for the three new keys
-
-The one-shot LOGW added in `8f3c84c` says the keys "have no effect on this SoC
-(new encoder API)". That implies impossibility, but
-`IMP_Encoder_SetChnQpIPDelta` exists on T31 and C100 (absent on T40/T41), so
-`i_bias_lvl` is merely unwired there. Distinguish "not supported by this SDK"
-from "not wired up yet".
-
-### Wire i_bias_lvl on T31/C100
-
-Through `IMP_Encoder_SetChnQpIPDelta`, applied after `RegisterChn` the same way
-`min_qp`/`max_qp` are applied via `SetChnQpBounds` (the `0a8bb9f` pattern),
-non-fatal on rejection. Then narrow the warning above to the SoCs that
-genuinely cannot honour it.
-
-### Expose flucLvl for H265 on the classic path
-
-Hardcoded to 0 in the H265 CBR/VBR/Smart fills; the last classic-path literal
-with a documented domain ([0,4], "bitrate fluctuation relative to the
-average"). It is the H265 counterpart to `i_bias_lvl`. Default 0 so nothing
-changes untouched.
-
-`frmQPStep` (3), `gopQPStep` (15), `gopRelation` (0) and `staticTime` (2) stay
-alone for now — no documented ranges.
-
-### Decide on the unreachable new-API rc fields
-
-On the ENC_NEW_API path timps never touches `uMaxPSNR`, `uMaxBitRate`,
-`eRcOptions` or `uMaxPictureSize`; they come from
-`IMP_Encoder_SetDefaultParam` and their values are not even readable.
-`uMaxPSNR` is the knob `capped_quality` is named after, so that mode is
-currently indistinguishable from an unconfigurable VBR. `uMaxPictureSize` ties
-into the IDR overflow warning around `MS_AU_BUF_MAX`.
-
-Header-derived only, not verified against hardware.
-
-### Document that videoN.bitrate means different things per SoC path
-
-Classic: written straight into `maxBitRate`, so under VBR it is a hard ceiling.
-New API: passed as `uTargetBitRate` while the real cap `uMaxBitRate` stays at
-the SDK default. A user who learned the ceiling semantics on a T23 gets
-something else on a T31. Either document it or unify via
-`IMP_Encoder_SetChnBitRate(chn, target, max)` — note that call takes bit/s.
+Decision 2026-08-21: readable via `encoder.<n>.rc` (max_psnr / rc_options /
+max_picture_size), no setters. `uMaxPSNR` is the knob `capped_quality` is
+named after, but everything known about these fields is header-derived and
+the investigation refuted two header-derived hypotheses already. Revisit with
+readback data from a real T31.
 
 ## Control API
 
@@ -234,6 +336,28 @@ the daynight log should show the deferred verdict.
 
 ## Done
 
+- **Live + static rate control, incl. WebUI** — implemented 2026-08-21
+  (timps commits c4e434f..9acfcbe, firmware webui commit 4397ddc7b). In
+  order: (1) `encoder.<n>.rc` readback via `IMP_Encoder_GetChnAttrRcMode`,
+  per channel, separate from the configured block — including the previously
+  unreadable new-API attrs (uMaxBitRate/iIPDelta/iPBDelta/eRcOptions/
+  uMaxPictureSize/uMaxPSNR). (2) `videoN.fluc_lvl` (0..4, H265 only; the
+  other four literals stay hardcoded, no documented ranges). (3) smart ->
+  capped_quality warns once; the 8f3c84c warning split into "no equivalent
+  field" vs "SDK lacks SetChnQpIPDelta"; `i_bias_lvl` wired on T31/C100 at
+  bring-up. (4) live apply per channel: classic = whole-union
+  `SetChnAttrRcMode` re-fill (H264 only, incl. live rc_mode switch), T31/
+  C100 = SetChnBitRate + SetChnQpBounds + SetChnQpIPDelta + fixqp-qp RMW,
+  T40 same minus i_bias, T41 bitrate + QP bounds only. `hub_control()` now
+  reports live vs persisted; `caps.video_live` advertises the platform set;
+  POST replies carry `deferred`/`deferred_keys` (runtime truth). (5) WebUI:
+  rc fields on both stream pages, gated per mode/codec/SoC with the reason
+  in the tooltip, per-save live/restart toast from `deferred_keys`, and an
+  "Encoder holds" readback line. Verified on the simulator (grading, clamps,
+  per-channel isolation, browser test of both pages); T23/T23-swrot/T31
+  cross-builds clean, T40/T41 compile clean (no fp64 toolchain to link).
+  **All IMP runtime behaviour still needs the hardware pass** — see
+  "Hardware verification" above.
 - **Smart qualityLvl semantics** — settled by measurement 2026-08-21. Under
   `smart`, quality_lvl 2 gives 1745 kbit/s and 7 gives 1265, same direction as
   vbr. The en T23 Smart text claiming 0..6 with the opposite direction is a
