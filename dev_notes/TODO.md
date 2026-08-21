@@ -788,3 +788,108 @@ follow-up above (comparing cam-garage's drop counters) - cam-garage's main
 channel is presumably in the scaled path already (different sensor/board),
 so a cross-camera procfs comparison is less informative than this scale=1
 hypothesis, which is now the highest-priority thing to try.
+
+### RESOLVED at the driver level: the gate is `isp_ch0_pre_dequeue_time`, not the scaler (2026-08-21, disassembly of tx-isp-t31.o)
+
+The scale=1 hypothesis above is **wrong**, and adopting prudynt's workaround
+would have taken channel 0 down fleet-wide. Established by disassembling the
+exact blob this fleet runs
+(`thingino output/piuma/cinnado_d1_.../build/ingenic-sdk-7b4b0f.../tx-isp-t31.o`,
+function `frame_channel_unlocked_ioctl`, REQBUFS handler; string `$LC53`):
+
+    REQBUFS on /dev/framechanN fails with "one buffer schedule only support
+    nrvbs = 1" if and only if:
+        isp_ch0_pre_dequeue_time > 0     (module parameter, default 0)
+        && channel index == 0            (framechan0 only)
+        && requested buffer count >= 2
+
+Crop/scaler configuration is **not part of the condition**. The requested
+count (from `libimp.so` `IMP_FrameSource_EnableChn`, same disassembly
+session) is `attr.nrVBs + FrameDepth`; the check runs at EnableChn time
+(REQBUFS), and EnableChn **does** return -1 on failure - the old comment's
+"no error surfaced above the kernel log" was wrong, the incident log's
+"framesource 0: EnableChn failed" was exactly this.
+
+Why the fleet splits the way it does (`/etc/modules.d/20-isp` per board):
+
+    cinnado d1 (all six sc2336 cams):
+        tx_isp_t31 isp_ch0_pre_dequeue_time=24 isp_ch0_pre_dequeue_interrupt_process=0 isp_memopt=1 print_level=1
+        (from BR2_ISP_CH0_PRE_DEQUEUE_TIME_VALUE=24 in the board defconfig)
+    wuuk y0510 (cam-garage, full 24.7 fps):
+        tx_isp_t31 isp_clk=200000000 print_level=1
+        (no pre-dequeue parameter -> gate never active)
+
+So the cam-garage cross-check is answered, just one level deeper than the
+question was posed: whether its video0 is scaled or not is irrelevant -
+its driver is simply loaded without the pre-dequeue parameter. Further
+confirmation: `package/thingino-daynightd/samples/t31-proc-jz-isp-fs.txt`
+(a wyze cam3 T31X) shows framesource 0 running 1920x1080 with `scaler:
+disable, crop: disable` and FOUR buffers - a non-scaled chan0 multi-buffer
+ring works fine on T31 when pre-dequeue is off.
+
+The ~45-47% `ch0_pre_dequeue_drop` and the 13.5 fps ceiling are the
+pre-dequeue machinery itself: chan0 is forced to a single buffer, and the
+pre-dequeue worker drops every frame for which the sole buffer has not been
+requeued in time.
+
+**prudynt's `scale = 1` verdict**: does NOT bypass the gate (the kernel
+never looks at the scaler) and prudynt requests nrVBs=2 on stream0 - on a
+pre-dequeue board that combination fails EnableChn outright. Not adopted.
+The "is 1:1 scaling lossless" question is therefore moot for this fix.
+
+**Fix applied in timps** (`src/hal/hal_ingenic.c`, fs_create):
+- new `t31_ch0_pre_dequeue_time()` reads the 0444 module parameter from
+  `/sys/module/tx_isp_t31/parameters/isp_ch0_pre_dequeue_time` once (cached;
+  unreadable = treated as active, stays safe).
+- the nrVBs clamp condition changed from `!scale` to
+  `chn == 0 && pre_dequeue active`. Same behavior as before on today's
+  cinnado boards (chn0 clamped to 1); additionally closes a latent trap the
+  old condition left open: a SCALED chn0 (e.g. video0 reconfigured to
+  1280x720) was previously unclamped -> nrVBs=2 -> dead channel 0 on any
+  pre-dequeue board. On boards without the parameter (wuuk), chn0 now gets
+  the normal 2-buffer ring instead of an unnecessary single buffer.
+- explicit `videoN.buffers` still overrides (now with a warning that names
+  the actual failure mode), so a runtime `echo "pre_dequeue_time 0"` probe
+  stays possible without a rebuild.
+- boot diagnostic LOGI per T31 channel: requested WxH, sensor WxH, scale,
+  final nrVBs - makes the next boot log show exactly what timps requested.
+
+Builds verified for T23, T31, C100, T40, T41 (`./build.sh deps/timps` each);
+`make sim USE_CONTROL=1` runs and the `/control?json=1` video block and
+`videoN.buffers` key are unchanged.
+
+**The actual fps lever is a firmware change, not timps**: drop
+`BR2_ISP_CH0_PRE_DEQUEUE_TIME(_VALUE=24)` (and the then-pointless
+`BR2_ISP_CH0_PRE_DEQUEUE_INTERRUPT_PROCESS`) from
+`configs/cameras/cinnado_d1_t31l_sc2336_atbm6031/..._defconfig` in the
+thingino tree, rebuild, `make ota`. With the parameter gone the kernel
+accepts nrVBs=2 on chan0 and the new timps code grants it automatically.
+NOT done here (out of this task's tree). Caveats to verify on hardware:
+one extra 1920x1080 NV12 buffer (~3.1 MB rmem) must fit - cinnado also sets
+`isp_memopt=1`, which suggests the vendor was squeezing memory; and
+pre-dequeue is a latency optimization, so glass-to-glass latency may rise
+slightly. Verification unchanged: `ffprobe -count_frames` + drop counters
+in `/proc/jz/isp/isp-fs`.
+
+**Boot-time `num_buffers:2` errors (open, honest status)**: the observed
+dmesg errors in the first ~67 s of a clean boot cannot come from timps'
+chn0 path as hypothesized. From source: the scale decision never runs
+before the ISP sensor query (isp_init fills `g_isp_sensor_w/h` before any
+fs_create, with a static-config fallback - both yield 1920x1080 here), the
+clamp is applied before CreateChn, EnableChn re-uses the stored attr on
+every recovery cycle, and the REQBUFS count is nrVBs+FrameDepth = 1+0 = 1.
+There is no first-attempt window with the raw `v->buffers`. Who requested
+2 buffers on framechan0 during that window is NOT identifiable from source;
+no other boot-time libimp client was found in the cinnado rootfs. Next boot
+with the new build will show the diagnostic LOGI line; correlate its
+timestamp plus the recovery-cycle log lines against the dmesg error
+timestamps (`dmesg -T`-equivalent via /proc/uptime deltas). Also worth one
+`cat /sys/module/tx_isp_t31/parameters/isp_ch0_pre_dequeue_time` on
+cam-kinder-rechts (expect 24) and on cam-garage (expect file absent).
+The related stability question: the watchdog exits the daemon after 5
+consecutive fruitless recovery cycles (~5 s of misses each at the 500 ms
+polling timeout); a boot-time stall (day/night switch storm) lasting the
+whole window could in principle exhaust them and take the daemon down
+without any buffers override - the observed ~67 s window says the margin
+is not comfortable. Worth watching, not worth code changes until the
+num_buffers:2 source is identified.

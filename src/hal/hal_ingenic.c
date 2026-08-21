@@ -945,6 +945,36 @@ static int isp_init(void)
 #define FS_ROT_FALLBACK 1
 #endif
 
+#if defined(PLATFORM_T31)
+/* T31(L) kernel one-buffer gate: with the tx-isp module parameter
+ * isp_ch0_pre_dequeue_time > 0, kernel framechan0 rejects REQBUFS for more
+ * than one buffer ("one buffer schedule only support nrvbs = 1" in dmesg,
+ * IMP_FrameSource_EnableChn returns -1). The gate is ONLY (framechan index
+ * == 0 && pre_dequeue active); crop/scaler configuration is irrelevant -
+ * established 2026-08-21 by disassembling tx-isp-t31.o
+ * frame_channel_unlocked_ioctl, superseding the "non-scaled channel" theory
+ * of 2026-07-26 (full story: dev_notes/TODO.md, single-buffer section).
+ * Reads the 0444 module parameter once and caches it; <0 = unreadable. */
+static int t31_ch0_pre_dequeue_time(void)
+{
+    static int cached = -2;                       /* -2 = not probed yet */
+    if (cached == -2) {
+        cached = -1;
+        FILE *f = fopen("/sys/module/tx_isp_t31/parameters/"
+                        "isp_ch0_pre_dequeue_time", "r");
+        if (f) {
+            int val;
+            if (fscanf(f, "%d", &val) == 1 && val >= 0) cached = val;
+            fclose(f);
+        }
+        if (cached < 0)
+            LOGW(MOD,"cannot read isp_ch0_pre_dequeue_time - assuming the "
+                 "pre-dequeue one-buffer schedule is active on framechan0");
+    }
+    return cached;
+}
+#endif
+
 /* ================= framesource ================= */
 static int fs_create(int chn, const ms_vstream_cfg *v)
 {
@@ -960,33 +990,33 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
     int sh = g_isp_sensor_h>0 ? g_isp_sensor_h : g_hcfg->sensor.height;
     int scale = (sw!=v->width)||(sh!=v->height);
     a.nrVBs = v->buffers>0 ? v->buffers : 2;
-    /* T31(L) tx-isp: the non-scaled full-res physical channel (crop-only, no
-     * scaler - the "main" stream when it matches the sensor's native
-     * resolution) only supports a single-buffer schedule; requesting the
-     * usual 2+ ring buffers is silently accepted by IMP_FrameSource_CreateChn/
-     * SetChnAttr (both return success) but the kernel driver then rejects the
-     * schedule ("one buffer schedule only support nrvbs = 1", visible only in
-     * dmesg) and the channel never produces a frame - PollingStream spins at
-     * rc=-1 forever with no error surfaced above the kernel log. The scaled
-     * (sub-stream) path uses the normal multi-buffer ring and is unaffected.
-     * Confirmed on a Cinnado D1 T31L/SC2336 board 2026-07-26. Scoped to
-     * PLATFORM_T31 (covers T31 and T31L, which share SOC_FAMILY=t31) since
-     * that's the only family this kernel constraint has been observed on;
-     * other chips keep the normal 2-buffer default untouched.
-     * Only auto-clamps the *default*; an explicit "buffers" line in
-     * timps.conf (v->buffers_explicit) is trusted as-is, same as raptor's
-     * per-stream nr_vbs override - lets a board/sensor combo that doesn't
-     * hit this limit (or wants to probe it, e.g. against more rmem) opt out
-     * without a code change. */
+    /* T31(L): clamp chn0 to one buffer ONLY when the kernel's pre-dequeue
+     * one-buffer gate is actually active (see t31_ch0_pre_dequeue_time above).
+     * Boards whose /etc/modules.d/20-isp does not set the parameter (e.g.
+     * wuuk T31X) keep the normal multi-buffer ring on chn0 - that, not the
+     * scaler, is why they run at full rate. Boards that set it (e.g. Cinnado
+     * D1: isp_ch0_pre_dequeue_time=24) get nrVBs=1 exactly as before, on
+     * scaled AND non-scaled chn0 alike (the old !scale condition left a
+     * scaled chn0 unclamped -> guaranteed EnableChn failure on those boards).
+     * An explicit "buffers" line (v->buffers_explicit) is still trusted
+     * as-is so a runtime-echoed pre_dequeue_time=0 can be probed without a
+     * rebuild. */
 #if defined(PLATFORM_T31)
-    if (!scale && a.nrVBs > 1) {
-        if (v->buffers_explicit)
-            LOGW(MOD,"chn%d: non-scaled channel with explicit buffers=%d overrides the "
-                 "known T31 nrVBs=1 default - if frames stop (check dmesg for "
-                 "'one buffer schedule'), drop the override", chn, a.nrVBs);
-        else
-            a.nrVBs = 1;
+    if (chn == 0 && a.nrVBs > 1) {
+        int pdq = t31_ch0_pre_dequeue_time();
+        if (pdq != 0) {                    /* active, or unknown: stay safe */
+            if (v->buffers_explicit)
+                LOGW(MOD,"chn0: explicit buffers=%d but isp_ch0_pre_dequeue_time=%d "
+                     "forces a one-buffer schedule on framechan0 - EnableChn "
+                     "will fail (dmesg: 'one buffer schedule') unless "
+                     "pre-dequeue is disabled at the driver", a.nrVBs, pdq);
+            else
+                a.nrVBs = 1;
+        }
     }
+    /* boot diagnostic: the exact geometry/buffer request for this channel */
+    LOGI(MOD,"chn%d: fs %dx%d (sensor %dx%d, scale=%d) nrVBs=%d",
+         chn, v->width, v->height, sw, sh, scale, a.nrVBs);
 #endif
     /* When crop AND scaler are both disabled, IMP requires the framesource
      * output to equal the ISP-reported sensor resolution. Some sensor drivers
