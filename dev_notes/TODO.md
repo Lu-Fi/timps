@@ -638,3 +638,31 @@ the daynight log should show the deferred verdict.
   in yet — the page has four labelled placeholders and a proposed
   `docs/wiki/images/<page-slug>/` convention, both waiting on the motif
   decision tracked under "Screenshots for the wiki" above.
+
+## Follow-up: ISP module parameters ruled out entirely (2026-08-21, live test on cam-kinder-rechts)
+
+Two reboot tests, both reverted afterward:
+
+    baseline                                        : 203 frames/15s (13.53 fps), drop ratio ~45%
+    isp_clk=200000000 added                         : 203 frames/15s (13.53 fps), drop ratio ~45%
+    isp_clk=220000000 + valid_lines=540 + time=20   : 203 frames/15s (13.53 fps), drop ratio ~47.5%
+    (last row matches the stock-firmware reference values from hugolog_e5's defconfig comment)
+
+Zero effect on fps or on `ch0_pre_dequeue_drop` from any combination. This
+rules out the missing-isp_clk defconfig gap as the cause - it is a real
+deviation from every sibling T31L+sc2336 profile, but not causally linked to
+the 13.5 fps ceiling. `ISP OUTPUT FPS: 30/1` in `/proc/jz/isp/isp-m0` stayed
+unchanged throughout, and WDR stayed Disabled.
+
+Do not re-test isp_clk/pre_dequeue_time/valid_lines - closed.
+
+Still open: what actually drops ~45-47% of frames at ch0_pre_dequeue,
+independent of every ISP module parameter tried. `buf:0` and `buf:1` in
+`/proc/jz/isp/isp-fs` always report identical counts, consistent with both
+video streams sharing one upstream frame source - the drop happens before
+that split, not per-encoder-channel. Next avenue: compare this against
+cam-garage (T31 + sc4336p, full rate) at the same procfs level to see if the
+working pairing shows near-zero drops there, which would confirm the drop
+counter itself is the right diagnostic and shift the search to what's
+upstream of it (sensor readout timing, i2c bus contention, ISP pipeline
+config unrelated to these three module parameters).
