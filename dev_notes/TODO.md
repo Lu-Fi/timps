@@ -6,6 +6,108 @@ is still guesswork, so nobody has to re-derive it.
 Background for the encoder block:
 `dev_notes/T23_RATECONTROL_INVESTIGATION_2026-08-21.md`.
 
+## OSD config WebUI: "Apply to both" scope + restart on adding a field
+
+Investigated 2026-08-21 against `package/timps/files/www/a/streamer-osd.js`,
+`streamer-osd0.html`/`streamer-osd1.html`, `timps-api.js` (WebUI repo) and
+`src/control.c`, `src/hal/imp_osd.c`, `src/config.c`, `src/config.h` (timps
+repo, read-only — two other agents were live-editing/investigating
+`hal_ingenic.c`/`hub.c`/`hub.h`/`enc_caps.h`/`osd_vars.c` for an unrelated
+fps/bitrate issue at the time; nothing in those files was touched here).
+
+### 1. "Apply to both streams" silently stops applying to both — FIXED (WebUI-only)
+
+Root cause found and fixed, no daemon change needed. The wire protocol was
+always correct: `sendItem()` in `streamer-osd.js` builds
+`{osd0:{"N":{...}}, osd1:{"N":{...}}}` for scope `"both"`, and
+`control_apply_json()` (`src/control.c:677-692`) applies each `osdS.N.*`
+section independently and lively via `imp_osd_apply(s, item)`
+(`src/hal/imp_osd.c:615`) — verified by reading both sides end to end,
+including `find_obj()`'s exact-name matching (`src/control.c:181`), which
+rules out `"osd"`/`"osd0"`/`"osd1"` colliding with each other.
+
+The bug was that the "Apply to" dropdown's value was **never actually
+recorded** — `buildCard()` re-derived it from scratch on every render purely
+via `itemsIdentical()` (byte-identical `enabled/text/x/y/font_size/color/
+transparency/outline/outline_color` on both streams). Every full re-render
+(a plain page load, returning to the tab, or — the common case — this same
+page's own `/events` "config" SSE echo of the edit it just made, see
+`onConfigEvent`, which only skips the reload while an input/select/textarea
+has focus) re-ran that check and, since `x`/`y` are in the identity set and
+main/substream almost always run at different resolutions, `itemsIdentical()`
+was essentially never true in practice. Result: the user picks "Both
+streams", edits one field (it correctly lands on both), then the very next
+reload flips the dropdown back to "This stream" with no warning — every
+subsequent field the user edits on that card silently stops reaching the
+other stream, exactly matching "apply to both doesn't work".
+
+Fix applied in `package/timps/files/www/a/streamer-osd.js`: added a
+module-level `scopeChoice` map (item index -> last scope the user explicitly
+picked via the dropdown), written in the `.osd-scope` `change` listener and
+consulted first in `buildCard()`, ahead of the `itemsIdentical()` auto-detect
+default. Cleared for an item when its card is removed (`.osd-remove`
+handler), so a slot reused later starts from the auto-detect default again
+instead of inheriting a stale pick. No server-side change; `src/control.c`
+and `src/hal/imp_osd.c` were only read, not modified.
+
+**Still to verify on hardware** (no camera access from this session): open a
+stream's OSD page, add/edit an overlay, set its scope to "Both streams",
+change two or three fields in sequence (including one that forces a
+reload — e.g. tab away and back, or wait for the SSE echo with focus
+outside any input) and confirm the dropdown now stays on "Both streams" and
+every field after the first still reaches the other stream's `osdX.N.*`
+config.
+
+### 2. Restart needed to add a new OSD field — confirmed daemon behavior, not a WebUI bug
+
+The master OSD switch needing a restart was already known
+(`osd.enabled`, config-only, `imp_osd_setup()` builds the groups once at
+startup — `src/config.c` osd_fields comment, `src/control.c:1071`). The
+narrower question was why enabling a single **new/previously-disabled**
+overlay item also needs one, since `osdS.N.enabled` is not in `/control`'s
+`"restart"` list.
+
+Confirmed from `src/hal/imp_osd.c`:
+
+- `MS_MAX_OSD` is 8 (`src/config.h:9`), `MS_MAX_VSTREAM` is 2
+  (`src/config.h:8`) — matches the WebUI's `MAX_OSD = 8` / one page per
+  stream.
+- `imp_osd_setup()` (`src/hal/imp_osd.c:417`) creates the OSD group
+  unconditionally (once osd.enabled or any privacy region is wanted), but
+  loops `for (i=0;i<MS_MAX_OSD;i++)` and does `if (!it->enabled) continue;`
+  **before** calling `IMP_OSD_CreateRgn()` (line 458-463) — i.e. it only
+  allocates an IMP region for items that were already enabled at boot. This
+  is asymmetric with privacy cover masks, which the same function
+  pre-creates for **all** `MS_MAX_PRIVACY` slots regardless of `enabled`,
+  explicitly "so masks can be toggled/moved LIVE without a restart" (line
+  498-500 comment).
+- `imp_osd_apply()` (`src/hal/imp_osd.c:615`, the function `/control` calls
+  live for every `osdS.N.*` POST) checks `rg->rgn<0` and, if so, logs
+  "no region on stream %d (disabled at startup) - enable persisted, applies
+  on restart" and returns without showing the item (line 626-631). The
+  source comment above it says this outright: "an item that was disabled at
+  startup has no region ... enabling it live is refused and takes effect
+  after a restart."
+
+So this is a genuine **daemon** limitation, not the WebUI being overly
+cautious: an item that was off when the streamer last started truly has no
+IMP region to show, no matter what `/control` POST is sent, until
+`imp_osd_setup()` runs again on the next restart. The WebUI's per-item
+"Needs restart" badge (`bootEnabled[S][item]`, captured from the boot-time
+GET) tracks exactly this condition and is accurate; `streamer-osd0.html`'s
+intro text already documents it correctly ("enabling an overlay that was off
+when the streamer last started ... take[s] effect after a streamer restart,
+flagged per overlay"). No WebUI change made or needed for this point.
+
+One asymmetry worth a future daemon-side look (not fixed here, out of scope
+and `imp_osd.c` was off-limits this session): OSD items could in principle
+be pre-created for all `MS_MAX_OSD` slots the same way privacy masks are, to
+let a fresh overlay go live without a restart. Also noted: `/control`'s
+generic `"restart":[...]` list (`src/control.c:1071`) does not list
+`osdS.N.enabled`, but nothing in this WebUI currently reads that generic
+list (checked — no `restart` consumer found under
+`package/timps/files/www/`), so today that omission has no visible effect.
+
 ## OSD `{fps}`/`{bitrate}`: cam-kinder-rechts showing 13 instead of ~25
 
 Investigated 2026-08-21 against `src/hub.c`/`src/hub.h` (read-only — another
