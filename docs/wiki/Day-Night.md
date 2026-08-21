@@ -161,6 +161,20 @@ reads from outside as an IR lamp that keeps switching itself off. Logged as
 `night reference lowered to <level>, proven by the silent probe (bar
 <level>)`. Corpus scenario `23-stale-reference-no-way-down`.
 
+Since 2026-08-21 the reference additionally refuses **clips**: a reading
+taken while the AE is railed (reserve known and `< ir_min_headroom`) is a
+clip, not a level — it may prove night, but it may not be remembered. The
+post-entry anchor waits for an honest sample (`night reference deferred: …`),
+and a failed probe whose pre-probe level was a clip leaves the reference
+unset instead of ratcheting the clip in. Until a trustworthy reading arrives
+the automaton runs on the configured absolute thresholds and the heartbeat
+alone, which changes nothing about its steady-state probe cadence. The same
+rule keeps clips out of `filter_cost`, the threshold diagnostic and the
+trend memory. Measured: a T23 whose ISP boots railed anchored 131072 where
+the scene was worth a twentieth of that, and the probe bar of 65536 then sat
+above anything a real brightening could reach. Corpus scenario
+`24-pegged-boot-poisoned-reference`.
+
 ## The trend (path T)
 
 `ref` answers a **step**; it cannot answer a **ramp**. The bar sits at
@@ -219,6 +233,7 @@ span a factor of 63 across twelve cameras at one instant.
 
 | verdict | condition | costs |
 |---|---|---|
+| night | *lit* reserve `< ir_min_headroom` | nothing — `r` divides two clips and says nothing; railed-dark is still night evidence |
 | night | `r >= ir_ratio_night` | nothing — the illuminator was carrying the scene |
 | night | reserve `< ir_min_headroom` | nothing — the meter is pegged at the *dark* end, which is itself proof |
 | day | `r <= ir_ratio_day`, reserve sufficient, **and the filter-cost gate below** | one switch |
@@ -371,7 +386,20 @@ the hardware anything, since adopting a persisted mode otherwise only set the
 automaton's own state. `switch_cmd` is deliberately **not** run for this:
 the board was already right (illuminator on, ISP already reporting Night),
 only its tuning was wrong, and a filter movement per boot would be a real
-mechanical cost the evidence doesn't ask for. Unlike a switch, this push does
+mechanical cost the evidence doesn't ask for.
+
+**Exception — the railed boot** (2026-08-21). When the persisted mode is
+night and the AE comes up with **0 units of reserve**, the push above is a
+no-op — the ISP already holds that value — and measured on a T23 the meter
+still read its rail 25 minutes later. Every reading in that state is a clip
+and even the silent probe is blind (`r` of two clips is exactly `1.00`).
+What demonstrably re-tunes the AE is a real transition: `day` and back read
+a factor 23 lower within 12 s of each leg. Boot therefore fires the audible
+probe directly (`why=boot pegged`, skipping the silent path), even with
+`boot_probe=0`: if the scene is day the probe confirms it and the movement
+was owed anyway; if it is night the revert re-tunes the ISP and the
+reference anchors from the first honest reading. One click per *railed*
+boot is the cheaper side of that trade; a healthy boot is unaffected. Unlike a switch, this push does
 **not** arm the repeating post-switch re-assert (below) — arming it here
 raced the boot probe, which can decide within seconds: the pending re-assert
 then overwrote that fresh decision with the stale persisted value a second
@@ -534,7 +562,9 @@ audible probe was asked for instead); `mode` is the automaton's mode at the
 time of the probe; `ref` is the night reference (`-1` outside night); `why`
 is the trigger that asked for this probe (`jump`, `trend`, `heartbeat`,
 `boot verify`, `requested`, …) with spaces replaced by underscores, since a
-`key=value` value can't carry one.
+`key=value` value can't carry one; `lit_hr` (appended 2026-08-21) is the AE
+headroom at the *lit* reading, the number that decides whether `r` compared
+two measurements or two clips.
 
 Since 2026-08-20 this line is `LOGD` — a measurement, not an event (see
 [Logging](Logging.md)). A collector that counts or plots it needs

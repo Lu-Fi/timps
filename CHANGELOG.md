@@ -8,6 +8,72 @@ semantic versioning.
 
 ### Fixed
 
+- **A reading the automaton itself calls worthless can no longer enter its
+  long-term memory** (`src/daynight.c`). Measured on a galayou_y4_t23n,
+  22 seconds after boot: the T23 ISP comes up with 128 units of digital gain
+  nobody asked for, the exposure index reads its rail (131072) with **0 units
+  of AE reserve**, and the silent boot probe correctly diagnosed it - "the
+  meter is pegged at the dark end" - then the automaton anchored its night
+  reference on exactly that value 22 seconds later. From there the probe bar
+  stood at 65536 and a twentyfold-too-dark night was declared normal. This is
+  one instance of a class: the trustworthiness signal (`headroom`, the AE
+  reserve) existed and was used for the *verdict*, but none of the places
+  that persist a measured value beyond the current tick checked it. The rule
+  now applied uniformly (`dn_clipped()`): a reading from a railed AE - the
+  reserve is known and below `ir_min_headroom` - is a **clip, not a level**.
+  It may still justify a verdict (a meter pegged at the dark end cannot
+  happen in daylight, so it *is* night evidence), but it may not be
+  remembered. Concretely gated: the post-entry reference anchor (waits,
+  logging "night reference deferred", until the meter is off the rail; the
+  configured absolute thresholds and the heartbeat carry the automaton
+  meanwhile - the steady-state probe cadence of a permanently railed camera
+  is unchanged, because the heartbeat deferral never depended on the
+  reference being set); the revert ratchet (a probe that found night leaves
+  the reference unset rather than anchoring a clipped pre-probe level); the
+  `filter_cost` learning in the day branch (a clipped day reading understates
+  the cost and re-opens the flap that factor closes); `probe_best` (else the
+  threshold diagnostic advises raising `day_gain` above a clip); and the
+  trend memory (a railed boot seeded `ema_slow` at the rail, and the repair
+  then read as a dawn - one wasted probe per boot). The silent-probe verdict
+  additionally records the AE reserve of the *lit* reading (`lit_hr` in the
+  structured probe line): the same night's data shows `r=1.00` from a railed
+  meter and `r=16.10` from the same scene once repaired - a ratio of two
+  clips carries no information, so it now answers "staying night" instead of
+  feeding any of the branches that compare it against thresholds. The
+  reference-lowering path and the ratio-day verdict are downstream of that
+  check and therefore only ever see a trusted lit level. NOT covered:
+  platforms whose isp dump has no gain-ceiling fields report headroom as
+  unknown, and unknown must count as usable or those cameras would never
+  anchor at all - they keep the old exposure.
+- **A railed boot is repaired by one real mode transition, not by
+  re-assertion** (`src/daynight.c`). The 2026-08-20 fix pushed
+  `image.running_mode` into the ISP at boot; measured tonight, that cannot
+  work: the ISP already holds the persisted value, so writing the same value
+  back is a no-op, and the camera still read the rail 25 minutes later. What
+  demonstrably re-tunes the AE is a genuine transition through the other
+  mode: `day` had the index moving within 12 s, `night` again read 5720
+  within another 12 s - factor 23, the magnitude the original incident
+  documented. So when boot finds the persisted mode NIGHT and the AE
+  hard-railed (0 units of reserve - the state in which every reading is a
+  clip and even the silent probe is structurally blind), the automaton now
+  fires the audible boot probe directly, skipping the silent path that
+  cannot answer there. If the scene is actually day, the probe confirms it
+  and the single movement was the right one anyway; if it is night, the
+  revert re-tunes the ISP and the reference then anchors from the first
+  honest reading. This deliberately revisits the 2026-08-20 decision that a
+  filter movement per boot is "a mechanical cost the evidence does not ask
+  for": for a *healthy* boot that is still true and nothing changes
+  (`boot_probe` semantics untouched, including `boot_probe=0`); for a railed
+  boot the alternative is a camera that is blind all night, poisons its
+  reference, and burns probes against a bar derived from a clip - one click
+  per railed boot is the cheaper side of that trade, and it fires only in
+  the state where the meter proves it cannot measure. A persisted-DAY boot
+  needs no special case: its honest pipeline forces the night switch, which
+  is already a real transition. Corpus scenario
+  `24-pegged-boot-poisoned-reference` replays the full night: railed boot,
+  cycle, deferred-then-honest anchor, and a light at t=600 that must still
+  reach day - which the poisoned bar of 65536 would have deferred
+  indefinitely.
 - **The C++ runtime is actually linked statically now** (`Makefile`). The
   build carried a comment stating that SRT builds link the final binary with
   g++ "so libstdc++ is resolved and static-linked (-static-libstdc++, passed
