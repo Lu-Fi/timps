@@ -255,6 +255,18 @@ video0.codec     = h264      # h264 | h265
 video0.width     = 1920
 video0.height    = 1080
 video0.fps       = 25
+# bitrate means DIFFERENT things per SoC generation (deliberate, documented
+# rather than papered over):
+#   classic (T10..T30, T23): written into maxBitRate/outBitRate - under vbr/
+#     smart it is a HARD CEILING the controller works below.
+#   new API (T31/C100/T40/T41): passed as uTargetBitRate - a TARGET the
+#     controller aims at, while the real cap uMaxBitRate stays at the SDK
+#     default (readable since the encoder.<n>.rc readback, never written by
+#     timps at bring-up; a live bitrate change preserves its ratio).
+# So a T23-calibrated "ceiling" intuition does not transfer to a T31. Not
+# unified via IMP_Encoder_SetChnBitRate at bring-up on purpose: that would
+# change the fielded behaviour of every new-API camera based on header-only
+# knowledge - measure with the rc readback first.
 video0.bitrate   = 3000      # kbps
 video0.rc_mode   = cbr       # cbr | vbr | fixqp | smart | capped_vbr | capped_quality
 video0.gop       = 50

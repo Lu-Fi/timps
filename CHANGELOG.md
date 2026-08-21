@@ -82,6 +82,21 @@ semantic versioning.
   value is passed through 1:1 and should be checked against the rc readback
   on hardware before the mapping is trusted.
 
+- **`videoN.bitrate`'s per-SoC meaning is documented instead of unified**
+  (`timps.conf.example`). Classic path: the value lands in
+  `maxBitRate`/`outBitRate`, a hard ceiling under vbr/smart. New API: it is
+  `uTargetBitRate`, a target, while the real cap `uMaxBitRate` stays at the
+  SDK default. Decision recorded in the file: NOT unified via
+  `IMP_Encoder_SetChnBitRate` at bring-up, because that would change the
+  fielded behaviour of every new-API camera on header-only knowledge - the
+  new rc readback is the tool to measure first. Related decision on the
+  other unreachable new-API attrs (`uMaxPSNR`, `uMaxBitRate`, `eRcOptions`,
+  `uMaxPictureSize`): they become READABLE via `encoder.<n>.rc` but stay
+  unwritable - `uMaxPSNR` is the knob `capped_quality` is named after, yet
+  everything known about these fields is header-derived and unverified on
+  hardware, so exposing setters would repeat the exact
+  header-reads-convincingly failure the investigation documented twice.
+
 - **The silent `smart` -> `capped_quality` substitution on the new API warns
   once** (`src/hal/hal_ingenic.c`). The classic path has always warned when
   it substitutes `capped_vbr`/`capped_quality` with `vbr`; the mirror-image
