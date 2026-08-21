@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.9.1] - 2026-08-21
+
 ### Fixed
 
 - **A silent-probe escalation actually reaches the audible probe now**
