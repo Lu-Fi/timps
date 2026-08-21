@@ -175,3 +175,21 @@ fassung and every VBR struct in every version say 0..7, lower = better, with
 the minBitRate formula. The measurement decides it: under `smart`, quality_lvl
 2 gives 1745 kbit/s and 7 gives 1265 — same direction as vbr. The en Smart text
 is a translation error.
+
+## Follow-up: min_qp is the actual lever (2026-08-21, later)
+
+Swept `min_qp` on cam-kinder-links under vbr, quality_lvl held at the default
+2 so min_qp was the only variable:
+
+    min_qp=20: 2052 1379 2426 1358 2054 1370 2064 1389 2071 1386 2086 1287   mean 1743
+    min_qp=30: 1000 1523 1398  941 1412  942 1406  936 1401  934 1401  882   mean 1181
+    min_qp=38:  305  203  830  175  198  131  198  131  198  132  198  129   mean  235
+
+That settles the "still unexplained" section above: the T23 controller is
+quality-seeking, not rate-seeking. It picks the best quality `min_qp` allows
+and the bitrate is a consequence, not a target. `min_qp=38` even undercuts the
+fixqp=42 reference (278) - consistent with a controller that is free to go
+finer than 38 in quiet passages under vbr, where fixqp cannot.
+
+`min_qp` and `max_qp` have been configurable since before this investigation
+started. The lever was always there.
