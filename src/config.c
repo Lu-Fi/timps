@@ -270,6 +270,9 @@ void config_defaults(ms_config *c)
         ms_vstream_cfg *v=&c->video[i];
         v->codec=MS_VC_H264; v->fps=25; v->rc_mode=MS_RC_CBR;
         v->gop=50; v->max_gop=60; v->profile=2; v->qp=35; v->min_qp=20; v->max_qp=45;
+        /* the values the classic rc fills used as literals before these became
+         * config keys, so an unset config keeps the previous encoder behaviour */
+        v->quality_lvl=2; v->change_pos=80; v->i_bias_lvl=0;
         v->rotation=0; v->buffers=2; v->imp_chn=i;
         /* piggyback JPEG encoder: on by default (snapshot.jpg/MJPEG preview
          * and the thingino WebUI thumbnail both expect it to just work).
@@ -1031,6 +1034,11 @@ static const cfg_field video_fields[] = {
     F ("qp",           0,              qp,           T_INT,   F_CTRL,  1,51),     /* only consumed when videoN.rc_mode=fixqp (enc_create's iInitialQP); no effect under CBR/VBR/etc, which rate-control instead */
     F ("min_qp",       0,              min_qp,       T_INT,   F_CTRL,  1,51),
     F ("max_qp",       0,              max_qp,       T_INT,   F_CTRL,  1,51),
+    /* classic-SoC rc knobs; ranges are the imp_encoder.h domains. No effect on
+     * the ENC_NEW_API SoCs, which warn once instead of failing silently. */
+    F ("quality_lvl",  0,              quality_lvl,  T_INT,   F_CTRL,  0,7),
+    F ("change_pos",   0,              change_pos,   T_INT,   F_CTRL,  50,100),
+    F ("i_bias_lvl",   0,              i_bias_lvl,   T_INT,   F_CTRL,  -3,3),
     F ("rotation",     0,              rotation,     T_ROT,   F_CTRL,  0,0),
     F ("buffers",      0,              buffers,      T_INT,   F_CTRL,  1,8),
     FS("rtsp_path",    0,              rtsp_path,    F_CTRL),

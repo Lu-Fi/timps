@@ -1172,6 +1172,19 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
              v->imp_chn);
     a.gopAttr.uGopLength       = (uint16_t)v->gop;   /* config.c clamps 1..1000 */
     a.gopAttr.uMaxSameSenceCnt = 1;
+    /* The new-API rc structs have no qualityLvl/changePos/iBiasLvl equivalent,
+     * so these three keys cannot be honoured here. Say so once instead of
+     * accepting them and doing nothing - that is exactly how min_qp/max_qp
+     * silently missed this path until 0a8bb9f. */
+    {
+        static int warned_rcknobs = 0;
+        if (!warned_rcknobs &&
+            (v->quality_lvl!=2 || v->change_pos!=80 || v->i_bias_lvl!=0)){
+            LOGW(MOD,"videoN.quality_lvl/change_pos/i_bias_lvl have no effect on "
+                     "this SoC (new encoder API) - values ignored");
+            warned_rcknobs = 1;
+        }
+    }
 #else
     /* older platforms: manual attribute setup (H264 only path shown) */
 #if defined(PLATFORM_T10)||defined(PLATFORM_T20)
@@ -1242,9 +1255,9 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
             a.rcAttr.attrRcMode.attrH265Vbr.minQp       = (v->min_qp>0)?(uint32_t)v->min_qp:15;
             a.rcAttr.attrRcMode.attrH265Vbr.staticTime  = 2;   /* rate-stat window, seconds */
             a.rcAttr.attrRcMode.attrH265Vbr.maxBitRate  = (uint32_t)v->bitrate_kbps;
-            a.rcAttr.attrRcMode.attrH265Vbr.iBiasLvl    = 0;
-            a.rcAttr.attrRcMode.attrH265Vbr.changePos   = 80;
-            a.rcAttr.attrRcMode.attrH265Vbr.qualityLvl  = 2;
+            a.rcAttr.attrRcMode.attrH265Vbr.iBiasLvl    = v->i_bias_lvl;
+            a.rcAttr.attrRcMode.attrH265Vbr.changePos   = (uint32_t)v->change_pos;
+            a.rcAttr.attrRcMode.attrH265Vbr.qualityLvl  = (uint32_t)v->quality_lvl;
             a.rcAttr.attrRcMode.attrH265Vbr.frmQPStep   = 3;
             a.rcAttr.attrRcMode.attrH265Vbr.gopQPStep   = 15;
             a.rcAttr.attrRcMode.attrH265Vbr.flucLvl     = 0;
@@ -1255,9 +1268,9 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
             a.rcAttr.attrRcMode.attrH264Vbr.minQp       = (v->min_qp>0)?(uint32_t)v->min_qp:15;
             a.rcAttr.attrRcMode.attrH264Vbr.staticTime  = 2;   /* rate-stat window, seconds */
             a.rcAttr.attrRcMode.attrH264Vbr.maxBitRate  = (uint32_t)v->bitrate_kbps;
-            a.rcAttr.attrRcMode.attrH264Vbr.iBiasLvl    = 0;
-            a.rcAttr.attrRcMode.attrH264Vbr.changePos   = 80;
-            a.rcAttr.attrRcMode.attrH264Vbr.qualityLvl  = 2;
+            a.rcAttr.attrRcMode.attrH264Vbr.iBiasLvl    = v->i_bias_lvl;
+            a.rcAttr.attrRcMode.attrH264Vbr.changePos   = (uint32_t)v->change_pos;
+            a.rcAttr.attrRcMode.attrH264Vbr.qualityLvl  = (uint32_t)v->quality_lvl;
             a.rcAttr.attrRcMode.attrH264Vbr.frmQPStep   = 3;
             a.rcAttr.attrRcMode.attrH264Vbr.gopQPStep   = 15;
             a.rcAttr.attrRcMode.attrH264Vbr.gopRelation = 0;
@@ -1270,7 +1283,7 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
             a.rcAttr.attrRcMode.attrH265Cbr.minQp      = (v->min_qp>0)?(uint32_t)v->min_qp:15;
             a.rcAttr.attrRcMode.attrH265Cbr.staticTime = 2;   /* rate-stat window, seconds */
             a.rcAttr.attrRcMode.attrH265Cbr.outBitRate = (uint32_t)v->bitrate_kbps;
-            a.rcAttr.attrRcMode.attrH265Cbr.iBiasLvl   = 0;
+            a.rcAttr.attrRcMode.attrH265Cbr.iBiasLvl   = v->i_bias_lvl;
             a.rcAttr.attrRcMode.attrH265Cbr.frmQPStep  = 3;
             a.rcAttr.attrRcMode.attrH265Cbr.gopQPStep  = 15;
             a.rcAttr.attrRcMode.attrH265Cbr.flucLvl    = 0;
@@ -1280,7 +1293,7 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
             a.rcAttr.attrRcMode.attrH264Cbr.maxQp        = (v->max_qp>0)?(uint32_t)v->max_qp:45;
             a.rcAttr.attrRcMode.attrH264Cbr.minQp        = (v->min_qp>0)?(uint32_t)v->min_qp:15;
             a.rcAttr.attrRcMode.attrH264Cbr.outBitRate   = (uint32_t)v->bitrate_kbps;
-            a.rcAttr.attrRcMode.attrH264Cbr.iBiasLvl     = 0;
+            a.rcAttr.attrRcMode.attrH264Cbr.iBiasLvl     = v->i_bias_lvl;
             a.rcAttr.attrRcMode.attrH264Cbr.frmQPStep    = 3;
             a.rcAttr.attrRcMode.attrH264Cbr.gopQPStep    = 15;
             a.rcAttr.attrRcMode.attrH264Cbr.adaptiveMode = 0;
@@ -2414,9 +2427,9 @@ static int sw_rot_start(const ms_config *cfg, int i)
         yin.mode.attrH264Vbr.minQp       = (v->min_qp>0)?(uint32_t)v->min_qp:15;
         yin.mode.attrH264Vbr.staticTime  = 2;
         yin.mode.attrH264Vbr.maxBitRate  = (uint32_t)v->bitrate_kbps;
-        yin.mode.attrH264Vbr.iBiasLvl    = 0;
-        yin.mode.attrH264Vbr.changePos   = 80;
-        yin.mode.attrH264Vbr.qualityLvl  = 2;
+        yin.mode.attrH264Vbr.iBiasLvl    = v->i_bias_lvl;
+        yin.mode.attrH264Vbr.changePos   = (uint32_t)v->change_pos;
+        yin.mode.attrH264Vbr.qualityLvl  = (uint32_t)v->quality_lvl;
         yin.mode.attrH264Vbr.frmQPStep   = 3;
         yin.mode.attrH264Vbr.gopQPStep   = 15;
         yin.mode.attrH264Vbr.gopRelation = 0;
@@ -2425,7 +2438,7 @@ static int sw_rot_start(const ms_config *cfg, int i)
         yin.mode.attrH264Cbr.maxQp        = (v->max_qp>0)?(uint32_t)v->max_qp:45;
         yin.mode.attrH264Cbr.minQp        = (v->min_qp>0)?(uint32_t)v->min_qp:15;
         yin.mode.attrH264Cbr.outBitRate   = (uint32_t)v->bitrate_kbps;
-        yin.mode.attrH264Cbr.iBiasLvl     = 0;
+        yin.mode.attrH264Cbr.iBiasLvl     = v->i_bias_lvl;
         yin.mode.attrH264Cbr.frmQPStep    = 3;
         yin.mode.attrH264Cbr.gopQPStep    = 15;
         yin.mode.attrH264Cbr.adaptiveMode = 0;

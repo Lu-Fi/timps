@@ -29,6 +29,11 @@ typedef struct {
     int      profile;        /* 0 baseline,1 main,2 high */
     int      qp;             /* fixed qp / init qp */
     int      min_qp, max_qp;
+    /* classic-SoC rate-control knobs (T10..T30); the ENC_NEW_API path has no
+     * equivalent fields and warns once if these deviate from the defaults */
+    int      quality_lvl;    /* VBR/Smart: minBitRate = bitrate * quality[lvl] */
+    int      change_pos;     /* VBR/Smart: % of bitrate above which qp is raised */
+    int      i_bias_lvl;     /* VBR+CBR: I-frame qp bias, -3..3 */
     int      rotation;       /* 0,90,270 (+180 only on T40/T41 per-channel I2D;
                               * 180 removed elsewhere - use image.hflip+vflip) */
     int      buffers;        /* IMP nrVBs */

@@ -6,6 +6,26 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- **Three classic-SoC rate-control knobs are now config keys**
+  (`videoN.quality_lvl` 0..7, `videoN.change_pos` 50..100,
+  `videoN.i_bias_lvl` -3..3; `src/config.h`, `src/config.c`,
+  `src/hal/hal_ingenic.c`, `src/control.c`). They were literals in the VBR/CBR
+  attribute fills, duplicated across the H264, H265 and T23 sw-rotate paths.
+  `qualityLvl` in particular was not cosmetic: the vendor SDK derives
+  `minBitRate = bitrate * quality[lvl]` from it, so the hardcoded 2 imposed an
+  invisible floor at 60% of the configured bitrate. Measured on a T23 with a
+  static scene: 2091 kbit/s under cbr and 1715 under vbr, against 278 kbit/s
+  for the same scene at a fixed qp - the encoder could always encode it
+  cheaply, the floor would not let it. Defaults are the previous literals
+  (2/80/0), so an untouched config produces the same stream as before.
+  The ENC_NEW_API SoCs (T31/C100/T40/T41) have no equivalent fields and now
+  warn once when these keys deviate from the defaults, instead of accepting
+  them and doing nothing - the failure mode that hid the `min_qp`/`max_qp` gap
+  until 0a8bb9f.
+
+
 ## [1.9.2] - 2026-08-21
 
 ### Added

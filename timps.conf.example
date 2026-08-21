@@ -248,6 +248,25 @@ video0.profile   = 2         # 0 baseline 1 main 2 high
 #video0.qp       = 35        # only used when video0.rc_mode = fixqp; no effect under cbr/vbr/etc (see video_fields' qp entry) - use min_qp/max_qp there instead
 video0.min_qp    = 20
 video0.max_qp    = 45
+
+# Classic-SoC rate control (T10..T30). No effect on T31/C100/T40/T41, whose
+# encoder API has no equivalent fields - timps warns once if you set them there.
+#
+#   quality_lvl  0..7   VBR/Smart only. The vendor SDK derives a HARD lower
+#                       bound from it: minBitRate = bitrate * quality[lvl] with
+#                       quality[] = {0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.1}. The
+#                       default 2 therefore refuses to go below 60% of
+#                       video0.bitrate no matter how still the scene is; raise
+#                       it to let quiet scenes get cheap. Lower = better
+#                       picture, higher floor.
+#   change_pos   50..100  VBR/Smart only. Percentage of bitrate above which the
+#                       encoder starts raising qp. Default 80.
+#   i_bias_lvl   -3..3  VBR and CBR. I-frame qp bias: negative spends more bits
+#                       on keyframes, positive fewer. Default 0.
+#
+#video0.quality_lvl = 2
+#video0.change_pos  = 80
+#video0.i_bias_lvl  = 0
 video0.rotation  = 0         # 0|90|180|270 - build-gated & SoC-dependent (see block above)
 video0.buffers   = 2
 video0.rtsp_path = /ch0
