@@ -1287,8 +1287,9 @@ int control_get_json(char *buf, size_t cap)
             "\"width\":%d,\"height\":%d},",
             sm, s_i2c, s_fps, s_w, s_h);
     }
-    /* video streams (all persist-only / restart-required). codec/rc_mode go
-     * through config_get_kv for the canonical config-file spelling. */
+    /* video streams (persist-first; the ENC_LIVE_KEYS rc subset applies
+     * live, see caps.video_live above). codec/rc_mode go through
+     * config_get_kv for the canonical config-file spelling. */
     APP("\"video\":{");
     for (int i=0;i<MS_MAX_VSTREAM;i++){
         const ms_vstream_cfg *vs=&c->video[i];

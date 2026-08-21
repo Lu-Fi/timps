@@ -11,8 +11,9 @@
  * Derived from the vendored SDK headers (verified 2026-08-21):
  *   classic (T10..T30, incl. T23): IMP_Encoder_SetChnAttrRcMode takes the
  *     whole rc union, so every rc key can be re-applied in one call.
- *     H264-only per the header - an H265 stream on T21/T30 stays
- *     restart-bound (runtime-graded, not expressible here).
+ *     H264-only per T23's header; T21/T30 headers additionally allow H265,
+ *     unverified on hardware, so every H265 stream stays restart-bound
+ *     (runtime-graded, not expressible here).
  *   T31/C100: SetChnBitRate + SetChnQpBounds + SetChnQpIPDelta +
  *     SetChnAttrRcMode (the last used only for the fixqp initial QP).
  *   T40: as T31/C100 but no SetChnQpIPDelta (i_bias_lvl unsupported).

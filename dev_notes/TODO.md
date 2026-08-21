@@ -201,6 +201,91 @@ hardware check above before touching any code. `hub.c`/`hub.h` are currently
 being live-edited by another agent for the rate-control work, so this fix (if
 confirmed) should land after that lands, to avoid a merge fight.
 
+### Root-cause investigation in the buildroot tree (2026-08-21) — ISP clock, not sensor
+
+The RTSP frame counts (ffprobe, independent of the daemon) supersede the
+stale-OSD theory above for the *magnitude* question: all six cinnado
+T31L+sc2336 cameras really deliver ~13.5 fps (135-136 frames/10 s), while
+T23N+sc2336 (25.0) and T31X+sc4336p (24.7) deliver full rate. Findings from
+`.ciao-wt` (read-only analysis, nothing applied):
+
+**Established from the tree:**
+
+- The sc2336 kernel driver is NOT a per-platform vendor blob: it is built
+  from source in the fetched `ingenic-sdk` checkout
+  (`output/ciao/<cam>/build/ingenic-sdk-c5cbd61.../3.10.14/sensor-src/{t23,t31}/sc2336.c`).
+  The t23 and t31 variants differ only in whitespace/cosmetics; the register
+  init tables are byte-identical (single 1080p linear mode, HTS 0x8ca=2250,
+  VTS 0x5a0=1440, 81 MHz SCLK, same `SENSOR_VERSION "H20210805a"`). No
+  WDR/HDR/DOL mode exists in either driver, so the
+  "double-exposure halves the rate" hypothesis is ruled out for this
+  firmware.
+- IQ tuning bins differ per SoC as expected
+  (`/usr/share/sensor/sc2336-t23.bin` 176288 B md5 aecf0163…,
+  `sc2336-t31.bin` 159736 B md5 68388420…) but IQ bins carry ISP tuning
+  (AE/AWB/CCM), not the sensor readout mode — the readout mode comes solely
+  from the (identical) driver init table.
+- **The defconfigs differ far more than previously noted** (the earlier
+  "only shvflip" comparison was wrong). The decisive difference is the ISP
+  core clock passed to the tx-isp module at load
+  (`target/etc/modules.d/20-isp`):
+  - T23N cinnado: `tx_isp_t23 ... isp_clk=200000000 isp_clka=600000000` -> full rate
+  - T31X wuuk: `tx_isp_t31 isp_clk=200000000` -> full rate
+  - **T31L cinnado: `tx_isp_t31 isp_ch0_pre_dequeue_time=24 ... ` with NO
+    `isp_clk` -> driver default `isp_clk = 100000000` (100 MHz,
+    `3.10.14/isp/t31/tx-isp-debug.c:11`; the ISP core itself is the vendor
+    archive `libt31-firmware-540.a`, ISP_FW_VER 1.1.6, and takes its clock
+    from this shim).**
+- Sibling T31L+sc2336 profiles in `configs/cameras/` DO raise the clock:
+  gncc_gc2 220 MHz, litokam_c1 220 MHz, hugolog_e5 220 MHz (with a comment
+  block showing the stock vendor parameters `isp_clk=220000000`,
+  `pre_dequeue_time=20`, `valid_lines=540`), galayou_y4_atbm6032 150 MHz,
+  wansview_g6 125 MHz. `cinnado_d1_t31l_sc2336_atbm6031` and
+  `wansview_w7_t31l` are the odd ones out with no `BR2_ISP_CLK_*` at all.
+- timps sets the sensor to its proc-reported max (30 fps,
+  `src/config.c:1747`, `IMP_ISP_Tuning_SetSensorFPS(30,1)` in
+  `src/hal/hal_ingenic.c:895`) and the encoder to FRC 30 -> 25 (matches the
+  logged `inFrmRate.frmRateNum=30 ... setFrmRate.frmRateNum=25`). If the
+  100 MHz ISP can only push ~16.2 fps of 1080p, the encoder's 25/30 drop
+  pattern turns that into exactly 16.2 * 5/6 = 13.5 fps — the measured
+  number. (This arithmetic fits, but the 16.2 figure itself is inference,
+  not yet measured.)
+
+**Remains conjecture until measured on hardware:**
+
+- That the ISP really delivers ~16.2 fps at 100 MHz (vs. dropping half).
+- Whether `isp_ch0_pre_dequeue_time=24` contributes (the working 220 MHz
+  profiles use 20 + `valid_lines=540`); `/proc/jz/isp/isp-fs` has a
+  dedicated `ch0_pre_dequeue_drop` counter to check this.
+- The single `sc2336 stream on` without `stream off` on T31 could not be
+  decided from the tree: both platforms run the same timps on-demand logic,
+  so it is either a dmesg ring-buffer artifact or a difference in viewer
+  pattern (e.g. a continuously-pulling client on that camera), not a
+  platform mechanism found in the source.
+
+**Discriminating measurements (on one affected camera, read-only):**
+
+1. ISP delivery rate before the encoder: snapshot
+   `grep -E 'buf_qcnt|losted|pre_dequeue' /proc/jz/isp/isp-fs`, wait 10 s,
+   snapshot again; delta(buf_qcnt)/10 = true ISP fps. ~16 confirms the
+   clock theory; ~30 moves the blame past the ISP.
+2. `grep -iE 'fps|wdr' /proc/jz/isp/isp-m0` — reports "ISP OUTPUT FPS" and
+   WDR mode from the vendor core.
+3. Live sensor timing over i2c (safe, read-only, bus owned by kernel hence
+   `-f`): `i2ctransfer -f -y 0 w2@0x30 0x32 0x0c r2` (HTS, expect 08 ca)
+   and `i2ctransfer -f -y 0 w2@0x30 0x32 0x0e r2` (VTS: 04 b0 = 30 fps,
+   05 a0 = 25 fps; ~0a 6a would mean the sensor itself is slowed — not
+   expected). Do NOT use `sinfo dump` for this: it pulses the sensor reset
+   line and would kill the running stream.
+4. The decisive experiment (one test camera, reversible):
+   `sed -i 's/^tx_isp_t31 /tx_isp_t31 isp_clk=200000000 /' /etc/modules.d/20-isp`
+   + reboot, then re-run the ffprobe count. If it lands at ~25, the tree fix
+   is one line in
+   `configs/cameras/cinnado_d1_t31l_sc2336_atbm6031/..._defconfig`:
+   add `BR2_ISP_CLK_220MHZ=y` (parity with the other T31L+sc2336 profiles;
+   200 MHz also plausible) — deliberately NOT applied, per-fleet decision
+   pending.
+
 ## `{bitrateN}` placeholder is missing (per-channel bitrate OSD text)
 
 Investigated 2026-08-21, read-only against `src/hal/osd_vars.c`, `src/hub.c`,
@@ -293,6 +378,68 @@ justify picking bounds. Revisit only with a documented domain or a
 measurement. (`gopRelation` is a bool and COULD be exposed trivially, but a
 knob with unknown semantics and no measurement is still a trap.)
 
+### Adversarial review of the rate-control rework (2026-08-21 audit)
+
+Scope: `c4e434f..c5d2de5` + the WebUI commits, checked against the vendored
+SDK headers, the simulator and cross-builds. Confirmed findings, smallest
+first; comment-level corrections were applied in the same pass.
+
+- **T21/T30 headers allow `SetChnAttrRcMode` for H265.** Only T23 (en+zh)
+  says "H264 only"; T21/T30 say "H264 and H265". The live path refuses every
+  classic H265 stream — over-conservative on T21/T30, correct on T23.
+  Comments in `enc_caps.h`/`hal_ingenic.c` corrected to say so; the refusal
+  itself stays until hardware confirms (no T21/T30 H265 stream in the fleet).
+- **`quality_lvl` range/semantics flip under smart.** Classic headers: VBR
+  qualityLvl 0..7, LOWER = better; Smart qualityLvl 0..6, HIGHER = better,
+  default 4. Config clamps a static 0..7 and the WebUI tooltip states the
+  VBR reading. Under `rc_mode=smart` a posted 7 is out of the documented
+  domain and the tooltip's direction is wrong. Fix would be mode-dependent
+  clamping + tooltip split — behavior change, deliberately not applied here.
+- **Grading is honest per call, not per effect.** Classic: a live write to a
+  key absent from the active mode's union member (`quality_lvl` under cbr,
+  `bitrate` under fixqp) reports "applied live" because the whole-union call
+  succeeds. New API: `qp` under non-fixqp reports "deferred" although a
+  restart will not make it effective either. Documented in code, no lie in
+  `deferred_keys` (the key DID reach the encoder), but "no effect in this
+  mode" is not expressible. Accepted as-is.
+- **`min_qp`/`max_qp` have no cross-field clamp** (SDK: minQp range
+  [0..maxQp]). min_qp=50+max_qp=20 passes config and reaches the SDK, which
+  then rejects (graded honestly at runtime). Pre-existing, not from this
+  rework.
+- **`SetChnBitRate` stores raw values** (T31 libimp disassembly: args land
+  unconverted in the channel state; for CBR the lib forces max:=target).
+  Consistent with the header's "bit/s" and the HAL's kbps*1000. Whether
+  `SetDefaultParam`'s `uTargetBitRate` uses the SAME unit is not decidable
+  statically — see the hardware check below.
+- **Readback vs. live-apply concurrency inside libimp.** GET `/control`
+  (`hal_enc_rc_read` -> `GetChnAttrRcMode`) takes no lock against a POST
+  worker's `SetChnAttrRcMode`/`SetChnBitRate` (`apply_mu` covers only
+  POST-vs-POST). No timps data race (g_cfg writes stay under
+  `config_str_lock`, `rc_live_apply` reads on the same thread), but Get-vs-Set
+  concurrently inside libimp is not a vendor-sample pattern. Worst plausible
+  case: a torn union in the readback. If hardware shows inconsistent
+  `encoder.<n>.rc` values during writes, serialize the two with a small
+  mutex.
+- **GET `/control` reads the videoN ints lock-free** while POST writes them
+  under `config_str_lock` — formally the C11 race the config.h rule exists
+  for. Pre-existing for every videoN int; the live keys just change more
+  often now.
+- **Verified clean:** sim contract exact (`deferred_keys` = changed-and-not-
+  live keys, clamped values in `applied`, unchanged re-posts deferred:0,
+  per-channel key names); `fluc_lvl` present in BOTH status-JSON branches
+  (`!USE_ROTATE` verified live on the sim); single response builder in
+  httpd.c; `enc_caps.h` matches the SDK call surface on all five platforms
+  (T41: no rc-mode setter, T40: no QpIPDelta — both confirmed in the
+  headers); new-API struct/field names, int16 casts and
+  `attrCappedQuality`=typedef-of-`attrCappedVbr` all match; classic fill
+  field-for-field correct incl. H264/H265 CBR layout differences; WebUI
+  gating and `deferred_keys` handling consistent with the server (minor: it
+  leaves `i_bias_lvl`/`fluc_lvl`/QP bounds enabled under FIXQP where they do
+  nothing).
+- **Builds:** T23/T31/C100 compile+link clean. T40/T41 compile clean; the
+  final link needs the xburst2 toolchain (not on this machine — vendor libs
+  are FP64), so run `./build.sh timps T40|T41` where it is available.
+
 ## Hardware verification (mine — the agents only have the simulator)
 
 Both agents work without camera access. Everything they build has to be checked
@@ -319,7 +466,21 @@ What to check:
   important, that they do *not* fire on the T23.
 - **`i_bias_lvl` on T31** via `SetChnQpIPDelta` — not just that the call
   returns 0, but whether the keyframe size actually moves. Sweep -3/0/+3 and
-  measure I-frame windows.
+  measure I-frame windows. Also read `encoder.<n>.rc.ip_delta` after each
+  write: classic iBiasLvl is a dimensionless level, iIPDelta a QP delta —
+  the readback tells whether the 1:1 pass-through lands as sent, the
+  I-frame sizes tell whether the sign convention matches the classic one
+  (audit: not decidable from the headers).
+- **`bitrate` unit on T31 (new API).** Boot with videoN.bitrate=2000, note
+  `encoder.<n>.rc.bitrate`. Then POST the same 2000 live. If the readback
+  jumps by x1000, `SetDefaultParam` and `SetChnBitRate` disagree on the
+  unit and the boot path underfeeds by 1000 (or the live path overfeeds);
+  if it is unchanged, both take bit/s-equivalent storage and the kbps*1000
+  conversion is right. Cross-check `ave_bitrate` against a real stream
+  measurement.
+- **T23 live rc actually applies.** POST `video0.bitrate` (and `min_qp`)
+  on cam-kinder-links without restart; `deferred_keys` must be empty for
+  them, the readback and the measured stream must follow within one GOP.
 - **`flucLvl`** is H265-only and the T23 SDK has no H265 at all, so it cannot
   be tested on the T23. Check whether any fleet camera can exercise it; if not,
   say so rather than claiming it works.

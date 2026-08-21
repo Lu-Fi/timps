@@ -3638,8 +3638,9 @@ static int rc_live_apply(int si, const char *k)
      * key re-derives the complete block from g_cfg via the same fill
      * enc_create used - the encoder never sees a half-updated struct, and
      * this includes a live rc_mode switch (the header supports FIXQP/CBR/
-     * VBR/SMART). H264 only: every classic header marks the call "only used
-     * to H264 channel", so an H265 stream (T21/T30) stays restart-bound. */
+     * VBR/SMART). H264 only: T23's header (en+zh) marks the call H264-only;
+     * T21/T30 say "H264 and H265" but stay refused here until hardware
+     * confirms it (dev_notes/TODO.md), so any H265 stream is restart-bound. */
     if (v->codec==MS_VC_H265){
         static int warned_h265_live = 0;
         if (!warned_h265_live){
