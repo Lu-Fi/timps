@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.9.2] - 2026-08-21
+
 ### Added
 
 - **A standing disagreement between the decided mode and the ISP is now
