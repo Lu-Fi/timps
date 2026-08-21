@@ -76,6 +76,11 @@ int         hub_get_vparam(int src, vparam *out);
 /* IDR request plumbing: HAL registers a callback; sinks call request. */
 void        hub_set_idr_cb(void (*cb)(int src));
 void        hub_request_idr(int src);
+/* Consumers (RTSP/fMP4/record) report a fanqueue overflow-heal event here;
+ * GET /control sums them per video stream as "queue_drops" - the only
+ * always-on trace of the silent drop->IDR->bitrate-spike cycle. */
+void        hub_note_drop(int src);
+unsigned    hub_get_drops(int src);
 double      hub_get_fps(int src);
 /* measured video throughput of the stream in kbit/s; 0 when idle (no producer,
  * i.e. the last 1s measurement window is stale). */

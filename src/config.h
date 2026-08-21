@@ -442,13 +442,18 @@ typedef struct {
 } ms_timelapse_cfg;
 
 /* optional SRT output (USE_SRT builds only, libsrt): serves one video stream
- * (+audio) as MPEG-TS over SRT in listener mode. */
+ * (+audio) as MPEG-TS over SRT, as a listener (default) or as a caller that
+ * dials out to srt.host (for cameras behind NAT / on unreliable links). */
 typedef struct {
     int      enabled;
-    int      port;                  /* SRT listener port (default 9000) */
+    int      port;                  /* listener: local bind port; caller:
+                                     * remote port (default 9000) */
     int      channel;               /* video stream to serve */
     int      latency_ms;            /* SRT receive/peer latency */
-    char     streamid[64];          /* optional required STREAMID */
+    char     mode[16];              /* "listener" (default) or "caller" */
+    char     host[64];              /* caller mode: remote host/address */
+    char     streamid[64];          /* listener: required STREAMID;
+                                     * caller: STREAMID to present */
     char     passphrase[64];        /* optional AES passphrase ("" = none) */
 } ms_srt_cfg;
 

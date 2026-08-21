@@ -74,6 +74,7 @@ availability) and links to the deeper `docs/sdk-feature-gaps.md` and
 | [Audio](Audio.md) | Capture codecs, the ONVIF-style two-way backchannel, and the system-sound play queue |
 | [Platform & SDK Support](Platform-SDK-Support.md) | Per-SoC capability summary; links to `docs/sdk-feature-gaps.md` and `docs/rotation.md` |
 | [Testing / QA](Testing-QA.md) | `scripts/timps-qa.sh` — what it checks and how to run it against a real camera |
+| [Logging](Logging.md) | Log levels, the per-module `debug_modules` switch, the module-tag table, and the machine-readable `switching to` / `probe:` / `stats:` lines |
 
 ## Quick links
 

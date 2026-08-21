@@ -147,12 +147,20 @@ http.tls_key    = /etc/ssl/private/httpd.key
 # rtsp.tls_port = 322                     # RTSPS port
 
 # ---- SRT output (USE_SRT builds, libsrt) ----
-# MPEG-TS over SRT in listener mode: ffplay srt://<ip>:9000
+# MPEG-TS over SRT. Default mode is listener: ffplay srt://<ip>:9000
+# mode=caller dials out instead (camera behind NAT / unreliable uplink) and
+# reconnects on its own with a capped backoff (1s doubling to 30s); srt.port
+# is then the REMOTE port. While a receiver is connected, a machine-readable
+# "stats:" line (retransmits/loss/RTT/bandwidth) is logged every 10 s and the
+# latest sample is visible under "srt" in GET /control.
 srt.enabled    = 1
 srt.port       = 9000
+# srt.mode       = listener               # listener (default) | caller
+# srt.host       =                        # caller mode: receiver host/IP
 # srt.channel    = 0
 # srt.latency_ms = 120
-# srt.streamid   =                        # optional required STREAMID
+# srt.streamid   =                        # listener: required STREAMID;
+#                                         # caller: STREAMID to present
 # srt.passphrase =                        # optional AES passphrase
 
 # ---- /events push stream (SSE, USE_CONTROL builds) ----

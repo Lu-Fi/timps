@@ -396,6 +396,7 @@ static void stream_mp4(hconn *c, int chn)
     int adaptive = cfg->http_adaptive_drop;
     int dropping = 0;      /* adaptive: skipping this client's frames until a keyframe */
     int64_t drop_idr_us = 0;   /* rate-limit the safety IDR request while dropping */
+    int drop_warned = 0;   /* one WARN per client; per-drop detail stays LOGD */
     /* persistent per-connection fragment buffer (M1): reset to len=0/err=0
      * each frame instead of ms_buf_init()/ms_buf_free() per packet - avoids
      * a malloc+free (plus the full-AU copy that was already unavoidable) on
@@ -456,6 +457,11 @@ static void stream_mp4(hconn *c, int chn)
         /* self-guarded on MS_TR_SUM, so summaries work with MS_TR_AU off too */
         ms_trace_window(&trc, last_pkt_us);
         int lost_key = fanqueue_take_dropped_key(&q);
+        /* WARN once per client: sustained overflow was otherwise invisible
+         * below DEBUG - only the /control counters moved */
+        if (lost_key && !drop_warned++)
+            LOGW(MOD,"mp4 chn=%d: send queue overflowed, dropping frames "
+                     "(client/network too slow) - details at DEBUG", chn);
         /* ANY eviction breaks GOP integrity for this client, not just a lost
          * keyframe: dropped mid-GOP P-frames leave every later P-frame of that
          * GOP referencing AUs the decoder never got (same defect rtsp.c heals
@@ -486,7 +492,7 @@ static void stream_mp4(hconn *c, int chn)
              * every other subscriber (Frigate, recording, healthy viewers)
              * just because one link is weak. Worst case this client gets a
              * keyframe-only slideshow - honest degradation, never corruption. */
-            if (lost_key || lost_any) dropping = 1;
+            if (lost_key || lost_any) { hub_note_drop(chn); dropping = 1; }
             if (!dropping) {
                 int cnt = 0; fanqueue_depth(&q, &cnt, NULL, NULL);
                 if (cnt >= MS_MP4_DROP_HIWAT) dropping = 1;
@@ -508,6 +514,8 @@ static void stream_mp4(hconn *c, int chn)
                      * then bounded to ~1s + one IDR latency, never unbounded. */
                     int64_t now = ms_now_us();
                     if (now - drop_idr_us > 1000000) {
+                        LOGD(MOD,"mp4 chn=%d: overflow backlog - freezing "
+                                 "client, IDR re-requested", chn);
                         hub_request_idr(chn);
                         drop_idr_us = now;
                     }
@@ -524,8 +532,11 @@ static void stream_mp4(hconn *c, int chn)
              * equivalent branch: a non-key drop can repeat every push while a
              * client stays behind, and the IDR request is global to the
              * shared encoder. */
+            hub_note_drop(chn);
             int64_t now = ms_now_us();
             if (lost_key || now - drop_idr_us > 1000000) {
+                LOGD(MOD,"mp4 chn=%d: overflow dropped %s - IDR re-requested",
+                     chn, lost_key ? "a keyframe" : "P-frame(s)");
                 hub_request_idr(chn);
                 drop_idr_us = now;
             }
@@ -1325,6 +1336,16 @@ static void *conn_thread(void *arg)
             int stale = 0;
             if (!c->local && !tok_ok &&
                 !http_check_auth(c->cfg, buf, method, path, &stale)) {
+                /* only real credential failures feed the rate-limited
+                 * brute-force report: a header-less request is the normal
+                 * digest first round-trip, a stale nonce a normal retry */
+                if (!stale && strcasestr(buf, "\nAuthorization:")) {
+                    struct sockaddr_in pa; socklen_t pl = sizeof pa;
+                    char ip[INET_ADDRSTRLEN] = "?";
+                    if (getpeername(c->fd, (struct sockaddr*)&pa, &pl) == 0)
+                        inet_ntop(AF_INET, &pa.sin_addr, ip, sizeof ip);
+                    auth_fail_note(MOD, c->tls ? "https" : "http", ip);
+                }
                 char nonce[33];
                 http_new_nonce(nonce);
                 char r[1024];
@@ -1393,8 +1414,10 @@ static void *conn_thread(void *arg)
                      * (up to MOTION_MAX_CELLS "active" entries). Heap, not
                      * stack: this buffer would otherwise sit in every
                      * conn_thread's frame, which is tight on small embedded
-                     * libc thread-stack defaults. */
-                    #define CONTROL_JSON_CAP 18432
+                     * libc thread-stack defaults.
+                     * +4K headroom for "last_errors" (16 modules x ~190 B
+                     * worst case, log.c) + queue_drops/record error fields. */
+                    #define CONTROL_JSON_CAP 22528
                     char *js = (char *)malloc(CONTROL_JSON_CAP);
                     if (js) {
                         int jn = control_get_json(js, CONTROL_JSON_CAP);

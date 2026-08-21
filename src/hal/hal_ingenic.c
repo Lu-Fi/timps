@@ -3765,6 +3765,24 @@ static void ing_control_commit(void)
 }
 #endif
 
+/* Teardown bookkeeping: a failed IMP_* call here surfaces only as an ISP
+ * init failure of the NEXT run (see S95timps wait_stop), by which time the
+ * cause never logged a line. Collect, report ONE summary line at the end. */
+static int  g_td_nerr;
+static char g_td_first[64];
+static int td(int rc, const char *name)
+{
+    if (rc != 0 && g_td_nerr++ == 0)
+        snprintf(g_td_first, sizeof g_td_first, "%s rc=%d", name, rc);
+    return rc;
+}
+static void td_report(const char *what)
+{
+    if (g_td_nerr)
+        LOGW(MOD,"%s: %d IMP call(s) failed (first: %s) - the next start may "
+             "fail ISP init", what, g_td_nerr, g_td_first);
+}
+
 /* ================= HAL entry points ================= */
 static int ing_init(const ms_config *cfg)
 {
@@ -3988,14 +4006,15 @@ fail:
      * channels, mirroring ing_stop; the IMP UnBind/UnRegister calls are
      * tolerated on never-bound/never-started objects. */
     LOGE(MOD,"video pipeline bring-up failed - tearing down partial state");
+    g_td_nerr = 0;   /* summary may include tolerated never-bound failures */
     for (int k=0;k<g_nv;k++) g_v[k].run=0;
     for (int k=0;k<g_nj;k++) g_j[k].run=0;
     act_wake();
     for (int k=0;k<g_nv;k++) if (g_v[k].has_thr) pthread_join(g_v[k].thr,NULL);
     for (int k=0;k<g_nj;k++) if (g_j[k].has_thr) pthread_join(g_j[k].thr,NULL);
     for (int k=0;k<g_nj;k++){          /* piggybacks: encoder channel only */
-        IMP_Encoder_UnRegisterChn(g_j[k].chn);
-        IMP_Encoder_DestroyChn(g_j[k].chn);
+        td(IMP_Encoder_UnRegisterChn(g_j[k].chn),"Encoder_UnRegisterChn");
+        td(IMP_Encoder_DestroyChn(g_j[k].chn),"Encoder_DestroyChn");
     }
     g_nj=0;
     int had_osd=0;
@@ -4007,7 +4026,7 @@ fail:
 #endif
         int c=g_v[k].chn, g=g_v[k].grp, og=g_v[k].og;
         IMPCell f={DEV_ID_FS,c,0}, e={DEV_ID_ENC,g,0};
-        IMP_FrameSource_DisableChn(c);
+        td(IMP_FrameSource_DisableChn(c),"FrameSource_DisableChn");
         /* unbind the pairs that were REALLY bound, downstream pair first.
          * With OSD the pipeline is fs->osd->enc (M-1) - unbinding fs->enc
          * there would leave both real bindings in place and the Destroy
@@ -4015,15 +4034,15 @@ fail:
         if (og>=0){
             had_osd=1;
             IMPCell o={DEV_ID_OSD,og,0};
-            if (g_v[k].nbound>=2) IMP_System_UnBind(&o,&e);
-            if (g_v[k].nbound>=1) IMP_System_UnBind(&f,&o);
+            if (g_v[k].nbound>=2) td(IMP_System_UnBind(&o,&e),"System_UnBind osd->enc");
+            if (g_v[k].nbound>=1) td(IMP_System_UnBind(&f,&o),"System_UnBind fs->osd");
         } else if (g_v[k].nbound>=1){
-            IMP_System_UnBind(&f,&e);
+            td(IMP_System_UnBind(&f,&e),"System_UnBind fs->enc");
         }
-        IMP_Encoder_UnRegisterChn(c);
-        IMP_Encoder_DestroyChn(c);
-        IMP_Encoder_DestroyGroup(g);
-        IMP_FrameSource_DestroyChn(c);
+        td(IMP_Encoder_UnRegisterChn(c),"Encoder_UnRegisterChn");
+        td(IMP_Encoder_DestroyChn(c),"Encoder_DestroyChn");
+        td(IMP_Encoder_DestroyGroup(g),"Encoder_DestroyGroup");
+        td(IMP_FrameSource_DestroyChn(c),"FrameSource_DestroyChn");
     }
     g_nv=0;
     /* OSD groups/regions/fonts built by imp_osd_setup: destroy them AFTER
@@ -4031,6 +4050,7 @@ fail:
      * is global, skips streams that were never set up, and the updater
      * thread only starts after the loop, so there is nothing to join. */
     if (had_osd) imp_osd_stop();
+    td_report("bring-up teardown");
     return -1;
 }
 
@@ -4055,6 +4075,7 @@ static void ing_request_idr(int src)
 
 static void ing_stop(void)
 {
+    g_td_nerr = 0;   /* see td()/td_report() */
     /* stop the IVS motion grid (uses the pinned channel recorded at start,
      * so a runtime monitor_stream change can never unpin the wrong FS) */
     pthread_mutex_lock(&g_motion_mtx);
@@ -4081,17 +4102,17 @@ static void ing_stop(void)
         if (jc->src==HUB_JPEG_SRC){
             /* dedicated channel: own framesource + own group */
             IMPCell fs={DEV_ID_FS,jc->chn,0}, enc={DEV_ID_ENC,jc->chn,0};
-            IMP_FrameSource_DisableChn(jc->chn);
-            IMP_System_UnBind(&fs,&enc);
-            IMP_Encoder_UnRegisterChn(jc->chn);
-            IMP_Encoder_DestroyChn(jc->chn);
-            IMP_Encoder_DestroyGroup(jc->chn);
-            IMP_FrameSource_DestroyChn(jc->chn);
+            td(IMP_FrameSource_DisableChn(jc->chn),"FrameSource_DisableChn");
+            td(IMP_System_UnBind(&fs,&enc),"System_UnBind fs->enc");
+            td(IMP_Encoder_UnRegisterChn(jc->chn),"Encoder_UnRegisterChn");
+            td(IMP_Encoder_DestroyChn(jc->chn),"Encoder_DestroyChn");
+            td(IMP_Encoder_DestroyGroup(jc->chn),"Encoder_DestroyGroup");
+            td(IMP_FrameSource_DestroyChn(jc->chn),"FrameSource_DestroyChn");
         } else {
             /* piggyback: only the encoder channel; framesource and group
              * belong to the video stream and are torn down below */
-            IMP_Encoder_UnRegisterChn(jc->chn);
-            IMP_Encoder_DestroyChn(jc->chn);
+            td(IMP_Encoder_UnRegisterChn(jc->chn),"Encoder_UnRegisterChn");
+            td(IMP_Encoder_DestroyChn(jc->chn),"Encoder_DestroyChn");
         }
     }
     g_nj=0;
@@ -4107,14 +4128,14 @@ static void ing_stop(void)
 #endif
         int chn=g_v[i].chn, grp=g_v[i].grp, og=g_v[i].og;
         IMPCell fs={DEV_ID_FS,chn,0}, enc={DEV_ID_ENC,grp,0};
-        IMP_FrameSource_DisableChn(chn);
+        td(IMP_FrameSource_DisableChn(chn),"FrameSource_DisableChn");
         if (og>=0){
             had_osd=1;
             IMPCell osd={DEV_ID_OSD,og,0};
-            IMP_System_UnBind(&osd,&enc);
-            IMP_System_UnBind(&fs,&osd);
+            td(IMP_System_UnBind(&osd,&enc),"System_UnBind osd->enc");
+            td(IMP_System_UnBind(&fs,&osd),"System_UnBind fs->osd");
         } else {
-            IMP_System_UnBind(&fs,&enc);
+            td(IMP_System_UnBind(&fs,&enc),"System_UnBind fs->enc");
         }
     }
     /* OSD groups also exist for privacy-only configs (osd.enabled==0), so key
@@ -4128,25 +4149,26 @@ static void ing_stop(void)
         if (g_v[i].sw_rot){ sw_rot_teardown(&g_v[i]); continue; }
 #endif
         int chn=g_v[i].chn, grp=g_v[i].grp;
-        IMP_Encoder_UnRegisterChn(chn);
-        IMP_Encoder_DestroyChn(chn);
-        IMP_Encoder_DestroyGroup(grp);
-        IMP_FrameSource_DestroyChn(chn);
+        td(IMP_Encoder_UnRegisterChn(chn),"Encoder_UnRegisterChn");
+        td(IMP_Encoder_DestroyChn(chn),"Encoder_DestroyChn");
+        td(IMP_Encoder_DestroyGroup(grp),"Encoder_DestroyGroup");
+        td(IMP_FrameSource_DestroyChn(chn),"FrameSource_DestroyChn");
     }
     g_nv=0;
 #ifdef ROT_HAS_SW_90
     sw_osd_global_shutdown();   /* shared SW-OSD TTF (per-item fonts freed above) */
 #endif
-    IMP_System_Exit();
+    td(IMP_System_Exit(),"System_Exit");
 #if defined(PLATFORM_T40)||defined(PLATFORM_T41)
-    IMP_ISP_DisableSensor(IMPVI_MAIN);
-    IMP_ISP_DelSensor(IMPVI_MAIN,&g_sensor);
+    td(IMP_ISP_DisableSensor(IMPVI_MAIN),"ISP_DisableSensor");
+    td(IMP_ISP_DelSensor(IMPVI_MAIN,&g_sensor),"ISP_DelSensor");
 #else
-    IMP_ISP_DisableSensor();
-    IMP_ISP_DelSensor(&g_sensor);
+    td(IMP_ISP_DisableSensor(),"ISP_DisableSensor");
+    td(IMP_ISP_DelSensor(&g_sensor),"ISP_DelSensor");
 #endif
-    IMP_ISP_DisableTuning();
-    IMP_ISP_Close();
+    td(IMP_ISP_DisableTuning(),"ISP_DisableTuning");
+    td(IMP_ISP_Close(),"ISP_Close");
+    td_report("teardown");
 }
 
 static const hal_backend g_ingenic = {

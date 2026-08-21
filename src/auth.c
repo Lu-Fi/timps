@@ -1,6 +1,7 @@
 #include "auth.h"
 #include "md5.h"
 #include "util.h"
+#include "log.h"
 #include <string.h>
 #include <stdlib.h>
 #include <time.h>
@@ -9,6 +10,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <ctype.h>
+#include <pthread.h>
 
 int auth_http_basic(const char *value, const char *user, const char *pass)
 {
@@ -227,4 +229,32 @@ void auth_gen_token(char out[33])
     snprintf(seed, sizeof seed, "%ld-%ld-%d-%ld",
              (long)time(NULL), (long)getpid(), rand(), (long)clock());
     md5_hex(seed, out);
+}
+
+/* Brute-force visibility (auth.h): silent 401s hide a credential sweep
+ * against a root daemon, while a scanner must not be able to flood the
+ * 64 KB syslog ring. Failures accumulate across RTSP+HTTP; report from the
+ * 3rd one on, at most one line per minute, and forget stray typos after
+ * 10 min of quiet (so a slow sweep still reports, two typos never do). */
+#define AUTH_FAIL_MIN     3
+#define AUTH_FAIL_GAP_S  60
+#define AUTH_FAIL_IDLE_S 600
+void auth_fail_note(const char *mod, const char *ifc, const char *peer)
+{
+    static pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
+    static time_t t_report, t_fail;
+    static unsigned n;
+    pthread_mutex_lock(&mtx);
+    time_t now = time(NULL);
+    if (t_fail && now - t_fail > AUTH_FAIL_IDLE_S) n = 0;
+    t_fail = now;
+    n++;
+    if (n >= AUTH_FAIL_MIN && (!t_report || now - t_report >= AUTH_FAIL_GAP_S)) {
+        log_printf(LOG_WARN, mod,
+                   "%u failed login attempts on %s since the last report "
+                   "(last from %s)", n, ifc, peer);
+        t_report = now;
+        n = 0;
+    }
+    pthread_mutex_unlock(&mtx);
 }

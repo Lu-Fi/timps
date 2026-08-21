@@ -263,7 +263,8 @@ void config_defaults(ms_config *c)
     c->rtsp_tls=0; c->rtsp_tls_port=322;
     /* optional SRT output (USE_SRT builds): off by default */
     c->srt.enabled=0; c->srt.port=9000; c->srt.channel=0; c->srt.latency_ms=120;
-    c->srt.streamid[0]=0; c->srt.passphrase[0]=0;
+    copystr(c->srt.mode,"listener",sizeof c->srt.mode);
+    c->srt.host[0]=0; c->srt.streamid[0]=0; c->srt.passphrase[0]=0;
 
     for (int i=0;i<MS_MAX_VSTREAM;i++){
         ms_vstream_cfg *v=&c->video[i];
@@ -833,6 +834,10 @@ static const cfg_field srt_fields[] = {
     F ("port",       0,         port,       T_INT,  0, 1,65535),
     F ("channel",    0,         channel,    T_INT,  0, 0,0),
     F ("latency_ms", "latency", latency_ms, T_INT,  0, 0,0),
+    /* "listener"/"caller"; validated in srt.c (bad value -> listener) so this
+     * table stays a plain string and config.c needs no new T_ type */
+    FS("mode",       0,         mode,       0),
+    FS("host",       0,         host,       0),
     FS("streamid",   0,         streamid,   0),
     FS("passphrase", 0,         passphrase, 0),
 };

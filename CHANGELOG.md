@@ -8,6 +8,159 @@ semantic versioning.
 
 ### Fixed
 
+- **A silent-probe escalation actually reaches the audible probe now**
+  (`src/daynight.c`). All three verdict branches that escalate ("no usable
+  reading", "reserve unknown", "inconclusive between the thresholds") set
+  `want_probe` - and the commit block then handed that straight back to the
+  silent path, same tick, with `d_lit` freshly cleared: the next verdict read
+  `r=-1`, fell into "no usable reading", and the loop silently probed forever
+  without ever consulting the day pipeline it kept asking for. Never seen in
+  the field or the corpus because the shipped thresholds
+  (`ir_ratio_day == ir_ratio_night == 2.0`) make the inconclusive branch
+  unreachable and the other two need a broken read - it surfaced the moment
+  scenario 25 exercised the new unknown-reserve escalation (35 silent probes
+  in 600 s, zero audible). Escalating branches now set the same
+  one-tick `no_silent` latch the railed boot uses, so the audible probe fires
+  that tick, subject to its own gap and dwell gates as ever.
+- **The filter-cost projection verdict lowers the reference like every other
+  night verdict** (`src/daynight.c`). The projection branch ("the room
+  supplies the light, but day mode would read above `night_gain` - staying
+  night", added with the `21-ir-ratio-flap` fix) is a proven night verdict at
+  a level below the probe bar, and it left the reference standing. On a scene
+  resting below the bar the jump trigger therefore re-armed and fired every
+  `probe_confirm_s`, indefinitely - measured on cam-schuppen on the morning of
+  2026-08-21: reference 5753, scene at 1040, `verdict=night` every 26 seconds,
+  each one dimming the image for the 8 s settle. The verdicts themselves were
+  CORRECT (day mode had been measured at 5.6x that same morning and re-learned
+  steeper on a later flap; 1040 x cost was still above `night_gain`, so
+  switching would only have bounced) - what was missing was the same lowering
+  rule scenario 23 established for the `r >= ir_ratio_night` branch: a silent
+  probe answering night below the bar is proof the reference describes a
+  scene that no longer exists. It now lowers to the lit level there too, so
+  each re-fire needs a further genuine halving. Also explains the "rising"
+  reference (2337 -> 5753) that looked like a ratchet violation: it was not
+  the ratchet but re-anchoring - every reverted day excursion discards the
+  reference and (3a) re-anchors at the then-current night reading, AE
+  transients included. Corpus scenario `26-projection-verdict-no-way-down`,
+  built from the camera's own morning numbers.
+- **A camera without gain ceilings says so, and stops calling everything
+  night** (`src/daynight.c`). When the ISP dump lacks the `MAX SENSOR analog
+  gain` / `MAX ISP digital gain` lines, the AE reserve is unknown (`hr=-1`).
+  Two consequences were silent. First, the entire clip protection above is
+  absent on such a camera - unknown must count as usable, or it would never
+  anchor a reference at all - and nothing said so; an operator would have had
+  to notice `hr=-1` in a DEBUG probe line and know what it implies. Now
+  warned once per session (`dn_ceiling_check()`, sibling of the path-C
+  blindness notice; three consecutive misses arm it so a torn /proc read
+  cannot). Second, and worse: in the silent-probe verdict an unknown reserve
+  fell into the `room < ir_min_headroom` branch (-1 is less than everything),
+  i.e. was treated as *proof* of a meter pegged at the dark end. On a
+  ceiling-less camera every low ratio therefore answered "staying night",
+  the brightening trigger was swallowed on every fire, and the ratio path
+  could never reach day - a structural stuck-night with a log line claiming
+  evidence it did not have. Unknown reserve now escalates to the audible
+  probe instead: r ~= 1 from a lit room and from a railed meter look
+  identical, only the reserve separates them, and without it the day
+  pipeline is the one honest judge left. That is exactly the pre-redesign
+  behaviour for these cameras, at the pre-redesign cost. Fleet data shows
+  the case is rarer than assumed - both T20s (jxf22/jxf23) do publish
+  ceilings, with *different* ISP digital maxima (45 vs 32) on the same SoC,
+  which also rules out ever hard-coding a fallback ceiling. Corpus scenario
+  `25-no-ceilings-unknown-reserve`; the harness learned a `no_ceilings` key
+  for it, because its synthetic camera always declared its limits and the
+  whole point here is a camera that does not - the old code passes every
+  other scenario and sits in stuck-night on this one.
+- **A reading the automaton itself calls worthless can no longer enter its
+  long-term memory** (`src/daynight.c`). Measured on a galayou_y4_t23n,
+  22 seconds after boot: the T23 ISP comes up with 128 units of digital gain
+  nobody asked for, the exposure index reads its rail (131072) with **0 units
+  of AE reserve**, and the silent boot probe correctly diagnosed it - "the
+  meter is pegged at the dark end" - then the automaton anchored its night
+  reference on exactly that value 22 seconds later. From there the probe bar
+  stood at 65536 and a twentyfold-too-dark night was declared normal. This is
+  one instance of a class: the trustworthiness signal (`headroom`, the AE
+  reserve) existed and was used for the *verdict*, but none of the places
+  that persist a measured value beyond the current tick checked it. The rule
+  now applied uniformly (`dn_clipped()`): a reading from a railed AE - the
+  reserve is known and below `ir_min_headroom` - is a **clip, not a level**.
+  It may still justify a verdict (a meter pegged at the dark end cannot
+  happen in daylight, so it *is* night evidence), but it may not be
+  remembered. Concretely gated: the post-entry reference anchor (waits,
+  logging "night reference deferred", until the meter is off the rail; the
+  configured absolute thresholds and the heartbeat carry the automaton
+  meanwhile - the steady-state probe cadence of a permanently railed camera
+  is unchanged, because the heartbeat deferral never depended on the
+  reference being set); the revert ratchet (a probe that found night leaves
+  the reference unset rather than anchoring a clipped pre-probe level); the
+  `filter_cost` learning in the day branch (a clipped day reading understates
+  the cost and re-opens the flap that factor closes); `probe_best` (else the
+  threshold diagnostic advises raising `day_gain` above a clip); and the
+  trend memory (a railed boot seeded `ema_slow` at the rail, and the repair
+  then read as a dawn - one wasted probe per boot). The silent-probe verdict
+  additionally records the AE reserve of the *lit* reading (`lit_hr` in the
+  structured probe line): the same night's data shows `r=1.00` from a railed
+  meter and `r=16.10` from the same scene once repaired - a ratio of two
+  clips carries no information, so it now answers "staying night" instead of
+  feeding any of the branches that compare it against thresholds. The
+  reference-lowering path and the ratio-day verdict are downstream of that
+  check and therefore only ever see a trusted lit level. NOT covered:
+  platforms whose isp dump has no gain-ceiling fields report headroom as
+  unknown, and unknown must count as usable or those cameras would never
+  anchor at all - they keep the old exposure.
+- **A railed boot is repaired by one real mode transition, not by
+  re-assertion** (`src/daynight.c`). The 2026-08-20 fix pushed
+  `image.running_mode` into the ISP at boot; measured tonight, that cannot
+  work: the ISP already holds the persisted value, so writing the same value
+  back is a no-op, and the camera still read the rail 25 minutes later. What
+  demonstrably re-tunes the AE is a genuine transition through the other
+  mode: `day` had the index moving within 12 s, `night` again read 5720
+  within another 12 s - factor 23, the magnitude the original incident
+  documented. So when boot finds the persisted mode NIGHT and the AE
+  hard-railed (0 units of reserve - the state in which every reading is a
+  clip and even the silent probe is structurally blind), the automaton now
+  fires the audible boot probe directly, skipping the silent path that
+  cannot answer there. If the scene is actually day, the probe confirms it
+  and the single movement was the right one anyway; if it is night, the
+  revert re-tunes the ISP and the reference then anchors from the first
+  honest reading. This deliberately revisits the 2026-08-20 decision that a
+  filter movement per boot is "a mechanical cost the evidence does not ask
+  for": for a *healthy* boot that is still true and nothing changes
+  (`boot_probe` semantics untouched, including `boot_probe=0`); for a railed
+  boot the alternative is a camera that is blind all night, poisons its
+  reference, and burns probes against a bar derived from a clip - one click
+  per railed boot is the cheaper side of that trade, and it fires only in
+  the state where the meter proves it cannot measure. A persisted-DAY boot
+  needs no special case: its honest pipeline forces the night switch, which
+  is already a real transition. Corpus scenario
+  `24-pegged-boot-poisoned-reference` replays the full night: railed boot,
+  cycle, deferred-then-honest anchor, and a light at t=600 that must still
+  reach day - which the poisoned bar of 65536 would have deferred
+  indefinitely.
+- **The C++ runtime is actually linked statically now** (`Makefile`). The
+  build carried a comment stating that SRT builds link the final binary with
+  g++ "so libstdc++ is resolved and static-linked (-static-libstdc++, passed
+  via IMPLIBS) reliably". `-static-libstdc++` appeared nowhere but in that
+  comment: `IMPLIBS` was `-l:libimp.a -l:libalog.a -l:libsysutils.a`, and the
+  firmware build overrides it in any case. Every SRT build therefore shipped
+  `libstdc++.so.6` - 2130 KB in the target, the single largest file in a 5 MB
+  rootfs, larger than `libimp.so`, the ISP driver or busybox, and more than
+  three times `timpsd` itself. Its only other consumer was
+  `libaudioProcess.so`, which nothing links and which was not mapped in any
+  process on a running camera. `USE_SRT=1` now links with
+  `-static-libstdc++ -static-libgcc`: `timpsd` grows 683744 -> 1278396 bytes
+  and drops `libstdc++.so.6` from its `NEEDED` list, which with the shared
+  library gone is a net 581632 bytes off the packed image. Do **not** extend
+  this to `libgcc_s.so.1` - uClibc dlopens it for `pthread_cancel` unwinding
+  with no `DT_NEEDED` entry, so a link-time dependency scan cannot see the
+  requirement, and removing it aborts the daemon right after audio init with
+  "libgcc_s.so.1 must be installed for pthread_cancel to work". Measurements
+  and the full method are in `docs/flash-footprint-srt-2026-08-20.md`.
+- **libsrt is built with section granularity** (firmware
+  `package/libsrt/libsrt.mk`). timps compiled its own sources with
+  `-ffunction-sections -fdata-sections` and linked with `--gc-sections`, but
+  `libsrt.a` was built without them, so the linker could only discard whole
+  object files while timps uses a small slice of libsrt's C API. Worth 28672
+  bytes on the packed image at no functional cost.
 - **A low IR ratio no longer switches to day on its own** (`src/daynight.c`).
   The silent probe answers "is the illuminator earning its keep". Switching to
   day also closes the IR-cut filter, which is a separate cost, and on a dim

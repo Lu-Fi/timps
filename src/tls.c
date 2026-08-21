@@ -32,6 +32,8 @@
 #include <stdlib.h>
 #include <sys/socket.h>
 #include <sys/time.h>
+#include <pthread.h>
+#include <time.h>
 
 #define MOD "TLS"
 
@@ -77,7 +79,9 @@ ms_tls_ctx *ms_tls_ctx_new(const char *cert_file, const char *key_file)
     }
     if (mbedtls_ssl_config_defaults(&c->conf, MBEDTLS_SSL_IS_SERVER,
                                     MBEDTLS_SSL_TRANSPORT_STREAM,
-                                    MBEDTLS_SSL_PRESET_DEFAULT) != 0) goto fail;
+                                    MBEDTLS_SSL_PRESET_DEFAULT) != 0) {
+        LOGE(MOD, "ssl config defaults failed"); goto fail;
+    }
 #if MBEDTLS_VERSION_MAJOR < 3
     /* M2: mbedTLS 2.x's PRESET_DEFAULT still negotiates TLS 1.0/1.1 - require
      * TLS 1.2 (3.x already defaults to >=1.2 and drops this API in 3.2+) */
@@ -85,7 +89,10 @@ ms_tls_ctx *ms_tls_ctx_new(const char *cert_file, const char *key_file)
                                  MBEDTLS_SSL_MINOR_VERSION_3);
 #endif
     mbedtls_ssl_conf_rng(&c->conf, mbedtls_ctr_drbg_random, &c->drbg);
-    if (mbedtls_ssl_conf_own_cert(&c->conf, &c->cert, &c->key) != 0) goto fail;
+    if (mbedtls_ssl_conf_own_cert(&c->conf, &c->cert, &c->key) != 0) {
+        LOGE(MOD, "cert/key pair rejected (%s / %s)", cert_file, key_file);
+        goto fail;
+    }
     LOGI(MOD, "TLS server context ready (cert %s)", cert_file);
     return c;
 fail:
@@ -102,6 +109,28 @@ void ms_tls_ctx_free(ms_tls_ctx *c)
     mbedtls_ctr_drbg_free(&c->drbg);
     mbedtls_entropy_free(&c->entropy);
     free(c);
+}
+
+/* Handshake failures that are NOT plain peer noise are the only runtime
+ * evidence of a broken TLS setup (cert the clients reject, cipher/config
+ * mismatch) - the shipped INFO level must see them, but rate-limited: a
+ * scanner hammering a broken listener must not flood the 64 KB syslog ring. */
+static void hs_fail_warn(int r)
+{
+    static pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
+    static time_t t_last;
+    static unsigned muted;
+    pthread_mutex_lock(&mtx);
+    time_t now = time(NULL);
+    if (!t_last || now - t_last >= 60) {
+        LOGW(MOD, "handshake failed (-0x%x, %u more suppressed) - rejected/"
+                  "expired cert or TLS config problem? (mbedtls strerror)",
+             -r, muted);
+        t_last = now;
+        muted = 0;
+    } else
+        muted++;
+    pthread_mutex_unlock(&mtx);
 }
 
 ms_tls_conn *ms_tls_accept(ms_tls_ctx *ctx, int fd)
@@ -126,7 +155,24 @@ ms_tls_conn *ms_tls_accept(ms_tls_ctx *ctx, int fd)
     int r;
     while ((r = mbedtls_ssl_handshake(&c->ssl)) != 0) {
         if (r != MBEDTLS_ERR_SSL_WANT_READ && r != MBEDTLS_ERR_SSL_WANT_WRITE) {
-            LOGD(MOD, "handshake failed (-0x%x)", -r);
+            /* peer noise (dead/mute/garbage-speaking connections: scanners,
+             * timeouts, resets) stays on DEBUG; everything else - which
+             * includes the cert/config error classes - goes to hs_fail_warn.
+             * The #ifdefs keep this building across mbedTLS 2.x/3.x (error
+             * macros are #defines there, some were pruned in 3.0). */
+            if (r == MBEDTLS_ERR_SSL_CONN_EOF ||
+                r == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY ||
+                r == MBEDTLS_ERR_NET_CONN_RESET ||
+#ifdef MBEDTLS_ERR_SSL_INVALID_RECORD
+                r == MBEDTLS_ERR_SSL_INVALID_RECORD ||
+#endif
+#ifdef MBEDTLS_ERR_SSL_UNEXPECTED_MESSAGE
+                r == MBEDTLS_ERR_SSL_UNEXPECTED_MESSAGE ||
+#endif
+                r == MBEDTLS_ERR_NET_RECV_FAILED)
+                LOGD(MOD, "handshake failed (-0x%x)", -r);
+            else
+                hs_fail_warn(r);
             goto fail;
         }
     }

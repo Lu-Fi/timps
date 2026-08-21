@@ -148,7 +148,11 @@ Nothing is load-bearing on any single sample the way `night_baseline` was:
   re-anchors it. Bounded by `heartbeat_max_s`.
 
 It can also be lowered directly, with no probe needed: a silent probe
-verdict of "night" (`r >= ir_ratio_night`) at a level *below* the current
+verdict of "night" — the illuminator carries the scene (`r >=
+ir_ratio_night`), or day mode is measured-to-bounce (the filter-cost
+projection; that branch forgot the rule until 2026-08-21 and cam-schuppen
+re-fired every 26 s against a stale bar, scenario
+`26-projection-verdict-no-way-down`) — at a level *below* the current
 probe bar (`ref * probe_jump_pct / 100`) is proof in the other direction —
 the reference predicted a brightening worth looking at, and the look found
 darkness, so the reference described a scene that no longer exists. Without
@@ -160,6 +164,20 @@ carries this scene," and nothing moved. Seventeen probes in a row, which
 reads from outside as an IR lamp that keeps switching itself off. Logged as
 `night reference lowered to <level>, proven by the silent probe (bar
 <level>)`. Corpus scenario `23-stale-reference-no-way-down`.
+
+Since 2026-08-21 the reference additionally refuses **clips**: a reading
+taken while the AE is railed (reserve known and `< ir_min_headroom`) is a
+clip, not a level — it may prove night, but it may not be remembered. The
+post-entry anchor waits for an honest sample (`night reference deferred: …`),
+and a failed probe whose pre-probe level was a clip leaves the reference
+unset instead of ratcheting the clip in. Until a trustworthy reading arrives
+the automaton runs on the configured absolute thresholds and the heartbeat
+alone, which changes nothing about its steady-state probe cadence. The same
+rule keeps clips out of `filter_cost`, the threshold diagnostic and the
+trend memory. Measured: a T23 whose ISP boots railed anchored 131072 where
+the scene was worth a twentieth of that, and the probe bar of 65536 then sat
+above anything a real brightening could reach. Corpus scenario
+`24-pegged-boot-poisoned-reference`.
 
 ## The trend (path T)
 
@@ -219,8 +237,10 @@ span a factor of 63 across twelve cameras at one instant.
 
 | verdict | condition | costs |
 |---|---|---|
+| night | *lit* reserve `< ir_min_headroom` | nothing — `r` divides two clips and says nothing; railed-dark is still night evidence |
 | night | `r >= ir_ratio_night` | nothing — the illuminator was carrying the scene |
 | night | reserve `< ir_min_headroom` | nothing — the meter is pegged at the *dark* end, which is itself proof |
+| escalate | reserve **unknown** (no ceiling fields in the ISP dump) | one audible probe — a lit room and a railed meter look identical without the reserve, so the day pipeline judges (2026-08-21; previously this fell into the "pegged" row and answered night forever) |
 | day | `r <= ir_ratio_day`, reserve sufficient, **and the filter-cost gate below** | one switch |
 | escalate | anything in between | one audible probe |
 
@@ -228,6 +248,15 @@ The headroom test is not a refinement. An AE with nothing left cannot respond
 to the illuminator going off, so it returns `r ≈ 1` — indistinguishable from
 daylight. Measured on a pitch-dark scene: `r = 1.14`, below `ir_ratio_day`.
 Only the reserve separates that from a genuinely lit room.
+
+A camera whose ISP dump has no ceiling fields (`MAX SENSOR analog gain` /
+`MAX ISP digital gain`) has no reserve at all — and therefore none of the
+clip protection either. That is announced once per session as a WARN
+("the ISP dump reports no gain ceilings …"), not left to be inferred from
+`hr=-1` in a probe line. Both fleet T20s do publish the ceilings (jxf23:
+32 units ISP digital, jxf22: 45 — same SoC, different sensors, so a
+hard-coded value would be wrong on one of them); the warning exists for the
+dump variant nobody has met yet.
 
 Both ratio thresholds ship at `2.0`, so with the defaults the "escalate" row
 never fires. Setting `ir_ratio_day` below `ir_ratio_night` opens a deliberate
@@ -278,7 +307,8 @@ current night reading × filter_cost < night_gain
 
 before it will act on a ratio at all. One exploratory switch is unavoidable:
 nothing can know the day-pipeline reading without trying it once. Every later
-pass refuses in the log and costs nothing:
+pass refuses in the log (at `LOGD`, like every per-probe line — see
+[Logging](Logging.md)) and costs nothing:
 
 ```
 silent probe (trend): r=1.27 - the room supplies the light, but day mode
@@ -370,7 +400,20 @@ the hardware anything, since adopting a persisted mode otherwise only set the
 automaton's own state. `switch_cmd` is deliberately **not** run for this:
 the board was already right (illuminator on, ISP already reporting Night),
 only its tuning was wrong, and a filter movement per boot would be a real
-mechanical cost the evidence doesn't ask for. Unlike a switch, this push does
+mechanical cost the evidence doesn't ask for.
+
+**Exception — the railed boot** (2026-08-21). When the persisted mode is
+night and the AE comes up with **0 units of reserve**, the push above is a
+no-op — the ISP already holds that value — and measured on a T23 the meter
+still read its rail 25 minutes later. Every reading in that state is a clip
+and even the silent probe is blind (`r` of two clips is exactly `1.00`).
+What demonstrably re-tunes the AE is a real transition: `day` and back read
+a factor 23 lower within 12 s of each leg. Boot therefore fires the audible
+probe directly (`why=boot pegged`, skipping the silent path), even with
+`boot_probe=0`: if the scene is day the probe confirms it and the movement
+was owed anyway; if it is night the revert re-tunes the ISP and the
+reference anchors from the first honest reading. One click per *railed*
+boot is the cheaper side of that trade; a healthy boot is unaffected. Unlike a switch, this push does
 **not** arm the repeating post-switch re-assert (below) — arming it here
 raced the boot probe, which can decide within seconds: the pending re-assert
 then overwrote that fresh decision with the stale persisted value a second
@@ -517,8 +560,8 @@ by `daynight.learn` when active) — the same value on every switch line
 regardless of direction, since it is read once per tick rather than chosen
 per branch.
 
-**Every silent probe**, once per verdict, at the point where all branches
-have decided:
+**Every silent probe**, once per verdict, at `LOGD`, at the point where all
+branches have decided:
 
 ```
 probe: r=1.05 lit=3350 dark=3520 hr=199 verdict=day mode=night ref=12098 why=brightening
@@ -533,7 +576,20 @@ audible probe was asked for instead); `mode` is the automaton's mode at the
 time of the probe; `ref` is the night reference (`-1` outside night); `why`
 is the trigger that asked for this probe (`jump`, `trend`, `heartbeat`,
 `boot verify`, `requested`, …) with spaces replaced by underscores, since a
-`key=value` value can't carry one.
+`key=value` value can't carry one; `lit_hr` (appended 2026-08-21) is the AE
+headroom at the *lit* reading, the number that decides whether `r` compared
+two measurements or two clips.
+
+Since 2026-08-20 this line is `LOGD` — a measurement, not an event (see
+[Logging](Logging.md)). A collector that counts or plots it needs
+
+```
+general.debug_modules = daynight
+```
+
+in `/etc/timps.conf`; without it the line simply stops, and a counting
+dashboard reads "no probes" where it should read "not logged". The
+`switching to` line above stays at `LOGI` unconditionally.
 
 ## Live control and status
 
