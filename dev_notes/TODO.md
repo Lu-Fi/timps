@@ -73,6 +73,69 @@ needed.
 
 Depends on the T23/T31 wiki entry above.
 
+## Hardware verification (mine — the agents only have the simulator)
+
+Both agents work without camera access. Everything they build has to be checked
+against real hardware afterwards, on both SoC generations:
+cam-kinder-links (T23) and cam-kinder-rechts (T31).
+
+What to check:
+
+- **Readback vs. written.** For every rate-control value, compare what
+  `/control` reports as configured against what `GetChnAttrRcMode` reports as
+  held. This is the whole point of the readback — we have never verified that
+  our writes arrive unaltered.
+- **Per channel.** ch0 and ch1 must stay independent. Test with genuinely
+  different settings running at once (ch0 vbr/2000, ch1 cbr/384 is the natural
+  case, it is what the fleet already runs).
+- **Live application really is live.** A change takes effect with no daemon
+  restart, the readback confirms it, and the stream does not break. Then the
+  inverse: on T41 there is no setter at all, so anything claiming to be live
+  there is a bug — untestable on our fleet, we have no T41.
+- **The new static keys** parse from timps.conf, persist, and survive a
+  restart with the same values.
+- **Both warnings fire where they should**: the `smart` -> `capped_quality`
+  substitution on the T31, and the reworded new-API warning. And, just as
+  important, that they do *not* fire on the T23.
+- **`i_bias_lvl` on T31** via `SetChnQpIPDelta` — not just that the call
+  returns 0, but whether the keyframe size actually moves. Sweep -3/0/+3 and
+  measure I-frame windows.
+- **`flucLvl`** is H265-only and the T23 SDK has no H265 at all, so it cannot
+  be tested on the T23. Check whether any fleet camera can exercise it; if not,
+  say so rather than claiming it works.
+
+Currently running: `min_qp` sweep (20 -> 30 -> 38) on cam-kinder-links under
+vbr with quality_lvl back at 2, so min_qp is the only variable. Tests whether
+the controller is quality-seeking and where its operating qp actually sits.
+
+## Screenshots for the wiki
+
+Needed for the parameter documentation, and they have to be produced
+deliberately rather than reused from the technical comparison.
+
+**Motif: to be agreed between the user and me before anything is captured.**
+Candidate is the cat-tree crop from the 2026-08-21 frames — anonymous enough,
+enough texture and fine structure to show quantisation artefacts. Not decided
+yet. The existing children's-room frames are not for publication.
+
+Requirements:
+
+- Frames from the **H.264 stream**, not JPEG snapshots — those come from a
+  separate encoder and would show nothing about rate control.
+- **Both SoCs**: the same settings on T23 (cam-kinder-links) and T31
+  (cam-kinder-rechts), so the reader can see the generational difference and
+  not just read about it.
+- One frame per setting: cbr baseline, vbr at quality_lvl 2 / 5 / 7, and fixqp
+  42 as the "what the scene actually costs" reference. Full frame plus a 1:1
+  centre crop each — the crop is where quantisation is visible; the scaled-down
+  full frame hides it.
+- Capture each SoC's series in one uninterrupted run so lighting is comparable
+  within it. Note the measured bitrate next to each image.
+
+The two cameras look at different rooms, so the T23 and T31 series will not
+show the same scene. Say that in the caption instead of implying a like-for-like
+comparison — the bitrate figures are comparable, the pictures are not.
+
 ## Encoder
 
 ### Read back the rate-control attrs via IMP_Encoder_GetChnAttrRcMode
