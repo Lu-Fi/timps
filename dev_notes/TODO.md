@@ -734,3 +734,57 @@ it.
 Camera fully recovered, config restored to the original unset state, no
 buffers experiment left in place. Not revisiting the buffers>2 idea for the
 fps investigation without also checking the T31 channel-0 clamp logic first.
+
+## Likely real cause of the T31+sc2336 fps ceiling: single-buffer schedule (2026-08-21, from the buffers=3 incident + prudynt-t comparison)
+
+The `buffers=3` crash above led straight to the probable root cause of the
+whole fps investigation, already documented in timps' own source
+(`hal_ingenic.c`, PLATFORM_T31 nrVBs clamp, "Confirmed on a Cinnado D1
+T31L/SC2336 board 2026-07-26" - the exact board family in this fleet):
+
+cam-kinder-rechts' video0 is 1920x1080 against a 1920x1080 sensor, so
+`scale = (sw!=width)||(sh!=height)` evaluates false - the "non-scaled full-res
+physical channel". The code silently clamps `nrVBs` to **1** for this case
+whenever `buffers_explicit` is unset (the normal state, untouched before
+tonight). That means the entire fps investigation above (203 frames/15s
+baseline, the ~45-47% `ch0_pre_dequeue_drop` ratio, all the ISP-clock/
+pre_dequeue-parameter tests) ran against a single-buffer framesource
+schedule the whole time - not the nominal 2-buffer default assumed at the
+start of the investigation. A single buffer gives the ISP nowhere to put the
+next frame if the encoder falls even slightly behind, which is a far more
+direct explanation for the drop ratio than anything tested so far.
+
+**Cross-check against `prudynt-t`** (`/mnt/NVMe/git/prudynt-t/src/IMPFramesource.cpp`):
+independently hit the same wall. A commented-out block there implements the
+same conditional (scale only if resolution differs) with the note "That's a
+great idea but it does not work as intended. Needs more investigation" -
+followed by unconditionally forcing `scale = 1` regardless of whether
+dimensions match. That routes every channel through the scaled multi-buffer
+ring path, sidestepping the non-scaled single-buffer constraint entirely.
+
+**Why the buffers=3 test didn't just get "clamped and still work"**: setting
+`buffers_explicit` (any explicit `videoN.buffers` line, any value >1) makes
+the HAL trust the value instead of applying the nrVBs=1 clamp - and the
+underlying kernel driver genuinely rejects nrVBs>1 in this channel's
+allocation mode ("one buffer schedule only support nrvbs = 1", visible only
+in dmesg, not in any userspace-visible error - EnableChn just fails and
+PollingStream spins at rc=-1 forever). There is no buffers value >1 that
+works on this channel today; the constraint is in the kernel driver, not a
+number to tune around.
+
+**Proposed fix, not applied**: force `scale=1` unconditionally for
+`PLATFORM_T31` non-scaled full-res channels (matching prudynt's
+already-proven workaround), so the channel gets a real multi-buffer ring
+instead of the single-buffer schedule. This is a source change in
+`hal_ingenic.c`'s scale-decision logic (around line 960), needs a rebuild and
+a flash to test - not something to try live via `/control` again tonight
+given the outage above. Verification would be the same independent
+`ffprobe -count_frames` measurement plus the `ch0_pre_dequeue_drop` ratio
+from `/proc/jz/isp/isp-fs`, both already used throughout tonight's
+investigation.
+
+This supersedes the "next avenue" note in the ISP-module-parameters
+follow-up above (comparing cam-garage's drop counters) - cam-garage's main
+channel is presumably in the scaled path already (different sensor/board),
+so a cross-camera procfs comparison is less informative than this scale=1
+hypothesis, which is now the highest-priority thing to try.
