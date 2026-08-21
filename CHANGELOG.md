@@ -8,6 +8,68 @@ semantic versioning.
 
 ### Fixed
 
+- **A silent-probe escalation actually reaches the audible probe now**
+  (`src/daynight.c`). All three verdict branches that escalate ("no usable
+  reading", "reserve unknown", "inconclusive between the thresholds") set
+  `want_probe` - and the commit block then handed that straight back to the
+  silent path, same tick, with `d_lit` freshly cleared: the next verdict read
+  `r=-1`, fell into "no usable reading", and the loop silently probed forever
+  without ever consulting the day pipeline it kept asking for. Never seen in
+  the field or the corpus because the shipped thresholds
+  (`ir_ratio_day == ir_ratio_night == 2.0`) make the inconclusive branch
+  unreachable and the other two need a broken read - it surfaced the moment
+  scenario 25 exercised the new unknown-reserve escalation (35 silent probes
+  in 600 s, zero audible). Escalating branches now set the same
+  one-tick `no_silent` latch the railed boot uses, so the audible probe fires
+  that tick, subject to its own gap and dwell gates as ever.
+- **The filter-cost projection verdict lowers the reference like every other
+  night verdict** (`src/daynight.c`). The projection branch ("the room
+  supplies the light, but day mode would read above `night_gain` - staying
+  night", added with the `21-ir-ratio-flap` fix) is a proven night verdict at
+  a level below the probe bar, and it left the reference standing. On a scene
+  resting below the bar the jump trigger therefore re-armed and fired every
+  `probe_confirm_s`, indefinitely - measured on cam-schuppen on the morning of
+  2026-08-21: reference 5753, scene at 1040, `verdict=night` every 26 seconds,
+  each one dimming the image for the 8 s settle. The verdicts themselves were
+  CORRECT (day mode had been measured at 5.6x that same morning and re-learned
+  steeper on a later flap; 1040 x cost was still above `night_gain`, so
+  switching would only have bounced) - what was missing was the same lowering
+  rule scenario 23 established for the `r >= ir_ratio_night` branch: a silent
+  probe answering night below the bar is proof the reference describes a
+  scene that no longer exists. It now lowers to the lit level there too, so
+  each re-fire needs a further genuine halving. Also explains the "rising"
+  reference (2337 -> 5753) that looked like a ratchet violation: it was not
+  the ratchet but re-anchoring - every reverted day excursion discards the
+  reference and (3a) re-anchors at the then-current night reading, AE
+  transients included. Corpus scenario `26-projection-verdict-no-way-down`,
+  built from the camera's own morning numbers.
+- **A camera without gain ceilings says so, and stops calling everything
+  night** (`src/daynight.c`). When the ISP dump lacks the `MAX SENSOR analog
+  gain` / `MAX ISP digital gain` lines, the AE reserve is unknown (`hr=-1`).
+  Two consequences were silent. First, the entire clip protection above is
+  absent on such a camera - unknown must count as usable, or it would never
+  anchor a reference at all - and nothing said so; an operator would have had
+  to notice `hr=-1` in a DEBUG probe line and know what it implies. Now
+  warned once per session (`dn_ceiling_check()`, sibling of the path-C
+  blindness notice; three consecutive misses arm it so a torn /proc read
+  cannot). Second, and worse: in the silent-probe verdict an unknown reserve
+  fell into the `room < ir_min_headroom` branch (-1 is less than everything),
+  i.e. was treated as *proof* of a meter pegged at the dark end. On a
+  ceiling-less camera every low ratio therefore answered "staying night",
+  the brightening trigger was swallowed on every fire, and the ratio path
+  could never reach day - a structural stuck-night with a log line claiming
+  evidence it did not have. Unknown reserve now escalates to the audible
+  probe instead: r ~= 1 from a lit room and from a railed meter look
+  identical, only the reserve separates them, and without it the day
+  pipeline is the one honest judge left. That is exactly the pre-redesign
+  behaviour for these cameras, at the pre-redesign cost. Fleet data shows
+  the case is rarer than assumed - both T20s (jxf22/jxf23) do publish
+  ceilings, with *different* ISP digital maxima (45 vs 32) on the same SoC,
+  which also rules out ever hard-coding a fallback ceiling. Corpus scenario
+  `25-no-ceilings-unknown-reserve`; the harness learned a `no_ceilings` key
+  for it, because its synthetic camera always declared its limits and the
+  whole point here is a camera that does not - the old code passes every
+  other scenario and sits in stuck-night on this one.
 - **A reading the automaton itself calls worthless can no longer enter its
   long-term memory** (`src/daynight.c`). Measured on a galayou_y4_t23n,
   22 seconds after boot: the T23 ISP comes up with 128 units of digital gain

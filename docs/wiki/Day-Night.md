@@ -148,7 +148,11 @@ Nothing is load-bearing on any single sample the way `night_baseline` was:
   re-anchors it. Bounded by `heartbeat_max_s`.
 
 It can also be lowered directly, with no probe needed: a silent probe
-verdict of "night" (`r >= ir_ratio_night`) at a level *below* the current
+verdict of "night" — the illuminator carries the scene (`r >=
+ir_ratio_night`), or day mode is measured-to-bounce (the filter-cost
+projection; that branch forgot the rule until 2026-08-21 and cam-schuppen
+re-fired every 26 s against a stale bar, scenario
+`26-projection-verdict-no-way-down`) — at a level *below* the current
 probe bar (`ref * probe_jump_pct / 100`) is proof in the other direction —
 the reference predicted a brightening worth looking at, and the look found
 darkness, so the reference described a scene that no longer exists. Without
@@ -236,6 +240,7 @@ span a factor of 63 across twelve cameras at one instant.
 | night | *lit* reserve `< ir_min_headroom` | nothing — `r` divides two clips and says nothing; railed-dark is still night evidence |
 | night | `r >= ir_ratio_night` | nothing — the illuminator was carrying the scene |
 | night | reserve `< ir_min_headroom` | nothing — the meter is pegged at the *dark* end, which is itself proof |
+| escalate | reserve **unknown** (no ceiling fields in the ISP dump) | one audible probe — a lit room and a railed meter look identical without the reserve, so the day pipeline judges (2026-08-21; previously this fell into the "pegged" row and answered night forever) |
 | day | `r <= ir_ratio_day`, reserve sufficient, **and the filter-cost gate below** | one switch |
 | escalate | anything in between | one audible probe |
 
@@ -243,6 +248,15 @@ The headroom test is not a refinement. An AE with nothing left cannot respond
 to the illuminator going off, so it returns `r ≈ 1` — indistinguishable from
 daylight. Measured on a pitch-dark scene: `r = 1.14`, below `ir_ratio_day`.
 Only the reserve separates that from a genuinely lit room.
+
+A camera whose ISP dump has no ceiling fields (`MAX SENSOR analog gain` /
+`MAX ISP digital gain`) has no reserve at all — and therefore none of the
+clip protection either. That is announced once per session as a WARN
+("the ISP dump reports no gain ceilings …"), not left to be inferred from
+`hr=-1` in a probe line. Both fleet T20s do publish the ceilings (jxf23:
+32 units ISP digital, jxf22: 45 — same SoC, different sensors, so a
+hard-coded value would be wrong on one of them); the warning exists for the
+dump variant nobody has met yet.
 
 Both ratio thresholds ship at `2.0`, so with the defaults the "escalate" row
 never fires. Setting `ir_ratio_day` below `ir_ratio_night` opens a deliberate

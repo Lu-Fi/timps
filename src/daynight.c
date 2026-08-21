@@ -426,6 +426,26 @@ static int dn_clipped(int headroom, const ms_daynight_cfg *dn)
     return headroom >= 0 && headroom < dn->ir_min_headroom;
 }
 
+/* Say so, once per session, when the ISP dump carries no gain ceilings.
+ * Without them the AE reserve is unknown, dn_clipped() must count unknown
+ * as usable, and nothing on this camera protects the reference or the
+ * learned values from a railed meter - a silent absence the operator would
+ * otherwise only meet as hr=-1 in a probe line. Sibling of dn_blind_check().
+ * Three consecutive misses arm it, so one torn /proc read cannot. */
+static void dn_ceiling_check(const dn_sample *sm, int *miss, int *warned)
+{
+    if (sm->headroom >= 0) { *miss = 0; return; }
+    if (*warned || ++*miss < 3) return;
+    *warned = 1;
+    LOGW(MOD, "the ISP dump reports no gain ceilings (MAX SENSOR analog "
+              "gain / MAX ISP digital gain), so the AE reserve is unknown "
+              "here: a railed meter cannot be told from a dark scene, the "
+              "railed-boot re-tune never fires, and the night reference and "
+              "learned values are NOT protected against clipped readings. "
+              "Ratio probes without a clear answer fall back to the audible "
+              "probe on this camera");
+}
+
 /* Say so, once, when path C is structurally blind on this camera. Called
  * from BOTH places a reference is set - the delayed anchor after entering
  * night AND a probe that proved night - because which of the two runs is an
@@ -959,6 +979,7 @@ static void *dn_thread(void *arg)
     int     warned_noisp = 0, warned_nocal = 0, hb_defer_logged = 0;
     int     blind_warned = 0;          /* path-C-is-blind notice, once */
     int     ref_wait_logged = 0;       /* railed-meter anchor deferral, once per arm */
+    int     ceil_miss = 0, ceil_warned = 0;  /* dn_ceiling_check() latch */
     int64_t reassert_at = 0;
     int     reassert_left = 0;
     int     booted      = 0;
@@ -1171,6 +1192,7 @@ static void *dn_thread(void *arg)
                 break;
             }
             warned_noisp = 0;
+            dn_ceiling_check(&sm, &ceil_miss, &ceil_warned);
 
             /* (D) boot: the persisted mode is a guess about a scene nobody
              * measured. Turn it into a measurement once, at t=0 - which is
@@ -1266,6 +1288,10 @@ static void *dn_thread(void *arg)
                     LOGW(MOD, "silent probe gave no usable reading - falling "
                               "back to the IR-cut probe");
                     want_probe = 1; probe_why = ir_why ? ir_why : "probe";
+                    /* escalations may not re-enter the silent path: d_lit is
+                     * cleared, so a second silent probe reads r=-1 and the
+                     * loop never reaches the audible judge it asked for. */
+                    no_silent = 1;
                 } else if (dn_clipped(d_lit_hr, dn)) {
                     /* the LIT reading was railed, so r divides two clips and
                      * says nothing (see dn_clipped). Railed-dark in night
@@ -1322,6 +1348,19 @@ static void *dn_thread(void *arg)
                      * (factor 2.2 over 67 minutes) that is a handful of
                      * silent probes, which is what they are cheap for. */
                     ema_fast = ema_slow = -1.0f; trend_since = 0;
+                } else if (room < 0) {
+                    /* reserve unknown: r ~= 1 from a lit room and from a
+                     * railed meter look identical, and only the reserve
+                     * separates them (see the headroom note in dn_sample).
+                     * Falling into the pegged branch below would call this
+                     * "night" forever; the day pipeline is the one honest
+                     * judge left. */
+                    LOGD(MOD, "silent probe (%s): r=%.2f but the AE reserve "
+                              "is unknown - cannot tell a lit room from a "
+                              "railed meter, asking the day pipeline",
+                         ir_why ? ir_why : "?", (double)r);
+                    want_probe = 1; probe_why = ir_why ? ir_why : "probe";
+                    no_silent = 1;          /* see the r<=0 branch */
                 } else if (r <= dn->ir_ratio_day && room >= dn->ir_min_headroom) {
                     /* the room supplies the light - but that alone does not
                      * make day mode usable, because switching also closes the
@@ -1339,6 +1378,23 @@ static void *dn_thread(void *arg)
                              ir_why ? ir_why : "?", (double)r,
                              (double)(lit * filter_cost), (double)filter_cost,
                              (double)dn->night_gain);
+                        /* this too is a night verdict below the bar, so the
+                         * same lowering rule as the r>=ir_ratio_night branch
+                         * applies - without it the jump trigger re-fires
+                         * every probe_confirm_s forever (measured on a shed
+                         * camera: one 8 s dimming every 26 s, all morning). */
+                        {
+                            float bar_c = ref * (float)dn->probe_jump_pct
+                                          / 100.0f;
+                            if (ref > 0.0f && lit > 0.0f && lit < bar_c) {
+                                ref = lit;
+                                LOGI(MOD, "night reference lowered to %.0f, "
+                                          "proven by the silent probe (bar "
+                                          "%.0f)", (double)ref,
+                                     (double)(ref * (float)dn->probe_jump_pct
+                                              / 100.0f));
+                            }
+                        }
                         trig_since = 0;
                         hb_at = now + (int64_t)dn->heartbeat_s * 1000;
                         sust_min = win_max = -1.0f; win_at = 0;
@@ -1375,6 +1431,7 @@ static void *dn_thread(void *arg)
                          ir_why ? ir_why : "?", (double)r,
                          (double)dn->ir_ratio_day, (double)dn->ir_ratio_night);
                     want_probe = 1; probe_why = ir_why ? ir_why : "probe";
+                    no_silent = 1;          /* see the r<=0 branch */
                 }
                 /* The measurement itself, in columns, once per probe at the
                  * point where every branch has decided. This is what the

@@ -1,0 +1,71 @@
+{
+  "name": "26-projection-verdict-no-way-down",
+  "incident": "2026-08-21 - cam-schuppen, morning: 'day mode would read ... staying night' every 26 seconds, reference never came down",
+  "description": "Scenario 23's defect, reopened through the OTHER night verdict. 23 taught the r >= ir_ratio_night branch to lower the reference when a silent probe answers night below the probe bar. The filter-cost projection branch ('the room supplies the light, but day mode would bounce off night_gain') is ALSO a night verdict, and it forgot the same lesson: it resets the trigger hold but leaves the reference standing, so on a scene resting below the bar the jump trigger re-arms and fires again every probe_confirm_s, indefinitely. Measured on a shed camera at 08:39: probe pairs 26 s apart, each dimming the image for the 8 s settle, reference 5753 over a scene reading 1040 - verdict correct every time, cadence unbounded.\n\nPhase 1 (t<600) reproduces how the camera got there, straight from its own morning log: r=1.52 sends it to day, day mode reads 5.61x the night level, the absolute rule reverts it and learns the cost. Phase 2 (t=600): the shed brightens to 1040 - far below the re-anchored bar, but 1040 * 5.61 is still above night_gain, so day mode is genuinely not viable. The projection verdict must now lower the reference like any other proven night-below-the-bar, after which the trigger stays quiet until the scene genuinely halves again. The old code fails the probe budget by an order of magnitude.",
+  "scale": 30,
+  "duration_s": 1200,
+  "initial_mode": "night",
+  "config": {
+    "daynight.day_gain": 768,
+    "daynight.night_gain": 4096,
+    "daynight.heartbeat_s": 3600,
+    "daynight.heartbeat_max_s": 3600
+  },
+  "interp": "step",
+  "noise_pct": 0,
+  "night_gain": [
+    [
+      0,
+      6432
+    ],
+    [
+      600,
+      1040
+    ]
+  ],
+  "night_gain_noir": [
+    [
+      0,
+      9795
+    ],
+    [
+      600,
+      1040
+    ]
+  ],
+  "day_gain": [
+    [
+      0,
+      36064
+    ],
+    [
+      600,
+      5834
+    ]
+  ],
+  "expect": {
+    "expected_mode": [
+      [
+        0,
+        "night"
+      ],
+      [
+        6,
+        "any"
+      ],
+      [
+        120,
+        "night"
+      ]
+    ],
+    "max_wrong_mode_s": 60,
+    "max_switches": 2,
+    "max_ir_probes": 4,
+    "monotonicity": "warn",
+    "expect_log": [
+      "day mode reads 5\\.[456][0-9]x the night level",
+      "day mode would read",
+      "night reference lowered to 1[01][0-9][0-9]"
+    ]
+  }
+}

@@ -57,6 +57,13 @@ Scenario JSON (all times virtual seconds, all gains IMP [24.8] linear):
   initial_mode                  - "day"|"night" (persisted image.running_mode)
   config                        - {"daynight.<key>": value, ...} overrides
   day_gain / night_gain         - [[t, gain], ...] breakpoints per pipeline
+  no_ceilings                   - OPTIONAL bool: omit the MAX gain lines from
+                                  the fake isp-m0 dump, so the daemon's AE
+                                  reserve stays unknown (hr=-1). Models the
+                                  dump variant without ceiling fields, where
+                                  every clip protection is structurally
+                                  absent - the case dn_ceiling_check() warns
+                                  about.
   night_gain_noir               - OPTIONAL [[t, gain], ...]: the NIGHT pipeline
                                   with the IR illuminator switched OFF. This is
                                   the third optical state the 2026-08-17
@@ -215,7 +222,8 @@ class SimRun:
     the switch_cmd stub and the trace recorder wired up."""
 
     def __init__(self, binary, scale, initial_mode, config, keep=False,
-                 model_illuminator=False):
+                 model_illuminator=False, no_ceilings=False):
+        self.no_ceilings = no_ceilings
         # short prefix: daynight.switch_cmd is a 64-byte field on the target
         self.dir = tempfile.mkdtemp(prefix="dnrp-")
         self.keep = keep
@@ -309,9 +317,12 @@ class SimRun:
             # room the AE still has, and the ratio verdict has no way to tell
             # "the room supplies the light" from "my meter is pegged and
             # cannot answer" - the two look identical (r ~= 1). A synthetic
-            # camera therefore has to declare its limits like a real one.
-            f.write("MAX SENSOR analog gain : %d\n" % MAX_AGAIN)
-            f.write("MAX ISP digital gain : %d\n" % MAX_IDGAIN)
+            # camera therefore has to declare its limits like a real one -
+            # unless the scenario is ABOUT a camera that does not
+            # (no_ceilings, scenario 25).
+            if not self.no_ceilings:
+                f.write("MAX SENSOR analog gain : %d\n" % MAX_AGAIN)
+                f.write("MAX ISP digital gain : %d\n" % MAX_IDGAIN)
             if ratio is not None:
                 mx = 1000
                 it = max(1, min(mx, int(round(ratio * mx))))
@@ -658,7 +669,8 @@ def run_regression(scn, binary, keep=False, scale_override=None):
     exp = scn.get("expect", {})
     sim = SimRun(binary, scale, scn["initial_mode"], scn.get("config"),
                  keep=keep,
-                 model_illuminator=bool(scn.get("night_gain_noir")))
+                 model_illuminator=bool(scn.get("night_gain_noir")),
+                 no_ceilings=bool(scn.get("no_ceilings")))
     def ratio_at(mode, t):
         c = scn.get("night_int_ratio" if mode == "night" else "day_int_ratio")
         return None if not c else max(0.0, min(1.0, interp_gain(c, t, "linear")))
