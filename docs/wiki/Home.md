@@ -69,6 +69,8 @@ availability) and links to the deeper `docs/sdk-feature-gaps.md` and
 | [Streaming Protocols](Streaming-Protocols.md) | RTSP, HTTP fMP4, MJPEG, snapshot and SRT — ports, transports, codecs, and client-compatibility notes |
 | [Motion Detection](Motion-Detection.md) | The IVS grid model, sensitivity mapping, the `on_motion` hook, and the T23 software-rotation coordinate caveat |
 | [Recording & Timelapse](Recording-Timelapse.md) | Continuous/motion-triggered SD recording with pre/post-roll, segment rotation, and periodic JPEG timelapse capture |
+| [Rate Control and Bandwidth: T23 vs T31](Rate-Control-Bandwidth.md) | Why the classic and new-generation encoder rate controllers use such different bandwidth for the same settings — a rate target vs. scene-content-adaptive quality |
+| [Rate Control Parameters](Rate-Control-Parameters.md) | Every rate-control field (`bitrate`, `rc_mode`, `quality_lvl`, `change_pos`, `i_bias_lvl`, ...): range, per-SoC support, and cost — measured vs. header-derived |
 | [Day/Night](Day-Night.md) | Automatic day/night switching, decision modes, and the ISP running-mode latch fix |
 | [Day/Night Design Notes](Day-Night-Design-Notes.md) | Historical: why the day/night subsystem kept needing fixing — the incident record, the restart-equivalence invariant, and the replay-harness plan that made the 2026-08-17 redesign possible |
 | [Audio](Audio.md) | Capture codecs, the ONVIF-style two-way backchannel, and the system-sound play queue |

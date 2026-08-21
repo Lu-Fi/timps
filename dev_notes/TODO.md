@@ -41,38 +41,6 @@ already failed against measurement.
 WebUI: show the per-SoC differences rather than silently ignoring them. A knob
 that does nothing on this camera should say so.
 
-### Wiki: why T23 needs far more bandwidth than T31
-
-Shorter than the investigation note and aimed at someone choosing or operating
-a camera. Core point: the classic controller (T10..T30) targets a rate, the new
-one (T31/C100/T40/T41) reacts to scene content.
-
-Measured on two cameras, same sensor, same settings, comparable light:
-within-level spread 37-42% on T31 against 0.2-4% on T23 across cbr, vbr and
-smart — while the same T23 at a fixed qp spreads 30-47%, so the chip sees the
-change and the controller erases it. Means 2091 against 1149 kbit/s.
-
-Say what can be done: `quality_lvl` lowers the T23 operating point to 1243
-(-41%), uniformly, in busy scenes too — not scene adaptation. And name the two
-refuted hypotheses so nobody re-derives them from the header.
-
-### Wiki: document the rate-control parameters with example images
-
-Every value: what it does, range, which SoCs honour it, what it costs.
-Illustrated with frames from the H.264 stream — **not** JPEG snapshots, those
-come from a separate encoder and would show nothing.
-
-Material captured on cam-kinder-links 2026-08-21: cbr/quality_lvl 2 (2091
-kbit/s), vbr/5 (1381), vbr/7 (1243), fixqp 42 (278), each with a 1:1 640x360
-centre crop.
-
-**The motif has to be approved by the user before anything goes into the wiki.**
-The existing frames are from a children's room and were captured for a
-technical comparison, not for publication. Ask which scene to use, re-shoot if
-needed.
-
-Depends on the T23/T31 wiki entry above.
-
 ## Hardware verification (mine — the agents only have the simulator)
 
 Both agents work without camera access. Everything they build has to be checked
@@ -135,6 +103,13 @@ Requirements:
 The two cameras look at different rooms, so the T23 and T31 series will not
 show the same scene. Say that in the caption instead of implying a like-for-like
 comparison — the bitrate figures are comparable, the pictures are not.
+
+`docs/wiki/Rate-Control-Parameters.md` already has four labelled placeholders
+(T23: cbr baseline, vbr/5, vbr/7, fixqp 42) and a proposed image location
+(`docs/wiki/images/<page-slug>/`) waiting for this material — drop the images
+in and swap the placeholders for real `![]()` references once the motif is
+agreed. The T31 companion set from this section is noted there as a tracked
+follow-up, not yet placeholdered.
 
 ## Encoder
 
@@ -264,3 +239,15 @@ the daynight log should show the deferred verdict.
   vbr. The en T23 Smart text claiming 0..6 with the opposite direction is a
   translation error. Also settled that `smart` brings no scene adaptation on
   T23: within-level spread 0.2-0.5% against 46.7% at a fixed qp.
+- **Wiki: why T23 needs far more bandwidth than T31** — written 2026-08-21 as
+  `docs/wiki/Rate-Control-Bandwidth.md`, linked from `Home.md`. Carries the
+  within-level-spread argument, the practical `quality_lvl` mitigation, and
+  both refuted hypotheses.
+- **Wiki: document the rate-control parameters** — written 2026-08-21 as
+  `docs/wiki/Rate-Control-Parameters.md`, linked from `Home.md`. Every field
+  (`bitrate`, `rc_mode`, `qp`, `min_qp`, `max_qp`, `quality_lvl`, `change_pos`,
+  `i_bias_lvl`, plus the five still-hardcoded classic-path fields) with range,
+  per-SoC support, and a measured-vs-header-derived marker. Images are not
+  in yet — the page has four labelled placeholders and a proposed
+  `docs/wiki/images/<page-slug>/` convention, both waiting on the motif
+  decision tracked under "Screenshots for the wiki" above.
