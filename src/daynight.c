@@ -66,6 +66,31 @@ enum { DN_DAY = 0, DN_NIGHT = 1, DN_UNKNOWN = -1 };
 #ifndef DN_REASSERT_COUNT
 #define DN_REASSERT_COUNT 2
 #endif
+/* Post-switch readback: believe a switch only once the ISP itself reports
+ * the new mode (dn_read sees the line every tick anyway). If it has not
+ * after the whole assert chain (script + both re-asserts) had time, force
+ * ONE real transition through the counter mode - re-asserting an already-
+ * believed value is a no-op to a stuck ISP, only an edge acts (cam-wohn
+ * 2026-08-21; same rule as the railed-boot cycle). One cycle, then give up
+ * loudly: a second identical cycle has no new mechanism, and a permanently
+ * stuck ISP must not turn this into a click generator. Cost trade-off in
+ * CHANGELOG.md 2026-08-21. */
+#ifndef DN_VERIFY_MS
+#define DN_VERIFY_MS (DN_REASSERT_COUNT * DN_REASSERT_MS + 2000)
+#endif
+#ifndef DN_VERIFY_HOLD_MS
+#define DN_VERIFY_HOLD_MS 5000
+#endif
+#define DN_VERIFY_MAX_CYCLES 1
+/* Standing disagreement notice: cur vs the ISP readback OUTSIDE the verify
+ * window. Report only, never enforce - the mismatch may be a deliberate
+ * manual override (board script, /control), and forcing it back would
+ * clobber exactly that. Debounced well past any switch transient; once per
+ * episode, reset when they agree again. Resolution path for the operator:
+ * a requested probe, which makes the automaton re-measure and decide. */
+#ifndef DN_DESYNC_MS
+#define DN_DESYNC_MS 20000
+#endif
 /* "has anything happened since the last probe that could mean day?" - the
  * question the heartbeat deferral turns on. Answered by the SUSTAINED minimum
  * of the smoothed exposure (see the tumbling window in the night branch)
@@ -184,13 +209,15 @@ static float g_st_luma       = -1.0f;
 static int   g_st_mode       = DN_UNKNOWN;
 static float g_st_ref        = -1.0f;
 static float g_st_bar        = -1.0f;
+static int   g_st_desync     = -1;   /* -1 unknown, 0 in sync, 1 standing */
 
 static void dn_status_update(float brightness, float gain, float exposure,
-                             float luma, int mode, float ref, float bar)
+                             float luma, int mode, float ref, float bar,
+                             int desync)
 {
     /* last values that woke /events (only touched by the sampling thread) */
     static float nfy_b = -1000.0f, nfy_g = -1000.0f;
-    static int   nfy_m = -1000;
+    static int   nfy_m = -1000, nfy_d = -1000;
 
     pthread_mutex_lock(&g_st_mu);
     g_st_brightness = brightness;
@@ -200,16 +227,18 @@ static void dn_status_update(float brightness, float gain, float exposure,
     g_st_mode       = mode;
     g_st_ref        = ref;
     g_st_bar        = bar;
+    g_st_desync     = desync;
     pthread_mutex_unlock(&g_st_mu);
 
     /* wake /events subscribers only on a REAL change - the readings jitter
-     * every sample, so require a mode flip, >= 1% brightness or a >= 5% gain
-     * move (same thresholds as the /events consumer dedup) */
+     * every sample, so require a mode flip, a standing-desync edge, >= 1%
+     * brightness or a >= 5% gain move (same thresholds as the /events
+     * consumer dedup) */
     float db = brightness - nfy_b; if (db < 0) db = -db;
     float dg = gain - nfy_g;       if (dg < 0) dg = -dg;
-    if (mode != nfy_m || db >= 1.0f ||
+    if (mode != nfy_m || desync != nfy_d || db >= 1.0f ||
         dg >= (nfy_g > 0.0f ? nfy_g * 0.05f : 8.0f)) {
-        nfy_b = brightness; nfy_g = gain; nfy_m = mode;
+        nfy_b = brightness; nfy_g = gain; nfy_m = mode; nfy_d = desync;
         events_notify();
     }
 }
@@ -236,6 +265,7 @@ typedef struct {
      * r = 1.14, below ir_ratio_day, and only the reserve (1 unit, i.e. none)
      * separates that from a genuinely lit room. */
     int   headroom;
+    int   isp;     /* mode the ISP itself reports: DN_DAY/DN_NIGHT/DN_UNKNOWN */
 } dn_sample;
 
 /* One sample of the ISP exposure state.
@@ -256,6 +286,7 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
 {
     o->d = o->gain = o->ratio = o->bright = -1.0f;
     o->headroom = -1;
+    o->isp = DN_UNKNOWN;
 
     { uint32_t hg; if (hal_isp_total_gain(&hg) == 0) o->gain = (float)hg; }
 
@@ -319,6 +350,9 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
                 sscanf(line, "Brightness : %d", &cb);
         }
         fclose(fp);
+
+        if      (!strcmp(m, "Day"))   o->isp = DN_DAY;
+        else if (!strcmp(m, "Night")) o->isp = DN_NIGHT;
 
         if (o->gain < 0.0f && (ag >= 0 || dg >= 0 || idg >= 0)) {
             float units = 0.0f;                 /* log2 gain, 32 units per stop */
@@ -982,6 +1016,11 @@ static void *dn_thread(void *arg)
     int     ceil_miss = 0, ceil_warned = 0;  /* dn_ceiling_check() latch */
     int64_t reassert_at = 0;
     int     reassert_left = 0;
+    int64_t verify_at   = 0;           /* readback due for the last commanded mode */
+    int     verify_cyc  = 0;           /* forced counter-cycles spent on it */
+    int64_t enforce_at  = 0;           /* mid-cycle: when to switch back to cur */
+    int64_t desync_since = 0;          /* standing cur/readback mismatch start */
+    int     desync_warned = 0;         /* the notice, once per episode */
     int     booted      = 0;
     int64_t boot_at     = ms_now_us() / 1000;
     int     day_ok      = 0;           /* the current day is confirmed, not probed */
@@ -1088,8 +1127,11 @@ static void *dn_thread(void *arg)
             sust_min = win_max = -1.0f; win_at = 0;
             ema_fast = ema_slow = -1.0f; trend_since = 0;
             ir_verdict_at = 0; d_lit = -1.0f; d_lit_hr = -1;
+            verify_at = enforce_at = 0; verify_cyc = 0;
+            desync_since = 0; desync_warned = 0;
             day_ok = 0; day_min = -1.0f;
-            dn_status_update(sm.bright, sm.gain, sm.d, luma, DN_UNKNOWN, -1.0f, -1.0f);
+            dn_status_update(sm.bright, sm.gain, sm.d, luma, DN_UNKNOWN,
+                             -1.0f, -1.0f, -1);
             dn_sleep(interval);
             continue;
         }
@@ -1099,6 +1141,8 @@ static void *dn_thread(void *arg)
             s = -1.0f; stable_n = 0; ref = -1.0f; ref_due = 0;
             trig_since = dark_since = verdict_at = hb_at = mode_since = 0;
             ir_verdict_at = 0; d_lit = -1.0f; d_lit_hr = -1;
+            verify_at = enforce_at = 0; verify_cyc = 0;
+            desync_since = 0; desync_warned = 0;
             last_probe = 0; pre_probe = -1.0f; pre_probe_hr = -1;
             ref_wait_logged = 0;
             sust_min = win_max = -1.0f; win_at = 0;
@@ -1144,7 +1188,7 @@ static void *dn_thread(void *arg)
             /* ... and never fed a clip (see dn_clipped): a railed boot
              * seeds the memory at the rail, and the repair then reads as a
              * dawn - one wasted probe per boot, measured. */
-            if (cur == DN_NIGHT && !ir_verdict_at &&
+            if (cur == DN_NIGHT && !ir_verdict_at && !enforce_at &&
                 !dn_clipped(sm.headroom, dn)) {
                 float af = dn_ema_alpha(interval, DN_TREND_FAST_MS);
                 float as = dn_ema_alpha(interval, DN_TREND_SLOW_MS);
@@ -1162,7 +1206,84 @@ static void *dn_thread(void *arg)
         char  why[80];
         why[0] = 0;
 
+        /* ---- ISP readback gate (see DN_VERIFY_MS) --------------------- */
+        if (enforce_at && now >= enforce_at) {     /* cycle 2/2: back to cur */
+            dn_switch(cur, "isp readback enforce", dn->switch_cmd, s, ref, bar);
+            enforce_at = 0;
+            if (verdict_at)         /* re-read the probe on settled optics */
+                verdict_at = now + (int64_t)dn->probe_settle_s * 1000;
+            verify_at = now + DN_VERIFY_MS;
+            reassert_left = DN_REASSERT_COUNT;
+            reassert_at   = now + DN_REASSERT_MS;
+            s = -1.0f; stable_n = 0;
+            sust_min = win_max = -1.0f; win_at = 0;
+            ema_fast = ema_slow = -1.0f; trend_since = 0;
+        }
+        if (verify_at && sm.isp >= 0 && sm.isp == cur) {
+            LOGD(MOD, "ISP confirmed the switch to %s%s",
+                 cur == DN_NIGHT ? "night" : "day",
+                 verify_cyc ? " (after a forced transition)" : "");
+            verify_at = 0; verify_cyc = 0;
+        } else if (verify_at && now >= verify_at && !ir_verdict_at) {
+            verify_at = 0;
+            if (sm.isp < 0) {
+                LOGD(MOD, "ISP does not report its running mode - switch to "
+                          "%s stays unverified",
+                     cur == DN_NIGHT ? "night" : "day");
+            } else if (verify_cyc < DN_VERIFY_MAX_CYCLES) {
+                verify_cyc++;
+                LOGW(MOD, "ISP still reports %s %d s after the switch to %s "
+                          "(script and re-asserts all ran) - forcing one "
+                          "transition through %s, the only thing a stuck "
+                          "ISP acts on",
+                     cur == DN_NIGHT ? "Day" : "Night",
+                     (int)(DN_VERIFY_MS / 1000),
+                     cur == DN_NIGHT ? "night" : "day",
+                     cur == DN_NIGHT ? "day" : "night");
+                dn_switch(cur == DN_NIGHT ? DN_DAY : DN_NIGHT, "isp readback",
+                          dn->switch_cmd, s, ref, bar);
+                enforce_at = now + DN_VERIFY_HOLD_MS;
+                s = -1.0f; stable_n = 0;
+            } else {
+                LOGW(MOD, "ISP still reports %s after a forced transition - "
+                          "giving up until the next mode change; the image "
+                          "does not match the decided mode %s",
+                     cur == DN_NIGHT ? "Day" : "Night",
+                     cur == DN_NIGHT ? "night" : "day");
+            }
+        }
+
+        /* ---- standing disagreement notice (see DN_DESYNC_MS) ---------- */
+        {
+            int agree = (booted && cur >= 0 && sm.isp >= 0)
+                      ? (sm.isp == cur) : -1;
+            if (agree == 0 && !verify_at && !enforce_at) {
+                if (!desync_since) desync_since = now;
+                if (!desync_warned && now - desync_since >= DN_DESYNC_MS) {
+                    desync_warned = 1;
+                    LOGW(MOD, "decided mode is %s but the ISP has been "
+                              "rendering %s for %d s - not enforcing, this "
+                              "may be a manual override. To re-measure and "
+                              "resolve, request a probe: POST /control "
+                              "{\"daynight\":{\"probe\":1}}",
+                         cur == DN_NIGHT ? "night" : "day",
+                         sm.isp == DN_NIGHT ? "Night" : "Day",
+                         (int)((now - desync_since) / 1000));
+                }
+            } else {
+                desync_since = 0;       /* gate active or no longer standing */
+                if (desync_warned && agree == 1) {
+                    desync_warned = 0;
+                    LOGI(MOD, "decided mode and ISP agree again (%s)",
+                         cur == DN_NIGHT ? "night" : "day");
+                }
+            }
+        }
+
         do {
+            /* mid-enforcement the optics are deliberately in the counter
+             * mode and every reading is junk - hold all decisions. */
+            if (enforce_at) break;
             /* ---------------- schedule mode: the calendar decides ------- */
             if (dn->mode == DN_MODE_SCHEDULE) {
                 time_t wall = time(NULL);
@@ -1227,6 +1348,7 @@ static void *dn_thread(void *arg)
                 hub_control("image.running_mode", running_mode ? "1" : "0");
                 LOGI(MOD, "boot: asserted running_mode=%d into the ISP - "
                           "nothing had told it this session", running_mode ? 1 : 0);
+                verify_at = now + DN_VERIFY_MS; verify_cyc = 0;
                 if (running_mode) {         /* persisted NIGHT */
                     cur = DN_NIGHT;
                     ref = -1.0f;
@@ -1470,6 +1592,8 @@ static void *dn_thread(void *arg)
              * for, which is what the whole dn_verify/dead-zone apparatus used
              * to be. */
             if (verdict_at && now >= verdict_at) {
+                if (sm.isp >= 0 && sm.isp != cur && (verify_at || enforce_at))
+                    break;   /* wrong optics - the readback gate is on it */
                 verdict_at = 0;
                 if ((probe_best <= 0.0f || s < probe_best) &&
                     !dn_clipped(sm.headroom, dn)) probe_best = s;
@@ -1719,6 +1843,7 @@ static void *dn_thread(void *arg)
             hb_defer_logged = 0;
             reassert_left = DN_REASSERT_COUNT;
             reassert_at   = now + DN_REASSERT_MS;
+            verify_at = now + DN_VERIFY_MS; verify_cyc = 0; enforce_at = 0;
         } else if (target != cur && target != DN_UNKNOWN &&
                    (force || !mode_since ||
                     now - mode_since >= (int64_t)dn->transition_s * 1000)) {
@@ -1732,6 +1857,7 @@ static void *dn_thread(void *arg)
             ema_fast = ema_slow = -1.0f; trend_since = 0;
             reassert_left = DN_REASSERT_COUNT;
             reassert_at   = now + DN_REASSERT_MS;
+            verify_at = now + DN_VERIFY_MS; verify_cyc = 0; enforce_at = 0;
             hb_defer_logged = 0;
             if (target == DN_NIGHT) {
                 if (reverted && dn_clipped(pre_probe_hr, dn)) {
@@ -1791,9 +1917,14 @@ static void *dn_thread(void *arg)
         float st_ref = (cur == DN_NIGHT) ? ref : -1.0f;
         float st_bar = (cur == DN_NIGHT && ref > 0.0f)
                      ? ref * (float)dn->probe_jump_pct / 100.0f : -1.0f;
+        /* the DEBOUNCED state, not the raw per-tick comparison - raw would
+         * flicker to 1 during every ordinary switch transient */
+        int st_desync = (booted && cur >= 0 && sm.isp >= 0)
+                      ? (desync_warned ? 1 : 0) : -1;
         dn_trace(dn, now, cur, &sm, s, st_ref, st_bar, verdict_at, hb_at,
                  ema_fast, ema_slow);
-        dn_status_update(sm.bright, sm.gain, sm.d, luma, cur, st_ref, st_bar);
+        dn_status_update(sm.bright, sm.gain, sm.d, luma, cur, st_ref, st_bar,
+                         st_desync);
         dn_sleep(interval);
     }
     LOGI(MOD, "detection thread stopped");
@@ -1822,7 +1953,8 @@ void daynight_stop(void)
 /* see daynight.h: latest measurement for GET /control */
 void daynight_get_status(int *enabled, int *mode,
                          float *brightness, float *total_gain, float *exposure,
-                         float *ae_luma, float *night_ref, float *probe_bar)
+                         float *ae_luma, float *night_ref, float *probe_bar,
+                         int *isp_desync)
 {
     pthread_mutex_lock(&g_st_mu);
     float b  = g_st_brightness;
@@ -1832,6 +1964,7 @@ void daynight_get_status(int *enabled, int *mode,
     int   m  = g_st_mode;
     float rf = g_st_ref;
     float pb = g_st_bar;
+    int   ds = g_st_desync;
     pthread_mutex_unlock(&g_st_mu);
     /* F-03: running_mode/daynight.enabled are live-mutable via /control -
      * snapshot under the config string lock instead of reading lock-free. */
@@ -1850,6 +1983,7 @@ void daynight_get_status(int *enabled, int *mode,
     if (ae_luma)    *ae_luma    = lu;
     if (night_ref)  *night_ref  = rf;
     if (probe_bar)  *probe_bar  = pb;
+    if (isp_desync) *isp_desync = ds;
 }
 
 /* see daynight.h: today's computed sunrise/sunset for the configured
@@ -1887,7 +2021,8 @@ int daynight_sun_status(char *sr_hhmm, char *ss_hhmm, size_t cap)
  * measurement -> everything unknown, mode from the persisted/live ISP mode */
 void daynight_get_status(int *enabled, int *mode,
                          float *brightness, float *total_gain, float *exposure,
-                         float *ae_luma, float *night_ref, float *probe_bar)
+                         float *ae_luma, float *night_ref, float *probe_bar,
+                         int *isp_desync)
 {
     if (enabled) *enabled = 0;
     if (mode){          /* F-03: live-mutable, read under the config string lock */
@@ -1902,6 +2037,7 @@ void daynight_get_status(int *enabled, int *mode,
     if (ae_luma)    *ae_luma    = -1.0f;
     if (night_ref)  *night_ref  = -1.0f;
     if (probe_bar)  *probe_bar  = -1.0f;
+    if (isp_desync) *isp_desync = -1;
 }
 
 int daynight_sun_status(char *sr_hhmm, char *ss_hhmm, size_t cap)

@@ -6,6 +6,105 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- **A standing disagreement between the decided mode and the ISP is now
+  reported - and deliberately never enforced** (`src/daynight.c`,
+  `src/control.c`, `src/mp4/httpd.c`). The readback gate below covers one
+  direction with a bounded window: "I commanded X and the ISP did not
+  follow within 18 s." The field morning of 2026-08-21 produced the other
+  direction by hand: while unsticking cam-wohn-ofen the operator drove the
+  board script to day while timps stood on night, and afterwards nothing
+  said that the two disagreed - the automaton would simply have flipped the
+  ISP back at its next opportunity. That case must NOT be enforced: outside
+  the gate window a mismatch may be exactly the manual override the
+  operator just made, and forcing it back would clobber it (the same
+  reasoning that keeps the re-assert divergence check WARN-only). What was
+  missing is the report. The automaton now compares its decided mode
+  against the ISP readback every tick it is idle (outside the verify
+  window, after boot, both sides known); a mismatch standing
+  `DN_DESYNC_MS` (20 s - well past any switch transient) earns ONE WARN
+  naming both sides and the resolution path that worked in the field, a
+  requested probe (`POST /control {"daynight":{"probe":1}}`, after which
+  timps re-measured, decided day at r=0.98 and the two agreed). One WARN
+  per episode, not one per tick; an INFO marks the episode's end when the
+  two agree again, and only then can a new episode report. The debounced
+  state rides along on `/control` and `/events` as `daynight.isp_desync`
+  (-1 unknown, 0 in sync, 1 standing), so a dashboard can alert on it
+  without log scraping.
+  This also makes the second latch defect class from `hal_ingenic.c`
+  visible: a value that DID latch and then silently REVERTED long after
+  the gate's window closed (observed on cam-L 2026-08-09, flip reverting
+  across a chn0 idle/active cycle). Such a revert now stands out as a
+  mode mismatch within 20 s and is warned once - still not enforced,
+  `fs_use()`'s chn0-edge re-apply remains the self-heal; what was missing
+  was any line saying it happened. Corpus scenario
+  `28-standing-desync-reported` (new harness key `isp_override`: the served
+  ISP mode forced from outside, the operator's hand): one WARN with the
+  probe hint, one INFO on agreement, zero board switches - the click budget
+  of 0 is the proof that this reports rather than enforces.
+
+### Fixed
+
+- **A mode switch only counts once the ISP confirms it - and a stuck ISP is
+  now unstuck by the one thing that acts on it, a real transition**
+  (`src/daynight.c`, `scripts/dn-replay.py`). Field incident, cam-wohn
+  (cinnado_d1_t31l, T31L), 2026-08-21: at 10:29:07 the automaton decided day
+  ("IR ratio 0.97"), `switch_cmd` ran with rc=0, the board hook chain POSTed
+  `running_mode=0`, both post-switch re-asserts fired - and
+  `/proc/jz/isp/isp-m0` kept reporting "ISP Runing Mode : Night" until past
+  11:00, half an hour of black-and-white video in broad daylight, with
+  `/control` reporting day the whole time and not one warning anywhere.
+  Root cause is structural: the machine kept three mode registers - its own
+  decision (`cur`), the config (`image.running_mode`), and the hardware
+  (the isp-m0 readback) - and only ever compared the first two (the
+  re-assert divergence check, WARN-only). The one register that is ground
+  truth was parsed by `dn_read()` every tick and thrown away; `dn_switch()`
+  checked the script's exit code, which only proves the script ran, and the
+  re-asserts pushed `SetISPRunningMode` with a value the driver already
+  believed - which the latch defect class documented in `hal_ingenic.c`
+  (T23/T31, rc=0 with chn0 idle, queued and never applied; or latched and
+  silently reverted) turns into a no-op. Field repair confirmed the rule:
+  `daynight night` then `daynight day` - a genuine edge - fixed it in 18 s;
+  re-asserting the same value had done nothing for half an hour.
+  The fix is a readback gate. Every commanded mode (each `dn_switch`, and
+  the boot assert) arms a verify deadline of `DN_VERIFY_MS` (both re-asserts
+  plus 2 s = 18 s, so the cheap existing chain always gets its full chance
+  first). The gate confirms early and silently (DEBUG) the moment the
+  readback matches. If the deadline expires unmatched, it forces exactly ONE
+  transition through the counter mode and back (5 s hold), re-arming the
+  verify; while the forced cycle is in flight all decisions and a pending
+  probe verdict are held, because the optics are deliberately wrong. If even
+  the forced cycle does not take, it gives up loudly (WARN naming the
+  mismatch) until the next commanded mode change - one cycle is the cap
+  because a second identical cycle has no new mechanism to offer, and a
+  permanently stuck ISP must not turn the gate into a click generator.
+  Cost accounting, since every filter movement is wear (see 2026-08-17):
+  on a healthy camera the gate costs nothing - the readback matches within
+  a tick or two and the confirmation is a DEBUG line. It spends 2 extra
+  movements only on a camera that has already eaten a lost switch, where
+  the alternative is unbounded hours of wrong mode (the heartbeat never
+  catches this: the machine believes it is in the right mode, so no trigger
+  is even armed - the day branch sat content at exposure 900 all morning).
+  Worst case, an ISP that never follows: 2 extra movements per legitimate
+  switch, bounded by the same dwell/gap config that bounds switches
+  themselves, plus one WARN per occurrence.
+  Relation to the railed-boot cycle (2026-08-21, scenario 24): same rule -
+  "re-asserting a believed value is a no-op to the ISP, only a transition
+  acts" - but disjoint detectors, so they cannot merge: the boot defect
+  shows the CORRECT mode with railed tuning (caught by AE reserve == 0,
+  readback matches throughout), this one shows the WRONG mode (caught by
+  readback, reserve says nothing). The repair they share is the forced
+  transition.
+  Harness: new scenario key `isp_sticky` - switches away from the stuck mode
+  are recorded but not rendered until one switch TO the stuck mode arrives
+  (the driver-view edge), and the mode assertions then judge the rendered
+  timeline instead of the switch log, which is exactly the pair that
+  diverges. Corpus scenario `27-isp-does-not-follow`, built from the
+  cam-wohn morning; pre-fix it reproduces the incident (1 switch, night for
+  the rest of the run, 110 s past the wrong-mode bound), post-fix it passes
+  with the exact field click count: 1 dropped + 2 for the cycle = 3.
+
 ## [1.9.1] - 2026-08-21
 
 ### Fixed

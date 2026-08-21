@@ -56,7 +56,7 @@ Names as they appear in the log and as `debug_modules` accepts them.
 
 | module | source | err | warn | info | debug | what its debug output adds |
 |---|---|---:|---:|---:|---:|---|
-| `DAYNIGHT` | `daynight.c` | 0 | 22 | 19 | 11 | every probe: ratio verdict and its branch, the structured `probe: r=… lit=… dark=… hr=… verdict=…` line, exposure vs night reference, illuminator-off readings |
+| `DAYNIGHT` | `daynight.c` | 0 | 25 | 20 | 13 | every probe: ratio verdict and its branch, the structured `probe: r=… lit=… dark=… hr=… verdict=…` line, exposure vs night reference, illuminator-off readings, ISP readback confirmations |
 | `HAL_ING` | `hal/hal_ingenic.c` | 44 | 57 | 39 | 10 | encoder/framesource internals, polling and teardown detail |
 | `CTRL` | `control.c` | 0 | 4 | 3 | 5 | request/field handling on `/control` |
 | `OSD` | `hal/imp_osd.c` | 4 | 8 | 6 | 3 | overlay placement and region updates |

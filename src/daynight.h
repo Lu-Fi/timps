@@ -96,10 +96,17 @@ int  daynight_request_probe(void);
  *               has not settled since entering it)
  *   probe_bar   the level D must fall below to ask for a probe
  *               (probe_jump_pct% of night_ref); -1 when not in night
+ *   isp_desync  standing disagreement between the decided mode and the ISP's
+ *               own readback ("ISP Runing Mode"), DEBOUNCED (the raw compare
+ *               flickers during every ordinary switch): 1 = standing (also
+ *               warned in the log, reported but never enforced - it may be a
+ *               deliberate manual override; a requested probe resolves it),
+ *               0 = in agreement, -1 = unknown (no readback / not decided)
  * NULL pointers are allowed for outputs the caller does not need. */
 void daynight_get_status(int *enabled, int *mode,
                          float *brightness, float *total_gain, float *exposure,
-                         float *ae_luma, float *night_ref, float *probe_bar);
+                         float *ae_luma, float *night_ref, float *probe_bar,
+                         int *isp_desync);
 
 /* Today's computed sunrise/sunset for the configured daynight.sun_* location
  * and offsets, formatted as local "HH:MM" into sr_hhmm/ss_hhmm (either may be

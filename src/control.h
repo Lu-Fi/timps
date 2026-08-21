@@ -122,7 +122,8 @@ int control_apply_json(const char *json, ctrl_result *res);
 int  control_motion_json(char *buf, size_t cap, const ms_motion_status *st);
 int  control_daynight_json(char *buf, size_t cap, int enabled, int mode,
                            float brightness, float total_gain, float exposure,
-                           float ae_luma, float night_ref, float probe_bar);
+                           float ae_luma, float night_ref, float probe_bar,
+                           int isp_desync);
 
 /* Serialize the current (in-memory) controllable values as JSON into buf.
  * The dump starts with a per-build capability list

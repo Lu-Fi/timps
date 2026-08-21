@@ -1,0 +1,36 @@
+{
+  "name": "28-standing-desync-reported",
+  "incident": "cam-wohn-ofen, 2026-08-21, operator-created reverse desync",
+  "description": "The mirror image of scenario 27, created BY HAND in the field the same morning: while unsticking cam-wohn-ofen the operator drove the board script to day while timps stood on night. Afterwards the two disagreed in the OTHER direction - decided mode night, ISP rendering Day - and nothing said so; the automaton would simply have flipped the ISP back at its next opportunity. Resolved only by a requested probe ({\"daynight\":{\"probe\":1}}), after which timps itself decided day (r=0.98) and the two agreed.\n\nWhat must happen here is precisely NOT what happens in 27: no enforcement. A standing disagreement outside the readback-gate window may be a deliberate manual override, and forcing it back would clobber exactly the intervention the operator just made. So the requirement is a report: one WARN once the mismatch has stood DN_DESYNC_MS (20 s - well past any switch transient, and the gate window already covers the 18 s after a commanded switch), naming both sides and the resolution path (the requested probe), then silence; and one INFO when they agree again, so the episode has a visible end and the next episode can report anew.\n\nThe shape: a stable lit interior at night (illuminator carries it, boot verify is silent, r=4, zero clicks). At t=60 the override forces the served ISP mode to Day; the day pipeline deliberately reads the SAME 2000 as the night pipeline so no trigger fires and the desync STANDS - a scene where path C or the trend would fire would resolve itself and test nothing (that self-resolution is 27's and 16's business). At t=150 the operator undoes it; ISP back to Night, agreement, INFO. The budgets are the teeth: 0 board switches proves report-not-enforce (an enforcing build spends 2 clicks here and fails), and the forbid on the gate's own lines proves the notice did not fire THROUGH the gate. Pre-fix (gate only, no notice) this scenario fails all four expect_log assertions: the desync stood for 90 s and the log never mentioned it.",
+  "scale": 30,
+  "duration_s": 220,
+  "initial_mode": "night",
+  "isp_override": [[60, "day"], [150, null]],
+  "config": {
+    "daynight.day_gain": 768,
+    "daynight.night_gain": 4096
+  },
+  "interp": "step",
+  "noise_pct": 0,
+  "night_gain": [[0, 2000], [220, 2000]],
+  "night_gain_noir": [[0, 8000], [220, 8000]],
+  "day_gain": [[0, 2000], [220, 2000]],
+  "expect": {
+    "mode_at": [[50, "night"], [100, "day"], [210, "night"]],
+    "max_switches": 0,
+    "max_ir_probes": 1,
+    "expect_log": [
+      "decided mode is night but the ISP has been rendering Day for \\d+ s",
+      "not enforcing, this may be a manual override",
+      "request a probe: POST /control",
+      "decided mode and ISP agree again \\(night\\)"
+    ],
+    "forbid_log": [
+      "forcing one transition",
+      "isp readback enforce",
+      "giving up until the next mode change",
+      "switching to day"
+    ],
+    "monotonicity": "warn"
+  }
+}

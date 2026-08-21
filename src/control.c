@@ -833,7 +833,8 @@ static void jesc(const char *s, char *out, size_t cap)
  * dev_notes/DAYNIGHT_REDESIGN_2026-08-17.md section 7.3. */
 int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
                           float brightness, float total_gain, float exposure,
-                          float ae_luma, float night_ref, float probe_bar)
+                          float ae_luma, float night_ref, float probe_bar,
+                          int isp_desync)
 {
     /* F-03: snapshot the whole daynight section under the config string lock
      * (the daynight.c thread pattern) and format from the local copy, so this
@@ -872,6 +873,9 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
         "{\"enabled\":%d,\"mode\":%d,\"brightness\":%.1f,\"total_gain\":%.0f,"
         "\"exposure\":%.0f,\"ae_luma\":%.0f,"
         "\"night_baseline\":%.0f,\"day_trigger\":%.0f,"
+        /* standing decided-mode/ISP-readback disagreement, debounced;
+         * -1 unknown, 0 in sync, 1 standing (see daynight.h) */
+        "\"isp_desync\":%d,"
         /* the two thresholds under BOTH names: the new one, and the
          * pre-2026-08-17 one an existing photosensing page still binds to
          * (they are the same config field via the alias). */
@@ -896,6 +900,7 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
         enabled, mode, (double)brightness, (double)total_gain,
         (double)exposure, (double)ae_luma,
         (double)night_ref, (double)probe_bar,
+        isp_desync,
         (double)d->day_gain, (double)d->night_gain,
         (double)d->day_gain, (double)d->night_gain,
         d->day_confirm_s,
@@ -1338,15 +1343,15 @@ int control_get_json(char *buf, size_t cap)
     APP("}");
     {   /* read-only day/night status (never persisted); shape/docs in
          * control_daynight_json above (shared with the /events push) */
-        int dn_en = 0, dn_mode = 0;
+        int dn_en = 0, dn_mode = 0, dn_ds = -1;
         float dn_b = -1.0f, dn_tg = -1.0f, dn_ex = -1.0f, dn_lu = -1.0f;
         float dn_rf = -1.0f, dn_pb = -1.0f;
         daynight_get_status(&dn_en, &dn_mode, &dn_b, &dn_tg, &dn_ex, &dn_lu,
-                            &dn_rf, &dn_pb);
+                            &dn_rf, &dn_pb, &dn_ds);
         APP(",\"daynight\":");
         int _dn = control_daynight_json(o<cap?buf+o:buf, o<cap?cap-o:0,
                                         dn_en, dn_mode, dn_b, dn_tg, dn_ex,
-                                        dn_lu, dn_rf, dn_pb);
+                                        dn_lu, dn_rf, dn_pb, dn_ds);
         if (_dn>0) o += (size_t)_dn;
     }
     {   /* read-only motion status; shape/docs in control_motion_json above

@@ -64,6 +64,32 @@ Scenario JSON (all times virtual seconds, all gains IMP [24.8] linear):
                                   every clip protection is structurally
                                   absent - the case dn_ceiling_check() warns
                                   about.
+  isp_sticky                    - OPTIONAL {"stuck": "day"|"night"}: the ISP
+                                  refuses to leave the stuck mode. switch_cmd
+                                  still runs (the click is still recorded),
+                                  but the served "ISP Runing Mode" - and the
+                                  served pipeline - stay stuck until one
+                                  switch TO the stuck mode arrives; after
+                                  that edge the ISP follows normally. The
+                                  harness form of the latch defect class
+                                  (hal_ingenic.c): re-asserting a believed
+                                  value is a no-op, only a real transition
+                                  acts - cam-wohn 2026-08-21. With isp_sticky
+                                  the mode_at / expected_mode assertions
+                                  judge the RENDERED timeline (what was
+                                  served), not the switch log, because with a
+                                  stuck ISP the two are exactly what differ.
+  isp_override                  - OPTIONAL [[t, "day"|"night"|null], ...]:
+                                  from t on, the served "ISP Runing Mode"
+                                  (and pipeline) is FORCED to the given mode
+                                  regardless of switch_cmd; null releases the
+                                  force. Models an operator driving the board
+                                  script by hand while the daemon stands on
+                                  its own decision - the cam-wohn-ofen
+                                  reverse-desync of 2026-08-21. Overrides win
+                                  over isp_sticky while active; like sticky,
+                                  the mode assertions judge the rendered
+                                  timeline.
   night_gain_noir               - OPTIONAL [[t, gain], ...]: the NIGHT pipeline
                                   with the IR illuminator switched OFF. This is
                                   the third optical state the 2026-08-17
@@ -675,6 +701,37 @@ def run_regression(scn, binary, keep=False, scale_override=None):
         c = scn.get("night_int_ratio" if mode == "night" else "day_int_ratio")
         return None if not c else max(0.0, min(1.0, interp_gain(c, t, "linear")))
 
+    sticky = scn.get("isp_sticky")           # {"stuck": "day"|"night"}
+    override = scn.get("isp_override")       # [[t, "day"|"night"|null], ...]
+
+    def override_at(t):
+        v = None
+        for tt, mm in (override or []):
+            if t >= tt:
+                v = mm
+        return v
+
+    def isp_mode_now():
+        """The mode the ISP actually renders. Without isp_sticky that is
+        simply the last switch_cmd drive. With it, switches AWAY from the
+        stuck mode are dropped until one switch TO the stuck mode has been
+        seen - only a transition acts on a stuck ISP."""
+        ov = override_at(sim.vnow())
+        if ov:
+            return ov                        # forced from outside
+        if not sticky:
+            return sim.cur_mode()
+        stuck = sticky["stuck"]
+        mode, released = sim.initial_mode, False
+        for _, mm in sim.switches():
+            if released:
+                mode = mm
+            elif mm == stuck:
+                released, mode = True, stuck
+            else:
+                mode = stuck                 # dropped: the ISP holds
+        return mode
+
     fed = []
     try:
         m0 = scn["initial_mode"]
@@ -686,7 +743,7 @@ def run_regression(scn, binary, keep=False, scale_override=None):
             t = sim.vnow()
             if t >= dur:
                 break
-            m = sim.cur_mode()
+            m = isp_mode_now()
             # THREE optical states, not two. The illuminator is independent of
             # the IR-cut filter, so a camera in night mode with the IR switched
             # off is a third thing entirely - and it is the state the whole
@@ -712,7 +769,17 @@ def run_regression(scn, binary, keep=False, scale_override=None):
 
         switches = sim.switches()
         irdrives = [p for p in sim.ir_probes() if p[1] == "off"]
-        segs = mode_timeline(scn["initial_mode"], switches, dur)
+        if sticky or override:
+            # judge what the ISP RENDERED (the fed history), not what was
+            # commanded - a stuck ISP is precisely where the two differ
+            segs, start, curm = [], 0.0, scn["initial_mode"]
+            for t, _, mm in fed:
+                if mm != curm:
+                    segs.append((start, t, curm))
+                    start, curm = t, mm
+            segs.append((start, dur, curm))
+        else:
+            segs = mode_timeline(scn["initial_mode"], switches, dur)
         rep.note("run", "%.0f virtual s at scale %d, %d board switches, "
                  "%d silent IR probes" % (dur, scale, len(switches), len(irdrives)))
         for st, sm in switches:
