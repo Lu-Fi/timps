@@ -694,3 +694,43 @@ right diagnostic and the search moves to what differs in the two sensors'
 timing/interrupt behavior at the driver level, which likely requires reading
 tx-isp kernel source (SDK checkout, not just the sensor driver) rather than
 further Buildroot config changes.
+
+## Incident: video<N>.buffers=3 crashed cam-kinder-rechts channel 0 (2026-08-21)
+
+Testing whether a deeper video buffer pool (nrVBs) would reduce the
+`ch0_pre_dequeue_drop` losses from the fps investigation above. Set
+`video0.buffers=3` and `video1.buffers=3` via `/control` on cam-kinder-rechts,
+restarted the daemon.
+
+**Result: channel 0 (main, 1920x1080) could not initialize at all.**
+`framesource 0: EnableChn failed` repeatedly, 5 forced recovery cycles never
+produced a frame, timpsd exited cleanly ("camera needs a manual/scheduled
+restart"). Channel 1 (sub, 640x360) was unaffected throughout - this is
+specific to the larger/main channel, not `buffers` in general.
+
+**Recovery took three attempts, because the first "fix" reintroduced the same
+class of bug.** Setting `video0.buffers` back to `2` via a direct
+`timps.conf` edit left the literal line `video0.buffers = 2` in the file.
+`buffers_explicit` (config.h) is set whenever the key is *present* in the
+file, regardless of value - it tells the HAL "trust this value as-is instead
+of applying your own safety clamp (e.g. T31 non-scaled channel)". With that
+clamp suppressed, channel 0 kept failing to enable on every subsequent boot
+(`[chn0] does not support user memory` in the raw vendor log), including
+across two full reboots, until the `video0.buffers`/`video1.buffers` lines
+were removed from `timps.conf` **entirely** rather than set to `2`. After
+that, channel 0 initialized normally on the next daemon start and fps
+returned to the pre-incident baseline (202 frames/15s, matching the earlier
+203 frames/15s within noise).
+
+**Takeaway for anyone touching `buffers` on a T31 main channel**: writing the
+default value back is not equivalent to leaving the key unset - the presence
+of the key changes HAL behavior independent of the value. `buffers_explicit`
+existing at all is a code smell for this exact trap; consider either dropping
+the "trust it as-is" override for the known-unsafe combination, or having the
+HAL log a warning when an explicit `buffers` value would suppress a clamp
+that's about to matter, instead of failing silently until EnableChn rejects
+it.
+
+Camera fully recovered, config restored to the original unset state, no
+buffers experiment left in place. Not revisiting the buffers>2 idea for the
+fps investigation without also checking the T31 channel-0 clamp logic first.
