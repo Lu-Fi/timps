@@ -234,6 +234,21 @@ video1.jpeg_chn     = 4
 # path adds ~7KB binary AND ~6MB of frame buffers + ~1 CPU core per rotated
 # 720x1280 stream - hence the substream-class recommendation.
 
+# ---- live vs restart (videoN.* via POST /control) --------------------------
+# Every videoN.* key is stored and persisted immediately. Geometry/codec/fps
+# keys take effect on the next daemon restart. The RATE-CONTROL subset is also
+# applied to the RUNNING encoder (per channel, effective at the next IDR/GOP)
+# where the SoC's SDK allows it:
+#   T10..T30 (incl. T23): rc_mode, bitrate, qp, min_qp, max_qp, quality_lvl,
+#                         change_pos, i_bias_lvl   (H264 streams only)
+#   T31/C100:             bitrate, min_qp, max_qp, qp (fixqp), i_bias_lvl
+#   T40:                  bitrate, min_qp, max_qp, qp (fixqp)
+#   T41:                  bitrate, min_qp, max_qp
+# GET /control advertises the set as caps.video_live; each POST reply lists
+# what did NOT apply live under "deferred"/"deferred_keys" (e.g. the encoder
+# channel is not running). The actual values the encoder holds are readable
+# as encoder.<n>.rc in GET /control - compare after writing.
+
 # ---- main video stream (channel 0) ----
 video0.enabled   = 1
 video0.codec     = h264      # h264 | h265

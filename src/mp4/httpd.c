@@ -1549,13 +1549,23 @@ static void *conn_thread(void *arg)
                     else if (cr.accepted == 0 && cr.rejected>0) { st = "409 Conflict";            reason = "values_rejected"; }
                     else if (cr.accepted == 0)                  { st = "422 Unprocessable Content"; reason = "unknown_fields"; }
                     else                                        { st = "200 OK";                  reason = NULL; }
-                    char rb[CTRL_ECHO_CAP + 224];
+                    /* "deferred"/"deferred_keys": changed video/sensor
+                     * fields that were persisted but did not reach the
+                     * running pipeline - they apply on the next restart
+                     * (control.h). The count is always exact; the key list
+                     * can overflow its buffer (deferred_truncated), the
+                     * same contract as applied/truncated. */
+                    char rb[CTRL_ECHO_CAP + CTRL_DEFER_CAP + 288];
                     int rn = snprintf(rb, sizeof rb,
                         "{\"ok\":%s,\"accepted\":%d,\"changed\":%d,"
                         "\"rejected\":%d,\"not_persisted\":%d,"
+                        "\"deferred\":%d,\"deferred_keys\":[%s]%s,"
                         "\"applied\":{%s}%s%s%s%s}",
                         (prc==0 && cr.accepted>0) ? "true" : "false",
                         cr.accepted, cr.changed, cr.rejected, cr.not_persisted,
+                        prc==0 ? cr.deferred : 0,
+                        prc==0 ? cr.defer : "",
+                        (prc==0 && !cr.defer_full) ? ",\"deferred_truncated\":true" : "",
                         prc==0 ? cr.echo : "",
                         (prc==0 && !cr.echo_full) ? ",\"truncated\":true" : "",
                         reason ? ",\"reason\":\"" : "", reason ? reason : "",

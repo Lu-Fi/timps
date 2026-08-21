@@ -106,9 +106,14 @@ int         hub_video_subs(void);
 /* optional live control: HAL registers a handler; the control endpoint forwards
  * parsed settings as dotted config keys with the raw value string (e.g.
  * "image.brightness"/"140", "osd0.0.text"/"cam1", "video0.bitrate"/"3500").
- * The handler parses numbers itself. No-op if no handler is registered. */
-void        hub_set_control_cb(void (*cb)(const char *key, const char *val));
-void        hub_control(const char *key, const char *val);
+ * The handler parses numbers itself. Returns 1 when the key reached the
+ * RUNNING pipeline, 0 when it only persisted (applies on restart, or is
+ * unsupported on this platform/build) - the control endpoint uses that to
+ * report per-key what took effect now and what waits for a restart (the
+ * videoN.* / sensor.* "deferred" grading in control.c). Returns 0 if no
+ * handler is registered (host sim). */
+void        hub_set_control_cb(int (*cb)(const char *key, const char *val));
+int         hub_control(const char *key, const char *val);
 /* Optional batch-commit hook: some HAL applies (the IVS motion-grid rebuild)
  * are expensive stop/destroy/recreate cycles that a single /control POST can
  * otherwise trigger once per key. The HAL registers a commit callback and just

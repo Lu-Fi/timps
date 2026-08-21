@@ -69,9 +69,9 @@ int hub_video_subs(void)
     return total;
 }
 
-static void (*g_control_cb)(const char*,const char*) = NULL;
-void hub_set_control_cb(void (*cb)(const char *key, const char *val)){ g_control_cb = cb; }
-void hub_control(const char *key, const char *val){ if (g_control_cb) g_control_cb(key, val); }
+static int (*g_control_cb)(const char*,const char*) = NULL;
+void hub_set_control_cb(int (*cb)(const char *key, const char *val)){ g_control_cb = cb; }
+int hub_control(const char *key, const char *val){ return g_control_cb ? g_control_cb(key, val) : 0; }
 
 static void (*g_control_commit_cb)(void) = NULL;
 void hub_set_control_commit_cb(void (*cb)(void)){ g_control_commit_cb = cb; }

@@ -41,11 +41,19 @@
  * keys are volume/gain/alc_gain/high_pass/agc/agc_target_dbfs/
  * agc_compression_db/ns; the attribute-level audio keys (enabled/codec/
  * samplerate/channels/bitrate/force_stereo/spk_*) are persist-only and take
- * effect on restart. ALL videoN.* and sensor.* keys are persist-only too:
- * encoder/FrameSource/sensor attributes are never reconfigured on the running
- * pipeline (the HAL just logs "applies on restart"); GET /control marks these
- * sections in "caps":{"restart":["video","sensor"]}. Unknown keys and missing
- * fields are ignored. The legacy flat form ({"brightness":140,
+ * effect on restart. videoN.* and sensor.* keys are persist-first: every one
+ * is stored + persisted, and MOST take effect on the next restart only
+ * (encoder/FrameSource/sensor attributes are not reconfigured on the running
+ * pipeline) - EXCEPT the rate-control subset this platform can apply to the
+ * live encoder (enc_caps.h; classic SoCs: the whole rc block incl. rc_mode,
+ * new-API SoCs: bitrate/min_qp/max_qp and per SoC qp/i_bias_lvl; host sim:
+ * none). GET /control advertises that subset as "caps":{"video_live":[...]}
+ * next to the conservative "restart":["video","sensor"] section list, and
+ * each POST reply reports in "deferred"/"deferred_keys" which of ITS changed
+ * video/sensor fields did NOT reach the running pipeline (channel down,
+ * classic H265, rejected IMP call, sim) - so a caller can tell what is in
+ * effect now from what waits for a restart, per request, not per platform
+ * guess. Unknown keys and missing fields are ignored. The legacy flat form ({"brightness":140,
  * "running_mode":1, "force_mode":"night"}) still works and maps to image.*.
  *
  * Further sections (applied live + persisted, see control.c):
@@ -89,6 +97,7 @@
  *              right and the values were not, the second means this build does
  *              not know the key names at all. */
 #define CTRL_ECHO_CAP 512
+#define CTRL_DEFER_CAP 1024
 typedef struct {
     int accepted;
     int changed;
@@ -97,6 +106,13 @@ typedef struct {
      * keys than the persist list holds. Live now, gone after a reboot - and
      * until this counter existed the caller had no way to learn that. */
     int not_persisted;
+    /* CHANGED videoN.* / sensor.* fields that were persisted but did NOT reach
+     * the running pipeline (hub_control() returned 0): they take effect on
+     * the next daemon restart. Subset of `changed` - an unchanged re-post
+     * reports nothing here, exactly like the echo. defer[] carries the keys
+     * as a ready-made JSON array body ("\"video0.width\",\"sensor.fps\"");
+     * defer_full mirrors echo_full (0 = list overflowed, count still exact). */
+    int deferred;
     /* The changed settings as a ready-made JSON object body, e.g.
      * "\"daynight.day_confirm_s\":\"41\"" - EFFECTIVE values, i.e. after
      * clamping, which is the whole point: a caller that posted 999 and got 99
@@ -106,6 +122,8 @@ typedef struct {
      * and the caller falls back to a GET. */
     char echo[CTRL_ECHO_CAP];
     int  echo_full;   /* 1 = echo lists every changed field */
+    char defer[CTRL_DEFER_CAP];
+    int  defer_full;  /* 1 = defer lists every deferred field */
 } ctrl_result;
 
 /* Returns 0 if the body was a JSON object, -1 if it was not parseable at all,

@@ -20,6 +20,7 @@
 #include "rtsp/backchannel.h"
 #include "rtsp/speaker.h"
 #include "rotate_caps.h"   /* ROT_HAS_90/ROT_HAS_HW_I2D (rotation caps + eff dims) */
+#include "enc_caps.h"      /* ENC_LIVE_KEYS: videoN keys applied to the live encoder */
 #include "hal/imp_motion.h"
 #include "hal/imp_osd.h"
 #include "hal/hal.h"       /* hal_enc_stats: read-only encoder telemetry */
@@ -101,6 +102,34 @@ static __thread int g_acc, g_chg, g_rej, g_nopersist;
  * from the change list missed that; comparing posted vs effective does not. */
 static __thread char g_echo[CTRL_ECHO_CAP];
 static __thread int  g_echo_off, g_echo_full;
+/* the "deferred" list: CHANGED video/sensor keys hub_control() could not
+ * apply to the running pipeline (see control.h). Same builder pattern as the
+ * echo; keys are table names, never user data, so no escaping is needed. */
+static __thread int  g_deferred;
+static __thread char g_defer[CTRL_DEFER_CAP];
+static __thread int  g_defer_off, g_defer_full;
+
+static void defer_add(const char *key)
+{
+    g_deferred++;
+    if (!g_defer_full) return;                      /* already overflowed */
+    int w = snprintf(g_defer + g_defer_off, sizeof g_defer - (size_t)g_defer_off,
+                     "%s\"%s\"", g_defer_off ? "," : "", key);
+    if (w < 0 || g_defer_off + w >= (int)sizeof g_defer) {
+        g_defer[g_defer_off] = 0; g_defer_full = 0; return;
+    }
+    g_defer_off += w;
+}
+
+/* keys from the caps.restart sections (video/sensor) - the only ones the
+ * deferred grading covers; other sections have their own live/restart
+ * contracts documented above and unchanged semantics. */
+static int key_is_restart_section(const char *key)
+{
+    return (!strncmp(key,"video",5) && key[5]>='0' &&
+            key[5]<'0'+MS_MAX_VSTREAM && key[6]=='.') ||
+           !strncmp(key,"sensor.",7);
+}
 
 static void echo_add(const char *key, const char *eff)
 {
@@ -394,7 +423,8 @@ static void timps_apply_setting(ctrl_changes *ch, const char *key, const char *r
         return;
     }
 
-    hub_control(key, out);               /* live via the HAL */
+    int live = hub_control(key, out);    /* live via the HAL (1) or persist-only (0) */
+    if (!live && key_is_restart_section(key)) defer_add(key);
     /* echo to every other /events subscriber ("config" SSE event) so other
      * open WebUI tabs/clients reflect this change instead of only seeing it
      * on next poll. motion- and daynight-prefixed keys additionally still
@@ -449,13 +479,16 @@ static void apply_ctrl_fields(ctrl_changes *ch, const char *prefix,
 
 int control_apply_json(const char *json, ctrl_result *res)
 {
-    if (res) { res->accepted = res->changed = res->rejected = 0; res->not_persisted = 0; }
+    if (res) { res->accepted = res->changed = res->rejected = 0; res->not_persisted = 0;
+               res->deferred = 0; res->echo[0] = 0; res->echo_full = 1;
+               res->defer[0] = 0; res->defer_full = 1; }
     if (!json || !json[0]) return -1;
     /* Not a JSON object at all - the hand-rolled scanner would simply find
      * nothing and the old code answered 200 to it. Say so instead. */
     if (!strchr(json, '{')) return -1;
     g_acc = g_chg = g_rej = g_nopersist = 0;
     g_echo[0] = 0; g_echo_off = 0; g_echo_full = 1;
+    g_deferred = 0; g_defer[0] = 0; g_defer_off = 0; g_defer_full = 1;
     /* A1 (concurrent-POST class): one HTTP worker thread per connection calls
      * this (httpd.c), so two simultaneous POSTs would otherwise interleave their
      * apply-to-g_cfg + hub_control + persist sequences and leave a partially
@@ -772,8 +805,11 @@ int control_apply_json(const char *json, ctrl_result *res)
     if (res) {
         res->accepted = g_acc; res->changed = g_chg; res->rejected = g_rej;
         res->not_persisted = g_nopersist;
+        res->deferred = g_deferred;
         snprintf(res->echo, sizeof res->echo, "%s", g_echo);
         res->echo_full = g_echo_full;
+        snprintf(res->defer, sizeof res->defer, "%s", g_defer);
+        res->defer_full = g_defer_full;
     }
     free(ch);
     pthread_mutex_unlock(&apply_mu);
@@ -1033,6 +1069,21 @@ int control_get_json(char *buf, size_t cap)
      * the osd.* section whose other keys are live, but itself only takes
      * effect on restart (groups are built once in imp_osd_setup). */
     APP("],\"restart\":[\"video\",\"sensor\",\"osd.enabled\"],");
+    /* videoN.* keys THIS build can apply to the running encoder (enc_caps.h)
+     * - the per-key exception to the conservative "video" entry above. A
+     * listed key can still fall back to restart at runtime (channel down,
+     * classic H265); the POST reply's "deferred" grading is the per-request
+     * truth, this list is what the UI may offer as live. Empty on the sim
+     * and on builds without a HAL control path. */
+    APP("\"video_live\":[");
+#ifdef ENC_LIVE_KEYS
+    {
+        static const char *const lk[] = { ENC_LIVE_KEYS };
+        for (size_t li=0; li<sizeof lk/sizeof lk[0]; li++)
+            APP("%s\"%s\"", li?",":"", lk[li]);
+    }
+#endif
+    APP("],");
     /* Concurrent-client ceilings. These are REFUSAL points - RTSP answers 453
      * and drops, HTTP and /events answer 503 "busy" - and until now a client
      * had no way at all to learn them short of opening connections until one

@@ -15,6 +15,7 @@
 #include "../isp_caps.h"
 #include "../audio_caps.h"
 #include "../rotate_caps.h"   /* ms_vstream_eff_dims (post-rotation dims) */
+#include "../enc_caps.h"      /* ENC_LIVE_KEYS: live rc keys of this build */
 #include "imp_osd.h"
 #include "imp_motion.h"
 #include "../rtsp/speaker.h"   /* speaker_set_volume/gain (spk_* live apply) */
@@ -61,6 +62,11 @@
  * genuinely unsupported there, not merely unwired. */
 #if defined(PLATFORM_T31)||defined(PLATFORM_C100)
 #define ENC_HAS_QPIPDELTA 1
+#endif
+/* T41's SDK exports only IMP_Encoder_GetChnAttrRcMode - no setter at all;
+ * everything except bitrate/QP bounds stays restart-bound there. */
+#if !defined(PLATFORM_T41)
+#define ENC_HAS_SETRCMODE 1
 #endif
 #else
 /* classic encoder headers (T10..T30) spell the channel attr type with a
@@ -1112,6 +1118,100 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
 }
 
 /* ================= encoder ================= */
+#ifndef ENC_NEW_API
+/* One classic-API rc-union fill, shared by enc_create() and the live
+ * re-apply in ing_control()'s video branch (IMP_Encoder_SetChnAttrRcMode
+ * takes exactly this struct, so a live change re-derives the WHOLE block
+ * from g_cfg instead of patching single fields). The T23 sw-rotate path
+ * keeps its own deliberately H264-only copy (sw_rot_start) - that unbound
+ * Yuv encoder has no runtime rc API anyway.
+ *
+ * Mode mapping: the classic rc enum offers only FIXQP/CBR/VBR/SMART (no
+ * CAPPED_* - see ENC_RC_MODE_* in the vendored T20/T21/T30 headers), so
+ * capped_vbr/capped_quality fall back to VBR (closest rate-bounded mode)
+ * with one warning instead of silently running as CBR. The VBR and Smart
+ * union members are layout-identical within each codec (verified in the
+ * T21/T30 headers), so one VBR-shaped fill serves both rcModes - same-shape
+ * overlap of two members, NOT the cross-codec H264/H265 reinterpretation
+ * that broke H265 CBR (fixed separately). The union member filled MUST
+ * match the channel's codec: the H265 structs are NOT layout-compatible
+ * with H264's. staticTime/frmQPStep/gopQPStep/adaptiveMode/gopRelation stay
+ * at the historical literals - no SDK header documents a range for them. */
+static void classic_rc_fill(IMPEncoderAttrRcMode *m, const ms_vstream_cfg *v)
+{
+    if (v->rc_mode==MS_RC_FIXQP){
+        m->rcMode = ENC_RC_MODE_FIXQP;
+#if !(defined(PLATFORM_T10)||defined(PLATFORM_T20))
+        if (v->codec==MS_VC_H265)
+            m->attrH265FixQp.qp = (v->qp>0)?(uint32_t)v->qp:35;
+        else
+#endif
+            m->attrH264FixQp.qp = (v->qp>0)?(uint32_t)v->qp:35;
+    } else if (v->rc_mode==MS_RC_VBR || v->rc_mode==MS_RC_SMART ||
+               v->rc_mode==MS_RC_CAPPED_VBR || v->rc_mode==MS_RC_CAPPED_QUALITY){
+        int use_smart = (v->rc_mode==MS_RC_SMART);
+        if (v->rc_mode==MS_RC_CAPPED_VBR || v->rc_mode==MS_RC_CAPPED_QUALITY){
+            static int warned_capped = 0;
+            if (!warned_capped){
+                LOGW(MOD,"rc_mode capped_vbr/capped_quality has no classic-SoC equivalent -> using vbr");
+                warned_capped = 1;
+            }
+        }
+        m->rcMode = use_smart ? ENC_RC_MODE_SMART : ENC_RC_MODE_VBR;
+#if !(defined(PLATFORM_T10)||defined(PLATFORM_T20))
+        if (v->codec==MS_VC_H265){
+            m->attrH265Vbr.maxQp       = (v->max_qp>0)?(uint32_t)v->max_qp:45;
+            m->attrH265Vbr.minQp       = (v->min_qp>0)?(uint32_t)v->min_qp:15;
+            m->attrH265Vbr.staticTime  = 2;   /* rate-stat window, seconds */
+            m->attrH265Vbr.maxBitRate  = (uint32_t)v->bitrate_kbps;
+            m->attrH265Vbr.iBiasLvl    = v->i_bias_lvl;
+            m->attrH265Vbr.changePos   = (uint32_t)v->change_pos;
+            m->attrH265Vbr.qualityLvl  = (uint32_t)v->quality_lvl;
+            m->attrH265Vbr.frmQPStep   = 3;
+            m->attrH265Vbr.gopQPStep   = 15;
+            m->attrH265Vbr.flucLvl     = (uint32_t)v->fluc_lvl;
+        } else
+#endif
+        {
+            m->attrH264Vbr.maxQp       = (v->max_qp>0)?(uint32_t)v->max_qp:45;
+            m->attrH264Vbr.minQp       = (v->min_qp>0)?(uint32_t)v->min_qp:15;
+            m->attrH264Vbr.staticTime  = 2;   /* rate-stat window, seconds */
+            m->attrH264Vbr.maxBitRate  = (uint32_t)v->bitrate_kbps;
+            m->attrH264Vbr.iBiasLvl    = v->i_bias_lvl;
+            m->attrH264Vbr.changePos   = (uint32_t)v->change_pos;
+            m->attrH264Vbr.qualityLvl  = (uint32_t)v->quality_lvl;
+            m->attrH264Vbr.frmQPStep   = 3;
+            m->attrH264Vbr.gopQPStep   = 15;
+            m->attrH264Vbr.gopRelation = 0;
+        }
+    } else {
+        m->rcMode = ENC_RC_MODE_CBR;
+#if !(defined(PLATFORM_T10)||defined(PLATFORM_T20))
+        if (v->codec==MS_VC_H265){
+            m->attrH265Cbr.maxQp      = (v->max_qp>0)?(uint32_t)v->max_qp:45;
+            m->attrH265Cbr.minQp      = (v->min_qp>0)?(uint32_t)v->min_qp:15;
+            m->attrH265Cbr.staticTime = 2;   /* rate-stat window, seconds */
+            m->attrH265Cbr.outBitRate = (uint32_t)v->bitrate_kbps;
+            m->attrH265Cbr.iBiasLvl   = v->i_bias_lvl;
+            m->attrH265Cbr.frmQPStep  = 3;
+            m->attrH265Cbr.gopQPStep  = 15;
+            m->attrH265Cbr.flucLvl    = (uint32_t)v->fluc_lvl;
+        } else
+#endif
+        {
+            m->attrH264Cbr.maxQp        = (v->max_qp>0)?(uint32_t)v->max_qp:45;
+            m->attrH264Cbr.minQp        = (v->min_qp>0)?(uint32_t)v->min_qp:15;
+            m->attrH264Cbr.outBitRate   = (uint32_t)v->bitrate_kbps;
+            m->attrH264Cbr.iBiasLvl     = v->i_bias_lvl;
+            m->attrH264Cbr.frmQPStep    = 3;
+            m->attrH264Cbr.gopQPStep    = 15;
+            m->attrH264Cbr.adaptiveMode = 0;
+            m->attrH264Cbr.gopRelation  = 0;
+        }
+    }
+}
+#endif /* !ENC_NEW_API */
+
 static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
 {
     IMPEncoderChnAttr a; memset(&a,0,sizeof a);
@@ -1229,106 +1329,12 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
     a.rcAttr.outFrmRate.frmRateDen = 1;
     a.rcAttr.maxGop = v->gop;
     /* rc mode MUST be filled: an all-zero attrRcMode means FIXQP with qp=0
-     * (broken stream). Field names verified against the vendored T20/T21/T30
-     * headers. rc_mode=fixqp used to silently no-op here (hardcoded CBR
-     * regardless of v->rc_mode) instead of crashing like the ENC_NEW_API path
-     * did - same underlying gap (videoN.qp never reached the HAL), just a
-     * quieter failure mode on these SoCs.
-     *
-     * The union member filled MUST match a.encAttr.enType. The H265 CBR struct
-     * is NOT layout-compatible with H264's: staticTime sits between minQp and
-     * outBitRate, and a single flucLvl replaces H264's adaptiveMode/gopRelation
-     * bools. Filling attrH264Cbr for a PT_H265 channel therefore writes the
-     * bitrate into the staticTime slot and leaves outBitRate garbage. So branch
-     * on v->codec exactly the way the enType selection above does. The FixQP
-     * structs happen to both be a lone {uint32_t qp;}, but branch them too so
-     * correctness doesn't rest on that coincidence. T10/T20 are H264-only and
-     * their vendored headers carry no attrH265* union members at all, so those
-     * references are compiled out under the same gate used for enType. */
-    if (v->rc_mode==MS_RC_FIXQP){
-        a.rcAttr.attrRcMode.rcMode = ENC_RC_MODE_FIXQP;
-#if !(defined(PLATFORM_T10)||defined(PLATFORM_T20))
-        if (v->codec==MS_VC_H265)
-            a.rcAttr.attrRcMode.attrH265FixQp.qp = (v->qp>0)?(uint32_t)v->qp:35;
-        else
-#endif
-            a.rcAttr.attrRcMode.attrH264FixQp.qp = (v->qp>0)?(uint32_t)v->qp:35;
-    } else if (v->rc_mode==MS_RC_VBR || v->rc_mode==MS_RC_SMART ||
-               v->rc_mode==MS_RC_CAPPED_VBR || v->rc_mode==MS_RC_CAPPED_QUALITY){
-        /* The classic rc enum offers only FIXQP/CBR/VBR/SMART (no CAPPED_* - see
-         * ENC_RC_MODE_* in the vendored T20/T21/T30 headers). Before this, every
-         * mode except FIXQP fell through to the CBR else below and silently ran
-         * as CBR, with no hint the selection had been dropped. Now:
-         *   vbr / smart               -> their real classic modes
-         *   capped_vbr/capped_quality -> no classic equivalent; fall back to VBR
-         *                                (closest rate-bounded mode) + one warning
-         * so the running mode never silently diverges from what the user asked
-         * for. The VBR and Smart union members are layout-identical within each
-         * codec (both: maxQp,minQp,staticTime,maxBitRate,iBiasLvl,changePos,
-         * qualityLvl,frmQPStep,gopQPStep + a trailing bool/flucLvl - verified in
-         * the T21/T30 headers), so one VBR-shaped fill serves both rcModes. That
-         * is same-shape overlap of two members, NOT the cross-codec H264/H265
-         * reinterpretation that broke H265 CBR (fixed separately). */
-        int use_smart = (v->rc_mode==MS_RC_SMART);
-        if (v->rc_mode==MS_RC_CAPPED_VBR || v->rc_mode==MS_RC_CAPPED_QUALITY){
-            static int warned_capped = 0;
-            if (!warned_capped){
-                LOGW(MOD,"rc_mode capped_vbr/capped_quality has no classic-SoC equivalent -> using vbr");
-                warned_capped = 1;
-            }
-        }
-        a.rcAttr.attrRcMode.rcMode = use_smart ? ENC_RC_MODE_SMART : ENC_RC_MODE_VBR;
-#if !(defined(PLATFORM_T10)||defined(PLATFORM_T20))
-        if (v->codec==MS_VC_H265){
-            a.rcAttr.attrRcMode.attrH265Vbr.maxQp       = (v->max_qp>0)?(uint32_t)v->max_qp:45;
-            a.rcAttr.attrRcMode.attrH265Vbr.minQp       = (v->min_qp>0)?(uint32_t)v->min_qp:15;
-            a.rcAttr.attrRcMode.attrH265Vbr.staticTime  = 2;   /* rate-stat window, seconds */
-            a.rcAttr.attrRcMode.attrH265Vbr.maxBitRate  = (uint32_t)v->bitrate_kbps;
-            a.rcAttr.attrRcMode.attrH265Vbr.iBiasLvl    = v->i_bias_lvl;
-            a.rcAttr.attrRcMode.attrH265Vbr.changePos   = (uint32_t)v->change_pos;
-            a.rcAttr.attrRcMode.attrH265Vbr.qualityLvl  = (uint32_t)v->quality_lvl;
-            a.rcAttr.attrRcMode.attrH265Vbr.frmQPStep   = 3;
-            a.rcAttr.attrRcMode.attrH265Vbr.gopQPStep   = 15;
-            a.rcAttr.attrRcMode.attrH265Vbr.flucLvl     = (uint32_t)v->fluc_lvl;
-        } else
-#endif
-        {
-            a.rcAttr.attrRcMode.attrH264Vbr.maxQp       = (v->max_qp>0)?(uint32_t)v->max_qp:45;
-            a.rcAttr.attrRcMode.attrH264Vbr.minQp       = (v->min_qp>0)?(uint32_t)v->min_qp:15;
-            a.rcAttr.attrRcMode.attrH264Vbr.staticTime  = 2;   /* rate-stat window, seconds */
-            a.rcAttr.attrRcMode.attrH264Vbr.maxBitRate  = (uint32_t)v->bitrate_kbps;
-            a.rcAttr.attrRcMode.attrH264Vbr.iBiasLvl    = v->i_bias_lvl;
-            a.rcAttr.attrRcMode.attrH264Vbr.changePos   = (uint32_t)v->change_pos;
-            a.rcAttr.attrRcMode.attrH264Vbr.qualityLvl  = (uint32_t)v->quality_lvl;
-            a.rcAttr.attrRcMode.attrH264Vbr.frmQPStep   = 3;
-            a.rcAttr.attrRcMode.attrH264Vbr.gopQPStep   = 15;
-            a.rcAttr.attrRcMode.attrH264Vbr.gopRelation = 0;
-        }
-    } else {
-        a.rcAttr.attrRcMode.rcMode = ENC_RC_MODE_CBR;
-#if !(defined(PLATFORM_T10)||defined(PLATFORM_T20))
-        if (v->codec==MS_VC_H265){
-            a.rcAttr.attrRcMode.attrH265Cbr.maxQp      = (v->max_qp>0)?(uint32_t)v->max_qp:45;
-            a.rcAttr.attrRcMode.attrH265Cbr.minQp      = (v->min_qp>0)?(uint32_t)v->min_qp:15;
-            a.rcAttr.attrRcMode.attrH265Cbr.staticTime = 2;   /* rate-stat window, seconds */
-            a.rcAttr.attrRcMode.attrH265Cbr.outBitRate = (uint32_t)v->bitrate_kbps;
-            a.rcAttr.attrRcMode.attrH265Cbr.iBiasLvl   = v->i_bias_lvl;
-            a.rcAttr.attrRcMode.attrH265Cbr.frmQPStep  = 3;
-            a.rcAttr.attrRcMode.attrH265Cbr.gopQPStep  = 15;
-            a.rcAttr.attrRcMode.attrH265Cbr.flucLvl    = (uint32_t)v->fluc_lvl;
-        } else
-#endif
-        {
-            a.rcAttr.attrRcMode.attrH264Cbr.maxQp        = (v->max_qp>0)?(uint32_t)v->max_qp:45;
-            a.rcAttr.attrRcMode.attrH264Cbr.minQp        = (v->min_qp>0)?(uint32_t)v->min_qp:15;
-            a.rcAttr.attrRcMode.attrH264Cbr.outBitRate   = (uint32_t)v->bitrate_kbps;
-            a.rcAttr.attrRcMode.attrH264Cbr.iBiasLvl     = v->i_bias_lvl;
-            a.rcAttr.attrRcMode.attrH264Cbr.frmQPStep    = 3;
-            a.rcAttr.attrRcMode.attrH264Cbr.gopQPStep    = 15;
-            a.rcAttr.attrRcMode.attrH264Cbr.adaptiveMode = 0;
-            a.rcAttr.attrRcMode.attrH264Cbr.gopRelation  = 0;
-        }
-    }
+     * (broken stream). rc_mode=fixqp used to silently no-op here (hardcoded
+     * CBR regardless of v->rc_mode) instead of crashing like the ENC_NEW_API
+     * path did - same underlying gap (videoN.qp never reached the HAL), just
+     * a quieter failure mode on these SoCs. The fill itself lives in
+     * classic_rc_fill() above, shared with the live rc re-apply. */
+    classic_rc_fill(&a.rcAttr.attrRcMode, v);
 #endif
     if (IMP_Encoder_CreateChn(chn,&a)<0){ LOGE(MOD,"Encoder_CreateChn %d",chn); return -1; }
     if (IMP_Encoder_RegisterChn(grp, chn)!=0){
@@ -3585,7 +3591,148 @@ static void *audio_thread(void *arg)
  * hflip+vflip collapses to a single fs_kick_chn0() (see fs_kick_chn0). flip is
  * only ever set via /control, which always calls hub_control_commit(). */
 static int g_isp_flip_kick_pending = 0;
-static void ing_control(const char *key, const char *val)
+/* ---- live rate-control apply (ENC_LIVE_KEYS, enc_caps.h) ----------------
+ * Everything here is strictly per channel: stream N's key is applied to
+ * stream N's own encoder channel and no other. The caller (control.c) has
+ * already stored the new value in g_cfg, so the appliers read from there. */
+
+/* is this videoN.* leaf one of the keys this BUILD can apply live? */
+static int rc_key_live(const char *k)
+{
+#ifdef ENC_LIVE_KEYS
+    static const char *const live[] = { ENC_LIVE_KEYS };
+    for (size_t i=0;i<sizeof live/sizeof live[0];i++)
+        if (!strcmp(k, live[i])) return 1;
+#else
+    (void)k;
+#endif
+    return 0;
+}
+
+/* stream index -> its running vchan; NULL when the stream never came up
+ * (disabled at boot, bring-up failed) - then live apply is impossible and
+ * the persisted value waits for the next restart. */
+static vchan *rc_live_vchan(int si)
+{
+    if (!g_hcfg || si<0 || si>=MS_MAX_VSTREAM) return NULL;
+    int chn = g_hcfg->video[si].imp_chn;
+    for (int i=0;i<g_nv;i++)
+        if (g_v[i].chn==chn) return &g_v[i];
+    return NULL;
+}
+
+/* Apply one live rc key to stream si's running encoder. Returns 1 when the
+ * IMP call succeeded, 0 on any fallback (the value is persisted either way).
+ * Takes effect at the next IDR/GOP per the SDK docs, never mid-frame. */
+static int rc_live_apply(int si, const char *k)
+{
+    vchan *vc = rc_live_vchan(si);
+    if (!vc) return 0;
+#ifdef ROT_HAS_SW_90
+    if (vc->sw_rot) return 0;   /* unbound Yuv encoder: no runtime rc API */
+#endif
+    const ms_vstream_cfg *v = &g_hcfg->video[si];
+    int chn = vc->chn;
+#ifndef ENC_NEW_API
+    /* Classic API: SetChnAttrRcMode takes the whole rc union, so ANY live rc
+     * key re-derives the complete block from g_cfg via the same fill
+     * enc_create used - the encoder never sees a half-updated struct, and
+     * this includes a live rc_mode switch (the header supports FIXQP/CBR/
+     * VBR/SMART). H264 only: every classic header marks the call "only used
+     * to H264 channel", so an H265 stream (T21/T30) stays restart-bound. */
+    if (v->codec==MS_VC_H265){
+        static int warned_h265_live = 0;
+        if (!warned_h265_live){
+            LOGW(MOD,"live rc change on an H265 stream: the classic SDK's "
+                     "SetChnAttrRcMode is H264-only - applies on restart");
+            warned_h265_live = 1;
+        }
+        return 0;
+    }
+    (void)k;
+    IMPEncoderAttrRcMode m; memset(&m,0,sizeof m);
+    classic_rc_fill(&m, v);
+    if (IMP_Encoder_SetChnAttrRcMode(chn, &m)!=0){
+        LOGW(MOD,"SetChnAttrRcMode chn%d failed - value applies on restart", chn);
+        return 0;
+    }
+    return 1;
+#else
+    /* New API: no complete fill exists (SetDefaultParam owns fields we never
+     * write and cannot rebuild), so each key uses its dedicated runtime call
+     * and everything else in the channel's attrs stays untouched. */
+    if (!strcmp(k,"bitrate")){
+        /* SetChnBitRate(chn, target, max) takes bit/s (all four new-API
+         * headers), while videoN.bitrate is kbps. The max: preserve the
+         * channel's CURRENT target:max ratio read back from the encoder -
+         * a raw/raw quotient, so it holds whatever unit the SDK stores -
+         * because uMaxBitRate is an SDK default we never wrote and blindly
+         * flattening it to the target would change VBR semantics. CBR/fixqp
+         * (no max field): max = target. */
+        long long t_bps = (long long)v->bitrate_kbps * 1000;
+        long long m_bps = t_bps;
+        IMPEncoderAttrRcMode m;
+        if (IMP_Encoder_GetChnAttrRcMode(chn,&m)==0){
+            long long tr=0, mr=0;
+            if (m.rcMode==IMP_ENC_RC_MODE_VBR){
+                tr=m.attrVbr.uTargetBitRate; mr=m.attrVbr.uMaxBitRate;
+            } else if (m.rcMode==IMP_ENC_RC_MODE_CAPPED_VBR ||
+                       m.rcMode==IMP_ENC_RC_MODE_CAPPED_QUALITY){
+                tr=m.attrCappedVbr.uTargetBitRate; mr=m.attrCappedVbr.uMaxBitRate;
+            }
+            if (tr>0 && mr>=tr) m_bps = t_bps*mr/tr;
+        }
+        if (t_bps > 0x7fffffffLL) return 0;         /* int argument */
+        if (m_bps > 0x7fffffffLL) m_bps = 0x7fffffffLL;
+        if (IMP_Encoder_SetChnBitRate(chn,(int)t_bps,(int)m_bps)!=0){
+            LOGW(MOD,"SetChnBitRate chn%d failed - value applies on restart", chn);
+            return 0;
+        }
+        return 1;
+    }
+    if (!strcmp(k,"min_qp") || !strcmp(k,"max_qp")){
+        /* same call + same 15/45 unset-defaults as the boot apply (0a8bb9f) */
+        int qmin=(v->min_qp>0)?v->min_qp:15, qmax=(v->max_qp>0)?v->max_qp:45;
+        if (IMP_Encoder_SetChnQpBounds(chn,qmin,qmax)!=0){
+            LOGW(MOD,"SetChnQpBounds chn%d failed - value applies on restart", chn);
+            return 0;
+        }
+        return 1;
+    }
+#ifdef ENC_HAS_QPIPDELTA
+    if (!strcmp(k,"i_bias_lvl")){
+        if (IMP_Encoder_SetChnQpIPDelta(chn, v->i_bias_lvl)!=0){
+            LOGW(MOD,"SetChnQpIPDelta chn%d failed - value applies on restart", chn);
+            return 0;
+        }
+        return 1;
+    }
+#endif
+#ifdef ENC_HAS_SETRCMODE
+    if (!strcmp(k,"qp")){
+        /* only operative under fixqp; read-modify-write so nothing else in
+         * the union is disturbed. Under any other mode qp has no effect
+         * anyway, so "restart-bound" is the honest answer there. */
+        IMPEncoderAttrRcMode m;
+        if (IMP_Encoder_GetChnAttrRcMode(chn,&m)!=0) return 0;
+        if (m.rcMode!=IMP_ENC_RC_MODE_FIXQP) return 0;
+        m.attrFixQp.iInitialQP = (int16_t)((v->qp>0)?v->qp:35);
+        if (IMP_Encoder_SetChnAttrRcMode(chn,&m)!=0){
+            LOGW(MOD,"SetChnAttrRcMode chn%d (fixqp qp) failed - value applies on restart", chn);
+            return 0;
+        }
+        return 1;
+    }
+#endif
+    return 0;
+#endif /* ENC_NEW_API */
+}
+
+/* Returns 1 when the key reached the RUNNING pipeline, 0 when it only
+ * persisted (applies on restart / unsupported here) - see hub.h. Only the
+ * videoN.* / sensor.* grading in control.c consumes the value today, but every
+ * branch answers truthfully so a future consumer does not inherit a lie. */
+static int ing_control(const char *key, const char *val)
 {
     int v = (int)strtol(val, NULL, 0);
 
@@ -3623,7 +3770,7 @@ static void ing_control(const char *key, const char *val)
          * which always ends in hub_control_commit(). */
         else if (ok && (!strcmp(k,"hflip") || !strcmp(k,"vflip")))
             g_isp_flip_kick_pending = 1;
-        return;
+        return ok ? 1 : 0;
     }
 
     if (!strncmp(key,"audio.",6)){
@@ -3640,10 +3787,11 @@ static void ing_control(const char *key, const char *val)
             if      (!strcmp(k,"spk_volume")) speaker_set_volume(g_hcfg->audio.spk_volume);
             else if (!strcmp(k,"spk_gain"))   speaker_set_gain(g_hcfg->audio.spk_gain);
             LOGI(MOD,"control %s=%d", key, v);
+            return 1;
 #else
             LOGD(MOD,"audio.%s persisted (no speaker/AO in this build)", k);
+            return 0;
 #endif
-            return;
         }
         /* Item-3: AEC engages inside hal_ao_open (it needs both AI capture and
          * AO output live), so a live toggle just persists and takes effect at
@@ -3655,7 +3803,7 @@ static void ing_control(const char *key, const char *val)
 #else
             LOGD(MOD,"audio.%s persisted (no speaker/AO in this build)", k);
 #endif
-            return;
+            return 0;   /* not in effect until the next AO open */
         }
         /* persist-only keys (take effect on restart): encoder/SetPubAttr-level
          * attributes - including channels/force_stereo, which audio_thread
@@ -3674,11 +3822,11 @@ static void ing_control(const char *key, const char *val)
             !strcmp(k,"agc_target_dbfs") || !strcmp(k,"agc_compression_db") ||
             !strcmp(k,"ns")){
             LOGI(MOD,"%s persisted, applies on restart", key);
-            return;
+            return 0;
         }
         if (!g_ai_up){                         /* audio input not running */
             LOGD(MOD,"%s persisted (audio input not running)", key);
-            return;
+            return 0;
         }
         /* volume/gain/alc_gain: plain parameter writes (no module create or
          * destroy), safe to apply live; serialized via g_ai_lock. */
@@ -3687,23 +3835,37 @@ static void ing_control(const char *key, const char *val)
         pthread_mutex_unlock(&g_ai_lock);
         if (ok) LOGI(MOD,"control %s=%d", key, v);
         else    LOGD(MOD,"audio.%s unsupported on this platform (persisted only)", k);
-        return;
+        return ok ? 1 : 0;
     }
 
-    /* videoN.* / sensor.*: encoder, FrameSource and sensor settings are
-     * config-only - never applied live (a live change would need a stream-
-     * killing channel/ISP reconfig). The control layer already stored and
-     * persisted the value; it takes effect on the next daemon restart. */
-    if ((!strncmp(key,"video",5) && key[5]>='0' && key[5]<'0'+MS_MAX_VSTREAM
-         && key[6]=='.') || !strncmp(key,"sensor.",7)){
+    /* videoN.*: geometry/codec/fps keys stay config-only (a live change
+     * would need a stream-killing channel/ISP reconfig) - but the rate-
+     * control subset CAN reach the running encoder on this build
+     * (ENC_LIVE_KEYS, enc_caps.h). Strictly per channel: stream N's key
+     * touches stream N's encoder channel only. On any fallback (channel not
+     * running, classic H265, IMP call rejected) the value is already
+     * persisted, so "applies on restart" remains true. */
+    if (!strncmp(key,"video",5) && key[5]>='0' && key[5]<'0'+MS_MAX_VSTREAM
+        && key[6]=='.'){
+        if (rc_key_live(key+7) && rc_live_apply(key[5]-'0', key+7)){
+            LOGI(MOD,"control %s applied to the running encoder "
+                     "(takes effect at the next IDR/GOP)", key);
+            return 1;
+        }
         LOGI(MOD,"%s persisted, applies on restart", key);
-        return;
+        return 0;
+    }
+    /* sensor.*: config-only, applied at the next ISP init */
+    if (!strncmp(key,"sensor.",7)){
+        LOGI(MOD,"%s persisted, applies on restart", key);
+        return 0;
     }
 
     /* daynight.*: config-only (the detection thread polls g_cfg), no HAL
      * action - the actual ISP mode change comes in as image.running_mode
-     * via the board's color script. */
-    if (!strncmp(key,"daynight.",9)) return;
+     * via the board's color script. The detection thread reads the new
+     * value on its next tick, so it IS in effect without a restart. */
+    if (!strncmp(key,"daynight.",9)) return 1;
 
     /* motion.*: enabled/cols/rows/sensitivity/monitor_stream/hold_ms/skip_frames
      * are applied LIVE by cleanly stopping and recreating the IVS grid (see
@@ -3722,6 +3884,7 @@ static void ing_control(const char *key, const char *val)
              * Deferred to commit like the rest so one POST = one apply. */
             g_motion_sense_pending = 1;
             LOGD(MOD,"control %s applied (IVS sensitivity update deferred to commit)", key);
+            return 1;
         } else if (!strcmp(k,"enabled") || !strcmp(k,"cols") || !strcmp(k,"rows") ||
                    !strcmp(k,"monitor_stream") ||
                    !strcmp(k,"hold_ms") || !strcmp(k,"skip_frames")){
@@ -3738,8 +3901,9 @@ static void ing_control(const char *key, const char *val)
              * deferred resync as the geometry keys. */
             g_motion_resync_pending = 1;
             LOGD(MOD,"control %s applied (IVS grid re-sync deferred to commit)", key);
+            return 1;
         }
-        return;
+        return 1;   /* cooldown_ms etc.: read from g_cfg per event, live */
     }
 
     /* osdS.N.* (per-stream) / legacy osdN.* (all streams): config (g_cfg) is
@@ -3750,7 +3914,7 @@ static void ing_control(const char *key, const char *val)
             imp_osd_apply(key[3]-'0', key[5]-'0');   /* osdS.N.* */
         else
             imp_osd_apply(-1, key[3]-'0');           /* legacy osdN.* */
-        return;
+        return 1;
     }
 
     /* privacy<S>.<N>.* cover masks: config (g_cfg) already updated -> re-apply
@@ -3768,7 +3932,7 @@ static void ing_control(const char *key, const char *val)
         /* M2: same deferral - dragging one privacy rectangle posts x+y+w+h in a
          * single request; rebuild the grid once at commit, not four times. */
         if (g_hcfg->motion.enabled && s==mon) g_motion_resync_pending = 1;
-        return;
+        return 1;
     }
 
     /* osd.* (master switch/global font/vars file): config-only - the OSD
@@ -3776,8 +3940,9 @@ static void ing_control(const char *key, const char *val)
      * effect on the next daemon restart */
     if (!strncmp(key,"osd.",4)){
         LOGI(MOD,"%s persisted, applies on restart", key);
-        return;
+        return 0;
     }
+    return 0;   /* unknown to the HAL: persisted only */
 }
 
 /* M2: flush deferred HAL applies after a full /control request. Currently only

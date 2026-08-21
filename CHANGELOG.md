@@ -39,6 +39,39 @@ semantic versioning.
   channel like every other `videoN.*` key. Both status-JSON branches in
   `control.c` were extended (the drift trap that bit in 8f3c84c).
 
+- **The rate-control keys apply LIVE to the running encoder** where the
+  SoC's SDK allows it - per channel, no daemon restart, effective at the
+  next IDR/GOP (`src/enc_caps.h` new, `src/hal/hal_ingenic.c`, `src/hub.h`,
+  `src/hub.c`, `src/control.h`, `src/control.c`, `src/mp4/httpd.c`,
+  `timps.conf.example`). What is live per platform (from the vendored
+  headers, 2026-08-21):
+  - classic T10..T30 incl. T23: `rc_mode`, `bitrate`, `qp`, `min_qp`,
+    `max_qp`, `quality_lvl`, `change_pos`, `i_bias_lvl` - one
+    `IMP_Encoder_SetChnAttrRcMode` call re-derives the whole rc union from
+    the config via the same fill bring-up uses (now factored into
+    `classic_rc_fill()`), so the encoder never sees a half-updated struct.
+    H264 streams only; the SDK marks the call H264-only.
+  - T31/C100: `bitrate` (SetChnBitRate), `min_qp`/`max_qp`
+    (SetChnQpBounds), `qp` under fixqp (read-modify-write via
+    Set/GetChnAttrRcMode), `i_bias_lvl` (SetChnQpIPDelta).
+  - T40: as above minus `i_bias_lvl`; T41: only `bitrate` and QP bounds
+    (no rc-mode setter in that SDK at all).
+  - `SetChnBitRate` takes bit/s while `videoN.bitrate` is kbps - converted,
+    and the target:max ratio the channel currently holds is preserved (raw
+    readback quotient, so it is unit-safe) instead of flattening the SDK's
+    `uMaxBitRate` default.
+  Everything is graded honestly, per request: `hub_control()` now returns
+  whether a key reached the running pipeline, GET /control advertises the
+  platform's live set as `caps.video_live` (empty on the sim), and every
+  POST reply carries `deferred`/`deferred_keys` listing the changed
+  video/sensor fields that did NOT apply live (channel not running, classic
+  H265, rejected IMP call) and therefore wait for a restart. The
+  `control.h` persist-only contract is updated accordingly; all other
+  sections keep their documented semantics. Verified against the
+  simulator (grading, caps, clamping, per-channel isolation); the actual
+  IMP runtime calls need hardware verification against the new
+  `encoder.<n>.rc` readback.
+
 - **`videoN.i_bias_lvl` is wired on T31/C100** via
   `IMP_Encoder_SetChnQpIPDelta`, applied after `RegisterChn` the same way
   the QP bounds are (the 0a8bb9f pattern), non-fatal on rejection
