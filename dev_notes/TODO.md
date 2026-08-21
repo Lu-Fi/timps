@@ -666,3 +666,31 @@ working pairing shows near-zero drops there, which would confirm the drop
 counter itself is the right diagnostic and shift the search to what's
 upstream of it (sensor readout timing, i2c bus contention, ISP pipeline
 config unrelated to these three module parameters).
+
+## Follow-up 2: sensor itself is not throttled (i2c VTS/HTS readback, 2026-08-21)
+
+Live register read on cam-kinder-rechts, `i2ctransfer -f -y 0 w2@0x30 0x32 0x0e r2`
+(VTS) and `... 0x32 0x0c r2` (HTS):
+
+    VTS = 0x04b0 = 1200   (init-table default was 1440 - AE lowered it, normal)
+    HTS = 0x08ca = 2250   (matches the init table exactly)
+
+    fps = SCLK / (HTS * VTS) = 81,000,000 / (2250 * 1200) = 30.0 fps
+
+The sensor is genuinely running at 30 fps, full stop - not a reduced mode, not
+a longer line time. Combined with the ISP module parameter tests above (all
+negative) and `ISP OUTPUT FPS: 30/1` from `isp-m0`, the ~45-47% loss is fully
+downstream of both the sensor and the ISP core's own frame production - it
+happens specifically at whatever `ch0_pre_dequeue` gates, between ISP output
+and encoder consumption. Neither isp_clk, pre_dequeue_time, nor valid_lines
+touch it.
+
+This is very likely a kernel/ISP-driver-level bug in the tx-isp t31 binding
+for this sensor mode, not something fixable via Buildroot Kconfig. Next step
+(not yet done): read the same `ch0_pre_dequeue_drop`/`buf_qcnt` counters on
+cam-garage (T31 + sc4336p, confirmed full rate) to see whether that pairing
+shows near-zero drops at the same procfs location - if so, the counter is the
+right diagnostic and the search moves to what differs in the two sensors'
+timing/interrupt behavior at the driver level, which likely requires reading
+tx-isp kernel source (SDK checkout, not just the sensor driver) rather than
+further Buildroot config changes.
