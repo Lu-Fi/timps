@@ -38,6 +38,35 @@ semantic versioning.
   key without defensible bounds is an invitation to misconfigure. Per
   channel like every other `videoN.*` key. Both status-JSON branches in
   `control.c` were extended (the drift trap that bit in 8f3c84c).
+
+- **`videoN.i_bias_lvl` is wired on T31/C100** via
+  `IMP_Encoder_SetChnQpIPDelta`, applied after `RegisterChn` the same way
+  the QP bounds are (the 0a8bb9f pattern), non-fatal on rejection
+  (`src/hal/hal_ingenic.c`). Only a non-default value is written, so the
+  SDK's own `iIPDelta` stays untouched otherwise; the effective value is
+  readable as `encoder.<n>.rc.ip_delta`. The classic `iBiasLvl` and the new
+  `iIPDelta` are close relatives, not proven identical in sign/scale - the
+  value is passed through 1:1 and should be checked against the rc readback
+  on hardware before the mapping is trusted.
+
+- **The silent `smart` -> `capped_quality` substitution on the new API warns
+  once** (`src/hal/hal_ingenic.c`). The classic path has always warned when
+  it substitutes `capped_vbr`/`capped_quality` with `vbr`; the mirror-image
+  substitution in the other direction ran without a log line, so a T31
+  configured with `rc_mode = smart` gave no hint it was running
+  capped_quality.
+
+- **The new-API rc-knob warning now tells the truth per key**
+  (`src/hal/hal_ingenic.c`). The 8f3c84c wording claimed
+  `quality_lvl/change_pos/i_bias_lvl` "have no effect on this SoC", implying
+  impossibility for all three. In fact only `quality_lvl`/`change_pos` (and
+  now `fluc_lvl`) have no equivalent field in the new-API rc structs;
+  `i_bias_lvl` has a runtime call that the T31/C100 SDKs ship (now wired,
+  above) and the T40/T41 SDKs genuinely lack. The warning is split
+  accordingly: "no equivalent field in this SoC's encoder API" vs "this
+  SoC's SDK has no IMP_Encoder_SetChnQpIPDelta".
+
+- **Three classic-SoC rate-control knobs are now config keys**
   (`videoN.quality_lvl` 0..7, `videoN.change_pos` 50..100,
   `videoN.i_bias_lvl` -3..3; `src/config.h`, `src/config.c`,
   `src/hal/hal_ingenic.c`, `src/control.c`). They were literals in the VBR/CBR

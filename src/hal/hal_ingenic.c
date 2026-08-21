@@ -56,6 +56,12 @@
 
 #if defined(PLATFORM_T31)||defined(PLATFORM_C100)||defined(PLATFORM_T40)||defined(PLATFORM_T41)
 #define ENC_NEW_API 1
+/* IMP_Encoder_SetChnQpIPDelta exists only in the T31 and C100 SDKs (grepped
+ * headers 2026-08-21); T40/T41 have no such call, so videoN.i_bias_lvl is
+ * genuinely unsupported there, not merely unwired. */
+#if defined(PLATFORM_T31)||defined(PLATFORM_C100)
+#define ENC_HAS_QPIPDELTA 1
+#endif
 #else
 /* classic encoder headers (T10..T30) spell the channel attr type with a
  * capitalized CHN; alias it so enc_create() reads the same on every SoC */
@@ -1120,7 +1126,16 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
         case MS_RC_VBR:            rc=IMP_ENC_RC_MODE_VBR; break;
         case MS_RC_FIXQP:          rc=IMP_ENC_RC_MODE_FIXQP; break;
         case MS_RC_CAPPED_VBR:     rc=IMP_ENC_RC_MODE_CAPPED_VBR; break;
-        case MS_RC_SMART:
+        case MS_RC_SMART: {
+            /* same courtesy the classic path pays for its capped_* -> vbr
+             * substitution (warned_capped): say the mode is being replaced
+             * instead of silently running something else */
+            static int warned_smart = 0;
+            if (!warned_smart){
+                LOGW(MOD,"rc_mode smart has no new-API equivalent -> using capped_quality");
+                warned_smart = 1;
+            }
+        } /* fall through */
         case MS_RC_CAPPED_QUALITY: rc=IMP_ENC_RC_MODE_CAPPED_QUALITY; break;
         default:                   rc=IMP_ENC_RC_MODE_CBR; break;
     }
@@ -1172,20 +1187,33 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
              v->imp_chn);
     a.gopAttr.uGopLength       = (uint16_t)v->gop;   /* config.c clamps 1..1000 */
     a.gopAttr.uMaxSameSenceCnt = 1;
-    /* The new-API rc structs have no qualityLvl/changePos/iBiasLvl equivalent,
-     * so these three keys cannot be honoured here. Say so once instead of
-     * accepting them and doing nothing - that is exactly how min_qp/max_qp
-     * silently missed this path until 0a8bb9f. */
+    /* Non-default classic rc knobs on the new API: say once what happens to
+     * each, instead of accepting them and doing nothing - that is exactly how
+     * min_qp/max_qp silently missed this path until 0a8bb9f. Two different
+     * truths, worded apart: quality_lvl/change_pos/fluc_lvl have NO equivalent
+     * field in the new-API rc structs on any SoC; i_bias_lvl HAS a runtime
+     * call (SetChnQpIPDelta, wired after RegisterChn below) but only the
+     * T31/C100 SDKs ship it - on T40/T41 it is unsupported, not merely
+     * unwired. */
     {
         static int warned_rcknobs = 0;
         if (!warned_rcknobs &&
-            (v->quality_lvl!=2 || v->change_pos!=80 || v->i_bias_lvl!=0 ||
-             v->fluc_lvl!=0)){
-            LOGW(MOD,"videoN.quality_lvl/change_pos/i_bias_lvl have no effect on "
-                     "this SoC (new encoder API) - values ignored");
+            (v->quality_lvl!=2 || v->change_pos!=80 || v->fluc_lvl!=0)){
+            LOGW(MOD,"videoN.quality_lvl/change_pos/fluc_lvl: no equivalent "
+                     "field in this SoC's encoder API - values ignored");
             warned_rcknobs = 1;
         }
     }
+#ifndef ENC_HAS_QPIPDELTA
+    {
+        static int warned_ipdelta = 0;
+        if (!warned_ipdelta && v->i_bias_lvl!=0){
+            LOGW(MOD,"videoN.i_bias_lvl: this SoC's SDK has no "
+                     "IMP_Encoder_SetChnQpIPDelta - value ignored");
+            warned_ipdelta = 1;
+        }
+    }
+#endif
 #else
     /* older platforms: manual attribute setup (H264 only path shown) */
 #if defined(PLATFORM_T10)||defined(PLATFORM_T20)
@@ -1328,6 +1356,19 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
             LOGW(MOD,"Encoder_SetChnQpBounds %d (%d..%d) failed - using SDK default range",
                  chn, qmin, qmax);
     }
+#ifdef ENC_HAS_QPIPDELTA
+    /* i_bias_lvl via IMP_Encoder_SetChnQpIPDelta (T31/C100 SDKs only), the
+     * same after-RegisterChn pattern as the QP bounds above and non-fatal on
+     * rejection. Only for a non-default value: 0 leaves the SDK's own
+     * iIPDelta untouched (readable as encoder.<n>.rc.ip_delta). The classic
+     * iBiasLvl and the new iIPDelta are close relatives, not proven identical
+     * in sign/scale - passed through 1:1; verify against the rc readback on
+     * hardware before trusting the mapping. */
+    if (v->i_bias_lvl != 0 &&
+        IMP_Encoder_SetChnQpIPDelta(chn, v->i_bias_lvl) != 0)
+        LOGW(MOD,"Encoder_SetChnQpIPDelta %d (%d) failed - using SDK default",
+             chn, v->i_bias_lvl);
+#endif
 #endif
     return 0;
 }
