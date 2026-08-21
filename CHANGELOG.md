@@ -26,7 +26,18 @@ semantic versioning.
   encoder (disabled stream, T23 sw-rotate path, host sim) omit the object,
   matching the stats behaviour.
 
-- **Three classic-SoC rate-control knobs are now config keys**
+- **`videoN.fluc_lvl` exposes the H265 flucLvl knob** (0..4, default 0 = the
+  previous literal, so an untouched config produces the same stream;
+  `src/config.h`, `src/config.c`, `src/hal/hal_ingenic.c`, `src/control.c`,
+  `timps.conf.example`). It was the last classic-path rc literal with a
+  documented domain ("bitrate fluctuation relative to the average") and is
+  the H265 counterpart to `i_bias_lvl`. H265 only: the H264 rc structs have
+  no such field, and the T23 sw-rotate path stays H264-only. `staticTime`
+  (2), `frmQPStep` (3), `gopQPStep` (15) and `gopRelation` (0) deliberately
+  stay hardcoded - the SDK headers document no range for any of them, and a
+  key without defensible bounds is an invitation to misconfigure. Per
+  channel like every other `videoN.*` key. Both status-JSON branches in
+  `control.c` were extended (the drift trap that bit in 8f3c84c).
   (`videoN.quality_lvl` 0..7, `videoN.change_pos` 50..100,
   `videoN.i_bias_lvl` -3..3; `src/config.h`, `src/config.c`,
   `src/hal/hal_ingenic.c`, `src/control.c`). They were literals in the VBR/CBR

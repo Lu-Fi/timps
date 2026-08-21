@@ -34,6 +34,8 @@ typedef struct {
     int      quality_lvl;    /* VBR/Smart: minBitRate = bitrate * quality[lvl] */
     int      change_pos;     /* VBR/Smart: % of bitrate above which qp is raised */
     int      i_bias_lvl;     /* VBR+CBR: I-frame qp bias, -3..3 */
+    int      fluc_lvl;       /* H265 CBR/VBR/Smart only: bitrate fluctuation
+                              * relative to the average, 0..4 */
     int      rotation;       /* 0,90,270 (+180 only on T40/T41 per-channel I2D;
                               * 180 removed elsewhere - use image.hflip+vflip) */
     int      buffers;        /* IMP nrVBs */

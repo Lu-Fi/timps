@@ -263,10 +263,21 @@ video0.max_qp    = 45
 #                       encoder starts raising qp. Default 80.
 #   i_bias_lvl   -3..3  VBR and CBR. I-frame qp bias: negative spends more bits
 #                       on keyframes, positive fewer. Default 0.
+#   fluc_lvl     0..4   H265 only (ignored for h264 - the H264 rc structs have
+#                       no such field). Allowed bitrate fluctuation relative to
+#                       the average. Default 0 = the previous hardcoded value.
+#
+# Effect caveat, measured on a T23 (see the CHANGELOG / dev notes): quality_lvl
+# reliably moves the operating point, but change_pos measurably did NOTHING
+# there (80/65/50 gave the same rate), and the controller would not go below
+# ~990 kbit/s although the same scene cost 278 at a fixed qp - unexplained.
+# Treat these knobs as levers to try while watching encoder.<n>.rc in
+# GET /control, not as guarantees.
 #
 #video0.quality_lvl = 2
 #video0.change_pos  = 80
 #video0.i_bias_lvl  = 0
+#video0.fluc_lvl    = 0
 video0.rotation  = 0         # 0|90|180|270 - build-gated & SoC-dependent (see block above)
 video0.buffers   = 2
 video0.rtsp_path = /ch0

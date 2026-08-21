@@ -1274,13 +1274,13 @@ int control_get_json(char *buf, size_t cap)
             "\"fps\":%d,\"bitrate\":%d,\"rc_mode\":\"%s\","
             "\"gop\":%d,\"max_gop\":%d,\"profile\":%d,\"qp\":%d,"
             "\"min_qp\":%d,\"max_qp\":%d,\"quality_lvl\":%d,"
-            "\"change_pos\":%d,\"i_bias_lvl\":%d,"
+            "\"change_pos\":%d,\"i_bias_lvl\":%d,\"fluc_lvl\":%d,"
             "\"rotation\":%d,\"buffers\":%d,"
             "\"rtsp_path\":\"%s\"}",
             i?",":"", i, vs->enabled, cod, vs->width, vs->height, ew, eh, vs->fps,
             vs->bitrate_kbps, rc, vs->gop, vs->max_gop, vs->profile,
             vs->qp, vs->min_qp, vs->max_qp, vs->quality_lvl,
-            vs->change_pos, vs->i_bias_lvl, vs->rotation, vs->buffers, rp);
+            vs->change_pos, vs->i_bias_lvl, vs->fluc_lvl, vs->rotation, vs->buffers, rp);
 #else
         /* rotation compiled out: omit eff_width/eff_height and the rotation
          * value is always 0 (prot() coerced it), so eff == raw dims anyway. */
@@ -1289,13 +1289,13 @@ int control_get_json(char *buf, size_t cap)
             "\"fps\":%d,\"bitrate\":%d,\"rc_mode\":\"%s\","
             "\"gop\":%d,\"max_gop\":%d,\"profile\":%d,\"qp\":%d,"
             "\"min_qp\":%d,\"max_qp\":%d,\"quality_lvl\":%d,"
-            "\"change_pos\":%d,\"i_bias_lvl\":%d,"
+            "\"change_pos\":%d,\"i_bias_lvl\":%d,\"fluc_lvl\":%d,"
             "\"rotation\":%d,\"buffers\":%d,"
             "\"rtsp_path\":\"%s\"}",
             i?",":"", i, vs->enabled, cod, vs->width, vs->height, vs->fps,
             vs->bitrate_kbps, rc, vs->gop, vs->max_gop, vs->profile,
             vs->qp, vs->min_qp, vs->max_qp, vs->quality_lvl,
-            vs->change_pos, vs->i_bias_lvl, vs->rotation, vs->buffers, rp);
+            vs->change_pos, vs->i_bias_lvl, vs->fluc_lvl, vs->rotation, vs->buffers, rp);
 #endif /* USE_ROTATE */
     }
     /* osd: master switch + the other osd.* globals (monitor_stream/font_path/

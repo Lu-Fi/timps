@@ -1179,7 +1179,8 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
     {
         static int warned_rcknobs = 0;
         if (!warned_rcknobs &&
-            (v->quality_lvl!=2 || v->change_pos!=80 || v->i_bias_lvl!=0)){
+            (v->quality_lvl!=2 || v->change_pos!=80 || v->i_bias_lvl!=0 ||
+             v->fluc_lvl!=0)){
             LOGW(MOD,"videoN.quality_lvl/change_pos/i_bias_lvl have no effect on "
                      "this SoC (new encoder API) - values ignored");
             warned_rcknobs = 1;
@@ -1260,7 +1261,7 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
             a.rcAttr.attrRcMode.attrH265Vbr.qualityLvl  = (uint32_t)v->quality_lvl;
             a.rcAttr.attrRcMode.attrH265Vbr.frmQPStep   = 3;
             a.rcAttr.attrRcMode.attrH265Vbr.gopQPStep   = 15;
-            a.rcAttr.attrRcMode.attrH265Vbr.flucLvl     = 0;
+            a.rcAttr.attrRcMode.attrH265Vbr.flucLvl     = (uint32_t)v->fluc_lvl;
         } else
 #endif
         {
@@ -1286,7 +1287,7 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
             a.rcAttr.attrRcMode.attrH265Cbr.iBiasLvl   = v->i_bias_lvl;
             a.rcAttr.attrRcMode.attrH265Cbr.frmQPStep  = 3;
             a.rcAttr.attrRcMode.attrH265Cbr.gopQPStep  = 15;
-            a.rcAttr.attrRcMode.attrH265Cbr.flucLvl    = 0;
+            a.rcAttr.attrRcMode.attrH265Cbr.flucLvl    = (uint32_t)v->fluc_lvl;
         } else
 #endif
         {
