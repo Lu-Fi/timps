@@ -268,3 +268,4 @@ int hal_isp_total_gain(uint32_t *gain){ (void)gain; return -1; }
 int hal_isp_ae_luma(uint32_t *luma){ (void)luma; return -1; }
 /* no encoder telemetry on the host sim: caller omits the stats object */
 int hal_enc_stats(int enc_chn, hal_enc_stat *out){ (void)enc_chn; (void)out; return -1; }
+int hal_enc_rc_read(int enc_chn, hal_enc_rc *out){ (void)enc_chn; (void)out; return -1; }

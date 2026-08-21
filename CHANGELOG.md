@@ -8,6 +8,24 @@ semantic versioning.
 
 ### Added
 
+- **GET /control now reports the rate-control attrs the encoder ACTUALLY
+  holds** (`src/hal/hal.h`, `src/hal/hal_ingenic.c`, `src/control.c`): each
+  `encoder.<n>` status object gains an `rc` sub-object read live via
+  `IMP_Encoder_GetChnAttrRcMode` - per channel, read-only, present on every
+  supported SoC. This is the missing diagnostic from the T23 rate-control
+  investigation (`dev_notes/T23_RATECONTROL_INVESTIGATION_2026-08-21.md`):
+  timps has always written these attrs at bring-up and never verified they
+  arrive unaltered, and two header-derived hypotheses about the controller
+  already failed against measurement. Keys reuse the `videoN.*` names where
+  they mean the same thing, so written and held values can be diffed
+  directly; the object is deliberately separate from the configured `video`
+  block. On the ENC_NEW_API SoCs this also makes `uMaxBitRate`, `iIPDelta`,
+  `iPBDelta`, `eRcOptions`, `uMaxPictureSize` and `uMaxPSNR` readable for the
+  first time (raw SDK values, units unverified - that open question is one of
+  the things the readback exists to answer). Channels without a queryable
+  encoder (disabled stream, T23 sw-rotate path, host sim) omit the object,
+  matching the stats behaviour.
+
 - **Three classic-SoC rate-control knobs are now config keys**
   (`videoN.quality_lvl` 0..7, `videoN.change_pos` 50..100,
   `videoN.i_bias_lvl` -3..3; `src/config.h`, `src/config.c`,

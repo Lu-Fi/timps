@@ -1386,6 +1386,44 @@ int control_get_json(char *buf, size_t cap)
                 es.cur_packs, es.work_done);
             if (es.ave_bitrate >= 0.0)
                 APP(",\"ave_bitrate\":%.1f", es.ave_bitrate);
+            {   /* "rc": what the encoder ACTUALLY holds right now
+                 * (IMP_Encoder_GetChnAttrRcMode readback, hal.h) -
+                 * deliberately separate from the CONFIGURED videoN.* block
+                 * above, so written and held values can be compared. Keys
+                 * reuse the videoN.* names where they mean the same thing;
+                 * fields the current mode/API does not carry are omitted.
+                 * On the new-API SoCs, bitrate/max_bitrate are the raw SDK
+                 * values (unit unverified) plus the four attrs timps never
+                 * writes (ip_delta/pb_delta/rc_options/max_picture_size/
+                 * max_psnr) - readable here for the first time. */
+                hal_enc_rc rc;
+                if (hal_enc_rc_read(c->video[i].imp_chn, &rc) == 0){
+                    APP(",\"rc\":{\"rc_mode\":\"%s\"", rc.mode);
+                    if (rc.bitrate       >= 0) APP(",\"bitrate\":%lld", rc.bitrate);
+                    if (rc.max_bitrate   >= 0) APP(",\"max_bitrate\":%lld", rc.max_bitrate);
+                    #define RCF(name,fld) \
+                        if (rc.fld != HAL_RC_UNSET) APP(",\"" name "\":%d", rc.fld)
+                    RCF("qp",            qp);
+                    RCF("min_qp",        min_qp);
+                    RCF("max_qp",        max_qp);
+                    RCF("i_bias_lvl",    i_bias_lvl);
+                    RCF("change_pos",    change_pos);
+                    RCF("quality_lvl",   quality_lvl);
+                    RCF("static_time",   static_time);
+                    RCF("frm_qp_step",   frm_qp_step);
+                    RCF("gop_qp_step",   gop_qp_step);
+                    RCF("adaptive_mode", adaptive_mode);
+                    RCF("gop_relation",  gop_relation);
+                    RCF("fluc_lvl",      fluc_lvl);
+                    RCF("ip_delta",      ip_delta);
+                    RCF("pb_delta",      pb_delta);
+                    RCF("max_psnr",      max_psnr);
+                    #undef RCF
+                    if (rc.rc_options       >= 0) APP(",\"rc_options\":%lld", rc.rc_options);
+                    if (rc.max_picture_size >= 0) APP(",\"max_picture_size\":%lld", rc.max_picture_size);
+                    APP("}");
+                }
+            }
             APP("}");
             nemit++;
         }

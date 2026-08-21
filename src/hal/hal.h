@@ -47,6 +47,39 @@ typedef struct {
 } hal_enc_stat;
 int hal_enc_stats(int enc_chn, hal_enc_stat *out);
 
+/* Read-only rate-control attributes the encoder ACTUALLY holds for one
+ * channel, from IMP_Encoder_GetChnAttrRcMode (present on every supported
+ * SoC). This is the missing diagnostic for the whole rc-key family: timps
+ * has always written these attrs at bring-up and never once verified they
+ * arrive unaltered. Values are the raw SDK readback, NOT g_cfg - compare
+ * them against the configured videoN.* to tell "written" from "held".
+ *
+ * Only the fields the encoder's CURRENT mode/API carries are filled; the
+ * rest stay HAL_RC_UNSET (an out-of-band sentinel: several fields are
+ * legitimately negative). On the classic API, bitrate is maxBitRate (VBR/
+ * Smart) or outBitRate (CBR), unit kbps per the SDK header. On the
+ * ENC_NEW_API SoCs, bitrate/max_bitrate are uTargetBitRate/uMaxBitRate in
+ * whatever unit the SDK stores internally - NOT verified to be kbps; that
+ * open question is one of the things this readback exists to answer.
+ * Returns 0 on success, <0 when the channel has no queryable encoder
+ * (disabled stream, T23 sw-rotate path, host sim). */
+#define HAL_RC_UNSET (-1000000)
+typedef struct {
+    char mode[16];               /* rc mode held, timps token spelling */
+    long long bitrate;           /* classic maxBitRate/outBitRate; new API uTargetBitRate */
+    long long max_bitrate;       /* new API uMaxBitRate (VBR/capped modes) */
+    int  qp;                     /* fixqp qp / new API iInitialQP */
+    int  min_qp, max_qp;
+    int  i_bias_lvl, change_pos, quality_lvl;      /* classic */
+    int  static_time, frm_qp_step, gop_qp_step;    /* classic */
+    int  adaptive_mode, gop_relation, fluc_lvl;    /* classic H264/H265 */
+    int  ip_delta, pb_delta;     /* new API iIPDelta/iPBDelta */
+    long long rc_options;        /* new API eRcOptions bitmask */
+    long long max_picture_size;  /* new API uMaxPictureSize */
+    int  max_psnr;               /* new API capped modes uMaxPSNR */
+} hal_enc_rc;
+int hal_enc_rc_read(int enc_chn, hal_enc_rc *out);
+
 #if defined(USE_BACKCHANNEL) || defined(USE_PLAY)
 /* Speaker output (IMP_AO). The HAL is the sole owner of the AO device; speaker.c
  * (backchannel + play queue) drives these, opening lazily on first use and

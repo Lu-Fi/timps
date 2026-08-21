@@ -4244,6 +4244,159 @@ int hal_enc_stats(int enc_chn, hal_enc_stat *out)
     return 0;
 }
 
+/* Rate-control readback (hal.h): what the encoder ACTUALLY holds, via
+ * IMP_Encoder_GetChnAttrRcMode. Which union member is valid follows from the
+ * rcMode read back plus (classic API) the channel's codec, so the codec is
+ * looked up in g_v first. Read-only by construction - this call cannot
+ * change encoder state on any platform. */
+int hal_enc_rc_read(int enc_chn, hal_enc_rc *out)
+{
+    if (!out) return -1;
+    int codec = -1;
+    for (int i=0;i<g_nv;i++)
+        if (g_v[i].chn == enc_chn){
+#ifdef ROT_HAS_SW_90
+            /* unbound Yuv encoder handle, no enc channel to query */
+            if (g_v[i].sw_rot) return -1;
+#endif
+            codec = g_v[i].codec;
+            break;
+        }
+    if (codec < 0) return -1;
+    IMPEncoderAttrRcMode m; memset(&m,0,sizeof m);
+    if (IMP_Encoder_GetChnAttrRcMode(enc_chn, &m) != 0) return -1;
+    out->bitrate = out->max_bitrate = -1;
+    out->rc_options = out->max_picture_size = -1;
+    out->qp = out->min_qp = out->max_qp = HAL_RC_UNSET;
+    out->i_bias_lvl = out->change_pos = out->quality_lvl = HAL_RC_UNSET;
+    out->static_time = out->frm_qp_step = out->gop_qp_step = HAL_RC_UNSET;
+    out->adaptive_mode = out->gop_relation = out->fluc_lvl = HAL_RC_UNSET;
+    out->ip_delta = out->pb_delta = out->max_psnr = HAL_RC_UNSET;
+#ifdef ENC_NEW_API
+    (void)codec;   /* new-API rc structs are codec-agnostic */
+    switch (m.rcMode){
+    case IMP_ENC_RC_MODE_FIXQP:
+        snprintf(out->mode,sizeof out->mode,"fixqp");
+        out->qp = m.attrFixQp.iInitialQP;
+        break;
+    case IMP_ENC_RC_MODE_CBR:
+        snprintf(out->mode,sizeof out->mode,"cbr");
+        out->bitrate      = (long long)m.attrCbr.uTargetBitRate;
+        out->qp           = m.attrCbr.iInitialQP;
+        out->min_qp       = m.attrCbr.iMinQP;
+        out->max_qp       = m.attrCbr.iMaxQP;
+        out->ip_delta     = m.attrCbr.iIPDelta;
+        out->pb_delta     = m.attrCbr.iPBDelta;
+        out->rc_options   = (long long)m.attrCbr.eRcOptions;
+        out->max_picture_size = (long long)m.attrCbr.uMaxPictureSize;
+        break;
+    case IMP_ENC_RC_MODE_VBR:
+        snprintf(out->mode,sizeof out->mode,"vbr");
+        out->bitrate      = (long long)m.attrVbr.uTargetBitRate;
+        out->max_bitrate  = (long long)m.attrVbr.uMaxBitRate;
+        out->qp           = m.attrVbr.iInitialQP;
+        out->min_qp       = m.attrVbr.iMinQP;
+        out->max_qp       = m.attrVbr.iMaxQP;
+        out->ip_delta     = m.attrVbr.iIPDelta;
+        out->pb_delta     = m.attrVbr.iPBDelta;
+        out->rc_options   = (long long)m.attrVbr.eRcOptions;
+        out->max_picture_size = (long long)m.attrVbr.uMaxPictureSize;
+        break;
+    case IMP_ENC_RC_MODE_CAPPED_VBR:
+    case IMP_ENC_RC_MODE_CAPPED_QUALITY:
+        snprintf(out->mode,sizeof out->mode,
+                 m.rcMode==IMP_ENC_RC_MODE_CAPPED_VBR?"capped_vbr":"capped_quality");
+        out->bitrate      = (long long)m.attrCappedVbr.uTargetBitRate;
+        out->max_bitrate  = (long long)m.attrCappedVbr.uMaxBitRate;
+        out->qp           = m.attrCappedVbr.iInitialQP;
+        out->min_qp       = m.attrCappedVbr.iMinQP;
+        out->max_qp       = m.attrCappedVbr.iMaxQP;
+        out->ip_delta     = m.attrCappedVbr.iIPDelta;
+        out->pb_delta     = m.attrCappedVbr.iPBDelta;
+        out->rc_options   = (long long)m.attrCappedVbr.eRcOptions;
+        out->max_picture_size = (long long)m.attrCappedVbr.uMaxPictureSize;
+        out->max_psnr     = m.attrCappedVbr.uMaxPSNR;
+        break;
+    default:
+        snprintf(out->mode,sizeof out->mode,"%d",(int)m.rcMode);
+        break;
+    }
+#else /* classic API */
+    switch (m.rcMode){
+    case ENC_RC_MODE_FIXQP:
+        snprintf(out->mode,sizeof out->mode,"fixqp");
+#if !(defined(PLATFORM_T10)||defined(PLATFORM_T20))
+        if (codec==MS_VC_H265) out->qp = (int)m.attrH265FixQp.qp;
+        else
+#endif
+            out->qp = (int)m.attrH264FixQp.qp;
+        break;
+    case ENC_RC_MODE_CBR:
+        snprintf(out->mode,sizeof out->mode,"cbr");
+#if !(defined(PLATFORM_T10)||defined(PLATFORM_T20))
+        if (codec==MS_VC_H265){
+            out->max_qp       = (int)m.attrH265Cbr.maxQp;
+            out->min_qp       = (int)m.attrH265Cbr.minQp;
+            out->static_time  = (int)m.attrH265Cbr.staticTime;
+            out->bitrate      = (long long)m.attrH265Cbr.outBitRate;
+            out->i_bias_lvl   = (int)m.attrH265Cbr.iBiasLvl;
+            out->frm_qp_step  = (int)m.attrH265Cbr.frmQPStep;
+            out->gop_qp_step  = (int)m.attrH265Cbr.gopQPStep;
+            out->fluc_lvl     = (int)m.attrH265Cbr.flucLvl;
+        } else
+#endif
+        {
+            out->max_qp        = (int)m.attrH264Cbr.maxQp;
+            out->min_qp        = (int)m.attrH264Cbr.minQp;
+            out->bitrate       = (long long)m.attrH264Cbr.outBitRate;
+            out->i_bias_lvl    = (int)m.attrH264Cbr.iBiasLvl;
+            out->frm_qp_step   = (int)m.attrH264Cbr.frmQPStep;
+            out->gop_qp_step   = (int)m.attrH264Cbr.gopQPStep;
+            out->adaptive_mode = (int)m.attrH264Cbr.adaptiveMode;
+            out->gop_relation  = (int)m.attrH264Cbr.gopRelation;
+        }
+        break;
+    case ENC_RC_MODE_VBR:
+    case ENC_RC_MODE_SMART:
+        snprintf(out->mode,sizeof out->mode,
+                 m.rcMode==ENC_RC_MODE_SMART?"smart":"vbr");
+        /* VBR and Smart unions are layout-identical per codec (see the fill
+         * in enc_create) - one VBR-shaped read serves both */
+#if !(defined(PLATFORM_T10)||defined(PLATFORM_T20))
+        if (codec==MS_VC_H265){
+            out->max_qp       = (int)m.attrH265Vbr.maxQp;
+            out->min_qp       = (int)m.attrH265Vbr.minQp;
+            out->static_time  = (int)m.attrH265Vbr.staticTime;
+            out->bitrate      = (long long)m.attrH265Vbr.maxBitRate;
+            out->i_bias_lvl   = (int)m.attrH265Vbr.iBiasLvl;
+            out->change_pos   = (int)m.attrH265Vbr.changePos;
+            out->quality_lvl  = (int)m.attrH265Vbr.qualityLvl;
+            out->frm_qp_step  = (int)m.attrH265Vbr.frmQPStep;
+            out->gop_qp_step  = (int)m.attrH265Vbr.gopQPStep;
+            out->fluc_lvl     = (int)m.attrH265Vbr.flucLvl;
+        } else
+#endif
+        {
+            out->max_qp       = (int)m.attrH264Vbr.maxQp;
+            out->min_qp       = (int)m.attrH264Vbr.minQp;
+            out->static_time  = (int)m.attrH264Vbr.staticTime;
+            out->bitrate      = (long long)m.attrH264Vbr.maxBitRate;
+            out->i_bias_lvl   = (int)m.attrH264Vbr.iBiasLvl;
+            out->change_pos   = (int)m.attrH264Vbr.changePos;
+            out->quality_lvl  = (int)m.attrH264Vbr.qualityLvl;
+            out->frm_qp_step  = (int)m.attrH264Vbr.frmQPStep;
+            out->gop_qp_step  = (int)m.attrH264Vbr.gopQPStep;
+            out->gop_relation = (int)m.attrH264Vbr.gopRelation;
+        }
+        break;
+    default:
+        snprintf(out->mode,sizeof out->mode,"%d",(int)m.rcMode);
+        break;
+    }
+#endif /* ENC_NEW_API */
+    return 0;
+}
+
 #if defined(USE_BACKCHANNEL) || defined(USE_PLAY)
 /* ---- speaker output (IMP_AO) -------------------------------------------------
  * Sole owner of AO dev/chn 0. Brought up lazily by speaker.c on the first
