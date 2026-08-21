@@ -11,8 +11,10 @@ All of these are `video<N>.*` keys and follow the same rules as the rest of
 that section in the [Configuration Reference](Configuration-Reference.md#videon--per-stream-encoder-settings):
 persist-only, restart-required, set in `timps.conf` or via `POST /control`
 (the value is stored and echoed back either way, it just doesn't reach the
-running encoder until the next restart). None of them can be changed live
-today.
+running encoder until the next restart). None of them can be *set* live
+today, but every field on this page can be *read back live* — see
+[Readback](HTTP-Control-API.md#the-encodernrc-object--what-the-encoder-actually-holds)
+below.
 
 ## Measured vs. header-derived
 
@@ -50,21 +52,32 @@ fields above — this is a structural difference between the two encoder
 generations (see [Platform & SDK Support](Platform-SDK-Support.md#two-encoder-api-generations)),
 not an oversight in what timps exposes.
 
-## What is still unexplained
+## What was unexplained, and how it was settled
 
-The T23's low-activity operating point settles around 990 kbit/s in the
-measured setup and does not go lower under any combination of `rc_mode`,
-`quality_lvl`, or `change_pos` tried so far — while the same scene, same
-camera, costs 278 kbit/s at a fixed QP of 42. Neither the `quality_lvl`
-floor formula nor the `change_pos` threshold accounts for this gap (both
-were checked and ruled out — see
-[Rate Control and Bandwidth](Rate-Control-Bandwidth.md#two-hypotheses-that-looked-right-and-were-not)),
-and `min_qp`/`max_qp` have sat at their defaults (20/45) throughout, so
-whatever rule the controller uses to pick a point inside that span is not
-currently known. This is written down as an open question rather than
-glossed over with a third unverified guess; the two candidate next steps
-(sweeping `min_qp`, and reading the live encoder state back via
-`IMP_Encoder_GetChnAttrRcMode()`) are tracked in `dev_notes/TODO.md`.
+The T23's low-activity operating point sat around 990 kbit/s in the
+measured setup and would not go lower under any combination of `rc_mode`,
+`quality_lvl`, or `change_pos` — while the same scene, same camera, costs
+278 kbit/s at a fixed QP of 42. Neither the `quality_lvl` floor formula
+nor the `change_pos` threshold accounted for the gap (both were checked
+and ruled out — see
+[Rate Control and Bandwidth](Rate-Control-Bandwidth.md#two-hypotheses-that-looked-right-and-were-not)).
+
+Sweeping `min_qp` settled it: 20 -> 1743 kbit/s, 30 -> 1181, 38 -> 235 —
+below the fixed-QP reference. The T23 controller is quality-seeking, not
+rate-seeking: it picks the best quality `min_qp` allows and the bitrate
+follows as a consequence. `min_qp`/`max_qp` predate this investigation
+and were never the mystery — they were simply left at their defaults
+(20/45) throughout the earlier tests, which is why the operating point
+looked fixed.
+
+### Readback
+
+The remaining question — whether timps's writes reach the encoder
+unaltered at all — is answered by `GET /control`'s
+[`encoder.<n>.rc` object](HTTP-Control-API.md#the-encodernrc-object--what-the-encoder-actually-holds),
+which reads the attributes back live via `IMP_Encoder_GetChnAttrRcMode`
+and reports them separately from the configured `video<N>.*` block. Diff
+the two if a setting ever looks like it is not taking effect.
 
 ## Illustrations (pending — placeholders only)
 

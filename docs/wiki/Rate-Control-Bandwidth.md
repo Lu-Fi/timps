@@ -122,10 +122,11 @@ should unlock savings sooner." Measured at `quality_lvl = 7`: `change_pos`
 80, 65, and 50 produced 1264, 1264, and 1251 kbit/s respectively — no
 measurable effect at all.
 
-Whatever actually determines the T23's lower bound (measurement puts it
+What actually determined the T23's lower bound (measurement put it
 around 990 kbit/s in this setup, well above the 278 kbit/s the same scene
-costs at a fixed QP of 42) is still unexplained — see
-[Rate Control Parameters](Rate-Control-Parameters.md#what-is-still-unexplained).
+costs at a fixed QP of 42) turned out to be `min_qp`, sitting untouched at
+its default of 20 throughout all of the above — see
+[Rate Control Parameters](Rate-Control-Parameters.md#what-was-unexplained-and-how-it-was-settled).
 
 ## See also
 

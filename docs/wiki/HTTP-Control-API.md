@@ -185,6 +185,38 @@ A channel whose query fails — a disabled stream, the T23 SW-rotate path
 simulation backend — is **omitted** from the object entirely rather than
 reported with misleading zeros.
 
+### The `encoder.<n>.rc` object — what the encoder actually holds
+
+Each `encoder.<n>` entry can carry an additional `"rc"` sub-object,
+read live via `IMP_Encoder_GetChnAttrRcMode` — a *second* source of truth
+next to the `video<N>.*` block, which only reports what was written. The
+two exist so a written value can be diffed against what the encoder held
+after the fact; see
+[Rate Control Parameters](Rate-Control-Parameters.md#what-was-unexplained-and-how-it-was-settled) for why
+that gap has mattered in practice (two SDK-header-derived assumptions
+about T23 rate control turned out wrong until this readback existed).
+
+```json
+"encoder": {
+  "0": {"registered":1, "left_pics":0, "...": "...",
+        "rc": {"rc_mode":"vbr", "bitrate":2000, "max_bitrate":2000,
+               "min_qp":20, "max_qp":45, "quality_lvl":7,
+               "change_pos":80, "i_bias_lvl":0}}
+}
+```
+
+Fields reuse the `video<N>.*` names where they mean the same thing.
+Only fields the current mode/API actually carries are present — a
+`cbr` channel never shows `quality_lvl`, a classic-SoC channel never
+shows `ip_delta`/`pb_delta`/`rc_options`/`max_picture_size`/`max_psnr`.
+On the new-generation API (T31/C100/T40/T41) those last five are the
+attributes timps itself never writes (left at the vendor SDK default);
+this readback is the first place their values are visible at all — as
+raw SDK numbers, units unverified. If `hal_enc_rc_read()` fails (no
+live channel, unqueryable state), the whole `rc` key is omitted, same
+as the parent `encoder.<n>` entry's own omission rule above.
+
+
 ### Request/response examples
 
 Get full status:
