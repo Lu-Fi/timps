@@ -259,7 +259,14 @@ double hub_get_fps(int src)
     hub_source *s = hub_get(src); if(!s) return 0.0;
     double fps;
     pthread_mutex_lock(&s->lock);
-    fps = s->mfps;
+    /* fwin only advances while the producer publishes - same staleness rule as
+     * hub_get_bitrate() below, which has had it since eda8302 while this one
+     * did not. Without it an idle on-demand stream reports whatever the last
+     * closed window happened to hold, and the window right before an idle-stop
+     * (or right after a StartRecvPic) is exactly the atypical one. That made
+     * {fps} and {bitrate} disagree on the same overlay - a frozen number next
+     * to a 0 - with no way for a reader to tell which was measuring. */
+    fps = (ms_now_us() - s->fwin < 2000000) ? s->mfps : 0.0;
     pthread_mutex_unlock(&s->lock);
     return fps;
 }

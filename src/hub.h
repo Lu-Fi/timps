@@ -81,6 +81,8 @@ void        hub_request_idr(int src);
  * always-on trace of the silent drop->IDR->bitrate-spike cycle. */
 void        hub_note_drop(int src);
 unsigned    hub_get_drops(int src);
+/* measured video frame rate of the stream; 0 when idle (no producer, i.e. the
+ * last 1s measurement window is stale) - same rule as hub_get_bitrate(). */
 double      hub_get_fps(int src);
 /* measured video throughput of the stream in kbit/s; 0 when idle (no producer,
  * i.e. the last 1s measurement window is stale). */

@@ -198,6 +198,22 @@ semantic versioning.
 
 ### Fixed
 
+- **`hub_get_fps()` reports 0 for an idle stream instead of a frozen number**
+  (`src/hub.c`, `src/hub.h`). `hub_get_bitrate()` has expired its measurement
+  after 2 s since `eda8302` - "so an idle on-demand stream shows 0 rather than
+  a frozen rate" - and its fps twin never got the same guard, so the two
+  disagreed on the same OSD overlay: `{bitrate}` at 0 next to a `{fps}` still
+  showing whatever the last closed 1 s window happened to hold. Since video
+  encoding is on-demand (`MS_IDLE_STOP_US`), the window right before an
+  idle-stop is exactly the atypical one to freeze. Affects `{fps}`/`{fpsN}` in
+  the OSD and the `fps` field of the HTTP `/stats` payload, both of which now
+  match their bitrate counterparts. **Not confirmed** as the explanation for
+  the one field report that prompted this (`dev_notes/TODO.md`, an OSD reading
+  13 instead of ~25 on cam-kinder-rechts); the check that would have decided it
+  was never run, and the fps ceiling on those cameras turned out to have a
+  driver-level cause. Applied because a frozen reading on an idle channel is
+  wrong on its own terms.
+
 - **`video<N>.qp` no longer claims a live apply it cannot make** on the
   new-API SoCs (`src/enc_caps.h`, `src/hal/hal_ingenic.c`, `src/control.h`,
   `scripts/timps-qa.sh`, `docs/wiki/Rate-Control-Parameters.md`,

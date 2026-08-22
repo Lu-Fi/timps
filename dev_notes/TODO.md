@@ -293,6 +293,31 @@ list (checked — no `restart` consumer found under
 
 ## OSD `{fps}`/`{bitrate}`: cam-kinder-rechts showing 13 instead of ~25
 
+**PARTLY CLOSED 2026-08-22.** Two separate things live in this entry and only
+one of them is settled.
+
+*The magnitude question is answered and was never this bug*: the ffprobe
+counts and the driver work below traced the ~13.5 fps to
+`isp_ch0_pre_dequeue_time`, fixed and verified on cam-kinder-rechts (see
+"RESOLVED: T31+sc2336 fps ceiling fixed" further down).
+
+*The asymmetry the investigation turned up is now fixed*: `hub_get_fps()` has
+the same 2 s staleness guard `hub_get_bitrate()` has carried since `eda8302`,
+so an idle channel reports 0 instead of a frozen `mfps`. Demonstrated on the
+host with the `osd_vars.c` + `hub.c` harness from the `{bitrateN}` item: after
+3 s of silence `{bitrate0}` read 0 while `{fps0}` still read 31.0, and with
+the guard both read 0.
+
+**What is still NOT established**: whether that asymmetry is what
+cam-kinder-rechts was showing. The suggested quick check - what `{bitrate}`
+read at the same moment as the 13 - was never run, and the fix was applied
+because a frozen fps reading on an idle channel is wrong on its own terms, not
+because it was confirmed as the cause. Nobody should read this as "the field
+report is explained". If a frozen `{fps}` is ever seen again, it is a new
+observation, not a regression of this.
+
+### Original entry
+
 Investigated 2026-08-21 against `src/hub.c`/`src/hub.h` (read-only — another
 agent is live-editing `hal_ingenic.c`/`hub.c`/`hub.h`/`enc_caps.h` for the
 rate-control work; this was analysis only, nothing here was applied).
@@ -360,9 +385,9 @@ isn't already conclusive:**
   the last value was — that would be the clean live confirmation of the
   "frozen on idle" theory.
 
-**Proposed minimal fix (not applied — sketch only):** give `hub_get_fps()`
-the same staleness guard `hub_get_bitrate()` already has, i.e. in
-`src/hub.c`:
+**Proposed minimal fix (APPLIED 2026-08-22, see the status note at the top of
+this entry):** give `hub_get_fps()` the same staleness guard
+`hub_get_bitrate()` already has, i.e. in `src/hub.c`:
 
 ```c
 double hub_get_fps(int src)
