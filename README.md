@@ -116,7 +116,8 @@ audio.codec  = aac       # needs timps built with libfaac; else pcmu (G.711u)
 # every stream. x/y: 0 = centered, >0 = from left/top, <0 = from right/
 # bottom. Optional text outline: outline = <px>, outline_color = 0xAARRGGBB.
 # Placeholders:
-# {hostname} {ip} {mac} {fps} {uptime} {net} {cpu} {mem} {clients} + strftime
+# {hostname} {ip} {mac} {fps} {fpsN} {bitrate} {bitrateN} {uptime} {net} {cpu}
+# {mem} {clients} + strftime
 osd0.0.text = %Y-%m-%d %H:%M:%S    # stream 0, item 0
 osd1.0.text = %H:%M                # stream 1 has its own items
 

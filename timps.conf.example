@@ -388,7 +388,7 @@ audio.aec                = 0      # live — 0 off, 1 on (USE_BACKCHANNEL/USE_PL
 
 # ---- OSD (up to 8 overlays PER video stream; own TrueType rasterizer) ----
 osd.enabled        = 1
-osd.monitor_stream = 0                        # stream whose fps feeds {fps}
+osd.monitor_stream = 0                        # stream feeding {fps}/{bitrate}
 osd.font_path      = /usr/share/fonts/default.ttf   # default TTF; empty = bitmap font
 osd.vars_file      = /tmp/timps_osd.vars                  # custom placeholder source
 osd.supersample    = 2                        # TTF rasterizer AA: samples/axis/pixel
@@ -420,7 +420,10 @@ osd.supersample    = 2                        # TTF rasterizer AA: samples/axis/
 # Each item is either type=text or type=logo.
 # Text placeholders:
 #   time:    strftime tokens, e.g. %Y-%m-%d %H:%M:%S  %F %T
-#   builtin: {hostname} {ip} {mac} {fps} {uptime}
+#   builtin: {hostname} {ip} {mac} {fps} {bitrate} {uptime}
+#            {fpsN}/{bitrateN} (e.g. {fps1}, {bitrate1}) are stream N's own
+#            figures; the no-number pair reads osd.monitor_stream for every
+#            layer, whichever stream the layer belongs to
 #   custom:  any {name} is read from osd.vars_file (key = value lines),
 #            so a script can write e.g.  site = Frontdoor  into that file.
 # Text outline (readability stroke, drawn under the fill):

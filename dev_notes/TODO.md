@@ -469,7 +469,27 @@ T23N+sc2336 (25.0) and T31X+sc4336p (24.7) deliver full rate. Findings from
    200 MHz also plausible) — deliberately NOT applied, per-fleet decision
    pending.
 
-## `{bitrateN}` placeholder is missing (per-channel bitrate OSD text)
+## RESOLVED: `{bitrateN}` placeholder was missing (per-channel bitrate OSD text)
+
+**Implemented 2026-08-22** exactly as sketched below - the branch went into
+`resolve()` right after the plain `{bitrate}` one, mirroring the `{fps}` ->
+`{fpsN}` order rather than being wedged in before it: `strcmp("bitrate9",
+"bitrate")` never matches, so there was no shadowing to avoid and the
+mirrored order reads better. No `hub.c`/`hub.h` change was needed, as
+predicted. Placeholder lists updated in `src/hal/osd_vars.h`,
+`docs/wiki/Configuration-Reference.md` (two lists, both of which were also
+missing plain `{bitrate}`), `timps.conf.example` and `README.md`.
+
+Verified on the host, not on a camera: `osd_vars.c` is not in the sim's source
+list, so it was exercised through a throwaway harness linking the real
+`osd_vars.c` + `hub.c` and publishing two channels at different frame sizes.
+`{fps0}/{fps1}` = 31.0/16.0 and `{bitrate0}/{bitrate1}` = 2478/256 - per
+channel, distinct, and `{bitrate}` kept reading the `osd.monitor_stream`
+global. `{bitrate9}` (>= MS_MAX_VSTREAM) renders 0 and `{bitrateX}` falls
+through to the vars-file lookup, both as intended. The OSD-text smoke test on
+a real camera below is still worth doing but nothing about it is in doubt.
+
+### Original entry
 
 Investigated 2026-08-21, read-only against `src/hal/osd_vars.c`, `src/hub.c`,
 `src/hub.h` and `git log`/`git show` on the relevant commits.

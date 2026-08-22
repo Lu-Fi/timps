@@ -131,6 +131,17 @@ semantic versioning.
   them and doing nothing - the failure mode that hid the `min_qp`/`max_qp` gap
   until 0a8bb9f.
 
+- **`{bitrateN}` OSD placeholder** (`src/hal/osd_vars.c`, `src/hal/osd_vars.h`,
+  `timps.conf.example`, `README.md`,
+  `docs/wiki/Configuration-Reference.md`): the per-channel counterpart to
+  `{fpsN}`, e.g. `osd1.1.text = {fps1} fps {bitrate1} kbit/s`. `{bitrate}`
+  without a number reads `osd.monitor_stream` and therefore prints the SAME
+  figure on every stream's overlay; `{bitrateN}` prints stream N's own
+  measured encoder output. `hub_get_bitrate()` has taken a per-channel hub
+  source since it was written - only the placeholder was missing, forgotten
+  when `{fpsN}` was added. It inherits that getter's 2 s staleness guard, so
+  an on-demand stream with no viewer shows 0 rather than a frozen rate.
+
 ### Changed
 
 - **day/night: the config surface is consolidated, ten keys smaller**

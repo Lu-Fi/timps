@@ -182,6 +182,16 @@ static void resolve(const char *name, const char *vars_file, char *out, int outs
         snprintf(out,outsz,"%.1f", ch<MS_MAX_VSTREAM ? hub_get_fps(ch) : 0.0);
     }
     else if (!strcmp(name,"bitrate"))  snprintf(out,outsz,"%.0f",g_bitrate);
+    /* {bitrateN}: measured encoder OUTPUT bitrate of video stream N
+     * specifically, independent of osd.monitor_stream. Mirrors {fpsN} -
+     * hub_get_bitrate() has always taken the hub source per channel, this
+     * placeholder was simply never written. Note it reports 0 for a channel
+     * idle >2 s (hub.c's staleness guard), so an on-demand substream with no
+     * viewer prints 0 rather than a frozen rate. */
+    else if (!strncmp(name,"bitrate",7) && name[7]>='0' && name[7]<='9' && name[8]==0){
+        int ch = name[7]-'0';
+        snprintf(out,outsz,"%.0f", ch<MS_MAX_VSTREAM ? hub_get_bitrate(ch) : 0.0);
+    }
     else if (!strcmp(name,"uptime"))   get_uptime(out,outsz);
     else if (!strcmp(name,"net")||!strcmp(name,"tx"))  get_net_tx(ifname,out,outsz);
     else if (!strcmp(name,"cpu"))      get_cpu(out,outsz);

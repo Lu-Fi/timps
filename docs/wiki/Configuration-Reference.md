@@ -239,7 +239,7 @@ overlay fields are documented separately below (`osd<S>.<N>.*`).
 | Key | Type | Default | Range | Live? | Description |
 | --- | --- | --- | --- | --- | --- |
 | `osd.enabled` | bool | 1 | 0/1 | Restart-only | Master OSD on/off switch, global across all streams. Settable via `/control` (`{"osd":{"enabled":...}}`) and persists, but the OSD groups are only ever built once at startup (`imp_osd_setup`), so the effect needs a restart. |
-| `osd.monitor_stream` | int | 0 | — | **Live** | Which stream's measured fps feeds the `{fps}` placeholder. Settable via `/control` (`{"osd":{"monitor_stream":...}}`); read directly off `g_cfg` on every OSD text refresh, so a POST applies on the next render, no restart needed. |
+| `osd.monitor_stream` | int | 0 | — | **Live** | Which stream's measured fps/bitrate feeds the `{fps}` and `{bitrate}` placeholders — for every OSD layer, on every stream. Use the numbered `{fpsN}`/`{bitrateN}` forms instead when a layer should show its own stream's figures. Settable via `/control` (`{"osd":{"monitor_stream":...}}`); read directly off `g_cfg` on every OSD text refresh, so a POST applies on the next render, no restart needed. |
 | `osd.font_path` | string | `/usr/share/fonts/default.ttf` | — | Restart-only | Default TTF font for text items without a per-item `font_path` override. Settable via `/control`, same restart-required class as `osd.enabled`. |
 | `osd.vars_file` | string | `/tmp/timps_osd.vars` | — | Restart-only | Custom placeholder source file (see "Custom placeholders" below). Settable via `/control`, same restart-required class as `osd.enabled`. |
 | `osd.supersample` | int | 2 | 1–4 | Restart-only | TTF rasterizer anti-aliasing quality (samples per axis per pixel); cost scales ~quadratically, 2 is visually close to 4 at typical OSD sizes for roughly a quarter of the CPU cost. Settable via `/control`, same restart-required class as `osd.enabled`. |
@@ -248,7 +248,8 @@ overlay fields are documented separately below (`osd<S>.<N>.*`).
 ### Custom placeholders (show any value you want in the OSD)
 
 Any `{name}` token in an OSD `text` template that isn't one of the built-in
-placeholders (`hostname`, `ip`, `mac`, `fps`, `fpsN`, `uptime`, `net`/`tx`,
+placeholders (`hostname`, `ip`, `mac`, `fps`, `fpsN`, `bitrate`, `bitrateN`,
+`uptime`, `net`/`tx`,
 `cpu`, `mem`, `clients`) is looked up in `osd.vars_file` instead - a plain
 `key = value` text file, one entry per line. This lets an external script
 drive OSD content with no timps code changes at all: temperature readings,
@@ -295,7 +296,7 @@ Default layout: item 0 = timestamp (top-left), item 1 = `{hostname}`
 | --- | --- | --- | --- | --- | --- |
 | `enabled` | bool | item 0–3: `1`, items 4–7: `0` | 0/1 | **Restart-only** | Enabling an item that started disabled has no IMP region to attach to — only takes effect on restart. Disabling a running item also only persists (no live hide). |
 | `type` | enum | `text` (item 3: `logo`) | `text`\|`logo` | **Restart-only** | Overlay type. Settable via `/control` and persists, but `imp_osd_apply()`'s live re-render dispatch is fixed at region-creation time (`rg->is_text`), so switching an existing item between text and logo needs a restart to actually change what's drawn (same restart-required reasoning as `enabled`). |
-| `text` | string(128) | per-item (see layout above) | — | **Live** (if the item had a region at startup) | Text template: literal text, `{placeholder}` tokens (`{hostname} {ip} {mac} {fps} {uptime} {net} {cpu} {mem} {clients}`), and `strftime()` codes. Posting `""` clears it (a deliberate exception to the usual "empty value refused" rule — see [HTTP /control API Reference](HTTP-Control-API.md#response-body-and-status-codes)); `null`/missing stays refused, since some clients post `null` for fields they merely didn't intend to touch. |
+| `text` | string(128) | per-item (see layout above) | — | **Live** (if the item had a region at startup) | Text template: literal text, `{placeholder}` tokens (`{hostname} {ip} {mac} {fps} {fpsN} {bitrate} {bitrateN} {uptime} {net} {cpu} {mem} {clients}`), and `strftime()` codes. Posting `""` clears it (a deliberate exception to the usual "empty value refused" rule — see [HTTP /control API Reference](HTTP-Control-API.md#response-body-and-status-codes)); `null`/missing stays refused, since some clients post `null` for fields they merely didn't intend to touch. |
 | `logo` (alias `logo_path`) | string(128) | `/usr/share/images/thingino_100x30.bgra` (item 3) | — | File-only | Raw BGRA logo file path. |
 | `logo_w` (alias `logo_width`) | int | 100 (item 3) | 0–4096 | File-only | Logo width in px. |
 | `logo_h` (alias `logo_height`) | int | 30 (item 3) | 0–4096 | File-only | Logo height in px. |

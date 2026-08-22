@@ -2,9 +2,12 @@
  *
  * Two stages:
  *   1) {name} tokens are replaced. Built-ins: {hostname} {ip} {mac} {fps}
- *      {fpsN} {bitrate} {uptime}. {fps} is the measured output fps of
- *      osd.monitor_stream; {fpsN} (e.g. {fps0}, {fps1}) is the measured output
- *      fps of video stream N specifically. Any other {name} is looked up in a
+ *      {fpsN} {bitrate} {bitrateN} {uptime}. {fps}/{bitrate} are the measured
+ *      output fps/kbit/s of osd.monitor_stream; {fpsN}/{bitrateN} (e.g.
+ *      {fps0}, {bitrate1}) are those of video stream N specifically - the
+ *      per-layer form, since every stream has its own OSD text but the
+ *      no-number pair reads one configured channel for all of them.
+ *      Any other {name} is looked up in a
  *      key=value file (vars_file, e.g. /tmp/timps_osd.vars) so scripts can
  *      inject arbitrary values.
  *   2) The result is passed through strftime(), so %Y %m %d %H %M %S %F %T ...
