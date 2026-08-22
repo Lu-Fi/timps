@@ -398,9 +398,9 @@ and far below it in a bright one); day→night is a direct measurement on the
 honest day pipeline, night→day only ever happens via a **probe**; and the
 calendar, when configured, schedules probes rather than deciding anything.
 
-`switch_cmd`, `isp_path`, `trace_path` and `state_path` are **not
-GET-readable** even though they are settable via the config file — each names
-a path or program the daemon acts on as root.
+`switch_cmd`, `isp_path`, `trace_path`, `state_path` and `irprobe_cmd` are
+**not GET-readable** even though they are settable via the config file —
+each names a path or program the daemon acts on as root.
 
 **Renamed 2026-08-17:** `total_gain_day_threshold` → `day_gain` and
 `total_gain_night_threshold` → `night_gain`. The old names still work as
