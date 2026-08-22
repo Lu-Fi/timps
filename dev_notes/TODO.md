@@ -965,3 +965,34 @@ cam-wintergarten). Recommend watching cam-kinder-rechts for real-world
 stability (a day of normal use, ideally including an overnight recording
 window) before touching the other five - this is the first and only unit
 running the new RMEM/buffer configuration.
+
+## Isolated: RMEM_MB increase was unnecessary (2026-08-22, cam-kinder-rechts)
+
+Split the two changes from the fix above and tested each build separately,
+same camera:
+
+    RMEM=26, no pre_dequeue: 373 frames/15s (24.9 fps), free mem  2176K after boot
+    RMEM=22, no pre_dequeue: 375 frames/15s (25.0 fps), free mem  6232K after boot
+
+Both hit `ch0_pre_dequeue_drop=0` and `nrVBs=2` in the boot log. The original
+22MB rmem pool already had enough slack for chn0's second video buffer -
+raising it to 26 bought nothing and cost 4MB off the already-tight 42MB Linux
+heap for no benefit. **Recommendation revised: keep `BR2_THINGINO_RMEM_MB`
+at its original value (22); only remove the four
+`BR2_ISP_CH0_PRE_DEQUEUE_*` lines.** Simpler diff, no memory trade-off.
+
+Operational note found along the way: reducing `BR2_THINGINO_RMEM_MB` via
+`make ota` did not take effect on first boot after flashing - the device
+came up with `rmem=0M` (a botched/incomplete memory-layout remap, visible in
+the flash tool's own "Remapping memory: osmem 38M -> 64M, rmem 26M -> 0M"
+log line) and timpsd never started. A second, plain reboot corrected it to
+the proper `rmem=22M@0x2a00000`. The earlier 22->26 *increase* took effect
+cleanly in one boot, so this looks specific to shrinking the reservation.
+Not investigated further since the final recommendation no longer changes
+RMEM_MB at all for this board, but worth knowing if RMEM is ever changed
+elsewhere: verify the live `/proc/cmdline` after an OTA that changes it, not
+just after the flash command returns.
+
+The five other cinnado_d1_t31l_sc2336_atbm6031 cameras are still at the
+original `BR2_THINGINO_RMEM_MB=22`, so a fleet-wide rollout of just the
+pre_dequeue removal never triggers this shrink case at all.
