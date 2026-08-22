@@ -6,6 +6,34 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- **A real restart can no longer strand the daemon dead on a start-stage
+  encoder alloc failure** (`src/main.c`) - root cause of the 2026-08-22 T31
+  fleet incident (5 of 12 cameras down after `--test-encoder`'s
+  restore-restart, manual reboot needed). After `S95timps restart`, the
+  previous instance's rmem carve-out (22 MB on the T31 boards) is not always
+  released by the time the new instance runs: `wait_stop()` only proves the
+  PID is gone, while the kernel-side ISP/encoder release lags (measured 4 s+
+  after a *clean* teardown, longer/possibly never when the 3 s shutdown
+  guillotine cut `g_hal->stop()` short). The bring-up handled this
+  asymmetrically: `g_hal->init()` failures retried forever (backoff loop +
+  the `IMP_System_Init` 5x1s retry), but a single `g_hal->start()` failure
+  exited the process permanently - and on low-RAM T31 boards it is precisely
+  start's big contiguous `Codec_Encode_Create` alloc that fails while
+  init's small allocs squeak through. The QA evidence matches exactly: the
+  five dead cameras were each observed minutes later still alive with 2
+  threads/0 listeners (parked in the init retry loop), then gone for good
+  (the one unguarded start-failure exit); cam-garage recovered because its
+  pool drained before start ran. `start()` failure now unwinds via
+  `g_hal->stop()` (safe: `ing_start`'s fail path already leaves no channels,
+  and `ing_stop`/`imp_osd_stop` tolerate empty state) and re-enters the same
+  retry loop. Additionally the shutdown path re-arms the hard-exit alarm
+  right before `g_hal->stop()`, so the vendor IMP teardown always gets the
+  full `MS_SHUTDOWN_ALARM_S` budget instead of whatever the recorder/server
+  stops left over - shrinking the window in which a guillotined teardown
+  leaves the pool dirty for the next instance in the first place.
+
 ### Added
 
 - **GET /control now reports the rate-control attrs the encoder ACTUALLY

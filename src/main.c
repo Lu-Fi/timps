@@ -435,14 +435,33 @@ int main(int argc, char **argv)
      * path unwinds fully on failure, so retrying costs nothing but the wait.
      * A genuine misconfiguration retries forever at 60 s, which is log noise
      * rather than harm, and it recovers by itself once the config is fixed. */
-    for (int backoff = 5; g_hal->init(&g_cfg) != 0; ) {
-        LOGE(MOD,"HAL init failed - retrying in %ds", backoff);
+    for (int backoff = 5;;) {
+        if (g_hal->init(&g_cfg) == 0) {
+            if (g_hal->start(&g_cfg) == 0) break;
+            /* start() failing is the SAME transient class as init() failing,
+             * and exiting here was the actual kill shot in the 2026-08-22 T31
+             * fleet incident (5 cameras): after a real restart the previous
+             * instance's rmem carve-out (22 MB) is not always released by the
+             * time this instance runs. IMP_System_Init's small allocations
+             * (init stage, retried by this loop) often squeak through while
+             * the encoder's big contiguous alloc in start() still fails
+             * ("Codec_Encode_Create failed") - so init retried forever but
+             * one start() failure exited the process permanently, leaving the
+             * camera dark with nothing to respawn it. start()'s failure path
+             * unwinds every partially-created channel (M8), so after a
+             * g_hal->stop() to release the init-stage state (System_Exit/ISP
+             * close - ing_stop tolerates the already-empty channel lists) a
+             * fresh init+start attempt is exactly as safe as the first one. */
+            LOGE(MOD,"HAL start failed - unwinding and retrying in %ds", backoff);
+            g_hal->stop();
+        } else {
+            LOGE(MOD,"HAL init failed - retrying in %ds", backoff);
+        }
         for (int i = 0; i < backoff && g_run; i++) sleep(1);
         if (!g_run) return 1;
         if (backoff < 60) backoff *= 2;
         if (backoff > 60) backoff = 60;
     }
-    if (g_hal->start(&g_cfg)!=0){ LOGE(MOD,"HAL start failed"); return 1; }
 
 #if defined(USE_BACKCHANNEL) || defined(USE_PLAY)
     {
@@ -489,6 +508,15 @@ int main(int argc, char **argv)
 #ifdef USE_PLAY
     speaker_stop();
 #endif
+    /* Re-arm the guillotine with a FULL budget for the vendor teardown: the
+     * single alarm armed in on_signal covers everything above too, so a slow
+     * recorder finalize or server stop could eat the whole 3 s and leave the
+     * IMP teardown to be cut short mid-way - which leaves the rmem carve-out
+     * dirty for the NEXT instance (the 2026-08-22 T31 incident: encoder
+     * allocs failing after a restart). Worst case is now bounded at
+     * ~2*MS_SHUTDOWN_ALARM_S instead of teardown silently getting only the
+     * leftovers; S95timps' wait_stop polls long enough to cover that. */
+    alarm(MS_SHUTDOWN_ALARM_S);
     g_hal->stop();
     /* the counterpart to hard_exit()'s write(): its absence after "shutting
      * down" is what identifies a shutdown the alarm cut short. */

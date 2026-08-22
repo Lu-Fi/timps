@@ -91,7 +91,26 @@ belongs in that repo's review queue, not slipped in unreviewed here.
 Background for the encoder block:
 `dev_notes/T23_RATECONTROL_INVESTIGATION_2026-08-21.md`.
 
-## OPEN, HIGH PRIORITY: a real restart can leave timpsd down (T31, mem-constrained boards)
+## FIX PENDING REVIEW, HIGH PRIORITY: a real restart can leave timpsd down (T31, mem-constrained boards)
+
+Root cause found 2026-08-22 (static analysis + the saved qa2-*.log evidence;
+fix on worktree branch `worktree-agent-a5d4e2fb5a49225f7`, NOT yet
+hardware-verified): `main.c`'s bring-up treated init and start failures
+asymmetrically - `g_hal->init()` retried forever, one `g_hal->start()`
+failure exited the process permanently. After a restart the old instance's
+rmem is released late (4 s+ even after a clean teardown; worse when the 3 s
+shutdown alarm guillotines `g_hal->stop()`), so on 22 MB-rmem T31 boards
+init's small allocs eventually pass while start's big contiguous
+`Codec_Encode_Create` alloc still fails -> unguarded exit, camera dark. The
+QA logs show exactly this two-phase death on all 5 cameras: section 16 found
+timpsd still "alive" with 2 threads/0 listeners (= parked in the init retry
+loop, all services down), and it was gone later (the one-shot start exit).
+cam-garage self-recovered because its pool drained before start ran. Fix:
+start failure now unwinds via `g_hal->stop()` and re-enters the retry loop;
+plus the shutdown path re-arms the alarm before `g_hal->stop()` so IMP
+teardown gets the full 3 s budget. See CHANGELOG [Unreleased]. Hardware
+verification still needed (a supervised `--test-encoder` restart cycle on ONE
+T31 camera) before fleet rollout. Original report follows.
 
 Found 2026-08-22 during the post-rollout fleet QA (`--test-encoder`, which
 deliberately forces a real restart to make a restart-bound `rc_mode` change
