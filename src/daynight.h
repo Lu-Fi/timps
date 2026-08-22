@@ -63,8 +63,8 @@
 
 /* ---- fixed fleet-wide constants (2026-08-22 config consolidation) ------
  * These eight used to be per-camera ms_daynight_cfg fields. The config
- * consolidation (dev_notes/DAYNIGHT_DECISION_2026-08-17.md) found that every
- * camera measured wanted the same value - the same situation DN_TREND_PCT
+ * consolidation (dev_notes/DAYNIGHT_CONSOLIDATION_2026-08-22.md) found that
+ * every camera measured wanted the same value - the same situation DN_TREND_PCT
  * (daynight.c) was already hardcoded for, and the same fix: a config key
  * nobody ever needed to change is not a config key, it is a constant that
  * happens to be spelled like one. Defined here rather than in daynight.c

@@ -32,6 +32,12 @@ The redesign doc alone is NOT sufficient to read the current code. The chain:
    readback verify/enforce cycle, boot "AE pegged" forced cycle,
    `filter_cost` projection, silent-probe retirement after 2 failures,
    operator probe request (`POST /control {"daynight":{"probe":1}}`).
+4. `DAYNIGHT_CONSOLIDATION_2026-08-22.md` - no behaviour change, but the
+   config surface shrank by ten keys: `learn`/`state_path` are gone and eight
+   fields became `DN_*` constants in `daynight.h`. Read it before trusting
+   any `daynight.*` key named in documents 1-3; note in particular that
+   document 2 still says "`daynight.learn` stays as an option that can be
+   switched off", which document 4 reverses.
 
 `src/daynight_probe.h` (732 lines) no longer exists - dropped, not merged;
 the probe plan is now a handful of `if`s inside `dn_thread()`.
@@ -71,7 +77,8 @@ The audible verdict is binary against `day_gain` (1594-1617).
 
 **Stale as of the 2026-08-22 config consolidation** (`learn`/`state_path`
 removed outright, eight more fields hardcoded - see
-`dev_notes/DAYNIGHT_DECISION_2026-08-17.md` and `CHANGELOG.md` Unreleased).
+`dev_notes/DAYNIGHT_CONSOLIDATION_2026-08-22.md` and `CHANGELOG.md`
+Unreleased).
 Line numbers below predate that change (they were verified against HEAD
 `6e49752`, ~2050 lines; `daynight.c` is shorter now that the learning
 subsystem is gone) and have NOT been re-walked line by line - treat them as
