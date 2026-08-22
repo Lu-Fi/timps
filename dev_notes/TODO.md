@@ -993,6 +993,20 @@ RMEM_MB at all for this board, but worth knowing if RMEM is ever changed
 elsewhere: verify the live `/proc/cmdline` after an OTA that changes it, not
 just after the flash command returns.
 
+Log-server cross-check (2026-08-22, Loki job="camera"): the *earlier* 22->26
+flash last night hit the identical failure signature at 00:59-01:15 CEST
+(`IMP_ISP_AddSensor failed`, `HAL init failed - retrying`, `KMEM Method:
+alloc_kmem_init mmap Addr 2600000 and Size 0 error`, plus a burst of
+`ipu_osd error` from the OSD compositor racing the half-initialized ISP) -
+so this is not shrink-specific after all. It self-healed on its own that
+time (timpsd's retry-with-backoff loop happened to succeed before hitting
+its give-up limit); this morning's shrink case did not self-heal and needed
+a manual reboot. Moot for the shipped fix since RMEM_MB no longer changes,
+but relevant for anyone touching `BR2_THINGINO_RMEM_MB` on any board in the
+future: expect the first post-flash boot to be unreliable in either
+direction and verify `/proc/cmdline` + a working video stream before
+trusting the flash, not just that the SSH port came back up.
+
 The five other cinnado_d1_t31l_sc2336_atbm6031 cameras are still at the
 original `BR2_THINGINO_RMEM_MB=22`, so a fleet-wide rollout of just the
 pre_dequeue removal never triggers this shrink case at all.
