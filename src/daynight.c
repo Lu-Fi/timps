@@ -1033,6 +1033,7 @@ static void *dn_thread(void *arg)
     int     ir_fails    = 0;           /* consecutive illuminator-command failures */
     float   filter_cost = -1.0f;
     float   ir_night_at = -1.0f;       /* night level a pending ratio verdict left */
+    int64_t ir_night_ms = 0;           /* ...and when: the pair has a shelf life */
     float   probe_best  = -1.0f;       /* best day-pipeline reading ever, for the diagnostic */
     int     day_seen    = 0;           /* has day ever been confirmed? */
     int     probe_fails = 0;           /* consecutive probes that found night */
@@ -1149,6 +1150,7 @@ static void *dn_thread(void *arg)
             ema_fast = ema_slow = -1.0f; trend_since = 0;
             day_ok = 0; day_min = -1.0f;
             filter_cost = ir_night_at = -1.0f;   /* re-measure from scratch */
+            ir_night_ms = 0;
             ir_fails = 0; g_ir_unusable = 0;     /* and re-test the illuminator */
             booted = 0; boot_at = now;
             warned_noisp = 0; hb_defer_logged = 0; blind_warned = 0;
@@ -1527,6 +1529,7 @@ static void *dn_thread(void *arg)
                                   "not the illuminator", ir_why ? ir_why : "?",
                              (double)r, room);
                         ir_night_at = lit;
+                        ir_night_ms = now;
                         target = DN_DAY;
                         snprintf(why, sizeof why, "IR ratio %.2f", (double)r);
                     }
@@ -1640,7 +1643,22 @@ static void *dn_thread(void *arg)
                      * is not nonsense, it is a different relationship between
                      * the two pipelines - and rejecting it as such is what
                      * left that camera unable to learn and free to flap. */
+                    /* ...and only from two readings of the SAME scene. A
+                     * ratio verdict undone within day_confirm_s - plus the
+                     * switch's own readback settling, the only latency in
+                     * between - is the flap this factor exists to predict.
+                     * One undone hours later is an ordinary dusk, and
+                     * dividing it by a night level from another hour
+                     * measures nothing but the sun's own path. Measured
+                     * 2026-08-21/22: every same-scene pair (~34s apart) gave
+                     * 0.73x-7.14x across four cameras; a boot-time probe at
+                     * 15:24 (full daylight) left ir_night_at=8, and the
+                     * dusk transition five hours later turned that into
+                     * 574x - after which no morning reading could clear the
+                     * veto until almost 09:00. */
                     if (ir_night_at > 0.0f && s > 0.0f &&
+                        now - ir_night_ms <=
+                            (int64_t)dn->day_confirm_s * 1000 + DN_VERIFY_MS &&
                         !dn_clipped(sm.headroom, dn)) {
                         /* not learned from a railed meter: a clipped day
                          * reading understates the cost and re-opens the flap
@@ -1652,8 +1670,16 @@ static void *dn_thread(void *arg)
                              (double)filter_cost, (double)s,
                              (double)ir_night_at,
                              (double)(dn->night_gain / filter_cost));
+                    } else if (ir_night_at > 0.0f) {
+                        LOGD(MOD, "night level %.0f from %lldms ago is too "
+                                  "stale to cost this dusk's %.0f against - "
+                                  "filter_cost stays unmeasured, the veto "
+                                  "stays off",
+                             (double)ir_night_at,
+                             (long long)(now - ir_night_ms), (double)s);
                     }
                     ir_night_at = -1.0f;
+                    ir_night_ms = 0;
                     target = DN_NIGHT;
                     snprintf(why, sizeof why, "exposure %.0f > %.0f",
                              (double)s, (double)dn->night_gain);
