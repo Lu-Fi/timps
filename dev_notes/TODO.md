@@ -1139,6 +1139,36 @@ without any buffers override - the observed ~67 s window says the margin
 is not comfortable. Worth watching, not worth code changes until the
 num_buffers:2 source is identified.
 
+**Open: does `isp_ch0_pre_dequeue_time` also explain a reported OSD/logo
+corruption at the bottom of the frame?** (2026-08-22, from a side
+conversation with Paul, cross-checked against
+https://blog.thingino.com/ingenic-isp-tuning-parameters, not yet tested
+against our own hardware). The parameter's actual function, from the
+kernel module's own `MODULE_PARM_DESC` and the blog post above (both
+independent of - and consistent with - the disassembly finding this
+section is built on): it is a latency optimization, not merely a buffer-
+count trigger. The ISP hands a frame to the encoder `isp_ch0_pre_dequeue_
+time` milliseconds *before* the sensor has finished reading it out (e.g.
+24 ms of "head start" on a 1080-line frame), to hide pipeline stall/avoid
+dropped frames. Set too high relative to the sensor's actual readout
+timing, the hand-over can start before the last rows exist, which shows
+up as a torn/corrupted strip at the bottom of the image - exactly where
+an OSD logo commonly sits. The blog also documents a related, not yet
+investigated parameter, `isp_ch0_pre_dequeue_valid_lines` (how many rows
+must be valid before a frame is eligible for early handover - plausibly
+the actual safety margin against this failure mode) and its channel-1
+equivalent `isp_ch1_dequeue_delay_time`.
+
+Not yet tested: whether a previously-reported "logo broken at the bottom
+of the frame" incident on this fleet is actually this mechanism, or
+something unrelated (a different project/camera, or an OSD-layer bug -
+see `c9081ef63`'s unrelated OSD fix for a different bug in the same
+subsystem). If revisited: compare a frame capture with
+`isp_ch0_pre_dequeue_time=24` (the cinnado default) against one with it
+disabled (`=0`, as on the post-a7bec4c92 fix) on the same camera/scene,
+and check `isp_ch0_pre_dequeue_valid_lines`'s current value/effect if the
+symptom reproduces.
+
 ## Fix 868696b verified on hardware (2026-08-22, cam-kinder-rechts)
 
 Built (rebuild-timps + separate pack, version confirmed from the packed
