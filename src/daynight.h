@@ -61,6 +61,51 @@
 
 #include <stddef.h>   /* size_t (daynight_sun_status) */
 
+/* ---- fixed fleet-wide constants (2026-08-22 config consolidation) ------
+ * These eight used to be per-camera ms_daynight_cfg fields. The config
+ * consolidation (dev_notes/DAYNIGHT_DECISION_2026-08-17.md) found that every
+ * camera measured wanted the same value - the same situation DN_TREND_PCT
+ * (daynight.c) was already hardcoded for, and the same fix: a config key
+ * nobody ever needed to change is not a config key, it is a constant that
+ * happens to be spelled like one. Defined here rather than in daynight.c
+ * because control.c's status JSON and config.c's config-file grace-period
+ * warning both need the same numbers - one header, so there is exactly one
+ * place the eight values live, never two copies to drift apart.
+ *
+ * ir_ratio_night/ir_ratio_day: r = D(illuminator off) / D(illuminator on) is
+ * dimensionless and needs no per-camera calibration - unlike any absolute
+ * exposure level, which spans a factor of 63 across this fleet at one
+ * instant. Re-derived 2026-08-19 from a full dusk-to-dawn campaign (twelve
+ * cameras, 37-62 probe pairs each): the darkest genuine night with AE
+ * headroom measured r=2.38, the dimmest confirmed-lit room r=1.50, and
+ * anything in 1.8..2.2 produces the same verdicts across the whole campaign
+ * - so both thresholds sit at the same round number, 2.0, deliberately
+ * equal (the gap between them is where the ratio is genuinely undecided and
+ * falls back to the audible probe).
+ *
+ * ir_min_headroom: minimum AE reserve, in log2 units (32 = one stop), for
+ * the ratio above to mean anything. An AE with nothing left cannot respond
+ * to the illuminator going off and returns r ~= 1 - indistinguishable from
+ * daylight. Measured on a pitch-dark outbuilding: r = 1.14 with 1 unit of
+ * reserve, which an 8-unit floor correctly calls a clip, not a level.
+ *
+ * ref_delay_s/boot_settle_s/transition_s: settle-time floors (IR LEDs and AE
+ * convergence after a switch or boot) - every camera's AE settles on the
+ * same order of seconds, so these were never observed to need per-camera
+ * tuning either.
+ *
+ * probe_jump_pct/probe_settle_s: the probe economy's own trigger bar and AE
+ * settle time - see the DN_TREND_PCT precedent comment in daynight.c for why
+ * a swept, fleet-wide constant belongs here instead of in config. */
+#define DN_PROBE_JUMP_PCT   50     /* probe when D falls below this % of the night reference */
+#define DN_PROBE_SETTLE_S    8     /* AE settle before a probe verdict */
+#define DN_REF_DELAY_S       30    /* wait after entering night before anchoring the reference */
+#define DN_IR_RATIO_NIGHT  2.0f    /* r at or above this = night, no click */
+#define DN_IR_RATIO_DAY    2.0f    /* r at or below this = day (if AE had room) */
+#define DN_IR_MIN_HEADROOM   8     /* min AE reserve, log2 units, for the ratio to mean anything */
+#define DN_BOOT_SETTLE_S     5     /* min wait before the first boot decision */
+#define DN_TRANSITION_S      5     /* min dwell between mode switches */
+
 #ifdef USE_DAYNIGHT
 void daynight_start(void);
 void daynight_stop(void);

@@ -420,38 +420,18 @@ then overwrote that fresh decision with the stale persisted value a second
 and third time, eight seconds apart, and a living room stayed in night mode
 through daylight because of it.
 
-## Learning (`daynight.learn`, default off)
+## Learning (removed 2026-08-22)
 
-Each confirmed day records its lowest `D`; the median of the last 8 says how
-bright this scene actually manages to get. With `learn=1` that median raises
-the effective `day_gain` when the configured value turns out to be
-unreachable — the failure that had three cameras stuck in night on
-2026-08-16, each needing an SSH session to diagnose. Two rules keep it safe:
-
-1. **It may only ever raise the threshold.** A too-generous `day_gain`
-   produces a false day, which path A corrects within `day_confirm_s`. A
-   too-strict one makes day unconfirmable, which is the failure with no
-   bound.
-2. **It is clamped below `night_gain/2`**, so the two thresholds cannot cross
-   and start oscillating.
-
-With `learn=0` the values are still collected and written to the log **once a
-day**, so the numbers can be read off a running camera before deciding to
-switch it on:
-
-```
-DAYNIGHT: learned: 6 day excursion(s) [812 790 845 1103 798 802], median 807,
-          effective day_gain 768 vs configured 768 - not applied (daynight.learn=0)
-```
-
-`daynight.state_path` persists them across reboots when learning is on
-(change-only, at most one write an hour, atomic rename — unlike `trace_path`
-this is not a flash-wear concern). A state file that does not parse is
-discarded silently.
-
-Deliberately **not** persisted: the night reference (it is re-anchored in
-30 s and a stale one would *disable* path C, violating rule 2) and the mode
-(it is measured at boot, not believed).
+An earlier version of this automaton recorded each confirmed day's lowest
+`D` and, with `daynight.learn=1`, let the median of the last 8 raise the
+effective `day_gain` when the configured value turned out to be unreachable
+— the failure that had three cameras stuck in night on 2026-08-16. In
+practice its own safety clamp (never raise the threshold past `night_gain/2`)
+could not raise it far enough for the cameras that actually needed it, so the
+config surface (`daynight.learn`, `daynight.state_path`) was removed rather
+than kept as dead weight. `daynight.diagnose_thresholds` covers the same
+failure mode today: it names the value to raise `day_gain` above instead of
+trying to raise it automatically.
 
 ## Anti-flapping guards
 
@@ -555,10 +535,9 @@ switching to night (heartbeat): daynight night [mode=night exp=6182 ref=-1 bar=7
 The `[...]` tail: `mode` is the mode being switched *to* (`day`/`night`);
 `exp` is the exposure index at the moment of the switch; `ref` is the night
 reference at that moment (`-1` when not currently in night, e.g. a
-day→night switch); `bar` is the effective day threshold (`day_gain`, raised
-by `daynight.learn` when active) — the same value on every switch line
-regardless of direction, since it is read once per tick rather than chosen
-per branch.
+day→night switch); `bar` is the day threshold (`day_gain`) — the same value
+on every switch line regardless of direction, since it is read once per tick
+rather than chosen per branch.
 
 **Every silent probe**, once per verdict, at `LOGD`, at the point where all
 branches have decided:

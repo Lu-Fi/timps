@@ -179,13 +179,6 @@ enum { DN_DAY = 0, DN_NIGHT = 1, DN_UNKNOWN = -1 };
  * 1970 and must not act on a "calendar" derived from it. */
 #define DN_CLOCK_SANE 1577836800L
 
-/* ---- learning ---------------------------------------------------------- */
-#define DN_LEARN_SLOTS 8         /* day excursions kept for the median */
-#define DN_LEARN_MIN   3         /* ... before the median is used at all */
-#define DN_LEARN_M     1.6f      /* headroom above the median, ~2/3 stop */
-#define DN_LEARN_SAVE_MS 3600000 /* at most one state write per hour */
-#define DN_LEARN_LOG_MS  86400000            /* the daily summary line */
-#define DN_LEARN_LOG_FIRST_MS 60000          /* ... plus one shortly after start */
 #define DN_UNREACHABLE 1.5f      /* "clear of the threshold" for the diagnostic */
 
 /* ---- trace recorder ---------------------------------------------------- */
@@ -446,26 +439,26 @@ static int dn_c_sighted(const dn_sample *sm, const ms_daynight_cfg *dn, float re
 {
     if (sm->ratio > 0.0f) return 1;
     if (ref <= 0.0f)      return 1;       /* nothing anchored yet */
-    return ref * (float)dn->probe_jump_pct / 100.0f > DN_GAIN_FLOOR;
+    return ref * (float)DN_PROBE_JUMP_PCT / 100.0f > DN_GAIN_FLOOR;
 }
 
 /* A reading from a railed AE is a clip, not a level. It may prove night -
  * a meter pegged at the DARK end cannot happen in daylight - but it must
- * never be remembered: not as the reference, not as a learned cost. r from
- * two clipped readings is no information either (measured: r=1.00 on a
- * meter whose scene was worth 23x less). Unknown headroom counts as usable,
- * or platforms without ceiling fields could never anchor at all. */
+ * never be remembered as the reference. r from two clipped readings is no
+ * information either (measured: r=1.00 on a meter whose scene was worth 23x
+ * less). Unknown headroom counts as usable, or platforms without ceiling
+ * fields could never anchor at all. */
 static int dn_clipped(int headroom, const ms_daynight_cfg *dn)
 {
-    return headroom >= 0 && headroom < dn->ir_min_headroom;
+    return headroom >= 0 && headroom < DN_IR_MIN_HEADROOM;
 }
 
 /* Say so, once per session, when the ISP dump carries no gain ceilings.
  * Without them the AE reserve is unknown, dn_clipped() must count unknown
- * as usable, and nothing on this camera protects the reference or the
- * learned values from a railed meter - a silent absence the operator would
- * otherwise only meet as hr=-1 in a probe line. Sibling of dn_blind_check().
- * Three consecutive misses arm it, so one torn /proc read cannot. */
+ * as usable, and nothing on this camera protects the reference from a
+ * railed meter - a silent absence the operator would otherwise only meet as
+ * hr=-1 in a probe line. Sibling of dn_blind_check(). Three consecutive
+ * misses arm it, so one torn /proc read cannot. */
 static void dn_ceiling_check(const dn_sample *sm, int *miss, int *warned)
 {
     if (sm->headroom >= 0) { *miss = 0; return; }
@@ -474,10 +467,9 @@ static void dn_ceiling_check(const dn_sample *sm, int *miss, int *warned)
     LOGW(MOD, "the ISP dump reports no gain ceilings (MAX SENSOR analog "
               "gain / MAX ISP digital gain), so the AE reserve is unknown "
               "here: a railed meter cannot be told from a dark scene, the "
-              "railed-boot re-tune never fires, and the night reference and "
-              "learned values are NOT protected against clipped readings. "
-              "Ratio probes without a clear answer fall back to the audible "
-              "probe on this camera");
+              "railed-boot re-tune never fires, and the night reference is "
+              "NOT protected against clipped readings. Ratio probes without "
+              "a clear answer fall back to the audible probe on this camera");
 }
 
 /* Say so, once, when path C is structurally blind on this camera. Called
@@ -731,148 +723,13 @@ static int64_t dn_secs_to_dawn(const ms_daynight_cfg *dn, time_t wall)
     }
 }
 
-/* ------------------------------------------------------------------ *
- * Learning (daynight.learn, default off). See the `learn` comment in
- * config.h for the two safety rules; this is their implementation.    */
-
-typedef struct {
-    float   slot[DN_LEARN_SLOTS];  /* lowest exposure of the last N day excursions */
-    int     n;                     /* slots filled */
-    int     idx;                   /* next write */
-    int     dirty;
-    int64_t saved_ms;
-} dn_learn;
-
-static float dn_learn_median(const dn_learn *l)
-{
-    if (l->n <= 0) return -1.0f;
-    float v[DN_LEARN_SLOTS];
-    memcpy(v, l->slot, (size_t)l->n * sizeof v[0]);
-    for (int i = 1; i < l->n; i++) {         /* insertion sort, n <= 8 */
-        float k = v[i]; int j = i - 1;
-        while (j >= 0 && v[j] > k) { v[j+1] = v[j]; j--; }
-        v[j+1] = k;
-    }
-    return (l->n & 1) ? v[l->n / 2] : (v[l->n/2 - 1] + v[l->n/2]) * 0.5f;
-}
-
-static void dn_learn_add(dn_learn *l, float v)
-{
-    if (!(v > 0.0f) || !isfinite(v)) return;
-    l->slot[l->idx] = v;
-    l->idx = (l->idx + 1) % DN_LEARN_SLOTS;
-    if (l->n < DN_LEARN_SLOTS) l->n++;
-    l->dirty = 1;
-}
-
-/* The effective day threshold. L1: only ever RAISE the configured value - a
- * too-generous threshold produces a false day, which the honest day->night
- * measurement corrects within day_confirm_s, while a too-strict one makes day
- * unconfirmable, which is the failure with no bound. L2: clamp below
- * night_gain/2 so the two thresholds can never cross and oscillate. */
-static float dn_day_bar(const ms_daynight_cfg *dn, const dn_learn *l)
-{
-    float bar = dn->day_gain;
-    if (!dn->learn || l->n < DN_LEARN_MIN) return bar;
-    float m = dn_learn_median(l);
-    if (!(m > 0.0f)) return bar;
-    float want = m * DN_LEARN_M;
-    if (want > bar) bar = want;
-    float cap = dn->night_gain * 0.5f;
-    if (bar > cap)          bar = cap;
-    if (bar < dn->day_gain) bar = dn->day_gain;
-    return bar;
-}
-
-static void dn_learn_load(const char *path, dn_learn *l)
-{
-    memset(l, 0, sizeof *l);
-    if (!path || !path[0]) return;
-    FILE *f = fopen(path, "r");
-    if (!f) return;                    /* absent is normal, not an error */
-    char line[256];
-    int ver = 0;
-    while (fgets(line, sizeof line, f)) {
-        if (!strncmp(line, "v ", 2)) ver = atoi(line + 2);
-        else if (ver == 1 && !strncmp(line, "day_ref ", 8)) {
-            const char *p = line + 8;
-            while (l->n < DN_LEARN_SLOTS) {
-                char *e; float v = strtof(p, &e);
-                if (e == p) break;
-                p = e;
-                if (v > 0.0f && isfinite(v)) l->slot[l->n++] = v;
-            }
-            l->idx = l->n % DN_LEARN_SLOTS;
-        }
-    }
-    fclose(f);
-    /* A state file we do not understand is discarded silently rather than
-     * half-applied: nothing in here is worth risking a camera over, and the
-     * next day excursion refills it. */
-    if (ver != 1) memset(l, 0, sizeof *l);
-    else if (l->n)
-        LOGI(MOD, "loaded %d learned day levels from %s (median %.0f)",
-             l->n, path, (double)dn_learn_median(l));
-}
-
-static void dn_learn_save(const ms_daynight_cfg *dn, dn_learn *l, int64_t now_ms)
-{
-    if (!dn->learn || !dn->state_path[0] || !l->dirty) return;
-    if (l->saved_ms && now_ms - l->saved_ms < DN_LEARN_SAVE_MS) return;
-    l->saved_ms = now_ms;              /* also the retry clock on failure */
-
-    char tmp[sizeof dn->state_path + 8];
-    snprintf(tmp, sizeof tmp, "%s.tmp", dn->state_path);
-    FILE *f = fopen(tmp, "w");
-    if (!f) {
-        LOGW(MOD, "cannot write %s: %s", tmp, strerror(errno));
-        return;
-    }
-    fputs("v 1\nday_ref", f);
-    for (int i = 0; i < l->n; i++) fprintf(f, " %.0f", (double)l->slot[i]);
-    fputc('\n', f);
-    int bad = ferror(f);
-    if (fclose(f) != 0) bad = 1;
-    if (bad) { LOGW(MOD, "cannot write %s: %s", tmp, strerror(errno));
-               unlink(tmp); return; }
-    if (rename(tmp, dn->state_path) != 0) {
-        LOGW(MOD, "cannot replace %s: %s", dn->state_path, strerror(errno));
-        unlink(tmp);
-        return;
-    }
-    l->dirty = 0;
-}
-
-/* The once-a-day summary. Emitted whether or not learning is ENABLED - the
- * point is that the numbers can be read off a running camera before deciding
- * to switch it on. */
-static void dn_learn_log(const ms_daynight_cfg *dn, const dn_learn *l)
-{
-    char buf[96];
-    int o = 0;
-    for (int i = 0; i < l->n && o < (int)sizeof buf - 8; i++)
-        o += snprintf(buf + o, sizeof buf - (size_t)o, "%s%.0f",
-                      i ? " " : "", (double)l->slot[i]);
-    if (!l->n) snprintf(buf, sizeof buf, "-");
-
-    float bar = dn_day_bar(dn, l);
-    const char *state = !dn->learn        ? "not applied (daynight.learn=0)"
-                      : l->n < DN_LEARN_MIN ? "not applied yet (needs 3 samples)"
-                      : bar > dn->day_gain  ? "APPLIED"
-                                            : "no change (configured value is looser)";
-    LOGI(MOD, "learned: %d day excursion(s) [%s], median %.0f, "
-              "effective day_gain %.0f vs configured %.0f - %s",
-         l->n, buf, (double)dn_learn_median(l), (double)bar,
-         (double)dn->day_gain, state);
-}
-
 /* The unreachable-threshold diagnostic.
  *
  * A SINGLE failed probe cannot tell "this room is dark" from "day_gain is set
  * below anything this scene can produce" - both look like a day-pipeline
  * reading above the bar, which is why the pre-redesign version of this warning
- * had to fire per probe and then repeat forever. Waiting for the daily
- * learning line is the opposite failure: a misconfigured camera would sit
+ * had to fire per probe and then repeat forever. Waiting a full day for a
+ * periodic summary is the opposite failure: a misconfigured camera would sit
  * silent for 24 h. So the evidence used is DN_DIAG_FAILS consecutive failed
  * probes whose best reading never once came close - which arrives within a few
  * probe intervals, cannot be produced by one unlucky measurement, and is
@@ -890,8 +747,7 @@ static void dn_diag_threshold(const ms_daynight_cfg *dn, int fails,
               "best day-pipeline exposure seen was %.0f but daynight.day_gain "
               "is %.0f. Either this scene never gets bright, or the threshold "
               "is too strict - raise daynight.day_gain above %.0f (keeping "
-              "night_gain well above that), or set daynight.learn=1 to have it "
-              "raised automatically",
+              "night_gain well above that)",
          fails, (double)probe_best, (double)dn->day_gain, (double)probe_best);
 }
 
@@ -1037,27 +893,24 @@ static void *dn_thread(void *arg)
     int     day_seen    = 0;           /* has day ever been confirmed? */
     int     probe_fails = 0;           /* consecutive probes that found night */
     int     diag_warned = 0;           /* the diagnostic is once per session */
-    dn_learn lrn;
-    int64_t learn_log_at = boot_at + DN_LEARN_LOG_FIRST_MS;
 
     g_int_hwm = 0;                     /* see dn_read(): sensor mode may differ */
     { ms_daynight_cfg dn0;
       config_str_lock();
       dn0 = g_cfg.daynight;
       config_str_unlock();
-      dn_learn_load(dn0.state_path, &lrn);
       time_t wall = time(NULL);
       int ck = dn_cal_kind(&dn0, wall);
       LOGI(MOD, "detection thread started (mode=%s, day<%g night>%g, "
                 "probe: gap %ds jump %d%% confirm %ds settle %ds, "
-                "heartbeat %ds/%ds, calendar=%s, boot_probe=%d, learn=%d, "
+                "heartbeat %ds/%ds, calendar=%s, boot_probe=%d, "
                 "interval %dms, dwell %ds, isp=%s, cmd=%s)",
            dn0.mode == DN_MODE_SCHEDULE ? "schedule" : "auto",
            (double)dn0.day_gain, (double)dn0.night_gain,
-           dn0.probe_min_gap_s, dn0.probe_jump_pct, dn0.probe_confirm_s,
-           dn0.probe_settle_s, dn0.heartbeat_s, dn0.heartbeat_max_s,
+           dn0.probe_min_gap_s, DN_PROBE_JUMP_PCT, dn0.probe_confirm_s,
+           DN_PROBE_SETTLE_S, dn0.heartbeat_s, dn0.heartbeat_max_s,
            ck == DN_CAL_TIME ? "time window" : ck == DN_CAL_SUN ? "sun" : "none",
-           dn0.boot_probe, dn0.learn, dn0.interval_ms, dn0.transition_s,
+           dn0.boot_probe, dn0.interval_ms, DN_TRANSITION_S,
            dn0.isp_path, dn0.switch_cmd);
       if (dn0.time_night_start[0] && dn0.time_day_start[0] &&
           (dn0.sun_latitude != 0.0f || dn0.sun_longitude != 0.0f))
@@ -1197,7 +1050,7 @@ static void *dn_thread(void *arg)
             }
         }
 
-        float bar = dn_day_bar(dn, &lrn);   /* effective day threshold */
+        float bar = dn->day_gain;           /* effective day threshold */
         int   target     = cur;             /* plain switch target */
         int   force      = 0;               /* bypass the dwell (probe revert) */
         int   want_probe = 0;
@@ -1211,7 +1064,7 @@ static void *dn_thread(void *arg)
             dn_switch(cur, "isp readback enforce", dn->switch_cmd, s, ref, bar);
             enforce_at = 0;
             if (verdict_at)         /* re-read the probe on settled optics */
-                verdict_at = now + (int64_t)dn->probe_settle_s * 1000;
+                verdict_at = now + (int64_t)DN_PROBE_SETTLE_S * 1000;
             verify_at = now + DN_VERIFY_MS;
             reassert_left = DN_REASSERT_COUNT;
             reassert_at   = now + DN_REASSERT_MS;
@@ -1321,7 +1174,7 @@ static void *dn_thread(void *arg)
              * every stuck-mode incident violated, made literal instead of
              * derived. */
             if (!booted) {
-                if (now - boot_at < (int64_t)dn->boot_settle_s * 1000 ||
+                if (now - boot_at < (int64_t)DN_BOOT_SETTLE_S * 1000 ||
                     (stable_n < DN_STABLE_N &&
                      now - boot_at < DN_STABLE_MAX_MS))
                     break;                  /* AE has not converged yet */
@@ -1352,7 +1205,7 @@ static void *dn_thread(void *arg)
                 if (running_mode) {         /* persisted NIGHT */
                     cur = DN_NIGHT;
                     ref = -1.0f;
-                    ref_due = now + (int64_t)dn->ref_delay_s * 1000;
+                    ref_due = now + (int64_t)DN_REF_DELAY_S * 1000;
                     ref_wait_logged = 0;
                     sust_min = win_max = -1.0f; win_at = 0;
                     ema_fast = ema_slow = -1.0f; trend_since = 0;
@@ -1427,7 +1280,7 @@ static void *dn_thread(void *arg)
                     hb_at = now + (int64_t)dn->heartbeat_s * 1000;
                     sust_min = win_max = -1.0f; win_at = 0;
                     ema_fast = ema_slow = -1.0f; trend_since = 0;
-                } else if (r >= dn->ir_ratio_night) {
+                } else if (r >= DN_IR_RATIO_NIGHT) {
                     /* the illuminator was doing the work: night, and it cost
                      * no click at all. */
                     LOGD(MOD, "silent probe (%s): r=%.2f (%.0f without IR vs "
@@ -1448,13 +1301,13 @@ static void *dn_thread(void *arg)
                      * each eight seconds with the illuminator off, forever. */
                     {
                         float lit = d_dark / r;
-                        float bar_c = ref * (float)dn->probe_jump_pct / 100.0f;
+                        float bar_c = ref * (float)DN_PROBE_JUMP_PCT / 100.0f;
                         if (ref > 0.0f && lit > 0.0f && lit < bar_c) {
                             ref = lit;
                             LOGI(MOD, "night reference lowered to %.0f, proven "
                                       "by the silent probe (bar %.0f)",
                                  (double)ref,
-                                 (double)(ref * (float)dn->probe_jump_pct
+                                 (double)(ref * (float)DN_PROBE_JUMP_PCT
                                           / 100.0f));
                         }
                     }
@@ -1483,7 +1336,7 @@ static void *dn_thread(void *arg)
                          ir_why ? ir_why : "?", (double)r);
                     want_probe = 1; probe_why = ir_why ? ir_why : "probe";
                     no_silent = 1;          /* see the r<=0 branch */
-                } else if (r <= dn->ir_ratio_day && room >= dn->ir_min_headroom) {
+                } else if (r <= DN_IR_RATIO_DAY && room >= DN_IR_MIN_HEADROOM) {
                     /* the room supplies the light - but that alone does not
                      * make day mode usable, because switching also closes the
                      * IR-cut filter. Once its cost has been measured here,
@@ -1506,14 +1359,14 @@ static void *dn_thread(void *arg)
                          * every probe_confirm_s forever (measured on a shed
                          * camera: one 8 s dimming every 26 s, all morning). */
                         {
-                            float bar_c = ref * (float)dn->probe_jump_pct
+                            float bar_c = ref * (float)DN_PROBE_JUMP_PCT
                                           / 100.0f;
                             if (ref > 0.0f && lit > 0.0f && lit < bar_c) {
                                 ref = lit;
                                 LOGI(MOD, "night reference lowered to %.0f, "
                                           "proven by the silent probe (bar "
                                           "%.0f)", (double)ref,
-                                     (double)(ref * (float)dn->probe_jump_pct
+                                     (double)(ref * (float)DN_PROBE_JUMP_PCT
                                               / 100.0f));
                             }
                         }
@@ -1530,7 +1383,7 @@ static void *dn_thread(void *arg)
                         target = DN_DAY;
                         snprintf(why, sizeof why, "IR ratio %.2f", (double)r);
                     }
-                } else if (room < dn->ir_min_headroom) {
+                } else if (room < DN_IR_MIN_HEADROOM) {
                     /* r came back near 1, but the AE had nothing left to move
                      * with, so it could not have answered. Pegged at the DARK
                      * end is itself proof of night - a bright-end ceiling
@@ -1551,7 +1404,7 @@ static void *dn_thread(void *arg)
                     LOGD(MOD, "silent probe (%s): r=%.2f is between %.2f and "
                               "%.2f - inconclusive, asking the day pipeline",
                          ir_why ? ir_why : "?", (double)r,
-                         (double)dn->ir_ratio_day, (double)dn->ir_ratio_night);
+                         (double)DN_IR_RATIO_DAY, (double)DN_IR_RATIO_NIGHT);
                     want_probe = 1; probe_why = ir_why ? ir_why : "probe";
                     no_silent = 1;          /* see the r<=0 branch */
                 }
@@ -1687,7 +1540,7 @@ static void *dn_thread(void *arg)
                     ref = s;
                     LOGI(MOD, "night reference %.0f (probe bar %.0f)",
                          (double)ref,
-                         (double)(ref * (float)dn->probe_jump_pct / 100.0f));
+                         (double)(ref * (float)DN_PROBE_JUMP_PCT / 100.0f));
                     dn_blind_check(&sm, dn, ref, &blind_warned);
                 }
             }
@@ -1695,7 +1548,7 @@ static void *dn_thread(void *arg)
 
             /* (3b) path C - spontaneous brightening, edge-triggered against a
              * reference that only ever moves on PROOF. */
-            if (ref > 0.0f && s < ref * (float)dn->probe_jump_pct / 100.0f) {
+            if (ref > 0.0f && s < ref * (float)DN_PROBE_JUMP_PCT / 100.0f) {
                 if (!trig_since) trig_since = now;
             } else trig_since = 0;
             if (trig_since &&
@@ -1789,15 +1642,15 @@ static void *dn_thread(void *arg)
         if (want_probe && !no_silent && cur == DN_NIGHT && !ir_verdict_at &&
             dn->irprobe_cmd[0] && !g_ir_unusable &&
             (!mode_since ||
-             now - mode_since >= (int64_t)dn->transition_s * 1000)) {
+             now - mode_since >= (int64_t)DN_TRANSITION_S * 1000)) {
             if (dn_irprobe(dn->irprobe_cmd, 0) == 0) {
                 d_lit = s;
                 d_lit_hr = sm.headroom;
                 ir_why = probe_why;
-                ir_verdict_at = now + (int64_t)dn->probe_settle_s * 1000;
+                ir_verdict_at = now + (int64_t)DN_PROBE_SETTLE_S * 1000;
                 LOGD(MOD, "silent probe (%s): illuminator off, reading in %ds "
                           "(lit level %.0f)", probe_why ? probe_why : "?",
-                     dn->probe_settle_s, (double)s);
+                     DN_PROBE_SETTLE_S, (double)s);
                 s = -1.0f; stable_n = 0;   /* the scene is about to change */
                 want_probe = 0;
                 probe_why = NULL;
@@ -1821,19 +1674,19 @@ static void *dn_thread(void *arg)
             (!last_probe ||
              now - last_probe >= (int64_t)dn->probe_min_gap_s * 1000) &&
             (!mode_since ||
-             now - mode_since >= (int64_t)dn->transition_s * 1000)) {
+             now - mode_since >= (int64_t)DN_TRANSITION_S * 1000)) {
             /* THE probe. It is the only route from night to day, and
              * probe_min_gap_s above is the only thing rationing it - so the
              * worst-case audible click rate is a property of the config
              * rather than of interacting heuristics. */
             LOGD(MOD, "probe (%s): exposure %.0f vs night reference %.0f, "
                       "verdict in %ds", probe_why, (double)s, (double)ref,
-                 dn->probe_settle_s);
+                 DN_PROBE_SETTLE_S);
             pre_probe = (s > 0.0f) ? s : ref;
             pre_probe_hr = sm.headroom;
             dn_switch(DN_DAY, probe_why, dn->switch_cmd, s, ref, bar);
             cur = DN_DAY; mode_since = now; last_probe = now;
-            verdict_at = now + (int64_t)dn->probe_settle_s * 1000;
+            verdict_at = now + (int64_t)DN_PROBE_SETTLE_S * 1000;
             ir_verdict_at = 0; d_lit = -1.0f; ir_why = NULL;
             trig_since = dark_since = 0; hb_at = 0;
             s = -1.0f; stable_n = 0;
@@ -1846,7 +1699,7 @@ static void *dn_thread(void *arg)
             verify_at = now + DN_VERIFY_MS; verify_cyc = 0; enforce_at = 0;
         } else if (target != cur && target != DN_UNKNOWN &&
                    (force || !mode_since ||
-                    now - mode_since >= (int64_t)dn->transition_s * 1000)) {
+                    now - mode_since >= (int64_t)DN_TRANSITION_S * 1000)) {
             int reverted = (cur == DN_DAY && target == DN_NIGHT && pre_probe > 0.0f);
             dn_switch(target, why[0] ? why : "?", dn->switch_cmd, s, ref, bar);
             cur = target; mode_since = now;
@@ -1865,7 +1718,7 @@ static void *dn_thread(void *arg)
                      * clip (see dn_clipped) - a verdict, not a reference.
                      * Anchor from the next honest sample instead. */
                     ref = -1.0f;
-                    ref_due = now + (int64_t)dn->ref_delay_s * 1000;
+                    ref_due = now + (int64_t)DN_REF_DELAY_S * 1000;
                     ref_wait_logged = 0;
                     LOGI(MOD, "probe found night, but the pre-probe level "
                               "%.0f had only %d units of AE reserve - the "
@@ -1881,15 +1734,12 @@ static void *dn_thread(void *arg)
                     ref = pre_probe; ref_due = 0;
                     LOGI(MOD, "night reference %.0f, proven by the probe "
                               "(bar %.0f)", (double)ref,
-                         (double)(ref * (float)dn->probe_jump_pct / 100.0f));
+                         (double)(ref * (float)DN_PROBE_JUMP_PCT / 100.0f));
                     dn_blind_check(&sm, dn, ref, &blind_warned);
                 } else {
                     ref = -1.0f;
-                    ref_due = now + (int64_t)dn->ref_delay_s * 1000;
+                    ref_due = now + (int64_t)DN_REF_DELAY_S * 1000;
                     ref_wait_logged = 0;
-                    /* a confirmed day that has now ended is a learning
-                     * sample: this is how bright this scene actually gets. */
-                    if (day_ok && day_min > 0.0f) dn_learn_add(&lrn, day_min);
                 }
                 day_ok = 0; day_min = -1.0f;
                 hb_at = now + (int64_t)dn->heartbeat_s * 1000;
@@ -1907,16 +1757,10 @@ static void *dn_thread(void *arg)
             pre_probe = -1.0f; pre_probe_hr = -1;
         }
 
-    tail:
-        if (now >= learn_log_at) {
-            learn_log_at = now + DN_LEARN_LOG_MS;
-            dn_learn_log(dn, &lrn);
-        }
-        dn_learn_save(dn, &lrn, now);
-
+    tail: ;
         float st_ref = (cur == DN_NIGHT) ? ref : -1.0f;
         float st_bar = (cur == DN_NIGHT && ref > 0.0f)
-                     ? ref * (float)dn->probe_jump_pct / 100.0f : -1.0f;
+                     ? ref * (float)DN_PROBE_JUMP_PCT / 100.0f : -1.0f;
         /* the DEBOUNCED state, not the raw per-tick comparison - raw would
          * flicker to 1 during every ordinary switch transient */
         int st_desync = (booted && cur >= 0 && sm.isp >= 0)
