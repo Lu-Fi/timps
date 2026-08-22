@@ -1,7 +1,7 @@
 {
   "name": "26-projection-verdict-no-way-down",
   "incident": "2026-08-21 - cam-schuppen, morning: 'day mode would read ... staying night' every 26 seconds, reference never came down",
-  "description": "Scenario 23's defect, reopened through the OTHER night verdict. 23 taught the r >= ir_ratio_night branch to lower the reference when a silent probe answers night below the probe bar. The filter-cost projection branch ('the room supplies the light, but day mode would bounce off night_gain') is ALSO a night verdict, and it forgot the same lesson: it resets the trigger hold but leaves the reference standing, so on a scene resting below the bar the jump trigger re-arms and fires again every probe_confirm_s, indefinitely. Measured on a shed camera at 08:39: probe pairs 26 s apart, each dimming the image for the 8 s settle, reference 5753 over a scene reading 1040 - verdict correct every time, cadence unbounded.\n\nPhase 1 (t<600) reproduces how the camera got there, straight from its own morning log: r=1.52 sends it to day, day mode reads 5.61x the night level, the absolute rule reverts it and learns the cost. Phase 2 (t=600): the shed brightens to 1040 - far below the re-anchored bar, but 1040 * 5.61 is still above night_gain, so day mode is genuinely not viable. The projection verdict must now lower the reference like any other proven night-below-the-bar, after which the trigger stays quiet until the scene genuinely halves again. The old code fails the probe budget by an order of magnitude.",
+  "description": "Scenario 23's defect, reopened through the OTHER night verdict. 23 taught the r >= ir_ratio_night branch to lower the reference when a silent probe answers night below the probe bar. The filter-cost projection branch ('the room supplies the light, but day mode would bounce off night_gain') is ALSO a night verdict, and it forgot the same lesson: it resets the trigger hold but leaves the reference standing, so on a scene resting below the bar the jump trigger re-arms and fires again every probe_confirm_s, indefinitely. Measured on a shed camera at 08:39: probe pairs 26 s apart, each dimming the image for the 8 s settle, reference 5753 over a scene reading 1040 - verdict correct every time, cadence unbounded.\n\nPhase 1 (t<600) reproduces how the camera got there, straight from its own morning log: r=1.52 sends it to day, day mode reads 5.61x the night level, the absolute rule reverts it and learns the cost. Phase 2 (t=600): the shed brightens to 1040 - far below the re-anchored bar, but 1040 * 5.61 is still above night_gain, so day mode is genuinely not viable. The projection verdict must now lower the reference like any other proven night-below-the-bar, after which the trigger stays quiet until the scene genuinely halves again. The old code fails the probe budget by an order of magnitude.\n\nRETIMED 2026-08-22 (boot measures before it decides). Phase 1 used to be produced by the BOOT silent probe: the machine came up in night, probed silently, got r=1.52 and went to day, which is where filter_cost was learned. Boot no longer takes the silent route - at t=0 nothing has established that our own illuminator is on, so the ratio has no premise - and without filter_cost phase 2 has nothing to project with: the machine simply switched to day at t=630 and back, and the projection branch this scenario exists for was never reached. The scenario stayed green on its budgets while testing none of its own mechanism.\n\nThe repair keeps phase 1 and moves its trigger from boot to where it belongs, a runtime path-C probe: the night pipeline now rests at 14000 (and 21000 without the illuminator, the same r=1.52) and steps to the incident's 6432 at t=100, which is under the 50% jump bar the boot-anchored reference sets. Same ratio, same day-pipeline 36064, same 5.61x filter cost, same phase 2 - and now the boot pair is what the extra two switches in the budget are (2 -> 4). If phase 1's 'day mode reads 5.6x' line ever stops firing, phase 2's projection assertions are testing nothing, which is exactly the failure this note records.",
   "scale": 30,
   "duration_s": 1200,
   "initial_mode": "night",
@@ -16,6 +16,10 @@
   "night_gain": [
     [
       0,
+      14000
+    ],
+    [
+      100,
       6432
     ],
     [
@@ -26,6 +30,10 @@
   "night_gain_noir": [
     [
       0,
+      21000
+    ],
+    [
+      100,
       9795
     ],
     [
@@ -54,12 +62,20 @@
         "any"
       ],
       [
-        120,
+        60,
+        "night"
+      ],
+      [
+        110,
+        "any"
+      ],
+      [
+        200,
         "night"
       ]
     ],
     "max_wrong_mode_s": 60,
-    "max_switches": 2,
+    "max_switches": 4,
     "max_ir_probes": 4,
     "monotonicity": "warn",
     "expect_log": [

@@ -877,6 +877,10 @@ static void *dn_thread(void *arg)
     int     desync_warned = 0;         /* the notice, once per episode */
     int     booted      = 0;
     int64_t boot_at     = ms_now_us() / 1000;
+    /* the boot MEASUREMENT is in flight: an ordinary probe, flagged only so
+     * its verdict can name itself and so it does not arm the running_mode
+     * re-assert off a value nothing has written yet (see both call sites). */
+    int     boot_deciding = 0;
     /* what the IR-cut filter costs in THIS scene, measured: the day pipeline
      * reading divided by the night reading that the ratio verdict left. The
      * silent probe answers "is the illuminator earning its keep"; the mode
@@ -999,7 +1003,7 @@ static void *dn_thread(void *arg)
             filter_cost = ir_night_at = -1.0f;   /* re-measure from scratch */
             ir_night_ms = 0;
             ir_fails = 0; g_ir_unusable = 0;     /* and re-test the illuminator */
-            booted = 0; boot_at = now;
+            booted = 0; boot_at = now; boot_deciding = 0;
             warned_noisp = 0; hb_defer_logged = 0; blind_warned = 0;
             LOGI(MOD, "auto day/night enabled");
         }
@@ -1159,16 +1163,76 @@ static void *dn_thread(void *arg)
                     warned_noisp = 1;
                     LOGW(MOD, "%s not readable, detection idle", dn->isp_path);
                 }
+                /* Boot still has to reach a decision and assert it. If no
+                 * exposure reading has turned up within DN_STABLE_MAX_MS of
+                 * start-up there is nothing to measure, so the persisted
+                 * value is all there is - but it gets asserted on the board
+                 * exactly once anyway, and it is said out loud as a FALLBACK.
+                 * Failing silently here would look identical to a normal
+                 * boot, which is precisely how a stale value acquires an
+                 * authority it never earned. */
+                if (!booted && now - boot_at >= DN_STABLE_MAX_MS) {
+                    booted = 1;
+                    target = running_mode ? DN_NIGHT : DN_DAY;
+                    force  = 1;
+                    snprintf(why, sizeof why, "boot fallback: no reading");
+                    hub_control("image.running_mode", running_mode ? "1" : "0");
+                    LOGW(MOD, "boot: no usable exposure reading %ds after "
+                              "start-up (%s) - the boot measurement cannot "
+                              "run, falling back to the persisted %s and "
+                              "asserting it on the board once",
+                         (int)(DN_STABLE_MAX_MS / 1000), dn->isp_path,
+                         running_mode ? "night" : "day");
+                }
                 break;
             }
             warned_noisp = 0;
             dn_ceiling_check(&sm, &ceil_miss, &ceil_warned);
 
-            /* (D) boot: the persisted mode is a guess about a scene nobody
-             * measured. Turn it into a measurement once, at t=0 - which is
-             * the restart-equivalence the design notes named as the property
-             * every stuck-mode incident violated, made literal instead of
-             * derived. */
+            /* (D) boot: MEASURE, then assert. Twice.
+             *
+             * The persisted running_mode is an opinion about a scene nobody
+             * has looked at this session, and nothing bounds how old it is: a
+             * camera that spent a year in a drawer boots carrying a year-old
+             * opinion about the light, which is worth exactly as much as a
+             * coin toss. So boot no longer adopts it. It puts the camera into
+             * the one optical state whose reading means something absolute -
+             * DAY: IR-cut closed, illuminator off, the pipeline that reports
+             * ambient light honestly - reads it against day_gain, and then
+             * asserts what it found on the board, physically, once.
+             *
+             * That is the restart-equivalence property the design notes named
+             * ("a cold start is a defined, mechanical act: boot into the day
+             * pipeline and compare it against day_gain/night_gain") made
+             * literal for EVERY boot, instead of only for the persisted-night
+             * one and only when boot_probe was left on.
+             *
+             * The measurement is the ORDINARY audible probe, not a second
+             * mechanism: same dn_switch, same DN_PROBE_SETTLE_S, same verdict
+             * at (1), same readback gate at DN_VERIFY_MS. All this block does
+             * is ask for one and remember that this one is the boot one.
+             *
+             * The cost, stated honestly: one switch_cmd invocation when the
+             * answer is day - the probe's own drive IS the assertion - and
+             * two when it is night. On a board that comes up in its reset
+             * state (/run/thingino/daynight_mode absent, IR-cut in the day
+             * position, LEDs off) the first of those moves nothing, and the
+             * second is the movement the camera actually needs. It is that
+             * second one that was missing on 2026-08-22, when five cameras
+             * rebooted after dark, adopted "night" in software, and spent the
+             * night with the IR LEDs off because switch_cmd was never called
+             * at all.
+             *
+             * Why not the silent probe here, cheap as it is: it divides a
+             * reading taken with OUR illuminator on by one taken with it off,
+             * and at boot nothing has established that it was ever on. A
+             * board in its reset state has the LEDs off and the IR-cut
+             * closed, so the "lit" reading is not lit, r comes back near 1,
+             * and the verdict is whatever the AE reserve happens to say -
+             * "the room supplies the light" in a dim room, "pegged, therefore
+             * night" in a dark one. The second of those is the answer that
+             * let the desync stand: right mode, no assertion, all night. A
+             * measurement whose premise is unverified is not a measurement. */
             if (!booted) {
                 if (now - boot_at < (int64_t)DN_BOOT_SETTLE_S * 1000 ||
                     (stable_n < DN_STABLE_N &&
@@ -1178,66 +1242,84 @@ static void *dn_thread(void *arg)
                 /* mode_since stays 0 deliberately: the dwell exists to space
                  * SWITCHES apart, and there has not been one yet - leaving it
                  * armed here would block the boot probe by transition_s. */
-                /* Push image.running_mode into the ISP once, the same way a
-                 * switch does. NOT switch_cmd: that moves the IR-cut filter,
-                 * and the measurement says the board was already right - the
-                 * illuminator was on, the ISP reported Night, and only its
-                 * tuning was wrong. Re-asserting the running mode is what
-                 * repaired it; a filter movement per boot would be a real
-                 * mechanical cost the evidence does not ask for. */
-                /* Assert ONCE, here, and do not arm the repeat countdown.
-                 * Arming it was wrong in a way that only showed on a camera:
-                 * the boot probe switches within seconds, and the pending
-                 * re-asserts then kept pushing the PERSISTED value over the
-                 * decision that had just been made - a living room sat in
-                 * night mode in daylight because the switch to day was
-                 * overwritten twice, eight seconds apart. A switch arms its
-                 * own re-assert with its own value; this one only has to say
-                 * the mode out loud once. */
-                hub_control("image.running_mode", running_mode ? "1" : "0");
-                LOGI(MOD, "boot: asserted running_mode=%d into the ISP - "
-                          "nothing had told it this session", running_mode ? 1 : 0);
-                verify_at = now + DN_VERIFY_MS; verify_cyc = 0;
-                if (running_mode) {         /* persisted NIGHT */
-                    cur = DN_NIGHT;
-                    ref = -1.0f;
-                    ref_due = now + (int64_t)DN_REF_DELAY_S * 1000;
-                    ref_wait_logged = 0;
-                    sust_min = win_max = -1.0f; win_at = 0;
-                    ema_fast = ema_slow = -1.0f; trend_since = 0;
-                    if (sm.headroom == 0) {
-                        /* AE hard-railed since boot: the reading is a clip
-                         * and a silent probe would divide two clips (r=1.00,
-                         * measured). The re-assert above is a no-op here -
-                         * the value never changed - and only a real
-                         * transition re-tunes the AE (T23 boot defect). So
-                         * spend the one filter cycle, even with boot_probe=0:
-                         * this is a broken meter, not an unverified mode.
-                         * Trade-off in CHANGELOG.md 2026-08-21. */
-                        want_probe = 1; probe_why = "boot pegged";
-                        no_silent = 1;
-                        LOGI(MOD, "boot: AE railed with 0 units of reserve - "
-                                  "the ISP came up mistuned and re-asserting "
-                                  "running_mode cannot fix that; cycling "
-                                  "through day once to re-tune it");
-                    } else if (dn->boot_probe) {
-                        want_probe = 1; probe_why = "boot verify";
-                    } else {
-                        hb_at = now + 1;    /* the first heartbeat does the job */
-                        LOGI(MOD, "boot: adopting persisted night, "
-                                  "boot_probe=0 so the heartbeat verifies it");
-                    }
-                } else {                    /* persisted DAY - honest pipeline */
-                    cur = DN_DAY;
-                    if (s < bar) {
-                        day_seen = 1;
-                        LOGI(MOD, "boot: day confirmed by exposure %.0f (< %.0f)",
-                             (double)s, (double)bar);
-                    } else {
-                        target = DN_NIGHT; force = 1;
-                        snprintf(why, sizeof why, "boot: exposure %.0f", (double)s);
-                    }
+
+                /* Say it whichever way boot then goes: a meter that comes up
+                 * hard-railed reads a clip rather than a level, nothing
+                 * downstream may remember it, and on a T23 it stayed there
+                 * for 25 minutes (2026-08-21). The operator wants to know
+                 * that independently of which branch below runs. */
+                if (sm.headroom == 0)
+                    LOGI(MOD, "boot: AE railed with 0 units of reserve - the "
+                              "meter is reading a clip, not a level, and only "
+                              "a real transition re-tunes it (T23 boot "
+                              "defect); the boot measurement is that "
+                              "transition");
+
+                /* boot_probe=0 now opts out of the MEASUREMENT, not out of
+                 * the assertion. The persisted value is taken on trust, as it
+                 * always was under that setting, but the hardware is still
+                 * made to match it exactly once - which is the half that was
+                 * missing, and the half that costs nothing to be wrong about
+                 * (asserting a mode the board is already in moves nothing).
+                 *
+                 * A hard-railed AE overrides the opt-out, as it did before:
+                 * re-asserting running_mode is a documented no-op on an ISP
+                 * that came up mistuned, so the measurement runs anyway and
+                 * the T23 case is subsumed rather than special-cased. */
+                if (!dn->boot_probe && sm.headroom != 0) {
+                    target = running_mode ? DN_NIGHT : DN_DAY;
+                    force  = 1;             /* cur is DN_UNKNOWN: nothing to dwell on */
+                    snprintf(why, sizeof why, "boot: persisted, boot_probe=0");
+                    hub_control("image.running_mode", running_mode ? "1" : "0");
+                    LOGI(MOD, "boot: boot_probe=0 - adopting the persisted %s "
+                              "without measuring it, and asserting it on the "
+                              "board once so the IR-cut filter and the LEDs "
+                              "cannot sit in the other mode until the next "
+                              "real transition", running_mode ? "night" : "day");
+                    break;
                 }
+                if (!dn->boot_probe)
+                    LOGI(MOD, "boot: measuring anyway despite boot_probe=0 - "
+                              "the railed meter above is a broken instrument, "
+                              "not an unverified mode, and adopting a value "
+                              "read off a rail would be adopting nothing");
+
+                boot_deciding = 1;
+                /* The probe path is the only route into the day reference
+                 * state, and by construction it starts from night. cur here
+                 * is not a claim about the board - at boot we have switched
+                 * nothing and know nothing - it is the framing the probe
+                 * needs, and the commit section overwrites it with the real
+                 * value in this same tick. */
+                cur = DN_NIGHT;
+                ref = -1.0f; ref_due = 0; ref_wait_logged = 0;
+                sust_min = win_max = -1.0f; win_at = 0;
+                ema_fast = ema_slow = -1.0f; trend_since = 0;
+                LOGI(MOD, "boot: measuring before deciding - persisted "
+                          "running_mode=%d is a hint, not evidence (exposure "
+                          "%.0f in whatever mode we came up in); switching to "
+                          "the day pipeline and reading it in %ds",
+                     running_mode ? 1 : 0, (double)s, DN_PROBE_SETTLE_S);
+                /* `s` is deliberately KEPT, and becomes the probe's pre_probe
+                 * level exactly as a runtime probe's would. Its provenance is
+                 * admittedly weaker here - it is the level in whatever mode
+                 * the board came up in, not one we commanded - but the
+                 * alternative is worse in the direction that does not
+                 * self-correct. Dropping it defers the anchor to the ordinary
+                 * DN_REF_DELAY_S window, and a reference sampled 30 s after a
+                 * boot can land inside a lighting transition: measured on the
+                 * corpus, scenario 02's dip to 1200 against a resting 3500
+                 * anchors a bar of 600 that the genuinely lit scene at 900
+                 * can never clear, and the camera sits in night for the rest
+                 * of the run. That is incident f8a7b21 verbatim. A reference
+                 * that lands too HIGH costs one self-correcting probe; one
+                 * that lands too low costs the trigger outright. The clipped
+                 * case - the only one where the pre-boot level is not just
+                 * imprecise but meaningless - is already rejected by
+                 * dn_clipped(pre_probe_hr) in the revert branch (scenario
+                 * 24). */
+                want_probe = 1; probe_why = "boot measure";
+                no_silent = 1;
                 break;
             }
 
@@ -1416,7 +1498,7 @@ static void *dn_thread(void *arg)
                  * five branches word themselves differently, and five places
                  * to keep in step is how a parser ends up knowing four of
                  * them. -1 means not measured, as everywhere else here. */
-                {   /* the trigger names are prose ("boot verify"); a
+                {   /* the trigger names are prose ("boot measure"); a
                      * key=value line must not carry a space in a value. */
                     char whyb[24];
                     snprintf(whyb, sizeof whyb, "%s", ir_why ? ir_why : "?");
@@ -1453,16 +1535,26 @@ static void *dn_thread(void *arg)
                     pre_probe = -1.0f;      /* it stuck: not a revert any more */
                     pre_probe_hr = -1;
                     hb_defer_logged = 0;
-                    LOGI(MOD, "probe confirmed day: exposure %.0f (< %.0f)",
-                         (double)s, (double)bar);
+                    if (boot_deciding)
+                        LOGI(MOD, "boot: measured day - exposure %.0f (< %.0f). "
+                                  "The optics are already there, so the one "
+                                  "switch_cmd this boot owed the board has "
+                                  "been spent", (double)s, (double)bar);
+                    else
+                        LOGI(MOD, "probe confirmed day: exposure %.0f (< %.0f)",
+                             (double)s, (double)bar);
                 } else {
                     target = DN_NIGHT; force = 1;
                     probe_fails++;
-                    snprintf(why, sizeof why, "probe found night, exposure %.0f",
-                             (double)s);
+                    snprintf(why, sizeof why, "%s, exposure %.0f",
+                             boot_deciding ? "boot: measured night"
+                                           : "probe found night", (double)s);
                     dn_diag_threshold(dn, probe_fails, probe_best, day_seen,
                                       &diag_warned);
                 }
+                /* the boot decision is made; from here the probe machinery is
+                 * ordinary again, re-assert included (see the probe block). */
+                boot_deciding = 0;
                 break;
             }
 
@@ -1704,6 +1796,17 @@ static void *dn_thread(void *arg)
             pre_probe = (s > 0.0f) ? s : ref;
             pre_probe_hr = sm.headroom;
             dn_switch(DN_DAY, probe_why, dn->switch_cmd, s, ref, bar);
+            /* The boot measurement charges the ration like any other probe,
+             * and that is load-bearing rather than incidental. Exempting it
+             * was tried and the corpus refuted it in one scenario: the boot
+             * probe's own pre_probe level is what anchors the night reference
+             * (see the boot block), and probe_min_gap_s is what stops the
+             * very next transient from re-anchoring it. Unrationed, scenario
+             * 02's dip to 1200 - 24 s after a boot that had correctly
+             * anchored 3500 - immediately fires a second probe, whose revert
+             * re-anchors on the dip, and the bar of 600 leaves the genuinely
+             * lit scene at 900 unable to ever clear it. That is incident
+             * f8a7b21 arriving through a new door. */
             cur = DN_DAY; mode_since = now; last_probe = now;
             verdict_at = now + (int64_t)DN_PROBE_SETTLE_S * 1000;
             ir_verdict_at = 0; d_lit = -1.0f; ir_why = NULL;
@@ -1712,8 +1815,18 @@ static void *dn_thread(void *arg)
             sust_min = win_max = -1.0f; win_at = 0;
             ema_fast = ema_slow = -1.0f; trend_since = 0;
             hb_defer_logged = 0;
-            reassert_left = DN_REASSERT_COUNT;
-            reassert_at   = now + DN_REASSERT_MS;
+            /* ...except for the boot measurement. The re-assert re-drives
+             * whatever image.running_mode currently says, and at boot that is
+             * still the persisted guess - nothing has written it this session
+             * (the board hook chain does, and it has only just been asked
+             * to). Armed here it would land DN_REASSERT_MS in, i.e. right
+             * where the boot verdict is read, and push the stale value over
+             * the optics this probe just commanded. That is the "switch to
+             * day overwritten twice, eight seconds apart" incident verbatim,
+             * and it is why the old boot block never armed a repeat either.
+             * The decision's own switch, below, arms its own. */
+            reassert_left = boot_deciding ? 0 : DN_REASSERT_COUNT;
+            reassert_at   = boot_deciding ? 0 : now + DN_REASSERT_MS;
             verify_at = now + DN_VERIFY_MS; verify_cyc = 0; enforce_at = 0;
         } else if (target != cur && target != DN_UNKNOWN &&
                    (force || !mode_since ||
@@ -1770,6 +1883,12 @@ static void *dn_thread(void *arg)
         }
 
     tail: ;
+        /* Defensive: the boot measurement is only in flight while its verdict
+         * is pending. If the probe never got off the ground - an unswitchable
+         * board, a guard above that changes shape later - clearing the flag
+         * here is what keeps it from suppressing every LATER probe's
+         * re-assert for the rest of the session. */
+        if (boot_deciding && !verdict_at) boot_deciding = 0;
         float st_ref = (cur == DN_NIGHT) ? ref : -1.0f;
         float st_bar = (cur == DN_NIGHT && ref > 0.0f)
                      ? ref * (float)DN_PROBE_JUMP_PCT / 100.0f : -1.0f;

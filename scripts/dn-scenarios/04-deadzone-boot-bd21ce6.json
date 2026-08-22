@@ -1,7 +1,7 @@
 {
   "name": "04-deadzone-boot-bd21ce6",
   "incident": "bd21ce6",
-  "description": "Camera rebooted at 09:23 in broad daylight with a stale persisted night and a mid-band night-pipeline gain (731, inside the 300..3000 dead-zone). Pre-fix the decision stayed DN_UNKNOWN forever - both reconfirm probes were gated on cur==NIGHT, which UNKNOWN never satisfies - and the camera rendered night video indefinitely with zero log lines. Post-fix: the dead-zone adoption must adopt the persisted night after settle, arm the verify deadline, and the (first-of-session, never-skipped) probe must find day-pipeline gain 250 and stick in day within DN_ADOPT_PROBE_S plus margin. RESTATED 2026-08-17: mode@200 asserted NIGHT because the old machine adopted the stale persisted night and could only correct itself when the verify deadline came due around t=300. The boot probe measures instead of adopting, so the camera is in day within ~3s - the assertion was encoding the latency of the bug, not a requirement. Expecting day at t=200 is what actually needs to hold.",
+  "description": "Camera rebooted at 09:23 in broad daylight with a stale persisted night and a mid-band night-pipeline gain (731, inside the 300..3000 dead-zone). Pre-fix the decision stayed DN_UNKNOWN forever - both reconfirm probes were gated on cur==NIGHT, which UNKNOWN never satisfies - and the camera rendered night video indefinitely with zero log lines. Post-fix: the dead-zone adoption must adopt the persisted night after settle, arm the verify deadline, and the (first-of-session, never-skipped) probe must find day-pipeline gain 250 and stick in day within DN_ADOPT_PROBE_S plus margin. RESTATED 2026-08-17: mode@200 asserted NIGHT because the old machine adopted the stale persisted night and could only correct itself when the verify deadline came due around t=300. The boot probe measures instead of adopting, so the camera is in day within ~3s - the assertion was encoding the latency of the bug, not a requirement. Expecting day at t=200 is what actually needs to hold.\n\nRESTATED 2026-08-22 (boot measures before it decides): the probe's trigger name changed from 'boot verify' to 'boot measure', because it is no longer verifying a persisted value - there is nothing to verify, the persisted value decides nothing. Every behavioural assertion here is unchanged and still passes at the same click budget.",
   "scale": 60,
   "duration_s": 600,
   "initial_mode": "night",
@@ -21,7 +21,7 @@
     "restart_equivalence_s": 300,
     "monotonicity": "warn",
     "expect_log": [
-      "probe \\(boot verify\\)"
+      "probe \\(boot measure\\)"
     ]
   }
 }

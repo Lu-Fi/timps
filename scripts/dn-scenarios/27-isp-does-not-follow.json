@@ -1,25 +1,101 @@
 {
   "name": "27-isp-does-not-follow",
   "incident": "cam-wohn (cinnado_d1_t31l, T31L), 2026-08-21 10:29 local",
-  "description": "The machine decides day, switches, and the HARDWARE does not follow. Field record: 10:29:07 'switching to day (IR ratio 0.97)', switch_cmd ran with rc=0, /control reported daynight.mode=0 (day) - and /proc/jz/isp/isp-m0 kept saying 'ISP Runing Mode : Night' until past 11:00, image black-and-white in broad daylight. No error anywhere, because nothing ever read the mode back: dn_read parsed the line every tick and threw it away. Repaired in the field only by a real pass through the counter mode (daynight night -> 8 s -> ISP=Night, daynight day -> 10 s -> ISP=Day) - re-asserting the already-believed value is a no-op to a stuck ISP, only a transition acts. Same rule the railed-boot cycle (T23, scenario 24) already encodes for a different detector: there the mode MATCHES and the tuning is railed (caught by AE reserve == 0); here the mode itself is wrong (caught by readback).\n\nThe shape: a lit interior at night (illuminator carries it, r=4 at the boot verify, no click), reference anchors ~2000. At t=120 the room light comes on: the night pipeline steps 2000 -> 900, under the 50% jump bar; path C fires a silent probe, the noir curve now reads the same 900, r~1.0 with reserve to spare -> switch to day. isp_sticky drops that switch: the harness keeps serving the night pipeline and 'Runing Mode : Night', exactly the field state - and crucially the machine's own day branch is CONTENT there (900 < night_gain 4096), so without readback nothing would ever notice.\n\nWhat the fix must do: confirm the switch against the readback, and when the grace (DN_VERIFY_MS = both re-asserts + 2 s = 18 s) expires unmatched, force exactly one transition through night and back. The sticky model releases on the switch TO night (the driver-view edge) and the return switch to day then renders. Click accounting is the point of the budget: 1 dropped day + 1 forced night + 1 forced day = 3 board drives, and the forbid on 'giving up' asserts the single cycle SUFFICED - a build that cycles more than once, or click-storms against a stuck ISP, fails the budget; a build without readback never leaves night and fails mode@290 and the wrong-mode bound instead (pre-fix measured: night for the whole run).",
+  "description": "The machine decides day, switches, and the HARDWARE does not follow. Field record: 10:29:07 'switching to day (IR ratio 0.97)', switch_cmd ran with rc=0, /control reported daynight.mode=0 (day) - and /proc/jz/isp/isp-m0 kept saying 'ISP Runing Mode : Night' until past 11:00, image black-and-white in broad daylight. No error anywhere, because nothing ever read the mode back: dn_read parsed the line every tick and threw it away. Repaired in the field only by a real pass through the counter mode (daynight night -> 8 s -> ISP=Night, daynight day -> 10 s -> ISP=Day) - re-asserting the already-believed value is a no-op to a stuck ISP, only a transition acts. Same rule the railed-boot cycle (T23, scenario 24) already encodes for a different detector: there the mode MATCHES and the tuning is railed (caught by AE reserve == 0); here the mode itself is wrong (caught by readback).\n\nThe shape: a lit interior at night (illuminator carries it, r=4 at the boot verify, no click), reference anchors ~2000. At t=120 the room light comes on: the night pipeline steps 2000 -> 900, under the 50% jump bar; path C fires a silent probe, the noir curve now reads the same 900, r~1.0 with reserve to spare -> switch to day. isp_sticky drops that switch: the harness keeps serving the night pipeline and 'Runing Mode : Night', exactly the field state - and crucially the machine's own day branch is CONTENT there (900 < night_gain 4096), so without readback nothing would ever notice.\n\nWhat the fix must do: confirm the switch against the readback, and when the grace (DN_VERIFY_MS = both re-asserts + 2 s = 18 s) expires unmatched, force exactly one transition through night and back. The sticky model releases on the switch TO night (the driver-view edge) and the return switch to day then renders. Click accounting is the point of the budget: 1 dropped day + 1 forced night + 1 forced day = 3 board drives, and the forbid on 'giving up' asserts the single cycle SUFFICED - a build that cycles more than once, or click-storms against a stuck ISP, fails the budget; a build without readback never leaves night and fails mode@290 and the wrong-mode bound instead (pre-fix measured: night for the whole run).\n\nRETIMED 2026-08-22 (boot measures before it decides). Two things had to move, and both make the model MORE faithful to the field record rather than less.\n\nFirst, isp_sticky gained a 'from': the ISP now gets stuck at t=100, not at power-on. It has to, because boot itself now performs a real transition, and the sticky model releases on the first switch TO the stuck mode - so a model stuck from t=0 has its release edge eaten by the boot sequence, and the runtime defect this scenario exists to reproduce can never occur. It would still have passed every log assertion, because the whole readback drama would simply have happened at boot instead: forced cycle, enforce, confirm, all of it, at t=24 rather than at the IR-ratio switch. Green, and testing the wrong transition. cam-wohn's ISP got stuck at 10:29 on a runtime probe, which is what 'from' now says.\n\nSecond, the day-pipeline curve is dark (8000) until the room light comes on at t=120. It used to read 500 - broad daylight - for the whole run, which was only ever a modelling convenience for 'the machine's own day branch is CONTENT there'. With a boot that actually READS the day pipeline that convenience became a lie the machine could act on: it would measure day at t=14 and the scenario's own night premise would be false. 8000 before the light and 500 after is what a lit interior at night looks like, and it is what the prose above already claimed.\n\nBudget 3 -> 5: the boot measurement pair, plus the unchanged three of the incident itself (1 dropped day + 1 forced night + 1 forced day).",
   "scale": 30,
   "duration_s": 300,
   "initial_mode": "night",
-  "isp_sticky": { "stuck": "night" },
+  "isp_sticky": {
+    "stuck": "night",
+    "from": 100
+  },
   "config": {
     "daynight.day_gain": 768,
     "daynight.night_gain": 4096
   },
   "interp": "step",
   "noise_pct": 0,
-  "night_gain": [[0, 2000], [119, 2000], [120, 900], [300, 900]],
-  "night_gain_noir": [[0, 8000], [119, 8000], [120, 900], [300, 900]],
-  "day_gain": [[0, 500], [300, 500]],
+  "night_gain": [
+    [
+      0,
+      2000
+    ],
+    [
+      119,
+      2000
+    ],
+    [
+      120,
+      900
+    ],
+    [
+      300,
+      900
+    ]
+  ],
+  "night_gain_noir": [
+    [
+      0,
+      8000
+    ],
+    [
+      119,
+      8000
+    ],
+    [
+      120,
+      900
+    ],
+    [
+      300,
+      900
+    ]
+  ],
+  "day_gain": [
+    [
+      0,
+      8000
+    ],
+    [
+      119,
+      8000
+    ],
+    [
+      120,
+      500
+    ],
+    [
+      300,
+      500
+    ]
+  ],
   "expect": {
-    "mode_at": [[100, "night"], [290, "day"]],
-    "expected_mode": [[0, "night"], [120, "any"], [190, "day"]],
+    "mode_at": [
+      [
+        100,
+        "night"
+      ],
+      [
+        290,
+        "day"
+      ]
+    ],
+    "expected_mode": [
+      [
+        0,
+        "night"
+      ],
+      [
+        120,
+        "any"
+      ],
+      [
+        190,
+        "day"
+      ]
+    ],
     "max_wrong_mode_s": 30,
-    "max_switches": 3,
+    "max_switches": 5,
     "max_ir_probes": 2,
     "expect_log": [
       "switching to day \\(IR ratio",

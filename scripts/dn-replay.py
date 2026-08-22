@@ -64,7 +64,8 @@ Scenario JSON (all times virtual seconds, all gains IMP [24.8] linear):
                                   every clip protection is structurally
                                   absent - the case dn_ceiling_check() warns
                                   about.
-  isp_sticky                    - OPTIONAL {"stuck": "day"|"night"}: the ISP
+  isp_sticky                    - OPTIONAL {"stuck": "day"|"night",
+                                  "from": <t>}: the ISP
                                   refuses to leave the stuck mode. switch_cmd
                                   still runs (the click is still recorded),
                                   but the served "ISP Runing Mode" - and the
@@ -79,6 +80,15 @@ Scenario JSON (all times virtual seconds, all gains IMP [24.8] linear):
                                   judge the RENDERED timeline (what was
                                   served), not the switch log, because with a
                                   stuck ISP the two are exactly what differ.
+                                  "from" (default 0) is WHEN the ISP gets
+                                  stuck; drives before it are followed
+                                  normally. Needed since 2026-08-22: boot now
+                                  performs a real transition of its own, and
+                                  a model stuck from t=0 has its release edge
+                                  consumed by the boot sequence before the
+                                  runtime defect can occur. The field
+                                  incident was a runtime transition, so this
+                                  is also the more faithful model.
   isp_override                  - OPTIONAL [[t, "day"|"night"|null], ...]:
                                   from t on, the served "ISP Runing Mode"
                                   (and pipeline) is FORCED to the given mode
@@ -718,16 +728,27 @@ def run_regression(scn, binary, keep=False, scale_override=None):
         """The mode the ISP actually renders. Without isp_sticky that is
         simply the last switch_cmd drive. With it, switches AWAY from the
         stuck mode are dropped until one switch TO the stuck mode has been
-        seen - only a transition acts on a stuck ISP."""
+        seen - only a transition acts on a stuck ISP.
+
+        `from` (default 0) is when the ISP GETS stuck; drives before it are
+        followed normally. It became necessary on 2026-08-22, when boot
+        started performing a real transition of its own: a model that is
+        stuck from t=0 has its release edge consumed by the boot sequence,
+        so the runtime defect the scenario exists to reproduce can never
+        happen. The field incident was an ISP that got stuck at a runtime
+        transition, and `from` is how a scenario says so."""
         ov = override_at(sim.vnow())
         if ov:
             return ov                        # forced from outside
         if not sticky:
             return sim.cur_mode()
         stuck = sticky["stuck"]
+        frm = sticky.get("from", 0)
         mode, released = sim.initial_mode, False
-        for _, mm in sim.switches():
-            if released:
+        for st, mm in sim.switches():
+            if st < frm:
+                mode = mm                    # not stuck yet: the ISP follows
+            elif released:
                 mode = mm
             elif mm == stuck:
                 released, mode = True, stuck

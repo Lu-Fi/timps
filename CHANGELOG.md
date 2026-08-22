@@ -6,6 +6,83 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- **Day/night boot now MEASURES before it decides, and asserts the answer on
+  the board once** (`src/daynight.c`, `src/daynight.h`, `src/config.c`,
+  `docs/wiki/Day-Night.md`, `docs/wiki/Configuration-Reference.md`). The old
+  boot path committed the persisted `image.running_mode` to the ISP
+  immediately and only *optionally* verified it afterwards, and it
+  deliberately never ran `switch_cmd` at all. Two things were wrong with
+  that. The persisted value has no bounded age - a camera that sat powered
+  off for a year boots carrying a year-old opinion about the light - and
+  because nothing forced a physical assertion, a boot that *confirmed* the
+  persisted value left the board untouched. That is the 2026-08-22 IR/ircut
+  desync: five fleet cameras rebooted after dark, adopted `night` in
+  software, and spent the night with the IR LEDs off, because
+  `/run/thingino/daynight_mode` is tmpfs, resets to `day` on every reboot,
+  and is only ever written by an actual `daynight day|night` call that never
+  came.
+
+  Boot is now: wait for the AE to converge (unchanged bounds -
+  `DN_BOOT_SETTLE_S`, `DN_STABLE_N`, hard-capped at `DN_STABLE_MAX_MS`), run
+  **one ordinary probe** into the day pipeline - the same `dn_switch`, the
+  same `DN_PROBE_SETTLE_S` verdict, the same ISP readback gate a runtime
+  probe uses, no second measurement mechanism - read it against `day_gain`,
+  and assert the answer. Cost, counted honestly: **one `switch_cmd`
+  invocation when the answer is day** (the probe's own drive *is* the
+  assertion) **and two when it is night**; on a board that comes up in its
+  reset day position the first moves nothing and the second is the movement
+  the camera actually needs. `daynight.boot_probe=0` now opts out of the
+  *measurement* only - the persisted value is adopted, then still asserted on
+  the board once - and a railed AE (0 units of reserve) overrides the opt-out
+  exactly as before, except that with `boot_probe=1` the measurement *is* the
+  real transition that re-tunes the meter, so the T23 railed-boot case is
+  subsumed rather than special-cased.
+
+  Three things the boot probe deliberately does NOT do, each of them a scar:
+  it never takes the **silent** route (the ratio divides a lit reading by an
+  unlit one, and at boot nothing has established that the illuminator was
+  ever on - in a dark room that lands on "pegged, therefore night", the right
+  mode with no assertion, which is precisely how the desync went unnoticed);
+  it never arms the repeating **running_mode re-assert** (the re-assert
+  re-drives whatever `image.running_mode` says, which at boot is still the
+  persisted guess, and it would land `DN_REASSERT_MS` in - right on the boot
+  verdict - which is the 2026-08 "switch to day overwritten twice, eight
+  seconds apart" living-room incident verbatim); and it keeps its pre-probe
+  level as the night-reference candidate rather than deferring the anchor to
+  `DN_REF_DELAY_S`, because an anchor sampled 30 s after a boot can land
+  inside a lighting transition - which is incident f8a7b21, and scenario 02
+  reproduced it immediately when that was tried. For the same reason the boot
+  probe charges `probe_min_gap_s` like any other probe: exempting it let the
+  very next transient re-anchor the reference it had just set correctly.
+  Post-boot transitions, their re-assert timers and their readback
+  enforcement are untouched.
+
+  If no usable exposure reading appears within `DN_STABLE_MAX_MS` of start-up
+  there is nothing to measure: boot falls back to the persisted value, still
+  asserts it on the board once, and says so with a `WRN`.
+
+  Corpus (`scripts/dn-scenarios/`, `scripts/dn-replay.py`): every changed
+  scenario carries a dated note saying what moved and why. Click budgets
+  re-derived for the boot pair (19-23, 25-28); the two boot-probe log names
+  updated (04, 07); and four scenarios genuinely retimed rather than
+  re-budgeted, because a boot that always performs a real transition consumed
+  the setup they depended on - 19 runs to t=780 so the darkness ratio verdict
+  it asserts comes from the post-light-off heartbeat probe instead of from
+  boot; 25 pins `probe_min_gap_s` at its 60 s floor so its light-on event is
+  still reachable (it is not a scenario about rationing); 26 moves its phase-1
+  `filter_cost` measurement from the boot silent probe to a runtime path-C
+  probe, without which phase 2's projection branch was never reached and the
+  scenario was quietly testing nothing; and 27's `isp_sticky` gained a `from`
+  key plus an honestly dark pre-light day curve, because a stuck-from-boot ISP
+  has its release edge eaten by the boot transition and the readback drama
+  would have played out at t=24 instead of at the runtime probe the incident
+  actually happened on. Full corpus: 28/28. Worth knowing before trusting a
+  single run: `03-noisy-night` came back 6 switches against a budget of 5 on
+  two consecutive runs - one of them a pre-change baseline - and 4 on the
+  third, so it is flaky on harness timing rather than on this change.
+
 ### Fixed
 
 - **A real restart can no longer strand the daemon dead on a start-stage

@@ -1,7 +1,7 @@
 {
   "name": "21-ir-ratio-flap-cam-sz",
   "incident": "2026-08-19 - a bedroom camera flapped 8 times in one evening; the case the IR ratio gets wrong",
-  "description": "The regression test for the feedback loop the silent probe opened. A dark interior with a dimmed lamp: the probe correctly reports r = 1.27 - the illuminator earns almost nothing - and the automaton switches to day. But switching to day also closes the IR-cut filter, and that filter is worth a factor of 3.3 here: the same scene reads 3514 with it open and 11480 with it shut. 11480 is above night_gain, so the absolute check switches straight back, the illuminator returns, and the cycle repeats.\n\nScenario 19 is the same probe verdict without the loop: there the day pipeline reads 3700, below night_gain, so nothing switches back. The two scenarios differ in that one number alone - which is why an absolute day->night threshold cannot be left to decide this on its own.\n\nThe ratio answers 'is the illuminator earning its keep'. The mode decision needs 'is there enough light to run day mode'. Those are different questions and the second one is the one that is binding here.\n\nOne exploratory switch is allowed - the automaton cannot know the day-mode reading without trying it once. Repeating it is the defect: every cycle is an audible click of the IR-cut filter, and overnight that is dozens per camera.",
+  "description": "The regression test for the feedback loop the silent probe opened. A dark interior with a dimmed lamp: the probe correctly reports r = 1.27 - the illuminator earns almost nothing - and the automaton switches to day. But switching to day also closes the IR-cut filter, and that filter is worth a factor of 3.3 here: the same scene reads 3514 with it open and 11480 with it shut. 11480 is above night_gain, so the absolute check switches straight back, the illuminator returns, and the cycle repeats.\n\nScenario 19 is the same probe verdict without the loop: there the day pipeline reads 3700, below night_gain, so nothing switches back. The two scenarios differ in that one number alone - which is why an absolute day->night threshold cannot be left to decide this on its own.\n\nThe ratio answers 'is the illuminator earning its keep'. The mode decision needs 'is there enough light to run day mode'. Those are different questions and the second one is the one that is binding here.\n\nOne exploratory switch is allowed - the automaton cannot know the day-mode reading without trying it once. Repeating it is the defect: every cycle is an audible click of the IR-cut filter, and overnight that is dozens per camera.\n\nRESTATED 2026-08-22 (boot measures before it decides): budget 2 -> 4. The two added drives are the boot measurement pair (day to read the honest pipeline, night because that is the answer), both inside the first 15 s. The flap this scenario bounds is the pair at t=324/358, and it is still exactly one pair - which is the assertion.",
   "scale": 30,
   "duration_s": 1800,
   "initial_mode": "night",
@@ -47,7 +47,7 @@
       ]
     ],
     "max_wrong_mode_s": 300,
-    "max_switches": 2,
+    "max_switches": 4,
     "max_ir_probes": 8,
     "monotonicity": "warn",
     "expect_log": [
