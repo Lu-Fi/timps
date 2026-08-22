@@ -3,6 +3,45 @@
 Working list. Newest block first; each entry says what is established and what
 is still guesswork, so nobody has to re-derive it.
 
+## OPEN: a dark-time reboot leaves the physical IR/ircut desynced from software
+
+Found 2026-08-22, same evening as the restart-crash entry below and likely to
+recur with it: `daynight.c`'s boot path (~line 1181, "Push image.running_mode
+into the ISP once... NOT switch_cmd") deliberately skips calling
+`switch_cmd` at boot, on the documented reasoning that the physical board is
+already in the state matching the persisted `running_mode` and a filter
+movement per boot is a real mechanical cost. That assumption holds for a
+reboot that happens in daylight or shortly after one, but not for a reboot
+that happens after dark with no live day/night transition since: the board
+script (`/sbin/daynight`, resolved via `switch_cmd = daynight`) keeps its own
+notion of physical state in `/run/thingino/daynight_mode` (tmpfs, reset to
+"day" on every reboot, and only ever written by an actual `daynight
+day|night` invocation - see its `[ -f "$MODE_FILE" ] || echo "day" >
+"$MODE_FILE"` and the IR-CUT/IR-LED GPIO logic further down). If timps boots
+straight into a persisted "night" `running_mode` and no dusk/dawn transition
+happens afterward, `/sbin/daynight` is never invoked, so `daynight_mode`
+stays "day" and the physical IR-cut filter and 850/940nm IR LEDs stay in
+their day (LED off) position indefinitely - the ISP is correctly night-tuned
+(color/exposure), but there is no IR light to see anything by.
+
+Confirmed on the fleet 2026-08-22 ~22:30: exactly the 5 cameras rebooted
+after dark that evening (cam-db, cam-schuppen, cam-sz, cam-wintergarten,
+cam-kinder-rechts) had an empty/missing `daynight_mode`; the 7 cameras that
+had been running continuously since before dusk all correctly showed
+"night". Fixed by hand for tonight (`ssh <ip> /sbin/daynight night` on the 5)
+- this is not a software fix, just a physical re-assert. Left unfixed, it
+would have silently self-corrected at tomorrow's dusk transition, since that
+IS a real transition and does call `switch_cmd`.
+
+Not fixed here because a real fix needs a decision, not just code: either
+(a) boot should compare `running_mode` against `/sbin/daynight status` (or
+equivalent) and call `switch_cmd` once if they disagree, accepting the
+mechanical cost is exactly what the boot path was written to avoid, or (b)
+`/sbin/daynight`'s own S06ircut/S10daynightd startup should assert the
+persisted mode itself rather than defaulting to "day" and waiting to be
+told - that lives in `thingino-firmware-LuFi`, outside timps. Either fix
+belongs in that repo's review queue, not slipped in unreviewed here.
+
 Background for the encoder block:
 `dev_notes/T23_RATECONTROL_INVESTIGATION_2026-08-21.md`.
 
