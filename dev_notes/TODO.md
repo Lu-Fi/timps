@@ -537,6 +537,60 @@ streams, confirm the rendered text differs and matches each stream's own
 
 ## Follow-ups from the 2026-08-21 rate-control implementation
 
+### BUG: `video<N>.qp` is graded "applied live" under fixqp and is not (T31)
+
+**Measured on cam-garage (T31X/sc4336p) 2026-08-22, substream in `fixqp`,
+daemon pid pinned across the whole sequence.** Found by the new `timps-qa.sh`
+RC6b check, which is why that check exists.
+
+The live path is inert while claiming success:
+
+| route | `qp` | delivered | mean keyframe |
+| --- | --- | --- | --- |
+| boot (`enc_create`) | 25 | 108 kbit/s | 19624 B |
+| boot (`enc_create`) | 42 | 17 kbit/s | 2161 B |
+| live POST | 25 | 40 kbit/s | 7793 B |
+| live POST | 42 | 40 kbit/s | 7801 B |
+| live POST 42 → 25, straight after a boot at 42 | 25 | 21 kbit/s | 3742 B |
+
+The boot path spans 6.4× across the same QP pair, so the encoder and the scene
+are both perfectly capable of expressing it. The live path does not move at
+all — and from a fresh boot at 42, a live POST of 25 leaves the stream where
+42 put it, not where a boot at 25 would.
+
+Meanwhile the POST reply says `deferred:0` and `encoder.1.rc.qp` echoes the
+new value exactly. So `IMP_Encoder_SetChnAttrRcMode` stores `attrFixQp.
+iInitialQP` where the next `GetChnAttrRcMode` reads it back, and never
+re-programs the running channel. `rc_live_apply`'s RMW (hal_ingenic.c, the
+`ENC_HAS_SETRCMODE` `qp` branch) is doing exactly what it says; the SDK call is
+not.
+
+This is the "accepted, persisted, faithfully echoed, and silently ignored"
+class again (340fb1f, ff28ee2, f003655, 0a8bb9f, 6ec766e, dd2221f, 51bf052,
+30ecc74) — with the twist that the readback is complicit, so only a bitstream
+measurement can see it. It is also a broken promise in the API contract:
+`deferred:0` means "reached the running pipeline", and a UI acting on it tells
+the user no restart is needed when one is.
+
+**Fix candidates**, in order of honesty:
+1. Drop `qp` from `ENC_LIVE_KEYS` for T31/C100 (and check T40, same call) in
+   `src/enc_caps.h`, so it is graded restart-bound and the reply stops lying.
+   Costs nothing real: nobody can use the live path today anyway.
+2. Find a call that does re-program a running fixqp channel. Nothing obvious in
+   the T31 headers; `SetChnAttrRcMode` is the only rc-attr setter.
+Option 1 unless 2 turns something up. **Not done** — this entry is the report,
+not the fix.
+
+**Not reproduced elsewhere yet**: T40 uses the same `ENC_HAS_SETRCMODE` branch
+and is untested; T41 has no setter at all so it is already restart-bound;
+classic (T10–T30) goes through the full-union re-fill, a different code path.
+Note the same shape was measured for `i_bias_lvl` on this SoC (accepted,
+echoed via `ip_delta`, no bitstream effect) — see the entry under "Hardware
+verification". Two of T31's five `caps.video_live` keys are therefore inert.
+The other three (`bitrate`, `min_qp`, `max_qp`) were measured to genuinely
+reach the encoder in the same session.
+
+
 ### Wiki pages are slightly stale after the implementation
 
 `docs/wiki/Rate-Control-Parameters.md` still says "the five still-hardcoded

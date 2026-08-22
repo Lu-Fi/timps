@@ -2730,7 +2730,10 @@ else
 			skip "video1.min_qp: floor $rc_mq_lo and ceiling $rc_mq_hi are less than 8 QP apart - no room for a probe coarse enough to prove the floor binds"
 		else
 			rc_baseline
-			if [ -z "$rc_base_kbps" ] || ! fcmp "$rc_base_kbps" ge 64; then
+			# 24 kbps, not RC4's 64: this probe needs no bitrate headroom, only
+			# enough delivered bits that a 0.6x drop is bigger than the capture
+			# noise. A dark static scene at night legitimately sits near here.
+			if [ -z "$rc_base_kbps" ] || ! fcmp "$rc_base_kbps" ge 24; then
 				skip "video1.min_qp: no usable substream baseline (got '${rc_base_kbps:-none}' kbps) - a floor that binds cannot be told apart from a stream that was already delivering nothing"
 				lv_mark_gated video "no-usable-baseline-for-bitstream-check" min_qp
 			else
@@ -2790,15 +2793,18 @@ else
 			skip "video1.max_qp: ceiling $rc_mq_hi leaves no room for a low/high pair inside [$rc_mq_lo..51] - cannot build a differential that isolates the ceiling"
 		else
 			rc_baseline
-			if [ -z "$rc_base_kbps" ] || ! fcmp "$rc_base_kbps" ge 64; then
-				skip "video1.max_qp: no usable substream baseline (got '${rc_base_kbps:-none}' kbps) - cannot pick a target starved enough to make the ceiling bind"
+			# starve to ~0.15x of what the scene actually costs, floored at the
+			# videoN.bitrate config clamp of 16 - low enough that the encoder is
+			# pinned against its ceiling in both halves of the pair. The gate is
+			# not a flat baseline floor but whether that clamp still leaves a real
+			# starve: on a scene delivering under ~32 kbps the floored target is no
+			# longer below what the scene costs, and neither ceiling would bind.
+			rc_starve=$(awk -v m="${rc_base_kbps:-0}" 'BEGIN{v=int(m*0.15); if(v<16)v=16; print v}')
+			if [ -z "$rc_base_kbps" ] || ! fcmp "$rc_starve" le "$(awk -v b="${rc_base_kbps:-0}" 'BEGIN{printf "%.0f", b*0.5}')"; then
+				skip "video1.max_qp: baseline '${rc_base_kbps:-none}' kbps leaves no starved target below the 16 kbps config clamp - cannot make the ceiling bind, so a null result would prove nothing"
 				lv_mark_gated video "no-usable-baseline-for-bitstream-check" max_qp
 			else
 				rc_b_orig=$(jget "$LV_BASE" video.1.bitrate)
-				# starve to ~0.15x of what the scene actually costs, floored at the
-				# videoN.bitrate config clamp - low enough that the encoder is
-				# pinned against its ceiling in both halves of the pair.
-				rc_starve=$(awk -v m="$rc_base_kbps" 'BEGIN{v=int(m*0.15); if(v<16)v=16; print v}')
 				rc_qc_lo=$((rc_mq_lo+8)); [ "$rc_qc_lo" -gt "$rc_mq_hi" ] && rc_qc_lo=$rc_mq_hi
 				rc_qc_hi=$((rc_mq_hi+6)); [ "$rc_qc_hi" -gt 51 ] && rc_qc_hi=51
 				LV_PENDING="{\"video\":{\"1\":{\"bitrate\":$rc_b_orig,\"max_qp\":$rc_mq_hi}}}"
@@ -3085,6 +3091,57 @@ else
 			fi
 		fi
 
+		# --- RC6b: under fixqp, the QP must actually drive the bitrate -------
+		# RC6 grades the CONTRACT (deferred outside fixqp, live inside it) and that
+		# stays the point of it - it is the one check that pins 443584e/22832f1's
+		# honest-but-imprecise "live-capable" wording. But inside fixqp the same
+		# probe can be made to prove something stronger for free: rate control is
+		# switched off there, so QP alone decides the bitrate, and a real bitstream
+		# measurement at two QP values is a second, independent proof that the live
+		# path reaches the ENCODER and not just the struct - the one thing
+		# encoder.1.rc.qp cannot tell apart.
+		# Reference for the magnitude: the 2026-08-21 T23 investigation put the
+		# same scene at 278 kbit/s at a fixed QP of 42 against 990-2091 kbit/s
+		# under rate control, so a 17-point QP spread is worth multiples, not
+		# percent. 1.5x is a deliberately loose bar for that.
+		# Only when the channel is ALREADY in fixqp: rc_mode is restart-bound on
+		# T31/C100/T40/T41, and forcing the mode would mean a restart inside a
+		# section whose every verdict depends on the daemon NOT restarting
+		# (rc_pid_check exists for exactly that). An honest skip beats breaking
+		# the premise the rest of the block rests on.
+		if [ -z "${rc_q_cur:-}" ] || ! rc_live_has qp; then
+			:   # gate-marked by RC6
+		elif [ "${rc_q_mode:-}" != fixqp ]; then
+			info "  video1.qp: substream runs rc_mode=$rc_q_mode, so the fixed QP is inert and there is no bitrate effect to measure. RC6 above verified the grading contract, which is what IS testable outside fixqp; configure the substream for fixqp to get the measured half"
+		elif ! rc_can_measure; then
+			skip "video1.qp bitrate-vs-QP measurement needs ffmpeg+ffprobe - not found"
+		else
+			rc_q_lo=25; rc_q_hi=42        # both inside config.c's 1..51 domain
+			rc_q_a=""; rc_q_b=""
+			LV_PENDING="{\"video\":{\"1\":{\"qp\":$rc_q_cur}}}"
+			lv_mark video qp
+			for rc_q_v in "$rc_q_lo" "$rc_q_hi"; do
+				code=$(lv_post "{\"video\":{\"1\":{\"qp\":$rc_q_v}}}")
+				[ "$code" = "200" ] || { bad "video1.qp=$rc_q_v: POST(live) HTTP $code"; break; }
+				sleep "$rc_settle_s"
+				rc_r=$(enc_measure "$PATH_SUB" "$rc_meas_dur" "rc6b_$rc_q_v") || continue
+				read -r rc_q_kbps _ _ _ _ <<<"$rc_r"
+				if [ "$rc_q_v" = "$rc_q_lo" ]; then rc_q_a="$rc_q_kbps"; else rc_q_b="$rc_q_kbps"; fi
+			done
+			rc_pid_check video1.qp-sweep
+			lv_post "$LV_PENDING" >/dev/null; LV_PENDING=""
+			if [ -z "$rc_q_a" ] || [ -z "$rc_q_b" ] || ! fcmp "${rc_q_b:-0}" gt 0; then
+				warn "video1.qp: could not measure both halves of the fixqp sweep (qp $rc_q_lo=${rc_q_a:-none}, qp $rc_q_hi=${rc_q_b:-none} kbps) - the live qp path stays unverified against the bitstream"
+			else
+				rc_q_r=$(awk -v a="$rc_q_a" -v b="$rc_q_b" 'BEGIN{printf "%.2f", a/b}')
+				if fcmp "$rc_q_r" ge 1.5; then
+					ok "video1.qp really drives the bitstream under fixqp: qp $rc_q_lo delivered ${rc_q_a} kbps and qp $rc_q_hi delivered ${rc_q_b} kbps (${rc_q_r}x apart) - lower QP, more bits, applied live with no restart. Independent of encoder.1.rc.qp, so this proves the value reached the ENCODER"
+				else
+					bad "video1.qp: under fixqp - where QP alone decides the bitrate - qp $rc_q_lo delivered ${rc_q_a} kbps and qp $rc_q_hi delivered ${rc_q_b} kbps (${rc_q_r}x). A 17-point QP spread cannot leave the bitrate flat, so the live write is graded applied (deferred:0) and is NOT reaching the encoder - the 340fb1f/ff28ee2 class, and the reply is lying to the caller about a restart not being needed. Measured on a T31 2026-08-22: the identical value applied at BOOT does work (qp 25 -> 108 kbps, qp 42 -> 17 kbps), so rc_live_apply's Get/SetChnAttrRcMode RMW stores iInitialQP where the next GetChnAttrRcMode reads it back but the running channel never re-programs. See dev_notes/TODO.md"
+				fi
+			fi
+		fi
+
 		# --- RC7: rc_mode, live on classic, restart-bound on the new API -----
 		# rc_mode is the one rc key whose live-capability actually differs
 		# between the two API generations, and it is a string, so it cannot
@@ -3133,6 +3190,41 @@ else
 			fi
 			rc_pid_check video1.rc_mode
 			lv_post "$LV_PENDING" >/dev/null; LV_PENDING=""
+		fi
+
+		# --- RC8a: the CONFIGURED profile must be the one in the bitstream ---
+		# RC8 below proves the profile is correctly reported restart-bound. That is
+		# a statement about the grading, not about the encoder: it would pass just
+		# as happily on a daemon that persists videoN.profile and then hands the
+		# SDK something else at bring-up. The SPS says which it is, and ffprobe
+		# reads the SPS off the stream header without decoding a single frame - two
+		# seconds, no capture, so unlike the rc probes this one is free.
+		# Judged against the CURRENT (boot-applied) profile and therefore placed
+		# BEFORE RC8's flip - after it the config would name a profile the running
+		# encoder legitimately does not have yet.
+		# Mapping is hal_ingenic.c's: 0 Baseline / 1 Main / >=2 High for H264, and
+		# H265 is pinned to HEVC Main regardless of videoN.profile - so on an H265
+		# stream the config value is genuinely not expected to appear, and saying
+		# "mismatch" there would be a script bug, not a daemon one.
+		rc_pf_now=$(jget "$LV_BASE" video.1.profile)
+		rc_pf_codec=$(jget "$LV_BASE" video.1.codec)
+		if [ -z "$rc_pf_now" ] || ! have ffprobe; then
+			:
+		else
+			rc_pf_seen=$(timeout -k 5 30 ffprobe -v error -rtsp_transport tcp \
+				-select_streams v:0 -show_entries stream=profile -of csv=p=0 \
+				"$(rtsp_url "$PATH_SUB")" 2>/dev/null | head -1 | tr -d '\r')
+			case "$rc_pf_codec" in
+				h265) rc_pf_want="Main";;
+				*)    case "$rc_pf_now" in 0) rc_pf_want="Baseline";; 1) rc_pf_want="Main";; *) rc_pf_want="High";; esac;;
+			esac
+			if [ -z "$rc_pf_seen" ]; then
+				warn "video1.profile: ffprobe could not read a profile off the substream SPS - cannot confirm the configured profile reached the encoder"
+			elif [ "$rc_pf_seen" = "$rc_pf_want" ]; then
+				ok "video1.profile=$rc_pf_now ($rc_pf_codec) is the profile the SUBSTREAM actually advertises - ffprobe reads '$rc_pf_seen' from the SPS, so the configured value reached the encoder and not just the config file"
+			else
+				bad "video1.profile=$rc_pf_now ($rc_pf_codec) should produce a '$rc_pf_want' bitstream but the substream SPS advertises '$rc_pf_seen' - the profile is persisted and echoed by GET /control while the encoder runs a different one (the 340fb1f class, on the one video key no readback covers: no rc union carries profile). Check enc_create's IMPEncoderProfile mapping against config.c's 0/1/2 domain"
+			fi
 		fi
 
 		# --- RC8: the restart-bound keys must SAY they are restart-bound -----
@@ -3223,6 +3315,88 @@ else
 			[ "$(jget "$gf" encoder.0.rc.min_qp)" = "$rc_h0" ] \
 				&& info "  per-channel isolation: both channels restored (ch0 held bound back to $rc_h0)" \
 				|| warn "per-channel isolation: ch0's held min_qp is $(jget "$gf" encoder.0.rc.min_qp), expected $rc_h0 after restore"
+		fi
+
+		# --- RC10a: quality_lvl, live and measurable on classic only ---------
+		# RC10 below round-trips quality_lvl through the config with the rest of
+		# the tuning keys, and until now that was its ONLY coverage - which quietly
+		# treated it as one uniform persist-only key when it is two different
+		# things depending on the SoC generation (enc_caps.h):
+		#   classic (T10-T30, incl. T23): part of ENC_LIVE_KEYS, applied to a
+		#     RUNNING channel by the full rc-struct re-fill through
+		#     SetChnAttrRcMode. It has a real, measured effect there.
+		#   new API (T31/C100/T40/T41): no equivalent field in the rc struct at
+		#     all. hal_ingenic.c logs "no equivalent field in this SoC's encoder
+		#     API - values ignored" once and drops it. Persisting is the whole of
+		#     the contract; there is nothing to measure and a measurement that
+		#     found no effect would be reporting correct behaviour as a failure.
+		# So the two cases are graded apart, on rc_live_has, like every other key
+		# in this block.
+		#
+		# The classic direction comes from the 2026-08-21 T23 investigation
+		# (dev_notes/T23_RATECONTROL_INVESTIGATION_2026-08-21.md, summarised in
+		# docs/wiki/Rate-Control-Parameters.md): a HIGHER quality_lvl delivers a
+		# LOWER bitrate - 1709 kbit/s at level 2 against 1243 at level 7 on the
+		# same scene under vbr, -27%, and 1745 vs 1265 under smart. Naming runs
+		# against intuition, so the probe asserts the measured direction, not the
+		# intuitive one. Within-level spread was 0.2-4% in that investigation,
+		# which is what sets the 10% bar below: ~3x the noise, well under the 27%
+		# a working knob produced.
+		#
+		# Gated on the channel ALREADY running vbr or smart: quality_lvl lives in
+		# the vbr union member and does nothing under cbr/fixqp. rc_mode is live on
+		# classic, so this probe COULD switch the mode itself - it deliberately
+		# does not. That would mean holding two live rc changes and two restores
+		# open at once on a path nobody has exercised, and an honest skip beats a
+		# probe whose failure mode is "left the substream in the wrong rc mode".
+		#
+		# NOT HARDWARE-VERIFIED. Written against the T23 numbers and the RC4
+		# enc_measure() pattern, syntax- and logic-checked only; the only camera
+		# available while this was written is a T31, where the branch cannot fire
+		# by construction. The first run against a real T10-T30 camera is what
+		# validates it - treat a verdict from this block as unproven until then.
+		rc_ql_cur=$(jget "$LV_BASE" video.1.quality_lvl)
+		rc_ql_mode=$(jget "$LV_BASE" encoder.1.rc.rc_mode)
+		if [ -z "$rc_ql_cur" ]; then
+			:   # RC10's round-trip reports its absence
+		elif ! rc_live_has quality_lvl; then
+			info "  video1.quality_lvl: not in caps.video_live on this $rc_plat build - the new-API rc structs have no equivalent field, so the daemon persists it and the HAL logs it as ignored. Config round-trip (RC10) is the entire contract here; there is no encoder behaviour to measure"
+		elif ! rc_can_measure; then
+			skip "video1.quality_lvl effect measurement needs ffmpeg+ffprobe - not found"
+		elif [ "$rc_ql_mode" != vbr ] && [ "$rc_ql_mode" != smart ]; then
+			skip "video1.quality_lvl: live on this $rc_plat build, but the substream runs rc_mode=$rc_ql_mode - quality_lvl sits in the vbr union member and has no effect outside vbr/smart. Re-run with the substream in vbr to measure it"
+		else
+			rc_ql_lo=2; rc_ql_hi=7          # the pair the T23 investigation measured
+			rc_ql_a=""; rc_ql_b=""
+			LV_PENDING="{\"video\":{\"1\":{\"quality_lvl\":$rc_ql_cur}}}"
+			lv_mark video quality_lvl
+			for rc_ql_v in "$rc_ql_lo" "$rc_ql_hi"; do
+				rf="$OUTDIR/rc_post_quality_lvl_$rc_ql_v.json"
+				code=$(lv_post_r "{\"video\":{\"1\":{\"quality_lvl\":$rc_ql_v}}}" "$rf")
+				if [ "$code" != "200" ]; then
+					bad "video1.quality_lvl=$rc_ql_v: POST(live) HTTP $code"; break; fi
+				if rc_defer_has "$rf" video1.quality_lvl; then
+					bad "video1.quality_lvl is in caps.video_live on this $rc_plat build but the POST reply DEFERRED it (keys=$(jget "$rf" deferred_keys)) - the classic full-union SetChnAttrRcMode re-fill was refused. An H265 channel is refused BY DESIGN (the classic live path is H264-only); this substream is $(jget "$LV_BASE" video.1.codec)"
+					break; fi
+				sleep "$rc_settle_s"
+				rc_r=$(enc_measure "$PATH_SUB" "$rc_meas_dur" "rc10a_$rc_ql_v") || continue
+				read -r rc_ql_kbps _ _ _ _ <<<"$rc_r"
+				if [ "$rc_ql_v" = "$rc_ql_lo" ]; then rc_ql_a="$rc_ql_kbps"; else rc_ql_b="$rc_ql_kbps"; fi
+			done
+			rc_pid_check video1.quality_lvl
+			lv_post "$LV_PENDING" >/dev/null; LV_PENDING=""
+			if [ -z "$rc_ql_a" ] || [ -z "$rc_ql_b" ] || ! fcmp "${rc_ql_a:-0}" gt 0; then
+				warn "video1.quality_lvl: could not measure both levels (lvl $rc_ql_lo=${rc_ql_a:-none}, lvl $rc_ql_hi=${rc_ql_b:-none} kbps) - the effect stays unverified on this camera"
+			else
+				rc_ql_r=$(awk -v a="$rc_ql_b" -v b="$rc_ql_a" 'BEGIN{printf "%.2f", a/b}')
+				if fcmp "$rc_ql_r" le 0.90; then
+					ok "video1.quality_lvl really moves the operating point on this $rc_plat build: level $rc_ql_lo delivered ${rc_ql_a} kbps and level $rc_ql_hi delivered ${rc_ql_b} kbps under rc_mode=$rc_ql_mode (${rc_ql_r}x) - higher level, lower bitrate, the direction the 2026-08-21 T23 measurement found (1709 -> 1243 kbit/s)"
+				elif fcmp "$rc_ql_r" ge 0.98 && fcmp "$rc_ql_r" le 1.02; then
+					bad "video1.quality_lvl: levels $rc_ql_lo and $rc_ql_hi delivered ${rc_ql_a} and ${rc_ql_b} kbps (${rc_ql_r}x) under rc_mode=$rc_ql_mode - indistinguishable. The key is advertised live on this $rc_plat build and the POSTs were graded applied (deferred:0), so it is being accepted, persisted and IGNORED (the 340fb1f/ff28ee2 class). The T23 reference moved 27% on the same pair; suspect the classic full-union re-fill not carrying qualityLvl into the active union member"
+				else
+					warn "video1.quality_lvl: level $rc_ql_lo delivered ${rc_ql_a} kbps and level $rc_ql_hi delivered ${rc_ql_b} kbps (${rc_ql_r}x) under rc_mode=$rc_ql_mode - the knob moves something, but not the >=10% drop the T23 reference (-27%) leads this check to expect, and not cleanly enough to call it broken either. Scene may be too static for the rate controller to have room; re-run on a busier picture"
+				fi
+			fi
 		fi
 
 		# --- RC10: the remaining videoN tuning keys, config round-trip --------
