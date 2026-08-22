@@ -3,6 +3,52 @@
 Working list. Newest block first; each entry says what is established and what
 is still guesswork, so nobody has to re-derive it.
 
+## OPEN, DESIGN: boot should MEASURE day/night, not just trust the persisted value
+
+User feedback 2026-08-22, prompted directly by the IR-desync entry below:
+trusting the persisted `running_mode` at boot is fine for a reboot minutes or
+hours after the last real reading, but has no real justification for a
+camera that was powered off for a long time - the extreme case raised was
+"what if it sat in a drawer for a year". A year-old (or even day-old, for a
+camera near a window with fast-changing light) persisted value is a guess
+with no more authority than a random default; there is no principled reason
+to commit the physical hardware to it before checking reality.
+
+Current behaviour (`daynight.c` ~line 1181 onward, see the entry below for
+the ISP-vs-switch_cmd split) is a hybrid: it commits `running_mode` to the
+ISP immediately from the persisted value, and only OPTIONALLY schedules a
+verifying probe afterward (`boot_probe`, on by default) - so the wrong
+guess is live, briefly, before anything checks it, and per the entry below
+the physical IR/ircut hardware may never get corrected at all if the probe
+happens to CONFIRM the stale guess rather than overturn it (nothing forces a
+`switch_cmd` call when the decision doesn't change).
+
+The user's position is the boot sequence should be inverted: measure first
+(a real exposure/gain reading against the day/night thresholds, the same
+kind of measurement `boot_probe` already knows how to take), decide from
+that measurement, and only THEN commit `running_mode` to the ISP and
+unconditionally call `switch_cmd` once to physically assert it - never
+trusting the persisted value as anything more than a hint for which probe
+path to prefer (e.g. still using it to pick day vs. night silent-probe
+framing where that matters for probe safety, per the existing "AE railed"
+boot special-case at ~line 1208).
+
+Deliberately not implemented tonight. This is a real behavioural change to
+a subsystem that was reworked and reviewed earlier THIS SAME DAY (the
+learning-removal consolidation, see `DAYNIGHT_CONSOLIDATION_2026-08-22.md`)
+and has already produced two real incidents THIS EVENING on top of that
+(the restart-crash entry below, and the IR-desync entry below it) - both
+found only because tonight happened to force restarts/reboots into it.
+Rushing a further change into the same subsystem at the same sitting, with
+no daylight hours left to observe a real transition before shipping it,
+is exactly the kind of pressure that produced the "switch to day was
+overwritten twice, eight seconds apart" incident the CURRENT boot logic's
+own comment (~line 1188) is scar tissue from. Needs: a clean design pass
+(what exactly triggers the always-call-switch_cmd - does it also fire on
+every plain `S95timps restart`, not just power-on boot, and is that
+distinction even knowable/desirable), then the same read-review-test cycle
+the rest of today's daynight work went through, not a same-night patch.
+
 ## OPEN: a dark-time reboot leaves the physical IR/ircut desynced from software
 
 Found 2026-08-22, same evening as the restart-crash entry below and likely to
