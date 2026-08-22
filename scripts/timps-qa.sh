@@ -20,6 +20,11 @@
 #   8. /control API ... status JSON, caps, safe write+persist round-trip
 #   8b. Live settings . POST every live setting, read it back, verify applied,
 #                       plus clamp regression (out-of-range persists clamped)
+#                       and the videoN rate-control block: caps.video_live vs
+#                       enc_caps.h, POST deferred/deferred_keys grading, and
+#                       encoder.<n>.rc (what the encoder HOLDS) vs what was
+#                       written - incl. i_bias_lvl->iIPDelta and per-channel
+#                       isolation, all without a restart
 #   8c. OSD vars_file . optional SSH: custom {placeholder} round-trip via the
 #                       on-device osd.vars_file key=value mechanism
 #   8d. Field drift ... diff GET /control?fields=1 (F_CTRL inventory) against
@@ -27,8 +32,9 @@
 #   8e. Malformed body  5 negative-case POSTs against the hand-rolled JSON
 #                       parser; asserts liveness, not a strict error contract
 #   8f. Flip/relatch .. optional: PIXEL-verified hflip + forced chn0 relatch
-#   8g. Encoder ....... optional SSH: persist-only bitrate/rc_mode verified by
-#                       MEASURING the substream after a real restart
+#   8g. Encoder ....... bitrate/rc_mode verified by MEASURING the substream,
+#                       live where caps.video_live allows it, otherwise after
+#                       a real restart (needs SSH only for the restart route)
 #   8h. Day/night ..... optional: forced time-window transition both ways, hook
 #                       invocation, running_mode follow-through, flap count
 #   9. /events ........ SSE stream emits events, provoked by a live-settings POST
@@ -141,13 +147,13 @@ TEST_CRASH="${TEST_CRASH:-0}"
 # from the 2026-08-11 coverage audit against this project's real bug history:
 TEST_LEAK="${TEST_LEAK:-0}"      # 12b: SIGKILLed clients must be reaped (6473848/265befb)
 TEST_FLIP="${TEST_FLIP:-0}"      # 8f:  pixel-verified hflip + forced chn0 relatch (8fb6fd3/9034d61)
-TEST_ENCODER="${TEST_ENCODER:-0}" # 8g: persist-only encoder settings verified after a restart
+TEST_ENCODER="${TEST_ENCODER:-0}" # 8g: encoder settings verified by measuring the substream (live or after a restart)
 TEST_DAYNIGHT="${TEST_DAYNIGHT:-0}" # 8h: deterministic day/night transition + flap check (0f5fc80)
 TEST_HOSTILE="${TEST_HOSTILE:-0}" # 13b: stalled client must not degrade healthy ones
 TEST_REBOOT="${TEST_REBOOT:-0}"  # 14c: real reboot, config/binary/version persistence
 
 usage() {
-	sed -n '2,52p' "$0" | sed 's/^# \{0,1\}//'
+	sed -n '2,58p' "$0" | sed 's/^# \{0,1\}//'
 	cat <<EOF
 
 Options (also settable as env vars):
@@ -195,12 +201,13 @@ Options (also settable as env vars):
                       instead of trusting the /control read-back, then force
                       a chn0 relatch and verify the flip survived it.
                       NEEDS A STATIC SCENE; ambiguous results WARN.
-  --test-encoder      (section 8g) needs --ssh: measure what the SUBSTREAM
-                      actually delivers, then cut its bitrate target well
-                      below that (a lower ceiling always binds), restart for
-                      real, and MEASURE again to prove the encoder honours the
-                      persisted config. Also compares cbr/vbr variance.
-                      Restores after.
+  --test-encoder      (section 8g) measure what the SUBSTREAM actually
+                      delivers, then cut its bitrate target well below that
+                      (a lower ceiling always binds) and MEASURE again to
+                      prove the encoder honours it. The new target goes in
+                      LIVE where caps.video_live lists bitrate, otherwise via
+                      a real restart, which is the only case that needs
+                      --ssh. Also compares cbr/vbr variance. Restores after.
   --test-daynight     (section 8h) force a day/night transition in both
                       directions via time windows, assert the board hook ran,
                       that image.running_mode followed, and that it did not
@@ -1736,6 +1743,14 @@ else
 	# POST a JSON body, echo the HTTP status
 	lv_post() { curl -s -o /dev/null -w '%{http_code}' --max-time 12 \
 		-u "$HTTP_USER:$HTTP_PASS" -X POST "$(http_base)/control" -d "$1"; }
+	# Same POST, but KEEP the reply body ($2). lv_post throws it away, which was
+	# fine while a POST reply could only say accepted/changed/rejected. Since
+	# 22832f1 the body also carries "deferred"/"deferred_keys" (httpd.c) - the
+	# only place the daemon states, per REQUEST, whether a changed video/sensor
+	# key reached the running pipeline or is waiting for a restart. The rc
+	# checks below are built on exactly that statement, so they need the body.
+	lv_post_r() { curl -s -o "$2" -w '%{http_code}' --max-time 12 \
+		-u "$HTTP_USER:$HTTP_PASS" -X POST "$(http_base)/control" -d "$1"; }
 	lv_get()  { curlq 12 "$(http_base)/control" -o "$1"; }
 	# Interruption safety: /control POSTs PERSIST to the camera's flash config.
 	# A run killed between POST(new) and POST(restore) used to strand the test
@@ -1816,6 +1831,7 @@ else
 		case "$rp" in
 			osd0.*|osd1.*) lsec=osd_item;;
 			privacy.*)     lsec=privacy;;
+			video.*)       lsec=video;;     # per-channel leaf set; the inventory calls it "video"
 			*)             lsec="$rp";;
 		esac
 		for ((i=0;i<n;i++)); do
@@ -2338,10 +2354,14 @@ else
 	ov_clamp_test daynight   '{"daynight":' '}' daynight   probe_min_gap_s  1        60
 	ov_clamp_test daynight   '{"daynight":' '}' daynight   heartbeat_max_s  99999999 604800
 
-	# --- persist-only (restart-required) sanity: these must NOT be advertised as
-	# live but MUST still round-trip through the config. One representative key
-	# each; the daemon reports the new value (persisted) even though the running
-	# pipeline is untouched until restart. ---
+	# --- video/sensor persist-first sanity: whatever the platform can or cannot
+	# push to a live encoder, EVERY videoN.* key must still round-trip through
+	# the config layer and be reported back. One representative key; the WHEN
+	# (live now vs. next restart) is a separate question, graded per key by the
+	# rc block below against caps.video_live and the POST reply's deferred list.
+	# This used to be worded "must NOT be advertised as live", which was true of
+	# every videoN.* key until 22832f1 and is now wrong for the rc subset on
+	# most SoCs - bitrate is live on all four new-API platforms and on classic.
 	pv_cur=$(jget "$LV_BASE" video.0.bitrate)
 	if [ -n "$pv_cur" ]; then
 		pv_new=$(flip_int 512 8000 "$pv_cur")
@@ -2349,11 +2369,567 @@ else
 		code=$(lv_post "{\"video\":{\"0\":{\"bitrate\":$pv_new}}}")
 		lv_get "$OUTDIR/lv_persist.json"
 		got=$(jget "$OUTDIR/lv_persist.json" video.0.bitrate)
-		[ "$got" = "$pv_new" ] && ok "persist-only video0.bitrate round-trips through config ($pv_new, applies on restart)" \
-			|| bad "persist-only video0.bitrate did not persist (got '$got', want '$pv_new')"
+		[ "$got" = "$pv_new" ] && ok "video0.bitrate round-trips through config ($pv_new; live-vs-restart graded below)" \
+			|| bad "video0.bitrate did not persist (got '$got', want '$pv_new')"
 		lv_mark video bitrate
 		lv_post "{\"video\":{\"0\":{\"bitrate\":$pv_cur}}}" >/dev/null   # restore
 		LV_PENDING=""
+	fi
+
+	# --- videoN rate control: LIVE apply, per-request grading, and what the
+	# encoder ACTUALLY holds (c4e434f/3edb85e/443584e/22832f1, 2026-08-21) ----
+	#
+	# Until those four commits every videoN.* key was persist-only by design,
+	# so 8b covered exactly one of them (the bitrate round-trip above) and 8d
+	# allowlisted the rest wholesale. Three new host-observable mechanisms
+	# changed that, which is why these checks live here in the default flow
+	# instead of behind --test-encoder's restart-and-measure:
+	#   caps.video_live      the videoN.* keys THIS build can push to a RUNNING
+	#                        encoder. enc_caps.h feeds both this list and the
+	#                        HAL's own gate, so a list that matches none of the
+	#                        four documented per-SoC sets means the two drifted.
+	#   deferred/deferred_keys in every POST reply - the per-REQUEST truth about
+	#                        which changed video/sensor keys did NOT reach the
+	#                        pipeline (channel down, wrong rc mode, rejected IMP
+	#                        call). A platform capability is not a promise; this
+	#                        is the promise being kept or not, per request.
+	#   encoder.<n>.rc       IMP_Encoder_GetChnAttrRcMode readback: what the
+	#                        encoder HOLDS, as opposed to what g_cfg was told.
+	#                        Everything else in 8b can only ever see the latter,
+	#                        which is precisely why "accepted, persisted,
+	#                        faithfully echoed, and silently ignored" is this
+	#                        project's most-repeated bug shape (340fb1f,
+	#                        ff28ee2, f003655, 0a8bb9f, 6ec766e, dd2221f,
+	#                        51bf052, 30ecc74). This is the first check in the
+	#                        script that can separate the two WITHOUT a restart
+	#                        and a stream measurement.
+	#
+	# NONE of this had ever executed on real hardware when these checks were
+	# written - all four commit messages say so in as many words, and 1bdd1b3
+	# lists the specific open questions (bitrate unit, iIPDelta sign/scale).
+	# So: a failure here is a candidate DAEMON bug first and a script bug
+	# second, and the verdict wording below says which one it would be.
+	#
+	# Everything is probed on video1 (the SUBSTREAM) for the same reason 8g is
+	# substream-only, except the per-channel isolation check, which cannot
+	# prove anything without touching both. That one is limited to a +-1 QP
+	# bound nudge on the mainstream, applied live and reverted in the next
+	# request - the smallest perturbation that is still observable.
+	rc_live=$(jget "$LV_BASE" caps.video_live)
+	# every rc/tuning key this block has a probe for, for the 8d ledger: each
+	# is either POSTed below or gate-marked with the reason it was not.
+	RC_ALL_KEYS="rc_mode bitrate qp min_qp max_qp quality_lvl change_pos i_bias_lvl fluc_lvl gop max_gop profile"
+	if [ -z "$rc_live" ]; then
+		# No caps.video_live at all: pre-22832f1 daemon. Same "older build
+		# lacks this capability" skip 8d uses for ?fields=1 and 4b for SRT -
+		# and emphatically NOT a silent pass, because a stale build is the one
+		# way this whole block can look green without testing anything.
+		skip "videoN rate control: GET /control has no caps.video_live - this daemon predates 22832f1 (live rc apply) and cannot exercise any of it. Everything below (live apply, deferred grading, encoder.<n>.rc readback) is untestable on this build; reflash before trusting a green run here"
+		lv_mark_gated video "no-caps.video_live(daemon-predates-22832f1)" $RC_ALL_KEYS
+	else
+	rc_live_keys=$(printf '%s' "$rc_live" | tr -d '[]"' | tr ',' ' ' | tr -s ' ' | sed 's/^ *//;s/ *$//')
+	rc_live_has() { case " $rc_live_keys " in *" $1 "*) return 0;; esac; return 1; }
+	rc_defer_has() { case "$(jget "$1" deferred_keys)" in *"\"$2\""*) return 0;; esac; return 1; }
+
+	# --- RC1: caps.video_live must be one of enc_caps.h's four per-SoC sets --
+	# "not more, not fewer" is checkable without knowing the SoC: enc_caps.h
+	# defines exactly four ENC_LIVE_KEYS variants, so anything else means the
+	# caps builder in control.c and the header have drifted apart - the exact
+	# failure the isp_caps.h pattern exists to prevent. With --ssh the SoC is
+	# also pinned to the RIGHT one of the four.
+	rc_set=$(printf '%s\n' $rc_live_keys | sort -u | tr '\n' ' ')
+	case "$rc_set" in
+		"bitrate i_bias_lvl max_qp min_qp qp ") rc_plat="T31/C100";;
+		"bitrate max_qp min_qp qp ")            rc_plat="T40";;
+		"bitrate max_qp min_qp ")               rc_plat="T41";;
+		"bitrate change_pos i_bias_lvl max_qp min_qp qp quality_lvl rc_mode ") rc_plat="classic";;
+		" ") rc_plat="none";;
+		*)   rc_plat="?";;
+	esac
+	if [ "$rc_plat" = none ]; then
+		info "  caps.video_live is empty - no live rc path in this build (host sim, or a HAL without a control callback). Nothing to grade live."
+		lv_mark_gated video "caps.video_live-empty(no-live-rc-path-in-this-build)" $RC_ALL_KEYS
+	elif [ "$rc_plat" = "?" ]; then
+		bad "caps.video_live is [$rc_live_keys], which matches NONE of enc_caps.h's four documented ENC_LIVE_KEYS sets (T31/C100, T40, T41, classic) - either control.c's caps builder and enc_caps.h have drifted apart, or a platform was added without updating this check. Everything below grades against a list that cannot be trusted"
+		lv_mark_gated video "caps.video_live-unrecognised" $RC_ALL_KEYS
+	else
+		ok "caps.video_live = [$rc_live_keys] - exactly enc_caps.h's $rc_plat set (no drift between the header and the caps builder)"
+		# thingino's /usr/sbin/soc prints the full part number (t31x, t31l,
+		# t23n, c100...); enc_caps.h switches on the FAMILY, so drop the
+		# variant suffix. Without --ssh the set-shape check above stands on
+		# its own - it just cannot say the shape belongs to THIS camera.
+		rc_soc=""; [ -n "$SSH_TARGET" ] && rc_soc=$(sshx "soc 2>/dev/null" 2>/dev/null | tr -dc 'a-z0-9')
+		if [ -n "$rc_soc" ]; then
+			case "$rc_soc" in
+				t31*|c100*)                    rc_exp="T31/C100";;
+				t40*)                          rc_exp="T40";;
+				t41*)                          rc_exp="T41";;
+				t10*|t20*|t21*|t23*|t30*)      rc_exp="classic";;
+				*)                             rc_exp="";;
+			esac
+			if [ -z "$rc_exp" ]; then
+				info "  camera reports soc=$rc_soc, which this check has no enc_caps.h mapping for - set shape verified, SoC match not"
+			elif [ "$rc_exp" = "$rc_plat" ]; then
+				ok "caps.video_live matches the SoC this camera actually is (soc=$rc_soc -> $rc_exp)"
+			else
+				bad "caps.video_live advertises the $rc_plat key set but the camera reports soc=$rc_soc, which enc_caps.h maps to $rc_exp - the daemon was built for a different platform than it is running on, or enc_caps.h's #if chain is wrong"
+			fi
+		fi
+	fi
+
+	# The rest only makes sense with a live path AND a queryable encoder. The
+	# readback is omitted by design for a channel with no encoder to query
+	# (disabled stream, T23 sw-rotate Yuv path, sim) - matching hal_enc_stats -
+	# so its absence is a legitimate skip, not a failure, and the deferred
+	# grading is then the only thing left to assert.
+	rc_rb=$(jget "$LV_BASE" encoder.1.rc)
+	if [ "$rc_plat" = none ] || [ "$rc_plat" = "?" ]; then
+		:
+	elif [ -z "$rc_rb" ]; then
+		skip "videoN rate control: caps.video_live is non-empty but GET /control carries no encoder.1.rc - substream channel has no queryable encoder (disabled, sw-rotate Yuv path, or bring-up failed). Cannot compare written against held values"
+		lv_mark_gated video "encoder.1.rc-absent(no-queryable-encoder-on-substream)" $RC_ALL_KEYS
+	else
+		# --- RC2: written vs held, before touching anything ------------------
+		# The readback's entire reason to exist. Compare the CONFIGURED
+		# videoN.* block against what the encoder reports holding, for every
+		# field both carry. Fields the current mode/API does not carry are
+		# omitted from the JSON, so an empty read here means "not applicable",
+		# never "zero".
+		# rc_mode needs a translation table, not an equality: both HALs
+		# substitute modes their SDK lacks, and both say so in the log. Not
+		# encoding that here would turn a documented, deliberate substitution
+		# into a false FAIL.
+		rc_mode_expect() {
+			case "$rc_plat" in
+				classic) case "$1" in capped_vbr|capped_quality) echo vbr;; *) echo "$1";; esac;;
+				*)       case "$1" in smart) echo capped_quality;; *) echo "$1";; esac;;
+			esac
+		}
+		rc_hold_ok=1
+		for rc_ch in 0 1; do
+			[ "$(jget "$LV_BASE" "video.$rc_ch.enabled")" = "1" ] || continue
+			rc_h_mode=$(jget "$LV_BASE" "encoder.$rc_ch.rc.rc_mode")
+			if [ -z "$rc_h_mode" ]; then
+				info "  encoder.$rc_ch.rc absent although video$rc_ch is enabled - channel has no queryable encoder (sw-rotate/bring-up); nothing to compare for this channel"
+				continue
+			fi
+			rc_c_mode=$(jget "$LV_BASE" "video.$rc_ch.rc_mode")
+			rc_w_mode=$(rc_mode_expect "$rc_c_mode")
+			if [ "$rc_h_mode" != "$rc_w_mode" ]; then
+				bad "encoder.$rc_ch.rc: configured rc_mode=$rc_c_mode should be held as '$rc_w_mode' on a $rc_plat SoC, but the encoder reports '$rc_h_mode' - the mode timps wrote at bring-up is not the mode the encoder is running"
+				rc_hold_ok=0
+			fi
+			for rc_f in min_qp max_qp; do
+				rc_h=$(jget "$LV_BASE" "encoder.$rc_ch.rc.$rc_f")
+				[ -n "$rc_h" ] || continue          # not carried by this mode
+				rc_c=$(jget "$LV_BASE" "video.$rc_ch.$rc_f")
+				[ "$rc_h" = "$rc_c" ] && continue
+				bad "encoder.$rc_ch.rc.$rc_f=$rc_h but video$rc_ch.$rc_f=$rc_c was configured - the QP bound timps wrote at bring-up is not the one the encoder holds"
+				rc_hold_ok=0
+			done
+			# bitrate is NOT compared for equality: whether the SDK stores the
+			# value in kbps (what SetDefaultParam is fed) or bit/s is the open
+			# question c4e434f was written to answer, and either answer is a
+			# legitimate reading here. Report the ratio; the live probe below
+			# is what turns it into a verdict, by checking the BOOT path and
+			# the LIVE path agree on it.
+			rc_h_br=$(jget "$LV_BASE" "encoder.$rc_ch.rc.bitrate")
+			rc_c_br=$(jget "$LV_BASE" "video.$rc_ch.bitrate")
+			if [ -n "$rc_h_br" ] && [ -n "$rc_c_br" ] && fcmp "$rc_c_br" gt 0; then
+				info "  encoder.$rc_ch.rc: mode=$rc_h_mode holds bitrate=$rc_h_br against a configured ${rc_c_br} kbps (ratio $(awk -v a="$rc_h_br" -v b="$rc_c_br" 'BEGIN{printf "%.4g", a/b}') - 1 = the SDK stores kbps, 1000 = bit/s)"
+			fi
+		done
+		[ "$rc_hold_ok" = 1 ] && ok "encoder.<n>.rc readback agrees with the configured videoN.* block on every field both carry (rc_mode incl. the documented $rc_plat substitutions, QP bounds)"
+
+		# --- the live probes -------------------------------------------------
+		# A restart between the POST and the read-back would make every
+		# assertion below meaningless (a restarted daemon applies EVERYTHING,
+		# live path or not), so pin the daemon identity across the whole
+		# sequence the same way the rest of the script detects a restart:
+		# pidof over SSH. Without --ssh the checks still run - a live apply
+		# that silently needed a restart would show up as the daemon being
+		# unreachable for a while, not as a pass - but say that they are
+		# unpinned rather than implying more than was proven.
+		rc_pid0=""; [ -n "$SSH_TARGET" ] && rc_pid0=$(sshx "pidof timpsd" 2>/dev/null | awk '{print $1}')
+		rc_pid_check() {   # $1=context; FAILs (and only then) if the daemon restarted
+			local now
+			[ -n "$rc_pid0" ] || return 0
+			now=$(sshx "pidof timpsd" 2>/dev/null | awk '{print $1}')
+			[ "$now" = "$rc_pid0" ] && return 0
+			bad "$1: timpsd pid changed during the live-apply probe ($rc_pid0 -> ${now:-gone}) - the daemon RESTARTED, so nothing above proves a live path"
+		}
+		[ -n "$rc_pid0" ] && info "  live-rc probes pinned to timpsd pid $rc_pid0 (any restart mid-probe invalidates the results and is caught)" \
+			|| info "  live-rc probes NOT pinned to a pid (no --ssh) - a live apply that secretly required a restart cannot be distinguished from one that did not"
+
+		# rc_probe <key> <new-value> <readback-field> -> POST video1.<key>,
+		# assert the daemon graded it live (not deferred), that the readback
+		# followed, and that no restart happened. Restores in the same shape
+		# as lv_section, trap-armed.
+		rc_probe() {
+			local key="$1" new="$2" fld="$3" cur rf gf got code
+			cur=$(jget "$LV_BASE" "video.1.$key")
+			if [ -z "$cur" ]; then
+				info "  video1.$key not present in GET /control - skipped"
+				lv_mark_gated video "not-present-in-GET-/control" "$key"; return; fi
+			rf="$OUTDIR/rc_post_$key.json"; gf="$OUTDIR/rc_read_$key.json"
+			LV_PENDING="{\"video\":{\"1\":{\"$key\":$cur}}}"
+			code=$(lv_post_r "{\"video\":{\"1\":{\"$key\":$new}}}" "$rf")
+			lv_mark video "$key"
+			if [ "$code" != "200" ]; then
+				bad "video1.$key: POST(live) HTTP $code"
+				lv_post "$LV_PENDING" >/dev/null; LV_PENDING=""; return; fi
+			lv_get "$gf"
+			if rc_defer_has "$rf" "video1.$key"; then
+				bad "video1.$key is listed in caps.video_live but the POST reply DEFERRED it (deferred=$(jget "$rf" deferred), keys=$(jget "$rf" deferred_keys)) - the platform advertises a live path the runtime then refused. Check the daemon log for the matching 'applies on restart' line; this is the daemon disagreeing with its own caps, not a script assumption"
+			else
+				got=$(jget "$gf" "encoder.1.rc.$fld")
+				if [ -z "$got" ]; then
+					warn "video1.$key: graded live (not deferred) but encoder.1.rc.$fld is absent from the readback - the current rc mode ($(jget "$gf" encoder.1.rc.rc_mode)) does not carry that field, so the apply cannot be confirmed either way"
+				elif [ "$got" = "$new" ]; then
+					ok "video1.$key=$new applied LIVE and the encoder confirms it (encoder.1.rc.$fld=$got) - no restart"
+				else
+					bad "video1.$key=$new was graded applied-live, but the encoder holds encoder.1.rc.$fld=$got, not $new - the IMP call reported success and the value did not arrive unaltered. This is the c4e434f readback doing its job; suspect the HAL's key->SDK-field mapping before suspecting this check"
+				fi
+			fi
+			rc_pid_check "video1.$key"
+			lv_post "$LV_PENDING" >/dev/null; LV_PENDING=""
+			lv_get "$OUTDIR/rc_restore_$key.json"
+			[ "$(jget "$OUTDIR/rc_restore_$key.json" "video.1.$key")" = "$cur" ] \
+				|| warn "video1.$key: did not restore to $cur"
+		}
+
+		# --- RC3: QP bounds, the unit-free live keys -------------------------
+		# min_qp/max_qp go through one dedicated SDK call on the new API and
+		# ride the full union re-fill on classic, and unlike bitrate they have
+		# no unit ambiguity at all - so they are the cleanest proof that the
+		# live path works end to end. Nudged by 1 from the current value:
+		# enough to be observable, small enough that a stranded value is a
+		# non-event. The SDK's own [0..maxQp] constraint is respected by
+		# construction (only the floor moves, and only downward).
+		for rc_k in min_qp max_qp; do
+			if ! rc_live_has "$rc_k"; then
+				info "  video1.$rc_k: not in caps.video_live on this $rc_plat build - restart-bound here"
+				lv_mark_gated video "not-in-caps.video_live-on-$rc_plat" "$rc_k"
+				continue
+			fi
+			rc_cur=$(jget "$LV_BASE" "video.1.$rc_k")
+			[ -n "$rc_cur" ] || continue
+			rc_probe "$rc_k" "$((rc_cur-1))" "$rc_k"
+		done
+
+		# --- RC4: bitrate, and the kbps-vs-bit/s question -------------------
+		# 1bdd1b3 could not decide statically whether SetDefaultParam (boot)
+		# and SetChnBitRate (live) agree on the unit: the HAL multiplies
+		# videoN.bitrate by 1000 for the live call and hands SetDefaultParam
+		# the kbps value unconverted. If the SDK stores both raw, the boot path
+		# underfeeds the encoder by 1000x - or the live path overfeeds it.
+		# The readback settles it without any stream measurement: compute
+		# held/configured BEFORE and AFTER a live POST. Both paths agreeing
+		# means the same ratio twice; disagreeing means the ratio jumps by
+		# ~1000, which is the bug and is reported as such.
+		if ! rc_live_has bitrate; then
+			info "  video1.bitrate: not in caps.video_live on this $rc_plat build - restart-bound here"
+			lv_mark_gated video "not-in-caps.video_live-on-$rc_plat" bitrate
+		else
+			rc_b_cfg=$(jget "$LV_BASE" video.1.bitrate)
+			rc_b_hold=$(jget "$LV_BASE" encoder.1.rc.bitrate)
+			rc_b_new=$(awk -v c="$rc_b_cfg" 'BEGIN{v=int(c*0.75); if(v<16)v=16; if(v==c)v=c-1; print v}')
+			rf="$OUTDIR/rc_post_bitrate.json"; gf="$OUTDIR/rc_read_bitrate.json"
+			LV_PENDING="{\"video\":{\"1\":{\"bitrate\":$rc_b_cfg}}}"
+			code=$(lv_post_r "{\"video\":{\"1\":{\"bitrate\":$rc_b_new}}}" "$rf")
+			lv_mark video bitrate
+			lv_get "$gf"
+			rc_b_hold2=$(jget "$gf" encoder.1.rc.bitrate)
+			if [ "$code" != "200" ]; then
+				bad "video1.bitrate: POST(live) HTTP $code"
+			elif rc_defer_has "$rf" video1.bitrate; then
+				bad "video1.bitrate is in caps.video_live but the POST reply DEFERRED it (keys=$(jget "$rf" deferred_keys)) - SetChnBitRate was refused or the channel is not running; the platform advertises a live path the runtime did not take"
+			elif [ -z "$rc_b_hold" ] || [ -z "$rc_b_hold2" ]; then
+				warn "video1.bitrate: graded applied-live but encoder.1.rc.bitrate is not carried by the current mode ($(jget "$gf" encoder.1.rc.rc_mode)) - cannot confirm the value or settle the unit question"
+			else
+				rc_verdict=$(awk -v hb="$rc_b_hold" -v cb="$rc_b_cfg" -v ha="$rc_b_hold2" -v ca="$rc_b_new" 'BEGIN{
+					if(cb<=0||ca<=0||hb<=0){print "nodata"; exit}
+					r0=hb/cb; r1=ha/ca;
+					printf "%.4g %.4g %.3f\n", r0, r1, (r0>0)?r1/r0:0 }')
+				rc_r0=0; rc_r1=0; rc_rr=0
+				[ "$rc_verdict" = nodata ] || read -r rc_r0 rc_r1 rc_rr <<<"$rc_verdict"
+				if [ "$rc_verdict" = nodata ]; then
+					warn "video1.bitrate: readback present but non-positive - cannot compute the unit ratio"
+				elif fcmp "$rc_rr" ge 0.9 && fcmp "$rc_rr" le 1.1; then
+					ok "video1.bitrate=$rc_b_new applied LIVE and the encoder followed (held $rc_b_hold -> $rc_b_hold2); boot and live paths agree on the unit (held/configured $rc_r0 vs $rc_r1, so the SDK stores $( fcmp "$rc_r1" ge 500 && echo 'bit/s' || echo 'kbps' ))"
+				else
+					bad "video1.bitrate: the BOOT path and the LIVE path disagree on the bitrate unit - held/configured was $rc_r0 at bring-up and is $rc_r1 after a live POST (a ${rc_rr}x jump). SetDefaultParam is fed kbps while SetChnBitRate is fed bit/s (hal_ingenic.c); one of the two is off by 1000, which means either the boot config underfeeds the encoder 1000x or the live POST overfeeds it. This is the exact question dev_notes/TODO.md and 1bdd1b3 left open - a daemon bug, not a test artifact"
+				fi
+			fi
+			rc_pid_check video1.bitrate
+			lv_post "$LV_PENDING" >/dev/null; LV_PENDING=""
+		fi
+
+		# --- RC5: i_bias_lvl, the single most explicitly-unverified mapping --
+		# 443584e passes videoN.i_bias_lvl (classic "I proportional frame
+		# support", -3..3) straight into IMP_Encoder_SetChnQpIPDelta ("QP
+		# difference between I frame and the first P"), 1:1, and says in the
+		# commit message that the two are close relatives NOT proven identical
+		# in sign or scale, with "the rc readback is the tool to verify the
+		# mapping on hardware before trusting it". This is that verification.
+		# Three distinguishable outcomes, worded apart on purpose:
+		#   readback == posted        the 1:1 pass-through holds (this only
+		#                             settles SCALE and SIGN of the transfer;
+		#                             whether the two knobs MEAN the same thing
+		#                             still needs an I-frame-size sweep, see
+		#                             dev_notes/TODO.md)
+		#   readback == -posted, or a
+		#     consistent multiple     mapping is real but not 1:1 - the pass-
+		#                             through is wrong and needs a conversion
+		#   readback unmoved          the call did not reach the encoder at all
+		# The probe value is +2 (in-domain, non-default, and not +-1 so a sign
+		# flip cannot be mistaken for an off-by-one).
+		if ! rc_live_has i_bias_lvl; then
+			info "  video1.i_bias_lvl: not in caps.video_live on this $rc_plat build (T40/T41 SDKs have no SetChnQpIPDelta) - restart-bound or unsupported here"
+			lv_mark_gated video "not-in-caps.video_live-on-$rc_plat" i_bias_lvl
+		else
+			rc_ib_cur=$(jget "$LV_BASE" video.1.i_bias_lvl)
+			# which field carries it depends on the API generation: classic
+			# reads iBiasLvl straight back as i_bias_lvl, the new API has no
+			# such field and 443584e routes the value into iIPDelta instead.
+			rc_ib_fld=ip_delta
+			[ -n "$(jget "$LV_BASE" encoder.1.rc.i_bias_lvl)" ] && rc_ib_fld=i_bias_lvl
+			rc_ib_before=$(jget "$LV_BASE" "encoder.1.rc.$rc_ib_fld")
+			rc_ib_new=2; [ "${rc_ib_cur:-0}" = 2 ] && rc_ib_new=-2
+			if [ -z "$rc_ib_cur" ]; then
+				info "  video1.i_bias_lvl not present in GET /control - skipped"
+				lv_mark_gated video "not-present-in-GET-/control" i_bias_lvl
+			else
+				rf="$OUTDIR/rc_post_i_bias_lvl.json"; gf="$OUTDIR/rc_read_i_bias_lvl.json"
+				LV_PENDING="{\"video\":{\"1\":{\"i_bias_lvl\":$rc_ib_cur}}}"
+				code=$(lv_post_r "{\"video\":{\"1\":{\"i_bias_lvl\":$rc_ib_new}}}" "$rf")
+				lv_mark video i_bias_lvl
+				lv_get "$gf"
+				rc_ib_after=$(jget "$gf" "encoder.1.rc.$rc_ib_fld")
+				if [ "$code" != "200" ]; then
+					bad "video1.i_bias_lvl: POST(live) HTTP $code"
+				elif rc_defer_has "$rf" video1.i_bias_lvl; then
+					bad "video1.i_bias_lvl is in caps.video_live but the POST reply DEFERRED it (keys=$(jget "$rf" deferred_keys)) - IMP_Encoder_SetChnQpIPDelta was rejected by the SDK on this SoC. 443584e wired the call on the strength of a header grep alone; a refusal here means the call exists but does not work as assumed"
+				elif [ -z "$rc_ib_after" ]; then
+					warn "video1.i_bias_lvl: graded applied-live but encoder.1.rc.$rc_ib_fld is absent (mode $(jget "$gf" encoder.1.rc.rc_mode) does not carry it) - the 1:1 iBiasLvl->iIPDelta mapping stays UNVERIFIED on this camera"
+				elif [ "$rc_ib_after" = "$rc_ib_new" ]; then
+					ok "video1.i_bias_lvl=$rc_ib_new reaches the encoder 1:1 (encoder.1.rc.$rc_ib_fld $rc_ib_before -> $rc_ib_after) - the 443584e pass-through holds in scale and sign (what it MEANS still needs an I-frame-size sweep)"
+				elif [ "$rc_ib_after" = "$((0-rc_ib_new))" ]; then
+					bad "video1.i_bias_lvl=$rc_ib_new is held by the encoder as $rc_ib_fld=$rc_ib_after - the SIGN IS INVERTED. 443584e passes classic iBiasLvl into the new API's iIPDelta 1:1 and flags exactly this as unproven; the pass-through needs a negation on this SoC"
+				elif [ "$rc_ib_after" = "$rc_ib_before" ]; then
+					bad "video1.i_bias_lvl=$rc_ib_new was graded applied-live (SetChnQpIPDelta returned 0) but encoder.1.rc.$rc_ib_fld did not move off $rc_ib_before - the call succeeds and changes nothing. This is the 443584e mapping being wrong, or the SDK silently ignoring the setter"
+				else
+					bad "video1.i_bias_lvl=$rc_ib_new is held by the encoder as $rc_ib_fld=$rc_ib_after (was $rc_ib_before) - the value reaches the encoder but NOT 1:1, so 443584e's straight pass-through of iBiasLvl into iIPDelta needs a scale/offset conversion"
+				fi
+				rc_pid_check video1.i_bias_lvl
+				lv_post "$LV_PENDING" >/dev/null; LV_PENDING=""
+			fi
+		fi
+
+		# --- RC6: qp, where "live-capable" and "has an effect" diverge -------
+		# The new API lists qp as live, but rc_live_apply only writes it under
+		# FIXQP (iInitialQP is the fixqp union member; under any other mode the
+		# RMW bails and the key is graded deferred). 1bdd1b3 accepted that as
+		# honest-but-imprecise grading. Assert BOTH halves of it so the
+		# behaviour is pinned rather than assumed: deferred under a non-fixqp
+		# mode, live under fixqp. Nothing here switches rc_mode to fixqp to
+		# force the second half - that would put the substream into constant-QP
+		# for the duration, and this section is not opt-in.
+		if ! rc_live_has qp; then
+			info "  video1.qp: not in caps.video_live on this $rc_plat build"
+			lv_mark_gated video "not-in-caps.video_live-on-$rc_plat" qp
+		else
+			rc_q_cur=$(jget "$LV_BASE" video.1.qp)
+			rc_q_mode=$(jget "$LV_BASE" encoder.1.rc.rc_mode)
+			if [ -z "$rc_q_cur" ]; then
+				lv_mark_gated video "not-present-in-GET-/control" qp
+			else
+				rf="$OUTDIR/rc_post_qp.json"; gf="$OUTDIR/rc_read_qp.json"
+				rc_q_new=$((rc_q_cur-1))
+				LV_PENDING="{\"video\":{\"1\":{\"qp\":$rc_q_cur}}}"
+				code=$(lv_post_r "{\"video\":{\"1\":{\"qp\":$rc_q_new}}}" "$rf")
+				lv_mark video qp
+				lv_get "$gf"
+				rc_q_hold=$(jget "$gf" encoder.1.rc.qp)
+				if [ "$code" != "200" ]; then
+					bad "video1.qp: POST HTTP $code"
+				elif [ "$rc_q_mode" = fixqp ]; then
+					if rc_defer_has "$rf" video1.qp; then
+						bad "video1.qp was DEFERRED although the channel runs in fixqp, the one mode rc_live_apply writes it in - the Get/SetChnAttrRcMode read-modify-write failed"
+					elif [ "$rc_q_hold" = "$rc_q_new" ]; then
+						ok "video1.qp=$rc_q_new applied LIVE under fixqp and the encoder holds it (encoder.1.rc.qp=$rc_q_hold)"
+					else
+						bad "video1.qp=$rc_q_new graded applied-live under fixqp but the encoder holds qp=$rc_q_hold"
+					fi
+				else
+					if rc_defer_has "$rf" video1.qp; then
+						ok "video1.qp is correctly DEFERRED under rc_mode=$rc_q_mode - qp only reaches the encoder in fixqp, and the grading says so instead of claiming a live apply that would do nothing"
+					else
+						bad "video1.qp was graded applied-live under rc_mode=$rc_q_mode, but rc_live_apply only writes iInitialQP under FIXQP and bails otherwise - the reply is claiming an apply that did not happen (the grading contract 1bdd1b3 signed off on)"
+					fi
+				fi
+				lv_post "$LV_PENDING" >/dev/null; LV_PENDING=""
+			fi
+		fi
+
+		# --- RC7: rc_mode, live on classic, restart-bound on the new API -----
+		# rc_mode is the one rc key whose live-capability actually differs
+		# between the two API generations, and it is a string, so it cannot
+		# ride lv_section's generic flip (the "qa_probe" probe value would just
+		# be rejected). Probed explicitly, and BOTH outcomes are asserted, not
+		# just the interesting one: on classic the whole union is re-filled and
+		# the encoder must report the new mode without a restart; on the new API
+		# there is no rc-mode setter for a running channel, so the reply must
+		# defer it AND the encoder must still be holding the OLD mode. That
+		# second half is the part worth having - "persist-only" is only true if
+		# nothing quietly reached the encoder anyway.
+		rc_m_cur=$(jget "$LV_BASE" video.1.rc_mode)
+		rc_m_held=$(jget "$LV_BASE" encoder.1.rc.rc_mode)
+		if [ -z "$rc_m_cur" ]; then
+			lv_mark_gated video "not-present-in-GET-/control" rc_mode
+		else
+			# cbr <-> vbr only: both exist on every SoC and neither needs a
+			# substitution, so a mismatch below is never the translation table.
+			if [ "$rc_m_cur" = cbr ]; then rc_m_new=vbr; else rc_m_new=cbr; fi
+			rf="$OUTDIR/rc_post_rc_mode.json"; gf="$OUTDIR/rc_read_rc_mode.json"
+			LV_PENDING="{\"video\":{\"1\":{\"rc_mode\":\"$rc_m_cur\"}}}"
+			code=$(lv_post_r "{\"video\":{\"1\":{\"rc_mode\":\"$rc_m_new\"}}}" "$rf")
+			lv_mark video rc_mode
+			lv_get "$gf"
+			rc_m_held2=$(jget "$gf" encoder.1.rc.rc_mode)
+			if [ "$code" != "200" ]; then
+				bad "video1.rc_mode: POST HTTP $code"
+			elif [ "$(jget "$gf" video.1.rc_mode)" != "$rc_m_new" ]; then
+				bad "video1.rc_mode=$rc_m_new did not round-trip through the config (reads back '$(jget "$gf" video.1.rc_mode)')"
+			elif rc_live_has rc_mode; then
+				if rc_defer_has "$rf" video1.rc_mode; then
+					bad "video1.rc_mode is in caps.video_live on this $rc_plat build but the POST reply DEFERRED it (keys=$(jget "$rf" deferred_keys)) - the classic full-union SetChnAttrRcMode was refused. An H265 stream is refused BY DESIGN here (H264-only per the SDK header); this substream is $(jget "$LV_BASE" video.1.codec), so that exemption $( [ "$(jget "$LV_BASE" video.1.codec)" = h265 ] && echo 'DOES apply - re-read this as expected, not a bug' || echo 'does not apply' )"
+				elif [ "$rc_m_held2" = "$(rc_mode_expect "$rc_m_new")" ]; then
+					ok "video1.rc_mode $rc_m_cur -> $rc_m_new applied LIVE and the encoder switched with it (encoder.1.rc.rc_mode $rc_m_held -> $rc_m_held2) - no restart"
+				else
+					bad "video1.rc_mode=$rc_m_new was graded applied-live but the encoder holds rc_mode=$rc_m_held2 (expected $(rc_mode_expect "$rc_m_new")) - SetChnAttrRcMode returned success and the mode did not change"
+				fi
+			else
+				if ! rc_defer_has "$rf" video1.rc_mode; then
+					bad "video1.rc_mode is NOT in caps.video_live on this $rc_plat build, yet the POST reply did not defer it (deferred=$(jget "$rf" deferred)) - the reply claims a live apply for a key the platform has no runtime setter for"
+				elif [ "$rc_m_held2" != "$rc_m_held" ]; then
+					bad "video1.rc_mode was correctly deferred, but the encoder's HELD mode changed anyway ($rc_m_held -> $rc_m_held2) - something wrote the rc union outside the graded live path"
+				else
+					ok "video1.rc_mode $rc_m_cur -> $rc_m_new persists and is correctly reported DEFERRED on this $rc_plat build; the running encoder is untouched (still holding $rc_m_held2)"
+				fi
+			fi
+			rc_pid_check video1.rc_mode
+			lv_post "$LV_PENDING" >/dev/null; LV_PENDING=""
+		fi
+
+		# --- RC8: the restart-bound keys must SAY they are restart-bound -----
+		# The deferred list is only worth anything if it is populated as well
+		# as emptied. profile is the safest canary in the video block: it is
+		# persist-only on every SoC (no rc union carries it, no runtime call
+		# exists), it does not touch geometry, buffer counts or the RTSP
+		# routing, and the running pipeline is untouched until a restart - so
+		# even a run killed with the trap defeated leaves nothing worse than a
+		# main-vs-high profile substream after the next reboot.
+		rc_pf_cur=$(jget "$LV_BASE" video.1.profile)
+		if [ -z "$rc_pf_cur" ]; then
+			lv_mark_gated video "not-present-in-GET-/control" profile
+		else
+			rc_pf_new=$(flip_int 0 2 "$rc_pf_cur")
+			rf="$OUTDIR/rc_post_profile.json"
+			LV_PENDING="{\"video\":{\"1\":{\"profile\":$rc_pf_cur}}}"
+			code=$(lv_post_r "{\"video\":{\"1\":{\"profile\":$rc_pf_new}}}" "$rf")
+			lv_mark video profile
+			if [ "$code" != "200" ]; then
+				bad "video1.profile: POST HTTP $code"
+			elif rc_defer_has "$rf" video1.profile; then
+				ok "video1.profile=$rc_pf_new is reported DEFERRED (deferred=$(jget "$rf" deferred), keys=$(jget "$rf" deferred_keys)) - a restart-bound key correctly says so"
+			else
+				bad "video1.profile=$rc_pf_new changed but the POST reply does NOT list it as deferred (deferred=$(jget "$rf" deferred)) - no SoC has a runtime call for the H264 profile, so the reply is telling the caller a restart-bound change is already in effect"
+			fi
+			# unchanged re-post must report nothing: deferred is a subset of
+			# `changed`, same contract as the applied echo (22832f1).
+			code=$(lv_post_r "{\"video\":{\"1\":{\"profile\":$rc_pf_new}}}" "$OUTDIR/rc_post_profile_repost.json")
+			[ "$(jget "$OUTDIR/rc_post_profile_repost.json" deferred)" = "0" ] \
+				&& ok "re-POSTing the same video1.profile reports deferred:0 - the deferred list is a subset of CHANGED, not of accepted" \
+				|| bad "re-POSTing an unchanged video1.profile still reports deferred=$(jget "$OUTDIR/rc_post_profile_repost.json" deferred) - deferred must be a subset of 'changed' (22832f1), so an idempotent POST would keep telling a UI a restart is pending"
+			lv_post "$LV_PENDING" >/dev/null; LV_PENDING=""
+		fi
+
+		# --- RC9: per-channel isolation --------------------------------------
+		# 22832f1 claims "strictly per channel ... verified live on hardware
+		# with ch0=vbr/2000/q7 vs ch1=cbr/384/q2" - by hand, once. Make it
+		# repeatable. Two directions, because they fail differently: a POST
+		# that names only ch1 must leave ch0's held attrs byte-identical (a
+		# wrong channel index would show up here), and a single POST naming
+		# BOTH with DIFFERENT values must land each on its own channel (a
+		# last-write-wins bug would show up here, and only here).
+		# min_qp is the vehicle: unit-free, exactly comparable, and a +-1
+		# nudge on the mainstream is the smallest perturbation that is still
+		# observable in the readback.
+		if ! rc_live_has min_qp; then
+			info "  per-channel isolation: min_qp is not live on this $rc_plat build - would only re-test the config layer, skipped"
+		elif [ -z "$(jget "$LV_BASE" encoder.0.rc.min_qp)" ] || [ -z "$(jget "$LV_BASE" encoder.1.rc.min_qp)" ]; then
+			skip "per-channel isolation: both channels need a min_qp-carrying rc readback (ch0 mode $(jget "$LV_BASE" encoder.0.rc.rc_mode), ch1 mode $(jget "$LV_BASE" encoder.1.rc.rc_mode)) - not comparable on this camera"
+		elif [ "$(jget "$LV_BASE" video.0.min_qp)" -lt 5 ] || [ "$(jget "$LV_BASE" video.1.min_qp)" -lt 5 ]; then
+			# the probe nudges DOWNWARD (never above max_qp, whose bound the SDK
+			# enforces); config clamps min_qp at 1, so a floor already near it
+			# leaves no room for two distinct values
+			skip "per-channel isolation: min_qp is already at/near the config floor (ch0 $(jget "$LV_BASE" video.0.min_qp), ch1 $(jget "$LV_BASE" video.1.min_qp)) - no room for two distinct probe values below it"
+		else
+			rc_i0=$(jget "$LV_BASE" video.0.min_qp); rc_i1=$(jget "$LV_BASE" video.1.min_qp)
+			rc_h0=$(jget "$LV_BASE" encoder.0.rc.min_qp)
+			rc_restore_both="{\"video\":{\"0\":{\"min_qp\":$rc_i0},\"1\":{\"min_qp\":$rc_i1}}}"
+			LV_PENDING="$rc_restore_both"
+			# (a) touch ch1 only - ch0 must not move
+			lv_post "{\"video\":{\"1\":{\"min_qp\":$((rc_i1-1))}}}" >/dev/null
+			gf="$OUTDIR/rc_iso_ch1only.json"; lv_get "$gf"
+			rc_h0b=$(jget "$gf" encoder.0.rc.min_qp); rc_h1b=$(jget "$gf" encoder.1.rc.min_qp)
+			if [ "$rc_h0b" != "$rc_h0" ]; then
+				bad "per-channel isolation: a POST naming ONLY video1.min_qp moved the MAINSTREAM's held bound too (encoder.0.rc.min_qp $rc_h0 -> $rc_h0b) - the live apply is hitting the wrong encoder channel"
+			elif [ "$rc_h1b" != "$((rc_i1-1))" ]; then
+				bad "per-channel isolation: video1.min_qp=$((rc_i1-1)) did not land on ch1 (encoder.1.rc.min_qp=$rc_h1b)"
+			else
+				ok "per-channel isolation: a POST naming only video1.min_qp moved ch1 ($rc_h1b) and left ch0 untouched ($rc_h0b)"
+			fi
+			# (b) both channels, DIFFERENT values, in ONE request
+			rc_n0=$((rc_i0-1)); rc_n1=$((rc_i1-2))
+			if [ "$rc_n0" = "$rc_n1" ]; then rc_n1=$((rc_n1-1)); fi
+			lv_post "{\"video\":{\"0\":{\"min_qp\":$rc_n0},\"1\":{\"min_qp\":$rc_n1}}}" >/dev/null
+			gf="$OUTDIR/rc_iso_both.json"; lv_get "$gf"
+			rc_g0=$(jget "$gf" encoder.0.rc.min_qp); rc_g1=$(jget "$gf" encoder.1.rc.min_qp)
+			if [ "$rc_g0" = "$rc_n0" ] && [ "$rc_g1" = "$rc_n1" ]; then
+				ok "per-channel isolation: one POST carrying ch0=$rc_n0 and ch1=$rc_n1 landed each value on its OWN encoder channel (held $rc_g0 / $rc_g1)"
+			elif [ "$rc_g0" = "$rc_g1" ]; then
+				bad "per-channel isolation: one POST carrying ch0=$rc_n0 and ch1=$rc_n1 left BOTH encoders holding $rc_g0 - last-write-wins across channels, exactly what 22832f1's per-channel claim rules out"
+			else
+				bad "per-channel isolation: ch0 wanted $rc_n0 holds $rc_g0, ch1 wanted $rc_n1 holds $rc_g1 - the two channels' live rc values are crossing over"
+			fi
+			rc_pid_check "per-channel isolation"
+			lv_post "$rc_restore_both" >/dev/null; LV_PENDING=""
+			gf="$OUTDIR/rc_iso_restore.json"; lv_get "$gf"
+			[ "$(jget "$gf" encoder.0.rc.min_qp)" = "$rc_h0" ] \
+				&& info "  per-channel isolation: both channels restored (ch0 held bound back to $rc_h0)" \
+				|| warn "per-channel isolation: ch0's held min_qp is $(jget "$gf" encoder.0.rc.min_qp), expected $rc_h0 after restore"
+		fi
+
+		# --- RC10: the remaining videoN tuning keys, config round-trip --------
+		# quality_lvl/change_pos/fluc_lvl/gop/max_gop are POST-able (F_CTRL) and
+		# were never round-tripped by anything. They carry no restart-crash or
+		# session-disruption risk - none of them changes geometry, codec,
+		# buffer counts or the RTSP path - so the blanket "too risky to fuzz"
+		# exclusion 8d used to apply to the whole video block never fitted
+		# them; it fitted width/height/buffers/rtsp_path. fluc_lvl is new in
+		# 3edb85e and is H265-only by SDK design, so on an H264 stream it
+		# persists with no consumer - which is a documented outcome, not a
+		# failure, and the round-trip is still what proves it is wired to the
+		# config at all. Ranges are chosen so every midpoint is in-domain and
+		# max_gop stays >= gop.
+		LV_MODE=persist
+		lv_section video1_tuning '{"video":{"1":' '}}' video.1 \
+			"quality_lvl int 0 7" "change_pos int 50 100" "fluc_lvl int 0 4" \
+			"gop int 25 100" "max_gop int 110 130"
+		LV_MODE=live
+	fi
 	fi
 
 	# --- audio.codec opus (opt-in build feature, 2026-08-04): also persist-only
@@ -2613,23 +3189,90 @@ else
 		lv_mark_gated video "opt-in---test-rotation-not-set" rotation
 	fi
 
-	# --- 8g. Persist-only encoder settings, verified AFTER a restart --------
+	# --- 8g. Encoder settings, verified by MEASURING the substream ----------
 	# (opt-in: --test-encoder, substream only)
 	#
-	# Everything else in 8b proves the config layer: POST a value, GET it back,
-	# it matches. That is exactly the assertion that CANNOT catch this
-	# project's most-repeated bug shape - a value accepted and persisted and
-	# faithfully echoed, which the running encoder then ignores or silently
-	# coerces (340fb1f, ff28ee2, f003655, 0a8bb9f, 6ec766e, dd2221f, 51bf052,
-	# 30ecc74). The only proof is to restart into the new config and MEASURE
-	# what comes down the wire.
+	# Everything else in 8b proves the config layer, and the rc block above
+	# proves what the encoder HOLDS. Neither proves what comes down the wire -
+	# and "held" is still an SDK struct, not a bitstream. This project's
+	# most-repeated bug shape is a value accepted, persisted, faithfully echoed
+	# and then ignored or silently coerced by the encoder (340fb1f, ff28ee2,
+	# f003655, 0a8bb9f, 6ec766e, dd2221f, 51bf052, 30ecc74), so the measurement
+	# stays, and it stays the only verdict that can catch a readback that
+	# agrees with itself while the bitstream does something else.
+	#
+	# What changed with 22832f1: the way the new value gets INTO the encoder is
+	# no longer always a restart. This block was written when every videoN.* key
+	# was persist-only, so it hard-coded rot_apply+rot_restart around every
+	# measurement. Now the route is per key and per platform, and the harness
+	# picks it from caps.video_live:
+	#   listed live  -> POST and measure. No restart, no downtime, ~2 min saved
+	#                   per key, and - the actual point - it is the only way to
+	#                   exercise the live code path at all, which no restart
+	#                   measurement can ever reach.
+	#   not listed   -> the original persist+restart+measure path, unchanged.
+	#                   It is not legacy: it is the regression test for every
+	#                   key and platform that stays restart-bound, and the only
+	#                   check that the BOOT fill still honours the config.
+	# Both routes end in the same enc_measure() comparison, so the verdicts
+	# below stay comparable across platforms; only the "how it got there" line
+	# differs, and it is printed.
 	#
 	# Substream only, on purpose: it carries the same encoder-config path as
 	# the main stream at a fraction of the disruption if a restart goes badly.
 	if [ "${TEST_ENCODER:-0}" = "1" ]; then
-		if [ -z "$SSH_TARGET" ]; then
-			skip "encoder verification needs --ssh (these settings only apply on a daemon restart)"
+		# --ssh is only unavoidable on the restart route. When the platform
+		# applies bitrate live there is nothing to restart and nothing to write
+		# into /etc/timps.conf behind the daemon's back, so requiring SSH there
+		# would refuse to run the one path that has never been measured.
+		case "$(jget "$LV_BASE" caps.video_live)" in
+			*'"bitrate"'*) enc_bitrate_live=1;;
+			*)             enc_bitrate_live=0;;
+		esac
+		if [ -z "$SSH_TARGET" ] && [ "$enc_bitrate_live" = 0 ]; then
+			skip "encoder verification needs --ssh: caps.video_live does not list bitrate on this build, so a daemon restart is the only way to get a new target into the encoder"
 		else
+			# enc_commit <json-body> <jget-path> <expected-value>
+			# Get a value into the RUNNING encoder by whichever route this
+			# platform offers, and SAY which one was taken - the reply's own
+			# "deferred" grading decides, not a guess from the SoC. 0 = the
+			# encoder has it and a measurement is meaningful, 1 = it does not
+			# and the caller must not measure.
+			enc_commit() {
+				local body="$1" path="$2" want="$3" got d
+				local rf="$OUTDIR/enc_commit_post.json" gf="$OUTDIR/enc_commit_get.json"
+				lv_post_r "$body" "$rf" >/dev/null
+				lv_get "$gf"
+				got=$(jget "$gf" "$path")
+				if [ "$got" != "$want" ]; then
+					bad "encoder: POST $body did not persist ($path='$got', want '$want') - the config layer rejected or dropped it before the encoder could be reached"
+					return 1
+				fi
+				d=$(jget "$rf" deferred)
+				if [ "${d:-1}" = "0" ]; then
+					ENC_ROUTE=live
+					# 22832f1: a live rc write "takes effect at the next IDR/GOP",
+					# and that latency is one of the things it left unverified.
+					# Settle for a few GOPs before measuring so the window is not
+					# polluted by the tail of the OLD rate - and so a verdict of
+					# "did not follow" means the encoder never followed, not that
+					# it had not got round to it yet.
+					enc_settle=$(awk -v g="$(jget "$gf" video.1.gop)" -v f="$(jget "$gf" video.1.fps)" \
+						'BEGIN{ s=(f>0&&g>0)? 3*g/f : 6; if(s<4)s=4; if(s>20)s=20; printf "%.0f", s }')
+					info "  encoder: $path=$want went in LIVE (deferred:0) - no restart; settling ${enc_settle}s (~3 GOPs) for the next-IDR latency, then measuring the actual bitstream, which is the first check to judge the 22832f1 runtime path"
+					sleep "$enc_settle"
+					return 0
+				fi
+				if [ -z "$SSH_TARGET" ]; then
+					skip "encoder: $path=$want came back deferred (keys=$(jget "$rf" deferred_keys)) and there is no --ssh to restart with - cannot measure this step"
+					return 1
+				fi
+				ENC_ROUTE=restart
+				info "  encoder: $path=$want is restart-bound here (deferred_keys=$(jget "$rf" deferred_keys)) - restarting for real to make it effective (~1-2 min)"
+				rot_restart || { bad "encoder: the daemon did not come back after a restart with $path=$want"; return 1; }
+				return 0
+			}
+			ENC_ROUTE=restart   # overwritten per enc_commit; names the route the verdicts judged
 			# enc_measure <rtsp-path> <dur> <tag> -> "<kbps> <cv>"
 			#   kbps = delivered VIDEO bitrate (payload bytes over the media
 			#          timespan; audio excluded so it is comparable with the
@@ -2701,11 +3344,18 @@ else
 					enc_bnew=$(awk -v c="$enc_bcur" 'BEGIN{ print (c>700)? 400 : 1500 }')
 					enc_dir=blind
 				fi
-				info "  encoder test: substream bitrate ${enc_bcur} -> ${enc_bnew} kbps (aiming ${enc_dir}), rc_mode ${enc_rcur:-?} -> cbr, then a real restart (~1-2 min)"
-				if ! rot_apply "{\"video\":{\"1\":{\"bitrate\":$enc_bnew,\"rc_mode\":\"cbr\"}}}" video.1.bitrate "$enc_bnew"; then
-					bad "encoder: POST video1.bitrate=$enc_bnew did not persist - the config layer rejected/dropped it before we could even restart"
-				elif ! rot_restart; then
-					bad "encoder: daemon did not come back after a restart with video1.bitrate=$enc_bnew/rc_mode=cbr"
+				info "  encoder test: substream bitrate ${enc_bcur} -> ${enc_bnew} kbps (aiming ${enc_dir}), rc_mode ${enc_rcur:-?} -> cbr"
+				# Two enc_commit steps instead of one combined POST+restart.
+				# Splitting them is what lets the bitrate measurement exercise the
+				# LIVE path on a platform where bitrate is live but rc_mode is not
+				# (every new-API SoC): one combined POST would carry a deferred
+				# rc_mode along with it, drag the whole request onto the restart
+				# route, and leave the runtime call untested by the only check in
+				# this script that measures the actual bitstream.
+				if ! enc_commit "{\"video\":{\"1\":{\"rc_mode\":\"cbr\"}}}" video.1.rc_mode cbr; then
+					:   # enc_commit already said what went wrong
+				elif ! enc_commit "{\"video\":{\"1\":{\"bitrate\":$enc_bnew}}}" video.1.bitrate "$enc_bnew"; then
+					:
 				else
 					if res=$(enc_measure "$PATH_SUB" "$enc_dur" cbr); then
 						read -r m_kbps cv_cbr <<<"$res"
@@ -2716,9 +3366,9 @@ else
 							# working encoder MUST come down to meet it.
 							keep=$(awk -v b="$enc_pre_kbps" 'BEGIN{printf "%.0f", b*0.8}')
 							if fcmp "$m_kbps" le "$hi"; then
-								ok "encoder: the restarted daemon actually FOLLOWS the substream bitrate target - delivered ${enc_pre_kbps} -> ${m_kbps} kbps after the target was cut to ${enc_bnew} (within 1.5x of it)"
+								ok "encoder: the daemon actually FOLLOWS the substream bitrate target via the ${ENC_ROUTE} path - delivered ${enc_pre_kbps} -> ${m_kbps} kbps after the target was cut to ${enc_bnew} (within 1.5x of it)"
 							elif fcmp "$m_kbps" ge "$keep"; then
-								bad "encoder: substream still delivers ${m_kbps} kbps (it delivered ${enc_pre_kbps} before) after the target was cut to ${enc_bnew} - the value was accepted, persisted and echoed but the encoder is ignoring it (the 340fb1f/ff28ee2 class)"
+								bad "encoder: substream still delivers ${m_kbps} kbps (it delivered ${enc_pre_kbps} before) after the target was cut to ${enc_bnew} via the ${ENC_ROUTE} path - the value was accepted, persisted and echoed but the encoder is ignoring it (the 340fb1f/ff28ee2 class). On the live path this is 22832f1s SetChnBitRate returning success without effect, which no readback can see"
 							else
 								warn "encoder: delivered ${m_kbps} kbps moved toward the requested ${enc_bnew} (from ${enc_pre_kbps}) but did not get within 1.5x of it - rate control is loose on this SoC/scene"
 							fi
@@ -2728,13 +3378,13 @@ else
 							# anything. Report, never fail.
 							lo=$(awk -v n="$enc_bnew" 'BEGIN{printf "%.0f", n*0.6}')
 							if fcmp "$m_kbps" ge "$lo" && fcmp "$m_kbps" le "$hi"; then
-								ok "encoder: the restarted daemon actually DELIVERS the requested substream bitrate (${m_kbps} kbps vs requested ${enc_bnew}, within 0.6-1.5x)"
+								ok "encoder: the daemon actually DELIVERS the requested substream bitrate via the ${ENC_ROUTE} path (${m_kbps} kbps vs requested ${enc_bnew}, within 0.6-1.5x)"
 							else
 								warn "encoder: delivered ${m_kbps} kbps against a requested ${enc_bnew} (was configured ${enc_bcur}) - could not measure the stream beforehand, so this cannot distinguish an ignored target from a scene/min_qp-limited one; re-run when the pre-measurement succeeds"
 							fi
 						fi
 						# --- does rc_mode do anything measurable? -------------
-						if rot_apply "{\"video\":{\"1\":{\"rc_mode\":\"vbr\"}}}" video.1.rc_mode vbr && rot_restart; then
+						if enc_commit "{\"video\":{\"1\":{\"rc_mode\":\"vbr\"}}}" video.1.rc_mode vbr; then
 							if res2=$(enc_measure "$PATH_SUB" "$enc_dur" vbr); then
 								read -r m2_kbps cv_vbr <<<"$res2"
 								info "  measured substream under vbr: ${m2_kbps} kbps, per-second CV ${cv_vbr} (cbr was ${cv_cbr})"
@@ -2774,10 +3424,10 @@ else
 								warn "encoder: no substream data captured under rc_mode=vbr - cannot compare rate-control behaviour"
 							fi
 						else
-							bad "encoder: could not apply/restart into rc_mode=vbr for the rate-control comparison"
+							bad "encoder: could not get rc_mode=vbr into the encoder (neither live nor via a restart) for the rate-control comparison"
 						fi
 					else
-						bad "encoder: no substream data after the restart with bitrate=$enc_bnew - the new encoder config may have broken the stream entirely"
+						bad "encoder: no substream data after applying bitrate=$enc_bnew via the ${ENC_ROUTE} path - the new encoder config may have broken the stream entirely"
 					fi
 				fi
 				# --- surface the daemon's own encoder telemetry ---------------
@@ -2791,16 +3441,29 @@ else
 						lp=$(jget "$ej" "encoder.$ch.left_pics")
 						[ -n "$lp" ] || continue
 						info "  encoder telemetry chn$ch: left_pics=$lp work_done=$(jget "$ej" "encoder.$ch.work_done") cur_packs=$(jget "$ej" "encoder.$ch.cur_packs") ave_bitrate=$(jget "$ej" "encoder.$ch.ave_bitrate")"
+						# what the encoder HOLDS after all of the above, next to
+						# what came down the wire. On a live run this is the only
+						# place the two are printed side by side, which is exactly
+						# the diff c4e434f was written to make possible.
+						rcm=$(jget "$ej" "encoder.$ch.rc.rc_mode")
+						[ -n "$rcm" ] && info "    held rc: mode=$rcm bitrate=$(jget "$ej" "encoder.$ch.rc.bitrate") min_qp=$(jget "$ej" "encoder.$ch.rc.min_qp") max_qp=$(jget "$ej" "encoder.$ch.rc.max_qp") ip_delta=$(jget "$ej" "encoder.$ch.rc.ip_delta")"
 					done
 				fi
-				# --- restore, the same way the rotation test does: straight
-				# into /etc/timps.conf, so it lands even if the daemon is unwell
-				rot_set_conf "video1.bitrate" "$enc_bcur"
-				rot_set_conf "video1.rc_mode" "${enc_rcur:-cbr}"
-				if rot_restart; then
+				# --- restore. With SSH, straight into /etc/timps.conf the way the
+				# rotation test does, so it lands even if the daemon is unwell.
+				# Without SSH (only reachable when the whole run went down the live
+				# path, so the daemon is demonstrably healthy) a plain POST is both
+				# the restore AND the re-apply, and there is nothing to restart.
+				if [ -n "$SSH_TARGET" ]; then
+					rot_set_conf "video1.bitrate" "$enc_bcur"
+					rot_set_conf "video1.rc_mode" "${enc_rcur:-cbr}"
+				else
+					lv_post "{\"video\":{\"1\":{\"bitrate\":$enc_bcur,\"rc_mode\":\"${enc_rcur:-cbr}\"}}}" >/dev/null
+				fi
+				if [ -z "$SSH_TARGET" ] || rot_restart; then
 					rj="$OUTDIR/enc_restore.json"; lv_get "$rj"
 					if [ "$(jget "$rj" video.1.bitrate)" = "$enc_bcur" ] && [ "$(jget "$rj" video.1.rc_mode)" = "${enc_rcur:-cbr}" ]; then
-						ok "encoder: restored substream bitrate=${enc_bcur} rc_mode=${enc_rcur:-cbr} and the daemon came back healthy"
+						ok "encoder: restored substream bitrate=${enc_bcur} rc_mode=${enc_rcur:-cbr} and the daemon is healthy"
 					else
 						warn "encoder: restore did not read back as expected (bitrate=$(jget "$rj" video.1.bitrate), rc_mode=$(jget "$rj" video.1.rc_mode)) - check the camera's video1 settings by hand"
 					fi
@@ -2964,7 +3627,7 @@ else
 	TESTED_record="segment_s pre_roll_s post_roll_s min_free_mb audio name dir"
 	TESTED_timelapse="interval_s keep_days name dir"
 	TESTED_daynight="day_gain night_gain day_confirm_s ref_delay_s boot_settle_s boot_probe probe_min_gap_s probe_jump_pct probe_confirm_s probe_settle_s heartbeat_s heartbeat_max_s learn ir_ratio_night ir_ratio_day ir_min_headroom sun_sunrise_offset_min sun_sunset_offset_min time_night_start time_day_start sun_latitude sun_longitude"
-	TESTED_video="bitrate rotation"
+	TESTED_video="bitrate rotation rc_mode qp min_qp max_qp quality_lvl change_pos i_bias_lvl fluc_lvl gop max_gop profile"
 	TESTED_privacy="enabled x y w h color"
 
 	# ALLOW_<section>: F_CTRL fields DELIBERATELY not round-tripped by 8b, with
@@ -2981,7 +3644,31 @@ else
 	ALLOW_record="enabled channel mode"                         # would start/stop capture or depend on stream count (see the comment above the record lv_section call)
 	ALLOW_timelapse="enabled channel"                           # same reasoning as record above
 	ALLOW_daynight="enabled interval_ms transition_s diagnose_thresholds"   # enabled reflects the detection thread's own state (poll lag), not a value to force; interval_ms/transition_s/diagnose_thresholds change timing or logging rather than a readable decision value
-	ALLOW_video="enabled codec width height fps rc_mode gop max_gop profile qp min_qp max_qp buffers rtsp_path"   # geometry/codec/identity/routing changes carry restart-crash or active-session-disruption risk beyond a plain config round-trip; rotation (the highest-risk one) already gets the deep --test-rotation real-restart treatment and bitrate gets a representative persist round-trip above - duplicating that pattern across every remaining encoder-tuning knob isn't what this drift check is for
+	# video: the exclusion used to be the WHOLE encoder block, justified as
+	# "geometry/codec/identity/routing changes carry restart-crash or
+	# active-session-disruption risk beyond a plain config round-trip". That
+	# blanket was written when every videoN.* key was persist-only and the only
+	# way to prove one had any effect was --test-encoder's restart-and-measure.
+	# It over-reached in both directions, and 22832f1/c4e434f made the gap
+	# untenable: the rate-control keys are now applied to the LIVE encoder on
+	# most SoCs and their arrival is directly readable (encoder.<n>.rc), so
+	# excluding them means the newest, least-verified code in the daemon is the
+	# one thing this script never touches. They have therefore graduated to real
+	# coverage in 8b's rc block - live-graded against caps.video_live, or
+	# persist-graded plus an assertion that the encoder did NOT move, per key,
+	# per platform, with the reason recorded in the ledger either way.
+	# What genuinely stays out, and why it is a different class from a QP bound:
+	#   enabled/width/height/fps/buffers  reconfigure FrameSource and the encoder
+	#     channel at the next bring-up; the rotation test (2565ff) exists because
+	#     that combination has crashed the daemon on real hardware, and every one
+	#     of these is the same restart-crash class, not a value round-trip.
+	#   codec/rtsp_path                   change stream identity and routing: a
+	#     probe value tears every connected client's session out from under it
+	#     at the next restart, and rtsp_path would leave THIS script unable to
+	#     find the stream again if a run died between POST and restore.
+	# rotation stays listed in TESTED_video, not here: it is opt-in
+	# (--test-rotation) and records its own gate reason when off.
+	ALLOW_video="enabled codec width height fps buffers rtsp_path"
 	ALLOW_privacy=""
 
 	contains_word() { local n="$1"; shift; local w; for w in "$@"; do [ "$w" = "$n" ] && return 0; done; return 1; }
