@@ -715,7 +715,13 @@ What to check:
   API, so a `vbr`/`smart` sweep needs a restart per half and was not run), and
   whether C100 — the other SoC whose SDK ships the call — behaves the same.
   The sweep itself is now repeatable as `timps-qa.sh` RC5b under
-  `--test-encoder`; point it at any T31/C100 camera to re-check.
+  `--test-encoder`; point it at any T31/C100 camera to re-check. It measures
+  `-3 / +3 / -3` and requires the effect to beat the drift the two `-3` legs
+  measure between them — an unbracketed A/B pair run at dusk on cam-garage
+  reported a 41.9 % "effect" with the opposite sign, purely from the light
+  changing, against 0.1 % from three controlled runs earlier the same day.
+  Keyframe size is not stable enough on a real camera to compare across two
+  captures without an in-run noise estimate.
 - **`bitrate` unit on T31 (new API).** Boot with videoN.bitrate=2000, note
   `encoder.<n>.rc.bitrate`. Then POST the same 2000 live. If the readback
   jumps by x1000, `SetDefaultParam` and `SetChnBitRate` disagree on the

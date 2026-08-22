@@ -3018,29 +3018,48 @@ else
 		elif ! rc_can_measure; then
 			skip "video1.i_bias_lvl I-frame sweep needs ffmpeg+ffprobe - not found"
 		else
-			rc_ib_lo=""; rc_ib_hi=""
+			# Bracketed -3 / +3 / -3, not a bare A/B pair. Keyframe size on a real
+			# camera drifts with the light: the same config measured across one
+			# session on cam-garage produced 26.7k B in the afternoon and 13.9k B at
+			# dusk, and an unbracketed pair duly reported a 41.9% "effect" with the
+			# opposite sign to three earlier controlled runs that had agreed on 0.1%.
+			# Repeating the -3 half at the end costs one capture and turns that
+			# unknown into a measured drift estimate, so the verdict can require the
+			# effect to be bigger than the drift instead of assuming it away.
+			rc_ib_a1=""; rc_ib_b=""; rc_ib_a2=""
 			LV_PENDING="{\"video\":{\"1\":{\"i_bias_lvl\":$rc_ib_cur}}}"
-			for rc_ib_v in -3 3; do
+			for rc_ib_leg in a1:-3 b:3 a2:-3; do
+				rc_ib_v="${rc_ib_leg#*:}"
 				code=$(lv_post "{\"video\":{\"1\":{\"i_bias_lvl\":$rc_ib_v}}}")
 				[ "$code" = "200" ] || { warn "video1.i_bias_lvl=$rc_ib_v: POST HTTP $code - sweep aborted"; break; }
 				sleep "$rc_settle_s"
-				rc_r=$(enc_measure "$PATH_SUB" "$rc_meas_dur" "rc5b_$rc_ib_v") || continue
+				rc_r=$(enc_measure "$PATH_SUB" "$rc_meas_dur" "rc5b_${rc_ib_leg%%:*}") || continue
 				read -r _ _ rc_ib_iavg rc_ib_icnt _ <<<"$rc_r"
 				[ "${rc_ib_icnt:-0}" -ge 3 ] || continue      # too few keyframes to average
-				if [ "$rc_ib_v" = -3 ]; then rc_ib_lo="$rc_ib_iavg"; else rc_ib_hi="$rc_ib_iavg"; fi
+				case "${rc_ib_leg%%:*}" in
+					a1) rc_ib_a1="$rc_ib_iavg";; b) rc_ib_b="$rc_ib_iavg";; a2) rc_ib_a2="$rc_ib_iavg";;
+				esac
 			done
 			rc_pid_check video1.i_bias_lvl-sweep
 			lv_post "$LV_PENDING" >/dev/null; LV_PENDING=""
-			if [ -z "$rc_ib_lo" ] || [ -z "$rc_ib_hi" ] || ! fcmp "${rc_ib_hi:-0}" gt 0; then
-				warn "video1.i_bias_lvl: could not measure both halves of the keyframe sweep (-3=${rc_ib_lo:-none} B, +3=${rc_ib_hi:-none} B) - the semantics stay unverified on this camera"
+			if [ -z "$rc_ib_a1" ] || [ -z "$rc_ib_b" ] || [ -z "$rc_ib_a2" ] || ! fcmp "${rc_ib_b:-0}" gt 0; then
+				warn "video1.i_bias_lvl: could not measure all three legs of the bracketed keyframe sweep (-3=${rc_ib_a1:-none} B, +3=${rc_ib_b:-none} B, -3 again=${rc_ib_a2:-none} B) - the semantics stay unverified on this camera"
 			else
+				# mean the two -3 legs so the comparison sits at the middle of the
+				# drift, and measure the drift from how far they fell apart
+				rc_ib_lo=$(awk -v x="$rc_ib_a1" -v y="$rc_ib_a2" 'BEGIN{printf "%.0f", (x+y)/2}')
+				rc_ib_hi="$rc_ib_b"
+				rc_ib_drift=$(awk -v x="$rc_ib_a1" -v y="$rc_ib_a2" 'BEGIN{m=(x>y)?x:y; n=(x<y)?x:y; printf "%.1f", (n>0)?100*(m/n-1):999}')
 				rc_ib_sep=$(awk -v a="$rc_ib_lo" -v b="$rc_ib_hi" 'BEGIN{m=(a>b)?a:b; n=(a<b)?a:b; printf "%.1f", (n>0)?100*(m/n-1):0}')
-				if fcmp "$rc_ib_sep" lt 15; then
-					info "  video1.i_bias_lvl sweep: mean keyframe ${rc_ib_lo} B at -3 vs ${rc_ib_hi} B at +3 - ${rc_ib_sep}% apart, under the 15% effect threshold. The value reaches the encoder (RC5 proved that) but does not move the bitstream: SetChnQpIPDelta is a no-op in this rc mode on this SoC. Matches the 2026-08-22 T31 measurement; nothing for timps to fix, the value it sends is the value the encoder reports"
+				rc_ib_ev="mean keyframe ${rc_ib_lo} B at -3 (legs ${rc_ib_a1}/${rc_ib_a2} B, ${rc_ib_drift}% scene drift between them) vs ${rc_ib_hi} B at +3, ${rc_ib_sep}% apart"
+				if fcmp "$rc_ib_sep" ge 15 && ! fcmp "$rc_ib_sep" ge "$(awk -v d="$rc_ib_drift" 'BEGIN{printf "%.1f", 2*d}')"; then
+					info "  video1.i_bias_lvl sweep: $rc_ib_ev - over the 15% effect threshold but NOT over twice the drift the two -3 legs measured, so the scene moved as much as the knob supposedly did. Inconclusive; re-run on a stable scene (steady light, no day/night transition) before reading a sign off this"
+				elif fcmp "$rc_ib_sep" lt 15; then
+					info "  video1.i_bias_lvl sweep: $rc_ib_ev - under the 15% effect threshold. The value reaches the encoder (RC5 proved that) but does not move the bitstream: SetChnQpIPDelta is a no-op in this rc mode on this SoC. Matches the 2026-08-22 T31 measurement; nothing for timps to fix, the value it sends is the value the encoder reports"
 				elif fcmp "$rc_ib_lo" gt "$rc_ib_hi"; then
-					ok "video1.i_bias_lvl has a real, correctly-signed effect: mean keyframe ${rc_ib_lo} B at -3 vs ${rc_ib_hi} B at +3 (${rc_ib_sep}% apart) - negative spends MORE bits on keyframes, which is the convention 443584e assumed"
+					ok "video1.i_bias_lvl has a real, correctly-signed effect: $rc_ib_ev, and that is more than twice the drift - negative spends MORE bits on keyframes, which is the convention 443584e assumed"
 				else
-					warn "video1.i_bias_lvl has a real effect with the OPPOSITE sign to the documented one: mean keyframe ${rc_ib_lo} B at -3 vs ${rc_ib_hi} B at +3 (${rc_ib_sep}% apart), i.e. POSITIVE spends more bits on keyframes. 443584e passes classic iBiasLvl into iIPDelta 1:1 on the assumption they share a sign convention; this says they do not, and the pass-through needs a negation on this SoC"
+					warn "video1.i_bias_lvl has a real effect with the OPPOSITE sign to the documented one: $rc_ib_ev, and that is more than twice the drift - i.e. POSITIVE spends more bits on keyframes. 443584e passes classic iBiasLvl into iIPDelta 1:1 on the assumption they share a sign convention; this says they do not, and the pass-through needs a negation on this SoC"
 				fi
 			fi
 		fi
