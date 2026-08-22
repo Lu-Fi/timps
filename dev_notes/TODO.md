@@ -137,6 +137,25 @@ hardware-verified on its own (would need a board whose rmem never clears,
 which is hard to arrange on purpose) - reviewed by reading the existing
 watchdog precedent and confirmed by `make sim`.
 
+**Second follow-up, same evening**: user feedback on the cap above - retries
+alone weren't what fixed cam-kinder-rechts, a real `reboot` was, every time
+this incident happened tonight. So after `MS_STARTUP_MAX_START_FAILS` is
+reached, `main.c` now escalates to exactly ONE real reboot (`sync()` +
+`reboot(RB_AUTOBOOT)`) before giving up for good - "for good" meaning a
+persistent marker file (`/etc/timps-startup-reboot.flag`, real flash, not
+`/run` tmpfs, so it survives the reboot) records that this incident already
+got its one shot. If the SAME incident is still failing 10 more times after
+that reboot, the marker is still there, so it gives up permanently instead
+of rebooting again - no boot loop. The marker is deleted the moment
+`start()` next succeeds, so an unrelated FUTURE incident (even far in the
+future) gets its own fresh one-shot reboot rather than inheriting a
+permanently spent one. Cross-compiled clean for T31/uClibc (confirms
+`<sys/reboot.h>`/`reboot()` exist on this toolchain) but the reboot
+escalation ITSELF is not yet hardware-verified - doing so deliberately means
+holding a real camera in the stuck state through 10 real failed attempts,
+which is exactly the scenario that took cam-kinder-rechts down earlier
+tonight, so it needs a supervised test, not a casual one.
+
 Found 2026-08-22 during the post-rollout fleet QA (`--test-encoder`, which
 deliberately forces a real restart to make a restart-bound `rc_mode` change
 effective - see RC6b's "rc_mode=vbr is restart-bound here, restarting for

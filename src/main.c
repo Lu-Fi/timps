@@ -26,6 +26,7 @@
 #include <time.h>
 #include <errno.h>
 #include <sys/file.h>
+#include <sys/reboot.h>
 #include <ucontext.h>
 
 #define MOD "MAIN"
@@ -448,11 +449,31 @@ int main(int argc, char **argv)
      * the log and matches "needs a manual/scheduled restart" rather than an
      * indefinitely spinning process that LOOKS alive but never serves a
      * frame. init() failures do not count against this limit. */
+    /* Giving up is not the end of the story: cam-kinder-rechts' own
+     * hardware-verification run (2026-08-22) showed 10 retries is not
+     * always enough time, but a real `reboot` fixed it every single time
+     * that resource-drain incident occurred tonight, on every affected
+     * camera - process-level retries never did on their own. So after the
+     * retry budget is spent, escalate to ONE real reboot before finally
+     * giving up - but ONLY one, ever, per problem: a marker file on the
+     * persistent (non-tmpfs) /etc partition survives the reboot the way
+     * nothing in /run does, so a second exhaustion of the SAME retry
+     * budget after that reboot means the reboot did not help either, and
+     * rebooting again would be a silent boot loop instead of a fix. The
+     * marker is cleared the moment start() next succeeds, so a genuinely
+     * new incident later (even after the camera has run fine for months)
+     * gets its own fresh one-shot reboot, not a permanently spent one. */
 #define MS_STARTUP_MAX_START_FAILS 10
+#define MS_STARTUP_REBOOT_MARKER "/etc/timps-startup-reboot.flag"
     int start_fails = 0;
     for (int backoff = 5;;) {
         if (g_hal->init(&g_cfg) == 0) {
-            if (g_hal->start(&g_cfg) == 0) break;
+            if (g_hal->start(&g_cfg) == 0) {
+                if (unlink(MS_STARTUP_REBOOT_MARKER) == 0)
+                    LOGI(MOD,"cleared the startup-reboot marker - this "
+                             "incident is over");
+                break;
+            }
             /* start() failing is the SAME transient class as init() failing,
              * and exiting here was the actual kill shot in the 2026-08-22 T31
              * fleet incident (5 cameras): after a real restart the previous
@@ -468,12 +489,31 @@ int main(int argc, char **argv)
              * close - ing_stop tolerates the already-empty channel lists) a
              * fresh init+start attempt is exactly as safe as the first one. */
             if (++start_fails >= MS_STARTUP_MAX_START_FAILS){
-                LOGE(MOD,"HAL start failed %d times in a row - giving up "
-                         "(camera needs a manual/scheduled restart; a prior "
-                         "incident showed this can mean the resource this "
-                         "board is waiting on never clears without a real "
-                         "reboot, not just more time)", start_fails);
                 g_hal->stop();
+                if (access(MS_STARTUP_REBOOT_MARKER, F_OK) == 0){
+                    LOGE(MOD,"HAL start failed %d times in a row AGAIN after "
+                             "the one-shot recovery reboot already tried for "
+                             "this - a real reboot does not fix this board's "
+                             "problem either, giving up for real (needs "
+                             "manual intervention, not another reboot)",
+                         start_fails);
+                    return 1;
+                }
+                int mf = open(MS_STARTUP_REBOOT_MARKER,
+                               O_CREAT|O_WRONLY|O_TRUNC, 0644);
+                if (mf >= 0) close(mf);
+                LOGE(MOD,"HAL start failed %d times in a row - retries alone "
+                         "did not clear whatever this board is waiting on "
+                         "(2026-08-22 T31 precedent: only a real reboot did), "
+                         "so escalating to ONE reboot before giving up "
+                         "permanently", start_fails);
+                sync();
+                reboot(RB_AUTOBOOT);
+                /* unreachable if the syscall works; fall through to the
+                 * normal give-up path if it somehow doesn't (no permission,
+                 * sandboxed init, etc.) rather than hang here forever */
+                LOGE(MOD,"reboot() itself failed (%s) - giving up instead",
+                     strerror(errno));
                 return 1;
             }
             LOGE(MOD,"HAL start failed (%d/%d) - unwinding and retrying in %ds",

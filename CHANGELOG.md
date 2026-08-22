@@ -50,6 +50,17 @@ semantic versioning.
   `init()` failures are unaffected and still retry forever - a
   misconfiguration is a different failure class, meant to wait for a human
   to fix the config rather than a bounded resource race.
+- **Exhausting the start() retry budget now escalates to one real reboot
+  before giving up** (`src/main.c`) - retries alone did not fix
+  cam-kinder-rechts' incident, a real `reboot` did, every time this class of
+  problem occurred tonight. A persistent marker file
+  (`/etc/timps-startup-reboot.flag`, survives the reboot unlike anything in
+  `/run`) makes the escalation exactly one-shot per incident: if the SAME
+  problem is still failing after the reboot, the daemon gives up for good
+  instead of rebooting again, so this cannot become a boot loop. The marker
+  clears the moment `start()` next succeeds, so a later, unrelated incident
+  gets its own fresh attempt. Cross-compiled clean for T31/uClibc; the
+  reboot escalation itself still needs a supervised hardware test.
 
 ### Added
 
