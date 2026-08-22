@@ -1010,3 +1010,34 @@ trusting the flash, not just that the SSH port came back up.
 The five other cinnado_d1_t31l_sc2336_atbm6031 cameras are still at the
 original `BR2_THINGINO_RMEM_MB=22`, so a fleet-wide rollout of just the
 pre_dequeue removal never triggers this shrink case at all.
+
+## Candidate: raise the package-default night_gain from 4096
+
+`night_gain` (= `total_gain_night_threshold`) has now been raised to 8000 on
+four cameras: cam-sz (2026-08-21, confirmed working - switched to day
+earlier the next morning, 2026-08-22), cam-wohn, cam-schuppen, and cam-vorne
+(2026-08-22, all applied but not yet individually confirmed).
+
+**Only cam-sz has a clean before/after result.** The other three are
+confounded:
+
+- **cam-schuppen has direct prior history against a clean win**: a
+  2026-08-16 note in its own overlay says night_gain=8000 (paired with
+  day_trigger=2500 back then, not restored here) was already tried on this
+  exact camera and "may not fully close" its dead zone. Re-raising to 8000
+  alone repeats a value already documented as insufficient there.
+- **cam-vorne was mid-dawn-transition when set** (projected day exposure
+  falling from ~992000 to ~6700 over ~40 minutes that morning, per the
+  fleet-wide log review) - it may have crossed into day shortly regardless
+  of the threshold change, so its outcome won't isolate the setting's effect.
+- **cam-wohn** has no confounding history noted, but also no dedicated
+  before/after measurement yet - it happened to be mid-transition too during
+  the same log review.
+
+Before making 8000 (or any other value) the package default in
+`package/timps/files/timps.conf` / `src/config.c`'s compiled-in default:
+confirm each of these four independently over a few real dawn/dusk cycles,
+and settle cam-schuppen's case specifically given its contradicting history
+(may need day_trigger raised too, not night_gain alone, per the 2026-08-16
+note). A single confirmed camera (cam-sz) is not enough evidence for a
+fleet-wide default change.
