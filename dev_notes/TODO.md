@@ -883,7 +883,7 @@ readback data from a real T31.
 
 ## Control API
 
-### Report ignored unknown fields in POST responses
+### RESOLVED: report ignored unknown fields in POST responses
 
 Measured against the simulator 2026-08-21: a POST containing only unknown keys
 returns 422 `unknown_fields`, but a POST mixing a valid key with an unknown one
@@ -892,6 +892,40 @@ returns `ok:true, accepted:1` and drops the unknown key silently.
 
 Add an `ignored:[...]` array without changing what gets applied. Same failure
 class as the `min_qp` gap and the missing status-JSON fields.
+
+**Done 2026-08-22.** The apply path could not be extended to do this: it walks
+the field TABLE and looks each name up in the body, so a name the tables do not
+know is structurally invisible to it (the point control.h already made). So
+`ign_scan()` walks the body in the other direction and tests each member
+against the SAME `tbl[i].name` + `F_CTRL` rule `apply_ctrl_fields()` accepts on
+- one call next to each section's apply call, never a second hand-written name
+list, so a field that stops being applied starts being reported in the same
+edit. Names are `ms_json_esc`-escaped (they are client data - a POSTed
+`"bright\"ness\\"` comes back correctly escaped, verified), and
+`ignored_truncated` flags a short list.
+
+Deliberately narrow so what it says is always true: object- and array-valued
+members are skipped (`get_val()` refuses those too, so they are subsections,
+not fields - this is also what keeps `{"video":{"0":{...}}}`'s index members and
+the legacy flat top-level form from being reported), only the scanned object's
+own level is walked, and sections with keys handled outside the table
+(`daynight.mode`/`probe`, `record.active`/`clip`/`seconds`, `speaker.play`/
+`stop`) pass those names as `extra` so they are not falsely reported.
+Documented in `docs/wiki/HTTP-Control-API.md`'s reply table, including the
+limits: an unknown top-level SECTION, an out-of-range stream/item index and an
+object-valued member are not listed, so `ignored:[]` is not a promise that
+every name in the body was understood.
+
+Verified against the sim: the TODO's own example now answers
+`ignored:["video1.quality_level"]` with `accepted:1` unchanged;
+`{"image":{"brightness":140,"brihtness":9}}` names `image.brihtness`; a
+fully-known body and the legacy flat form both report `ignored:[]` (no false
+positives); `{"daynight":{"mode":"sensor","probe":0,...}}` reports neither;
+`{"motion":{"on_motion":"/bin/sh",...}}` reports it, which is correct - it is
+present and not applied; 40 unknown keys overflow the buffer and set
+`ignored_truncated` with the JSON still valid. `scripts/timps-qa.sh` 8e gained
+case 9 for the mixed body and the empty-list negative half; both were run
+against the sim and pass.
 
 ## Fleet
 

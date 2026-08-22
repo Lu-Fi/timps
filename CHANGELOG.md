@@ -131,6 +131,24 @@ semantic versioning.
   them and doing nothing - the failure mode that hid the `min_qp`/`max_qp` gap
   until 0a8bb9f.
 
+- **`POST /control` names the fields it ignored** (`src/control.c`,
+  `src/control.h`, `src/mp4/httpd.c`, `scripts/timps-qa.sh`,
+  `docs/wiki/HTTP-Control-API.md`): the reply gains an `ignored` array listing
+  the field names the request carried that this build did not apply - a typo, a
+  key from another section, a key gated out of this binary, or one with no
+  `/control` write path. A body carrying ONLY unknown keys has always been
+  visible (`422 unknown_fields`); a body mixing one good key with one typo
+  answered `200 accepted:1` and dropped the typo without a word, which is the
+  shape a real client actually produces. Nothing about what is applied changes
+  and no count moves - `{"quality_lvl":7,"quality_level":5}` still applies the
+  first key, it just no longer looks like a clean success. Built by walking the
+  request body and testing each member against the SAME table+`F_CTRL` rule the
+  apply path uses, so the two cannot drift; names are `ms_json_esc`-escaped
+  (they are client data) and `ignored_truncated` flags a short list, the same
+  contract as `applied`/`deferred_keys`. Scope is unknown fields inside known
+  sections: an unknown top-level section, an out-of-range stream/item index and
+  an object-valued member are not fields and are not listed.
+
 - **`{bitrateN}` OSD placeholder** (`src/hal/osd_vars.c`, `src/hal/osd_vars.h`,
   `timps.conf.example`, `README.md`,
   `docs/wiki/Configuration-Reference.md`): the per-channel counterpart to

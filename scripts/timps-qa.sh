@@ -30,7 +30,9 @@
 #   8d. Field drift ... diff GET /control?fields=1 (F_CTRL inventory) against
 #                       8b's tested set + a documented allowlist
 #   8e. Malformed body  5 negative-case POSTs against the hand-rolled JSON
-#                       parser; asserts liveness, not a strict error contract
+#                       parser (liveness, not a strict error contract), the
+#                       three fixed httpd request-handling defects, and the
+#                       "ignored" reply array on a mixed known+typo body
 #   8f. Flip/relatch .. optional: PIXEL-verified hflip + forced chn0 relatch
 #   8g. Encoder ....... bitrate/rc_mode verified by MEASURING the substream,
 #                       live where caps.video_live allows it, otherwise after
@@ -4447,6 +4449,42 @@ elif [ "$mb8_code" = "200" ]; then
 	bad "HEAD /control: 200 but Content-Length=${mb8_cl:-?} - the {\"ok\":true} shape, i.e. HEAD fell into the POST branch and ran control_apply_json(\"\") again (the pre-fix behaviour)"
 else
 	warn "HEAD /control: HTTP $mb8_code (want 200 with GET semantics; see $mb8_hdr)"
+fi
+
+# 9. mixed known + misspelled field: the typo must be NAMED in "ignored".
+#    A body carrying only unknown keys has always been visible (422
+#    unknown_fields); a body mixing one good key with one typo answered 200
+#    accepted:1 and dropped the typo without a word, which is the shape a real
+#    client actually produces. Exact assertions, unlike cases 1-5: this is a
+#    documented reply field (docs/wiki/HTTP-Control-API.md), not the parser's
+#    undocumented error behaviour. Re-posts the CURRENT brightness, so accepted
+#    counts it while changed stays 0 and there is nothing to restore.
+mb9_bf="$OUTDIR/mb9_before.json"; curlq 12 "$(http_base)/control" -o "$mb9_bf"
+mb9_cur=$(jget "$mb9_bf" image.brightness)
+if [ -z "$mb9_cur" ]; then
+	warn "ignored-fields test: could not read current image.brightness - skipping"
+else
+	mb9_rf="$OUTDIR/mb9_reply.json"
+	curl -s -o "$mb9_rf" --max-time 8 -u "$HTTP_USER:$HTTP_PASS" \
+		-X POST "$(http_base)/control" \
+		-d "{\"image\":{\"brightness\":$mb9_cur,\"brihtness\":9}}" >/dev/null
+	mb9_acc=$(jget "$mb9_rf" accepted)
+	if grep -q '"image.brihtness"' "$mb9_rf" 2>/dev/null && [ "${mb9_acc:-0}" -ge 1 ]; then
+		ok "mixed known+unknown field: accepted=$mb9_acc and the typo is named in ignored[] - a partly-misspelled request no longer reads as a clean success"
+	elif [ "${mb9_acc:-0}" -ge 1 ]; then
+		bad "mixed known+unknown field: accepted=$mb9_acc but 'image.brihtness' is not in the reply's ignored[] ($(cat "$mb9_rf" 2>/dev/null | head -c 300)) - either this daemon predates the ignored[] array, or the ign_scan walk stopped covering the image section"
+	else
+		warn "mixed known+unknown field: accepted='$mb9_acc', expected the valid half to apply - reply in $mb9_rf"
+	fi
+	# the negative half: a fully-known body must report an EMPTY list, or the
+	# array would just be noise a client learns to ignore
+	curl -s -o "$mb9_rf" --max-time 8 -u "$HTTP_USER:$HTTP_PASS" \
+		-X POST "$(http_base)/control" -d "{\"image\":{\"brightness\":$mb9_cur}}" >/dev/null
+	if grep -q '"ignored":\[\]' "$mb9_rf" 2>/dev/null; then
+		ok "fully-known request reports ignored:[] - the list stays empty when there is nothing to report"
+	else
+		bad "fully-known request did not report an empty ignored[] ($(cat "$mb9_rf" 2>/dev/null | head -c 300)) - a false positive there makes the whole field unusable"
+	fi
 fi
 
 fi

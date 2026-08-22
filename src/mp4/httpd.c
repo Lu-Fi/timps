@@ -1555,17 +1555,27 @@ static void *conn_thread(void *arg)
                      * (control.h). The count is always exact; the key list
                      * can overflow its buffer (deferred_truncated), the
                      * same contract as applied/truncated. */
-                    char rb[CTRL_ECHO_CAP + CTRL_DEFER_CAP + 288];
+                    /* "ignored": field names the body carried that this build
+                     * does not apply (control.h). Purely informational - it
+                     * changes no count and nothing about what was applied - and
+                     * it exists because a request mixing one good key with one
+                     * typo used to answer 200 accepted:1 and drop the typo
+                     * silently; only an ALL-unknown body was visible, as 422.
+                     * Same overflow contract as applied/deferred_keys. */
+                    char rb[CTRL_ECHO_CAP + CTRL_DEFER_CAP + CTRL_IGN_CAP + 320];
                     int rn = snprintf(rb, sizeof rb,
                         "{\"ok\":%s,\"accepted\":%d,\"changed\":%d,"
                         "\"rejected\":%d,\"not_persisted\":%d,"
                         "\"deferred\":%d,\"deferred_keys\":[%s]%s,"
+                        "\"ignored\":[%s]%s,"
                         "\"applied\":{%s}%s%s%s%s}",
                         (prc==0 && cr.accepted>0) ? "true" : "false",
                         cr.accepted, cr.changed, cr.rejected, cr.not_persisted,
                         prc==0 ? cr.deferred : 0,
                         prc==0 ? cr.defer : "",
                         (prc==0 && !cr.defer_full) ? ",\"deferred_truncated\":true" : "",
+                        prc==0 ? cr.ign : "",
+                        (prc==0 && !cr.ign_full) ? ",\"ignored_truncated\":true" : "",
                         prc==0 ? cr.echo : "",
                         (prc==0 && !cr.echo_full) ? ",\"truncated\":true" : "",
                         reason ? ",\"reason\":\"" : "", reason ? reason : "",

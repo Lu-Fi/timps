@@ -53,7 +53,9 @@
  * video/sensor fields did NOT reach the running pipeline (channel down,
  * classic H265, rejected IMP call, sim) - so a caller can tell what is in
  * effect now from what waits for a restart, per request, not per platform
- * guess. Unknown keys and missing fields are ignored. The legacy flat form ({"brightness":140,
+ * guess. Unknown keys and missing fields are ignored - and the unknown ones are
+ * now NAMED back in the reply's "ignored" array, so a body mixing a valid key
+ * with a typo no longer reads as a clean success. The legacy flat form ({"brightness":140,
  * "running_mode":1, "force_mode":"night"}) still works and maps to image.*.
  *
  * Further sections (applied live + persisted, see control.c):
@@ -75,11 +77,12 @@
  * answered {"ok":true} unconditionally - the response did not merely omit an
  * error, it ASSERTED success, so a client could not tell a typo from a write.
  *
- * What is and is not reportable follows from the parser's shape: apply_ctrl_fields
- * walks the field TABLE and looks each name up in the body, so a key the tables
- * do not know is never seen and cannot be listed individually. What CAN be stated
- * exactly is how many known fields the body carried - and that is enough for a
- * client to verify its own write: post one key, expect accepted >= 1.
+ * apply_ctrl_fields walks the field TABLE and looks each name up in the body, so
+ * the apply path is structurally blind to a key the tables do not know. What CAN
+ * be stated exactly is how many known fields the body carried - and that is
+ * enough for a client to verify its own write: post one key, expect
+ * accepted >= 1. The unknown names are reported separately by a second, purely
+ * informational walk in the other direction (ign_scan, see `ignored` below).
  *
  *   accepted - fields recognised and applied, INCLUDING writes of the value a
  *              field already had. Kept separate from `changed` on purpose: a
@@ -98,6 +101,11 @@
  *              not know the key names at all. */
 #define CTRL_ECHO_CAP 512
 #define CTRL_DEFER_CAP 1024
+#define CTRL_IGN_CAP 512
+/* longest field name ign_note() will carry; the longest key any table holds is
+ * daynight.total_gain_night_threshold's 26-char leaf, so anything near this is
+ * already not a field name. */
+#define CTRL_IGN_NAME 48
 typedef struct {
     int accepted;
     int changed;
@@ -124,6 +132,25 @@ typedef struct {
     int  echo_full;   /* 1 = echo lists every changed field */
     char defer[CTRL_DEFER_CAP];
     int  defer_full;  /* 1 = defer lists every deferred field */
+    /* Fields the request CARRIED that this build did not apply: a typo, a key
+     * from another section, a key gated out of this binary, or one with no
+     * F_CTRL. Independent of accepted/changed/rejected - nothing about what is
+     * applied changes because of this list, it only stops a mixed request from
+     * looking like a clean success. `{"quality_lvl":7,"quality_level":5}`
+     * answered 200 accepted:1 and dropped the typo without a word; only an
+     * all-unknown request was ever visible (422 unknown_fields), i.e. the case
+     * a client is least likely to hit. Prefixed keys, as a ready-made JSON
+     * array body ("\"video0.quality_level\""). ign_full mirrors echo_full/
+     * defer_full: 0 = the list is short (buffer full, or a name too long to
+     * carry).
+     *
+     * Scope, so a caller does not over-read it: it reports unknown FIELDS
+     * inside sections this build understands. An unknown top-level section, an
+     * out-of-range stream/item index, and an object-valued member are not
+     * fields and are not listed - a `0` there is not a promise that every name
+     * in the body was understood. */
+    char ign[CTRL_IGN_CAP];
+    int  ign_full;
 } ctrl_result;
 
 /* Returns 0 if the body was a JSON object, -1 if it was not parseable at all,

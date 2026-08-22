@@ -297,7 +297,9 @@ Nested per-section objects, matching the config-file section prefixes:
 }
 ```
 
-Every field is optional; unknown keys are ignored; the legacy flat form
+Every field is optional; unknown keys are ignored — and named back in the
+reply's `ignored` array, so a body mixing a valid key with a typo does not
+read as a clean success; the legacy flat form
 (`{"brightness":140,"running_mode":1}` or `{"force_mode":"night"|"day"}`)
 still works and maps onto `image.*`.
 
@@ -329,7 +331,7 @@ shape, whatever the status:
 
 ```json
 {"ok":true,"accepted":2,"changed":1,"rejected":0,"not_persisted":0,
- "deferred":0,"deferred_keys":[],
+ "deferred":0,"deferred_keys":[],"ignored":[],
  "applied":{"image.brightness":"255"}}
 ```
 
@@ -341,15 +343,17 @@ shape, whatever the status:
 | `rejected` | Known fields whose **value** was refused (`null`, `undefined`, or an empty string on a non-string field), plus commands that were understood and failed (`record.clip` to an unwritable path). |
 | `not_persisted` | Of `accepted`, the number that were applied live but **not** written to `/etc/timps.conf` because the request changed more keys than the 48-slot persist list holds. Those values are live now and gone after the next reboot; a caller changing many keys at once should split the request or re-`GET` to confirm what survived. |
 | `deferred` / `deferred_keys` | (2026-08-21) Of `changed`, the `video<N>.*`/`sensor.*` keys that were persisted but did **not** reach the running pipeline this request — `deferred` is always the exact count, `deferred_keys` lists them (subject to `deferred_truncated`, same overflow contract as `applied`/`truncated`). A key absent from `deferred_keys` after a successful `changed` count on a `video`/`sensor` field DID apply live — see `caps.video_live` and [Rate Control Parameters](Rate-Control-Parameters.md#live-vs-restart-per-soc). Every other section's keys are graded by the [section-by-section table](#section-by-section-behavior) above instead; `deferred` never lists them. |
+| `ignored` | (2026-08-22) Field names the request carried that this build did **not** apply — a typo, a key from another section, a key gated out of this binary, or one with no `/control` write path (`motion.on_motion`, `video<N>.imp_chn`, …). Fully prefixed (`"video1.quality_level"`). It changes no count and nothing about what was applied: `{"quality_lvl":7,"quality_level":5}` still applies the first key and still answers `200 accepted:1` — it now also says the second one went nowhere, instead of leaving that request looking like a clean success. (A body carrying *only* unknown keys was always visible as the `422` below; the mixed body, which is what a real client produces, was not.) Reports unknown **fields inside sections this build understands** — an unknown top-level section, an out-of-range stream/item index and an object-valued member are not fields and are not listed, so an empty array is not a promise that every name in the body was understood. |
+| `ignored_truncated` | Present (`true`) only if the `ignored` list is short — more names than the 512-byte buffer holds, or a name too long to carry. |
 | `applied` | Per-key echo of the **effective** value wherever it differs from what was posted — i.e. after clamping. This is how a caller that posted `999` learns it got `255`, without re-`GET`ting the document. |
 | `truncated` | Present (`true`) only if more keys changed than the 512-byte echo holds; fall back to a `GET`. |
 | `reason` | Present only on the error answers below — the machine-readable discriminator, so a client never has to infer the case from the status line. |
 
 | Status | `reason` | Meaning | What the client should do |
 | --- | --- | --- | --- |
-| `200 OK` | — | At least one known field was applied (or one command carried out). A partial request — some fields applied, others rejected — is a `200`; check `rejected`. | Nothing. Read `applied` for clamped values. |
+| `200 OK` | — | At least one known field was applied (or one command carried out). A partial request — some fields applied, others rejected or unknown — is a `200`; check `rejected` and `ignored`. | Nothing. Read `applied` for clamped values. |
 | `400 Bad Request` | `not_json` | The body was not a JSON object at all (garbage, empty, truncated before the first `{`). | Fix the caller — this is a client bug. |
-| `422 Unprocessable Content` | `unknown_fields` | It parsed, but carried **no field this build knows**: a typo, the wrong section, or a key gated out of this binary. Nothing was applied. | Check spelling — and check the `*.available` flags above, because the key may simply not exist in *this* build. Retrying the identical body will never succeed. |
+| `422 Unprocessable Content` | `unknown_fields` | It parsed, but carried **no field this build knows**: a typo, the wrong section, or a key gated out of this binary. Nothing was applied; `ignored` names the keys. | Check spelling — and check the `*.available` flags above, because the key may simply not exist in *this* build. Retrying the identical body will never succeed. |
 | `409 Conflict` | `values_rejected` | It parsed and every field in it **was** known, but every one of them was refused: bad values, or a command that failed. Nothing was applied. | The key names were right; re-send with valid **values**. |
 | `413 Payload Too Large` | — | `Content-Length` negative, or larger than the request buffer. | Split the request. |
 | `503 Service Unavailable` | `oom` | The daemon could not allocate to service the request. | Retry later; not a client error. |

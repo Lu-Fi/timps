@@ -109,6 +109,27 @@ static __thread int  g_deferred;
 static __thread char g_defer[CTRL_DEFER_CAP];
 static __thread int  g_defer_off, g_defer_full;
 
+/* the "ignored" list: field names the request carried that this build does not
+ * apply (see control.h). Unlike echo/defer these are USER data - a client can
+ * post any name at all - so they go through ms_json_esc like the echo values,
+ * never spliced raw. ign_full = 0 says the list is short (buffer full, or a
+ * name too long to carry), the same contract as echo_full/defer_full. */
+static __thread char g_ign[CTRL_IGN_CAP];
+static __thread int  g_ign_off, g_ign_full;
+
+static void ign_add(const char *key)
+{
+    if (!g_ign_full) return;                        /* already overflowed */
+    char ekey[CTRL_IGN_NAME*2+8];
+    ms_json_esc(key, ekey, sizeof ekey);
+    int w = snprintf(g_ign + g_ign_off, sizeof g_ign - (size_t)g_ign_off,
+                     "%s\"%s\"", g_ign_off ? "," : "", ekey);
+    if (w < 0 || g_ign_off + w >= (int)sizeof g_ign) {
+        g_ign[g_ign_off] = 0; g_ign_full = 0; return;
+    }
+    g_ign_off += w;
+}
+
 static void defer_add(const char *key)
 {
     g_deferred++;
@@ -477,11 +498,87 @@ static void apply_ctrl_fields(ctrl_changes *ch, const char *prefix,
     }
 }
 
+/* The other direction: which names did the request carry that the walk above
+ * did NOT consume? apply_ctrl_fields() looks each TABLE name up in the body, so
+ * it is structurally blind to a name that is not in the table - which is why a
+ * body mixing one good key with one typo answered 200 accepted:1 and dropped
+ * the typo without a word. Only a request whose fields are ALL unknown was ever
+ * visible (422 unknown_fields), i.e. the case a client is least likely to hit.
+ *
+ * So walk the body instead of the table, and report every member of THIS
+ * object apply_ctrl_fields() would not have taken. The test is exactly dual to
+ * its accept test (name in tbl[] AND F_CTRL), never a second hand-written name
+ * list, so the two cannot drift: a field that stops being applied starts being
+ * reported in the same edit. `extra` names the keys a section consumes OUTSIDE
+ * the table (daynight.mode's token validation, the record/speaker/daynight
+ * commands), space separated - without it those would be reported as ignored
+ * while in fact being applied.
+ *
+ * Deliberately narrow, so that what it does say is always true:
+ *   - members whose value is an OBJECT or ARRAY are skipped. get_val() refuses
+ *     those too, so an object is never a settable field - it is a subsection
+ *     (video's "0"/"1", an osd item) scanned through its own call, or one this
+ *     build does not know, and naming a whole section as an ignored FIELD would
+ *     be a category error.
+ *   - only this object's own level is walked; nested objects are scanned by
+ *     their own calls, and an out-of-range index ({"video":{"9":{...}}}) has no
+ *     call and stays unreported.
+ *   - the top-level legacy flat form is not scanned at all: there every
+ *     unknown scalar would be reported under an "image." prefix it does not
+ *     have. */
+static void ign_note(const char *prefix, const char *nb, const char *ne,
+                     const cfg_field *tbl, int n, const char *extra)
+{
+    size_t len = (size_t)(ne - nb);
+    if (len == 0) return;
+    if (len >= CTRL_IGN_NAME){    /* cannot be a field name, and cannot be
+                                   * carried verbatim: say the list is short
+                                   * rather than report a truncated name */
+        g_ign_full = 0;
+        return;
+    }
+    char name[CTRL_IGN_NAME];
+    memcpy(name, nb, len); name[len] = 0;
+    for (int i=0;i<n;i++)
+        if ((tbl[i].flags & F_CTRL) && !strcmp(name, tbl[i].name)) return;
+    for (const char *x = extra; x && *x; ){
+        while (*x==' ') x++;
+        size_t xl = strcspn(x, " ");
+        if (xl == len && !memcmp(x, name, len)) return;
+        x += xl;
+    }
+    char full[CTRL_IGN_NAME+40];
+    snprintf(full, sizeof full, "%s.%s", prefix, name);
+    ign_add(full);
+}
+
+static void ign_scan(const char *prefix, const char *s, const char *e,
+                     const cfg_field *tbl, int n, const char *extra)
+{
+    int depth = 0;
+    for (const char *p=s; p<e; p++){
+        if (*p=='{' || *p=='[') { depth++; continue; }
+        if (*p=='}' || *p==']') { if (depth>0) depth--; continue; }
+        if (*p!='"') continue;
+        const char *q = p+1;                     /* find the closing quote */
+        while (q<e && *q!='"'){ if (*q=='\\' && q+1<e) q++; q++; }
+        if (q>=e) return;                        /* unterminated - give up */
+        const char *c = skip_ws(q+1, e);
+        if (c<e && *c==':'){                     /* a NAME, not a string value */
+            const char *v = skip_ws(c+1, e);
+            if (depth==0 && v<e && *v!='{' && *v!='[')
+                ign_note(prefix, p+1, q, tbl, n, extra);
+        }
+        p = q;
+    }
+}
+
 int control_apply_json(const char *json, ctrl_result *res)
 {
     if (res) { res->accepted = res->changed = res->rejected = 0; res->not_persisted = 0;
                res->deferred = 0; res->echo[0] = 0; res->echo_full = 1;
-               res->defer[0] = 0; res->defer_full = 1; }
+               res->defer[0] = 0; res->defer_full = 1;
+               res->ign[0] = 0; res->ign_full = 1; }
     if (!json || !json[0]) return -1;
     /* Not a JSON object at all - the hand-rolled scanner would simply find
      * nothing and the old code answered 200 to it. Say so instead. */
@@ -489,6 +586,7 @@ int control_apply_json(const char *json, ctrl_result *res)
     g_acc = g_chg = g_rej = g_nopersist = 0;
     g_echo[0] = 0; g_echo_off = 0; g_echo_full = 1;
     g_deferred = 0; g_defer[0] = 0; g_defer_off = 0; g_defer_full = 1;
+    g_ign[0] = 0; g_ign_off = 0; g_ign_full = 1;
     /* A1 (concurrent-POST class): one HTTP worker thread per connection calls
      * this (httpd.c), so two simultaneous POSTs would otherwise interleave their
      * apply-to-g_cfg + hub_control + persist sequences and leave a partially
@@ -523,6 +621,10 @@ int control_apply_json(const char *json, ctrl_result *res)
     int nimg; const cfg_field *img_tbl = cfg_fields_image(&nimg);
     const char *se, *sb = find_obj(json, end, "image", &se);
     apply_ctrl_fields(ch, "image", sb?sb:json, sb?se:end, img_tbl, nimg);
+    /* only the nested form gets the unknown-field scan: in the legacy flat
+     * form the "body" is the whole document, whose other members are sections,
+     * not image fields (see ign_scan). */
+    if (sb) ign_scan("image", sb, se, img_tbl, nimg, NULL);
     /* legacy day/night: {"force_mode":"night"|"day"} */
     if (get_val(json, end, "force_mode", v, sizeof v)){
         if      (!strcmp(v,"night")) timps_apply_setting(ch,"image.running_mode","1");
@@ -541,6 +643,7 @@ int control_apply_json(const char *json, ctrl_result *res)
     if (sb){
         int naud; const cfg_field *aud_tbl = cfg_fields_audio(&naud);
         apply_ctrl_fields(ch, "audio", sb, se, aud_tbl, naud);
+        ign_scan("audio", sb, se, aud_tbl, naud, NULL);
     }
 
 #ifdef USE_PLAY
@@ -565,6 +668,9 @@ int control_apply_json(const char *json, ctrl_result *res)
                 LOGI(MOD,"speaker play %s", full);
             } else LOGW(MOD,"speaker play: rejected '%s'", v);
         }
+        /* no field table at all here: play/stop are commands, and anything
+         * else in this object is a name this build does not know. */
+        ign_scan("speaker", sb, se, NULL, 0, "play stop");
     }
 #endif
 
@@ -576,6 +682,7 @@ int control_apply_json(const char *json, ctrl_result *res)
         if (gb) {
             int ngen; const cfg_field *gen_tbl = cfg_fields_general(&ngen);
             apply_ctrl_fields(ch, "general", gb, ge, gen_tbl, ngen);
+            ign_scan("general", gb, ge, gen_tbl, ngen, NULL);
         }
     }
 
@@ -620,6 +727,9 @@ int control_apply_json(const char *json, ctrl_result *res)
             }
         }
         apply_ctrl_fields(ch, "daynight", sb, se, dn_tbl, ndn);
+        /* "mode" is in the table but F_CTRL-less (validated by the token check
+         * above, not the generic walker); "probe" is a command. */
+        ign_scan("daynight", sb, se, dn_tbl, ndn, "mode probe");
     }
 
     /* osd, legacy shared form: {"osd":{"enabled":true,"0":{...},..,"7":{...}}}
@@ -653,6 +763,7 @@ int control_apply_json(const char *json, ctrl_result *res)
                 q++;
             }
             apply_ctrl_fields(ch, "osd", seg, q, osd_tbl, nosd);
+            ign_scan("osd", seg, q, osd_tbl, nosd, NULL);
             if (q >= se) break;
             const char *nend = NULL;
             int d = 0;
@@ -671,6 +782,7 @@ int control_apply_json(const char *json, ctrl_result *res)
             if (!ib) continue;
             char pre[8]; snprintf(pre,sizeof pre,"osd%d",i);
             apply_ctrl_fields(ch, pre, ib, ie, item_tbl, nitem);
+            ign_scan(pre, ib, ie, item_tbl, nitem, NULL);
         }
     }
 
@@ -688,6 +800,7 @@ int control_apply_json(const char *json, ctrl_result *res)
             if (!ib) continue;
             char pre[12]; snprintf(pre,sizeof pre,"osd%d.%d",s,i);
             apply_ctrl_fields(ch, pre, ib, ie, item_tbl, nitem);
+            ign_scan(pre, ib, ie, item_tbl, nitem, NULL);
         }
     }
 
@@ -703,6 +816,7 @@ int control_apply_json(const char *json, ctrl_result *res)
             if (!ib) continue;
             char pre[8]; snprintf(pre,sizeof pre,"video%d",i);
             apply_ctrl_fields(ch, pre, ib, ie, vid_tbl, nvid);
+            ign_scan(pre, ib, ie, vid_tbl, nvid, NULL);
         }
     }
 
@@ -722,6 +836,7 @@ int control_apply_json(const char *json, ctrl_result *res)
                 if (!nb) continue;
                 char pre[16]; snprintf(pre,sizeof pre,"privacy%d.%d",s,n);
                 apply_ctrl_fields(ch, pre, nb, ne, priv_tbl, nprivf);
+                ign_scan(pre, nb, ne, priv_tbl, nprivf, NULL);
             }
         }
     }
@@ -732,6 +847,7 @@ int control_apply_json(const char *json, ctrl_result *res)
     if (sb){
         int nsen; const cfg_field *sen_tbl = cfg_fields_sensor(&nsen);
         apply_ctrl_fields(ch, "sensor", sb, se, sen_tbl, nsen);
+        ign_scan("sensor", sb, se, sen_tbl, nsen, NULL);
     }
 
     /* motion: {"motion":{"enabled":..,"sensitivity":..,"cols":..,"rows":..,
@@ -751,6 +867,7 @@ int control_apply_json(const char *json, ctrl_result *res)
     if (sb){
         int nmot; const cfg_field *mot_tbl = cfg_fields_motion(&nmot);
         apply_ctrl_fields(ch, "motion", sb, se, mot_tbl, nmot);
+        ign_scan("motion", sb, se, mot_tbl, nmot, NULL);
     }
 
     /* record: {"record":{"active":1|0}} = manual start/stop override (the
@@ -779,6 +896,8 @@ int control_apply_json(const char *json, ctrl_result *res)
         }
         int nrec; const cfg_field *rec_tbl = cfg_fields_record(&nrec);
         apply_ctrl_fields(ch, "record", sb, se, rec_tbl, nrec);
+        /* active/clip/seconds are commands handled above, not table fields. */
+        ign_scan("record", sb, se, rec_tbl, nrec, "active clip seconds");
     }
 
     /* timelapse: {"timelapse":{"enabled":..,"channel":..,"dir":..,"name":..,
@@ -788,6 +907,7 @@ int control_apply_json(const char *json, ctrl_result *res)
     if (sb){
         int ntl; const cfg_field *tl_tbl = cfg_fields_timelapse(&ntl);
         apply_ctrl_fields(ch, "timelapse", sb, se, tl_tbl, ntl);
+        ign_scan("timelapse", sb, se, tl_tbl, ntl, NULL);
     }
 
     /* M2: flush any HAL apply that was deferred/batched across the keys of this
@@ -810,6 +930,8 @@ int control_apply_json(const char *json, ctrl_result *res)
         res->echo_full = g_echo_full;
         snprintf(res->defer, sizeof res->defer, "%s", g_defer);
         res->defer_full = g_defer_full;
+        snprintf(res->ign, sizeof res->ign, "%s", g_ign);
+        res->ign_full = g_ign_full;
     }
     free(ch);
     pthread_mutex_unlock(&apply_mu);
