@@ -110,7 +110,7 @@ on every decision tick — which is what the 2 s default `interval_ms` pays for
 | **C** | spontaneous probe | *relative* fall of `D` below `probe_jump_pct`% of the night reference, held `probe_confirm_s` | **lights on**; indoor cameras; cameras with no location data — the path that carries most of a fleet | 2 clicks if it fails |
 | **T** | trend probe | a 3-minute EMA of `D` below **75%** of a 60-minute one, held `probe_confirm_s` | **dawn** — a ramp too slow for path C's step bar (measured: a real twilight needs 106 minutes to reach it) | 0 clicks; only armed when `daynight.irprobe_cmd` makes the probe silent |
 | **B** | heartbeat probe | wall clock only, no sensor | a reference anchored too low, a scene the index cannot read | 2 clicks |
-| **D** | boot | one measurement at `t=0` | the persisted mode is a guess | 1 click per boot |
+| **D** | boot | one measurement at `t=0`, then one assertion | the persisted mode is a guess of unbounded age, and the board may be in the other mode | 1 `switch_cmd` if the answer is day, 2 if night |
 
 The construction rule, and the thing the previous design lacked:
 
@@ -381,44 +381,82 @@ sharpness of scheduling, not correctness.
 
 ## Boot
 
-The persisted `image.running_mode` is a guess about a scene nobody measured.
+The persisted `image.running_mode` is a guess about a scene nobody measured,
+and nothing bounds how old it is — a camera that spent a year in a drawer
+boots carrying a year-old opinion about the light. So since 2026-08-22 boot
+does not adopt it. It **measures, then asserts**:
 
-* persisted **day** → we are already in the honest pipeline; one settled
-  reading decides. **Zero clicks.**
-* persisted **night** → one probe turns the guess into a measurement
-  (`daynight.boot_probe=1`, the default). **One click per boot.**
+1. Wait for the AE to converge (`DN_BOOT_SETTLE_S`, then `DN_STABLE_N`
+   on-EMA samples, hard-capped at `DN_STABLE_MAX_MS`).
+2. Run one **ordinary probe** into the day pipeline — the same `dn_switch`,
+   the same `DN_PROBE_SETTLE_S`, the same verdict and the same ISP readback
+   gate a runtime probe uses. Day is the only optical state whose reading
+   means something absolute (IR-cut closed, illuminator off).
+3. Read it against `day_gain` and **assert the answer on the board once**.
 
-This makes *restart-equivalence* — the property the design notes identified
-as the one every stuck-mode incident violated ("a service restart fixes it")
-— literal at `t=0` rather than something to be derived. It is also what
-replaced dead-zone adoption, the symmetric verify deadlines and the
-still-brightening extension.
+Cost, counted honestly: **one `switch_cmd` invocation when the answer is
+day** — the probe's own drive *is* the assertion — **and two when it is
+night**. On a board that comes up in its reset state (`/run/thingino/
+daynight_mode` absent, IR-cut in the day position, LEDs off) the first of
+those moves nothing, and the second is the movement the camera actually
+needs.
 
-Boot also pushes the persisted `image.running_mode` into the ISP directly
-(`hub_control()`), once — the only path other than a switch that ever tells
-the hardware anything, since adopting a persisted mode otherwise only set the
-automaton's own state. `switch_cmd` is deliberately **not** run for this:
-the board was already right (illuminator on, ISP already reporting Night),
-only its tuning was wrong, and a filter movement per boot would be a real
-mechanical cost the evidence doesn't ask for.
+That second call is what a dark-time reboot used to be missing: on
+2026-08-22 five fleet cameras rebooted after dark, adopted `night` in
+software, and spent the night with the IR LEDs off, because the old boot
+path deliberately never called `switch_cmd` at all. Under this sequence
+that outcome is unreachable by construction — every boot ends in exactly one
+assertion of the mode it decided.
 
-**Exception — the railed boot** (2026-08-21). When the persisted mode is
-night and the AE comes up with **0 units of reserve**, the push above is a
-no-op — the ISP already holds that value — and measured on a T23 the meter
-still read its rail 25 minutes later. Every reading in that state is a clip
-and even the silent probe is blind (`r` of two clips is exactly `1.00`).
-What demonstrably re-tunes the AE is a real transition: `day` and back read
-a factor 23 lower within 12 s of each leg. Boot therefore fires the audible
-probe directly (`why=boot pegged`, skipping the silent path), even with
-`boot_probe=0`: if the scene is day the probe confirms it and the movement
-was owed anyway; if it is night the revert re-tunes the ISP and the
-reference anchors from the first honest reading. One click per *railed*
-boot is the cheaper side of that trade; a healthy boot is unaffected. Unlike a switch, this push does
-**not** arm the repeating post-switch re-assert (below) — arming it here
-raced the boot probe, which can decide within seconds: the pending re-assert
-then overwrote that fresh decision with the stale persisted value a second
-and third time, eight seconds apart, and a living room stayed in night mode
-through daylight because of it.
+It also makes *restart-equivalence* — the property the design notes
+identified as the one every stuck-mode incident violated ("a service restart
+fixes it") — literal at `t=0` for **every** boot, not only for a persisted
+night with `boot_probe` left on.
+
+The boot probe never takes the **silent** route, cheap as it is. The silent
+probe divides a reading taken with our illuminator on by one taken with it
+off, and at boot nothing has established that it was ever on: a board in its
+reset state has the LEDs off, so the "lit" reading is not lit, `r` comes back
+near 1, and the verdict is whatever the AE reserve happens to say. In a dark
+room that lands on *"pegged, therefore night"* — the right mode, no
+assertion, all night. That is exactly how the desync above went unnoticed.
+
+The boot probe also does **not** arm the repeating post-switch re-assert. The
+re-assert re-drives whatever `image.running_mode` currently says, and at boot
+that is still the persisted guess (only the board hook chain ever writes it,
+and it has just been asked to). Armed here it lands `DN_REASSERT_MS` in —
+right where the boot verdict is read — and pushes the stale value over the
+optics the probe just commanded. That is the incident a living room already
+paid for: the switch to day was overwritten twice, eight seconds apart, and
+the room stayed in night mode through daylight. The boot *decision's* own
+switch arms its own re-assert normally.
+
+What the boot probe *does* do like any other probe is keep its pre-probe
+level as the night-reference candidate, and charge `probe_min_gap_s`. Both
+were tried the other way and the corpus refused them. Deferring the anchor to
+the ordinary `DN_REF_DELAY_S` window lets it land inside a lighting
+transition — scenario 02's dip to 1200 against a resting 3500 anchors a bar
+of 600 that a genuinely lit scene at 900 can never clear, i.e. incident
+f8a7b21. Exempting the boot probe from the ration lets that same transient
+fire a second probe 24 s later, whose revert re-anchors on the dip: the same
+incident through a different door. A reference that lands too *high* costs
+one self-correcting probe; one that lands too low costs the trigger outright.
+
+**`boot_probe=0`** opts out of the *measurement*, not the *assertion*. The
+persisted value is taken on trust, as it always was under that setting, and
+then asserted on the board once. A **railed AE** (0 units of reserve)
+overrides the opt-out and measures anyway: a pegged meter reads a clip rather
+than a level, re-asserting `running_mode` is a documented no-op on an ISP
+that came up mistuned, and only a real transition re-tunes it (T23, measured
+2026-08-21: `day` and back read a factor 23 lower within 12 s of each leg).
+With `boot_probe=1` the measurement *is* that transition, so the case is
+subsumed rather than special-cased.
+
+**Fallback.** If no usable exposure reading has appeared within
+`DN_STABLE_MAX_MS` of start-up (no ISP file, a wedged `/proc` dump), there is
+nothing to measure. Boot then falls back to the persisted value — and still
+asserts it on the board once — with a `WRN` that says so. Silently behaving
+like a normal boot is how a stale value acquires authority it never earned.
 
 ## Learning (removed 2026-08-22)
 
@@ -554,7 +592,7 @@ reading; `verdict` is `day`, `night`, or `escalate` (inconclusive — the
 audible probe was asked for instead); `mode` is the automaton's mode at the
 time of the probe; `ref` is the night reference (`-1` outside night); `why`
 is the trigger that asked for this probe (`jump`, `trend`, `heartbeat`,
-`boot verify`, `requested`, …) with spaces replaced by underscores, since a
+`boot measure`, `requested`, …) with spaces replaced by underscores, since a
 `key=value` value can't carry one; `lit_hr` (appended 2026-08-21) is the AE
 headroom at the *lit* reading, the number that decides whether `r` compared
 two measurements or two clips.

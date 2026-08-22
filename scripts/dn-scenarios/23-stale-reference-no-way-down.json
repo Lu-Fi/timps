@@ -1,7 +1,7 @@
 {
   "name": "23-stale-reference-no-way-down",
   "incident": "2026-08-20 - a camera whose ISP came up wrong, anchored the night reference 20x too high, and then probed forever",
-  "description": "The reference is the level at which night was last PROVEN, and it only ever moved upward - on a day probe that came back dark. Nothing could lower it. That is fine while it describes the scene, and a trap when it does not.\n\nMeasured: a T23 came up with its ISP badly tuned, reading 50000 where the scene was worth 6000, and the reference anchored there. Once the ISP recovered, every reading sat far below the probe bar, so the jump trigger fired, the silent probe answered 'the illuminator carries this scene' - correctly - and nothing changed. Seventeen probes in a row, one every fourteen seconds, each eight seconds with the illuminator off. The operator saw it as an IR lamp that kept switching off.\n\nA silent probe answering night BELOW the bar is proof in the other direction: the reference predicted a brightening worth looking at, and the look said night. So it may come down, by the same rule that let it go up.",
+  "description": "The reference is the level at which night was last PROVEN, and it only ever moved upward - on a day probe that came back dark. Nothing could lower it. That is fine while it describes the scene, and a trap when it does not.\n\nMeasured: a T23 came up with its ISP badly tuned, reading 50000 where the scene was worth 6000, and the reference anchored there. Once the ISP recovered, every reading sat far below the probe bar, so the jump trigger fired, the silent probe answered 'the illuminator carries this scene' - correctly - and nothing changed. Seventeen probes in a row, one every fourteen seconds, each eight seconds with the illuminator off. The operator saw it as an IR lamp that kept switching off.\n\nA silent probe answering night BELOW the bar is proof in the other direction: the reference predicted a brightening worth looking at, and the look said night. So it may come down, by the same rule that let it go up.\n\nRESTATED 2026-08-22 (boot measures before it decides): budget 1 -> 2, the boot measurement pair. Nothing else moves: the seventeen-probes-in-a-row defect this scenario exists for is a SILENT probe cadence, still bounded at 5, and 'night reference lowered' still fires.",
   "scale": 30,
   "duration_s": 1200,
   "initial_mode": "night",
@@ -19,7 +19,7 @@
   "expect": {
     "expected_mode": [[0, "night"], [1150, "night"]],
     "max_wrong_mode_s": 60,
-    "max_switches": 1,
+    "max_switches": 2,
     "max_ir_probes": 5,
     "monotonicity": "warn",
     "expect_log": ["night reference lowered"]

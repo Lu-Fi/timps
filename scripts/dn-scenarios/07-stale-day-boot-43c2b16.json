@@ -1,7 +1,7 @@
 {
   "name": "07-stale-day-boot-43c2b16",
   "incident": "43c2b16",
-  "description": "Camera powered off in daylight, left until after dark, then booted: it reads a dead-zone day-pipeline gain (1500 - dark but not railed, so the fixed night crossing at 3000 need never fire) and adopts the stale persisted DAY. Pre-fix that state had no deadline at all - every self-healing path was gated on cur==NIGHT - and the camera rendered a black day-pipeline scene indefinitely. Post-fix the adopted day gets the same verify deadline: still ambiguous at the deadline with no improvement (flat scene, no brightening extension), so it must fall to the recoverable side within DN_ADOPT_PROBE_S plus the ordinary switch path's hysteresis. RESTATED 2026-08-17: mode@200 asserted DAY because the old machine believed the stale persisted day and rendered a black scene until its adopted-day verify deadline expired. The new boot path reads the day pipeline it is already in and decides from that reading in ~3s, so night at t=200 is correct and the old expectation was encoding the bug's latency.",
+  "description": "Camera powered off in daylight, left until after dark, then booted: it reads a dead-zone day-pipeline gain (1500 - dark but not railed, so the fixed night crossing at 3000 need never fire) and adopts the stale persisted DAY. Pre-fix that state had no deadline at all - every self-healing path was gated on cur==NIGHT - and the camera rendered a black day-pipeline scene indefinitely. Post-fix the adopted day gets the same verify deadline: still ambiguous at the deadline with no improvement (flat scene, no brightening extension), so it must fall to the recoverable side within DN_ADOPT_PROBE_S plus the ordinary switch path's hysteresis. RESTATED 2026-08-17: mode@200 asserted DAY because the old machine believed the stale persisted day and rendered a black scene until its adopted-day verify deadline expired. The new boot path reads the day pipeline it is already in and decides from that reading in ~3s, so night at t=200 is correct and the old expectation was encoding the bug's latency.\n\nRESTATED 2026-08-22 (boot measures before it decides): a persisted DAY no longer reads the pipeline it happens to be in - it asserts the day reference state first (switch_cmd day) and reads that, so the night verdict now says 'boot: measured night' and the run spends two switch_cmd calls instead of one. The second is the decision; the first is the measurement, and on a board already in the day position it moves nothing. Budget, mode timeline, wrong-mode bound and restart-equivalence all unchanged.",
   "scale": 60,
   "duration_s": 880,
   "initial_mode": "day",
@@ -23,7 +23,7 @@
     "restart_equivalence_s": 300,
     "monotonicity": "warn",
     "expect_log": [
-      "switching to night \\(boot: exposure"
+      "switching to night \\(boot: measured night, exposure"
     ]
   }
 }

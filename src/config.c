@@ -459,7 +459,11 @@ void config_defaults(ms_config *c)
      * any evidence-gating that could erode the guarantee. */
     c->daynight.heartbeat_s=14400;
     c->daynight.heartbeat_max_s=43200;
-    c->daynight.boot_probe=1;      /* one click per boot buys a measurement */
+    /* one probe per boot buys a MEASUREMENT instead of a stale opinion. 0
+     * adopts the persisted mode without measuring - but boot asserts the
+     * mode it ends up with on the board either way, which is the half a
+     * dark-time reboot needs (2026-08-22 IR/ircut desync). */
+    c->daynight.boot_probe=1;
     /* boot_settle_s used to default to 5 here; now the fixed DN_BOOT_SETTLE_S
      * constant in daynight.h. */
     /* 2000 ms, not the old 500: the exposure index needs the /proc scrape on

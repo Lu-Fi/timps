@@ -38,10 +38,14 @@
  *                     how long a wrong night can last - deliberately a flat
  *                     interval, never a multiplying backoff. When a calendar
  *                     is configured it only pulls this in to dawn.
- *   D  boot           the persisted mode is a guess: if it says day we are in
- *                     the honest pipeline already and one reading settles it,
- *                     if it says night a single probe turns the guess into a
- *                     measurement (daynight.boot_probe).
+ *   D  boot           the persisted mode is a guess of unbounded age, so it
+ *                     decides nothing: boot runs one ordinary probe into the
+ *                     day pipeline, reads it against day_gain, and asserts
+ *                     what it found on the board once - always, whether or
+ *                     not it agrees with what was persisted.
+ *                     daynight.boot_probe=0 opts out of the MEASUREMENT
+ *                     (adopt the persisted value) but not out of the single
+ *                     assertion.
  *
  * The metric is the EXPOSURE INDEX D = total_gain * integration_time /
  * max_integration_time (higher = darker), not bare gain - see the

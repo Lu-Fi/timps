@@ -1,7 +1,7 @@
 {
   "name": "25-no-ceilings-unknown-reserve",
   "incident": "2026-08-21 - review finding while making the missing-ceilings case audible: hr=-1 fell into the pegged branch and answered night forever",
-  "description": "A camera whose ISP dump has no MAX gain lines. The AE reserve is then unknown (hr=-1), and -1 is less than every ir_min_headroom, so the silent-probe verdict treated 'unknown' as 'pegged at the dark end - itself proof of night'. Consequence: on such a camera every low ratio answered night, the brightening trigger was swallowed on every fire, and the ratio path could never reach day. Structural stuck-night, with a log line claiming evidence it did not have.\n\nThe fix distinguishes the three honestly: reserve present and low = pegged (night evidence); reserve present and sufficient = the ratio may answer day; reserve UNKNOWN = the ratio cannot be classified at all, so the probe escalates to the audible path and the honest day pipeline judges - the pre-redesign behaviour for these cameras, at the pre-redesign cost. The absence of every clip protection on such a camera is also announced once per session as a WARN instead of being inferable only from hr=-1 in a DEBUG line.\n\nBoth fleet T20s do publish ceilings (with different ISP digital maxima, 45 vs 32, on the same SoC - no hard-coded fallback could be right on both), so this models the dump variant nobody has met yet. The room light comes on at t=300: the machine must reach day through escalate -> audible probe -> day-pipeline confirmation, within one heartbeat of nothing.",
+  "description": "A camera whose ISP dump has no MAX gain lines. The AE reserve is then unknown (hr=-1), and -1 is less than every ir_min_headroom, so the silent-probe verdict treated 'unknown' as 'pegged at the dark end - itself proof of night'. Consequence: on such a camera every low ratio answered night, the brightening trigger was swallowed on every fire, and the ratio path could never reach day. Structural stuck-night, with a log line claiming evidence it did not have.\n\nThe fix distinguishes the three honestly: reserve present and low = pegged (night evidence); reserve present and sufficient = the ratio may answer day; reserve UNKNOWN = the ratio cannot be classified at all, so the probe escalates to the audible path and the honest day pipeline judges - the pre-redesign behaviour for these cameras, at the pre-redesign cost. The absence of every clip protection on such a camera is also announced once per session as a WARN instead of being inferable only from hr=-1 in a DEBUG line.\n\nBoth fleet T20s do publish ceilings (with different ISP digital maxima, 45 vs 32, on the same SoC - no hard-coded fallback could be right on both), so this models the dump variant nobody has met yet. The room light comes on at t=300: the machine must reach day through escalate -> audible probe -> day-pipeline confirmation, within one heartbeat of nothing.\n\nRETIMED 2026-08-22 (boot measures before it decides). Two changes, both mechanical. Budget 1 -> 3 for the boot measurement pair (the recovery switch at t=330 is the third and is the one this scenario is about). And probe_min_gap_s is pinned at its 60 s floor: the boot probe is a real audible probe and charges the ration like any other, so at the 600 s default the light-on at t=300 could not be answered until t=606 - past the end of the run - and the scenario would have stopped testing the hr=-1 escalation while still looking busy (27 silent probes, no verdict). This scenario is not about rationing; pinning the floor keeps it about what it is about. Same lesson as scenario 24's retime on 2026-08-22: a test that cannot reach its own event does not fail, it quietly stops testing.",
   "scale": 30,
   "duration_s": 600,
   "initial_mode": "night",
@@ -10,7 +10,8 @@
     "daynight.day_gain": 768,
     "daynight.night_gain": 4096,
     "daynight.heartbeat_s": 3600,
-    "daynight.heartbeat_max_s": 3600
+    "daynight.heartbeat_max_s": 3600,
+    "daynight.probe_min_gap_s": 60
   },
   "interp": "step",
   "noise_pct": 0,
@@ -20,7 +21,7 @@
   "expect": {
     "expected_mode": [[0, "night"], [298, "any"], [400, "day"]],
     "max_wrong_mode_s": 60,
-    "max_switches": 1,
+    "max_switches": 3,
     "max_ir_probes": 3,
     "monotonicity": "warn",
     "expect_log": [

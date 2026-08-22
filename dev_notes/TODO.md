@@ -3,7 +3,67 @@
 Working list. Newest block first; each entry says what is established and what
 is still guesswork, so nobody has to re-derive it.
 
-## OPEN, DESIGN: boot should MEASURE day/night, not just trust the persisted value
+## IMPLEMENTED, PENDING REVIEW + HARDWARE: boot MEASURES day/night instead of trusting the persisted value
+
+Implemented 2026-08-22 on worktree branch `worktree-agent-boot-measure`,
+NOT hardware-verified. Design and the shape of the change are in
+CHANGELOG [Unreleased] ("Day/night boot now MEASURES before it decides")
+and `docs/wiki/Day-Night.md` section "Boot"; the original ask is preserved
+verbatim below. Summary of what shipped:
+
+- Boot no longer adopts `running_mode`. It waits for AE convergence
+  (unchanged bounds), runs ONE ordinary probe into the day pipeline - the
+  same `dn_switch`, `DN_PROBE_SETTLE_S` verdict and readback gate a runtime
+  probe uses, deliberately not a second measurement mechanism - reads it
+  against `day_gain`, and asserts the answer with `switch_cmd`.
+- Cost: one `switch_cmd` invocation for a day answer (the probe's own drive
+  IS the assertion), two for a night answer. Exactly one assertion of the
+  DECIDED mode per boot, always.
+- `boot_probe=0` now opts out of the measurement, not the assertion. The
+  railed-AE (`headroom == 0`) override still forces a measurement, and with
+  `boot_probe=1` the boot probe IS the real transition that case needed, so
+  it is subsumed rather than special-cased.
+- Fallback: no usable exposure reading within `DN_STABLE_MAX_MS` -> adopt
+  the persisted value, still assert it once, `WRN` saying it is a fallback.
+- Three deliberate non-behaviours, each a scar: the boot probe never takes
+  the silent route (its premise - "our illuminator was on" - is unverified
+  at boot, and in a dark room the ratio lands on "pegged, therefore night",
+  the right mode with no assertion, which is exactly how the desync below
+  went unnoticed); it never arms the running_mode re-assert (that is the
+  "overwritten twice, eight seconds apart" incident); it never consumes
+  `probe_min_gap_s`.
+
+Still open on this:
+1. Hardware verification. Nobody has watched a real camera do this. The
+   two that matter are a dark-time reboot (must end with `daynight night`
+   having run, `/run/thingino/daynight_mode` = night, LEDs on) and a
+   daylight reboot (must end in day with ONE `switch_cmd day`, no revert).
+2. The `S95timps restart` question from the original ask is still not
+   answered, only sidestepped: the new sequence does the same thing on a
+   restart as on a power-on boot, because it does not need to know which it
+   is. That is a decision, not an oversight - a restart's optics are just as
+   unknown as a boot's - but it means a restart now costs one to two
+   `switch_cmd` calls where it used to cost none, which is worth watching on
+   a camera that gets restarted often (QA `--test-encoder` restarts it
+   repeatedly).
+3. Stuck-ISP boot: with a board whose ISP does not follow the switch
+   (scenario 27's defect class), the boot probe now drags the readback
+   enforcement machinery in at t=0, costing three `switch_cmd` calls instead
+   of zero. Bounded by `DN_VERIFY_MAX_CYCLES` and it REPAIRS the stuck ISP,
+   but it is a real change in a real pathology.
+4. The corpus needed real retiming in four places (19, 25, 26, 27), not just
+   re-budgeting, because the boot sequence used to SUPPLY setup those
+   scenarios depended on - most sharply in 26, where the boot silent probe
+   was what measured `filter_cost`, and without it the scenario stayed green
+   while its own phase-2 mechanism was never reached. Each carries a dated
+   note. A reviewer should read those four notes specifically and decide
+   whether the retimes preserve the incident each scenario encodes.
+5. `03-noisy-night` is flaky on harness timing (6 switches against a budget
+   of 5 on two runs including a pre-change baseline, 4 on a third). Not
+   caused by this change, but it means a single green corpus run is not
+   proof; run it twice.
+
+Original ask, unchanged:
 
 User feedback 2026-08-22, prompted directly by the IR-desync entry below:
 trusting the persisted `running_mode` at boot is fine for a reboot minutes or
@@ -49,7 +109,20 @@ every plain `S95timps restart`, not just power-on boot, and is that
 distinction even knowable/desirable), then the same read-review-test cycle
 the rest of today's daynight work went through, not a same-night patch.
 
-## OPEN: a dark-time reboot leaves the physical IR/ircut desynced from software
+## FIX PENDING REVIEW + HARDWARE: a dark-time reboot leaves the physical IR/ircut desynced from software
+
+Addressed 2026-08-22 by the boot-measures-first change above (same worktree
+branch), via option (a) below made unconditional: boot now always ends in
+exactly one `switch_cmd` call asserting the mode it decided, whether or not
+that mode differs from the persisted one. The failure below is unreachable
+by construction under that sequence - the five cameras would have run
+`daynight night` at boot, written `/run/thingino/daynight_mode`, and lit
+their LEDs. Option (b) (`/sbin/daynight`'s own startup asserting the
+persisted mode) is still worth doing in `thingino-firmware-LuFi` and is NOT
+made redundant by this: it would also cover the window before timps starts,
+and cameras not running timps at all. Original report follows.
+
+
 
 Found 2026-08-22, same evening as the restart-crash entry below and likely to
 recur with it: `daynight.c`'s boot path (~line 1181, "Push image.running_mode
