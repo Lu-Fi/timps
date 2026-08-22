@@ -2516,17 +2516,18 @@ else
 	rc_live_has() { case " $rc_live_keys " in *" $1 "*) return 0;; esac; return 1; }
 	rc_defer_has() { case "$(jget "$1" deferred_keys)" in *"\"$2\""*) return 0;; esac; return 1; }
 
-	# --- RC1: caps.video_live must be one of enc_caps.h's four per-SoC sets --
+	# --- RC1: caps.video_live must be one of enc_caps.h's per-SoC sets -------
 	# "not more, not fewer" is checkable without knowing the SoC: enc_caps.h
-	# defines exactly four ENC_LIVE_KEYS variants, so anything else means the
+	# defines four ENC_LIVE_KEYS variants collapsing to three distinct sets
+	# (T40 and T41 are identical since qp stopped being advertised live, see
+	# the qp note in enc_caps.h), so anything else means the
 	# caps builder in control.c and the header have drifted apart - the exact
 	# failure the isp_caps.h pattern exists to prevent. With --ssh the SoC is
 	# also pinned to the RIGHT one of the four.
 	rc_set=$(printf '%s\n' $rc_live_keys | sort -u | tr '\n' ' ')
 	case "$rc_set" in
-		"bitrate i_bias_lvl max_qp min_qp qp ") rc_plat="T31/C100";;
-		"bitrate max_qp min_qp qp ")            rc_plat="T40";;
-		"bitrate max_qp min_qp ")               rc_plat="T41";;
+		"bitrate i_bias_lvl max_qp min_qp ")    rc_plat="T31/C100";;
+		"bitrate max_qp min_qp ")               rc_plat="T40/T41";;
 		"bitrate change_pos i_bias_lvl max_qp min_qp qp quality_lvl rc_mode ") rc_plat="classic";;
 		" ") rc_plat="none";;
 		*)   rc_plat="?";;
@@ -2547,8 +2548,7 @@ else
 		if [ -n "$rc_soc" ]; then
 			case "$rc_soc" in
 				t31*|c100*)                    rc_exp="T31/C100";;
-				t40*)                          rc_exp="T40";;
-				t41*)                          rc_exp="T41";;
+				t40*|t41*)                     rc_exp="T40/T41";;
 				t10*|t20*|t21*|t23*|t30*)      rc_exp="classic";;
 				*)                             rc_exp="";;
 			esac
@@ -3103,7 +3103,12 @@ else
 		fi
 
 		# --- RC6: qp, where "live-capable" and "has an effect" diverge -------
-		# The new API lists qp as live, but rc_live_apply only writes it under
+		# 2026-08-22: the new-API SoCs no longer list qp live at all (RC6b
+		# measured that path as inert - see the qp note in enc_caps.h), so both
+		# this check and RC6b self-gate there now. What follows describes the
+		# new-API contract they were written for and is kept for the day a
+		# verified SetChnQp() puts qp back in caps.video_live.
+		# The new API listed qp as live, but rc_live_apply only writes it under
 		# FIXQP (iInitialQP is the fixqp union member; under any other mode the
 		# RMW bails and the key is graded deferred). 1bdd1b3 accepted that as
 		# honest-but-imprecise grading. Assert BOTH halves of it so the

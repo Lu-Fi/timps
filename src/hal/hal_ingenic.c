@@ -3741,7 +3741,15 @@ static int rc_live_apply(int si, const char *k)
 #endif
 #ifdef ENC_HAS_SETRCMODE
     if (!strcmp(k,"qp")){
-        /* only operative under fixqp; read-modify-write so nothing else in
+        /* UNREACHABLE since 2026-08-22: `qp` is no longer in ENC_LIVE_KEYS on
+         * any new-API SoC, so rc_key_live() never lets it in here. Kept as the
+         * record of what SetChnAttrRcMode actually does - it stores the value
+         * where the next Get reads it back and never re-programs the running
+         * channel (measured on cam-garage; see enc_caps.h). Restoring a live
+         * qp means IMP_Encoder_SetChnQp() plus a bitstream measurement, not
+         * re-listing the key.
+         *
+         * only operative under fixqp; read-modify-write so nothing else in
          * the union is disturbed. Under any other mode qp has no effect
          * anyway, so "restart-bound" is the honest answer there. */
         IMPEncoderAttrRcMode m;

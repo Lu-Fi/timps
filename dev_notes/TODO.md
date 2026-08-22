@@ -544,7 +544,40 @@ streams, confirm the rendered text differs and matches each stream's own
 
 ## Follow-ups from the 2026-08-21 rate-control implementation
 
-### BUG: `video<N>.qp` is graded "applied live" under fixqp and is not (T31)
+### RESOLVED: `video<N>.qp` was graded "applied live" under fixqp and is not (T31)
+
+**Fixed 2026-08-22 by fix candidate 1**: `qp` is out of `ENC_LIVE_KEYS` for
+T31/C100 **and T40** (T40 shares the `ENC_HAS_SETRCMODE` branch and is graded
+the same way rather than optimistically, still without a measurement of its
+own). The POST reply now defers `video<N>.qp` on every new-API SoC, which is
+what was true all along. `caps.video_live` on T31/C100 is
+`bitrate,min_qp,max_qp,i_bias_lvl`; T40 and T41 now carry the identical set,
+so `timps-qa.sh`'s RC1 set-shape table collapsed to three cases and reports
+`T40/T41`. RC6/RC6b self-gate on `rc_live_has qp` and are inert on the new
+API from here; the classic path is unchanged. The dead `qp` branch in
+`rc_live_apply` is kept and marked unreachable, since it is the record of what
+`SetChnAttrRcMode` actually does. Verified: `make sim` clean, T31 and T23
+cross-syntax clean, macro expansion checked per platform. **Not re-measured on
+hardware** - the change only removes a claim, so there is nothing new for the
+bitstream to confirm.
+
+**Correction to candidate 2 below: it is NOT a dead end.**
+`IMP_Encoder_SetChnQp(int encChn, int iQP)` is declared in
+`include/T31/1.1.5{,.2}/en`, `include/T31/1.1.6/en` (the set the T31 build
+uses) and `include/C100/2.1.0/en`, documented as *"Setting the rate control
+property QP dynamically ... will reset the QP of the next frame, and the set
+QP will take effect in the next frame"*, H264 and H265, channel must exist.
+Not present in T40/T41 1.2.0/zh, nor in T31 1.1.1/1.1.2. Deliberately NOT
+wired: header presence is not proof libimp exports it, and re-advertising `qp`
+live on the strength of a doc comment would recreate the same broken promise
+this entry is about. To land it: call it in `rc_live_apply`'s `qp` branch,
+re-add `qp` to `ENC_LIVE_KEYS` for T31/C100 only, and re-run the RC6b
+bitstream measurement on cam-garage - if the two QP values do not span like
+the boot path does, revert and leave the key restart-bound.
+
+The original report follows.
+
+#### Original report (2026-08-22)
 
 **Measured on cam-garage (T31X/sc4336p) 2026-08-22, substream in `fixqp`,
 daemon pid pinned across the whole sequence.** Found by the new `timps-qa.sh`
@@ -585,8 +618,9 @@ the user no restart is needed when one is.
    Costs nothing real: nobody can use the live path today anyway.
 2. Find a call that does re-program a running fixqp channel. Nothing obvious in
    the T31 headers; `SetChnAttrRcMode` is the only rc-attr setter.
-Option 1 unless 2 turns something up. **Not done** — this entry is the report,
-not the fix.
+   *(Wrong - `IMP_Encoder_SetChnQp` exists on T31/C100; see the correction at
+   the top of this entry.)*
+Option 1 unless 2 turns something up. **Done 2026-08-22 (option 1).**
 
 **Not reproduced elsewhere yet**: T40 uses the same `ENC_HAS_SETRCMODE` branch
 and is untested; T41 has no setter at all so it is already restart-bound;

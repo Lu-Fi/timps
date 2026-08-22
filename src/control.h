@@ -46,7 +46,7 @@
  * (encoder/FrameSource/sensor attributes are not reconfigured on the running
  * pipeline) - EXCEPT the rate-control subset this platform can apply to the
  * live encoder (enc_caps.h; classic SoCs: the whole rc block incl. rc_mode,
- * new-API SoCs: bitrate/min_qp/max_qp and per SoC qp/i_bias_lvl; host sim:
+ * new-API SoCs: bitrate/min_qp/max_qp plus i_bias_lvl on T31/C100; host sim:
  * none). GET /control advertises that subset as "caps":{"video_live":[...]}
  * next to the conservative "restart":["video","sensor"] section list, and
  * each POST reply reports in "deferred"/"deferred_keys" which of ITS changed

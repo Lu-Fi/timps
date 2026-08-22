@@ -14,11 +14,23 @@
  *     H264-only per T23's header; T21/T30 headers additionally allow H265,
  *     unverified on hardware, so every H265 stream stays restart-bound
  *     (runtime-graded, not expressible here).
- *   T31/C100: SetChnBitRate + SetChnQpBounds + SetChnQpIPDelta +
- *     SetChnAttrRcMode (the last used only for the fixqp initial QP).
+ *   T31/C100: SetChnBitRate + SetChnQpBounds + SetChnQpIPDelta.
  *   T40: as T31/C100 but no SetChnQpIPDelta (i_bias_lvl unsupported).
  *   T41: only SetChnBitRate and SetChnQpBounds - no rc-mode setter at all.
  * quality_lvl/change_pos/fluc_lvl have no new-API equivalent anywhere.
+ *
+ * `qp` is deliberately NOT live on any new-API SoC. SetChnAttrRcMode writes
+ * attrFixQp.iInitialQP into the struct the next Get reads back but never
+ * re-programs the running channel: measured on cam-garage (T31X) 2026-08-22,
+ * the boot path spans 6.4x across qp 25 vs 42 while the live path does not
+ * move the bitstream at all, with deferred:0 and a complicit readback (see
+ * dev_notes/TODO.md). Listing it here would promise a caller that no restart
+ * is needed when one is. T40 shares that exact code path (ENC_HAS_SETRCMODE),
+ * untested but graded the same way rather than optimistically. A candidate
+ * replacement exists and is unverified: IMP_Encoder_SetChnQp(chn, iQP)
+ * ("takes effect in the next frame") is declared in the T31 1.1.5+ and C100
+ * headers - not in T40/T41, and not in the older T31 header sets - so
+ * restoring a live qp there needs a hardware measurement first.
  *
  * The list is a static PLATFORM capability: a listed key can still fall
  * back to restart (channel not running, classic H265, IMP call rejected) -
@@ -34,9 +46,9 @@
 #if defined(PLATFORM_T41)
 #define ENC_LIVE_KEYS "bitrate", "min_qp", "max_qp"
 #elif defined(PLATFORM_T40)
-#define ENC_LIVE_KEYS "bitrate", "min_qp", "max_qp", "qp"
+#define ENC_LIVE_KEYS "bitrate", "min_qp", "max_qp"
 #else /* T31/C100 */
-#define ENC_LIVE_KEYS "bitrate", "min_qp", "max_qp", "qp", "i_bias_lvl"
+#define ENC_LIVE_KEYS "bitrate", "min_qp", "max_qp", "i_bias_lvl"
 #endif
 #else /* classic API: full union re-fill, H264 channels */
 #define ENC_LIVE_KEYS "rc_mode", "bitrate", "qp", "min_qp", "max_qp", \

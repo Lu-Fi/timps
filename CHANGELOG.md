@@ -185,6 +185,25 @@ semantic versioning.
   object for diagnostics; they are simply no longer POST-able or
   config-file-tunable.
 
+### Fixed
+
+- **`video<N>.qp` no longer claims a live apply it cannot make** on the
+  new-API SoCs (`src/enc_caps.h`, `src/hal/hal_ingenic.c`, `src/control.h`,
+  `scripts/timps-qa.sh`, `docs/wiki/Rate-Control-Parameters.md`,
+  `docs/wiki/HTTP-Control-API.md`). Measured on cam-garage (T31X, substream in
+  `fixqp`): a live POST is answered `deferred:0` and `encoder.<n>.rc.qp`
+  echoes the new value, while the encoded bitstream does not move at all - the
+  same QP pair applied at boot spans 6.4x. `IMP_Encoder_SetChnAttrRcMode`
+  stores `attrFixQp.iInitialQP` where the next `Get` reads it back and never
+  re-programs the running channel, so the readback is complicit and only a
+  bitstream measurement can see it. `qp` is therefore out of `ENC_LIVE_KEYS`
+  for T31/C100 and for T40, which shares that code path untested; it is graded
+  restart-bound, which is what it always was. `caps.video_live` on T31/C100 is
+  now `bitrate,min_qp,max_qp,i_bias_lvl` and T40 matches T41 exactly. Nothing
+  about what gets applied changes - only what the reply promises.
+  `IMP_Encoder_SetChnQp()` (T31 1.1.5+ / C100 headers only) is the candidate
+  for a real live `qp` there and stays unwired until it is measured.
+
 ## [1.9.2] - 2026-08-21
 
 ### Added

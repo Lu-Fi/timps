@@ -73,12 +73,24 @@ of hardcoding this table into a client.
 | Key | Classic H.264 (T10–T30, T23) | Classic H.265 (T21/T30) | T31 / C100 | T40 | T41 |
 | --- | --- | --- | --- | --- | --- |
 | `bitrate` | Live | Restart | Live | Live | Live |
-| `rc_mode` | Live (full rc-struct re-fill in one call) | Restart | Restart — no direct mode setter; `SetChnAttrRcMode` is only used live to RMW the `fixqp` initial QP, not to switch modes | Restart | Restart — SDK has no rc-mode setter at all |
-| `qp` (fixqp initial QP) | Live | Restart | Live | Live | Restart |
+| `rc_mode` | Live (full rc-struct re-fill in one call) | Restart | Restart — no direct mode setter | Restart | Restart — SDK has no rc-mode setter at all |
+| `qp` (fixqp initial QP) | Live | Restart | Restart (see below) | Restart (see below) | Restart |
 | `min_qp` / `max_qp` | Live | Restart | Live | Live | Live |
 | `quality_lvl` / `change_pos` | Live | Restart | No effect | No effect | No effect |
 | `i_bias_lvl` | Live | Restart | Live | No effect (no `SetChnQpIPDelta`) | No effect (no `SetChnQpIPDelta`) |
 | `fluc_lvl` | Restart-only (H.265-only field; classic live-apply is H.264-only) | Restart | No effect | No effect | No effect |
+
+`qp` was listed Live on T31/C100/T40 until 2026-08-22 and is not. Measured
+on cam-garage (T31X, substream in `fixqp`): the live POST is graded
+`deferred:0`, `encoder.<n>.rc.qp` echoes the new value — and the encoded
+bitstream does not move, while the same QP pair applied at boot spans 6.4×.
+`IMP_Encoder_SetChnAttrRcMode` stores `attrFixQp.iInitialQP` where the next
+`Get` reads it back and never re-programs the running channel, so the key is
+now graded restart-bound, which is what it always was. T40 shares that code
+path and is graded the same way without a measurement of its own.
+`IMP_Encoder_SetChnQp()` (T31 1.1.5+ and C100 headers only, "takes effect in
+the next frame") is the candidate for restoring a real live `qp` there and
+needs a bitstream measurement before it is advertised.
 
 H.264-only on the classic path because `IMP_Encoder_SetChnAttrRcMode`'s
 full-struct re-fill is only proven safe for the H.264 union layout; an
