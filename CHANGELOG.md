@@ -33,6 +33,23 @@ semantic versioning.
   full `MS_SHUTDOWN_ALARM_S` budget instead of whatever the recorder/server
   stops left over - shrinking the window in which a guillotined teardown
   leaves the pool dirty for the next instance in the first place.
+  Hardware-verified same evening on cam-kinder-rechts: the daemon stayed
+  alive and kept retrying instead of dying, though on that board the
+  rmem carve-out needed a real reboot to actually clear rather than
+  clearing on its own within ~9 minutes of retries - which is why the
+  next entry adds a bound.
+- **A `start()` failure loop that never clears no longer retries forever**
+  (`src/main.c`) - discovered immediately by the hardware verification of
+  the fix above: retrying every 60 s is only an improvement over dying if
+  the retries eventually succeed, and on a board whose rmem genuinely will
+  not clear without a reboot they do not. `start()` failures are now capped
+  at `MS_STARTUP_MAX_START_FAILS` (10); past that the daemon logs clearly
+  and exits, matching the existing `MS_VIDEO_WATCHDOG_MAX_RECOVERIES`
+  convention in `hal_ingenic.c` (give up loudly, let a human/scheduler
+  restart it, rather than spin forever looking alive while serving nothing).
+  `init()` failures are unaffected and still retry forever - a
+  misconfiguration is a different failure class, meant to wait for a human
+  to fix the config rather than a bounded resource race.
 
 ### Added
 

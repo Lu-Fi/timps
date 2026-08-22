@@ -435,6 +435,21 @@ int main(int argc, char **argv)
      * path unwinds fully on failure, so retrying costs nothing but the wait.
      * A genuine misconfiguration retries forever at 60 s, which is log noise
      * rather than harm, and it recovers by itself once the config is fixed. */
+    /* start(), unlike init(), is NOT given the same infinite patience: a
+     * config problem waiting for a human to fix it is the case init()'s
+     * forever-retry is for, but a start() failure here is a resource-drain
+     * race (2026-08-22 T31 incident) that either clears within a handful of
+     * attempts or, per that same incident's follow-up test, sometimes never
+     * clears without a real reboot - at which point retrying forever is the
+     * "silent, unbounded hang" the video watchdog's own MS_VIDEO_WATCHDOG_
+     * MAX_RECOVERIES precedent (hal_ingenic.c) exists to avoid. Same
+     * response here: give up loudly and exit after a bounded number of
+     * start() failures, so the camera goes dark in a way that is visible in
+     * the log and matches "needs a manual/scheduled restart" rather than an
+     * indefinitely spinning process that LOOKS alive but never serves a
+     * frame. init() failures do not count against this limit. */
+#define MS_STARTUP_MAX_START_FAILS 10
+    int start_fails = 0;
     for (int backoff = 5;;) {
         if (g_hal->init(&g_cfg) == 0) {
             if (g_hal->start(&g_cfg) == 0) break;
@@ -452,7 +467,17 @@ int main(int argc, char **argv)
              * g_hal->stop() to release the init-stage state (System_Exit/ISP
              * close - ing_stop tolerates the already-empty channel lists) a
              * fresh init+start attempt is exactly as safe as the first one. */
-            LOGE(MOD,"HAL start failed - unwinding and retrying in %ds", backoff);
+            if (++start_fails >= MS_STARTUP_MAX_START_FAILS){
+                LOGE(MOD,"HAL start failed %d times in a row - giving up "
+                         "(camera needs a manual/scheduled restart; a prior "
+                         "incident showed this can mean the resource this "
+                         "board is waiting on never clears without a real "
+                         "reboot, not just more time)", start_fails);
+                g_hal->stop();
+                return 1;
+            }
+            LOGE(MOD,"HAL start failed (%d/%d) - unwinding and retrying in %ds",
+                 start_fails, MS_STARTUP_MAX_START_FAILS, backoff);
             g_hal->stop();
         } else {
             LOGE(MOD,"HAL init failed - retrying in %ds", backoff);

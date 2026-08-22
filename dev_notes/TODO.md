@@ -91,16 +91,15 @@ belongs in that repo's review queue, not slipped in unreviewed here.
 Background for the encoder block:
 `dev_notes/T23_RATECONTROL_INVESTIGATION_2026-08-21.md`.
 
-## FIX PENDING REVIEW, HIGH PRIORITY: a real restart can leave timpsd down (T31, mem-constrained boards)
+## RESOLVED (hardware-verified): a real restart could leave timpsd down (T31, mem-constrained boards)
 
 Root cause found 2026-08-22 (static analysis + the saved qa2-*.log evidence;
-fix on worktree branch `worktree-agent-a5d4e2fb5a49225f7`, NOT yet
-hardware-verified): `main.c`'s bring-up treated init and start failures
-asymmetrically - `g_hal->init()` retried forever, one `g_hal->start()`
-failure exited the process permanently. After a restart the old instance's
-rmem is released late (4 s+ even after a clean teardown; worse when the 3 s
-shutdown alarm guillotines `g_hal->stop()`), so on 22 MB-rmem T31 boards
-init's small allocs eventually pass while start's big contiguous
+fix landed in `main.c`, merged to main as `366917c`): the bring-up treated
+init and start failures asymmetrically - `g_hal->init()` retried forever, one
+`g_hal->start()` failure exited the process permanently. After a restart the
+old instance's rmem is released late (4 s+ even after a clean teardown; worse
+when the 3 s shutdown alarm guillotines `g_hal->stop()`), so on 22 MB-rmem
+T31 boards init's small allocs eventually pass while start's big contiguous
 `Codec_Encode_Create` alloc still fails -> unguarded exit, camera dark. The
 QA logs show exactly this two-phase death on all 5 cameras: section 16 found
 timpsd still "alive" with 2 threads/0 listeners (= parked in the init retry
@@ -108,9 +107,35 @@ loop, all services down), and it was gone later (the one-shot start exit).
 cam-garage self-recovered because its pool drained before start ran. Fix:
 start failure now unwinds via `g_hal->stop()` and re-enters the retry loop;
 plus the shutdown path re-arms the alarm before `g_hal->stop()` so IMP
-teardown gets the full 3 s budget. See CHANGELOG [Unreleased]. Hardware
-verification still needed (a supervised `--test-encoder` restart cycle on ONE
-T31 camera) before fleet rollout. Original report follows.
+teardown gets the full 3 s budget. See CHANGELOG [Unreleased].
+
+**Hardware-verified same evening on cam-kinder-rechts** (T31,
+`--test-encoder`'s exact restore-restart step that killed it before): the
+fix worked as designed - the daemon stayed alive and logged `HAL start
+failed - unwinding and retrying in 60s` every ~60 s instead of vanishing.
+It did NOT self-recover within ~9 minutes of retrying, though - the rmem
+carve-out on this board apparently sometimes needs a real reboot to clear,
+not just time, so a real `reboot` was used to restore it, same as the
+original 5. The fix's actual guarantee is narrower than "the camera
+recovers itself": it guarantees the daemon stays alive and visibly
+retrying/logging instead of silently dying, which is what makes the
+following bound possible/meaningful.
+
+**Follow-up, also landed same evening**: retrying `start()` forever, per the
+above, can mean retrying forever for real (9+ minutes and still going in the
+verification run) - a process that LOOKS alive but never serves a frame is
+its own failure mode, so `start()` failures are now capped at
+`MS_STARTUP_MAX_START_FAILS = 10` (a `#define` next to the retry loop in
+`main.c`), after which the daemon gives up loudly (`LOGE` + exit) instead of
+spinning indefinitely - the same "exit rather than hang forever, a human or
+scheduler restarts it" convention `hal_ingenic.c`'s
+`MS_VIDEO_WATCHDOG_MAX_RECOVERIES` already uses for the video watchdog.
+`init()` failures are NOT capped (unchanged, still forever) - a
+misconfiguration is meant to wait for a human to fix the config, which is a
+different class of failure than a resource-drain race. Not
+hardware-verified on its own (would need a board whose rmem never clears,
+which is hard to arrange on purpose) - reviewed by reading the existing
+watchdog precedent and confirmed by `make sim`.
 
 Found 2026-08-22 during the post-rollout fleet QA (`--test-encoder`, which
 deliberately forces a real restart to make a restart-bound `rc_mode` change
