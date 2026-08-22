@@ -359,18 +359,25 @@ FFWARN_RE='non-monoton(ous|ic)|discontinuit|corrupt|error while|decode_slice|con
 # that turns the caller's $((...)) into a fatal arithmetic syntax error.
 ffwarn_count() { local n; n=$(grep -icE "$FFWARN_RE" "$1" 2>/dev/null); printf '%s' "${n:-0}"; }
 
-# enc_measure <rtsp-path> <dur> <tag> -> "<kbps> <cv>"
-#   kbps = delivered VIDEO bitrate (payload bytes over the media timespan;
-#          audio excluded so it is comparable with the configured video
-#          bitrate)
-#   cv   = coefficient of variation of the per-second byte totals. Per-FRAME
-#          variance is dominated by I-vs-P size in every rc mode and says
-#          nothing; per-SECOND variance is what actually separates CBR from
-#          VBR.
-# Shared by 8b's RC4 (live-apply verification, no restart) and 8g (the fuller
-# persist+restart route) - both need "what did the encoder actually deliver",
-# neither can get it from an SDK struct readback (see RC4's own comment on
-# why that readback is unreliable without an active client pulling frames).
+# enc_measure <rtsp-path> <dur> <tag> -> "<kbps> <cv> <i_avg> <i_cnt> <p_avg>"
+#   kbps  = delivered VIDEO bitrate (payload bytes over the media timespan;
+#           audio excluded so it is comparable with the configured video
+#           bitrate)
+#   cv    = coefficient of variation of the per-second byte totals. Per-FRAME
+#           variance is dominated by I-vs-P size in every rc mode and says
+#           nothing; per-SECOND variance is what actually separates CBR from
+#           VBR.
+#   i_avg = mean KEYFRAME size in bytes, i_cnt how many were seen, p_avg the
+#           mean non-keyframe size. Split off the packet FLAGS column ("K_" on
+#           a keyframe) rather than decoding: -show_entries packet=... never
+#           opens the decoder, so this costs nothing on top of the bitrate pass
+#           and works for H264 and H265 alike. Added for RC5's i_bias_lvl
+#           sweep, which needs I-frame size specifically - overall kbps cannot
+#           see an I-vs-P bit REDISTRIBUTION at a constant CBR target.
+# Shared by 8b's RC3b/RC3c/RC4/RC5 (live-apply verification, no restart) and 8g
+# (the fuller persist+restart route) - all need "what did the encoder actually
+# deliver", none can get it from an SDK struct readback (see RC4's own comment
+# on why that readback is unreliable without an active client pulling frames).
 enc_measure() {
 	local pth="$1" dur="$2" tag="$3"
 	local f="$OUTDIR/enc_${tag}.mkv" c="$OUTDIR/enc_${tag}.csv"
@@ -378,21 +385,23 @@ enc_measure() {
 		-rtsp_transport tcp -i "$(rtsp_url "$pth")" -t "$dur" -an -c copy "$f" \
 		</dev/null 2>"$OUTDIR/enc_${tag}.log" || true
 	[ -s "$f" ] || return 1
-	ffprobe -v error -select_streams v:0 -show_entries packet=pts_time,size \
+	ffprobe -v error -select_streams v:0 -show_entries packet=pts_time,size,flags \
 		-of csv=p=0 "$f" 2>/dev/null > "$c"
 	[ -s "$c" ] || return 1
-	awk -F, '{t=$1+0; s=$2+0; if(n++==0)t0=t; tl=t; sum+=s; b[int(t)]+=s}
+	awk -F, '{t=$1+0; s=$2+0; if(n++==0)t0=t; tl=t; sum+=s; b[int(t)]+=s;
+		if($3 ~ /K/){ ic++; isum+=s } else { pc++; psum+=s }}
 	END{
-		span=tl-t0; if(span<=0){print "0 0"; exit}
+		iavg=(ic>0)?isum/ic:0; pavg=(pc>0)?psum/pc:0;
+		span=tl-t0; if(span<=0){ printf "0 0 %.0f %d %.0f\n", iavg, ic, pavg; exit }
 		kbps=sum*8/span/1000;
 		# drop the first and last (partial) second buckets
 		m=0; c2=0; for(k in b){ ks[c2++]=k }
 		lo=1e18; hi=-1e18; for(i=0;i<c2;i++){ if(ks[i]+0<lo)lo=ks[i]+0; if(ks[i]+0>hi)hi=ks[i]+0 }
 		nn=0; for(k in b){ if(k+0>lo && k+0<hi){ v[nn++]=b[k]; m+=b[k] } }
-		if(nn<3){ printf "%.0f 0\n", kbps; exit }
+		if(nn<3){ printf "%.0f 0 %.0f %d %.0f\n", kbps, iavg, ic, pavg; exit }
 		m/=nn; sd=0; for(i=0;i<nn;i++) sd+=(v[i]-m)*(v[i]-m);
 		sd=sqrt(sd/nn);
-		printf "%.0f %.3f\n", kbps, (m>0)?sd/m:0;
+		printf "%.0f %.3f %.0f %d %.0f\n", kbps, (m>0)?sd/m:0, iavg, ic, pavg;
 	}' "$c"
 	rm -f "$f"
 }
@@ -2655,6 +2664,178 @@ else
 			rc_probe "$rc_k" "$((rc_cur-1))" "$rc_k"
 		done
 
+		# --- the measured probes: one shared baseline ------------------------
+		# RC3b/RC3c/RC4 all need "what does the substream deliver RIGHT NOW,
+		# untouched", and all three run back-to-back on an unchanged config, so
+		# measuring it three times would cost three captures to learn the same
+		# number. Memoised: the first caller pays, the rest read the cache. It
+		# also anchors the three verdicts to ONE reference measurement, so a
+		# scene change mid-section shifts all of them together instead of making
+		# two of them silently disagree.
+		#   rc_base_kbps  delivered kbps, "" when unmeasurable
+		#   rc_base_iavg  mean keyframe bytes (RC5's sweep reference)
+		# A camera whose substream cannot be pulled at all leaves these empty and
+		# every measured probe below skips - never FAILs, because an unreachable
+		# stream proves nothing about the encoder.
+		rc_base_done=0; rc_base_kbps=""; rc_base_iavg=""; rc_base_icnt=""
+		rc_meas_dur="${RC_MEAS_DUR:-${RC4_DUR:-15}}"
+		rc_baseline() {
+			local r
+			[ "$rc_base_done" = 1 ] && return 0
+			rc_base_done=1
+			if r=$(enc_measure "$PATH_SUB" "$rc_meas_dur" rc_base); then
+				read -r rc_base_kbps _ rc_base_iavg rc_base_icnt _ <<<"$r"
+				info "  measured baseline: substream delivers ${rc_base_kbps} kbps (configured $(jget "$LV_BASE" video.1.bitrate) kbps), mean keyframe ${rc_base_iavg} B over ${rc_base_icnt} I-frames in ${rc_meas_dur}s"
+			fi
+			return 0
+		}
+		# How long to wait after a live rc POST before the change is fully
+		# expressed in the bitstream: rate control re-plans at the next IDR, so
+		# ~3 GOPs, clamped into 4..20s. Same figure RC4 derived; hoisted here so
+		# every measured probe uses it instead of growing a second constant.
+		rc_settle_s=$(awk -v g="$(jget "$LV_BASE" video.1.gop)" -v f="$(jget "$LV_BASE" video.1.fps)" \
+			'BEGIN{ s=(f>0&&g>0)? 3*g/f : 6; if(s<4)s=4; if(s>20)s=20; printf "%.0f", s }')
+		rc_can_measure() { have ffmpeg && have ffprobe; }
+
+		# --- RC3b: min_qp must actually CONSTRAIN the bitstream --------------
+		# RC3 above proves min_qp reaches the SDK struct and is echoed back.
+		# That is precisely the evidence this project has learned not to trust
+		# on its own: "accepted, persisted, faithfully echoed, and silently
+		# ignored" is what 340fb1f/ff28ee2/0a8bb9f/6ec766e all turned out to be.
+		# A QP FLOOR is measurable without extracting QP at all: raising it
+		# forbids the encoder the fine quantisation it needs to spend bits, so
+		# the delivered bitrate must FALL.
+		#
+		# Direction, measured on a T31/sc4336p 2026-08-22 (640x360 substream,
+		# cbr, 384 kbps configured, static scene):
+		#     min_qp 10           -> 392 kbps  (rises to the 384 ceiling)
+		#     min_qp 20 (default) -> 208..225 kbps
+		#     min_qp 40           -> 23..24 kbps
+		# i.e. RAISING the floor LOWERS the bitrate. Worth stating explicitly
+		# because the intuition runs the other way: low QP means FINE
+		# quantisation means MORE bits, so a floor on QP is a ceiling on rate.
+		#
+		# The probe raises the floor to max_qp-5 rather than by a fixed step -
+		# coarse enough to starve any scene on any sensor, so the verdict does
+		# not depend on how busy the picture happens to be. It needs real
+		# headroom between the current floor and that target, otherwise a null
+		# result would be meaningless rather than damning: hence the >=8 gate.
+		rc_mq_lo=$(jget "$LV_BASE" video.1.min_qp)
+		rc_mq_hi=$(jget "$LV_BASE" video.1.max_qp)
+		if ! rc_live_has min_qp || ! rc_live_has max_qp; then
+			: # RC3 already gate-marked these; nothing measurable to add
+		elif ! rc_can_measure; then
+			skip "video1.min_qp/max_qp bitstream verification needs ffmpeg+ffprobe - not found (the RC3 readback still ran, but it only proves the value reached the struct, not that the bound binds)"
+		elif [ -z "$rc_mq_lo" ] || [ -z "$rc_mq_hi" ] || [ "$((rc_mq_hi-rc_mq_lo))" -lt 8 ]; then
+			skip "video1.min_qp: floor $rc_mq_lo and ceiling $rc_mq_hi are less than 8 QP apart - no room for a probe coarse enough to prove the floor binds"
+		else
+			rc_baseline
+			if [ -z "$rc_base_kbps" ] || ! fcmp "$rc_base_kbps" ge 64; then
+				skip "video1.min_qp: no usable substream baseline (got '${rc_base_kbps:-none}' kbps) - a floor that binds cannot be told apart from a stream that was already delivering nothing"
+				lv_mark_gated video "no-usable-baseline-for-bitstream-check" min_qp
+			else
+				rc_mq_new=$((rc_mq_hi-5))
+				rf="$OUTDIR/rc_post_minqp_meas.json"
+				LV_PENDING="{\"video\":{\"1\":{\"min_qp\":$rc_mq_lo}}}"
+				code=$(lv_post_r "{\"video\":{\"1\":{\"min_qp\":$rc_mq_new}}}" "$rf")
+				lv_mark video min_qp
+				if [ "$code" != "200" ]; then
+					bad "video1.min_qp: POST(live) HTTP $code"
+				elif rc_defer_has "$rf" video1.min_qp; then
+					bad "video1.min_qp is in caps.video_live but the POST reply DEFERRED it (keys=$(jget "$rf" deferred_keys))"
+				else
+					sleep "$rc_settle_s"
+					if rc_r=$(enc_measure "$PATH_SUB" "$rc_meas_dur" rc3b); then
+						read -r rc_mq_kbps _ _ _ _ <<<"$rc_r"
+						rc_mq_want=$(awk -v b="$rc_base_kbps" 'BEGIN{printf "%.0f", b*0.6}')
+						rc_mq_ratio=$(awk -v a="$rc_mq_kbps" -v b="$rc_base_kbps" 'BEGIN{printf "%.2f", (b>0)?a/b:0}')
+						if fcmp "$rc_mq_kbps" le "$rc_mq_want"; then
+							ok "video1.min_qp really CONSTRAINS the bitstream: raising the QP floor $rc_mq_lo -> $rc_mq_new cut the delivered substream ${rc_base_kbps} -> ${rc_mq_kbps} kbps (${rc_mq_ratio}x) with the bitrate target untouched - the bound is not merely echoed back, it binds"
+						elif fcmp "$rc_mq_ratio" ge 0.9; then
+							bad "video1.min_qp: the QP floor went $rc_mq_lo -> $rc_mq_new live (deferred:0) and encoder.1.rc echoed it, yet the substream still delivers ${rc_mq_kbps} kbps against a ${rc_base_kbps} kbps baseline (${rc_mq_ratio}x) - a floor that coarse cannot leave the bitrate untouched, so the bound is being accepted, persisted, echoed and IGNORED (the 340fb1f/ff28ee2 class). Suspect IMP_Encoder_SetChnQpBounds not reaching the running channel"
+						else
+							warn "video1.min_qp: floor $rc_mq_lo -> $rc_mq_new moved the substream ${rc_base_kbps} -> ${rc_mq_kbps} kbps (${rc_mq_ratio}x) - right direction, weaker than the 0.6x this probe expects. The scene may already be quantisation-limited; re-run on a busier picture before reading anything into it"
+						fi
+					else
+						warn "video1.min_qp: could not measure the substream after raising the floor - cannot confirm the bound binds"
+					fi
+				fi
+				rc_pid_check video1.min_qp
+				lv_post "$LV_PENDING" >/dev/null; LV_PENDING=""
+			fi
+		fi
+
+		# --- RC3c: max_qp must actually CONSTRAIN the bitstream --------------
+		# The QP CEILING is the mirror image and needs a different setup: it only
+		# binds when the encoder WANTS to quantise coarsely, i.e. when the bitrate
+		# target is starved relative to what the scene costs. On a comfortable
+		# target the encoder never approaches max_qp and moving it proves nothing,
+		# which is why this probe deliberately starves the target first and then
+		# compares two ceilings against that SAME target.
+		#
+		# Differential, measured on the same T31 2026-08-22 (bitrate starved to
+		# 33 kbps, ~0.15x of the 208 kbps the scene was delivering):
+		#     max_qp 28 -> 82..83 kbps  (not allowed to degrade, overshoots ~2.5x)
+		#     max_qp 45 -> 67 kbps
+		#     max_qp 51 -> 13..14 kbps  (free to degrade, nearly reaches target)
+		# The low-vs-high pair separates by ~6x, against only 1.2x for low-vs-
+		# default, which is why the probe uses both ends rather than comparing one
+		# end against the configured value. Both halves sit at the same starved
+		# bitrate, so the delta is attributable to max_qp alone.
+		if ! rc_live_has min_qp || ! rc_live_has max_qp || ! rc_live_has bitrate; then
+			: # gate-marked by RC3/RC4
+		elif ! rc_can_measure || [ -z "$rc_mq_lo" ] || [ -z "$rc_mq_hi" ]; then
+			: # already reported by RC3b
+		elif [ "$((51-rc_mq_hi))" -lt 4 ] || [ "$((rc_mq_hi-rc_mq_lo))" -lt 8 ]; then
+			skip "video1.max_qp: ceiling $rc_mq_hi leaves no room for a low/high pair inside [$rc_mq_lo..51] - cannot build a differential that isolates the ceiling"
+		else
+			rc_baseline
+			if [ -z "$rc_base_kbps" ] || ! fcmp "$rc_base_kbps" ge 64; then
+				skip "video1.max_qp: no usable substream baseline (got '${rc_base_kbps:-none}' kbps) - cannot pick a target starved enough to make the ceiling bind"
+				lv_mark_gated video "no-usable-baseline-for-bitstream-check" max_qp
+			else
+				rc_b_orig=$(jget "$LV_BASE" video.1.bitrate)
+				# starve to ~0.15x of what the scene actually costs, floored at the
+				# videoN.bitrate config clamp - low enough that the encoder is
+				# pinned against its ceiling in both halves of the pair.
+				rc_starve=$(awk -v m="$rc_base_kbps" 'BEGIN{v=int(m*0.15); if(v<16)v=16; print v}')
+				rc_qc_lo=$((rc_mq_lo+8)); [ "$rc_qc_lo" -gt "$rc_mq_hi" ] && rc_qc_lo=$rc_mq_hi
+				rc_qc_hi=$((rc_mq_hi+6)); [ "$rc_qc_hi" -gt 51 ] && rc_qc_hi=51
+				LV_PENDING="{\"video\":{\"1\":{\"bitrate\":$rc_b_orig,\"max_qp\":$rc_mq_hi}}}"
+				lv_mark video max_qp bitrate
+				rc_qc_a=""; rc_qc_b=""
+				code=$(lv_post_r "{\"video\":{\"1\":{\"bitrate\":$rc_starve,\"max_qp\":$rc_qc_lo}}}" "$OUTDIR/rc_post_maxqp_lo.json")
+				if [ "$code" != "200" ]; then
+					bad "video1.max_qp: POST(live, starve+low ceiling) HTTP $code"
+				else
+					sleep "$rc_settle_s"
+					rc_r=$(enc_measure "$PATH_SUB" "$rc_meas_dur" rc3c_lo) && read -r rc_qc_a _ _ _ _ <<<"$rc_r"
+					code=$(lv_post_r "{\"video\":{\"1\":{\"max_qp\":$rc_qc_hi}}}" "$OUTDIR/rc_post_maxqp_hi.json")
+					if [ "$code" != "200" ]; then
+						bad "video1.max_qp: POST(live, high ceiling) HTTP $code"
+					else
+						sleep "$rc_settle_s"
+						rc_r=$(enc_measure "$PATH_SUB" "$rc_meas_dur" rc3c_hi) && read -r rc_qc_b _ _ _ _ <<<"$rc_r"
+					fi
+				fi
+				if [ -z "$rc_qc_a" ] || [ -z "$rc_qc_b" ] || ! fcmp "${rc_qc_b:-0}" gt 0; then
+					warn "video1.max_qp: could not measure both halves of the ceiling differential (low=${rc_qc_a:-none}, high=${rc_qc_b:-none} kbps) - the ceiling stays unverified against the bitstream"
+				else
+					rc_qc_r=$(awk -v a="$rc_qc_a" -v b="$rc_qc_b" 'BEGIN{printf "%.2f", a/b}')
+					if fcmp "$rc_qc_r" ge 1.5; then
+						ok "video1.max_qp really CONSTRAINS the bitstream: at the same starved ${rc_starve} kbps target, ceiling $rc_qc_lo delivered ${rc_qc_a} kbps and ceiling $rc_qc_hi delivered ${rc_qc_b} kbps (${rc_qc_r}x apart) - a low ceiling forbids the encoder from degrading enough to reach the target, exactly as a QP bound must"
+					else
+						bad "video1.max_qp: at a starved ${rc_starve} kbps target the ceiling made no difference to the bitstream - $rc_qc_lo delivered ${rc_qc_a} kbps and $rc_qc_hi delivered ${rc_qc_b} kbps (${rc_qc_r}x). Both POSTs were graded live and encoder.1.rc echoes the bound, so this is the ceiling being accepted and IGNORED (the 340fb1f/ff28ee2 class) - unless the stream is content-limited well under ${rc_starve} kbps in both halves, in which case rate control had nothing to express either way"
+					fi
+				fi
+				rc_pid_check video1.max_qp
+				lv_post "$LV_PENDING" >/dev/null; LV_PENDING=""
+				gf="$OUTDIR/rc_restore_maxqp.json"; lv_get "$gf"
+				{ [ "$(jget "$gf" video.1.bitrate)" = "$rc_b_orig" ] && [ "$(jget "$gf" video.1.max_qp)" = "$rc_mq_hi" ]; } \
+					|| warn "video1.max_qp: did not restore to bitrate=$rc_b_orig / max_qp=$rc_mq_hi"
+			fi
+		fi
+
 		# --- RC4: bitrate, verified against the actual bitstream ------------
 		# 1bdd1b3 left open whether SetDefaultParam (boot) and SetChnBitRate
 		# (live) agree on the bitrate unit. The first version of this check
@@ -2678,12 +2859,15 @@ else
 			lv_mark_gated video "no-ffmpeg-ffprobe" bitrate
 		else
 			rc_b_cfg=$(jget "$LV_BASE" video.1.bitrate)
-			rc_dur="${RC4_DUR:-15}"
-			rc_pre_kbps=""
-			if res0=$(enc_measure "$PATH_SUB" "$rc_dur" rc4_pre); then
-				read -r rc_pre_kbps rc_pre_cv <<<"$res0"
-				info "  video1.bitrate: substream currently delivers ${rc_pre_kbps} kbps at a configured ${rc_b_cfg} kbps"
-			fi
+			rc_dur="$rc_meas_dur"
+			# Baseline shared with RC3b/RC3c - see rc_baseline(). Both of those
+			# restore the config before returning, so the cached number still
+			# describes the state this probe starts from, and reusing it keeps all
+			# three verdicts anchored to one reference instead of paying for a third
+			# identical capture of the same untouched stream.
+			rc_baseline
+			rc_pre_kbps="$rc_base_kbps"
+			[ -n "$rc_pre_kbps" ] && info "  video1.bitrate: substream delivers ${rc_pre_kbps} kbps at a configured ${rc_b_cfg} kbps"
 			if [ -z "$rc_pre_kbps" ] || ! fcmp "$rc_pre_kbps" ge 64; then
 				# no usable baseline (stream unreachable, or already so low
 				# that 0.4x would land under the videoN.bitrate clamp of 16) -
@@ -2702,12 +2886,11 @@ else
 				elif rc_defer_has "$rf" video1.bitrate; then
 					bad "video1.bitrate is in caps.video_live but the POST reply DEFERRED it (keys=$(jget "$rf" deferred_keys)) - SetChnBitRate was refused or the channel is not running; the platform advertises a live path the runtime did not take"
 				else
-					rc_settle=$(awk -v g="$(jget "$LV_BASE" video.1.gop)" -v f="$(jget "$LV_BASE" video.1.fps)" \
-						'BEGIN{ s=(f>0&&g>0)? 3*g/f : 6; if(s<4)s=4; if(s>20)s=20; printf "%.0f", s }')
+					rc_settle="$rc_settle_s"   # ~3 GOPs, computed once above
 					info "  video1.bitrate=$rc_b_new went in LIVE (deferred:0) - settling ${rc_settle}s (~3 GOPs) for the next-IDR latency before measuring"
 					sleep "$rc_settle"
 					if res1=$(enc_measure "$PATH_SUB" "$rc_dur" rc4_post); then
-						read -r rc_post_kbps rc_post_cv <<<"$res1"
+						read -r rc_post_kbps rc_post_cv _ _ _ <<<"$res1"
 						rc_hi=$(awk -v n="$rc_b_new" 'BEGIN{printf "%.0f", n*1.5}')
 						rc_keep=$(awk -v b="$rc_pre_kbps" 'BEGIN{printf "%.0f", b*0.8}')
 						if fcmp "$rc_post_kbps" le "$rc_hi"; then
@@ -3361,7 +3544,7 @@ else
 				# "the encoder ignored it" genuinely distinguishable.
 				enc_pre_kbps=""; cv_pre=""
 				if res0=$(enc_measure "$PATH_SUB" "$enc_dur" pre); then
-					read -r enc_pre_kbps cv_pre <<<"$res0"
+					read -r enc_pre_kbps cv_pre _ _ _ <<<"$res0"
 					info "  encoder test: substream currently DELIVERS ${enc_pre_kbps} kbps at a configured ${enc_bcur} kbps (per-second CV ${cv_pre})"
 				fi
 				if [ -n "${enc_pre_kbps:-}" ] && fcmp "$enc_pre_kbps" ge 64; then
@@ -3391,7 +3574,7 @@ else
 					:
 				else
 					if res=$(enc_measure "$PATH_SUB" "$enc_dur" cbr); then
-						read -r m_kbps cv_cbr <<<"$res"
+						read -r m_kbps cv_cbr _ _ _ <<<"$res"
 						info "  measured substream: ${m_kbps} kbps over ${enc_dur}s (requested ${enc_bnew}, previously ${enc_bcur}), per-second CV ${cv_cbr}"
 						hi=$(awk -v n="$enc_bnew" 'BEGIN{printf "%.0f", n*1.5}')
 						if [ "$enc_dir" = down ]; then
@@ -3419,7 +3602,7 @@ else
 						# --- does rc_mode do anything measurable? -------------
 						if enc_commit "{\"video\":{\"1\":{\"rc_mode\":\"vbr\"}}}" video.1.rc_mode vbr; then
 							if res2=$(enc_measure "$PATH_SUB" "$enc_dur" vbr); then
-								read -r m2_kbps cv_vbr <<<"$res2"
+								read -r m2_kbps cv_vbr _ _ _ <<<"$res2"
 								info "  measured substream under vbr: ${m2_kbps} kbps, per-second CV ${cv_vbr} (cbr was ${cv_cbr})"
 								if fcmp "$cv_cbr" le 0 || fcmp "$cv_vbr" le 0; then
 									warn "encoder: could not measure per-second bitrate variance in one of the modes - rc_mode effect unproven"
