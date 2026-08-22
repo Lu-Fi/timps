@@ -25,6 +25,93 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 SECTION_RE = re.compile(r"^=== (.+?) ===$")
 RESULT_RE = re.compile(r"^\[(PASS|WARN|FAIL|SKIP|skip)\]\s*(.*)$")
 
+# --- chart extraction --------------------------------------------------------
+# timps-qa.sh's RC-block (8b) writes free-prose result lines carrying real
+# measured before/after numbers (e.g. RC4's bitrate live-apply, RC3b/RC3c's QP
+# bound differentials) - the whole point of those checks is a number a reader
+# can eyeball, and a wall of text buries it. This does NOT change what the
+# script reads: still summary.txt, still no new data source (see the module
+# docstring) - it just recognizes a handful of known prose shapes and turns
+# the numbers already in them into a small inline bar chart. A line that
+# doesn't match any shape renders exactly as before (plain text) - this is
+# additive, not a replacement, so a future RC check with an unrecognized
+# phrasing degrades gracefully instead of breaking the report.
+#
+# Tried in order, most specific first, so a line matching a later, looser
+# pattern by accident of a former one never gets a chance to misfire.
+CHART_TRIPLE_RE = re.compile(
+    r"(-?\d+)=([\d.]+)\s*B,\s*(-?\d+)=([\d.]+)\s*B,\s*-?\d+\s*again=([\d.]+)\s*B"
+)
+CHART_COMPARE_RE = re.compile(
+    r"(?:ceiling|level)\s+(-?[\d.]+)\s+delivered\s+([\d.]+)\s*kbps\s+and\s+"
+    r"(?:ceiling|level)\s+(-?[\d.]+)\s+delivered\s+([\d.]+)\s*kbps"
+)
+# All "N -> M UNIT" occurrences; a line can carry more than one arrow (e.g.
+# RC3b's "floor 20 -> 40 cut the delivered substream 208 -> 24 kbps" has a
+# unitless QP-floor arrow AND the kbps one) - requiring the unit immediately
+# after the second number is what keeps this from picking up the wrong pair;
+# take the LAST match so a trailing kbps/B arrow always wins over an earlier
+# unitless one.
+CHART_PAIR_RE = re.compile(r"([\d.]+)\s*(?:->|→)\s*([\d.]+)\s*(kbps|B)\b")
+
+
+def extract_chart(text: str):
+    """Return a chart spec dict from a result line's prose, or None.
+
+    Spec shape: {"bars": [{"label": str, "value": float}, ...], "unit": str}
+    """
+    m = CHART_TRIPLE_RE.search(text)
+    if m:
+        l1, v1, l2, v2, v3 = m.groups()
+        return {
+            "unit": "B",
+            "bars": [
+                {"label": f"{l1}", "value": float(v1)},
+                {"label": f"{l2}", "value": float(v2)},
+                {"label": f"{l1} again", "value": float(v3)},
+            ],
+        }
+    m = CHART_COMPARE_RE.search(text)
+    if m:
+        l1, v1, l2, v2 = m.groups()
+        return {
+            "unit": "kbps",
+            "bars": [
+                {"label": l1, "value": float(v1)},
+                {"label": l2, "value": float(v2)},
+            ],
+        }
+    matches = CHART_PAIR_RE.findall(text)
+    if matches:
+        v1, v2, unit = matches[-1]
+        return {
+            "unit": unit,
+            "bars": [
+                {"label": "vorher", "value": float(v1)},
+                {"label": "nachher", "value": float(v2)},
+            ],
+        }
+    return None
+
+
+def render_chart(chart) -> str:
+    bars = chart["bars"]
+    unit = chart["unit"]
+    peak = max((b["value"] for b in bars), default=0) or 1
+    rows = []
+    for b in bars:
+        pct = max(2.0, min(100.0, b["value"] / peak * 100))
+        rows.append(
+            "<div class='chart-row'>"
+            f"<span class='chart-label'>{html.escape(b['label'])}</span>"
+            "<span class='chart-track'>"
+            f"<span class='chart-bar' style='width:{pct:.1f}%'></span>"
+            "</span>"
+            f"<span class='chart-value'>{b['value']:g} {html.escape(unit)}</span>"
+            "</div>"
+        )
+    return f"<div class='mini-chart'>{''.join(rows)}</div>"
+
 LEVEL_CLASS = {
     "PASS": "pass",
     "WARN": "warn",
@@ -185,6 +272,9 @@ def render_html(qa_dir: Path, header, sections, totals, result_line) -> str:
                 notes_html = "<ul class='notes'>" + "".join(
                     f"<li>{esc(n)}</li>" for n in item["notes"]
                 ) + "</ul>"
+            chart = extract_chart(item["text"])
+            chart_html = render_chart(chart) if chart else ""
+            notes_html = chart_html + notes_html
             if level is None:
                 rows.append(f"<div class='info-line'>{text}{notes_html}</div>")
             else:
@@ -234,7 +324,7 @@ def render_html(qa_dir: Path, header, sections, totals, result_line) -> str:
 <style>
   :root {{
     --bg: #0f1115; --panel: #171a21; --border: #2a2f3a; --text: #e6e8ec; --muted: #9aa3b2;
-    --pass: #2ecc71; --warn: #f5a623; --fail: #e74c3c; --skip: #6c7a91;
+    --pass: #2ecc71; --warn: #f5a623; --fail: #e74c3c; --skip: #6c7a91; --accent: #4a9eff;
   }}
   * {{ box-sizing: border-box; }}
   body {{
@@ -284,6 +374,14 @@ def render_html(qa_dir: Path, header, sections, totals, result_line) -> str:
   .mini-badge.fail {{ background: rgba(231,76,60,0.15); color: var(--fail); }}
   .mini-badge.skip {{ background: rgba(108,122,145,0.15); color: var(--skip); }}
   ul.notes {{ margin: 0.2rem 0 0.2rem 0; padding-left: 1.1rem; color: var(--muted); font-size: 0.85rem; width: 100%; }}
+  .mini-chart {{ width: 100%; margin: 0.35rem 0 0.15rem; display: flex; flex-direction: column; gap: 0.2rem; }}
+  .chart-row {{ display: grid; grid-template-columns: 5.5rem 1fr 5.5rem; align-items: center; gap: 0.5rem; font-size: 0.78rem; }}
+  .chart-label {{ color: var(--muted); text-align: right; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }}
+  .chart-track {{ background: rgba(255,255,255,0.06); border-radius: 4px; height: 0.7rem; overflow: hidden; }}
+  .chart-bar {{ display: block; height: 100%; background: var(--accent); border-radius: 4px; min-width: 2px; }}
+  .chart-value {{ font-variant-numeric: tabular-nums; color: var(--text); font-family: ui-monospace, monospace; }}
+  .result-row.fail .chart-bar {{ background: var(--fail); }}
+  .result-row.warn .chart-bar {{ background: var(--warn); }}
   .result-row.fail .result-text {{ color: var(--fail); font-weight: 600; }}
   .result-row.warn .result-text {{ color: var(--warn); }}
   .snap-grid {{ display: flex; gap: 1rem; flex-wrap: wrap; }}
