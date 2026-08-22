@@ -296,7 +296,10 @@ class SimRun:
             # rather than raising the global level and pulling in every other
             # module's debug output.
             "general.debug_modules": "daynight",
-            "daynight.boot_settle_s": 2,
+            # No boot_settle_s here: it became the fixed DN_BOOT_SETTLE_S=5 on
+            # 2026-08-22 and can no longer be overridden. The line that used to
+            # set 2 kept being parsed, kept being ignored, and only added a
+            # config WRN to every scenario's sim.log.
             "daynight.isp_path": self.isp,
             "daynight.switch_cmd": stub,
             "daynight.trace_path": self.trace,

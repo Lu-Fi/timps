@@ -7,8 +7,7 @@
   "initial_mode": "day",
   "config": {
     "daynight.total_gain_day_threshold": 300,
-    "daynight.total_gain_night_threshold": 3000,
-    "daynight.boot_settle_s": 5
+    "daynight.total_gain_night_threshold": 3000
   },
   "interp": "log",
   "day_gain": [[0, 18000], [15, 300], [20, 200], [180, 200]],
