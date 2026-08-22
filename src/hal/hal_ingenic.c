@@ -3680,7 +3680,13 @@ static int rc_live_apply(int si, const char *k)
         }
         return 0;
     }
-    (void)k;
+    /* qp only feeds attrFixQp.iInitialQP, a union member the encoder ignores
+     * outside fixqp - the whole-union refill below "succeeds" either way, so
+     * without this gate a qp POST under cbr/vbr/smart would be graded live
+     * (deferred:0) despite having no observable effect on the running
+     * channel (2026-08-22 hardware measurement, cam-vorne/T23N; the same
+     * honest-vs-optimistic gap the new-API path already closes for qp). */
+    if (!strcmp(k,"qp") && v->rc_mode!=MS_RC_FIXQP) return 0;
     IMPEncoderAttrRcMode m; memset(&m,0,sizeof m);
     classic_rc_fill(&m, v);
     if (IMP_Encoder_SetChnAttrRcMode(chn, &m)!=0){

@@ -620,6 +620,22 @@ re-add `qp` to `ENC_LIVE_KEYS` for T31/C100 only, and re-run the RC6b
 bitstream measurement on cam-garage - if the two QP values do not span like
 the boot path does, revert and leave the key restart-bound.
 
+**2026-08-22, classic path (T23N) closed too**: "the classic path is
+unchanged" above turned out to be the remaining gap. RC6 (which pins the
+same deferred-outside-fixqp/live-inside-fixqp contract already enforced on
+the new API) FAILed on cam-vorne: `video1.qp` posted under `rc_mode=cbr`
+graded `deferred:0` even though classic `rc_live_apply` ignores `k` entirely
+and just re-fills the whole `IMPEncoderAttrRcMode` union from `g_cfg` -
+`SetChnAttrRcMode` succeeds regardless of which field the caller cared about,
+so a fixqp-only field reported "live" while doing nothing observable. Fixed
+in `rc_live_apply`'s classic branch: `qp` now returns 0 (persisted, applies
+on restart) when `v->rc_mode!=MS_RC_FIXQP`, before the union re-fill. Verified
+on hardware (cam-vorne, T23N): RC6 now reads "correctly DEFERRED under
+rc_mode=cbr". Also fixes T20X (wyze/wyze-pan), which shares the classic
+branch. This narrows the "grading is honest per call, not per effect" note
+below - that acceptance no longer covers `qp` on classic, only the other
+keys it names (`quality_lvl`, `bitrate` under a non-native mode).
+
 The original report follows.
 
 #### Original report (2026-08-22)
@@ -714,10 +730,10 @@ first; comment-level corrections were applied in the same pass.
 - **Grading is honest per call, not per effect.** Classic: a live write to a
   key absent from the active mode's union member (`quality_lvl` under cbr,
   `bitrate` under fixqp) reports "applied live" because the whole-union call
-  succeeds. New API: `qp` under non-fixqp reports "deferred" although a
-  restart will not make it effective either. Documented in code, no lie in
-  `deferred_keys` (the key DID reach the encoder), but "no effect in this
-  mode" is not expressible. Accepted as-is.
+  succeeds. Accepted as-is for these - `qp` used to be in this bucket too but
+  was pulled out and gated (2026-08-22, see the RESOLVED entry above): it is
+  the one key whose live-vs-restart claim was actually being asserted by RC6
+  and hardware-measured, not just accepted as an architectural limit.
 - **`min_qp`/`max_qp` have no cross-field clamp** (SDK: minQp range
   [0..maxQp]). min_qp=50+max_qp=20 passes config and reaches the SDK, which
   then rejects (graded honestly at runtime). Pre-existing, not from this
