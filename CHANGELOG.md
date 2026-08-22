@@ -59,8 +59,10 @@ semantic versioning.
   problem is still failing after the reboot, the daemon gives up for good
   instead of rebooting again, so this cannot become a boot loop. The marker
   clears the moment `start()` next succeeds, so a later, unrelated incident
-  gets its own fresh attempt. Cross-compiled clean for T31/uClibc; the
-  reboot escalation itself still needs a supervised hardware test.
+  gets its own fresh attempt. Hardware-verified on cam-kinder-rechts by
+  deliberately reproducing the stuck state again: counted 1/10 through
+  9/10 over ~8 minutes, escalated to a real reboot at attempt 10, back to
+  serving within ~15s with no manual intervention, marker file cleared.
 
 ### Added
 

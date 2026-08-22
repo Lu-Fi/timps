@@ -149,12 +149,19 @@ that reboot, the marker is still there, so it gives up permanently instead
 of rebooting again - no boot loop. The marker is deleted the moment
 `start()` next succeeds, so an unrelated FUTURE incident (even far in the
 future) gets its own fresh one-shot reboot rather than inheriting a
-permanently spent one. Cross-compiled clean for T31/uClibc (confirms
-`<sys/reboot.h>`/`reboot()` exist on this toolchain) but the reboot
-escalation ITSELF is not yet hardware-verified - doing so deliberately means
-holding a real camera in the stuck state through 10 real failed attempts,
-which is exactly the scenario that took cam-kinder-rechts down earlier
-tonight, so it needs a supervised test, not a casual one.
+permanently spent one.
+
+**Hardware-verified the same night**, deliberately reproducing the exact
+stuck state on cam-kinder-rechts again (same `--test-encoder` restore-restart
+that caused the original incident): `start_fails` counted cleanly 1/10
+through 9/10 over ~8 minutes (each log line matching `HAL start failed
+(N/10) - unwinding and retrying in 60s`), SSH went briefly unreachable right
+at attempt 10 (the escalation reboot firing), and `/control` was back to 200
+~15s later with no manual intervention. Confirmed after: `timpsd` running
+under a fresh PID, `/etc/timps-startup-reboot.flag` gone (cleared by the
+successful `start()`, as designed), RTSP sessions and the encoder serving
+normally, daynight's own boot-verify probe running as expected. The full
+cap-then-escalate-then-clear cycle worked end to end on the first real test.
 
 Found 2026-08-22 during the post-rollout fleet QA (`--test-encoder`, which
 deliberately forces a real restart to make a restart-bound `rc_mode` change
