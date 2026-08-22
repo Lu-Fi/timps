@@ -398,9 +398,9 @@ and far below it in a bright one); day→night is a direct measurement on the
 honest day pipeline, night→day only ever happens via a **probe**; and the
 calendar, when configured, schedules probes rather than deciding anything.
 
-`switch_cmd`, `isp_path`, `trace_path`, `state_path` and `irprobe_cmd` are
-**not GET-readable** even though they are settable via the config file —
-each names a path or program the daemon acts on as root.
+`switch_cmd`, `isp_path`, `trace_path` and `irprobe_cmd` are **not
+GET-readable** even though they are settable via the config file — each
+names a path or program the daemon acts on as root.
 
 **Renamed 2026-08-17:** `total_gain_day_threshold` → `day_gain` and
 `total_gain_night_threshold` → `night_gain`. The old names still work as
@@ -409,6 +409,23 @@ aliases and the units and calibration are unchanged.
 `day_gain_pct`, `baseline_delay_s`, `boot_settle_max_s`, `boot_stable_pct`,
 `night_reconfirm_s`, `probe_max_skip_s`, `threshold_low`, `threshold_high`,
 `hysteresis`.
+
+**Removed 2026-08-22** (config consolidation — parsed, ignored, warned about
+once): the whole `learn`/`state_path` learning subsystem is gone outright.
+Its own safety clamp (never raise `day_gain` past `night_gain/2`) could not
+raise the threshold far enough for the cameras that actually needed it —
+`diagnose_thresholds` below is what is left: it names the value to raise by
+hand instead of trying to raise it automatically.
+
+**Fixed 2026-08-22** (config consolidation — no longer settable, but *not*
+removed: each became a `DN_*` constant in `src/daynight.h` and keeps working
+exactly as its old default did): `probe_jump_pct`, `probe_settle_s`,
+`ref_delay_s`, `ir_ratio_night`, `ir_ratio_day`, `ir_min_headroom`,
+`boot_settle_s`, `transition_s`. A camera whose config file still sets one of
+these to something other than its fixed value gets one warning naming the
+value now in effect; setting it to the value it already defaulted to is
+silent. All eight are still visible read-only in `GET /control` for
+diagnostics.
 
 | Key | Type | Default | Range | Live? | Description |
 | --- | --- | --- | --- | --- | --- |
@@ -424,26 +441,34 @@ aliases and the units and calibration are unchanged.
 | `daynight.night_gain` | float | 4096 | 1–1,000,000 | **Live** | Exposure index above which day ends. 4096 = 16×, "colour is hopeless". Alias: `total_gain_night_threshold`. |
 | `daynight.day_confirm_s` | int | 30 | 1–3600 | **Live** | How long the index must stay above `night_gain` before day→night. |
 | `daynight.probe_min_gap_s` | int | 600 | 60–86400 | **Live** | Minimum seconds between probes. **This is the only thing rationing the audible IR-cut click**, so the worst-case click rate is a property of the config rather than of interacting heuristics. |
-| `daynight.probe_jump_pct` | int | 50 | 1–99 | **Live** | Probe when the index falls below this percentage of the *night reference* (the level at which night was last proven). 50 = one full stop of new brightening. |
-| `daynight.probe_confirm_s` | int | 15 | 1–3600 | **Live** | …and stays there this long. Long enough to reject headlights, short enough that "light on → colour" is about `probe_confirm_s + probe_settle_s`. |
-| `daynight.probe_settle_s` | int | 8 | 1–600 | **Live** | AE settling on the day pipeline before the probe verdict is taken. One verdict, binary: below `day_gain` it sticks, otherwise it reverts immediately (bypassing `transition_s`). |
-| `daynight.ir_ratio_night` | float | 2.0 | 1.05–1000 | **Live** | Silent probe: an IR ratio `r` at or above this means the illuminator is carrying the scene — stay night, no click. `r = D(illuminator off) / D(illuminator on)`, so it is dimensionless and fleet-wide, unlike any absolute level. |
-| `daynight.ir_ratio_day` | float | 2.0 | 1.0–100 | **Live** | …and at or below this the room supplies the light. Ships **equal to** `ir_ratio_night`, so every silent probe reaches a verdict; setting it lower opens a deliberate dead zone that escalates to the audible probe instead of deciding on thin evidence. |
-| `daynight.ir_min_headroom` | int | 8 | 0–320 | **Live** | Minimum AE reserve, in log2 units (32 = one stop), for a ratio to mean anything. An AE with nothing left cannot respond to the illuminator going off and returns `r ≈ 1`, which looks exactly like daylight — measured 1.14 on a pitch-dark scene. Below this the verdict is night: being pegged at the *dark* end is itself proof. |
-| `daynight.ref_delay_s` | int | 30 | 0–3600 | **Live** | Wait after entering night before anchoring the night reference (IR LEDs settling). A floor — the anchor also waits for the reading to stop moving. |
+| `daynight.probe_confirm_s` | int | 15 | 1–3600 | **Live** | …and stays there this long. Long enough to reject headlights, short enough that "light on → colour" is about `probe_confirm_s` + the fixed probe settle time. |
 | `daynight.heartbeat_s` | int | 14400 (4h) | 300–604800 | **Live** | Probe interval while the scene is moving, independent of any reading. Deliberately flat, never doubling: this is the only bound on how long a wrong night can last. |
 | `daynight.heartbeat_max_s` | int | 43200 (12h) | 300–604800 | **Live** | Interval once the scene has demonstrably not moved since the last probe (nothing new to spend a click on) — and the hard ceiling on the deferral. Only applied while the spontaneous trigger can actually see. |
 | `daynight.boot_probe` | int | 1 | 0/1 | **Live** | `1` = one probe at boot when the persisted mode is night, turning a guess into a measurement. `0` = leave it to the first heartbeat. A persisted *day* never costs a click either way. |
-| `daynight.boot_settle_s` | int | 5 | 0–600 | **Live** | Minimum wait after thread start/re-enable before the first decision (also gated on the reading having settled). |
-| `daynight.learn` | int | 0 | 0/1 | **Live** | `1` = let the median of the last 8 confirmed-day minima raise `day_gain` when the configured value is unreachable for this scene, and persist it to `state_path`. It can only ever *raise* the threshold and is clamped below `night_gain/2`. With `0` the numbers are still collected and logged once a day. |
 | `daynight.interval_ms` | int | 2000 | 100–60000 | **Live** | Sample interval. 2 s, not the pre-2026-08-17 500 ms: the exposure index needs the `/proc` scrape every tick and no confirmation window is shorter than 8 s. |
-| `daynight.transition_s` | int | 5 | 0–3600 | **Live** | Minimum dwell between switches. A failed probe's revert bypasses it. |
 | `daynight.diagnose_thresholds` | int | 0 | 0/1 | **Live** | Warn once a day when no probe has ever confirmed day and the best day-pipeline reading is still clear of `day_gain`. |
 | `daynight.irprobe_cmd` | string(64) | `timps-irprobe` | — | File-only, not GET-readable | Board script run as `<cmd> on\|off` to drive the IR illuminator **alone**, without moving the IR-cut filter. Its presence is what arms the silent probe and the trend path; set it empty to fall back to the audible probe only. Run via `fork`+`execlp`, never a shell. |
 | `daynight.switch_cmd` | string(64) | `daynight` | — | File-only, not GET-readable | Board script run as `<cmd> day\|night` on a switch. |
 | `daynight.isp_path` | string(128) | `/proc/jz/isp/isp-m0` | — | File-only, not GET-readable | ISP exposure proc file (gain **and** integration time). |
 | `daynight.trace_path` | string(128) | `""` | — | File-only, not GET-readable | Opt-in decision-trace CSV for the replay harness. **tmpfs only**; 1 MB cap, rotated once to `<path>.1`. |
-| `daynight.state_path` | string(128) | `/etc/timps-daynight.state` | — | File-only, not GET-readable | Where `learn=1` persists the learned day levels. Written only on change and at most hourly. |
+
+### Fixed internal constants (no longer config, read-only in `GET /control`)
+
+These eight were per-camera `daynight.*` fields until the 2026-08-22
+consolidation; see the "Fixed 2026-08-22" note above. Values are the
+`DN_*` constants in `src/daynight.h`, which also carries the fleet
+measurements each was derived from.
+
+| Key (status-only) | Was type | Fixed value | What it did |
+| --- | --- | --- | --- |
+| `probe_jump_pct` | int | 50 | Probe when the index falls below this percentage of the *night reference* (the level at which night was last proven). 50 = one full stop of new brightening. |
+| `probe_settle_s` | int | 8 | AE settling on the day pipeline before the probe verdict is taken. One verdict, binary: below `day_gain` it sticks, otherwise it reverts immediately (bypassing `transition_s`). |
+| `ref_delay_s` | int | 30 | Wait after entering night before anchoring the night reference (IR LEDs settling). A floor — the anchor also waits for the reading to stop moving. |
+| `ir_ratio_night` | float | 2.0 | Silent probe: an IR ratio `r` at or above this means the illuminator is carrying the scene — stay night, no click. `r = D(illuminator off) / D(illuminator on)`, so it is dimensionless and fleet-wide, unlike any absolute level. |
+| `ir_ratio_day` | float | 2.0 | …and at or below this the room supplies the light. Deliberately equal to `ir_ratio_night`, so every silent probe reaches a verdict; a reading between the two is inconclusive and escalates to the audible probe instead of deciding on thin evidence. |
+| `ir_min_headroom` | int | 8 | Minimum AE reserve, in log2 units (32 = one stop), for a ratio to mean anything. An AE with nothing left cannot respond to the illuminator going off and returns `r ≈ 1`, which looks exactly like daylight — measured 1.14 on a pitch-dark scene. Below this the verdict is night: being pegged at the *dark* end is itself proof. |
+| `boot_settle_s` | int | 5 | Minimum wait after thread start/re-enable before the first decision (also gated on the reading having settled). |
+| `transition_s` | int | 5 | Minimum dwell between switches. A failed probe's revert bypasses it. |
 
 ## `general.*` — daemon-wide settings
 

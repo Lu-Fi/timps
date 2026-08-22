@@ -67,7 +67,15 @@ no click, not rate-limited), audible IR-cut probe only when the ratio could
 not answer - and the audible one alone is rate-limited by `probe_min_gap_s`.
 The audible verdict is binary against `day_gain` (1594-1617).
 
-### Config field reference (all daynight.* keys from src/config.c:967-1009)
+### Config field reference (all daynight.* keys from src/config.c)
+
+**Stale as of the 2026-08-22 config consolidation** (`learn`/`state_path`
+removed outright, eight more fields hardcoded - see
+`dev_notes/DAYNIGHT_DECISION_2026-08-17.md` and `CHANGELOG.md` Unreleased).
+Line numbers below predate that change (they were verified against HEAD
+`6e49752`, ~2050 lines; `daynight.c` is shorter now that the learning
+subsystem is gone) and have NOT been re-walked line by line - treat them as
+approximate, re-grep before trusting a specific line.
 
 | field | path | what it does (daynight.c) | higher value means |
 |---|---|---|---|
@@ -75,27 +83,33 @@ The audible verdict is binary against `day_gain` (1594-1617).
 | `mode` | all | `auto` vs `schedule` (calendar-only, 1288) | - |
 | `time_night_start`/`time_day_start` | B, schedule | fixed local window (609-619); wins over sun | - |
 | `sun_latitude`/`sun_longitude`, `sun_*_offset_min` | B, schedule | sun calendar (627-732); heartbeat dawn pull-in (1896-1898) | - |
-| `day_gain` (alias `total_gain_day_threshold`) | probe verdict (C/T/B/D) | audible-probe verdict `s < bar` (1600), boot-day confirm (1383); base of `dn_day_bar()` (773-785) | day confirmed more easily = faster to colour (false day self-corrects via A) |
-| `night_gain` (alias `total_gain_night_threshold`) | A | day->night threshold (1628); also silent-probe day projection cap (1495) and learn cap `night_gain/2` (782-783) | stays in day/colour longer |
+| `day_gain` (alias `total_gain_day_threshold`) | probe verdict (C/T/B/D) | audible-probe verdict `s < bar` (1600), boot-day confirm (1383); `bar` is just `dn->day_gain` now that `dn_day_bar()`/`learn` are gone | day confirmed more easily = faster to colour (false day self-corrects via A) |
+| `night_gain` (alias `total_gain_night_threshold`) | A | day->night threshold (1628); also silent-probe day projection cap (1495) | stays in day/colour longer |
 | `day_confirm_s` | A | hold time above `night_gain` (1631) | more cautious day->night |
 | `probe_min_gap_s` | audible probe | ONLY rate limit on audible clicks (1821-1822); floor 60 s | fewer clicks, slower retry after a failed probe |
-| `probe_jump_pct` | C | trigger bar `ref*pct/100` (1698); also `dn_c_sighted` (449), silent-probe lowering bar (1451, 1509), status `day_trigger` (1919) | MORE sensitive (a smaller brightening fires; 99 = any dip) |
 | `probe_confirm_s` | C, T, B | hold time for C (1702) and T (1739); size of the tumbling window feeding the heartbeat deferral evidence (1170) | needs longer-held evidence = fewer false probes, slower reaction |
-| `probe_settle_s` | probe verdict | AE settle before the verdict: silent (1797), audible (1836), re-read after enforce (1214) | later but more settled verdicts |
-| `ref_delay_s` | C | wait before anchoring `ref` after night entry (1355, 1868, 1888) | path C armed later |
-| `ir_ratio_night` | silent probe | `r >= this` = night, no click (1430) | silent night-confirm harder -> more audible escalations |
-| `ir_ratio_day` | silent probe | `r <= this` (+ headroom) = day (1486) | silent day verdict easier (faster, riskier) |
-| `ir_min_headroom` | silent probe + clip guard | `dn_clipped()` bound (458-461), day-verdict requirement (1486), pegged-dark proof (1533) | more readings treated as clips = more conservative |
 | `heartbeat_s` | B | base interval (1749), defer step (1756), reschedule after night entry (1895) and every silent night verdict (1427, 1462, 1521, 1544) | wrong night checked less often |
 | `heartbeat_max_s` | B | hard cap on deferral, measured since the last AUDIBLE probe (1753-1755) | flat scenes probed less often |
 | `boot_probe` | D | 1 = probe a persisted night at boot (1374) | - |
-| `boot_settle_s` | D | minimum AE settle before the boot decision (1324) | later boot decision |
-| `learn` | verdict bar | 1 = apply learned median to `dn_day_bar()` (775) and persist (820); collection+daily log always run | - |
-| `state_path` | learning | learn file, loaded at start (1048), saved <=1/h atomically (818-844) | - |
 | `interval_ms` | all | tick (1088), default 2000 | slower sampling everywhere |
-| `transition_s` | all switches | dwell between switches (1792, 1823-1824, 1848-1849); probe reverts bypass it (`force`) | fewer flips, slower |
 | `diagnose_thresholds` | diagnostics | arms the 3-failed-probes warning (885) | - |
 | `switch_cmd`/`isp_path`/`trace_path`/`irprobe_cmd` | plumbing | board script (1834), scrape source (311), trace recorder (901), silent probe (1793); all F_NOGET, not POSTable | - |
+
+**Removed outright (2026-08-22):** `learn`, `state_path` - the learning
+subsystem's own safety clamp (`night_gain/2`) could not raise `day_gain` far
+enough for the cameras that actually needed it
+(`private/fleet/camera-fleet.md`); `diagnose_thresholds` above is what is
+left, naming the value to raise by hand instead of raising it automatically.
+
+**Hardcoded, no longer POST-able or config-file-settable (2026-08-22):**
+`probe_jump_pct` (50), `probe_settle_s` (8), `ref_delay_s` (30),
+`ir_ratio_night` (2.0), `ir_ratio_day` (2.0), `ir_min_headroom` (8),
+`boot_settle_s` (5), `transition_s` (5) - every camera measured wanted the
+same value, so these are now the `DN_*` constants in `src/daynight.h`
+instead of `ms_daynight_cfg` struct fields. Still visible read-only in
+`GET /control`'s `daynight` status object for diagnostics. A config file
+that still sets one of these to something other than its fixed value gets
+one warning naming the value now in effect.
 
 No dead config: every field in the table is read by the current code.
 `day_trigger` is NOT in this table because it is not config - see below.
@@ -107,16 +121,16 @@ Read-only, computed per tick (control.c:849-935, daynight.c:1917-1927):
 | status key | internal | meaning |
 |---|---|---|
 | `night_baseline` | `ref` | the PROVEN night level; -1 outside night. Legacy key name - it is NOT the old drifting baseline |
-| `day_trigger` | `ref * probe_jump_pct/100` | the path-C probe bar; -1 outside night. Legacy key name - it has nothing to do with `day_gain` and cannot be set |
+| `day_trigger` | `ref * DN_PROBE_JUMP_PCT/100` | the path-C probe bar; -1 outside night. Legacy key name - it has nothing to do with `day_gain`; `DN_PROBE_JUMP_PCT` is a fixed constant as of 2026-08-22 (was the config field `probe_jump_pct`), so this was never settable and still is not |
 | `exposure` | `sm.d` | the RAW exposure index D of the last sample (not the EMA `s` - the trace logs both) |
 | `total_gain` | `sm.gain` | gain half only, for continuity with old plots |
 | `brightness` | `sm.bright` | thingino formula, display only, no longer a decision path |
 | `isp_desync` | debounced `cur != sm.isp` | -1 unknown / 0 in sync / 1 standing |
 
-Everything else in the object is a config echo. Caveat: the echoed
-`day_gain` is the CONFIGURED value; with `learn=1` the applied verdict bar
-(`dn_day_bar()`) can be higher and is visible only in the daily
-"learned:" log line, not in `/control`.
+Everything else in the object is a config echo (the eight fixed `DN_*`
+constants included - see the field reference above). No caveat on `day_gain`
+any more: the 2026-08-22 consolidation removed `learn`, so the echoed value
+is always the one actually applied.
 
 ### Deviations from the redesign doc not recorded in its §12
 

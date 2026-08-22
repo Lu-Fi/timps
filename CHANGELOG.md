@@ -131,6 +131,59 @@ semantic versioning.
   them and doing nothing - the failure mode that hid the `min_qp`/`max_qp` gap
   until 0a8bb9f.
 
+### Changed
+
+- **day/night: the config surface is consolidated, ten keys smaller**
+  (`src/daynight.c`, `src/daynight.h`, `src/config.h`, `src/config.c`,
+  `src/control.c`, `docs/wiki/Configuration-Reference.md`,
+  `docs/wiki/Day-Night.md`, `docs/wiki/HTTP-Control-API.md`,
+  `dev_notes/TODO.md`, `timps.conf.example`). Two different reasons, two
+  different treatments:
+
+  **`daynight.learn`/`daynight.state_path` are removed outright.** The
+  learning subsystem recorded each confirmed day's lowest exposure reading
+  and, with `learn=1`, let the median of the last 8 raise `day_gain` when the
+  configured value turned out to be unreachable for a scene - the failure
+  that had three cameras stuck in night on 2026-08-16. In practice its own
+  safety clamp (never raise the threshold past `night_gain/2`) could not
+  raise it far enough for the cameras that actually needed it: the live
+  fleet measurements show `cam-sz`/`cam-wohn-ofen` need `day_gain` up
+  around 2528-3238 while the clamp caps a raised value at `night_gain/2` =
+  2048 under their current `night_gain`
+  (`private/fleet/camera-fleet.md`, "Konsequenz für die Schwellwerte"). A
+  mechanism that cannot fix its own motivating incident is not worth the
+  config surface, the state file, or the daily "learned:" log line it cost
+  to keep around. `daynight.diagnose_thresholds` covers the same failure
+  mode today - it names the value to raise `day_gain` above instead of
+  trying to raise it automatically, which is the honest version of what
+  `learn` was attempting.
+
+  **Eight more fields become fixed internal constants**: `probe_jump_pct`,
+  `probe_settle_s`, `ref_delay_s`, `ir_ratio_night`, `ir_ratio_day`,
+  `ir_min_headroom`, `boot_settle_s`, `transition_s` (now `DN_PROBE_JUMP_PCT`
+  etc in `src/daynight.h`, the one place all eight live so `control.c`'s
+  status JSON and `config.c`'s grace-period warning can't drift apart). Every
+  one of these was already documented in code as camera-invariant: the
+  `ir_ratio_*` pair is a dimensionless ratio (`r = D(illuminator off) /
+  D(illuminator on)`) that "needs no per-camera calibration" by construction,
+  re-derived from a twelve-camera dusk-to-dawn campaign where anything in
+  1.8..2.2 gave identical verdicts across the whole night; the settle-time
+  floors (`ref_delay_s`/`boot_settle_s`/`transition_s`) and the probe
+  economy's own bar/settle time (`probe_jump_pct`/`probe_settle_s`) are AE
+  and IR-LED physics, not per-installation tuning. A config key nobody ever
+  needed to change per camera is not a config key.
+
+  Both groups keep a config-file **grace period**: a `timps.conf` that still
+  sets one of the ten old keys is parsed and the line is ignored rather than
+  landing in the generic "unknown key" warning, so an old config does not
+  read like it has a typo. `learn`/`state_path` warn unconditionally (the
+  mechanism they controlled is gone); the eight hardcoded fields warn only
+  when the configured value differs from the constant it became, since the
+  constant's value equals the field's old default - a config that never
+  touched one of these is silently unaffected, matching its default exactly.
+  All eight remain visible read-only in `GET /control`'s `daynight` status
+  object for diagnostics; they are simply no longer POST-able or
+  config-file-tunable.
 
 ## [1.9.2] - 2026-08-21
 
