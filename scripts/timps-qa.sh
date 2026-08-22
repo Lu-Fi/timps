@@ -359,6 +359,44 @@ FFWARN_RE='non-monoton(ous|ic)|discontinuit|corrupt|error while|decode_slice|con
 # that turns the caller's $((...)) into a fatal arithmetic syntax error.
 ffwarn_count() { local n; n=$(grep -icE "$FFWARN_RE" "$1" 2>/dev/null); printf '%s' "${n:-0}"; }
 
+# enc_measure <rtsp-path> <dur> <tag> -> "<kbps> <cv>"
+#   kbps = delivered VIDEO bitrate (payload bytes over the media timespan;
+#          audio excluded so it is comparable with the configured video
+#          bitrate)
+#   cv   = coefficient of variation of the per-second byte totals. Per-FRAME
+#          variance is dominated by I-vs-P size in every rc mode and says
+#          nothing; per-SECOND variance is what actually separates CBR from
+#          VBR.
+# Shared by 8b's RC4 (live-apply verification, no restart) and 8g (the fuller
+# persist+restart route) - both need "what did the encoder actually deliver",
+# neither can get it from an SDK struct readback (see RC4's own comment on
+# why that readback is unreliable without an active client pulling frames).
+enc_measure() {
+	local pth="$1" dur="$2" tag="$3"
+	local f="$OUTDIR/enc_${tag}.mkv" c="$OUTDIR/enc_${tag}.csv"
+	timeout -k 5 "$((dur+15))" ffmpeg -hide_banner -nostdin -y -loglevel warning \
+		-rtsp_transport tcp -i "$(rtsp_url "$pth")" -t "$dur" -an -c copy "$f" \
+		</dev/null 2>"$OUTDIR/enc_${tag}.log" || true
+	[ -s "$f" ] || return 1
+	ffprobe -v error -select_streams v:0 -show_entries packet=pts_time,size \
+		-of csv=p=0 "$f" 2>/dev/null > "$c"
+	[ -s "$c" ] || return 1
+	awk -F, '{t=$1+0; s=$2+0; if(n++==0)t0=t; tl=t; sum+=s; b[int(t)]+=s}
+	END{
+		span=tl-t0; if(span<=0){print "0 0"; exit}
+		kbps=sum*8/span/1000;
+		# drop the first and last (partial) second buckets
+		m=0; c2=0; for(k in b){ ks[c2++]=k }
+		lo=1e18; hi=-1e18; for(i=0;i<c2;i++){ if(ks[i]+0<lo)lo=ks[i]+0; if(ks[i]+0>hi)hi=ks[i]+0 }
+		nn=0; for(k in b){ if(k+0>lo && k+0<hi){ v[nn++]=b[k]; m+=b[k] } }
+		if(nn<3){ printf "%.0f 0\n", kbps; exit }
+		m/=nn; sd=0; for(i=0;i<nn;i++) sd+=(v[i]-m)*(v[i]-m);
+		sd=sqrt(sd/nn);
+		printf "%.0f %.3f\n", kbps, (m>0)?sd/m:0;
+	}' "$c"
+	rm -f "$f"
+}
+
 # ---------------------------------------------------------- on-device telemetry
 # dev_proc_sample [window_s] -> "<rss_kB> <fds> <threads> <cpu_pct>", empty
 # without SSH or if timpsd isn't running.
@@ -2617,52 +2655,75 @@ else
 			rc_probe "$rc_k" "$((rc_cur-1))" "$rc_k"
 		done
 
-		# --- RC4: bitrate, and the kbps-vs-bit/s question -------------------
-		# 1bdd1b3 could not decide statically whether SetDefaultParam (boot)
-		# and SetChnBitRate (live) agree on the unit: the HAL multiplies
-		# videoN.bitrate by 1000 for the live call and hands SetDefaultParam
-		# the kbps value unconverted. If the SDK stores both raw, the boot path
-		# underfeeds the encoder by 1000x - or the live path overfeeds it.
-		# The readback settles it without any stream measurement: compute
-		# held/configured BEFORE and AFTER a live POST. Both paths agreeing
-		# means the same ratio twice; disagreeing means the ratio jumps by
-		# ~1000, which is the bug and is reported as such.
+		# --- RC4: bitrate, verified against the actual bitstream ------------
+		# 1bdd1b3 left open whether SetDefaultParam (boot) and SetChnBitRate
+		# (live) agree on the bitrate unit. The first version of this check
+		# tried to settle it from encoder.1.rc.bitrate alone (held/configured
+		# before vs. after a live POST) - no stream, no wait. That version is
+		# WRONG: encoder.<n>.rc.bitrate does not advance until the channel
+		# actually encodes a frame, which on an idle channel (no RTSP/HTTP
+		# client pulling it) never happens - measured 2026-08-22 on a T31:
+		# eight seconds of polling after a live POST, register frozen at the
+		# OLD value throughout, while the real substream (pulled with ffmpeg
+		# for the same eight seconds) had already moved. The register is a
+		# fine cross-check for the fields that DO update synchronously
+		# (min_qp/max_qp/i_bias_lvl, see RC3/RC5), just not for this one - so
+		# this check now measures the bitstream directly, the same way 8g
+		# proves the persist+restart route, and grades on THAT.
 		if ! rc_live_has bitrate; then
 			info "  video1.bitrate: not in caps.video_live on this $rc_plat build - restart-bound here"
 			lv_mark_gated video "not-in-caps.video_live-on-$rc_plat" bitrate
+		elif ! have ffmpeg || ! have ffprobe; then
+			skip "video1.bitrate live-apply verification needs ffmpeg+ffprobe (real bitstream measurement) - not found"
+			lv_mark_gated video "no-ffmpeg-ffprobe" bitrate
 		else
 			rc_b_cfg=$(jget "$LV_BASE" video.1.bitrate)
-			rc_b_hold=$(jget "$LV_BASE" encoder.1.rc.bitrate)
-			rc_b_new=$(awk -v c="$rc_b_cfg" 'BEGIN{v=int(c*0.75); if(v<16)v=16; if(v==c)v=c-1; print v}')
-			rf="$OUTDIR/rc_post_bitrate.json"; gf="$OUTDIR/rc_read_bitrate.json"
-			LV_PENDING="{\"video\":{\"1\":{\"bitrate\":$rc_b_cfg}}}"
-			code=$(lv_post_r "{\"video\":{\"1\":{\"bitrate\":$rc_b_new}}}" "$rf")
-			lv_mark video bitrate
-			lv_get "$gf"
-			rc_b_hold2=$(jget "$gf" encoder.1.rc.bitrate)
-			if [ "$code" != "200" ]; then
-				bad "video1.bitrate: POST(live) HTTP $code"
-			elif rc_defer_has "$rf" video1.bitrate; then
-				bad "video1.bitrate is in caps.video_live but the POST reply DEFERRED it (keys=$(jget "$rf" deferred_keys)) - SetChnBitRate was refused or the channel is not running; the platform advertises a live path the runtime did not take"
-			elif [ -z "$rc_b_hold" ] || [ -z "$rc_b_hold2" ]; then
-				warn "video1.bitrate: graded applied-live but encoder.1.rc.bitrate is not carried by the current mode ($(jget "$gf" encoder.1.rc.rc_mode)) - cannot confirm the value or settle the unit question"
-			else
-				rc_verdict=$(awk -v hb="$rc_b_hold" -v cb="$rc_b_cfg" -v ha="$rc_b_hold2" -v ca="$rc_b_new" 'BEGIN{
-					if(cb<=0||ca<=0||hb<=0){print "nodata"; exit}
-					r0=hb/cb; r1=ha/ca;
-					printf "%.4g %.4g %.3f\n", r0, r1, (r0>0)?r1/r0:0 }')
-				rc_r0=0; rc_r1=0; rc_rr=0
-				[ "$rc_verdict" = nodata ] || read -r rc_r0 rc_r1 rc_rr <<<"$rc_verdict"
-				if [ "$rc_verdict" = nodata ]; then
-					warn "video1.bitrate: readback present but non-positive - cannot compute the unit ratio"
-				elif fcmp "$rc_rr" ge 0.9 && fcmp "$rc_rr" le 1.1; then
-					ok "video1.bitrate=$rc_b_new applied LIVE and the encoder followed (held $rc_b_hold -> $rc_b_hold2); boot and live paths agree on the unit (held/configured $rc_r0 vs $rc_r1, so the SDK stores $( fcmp "$rc_r1" ge 500 && echo 'bit/s' || echo 'kbps' ))"
-				else
-					bad "video1.bitrate: the BOOT path and the LIVE path disagree on the bitrate unit - held/configured was $rc_r0 at bring-up and is $rc_r1 after a live POST (a ${rc_rr}x jump). SetDefaultParam is fed kbps while SetChnBitRate is fed bit/s (hal_ingenic.c); one of the two is off by 1000, which means either the boot config underfeeds the encoder 1000x or the live POST overfeeds it. This is the exact question dev_notes/TODO.md and 1bdd1b3 left open - a daemon bug, not a test artifact"
-				fi
+			rc_dur="${RC4_DUR:-15}"
+			rc_pre_kbps=""
+			if res0=$(enc_measure "$PATH_SUB" "$rc_dur" rc4_pre); then
+				read -r rc_pre_kbps rc_pre_cv <<<"$res0"
+				info "  video1.bitrate: substream currently delivers ${rc_pre_kbps} kbps at a configured ${rc_b_cfg} kbps"
 			fi
-			rc_pid_check video1.bitrate
-			lv_post "$LV_PENDING" >/dev/null; LV_PENDING=""
+			if [ -z "$rc_pre_kbps" ] || ! fcmp "$rc_pre_kbps" ge 64; then
+				# no usable baseline (stream unreachable, or already so low
+				# that 0.4x would land under the videoN.bitrate clamp of 16) -
+				# same escape 8g takes, for the same reason: an unprovable
+				# direction must not produce a hard FAIL.
+				skip "video1.bitrate: could not measure a usable substream baseline (got '${rc_pre_kbps:-none}' kbps) - cannot pick a target the encoder is provably forced to follow"
+				lv_mark_gated video "no-usable-baseline" bitrate
+			else
+				rc_b_new=$(awk -v m="$rc_pre_kbps" 'BEGIN{v=int(m*0.4); if(v<16)v=16; print v}')
+				rf="$OUTDIR/rc_post_bitrate.json"
+				LV_PENDING="{\"video\":{\"1\":{\"bitrate\":$rc_b_cfg}}}"
+				code=$(lv_post_r "{\"video\":{\"1\":{\"bitrate\":$rc_b_new}}}" "$rf")
+				lv_mark video bitrate
+				if [ "$code" != "200" ]; then
+					bad "video1.bitrate: POST(live) HTTP $code"
+				elif rc_defer_has "$rf" video1.bitrate; then
+					bad "video1.bitrate is in caps.video_live but the POST reply DEFERRED it (keys=$(jget "$rf" deferred_keys)) - SetChnBitRate was refused or the channel is not running; the platform advertises a live path the runtime did not take"
+				else
+					rc_settle=$(awk -v g="$(jget "$LV_BASE" video.1.gop)" -v f="$(jget "$LV_BASE" video.1.fps)" \
+						'BEGIN{ s=(f>0&&g>0)? 3*g/f : 6; if(s<4)s=4; if(s>20)s=20; printf "%.0f", s }')
+					info "  video1.bitrate=$rc_b_new went in LIVE (deferred:0) - settling ${rc_settle}s (~3 GOPs) for the next-IDR latency before measuring"
+					sleep "$rc_settle"
+					if res1=$(enc_measure "$PATH_SUB" "$rc_dur" rc4_post); then
+						read -r rc_post_kbps rc_post_cv <<<"$res1"
+						rc_hi=$(awk -v n="$rc_b_new" 'BEGIN{printf "%.0f", n*1.5}')
+						rc_keep=$(awk -v b="$rc_pre_kbps" 'BEGIN{printf "%.0f", b*0.8}')
+						if fcmp "$rc_post_kbps" le "$rc_hi"; then
+							ok "video1.bitrate=$rc_b_new applied LIVE and the substream actually follows it - measured ${rc_pre_kbps} -> ${rc_post_kbps} kbps (target was cut to ${rc_b_new}, delivered within 1.5x of it)"
+						elif fcmp "$rc_post_kbps" ge "$rc_keep"; then
+							bad "video1.bitrate: substream still delivers ${rc_post_kbps} kbps (was ${rc_pre_kbps}) after a live cut to ${rc_b_new} - the value was accepted and reported as applied live (deferred:0) but the encoder is ignoring it (the 340fb1f/ff28ee2 class - 22832f1's SetChnBitRate returning success without effect, invisible to any struct readback)"
+						else
+							warn "video1.bitrate: delivered ${rc_post_kbps} kbps moved toward the requested ${rc_b_new} (from ${rc_pre_kbps}) but did not get within 1.5x of it - rate control is loose on this SoC/scene, or ${rc_dur}s is too short a settle for this GOP length"
+						fi
+					else
+						warn "video1.bitrate: could not measure the substream after the live POST (stream drop?) - cannot confirm the live-apply path had a real effect"
+					fi
+				fi
+				rc_pid_check video1.bitrate
+				lv_post "$LV_PENDING" >/dev/null; LV_PENDING=""
+			fi
 		fi
 
 		# --- RC5: i_bias_lvl, the single most explicitly-unverified mapping --
@@ -3273,39 +3334,11 @@ else
 				return 0
 			}
 			ENC_ROUTE=restart   # overwritten per enc_commit; names the route the verdicts judged
-			# enc_measure <rtsp-path> <dur> <tag> -> "<kbps> <cv>"
-			#   kbps = delivered VIDEO bitrate (payload bytes over the media
-			#          timespan; audio excluded so it is comparable with the
-			#          configured video bitrate)
-			#   cv   = coefficient of variation of the per-second byte totals.
-			#          Per-FRAME variance is dominated by I-vs-P size in every
-			#          rc mode and says nothing; per-SECOND variance is what
-			#          actually separates CBR from VBR.
-			enc_measure() {
-				local pth="$1" dur="$2" tag="$3"
-				local f="$OUTDIR/enc_${tag}.mkv" c="$OUTDIR/enc_${tag}.csv"
-				timeout -k 5 "$((dur+15))" ffmpeg -hide_banner -nostdin -y -loglevel warning \
-					-rtsp_transport tcp -i "$(rtsp_url "$pth")" -t "$dur" -an -c copy "$f" \
-					</dev/null 2>"$OUTDIR/enc_${tag}.log" || true
-				[ -s "$f" ] || return 1
-				ffprobe -v error -select_streams v:0 -show_entries packet=pts_time,size \
-					-of csv=p=0 "$f" 2>/dev/null > "$c"
-				[ -s "$c" ] || return 1
-				awk -F, '{t=$1+0; s=$2+0; if(n++==0)t0=t; tl=t; sum+=s; b[int(t)]+=s}
-				END{
-					span=tl-t0; if(span<=0){print "0 0"; exit}
-					kbps=sum*8/span/1000;
-					# drop the first and last (partial) second buckets
-					m=0; c2=0; for(k in b){ ks[c2++]=k }
-					lo=1e18; hi=-1e18; for(i=0;i<c2;i++){ if(ks[i]+0<lo)lo=ks[i]+0; if(ks[i]+0>hi)hi=ks[i]+0 }
-					nn=0; for(k in b){ if(k+0>lo && k+0<hi){ v[nn++]=b[k]; m+=b[k] } }
-					if(nn<3){ printf "%.0f 0\n", kbps; exit }
-					m/=nn; sd=0; for(i=0;i<nn;i++) sd+=(v[i]-m)*(v[i]-m);
-					sd=sqrt(sd/nn);
-					printf "%.0f %.3f\n", kbps, (m>0)?sd/m:0;
-				}' "$c"
-				rm -f "$f"
-			}
+			# enc_measure is now a shared helper (see its definition near
+			# ffwarn_count) - RC4 needs the identical real-bitstream
+			# measurement for the live-apply path and duplicating it here
+			# drifting silently apart from RC4's copy is exactly the failure
+			# class FFWARN_RE's own comment warns about.
 			enc_dur="${ENC_DUR:-25}"
 			enc_bcur=$(jget "$LV_BASE" video.1.bitrate)
 			enc_rcur=$(jget "$LV_BASE" video.1.rc_mode)
