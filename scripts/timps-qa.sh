@@ -1820,9 +1820,11 @@ else
 	flip_int()  { awk -v lo="$1" -v hi="$2" -v c="$3" 'BEGIN{
 		m=int((lo+hi)/2); if(m!=c){print m} else if(m<hi){print m+1} else{print m-1}}'; }
 	flip_bool() { [ "${1:-0}" = "1" ] && echo 0 || echo 1; }
-	# T_FLT fields (e.g. daynight.ir_ratio_*) need their own flip: flip_int's
-	# int() would collapse a 1.5..3.0 range onto a single value and the
-	# read-back compare would then pass without anything having changed.
+	# T_FLT fields (e.g. daynight.day_gain/night_gain) need their own flip:
+	# flip_int's int() would collapse a fractional range onto a single value
+	# and the read-back compare would then pass without anything having
+	# changed. (The example used to be daynight.ir_ratio_*, which the
+	# 2026-08-22 consolidation turned into a fixed constant.)
 	flip_flt()  { awk -v lo="$1" -v hi="$2" -v c="$3" 'BEGIN{
 		m=(lo+hi)/2; m=int(m*10+0.5)/10;
 		if(m!=c+0){printf "%g", m} else {printf "%g", (m+0.1<=hi)?m+0.1:m-0.1}}'; }
@@ -2047,21 +2049,51 @@ else
 	LV_RESTORE_SOFT=0
 
 	# --- daynight: the detection thread reads these live from config. Test the
-	# numeric thresholds + tunables (day/night gain thresholds, gain %, delay);
-	# "enabled" reflects the thread's own state (poll lag) so it is left out ---
+	# thresholds + tunables that are still per-camera settable; "enabled"
+	# reflects the thread's own state (poll lag) so it is left out.
+	# day_gain/night_gain are T_FLT in config.c and are probed as such.
+	#
+	# NOT here any more: probe_jump_pct, probe_settle_s, ref_delay_s,
+	# ir_ratio_night, ir_ratio_day, ir_min_headroom and boot_settle_s became
+	# fixed DN_* constants on 2026-08-22 (daynight.h), and daynight.learn went
+	# away with the learning subsystem. A round-trip probe on any of them is
+	# not a weaker test, it is a FAILING one: POSTed alone the key is a 422,
+	# POSTed alongside valid keys (which is what lv_section does) the request
+	# is a 200 and the key is silently dropped - so the read-back returns the
+	# constant and lv_section reports "not applied". They are asserted
+	# read-only immediately below instead, which is all there is left to
+	# assert about them. ---
 	lv_section daynight '{"daynight":' '}' daynight \
-		"day_gain int 100 900" \
-		"night_gain int 2000 8000" \
-		"day_confirm_s int 1 120" "ref_delay_s int 0 60" \
-		"boot_settle_s int 0 60" "boot_probe int 0 1" \
-		"probe_min_gap_s int 60 3600" "probe_jump_pct int 1 99" \
-		"probe_confirm_s int 1 120" "probe_settle_s int 1 60" \
+		"day_gain flt 100 900" \
+		"night_gain flt 2000 8000" \
+		"day_confirm_s int 1 120" "boot_probe int 0 1" \
+		"probe_min_gap_s int 60 3600" "probe_confirm_s int 1 120" \
 		"heartbeat_s int 300 86400" "heartbeat_max_s int 300 604800" \
-		"learn int 0 1" \
-		"ir_ratio_night flt 1.5 8" "ir_ratio_day flt 1.1 3" \
-		"ir_min_headroom int 0 320" \
 		"sun_sunrise_offset_min int -1440 1440" \
 		"sun_sunset_offset_min int -1440 1440"
+
+	# --- daynight fixed constants (2026-08-22 consolidation): read-only, and
+	# GET /control must report the compiled DN_* value for each. control.c
+	# prints these straight from the daynight.h constants, so this catches the
+	# one way they can still go wrong - a value edited in the header without
+	# the status/config-warning side following it, or the reverse. Floats come
+	# through "%g", hence "2" and not "2.0". ---
+	dn_const() {   # <key> <expected>
+		dnc_n=$((dnc_n+1))
+		local got; got=$(jget "$LV_BASE" "daynight.$1")
+		if [ "$got" = "$2" ]; then dnc_ok=$((dnc_ok+1))
+		else bad "daynight.$1: status reports '$got', want the fixed constant '$2' (DN_* in daynight.h vs control.c drift, or the key vanished from the status object)"; fi
+	}
+	dnc_ok=0; dnc_n=0
+	dn_const probe_jump_pct  50
+	dn_const probe_settle_s  8
+	dn_const ref_delay_s     30
+	dn_const ir_ratio_night  2
+	dn_const ir_ratio_day    2
+	dn_const ir_min_headroom 8
+	dn_const boot_settle_s   5
+	dn_const transition_s    5
+	[ "$dnc_ok" = "$dnc_n" ] && ok "daynight fixed constants: all $dnc_n report their compiled DN_* value (50/8/30/2/2/8/5/5) - not per-camera settable since 2026-08-22"
 
 	# --- daynight TIME/SUN path (F-08): the mode enum + the string/float keys the
 	# time/sun modes use. None fit the generic lv_section round-trip - "mode" is
@@ -2120,7 +2152,6 @@ else
 		if [ "${dn_en:-0}" != "1" ]; then
 			skip "day/night transition test: daynight.enabled=0 on this camera (the detection thread is not running, nothing would ever switch)"
 		else
-			dn_tr_cur=$(jget "$LV_BASE" daynight.transition_s); dn_tr_cur=${dn_tr_cur:-5}
 			dn_mode_cur2=$(jget "$LV_BASE" daynight.dn_mode)
 			tns_cur2=$(jget "$LV_BASE" daynight.time_night_start)
 			tds_cur2=$(jget "$LV_BASE" daynight.time_day_start)
@@ -2136,8 +2167,17 @@ else
 			# restored to auto but the thread banner then read
 			# calendar="time window" 14:07..12:05, which in auto mode silently
 			# pulls the heartbeat in to a fabricated dawn).
-			dn_win_restore="\"time_night_start\":\"$tns_cur2\",\"time_day_start\":\"$tds_cur2\","
-			dn_full_restore="{\"daynight\":{\"mode\":\"$dn_mode_cur2\",${dn_win_restore}\"transition_s\":$dn_tr_cur}}"
+			# transition_s used to be forced to 2 here (and restored) so the
+			# mode-switch dwell would not eat into the wait bounds below. It
+			# became the fixed DN_TRANSITION_S=5 on 2026-08-22: the POST is
+			# now silently dropped (mixed body -> HTTP 200, value unchanged)
+			# and the restore compared 5 against 5, so the block read green
+			# while asserting nothing. Dropped on both sides. The real dwell
+			# is 5 s and the sampling interval 2 s, i.e. at most ~7 s from a
+			# window POST to the decision - an order of magnitude inside the
+			# 60 s dn_wait bounds used below, so no bound needs widening.
+			dn_win_restore="\"time_night_start\":\"$tns_cur2\",\"time_day_start\":\"$tds_cur2\""
+			dn_full_restore="{\"daynight\":{\"mode\":\"$dn_mode_cur2\",${dn_win_restore}}}"
 			LV_PENDING="$dn_full_restore"
 
 			# Windows are evaluated against the CAMERA's clock, which is not
@@ -2203,7 +2243,7 @@ else
 			dn_pre_j="$OUTDIR/lv_dn_pre.json"; lv_get "$dn_pre_j"
 			if [ "$(jget "$dn_pre_j" daynight.mode)" = "1" ]; then
 				dn_ns0=$(dn_shift "$dn_now" 120); dn_ds0=$(dn_shift "$dn_now" -2)
-				lv_post "{\"daynight\":{\"mode\":\"time\",\"transition_s\":2,\"time_night_start\":\"$dn_ns0\",\"time_day_start\":\"$dn_ds0\"}}" >/dev/null
+				lv_post "{\"daynight\":{\"mode\":\"time\",\"time_night_start\":\"$dn_ns0\",\"time_day_start\":\"$dn_ds0\"}}" >/dev/null
 				if dn_wait 0 60 >/dev/null; then
 					dn_wait_rm 0 10 >/dev/null || true
 					info "  day/night: camera started in NIGHT - forced DAY first so both transitions below are fresh edges"
@@ -2222,8 +2262,8 @@ else
 
 			# --- force NIGHT: a window that contains "now" ------------------
 			dn_ns=$(dn_shift "$dn_now" -2); dn_ds=$(dn_shift "$dn_now" 120)
-			code=$(lv_post "{\"daynight\":{\"mode\":\"time\",\"transition_s\":2,\"time_night_start\":\"$dn_ns\",\"time_day_start\":\"$dn_ds\"}}")
-			info "  day/night: night window $dn_ns -> $dn_ds (now=$dn_now is inside it), transition_s=2, HTTP $code"
+			code=$(lv_post "{\"daynight\":{\"mode\":\"time\",\"time_night_start\":\"$dn_ns\",\"time_day_start\":\"$dn_ds\"}}")
+			info "  day/night: night window $dn_ns -> $dn_ds (now=$dn_now is inside it), dwell DN_TRANSITION_S=5s, HTTP $code"
 			if t_night=$(dn_wait 1 60); then
 				ok "day/night: camera switched to NIGHT within ${t_night}s of the forced time window (daynight.mode=1)"
 				dn_rm_edge=0
@@ -2240,7 +2280,7 @@ else
 
 			# --- force DAY: invert the window --------------------------------
 			dn_ns2=$(dn_shift "$dn_now" 120); dn_ds2=$(dn_shift "$dn_now" -2)
-			code=$(lv_post "{\"daynight\":{\"mode\":\"time\",\"transition_s\":2,\"time_night_start\":\"$dn_ns2\",\"time_day_start\":\"$dn_ds2\"}}")
+			code=$(lv_post "{\"daynight\":{\"mode\":\"time\",\"time_night_start\":\"$dn_ns2\",\"time_day_start\":\"$dn_ds2\"}}")
 			info "  day/night: day window (night $dn_ns2 -> day $dn_ds2), HTTP $code"
 			if t_day=$(dn_wait 0 60); then
 				ok "day/night: camera switched back to DAY within ${t_day}s (daynight.mode=0)"
@@ -2323,16 +2363,16 @@ else
 			# --- restore -------------------------------------------------------
 			lv_post "$dn_full_restore" >/dev/null
 			dnr="$OUTDIR/lv_dn_restore.json"; lv_get "$dnr"
-			# verify the WINDOWS too, not just mode/transition_s: leaving the
-			# test windows behind is silent (they change nothing visible in
+			# verify the WINDOWS too, not just mode: leaving the test
+			# windows behind is silent (they change nothing visible in
 			# auto mode except the heartbeat's dawn target), so nothing else
 			# would ever report it.
 			dnr_tns=$(jget "$dnr" daynight.time_night_start); dnr_tds=$(jget "$dnr" daynight.time_day_start)
-			if [ "$(jget "$dnr" daynight.dn_mode)" = "$dn_mode_cur2" ] && [ "$(jget "$dnr" daynight.transition_s)" = "$dn_tr_cur" ] &&
+			if [ "$(jget "$dnr" daynight.dn_mode)" = "$dn_mode_cur2" ] &&
 			   [ "${dnr_tns:-}" = "${tns_cur2:-}" ] && [ "${dnr_tds:-}" = "${tds_cur2:-}" ]; then
-				LV_PENDING=""; info "  day/night: restored mode=$dn_mode_cur2, windows ('${tns_cur2}'..'${tds_cur2}') and transition_s=$dn_tr_cur"
+				LV_PENDING=""; info "  day/night: restored mode=$dn_mode_cur2 and windows ('${tns_cur2}'..'${tds_cur2}')"
 			else
-				warn "day/night: restore did not fully land (mode=$(jget "$dnr" daynight.dn_mode), transition_s=$(jget "$dnr" daynight.transition_s), windows '${dnr_tns}'..'${dnr_tds}' want '${tns_cur2}'..'${tds_cur2}') - check the camera's daynight settings by hand"
+				warn "day/night: restore did not fully land (mode=$(jget "$dnr" daynight.dn_mode), windows '${dnr_tns}'..'${dnr_tds}' want '${tns_cur2}'..'${tds_cur2}') - check the camera's daynight settings by hand"
 			fi
 		fi
 	fi
@@ -2396,8 +2436,6 @@ else
 	}
 	ov_clamp_test image      '{"image":'    '}' image      brightness       -99      0
 	ov_clamp_test image      '{"image":'    '}' image      brightness       9999     255
-	ov_clamp_test daynight   '{"daynight":' '}' daynight   probe_jump_pct   -50      1
-	ov_clamp_test daynight   '{"daynight":' '}' daynight   probe_jump_pct   999      99
 	ov_clamp_test daynight   '{"daynight":' '}' daynight   probe_min_gap_s  1        60
 	ov_clamp_test daynight   '{"daynight":' '}' daynight   heartbeat_max_s  99999999 604800
 
@@ -4104,7 +4142,7 @@ else
 	TESTED_motion="sensitivity monitor_stream enabled hold_ms skip_frames"
 	TESTED_record="segment_s pre_roll_s post_roll_s min_free_mb audio name dir"
 	TESTED_timelapse="interval_s keep_days name dir"
-	TESTED_daynight="day_gain night_gain day_confirm_s ref_delay_s boot_settle_s boot_probe probe_min_gap_s probe_jump_pct probe_confirm_s probe_settle_s heartbeat_s heartbeat_max_s learn ir_ratio_night ir_ratio_day ir_min_headroom sun_sunrise_offset_min sun_sunset_offset_min time_night_start time_day_start sun_latitude sun_longitude"
+	TESTED_daynight="day_gain night_gain day_confirm_s boot_probe probe_min_gap_s probe_confirm_s heartbeat_s heartbeat_max_s sun_sunrise_offset_min sun_sunset_offset_min time_night_start time_day_start sun_latitude sun_longitude"
 	TESTED_video="bitrate rotation rc_mode qp min_qp max_qp quality_lvl change_pos i_bias_lvl fluc_lvl gop max_gop profile"
 	TESTED_privacy="enabled x y w h color"
 
@@ -4121,7 +4159,14 @@ else
 	ALLOW_motion="cols rows"                                    # risky IVS grid rebuild, clamped to the SDK cell budget - would look like a mismatch here regardless
 	ALLOW_record="enabled channel mode"                         # would start/stop capture or depend on stream count (see the comment above the record lv_section call)
 	ALLOW_timelapse="enabled channel"                           # same reasoning as record above
-	ALLOW_daynight="enabled interval_ms transition_s diagnose_thresholds"   # enabled reflects the detection thread's own state (poll lag), not a value to force; interval_ms/transition_s/diagnose_thresholds change timing or logging rather than a readable decision value
+	# The eight consolidated fields (2026-08-22) are ALLOWed rather than
+	# TESTED: on a current daemon they are not F_CTRL at all, so they never
+	# appear in the inventory and these words cost nothing - but the fleet
+	# still runs pre-consolidation firmware where they DO appear, and there
+	# they must be a documented exclusion, not eight drift warnings and not a
+	# stale "tested" claim for a probe 8b no longer contains. Their read-only
+	# assertion lives in 8b next to the daynight lv_section call.
+	ALLOW_daynight="enabled interval_ms diagnose_thresholds probe_jump_pct probe_settle_s ref_delay_s ir_ratio_night ir_ratio_day ir_min_headroom boot_settle_s transition_s learn"   # enabled reflects the detection thread's own state (poll lag), not a value to force; interval_ms/diagnose_thresholds change timing or logging rather than a readable decision value; the rest are the 2026-08-22 constants (plus the retired learn), settable only on older firmware
 	# video: the exclusion used to be the WHOLE encoder block, justified as
 	# "geometry/codec/identity/routing changes carry restart-crash or
 	# active-session-disruption risk beyond a plain config round-trip". That
