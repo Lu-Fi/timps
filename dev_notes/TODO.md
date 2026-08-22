@@ -626,13 +626,28 @@ What to check:
 - **Both warnings fire where they should**: the `smart` -> `capped_quality`
   substitution on the T31, and the reworded new-API warning. And, just as
   important, that they do *not* fire on the T23.
-- **`i_bias_lvl` on T31** via `SetChnQpIPDelta` — not just that the call
-  returns 0, but whether the keyframe size actually moves. Sweep -3/0/+3 and
-  measure I-frame windows. Also read `encoder.<n>.rc.ip_delta` after each
-  write: classic iBiasLvl is a dimensionless level, iIPDelta a QP delta —
-  the readback tells whether the 1:1 pass-through lands as sent, the
-  I-frame sizes tell whether the sign convention matches the classic one
-  (audit: not decidable from the headers).
+- **`i_bias_lvl` on T31** via `SetChnQpIPDelta` — **measured 2026-08-22 on
+  cam-garage (T31X/sc4336p), and the answer is that the call does nothing to
+  the bitstream.** Transfer: settled and correct. `encoder.<n>.rc.ip_delta`
+  echoes the posted value 1:1, in scale and sign, live and after a restart —
+  the 443584e pass-through lands as sent, so nothing to fix there. Semantics:
+  no effect. Live path, three interleaved −3/+3 pairs, 15 s captures, stable
+  scene at the configured 384 kbps: mean keyframe 26254/26695/26646 B at −3
+  against 26687/26701/26700 B at +3 — 1.7 % spread, no direction, delivered
+  rate 224/225/226 kbps either way. Boot path (value applied by `enc_create`
+  after `RegisterChn`, daemon restarted between halves), two interleaved
+  pairs: 13855/20549 B at −3 against 14942/23034 B at +3 — the +3 half larger
+  both times, but keyframes drifted 26k → 14k across the session with the
+  light, so 8–12 % is inside the scene drift and is not a result. Boot and
+  live use the identical SDK call on the identical channel.
+  Conclusion: `IMP_Encoder_SetChnQpIPDelta` is accepted, faithfully echoed,
+  and inert under `cbr` on this SoC. That is an SDK-side null, not a timps
+  bug — which is why the QA verdict is INFO, not FAIL. **Still open:** whether
+  it does anything under a non-`cbr` mode (rc_mode is restart-bound on the new
+  API, so a `vbr`/`smart` sweep needs a restart per half and was not run), and
+  whether C100 — the other SoC whose SDK ships the call — behaves the same.
+  The sweep itself is now repeatable as `timps-qa.sh` RC5b under
+  `--test-encoder`; point it at any T31/C100 camera to re-check.
 - **`bitrate` unit on T31 (new API).** Boot with videoN.bitrate=2000, note
   `encoder.<n>.rc.bitrate`. Then POST the same 2000 live. If the readback
   jumps by x1000, `SetDefaultParam` and `SetChnBitRate` disagree on the

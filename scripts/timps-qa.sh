@@ -2920,8 +2920,7 @@ else
 		#   readback == posted        the 1:1 pass-through holds (this only
 		#                             settles SCALE and SIGN of the transfer;
 		#                             whether the two knobs MEAN the same thing
-		#                             still needs an I-frame-size sweep, see
-		#                             dev_notes/TODO.md)
+		#                             is RC5b's keyframe sweep, below)
 		#   readback == -posted, or a
 		#     consistent multiple     mapping is real but not 1:1 - the pass-
 		#                             through is wrong and needs a conversion
@@ -2957,7 +2956,7 @@ else
 				elif [ -z "$rc_ib_after" ]; then
 					warn "video1.i_bias_lvl: graded applied-live but encoder.1.rc.$rc_ib_fld is absent (mode $(jget "$gf" encoder.1.rc.rc_mode) does not carry it) - the 1:1 iBiasLvl->iIPDelta mapping stays UNVERIFIED on this camera"
 				elif [ "$rc_ib_after" = "$rc_ib_new" ]; then
-					ok "video1.i_bias_lvl=$rc_ib_new reaches the encoder 1:1 (encoder.1.rc.$rc_ib_fld $rc_ib_before -> $rc_ib_after) - the 443584e pass-through holds in scale and sign (what it MEANS still needs an I-frame-size sweep)"
+					ok "video1.i_bias_lvl=$rc_ib_new reaches the encoder 1:1 (encoder.1.rc.$rc_ib_fld $rc_ib_before -> $rc_ib_after) - the 443584e pass-through holds in scale and sign. What it MEANS is a separate question, answered by the RC5b keyframe sweep under --test-encoder (measured to be a no-op on T31, see its comment)"
 				elif [ "$rc_ib_after" = "$((0-rc_ib_new))" ]; then
 					bad "video1.i_bias_lvl=$rc_ib_new is held by the encoder as $rc_ib_fld=$rc_ib_after - the SIGN IS INVERTED. 443584e passes classic iBiasLvl into the new API's iIPDelta 1:1 and flags exactly this as unproven; the pass-through needs a negation on this SoC"
 				elif [ "$rc_ib_after" = "$rc_ib_before" ]; then
@@ -2967,6 +2966,76 @@ else
 				fi
 				rc_pid_check video1.i_bias_lvl
 				lv_post "$LV_PENDING" >/dev/null; LV_PENDING=""
+			fi
+		fi
+
+		# --- RC5b: what i_bias_lvl MEANS, measured on the keyframes ----------
+		# RC5 settles the transfer (scale and sign of iBiasLvl -> iIPDelta); it
+		# cannot settle the semantics, and dev_notes/TODO.md has carried "sweep
+		# -3/0/+3 and measure I-frame windows" as open work since 443584e. This is
+		# that sweep. i_bias_lvl is an I-frame QP bias, so its effect is an I-vs-P
+		# bit REDISTRIBUTION at a constant target - invisible in overall kbps,
+		# visible only in mean keyframe size, which enc_measure() now returns.
+		#
+		# Opt-in behind --test-encoder, and that is a deliberate cost call rather
+		# than caution: the sweep is two more captures (~45s), and the ONLY SoCs
+		# that can run it at all are T31/C100 (T40/T41 SDKs have no
+		# SetChnQpIPDelta, so caps.video_live omits the key and this block never
+		# fires) - where it has already been measured to be a null. Paying 45s on
+		# every default run for a line we can predict is not worth it; keeping the
+		# probe so a future SoC or SDK can be checked against it is.
+		#
+		# RESULT ON T31/sc4336p, 2026-08-22 - NO measurable semantic effect:
+		#   live path, 3 interleaved -3/+3 pairs, 15s each, stable scene at the
+		#   configured 384 kbps: mean keyframe 26254/26695/26646 B at -3 against
+		#   26687/26701/26700 B at +3. Spread 1.7%, no direction, total delivered
+		#   rate 224/225/226 kbps either way.
+		#   boot path (value applied by enc_create after RegisterChn, daemon
+		#   restarted between halves), 2 interleaved pairs: 13855/20549 B at -3
+		#   against 14942/23034 B at +3 - the +3 half larger both times, but the
+		#   scene was drifting hard across those runs (keyframes fell 26k -> 14k
+		#   over the session) and 8-12% is inside that drift, so it is not a
+		#   result. Boot and live use the identical SDK call on the identical
+		#   channel, and the register echoes the value faithfully in both.
+		# So: SetChnQpIPDelta is accepted, echoed by encoder.<n>.rc.ip_delta, and
+		# does nothing to the bitstream under cbr on this SoC. That is an SDK-side
+		# null, not a timps bug - the value timps sends is the value the encoder
+		# reports holding - which is why the null grades INFO here. An INVERTED
+		# sign would be actionable (443584e would need a negation) and grades WARN.
+		# 15% is the effect threshold: an order of magnitude over the 1.7%
+		# same-config spread measured above, comfortably under a real QP-delta
+		# effect, which would move keyframe size by tens of percent.
+		if [ "$TEST_ENCODER" != 1 ]; then
+			:
+		elif ! rc_live_has i_bias_lvl || [ -z "${rc_ib_cur:-}" ]; then
+			:   # gate-marked by RC5
+		elif ! rc_can_measure; then
+			skip "video1.i_bias_lvl I-frame sweep needs ffmpeg+ffprobe - not found"
+		else
+			rc_ib_lo=""; rc_ib_hi=""
+			LV_PENDING="{\"video\":{\"1\":{\"i_bias_lvl\":$rc_ib_cur}}}"
+			for rc_ib_v in -3 3; do
+				code=$(lv_post "{\"video\":{\"1\":{\"i_bias_lvl\":$rc_ib_v}}}")
+				[ "$code" = "200" ] || { warn "video1.i_bias_lvl=$rc_ib_v: POST HTTP $code - sweep aborted"; break; }
+				sleep "$rc_settle_s"
+				rc_r=$(enc_measure "$PATH_SUB" "$rc_meas_dur" "rc5b_$rc_ib_v") || continue
+				read -r _ _ rc_ib_iavg rc_ib_icnt _ <<<"$rc_r"
+				[ "${rc_ib_icnt:-0}" -ge 3 ] || continue      # too few keyframes to average
+				if [ "$rc_ib_v" = -3 ]; then rc_ib_lo="$rc_ib_iavg"; else rc_ib_hi="$rc_ib_iavg"; fi
+			done
+			rc_pid_check video1.i_bias_lvl-sweep
+			lv_post "$LV_PENDING" >/dev/null; LV_PENDING=""
+			if [ -z "$rc_ib_lo" ] || [ -z "$rc_ib_hi" ] || ! fcmp "${rc_ib_hi:-0}" gt 0; then
+				warn "video1.i_bias_lvl: could not measure both halves of the keyframe sweep (-3=${rc_ib_lo:-none} B, +3=${rc_ib_hi:-none} B) - the semantics stay unverified on this camera"
+			else
+				rc_ib_sep=$(awk -v a="$rc_ib_lo" -v b="$rc_ib_hi" 'BEGIN{m=(a>b)?a:b; n=(a<b)?a:b; printf "%.1f", (n>0)?100*(m/n-1):0}')
+				if fcmp "$rc_ib_sep" lt 15; then
+					info "  video1.i_bias_lvl sweep: mean keyframe ${rc_ib_lo} B at -3 vs ${rc_ib_hi} B at +3 - ${rc_ib_sep}% apart, under the 15% effect threshold. The value reaches the encoder (RC5 proved that) but does not move the bitstream: SetChnQpIPDelta is a no-op in this rc mode on this SoC. Matches the 2026-08-22 T31 measurement; nothing for timps to fix, the value it sends is the value the encoder reports"
+				elif fcmp "$rc_ib_lo" gt "$rc_ib_hi"; then
+					ok "video1.i_bias_lvl has a real, correctly-signed effect: mean keyframe ${rc_ib_lo} B at -3 vs ${rc_ib_hi} B at +3 (${rc_ib_sep}% apart) - negative spends MORE bits on keyframes, which is the convention 443584e assumed"
+				else
+					warn "video1.i_bias_lvl has a real effect with the OPPOSITE sign to the documented one: mean keyframe ${rc_ib_lo} B at -3 vs ${rc_ib_hi} B at +3 (${rc_ib_sep}% apart), i.e. POSITIVE spends more bits on keyframes. 443584e passes classic iBiasLvl into iIPDelta 1:1 on the assumption they share a sign convention; this says they do not, and the pass-through needs a negation on this SoC"
+				fi
 			fi
 		fi
 
