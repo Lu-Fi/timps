@@ -6,6 +6,41 @@ is still guesswork, so nobody has to re-derive it.
 Background for the encoder block:
 `dev_notes/T23_RATECONTROL_INVESTIGATION_2026-08-21.md`.
 
+## OPEN, HIGH PRIORITY: a real restart can leave timpsd down (T31, mem-constrained boards)
+
+Found 2026-08-22 during the post-rollout fleet QA (`--test-encoder`, which
+deliberately forces a real restart to make a restart-bound `rc_mode` change
+effective - see RC6b's "rc_mode=vbr is restart-bound here, restarting for
+real" in `timps-qa.sh`). On 5 of 12 fleet cameras (all `cinnado_d1_t31l` /
+`wuuk_y0510_t31x`, i.e. the T31 boards with 37-38 MB total RAM: cam-db,
+cam-schuppen, cam-wintergarten, cam-sz, cam-kinder-rechts) the restart's
+encoder re-init hit a repeating `E/Encoder: encoder_init failed` loop (dozens
+of attempts over ~20-30s), then on cam-garage's occurrence self-recovered
+(matches the earlier 2026-08-22 "did not come back after the final
+restore-restart" QA finding on cam-garage, which turned out to be slow, not
+dead), but on these 5 the daemon gave up entirely: `E/Alloc Manager: allocMem
+mem_manager->alloc is failed`, `E/IMP Alloc APIs: g_alloc.alloc_mem failed`,
+`Codec_Encode_Create failed`, then no live `timpsd` process at all - `/control`
+and RTSP both fully down, not self-healing.
+
+Kernel command line on the affected boards after a real *reboot* correctly
+shows `rmem=22M@0x2a00000` (the normal reserved encoder pool, not the
+temporary `rmem=0M` used mid-OTA-upload to free RAM for the transfer) - so
+this is not the OTA memory remap leaking into the boot config. The pattern
+(fails only after a same-process *restart*, a full power-cycle reboot always
+recovers cleanly) points at the IMP SDK's rmem-backed allocator not being
+cleanly reusable across a soft process restart on these lower-RAM boards -
+plausibly the previous instance's allocations in the physical rmem carve-out
+are not fully released before the new instance probes it, and 22 MB has much
+less slack to absorb that than it would on a bigger board. Needs a hardware
+investigation (does the failing instance's `Alloc Manager` dump - it prints
+one, captured in logread - show any `owner=` entries that should have been
+freed by the restart path already?) before attempting a fix. Until then,
+**avoid `--test-encoder` runs that hit a real restart on T31 boards in
+unattended/fleet contexts** - all 5 affected cameras were manually recovered
+via SSH `reboot` this session; nothing in the field would have done that on
+its own.
+
 ## Day/night: code-verified config/status reference (read-only audit 2026-08-22)
 
 Occasion: in a support conversation the `/control` status key `day_trigger`
