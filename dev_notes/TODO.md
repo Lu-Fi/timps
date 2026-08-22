@@ -6,6 +6,168 @@ is still guesswork, so nobody has to re-derive it.
 Background for the encoder block:
 `dev_notes/T23_RATECONTROL_INVESTIGATION_2026-08-21.md`.
 
+## Day/night: code-verified config/status reference (read-only audit 2026-08-22)
+
+Occasion: in a support conversation the `/control` status key `day_trigger`
+was mistaken for a settable config field. It is not - it is a read-only
+display value (the computed path-C probe bar, see the status table below).
+This section is the lookup table that was missing, verified line by line
+against `src/daynight.c` (2050 lines, HEAD `6e49752`). Nothing was changed;
+three small findings are listed at the end.
+
+### Which document is authoritative where
+
+The redesign doc alone is NOT sufficient to read the current code. The chain:
+
+1. `DAYNIGHT_REDESIGN_2026-08-17.md` - the four-path automaton (A/B/C/D),
+   exposure index, boot, learning. Its §12 covers only what changed during
+   the 2026-08-17 implementation itself.
+2. `DAYNIGHT_DECISION_2026-08-17.md` - supersedes the night-to-day half:
+   adds the **silent probe** (`irprobe_cmd`, `ir_ratio_*`, `ir_min_headroom`,
+   headroom/"railed is an answer") and **path T** (trend trigger, fixed
+   constants `DN_TREND_*`). Its "What shipped - 2026-08-18" section is the
+   place to look first when that note and the code disagree.
+3. `CHANGELOG.md` 1.9.1/1.9.2 (2026-08-21) - the third wave: reference
+   lowering by silent-probe proof, clip protection (`dn_clipped`), ISP
+   readback verify/enforce cycle, boot "AE pegged" forced cycle,
+   `filter_cost` projection, silent-probe retirement after 2 failures,
+   operator probe request (`POST /control {"daynight":{"probe":1}}`).
+
+`src/daynight_probe.h` (732 lines) no longer exists - dropped, not merged;
+the probe plan is now a handful of `if`s inside `dn_thread()`.
+
+### The five trigger paths (the redesign's four, plus T from the decision note)
+
+- **A - day->night, direct measurement** (no probe). In DAY, smoothed
+  exposure `s > night_gain` held for `day_confirm_s` -> switch to night
+  (daynight.c:1628-1660). Reset whenever `s` drops back below `night_gain`.
+- **C - spontaneous jump** (night->day trigger). In NIGHT,
+  `s < ref * probe_jump_pct/100` held for `probe_confirm_s` -> ask for a
+  probe (1698-1704). `ref` is the PROVEN night level; it moves only on proof:
+  anchored after night entry (1672-1693), ratcheted up by a failed audible
+  probe (1874-1885), lowered by a silent probe that proved night below the
+  bar (1449-1460, 1508-1519).
+- **T - trend** (night->day trigger, dawn ramps path C cannot see).
+  `ema_fast < 75% of ema_slow` (tau 3/60 min, compile-time `DN_TREND_*`)
+  held for `probe_confirm_s` -> probe (1726-1741). Armed ONLY while
+  `irprobe_cmd` is set and not retired.
+- **B - heartbeat** (safety net, the only bound on a wrong night). Every
+  `heartbeat_s` in night a probe fires, UNLESS the scene is flat (sustained
+  min not 10% below `ref`, `DN_MOVED_MARGIN`) AND path C is sighted
+  (`dn_c_sighted`) AND less than `heartbeat_max_s` has passed since the last
+  audible probe - then it defers by another `heartbeat_s` (1743-1771).
+- **D - boot**. After `boot_settle_s` + AE settled: persisted day -> verdict
+  from the honest reading, zero clicks (1381-1391); persisted night -> boot
+  probe if `boot_probe=1` or the AE is railed with 0 reserve, else the first
+  heartbeat fires immediately (1352-1380).
+
+All night->day triggers (C/T/B/D and operator request) funnel into ONE
+escalation (1774-1846): silent probe first (illuminator off, ratio verdict,
+no click, not rate-limited), audible IR-cut probe only when the ratio could
+not answer - and the audible one alone is rate-limited by `probe_min_gap_s`.
+The audible verdict is binary against `day_gain` (1594-1617).
+
+### Config field reference (all daynight.* keys from src/config.c:967-1009)
+
+| field | path | what it does (daynight.c) | higher value means |
+|---|---|---|---|
+| `enabled` | all | 0 = thread measures but forces nothing (1121) | - |
+| `mode` | all | `auto` vs `schedule` (calendar-only, 1288) | - |
+| `time_night_start`/`time_day_start` | B, schedule | fixed local window (609-619); wins over sun | - |
+| `sun_latitude`/`sun_longitude`, `sun_*_offset_min` | B, schedule | sun calendar (627-732); heartbeat dawn pull-in (1896-1898) | - |
+| `day_gain` (alias `total_gain_day_threshold`) | probe verdict (C/T/B/D) | audible-probe verdict `s < bar` (1600), boot-day confirm (1383); base of `dn_day_bar()` (773-785) | day confirmed more easily = faster to colour (false day self-corrects via A) |
+| `night_gain` (alias `total_gain_night_threshold`) | A | day->night threshold (1628); also silent-probe day projection cap (1495) and learn cap `night_gain/2` (782-783) | stays in day/colour longer |
+| `day_confirm_s` | A | hold time above `night_gain` (1631) | more cautious day->night |
+| `probe_min_gap_s` | audible probe | ONLY rate limit on audible clicks (1821-1822); floor 60 s | fewer clicks, slower retry after a failed probe |
+| `probe_jump_pct` | C | trigger bar `ref*pct/100` (1698); also `dn_c_sighted` (449), silent-probe lowering bar (1451, 1509), status `day_trigger` (1919) | MORE sensitive (a smaller brightening fires; 99 = any dip) |
+| `probe_confirm_s` | C, T, B | hold time for C (1702) and T (1739); size of the tumbling window feeding the heartbeat deferral evidence (1170) | needs longer-held evidence = fewer false probes, slower reaction |
+| `probe_settle_s` | probe verdict | AE settle before the verdict: silent (1797), audible (1836), re-read after enforce (1214) | later but more settled verdicts |
+| `ref_delay_s` | C | wait before anchoring `ref` after night entry (1355, 1868, 1888) | path C armed later |
+| `ir_ratio_night` | silent probe | `r >= this` = night, no click (1430) | silent night-confirm harder -> more audible escalations |
+| `ir_ratio_day` | silent probe | `r <= this` (+ headroom) = day (1486) | silent day verdict easier (faster, riskier) |
+| `ir_min_headroom` | silent probe + clip guard | `dn_clipped()` bound (458-461), day-verdict requirement (1486), pegged-dark proof (1533) | more readings treated as clips = more conservative |
+| `heartbeat_s` | B | base interval (1749), defer step (1756), reschedule after night entry (1895) and every silent night verdict (1427, 1462, 1521, 1544) | wrong night checked less often |
+| `heartbeat_max_s` | B | hard cap on deferral, measured since the last AUDIBLE probe (1753-1755) | flat scenes probed less often |
+| `boot_probe` | D | 1 = probe a persisted night at boot (1374) | - |
+| `boot_settle_s` | D | minimum AE settle before the boot decision (1324) | later boot decision |
+| `learn` | verdict bar | 1 = apply learned median to `dn_day_bar()` (775) and persist (820); collection+daily log always run | - |
+| `state_path` | learning | learn file, loaded at start (1048), saved <=1/h atomically (818-844) | - |
+| `interval_ms` | all | tick (1088), default 2000 | slower sampling everywhere |
+| `transition_s` | all switches | dwell between switches (1792, 1823-1824, 1848-1849); probe reverts bypass it (`force`) | fewer flips, slower |
+| `diagnose_thresholds` | diagnostics | arms the 3-failed-probes warning (885) | - |
+| `switch_cmd`/`isp_path`/`trace_path`/`irprobe_cmd` | plumbing | board script (1834), scrape source (311), trace recorder (901), silent probe (1793); all F_NOGET, not POSTable | - |
+
+No dead config: every field in the table is read by the current code.
+`day_trigger` is NOT in this table because it is not config - see below.
+
+### /control status keys ("daynight":{...}) vs the automaton's internals
+
+Read-only, computed per tick (control.c:849-935, daynight.c:1917-1927):
+
+| status key | internal | meaning |
+|---|---|---|
+| `night_baseline` | `ref` | the PROVEN night level; -1 outside night. Legacy key name - it is NOT the old drifting baseline |
+| `day_trigger` | `ref * probe_jump_pct/100` | the path-C probe bar; -1 outside night. Legacy key name - it has nothing to do with `day_gain` and cannot be set |
+| `exposure` | `sm.d` | the RAW exposure index D of the last sample (not the EMA `s` - the trace logs both) |
+| `total_gain` | `sm.gain` | gain half only, for continuity with old plots |
+| `brightness` | `sm.bright` | thingino formula, display only, no longer a decision path |
+| `isp_desync` | debounced `cur != sm.isp` | -1 unknown / 0 in sync / 1 standing |
+
+Everything else in the object is a config echo. Caveat: the echoed
+`day_gain` is the CONFIGURED value; with `learn=1` the applied verdict bar
+(`dn_day_bar()`) can be higher and is visible only in the daily
+"learned:" log line, not in `/control`.
+
+### Deviations from the redesign doc not recorded in its §12
+
+All verified formulas that DO match the draft: the jump trigger (1698), the
+EMA/`stable_n` shape (1161-1163), the ref anchor rule (1672), the learn
+clamp `clamp(max(day_gain, median*1.6), day_gain, night_gain/2)` (773-785),
+atomic <=1/h persistence with silent discard of unknown versions (787-844),
+the 3-failed-probes diagnostic (§12.6, 881-896). Deviations:
+
+- `next_heartbeat()` shape: the draft schedules `heartbeat_max_s` as one long
+  appointment; the code defers in `heartbeat_s` steps with a hard cap of
+  `heartbeat_max_s` since the last audible probe (1750-1771). Same ceiling,
+  different mechanism; only the flatness-evidence half is in §12.2.
+- `c_sighted()` formula: draft `ref > DN_GAIN_FLOOR*1.5`; code
+  `ref * probe_jump_pct/100 > DN_GAIN_FLOOR` (449) - i.e. "the bar itself is
+  above the floor", strictly more correct. On the current fleet the
+  integration-time ratio is readable everywhere, so it is effectively always
+  true and the deferral is bounded by `heartbeat_max_s` alone.
+- The draft's calendar gate "and c_sighted()" is dropped: the dawn pull-in
+  only ever shortens the interval (dn_secs_to_dawn, 707-732), so gating it
+  was pointless. Benign.
+- `boot_probe auto|always|never` shipped as plain 0/1 (config.c:993), plus
+  the unconditional "AE railed with 0 reserve" forced cycle (1359-1373).
+- `state_path` default is non-empty (`/etc/timps-daynight.state`); the
+  learning gate is the separate `learn` flag (§12.3), not path emptiness.
+- Everything else that differs (silent probe, path T, ref lowering, clip
+  guards, verify cycle) is documented in the decision note / CHANGELOG, not
+  in §12 - by design, see the chain above.
+
+### Findings (real but minor - nothing changed, listed for triage)
+
+1. **A failed illuminator re-light is not retried.** The verdict path turns
+   the LEDs back on with `dn_irprobe(dn->irprobe_cmd, 1)` and ignores the
+   return value (daynight.c:1405); `ir_fails` counts only the "off"
+   direction (1812). Worse: disabling daynight mid-silent-probe
+   (1121-1136) or stopping the thread clears `ir_verdict_at` without
+   re-lighting, so a camera can be left with its illuminator off until the
+   next probe or switch (up to `heartbeat_s`). Real switches are safe -
+   `switch_cmd` re-establishes the lights.
+2. **The calendar dawn pull-in survives only until the first reschedule.**
+   `hb_at` is pulled toward sunrise only on night ENTRY (1896-1898); every
+   later reschedule - heartbeat deferral (1756) and all four silent-probe
+   night verdicts (1427, 1462, 1521, 1544) - sets a plain
+   `now + heartbeat_s` and drops the sunrise appointment. Bounded by
+   `heartbeat_s`, and paths C/T usually catch dawn first, but it deviates
+   from the redesign's §4.4 intent ("an appointment exactly at sunrise").
+3. **`g_probe_req` is sticky across states.** A probe requested while in
+   day, mid-probe, or while `enabled=0` is consumed only by the night
+   branch (1734), so it can fire a surprise silent probe hours later at the
+   next night entry. `/control` acks it (`g_acc++`) either way.
+
 ## OSD config WebUI: "Apply to both" scope + restart on adding a field
 
 Investigated 2026-08-21 against `package/timps/files/www/a/streamer-osd.js`,
