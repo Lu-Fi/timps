@@ -481,11 +481,21 @@ real-hardware (`HAL_INGENIC`) build. File-only.
 ## `video<N>.*` — per-stream encoder settings
 
 `N` is the video stream index (`0` = main, `1` = sub; `MS_MAX_VSTREAM=2`
-streams total). **Every key here is persist-only / restart-required**
-(the encoder and FrameSource are never reconfigured on the running
-pipeline) **except `rtsp_path`**, which is honestly live — see the caveat
-at the top of this page. `GET /control` groups this whole section under
-`caps.restart: ["video", "sensor", "osd.enabled"]`.
+streams total). Geometry/codec/identity keys (`enabled`/`codec`/`width`/
+`height`/`fps`/`gop`/`max_gop`/`profile`/`rotation`/`buffers`) are
+persist-only / restart-required (the encoder and FrameSource are never
+reconfigured on the running pipeline); `rtsp_path` is honestly live — see
+the caveat at the top of this page. The rate-control knobs below
+(`bitrate`/`rc_mode`/`qp`/`min_qp`/`max_qp`/`i_bias_lvl`) are **Mixed**: a
+per-platform subset reaches the running encoder live as of 2026-08-21 —
+see [Rate Control Parameters: Live vs.
+restart](Rate-Control-Parameters.md#live-vs-restart-per-soc) for the exact
+key × SoC table, or query the running build's own `caps.video_live` (never
+hardcode the table into a client — see
+[HTTP Control API](HTTP-Control-API.md#the-caps-object)).
+`GET /control` still groups this whole section under `caps.restart:
+["video", "sensor", "osd.enabled"]` as the conservative default; a key
+that also appears in `caps.video_live` is the per-key exception.
 
 | Key | Type | Default (video0 / video1) | Range | Live? | Description |
 | --- | --- | --- | --- | --- | --- |
@@ -494,17 +504,17 @@ at the top of this page. `GET /control` groups this whole section under
 | `video<N>.width` | int | 1920 / 640 | 64–4096 | Restart-only | Encode width (pre-rotation). |
 | `video<N>.height` | int | 1080 / 360 | 64–4096 | Restart-only | Encode height (pre-rotation). |
 | `video<N>.fps` | int | 25 / 25 | 1–120 | Restart-only | Encode frame rate. |
-| `video<N>.bitrate` | int | 3000 / 512 | 16–50000 (kbps) | Restart-only | Target bitrate. |
-| `video<N>.rc_mode` (alias `mode`) | enum | `cbr` / `cbr` | `cbr`\|`vbr`\|`fixqp`\|`smart`\|`capped_vbr`\|`capped_quality` | Restart-only | Rate-control mode. |
+| `video<N>.bitrate` | int | 3000 / 512 | 16–50000 (kbps) | **Mixed** (live on every SoC as of 2026-08-21, see below) | Target bitrate. |
+| `video<N>.rc_mode` (alias `mode`) | enum | `cbr` / `cbr` | `cbr`\|`vbr`\|`fixqp`\|`smart`\|`capped_vbr`\|`capped_quality` | **Mixed** (live on classic SoCs only, see below) | Rate-control mode. |
 | `video<N>.gop` | int | 50 / 50 | 1–1000 | Restart-only | GOP length (I-frame interval). |
 | `video<N>.max_gop` | int | 60 / 60 | 1–1000 | Restart-only | **RESERVED / no effect** — parsed, clamped and persisted for compatibility but consumed by no HAL; the encoder's keyframe interval comes from `video<N>.gop`. Setting a non-zero value logs a one-shot warning. |
 | `video<N>.profile` | int | 2 / 2 | 0 (baseline) – 2 (high) | Restart-only | H.264/H.265 encode profile. |
-| `video<N>.qp` | int | 35 / 35 | 1–51 | Restart-only | Fixed QP, used only when `video<N>.rc_mode=fixqp` (passed as the encoder's initial/fixed QP: `iInitialQP` on the new API, `attrH264FixQp.qp`/`attrH265FixQp.qp` on the classic API). No effect under `cbr`/`vbr`/etc., which derive QP from rate control instead — use `video<N>.min_qp`/`max_qp` there. |
-| `video<N>.min_qp` | int | 20 / 20 | 1–51 | Restart-only | Minimum QP. |
-| `video<N>.max_qp` | int | 45 / 45 | 1–51 | Restart-only | Maximum QP. |
+| `video<N>.qp` | int | 35 / 35 | 1–51 | **Mixed**, see below | Fixed QP, used only when `video<N>.rc_mode=fixqp` (passed as the encoder's initial/fixed QP: `iInitialQP` on the new API, `attrH264FixQp.qp`/`attrH265FixQp.qp` on the classic API). No effect under `cbr`/`vbr`/etc., which derive QP from rate control instead — use `video<N>.min_qp`/`max_qp` there. |
+| `video<N>.min_qp` | int | 20 / 20 | 1–51 | **Mixed** (live on every SoC as of 2026-08-21, see below) | Minimum QP. |
+| `video<N>.max_qp` | int | 45 / 45 | 1–51 | **Mixed** (live on every SoC as of 2026-08-21, see below) | Maximum QP. |
 | `video<N>.quality_lvl` | int | 2 / 2 | 0–7 | Restart-only | Classic-SoC (T10..T30) VBR/Smart only: minimum quality floor. 0 = highest quality/largest stream, 7 = lowest. The vendor SDK derives `minBitRate = bitrate * quality[lvl]` from it (`quality[]={0.8..0.1}`), but that floor was not found to be binding in testing — see [Rate Control Parameters](Rate-Control-Parameters.md). No equivalent field on the new encoder API (T31/C100/T40/T41); a non-default value there logs a one-shot warning and has no effect. |
 | `video<N>.change_pos` | int | 80 / 80 | 50–100 | Restart-only | Classic-SoC VBR/Smart only: percentage of `bitrate` above which the controller starts raising QP. Measured to have no observable effect on a T23 (80/65/50 gave identical output) — treat as unverified rather than a reliable lever. No equivalent on the new API; same one-shot warning as `quality_lvl`. |
-| `video<N>.i_bias_lvl` | int | 0 / 0 | -3–3 | Restart-only | I-frame QP bias (negative = more bits on keyframes). Classic SoCs: both CBR and VBR/Smart. New API: wired on T31/C100 via `IMP_Encoder_SetChnQpIPDelta` (readable back as `encoder.<n>.rc.ip_delta`); T40/T41 have no such call and warn once instead. |
+| `video<N>.i_bias_lvl` | int | 0 / 0 | -3–3 | **Mixed** (live on classic SoCs and T31/C100, see below) | I-frame QP bias (negative = more bits on keyframes). Classic SoCs: both CBR and VBR/Smart. New API: wired on T31/C100 via `IMP_Encoder_SetChnQpIPDelta` (readable back as `encoder.<n>.rc.ip_delta`); T40/T41 have no such call and warn once instead. |
 | `video<N>.fluc_lvl` | int | 0 / 0 | 0–4 | Restart-only, H265 only | Classic-SoC H265 CBR/VBR/Smart: bitrate fluctuation allowed relative to the average. No H264 equivalent field, and the T23 SW-rotate path is H264-only so never sees this key. No equivalent on the new API. |
 | `video<N>.rotation` | int | 0 / 0 | `0`\|`90`\|`270` (+`180` on T40/T41 only); legacy `1`/`2` accepted as raw `rotTo90` values | Restart-only, `USE_ROTATE` builds only | Image rotation — see [Platform & SDK Support](Platform-SDK-Support.md) and `docs/rotation.md`. Unsupported values on a given SoC are coerced to `0` with a warning. |
 | `video<N>.buffers` | int | 2 / 2 | 1–8 | Restart-only | IMP video buffer count (`nrVBs`). Explicitly setting this makes the HAL trust it as-is instead of applying its own safety clamp. |
