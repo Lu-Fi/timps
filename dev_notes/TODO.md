@@ -30,8 +30,10 @@ verbatim below. Summary of what shipped:
   at boot, and in a dark room the ratio lands on "pegged, therefore night",
   the right mode with no assertion, which is exactly how the desync below
   went unnoticed); it never arms the running_mode re-assert (that is the
-  "overwritten twice, eight seconds apart" incident); it never consumes
-  `probe_min_gap_s`.
+  "overwritten twice, eight seconds apart" incident); and it CHARGES
+  `probe_min_gap_s` like any other probe (exempting it was tried and
+  scenario 02 reproduced incident f8a7b21 - see the commit message and
+  CHANGELOG; an earlier revision of this entry said the opposite).
 
 Still open on this:
 1. Hardware verification. Nobody has watched a real camera do this. The
