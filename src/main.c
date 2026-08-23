@@ -499,9 +499,45 @@ int main(int argc, char **argv)
                          start_fails);
                     return 1;
                 }
+                /* The marker is the ONLY thing that makes this reboot
+                 * one-shot, so it has to exist before the reboot, not after.
+                 * If it cannot be created - /etc full, or the rootfs
+                 * remounted read-only after an earlier fault, both realistic
+                 * on these NOR-flash boards - then the access() check above
+                 * finds nothing on the NEXT boot either, this branch reboots
+                 * again, and a persistent startup fault turns into a reboot
+                 * every few minutes forever: precisely the boot loop the
+                 * marker exists to prevent. So no marker means no reboot.
+                 * Dark-but-stable degrades correctly and leaves a log to
+                 * read; a silent reboot loop does neither.
+                 * close() is checked because a deferred ENOSPC surfaces
+                 * there on some flash filesystems, and the sync()+access()
+                 * pair confirms the entry is really on disk to be found
+                 * after a reboot rather than merely opened. */
+                int marker_err = 0;
                 int mf = open(MS_STARTUP_REBOOT_MARKER,
                                O_CREAT|O_WRONLY|O_TRUNC, 0644);
-                if (mf >= 0) close(mf);
+                if (mf < 0) {
+                    marker_err = errno;
+                } else {
+                    if (close(mf) != 0) marker_err = errno;
+                    sync();
+                    if (!marker_err && access(MS_STARTUP_REBOOT_MARKER, F_OK) != 0)
+                        marker_err = errno;
+                }
+                if (marker_err){
+                    LOGE(MOD,"HAL start failed %d times in a row, but the "
+                             "one-shot reboot marker %s cannot be written "
+                             "(%s) - without it every boot would take this "
+                             "same escalation branch and reboot again, i.e. a "
+                             "silent reboot loop, so giving up permanently "
+                             "WITHOUT the escalation reboot. Fix the rootfs "
+                             "(/etc full, or mounted read-only?) to re-enable "
+                             "the one-shot recovery reboot",
+                         start_fails, MS_STARTUP_REBOOT_MARKER,
+                         strerror(marker_err));
+                    return 1;
+                }
                 LOGE(MOD,"HAL start failed %d times in a row - retries alone "
                          "did not clear whatever this board is waiting on "
                          "(2026-08-22 T31 precedent: only a real reboot did), "
