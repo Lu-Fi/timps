@@ -1669,16 +1669,57 @@ httpd *httpd_start(const ms_config *cfg)
 #ifdef USE_CONTROL
     g_start_us = ms_now_us();          /* uptime base for /events stats */
 #endif
-    h->lfd=net_listen_tcp(cfg->http_port, 8);
-    if (h->lfd<0){ LOGE(MOD,"cannot bind http port %d",cfg->http_port); free(h); return NULL; }
+    /* TLS FIRST, before the listener exists. HTTPS here is not a second port
+     * the way RTSPS is (rtsp.c opens its own rtsp.tls_port and losing it
+     * leaves plain RTSP exactly as plain as it always was) - it is the SAME
+     * port. Falling back to plaintext on it, as this did, hands every Basic-
+     * Auth header and http.token to anyone on the network, on the very port
+     * the operator configured http.https=1 to protect, announced by one LOGE
+     * at boot and nothing afterwards. Some of these cameras are in bedrooms.
+     * So: requested-but-broken TLS refuses to serve at all. The listener is
+     * never bound, which is the ongoing signal a one-time log line is not -
+     * every client gets a connection refusal instead of a silent downgrade,
+     * and the streamer's other outputs (RTSP, recording) keep running. The
+     * camera stays reachable for repair over the firmware's own web UI/SSH,
+     * which do not live on this port.
+     * This only triggers when TLS was explicitly requested AND the context
+     * still failed - S95timps' ensure_tls_certs() generates a self-signed
+     * pair before start, so a cert-less first boot does not land here, and
+     * http.https=0 never reaches this block at all. */
 #ifdef USE_TLS
     if (cfg->http_https) {
         h->tls_ctx = ms_tls_ctx_new(cfg->http_tls_cert, cfg->http_tls_key);
-        if (!h->tls_ctx)
-            LOGE(MOD,"HTTPS requested but TLS context failed - serving plain HTTP");
-        else
-            LOGI(MOD,"HTTPS enabled on port %d", cfg->http_port);
+        if (!h->tls_ctx){
+            LOGE(MOD,"http.https=1 but the TLS context could not be built from "
+                     "cert %s / key %s (see the TLS error above) - REFUSING to "
+                     "serve port %d at all rather than silently downgrading it "
+                     "to plaintext and leaking credentials. Fix or regenerate "
+                     "the cert/key pair, or set http.https=0 to accept plain "
+                     "HTTP deliberately",
+                 cfg->http_tls_cert, cfg->http_tls_key, cfg->http_port);
+            free(h);
+            return NULL;
+        }
     }
+#else
+    /* No TLS in this build, so http.https cannot be honoured. Not fail-closed
+     * (the operator cannot fix it without a different binary, and rtsp.c's
+     * equivalent warns and carries on) - but it must not be silent either. */
+    if (cfg->http_https)
+        LOGE(MOD,"http.https=1 but this build has no USE_TLS - port %d serves "
+                 "PLAIN HTTP and any password or token sent to it goes over "
+                 "the network in the clear", cfg->http_port);
+#endif
+    h->lfd=net_listen_tcp(cfg->http_port, 8);
+    if (h->lfd<0){
+        LOGE(MOD,"cannot bind http port %d",cfg->http_port);
+#ifdef USE_TLS
+        if (h->tls_ctx) ms_tls_ctx_free((ms_tls_ctx *)h->tls_ctx);
+#endif
+        free(h); return NULL;
+    }
+#ifdef USE_TLS
+    if (h->tls_ctx) LOGI(MOD,"HTTPS enabled on port %d", cfg->http_port);
 #endif
     h->run=1;
     ms_thread_create(&h->thr,MS_STACK_UTIL,accept_thread,h);

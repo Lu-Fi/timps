@@ -712,8 +712,21 @@ int main(int argc, char **argv)
     timelapse_start(&g_cfg);
     srt_start(&g_cfg);
 
-    LOGI(MOD,"running. rtsp://<ip>:%d%s  http://<ip>:%d/",
-         g_cfg.rtsp_port, g_cfg.video[0].rtsp_path, g_cfg.http_port);
+    /* advertise only what actually came up: httpd_start() now returns NULL
+     * when http.https=1 could not be honoured (fail closed, see httpd.c), and
+     * a "running ... http://<ip>:port/" line for a port that refuses every
+     * connection would bury exactly the message the operator needs to see */
+    char rurl[96] = "", hurl[96] = "";
+    if (rtsp) snprintf(rurl, sizeof rurl, " rtsp://<ip>:%d%s",
+                       g_cfg.rtsp_port, g_cfg.video[0].rtsp_path);
+    if (http) snprintf(hurl, sizeof hurl, "  http%s://<ip>:%d/",
+#ifdef USE_TLS
+                       g_cfg.http_https ? "s" : "",
+#else
+                       "",
+#endif
+                       g_cfg.http_port);
+    LOGI(MOD,"running.%s%s", rurl, hurl);
 
     while (g_run) sleep(1);
 
