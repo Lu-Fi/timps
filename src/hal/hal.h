@@ -44,6 +44,11 @@ typedef struct {
     unsigned cur_packs;          /* curPacks: stream packets in the current frame */
     unsigned work_done;          /* work_done: 0 = running, 1 = not running */
     double   ave_bitrate;        /* T31 IMP_Encoder_GetChnAveBitrate, else <0 */
+    unsigned au_drops;           /* CUMULATIVE producer-side frame drops (AU >
+                                  * MS_AU_BUF_MAX, pool OOM, assembly overflow) -
+                                  * the events behind the throttled "dropping
+                                  * frame" log, previously invisible between
+                                  * every 20th line */
 } hal_enc_stat;
 int hal_enc_stats(int enc_chn, hal_enc_stat *out);
 

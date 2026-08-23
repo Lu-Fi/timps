@@ -1555,12 +1555,16 @@ int control_get_json(char *buf, size_t cap)
         for (int i=0;i<MS_MAX_VSTREAM;i++){
             hal_enc_stat es;
             if (hal_enc_stats(c->video[i].imp_chn, &es) != 0) continue;
+            /* au_drops: cumulative producer-side frame drops (oversized AU /
+             * pool OOM in the HAL encode thread). The log throttles these to
+             * every 20th event; this is the only exact count. Distinct from
+             * queue_drops below, which counts consumer-queue evictions. */
             APP("%s\"%d\":{\"registered\":%u,\"left_pics\":%u,"
                 "\"left_stream_bytes\":%u,\"left_stream_frames\":%u,"
-                "\"cur_packs\":%u,\"work_done\":%u",
+                "\"cur_packs\":%u,\"work_done\":%u,\"au_drops\":%u",
                 nemit?",":"", i, es.registered, es.left_pics,
                 es.left_stream_bytes, es.left_stream_frames,
-                es.cur_packs, es.work_done);
+                es.cur_packs, es.work_done, es.au_drops);
             if (es.ave_bitrate >= 0.0)
                 APP(",\"ave_bitrate\":%.1f", es.ave_bitrate);
             {   /* "rc": what the encoder ACTUALLY holds right now

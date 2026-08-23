@@ -264,6 +264,9 @@ typedef struct {
      * Unused on non-T31 builds. */
     volatile int ave_valid;
     double       ave_bitrate;
+    /* cumulative producer-side frame drops (hal_enc_stat.au_drops). Single
+     * writer (this channel's encode thread), read lock-free by /control. */
+    volatile unsigned au_drops;
     /* Fix 1: capture-accurate, strictly-monotonic video presentation clock.
      * Replaces the old ms_now_us()-at-publish stamping that jittered and
      * burst-collapsed the RTP/fMP4 media clock. See pts_sanitize(). */
@@ -1778,16 +1781,19 @@ static void *video_thread(void *arg)
          * Do NOT force an IDR on this drop: an IDR is the *largest* frame type,
          * so forcing one after a size overflow only guarantees the next frame
          * overflows too (the historical permanent-stall "only ch0 works" bug);
-         * a dropped frame is recovered downstream (fanqueue_take_dropped_key +
-         * hub_request_idr on real clients). */
+         * clients ride out a broken GOP until the next SCHEDULED IDR (<=
+         * videoN.gop frames). Note fanqueue_take_dropped_key/hub_request_idr do
+         * NOT fire here - they only see consumer-queue evictions, and a frame
+         * dropped at the producer never enters any fanqueue. */
         size_t need=0;
         for (uint32_t i=0;i<st.packCount;i++)
             if (st.pack[i].length) need += (size_t)st.pack[i].length + 4; /* +startcode */
         if (need > MS_AU_BUF_MAX){
+            __sync_fetch_and_add(&vc->au_drops, 1u);
             if ((dbg_ovf++ % 20)==0)
                 LOGW(MOD,"chn%d: AU exceeds max buffer (need=%zu, max=%d, packCount=%u) - "
-                     "dropping frame",
-                     vc->chn, need, MS_AU_BUF_MAX, st.packCount);
+                     "dropping frame (%u dropped so far)",
+                     vc->chn, need, MS_AU_BUF_MAX, st.packCount, vc->au_drops);
             IMP_Encoder_ReleaseStream(vc->chn,&st);
             continue;
         }
@@ -1796,6 +1802,7 @@ static void *video_thread(void *arg)
          * overflow (the guard below is defensive only). */
         ms_pkt *pk = hub_pkt_get(vc->chn, need);
         if (!pk){
+            __sync_fetch_and_add(&vc->au_drops, 1u);
             if ((dbg_ovf++ % 20)==0)
                 LOGW(MOD,"chn%d: no memory for AU packet (need=%zu) - dropping frame",
                      vc->chn, need);
@@ -1810,6 +1817,7 @@ static void *video_thread(void *arg)
          * unreachable; if a pool/SDK anomaly ever tripped it, drop the frame
          * (and return the pooled buffer) rather than publish a truncated AU. */
         if (overflow){
+            __sync_fetch_and_add(&vc->au_drops, 1u);
             if ((dbg_ovf++ % 20)==0)
                 LOGW(MOD,"chn%d: AU assembly overflow (cap=%zu, need=%zu, packCount=%u) - "
                      "dropping frame",
@@ -4507,13 +4515,15 @@ int hal_enc_stats(int enc_chn, hal_enc_stat *out)
     out->cur_packs          = s.curPacks;
     out->work_done          = s.work_done;
     out->ave_bitrate        = -1.0;
-#if defined(PLATFORM_T31)
+    out->au_drops           = 0;
     for (int i=0;i<g_nv;i++)
         if (g_v[i].chn == enc_chn){
+            out->au_drops = g_v[i].au_drops;
+#if defined(PLATFORM_T31)
             if (g_v[i].ave_valid) out->ave_bitrate = g_v[i].ave_bitrate;
+#endif
             break;
         }
-#endif
     return 0;
 }
 
