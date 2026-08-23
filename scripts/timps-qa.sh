@@ -441,6 +441,37 @@ FFWARN_RE='non-monoton(ous|ic)|discontinuit|corrupt|error while|decode_slice|con
 # that turns the caller's $((...)) into a fatal arithmetic syntax error.
 ffwarn_count() { local n; n=$(grep -icE "$FFWARN_RE" "$1" 2>/dev/null); printf '%s' "${n:-0}"; }
 
+# mjdecode_count <logfile> -> decoder-attributed JPEG decode failures, a bare
+# integer. 15c's MJPEG capture is ONE ffmpeg with two outputs sharing one
+# stderr: the -c copy segment writer and the -f null decode sink. ffwarn_count
+# over that shared log cannot tell which component complained, and BOTH muxers
+# log a timestamp-bookkeeping warning for the same harmless event (duplicate
+# wallclock arrival stamps): the copy side's "Non-monotonic DTS" matches
+# FFWARN_RE and read as decode failures on two separate clean cam-garage
+# longruns (2026-08-22/24, all "failures" were [vost#0:0/copy DTS lines, zero
+# corruption terms anywhere); the null side's "Application provided invalid,
+# non monotonically increasing dts" escapes FFWARN_RE only by wording accident
+# (no hyphen, "invalid," not "invalid data") and would come straight back if
+# the shared pattern were ever tightened. So THIS verdict filters by the
+# component tag instead: only lines the mjpeg decoder (or the mpjpeg demuxer,
+# whose multipart-framing errors are equally genuine breakage) printed.
+# Matching wording as ffwarn_count does is NOT enough the other way either:
+# a garbled-but-not-truncated body makes the decoder say "error dc" /
+# "mjpeg_decode_dc: bad vlc" / "error y=N x=N" (measured against the host sim
+# fed a byte-scrambled JPEG, same method that once calibrated "EOI missing"/
+# "overread" in FFWARN_RE above) - none of which any corruption-term list
+# anticipated. At -loglevel warning those components only speak when a frame
+# is actually broken, so tag-gating IS the corruption test; the explicit
+# timestamp-wording exclusion is belt-and-braces so no future muxer-style
+# bookkeeping line can sneak back in even if it lands inside a matching tag.
+MJDEC_TAG_RE='^\[(mjpeg|mpjpeg) @ '
+MJDEC_TS_EXCL_RE='non.monoton|dts|pts|timestamp'
+mjdecode_count() {
+	local n
+	n=$(grep -iE "$MJDEC_TAG_RE" "$1" 2>/dev/null | grep -civE "$MJDEC_TS_EXCL_RE")
+	printf '%s' "${n:-0}"
+}
+
 # enc_measure <rtsp-path> <dur> <tag> -> "<kbps> <cv> <i_avg> <i_cnt> <p_avg>"
 #   kbps  = delivered VIDEO bitrate (payload bytes over the media timespan;
 #           audio excluded so it is comparable with the configured video
@@ -6262,9 +6293,15 @@ for lr_s in $LR_SLOTS; do
 		skip "$lr_pfx A/V skew: NOT APPLICABLE - /stream.mjpeg is multipart JPEG with no audio track at all, so there are no two clocks to drift apart. Frame rate, inter-frame gaps and JPEG validity are measured instead (below)"
 		skip "$lr_pfx delivery pacing: NOT APPLICABLE - this capture timestamps frames with the host's arrival clock, so media time equals wall time by construction and the ratio would read 1.0x however badly the stream stalled. The same failure shows up as a frame gap and a rate drop instead"
 		# A truncated or garbled JPEG is invisible to -c copy, which is why the
-		# capture also fed a decoding -f null sink. Counted with the SHARED
-		# ffwarn_count/FFWARN_RE - never a second private copy of that pattern.
-		lr_ffe=$(ffwarn_count "$lr_log")
+		# capture also fed a decoding -f null sink. NOT counted with the shared
+		# ffwarn_count: both of this capture's outputs write into ONE stderr,
+		# and the copy muxer's harmless "Non-monotonic DTS" bookkeeping lines
+		# matched FFWARN_RE and failed two provably-clean real runs. Counted
+		# with mjdecode_count (defined next to FFWARN_RE - still no private
+		# inline pattern here), which keeps only decoder/demuxer-attributed
+		# lines and therefore also catches garbled-body wording ("error dc",
+		# "bad vlc") that no corruption-term list anticipated.
+		lr_ffe=$(mjdecode_count "$lr_log")
 		if [ "$lr_ffe" -eq 0 ]; then
 			ok "$lr_pfx: all $lr_mjframes JPEG frames delivered over ${LR_DUR}s decoded cleanly (no truncated/corrupt frames)"
 		elif [ "$lr_ffe" -le 3 ]; then
