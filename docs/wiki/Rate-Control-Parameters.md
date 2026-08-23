@@ -39,11 +39,11 @@ verified fact.
 | `video<N>.bitrate` | 16–50000 kbit/s | All | **Measured** — is the primary lever everywhere | Meaning differs by SoC path: on classic SoCs (T10–T30) it is written straight into the hardware ceiling (`maxBitRate`/`outBitRate`) and is a hard cap under `vbr`. On new-API SoCs (T31/C100/T40/T41) it is only the *target* (`uTargetBitRate`); the real ceiling (`uMaxBitRate`) stays at the SDK default and is not configurable through timps. A value that reads as "the cap" on a T23 is only "the target" on a T31. |
 | `video<N>.rc_mode` | `cbr`\|`vbr`\|`fixqp`\|`smart`\|`capped_vbr`\|`capped_quality`, default `cbr` | All, with gaps | **Measured** (mode selection); **header-derived** (per-mode semantics beyond bandwidth) | Classic SoCs have no hardware equivalent for `capped_vbr`/`capped_quality` and fall back to `vbr` with a one-time warning. New-API SoCs currently map `smart` onto `capped_quality` with **no** warning — a known asymmetry, not yet fixed. See [Rate Control and Bandwidth](Rate-Control-Bandwidth.md) for what each mode actually buys you on each SoC generation. |
 | `video<N>.qp` | 1–51 | All (only used when `rc_mode=fixqp`) | **Measured**, indirectly | Not a rate-control field in the normal sense — it disables rate control entirely and fixes QP. Useful as a diagnostic: the same T23 scene that costs ~990–2091 kbit/s under any rate-control mode costs 278 kbit/s at a fixed QP of 42, proving the encoder can see and react to the scene even when the rate controller chooses not to. |
-| `video<N>.min_qp` | 1–51, default 20 | All — classic SoCs via the rate-control struct, new-API SoCs via a separate `IMP_Encoder_SetChnQpBounds` call after channel registration | **Unmeasured** | Wired on every platform per source, but no sweep of this value has been run against real hardware. It is the most promising untried lever: if lowering it moves the T23's low-window floor, the controller is quality-seeking within these bounds rather than rate-seeking, and `min_qp` — not `quality_lvl` — is the real dial. Flagged as the cheapest next experiment. |
-| `video<N>.max_qp` | 1–51, default 45 | Same as `min_qp` | **Unmeasured** | Same caveat as `min_qp`. |
+| `video<N>.min_qp` | 1–51, default 20 | All — classic SoCs via the rate-control struct, new-API SoCs via a separate `IMP_Encoder_SetChnQpBounds` call after channel registration | **Measured** (T31, 2026-08-22) | A raised QP *floor* is a bitrate *ceiling* — counter-intuitive on first read, but a floor on how coarse the quantizer may get is a cap on how far the encoder can compress, so it can only spend more bits, never fewer, once the target itself is out of reach. Live-differential proof on a T31 substream: raising `min_qp` 20 → 40 cut the delivered bitrate 229 → 25 kbps (0.11×) with the `bitrate` target untouched — the bound genuinely constrains the encoder, it is not merely echoed back by `GET /control`. |
+| `video<N>.max_qp` | 1–51, default 45 | Same as `min_qp` | **Measured** (T31, 2026-08-22) | The mirror image of `min_qp`: a lowered QP *ceiling* forbids the encoder from degrading enough to hit a starved bitrate target, so it binds only once the target is already below what the scene needs. Proof needs a starved target first — at a common 34 kbps target on the same T31 substream, ceiling 28 delivered 97 kbps while ceiling 51 delivered 14 kbps (6.93× apart), i.e. the tighter ceiling forced the encoder to spend far more than the unreachable target asked for. |
 | `video<N>.quality_lvl` | 0–7, default 2 | Classic SoCs only (T10–T30), `vbr`/`smart` modes only. No effect on T31/C100/T40/T41 — logged once and ignored. | **Measured** | Moves the T23's whole operating point down: 1709 kbit/s at level 2 vs. 1243 at level 7 on the same scene (−27%; −41% against the shipped `cbr` default of 2091). This is a **uniform** shift, not scene adaptation — the within-level spread stays at 0.2–4% at every level, same as under `cbr`. It is not a hard bitrate floor either, despite what the header formula suggests — see the refuted hypothesis on the companion page. |
 | `video<N>.change_pos` | 50–100, default 80 | Classic SoCs only, `vbr`/`smart` modes only. No effect on new-API SoCs. | **Measured** | No measurable effect on T23 at any tested value (80 / 65 / 50 all landed within 1251–1264 kbit/s at `quality_lvl=7`). Despite the header's description ("qp is adjusted once bitrate exceeds this percentage of the target"), do not expect tuning this to change anything until it has been re-verified on other SoCs or with `IMP_Encoder_GetChnAttrRcMode()` readback. |
-| `video<N>.i_bias_lvl` | −3–3, default 0 | Classic SoCs (`vbr`+`cbr` modes) and T31/C100 (all modes, via `IMP_Encoder_SetChnQpIPDelta`, wired 2026-08-21). No effect on T40/T41 — their SDKs have no equivalent call, logged once and ignored. | **Unmeasured** on T31/C100 (wired, not yet exercised against a running encoder); measured non-effect on T40/T41 | Header describes it as an I-frame QP bias. The classic `iBiasLvl` and new-API `iIPDelta` are close relatives, not proven identical in sign/scale — the value is passed through 1:1 today. `encoder.<n>.rc.ip_delta` (see Readback below) is the way to check the mapping on a T31/C100 before trusting a configured value the way the classic one is trusted. |
+| `video<N>.i_bias_lvl` | −3–3, default 0 | Classic SoCs (`vbr`+`cbr` modes) and T31/C100 (all modes, via `IMP_Encoder_SetChnQpIPDelta`, wired 2026-08-21). No effect on T40/T41 — their SDKs have no equivalent call, logged once and ignored. | **Measured** on T31/C100, `cbr` (2026-08-22): confirmed null; measured non-effect on T40/T41 | Header describes it as an I-frame QP bias. The value reaches the encoder correctly — `encoder.<n>.rc.ip_delta` echoes the configured value 1:1, in scale and sign, proving the pass-through itself is right — but a bracketed `-3/+3/-3` sweep on a T31 substream under `cbr` found no bitstream effect beyond measurement noise (mean keyframe size within ~0.1% across the swing, versus a 15% effect threshold): `SetChnQpIPDelta` is a no-op in `cbr` on this SoC. Not a timps bug — the value timps sends is the value the encoder reports back — but it means configuring this field on a T31/C100 `cbr` stream buys nothing today. Unmeasured under `vbr`/`fixqp` on T31/C100, and unmeasured on classic SoCs in either mode. |
 | `video<N>.fluc_lvl` | 0–4, default 0 | Classic SoCs, H.265 channels only (exposed as a config key 2026-08-21 — was hardcoded at 0 before). No effect on new-API SoCs. | **Unmeasured** | "Bitrate fluctuation relative to the average" per the header — the H.265 counterpart of `i_bias_lvl`. Always restart-bound (see [Live vs. restart](#live-vs-restart-per-soc) below) — it is inherently an H.265-only field, and the classic live-apply path only ever covers H.264 channels. |
 | *(hardcoded, classic path only)* `staticTime` | fixed at 2 (seconds) | Classic SoCs | Header-derived | Rate-control statistics window. No documented valid range; not yet exposed as a config key. |
 | *(hardcoded)* `frmQPStep` | fixed at 3 | Classic SoCs | Header-derived | Per-frame QP step limit. No documented range. |
@@ -74,7 +74,7 @@ of hardcoding this table into a client.
 | --- | --- | --- | --- | --- | --- |
 | `bitrate` | Live | Restart | Live | Live | Live |
 | `rc_mode` | Live (full rc-struct re-fill in one call) | Restart | Restart — no direct mode setter | Restart | Restart — SDK has no rc-mode setter at all |
-| `qp` (fixqp initial QP) | Live | Restart | Restart (see below) | Restart (see below) | Restart |
+| `qp` (fixqp initial QP) | Live under `fixqp` only, Restart otherwise (see below) | Restart | Restart (see below) | Restart (see below) | Restart |
 | `min_qp` / `max_qp` | Live | Restart | Live | Live | Live |
 | `quality_lvl` / `change_pos` | Live | Restart | No effect | No effect | No effect |
 | `i_bias_lvl` | Live | Restart | Live | No effect (no `SetChnQpIPDelta`) | No effect (no `SetChnQpIPDelta`) |
@@ -92,6 +92,23 @@ path and is graded the same way without a measurement of its own.
 the next frame") is the candidate for restoring a real live `qp` there and
 needs a bitstream measurement before it is advertised.
 
+The classic H.264 path had the same class of bug, closed 2026-08-22: its
+live-apply re-fills the *whole* rate-control union via
+`IMP_Encoder_SetChnAttrRcMode` regardless of which key was actually posted,
+so the call "succeeds" and gets graded live even when the specific field
+posted has no effect in the encoder's *current* mode — `qp` only feeds
+`attrFixQp.iInitialQP`, a union member the encoder ignores outside `fixqp`.
+Measured on a T23N camera: `video1.qp` posted under `cbr` was graded
+`deferred:0` (claimed live) with no observable bitstream effect. Fixed by
+gating the classic `qp` branch on the channel's current `rc_mode`, the same
+outside-its-native-mode check the new-API side already had — `qp` is now
+correctly graded restart-bound outside `fixqp` on classic SoCs too. This
+also benefits T20X, which shares the classic code path. Unlike the new-API
+side, no candidate replacement call is needed here: the classic
+`SetChnAttrRcMode` call genuinely does reprogram the running channel — it
+just needs to run *in* `fixqp` for the `qp` field within it to matter, which
+the gate now correctly requires.
+
 H.264-only on the classic path because `IMP_Encoder_SetChnAttrRcMode`'s
 full-struct re-fill is only proven safe for the H.264 union layout; an
 H.265 channel on T21/T30 stays restart-bound no matter which key changed
@@ -100,13 +117,22 @@ capability — hence no `ENC_LIVE_KEYS` distinction for it). The host
 simulator has no live path at all — `caps.video_live` is always empty
 there.
 
-**Hardware verification status**: wired and cross-build clean (T23, T31,
-T23+`USE_SW_ROTATE`; T40/T41 compile-checked, not link-tested — their
-vendor libs need an fp64 toolchain this repo does not ship). The live IMP
-calls themselves, the `i_bias_lvl`↔`iIPDelta` mapping, and the "takes
-effect at next IDR" latency remain to be verified against a running
-encoder (tracked in `dev_notes/TODO.md`) — this table will be updated with
-**Measured** once that lands.
+**Hardware verification status**: wired and cross-build clean on every
+platform (T23, T23N, T20X, T31, T31X, T23+`USE_SW_ROTATE`; T40/T41
+compile-checked, not link-tested — their vendor libs need an fp64 toolchain
+this repo does not ship). As of 2026-08-22, real hardware measurement on a
+T31 fleet has confirmed: `bitrate`/`min_qp`/`max_qp` genuinely bind on the
+live path (differential bitstream proofs, see the table above); the
+`i_bias_lvl`↔`ip_delta` pass-through is correct in scale and sign but a
+confirmed no-op on the bitstream under `cbr`; and `qp`'s live/restart
+grading is now honest on both encoder-API generations (classic and
+new-API), closing the exact same "whole call succeeds, so it's graded live
+regardless of whether the specific field posted has any effect in the
+current mode" gap on each side independently. The "takes effect at next
+IDR" latency claim itself has not been independently timed (the
+measurements above establish that live changes take effect, not exactly
+how many frames later) — that and `i_bias_lvl` under `vbr`/`fixqp` remain
+open (tracked in `dev_notes/TODO.md`).
 
 ## What was unexplained, and how it was settled
 
@@ -228,8 +254,11 @@ mirrors `docs/wiki/` at its own root.
 - [Platform & SDK Support](Platform-SDK-Support.md#two-encoder-api-generations) —
   the classic-vs-new-API encoder split these fields are organized around.
 - `dev_notes/T23_RATECONTROL_INVESTIGATION_2026-08-21.md` — full
-  measurement data and method.
-- `dev_notes/TODO.md` — open follow-up work: hardware verification of the
-  2026-08-21 live-apply/readback work (this page's [Live vs.
-  restart](#live-vs-restart-per-soc) table), and the `min_qp` sweep on
-  platforms other than T23.
+  measurement data and method for the 2026-08-21 T23 investigation
+  (`quality_lvl`, `change_pos`, the `min_qp` sweep that settled the
+  quality-seeking-vs-rate-seeking question on that SoC).
+- `dev_notes/TODO.md` — open follow-up work: the "takes effect at next IDR"
+  latency has not been independently timed; `i_bias_lvl` is unmeasured under
+  `vbr`/`fixqp` on T31/C100 and unmeasured on every classic SoC in either
+  mode; and nothing above has been measured yet on T20X or T40/T41 hardware
+  (compile/link status only).
