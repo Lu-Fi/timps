@@ -54,6 +54,11 @@
 #  15. Soak .......... long capture with periodic health sampling
 #  15b. Session drift  optional: ONE unbroken RTSP session for hours, A/V skew
 #                      sampled at checkpoints, judged on TREND not snapshot
+#  15c. Long-run all . optional: RTSP + HTTP fMP4 + MJPEG held open CONCURRENTLY
+#                      for hours; per-protocol reliability trends (A/V drift for
+#                      the two that carry audio, frame-rate/gap/JPEG validity for
+#                      MJPEG, which has no audio), plus a stall check that only
+#                      HTTP can fail and an aggregate daemon leak trend
 #  16. On-device ..... optional SSH: timpsd RSS/CPU/fds/threads, logread errors,
 #                      watchdog-escalation grep, dmesg (kernel/driver) scan,
 #                      /etc/timps.conf integrity (glued/duplicate keys)
@@ -124,6 +129,28 @@ DRIFT_SEG="${DRIFT_SEG:-300}"      # checkpoint interval within that session
 # |skew| at which the session is aborted early - the bug is already proven at
 # this point and there is nothing to learn from another hour of it.
 DRIFT_ABORT="${DRIFT_ABORT:-1.0}"
+# Section 15c - long-run reliability of EVERY stream type, not just RTSP.
+#
+# Why this exists at all: 15 and 15b are the only long-duration checks in this
+# script and BOTH pull rtsp_url($PATH_MAIN) exclusively. /stream.mp4 and
+# /stream.mjpeg are covered only by sections 4 and 5, which take a single
+# ~$INTEG_DUR capture. A degradation confined to the HTTP serving path - the
+# fMP4 muxer's tfdt accumulator, a chunked response that goes quiet without
+# closing, MJPEG multipart framing that desyncs after hours - was therefore
+# invisible no matter how long --profile soak or --profile drift ran.
+#
+# 0 = off. Deliberately NOT folded into the soak or drift profiles: all three
+# are hours long, so bundling them would silently multiply an already multi-hour
+# run's wall time (the same reason 15b got its own profile instead of joining
+# the soak). `--profile longrun` sets 7200.
+LONGRUN_DUR="${LONGRUN_DUR:-0}"    # seconds each protocol is held open (0 = skip)
+LONGRUN_SEG="${LONGRUN_SEG:-300}"  # checkpoint interval; needs >=4 for a trend
+# Which protocols take part. All three at once by default - see the long comment
+# on section 15c for why concurrent is both faster and more realistic. Narrow it
+# (e.g. --longrun-protos mjpeg) to ATTRIBUTE a leak the concurrent run surfaced:
+# the on-device fd/thread series is one aggregate number for the daemon, so with
+# three sessions open it cannot say which consumer type grew it.
+LONGRUN_PROTOS="${LONGRUN_PROTOS:-rtsp,fmp4,mjpeg}"
 DO_RESTART="${DO_RESTART:-0}"      # 1 = exercise streamer restart
 ONLY=""                            # comma-sep section names/numbers to run (empty = all)
 # Optional backchannel acoustic-loopback test (default OFF, never in a profile):
@@ -155,7 +182,10 @@ TEST_HOSTILE="${TEST_HOSTILE:-0}" # 13b: stalled client must not degrade healthy
 TEST_REBOOT="${TEST_REBOOT:-0}"  # 14c: real reboot, config/binary/version persistence
 
 usage() {
-	sed -n '2,58p' "$0" | sed 's/^# \{0,1\}//'
+	# NOTE: this range must cover the whole banner comment above, up to and
+	# including the LAST line of section 16's description - it used to stop at
+	# 58 and silently dropped 16's final "/etc/timps.conf integrity" line.
+	sed -n '2,64p' "$0" | sed 's/^# \{0,1\}//'
 	cat <<EOF
 
 Options (also settable as env vars):
@@ -176,6 +206,21 @@ Options (also settable as env vars):
                       stays visible instead of being reset every slice.
   --drift-seg S       drift checkpoint interval in seconds (default 300).
                       Needs >=4 checkpoints for a trend verdict.
+  --longrun-dur S     hold RTSP, HTTP fMP4 and HTTP MJPEG open CONCURRENTLY
+                      for S seconds and judge each one's reliability on the
+                      TREND across checkpoints (section 15c). Default 0 = off;
+                      --profile longrun sets 7200 (2h). Unlike --drift-dur
+                      this covers all three stream types, and unlike the soak
+                      it never reconnects. One time window for all three, so
+                      it costs the same wall time as testing RTSP alone - and
+                      it reproduces the real fleet case (an NVR on RTSP while
+                      a WebUI viewer is on MJPEG).
+  --longrun-seg S     15c checkpoint interval in seconds (default 300).
+                      Needs >=4 checkpoints for a trend verdict.
+  --longrun-protos L  comma-separated subset of rtsp,fmp4,mjpeg for 15c
+                      (default all three). Narrow it to attribute a leak:
+                      the daemon's fd/thread counters are aggregate, so a
+                      three-session run cannot say which consumer grew them.
   --only LIST         run only these sections (names or numbers, comma-sep),
                       e.g. --only onvif  or  --only 3,10 ; preflight always runs
   --out DIR           output directory
@@ -242,6 +287,12 @@ Profiles:
   soak      hours   : standard + long soak (default 2h; set --soak-dur)
   drift     hours   : standard + one unbroken RTSP session with A/V-drift
                       checkpoints (default 2h; set --drift-dur/--drift-seg)
+  longrun   hours   : standard + RTSP, fMP4 and MJPEG held open concurrently
+                      for one long window, each judged on its own reliability
+                      trend (default 2h; set --longrun-dur/--longrun-seg).
+                      Use this - not `drift` - to answer "is EVERY stream type
+                      still healthy after hours"; `drift` stays the isolated,
+                      contention-free RTSP-only A/V measurement.
 EOF
 	exit 1
 }
@@ -268,6 +319,9 @@ while [ $# -gt 0 ]; do
 		--soak-dur) SOAK_DUR="$2"; shift 2;;
 		--drift-dur) DRIFT_DUR="$2"; shift 2;;
 		--drift-seg) DRIFT_SEG="$2"; shift 2;;
+		--longrun-dur) LONGRUN_DUR="$2"; shift 2;;
+		--longrun-seg) LONGRUN_SEG="$2"; shift 2;;
+		--longrun-protos) LONGRUN_PROTOS="$2"; shift 2;;
 		--restart) DO_RESTART=1; shift;;
 		--only) ONLY="$2"; shift 2;;
 		--out) OUTDIR="$2"; shift 2;;
@@ -308,6 +362,12 @@ case "$PROFILE" in
 	# separate profile rather than folding into `soak`: both are hours long and
 	# run serially, so bundling them would silently double a soak run's wall time
 	drift)    [ "$DRIFT_DUR" -gt 0 ] || DRIFT_DUR=7200;;
+	# 15c gets its own profile for the same reason, and specifically NOT a slot
+	# in `soak`/`drift`: those two are what people already schedule overnight and
+	# their wall time must stay what it says on the tin. Inside 15c the three
+	# protocols DO share one window (that part is concurrent) - it is only the
+	# long-duration SECTIONS that must not stack.
+	longrun)  [ "$LONGRUN_DUR" -gt 0 ] || LONGRUN_DUR=7200;;
 	*) echo "unknown profile: $PROFILE" >&2; usage;;
 esac
 
@@ -346,6 +406,18 @@ fcmp() { awk -v a="$1" -v b="$3" -v op="$2" 'BEGIN{
 	if(op=="lt")exit!(a<b); if(op=="le")exit!(a<=b);
 	if(op=="gt")exit!(a>b); if(op=="ge")exit!(a>=b); exit 1}'; }
 
+# fmt <decimals> <number> -> the number re-rounded for display.
+# Deliberately NOT bash's builtin printf. That one honours LC_NUMERIC, so on a
+# de_DE / fr_FR host (this project's own author runs de_DE) `printf '%.1f' 12.30`
+# both REJECTS its input as an invalid number AND prints "12,3". A comma-decimal
+# then flows into the next awk - and every threshold in this file is compared
+# through awk via fcmp - where "12,3" parses as 12, silently moving the verdict
+# boundary. awk's printf is not locale-sensitive here, which is why every other
+# float in this script is already formatted with awk. Format is built by
+# concatenation rather than "%.*f" so it does not depend on the awk variant
+# supporting the * precision flag.
+fmt() { awk -v v="$2" -v d="${1:-1}" 'BEGIN{ printf("%." d "f", v) }'; }
+
 # ---------------------------------------------------------------- shared patterns
 # ONE definition of "ffmpeg complained about the media" for every capture this
 # script takes. analyze_stream's copy and the soak loop's copy had already
@@ -354,7 +426,15 @@ fcmp() { awk -v a="$1" -v b="$3" -v op="$2" 'BEGIN{
 # survive undetected in analyze_stream for the whole life of the project -
 # ffmpeg's actual muxer wording is "Non-monotonic DTS; previous: X, current: Y".
 # Keep it here, use it everywhere, never inline a second copy.
-FFWARN_RE='non-monoton(ous|ic)|discontinuit|corrupt|error while|decode_slice|concealing|invalid data|missed'
+# "EOI missing" / "overread" are the JPEG decoder's wording for a truncated or
+# over-run entropy segment - i.e. a multipart body that did not carry the whole
+# frame. They were added when 15c started decoding the MJPEG stream: without
+# them a stream in which EVERY frame was truncated reported zero warnings and
+# passed (verified against the host sim fed a deliberately cut-off JPEG). They
+# are extended HERE rather than matched by a private pattern inside 15c, which
+# is the whole point of this variable - and they cost nothing on the other
+# captures, since no H.264/H.265/AAC decoder emits either phrase.
+FFWARN_RE='non-monoton(ous|ic)|discontinuit|corrupt|error while|decode_slice|concealing|invalid data|missed|EOI missing|overread'
 # ffwarn_count <logfile> -> count of matching lines, always a bare integer.
 # NOTE the `n=$(grep -c ...)` shape: grep -c prints "0" AND exits 1 on no match,
 # so chaining `|| echo 0` (as the soak loop once did) yields a two-line "0\n0"
@@ -557,6 +637,103 @@ leak_trend() {
 	}'
 }
 
+# series_quarters [column]   (reads a whitespace series on stdin, '#' = comment)
+#   -> "<n> <first_quarter_mean> <last_quarter_mean> <growth>"
+# Quarter MEANS rather than first-vs-last single values so ordinary jitter
+# averages out while a real accumulation survives. This is the shape every
+# long-duration verdict in this script uses (soak CPU, 15b's A/V drift, 15c's
+# per-protocol fps/gap/skew trends) - it lived as three separate inline awk
+# copies until they were collapsed here; see FFWARN_RE's comment for what
+# happens when copies of the same rule are left to drift apart.
+series_quarters() {
+	awk -v col="${1:-1}" '/^#/{next} NF{n++; s[n]=$col+0}
+	END{ if(n<1){print "0 0 0 0"; exit}
+	     q=int(n/4); if(q<1)q=1;
+	     for(i=1;i<=q;i++)f+=s[i]; for(i=n-q+1;i<=n;i++)l+=s[i]; f/=q; l/=q;
+	     printf "%d %.3f %.3f %.3f\n", n, f, l, l-f }'
+}
+
+# av_trend_stats <series-file>
+#   -> "<n> <q1> <q4> <growth> <|growth|> <slope_s_per_h> <mono> <max|skew|> <band> <hours>"
+# Series format (written by every long A/V session in this script):
+#   "<seg> <t_media_end_s> <skew_end_s> <skew_delta_in_seg_s> <wall_s>"
+# Only columns 2 (media time) and 3 (skew) are read, so extra trailing columns
+# are free to add.
+#
+#   growth = mean(last quarter) - mean(first quarter), as series_quarters.
+#   slope  = least-squares seconds-of-skew per hour of session, the same signal
+#            as a RATE so runs of different length compare directly.
+#   mono   = fraction of consecutive checkpoint-to-checkpoint steps that moved
+#            in the trend's direction. The practical stand-in for "monotonically
+#            growing": real captures jitter, so demanding that every single step
+#            increase would never fire. ~0.5 = noise, ->1.0 = a ratchet.
+#   band   = max-min, and max|skew| the worst absolute level seen, for the
+#            separate absolute-level judgement (a large but CONSTANT offset is a
+#            different defect from a growing one).
+av_trend_stats() {
+	awk '
+	/^#/{next} {n++; t[n]=$2+0; s[n]=$3+0}
+	END{
+		if(n<2){print "0 0 0 0 0 0 0 0 0 0"; exit}
+		q=int(n/4); if(q<1)q=1;
+		for(i=1;i<=q;i++)f+=s[i];
+		for(i=n-q+1;i<=n;i++)l+=s[i];
+		f/=q; l/=q; growth=l-f; ag=(growth<0?-growth:growth);
+		for(i=1;i<=n;i++){sx+=t[i];sy+=s[i];sxx+=t[i]*t[i];sxy+=t[i]*s[i]}
+		den=n*sxx-sx*sx; slope=(den!=0)?(n*sxy-sx*sy)/den:0;
+		dir=(growth<0?-1:1); same=0;
+		for(i=2;i<=n;i++){d=s[i]-s[i-1]; if(d*dir>0)same++}
+		mono=(n>1)?same/(n-1):0;
+		mx=s[1]; mn=s[1]; mabs=0;
+		for(i=1;i<=n;i++){if(s[i]>mx)mx=s[i]; if(s[i]<mn)mn=s[i]; a=(s[i]<0?-s[i]:s[i]); if(a>mabs)mabs=a}
+		span=t[n]-t[1]; hrs=(span>0)?span/3600:0;
+		printf "%d %.3f %.3f %.3f %.3f %.3f %.2f %.3f %.3f %.2f\n", n, f, l, growth, ag, slope*3600, mono, mabs, mx-mn, hrs;
+	}' "$1"
+}
+
+# av_drift_verdict <prefix> <series-file>
+# Emits the TREND + LEVEL verdicts for one long-lived audio+video session.
+# <prefix> starts every message ("drift" for 15b's isolated RTSP session,
+# "longrun rtsp"/"longrun fmp4" for 15c), so the two callers can never disagree
+# about WHAT counts as accumulating drift - there is one ladder, not one per
+# protocol. RTSP and fMP4 reach A/V sync through completely different code
+# (RTCP sender reports vs the fMP4 tfdt accumulators in src/mp4/fmp4.c), which
+# is exactly why both need measuring - but "how much drift is too much" is a
+# property of human perception, not of the transport, so the thresholds are shared.
+av_drift_verdict() {
+	local pfx="$1" series="$2"
+	local n q1 q4 growth agrowth rate mono maxabs band hours monopct
+	read -r n q1 q4 growth agrowth rate mono maxabs band hours <<<"$(av_trend_stats "$series")"
+	if [ "${n:-0}" -lt 4 ]; then
+		warn "$pfx: only ${n:-0} usable checkpoint(s) - not enough to judge a trend (need >=4); per-checkpoint values are in $series"
+		return
+	fi
+	monopct=$(awk -v m="$mono" 'BEGIN{printf "%d", m*100}')
+	info "$pfx trend over ${hours}h / $n checkpoints: first-quarter avg=${q1}s -> last-quarter avg=${q4}s (growth ${growth}s, slope ${rate}s/h extrapolated from a ${hours}h fit, ${monopct}% of steps moved with the trend, band ${band}s, max|skew| ${maxabs}s)"
+	info "  per-checkpoint values: $series"
+	# TREND verdict - the actual signature of the RTCP-SR class of bug.
+	# Thresholds are on absolute growth over the session (what a viewer
+	# experiences) and are cross-checked against monotonicity, so a large
+	# but bursty/bounded wobble does not read the same as a slow ratchet.
+	if fcmp "$agrowth" ge 0.50; then
+		bad "$pfx TREND: A/V skew moved ${growth}s across the session (${rate}s/h) - unmistakably accumulating within one connection"
+	elif fcmp "$agrowth" ge 0.25 && fcmp "$mono" ge 0.60; then
+		bad "$pfx TREND: A/V skew grew ${growth}s and ${monopct}% of steps moved the same way - drift is accumulating, not jitter"
+	elif fcmp "$agrowth" ge 0.15 && fcmp "$mono" ge 0.85; then
+		bad "$pfx TREND: A/V skew grew only ${growth}s but ${monopct}% of steps moved the same way - a near-perfect ratchet, i.e. slow accumulation that a single-snapshot threshold would never catch"
+	elif fcmp "$agrowth" ge 0.10; then
+		warn "$pfx TREND: A/V skew moved ${growth}s across the session (${rate}s/h, ${monopct}% of steps with the trend) - watch it; re-run longer to tell a slow ratchet from a bounded wobble"
+	else
+		ok "$pfx TREND: A/V skew stayed bounded (${growth}s between first- and last-quarter averages, ${rate}s/h) - noisy but not accumulating"
+	fi
+	# ABSOLUTE-level verdict, same thresholds section 3 applies to a single
+	# capture - reported separately because a large but CONSTANT offset is a
+	# different defect from a growing one.
+	if fcmp "$maxabs" le 0.15; then ok "$pfx LEVEL: worst A/V skew ${maxabs}s over the whole session (in sync)"
+	elif fcmp "$maxabs" le 0.40; then warn "$pfx LEVEL: worst A/V skew ${maxabs}s (marginal offset; see the TREND verdict for whether it is growing)"
+	else bad "$pfx LEVEL: worst A/V skew ${maxabs}s (out of sync)"; fi
+}
+
 RU="$RTSP_USER"; RP="$RTSP_PASS"
 rtsp_url() { printf 'rtsp://%s:%s@%s:%s/%s' "$RU" "$RP" "$CAM" "$RTSP_PORT" "$1"; }
 http_base() { printf 'http://%s:%s' "$CAM" "$HTTP_PORT"; }
@@ -748,6 +925,63 @@ av_skew() {
 		}
 		printf "%.3f %.3f %.3f\n", ss, se, se-ss;
 	}' "$1"
+}
+
+# seg_probe <segment-file> <scratch-csv>
+#   -> "<video_pkts> <audio_pkts> <t_media_end_s> <skew_start> <skew_end> <skew_delta>"
+# One completed checkpoint of a long audio+video session. The three skew fields
+# come straight from av_skew() (empty -> "-", so the caller can test for it
+# without tripping over `set -u`), and the packet counts let the caller tell
+# "this checkpoint had no A/V pair" apart from "this stream carries no audio".
+# Shared by 15b and 15c so a checkpoint means exactly the same thing in both.
+seg_probe() {
+	ffprobe -v error -show_entries packet=codec_type,pts_time -of csv=p=0 "$1" 2>/dev/null > "$2"
+	local ss se dd
+	read -r ss se dd <<<"$(av_skew "$2")"
+	awk -F, -v ss="${ss:-}" -v se="${se:-}" -v dd="${dd:-}" '
+		$1=="video"{nv++; t=$2+0} $1=="audio"{na++}
+		END{printf "%d %d %.1f %s %s %s\n", nv, na, t,
+		            (ss==""?"-":ss), (se==""?"-":se), (dd==""?"-":dd)}' "$2"
+}
+
+# mj_probe <segment-file> <scratch-csv>
+#   -> "<frames> <t_first_s> <t_last_s> <max_arrival_gap_s> <bytes_avg> <bytes_min>"
+# The MJPEG counterpart of seg_probe. Two things differ from the A/V case and
+# both matter:
+#   * There is no audio track, so nothing here measures skew - see the N/A note
+#     in section 15c rather than a silently absent check.
+#   * The capture runs with -use_wallclock_as_timestamps 1, so pts_time is the
+#     host's ARRIVAL time for each JPEG, not a media clock the daemon chose.
+#     That is the only way a gap in DELIVERY is measurable at all: the mpjpeg
+#     demuxer carries no timestamps of its own, and without that flag ffmpeg
+#     invents an even 25fps ladder in which a multi-second freeze is invisible.
+mj_probe() {
+	ffprobe -v error -select_streams v:0 -show_entries packet=pts_time,size \
+		-of csv=p=0 "$1" 2>/dev/null > "$2"
+	awk -F, '{p=$1+0; s=$2+0; n++;
+		if(n==1){first=p} else {g=p-prev; if(g>mx)mx=g}
+		prev=p; last=p; sum+=s; if(mn==0||s<mn)mn=s}
+	END{ if(n<1){print "0 0 0 0 0 0"; exit}
+	     printf "%d %.3f %.3f %.3f %.0f %.0f\n", n, first, last, mx, sum/n, mn }' "$2"
+}
+
+# rt_stats <series-file> <media-col> <wall-col> <min-step-s>
+#   -> "<n_measurable> <min_rt> <mean_rt>"
+# Media time advanced per second of wall time, measured DIFFERENTIALLY between
+# consecutive checkpoints. A cumulative media/wall ratio cannot be used here:
+# a checkpoint is only declared complete once its successor file exists, so the
+# wall reading always lags the media reading by up to one segment - a constant
+# offset that cancels in the difference but biases the ratio low.
+# <min-step-s> guards the other direction: when several finished segments are
+# drained in the same poll (or at process exit) their wall readings are
+# effectively identical, and dividing by ~0 would manufacture a huge rt.
+rt_stats() {
+	awk -v tc="$2" -v wc="$3" -v minstep="$4" '
+	/^#/{next} { t=$tc+0; w=$wc+0;
+		if(have){ dw=w-pw; dt=t-pt;
+			if(dw>=minstep){ r=dt/dw; n++; s+=r; if(n==1||r<mn)mn=r } }
+		pt=t; pw=w; have=1 }
+	END{ if(n<1){print "0 0 0"; exit} printf "%d %.3f %.3f\n", n, mn, s/n }' "$1"
 }
 
 # --------------------------------------------------- stream integrity + A/V sync core
@@ -5534,11 +5768,11 @@ if [ "${SOAK_DUR:-0}" -gt 0 ] && want 15 soak; then
 		fi
 	done
 	if [ -s "$cpu_series" ]; then
-		read -r cn cq1 cq4 cgrowth _ _ _ _ _ _ <<<"$(awk '{n++;s[n]=$1+0}
-			END{ if(n<1){print "0 0 0 0 0 0 0 0 0 0"; exit}
-			     q=int(n/4); if(q<1)q=1;
-			     for(i=1;i<=q;i++)f+=s[i]; for(i=n-q+1;i<=n;i++)l+=s[i]; f/=q; l/=q;
-			     printf "%d %.1f %.1f %.1f 0 0 0 0 0 0\n", n, f, l, l-f }' "$cpu_series")"
+		# shared series_quarters (see the helper section) - this used to be a
+		# third inline copy of the same quarter-mean awk. It prints %.3f, so
+		# round back to the one decimal this line has always shown.
+		read -r cn cq1 cq4 cgrowth <<<"$(series_quarters 1 < "$cpu_series")"
+		cq1=$(fmt 1 "$cq1"); cq4=$(fmt 1 "$cq4"); cgrowth=$(fmt 1 "$cgrowth")
 		info "timpsd CPU across soak: first-quarter avg ${cq1}% -> last-quarter avg ${cq4}% ($cn slices, see $cpu_series)"
 		if [ "${cn:-0}" -ge 4 ]; then
 			if fcmp "$cgrowth" ge 15; then bad "soak: timpsd CPU rose ${cgrowth} points across the soak (${cq1}% -> ${cq4}%) at constant load - work per client is growing (spin/backlog)"
@@ -5579,7 +5813,7 @@ if [ "${DRIFT_DUR:-0}" -gt 0 ] && want 15b drift; then
 	hdr "15b. Long-session A/V drift (ONE ${DRIFT_DUR}s RTSP connection, ${DRIFT_SEG}s checkpoints)"
 	ddir="$OUTDIR/drift"; mkdir -p "$ddir"
 	dlog="$OUTDIR/drift_ffmpeg.log"; dseries="$OUTDIR/drift_series.txt"
-	printf '# seg t_media_end_s skew_end_s skew_delta_in_seg_s\n' > "$dseries"
+	printf '# seg t_media_end_s skew_end_s skew_delta_in_seg_s wall_s\n' > "$dseries"
 	nseg_expect=$(( DRIFT_DUR / DRIFT_SEG ))
 	[ "$nseg_expect" -ge 4 ] || warn "drift: --drift-dur $DRIFT_DUR with --drift-seg $DRIFT_SEG gives only $nseg_expect checkpoint(s); the trend verdict needs >=4 (raise --drift-dur or lower --drift-seg)"
 	info "drift: one unbroken RTSP ($RTSP_TRANSPORT) session, segmented every ${DRIFT_SEG}s with -reset_timestamps 0 so skew stays comparable ACROSS checkpoints"
@@ -5592,7 +5826,7 @@ if [ "${DRIFT_DUR:-0}" -gt 0 ] && want 15b drift; then
 		-map 0 -c copy -f segment -segment_time "$DRIFT_SEG" -reset_timestamps 0 \
 		-segment_format matroska "$ddir/seg_%04d.mkv" </dev/null 2>"$dlog" &
 	d_pid=$!
-	d_next=0; d_pts=0; d_noav=0; d_abort=0
+	d_next=0; d_noav=0; d_abort=0
 	while :; do
 		d_alive=1; kill -0 "$d_pid" 2>/dev/null || d_alive=0
 		while :; do
@@ -5605,17 +5839,15 @@ if [ "${DRIFT_DUR:-0}" -gt 0 ] && want 15b drift; then
 			# still being written to.
 			[ -f "$d_nxt" ] || [ "$d_alive" = "0" ] || break
 			d_csv="$ddir/pkts.csv"
-			ffprobe -v error -show_entries packet=codec_type,pts_time -of csv=p=0 "$d_cur" 2>/dev/null > "$d_csv"
-			read -r d_ss d_se d_dd <<<"$(av_skew "$d_csv")"
-			read -r d_nv d_na d_tend <<<"$(awk -F, '
-				$1=="video"{nv++; t=$2+0} $1=="audio"{na++}
-				END{printf "%d %d %.1f", nv, na, t}' "$d_csv")"
-			if [ "${d_nv:-0}" -eq 0 ] || [ "${d_na:-0}" -eq 0 ] || [ -z "${d_se:-}" ]; then
+			# shared seg_probe (see the helper section): one definition of what
+			# a checkpoint measures, used by 15c too
+			d_wall=$(( $(date +%s) - d_t0 ))
+			read -r d_nv d_na d_tend d_ss d_se d_dd <<<"$(seg_probe "$d_cur" "$d_csv")"
+			if [ "${d_nv:-0}" -eq 0 ] || [ "${d_na:-0}" -eq 0 ] || [ "${d_se:-}" = "-" ]; then
 				d_noav=$((d_noav+1))
 				info "  checkpoint $d_next: video=${d_nv:-0} audio=${d_na:-0} pkts - no A/V pair here, skew not measurable"
 			else
-				d_pts=$((d_pts+1))
-				printf '%d %s %s %s\n' "$d_next" "$d_tend" "$d_se" "$d_dd" >> "$dseries"
+				printf '%d %s %s %s %s\n' "$d_next" "$d_tend" "$d_se" "$d_dd" "$d_wall" >> "$dseries"
 				info "  checkpoint $d_next  t=${d_tend}s  A/V skew=${d_se}s  (moved ${d_dd}s within this segment; v=$d_nv a=$d_na pkts)"
 				d_abs=$(awk -v d="$d_se" 'BEGIN{printf "%.3f", (d<0?-d:d)}')
 				if fcmp "$d_abs" ge "${DRIFT_ABORT:-1.0}"; then
@@ -5647,70 +5879,504 @@ if [ "${DRIFT_DUR:-0}" -gt 0 ] && want 15b drift; then
 	[ "$d_ffe" -eq 0 ] && ok "drift: no ffmpeg decode/timestamp warnings over the whole session" \
 		|| warn "drift: $d_ffe ffmpeg decode/timestamp warning(s) during the session (see $dlog)"
 
-	if [ "$d_pts" -lt 4 ]; then
-		warn "drift: only $d_pts usable checkpoint(s) - not enough to judge a trend (need >=4); per-checkpoint values are in $dseries"
-	else
-		# Trend maths, all in one awk pass over the checkpoint series:
-		#   growth  = mean(last quarter) - mean(first quarter). Quarter means
-		#             instead of first-vs-last single values so ordinary jitter
-		#             averages out; a real accumulation survives it.
-		#   slope   = least-squares seconds-of-skew per hour of session, the
-		#             same signal expressed as a rate (comparable across runs
-		#             of different --drift-dur).
-		#   monof   = fraction of consecutive checkpoint-to-checkpoint steps
-		#             that moved in the trend's direction. This is the
-		#             practical stand-in for "monotonically growing": real
-		#             captures jitter, so demanding every single step increase
-		#             would never fire. ~0.5 = noise, ->1.0 = a ratchet.
-		#   band    = max-min, and maxabs = worst |skew| seen, for the separate
-		#             absolute-level judgement below.
-		read -r d_n d_q1 d_q4 d_growth d_agrowth d_rate d_mono d_maxabs d_band d_hours <<<"$(awk '
-			/^#/{next} {n++; t[n]=$2+0; s[n]=$3+0}
-			END{
-				if(n<2){print "0 0 0 0 0 0 0 0 0 0"; exit}
-				q=int(n/4); if(q<1)q=1;
-				for(i=1;i<=q;i++)f+=s[i];
-				for(i=n-q+1;i<=n;i++)l+=s[i];
-				f/=q; l/=q; growth=l-f; ag=(growth<0?-growth:growth);
-				for(i=1;i<=n;i++){sx+=t[i];sy+=s[i];sxx+=t[i]*t[i];sxy+=t[i]*s[i]}
-				den=n*sxx-sx*sx; slope=(den!=0)?(n*sxy-sx*sy)/den:0;
-				dir=(growth<0?-1:1); same=0;
-				for(i=2;i<=n;i++){d=s[i]-s[i-1]; if(d*dir>0)same++}
-				mono=(n>1)?same/(n-1):0;
-				mx=s[1]; mn=s[1]; mabs=0;
-				for(i=1;i<=n;i++){if(s[i]>mx)mx=s[i]; if(s[i]<mn)mn=s[i]; a=(s[i]<0?-s[i]:s[i]); if(a>mabs)mabs=a}
-				span=t[n]-t[1]; hrs=(span>0)?span/3600:0;
-				printf "%d %.3f %.3f %.3f %.3f %.3f %.2f %.3f %.3f %.2f\n", n, f, l, growth, ag, slope*3600, mono, mabs, mx-mn, hrs;
-			}' "$dseries")"
-		d_monopct=$(awk -v m="$d_mono" 'BEGIN{printf "%d", m*100}')
-		info "drift trend over ${d_hours}h / $d_n checkpoints: first-quarter avg=${d_q1}s -> last-quarter avg=${d_q4}s (growth ${d_growth}s, slope ${d_rate}s/h extrapolated from a ${d_hours}h fit, ${d_monopct}% of steps moved with the trend, band ${d_band}s, max|skew| ${d_maxabs}s)"
-		info "  per-checkpoint values: $dseries"
-		# TREND verdict - the actual signature of the RTCP-SR class of bug.
-		# Thresholds are on absolute growth over the session (what a viewer
-		# experiences) and are cross-checked against monotonicity, so a large
-		# but bursty/bounded wobble does not read the same as a slow ratchet.
-		if fcmp "$d_agrowth" ge 0.50; then
-			bad "drift TREND: A/V skew moved ${d_growth}s across the session (${d_rate}s/h) - unmistakably accumulating within one connection"
-		elif fcmp "$d_agrowth" ge 0.25 && fcmp "$d_mono" ge 0.60; then
-			bad "drift TREND: A/V skew grew ${d_growth}s and ${d_monopct}% of steps moved the same way - drift is accumulating, not jitter"
-		elif fcmp "$d_agrowth" ge 0.15 && fcmp "$d_mono" ge 0.85; then
-			bad "drift TREND: A/V skew grew only ${d_growth}s but ${d_monopct}% of steps moved the same way - a near-perfect ratchet, i.e. slow accumulation that a single-snapshot threshold would never catch"
-		elif fcmp "$d_agrowth" ge 0.10; then
-			warn "drift TREND: A/V skew moved ${d_growth}s across the session (${d_rate}s/h, ${d_monopct}% of steps with the trend) - watch it; re-run longer to tell a slow ratchet from a bounded wobble"
-		else
-			ok "drift TREND: A/V skew stayed bounded (${d_growth}s between first- and last-quarter averages, ${d_rate}s/h) - noisy but not accumulating"
-		fi
-		# ABSOLUTE-level verdict, same thresholds section 3 applies to a single
-		# capture - reported separately because a large but CONSTANT offset is a
-		# different defect from a growing one.
-		if fcmp "$d_maxabs" le 0.15; then ok "drift LEVEL: worst A/V skew ${d_maxabs}s over the whole session (in sync)"
-		elif fcmp "$d_maxabs" le 0.40; then warn "drift LEVEL: worst A/V skew ${d_maxabs}s (marginal offset; see the TREND verdict for whether it is growing)"
-		else bad "drift LEVEL: worst A/V skew ${d_maxabs}s (out of sync)"; fi
-	fi
+	# Trend maths + the TREND/LEVEL verdict ladder live in av_drift_verdict (see
+	# the helper section). Section 15c judges the fMP4 session with the exact
+	# same call, so "how much drift is too much" can never diverge between the
+	# two transports - only the message prefix differs.
+	av_drift_verdict "drift" "$dseries"
 	# same rm discipline as the soak loop - segments are analysed and deleted as
 	# they complete, this only sweeps an aborted run's leftovers
 	rm -f "$ddir"/seg_*.mkv "$ddir"/pkts*.csv
 	rmdir "$ddir" 2>/dev/null || true
+fi
+
+# --- 15c. Long-run reliability of EVERY stream type -------------------------
+# Coverage gap this closes: 15 (soak) and 15b (drift) are the only long-duration
+# checks in this file and BOTH of them open rtsp_url($PATH_MAIN) and nothing
+# else. /stream.mp4 and /stream.mjpeg are exercised only by sections 4 and 5,
+# which take one ~${INTEG_DUR}s capture inside the normal suite. So a
+# degradation that lives in the HTTP serving path rather than the RTSP one was
+# unreachable no matter how many hours --profile soak or --profile drift ran.
+#
+# WHAT "RELIABLE" MEANS IS NOT THE SAME FOR THE THREE, and this section
+# deliberately does not pretend otherwise:
+#
+#   rtsp   - already characterised by 15b in isolation. It takes part here as a
+#            CONTRAST CHANNEL: if all three protocols degrade together in the
+#            same window the cause is the camera, the encoder or the link; if
+#            only one does, the cause is that protocol's own code. Neither the
+#            soak nor 15b can make that distinction, because neither has
+#            anything to compare against.
+#   fmp4   - carries audio exactly like RTSP does, so the A/V-drift question
+#            applies unchanged - but it reaches A/V sync through completely
+#            different code. RTSP pairs an NTP and an RTP clock in its RTCP
+#            sender reports; fMP4 accumulates per-track baseMediaDecodeTime in
+#            src/mp4/fmp4.c, where video follows real PTS deltas (integer-
+#            truncated into the 90kHz timescale, and clamped when a gap exceeds
+#            10s) while audio advances by a FIXED 1024 samples per frame and
+#            only ever re-anchors FORWARD. Those two tracks can therefore walk
+#            apart over hours by a mechanism that has no RTSP equivalent, and
+#            the anchor is per-connection - so, exactly as with 15b, a slice
+#            loop that reconnects would reset it and see nothing.
+#            fMP4 also has HTTP-only failure modes: a chunked response that
+#            stops producing bytes without ever closing the socket. That is
+#            what the media-vs-wall pacing check below is for; ffmpeg does not
+#            report it as an error, it simply sits there.
+#   mjpeg  - video only. There is NO audio track in a multipart/x-mixed-replace
+#            JPEG stream, so an A/V-drift check is not "skipped" here, it is
+#            meaningless by construction - and it says so out loud (a `skip`
+#            line naming the reason) instead of quietly measuring nothing.
+#            What IS real for MJPEG over hours: does the frame rate hold, do
+#            inter-frame gaps grow, and does a JPEG ever come back truncated or
+#            garbled late in the run. The last one needs a DECODER - `-c copy`
+#            would store broken bytes without complaint - so the MJPEG capture
+#            runs a second `-f null` sink whose warnings are counted with the
+#            shared ffwarn_count/FFWARN_RE.
+#
+# CONCURRENT, NOT SEQUENTIAL. Three multi-hour checks run back to back would
+# triple the wall time of an already overnight run. One shared window costs the
+# same as testing RTSP alone, and it is also the more faithful test: real
+# deployments have several consumers on different protocols at once (an NVR
+# pulling RTSP while a browser watches the MJPEG preview). The contention
+# argument against it does not hold up here - all three captures are `-c copy`
+# except the small MJPEG decode sink, so the host does no encoding work, and
+# three subscribers is far inside RTSP_MAX_CLIENTS. The real cost of sharing a
+# window is ATTRIBUTION, and only in one place: the daemon's fd/thread/RSS
+# counters are per-process, so with three sessions open a leak trend cannot name
+# which consumer caused it. --longrun-protos exists to answer exactly that
+# question by re-running one protocol on its own.
+#
+# Capture concurrently, REPORT SEQUENTIALLY. Per-checkpoint lines are buffered
+# to a per-slot notes file and replayed protocol by protocol at the end rather
+# than printed live. Interleaving them would not just read badly: the generated
+# HTML report (scripts/qa_html_report.py) attaches every indented note to the
+# PRECEDING result line, so live-interleaved checkpoints would be filed under
+# whichever protocol happened to print a verdict last.
+if want 15c longrun; then
+if [ "${LONGRUN_DUR:-0}" -le 0 ]; then
+	# Only worth a line when the section was explicitly asked for - a normal
+	# quick/standard/load run is supposed to pass over this silently.
+	[ -n "$ONLY" ] && skip "15c: long-run reliability is off - pass --longrun-dur S (or --profile longrun)"
+else
+# Round the window down to a whole number of checkpoints. Without this the final
+# segment is a partial one, and a partial window makes the MJPEG frames-per-
+# checkpoint rate read artificially low - which lands squarely in the LAST
+# quarter, i.e. exactly the half of the trend comparison that decides whether
+# the frame rate "decayed".
+LR_SEG="$LONGRUN_SEG"; [ "$LR_SEG" -ge 10 ] || LR_SEG=10
+LR_DUR=$(( (LONGRUN_DUR / LR_SEG) * LR_SEG )); [ "$LR_DUR" -ge "$LR_SEG" ] || LR_DUR="$LR_SEG"
+hdr "15c. Long-run stream reliability (${LR_DUR}s, ${LR_SEG}s checkpoints, concurrent: $LONGRUN_PROTOS)"
+[ "$LR_DUR" -eq "$LONGRUN_DUR" ] || info "  window rounded ${LONGRUN_DUR}s -> ${LR_DUR}s so every checkpoint covers a full ${LR_SEG}s"
+lr_nck=$(( LR_DUR / LR_SEG ))
+[ "$lr_nck" -ge 4 ] || warn "longrun: ${LR_DUR}s / ${LR_SEG}s gives only $lr_nck checkpoint(s); every trend verdict needs >=4 (raise --longrun-dur or lower --longrun-seg)"
+
+lr_base="$OUTDIR/longrun"; mkdir -p "$lr_base"
+declare -A LR_PID LR_DIR LR_SER LR_PSER LR_LOG LR_NEXT LR_NOAV LR_KIND LR_ALIVE LR_HIT LR_CKS LR_VID LR_END
+LR_SLOTS=""
+LR_T0=$(date +%s)
+
+# lr_launch <slot> <kind> <url> [input-opts...]
+#   kind av    = audio+video (rtsp, fmp4): one segmented -c copy output.
+#   kind video = mjpeg: the same segmented output PLUS a decoding -f null sink.
+# -reset_timestamps 0 is the same trick 15b documents at length: without it the
+# segment muxer re-zeroes every file and each checkpoint reads ~0 drift forever.
+# For the MJPEG slot it does something subtly different but just as essential -
+# combined with -use_wallclock_as_timestamps it makes each packet's pts the
+# host's real ARRIVAL time on one continuous timeline, which is the only way an
+# inter-frame gap is measurable (the mpjpeg demuxer carries no timestamps of its
+# own, and ffmpeg's fallback is an evenly spaced ladder in which a freeze is
+# invisible).
+# -t is repeated per output on purpose: placed once it binds to the first output
+# only, and the MJPEG decode sink would then run until the outer timeout killed
+# it, turning every clean run into a "session ended early" false alarm.
+lr_launch() {
+	local slot="$1" kind="$2" url="$3"; shift 3
+	local d="$lr_base/$slot"; mkdir -p "$d"
+	LR_DIR[$slot]="$d"
+	LR_SER[$slot]="$OUTDIR/longrun_${slot}_series.txt"
+	LR_PSER[$slot]="$OUTDIR/longrun_${slot}_pacing.txt"
+	LR_LOG[$slot]="$OUTDIR/longrun_${slot}_ffmpeg.log"
+	LR_KIND[$slot]="$kind"
+	LR_NEXT[$slot]=0; LR_NOAV[$slot]=0; LR_HIT[$slot]=""; LR_CKS[$slot]=0
+	LR_VID[$slot]=0; LR_ALIVE[$slot]=1; LR_END[$slot]=0
+	: > "$d/notes.txt"
+	if [ "$kind" = "av" ]; then
+		printf '# seg t_media_end_s skew_end_s skew_delta_in_seg_s wall_s\n' > "${LR_SER[$slot]}"
+		# Pacing lives in its OWN series because the skew series only ever
+		# gets a row when a checkpoint had BOTH tracks. A camera running with
+		# audio.enabled=0 is a perfectly normal configuration whose video
+		# delivery still has to be judged - folding the two into one file
+		# would silently drop the pacing check for exactly those cameras.
+		printf '# seg t_media_end_s wall_s\n' > "${LR_PSER[$slot]}"
+		timeout -k 15 "$((LR_DUR+90))" ffmpeg -hide_banner -nostdin -y -loglevel warning \
+			"$@" -i "$url" -t "$LR_DUR" \
+			-map 0 -c copy -f segment -segment_time "$LR_SEG" -reset_timestamps 0 \
+			-segment_format matroska "$d/seg_%04d.mkv" </dev/null 2>"${LR_LOG[$slot]}" &
+	else
+		printf '# seg frames fps maxgap_s bytes_avg bytes_min t_end_s wall_s\n' > "${LR_SER[$slot]}"
+		timeout -k 15 "$((LR_DUR+90))" ffmpeg -hide_banner -nostdin -y -loglevel warning \
+			-use_wallclock_as_timestamps 1 "$@" -i "$url" \
+			-t "$LR_DUR" -map 0:v -c copy -f segment -segment_time "$LR_SEG" \
+			-reset_timestamps 0 -segment_format matroska "$d/seg_%04d.mkv" \
+			-t "$LR_DUR" -map 0:v -f null - </dev/null 2>"${LR_LOG[$slot]}" &
+	fi
+	LR_PID[$slot]=$!
+	LR_SLOTS="$LR_SLOTS $slot"
+}
+
+# lr_poll <slot> - drain every checkpoint that has finished since the last call.
+# Analysed segments are deleted immediately (same discipline as 15b and the
+# soak), so a multi-hour three-protocol run keeps disk use bounded.
+lr_poll() {
+	local slot="$1"
+	# separate statement on purpose: bash expands EVERY word of a `local` line
+	# before any of its assignments take effect, so referring to $slot on the
+	# same line reads it before it exists (fatal under `set -u`)
+	local d="${LR_DIR[$slot]}" ser="${LR_SER[$slot]}" kind="${LR_KIND[$slot]}"
+	if ! kill -0 "${LR_PID[$slot]}" 2>/dev/null; then
+		if [ "${LR_ALIVE[$slot]}" = "1" ]; then
+			LR_ALIVE[$slot]=0
+			LR_END[$slot]=$(( $(date +%s) - LR_T0 ))
+		fi
+	fi
+	while :; do
+		local idx cur nxt w csv
+		idx="${LR_NEXT[$slot]}"
+		cur=$(printf '%s/seg_%04d.mkv' "$d" "$idx")
+		nxt=$(printf '%s/seg_%04d.mkv' "$d" "$((idx+1))")
+		[ -f "$cur" ] || break
+		# A segment is complete only once its SUCCESSOR exists (the muxer opens
+		# the next file at the boundary) - or once ffmpeg is gone, at which point
+		# everything on disk is closed. Never probe a file still being written.
+		[ -f "$nxt" ] || [ "${LR_ALIVE[$slot]}" = "0" ] || break
+		w=$(( $(date +%s) - LR_T0 ))
+		csv="$d/pkts.csv"
+		if [ "$kind" = "av" ]; then
+			local nv na tend ss se dd ab
+			read -r nv na tend ss se dd <<<"$(seg_probe "$cur" "$csv")"
+			if [ "${nv:-0}" -gt 0 ]; then
+				LR_VID[$slot]=$(( LR_VID[$slot] + 1 ))
+				printf '%d %s %s\n' "$idx" "$tend" "$w" >> "${LR_PSER[$slot]}"
+			fi
+			if [ "${nv:-0}" -eq 0 ] || [ "${na:-0}" -eq 0 ] || [ "${se:-}" = "-" ]; then
+				LR_NOAV[$slot]=$(( LR_NOAV[$slot] + 1 ))
+				printf '  checkpoint %d: video=%s audio=%s pkts - no A/V pair here, skew not measurable\n' \
+					"$idx" "${nv:-0}" "${na:-0}" >> "$d/notes.txt"
+			else
+				printf '%d %s %s %s %s\n' "$idx" "$tend" "$se" "$dd" "$w" >> "$ser"
+				LR_CKS[$slot]=$(( LR_CKS[$slot] + 1 ))
+				printf '  checkpoint %d  t=%ss  A/V skew=%ss  (moved %ss within this checkpoint; v=%s a=%s pkts)\n' \
+					"$idx" "$tend" "$se" "$dd" "$nv" "$na" >> "$d/notes.txt"
+				ab=$(awk -v x="$se" 'BEGIN{printf "%.3f", (x<0?-x:x)}')
+				# Record the crossing but DO NOT tear this session down the way
+				# 15b does. 15b owns its whole window, so ending early there
+				# costs nothing; here the other two protocols are still being
+				# measured against a three-consumer load, and dropping one of
+				# them mid-window would silently change the conditions their
+				# trends are computed under.
+				[ -z "${LR_HIT[$slot]}" ] && fcmp "$ab" ge "${DRIFT_ABORT:-1.0}" \
+					&& LR_HIT[$slot]="$idx $tend $se"
+			fi
+		else
+			local fr tf tl mg ba bm fps
+			read -r fr tf tl mg ba bm <<<"$(mj_probe "$cur" "$csv")"
+			# frames divided by the FULL checkpoint length, not by the span the
+			# frames themselves happen to cover: a stream that stops delivering
+			# halfway through the window must read as half the rate, and
+			# frames/(last-first) would report the undisturbed rate instead.
+			fps=$(awk -v n="$fr" -v s="$LR_SEG" 'BEGIN{printf "%.2f", (s>0)?n/s:0}')
+			printf '%d %s %s %s %s %s %s %s\n' "$idx" "$fr" "$fps" "$mg" "$ba" "$bm" "$tl" "$w" >> "$ser"
+			LR_CKS[$slot]=$(( LR_CKS[$slot] + 1 ))
+			printf '  checkpoint %d  frames=%s (~%s fps)  worst inter-frame gap=%ss  mean JPEG %sB (smallest %sB)\n' \
+				"$idx" "$fr" "$fps" "$mg" "$ba" "$bm" >> "$d/notes.txt"
+		fi
+		rm -f "$cur" "$csv"
+		LR_NEXT[$slot]=$((idx+1))
+	done
+}
+
+# ---- launch the requested protocols into ONE shared window ----
+lr_bad_proto=""
+for lr_p in $(echo "$LONGRUN_PROTOS" | tr ',' ' '); do
+	case "$lr_p" in
+	rtsp)
+		lr_launch rtsp av "$(rtsp_url "$PATH_MAIN")" -rtsp_transport "$RTSP_TRANSPORT"
+		info "  rtsp:  one unbroken $RTSP_TRANSPORT session on $PATH_MAIN"
+		;;
+	fmp4)
+		lr_launch fmp4 av "$(http_base)/stream.mp4?chn=0" -headers "$AUTH_HDR"$'\r\n'
+		info "  fmp4:  one unbroken HTTP response from /stream.mp4?chn=0"
+		;;
+	mjpeg)
+		# Same nojpeg gate section 5 documents: a build with the JPEG pipeline
+		# switched off answers 404 "no jpeg". That is the camera working as
+		# configured, so it must skip rather than fail - and it must be checked
+		# BEFORE launching, or the slot would sit there for hours capturing
+		# nothing and then report a stream drop.
+		lr_mjpre=$(curl -s -o /dev/null -w '%{http_code}' --max-time 6 \
+			-u "$HTTP_USER:$HTTP_PASS" "$(http_base)/snapshot.jpg?chn=0")
+		if [ "$lr_mjpre" = "404" ]; then
+			skip "longrun mjpeg: no JPEG source on this config (snapshot probe -> 404 'no jpeg') - a deliberate nojpeg build, working as configured"
+		else
+			lr_launch mjpeg video "$(http_base)/stream.mjpeg?chn=0" \
+				-headers "$AUTH_HDR"$'\r\n' -f mpjpeg
+			info "  mjpeg: one unbroken HTTP response from /stream.mjpeg?chn=0 (+ a decoding sink for JPEG validity)"
+		fi
+		;;
+	"") : ;;
+	*) lr_bad_proto="$lr_bad_proto $lr_p";;
+	esac
+done
+[ -z "$lr_bad_proto" ] || warn "longrun: unknown protocol(s) in --longrun-protos:$lr_bad_proto (known: rtsp, fmp4, mjpeg)"
+
+if [ -z "$LR_SLOTS" ]; then
+	warn "longrun: no protocol was started - nothing to measure (check --longrun-protos)"
+else
+# ---- one supervisor loop services all slots ----
+lr_fds="$OUTDIR/longrun_fds.txt";     lr_thr="$OUTDIR/longrun_threads.txt"
+lr_cpuf="$OUTDIR/longrun_cpu.txt";    lr_rssf="$OUTDIR/longrun_rss.txt"
+: > "$lr_fds"; : > "$lr_thr"; : > "$lr_cpuf"; : > "$lr_rssf"
+lr_snap_prev=""; [ -n "$SSH_TARGET" ] && lr_snap_prev=$(dev_snap)
+lr_dev_last=0; lr_now=0
+while :; do
+	lr_any=0
+	for lr_s in $LR_SLOTS; do
+		lr_poll "$lr_s"
+		[ "${LR_ALIVE[$lr_s]}" = "1" ] && lr_any=1
+	done
+	lr_now=$(( $(date +%s) - LR_T0 ))
+	# On-device telemetry on the CHECKPOINT cadence, not the poll cadence - an
+	# ssh round trip every few seconds for hours is a load of its own, and the
+	# soak has already shown that checkpoint granularity is enough to see a
+	# leak's shape.
+	if [ -n "$SSH_TARGET" ] && [ "$((lr_now - lr_dev_last))" -ge "$LR_SEG" ]; then
+		lr_dev_last="$lr_now"
+		lr_snap_now=$(dev_snap)
+		if [ -n "$lr_snap_now" ]; then
+			read -r lr_rss lr_fd lr_th _ _ <<<"$lr_snap_now"
+			echo "$lr_fd"  >> "$lr_fds"
+			echo "$lr_th"  >> "$lr_thr"
+			echo "$lr_rss" >> "$lr_rssf"
+			echo "$(dev_cpu_between "${lr_snap_prev:-}" "$lr_snap_now")" >> "$lr_cpuf"
+			lr_snap_prev="$lr_snap_now"
+		fi
+	fi
+	lr_status=""
+	for lr_s in $LR_SLOTS; do lr_status="$lr_status ${lr_s}=${LR_CKS[$lr_s]}ck"; done
+	printf '\r  longrun %ds/%ds %s  fd=%s thr=%s     ' \
+		"$lr_now" "$LR_DUR" "$lr_status" "${lr_fd:-?}" "${lr_th:-?}"
+	[ "$lr_any" = "0" ] && break
+	# Backstop: each capture is already bounded by its own `timeout`, so this
+	# only fires if one of them wedged past even that - never leave a QA run
+	# spinning here forever.
+	[ "$lr_now" -gt "$((LR_DUR+150))" ] && break
+	sleep 5
+done
+echo
+for lr_s in $LR_SLOTS; do
+	if [ "${LR_ALIVE[$lr_s]}" = "1" ]; then
+		warn "longrun $lr_s: capture still running past the ${LR_DUR}s window + its own timeout - killed (see ${LR_LOG[$lr_s]})"
+		kill -TERM "${LR_PID[$lr_s]}" 2>/dev/null; sleep 2
+		kill -KILL "${LR_PID[$lr_s]}" 2>/dev/null
+		LR_ALIVE[$lr_s]=0; LR_END[$lr_s]="$lr_now"
+	fi
+	wait "${LR_PID[$lr_s]}" 2>/dev/null
+	lr_poll "$lr_s"          # drain whatever closed as the process exited
+done
+
+# ---- report, one protocol at a time (see the note on qa_html_report.py) ----
+for lr_s in $LR_SLOTS; do
+	lr_pfx="longrun $lr_s"
+	lr_ser="${LR_SER[$lr_s]}"; lr_log="${LR_LOG[$lr_s]}"; lr_d="${LR_DIR[$lr_s]}"
+	lr_end="${LR_END[$lr_s]}"
+
+	# Did the ONE connection actually stay up? A short wall time is itself the
+	# finding, and it invalidates every trend below it.
+	if [ "$lr_end" -lt "$((LR_DUR - LR_SEG))" ]; then
+		bad "$lr_pfx: the session ended after ${lr_end}s of ${LR_DUR}s - the single connection did not stay up (see $lr_log)"
+	else
+		ok "$lr_pfx: one connection held open for ${lr_end}s without reconnecting"
+	fi
+	# replay this slot's per-checkpoint detail
+	if [ -s "$lr_d/notes.txt" ]; then
+		while IFS= read -r lr_line; do info "$lr_line"; done < "$lr_d/notes.txt"
+	fi
+
+	if [ "${LR_KIND[$lr_s]}" = "av" ]; then
+		# Nothing below this point means anything without data, and a PASS that
+		# only says "we saw no warnings in a log of a session that never
+		# connected" is worse than no line at all.
+		if [ "${LR_VID[$lr_s]}" -eq 0 ]; then
+			bad "$lr_pfx: not one checkpoint carried video over the ${LR_DUR}s window - the reliability trends below cannot be computed (see $lr_log)"
+			continue
+		fi
+		lr_ffe=$(ffwarn_count "$lr_log")
+		[ "$lr_ffe" -eq 0 ] && ok "$lr_pfx: no ffmpeg decode/timestamp warnings over the whole session" \
+			|| warn "$lr_pfx: $lr_ffe ffmpeg decode/timestamp warning(s) during the session (see $lr_log)"
+		if [ "${LR_CKS[$lr_s]}" -eq 0 ]; then
+			# Video arrived throughout but audio never did. That is a normal
+			# configuration (audio.enabled=0), not a fault - and it must say so
+			# rather than reporting "0 usable checkpoints" as if the session had
+			# failed. The video-side verdicts below still apply and still run.
+			skip "$lr_pfx A/V skew: NOT APPLICABLE on this camera - video arrived in all ${LR_VID[$lr_s]} checkpoint(s) but no audio track was ever present, so there is no second clock to drift against (enable audio to exercise the A/V path)"
+		else
+			[ "${LR_NOAV[$lr_s]}" -eq 0 ] || warn "$lr_pfx: ${LR_NOAV[$lr_s]} of $(( LR_NOAV[$lr_s] + LR_CKS[$lr_s] )) checkpoint(s) had no usable audio+video pair - audio dropped out for at least ${LR_SEG}s there while video kept flowing"
+			if [ -n "${LR_HIT[$lr_s]}" ]; then
+				read -r lr_hi lr_ht lr_hs <<<"${LR_HIT[$lr_s]}"
+				bad "$lr_pfx: |A/V skew| first crossed the ${DRIFT_ABORT:-1.0}s abort line at checkpoint ${lr_hi} (t=${lr_ht}s, skew ${lr_hs}s) - the session was deliberately NOT cut short so the other protocols kept their three-consumer conditions; the defect is already demonstrated at that checkpoint"
+			fi
+			# Shared TREND + LEVEL ladder - identical thresholds to 15b's isolated
+			# RTSP measurement, so a number means the same thing in both sections.
+			av_drift_verdict "$lr_pfx" "$lr_ser"
+		fi
+		# Delivery pacing: media seconds gained per wall second, differentially
+		# between checkpoints. This is what catches an HTTP response that goes
+		# quiet WITHOUT closing - ffmpeg reports no error for that, it simply
+		# stops producing, and every skew number stays perfectly healthy while
+		# the viewer stares at a frozen picture. Read from the pacing series, so
+		# it works on an audio-less camera too.
+		# Only the LOW side is judged here. analyze_stream's rt>1.20
+		# "fast-forward / wrong clock" test is the right home for the high side:
+		# there it is measured against one continuous wall clock, whereas these
+		# wall readings are taken by a polling loop and are quantised by the poll
+		# interval, which inflates the ratio on short checkpoints. A wrong clock
+		# is already caught per capture by section 3; a slow leak of real time is
+		# only visible over hours, which is what this check adds.
+		read -r lr_rn lr_rmin lr_rmean <<<"$(rt_stats "${LR_PSER[$lr_s]}" 2 3 "$((LR_SEG/2))")"
+		if [ "${lr_rn:-0}" -lt 3 ]; then
+			info "  $lr_pfx: too few checkpoints to judge delivery pacing"
+		elif fcmp "$lr_rmin" lt 0.50; then
+			bad "$lr_pfx PACING: media time advanced only ${lr_rmin}x real time across one checkpoint (mean ${lr_rmean}x over $lr_rn) - the session went quiet for a stretch while the connection stayed open"
+		elif fcmp "$lr_rmean" lt 0.90; then
+			warn "$lr_pfx PACING: media time averaged ${lr_rmean}x real time (worst checkpoint ${lr_rmin}x) - the stream is falling behind the clock without disconnecting"
+		else
+			ok "$lr_pfx PACING: media time kept up with the clock (mean ${lr_rmean}x, worst checkpoint ${lr_rmin}x over $lr_rn checkpoints)"
+		fi
+	else
+		# ---- MJPEG: what applies, and what explicitly does not ----
+		lr_mjframes=$(awk '/^#/{next}{n+=$2+0} END{print n+0}' "$lr_ser")
+		if [ "${LR_CKS[$lr_s]}" -eq 0 ] || [ "$lr_mjframes" -eq 0 ]; then
+			bad "$lr_pfx: no JPEG frames arrived at all over the ${LR_DUR}s window - the reliability trends below cannot be computed (see $lr_log)"
+			continue
+		fi
+		skip "$lr_pfx A/V skew: NOT APPLICABLE - /stream.mjpeg is multipart JPEG with no audio track at all, so there are no two clocks to drift apart. Frame rate, inter-frame gaps and JPEG validity are measured instead (below)"
+		skip "$lr_pfx delivery pacing: NOT APPLICABLE - this capture timestamps frames with the host's arrival clock, so media time equals wall time by construction and the ratio would read 1.0x however badly the stream stalled. The same failure shows up as a frame gap and a rate drop instead"
+		# A truncated or garbled JPEG is invisible to -c copy, which is why the
+		# capture also fed a decoding -f null sink. Counted with the SHARED
+		# ffwarn_count/FFWARN_RE - never a second private copy of that pattern.
+		lr_ffe=$(ffwarn_count "$lr_log")
+		if [ "$lr_ffe" -eq 0 ]; then
+			ok "$lr_pfx: all $lr_mjframes JPEG frames delivered over ${LR_DUR}s decoded cleanly (no truncated/corrupt frames)"
+		elif [ "$lr_ffe" -le 3 ]; then
+			warn "$lr_pfx: $lr_ffe JPEG frame(s) failed to decode cleanly over ${LR_DUR}s - truncated or corrupt multipart bodies (see $lr_log)"
+		else
+			bad "$lr_pfx: $lr_ffe JPEG frame(s) failed to decode cleanly over ${LR_DUR}s - the multipart framing or the JPEG bodies are breaking (see $lr_log)"
+		fi
+		lr_dead=$(awk '/^#/{next} $2+0==0{n++} END{print n+0}' "$lr_ser")
+		[ "$lr_dead" -eq 0 ] || bad "$lr_pfx: $lr_dead checkpoint(s) received ZERO frames - the stream stopped delivering for at least ${LR_SEG}s at a time (see $lr_ser)"
+		read -r lr_fn lr_fq1 lr_fq4 lr_fgrow <<<"$(series_quarters 3 < "$lr_ser")"
+		# series_quarters reports %.3f for every series it handles; frame rates
+		# read better at 2 decimals, and the ratio maths below is unaffected
+		lr_fq1=$(fmt 2 "$lr_fq1"); lr_fq4=$(fmt 2 "$lr_fq4")
+		if [ "${lr_fn:-0}" -lt 4 ]; then
+			warn "$lr_pfx: only ${lr_fn:-0} checkpoint(s) - not enough to judge a frame-rate trend (need >=4); per-checkpoint values are in $lr_ser"
+		else
+			# Judged RELATIVELY. There is no nominal to compare against that is
+			# trustworthy here: jpeg.fps is a request, the JPEG source is fed
+			# on demand, and the honest question over hours is "is it still
+			# delivering what it was delivering at the start", not "does it hit
+			# a configured number".
+			lr_frel=$(awk -v a="$lr_fq1" -v b="$lr_fq4" 'BEGIN{ if(a>0) printf "%.1f", (b-a)/a*100; else print "0" }')
+			info "$lr_pfx frame rate over $lr_fn checkpoints: first-quarter avg ${lr_fq1} fps -> last-quarter avg ${lr_fq4} fps (${lr_frel}%)"
+			info "  per-checkpoint values: $lr_ser"
+			if fcmp "$lr_frel" le -20; then
+				bad "$lr_pfx RATE: frame delivery fell ${lr_frel}% between the first and last quarter of the session (${lr_fq1} -> ${lr_fq4} fps) - the MJPEG path degrades the longer a client stays connected"
+			elif fcmp "$lr_frel" le -10; then
+				warn "$lr_pfx RATE: frame delivery drifted ${lr_frel}% down over the session (${lr_fq1} -> ${lr_fq4} fps) - re-run longer to tell a slow decay from scene-driven variation"
+			else
+				ok "$lr_pfx RATE: frame delivery held steady across the session (${lr_fq1} -> ${lr_fq4} fps, ${lr_frel}%)"
+			fi
+			# Gaps: an absolute verdict (what a viewer actually sees) plus a
+			# growth verdict (is it getting worse), the same two-part shape the
+			# A/V drift check uses. Thresholds scale with the stream's OWN frame
+			# period, because 2s between frames is a freeze at 5fps and normal
+			# at 0.5fps - with an absolute floor so a very slow stream cannot
+			# excuse a multi-second stall.
+			read -r lr_gn lr_gq1 lr_gq4 lr_ggrow <<<"$(series_quarters 4 < "$lr_ser")"
+			lr_gworst=$(awk '/^#/{next}{ if($4+0>m) m=$4+0 } END{printf "%.3f", m}' "$lr_ser")
+			read -r lr_gwarn lr_gbad <<<"$(awk -v f="$lr_fq1" 'BEGIN{
+				p=(f>0)?1/f:0.2;
+				w=5*p;  if(w<2.0) w=2.0;
+				b=15*p; if(b<5.0) b=5.0;
+				printf "%.2f %.2f", w, b }')"
+			info "$lr_pfx inter-frame gaps: worst ${lr_gworst}s, first-quarter avg ${lr_gq1}s -> last-quarter avg ${lr_gq4}s (freeze thresholds for this stream's ~${lr_fq1} fps: warn >${lr_gwarn}s, fail >${lr_gbad}s)"
+			if fcmp "$lr_gworst" ge "$lr_gbad"; then
+				bad "$lr_pfx GAPS: the stream went ${lr_gworst}s without a frame at some point - a visible freeze for an MJPEG viewer"
+			elif fcmp "$lr_gworst" ge "$lr_gwarn"; then
+				warn "$lr_pfx GAPS: worst inter-frame gap ${lr_gworst}s (a noticeable hitch; see $lr_ser for where)"
+			else
+				ok "$lr_pfx GAPS: no frame gap exceeded ${lr_gwarn}s over the whole session (worst ${lr_gworst}s)"
+			fi
+			if fcmp "$lr_gq1" gt 0 && fcmp "$lr_gq4" ge "$(awk -v a="$lr_gq1" 'BEGIN{printf "%.4f", a*2}')" \
+			   && fcmp "$lr_gq4" ge "$lr_gwarn"; then
+				warn "$lr_pfx GAPS: typical worst-gap more than doubled across the session (${lr_gq1}s -> ${lr_gq4}s) - delivery is getting lumpier the longer the client stays connected"
+			fi
+			# Frame SIZE is reported, never judged: JPEG size tracks scene
+			# content and light level, so a night-time drop of 60% is completely
+			# normal and a threshold here would fire on weather, not on defects.
+			# A genuine truncation shows up in the decode count above instead.
+			read -r lr_bn lr_bq1 lr_bq4 lr_bgrow <<<"$(series_quarters 5 < "$lr_ser")"
+			lr_bq1=$(fmt 0 "$lr_bq1"); lr_bq4=$(fmt 0 "$lr_bq4")
+			lr_bmin=$(awk '/^#/{next}{ if(m==0||$6+0<m) m=$6+0 } END{printf "%.0f", m}' "$lr_ser")
+			info "$lr_pfx JPEG size (context only, scene-dependent - not a verdict): mean ${lr_bq1}B -> ${lr_bq4}B, smallest single frame ${lr_bmin}B"
+		fi
+	fi
+done
+
+# ---- aggregate daemon health across the shared window ----
+if [ -n "$SSH_TARGET" ]; then
+	lr_nsl=$(echo "$LR_SLOTS" | wc -w)
+	info "longrun: the counters below are PER-PROCESS, i.e. aggregate over all $lr_nsl concurrent session(s) - they can prove the daemon leaked, but not which consumer type did it. Re-run with --longrun-protos <one> to attribute."
+	for lr_pair in "fds:$lr_fds" "threads:$lr_thr"; do
+		lr_what="${lr_pair%%:*}"; lr_sf="${lr_pair##*:}"
+		[ -s "$lr_sf" ] || continue
+		read -r lr_ln lr_lf lr_ll lr_ld lr_lnd lr_lup <<<"$(leak_trend < "$lr_sf")"
+		[ "${lr_ln:-0}" -ge 4 ] || { info "  longrun $lr_what: only ${lr_ln:-0} sample(s) - too few to judge a trend"; continue; }
+		if [ "$lr_ld" -le 0 ]; then
+			ok "longrun $lr_what: ${lr_lf} -> ${lr_ll} over $lr_ln samples (no growth)"
+		elif [ "$lr_lnd" = "1" ]; then
+			# Note this is a DIFFERENT stimulus from the soak's: there, growth
+			# means sessions are not being reaped across reconnects. Here the
+			# session count never changes, so a rising count can only come from
+			# something inside a long-lived session.
+			bad "longrun $lr_what: ${lr_lf} -> ${lr_ll} (+${lr_ld}) and never came back down across $lr_ln samples, with a CONSTANT number of sessions open the whole time - something is being allocated per fragment/frame inside a live session and never released"
+		else
+			warn "longrun $lr_what: ${lr_lf} -> ${lr_ll} (+${lr_ld}) over $lr_ln samples, but the series fluctuates (${lr_lup} rises) - churn rather than a clean leak"
+		fi
+	done
+	if [ -s "$lr_rssf" ]; then
+		lr_r0=$(head -1 "$lr_rssf"); lr_r1=$(tail -1 "$lr_rssf")
+		lr_rg=$(( lr_r1 - lr_r0 ))
+		info "timpsd RSS across the long-run window: ${lr_r0}kB -> ${lr_r1}kB (delta ${lr_rg}kB over ${LR_DUR}s)"
+		[ "$lr_rg" -lt 2048 ] && ok "longrun: no significant memory growth (<2MB) with all sessions held open" \
+			|| warn "longrun: timpsd RSS grew ${lr_rg}kB while the sessions stayed open (possible per-fragment leak - see $lr_rssf)"
+	fi
+	if [ -s "$lr_cpuf" ]; then
+		read -r lr_cn lr_cq1 lr_cq4 lr_cg <<<"$(series_quarters 1 < "$lr_cpuf")"
+		lr_cq1=$(fmt 1 "$lr_cq1"); lr_cq4=$(fmt 1 "$lr_cq4"); lr_cg=$(fmt 1 "$lr_cg")
+		info "timpsd CPU across the long-run window: first-quarter avg ${lr_cq1}% -> last-quarter avg ${lr_cq4}% ($lr_cn samples, see $lr_cpuf)"
+		if [ "${lr_cn:-0}" -ge 4 ]; then
+			if fcmp "$lr_cg" ge 15; then bad "longrun: timpsd CPU rose ${lr_cg} points (${lr_cq1}% -> ${lr_cq4}%) with an unchanging set of clients - work per client is growing (spin/backlog)"
+			elif fcmp "$lr_cg" ge 5; then warn "longrun: timpsd CPU drifted up ${lr_cg} points (${lr_cq1}% -> ${lr_cq4}%) with an unchanging set of clients"
+			else ok "longrun: timpsd CPU stable across the window (${lr_cq1}% -> ${lr_cq4}%)"; fi
+		fi
+	fi
+fi
+fi
+# analysed segments are removed as they complete; this only sweeps an
+# interrupted run's leftovers
+rm -rf "$lr_base"
+fi
 fi
 
 # --- 16. On-device (SSH) ----------------------------------------------------
