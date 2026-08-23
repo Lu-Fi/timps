@@ -33,7 +33,78 @@ count lines tagged `[mjpeg @` (the actual JPEG decoder) with a genuine
 corruption term, not any DTS/muxer-timestamp warning regardless of which
 ffmpeg component emitted it.
 
-## NOT YET TESTED ON HARDWARE: SYN-flood backlog fix (`74c29c4`)
+## RESOLVED: cam-garage's fMP4 client got force-dropped under congestion, misread as a mid-stream mute
+
+Found 2026-08-24 in the FIRST real-hardware `--profile longrun` run against a
+build that actually carries `74c29c4` (see the entry below): the fMP4 client
+died at checkpoint 9/24 with `no audio for 5s but video still flowing (muted
+mid-stream?)`, three minutes into a congestion event that two independent
+RTSP sessions on the same camera rode out with mere frame drops (`send queue
+overflowed`). `src/mp4/httpd.c`'s `MS_MP4_AUDIO_GAP_US` heuristic exists for
+a real case (`audio.mute` via `/control` mid-connection genuinely starves the
+declared moov trak and freezes the whole MSE presentation), but it measured
+the wrong signal: `last_audio_us` only advances when THIS consumer pops an
+audio packet, while `fanqueue` overflow evicts audio the same as everything
+else (drop-oldest is media-blind). Under sustained backpressure (multi-second
+`csend()` stalls, queue wrapping meanwhile) the popped-audio clock stops with
+the source still producing audio, and the fixed 5s gap fires on the next
+video pop as if the mic had gone silent.
+
+Dispatched to a Fable agent, confirmed via host-sim A/B testing (pre-fix
+binary force-drops a congested-but-still-fed client after ~131s; a genuine
+`audio.mute=1` still correctly drops both binaries at the 5s window - the
+real protection is intact). Fixed: `fanqueue` now remembers audio evictions
+(`dropped_audio`, mirroring the existing `dropped_key`/`dropped_any`); the
+mp4 loop clears it on every audio packet it actually delivers, so at gap-fire
+time "flag set" means "evicted since the last delivered audio" - proof the
+source is alive. Eviction -> keep the client, restart the window (matches
+`rtsp.c`'s own overflow behavior). No eviction -> still drops as before.
+Merged `b824b3c`, reviewed and independently re-verified (`make sim`,
+`make test-config`, `make test-auth`) before push.
+
+**Known residual gap** (the agent's own caveat, not fixed): if the audio
+SOURCE thread itself was transiently starved during a congestion event
+(producing nothing, rather than producing-but-being-evicted), this fix can't
+tell that apart from a real mute - nothing was evicted to prove otherwise.
+Not addressed; no evidence yet that this variant actually occurs.
+
+## PARTIALLY VERIFIED, ONE CLEAN RUN: SYN-flood backlog fix (`74c29c4`)
+
+Update 2026-08-24: rebuilt and reflashed cam-garage from `main` tip
+(`v1.9.3-9-g483b749`, confirmed via `strings /usr/bin/timpsd`), so the fix
+described below was actually running this time (see the prior write-up for
+why the first attempt tested an unfixed binary). Re-ran `--profile longrun`,
+2h, three protocols concurrent: **zero `SYN flooding` dmesg lines** over the
+full window, versus the untested build's already-inconclusive prior run.
+One clean 2h run under real concurrent load is real evidence the fix helps,
+but it is one data point, not proof the ceiling can never be hit again under
+worse WiFi conditions - leaving this "partially verified" rather than
+"resolved" until it's held up across more runs.
+
+## OPEN: cam-garage's timpsd CPU jumped ~14% -> ~22% during tonight's longrun QA and never came back down
+
+Found 2026-08-24, same run as the two entries above. `timpsd` CPU (measured
+on-device on the `--ssh` leak-trend cadence) sat flat at 14.3-14.4% for the
+first ~7 samples (~35min), then stepped up to 19.7% and settled at
+21.4-22.4% for the remaining ~15 samples (~75min) - a step change, not a
+gradual drift, landing right around when an external client (NVR/HA,
+sessions distinct from the QA run's own) connected to both channels and
+cycled the substream encoder (`framesource 1`) on/off three times in ~7
+minutes (22:59-23:06). Confirmed this is not a QA-run artifact: checked
+`timpsd` live via SSH HOURS after the QA run ended (all QA clients long
+gone, only the camera's usual 2 standing RTSP clients connected) and measured
+**18.4% CPU** by direct `/proc/<pid>/stat` utime+stime delta over 5s - still
+clearly elevated versus the run's own 14.3-14.4% baseline measured under the
+same "just the usual clients" condition at the start. Per-thread breakdown
+(`/proc/<pid>/task/*/stat`) shows several threads named `group_update` with
+disproportionate accumulated CPU time. Not yet investigated further - no
+agent dispatched yet. Candidate next step: find what `group_update` is
+(grep `pthread_setname`/thread-creation sites in the encoder/framesource
+enable path) and check whether disabling/re-enabling the substream encoder
+leaves something running that should have stopped. A daemon restart would
+clear the symptom but not tell us what caused it.
+
+## SUPERSEDED by the "PARTIALLY VERIFIED, ONE CLEAN RUN" entry above: SYN-flood backlog fix (`74c29c4`) not yet tested on hardware
 
 Correction 2026-08-23: an earlier version of this entry claimed the first
 real-hardware run of `--profile longrun` against cam-garage showed the fix
