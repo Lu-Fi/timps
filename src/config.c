@@ -1613,6 +1613,44 @@ static void strip_inline_comment(char *val)
         if (*p=='#' && (p==val || p[-1]==' ' || p[-1]=='\t')) { *p=0; break; }
 }
 
+/* Unquote a value that starts with ' or ", and cut an inline comment that
+ * follows the CLOSING quote. strip_inline_comment() above bows out of quoted
+ * values entirely (so a '#' INSIDE the quotes survives, which is the whole
+ * point of quoting), which used to leave    key = "/mnt/sd" # a note    stored
+ * verbatim as    "/mnt/sd" # a note    - quotes and comment both - because the
+ * unquote step only looked at the first and last character of the raw value
+ * and the last one was 'e', not '"'. Silently, and only visible after the next
+ * reload.
+ *
+ * The closing quote is searched from the RIGHT, not the left: write_kv_line()
+ * below deliberately does NOT escape a quote inside a value and documents that
+ * the loader strips one leading and one trailing quote, so    "say "hi""
+ * must keep reading back as    say "hi"   . Taking the first inner quote as
+ * the closing one would silently truncate every such value on the next load -
+ * trading this bug for a worse one. A quote qualifies as the closing quote
+ * only if the rest of the value is blank or an inline "# comment"; the
+ * rightmost one that qualifies wins.
+ *
+ * Returns the unquoted value, or val unchanged when there is no closing quote
+ * at all (an unbalanced value, which is a config typo worth warning about -
+ * the caller does that). */
+static char *unquote_value(char *val, int *unterminated)
+{
+    *unterminated = 0;
+    char q = *val;
+    if (q!='"' && q!='\'') return val;
+    for (char *p = val + strlen(val); --p > val; ){
+        if (*p != q) continue;
+        const char *t = p + 1;
+        while (*t==' ' || *t=='\t') t++;
+        if (*t && *t!='#') continue;              /* not the closing quote */
+        *p = 0;                                   /* drop it + everything after */
+        return val + 1;
+    }
+    *unterminated = 1;
+    return val;
+}
+
 int config_load(ms_config *c, const char *path)
 {
     config_defaults(c);
@@ -1646,10 +1684,11 @@ int config_load(ms_config *c, const char *path)
         char *val = trim(eq+1);
         strip_inline_comment(val);
         val = trim(val);                 /* drop the space left before the '#' */
-        size_t vl = strlen(val);
-        if (vl>=2 && ((val[0]=='"'&&val[vl-1]=='"')||(val[0]=='\''&&val[vl-1]=='\''))) {
-            val[vl-1]=0; val++;
-        }
+        int unterminated = 0;
+        val = unquote_value(val, &unterminated);
+        if (unterminated)
+            LOGW(MOD,"config: %s has an opening quote but no closing one - "
+                     "keeping the value verbatim, quotes included", key);
         set_kv(c, key, val);
         n++;
     }
@@ -1793,11 +1832,12 @@ void config_sensor_finalize(ms_config *c)
  *      quoted values; that exemption is the escape hatch used here.
  *   2. trim() eats leading and trailing whitespace, so "  pad  " comes back as
  *      "pad", and an empty value leaves nothing after the '=' at all.
- *   3. when the value starts AND ends with the same quote character (' or "),
- *      the loader strips that outer pair. A value that legitimately IS
- *      'Kamera' or "Kamera" therefore loses its own quotes on reload - and
- *      because the shortened form is stable, it does so invisibly from the
- *      second load on.
+ *   3. when the value starts with a quote character (' or "), the loader
+ *      strips it together with the matching closing quote (the rightmost one
+ *      followed by nothing but blanks or an inline comment). A value that
+ *      legitimately IS 'Kamera' or "Kamera" therefore loses its own quotes on
+ *      reload - and because the shortened form is stable, it does so
+ *      invisibly from the second load on.
  *
  * So the value is quoted unless it is a bare token that no loader rule can
  * touch. The characters that force quoting, and the rule each one answers:
@@ -1908,6 +1948,26 @@ int config_write_keys(const char *path, const char *const *keys,
             }
             if (handled) { last_nl = 1; }     /* write_kv_line always ends in '\n' */
             else { fputs(line, out); size_t ll=strlen(line); last_nl = (ll==0)||line[ll-1]=='\n'; }
+        }
+        /* fgets() returning NULL means EOF *or* a read error, and the two are
+         * indistinguishable without ferror(). A bad flash block partway
+         * through the old config would end the copy loop early, the tmp file
+         * would look perfectly well-formed, and the rename() below would
+         * commit it - silently deleting every setting after the unreadable
+         * block, on the next /control POST, with the daemon still running the
+         * old values so nobody notices until the next restart. There is no
+         * safe way to "finish" the copy here, so abort the whole rewrite: the
+         * original file is still intact, and the caller's change is simply
+         * not persisted (it stays live in g_cfg). */
+        if (ferror(in)){
+            LOGE(MOD,"read error on %s (%s) - ABORTING the config rewrite so "
+                     "the truncated copy is not committed over it. The setting "
+                     "is live but NOT persisted; this flash needs attention",
+                 path, strerror(errno));
+            fclose(in);
+            fclose(out);
+            remove(tmp);
+            goto unlock;
         }
         fclose(in);
     }

@@ -3595,9 +3595,30 @@ static void *audio_thread(void *arg)
 #ifdef USE_STREAM_OPUS
     if (opus) opus_encoder_destroy(opus);
 #endif
+    /* Same disable sequence as the faac-fallback rebuild above, and it needs
+     * the same lock for the same reason (Item-6/Item-1): clearing g_ai_up is
+     * not enough on its own. A /control writer tests g_ai_up WITHOUT the lock
+     * and only then takes g_ai_lock before its IMP_AI parameter call, so one
+     * that passed that test an instant before we clear the flag can still
+     * land a call on the channel we are tearing down - and on the AEC-capable
+     * builds the same window belongs to hal_ao_open/close's IMP_AI_{Enable,
+     * Disable}Aec on this very dev0/chn0, which is the documented
+     * free-while-in-use UAF in libaudioProcess.so. Holding the lock across
+     * the whole sequence makes such a caller block until the channel is fully
+     * down and then see g_ai_up==0.
+     * Normal shutdown gets here with httpd already stopped, so the window is
+     * narrow - but the audio thread also exits on its own (the AI watchdog's
+     * "no audio frames received" break) while /control is very much alive,
+     * and that path is not narrow at all. */
+#if defined(USE_CONTROL) || defined(USE_BACKCHANNEL) || defined(USE_PLAY)
+    pthread_mutex_lock(&g_ai_lock);
+#endif
     g_ai_up = 0;
     IMP_AI_DisableChn(dev,chnid);
     IMP_AI_Disable(dev);
+#if defined(USE_CONTROL) || defined(USE_BACKCHANNEL) || defined(USE_PLAY)
+    pthread_mutex_unlock(&g_ai_lock);
+#endif
     return NULL;
 }
 

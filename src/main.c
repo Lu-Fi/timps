@@ -22,6 +22,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#include <setjmp.h>
 #include <unistd.h>
 #include <time.h>
 #include <errno.h>
@@ -315,6 +316,152 @@ static void on_signal(int s)
     signal(SIGALRM, hard_exit);
     alarm(MS_SHUTDOWN_ALARM_S);
 }
+
+/* ---- bring-up teardown deadline (B1) -----------------------------------
+ * The shutdown path re-arms the guillotine right before its g_hal->stop()
+ * because the vendor IMP teardown "is precisely what cannot be trusted to
+ * return" (see above). The bring-up retry loop calls exactly the same
+ * g_hal->stop() to unwind a failed start() before retrying, and had no such
+ * protection: a wedged IMP_System_Exit() on, say, the 3rd of 10 attempts
+ * hung main() forever - the retry cap is never reached, the reboot
+ * escalation never fires, and the camera sits dark behind a process that
+ * looks perfectly alive. That is the failure the cap and the escalation
+ * exist to rule out, reached one level lower down.
+ *
+ * hard_exit() is the wrong response here: _exit(0) in the middle of the
+ * bring-up loop would end the process on attempt 3 with nothing to respawn
+ * it, throwing away the remaining retries AND the reboot escalation. So the
+ * bring-up guillotine does not kill the process; it abandons the wedged
+ * call and returns control to the loop via siglongjmp, which is safe
+ * precisely because the alternative is a permanent hang in the same thread.
+ *
+ * Deliberately NOT MS_SHUTDOWN_ALARM_S (3 s): that number is chosen for
+ * shutdown latency (S95timps' wait_stop budget), and nothing waits on us
+ * during bring-up. Being wrong here is expensive - a stop() that is merely
+ * slow would be declared wedged and cost the incident its one-shot reboot -
+ * so the bring-up deadline is generous enough that expiring it means
+ * "wedged", not "slow". A shutdown requested while we are in here still
+ * gets the short budget.
+ *
+ * Caveat, unavoidable at this level: if the vendor call is stuck in an
+ * uninterruptible kernel ioctl, SIGALRM is not delivered until it returns
+ * and no user-space guillotine (this one or hard_exit) can do anything. */
+#ifndef MS_STARTUP_STOP_ALARM_S
+#define MS_STARTUP_STOP_ALARM_S 20
+#endif
+static sigjmp_buf g_stop_jb;
+static volatile sig_atomic_t g_stop_armed;      /* inside a bounded stop()? */
+static volatile sig_atomic_t g_stop_expired;    /* it hit the deadline */
+static void startup_alarm(int s)
+{
+    if (g_stop_armed){
+        g_stop_armed  = 0;
+        g_stop_expired = 1;
+        /* async-signal-safe only, like hard_exit() */
+        static const char m[] =
+            "timpsd: HAL teardown did not return - abandoning it\n";
+        ssize_t ignored = write(STDERR_FILENO, m, sizeof m - 1);
+        (void)ignored;
+        siglongjmp(g_stop_jb, 1);
+    }
+    hard_exit(s);            /* not in a bounded stop(): shutdown guillotine */
+}
+/* g_hal->stop() with the deadline above. 0 = it returned, -1 = it was
+ * abandoned and the vendor library is now in an unknown state. */
+static int hal_stop_bounded(void)
+{
+    g_stop_expired = 0;
+    if (sigsetjmp(g_stop_jb, 1) == 0){
+        g_stop_armed = 1;
+        signal(SIGALRM, startup_alarm);
+        /* a stop requested by the operator keeps the short shutdown budget */
+        alarm(g_run ? MS_STARTUP_STOP_ALARM_S : MS_SHUTDOWN_ALARM_S);
+        g_hal->stop();
+    }
+    /* Order matters: cancel the alarm BEFORE clearing the armed flag. The
+     * other order leaves a window where an alarm that fires just as stop()
+     * returns finds armed==0 and takes hard_exit() - killing the process at
+     * the exact moment things went RIGHT. This way that race lands in the
+     * "abandoned" branch instead, which merely costs one wasted decision. */
+    alarm(0);
+    g_stop_armed = 0;
+    return g_stop_expired ? -1 : 0;
+}
+
+/* Marker file for the one-shot recovery reboot, on the persistent (non-tmpfs)
+ * /etc partition so it survives the reboot the way nothing in /run does. */
+/* both -D overridable so the host sim can exercise these paths without a
+ * writable /etc and without a 10-attempt wait */
+#ifndef MS_STARTUP_MAX_START_FAILS
+#define MS_STARTUP_MAX_START_FAILS 10
+#endif
+#ifndef MS_STARTUP_REBOOT_MARKER
+#define MS_STARTUP_REBOOT_MARKER "/etc/timps-startup-reboot.flag"
+#endif
+
+/* Bring-up has failed for good ("why" says how). Escalate to ONE real reboot
+ * - but ONLY one, ever, per incident: cam-kinder-rechts' hardware-verified
+ * run (2026-08-22) showed process-level retries never cleared that board's
+ * stuck rmem while a real `reboot` cleared it every single time, so the
+ * reboot is worth taking; a second failure after it means the reboot did not
+ * help either and repeating it would be a silent boot loop instead of a fix.
+ * The marker is cleared the moment start() next succeeds, so a genuinely new
+ * incident later (even after months of uptime) gets its own fresh one-shot
+ * reboot rather than a permanently spent one.
+ * Returns the process exit status; does not return at all when it reboots. */
+static int startup_give_up(const char *why)
+{
+    if (access(MS_STARTUP_REBOOT_MARKER, F_OK) == 0){
+        LOGE(MOD,"%s - AGAIN, after the one-shot recovery reboot already tried "
+                 "for this. A real reboot does not fix this board's problem "
+                 "either, so giving up for real (needs manual intervention, "
+                 "not another reboot)", why);
+        return 1;
+    }
+    /* The marker is the ONLY thing that makes this reboot one-shot, so it has
+     * to exist before the reboot, not after. If it cannot be created - /etc
+     * full, or the rootfs remounted read-only after an earlier fault, both
+     * realistic on these NOR-flash boards - then the access() check above
+     * finds nothing on the NEXT boot either, this path reboots again, and a
+     * persistent startup fault turns into a reboot every few minutes forever:
+     * precisely the boot loop the marker exists to prevent. So no marker
+     * means no reboot. Dark-but-stable degrades correctly and leaves a log to
+     * read; a silent reboot loop does neither.
+     * close() is checked because a deferred ENOSPC surfaces there on some
+     * flash filesystems, and the sync()+access() pair confirms the entry is
+     * really on disk to be found after a reboot rather than merely opened. */
+    int marker_err = 0;
+    int mf = open(MS_STARTUP_REBOOT_MARKER, O_CREAT|O_WRONLY|O_TRUNC, 0644);
+    if (mf < 0) {
+        marker_err = errno;
+    } else {
+        if (close(mf) != 0) marker_err = errno;
+        sync();
+        if (!marker_err && access(MS_STARTUP_REBOOT_MARKER, F_OK) != 0)
+            marker_err = errno;
+    }
+    if (marker_err){
+        LOGE(MOD,"%s, but the one-shot reboot marker %s cannot be written "
+                 "(%s) - without it every boot would take this same escalation "
+                 "path and reboot again, i.e. a silent reboot loop, so giving "
+                 "up permanently WITHOUT the escalation reboot. Fix the rootfs "
+                 "(/etc full, or mounted read-only?) to re-enable the one-shot "
+                 "recovery reboot",
+             why, MS_STARTUP_REBOOT_MARKER, strerror(marker_err));
+        return 1;
+    }
+    LOGE(MOD,"%s - escalating to ONE reboot before giving up permanently "
+             "(2026-08-22 T31 precedent: retries alone did not clear whatever "
+             "the board was waiting on, only a real reboot did)", why);
+    sync();
+    reboot(RB_AUTOBOOT);
+    /* unreachable if the syscall works; fall through to the normal give-up
+     * path if it somehow doesn't (no permission, sandboxed init, etc.)
+     * rather than hang here forever */
+    LOGE(MOD,"reboot() itself failed (%s) - giving up instead", strerror(errno));
+    return 1;
+}
+
 static void idr_trampoline(int src){ if (g_hal && g_hal->request_idr) g_hal->request_idr(src); }
 /* rand() seed for the remaining non-secret rand() users (UDP port picks
  * etc.). Seeding from time^pid made every rand()-derived value guessable
@@ -454,17 +601,9 @@ int main(int argc, char **argv)
      * always enough time, but a real `reboot` fixed it every single time
      * that resource-drain incident occurred tonight, on every affected
      * camera - process-level retries never did on their own. So after the
-     * retry budget is spent, escalate to ONE real reboot before finally
-     * giving up - but ONLY one, ever, per problem: a marker file on the
-     * persistent (non-tmpfs) /etc partition survives the reboot the way
-     * nothing in /run does, so a second exhaustion of the SAME retry
-     * budget after that reboot means the reboot did not help either, and
-     * rebooting again would be a silent boot loop instead of a fix. The
-     * marker is cleared the moment start() next succeeds, so a genuinely
-     * new incident later (even after the camera has run fine for months)
-     * gets its own fresh one-shot reboot, not a permanently spent one. */
-#define MS_STARTUP_MAX_START_FAILS 10
-#define MS_STARTUP_REBOOT_MARKER "/etc/timps-startup-reboot.flag"
+     * retry budget is spent, startup_give_up() above escalates to ONE real
+     * reboot before finally giving up. */
+    char why[200];
     int start_fails = 0;
     for (int backoff = 5;;) {
         if (g_hal->init(&g_cfg) == 0) {
@@ -472,6 +611,18 @@ int main(int argc, char **argv)
                 if (unlink(MS_STARTUP_REBOOT_MARKER) == 0)
                     LOGI(MOD,"cleared the startup-reboot marker - this "
                              "incident is over");
+                /* ENOENT is the normal case (no marker to clear) and stays
+                 * silent. Anything else - EROFS, EACCES - leaves a stale
+                 * marker behind invisibly, and a stale marker is not
+                 * harmless: the next, entirely unrelated incident finds it
+                 * via access() and skips straight to "giving up for real",
+                 * silently spending a recovery reboot it never got. */
+                else if (errno != ENOENT)
+                    LOGW(MOD,"could not clear the startup-reboot marker %s "
+                             "(%s) - it is stale now, and while it sits there "
+                             "a future unrelated start failure will skip its "
+                             "one-shot recovery reboot. Remove it by hand",
+                         MS_STARTUP_REBOOT_MARKER, strerror(errno));
                 break;
             }
             /* start() failing is the SAME transient class as init() failing,
@@ -489,36 +640,41 @@ int main(int argc, char **argv)
              * close - ing_stop tolerates the already-empty channel lists) a
              * fresh init+start attempt is exactly as safe as the first one. */
             if (++start_fails >= MS_STARTUP_MAX_START_FAILS){
-                g_hal->stop();
-                if (access(MS_STARTUP_REBOOT_MARKER, F_OK) == 0){
-                    LOGE(MOD,"HAL start failed %d times in a row AGAIN after "
-                             "the one-shot recovery reboot already tried for "
-                             "this - a real reboot does not fix this board's "
-                             "problem either, giving up for real (needs "
-                             "manual intervention, not another reboot)",
-                         start_fails);
-                    return 1;
-                }
-                int mf = open(MS_STARTUP_REBOOT_MARKER,
-                               O_CREAT|O_WRONLY|O_TRUNC, 0644);
-                if (mf >= 0) close(mf);
-                LOGE(MOD,"HAL start failed %d times in a row - retries alone "
-                         "did not clear whatever this board is waiting on "
-                         "(2026-08-22 T31 precedent: only a real reboot did), "
-                         "so escalating to ONE reboot before giving up "
-                         "permanently", start_fails);
-                sync();
-                reboot(RB_AUTOBOOT);
-                /* unreachable if the syscall works; fall through to the
-                 * normal give-up path if it somehow doesn't (no permission,
-                 * sandboxed init, etc.) rather than hang here forever */
-                LOGE(MOD,"reboot() itself failed (%s) - giving up instead",
-                     strerror(errno));
-                return 1;
+                /* bounded like every other teardown here: a wedge in this one
+                 * would strand us one statement short of the escalation that
+                 * this whole branch exists to perform */
+                hal_stop_bounded();
+                snprintf(why, sizeof why, "HAL start failed %d times in a row "
+                         "and retries alone did not clear whatever this board "
+                         "is waiting on", start_fails);
+                return startup_give_up(why);
             }
             LOGE(MOD,"HAL start failed (%d/%d) - unwinding and retrying in %ds",
                  start_fails, MS_STARTUP_MAX_START_FAILS, backoff);
-            g_hal->stop();
+            if (hal_stop_bounded() != 0){
+                /* The vendor teardown never returned and we walked away from
+                 * it. Do NOT simply retry: init()/start() have no deadline of
+                 * their own, and running them on top of a libimp left
+                 * mid-teardown (locks held, threads not joined) is how a
+                 * "retry" turns into a second, permanent hang - the very
+                 * thing this deadline was added to prevent. A teardown that
+                 * is still running after MS_STARTUP_STOP_ALARM_S is also
+                 * exactly the class of fault the 2026-08-22 incident showed
+                 * only a real reboot clears. So spend the retry budget here
+                 * and hand this to the same one-shot, marker-gated escalation
+                 * the exhausted budget uses: reboot once, and if the marker
+                 * says that reboot has already been tried, stay down. */
+                if (!g_run) return 1;      /* operator asked us to stop */
+                snprintf(why, sizeof why, "HAL teardown after start failure "
+                         "%d/%d did not return within %ds and had to be "
+                         "abandoned, leaving the vendor library in an unknown "
+                         "state", start_fails, MS_STARTUP_MAX_START_FAILS,
+                         MS_STARTUP_STOP_ALARM_S);
+                int rc = startup_give_up(why);
+                /* a vendor thread is still wedged somewhere inside libimp;
+                 * running libc's exit handlers on top of that buys nothing */
+                _exit(rc);
+            }
         } else {
             LOGE(MOD,"HAL init failed - retrying in %ds", backoff);
         }
@@ -556,8 +712,21 @@ int main(int argc, char **argv)
     timelapse_start(&g_cfg);
     srt_start(&g_cfg);
 
-    LOGI(MOD,"running. rtsp://<ip>:%d%s  http://<ip>:%d/",
-         g_cfg.rtsp_port, g_cfg.video[0].rtsp_path, g_cfg.http_port);
+    /* advertise only what actually came up: httpd_start() now returns NULL
+     * when http.https=1 could not be honoured (fail closed, see httpd.c), and
+     * a "running ... http://<ip>:port/" line for a port that refuses every
+     * connection would bury exactly the message the operator needs to see */
+    char rurl[96] = "", hurl[96] = "";
+    if (rtsp) snprintf(rurl, sizeof rurl, " rtsp://<ip>:%d%s",
+                       g_cfg.rtsp_port, g_cfg.video[0].rtsp_path);
+    if (http) snprintf(hurl, sizeof hurl, "  http%s://<ip>:%d/",
+#ifdef USE_TLS
+                       g_cfg.http_https ? "s" : "",
+#else
+                       "",
+#endif
+                       g_cfg.http_port);
+    LOGI(MOD,"running.%s%s", rurl, hurl);
 
     while (g_run) sleep(1);
 

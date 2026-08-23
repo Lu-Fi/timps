@@ -3,6 +3,68 @@
 Working list. Newest block first; each entry says what is established and what
 is still guesswork, so nobody has to re-derive it.
 
+## IMPLEMENTED, PENDING HARDWARE: seven review findings (A1, A3, A4, B1, B2, B5, B7)
+
+Implemented 2026-08-23 on worktree branch `agent-fixes-a2492577`, on top of
+`worktree-agent-ad3cd67597597d1e1`. One commit per finding so they can be
+cherry-picked individually. Everything below builds clean (`make sim`,
+`make test-config`, `make test-auth`, and a T31 cross syntax-check for the
+target-only files) - none of it has run on a camera.
+
+- **A1** (`main.c`): the escalation branch rebooted even when the one-shot
+  marker could not be written. On an unwritable `/etc` that is a reboot
+  every ~8 min forever. Now marker-write failure means give up WITHOUT the
+  reboot.
+- **A3** (`config.c`): `key = "value" # comment` kept both the quotes and
+  the comment. The unquote step now finds the real closing quote (searched
+  from the right, so `write_kv_line`'s unescaped-quote round trip survives)
+  and cuts the comment behind it. New `make test-config` harness.
+- **A4** (`config.c`): the atomic rewrite never checked `ferror()` on the
+  read side, so a bad flash block silently committed a truncated config.
+  Now it aborts the rewrite and leaves the original alone.
+- **B1** (`main.c`): the bring-up retry loop's own `g_hal->stop()` had no
+  deadline - a wedged `IMP_System_Exit()` hung the process before the retry
+  cap or the escalation could fire. Now bounded by
+  `MS_STARTUP_STOP_ALARM_S` (20 s, deliberately not the 3 s shutdown value)
+  with a siglongjmp-based guillotine that returns control to the loop
+  instead of `_exit()`ing it.
+- **B2** (`main.c`): `unlink()` of the marker now warns on anything but
+  `ENOENT`.
+- **B5** (`hal_ingenic.c`): the audio thread's exit-path AI disable now
+  holds `g_ai_lock`, like the other disable site.
+- **B7** (`httpd.c`): `http.https=1` with a failed TLS context no longer
+  falls back to plaintext on the same port - it refuses to bind.
+
+Still open on these:
+1. Hardware verification of A1 and B1. Both are reboot/alarm behaviour that
+   cannot be exercised off-device. The host runs used a fault-injected sim
+   backend (start() fails, stop() blocks forever) plus `-D` overrides for
+   the marker path and the deadline; that proves the control flow, not the
+   vendor interaction. What to watch on a real board: a start() failure
+   loop must still reach exactly ONE reboot, and a `chattr`/read-only
+   `/etc` must produce "giving up WITHOUT the escalation reboot" and stay
+   down.
+2. B1's abandoned-teardown policy is a judgement call worth a second
+   opinion: an abandoned `stop()` does NOT retry, it goes straight to the
+   one-shot escalation. Reasoning is in the commit message (init()/start()
+   have no deadline of their own, so retrying on a half-torn-down libimp
+   risks a second, unbounded hang). If a board ever turns out to have a
+   stop() that is slow-but-honest past 20 s, this trades a retry for a
+   reboot - raise `MS_STARTUP_STOP_ALARM_S` rather than removing the
+   deadline.
+3. B7 has never run against real mbedTLS: the host has none, so the
+   fail-closed decision was driven through a stub `tls.c`. Worth one
+   deliberate test on a camera with a deliberately corrupted
+   `http.tls_cert` - expected: no listener on the http port, RTSP
+   unaffected, one LOGE naming the cert.
+4. B7 leaves one asymmetry on purpose: a build WITHOUT `USE_TLS` and
+   `http.https=1` still serves plaintext (now at LOGE instead of silently),
+   because the operator cannot fix that without a different binary. If the
+   fleet standardises on `USE_TLS=1`, revisit and make that case fail
+   closed too.
+5. B5's race is not reproducible off hardware; the fix is by inspection
+   against the documented invariant at the other `g_ai_lock` call site.
+
 ## OPEN: cinnado_d1_t31l boards idle at 16-36% CPU with zero clients (likely pre-existing, not investigated)
 
 Found 2026-08-23 via `timps-qa.sh`'s "expected near-idle - possible busy-wait
@@ -49,8 +111,10 @@ verbatim below. Summary of what shipped:
   at boot, and in a dark room the ratio lands on "pegged, therefore night",
   the right mode with no assertion, which is exactly how the desync below
   went unnoticed); it never arms the running_mode re-assert (that is the
-  "overwritten twice, eight seconds apart" incident); it never consumes
-  `probe_min_gap_s`.
+  "overwritten twice, eight seconds apart" incident); and it CHARGES
+  `probe_min_gap_s` like any other probe (exempting it was tried and
+  scenario 02 reproduced incident f8a7b21 - see the commit message and
+  CHANGELOG; an earlier revision of this entry said the opposite).
 
 Still open on this:
 1. Hardware verification. Nobody has watched a real camera do this. The
