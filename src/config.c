@@ -1949,6 +1949,26 @@ int config_write_keys(const char *path, const char *const *keys,
             if (handled) { last_nl = 1; }     /* write_kv_line always ends in '\n' */
             else { fputs(line, out); size_t ll=strlen(line); last_nl = (ll==0)||line[ll-1]=='\n'; }
         }
+        /* fgets() returning NULL means EOF *or* a read error, and the two are
+         * indistinguishable without ferror(). A bad flash block partway
+         * through the old config would end the copy loop early, the tmp file
+         * would look perfectly well-formed, and the rename() below would
+         * commit it - silently deleting every setting after the unreadable
+         * block, on the next /control POST, with the daemon still running the
+         * old values so nobody notices until the next restart. There is no
+         * safe way to "finish" the copy here, so abort the whole rewrite: the
+         * original file is still intact, and the caller's change is simply
+         * not persisted (it stays live in g_cfg). */
+        if (ferror(in)){
+            LOGE(MOD,"read error on %s (%s) - ABORTING the config rewrite so "
+                     "the truncated copy is not committed over it. The setting "
+                     "is live but NOT persisted; this flash needs attention",
+                 path, strerror(errno));
+            fclose(in);
+            fclose(out);
+            remove(tmp);
+            goto unlock;
+        }
         fclose(in);
     }
     /* Never let an appended key glue onto an unterminated last line. This also
