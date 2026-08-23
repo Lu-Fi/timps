@@ -5842,6 +5842,23 @@ fi
 hdr "SUMMARY"
 log "PASS=$PASS  WARN=$WARN  FAIL=$FAIL  SKIP=$SKIP"
 log "logs + recordings in: $OUTDIR"
-if [ "$FAIL" -gt 0 ]; then log "${c_red}RESULT: FAIL${c_rst}"; exit 2
-elif [ "$WARN" -gt 0 ]; then log "${c_yel}RESULT: PASS with warnings${c_rst}"; exit 1
-else log "${c_grn}RESULT: PASS${c_rst}"; exit 0; fi
+if [ "$FAIL" -gt 0 ]; then log "${c_red}RESULT: FAIL${c_rst}"; QA_EXIT=2
+elif [ "$WARN" -gt 0 ]; then log "${c_yel}RESULT: PASS with warnings${c_rst}"; QA_EXIT=1
+else log "${c_grn}RESULT: PASS${c_rst}"; QA_EXIT=0; fi
+
+# Every run gets an HTML report - not an opt-in extra, so a report never goes
+# missing just because generating it after the fact was forgotten. Best-effort:
+# a report generation problem is worth a WARN, never worth failing an otherwise
+# good QA run over.
+qa_html_report="$(dirname "$0")/qa_html_report.py"
+if have python3 && [ -f "$qa_html_report" ]; then
+	if python3 "$qa_html_report" "$OUTDIR" -o "$OUTDIR/report.html" >"$OUTDIR/report_gen.log" 2>&1; then
+		log "html report: $OUTDIR/report.html"
+	else
+		log "${c_yel}[WARN]${c_rst} html report generation failed - see $OUTDIR/report_gen.log"
+	fi
+else
+	log "${c_yel}[WARN]${c_rst} html report skipped - python3 or qa_html_report.py not found"
+fi
+
+exit "$QA_EXIT"
