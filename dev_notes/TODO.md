@@ -21,26 +21,53 @@ if it were a decode failure from the validation sink. cam-garage's MJPEG
 delivery was very likely fully healthy for the whole 2h run; this is a
 QA-script bug, not a camera defect.
 
-**Fix (not yet implemented)**: give the segment output and the decode sink
-separate log files in `lr_launch`'s mjpeg branch (`2>"${LR_LOG[$slot]}"` vs a
-second `-decode.log`), and only run `ffwarn_count` for the "failed to decode
-cleanly" verdict against the decode-sink log.
+**Fix (not yet implemented)**: a Fable agent checking this finding pointed out
+that a naive fix (separate log files for the segment vs. decode output) would
+still be fragile - the `-f null` decode sink's OWN muxer also logs a DTS-class
+warning for the exact same events (`Application provided invalid, non
+monotonically increasing dts to muxer...`), which currently escapes FFWARN_RE
+only by wording accident (no hyphen in "non monotonically", "invalid," not
+"invalid data"). A future tightening of the shared regex would start
+mis-counting these too. The more robust fix: for this specific verdict, only
+count lines tagged `[mjpeg @` (the actual JPEG decoder) with a genuine
+corruption term, not any DTS/muxer-timestamp warning regardless of which
+ffmpeg component emitted it.
 
-## PARTIALLY VERIFIED: SYN-flood backlog fix (`74c29c4`) reduces but does not eliminate the kernel drop under concurrent load
+## NOT YET TESTED ON HARDWARE: SYN-flood backlog fix (`74c29c4`)
 
-First real-hardware test of the fix 2026-08-23: `--profile longrun` (2h, all
-three protocols concurrent) against cam-garage, running v1.9.3 with the fix
-active (confirmed on-device: `somaxconn=128`, binary matches). The
-`TCP: Possible SYN flooding on port 8880` line still appeared ONCE, at
-~4:44h kernel uptime, during the window all three sessions were open
-together. Before the fix this was showing up reliably on every soak run
-against cam-vorne; here it took a 2h window with three concurrent consumers
-to reproduce it even once. Conclusion so far: the fix is a real improvement
-(backlog 8->128 is a large margin), not a complete fix - under this
-camera's WiFi conditions plus enough concurrent load the SYN queue can still
-fill once in a while. Not upgrading past "partially verified" until this
-either stops recurring across more runs or a lower bound on frequency is
-established.
+Correction 2026-08-23: an earlier version of this entry claimed the first
+real-hardware run of `--profile longrun` against cam-garage showed the fix
+(backlog 8->128) as "partially effective" because the
+`TCP: Possible SYN flooding on port 8880` dmesg line still appeared once
+during the 2h run. A Fable agent dispatched to independently verify this
+found BOTH supporting claims wrong:
+
+1. **cam-garage was not running the fix at all.** `strings
+   /usr/bin/timpsd | grep -m1 '^v[0-9]'` reports plain `v1.9.3` with no
+   `-N-g<hash>` suffix, i.e. the binary is built exactly at the `v1.9.3` tag
+   commit (`08f645e`). `74c29c4` is 3 commits AFTER that tag
+   (`git describe --tags 74c29c4` -> `v1.9.3-3-g74c29c4`,
+   `git tag --contains 74c29c4` -> empty) - it was never in the release that
+   was flashed. `somaxconn=128` (what the original write-up cited as
+   evidence) proves nothing here: that is thingino's own sysctl and would
+   read 128 regardless of what backlog the timps binary itself asks for.
+2. **The dmesg line predates the test window.** Camera and host clocks agree
+   to the second; camera uptime at report time (21:22:48) puts boot at
+   11:19:13, so the line's kernel timestamp (17069.107s) is wall-clock
+   16:03:42 - the longrun QA didn't start until ~18:07. The line is >2h
+   older than the test. `dmesg_tail_runtime.txt` isn't actually
+   window-filtered ("runtime" here just means "since the last boot-anchor
+   log line", per `dmesg_capture()`), so it silently included stale history.
+
+What this run actually shows: an UNFIXED (backlog=8) binary survived 2h of
+three-protocol concurrent load with the kernel completely silent afterward -
+which says nothing either way about `74c29c4`'s effectiveness, since no SYN
+flood was provoked during the window at all, fixed or not.
+
+**Next step**: rebuild a `main`-tip image (which does carry the fix, plus
+`au_drops`) and reflash cam-garage - remember the `TIMPS_VERSION`/`timps.hash`
+pairing rule if this goes through the thingino-firmware-LuFi package path -
+then re-run `--profile longrun` and actually check whether the fix holds.
 
 ## DONE (sim-verified, hardware-verification pending): long-run concurrent RTSP/fMP4/MJPEG reliability QA (section 15c)
 
@@ -84,7 +111,7 @@ timing, confirming MJPEG gap thresholds don't false-positive on normal
 on-demand/scene-dependent behavior, and running the leak-trend checks with
 `--ssh` (never exercised in the sim path).
 
-## SUPERSEDED by the "PARTIALLY VERIFIED" entry above: hardcoded listen() backlog of 8 caused a kernel SYN-flood drop
+## SUPERSEDED by the "NOT YET TESTED ON HARDWARE" entry above: hardcoded listen() backlog of 8 caused a kernel SYN-flood drop
 
 Found 2026-08-23 in cam-vorne's `dmesg` during a `timps-qa.sh --profile soak`
 run: `TCP: Possible SYN flooding on port 8880. Dropping request.` All three
