@@ -3,6 +3,25 @@
 Working list. Newest block first; each entry says what is established and what
 is still guesswork, so nobody has to re-derive it.
 
+## OPEN: cinnado_d1_t31l boards idle at 16-36% CPU with zero clients (likely pre-existing, not investigated)
+
+Found 2026-08-23 via `timps-qa.sh`'s "expected near-idle - possible busy-wait
+loop" check on cam-kinder-rechts (24.1%, WARN, non-blocking). Checked
+`top -bn1` on three `cinnado_d1_t31l_sc2336_atbm6031` boards with zero RTSP/
+HTTP clients connected: cam-db 16.6%, cam-sz 36.3%, cam-kinder-rechts ~20-24%.
+For comparison, cam-garage (`wuuk_y0510_t31x_sc4336p_ssv6158`, a different
+board) showed 0.0% idle under the same check. This points at a
+board-family characteristic (ISP tuning daemon or a sensor-specific
+continuous thread on the cinnado boards, several `group_update`/`FS(n)-tick`
+threads showed non-trivial cumulative CPU in a `/proc/<pid>/task/*/stat`
+check) rather than a regression from tonight's changes - the pattern is
+shared across three different cinnado units with different config
+histories, not unique to the one that got tonight's fixes first. Not
+investigated further: which specific thread is actually hot (need two
+time-separated `/proc` samples to get a rate, not just cumulative ticks),
+and whether this is new or has always been the case on this board family
+(no pre-2026-08 idle-CPU baseline exists to compare against).
+
 ## IMPLEMENTED, PENDING REVIEW + HARDWARE: boot MEASURES day/night instead of trusting the persisted value
 
 Implemented 2026-08-22 on worktree branch `worktree-agent-boot-measure`,
