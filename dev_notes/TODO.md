@@ -3,35 +3,39 @@
 Working list. Newest block first; each entry says what is established and what
 is still guesswork, so nobody has to re-derive it.
 
-## OPEN: section 15c's MJPEG decode-failure count is a false positive - counts benign copy-side DTS warnings, not real corruption
+## RESOLVED: section 15c's MJPEG decode-failure count was a false positive - counted benign copy-side DTS warnings, not real corruption
 
 Found 2026-08-23 running the first real hardware `--profile longrun` against
 cam-garage (2h, all three protocols concurrent): reported "8 JPEG frame(s)
-failed to decode cleanly" (FAIL). Checked the raw log
-(`longrun_mjpeg_ffmpeg.log`): all 8 matches are `Non-monotonic DTS` lines
-from the segment `-c copy` OUTPUT (`vost#0:0/copy`), not from the `-f null`
-DECODE sink that the check is meant to validate - zero lines contain any of
-the actual corruption markers (`EOI missing`, `overread`, `invalid data`,
-`corrupt`). Root cause: the MJPEG slot's single ffmpeg process writes BOTH
-outputs' stderr into one shared `$lr_log`, and the shared `FFWARN_RE` (via
-`ffwarn_count`) does not distinguish which output a warning came from -
-`-c copy`'s ordinary DTS nudging (expected here, since
-`-use_wallclock_as_timestamps` feeds it real arrival jitter) gets counted as
-if it were a decode failure from the validation sink. cam-garage's MJPEG
-delivery was very likely fully healthy for the whole 2h run; this is a
-QA-script bug, not a camera defect.
+failed to decode cleanly" (FAIL), and again "9" on the re-run two entries
+above. Checked the raw log (`longrun_mjpeg_ffmpeg.log`) both times: every
+match was a `Non-monotonic DTS` line from the segment `-c copy` OUTPUT
+(`vost#0:0/copy`), not from the `-f null` DECODE sink the check is meant to
+validate - zero lines contained any actual corruption marker. Root cause:
+the MJPEG slot's single ffmpeg process writes BOTH outputs' stderr into one
+shared log, and the shared `FFWARN_RE` (via `ffwarn_count`) can't tell which
+output a warning came from. cam-garage's MJPEG delivery was healthy both
+times; the FAIL was the script's.
 
-**Fix (not yet implemented)**: a Fable agent checking this finding pointed out
-that a naive fix (separate log files for the segment vs. decode output) would
-still be fragile - the `-f null` decode sink's OWN muxer also logs a DTS-class
-warning for the exact same events (`Application provided invalid, non
-monotonically increasing dts to muxer...`), which currently escapes FFWARN_RE
-only by wording accident (no hyphen in "non monotonically", "invalid," not
-"invalid data"). A future tightening of the shared regex would start
-mis-counting these too. The more robust fix: for this specific verdict, only
-count lines tagged `[mjpeg @` (the actual JPEG decoder) with a genuine
-corruption term, not any DTS/muxer-timestamp warning regardless of which
-ffmpeg component emitted it.
+Dispatched to a Fable agent (same one that fixed the mp4 mute issue above),
+which found the fix needed to be sharper than "split the logs": the `-f
+null` sink's own muxer logs a same-shaped DTS line for the same events that
+escapes FFWARN_RE only by wording accident, AND matching corruption wording
+alone misses real corruption in the other direction - a byte-scrambled (not
+truncated) JPEG makes the decoder say "error dc" / "bad vlc" / "error y=N
+x=N", which the old list never anticipated (measured 0 where a fixed
+detector correctly counted 183, against a sim-fed garbled JPEG). Fixed with
+a new `mjdecode_count()` helper that filters by ffmpeg COMPONENT TAG
+(`[mjpeg @`/`[mpjpeg @`) instead of wording, with a timestamp-wording
+exclusion as a second line of defense. Verified: both real cam-garage logs
+now read 0 (previously 8 and 9); sim good/truncated/garbled feeds read
+0/123/183 (old logic read 0/123/0 - missed the garbled case entirely);
+end-to-end `--only longrun --longrun-protos mjpeg` against the sim passes
+clean and fails loudly on a truncated feed. I independently re-confirmed the
+0/0 result against both real logs and separately generated a scrambled JPEG
+of my own (unrelated to the agent's test case) - real ffmpeg tags the result
+`[mjpeg @ ...] huffman table decode error`, which the new tag-based filter
+correctly catches. Merged `854b7f6` (fast-forward, no conflicts).
 
 ## RESOLVED: cam-garage's fMP4 client got force-dropped under congestion, misread as a mid-stream mute
 
@@ -81,28 +85,47 @@ but it is one data point, not proof the ceiling can never be hit again under
 worse WiFi conditions - leaving this "partially verified" rather than
 "resolved" until it's held up across more runs.
 
-## OPEN: cam-garage's timpsd CPU jumped ~14% -> ~22% during tonight's longrun QA and never came back down
+## RESOLVED (explained, not a bug): cam-garage's timpsd CPU step from ~14% to ~22% was legitimate NVR load, not a leak
 
-Found 2026-08-24, same run as the two entries above. `timpsd` CPU (measured
-on-device on the `--ssh` leak-trend cadence) sat flat at 14.3-14.4% for the
-first ~7 samples (~35min), then stepped up to 19.7% and settled at
-21.4-22.4% for the remaining ~15 samples (~75min) - a step change, not a
-gradual drift, landing right around when an external client (NVR/HA,
-sessions distinct from the QA run's own) connected to both channels and
-cycled the substream encoder (`framesource 1`) on/off three times in ~7
-minutes (22:59-23:06). Confirmed this is not a QA-run artifact: checked
-`timpsd` live via SSH HOURS after the QA run ended (all QA clients long
-gone, only the camera's usual 2 standing RTSP clients connected) and measured
-**18.4% CPU** by direct `/proc/<pid>/stat` utime+stime delta over 5s - still
-clearly elevated versus the run's own 14.3-14.4% baseline measured under the
-same "just the usual clients" condition at the start. Per-thread breakdown
-(`/proc/<pid>/task/*/stat`) shows several threads named `group_update` with
-disproportionate accumulated CPU time. Not yet investigated further - no
-agent dispatched yet. Candidate next step: find what `group_update` is
-(grep `pthread_setname`/thread-creation sites in the encoder/framesource
-enable path) and check whether disabling/re-enabling the substream encoder
-leaves something running that should have stopped. A daemon restart would
-clear the symptom but not tell us what caused it.
+Found 2026-08-24: `timpsd` CPU stepped from 14.3-14.4% to a sustained
+21.4-22.4% partway through the longrun QA run and never came back down,
+coinciding with an external client (the NVR) cycling the substream encoder
+on/off three times around 22:59-23:06. My own follow-up re-check ("still
+18.4% hours later with only the usual 2 clients connected") looked like
+confirmation of a stuck/leaked state.
+
+Dispatched to the same Fable agent for investigation: **refuted**. Two
+findings killed it:
+
+1. `group_update` is a libimp (Ingenic SDK, not timps) thread - each IMP
+   group's `module_thread`, named via `prctl(PR_SET_NAME, ...)` in its own
+   update callback, blocking in `sem_wait` between frames. Confirmed by
+   disassembling the T31 `libimp.a` with the repo's own toolchain: creation
+   and teardown (`AllocModule`/`FreeModule`, and timps's own
+   `IMP_FrameSource_EnableChn`/`DisableChn` call sites) are symmetric,
+   `pthread_create` paired with `pthread_cancel`+`join` on every path
+   including both watchdog-recovery branches. No busy-loop exists; a
+   disabled group's thread sleeps indefinitely. High *accumulated* CPU time
+   on a long-lived thread is just normal per-frame pipeline work, not a leak
+   signature.
+2. **The "same conditions" premise behind my re-check didn't hold.** The
+   device log shows `PLAY vchn=1` + `PLAY vchn=0` for the NVR's two sessions
+   at 23:06:03 with **no disconnect logged since** - confirmed live (`netstat`
+   still shows both ESTABLISHED from the NVR's IP hours later, one lone
+   unrelated disconnect at 00:23:54 belongs to the QA run's own RTSP
+   capture). At the ORIGINAL 14.3% baseline the NVR held only the main
+   stream - the substream was off until 22:59. So "14.3% with the usual 2
+   clients" and "18.4% with the usual 2 clients" were not actually the same
+   condition: same client COUNT, different channel count. The NVR switched
+   from single- to dual-channel sometime in that window and simply never
+   switched back - the extra CPU is two real, ongoing encode pipelines, not
+   residue. Reproduced the negative in `make sim`: 12 connect/disconnect
+   churn cycles on the substream return CPU and thread count exactly to
+   baseline once the client actually goes away.
+
+No code change. I independently re-confirmed the live evidence (both NVR
+sessions still ESTABLISHED, no disconnect since 23:06:03, current CPU 17.8%
+- consistent with the explanation, not with a leak) before accepting this.
 
 ## SUPERSEDED by the "PARTIALLY VERIFIED, ONE CLEAN RUN" entry above: SYN-flood backlog fix (`74c29c4`) not yet tested on hardware
 
