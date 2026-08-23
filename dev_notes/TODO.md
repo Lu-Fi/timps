@@ -3,6 +3,45 @@
 Working list. Newest block first; each entry says what is established and what
 is still guesswork, so nobody has to re-derive it.
 
+## OPEN: section 15c's MJPEG decode-failure count is a false positive - counts benign copy-side DTS warnings, not real corruption
+
+Found 2026-08-23 running the first real hardware `--profile longrun` against
+cam-garage (2h, all three protocols concurrent): reported "8 JPEG frame(s)
+failed to decode cleanly" (FAIL). Checked the raw log
+(`longrun_mjpeg_ffmpeg.log`): all 8 matches are `Non-monotonic DTS` lines
+from the segment `-c copy` OUTPUT (`vost#0:0/copy`), not from the `-f null`
+DECODE sink that the check is meant to validate - zero lines contain any of
+the actual corruption markers (`EOI missing`, `overread`, `invalid data`,
+`corrupt`). Root cause: the MJPEG slot's single ffmpeg process writes BOTH
+outputs' stderr into one shared `$lr_log`, and the shared `FFWARN_RE` (via
+`ffwarn_count`) does not distinguish which output a warning came from -
+`-c copy`'s ordinary DTS nudging (expected here, since
+`-use_wallclock_as_timestamps` feeds it real arrival jitter) gets counted as
+if it were a decode failure from the validation sink. cam-garage's MJPEG
+delivery was very likely fully healthy for the whole 2h run; this is a
+QA-script bug, not a camera defect.
+
+**Fix (not yet implemented)**: give the segment output and the decode sink
+separate log files in `lr_launch`'s mjpeg branch (`2>"${LR_LOG[$slot]}"` vs a
+second `-decode.log`), and only run `ffwarn_count` for the "failed to decode
+cleanly" verdict against the decode-sink log.
+
+## PARTIALLY VERIFIED: SYN-flood backlog fix (`74c29c4`) reduces but does not eliminate the kernel drop under concurrent load
+
+First real-hardware test of the fix 2026-08-23: `--profile longrun` (2h, all
+three protocols concurrent) against cam-garage, running v1.9.3 with the fix
+active (confirmed on-device: `somaxconn=128`, binary matches). The
+`TCP: Possible SYN flooding on port 8880` line still appeared ONCE, at
+~4:44h kernel uptime, during the window all three sessions were open
+together. Before the fix this was showing up reliably on every soak run
+against cam-vorne; here it took a 2h window with three concurrent consumers
+to reproduce it even once. Conclusion so far: the fix is a real improvement
+(backlog 8->128 is a large margin), not a complete fix - under this
+camera's WiFi conditions plus enough concurrent load the SYN queue can still
+fill once in a while. Not upgrading past "partially verified" until this
+either stops recurring across more runs or a lower bound on frequency is
+established.
+
 ## DONE (sim-verified, hardware-verification pending): long-run concurrent RTSP/fMP4/MJPEG reliability QA (section 15c)
 
 Requested 2026-08-23: sections 15 (soak) and 15b (drift) are the only
@@ -45,7 +84,7 @@ timing, confirming MJPEG gap thresholds don't false-positive on normal
 on-demand/scene-dependent behavior, and running the leak-trend checks with
 `--ssh` (never exercised in the sim path).
 
-## RESOLVED (hardware-verification pending): hardcoded listen() backlog of 8 caused a kernel SYN-flood drop
+## SUPERSEDED by the "PARTIALLY VERIFIED" entry above: hardcoded listen() backlog of 8 caused a kernel SYN-flood drop
 
 Found 2026-08-23 in cam-vorne's `dmesg` during a `timps-qa.sh --profile soak`
 run: `TCP: Possible SYN flooding on port 8880. Dropping request.` All three
