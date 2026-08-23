@@ -21,6 +21,7 @@ int fanqueue_init(fanqueue *q, int cap)
     if (!q->slots) return -1;
     q->cap = cap; q->head=q->tail=q->count=0; q->bytes=0;
     q->closed = 0; q->dropped = 0; q->dropped_key = 0; q->dropped_any = 0;
+    q->dropped_audio = 0;
     pthread_mutex_init(&q->lock, NULL);
     /* condvar on CLOCK_MONOTONIC: a wall-clock step (NTP sync on boot) must
      * never stretch a consumer's pop timeout (like events.c does) */
@@ -60,6 +61,7 @@ int fanqueue_push(fanqueue *q, ms_pkt *p)
         /* remember if a video keyframe was lost (flag read by the consumer,
          * which then requests a fresh IDR from its source) */
         if (old->media==MS_MEDIA_VIDEO && old->keyframe) q->dropped_key = 1;
+        if (old->media==MS_MEDIA_AUDIO) q->dropped_audio = 1;
         pkt_unref(old);
         q->dropped++;
         q->dropped_any = 1;
@@ -137,6 +139,15 @@ int fanqueue_take_dropped(fanqueue *q)
     pthread_mutex_lock(&q->lock);
     int d = q->dropped_any;
     q->dropped_any = 0;
+    pthread_mutex_unlock(&q->lock);
+    return d;
+}
+
+int fanqueue_take_dropped_audio(fanqueue *q)
+{
+    pthread_mutex_lock(&q->lock);
+    int d = q->dropped_audio;
+    q->dropped_audio = 0;
     pthread_mutex_unlock(&q->lock);
     return d;
 }

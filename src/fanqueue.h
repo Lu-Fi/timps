@@ -24,6 +24,12 @@ typedef struct fanqueue {
                                     * P-frames), read-and-clear separately from
                                     * dropped_key so consumers can self-heal a
                                     * mid-GOP P-frame gap too */
+    int             dropped_audio; /* an AUDIO packet was dropped on overflow.
+                                    * Lets a consumer whose audio stopped
+                                    * ARRIVING tell "produced but evicted from
+                                    * my queue" (congestion) apart from "never
+                                    * produced" (source muted) - see the
+                                    * MS_MP4_AUDIO_GAP_US check in mp4/httpd.c */
 } fanqueue;
 
 int   fanqueue_init(fanqueue *q, int cap);
@@ -59,6 +65,12 @@ int   fanqueue_take_dropped_key(fanqueue *q);
  * shared encoder and a chronically slow client must not spike the bitrate for
  * every other subscriber. */
 int   fanqueue_take_dropped(fanqueue *q);
+/* read-and-clear the "an audio packet was evicted" flag. The mp4 consumer
+ * clears it on every audio packet it actually delivers, so at any later
+ * point "flag set" means audio was produced-but-evicted SINCE the last
+ * delivered audio - the one distinction the mute-vs-congestion decision
+ * needs (a real mute leaves nothing to evict). */
+int   fanqueue_take_dropped_audio(fanqueue *q);
 /* snapshot the current backlog under the lock: queued slot count, capacity
  * and queued payload bytes (any of the out-pointers may be NULL). Lets a
  * consumer detect its OWN sustained backlog (this client can't keep up) and

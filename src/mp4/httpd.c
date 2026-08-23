@@ -437,14 +437,37 @@ static void stream_mp4(hconn *c, int chn)
          * audio in the moov; video-only clients never reach the else branch. */
         if (p->media == MS_MEDIA_AUDIO) {
             last_audio_us = last_pkt_us;
+            /* delivered audio makes any older eviction stale: clear the flag
+             * so the gap branch below only ever sees evictions from the
+             * CURRENT gap, not a congestion burst minutes ago */
+            fanqueue_take_dropped_audio(&q);
         } else if (mux.has_audio &&
                    last_pkt_us - last_audio_us > MS_MP4_AUDIO_GAP_US) {
-            LOGW(MOD,"mp4 chn=%d: no audio for %llds but video still flowing "
-                     "(muted mid-stream?) - dropping this client so it "
-                     "reconnects video-only", chn,
-                 (long long)(MS_MP4_AUDIO_GAP_US/1000000));
-            pkt_unref(p);
-            break;
+            /* Audio stopped ARRIVING - but was it ever produced? Overflow
+             * evicts audio from this client's queue like everything else
+             * (fanqueue drop-oldest is media-blind), and last_audio_us only
+             * advances on a POP - so a congested client (long csend() stalls,
+             * queue wrapping meanwhile) trips this gap with the mic wide
+             * open. Observed on cam-garage QA 2026-08-22: the fMP4 client got
+             * "muted mid-stream?"-dropped 3 min into a congestion event that
+             * two RTSP sessions rode out with mere frame drops. Evicted-since-
+             * last-delivered audio proves the source is alive: keep the client
+             * and restart the window (honest degradation like rtsp.c's
+             * overflow branch - the overflow WARN below already tells the
+             * story). A REAL mute leaves nothing to evict and still drops one
+             * window later, so the MSE unfed-trak protection is intact. */
+            if (fanqueue_take_dropped_audio(&q)) {
+                last_audio_us = last_pkt_us;
+                LOGD(MOD,"mp4 chn=%d: audio gap is eviction (overflow), not "
+                         "a mute - keeping client", chn);
+            } else {
+                LOGW(MOD,"mp4 chn=%d: no audio for %llds but video still "
+                         "flowing (muted mid-stream?) - dropping this client "
+                         "so it reconnects video-only", chn,
+                     (long long)(MS_MP4_AUDIO_GAP_US/1000000));
+                pkt_unref(p);
+                break;
+            }
         }
         /* trace.h: last_pkt_us IS the pop instant, so t_pop costs nothing extra
          * on this path - only the t_done read after the send does. */
