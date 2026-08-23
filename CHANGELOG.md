@@ -6,6 +6,23 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- **`timps-qa.sh --profile longrun` (section 15c): long-run reliability
+  testing for RTSP, fMP4 and MJPEG concurrently**, not just RTSP. Sections
+  15 (soak) and 15b (drift) only ever opened the RTSP main stream, so a
+  degradation confined to the HTTP fMP4 or MJPEG serving path was
+  unreachable no matter how long those ran. The new section holds one
+  session per protocol open at once for a shared window (default 2h,
+  `--longrun-dur`/`--longrun-seg`/`--longrun-protos`) and judges each on a
+  protocol-appropriate trend: A/V drift + delivery pacing for RTSP/fMP4
+  (sharing 15b's verdict ladder), frame-rate/gap/JPEG-validity for MJPEG
+  (which has no audio track, so drift is reported N/A rather than silently
+  skipped). Also fixes a `printf`-locale bug (`LC_NUMERIC` mis-formatting
+  numbers under non-`C` locales), extends the shared decode-warning pattern
+  to catch truncated/corrupt JPEG frames, and closes a vacuous-PASS gap
+  where a session that never received data could still report success.
+
 ## [1.9.3] - 2026-08-23
 
 ### Changed

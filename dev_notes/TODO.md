@@ -3,6 +3,48 @@
 Working list. Newest block first; each entry says what is established and what
 is still guesswork, so nobody has to re-derive it.
 
+## DONE (sim-verified, hardware-verification pending): long-run concurrent RTSP/fMP4/MJPEG reliability QA (section 15c)
+
+Requested 2026-08-23: sections 15 (soak) and 15b (drift) are the only
+long-duration checks in `timps-qa.sh`, and both only ever open the RTSP main
+stream - a degradation confined to the HTTP fMP4 or MJPEG serving path was
+unreachable no matter how long `--profile soak`/`drift` ran. New `--profile
+longrun` / `--only 15c` holds one RTSP, one fMP4 and one MJPEG session open
+CONCURRENTLY for a shared window (default 2h, `--longrun-dur`/`--longrun-seg`/
+`--longrun-protos`) and judges each on its own protocol-appropriate trend:
+A/V drift + delivery pacing for RTSP/fMP4 (sharing 15b's exact verdict ladder
+via the newly-extracted `av_drift_verdict()`), frame-rate/gap/JPEG-validity
+for MJPEG (no audio track to drift against, stated explicitly rather than
+silently skipped). Capture runs concurrently, reports sequentially per
+protocol (`qa_html_report.py` attaches notes to the preceding result line;
+interleaving would misattribute them across protocols).
+
+Built by an Opus agent; found and fixed three latent bugs along the way:
+a bash `printf '%.1f'` locale bug that mis-formats/rejects numbers under
+`LC_NUMERIC=de_DE` (new `fmt()` helper using awk instead), `FFWARN_RE` not
+catching truncated/corrupt JPEG frames ("EOI missing"/"overread", added to
+the one shared pattern), and vacuous PASSes on sessions that never actually
+received data. `series_quarters()`/`av_trend_stats()`/`av_drift_verdict()`
+generalized out of three separately-drifting inline awk copies (soak, 15b,
+now 15c) into one shared implementation.
+
+Reviewed line-by-line and independently verified against the host sim with
+synthetic video/audio/JPEG test media (`make sim`): full 3-protocol run
+produces a clean, correctly-graded report (PASS/WARN/SKIP), correct no-audio
+N/A handling, correct HTML report generation. One thing surfaced during
+verification that is NOT a defect in this change: RTSP's capture in this sim
+setup runs past its requested window under an ffmpeg/RTP-timestamp quirk
+that the pre-existing, unmodified 15b `drift` section exhibits identically
+against the same test media (confirmed by re-running 15b standalone) - a
+test-media artifact, not a regression. Merged `f2416ee`.
+
+Still needs real hardware to confirm: whether the fMP4 tfdt truncation
+actually accumulates over hours (the sim's looping source can't produce
+this), calibrating the PACING check's thresholds against real segment
+timing, confirming MJPEG gap thresholds don't false-positive on normal
+on-demand/scene-dependent behavior, and running the leak-trend checks with
+`--ssh` (never exercised in the sim path).
+
 ## RESOLVED (hardware-verification pending): hardcoded listen() backlog of 8 caused a kernel SYN-flood drop
 
 Found 2026-08-23 in cam-vorne's `dmesg` during a `timps-qa.sh --profile soak`
