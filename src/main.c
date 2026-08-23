@@ -611,6 +611,18 @@ int main(int argc, char **argv)
                 if (unlink(MS_STARTUP_REBOOT_MARKER) == 0)
                     LOGI(MOD,"cleared the startup-reboot marker - this "
                              "incident is over");
+                /* ENOENT is the normal case (no marker to clear) and stays
+                 * silent. Anything else - EROFS, EACCES - leaves a stale
+                 * marker behind invisibly, and a stale marker is not
+                 * harmless: the next, entirely unrelated incident finds it
+                 * via access() and skips straight to "giving up for real",
+                 * silently spending a recovery reboot it never got. */
+                else if (errno != ENOENT)
+                    LOGW(MOD,"could not clear the startup-reboot marker %s "
+                             "(%s) - it is stale now, and while it sits there "
+                             "a future unrelated start failure will skip its "
+                             "one-shot recovery reboot. Remove it by hand",
+                         MS_STARTUP_REBOOT_MARKER, strerror(errno));
                 break;
             }
             /* start() failing is the SAME transient class as init() failing,
