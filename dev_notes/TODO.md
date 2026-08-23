@@ -3,6 +3,54 @@
 Working list. Newest block first; each entry says what is established and what
 is still guesswork, so nobody has to re-derive it.
 
+## RESOLVED (hardware-verification pending): hardcoded listen() backlog of 8 caused a kernel SYN-flood drop
+
+Found 2026-08-23 in cam-vorne's `dmesg` during a `timps-qa.sh --profile soak`
+run: `TCP: Possible SYN flooding on port 8880. Dropping request.` All three
+TCP listeners (HTTP, RTSP, RTSPS) called `net_listen_tcp()` with a hardcoded
+backlog of 8 (`src/rtsp/rtsp.c`, `src/mp4/httpd.c`), capping the half-open
+SYN queue at 16 on the 3.10 kernel - shallow enough that ordinary WiFi loss
+(SYN-ACK retransmits linger 30s+ under packet loss) plus a handful of
+clients trips the kernel's defensive drop. `thingino-firmware-LuFi`'s own
+`overlay/etc/sysctl.conf` already sets `net.core.somaxconn=128` specifically
+to raise this ceiling - the hardcoded 8 undercut that on timps's own sockets
+regardless of the sysctl. Fixed: new `NET_TCP_BACKLOG=128` (`74c29c4`),
+kernel-clamped to `somaxconn` so it asks for exactly what the firmware
+already provisions. Verified in a scratch build: `ss -ltn` shows backlog 128
+post-fix vs 8 before; a 30-connection burst to `/control` got 30/30 HTTP 200
+with the fix, none without hardware to compare against pre-fix behavior at
+that burst size. Not yet reproduced/cleared on a real camera - the actual
+verification is watching `dmesg` stay clean under the same soak conditions
+that produced the original line.
+
+**Separately, NOT this bug**: the same investigation traced the recurring
+fleet-wide "load 8 clients: 7 ok / 1 failed (NOT admission control)" finding
+(seen on multiple cameras across tonight's QA runs) to something else
+entirely - see the next entry.
+
+## OPEN: `timps-qa.sh` section 13's "NOT admission control" claim is wrong when a baseline client already holds a slot
+
+Found 2026-08-23 investigating the SYN-flood finding above (same
+investigation, different root cause than the SYN issue - not a timps daemon
+bug, a QA-script labeling bug). Section 13's 8-client load ramp assumes it
+is the only consumer and labels a rejected 9th connection "NOT admission
+control - degradation". On cam-vorne during the soak run, `events.log`
+showed an EXTERNAL client (NVR/Home Assistant/go2rtc - whichever fleet
+component holds a standing substream subscription) already holding 1 RTSP
+session before the QA ramp even started. Baseline 1 + QA's 8 = 9 >
+`RTSP_MAX_CLIENTS=8`, so the 9th connection's `503` is `rtsp.c`'s admission
+control working exactly as designed, correctly rejecting the caller who
+happened to arrive last - not evidence of degradation at all. This plausibly
+explains the SAME "7 ok/1 failed" pattern seen on other fleet cameras
+tonight too, wherever a standing external viewer already exists.
+
+**Fix (not yet implemented)**: section 13 should measure `hub_clients()`
+(the helper already exists, used by section 12b) as a baseline BEFORE
+starting its own ramp, and grade `baseline + n > RTSP_MAX_CLIENTS` as
+correct cap enforcement rather than "NOT admission control". Without this,
+every camera with a standing external viewer will keep producing this same
+false alarm on every future QA run.
+
 ## RESOLVED (diagnostics), OPEN (root cause acceptable, not acted on): cam-vorne AU-drop during 2h drift QA
 
 Found 2026-08-23 in a `timps-qa.sh --profile drift` run against cam-vorne
