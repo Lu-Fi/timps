@@ -1710,7 +1710,7 @@ httpd *httpd_start(const ms_config *cfg)
                  "PLAIN HTTP and any password or token sent to it goes over "
                  "the network in the clear", cfg->http_port);
 #endif
-    h->lfd=net_listen_tcp(cfg->http_port, 8);
+    h->lfd=net_listen_tcp(cfg->http_port, NET_TCP_BACKLOG);
     if (h->lfd<0){
         LOGE(MOD,"cannot bind http port %d",cfg->http_port);
 #ifdef USE_TLS

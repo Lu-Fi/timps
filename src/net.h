@@ -6,6 +6,14 @@
 #include <sys/socket.h>
 #include <sys/uio.h>
 
+/* listen() backlog for all TCP listeners (RTSP/HTTP). The kernel clamps this
+ * to net.core.somaxconn (128 on thingino, which raises it for exactly this
+ * purpose), so 128 asks for the full queue the firmware already provisions.
+ * The old hardcoded 8 also capped the half-open (SYN) queue at 16 on the 3.10
+ * boards - shallow enough that a lossy WiFi patch plus a handful of clients
+ * trips the kernel's "Possible SYN flooding" drop heuristic. */
+#define NET_TCP_BACKLOG 128
+
 int  net_listen_tcp(int port, int backlog);      /* returns listening fd or -1 */
 /* accept() with FD_CLOEXEC set atomically (accept4) so forked board scripts
  * (daynight/motion) don't inherit live client sockets; returns fd or -1 */

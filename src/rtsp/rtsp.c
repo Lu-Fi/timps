@@ -1698,7 +1698,7 @@ rtsp_server *rtsp_start(const ms_config *cfg)
     rtsp_server *s = (rtsp_server*)calloc(1,sizeof(*s));
     if (!s) return NULL;
     s->cfg = cfg;
-    s->lfd = net_listen_tcp(cfg->rtsp_port, 8);
+    s->lfd = net_listen_tcp(cfg->rtsp_port, NET_TCP_BACKLOG);
     if (s->lfd < 0){ LOGE(MOD,"cannot bind rtsp port %d",cfg->rtsp_port); free(s); return NULL; }
     s->run = 1;
     ms_thread_create(&s->thr, MS_STACK_UTIL, accept_thread, s);
@@ -1710,7 +1710,7 @@ rtsp_server *rtsp_start(const ms_config *cfg)
         if (!s->tls_ctx)
             LOGE(MOD,"RTSPS requested but TLS context failed - plain RTSP only");
         else {
-            s->lfd_tls = net_listen_tcp(cfg->rtsp_tls_port, 8);
+            s->lfd_tls = net_listen_tcp(cfg->rtsp_tls_port, NET_TCP_BACKLOG);
             if (s->lfd_tls < 0)
                 LOGE(MOD,"cannot bind rtsps port %d",cfg->rtsp_tls_port);
             else if (ms_thread_create(&s->thr_tls, MS_STACK_UTIL, accept_tls_thread, s) != 0){
