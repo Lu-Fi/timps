@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.9.3] - 2026-08-23
+
 ### Changed
 
 - **Day/night boot now MEASURES before it decides, and asserts the answer on

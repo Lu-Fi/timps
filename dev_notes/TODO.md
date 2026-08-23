@@ -3,13 +3,28 @@
 Working list. Newest block first; each entry says what is established and what
 is still guesswork, so nobody has to re-derive it.
 
-## IMPLEMENTED, PENDING HARDWARE: seven review findings (A1, A3, A4, B1, B2, B5, B7)
+## PARTIALLY HARDWARE-VERIFIED (v1.9.3): seven review findings (A1, A3, A4, B1, B2, B5, B7)
 
 Implemented 2026-08-23 on worktree branch `agent-fixes-a2492577`, on top of
-`worktree-agent-ad3cd67597597d1e1`. One commit per finding so they can be
-cherry-picked individually. Everything below builds clean (`make sim`,
-`make test-config`, `make test-auth`, and a T31 cross syntax-check for the
-target-only files) - none of it has run on a camera.
+`worktree-agent-ad3cd67597597d1e1`, merged to `main` as `5df5f05`. One commit
+per finding so they can be cherry-picked individually. Builds clean (`make
+sim`, `make test-config` 12/12, `make test-auth` 4/4).
+
+**Normal-operation hardware verification, same day**: flashed to cam-garage
+and cam-vorne (v1.9.3), full `timps-qa.sh --profile standard` run against
+both - 0 FAIL on either (144/1 warn, 142/3 warn; warnings pre-existing and
+already understood: motion-gated recorder with motion off, one ffmpeg
+warning, expected fps degradation at the 8-client load ceiling). This
+confirms nothing here broke ordinary operation.
+
+**Still NOT verified**: A1 and B1's actual escalation/alarm paths. Neither
+run above deliberately drove the daemon into 10 failed starts the way
+cam-kinder-rechts' `--test-encoder` stress test did for the retry-cap fix
+(2026-08-22) - a clean QA pass says these two boards work normally, not that
+the reboot escalation or the bring-up teardown deadline fire correctly under
+real fault conditions. That still needs the same kind of deliberate
+reproduction cam-kinder-rechts got. B7's fail-closed TLS path is likewise
+unexercised against a real broken cert on hardware.
 
 - **A1** (`main.c`): the escalation branch rebooted even when the one-shot
   marker could not be written. On an unwritable `/etc` that is a reboot
@@ -65,32 +80,41 @@ Still open on these:
 5. B5's race is not reproducible off hardware; the fix is by inspection
    against the documented invariant at the other `g_ai_lock` call site.
 
-## OPEN: cinnado_d1_t31l boards idle at 16-36% CPU with zero clients (likely pre-existing, not investigated)
+## RESOLVED: cinnado_d1_t31l "idle" CPU was Frigate, not a bug
 
 Found 2026-08-23 via `timps-qa.sh`'s "expected near-idle - possible busy-wait
-loop" check on cam-kinder-rechts (24.1%, WARN, non-blocking). Checked
-`top -bn1` on three `cinnado_d1_t31l_sc2336_atbm6031` boards with zero RTSP/
-HTTP clients connected: cam-db 16.6%, cam-sz 36.3%, cam-kinder-rechts ~20-24%.
-For comparison, cam-garage (`wuuk_y0510_t31x_sc4336p_ssv6158`, a different
-board) showed 0.0% idle under the same check. This points at a
-board-family characteristic (ISP tuning daemon or a sensor-specific
-continuous thread on the cinnado boards, several `group_update`/`FS(n)-tick`
-threads showed non-trivial cumulative CPU in a `/proc/<pid>/task/*/stat`
-check) rather than a regression from tonight's changes - the pattern is
-shared across three different cinnado units with different config
-histories, not unique to the one that got tonight's fixes first. Not
-investigated further: which specific thread is actually hot (need two
-time-separated `/proc` samples to get a rate, not just cumulative ticks),
-and whether this is new or has always been the case on this board family
-(no pre-2026-08 idle-CPU baseline exists to compare against).
+loop" check on cam-kinder-rechts (24.1%, WARN). Cross-checked two sibling
+`cinnado_d1_t31l_sc2336_atbm6031` boards (cam-db 16.6%, cam-sz 36.3%) against
+one different board (cam-garage, 0.0%) and initially read this as a
+board-family characteristic worth investigating. User confirmed same day:
+these boards are pulled continuously by Frigate (NVR), which QA's own
+client-tracking has no visibility into - "zero clients" only meant "zero
+clients from this QA run's perspective," not zero real load. Not a timpsd
+bug, not board-specific; closed. Leaves a minor QA-script sharpness note (not
+acted on): the idle-CPU check does not verify zero clients are ACTUALLY
+connected before declaring a baseline "idle", it just assumes so between its
+own test phases.
 
-## IMPLEMENTED, PENDING REVIEW + HARDWARE: boot MEASURES day/night instead of trusting the persisted value
+## HARDWARE-VERIFIED (fleet-wide, v1.9.2/v1.9.3): boot MEASURES day/night instead of trusting the persisted value
 
 Implemented 2026-08-22 on worktree branch `worktree-agent-boot-measure`,
-NOT hardware-verified. Design and the shape of the change are in
-CHANGELOG [Unreleased] ("Day/night boot now MEASURES before it decides")
-and `docs/wiki/Day-Night.md` section "Boot"; the original ask is preserved
-verbatim below. Summary of what shipped:
+merged to `main` as `50cc113`. Design and the shape of the change are in
+CHANGELOG [1.9.3] ("Day/night boot now MEASURES before it decides") and
+`docs/wiki/Day-Night.md` section "Boot"; the original ask is preserved
+verbatim below. Deployed to all 12 fleet cameras 2026-08-22/23.
+
+**Hardware-verified, both halves**: the boot-time measurement itself was
+confirmed across all 7 cameras rolled out that first evening (dark-time
+boot -> correct `night` decision -> `/sbin/daynight night` actually run,
+`/run/thingino/daynight_mode`=night, IR-cut/LEDs physically correct - no
+manual re-assert needed, unlike the pre-fix behaviour that started this
+whole redesign). The RUNTIME transition logic was independently confirmed
+by a genuine dawn crossing during the same session: cam-vorne's own silent
+brightness probes (r=1.00-1.95, room light not IR reflection) correctly
+detected first light and switched to day with an ISP-confirmed re-assert,
+unprompted - real evidence the daynight state machine still works after
+the boot-sequence rewrite, not just the new code path in isolation.
+Summary of what shipped:
 
 - Boot no longer adopts `running_mode`. It waits for AE convergence
   (unchanged bounds), runs ONE ordinary probe into the day pipeline - the
@@ -192,18 +216,19 @@ every plain `S95timps restart`, not just power-on boot, and is that
 distinction even knowable/desirable), then the same read-review-test cycle
 the rest of today's daynight work went through, not a same-night patch.
 
-## FIX PENDING REVIEW + HARDWARE: a dark-time reboot leaves the physical IR/ircut desynced from software
+## RESOLVED (hardware-verified fleet-wide): a dark-time reboot leaves the physical IR/ircut desynced from software
 
-Addressed 2026-08-22 by the boot-measures-first change above (same worktree
+Fixed 2026-08-22 by the boot-measures-first change above (same worktree
 branch), via option (a) below made unconditional: boot now always ends in
 exactly one `switch_cmd` call asserting the mode it decided, whether or not
-that mode differs from the persisted one. The failure below is unreachable
-by construction under that sequence - the five cameras would have run
-`daynight night` at boot, written `/run/thingino/daynight_mode`, and lit
-their LEDs. Option (b) (`/sbin/daynight`'s own startup asserting the
-persisted mode) is still worth doing in `thingino-firmware-LuFi` and is NOT
-made redundant by this: it would also cover the window before timps starts,
-and cameras not running timps at all. Original report follows.
+that mode differs from the persisted one. Confirmed on hardware 2026-08-22/23
+across the whole fleet rollout: every camera that booted after dark correctly
+ran `daynight night` on its own, no manual `/sbin/daynight night` needed on
+any of them (unlike the original 5-camera incident this entry documents).
+Option (b) (`/sbin/daynight`'s own startup asserting the persisted mode) is
+still worth doing in `thingino-firmware-LuFi` and is NOT made redundant by
+this: it would also cover the window before timps starts, and cameras not
+running timps at all. Original report follows.
 
 
 
