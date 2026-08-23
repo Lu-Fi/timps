@@ -218,7 +218,7 @@ IMPLIBS ?= -l:libimp.a -l:libalog.a -l:libsysutils.a
 # against a distro/buildroot that only ships libfaac.so.
 FAACLIB ?= -l:libfaac.a
 
-.PHONY: all target sim clean strip test-auth
+.PHONY: all target sim clean strip test-auth test-config
 
 all: target
 
@@ -282,8 +282,18 @@ test-auth:
 	 kill $$simpid 2>/dev/null; wait $$simpid 2>/dev/null; \
 	 exit $$rc
 
+# Host-only unit test for the config-file line parser (quoting, inline
+# comments, the writer/loader round trip). Links the real src/config.c, needs
+# no hardware and no running daemon; exit code is the test result.
+CFGTEST_SRC := scripts/test_config.c src/config.c src/log.c src/util.c \
+               src/fanqueue.c src/frame.c
+test-config:
+	$(HOSTCC) $(CFLAGS) -DMS_VERSION='"$(VERSION)"' -Isrc $(CFGTEST_SRC) \
+	  $(LDFLAGS) -lpthread -lm -o $(BIN)-cfgtest
+	@./$(BIN)-cfgtest; rc=$$?; rm -f $(BIN)-cfgtest; exit $$rc
+
 strip: target
 	$(CROSS_COMPILE)strip $(BIN)
 
 clean:
-	rm -f $(BIN) $(BIN)-sim
+	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest
