@@ -3,6 +3,38 @@
 Working list. Newest block first; each entry says what is established and what
 is still guesswork, so nobody has to re-derive it.
 
+## RESOLVED (diagnostics), OPEN (root cause acceptable, not acted on): cam-vorne AU-drop during 2h drift QA
+
+Found 2026-08-23 in a `timps-qa.sh --profile drift` run against cam-vorne
+(T23N, 1080p `cbr` 2000 kbit/s): one throttled `AU exceeds max buffer` line
+(need=1116108, max=1048576 `MS_AU_BUF_MAX`). Root-caused via the T23
+rate-control investigation: the classic-API controller is quality-seeking,
+not rate-seeking (min_qp=20 default), so a complex-scene IDR at 1080p
+legitimately reaches ~1 MB regardless of the configured bitrate target -
+this can happen on ANY T23 board at 1080p, not something specific to
+cam-vorne's config (verified stock defaults). The no-force-IDR design
+(commit `8128201`, a real prior stall incident on the same board family) is
+correct and untouched; actual recovery is simply the next scheduled IDR
+(<= `videoN.gop` frames, ~2s at the default gop=50/25fps) - NOT the
+`fanqueue_take_dropped_key`/`hub_request_idr` path the old code comment
+claimed, which only fires on consumer-queue evictions and never sees a
+producer-side drop. Comment corrected.
+
+**Fixed**: the exact count was previously unobservable (log throttled to
+every 20th event) - `encoder.<n>.au_drops` in `/control` now exposes the
+true cumulative count per channel (`77e8ad1`).
+
+**Deliberately not changed**: `MS_AU_BUF_MAX` (a single global 1 MiB
+constant, not resolution/bitrate-aware) was NOT raised - the rationale
+against a bigger buffer costing RAM is stale since the P-01 pool rework,
+but a >1MB packet entering a client fanqueue (`FQ_MAX_BYTES`=2MB) would
+evict nearly a full queue per push, and that trade-off needs hardware
+validation before touching it. Follow-up once `au_drops` has real fleet
+data: if it climbs steadily rather than staying near-zero, the two levers
+are a T23-specific `-DMS_AU_BUF_MAX` bump or raising `video0.min_qp` (the
+proven T23 lever from the 2026-08-21 investigation) - pick whichever the
+actual drop rate justifies, not preemptively.
+
 ## PARTIALLY HARDWARE-VERIFIED (v1.9.3): seven review findings (A1, A3, A4, B1, B2, B5, B7)
 
 Implemented 2026-08-23 on worktree branch `agent-fixes-a2492577`, on top of
