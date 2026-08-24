@@ -103,6 +103,27 @@ could plausibly be re-rolled unluckily on one specific boot - decisive test
 (not done tonight, needs someone watching in case the camera doesn't come
 back) is to reboot .163 and re-check the rate after ~1h.
 
+**Update, same day: reboot test done, boot-lottery theory weakened.**
+Rebooted .163 for real, watched it come back (online in ~10s), then
+measured the rate again after 2.5h uptime via the same method (IPU IRQ
+count in `/proc/interrupts` vs the `total wedges` dmesg counter):
+
+    pre-reboot (from the investigation above): 7392 / 2,087,516  = 1/283
+    post-reboot (2.5h uptime):                 1643 /   537,419  = 1/327
+    healthy baseline (2026-08-15, this unit):    13 / ~35h        ~1/388,000
+
+~15% better than before the reboot, but still ~1400x the healthy baseline
+- nowhere near the clean "back to normal" result that would confirm a
+one-off bad boot-time DRAM calibration. A pure boot-lottery cause should
+have either fully cleared or shown no correlation at all with the reboot;
+a small, real-but-modest improvement that stays three orders of magnitude
+off baseline argues more for a persistent factor (this unit's marginal
+WiFi link/physical location, thermal environment, or genuine hardware
+aging) than for a per-boot dice roll. Not conclusive on its own (one
+reboot, no repeat measurement, and the RF disturbance may still have been
+partially active during either window) - but shifts the leading theory
+away from "just reboot it and it's fine."
+
 ## OPEN (known mechanism, broader than thought): `ipu_osd error ret = -1` recurs on every channel re-enable, not just at boot
 
 Found 2026-08-24 checking the fleet syslog server for the same night as the
