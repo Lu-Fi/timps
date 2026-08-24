@@ -3,6 +3,58 @@
 Working list. Newest block first; each entry says what is established and what
 is still guesswork, so nobody has to re-derive it.
 
+## RESOLVED: 15c fMP4 "corrupt packet" death at ~5400s was truncation-at-disconnect, not corruption - server now logs the reason
+
+Found 2026-08-24 in the second `--profile longrun` against cam-garage (4h, on
+`v1.9.3-13-g91c7f03` which carries the `b824b3c` mute fix - that symptom was
+confirmed gone). The fMP4 client survived 17 clean checkpoints (~85 min, A/V
+skew ~0.02s, pacing 0.995x) then died inside checkpoint 18 with ffmpeg demux
+errors (`Stream ends prematurely` / `Packet corrupt` / `Invalid NAL unit size
+(1036 > 944)` / `missing picture in access unit with size 948` / `root atom
+offset ...: partial file`) and ZERO server-side log lines. RTSP and MJPEG on
+the same camera completed the full 4h cleanly.
+
+Root cause (host-sim reproduced, byte-for-byte signature match): that error
+sequence is the generic ffmpeg signature of an fMP4 HTTP body that ENDS
+mid-fragment. When the client stops draining TCP (WiFi dead spell), `csend()`
+blocks, SO_SNDTIMEO (15s, `net_set_timeouts` in accept_thread) expires inside
+`net_sendall()` AFTER a partial write, and `stream_mp4()`'s loop broke with no
+log at any level - the one way a live streaming client could vanish silently.
+The truncated final fragment then yields exactly those five demux/decode
+lines (the `N+4` relation between "access unit with size" and the NAL-size
+mismatch is the AVCC length-prefix of the torn sample; even the "root atom
+offset past stream end" ffmpeg accounting quirk reproduces). Repro:
+SIGSTOP-ing a QA-style ffmpeg client of the 6 Mbit/s host sim for 60s
+produces the identical 7-line log and an unlogged server-side death.
+
+Ruled out along the way: (1) a duration-dependent fragment-writer defect -
+read `fmp4.c`/`httpd.c` end-to-end for fixed-width wrap candidates (mfhd seq
+is uint32 = years; tfdt is v1/64-bit; trun size / NAL prefix are per-frame),
+and a 4-VIRTUAL-hour continuous fMP4 session against `make sim
+SIM_CFLAGS=-DMS_CLOCK_SCALE=30` fully decoded with ZERO demux/decode
+warnings, riding through one genuine overflow+adaptive-drop event with valid
+output; (2) a TCP-checksum-evading bit flip - possible in principle but
+explains neither the 0.902x final-checkpoint pacing, the 0.742s terminal
+skew (eviction/backlog effects), the stream ENDING, nor the zero-log server.
+Timeline fits a link stall: last delivered media 5382s, death at wall 5416s
+(~34s = buffer drain + 15s send timeout). Fleet syslog adds support: another
+camera on a different subnet logged an isolated `send queue overflowed` at
+04:20, ~19 min before this death (~04:39) - a household-wide RF disturbance
+window, not a garage- or mp4-specific event.
+
+Also explained: the eviction WARN never fired because it is emitted by the
+consumer loop after a pop, and the thread was parked in the blocking
+`csend()` the whole time. Fix (this entry's commit): `stream_mp4()` and
+`stream_mjpeg()` now log every exit - WARN with errno + session age for a
+torn send (EAGAIN spelled out as "no TCP progress for 15s, SO_SNDTIMEO"),
+INFO for everyday EPIPE/ECONNRESET departures and orderly closes. Verified
+against the host sim: stalled-reader repro now logs the WARN 54s in;
+curl-abort logs INFO; b824b3c's mute-vs-eviction behavior untouched.
+Hardware verification pending: next cam-garage longrun should show the
+exit-reason line if this recurs. NOT a timps data-path bug - the bytes sent
+up to the disconnect were valid (the 17 clean checkpoints are themselves
+2900+ decoded-clean segments).
+
 ## RESOLVED: section 15c's MJPEG decode-failure count was a false positive - counted benign copy-side DTS warnings, not real corruption
 
 Found 2026-08-23 running the first real hardware `--profile longrun` against
