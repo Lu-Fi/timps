@@ -3,6 +3,37 @@
 Working list. Newest block first; each entry says what is established and what
 is still guesswork, so nobody has to re-derive it.
 
+## OPEN: cam-wyze-pan (.163) has a constant, boot-persistent IPU wedge rate ~1800x the documented baseline - separate from the RF disturbance
+
+Follow-up to the `ipu_osd error` entry below and the RF-disturbance entries
+further down: dispatched a Fable agent (in `thingino-firmware-LuFi`, not
+this repo - see `dev_notes/IPU_WEDGE_INVESTIGATION_2026-08-24.md` there,
+not pushed/committed there per the "nur timps" convention, but the file
+exists locally) after the user asked whether the T20 IPU wedge messages
+seen live via `dmesg` on cam-wyze-pan (192.168.10.163) could be a
+timing/binding bug rather than "just silicon lottery."
+
+**Finding: two separate phenomena.** cam-wyze (.107) shows genuine
+RF-disturbance-correlated wedge bursts matching this file's own documented
+incident windows - confirms that mechanism further. But cam-wyze-pan
+(.163) shows something different: a FLAT ~1/283 per-op wedge rate that has
+held constant since its last boot (~13:14 the day before, well before the
+23:05 RF onset) - i.e. not caused by tonight's network disturbance at all.
+That's ~1800x the `~1/500k` baseline the original mitigation patch
+(`640f3a0ff` in thingino-firmware-LuFi) cites - but that baseline was
+itself measured on this SAME unit a week ago (2026-08-15, normal then), so
+this is a state that changed, not permanently-bad silicon.
+
+Sensor config, IPU clock binding, and (via a real controlled experiment -
+cutting the motor step ISR rate 98.9% with zero effect on wedge rate) the
+motor subsystem were all ruled out as causes. Existing mitigation recovers
+100% of ~7400 observed events with zero escalation - operationally
+invisible to a viewer, but the constant elevated rate itself is unexplained.
+Leading theory: T20 does DRAM calibration in U-Boot at every boot, which
+could plausibly be re-rolled unluckily on one specific boot - decisive test
+(not done tonight, needs someone watching in case the camera doesn't come
+back) is to reboot .163 and re-check the rate after ~1h.
+
 ## OPEN (known mechanism, broader than thought): `ipu_osd error ret = -1` recurs on every channel re-enable, not just at boot
 
 Found 2026-08-24 checking the fleet syslog server for the same night as the
