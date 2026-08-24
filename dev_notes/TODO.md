@@ -3,7 +3,40 @@
 Working list. Newest block first; each entry says what is established and what
 is still guesswork, so nobody has to re-derive it.
 
-## RESOLVED: 15c fMP4 "corrupt packet" death at ~5400s was truncation-at-disconnect, not corruption - server now logs the reason
+## OPEN (known mechanism, broader than thought): `ipu_osd error ret = -1` recurs on every channel re-enable, not just at boot
+
+Found 2026-08-24 checking the fleet syslog server for the same night as the
+entries below (user pointed out I'd missed it - my first fleet sweep only
+grepped for LOGE/FATAL/panic/crash/watchdog/reboot/oom-style terms, which
+this doesn't match, and it's a `logcat`-shipped OSD-module line, not a
+`timpsd[N]:`-tagged one). `ing-wyze-cam2-8071` (this is cam-wyze under its
+raw hostname - promtail was never given a friendly-name mapping for it,
+easy to confuse with cam-wyze-pan) logged `E/OSD ipu: ipu_osd error ret =
+-1` **63 times** overnight. Every occurrence's embedded logcat timestamp
+lines up with a `[HAL_ING] framesource N enabled` event in the same
+window - i.e. an ordinary channel start (a client connecting causes
+`fs_use()`/`IMP_FrameSource_EnableChn`), not a daemon restart or boot.
+
+This is the SAME failure signature already documented further down in this
+file (search `ipu_osd error`) from 2026-08-22, but that entry frames it as
+something seen only during a botched boot after an RMEM_MB change on a
+*different* board family (cinnado T31). Tonight's cam-wyze occurrences (a
+T20 board, no boot, no RMEM change, just normal client churn) show the same
+OSD-compositor-races-the-ISP race fires on ordinary channel re-enable too -
+the boot case was one trigger for the same underlying race, not the only
+one. cam-wyze saw unusually frequent channel churn tonight because of the
+household-wide RF disturbance documented in the entries below (repeated
+client disconnect/reconnect cycles each re-trigger `EnableChn`), which is
+presumably why it surfaced so clearly here and not on quieter cameras.
+
+No crash, no restart, no escalation - `ret = -1` is logged and streaming
+continues; the practical effect is presumably a dropped or stale OSD overlay
+frame right at channel start, not a stream interruption. Not investigated
+further tonight (found late, near the end of this session) - worth a real
+look at what `IMP_OSD` call is racing what ISP init step on channel enable,
+and whether it's fixable with a short wait/retry rather than just logging
+through it, given it now looks like a routine event (any client reconnect)
+rather than a rare one (only on boot after specific config changes).
 
 Found 2026-08-24 in the second `--profile longrun` against cam-garage (4h, on
 `v1.9.3-13-g91c7f03` which carries the `b824b3c` mute fix - that symptom was
@@ -2141,7 +2174,10 @@ flash last night hit the identical failure signature at 00:59-01:15 CEST
 (`IMP_ISP_AddSensor failed`, `HAL init failed - retrying`, `KMEM Method:
 alloc_kmem_init mmap Addr 2600000 and Size 0 error`, plus a burst of
 `ipu_osd error` from the OSD compositor racing the half-initialized ISP) -
-so this is not shrink-specific after all. It self-healed on its own that
+so this is not shrink-specific after all. **Update 2026-08-24: this race is
+not boot-specific either - see the entry near the top of this file for
+`ipu_osd error` recurring 63 times in one night on cam-wyze during ordinary
+channel re-enable cycles, no boot or RMEM change involved.** It self-healed on its own that
 time (timpsd's retry-with-backoff loop happened to succeed before hitting
 its give-up limit); this morning's shrink case did not self-heal and needed
 a manual reboot. Moot for the shipped fix since RMEM_MB no longer changes,
