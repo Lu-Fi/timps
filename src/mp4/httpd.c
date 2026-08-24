@@ -17,6 +17,7 @@
 #include <stdio.h>
 #include <strings.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <string.h>
 #include <unistd.h>
 #include <pthread.h>
@@ -133,6 +134,33 @@ static int csend(hconn *c, const void *buf, int len)
     ms_trace_wr_end(c->tr, t_wr, rc >= 0 ? len : 0);
     return rc;
 }
+/* one-line exit-reason log for the streaming loops: a failed csend() is the
+ * ONLY way a live streaming client can vanish with no log line at all (every
+ * other exit already speaks), and it is also the one that leaves a torn
+ * fragment/part on the wire - the peer's demuxer then reports "corruption"
+ * that never existed as sent bytes. EAGAIN here is SO_SNDTIMEO expiry: 15s
+ * of zero TCP progress, i.e. the peer stopped reading (dead link/frozen
+ * client), not a fault in what was being sent. */
+static void log_send_fail(const char *what, int chn, int err, int64_t up_us)
+{
+    long long up_s = (long long)(up_us/1000000);
+    /* orderly-ish client departures (tab closed, player stopped) come in as
+     * EPIPE/ECONNRESET and are everyday events - INFO. Everything else means
+     * the peer went silent while we still had data (SO_SNDTIMEO expiry shows
+     * as EAGAIN) - WARN, because the send died mid-frame and the peer's
+     * demuxer will report a truncated/corrupt tail that was never sent. */
+    if (err==EPIPE || err==ECONNRESET)
+        LOGI(MOD,"%s=%d: client disconnected after %llds (%s)",
+             what, chn, up_s, strerror(err));
+    else
+        LOGW(MOD,"%s=%d: send failed after %llds (%s) - dropping client; the "
+                 "write is torn mid-frame, so the peer logs a truncated tail",
+             what, chn, up_s,
+             (err==EAGAIN||err==EWOULDBLOCK) ?
+                 "no TCP progress for 15s, SO_SNDTIMEO - peer stopped reading" :
+                 strerror(err));
+}
+
 static int crecv(hconn *c, void *buf, int len, int flags)
 {
 #ifdef USE_TLS
@@ -390,6 +418,7 @@ static void stream_mp4(hconn *c, int chn)
     if (csend(c, seg.data, seg.len)<0){ ms_buf_free(&seg); goto out; }
     ms_buf_free(&seg);
     LOGI(MOD,"mp4 client streaming chn=%d",chn);
+    int64_t conn0_us = ms_now_us();   /* for the exit-reason lines below */
 
     int got_key=0;
     int64_t pre_key_probe_us = 0;   /* see the got_key==0 branch below (H-1) */
@@ -418,7 +447,11 @@ static void stream_mp4(hconn *c, int chn)
         ms_pkt *p = fanqueue_pop(&q, 200);
         if (!p) {
             char t[8]; int n=crecv(c,t,sizeof t,MSG_DONTWAIT);
-            if (n==0) break;
+            if (n==0) {
+                LOGI(MOD,"mp4 chn=%d: client closed after %llds", chn,
+                     (long long)((ms_now_us()-conn0_us)/1000000));
+                break;
+            }
             int64_t idle_now = ms_now_us();
             /* trace.h: idle tick for the periodic summary - reuses the stall
              * check's clock read, so no extra syscall on this path */
@@ -601,13 +634,14 @@ static void stream_mp4(hconn *c, int chn)
          * desync the client's SourceBuffer for the rest of the session. If
          * we dropped a keyframe's fragment this way, ask for a fresh IDR so
          * the stream can resync as soon as memory pressure clears. */
-        int rc = 0;
+        int rc = 0, serr = 0;
         if (!frag_ok) {
             LOGW(MOD,"dropped a corrupt %s fragment (OOM?)",
                  p->media==MS_MEDIA_VIDEO?"video":"audio");
             if (p->media==MS_MEDIA_VIDEO && p->keyframe) hub_request_idr(chn);
         } else if (frag.len) {
             rc = csend(c, frag.data, frag.len);
+            if (rc<0) serr = errno;   /* before trace/unref can clobber it */
         }
         /* trace.h: read what the line needs before the packet can be recycled.
          * Note `send - wr` here is the fMP4 mux cost (fmp4_*_fragment builds
@@ -617,7 +651,10 @@ static void stream_mp4(hconn *c, int chn)
             ms_trace_au_end(&trc, p->media, p->keyframe, p->len, p->enq_us,
                             t_pop, ms_now_us(), tr_q, tr_qcap);
         pkt_unref(p);
-        if (rc<0) break;
+        if (rc<0) {
+            log_send_fail("mp4 chn", chn, serr, ms_now_us()-conn0_us);
+            break;
+        }
     }
     ms_buf_free(&frag);
 out:
@@ -738,6 +775,7 @@ static void stream_mjpeg(hconn *c, int src, const char *bnd)
         hub_unsubscribe(src,&q); fanqueue_free(&q); return;
     }
     LOGI(MOD,"mjpeg client streaming");
+    int64_t conn0_us = ms_now_us();   /* for the exit-reason lines below */
     /* M-1: from here on this thread only ever waits on the queue, so publish
      * it - see stream_mp4 above. The csend()s before this point are covered by
      * the fd shutdown instead. */
@@ -748,7 +786,11 @@ static void stream_mjpeg(hconn *c, int src, const char *bnd)
         ms_pkt *p = fanqueue_pop(&q, 500);
         if (!p) {
             char t[8]; int r=crecv(c,t,sizeof t,MSG_DONTWAIT);
-            if (r==0) break;
+            if (r==0) {
+                LOGI(MOD,"mjpeg src=%d: client closed after %llds", src,
+                     (long long)((ms_now_us()-conn0_us)/1000000));
+                break;
+            }
             if (ms_now_us() - last_pkt_us > MS_STREAM_STALL_US) {
                 LOGW(MOD,"mjpeg: no frames for %llds - encoder stall, "
                          "dropping this client",
@@ -770,8 +812,12 @@ static void stream_mjpeg(hconn *c, int src, const char *bnd)
         /* close this part and open the next one NOW, not when the next frame
          * shows up - that is the whole point (see the comment above dlm). */
         if (rc>=0) rc = csend(c,dlm,dn);
+        int serr = rc<0 ? errno : 0;
         pkt_unref(p);
-        if (rc<0) break;
+        if (rc<0) {
+            log_send_fail("mjpeg src", src, serr, ms_now_us()-conn0_us);
+            break;
+        }
     }
     hub_unsubscribe(src, &q);
     ms_creg_set_queue(&g_clientreg, c->slot, NULL);
