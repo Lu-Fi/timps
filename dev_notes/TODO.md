@@ -42,6 +42,27 @@ camera on a different subnet logged an isolated `send queue overflowed` at
 04:20, ~19 min before this death (~04:39) - a household-wide RF disturbance
 window, not a garage- or mp4-specific event.
 
+**Update 2026-08-24, confirmed the trigger**: checked the router logs on the
+same central syslog server (the "Zyxcel" OpenWrt AP, which several fleet
+cameras but NOT cam-garage sit behind - cam-garage is on its own separate
+subnet/AP). Its own `chanlog` self-monitoring shows the 2.4GHz channel
+jumping from a normal ~59% busy to a router-flagged `HOCH` 67% at 23:05,
+climbing to 75-84% by 23:15, and then STAYING at 80-84% continuously for
+over 5.5 hours (through at least 04:45 the next morning) - not a brief
+blip, a sustained high-congestion RF environment spanning BOTH this
+incident (23:09 on the first, 2h run) and the 04:39 death investigated
+above (on the second, 4h run), with the isolated cam-kinder-rechts overflow
+at 04:20 landing inside the same window. That cam-garage (a different
+subnet/AP entirely) shows correlated symptoms during a period when only the
+Zyxcel AP's own channel measurement is elevated suggests the disturbance
+is physical/ambient (a device transmitting on an overlapping 2.4GHz
+channel-agnostic of which AP a camera associates with) rather than confined
+to one AP's own congestion. The morning cluster (~08:45-09:20, a separate
+incident affecting most of the fleet, not covered by this entry) has no
+corresponding `chanlog` data - that router doesn't appear to have been
+logging channel stats yet at that hour - so it remains unexplained by this
+evidence and is a separate, still-open question if it recurs.
+
 Also explained: the eviction WARN never fired because it is emitted by the
 consumer loop after a pop, and the thread was parked in the blocking
 `csend()` the whole time. Fix (this entry's commit): `stream_mp4()` and
