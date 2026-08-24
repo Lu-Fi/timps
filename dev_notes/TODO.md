@@ -29,6 +29,49 @@ Committed locally in `thingino-firmware-LuFi` only (`96c29736`, fixup
 repo. Not yet rolled out to the rest of the fleet beyond these two
 cameras.
 
+**Follow-up, same day**: fixing the 404 exposed a SECOND, separate bug -
+the user watched the browser navigate away from whatever config page they
+were on to a bare `{"status":"ok",...}` JSON page when clicking "Restart
+streamer" (screenshot confirmed). The restart itself worked; only the UX
+was wrong. Root cause: the WebUI's generic nav-menu renderer
+(`package/thingino-webui/files/www/a/navigation.js`) treats every menu
+entry as a plain page link (`window.location.href = href`), including
+this one, which is actually a state-changing CGI action, not a page.
+Pre-existing pattern inherited from `prudynt.webui.json`'s identical menu
+shape - not something timps introduced.
+
+Dispatched to an Opus agent, which found the SAME broken shape in all
+three streamer manifests (timps, prudynt-t, raptor) and fixed it
+generically rather than timps-only: new opt-in `"action": true` nav-item
+field: an action item `fetch()`s its href and reports the result in the
+existing message-overlay system instead of navigating, deliberately
+opt-in (not a "CGI href = action" heuristic) because `/x/reboot.cgi` and
+`/x/logout.cgi` are nav items that legitimately need to keep navigating
+(302 redirects). Verified with an offline Chrome harness built from the
+actual packed `rootfs.squashfs` content (desktop + offcanvas paths, cancel
+vs accept, double-click guard, 5 different CGI error-response shapes, and
+a regression check that Reboot/Logout still navigate normally) before
+ever touching a real camera. Flashed and verified on cam-kinder-rechts
+(md5 of the served `navigation.js` matches source -> package -> squashfs
+-> device -> HTTP chain exactly). Real-browser-click confirmation against
+an authenticated session still needs the user's own eyes (agent
+deliberately would not touch the login flow with real credentials).
+
+Two things the agent caught before they became real damage: (1) building
+from a bare `git worktree` of this repo without `THINGINO_USER_DIR`/
+`BR2_DL_DIR`/`THINGINO_OUTPUT_DIR` silently regenerates `.config` from the
+board defconfig, which for this board defaults to the PRUDYNT streamer,
+not timps - caught by comparing plugin manifests before flashing, not by
+anything automatic; (2) `buildroot/Makefile`'s submodule rule uses
+`git submodule update --remote` and had silently pulled an unpinned
+buildroot version mid-build - restored the pin before packing. Both noted
+in `thingino-firmware-LuFi`'s local dev_notes as open process hazards, not
+yet fixed with an actual guard.
+
+Committed locally in `thingino-firmware-LuFi` only (`a7236bc2`), same "nur
+timps" convention, fast-forward merged onto the same local branch as the
+404 fix above. Not yet rolled out beyond cam-kinder-rechts.
+
 ## OPEN: cam-wyze-pan (.163) has a constant, boot-persistent IPU wedge rate ~1800x the documented baseline - separate from the RF disturbance
 
 Follow-up to the `ipu_osd error` entry below and the RF-disturbance entries
