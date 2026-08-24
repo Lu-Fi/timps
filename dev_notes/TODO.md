@@ -3,6 +3,32 @@
 Working list. Newest block first; each entry says what is established and what
 is still guesswork, so nobody has to re-derive it.
 
+## RESOLVED (thingino-firmware-LuFi, not this repo): the WebUI's "Restart" button has 404'd fleet-wide since 2026-08-16
+
+Found 2026-08-24: a user's persist-only setting change (fps/rc_mode on
+cam-kinder-rechts) correctly said "applies on restart", but clicking
+Restart appeared to do nothing. Root cause was in `thingino-firmware-LuFi`,
+not timps itself: `package/timps/timps.mk`'s `TIMPS_PURGE_STOCK_WEBUI`
+hook deletes files that belong to the stock prudynt/raptor streamers and
+can never be reached on a timps image - but its list included
+`var/www/x/restart-prudynt.cgi`, which is ALSO the exact path
+`TIMPS_INSTALL_WEBUI` installs timps's own replacement restart CGI under
+(same name/URL on purpose - `timps-preview.js`, timps's own frontend
+script, calls that literal path, not anything in the stock/base WebUI).
+Both hooks run in the same `target-finalize` pass; the purge ran after
+the install and silently deleted timps's own file on every single image
+built since the file was added (2026-08-16) - checked two independently
+flashed cameras (cam-garage, cam-kinder-rechts) tonight, both missing it
+regardless of build recency. Fixed by dropping that one path from the
+purge list; verified end-to-end on both cameras (file now present,
+`curl .../x/restart-prudynt.cgi` returns 401 auth-required instead of 404
+not-found - found and executed, not silently missing).
+
+Committed locally in `thingino-firmware-LuFi` only (`96c29736`, fixup
+`7f9acc35`) - not pushed, per the standing "nur timps" convention for that
+repo. Not yet rolled out to the rest of the fleet beyond these two
+cameras.
+
 ## OPEN: cam-wyze-pan (.163) has a constant, boot-persistent IPU wedge rate ~1800x the documented baseline - separate from the RF disturbance
 
 Follow-up to the `ipu_osd error` entry below and the RF-disturbance entries
