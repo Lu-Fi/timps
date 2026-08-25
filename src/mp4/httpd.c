@@ -1540,8 +1540,21 @@ static void *conn_thread(void *arg)
                                         "Transfer-Encoding not supported, use Content-Length",51);
                             goto done;
                         }
+                        /* Header-scoped for the same reason as the
+                         * Transfer-Encoding check above, and it matters more
+                         * here: an unscoped scan finds a match INSIDE the JSON
+                         * whenever the request carries no real Content-Length
+                         * header, and then atoi()s whatever digits follow it in
+                         * the body. Body content would be deciding the declared
+                         * length of the body - a big number 413s a request the
+                         * server was about to handle, and a small one truncates
+                         * the JSON at that offset (body[clen]=0 below), so a
+                         * mangled prefix gets applied and the rest silently
+                         * vanishes. With the scope, a missing header means
+                         * clen stays 0, which is exactly what a request that
+                         * genuinely has no Content-Length already got. */
                         const char *cl = strcasestr(buf,"Content-Length:");
-                        if (cl) clen = atoi(cl+15);
+                        if (cl && cl < body) clen = atoi(cl+15);
                         /* how many body bytes this fixed buffer can hold
                          * alongside the headers already consumed. A clen
                          * bigger than that used to get silently clamped and
