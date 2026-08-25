@@ -3,6 +3,82 @@
 Working list. Newest block first; each entry says what is established and what
 is still guesswork, so nobody has to re-derive it.
 
+## OPEN (thingino-firmware-LuFi, not this repo): PTZ presets are CGI-only - no WebSocket path
+
+Found 2026-08-25 during the post-merge PTZ compatibility check (see the
+`presets[0]` entry below): today's upstream merge added a PTZ-presets feature
+(`package/thingino-motors/files/www/x/json-motor.cgi`'s `pg/ps/pr/pd/pu/po`
+commands, backed by `/usr/sbin/ptz_presets`, UI in `preview-motors-settings.js`'s
+"Presets" tab) alongside this fork's own WebSocket-based joystick control
+(`preview-motors.js`, `motors-daemon`'s WS server). The two are cleanly
+separated today - presets are an independent, occasional CRUD action (list/
+save/run/delete/update/reorder), joystick is the high-frequency live-drag
+path - and nothing is broken by presets staying CGI-only: each preset action
+is a single request/response, not a held gesture, so a WebSocket buys latency
+that presets don't need the way joystick drag does.
+
+Raised as a "should this eventually move to WebSocket too" question, for
+consistency with the joystick path and in case a future UI (multi-preset
+drag-reorder with live position preview? a status stream while a `pr` move-
+to-preset is in flight, similar to how joystick position now arrives as a
+server push instead of being polled?) wants that either JOIN the existing WS
+protocol as a new message type, or start a live-progress push instead of the
+current fire-and-forget CGI response. Deliberately not implemented now -
+capturing the idea while the fleet rollout is still in progress, revisit once
+there's an actual UI need for it rather than doing it preemptively.
+
+## RESOLVED (thingino-firmware-LuFi, not this repo): every board now has a generic default `presets[0]` "Home" that silently overrides the camera's real calibrated `pos_0`
+
+Found 2026-08-25 immediately after today's upstream merge, during the
+6/7-camera fleet rollout (galayou, both kinder cameras, schuppen, cam-garage
+all reflashed before this was caught): the same merge that added the PTZ
+presets feature above also ships a generic per-board-model `presets[0]`
+"Home" entry in every `configs/cameras/<board>/thingino.json` (rough factory
+guess, identical across every unit of a given board model - e.g. both
+`cinnado_d1_t23n` and `cinnado_d1_t31l` ship `1850,500`), and changed
+`package/thingino-motors/files/S59motor`'s `position_motors()` to prefer
+`motors.presets.0.x/y` over the legacy `motors.pos_0`, falling back to
+`pos_0` only when presets is ABSENT. Since every board now always ships a
+presets array, that fallback never fires - every freshly-built camera
+silently homes to the generic board-template position instead of its own
+per-camera calibrated one, even though `pos_0` itself was never touched and
+sat correctly in the merged config the whole time.
+
+Confirmed via `motors -p` immediately after each reflash: kinder-links and
+kinder-rechts (different board families, both cinnado_d1_t2xx) both reported
+the identical `1850,500`; cam-garage reported `2025,500` instead of its own
+`2630,0`; galayou/cam-vorne reported `2025,575` instead of `2879,575` - the
+shared/generic values were the tell, not a random-looking failure.
+
+Fixed by adding a matching `presets[0]` entry (id 0, description "Home", x/y
+= that camera's own `pos_0`) to each affected camera's own
+`user/<board>/<ip>/thingino.json` profile, so the new upstream logic picks
+the correct per-camera value instead of falling through to the board
+template. Applied to all 6 PTZ-capable fleet cameras: kinder-links
+(192.168.10.124), kinder-rechts (192.168.10.151), cam-garage
+(192.168.15.190), galayou/cam-vorne (192.168.15.129), cam-schuppen
+(192.168.10.25, itself just migrated from 192.168.241.102 the same day - see
+below), and cam-wyze-pan (192.168.10.163). cam-wyze (192.168.10.107) has no
+`motors` block in its profile at all - not a pan/tilt camera, unaffected.
+
+The 5 cameras already reflashed before this was caught (kinder-links,
+kinder-rechts, cam-garage, galayou, cam-schuppen) were also fixed live and
+re-homed without a second reflash: `jct /etc/thingino.json set
+motors.presets.0.x/y <value>` followed by `motors -d h -x <x> -y <y>`
+(mirroring `S59motor`'s own `position_motors()`), verified via `motors -p`
+matching the camera's real `pos_0` afterward. cam-wyze-pan picked up the fix
+automatically since its profile was corrected before that camera's own
+build/flash ran.
+
+Not investigated further: whether the underlying upstream design (silently
+preferring a generic template value the moment ANY presets array exists,
+rather than e.g. only when presets[0] is explicitly the camera's own) is
+worth raising upstream, or whether `S59motor` should instead prefer `pos_0`
+when both are present. Left as upstream's intended behavior for now, worked
+around at the per-camera-profile level instead of patching the shared
+script, consistent with today's separate "no changes to shared scripts"
+instruction for `fw_ota.sh`.
+
 ## RESOLVED (explained, not a bug): the 8h-longrun's two FAILs were ONE network stall - RTSP reset came from the path, not timpsd
 
 From the overnight 2026-08-24/25 `--profile longrun` against cam-garage
