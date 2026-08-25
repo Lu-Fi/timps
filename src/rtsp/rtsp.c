@@ -324,6 +324,7 @@ typedef struct {
                                         * and untouched unless general.trace */
     int                 playing;
     int                 play_cseq;     /* CSeq of PLAY; 200 sent after subscribe */
+    int                 logged_exit;   /* stream_loop() already logged why (see log_send_fail) */
 #ifdef USE_BACKCHANNEL
     int                 have_bc;               /* client SETUP the backchannel (trackID=2) */
     int                 bc_udp[2];             /* server rtp,rtcp recv fds (UDP), -1 none */
@@ -1042,9 +1043,34 @@ static int handle_request(session *s, char *req)
     return 0;
 }
 
+/* one-line exit-reason log for the play loop, mirroring mp4/httpd.c's
+ * log_send_fail(): a failed media write was, before this, the one way a
+ * live RTSP client could vanish with only the generic "client disconnect"
+ * line at client_thread's done: label - no different from an ordinary
+ * TEARDOWN as far as the log was concerned, even though (see stream_loop's
+ * H-1 comment) it also leaves a torn interleaved/RTP write on the wire.
+ * EPIPE/ECONNRESET are everyday client departures - INFO. Everything else
+ * (EAGAIN/EWOULDBLOCK is SO_SNDTIMEO expiry: 15s of zero TCP progress) means
+ * the peer went silent while a frame was still being sent - WARN. */
+static void log_send_fail(const char *session, int err, int64_t up_us)
+{
+    long long up_s = (long long)(up_us/1000000);
+    if (err==EPIPE || err==ECONNRESET)
+        LOGI(MOD,"session=%s: client disconnected after %llds (%s)",
+             session, up_s, strerror(err));
+    else
+        LOGW(MOD,"session=%s: send failed after %llds (%s) - dropping client; "
+                 "the write is torn mid-frame/mid-interleave",
+             session, up_s,
+             (err==EAGAIN||err==EWOULDBLOCK) ?
+                 "no TCP progress for 15s, SO_SNDTIMEO - peer stopped reading" :
+                 strerror(err));
+}
+
 static void stream_loop(session *s)
 {
     const ms_config *c = s->cfg;
+    int64_t conn0_us = ms_now_us();   /* for the exit-reason line below */
     /* guard against an invalid video channel (would read video[-1]). enabled/
      * codec are restart-only -> read the boot snapshot so a live edit cannot
      * make an unpublished channel look servable or flip the RTP packetizer to a
@@ -1314,6 +1340,11 @@ static void stream_loop(session *s)
              * back to the packet pool. */
             if (sendrc >= 0 && sink_flush(&s->vsink) < 0) sendrc = -1;
             if (sendrc >= 0 && sink_flush(&s->asink) < 0) sendrc = -1;
+            /* captured here, before sink_discard/pkt_unref/trace can touch it -
+             * whichever of the sends above first went negative is the one that
+             * set this, since every later check is short-circuited once
+             * sendrc is already -1 */
+            int send_err = (sendrc < 0) ? errno : 0;
             if (sendrc < 0) { sink_discard(&s->vsink); sink_discard(&s->asink); }
             pkt_unref(p);
             if (t_pop)
@@ -1326,7 +1357,11 @@ static void stream_loop(session *s)
              * later drains its window - and looping forever on a stalled
              * client would pin this slot (defeats the DoS timeout). Stop
              * the play loop now; teardown below closes the fd. */
-            if (sendrc < 0) { s->playing = 0; break; }
+            if (sendrc < 0) {
+                log_send_fail(s->session, send_err, ms_now_us()-conn0_us);
+                s->logged_exit = 1;
+                s->playing = 0; break;
+            }
         }
     after_pkt:;
 #ifdef USE_BACKCHANNEL
@@ -1347,7 +1382,10 @@ static void stream_loop(session *s)
 #endif
         if ((s->have_video && rtp_maybe_sr(&s->vtrack, now) < 0) ||
             (s->have_audio && rtp_maybe_sr(&s->atrack, now) < 0)) {
-            s->playing = 0; break;      /* H-1: torn RTCP frame, see above */
+            /* H-1: torn RTCP frame, see above */
+            log_send_fail(s->session, errno, ms_now_us()-conn0_us);
+            s->logged_exit = 1;
+            s->playing = 0; break;
         }
         /* trace.h: periodic per-session summary. Reuses the loop's existing
          * `now` snapshot - no extra clock read - and returns immediately
@@ -1609,7 +1647,12 @@ static void *client_thread(void *arg)
     }
 
 done:
-    LOGI(MOD,"client disconnect session=%s", s->session[0]?s->session:"-");
+    /* stream_loop() already logged a more specific exit reason (see
+     * log_send_fail()) for a failed-send exit; this generic line covers
+     * every other way out (ordinary TEARDOWN, auth failure, a session that
+     * never reached PLAY at all). */
+    if (!s->logged_exit)
+        LOGI(MOD,"client disconnect session=%s", s->session[0]?s->session:"-");
 #ifdef USE_TLS
     if (s->tls) ms_tls_close((ms_tls_conn*)s->tls);
 #endif
