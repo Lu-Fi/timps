@@ -124,6 +124,26 @@ reboot, no repeat measurement, and the RF disturbance may still have been
 partially active during either window) - but shifts the leading theory
 away from "just reboot it and it's fine."
 
+**Update 2026-08-25: compared against cam-wyze (.107), found a separate real
+bug instead of a matching pattern.** .107 turned out to be running a kernel
+from *before* the mitigation patch even existed (Aug 13 build, patch landed
+Aug 15) - `rebuild-timps` refreshed the userspace daemon but Buildroot's
+`.stamp_patched` marker silently skipped re-patching the kernel, so every
+`make ota` against .107 since Aug 15 shipped a stale pre-mitigation kernel
+regardless of how current the rest of the build was. Same silicon wedge
+condition as .163 (identical `IPU_STATUS=0x80010030` signature), but hitting
+the old driver's dead-end path instead of the 100ms reset+retry - measured
+real impact this time (a 2.04s dropped-frame gap on one wedge), and .107
+hard-crashed/watchdog-rebooted once during the observation window (reset PC
+inside `ipu_ioctl`, plausible but not proven to be the same condition
+escalating). Fixed: `linux-dirclean` + rebuild + reflash on .107; confirmed
+the patch is compiled in and the kernel is now current. Full writeup and a
+process-gap recommendation (nothing currently catches a patch-vs-stamp
+staleness like this) in `thingino-firmware-LuFi/dev_notes/IPU_WEDGE_INVESTIGATION_2026-08-24.md`.
+
+.163's own anomaly is untouched by any of this - re-measured flat ~1/265
+tonight after its own reflash+reboot, still unexplained, still open.
+
 ## OPEN (known mechanism, broader than thought): `ipu_osd error ret = -1` recurs on every channel re-enable, not just at boot
 
 Found 2026-08-24 checking the fleet syslog server for the same night as the
