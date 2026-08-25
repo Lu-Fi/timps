@@ -868,6 +868,7 @@ static void *dn_thread(void *arg)
     int     blind_warned = 0;          /* path-C-is-blind notice, once */
     int     ref_wait_logged = 0;       /* railed-meter anchor deferral, once per arm */
     int     ceil_miss = 0, ceil_warned = 0;  /* dn_ceiling_check() latch */
+    int     gains_warned = 0;          /* inverted day_gain/night_gain, once per spell */
     int64_t reassert_at = 0;
     int     reassert_left = 0;
     int64_t verify_at   = 0;           /* readback due for the last commanded mode */
@@ -938,6 +939,36 @@ static void *dn_thread(void *arg)
         dncfg        = g_cfg.daynight;
         running_mode = g_cfg.image.running_mode;
         config_str_unlock();
+        /* The two thresholds are a hysteresis BAND (see config.h): day_gain is
+         * the lower edge ("is it day"), night_gain the upper one ("has day
+         * ended"). config.c range-clamps each to 1..1000000 but cannot compare
+         * them - field_set() sees one name+offset at a time with no access to a
+         * sibling - and the names invite exactly the mix-up (in night the gain
+         * is HIGH, so "day_gain" reads to some as "the gain during day"). An
+         * inverted band makes every reading simultaneously dark enough to end
+         * day and bright enough to start it, so the decision flaps between the
+         * two for as long as the config stays that way - bounded by
+         * day_confirm_s/DN_TRANSITION_S/probe_min_gap_s, so it is a wrong-and-
+         * noisy camera rather than a runaway, but it is never what was meant.
+         * Order the band on the per-poll snapshot: this loop's own copy is
+         * where every threshold comparison downstream reads from, so one swap
+         * here covers all of them, while g_cfg keeps what was written and
+         * GET /control still reports it verbatim. Equal edges are left alone -
+         * that is a zero-hysteresis config, twitchy but deliberate. */
+        if (dncfg.day_gain > dncfg.night_gain) {
+            if (!gains_warned) {
+                LOGW(MOD, "daynight.day_gain (%.0f) is above night_gain (%.0f) - "
+                          "the thresholds are swapped; using day<%.0f night>%.0f",
+                     (double)dncfg.day_gain, (double)dncfg.night_gain,
+                     (double)dncfg.night_gain, (double)dncfg.day_gain);
+                gains_warned = 1;
+            }
+            float t = dncfg.day_gain;
+            dncfg.day_gain = dncfg.night_gain;
+            dncfg.night_gain = t;
+        } else {
+            gains_warned = 0;   /* re-warn if a later /control write re-inverts */
+        }
         const ms_daynight_cfg *dn = &dncfg;
         int     interval = dn->interval_ms > 0 ? dn->interval_ms : 2000;
         int64_t now      = ms_now_us() / 1000;
