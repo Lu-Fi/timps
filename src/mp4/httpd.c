@@ -1045,17 +1045,31 @@ static int sse_emit(hconn *c, const char *type, const char *json, int64_t *last_
  * counts, the measured per-stream fps/bitrate (the OSD {fps}/{bitrate}
  * sources, see hub_get_fps/hub_get_bitrate), and cumulative adaptive-drop
  * counters (0/0 unless http.adaptive_drop=1 and a client's link is actually
- * struggling - see g_drop_frames/g_drop_bytes). */
-static int stats_json(const ms_config *cfg, char *buf, size_t cap)
+ * struggling - see g_drop_frames/g_drop_bytes).
+ *
+ * Split into collect/render/changed (rather than one function like the old
+ * stats_json()) so events_stream() can decide whether a tick is worth
+ * sending BEFORE paying for the snprintf/emit - same shape as the existing
+ * motion/daynight dedup below, just done as a signature split instead of a
+ * hand-unrolled field compare, since here there is an array of streams
+ * rather than a handful of scalars. */
+typedef struct {
+    int64_t uptime_s;
+    int     clients;
+    int     n;                      /* enabled streams actually reported */
+    struct {
+        int      chn, subs;
+        float    fps, kbps;
+        int      width, height, codec;
+        unsigned drop_frames, drop_bytes;
+    } v[MS_MAX_VSTREAM];
+} stats_snapshot;
+
+static void stats_collect(stats_snapshot *st)
 {
-    size_t o = 0;
-    #define APP(...) do { \
-        int _n = snprintf(o<cap?buf+o:buf, o<cap?cap-o:0, __VA_ARGS__); \
-        if (_n>0) o += (size_t)_n; \
-    } while (0)
-    APP("{\"uptime_s\":%lld,\"clients\":%d,\"video\":[",
-        (long long)((ms_now_us()-g_start_us)/1000000), hub_video_subs());
-    int first = 1;
+    st->uptime_s = (ms_now_us()-g_start_us)/1000000;
+    st->clients  = hub_video_subs();
+    st->n = 0;
     for (int i=0;i<MS_MAX_VSTREAM;i++){
         /* report the RUNNING stream (boot snapshot) so enabled/geometry/codec
          * stay consistent with the measured fps/kbps beside them, not a live-
@@ -1067,17 +1081,66 @@ static int stats_json(const ms_config *cfg, char *buf, size_t cap)
         int w, h;
         if (!hub_get_video_params(i, NULL, &w, &h, NULL))
             ms_vstream_eff_dims(&g_cfg_boot.video[i], &w, &h);
+        int j = st->n++;
+        st->v[j].chn    = i;
+        st->v[j].subs   = hub_subs(i);
+        st->v[j].fps    = hub_get_fps(i);
+        st->v[j].kbps   = hub_get_bitrate(i);
+        st->v[j].width  = w;
+        st->v[j].height = h;
+        st->v[j].codec  = g_cfg_boot.video[i].codec;
+        st->v[j].drop_frames = g_drop_frames[i];
+        st->v[j].drop_bytes  = g_drop_bytes[i];
+    }
+}
+
+static int stats_render_json(const stats_snapshot *st, char *buf, size_t cap)
+{
+    size_t o = 0;
+    #define APP(...) do { \
+        int _n = snprintf(o<cap?buf+o:buf, o<cap?cap-o:0, __VA_ARGS__); \
+        if (_n>0) o += (size_t)_n; \
+    } while (0)
+    APP("{\"uptime_s\":%lld,\"clients\":%d,\"video\":[",
+        (long long)st->uptime_s, st->clients);
+    for (int j=0;j<st->n;j++)
         APP("%s{\"chn\":%d,\"subs\":%d,\"fps\":%.1f,\"kbps\":%.0f,"
             "\"width\":%d,\"height\":%d,\"codec\":\"%s\","
             "\"drop_frames\":%u,\"drop_bytes\":%u}",
-            first?"":",", i, hub_subs(i), hub_get_fps(i), hub_get_bitrate(i),
-            w, h, g_cfg_boot.video[i].codec==MS_VC_H265?"h265":"h264",
-            g_drop_frames[i], g_drop_bytes[i]);
-        first = 0;
-    }
+            j?",":"", st->v[j].chn, st->v[j].subs, st->v[j].fps, st->v[j].kbps,
+            st->v[j].width, st->v[j].height,
+            st->v[j].codec==MS_VC_H265?"h265":"h264",
+            st->v[j].drop_frames, st->v[j].drop_bytes);
     APP("]}");
     #undef APP
     return (int)o;
+}
+
+/* worth pushing before the next scheduled tick? uptime_s is deliberately NOT
+ * part of this - it changes every second by definition, comparing it would
+ * defeat the whole point. subs/dims/codec/drop counters change rarely but
+ * matter immediately (a drop-counter bump means a client's link is actively
+ * struggling - reporting it up to events_stats_ms late is the wrong
+ * trade-off), so those are exact-match. fps/kbps are continuous measured
+ * values that wobble by measurement noise even when nothing meaningful
+ * changed, so those get a threshold - same style as the daynight dedup
+ * above (db>=1.0f / dg>=5%). */
+static int stats_changed(const stats_snapshot *a, const stats_snapshot *b)
+{
+    if (a->clients != b->clients || a->n != b->n) return 1;
+    for (int j=0;j<a->n;j++){
+        if (a->v[j].chn != b->v[j].chn || a->v[j].subs != b->v[j].subs) return 1;
+        if (a->v[j].width != b->v[j].width || a->v[j].height != b->v[j].height) return 1;
+        if (a->v[j].codec != b->v[j].codec) return 1;
+        if (a->v[j].drop_frames != b->v[j].drop_frames ||
+            a->v[j].drop_bytes  != b->v[j].drop_bytes) return 1;
+        float dfps = a->v[j].fps - b->v[j].fps; if (dfps < 0) dfps = -dfps;
+        if (dfps >= 0.1f) return 1;
+        float dkbps = a->v[j].kbps - b->v[j].kbps; if (dkbps < 0) dkbps = -dkbps;
+        float kthresh = b->v[j].kbps > 0.0f ? b->v[j].kbps * 0.05f : 8.0f;
+        if (dkbps >= kthresh) return 1;
+    }
+    return 0;
 }
 
 static void events_stream(hconn *c, const char *path, const char *cors)
@@ -1136,7 +1199,8 @@ static void events_stream(hconn *c, const char *path, const char *cors)
 
     {
     ms_motion_status lm;                          /* last-sent snapshots */
-    int have_m = 0, have_d = 0;
+    stats_snapshot lst;
+    int have_m = 0, have_d = 0, have_st = 0;
     int ld_en = 0, ld_mode = 0, ld_ds = -2;
     float ld_b = 0.0f, ld_g = 0.0f;
     int stats_ms = cfg->events_stats_ms;
@@ -1148,6 +1212,7 @@ static void events_stream(hconn *c, const char *path, const char *cors)
     char js[1024];                                /* fits max_cells active[] */
 
     memset(&lm, 0, sizeof lm);
+    memset(&lst, 0, sizeof lst);
     for (;;){
         int rc = 0;
         if (want_motion){
@@ -1197,8 +1262,13 @@ static void events_stream(hconn *c, const char *path, const char *cors)
         }
         if (rc >= 0 && ms_now_us() >= next_stats){
             next_stats = ms_now_us() + (int64_t)stats_ms * 1000;
-            if (stats_json(cfg, js, sizeof js) < (int)sizeof js)
-                rc = sse_emit(c, "stats", js, &last_write);
+            stats_snapshot st;
+            stats_collect(&st);
+            if (!have_st || stats_changed(&st, &lst)){
+                lst = st; have_st = 1;
+                if (stats_render_json(&st, js, sizeof js) < (int)sizeof js)
+                    rc = sse_emit(c, "stats", js, &last_write);
+            }
         }
         if (rc >= 0 && want_config){
             /* settings changed elsewhere (another client's /control POST):

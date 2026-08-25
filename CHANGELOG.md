@@ -23,6 +23,24 @@ semantic versioning.
   to catch truncated/corrupt JPEG frames, and closes a vacuous-PASS gap
   where a session that never received data could still report success.
 
+### Changed
+
+- **`/events` `stats` push now skips ticks where nothing actually changed**
+  (`src/mp4/httpd.c`). Previously it re-sent every enabled stream's
+  subs/fps/kbps/dims/codec/drop-counters on every `events.stats_ms` tick
+  unconditionally - unlike the `motion`/`daynight` events beside it, which
+  already only push on a real change. Split the old single `stats_json()`
+  into `stats_collect()`/`stats_render_json()`/`stats_changed()` so the SSE
+  loop can compare against the last-sent snapshot before paying for the
+  `snprintf`+emit: subs/dims/codec/drop counters are exact-match (a drop
+  bump means a client's link is actively struggling, worth reporting
+  immediately rather than up to `events.stats_ms` late), fps/kbps get a
+  noise threshold (0.1fps / 5%) so measurement jitter alone doesn't trigger
+  a push. `uptime_s` is deliberately excluded from the comparison - it
+  changes every tick by definition. A connection that opens still gets an
+  immediate baseline push; an idle, unchanging stream now sends one instead
+  of one every 2s.
+
 ## [1.9.3] - 2026-08-23
 
 ### Changed
