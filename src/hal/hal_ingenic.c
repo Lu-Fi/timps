@@ -3331,13 +3331,14 @@ static void *audio_thread(void *arg)
     if (!use_aac && (g_acodec==MS_AC_PCMU || g_acodec==MS_AC_PCMA) && g_asr!=8000) {
         LOGW(MOD,"faac fallback: reconfiguring AI %dHz -> 8000 for G.711", g_asr);
         /* Item-6: hold g_ai_lock across the ENTIRE disable/re-enable. Clearing
-         * g_ai_up alone is not enough: a /control volume/gain write reads g_ai_up
-         * WITHOUT the lock, then takes g_ai_lock before calling ai_apply_key, so a
-         * writer that passed its g_ai_up check an instant before we clear it would
-         * otherwise land an IMP_AI parameter call on the channel mid-rebuild (an
-         * IMP call on a disabled channel -> failed live-apply). Under the lock,
-         * such a writer blocks until the channel is fully back up (or bails on the
-         * cleared g_ai_up). Same lock the /control path uses (fix Item-1). */
+         * g_ai_up alone is not enough: it is the LOCK, not the flag, that keeps a
+         * /control volume/gain write off the channel mid-rebuild. (That writer
+         * used to test g_ai_up before taking g_ai_lock, so one that passed the
+         * test an instant before we clear it could still land an IMP_AI parameter
+         * call on a disabled channel -> failed live-apply; it now takes the lock
+         * first and re-tests inside it.) Under the lock such a writer blocks until
+         * the channel is fully back up, or bails on the cleared g_ai_up. Same lock
+         * the /control path uses (fix Item-1). */
 #if defined(USE_CONTROL) || defined(USE_BACKCHANNEL) || defined(USE_PLAY)
         pthread_mutex_lock(&g_ai_lock);
 #endif
@@ -3605,11 +3606,12 @@ static void *audio_thread(void *arg)
 #endif
     /* Same disable sequence as the faac-fallback rebuild above, and it needs
      * the same lock for the same reason (Item-6/Item-1): clearing g_ai_up is
-     * not enough on its own. A /control writer tests g_ai_up WITHOUT the lock
-     * and only then takes g_ai_lock before its IMP_AI parameter call, so one
-     * that passed that test an instant before we clear the flag can still
-     * land a call on the channel we are tearing down - and on the AEC-capable
-     * builds the same window belongs to hal_ao_open/close's IMP_AI_{Enable,
+     * not enough on its own. A /control writer's g_ai_up test and its IMP_AI
+     * parameter call are one critical section under g_ai_lock (the test used
+     * to sit OUTSIDE the lock, so a writer that passed it an instant before
+     * we clear the flag could still land a call on the channel we are tearing
+     * down; it now re-tests inside) - and on the AEC-capable builds the
+     * same window belongs to hal_ao_open/close's IMP_AI_{Enable,
      * Disable}Aec on this very dev0/chn0, which is the documented
      * free-while-in-use UAF in libaudioProcess.so. Holding the lock across
      * the whole sequence makes such a caller block until the channel is fully
@@ -3898,13 +3900,22 @@ static int ing_control(const char *key, const char *val)
             LOGI(MOD,"%s persisted, applies on restart", key);
             return 0;
         }
+        /* volume/gain/alc_gain: plain parameter writes (no module create or
+         * destroy), safe to apply live; serialized via g_ai_lock.
+         *
+         * Found by review: g_ai_up used to be checked here BEFORE taking
+         * the lock below, the same TOCTOU window as hal_ao_open()'s AEC
+         * enable - a disable can complete in the gap between this check
+         * and actually acquiring g_ai_lock, and audio_thread's disable path
+         * holds that same lock across its whole clear-g_ai_up sequence
+         * specifically so a re-check under the lock sees the true state.
+         * So take the lock first, then check. */
+        pthread_mutex_lock(&g_ai_lock);        /* dev 0 / chn 0 as in audio_thread */
         if (!g_ai_up){                         /* audio input not running */
+            pthread_mutex_unlock(&g_ai_lock);
             LOGD(MOD,"%s persisted (audio input not running)", key);
             return 0;
         }
-        /* volume/gain/alc_gain: plain parameter writes (no module create or
-         * destroy), safe to apply live; serialized via g_ai_lock. */
-        pthread_mutex_lock(&g_ai_lock);        /* dev 0 / chn 0 as in audio_thread */
         int ok = ai_apply_key(k);
         pthread_mutex_unlock(&g_ai_lock);
         if (ok) LOGI(MOD,"control %s=%d", key, v);
@@ -4749,17 +4760,32 @@ int hal_ao_open(int want_rate)
      * enabled and never calls DisableAec on a chn that never had it. */
     int aec_on = 0;
     if (g_hcfg){ config_str_lock(); aec_on = g_hcfg->audio.aec; config_str_unlock(); }  /* F-02: cold read under lock */
-    if (aec_on && g_ai_up){
+    if (aec_on){
         /* Item-1: serialize the AEC module create against audio_thread's
-         * concurrent GetFrame on the same AI dev0/chn0 (see g_ai_lock). */
+         * concurrent GetFrame on the same AI dev0/chn0 (see g_ai_lock).
+         *
+         * Found by review: g_ai_up used to be read here BEFORE taking the
+         * lock, then trusted for the IMP_AI_EnableAec call below it without
+         * a re-check - exactly the TOCTOU window the Item-6/audio_thread
+         * comments elsewhere in this file already describe (a disable
+         * holds g_ai_lock across its whole clear-g_ai_up sequence
+         * specifically so a caller blocked on the lock sees the up-to-date
+         * value once it gets in). Re-checking g_ai_up under the lock closes
+         * that window: either the disable already finished and this now
+         * correctly skips, or it hasn't started and the channel is
+         * genuinely still up. */
         pthread_mutex_lock(&g_ai_lock);
-        int aec_rc = IMP_AI_EnableAec(0, 0, 0, 0);
-        pthread_mutex_unlock(&g_ai_lock);
-        if (aec_rc == 0){
-            g_aec_on = 1;
-            LOGI(MOD, "AEC enabled (AI 0/0 <- AO 0/0)");
+        if (g_ai_up) {
+            int aec_rc = IMP_AI_EnableAec(0, 0, 0, 0);
+            pthread_mutex_unlock(&g_ai_lock);
+            if (aec_rc == 0){
+                g_aec_on = 1;
+                LOGI(MOD, "AEC enabled (AI 0/0 <- AO 0/0)");
+            } else {
+                LOGW(MOD, "IMP_AI_EnableAec failed - continuing without echo cancellation");
+            }
         } else {
-            LOGW(MOD, "IMP_AI_EnableAec failed - continuing without echo cancellation");
+            pthread_mutex_unlock(&g_ai_lock);
         }
     }
     return rate;

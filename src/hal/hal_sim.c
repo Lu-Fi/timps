@@ -198,13 +198,22 @@ static int sim_start(const ms_config *cfg)
         if (!cfg->video[i].enabled) continue;
         const char *path = (i==0)?cfg->sim_video0:cfg->sim_video1;
         if (!path[0]) { LOGW(MOD,"sim.video%d not set, skipping",i); continue; }
-        sim_vid *v=&g_vid[g_nvid++];
+        sim_vid *v=&g_vid[g_nvid];
         v->src=i; v->chn=i; v->fps=cfg->video[i].fps; v->codec=cfg->video[i].codec;
         strncpy(v->path,path,sizeof v->path-1);
         int ew, eh; ms_vstream_eff_dims(&cfg->video[i], &ew, &eh);
         hub_set_video_params(i,cfg->video[i].codec,ew,eh,cfg->video[i].fps);
         v->run=1; v->active=0;
-        ms_thread_create(&v->thr,MS_STACK_STREAM,vid_thread,v);
+        /* Found by review: g_nvid used to be incremented unconditionally
+         * (via &g_vid[g_nvid++] above) with the create's return value
+         * ignored, unlike jpg_start()'s identical-shape loop just below -
+         * sim_stop()'s join loop runs to g_nvid regardless of ->run, so a
+         * failed create left a garbage pthread_t that pthread_join() would
+         * later be called on. Mirror jpg_start(): only count this slot once
+         * the thread actually exists. Host-only (make sim), never runs on
+         * camera hardware. */
+        if (ms_thread_create(&v->thr,MS_STACK_STREAM,vid_thread,v)==0) g_nvid++;
+        else v->run=0;
     }
     if (cfg->audio.enabled && cfg->sim_audio[0]) {
         /* G.711 (PCMA/PCMU) is always 8 kHz - mirror hal_ingenic's pinning so
@@ -219,7 +228,11 @@ static int sim_start(const ms_config *cfg)
         hub_set_audio_params(cfg->audio.codec,asr,ach);
         strncpy(g_aud.path,cfg->sim_audio,sizeof g_aud.path-1);
         g_aud.samplerate=asr; g_aud.run=1; g_aud.active=0;
-        ms_thread_create(&g_aud.thr,MS_STACK_STREAM,aud_thread,&g_aud);
+        /* Found by review: same unchecked create as g_vid above; sim_stop()
+         * already guards this one on ->run (`if (g_aud.run)`), so clearing
+         * it on failure is the whole fix here. */
+        if (ms_thread_create(&g_aud.thr,MS_STACK_STREAM,aud_thread,&g_aud)!=0)
+            g_aud.run=0;
     }
     if (cfg->jpeg.enabled && cfg->sim_jpeg[0])
         jpg_start(cfg->sim_jpeg, HUB_JPEG_SRC, cfg->jpeg.fps);

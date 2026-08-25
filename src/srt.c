@@ -509,7 +509,18 @@ static void *client_thread(void *arg)
 {
     ts_mux *m = (ts_mux *)arg;
     stream_run(m);
-    srt_client_close(m->slot);     /* no-op if the teardown already closed it */
+    /* Found by review: srt_client_close(-1) is a no-op (see its own guard),
+     * and m->slot is -1 exactly when srt_client_reg() found the registry
+     * full and left this thread sole owner of m->sock (listen_thread's
+     * comment: "-1 when full"). Today that can't actually happen - the
+     * count-based admission gate in listen_thread() never lets g_srt_clients
+     * exceed SRT_MAX_CLIENTS, so the registry can't appear full while
+     * admission would still allow a new client - but if that ever changes,
+     * the no-op above would leak this socket's fd silently, forever, on a
+     * memory/fd-constrained embedded device. Cheap enough to just always be
+     * correct rather than correct-by-invariant. */
+    if (m->slot < 0) srt_close(m->sock);
+    else srt_client_close(m->slot);
     free(m);
     __sync_fetch_and_sub(&g_srt_clients, 1);
     return NULL;

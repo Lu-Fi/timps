@@ -1515,6 +1515,31 @@ static void *conn_thread(void *arg)
                         body += 4;
                         /* body may arrive split: finish per Content-Length */
                         int have = n - (int)(body - buf), clen = 0;
+                        /* Found by review: chunked bodies were previously read
+                         * as raw bytes (chunk-size lines/CRLF framing
+                         * included) and handed straight to the JSON scanner
+                         * below, which looks for quoted names anywhere in the
+                         * string rather than requiring well-formed JSON - a
+                         * chunk boundary landing mid-key/value gave undefined
+                         * results instead of a clear error. This server never
+                         * proxies the body anywhere, so there's no request-
+                         * smuggling angle to a second hop, but silently
+                         * mis-parsing is still worse than saying so. No
+                         * decoder exists here, so reject rather than guess.
+                         *
+                         * Scoped to the header block (< body): buf already
+                         * holds whatever body bytes arrived in the same
+                         * read, and a plain strcasestr(buf,...) would also
+                         * fire on the string appearing INSIDE the JSON (an
+                         * OSD text, say) - a 411 on a perfectly well-formed
+                         * request. Headers precede body, so the first match
+                         * below body is the real header. */
+                        const char *te = strcasestr(buf,"Transfer-Encoding:");
+                        if (te && te < body) {
+                            http_send_ex(c,"411 Length Required","text/plain",cors,
+                                        "Transfer-Encoding not supported, use Content-Length",51);
+                            goto done;
+                        }
                         const char *cl = strcasestr(buf,"Content-Length:");
                         if (cl) clen = atoi(cl+15);
                         /* how many body bytes this fixed buffer can hold
@@ -1554,6 +1579,23 @@ static void *conn_thread(void *arg)
                             if (r <= 0) break;
                             n += r; have += r; buf[n] = 0;
                         }
+                        /* Found by review: Content-Length was validated above
+                         * but never actually ENFORCED as the boundary of what
+                         * belongs to this request - buf[n]=0 above terminates
+                         * at however many bytes a single write happened to
+                         * deliver, which can be more than clen (a misdeclared
+                         * length, or bytes from an attempted pipelined second
+                         * request despite this server always answering
+                         * Connection: close). Those extra bytes were still
+                         * inside control_apply_json()'s scanned range, since
+                         * its hand-rolled parser looks for quoted names
+                         * anywhere in the string rather than requiring a
+                         * single well-formed top-level object. Only trim when
+                         * the declared length was actually reached - a short
+                         * read (have < clen, already truncated by the
+                         * deadline above) is a separate, pre-existing
+                         * condition this isn't meant to paper over. */
+                        if (have >= clen) body[clen] = 0;
                     }
                     /* The old code answered {"ok":true} 200 to everything -
                      * garbage, truncated JSON, unknown keys and real writes
@@ -1832,13 +1874,24 @@ void httpd_stop(httpd *h)
     /* Say whether the drain actually drained. Without this the failure mode is
      * invisible: teardown continues either way, and "still live" is exactly the
      * state in which the tls_ctx free below is a use-after-free. */
-    if (g_nconn > 0)
+    if (g_nconn > 0) {
+        /* Found by review: this used to free tls_ctx/h unconditionally right
+         * after the warning below, which is exactly a use-after-free for
+         * whichever thread(s) are still live - a detached conn_thread that
+         * hasn't noticed the wake yet can still be inside mbedtls_ssl_* on a
+         * ctx this would just have freed out from under it. httpd_stop() runs
+         * once, immediately before g_hal->stop() and process exit (main.c),
+         * so leaking tls_ctx/h on this path trades a crash for a leak the OS
+         * reclaims within seconds anyway - the only sane trade this close to
+         * exit. */
         LOGW(MOD,"%d connection thread(s) still live after a %lld ms drain - "
-                 "proceeding to teardown", g_nconn,
+                 "leaking tls_ctx/h rather than risking a use-after-free "
+                 "on process exit", g_nconn,
              (long long)((ms_now_us()-drain0)/1000));
-    else
-        LOGI(MOD,"all connection threads gone after %lld ms",
-             (long long)((ms_now_us()-drain0)/1000));
+        return;
+    }
+    LOGI(MOD,"all connection threads gone after %lld ms",
+         (long long)((ms_now_us()-drain0)/1000));
 #ifdef USE_TLS
     if (h->tls_ctx) {
         /* the drain above already let any TLS handshake/read/write conn_thread

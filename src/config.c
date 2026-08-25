@@ -753,7 +753,12 @@ static const cfg_field jpeg_fields[] = {
     F ("height",        0, height,  T_INT,  0, 64,4096),
     F ("quality",       0, quality, T_INT,  0, 1,100),
     F ("fps",           0, fps,     T_INT,  0, 1,120),
-    F ("imp_chn",       0, imp_chn, T_INT,  0, 0,0),
+    /* 0,8: same bound as video_fields' imp_chn/jpeg_chn just below - libimp's
+     * own bound is chn<9 (GetStream_Impl), and above MS_FS_MAXCHN fs_use()
+     * returns silently. Found by review: this field used the placeholder
+     * 0,0 (no clamp) instead, the one channel-index field that had never
+     * gotten the same treatment. */
+    F ("imp_chn",       0, imp_chn, T_INT,  0, 0,8),
     FS("snapshot_path", 0, snapshot_path, 0),
 };
 #undef TT
