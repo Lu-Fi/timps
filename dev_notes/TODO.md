@@ -3,6 +3,87 @@
 Working list. Newest block first; each entry says what is established and what
 is still guesswork, so nobody has to re-derive it.
 
+## OPEN: 8h-longrun stream-reliability FAILs (RTSP session reset at 9918s, one 9.76s MJPEG gap)
+
+From the overnight 2026-08-24/25 `--profile longrun` against cam-garage
+(28800s, rtsp+fmp4+mjpeg concurrent, `v1.9.3-21-gb100f52`; artifacts in
+`dev_notes/qa-runs/longrun-cam-garage-2026-08-25/`). Two FAILs, both in
+section 15c's "one unbroken session for the whole window" checks:
+
+1. The single RTSP TCP session died after 9918s (~2.75h) of 28800s -
+   ffmpeg saw `Failed reading RTSP data: Connection reset by peer`
+   (`longrun_rtsp_ffmpeg.log`). The fmp4 HTTP session survived the full 8h,
+   so the daemon as a whole did not wedge; this is one connection dying.
+2. The MJPEG stream went 9.760s without a frame at some point - a visible
+   freeze for a viewer - but the session itself survived.
+
+Not investigated yet. Attribution is genuinely open: an 8h unbroken single
+TCP session over this camera's WiFi is a strict bar, and "reset by peer"
+can be the AP as easily as timpsd (rtsp.c DOES deliberately reset
+slow/stalled clients - worth checking whether the eviction path logged
+anything at that timestamp; logread from the window has since rotated but
+the central Loki at 192.168.178.17 has it). Everything else in the run was
+healthy: no fd/thread/RSS growth over 95 samples, no watchdog escalations,
+no daemon restart. Next step when picked up: re-run with
+`--longrun-protos rtsp` alone and pull the Loki window around the reset.
+
+## HARDWARE-VERIFIED (cam-garage, 2026-08-25): A1's one-shot escalation reboot, both give-up branches, and B7's TLS fail-closed
+
+Closes the "Still open" hardware-verification items of the seven-findings
+entry below (kept there for the implementation details). Method and results,
+all on cam-garage (`v1.9.3-29-g6b7e6cd`, sc4336p/2560x1440):
+
+**Fault recipe** (reusable): append `video0.width = 4096` /
+`video0.height = 4096` to `/etc/timps.conf`. Passes config validation,
+`init()` succeeds, but `Encoder_CreateChn 0` deterministically rejects it,
+so `start()` fails exactly the way A1/B1 need - fully revertible, and no
+rmem drain observed across ~30 failure cycles.
+
+**A1, unwritable-marker branch**: with `/etc` remounted read-only, exactly
+10 `HAL start failed (n/10)` cycles (5/10/20/40/60...60s backoff), then the
+exact expected LOGE: marker `/etc/timps-startup-reboot.flag` "cannot be
+written (Read-only file system) ... giving up permanently WITHOUT the
+escalation reboot". Process exited, camera did NOT reboot (boot_id and
+uptime continuous), no marker file created.
+
+**A1, escalation branch - exactly ONE reboot**: with `/etc` writable and
+the same fault, 10 cycles -> "escalating to ONE reboot before giving up
+permanently" (Loki 12:45:21) -> real reboot (boot_id changed
+`9bcd105a...` -> `d9a06bfd...`), marker present after boot. timpsd
+auto-started into the still-faulty config, ran 10 MORE cycles, and took
+the marker branch: "AGAIN, after the one-shot recovery reboot already
+tried for this ... giving up for real (needs manual intervention)" -
+stayed down, boot_id unchanged. One reboot total, ever, per incident:
+exactly the designed behaviour, now observed end-to-end on real hardware.
+
+**B1 (bounded bring-up teardown)**: every one of the ~30 failed-start
+cycles' `stop()` teardowns returned control to the retry loop cleanly -
+the 20s guillotine armed each cycle and never false-fired against a real,
+honest `IMP_System_Exit`. The wedged-stop leg itself (stop() hanging past
+20s) cannot be forced on this board - that specific path remains verified
+via the fault-injected sim backend only, which the original entry already
+deemed acceptable.
+
+**B7 (TLS fail-closed) - real mbedTLS this time**: baseline `http.https=1`
+with a valid cert served TLS on 8880 (plaintext refused). With a corrupted
+cert: timpsd stayed up, ZERO listener on 8880 (netstat + external connect),
+RTSP fully unaffected (h264+aac probed fine), and the two expected log
+lines fired (Loki 12:14:54): `[TLS] cannot parse cert
+/etc/ssl/certs/httpd.crt` then `[HTTP] ... REFUSING to serve port 8880 at
+all rather than silently downgrading`. No bug, no code change.
+
+**Restoration verified**: fault lines removed (`/etc/timps.conf` md5 back
+to the pre-test reference `7a4cafe69ab0621bd246f883340cabb6`), marker
+deleted, test certs removed (`http.https` is commented out in the normal
+config, so no certs is the correct state), `/etc` mount normal after the
+reboot, timpsd running, RTSP + `/snapshot.jpg` re-verified externally.
+
+One operational scar from the run: `S95timps stop` during a bring-up
+backoff sleep kills timpsd with NO log line (the shutdown handler isn't
+what's running during the retry ladder), which looks exactly like a silent
+crash in the log. Cost ~20 min of false crash-hunting; remember it before
+suspecting the daemon.
+
 ## RESOLVED (thingino-firmware-LuFi, not this repo): the WebUI's "Restart" button has 404'd fleet-wide since 2026-08-16
 
 Found 2026-08-24: a user's persist-only setting change (fps/rc_mode on
@@ -348,7 +429,19 @@ SOURCE thread itself was transiently starved during a congestion event
 tell that apart from a real mute - nothing was evicted to prove otherwise.
 Not addressed; no evidence yet that this variant actually occurs.
 
-## PARTIALLY VERIFIED, ONE CLEAN RUN: SYN-flood backlog fix (`74c29c4`)
+## HARDWARE-VERIFIED (2h + 8h clean runs): SYN-flood backlog fix (`74c29c4`)
+
+Update 2026-08-25: second, longer confirmation run. Overnight
+`--profile longrun` against cam-garage (`v1.9.3-21-gb100f52`, 2026-08-24
+22:55 -> 07:05, 28800s window, rtsp+fmp4+mjpeg concurrent plus the usual
+load ramp to 8 clients): **zero `SYN flooding` lines** anywhere - QA log,
+logread, and both saved dmesg tails
+(`dev_notes/qa-runs/longrun-cam-garage-2026-08-25/`). Together with the
+clean 2h run below that is 10h of concurrent-protocol load without the
+kernel drop ever firing; calling the backlog fix verified. NOTE the run's
+overall RESULT was still FAIL for two reasons UNRELATED to SYN flooding
+(single RTSP session reset by peer at 9918s, one 9.76s MJPEG gap) - tracked
+as their own open entry below ("8h-longrun stream-reliability FAILs").
 
 Update 2026-08-24: rebuilt and reflashed cam-garage from `main` tip
 (`v1.9.3-9-g483b749`, confirmed via `strings /usr/bin/timpsd`), so the fix
@@ -561,7 +654,14 @@ are a T23-specific `-DMS_AU_BUF_MAX` bump or raising `video0.min_qp` (the
 proven T23 lever from the 2026-08-21 investigation) - pick whichever the
 actual drop rate justifies, not preemptively.
 
-## PARTIALLY HARDWARE-VERIFIED (v1.9.3): seven review findings (A1, A3, A4, B1, B2, B5, B7)
+## HARDWARE-VERIFIED (v1.9.3, escalation paths 2026-08-25): seven review findings (A1, A3, A4, B1, B2, B5, B7)
+
+Update 2026-08-25: the three "Still open" hardware items below (A1's two
+give-up branches, B1's bounded teardown under real repeated start failure,
+B7 against real mbedTLS) are now verified on cam-garage - full method and
+results in the "HARDWARE-VERIFIED (cam-garage, 2026-08-25)" entry near the
+top of this file. Only B1's wedged-stop leg remains sim-only (cannot be
+forced on hardware; accepted). The original entry follows unchanged.
 
 Implemented 2026-08-23 on worktree branch `agent-fixes-a2492577`, on top of
 `worktree-agent-ad3cd67597597d1e1`, merged to `main` as `5df5f05`. One commit
