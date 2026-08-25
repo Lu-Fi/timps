@@ -179,6 +179,35 @@ and whether it's fixable with a short wait/retry rather than just logging
 through it, given it now looks like a routine event (any client reconnect)
 rather than a rare one (only on boot after specific config changes).
 
+**Update 2026-08-25: stopped fleet-wide, correlated with the .107 kernel
+rebuild, not independently investigated/fixed.** Checked the raw syslog
+files directly on the central log server (`/opt/camlogs/logs/<camera>/`,
+bypassing Loki's 1000-line query cap) for every camera, yesterday vs today:
+`ing-wyze-cam2-8071` (cam-wyze, .107) went 1339 -> 22, and `cam-garage` went
+21 -> 0; the other ten cameras were already at 0 both days. All 22 remaining
+cam-wyze occurrences land before 00:30, i.e. inside the OLD `timpsd`
+instance that was still running while the from-scratch kernel rebuild
+(`linux-dirclean` + rebuild + reflash, done to fix the unrelated
+`IPU_STATUS=0x80010030` wedge issue in the entry above) was in progress;
+`timpsd` restarted three times between 00:17 and 00:51 as part of that
+reflash, and there has been zero `ipu_osd error` since the last restart -
+11+ hours clean as of this check, with the syslog pipe itself confirmed
+still alive via unrelated DHCP-renewal lines in the same window.
+
+This was NOT a targeted fix - nothing in the kernel-rebuild investigation
+touched `IMP_OSD` or the channel-enable path this entry is about. Leading
+theory: the full from-scratch kernel build changed something incidental
+(compiler flags, timing, an unrelated upstream patch already queued in the
+tree) that happens to close the race, rather than the known wedge-mitigation
+patch itself. Correlation over one clean day on one rebuilt camera, not
+proof - cam-wyze-pan (.163) and the T31 boards that showed this in the
+2026-08-22 boot/RMEM incident were never rebuilt this way and have not been
+re-checked. Downgrading from "open, not investigated" to "open, watching for
+recurrence" rather than closing outright; worth re-checking cam-wyze again
+in a few days, and worth trying the same from-scratch rebuild on a camera
+that still shows the error (if one turns up) to see if it's reproducibly the
+rebuild itself and not just this one unit's own reflash.
+
 Found 2026-08-24 in the second `--profile longrun` against cam-garage (4h, on
 `v1.9.3-13-g91c7f03` which carries the `b824b3c` mute fix - that symptom was
 confirmed gone). The fMP4 client survived 17 clean checkpoints (~85 min, A/V
