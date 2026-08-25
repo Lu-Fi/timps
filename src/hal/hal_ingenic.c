@@ -1151,6 +1151,45 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
 }
 
 /* ================= encoder ================= */
+
+/* The effective QP bounds to program for a stream. Two separate things every
+ * consumer needs, and each of them used to open-code only the first:
+ *
+ *  - 0 means "unset" -> the historical 15/45 defaults (0a8bb9f), which is what
+ *    the (v->min_qp>0)?v->min_qp:15 ternaries at each site were doing.
+ *  - min_qp > max_qp is an inverted range and nothing rejected it. config.c
+ *    clamps each field to 1..51 but cannot compare the two: field_set() works
+ *    from a name+offset table one field at a time and has no way to see a
+ *    sibling's value. So an inverted pair reached the SDK verbatim - on the
+ *    classic attr structs no vendor header documents what minQp>maxQp does,
+ *    and on the new API IMP_Encoder_SetChnQpBounds simply fails, leaving the
+ *    encoder's built-in range and silently ignoring BOTH configured values.
+ *    Swapping is the honest reading: two bounds were given in the wrong order,
+ *    and the range meant is the ordered one.
+ *
+ * Deliberately fixed here, at the point of use, rather than in config.c:
+ * swapping at write time would rewrite a field the client never touched, and
+ * rejecting the write would break the perfectly ordinary /control sequence of
+ * raising min_qp before max_qp (each write is a separate request). The stored
+ * config keeps exactly what was written and reads back unchanged; only what is
+ * programmed into the encoder is ordered. Warned once, not per apply - the
+ * live rc re-apply path calls straight through here on every /control write. */
+static void qp_bounds(const ms_vstream_cfg *v, int *qmin, int *qmax)
+{
+    int lo = (v->min_qp>0) ? v->min_qp : 15;
+    int hi = (v->max_qp>0) ? v->max_qp : 45;
+    if (lo > hi){
+        static int warned_qpswap = 0;
+        if (!warned_qpswap){
+            LOGW(MOD,"videoN.min_qp (%d) > max_qp (%d) - programming %d..%d",
+                 lo, hi, hi, lo);
+            warned_qpswap = 1;
+        }
+        int t = lo; lo = hi; hi = t;
+    }
+    *qmin = lo; *qmax = hi;
+}
+
 #ifndef ENC_NEW_API
 /* One classic-API rc-union fill, shared by enc_create() and the live
  * re-apply in ing_control()'s video branch (IMP_Encoder_SetChnAttrRcMode
@@ -1172,6 +1211,7 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
  * at the historical literals - no SDK header documents a range for them. */
 static void classic_rc_fill(IMPEncoderAttrRcMode *m, const ms_vstream_cfg *v)
 {
+    int qmin, qmax; qp_bounds(v, &qmin, &qmax);   /* unset defaults + ordered */
     if (v->rc_mode==MS_RC_FIXQP){
         m->rcMode = ENC_RC_MODE_FIXQP;
 #if !(defined(PLATFORM_T10)||defined(PLATFORM_T20))
@@ -1193,8 +1233,8 @@ static void classic_rc_fill(IMPEncoderAttrRcMode *m, const ms_vstream_cfg *v)
         m->rcMode = use_smart ? ENC_RC_MODE_SMART : ENC_RC_MODE_VBR;
 #if !(defined(PLATFORM_T10)||defined(PLATFORM_T20))
         if (v->codec==MS_VC_H265){
-            m->attrH265Vbr.maxQp       = (v->max_qp>0)?(uint32_t)v->max_qp:45;
-            m->attrH265Vbr.minQp       = (v->min_qp>0)?(uint32_t)v->min_qp:15;
+            m->attrH265Vbr.maxQp       = (uint32_t)qmax;
+            m->attrH265Vbr.minQp       = (uint32_t)qmin;
             m->attrH265Vbr.staticTime  = 2;   /* rate-stat window, seconds */
             m->attrH265Vbr.maxBitRate  = (uint32_t)v->bitrate_kbps;
             m->attrH265Vbr.iBiasLvl    = v->i_bias_lvl;
@@ -1206,8 +1246,8 @@ static void classic_rc_fill(IMPEncoderAttrRcMode *m, const ms_vstream_cfg *v)
         } else
 #endif
         {
-            m->attrH264Vbr.maxQp       = (v->max_qp>0)?(uint32_t)v->max_qp:45;
-            m->attrH264Vbr.minQp       = (v->min_qp>0)?(uint32_t)v->min_qp:15;
+            m->attrH264Vbr.maxQp       = (uint32_t)qmax;
+            m->attrH264Vbr.minQp       = (uint32_t)qmin;
             m->attrH264Vbr.staticTime  = 2;   /* rate-stat window, seconds */
             m->attrH264Vbr.maxBitRate  = (uint32_t)v->bitrate_kbps;
             m->attrH264Vbr.iBiasLvl    = v->i_bias_lvl;
@@ -1221,8 +1261,8 @@ static void classic_rc_fill(IMPEncoderAttrRcMode *m, const ms_vstream_cfg *v)
         m->rcMode = ENC_RC_MODE_CBR;
 #if !(defined(PLATFORM_T10)||defined(PLATFORM_T20))
         if (v->codec==MS_VC_H265){
-            m->attrH265Cbr.maxQp      = (v->max_qp>0)?(uint32_t)v->max_qp:45;
-            m->attrH265Cbr.minQp      = (v->min_qp>0)?(uint32_t)v->min_qp:15;
+            m->attrH265Cbr.maxQp      = (uint32_t)qmax;
+            m->attrH265Cbr.minQp      = (uint32_t)qmin;
             m->attrH265Cbr.staticTime = 2;   /* rate-stat window, seconds */
             m->attrH265Cbr.outBitRate = (uint32_t)v->bitrate_kbps;
             m->attrH265Cbr.iBiasLvl   = v->i_bias_lvl;
@@ -1232,8 +1272,8 @@ static void classic_rc_fill(IMPEncoderAttrRcMode *m, const ms_vstream_cfg *v)
         } else
 #endif
         {
-            m->attrH264Cbr.maxQp        = (v->max_qp>0)?(uint32_t)v->max_qp:45;
-            m->attrH264Cbr.minQp        = (v->min_qp>0)?(uint32_t)v->min_qp:15;
+            m->attrH264Cbr.maxQp        = (uint32_t)qmax;
+            m->attrH264Cbr.minQp        = (uint32_t)qmin;
             m->attrH264Cbr.outBitRate   = (uint32_t)v->bitrate_kbps;
             m->attrH264Cbr.iBiasLvl     = v->i_bias_lvl;
             m->attrH264Cbr.frmQPStep    = 3;
@@ -1389,8 +1429,7 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
      * effective bounds match across SoCs. Non-fatal: a rejected call just leaves
      * the encoder's built-in QP range, so warn and carry on. */
     {
-        int qmin = (v->min_qp>0)?v->min_qp:15;
-        int qmax = (v->max_qp>0)?v->max_qp:45;
+        int qmin, qmax; qp_bounds(v, &qmin, &qmax);
         if (IMP_Encoder_SetChnQpBounds(chn, qmin, qmax)!=0)
             LOGW(MOD,"Encoder_SetChnQpBounds %d (%d..%d) failed - using SDK default range",
                  chn, qmin, qmax);
@@ -2488,6 +2527,7 @@ static int sw_rot_start(const ms_config *cfg, int i)
      * marks every H.265 rc struct "不支持" (HEVC encode unsupported), so there
      * is no attrH265* path worth mirroring on this SoC. */
     IMPEncoderYuvIn yin; memset(&yin,0,sizeof yin);
+    int qmin, qmax; qp_bounds(v, &qmin, &qmax);   /* unset defaults + ordered */
     yin.type = (v->codec==MS_VC_H265) ? PT_H265 : PT_H264;
     yin.outFrmRate.frmRateNum = (uint32_t)v->fps;
     yin.outFrmRate.frmRateDen = 1;
@@ -2509,8 +2549,8 @@ static int sw_rot_start(const ms_config *cfg, int i)
             warned_capped = 1;
         }
         yin.mode.rcMode = (v->rc_mode==MS_RC_SMART) ? ENC_RC_MODE_SMART : ENC_RC_MODE_VBR;
-        yin.mode.attrH264Vbr.maxQp       = (v->max_qp>0)?(uint32_t)v->max_qp:45;
-        yin.mode.attrH264Vbr.minQp       = (v->min_qp>0)?(uint32_t)v->min_qp:15;
+        yin.mode.attrH264Vbr.maxQp       = (uint32_t)qmax;
+        yin.mode.attrH264Vbr.minQp       = (uint32_t)qmin;
         yin.mode.attrH264Vbr.staticTime  = 2;
         yin.mode.attrH264Vbr.maxBitRate  = (uint32_t)v->bitrate_kbps;
         yin.mode.attrH264Vbr.iBiasLvl    = v->i_bias_lvl;
@@ -2521,8 +2561,8 @@ static int sw_rot_start(const ms_config *cfg, int i)
         yin.mode.attrH264Vbr.gopRelation = 0;
     } else {
         yin.mode.rcMode = ENC_RC_MODE_CBR;
-        yin.mode.attrH264Cbr.maxQp        = (v->max_qp>0)?(uint32_t)v->max_qp:45;
-        yin.mode.attrH264Cbr.minQp        = (v->min_qp>0)?(uint32_t)v->min_qp:15;
+        yin.mode.attrH264Cbr.maxQp        = (uint32_t)qmax;
+        yin.mode.attrH264Cbr.minQp        = (uint32_t)qmin;
         yin.mode.attrH264Cbr.outBitRate   = (uint32_t)v->bitrate_kbps;
         yin.mode.attrH264Cbr.iBiasLvl     = v->i_bias_lvl;
         yin.mode.attrH264Cbr.frmQPStep    = 3;
@@ -3760,7 +3800,7 @@ static int rc_live_apply(int si, const char *k)
     }
     if (!strcmp(k,"min_qp") || !strcmp(k,"max_qp")){
         /* same call + same 15/45 unset-defaults as the boot apply (0a8bb9f) */
-        int qmin=(v->min_qp>0)?v->min_qp:15, qmax=(v->max_qp>0)?v->max_qp:45;
+        int qmin, qmax; qp_bounds(v, &qmin, &qmax);
         if (IMP_Encoder_SetChnQpBounds(chn,qmin,qmax)!=0){
             LOGW(MOD,"SetChnQpBounds chn%d failed - value applies on restart", chn);
             return 0;
