@@ -628,7 +628,19 @@ static void *listen_thread(void *arg)
         __sync_fetch_and_add(&g_srt_clients, 1);
         pthread_t t;
         if (ms_thread_create(&t, MS_STACK_CONN, client_thread, m) == 0) pthread_detach(t);
-        else { srt_close(cs); free(m); __sync_fetch_and_sub(&g_srt_clients, 1); }
+        else {
+            /* cs is PUBLISHED in the registry by now (srt_client_reg above), so
+             * closing it directly would leave g_client_sock[m->slot] naming a
+             * closed socket id - and libsrt reuses ids, so the teardown sweep
+             * below (or srt_stop's) would then close whatever unrelated newer
+             * socket inherited it. Same reason srt_close_listener() exists (L4).
+             * Take it back out of the registry instead; srt_close(cs) is only
+             * correct when registration failed and this thread is sole owner.
+             * Mirrors client_thread's exit exactly - see its comment. */
+            if (m->slot < 0) srt_close(cs);
+            else srt_client_close(m->slot);
+            free(m); __sync_fetch_and_sub(&g_srt_clients, 1);
+        }
     }
     srt_close_listener();      /* no-op if srt_stop() already closed it (L4) */
     /* M-2: close every live client socket BEFORE draining. g_run=0 alone only
