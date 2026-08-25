@@ -210,11 +210,35 @@ static int seg_open(int chn, const ms_record_cfg *rc)
         LOGE(MOD,"unsafe record.dir/name ('..' or absolute name), not recording");
         return -1;
     }
-    char path[512];
-    ms_media_path(path,sizeof path,dir,"records",name,".mp4");
+    /* O_EXCL, not fopen("wb"): the segment name is only as unique as the
+     * strftime pattern's own granularity (default: one second). A stop/start
+     * inside the same window - motion re-triggering right after post_roll
+     * expiry is the realistic one - or a backwards clock step onto an
+     * already-recorded timestamp would otherwise silently truncate a COMPLETE
+     * earlier segment. Failing instead would be wrong too: a clock step back
+     * over an hour of existing files would stall recording for that whole
+     * hour (the caller just retries seg_open on the next packet). So uniquify
+     * with a -N suffix - nothing already on the card is ever destroyed, and
+     * the retry path isn't entered at all. Same rigor as the rest of this
+     * function: every failure path below unlinks `path`, which now always
+     * names the file actually opened. */
+    char stem[400], path[512];
+    ms_media_path(stem,sizeof stem,dir,"records",name,"");
+    snprintf(path,sizeof path,"%s.mp4",stem);
     ms_mkdirs(path);
-    w_fp=fopen(path,"wb");
-    if (!w_fp){ LOGE(MOD,"open %s: %s",path,strerror(errno)); return -1; }
+    int fd=open(path,O_WRONLY|O_CREAT|O_EXCL,0644);
+    for (int i=1; fd<0 && errno==EEXIST && i<1000; i++){
+        snprintf(path,sizeof path,"%s-%d.mp4",stem,i);
+        fd=open(path,O_WRONLY|O_CREAT|O_EXCL,0644);
+        if (fd>=0) LOGW(MOD,"segment name collision, wrote %s instead",path);
+    }
+    if (fd<0){ LOGE(MOD,"open %s: %s",path,strerror(errno)); return -1; }
+    w_fp=fdopen(fd,"wb");
+    if (!w_fp){
+        LOGE(MOD,"fdopen %s: %s",path,strerror(errno));
+        close(fd); unlink(path);         /* don't leave an empty stub (L6) */
+        return -1;
+    }
 
     fmp4_init(&w_mux);
     w_mux.has_video=1;
