@@ -9,6 +9,12 @@ outputs/
 toolchain/
 timps-qa-*/
 
+# raw timps-qa.sh output pointed at --out dev_notes/qa-runs/... (longrun
+# investigations etc.) - same rationale as timps-qa-*/ above, just a
+# different --out location that pattern doesn't cover: recordings/logs, not
+# for the repo, only the written-up conclusion in dev_notes/TODO.md is.
+dev_notes/qa-runs/
+
 # logs (mpv-timps.log etc.)
 *.log
 
