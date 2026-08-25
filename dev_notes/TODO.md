@@ -3,29 +3,88 @@
 Working list. Newest block first; each entry says what is established and what
 is still guesswork, so nobody has to re-derive it.
 
-## OPEN: 8h-longrun stream-reliability FAILs (RTSP session reset at 9918s, one 9.76s MJPEG gap)
+## RESOLVED (explained, not a bug): the 8h-longrun's two FAILs were ONE network stall - RTSP reset came from the path, not timpsd
 
 From the overnight 2026-08-24/25 `--profile longrun` against cam-garage
 (28800s, rtsp+fmp4+mjpeg concurrent, `v1.9.3-21-gb100f52`; artifacts in
 `dev_notes/qa-runs/longrun-cam-garage-2026-08-25/`). Two FAILs, both in
-section 15c's "one unbroken session for the whole window" checks:
+section 15c: (1) the single RTSP TCP session died after 9918s with
+`Connection reset by peer` on the client; (2) one 9.76s MJPEG inter-frame
+gap. Investigated 2026-08-25 from the raw artifacts plus the central
+syslog (`/opt/camlogs/logs/cam-garage/`, read directly, not via Loki's
+1000-line cap): **both are the same single event**, a ~2-3 minute
+congestion/stall on cam-garage's link around 01:48-01:52, the same
+RF-disturbance mechanism class documented further down this file. No timps
+code change; not a timps bug.
 
-1. The single RTSP TCP session died after 9918s (~2.75h) of 28800s -
-   ffmpeg saw `Failed reading RTSP data: Connection reset by peer`
-   (`longrun_rtsp_ffmpeg.log`). The fmp4 HTTP session survived the full 8h,
-   so the daemon as a whole did not wedge; this is one connection dying.
-2. The MJPEG stream went 9.760s without a frame at some point - a visible
-   freeze for a viewer - but the session itself survived.
+**The unified timeline** (longrun t=0 at ~23:04:58; timpsd pid 1167
+continuous throughout):
 
-Not investigated yet. Attribution is genuinely open: an 8h unbroken single
-TCP session over this camera's WiFi is a strict bar, and "reset by peer"
-can be the AP as easily as timpsd (rtsp.c DOES deliberately reset
-slow/stalled clients - worth checking whether the eviction path logged
-anything at that timestamp; logread from the window has since rotated but
-the central Loki at 192.168.178.17 has it). Everything else in the run was
-healthy: no fd/thread/RSS growth over 95 samples, no watchdog escalations,
-no daemon restart. Next step when picked up: re-run with
-`--longrun-protos rtsp` alone and pull the Loki window around the reset.
+    23:05:03  [RTSP] PLAY session=4d1a0a1f vchn=0 TCP v=1 a=1   (the QA capture)
+    01:47:57  WARN [RTSP] session=4d1a0a1f: send queue overflowed (t~9779s)
+    01:50:03  client: ffmpeg dies, "Connection reset by peer" (wall 9918s;
+              last media t=9882.4s ~ 01:49:30 - i.e. ~35s of stall first)
+    01:50:16  INFO [RTSP] client disconnect session=4d1a0a1f    (generic exit)
+    01:50:31  WARN [HTTP] mp4 chn=0: send queue overflowed      (survived)
+    ~01:49:45-01:54:45  MJPEG checkpoint 33: the 9.76s gap (ckpt 32 already
+              had 3.88s; fmp4 ckpts 32/33 also short: v=7039/7222 vs 7400)
+
+All three protocols on the one WiFi link degraded in the same window and
+only there - the other 190+ five-minute checkpoints are clean. fMP4 and
+MJPEG rode it out in the drop-frames overflow path exactly as designed
+(fMP4 held one connection 28809s; all 142030 JPEGs decoded cleanly) and
+recovered; the RTSP TCP connection was the one casualty.
+
+**Why the reset was NOT timpsd** - this is where the exit-reason logging
+added this session (`log_send_fail()` in rtsp.c/httpd.c) earned its keep,
+by what it did NOT say:
+
+- The server-side exit line is the generic INFO `client disconnect` from
+  client_thread's done: label - which only fires when `logged_exit` is
+  unset, i.e. the play loop ended on the RECV side. A slow-client
+  force-drop (SO_SNDTIMEO expiry) or any failed media/RTCP write would
+  have logged the WARN "send failed ... dropping client" instead. It
+  didn't: timpsd's send path never failed. The RTSP overflow WARN at
+  01:47:57 is the non-fatal drop-frames path (keeps the socket), same as
+  the mp4 one that survived.
+- The A3 keepalive reaper is UDP-transport-only; this session was TCP.
+- The camera's kernel didn't give up either: `tcp_retries2` is the
+  default 15 (checked live on cam-garage) - a ~15+ minute give-up, not
+  2.3 minutes. And a retransmission-timeout death doesn't send RST anyway.
+
+So timpsd OBSERVED the death (its recv saw the connection reset, 13s
+after the client did) rather than causing it. With both endpoints ruled
+out, the first RST originated in the network path between the QA host
+(192.168.178.103) and the camera's separate subnet (192.168.15.x) -
+consistent with a stateful middlebox/conntrack entry dying during the
+multi-minute stall and RST-ing both directions. Which exact box can't be
+pinned without a packet capture of the moment, which doesn't exist; that
+sliver stays formally unproven but nothing in timps depends on it.
+
+**Ruled out explicitly**:
+
+- The same-day hardware fault-injection session (entry below): its first
+  timpsd restart is 07:57:29, all activity 07:57-12:45+, the longrun ended
+  07:05. Zero overlap; pid 1167 served the entire 8h uninterrupted.
+- Daemon wedge/restart/leak: fMP4 + MJPEG survived the full window on the
+  same daemon; fd/thread/RSS flat over 95 samples; dmesg silent (no WiFi
+  disassoc logged, no kernel events at all in the window).
+- A cam-garage-specific software fault: the RF context matches the known
+  household pattern - both Zyxel APs' chanlog held sustained `HOCH` 2.4GHz
+  busy through the night (Zyxcel 71-80%, Zyxel2 63-69% around the window).
+  No OTHER camera logged symptoms in 01:40-02:05 though, so this
+  particular stall was local to cam-garage's link within an ambient
+  congested night - same shape as the 2h/4h-run incidents further down.
+
+**Verdict**: both FAILs are environmental. Section 15c's "one unbroken
+session" bar is doing its job - an 8h single TCP session over congested
+2.4GHz WiFi is a genuinely strict ask, and the run's other 158 PASSes plus
+the clean recovery of the two HTTP streams are the actual health signal.
+Nothing to fix in `src/`; no follow-up needed unless it recurs WITHOUT the
+RF-congestion context (then: packet capture at the inter-subnet router to
+pin the RST origin, and `--longrun-protos rtsp` for a cheaper repro
+window). Raw recordings stay uncommitted per the existing qa-runs
+convention (directory has never been tracked).
 
 ## HARDWARE-VERIFIED (cam-garage, 2026-08-25): A1's one-shot escalation reboot, both give-up branches, and B7's TLS fail-closed
 
@@ -440,8 +499,9 @@ logread, and both saved dmesg tails
 clean 2h run below that is 10h of concurrent-protocol load without the
 kernel drop ever firing; calling the backlog fix verified. NOTE the run's
 overall RESULT was still FAIL for two reasons UNRELATED to SYN flooding
-(single RTSP session reset by peer at 9918s, one 9.76s MJPEG gap) - tracked
-as their own open entry below ("8h-longrun stream-reliability FAILs").
+(single RTSP session reset by peer at 9918s, one 9.76s MJPEG gap) - since
+investigated and resolved as one environmental network stall, see the
+"the 8h-longrun's two FAILs were ONE network stall" entry above.
 
 Update 2026-08-24: rebuilt and reflashed cam-garage from `main` tip
 (`v1.9.3-9-g483b749`, confirmed via `strings /usr/bin/timpsd`), so the fix
