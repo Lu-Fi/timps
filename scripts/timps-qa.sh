@@ -5212,6 +5212,16 @@ max_stable=0
 for n in $LOAD_CLIENTS; do
 	pids=""; ldir="$OUTDIR/load_${n}"; mkdir -p "$ldir"
 	lsnap0=""; [ -n "$SSH_TARGET" ] && lsnap0=$(dev_snap)
+	# Baseline BEFORE starting this step's own clients: an external viewer
+	# (NVR, Home Assistant, go2rtc, ...) may already hold one or more of the
+	# RTSP_MAX_CLIENTS slots, so this step's own headroom is RTSP_CAP minus
+	# that baseline, not the raw RTSP_CAP. See the grading block below.
+	# It is an UPPER bound on the slots in use: "clients" is hub_video_subs(),
+	# so HTTP/fMP4/MJPEG subscribers count too although they hold no RTSP slot,
+	# and under -rtsp-transport udp the previous step's clients can still be
+	# in there until the reaper runs. The grading block treats "more got in
+	# than this predicted" as a stale baseline, not as a fault.
+	base=$(hub_clients)
 	for c in $(seq 1 "$n"); do
 		timeout -k 5 "$((LOAD_DUR+6))" ffmpeg -hide_banner -nostdin -loglevel error -stats -rtsp_transport "$RTSP_TRANSPORT" \
 			-i "$(rtsp_url "$PATH_MAIN")" -t "$LOAD_DUR" -an -f null - </dev/null >"$ldir/c${c}.out" 2>"$ldir/c${c}.log" &
@@ -5248,30 +5258,62 @@ for n in $LOAD_CLIENTS; do
 		fi
 	fi
 	nf="${NOM_FPS[main]:-0}"; lo=$(awk -v x="$nf" 'BEGIN{printf "%.1f",x*0.9}')
-	# RTSP_MAX_CLIENTS (rtsp.c:32) is a HARD cap of 8: the 9th client is
-	# rejected on purpose, with a "client limit (%d) reached, rejecting" log
-	# line, because each client costs a thread plus a fanqueue. The `load`
-	# profile ramps to 12 and 16, so those steps used to be reported as
-	# "N failed (degrading)" - describing correctly-enforced admission control
-	# as degradation, and burying a real degradation if one ever happened
-	# there. Label the two cases apart. Not exposed via /control (checked),
-	# hence the constant + citation; override with RTSP_CAP= if a build
-	# changes it.
-	if [ "$n" -gt "$RTSP_CAP" ]; then
-		if [ "$okcli" -eq "$RTSP_CAP" ] && { fcmp "$nf" le 0 || fcmp "$minfps" ge "$lo"; }; then
-			ok "load ${n} clients: at cap - exactly ${RTSP_CAP} served at full fps (min ${minfps}), ${failcli} correctly rejected by RTSP_MAX_CLIENTS=${RTSP_CAP} (rtsp.c:32)${extra}"
-		elif [ "$okcli" -eq "$RTSP_CAP" ]; then
-			warn "load ${n} clients: at cap (${RTSP_CAP} served, ${failcli} rejected as designed) but min fps ${minfps} is below 90% of nominal ${nf} - the served clients are degrading${extra}"
+	# RTSP_MAX_CLIENTS (rtsp.c:32) is a HARD cap of 8: the 9th client on the
+	# server is rejected on purpose, with a "client limit (%d) reached,
+	# rejecting" log line, because each client costs a thread plus a
+	# fanqueue. This step's own HEADROOM is that cap minus whatever an
+	# external viewer (NVR, Home Assistant, go2rtc, ...) already held before
+	# this step started (see `base` above) - an 8-client ramp against a cap
+	# of 8 with one baseline client already attached can only seat 7 of its
+	# own, and that 8th rejection is the cap working exactly as designed, not
+	# degradation. Not exposed via /control (checked), hence the constant +
+	# citation; override with RTSP_CAP= if a build changes it.
+	# Digits only, and normalised through 10# - `[ 08 -ge 0 ]` passes (test
+	# parses base 10) but `$((8-08))` then dies on the octal literal, leaving
+	# `avail` unset, which `set -u` turns into a hard abort of the whole run.
+	if [ -n "$base" ] && [ -z "${base//[0-9]/}" ]; then
+		base=$((10#$base))
+		avail=$((RTSP_CAP - base)); [ "$avail" -lt 0 ] && avail=0
+		basemsg=""
+		[ "$base" -gt 0 ] && basemsg=" [baseline: ${base} client(s) already attached]"
+	else
+		avail="$RTSP_CAP"; base=0; basemsg=""
+	fi
+	if [ "$avail" -le 0 ]; then
+		# Nothing left to test with: the pre-existing clients already fill the
+		# cap, so every outcome of this step - all served, all rejected - says
+		# something about them, not about this build.
+		warn "load ${n} clients: no headroom - ${base} client(s) were already attached when this step started, filling RTSP_MAX_CLIENTS=${RTSP_CAP} (rtsp.c:32); ${okcli} ok / ${failcli} failed grades nothing. Re-run with no external viewer on the camera${extra}"
+	elif [ "$n" -gt "$avail" ]; then
+		if [ "$okcli" -eq "$avail" ] && { fcmp "$nf" le 0 || fcmp "$minfps" ge "$lo"; }; then
+			ok "load ${n} clients: at cap - exactly ${avail} served at full fps (min ${minfps}), ${failcli} correctly rejected by RTSP_MAX_CLIENTS=${RTSP_CAP} (rtsp.c:32)${basemsg}${extra}"
+		elif [ "$okcli" -eq "$avail" ]; then
+			warn "load ${n} clients: at cap (${avail} served, ${failcli} rejected as designed) but min fps ${minfps} is below 90% of nominal ${nf} - the served clients are degrading${basemsg}${extra}"
+		elif [ "$okcli" -gt "$avail" ] && [ "$base" -gt 0 ] && [ "$okcli" -le "$RTSP_CAP" ]; then
+			# More of this step's own clients got in than the headroom
+			# predicted, but still within the cap: the baseline over-counted.
+			# "clients" is hub_video_subs(), which also counts HTTP/fMP4/MJPEG
+			# subscribers - those hold no RTSP slot - and an external viewer
+			# may simply have disconnected during the step. Grade on what
+			# happened, not on the stale prediction.
+			if [ "$failcli" -eq 0 ] && { fcmp "$nf" le 0 || fcmp "$minfps" ge "$lo"; }; then
+				ok "load ${n} clients: all ok, min ${minfps} fps, aggregate ${agg} fps/s - more than the ${avail} free slots the baseline predicted, so not all of the ${base} pre-existing client(s) held an RTSP slot${extra}"
+				max_stable="$n"
+			else
+				warn "load ${n} clients: ${okcli} ok / ${failcli} failed, min fps ${minfps} - more got in than the ${avail}-slot headroom predicted, so the ${base}-client baseline was stale; judge this step by hand${extra}"
+			fi
+		elif [ "$okcli" -gt "$avail" ]; then
+			warn "load ${n} clients: ${okcli} served at once, more than RTSP_MAX_CLIENTS=${RTSP_CAP} (rtsp.c:32) allows - the cap is NOT being enforced (${failcli} failed)${basemsg}${extra}"
 		elif [ "$okcli" -gt 0 ]; then
-			warn "load ${n} clients: only ${okcli} served, expected the full cap of ${RTSP_CAP} before rejections start (${failcli} failed)${extra}"
+			warn "load ${n} clients: only ${okcli} served, expected ${avail} before rejections start (${failcli} failed)${basemsg}${extra}"
 		else
-			bad "load ${n} clients: all failed - not cap enforcement, the server served nobody${extra}"; break
+			bad "load ${n} clients: all failed - not cap enforcement, the server served nobody${basemsg}${extra}"; break
 		fi
 	elif [ "$failcli" -eq 0 ] && { fcmp "$nf" le 0 || fcmp "$minfps" ge "$lo"; }; then
 		ok "load ${n} clients: all ok, min ${minfps} fps, aggregate ${agg} fps/s${extra}"
 		max_stable="$n"
 	elif [ "$okcli" -gt 0 ]; then
-		warn "load ${n} clients: ${okcli} ok / ${failcli} failed, min fps ${minfps} (degrading, and below the ${RTSP_CAP}-client cap so this is NOT admission control)${extra}"
+		warn "load ${n} clients: ${okcli} ok / ${failcli} failed, min fps ${minfps} (degrading, and still within this step's headroom of ${avail} slot(s) out of RTSP_MAX_CLIENTS=${RTSP_CAP}, so this is NOT admission control)${basemsg}${extra}"
 	else
 		bad "load ${n} clients: all failed${extra}"; break
 	fi
