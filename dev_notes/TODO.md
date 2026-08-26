@@ -3,6 +3,69 @@
 Working list. Newest block first; each entry says what is established and what
 is still guesswork, so nobody has to re-derive it.
 
+## RESOLVED (explained, not a bug): cam-vorne's `E/VBM`/`E/Framesource ... not bind pool` lines are harmless vendor-SDK chatter from a real, idle-only chn0 enable cycle
+
+Found 2026-08-26 checking the fleet syslog for the first night after the
+2026-08-25 rebuild: cam-vorne logged 48 `E/`-level lines overnight that no
+other camera logged, in two bursts each lining up with a day/night switch:
+
+```
+E/VBM( 1110): VBMCreatePool()-0: w=1920 h=1080 f=842094158
+E/VBM( 1110): VBMCreatePool()-0: pool->config.fmt.fmt.pix.sizeimage=3133440 sizeimage=3133440
+E/Framesource( 1110): IMP_FrameSource_GetPool(3426):chnNum: 0 not bind pool
+E/VBM( 1110): VBMCreatePool()-0: sizeimage=3133440
+```
+
+Predates the rebuild (same pattern at similar-or-higher frequency on
+2026-08-22/23/24) - not a regression from the merge or any of this week's
+work.
+
+**Root cause**: `IMP_FrameSource_GetPool`'s own vendor header
+(`include/T23/1.3.0/en/imp/imp_framesource.h:504`) documents this as normal
+libimp housekeeping ("cannot be used by customers temporarily") emitted on a
+real `EnableChn` of chn0 when timps hasn't bound a user MemPool (it doesn't -
+this is the documented rmem-fallback path, not an error condition). Every
+daynight switch calls `hub_control("image.running_mode")` three times (the
+switch itself plus `DN_REASSERT_COUNT=2` re-asserts, `daynight.c:66`,
+defence against this board's own ISP-latch quirk) - `ing_control()`'s
+`fs_kick_chn0()` (`hal_ingenic.c:566`) does a REAL enable+disable cycle only
+when chn0 is currently idle, and each real enable emits these four lines.
+Confirmed by matching the logcat lines' embedded Unix timestamps
+second-for-second against three `framesource 0 enabled/disabled (idle)`
+pairs in timpsd's own log at the same switch.
+
+**Why only cam-vorne**: not a T23-vs-T31 thing - `cam-kinder-links` (also
+T23) shows the identical lines once per daemon start, then never again,
+because Frigate holds its chn0 open 24/7 (pulls both `/ch0` record and
+`/ch1` detect from every other fleet camera). cam-vorne is the one exception
+- Frigate's own config (`/frigate/config/config.yaml` on the syslog/services
+host, camera key `cam-v`) has its `/ch0` record input commented out, only
+`/ch1` (detect+record) is active - so cam-vorne's chn0 genuinely idles
+between clients, and every overnight daynight switch does real enable
+cycles instead of a refcounted no-op. (The "no other camera logged this last
+night" observation only held for the night window - all cameras logged it
+during the previous day's rebuild restarts, for the same real-idle-enable
+reason at daemon startup.)
+
+**Impact: none observed**. Pool creation succeeds every time (rmem fallback
+is the documented normal path without a MemPool), streaming continued
+through every cycle, zero `EnableChn failed` across days of this happening.
+Vendor's own only named risk (rmem fragmentation from repeated pool
+create/destroy) has no supporting evidence here (rmem=22M, no alloc
+failures).
+
+**Decision**: leave as-is, don't change code or Frigate's config for this -
+it's vendor chatter at the wrong log level describing intended behavior, and
+the daynight re-assert kicks are deliberate defence-in-depth against a real
+per-board ISP quirk (weakening them to quiet a cosmetic log line would be
+backwards). Documented here so nobody re-investigates it as a live issue.
+Considered and declined: filtering/relabeling it in promtail (adds
+config-maintenance surface for a cosmetic Grafana count, not worth it
+unless the noise actually becomes a problem); reactivating Frigate's `/ch0`
+record for cam-v (separate question, whatever reason it's currently off for
+- WLAN bandwidth on the atbm6062 radio is the leading guess - not
+this repo's decision to make unprompted).
+
 ## OPEN (thingino-firmware-LuFi, not this repo): PTZ presets are CGI-only - no WebSocket path
 
 Found 2026-08-25 during the post-merge PTZ compatibility check (see the
