@@ -41,6 +41,33 @@ semantic versioning.
   immediate baseline push; an idle, unchanging stream now sends one instead
   of one every 2s.
 
+- **The per-frame keyframe test no longer scans the whole access unit**
+  (`src/hal/hal_ingenic.c`, `src/codec/vparam.c`). `au_is_key()` ran on the
+  video producer thread for every encoded frame of every stream and walked
+  the AU to its end whenever it found no IDR NAL - i.e. for the ~96% of
+  frames that are P-frames, it read the entire frame just to answer "no".
+  It now walks start codes and stops at the FIRST VCL NAL: an access unit
+  carries exactly one coded picture, so all of its slices agree on
+  IDR-/IRAP-ness, and the parameter-set/SEI/AUD NALs that may precede them
+  are a few dozen bytes. Same answer, a couple of dozen bytes read instead
+  of up to 1 MB. `vparam_update()` gets the matching treatment on the
+  keyframe path: it stops once the access unit has supplied the complete
+  set (VPS+)SPS+PPS instead of walking the several-hundred-KB IDR slice
+  behind them - and it does that while `hub_prepare_locked()` holds the
+  source lock that subscribe/unsubscribe and the `/events` stats tick also
+  contend for. An AU that carries no parameter sets, or refreshes only part
+  of the set, is still scanned to the end exactly as before.
+
+  Deliberately NOT taken from `IMPEncoderPack`'s own NAL-type field, which
+  every vendored SDK header does expose (`nalType.h264NalType`/`h265NalType`
+  on T31/C100/T40/T41, `dataType.h264Type`/`h265Type` on T20/T21/T23/T30,
+  with T20's union missing the H.265 arm entirely): the field describes a
+  libimp bitstream *section*, which is not guaranteed to be one NAL, so
+  believing it would trade a per-SoC-verifiable byte test for an unverified
+  per-libimp-version assumption - and the SW-rotate path
+  (`IMP_Encoder_YuvEncode`) has no pack array at all. With the early exit
+  there is nothing measurable left to win. `+160 B` .text on T31/`-Os`.
+
 ## [1.9.3] - 2026-08-23
 
 ### Changed

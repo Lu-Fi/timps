@@ -10,7 +10,8 @@ void vparam_init(vparam *v, int codec)
     v->codec = codec;
 }
 
-static void store(uint8_t *dst, int *dlen, const uint8_t *s, size_t n, int cap)
+/* returns 1 if the set was actually taken (see vparam_update's early exit) */
+static int store(uint8_t *dst, int *dlen, const uint8_t *s, size_t n, int cap)
 {
     /* an oversized parameter set used to be silently clipped, producing a
      * corrupt (truncated-NAL) avcC/hvcC/sprop-parameter-sets that no client
@@ -18,27 +19,39 @@ static void store(uint8_t *dst, int *dlen, const uint8_t *s, size_t n, int cap)
      * (SPS/PPS are always small), but skip-on-overflow - keep whatever
      * valid set was cached before, if any - is a safer failure mode than
      * emitting truncated data. */
-    if ((int)n > cap) return;
+    if ((int)n > cap) return 0;
     memcpy(dst, s, n);
     *dlen = (int)n;
+    return 1;
 }
 
 int vparam_update(vparam *v, const uint8_t *au, size_t len)
 {
     nal_iter it; nal_unit u;
+    /* which sets THIS access unit has supplied: vps|sps|pps as bits 0|1|2 */
+    int got = 0, want = (v->codec == MS_VC_H264) ? 6 : 7;
     nal_iter_init(&it, au, len);
     while (nal_iter_next(&it, &u)) {
         if (u.len < 2) continue;
         if (v->codec == MS_VC_H264) {
             int t = h264_nal_type(u.data);
-            if (t==7) store(v->sps,&v->sps_len,u.data,u.len,sizeof v->sps);
-            else if (t==8) store(v->pps,&v->pps_len,u.data,u.len,sizeof v->pps);
+            if (t==7) got |= store(v->sps,&v->sps_len,u.data,u.len,sizeof v->sps)<<1;
+            else if (t==8) got |= store(v->pps,&v->pps_len,u.data,u.len,sizeof v->pps)<<2;
         } else {
             int t = h265_nal_type(u.data);
-            if (t==32) store(v->vps,&v->vps_len,u.data,u.len,sizeof v->vps);
-            else if (t==33) store(v->sps,&v->sps_len,u.data,u.len,sizeof v->sps);
-            else if (t==34) store(v->pps,&v->pps_len,u.data,u.len,sizeof v->pps);
+            if (t==32) got |= store(v->vps,&v->vps_len,u.data,u.len,sizeof v->vps);
+            else if (t==33) got |= store(v->sps,&v->sps_len,u.data,u.len,sizeof v->sps)<<1;
+            else if (t==34) got |= store(v->pps,&v->pps_len,u.data,u.len,sizeof v->pps)<<2;
         }
+        /* Parameter sets precede the coded picture, so once THIS access unit
+         * has supplied the whole set there is nothing further to find: stop
+         * instead of walking the (100s of KB) IDR slice behind it - hub calls
+         * this on every keyframe while holding the source lock that
+         * subscribe/unsubscribe and the stats tick also need. The gate is what
+         * this CALL took, not vparam_ready(): an AU that refreshes an already
+         * complete set must still be read past its first NAL, and an AU that
+         * carries no (or an unusable) set is scanned to the end as before. */
+        if (got == want) break;
     }
     return vparam_ready(v);
 }

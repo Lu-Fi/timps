@@ -1451,14 +1451,42 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
     return 0;
 }
 
-/* concatenated pack -> keyframe test */
+/* concatenated pack -> keyframe test.
+ *
+ * Decided by the FIRST VCL NAL only: an access unit carries exactly one coded
+ * picture, so all of its slices agree on IDR-/IRAP-ness, and the parameter
+ * set / SEI / AUD NALs that may precede them are a few dozen bytes. So this
+ * walks start codes, reads one NAL header byte at each, and stops at the first
+ * slice - it does not need each NAL's END, which is what made the previous
+ * nal_iter version walk the whole AU for every one of the ~96% of frames that
+ * are not keyframes, at full frame rate, on the producer thread, per stream.
+ *
+ * Not read from IMPEncoderPack.nalType/.dataType, which the SDK does fill in:
+ * that field is per PACK, and a pack is a libimp bitstream section, not
+ * necessarily one NAL (see enc_assemble_packs' start-code fixup below), so it
+ * cannot answer "is any NAL in this AU an IDR" without the same per-platform
+ * assumptions this function exists to avoid - and the sw-rotate path
+ * (IMP_Encoder_YuvEncode) has no pack array at all. With the early exit the
+ * byte path costs a few dozen bytes per AU, so there is nothing left to win. */
 static int au_is_key(int codec, const uint8_t *au, size_t len)
 {
-    nal_iter it; nal_unit u; nal_iter_init(&it,au,len);
-    while (nal_iter_next(&it,&u)){
-        if (u.len<1) continue;
-        if (codec==MS_VC_H264){ if (h264_nal_type(u.data)==5) return 1; }
-        else { int t=h265_nal_type(u.data); if (t>=16&&t<=23) return 1; }
+    for (size_t i=0; i+4<=len; ){
+        size_t h;
+        if (au[i]!=0 || au[i+1]!=0) { i++; continue; }
+        if (au[i+2]==1)                     h = i+3;
+        else if (au[i+2]==0 && au[i+3]==1)  h = i+4;
+        else { i++; continue; }
+        if (h>=len) break;
+        if (codec==MS_VC_H264){
+            int t=h264_nal_type(au+h);
+            if (t==5) return 1;
+            if (t>=1 && t<=5) return 0;      /* VCL of a non-IDR picture */
+        } else {
+            int t=h265_nal_type(au+h);
+            if (t>=16 && t<=23) return 1;
+            if (t<=31) return 0;             /* VCL of a non-IRAP picture */
+        }
+        i = h+1;
     }
     return 0;
 }
