@@ -64,6 +64,15 @@ Scenario JSON (all times virtual seconds, all gains IMP [24.8] linear):
                                   every clip protection is structurally
                                   absent - the case dn_ceiling_check() warns
                                   about.
+  no_max_int                    - OPTIONAL bool: publish the integration time
+                                  but NOT its maximum, so the daemon falls
+                                  back to its own high-water mark (dn_read's
+                                  g_int_hwm). This is what both fleet T20s do
+                                  - isp_info, the older SDK naming - and the
+                                  path on which the integration-time half of
+                                  the AE-reserve test cannot be trusted.
+                                  Requires day_int_ratio/night_int_ratio to
+                                  have any effect. See scenario 29.
   isp_sticky                    - OPTIONAL {"stuck": "day"|"night",
                                   "from": <t>}: the ISP
                                   refuses to leave the stuck mode. switch_cmd
@@ -258,8 +267,10 @@ class SimRun:
     the switch_cmd stub and the trace recorder wired up."""
 
     def __init__(self, binary, scale, initial_mode, config, keep=False,
-                 model_illuminator=False, no_ceilings=False):
+                 model_illuminator=False, no_ceilings=False,
+                 no_max_int=False):
         self.no_ceilings = no_ceilings
+        self.no_max_int = no_max_int
         # short prefix: daynight.switch_cmd is a 64-byte field on the target
         self.dir = tempfile.mkdtemp(prefix="dnrp-")
         self.keep = keep
@@ -366,7 +377,15 @@ class SimRun:
                 mx = 1000
                 it = max(1, min(mx, int(round(ratio * mx))))
                 f.write("SENSOR Integration Time : %d lines\n" % it)
-                f.write("SENSOR Max Integration Time : %d lines\n" % mx)
+                # The maximum. Both fleet T20s publish the integration time
+                # and NOT its maximum (isp_info, the older SDK naming), which
+                # sends the daemon to its high-water-mark fallback - the case
+                # scenario 29 is about. The served ratio then still means what
+                # the scenario wrote, because the highest ratio the curve ever
+                # reaches sets the mark: write the curve so its own peak is
+                # the intended 1.0 if the index is to be faithful.
+                if not self.no_max_int:
+                    f.write("SENSOR Max Integration Time : %d lines\n" % mx)
         os.replace(tmp, self.isp)
 
     def start(self, first_gain, first_ratio=None):
@@ -709,7 +728,8 @@ def run_regression(scn, binary, keep=False, scale_override=None):
     sim = SimRun(binary, scale, scn["initial_mode"], scn.get("config"),
                  keep=keep,
                  model_illuminator=bool(scn.get("night_gain_noir")),
-                 no_ceilings=bool(scn.get("no_ceilings")))
+                 no_ceilings=bool(scn.get("no_ceilings")),
+                 no_max_int=bool(scn.get("no_max_int")))
     def ratio_at(mode, t):
         c = scn.get("night_int_ratio" if mode == "night" else "day_int_ratio")
         return None if not c else max(0.0, min(1.0, interp_gain(c, t, "linear")))

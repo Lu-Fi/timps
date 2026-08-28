@@ -256,7 +256,9 @@ typedef struct {
     float bright;  /* 0..100 %, status readout only; <0 = unknown */
     /* How much room the AE still has, in log2 units (32 = one stop): the
      * unused gain below each ceiling, plus a stop's worth if the integration
-     * time is not railed either. <0 = the maxima were not readable.
+     * time is not railed either - the latter only where the SDK publishes a
+     * real maximum to be railed against (see dn_read). <0 = the maxima were
+     * not readable.
      *
      * This is what makes a ratio reading trustworthy. An AE with nothing left
      * cannot respond to the illuminator going off, so it returns r ~= 1 -
@@ -425,6 +427,7 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
          * genuinely dark stretch pins it at the true value and it stays there.
          * Reset with the thread, not kept across a re-enable, because the
          * sensor mode may have changed underneath us. */
+        int mit_real = mit > 0;             /* the SDK published it itself */
         if (mit <= 0 && it > 0) {
             if (it > g_int_hwm) g_int_hwm = it;
             mit = g_int_hwm;
@@ -432,7 +435,16 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
         if (mag >= 0 && ag >= 0) {
             o->headroom = (mag - ag) + (midg >= 0 && idg >= 0 ? midg - idg : 0);
             if (o->headroom < 0) o->headroom = 0;
-            if (it > 0 && mit > 0 && it < mit * 9 / 10) o->headroom += 32;
+            /* A stop's worth if the AE could still answer by lengthening the
+             * exposure - but only a REAL maximum can establish that. Against
+             * the high-water mark above the test fires forever once a
+             * transient has pinned the mark over the value the AE settles at,
+             * and it reported 32 units of reserve for a meter railed on both
+             * gains. The safe-direction argument above is about o->ratio, not
+             * about this. Both T20s, no maximum published; every T31/T23
+             * publishes one and reaches it when dark, so this is inert there.
+             * Measured 2026-08-28, see TODO.md and scenario 29. */
+            if (mit_real && it > 0 && it < mit * 9 / 10) o->headroom += 32;
         }
 
         if (it >= 0 && mit > 0) {

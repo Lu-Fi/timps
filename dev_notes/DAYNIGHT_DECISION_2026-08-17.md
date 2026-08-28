@@ -114,6 +114,17 @@ can now answer. The blindness dissolves at exactly the moment it would matter.
 Headroom test: `(max_analog - analog) + (max_digital - digital) >= 8` log2
 units, or integration time below 90 % of maximum.
 
+**NARROWED 2026-08-28.** The integration-time half now applies only where the
+SDK publishes the maximum itself. Both T20s - i.e. both of the "two of the
+twelve cameras" this section is written about - publish the integration time
+and not its maximum, so `dn_read()` substitutes its own high-water mark, and a
+mark is the longest exposure ever *observed*, not the longest available. On
+cam-J it was pinned by a transient at 1120 while the AE settled at 843, making
+the test true forever: 32 units of reserve reported for a meter railed on both
+gains, on all 9534 samples of a day's trace. The rail rule was therefore off on
+exactly the cameras it was written for - measured in the harness as a day/night
+flap every heartbeat on a pitch-dark room. Scenario 29 covers it.
+
 ---
 
 ## Why these numbers

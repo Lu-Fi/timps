@@ -1,0 +1,41 @@
+{
+  "name": "29-railed-t20-no-max-int",
+  "incident": "2026-08-28 - side finding of the cam-wyze-pan investigation: the integration-time half of the AE-reserve test fired on a high-water mark and manufactured 32 units of reserve for a fully railed meter",
+  "description": "A T20 cellar camera, railed at the dark end, whose SDK publishes the integration time but not its maximum. dn_read() then substitutes its own high-water mark - and `it < mit * 9/10` measured against a mark is not a statement about the AE's remaining room, it is a statement about some earlier moment under some other sensor mode. On cam-J the integration time is pinned at 843 against a mark of 1120, so the ratio is a constant 0.7527 and the +32 bonus fired on all 9534 samples of a day's trace, 9010 of which had analog (128/128) and ISP digital (45/45) both railed. Reserve 0 was reported as 32.\n\nThat single number is the whole rail rule. The silent probe's fork is `r <= ir_ratio_day AND room >= ir_min_headroom` -> the room supplies the light, DAY, against `room < ir_min_headroom` -> pegged at the dark end, which is itself night. With the illuminator contributing nothing (this camera's r never leaves ~1.0) the fork is decided by the reserve alone, so the bonus inverted the verdict: a pitch-dark windowless room read as a lit one and the machine drove the board to day. Everything else that gates on dn_clipped() went with it - the night reference, filter_cost, probe_best, the trend pair.\n\nOn a meter this thoroughly railed the guard that actually catches it is the one an eyelash further up: the LIT reading is a clip too, so r divides two clips and says nothing. That is the same reserve, read the same way - it just gets there first. The pegged-is-night fork is what would have caught it a step later.\n\nThe fix grants the bonus only where the maximum is the SDK's own. A high-water mark cannot prove there is room beyond what has already been observed, and being monotone it cannot withdraw the claim once a transient peak has set it.\n\nNo scenario reached this before: the harness always published a maximum alongside the integration time, so the fallback path had no coverage at all. Scenario 22 is the same camera and the same r=1.00, but written with gains far below the synthetic ceiling - it models the flap, not the rail.\n\nThe mark has to be SET before it can lie, and dn_read clears it with the thread, so the run serves the transient itself: the integration time opens railed at the maximum and settles 25 % below it at t=20, which pins the mark at the opening value for the rest of the run - the harness form of a sensor mode or antiflicker setting that no longer applies. The gain curve is scaled by the reciprocal at the same instant so the exposure index stays a flat 300000 across the step and no trend or brightening trigger is fed a move that is not in the scene. Written with a constant ratio instead, the scenario passes on the pre-fix tree and tests nothing: the mark equals the current integration time, so the bonus never fires.\n\nAgainst the pre-fix tree this scenario switches to day within one probe of boot. Post-fix it spends its whole night in night, with zero audible clicks after the boot measurement pair.",
+  "scale": 30,
+  "duration_s": 1800,
+  "initial_mode": "night",
+  "no_max_int": true,
+  "config": {
+    "daynight.day_gain": 768,
+    "daynight.night_gain": 4096,
+    "daynight.heartbeat_s": 300,
+    "daynight.heartbeat_max_s": 300,
+    "daynight.probe_min_gap_s": 60
+  },
+  "interp": "step",
+  "noise_pct": 0,
+  "night_gain": [[0, 300000], [20, 398565]],
+  "night_gain_noir": [[0, 300000], [20, 398565]],
+  "day_gain": [[0, 300000], [20, 398565]],
+  "night_int_ratio": [[0, 1.0], [20, 0.7527]],
+  "day_int_ratio": [[0, 1.0], [20, 0.7527]],
+  "expect": {
+    "expected_mode": [[0, "night"], [1, "any"], [60, "night"]],
+    "max_wrong_mode_s": 60,
+    "max_switches": 2,
+    "monotonicity": "warn",
+    "expect_log": [
+      "boot: AE railed with 0 units of reserve",
+      "the lit reading had only 0 units of AE reserve - a ratio of two clips",
+      "night reference deferred: only 0 units of AE reserve",
+      "probe: r=1.00 .* hr=0 verdict=night"
+    ],
+    "forbid_log": [
+      "the room supplies the light",
+      "the illuminator carries this scene",
+      "hr=32",
+      "switching to day \\((?!boot measure)"
+    ]
+  }
+}

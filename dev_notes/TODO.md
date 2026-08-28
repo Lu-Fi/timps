@@ -3,6 +3,113 @@
 Working list. Newest block first; each entry says what is established and what
 is still guesswork, so nobody has to re-derive it.
 
+## RESOLVED: the AE-reserve test granted a stop of integration-time credit against a high-water mark, disabling every clip protection on both T20s
+
+Found 2026-08-28 as a side finding of the cam-wyze-pan investigation below,
+then given its own pass. It is worse than that entry recorded it: not latent,
+and not confined to jxf22.
+
+**The mechanism.** `dn_read()` computes the AE reserve as the unused gain
+below each ceiling, plus a stop (`+32`) when `it < mit * 9/10` - "the AE could
+still answer by lengthening the exposure". Where the SDK does not publish
+`SENSOR Max Integration Time`, `mit` is `dn_read`'s own high-water mark
+instead. A mark is the longest exposure ever *observed*. It cannot prove there
+is room beyond what has already happened, it says nothing about the sensor
+mode or antiflicker setting that produced the peak, and being monotone it
+cannot withdraw the claim once a transient has set it. The existing
+safe-direction argument in that comment is about `o->ratio`, where an
+under-estimate rails at 1.0 and the index degrades to bare gain; it was never
+re-derived for the reserve, where the mark is an *over*-estimate relative to an
+integration time the AE has since pinned lower, and the test then fires
+forever.
+
+**Evidence, first-hand.** Live `/proc/jz/isp/isp_info` on cam-wyze-pan
+(192.168.10.163) at the time of writing: no `SENSOR Max Integration Time` line
+at all, `SENSOR Integration Time : 843`, `SENSOR analog gain : 128` against
+`MAX SENSOR analog gain : 128`, `ISP digital gain : 45` against `MAX ISP
+digital gain : 45`. Real reserve: **0**. Mark: 1120 (843 / 0.7527), so
+`843 < 1008` and the bonus fires - reported reserve **32**, four times
+`ir_min_headroom`. The on-device trace has ratio `0.7527` on 9534 of 9534
+samples and gain 10856 (the fully railed value) on 9010 of them: the bonus
+fired on every sample of the day, and on 9010 of them the base it was added to
+was zero.
+
+**Not jxf22-specific, and not latent.** Probed all twelve fleet cameras the
+same day. The split is by SoC generation, exactly as `dn_read()`'s path
+fallback already documents: both T20s read `isp_info` and publish **no**
+maximum (cam-wyze-pan/jxf22 ratio a constant 0.7527; cam-wyze-cam2/jxf23,
+192.168.10.107, a constant 0.3333 on 7073 of 7165 samples) - both permanently
+credited. The T23/T31s read `isp-m0`, publish a real maximum, **and reach it
+exactly** when dark (192.168.10.25 `1196/1196`, 192.168.10.21 `1496/1496`), so
+their integration-time test works as designed and the fix is a no-op there.
+The two affected cameras are cam-J and cam-K - the two dark cellar cameras,
+i.e. precisely the "two of the twelve sit entirely at the rail" that
+DAYNIGHT_DECISION_2026-08-17 built the rail rule for. The rule was off on the
+only cameras that need it.
+
+**What it actually cost.** `dn_clipped()` gates seven decisions, and all seven
+were disabled on those two cameras: the night reference could be anchored on a
+clip, `filter_cost` learned from a railed meter, `probe_best` polluted, the
+trend pair seeded at the rail, and - the load-bearing one - the silent probe's
+fork. With `ir_ratio_day == ir_ratio_night == 2.0`, that fork is decided by
+the reserve alone for any `r < 2.0`: `room >= 8` means "the room supplies the
+light, go day", `room < 8` means "pegged at the dark end, which is itself
+night". cam-J's `r` never leaves ~1.0. Reproduced in the harness (scenario 29,
+below): against the pre-fix binary a pitch-dark railed room switches to **day
+at t=325 and back at t=359**, and would do so once per heartbeat - two audible
+clicks and 34 s of wrong mode, forever, in a room with no light in it. The
+earlier entry's "harmless here since the branch it feeds still reached the
+right answer" was true only because cam-wyze-pan happened to have a measured
+`filter_cost` whose day-reading projection vetoed the switch inside the wrong
+branch - a downstream net catching a decision that had already gone wrong, and
+one that is itself learned through the same broken gate.
+
+**Fix**: `src/daynight.c`, `dn_read()` - the `+32` is granted only when `mit`
+came from the SDK (`int mit_real = mit > 0;` captured before the high-water
+fallback overwrites it). One condition, no new tunable. The reserve on both
+T20s is now the honest gain-only figure, so railed-dark reads as clipped and
+the rail rule does what the design says.
+
+**Rejected alternative**: additionally requiring some nonzero gain reserve
+before the bonus may count ("extend a real headroom, never manufacture one").
+It would also fix this case, but it changes behaviour on cameras that are not
+broken: an AE that rails gain first to keep exposure short - legitimate, and
+antiflicker quantisation makes it reachable - would be called clipped while it
+genuinely still had a stop of exposure available. No fleet evidence for that
+shape either way, and provenance is the narrower cut that matches where the
+information is actually missing.
+
+**Verification.** `make sim` + the full scenario corpus at both clock scales
+(28 scenarios, 12 at scale 30 and 16 at scale 60), before and after: unchanged,
+all green. The fix is provably inert on the existing corpus - every scenario
+either publishes a maximum or omits the integration-time fields entirely, so
+`mit_real` is exactly the old condition there. New scenario **29-railed-t20-
+no-max-int** covers the gap: `no_max_int` (new harness option - publish the
+integration time, withhold its maximum) plus railed gains plus a constant
+sub-0.9 ratio. It FAILS on the pre-fix binary (4 switches against a budget of
+2, `hr=32`, "the room supplies the light") and passes after. Note the first
+draft of it passed on BOTH trees and tested nothing: with a constant ratio the
+mark equals the current integration time and the bonus never fires. The
+scenario therefore serves the pinning transient itself (railed at t=0, 25 %
+below from t=20, gain scaled by the reciprocal at the same instant so the
+exposure index stays flat and no trend trigger is fed a move that is not in
+the scene). Same trap as the `check_clock` one - a test that cannot reach its
+own event does not fail, it quietly stops testing.
+
+**Noticed while verifying, NOT caused by this change**: scenario 03-noisy-night
+is flaky on its click budget - 6 switches against a budget of 5, roughly one
+run in two, and at the same rate on both binaries (measured 3 isolated runs
+each: pre-fix 2 fail, post-fix 1 fail; it also failed in the corpus run under
+CPU load and passed in the one before). It cannot be this change: 03 serves no
+integration-time fields at all, so `it` stays -1 and the condition is false
+before and after. It looks like the noise seed interacting with real-time
+scheduling rather than a fixed seed producing a fixed trace. Own item.
+
+**Still open**: nothing on this specific defect. Adjacent, and untouched -
+cam-J's illuminator contributing nothing (`r` never above ~1.10 even when
+gain-railed) is still the more consequential problem for that room, and is
+recorded in the entry below.
+
 ## RESOLVED: cam-wyze-pan never confirmed day mode after a manual basement-light event - windowless room, not a bug
 
 Found 2026-08-28: user was in the basement (light on) for ~17 minutes
