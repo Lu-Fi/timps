@@ -1,0 +1,38 @@
+{
+  "name": "30-railed-day-no-exit",
+  "incident": "2026-08-28 evening - cam-wyze-pan stuck in day mode for 88 minutes, railed dark, until a manual running_mode override; the direct follow-on of raising daynight.night_gain to 7000 that same afternoon",
+  "description": "The day->night rule is `s > night_gain` held for day_confirm_s, and it silently assumes the day pipeline can PRODUCE a reading above night_gain. It cannot everywhere: the two pipelines rail at different ceilings (the T20/jxf22 day tuning caps ISP digital gain at 32 units against the night tuning's 45, which at that camera's pinned 0.7527 integration ratio is an index ceiling of 6166 in day vs 8171 in night). Raise night_gain into the gap between the two ceilings - done deliberately on 2026-08-28 to make day reachable in a windowless basement, because the day pipeline's ~6160 there had made day unreachable under the 4096 default - and day mode becomes a mode with no exit. Day has no probe and no history by design; the absolute rule was its only door, and the reading needed to open it is beyond the meter's own rail.\n\nMeasured on the camera itself: legitimate silent-probe day verdict at 20:42:53 (r=1.04, real reserve, room lit), lights out some time after, day pipeline pegged at 6166 < 7000 for 88+ minutes of total log silence - the branch ran every 2 s and compared honestly, the comparison was just unsatisfiable. The manual override that ended it flipped the ISP to the night pipeline, whose railed reading 8171 > 7000 finally started dark_since, and the machine 'found' night 30 s later off its own rule - reading a pipeline it did not know it was in.\n\nThe fix: a clip counts as dark. A day meter pegged at its dark end is a floor, not a level, and cannot happen in a bright scene - the same argument as the silent probe's pegged-is-night branch, now applied where the mode has no other way to ask. day_confirm_s still gates it.\n\nThis scenario serves honest ceilings (no integration-time fields at all), so it isolates the day-branch rule and fails on any tree without it - including the pre-e361b3b trees, where the field camera's clip was ADDITIONALLY masked by the high-water-mark +32 reserve bonus (scenario 29's subject; on the incident binary hr read 32 for a meter railed on both gains, so even this fix would have been blind there. The two fixes ship together or not at all).\n\nShape: lit basement room under the night pipeline (1250, ample reserve, illuminator contributing nothing - r=1.0), day pipeline railed at the synthetic sensor's own ceiling (served 400000 -> ag 340 of MAX 320, reserve 0, index ~404k) and BELOW night_gain 500000 whatever the light does. Boot measures night; the first heartbeat's silent probe reads 'the room supplies the light' and enters day exactly as the camera did; the railed day meter must then exit within day_confirm_s - filter_cost deliberately NOT learned from the clip, so no 'day mode reads' line may appear. Lights out at 600 rails the night pipeline too; every later heartbeat probe answers 'a ratio of two clips, staying night' for zero further clicks.\n\nPre-fix this run enters day at ~330 and never leaves it - 1400+ seconds of wrong mode against a budget of 120.",
+  "scale": 30,
+  "duration_s": 1800,
+  "initial_mode": "night",
+  "config": {
+    "daynight.day_gain": 768,
+    "daynight.night_gain": 500000,
+    "daynight.heartbeat_s": 300,
+    "daynight.heartbeat_max_s": 300,
+    "daynight.probe_min_gap_s": 60
+  },
+  "interp": "step",
+  "noise_pct": 0,
+  "night_gain": [[0, 1250], [600, 400000]],
+  "night_gain_noir": [[0, 1250], [600, 400000]],
+  "day_gain": [[0, 400000]],
+  "expect": {
+    "expected_mode": [[0, "night"], [5, "any"], [120, "night"],
+                      [290, "any"], [430, "night"]],
+    "max_wrong_mode_s": 120,
+    "max_switches": 4,
+    "max_ir_probes": 8,
+    "monotonicity": "warn",
+    "expect_log": [
+      "the room supplies the light",
+      "switching to day \\(IR ratio",
+      "switching to night \\(day meter railed",
+      "day level .* is a clip",
+      "a ratio of two clips, staying night"
+    ],
+    "forbid_log": [
+      "day mode reads"
+    ]
+  }
+}

@@ -1766,8 +1766,26 @@ static void *dn_thread(void *arg)
                  * arrive through the ordinary path, losing the pre-probe
                  * level the reference is anchored from. */
                 if (verdict_at) break;
-                if (s > dn->night_gain) { if (!dark_since) dark_since = now; }
-                else                    dark_since = 0;
+                /* A railed meter counts as dark. `s` off a pegged AE is a
+                 * floor, not a level (see dn_clipped), and pegged at the
+                 * dark end cannot happen in a bright scene - the argument
+                 * the silent probe's pegged branch already stands on. It is
+                 * load-bearing here because the two pipelines rail at
+                 * DIFFERENT ceilings (T20/jxf22 caps ISP digital gain at 32
+                 * in day vs 45 in night: 6166 vs 8171 at its pinned 0.7527
+                 * ratio), so a night_gain set between them makes
+                 * `s > night_gain` unsatisfiable in day mode - and day has
+                 * no probe and no history to exit by. Measured 2026-08-28
+                 * on cam-J: 88 minutes railed dark in day mode, ended only
+                 * by a manual override. A wrong night self-corrects through
+                 * the probes; a wrong day corrects through nothing, so a
+                 * clip's ambiguity (dark past the rail, or merely at it) is
+                 * spent in the direction that can take itself back.
+                 * day_confirm_s still gates, so one AE transient cannot
+                 * flip the mode on its own. */
+                if (s > dn->night_gain || dn_clipped(sm.headroom)) {
+                    if (!dark_since) dark_since = now;
+                } else dark_since = 0;
                 if (dark_since &&
                     now - dark_since >= (int64_t)dn->day_confirm_s * 1000) {
                     /* a ratio verdict undone by the absolute rule is the one
@@ -1808,6 +1826,12 @@ static void *dn_thread(void *arg)
                              (double)filter_cost, (double)s,
                              (double)ir_night_at,
                              (double)(dn->night_gain / filter_cost));
+                    } else if (ir_night_at > 0.0f && dn_clipped(sm.headroom)) {
+                        LOGD(MOD, "day level %.0f is a clip (%d units of AE "
+                                  "reserve), not a cost measurement - "
+                                  "filter_cost stays unmeasured, the veto "
+                                  "stays off",
+                             (double)s, sm.headroom);
                     } else if (ir_night_at > 0.0f) {
                         LOGD(MOD, "night level %.0f from %lldms ago is too "
                                   "stale to cost this dusk's %.0f against - "
@@ -1819,8 +1843,13 @@ static void *dn_thread(void *arg)
                     ir_night_at = -1.0f;
                     ir_night_ms = 0;
                     target = DN_NIGHT;
-                    snprintf(why, sizeof why, "exposure %.0f > %.0f",
-                             (double)s, (double)dn->night_gain);
+                    if (s > dn->night_gain)
+                        snprintf(why, sizeof why, "exposure %.0f > %.0f",
+                                 (double)s, (double)dn->night_gain);
+                    else
+                        snprintf(why, sizeof why,
+                                 "day meter railed at %.0f, reserve %d",
+                                 (double)s, sm.headroom);
                 }
                 break;
             }

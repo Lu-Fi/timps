@@ -61,6 +61,19 @@ means night. An honest measurement on the honest pipeline, an absolute
 threshold - but an uncritical one. It sits at 4096, while everything
 interesting happens around 1000.
 
+**AMENDED 2026-08-28.** A clipped sample now also counts as dark: the rule
+assumed the day pipeline can *produce* a reading above `night_gain`, and the
+two pipelines rail at different ceilings (T20/jxf22 caps ISP digital gain at
+32 log2-units in day against 45 in night - an index ceiling of 6166 vs 8171
+at its pinned 0.7527 ratio). A `night_gain` raised into that gap made
+`s > night_gain` unsatisfiable, and day mode - no probe, no history, by
+design - had no other door: cam-wyze-pan spent 88 minutes railed dark in day
+mode until a manual override. A meter pegged at its dark end is a floor, not
+a level, and cannot happen in a bright scene - the silent probe's
+pegged-is-night argument, applied where the mode cannot otherwise ask.
+`day_confirm_s` still gates it. Scenario 30; inert wherever the day rail
+sits above `night_gain`, which is everywhere the default config runs.
+
 **Night** keeps two EMAs of the index (tau 3 min and 60 min) and fires the
 **silent probe** when any one of three conditions holds:
 

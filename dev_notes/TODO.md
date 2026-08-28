@@ -3,6 +3,67 @@
 Working list. Newest block first; each entry says what is established and what
 is still guesswork, so nobody has to re-derive it.
 
+## RESOLVED: day mode with no exit - cam-wyze-pan stuck in day, railed dark, for 88 minutes; the day->night rule assumed the day pipeline can read above night_gain, and on this camera it cannot
+
+Found 2026-08-28 evening, the direct follow-on of the night_gain=7000 change
+from that afternoon (entry below, now superseded). Legitimate silent-probe day
+verdict at 20:42:53 (`r=1.04 lit=896 dark=936 hr=132` - room genuinely lit,
+real AE reserve ~100 units under the bogus +32), then, after light-off, zero
+`[DAYNIGHT]` lines for 88 minutes with the ISP railed fully dark in Day mode.
+Ended only by a manual `running_mode=1` override at ~22:10.
+
+**Not a stall, not missing logging.** The detection thread ran its 2 s tick
+the whole time (`/control` readings stayed live) and the DAY branch is
+correctly silent until it decides. The comparison it makes -
+`s > night_gain` held for `day_confirm_s` - was simply unsatisfiable: the two
+pipelines rail at DIFFERENT ceilings on this SoC (day tuning caps ISP digital
+gain at 32 log2-units, night at 45), so with the integration ratio pinned at
+0.7527 the day pipeline's index tops out at **6166** against night's 8171.
+The "near-constant ~6160 regardless of light" that the superseded entry
+measured across 14 transitions was never a light level - it is the day
+meter's own gain rail (6154-6166 = railed to within one idg unit). Raising
+night_gain to 7000 therefore moved the exit bar above the day meter's
+physical ceiling: day mode - which by design has no probe and no history -
+lost its only door. There is no working value either: the lit and dark day
+readings are 6154 vs 6166, indistinguishable inside AGC noise.
+
+**The proof in the incident log itself**: the daemon's own switch fired at
+22:11:29 (`exposure 8166 > 7000`) - 30 s AFTER the manual override flipped
+the ISP to the night pipeline. It "found" night by reading a pipeline it did
+not know it was in; 8166 is the night rail, unreachable from day.
+
+**Fix (this repo)**: the DAY branch now counts a clipped sample as dark -
+`s > night_gain || dn_clipped(sm.headroom)` starts `dark_since` - because a
+day meter pegged at its dark end is a floor, not a level, and cannot happen
+in a bright scene (the silent probe's pegged-is-night argument, applied where
+the mode has no other way to ask). `day_confirm_s` still gates. Scenario 30
+(`30-railed-day-no-exit`) reproduces the trap (pre-fix: enters day at t=325
+and never leaves, 1370 s wrong; post-fix: exits after day_confirm_s, budget
+4 clicks, filter_cost NOT learned from the clip); full corpus green at both
+clock scales. NOTE: on the incident binary this fix alone would have been
+blind - the pre-`e361b3b` high-water-mark bonus reported hr=32 for a meter
+railed on both gains, so `dn_clipped()` said "not clipped". The two fixes
+ship together or not at all.
+
+**Fleet state**: cam-wyze-pan still runs v1.9.3-36-gd51dcd9 (neither fix).
+`night_gain` reverted to the 4096 default (live via /control, self-persisted
+to /etc/timps.conf, and in the thingino-firmware-LuFi overlay) - on that
+binary 7000 was a re-armed trap: filter_cost is currently unmeasured (the
+22:11 relearn was correctly refused as stale), so the next lamp-on would
+have re-entered day unvetoed and the next lamp-off stranded it again. With
+4096 the old binary bounces out of day in 30 s, relearns filter_cost
+(~6.5x), and the veto re-arms - the stable pre-2026-08-28 behaviour.
+
+**OPEN residual, needs a decision before the fixed binary reaches this
+camera**: post-`e361b3b`, filter_cost may no longer be learned from a
+clipped day reading - correct in general, but on THIS camera every day
+reading is a clip, so the veto can never re-arm and each trend/heartbeat
+silent probe in a lit room will verdict day and bounce back 30 s later
+(2 clicks per episode; the trend fired twice on 2026-08-28 alone). Day mode
+is not a usable state in a room whose day meter cannot meter it. Candidates:
+per-camera `irprobe_cmd=""` opt-out (also loses path T), schedule mode, or
+the declined-for-now HA coupling of `running_mode` to the physical light.
+
 ## RESOLVED: the replay harness's "seeded" AGC noise was keyed on the DRIVER's clock, so the daemon drew a different realisation every run - 03-noisy-night's click budget was decided by host scheduling
 
 Found 2026-08-28, the own item the AE-reserve entry below asked for. That entry
@@ -193,7 +254,7 @@ cam-J's illuminator contributing nothing (`r` never above ~1.10 even when
 gain-railed) is still the more consequential problem for that room, and is
 recorded in the entry below.
 
-## RESOLVED: cam-wyze-pan never confirmed day mode after a manual basement-light event - windowless room, not a bug
+## SUPERSEDED (the fix below caused the "day mode with no exit" incident the same evening - see the 2026-08-28 entry at the top; night_gain is back at 4096): cam-wyze-pan never confirmed day mode after a manual basement-light event - windowless room, not a bug
 
 Found 2026-08-28: user was in the basement (light on) for ~17 minutes
 (17:41:59-17:59:20, confirmed via `daynight.trace_path` on-device, the
