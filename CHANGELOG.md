@@ -207,6 +207,26 @@ semantic versioning.
   previous mux across 16 payload sizes spanning the 188- and 1316-byte
   boundaries, video (with PCR + random-access adaptation field) and audio.
 
+- **`GET /control` no longer walks the sounds directory on every request**
+  (`src/control.c`, `USE_PLAY` builds). Building `caps.play.sounds` meant an
+  `opendir`/`readdir` walk plus one `stat()` per candidate - up to
+  `SOUNDS_LIST_MAX` (96) of them - on every single GET *and* every `/events`
+  snapshot, for a directory that ships with the firmware image and
+  essentially never changes at runtime. The rendered list is cached and
+  rebuilt only when `SOUNDS_DIR`'s own mtime moves (one `stat()` on the
+  directory, not on its contents). Guarded by its own mutex because the
+  callers are concurrent httpd worker threads, and held across the append so
+  the buffer cannot be reallocated under a reader. Directory mtime has 1 s
+  granularity, so a file dropped in during the same second as a build can be
+  missed until the next change - immaterial for a picker list, and the `play`
+  POST re-validates the chosen name against the real directory anyway.
+
+  Size: `+201 B` .text / `-12 B` .data / `-16 B` .bss on the default T31
+  `-Os` build for all of the above (`+280 B` .text and `+48 B` .bss more in a
+  `USE_PLAY` build, `+50 B` .text for `srt.c`). Heap moves the other way: TCP
+  RTSP clients gain a ~1.1 KB batch each, while every fMP4 client thread and
+  the recorder lose a frame-sized (up to a few hundred KB) scratch buffer.
+
 ## [1.9.3] - 2026-08-23
 
 ### Changed

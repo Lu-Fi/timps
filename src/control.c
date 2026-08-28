@@ -82,6 +82,82 @@ static int sound_path(const char *name, char *out, size_t cap)
     snprintf(out,cap,"%s",p);
     return 1;
 }
+
+/* Rendered caps.play.sounds body ("a.wav","b.opus" - no brackets), cached.
+ * Building it means an opendir/readdir walk plus one stat() per candidate (up
+ * to SOUNDS_LIST_MAX of them), and GET /control ran all of that on EVERY
+ * request for a directory that is part of the firmware image and essentially
+ * never changes at runtime. Rebuild only when SOUNDS_DIR's own mtime moves -
+ * one stat() on the directory, not on its contents; a create/delete/rename in
+ * there always bumps it. (Directory mtime has 1 s granularity, so a file
+ * dropped in during the same second as a build can be missed until the next
+ * change - a non-issue for a picker list, and the play POST re-validates the
+ * chosen name against the real directory anyway.) Callers are concurrent
+ * httpd worker threads, hence the mutex; it is held across the append so the
+ * buffer cannot be realloc'd out from under a reader. */
+static pthread_mutex_t g_sounds_lock = PTHREAD_MUTEX_INITIALIZER;
+static ms_buf  g_sounds;
+static time_t  g_sounds_mtime;
+static int     g_sounds_valid;
+
+/* caller holds g_sounds_lock */
+static void sounds_cache_refresh(void)
+{
+    struct stat dst;
+    time_t mt = (stat(SOUNDS_DIR,&dst)==0) ? dst.st_mtime : (time_t)0;
+    if (g_sounds_valid && mt == g_sounds_mtime) return;
+    g_sounds.len = 0; g_sounds.err = 0;
+    g_sounds_mtime = mt; g_sounds_valid = 1;
+    DIR *dh = opendir(SOUNDS_DIR);
+    if (!dh) return;
+    struct dirent *de; int first = 1; int emitted = 0;
+    while ((de = readdir(dh))){
+        /* stop well before the JSON buffer can overflow - see the
+         * SOUNDS_LIST_MAX comment above */
+        if (emitted >= SOUNDS_LIST_MAX) break;
+        const char *nm = de->d_name;
+        size_t l = strlen(nm);
+        /* .wav: any RIFF/WAVE this build can decode (PCM/A-law/mu-law -
+         * a real user-dropped file, e.g. for the ESPHome media_player
+         * integration). .ulaw: thingino-sounds' own G.711 mu-law
+         * asset format (still a WAV container internally, wav_open()
+         * sniffs the RIFF header regardless of extension - the
+         * distinct extension is just so it isn't mistaken for a
+         * generic playable-anywhere .wav on disk). */
+        int is_wav  = l >= 5 && !strcmp(nm+l-4,".wav");
+        int is_ulaw = l >= 6 && !strcmp(nm+l-5,".ulaw");
+#ifdef USE_PLAY_OPUS
+        int is_opus = l >= 6 && !strcmp(nm+l-5,".opus");
+#else
+        int is_opus = 0;   /* can't decode it - don't offer a sound that always fails */
+#endif
+        if (!is_opus && !is_wav && !is_ulaw) continue;
+        /* skip names that can't be spliced raw into a JSON string: a
+         * quote/backslash breaks the string, and any control byte
+         * (< 0x20 - a literal newline in a filename is legal on Linux)
+         * is invalid inside a JSON string per RFC 8259. Skipping keeps
+         * this list emitted-raw (like the fixed caps.* lists) rather
+         * than introducing an escaping pass just for filenames. */
+        int bad = 0;
+        for (const char *q = nm; *q; q++)
+            if (*q=='"' || *q=='\\' || (unsigned char)*q < 0x20){ bad = 1; break; }
+        if (bad) continue;
+        char pp[300]; struct stat st;
+        snprintf(pp,sizeof pp,"%s/%s",SOUNDS_DIR,nm);
+        if (stat(pp,&st)!=0 || !S_ISREG(st.st_mode)) continue;
+        if (!first) ms_buf_put(&g_sounds, ",", 1);
+        ms_buf_put(&g_sounds, "\"", 1);
+        ms_buf_put(&g_sounds, nm, l);
+        ms_buf_put(&g_sounds, "\"", 1);
+        first = 0; emitted++;
+    }
+    closedir(dh);
+    /* a partial list from an OOM would be invalid JSON (a dangling comma or
+     * an unterminated string) - emit nothing rather than that, and drop the
+     * valid flag so the next request retries instead of caching the gap for
+     * as long as the directory happens not to change */
+    if (g_sounds.err){ g_sounds.len = 0; g_sounds.err = 0; g_sounds_valid = 0; }
+}
 #endif
 
 #define CTRL_MAX_CHG 48
@@ -1298,50 +1374,10 @@ int control_get_json(char *buf, size_t cap)
      * from a prior build - list both extensions rather than assume). */
 #ifdef USE_PLAY
     APP("\"play\":{\"available\":1,\"sounds\":[");
-    {
-        DIR *dh = opendir(SOUNDS_DIR);
-        if (dh){
-            struct dirent *de; int first = 1; int emitted = 0;
-            while ((de = readdir(dh))){
-                /* stop well before the JSON buffer can overflow - see the
-                 * SOUNDS_LIST_MAX comment above */
-                if (emitted >= SOUNDS_LIST_MAX) break;
-                const char *nm = de->d_name;
-                size_t l = strlen(nm);
-                /* .wav: any RIFF/WAVE this build can decode (PCM/A-law/mu-law -
-                 * a real user-dropped file, e.g. for the ESPHome media_player
-                 * integration). .ulaw: thingino-sounds' own G.711 mu-law
-                 * asset format (still a WAV container internally, wav_open()
-                 * sniffs the RIFF header regardless of extension - the
-                 * distinct extension is just so it isn't mistaken for a
-                 * generic playable-anywhere .wav on disk). */
-                int is_wav  = l >= 5 && !strcmp(nm+l-4,".wav");
-                int is_ulaw = l >= 6 && !strcmp(nm+l-5,".ulaw");
-#ifdef USE_PLAY_OPUS
-                int is_opus = l >= 6 && !strcmp(nm+l-5,".opus");
-#else
-                int is_opus = 0;   /* can't decode it - don't offer a sound that always fails */
-#endif
-                if (!is_opus && !is_wav && !is_ulaw) continue;
-                /* skip names that can't be spliced raw into a JSON string: a
-                 * quote/backslash breaks the string, and any control byte
-                 * (< 0x20 - a literal newline in a filename is legal on Linux)
-                 * is invalid inside a JSON string per RFC 8259. Skipping keeps
-                 * this list emitted-raw (like the fixed caps.* lists) rather
-                 * than introducing an escaping pass just for filenames. */
-                int bad = 0;
-                for (const char *q = nm; *q; q++)
-                    if (*q=='"' || *q=='\\' || (unsigned char)*q < 0x20){ bad = 1; break; }
-                if (bad) continue;
-                char pp[300]; struct stat st;
-                snprintf(pp,sizeof pp,"%s/%s",SOUNDS_DIR,nm);
-                if (stat(pp,&st)!=0 || !S_ISREG(st.st_mode)) continue;
-                APP("%s\"%s\"", first?"":",", nm);
-                first = 0; emitted++;
-            }
-            closedir(dh);
-        }
-    }
+    pthread_mutex_lock(&g_sounds_lock);
+    sounds_cache_refresh();
+    APP("%.*s", (int)g_sounds.len, g_sounds.data ? (const char*)g_sounds.data : "");
+    pthread_mutex_unlock(&g_sounds_lock);
     APP("]},");
 #else
     APP("\"play\":{\"available\":0},");
