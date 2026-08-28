@@ -91,6 +91,18 @@ semantic versioning.
   layout-agnostic oldest-by-mtime scan stays correct for a flat or
   custom-strftime naming scheme too.
 
+- **Timelapse retention pruning is rate-limited to hourly** (`src/timelapse.c`).
+  `prune()` ran after *every* successful shot, recursively `lstat`-ing every
+  kept JPEG under the timelapse tree - at a 10 s interval and a multi-day
+  `keep_days` that is a full-tree walk six times a minute, forever, to
+  re-evaluate a cutoff whose granularity is days. It kept the SD card busy
+  around the clock for no benefit, which also defeats the point of the
+  just-in-time frame grab that otherwise leaves the pipeline idle between
+  shots. A monotonic (`ms_now_us`) guard now skips the walk unless an hour
+  has passed - still ~24x finer than the cutoff actually moves. The guard
+  starts unset so the first shot after a start/restart prunes immediately,
+  which is the one moment the backlog can be arbitrarily old.
+
 ## [1.9.3] - 2026-08-23
 
 ### Changed

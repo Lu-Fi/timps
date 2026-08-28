@@ -12,8 +12,8 @@
  * HAL idle-stop debounce shuts encoder + framesource back down - the old
  * always-subscribed loop kept them running 24/7 and discarded
  * interval_s*fps encodes per kept frame.
- * Retention: after each shot, *.jpg older than keep_days are pruned (emptied
- * directories are removed).
+ * Retention: *.jpg older than keep_days are pruned (emptied directories are
+ * removed), at most hourly - see TL_PRUNE_US.
  *
  * Only built with USE_TIMELAPSE (default on); without it the stubs at the
  * bottom keep the call sites (main.c/control.c) unconditional, like srt.c. */
@@ -75,11 +75,27 @@ static void prune_old(const char *base, time_t cutoff, int depth)
     closedir(d);
 }
 
+/* how often prune_old() is actually allowed to walk the tree. prune() is
+ * called after EVERY successful shot, but the retention it enforces has
+ * DAY granularity - at a 10 s interval and a multi-day keep_days that walked
+ * and lstat'd every kept JPEG six times a minute, forever, to move a cutoff
+ * that had not moved. Hourly is still ~24x finer than the cutoff steps, and
+ * leaves the card idle between shots (the whole point of the just-in-time
+ * grab below). */
+#define TL_PRUNE_US (3600*1000000LL)
+
 /* keep_days comes from the caller's under-lock timelapse snapshot (F-02). */
 static void prune(int keep_days)
 {
     int days=keep_days;
     if (days<=0) return;
+    /* only tl_thread calls prune(), so the guard needs no locking. Starts at 0
+     * so the first shot after a start/restart prunes immediately - that is the
+     * one time the backlog can be arbitrarily old (the daemon was down). */
+    static int64_t next_walk_us;
+    int64_t now=ms_now_us();
+    if (next_walk_us && now<next_walk_us) return;
+    next_walk_us = now + TL_PRUNE_US;
     /* timelapse.dir is runtime-mutable via /control: snapshot it under the
      * config string lock (never hold the lock across filesystem calls) */
     char dir[128];
