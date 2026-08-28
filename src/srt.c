@@ -246,6 +246,24 @@ static int ts_send(ts_mux *m, const uint8_t *pkt188)
     return 0;
 }
 
+/* Same batching, but for a producer that can write the 188 bytes in place:
+ * ts_slot() hands out the next free packet slot, ts_commit() accounts for it
+ * (and flushes when the batch is full, so the following ts_slot() is valid
+ * again). send_pes() - the only per-access-unit producer here - used to build
+ * each packet in a stack buffer that ts_send() then memcpy'd into the very
+ * same array. The PSI writers keep using ts_send(): PAT/PMT go out about once
+ * a second, and send_section() builds its packet before it knows the length
+ * check will let it be sent at all. */
+static uint8_t *ts_slot(ts_mux *m)
+{
+    return m->batch + (size_t)m->batch_n * 188;
+}
+static int ts_commit(ts_mux *m)
+{
+    if (++m->batch_n >= TS_BATCH_PKTS) return ts_flush(m);
+    return 0;
+}
+
 static int send_section(ts_mux *m, int pid, uint8_t *cc, const uint8_t *sec, int n)
 {
     uint8_t p[188]; memset(p, 0xFF, sizeof p);
@@ -324,7 +342,7 @@ static int send_pes(ts_mux *m, int pid, uint8_t *cc, int stream_id,
     int first = 1;
 
     while (hn > 0 || bn > 0) {
-        uint8_t p[188]; int o = 0;
+        uint8_t *p = ts_slot(m); int o = 0;
         p[o++] = 0x47;
         p[o++] = (first ? 0x40 : 0x00) | ((pid >> 8) & 0x1F);
         p[o++] = pid & 0xFF;
@@ -366,11 +384,15 @@ static int send_pes(ts_mux *m, int pid, uint8_t *cc, int stream_id,
         }
 
         /* fill remaining bytes of this 188 packet with header then payload */
-        while (o < 188 && hn > 0) { p[o++] = *hp++; hn--; }
-        while (o < 188 && bn > 0) { p[o++] = *bp++; bn--; }
-        while (o < 188) p[o++] = 0xFF;                   /* should not happen */
+        int n = 188 - o;
+        if (n > hn) n = hn;
+        if (n > 0) { memcpy(p + o, hp, (size_t)n); o += n; hp += n; hn -= n; }
+        n = 188 - o;
+        if (n > bn) n = bn;
+        if (n > 0) { memcpy(p + o, bp, (size_t)n); o += n; bp += n; bn -= n; }
+        if (o < 188) memset(p + o, 0xFF, (size_t)(188 - o));  /* should not happen */
 
-        if (ts_send(m, p) < 0) return -1;
+        if (ts_commit(m) < 0) return -1;
         first = 0;
     }
     return 0;

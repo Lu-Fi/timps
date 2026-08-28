@@ -195,6 +195,18 @@ semantic versioning.
   `pk->data` by then and nothing after that point reads `st`, so the release
   simply moves up.
 
+- **The SRT TS mux stops copying payload a byte at a time, and builds each
+  packet straight into the send batch** (`src/srt.c`). `send_pes()` filled
+  the PES header and payload into its 188-byte packet with three scalar
+  `while` loops, then `ts_send()` `memcpy`'d that stack buffer into
+  `m->batch` - so every byte of every access unit went through a per-byte
+  loop and then a second copy. The loops become `memcpy`/`memcpy`/`memset`,
+  and `ts_slot()`/`ts_commit()` let `send_pes()` write directly into the next
+  free batch slot (the PSI writers keep `ts_send()`: they build their packet
+  before they know it will be sent). Output verified bit-identical to the
+  previous mux across 16 payload sizes spanning the 188- and 1316-byte
+  boundaries, video (with PCR + random-access adaptation field) and audio.
+
 ## [1.9.3] - 2026-08-23
 
 ### Changed
