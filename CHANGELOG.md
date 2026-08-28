@@ -153,6 +153,28 @@ semantic versioning.
   whatever accumulates between drains. 6 s UDP session on the sim: 511 -> 137
   `recvfrom`, of which 486 -> 112 were `EAGAIN`.
 
+- **The fMP4 mux no longer copies every video access unit twice** (`src/mp4/
+  fmp4.c`). `trun` has to record the sample length before any `mdat` byte is
+  written, which is why `fmp4_video_fragment()` built the whole AVCC sample
+  in a per-thread scratch `ms_buf` and then copied it again into the caller's
+  fragment buffer - once per client per frame, plus once for the recorder.
+  The Annex-B walk now *indexes* the AU's NALs (offset+length, skipping
+  parameter sets) in the single pass it already had to make, which yields
+  both the total length for `trun` and the pointers the `mdat` body is then
+  written from - straight into `out`. `fragment()` is split into
+  `fragment_head()` (moof + the mdat box header, byte-for-byte unchanged) and
+  the body write; the audio path keeps the old contiguous-sample signature as
+  a thin wrapper. Deliberately NOT done as a length-only pre-pass:
+  `nal_iter`/`find_start` is a byte-at-a-time start-code scan, so a second
+  walk of a 200 KB IDR would have cost more than the word-wise `memcpy` it
+  saved - indexing is what makes one pass enough. Also removes the
+  `pthread_key` scratch machinery entirely, i.e. one frame-sized persistent
+  buffer per fMP4 client thread and per recorder. An AU with more than
+  `FMP4_NAL_IDX` (32) non-parameter-set NALs falls back to re-scanning via
+  the old `annexb_to_sample()`. Verified byte-identical against the previous
+  implementation on three H.264 sources, with the index cap forced to 2 to
+  exercise the fallback as well.
+
 ## [1.9.3] - 2026-08-23
 
 ### Changed

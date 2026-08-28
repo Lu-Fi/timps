@@ -4,7 +4,6 @@
 #include "../codec/aac.h"
 #include <string.h>
 #include <stdlib.h>
-#include <pthread.h>
 
 #define TRK_VIDEO 1
 #define TRK_AUDIO 2
@@ -117,18 +116,25 @@ static uint64_t pts_track_time(fmp4_mux *m, int64_t pts_us, int64_t *last_pts_io
     return dts;
 }
 
-/* Annex-B AU -> length-prefixed (AVCC) sample, skipping parameter sets. */
+/* NALs the AVCC sample never carries: parameter sets (they live in the moov's
+ * avcC/hvcC) and the access-unit delimiter. ONE definition, because
+ * fmp4_video_fragment's NAL index and the annexb_to_sample() fallback below
+ * must agree on it exactly - the index is what tells trun the sample length. */
+static int nal_skipped(const fmp4_mux *m, const nal_unit *u)
+{
+    int t = (m->vcodec==MS_VC_H264) ? h264_nal_type(u->data) : h265_nal_type(u->data);
+    if (m->vcodec==MS_VC_H264) return t==7||t==8||t==9;          /* SPS/PPS/AUD */
+    return t==32||t==33||t==34||t==35;                           /* VPS/SPS/PPS/AUD */
+}
+
+/* Annex-B AU -> length-prefixed (AVCC) sample, skipping parameter sets.
+ * Only used for the rare AU that overflows fmp4_video_fragment's NAL index. */
 static void annexb_to_sample(const fmp4_mux *m, const uint8_t *au, size_t len, ms_buf *out)
 {
     nal_iter it; nal_unit u;
     nal_iter_init(&it, au, len);
     while (nal_iter_next(&it, &u)) {
-        int t = (m->vcodec==MS_VC_H264) ? h264_nal_type(u.data) : h265_nal_type(u.data);
-        if (m->vcodec==MS_VC_H264) {
-            if (t==7||t==8||t==9) continue;             /* SPS/PPS/AUD */
-        } else {
-            if (t==32||t==33||t==34||t==35) continue;   /* VPS/SPS/PPS/AUD */
-        }
+        if (nal_skipped(m, &u)) continue;
         ms_buf_be32(out, (uint32_t)u.len);
         ms_buf_put(out, u.data, u.len);
     }
@@ -388,9 +394,16 @@ int fmp4_init_segment(fmp4_mux *m, ms_buf *out)
     return out->err ? -1 : 0;
 }
 
-static int fragment(fmp4_mux *m, int track_id, const uint8_t *sample, size_t slen,
-                    uint32_t duration, uint64_t dts, uint32_t first_flags,
-                    int use_first_flags, ms_buf *out)
+/* Write moof + the mdat box header, and return the mdat box position so the
+ * caller can append exactly `slen` bytes of sample data and box_close() it.
+ * Split out of fragment() because the video path writes its sample straight
+ * into `out` instead of handing over a contiguous buffer - see
+ * fmp4_video_fragment. The moof contents are unchanged either way; trun still
+ * records the sample length before any mdat byte is written, which is why the
+ * caller has to know `slen` up front. */
+static size_t fragment_head(fmp4_mux *m, int track_id, size_t slen,
+                            uint32_t duration, uint64_t dts, uint32_t first_flags,
+                            int use_first_flags, ms_buf *out)
 {
     size_t moof = box_open(out, "moof");
     size_t mfhd = box_open(out, "mfhd");
@@ -432,7 +445,15 @@ static int fragment(fmp4_mux *m, int track_id, const uint8_t *sample, size_t sle
     uint32_t data_off = (uint32_t)(out->len - moof) + 8;
     if (out->data && !out->err) wr_be32(out->data + data_off_pos, data_off);
 
-    size_t mdat = box_open(out, "mdat");
+    return box_open(out, "mdat");
+}
+
+static int fragment(fmp4_mux *m, int track_id, const uint8_t *sample, size_t slen,
+                    uint32_t duration, uint64_t dts, uint32_t first_flags,
+                    int use_first_flags, ms_buf *out)
+{
+    size_t mdat = fragment_head(m, track_id, slen, duration, dts,
+                                first_flags, use_first_flags, out);
     ms_buf_put(out, sample, slen);
     box_close(out, mdat);
     /* any append above (box_open/ms_buf_put/box_close) may have silently
@@ -442,66 +463,58 @@ static int fragment(fmp4_mux *m, int track_id, const uint8_t *sample, size_t sle
     return out->err ? -1 : 0;
 }
 
-/* fmp4_video_fragment's Annex-B -> AVCC conversion needs a staging buffer:
- * the sample's total length (parameter sets stripped out) is only known
- * once every NAL has been copied, but the trun box must record that length
- * BEFORE the mdat bytes are written, so the sample cannot be built directly
- * into the caller's `out` fragment buffer. This used to be ms_buf_init()'d
- * and ms_buf_free()'d on every single video frame of every client/recorder
- * (M1: per-frame heap churn on the 24/7 musl heap). Each caller of
- * fmp4_video_fragment already runs on its own dedicated, long-lived thread
- * (one per HTTP client in httpd.c's stream_mp4, one for the whole recorder
- * in record.c's rec_thread), so a pthread-TLS buffer gives every one of
- * them a persistent scratch buffer: reset to len=0 per frame (no realloc
- * once it reaches that stream's steady-state frame size) and reclaimed via
- * the key destructor when the thread exits (client disconnect / recorder
- * shutdown), so nothing leaks over the life of the daemon. */
-static pthread_key_t  g_scratch_key;
-static pthread_once_t g_scratch_once = PTHREAD_ONCE_INIT;
-
-static void scratch_destroy(void *p)
-{
-    ms_buf *b = (ms_buf*)p;
-    ms_buf_free(b);
-    free(b);
-}
-static void scratch_key_make(void)
-{
-    pthread_key_create(&g_scratch_key, scratch_destroy);
-}
-/* per-thread scratch ms_buf, reset to len=0/err=0; NULL only on OOM (the tiny
- * struct allocation itself, not the buffer growth, which ms_buf_put reports
- * via ->err as usual) */
-static ms_buf *scratch_get(void)
-{
-    pthread_once(&g_scratch_once, scratch_key_make);
-    ms_buf *b = (ms_buf*)pthread_getspecific(g_scratch_key);
-    if (!b) {
-        b = (ms_buf*)calloc(1, sizeof(*b));
-        if (!b) return NULL;
-        if (pthread_setspecific(g_scratch_key, b) != 0) { free(b); return NULL; }
-    }
-    b->len = 0; b->err = 0;
-    return b;
-}
+/* How many NALs of one access unit fmp4_video_fragment indexes on the stack.
+ * A typical AU is 1-5 NALs (SPS/PPS/SEI + one slice); 32 covers heavily
+ * multi-sliced encodes too, and an AU beyond that just takes the slower
+ * re-scan path below. 256 B of a 128 KB (MS_STACK_STREAM) thread stack. */
+#define FMP4_NAL_IDX 32
 
 int fmp4_video_fragment(fmp4_mux *m, const uint8_t *au, size_t len,
                         int keyframe, int64_t pts_us, ms_buf *out)
 {
-    ms_buf *s = scratch_get();
-    if (!s) return -1;                             /* OOM: drop this frame */
-    annexb_to_sample(m, au, len, s);
+    /* The trun box must record the sample length BEFORE any mdat byte is
+     * written, which is why this used to build the whole AVCC sample in a
+     * per-thread scratch ms_buf and then copy it a second time into `out`.
+     * Index the NALs in the one Annex-B pass instead: the walk already has to
+     * happen, and it yields both the total length (for trun) and the pointers
+     * the mdat body is then written from - directly into `out`. That drops one
+     * full copy of every video access unit per client per frame, and with it a
+     * second frame-sized persistent buffer per streaming thread.
+     * nal_iter/find_start is a byte-at-a-time start-code scan, so re-deriving
+     * the length in a separate pre-pass would have cost more than the copy it
+     * saved - the index is what makes one pass enough. */
+    struct { const uint8_t *p; size_t n; } nals[FMP4_NAL_IDX];
+    int nn = 0, overflow = 0;
+    size_t slen = 0;
+    {
+        nal_iter it; nal_unit u;
+        nal_iter_init(&it, au, len);
+        while (nal_iter_next(&it, &u)) {
+            if (nal_skipped(m, &u)) continue;
+            if (nn < FMP4_NAL_IDX) { nals[nn].p = u.data; nals[nn].n = u.len; nn++; }
+            else overflow = 1;
+            slen += 4 + u.len;
+        }
+    }
     /* parameter-set-only AU (no VCL data): emit nothing and do not advance
-     * the timeline - a 0-byte sample would make MSE choke. s->err covers the
-     * OOM case (annexb_to_sample's ms_buf_put failed partway through) -
-     * treat it the same as "nothing to emit" rather than muxing a truncated
-     * sample. */
-    if (s->err || s->len == 0) return s->err ? -1 : 0;
+     * the timeline - a 0-byte sample would make MSE choke. */
+    if (slen == 0) return 0;
     uint32_t dur = m->fps>0 ? m->v_timescale/(uint32_t)m->fps : 3000; /* nominal */
     uint64_t dts = pts_track_time(m, pts_us, &m->v_last_pts_us,
                                   &m->v_dts, m->v_timescale, &dur, 0);
     uint32_t flags = keyframe ? 0x02000000 : 0x01010000;
-    return fragment(m, TRK_VIDEO, s->data, s->len, dur, dts, flags, 1, out);
+    size_t mdat = fragment_head(m, TRK_VIDEO, slen, dur, dts, flags, 1, out);
+    /* one grow for the whole sample instead of one per NAL */
+    ms_buf_reserve(out, slen);
+    if (overflow) annexb_to_sample(m, au, len, out);
+    else for (int i = 0; i < nn; i++) {
+        ms_buf_be32(out, (uint32_t)nals[i].n);
+        ms_buf_put(out, nals[i].p, nals[i].n);
+    }
+    box_close(out, mdat);
+    /* err is sticky across every append above (see fragment()) - a truncated
+     * fragment is reported, never handed to the caller as valid. */
+    return out->err ? -1 : 0;
 }
 
 int fmp4_audio_fragment(fmp4_mux *m, const uint8_t *frame, size_t len,
