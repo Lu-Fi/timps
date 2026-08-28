@@ -1368,8 +1368,9 @@ int control_get_json(char *buf, size_t cap)
 #else
     APP("\"record\":{\"available\":0},");
 #endif
-    /* audio backchannel: available only if the feature is compiled AND the
-     * ingenic-audiodaemon client (/bin/iac) is present on the device */
+    /* audio backchannel: available only if the feature is compiled AND
+     * audio.backchannel was enabled at boot (bc_available() - see there,
+     * it's restart-only, not the live config value) */
 #ifdef USE_BACKCHANNEL
     APP("\"backchannel\":{\"available\":%d},", bc_available());
 #else
