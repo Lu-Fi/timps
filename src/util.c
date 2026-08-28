@@ -29,6 +29,7 @@ int ms_buf_init(ms_buf *b, size_t cap)
     b->len = 0;
     b->cap = b->data ? cap : 0;
     b->err = b->data ? 0 : 1;
+    b->nsmall = 0;
     return b->data ? 0 : -1;
 }
 
@@ -59,11 +60,22 @@ void ms_buf_free(ms_buf *b){ free(b->data); b->data=NULL; b->len=b->cap=0; }
 
 void ms_buf_reset(ms_buf *b, size_t soft)
 {
+    size_t used = b->len;
     b->len = 0; b->err = 0;
-    if (soft && b->cap > soft) {
-        uint8_t *nd = (uint8_t*)realloc(b->data, soft);
-        if (nd) { b->data = nd; b->cap = soft; }   /* shrink failure is harmless */
-    }
+    if (!soft || b->cap <= soft) { b->nsmall = 0; return; }
+    /* The shrink is for a ONE-OFF outlier. Giving the capacity back the
+     * instant a single payload fits again turns a stream whose payloads
+     * ROUTINELY exceed `soft` into a shrink-realloc plus a grow-realloc every
+     * time one arrives - at 4-6 Mbit with a 2 s GOP every IDR fragment
+     * overshoots the recorder's 256 KB cap, so that was a realloc pair per
+     * GOP for the life of the process. Hand the memory back only once the
+     * buffer has stayed under the cap for a run of resets, i.e. the big
+     * payload really was the exception and not the shape of this stream. */
+    if (used > soft) { b->nsmall = 0; return; }
+    if (++b->nsmall < MS_BUF_SHRINK_RUN) return;
+    b->nsmall = 0;
+    uint8_t *nd = (uint8_t*)realloc(b->data, soft);
+    if (nd) { b->data = nd; b->cap = soft; }   /* shrink failure is harmless */
 }
 
 int ms_base64(char *dst, const uint8_t *src, int n)

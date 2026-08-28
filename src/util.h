@@ -53,6 +53,8 @@ typedef struct {
                       * not patch size/offset fields into it - the buffer's
                       * content is short some bytes, so `pos` no longer
                       * points at what the caller thinks it does. */
+    unsigned nsmall; /* consecutive ms_buf_reset()s whose payload fit under
+                      * `soft` - the shrink hysteresis, see ms_buf_reset() */
 } ms_buf;
 
 int  ms_buf_init(ms_buf *b, size_t cap);
@@ -64,7 +66,11 @@ int  ms_buf_be32(ms_buf *b, uint32_t v);
 void ms_buf_free(ms_buf *b);
 /* reuse a persistent buffer: len=0, err=0, and shrink the backing store back to
  * `soft` if a rare huge frame grew it past that, so per-connection/-recorder
- * buffers don't stay ballooned. Normal frames fit under `soft` -> no realloc. */
+ * buffers don't stay ballooned. Normal frames fit under `soft` -> no realloc.
+ * The shrink waits for MS_BUF_SHRINK_RUN consecutive resets that fit, so a
+ * stream whose frames routinely exceed `soft` keeps its capacity instead of
+ * realloc-ing it away and back every time (see ms_buf_reset). */
+#define MS_BUF_SHRINK_RUN 64
 void ms_buf_reset(ms_buf *b, size_t soft);
 
 /* base64 encode; returns bytes written (excludes NUL). dst must hold

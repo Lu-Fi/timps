@@ -1281,18 +1281,27 @@ static void stream_loop(session *s)
          s->tcp?"TCP":"UDP", s->have_video, s->have_audio);
 
     while (s->playing) {
-        /* M-3: teardown closed our queue (rtsp_stop) - leave now. This is the
-         * only exit that works for an RTSPS and/or UDP-transport session; see
-         * the ms_creg_set_queue() call in client_thread. */
-        if (fanqueue_closed(&s->q)) break;
+        /* P-03 (fanqueue): ONE lock/unlock for the pop and for everything this
+         * loop used to ask the same queue right around it - closed?, the two
+         * overflow flags, and the trace depth below. Each was its own cycle on
+         * the mutex the producer contends for, four per frame per session. */
+        fq_status qs;
+        ms_pkt *p = fanqueue_pop_ex(&s->q, pop_ms, &qs);
+        /* M-3: teardown closed our queue (rtsp_stop) - leave now, without
+         * sending whatever the pop still had in hand. This is the only exit
+         * that works for an RTSPS and/or UDP-transport session; see the
+         * ms_creg_set_queue() call in client_thread. */
+        if (qs.closed) { pkt_unref(p); break; }
         /* P-03: no vDSO on this MIPS target, so every ms_now_us() is a real
          * syscall. Read it ONCE per iteration and reuse it for the drop-IDR
-         * rate-limit, the RTCP-SR check, the liveness stamp and the control-poll
-         * gate below, instead of 3-5 clock_gettime() syscalls per media frame. */
+         * rate-limit, the trace's t_pop, the RTCP-SR check, the liveness stamp
+         * and the control-poll gate below, instead of 3-5 clock_gettime()
+         * syscalls per media frame. Read AFTER the pop: a reading taken before
+         * a wait of up to pop_ms would report a producer stall as our own. */
         int64_t now = ms_now_us();
         /* if the queue overflowed and dropped a keyframe, request a fresh IDR
          * so the client doesn't decode garbage until the next GOP */
-        if (sub_v && fanqueue_take_dropped_key(&s->q)) {
+        if (sub_v && qs.dropped_key) {
             hub_note_drop(s->vchn);   /* /control "queue_drops" */
             /* WARN once per session: sustained overflow was otherwise
              * invisible below DEBUG - only the /control counter moved */
@@ -1315,7 +1324,7 @@ static void stream_loop(session *s)
          * chronically slow client must not spike the bitrate for every other
          * subscriber. The keyframe-drop path above resets the timer, so it
          * won't double-fire. */
-        else if (sub_v && fanqueue_take_dropped(&s->q)) {
+        else if (sub_v && qs.dropped_any) {
             hub_note_drop(s->vchn);
             if (now - drop_idr_us > 1000000) {
                 LOGD(MOD,"session=%s chn=%d: overflow dropped P-frame(s) - "
@@ -1324,20 +1333,16 @@ static void stream_loop(session *s)
                 drop_idr_us = now;
             }
         }
-        ms_pkt *p = fanqueue_pop(&s->q, pop_ms);
         if (p) {
-            /* trace.h: t_pop must be read AFTER the pop returned - `now` above
-             * predates a blocking wait of up to pop_ms and would report a
-             * producer stall as our own send time. Two clock_gettime per AU,
-             * and only while tracing. */
+            /* trace.h: `now` IS the post-pop instant, so t_pop costs nothing
+             * extra here - only the t_done read after the send does. */
             int64_t t_pop = 0, tr_enq = 0;
             int tr_q = -1, tr_qcap = -1, tr_media = 0, tr_key = 0;
             size_t tr_len = 0;
             if (ms_trace_on(MS_TR_AU)) {
-                t_pop = ms_now_us();
+                t_pop = now;
                 ms_trace_au_begin(&s->tr);
-                if (ms_trace_on(MS_TR_Q))
-                    fanqueue_depth(&s->q, &tr_q, &tr_qcap, NULL);
+                if (ms_trace_on(MS_TR_Q)) { tr_q = qs.count; tr_qcap = qs.cap; }
                 /* p is unref'd below and may be recycled by the producer
                  * immediately afterwards, so snapshot what the line needs. */
                 tr_media = p->media; tr_key = p->keyframe;

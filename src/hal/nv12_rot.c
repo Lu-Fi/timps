@@ -14,6 +14,7 @@
  *             src top-left -> dst bottom-left.
  * In both cases the destination is sh x sw (dims swapped). */
 #include "nv12_rot.h"
+#include <stddef.h>
 #include <string.h>
 
 #define NV12_ROT_TILE 32
@@ -24,18 +25,31 @@ static void rot_plane(const uint8_t *s, int sw, int sh, uint8_t *d,
                       int esz, int cw)
 {
     const int dw = sh;   /* destination plane width in elements */
+    /* x enters the destination index ONLY through the x*dw / (sw-1-x)*dw
+     * term, so within a source row the destination advances by a constant
+     * +-dw elements per element - the per-element multiply and the cw
+     * ternary collapse into one pointer add. esz is hoisted out of the
+     * innermost loop for the same reason: this loop runs once per plane byte
+     * (~21 MB/s at 720p15), so anything left inside it is paid 21 million
+     * times a second. */
+    const ptrdiff_t dstep = (ptrdiff_t)(cw ? dw : -dw) * esz;
     for (int ty = 0; ty < sh; ty += NV12_ROT_TILE) {
         int ye = ty + NV12_ROT_TILE; if (ye > sh) ye = sh;
         for (int tx = 0; tx < sw; tx += NV12_ROT_TILE) {
             int xe = tx + NV12_ROT_TILE; if (xe > sw) xe = sw;
             for (int y = ty; y < ye; y++) {
                 const uint8_t *sp = s + ((size_t)y * (size_t)sw + tx) * esz;
-                for (int x = tx; x < xe; x++, sp += esz) {
-                    size_t di = cw ? ((size_t)x * dw + (size_t)(sh - 1 - y))
-                                   : ((size_t)(sw - 1 - x) * dw + (size_t)y);
-                    uint8_t *dp = d + di * esz;
-                    dp[0] = sp[0];
-                    if (esz == 2) dp[1] = sp[1];
+                uint8_t *dp = d + (cw ? ((size_t)tx * dw + (size_t)(sh - 1 - y))
+                                      : ((size_t)(sw - 1 - tx) * dw + (size_t)y))
+                                  * esz;
+                if (esz == 1) {
+                    for (int x = tx; x < xe; x++, sp++, dp += dstep)
+                        dp[0] = sp[0];
+                } else {
+                    for (int x = tx; x < xe; x++, sp += 2, dp += dstep) {
+                        dp[0] = sp[0];
+                        dp[1] = sp[1];
+                    }
                 }
             }
         }

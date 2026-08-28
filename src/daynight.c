@@ -24,8 +24,11 @@
 #include "log.h"
 #include "util.h"      /* ms_now_us(): monotonic clock for every deadline */
 #include <string.h>
+#include <stdlib.h>    /* strtol(): the ISP /proc field parser */
+#include <ctype.h>     /* isspace(): ditto */
 #include <unistd.h>    /* F-01: fork/execlp/dup2 instead of system() */
 #include <sys/wait.h>
+#include <signal.h>    /* SIGKILL: a board hook that wedges is not waited on forever */
 #include <fcntl.h>
 #include <errno.h>
 #include <pthread.h>
@@ -180,6 +183,10 @@ enum { DN_DAY = 0, DN_NIGHT = 1, DN_UNKNOWN = -1 };
 
 #define DN_UNREACHABLE 1.5f      /* "clear of the threshold" for the diagnostic */
 
+/* how often dn_read() re-probes the CONFIGURED isp_path while a fallback path
+ * is the one actually working (~5 min at the 2 s default interval) */
+#define DN_ISP_REPROBE_TICKS 150
+
 /* ---- trace recorder ---------------------------------------------------- */
 #ifndef DN_TRACE_EVERY
 #define DN_TRACE_EVERY 5         /* one line per N samples (10 s at 2 s) */
@@ -271,9 +278,38 @@ typedef struct {
  *
  * The isp-m0 gain fields are in the IMP log2 unit (0 = 1x, 32 = 2x, per the
  * SetMaxAgain/SetMaxDgain docs), so linear = 2^(units/32) and the analog,
- * sensor-digital and ISP-digital parts add in log space.
- * NOTE: sscanf on the exact-prefix format quietly skips the "MAX SENSOR
- * analog gain" style maximum lines that strstr also matches. */
+ * sensor-digital and ISP-digital parts add in log space. */
+
+/* Prefix-anchored field match: the value part past `pfx`, or NULL.
+ *
+ * Every value line in the dump starts at column 0, and the sscanf formats
+ * this replaces were anchored there too (a scanf literal only ever matches at
+ * the current position) - so an indented line already yielded nothing even
+ * though strstr() matched it. This therefore accepts exactly the same lines
+ * as the old strstr()-scan-the-whole-line + sscanf()-re-match-the-prefix
+ * pair, for one comparison instead of two scans, ~43k times a day forever.
+ * The "MAX ..." prefixes must stay AHEAD of the plain ones they contain, as
+ * they did before. */
+#define DN_FIELD(line, pfx) \
+    (strncmp((line), (pfx), sizeof(pfx) - 1) ? NULL : (line) + sizeof(pfx) - 1)
+
+/* strtol with sscanf's rule: no number there -> leave the target alone, so a
+ * field the dump omits or mangles stays at its -1 "absent" marker. */
+static void dn_field_int(const char *v, int *out)
+{
+    char *e; long x = strtol(v, &e, 10);
+    if (e != v) *out = (int)x;
+}
+
+/* the "%31s" of "ISP Runing Mode : %31s": first whitespace-delimited token */
+static void dn_field_tok(const char *v, char *out, size_t osz)
+{
+    while (isspace((unsigned char)*v)) v++;
+    size_t i = 0;
+    while (v[i] && !isspace((unsigned char)v[i]) && i + 1 < osz){ out[i] = v[i]; i++; }
+    out[i] = 0;
+}
+
 static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
 {
     o->d = o->gain = o->ratio = o->bright = -1.0f;
@@ -296,24 +332,39 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
      * been failing silently for as long as it has existed: the gain came from
      * the IMP API and every field only the scrape can provide (integration
      * time, and before the redesign the brightness fallback) was simply never
-     * read. Falling back costs one failed fopen per tick on a camera where the
-     * default is wrong, and nothing at all where it is right. */
+     * read. */
     static const char *const ALT[] = { "/proc/jz/isp/isp_info", NULL };
     static const char *used;            /* single-caller: the detection thread */
-    FILE *fp = fopen(dn->isp_path, "r");
+    /* Once a fallback is known to work, open THAT first. Probing the
+     * configured path every time cost a guaranteed ENOENT fopen on every tick
+     * of every T20's life (isp-m0 does not exist in that SDK and never will) -
+     * ~43k a day, forever. The configured path is still re-probed, both
+     * whenever the cached one stops opening and once every
+     * DN_ISP_REPROBE_TICKS regardless, so "the configured path came back" (or
+     * was corrected via /control) is still picked up - just not 43k times a
+     * day. Where the configured path is right this whole dance costs nothing,
+     * exactly as before. */
+    static unsigned since_reprobe;
+    FILE *fp = NULL;
+    if (used && ++since_reprobe < DN_ISP_REPROBE_TICKS)
+        fp = fopen(used, "r");
     if (!fp) {
-        for (int i = 0; ALT[i] && !fp; i++) {
-            if (!strcmp(ALT[i], dn->isp_path)) continue;
-            fp = fopen(ALT[i], "r");
-            if (fp && used != ALT[i]) {
-                used = ALT[i];
-                LOGW(MOD, "%s is not readable, using %s instead - set "
-                          "daynight.isp_path to silence this",
-                     dn->isp_path, ALT[i]);
+        since_reprobe = 0;
+        fp = fopen(dn->isp_path, "r");
+        if (fp) {
+            used = NULL;                /* the configured path came back */
+        } else {
+            for (int i = 0; ALT[i] && !fp; i++) {
+                if (!strcmp(ALT[i], dn->isp_path)) continue;
+                fp = fopen(ALT[i], "r");
+                if (fp && used != ALT[i]) {
+                    used = ALT[i];
+                    LOGW(MOD, "%s is not readable, using %s instead - set "
+                              "daynight.isp_path to silence this",
+                         dn->isp_path, ALT[i]);
+                }
             }
         }
-    } else if (used) {
-        used = NULL;                    /* the configured path came back */
     }
     if (fp) {
         char line[256];
@@ -321,25 +372,32 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
         int mag = -1, midg = -1;          /* the ceilings, for the reserve */
         char m[32] = {0};
 
+        /* one bit per field; stop reading once the dump has supplied all of
+         * them rather than scanning the rest of a several-KB register dump */
+        unsigned got = 0;
+        const char *v;
+
         while (fgets(line, sizeof line, fp)) {
-            if (strstr(line, "ISP Runing Mode :"))
-                sscanf(line, "ISP Runing Mode : %31s", m);
-            else if (strstr(line, "SENSOR Integration Time :"))
-                sscanf(line, "SENSOR Integration Time : %d lines", &it);
-            else if (strstr(line, "SENSOR Max Integration Time :"))
-                sscanf(line, "SENSOR Max Integration Time : %d lines", &mit);
-            else if (strstr(line, "MAX SENSOR analog gain :"))
-                sscanf(line, "MAX SENSOR analog gain : %d", &mag);
-            else if (strstr(line, "MAX ISP digital gain :"))
-                sscanf(line, "MAX ISP digital gain : %d", &midg);
-            else if (strstr(line, "SENSOR analog gain :"))
-                sscanf(line, "SENSOR analog gain : %d", &ag);
-            else if (strstr(line, "SENSOR digital gain :"))
-                sscanf(line, "SENSOR digital gain : %d", &dg);
-            else if (strstr(line, "ISP digital gain :"))
-                sscanf(line, "ISP digital gain : %d", &idg);
-            else if (strstr(line, "Brightness :"))
-                sscanf(line, "Brightness : %d", &cb);
+            if      ((v = DN_FIELD(line, "ISP Runing Mode :")))
+                { dn_field_tok(v, m, sizeof m);  got |= 1u<<0; }
+            else if ((v = DN_FIELD(line, "SENSOR Integration Time :")))
+                { dn_field_int(v, &it);          got |= 1u<<1; }
+            else if ((v = DN_FIELD(line, "SENSOR Max Integration Time :")))
+                { dn_field_int(v, &mit);         got |= 1u<<2; }
+            else if ((v = DN_FIELD(line, "MAX SENSOR analog gain :")))
+                { dn_field_int(v, &mag);         got |= 1u<<3; }
+            else if ((v = DN_FIELD(line, "MAX ISP digital gain :")))
+                { dn_field_int(v, &midg);        got |= 1u<<4; }
+            else if ((v = DN_FIELD(line, "SENSOR analog gain :")))
+                { dn_field_int(v, &ag);          got |= 1u<<5; }
+            else if ((v = DN_FIELD(line, "SENSOR digital gain :")))
+                { dn_field_int(v, &dg);          got |= 1u<<6; }
+            else if ((v = DN_FIELD(line, "ISP digital gain :")))
+                { dn_field_int(v, &idg);         got |= 1u<<7; }
+            else if ((v = DN_FIELD(line, "Brightness :")))
+                { dn_field_int(v, &cb);          got |= 1u<<8; }
+            else continue;
+            if (got == 0x1ffu) break;
         }
         fclose(fp);
 
@@ -621,6 +679,25 @@ static int dn_sun_times(float lat, float lon, time_t now,
     gmtime_r(&now, &g);
     time_t midnight = now - (g.tm_hour * 3600 + g.tm_min * 60 + g.tm_sec);
 
+    /* Memoized per UTC day: the answer is constant for the whole day by
+     * construction (it is derived from `midnight`, nothing else time-varying),
+     * yet mode=schedule asked for it on every 2 s tick - ~10 double-precision
+     * libm calls (sin/cos/asin/acos/fmod) on a soft-float SoC, ~43k times a
+     * day, all returning the same two instants. Keyed on lat/lon as well, so a
+     * coordinate change via /control takes effect on the next tick; the
+     * sunrise/sunset OFFSETS are applied by the callers AFTER this returns and
+     * so need no invalidation. Two slots because dn_secs_to_dawn() asks for
+     * today and tomorrow within one call, which a single slot would thrash.
+     * No locking: the detection thread is the only caller. */
+    static struct { time_t day, sr, ss; float lat, lon; int r, valid; } memo[2];
+    int slot = (int)((midnight / 86400) & 1);
+    if (memo[slot].valid && memo[slot].day == midnight &&
+        memo[slot].lat == lat && memo[slot].lon == lon) {
+        if (sr_out) *sr_out = memo[slot].sr;
+        if (ss_out) *ss_out = memo[slot].ss;
+        return memo[slot].r;
+    }
+
     const double D2R = M_PI / 180.0, R2D = 180.0 / M_PI;
     double jd_mid = 2440587.5 + (double)midnight / 86400.0;
     double n = floor(jd_mid - 2451545.0 + 0.0008 + 0.5);
@@ -635,14 +712,23 @@ static int dn_sun_times(float lat, float lon, time_t now,
     double latr = lat * D2R;
     double cosw = (sin(-0.833 * D2R) - sin(latr) * sin(decl)) /
                   (cos(latr) * cos(decl));
-    if (cosw < -1.0) return +1;        /* sun always up   -> permanent day   */
-    if (cosw >  1.0) return -1;        /* sun always down -> permanent night */
-    double w0 = acos(cosw) * R2D;
-    double jrise = Jtransit - w0 / 360.0;
-    double jset  = Jtransit + w0 / 360.0;
-    if (sr_out) *sr_out = (time_t)((jrise - 2440587.5) * 86400.0 + 0.5);
-    if (ss_out) *ss_out = (time_t)((jset  - 2440587.5) * 86400.0 + 0.5);
-    return 0;
+    int r = 0;
+    time_t sr = 0, ss = 0;
+    if      (cosw < -1.0) r = +1;      /* sun always up   -> permanent day   */
+    else if (cosw >  1.0) r = -1;      /* sun always down -> permanent night */
+    else {
+        double w0 = acos(cosw) * R2D;
+        double jrise = Jtransit - w0 / 360.0;
+        double jset  = Jtransit + w0 / 360.0;
+        sr = (time_t)((jrise - 2440587.5) * 86400.0 + 0.5);
+        ss = (time_t)((jset  - 2440587.5) * 86400.0 + 0.5);
+    }
+    memo[slot].day = midnight; memo[slot].lat = lat; memo[slot].lon = lon;
+    memo[slot].sr  = sr;       memo[slot].ss  = ss;  memo[slot].r   = r;
+    memo[slot].valid = 1;
+    if (sr_out) *sr_out = sr;
+    if (ss_out) *ss_out = ss;
+    return r;
 }
 
 /* Is a calendar configured at all, and which one?

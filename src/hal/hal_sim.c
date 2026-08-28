@@ -113,7 +113,7 @@ static void *vid_thread(void *arg)
                 ms_pkt *pk = hub_pkt_get(v->src, aulen);
                 if (pk){
                     memcpy(pk->data, au, aulen); pk->len = aulen;
-                    hub_publish_take(v->src, pk, now-g_epoch, key, MS_MEDIA_VIDEO);
+                    hub_publish_take(v->src, pk, now-g_epoch, key, MS_MEDIA_VIDEO, now);
                 }
                 next+=step; aulen=0; have_vcl=0; key=0;
             }
@@ -149,7 +149,7 @@ static void *aud_thread(void *arg)
             /* live mic mute (audio.mute via /control): keep pacing but do
              * not publish - mirrors the gate in hal_ingenic's audio_thread */
             if (!g_cfg.audio.mute)
-                hub_publish(HUB_AUDIO_SRC,file+off,fl,now-g_epoch,0,MS_MEDIA_AUDIO);
+                hub_publish(HUB_AUDIO_SRC,file+off,fl,now-g_epoch,0,MS_MEDIA_AUDIO,now);
             off+=fl; next+=step;
         }
     }
@@ -170,8 +170,9 @@ static void *jpg_thread(void *arg)
         /* P-01: exercise the take path for JPEG sources too (see vid_thread). */
         ms_pkt *pk = hub_pkt_get(j->src, flen);
         if (pk){
+            int64_t now = ms_now_us();
             memcpy(pk->data, file, flen); pk->len = flen;
-            hub_publish_take(j->src, pk, ms_now_us()-g_epoch, 1, MS_MEDIA_JPEG);
+            hub_publish_take(j->src, pk, now-g_epoch, 1, MS_MEDIA_JPEG, now);
         }
         usleep(step);
     }

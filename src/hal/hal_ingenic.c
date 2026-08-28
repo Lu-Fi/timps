@@ -1907,7 +1907,7 @@ static void *video_thread(void *arg)
         int64_t pts = pts_sanitize(&vc->pts, hw_us, pub_now,
                                    1000000 / (vc->fps > 0 ? vc->fps : 25),
                                    PTS_SKEW_VIDEO_US);
-        hub_publish_take(vc->chn, pk, pts, key, MS_MEDIA_VIDEO);
+        hub_publish_take(vc->chn, pk, pts, key, MS_MEDIA_VIDEO, pub_now);
 #if defined(PLATFORM_T31)
         /* Item-2 (T31 only): cache the running average bitrate for the read-only
          * /control encoder-stats getter. Must run while 'st' is still held (the
@@ -2403,7 +2403,7 @@ static void *sw_rot_thread(void *arg)
                                    1000000 / (vc->fps > 0 ? vc->fps : 25),
                                    PTS_SKEW_VIDEO_US);
         hub_publish(vc->chn, (const uint8_t*)out.outAddr, (size_t)out.outLen,
-                    pts, key, MS_MEDIA_VIDEO);
+                    pts, key, MS_MEDIA_VIDEO, pub_now);
 
         /* ---- Batch 7: standalone JPEG on the SW-rotate stream ----------------
          * On-demand + throttled, mirroring jpeg_thread's contract:
@@ -2434,7 +2434,7 @@ static void *sw_rot_thread(void *arg)
                                            vc->w, vc->h, vc->jpeg_q, &jlen)==0
                     && jlen > 0 && (uint32_t)jlen <= vc->jbuf_cap) {
                     hub_publish(HUB_JPEG_SRC_N(vc->si), vc->jbuf, (size_t)jlen,
-                                ms_now_us(), 1, MS_MEDIA_JPEG);
+                                jn, 1, MS_MEDIA_JPEG, jn);
                 } else if (jlen > 0 && (uint32_t)jlen > vc->jbuf_cap) {
                     LOGW(MOD,"sw-rot chn%d: JPEG (%d) exceeds buf (%u) - dropped",
                          vc->chn, jlen, vc->jbuf_cap);
@@ -2896,8 +2896,9 @@ static void *jpeg_thread(void *arg)
         /* Snapshot-to-file is subscriber-independent and must read the buffer
          * BEFORE the hand-off: after hub_publish_take() the packet may already
          * be recycled or in flight to a subscriber. */
+        int64_t pub_now = ms_now_us();
         if (snap_configured &&
-            ms_now_us() - jc->last_snapshot_us >= MS_SNAPSHOT_INTERVAL_US) {
+            pub_now - jc->last_snapshot_us >= MS_SNAPSHOT_INTERVAL_US) {
             /* copy the path under config_str_lock, then do the (blocking)
              * file I/O against the local copy - never hold the lock across
              * fopen/fwrite/rename (M3). */
@@ -2924,7 +2925,7 @@ static void *jpeg_thread(void *arg)
         /* Hand off to the hub. A 0-subscriber publish returns the buffer
          * straight to the pool - equivalent to the old jc->active/hub_active
          * gate, which only ever skipped the now-eliminated malloc+copy. */
-        hub_publish_take(jc->src, pk, ms_now_us(), 1, MS_MEDIA_JPEG);
+        hub_publish_take(jc->src, pk, pub_now, 1, MS_MEDIA_JPEG, pub_now);
     }
     if (receiving){ IMP_Encoder_StopRecvPic(jc->chn); fs_unuse(jc->fs_chn); }
     return NULL;
@@ -3598,21 +3599,26 @@ static void *audio_thread(void *arg)
                 }
                 acc_n += take*(size_t)g_ach; off += take;
                 while (acc_n >= faac_in){
-                    /* NOTE (per-thread footprint): this 8 KB AAC output buffer
-                     * plus the 4 KB Opus obuf below are __thread statics on the
-                     * audio worker, ~12 KB of thread-local storage total. That is
-                     * an accepted tradeoff on these embedded SoCs (avoids per-
-                     * frame heap churn / a shared-buffer lock on the hot audio
-                     * path); it is not a leak. Documented here as the starting
-                     * point for any future stack/TLS size-optimization pass. */
-                    static __thread uint8_t aac[8192];
+                    /* P-01, audio: encode STRAIGHT into a packet borrowed from
+                     * the audio source's recycling pool, exactly as the video
+                     * and JPEG producers do, and hand it over with
+                     * hub_publish_take(). This used to encode into an 8 KB
+                     * __thread scratch buffer and let hub_publish() malloc +
+                     * copy the frame out of it again, per frame, forever. The
+                     * scratch (and the Opus one below) is gone with it, so the
+                     * audio worker's thread-local footprint drops by ~12 KB.
+                     * A borrow that yields no frame (n==0, or OOM) is returned
+                     * to the pool by the pkt_unref() below. */
+                    ms_pkt *pk = hub_pkt_get(HUB_AUDIO_SRC, 8192);
                     uint32_t n = 0;
                     /* FAAC_INPUT_16BIT: pass the int16 PCM directly; in_samples
                      * is the TOTAL interleaved count (frame_samples * channels
                      * == faac_in: 1024 mono, 2048 stereo). */
-                    faac_status st = faac_encoder_encode(faac, acc, (uint32_t)faac_in,
-                                                         aac, sizeof aac, &n);
-                    if (st!=FAAC_OK) LOGW(MOD,"faac_encoder_encode: %s",faac_strerror(st));
+                    if (pk){
+                        faac_status st = faac_encoder_encode(faac, acc, (uint32_t)faac_in,
+                                                             pk->data, (uint32_t)pk->cap, &n);
+                        if (st!=FAAC_OK) LOGW(MOD,"faac_encoder_encode: %s",faac_strerror(st));
+                    }
                     if (n>0){
                         if (!dbg_logged){ LOGI(MOD,"AAC encoder producing (%u bytes/frame)",n); dbg_logged=1; }
                         /* A1: stamp with the AI capture time (frm.timeStamp),
@@ -3621,11 +3627,14 @@ static void *audio_thread(void *arg)
                          * so successive drains carry distinct, increasing capture
                          * stamps; the AAC nominal frame (1024/g_asr) is the
                          * fallback interval. */
-                        int64_t a_pts = pts_sanitize(&apts, frm.timeStamp, ms_now_us(),
+                        int64_t a_now = ms_now_us();
+                        int64_t a_pts = pts_sanitize(&apts, frm.timeStamp, a_now,
                                                      (int64_t)1024*1000000/(g_asr>0?g_asr:16000),
                                                      PTS_SKEW_AUDIO_US);
-                        hub_publish(HUB_AUDIO_SRC, aac, (size_t)n, a_pts, 0, MS_MEDIA_AUDIO);
-                    }
+                        pk->len = (size_t)n;
+                        hub_publish_take(HUB_AUDIO_SRC, pk, a_pts, 0,
+                                         MS_MEDIA_AUDIO, a_now);
+                    } else pkt_unref(pk);      /* NULL-safe */
                     acc_n -= faac_in;
                     memmove(acc, acc+faac_in, acc_n*sizeof(int16_t));
                 }
@@ -3638,33 +3647,48 @@ static void *audio_thread(void *arg)
              * (samples == numPerFrm == g_asr*40/1000: 320@8k, 640@16k), so no
              * re-blocking is needed (unlike faac's fixed 1024-sample unit). Mono
              * only, so `samples` is directly opus_encode's per-channel count. */
-            static __thread uint8_t obuf[4096];   /* >> the 1275 B/frame RFC 7587 max */
-            int on = opus_encode(opus, pcm, (int)samples, obuf, (opus_int32)sizeof obuf);
-            if (on < 0) {
-                LOGW(MOD,"opus_encode: %s", opus_strerror(on));
-            } else if (on > 0) {
+            /* P-01, audio: pooled packet as the encode target (see the AAC
+             * branch above). 4 KB >> the 1275 B/frame RFC 7587 max. */
+            ms_pkt *pk = hub_pkt_get(HUB_AUDIO_SRC, 4096);
+            int on = pk ? opus_encode(opus, pcm, (int)samples, pk->data,
+                                      (opus_int32)pk->cap) : 0;
+            if (on <= 0) {
+                if (on < 0) LOGW(MOD,"opus_encode: %s", opus_strerror(on));
+                pkt_unref(pk);                 /* NULL-safe */
+            } else {
                 if (!dbg_logged_opus){
                     LOGI(MOD,"opus encoder producing (%d bytes/frame)", on);
                     dbg_logged_opus=1;
                 }
                 /* A1: one Opus frame per AI frame -> stamp with this frame's
                  * capture time; fallback interval = this frame's duration. */
-                int64_t a_pts = pts_sanitize(&apts, frm.timeStamp, ms_now_us(),
+                int64_t a_now = ms_now_us();
+                int64_t a_pts = pts_sanitize(&apts, frm.timeStamp, a_now,
                                              (int64_t)samples*1000000/(g_asr>0?g_asr:16000),
                                              PTS_SKEW_AUDIO_US);
-                hub_publish(HUB_AUDIO_SRC, obuf, (size_t)on, a_pts, 0, MS_MEDIA_AUDIO);
+                pk->len = (size_t)on;
+                hub_publish_take(HUB_AUDIO_SRC, pk, a_pts, 0,
+                                 MS_MEDIA_AUDIO, a_now);
             }
 #endif
         } else {
-            uint8_t enc[2048];
-            if (samples>sizeof enc) samples=sizeof enc;
-            if (g_acodec==MS_AC_PCMA) g711_alaw_encode(pcm,samples,enc);
-            else                      g711_ulaw_encode(pcm,samples,enc);
-            /* A1: one G.711 frame per AI frame -> capture time, sanitized. */
-            int64_t a_pts = pts_sanitize(&apts, frm.timeStamp, ms_now_us(),
-                                         (int64_t)samples*1000000/(g_asr>0?g_asr:8000),
-                                         PTS_SKEW_AUDIO_US);
-            hub_publish(HUB_AUDIO_SRC,enc,samples,a_pts,0,MS_MEDIA_AUDIO);
+            /* P-01, audio: pooled packet as the encode target (see above).
+             * 1 byte per sample, so the byte cap is also the sample cap - the
+             * same bound the old 2 KB stack buffer imposed. */
+            const size_t g711_max = 2048;
+            if (samples>g711_max) samples=g711_max;
+            ms_pkt *pk = hub_pkt_get(HUB_AUDIO_SRC, g711_max);
+            if (pk){
+                if (g_acodec==MS_AC_PCMA) g711_alaw_encode(pcm,samples,pk->data);
+                else                      g711_ulaw_encode(pcm,samples,pk->data);
+                pk->len = samples;
+                /* A1: one G.711 frame per AI frame -> capture time, sanitized. */
+                int64_t a_now = ms_now_us();
+                int64_t a_pts = pts_sanitize(&apts, frm.timeStamp, a_now,
+                                             (int64_t)samples*1000000/(g_asr>0?g_asr:8000),
+                                             PTS_SKEW_AUDIO_US);
+                hub_publish_take(HUB_AUDIO_SRC,pk,a_pts,0,MS_MEDIA_AUDIO,a_now);
+            }
         }
         IMP_AI_ReleaseFrame(dev,chnid,&frm);
         /* adaptive pacing: if IMP_AI didn't actually block (spin), throttle to

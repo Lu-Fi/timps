@@ -219,6 +219,11 @@ int osd_expand(const char *tmpl, const char *vars_file, char *out, int outsz)
         stage1[o++]=*p++;
     }
     stage1[o]=0;
+    /* No '%' left after substitution -> nothing for strftime to do, and the
+     * whitelist pass below would only copy the string a second time. Skips
+     * localtime_r+strftime entirely for the common pure-{var} item and for
+     * static labels; only a clock item pays for the time machinery. */
+    if (!strchr(stage1,'%')){ snprintf(out,outsz,"%s",stage1); return 0; }
     /* stage 2: strftime for time placeholders. L13: the template is partly
      * user-controlled (osd text via /control), so whitelist the '%'
      * conversions we intend to support and neutralize everything else into a

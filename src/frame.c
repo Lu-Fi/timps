@@ -81,9 +81,14 @@ ms_pkt *pkt_pool_get(pkt_pool *pool, size_t cap)
     }
     if (cap == 0) cap = 1;
     if (cap > p->cap) {
-        uint8_t *nd = (uint8_t*)realloc(p->data, cap);
-        if (!nd) { free(p->data); free(p); return NULL; }  /* OOM: drop frame */
-        p->data = nd;
+        /* free+malloc, not realloc: the borrow starts at len==0, so the old
+         * contents are the previous frame's - bytes the caller overwrites and
+         * nobody reads. realloc() would copy them anyway on every grow, and
+         * it also has to work in place or move THIS block, while malloc is
+         * free to serve a better-fitting chunk. */
+        free(p->data);
+        p->data = (uint8_t*)malloc(cap);
+        if (!p->data) { free(p); return NULL; }   /* OOM: drop frame */
         p->cap  = cap;
     }
     p->len      = 0;

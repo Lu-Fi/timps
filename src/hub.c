@@ -353,8 +353,11 @@ void hub_unsubscribe(int src, fanqueue *q)
 /* Shared per-frame under-lock bookkeeping for both hub_publish() (borrowed
  * buffer, copies) and hub_publish_take() (pooled buffer, no copy). Updates the
  * cached vparam/fps/bitrate for VIDEO and snapshots the subscriber list, all
- * under s->lock. vparam_update() reads the AU buffer HERE, exactly as before,
- * at the same point in the sequence relative to the push - the take path passes
+ * under s->lock. `now` is the producer's publish instant, threaded in from the
+ * caller (see hub_publish() in hub.h): this used to sample its own here, under
+ * the lock, microseconds after the caller had already paid a syscall for one.
+ * vparam_update() reads the AU buffer HERE, exactly as before, at the same
+ * point in the sequence relative to the push - the take path passes
  * the same (data,len) it will hand to subscribers, and the producer's packet is
  * still fully owned at this point, so vparam sees identical bytes. Raises
  * g_pushing[src] while a subscriber snapshot is "out" so a concurrent
@@ -363,7 +366,7 @@ void hub_unsubscribe(int src, fanqueue *q)
  * hub_finish_push()). */
 static int hub_prepare_locked(hub_source *s, int src,
                               const uint8_t *data, size_t len,
-                              int keyframe, int media,
+                              int keyframe, int media, int64_t now,
                               fanqueue **subs_snap, int *pushing)
 {
     int nsub_snap;
@@ -373,7 +376,6 @@ static int hub_prepare_locked(hub_source *s, int src,
         if (keyframe || !s->vp_ready) {
             if (vparam_update(&s->vp, data, len)) s->vp_ready = 1;
         }
-        int64_t now = ms_now_us();
         if (s->fwin == 0) s->fwin = now;
         s->fcount++;
         if (now - s->fwin >= 1000000) {
@@ -406,14 +408,14 @@ static void hub_finish_push(int src)
 }
 
 void hub_publish(int src, const uint8_t *data, size_t len,
-                 int64_t pts_us, int keyframe, int media)
+                 int64_t pts_us, int keyframe, int media, int64_t now_us)
 {
     hub_source *s = hub_get(src); if(!s) return;
 
     fanqueue *subs_snap[HUB_MAX_SUBS];
     int pushing = 0;
     int nsub_snap = hub_prepare_locked(s, src, data, len, keyframe, media,
-                                       subs_snap, &pushing);
+                                       now_us, subs_snap, &pushing);
 
     if (nsub_snap == 0) return;      /* nobody listening: skip the malloc + copy */
 
@@ -432,8 +434,9 @@ void hub_publish(int src, const uint8_t *data, size_t len,
          * different bogus timeline (ffmpeg: "Non-monotonic DTS" waves on the
          * plain TCP+audio path, rtcpfix-camC/-camA 2026-08-11). One
          * clock_gettime per published frame PER SOURCE (~25-40/s), not per
-         * subscriber - well under P-03's per-session-per-frame concern. */
-        p->enq_us = ms_now_us();
+         * subscriber - well under P-03's per-session-per-frame concern. And
+         * now not even that: it is the producer's own reading, handed in. */
+        p->enq_us = now_us;
         /* push after releasing s->lock; each push takes its own ref, the
          * builder's own reference is released once below. */
         for (int i=0;i<nsub_snap;i++)
@@ -445,7 +448,7 @@ void hub_publish(int src, const uint8_t *data, size_t len,
 }
 
 void hub_publish_take(int src, ms_pkt *p,
-                      int64_t pts_us, int keyframe, int media)
+                      int64_t pts_us, int keyframe, int media, int64_t now_us)
 {
     hub_source *s = hub_get(src);
     if (!s || !p) { pkt_unref(p); return; }   /* pkt_unref(NULL) is a no-op */
@@ -454,14 +457,15 @@ void hub_publish_take(int src, ms_pkt *p,
     p->keyframe = keyframe;
     p->media    = media;
     /* see hub_publish(): unconditional publish-instant stamp (trace `age` +
-     * the RTCP SR media<->wall anchor). Stamped before the fan-out so every
-     * subscriber sees the same publish instant. */
-    p->enq_us   = ms_now_us();
+     * the RTCP SR media<->wall anchor), taken from the producer's own clock
+     * read. Stamped before the fan-out so every subscriber sees the same
+     * publish instant. */
+    p->enq_us   = now_us;
 
     fanqueue *subs_snap[HUB_MAX_SUBS];
     int pushing = 0;
     int nsub_snap = hub_prepare_locked(s, src, p->data, p->len, keyframe, media,
-                                       subs_snap, &pushing);
+                                       now_us, subs_snap, &pushing);
 
     if (nsub_snap == 0) {
         /* 0 subscribers: consume the producer's reference. This returns the

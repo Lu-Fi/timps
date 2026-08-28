@@ -38,9 +38,16 @@ void        hub_init(void);
 hub_source *hub_get(int src);
 /* HAL calls this for every encoded access unit (takes a BORROWED buffer,
  * copies into a refcounted pkt). Skips the malloc+copy entirely when the
- * source has 0 subscribers. */
+ * source has 0 subscribers.
+ *
+ * `now_us` is the PRODUCER's ms_now_us() reading for this frame: the publish
+ * instant stamped into p->enq_us and the clock the fps/bitrate windows
+ * advance on. Passed in rather than sampled here because every producer
+ * already took one a few microseconds earlier (pts_sanitize needs it), and
+ * this target has no vDSO - so each ms_now_us() is a real syscall and the
+ * publish path used to make three of them per frame for one instant. */
 void        hub_publish(int src, const uint8_t *data, size_t len,
-                        int64_t pts_us, int keyframe, int media);
+                        int64_t pts_us, int keyframe, int media, int64_t now_us);
 /* P-01 zero-second-copy variant: the producer assembles the access unit
  * DIRECTLY into a pooled packet obtained from hub_pkt_get(src, cap), sets
  * p->len, and hands ownership here. No second full-frame copy is made. On a
@@ -51,7 +58,8 @@ void        hub_publish(int src, const uint8_t *data, size_t len,
  * no-op. */
 ms_pkt     *hub_pkt_get(int src, size_t cap);
 void        hub_publish_take(int src, ms_pkt *p,
-                             int64_t pts_us, int keyframe, int media);
+                             int64_t pts_us, int keyframe, int media,
+                             int64_t now_us);   /* see hub_publish() */
 /* subscribe returns 0 on success; caller supplies its own fanqueue. */
 int         hub_subscribe(int src, fanqueue *q);
 void        hub_unsubscribe(int src, fanqueue *q);

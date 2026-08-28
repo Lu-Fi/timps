@@ -474,12 +474,17 @@ static void stream_mp4(hconn *c, int chn)
     int64_t last_audio_us = last_pkt_us; /* see MS_MP4_AUDIO_GAP_US */
     /* blocking socket: net_sendall must never write a partial fragment */
     while (1) {
-        /* M-1: teardown closed our queue - leave NOW, before popping whatever
-         * is still buffered. Sending it out could block up to SO_SNDTIMEO
+        /* P-03 (fanqueue): ONE lock/unlock for the pop and for everything this
+         * loop used to ask the same queue right afterwards - closed?, the two
+         * overflow flags, the backlog depth. Each was its own cycle on the
+         * mutex the producer contends for, up to five per frame per client. */
+        fq_status qs;
+        ms_pkt *p = fanqueue_pop_ex(&q, 200, &qs);
+        /* M-1: teardown closed our queue - leave NOW, dropping whatever this
+         * pop still had in hand. Sending it out could block up to SO_SNDTIMEO
          * (15 s) on a client that stopped reading, which is exactly the wedge
          * the drain in httpd_stop() cannot survive. */
-        if (fanqueue_closed(&q)) break;
-        ms_pkt *p = fanqueue_pop(&q, 200);
+        if (qs.closed) { pkt_unref(p); break; }
         if (!p) {
             char t[8]; int n=crecv(c,t,sizeof t,MSG_DONTWAIT);
             if (n==0) {
@@ -543,11 +548,11 @@ static void stream_mp4(hconn *c, int chn)
         int tr_q = -1, tr_qcap = -1;
         if (t_pop) {
             ms_trace_au_begin(&trc);
-            if (ms_trace_on(MS_TR_Q)) fanqueue_depth(&q, &tr_q, &tr_qcap, NULL);
+            if (ms_trace_on(MS_TR_Q)) { tr_q = qs.count; tr_qcap = qs.cap; }
         }
         /* self-guarded on MS_TR_SUM, so summaries work with MS_TR_AU off too */
         ms_trace_window(&trc, last_pkt_us);
-        int lost_key = fanqueue_take_dropped_key(&q);
+        int lost_key = qs.dropped_key;
         /* WARN once per client: sustained overflow was otherwise invisible
          * below DEBUG - only the /control counters moved */
         if (lost_key && !drop_warned++)
@@ -565,7 +570,7 @@ static void stream_mp4(hconn *c, int chn)
          * ~1.4-1.6 s eviction holes whose delivery resumed on mid-GOP
          * P-frames - silent corruption the adaptive path was built to
          * prevent. */
-        int lost_any = fanqueue_take_dropped(&q);
+        int lost_any = qs.dropped_any;
         if (adaptive) {
             /* Per-client adaptive frame-dropping. This client's fanqueue is
              * its own private buffer; if it backs up (a weak link that can't
@@ -584,10 +589,7 @@ static void stream_mp4(hconn *c, int chn)
              * just because one link is weak. Worst case this client gets a
              * keyframe-only slideshow - honest degradation, never corruption. */
             if (lost_key || lost_any) { hub_note_drop(chn); dropping = 1; }
-            if (!dropping) {
-                int cnt = 0; fanqueue_depth(&q, &cnt, NULL, NULL);
-                if (cnt >= MS_MP4_DROP_HIWAT) dropping = 1;
-            }
+            if (!dropping && qs.count >= MS_MP4_DROP_HIWAT) dropping = 1;
             if (dropping) {
                 if (p->media == MS_MEDIA_VIDEO && p->keyframe) {
                     dropping = 0;                /* clean boundary: resume here */

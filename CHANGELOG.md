@@ -263,6 +263,169 @@ semantic versioning.
   (which the ticket context points at). `+208 B` .text in `tls.o` on the T31
   `-Os` cross build, byte-identical to before with tickets compiled out.
 
+- **One clock read per published frame instead of three** (`src/hub.c`,
+  `src/hub.h`, `src/hal/hal_ingenic.c`, `src/hal/hal_sim.c`). There is no vDSO
+  on this target, so every `ms_now_us()` is a real `clock_gettime` syscall -
+  and the publish path made three of them for what is, to microseconds, one
+  instant: the producer took one for `pts_sanitize()`, `hub_publish*()` took
+  another for the packet's `enq_us` stamp, and `hub_prepare_locked()` took a
+  third *while holding the source lock* that subscribe/unsubscribe and the
+  `/events` stats tick contend for. `hub_publish()`/`hub_publish_take()` now
+  take the producer's reading as a `now_us` argument and thread it through,
+  so each published access unit costs exactly the one syscall its producer
+  already had to make. Applies to the audio publish path too, which had the
+  same three-deep pattern in each of its AAC/Opus/G.711 branches. The same
+  fix in `src/srt.c`'s `stream_run()`: one reading per loop iteration now
+  serves the link-stats tick, the encoder-stall bound, the arrival stamp and
+  the PAT/PMT cadence, instead of three per received packet - and it is read
+  *after* the pop, so it is the arrival instant rather than one that predates
+  a wait of up to 200 ms.
+
+- **The per-client fanqueue is locked once per frame, not four or five
+  times** (`src/fanqueue.c`, `src/fanqueue.h`, `src/rtsp/rtsp.c`,
+  `src/mp4/httpd.c`). Both streaming loops asked their queue a series of
+  one-line questions immediately around every `fanqueue_pop()` - is it
+  closed, did an overflow lose a keyframe, did it lose any packet, how deep
+  is the backlog - and each was its own lock/unlock cycle on the very mutex
+  the producer thread contends for on every push. New `fanqueue_pop_ex()`
+  answers all of them inside the pop's own critical section and hands back an
+  `fq_status`. The overflow flags are read-and-cleared exactly as their
+  `take_*` functions did, but ONLY on a pop that returns a packet: an
+  overflow always leaves its packet queued behind it, so the flags travel
+  with that packet and a timed-out pop cannot swallow a signal it has no
+  packet to deliver alongside. `dropped_audio` is deliberately left out - its
+  read-and-clear timing is what lets `httpd.c` tell a real mute apart from a
+  congestion eviction (2026-08-22, cam-garage), and folding it in would have
+  cleared it on every pop and re-broken exactly that. Both loops also stopped
+  needing a second clock read: the iteration's `now` is now taken after the
+  pop, which is where the trace's `t_pop` wanted it anyway.
+
+- **`fanqueue_push()` only signals the condvar when the queue was empty**
+  (`src/fanqueue.c`). Single consumer, so a waiter can only be parked when
+  the queue is empty; once a client has any backlog at all - which is
+  precisely the state a struggling client sits in - every push was paying for
+  a `pthread_cond_signal()` that could not wake anybody. `fanqueue_close()`
+  still broadcasts unconditionally.
+
+- **`pkt_pool_get()` no longer copies the previous frame when it grows a
+  pooled buffer** (`src/frame.c`). The borrow starts at `len == 0`, so the
+  old contents are the last frame's bytes - which the caller is about to
+  overwrite and nobody will read - yet `realloc()` faithfully copied them on
+  every grow (the ~1/GOP oversized IDR). `free()` + `malloc()` skips the copy
+  and lets the allocator pick a better-fitting chunk instead of having to
+  extend or move this one.
+
+- **Audio frames are encoded straight into a pooled hub packet**
+  (`src/hal/hal_ingenic.c`). Video and JPEG have used
+  `hub_pkt_get()` + encode-in-place + `hub_publish_take()` since P-01; audio
+  was still on the old `pkt_new()` path, encoding into a `__thread` scratch
+  buffer and then paying a `malloc` plus a full-frame copy out of it, per
+  frame, forever. All three encoder branches (faac, Opus, G.711) now take the
+  pooled buffer as their output target directly; a borrow that yields no
+  frame (faac priming, an encoder error, OOM) is handed back with
+  `pkt_unref()`. Small in bytes - 320 B to 1.5 KB at 25-50 frames/s - but it
+  also retires the 8 KB AAC and 4 KB Opus scratch buffers, dropping the audio
+  worker's thread-local footprint by ~12 KB.
+
+- **`ms_buf_reset()` stopped realloc-ing the recorder's fragment buffer down
+  and back up once per GOP** (`src/util.c`, `src/util.h`). The shrink-back
+  exists to release a ONE-OFF outlier, but it fired the instant a single
+  payload fit under the cap again - so a stream whose payloads *routinely*
+  exceed it paid a shrink-realloc plus a grow-realloc every time one arrived.
+  At 4-6 Mbit with a 2 s GOP that is every IDR fragment against the 256 KB
+  cap `record.c` and the fMP4 client loop in `mp4/httpd.c` both pass: a
+  realloc pair per GOP, per recorder and per fMP4 client, for the life of the
+  process. The capacity is now handed back only after `MS_BUF_SHRINK_RUN`
+  (64) consecutive resets have stayed under the cap - i.e. the big payload
+  really was the exception and not the shape of this stream. A genuine
+  outlier is still released, a couple of seconds later; the memory bound is
+  unchanged.
+
+- **T23 software rotation: the inner loop no longer recomputes a destination
+  index per byte** (`src/hal/nv12_rot.c`). This is the highest-frequency loop
+  in the daemon when it runs - ~21 MB/s of plane bytes at 720p15 - and each
+  byte cost a direction ternary, a multiply and an add to locate its
+  destination. `x` enters that index only through the `x*dw` /`(sw-1-x)*dw`
+  term, so within a source row the destination advances by a CONSTANT `±dw`
+  elements: the whole computation collapses to one pointer add, and the
+  1-byte (Y) versus 2-byte (CbCr pair) test is hoisted out of the innermost
+  loop with it. Verified byte-for-byte against the previous implementation
+  over both directions at 12 frame geometries, including odd and
+  smaller-than-a-tile ones.
+
+- **OSD templates without a `%` skip the whole time-formatting stage**
+  (`src/hal/osd_vars.c`). `osd_expand()` ran the strftime whitelist pass plus
+  `localtime_r()`+`strftime()` unconditionally - once per OSD item, per
+  refresh tick - including for pure `{var}` templates and static labels that
+  contain no strftime directive at all. It now copies through and returns as
+  soon as stage 1 comes out without a `%`. A `{var}` whose *value* contains a
+  `%` still goes through the whitelist exactly as before.
+
+- **The day/night ISP scrape parses prefix-anchored, stops when it has
+  everything, and remembers which `/proc` path works** (`src/daynight.c`).
+  This loop runs every `daynight.interval_ms` forever - ~43,000 times a day
+  at the 2 s default - and did three avoidable things on every pass.
+
+  It matched each of its nine fields with `strstr()` (scan the whole line for
+  the prefix, anywhere) and then re-matched the same prefix with `sscanf()`
+  to extract the value. The dump's value lines all start at column 0 and the
+  `sscanf` formats were anchored there anyway - a scanf literal only ever
+  matches at the current position - so an indented line already yielded
+  nothing despite `strstr()` matching it. One `strncmp()` plus `strtol()`
+  therefore accepts exactly the same lines for one comparison instead of two
+  scans, with `strtol`'s "no number there -> leave the target alone" rule
+  preserving the `-1` absent-markers. The `MAX ...` prefixes keep their place
+  ahead of the plain ones they contain. Verified against the old chain on 12
+  dumps: the two real fleet layouts (T31/T23 `isp-m0`, T20 `isp_info`), the
+  replay harness's, and the empty/garbage/indented/duplicate-substring edge
+  cases - identical field-for-field. The loop also stops once all nine fields
+  have been supplied rather than reading out the rest of the register dump.
+
+  And on a T20 the *first* `fopen()` was guaranteed to fail: `isp-m0` does
+  not exist in that SDK and never will, so the configured-path-then-fallback
+  probe order cost one ENOENT syscall pair on every single tick of those
+  cameras' lives. The working path is now remembered and tried first, with
+  the configured one re-probed whenever the cached path stops opening and
+  once every `DN_ISP_REPROBE_TICKS` (~5 min) regardless - so "the configured
+  path came back", or was corrected via `/control`, is still picked up.
+
+- **Schedule mode computes sunrise/sunset once a day, not once every 2 s**
+  (`src/daynight.c`). `mode=schedule` with a lat/lon calendar ran the full
+  sunrise equation on every tick: `gmtime_r` plus ~10 double-precision libm
+  calls (`sin`/`cos`/`asin`/`acos`/`fmod`) on a soft-float SoC, ~43,000 times
+  a day, to re-derive two instants that are constant for the whole UTC day by
+  construction. `dn_sun_times()` now memoizes on `(UTC day, lat, lon)`, so a
+  coordinate change via `/control` still takes effect on the next tick, while
+  the sunrise/sunset OFFSETS are applied by the callers afterwards and need
+  no invalidation at all. Two slots, because `dn_secs_to_dawn()` asks for
+  today and tomorrow within one call and one slot would thrash between them.
+  Verified identical (return value and both instants) against the uncached
+  form over 400 consecutive days at six locations including polar day and
+  polar night, with the today/tomorrow interleave. The `HH:MM` window mode's
+  per-tick `sscanf` was left alone: its cache key would be the config string
+  itself, and comparing that costs about what parsing it does.
+
+- **Backchannel resampling dropped its per-sample floating-point divide**
+  (`src/codec/resample.c`). `ms_resample()` computed `pos = i / ratio` for
+  every output sample - a soft-float divide per sample on the two-way-talk
+  path. It now walks a fixed-point cursor with one add per sample. Q32, not
+  Q16: the step is truncated so its error accumulates across the call, and at
+  Q16 a 3x upsample of a full 16 K-sample buffer walks off by ~0.1 sample,
+  which is visible against the reference; Q32 puts that at 1e-5 samples.
+  Measured against the old double implementation across 8/16/44.1/48 kHz
+  conversions in both directions: identical sample counts, maximum deviation
+  2 LSB out of ±32768 (~-84 dBFS), which is the truncate-toward-zero versus
+  floor rounding difference and not error.
+
+  Sizes for all of the above, T31 `-Os` cross build, `.text` per object:
+  `daynight.c +656 B` (the inlined constant-prefix `strncmp`s are bigger than
+  the `strstr` calls they replace, and the sun memo adds a lookup),
+  `fanqueue.c +116 B`, `osd_vars.c +52 B`, `util.c +48 B`, `nv12_rot.c +32 B`,
+  `resample.c +20 B`, `hub.c +4 B`, `frame.c ±0`, against `hal_ingenic.c
+  -48 B`, `httpd.c -40 B` and `rtsp.c -36 B` - `+804 B` net. `srt.c` is not
+  in that count (its build needs libsrt headers); its change is a few
+  removed calls.
+
 ## [1.9.3] - 2026-08-23
 
 ### Changed

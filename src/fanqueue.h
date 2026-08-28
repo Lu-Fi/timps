@@ -40,6 +40,30 @@ int   fanqueue_push(fanqueue *q, ms_pkt *p);
 /* pop: blocks until a packet is available or queue closed. returns NULL on
  * close. Caller must pkt_unref() the result. */
 ms_pkt *fanqueue_pop(fanqueue *q, int timeout_ms);
+
+/* what fanqueue_pop_ex() reports alongside the packet */
+typedef struct {
+    int closed;        /* as fanqueue_closed() */
+    int dropped_key;   /* as fanqueue_take_dropped_key() - read AND cleared */
+    int dropped_any;   /* as fanqueue_take_dropped()     - read AND cleared */
+    int count, cap;    /* as fanqueue_depth(), sampled AFTER this pop */
+} fq_status;
+
+/* fanqueue_pop() plus - answered inside the SAME critical section - everything
+ * a consumer loop otherwise asks the queue immediately afterwards: is it
+ * closed, did an overflow lose a keyframe or any packet, how deep is the
+ * remaining backlog. Each of those was a separate lock/unlock cycle on the
+ * very mutex the producer contends for, up to four per frame per client.
+ *
+ * dropped_key/dropped_any are read-and-cleared exactly as their take_*
+ * functions do, but ONLY on a pop that returns a packet: an overflow always
+ * leaves its packet queued behind it, so the flags travel WITH that packet,
+ * and a pop that merely timed out must not swallow a signal it has no packet
+ * to deliver alongside. dropped_audio is deliberately not included - its
+ * read-and-clear timing is load-bearing in mp4/httpd.c, see
+ * fanqueue_take_dropped_audio(). `st` may be NULL (then this is plain
+ * fanqueue_pop()). */
+ms_pkt *fanqueue_pop_ex(fanqueue *q, int timeout_ms, fq_status *st);
 /* Close the queue: wakes every consumer blocked in fanqueue_pop() at once and
  * makes every later pop return NULL immediately. This is the ONLY way to end a
  * consumer loop that is waiting on packets rather than on its socket - see

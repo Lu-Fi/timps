@@ -459,14 +459,21 @@ static void stream_run(ts_mux *m)
     int64_t stats_t = last_pkt_us;
     while (g_run) {
         ms_pkt *p = fanqueue_pop(&q, 200);
-        /* before the !p bail: the link stats stay interesting (and the
+        /* P-03: no vDSO on this MIPS target, so every ms_now_us() is a real
+         * syscall. Read it ONCE per iteration, right after the pop, and reuse
+         * that instant for the stats tick, the stall bound, the pop stamp and
+         * the PSI cadence below - three clock_gettime()s per received packet
+         * otherwise. Read AFTER the pop, never before: `now` has to be the
+         * arrival instant, not one that predates a wait of up to 200 ms.
+         *
+         * Before the !p bail: the link stats stay interesting (and the
          * /control snapshot fresh) even while the encoder goes quiet */
-        int64_t snow = ms_now_us();
-        if (snow - stats_t >= SRT_STATS_PERIOD_S * 1000000LL) {
-            stats_tick(m); stats_t = snow;
+        int64_t now = ms_now_us();
+        if (now - stats_t >= SRT_STATS_PERIOD_S * 1000000LL) {
+            stats_tick(m); stats_t = now;
         }
         if (!p) {
-            if (ms_now_us() - last_pkt_us > SRT_STALL_US) {
+            if (now - last_pkt_us > SRT_STALL_US) {
                 LOGW(MOD,"chn=%d: no packets for %llds - encoder stall, "
                          "dropping this client", chn,
                      (long long)(SRT_STALL_US/1000000));
@@ -474,11 +481,10 @@ static void stream_run(ts_mux *m)
             }
             continue;
         }
-        last_pkt_us = ms_now_us();
+        last_pkt_us = now;
         if (fanqueue_take_dropped_key(&q)) hub_request_idr(chn);
 
         /* (re)send PAT/PMT ~every second and before the first packet */
-        int64_t now = ms_now_us();
         if (!psi || now - psi_t > 1000000) {
             if (send_pat(m) < 0 || send_pmt(m) < 0) { pkt_unref(p); break; }
             psi = 1; psi_t = now;

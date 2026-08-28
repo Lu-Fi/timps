@@ -89,16 +89,26 @@ int fanqueue_push(fanqueue *q, ms_pkt *p)
             q->dropped++;
         }
     }
+    /* Single consumer (see fanqueue.h): a waiter can only be parked in
+     * fanqueue_pop() when the queue is EMPTY, so a push onto a non-empty
+     * queue has nobody to wake and the signal is pure libc overhead - which
+     * is exactly the state a client that has fallen behind sits in. */
+    int was_empty = (q->count == 0);
     q->slots[q->tail] = p;
     q->tail = (q->tail+1)%q->cap;
     q->count++;
     q->bytes += p->len;
     pthread_mutex_unlock(&q->lock);
-    pthread_cond_signal(&q->cond);
+    if (was_empty) pthread_cond_signal(&q->cond);
     return dropped;
 }
 
 ms_pkt *fanqueue_pop(fanqueue *q, int timeout_ms)
+{
+    return fanqueue_pop_ex(q, timeout_ms, NULL);
+}
+
+ms_pkt *fanqueue_pop_ex(fanqueue *q, int timeout_ms, fq_status *st)
 {
     pthread_mutex_lock(&q->lock);
     while (q->count==0 && !q->closed) {
@@ -120,6 +130,16 @@ ms_pkt *fanqueue_pop(fanqueue *q, int timeout_ms)
         q->head=(q->head+1)%q->cap;
         q->count--;
         q->bytes -= p->len;
+    }
+    if (st) {
+        st->closed = q->closed;
+        st->count  = q->count;
+        st->cap    = q->cap;
+        /* see fanqueue.h: the drop flags are consumed only together with the
+         * packet they were raised behind */
+        st->dropped_key = p ? q->dropped_key : 0;
+        st->dropped_any = p ? q->dropped_any : 0;
+        if (p) { q->dropped_key = 0; q->dropped_any = 0; }
     }
     pthread_mutex_unlock(&q->lock);
     return p;
