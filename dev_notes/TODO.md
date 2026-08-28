@@ -3,6 +3,70 @@
 Working list. Newest block first; each entry says what is established and what
 is still guesswork, so nobody has to re-derive it.
 
+## RESOLVED: cam-wyze-pan never confirmed day mode after a manual basement-light event - windowless room, not a bug
+
+Found 2026-08-28: user was in the basement (light on) for ~17 minutes
+(17:41:59-17:59:20, confirmed via `daynight.trace_path` on-device, the
+longest light window of the day) and `image.running_mode` stayed at night
+the whole time. Dispatched to an Opus agent for a full evidence-first
+investigation (raw syslog on the fleet log server plus the on-device
+`/tmp/dn-trace.csv`, not just the `[DAYNIGHT]`-tagged lines).
+
+**Not a coverage gap**: the trend probe (4-minute EMA lead time) DID fire
+mid-window at 17:46:07 and measured `r=1.10 lit=962 dark=1059`. **Not a
+stale/outlier `filter_cost`** either - the working theory going in was that
+the cached day/night gain-ratio (~6.13x, used to project what the day
+pipeline would read before committing to a switch) was measured under
+unusually poor lighting and never re-measured since real day only happens on
+a real switch. Refuted: the current 6.13x was measured at `lit=1007`,
+*brighter* than today's whole 962/822/900/1022 range - re-measuring today
+would likely have come out worse (7.50x), not better. All 14 filter_cost
+measurements for this camera since 2026-08-20 land in 6154-6166 regardless
+of the pre-switch night level (690 to 8171, an 11.8x spread) - the day
+pipeline in this room reads almost the same regardless of how bright the
+manual light gets.
+
+**Real cause**: `night_gain` (4096, the package default) times filter_cost
+(~6.13) is ~25100 - the room would need to read below `4096/6.13 ≈ 668` to
+ever pass, and it never has (822 was the brightest moment on record). Day
+mode is essentially unreachable in this room under the default threshold,
+independent of the light's actual brightness - the veto is doing its job by
+its own logic, the threshold configured for it just doesn't fit a windowless
+room with no real daylight.
+
+Two side findings from the same investigation, left open, not acted on:
+`dn_clipped()`'s headroom calculation grants a `+32` integration-time bonus
+even when the sensor is fully railed dark (this camera's integration ratio
+sits constant at 0.7527, always under the 0.9 cutoff, regardless of
+darkness) - harmless here since the branch it feeds still reached the right
+answer, but a latent fleet-wide bug worth a dedicated look. And this
+camera's IR illuminator appears to contribute nothing to the scene (`r`
+never exceeds ~1.10 even at the darkest gain-railed moments) - probably the
+more consequential problem for a windowless room in practice, unrelated to
+day/night logic.
+
+**Fix applied**: `daynight.night_gain` raised from the package default 4096
+to **7000** for this camera only (`daynight.night_gain = 7000` in
+`user/wyze_campan1_t20x_jxf22_rtl8189etv/192.168.10.163/overlay/etc/
+timps.conf` in thingino-firmware-LuFi, applied live via `/control` first,
+took effect immediately - `bitrate`/`fps`-style fields defer to a restart,
+`night_gain` did not). Math: `962 * 6.13 = 5897 < 7000` - light-on now
+clears the bar; the day pipeline's own near-constant ~6160 reading stays
+`< 7000` too, so it won't immediately bounce back to night once switched;
+light-off's `8171 * 6.13 ≈ 50000` stays nowhere near 7000, so the veto still
+holds and there's no flapping. `day_gain` left untouched.
+
+An alternative considered and declined (for now): couple `image.running_mode`
+directly to a Home Assistant entity for the physical basement light instead
+of the gain heuristic, since "day" in a windowless room is inherently a
+transient, manually-triggered state rather than something a light-level
+probe should have to infer. Not pursued because no suitable HA entity for
+the basement light was found in a first pass - the only `light.*` entity in
+the "Keller" area (`light.tasmotalifepo4`) is almost certainly a LiFePO4
+battery-system indicator, not the room light, and none of the ~30 `switch.*`
+entities there look like a light switch either. Worth revisiting if the
+gain-threshold fix above turns out not to hold up.
+
 ## RESOLVED (explained, not a bug): cam-vorne's `E/VBM`/`E/Framesource ... not bind pool` lines are harmless vendor-SDK chatter from a real, idle-only chn0 enable cycle
 
 Found 2026-08-26 checking the fleet syslog for the first night after the
