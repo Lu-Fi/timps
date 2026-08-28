@@ -121,6 +121,38 @@ semantic versioning.
   the frame - no legitimate OSD text needs to be that tall, and 128 keeps the
   worst case a quarter of that.
 
+- **TCP-interleaved RTSP now batches a whole access unit into one
+  `sendmsg()`** (`src/rtsp/rtsp.c`). The UDP path has batched into `sendmmsg`
+  since P3; TCP was left at one `net_sendmsg_all()` per RTP packet, so a
+  200 KB IDR fragmented into ~170 FU-A packets was ~170 syscalls serialized
+  on that client's thread - the transport ffmpeg/Frigate/go2rtc default to.
+  A byte stream needs no per-packet framing beyond the 4-byte `'$'` prefix,
+  so the same `rtp_batch` now stages `{prefix + RTP header}` (one iovec, one
+  segment, as before) plus a payload iovec pointing into the access unit, and
+  the play loop's existing flush barrier pushes up to `RTP_BATCH_N` packets
+  per `sendmsg()`. Measured on the host sim with a 1080p/6 Mbit source over
+  RTSP/TCP: 3498 -> 346 `sendmsg` calls for a 5 s session. The zero-copy
+  payload-lifetime contract is unchanged (`rtp_out_fn`, rtp.h) - the barrier
+  that already covered the UDP batch covers this one by construction, and
+  `sink_discard()` drops staged pointers on the error path. An interleaved
+  RTCP packet flushes the batch before it is written rather than being
+  staged, so it can never jump ahead of RTP bytes already queued on the
+  stream. RTSPS deliberately keeps its one-record-per-packet path: mbedTLS
+  has no scatter/gather write, so batching there would only trade the memcpy
+  for extra TLS records (same reasoning as the existing note in
+  `sink_send()`), and such sinks simply get no batch allocated.
+
+- **The RTCP liveness drain is throttled to 1 Hz instead of running per
+  media frame** (`src/rtsp/rtsp.c`). Every UDP-transport session did a
+  non-blocking `recvfrom()` on both RTCP sockets on every iteration of the
+  stream loop - ~50/s on a 25 fps video+audio session, essentially all of
+  them `EAGAIN` - to feed `last_act_us`, whose reaping threshold is 120 s
+  and whose real input (the peer's receiver reports) arrives every few
+  seconds at most. Gated on the loop's existing `now` snapshot, matching the
+  P-04 control-poll throttle a few lines above; the socket buffers hold
+  whatever accumulates between drains. 6 s UDP session on the sim: 511 -> 137
+  `recvfrom`, of which 486 -> 112 were `EAGAIN`.
+
 ## [1.9.3] - 2026-08-23
 
 ### Changed

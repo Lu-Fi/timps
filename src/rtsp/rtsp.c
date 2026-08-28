@@ -90,27 +90,40 @@ struct rtsp_server {
 #endif
 };
 
-/* P3: batch buffer for UDP RTP - collect the packets of one access unit and
- * hand them to the kernel in a single sendmmsg() instead of one sendto()
- * each. A 200 KB IDR is ~170 packets at the 1200-byte default MTU; on this
- * no-vDSO 3.10/MIPS platform each avoided syscall is ~2-5 us. Availability
- * verified against the actual toolchain: uClibc-ng exports sendmmsg (checked
- * in the buildroot sysroot libc.so) and kernel 3.10 has the syscall (since
- * 3.0); glibc/musl (sim builds) have it too. ENOSYS still falls back at
- * runtime, so an exotic kernel degrades to the old per-packet path. */
+/* P3: batch buffer for RTP - collect the packets of one access unit and hand
+ * them to the kernel in a single syscall instead of one per packet. A 200 KB
+ * IDR is ~170 packets at the 1200-byte default MTU; on this no-vDSO 3.10/MIPS
+ * platform each avoided syscall is ~2-5 us.
+ *
+ * UDP: one sendmmsg() per batch. Availability verified against the actual
+ * toolchain: uClibc-ng exports sendmmsg (checked in the buildroot sysroot
+ * libc.so) and kernel 3.10 has the syscall (since 3.0); glibc/musl (sim
+ * builds) have it too. ENOSYS still falls back at runtime, so an exotic
+ * kernel degrades to the old per-packet path.
+ *
+ * TCP-interleaved: one net_sendmsg_all() per batch. A byte stream needs no
+ * per-packet framing beyond the 4-byte '$' prefix that is staged in front of
+ * each RTP header, so the whole batch is one iovec array (msgs[] goes unused
+ * on this path - ~0.5 KB per TCP client, cheaper than a second struct shape).
+ * NOT used for RTSPS: see the TLS note in sink_send(). */
 #define RTP_BATCH_N 16
 typedef struct {
-    int             n;
+    int             n;          /* packets staged */
+    int             niov;       /* iov[] entries in use (TCP path) */
     struct mmsghdr  msgs[RTP_BATCH_N];
-    /* two iovecs per datagram: [2i] the staged header, [2i+1] the payload
-     * still sitting in the encoder's access unit (never copied here) */
+    /* two iovecs per packet: the staged header block, and the payload still
+     * sitting in the encoder's access unit (never copied here). UDP indexes
+     * this as [2i]/[2i+1]; TCP packs it densely (a 0-length payload takes no
+     * entry) and tracks the count in niov. */
     struct iovec    iov[2*RTP_BATCH_N];
     /* Only the HEADERS are staged. They must be copied because the packetizer
      * reuses one small stack buffer per packet (rtp_out_fn's lifetime contract
      * in rtp.h); the payload must NOT be, and that is the whole point - this
      * array used to be RTP_BATCH_N * RTP_MTU_MAX = 23.5 KB of per-UDP-client
-     * bounce buffer that also blew past the target's L1 D-cache. */
-    uint8_t         hdr[RTP_BATCH_N][RTP_HDR_MAX];
+     * bounce buffer that also blew past the target's L1 D-cache. The 4 extra
+     * bytes hold the interleave prefix on the TCP path, so prefix and RTP
+     * header go out as ONE iovec (and one TCP segment) like they did before. */
+    uint8_t         hdr[RTP_BATCH_N][4 + RTP_HDR_MAX];
 } rtp_batch;
 
 /* RTP output sink (UDP or TCP-interleaved) */
@@ -130,7 +143,7 @@ typedef struct {
 #endif
 } rtp_sink;
 
-/* flush the pending sendmmsg batch; 0 = ok (or nothing pending), <0 = error
+/* flush the pending batch; 0 = ok (or nothing pending), <0 = error
  * (same contract as a failed sendto: caller stops the session) */
 static int sink_flush(rtp_sink *s)
 {
@@ -139,6 +152,21 @@ static int sink_flush(rtp_sink *s)
     /* trace.h: one bracket around the whole batch, not per datagram - a
      * sendmmsg IS one kernel entry, and it is the unit that can block. */
     int64_t t_wr = ms_trace_wr_begin();
+    if (s->tcp) {
+        int bytes = 0;
+        if (t_wr) for (int i = 0; i < b->niov; i++) bytes += (int)b->iov[i].iov_len;
+        /* net_sendmsg_all() consumes b->iov in place on a partial write, which
+         * is why n/niov are reset unconditionally right after - the array is
+         * not reusable either way. A short write here is the same torn-frame
+         * situation H-1 covers for a single packet: the caller stops the
+         * session and teardown closes the fd. */
+        int rc = net_sendmsg_all(s->fd, b->iov, b->niov);
+        b->n = 0; b->niov = 0;
+        ms_trace_wr_end(s->tr, t_wr, rc < 0 ? 0 : bytes);
+        if (rc < 0) return -1;
+        s->wrote_tcp = 1;
+        return 0;
+    }
     int bytes = 0;
     if (t_wr)
         for (int i = 0; i < b->n; i++)
@@ -178,10 +206,10 @@ static int sink_flush(rtp_sink *s)
  * error path, where the rest of the AU is abandoned and no flush follows, the
  * batch must be emptied BEFORE that pkt_unref rather than left holding
  * pointers into a buffer that may go back to the pool. No-op for a sink
- * without a batch (TCP, audio). */
+ * without a batch (audio, RTSPS). */
 static void sink_discard(rtp_sink *s)
 {
-    if (s->batch) s->batch->n = 0;
+    if (s->batch) { s->batch->n = 0; s->batch->niov = 0; }
 }
 
 /* Largest interleaved RTP/RTCP packet this sink will frame. Sized
@@ -214,6 +242,39 @@ static int sink_send(void *ctx, const uint8_t *hdr, int hlen,
         ilv[1] = (uint8_t)(rtcp ? s->chan_rtcp : s->chan_rtp);
         ilv[2] = (uint8_t)(len >> 8);
         ilv[3] = (uint8_t)len;
+        /* P3 on TCP: stage the packet and let the play loop's flush barrier
+         * push the whole access unit out in one net_sendmsg_all(). A 200 KB
+         * IDR fragmented into ~170 FU-A packets was ~170 sendmsg() calls,
+         * serialized on this client's thread; it is now ~11 (RTP_BATCH_N).
+         * An RTCP packet flushes first rather than being staged: it is
+         * emitted from outside the AU loop and must not jump ahead of RTP
+         * bytes already queued on this byte stream. */
+        if (s->batch) {
+            rtp_batch *b = s->batch;
+            if (rtcp) {
+                if (sink_flush(s) < 0) return -1;
+            } else {
+                if (4 + hlen > (int)sizeof b->hdr[0]) return -1;   /* see RTP_HDR_MAX */
+                /* The prefix+header are copied (<= 20 B) because the packetizer
+                 * reuses its stack buffer for the next packet of this AU. The
+                 * PAYLOAD is not - same lifetime reasoning as the UDP branch
+                 * below, and the same flush barrier guarantees it. */
+                uint8_t *h = b->hdr[b->n];
+                memcpy(h, ilv, 4);
+                memcpy(h + 4, hdr, (size_t)hlen);
+                struct iovec *iv = &b->iov[b->niov];
+                iv[0].iov_base = h;
+                iv[0].iov_len  = (size_t)(4 + hlen);
+                b->niov++;
+                if (plen) {
+                    iv[1].iov_base = (void*)pay;
+                    iv[1].iov_len  = (size_t)plen;
+                    b->niov++;
+                }
+                if (++b->n == RTP_BATCH_N && sink_flush(s) < 0) return -1;
+                return len;
+            }
+        }
         /* trace.h: this is THE interesting write on a TCP-interleaved session -
          * it is where a stalled peer / closed receive window parks us for up to
          * SO_SNDTIMEO. Bracketing it (only while MS_TR_WR is on) is what lets a
@@ -1120,16 +1181,23 @@ static void stream_loop(session *s)
     if (s->have_video) {
         rtp_track_init(&s->vtrack, VIDEO_PT, 90000, c->rtsp_mtu, cname,
                        sink_send, &s->vsink);
-        /* P3: batch UDP video packets into sendmmsg; audio stays direct
-         * (one packet per frame - nothing to batch). Allocation failure
-         * just keeps the per-packet path.
+        /* P3: batch video packets into one sendmmsg (UDP) / one sendmsg (TCP
+         * interleaved); audio stays direct (one packet per frame - nothing to
+         * batch). Allocation failure just keeps the per-packet path. RTSPS is
+         * excluded: TLS has no scatter/gather write, so batching there would
+         * only trade one memcpy for one TLS record per packet either way (see
+         * sink_send).
          * A batched sink DEFERS the send, and since the packets it stages
          * reference the access unit rather than copying it (rtp_out_fn), every
          * batch must be emptied before the play loop drops its packet
          * reference. stream_loop's flush barrier covers any sink given a batch
          * here, audio included, so adding one below is safe - but read that
          * barrier before you do. */
-        if (!s->vsink.tcp)
+        int can_batch = 1;
+#ifdef USE_TLS
+        if (s->vsink.tls) can_batch = 0;
+#endif
+        if (can_batch)
             s->vsink.batch = (rtp_batch*)calloc(1, sizeof(rtp_batch));
         if (hub_subscribe(s->vchn, &s->q) != 0) goto full;
         sub_v = 1;
@@ -1190,6 +1258,7 @@ static void stream_loop(session *s)
     int64_t drop_idr_us = 0;   /* rate-limit the safety IDR request on any drop */
     int drop_warned = 0;   /* one WARN per session; per-drop detail stays LOGD */
     int64_t last_ctl_poll_us = 0;   /* P-04: rate-limit the nonblocking ctl poll */
+    int64_t last_rtcp_drain_us = 0; /* same, for the RTCP liveness drain below */
     int pop_ms = 100;
     /* A3: last proof-of-life from the client. UDP-transport sessions are
      * otherwise undetectably dead: sendto() on an unconnected UDP socket
@@ -1284,7 +1353,7 @@ static void stream_loop(session *s)
                 if (vc==MS_VC_H265) sendrc = rtp_send_h265(&s->vtrack,p->data,p->len,p->pts_us);
                 else                sendrc = rtp_send_h264(&s->vtrack,p->data,p->len,p->pts_us);
                 /* P3: one access unit done - push the whole batch out in a
-                 * single sendmmsg (no-op on TCP / unbatched sinks). Kept here,
+                 * single syscall (no-op on an unbatched sink). Kept here,
                  * ahead of the SR anchor below, because the anchor must only
                  * be taken once the AU is really on the wire; the barrier
                  * before pkt_unref() then finds nothing left to do. */
@@ -1327,8 +1396,8 @@ static void stream_loop(session *s)
              *
              * In today's shape both calls are cheap no-ops on the path that
              * already flushed: the video branch above flushes after each AU,
-             * and the audio sink has no batch at all (only vsink gets one, and
-             * only for UDP). They are here so the invariant holds by
+             * and the audio sink has no batch at all (only vsink gets one).
+             * They are here so the invariant holds by
              * CONSTRUCTION rather than by that coincidence - give asink a
              * batch, or add a third media branch, and this still cannot leak a
              * dangling payload pointer past the unref.
@@ -1540,16 +1609,27 @@ static void stream_loop(session *s)
                           (s->asink.tcp && s->asink.wrote_tcp);
         int reap_check = !tcp_active;
         if (reap_check) {
-            for (int t = 0; t < 2; t++) {
-                int rfd = t ? s->a_udp[1] : s->v_udp[1];
-                if (rfd < 0) continue;   /* -1 for TCP sessions: no-op there */
-                uint8_t rr[512];
-                struct sockaddr_in from; socklen_t fl = sizeof from;
-                while (recvfrom(rfd, rr, sizeof rr, MSG_DONTWAIT,
-                                (struct sockaddr*)&from, &fl) > 0) {
-                    if (from.sin_addr.s_addr == s->peer.sin_addr.s_addr)
-                        last_act_us = now;
-                    fl = sizeof from;
+            /* Gate the drain to ~1 s, exactly like the P-04 control poll
+             * above: it used to run per media frame (~50 recvfrom/s on a
+             * video+audio session, essentially all of them EAGAIN) to feed a
+             * timestamp whose decision threshold is 120 s and whose real
+             * input - the peer's receiver reports - arrives every few seconds
+             * at most. The socket buffers hold what accumulates between
+             * drains, and 1 s of extra staleness on a 120 s threshold is
+             * noise. */
+            if (now - last_rtcp_drain_us >= 1000000) {
+                last_rtcp_drain_us = now;
+                for (int t = 0; t < 2; t++) {
+                    int rfd = t ? s->a_udp[1] : s->v_udp[1];
+                    if (rfd < 0) continue;   /* -1 for TCP sessions: no-op there */
+                    uint8_t rr[512];
+                    struct sockaddr_in from; socklen_t fl = sizeof from;
+                    while (recvfrom(rfd, rr, sizeof rr, MSG_DONTWAIT,
+                                    (struct sockaddr*)&from, &fl) > 0) {
+                        if (from.sin_addr.s_addr == s->peer.sin_addr.s_addr)
+                            last_act_us = now;
+                        fl = sizeof from;
+                    }
                 }
             }
             if (now - last_act_us >
