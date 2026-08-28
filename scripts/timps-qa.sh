@@ -2269,9 +2269,11 @@ else
 	LV_MODE=live
 
 	# --- osd stream 0 item 0: the live text-overlay leaf keys (caps.osd).
-	# font_size clamps 8..256, transparency 0..255, colors are 0xAARRGGBB hex ---
+	# font_size clamps 8..128 (lowered from 256 - a 255-char item at 256px
+	# could transiently allocate a ~14MB rasterizer canvas), transparency
+	# 0..255, colors are 0xAARRGGBB hex ---
 	lv_section osd0.0 '{"osd0":{"0":' '}}' osd0.0 \
-		"text str" "x int 0 200" "y int 0 200" "font_size int 8 256" \
+		"text str" "x int 0 200" "y int 0 200" "font_size int 8 128" \
 		"transparency int 0 255" "outline int 0 4" "color hex" "outline_color hex"
 
 	# --- osd.* globals (Finding #1): monitor_stream/font_path/vars_file are
