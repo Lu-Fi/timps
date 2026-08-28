@@ -351,7 +351,10 @@ done
 # (even against the same camera) never collide; --out still overrides.
 if [ -z "$OUTDIR" ]; then
 	_cam_tag=$(printf '%s' "$CAM" | tr -c 'A-Za-z0-9._-' '_')
-	OUTDIR="timps-qa-${_cam_tag}-$(date +%Y%m%d-%H%M%S)-$$"
+	# Under dev_notes/qa-runs/, not the repo root directly - same gitignored
+	# location --out already points long-run investigations at, so ad-hoc runs
+	# stop littering the top level with timps-qa-* directories.
+	OUTDIR="dev_notes/qa-runs/timps-qa-${_cam_tag}-$(date +%Y%m%d-%H%M%S)-$$"
 fi
 
 case "$PROFILE" in
