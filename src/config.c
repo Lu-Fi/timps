@@ -1044,8 +1044,13 @@ static const cfg_field osd_item_fields[] = {
     F ("y",             0,              y,             T_INT,    F_CTRL,  0,0),
     /* H4: font_size feeds the OSD canvas allocation (msttf_render); clamped
      * at parse so a bad /control write can never request an absurd raster
-     * (the rasterizer additionally hard-clamps its own pixel height) */
-    F ("font_size",     0,              font_size,     T_INT,    F_CTRL,  8,256),
+     * (the rasterizer additionally hard-clamps its own pixel height).
+     * Ceiling lowered 256->128 2026-08-28: a 255-char item (txt[] max) at
+     * 256px could still transiently allocate a ~14MB canvas inside one
+     * msttf_render() call before refresh_text() discarded it for exceeding
+     * the frame - 128 keeps the worst case a fraction of that with no
+     * legitimate OSD use case needing text that tall. */
+    F ("font_size",     0,              font_size,     T_INT,    F_CTRL,  8,128),
     F ("color",         "font_color",   color,         T_HEX,    F_CTRL,  0,0),
     /* imp_osd.c feeds this straight into the group attr's uint8_t fgAlhpa:
      * clamp so e.g. 300 doesn't wrap to 44 while the config echoes 300 */

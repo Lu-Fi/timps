@@ -433,12 +433,23 @@ osd.supersample    = 2                        # TTF rasterizer AA: samples/axis/
 # set the sub-stream (osd1.*) size directly for legibility - a small sub-stream
 # needs a proportionally similar px size, not a smaller number.
 #
+# Default layout (this matches config_defaults() in config.c exactly - shown
+# explicitly here, like every other setting in this file, so the format is
+# documented even though a fresh config already starts this way): date+time
+# top-left, hostname centered, uptime top-right, logo bottom-right - 4 items,
+# deliberately kept to that so the 1s-live clock item is the only one that
+# re-renders every tick (hostname/uptime/logo are each their own item
+# specifically so a static value never rides along with something that
+# changes, and gets change-gated out after its first render - see
+# refresh_text() in imp_osd.c). x/y follow the old-streamer convention
+# (imp_osd.c resolve_pos): positive = from that edge, negative = from the
+# opposite edge, 0 = centered on that axis.
 osd0.0.enabled   = 1
 osd0.0.type      = text
-osd0.0.text      = {hostname}  %Y-%m-%d %H:%M:%S
-osd0.0.x         = 16
-osd0.0.y         = 16
-osd0.0.font_size = 32
+osd0.0.text      = %Y-%m-%d %H:%M:%S
+osd0.0.x         = 10                         # from the left
+osd0.0.y         = 10
+osd0.0.font_size = 128
 osd0.0.color     = 0xFFFFFFFF                 # ARGB
 osd0.0.transparency = 255
 osd0.0.outline       = 1                      # 1 px black stroke (on by default)
@@ -447,30 +458,53 @@ osd0.0.outline_color = 0xFF000000
 
 osd0.1.enabled   = 1
 osd0.1.type      = text
-osd0.1.text      = {fps} fps  {ip}
-osd0.1.x         = 16
-osd0.1.y         = 56
-osd0.1.font_size = 24
-osd0.1.color     = 0xFFFFFF00
+osd0.1.text      = {hostname}
+osd0.1.x         = 0                          # 0 = centered horizontally
+osd0.1.y         = 10
+osd0.1.font_size = 32
+osd0.1.color     = 0xFFFFFFFF
+osd0.1.outline       = 1
+osd0.1.outline_color = 0xFF000000
 
-# substream: its own set, e.g. just a timestamp
+osd0.2.enabled   = 1
+osd0.2.type      = text
+osd0.2.text      = {uptime}
+osd0.2.x         = -10                        # negative = from the right
+osd0.2.y         = 10
+osd0.2.font_size = 32
+osd0.2.color     = 0xFFFFFFFF
+osd0.2.outline       = 1
+osd0.2.outline_color = 0xFF000000
+
+osd0.3.enabled   = 1
+osd0.3.type      = logo
+osd0.3.logo      = /usr/share/images/thingino_100x30.bgra  # installed by the
+                                               # thingino-logo package on every
+                                               # thingino build - not timps-
+                                               # specific, no per-camera asset
+                                               # to provide. /usr/share/images/
+                                               # thingino_210x64.bgra is the
+                                               # larger variant if 100x30 reads
+                                               # too small in the corner.
+osd0.3.logo_w    = 100
+osd0.3.logo_h    = 30
+osd0.3.x         = -10                        # bottom-right
+osd0.3.y         = -10
+osd0.3.transparency = 200
+
+# substream: same 4-item layout applies automatically (config_defaults()
+# seeds it per-stream), just at a smaller absolute font_size - override
+# item 0 here only as an example of picking a different sub-stream size;
+# items 1-3 (hostname/uptime/logo) inherit the compiled default unless
+# also given explicit osd1.N.* keys below.
 osd1.0.enabled   = 1
 osd1.0.type      = text
 osd1.0.text      = %Y-%m-%d %H:%M:%S
-osd1.0.x         = 16
-osd1.0.y         = 16
+osd1.0.x         = 10
+osd1.0.y         = 10
 osd1.0.font_size = 12                         # absolute px on the sub-stream
 osd1.0.outline       = 1
 osd1.0.outline_color = 0xFF000000
-
-# osd0.2.enabled   = 1
-# osd0.2.type      = logo
-# osd0.2.logo      = /etc/logo.bgra          # raw BGRA pixels
-# osd0.2.logo_w    = 100
-# osd0.2.logo_h    = 30
-# osd0.2.x         = 1780
-# osd0.2.y         = 16
-# osd0.2.transparency = 200
 
 # ---- privacy masks (solid cover rectangles) ----
 # Up to MS_MAX_PRIVACY (4) rectangles per video stream, drawn as IMP OSD cover

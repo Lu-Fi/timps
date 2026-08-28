@@ -103,6 +103,24 @@ semantic versioning.
   starts unset so the first shot after a start/restart prunes immediately,
   which is the one moment the backlog can be arbitrarily old.
 
+- **`timps.conf.example`'s OSD section brought back in sync with the actual
+  compiled default** (`timps.conf.example`, `src/config.c`). The shipped
+  example bundled `{hostname}` into the same item as the live clock (forcing
+  an unchanging value to re-rasterize every second alongside it) and had no
+  `{uptime}`/logo entries at all - `config_defaults()` has set the intended
+  time / hostname / uptime / logo 4-item layout (`src/config.c:307-336`,
+  added 2026-07-11) as the real default all along; the example file had just
+  drifted from it. Re-derived the example's `osd0.*`/`osd1.0.*` block from
+  that function so both agree byte-for-byte (10px margins, same
+  `/usr/share/images/thingino_100x30.bgra` - installed fleet-wide by the
+  `thingino-logo` package, confirmed present in every camera profile's build
+  output, not a timps-specific asset). Also lowered the `font_size` clamp
+  256->128 (`src/config.c`): a 255-char item (the `txt[]` cap) at 256px could
+  still transiently allocate a ~14 MB rasterizer canvas inside one
+  `msttf_render()` call before `refresh_text()` discarded it for exceeding
+  the frame - no legitimate OSD text needs to be that tall, and 128 keeps the
+  worst case a quarter of that.
+
 ## [1.9.3] - 2026-08-23
 
 ### Changed
