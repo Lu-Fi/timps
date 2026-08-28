@@ -123,26 +123,48 @@ static void ring_push(ms_pkt *p, int64_t pre_us)
  * used to exist as word-identical twins here and there; see util.h for the
  * chosen component semantics. */
 
-/* recursively find the oldest regular file under base (by mtime); returns 1 and
- * fills out on success. lstat (not stat) so a symlink is never followed out of
- * the records tree, and depth-bounded like timelapse.c's prune_old (L8). */
-static int find_oldest(const char *base, char *out, size_t cap, time_t *oldest, int depth)
+/* how many prune victims one tree walk collects. Once the card sits at
+ * min_free_mb - the steady state of continuous recording - EVERY seg_open()
+ * prunes, and the old code re-walked the whole records tree (opendir/readdir/
+ * lstat over thousands of segments) once per deleted file. That walk runs
+ * synchronously inside seg_open() while encoded frames pile into the record
+ * fanqueue, so on a full card it costs dropped frames / a re-requested IDR
+ * that every RTSP+SRT viewer pays for too, not just the recording. One walk
+ * now yields this many oldest files; a rotation frees at most one segment's
+ * worth of space, so 32 covers a normal cycle many times over and the
+ * re-walk below is the rare fallback (e.g. after an external bulk write to
+ * the card). */
+#define PRUNE_BATCH 32
+
+typedef struct { time_t mt; char path[336]; } prune_cand;
+
+/* insertion into a bounded array kept sorted oldest-first: with PRUNE_BATCH
+ * small this beats a heap in both code size and constant factor, and the
+ * common case (a file NEWER than every candidate held) is a single compare. */
+static void cand_add(prune_cand *c, int *n, const char *path, time_t mt)
 {
-    if (depth>8) return 0;
-    DIR *d=opendir(base); if(!d) return 0;
-    int found=0; struct dirent *e;
+    if (*n==PRUNE_BATCH && mt>=c[PRUNE_BATCH-1].mt) return;
+    int i = (*n<PRUNE_BATCH) ? (*n)++ : PRUNE_BATCH-1;
+    for (; i>0 && c[i-1].mt>mt; i--) c[i]=c[i-1];
+    c[i].mt=mt; snprintf(c[i].path,sizeof c[i].path,"%s",path);
+}
+
+/* recursively collect the PRUNE_BATCH oldest regular files under base (by
+ * mtime). lstat (not stat) so a symlink is never followed out of the records
+ * tree, and depth-bounded like timelapse.c's prune_old (L8). */
+static void collect_oldest(const char *base, prune_cand *c, int *n, int depth)
+{
+    if (depth>8) return;
+    DIR *d=opendir(base); if(!d) return;
+    struct dirent *e;
     while ((e=readdir(d))){
         if (!strcmp(e->d_name,".")||!strcmp(e->d_name,"..")) continue;
         char p[336]; snprintf(p,sizeof p,"%s/%s",base,e->d_name);
         struct stat s; if (lstat(p,&s)!=0) continue;
-        if (S_ISDIR(s.st_mode)){
-            if (find_oldest(p,out,cap,oldest,depth+1)) found=1;
-        } else if (S_ISREG(s.st_mode)){
-            if (*oldest==0 || s.st_mtime<*oldest){ *oldest=s.st_mtime; snprintf(out,cap,"%s",p); found=1; }
-        }
+        if (S_ISDIR(s.st_mode))       collect_oldest(p,c,n,depth+1);
+        else if (S_ISREG(s.st_mode))  cand_add(c,n,p,s.st_mtime);
     }
     closedir(d);
-    return found;
 }
 
 /* delete oldest segment files until at least min_free_mb is available.
@@ -161,13 +183,22 @@ static void prune_free(int min_free_mb)
     char base[200]; char host[64];
     ms_hostname(host,sizeof host);           /* F4 handling lives in ms_hostname */
     snprintf(base,sizeof base,"%s/%s/records",dir,host);
-    for (int guard=0; guard<10000; guard++){
+    /* ~11 KB kept off the record thread's stack: only rec_thread ever reaches
+     * prune_free (via seg_open), so a function-local static needs no locking -
+     * same reasoning as seg_write's persistent fragment buffer. */
+    static prune_cand cand[PRUNE_BATCH];
+    for (int walk=0; walk<32; walk++){
         long long fm=ms_free_mb(dir);
         if (fm<0 || fm>=min_free_mb) return;
-        char victim[336]=""; time_t oldest=0;
-        if (!find_oldest(base,victim,sizeof victim,&oldest,0) || !victim[0]) return;
-        if (unlink(victim)!=0) return;
-        LOGI(MOD,"pruned %s (free %lld MB < %d)",victim,fm,min_free_mb);
+        int n=0;
+        collect_oldest(base,cand,&n,0);
+        if (!n) return;                      /* nothing left to prune */
+        for (int i=0;i<n;i++){
+            if (unlink(cand[i].path)!=0) return;
+            LOGI(MOD,"pruned %s (free %lld MB < %d)",cand[i].path,fm,min_free_mb);
+            fm=ms_free_mb(dir);
+            if (fm<0 || fm>=min_free_mb) return;
+        }
     }
 }
 

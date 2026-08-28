@@ -68,6 +68,29 @@ semantic versioning.
   (`IMP_Encoder_YuvEncode`) has no pack array at all. With the early exit
   there is nothing measurable left to win. `+160 B` .text on T31/`-Os`.
 
+- **Recording's free-space prune now walks the records tree ONCE per
+  rotation instead of once per deleted file** (`src/record.c`). A card that
+  has reached `record.min_free_mb` - the steady state of continuous
+  recording, not an edge case - made every single `seg_open()` enter the
+  prune loop, and each iteration did a full recursive
+  `opendir`/`readdir`/`lstat` sweep of the whole tree just to identify the
+  one oldest file, unlinked it, then swept the entire tree again for the
+  next victim. With thousands of segments on the card that is seconds of
+  synchronous I/O inside `seg_open()`, while encoded frames pile into the
+  record fanqueue - so the cost was not confined to recording: an overflow
+  there drops a keyframe and re-requests an IDR on the shared encoder, which
+  every RTSP and SRT viewer pays for. `find_oldest()` is replaced by
+  `collect_oldest()`, which gathers the 32 oldest files in one walk into a
+  bounded insertion-sorted array; `prune_free()` unlinks from that list and
+  re-checks `statvfs` between each unlink, stopping the moment there is
+  enough space, and only re-walks in the rare case the batch is exhausted
+  and the card is still short. A batch covers a normal rotation many times
+  over, so the steady state is now one walk per rotation. Deliberately not
+  keyed on the day/hour directory buckets that `record.name` produces by
+  default: that pattern is runtime-mutable via `/control`, so a
+  layout-agnostic oldest-by-mtime scan stays correct for a flat or
+  custom-strftime naming scheme too.
+
 ## [1.9.3] - 2026-08-23
 
 ### Changed
