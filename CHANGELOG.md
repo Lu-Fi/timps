@@ -25,6 +25,60 @@ semantic versioning.
 
 ### Changed
 
+- **OSD TrueType rasterization: 39% less CPU per render, measured on a T31
+  camera** (`src/hal/msttf.c`). Two independent changes to the glyph
+  rasterizer that re-draws every OSD text item from scratch, once a second,
+  per stream:
+  - The innermost scanline-fill loop (contour segments x supersampled
+    scanlines x glyph rows, the hottest loop in the file) indexed the far
+    end of each edge as `p[(j+1) % pl->n]`. It now starts on the closing
+    edge and carries the previous point forward, which drops both the
+    per-segment integer division and one of the two point loads. Same edges
+    in the same orientation, only rotated by one, and the crossings are
+    sorted immediately afterwards, so the output is **bit-identical** -
+    verified as such over 1920 renders (4 fonts x 8 strings incl. full
+    ASCII x pixel_h 8/12/16/20/24/32/48/64/96/128 x supersample 1/2/4 x
+    outline on/off), byte-for-byte equal to the old code. On a T31 camera a
+    32px clock string went 6.50 -> 5.51 ms (-15%). Note for the next person
+    who reads this loop: the obvious alternative, replacing the `%` with an
+    `if (jn == n) jn = 0` branch, measured ~5% *slower* than the modulo on
+    that T31 (6.50 -> 6.83 ms) even though it is 31% faster on a desktop -
+    the divider overlaps the surrounding float work there, the branch does
+    not. Host timings do not decide this one.
+  - `quad()` emitted a fixed 8 line segments per quadratic bezier no matter
+    how large the glyph was on screen, which over-tessellates the 12px
+    sub-stream OSD and under-tessellates a 128px one. Since the control
+    points reach it already in device pixels, it now solves the
+    uniform-subdivision error bound `|a-2c+b| / (8n^2) <= 0.02px` for the
+    segment count directly (clamped to 2..16). That tolerance is 1/25th of
+    a supersample cell at the default `osd.supersample=2`. Not bit-exact by
+    construction; measured against a 64-segments-per-curve reference
+    rendering, the new flattening changes 0.6% of ink pixels versus the old
+    fixed 8 (max delta one supersample step, i.e. 64/255 alpha, no pixel
+    changed inside a glyph body, total alpha mass -0.05%), and at 96-128px
+    it is *closer* to the reference than the fixed 8 was. T31: 5.51 ->
+    3.95 ms for the same 32px clock string; 6.50 -> 3.95 ms for both
+    changes together (-39%), and -25% over a full 8-string/10-size sweep.
+    Host x86-64: 0.52 -> 0.20 ms (-62%).
+  - Consequence for the opt-in autohinter (`USE_OSD_HINTING`, compiled in
+    on several fleet cameras and on by default there via `osd.hinting`):
+    it used a fixed 2px edge-length gate to tell real stems from
+    flattened-bezier chords, which only worked while chords were short.
+    That assumption was already breaking above ~50px with the fixed 8
+    segments (a chord is ~0.04*pixel_h long there), where the snapper was
+    chunking up round glyphs, and adaptive stepping makes chords longer
+    still. Contour points now carry a flag marking the ones `quad()`
+    emitted, so the hinter skips chord edges exactly, at any size, and the
+    2px gate goes back to filtering only tiny serif nubs - hinted output at
+    the sizes this hinter was tuned for (<=12px) is unchanged in its
+    stem snapping, and at 96/128px it is much closer to an ideal hinted
+    rendering than before (pixels off by more than one supersample step:
+    1056/2485 -> 172/193).
+  - Cost: `msttf.o` `.text` +244 B (+264 B with hinting compiled in),
+    `timpsd` `.text` 993786 -> 994084 B on T31, i.e. +0.03%. Checked with
+    ASan/UBSan/LeakSan over the whole render matrix plus six
+    byte-corrupted fonts, hinting on and off.
+
 - **`/events` `stats` push now skips ticks where nothing actually changed**
   (`src/mp4/httpd.c`). Previously it re-sent every enabled stream's
   subs/fps/kbps/dims/codec/drop-counters on every `events.stats_ms` tick
