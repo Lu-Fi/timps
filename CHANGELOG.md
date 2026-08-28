@@ -482,6 +482,40 @@ semantic versioning.
 
 ### Fixed
 
+- **fMP4: a transport stall longer than 10 s no longer desyncs audio from
+  video for the rest of the connection** (`src/mp4/fmp4.c`,
+  `pts_track_time()`). The video track's `tfdt` is a running sum of emitted
+  sample durations, and each duration comes from the real PTS delta - but
+  only while that delta is under a 10 s sanity clamp; beyond it the sample
+  fell back to the *nominal* one-frame duration. Nothing then recovered the
+  lost time, because a duration accumulator has no way to notice it is
+  behind. So a delivery gap longer than the clamp - a weak-WiFi client whose
+  `csend()` blocks while its fanqueue evicts, then `stream_mp4()`'s adaptive
+  drop draining the backlog to the next keyframe - was silently subtracted
+  from the video timeline *permanently*: every later frame stayed that much
+  behind real time, while the audio track re-anchored to true capture time
+  via the M2 branch two lines below and stayed correct. The two tracks
+  ended up at a fixed A/V offset equal to the stall, for the whole
+  remaining session, with no drift and no error anywhere - the shape that
+  makes it look like a clean stream that is simply out of sync.
+  Reproduced exactly against the real muxer: a 24 s gap yields a dead-flat
+  +23.99 s skew (`cam-vorne-garage`, 2 h `--profile longrun` on
+  2026-08-28: ~0.03 s skew for 45 minutes, one WiFi stall, then 24.0 s flat
+  for the remaining 65 minutes, `FAIL longrun fmp4 LEVEL/TREND`). RTSP over
+  the same link at the same moment was unaffected, because RTP timestamps
+  are absolute and simply resume in the right place - which is why only the
+  fMP4 leg failed. The fix gives the video track the same re-anchor the
+  audio track already had: a PTS delta the clamp rejects now falls through
+  to the offset-from-shared-base branch instead of silently keeping
+  `nominal`, so the timeline jumps forward once to true media time and
+  lip-sync is preserved. The `off > dts + 2 * nominal` threshold keeps every
+  normal frame on the continuous accumulator - the muxed byte stream is
+  **bit-identical** for gaps of 0 - 9.99 s (verified byte-for-byte over 15
+  gap sizes), and for a gap past the clamp only the resuming track's `tfdt`
+  values change, with `tfdt` monotonicity intact on both tracks. Also
+  applies to the SD recorder, which muxes through the same function. `-72 B`
+  `.text` (`fmp4.o`, `-Os`, identical on T20/T23/T31/T40/C100).
+
 - **A hung `daynight.switch_cmd`/`irprobe_cmd` no longer freezes day/night
   switching AND daemon shutdown** (`src/daynight.c`). Both board hooks are
   `fork()`+`execlp()`'d from the detection thread and were then reaped with a

@@ -91,11 +91,19 @@ static uint64_t pts_track_time(fmp4_mux *m, int64_t pts_us, int64_t *last_pts_io
     uint64_t dts = *dts_io;
     uint32_t dur = nominal;
     if (pts_us > 0 && pts_us > *last_pts_io) {
-        if (!fixed_dur) {
-            uint64_t d = (uint64_t)(pts_us - *last_pts_io) * timescale / 1000000u;
-            if (d > 0 && d < (uint64_t)timescale * 10) dur = (uint32_t)d; /* clamp jitter/gaps */
+        /* A PTS-following (video) track absorbs the gap into THIS sample's
+         * duration, but only while the delta is credible: a delta of 10 s or
+         * more is far more likely a garbage/rolled-over capture stamp than a
+         * real one, and muxing it as a single 10-second-long sample would
+         * wreck the presentation. Such a delta therefore falls through to the
+         * re-anchor below instead of silently keeping `nominal` - see the M6
+         * note there for why "silently keeping nominal" was a bug. */
+        uint64_t d = fixed_dur ? 0
+                   : (uint64_t)(pts_us - *last_pts_io) * timescale / 1000000u;
+        if (!fixed_dur && d > 0 && d < (uint64_t)timescale * 10) {
+            dur = (uint32_t)d;                        /* jitter/short gap */
         } else if (m->base_pts_us >= 0 && pts_us >= m->base_pts_us) {
-            /* M2: a fixed-duration (audio) track otherwise advances by
+            /* M2 (audio): a fixed-duration track otherwise advances by
              * exactly `nominal` per sample, so any input gap (audio.mute
              * toggle, AI stall, dropped fragment) leaves the audio timeline
              * permanently behind the PTS-following video track. If the real
@@ -105,7 +113,27 @@ static uint64_t pts_track_time(fmp4_mux *m, int64_t pts_us, int64_t *last_pts_io
              * Only forward jumps are possible (`off > dts` by the guard),
              * so tfdt stays strictly monotonic; contiguous audio (delta of
              * about one frame) never trips the threshold and keeps the
-             * exact fixed-1024 behavior. */
+             * exact fixed-1024 behavior.
+             *
+             * M6 (video): the SAME recovery, for the one case the duration
+             * clamp above rejects. A transport stall longer than the clamp -
+             * a weak-WiFi client whose csend() blocks, its fanqueue evicting
+             * meanwhile, then httpd.c's adaptive drop draining the backlog to
+             * the next keyframe - resumes with a delta of tens of seconds.
+             * With no recovery here the video timeline kept `nominal` for that
+             * sample and simply LOST the whole stall: every later frame stayed
+             * that much behind real time for the rest of the connection, while
+             * the audio track re-anchored via M2 and stayed correct. The two
+             * tracks then sat at a fixed A/V offset equal to the stall, which
+             * never healed because the offset is an accumulator, not a
+             * measurement (cam-vorne-garage 2h fMP4 longrun 2026-08-28: ~0.03 s
+             * skew for 45 min, one WiFi stall, then a dead-flat 24.0 s for the
+             * remaining 65 min; RTSP over the same link was unaffected because
+             * RTP timestamps are absolute and simply resume at the right
+             * place). Re-anchoring costs one tfdt jump forward to true media
+             * time - exactly what the client needs to keep lip-sync - and the
+             * threshold keeps every normal frame on the continuous
+             * accumulator, so healthy streams are bit-identical. */
             uint64_t off = (uint64_t)(pts_us - m->base_pts_us) * timescale / 1000000u;
             if (off > dts + 2ull * nominal) dts = off;
         }
