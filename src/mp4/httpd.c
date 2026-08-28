@@ -134,6 +134,35 @@ static int csend(hconn *c, const void *buf, int len)
     ms_trace_wr_end(c->tr, t_wr, rc >= 0 ? len : 0);
     return rc;
 }
+
+/* csend() for a response made of several pieces: one gather-write instead of
+ * one syscall (and, with TCP_NODELAY set, one TCP segment) per piece. MJPEG
+ * pays this per frame - part header, JPEG body and boundary delimiter were
+ * three of each. TLS has no scatter/gather write, so the HTTPS path keeps the
+ * sequential writes it always did; it is not the per-frame-cost case.
+ * net_sendmsg_all() consumes `iov` in place on a partial write, so the caller
+ * must treat the array as spent afterwards. */
+static int csendv(hconn *c, struct iovec *iov, int niov)
+{
+    int total = 0;
+    for (int i = 0; i < niov; i++) total += (int)iov[i].iov_len;
+    int64_t t_wr = ms_trace_wr_begin();
+    int rc;
+#ifdef USE_TLS
+    if (c->tls) {
+        rc = 0;
+        for (int i = 0; i < niov && rc >= 0; i++)
+            if (iov[i].iov_len)
+                rc = ms_tls_write((ms_tls_conn *)c->tls, iov[i].iov_base,
+                                  (int)iov[i].iov_len);
+    } else
+#endif
+    {
+        rc = net_sendmsg_all(c->fd, iov, niov);
+    }
+    ms_trace_wr_end(c->tr, t_wr, rc >= 0 ? total : 0);
+    return rc;
+}
 /* one-line exit-reason log for the streaming loops: a failed csend() is the
  * ONLY way a live streaming client can vanish with no log line at all (every
  * other exit already speaks), and it is also the one that leaves a torn
@@ -269,10 +298,16 @@ static void http_send_ex(hconn *c, const char *status, const char *ctype,
         "Cache-Control: no-cache\r\nConnection: close\r\n\r\n",
         status, ctype, bodylen, extra ? extra : "");
     if (n >= (int)sizeof hdr) return;      /* never send a truncated header */
-    csend(c, hdr, n);
+    struct iovec iov[2];
+    iov[0].iov_base = hdr;           iov[0].iov_len = (size_t)n;
     /* HEAD (RFC 7231 4.3.2): same headers a GET would send - including the
      * Content-Length of the body a GET would have returned - but no body */
-    if (body && bodylen && !c->head) csend(c, body, bodylen);
+    int niov = 1;
+    if (body && bodylen && !c->head) {
+        iov[1].iov_base = (void*)body; iov[1].iov_len = (size_t)bodylen;
+        niov = 2;
+    }
+    csendv(c, iov, niov);
 }
 
 static void http_send(hconn *c, const char *status, const char *ctype,
@@ -714,8 +749,12 @@ static void snapshot_jpg(hconn *c, int src)
         /* never send a truncated header (n >= sizeof hdr means snprintf's
          * would-be length overran the buffer) - same guard as http_send_ex.
          * HEAD gets the true Content-Length of the grabbed frame, no body. */
-        if (n < (int)sizeof hdr && csend(c,hdr,n)>=0 && !c->head)
-            csend(c,p->data,(int)p->len);
+        if (n < (int)sizeof hdr) {
+            struct iovec iov[2];
+            iov[0].iov_base = hdr;      iov[0].iov_len = (size_t)n;
+            iov[1].iov_base = p->data;  iov[1].iov_len = p->len;
+            csendv(c, iov, c->head ? 1 : 2);
+        }
         pkt_unref(p);
     } else if (busy) {
         http_send_ex(c,"503 Service Unavailable","text/plain",MEDIA_CORS,"busy",4);
@@ -807,11 +846,19 @@ static void stream_mjpeg(hconn *c, int src, const char *bnd)
         /* a truncated multipart header would desync the boundary framing for
          * the rest of the stream - never send it, tear the stream down like
          * any other write failure (n >= sizeof part = snprintf overran) */
-        int rc = (hn >= (int)sizeof part) ? -1 : csend(c,part,hn);
-        if (rc>=0) rc = csend(c,p->data,(int)p->len);
-        /* close this part and open the next one NOW, not when the next frame
-         * shows up - that is the whole point (see the comment above dlm). */
-        if (rc>=0) rc = csend(c,dlm,dn);
+        int rc = -1;
+        if (hn < (int)sizeof part) {
+            /* part header + JPEG + the delimiter that closes this part and
+             * opens the next one, in ONE write. The delimiter goes out NOW,
+             * not when the next frame shows up - that is the whole point (see
+             * the comment above dlm) - and putting all three in one iovec is
+             * what keeps that from costing three syscalls/segments a frame. */
+            struct iovec iov[3];
+            iov[0].iov_base = part;     iov[0].iov_len = (size_t)hn;
+            iov[1].iov_base = p->data;  iov[1].iov_len = p->len;
+            iov[2].iov_base = dlm;      iov[2].iov_len = (size_t)dn;
+            rc = csendv(c, iov, 3);
+        }
         int serr = rc<0 ? errno : 0;
         pkt_unref(p);
         if (rc<0) {

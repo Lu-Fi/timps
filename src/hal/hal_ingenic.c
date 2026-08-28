@@ -2886,6 +2886,13 @@ static void *jpeg_thread(void *arg)
         }
         dbg_jempty=0;
         pk->len = jlen;
+        /* Give the IMP stream buffer back HERE, not after the snapshot
+         * write and publish below. enc_assemble_packs() above has copied every
+         * pack into pk->data, so nothing past this point reads `st` - while the
+         * snapshot fwrite/rename can stall for hundreds of ms on SD-card wear
+         * levelling, and holding a checked-out stream across that stalls the
+         * encoder's own ring (the next frame has nowhere to land). */
+        IMP_Encoder_ReleaseStream(jc->chn,&st);
         /* Snapshot-to-file is subscriber-independent and must read the buffer
          * BEFORE the hand-off: after hub_publish_take() the packet may already
          * be recycled or in flight to a subscriber. */
@@ -2918,7 +2925,6 @@ static void *jpeg_thread(void *arg)
          * straight to the pool - equivalent to the old jc->active/hub_active
          * gate, which only ever skipped the now-eliminated malloc+copy. */
         hub_publish_take(jc->src, pk, ms_now_us(), 1, MS_MEDIA_JPEG);
-        IMP_Encoder_ReleaseStream(jc->chn,&st);
     }
     if (receiving){ IMP_Encoder_StopRecvPic(jc->chn); fs_unuse(jc->fs_chn); }
     return NULL;

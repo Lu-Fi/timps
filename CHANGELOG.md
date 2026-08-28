@@ -175,6 +175,26 @@ semantic versioning.
   implementation on three H.264 sources, with the index cap forced to 2 to
   exercise the fallback as well.
 
+- **MJPEG sends one frame in one syscall instead of three**
+  (`src/mp4/httpd.c`). The part header, the JPEG body and the boundary
+  delimiter were three separate `csend()`s - and with `TCP_NODELAY` set,
+  three TCP segments - for every frame. A new `csendv()` wraps
+  `net_sendmsg_all()` for the plain path (the HTTPS path keeps the sequential
+  writes: mbedTLS has no gather write, and it is not the per-frame-cost
+  case). `http_send_ex()` and `snapshot_jpg()`, the same header+body shape at
+  much lower frequency, use it too. Wire output is byte-identical, boundary
+  framing included.
+
+- **`jpeg_thread` releases the IMP encoder stream before the snapshot file
+  write, not after** (`src/hal/hal_ingenic.c`). Order was `GetStream` ->
+  assemble into the pooled packet -> `fopen`/`fwrite`/`fclose`/`rename` the
+  snapshot JPEG -> publish -> `ReleaseStream`, so a card doing wear-levelling
+  (hundreds of ms, occasionally seconds) held one of the encoder's stream
+  buffers checked out for the whole stall, with the next frame having nowhere
+  to land. `enc_assemble_packs()` has already copied every pack into
+  `pk->data` by then and nothing after that point reads `st`, so the release
+  simply moves up.
+
 ## [1.9.3] - 2026-08-23
 
 ### Changed
