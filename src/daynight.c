@@ -550,6 +550,81 @@ static void dn_blind_check(const dn_sample *sm, float ref, int *warned)
 /* ------------------------------------------------------------------ *
  * Driving the board                                                   */
 
+/* How long a board hook may run before it is presumed wedged. switch_cmd
+ * drives a motor through a script chain, irprobe_cmd writes a GPIO - both are
+ * sub-second in practice, so these are generous ceilings for "it is never
+ * coming back", not budgets anything normal spends. */
+#ifndef DN_CMD_TIMEOUT_MS
+#define DN_CMD_TIMEOUT_MS 10000      /* switch_cmd */
+#endif
+#ifndef DN_IRPROBE_TIMEOUT_MS
+#define DN_IRPROBE_TIMEOUT_MS 5000   /* irprobe_cmd */
+#endif
+/* Grace given to a hook when shutdown is already requested: long enough for a
+ * healthy script to finish the switch it started, short enough that a wedged
+ * one cannot hold daynight_stop()'s pthread_join(). */
+#ifndef DN_CMD_STOP_MS
+#define DN_CMD_STOP_MS 1000
+#endif
+#define DN_CMD_POLL_MS 20            /* waitpid(WNOHANG) cadence */
+#define DN_CMD_KILL_MS 500           /* reap window after SIGKILL */
+
+/* Reap a board-hook child, bounded. A blocking waitpid() here is a hang the
+ * whole feature rides on: the hook runs ON the detection thread, so a script
+ * that never returns - stuck I2C, an NFS-mounted script, a shell waiting on a
+ * pipe nobody writes - freezes day/night switching AND daemon shutdown, since
+ * daynight_stop() joins this same thread. Poll instead; wait on the stop gate
+ * so a shutdown is noticed within one slice rather than at the deadline, and
+ * SIGKILL a child that outstays its welcome.
+ *
+ * Returns the child's exit status, or -1 if it died on a signal, had to be
+ * killed, or could not be reaped. A child stuck in uninterruptible sleep
+ * survives SIGKILL, so the reap after it is bounded too: we give up and leave
+ * a zombie rather than trade this hang for a shorter one. */
+static int dn_reap(pid_t pid, const char *cmd, const char *arg, int timeout_ms)
+{
+    int64_t deadline = ms_now_us() / 1000 + timeout_ms;
+    int killed = 0, shortened = 0;
+    for (;;){
+        int st = 0;
+        pid_t r = waitpid(pid, &st, WNOHANG);
+        if (r == pid) return WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+        if (r < 0 && errno != EINTR){
+            LOGW(MOD, "waitpid('%s %s') failed: %s", cmd, arg, strerror(errno));
+            return -1;
+        }
+        int64_t now = ms_now_us() / 1000;
+        int stopping = ms_stopgate_stopped(&g_gate);
+        if (stopping && !shortened && !killed){
+            shortened = 1;
+            if (deadline > now + DN_CMD_STOP_MS) deadline = now + DN_CMD_STOP_MS;
+        }
+        if (now >= deadline){
+            if (killed){
+                LOGE(MOD, "'%s %s' (pid %d) survived SIGKILL - abandoning it. "
+                          "The board hook is stuck in the kernel (I2C/GPIO "
+                          "driver or a dead mount); day/night continues without it",
+                     cmd, arg, (int)pid);
+                return -1;
+            }
+            LOGW(MOD, "'%s %s' (pid %d) did not finish in time - killing it. "
+                      "A board hook must not block the detection thread",
+                 cmd, arg, (int)pid);
+            kill(pid, SIGKILL);
+            killed = 1;
+            deadline = now + DN_CMD_KILL_MS;
+        }
+        /* the gate returns immediately once stop is requested, so poll on a
+         * plain sleep from that point on rather than spinning */
+        if (killed || stopping){
+            struct timespec ts = { 0, DN_CMD_POLL_MS * 1000000L };
+            nanosleep(&ts, NULL);
+        } else {
+            ms_stopgate_wait(&g_gate, DN_CMD_POLL_MS);
+        }
+    }
+}
+
 /* run "<switch_cmd> day|night" (the thingino board script: ircut/light/color).
  * The mode change is committed even if the command fails so a missing script
  * warns once per switch instead of retrying every sample. */
@@ -576,9 +651,7 @@ static void dn_switch(int mode, const char *why, const char *cmd,
         execlp(cmd, cmd, arg, (char*)NULL);
         _exit(127);              /* exec failed (script missing / not a program) */
     }
-    int st = 0;
-    while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
-    int rc = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+    int rc = dn_reap(pid, cmd, arg, DN_CMD_TIMEOUT_MS);
     if (rc != 0)
         LOGW(MOD, "'%s %s' failed (rc=%d) - is the script installed?", cmd, arg, rc);
 }
@@ -628,9 +701,7 @@ static int dn_irprobe(const char *cmd, int on)
         execlp(cmd, cmd, arg, (char*)NULL);
         _exit(127);
     }
-    int st = 0;
-    while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
-    int rc = WIFEXITED(st) ? WEXITSTATUS(st) : -1;
+    int rc = dn_reap(pid, cmd, arg, DN_IRPROBE_TIMEOUT_MS);
     if (rc != 0)
         LOGW(MOD, "'%s %s' failed (rc=%d) - silent probe unavailable, "
                   "falling back to the IR-cut probe", cmd, arg, rc);

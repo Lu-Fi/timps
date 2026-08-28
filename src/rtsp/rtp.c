@@ -331,8 +331,12 @@ int rtp_send_g711(rtp_track *t, const uint8_t *frame, size_t len, int64_t pts_us
          * (after silence). This track has no silence suppression - it's
          * one continuous talkspurt for the whole session - so that's just
          * the very first packet ever sent on it, not every packet. */
-        int h = rtp_hdr(hdr, t, t->pkt_count==0, (uint32_t)(ts + off));
-        if (emit(t, hdr, h, frame+off, (int)chunk, ts) < 0) return -1; /* client gone (L3) */
+        /* per-FRAGMENT timestamp (1 byte == 1 sample), and emit() latches it
+         * as last_rtp_ts for the RTCP SR extrapolation - passing the base ts
+         * there left the SR anchored up to a fragment behind the wire */
+        uint32_t fts = (uint32_t)(ts + off);
+        int h = rtp_hdr(hdr, t, t->pkt_count==0, fts);
+        if (emit(t, hdr, h, frame+off, (int)chunk, fts) < 0) return -1; /* client gone (L3) */
         off += chunk;
     }
     t->audio_samples += len;   /* mono 8-bit: bytes == samples */

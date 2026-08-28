@@ -9,12 +9,31 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <pthread.h>
+
+/* Every static in this file is shared state. Two producers reach it
+ * concurrently: imp_osd.c's OSD updater thread and, on T23 with software
+ * rotation, one sw_rot_thread per rotated channel - a mixed config runs both
+ * at once, and each expands placeholders on its own cadence. The doubles are
+ * torn reads on 32-bit MIPS; the cached[]/last_us pairs can be read mid-update
+ * (a half-written string, or a TTL stamp that belongs to the other thread's
+ * sample). One mutex covers the lot: the protected regions are a string copy
+ * or a once-per-second /proc read, never a call back out of this file - see
+ * resolve(), which copies the interface names out before using them so the
+ * get_*() helpers below never re-enter the lock. */
+static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 
 static double g_fps = 0.0;
-void osd_vars_set_fps(double fps){ g_fps = fps; }
+void osd_vars_set_fps(double fps)
+{
+    pthread_mutex_lock(&g_mu); g_fps = fps; pthread_mutex_unlock(&g_mu);
+}
 
 static double g_bitrate = 0.0;   /* live stream bitrate, kbit/s */
-void osd_vars_set_bitrate(double kbps){ g_bitrate = kbps; }
+void osd_vars_set_bitrate(double kbps)
+{
+    pthread_mutex_lock(&g_mu); g_bitrate = kbps; pthread_mutex_unlock(&g_mu);
+}
 
 static int64_t mono_us(void);   /* defined below get_uptime(); used by the
                                   * ~1s-TTL caches added to the /proc /sys
@@ -43,6 +62,7 @@ static void get_mac(const char *ifname, char *out, int outsz)
 {
     static char cached[32]="00:00:00:00:00:00"; static int64_t last_us=0;
     int64_t now=mono_us();
+    pthread_mutex_lock(&g_mu);
     if (last_us==0 || now-last_us >= 1000000){
         char path[128];
         snprintf(path,sizeof path,"/sys/class/net/%s/address", ifname);
@@ -58,6 +78,7 @@ static void get_mac(const char *ifname, char *out, int outsz)
         last_us=now;
     }
     snprintf(out,outsz,"%s",cached);
+    pthread_mutex_unlock(&g_mu);
 }
 
 /* resolve() used to fopen() these /proc files fresh for every placeholder in
@@ -68,6 +89,7 @@ static void get_uptime(char *out, int outsz)
 {
     static char cached[24]="0:00:00"; static int64_t last_us=0;
     int64_t now=mono_us();
+    pthread_mutex_lock(&g_mu);
     if (last_us==0 || now-last_us >= 1000000){
         FILE *f=fopen("/proc/uptime","r");
         double up=0;
@@ -77,6 +99,7 @@ static void get_uptime(char *out, int outsz)
         last_us=now;
     }
     snprintf(out,outsz,"%s",cached);
+    pthread_mutex_unlock(&g_mu);
 }
 
 static int64_t mono_us(void)
@@ -93,6 +116,7 @@ static void get_net_tx(const char *ifname, char *out, int outsz)
     static unsigned long long last_tx=0; static int64_t last_us=0;
     static char cached[24]="0 kbit/s";
     int64_t now=mono_us();
+    pthread_mutex_lock(&g_mu);
     if (last_us==0 || now-last_us >= 900000){
         char path[128]; snprintf(path,sizeof path,"/sys/class/net/%s/statistics/tx_bytes",ifname);
         unsigned long long tx=0; FILE *f=fopen(path,"r");
@@ -106,12 +130,14 @@ static void get_net_tx(const char *ifname, char *out, int outsz)
         last_tx=tx; last_us=now;
     }
     snprintf(out,outsz,"%s",cached);
+    pthread_mutex_unlock(&g_mu);
 }
 
 static void get_cpu(char *out, int outsz)   /* 1-min load average */
 {
     static char cached[16]="0.00"; static int64_t last_us=0;
     int64_t now=mono_us();
+    pthread_mutex_lock(&g_mu);
     if (last_us==0 || now-last_us >= 1000000){
         FILE *f=fopen("/proc/loadavg","r"); double la=0;
         if (f){ if(fscanf(f,"%lf",&la)!=1) la=0; fclose(f); }
@@ -119,12 +145,14 @@ static void get_cpu(char *out, int outsz)   /* 1-min load average */
         last_us=now;
     }
     snprintf(out,outsz,"%s",cached);
+    pthread_mutex_unlock(&g_mu);
 }
 
 static void get_mem(char *out, int outsz)   /* free RAM in MB */
 {
     static char cached[16]="?"; static int64_t last_us=0;
     int64_t now=mono_us();
+    pthread_mutex_lock(&g_mu);
     if (last_us==0 || now-last_us >= 1000000){
         FILE *f=fopen("/proc/meminfo","r");
         if (f){
@@ -140,6 +168,7 @@ static void get_mem(char *out, int outsz)   /* free RAM in MB */
         last_us=now;
     }
     snprintf(out,outsz,"%s",cached);
+    pthread_mutex_unlock(&g_mu);
 }
 
 
@@ -164,13 +193,36 @@ static int lookup_file(const char *file, const char *name, char *out, int outsz)
 
 static void resolve(const char *name, const char *vars_file, char *out, int outsz)
 {
-    static char ifname[32], ip[64]; static int cached=0;
-    if (!cached){ if(primary_iface(ifname,sizeof ifname,ip,sizeof ip)!=0){ strcpy(ifname,"eth0"); strcpy(ip,"0.0.0.0"); } cached=1; }
+    /* The interface is resolved ONCE and then kept - it does not change under
+     * a running daemon, and getifaddrs() per placeholder per tick is exactly
+     * the cost the caches above exist to avoid. But only a real answer counts
+     * as resolved: these cameras have no RTC and bring the network up
+     * asynchronously, so the first OSD tick routinely runs before DHCP has
+     * handed out an address. Latching the eth0/0.0.0.0 fallback there froze
+     * {ip} at 0.0.0.0 (and {mac}/{net} on a guessed interface) until the next
+     * restart. On failure we keep the fallback strings but stay unresolved,
+     * re-probing on the same ~1s TTL as everything else in this file. */
+    static char ifname[32]="eth0", ip[64]="0.0.0.0";
+    static int have_iface=0; static int64_t probe_us=0;
+    char ifn[32], ipbuf[64];
+    pthread_mutex_lock(&g_mu);
+    if (!have_iface){
+        int64_t now=mono_us();
+        if (probe_us==0 || now-probe_us >= 1000000){
+            probe_us=now;
+            if (primary_iface(ifname,sizeof ifname,ip,sizeof ip)==0) have_iface=1;
+        }
+    }
+    /* copied out under the lock: the get_*() helpers below take it themselves */
+    snprintf(ifn,sizeof ifn,"%s",ifname);
+    snprintf(ipbuf,sizeof ipbuf,"%s",ip);
+    double fps=g_fps, bitrate=g_bitrate;
+    pthread_mutex_unlock(&g_mu);
 
     if      (!strcmp(name,"hostname")){ char h[128]; if(gethostname(h,sizeof h)!=0)strcpy(h,"camera"); snprintf(out,outsz,"%s",h); }
-    else if (!strcmp(name,"ip"))       snprintf(out,outsz,"%s",ip);
-    else if (!strcmp(name,"mac"))      get_mac(ifname,out,outsz);
-    else if (!strcmp(name,"fps"))      snprintf(out,outsz,"%.1f",g_fps);
+    else if (!strcmp(name,"ip"))       snprintf(out,outsz,"%s",ipbuf);
+    else if (!strcmp(name,"mac"))      get_mac(ifn,out,outsz);
+    else if (!strcmp(name,"fps"))      snprintf(out,outsz,"%.1f",fps);
     /* {fpsN}: measured encoder OUTPUT fps of video stream N specifically
      * (0..MS_MAX_VSTREAM-1), independent of osd.monitor_stream. Like {fps}
      * this is the rate the hub is actually publishing on that channel - the
@@ -181,7 +233,7 @@ static void resolve(const char *name, const char *vars_file, char *out, int outs
         int ch = name[3]-'0';
         snprintf(out,outsz,"%.1f", ch<MS_MAX_VSTREAM ? hub_get_fps(ch) : 0.0);
     }
-    else if (!strcmp(name,"bitrate"))  snprintf(out,outsz,"%.0f",g_bitrate);
+    else if (!strcmp(name,"bitrate"))  snprintf(out,outsz,"%.0f",bitrate);
     /* {bitrateN}: measured encoder OUTPUT bitrate of video stream N
      * specifically, independent of osd.monitor_stream. Mirrors {fpsN} -
      * hub_get_bitrate() has always taken the hub source per channel, this
@@ -193,7 +245,7 @@ static void resolve(const char *name, const char *vars_file, char *out, int outs
         snprintf(out,outsz,"%.0f", ch<MS_MAX_VSTREAM ? hub_get_bitrate(ch) : 0.0);
     }
     else if (!strcmp(name,"uptime"))   get_uptime(out,outsz);
-    else if (!strcmp(name,"net")||!strcmp(name,"tx"))  get_net_tx(ifname,out,outsz);
+    else if (!strcmp(name,"net")||!strcmp(name,"tx"))  get_net_tx(ifn,out,outsz);
     else if (!strcmp(name,"cpu"))      get_cpu(out,outsz);
     else if (!strcmp(name,"mem"))      get_mem(out,outsz);
     else if (!strcmp(name,"clients"))  snprintf(out,outsz,"%d",hub_video_subs());

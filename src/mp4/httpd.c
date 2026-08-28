@@ -1422,7 +1422,13 @@ static void serve_player(hconn *c, const char *path)
         embed?"embed":"",
         embed?"":"<h3>timps preview</h3>",
         vcodec, aud, chn, PLAYER_TAIL);
-    if (n>=(int)sizeof html) n=sizeof(html)-1;
+    if (n<0 || n>=(int)sizeof html){
+        /* a truncated page is a page cut mid-<script>, not a smaller page:
+         * the browser gets a dead player and no reason for it. Same rule as
+         * the /control JSON above - never ship a corrupt body as 200. */
+        http_send(c,"500 Internal Server Error","text/plain","player page too large",21);
+        return;
+    }
     http_send(c,"200 OK","text/html",html,n);
 }
 

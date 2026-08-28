@@ -257,17 +257,28 @@ static const char *skip_ws(const char *p, const char *e)
 }
 
 /* find "name" within [s,e) followed by ':'; returns pointer to the value
- * (first non-ws char after the colon) or NULL */
+ * (first non-ws char after the colon) or NULL.
+ *
+ * The scan steps from string literal to string literal and skips over the
+ * CONTENTS of every one it does not match - the same discipline find_obj()
+ * uses for its brace matching, and for the same reason. A raw memcmp sweep
+ * matched the pattern anywhere in the range, so a POSTed string VALUE whose
+ * bytes contained  "x":  (an OSD text, say) could bind a LATER field's lookup
+ * to that substring instead of to the object's real "x" member. */
 static const char *find_field(const char *s, const char *e, const char *name)
 {
     char pat[40];
     int pl = snprintf(pat, sizeof pat, "\"%s\"", name);
     if (pl<=0 || pl>=(int)sizeof pat) return NULL;
-    for (const char *p=s; p+pl<=e; p++){
-        if (memcmp(p, pat, pl)) continue;
-        const char *q = skip_ws(p+pl, e);
-        if (q<e && *q==':') return skip_ws(q+1, e);
-        /* "name" not followed by ':' (e.g. a string value): keep looking */
+    for (const char *p=s; p<e; p++){
+        if (*p != '"') continue;
+        if (e-p >= pl && !memcmp(p, pat, pl)){
+            const char *q = skip_ws(p+pl, e);
+            if (q<e && *q==':') return skip_ws(q+1, e);
+            /* "name" not followed by ':' (e.g. a string value): keep looking */
+        }
+        for (p++; p<e && *p!='"'; p++)          /* past this literal's end */
+            if (*p=='\\' && p+1<e) p++;
     }
     return NULL;
 }

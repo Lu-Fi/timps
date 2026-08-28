@@ -426,6 +426,97 @@ semantic versioning.
   in that count (its build needs libsrt headers); its change is a few
   removed calls.
 
+### Fixed
+
+- **A hung `daynight.switch_cmd`/`irprobe_cmd` no longer freezes day/night
+  switching AND daemon shutdown** (`src/daynight.c`). Both board hooks are
+  `fork()`+`execlp()`'d from the detection thread and were then reaped with a
+  plain blocking `waitpid()`, so a script that never returns - stuck I2C, a
+  script on a mount that stopped answering, a shell waiting on a pipe nobody
+  writes - parked that thread inside the kernel forever. Day/night stopped
+  switching, and because `daynight_stop()` `pthread_join()`s the same thread,
+  so did shutdown: the daemon had to be killed. The new `dn_reap()` polls
+  `waitpid(WNOHANG)` on the thread's own stop gate (the `ms_stopgate` idiom
+  the sample loop already sleeps on, so a shutdown is noticed within one
+  20 ms slice rather than at the deadline), `SIGKILL`s a hook still running
+  after 10 s (`switch_cmd`) / 5 s (`irprobe_cmd`), and bounds the reap after
+  that kill too - a child wedged in uninterruptible sleep survives `SIGKILL`,
+  and waiting on it would be the same hang one step later, so it is
+  abandoned with an ERROR line instead. When shutdown is already requested
+  the deadline shortens to 1 s: long enough that a healthy script finishes
+  the switch it started (verified - a fast hook still returns its real exit
+  status during shutdown), short enough that a wedged one cannot hold the
+  join. The cost on the normal path is up to one 20 ms poll slice per hook
+  invocation, i.e. twice a day for `switch_cmd`.
+
+- **`find_field()` no longer matches a key name inside a string VALUE**
+  (`src/control.c`). Its sibling `find_obj()` has always skipped over string
+  literals while brace-matching; `find_field()` swept the object's byte range
+  with a raw `memcmp`, so the bytes of a member name occurring inside an
+  earlier string value bound the lookup to that substring. A `/control` POST
+  of `{"osd":{"0":{"text":"hi"x":999","x":10}}}` set `osd0.x` to **999**
+  instead of 10 - the value came out of the middle of the text field. Only an
+  authenticated client can reach it and it only misapplies that client's own
+  request, but it is a real field-N-takes-field-M's-value bug. The scan now
+  steps literal to literal and skips the contents of every one it does not
+  match, the same discipline `find_obj()` uses. Well-formed JSON is
+  unaffected either way (`\"` escapes never produced a raw match); the
+  reachable case is the lenient parser's tolerance of unescaped quotes.
+
+- **The `{ip}`/`{mac}`/`{net}` OSD placeholders no longer latch a failed
+  interface probe for the rest of the session** (`src/hal/osd_vars.c`).
+  `resolve()` cached the `getifaddrs()` result on the FIRST call and set the
+  cache flag even when the probe failed - and on these cameras the first OSD
+  tick routinely runs before DHCP has answered (no RTC, network comes up
+  asynchronously). A camera that booted that way burned `{ip}`=`0.0.0.0`,
+  plus a guessed `eth0` for `{mac}`/`{net}`, into its video until the next
+  restart. Only a genuinely resolved interface is cached now; a failure keeps
+  the fallback strings but stays unresolved and re-probes on the same ~1 s
+  TTL the rest of the file's readers use (not per call - that is the cost the
+  caching exists to avoid).
+
+- **`osd_vars.c`'s shared caches are no longer written from two threads
+  without synchronization** (`src/hal/osd_vars.c`). `g_fps`/`g_bitrate` and
+  the `cached[]`/`last_us` pairs in `get_mac`/`get_uptime`/`get_net_tx`/
+  `get_cpu`/`get_mem` are reached by imp_osd.c's OSD updater thread and, on
+  T23 with software rotation, by one `sw_rot_thread` per rotated channel - a
+  mixed config runs both at once. The `double`s are torn reads on 32-bit
+  MIPS and the string caches could be read mid-`snprintf`. Worst case was one
+  garbled OSD value for one tick rather than a crash, but it is UB. One
+  file-local mutex now covers all of it; the protected regions are a string
+  copy or a once-per-second `/proc` read and never call back out of the file,
+  and `resolve()` copies the interface name out from under the lock before
+  calling the `get_*()` helpers, so the lock can never be taken recursively.
+
+- **`serve_player()` answers 500 instead of shipping a truncated player page
+  as 200 OK** (`src/mp4/httpd.c`). Every other `snprintf` overflow guard in
+  this file refuses; this one clamped `n` and sent the cut-off HTML as a
+  success, which is a page severed mid-`<script>` and a dead `<video>` with
+  no reason given. It now mirrors the `/control` JSON guard beside it. The
+  rendered page is ~3.0 KB against the 4 KB buffer, so this is a tripwire for
+  a future edit rather than a live failure.
+
+- **`config_write_keys()` says so when it drops keys past its 64-key
+  tracking array** (`src/config.c`). The clamp is unreachable from the only
+  caller (`/control` batches at most `CTRL_MAX_CHG` = 48), but it was the one
+  shape of persist failure that cannot be noticed: the values are live in
+  `g_cfg` and read back correctly, and the loss only surfaces at the next
+  restart. It now logs which key the tail starts at. The array is left at a
+  fixed 64 - sizing it by `n` would put a caller-controlled allocation on a
+  path that today has no caller able to reach it.
+
+- **A fragmented G.711 packet records its own timestamp for the RTCP SR**
+  (`src/rtsp/rtp.c`). The fragment loop stamped each RTP header with
+  `ts + off` but handed `emit()` the base `ts`, so `last_rtp_ts` - which the
+  Sender Report extrapolates from - lagged by up to one fragment offset.
+  Unreachable today (a 320-byte G.711 frame never exceeds the MTU), fixed
+  because it is a one-line correction to a value the SR depends on.
+
+  Sizes, T31 `-Os` cross build, `.text` per object: `daynight.c +928 B`
+  (`dn_reap()` plus its log strings), `osd_vars.c +416 B`, `config.c +156 B`,
+  `control.c +80 B`, `httpd.c ±0`, `rtp.c ±0` - `+1580 B`, `+1.7 KB` in the
+  linked binary.
+
 ## [1.9.3] - 2026-08-23
 
 ### Changed

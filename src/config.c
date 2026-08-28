@@ -1895,13 +1895,24 @@ static void write_kv_line(FILE *f, const char *k, const char *vin)
  * are replaced in place (comments, order and unknown lines are preserved),
  * missing keys are appended at the end, later duplicates of a replaced key are
  * dropped. The file is written atomically (tmp file + rename). Returns 0 on
- * success. A missing source file is fine (it is created). */
+ * success. A missing source file is fine (it is created).
+ *
+ * At most sizeof(done) keys per call. The only caller batches at most
+ * CTRL_MAX_CHG (48) of them, so the clamp is unreachable today - but it used
+ * to drop the tail without a word, which is the one way a persist may not
+ * fail: the values are live in g_cfg and look applied, and the loss only
+ * surfaces at the next restart. Say so if it ever fires. */
 int config_write_keys(const char *path, const char *const *keys,
                       const char *const *vals, int n)
 {
     if (!path || !path[0] || n<=0) return -1;
     unsigned char done[64];
-    if (n > (int)sizeof done) n = (int)sizeof done;
+    if (n > (int)sizeof done){
+        LOGW(MOD,"config_write_keys: %d keys in one call, only the first %d are "
+                 "persisted (%s onwards stays live but unsaved)",
+             n, (int)sizeof done, keys[sizeof done]);
+        n = (int)sizeof done;
+    }
     memset(done, 0, sizeof done);
 
     /* Serialize writers. /control POSTs run in detached per-connection threads
