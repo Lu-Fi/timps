@@ -140,6 +140,10 @@ http.token_file  = /run/timps.token
 # boot if missing. NOTE: with a SELF-SIGNED cert the browser blocks the WebUI's
 # cross-origin media fetches to :8880 until you visit https://<ip>:8880/ once
 # and trust it - so https is opt-in, not on by default.
+# Session resumption (RFC 5077 tickets) is always on and needs no key here: a
+# client that reconnects skips the full handshake, trading some forward secrecy
+# for it - a resumed session is decryptable by whoever holds the ticket key,
+# which timps rotates every 12h. Full handshakes stay forward-secret.
 # http.https    = 1                       # serve the HTTP port over TLS
 http.tls_cert   = /etc/ssl/certs/httpd.crt
 http.tls_key    = /etc/ssl/private/httpd.key

@@ -11,6 +11,24 @@
 #include <mbedtls/pk.h>
 #include <mbedtls/version.h>
 
+/* Session resumption (RFC 5077 tickets). Optional: an mbedTLS trimmed for
+ * flash may have the protocol feature (MBEDTLS_SSL_SESSION_TICKETS) or the
+ * ticket implementation (MBEDTLS_SSL_TICKET_C, i.e. ssl_ticket.c and the
+ * mbedtls_ssl_ticket_* API) compiled out - either way this file still builds,
+ * and just runs without resumption. Same defensive shape as the optional
+ * MBEDTLS_ERR_SSL_* macros in ms_tls_accept() below. */
+#if defined(MBEDTLS_SSL_SESSION_TICKETS) && defined(MBEDTLS_SSL_TICKET_C)
+#define MS_TLS_TICKETS 1
+#include <mbedtls/ssl_ticket.h>
+/* Ticket key lifetime, and with it the key ROTATION period - mbedTLS only
+ * rotates when this is non-zero. Passing 0 would mean one ticket key for the
+ * device's entire uptime (a camera runs for months), so a single key
+ * compromise would retroactively decrypt every session ever resumed under it.
+ * 12h bounds that window while still covering a WebUI session or a day of
+ * RTSPS reconnects. Must also stay under the 7 days TLS 1.3 permits. */
+#define MS_TLS_TICKET_LIFETIME 43200u    /* seconds = 12 h */
+#endif
+
 /* One ms_tls_ctx holds ONE mbedtls_ctr_drbg_context, seeded once in
  * ms_tls_ctx_new(). Every accepted connection then draws from that same DRBG
  * from its own thread (handshake, key exchange, and mbedtls_pk_parse_keyfile on
@@ -43,6 +61,9 @@ struct ms_tls_ctx {
     mbedtls_pk_context       key;
     mbedtls_entropy_context  entropy;
     mbedtls_ctr_drbg_context drbg;
+#ifdef MS_TLS_TICKETS
+    mbedtls_ssl_ticket_context ticket;
+#endif
 };
 
 struct ms_tls_conn {
@@ -59,6 +80,9 @@ ms_tls_ctx *ms_tls_ctx_new(const char *cert_file, const char *key_file)
     mbedtls_pk_init(&c->key);
     mbedtls_entropy_init(&c->entropy);
     mbedtls_ctr_drbg_init(&c->drbg);
+#ifdef MS_TLS_TICKETS
+    mbedtls_ssl_ticket_init(&c->ticket);
+#endif
 
     const char *pers = "timps-tls";
     if (mbedtls_ctr_drbg_seed(&c->drbg, mbedtls_entropy_func, &c->entropy,
@@ -89,6 +113,28 @@ ms_tls_ctx *ms_tls_ctx_new(const char *cert_file, const char *key_file)
                                  MBEDTLS_SSL_MINOR_VERSION_3);
 #endif
     mbedtls_ssl_conf_rng(&c->conf, mbedtls_ctr_drbg_random, &c->drbg);
+#ifdef MS_TLS_TICKETS
+    /* Resumption saves a full handshake (an RSA/ECDHE signature on a 1 GHz
+     * MIPS core) whenever the WebUI reopens a connection. Tickets only - the
+     * TLS 1.2-only session cache is deliberately NOT wired up, because
+     * PRESET_DEFAULT here reaches TLS 1.3, where any modern browser lands and
+     * where the cache does nothing. Draws from the same DRBG as the rest of
+     * the config, which therefore has to outlive the ticket context (see the
+     * free order in ms_tls_ctx_free).
+     * SECURITY: a RESUMED session is not forward-secret - anyone who obtains
+     * the ticket key can decrypt recorded traffic of every session resumed
+     * under it. MS_TLS_TICKET_LIFETIME bounds that window; full handshakes
+     * keep their ECDHE forward secrecy either way. Failing to set the ticket
+     * context up costs only resumption, so it warns rather than killing an
+     * otherwise working listener. */
+    if (mbedtls_ssl_ticket_setup(&c->ticket, mbedtls_ctr_drbg_random, &c->drbg,
+                                 MBEDTLS_CIPHER_AES_256_GCM,
+                                 MS_TLS_TICKET_LIFETIME) != 0)
+        LOGW(MOD, "session ticket setup failed - no resumption on this listener");
+    else
+        mbedtls_ssl_conf_session_tickets_cb(&c->conf, mbedtls_ssl_ticket_write,
+                                            mbedtls_ssl_ticket_parse, &c->ticket);
+#endif
     if (mbedtls_ssl_conf_own_cert(&c->conf, &c->cert, &c->key) != 0) {
         LOGE(MOD, "cert/key pair rejected (%s / %s)", cert_file, key_file);
         goto fail;
@@ -106,6 +152,12 @@ void ms_tls_ctx_free(ms_tls_ctx *c)
     mbedtls_ssl_config_free(&c->conf);
     mbedtls_x509_crt_free(&c->cert);
     mbedtls_pk_free(&c->key);
+#ifdef MS_TLS_TICKETS
+    /* before the DRBG: the ticket context holds a pointer to it (mbedTLS may
+     * still rotate the key from here) - and after the conf, which points at
+     * the ticket context via the write/parse callbacks */
+    mbedtls_ssl_ticket_free(&c->ticket);
+#endif
     mbedtls_ctr_drbg_free(&c->drbg);
     mbedtls_entropy_free(&c->entropy);
     free(c);

@@ -227,6 +227,42 @@ semantic versioning.
   RTSP clients gain a ~1.1 KB batch each, while every fMP4 client thread and
   the recorder lose a frame-sized (up to a few hundred KB) scratch buffer.
 
+- **TLS listeners now offer session resumption via RFC 5077 tickets**
+  (`src/tls.c`, `USE_TLS` builds). Every HTTPS/RTSPS connection previously
+  paid for a full handshake - an RSA/ECDHE signature on a 1 GHz MIPS core -
+  even when the same browser reconnected seconds later, which the WebUI does
+  constantly. `ms_tls_ctx_new()` now sets up an `mbedtls_ssl_ticket_context`
+  (AES-256-GCM) fed by the DRBG the context already seeds, and hands its
+  write/parse callbacks to the config; httpd's HTTPS listener and rtsp's
+  RTSPS listener each build their own `ms_tls_ctx`, so they keep their
+  separate ticket keys rather than sharing one.
+
+  Tickets only - deliberately not `mbedtls_ssl_conf_session_cache()`, whose
+  `f_get_cache` hook mbedTLS 3.6 references only from `ssl_tls12_server.c`:
+  this build's `PRESET_DEFAULT` reaches TLS 1.3, where every current browser
+  lands and where the cache does nothing. Server-side wiring is
+  `mbedtls_ssl_conf_session_tickets_cb()`; `mbedtls_ssl_conf_session_tickets()`
+  is the client-only, TLS-1.2-only knob and is not used here.
+
+  The ticket key lifetime is a real 12 h (`MS_TLS_TICKET_LIFETIME`), never 0:
+  mbedTLS rotates the ticket key only when the lifetime is non-zero, so 0
+  would pin one key for the whole uptime of a camera that runs for months,
+  and a single key compromise would then retroactively decrypt every session
+  ever resumed under it. 12 h keeps that window short while still covering a
+  WebUI session, and stays well under the 7 days TLS 1.3 allows. Note that a
+  *resumed* session is not forward-secret for the life of the ticket key
+  (full handshakes keep their ECDHE forward secrecy either way) - now stated
+  in `timps.conf.example`'s TLS section, since it is a user-visible property
+  and not just an implementation detail.
+
+  All of it sits behind `MBEDTLS_SSL_SESSION_TICKETS && MBEDTLS_SSL_TICKET_C`,
+  so an mbedTLS trimmed for flash still compiles and simply runs without
+  resumption, and a runtime `mbedtls_ssl_ticket_setup()` failure warns and
+  keeps the listener rather than killing it. `mbedtls_ssl_ticket_free()` runs
+  after the config (which points at the ticket context) and before the DRBG
+  (which the ticket context points at). `+208 B` .text in `tls.o` on the T31
+  `-Os` cross build, byte-identical to before with tickets compiled out.
+
 ## [1.9.3] - 2026-08-23
 
 ### Changed
