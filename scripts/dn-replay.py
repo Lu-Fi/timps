@@ -136,7 +136,14 @@ Scenario JSON (all times virtual seconds, all gains IMP [24.8] linear):
                                   see. The decision metric is gain * ratio.
   interp                        - "log" (default, geometric - gain ramps are
                                   exponential), "linear" or "step"
-  noise_pct                     - stochastic +-% AGC jitter (2 sigma), seeded
+  noise_pct                     - stochastic +-% AGC jitter (2 sigma), seeded.
+                                  The draw is indexed by the DAEMON's sample
+                                  number (inotify on the served isp-m0, see
+                                  IspReads), not by scenario time, so the
+                                  sequence it sees is the same on an idle host
+                                  and a loaded one. A time-keyed draw is not
+                                  reproducible however carefully it is seeded -
+                                  read noise_factor() before changing this.
   noise_seed                    - PRNG seed (default 0); vary to re-roll a run
   expect:
     mode_at                     - [[t, "day"|"night"], ...]
@@ -213,9 +220,10 @@ def interp_gain(points, t, mode):
     return points[-1][1]
 
 
-def noise_factor(t, pct, seed=0):
+def noise_factor(idx, pct, seed=0):
     """STOCHASTIC AGC noise, +-pct% (1 sigma ~ pct/2), seeded so a run is still
-    reproducible.
+    reproducible. `idx` is the DAEMON's sample number - see IspReads and the
+    determinism note below, and never a wall-clock or virtual TIME.
 
     This was a bounded sum of two sinusoids until 2026-08-16, and that choice
     silently disarmed the corpus against a whole class of defect. A deterministic
@@ -235,14 +243,31 @@ def noise_factor(t, pct, seed=0):
       - it must be reproducible, or a corpus failure cannot be bisected. Hence a
         seeded PRNG keyed on the sample index rather than random.random().
 
+    INDEXED BY THE DAEMON'S READ, not by time (2026-08-28). Keying the draw on
+    a 500 ms grid of the driver's virtual clock looks reproducible and is not:
+    the daemon samples on ITS own wall-clock schedule, so which grid point each
+    of its reads lands on is decided by host scheduling. Measured on
+    03-noisy-night (25% noise, 3600 virtual s at scale 60): the daemon's tick
+    cadence runs 1980 virtual ms rather than the configured 2000 (interval/scale
+    is an integer division in ms_stopgate_wait) and each 5-tick trace gap
+    wobbles between 9924 and 10632 virtual ms, so consecutive runs of the SAME
+    binary agreed on only 10-30% of their index-aligned gain samples. That is
+    not jitter around one realisation, it is a different realisation each run,
+    and a scenario whose assertion rides an order statistic of it - here
+    sust_min against DN_MOVED_MARGIN - then decides by coin flip. Indexing on
+    the read makes "the daemon's n-th sample" the unit of the process: the
+    sequence it sees is now the same sequence every run, whatever the host is
+    doing. It is also the more faithful model, since an AGC redraws per readout
+    rather than per wall-clock instant.
+
     The AR(1) term gives it the short autocorrelation real AGC hunting has (an
-    ISP does not redraw its gain independently every 500 ms), which is what makes
+    ISP does not redraw its gain independently every sample), which is what makes
     the EMA smoother see something realistic rather than white noise it can
     trivially average away."""
     if not pct:
         return 1.0
-    # deterministic per-(seed, tick) draws: splitmix64-style avalanche
-    idx = int(round(t * 2.0))            # the 500 ms sample grid
+    # deterministic per-(seed, sample) draws: splitmix64-style avalanche
+    idx = int(idx)
     def draw(k):
         x = (idx * 0x9E3779B97F4A7C15 + k * 0xBF58476D1CE4E5B9
              + seed * 0x94D049BB133111EB) & 0xFFFFFFFFFFFFFFFF
@@ -260,6 +285,70 @@ def noise_factor(t, pct, seed=0):
     g = 0.6 * gp + 0.8 * g
     return 1.0 + (pct / 100.0) * 0.5 * g
 
+
+class IspReads:
+    """Counts the daemon's opens of the served isp-m0 file.
+
+    This is what makes a noisy scenario reproducible: the driver advances the
+    noise draw once per observed read, so the daemon's n-th sample always gets
+    draw n regardless of when, in host time, that sample happened. See
+    noise_factor() for the measurement that forced it.
+
+    inotify on the RUNDIR rather than on the file, because serve() publishes by
+    rename: a watch on the file follows the old inode out of the directory after
+    the first write and then reports nothing. A directory watch names the file
+    in every event, so IN_OPEN + name == "isp-m0" is exactly the daemon's read -
+    the driver's own writes go to isp-m0.tmp and are not counted.
+
+    ctypes rather than a dependency: the harness already only runs on Linux (it
+    replays a /proc scrape into a host build), and inotify has been in libc
+    since 2005. Construction failure is fatal for a scenario that declares
+    noise_pct - falling back to a time-keyed draw would restore exactly the
+    silent flakiness this class exists to remove."""
+
+    IN_OPEN = 0x00000020
+
+    def __init__(self, directory, name="isp-m0"):
+        import ctypes
+        self._name = name.encode()
+        self._libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        fd = self._libc.inotify_init1(os.O_NONBLOCK)
+        if fd < 0:
+            raise OSError(ctypes.get_errno(), "inotify_init1 failed")
+        self.fd = fd
+        wd = self._libc.inotify_add_watch(fd, directory.encode(), self.IN_OPEN)
+        if wd < 0:
+            err = ctypes.get_errno()
+            os.close(fd)
+            self.fd = -1
+            raise OSError(err, "inotify_add_watch(%s) failed" % directory)
+        self.count = 0
+
+    def poll(self):
+        """drain the queue, return the cumulative read count."""
+        while True:
+            try:
+                buf = os.read(self.fd, 8192)
+            except BlockingIOError:
+                return self.count
+            except OSError:
+                return self.count
+            if not buf:
+                return self.count
+            i = 0
+            # struct inotify_event { int wd; u32 mask; u32 cookie; u32 len; }
+            while i + 16 <= len(buf):
+                ln = int.from_bytes(buf[i + 12:i + 16], sys.byteorder)
+                nm = buf[i + 16:i + 16 + ln].split(b"\0", 1)[0]
+                if nm == self._name:
+                    self.count += 1
+                i += 16 + ln
+
+    def close(self):
+        if self.fd >= 0:
+            os.close(self.fd)
+            self.fd = -1
+
 # ---------------------------------------------------------------- sim lifecycle
 
 class SimRun:
@@ -268,7 +357,7 @@ class SimRun:
 
     def __init__(self, binary, scale, initial_mode, config, keep=False,
                  model_illuminator=False, no_ceilings=False,
-                 no_max_int=False):
+                 no_max_int=False, watch_reads=False):
         self.no_ceilings = no_ceilings
         self.no_max_int = no_max_int
         # short prefix: daynight.switch_cmd is a 64-byte field on the target
@@ -347,6 +436,20 @@ class SimRun:
         self.binary = binary
         self.proc = None
         self.t0 = None
+        # Armed before the process exists, so not one read can be missed: the
+        # very first sample the daemon takes must consume draw 0 or the whole
+        # sequence is off by one in a way that depends on spawn latency.
+        self.reads = None
+        if watch_reads:
+            try:
+                self.reads = IspReads(self.dir)
+            except (OSError, AttributeError) as e:
+                raise SystemExit(
+                    "this scenario declares noise_pct, which needs inotify to "
+                    "index the noise on the daemon's own reads (see "
+                    "noise_factor): %s. Without it the draw would be keyed on "
+                    "the driver's clock and the run would silently stop being "
+                    "reproducible." % e)
 
     def serve(self, gain, isp_mode, ratio=None):
         """write the fake isp-m0 scrape file atomically (rename: the scraper
@@ -447,7 +550,13 @@ class SimRun:
                     "sim binary %s was built with MS_CLOCK_SCALE=%s but the "
                     "scenario asks for %d - rebuild, or pass --scale %s"
                     % (self.binary, m.group(1), self.scale, m.group(1)))
-            time.sleep(0.05)
+            # 1 ms, not the 50 it used to be: this handshake sits between the
+            # spawn and the driver's first serve, and every millisecond spent
+            # here is a millisecond in which the daemon could take a sample the
+            # driver has not caught up with yet (IspReads). The banner is
+            # printed long before daynight_start(), so a tight poll leaves the
+            # whole of the rest of main() as margin.
+            time.sleep(0.001)
         raise SystemExit("sim binary %s produced no startup banner within 5s"
                          % self.binary)
 
@@ -514,6 +623,8 @@ class SimRun:
         return (epoch - self._epoch0) * self.scale
 
     def cleanup(self):
+        if self.reads:
+            self.reads.close()
         if self.keep:
             print("  rundir kept: %s" % self.dir)
         else:
@@ -729,7 +840,8 @@ def run_regression(scn, binary, keep=False, scale_override=None):
                  keep=keep,
                  model_illuminator=bool(scn.get("night_gain_noir")),
                  no_ceilings=bool(scn.get("no_ceilings")),
-                 no_max_int=bool(scn.get("no_max_int")))
+                 no_max_int=bool(scn.get("no_max_int")),
+                 watch_reads=bool(noise))
     def ratio_at(mode, t):
         c = scn.get("night_int_ratio" if mode == "night" else "day_int_ratio")
         return None if not c else max(0.0, min(1.0, interp_gain(c, t, "linear")))
@@ -781,8 +893,13 @@ def run_regression(scn, binary, keep=False, scale_override=None):
         m0 = scn["initial_mode"]
         g0 = interp_gain(scn["night_gain" if m0 == "night" else "day_gain"],
                          0, interp)
-        sim.start(g0, ratio_at(m0, 0))
+        # draw 0 is served before the process exists, so the daemon's first
+        # sample consumes it even if that sample beats the driver's first loop
+        # iteration - otherwise the whole sequence is offset by however many
+        # reads happened during the spawn.
+        sim.start(g0 * noise_factor(0, noise, nseed), ratio_at(m0, 0))
         step = max(0.25 / scale, 0.002)      # 250 virtual ms per driver step
+        prev_nidx, skipped = 0, 0
         while True:
             t = sim.vnow()
             if t >= dur:
@@ -801,7 +918,18 @@ def run_regression(scn, binary, keep=False, scale_override=None):
                 curve = scn["night_gain"]
             else:
                 curve = scn["day_gain"]
-            g = interp_gain(curve, t, interp) * noise_factor(t, noise, nseed)
+            # The CURVE is a function of scenario time; the NOISE is a function
+            # of how many samples the daemon has already taken. Both have to be
+            # so, and for different reasons: a scenario writes its dawn against
+            # the clock, while a draw keyed on the clock is re-rolled by every
+            # scheduling wobble (noise_factor). Serving draw n while n reads
+            # have happened means read n+1 - the next one - consumes it; the
+            # driver refreshes ~8x per daemon sample, so it is always in place.
+            nidx = sim.reads.poll() if sim.reads else 0
+            if nidx > prev_nidx + 1:
+                skipped += nidx - prev_nidx - 1
+            prev_nidx = nidx
+            g = interp_gain(curve, t, interp) * noise_factor(nidx, noise, nseed)
             g = max(g, 256.0)                # sensor floor, see gain_to_units
             r = ratio_at(m, t)
             sim.serve(g, m, r)
@@ -828,6 +956,17 @@ def run_regression(scn, binary, keep=False, scale_override=None):
                  "%d silent IR probes" % (dur, scale, len(switches), len(irdrives)))
         for st, sm in switches:
             rep.note("switch", "t=%.0fs -> %s" % (st, sm))
+        if noise:
+            # The reproducibility precondition, asserted rather than assumed.
+            # One noise draw per daemon read only holds while the driver gets
+            # to serve between two consecutive reads; if the host starved it
+            # for a whole daemon tick the machine saw a DIFFERENT realisation
+            # of the "seeded" trace, and every assertion below is then about a
+            # run nobody can reproduce. Silent flakiness is the one failure
+            # mode this corpus cannot afford, so say so out loud.
+            rep.check(skipped == 0, "noise-sync",
+                      "%d of %d daemon reads served the wrong draw "
+                      "(driver starved)" % (skipped, prev_nidx))
 
         for t, want in exp.get("mode_at", []):
             got = mode_at(segs, t)

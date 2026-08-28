@@ -3,6 +3,87 @@
 Working list. Newest block first; each entry says what is established and what
 is still guesswork, so nobody has to re-derive it.
 
+## RESOLVED: the replay harness's "seeded" AGC noise was keyed on the DRIVER's clock, so the daemon drew a different realisation every run - 03-noisy-night's click budget was decided by host scheduling
+
+Found 2026-08-28, the own item the AE-reserve entry below asked for. That entry
+was right that the flakiness is not a behavioural regression; it is a defect in
+the harness, and it predates the fix that exposed it.
+
+**What it looked like.** `03-noisy-night-0f5fc80` failed its click budget with
+"6 switches (budget 5)" against a passing 4, roughly one run in two to one in
+six, on the same binary, and more often under CPU load. Reproduced here before
+the fix: 6 clean runs gave 5 x 4 switches and 1 x 6.
+
+**The mechanism.** `noise_factor()` drew its gaussian from a splitmix64 hash of
+`round(t * 2)` - a 500 ms grid of the DRIVER's virtual clock - and the scenario
+carries `noise_seed`, so the trace reads as deterministic. It is not, because
+the clock it is keyed on is not the clock that consumes it. The daemon scrapes
+the served `isp-m0` on its OWN wall-clock schedule, so which grid point each of
+its reads lands on is a scheduling outcome, and the seed only fixes the map from
+grid point to value, never which points get visited. Measured on this scenario
+(3600 virtual s at scale 60, one binary, idle host, from the daemon's own
+`daynight.trace_path`):
+
+- the tick cadence is **1980** virtual ms, not the configured 2000 -
+  `ms_stopgate_wait()` divides the interval by the scale in integer real ms
+  (2000/60 = 33), and 33 x 60 = 1980 - so the daemon's clock runs ~18 virtual s
+  short over the hour;
+- each 5-tick trace gap wobbles between **9924 and 10632** virtual ms, i.e. up
+  to 1.4 noise grid points of jitter in a single gap;
+- two runs agreed on **35 of 362** logged gain samples (9.7%), a third on 108 of
+  362 (29.8%). That is not jitter around one realisation. It is a different
+  realisation each time.
+
+**Why that decided the budget.** The third probe pair is the heartbeat
+deferral: `flat = !(sust_min < ref * DN_MOVED_MARGIN)`, where `sust_min` is the
+running minimum, over tumbling `probe_confirm_s` windows, of the window maximum
+of the smoothed exposure. Against the scenario's 3500 anchor the bar is 3150,
+and with +-25% noise the min-of-~240-window-maxima sits about one sigma above
+it - so whether the pair fires is a coin flip on the realisation. An assertion
+riding an order statistic of a re-rolled random process is exactly a coin flip,
+which is what the 1-in-2 to 1-in-6 failure rate was.
+
+**The fix** (`scripts/dn-replay.py`). Index the draw on the DAEMON's sample
+number instead of on time, so "the daemon's n-th sample" is the unit of the
+process and the sequence it sees is the same sequence on an idle host and a
+loaded one. A `ctypes` inotify watch (`IspReads`) on the rundir counts `IN_OPEN`
+of `isp-m0` - which is exactly the daemon's read, since the driver publishes
+through `isp-m0.tmp` + rename - and the driver serves draw n once n reads have
+happened, so read n+1 consumes draw n. The driver refreshes ~8x per daemon
+sample, so the value is always in place before the read that wants it. Two
+supporting details: the initial serve now carries draw 0, and `check_clock()`
+polls at 1 ms rather than 50, so a sample taken during the spawn cannot offset
+the whole sequence. It is also the more faithful model - an AGC redraws per
+readout, not per wall-clock instant.
+
+The invariant is asserted, not assumed. A new `noise-sync` check fails any
+scenario where the host starved the driver for a whole daemon tick, because a
+skipped draw means the machine saw a trace nobody can reproduce and every
+assertion under it is then about that trace. Silent flakiness is the one failure
+mode this corpus cannot afford.
+
+**Verified.** 10 consecutive runs of 03: identical switch timeline every time
+(4 switches, boot pair at t=20/29 s, heartbeat pair at t=1829-1832/1838-1841 s -
+the second or two of spread is the switch log's wall-clock stamp, not a
+different decision), against 10-30% sample agreement before. The daemon's own
+gain trace is now 99.7-100% identical run to run. Full corpus re-run with
+freshly built binaries at both clock scales (16 scenarios at 60, 13 at 30):
+**29 passed, 0 failed**, and `noise-sync` reported 0 starved reads on all 13
+noisy scenarios, up to 7237 reads in one run. Then 5 more runs of 03 with all
+16 cores pinned by spinners - the condition under which it used to fail most
+often: same 4-switch timeline, same times, 0 starved reads, all PASS.
+
+**Still open, and deliberately not fixed here.** One residual: a deadline that
+falls due between two ticks (the heartbeat) can fire one tick either side of
+where it fired last run, so the probe's `pre_probe` anchor is taken from a
+neighbouring draw - measured as `ref` 3433 vs 3579 on two otherwise identical
+runs, a 4% shift in the bar `sust_min` has to beat. It did not change the
+outcome in any of the 10 runs or under full CPU load, and removing it would mean
+making the daemon's tick times themselves deterministic, which is a property the
+daemon does not have on real hardware either. Also untouched: 03's budget stays
+at 5 with the realisation now landing on 4, because the scenario's own
+description says tightening it belongs to the `probe_backoff` revisit.
+
 ## RESOLVED: the AE-reserve test granted a stop of integration-time credit against a high-water mark, disabling every clip protection on both T20s
 
 Found 2026-08-28 as a side finding of the cam-wyze-pan investigation below,
@@ -104,6 +185,8 @@ CPU load and passed in the one before). It cannot be this change: 03 serves no
 integration-time fields at all, so `it` stays -1 and the condition is false
 before and after. It looks like the noise seed interacting with real-time
 scheduling rather than a fixed seed producing a fixed trace. Own item.
+(That reading was right, and it is the entry at the top of this file: the noise
+was keyed on the driver's clock, not on the daemon's reads.)
 
 **Still open**: nothing on this specific defect. Adjacent, and untouched -
 cam-J's illuminator contributing nothing (`r` never above ~1.10 even when
