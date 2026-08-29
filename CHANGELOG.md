@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-08-29
+
 ### Added
 
 - **`timps-qa.sh --profile longrun` (section 15c): long-run reliability
