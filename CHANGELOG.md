@@ -6,7 +6,7 @@ semantic versioning.
 
 ## [Unreleased]
 
-## [1.10.0] - 2026-08-29
+## [1.9.5] - 2026-08-29
 
 ### Added
 
