@@ -524,6 +524,42 @@ semantic versioning.
 
 ### Fixed
 
+- **HTTP connection cap: a TLS listener no longer answers "busy" in
+  plaintext** (`src/mp4/httpd.c`, `accept_thread()`). The
+  `http_max_clients` check runs before the TLS handshake - deliberately, so
+  that turning a client away costs nothing - but it then wrote a plaintext
+  `HTTP/1.1 503 Service Unavailable` onto a socket whose peer had just sent a
+  ClientHello and was waiting for a ServerHello. To a TLS client that is not
+  a status line at all, just a malformed record, so the connection aborts as
+  a TLS error. Two consequences, both observed on a live camera with
+  `http.https=1`: the browser cannot distinguish "camera is busy, retry
+  shortly" from "TLS is broken", and the preview page's own
+  `res.status >= 500 -> retry with backoff` handling never fires, because no
+  parseable status ever arrives. The 503 is now sent only when the listener
+  is actually plaintext; a TLS listener closes the connection instead. A bare
+  close is still a blunt signal, but it is an honest transport-level refusal
+  rather than a protocol violation that masquerades as a TLS fault - sending
+  a real 503 inside TLS would mean completing a handshake purely to say
+  "busy", spending the CPU and the slot the cap exists to protect.
+
+- **TLS: handshake-failure warnings said the opposite of what the common
+  case means, and never named the peer** (`src/tls.c`, `hs_fail_warn()`).
+  Every non-noise handshake failure was logged as "rejected/expired cert or
+  TLS config problem?", pointing the operator at the camera's own
+  certificate and configuration. But the failure that dominates in practice,
+  `MBEDTLS_ERR_SSL_FATAL_ALERT_MESSAGE` (`-0x7780`), means the exact
+  opposite: the *peer* sent *us* a fatal alert, i.e. the client refused our
+  certificate and hung up, with nothing wrong on our side. On these cameras
+  that is the ordinary consequence of the generated self-signed cert, whose
+  SAN carries only the `.local` hostname - a browser reaching the camera by
+  IP gets a name mismatch, and a certificate exception granted to the web UI
+  on `:443` does not extend to timps on `:8880`, which is a separate origin.
+  The message now distinguishes that case explicitly and says our config is
+  not at fault, and both variants log the peer address (via `getpeername()`,
+  no API change), so one browser tab without an exception can be told apart
+  from a scanner. This wording had already sent one investigation down the
+  wrong path.
+
 - **fMP4: a transport stall longer than 10 s no longer desyncs audio from
   video for the rest of the connection** (`src/mp4/fmp4.c`,
   `pts_track_time()`). The video track's `tfdt` is a running sum of emitted

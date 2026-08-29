@@ -11,6 +11,10 @@
 #include <mbedtls/pk.h>
 #include <mbedtls/version.h>
 
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
 /* Session resumption (RFC 5077 tickets). Optional: an mbedTLS trimmed for
  * flash may have the protocol feature (MBEDTLS_SSL_SESSION_TICKETS) or the
  * ticket implementation (MBEDTLS_SSL_TICKET_C, i.e. ssl_ticket.c and the
@@ -167,7 +171,7 @@ void ms_tls_ctx_free(ms_tls_ctx *c)
  * evidence of a broken TLS setup (cert the clients reject, cipher/config
  * mismatch) - the shipped INFO level must see them, but rate-limited: a
  * scanner hammering a broken listener must not flood the 64 KB syslog ring. */
-static void hs_fail_warn(int r)
+static void hs_fail_warn(int r, int fd)
 {
     static pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
     static time_t t_last;
@@ -175,9 +179,37 @@ static void hs_fail_warn(int r)
     pthread_mutex_lock(&mtx);
     time_t now = time(NULL);
     if (!t_last || now - t_last >= 60) {
-        LOGW(MOD, "handshake failed (-0x%x, %u more suppressed) - rejected/"
-                  "expired cert or TLS config problem? (mbedtls strerror)",
-             -r, muted);
+        /* Who tripped it matters as much as the code: one browser tab with no
+         * certificate exception looks exactly like a scanner in the counter
+         * alone, and the operator cannot tell them apart without the peer. */
+        char peer[INET_ADDRSTRLEN + 8] = "unknown";
+        struct sockaddr_in sa;
+        socklen_t sl = sizeof sa;
+        if (getpeername(fd, (struct sockaddr *)&sa, &sl) == 0 &&
+            sa.sin_family == AF_INET)
+            inet_ntop(AF_INET, &sa.sin_addr, peer, sizeof peer);
+
+        /* MBEDTLS_ERR_SSL_FATAL_ALERT_MESSAGE (-0x7780) is the single most
+         * common failure on these cameras and it does NOT mean what the old
+         * wording here said. It means the PEER sent us a fatal alert, i.e. the
+         * client refused OUR certificate and hung up - our config is fine. The
+         * usual reason is the self-signed cert thingino generates: its SAN
+         * carries only the .local hostname, so a browser reaching the camera by
+         * IP gets a name mismatch, and a certificate exception granted for the
+         * web UI on :443 does not carry over to timps on :8880 (different
+         * origin). Saying "our cert may be expired / our TLS config may be
+         * broken" for this sent at least one investigation down the wrong path. */
+        if (r == MBEDTLS_ERR_SSL_FATAL_ALERT_MESSAGE)
+            LOGW(MOD, "handshake failed: peer %s sent a fatal alert "
+                      "(-0x%x, %u more suppressed) - the CLIENT rejected our "
+                      "certificate (self-signed, or the name/IP it connected to "
+                      "is not in the cert SAN); our TLS config is not at fault",
+                 peer, -r, muted);
+        else
+            LOGW(MOD, "handshake failed with peer %s (-0x%x, %u more "
+                      "suppressed) - rejected/expired cert or TLS config "
+                      "problem? (mbedtls strerror)",
+                 peer, -r, muted);
         t_last = now;
         muted = 0;
     } else
@@ -224,7 +256,7 @@ ms_tls_conn *ms_tls_accept(ms_tls_ctx *ctx, int fd)
                 r == MBEDTLS_ERR_NET_RECV_FAILED)
                 LOGD(MOD, "handshake failed (-0x%x)", -r);
             else
-                hs_fail_warn(r);
+                hs_fail_warn(r, fd);
             goto fail;
         }
     }

@@ -1887,9 +1887,27 @@ static void *accept_thread(void *arg)
         net_set_nodelay(fd);
         /* global connection cap: each client costs a thread + queue */
         if (g_nconn >= HTTP_MAX_CLIENTS) {
-            const char *r="HTTP/1.1 503 Service Unavailable\r\n"
-                          "Content-Length: 4\r\nConnection: close\r\n\r\nbusy";
-            net_sendall(fd, r, (int)strlen(r));
+            /* The cap is checked BEFORE the TLS handshake - deliberately, since
+             * the whole point is to spend nothing on a client we are turning
+             * away. But that means this plaintext 503 used to be written onto a
+             * socket where the peer is mid-ClientHello and expects a
+             * ServerHello: to a TLS client it is not a status at all, just a
+             * malformed record, so it aborts the connection. The browser then
+             * cannot tell "camera busy, retry" from "TLS is broken" - and the
+             * preview page's own careful `res.status >= 500 -> retry` handling
+             * never fires, because there is no parseable status to see.
+             * So: only speak plaintext HTTP when the listener IS plaintext. On
+             * a TLS listener, close instead. A bare close is still a poor
+             * signal, but it is an honest transport-level refusal rather than a
+             * protocol violation that masquerades as a TLS fault. Doing better
+             * (a real 503 inside TLS) means completing a handshake purely to
+             * say "busy", which spends exactly the CPU and the slot this cap
+             * exists to protect. */
+            if (!h->tls_ctx) {
+                const char *r="HTTP/1.1 503 Service Unavailable\r\n"
+                              "Content-Length: 4\r\nConnection: close\r\n\r\nbusy";
+                net_sendall(fd, r, (int)strlen(r));
+            }
             close(fd);
             LOGW(MOD,"connection limit (%d) reached, rejecting client",HTTP_MAX_CLIENTS);
             continue;
@@ -1932,11 +1950,9 @@ httpd *httpd_start(const ms_config *cfg)
      * camera stays reachable for repair over the firmware's own web UI/SSH,
      * which do not live on this port.
      * This only triggers when TLS was explicitly requested AND the context
-     * still failed - S95timps' ensure_tls_certs() makes a usable pair exist
-     * before start (symlinked to the web UI's own cert where there is one, so
-     * both ports present the same cert to the browser; freshly generated
-     * self-signed otherwise), so a cert-less first boot does not land here,
-     * and http.https=0 never reaches this block at all. */
+     * still failed - S95timps' ensure_tls_certs() generates a self-signed
+     * pair before start, so a cert-less first boot does not land here, and
+     * http.https=0 never reaches this block at all. */
 #ifdef USE_TLS
     if (cfg->http_https) {
         h->tls_ctx = ms_tls_ctx_new(cfg->http_tls_cert, cfg->http_tls_key);
