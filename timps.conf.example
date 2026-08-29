@@ -136,17 +136,24 @@ http.token_file  = /run/timps.token
 # the caps.*.available flags: the firmware package and a standalone build.sh
 # binary are not compiled with the same feature set, and the version string
 # cannot tell them apart.)
-# Uses thingino's httpd cert (mbedtls-certgen); S95timps generates it on first
-# boot if missing. NOTE: with a SELF-SIGNED cert the browser blocks the WebUI's
-# cross-origin media fetches to :8880 until you visit https://<ip>:8880/ once
-# and trust it - so https is opt-in, not on by default.
+# S95timps makes sure a usable cert/key pair exists before timpsd starts, so a
+# cert-less first boot still comes up with a working TLS listener.
+# On an image that ships the thingino WebUI, S95timps points
+# the two paths below at the WebUI's OWN certificate (/etc/ssl/certs/uhttpd.crt)
+# instead of generating a second one, so :443 and :8880 present the IDENTICAL
+# certificate and trusting the WebUI once also covers the preview's cross-origin
+# fetches. Without that, a browser tracks self-signed trust per origin
+# (host+PORT) and Safari offers no click-through for fetch()/XHR at all - the
+# preview just fails with "Load failed". On an image without the WebUI the pair
+# below is generated as timps' own self-signed cert, and you do still have to
+# visit https://<ip>:8880/ once to trust it. https stays opt-in either way.
 # Session resumption (RFC 5077 tickets) is always on and needs no key here: a
 # client that reconnects skips the full handshake, trading some forward secrecy
 # for it - a resumed session is decryptable by whoever holds the ticket key,
 # which timps rotates every 12h. Full handshakes stay forward-secret.
 # http.https    = 1                       # serve the HTTP port over TLS
-http.tls_cert   = /etc/ssl/certs/httpd.crt
-http.tls_key    = /etc/ssl/private/httpd.key
+http.tls_cert   = /etc/ssl/certs/timps.crt
+http.tls_key    = /etc/ssl/private/timps.key
 # rtsp.tls      = 1                       # additionally run an RTSPS listener
 # rtsp.tls_port = 322                     # RTSPS port
 

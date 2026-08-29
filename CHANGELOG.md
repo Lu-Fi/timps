@@ -25,6 +25,48 @@ semantic versioning.
 
 ### Changed
 
+- **HTTPS now shares the web UI's TLS certificate instead of presenting a
+  second, different self-signed one** (`src/config.c`, `timps.conf.example`;
+  the thingino side is `package/timps/files/S95timps` and
+  `generate-tls-certs.sh`). The `http.tls_cert`/`http.tls_key` defaults move
+  from `/etc/ssl/certs/httpd.crt` + `/etc/ssl/private/httpd.key` to
+  `/etc/ssl/certs/timps.crt` + `/etc/ssl/private/timps.key`, and `S95timps`'
+  `ensure_tls_certs()` now resolves them in priority order: an existing
+  non-empty pair is left alone; otherwise, if the web UI's
+  `/etc/ssl/certs/uhttpd.crt` + `/etc/ssl/private/uhttpd.key` exist and are
+  non-empty, the configured paths are **symlinked** to them; only otherwise is
+  a self-signed pair generated as before.
+
+  Why this is a correctness fix and not a tidy-up: a browser records trust for
+  a self-signed certificate per **origin**, i.e. scheme+host+**port**. The web
+  UI on :443 earns that trust the first time someone clicks through the
+  interstitial on a top-level navigation. timps on :8880 never can, because
+  the preview reaches it from JavaScript - and Safari, iOS Safari in
+  particular, offers **no** click-through for a `fetch()`/XHR failure. The
+  page just reports `Load failed` with no recoverable action, which is exactly
+  how this surfaced: an iPhone user enabled `http.https=1` and got a silent,
+  generic stream error. Presenting the identical certificate on both ports
+  makes the single trust decision cover both. Confirmed on a camera with
+  `openssl s_client` against :443 and :8880 - matching SHA256 fingerprints.
+
+  The old default was already *meant* to do this: its comment read "reuse
+  thingino's httpd cert (mbedtls-certgen writes it here)", but nothing has
+  written `/etc/ssl/certs/httpd.crt` since uhttpd replaced the old httpd, so
+  the path quietly degraded into "timps' own certificate under a misleading
+  name". The rename makes the generated file honest, and the resolution now
+  lives in the init script because that is the only layer that knows whether
+  a given image ships a web UI at all - `config.c` cannot: a headless build
+  has no `uhttpd.crt`, so hardcoding that path as the compiled-in default
+  would leave those cameras with no certificate and no HTTPS listener. A
+  symlink rather than a copy, because `S02ssl` regenerates uhttpd's cert
+  whenever it goes missing (after a flash, for instance) and a one-time copy
+  would silently go stale and desynchronise the two ports again.
+
+  Note for anyone who set `http.tls_cert` by hand: nothing changes while that
+  file exists. Only a *missing* configured cert now resolves to the web UI's,
+  and that is logged (`TLS: sharing the web UI certificate ...`) rather than
+  done silently.
+
 - **OSD TrueType rasterization: 39% less CPU per render, measured on a T31
   camera** (`src/hal/msttf.c`). Two independent changes to the glyph
   rasterizer that re-draws every OSD text item from scratch, once a second,

@@ -207,8 +207,8 @@ File-only. See [HTTP /control API Reference](HTTP-Control-API.md) and
 | `http.token` | string | `""` | — | File-only | Optional persistent remote secret token for `/control`/`/events`/media endpoints (never written to the token file). |
 | `http.token_file` | string | `/run/timps.token` | — | File-only | Where the random per-boot token is published (mode 0640); `""` disables publishing. |
 | `http.https` (alias `tls`) | bool | 0 | 0/1 | File-only | Serve HTTP over TLS (`USE_TLS` builds). |
-| `http.tls_cert` (alias `cert`) | string | `/etc/ssl/certs/httpd.crt` | — | File-only | PEM certificate (shared with RTSPS). |
-| `http.tls_key` (alias `key`) | string | `/etc/ssl/private/httpd.key` | — | File-only | PEM private key (shared with RTSPS). |
+| `http.tls_cert` (alias `cert`) | string | `/etc/ssl/certs/timps.crt` | — | File-only | Certificate, PEM or DER (shared with RTSPS). On thingino, `S95timps` symlinks this to the WebUI's `/etc/ssl/certs/uhttpd.crt` when that exists, so both ports present the same cert; otherwise it generates a self-signed pair here. |
+| `http.tls_key` (alias `key`) | string | `/etc/ssl/private/timps.key` | — | File-only | Private key matching `http.tls_cert` (shared with RTSPS). |
 
 > **Security — empty credentials expose the media (by design).** While both
 > `http.user` and `rtsp.user` are empty (the shipped default), the media

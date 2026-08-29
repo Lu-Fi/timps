@@ -1932,9 +1932,11 @@ httpd *httpd_start(const ms_config *cfg)
      * camera stays reachable for repair over the firmware's own web UI/SSH,
      * which do not live on this port.
      * This only triggers when TLS was explicitly requested AND the context
-     * still failed - S95timps' ensure_tls_certs() generates a self-signed
-     * pair before start, so a cert-less first boot does not land here, and
-     * http.https=0 never reaches this block at all. */
+     * still failed - S95timps' ensure_tls_certs() makes a usable pair exist
+     * before start (symlinked to the web UI's own cert where there is one, so
+     * both ports present the same cert to the browser; freshly generated
+     * self-signed otherwise), so a cert-less first boot does not land here,
+     * and http.https=0 never reaches this block at all. */
 #ifdef USE_TLS
     if (cfg->http_https) {
         h->tls_ctx = ms_tls_ctx_new(cfg->http_tls_cert, cfg->http_tls_key);

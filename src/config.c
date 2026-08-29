@@ -258,10 +258,24 @@ void config_defaults(ms_config *c)
     c->events_enabled=1; c->events_stats_ms=2000; c->events_max_clients=8;
     /* optional TLS (USE_TLS builds): off by default */
     c->http_https=0;
-    /* reuse thingino's httpd cert (mbedtls-certgen writes it here); S95timps
-     * generates it on first boot when https is enabled and it is missing */
-    copystr(c->http_tls_cert,"/etc/ssl/certs/httpd.crt",128);
-    copystr(c->http_tls_key,"/etc/ssl/private/httpd.key",128);
+    /* timps' OWN cert path - deliberately not the web UI's uhttpd.crt, because
+     * a build without the web UI has no such file and this default must still
+     * be a place we may generate into. Sharing the web UI's certificate is the
+     * DESIRED outcome (a browser trusts a self-signed cert per origin =
+     * host+port, and Safari gives fetch()/XHR no click-through at all, so a
+     * second cert on :8880 makes the preview fail with a bare "Load failed"
+     * for anyone who only ever trusted the web UI's). That sharing is arranged
+     * at boot, not here: S95timps' ensure_tls_certs() points these paths at
+     * /etc/ssl/certs/uhttpd.crt when that exists and is non-empty, and only
+     * generates a self-signed pair here when it does not.
+     * The old default was /etc/ssl/certs/httpd.crt with a comment claiming it
+     * was thingino's httpd cert; nothing has written that path since uhttpd
+     * replaced the old httpd, so it silently became "timps' own cert under a
+     * misleading name". Hence the rename, and hence the resolution living in
+     * the init script, which is the only layer that knows what this particular
+     * image actually shipped. */
+    copystr(c->http_tls_cert,"/etc/ssl/certs/timps.crt",128);
+    copystr(c->http_tls_key,"/etc/ssl/private/timps.key",128);
     c->rtsp_tls=0; c->rtsp_tls_port=322;
     /* optional SRT output (USE_SRT builds): off by default */
     c->srt.enabled=0; c->srt.port=9000; c->srt.channel=0; c->srt.latency_ms=120;
