@@ -1031,6 +1031,8 @@ static void *dn_thread(void *arg)
     float   ema_fast    = -1.0f;       /* tau DN_TREND_FAST_MS  - the scene */
     float   ema_slow    = -1.0f;       /* tau DN_TREND_SLOW_MS  - its memory */
     int64_t trend_since = 0;           /* path T hold start */
+    int64_t clip_since  = 0;           /* ... how long the clip has held still */
+    int     clip_held   = 0;           /* ... long enough to be a rest, not a ramp */
     /* ---- bookkeeping that is not part of the decision ---- */
     int     was_enabled = 0;
     int     warned_noisp = 0, warned_nocal = 0, hb_defer_logged = 0;
@@ -1238,11 +1240,39 @@ static void *dn_thread(void *arg)
              * illuminator off the camera is in a third optical state
              * entirely, and a day excursion's levels are not commensurable
              * with a night's at all. */
-            /* ... and never fed a clip (see dn_clipped): a railed boot
-             * seeds the memory at the rail, and the repair then reads as a
-             * dawn - one wasted probe per boot, measured. */
+            /* ... and a clip (see dn_clipped) only once the meter has HELD
+             * it. Refusing clips outright was the original rule and its
+             * reason still stands: a railed boot seeds the memory at the
+             * rail, the repair then reads as a dawn, one wasted probe per
+             * boot, measured. But outright is too strong, because it
+             * deadlocks the pair on a board whose genuine rest state IS a
+             * clip - measured on cam-wyze-pan (T20) 2026-08-30: d=8171 with
+             * 0 units of reserve for the whole night, so neither EMA was
+             * ever seeded and path T could not fire once in the session.
+             *
+             * What separates the two is time, not the reading: a boot rail
+             * is a level on its way somewhere, a resting rail is not. So a
+             * clipped sample counts only once it has sat still (stable_n on
+             * the smoother) for DN_STABLE_MAX_MS - the longest this file
+             * ever waits for an AE to settle anywhere. Past that bound a
+             * clip is by construction not a settling transient, and the
+             * whole poisoning window is behind it: the pair is re-seeded at
+             * every night entry and every verdict, so the only ramp it can
+             * be seeded from is the one that follows. DN_REF_DELAY_S was
+             * tried here first and is too short - scenario 24's T23 boot
+             * holds its rail for 90 s and cost one extra silent probe.
+             *
+             * Deliberately NOT conditioned on `ref`: that ratchet answers a
+             * different question, and on exactly the camera this is for it
+             * never anchors at all - which is how gating on it produced a
+             * catch-22 where neither the reference nor the trend could ever
+             * start. */
+            if (dn_clipped(sm.headroom) && stable_n >= DN_STABLE_N) {
+                if (!clip_since) clip_since = now;
+            } else clip_since = 0;
+            clip_held = clip_since && now - clip_since >= DN_STABLE_MAX_MS;
             if (cur == DN_NIGHT && !ir_verdict_at && !enforce_at &&
-                !dn_clipped(sm.headroom)) {
+                (!dn_clipped(sm.headroom) || clip_held)) {
                 float af = dn_ema_alpha(interval, DN_TREND_FAST_MS);
                 float as = dn_ema_alpha(interval, DN_TREND_SLOW_MS);
                 ema_fast = (ema_fast > 0.0f) ? ema_fast + (sm.d - ema_fast) * af : sm.d;
@@ -1864,11 +1894,31 @@ static void *dn_thread(void *arg)
              * the spontaneous trigger until the next heartbeat re-anchors it. */
             if (ref < 0.0f && ref_due && now >= ref_due &&
                 (stable_n >= DN_STABLE_N || now >= ref_due + DN_STABLE_MAX_MS)) {
-                if (dn_clipped(sm.headroom)) {
+                if (dn_clipped(sm.headroom) && !clip_held) {
                     /* a clip must not become the long-term reference (see
                      * dn_clipped); keep waiting for an honest sample. The
                      * absolute thresholds and the heartbeat carry the
-                     * automaton meanwhile. */
+                     * automaton meanwhile.
+                     *
+                     * Unless it is not a passing clip at all: clip_held is
+                     * the trend pair's test - the same reading, sat still
+                     * (stable_n) for DN_STABLE_MAX_MS - and it answers this
+                     * question too, because both are asking whether a rail is
+                     * a level on its way somewhere or the scene's rest state.
+                     * Waiting unconditionally is right for the first, and a
+                     * deadlock for the second: measured on cam-wyze-pan (T20)
+                     * 2026-08-30, d=8171 with 0 units of reserve all night,
+                     * so `ref` never anchored, path C never had a bar, and a
+                     * cellar light took the trend's 3 minutes to find instead
+                     * of the jump trigger's 20 seconds - longer than the
+                     * visits it exists to catch.
+                     *
+                     * Safe in the direction it can be wrong: a dark rail
+                     * UNDERSTATES how dark the scene is, so a reference
+                     * anchored on one sets the jump bar LOW, which costs
+                     * sensitivity, never false probes. And this is still only
+                     * the first anchor (ref < 0) - the ratchet above decides
+                     * every move after it, on proof, exactly as before. */
                     if (!ref_wait_logged) {
                         ref_wait_logged = 1;
                         LOGI(MOD, "night reference deferred: only %d units of "
@@ -1941,8 +1991,14 @@ static void *dn_thread(void *arg)
              * why this is not a backoff. */
             if (!hb_at) hb_at = now + (int64_t)dn->heartbeat_s * 1000;
             if (now >= hb_at) {
-                int flat = !(ref > 0.0f && sust_min > 0.0f &&
-                             sust_min < ref * DN_MOVED_MARGIN);
+                /* no reference means no evidence test either way, so an
+                 * unanchored ref must not defer the heartbeat - it did
+                 * before, which is how a railed meter that never gets past
+                 * the "ref deferred: only N units of AE reserve" wait in (3a)
+                 * also silenced the one bound that is supposed to survive
+                 * every other failure mode. */
+                int flat = (ref > 0.0f && sust_min > 0.0f)
+                         ? !(sust_min < ref * DN_MOVED_MARGIN) : 0;
                 int64_t since = last_probe ? now - last_probe : INT64_MAX;
                 if (flat && sighted &&
                     since < (int64_t)dn->heartbeat_max_s * 1000) {
