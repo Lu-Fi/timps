@@ -2307,4 +2307,7 @@ int daynight_sun_status(char *sr_hhmm, char *ss_hhmm, size_t cap)
     return 0;
 }
 
+/* no detection thread to arm a probe on */
+int daynight_request_probe(void) { return -1; }
+
 #endif /* USE_DAYNIGHT */
