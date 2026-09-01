@@ -39,6 +39,10 @@ USE_BACKCHANNEL ?= 0        # 1 = ONVIF audio backchannel (client->speaker via n
 USE_BC_AAC    ?= 0          # 1 = also decode AAC backchannel (needs libhelix-aac); implies USE_BACKCHANNEL
 HELIXLIB      ?= -lhelix-aac # link flag for the helix AAC decoder (USE_BC_AAC)
 HELIX_INC     ?=            # optional -I dir for aacdec.h/aaccommon.h (USE_BC_AAC)
+USE_BC_WS     ?= 0          # 1 = browser-microphone backchannel over a WebSocket at /talk on
+                            #     the HTTPS port (RFC 6455 framing + G.711 mu-law in, decoded
+                            #     by the g711.c the backchannel already builds; no new library).
+                            #     Implies USE_BACKCHANNEL + USE_CONTROL; REQUIRES USE_TLS.
 USE_PLAY      ?= 0          # 1 = /run/timps/audio_out play-FIFO queue (system sounds via native IMP_AO); WAV + raw PCM16
 USE_PLAY_OPUS ?= 0          # 1 = also decode Ogg-Opus in the play queue (needs opusfile); implies USE_PLAY
 OPUSLIB       ?= -lopusfile -lopus -logg  # link flags for opusfile (USE_PLAY_OPUS)
@@ -153,6 +157,25 @@ endif
 ifeq ($(USE_PLAY_OPUS),1)
 USE_PLAY := 1
 endif
+# USE_BC_WS implies the backchannel (it feeds bc_feed_pcm) AND the control
+# endpoint: a browser's WebSocket constructor cannot set request headers, so
+# the ONLY credential it can present is the per-boot ?token=, and the whole
+# token path (http_header/http_check_token/http_cors and the tok_ok that
+# unlocks the global auth gate) is compiled only under USE_CONTROL. Without it
+# /talk still builds but 401s every browser on a camera that has credentials.
+#
+# TLS is a hard requirement rather than an implication: it needs a library that
+# may not be present, so a silent flip would surface as a confusing link error.
+# getUserMedia() is refused outside a secure context, so a plaintext build
+# could never be fed by a browser in the first place.
+ifeq ($(USE_BC_WS),1)
+USE_BACKCHANNEL := 1
+USE_CONTROL     := 1
+ifneq ($(USE_TLS),1)
+$(error USE_BC_WS=1 requires USE_TLS=1 - getUserMedia() is refused outside a \
+        secure context, so a plaintext build can never receive browser audio)
+endif
+endif
 # speaker.c (native IMP_AO owner) + the shared resampler are pulled in whenever
 # either audio-output producer is built.
 USE_AUDIO_OUT :=
@@ -164,6 +187,7 @@ USE_AUDIO_OUT := 1
 endif
 TARGET_ALLSRC := $(TARGET_SRC) $(if $(filter 1,$(USE_TLS)),src/tls.c) \
                  $(if $(filter 1,$(USE_BACKCHANNEL)),src/rtsp/backchannel.c) \
+                 $(if $(filter 1,$(USE_BC_WS)),src/ws.c src/sha1.c src/rtsp/talk_ws.c) \
                  $(if $(filter 1,$(USE_AUDIO_OUT)),src/rtsp/speaker.c src/codec/resample.c)
 TARGET_OBJS   := $(notdir $(TARGET_ALLSRC:.c=.o))
 
@@ -233,6 +257,7 @@ target:
 	  $(if $(filter 1,$(USE_SRT)),-DUSE_SRT) \
 	  $(if $(filter 1,$(USE_BACKCHANNEL)),-DUSE_BACKCHANNEL) \
 	  $(if $(filter 1,$(USE_BC_AAC)),-DUSE_BC_AAC $(if $(HELIX_INC),-I$(HELIX_INC))) \
+	  $(if $(filter 1,$(USE_BC_WS)),-DUSE_BC_WS) \
 	  $(if $(filter 1,$(USE_PLAY)),-DUSE_PLAY) \
 	  $(if $(filter 1,$(USE_PLAY_OPUS)),-DUSE_PLAY_OPUS $(if $(OPUS_INC),-I$(OPUS_INC) -I$(OPUS_INC)/opus)) \
 	  $(if $(filter 1,$(USE_STREAM_OPUS)),-DUSE_STREAM_OPUS $(if $(OPUS_INC),-I$(OPUS_INC))) \
@@ -248,7 +273,7 @@ target:
 	  $(if $(filter 1,$(USE_PLAY_OPUS)),$(OPUSLIB)) \
 	  $(if $(filter 1,$(USE_STREAM_OPUS)),$(OPUS_ENC_LIB)) $(LIBS) -o $(BIN)
 	@rm -f $(TARGET_OBJS)
-	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT) USE_BACKCHANNEL=$(USE_BACKCHANNEL) USE_BC_AAC=$(USE_BC_AAC) USE_PLAY=$(USE_PLAY) USE_PLAY_OPUS=$(USE_PLAY_OPUS) USE_STREAM_OPUS=$(USE_STREAM_OPUS) USE_ROTATE=$(USE_ROTATE) USE_SW_ROTATE=$(USE_SW_ROTATE) USE_OSD_HINTING=$(USE_OSD_HINTING) USE_TRACE=$(USE_TRACE))"
+	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT) USE_BACKCHANNEL=$(USE_BACKCHANNEL) USE_BC_AAC=$(USE_BC_AAC) USE_BC_WS=$(USE_BC_WS) USE_PLAY=$(USE_PLAY) USE_PLAY_OPUS=$(USE_PLAY_OPUS) USE_STREAM_OPUS=$(USE_STREAM_OPUS) USE_ROTATE=$(USE_ROTATE) USE_SW_ROTATE=$(USE_SW_ROTATE) USE_OSD_HINTING=$(USE_OSD_HINTING) USE_TRACE=$(USE_TRACE))"
 
 sim:
 	$(HOSTCC) $(CFLAGS) -DMS_VERSION='"$(VERSION)"' $(if $(filter 1,$(USE_CONTROL)),-DUSE_CONTROL) \

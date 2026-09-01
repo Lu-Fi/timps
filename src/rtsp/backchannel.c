@@ -161,10 +161,26 @@ static int decode_aac(const uint8_t *pl, int plen, int *out_rate)
 }
 #endif
 
-void bc_feed_rtp(const void *owner, const uint8_t *rtp, int len)
+/* Single-talker election. CALLER MUST HOLD g_lock.
+ *
+ * Returns 1 if `owner` holds (or has just won) the decode election, having
+ * stamped g_owner_last_us; 0 if another producer owns it and is not yet stale.
+ *
+ * Extracted from bc_feed_rtp() so the non-RTP producers (bc_feed_pcm below,
+ * used by the WebSocket talk endpoint) arbitrate against RTSP talkers through
+ * exactly this policy rather than a second, divergent one. It REQUIRES the
+ * lock instead of taking it so that bc_feed_rtp() can keep its single locked
+ * region: see the AAC note below for why that shape matters.
+ *
+ * The steal branch frees the AAC decoder so no state from the previous
+ * owner's stream leaks into the new one. That free is safe here and ONLY
+ * here: every caller that can be inside AACDecode holds g_lock across the
+ * whole decode, so no thread can be executing in the decoder while this frees
+ * it. Do NOT "optimise" bc_feed_rtp() by moving its decode out of the locked
+ * region - that invariant is what keeps this line from being a use-after-free
+ * once a second producer can trigger a steal. */
+static int bc_elect_locked(const void *owner, int64_t now)
 {
-    pthread_mutex_lock(&g_lock);
-    int64_t now = ms_now_us();
     if (g_owner == NULL){                 /* first talker becomes decode owner */
         g_owner = owner;
         LOGI(MOD,"backchannel decode owner acquired");
@@ -179,8 +195,41 @@ void bc_feed_rtp(const void *owner, const uint8_t *rtp, int len)
              (long long)(BC_OWNER_STALE_US/1000000));
         g_owner = owner;
     }
-    if (g_owner != owner){ pthread_mutex_unlock(&g_lock); return; }  /* not the owner */
+    if (g_owner != owner) return 0;       /* not the owner */
     g_owner_last_us = now;
+    return 1;
+}
+
+/* Feed ALREADY-DECODED mono PCM, subject to the same election. See
+ * backchannel.h. Locking sequence, deliberately different from bc_feed_rtp():
+ *
+ *   lock -> elect (+stamp) -> unlock -> speaker_write_pcm
+ *
+ * There is no decode step inside, so nothing shared is touched after the
+ * unlock: `pcm` belongs to the caller (talk_ws.c decodes mu-law into a stack
+ * buffer) and speaker_write_pcm() only reads it, copying through ms_resample
+ * under speaker.c's own, separate mutex. g_pcm is NOT involved on this path.
+ *
+ * g_lock is released before speaker_write_pcm() for the same reason
+ * bc_feed_rtp() releases it there: backchannel's g_lock and speaker.c's
+ * g_lock are distinct mutexes and are never held simultaneously, so no lock
+ * ordering exists between them to violate. */
+int bc_feed_pcm(const void *owner, const int16_t *pcm, int nsamp, int rate)
+{
+    if (!pcm || nsamp <= 0) return 0;
+    pthread_mutex_lock(&g_lock);
+    int win = bc_elect_locked(owner, ms_now_us());
+    pthread_mutex_unlock(&g_lock);
+    if (!win) return 0;                   /* another talker holds the speaker */
+    speaker_write_pcm(owner, pcm, nsamp, rate);
+    return 1;
+}
+
+void bc_feed_rtp(const void *owner, const uint8_t *rtp, int len)
+{
+    pthread_mutex_lock(&g_lock);
+    int64_t now = ms_now_us();
+    if (!bc_elect_locked(owner, now)){ pthread_mutex_unlock(&g_lock); return; }
 
     int off = rtp_payload_off(rtp, len);
     if (off < 0){ pthread_mutex_unlock(&g_lock); return; }

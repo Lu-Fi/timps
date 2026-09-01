@@ -313,6 +313,7 @@ void config_defaults(ms_config *c)
     c->audio.spk_enabled=1; c->audio.spk_volume=80; c->audio.spk_gain=25;
     c->audio.backchannel=0; c->audio.backchannel_codec=0; c->audio.backchannel_rate=16000;
     c->audio.aec=0;                                        /* AEC opt-in, default off */
+    c->audio.talk_ws=0;                                    /* /talk WebSocket opt-in, default off */
 
     c->jpeg.enabled=0; c->jpeg.width=640; c->jpeg.height=360;
     c->jpeg.quality=75; c->jpeg.fps=5; c->jpeg.imp_chn=2;
@@ -755,6 +756,11 @@ static const cfg_field audio_fields[] = {
     F ("backchannel_codec",  0, backchannel_codec,  T_BCCODEC,F_CTRL, 0,0),
     F ("backchannel_rate",   0, backchannel_rate,   T_INT,    F_CTRL, 8000,48000),
     F ("aec",                0, aec,                T_BOOL,   F_CTRL|CAP_SPK, 0,0),
+    /* F_CTRL only, deliberately NOT CAP_SPK: talk_ws is restart-required (the
+     * /talk route is decided per request against the boot-time backchannel
+     * setup), and F_CAP is what tells the WebUI a key is a LIVE control. Same
+     * class as `backchannel` above, not the same class as `aec`. */
+    F ("talk_ws",            0, talk_ws,            T_BOOL,   F_CTRL, 0,0),
 };
 #undef CAP_ALC
 #undef CAP_SPK

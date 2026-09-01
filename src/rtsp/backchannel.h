@@ -30,6 +30,21 @@ int         bc_clock_rate(void);     /* 8000 (G.711) or out_rate (AAC) */
  * dropped until the owner releases. `owner` is any stable per-session pointer. */
 void bc_feed_rtp(const void *owner, const uint8_t *rtp, int len);
 
+/* Feed ALREADY-DECODED mono PCM16 into the backchannel, subject to the SAME
+ * single-talker election bc_feed_rtp() uses. For producers that do their own
+ * decoding into their own buffer - currently the WebSocket talk endpoint
+ * (talk_ws.c), which G.711 mu-law-decodes into a caller stack buffer.
+ *
+ * `rate` is the sample rate of `pcm`; speaker.c resamples to the AO rate, so
+ * whatever the browser's AudioContext ended up at can be passed straight in.
+ *
+ * Returns 1 if the samples were accepted (this producer holds the election),
+ * 0 if another talker owns the speaker. A caller that keeps getting 0 should
+ * close its session rather than keep decoding into a void.
+ *
+ * `pcm` is read, never retained: it may be a stack buffer. */
+int  bc_feed_pcm(const void *owner, const int16_t *pcm, int nsamp, int rate);
+
 /* Release the speaker if this owner holds it (call at PLAY end / teardown). */
 void bc_release(const void *owner);
 

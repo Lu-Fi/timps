@@ -104,6 +104,12 @@ typedef struct {
      * varies per SoC/mic/speaker pairing. Applied at the next AO open (like
      * spk_volume/spk_gain), only while both AI capture and AO output are live. */
     int      aec;
+    /* Browser-microphone backchannel over a WebSocket at /talk on the HTTPS
+     * port (USE_BC_WS). Restart-required and default OFF, matching
+     * `backchannel` itself: this opens a path from a visitor's microphone to
+     * the camera's speaker, so it is opt-in twice - once at build time via
+     * BR2_PACKAGE_TIMPS_BC_WS, once here. */
+    int      talk_ws;
 } ms_audio_cfg;
 
 typedef struct {

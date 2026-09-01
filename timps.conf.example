@@ -371,6 +371,15 @@ audio.mute               = 0      # live — mic mute (1 = drop captured frames,
 # speaker output from the mic capture so the far end doesn't hear itself over the
 # backchannel. Applied at the next AO open.
 audio.aec                = 0      # live — 0 off, 1 on (USE_BACKCHANNEL/USE_PLAY)
+# talk_ws: browser-microphone backchannel over a WebSocket at wss://<cam>:<http
+# port>/talk (USE_BC_WS builds only). A browser cannot speak RTSP/RTP, so the
+# ONVIF backchannel above is unreachable from a web page; this serves the same
+# speaker path to one. Requires audio.backchannel=1 (it shares that pipeline and
+# its single-talker arbitration) and http.https=1 — getUserMedia() is refused
+# outside a secure context, so a plaintext listener could never be fed. Default
+# off: this is a path from a visitor's microphone to the camera's speaker.
+# Consider audio.aec=1 alongside it, or the far end hears itself.
+audio.talk_ws            = 0      # restart — 0 off, 1 on (USE_BC_WS)
 # speaker (AO) - active on USE_PLAY / USE_BACKCHANNEL builds:
 #   spk_enabled = master gate for the physical speaker; when 0 neither the
 #                 backchannel nor local playback produces any sound.

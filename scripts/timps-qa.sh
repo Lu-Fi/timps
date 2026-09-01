@@ -10,6 +10,8 @@
 #   2. Discovery ...... ffprobe every stream (codec/res/fps/audio)
 #   2b. Auth .......... no-auth + wrong-pass must be blocked (RTSP + HTTP surfaces)
 #   2c. Backchannel ... optional ONVIF backchannel: handshake + short PCMU tone
+#   2e. Talk /talk .... optional browser-mic backchannel over WebSocket (TLS):
+#                       capability, upgrade + auth/input negatives, silence run
 #   3. Integrity+Sync . record each stream, measure fps, real-time rate,
 #                       A/V drift, timestamp monotonicity, decode errors
 #   4. HTTP fMP4 ...... /stream.mp4 (MSE feed) plays, fps/bitrate, errors
@@ -1744,6 +1746,166 @@ else
 			fi
 		fi
 	fi
+fi
+
+fi
+if want 2e talk talkws; then
+# --- 2e. Browser-microphone talk endpoint (/talk, optional) -----------------
+hdr "2e. Browser talk endpoint /talk (optional)"
+# The WebSocket transport for the SAME backchannel 2c exercised over RTSP
+# (USE_BC_WS / src/rtsp/talk_ws.c), used by the preview page's talk button.
+# TLS-only by construction: getUserMedia() is refused outside a secure context,
+# so a camera without http.https can never be fed by a browser and /talk answers
+# 426 there. Optional feature, so absent or switched off is info, not FAIL.
+talkpy="$(dirname "$0")/talk-ws.py"
+talklog="$OUTDIR/talk-ws.log"
+talkcaps="$OUTDIR/talk-caps.json"
+talk_base="https://$CAM:$HTTP_PORT"
+# QA_TOKEN is set in section 2b; re-derive it here so --only 2e works standalone.
+talk_token="${QA_TOKEN:-${HTTP_TOKEN:-}}"
+if [ -z "$talk_token" ] && [ -n "$SSH_TARGET" ]; then
+	talk_token=$(sshx "cat ${TOKEN_FILE:-/run/timps.token} 2>/dev/null" | head -1 | tr -d ' \r\n')
+fi
+# Capability read: Basic auth, like every other /control fetch in this script
+# (curlq/check_auth_ok/section 8). Deliberately NOT the ?token=/X-Timps-Token
+# path - that credential is for the /talk UPGRADE below, and a camera with
+# http.user/http.pass set answers /control 401 to a token-less request. Reading
+# caps with the token header meant an empty $talk_token produced a 401 that was
+# then reported as "https is probably off", which is a different fault
+# entirely; keep the two credentials separate.
+#   -k: the camera's cert is self-signed by design (S95timps ensure_tls_certs);
+#       this section tests the /talk protocol, not the PKI.
+talk_ws=""
+talk_cc=$(curl -sk --max-time 8 -u "$HTTP_USER:$HTTP_PASS" \
+        -o "$talkcaps" -w '%{http_code}' "$talk_base/control" 2>/dev/null)
+[ "$talk_cc" = "200" ] && talk_ws=$(jget "$talkcaps" caps.backchannel.talk_ws)
+
+talk_try() { # <talk-ws.py args...> -> its report on stdout, also appended to the log
+	python3 "$talkpy" --host "$CAM" --port "$HTTP_PORT" "$@" 2>&1 | tee -a "$talklog"
+}
+talk_code() { printf '%s\n' "$1" | sed -n 's/^HTTP //p' | head -1; }
+
+if ! have python3; then
+	info "/talk test skipped (needs python3)"
+elif [ ! -f "$talkpy" ]; then
+	info "/talk test skipped (scripts/talk-ws.py not found)"
+elif [ "$talk_cc" = "000" ]; then
+	info "/talk: nothing answering TLS at $talk_base (curl could not connect) - /talk is TLS-only by construction, so this camera needs http.https=1; nothing to test"
+elif [ "$talk_cc" != "200" ]; then
+	info "/talk: GET $talk_base/control -> HTTP $talk_cc while reading capabilities (credentials? --http-user/--http-pass, currently '$HTTP_USER') - cannot judge /talk"
+elif [ -z "$talk_ws" ]; then
+	info "/talk: /control carries no caps.backchannel.talk_ws field - this timps predates the browser-talk feature"
+elif [ "$talk_ws" != "1" ]; then
+	info "/talk not available (caps.backchannel.talk_ws=$talk_ws - not built, audio.talk_ws off, or audio.backchannel off at boot) - optional"
+else
+	ok "/talk advertised (caps.backchannel.talk_ws=1)"
+	: > "$talklog"
+
+	# --- auth negatives. Meaningless against loopback: httpd trusts
+	# 127.0.0.0/8 on purpose, so these would "fail" against the intended
+	# bypass rather than against the auth code (same carve-out as 2b).
+	if is_loopback "$CAM"; then
+		skip "/talk auth negatives skipped: $CAM is loopback and httpd trusts 127.0.0.0/8 by design"
+	else
+		tres=$(talk_try --rate 8000)                      # no token at all
+		tcode=$(talk_code "$tres")
+		case "$tcode" in
+			401|403) ok "/talk blocks a no-token upgrade (HTTP $tcode)";;
+			101)     warn "/talk upgraded WITHOUT a token (HTTP 101) - expected only on a camera with no credentials configured";;
+			*)       skip "/talk no-token -> HTTP ${tcode:-none} (nothing proven)";;
+		esac
+
+		tres=$(talk_try --token "qa_wrong_$$" --rate 8000)
+		tcode=$(talk_code "$tres")
+		case "$tcode" in
+			401|403) ok "/talk rejects a WRONG token (HTTP $tcode)";;
+			101)     bad "/talk accepted a WRONG token (HTTP 101) - token comparison broken";;
+			*)       skip "/talk wrong-token -> HTTP ${tcode:-none} (nothing proven)";;
+		esac
+	fi
+
+	# Everything past this point needs a VALID /talk token. httpd.c applies its
+	# global auth gate before the dispatch chain, so without one the endpoint
+	# 401s and every deeper assertion below would measure the auth gate rather
+	# than talk_ws.c. Basic/Digest is not an option here: a browser's WebSocket
+	# constructor cannot set headers, which is exactly why /talk takes ?token=.
+	if [ -z "$talk_token" ]; then
+	info "  deeper /talk checks need the per-boot token: re-run with --ssh root@$CAM (reads ${TOKEN_FILE:-/run/timps.token}) or HTTP_TOKEN=<token>. The capability and auth negatives above still ran."
+	else
+
+	# --- positive: a valid upgrade must yield 101 AND the RFC 6455 section
+	# 1.3 accept vector, which proves the whole sha1+base64 path in ws.c
+	tres=$(talk_try --token "$talk_token" --rate 8000)
+	if printf '%s\n' "$tres" | grep -q '^HTTP 101' &&
+	   printf '%s\n' "$tres" | grep -q '^ACCEPT ok'; then
+		ok "/talk upgrade: HTTP 101 + correct Sec-WebSocket-Accept (RFC 6455 1.3 vector)"
+	else
+		bad "/talk upgrade failed: $(printf '%s\n' "$tres" | grep -E '^(HTTP|ACCEPT|RESULT)' | tr '\n' ' ')"
+	fi
+
+	# --- input validation (talk_ws.c refuses rather than guessing)
+	tres=$(talk_try --token "$talk_token" --rate 12345)
+	tcode=$(talk_code "$tres")
+	if [ "$tcode" = "400" ]; then
+		ok "/talk rejects an unsupported ?rate= (HTTP 400)"
+	else
+		warn "/talk ?rate=12345 -> HTTP ${tcode:-none} (expected 400)"
+	fi
+
+	tres=$(talk_try --token "$talk_token" --rate 8000 --method POST)
+	tcode=$(talk_code "$tres")
+	if [ "$tcode" = "405" ]; then
+		ok "/talk rejects a non-GET upgrade (HTTP 405, RFC 6455 4.1)"
+	else
+		warn "/talk POST upgrade -> HTTP ${tcode:-none} (expected 405)"
+	fi
+
+	# --- framing: an unmasked client frame MUST be refused (RFC 6455 5.1 -
+	# unmasked client data is the signature of the cache-poisoning attack
+	# masking exists to prevent)
+	tres=$(talk_try --token "$talk_token" --rate 8000 --unmasked)
+	if printf '%s\n' "$tres" | grep -q '^RESULT ok'; then
+		ok "/talk rejects an UNMASKED client frame (RFC 6455 5.1)"
+	else
+		warn "/talk unmasked-frame probe: $(printf '%s\n' "$tres" | grep '^RESULT' | head -1)"
+	fi
+
+	# --- a real (silent) session, paced to real time so this exercises the
+	# normal path rather than talk_ws.c's backlog guard. Digital silence, so a
+	# QA run never makes the camera audibly beep in someone's house.
+	tres=$(talk_try --token "$talk_token" --rate 8000 --secs 1)
+	tsent=$(printf '%s\n' "$tres" | sed -n 's/^SENT //p' | head -1)
+	tclose=$(printf '%s\n' "$tres" | sed -n 's/^CLOSE //p' | head -1)
+	# close=none is EXPECTED, not a fault: ws.c returns WS_CLOSED on a peer
+	# close without echoing a Close frame back (RFC 6455 5.5.1 says SHOULD,
+	# not MUST), so the camera simply drops the TCP connection. Browsers are
+	# unaffected - preview-talk.js detaches its handlers before closing, and
+	# the two closes the SERVER initiates (1001 idle, 1008 speaker busy) do
+	# send a real frame. What actually matters is the teardown check below.
+	if printf '%s\n' "$tres" | grep -q '^RESULT ok' && [ "${tsent:-0}" -ge 40 ]; then
+		ok "/talk streamed ${tsent} x 20ms mu-law frames, clean close (server close=${tclose:-none}; 'none' = TCP close without a Close echo, per ws.c)"
+	else
+		warn "/talk streaming session incomplete (sent=${tsent:-0} close=${tclose:-none}) - see $talklog"
+	fi
+
+	if [ -n "$SSH_TARGET" ]; then
+		if sshx "logread 2>/dev/null | grep -q 'talk session open'"; then
+			ok "camera logged 'talk session open' (frames reached talk_ws.c's audio loop)"
+			# the teardown line is what proves bc_release() ran promptly on the
+			# client's close frame, instead of the speaker staying owned until
+			# the 10s BC_OWNER_STALE_US timeout
+			if sshx "logread 2>/dev/null | grep -q 'talk session closed'"; then
+				ok "camera logged a clean talk teardown (bc_release ran; speaker not left owned)"
+			else
+				warn "'talk session open' seen but no 'talk session closed' - prompt teardown not confirmed"
+			fi
+		else
+			warn "no 'talk session open' in logread - the session may not have reached talk_ws.c"
+		fi
+	else
+		info "  pass --ssh root@$CAM to confirm the camera opened AND cleanly closed the talk session"
+	fi
+	fi   # token-gated block
 fi
 
 fi

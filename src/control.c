@@ -1370,11 +1370,28 @@ int control_get_json(char *buf, size_t cap)
 #endif
     /* audio backchannel: available only if the feature is compiled AND
      * audio.backchannel was enabled at boot (bc_available() - see there,
-     * it's restart-only, not the live config value) */
+     * it's restart-only, not the live config value).
+     *
+     * "talk_ws" is the browser-microphone WebSocket transport for that same
+     * backchannel (USE_BC_WS, endpoint /talk). It is a SECOND flag rather
+     * than a second caps entry because it is not a separate feature - it is
+     * another way into this one, and a camera can perfectly well have the
+     * RTSP backchannel without it. Like "available" it folds compile-time and
+     * boot-time state into one number: 1 means httpd would actually serve
+     * /talk right now (feature compiled + audio.talk_ws set + the backchannel
+     * pipeline up), so the WebUI can hide its talk button on a single test
+     * instead of guessing. It deliberately does NOT report the TLS half of
+     * the requirement: /talk 426s on a plaintext listener, but the WebUI
+     * already learns the scheme from /x/timps-token.cgi's "tls" field. */
 #ifdef USE_BACKCHANNEL
-    APP("\"backchannel\":{\"available\":%d},", bc_available());
+#ifdef USE_BC_WS
+    APP("\"backchannel\":{\"available\":%d,\"talk_ws\":%d},",
+        bc_available(), (c->audio.talk_ws && bc_available()) ? 1 : 0);
 #else
-    APP("\"backchannel\":{\"available\":0},");
+    APP("\"backchannel\":{\"available\":%d,\"talk_ws\":0},", bc_available());
+#endif
+#else
+    APP("\"backchannel\":{\"available\":0,\"talk_ws\":0},");
 #endif
     /* play queue: available = the play-FIFO feature is compiled in. "sounds"
      * enumerates the .opus and .wav files under SOUNDS_DIR so the WebUI

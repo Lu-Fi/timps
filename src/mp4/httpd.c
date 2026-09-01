@@ -14,6 +14,10 @@
 #include "../daynight.h"
 #include "../events.h"
 #endif
+#ifdef USE_BC_WS
+#include "../rtsp/talk_ws.h"
+#include "../rtsp/backchannel.h"   /* bc_available(): backchannel set up at boot */
+#endif
 #include <stdio.h>
 #include <strings.h>
 #include <stdlib.h>
@@ -1510,7 +1514,15 @@ static void *conn_thread(void *arg)
                         !strncmp(path,"/snapshot.jpg",13) ||
                         !strncmp(path,"/stream.mjpeg",13) ||
                         !strncmp(path,"/mjpeg",6);
-            if (media || !strncmp(path,"/control",8) || !strncmp(path,"/events",7)) {
+            if (media || !strncmp(path,"/control",8) || !strncmp(path,"/events",7)
+#ifdef USE_BC_WS
+                /* /talk needs the ?token= unlock for the same structural
+                 * reason /events does: a browser's WebSocket constructor
+                 * cannot set request headers, so "X-Timps-Token:" is not
+                 * available to it and the query form is the only option. */
+                || !strncmp(path,"/talk",5)
+#endif
+               ) {
                 http_cors(buf, cors, sizeof cors);
                 if (!strcmp(method,"OPTIONS")) {
                     /* CORS preflight: answered before any auth - a preflight
@@ -1847,6 +1859,30 @@ static void *conn_thread(void *arg)
                 else
                     events_stream(c, path, cors);
             }
+#ifdef USE_BC_WS
+            else if (!strncmp(path,"/talk",5)) {
+                /* Browser-microphone backchannel - same access rules as
+                 * /events: localhost, a valid token (tok_ok; a WebSocket can
+                 * only pass it as ?token=, exactly like EventSource), or
+                 * configured credentials (already enforced by the global
+                 * gate above). talk_ws.c relies on this: it authenticates
+                 * nothing itself. */
+                const char *user = c->cfg->http_user[0] ? c->cfg->http_user
+                                                        : c->cfg->rtsp_user;
+                if (!c->tls)
+                    /* getUserMedia() is refused outside a secure context, so
+                     * a browser on a plaintext listener could never have
+                     * obtained a microphone to send in the first place. Say
+                     * so instead of upgrading a connection that cannot work. */
+                    http_send_ex(c,"426 Upgrade Required","text/plain",cors,"tls required",12);
+                else if (!c->cfg->audio.talk_ws || !bc_available())
+                    http_send_ex(c,"404 Not Found","text/plain",cors,"disabled",8);
+                else if (!c->local && !tok_ok && !user[0])
+                    http_send_ex(c,"403 Forbidden","text/plain",cors,"local only",10);
+                else
+                    talk_ws_serve(c->fd, c->tls, buf, n, path);
+            }
+#endif
 #endif
             else
                 http_send(c,"404 Not Found","text/plain","not found",9);
