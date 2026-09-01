@@ -1343,6 +1343,27 @@ if have git; then
 	[ -n "$local_ver" ] && info "  (this checkout's git describe: $local_ver - compare by eye; a mismatch is often expected, not a failure)"
 fi
 
+# Same stale-flash question for the PTZ daemon on cameras that ship it.
+# `motors --version` answers without needing motors-daemon to be up, so a
+# reported version is proof about the BINARY, not about the daemon's health.
+if [ -n "$SSH_TARGET" ]; then
+	if ! sshx "command -v motors >/dev/null 2>&1"; then
+		skip "motors build version: thingino-motors not installed on $CAM"
+	else
+		# A build predating the flag does not fail on it: getopt rejects the
+		# unknown option and the usage text (or the daemon-not-running
+		# message, printed even earlier) lands on stdout instead. Both
+		# contain spaces, a version token never does - that is the test.
+		mot_ver=$(sshx "motors --version 2>/dev/null" | head -1 | tr -d '\r')
+		case "$mot_ver" in
+			'')                    warn "\`motors --version\` printed nothing - build predates the version flag";;
+			unknown)               warn "motors reports version \"unknown\" - built without -DMOTORS_BUILD_VERSION";;
+			*[!A-Za-z0-9._-]*)     warn "\`motors --version\` did not print a version (got: $mot_ver) - build predates the version flag";;
+			*)                     ok "camera $CAM reports: motors $mot_ver";;
+		esac
+	fi
+fi
+
 fi
 if want 2 discovery; then
 # --- 2. discovery -----------------------------------------------------------
