@@ -72,6 +72,7 @@ rotation deep-dive), [`docs/sdk-feature-gaps.md`](docs/sdk-feature-gaps.md),
 | `http://<ip>:8880/stream.mjpeg` | MJPEG (multipart) |
 | `…?chn=N` | JPEG / MJPEG at the resolution of `videoN` (needs `videoN.jpeg = true`) |
 | `http://<ip>:8880/events` | SSE push stream: `motion` / `daynight` / `stats` events (`USE_CONTROL` builds — see [HTTP /control API](docs/wiki/HTTP-Control-API.md)) |
+| `wss://<ip>:8880/talk` | WebSocket audio backchannel: browser microphone → camera speaker (`USE_BC_WS` builds, TLS only — see [Talk](#talk-browser-microphone--camera-speaker-talk)) |
 
 See [Streaming Protocols](docs/wiki/Streaming-Protocols.md) for transport
 details, codec negotiation and client-compatibility notes.
@@ -153,6 +154,7 @@ paths.
 | `USE_TIMELAPSE` | native timelapse (periodic JPEG shots to SD). **On by default**; `USE_TIMELAPSE=0` to leave it out (saves ~4 KB) |
 | `USE_BACKCHANNEL` | ONVIF audio backchannel (client → speaker), native `IMP_AO`. Off by default |
 | `USE_BC_AAC` | also accept AAC on the backchannel (needs `libhelix-aac`); G.711 always works without it |
+| `USE_BC_WS` | also serve the backchannel to a browser over a WebSocket (`/talk`, G.711 mu-law). Off by default; implies `USE_BACKCHANNEL`+`USE_CONTROL`, requires `USE_TLS` |
 | `USE_PLAY` | system-sound play queue (`/usr/sbin/play` protocol via a FIFO), native `IMP_AO`. Off by default |
 | `USE_PLAY_OPUS` | also decode Ogg-Opus in the play queue (needs `opusfile`); WAV/PCM/G.711 always work without it |
 | `USE_ROTATE` | image rotation (`videoN.rotation = 0\|90\|270`, plus `180` on T40/T41). Off by default |
@@ -233,6 +235,44 @@ PCMU/PCMA or AAC) and a system-sound **play queue** (`USE_PLAY`, the same FIFO
 protocol prudynt/raptor's `/usr/sbin/play` wrapper speaks — WAV, raw PCM16,
 G.711 and optionally Ogg-Opus). See [Audio](docs/wiki/Audio.md) for the full
 protocol and capability details.
+
+### Talk: browser microphone → camera speaker (`/talk`)
+
+A browser cannot speak RTSP/RTP, so the backchannel above is unreachable from
+a web page. `USE_BC_WS` (`BR2_PACKAGE_TIMPS_BC_WS`, off by default) adds
+`wss://<ip>:8880/talk`, an RFC 6455 WebSocket that feeds the *same* speaker
+path and the same single-talker arbitration: the client sends 20 ms **binary**
+frames of G.711 mu-law, timps decodes them and hands the PCM to
+`bc_feed_pcm()`. No new library — the framing rides the connection the HTTP
+server has already TLS-terminated.
+
+A client opens `/talk?token=<token>&rate=<hz>` and starts sending. `rate` is
+the capture rate it actually got (`8000` — mu-law's native rate — if omitted;
+`16000`/`24000`/`32000`/`44100`/`48000` are also accepted, because a browser
+`AudioContext` may impose the hardware rate instead of the requested one;
+anything else is refused with 400). timps resamples to the AO rate. The server
+replies with one hello text frame, `{"ok":1,"codec":"pcmu","rate":N}`, then
+only ever sends PING/CLOSE. It closes with 1008 if another talker (an ONVIF
+client or NVR) holds the speaker, and with 1001 after 10 s of silence — it
+PINGs every 3 s, so a merely quiet client keeps the session up. Frames that
+would run the accepted audio more than 400 ms ahead of real time are dropped
+rather than queued, since TCP will not drop them for you and the delay would
+never come back. `scripts/talk-ws.py` speaks all of this without a browser.
+
+Access is the same gate as `/events`: localhost, a valid **token**, or
+Basic/Digest credentials — as `?token=`, because a `WebSocket` constructor
+cannot set request headers. A WebSocket upgrade is not covered by CORS, so
+`/talk` additionally requires a present `Origin` to have the same host as
+`Host` (an absent one is a non-browser client, which still had to present a
+token; `null` is refused).
+
+`USE_BC_WS` implies `USE_BACKCHANNEL` + `USE_CONTROL` (the token machinery
+lives there) and **requires** `USE_TLS`: `getUserMedia()` is refused outside a
+secure context, so a plaintext listener could never be fed by a browser and
+`/talk` answers 426 there. Enable it per camera with `audio.talk_ws = 1`
+(restart-required, default 0) — a microphone-to-speaker path is opt-in at
+build time and again at run time. `GET /control` reports
+`caps.backchannel.talk_ws` once both are true.
 
 ### Recording, timelapse & privacy masks
 

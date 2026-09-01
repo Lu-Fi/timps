@@ -6,6 +6,143 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.9.6] - 2026-09-01
+
+### Added
+
+- **Browser-microphone "talk": the audio backchannel gains a WebSocket
+  transport at `/talk`** (`src/rtsp/talk_ws.c`, `src/ws.c`, `src/sha1.c`,
+  `src/rtsp/backchannel.c`, `src/mp4/httpd.c`, `src/control.c`,
+  `src/config.c`). Until now backchannel audio could only originate from an
+  ONVIF/RTSP caller: a browser cannot speak RTSP/RTP, so the speaker was
+  unreachable from the preview page that every other camera function is
+  driven from. `/talk` serves the same speaker path over an RFC 6455
+  WebSocket instead - the page captures the visitor's microphone with
+  `getUserMedia()`, encodes G.711 mu-law and sends 20 ms binary frames; timps
+  decodes them with the `g711.c` the backchannel already builds and hands the
+  PCM to a new `bc_feed_pcm()`, which arbitrates against any RTSP talker
+  exactly as an incoming RTP packet would. No new library: framing and
+  handshake are `ws.c`/`sha1.c` vendored from thingino-motors, riding the
+  connection `httpd.c` has already TLS-terminated. Roughly 8 KB of text.
+  - **The TLS shim exists because timps' own mbedTLS wrapper inverts POSIX's
+    read/write return convention** that `ws.c` was written against: a `0`
+    means "retry" in timps and "peer closed" in `ws.c`'s contract, so
+    `io_read`/`io_write`/`io_pending` translate between the two - including
+    setting `errno=EIO` explicitly on write failure, since `ms_tls_write()`
+    never sets it and `ws.c`'s retry logic branches on `errno==EAGAIN`.
+    Sockets stay **blocking**, unlike motors' own WS listener, because
+    `ms_tls_write()`'s `WANT_READ`/`WANT_WRITE` handling is a bare `continue`
+    that would busy-spin on a non-blocking fd.
+  - **`bc_elect_locked()` splits the backchannel lock boundary** rather than
+    letting the new producer re-enter it. The RTP path keeps decoding inside
+    the lock as before; the WS path decodes into a caller stack buffer
+    entirely outside any lock and takes it only briefly to run the same
+    election. That requires-not-takes split is what avoids both a double-lock
+    deadlock and a decoder use-after-free when an AAC-decoder steal happens
+    mid-feed.
+  - **A backlog guard, which is the one thing TCP does not give for free.**
+    RTP over UDP self-regulates - a network stall drops packets and the
+    backchannel recovers on its own. A WebSocket drops nothing: a 2 s WiFi
+    stall buffers 2 s of audio, delivers it in a burst, and `hal_ao_write()`
+    (blocking by design, the AO ring being the playback clock) then plays
+    every sample, so latency would step up and never come back down. `/talk`
+    tracks how far ahead of the wall clock the audio it has *accepted*
+    reaches and drops a frame that would put it more than 400 ms ahead,
+    without advancing the accumulator, so the schedule slides back to real
+    time by itself; a gap over 2 s re-anchors instead (push-to-talk released,
+    tab backgrounded). Every exit path runs `bc_release()`, whose
+    `ao_drop(0)` discards the queued tail rather than waiting it out - that
+    discard is what bounds accumulated latency to a single press.
+  - **Auth is the `/events` gate, applied in `httpd.c` before `talk_ws.c` is
+    entered**: localhost, a valid per-boot `?token=`, or configured
+    credentials. The query form is structural, not a shortcut - a browser's
+    `WebSocket` constructor cannot set request headers, exactly like
+    `EventSource`. `talk_ws.c` deliberately authenticates nothing itself.
+    What it *does* police is the origin, because a WebSocket upgrade is not
+    covered by CORS and the `http_cors()` headers on `/talk` protect nothing:
+    a present `Origin` must have the same host as `Host` (ports deliberately
+    not compared - the WebUI is served by uhttpd on :443 while timps listens
+    elsewhere by construction), an absent one is a non-browser client that
+    had to present a token anyway, and an empty or `null` one is refused as
+    unmatchable. Defence in depth for a token that leaked into a referrer or
+    a proxy log.
+  - **Session hygiene:** a `PING` every 3 s so an idle-but-live client has
+    something to answer, close after 10 s with nothing received at all
+    (`ws.c` stamps every complete frame, so this measures liveness, not
+    talkativeness - it catches a half-open TCP after a WiFi drop). A session
+    the election refuses for 50 consecutive frames (~1 s - another talker
+    holds the speaker) is closed with 1008 rather than left decoding into a
+    void. The client declares its capture rate as `?rate=`; 8000 (mu-law's
+    native rate) is the default and 16000/24000/32000/44100/48000 are also
+    accepted, because a browser `AudioContext` may decline the rate the page
+    asked for and impose the hardware one - iOS Safari commonly forces 48000.
+    Anything else is refused with 400 rather than guessed at. The server
+    answers with one hello text frame (`{"ok":1,"codec":"pcmu","rate":N}`),
+    which turns "no audio" into a diagnosable state on the browser side.
+  - **Gated twice, and off both times by default.** At build time by
+    `USE_BC_WS` / `BR2_PACKAGE_TIMPS_BC_WS`, which implies `USE_BACKCHANNEL`
+    and `USE_CONTROL` and *requires* `USE_TLS`. The control endpoint is a
+    hard dependency for the auth story above: the whole token path
+    (`http_header`/`http_check_token`/`http_cors` and the `tok_ok` that
+    unlocks the global gate) compiles only under `USE_CONTROL`, so without it
+    `/talk` still builds but 401s every browser on a camera that has
+    credentials. TLS is an explicit `$(error)` rather than a silent implication
+    because it needs a library that may be absent, and because
+    `getUserMedia()` is refused outside a secure context - a plaintext build
+    could never be fed by a browser at all, which is also why `/talk` answers
+    426 on a plaintext listener instead of upgrading a connection that cannot
+    work. At runtime by `audio.talk_ws` (default 0, restart-required, same
+    class as `backchannel` itself): this is a path from a visitor's
+    microphone to the camera's speaker, so it is opt-in twice.
+  - `GET /control` reports `caps.backchannel.talk_ws`, a second flag on the
+    existing `backchannel` entry rather than a new one - `/talk` is not a
+    separate feature, it is another way into this one. Like `available` it
+    folds compile-time and boot-time state into a single number ("httpd would
+    serve `/talk` right now"), so a UI can hide its talk button on one test.
+  - Live-verified on a T31 camera: 18/18 `timps-qa.sh` section 2e PASS
+    (handshake, auth gate, mask enforcement, real mu-law frames, clean
+    `bc_release()` teardown) and a clean overnight syslog across 9 real
+    sessions with zero dropped frames. `scripts/talk-ws.py` is a standalone
+    client that speaks the protocol without a browser (`--secs` streams
+    mu-law silence, `--unmasked`/`--method`/`--rate` exercise the refusal
+    paths) and prints machine-greppable result lines for the QA script.
+
+- **`timps-qa.sh` now version-checks the motors daemon too** (`motors
+  --version`), the same stale-flash check it already ran against `timpsd`.
+
+### Fixed
+
+- **A stable AE-meter clip now seeds both the day/night trend pair and the
+  night reference** (`src/daynight.c`). On a board whose true dark rest state
+  *is* a clip - 0 units of headroom, e.g. cam-wyze-pan's T20 - both detection
+  paths could get permanently stuck: `ref` refused to anchor from a clip at
+  all (to keep a still-ramping boot sample from being read as a "dawn"), and
+  the trend EMA pair was frozen while clipped. On a camera that rests at the
+  rail nearly all night, neither ever fired and the only surviving detector
+  was the 12 h heartbeat. Both now share one measurement: a clip counts as
+  valid data once it has held stable (`stable_n`) for `DN_STABLE_MAX_MS` -
+  past that bound it is the camera's rest state, not a transient. Below the
+  bound nothing changes. Also, an unanchored `ref` no longer defers the
+  heartbeat, which is how a permanently clipped meter managed to silence the
+  one bound meant to survive every other failure mode. Live-verified on
+  cam-wyze-pan: `ref` anchors at the true 8171 dark baseline ~150 s after
+  night entry instead of sitting at -1 all night, and a real light-on event
+  fires the fast jump trigger (~20-25 s, IR-ratio confirmed) rather than only
+  the 3-minute trend fallback. Corpus: 35/35 dn-scenarios pass, cost-neutral
+  or better - one scenario drops from 16 forced probes to 2, now that the
+  heartbeat's flat/moved check has a working reference to test against.
+
+- **Build break with `USE_CONTROL=1 USE_DAYNIGHT=0`** (`src/daynight.c`,
+  `src/daynight.h`). `daynight_request_probe()` was declared only inside the
+  `USE_DAYNIGHT` guard, but `control.c`'s probe command - added after the
+  `!USE_DAYNIGHT` stub section already existed - calls it under `USE_CONTROL`
+  alone. `BR2_PACKAGE_TIMPS_DAYNIGHT` is user-deselectable while
+  `TIMPS_CONTROL` defaults on, so the combination is reachable from
+  menuconfig, not merely theoretical; found by an automated
+  flag-completeness audit. The declaration moves below the `#endif` (matching
+  the always-linkable status functions beside it) and gets a stub returning
+  -1, which `control.c` already reports as "this build cannot probe".
+
 ## [1.9.5] - 2026-08-29
 
 ### Added
