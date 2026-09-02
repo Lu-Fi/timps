@@ -313,7 +313,7 @@ void config_defaults(ms_config *c)
     c->audio.spk_enabled=1; c->audio.spk_volume=80; c->audio.spk_gain=25;
     c->audio.backchannel=0; c->audio.backchannel_codec=0; c->audio.backchannel_rate=16000;
     c->audio.aec=0;                                        /* AEC opt-in, default off */
-    c->audio.talk_ws=0;                                    /* /talk WebSocket opt-in, default off */
+    c->audio.talk_ws=0;                                    /* /talk WebSocket opt-in: 0 off, 1 TLS-only, 2 TLS optional */
 
     c->jpeg.enabled=0; c->jpeg.width=640; c->jpeg.height=360;
     c->jpeg.quality=75; c->jpeg.fps=5; c->jpeg.imp_chn=2;
@@ -567,6 +567,7 @@ enum {
     T_DNMODE,   /* int: "sensor"/"time"/"sun"  <-> same                   */
     T_RECMODE,  /* int: "motion"/"continuous"/number <-> "%d"             */
     T_BCCODEC,  /* int: "pcmu"/"pcma"/"aac"/number   <-> "%d"             */
+    T_TRISTATE, /* int: 0/1/2, legacy bool words -> 1 <-> "%d"            */
 };
 
 /* F_NOGET/F_ATOMIC/F_CTRL and the cfg_field struct itself now live in
@@ -759,8 +760,14 @@ static const cfg_field audio_fields[] = {
     /* F_CTRL only, deliberately NOT CAP_SPK: talk_ws is restart-required (the
      * /talk route is decided per request against the boot-time backchannel
      * setup), and F_CAP is what tells the WebUI a key is a LIVE control. Same
-     * class as `backchannel` above, not the same class as `aec`. */
-    F ("talk_ws",            0, talk_ws,            T_BOOL,   F_CTRL, 0,0),
+     * class as `backchannel` above, not the same class as `aec`.
+     *
+     * Tri-state, not a bool: 0 off, 1 on with TLS REQUIRED (what "on" has
+     * always meant - /talk 426s on a plaintext port), 2 on with TLS merely
+     * preferred (a plain ws:// upgrade is accepted, for operators who give
+     * the origin a secure context by hand). T_TRISTATE keeps the old
+     * true/on/yes spellings parsing as the strict 1. */
+    F ("talk_ws",            0, talk_ws,            T_TRISTATE,F_CTRL, 0,2),
 };
 #undef CAP_ALC
 #undef CAP_SPK
@@ -1228,6 +1235,12 @@ static void field_set(void *base, const cfg_field *f, const char *val)
         else if (!strcasecmp(val,"aac"))  *(int*)p = 2;
         else *(int*)p = pint_cl(val,0,2);
         break;
+    case T_TRISTATE:
+        /* a key that used to be a plain bool and grew a second "on" mode.
+         * The boolean spellings still parse, and still mean the ORIGINAL
+         * (stricter) on-value 1 - never the newer, more permissive 2. */
+        *(int*)p = pbool(val) ? 1 : pint_cl(val,0,2);
+        break;
     }
 }
 
@@ -1242,7 +1255,7 @@ static int field_get(const void *base, const cfg_field *f, char *out, size_t cap
     }
     switch (f->type){
     case T_BOOL: case T_INT: case T_CHAN: case T_ROT:
-    case T_RECMODE: case T_BCCODEC:
+    case T_RECMODE: case T_BCCODEC: case T_TRISTATE:
         snprintf(out,cap,"%d",*(const int*)p); break;
     case T_HEX:    snprintf(out,cap,"0x%08X",*(const uint32_t*)p); break;
     case T_FLT:    snprintf(out,cap,"%g",(double)*(const float*)p); break;

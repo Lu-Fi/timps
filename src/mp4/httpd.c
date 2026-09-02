@@ -1869,14 +1869,20 @@ static void *conn_thread(void *arg)
                  * nothing itself. */
                 const char *user = c->cfg->http_user[0] ? c->cfg->http_user
                                                         : c->cfg->rtsp_user;
-                if (!c->tls)
-                    /* getUserMedia() is refused outside a secure context, so
-                     * a browser on a plaintext listener could never have
-                     * obtained a microphone to send in the first place. Say
-                     * so instead of upgrading a connection that cannot work. */
-                    http_send_ex(c,"426 Upgrade Required","text/plain",cors,"tls required",12);
-                else if (!c->cfg->audio.talk_ws || !bc_available())
+                if (!c->cfg->audio.talk_ws || !bc_available())
                     http_send_ex(c,"404 Not Found","text/plain",cors,"disabled",8);
+                else if (!c->tls && c->cfg->audio.talk_ws < 2)
+                    /* audio.talk_ws=1 (the historical "on") is strict:
+                     * getUserMedia() is refused outside a secure context, so
+                     * a browser on a plaintext listener could normally never
+                     * have obtained a microphone to send in the first place.
+                     * Say so instead of upgrading a connection that cannot
+                     * work. audio.talk_ws=2 opts out of that check for
+                     * operators who grant the origin a secure context by hand
+                     * (e.g. Chrome's unsafely-treat-insecure-origin-as-secure)
+                     * - talk_ws_serve() takes a NULL tls and speaks plain
+                     * ws:// just fine. */
+                    http_send_ex(c,"426 Upgrade Required","text/plain",cors,"tls required",12);
                 else if (!c->local && !tok_ok && !user[0])
                     http_send_ex(c,"403 Forbidden","text/plain",cors,"local only",10);
                 else
@@ -2012,6 +2018,32 @@ httpd *httpd_start(const ms_config *cfg)
         LOGE(MOD,"http.https=1 but this build has no USE_TLS - port %d serves "
                  "PLAIN HTTP and any password or token sent to it goes over "
                  "the network in the clear", cfg->http_port);
+#endif
+#ifdef USE_BC_WS
+    /* audio.talk_ws=1 means "serve /talk, TLS required". On a port that will
+     * never be TLS that is unsatisfiable: every /talk request 426s. Rather
+     * than let it look enabled-but-broken, say so once at startup - /control
+     * reports talk_ws:0 for exactly this case, so the WebUI hides the button
+     * and the operator has nothing but the log to explain why. */
+    {
+        int tls_port = 0;
+#ifdef USE_TLS
+        tls_port = cfg->http_https;
+#endif
+        if (cfg->audio.talk_ws == 1 && !tls_port)
+            LOGW(MOD,"audio.talk_ws=1 requires TLS on the http port, but port "
+                     "%d is plaintext%s - /talk stays disabled. Set "
+                     "audio.talk_ws=2 to accept plain ws:// deliberately "
+                     "(the browser then needs a secure-context override to "
+                     "reach its microphone at all)",
+                 cfg->http_port,
+#ifdef USE_TLS
+                 " (http.https=0)"
+#else
+                 " (no TLS in this build)"
+#endif
+                 );
+    }
 #endif
     h->lfd=net_listen_tcp(cfg->http_port, NET_TCP_BACKLOG);
     if (h->lfd<0){

@@ -6,6 +6,40 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- **`audio.talk_ws` becomes a tri-state, and `USE_BC_WS` no longer requires
+  `USE_TLS`** (`src/config.c`, `src/config.h`, `src/mp4/httpd.c`,
+  `src/control.c`, `Makefile`). 1.9.6 shipped `/talk` as TLS-only, enforced
+  twice: an `$(error)` refusing to build without `USE_TLS`, and a `426` on any
+  plaintext connection. The reasoning was that `getUserMedia()` is refused
+  outside a secure context, so a plaintext camera could never be fed by a
+  browser anyway - true of the browser's default policy, but not of the
+  operator, who can grant an origin a secure context by hand
+  (`chrome://flags/#unsafely-treat-insecure-origin-as-secure`, a trusted
+  tunnel, localhost) for a camera they own. The daemon was refusing a
+  connection the browser was already willing to make.
+  - `audio.talk_ws` now takes `0` (off), `1` (on, TLS required) or `2` (on,
+    TLS preferred but a plain `ws://` upgrade accepted too). **`1` keeps its
+    exact 1.9.6 meaning** - it is still strictly TLS-only, so nothing that
+    already has it becomes more permissive, and it stays the value the
+    Buildroot package presets. `2` is only ever set by hand: the microphone
+    audio and its `?token=` then cross the network in the clear. The old
+    boolean spellings (`true`/`on`/`yes`) still parse, as the strict `1`.
+  - `httpd.c` checks `talk_ws < 2` instead of `!c->tls`, and answers `404`
+    before `426` so a disabled endpoint no longer advertises itself.
+    `talk_ws_serve()` already took a `NULL` tls handle; `ws.c`'s every
+    mbedTLS-facing line was already behind `#ifdef USE_TLS`. Nothing in the
+    WebSocket or talk path needed changing.
+  - `caps.backchannel.talk_ws` in `GET /control` reports the same `0`/`1`/`2`
+    as a resolved verdict rather than a raw config echo: `1` on a plaintext
+    port resolves to `0`, because `/talk` would `426` and a UI must not offer
+    a button for it. The WebUI now derives its `ws://` vs `wss://` scheme from
+    the `tls` field it already reads, instead of hardcoding `wss://`.
+  - A `USE_TLS=0` build can never satisfy `audio.talk_ws=1`, so `httpd_start()`
+    logs one warning naming `audio.talk_ws=2` as the fix and serves nothing,
+    rather than 426-ing silently forever.
+
 ## [1.9.6] - 2026-09-01
 
 ### Added

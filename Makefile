@@ -40,9 +40,10 @@ USE_BC_AAC    ?= 0          # 1 = also decode AAC backchannel (needs libhelix-aa
 HELIXLIB      ?= -lhelix-aac # link flag for the helix AAC decoder (USE_BC_AAC)
 HELIX_INC     ?=            # optional -I dir for aacdec.h/aaccommon.h (USE_BC_AAC)
 USE_BC_WS     ?= 0          # 1 = browser-microphone backchannel over a WebSocket at /talk on
-                            #     the HTTPS port (RFC 6455 framing + G.711 mu-law in, decoded
+                            #     the http port (RFC 6455 framing + G.711 mu-law in, decoded
                             #     by the g711.c the backchannel already builds; no new library).
-                            #     Implies USE_BACKCHANNEL + USE_CONTROL; REQUIRES USE_TLS.
+                            #     Implies USE_BACKCHANNEL + USE_CONTROL. USE_TLS is optional:
+                            #     without it only audio.talk_ws=2 (plain ws://) is usable.
 USE_PLAY      ?= 0          # 1 = /run/timps/audio_out play-FIFO queue (system sounds via native IMP_AO); WAV + raw PCM16
 USE_PLAY_OPUS ?= 0          # 1 = also decode Ogg-Opus in the play queue (needs opusfile); implies USE_PLAY
 OPUSLIB       ?= -lopusfile -lopus -logg  # link flags for opusfile (USE_PLAY_OPUS)
@@ -164,17 +165,17 @@ endif
 # unlocks the global auth gate) is compiled only under USE_CONTROL. Without it
 # /talk still builds but 401s every browser on a camera that has credentials.
 #
-# TLS is a hard requirement rather than an implication: it needs a library that
-# may not be present, so a silent flip would surface as a confusing link error.
-# getUserMedia() is refused outside a secure context, so a plaintext build
-# could never be fed by a browser in the first place.
+# TLS is NOT required to build this: ws.c terminates nothing itself (httpd.c
+# hands it an already-terminated connection, or a NULL tls handle for a plain
+# socket) and every mbedTLS-facing line in it is behind #ifdef USE_TLS, so a
+# USE_TLS=0 build links cleanly. What such a build cannot offer is the strict
+# audio.talk_ws=1 mode, which requires a TLS listener; only audio.talk_ws=2
+# (plain ws:// accepted) does anything there, and the browser then needs a
+# secure-context override to reach its microphone at all. httpd_start() warns
+# about the unsatisfiable combination at boot.
 ifeq ($(USE_BC_WS),1)
 USE_BACKCHANNEL := 1
 USE_CONTROL     := 1
-ifneq ($(USE_TLS),1)
-$(error USE_BC_WS=1 requires USE_TLS=1 - getUserMedia() is refused outside a \
-        secure context, so a plaintext build can never receive browser audio)
-endif
 endif
 # speaker.c (native IMP_AO owner) + the shared resampler are pulled in whenever
 # either audio-output producer is built.

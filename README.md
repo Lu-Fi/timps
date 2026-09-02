@@ -267,12 +267,25 @@ cannot set request headers. A WebSocket upgrade is not covered by CORS, so
 token; `null` is refused).
 
 `USE_BC_WS` implies `USE_BACKCHANNEL` + `USE_CONTROL` (the token machinery
-lives there) and **requires** `USE_TLS`: `getUserMedia()` is refused outside a
-secure context, so a plaintext listener could never be fed by a browser and
-`/talk` answers 426 there. Enable it per camera with `audio.talk_ws = 1`
-(restart-required, default 0) — a microphone-to-speaker path is opt-in at
-build time and again at run time. `GET /control` reports
-`caps.backchannel.talk_ws` once both are true.
+lives there). `USE_TLS` is **recommended but optional** — `ws.c` terminates
+nothing itself, so the plain-`ws://` path links without mbedTLS. Enable it per
+camera with `audio.talk_ws` (restart-required, default 0):
+
+| `audio.talk_ws` | `/talk` |
+| --- | --- |
+| `0` | not served |
+| `1` | served over TLS only — a plaintext port answers 426. The package default on TLS builds; unsatisfiable (and warned about at startup) without TLS |
+| `2` | served over `wss://` when the port is TLS, **and** over plain `ws://` when it is not |
+
+`2` is a deliberate hand edit, never preset: the microphone audio and its
+token then cross the network in the clear. The real constraint it works around
+is the browser, not the camera — `getUserMedia()` is refused outside a secure
+context, so `2` is only useful to someone who has granted the origin one
+(`chrome://flags/#unsafely-treat-insecure-origin-as-secure`, a trusted tunnel,
+localhost). A microphone-to-speaker path stays opt-in at build time and again
+at run time. `GET /control` reports the resolved answer as
+`caps.backchannel.talk_ws` (`0`/`1`/`2`, where `1` with a plaintext port
+resolves to `0`), so the WebUI needs no second test.
 
 ### Recording, timelapse & privacy masks
 

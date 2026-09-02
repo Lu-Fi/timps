@@ -1376,17 +1376,32 @@ int control_get_json(char *buf, size_t cap)
      * backchannel (USE_BC_WS, endpoint /talk). It is a SECOND flag rather
      * than a second caps entry because it is not a separate feature - it is
      * another way into this one, and a camera can perfectly well have the
-     * RTSP backchannel without it. Like "available" it folds compile-time and
-     * boot-time state into one number: 1 means httpd would actually serve
-     * /talk right now (feature compiled + audio.talk_ws set + the backchannel
-     * pipeline up), so the WebUI can hide its talk button on a single test
-     * instead of guessing. It deliberately does NOT report the TLS half of
-     * the requirement: /talk 426s on a plaintext listener, but the WebUI
-     * already learns the scheme from /x/timps-token.cgi's "tls" field. */
+     * RTSP backchannel without it.
+     *
+     * Like "available" it folds compile-time and boot-time state into one
+     * number, so the WebUI can hide its talk button on a single test instead
+     * of guessing. It reports the EFFECTIVE mode, not the raw config value:
+     *   0  httpd would not serve /talk at all right now
+     *   1  served, TLS required   (audio.talk_ws=1 and this port is TLS)
+     *   2  served, TLS optional   (audio.talk_ws=2; plain ws:// accepted)
+     * audio.talk_ws=1 on a plaintext port therefore reports 0, because /talk
+     * would 426 every request - the WebUI must not offer a button for it.
+     * Nothing here says which scheme to dial: 1 always means wss://, and for
+     * 2 the WebUI takes the scheme from /x/timps-token.cgi's "tls" field, the
+     * same one it already uses for the media/control URLs. */
 #ifdef USE_BACKCHANNEL
 #ifdef USE_BC_WS
-    APP("\"backchannel\":{\"available\":%d,\"talk_ws\":%d},",
-        bc_available(), (c->audio.talk_ws && bc_available()) ? 1 : 0);
+    {
+        int tws = c->audio.talk_ws;
+        if (tws < 0 || tws > 2 || !bc_available()) tws = 0;
+#ifdef USE_TLS
+        if (tws == 1 && !c->http_https) tws = 0;   /* strict mode, no TLS */
+#else
+        if (tws == 1) tws = 0;                     /* strict mode, TLS-less build */
+#endif
+        APP("\"backchannel\":{\"available\":%d,\"talk_ws\":%d},",
+            bc_available(), tws);
+    }
 #else
     APP("\"backchannel\":{\"available\":%d,\"talk_ws\":0},", bc_available());
 #endif

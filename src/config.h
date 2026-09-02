@@ -104,11 +104,19 @@ typedef struct {
      * varies per SoC/mic/speaker pairing. Applied at the next AO open (like
      * spk_volume/spk_gain), only while both AI capture and AO output are live. */
     int      aec;
-    /* Browser-microphone backchannel over a WebSocket at /talk on the HTTPS
+    /* Browser-microphone backchannel over a WebSocket at /talk on the http
      * port (USE_BC_WS). Restart-required and default OFF, matching
      * `backchannel` itself: this opens a path from a visitor's microphone to
      * the camera's speaker, so it is opt-in twice - once at build time via
-     * BR2_PACKAGE_TIMPS_BC_WS, once here. */
+     * BR2_PACKAGE_TIMPS_BC_WS, once here. Tri-state:
+     *   0  off
+     *   1  on, TLS REQUIRED - /talk 426s unless the port is https. The
+     *      original meaning of "on", and what the package ships as its
+     *      install-time default on TLS builds.
+     *   2  on, TLS preferred but not required - a plain ws:// upgrade is
+     *      accepted too. For plaintext cameras where the operator grants the
+     *      origin a secure context by hand (getUserMedia() is refused
+     *      otherwise), and the only usable value in a build without TLS. */
     int      talk_ws;
 } ms_audio_cfg;
 
