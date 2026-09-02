@@ -167,62 +167,90 @@ static void collect_oldest(const char *base, prune_cand *c, int *n, int depth)
     closedir(d);
 }
 
+/* sum of every regular file's size under base, in MB - depth-bounded the
+ * same as collect_oldest. Used only to answer "could pruning ever reach the
+ * target", so a coarse MB rounding is fine. */
+static long long tree_size_mb(const char *base, int depth)
+{
+    if (depth>8) return 0;
+    DIR *d=opendir(base); if(!d) return 0;
+    struct dirent *e;
+    long long bytes=0;
+    while ((e=readdir(d))){
+        if (!strcmp(e->d_name,".")||!strcmp(e->d_name,"..")) continue;
+        char p[336]; snprintf(p,sizeof p,"%s/%s",base,e->d_name);
+        struct stat s; if (lstat(p,&s)!=0) continue;
+        if (S_ISDIR(s.st_mode))       bytes+=tree_size_mb(p,depth+1)*1024*1024;
+        else if (S_ISREG(s.st_mode))  bytes+=s.st_size;
+    }
+    closedir(d);
+    return bytes/(1024*1024);
+}
+
 /* delete oldest segment files until at least min_free_mb is available.
  * min_free_mb comes from the caller's under-lock record snapshot (F-02), not a
- * lock-free g_rc->record read. */
-static void prune_free(int min_free_mb)
+ * lock-free g_rc->record read. Returns 0 if the caller may proceed to record
+ * (already had enough free space, or pruning reached the target), -1 if
+ * min_free_mb cannot be reached even by deleting every existing recording -
+ * the caller must not record rather than empty the archive chasing a target
+ * it can never hit. */
+static int prune_free(int min_free_mb)
 {
-    if (min_free_mb<=0) return;
+    if (min_free_mb<=0) return 0;
     /* record.dir is runtime-mutable via /control: snapshot it under the
      * config string lock (never hold the lock across statfs/unlink) */
     char dir[128];
     config_str_lock();
     snprintf(dir,sizeof dir,"%s",g_rc->record.dir);
     config_str_unlock();
-    if (ms_path_unsafe(dir,NULL)) return;   /* never prune outside the tree (L10) */
+    if (ms_path_unsafe(dir,NULL)) return -1;   /* never prune outside the tree (L10) */
 
-    /* A min_free_mb that exceeds what the card could hold even fully empty
-     * is unreachable by construction - the loop below would otherwise delete
-     * every recording it can find trying, one walk of PRUNE_BATCH files at a
-     * time, and never stop until nothing is left. Clamp the effective target
-     * well under total capacity instead, so a misconfigured (or now-too-small,
-     * e.g. after swapping in a smaller card) threshold can cost old footage
-     * but never the whole archive. Logged once per bad-value edge so it does
-     * not spam every segment rotation while stuck. */
-    long long total_mb = ms_total_mb(dir);
-    long long cap_mb = total_mb>0 ? (total_mb*9)/10 : min_free_mb;
-    static int warned;
-    if (total_mb>0 && min_free_mb>=cap_mb){
-        if (!warned){
-            LOGW(MOD,"record.min_free_mb=%d unreachable on a %lldMB card - "
-                     "capping the prune target at %lldMB instead of wiping "
-                     "every recording trying to reach it",
-                 min_free_mb,total_mb,cap_mb);
-            warned=1;
-        }
-        min_free_mb=(int)cap_mb;
-    } else warned=0;
+    long long fm=ms_free_mb(dir);
+    if (fm<0) return 0;              /* statvfs failed; behave as before (no-op) */
+    if (fm>=min_free_mb) return 0;   /* already satisfied, nothing to prune */
 
     char base[200]; char host[64];
     ms_hostname(host,sizeof host);           /* F4 handling lives in ms_hostname */
     snprintf(base,sizeof base,"%s/%s/records",dir,host);
+
+    /* Reachability check BEFORE deleting anything: if freeing every byte of
+     * every existing recording still would not reach min_free_mb, no amount
+     * of pruning gets there - the old code kept deleting anyway, one
+     * PRUNE_BATCH walk at a time, until the archive was empty and it STILL
+     * hadn't reached an unreachable target. Refuse instead, once per
+     * bad-value edge so it does not spam every segment rotation. */
+    static int warned;
+    long long max_recoverable = fm + tree_size_mb(base,0);
+    if (max_recoverable < min_free_mb){
+        if (!warned){
+            LOGW(MOD,"record.min_free_mb=%d unreachable (only %lldMB free, "
+                     "%lldMB even if every existing recording were deleted) - "
+                     "refusing to record rather than empty the archive",
+                 min_free_mb,fm,max_recoverable);
+            warned=1;
+        }
+        return -1;
+    }
+    warned=0;
+
     /* ~11 KB kept off the record thread's stack: only rec_thread ever reaches
      * prune_free (via seg_open), so a function-local static needs no locking -
      * same reasoning as seg_write's persistent fragment buffer. */
     static prune_cand cand[PRUNE_BATCH];
     for (int walk=0; walk<32; walk++){
-        long long fm=ms_free_mb(dir);
-        if (fm<0 || fm>=min_free_mb) return;
+        fm=ms_free_mb(dir);
+        if (fm<0 || fm>=min_free_mb) return 0;
         int n=0;
         collect_oldest(base,cand,&n,0);
-        if (!n) return;                      /* nothing left to prune */
+        if (!n) return 0;                    /* nothing left to prune */
         for (int i=0;i<n;i++){
-            if (unlink(cand[i].path)!=0) return;
+            if (unlink(cand[i].path)!=0) return 0;
             LOGI(MOD,"pruned %s (free %lld MB < %d)",cand[i].path,fm,min_free_mb);
             fm=ms_free_mb(dir);
-            if (fm<0 || fm>=min_free_mb) return;
+            if (fm<0 || fm>=min_free_mb) return 0;
         }
     }
+    return 0;
 }
 
 /* ---- segment writer ---- */
@@ -252,7 +280,7 @@ static void status_set(int rec, long long bytes, const char *file)
 
 static int seg_open(int chn, const ms_record_cfg *rc)
 {
-    prune_free(rc->min_free_mb);
+    if (prune_free(rc->min_free_mb)!=0) return -1;   /* target unreachable; see prune_free() */
     /* record.dir/name are runtime-mutable via /control: snapshot them under
      * the config string lock before strftime/path building */
     char dir[128], name[96];
