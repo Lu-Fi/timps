@@ -193,12 +193,21 @@ each launch, and no per-tab or per-session repetition.
 
 - `dom.securecontext.allowlist` in `about:config` — a comma-separated list
   of **hostnames** (no scheme, no port — `192.168.10.21`, not
-  `http://192.168.10.21` or `192.168.10.21:8080`). This is Firefox's
-  equivalent of the Chromium flag: matching hosts get `isSecureContext ===
-  true` (verified in `nsGlobalWindowOuter::ComputeIsSecureContext` →
+  `http://192.168.10.21` or `192.168.10.21:8080`; multiple cameras:
+  `192.168.10.21,192.168.10.22`). This is Firefox's equivalent of the
+  Chromium flag: matching hosts get `isSecureContext === true` (verified
+  in `nsGlobalWindowOuter::ComputeIsSecureContext` →
   `nsMixedContentBlocker::IsPotentiallyTrustworthyOrigin`), unlocking both
   `getUserMedia()` **and** `VideoDecoder` — this is the one to use if you
   also want the WebCodecs preview to work.
+
+  1. Open `about:config`, accept the risk warning.
+  2. Search `dom.securecontext.allowlist`. Don't confuse it with the
+     unrelated sibling `dom.securecontext.allowlist_onions` (Tor `.onion`
+     addresses, nothing to do with LAN cameras).
+  3. Set the value to the camera's hostname, e.g. `192.168.10.21`.
+  4. Reload the camera page — no browser restart needed, the pref is
+     read at page-load/navigation time.
 - `media.devices.insecure.enabled` **and**
   `media.getusermedia.insecure.enabled`, both `true` in `about:config` —
   an older, narrower pair (both required together; the first re-exposes
