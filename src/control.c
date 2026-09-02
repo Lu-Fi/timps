@@ -752,18 +752,27 @@ int control_apply_json(const char *json, ctrl_result *res)
         /* only stop on a TRUTHY "stop" - {"stop":false|0|null} must not stop,
          * and (else-if below) must not shadow a "play" sent in the same object.
          * Same truthiness idiom used for the boolean fields elsewhere here. */
-        int do_stop = get_val(sb, se, "stop", v, sizeof v) &&
-                      (!strcmp(v,"true")||!strcmp(v,"1"));
+        /* Commands, not settings - same false-422 shape record.active and
+         * daynight.probe were fixed for: a body with only "stop"/"play" and
+         * nothing else has no F_CTRL field for apply_ctrl_fields() to count,
+         * so accepted stayed 0 and the grading answered 422 to a stop/play
+         * that had actually run. */
+        int have_stop = get_val(sb, se, "stop", v, sizeof v);
+        int do_stop = have_stop && (!strcmp(v,"true")||!strcmp(v,"1"));
         if (do_stop){
             speaker_play_line("STOP");
             LOGI(MOD,"speaker stop");
+            g_acc++;
         } else if (get_val(sb, se, "play", v, sizeof v)){
             char full[320], line[400];
             if (sound_path(v, full, sizeof full)){
                 snprintf(line, sizeof line, "PLAY url=%s", full);
                 speaker_play_line(line);
                 LOGI(MOD,"speaker play %s", full);
-            } else LOGW(MOD,"speaker play: rejected '%s'", v);
+                g_acc++;
+            } else { LOGW(MOD,"speaker play: rejected '%s'", v); g_rej++; }
+        } else if (have_stop){
+            g_acc++;   /* "stop":false etc. - recognised, deliberately a no-op */
         }
         /* no field table at all here: play/stop are commands, and anything
          * else in this object is a name this build does not know. */
