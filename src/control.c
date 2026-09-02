@@ -972,9 +972,16 @@ int control_apply_json(const char *json, ctrl_result *res)
      * record.* config keys persist and the running recorder reads them live. */
     sb = find_obj(json, end, "record", &se);
     if (sb){
-        if (get_val(sb, se, "active", v, sizeof v))
+        if (get_val(sb, se, "active", v, sizeof v)){
+            /* A COMMAND, not a setting: same false-422 shape as the clip
+             * command below (Finding 1's grading answers 422 to anything
+             * that leaves accepted at 0) - "active" alone in the body, e.g.
+             * the control-bar's stop request {"record":{"active":0}}, has
+             * no other field for apply_ctrl_fields() to count. */
             record_set_active((!strcmp(v,"true")||!strcmp(v,"1")) ? 1 :
                               (!strcmp(v,"false")||!strcmp(v,"0")) ? 0 : -1);
+            g_acc++;
+        }
         {   /* {"record":{"clip":"/tmp/x.mp4","seconds":6}} -> capture an
              * on-demand fMP4 clip (blocks ~seconds); used by send2 video. */
             char clip[160];
