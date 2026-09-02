@@ -183,6 +183,21 @@ TEST_DAYNIGHT="${TEST_DAYNIGHT:-0}" # 8h: deterministic day/night transition + f
 TEST_HOSTILE="${TEST_HOSTILE:-0}" # 13b: stalled client must not degrade healthy ones
 TEST_REBOOT="${TEST_REBOOT:-0}"  # 14c: real reboot, config/binary/version persistence
 
+# How long after a daemon restart the picture is not evidence about anything.
+# daynight.c runs a boot probe on EVERY start (daynight.boot_probe defaults to
+# 1, config.c): it drives the camera into the day pipeline - IR-cut closed, our own
+# illuminator OFF - reads the ambient level, then drives back. In a dark room
+# that is a black frame for the whole window, and any pixel comparison taken
+# inside it compares two black frames.
+# The budget is DN_BOOT_SETTLE_S 5 + DN_PROBE_SETTLE_S 8 + DN_TRANSITION_S 5
+# (daynight.h) plus room for the ISP to confirm the switch back and AE to
+# reconverge. Measured against 192.168.10.21 on 2026-09-02, from the daemon's
+# own syslog: thread start 22:05:07, probe out at :13, back to night at :22,
+# ISP confirmed at :24 - so the dark window ran start+6 to start+17 and 30 s
+# clears it with most of a window to spare.
+DN_BOOT_WINDOW_S=30
+DAEMON_BACK_AT=""                # set by rot_restart; epoch seconds
+
 usage() {
 	# NOTE: this range must cover the whole banner comment above, up to and
 	# including the LAST line of section 16's description - it used to stop at
@@ -656,6 +671,23 @@ psnr_db() {
 	v=$(ffmpeg -hide_banner -nostdin -loglevel info -i "$1" -i "$2" \
 	    -lavfi psnr -f null - </dev/null 2>&1 | grep -oE 'average:[0-9.a-z]+' | tail -1 | cut -d: -f2)
 	case "$v" in inf|INF) printf '99';; "") : ;; *) printf '%s' "$v";; esac
+}
+
+# luma_spread <jpeg> -> the 10th..90th-percentile luma range (0..255) of the
+# frame, empty if it cannot be measured. This is "is there any structure in
+# this picture at all", the precondition every PSNR verdict in 8f silently
+# assumes: two featureless frames match each other beautifully whatever the
+# ISP did between them, so a PSNR delta taken across them is noise wearing a
+# verdict's clothes.
+# Deliberately percentiles and NOT YMIN..YMAX: every snapshot this script takes
+# carries the white OSD timestamp, which pins YMAX at 255 and YMIN at 0 no
+# matter how black the scene behind it is - min/max would call a pitch-dark
+# frame "full range". YLOW/YHIGH cannot be moved by a two-line overlay.
+luma_spread() {
+	ffmpeg -hide_banner -nostdin -loglevel error -i "$1" \
+	    -vf signalstats,metadata=mode=print:file=- -f null - </dev/null 2>/dev/null \
+	| awk -F= '/\.YLOW=/{lo=$2} /\.YHIGH=/{hi=$2}
+	           END{ if(lo!=""&&hi!="") printf "%d", hi-lo }'
 }
 
 # leak_trend  (reads one number per line on stdin)
@@ -4003,7 +4035,13 @@ else
 		# bounded, so a genuine hang/crash (control server never binds)
 		# falls through to the return 1 below instead of a false pass.
 		for i in $(seq 1 15); do
-			[ "$(curlq 3 -o /dev/null -w '%{http_code}' "$(http_base)/control")" = "200" ] && return 0
+			# Stamp when the fresh daemon first answered. Every restart hands
+			# daynight.c a boot that runs its own probe (boot_probe=1 by
+			# default), and that probe drives the picture through a transient
+			# no later section may mistake for a fault - see DN_BOOT_WINDOW_S
+			# and its use in 8f.
+			[ "$(curlq 3 -o /dev/null -w '%{http_code}' "$(http_base)/control")" = "200" ] \
+				&& { DAEMON_BACK_AT=$(date +%s); return 0; }
 			sleep 2
 		done
 		return 1
@@ -4959,6 +4997,9 @@ fi
 #
 # Needs a STATIC scene - a camera pointed at moving traffic will produce
 # ambiguous PSNR deltas, which are reported as WARN, never as a false FAIL.
+# It also needs a scene with something IN it, and it needs the daynight
+# automaton to be holding still: both guarded below, because on 2026-09-02
+# neither was and the section FAILed a healthy ISP for it.
 if want 8f flip; then
 hdr "8f. Pixel-verified hflip + forced chn0 relatch (opt-in)"
 if [ "$TEST_FLIP" != "1" ]; then
@@ -4969,6 +5010,29 @@ else
 	fl_dir="$OUTDIR/flip"; mkdir -p "$fl_dir"
 	fl_snap() { curl -s --max-time 12 -u "$HTTP_USER:$HTTP_PASS" "$(http_base)/snapshot.jpg?chn=0" -o "$1" 2>/dev/null; [ -s "$1" ]; }
 	fl_post() { curl -s -o /dev/null -w '%{http_code}' --max-time 12 -u "$HTTP_USER:$HTTP_PASS" -X POST "$(http_base)/control" -d "$1"; }
+	# A pixel verdict needs pixels. Below this much 10..90 percentile luma
+	# range (see luma_spread) a frame is flat enough that mirroring it changes
+	# nothing a PSNR can see, so no comparison taken across it means anything.
+	# The 2026-09-02 boot-probe frames measured 4 codes of range and the same
+	# scene with the illuminator on measured 89, so 12 sits clear of both.
+	FL_MIN_SPREAD=12
+	fl_flat() { [ -n "$1" ] && [ "$1" -lt "$FL_MIN_SPREAD" ]; }
+
+	# --- do not measure inside a boot-probe transient ----------------------
+	# 8b's rotation and encoder sub-tests restart the daemon, and every restart
+	# makes daynight.c run its boot probe (boot_probe=1 by default): it drives
+	# the camera into the day pipeline with our own illuminator OFF, which in a
+	# dark room is a black picture for the length of DN_BOOT_WINDOW_S. On
+	# 2026-09-02 8f started 4s after 8g's restore-restart returned, both flip
+	# references came back black, and the meaningless PSNR that followed FAILed
+	# a perfectly healthy ISP. Sit the window out instead of measuring in it.
+	if [ -n "$DAEMON_BACK_AT" ]; then
+		fl_wait=$(( DN_BOOT_WINDOW_S - ( $(date +%s) - DAEMON_BACK_AT ) ))
+		if [ "$fl_wait" -gt 0 ]; then
+			info "  the daemon restarted earlier in this run - waiting ${fl_wait}s for daynight's boot probe to finish before touching the picture"
+			sleep "$fl_wait"
+		fi
+	fi
 	# Interruption safety, same reasoning as 8b/9: a run killed between the
 	# flip and the restore would leave the camera mirrored for good. Chain to
 	# 8b's pending-restore if that section defined one, instead of silently
@@ -5018,7 +5082,10 @@ else
 		else
 			info "  hflip=1 snapshot vs mirrored-hflip=0 snapshot: ${p_mir}dB; vs the raw hflip=0 snapshot: ${p_dir}dB"
 			d=$(awk -v a="$p_mir" -v b="$p_dir" 'BEGIN{printf "%.2f", a-b}')
-			if fcmp "$d" ge 3; then
+			fl_s0=$(luma_spread "$fl_dir/r0.jpg"); fl_s1=$(luma_spread "$fl_dir/r1.jpg")
+			if fl_flat "$fl_s0" || fl_flat "$fl_s1"; then
+				warn "flip test: scene unmeasurable (near-uniform frame, 10..90 percentile luma range ${fl_s0:-?}/${fl_s1:-?}, need >=${FL_MIN_SPREAD}) - likely a daynight probe with the illuminator off, or a genuinely featureless scene. Cannot verify hflip: mirroring a blank frame gives back the same blank frame, so the ${d}dB above is noise, not a verdict"
+			elif fcmp "$d" ge 3; then
 				ok "hflip is REAL: the picture actually mirrors (mirrored match beats direct match by ${d}dB) - not just a config value being echoed back"
 			elif fcmp "$d" le -3; then
 				bad "hflip=1 did NOT change the image: the flipped snapshot still matches the UNflipped one better (by $(awk -v x="$d" 'BEGIN{printf "%.2f",-x}')dB). The daemon accepts and reports the setting, but the ISP is ignoring it"
@@ -5053,7 +5120,10 @@ else
 		else
 			d2=$(awk -v a="$p_still" -v b="$p_reset" 'BEGIN{printf "%.2f", a-b}')
 			info "  post-relatch snapshot vs flipped reference: ${p_still}dB; vs unflipped reference: ${p_reset}dB"
-			if fcmp "$d2" ge 3; then
+			fl_sr=$(luma_spread "$fl_dir/relatch.jpg")
+			if fl_flat "$fl_sr" || fl_flat "${fl_s1:-}"; then
+				warn "flip-after-relatch: scene unmeasurable (near-uniform frame, 10..90 percentile luma range ${fl_sr:-?} post-relatch against ${fl_s1:-?} for the flipped reference, need >=${FL_MIN_SPREAD}) - likely a daynight probe with the illuminator off, or a genuinely featureless scene. Cannot judge whether hflip survived"
+			elif fcmp "$d2" ge 3; then
 				ok "hflip SURVIVED a forced chn0 relatch (still matches the flipped reference by ${d2}dB) - the ISP self-heal on the 0->1 edge is working"
 			elif fcmp "$d2" le -3; then
 				bad "hflip was LOST across the chn0 relatch: the picture went back to matching the UNflipped reference. This is the 8fb6fd3/9034d61 regression - the ISP silently drops hflip/vflip when the channel re-latches on the first new viewer"
