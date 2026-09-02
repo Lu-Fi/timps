@@ -238,54 +238,16 @@ protocol and capability details.
 
 ### Talk: browser microphone → camera speaker (`/talk`)
 
-A browser cannot speak RTSP/RTP, so the backchannel above is unreachable from
-a web page. `USE_BC_WS` (`BR2_PACKAGE_TIMPS_BC_WS`, off by default) adds
-`wss://<ip>:8880/talk`, an RFC 6455 WebSocket that feeds the *same* speaker
-path and the same single-talker arbitration: the client sends 20 ms **binary**
-frames of G.711 mu-law, timps decodes them and hands the PCM to
-`bc_feed_pcm()`. No new library — the framing rides the connection the HTTP
-server has already TLS-terminated.
-
-A client opens `/talk?token=<token>&rate=<hz>` and starts sending. `rate` is
-the capture rate it actually got (`8000` — mu-law's native rate — if omitted;
-`16000`/`24000`/`32000`/`44100`/`48000` are also accepted, because a browser
-`AudioContext` may impose the hardware rate instead of the requested one;
-anything else is refused with 400). timps resamples to the AO rate. The server
-replies with one hello text frame, `{"ok":1,"codec":"pcmu","rate":N}`, then
-only ever sends PING/CLOSE. It closes with 1008 if another talker (an ONVIF
-client or NVR) holds the speaker, and with 1001 after 10 s of silence — it
-PINGs every 3 s, so a merely quiet client keeps the session up. Frames that
-would run the accepted audio more than 400 ms ahead of real time are dropped
-rather than queued, since TCP will not drop them for you and the delay would
-never come back. `scripts/talk-ws.py` speaks all of this without a browser.
-
-Access is the same gate as `/events`: localhost, a valid **token**, or
-Basic/Digest credentials — as `?token=`, because a `WebSocket` constructor
-cannot set request headers. A WebSocket upgrade is not covered by CORS, so
-`/talk` additionally requires a present `Origin` to have the same host as
-`Host` (an absent one is a non-browser client, which still had to present a
-token; `null` is refused).
-
-`USE_BC_WS` implies `USE_BACKCHANNEL` + `USE_CONTROL` (the token machinery
-lives there). `USE_TLS` is **recommended but optional** — `ws.c` terminates
-nothing itself, so the plain-`ws://` path links without mbedTLS. Enable it per
-camera with `audio.talk_ws` (restart-required, default 0):
-
-| `audio.talk_ws` | `/talk` |
-| --- | --- |
-| `0` | not served |
-| `1` | served over TLS only — a plaintext port answers 426. The package default on TLS builds; unsatisfiable (and warned about at startup) without TLS |
-| `2` | served over `wss://` when the port is TLS, **and** over plain `ws://` when it is not |
-
-`2` is a deliberate hand edit, never preset: the microphone audio and its
-token then cross the network in the clear. The real constraint it works around
-is the browser, not the camera — `getUserMedia()` is refused outside a secure
-context, so `2` is only useful to someone who has granted the origin one
-(`chrome://flags/#unsafely-treat-insecure-origin-as-secure`, a trusted tunnel,
-localhost). A microphone-to-speaker path stays opt-in at build time and again
-at run time. `GET /control` reports the resolved answer as
-`caps.backchannel.talk_ws` (`0`/`1`/`2`, where `1` with a plaintext port
-resolves to `0`), so the WebUI needs no second test.
+`USE_BC_WS` (`BR2_PACKAGE_TIMPS_BC_WS`, off by default) adds an RFC 6455
+WebSocket at `/talk` that feeds a browser's microphone into the same
+speaker path the ONVIF backchannel above uses — the only way to reach it
+from a web page, since a browser cannot speak RTSP/RTP. TLS is recommended
+but not required (`audio.talk_ws=1|2`, see below); on a plain-`http://`
+camera the browser additionally needs its own secure-context override for
+`getUserMedia()` to work at all. Full protocol details, the `audio.talk_ws`
+tri-state, and per-browser (Chrome/Edge/Brave, Firefox, Safari)
+secure-context override instructions:
+[Audio → Browser push-to-talk](docs/wiki/Audio.md#browser-push-to-talk-talk-use_bc_ws).
 
 ### Recording, timelapse & privacy masks
 

@@ -125,6 +125,105 @@ default; enabling it is restart-only (`audio.backchannel`, see
 # ffmpeg-based two-way test tooling: scripts/bc-send.py, scripts/bc-talk.py
 ```
 
+## Browser push-to-talk (`/talk`, `USE_BC_WS`)
+
+A browser cannot speak RTSP/RTP, so the ONVIF backchannel above is
+unreachable from a web page. `USE_BC_WS` (`BR2_PACKAGE_TIMPS_BC_WS`, off by
+default) adds an RFC 6455 WebSocket at `/talk` that feeds the *same* speaker
+path and the same single-talker arbitration: the client sends 20 ms
+**binary** frames of G.711 mu-law, timps decodes them and hands the PCM to
+`bc_feed_pcm()`. `USE_BC_WS` implies `USE_BACKCHANNEL` + `USE_CONTROL` (the
+`?token=` machinery lives there — a `WebSocket` constructor cannot set
+request headers). `scripts/talk-ws.py` speaks the protocol without a
+browser.
+
+`USE_TLS` is **recommended but optional**: `ws.c` terminates nothing itself,
+so the plain-`ws://` code path links without mbedTLS at all. Whether the
+port actually requires TLS is a *runtime* choice, `audio.talk_ws`
+(restart-required, default `0`; see
+[Configuration Reference](Configuration-Reference.md#audio--capture-encode-speaker-defaults)):
+
+| `audio.talk_ws` | `/talk` |
+| --- | --- |
+| `0` | not served |
+| `1` | served over TLS only — a plaintext port answers `426`. The package default on TLS builds; unsatisfiable (and warned about at startup) on a build without `USE_TLS` |
+| `2` | served over `wss://` when the port is TLS, **and** over plain `ws://` when it is not |
+
+`2` is a deliberate hand edit, never preset: the microphone audio and its
+token then cross the network in the clear. `GET /control` reports the
+resolved answer as `caps.backchannel.talk_ws` (`0`/`1`/`2`, where `1` on a
+plaintext port resolves to `0`), so the WebUI needs no second test.
+
+### Granting the browser a secure context for a plain-`http://` camera
+
+`talk_ws=2` only removes the *server's* TLS requirement. The *browser*
+separately refuses `getUserMedia()` — and, unrelated to audio, the thingino
+WebUI's WebCodecs real-time preview mode, gated on `window.VideoDecoder` —
+on a plain `http://` origin unless something grants that origin a **secure
+context**. No browser treats private/LAN IP ranges as trustworthy by
+default (verified against Chromium/Firefox/WebKit source and MDN — the
+secure-context algorithm is otherwise consistent across all three: https,
+`wss:`, `127.0.0.0/8`, `::1`, `localhost`, `file:`, nothing else), so a
+`http://192.168.x.x` camera is an insecure context everywhere without one
+of the overrides below.
+
+**Chrome / Edge / Brave** — `chrome://flags/#unsafely-treat-insecure-origin-as-secure`
+(`edge://flags/...`, `brave://flags/...` — same flag, compiled into
+Chromium):
+
+1. Open the flag URL above.
+2. In the **Insecure origins treated as secure** text box, enter the
+   camera's origin **including any non-default port**, e.g.
+   `http://192.168.10.21` (port 80) or `http://192.168.10.21:8080`. Scheme
+   required, no trailing slash. Multiple origins: comma-separated;
+   wildcard host patterns are also accepted.
+3. Set the dropdown next to it to **Enabled**.
+4. Relaunch the browser when prompted.
+
+This flips `window.isSecureContext` to `true` for the listed origin(s) —
+confirmed in the Chromium source (`net/base/is_potentially_trustworthy.cc`,
+the allowlist feeds the same `IsOriginPotentiallyTrustworthy()` check that
+computes `isSecureContext`), so it unlocks **every** secure-context API,
+`getUserMedia()` and `VideoDecoder` alike, not just audio. The setting is
+stored browser-wide (in the installation's `Local State` file, not per
+profile) and persists across restarts — no command-line flag needed on
+each launch, and no per-tab or per-session repetition.
+
+**Firefox** has two different overrides depending on what you need:
+
+- `dom.securecontext.allowlist` in `about:config` — a comma-separated list
+  of **hostnames** (no scheme, no port — `192.168.10.21`, not
+  `http://192.168.10.21` or `192.168.10.21:8080`). This is Firefox's
+  equivalent of the Chromium flag: matching hosts get `isSecureContext ===
+  true` (verified in `nsGlobalWindowOuter::ComputeIsSecureContext` →
+  `nsMixedContentBlocker::IsPotentiallyTrustworthyOrigin`), unlocking both
+  `getUserMedia()` **and** `VideoDecoder` — this is the one to use if you
+  also want the WebCodecs preview to work.
+- `media.devices.insecure.enabled` **and**
+  `media.getusermedia.insecure.enabled`, both `true` in `about:config` —
+  an older, narrower pair (both required together; the first re-exposes
+  `navigator.mediaDevices` on `http:`, the second then permits
+  `getUserMedia()` itself). Two real differences from the option above:
+  it's **global** (every `http://` site, not just the camera's origin —
+  there's no host list), and it only bypasses the `mediaDevices`/gUM gate
+  specifically — it does **not** flip `isSecureContext`, so `VideoDecoder`
+  stays unavailable regardless. Prefer `dom.securecontext.allowlist`
+  unless you specifically want the broader, audio-only override.
+
+**Safari** has a narrower, WebRTC-specific override, not a general
+secure-context one: **Develop → WebRTC → Allow Media Capture on Insecure
+Sites** (macOS; on iOS, reachable via remote Web Inspector from a Mac,
+Device Settings pane). This permits `getUserMedia()` on `http://` pages, so
+push-to-talk (`talk_ws=2`) works. There is no Safari equivalent of the
+Chromium/Firefox host-allowlist — `isSecureContext` itself never becomes
+true for a plain `http://` origin — so the WebCodecs preview stays
+unavailable on Safari regardless of this toggle.
+
+None of the above is needed at all against `http://localhost` (or a tunnel
+that makes the camera appear there, e.g. `ssh -L 8880:127.0.0.1:8880
+root@camera`): browsers treat `localhost` as a secure context unconditionally
+(Firefox only since version 84; check your version if relying on this).
+
 ## System-sound play queue (`USE_PLAY`)
 
 A FIFO at `/run/timps/audio_out` that speaks the **same line protocol**
