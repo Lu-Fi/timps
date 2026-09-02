@@ -59,7 +59,12 @@ int msttf_load(msttf_font *f, const char *path)
     f->units_per_em=u16(d+head+18);
     f->loca_fmt=s16(d+head+50);
     f->num_glyphs=u16(d+maxp+4);
+    /* 0 is malformed (the spec requires at least one metric) and would make
+     * both the hmtx room-check below vacuous and advance()'s last-metric
+     * fallback index -1, reading 4 bytes before the table. Floor it to the
+     * same 1 the no-hhea case falls back to. */
     f->num_hmetrics=hhea?u16(d+hhea+34):1;
+    if (f->num_hmetrics<1) f->num_hmetrics=1;
     if (f->units_per_em==0){ free(f->data); f->data=NULL; return -3; } /* msttf_render divides by this */
     /* glyf_offset()/advance() trust loca/hmtx to have room for every
      * gid/hmetric they're asked about without their own bounds check -
