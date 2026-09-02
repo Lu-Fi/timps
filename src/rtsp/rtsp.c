@@ -389,6 +389,7 @@ typedef struct {
 #ifdef USE_BACKCHANNEL
     int                 have_bc;               /* client SETUP the backchannel (trackID=2) */
     int                 bc_udp[2];             /* server rtp,rtcp recv fds (UDP), -1 none */
+    uint16_t            bc_cport;              /* SETUP's client_port RTP half, network order */
     int                 bc_chan_rtp;           /* TCP-interleaved rtp channel id, -1 UDP */
 #endif
 #ifdef USE_TLS
@@ -974,6 +975,7 @@ static int handle_request(session *s, char *req)
                 int fl=fcntl(s->bc_udp[0],F_GETFL,0);   /* poll without blocking PLAY */
                 if (fl>=0) fcntl(s->bc_udp[0],F_SETFL,fl|O_NONBLOCK);
                 s->have_bc=1;
+                s->bc_cport=htons((uint16_t)cp);   /* the drain checks it, see stream_loop */
                 snprintf(bextra,sizeof bextra,
                     "Transport: RTP/AVP;unicast;client_port=%d-%d;server_port=%d-%d\r\nSession: %s;timeout=%d\r\n",
                     cp,cp2, base,base+1, s->session,RTSP_SESSION_TIMEOUT_S);
@@ -1439,8 +1441,12 @@ static void stream_loop(session *s)
         }
     after_pkt:;
 #ifdef USE_BACKCHANNEL
-        /* drain any received backchannel RTP (UDP). Only accept from the RTSP
-         * peer's address so a stranger can't inject audio into the speaker. */
+        /* Drain any received backchannel RTP (UDP). Only accept from the RTSP
+         * peer's address AND the client_port it named in SETUP, so a stranger
+         * cannot inject audio into the speaker - the address alone lets anyone
+         * sharing the client's IP (or spoofing it) talk out of the camera, and
+         * that port is where a conforming client sends from anyway, since it is
+         * the socket we send the backchannel RTCP back to. */
         if (s->have_bc && s->bc_udp[0] >= 0){
             uint8_t bpkt[1600];
             for (int k=0;k<16;k++){
@@ -1449,6 +1455,7 @@ static void stream_loop(session *s)
                                       (struct sockaddr*)&from, &fl);
                 if (bn <= 0) break;
                 if (from.sin_addr.s_addr != s->peer.sin_addr.s_addr) continue;
+                if (s->bc_cport && from.sin_port != s->bc_cport) continue;
                 last_act_us = now;           /* A3: talk-only UDP sessions */
                 bc_feed_rtp(s, bpkt, (int)bn);
             }
@@ -1627,11 +1634,18 @@ static void stream_loop(session *s)
                 for (int t = 0; t < 2; t++) {
                     int rfd = t ? s->a_udp[1] : s->v_udp[1];
                     if (rfd < 0) continue;   /* -1 for TCP sessions: no-op there */
+                    /* the port half of the same test the backchannel drain
+                     * does: this feeds the idle reaper, so accepting any
+                     * datagram from the peer's ADDRESS lets a stranger there
+                     * keep a dead session alive indefinitely. The client's
+                     * RTCP port is the one we send our SRs to. */
+                    uint16_t rport = (t ? &s->asink : &s->vsink)->dst_rtcp.sin_port;
                     uint8_t rr[512];
                     struct sockaddr_in from; socklen_t fl = sizeof from;
                     while (recvfrom(rfd, rr, sizeof rr, MSG_DONTWAIT,
                                     (struct sockaddr*)&from, &fl) > 0) {
-                        if (from.sin_addr.s_addr == s->peer.sin_addr.s_addr)
+                        if (from.sin_addr.s_addr == s->peer.sin_addr.s_addr &&
+                            (!rport || from.sin_port == rport))
                             last_act_us = now;
                         fl = sizeof from;
                     }
