@@ -398,12 +398,17 @@ static void seg_close(void)
     status_set(0,0,"");
 }
 
-/* write the buffered pre-roll starting at the last keyframe within the window */
+/* Write the buffered pre-roll, starting at the OLDEST keyframe still in the
+ * ring - a decodable start as far back as pre_roll_s allows. Scanning newest
+ * first instead would pick the most recent keyframe and cap every pre-roll at
+ * roughly one GOP no matter what pre_roll_s says, which is not what the ring
+ * is trimmed to hold (ring_push) nor what the cap warning in rec_thread
+ * measures. */
 static void flush_ring(void)
 {
     if (r_count<=0) return;
     int start=-1;
-    for (int i=r_count-1;i>=0;i--){
+    for (int i=0;i<r_count;i++){
         ms_pkt *p=r_buf[(r_head+i)%RING_CAP];
         if (p->media==MS_MEDIA_VIDEO && p->keyframe){ start=i; break; }
     }
