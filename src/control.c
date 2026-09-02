@@ -568,10 +568,17 @@ static void timps_apply_setting(ctrl_changes *ch, const char *key, const char *r
  * credential/token and the videoN.imp_chn / jpeg* / jpeg_chn channel-wiring
  * fields all intentionally have no F_CTRL in config.c and so are silently
  * skipped here even if present in the POSTed JSON - see the F_CTRL doc
- * comment in config.h. Field names are matched using tbl[i].name only
- * (never .alias): the JSON body has only ever recognized the canonical
- * spellings the old arrays hard-coded (e.g. "rc_mode", not its "mode"
- * config-file alias), and this preserves that exactly. */
+ * comment in config.h.
+ *
+ * .alias counts as a name here, exactly as it does in the config-FILE parser
+ * (field_find()). This used to be name-only, to preserve what the old
+ * hard-coded arrays happened to accept - but an alias exists in config.c for
+ * one reason only, that the older spelling must keep working, and dropping it
+ * on the POST path silently broke the shipped WebUI: its photosensing sliders
+ * post total_gain_day_threshold/total_gain_night_threshold (the pre-rename
+ * names of daynight.day_gain/night_gain), got a 200 back, and nothing was
+ * saved. The canonical name still wins when a body carries both, and what is
+ * applied/persisted/echoed is always the canonical one. */
 static void apply_ctrl_fields(ctrl_changes *ch, const char *prefix,
                               const char *s, const char *e,
                               const cfg_field *tbl, int n)
@@ -579,7 +586,8 @@ static void apply_ctrl_fields(ctrl_changes *ch, const char *prefix,
     char v[160], full[40];
     for (int i=0;i<n;i++){
         if (!(tbl[i].flags & F_CTRL)) continue;
-        if (!get_val(s, e, tbl[i].name, v, sizeof v)) continue;
+        if (!get_val(s, e, tbl[i].name, v, sizeof v) &&
+            !(tbl[i].alias && get_val(s, e, tbl[i].alias, v, sizeof v))) continue;
         snprintf(full, sizeof full, "%s.%s", prefix, tbl[i].name);
         timps_apply_setting(ch, full, v);
     }
@@ -594,10 +602,10 @@ static void apply_ctrl_fields(ctrl_changes *ch, const char *prefix,
  *
  * So walk the body instead of the table, and report every member of THIS
  * object apply_ctrl_fields() would not have taken. The test is exactly dual to
- * its accept test (name in tbl[] AND F_CTRL), never a second hand-written name
- * list, so the two cannot drift: a field that stops being applied starts being
- * reported in the same edit. `extra` names the keys a section consumes OUTSIDE
- * the table (daynight.mode's token validation, the record/speaker/daynight
+ * its accept test (name or alias in tbl[] AND F_CTRL), never a second
+ * hand-written name list, so the two cannot drift: a field that stops being
+ * applied starts being reported in the same edit. `extra` names the keys a
+ * section consumes OUTSIDE the table (daynight.mode's token validation, the record/speaker/daynight
  * commands), space separated - without it those would be reported as ignored
  * while in fact being applied.
  *
@@ -627,7 +635,9 @@ static void ign_note(const char *prefix, const char *nb, const char *ne,
     char name[CTRL_IGN_NAME];
     memcpy(name, nb, len); name[len] = 0;
     for (int i=0;i<n;i++)
-        if ((tbl[i].flags & F_CTRL) && !strcmp(name, tbl[i].name)) return;
+        if ((tbl[i].flags & F_CTRL) &&
+            (!strcmp(name, tbl[i].name) ||
+             (tbl[i].alias && !strcmp(name, tbl[i].alias)))) return;
     for (const char *x = extra; x && *x; ){
         while (*x==' ') x++;
         size_t xl = strcspn(x, " ");
