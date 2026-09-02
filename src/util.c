@@ -291,6 +291,16 @@ long long ms_free_mb(const char *dir)
     return (long long)((vf.f_bavail * (unsigned long long)vf.f_frsize) / (1024*1024));
 }
 
+/* Total filesystem capacity, same units as ms_free_mb - lets a caller catch a
+ * min_free_mb (or similar) target that exceeds what the card could ever hold
+ * even fully empty, before acting on it as if it were reachable. */
+long long ms_total_mb(const char *dir)
+{
+    struct statvfs vf;
+    if (statvfs(dir, &vf) != 0) return -1;
+    return (long long)((vf.f_blocks * (unsigned long long)vf.f_frsize) / (1024*1024));
+}
+
 void ms_mkdirs(const char *path)
 {
     char tmp[512]; snprintf(tmp, sizeof tmp, "%s", path);

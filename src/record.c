@@ -180,6 +180,29 @@ static void prune_free(int min_free_mb)
     snprintf(dir,sizeof dir,"%s",g_rc->record.dir);
     config_str_unlock();
     if (ms_path_unsafe(dir,NULL)) return;   /* never prune outside the tree (L10) */
+
+    /* A min_free_mb that exceeds what the card could hold even fully empty
+     * is unreachable by construction - the loop below would otherwise delete
+     * every recording it can find trying, one walk of PRUNE_BATCH files at a
+     * time, and never stop until nothing is left. Clamp the effective target
+     * well under total capacity instead, so a misconfigured (or now-too-small,
+     * e.g. after swapping in a smaller card) threshold can cost old footage
+     * but never the whole archive. Logged once per bad-value edge so it does
+     * not spam every segment rotation while stuck. */
+    long long total_mb = ms_total_mb(dir);
+    long long cap_mb = total_mb>0 ? (total_mb*9)/10 : min_free_mb;
+    static int warned;
+    if (total_mb>0 && min_free_mb>=cap_mb){
+        if (!warned){
+            LOGW(MOD,"record.min_free_mb=%d unreachable on a %lldMB card - "
+                     "capping the prune target at %lldMB instead of wiping "
+                     "every recording trying to reach it",
+                 min_free_mb,total_mb,cap_mb);
+            warned=1;
+        }
+        min_free_mb=(int)cap_mb;
+    } else warned=0;
+
     char base[200]; char host[64];
     ms_hostname(host,sizeof host);           /* F4 handling lives in ms_hostname */
     snprintf(base,sizeof base,"%s/%s/records",dir,host);

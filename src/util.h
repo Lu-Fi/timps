@@ -262,6 +262,7 @@ int ms_path_unsafe(const char *dir, const char *name);
 
 /* free space on the filesystem holding dir, in MB; -1 on error */
 long long ms_free_mb(const char *dir);
+long long ms_total_mb(const char *dir);
 
 /* create every parent directory of a file path (mkdir -p on dirname) */
 void ms_mkdirs(const char *path);
