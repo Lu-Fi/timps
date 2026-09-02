@@ -264,22 +264,26 @@ static int poll_readable(ws_io *io, int timeout_ms) {
  * thing to do when it does expire is close. */
 #define WS_WRITE_TIMEOUT_MS 10000
 
-/* Read exactly n bytes or fail. budget_ms is decremented in place so a caller
- * assembling a multi-part frame shares one deadline across all its reads. */
-static int read_exact(ws_io *io, void *buf, size_t n, int *budget_ms) {
+/* Read exactly n bytes or fail. deadline_ms is an ABSOLUTE ws_now_ms() instant,
+ * so a caller assembling a multi-part frame shares one wall-clock deadline
+ * across all its reads. It has to be absolute: a per-call budget that is only
+ * zeroed on a timeout never charges a SUCCESSFUL read for the time it took, so
+ * a peer trickling one byte per poll slice renews the full budget on every
+ * iteration and holds the connection open forever (same slow-loris shape the
+ * mp4/httpd.c head-read loop was fixed for). */
+static int read_exact(ws_io *io, void *buf, size_t n, long long deadline_ms) {
   unsigned char *p = (unsigned char *)buf;
   size_t got = 0;
 
   while (got < n) {
-    int slice = (*budget_ms > 0) ? *budget_ms : 0;
-    int pr = poll_readable(io, slice);
+    long long left = deadline_ms - ws_now_ms();
+    int pr = poll_readable(io, left > 0 ? (int)left : 0);
     if (pr == WS_AGAIN) {
-      *budget_ms = 0;
       /* Timing out with a partial frame in hand is not recoverable: the
        * stream is byte-oriented and we have already consumed a prefix, so
        * there is no way to resynchronise. Only a timeout on a frame that
        * has not started yet is benign, and that case is handled by the
-       * caller peeking the first byte with its own budget. */
+       * caller peeking the first byte under the same deadline. */
       return (got == 0) ? WS_AGAIN : WS_EIO;
     }
     if (pr != WS_OK)
@@ -293,7 +297,7 @@ static int read_exact(ws_io *io, void *buf, size_t n, int *budget_ms) {
         continue;
       /* TLS only: poll() saw a readable socket but the record it carried was
        * incomplete, so nothing decrypted out of it yet. Go back and wait for
-       * the rest under the same budget. */
+       * the rest under the same deadline. */
       if (errno == EAGAIN || errno == EWOULDBLOCK)
         continue;
       return WS_EIO;
@@ -395,7 +399,7 @@ bool ws_header(const ws_handshake *hs, const char *name, char *out,
 int ws_handshake_read(ws_io *io, ws_handshake *hs, int timeout_ms) {
   char *buf;
   size_t len = 0;
-  int budget = timeout_ms;
+  long long deadline = ws_now_ms() + timeout_ms;
   const char *p;
 
   memset(hs, 0, sizeof(*hs));
@@ -407,7 +411,8 @@ int ws_handshake_read(ws_io *io, ws_handshake *hs, int timeout_ms) {
    * deadline; a client that opens a socket and says nothing is dropped by
    * the deadline, which is the cheap half of the DoS story. */
   for (;;) {
-    int pr = poll_readable(io, budget > 0 ? budget : 0);
+    long long left = deadline - ws_now_ms();
+    int pr = poll_readable(io, left > 0 ? (int)left : 0);
     if (pr == WS_AGAIN)
       return WS_EIO; /* handshake never completed */
     if (pr != WS_OK)
@@ -622,11 +627,13 @@ int ws_send_close(ws_io *io, int code, const char *reason) {
 
 int ws_read_message(ws_conn *c, int *opcode, unsigned char *out, size_t cap,
                     size_t *out_len, int timeout_ms) {
-  int budget = timeout_ms;
+  /* one absolute deadline for the whole message, fragments included: every
+   * read below charges against it whether it succeeded or timed out. */
+  long long deadline = ws_now_ms() + timeout_ms;
 
   for (;;) {
     unsigned char h[2];
-    int rc = read_exact(c->io, h, 2, &budget);
+    int rc = read_exact(c->io, h, 2, deadline);
     if (rc != WS_OK)
       return rc; /* WS_AGAIN here is benign: no frame had started */
 
@@ -653,12 +660,12 @@ int ws_read_message(ws_conn *c, int *opcode, unsigned char *out, size_t cap,
       unsigned char e[2];
       /* Once a header has started, a timeout means a torn frame - read_exact
        * turns that into WS_EIO for us. */
-      if ((rc = read_exact(c->io, e, 2, &budget)) != WS_OK)
+      if ((rc = read_exact(c->io, e, 2, deadline)) != WS_OK)
         return (rc == WS_AGAIN) ? WS_EIO : rc;
       plen = ((uint64_t)e[0] << 8) | e[1];
     } else if (plen == 127) {
       unsigned char e[8];
-      if ((rc = read_exact(c->io, e, 8, &budget)) != WS_OK)
+      if ((rc = read_exact(c->io, e, 8, deadline)) != WS_OK)
         return (rc == WS_AGAIN) ? WS_EIO : rc;
       plen = 0;
       for (int i = 0; i < 8; i++)
@@ -678,12 +685,12 @@ int ws_read_message(ws_conn *c, int *opcode, unsigned char *out, size_t cap,
       return WS_ETOOBIG;
 
     unsigned char mask[4];
-    if ((rc = read_exact(c->io, mask, 4, &budget)) != WS_OK)
+    if ((rc = read_exact(c->io, mask, 4, deadline)) != WS_OK)
       return (rc == WS_AGAIN) ? WS_EIO : rc;
 
     unsigned char payload[WS_MAX_PAYLOAD];
     if (plen > 0) {
-      if ((rc = read_exact(c->io, payload, (size_t)plen, &budget)) != WS_OK)
+      if ((rc = read_exact(c->io, payload, (size_t)plen, deadline)) != WS_OK)
         return (rc == WS_AGAIN) ? WS_EIO : rc;
       for (uint64_t i = 0; i < plen; i++)
         payload[i] ^= mask[i & 3];
@@ -735,7 +742,7 @@ int ws_read_message(ws_conn *c, int *opcode, unsigned char *out, size_t cap,
     }
 
     if (!fin)
-      continue; /* wait for the rest; budget keeps shrinking */
+      continue; /* wait for the rest, under the same deadline */
 
     if (c->frag_len >= cap)
       return WS_ETOOBIG;
