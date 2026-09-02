@@ -608,7 +608,7 @@ dev_proc_sample() {
 #    fatal forms are word-anchored, and the specific verified-benign strings
 #    are denylisted as well so they cannot come back through the no-anchor path.
 DMESG_BAD_RE='Kernel panic|\bOops\b|BUG:|soft lockup|oom-killer|[Oo]ut of memory|SYN flooding|segfault|do_page_fault|error|fail|timeout'
-DMESG_BENIGN_RE='collect2: error|RESET ERROR|Kernel command line|cgu clk gate get error|pls check processor_id|sc_jz not support|watchdog initialized|jz-wdt|\[atbm_log\]|NOHZ:|loops_per_jiffy|jzmmc.*Error status|streamoff|wait stop|num_buffers|done_count|link_stream|sensor_probe|probe ok|Error Recovery|failover|no error|error_code=0'
+DMESG_BENIGN_RE='collect2: error|RESET ERROR|Kernel command line|cgu clk gate get error|pls check processor_id|sc_jz not support|watchdog initialized|jz-wdt|\[atbm_log\]|NOHZ:|loops_per_jiffy|jzmmc.*Error status|streamoff|wait stop|num_buffers|done_count|link_stream|sensor_probe|probe ok|Error Recovery|failover|no error|error_code=0|tisp_netlink_init'
 # last boot-stage marker; everything after it is runtime. Sensor-model agnostic
 # (sc2336/sc4336p/... all print "<model> stream on").
 DMESG_BOOT_ANCHOR='stream on|chip found @|sensor driver version|sensor_detect|codec_set_device|codec_codec_ctl'
@@ -2448,7 +2448,8 @@ else
 		"bitrate int 8 320" "high_pass bool" "agc bool" "ns int 0 3" \
 		"agc_target_dbfs int 0 31" "agc_compression_db int 0 90" \
 		"force_stereo bool" "spk_enabled bool" "backchannel bool" \
-		"backchannel_codec int 0 2" "backchannel_rate int 8000 48000"
+		"backchannel_codec int 0 2" "backchannel_rate int 8000 48000" \
+		"talk_ws int 0 2"
 	LV_MODE=live
 
 	# --- osd stream 0 item 0: the live text-overlay leaf keys (caps.osd).
@@ -4595,7 +4596,7 @@ else
 	# lv_gated.txt with a reason when they are off, which satisfies the
 	# promise without attesting a test that never ran.
 	TESTED_image="brightness contrast saturation sharpness hue vflip hflip running_mode anti_flicker ae_compensation max_again max_dgain sinter_strength temper_strength dpc_strength defog_strength drc_strength highlight_depress backlight_compensation core_wb_mode wb_rgain wb_bgain"
-	TESTED_audio="volume gain alc_gain mute spk_volume spk_gain aec codec enabled samplerate channels bitrate high_pass agc ns agc_target_dbfs agc_compression_db force_stereo spk_enabled backchannel backchannel_codec backchannel_rate"
+	TESTED_audio="volume gain alc_gain mute spk_volume spk_gain aec codec enabled samplerate channels bitrate high_pass agc ns agc_target_dbfs agc_compression_db force_stereo spk_enabled backchannel backchannel_codec backchannel_rate talk_ws"
 	TESTED_sensor=""
 	TESTED_osd="monitor_stream font_path vars_file enabled supersample hinting"
 	TESTED_osd_item="text x y font_size color transparency outline outline_color"
