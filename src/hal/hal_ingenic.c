@@ -2100,8 +2100,14 @@ static void sw_osd_compose(vchan *vc)
         sw_osd_slot *sl = &vc->osd.it[i];
         if (!sl->used) continue;
         ms_osd_item it;
+        /* osd.vars_file comes along in the SAME critical section as the item:
+         * it is POST-settable too, and osd_expand() below reads it - the one
+         * lock-free live-mutable-string read this path had left (imp_osd.c's
+         * refresh_text() snapshots it for the same reason). */
+        char vars_file[sizeof g_hcfg->osd.vars_file];
         config_str_lock();
         it = g_hcfg->osd.items[vc->si][i];
+        memcpy(vars_file, g_hcfg->osd.vars_file, sizeof vars_file);
         config_str_unlock();
         if (!it.enabled){                        /* runtime-disabled: hide */
             if (sl->bgra){ free(sl->bgra); sl->bgra=NULL; sl->last[0]=0; }
@@ -2109,7 +2115,7 @@ static void sw_osd_compose(vchan *vc)
         }
         if (refresh || !sl->bgra){
             char txt[256];
-            osd_expand(it.text, g_hcfg->osd.vars_file, txt, sizeof txt);
+            osd_expand(it.text, vars_file, txt, sizeof txt);
             if (!sl->bgra || strcmp(txt, sl->last)!=0){
                 /* scale font with stream height like imp_osd.c refresh_text
                  * (font_size is calibrated for 1080p) */
