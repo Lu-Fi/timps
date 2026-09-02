@@ -1497,12 +1497,12 @@ int control_get_json(char *buf, size_t cap)
             "\"channels\":%d,\"bitrate\":%d,\"force_stereo\":%d,"
             "\"spk_enabled\":%d,\"spk_volume\":%d,\"spk_gain\":%d,"
             "\"backchannel\":%d,\"backchannel_codec\":%d,\"backchannel_rate\":%d,"
-            "\"aec\":%d},",
+            "\"talk_ws\":%d,\"aec\":%d},",
             aud.enabled, cod, aud.samplerate,
             aud.channels, aud.bitrate_kbps, aud.force_stereo,
             aud.spk_enabled, aud.spk_volume, aud.spk_gain,
             aud.backchannel, aud.backchannel_codec, aud.backchannel_rate,
-            aud.aec);
+            aud.talk_ws, aud.aec);
     }
     {   /* sensor (all persist-only / restart-required, but POST-able) */
         char sm[136];
