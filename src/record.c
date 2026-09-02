@@ -150,9 +150,17 @@ static void cand_add(prune_cand *c, int *n, const char *path, time_t mt)
 }
 
 /* recursively collect the PRUNE_BATCH oldest regular files under base (by
- * mtime). lstat (not stat) so a symlink is never followed out of the records
- * tree, and depth-bounded like timelapse.c's prune_old (L8). */
-static void collect_oldest(const char *base, prune_cand *c, int *n, int depth)
+ * mtime), and accumulate the total size of every regular file seen into
+ * *bytes. lstat (not stat) so a symlink is never followed out of the records
+ * tree, and depth-bounded like timelapse.c's prune_old (L8).
+ *
+ * The total is carried out of this walk rather than measured by a second one:
+ * the reachability check in prune_free() needs the tree's size, and every
+ * entry is already being lstat'd here. A separate sizing walk doubled the
+ * opendir/readdir/lstat cost of every segment rotation in the steady state
+ * where the card sits at min_free_mb and each rotation prunes. */
+static void collect_oldest(const char *base, prune_cand *c, int *n, int depth,
+                           long long *bytes)
 {
     if (depth>8) return;
     DIR *d=opendir(base); if(!d) return;
@@ -161,30 +169,10 @@ static void collect_oldest(const char *base, prune_cand *c, int *n, int depth)
         if (!strcmp(e->d_name,".")||!strcmp(e->d_name,"..")) continue;
         char p[336]; snprintf(p,sizeof p,"%s/%s",base,e->d_name);
         struct stat s; if (lstat(p,&s)!=0) continue;
-        if (S_ISDIR(s.st_mode))       collect_oldest(p,c,n,depth+1);
-        else if (S_ISREG(s.st_mode))  cand_add(c,n,p,s.st_mtime);
+        if (S_ISDIR(s.st_mode))       collect_oldest(p,c,n,depth+1,bytes);
+        else if (S_ISREG(s.st_mode)){ cand_add(c,n,p,s.st_mtime); *bytes+=s.st_size; }
     }
     closedir(d);
-}
-
-/* sum of every regular file's size under base, in MB - depth-bounded the
- * same as collect_oldest. Used only to answer "could pruning ever reach the
- * target", so a coarse MB rounding is fine. */
-static long long tree_size_mb(const char *base, int depth)
-{
-    if (depth>8) return 0;
-    DIR *d=opendir(base); if(!d) return 0;
-    struct dirent *e;
-    long long bytes=0;
-    while ((e=readdir(d))){
-        if (!strcmp(e->d_name,".")||!strcmp(e->d_name,"..")) continue;
-        char p[336]; snprintf(p,sizeof p,"%s/%s",base,e->d_name);
-        struct stat s; if (lstat(p,&s)!=0) continue;
-        if (S_ISDIR(s.st_mode))       bytes+=tree_size_mb(p,depth+1)*1024*1024;
-        else if (S_ISREG(s.st_mode))  bytes+=s.st_size;
-    }
-    closedir(d);
-    return bytes/(1024*1024);
 }
 
 /* delete oldest segment files until at least min_free_mb is available.
@@ -213,35 +201,7 @@ static int prune_free(int min_free_mb)
     ms_hostname(host,sizeof host);           /* F4 handling lives in ms_hostname */
     snprintf(base,sizeof base,"%s/%s/records",dir,host);
 
-    /* Reachability check BEFORE deleting anything: if freeing every byte of
-     * every existing recording still would not reach min_free_mb, no amount
-     * of pruning gets there - the old code kept deleting anyway, one
-     * PRUNE_BATCH walk at a time, until the archive was empty and it STILL
-     * hadn't reached an unreachable target. Refuse instead, once per
-     * bad-value edge so it does not spam every segment rotation. */
     static int warned;
-    long long max_recoverable = fm + tree_size_mb(base,0);
-    if (max_recoverable < min_free_mb){
-        if (!warned){
-            LOGW(MOD,"record.min_free_mb=%d unreachable (only %lldMB free, "
-                     "%lldMB even if every existing recording were deleted) - "
-                     "refusing to record rather than empty the archive",
-                 min_free_mb,fm,max_recoverable);
-            warned=1;
-        }
-        /* Surface the refusal the same way a write failure would (write_errors/
-         * last_error in record_get_status()) - otherwise a client that just
-         * asked for record.active=1 sees the request accepted, "recording"
-         * never turns true, and nothing explains why. */
-        pthread_mutex_lock(&g_lock);
-        g_werrs++;
-        g_werr_us = ms_now_us();
-        snprintf(g_werr,sizeof g_werr,"min_free_mb=%d unreachable (max %lldMB)",
-                 min_free_mb,max_recoverable);
-        pthread_mutex_unlock(&g_lock);
-        return -1;
-    }
-    warned=0;
 
     /* ~11 KB kept off the record thread's stack: only rec_thread ever reaches
      * prune_free (via seg_open), so a function-local static needs no locking -
@@ -250,8 +210,42 @@ static int prune_free(int min_free_mb)
     for (int walk=0; walk<32; walk++){
         fm=ms_free_mb(dir);
         if (fm<0 || fm>=min_free_mb) return 0;
-        int n=0;
-        collect_oldest(base,cand,&n,0);
+        int n=0; long long tree_bytes=0;
+        collect_oldest(base,cand,&n,0,&tree_bytes);
+
+        /* Reachability check BEFORE deleting anything: if freeing every byte
+         * of every existing recording still would not reach min_free_mb, no
+         * amount of pruning gets there - the old code kept deleting anyway,
+         * one PRUNE_BATCH walk at a time, until the archive was empty and it
+         * STILL hadn't reached an unreachable target. Refuse instead, once per
+         * bad-value edge so it does not spam every segment rotation.
+         * First walk only: later walks have already deleted files, so their
+         * (smaller) tree total would refuse mid-prune. */
+        if (walk==0){
+            long long max_recoverable = fm + tree_bytes/(1024*1024);
+            if (max_recoverable < min_free_mb){
+                if (!warned){
+                    LOGW(MOD,"record.min_free_mb=%d unreachable (only %lldMB free, "
+                             "%lldMB even if every existing recording were deleted) - "
+                             "refusing to record rather than empty the archive",
+                         min_free_mb,fm,max_recoverable);
+                    warned=1;
+                }
+                /* Surface the refusal the same way a write failure would
+                 * (write_errors/last_error in record_get_status()) - otherwise a
+                 * client that just asked for record.active=1 sees the request
+                 * accepted, "recording" never turns true, and nothing explains why. */
+                pthread_mutex_lock(&g_lock);
+                g_werrs++;
+                g_werr_us = ms_now_us();
+                snprintf(g_werr,sizeof g_werr,"min_free_mb=%d unreachable (max %lldMB)",
+                         min_free_mb,max_recoverable);
+                pthread_mutex_unlock(&g_lock);
+                return -1;
+            }
+            warned=0;
+        }
+
         if (!n) return 0;                    /* nothing left to prune */
         for (int i=0;i<n;i++){
             if (unlink(cand[i].path)!=0) return 0;
