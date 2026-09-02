@@ -197,6 +197,19 @@ static int prune_free(int min_free_mb)
     if (fm<0) return 0;              /* statvfs failed; behave as before (no-op) */
     if (fm>=min_free_mb) return 0;   /* already satisfied, nothing to prune */
 
+    /* An unreachable target refuses every call, and seg_open() is called
+     * once per incoming packet while nothing is open - measured ~31/s on a
+     * stuck camera. Each refusal otherwise re-walks the whole records tree
+     * (collect_oldest) just to re-derive the same "still unreachable"
+     * answer. Back off after a refusal instead: skip straight to refusing,
+     * no walk, until the backoff expires - a single statvfs call (already
+     * done above) is all a retry costs while stuck. Free space appearing
+     * some other way (manual deletion, a config fix) is still noticed no
+     * later than the backoff window, and the already-satisfied fast path
+     * above is never gated by this at all. */
+    static int64_t refused_until_us;
+    if (ms_now_us() < refused_until_us) return -1;
+
     char base[200]; char host[64];
     ms_hostname(host,sizeof host);           /* F4 handling lives in ms_hostname */
     snprintf(base,sizeof base,"%s/%s/records",dir,host);
@@ -241,6 +254,7 @@ static int prune_free(int min_free_mb)
                 snprintf(g_werr,sizeof g_werr,"min_free_mb=%d unreachable (max %lldMB)",
                          min_free_mb,max_recoverable);
                 pthread_mutex_unlock(&g_lock);
+                refused_until_us = g_werr_us + 5*1000000;   /* see the backoff comment above */
                 return -1;
             }
             warned=0;
