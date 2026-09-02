@@ -720,6 +720,19 @@ static int dn_irprobe(const char *cmd, int on)
     return rc == 0 ? 0 : -1;
 }
 
+/* Abandon a silent probe that will never be judged. The verdict block is the
+ * only place that lights the illuminator again, so every path that leaves the
+ * probe behind instead of reaching one - detection switched off, mode switched
+ * to schedule, the thread stopping - has to come through here, or a night
+ * camera simply stays dark. No-op when no probe is in flight. */
+static void dn_probe_abandon(const char *cmd, int64_t *ir_verdict_at,
+                             float *d_lit, int *d_lit_hr)
+{
+    if (!*ir_verdict_at) return;
+    dn_irprobe(cmd, 1);
+    *ir_verdict_at = 0; *d_lit = -1.0f; *d_lit_hr = -1;
+}
+
 /* ------------------------------------------------------------------ *
  * The calendar. It NEVER decides in auto mode - it only tells the
  * heartbeat when looking is worth more than usual. In schedule mode it is
@@ -1182,7 +1195,7 @@ static void *dn_thread(void *arg)
             pre_probe = -1.0f; pre_probe_hr = -1;
             sust_min = win_max = -1.0f; win_at = 0;
             ema_fast = ema_slow = -1.0f; trend_since = 0;
-            ir_verdict_at = 0; d_lit = -1.0f; d_lit_hr = -1;
+            dn_probe_abandon(dn->irprobe_cmd, &ir_verdict_at, &d_lit, &d_lit_hr);
             verify_at = enforce_at = 0; verify_cyc = 0;
             desync_since = 0; desync_warned = 0;
             dn_status_update(sm.bright, sm.gain, sm.d, luma, DN_UNKNOWN,
@@ -1369,6 +1382,11 @@ static void *dn_thread(void *arg)
             if (enforce_at) break;
             /* ---------------- schedule mode: the calendar decides ------- */
             if (dn->mode == DN_MODE_SCHEDULE) {
+                /* the verdict block below belongs to auto mode and is no
+                 * longer reached - a probe armed just before the switch has
+                 * to be given its light back here */
+                dn_probe_abandon(dn->irprobe_cmd, &ir_verdict_at,
+                                 &d_lit, &d_lit_hr);
                 time_t wall = time(NULL);
                 int t = dn_cal_target(dn, wall);
                 if (t == DN_UNKNOWN) {
@@ -2187,6 +2205,13 @@ static void *dn_thread(void *arg)
                          st_desync);
         dn_sleep(interval);
     }
+    /* shutdown mid-probe: the illuminator is ours to hand back before the
+     * only thread that would have done it goes away (dn->* is loop-scoped) */
+    { char cmd[sizeof g_cfg.daynight.irprobe_cmd];
+      config_str_lock();
+      memcpy(cmd, g_cfg.daynight.irprobe_cmd, sizeof cmd);
+      config_str_unlock();
+      dn_probe_abandon(cmd, &ir_verdict_at, &d_lit, &d_lit_hr); }
     LOGI(MOD, "detection thread stopped");
     return NULL;
 }
