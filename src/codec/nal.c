@@ -1,3 +1,5 @@
+#include <string.h>
+
 #include "nal.h"
 
 void nal_iter_init(nal_iter *it, const uint8_t *au, size_t len)
@@ -6,14 +8,28 @@ void nal_iter_init(nal_iter *it, const uint8_t *au, size_t len)
 }
 
 /* find next start code (00 00 01 or 00 00 00 01) at or after p, return index
- * of the byte following the start code, and set *sc_len; -1 if none */
+ * of the byte following the start code, and set *sc_len; -1 if none.
+ *
+ * Every start code begins with a 0x00, so memchr() does the skipping over the
+ * (long, entropy-coded, essentially never zero) NAL payload runs instead of a
+ * byte-at-a-time loop here. This runs once per NAL per consumer - the RTP
+ * packetizer, the fMP4 muxer and the recorder each iterate every AU - so the
+ * inner loop is worth handing to libc. Candidates still have to be confirmed
+ * byte by byte: a lone 0x00 is not a start code, and a 00 00 00 00 01 run must
+ * report the start code at the LAST of the leading zeros, not the first. */
 static long find_start(const uint8_t *b, size_t n, size_t from, int *sc_len)
 {
-    for (size_t i=from; i+3<=n; i++){
-        if (b[i]==0 && b[i+1]==0){
+    size_t i = from;
+    while (i+3<=n){                    /* i<=n-3, so b[i+1] and b[i+2] are in range */
+        /* n-2-i = the span [i, n-3]: a 0x00 past n-3 cannot begin a start code */
+        const uint8_t *z = memchr(b+i,0,n-2-i);
+        if (!z) return -1;
+        i = (size_t)(z-b);
+        if (b[i+1]==0){
             if (b[i+2]==1){ *sc_len=3; return (long)i; }
-            if (i+4<=n && b[i+2]==0 && b[i+3]==1){ *sc_len=4; return (long)i; }
-        }
+            if (b[i+2]==0 && i+4<=n && b[i+3]==1){ *sc_len=4; return (long)i; }
+            i++;
+        } else i+=2;                   /* b[i+1] nonzero: nothing can start at i or i+1 */
     }
     return -1;
 }
