@@ -229,6 +229,16 @@ static int prune_free(int min_free_mb)
                  min_free_mb,fm,max_recoverable);
             warned=1;
         }
+        /* Surface the refusal the same way a write failure would (write_errors/
+         * last_error in record_get_status()) - otherwise a client that just
+         * asked for record.active=1 sees the request accepted, "recording"
+         * never turns true, and nothing explains why. */
+        pthread_mutex_lock(&g_lock);
+        g_werrs++;
+        g_werr_us = ms_now_us();
+        snprintf(g_werr,sizeof g_werr,"min_free_mb=%d unreachable (max %lldMB)",
+                 min_free_mb,max_recoverable);
+        pthread_mutex_unlock(&g_lock);
         return -1;
     }
     warned=0;
