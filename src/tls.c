@@ -52,12 +52,23 @@
 
 #include <string.h>
 #include <stdlib.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <pthread.h>
 #include <time.h>
 
+#include "util.h"       /* ms_now_us */
+
 #define MOD "TLS"
+
+/* How long a peer may take to complete the TLS handshake, in total. Both a
+ * per-recv SO_RCVTIMEO and the wall-clock cap in ms_tls_accept() use it; the
+ * callers' own post-handshake timeouts (net_set_timeouts()) are the same
+ * magnitude. */
+#define MS_TLS_HANDSHAKE_S 30
 
 struct ms_tls_ctx {
     mbedtls_ssl_config       conf;
@@ -221,6 +232,7 @@ ms_tls_conn *ms_tls_accept(ms_tls_ctx *ctx, int fd)
 {
     ms_tls_conn *c = calloc(1, sizeof *c);
     if (!c) return NULL;
+    int fl = fcntl(fd, F_GETFL, 0);   /* the blocking mode to put back, see below */
     mbedtls_ssl_init(&c->ssl);
     mbedtls_net_init(&c->net);
     c->net.fd = fd;
@@ -233,9 +245,22 @@ ms_tls_conn *ms_tls_accept(ms_tls_ctx *ctx, int fd)
      * Callers (rtsp/httpd accept paths) set the same-magnitude timeout via
      * net_set_timeouts() already; this keeps the guarantee local to tls.c. */
     {
-        struct timeval tv = { 30, 0 };
+        struct timeval tv = { MS_TLS_HANDSHAKE_S, 0 };
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof tv);
     }
+    /* ...which bounds ONE recv(), not the handshake. A peer that sends a byte
+     * just before each timeout expires restarts it forever, and on a BLOCKING
+     * fd mbedtls_ssl_handshake() does every one of those recv()s inside a
+     * single call - so no deadline written out here would ever be reached: the
+     * thread is pinned pre-auth for as long as the peer keeps trickling.
+     * Drive the handshake NON-BLOCKING instead, which hands control back as
+     * WANT_READ/WANT_WRITE whenever the socket runs dry, and do the waiting in
+     * this loop against one wall-clock deadline for the whole exchange (same
+     * shape as the post-handshake header reads in httpd.c/ws.c). Restored to
+     * blocking below: ms_tls_write() retries WANT_WRITE with a bare continue,
+     * which would busy-spin a core on a non-blocking fd. */
+    if (fl >= 0) fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+    int64_t hs_deadline = ms_now_us() + (int64_t)MS_TLS_HANDSHAKE_S * 1000000;
     int r;
     while ((r = mbedtls_ssl_handshake(&c->ssl)) != 0) {
         if (r != MBEDTLS_ERR_SSL_WANT_READ && r != MBEDTLS_ERR_SSL_WANT_WRITE) {
@@ -259,9 +284,25 @@ ms_tls_conn *ms_tls_accept(ms_tls_ctx *ctx, int fd)
                 hs_fail_warn(r, fd);
             goto fail;
         }
+        int64_t left = hs_deadline - ms_now_us();
+        if (left > 0) {
+            struct pollfd p = { .fd = fd, .revents = 0,
+                                .events = (r == MBEDTLS_ERR_SSL_WANT_WRITE)
+                                          ? POLLOUT : POLLIN };
+            int pr = poll(&p, 1, (int)(left / 1000) + 1);
+            if (pr > 0) continue;
+            if (pr < 0 && errno == EINTR) continue;
+            if (pr < 0) { LOGD(MOD, "handshake poll: %s", strerror(errno)); goto fail; }
+        }
+        /* peer noise like the classes just above, so DEBUG too */
+        LOGD(MOD, "handshake not completed within %ds - dropping",
+             MS_TLS_HANDSHAKE_S);
+        goto fail;
     }
+    if (fl >= 0) fcntl(fd, F_SETFL, fl);
     return c;
 fail:
+    if (fl >= 0) fcntl(fd, F_SETFL, fl);
     mbedtls_ssl_free(&c->ssl);
     free(c);
     return NULL;
