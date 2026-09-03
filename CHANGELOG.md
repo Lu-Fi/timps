@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.9.8] - 2026-09-03
+
 ### Changed
 
 - **`audio.talk_ws` becomes a tri-state, and `USE_BC_WS` no longer requires
@@ -39,6 +41,190 @@ semantic versioning.
   - A `USE_TLS=0` build can never satisfy `audio.talk_ws=1`, so `httpd_start()`
     logs one warning naming `audio.talk_ws=2` as the fix and serves nothing,
     rather than 426-ing silently forever.
+  - The flat `audio` object in `GET /control` echoes `talk_ws` alongside the
+    other speaker/backchannel fields, which 1.9.6 had missed.
+    `caps.backchannel.talk_ws` is deliberately a resolved verdict, not a
+    config echo, so without this a UI could read what `/talk` would do right
+    now but never what the camera is actually set to.
+
+- **Recording refuses the segment when `record.min_free_mb` can never be
+  reached, instead of emptying the archive chasing it** (`src/record.c`).
+  `prune_free()` deleted the oldest files and re-checked `statvfs` until the
+  target was met, with no test for whether the target was *meetable*. Set
+  `min_free_mb` above what the card can ever offer - larger than the card, or
+  larger than its free space plus every recording on it - and the loop deleted
+  every existing recording, one `PRUNE_BATCH` walk at a time, still did not
+  reach the target, and `seg_open()` then recorded onto the card it had just
+  emptied. The archive was the thing being protected. `prune_free()` now
+  returns a verdict instead of `void`: on its first walk it compares
+  `min_free_mb` against `free + the total bytes of the records tree` and, if
+  even deleting everything would fall short, deletes nothing, warns once, and
+  returns -1 - which fails `seg_open()`, so nothing is recorded either. A
+  reachable target prunes exactly as before.
+  - The refusal is surfaced through the same `write_errors` / `last_error`
+    fields of `record_get_status()` a write failure uses. Otherwise a client
+    that just POSTed `record.active=1` gets its 200, watches `recording`
+    never turn true, and has nothing to read that explains why.
+  - Refusals are rate-limited to one real evaluation per 5 s. While nothing
+    is open, `seg_open()` runs once per incoming packet (~31/s measured on a
+    stuck camera) and each refusal would otherwise re-walk the whole records
+    tree to re-derive the same answer; inside the backoff a retry costs the
+    one `statvfs` that was already done. Space appearing by some other route
+    (a manual delete, a config fix) is still noticed within the window, and
+    the already-satisfied fast path is never gated by the backoff at all.
+  - The tree total the check needs is accumulated inside `collect_oldest()`'s
+    existing `lstat` walk rather than measured by a second one, which keeps
+    1.9.5's one-walk-per-rotation property in the steady state where the card
+    sits at `min_free_mb` and every rotation prunes.
+
+- **NAL start-code scanning skips payload runs with `memchr()` instead of a
+  byte-at-a-time loop** (`src/codec/nal.c`). `find_start()` sits on the hot
+  path of every consumer that iterates an access unit - the RTP packetizer,
+  the fMP4 muxer and the recorder each walk every NAL of every frame - and
+  its inner loop read one byte at a time across the long, entropy-coded,
+  essentially never-zero payload runs between start codes. Every start code
+  begins with a `0x00`, so that skipping is now libc's job. Candidates are
+  still confirmed byte by byte: a lone `0x00` is not a start code, and a
+  `00 00 00 00 01` run must report the start code at the LAST of its leading
+  zeros, not the first.
+
+### Fixed
+
+- **A slow peer could hold a TLS handshake or a WebSocket frame read open
+  indefinitely** (`src/tls.c`, `src/ws.c`). Two independent instances of the
+  same slow-loris shape `mp4/httpd.c`'s head-read loop was fixed for: a
+  timeout that a *successful* read renews rather than spends.
+  - `ms_tls_accept()` bounded the handshake with `SO_RCVTIMEO`, which bounds
+    one `recv()`, not the exchange - and on a blocking fd
+    `mbedtls_ssl_handshake()` does every one of those `recv()`s inside a
+    single call, so a peer sending one byte just before each timeout expires
+    pins the accepting thread pre-auth for as long as it likes. The handshake
+    now runs NON-blocking against one 30 s wall-clock deadline
+    (`MS_TLS_HANDSHAKE_S`), doing its own `poll()` on
+    `WANT_READ`/`WANT_WRITE`. The fd is put back to blocking on both exit
+    paths, because `ms_tls_write()` retries `WANT_WRITE` with a bare
+    `continue` and would busy-spin a core on a non-blocking one.
+  - `ws.c`'s `read_exact()` took a `budget_ms` that was only zeroed when a
+    poll timed out; a read that returned data cost nothing, so a peer
+    trickling one byte per poll slice renewed the whole budget on every
+    iteration and held a frame read open forever. It now takes an ABSOLUTE
+    deadline, and `ws_read_message()` sets one for the entire message,
+    continuation frames included - `ws_handshake_read()` likewise.
+
+- **The UDP backchannel and the RTCP liveness drain accepted datagrams from
+  the peer's address regardless of source port** (`src/rtsp/rtsp.c`). Both
+  now also require the port the client named in `SETUP` - the `client_port`
+  RTP half for the backchannel, the sink's RTCP destination for the liveness
+  drain; in both cases the socket we already send back to, and so the one a
+  conforming client sends from. Without that half of the test, anyone sharing
+  the client's IP (a second host behind the same NAT) or spoofing it could
+  talk out of the camera's speaker, or keep a dead session alive past the
+  120 s idle reaper by feeding it RTCP. Each test is skipped when no port was
+  recorded, so nothing that worked before stops working.
+
+- **`/control` answered 422 to a `record.active` or `speaker` command that had
+  actually run** (`src/control.c`). The response grading answers 422 when a
+  body leaves `accepted` at 0, and only `apply_ctrl_fields()` counts - which
+  sees settings, not commands. A body carrying nothing else, e.g. the WebUI
+  control bar's stop request `{"record":{"active":0}}`, or
+  `{"speaker":{"stop":true}}`, therefore got an error back for an action that
+  had been performed. `record.active` and a successful speaker play/stop now
+  count themselves as accepted (a `play` whose path is rejected counts as
+  rejected, and a recognised-but-falsy `"stop":false` as an accepted no-op) -
+  the same fix `daynight.probe` already had.
+
+- **A POST body's field names ignored config aliases, silently dropping the
+  shipped WebUI's photosensing sliders** (`src/control.c`). The `/control`
+  POST path matched `tbl[i].name` only, never `.alias`, deliberately
+  preserving what the old hard-coded arrays happened to accept. But an alias
+  exists for exactly one reason - an older spelling has to keep working - and
+  the WebUI posts two of them: `total_gain_day_threshold` /
+  `total_gain_night_threshold`, the pre-rename names of
+  `daynight.day_gain`/`night_gain`. They got a 200 back and nothing was
+  saved. An alias now counts as a name here as it already does in the
+  config-FILE parser (`field_find()`); the canonical name wins when a body
+  carries both, and what is applied, persisted and echoed is always the
+  canonical one. `ign_note()` gets the same test in the same edit, so the
+  ignored-fields report stays exactly dual to the accept test rather than
+  reporting an aliased field as ignored while it is being applied.
+
+- **An abandoned day/night probe left the illuminator off** (`src/daynight.c`).
+  A silent IR probe turns the illuminator off to read the ambient level, and
+  the verdict block was the only place that ever turned it back on. Every
+  path that leaves a probe behind without reaching a verdict - detection
+  switched off at runtime, the mode switched to `schedule`, the thread
+  stopping - therefore left a night camera dark. A new `dn_probe_abandon()`
+  relights and clears the probe state, and all three paths go through it (the
+  shutdown one re-reading `irprobe_cmd` under the config string lock, the
+  loop-scoped snapshot being gone by then). No-op when no probe is in flight.
+
+- **The software-rotate OSD path read `osd.vars_file` without the config
+  string lock** (`src/hal/hal_ingenic.c`). `sw_osd_compose()` snapshotted the
+  OSD item under `config_str_lock()` and then handed the live
+  `g_hcfg->osd.vars_file` straight to `osd_expand()`, although that string is
+  POST-settable too - the one lock-free live-mutable-string read this path
+  had left. It is now copied in the same critical section as the item, which
+  is what `imp_osd.c`'s `refresh_text()` had already been fixed to do.
+
+- **The record pre-roll was capped at roughly one GOP whatever
+  `record.pre_roll_s` said** (`src/record.c`). `flush_ring()` scanned the ring
+  newest-first for a keyframe to start the segment at, and so always found the
+  most recent one. It now scans oldest-first and starts at the OLDEST keyframe
+  still buffered - the decodable start as far back as `pre_roll_s` allows,
+  which is what the ring is trimmed to hold (`ring_push`) and what
+  `rec_thread`'s cap warning measures.
+
+- **A font declaring `numberOfHMetrics = 0` read 4 bytes before the `hmtx`
+  table** (`src/hal/msttf.c`). Zero is malformed - the spec requires at least
+  one metric - and it made `msttf_load()`'s `hmtx` room check vacuous while
+  leaving `advance()`'s last-metric fallback indexing `hmtx[-1]`. Floored to
+  1, the same value the no-`hhea` case already fell back to.
+
+### Documentation
+
+- **Per-browser secure-context instructions for `/talk` on a plain-`http://`
+  camera** (`docs/wiki/Audio.md`, `README.md`). `audio.talk_ws=2` removes the
+  *server's* TLS requirement; the *browser* separately refuses
+  `getUserMedia()` - and, unrelated to audio, the thingino WebUI's WebCodecs
+  preview, gated on `window.VideoDecoder` - on an insecure origin, and no
+  browser treats private/LAN IP ranges as trustworthy by default. So the
+  tri-state is only half the answer, and the other half now has a
+  step-by-step: Chrome / Edge / Brave's
+  `chrome://flags/#unsafely-treat-insecure-origin-as-secure` (stored
+  browser-wide, flips `isSecureContext` itself, so it unlocks WebCodecs too),
+  Firefox's `dom.securecontext.allowlist` (hostnames only, no scheme or port;
+  likewise unlocks both) versus the older, global, audio-only
+  `media.devices.insecure.enabled` + `media.getusermedia.insecure.enabled`
+  pair that does NOT flip `isSecureContext`, and Safari's Develop -> WebRTC ->
+  Allow Media Capture on Insecure Sites (`getUserMedia()` only - Safari has no
+  host allowlist, so its WebCodecs preview stays unavailable regardless). Each
+  claim checked against the Chromium/Firefox/WebKit source rather than
+  folklore. None of it is needed against `http://localhost` or an `ssh -L`
+  tunnel that makes the camera appear there. The README's `/talk` section
+  shrinks to a summary plus a link, since the protocol detail it duplicated
+  now lives in the wiki page beside these overrides.
+
+### Testing
+
+- **`timps-qa.sh` section 8f FAILed a healthy ISP when it ran too soon after a
+  restart.** Every daemon restart makes `daynight.c` run its boot probe
+  (`daynight.boot_probe` defaults to 1), which drives the camera into the day
+  pipeline with the illuminator OFF - in a dark room, a black picture for the
+  length of the probe. On 2026-09-02 8f started 4 s after 8g's
+  restore-restart, both flip reference frames came back black, and the PSNR
+  taken between two featureless frames FAILed the hflip check. `rot_restart()`
+  now stamps when the daemon answered again and 8f sits out a 30 s
+  `DN_BOOT_WINDOW_S` from that stamp; independently, a new `luma_spread()`
+  measures each reference frame's 10th..90th-percentile luma range and
+  downgrades the flip verdicts to WARN when there is no structure in the
+  picture to compare. Percentiles and not `YMIN`/`YMAX`, because every
+  snapshot this script takes carries the white OSD timestamp, which pins
+  min/max at 0/255 and would call a pitch-dark frame full-range.
+
+- **`timps-qa.sh` covers `audio.talk_ws`** in section 8b's live field matrix
+  (`int 0 2`) and in `TESTED_audio`, and whitelists the benign vendor-ISP
+  `tisp_netlink_init` boot line in `DMESG_BENIGN_RE`, which the dmesg check
+  was otherwise flagging.
 
 ## [1.9.6] - 2026-09-01
 
