@@ -34,9 +34,7 @@ capability matrix, testing — see the **[wiki](docs/wiki/Home.md)**:
 | [Testing / QA](docs/wiki/Testing-QA.md) | `scripts/timps-qa.sh` |
 
 Other docs worth knowing about: [`docs/rotation.md`](docs/rotation.md) (full
-rotation deep-dive), [`docs/sdk-feature-gaps.md`](docs/sdk-feature-gaps.md),
-[`docs/backchannel.md`](docs/backchannel.md),
-[`docs/camera-fleet.md`](docs/camera-fleet.md).
+rotation deep-dive), [`docs/sdk-feature-gaps.md`](docs/sdk-feature-gaps.md).
 
 ## Features
 
@@ -72,7 +70,7 @@ rotation deep-dive), [`docs/sdk-feature-gaps.md`](docs/sdk-feature-gaps.md),
 | `http://<ip>:8880/stream.mjpeg` | MJPEG (multipart) |
 | `…?chn=N` | JPEG / MJPEG at the resolution of `videoN` (needs `videoN.jpeg = true`) |
 | `http://<ip>:8880/events` | SSE push stream: `motion` / `daynight` / `stats` events (`USE_CONTROL` builds — see [HTTP /control API](docs/wiki/HTTP-Control-API.md)) |
-| `wss://<ip>:8880/talk` | WebSocket audio backchannel: browser microphone → camera speaker (`USE_BC_WS` builds, TLS only — see [Talk](#talk-browser-microphone--camera-speaker-talk)) |
+| `wss://<ip>:8880/talk` | WebSocket audio backchannel: browser microphone → camera speaker (`USE_BC_WS` builds; TLS by default, plain `ws://` with `audio.talk_ws=2` — see [Talk](#talk-browser-microphone--camera-speaker-talk)) |
 
 See [Streaming Protocols](docs/wiki/Streaming-Protocols.md) for transport
 details, codec negotiation and client-compatibility notes.
@@ -154,13 +152,13 @@ paths.
 | `USE_TIMELAPSE` | native timelapse (periodic JPEG shots to SD). **On by default**; `USE_TIMELAPSE=0` to leave it out (saves ~4 KB) |
 | `USE_BACKCHANNEL` | ONVIF audio backchannel (client → speaker), native `IMP_AO`. Off by default |
 | `USE_BC_AAC` | also accept AAC on the backchannel (needs `libhelix-aac`); G.711 always works without it |
-| `USE_BC_WS` | also serve the backchannel to a browser over a WebSocket (`/talk`, G.711 mu-law). Off by default; implies `USE_BACKCHANNEL`+`USE_CONTROL`, requires `USE_TLS` |
+| `USE_BC_WS` | also serve the backchannel to a browser over a WebSocket (`/talk`, G.711 mu-law). Off by default; implies `USE_BACKCHANNEL`+`USE_CONTROL`. `USE_TLS` is recommended, not required (without it only `audio.talk_ws=2`, plain `ws://`, is usable) |
 | `USE_PLAY` | system-sound play queue (`/usr/sbin/play` protocol via a FIFO), native `IMP_AO`. Off by default |
 | `USE_PLAY_OPUS` | also decode Ogg-Opus in the play queue (needs `opusfile`); WAV/PCM/G.711 always work without it |
 | `USE_ROTATE` | image rotation (`videoN.rotation = 0\|90\|270`, plus `180` on T40/T41). Off by default |
 | `USE_SW_ROTATE` | software 90/270 rotation on SoCs without a hardware path (T23); needs `USE_ROTATE` |
 | `USE_TLS` | HTTPS (`http.https`) + RTSPS (`rtsp.tls`) via mbedTLS. Auto-enabled when `libmbedtls` is linked |
-| `USE_SRT` | MPEG-TS over SRT output (listener mode). Auto-enabled when `libsrt` is linked |
+| `USE_SRT` | MPEG-TS over SRT output, listener (`srt.mode=listener`, default) or caller (`srt.mode=caller`). Auto-enabled when `libsrt` is linked |
 
 Full details, defaults and rationale for each flag: [Building](docs/wiki/Building.md).
 
@@ -274,8 +272,11 @@ and [Platform & SDK Support](docs/wiki/Platform-SDK-Support.md).
 `USE_TLS=1` (auto-enabled when `libmbedtls` is linked) lets the HTTP server
 run **HTTPS** and RTSP run **RTSPS**, the same code path serving plain
 HTTP/RTSP byte-for-byte when TLS is off. `USE_SRT=1` (auto-enabled when
-`libsrt` is linked) adds MPEG-TS over SRT in listener mode, played back with
-e.g. `ffplay srt://<ip>:9000`. See [Streaming Protocols](docs/wiki/Streaming-Protocols.md).
+`libsrt` is linked) adds MPEG-TS over SRT, either as a listener
+(`srt.mode=listener`, the default — played back with e.g.
+`ffplay srt://<ip>:9000`) or as a caller (`srt.mode=caller` + `srt.host`,
+dialling a receiver itself, for cameras behind NAT). See
+[Streaming Protocols](docs/wiki/Streaming-Protocols.md).
 
 ## Security
 

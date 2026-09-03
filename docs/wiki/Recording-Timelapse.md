@@ -43,11 +43,15 @@ config-driven ("auto") behavior.
 A circular ring buffer (256 packet slots, plus a hard 4 MB byte backstop
 independent of slot count) continuously retains recent packets — refcounted,
 not copied — while motion mode is not actively writing. When a recording
-transition to "writing" happens, the ring is scanned **backwards** for
-the most recent video keyframe and everything from there forward is
-flushed into the new segment first, so a motion-triggered clip always
-starts cleanly at a keyframe rather than mid-GOP. If the pre-roll window
-configured (`record.pre_roll_s`) exceeds what the ring can actually hold
+transition to "writing" happens, the ring is scanned **oldest first** for
+the first video keyframe still buffered, and everything from there
+forward is flushed into the new segment, so a motion-triggered clip
+always starts cleanly at a keyframe rather than mid-GOP — and as far back
+as `record.pre_roll_s` allows. (Scanning newest-first instead would start
+at the *most recent* keyframe and silently cap every pre-roll at roughly
+one GOP, whatever `pre_roll_s` said; that was the behaviour until
+`dd7946a`.) If the pre-roll window configured
+(`record.pre_roll_s`) exceeds what the ring can actually hold
 at the stream's current bitrate/fps, a one-time warning is logged (the
 ring silently truncates otherwise).
 
@@ -63,10 +67,47 @@ rotation (one continuous file for as long as recording stays active).
 
 Before opening any new segment, if `record.min_free_mb > 0` and free
 space on `record.dir` is below that threshold, the globally **oldest**
-regular file anywhere under `<dir>/<hostname>/records` is deleted
-(repeating until the threshold is met or no candidate remains) —
-directory traversal uses `lstat`, never following a symlink out of the
-tree.
+regular files anywhere under `<dir>/<hostname>/records` are deleted until
+the threshold is met or no candidate remains — one directory walk
+collects the 32 oldest at a time (rather than re-walking the whole tree
+per deleted file, which on a full card costs dropped frames), and
+traversal uses `lstat`, never following a symlink out of the tree.
+
+**Pruning is not unconditional.** The same walk that collects candidates
+also totals the size of the records tree, and before deleting anything
+the first walk asks whether the target is reachable at all: if
+`free_mb + everything under the records tree` is still below
+`min_free_mb`, no amount of deleting gets there — the usual cause is a
+`min_free_mb` larger than the card. In that case **nothing is deleted**,
+and instead:
+
+- `seg_open()` fails, so no segment is opened at all: `recording` stays
+  `0` even with `record.enabled=1` or a manual
+  `{"record":{"active":1}}` override — the daemon refuses to record
+  rather than empty the archive chasing a target it can never hit;
+- one warning is logged (`record.min_free_mb=<N> unreachable (only <F>MB
+  free, <M>MB even if every existing recording were deleted)`), once per
+  bad-value edge rather than once per attempted rotation;
+- the refusal is surfaced through the same `write_errors` / `last_error`
+  fields `record_get_status()` uses for a write failure, so `GET
+  /control`'s `record` object explains it without an SSH session:
+  `"write_errors"` increments and `"last_error"` reads
+  `min_free_mb=<N> unreachable (max <M>MB)`;
+- and the answer is re-evaluated at most once every 5 seconds. While
+  nothing is open, `seg_open()` runs once per incoming packet (~31/s
+  measured), so a retry inside that window reuses the known refusal
+  and costs a single `statvfs`, not another tree walk. Space appearing by
+  some other route (a manual delete, a config fix) is therefore noticed
+  within 5 seconds, not immediately.
+
+This is a deliberate behaviour change: earlier versions deleted the
+oldest file over and over until the archive was empty and then recorded
+anyway. If a camera reports `"recording":0` together with a
+`min_free_mb ... unreachable` `last_error`, the fix is to lower
+`record.min_free_mb` (or point `record.dir` at larger media), not to
+delete recordings by hand — the daemon already knows deleting them would
+not be enough. A failed `statvfs` is not a refusal: free space simply
+cannot be measured, and recording proceeds as if no threshold were set.
 
 ### Durability
 
@@ -124,6 +165,16 @@ on demand. Notable safety details:
 `file` (current path, empty when idle), alongside the persisted config
 values so a WebUI can populate its record settings page from the same
 read.
+
+It also carries the answers to "it says enabled, so why is nothing being
+written?": `motion_gate_available`/`motion_gate_enabled` (motion mode
+with the detector structurally inert, versus merely quiet),
+`manual_off` (the manual override latched off), and the write-path health
+triple `write_errors` (count since start) / `last_error_age_s` (seconds
+since the last one, `-1` = never) / `last_error` (its text). A dying or
+full SD card, and the unreachable-`min_free_mb` refusal above, both
+announce themselves there rather than only in a log ring that recycles in
+hours.
 
 ## Timelapse (`src/timelapse.c`)
 

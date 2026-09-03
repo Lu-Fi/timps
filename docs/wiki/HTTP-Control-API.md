@@ -116,7 +116,7 @@ cannot actually apply, instead of hardcoding a feature matrix client-side:
 | `caps.privacy` | `{"available":0\|1, "max_regions":N}` — `available` reflects whether an OSD group actually exists on **any** stream (it only does if OSD or a privacy region was enabled at boot), not a hardcoded 1. |
 | `caps.rotation` | (Only present in `USE_ROTATE` builds.) The ascending array of rotation values this SoC's build can actually apply, e.g. `[0]`, `[0,90,270]`, or `[0,90,180,270]` on T40/T41. See [Platform & SDK Support](Platform-SDK-Support.md). |
 | `caps.record` / `caps.timelapse` | `{"available":0\|1}` per `USE_RECORD`/`USE_TIMELAPSE`. |
-| `caps.backchannel` | `{"available":<bc_available()>}` — whether the backchannel was actually configured at boot (restart-only master switch — see [Audio](Audio.md)). |
+| `caps.backchannel` | `{"available":<bc_available()>,"talk_ws":0\|1\|2}` — `available` is whether the backchannel was actually configured at boot (restart-only master switch — see [Audio](Audio.md)). `talk_ws` is the browser-microphone WebSocket (`/talk`, `USE_BC_WS`) on the *same* backchannel, reported as a second flag rather than a second caps entry because a camera can perfectly well have the RTSP backchannel without it. It is the **resolved verdict**, not the raw `audio.talk_ws` value: `0` = this port would not serve `/talk` at all right now, `1` = served, TLS required, `2` = served, plain `ws://` accepted. `audio.talk_ws=1` on a plaintext port therefore reports `0` (every request would `426`), so a WebUI can gate its talk button on this one number. Nothing here says which scheme to dial: `1` always means `wss://`; for `2` take the scheme from the same `tls` field the media/control URLs use. |
 | `caps.play` | `{"available":0\|1, "sounds":[...]}` — the play queue, with `sounds` live-enumerated from `/usr/share/sounds` (`.wav`/`.ulaw` always; `.opus` only when `USE_PLAY_OPUS` was actually compiled in, capped at 96 entries to bound the JSON response size). |
 
 ### Build-feature discovery — `*.available`
@@ -143,9 +143,18 @@ when the feature *is* compiled in, they also carry the runtime settings
 needed to dial it:
 
 ```json
-"srt": {"available":1,"enabled":1,"port":9000,"channel":0}
+"srt": {"available":1,"enabled":1,"port":9000,"channel":0,"mode":"listener",
+        "connected":1,"stats_age_s":3,"rtt_ms":12.4,"bw_mbps":48.10,
+        "rate_mbps":2.85,"retrans":0,"loss":0,"drop":0}
 "tls": {"available":1,"https":1,"rtsps":1,"rtsps_port":322}
 ```
+
+`srt.mode` is `"listener"` or `"caller"` (see
+[Streaming Protocols](Streaming-Protocols.md#srt-srcsrtc)), and the
+`rtt_ms`/`bw_mbps`/`rate_mbps`/`retrans`/`loss`/`drop` numbers come from
+the last 10-second `srt_bstats` tick, so a test harness can see link
+health without SSH. `-1`, and `stats_age_s:-1`, mean no connection has
+lasted long enough to produce a sample yet.
 
 When the build lacks the feature, **only** `{"available":0}` is emitted.
 That is deliberate for `tls` in particular: `http.https`/`rtsp.tls` may
@@ -303,6 +312,21 @@ read as a clean success; the legacy flat form
 (`{"brightness":140,"running_mode":1}` or `{"force_mode":"night"|"day"}`)
 still works and maps onto `image.*`.
 
+A field's **config-file alias is accepted here too**, exactly as it is by
+the config-file parser — `video0.mode` for `rc_mode`, `record.segment`
+for `segment_s`, `osd0.0.stroke` for `outline`,
+`daynight.total_gain_day_threshold` for `day_gain`, and so on (the
+aliases are listed per key in the
+[Configuration Reference](Configuration-Reference.md)). This was
+name-only until `e79b5a9`, which silently dropped the shipped WebUI's
+photosensing sliders: they post the pre-rename
+`total_gain_day_threshold`/`total_gain_night_threshold` spellings, got a
+`200` back, and nothing was saved. The canonical name still wins if a
+body carries both, and what is applied, persisted and echoed in
+`applied` is always the canonical spelling. The `ignored` list uses the
+same alias-aware test, so an alias is never reported as ignored while in
+fact being applied.
+
 ### Section-by-section behavior
 
 See [Configuration Reference](Configuration-Reference.md) for the
@@ -321,7 +345,7 @@ summary:
 | `privacy` | `privacy<S>.<N>.*` | Live (create/show/hide/move) as long as an OSD group exists on that stream. |
 | `sensor` | `sensor.*` | Persist-only; applied at the next ISP init. |
 | `motion` | `motion.enabled/sensitivity/cols/rows/monitor_stream` | All live — the HAL stops and recreates the whole IVS grid on any of these (a single request's several motion keys are batched into **one** rebuild via `hub_control_commit()`, not one rebuild per key). `hold_ms`/`skip_frames` are also POST-able (persist + echo) but only feed the grid/hold logic at the next such rebuild or a restart, not immediately. `cooldown_ms`/`on_motion` are deliberately **not** POST-able (config-file only). |
-| `record` | `record.*` + `{"active":1\|0}` + `{"clip":"...","seconds":N}` | Config keys apply on the recorder's next loop pass (no restart); `active` is an immediate manual start/stop override; `clip`/`seconds` triggers an independent one-shot on-demand fMP4 capture, not persisted. |
+| `record` | `record.*` + `{"active":1\|0}` + `{"clip":"...","seconds":N}` | Config keys apply on the recorder's next loop pass (no restart); `active` is an immediate manual start/stop override; `clip`/`seconds` triggers an independent one-shot on-demand fMP4 capture, not persisted. An accepted `{"active":1}` is not a promise that recording starts: if `record.min_free_mb` cannot be reached even by deleting every existing recording, the recorder refuses to open a segment, and the GET status object's `recording` stays `0` with `write_errors` incremented and `last_error` reading `min_free_mb=<N> unreachable (max <M>MB)` — see [Recording & Timelapse](Recording-Timelapse.md#free-space-pruning). |
 | `timelapse` | `timelapse.*` | Applied on the timelapse thread's next loop pass, no restart. |
 
 ### Response body and status codes

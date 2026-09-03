@@ -139,6 +139,7 @@ on a running capture channel).
 | `audio.backchannel` | bool | 0 | 0/1 | Restart-only | Enable the ONVIF two-way audio backchannel (`USE_BACKCHANNEL` build). |
 | `audio.backchannel_codec` | enum | `pcmu` (0) | `pcmu`(0)\|`pcma`(1)\|`aac`(2) | Restart-only | Advertised/accepted backchannel codec. |
 | `audio.backchannel_rate` | int | 16000 | 8000–48000 | Restart-only | Speaker sample rate fed by the backchannel decoder. |
+| `audio.talk_ws` | tri-state | 0 | 0\|1\|2 (`true`/`on`/`yes` → 1) | Restart-only | Serve the browser push-to-talk WebSocket at `/talk` (`USE_BC_WS` builds, and only when the backchannel itself came up at boot). `0` = not served; `1` = served over TLS only, a plaintext port answers `426`; `2` = also served over plain `ws://`, a deliberate hand edit since the microphone audio and its token then cross the network in the clear. `GET /control` reports the resolved verdict as `caps.backchannel.talk_ws` (`1` on a plaintext port resolves to `0`). See [Audio](Audio.md#browser-push-to-talk-talk-use_bc_ws). |
 | `audio.aec` | bool | 0 | 0/1 | **Live** (only if `USE_PLAY` or `USE_BACKCHANNEL` compiled in) | Opt-in Acoustic Echo Cancellation (`IMP_AI_EnableAec`) for the backchannel — subtracts the speaker output from the mic capture. Engages only once both AI capture and AO output are actually live, applied at the next AO open (same timing contract as `spk_volume`/`spk_gain`). Off by default since AEC quality/latency varies per SoC/mic/speaker pairing. |
 
 See [Audio](Audio.md) for the backchannel/play-queue feature details.
@@ -184,12 +185,14 @@ File-only. `USE_SRT` builds only (see [Streaming Protocols](Streaming-Protocols.
 
 | Key | Type | Default | Range | Live? | Description |
 | --- | --- | --- | --- | --- | --- |
-| `srt.enabled` | bool | 0 | 0/1 | File-only | Enable the SRT listener. |
-| `srt.port` | int | 9000 | 1–65535 | File-only | SRT listener port. |
+| `srt.enabled` | bool | 0 | 0/1 | File-only | Enable the SRT output. |
+| `srt.mode` | string | `listener` | `listener`\|`caller` | File-only | `listener` waits for receivers to dial in; `caller` makes the camera dial `srt.host`:`srt.port` itself and reconnect forever with a doubling 1→30 s backoff (for cameras behind NAT). An unrecognized value warns and falls back to `listener`. |
+| `srt.host` | string | `""` | — | File-only | Caller mode only: the receiver to dial. `srt.mode=caller` with this empty is a startup error and SRT stays off (it is not silently downgraded to a listener). Ignored in listener mode. |
+| `srt.port` | int | 9000 | 1–65535 | File-only | Listener: local bind port. Caller: the remote port dialled on `srt.host`. |
 | `srt.channel` | int | 0 | — | File-only | Video stream served over SRT. |
 | `srt.latency_ms` (alias `latency`) | int | 120 | — | File-only | SRT latency (ms). |
-| `srt.streamid` | string | `""` | — | File-only | Required `STREAMID` for a connecting client (`""` = not enforced). |
-| `srt.passphrase` | string | `""` | — | File-only | AES passphrase for SRT encryption (10–79 chars if set; the listener refuses to start on an invalid passphrase rather than run unencrypted). |
+| `srt.streamid` | string | `""` | — | File-only | Listener: required `STREAMID` for a connecting client (`""` = not enforced). Caller: the `STREAMID` timps presents to the receiver. |
+| `srt.passphrase` | string | `""` | — | File-only | AES passphrase for SRT encryption (10–79 chars if set; an invalid passphrase stops SRT — the listener never binds, the caller stops dialling — rather than running unencrypted). |
 
 ## `http.*` — HTTP server (fMP4/MJPEG/snapshot/control/events)
 
@@ -368,7 +371,7 @@ within its ~300 ms poll cycle without a restart.
 | `record.segment_s` (alias `segment`) | int | 60 | 0–86400 | **Live (next cycle)** | Max segment length in seconds; rotation only happens at a video keyframe. `0` = single file, no rotation. |
 | `record.pre_roll_s` (alias `pre_roll`) | int | 3 | 0–60 | **Live (next cycle)** | Motion mode: seconds of buffered video kept before the trigger (ring buffer). |
 | `record.post_roll_s` (alias `post_roll`) | int | 10 | 1–300 | **Live (next cycle)** | Motion mode: keep recording this long after the last motion event. |
-| `record.min_free_mb` | int | 200 | 0–1048576 | **Live (next cycle)** | Prune oldest segments until at least this much free space remains. |
+| `record.min_free_mb` | int | 200 | 0–1048576 | **Live (next cycle)** | Prune oldest segments until at least this much free space remains. Set it larger than the media can ever provide and the recorder **refuses to record** (saying so in the record status object's `last_error`) instead of emptying the archive chasing an unreachable target — see [Recording & Timelapse](Recording-Timelapse.md#free-space-pruning). |
 | `record.audio` | bool | 1 | 0/1 | **Live (next cycle)** | Mux AAC audio into the recording when available (G.711 cannot be muxed into fMP4). |
 
 `{"record":{"active":1|0}}` (not a config key) is a transient manual

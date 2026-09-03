@@ -13,7 +13,7 @@ the code goes out of its way to get right.
 | HTTP fMP4 | 8880 (`/stream.mp4`) | Chunked HTTP, `video/mp4`, MSE-oriented | H.264 always; H.265 if the stream's codec is H.265 | **AAC only** — the muxer has no G.711 support | localhost bypass, token, HTTP Digest (`qop=auth`) or Basic | via `USE_TLS` + `http.https` |
 | MJPEG | 8880 (`/stream.mjpeg`, `/mjpeg`) | `multipart/x-mixed-replace` | MJPEG (piggyback or dedicated `jpeg.*` channel) | n/a | same as HTTP | same as HTTP |
 | Snapshot | 8880 (`/snapshot.jpg`) | single JPEG response | MJPEG | n/a | same as HTTP | same as HTTP |
-| SRT | 9000 | MPEG-TS over SRT, listener mode | H.264/H.265 (PID `0x100`) | AAC only (PID `0x101`; video-only fallback for G.711) | `srt.streamid` (access) + `srt.passphrase` (AES) | SRT's own encryption |
+| SRT | 9000 | MPEG-TS over SRT, listener (default) or caller (`srt.mode`) | H.264/H.265 (PID `0x100`) | AAC only (PID `0x101`; video-only fallback for G.711) | `srt.streamid` (access) + `srt.passphrase` (AES) | SRT's own encryption |
 
 ## RTSP (`src/rtsp/rtsp.c` + `src/rtsp/rtp.c`)
 
@@ -194,13 +194,26 @@ resolution.
 
 ## SRT (`src/srt.c`)
 
-Compiled only under `USE_SRT` (needs `libsrt`); the code comment flags
-this path as needing on-device verification with `ffplay`/VLC since it
-cannot be exercised in the x86 host simulation without `libsrt` linked.
+Compiled only under `USE_SRT` (needs `libsrt`). `make sim USE_SRT=1`
+exercises both modes against host libsrt/ffmpeg, but the hand-rolled TS
+mux still wants on-device verification with `ffplay`/VLC — TS
+bit-twiddling is easy to get subtly wrong.
 
-- **Mode**: listener-only (`srt_bind`+`srt_listen`, backlog 4) on
-  `srt.port` (default **9000**), serving one configured video channel
-  (`srt.channel`, validated against the boot-enabled streams).
+- **Mode**: `srt.mode` selects between the two, both serving one
+  configured video channel (`srt.channel`, validated against the
+  boot-enabled streams):
+  - **`listener`** (default) — `srt_bind`+`srt_listen` (backlog 4) on
+    `srt.port` (default **9000**) and one streaming thread per accepted
+    client.
+  - **`caller`** — timps dials `srt.host`:`srt.port` itself and streams
+    over that one connection, for a camera behind NAT or on an
+    unreliable link. It reconnects forever with a doubling 1→30 s
+    backoff, and logs an outage **once** (not once per attempt); a
+    session shorter than 5 s does not earn the fast backoff back, so a
+    flapping receiver cannot cycle at 1 s. `srt.mode=caller` with an
+    empty `srt.host` disables SRT with an error rather than falling back
+    to a listener; any other unrecognized `srt.mode` value warns and
+    uses `listener`.
 - **Muxing**: a hand-rolled MPEG-TS mux — video on PID `0x100`, AAC audio
   on PID `0x101` (ADTS-wrapped for `stream_type=0x0F`), PMT on PID
   `0x1000`, PCR carried on the video PID, PAT/PMT resent roughly every
@@ -211,11 +224,16 @@ cannot be exercised in the x86 host simulation without `libsrt` linked.
   AAC (i.e. G.711 or Opus), SRT streams **video-only** with a one-time
   warning — the TS mux here only knows how to carry AAC.
 - **Access control**: `srt.streamid`, if set, is enforced at accept time
-  — a connecting client must present the matching `STREAMID` or is
-  rejected (this was previously checked nowhere at all). `srt.passphrase`
-  (10–79 chars, libsrt's AES-based encryption) is validated at startup;
-  if libsrt rejects it, **the listener refuses to start** rather than
-  silently running unencrypted.
+  in listener mode — a connecting client must present the matching
+  `STREAMID` or is rejected (this was previously checked nowhere at
+  all); in caller mode the same key is instead the `STREAMID` timps
+  *presents* to the receiver. `srt.passphrase`
+  (10–79 chars, libsrt's AES-based encryption) is validated when the
+  socket is set up; if libsrt rejects it, **SRT gives up** — the listener
+  never binds, the caller stops dialling — rather than silently running
+  unencrypted.
+
+Playing back a listener-mode camera:
 
 ```sh
 ffplay srt://<ip>:9000

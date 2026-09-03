@@ -25,8 +25,9 @@ is the place to start.
 - **Browser preview over fragmented MP4** (`/stream.mp4`, `/`) — MSE-compatible
   fMP4 muxing for `ffplay`/VLC and `<video>`/MSE in a browser, with audio.
 - **MJPEG** (`/stream.mjpeg`) and **JPEG snapshot** (`/snapshot.jpg`).
-- **SRT output** (`USE_SRT`) — MPEG-TS over SRT in listener mode, e.g. for
-  `ffplay srt://<ip>:9000`.
+- **SRT output** (`USE_SRT`) — MPEG-TS over SRT, as a listener
+  (`srt.mode=listener`, the default; e.g. `ffplay srt://<ip>:9000`) or as a
+  caller dialling out to `srt.host` (`srt.mode=caller`).
 - **On-demand encoding** — a stream's encoder only runs while at least one
   client is subscribed; idle streams cost ~0% CPU.
 - **Live control API** (`/control`, `USE_CONTROL`) — read and change ISP
@@ -86,6 +87,5 @@ availability) and links to the deeper `docs/sdk-feature-gaps.md` and
 - `docs/sdk-feature-gaps.md` — an independent audit of every `IMP_*` SDK
   call available per platform vs. what timps currently uses, with a
   prioritized list of unused capabilities.
-- `docs/backchannel.md` — implementation notes for the audio backchannel.
-- `docs/camera-fleet.md` — a real-world fleet inventory (SoC/sensor mix per
-  deployed camera).
+- `docs/backchannel.md` — a stub kept for old links; the audio backchannel
+  is documented in [Audio](Audio.md).

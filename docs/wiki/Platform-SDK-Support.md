@@ -126,6 +126,3 @@ on-device test history.
   resolution/framerate constraints, the T31 hardware-OSD-on-rotated-stream
   investigation trail, direction-convention history, and how the other
   thingino streamers (prudynt-t, raptor, strero) compare.
-- **`docs/camera-fleet.md`** — a real-world inventory of deployed cameras
-  by SoC/sensor combination, useful for gauging which platforms see the
-  most real-world testing.

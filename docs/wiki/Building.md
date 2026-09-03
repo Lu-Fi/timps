@@ -103,14 +103,17 @@ resulting binary is byte-identical to a build that never had the feature.
 | `USE_TIMELAPSE` | **1 (on)** | Builds `src/timelapse.c`: periodic JPEG capture to SD. `USE_TIMELAPSE=0` saves ~4 KB. |
 | `USE_FAAC` | 0 (off) | Software AAC audio encoding via `libfaac` (`FAACLIB`, default static `-l:libfaac.a`). Needed for AAC on RTSP/browser preview; without it `audio.codec` should be `pcmu`/`pcma`. |
 | `USE_TLS` | 0 (off) | HTTPS (`http.https`) + RTSPS (`rtsp.tls`, port 322 by default) via mbedTLS (`src/tls.c`). Needs `-lmbedtls`/`-lmbedx509`/`-lmbedcrypto` available; auto-enabled by the thingino package build when `libmbedtls` is linked. |
-| `USE_SRT` | 0 (off) | MPEG-TS over SRT output in listener mode (`src/srt.c`), needs `libsrt`. Because SRT links C++ (`libstdc++`), the final link step switches from `gcc` to `g++` (`LINK_DRV`) when this is on. |
+| `USE_SRT` | 0 (off) | MPEG-TS over SRT output (`src/srt.c`), needs `libsrt`. Serves either as a listener (`srt.mode=listener`, the default) or as a caller dialling `srt.host` (`srt.mode=caller`) — see [Streaming Protocols](Streaming-Protocols.md#srt-srcsrtc). Because SRT links C++ (`libstdc++`), the final link step switches from `gcc` to `g++` (`LINK_DRV`) when this is on. |
 | `USE_ROTATE` | 0 (off) | Image rotation (`videoN.rotation = 0\|90\|270`, plus `180` on T40/T41). Off by default = zero `ROT_HAS_*` macros defined, so all rotation code compiles out. See [Platform & SDK Support](Platform-SDK-Support.md) and `docs/rotation.md`. |
 | `USE_SW_ROTATE` | 0 (off) | Opt-in **software** 90/270 rotation on T23 only (CPU NV12 transpose + unbound `IMP_Encoder_YuvEncode`; no hardware OSD/privacy on the rotated stream). Implies `USE_ROTATE=1`. Defines `-DMS_ENABLE_SW_ROTATE` (not `USE_SW_ROTATE` itself) in the actual compile. |
 | `USE_BACKCHANNEL` | 0 (off) | ONVIF-style two-way audio backchannel (client → camera speaker) via native `IMP_AO`. Pure-C G.711 decode built in; see [Audio](Audio.md). |
 | `USE_BC_AAC` | 0 (off) | Also accept AAC on the backchannel (`libhelix-aac`, `HELIXLIB`/`HELIX_INC`). Implies `USE_BACKCHANNEL=1`. |
+| `USE_BC_WS` | 0 (off) | Browser-microphone backchannel over an RFC 6455 WebSocket at `/talk` on the http port (`src/ws.c`, `src/sha1.c`, `src/rtsp/talk_ws.c`) — 20 ms binary frames of G.711 mu-law, decoded by the `g711.c` the backchannel already builds, so no new library. Implies `USE_BACKCHANNEL=1` **and** `USE_CONTROL=1` (the `?token=` machinery lives there — a `WebSocket` constructor cannot set request headers). `USE_TLS` is **optional**, not required: without it only `audio.talk_ws=2` (plain `ws://`) is usable. See [Audio](Audio.md#browser-push-to-talk-talk-use_bc_ws). |
 | `USE_PLAY` | 0 (off) | System-sound play queue: a FIFO at `/run/timps/audio_out` accepting the same `PLAY`/`STOP` protocol prudynt/raptor's `/usr/sbin/play` speaks, driving `IMP_AO` natively. Decodes WAV, raw PCM16, G.711 out of the box. |
 | `USE_PLAY_OPUS` | 0 (off) | Also decode Ogg-Opus in the play queue (`opusfile`, `OPUSLIB`/`OPUS_INC`). Implies `USE_PLAY=1`. Unrelated to `USE_STREAM_OPUS` below (that is the encode/stream side). |
 | `USE_STREAM_OPUS` | 0 (off) | Offer **Opus as a live RTSP/RTP streaming audio codec** (RFC 7587): makes `audio.codec = opus` a valid choice alongside `aac`/`pcmu`/`pcma`. The mic is encoded at its capture rate (16 kHz default) in `OPUS_APPLICATION_VOIP` mode; the RTP track is always SDP-signalled as `opus/48000/2` per the RFC (real mono/rate carried out-of-band via `sprop-stereo=0`). RTSP-only, exactly like G.711 — Opus is **not** carried by the HTTP fMP4 preview or the SRT TS mux. Links the bare `libopus` **encoder** (~337 KB, `OPUS_ENC_LIB`, default `-lopus`), **not** `opusfile`/`libogg` — RTP carries raw Opus frames with no Ogg container. Fully independent of `USE_PLAY_OPUS` (local `.opus` file playback); a board may enable either, both, or neither. Off = no Opus stream code compiled in and `opus` is not an accepted `audio.codec` value. See [Audio](Audio.md) and [Streaming Protocols](Streaming-Protocols.md). |
+| `USE_OSD_HINTING` | 0 (off) | Compile in the opt-in geometric OSD-text autohinter (`autohint_glyph()` and friends in `src/hal/msttf.c`). Still gated at runtime by the `osd.hinting` config key either way; off measures ~2.1 KB smaller `.text` (T31/GCC 16.1.0/`-Os`) and makes `osd.hinting=1` in `timps.conf` accepted but a no-op. |
+| `USE_TRACE` | 0 (off) | **Developer tool, not for production images.** Compiles in `src/trace.c`, the opt-in send-pipeline latency instrumentation (see `src/trace.h`). Off means `trace.c` is not compiled at all, `ms_trace_on()` and friends become static-false inline stubs the compiler dead-code-eliminates at `-Os`, and `general.trace`/`general.trace_ms` in `timps.conf` are accepted but a no-op — the same pattern as `USE_OSD_HINTING`. Deliberately **not** a menuconfig option (see below); turn it on with `make USE_TRACE=1 ...` for a debug build. |
 
 Any combination of `USE_BACKCHANNEL`/`USE_PLAY` pulls in `src/rtsp/speaker.c`
 + `src/codec/resample.c` (the shared `IMP_AO` owner + resampler) — this is
@@ -173,8 +176,16 @@ make                 # build the firmware, flash as usual
 | `BR2_PACKAGE_TIMPS_SW_ROTATE` (depends on `ROTATE`) | `USE_SW_ROTATE` | n |
 | `BR2_PACKAGE_TIMPS_BACKCHANNEL` | `USE_BACKCHANNEL` | n |
 | `BR2_PACKAGE_TIMPS_BC_AAC` (depends on `BACKCHANNEL`) | `USE_BC_AAC` | n |
+| `BR2_PACKAGE_TIMPS_BC_WS` (depends on `BACKCHANNEL` + `CONTROL`) | `USE_BC_WS` | **y on TLS builds**, else n |
 | `BR2_PACKAGE_TIMPS_PLAY` | `USE_PLAY` | n |
 | `BR2_PACKAGE_TIMPS_PLAY_OPUS` (depends on `PLAY`) | `USE_PLAY_OPUS` | n |
+| `BR2_PACKAGE_TIMPS_OSD_HINTING` | `USE_OSD_HINTING` | n |
+
+`USE_TRACE` has **no** Kconfig option on purpose — it must not be
+reachable from menuconfig. For a one-off debug build, pass `TIMPS_TRACE=1`
+as a plain make-variable override on the firmware build invocation
+(`make ... TIMPS_TRACE=1 rebuild-timps`); unset, the package builds
+`USE_TRACE=0` like every other build.
 
 The package also exposes an **"Audio backchannel preset"** choice that
 bundles the interdependent audio options for convenience:

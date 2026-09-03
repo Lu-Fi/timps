@@ -371,15 +371,19 @@ audio.mute               = 0      # live — mic mute (1 = drop captured frames,
 # speaker output from the mic capture so the far end doesn't hear itself over the
 # backchannel. Applied at the next AO open.
 audio.aec                = 0      # live — 0 off, 1 on (USE_BACKCHANNEL/USE_PLAY)
-# talk_ws: browser-microphone backchannel over a WebSocket at wss://<cam>:<http
+# talk_ws: browser-microphone backchannel over a WebSocket at <cam>:<http
 # port>/talk (USE_BC_WS builds only). A browser cannot speak RTSP/RTP, so the
 # ONVIF backchannel above is unreachable from a web page; this serves the same
 # speaker path to one. Requires audio.backchannel=1 (it shares that pipeline and
-# its single-talker arbitration) and http.https=1 — getUserMedia() is refused
-# outside a secure context, so a plaintext listener could never be fed. Default
-# off: this is a path from a visitor's microphone to the camera's speaker.
-# Consider audio.aec=1 alongside it, or the far end hears itself.
-audio.talk_ws            = 0      # restart — 0 off, 1 on (USE_BC_WS)
+# its single-talker arbitration). Tri-state, not a bool: 1 = served over TLS
+# only (a plaintext port answers 426, so this needs http.https=1), 2 = also
+# served over plain ws://. Use 2 only deliberately: the microphone audio and its
+# token then cross the network in the clear, and the browser still refuses
+# getUserMedia() on a plain http:// origin unless that origin was granted a
+# secure context by hand (see the wiki's Audio page). Default off: this is a
+# path from a visitor's microphone to the camera's speaker. Consider
+# audio.aec=1 alongside it, or the far end hears itself.
+audio.talk_ws            = 0      # restart — 0 off, 1 TLS-only, 2 also ws://
 # speaker (AO) - active on USE_PLAY / USE_BACKCHANNEL builds:
 #   spk_enabled = master gate for the physical speaker; when 0 neither the
 #                 backchannel nor local playback produces any sound.
@@ -543,7 +547,10 @@ osd1.0.outline_color = 0xFF000000
 # Records one video stream to <dir>/<hostname>/records/<name>.mp4, rotating
 # every segment_s at a keyframe. mode: continuous | motion (record around
 # motion with pre/post roll; needs motion.enabled). Old segments are pruned to
-# keep min_free_mb free. The /control "record" action (WebUI record button)
+# keep min_free_mb free - but a min_free_mb the card can never reach (bigger
+# than the card, typically) makes the recorder refuse to record and report why
+# in /control's record.last_error, rather than delete every recording it has
+# and still miss the target. The /control "record" action (WebUI record button)
 # is a manual start/stop override on top of this.
 # record.enabled     = 1
 # record.channel      = 0

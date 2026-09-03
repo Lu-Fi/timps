@@ -7,9 +7,8 @@ queue** (local WAV/PCM/G.711/Opus files → camera speaker). The backchannel
 and play queue share one speaker owner module, `src/rtsp/speaker.c`, which
 drives the Ingenic `IMP_AO` device **natively** — there is no dependency
 on an external `/bin/iac`/`play` helper process. (`docs/backchannel.md` at
-the repository root predates this native-`IMP_AO` design and still
-describes the old `/bin/iac`-based architecture; treat this wiki page as
-current and that file as historical.)
+the repository root is now just a stub pointing here; it used to describe
+the old `/bin/iac`-based architecture.)
 
 ## Capture
 
