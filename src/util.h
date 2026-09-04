@@ -159,7 +159,15 @@ int  ms_stopgate_stopped(ms_stopgate *g);
 #define RTSP_MAX_CLIENTS 8
 #endif
 #ifndef HTTP_MAX_CLIENTS
-#define HTTP_MAX_CLIENTS 8
+/* preview.html alone holds 3+ slots per open tab (the mp4/rt stream plus
+ * two SSE subscriptions - motion events, heartbeat) - 8 left room for
+ * barely two simultaneous viewers before the connection-cap 503 (see
+ * httpd.c's accept_thread) started rejecting legitimate new tabs, not
+ * just runaway/DoS load. 16 doubles the thread+fanqueue cost this cap
+ * exists to bound, still far below what would actually strain RAM on
+ * these boards - still -D overridable per the comment above for
+ * low-RAM boards that want the old ceiling back. */
+#define HTTP_MAX_CLIENTS 16
 #endif
 #ifndef EVENTS_MAX_CLIENTS_DEF
 #define EVENTS_MAX_CLIENTS_DEF 8
