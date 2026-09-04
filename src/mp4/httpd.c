@@ -1946,7 +1946,17 @@ static void *accept_thread(void *arg)
              * say "busy", which spends exactly the CPU and the slot this cap
              * exists to protect. */
             if (!h->tls_ctx) {
+                /* Every other response path (2xx/4xx and the OPTIONS
+                 * preflight, see http_cors()/MEDIA_CORS) sends
+                 * Access-Control-Allow-Origin - this early cap rejection
+                 * is the one place that didn't, since it fires before
+                 * per-request CORS handling even starts. Without it a
+                 * same-origin-but-different-port page (the normal
+                 * preview.html:80 -> timpsd:8880 split) sees a CORS
+                 * failure instead of the real 503, so its >=500 retry
+                 * logic never triggers and the stream stays dead. */
                 const char *r="HTTP/1.1 503 Service Unavailable\r\n"
+                              "Access-Control-Allow-Origin: *\r\n"
                               "Content-Length: 4\r\nConnection: close\r\n\r\nbusy";
                 net_sendall(fd, r, (int)strlen(r));
             }
