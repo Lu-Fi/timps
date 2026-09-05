@@ -243,7 +243,7 @@ IMPLIBS ?= -l:libimp.a -l:libalog.a -l:libsysutils.a
 # against a distro/buildroot that only ships libfaac.so.
 FAACLIB ?= -l:libfaac.a
 
-.PHONY: all target sim clean strip test-auth test-config test-fmp4 test-fanqueue
+.PHONY: all target sim clean strip test-auth test-config test-fmp4 test-fanqueue test-hub-pool
 
 all: target
 
@@ -342,8 +342,29 @@ test-fanqueue:
 	  $(LDFLAGS) -lpthread -o $(BIN)-fqtest
 	@./$(BIN)-fqtest; rc=$$?; rm -f $(BIN)-fqtest; exit $$rc
 
+# Host-only unit test for the packet recycling pool (src/frame.c): the
+# oversized-buffer slot recycles every IDR/JPEG instead of malloc+free-ing it,
+# is handed out only to over-keep_cap borrows (so no published packet carries
+# cap >> len), and pkt_pool_trim() gives it back. The property under test is
+# "which allocations are NOT made", so the harness counts frame.c's own
+# malloc/free calls via --wrap - hence the extra link flags. Needs no hardware
+# and no running daemon; exit code is the test result.
+#   make test-hub-pool SAN=asan   memory safety (leaks, UAF, double free)
+#   make test-hub-pool SAN=tsan   the concurrent producer/consumer/trim case
+POOLTEST_SRC := scripts/test_hub_pool.c src/frame.c
+ifeq ($(SAN),asan)
+POOLTEST_SAN := -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1
+endif
+ifeq ($(SAN),tsan)
+POOLTEST_SAN := -fsanitize=thread -g -O1
+endif
+test-hub-pool:
+	$(HOSTCC) $(CFLAGS) $(POOLTEST_SAN) -Isrc $(POOLTEST_SRC) \
+	  $(LDFLAGS) -Wl,--wrap=malloc -Wl,--wrap=free -lpthread -o $(BIN)-pooltest
+	@./$(BIN)-pooltest; rc=$$?; rm -f $(BIN)-pooltest; exit $$rc
+
 strip: target
 	$(CROSS_COMPILE)strip $(BIN)
 
 clean:
-	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest
+	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest

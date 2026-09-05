@@ -35,12 +35,18 @@ void pkt_unref(ms_pkt *p)
         if (pool) {
             /* P-01: the last reference is gone, so no subscriber can still
              * touch this buffer - hand it back to the source pool for reuse
-             * (no free()) unless the pool is already full or the buffer
-             * ratcheted past keep_cap (a one-off large IDR), in which case
-             * free it to bound idle pool memory to max_free*keep_cap/source. */
+             * (no free()). Two destinations, split at keep_cap:
+             *   <= keep_cap: the freelist, bounded by max_free, as before.
+             *   >  keep_cap: the single ->big slot (R-01), so the recurring
+             *     large frames recycle. A SECOND oversized buffer is freed
+             *     rather than pinned - that is what keeps the idle ceiling at
+             *     max_free*keep_cap + one big buffer instead of scaling with
+             *     however many large frames happen to be in flight. */
             int pooled = 0;
             pthread_mutex_lock(&pool->lock);
-            if (pool->nfree < pool->max_free && p->cap <= pool->keep_cap) {
+            if (p->cap > pool->keep_cap) {
+                if (!pool->big) { p->pnext = NULL; pool->big = p; pooled = 1; }
+            } else if (pool->nfree < pool->max_free) {
                 p->pnext = pool->freelist;
                 pool->freelist = p;
                 pool->nfree++;
@@ -61,13 +67,36 @@ void pkt_pool_init(pkt_pool *pool, int max_free, size_t keep_cap)
     pool->nfree    = 0;
     pool->max_free = max_free;
     pool->keep_cap = keep_cap;
+    pool->big      = NULL;
+}
+
+void pkt_pool_trim(pkt_pool *pool)
+{
+    ms_pkt *b;
+    pthread_mutex_lock(&pool->lock);
+    b = pool->big;
+    pool->big = NULL;
+    pthread_mutex_unlock(&pool->lock);
+    /* free outside the lock: the producer's next borrow must not wait on it */
+    if (b) { free(b->data); free(b); }
 }
 
 ms_pkt *pkt_pool_get(pkt_pool *pool, size_t cap)
 {
     ms_pkt *p = NULL;
+    if (cap == 0) cap = 1;
+    /* Size-matched dispatch (R-01). A request over keep_cap takes the ->big
+     * slot and NEVER the freelist: raiding a warm small buffer for a large
+     * frame would free its data anyway, so it only costs the next P-frame its
+     * buffer. A request at or under keep_cap takes the freelist and NEVER
+     * ->big: handing an IDR-sized buffer to a 2 KB P-frame is precisely the
+     * cap >> len packet the fanqueue/record byte budgets cannot account for.
+     * Either miss falls through to a fresh malloc, exactly as an empty
+     * freelist always has. */
     pthread_mutex_lock(&pool->lock);
-    if (pool->freelist) {
+    if (cap > pool->keep_cap) {
+        if (pool->big) { p = pool->big; pool->big = NULL; }
+    } else if (pool->freelist) {
         p = pool->freelist;
         pool->freelist = p->pnext;
         pool->nfree--;
@@ -79,7 +108,6 @@ ms_pkt *pkt_pool_get(pkt_pool *pool, size_t cap)
         p->data = NULL;
         p->cap  = 0;
     }
-    if (cap == 0) cap = 1;
     if (cap > p->cap) {
         /* free+malloc, not realloc: the borrow starts at len==0, so the old
          * contents are the previous frame's - bytes the caller overwrites and

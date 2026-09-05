@@ -183,11 +183,22 @@ static pthread_cond_t  g_push_done[HUB_NSRC];
  *     (build + a handful queued) without malloc churn; a genuinely slow client
  *     or the recorder pre-roll ring pins many buffers, but those exceed the
  *     pool and simply fall back to malloc/free - i.e. no worse than today.
- *   HUB_POOL_KEEP_CAP - buffers that ratcheted past this (a one-off large IDR)
- *     are freed on return rather than pinned idle, bounding worst-case idle
- *     pool memory to HUB_POOL_MAX_FREE * HUB_POOL_KEEP_CAP per source
- *     (~384 KB). High-frequency P-frames stay well under it and recycle for
- *     free; the ~1/GOP oversized IDR pays a realloc-grow + free, negligible. */
+ *   HUB_POOL_KEEP_CAP - the small/large split point. Freelist entries stay at
+ *     or under it, bounding the freelist's idle memory to HUB_POOL_MAX_FREE *
+ *     HUB_POOL_KEEP_CAP per source (~384 KB). High-frequency P-frames stay
+ *     well under it and recycle for free.
+ *
+ * R-01 (REVIEW_2026-08-07, left open pending a soak measurement): at 96 KB
+ * this split ALSO used to mean "freed on return", and the frames above it are
+ * not the one-off the comment assumed - every IDR is (256-400 KB observed at
+ * 1080p/3000 kbps) and every 1080p JPEG is (~800 KB observed, hal_ingenic.c
+ * :106-117), i.e. ~1/GOP per video source plus every MJPEG/snapshot frame paid
+ * a malloc+free of that size. pkt_pool now keeps ONE such buffer per source
+ * (pkt_pool->big) so those recycle too, handed out only for requests that are
+ * themselves over the split so cap ~= len still holds on every published
+ * packet. Raising HUB_POOL_KEEP_CAP instead would have quadrupled the idle
+ * ceiling this constant exists to defend; the one big slot adds at most one
+ * buffer, and hub_pool_trim() gives it back when a producer stops. */
 #ifndef HUB_POOL_MAX_FREE
 #define HUB_POOL_MAX_FREE 4
 #endif
@@ -211,6 +222,12 @@ ms_pkt *hub_pkt_get(int src, size_t cap)
 {
     if (src < 0 || src >= HUB_NSRC) return NULL;
     return pkt_pool_get(&g_pool[src], cap);
+}
+
+void hub_pool_trim(int src)
+{
+    if (src < 0 || src >= HUB_NSRC) return;
+    pkt_pool_trim(&g_pool[src]);
 }
 
 hub_source *hub_get(int src)

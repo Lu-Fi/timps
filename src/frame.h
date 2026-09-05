@@ -45,9 +45,25 @@ typedef struct pkt_pool {
     ms_pkt         *freelist;
     int             nfree;
     int             max_free;   /* cap on idle buffers retained */
-    size_t          keep_cap;   /* a buffer whose data grew beyond this is
-                                 * freed on return, not pooled, so a transient
-                                 * large IDR can't pin max_free*IDR-size idle */
+    size_t          keep_cap;   /* small/large split point: a buffer whose data
+                                 * grew beyond this never enters the freelist,
+                                 * so a transient large IDR can't pin
+                                 * max_free*IDR-size idle */
+    /* R-01 (REVIEW_2026-08-07 P-01, left open pending a soak measurement):
+     * ONE over-keep_cap buffer is retained here instead of being freed, so the
+     * recurring large frames - every IDR, and every 1080p JPEG, all of which
+     * are above keep_cap by construction - recycle instead of paying a
+     * malloc+free of 100-800 KB each. Deliberately a single slot and not a
+     * bigger keep_cap: raising keep_cap would let all max_free freelist entries
+     * ratchet to IDR size (4x the idle footprint the 96 KB ceiling was chosen
+     * to defend on 32 MB SoCs), and it is handed out ONLY for requests that are
+     * themselves over keep_cap (see pkt_pool_get). That second rule is what
+     * keeps cap ~= len on every published packet: fanqueue's FQ_MAX_BYTES /
+     * record.c's RING_MAX_BYTES budgets account ->len, so a small frame carried
+     * in an IDR-sized buffer would be memory the backstops cannot see - the
+     * exact hazard hal_ingenic.c's sw-rotate publish path is documented to
+     * avoid. pkt_pool_trim() releases the slot when a producer goes idle. */
+    ms_pkt         *big;
 } pkt_pool;
 
 /* Copy constructor (unchanged contract): mallocs + copies the buffer. Still
@@ -65,5 +81,11 @@ void    pkt_pool_init(pkt_pool *p, int max_free, size_t keep_cap);
  * Returns with _ref==1, len==0, pool set; NULL on OOM. The caller fills
  * data[0..len) and sets ->len, then publishes with hub_publish_take(). */
 ms_pkt *pkt_pool_get(pkt_pool *p, size_t cap);
+/* Release the retained over-keep_cap buffer (see ->big), returning the pool to
+ * the max_free*keep_cap idle ceiling. For producers that have just stopped
+ * their encoder: an idle source must not sit on an IDR-sized buffer. Safe to
+ * call at any time and any number of times - it only ever frees a buffer that
+ * is already idle in the pool, never one still referenced by a subscriber. */
+void    pkt_pool_trim(pkt_pool *p);
 
 #endif

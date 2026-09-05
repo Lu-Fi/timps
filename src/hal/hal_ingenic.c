@@ -1738,6 +1738,13 @@ static void *video_thread(void *arg)
             if (now - idle_since >= MS_IDLE_STOP_US) {
                 IMP_Encoder_StopRecvPic(vc->chn);
                 fs_unuse(vc->chn);            /* stop the frame flow entirely */
+                /* R-01: no more frames from this source until a client comes
+                 * back, so hand back the retained IDR-sized pool buffer rather
+                 * than sit on it for the whole idle period. Reaching here means
+                 * MS_IDLE_STOP_US with no subscriber, so every packet has long
+                 * since been returned; a late return would simply refill the
+                 * slot, which is harmless. */
+                hub_pool_trim(vc->chn);
                 receiving=0; idle_since=0;
                 LOGI(MOD,"video chn%d idle",vc->chn);
                 continue;
@@ -2775,6 +2782,7 @@ static void *jpeg_thread(void *arg)
             if (nowi - idle_since >= MS_IDLE_STOP_US) {
                 IMP_Encoder_StopRecvPic(jc->chn);
                 fs_unuse(jc->fs_chn);         /* stop the frame flow entirely */
+                hub_pool_trim(jc->src);       /* R-01, see video_thread */
                 receiving=0; idle_since=0;
                 continue;
             }
@@ -2934,6 +2942,10 @@ static void *jpeg_thread(void *arg)
         hub_publish_take(jc->src, pk, pub_now, 1, MS_MEDIA_JPEG, pub_now);
     }
     if (receiving){ IMP_Encoder_StopRecvPic(jc->chn); fs_unuse(jc->fs_chn); }
+    /* This thread also leaves the loop for good on the watchdog give-up above,
+     * with the rest of the daemon still running - don't leave an ~800 KB JPEG
+     * buffer retained for a source that will never publish again. */
+    hub_pool_trim(jc->src);
     return NULL;
 }
 

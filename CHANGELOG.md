@@ -8,6 +8,41 @@ semantic versioning.
 
 ### Changed
 
+- **The frame pool now recycles the oversized buffers too — every IDR and every
+  1080p JPEG** (`src/frame.c`, `src/frame.h`, `src/hub.c`, `src/hub.h`,
+  `src/hal/hal_ingenic.c`). Closes R-01 from the 2026-08-07 P-01 review, which
+  asked for a soak measurement that was never taken. A buffer that grew past
+  `HUB_POOL_KEEP_CAP` (96 KB) used to be `free()`d on its last unref rather
+  than pooled — and the frames above that line are not the "one-off large IDR"
+  the comment assumed: `video0.jpeg` defaults to on at the video stream's
+  resolution, so a WebUI preview produces 1080p JPEGs at 5 fps, measured today
+  at 224 KB at night and documented at 800-820 KB in detail-heavy daylight.
+  - `pkt_pool` keeps **one** such buffer per source, and hands it out **only**
+    to borrows that are themselves over the split. That second rule keeps
+    `cap ≈ len` on every published packet: `fanqueue`'s `FQ_MAX_BYTES` and
+    `record.c`'s `RING_MAX_BYTES` account `->len`, so a small frame carried in
+    an IDR-sized buffer would be memory the backstops cannot see — the hazard
+    `hal_ingenic.c` already documents for the T23 SW-rotate publish path.
+  - New `hub_pool_trim(src)` / `pkt_pool_trim()`, called from `video_thread`
+    and `jpeg_thread` where they shut the encoder down for a sustained idle
+    period, so an idle source does not sit on an IDR-sized buffer and the old
+    `max_free * keep_cap` idle ceiling is restored.
+  - Measured on a T31 camera's own uClibc-ng: this allocator starts using
+    `mmap` between 192 KB and 256 KB, so above that a frame took one minor
+    fault **per page** — 201 for an 800 KB JPEG — and cost 2.7x what writing it
+    costs. Recycling saves **326 µs at 256 KB, 401 µs at 300 KB, 994 µs at
+    800 KB** per frame, i.e. ~0.5% of a core for a daylight 1080p MJPEG viewer,
+    and 12-23 µs per frame below the threshold.
+  - **No change at the fleet's current settings**: 1200 kbps at 15 fps puts an
+    IDR near 80 KB, under the split, where buffers already recycled. The win is
+    the JPEG/MJPEG path and any camera above ~1.5 Mbps.
+  - New `make test-hub-pool` (60085 checks; also `SAN=asan` / `SAN=tsan`, both
+    clean) covers the retention, the size-matched dispatch in both directions,
+    the trim, the unchanged freelist and refcount behaviour, a 20k-frame
+    randomised fan-out and a concurrent producer/consumer/trim run.
+    **+356 B `.text`, +8 B on flash.** See
+    `dev_notes/FRAME_POOL_BIG_2026-09-05.md`.
+
 - **fMP4 HTTP streaming no longer copies the access unit, and no longer keeps
   a frame-sized buffer per client** (`src/mp4/fmp4.c`, `src/mp4/fmp4.h`,
   `src/mp4/httpd.c`). 1.9.4 removed the second of two per-frame copies in the

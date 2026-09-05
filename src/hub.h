@@ -57,6 +57,13 @@ void        hub_publish(int src, const uint8_t *data, size_t len,
  * back in the pool or in flight to a subscriber). Passing a NULL p is a safe
  * no-op. */
 ms_pkt     *hub_pkt_get(int src, size_t cap);
+/* Give back this source's retained oversized pool buffer (see pkt_pool->big
+ * and R-01 in hub.c). Producers call it where they shut their encoder down for
+ * a sustained idle period - an idle source must not sit on an IDR-sized
+ * buffer. Purely a memory hint: it frees only a buffer already idle in the
+ * pool, never one a subscriber still references, and the pool refills itself
+ * from the next large frame. */
+void        hub_pool_trim(int src);
 void        hub_publish_take(int src, ms_pkt *p,
                              int64_t pts_us, int keyframe, int media,
                              int64_t now_us);   /* see hub_publish() */
