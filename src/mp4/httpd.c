@@ -467,13 +467,37 @@ static void stream_mp4(hconn *c, int chn)
     int drop_warned = 0;   /* one WARN per client; per-drop detail stays LOGD */
     /* persistent per-connection fragment buffer (M1): reset to len=0/err=0
      * each frame instead of ms_buf_init()/ms_buf_free() per packet - avoids
-     * a malloc+free (plus the full-AU copy that was already unavoidable) on
-     * every single video/audio frame of every connected client. Grows once
-     * to this stream's steady-state fragment size via ms_buf_reserve and is
-     * then reused for the life of the connection; freed once when the loop
-     * below exits. */
+     * a malloc+free on every single video/audio frame of every connected
+     * client. Reused for the life of the connection; freed once when the
+     * loop below exits.
+     *
+     * Z1: on a plain (non-TLS) connection this now holds only moof + the
+     * 8-byte mdat header (~120 B) - fmp4_video_fragment_iov() sends the AU
+     * itself straight out of the packet, so the buffer never has to be
+     * frame-sized. That matters more than the copy it saves: ms_buf_reserve
+     * grows by powers of two, so a 300 KB IDR fragment pinned 512 KB (a
+     * 1440p one, 1 MB) per client for the life of the connection against a
+     * ~5 MB RSS daemon, and ms_buf_reset's shrink run never completed because
+     * every GOP's IDR restarted it. HTTP_MAX_CLIENTS is 16.
+     *
+     * TLS keeps the contiguous path: csendv() has no scatter/gather write
+     * over TLS and serialises per iovec, which would turn one fragment into
+     * up to 65 tiny TLS records (~29 B of framing each) and 65 write
+     * syscalls - strictly worse than the copy. Same call this made before,
+     * so the HTTPS path is unchanged; sink_send in rtsp.c splits for RTSPS
+     * for the same reason. */
+    int use_iov = 1;
+#ifdef USE_TLS
+    if (c->tls) use_iov = 0;
+#endif
+    /* soft cap for the per-frame ms_buf_reset: with the gather-write the
+     * steady state is a head plus the odd small audio fragment, so hand back
+     * anything an overflow AU (>FMP4_NAL_IDX NALs) forced us to grow to. */
+    const size_t frag_soft = use_iov ? 4096 : 256*1024;
     ms_buf frag;
     if (ms_buf_init(&frag, 4096)) goto out;        /* OOM */
+    fmp4_frag_iov fi;              /* refilled per video frame, see fmp4.h */
+    fi.niov = 0;
     int64_t last_pkt_us = ms_now_us();   /* H-2: encoder-stall bound, see above */
     int64_t last_audio_us = last_pkt_us; /* see MS_MP4_AUDIO_GAP_US */
     /* blocking socket: net_sendall must never write a partial fragment */
@@ -638,8 +662,9 @@ static void stream_mp4(hconn *c, int chn)
                 drop_idr_us = now;
             }
         }
-        ms_buf_reset(&frag, 256*1024);   /* reuse, shrink an outlier IDR buffer back */
+        ms_buf_reset(&frag, frag_soft);  /* reuse, shrink an outlier buffer back */
         int frag_ok = 1;
+        fi.niov = 0;                     /* stale iovecs must never outlive their AU */
         if (p->media==MS_MEDIA_VIDEO) {
             if (!got_key){
                 if(!p->keyframe){
@@ -666,7 +691,16 @@ static void stream_mp4(hconn *c, int chn)
                 }
                 got_key=1;
             }
-            frag_ok = fmp4_video_fragment(&mux, p->data, p->len, p->keyframe, p->pts_us, &frag) == 0;
+            /* Z1: the iovec form aliases p->data, so the send below MUST stay
+             * above this frame's pkt_unref() - it does (same zero-copy flush
+             * barrier rtsp.c documents at its own unref). Audio fragments keep
+             * the contiguous path: an AAC frame is a few hundred bytes, so
+             * there is no copy worth avoiding and no buffer worth not growing. */
+            frag_ok = use_iov
+                ? fmp4_video_fragment_iov(&mux, p->data, p->len, p->keyframe,
+                                          p->pts_us, &frag, &fi) == 0
+                : fmp4_video_fragment(&mux, p->data, p->len, p->keyframe,
+                                      p->pts_us, &frag) == 0;
         } else if (want_audio && got_key) {
             frag_ok = fmp4_audio_fragment(&mux, p->data, p->len, p->pts_us, &frag) == 0;
         }
@@ -680,14 +714,21 @@ static void stream_mp4(hconn *c, int chn)
             LOGW(MOD,"dropped a corrupt %s fragment (OOM?)",
                  p->media==MS_MEDIA_VIDEO?"video":"audio");
             if (p->media==MS_MEDIA_VIDEO && p->keyframe) hub_request_idr(chn);
+        } else if (fi.niov) {
+            /* one sendmsg() for head + every NAL - same bytes, same single
+             * TCP write, without staging the AU anywhere first */
+            rc = csendv(c, fi.iov, fi.niov);
+            if (rc<0) serr = errno;   /* before trace/unref can clobber it */
         } else if (frag.len) {
             rc = csend(c, frag.data, frag.len);
             if (rc<0) serr = errno;   /* before trace/unref can clobber it */
         }
         /* trace.h: read what the line needs before the packet can be recycled.
-         * Note `send - wr` here is the fMP4 mux cost (fmp4_*_fragment builds
-         * moof+mdat, which copies the whole AU) - the fMP4 analogue of the RTSP
-         * packetizer, and the thing to look at when a slow AU shows a small wr. */
+         * Note `send - wr` here is the fMP4 mux cost - the fMP4 analogue of the
+         * RTSP packetizer, and the thing to look at when a slow AU shows a
+         * small wr. On the gather-write path that cost is now just the moof
+         * build plus the Annex-B walk; only TLS and audio still copy the
+         * payload. */
         if (t_pop)
             ms_trace_au_end(&trc, p->media, p->keyframe, p->len, p->enq_us,
                             t_pop, ms_now_us(), tr_q, tr_qcap);

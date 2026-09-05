@@ -243,7 +243,7 @@ IMPLIBS ?= -l:libimp.a -l:libalog.a -l:libsysutils.a
 # against a distro/buildroot that only ships libfaac.so.
 FAACLIB ?= -l:libfaac.a
 
-.PHONY: all target sim clean strip test-auth test-config
+.PHONY: all target sim clean strip test-auth test-config test-fmp4
 
 all: target
 
@@ -318,8 +318,21 @@ test-config:
 	  $(LDFLAGS) -lpthread -lm -o $(BIN)-cfgtest
 	@./$(BIN)-cfgtest; rc=$$?; rm -f $(BIN)-cfgtest; exit $$rc
 
+# Host-only unit test for the fMP4 muxer's gather-write path: proves
+# fmp4_video_fragment_iov() emits byte-for-byte what fmp4_video_fragment()
+# emits (this is an ISO BMFF wire format) and that the mux state both leave
+# behind is identical. Links the real src/mp4/fmp4.c, needs no hardware and no
+# running daemon; exit code is the test result.
+FMP4TEST_SRC := scripts/test_fmp4.c src/mp4/fmp4.c src/codec/nal.c \
+                src/codec/vparam.c src/codec/aac.c src/util.c src/log.c \
+                src/config.c src/fanqueue.c src/frame.c
+test-fmp4:
+	$(HOSTCC) $(CFLAGS) -DMS_VERSION='"$(VERSION)"' -Isrc $(FMP4TEST_SRC) \
+	  $(LDFLAGS) -lpthread -lm -o $(BIN)-fmp4test
+	@./$(BIN)-fmp4test; rc=$$?; rm -f $(BIN)-fmp4test; exit $$rc
+
 strip: target
 	$(CROSS_COMPILE)strip $(BIN)
 
 clean:
-	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest
+	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test

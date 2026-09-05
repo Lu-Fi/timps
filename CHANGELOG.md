@@ -6,6 +6,47 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- **fMP4 HTTP streaming no longer copies the access unit, and no longer keeps
+  a frame-sized buffer per client** (`src/mp4/fmp4.c`, `src/mp4/fmp4.h`,
+  `src/mp4/httpd.c`). 1.9.4 removed the second of two per-frame copies in the
+  fMP4 mux (`4741bd6`) and left the first, described in the code as
+  unavoidable. It was not: `csendv()`, the gather-write helper, landed in the
+  same review round for MJPEG, and with it the fragment never has to be
+  contiguous.
+  - New `fmp4_video_fragment_iov()` builds only moof + the 8-byte mdat header
+    (~120 B) and returns iovecs pointing straight at the caller's access unit
+    - `{head, len0, nal0, len1, nal1, …}`, at most 65 entries, well under
+    `IOV_MAX`. `stream_mp4()` sends the lot with one `csendv()`. This is the
+    same lifetime contract `rtsp.c` has relied on for RTP since the sinks went
+    zero-copy: the consumer holds its `ms_pkt` reference across the send, so
+    the payload cannot be recycled underneath the iovecs.
+  - The bigger win is memory, not the copy. `ms_buf_reserve` grows by powers
+    of two, so a 300 KB IDR fragment pinned 512 KB per client (a 1440p one,
+    1 MB), and `ms_buf_reset`'s shrink needs 64 consecutive sub-cap resets -
+    which every GOP's IDR restarted, so it never shrank. The per-connection
+    buffer's soft cap drops from 256 KB to 4 KB on this path. Measured with 8
+    concurrent 1080p clients: **546 KB → 136 KB of RSS per client**, and
+    **~12% less daemon CPU** under the same load. `HTTP_MAX_CLIENTS` is 16.
+  - The NAL-indexing walk is now shared (`index_nals()`) between the
+    contiguous and gather-write builders, so they cannot disagree about the
+    trun sample length - a disagreement there is unrecoverable for the client.
+  - Unchanged on purpose: **HTTPS** clients (TLS has no scatter/gather write;
+    `csendv()` serialises per iovec, which would emit up to 65 tiny TLS
+    records - `sink_send()` splits for RTSPS for the same reason), **audio**
+    fragments (a few hundred bytes, nothing to save), and `record.c` (writes
+    to a file, where contiguous is right). An AU with more than 32 NALs falls
+    back to the contiguous mux inside the new function and is returned as a
+    single iovec, so the caller keeps one send path.
+  - Verified byte-for-byte against the previous mux by a new host unit test
+    (`make test-fmp4`, 11 cases incl. H.265, 3-byte start codes, the
+    NAL-overflow fallback and resume, and the M6 re-anchor), which was itself
+    checked against three injected bugs. End-to-end over a real socket, the
+    mdat payloads of a 10 s capture are byte-identical to the baseline's.
+    `+876 B .text` on T31. See
+    `dev_notes/FMP4_ZEROCOPY_2026-09-05.md`.
+
 ## [1.9.8] - 2026-09-03
 
 ### Changed

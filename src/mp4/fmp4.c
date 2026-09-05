@@ -491,39 +491,50 @@ static int fragment(fmp4_mux *m, int track_id, const uint8_t *sample, size_t sle
     return out->err ? -1 : 0;
 }
 
-/* How many NALs of one access unit fmp4_video_fragment indexes on the stack.
- * A typical AU is 1-5 NALs (SPS/PPS/SEI + one slice); 32 covers heavily
- * multi-sliced encodes too, and an AU beyond that just takes the slower
- * re-scan path below. 256 B of a 128 KB (MS_STACK_STREAM) thread stack. */
-#define FMP4_NAL_IDX 32
+/* One kept NAL of an access unit: where its body is and how long it is.
+ * FMP4_NAL_IDX of these live on the caller's stack. */
+typedef struct { const uint8_t *p; size_t n; } nal_ref;
+
+/* The single Annex-B walk that yields BOTH the trun sample length and the
+ * write sources for the mdat body.
+ *
+ * The trun box must record the sample length BEFORE any mdat byte is written,
+ * which is why the mux used to build the whole AVCC sample in a scratch buffer
+ * and then copy it a second time into the output. Indexing the NALs during the
+ * walk that has to happen anyway yields both, so one pass is enough.
+ * nal_iter/find_start is a byte-at-a-time start-code scan, so re-deriving the
+ * length in a separate pre-pass would cost more than the copy it saves.
+ *
+ * Shared by the contiguous and the gather-write builders below so the two can
+ * never disagree about which NALs are kept or how long the sample is: a trun
+ * length that disagrees with the mdat payload desyncs the client's
+ * SourceBuffer for the rest of the session.
+ *   *slen_o:     total AVCC sample length - counts the NALs past the index too
+ *   *overflow_o: 1 when the AU had more NALs than the index holds
+ *   returns:     number of NALs actually indexed in nals[] */
+static int index_nals(const fmp4_mux *m, const uint8_t *au, size_t len,
+                      nal_ref *nals, size_t *slen_o, int *overflow_o)
+{
+    int nn = 0, overflow = 0;
+    size_t slen = 0;
+    nal_iter it; nal_unit u;
+    nal_iter_init(&it, au, len);
+    while (nal_iter_next(&it, &u)) {
+        if (nal_skipped(m, &u)) continue;
+        if (nn < FMP4_NAL_IDX) { nals[nn].p = u.data; nals[nn].n = u.len; nn++; }
+        else overflow = 1;
+        slen += 4 + u.len;
+    }
+    *slen_o = slen; *overflow_o = overflow;
+    return nn;
+}
 
 int fmp4_video_fragment(fmp4_mux *m, const uint8_t *au, size_t len,
                         int keyframe, int64_t pts_us, ms_buf *out)
 {
-    /* The trun box must record the sample length BEFORE any mdat byte is
-     * written, which is why this used to build the whole AVCC sample in a
-     * per-thread scratch ms_buf and then copy it a second time into `out`.
-     * Index the NALs in the one Annex-B pass instead: the walk already has to
-     * happen, and it yields both the total length (for trun) and the pointers
-     * the mdat body is then written from - directly into `out`. That drops one
-     * full copy of every video access unit per client per frame, and with it a
-     * second frame-sized persistent buffer per streaming thread.
-     * nal_iter/find_start is a byte-at-a-time start-code scan, so re-deriving
-     * the length in a separate pre-pass would have cost more than the copy it
-     * saved - the index is what makes one pass enough. */
-    struct { const uint8_t *p; size_t n; } nals[FMP4_NAL_IDX];
-    int nn = 0, overflow = 0;
-    size_t slen = 0;
-    {
-        nal_iter it; nal_unit u;
-        nal_iter_init(&it, au, len);
-        while (nal_iter_next(&it, &u)) {
-            if (nal_skipped(m, &u)) continue;
-            if (nn < FMP4_NAL_IDX) { nals[nn].p = u.data; nals[nn].n = u.len; nn++; }
-            else overflow = 1;
-            slen += 4 + u.len;
-        }
-    }
+    nal_ref nals[FMP4_NAL_IDX];
+    size_t slen; int overflow;
+    int nn = index_nals(m, au, len, nals, &slen, &overflow);
     /* parameter-set-only AU (no VCL data): emit nothing and do not advance
      * the timeline - a 0-byte sample would make MSE choke. */
     if (slen == 0) return 0;
@@ -543,6 +554,67 @@ int fmp4_video_fragment(fmp4_mux *m, const uint8_t *au, size_t len,
     /* err is sticky across every append above (see fragment()) - a truncated
      * fragment is reported, never handed to the caller as valid. */
     return out->err ? -1 : 0;
+}
+
+int fmp4_video_fragment_iov(fmp4_mux *m, const uint8_t *au, size_t len,
+                            int keyframe, int64_t pts_us,
+                            ms_buf *head, fmp4_frag_iov *fi)
+{
+    /* The one remaining full-AU copy the contiguous builder still pays exists
+     * only so the fragment can leave as ONE buffer. A gather-write does not
+     * need that: the caller holds its ms_pkt reference across the send (see
+     * the contract in fmp4.h), exactly as rtsp.c does for RTP, so the mdat
+     * body can be sent straight out of the access unit. What is left to build
+     * is moof + the 8-byte mdat header - about 120 bytes instead of a
+     * frame-sized buffer per client. */
+    fi->niov = 0;
+    nal_ref nals[FMP4_NAL_IDX];
+    size_t slen; int overflow;
+    int nn = index_nals(m, au, len, nals, &slen, &overflow);
+    if (slen == 0) return 0;                      /* see fmp4_video_fragment */
+    if (overflow) {
+        /* More NALs than the index holds - too many to describe as iovecs
+         * anyway. Mux it contiguously (which advances the timeline exactly
+         * once, since nothing above touched mux state yet) and hand it back
+         * as a single iovec, so the caller keeps one send path. `head` grows
+         * to AU size for this frame and ms_buf_reset()'s soft cap gives the
+         * memory back once the outlier has passed. */
+        if (fmp4_video_fragment(m, au, len, keyframe, pts_us, head) != 0) return -1;
+        if (head->len) {
+            fi->iov[0].iov_base = head->data;
+            fi->iov[0].iov_len  = head->len;
+            fi->niov = 1;
+        }
+        return 0;
+    }
+    uint32_t dur = m->fps>0 ? m->v_timescale/(uint32_t)m->fps : 3000; /* nominal */
+    uint64_t dts = pts_track_time(m, pts_us, &m->v_last_pts_us,
+                                  &m->v_dts, m->v_timescale, &dur, 0);
+    uint32_t flags = keyframe ? 0x02000000 : 0x01010000;
+    size_t mdat = fragment_head(m, TRK_VIDEO, slen, dur, dts, flags, 1, head);
+    /* err is sticky: a failed grow anywhere in fragment_head leaves `mdat` not
+     * reliably inside head->data, so the patch below would be out of bounds.
+     * This is the same guard box_close() applies on the contiguous path. */
+    if (!head->data || head->err) return -1;
+    /* box_close(head, mdat) would write (head->len - mdat) once the body had
+     * been appended. The body is `slen` bytes and never enters `head`, so the
+     * size it would have produced is exactly 8 + slen - written here so the
+     * mdat box on the wire is byte-identical to the contiguous mux's. */
+    wr_be32(head->data + mdat, (uint32_t)(8 + slen));
+
+    fi->iov[0].iov_base = head->data;
+    fi->iov[0].iov_len  = head->len;
+    fi->niov = 1;
+    for (int i = 0; i < nn; i++) {
+        wr_be32(fi->lp[i], (uint32_t)nals[i].n);
+        fi->iov[fi->niov].iov_base = fi->lp[i];
+        fi->iov[fi->niov].iov_len  = 4;
+        fi->niov++;
+        fi->iov[fi->niov].iov_base = (void *)(uintptr_t)nals[i].p;
+        fi->iov[fi->niov].iov_len  = nals[i].n;
+        fi->niov++;
+    }
+    return 0;
 }
 
 int fmp4_audio_fragment(fmp4_mux *m, const uint8_t *frame, size_t len,
