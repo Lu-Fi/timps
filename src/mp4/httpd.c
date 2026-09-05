@@ -48,6 +48,23 @@
 #ifndef MS_MP4_DROP_HIWAT
 #define MS_MP4_DROP_HIWAT (MS_MP4_QCAP*3/4)
 #endif
+/* fanqueue capacity for MJPEG streaming clients. Deliberately far smaller than
+ * MS_MP4_QCAP, because MJPEG is not a coded stream: every part is an
+ * independent, self-contained JPEG, so a client that has fallen behind gains
+ * nothing from a deep backlog - the frames it would eventually receive are
+ * already stale by the time it drains them, and the only thing depth buys is
+ * latency. (fMP4/RTSP need depth for the opposite reason: dropping one P-frame
+ * corrupts the rest of the GOP, so their queues absorb bursts instead.)
+ * The queue only ever fills once the socket send buffer is full, i.e. the
+ * client genuinely cannot keep up - TCP already smooths ordinary jitter - so
+ * 2 slots (one being written, one fresh behind it) is the useful depth and
+ * anything beyond it is lag plus pinned memory: JPEGs run 100-800 KB, and the
+ * previous cap of 8 let a single stalled viewer pin the whole FQ_MAX_BYTES
+ * budget (2 MB) while drifting up to 1.6 s behind at 5 fps. -D overridable
+ * like MS_MP4_QCAP. */
+#ifndef MS_MJPEG_QCAP
+#define MS_MJPEG_QCAP 2
+#endif
 /* H-2 hardening: disconnect detection in the fMP4/MJPEG streaming loops is
  * data-driven (crecv() is only even polled once fanqueue_pop times out with
  * no packet), so an encoder-stall (hub source pinned but the HAL stopped
@@ -835,7 +852,7 @@ static void stream_mjpeg(hconn *c, int src, const char *bnd)
 
     /* subscribe BEFORE sending headers so a full source can answer 503 */
     fanqueue q;
-    if (fanqueue_init(&q,8)) return;
+    if (fanqueue_init(&q,MS_MJPEG_QCAP)) return;
     if (hub_subscribe(src, &q) != 0) {   /* too many subscribers */
         http_send_ex(c,"503 Service Unavailable","text/plain",MEDIA_CORS,"busy",4);
         fanqueue_free(&q);

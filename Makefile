@@ -243,7 +243,7 @@ IMPLIBS ?= -l:libimp.a -l:libalog.a -l:libsysutils.a
 # against a distro/buildroot that only ships libfaac.so.
 FAACLIB ?= -l:libfaac.a
 
-.PHONY: all target sim clean strip test-auth test-config test-fmp4
+.PHONY: all target sim clean strip test-auth test-config test-fmp4 test-fanqueue
 
 all: target
 
@@ -331,8 +331,19 @@ test-fmp4:
 	  $(LDFLAGS) -lpthread -lm -o $(BIN)-fmp4test
 	@./$(BIN)-fmp4test; rc=$$?; rm -f $(BIN)-fmp4test; exit $$rc
 
+# Host-only unit test for the fanqueue overflow contract: drop-oldest keeps the
+# newest packets, the FQ_MAX_BYTES budget and the slot cap each bound what a
+# stalled consumer pins, and the drop flags still fire at small capacities
+# (MS_MJPEG_QCAP = 2). Links the real src/fanqueue.c, needs no hardware and no
+# running daemon; exit code is the test result.
+FQTEST_SRC := scripts/test_fanqueue.c src/fanqueue.c src/frame.c
+test-fanqueue:
+	$(HOSTCC) $(CFLAGS) -Isrc $(FQTEST_SRC) \
+	  $(LDFLAGS) -lpthread -o $(BIN)-fqtest
+	@./$(BIN)-fqtest; rc=$$?; rm -f $(BIN)-fqtest; exit $$rc
+
 strip: target
 	$(CROSS_COMPILE)strip $(BIN)
 
 clean:
-	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test
+	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest
