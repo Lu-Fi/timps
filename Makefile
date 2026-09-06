@@ -108,9 +108,17 @@ IMP_INC ?= $(INC_ROOT)/T23/1.3.0/en
 else ifeq ($(PLATFORM),T30)
 IMP_INC ?= $(INC_ROOT)/T30/1.0.5/zh
 else ifeq ($(PLATFORM),T40)
-IMP_INC ?= $(INC_ROOT)/T40/1.2.0/zh
+# MUST match the libimp thingino ships for T40 (SDK 1.3.1, see ingenic-lib.mk
+# and build.sh get_ingenic_lib_src). The 1.2.0 header lacks the trailing
+# 'isVI' member of IMPEncoderStream that 1.3.1 added, so IMP_Encoder_GetStream
+# writes one word past the caller's struct on every frame - same class of
+# silent ABI mismatch as the T23 fcrop note above. video_thread() has a
+# compile-time tripwire against this.
+IMP_INC ?= $(INC_ROOT)/T40/1.3.1/en
 else ifeq ($(PLATFORM),T41)
-IMP_INC ?= $(INC_ROOT)/T41/1.2.0/zh
+# 1.2.6 = the libimp thingino ships for T41 (1.2.0 is layout-compatible for
+# everything timps uses, but keep header and lib on the same version).
+IMP_INC ?= $(INC_ROOT)/T41/1.2.6/en
 else ifeq ($(PLATFORM),T20)
 IMP_INC ?= $(INC_ROOT)/T20/3.12.0/zh
 PLATFORM_CFLAGS += -DFQ_MAX_BYTES=1048576   # P-08: see T21 note above

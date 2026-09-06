@@ -1871,6 +1871,15 @@ static void *video_thread(void *arg)
             continue;
         }
         IMPEncoderStream st;
+#if defined(PLATFORM_T40)||defined(PLATFORM_T41)
+        /* ABI tripwire (same idea as the T23 fcrop store in fs_create): the
+         * libimp thingino ships for T40 (1.3.1) and T41 (1.2.6) fills a
+         * trailing 'isVI' in IMPEncoderStream that the older T40 1.2.0
+         * header lacks, so a build against that header hands GetStream a
+         * struct one word too short - a per-frame stack overwrite that
+         * compiles clean. Naming the member makes such a build FAIL. */
+        (void)st.isVI;
+#endif
         if (IMP_Encoder_GetStream(vc->chn,&st,1)!=0){
             LOGW(MOD,"chn%d: GetStream failed after PollingStream OK",vc->chn); continue; }
         dbg_pollfail=0;

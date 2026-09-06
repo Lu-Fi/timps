@@ -21,8 +21,8 @@ git submodule under `include/`) are pinned per platform in the
 | T21 | `include/T21/1.0.33/zh` |
 | T23 | `include/T23/1.3.0/en` (must be ≥1.1.2 — earlier headers are missing a struct member that, combined with a newer libimp, makes the framesource silently deliver no frames; `fs_create()` has a compile-time tripwire against this mismatch) |
 | T30 | `include/T30/1.0.5/zh` |
-| T40 | `include/T40/1.2.0/zh` |
-| T41 | `include/T41/1.2.0/zh` |
+| T40 | `include/T40/1.3.1/en` (matches the libimp 1.3.1 thingino ships; the older 1.2.0 header lacks `IMPEncoderStream.isVI`, so `IMP_Encoder_GetStream` would overrun a struct one word too short — `video_thread()` has a compile-time tripwire against this) |
+| T41 | `include/T41/1.2.6/en` (matches the libimp 1.2.6 thingino ships) |
 | T20, T10 | `include/T20/3.12.0/zh` (T10 has no distinct header set and builds against T20's) |
 
 ## Two encoder-API generations
