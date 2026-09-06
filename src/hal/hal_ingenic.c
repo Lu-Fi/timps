@@ -512,6 +512,35 @@ static void fs_unuse(int chn)
     }
     pthread_mutex_unlock(&g_fs_mtx);
 }
+/* Teardown counterpart of fs_use()/fs_unuse(): hard-stop one FS channel. By
+ * the time ing_stop() or the bring-up unwind reach a channel, every producer
+ * thread has been joined and has run its StopRecvPic+fs_unuse() epilogue (and
+ * the motion pin is released first), so the channel is normally ALREADY off -
+ * either idle (on-demand FS, nobody watching) or just idled by that last
+ * fs_unuse(). libimp rejects a second DisableChn ("FrameSource N do not
+ * enable", rc=-1), which made td_report() flag EVERY clean shutdown fleet-wide
+ * as "2 IMP call(s) failed (first: FrameSource_DisableChn rc=-1) - the next
+ * start may fail ISP init" (13/13 shutdowns observed 2026-09-05, next start
+ * fine each time). Only issue the real call when the channel is physically
+ * on, and zero the bookkeeping: main.c's start-retry path runs ing_stop() ->
+ * ing_init() -> ing_start() in-process, so stale counts would carry over. A
+ * non-zero refcount here means some holder leaked its reference. */
+static int fs_teardown(int chn)
+{
+    if (chn < 0 || chn >= MS_FS_MAXCHN) return 0;
+    int rc = 0;
+    pthread_mutex_lock(&g_fs_mtx);
+    if (g_fs_users[chn])
+        LOGW(MOD,"framesource %d: %d reference(s) still held at teardown",
+             chn, g_fs_users[chn]);
+    if (g_fs_enabled[chn]) {
+        rc = IMP_FrameSource_DisableChn(chn);
+        g_fs_enabled[chn] = 0;
+    }
+    g_fs_users[chn] = 0;
+    pthread_mutex_unlock(&g_fs_mtx);
+    return rc;
+}
 
 /* ISP latch kick. Several ISP settings only take effect while framesource chn0
  * is delivering frames: the SDK Set call returns 0 but the change sits queued in
@@ -2463,7 +2492,7 @@ static void *sw_rot_thread(void *arg)
  * the caller). No encoder group/chn, no OSD group, no binds to undo. */
 static void sw_rot_teardown(vchan *vc)
 {
-    IMP_FrameSource_DisableChn(vc->chn);
+    fs_teardown(vc->chn);
     if (vc->yuv_h){ IMP_Encoder_YuvExit(vc->yuv_h); vc->yuv_h=NULL; }
     if (vc->bounce){ IMP_Encoder_VbmFree(vc->bounce); vc->bounce=NULL; }
     if (vc->ybuf){ free(vc->ybuf); vc->ybuf=NULL; }
@@ -4447,7 +4476,7 @@ fail:
 #endif
         int c=g_v[k].chn, g=g_v[k].grp, og=g_v[k].og;
         IMPCell f={DEV_ID_FS,c,0}, e={DEV_ID_ENC,g,0};
-        td(IMP_FrameSource_DisableChn(c),"FrameSource_DisableChn");
+        td(fs_teardown(c),"FrameSource_DisableChn");
         /* unbind the pairs that were REALLY bound, downstream pair first.
          * With OSD the pipeline is fs->osd->enc (M-1) - unbinding fs->enc
          * there would leave both real bindings in place and the Destroy
@@ -4523,7 +4552,7 @@ static void ing_stop(void)
         if (jc->src==HUB_JPEG_SRC){
             /* dedicated channel: own framesource + own group */
             IMPCell fs={DEV_ID_FS,jc->chn,0}, enc={DEV_ID_ENC,jc->chn,0};
-            td(IMP_FrameSource_DisableChn(jc->chn),"FrameSource_DisableChn");
+            td(fs_teardown(jc->chn),"FrameSource_DisableChn");
             td(IMP_System_UnBind(&fs,&enc),"System_UnBind fs->enc");
             td(IMP_Encoder_UnRegisterChn(jc->chn),"Encoder_UnRegisterChn");
             td(IMP_Encoder_DestroyChn(jc->chn),"Encoder_DestroyChn");
@@ -4549,7 +4578,7 @@ static void ing_stop(void)
 #endif
         int chn=g_v[i].chn, grp=g_v[i].grp, og=g_v[i].og;
         IMPCell fs={DEV_ID_FS,chn,0}, enc={DEV_ID_ENC,grp,0};
-        td(IMP_FrameSource_DisableChn(chn),"FrameSource_DisableChn");
+        td(fs_teardown(chn),"FrameSource_DisableChn");
         if (og>=0){
             had_osd=1;
             IMPCell osd={DEV_ID_OSD,og,0};
