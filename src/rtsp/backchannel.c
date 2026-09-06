@@ -227,22 +227,29 @@ int bc_feed_pcm(const void *owner, const int16_t *pcm, int nsamp, int rate)
 
 void bc_feed_rtp(const void *owner, const uint8_t *rtp, int len)
 {
-    pthread_mutex_lock(&g_lock);
-    int64_t now = ms_now_us();
-    if (!bc_elect_locked(owner, now)){ pthread_mutex_unlock(&g_lock); return; }
-
+    /* Validate BEFORE electing: only a packet that actually carries speaker
+     * audio may win or refresh the election. Electing first let a muxed RTCP
+     * RR (or any malformed packet) from the current owner re-stamp
+     * g_owner_last_us, so an NVR that kept the backchannel open with RTCP
+     * keepalives but never talked held the election forever - exactly the
+     * silent-owner case the F2 staleness re-election exists for. Nothing
+     * below touches shared state, so it needs no lock. */
     int off = rtp_payload_off(rtp, len);
-    if (off < 0){ pthread_mutex_unlock(&g_lock); return; }
+    if (off < 0) return;
     /* drop RTP padding (P bit): last byte = pad length */
     if ((rtp[0] & 0x20) && len > off){
         int pad = rtp[len-1];
         if (pad > 0 && pad <= len - off) len -= pad;
     }
     /* only the advertised payload type (also skips muxed RTCP on this channel) */
-    if ((rtp[1] & 0x7F) != bc_payload_type()){ pthread_mutex_unlock(&g_lock); return; }
+    if ((rtp[1] & 0x7F) != bc_payload_type()) return;
     const uint8_t *pl = rtp + off;
     int plen = len - off;
-    if (plen <= 0){ pthread_mutex_unlock(&g_lock); return; }
+    if (plen <= 0) return;
+
+    pthread_mutex_lock(&g_lock);
+    int64_t now = ms_now_us();
+    if (!bc_elect_locked(owner, now)){ pthread_mutex_unlock(&g_lock); return; }
 
     int nsamp = 0, src_rate = 8000;
     int cap = (int)(sizeof g_pcm / sizeof g_pcm[0]);

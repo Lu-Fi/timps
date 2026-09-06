@@ -4041,9 +4041,23 @@ static int ing_control(const char *key, const char *val)
             !strcmp(k,"channels")  || !strcmp(k,"force_stereo") ||
             !strcmp(k,"high_pass") || !strcmp(k,"agc")      ||
             !strcmp(k,"agc_target_dbfs") || !strcmp(k,"agc_compression_db") ||
-            !strcmp(k,"ns")){
+            !strcmp(k,"ns")        ||
+            /* backchannel pipeline setup (bc_configure/speaker_configure)
+             * happens once in main.c at boot; rtsp.c gates on that boot-time
+             * state (bc_available), not the live value */
+            !strcmp(k,"backchannel") || !strcmp(k,"backchannel_codec") ||
+            !strcmp(k,"backchannel_rate")){
             LOGI(MOD,"%s persisted, applies on restart", key);
             return 0;
+        }
+        /* talk_ws: no HAL state at all - httpd.c reads g_cfg.audio.talk_ws on
+         * every /talk request, so the new mode governs the NEXT upgrade
+         * request immediately (only bc_available() stays boot-bound). Used
+         * to fall through to ai_apply_key() below and log the misleading
+         * "unsupported on this platform". */
+        if (!strcmp(k,"talk_ws")){
+            LOGI(MOD,"control %s=%d (governs new /talk requests)", key, v);
+            return 1;
         }
         /* volume/gain/alc_gain: plain parameter writes (no module create or
          * destroy), safe to apply live; serialized via g_ai_lock.

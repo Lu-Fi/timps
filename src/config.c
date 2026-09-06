@@ -757,10 +757,10 @@ static const cfg_field audio_fields[] = {
     F ("backchannel_codec",  0, backchannel_codec,  T_BCCODEC,F_CTRL, 0,0),
     F ("backchannel_rate",   0, backchannel_rate,   T_INT,    F_CTRL, 8000,48000),
     F ("aec",                0, aec,                T_BOOL,   F_CTRL|CAP_SPK, 0,0),
-    /* F_CTRL only, deliberately NOT CAP_SPK: talk_ws is restart-required (the
-     * /talk route is decided per request against the boot-time backchannel
-     * setup), and F_CAP is what tells the WebUI a key is a LIVE control. Same
-     * class as `backchannel` above, not the same class as `aec`.
+    /* F_CTRL only, deliberately NOT CAP_SPK: httpd.c reads talk_ws live on
+     * every /talk request, but the backchannel it rides on is boot-bound
+     * (bc_available), and F_CAP is what tells the WebUI a key is a LIVE
+     * hardware control - it is a route policy, not a knob like `aec`.
      *
      * Tri-state, not a bool: 0 off, 1 on with TLS REQUIRED (what "on" has
      * always meant - /talk 426s on a plaintext port), 2 on with TLS merely

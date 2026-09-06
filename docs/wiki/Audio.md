@@ -50,11 +50,15 @@ directly: the backchannel and the play queue. It owns:
 - **Ownership arbitration** — exactly one producer (a backchannel RTSP
   session, or the play queue) holds the AO at a time. **The backchannel
   always preempts**: if the play queue currently holds the speaker, it is
-  signaled to yield immediately (discarding, not draining, whatever it
-  was playing) so the real-time conversational path never waits behind a
-  system sound. The play queue, conversely, never preempts anything — it
-  yields to an active backchannel and waits for it to release before
-  resuming.
+  signaled to yield immediately (no further blocks are decoded) so the
+  real-time conversational path never waits behind a system sound. Note
+  that the AO device is handed over without being reopened, so audio the
+  play queue had already queued into the `IMP_AO` ring/cache (up to a few
+  hundred ms) still plays out ahead of the first backchannel frame. The
+  play queue, conversely, never preempts anything — it yields to an active
+  backchannel and waits for it to release before resuming (or, if the
+  backchannel owner has been silent for 10 s, reclaims the speaker for the
+  queued sound).
 - **Live volume/gain** — `speaker_set_volume`/`speaker_set_gain` apply
   immediately to whichever producer currently holds `IMP_AO`, and persist
   as the default for whichever producer opens it next. This is what
@@ -104,8 +108,14 @@ default; enabling it is restart-only (`audio.backchannel`, see
 - **Session election**: the *first* RTSP session to actually feed an RTP
   packet becomes the exclusive backchannel decode owner; every other
   concurrent session's packets are dropped until that owner releases (at
-  `TEARDOWN` or connection loss) — this is a separate, RTP-decode-level
-  arbitration layered on top of speaker.c's AO-device arbitration.
+  `TEARDOWN` or connection loss) **or has sent no audio for 10 s**, after
+  which the next talker steals the election (so an NVR that keeps the
+  session open but rarely talks cannot hold the speaker hostage). Only
+  packets carrying the negotiated payload type count as "talking" — muxed
+  RTCP or malformed packets neither win nor refresh the election. This is
+  a separate, RTP-decode-level arbitration layered on top of speaker.c's
+  AO-device arbitration; `/talk` sessions take part in exactly the same
+  election.
 - **RTP handling**: validates RTP version/header length, strips CSRC/
   extension headers and any padding, and — importantly — only accepts
   packets whose RTP payload type matches the negotiated codec, which also
@@ -139,7 +149,8 @@ browser.
 `USE_TLS` is **recommended but optional**: `ws.c` terminates nothing itself,
 so the plain-`ws://` code path links without mbedTLS at all. Whether the
 port actually requires TLS is a *runtime* choice, `audio.talk_ws`
-(restart-required, default `0`; see
+(read per `/talk` request, so a `/control` POST applies to the next
+connection; default `0`; see
 [Configuration Reference](Configuration-Reference.md#audio--capture-encode-speaker-defaults)):
 
 | `audio.talk_ws` | `/talk` |
