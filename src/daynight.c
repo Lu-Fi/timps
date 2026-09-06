@@ -502,6 +502,19 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
             o->ratio = r;
         }
 
+        /* Cutover 2026-09-06: where the SDK never publishes a real max (both
+         * T20 cellar cameras - see mit_real above), the high-water-mark ratio
+         * just computed is a boot-time-blind estimate (rails at 1.0 for
+         * minutes after every restart, confirmed live on cam-wyze-pan:
+         * ratio_imp=0.8350 vs ratio=1.0000 at t=21s, converging to within
+         * 0.1% of each other by ~2.5 min). IMP_ISP_Tuning_GetExpr's own
+         * it_max_lines is authoritative from sample 1, so prefer it whenever
+         * the scrape's max is the estimate, not the SDK's. T31/T23 (mit_real
+         * true) are untouched - cross-checked to agree with IMP there
+         * already, nothing to gain by switching. */
+        if (!mit_real && o->ratio_imp > 0.0f)
+            o->ratio = o->ratio_imp;
+
         /* brightness %, the thingino daynightd formula - STATUS ONLY. It
          * stopped being a decision path in the 2026-08-17 redesign: it is a
          * second, cruder view of the same two fields the exposure index uses
@@ -532,11 +545,13 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
             said = 1;
             LOGI(MOD, "exposure sources: scrape ratio=%.4f (it/max, max %s) | "
                       "IMP GetExpr ratio=%.4f it=%d max=%d line=%dus (=%dus/%dus)"
-                      "%s%d us | shadow read only, decides nothing",
+                      "%s%d us | %s",
                  (double)o->ratio, g_int_hwm > 0 ? "ESTIMATED (high-water)" : "published",
                  (double)o->ratio_imp, o->imp_it, o->imp_it_max, o->imp_line_us,
                  o->imp_it * o->imp_line_us, o->imp_it_max * o->imp_line_us,
-                 " GetEVAttr expr_us=", o->imp_expr_us);
+                 " GetEVAttr expr_us=", o->imp_expr_us,
+                 g_int_hwm > 0 ? "scrape max is the estimate - IMP now decides"
+                               : "scrape max is real - shadow read only, decides nothing");
         }
     }
 
