@@ -1325,6 +1325,36 @@ if [ -n "$SSH_TARGET" ]; then
 	else
 		ok "no stale /run/timps.crash on $CAM (no unnoticed crash evidence since last boot)"
 	fi
+
+	# RAM headroom + this script's OWN tmpfs leftovers (cam-vorne 2026-09-06).
+	# /tmp is tmpfs on thingino, so every byte parked there is RAM the kernel
+	# cannot reclaim. Five earlier runs without --ssh each left a 2 MB
+	# section-11 clip behind (the old section 11 POSTed the clip even when it
+	# could not verify or delete it), pinning 10.5 MB of a 38 MB T23 - the next
+	# run's own clip then tipped the kernel OOM-killer onto timpsd. Anything
+	# matching /tmp/timps_qa_*.mp4 is by construction a leftover of a previous
+	# run of this script (never a user file), so remove it before starting.
+	mi=$(sshx "awk '/^(MemTotal|MemFree|Cached|Shmem):/{printf \"%s %s \", \$1, \$2}' /proc/meminfo 2>/dev/null; df -k /tmp 2>/dev/null | awk 'NR==2{print \$3}'")
+	if [ -n "$mi" ]; then
+		m_tot=$(echo "$mi" | sed -n 's/.*MemTotal: *\([0-9]*\).*/\1/p')
+		m_free=$(echo "$mi" | sed -n 's/.*MemFree: *\([0-9]*\).*/\1/p')
+		m_cache=$(echo "$mi" | sed -n 's/.*Cached: *\([0-9]*\).*/\1/p')
+		m_shm=$(echo "$mi" | sed -n 's/.*Shmem: *\([0-9]*\).*/\1/p')
+		m_tmp=$(echo "$mi" | awk '{print $NF}')
+		# Cached includes the tmpfs pages, which are NOT reclaimable - net them out
+		m_avail=$(( ${m_free:-0} + ${m_cache:-0} - ${m_shm:-0} ))
+		info "RAM: MemTotal ${m_tot:-?}kB, reclaimable ~${m_avail}kB (MemFree ${m_free:-?} + Cached ${m_cache:-?} - tmpfs ${m_shm:-?}), /tmp holds ${m_tmp:-?}kB"
+		if [ "${m_tot:-0}" -gt 0 ] && [ $(( ${m_shm:-0} * 100 / m_tot )) -ge 20 ]; then
+			warn "tmpfs pins ${m_shm}kB = $(( m_shm * 100 / m_tot ))% of RAM - the OOM-killer picks timpsd first (largest RSS) once the rest runs out; check what sits in /tmp"
+		fi
+	fi
+	stale_clips=$(sshx "ls /tmp/timps_qa_*.mp4 2>/dev/null")
+	if [ -n "$stale_clips" ]; then
+		nclip=$(echo "$stale_clips" | grep -c .)
+		kclip=$(sshx "du -ck /tmp/timps_qa_*.mp4 2>/dev/null | tail -1 | cut -f1")
+		warn "found ${nclip} stale section-11 clip(s) from earlier QA runs in /tmp (${kclip:-?}kB of tmpfs = RAM) - removing them"
+		sshx "rm -f /tmp/timps_qa_*.mp4" >/dev/null 2>&1
+	fi
 fi
 
 ping -c1 -W2 "$CAM" >/dev/null 2>&1 && ok "camera $CAM reachable (ping)" || warn "ping $CAM failed (may be firewalled)"
@@ -5340,25 +5370,40 @@ if want 11 clip record; then
 # --- 11. Recording clip -----------------------------------------------------
 hdr "11. On-demand recording clip (/control record.clip)"
 clip="/tmp/timps_qa_$$.mp4"
-code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 -u "$HTTP_USER:$HTTP_PASS" \
-	-X POST "$(http_base)/control" -d "{\"record\":{\"clip\":\"$clip\",\"seconds\":4}}")
-if [ "$code" = "200" ]; then
-	if [ -n "$SSH_TARGET" ]; then
+if [ -z "$SSH_TARGET" ]; then
+	# NOT a pass, and no longer even a POST: /control answers 200
+	# unconditionally (httpd.c - record_clip()'s return code is dropped in
+	# control.c), so without SSH there is no observable that distinguishes
+	# "clip written" from "no SD card / bad path / USE_RECORD regression",
+	# AND nothing can delete the clip afterwards. The clip lands on /tmp,
+	# which is tmpfs = RAM: five SSH-less runs against cam-vorne (38 MB T23)
+	# each left 2 MB behind, and the sixth run's clip tipped the kernel
+	# OOM-killer onto timpsd (2026-09-06). The /control status has no
+	# clip-result field either (record.file is the continuous recorder's) -
+	# if the daemon ever surfaces one, this can become a host-side check.
+	skip "record.clip: needs --ssh (the daemon answers 200 unconditionally and drops record_clip's return code, and the 2 MB clip on tmpfs can only be removed over SSH) - not POSTed"
+else
+	code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 30 -u "$HTTP_USER:$HTTP_PASS" \
+		-X POST "$(http_base)/control" -d "{\"record\":{\"clip\":\"$clip\",\"seconds\":4}}")
+	if [ "$code" = "200" ]; then
 		sz=$(sshx "wc -c < $clip 2>/dev/null || echo 0"); sz=${sz:-0}
 		[ "${sz:-0}" -gt 2000 ] && ok "record.clip wrote ${sz}B fMP4 on device" || bad "record.clip file missing/empty on device"
-		sshx "rm -f $clip" 2>/dev/null
 	else
-		# NOT a pass: POST /control answers 200 unconditionally (httpd.c -
-		# record_clip()'s return code is dropped in control.c), so without
-		# SSH there is no observable that distinguishes "clip written" from
-		# "no SD card / bad path / USE_RECORD regression". The old ok here
-		# was a guaranteed PASS that could not fail, counting as proof of a
-		# recorder nobody looked at. The /control status has no clip-result
-		# field either (record.file is the continuous recorder's) - if the
-		# daemon ever surfaces one, this can become a host-side check.
-		skip "record.clip: HTTP 200 proves only transport (the daemon answers 200 unconditionally and drops record_clip's return code) - pass --ssh to verify the file actually exists on device"
+		# HTTP 000 here has meant "timpsd died while the clip was being
+		# captured" (record_clip blocks the /control thread for its whole
+		# duration, so a death mid-clip resets the connection). Say so rather
+		# than letting the sections that follow discover a corpse one by one.
+		if [ "$(sshx "pidof timpsd >/dev/null && echo yes")" = "yes" ]; then
+			warn "record.clip returned HTTP $code"
+		else
+			bad "record.clip returned HTTP $code and timpsd is NOT running - the daemon died during the clip capture (check dmesg for 'Out of memory' / logread for the last line)"
+		fi
 	fi
-else warn "record.clip returned HTTP $code"; fi
+	# ALWAYS remove the clip, whatever the POST answered: record_clip()
+	# writes the file regardless of whether the HTTP reply ever made it back,
+	# and a partial clip on tmpfs is RAM held until reboot.
+	sshx "rm -f $clip" 2>/dev/null
+fi
 
 fi
 if want 12 reliability reconnect; then
@@ -6802,6 +6847,14 @@ if [ -n "$SSH_TARGET" ] && want 16 ssh; then
 	# prevent, quietly reintroduced by this section's own stress load.
 	agc_bj="$OUTDIR/agc_base.json"; curlq 8 "$(http_base)/control" -o "$agc_bj" 2>/dev/null || true
 	agc0=$(jget "$agc_bj" audio.agc)
+	# Baseline liveness too: on cam-vorne 2026-09-06 the daemon had been
+	# OOM-killed in section 11, sections 12-15 failed one after another, and
+	# this section then announced "DIED during rapid agc writes - UAF
+	# regression" about a process that had been dead for two hours. Only a
+	# daemon that was alive BEFORE the stress can have died OF the stress.
+	up1=$(sshx "pidof timpsd >/dev/null && echo yes")
+	oom_re='Out of memory: Kill process|Killed process [0-9]+ \((timpsd|Framesource|Encoder|Polling|hub|rtsp|http)'
+	oomk0=$(sshx "dmesg 2>/dev/null | grep -cE '$oom_re'"); oomk0=${oomk0:-0}
 	info "  config-write stress: 20 rapid /control writes..."
 	for i in $(seq 1 20); do
 		curl -s -o /dev/null --max-time 5 -u "$HTTP_USER:$HTTP_PASS" -X POST "$(http_base)/control" \
@@ -6832,8 +6885,19 @@ if [ -n "$SSH_TARGET" ] && want 16 ssh; then
 	# libaudioProcess.so. Confirm the daemon survived and treats them as
 	# persist-only (no live-apply), not the removed v1.4.4 "queued" deferral.
 	up2=$(sshx "pidof timpsd >/dev/null && echo yes")
-	[ "$up2" = "yes" ] && ok "timpsd alive after AGC-toggle/config-write stress" \
-		|| bad "timpsd DIED during rapid agc /control writes - live-DSP-toggle UAF regression"
+	# The kernel OOM-killer leaves its own signature and is NOT the UAF class:
+	# "Out of memory: Kill process N (timpsd)" / "Killed process N (timpsd|
+	# Framesource-0|...)" - any thread name of tgid timpsd can be the one
+	# named. Grade it as what it is so the fix goes to the memory budget
+	# (tmpfs contents, client caps) and not to the audio DSP path. Only lines
+	# that appeared DURING the stress count - dmesg keeps an older OOM until
+	# reboot, and that one belongs to whichever section it happened in.
+	oomk=$(sshx "dmesg 2>/dev/null | grep -cE '$oom_re'"); oomk=$(( ${oomk:-0} - oomk0 ))
+	if [ "$up2" = "yes" ]; then ok "timpsd alive after AGC-toggle/config-write stress"
+	elif [ "$up1" != "yes" ]; then bad "timpsd was ALREADY dead before the config-write stress (it died earlier in this run - see the sections above, dmesg and logread); the agc toggles are not the cause"
+	elif [ "$oomk" -gt 0 ]; then bad "timpsd was killed by the kernel OOM-killer during the config-write stress (${oomk} new dmesg line(s)) - RAM exhaustion, not the live-DSP-toggle UAF class"
+	else bad "timpsd DIED during rapid agc /control writes - live-DSP-toggle UAF regression"; fi
+	[ "$oomk" -gt 0 ] && sshx "dmesg 2>/dev/null | grep -E 'Out of memory|Killed process|shmem:' | tail -4" 2>/dev/null | sed 's/^/    /' | tee -a "$SUMMARY"
 	seg=$(sshx "dmesg 2>/dev/null | grep -cE 'libaudioProcess|SIGSEGV to timpsd|do_page_fault[^\n]*timpsd'")
 	[ "${seg:-0}" -eq 0 ] && ok "no timpsd segfault signature in dmesg" \
 		|| bad "dmesg shows timpsd segfault (${seg} lines) - libimp AGC/NS/HPF race back?"
