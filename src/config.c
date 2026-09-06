@@ -240,6 +240,9 @@ void config_defaults(ms_config *c)
     im->defog_strength=128; im->drc_strength=128;
     im->highlight_depress=0; im->backlight_compensation=0;
     im->core_wb_mode=0; im->wb_rgain=0; im->wb_bgain=0;
+    /* opt-in: 0 leaves the sensor mode's own AE maximum untouched, i.e. the
+     * exact behaviour every camera had before the key existed */
+    im->ae_it_max_us=0;
 
     c->rtsp_enabled = 1; c->rtsp_port = 554; c->rtsp_user[0]=0; c->rtsp_pass[0]=0;
     /* 1200 (WebRTC's choice) leaves room for WireGuard/OpenVPN/PPPoE/IPv6
@@ -664,6 +667,12 @@ static const cfg_field sensor_fields[] = {
 #else
 #define CAP_WB 0
 #endif
+/* either SDK spelling of the AE integration-time cap counts as support */
+#if defined(ISP_HAS_AE_IT_MAX) || defined(ISP_HAS_AE_IT_RANGE)
+#define CAP_AEITMAX F_CAP
+#else
+#define CAP_AEITMAX 0
+#endif
 static const cfg_field image_fields[] = {
     F("brightness",             0, brightness,             T_INT, F_CTRL|F_CAP,          0,255),
     F("contrast",               0, contrast,               T_INT, F_CTRL|F_CAP,          0,255),
@@ -687,6 +696,10 @@ static const cfg_field image_fields[] = {
     F("core_wb_mode",           0, core_wb_mode,           T_INT, F_CTRL|CAP_WB,         0,1),   /* F-09 */
     F("wb_rgain",               0, wb_rgain,               T_INT, F_CTRL|CAP_WB,         0,65535),
     F("wb_bgain",               0, wb_bgain,               T_INT, F_CTRL|CAP_WB,         0,65535),
+    /* 0 = off. The ceiling is 1 s because a sensor line maximum on these parts
+     * is well under that at any usable frame rate; the HAL clamps to the real
+     * sensor range anyway, so this only rejects nonsense. */
+    F("ae_it_max_us",           0, ae_it_max_us,           T_INT, F_CTRL|CAP_AEITMAX,    0,1000000),
 };
 #undef CAP_HUE
 #undef CAP_AECOMP
@@ -698,6 +711,7 @@ static const cfg_field image_fields[] = {
 #undef CAP_HILIGHT
 #undef CAP_BACKLIGHT
 #undef CAP_WB
+#undef CAP_AEITMAX
 #undef TT
 
 #define TT ms_audio_cfg

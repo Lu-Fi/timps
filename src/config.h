@@ -149,6 +149,37 @@ typedef struct {
     int      defog_strength, drc_strength;
     int      highlight_depress, backlight_compensation;
     int      core_wb_mode, wb_rgain, wb_bgain;
+    /* Upper bound on the AE's integration time, in MICROSECONDS; 0 = off (the
+     * default), leave the sensor mode's own maximum alone.
+     *
+     * Bounds motion blur. In effect this is a NIGHT setting even though it is
+     * applied unconditionally: a daylit scene exposes orders of magnitude
+     * shorter than any useful cap, so the cap only ever binds once the AE has
+     * run out of light and started buying brightness with exposure time - the
+     * point at which anything that moves smears. The cost is paid in the same
+     * currency: the AE answers the shortfall with gain instead, so a capped
+     * night frame is sharper and noisier. There is no free version of this.
+     *
+     * Microseconds, not sensor lines, deliberately: the SDK works in lines,
+     * but a line is a property of the sensor mode and frame rate, so the same
+     * line count means different exposures on two cameras and even on one
+     * camera across a mode change. The HAL converts using the SDK's own
+     * one_line_expr_in_us at apply time and clamps into the sensor's real
+     * [min,max] range.
+     *
+     * Two things measured on hardware (T31X/sc4336p) that a caller has to know:
+     *  - It is a LIVE control, not yet a dependable boot setting. The SDK only
+     *    honours the write while chn0 is genuinely delivering frames to a
+     *    consumer: a POST landing while something is watching takes effect on
+     *    the next sample, whereas the boot-time apply is accepted, echoed back
+     *    by GetExpr, and silently ignored by the sensor. See
+     *    isp_ae_it_max_latch() for the full measurement.
+     *  - It MOVES daynight's exposure index. The index is gain x
+     *    (integration_time / max), and capping the maximum makes the AE rail
+     *    against it sooner and answer the shortfall with gain, so a camera
+     *    running this key needs its daynight.*_gain thresholds re-checked
+     *    rather than inherited. */
+    int      ae_it_max_us;
 } ms_image_cfg;
 
 /* one OSD overlay: text (with placeholders) or a BGRA logo */

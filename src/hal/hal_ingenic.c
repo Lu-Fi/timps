@@ -498,6 +498,14 @@ static void fs_use(int chn)
         isp_apply_image("hflip");
         isp_apply_image("vflip");
         isp_apply_image("running_mode");
+        /* NOT image.ae_it_max_us, even though a chn0 idle->active cycle resets
+         * it exactly like the flip: this point is the enable EDGE, before any
+         * frame has been delivered, and that SoC measurably ignores a cap
+         * written there (see isp_ae_it_max_latch). Re-asserting it from here
+         * would look like a fix and do nothing. The cap is (re)established from
+         * ing_start() and from a /control write, both of which pump chn0 first;
+         * a cap silently lost to an idle->active cycle in between is a KNOWN
+         * GAP, not a solved one - see dev_notes. */
         pthread_mutex_unlock(&g_isp_lock);
     }
 }
@@ -808,6 +816,78 @@ static int isp_apply_image(const char *k)
         return 0;
 #endif
     }
+    /* AE integration-time cap (image.ae_it_max_us). See ms_image_cfg for what
+     * it buys and what it costs. 0 = off, and off must not touch the ISP at
+     * all: there is no "restore the sensor default" call, so the only safe
+     * meaning of 0 is "never wrote anything".
+     *
+     * The config is in microseconds; the SDK is in sensor lines. GetExpr
+     * supplies both one_line_expr_in_us and the sensor's real [min,max] line
+     * range for the CURRENT mode, so convert here rather than making the user
+     * do sensor arithmetic, and clamp into that range - asking for a cap above
+     * the sensor's own maximum is a no-op the SDK should not have to reject,
+     * and asking for one below its minimum would be a request to underexpose
+     * beyond what the hardware can do. */
+    if (!strcmp(k,"ae_it_max_us")){
+#if defined(ISP_HAS_AE_IT_MAX) || defined(ISP_HAS_AE_IT_RANGE)
+        if (im->ae_it_max_us <= 0) return 1;          /* off: write nothing */
+        hal_isp_expo ex;
+        int have = (hal_isp_exposure(&ex) == 0);
+        if (!have || ex.line_us == 0 || ex.it_max_lines == 0){
+            LOGW(MOD,"image.ae_it_max_us: GetExpr gave no line/max reference "
+                     "(%s) - cannot convert microseconds to sensor lines, "
+                     "cap not applied", have ? "zero line_us/it_max" : "call failed");
+            return 1;
+        }
+        uint32_t want = (uint32_t)im->ae_it_max_us / ex.line_us;
+        if (want == 0) want = 1;
+        if (ex.it_min_lines && want < ex.it_min_lines) want = ex.it_min_lines;
+        if (want > ex.it_max_lines) {
+            LOGI(MOD,"image.ae_it_max_us=%d (%lu lines) is above the sensor "
+                     "mode's own maximum of %lu lines (%luus) - nothing to cap",
+                 im->ae_it_max_us, (unsigned long)want,
+                 (unsigned long)ex.it_max_lines,
+                 (unsigned long)(ex.it_max_lines * ex.line_us));
+            return 1;
+        }
+#if defined(ISP_HAS_AE_IT_MAX)          /* T23/T31/C100 */
+        int rc = IMP_ISP_Tuning_SetAe_IT_MAX(want);
+#else                                   /* T10/T20/T21/T30 */
+        /* The older SDK sets the whole AE exposure attribute at once. MODE_RANGE
+         * is the one mode that bounds the AE without seizing it: MODE_AUTO
+         * ignores the values, MODE_MANUAL would pin the exposure and take away
+         * the auto-exposure this key exists to shape rather than replace. */
+        IMPISPITAttr it; memset(&it,0,sizeof it);
+        it.mode                 = IMPISP_TUNING_MODE_RANGE;
+        it.integration_time     = (uint16_t)(ex.it_min_lines ? ex.it_min_lines : 1);
+        it.max_integration_time = (uint16_t)want;
+        int rc = IMP_ISP_Tuning_SetIntegrationTime(&it);
+#endif
+        if (rc) {
+            LOGW(MOD,"image.ae_it_max_us=%d: SDK rejected the cap (%lu lines, "
+                     "rc=%d) - AE maximum unchanged",
+                 im->ae_it_max_us, (unsigned long)want, rc);
+            return 1;
+        }
+        /* Read it straight back through the SAME accessor daynight uses. This
+         * is not decoration: the header documents no unit for SetAe_IT_MAX, so
+         * the readback is what establishes that lines were the right unit, and
+         * it is also what tells daynight's exposure ratio that its denominator
+         * just moved. */
+        hal_isp_expo af;
+        if (hal_isp_exposure(&af) == 0)
+            LOGI(MOD,"image.ae_it_max_us=%d -> capped AE at %lu lines; "
+                     "GetExpr now reports max=%lu lines (%luus), was %lu lines (%luus)",
+                 im->ae_it_max_us, (unsigned long)want,
+                 (unsigned long)af.it_max_lines,
+                 (unsigned long)(af.it_max_lines * (af.line_us?af.line_us:ex.line_us)),
+                 (unsigned long)ex.it_max_lines,
+                 (unsigned long)(ex.it_max_lines * ex.line_us));
+        return 1;
+#else
+        return 0;                       /* T40/T41: no such call in that SDK */
+#endif
+    }
     /* white balance: mode + gains are one IMPISPWB, applied on any of them */
     if (!strcmp(k,"core_wb_mode")||!strcmp(k,"wb_rgain")||!strcmp(k,"wb_bgain")){
         IMPISPWB wb; memset(&wb,0,sizeof wb);
@@ -830,7 +910,11 @@ static void apply_image_tuning(void)
         "hflip","vflip","running_mode","anti_flicker","ae_compensation",
         "max_again","max_dgain","sinter_strength","temper_strength",
         "dpc_strength","defog_strength","drc_strength","highlight_depress",
-        "backlight_compensation","core_wb_mode"
+        "backlight_compensation","core_wb_mode",
+        /* LAST on purpose: it reads the sensor's live AE range back through
+         * GetExpr to convert microseconds to lines, so it wants the rest of
+         * the tuning (running_mode above all) already applied. */
+        "ae_it_max_us"
     };
     for (size_t i=0;i<sizeof keys/sizeof keys[0];i++)
         if (!isp_apply_image(keys[i]))
@@ -3801,6 +3885,56 @@ static void *audio_thread(void *arg)
  * -DUSE_CONTROL. */
 /* g_isp_lock is defined up in the FrameSource section (fs_use() also takes it on
  * a chn0 enable edge, and fs_use() is compiled in non-USE_CONTROL builds too). */
+/* The AE integration-time cap needs a STRICTER kick than fs_kick_chn0 gives.
+ *
+ * Measured on cam-garage (T31X/sc4336p) 2026-09-06. hflip/vflip/running_mode
+ * follow "Set now, pump chn0 afterwards and the queued value latches" - that is
+ * what fs_kick_chn0() implements. IMP_ISP_Tuning_SetAe_IT_MAX does NOT: issued
+ * into an idle pipeline it returns 0, GetExpr echoes the new maximum back, and
+ * /proc/jz/isp/isp-m0's "SENSOR Max Integration Time" never moves - a later kick
+ * does not rescue it, and within a couple of minutes even the GetExpr echo has
+ * decayed back to the sensor default. The identical call issued while an RTSP
+ * client was already pulling chn0 took effect on the spot, /proc following
+ * within one sample (1496 -> 545 lines for a 12 ms cap).
+ *
+ * So the Set has to happen DURING delivery, not before it: bring chn0 up, let
+ * it produce frames, and only then write the cap. Same refcounted fs_use()/
+ * fs_unuse() pair as fs_kick_chn0, so this is a cheap ref bump when chn0 is
+ * already streaming. Callers must NOT hold g_isp_lock (fs_use takes it on the
+ * enable edge) - this takes it itself around the apply.
+ *
+ * HONEST LIMIT, measured the same day: this is NOT sufficient on its own at
+ * boot. Pumping chn0 here for 0.3 s and for 2.5 s both left /proc at the
+ * sensor default, with a client subsequently streaming for a minute and still
+ * 1496 - while a /control POST arriving mid-stream moved it on the first
+ * sample. The likely reason is that fs_use() only ENABLES the framesource;
+ * nothing here consumes frames from it, so the pipeline is not in the state a
+ * real subscriber puts it in, and only that state makes the SDK honour the
+ * write. Sizing the sleep up does not fix a pipeline that is not delivering.
+ *
+ * Consequence, and the reason image.ae_it_max_us ships default-off: the cap is
+ * dependable as a LIVE control (POST while something is watching) and is NOT
+ * dependable as a boot-time setting. Making it survive a reboot unattended
+ * needs the re-apply to be driven from the video path once real frames have
+ * flowed - see dev_notes. Left in place because it is harmless, idempotent,
+ * and may well be sufficient on a SoC/sensor whose AE is less fussy; it must
+ * just not be mistaken for a working boot path on T31X/sc4336p. */
+#ifndef AE_IT_MAX_PUMP_US
+#define AE_IT_MAX_PUMP_US 500000    /* == FS0_KICK_US; longer did not help */
+#endif
+static void isp_ae_it_max_latch(void)
+{
+    if (!g_hcfg || g_hcfg->image.ae_it_max_us <= 0) return;
+    if (!g_hcfg->video[0].enabled) return;
+    fs_use(0);
+    usleep(AE_IT_MAX_PUMP_US);
+    pthread_mutex_lock(&g_isp_lock);
+    isp_apply_image("ae_it_max_us");
+    pthread_mutex_unlock(&g_isp_lock);
+    usleep(400000);                 /* let the AE act on it before releasing */
+    fs_unuse(0);
+}
+
 /* set by ing_control() when a live hflip/vflip apply needs the ISP latch kick;
  * consumed once in ing_control_commit() so a settings POST carrying both
  * hflip+vflip collapses to a single fs_kick_chn0() (see fs_kick_chn0). flip is
@@ -4000,6 +4134,14 @@ static int ing_control(const char *key, const char *val)
          * which always ends in hub_control_commit(). */
         else if (ok && (!strcmp(k,"hflip") || !strcmp(k,"vflip")))
             g_isp_flip_kick_pending = 1;
+        /* the cap needs the Set to land mid-delivery, so the apply that just
+         * ran under g_isp_lock is not enough on an idle pipeline - redo it
+         * with chn0 actually pumping (see isp_ae_it_max_latch). Inline rather
+         * than deferred to commit: this is a single key, there is nothing to
+         * coalesce with, and blocking ~500 ms on a /control thread is the same
+         * cost running_mode already pays above. */
+        else if (ok && !strcmp(k,"ae_it_max_us"))
+            isp_ae_it_max_latch();
         return ok ? 1 : 0;
     }
 
@@ -4469,6 +4611,11 @@ static int ing_start(const ms_config *cfg)
      * Must run here (end of ing_start), NOT at the apply_image_tuning() call in
      * isp_init, where fs chn0 does not yet exist. */
     fs_kick_chn0();
+    /* image.ae_it_max_us is in the same latch class but needs the Set to land
+     * while frames are already flowing, which the kick above cannot provide
+     * (it pumps AFTER the boot-time Set). See isp_ae_it_max_latch(). No-op
+     * when the key is 0, i.e. on every camera that has not opted in. */
+    isp_ae_it_max_latch();
     return 0;
 
 fail:

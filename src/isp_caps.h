@@ -78,6 +78,29 @@
 #define ISP_HAS_AELUMA 1
 #endif
 
+/* Capping the AE's maximum integration time (image.ae_it_max_us).
+ *
+ * Two different SDK spellings, split by SoC generation (verified 2026-09-06
+ * against the vendored headers):
+ *   ISP_HAS_AE_IT_MAX   - IMP_ISP_Tuning_SetAe_IT_MAX(unsigned int), on
+ *                         T23/T31/C100. The header documents no unit; measured
+ *                         on cam-garage (T31X/sc4336p) it is SENSOR LINES, the
+ *                         same unit GetExpr reports and reads back through it.
+ *   ISP_HAS_AE_IT_RANGE - IMP_ISP_Tuning_SetIntegrationTime(IMPISPITAttr*), on
+ *                         T10/T20/T21/T30 - the older SDK, which expresses the
+ *                         same thing as a mode + integration_time +
+ *                         max_integration_time triple.
+ * Neither exists in the T40/T41 reworked tuning API, so the key is inert
+ * there (and F_CAP-gated out of GET /control's caps list). */
+#if defined(PLATFORM_T23)||defined(PLATFORM_T31)||defined(PLATFORM_C100)|| \
+    !defined(ISP_PLATFORM_KNOWN)
+#define ISP_HAS_AE_IT_MAX 1
+#endif
+#if defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)|| \
+    defined(PLATFORM_T30)
+#define ISP_HAS_AE_IT_RANGE 1
+#endif
+
 /* IMP_ISP_Tuning_GetExpr + IMP_ISP_Tuning_GetEVAttr (AE exposure readback).
  *
  * Declared, with an IDENTICAL IMPISPExpr union layout (verified 2026-09-06
