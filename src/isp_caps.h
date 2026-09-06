@@ -78,6 +78,24 @@
 #define ISP_HAS_AELUMA 1
 #endif
 
+/* IMP_ISP_Tuning_GetExpr + IMP_ISP_Tuning_GetEVAttr (AE exposure readback).
+ *
+ * Declared, with an IDENTICAL IMPISPExpr union layout (verified 2026-09-06
+ * against T20/3.12.0, T21/1.0.33, T23/1.3.0, T30/1.0.5, T31/1.1.6 and
+ * C100/2.1.0), on every classic-tuning SoC; absent from the T40/T41 reworked
+ * tuning API. GetExpr's g_attr publishes integration_time / _min / _max in
+ * SENSOR LINES plus one_line_expr_in_us, so the exposure can be expressed in
+ * real microseconds without knowing the sensor mode; GetEVAttr adds expr_us,
+ * again and dgain.
+ *
+ * This is what daynight.c's g_int_hwm high-water-mark exists to guess: the
+ * /proc dump on the T20s publishes "SENSOR Integration Time" but no maximum,
+ * and dn_read() therefore estimates the maximum as the longest exposure it has
+ * ever seen. GetExpr answers it directly. See dn_read()'s dual-read. */
+#if !defined(ISP_NEW_TUNING_API)
+#define ISP_HAS_EXPR 1
+#endif
+
 /* IMP_ISP_Tuning_GetSensorAttr (real sensor output resolution) - T23 T31 T32
  * T33 T40 T41 C100. Used to declare the framesource input resolution when the
  * sensor driver reports 0x0 to the framesource (e.g. sc2336). T40/T41 take an

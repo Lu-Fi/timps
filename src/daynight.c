@@ -15,7 +15,7 @@
  * Compiled only with -DUSE_DAYNIGHT; uses nothing but libc + pthread. */
 #include "daynight.h"
 #include "config.h"
-#include "hal/hal.h"   /* hal_isp_total_gain(): ISP gain via the IMP API */
+#include "hal/hal.h"   /* hal_isp_total_gain()/hal_isp_exposure(): ISP via IMP */
 #include <stdio.h>     /* snprintf() - needed by the !USE_DAYNIGHT stub too */
 
 #ifdef USE_DAYNIGHT
@@ -267,16 +267,44 @@ typedef struct {
      * separates that from a genuinely lit room. */
     int   headroom;
     int   isp;     /* mode the ISP itself reports: DN_DAY/DN_NIGHT/DN_UNKNOWN */
+
+    /* ---- SHADOW READ, decides nothing (yet) ----------------------------
+     * The same integration time and maximum the /proc scrape above supplies,
+     * taken instead from IMP_ISP_Tuning_GetExpr via hal_isp_exposure(). This
+     * exists to answer one question with real fleet data before anything is
+     * switched over: does the SDK accessor agree with the scrape on the T31s,
+     * and does it give the two T20 cellar cameras the REAL maximum that
+     * g_int_hwm currently has to guess?
+     *
+     * Deliberately NOT fed into ->ratio or ->d. The scrape is what every
+     * decision path, every tuned threshold and every recorded trace in the
+     * fleet was calibrated against; swapping the measurement underneath them
+     * on the strength of a header reading would invalidate all of it at once.
+     * These ride along in the trace CSV (columns imp_*) so a real dusk and a
+     * real dawn can be compared side by side first. <0 / 0 = unavailable
+     * (T40/T41 have no GetExpr, sim, or the ISP is not up yet). */
+    float ratio_imp;    /* it/it_max per the SDK, same scale as ->ratio */
+    int   imp_it;       /* sensor lines */
+    int   imp_it_max;   /* sensor lines - the number the T20 scrape lacks */
+    int   imp_line_us;  /* microseconds per sensor line */
+    int   imp_expr_us;  /* GetEVAttr's own exposure, for cross-checking */
 } dn_sample;
 
 /* One sample of the ISP exposure state.
  *
  * The gain half comes from IMP_ISP_Tuning_GetTotalGain where the platform has
  * it (robust, and the same number prudynt/raptor and the WebUI plot), falling
- * back to the /proc dump's own gain fields. The integration-time half has no
- * IMP accessor at all, so the /proc scrape now runs on every decision tick
- * rather than only for the status readout - which is what the 2 s default
- * interval_ms pays for.
+ * back to the /proc dump's own gain fields. The integration-time half comes
+ * from the /proc scrape, which therefore runs on every decision tick rather
+ * than only for the status readout - which is what the 2 s default interval_ms
+ * pays for.
+ *
+ * That half DOES have an IMP accessor after all - IMP_ISP_Tuning_GetExpr, on
+ * every classic-tuning SoC, maximum included (this comment used to say there
+ * was none; corrected 2026-09-06 against the vendored headers). It is read
+ * here as a shadow measurement and traced, but decides nothing yet: see the
+ * imp_* members of dn_sample for why the cutover is a separate, evidenced
+ * step rather than a drop-in.
  *
  * The isp-m0 gain fields are in the IMP log2 unit (0 = 1x, 32 = 2x, per the
  * SetMaxAgain/SetMaxDgain docs), so linear = 2^(units/32) and the analog,
@@ -317,8 +345,28 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
     o->d = o->gain = o->ratio = o->bright = -1.0f;
     o->headroom = -1;
     o->isp = DN_UNKNOWN;
+    o->ratio_imp = -1.0f;
+    o->imp_it = o->imp_it_max = o->imp_line_us = o->imp_expr_us = 0;
 
     { uint32_t hg; if (hal_isp_total_gain(&hg) == 0) o->gain = (float)hg; }
+
+    /* the shadow read (see dn_sample) - taken BEFORE the scrape so both halves
+     * describe as nearly the same instant as two separate reads can */
+    {
+        hal_isp_expo ex;
+        if (hal_isp_exposure(&ex) == 0) {
+            o->imp_it      = (int)ex.it_lines;
+            o->imp_it_max  = (int)ex.it_max_lines;
+            o->imp_line_us = (int)ex.line_us;
+            o->imp_expr_us = (int)ex.expr_us;
+            if (ex.it_max_lines > 0) {
+                float r = (float)ex.it_lines / (float)ex.it_max_lines;
+                if (r > 1.0f) r = 1.0f;
+                if (r < DN_RATIO_MIN) r = DN_RATIO_MIN;
+                o->ratio_imp = r;
+            }
+        }
+    }
 
     /* The configured path first, then the known alternatives. Measured on the
      * live fleet 2026-08-17, and it splits cleanly by SoC generation: all ten
@@ -470,6 +518,25 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
         } else if (m[0]) {
             if      (!strcmp(m, "Day"))   o->bright = 75.0f;
             else if (!strcmp(m, "Night")) o->bright = 25.0f;
+        }
+    }
+
+    /* One-shot, at the first sample where the SDK answers: say what the two
+     * measurements make of the same instant. This is the line that tells you,
+     * on a camera you have just flashed and without arming a trace, whether
+     * the scrape has a real maximum or an estimated one and whether the SDK
+     * agrees with it. Once per process - the trace CSV carries the series. */
+    {
+        static int said;
+        if (!said && o->imp_it_max > 0) {
+            said = 1;
+            LOGI(MOD, "exposure sources: scrape ratio=%.4f (it/max, max %s) | "
+                      "IMP GetExpr ratio=%.4f it=%d max=%d line=%dus (=%dus/%dus)"
+                      "%s%d us | shadow read only, decides nothing",
+                 (double)o->ratio, g_int_hwm > 0 ? "ESTIMATED (high-water)" : "published",
+                 (double)o->ratio_imp, o->imp_it, o->imp_it_max, o->imp_line_us,
+                 o->imp_it * o->imp_line_us, o->imp_it_max * o->imp_line_us,
+                 " GetEVAttr expr_us=", o->imp_expr_us);
         }
     }
 
@@ -981,15 +1048,24 @@ static void dn_trace(const ms_daynight_cfg *dn, int64_t now_ms, int cur,
          * -1 = not seeded (not in night, or a probe in flight). */
         if (ftello(f) == 0)
             fputs("t_mono_ms,cur,d,gain,ratio,smooth,ref,bar,"
-                  "verdict_in_s,heartbeat_in_s,trend_fast,trend_slow\n", f);
+                  "verdict_in_s,heartbeat_in_s,trend_fast,trend_slow,"
+                  /* the IMP_ISP_Tuning_GetExpr shadow read - APPENDED, for the
+                   * same reason trend_fast/trend_slow were: every existing
+                   * reader indexes by column position. ratio_imp is directly
+                   * comparable with the `ratio` column above; they are the same
+                   * quantity from two different sources. */
+                  "ratio_imp,imp_it,imp_it_max,imp_line_us,imp_expr_us\n", f);
     }
     int64_t v_in = verdict_at > 0 ? (verdict_at - now_ms) / 1000 : -1;
     int64_t h_in = hb_at      > 0 ? (hb_at      - now_ms) / 1000 : -1;
-    fprintf(f, "%lld,%d,%.0f,%.0f,%.4f,%.0f,%.0f,%.0f,%lld,%lld,%.0f,%.0f\n",
+    fprintf(f, "%lld,%d,%.0f,%.0f,%.4f,%.0f,%.0f,%.0f,%lld,%lld,%.0f,%.0f,"
+               "%.4f,%d,%d,%d,%d\n",
             (long long)now_ms, cur, (double)sm->d, (double)sm->gain,
             (double)sm->ratio, (double)s, (double)ref, (double)bar,
             (long long)v_in, (long long)h_in,
-            (double)ema_fast, (double)ema_slow);
+            (double)ema_fast, (double)ema_slow,
+            (double)sm->ratio_imp, sm->imp_it, sm->imp_it_max,
+            sm->imp_line_us, sm->imp_expr_us);
     fflush(f);   /* tmpfs, a fraction of a line per second - a crash must not
                   * eat the tail */
     if (ftello(f) > (off_t)DN_TRACE_MAX_BYTES) {

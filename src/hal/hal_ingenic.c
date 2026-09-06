@@ -4676,6 +4676,38 @@ int hal_isp_ae_luma(uint32_t *luma)
 #endif
 }
 
+/* daynight exposure source: the AE's own integration time AND its maximum,
+ * straight from the SDK (see hal.h). This is the accessor daynight.c's comment
+ * said did not exist - it does, on every classic-tuning SoC, and it publishes
+ * the maximum that the /proc dump omits on the T20/T30-era SDKs.
+ *
+ * GetExpr is the load-bearing call (it alone supplies the maximum); GetEVAttr
+ * is a bonus that pins the exposure in real microseconds independently of the
+ * line arithmetic, so the two can be cross-checked. A GetEVAttr failure is NOT
+ * fatal - expr_us/again/dgain just stay 0. */
+int hal_isp_exposure(hal_isp_expo *out)
+{
+#ifdef ISP_HAS_EXPR
+    if (!out) return -1;
+    memset(out, 0, sizeof *out);
+    IMPISPExpr e; memset(&e, 0, sizeof e);
+    if (IMP_ISP_Tuning_GetExpr(&e) < 0) return -1;
+    out->it_lines     = e.g_attr.integration_time;
+    out->it_min_lines = e.g_attr.integration_time_min;
+    out->it_max_lines = e.g_attr.integration_time_max;
+    out->line_us      = e.g_attr.one_line_expr_in_us;
+    IMPISPEVAttr ev; memset(&ev, 0, sizeof ev);
+    if (IMP_ISP_Tuning_GetEVAttr(&ev) >= 0) {
+        out->expr_us = ev.expr_us;
+        out->again   = ev.again;
+        out->dgain   = ev.dgain;
+    }
+    return 0;
+#else
+    (void)out; return -1;
+#endif
+}
+
 /* Item-2: read-only encoder queue/buffer telemetry via IMP_Encoder_Query (all
  * 9 platforms). Fills *out and returns 0 on success; <0 (caller omits the
  * stats) when the query fails - e.g. a channel that doesn't exist (disabled

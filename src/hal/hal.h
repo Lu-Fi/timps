@@ -28,6 +28,34 @@ int hal_isp_total_gain(uint32_t *gain);
  * *luma on success, <0 when unavailable (other SoCs, sim, ISP down). */
 int hal_isp_ae_luma(uint32_t *luma);
 
+/* ISP AE exposure readback, straight from IMP_ISP_Tuning_GetExpr (+GetEVAttr).
+ *
+ * The integration-time half of daynight's exposure index used to have no IMP
+ * accessor at all, so it came from scraping /proc/jz/isp/isp-m0 (or isp_info on
+ * the T20s) - and that dump publishes no MAXIMUM on the older SDKs, which is
+ * why dn_read() carries a high-water-mark estimate for it. GetExpr publishes
+ * integration_time / _min / _max in sensor lines AND one_line_expr_in_us, so
+ * the real maximum and a microsecond conversion are both available directly.
+ *
+ * Present on every classic-tuning SoC (T10..T31, C100); not in the T40/T41
+ * reworked tuning API - see ISP_HAS_EXPR in isp_caps.h. Returns 0 and fills
+ * *out on success, <0 when unavailable (T40/T41, sim, ISP not up, or the SDK
+ * rejected the call). Fields the SDK could not supply are left 0.
+ *
+ * NOTE the SDK's own units: lines are sensor lines for the CURRENT sensor mode
+ * and frame rate, so it_lines is only comparable against it_max_lines from the
+ * same sample - never cached across a mode change. */
+typedef struct {
+    uint32_t it_lines;      /* g_attr.integration_time      (sensor lines) */
+    uint32_t it_min_lines;  /* g_attr.integration_time_min  (sensor lines) */
+    uint32_t it_max_lines;  /* g_attr.integration_time_max  (sensor lines) */
+    uint32_t line_us;       /* g_attr.one_line_expr_in_us; 0 = not supplied */
+    uint32_t expr_us;       /* GetEVAttr.expr_us;   0 = GetEVAttr unavailable */
+    uint32_t again;         /* GetEVAttr.again      (SDK's own units) */
+    uint32_t dgain;         /* GetEVAttr.dgain      (SDK's own units) */
+} hal_isp_expo;
+int hal_isp_exposure(hal_isp_expo *out);
+
 /* Read-only encoder queue/buffer telemetry for one encoder channel, from
  * IMP_Encoder_Query (IMPEncoderChnStat/CHNStat, present on all 9 platforms).
  * All counts are instantaneous. On T31, ave_bitrate is additionally filled from
