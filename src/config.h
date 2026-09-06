@@ -168,12 +168,19 @@ typedef struct {
      * [min,max] range.
      *
      * Two things measured on hardware (T31X/sc4336p) that a caller has to know:
-     *  - It is a LIVE control, not yet a dependable boot setting. The SDK only
-     *    honours the write while chn0 is genuinely delivering frames to a
+     *  - The write only takes while chn0 is genuinely DELIVERING frames to a
      *    consumer: a POST landing while something is watching takes effect on
-     *    the next sample, whereas the boot-time apply is accepted, echoed back
-     *    by GetExpr, and silently ignored by the sensor. See
-     *    isp_ae_it_max_latch() for the full measurement.
+     *    the next sample, whereas an apply into an idle pipeline (boot, or a
+     *    POST with nobody watching) is accepted, echoed back by GetExpr, and
+     *    silently ignored by the sensor. The HAL therefore re-applies the cap
+     *    from the encode threads' own frame-delivery path and verifies it by
+     *    readback, so a persisted value takes hold as soon as the first real
+     *    client streams after boot - typically within ~30 s of that client
+     *    connecting. See ae_it_max_on_frame() for the full measurement.
+     *  - Within one daemon lifetime the cap only ratchets DOWN. Once a cap is
+     *    in force GetExpr reports it as the sensor mode's maximum, so raising
+     *    the value again reads as "above the maximum, nothing to cap" and 0 has
+     *    no restore call at all: both need a restart to take effect.
      *  - It MOVES daynight's exposure index. The index is gain x
      *    (integration_time / max), and capping the maximum makes the AE rail
      *    against it sooner and answer the shortfall with gain, so a camera

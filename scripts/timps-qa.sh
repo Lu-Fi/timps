@@ -4680,7 +4680,15 @@ else
 	# model already used in config.c (explicit exclusions, not silent gaps).
 	# A field belongs here only because POSTing it in an unattended run is a
 	# bad idea, never just "nobody got to it yet" (that case should WARN).
-	ALLOW_image=""
+	# ae_it_max_us: the one image key a probe cannot restore. 0 means "never
+	# wrote anything" (there is no call that hands the AE maximum back), and
+	# raising it again is refused, because once a cap is in force GetExpr
+	# reports THAT as the sensor mode's maximum and isp_apply_image reads the
+	# higher request as "above the maximum - nothing to cap" (measured on
+	# cam-garage 2026-09-06: 12000 -> 8000 took, 8000 -> 12000 did not). Only a
+	# restart clears it, so a POST here would leave the camera's night exposure
+	# permanently changed by a test run - exactly what this allowlist is for.
+	ALLOW_image="ae_it_max_us"
 	ALLOW_audio=""
 	ALLOW_sensor="model i2c_addr fps width height"             # persist-only imaging config - risky to fuzz (all of sensor.*)
 	ALLOW_osd=""

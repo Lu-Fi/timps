@@ -454,6 +454,10 @@ static int g_fs_enabled[MS_FS_MAXCHN];
  * ISP section; forward-declared so fs_use()'s chn0 relatch can reach it. */
 static pthread_mutex_t g_isp_lock = PTHREAD_MUTEX_INITIALIZER;
 static int isp_apply_image(const char *k);
+/* AE integration-time cap supervisor (see ae_it_max_on_frame): fs_use()'s chn0
+ * enable edge re-arms it, so the value the edge is known to reset is re-written
+ * as soon as the caller's frame loop is actually delivering. */
+static void ae_it_max_arm(void);
 static void fs_use(int chn)
 {
     if (chn < 0 || chn >= MS_FS_MAXCHN) return;
@@ -498,15 +502,15 @@ static void fs_use(int chn)
         isp_apply_image("hflip");
         isp_apply_image("vflip");
         isp_apply_image("running_mode");
-        /* NOT image.ae_it_max_us, even though a chn0 idle->active cycle resets
-         * it exactly like the flip: this point is the enable EDGE, before any
-         * frame has been delivered, and that SoC measurably ignores a cap
-         * written there (see isp_ae_it_max_latch). Re-asserting it from here
-         * would look like a fix and do nothing. The cap is (re)established from
-         * ing_start() and from a /control write, both of which pump chn0 first;
-         * a cap silently lost to an idle->active cycle in between is a KNOWN
-         * GAP, not a solved one - see dev_notes. */
         pthread_mutex_unlock(&g_isp_lock);
+        /* image.ae_it_max_us is reset by this same edge but must NOT be written
+         * here: the enable edge is before any frame has been delivered, and the
+         * SDK measurably ignores a cap written into a pipeline that is not
+         * delivering (see ae_it_max_on_frame). Arm the supervisor instead - the
+         * caller is about to pull frames, and the re-write then happens from
+         * inside that delivery. Plain stores, so holding g_fs_mtx/g_isp_lock
+         * around this would be safe too; kept outside for lock hygiene. */
+        ae_it_max_arm();
     }
 }
 static void fs_unuse(int chn)
@@ -922,6 +926,152 @@ static void apply_image_tuning(void)
     const ms_image_cfg *im = &g_hcfg->image;
     LOGI(MOD,"image tuning applied (bri=%d con=%d sat=%d sharp=%d)",
          im->brightness,im->contrast,im->saturation,im->sharpness);
+#endif
+}
+
+/* ============ image.ae_it_max_us: frame-driven cap supervisor ============
+ *
+ * The AE integration-time cap is the one ISP key whose Set is honoured only
+ * while the pipeline is genuinely DELIVERING frames to a consumer - not merely
+ * while framesource chn0 is enabled. Measured on cam-garage (T31X / sc4336p,
+ * ISP H20221206a) 2026-09-06:
+ *   - written into an idle pipeline (boot, or a /control POST with nobody
+ *     watching), IMP_ISP_Tuning_SetAe_IT_MAX returns 0 and GetExpr echoes the
+ *     new maximum straight back, but /proc/jz/isp/isp-m0's "SENSOR Max
+ *     Integration Time" never moves, a later kick does not rescue it, and
+ *     within a couple of minutes even the GetExpr echo has decayed back to the
+ *     sensor default;
+ *   - the identical write issued while an RTSP client was already pulling chn0
+ *     took effect on the spot, /proc following within one sample (1496 -> 545
+ *     lines for a 12 ms cap).
+ * The first attempt at a boot path (isp_ae_it_max_latch(), removed in favour of
+ * this) tried to fake the second state: fs_use(0), sleep, Set, sleep,
+ * fs_unuse(0). It does not work, at 0.3 s or at 2.5 s of pump, and a real
+ * client streaming for a full minute afterwards still read 1496 - because
+ * fs_use() only ENABLES the framesource. Nobody consumed those frames, so the
+ * pipeline was never in the state that makes the SDK honour the write, and
+ * sizing the sleep up cannot fix a pipeline that is not delivering.
+ *
+ * So the write is driven from the real frame path instead: the encode threads
+ * call ae_it_max_on_frame() after each frame they have actually pulled from the
+ * encoder and published, which is by construction the same state a live
+ * /control POST lands in - the one state that is measured to work. Nothing
+ * else in the ISP block needs this; hflip/vflip/running_mode latch off a mere
+ * enable (fs_kick_chn0), which is why they are not routed through here.
+ *
+ * A supervisor rather than a one-shot, because the cap can be lost again with
+ * no Set of ours involved: a chn0 disable/enable cycle resets it (same class as
+ * the flip latch, see fs_use - previously a KNOWN GAP with no fix, now closed
+ * by the arm there), and an ignored write's GetExpr echo decays. Verification
+ * is the readback through the same accessor daynight uses: the cap is "in
+ * effect" while GetExpr's own maximum is at or below what was asked for, which
+ * also makes the clamped "asking for more than the sensor mode's own maximum"
+ * case self-satisfying (isp_apply_image writes nothing there).
+ *
+ * Cost on the frame path: one int compare per published frame, one clock read
+ * per AE_IT_MIN_FRAMES frames, and one GetExpr per AE_IT_HOLD_US once the cap
+ * holds. While it does NOT hold, it is one GetExpr + one re-write per
+ * AE_IT_SETTLE_US, backing off to AE_IT_SLOW_US after AE_IT_LOUD_TRIES so a SoC
+ * that never honours the cap costs a log line every few minutes, not a stream.
+ *
+ * Not covered: a pipeline whose only frame consumer is motion detection (IVS
+ * pulls frames with no encoder running, in imp_motion.c). The cap then waits
+ * for the first real video/JPEG client. */
+#if !defined(NO_TUNINGS) && \
+    (defined(ISP_HAS_AE_IT_MAX) || defined(ISP_HAS_AE_IT_RANGE))
+#define AE_IT_SUPERVISE 1               /* this build can write the cap at all */
+#endif
+#ifndef AE_IT_MIN_FRAMES
+#define AE_IT_MIN_FRAMES  15            /* delivered frames each check stands on */
+#endif
+/* Cadences. AE_IT_SETTLE_US is sized off the measured readback lag: after a
+ * write that DID take (/proc moved within ~30 s of it at boot, within ~4 s for
+ * a live POST into an already-streaming pipeline), GetExpr still reports the
+ * OLD maximum for another 20-30 s. Judging a write sooner than that just
+ * produces redundant - idempotent, harmless - rewrites and log lines: 10 s gave
+ * three writes per boot on cam-garage where 30 s gives one. */
+#define AE_IT_SETTLE_US   30000000LL    /* after a write, before judging it */
+#define AE_IT_HOLD_US     60000000LL    /* recheck cadence once the cap holds */
+#define AE_IT_SLOW_US    300000000LL    /* ...and after giving up on it sticking */
+#define AE_IT_LOUD_TRIES  6             /* re-writes before backing off + warning */
+static int     g_ae_it_frames = 0;      /* frames delivered since the last check */
+static int64_t g_ae_it_next_us = 0;     /* earliest time for the next check */
+static int     g_ae_it_fails = 0;       /* consecutive checks finding no cap */
+static int     g_ae_it_warned = 0;
+
+/* Re-arm: check as soon as AE_IT_MIN_FRAMES more frames have been delivered.
+ * Called wherever the cap has just been (re)configured or is known to have been
+ * reset - boot, a /control write, a chn0 enable edge. Plain stores on purpose:
+ * the deadline is a heuristic and every caller may hold locks; a racing store
+ * costs at most one extra GetExpr, and the check re-validates under g_isp_lock. */
+static void ae_it_max_arm(void)
+{
+    g_ae_it_frames  = 0;
+    g_ae_it_next_us = 0;
+    g_ae_it_fails   = 0;
+    g_ae_it_warned  = 0;
+}
+
+#ifdef AE_IT_SUPERVISE
+/* Slow path. Serialized on g_isp_lock, which also makes readback+rewrite atomic
+ * against a concurrent /control apply. Callers must NOT hold it. */
+static void ae_it_max_check(int64_t now)
+{
+    pthread_mutex_lock(&g_isp_lock);
+    /* another encode thread may have just done this round */
+    if (now < g_ae_it_next_us){ pthread_mutex_unlock(&g_isp_lock); return; }
+    int us = g_hcfg ? g_hcfg->image.ae_it_max_us : 0;
+    hal_isp_expo ex;
+    if (us <= 0 || hal_isp_exposure(&ex) != 0 || ex.line_us == 0 || ex.it_max_lines == 0){
+        /* no reference to judge by (or the key was just turned off): stay quiet,
+         * isp_apply_image() would only log the same non-answer every round */
+        g_ae_it_next_us = now + AE_IT_SETTLE_US;
+        pthread_mutex_unlock(&g_isp_lock);
+        return;
+    }
+    uint32_t want = (uint32_t)us / ex.line_us;
+    if (want == 0) want = 1;
+    if (ex.it_max_lines <= want){                       /* cap is in effect */
+        if (g_ae_it_fails)
+            LOGI(MOD,"image.ae_it_max_us=%d: cap in effect (AE max %lu lines, %luus) "
+                     "after %d write(s) on the live frame path",
+                 us, (unsigned long)ex.it_max_lines,
+                 (unsigned long)(ex.it_max_lines * ex.line_us), g_ae_it_fails);
+        g_ae_it_fails  = 0;
+        g_ae_it_warned = 0;
+        g_ae_it_next_us = now + AE_IT_HOLD_US;
+    } else {
+        isp_apply_image("ae_it_max_us");   /* logs the write and its readback */
+        g_ae_it_fails++;
+        if (g_ae_it_fails >= AE_IT_LOUD_TRIES && !g_ae_it_warned){
+            g_ae_it_warned = 1;
+            LOGW(MOD,"image.ae_it_max_us=%d: %d writes on a live, delivering "
+                     "pipeline and the AE maximum is still %lu lines - this "
+                     "sensor/ISP is not honouring the cap; retrying slowly",
+                 us, g_ae_it_fails, (unsigned long)ex.it_max_lines);
+        }
+        g_ae_it_next_us = now + (g_ae_it_fails >= AE_IT_LOUD_TRIES
+                                 ? AE_IT_SLOW_US : AE_IT_SETTLE_US);
+    }
+    pthread_mutex_unlock(&g_isp_lock);
+}
+#endif
+
+/* Fast path: called from the encode threads right after a frame has actually
+ * been pulled from the encoder and published, i.e. from inside genuine frame
+ * delivery. Everything expensive is behind the frame counter and the deadline.
+ * The unlocked 64-bit deadline read can tear on 32-bit MIPS; the worst outcome
+ * is one extra ae_it_max_check(), which re-validates the deadline under the
+ * lock, so it is not worth an atomic. */
+static inline void ae_it_max_on_frame(void)
+{
+#ifdef AE_IT_SUPERVISE
+    if (!g_hcfg || g_hcfg->image.ae_it_max_us <= 0) return;   /* opt-in, default off */
+    if (__sync_add_and_fetch(&g_ae_it_frames, 1) < AE_IT_MIN_FRAMES) return;
+    g_ae_it_frames = 0;                  /* count the next batch either way */
+    int64_t now = ms_now_us();
+    if (now < g_ae_it_next_us) return;
+    ae_it_max_check(now);
 #endif
 }
 
@@ -2037,6 +2187,11 @@ static void *video_thread(void *arg)
                                    1000000 / (vc->fps > 0 ? vc->fps : 25),
                                    PTS_SKEW_VIDEO_US);
         hub_publish_take(vc->chn, pk, pts, key, MS_MEDIA_VIDEO, pub_now);
+        /* A frame was really pulled from the encoder and handed on - the one
+         * pipeline state in which the ISP honours the AE integration-time cap
+         * (see ae_it_max_on_frame). Cheap no-op unless image.ae_it_max_us is
+         * set, and this is exactly where a working live /control POST lands. */
+        ae_it_max_on_frame();
 #if defined(PLATFORM_T31)
         /* Item-2 (T31 only): cache the running average bitrate for the read-only
          * /control encoder-stats getter. Must run while 'st' is still held (the
@@ -2539,6 +2694,7 @@ static void *sw_rot_thread(void *arg)
                                    PTS_SKEW_VIDEO_US);
         hub_publish(vc->chn, (const uint8_t*)out.outAddr, (size_t)out.outLen,
                     pts, key, MS_MEDIA_VIDEO, pub_now);
+        ae_it_max_on_frame();   /* real delivery: see video_thread's call */
 
         /* ---- Batch 7: standalone JPEG on the SW-rotate stream ----------------
          * On-demand + throttled, mirroring jpeg_thread's contract:
@@ -3062,6 +3218,7 @@ static void *jpeg_thread(void *arg)
          * straight to the pool - equivalent to the old jc->active/hub_active
          * gate, which only ever skipped the now-eliminated malloc+copy. */
         hub_publish_take(jc->src, pk, pub_now, 1, MS_MEDIA_JPEG, pub_now);
+        ae_it_max_on_frame();   /* real delivery: see video_thread's call */
     }
     if (receiving){ IMP_Encoder_StopRecvPic(jc->chn); fs_unuse(jc->fs_chn); }
     /* This thread also leaves the loop for good on the watchdog give-up above,
@@ -3885,55 +4042,10 @@ static void *audio_thread(void *arg)
  * -DUSE_CONTROL. */
 /* g_isp_lock is defined up in the FrameSource section (fs_use() also takes it on
  * a chn0 enable edge, and fs_use() is compiled in non-USE_CONTROL builds too). */
-/* The AE integration-time cap needs a STRICTER kick than fs_kick_chn0 gives.
- *
- * Measured on cam-garage (T31X/sc4336p) 2026-09-06. hflip/vflip/running_mode
- * follow "Set now, pump chn0 afterwards and the queued value latches" - that is
- * what fs_kick_chn0() implements. IMP_ISP_Tuning_SetAe_IT_MAX does NOT: issued
- * into an idle pipeline it returns 0, GetExpr echoes the new maximum back, and
- * /proc/jz/isp/isp-m0's "SENSOR Max Integration Time" never moves - a later kick
- * does not rescue it, and within a couple of minutes even the GetExpr echo has
- * decayed back to the sensor default. The identical call issued while an RTSP
- * client was already pulling chn0 took effect on the spot, /proc following
- * within one sample (1496 -> 545 lines for a 12 ms cap).
- *
- * So the Set has to happen DURING delivery, not before it: bring chn0 up, let
- * it produce frames, and only then write the cap. Same refcounted fs_use()/
- * fs_unuse() pair as fs_kick_chn0, so this is a cheap ref bump when chn0 is
- * already streaming. Callers must NOT hold g_isp_lock (fs_use takes it on the
- * enable edge) - this takes it itself around the apply.
- *
- * HONEST LIMIT, measured the same day: this is NOT sufficient on its own at
- * boot. Pumping chn0 here for 0.3 s and for 2.5 s both left /proc at the
- * sensor default, with a client subsequently streaming for a minute and still
- * 1496 - while a /control POST arriving mid-stream moved it on the first
- * sample. The likely reason is that fs_use() only ENABLES the framesource;
- * nothing here consumes frames from it, so the pipeline is not in the state a
- * real subscriber puts it in, and only that state makes the SDK honour the
- * write. Sizing the sleep up does not fix a pipeline that is not delivering.
- *
- * Consequence, and the reason image.ae_it_max_us ships default-off: the cap is
- * dependable as a LIVE control (POST while something is watching) and is NOT
- * dependable as a boot-time setting. Making it survive a reboot unattended
- * needs the re-apply to be driven from the video path once real frames have
- * flowed - see dev_notes. Left in place because it is harmless, idempotent,
- * and may well be sufficient on a SoC/sensor whose AE is less fussy; it must
- * just not be mistaken for a working boot path on T31X/sc4336p. */
-#ifndef AE_IT_MAX_PUMP_US
-#define AE_IT_MAX_PUMP_US 500000    /* == FS0_KICK_US; longer did not help */
-#endif
-static void isp_ae_it_max_latch(void)
-{
-    if (!g_hcfg || g_hcfg->image.ae_it_max_us <= 0) return;
-    if (!g_hcfg->video[0].enabled) return;
-    fs_use(0);
-    usleep(AE_IT_MAX_PUMP_US);
-    pthread_mutex_lock(&g_isp_lock);
-    isp_apply_image("ae_it_max_us");
-    pthread_mutex_unlock(&g_isp_lock);
-    usleep(400000);                 /* let the AE act on it before releasing */
-    fs_unuse(0);
-}
+/* The AE integration-time cap (image.ae_it_max_us) has no kick function of its
+ * own: it needs the write to land while frames are genuinely being DELIVERED,
+ * which no amount of pumping from here can produce. It is driven from the
+ * encode threads instead - see ae_it_max_on_frame() up in the ISP section. */
 
 /* set by ing_control() when a live hflip/vflip apply needs the ISP latch kick;
  * consumed once in ing_control_commit() so a settings POST carrying both
@@ -4134,14 +4246,15 @@ static int ing_control(const char *key, const char *val)
          * which always ends in hub_control_commit(). */
         else if (ok && (!strcmp(k,"hflip") || !strcmp(k,"vflip")))
             g_isp_flip_kick_pending = 1;
-        /* the cap needs the Set to land mid-delivery, so the apply that just
-         * ran under g_isp_lock is not enough on an idle pipeline - redo it
-         * with chn0 actually pumping (see isp_ae_it_max_latch). Inline rather
-         * than deferred to commit: this is a single key, there is nothing to
-         * coalesce with, and blocking ~500 ms on a /control thread is the same
-         * cost running_mode already pays above. */
+        /* The cap only sticks when the write lands mid-delivery. The apply
+         * that just ran under g_isp_lock IS that write whenever something is
+         * watching (the measured-good live path, unchanged); when nothing is,
+         * no pump can substitute for a consumer, so hand it to the frame-path
+         * supervisor, which re-writes and then verifies as soon as real frames
+         * flow again. Arming is a couple of stores - unlike the ~900 ms sleep
+         * this used to spend blocking the /control thread for no effect. */
         else if (ok && !strcmp(k,"ae_it_max_us"))
-            isp_ae_it_max_latch();
+            ae_it_max_arm();
         return ok ? 1 : 0;
     }
 
@@ -4611,11 +4724,13 @@ static int ing_start(const ms_config *cfg)
      * Must run here (end of ing_start), NOT at the apply_image_tuning() call in
      * isp_init, where fs chn0 does not yet exist. */
     fs_kick_chn0();
-    /* image.ae_it_max_us is in the same latch class but needs the Set to land
-     * while frames are already flowing, which the kick above cannot provide
-     * (it pumps AFTER the boot-time Set). See isp_ae_it_max_latch(). No-op
-     * when the key is 0, i.e. on every camera that has not opted in. */
-    isp_ae_it_max_latch();
+    /* image.ae_it_max_us is a harder case than the kick above can serve: it
+     * needs the write to land while frames are being DELIVERED, and at the end
+     * of bring-up nothing is consuming yet. Arm the frame-path supervisor
+     * instead - the boot-time write then happens by itself the first time a
+     * real client makes frames flow (see ae_it_max_on_frame). No-op when the
+     * key is 0, i.e. on every camera that has not opted in. */
+    ae_it_max_arm();
     return 0;
 
 fail:
