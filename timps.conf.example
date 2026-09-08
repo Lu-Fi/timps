@@ -359,18 +359,29 @@ audio.bitrate            = 32     # kbps, aac                 (persist + restart
 audio.volume             = 80     # live — IMP_AI_SetVol
 audio.gain               = 25     # live — IMP_AI_SetGain
 audio.alc_gain           = 0      # live — IMP_AI_SetAlcGain PGA 0..7 (T21/T31/C100)
-audio.high_pass          = 0      # live — high-pass filter on/off
-audio.agc                = 0      # live — automatic gain control on/off
-audio.agc_target_dbfs    = 10     # live — AGC target level 0..31
-audio.agc_compression_db = 0      # live — AGC compression gain 0..90
-audio.ns                 = 0      # live — noise suppression 0 off, 1..3
+# high_pass/agc/ns: NOT live despite being POST-able. libimp runs these DSP
+# modules on its own internal record thread and frees module state with no
+# lock, so a live Enable/Disable would race that thread (UAF -> SIGSEGV in
+# libaudioProcess.so). A POST persists the new value; it only takes effect at
+# the next AI channel bring-up, i.e. a timps restart.
+audio.high_pass           = 1     # restart — high-pass filter on/off
+audio.agc                 = 0     # restart — automatic gain control on/off
+audio.agc_target_dbfs     = 10    # restart — AGC target level 0..31
+audio.agc_compression_db  = 0     # restart — AGC compression gain 0..90
+audio.ns                  = 0     # restart — noise suppression 0 off, 1..3
 audio.mute               = 0      # live — mic mute (1 = drop captured frames,
                                   #        clients receive no audio; no restart)
 # aec: opt-in Acoustic Echo Cancellation (IMP_AI_EnableAec), default off. Only
 # engages when BOTH the mic (AI) and the speaker (AO) are live; it subtracts the
 # speaker output from the mic capture so the far end doesn't hear itself over the
-# backchannel. Applied at the next AO open.
-audio.aec                = 0      # live — 0 off, 1 on (USE_BACKCHANNEL/USE_PLAY)
+# backchannel. A POST persists the new value; it takes effect at the next AO
+# open, not immediately (same "not truly live" caveat as high_pass/agc/ns
+# above). Also note: IMP_AI_EnableAec brings up the vendor's full WebRTC audio
+# processing chain (AGC+NS+HPF, configured by /etc/webrtc_profile.ini, not by
+# these settings) on the mic while engaged - observed on Garage to sometimes
+# leave the mic path audibly noisier even after AEC disengages, until timps is
+# restarted.
+audio.aec                = 0      # persists now, engages at next AO open — 0 off, 1 on (USE_BACKCHANNEL/USE_PLAY)
 # talk_ws: browser-microphone backchannel over a WebSocket at <cam>:<http
 # port>/talk (USE_BC_WS builds only). A browser cannot speak RTSP/RTP, so the
 # ONVIF backchannel above is unreachable from a web page; this serves the same
