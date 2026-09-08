@@ -49,9 +49,11 @@ _Static_assert(MOTION_MAX_CELLS <= MOTION_STATUS_MAX,
 #include <unistd.h>
 #include <stdlib.h>
 #include <time.h>
-#include <sys/wait.h>   /* NEU-01: fork/execlp instead of system() */
-#include <fcntl.h>      /* pipe2/O_CLOEXEC (on_motion exec-failure detection) */
+#include <sys/wait.h>   /* NEU-01: posix_spawn instead of system() */
+#include <spawn.h>      /* NEU-01b: vfork-backed hook launch, no fork() copy */
 #include <errno.h>
+
+extern char **environ;   /* child env is built explicitly for posix_spawn */
 
 static volatile int   g_run;
 static pthread_t      g_thr;
@@ -88,6 +90,71 @@ static int64_t g_cell_hit[MOTION_STATUS_MAX]; /* last retRoi=1 per cell, mono ms
 
 static int64_t now_ms(void){ struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t);
                              return (int64_t)t.tv_sec*1000 + t.tv_nsec/1000000; }
+
+/* ---- on_motion hook children -------------------------------------------
+ * posix_spawn() hands back a DIRECT child (the old double-fork orphaned the
+ * worker onto init instead), so it has to be reaped - but never inline: a hook
+ * may legitimately run for seconds and this is the IVS analysis thread. Park
+ * the pid here and collect it with WNOHANG once per loop pass. File-scope for
+ * the same reason g_last_fire is: motion_sync() joins and recreates this
+ * thread on a channel rebuild, and outstanding children must survive that.
+ *
+ * Safe because timps installs no SIGCHLD handler and never waits on -1
+ * (daynight.c's dn_reap only ever waits on its own pid), so nothing can steal
+ * these children or race the reap. */
+#define MOTION_HOOK_MAX 8
+/* Upper bound on the child environment we hand posix_spawn: our own environ
+ * (a daemon started from an init script carries a handful of variables) plus
+ * the four MOTION_* and the NULL. Entries beyond it are dropped rather than
+ * overrun - the MOTION_* always make it in. */
+#define MOTION_HOOK_ENV_MAX 64
+static pid_t g_hook_pid[MOTION_HOOK_MAX];
+/* Last thing we warned about, so a repeating fault logs once but a DIFFERENT
+ * fault still gets through. Cleared when a hook executes again: the old
+ * "a broken hook stays broken" latch was wrong - the common failure turned out
+ * to be transient memory pressure, and latching it also muted a hook that
+ * broke for real later. */
+enum { HOOK_OK = 0, HOOK_W_SPAWN, HOOK_W_NOEXEC, HOOK_W_SIGNAL, HOOK_W_BUSY };
+static int g_hook_warn;
+
+static void hooks_reap(const char *cmd)
+{
+    for (int i = 0; i < MOTION_HOOK_MAX; i++){
+        if (!g_hook_pid[i]) continue;
+        int st = 0;
+        pid_t r = waitpid(g_hook_pid[i], &st, WNOHANG);
+        if (r == 0) continue;                       /* still running */
+        if (r < 0 && errno == EINTR) continue;
+        g_hook_pid[i] = 0;
+        if (r < 0) continue;                        /* ECHILD: already gone */
+        if (WIFEXITED(st) && WEXITSTATUS(st) == 127){
+            /* uClibc-ng's __spawni (librt/spawn.c) _exit(127)s when execve
+             * fails; posix_spawn() itself has already returned 0 by then, so
+             * 127 here - and ONLY 127 - is the genuine "could not execute the
+             * hook" verdict. A resource failure never reaches this branch, it
+             * comes back as posix_spawn()'s return value instead. */
+            if (g_hook_warn != HOOK_W_NOEXEC){
+                g_hook_warn = HOOK_W_NOEXEC;
+                LOGW(MOD,"on_motion '%s' cannot be executed - "
+                     "is the script installed and executable?", cmd);
+            }
+        } else if (WIFSIGNALED(st)){
+            if (g_hook_warn != HOOK_W_SIGNAL){
+                g_hook_warn = HOOK_W_SIGNAL;
+                LOGW(MOD,"on_motion '%s' killed by signal %d (out of memory?)",
+                     cmd, WTERMSIG(st));
+            }
+        } else if (WIFEXITED(st)){
+            g_hook_warn = HOOK_OK;   /* it ran: re-arm every warning above */
+        }
+    }
+}
+
+static int hooks_slot(void)
+{
+    for (int i = 0; i < MOTION_HOOK_MAX; i++) if (!g_hook_pid[i]) return i;
+    return -1;
+}
 
 /* Silent-limbo hardening: PollingResult(1000ms)/GetResult failing forever
  * (SDK/driver wedge) used to leave the thread ticking a bare `continue` with
@@ -171,6 +238,10 @@ static void *motion_thread(void *arg)
     pthread_mutex_unlock(&g_st_lock);
     int64_t stall_since_ms = 0;   /* 0 = currently receiving results fine */
     while (g_run) {
+        /* collect finished on_motion hooks before anything else: never inline
+         * at fire time, and this pass ticks at least once a second even when
+         * IVS is silent, so a zombie lives at most one poll interval */
+        hooks_reap(g_hcfg->motion.on_motion);
         if (IMP_IVS_PollingResult(g_chn, 1000) < 0){
             motion_note_miss(&stall_since_ms);
             continue;
@@ -224,16 +295,36 @@ static void *motion_thread(void *arg)
                 g_last_fire = t;
                 LOGI(MOD,"motion detected");
                 if (g_hcfg->motion.on_motion[0]) {
-                    /* NEU-01 (same class as daynight.c F-01): run via
-                     * fork()+execlp() instead of system(), so a malicious
+                    /* NEU-01 (same class as daynight.c F-01): launch the hook
+                     * with an execve of its own, never system(), so a malicious
                      * on_motion value (config-file only, NOT settable via
                      * /control - keep it that way) can only fail to exec, it
-                     * can never inject shell commands. Double-fork so this
-                     * analysis thread never blocks on the triggered script
-                     * (matches the old "cmd &" backgrounding): the immediate
-                     * child forks the real worker and exits right away: the
-                     * grandchild is reparented to init and reaped there, no
-                     * zombies and no wait() on the actual script runtime.
+                     * can never inject shell commands.
+                     *
+                     * NEU-01b: posix_spawn(), NOT fork(). uClibc-ng's __spawni
+                     * (librt/spawn.c) takes the vfork() path whenever no
+                     * "dangerous" attributes are requested - which is exactly
+                     * our case, attrp and file-actions are both NULL - so the
+                     * child SHARES this address space until execve rather than
+                     * copying it. The old double-fork had to duplicate the whole
+                     * daemon twice (~97 MB of VM across ~40 thread stacks): on a
+                     * 29 MB board that returned ENOMEM under load, and when it
+                     * did succeed the two extra address-space copies pushed the
+                     * box into the OOM killer - which then killed timpsd itself.
+                     * vfork costs no page tables and no commit charge, so the
+                     * hook still launches when memory is nearly gone, and it
+                     * returns as soon as the child execs (measured ~2 ms for a
+                     * hook that then ran 4 s), so this analysis thread still
+                     * never waits on the script's runtime.
+                     *
+                     * The verdict still comes from waitpid, NOT from the return
+                     * value: uClibc-ng reports a failed execve as _exit(127) in
+                     * the child (posix_spawn itself returns 0), so rc != 0 means
+                     * only that the spawn could not be started at all. That
+                     * split is what fixes the misreporting - a resource failure
+                     * and a genuinely unusable hook are now distinct, where the
+                     * old code collapsed both into exit 127 and blamed the
+                     * script for what was really ENOMEM. See hooks_reap().
                      *
                      * M3: hand the script context via the environment (idiomatic
                      * for a hook, and invisible to any caller that ignores it) so
@@ -244,58 +335,55 @@ static void *motion_thread(void *arg)
                      *   MOTION_TIME              unix time of the trigger
                      * All values are daemon-controlled numerics (grid ints, an
                      * internally-computed mask, the clock) - no attacker-
-                     * influenced data, so this reopens no injection surface. The
-                     * strings are formatted BEFORE fork(); setenv() runs only in
-                     * the single-threaded grandchild, mutating its own env. */
+                     * influenced data, so this reopens no injection surface.
+                     * posix_spawn has no "fork, then setenv" step, so the child
+                     * environment is built explicitly: our own environ minus any
+                     * inherited MOTION_* (so a stale value can never shadow this
+                     * event's), plus these four. Nothing in timps calls
+                     * setenv/putenv at runtime, so environ is stable to read. */
                     const char *cmd = g_hcfg->motion.on_motion;
-                    char e_cols[24], e_rows[24], e_cells[32], e_time[32];
-                    snprintf(e_cols, sizeof e_cols, "%d", gcols);
-                    snprintf(e_rows, sizeof e_rows, "%d", grows);
-                    snprintf(e_cells,sizeof e_cells,"%llu",(unsigned long long)hitmask);
-                    snprintf(e_time, sizeof e_time, "%lld", (long long)time(NULL));
-                    pid_t pid = fork();
-                    if (pid < 0){
-                        LOGW(MOD,"on_motion: fork failed: %s", strerror(errno));
-                    } else if (pid == 0){
-                        /* CLOEXEC pipe: a successful exec closes it silently,
-                         * a failed one writes a byte - so the exec verdict
-                         * (and only that; never the script's runtime) travels
-                         * through the middle child the daemon already waits
-                         * on. Exit code 127 = hook cannot be executed. */
-                        int pfd[2];
-                        if (pipe2(pfd, O_CLOEXEC) != 0) pfd[0] = pfd[1] = -1;
-                        pid_t gp = fork();
-                        if (gp == 0){
-                            if (pfd[0] >= 0) close(pfd[0]);
-                            setenv("MOTION_COLS",  e_cols,  1);
-                            setenv("MOTION_ROWS",  e_rows,  1);
-                            setenv("MOTION_CELLS", e_cells, 1);
-                            setenv("MOTION_TIME",  e_time,  1);
-                            execlp(cmd, cmd, (char*)NULL);
-                            if (pfd[1] >= 0){
-                                char e = 1;
-                                while (write(pfd[1], &e, 1) < 0 && errno == EINTR) {}
-                            }
-                            _exit(127);          /* exec failed */
+                    char e_cols[32], e_rows[32], e_cells[40], e_time[40];
+                    snprintf(e_cols, sizeof e_cols, "MOTION_COLS=%d", gcols);
+                    snprintf(e_rows, sizeof e_rows, "MOTION_ROWS=%d", grows);
+                    snprintf(e_cells,sizeof e_cells,"MOTION_CELLS=%llu",
+                             (unsigned long long)hitmask);
+                    snprintf(e_time, sizeof e_time, "MOTION_TIME=%lld",
+                             (long long)time(NULL));
+                    char *extra[4] = { e_cols, e_rows, e_cells, e_time };
+
+                    int slot = hooks_slot();
+                    if (slot < 0){
+                        if (g_hook_warn != HOOK_W_BUSY){
+                            g_hook_warn = HOOK_W_BUSY;
+                            LOGW(MOD,"on_motion: %d '%s' hooks still running - "
+                                 "skipping this event; the hook outlives "
+                                 "motion.cooldown_ms", MOTION_HOOK_MAX, cmd);
                         }
-                        int failed = (gp < 0);
-                        if (pfd[1] >= 0) close(pfd[1]);
-                        if (!failed && pfd[0] >= 0){
-                            char e; ssize_t rn;
-                            while ((rn = read(pfd[0], &e, 1)) < 0 && errno == EINTR) {}
-                            failed = (rn == 1);
-                        }
-                        _exit(failed ? 127 : 0);
                     } else {
-                        int st = 0;
-                        while (waitpid(pid, &st, 0) < 0 && errno == EINTR) {}
-                        if (WIFEXITED(st) && WEXITSTATUS(st) == 127){
-                            static int warned;   /* once: a broken hook stays broken */
-                            if (!warned){
-                                warned = 1;
-                                LOGW(MOD,"on_motion '%s' cannot be executed - "
-                                     "is the script installed and executable?", cmd);
+                        char *envp[MOTION_HOOK_ENV_MAX];
+                        int k = 0;
+                        for (char **e = environ;
+                             *e && k < MOTION_HOOK_ENV_MAX - 5; e++)
+                            if (strncmp(*e, "MOTION_", 7) != 0) envp[k++] = *e;
+                        for (int i = 0; i < 4; i++) envp[k++] = extra[i];
+                        envp[k] = NULL;
+
+                        char *argv[2]; argv[0] = (char*)cmd; argv[1] = NULL;
+                        pid_t pid = 0;
+                        int rc = posix_spawn(&pid, cmd, NULL, NULL, argv, envp);
+                        if (rc != 0){
+                            /* vfork/fork itself failed: a RESOURCE shortage,
+                             * never the hook's fault. Say so plainly, and do not
+                             * latch it - it clears on its own. */
+                            if (g_hook_warn != HOOK_W_SPAWN){
+                                g_hook_warn = HOOK_W_SPAWN;
+                                LOGW(MOD,"on_motion: cannot launch '%s': %s - "
+                                     "motion event dropped (the hook itself is "
+                                     "fine; the board is out of memory)",
+                                     cmd, strerror(rc));
                             }
+                        } else {
+                            g_hook_pid[slot] = pid;
                         }
                     }
                 }
@@ -303,6 +391,10 @@ static void *motion_thread(void *arg)
         }
         IMP_IVS_ReleaseResult(g_chn, (void*)result);
     }
+    /* last sweep on the way out. Anything still running stays tracked in
+     * g_hook_pid[] - motion_sync() recreates this thread and picks it up; on a
+     * real shutdown init inherits it, exactly as before. */
+    hooks_reap(g_hcfg->motion.on_motion);
     return NULL;
 }
 
