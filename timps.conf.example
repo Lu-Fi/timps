@@ -357,7 +357,7 @@ audio.channels           = 1      # 1 mono | 2 = simulated stereo (dual-mono),
                                   # AAC only               (persist + restart)
 audio.bitrate            = 32     # kbps, aac                 (persist + restart)
 audio.volume             = 80     # live — IMP_AI_SetVol
-audio.gain               = 25     # live — IMP_AI_SetGain
+audio.gain               = 15     # live — IMP_AI_SetGain
 audio.alc_gain           = 0      # live — IMP_AI_SetAlcGain PGA 0..7 (T21/T31/C100)
 # high_pass/agc/ns: NOT live despite being POST-able. libimp runs these DSP
 # modules on its own internal record thread and frees module state with no

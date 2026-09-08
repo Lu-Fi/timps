@@ -307,7 +307,11 @@ void config_defaults(ms_config *c)
 
     c->audio.enabled=1; c->audio.codec=MS_AC_AAC; c->audio.samplerate=16000;
     c->audio.channels=1; c->audio.bitrate_kbps=32;
-    c->audio.volume=80; c->audio.gain=25;   /* audible defaults */
+    /* gain 25->15 (2026-09-08): 31 (max) clipped hard on a T20 (jxf23) camera
+     * that already ran hot at the old default - listened A/B across a T20, a
+     * T23 (sc2336) and a T31 (sc4336p, Garage), 15 was preferred on all three.
+     * volume stays 80, already the preferred value on every camera tested. */
+    c->audio.volume=80; c->audio.gain=15;   /* audible defaults */
     /* high_pass on by default (2026-09-08): removes DC/low-frequency rumble
      * (fan/structure-borne vibration, mains hum) without touching voice band;
      * confirmed on Garage as a pure win with no observed downside. */
