@@ -539,6 +539,27 @@ enc_measure() {
 	rm -f "$f"
 }
 
+# Attach a real consumer to one channel just long enough for frames to flow.
+# encoder.<n>.rc.* is the encoder's LIVE rate-control state: it refreshes when
+# the channel ENCODES A FRAME, not when the IMP setter is called, and timps
+# stops the channel entirely after its idle timeout with no subscriber. On a
+# camera nobody is watching, a live rc POST is therefore invisible in the
+# readback forever - measured 2026-09-08 on a T41LQ (Vanhua T55A): min_qp
+# posted 30/12/40/41 with no client, register frozen through 35s of polling;
+# 2s of RTSP and it followed instantly. Per channel, and identically at
+# bring-up (fresh boot: configured 20, register 18 on BOTH channels until each
+# had streamed once). Not T40/T41-specific - RC4 already documents the same
+# effect on bitrate, measured on a T31; this just generalizes it to min_qp/
+# max_qp/i_bias_lvl and to the RC2 hold-check, which both used to trust the
+# register on an idle channel and misread "asleep" as "wrong".
+rc_touch_stream() {   # $1 = rtsp path (default $PATH_SUB)
+	have ffmpeg || return 1
+	timeout -k 3 12 ffmpeg -hide_banner -nostdin -loglevel error \
+		-rtsp_transport tcp -i "$(rtsp_url "${1:-$PATH_SUB}")" -t 2 \
+		-an -c copy -f null - </dev/null >/dev/null 2>&1
+	return 0
+}
+
 # ---------------------------------------------------------- on-device telemetry
 # dev_proc_sample [window_s] -> "<rss_kB> <fds> <threads> <cpu_pct>", empty
 # without SSH or if timpsd isn't running.
@@ -3111,23 +3132,32 @@ else
 		rc_hold_ok=1
 		for rc_ch in 0 1; do
 			[ "$(jget "$LV_BASE" "video.$rc_ch.enabled")" = "1" ] || continue
-			rc_h_mode=$(jget "$LV_BASE" "encoder.$rc_ch.rc.rc_mode")
+			# touch this channel before trusting its register: encoder.<n>.rc.*
+			# only refreshes on an encoded frame (see rc_touch_stream's comment),
+			# so an idle channel's LV_BASE snapshot is a stale readback, not a
+			# live disagreement - re-fetch AFTER a real client pulled 2s of it.
+			rc2_fresh="$LV_BASE"
+			if rc_touch_stream "$([ "$rc_ch" = 0 ] && printf '%s' "$PATH_MAIN" || printf '%s' "$PATH_SUB")"; then
+				rc2_fresh="$OUTDIR/rc2_fresh_ch${rc_ch}.json"; lv_get "$rc2_fresh"
+				[ -s "$rc2_fresh" ] || rc2_fresh="$LV_BASE"
+			fi
+			rc_h_mode=$(jget "$rc2_fresh" "encoder.$rc_ch.rc.rc_mode")
 			if [ -z "$rc_h_mode" ]; then
 				info "  encoder.$rc_ch.rc absent although video$rc_ch is enabled - channel has no queryable encoder (sw-rotate/bring-up); nothing to compare for this channel"
 				continue
 			fi
-			rc_c_mode=$(jget "$LV_BASE" "video.$rc_ch.rc_mode")
+			rc_c_mode=$(jget "$rc2_fresh" "video.$rc_ch.rc_mode")
 			rc_w_mode=$(rc_mode_expect "$rc_c_mode")
 			if [ "$rc_h_mode" != "$rc_w_mode" ]; then
 				bad "encoder.$rc_ch.rc: configured rc_mode=$rc_c_mode should be held as '$rc_w_mode' on a $rc_plat SoC, but the encoder reports '$rc_h_mode' - the mode timps wrote at bring-up is not the mode the encoder is running"
 				rc_hold_ok=0
 			fi
 			for rc_f in min_qp max_qp; do
-				rc_h=$(jget "$LV_BASE" "encoder.$rc_ch.rc.$rc_f")
+				rc_h=$(jget "$rc2_fresh" "encoder.$rc_ch.rc.$rc_f")
 				[ -n "$rc_h" ] || continue          # not carried by this mode
-				rc_c=$(jget "$LV_BASE" "video.$rc_ch.$rc_f")
+				rc_c=$(jget "$rc2_fresh" "video.$rc_ch.$rc_f")
 				[ "$rc_h" = "$rc_c" ] && continue
-				bad "encoder.$rc_ch.rc.$rc_f=$rc_h but video$rc_ch.$rc_f=$rc_c was configured - the QP bound timps wrote at bring-up is not the one the encoder holds"
+				bad "encoder.$rc_ch.rc.$rc_f=$rc_h but video$rc_ch.$rc_f=$rc_c was configured - the QP bound timps wrote at bring-up is not the one the encoder holds (checked after 2s of real streaming, so this is not the idle-register staleness RC4/rc_touch_stream documents)"
 				rc_hold_ok=0
 			done
 			# bitrate is NOT compared for equality: whether the SDK stores the
@@ -3181,6 +3211,8 @@ else
 			if [ "$code" != "200" ]; then
 				bad "video1.$key: POST(live) HTTP $code"
 				lv_post "$LV_PENDING" >/dev/null; LV_PENDING=""; return; fi
+			local touched=1
+			rc_touch_stream "$PATH_SUB" || touched=0
 			lv_get "$gf"
 			if rc_defer_has "$rf" "video1.$key"; then
 				bad "video1.$key is listed in caps.video_live but the POST reply DEFERRED it (deferred=$(jget "$rf" deferred), keys=$(jget "$rf" deferred_keys)) - the platform advertises a live path the runtime then refused. Check the daemon log for the matching 'applies on restart' line; this is the daemon disagreeing with its own caps, not a script assumption"
@@ -3190,8 +3222,10 @@ else
 					warn "video1.$key: graded live (not deferred) but encoder.1.rc.$fld is absent from the readback - the current rc mode ($(jget "$gf" encoder.1.rc.rc_mode)) does not carry that field, so the apply cannot be confirmed either way"
 				elif [ "$got" = "$new" ]; then
 					ok "video1.$key=$new applied LIVE and the encoder confirms it (encoder.1.rc.$fld=$got) - no restart"
+				elif [ "$touched" = 1 ]; then
+					bad "video1.$key=$new was graded applied-live, but the encoder holds encoder.1.rc.$fld=$got, not $new - the IMP call reported success and the value did not arrive unaltered (checked after 2s of real streaming, so this is not idle-register staleness). This is the c4e434f readback doing its job; suspect the HAL's key->SDK-field mapping before suspecting this check"
 				else
-					bad "video1.$key=$new was graded applied-live, but the encoder holds encoder.1.rc.$fld=$got, not $new - the IMP call reported success and the value did not arrive unaltered. This is the c4e434f readback doing its job; suspect the HAL's key->SDK-field mapping before suspecting this check"
+					warn "video1.$key=$new was graded applied-live, but encoder.1.rc.$fld=$got, not $new, and this could not be confirmed with a real client (ffmpeg missing or the stream pull failed) - encoder.<n>.rc.* only refreshes when the channel actually encodes a frame (see rc_touch_stream), so on an unconfirmed idle channel this is expected, not a defect"
 				fi
 			fi
 			rc_pid_check "video1.$key"
@@ -3408,10 +3442,15 @@ else
 		# client pulling it) never happens - measured 2026-08-22 on a T31:
 		# eight seconds of polling after a live POST, register frozen at the
 		# OLD value throughout, while the real substream (pulled with ffmpeg
-		# for the same eight seconds) had already moved. The register is a
-		# fine cross-check for the fields that DO update synchronously
-		# (min_qp/max_qp/i_bias_lvl, see RC3/RC5), just not for this one - so
-		# this check now measures the bitstream directly, the same way 8g
+		# for the same eight seconds) had already moved. This is NOT special
+		# to bitrate: min_qp/max_qp (RC2/RC3) and i_bias_lvl (RC5) go through
+		# the exact same frame-driven register and were WRONGLY carved out
+		# here as "update synchronously" - confirmed false 2026-09-08 on a
+		# T41LQ (min_qp posted 4 different values with no client, register
+		# never moved through 35s of polling; T31 looked fine only because
+		# the test camera happened to have a permanent RTSP client attached).
+		# RC2/RC3 now call rc_touch_stream before trusting the register, same
+		# as this check measures the bitstream directly, the same way 8g
 		# proves the persist+restart route, and grades on THAT.
 		if ! rc_live_has bitrate; then
 			info "  video1.bitrate: not in caps.video_live on this $rc_plat build - restart-bound here"
@@ -3851,22 +3890,35 @@ else
 		# min_qp is the vehicle: unit-free, exactly comparable, and a +-1
 		# nudge on the mainstream is the smallest perturbation that is still
 		# observable in the readback.
+		# Touch BOTH channels and re-fetch before using anything as a
+		# baseline: $LV_BASE predates this section's own RC2/RC3 touches, so
+		# ch0 in particular may have gone stale->fresh since it was captured -
+		# comparing a freshly-touched readback against that stale snapshot
+		# reads as a channel crossing over when it is really just $LV_BASE
+		# catching up (measured 2026-09-08 on a T41LQ: ch0's register moved
+		# 18->20 - its own real value - purely because RC2 touched it first).
+		rc9_base="$LV_BASE"
+		if rc_touch_stream "$PATH_MAIN" && rc_touch_stream "$PATH_SUB"; then
+			rc9_base="$OUTDIR/rc9_base.json"; lv_get "$rc9_base"
+			[ -s "$rc9_base" ] || rc9_base="$LV_BASE"
+		fi
 		if ! rc_live_has min_qp; then
 			info "  per-channel isolation: min_qp is not live on this $rc_plat build - would only re-test the config layer, skipped"
-		elif [ -z "$(jget "$LV_BASE" encoder.0.rc.min_qp)" ] || [ -z "$(jget "$LV_BASE" encoder.1.rc.min_qp)" ]; then
-			skip "per-channel isolation: both channels need a min_qp-carrying rc readback (ch0 mode $(jget "$LV_BASE" encoder.0.rc.rc_mode), ch1 mode $(jget "$LV_BASE" encoder.1.rc.rc_mode)) - not comparable on this camera"
-		elif [ "$(jget "$LV_BASE" video.0.min_qp)" -lt 5 ] || [ "$(jget "$LV_BASE" video.1.min_qp)" -lt 5 ]; then
+		elif [ -z "$(jget "$rc9_base" encoder.0.rc.min_qp)" ] || [ -z "$(jget "$rc9_base" encoder.1.rc.min_qp)" ]; then
+			skip "per-channel isolation: both channels need a min_qp-carrying rc readback (ch0 mode $(jget "$rc9_base" encoder.0.rc.rc_mode), ch1 mode $(jget "$rc9_base" encoder.1.rc.rc_mode)) - not comparable on this camera"
+		elif [ "$(jget "$rc9_base" video.0.min_qp)" -lt 5 ] || [ "$(jget "$rc9_base" video.1.min_qp)" -lt 5 ]; then
 			# the probe nudges DOWNWARD (never above max_qp, whose bound the SDK
 			# enforces); config clamps min_qp at 1, so a floor already near it
 			# leaves no room for two distinct values
-			skip "per-channel isolation: min_qp is already at/near the config floor (ch0 $(jget "$LV_BASE" video.0.min_qp), ch1 $(jget "$LV_BASE" video.1.min_qp)) - no room for two distinct probe values below it"
+			skip "per-channel isolation: min_qp is already at/near the config floor (ch0 $(jget "$rc9_base" video.0.min_qp), ch1 $(jget "$rc9_base" video.1.min_qp)) - no room for two distinct probe values below it"
 		else
-			rc_i0=$(jget "$LV_BASE" video.0.min_qp); rc_i1=$(jget "$LV_BASE" video.1.min_qp)
-			rc_h0=$(jget "$LV_BASE" encoder.0.rc.min_qp)
+			rc_i0=$(jget "$rc9_base" video.0.min_qp); rc_i1=$(jget "$rc9_base" video.1.min_qp)
+			rc_h0=$(jget "$rc9_base" encoder.0.rc.min_qp)
 			rc_restore_both="{\"video\":{\"0\":{\"min_qp\":$rc_i0},\"1\":{\"min_qp\":$rc_i1}}}"
 			LV_PENDING="$rc_restore_both"
 			# (a) touch ch1 only - ch0 must not move
 			lv_post "{\"video\":{\"1\":{\"min_qp\":$((rc_i1-1))}}}" >/dev/null
+			rc_touch_stream "$PATH_MAIN" && rc_touch_stream "$PATH_SUB"
 			gf="$OUTDIR/rc_iso_ch1only.json"; lv_get "$gf"
 			rc_h0b=$(jget "$gf" encoder.0.rc.min_qp); rc_h1b=$(jget "$gf" encoder.1.rc.min_qp)
 			if [ "$rc_h0b" != "$rc_h0" ]; then
@@ -3880,6 +3932,7 @@ else
 			rc_n0=$((rc_i0-1)); rc_n1=$((rc_i1-2))
 			if [ "$rc_n0" = "$rc_n1" ]; then rc_n1=$((rc_n1-1)); fi
 			lv_post "{\"video\":{\"0\":{\"min_qp\":$rc_n0},\"1\":{\"min_qp\":$rc_n1}}}" >/dev/null
+			rc_touch_stream "$PATH_MAIN" && rc_touch_stream "$PATH_SUB"
 			gf="$OUTDIR/rc_iso_both.json"; lv_get "$gf"
 			rc_g0=$(jget "$gf" encoder.0.rc.min_qp); rc_g1=$(jget "$gf" encoder.1.rc.min_qp)
 			if [ "$rc_g0" = "$rc_n0" ] && [ "$rc_g1" = "$rc_n1" ]; then
@@ -3891,6 +3944,7 @@ else
 			fi
 			rc_pid_check "per-channel isolation"
 			lv_post "$rc_restore_both" >/dev/null; LV_PENDING=""
+			rc_touch_stream "$PATH_MAIN" && rc_touch_stream "$PATH_SUB"
 			gf="$OUTDIR/rc_iso_restore.json"; lv_get "$gf"
 			[ "$(jget "$gf" encoder.0.rc.min_qp)" = "$rc_h0" ] \
 				&& info "  per-channel isolation: both channels restored (ch0 held bound back to $rc_h0)" \
