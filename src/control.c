@@ -521,17 +521,22 @@ static void timps_apply_setting(ctrl_changes *ch, const char *key, const char *r
      * imp_motion.c) before it reaches IVS, so a raw change that maps to the SAME
      * level (e.g. 128->129) has zero effect on detection. The change-detection
      * above only skips when the RAW values match; compare the MAPPED values too
-     * and, when they match, skip the expensive IVS grid rebuild (deferred via
-     * M2's g_motion_resync_pending - never flagged because hub_control() is
-     * skipped, so hub_control_commit() finds nothing to do) and the flash
-     * persist. Keep the mapping in sync with imp_motion.c. */
+     * and, when they match, skip the expensive IVS grid rebuild - but NOT the
+     * persist. This used to `return` here, which skipped hub_control() (fine,
+     * nothing for the HAL to do at the same level) but ALSO skipped the persist/
+     * echo/change-tracking below: config_apply_kv() above had already written
+     * the new RAW value into g_cfg, so a same-level change left g_cfg ahead of
+     * /etc/timps.conf until the next reboot silently reverted it, with no
+     * /events echo either. Keep the mapping in sync with imp_motion.c. */
+    int live;
     if (known && !strcmp(key,"motion.sensitivity") &&
         atoi(before)*4/255 == atoi(after)*4/255){
-        LOGD(MOD,"unchanged %s = %s (same effective sensitivity level, skipped)", key, val);
-        return;
+        LOGD(MOD,"%s = %s: same effective sensitivity level, grid update skipped "
+                 "(value still persisted)", key, out);
+        live = 1;                        /* nothing to do in the HAL */
+    } else {
+        live = hub_control(key, out);    /* live via the HAL (1) or persist-only (0) */
     }
-
-    int live = hub_control(key, out);    /* live via the HAL (1) or persist-only (0) */
     if (!live && key_is_restart_section(key)) defer_add(key);
     /* echo to every other /events subscriber ("config" SSE event) so other
      * open WebUI tabs/clients reflect this change instead of only seeing it
@@ -1200,7 +1205,9 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
  *   cols/rows      grid geometry in use (active[] is row-major,
  *                  index = row*cols+col, length = cols*rows)
  *   max_cells      SDK budget (= caps.motion.max_cells, convenience)
- *   sensitivity    0..255 UI value in use
+ *   sensitivity    0..255 configured UI value (g_cfg, like hold_ms/
+ *                  skip_frames - baked into the grid at the next
+ *                  create/resync, not necessarily what IVS is running now)
  *   monitor_stream stream whose FrameSource feeds the IVS grid
  *   stalled        1 = enabled but IVS has delivered no result for a while;
  *                  a recovery cycle ran (or is running) - see imp_motion.c
@@ -1220,18 +1227,26 @@ int control_motion_json(char *buf, size_t cap, const ms_motion_status *st)
     } while (0)
     /* F-03: motion.monitor_stream is live-mutable via /control - read it under
      * the config string lock rather than lock-free. hold_ms/skip_frames ride
-     * along under the same lock (also /control-mutable now). */
+     * along under the same lock (also /control-mutable now).
+     * sensitivity joins them: it used to be reported from the live IVS status
+     * (st->sensitivity/g_st), which imp_motion_stop() leaves STALE at the last
+     * running value. A POST that set sensitivity and disabled motion in the
+     * same request (the settings-page save, and timps-qa.sh's motion probe)
+     * then persisted the new value but kept reporting the old one until
+     * motion was re-enabled - the WebUI slider snapped back on every refresh.
+     * Same contract as hold_ms/skip_frames: report what is CONFIGURED. */
     config_str_lock();
     int monitor_stream = g_cfg.motion.monitor_stream;
     int hold_ms = g_cfg.motion.hold_ms;
     int skip_frames = g_cfg.motion.skip_frames;
+    int sensitivity  = g_cfg.motion.sensitivity;
     config_str_unlock();
     APP("{\"available\":%d,\"enabled\":%d,\"cols\":%d,"
         "\"rows\":%d,\"max_cells\":%d,\"sensitivity\":%d,"
         "\"monitor_stream\":%d,\"hold_ms\":%d,\"skip_frames\":%d,"
         "\"stalled\":%d,\"active\":[",
         st->available, st->enabled, st->cols, st->rows,
-        MOTION_MAX_CELLS, st->sensitivity, monitor_stream,
+        MOTION_MAX_CELLS, sensitivity, monitor_stream,
         hold_ms, skip_frames,
         st->stalled);
     int mcells = st->cells;
