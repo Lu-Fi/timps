@@ -1079,6 +1079,19 @@ static int isp_init(void)
 {
     int ret;
     memset(&g_sensor,0,sizeof g_sensor);
+#if defined(PLATFORM_T40)||defined(PLATFORM_T41)
+    /* T40/T41 only: rst_gpio/pwdn_gpio/power_gpio are `int` here and are
+     * real, active pin numbers - unlike the same-named `unsigned short`
+     * fields on T20/T23/T31, marked "invalid now" and left untouched by
+     * those drivers. GPIO_PA(0) is 0, a valid pin, so the memset default
+     * asks the T40/T41 sensor driver to toggle PA0 as both reset and
+     * power-down on any board that doesn't wire the sensor there. -1 is
+     * every vendor driver's own "no such pin" sentinel (checked before any
+     * gpio_request), same convention prudynt uses. */
+    g_sensor.rst_gpio = -1;
+    g_sensor.pwdn_gpio = -1;
+    g_sensor.power_gpio = -1;
+#endif
     /* bounded copies: sensor.model (64) is larger than name (32) / i2c.type (20).
      * sensor.model is runtime-mutable via /control, so read it under
      * config_str_lock rather than directly off g_hcfg (M3). */
@@ -1091,9 +1104,20 @@ static int isp_init(void)
     config_str_unlock();
     g_sensor.i2c.addr = g_hcfg->sensor.i2c_addr;
 
-#if !(defined(PLATFORM_T40)||defined(PLATFORM_T41))
-    IMP_OSD_SetPoolSize(g_hcfg->osd_pool_size * 1024);
-#endif
+    /* NOT optional on any SoC, T40/T41 included: on T41 libimp's `pool_size`
+     * defaults to 1 BYTE, and that pool IS the IPU's OSD scratch buffer
+     * (OSDInit -> IMP_Alloc -> OSD_mem_create -> ipu_init -> ipu_osd). Skipping
+     * this made every per-frame composite fail with "ipu buffer too small, OSD
+     * need Buffer size is N" - printed by libimp to stdout, so a daemonised
+     * timpsd showed nothing but a silent, completely OSD-free stream (first seen
+     * on the Vanhua T55A / T41LQ). The T40/T41 exclusion presumably dates from
+     * the T41 1.0.1 headers, which are the only ones that do not declare this
+     * call; the Makefile pins T41->1.2.6 and T40->1.3.1, both of which do.
+     * Must run before the first IMP_OSD_CreateGroup, which is where OSDInit
+     * sizes the buffer - here, ahead of IMP_ISP_Open(), is early enough. */
+    if (IMP_OSD_SetPoolSize(g_hcfg->osd_pool_size * 1024) < 0)
+        LOGW(MOD,"IMP_OSD_SetPoolSize(%d KB) failed - OSD overlays may not "
+                 "composite", g_hcfg->osd_pool_size);
     ret = IMP_ISP_Open();
     if (ret<0){ LOGE(MOD,"IMP_ISP_Open failed"); return -1; }
 
