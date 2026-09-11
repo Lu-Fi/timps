@@ -97,15 +97,6 @@ IMP_INC ?= $(INC_ROOT)/T21/1.0.33/zh
 # (default 2 MB -> 1 MB) so 8 HTTP + 8 RTSP + 8 SRT all-stalled worst case is
 # ~24 MB instead of ~48 MB. Lower bitrates on these boards fit comfortably.
 PLATFORM_CFLAGS += -DFQ_MAX_BYTES=1048576
-# T21's toolchain linker cannot resolve the general-dynamic TLS access
-# pattern gcc emits by default for __thread variables in control.c
-# ("can't find matching LO16 reloc against '<var>' for R_MIPS_TLS_TPREL_HI16").
-# timpsd is a statically-linked executable, never dlopen'd, so local-exec
-# (the simplest model, valid whenever the TLS variable's definition is
-# known to be in the main executable at link time) is always correct here
-# and sidesteps the buggy relocation pair entirely. Other platforms link
-# fine with the default model; scope this to T21 only.
-PLATFORM_CFLAGS += -ftls-model=local-exec
 else ifeq ($(PLATFORM),T23)
 # MUST be 1.1.2+ to match the libimp thingino ships for T23 (SDK 1.3.0, see
 # ingenic-lib.mk). The 1.1.0 header lacks the trailing 'fcrop' member of
