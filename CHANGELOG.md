@@ -8,6 +8,39 @@ semantic versioning.
 
 ### Changed
 
+- **The HTTP port serves `http://` and `https://` at the same time, chosen per
+  connection** (`src/mp4/httpd.c`, `src/config.c`, `src/config.h`,
+  `src/control.c`). `http.https=1` used to make port 8880 TLS-*only*, and that
+  is unworkable for what this port is actually for: the preview stream is
+  `fetch()`ed by a WebUI page whose scheme is decided by a **different** server
+  (uhttpd on :80/:443). Page on `http://` + stream on `https://` fails outright
+  — a self-signed certificate cannot be click-through-trusted for a subresource
+  fetch, Safari only ever says "Load failed" — and the reverse is blocked as
+  mixed content. Neither side can fix it alone, so the port now stops taking
+  sides: `conn_thread` peeks (`MSG_PEEK`, so the byte stays put) at the first
+  byte of each connection, hands `0x16` (the TLS handshake record type) to
+  `ms_tls_accept()` and everything else — always an HTTP method letter — to the
+  plain path. Same technique thingino-motors uses for `ws://`+`wss://` on its
+  single PTZ port.
+  - **`http.https` is now a tri-state**: `0` plaintext only (unchanged
+    default), `1` **both** schemes, `2` TLS only — plaintext gets a
+    `426 Upgrade Required` and is closed. `2` is the old meaning of `1`, kept
+    as a deliberate opt-in; `true`/`on`/`yes` still parse as `1`. Either
+    on-value still fails **closed** when the cert/key will not load: the
+    listener is never bound, never silently downgraded.
+  - A connection that says nothing at all is dropped after `MS_HTTP_SNIFF_MS`
+    (5 s, the same magnitude as the header-block deadline that follows) instead
+    of committing a thread to a handshake or a header read.
+  - The connection-cap `503` now decides plaintext-vs-close from a
+    **non-blocking** peek at that connection rather than from "is the listener
+    TLS", so a plain HTTP client still gets the parseable `503` its retry logic
+    needs while a mid-ClientHello peer still gets the honest bare close.
+  - `USE_TLS=0` builds are byte-identical in behaviour: the peek helper and the
+    whole sniff are inside `#ifdef USE_TLS`, and `http.https=0` never reaches
+    them even in a TLS build.
+  - `GET /control`'s `tls.https` is the raw tri-state: a client must read `1` as
+    "dial it with the page's own scheme", not as "force https".
+
 - **The frame pool now recycles the oversized buffers too — every IDR and every
   1080p JPEG** (`src/frame.c`, `src/frame.h`, `src/hub.c`, `src/hub.h`,
   `src/hal/hal_ingenic.c`). Closes R-01 from the 2026-08-07 P-01 review, which

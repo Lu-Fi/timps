@@ -554,7 +554,10 @@ typedef struct {
     int            events_max_clients;  /* concurrent /events conns -> 503 */
     /* optional TLS (USE_TLS builds only): HTTPS for the http port + RTSPS for a
      * second RTSP port. Plain HTTP/RTSP still run as before. */
-    int            http_https;          /* 1 = serve the http port over TLS */
+    int            http_https;          /* 0 = plain only, 1 = plain AND TLS on
+                                           the same port (sniffed per
+                                           connection), 2 = TLS only (plain
+                                           refused with 426) */
     char           http_tls_cert[128];  /* PEM cert file */
     char           http_tls_key[128];   /* PEM private key file */
     int            rtsp_tls;            /* 1 = also run an RTSPS (TLS) listener */

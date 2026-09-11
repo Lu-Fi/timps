@@ -209,7 +209,7 @@ File-only. See [HTTP /control API Reference](HTTP-Control-API.md) and
 | `http.pass` (alias `password`) | string | `""` | — | File-only | HTTP password. Falls back to `rtsp.pass` if empty. |
 | `http.token` | string | `""` | — | File-only | Optional persistent remote secret token for `/control`/`/events`/media endpoints (never written to the token file). |
 | `http.token_file` | string | `/run/timps.token` | — | File-only | Where the random per-boot token is published (mode 0640); `""` disables publishing. |
-| `http.https` (alias `tls`) | bool | 0 | 0/1 | File-only | Serve HTTP over TLS (`USE_TLS` builds). |
+| `http.https` (alias `tls`) | tri-state | 0 | 0/1/2 | File-only | TLS on the HTTP port (`USE_TLS` builds). **0** = plaintext only. **1** = *both* schemes on the same port — each connection is classified by its first byte (`0x16` = TLS handshake record, any HTTP method starts with a letter), so `http://` and `https://` both work; this is wider than the pre-v1.9.11 meaning of `1`, which was TLS-only. **2** = TLS only: a plaintext request gets `426 Upgrade Required` and is closed (the old meaning of `1`). Either on-value still fails **closed** — a cert/key that cannot be loaded means the listener is not bound at all, never a silent downgrade to plaintext. |
 | `http.tls_cert` (alias `cert`) | string | `/etc/ssl/certs/timps.crt` | — | File-only | Certificate, PEM or DER (shared with RTSPS). On thingino, `S95timps` symlinks this to the WebUI's `/etc/ssl/certs/uhttpd.crt` when that exists, so both ports present the same cert; otherwise it generates a self-signed pair here. |
 | `http.tls_key` (alias `key`) | string | `/etc/ssl/private/timps.key` | — | File-only | Private key matching `http.tls_cert` (shared with RTSPS). |
 

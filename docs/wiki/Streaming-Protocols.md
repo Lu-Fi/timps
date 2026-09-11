@@ -125,8 +125,12 @@ supported` (RFC 2326 §12.32) rather than being silently ignored. See
 
 ## HTTP fMP4 preview (`src/mp4/httpd.c` + `src/mp4/fmp4.c`)
 
-- **Port**: `http.port` (default **8880**); HTTPS when built with
-  `USE_TLS` and `http.https=1`.
+- **Port**: `http.port` (default **8880**). With `USE_TLS` and
+  `http.https=1` that one port serves **both** `http://` and `https://`,
+  chosen per connection by peeking at the client's first byte (`0x16` =
+  TLS handshake record, otherwise an HTTP method letter) — so the
+  preview works whichever scheme the embedding WebUI page was served
+  over. `http.https=2` refuses plaintext (`426`) instead.
 - **Routes**: `/` and `/?embed` (an HTML page with an embedded
   MediaSource-Extensions `<video>` player — the MSE codec string is
   derived live from the actual SPS/HEVC profile-tier-level, not

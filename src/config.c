@@ -830,7 +830,16 @@ static const cfg_field http_fields[] = {
     FS("pass",        "password", http_pass,        0),
     FS("token",       0,          http_token,       0),
     FS("token_file",  0,          http_token_file,  0),
-    F ("https",       "tls",      http_https,       T_BOOL, 0, 0,0),
+    /* Tri-state, not a bool (v1.9.11): 0 off, 1 = TLS available on this port
+     * ALONGSIDE plain HTTP (the scheme is sniffed per connection, see
+     * httpd.c's conn_thread), 2 = TLS only, plaintext refused - which is what
+     * 1 used to mean. The widening is deliberate: a TLS-only preview port is
+     * unreachable from a WebUI page served over http://, and vice versa, and
+     * which scheme that page uses is decided by a different server (uhttpd).
+     * T_TRISTATE keeps the old true/on/yes spellings parsing as 1; note that
+     * here - unlike audio.talk_ws - 1 is no longer the STRICTER of the two
+     * on-values, so an operator who wants the old behaviour must say 2. */
+    F ("https",       "tls",      http_https,       T_TRISTATE, 0, 0,2),
     FS("tls_cert",    "cert",     http_tls_cert,    0),
     FS("tls_key",     "key",      http_tls_key,     0),
 };

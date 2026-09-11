@@ -101,6 +101,14 @@
 #ifndef MS_HTTP_DRAIN_MS
 #define MS_HTTP_DRAIN_MS 500
 #endif
+/* How long a connection may take to reveal WHICH protocol it speaks, i.e. to
+ * send its first byte, when http.https makes this port serve both (see the
+ * sniff in conn_thread). Same magnitude as the header-block deadline that
+ * follows it - a peer that sends nothing at all would have been dropped there
+ * anyway, this just does it before a thread is committed to either path. */
+#ifndef MS_HTTP_SNIFF_MS
+#define MS_HTTP_SNIFF_MS 5000
+#endif
 
 static volatile int g_nconn;   /* current connection count (sync builtins) */
 /* M-1: every live connection, so httpd_stop() can END its thread instead of
@@ -1494,6 +1502,36 @@ static void serve_player(hconn *c, const char *path)
     http_send(c,"200 OK","text/html",html,n);
 }
 
+#ifdef USE_TLS
+/* Give up on a connection before it has spoken a word of any protocol: the
+ * three-step teardown conn_thread's `done:` label does, minus the TLS close
+ * (there is no TLS connection yet on any path that calls this). */
+static void conn_drop(hconn *c)
+{
+    ms_creg_del(&g_clientreg, c->slot);   /* before close(): fd reuse */
+    close(c->fd);
+    free(c);
+    __sync_fetch_and_sub(&g_nconn, 1);
+}
+
+/* The first byte the client sent, LEFT IN THE SOCKET BUFFER (MSG_PEEK) so
+ * whichever protocol path is chosen still reads the stream from its true
+ * beginning. <0 = nothing arrived within wait_ms, or the peer went away;
+ * wait_ms=0 asks without blocking at all. */
+static int peek_first_byte(int fd, int wait_ms)
+{
+    struct pollfd p; p.fd = fd; p.events = POLLIN; p.revents = 0;
+    int pr;
+    do { pr = poll(&p, 1, wait_ms); } while (pr < 0 && errno == EINTR);
+    if (pr <= 0) return -1;
+    unsigned char b = 0;
+    ssize_t r;
+    do { r = recv(fd, &b, 1, MSG_PEEK); } while (r < 0 && errno == EINTR);
+    if (r <= 0) return -1;                 /* r==0: POLLIN meant EOF */
+    return (int)b;
+}
+#endif /* USE_TLS */
+
 static void *conn_thread(void *arg)
 {
     hconn *c = (hconn*)arg;
@@ -1502,12 +1540,66 @@ static void *conn_thread(void *arg)
      * on. Full registry -> -1 -> every ms_creg_* call below is a no-op. */
     c->slot = ms_creg_add(&g_clientreg, c->fd);
 #ifdef USE_TLS
-    /* HTTPS: run the TLS handshake before any request I/O. From here on all
-     * reads/writes go through crecv/csend, which use c->tls transparently. */
+    /* http:// and https:// share ONE port, chosen PER CONNECTION by sniffing
+     * the client's first byte rather than by configuration (http.https=1).
+     * 0x16 is the TLS record type "handshake"; a plain HTTP client's first
+     * byte is always a method letter - 'G', 'P', 'H', 'O', 'D' - so the
+     * ambiguity that usually makes protocol sniffing a bad idea does not
+     * arise here. thingino-motors' PTZ WebSocket listener (motor-ws.c) picks
+     * ws:// vs wss:// on its single port exactly this way.
+     *
+     * Why sniff rather than let http.https pick one scheme for the whole port:
+     * this port is not reached by a user typing a URL, it is reached by the
+     * WebUI's preview page fetch()ing a stream from whatever scheme that page
+     * itself was served over - and uhttpd's :80/:443 split is a SEPARATE
+     * server whose scheme we do not control. A TLS-only :8880 then breaks
+     * every http:// page (a self-signed cert cannot be click-through-trusted
+     * for a subresource fetch - Safari just reports "Load failed"), and a
+     * plaintext-only :8880 is mixed-content-blocked from an https:// page.
+     * Serving both makes the page's scheme irrelevant, which is the only
+     * arrangement that cannot be knocked over by the other server's config.
+     *
+     * http.https=2 keeps the old fail-closed behaviour as a deliberate opt-in
+     * (see the semantics note in httpd_start): TLS mandatory, plaintext
+     * refused. 1 means "TLS available here", not "TLS only".
+     *
+     * MSG_PEEK leaves the byte where it is, so both paths below read the
+     * request/handshake from its true beginning. */
     if (c->tls_ctx) {
-        c->tls = ms_tls_accept((ms_tls_ctx *)c->tls_ctx, c->fd);
-        if (!c->tls) { ms_creg_del(&g_clientreg, c->slot);   /* before close(): fd reuse */
-                       close(c->fd); free(c); __sync_fetch_and_sub(&g_nconn, 1); return NULL; }
+        int first = peek_first_byte(c->fd, MS_HTTP_SNIFF_MS);
+        if (first < 0) {
+            /* Connected and then said nothing (scanner, half-open probe,
+             * slow-loris). Reclaimed here rather than after committing a
+             * thread to a handshake or a header read. */
+            LOGD(MOD,"client sent nothing within %d ms - dropping",
+                 MS_HTTP_SNIFF_MS);
+            conn_drop(c); return NULL;
+        }
+        if (first == 0x16) {
+            /* HTTPS: run the TLS handshake before any request I/O. From here
+             * on all reads/writes go through crecv/csend, which use c->tls
+             * transparently. */
+            c->tls = ms_tls_accept((ms_tls_ctx *)c->tls_ctx, c->fd);
+            /* ms_tls_accept() already logged (and rate-limited) whatever was
+             * worth logging; nothing useful can be said back to a peer that
+             * is expecting TLS records. */
+            if (!c->tls) { conn_drop(c); return NULL; }
+        } else if (c->cfg->http_https >= 2) {
+            /* Strict mode: TLS is mandatory on this port. Unlike the 503 in
+             * accept_thread this CAN be said in plaintext usefully - the peer
+             * demonstrably speaks it - so say why instead of just hanging up
+             * on a connection an operator will otherwise have to tcpdump. */
+            const char *r = "HTTP/1.1 426 Upgrade Required\r\n"
+                            "Upgrade: TLS/1.2, HTTP/1.1\r\n"
+                            "Connection: close\r\n"
+                            "Access-Control-Allow-Origin: *\r\n"
+                            "Content-Length: 14\r\n\r\nhttps required";
+            net_sendall(c->fd, r, (int)strlen(r));
+            LOGD(MOD,"plaintext request refused (http.https=2)");
+            conn_drop(c); return NULL;
+        }
+        /* else: plain HTTP on a TLS-capable port - fall through, the peeked
+         * byte is still the first thing the header loop below reads. */
     }
 #endif
 #ifdef USE_CONTROL
@@ -1996,14 +2088,32 @@ static void *accept_thread(void *arg)
              * cannot tell "camera busy, retry" from "TLS is broken" - and the
              * preview page's own careful `res.status >= 500 -> retry` handling
              * never fires, because there is no parseable status to see.
-             * So: only speak plaintext HTTP when the listener IS plaintext. On
-             * a TLS listener, close instead. A bare close is still a poor
+             * So: only speak plaintext HTTP to a peer that is itself speaking
+             * plaintext. To a TLS one, close instead. A bare close is still a poor
              * signal, but it is an honest transport-level refusal rather than a
              * protocol violation that masquerades as a TLS fault. Doing better
              * (a real 503 inside TLS) means completing a handshake purely to
              * say "busy", which spends exactly the CPU and the slot this cap
              * exists to protect. */
-            if (!h->tls_ctx) {
+            int speak_plain = 1;
+#ifdef USE_TLS
+            if (h->tls_ctx) {
+                /* The port now serves BOTH schemes (see conn_thread's sniff),
+                 * so "is the listener plaintext?" no longer has one answer -
+                 * only this connection does. Ask the same question the sniff
+                 * asks, but WITHOUT waiting: a rejection path must not park
+                 * the accept loop on a peer that has not spoken yet. A client
+                 * that has already sent its ClientHello (the common case -
+                 * the cap is hit under load, when data is in flight) gets the
+                 * honest bare close; one that has sent nothing yet falls back
+                 * to the plaintext 503, which is what this port did for every
+                 * client before TLS was an option and is the right guess for
+                 * the browser this cap exists to keep informed. */
+                int first = peek_first_byte(fd, 0);
+                speak_plain = (first != 0x16 && h->cfg->http_https < 2);
+            }
+#endif
+            if (speak_plain) {
                 /* Every other response path (2xx/4xx and the OPTIONS
                  * preflight, see http_cors()/MEDIA_CORS) sends
                  * Access-Control-Allow-Origin - this early cap rejection
@@ -2049,16 +2159,34 @@ httpd *httpd_start(const ms_config *cfg)
     /* TLS FIRST, before the listener exists. HTTPS here is not a second port
      * the way RTSPS is (rtsp.c opens its own rtsp.tls_port and losing it
      * leaves plain RTSP exactly as plain as it always was) - it is the SAME
-     * port. Falling back to plaintext on it, as this did, hands every Basic-
-     * Auth header and http.token to anyone on the network, on the very port
-     * the operator configured http.https=1 to protect, announced by one LOGE
-     * at boot and nothing afterwards. Some of these cameras are in bedrooms.
-     * So: requested-but-broken TLS refuses to serve at all. The listener is
-     * never bound, which is the ongoing signal a one-time log line is not -
-     * every client gets a connection refusal instead of a silent downgrade,
-     * and the streamer's other outputs (RTSP, recording) keep running. The
-     * camera stays reachable for repair over the firmware's own web UI/SSH,
-     * which do not live on this port.
+     * port, serving both schemes, picked per connection (conn_thread).
+     *
+     * http.https SEMANTICS (tri-state, and 1 changed meaning in v1.9.11):
+     *   0 = plaintext only. No TLS context, no sniff, byte-identical to what
+     *       this port always did.
+     *   1 = BOTH. TLS is available on this port and a client that starts a
+     *       TLS handshake gets it; a plain HTTP client is still served.
+     *       Previously 1 meant TLS-ONLY, which made the preview unreachable
+     *       from any WebUI page served over the other scheme - see the long
+     *       note in conn_thread for why sniffing beats picking one.
+     *   2 = TLS only, plaintext refused with a 426. The old meaning of 1,
+     *       kept as a deliberate opt-in for operators who want no plaintext
+     *       on this port at all.
+     * Anything > 0 builds the context, so the fail-closed rule below is
+     * unchanged for both on-values.
+     *
+     * Falling back to plaintext when TLS was ASKED FOR but could not be built
+     * is a different thing entirely from serving plaintext alongside a
+     * working TLS listener: it hands every Basic-Auth header and http.token
+     * to anyone on the network on the very port the operator configured
+     * http.https to protect, announced by one LOGE at boot and nothing
+     * afterwards. Some of these cameras are in bedrooms. So: requested-but-
+     * broken TLS refuses to serve at all. The listener is never bound, which
+     * is the ongoing signal a one-time log line is not - every client gets a
+     * connection refusal instead of a silent downgrade, and the streamer's
+     * other outputs (RTSP, recording) keep running. The camera stays
+     * reachable for repair over the firmware's own web UI/SSH, which do not
+     * live on this port.
      * This only triggers when TLS was explicitly requested AND the context
      * still failed - S95timps' ensure_tls_certs() generates a self-signed
      * pair before start, so a cert-less first boot does not land here, and
@@ -2067,13 +2195,14 @@ httpd *httpd_start(const ms_config *cfg)
     if (cfg->http_https) {
         h->tls_ctx = ms_tls_ctx_new(cfg->http_tls_cert, cfg->http_tls_key);
         if (!h->tls_ctx){
-            LOGE(MOD,"http.https=1 but the TLS context could not be built from "
+            LOGE(MOD,"http.https=%d but the TLS context could not be built from "
                      "cert %s / key %s (see the TLS error above) - REFUSING to "
                      "serve port %d at all rather than silently downgrading it "
                      "to plaintext and leaking credentials. Fix or regenerate "
                      "the cert/key pair, or set http.https=0 to accept plain "
                      "HTTP deliberately",
-                 cfg->http_tls_cert, cfg->http_tls_key, cfg->http_port);
+                 cfg->http_https, cfg->http_tls_cert, cfg->http_tls_key,
+                 cfg->http_port);
             free(h);
             return NULL;
         }
@@ -2083,9 +2212,9 @@ httpd *httpd_start(const ms_config *cfg)
      * (the operator cannot fix it without a different binary, and rtsp.c's
      * equivalent warns and carries on) - but it must not be silent either. */
     if (cfg->http_https)
-        LOGE(MOD,"http.https=1 but this build has no USE_TLS - port %d serves "
+        LOGE(MOD,"http.https=%d but this build has no USE_TLS - port %d serves "
                  "PLAIN HTTP and any password or token sent to it goes over "
-                 "the network in the clear", cfg->http_port);
+                 "the network in the clear", cfg->http_https, cfg->http_port);
 #endif
 #ifdef USE_BC_WS
     /* audio.talk_ws=1 means "serve /talk, TLS required". On a port that will
@@ -2122,7 +2251,16 @@ httpd *httpd_start(const ms_config *cfg)
         free(h); return NULL;
     }
 #ifdef USE_TLS
-    if (h->tls_ctx) LOGI(MOD,"HTTPS enabled on port %d", cfg->http_port);
+    /* Say WHICH of the two on-modes is running: "HTTPS enabled" read as
+     * "plain HTTP is gone" for as long as that was true, and an operator who
+     * upgrades into the new meaning of 1 has no other way to notice that the
+     * port still answers http://. */
+    if (h->tls_ctx)
+        LOGI(MOD, cfg->http_https >= 2
+                    ? "HTTPS only on port %d (http.https=2, plaintext refused)"
+                    : "HTTP and HTTPS both served on port %d (http.https=1, "
+                      "scheme detected per connection)",
+             cfg->http_port);
 #endif
     h->run=1;
     ms_thread_create(&h->thr,MS_STACK_UTIL,accept_thread,h);
