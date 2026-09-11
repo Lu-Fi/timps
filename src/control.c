@@ -167,55 +167,64 @@ typedef struct {
     int  n;
 } ctrl_changes;
 
-/* counters for the ctrl_result the caller gets back; see control.h */
-static __thread int g_acc, g_chg, g_rej, g_nopersist;
-/* the "applied" echo, built as JSON while the values are in hand. It records a
- * field whenever the CANONICAL stored value differs from what was POSTed - not
- * when the value CHANGED. The two are not the same, and the difference is
- * exactly the case the UI needs most: posting 999 to a field already clamped
- * to 255 stores nothing new (changed stays 0) but the caller still sent a value
- * it will never get, and a slider left showing 999 would be wrong. Building it
- * from the change list missed that; comparing posted vs effective does not. */
-static __thread char g_echo[CTRL_ECHO_CAP];
-static __thread int  g_echo_off, g_echo_full;
-/* the "deferred" list: CHANGED video/sensor keys hub_control() could not
- * apply to the running pipeline (see control.h). Same builder pattern as the
- * echo; keys are table names, never user data, so no escaping is needed. */
-static __thread int  g_deferred;
-static __thread char g_defer[CTRL_DEFER_CAP];
-static __thread int  g_defer_off, g_defer_full;
+/* Per-request scratch state for control_apply_json() and everything it
+ * calls. Was `static __thread` (each variable independent thread-local
+ * storage) until T21's cross-linker turned out unable to resolve the TLS
+ * relocations for it (R_MIPS_TLS_TPREL_HI16/LO16 pairing failure, not fixed
+ * by -ftls-model=local-exec or dropping --gc-sections - a toolchain
+ * limitation, not a codegen choice). A plain struct, stack-allocated once
+ * per control_apply_json() call and threaded through by pointer, gives the
+ * same per-call isolation across concurrent requests without any TLS. */
+typedef struct {
+    /* counters for the ctrl_result the caller gets back; see control.h */
+    int acc, chg, rej, nopersist;
+    /* the "applied" echo, built as JSON while the values are in hand. It records a
+     * field whenever the CANONICAL stored value differs from what was POSTed - not
+     * when the value CHANGED. The two are not the same, and the difference is
+     * exactly the case the UI needs most: posting 999 to a field already clamped
+     * to 255 stores nothing new (changed stays 0) but the caller still sent a value
+     * it will never get, and a slider left showing 999 would be wrong. Building it
+     * from the change list missed that; comparing posted vs effective does not. */
+    char echo[CTRL_ECHO_CAP];
+    int  echo_off, echo_full;
+    /* the "deferred" list: CHANGED video/sensor keys hub_control() could not
+     * apply to the running pipeline (see control.h). Same builder pattern as the
+     * echo; keys are table names, never user data, so no escaping is needed. */
+    int  deferred;
+    char defer[CTRL_DEFER_CAP];
+    int  defer_off, defer_full;
+    /* the "ignored" list: field names the request carried that this build does not
+     * apply (see control.h). Unlike echo/defer these are USER data - a client can
+     * post any name at all - so they go through ms_json_esc like the echo values,
+     * never spliced raw. ign_full = 0 says the list is short (buffer full, or a
+     * name too long to carry), the same contract as echo_full/defer_full. */
+    char ign[CTRL_IGN_CAP];
+    int  ign_off, ign_full;
+} ctrl_scratch_t;
 
-/* the "ignored" list: field names the request carried that this build does not
- * apply (see control.h). Unlike echo/defer these are USER data - a client can
- * post any name at all - so they go through ms_json_esc like the echo values,
- * never spliced raw. ign_full = 0 says the list is short (buffer full, or a
- * name too long to carry), the same contract as echo_full/defer_full. */
-static __thread char g_ign[CTRL_IGN_CAP];
-static __thread int  g_ign_off, g_ign_full;
-
-static void ign_add(const char *key)
+static void ign_add(ctrl_scratch_t *sc, const char *key)
 {
-    if (!g_ign_full) return;                        /* already overflowed */
+    if (!sc->ign_full) return;                        /* already overflowed */
     char ekey[CTRL_IGN_NAME*2+8];
     ms_json_esc(key, ekey, sizeof ekey);
-    int w = snprintf(g_ign + g_ign_off, sizeof g_ign - (size_t)g_ign_off,
-                     "%s\"%s\"", g_ign_off ? "," : "", ekey);
-    if (w < 0 || g_ign_off + w >= (int)sizeof g_ign) {
-        g_ign[g_ign_off] = 0; g_ign_full = 0; return;
+    int w = snprintf(sc->ign + sc->ign_off, sizeof sc->ign - (size_t)sc->ign_off,
+                     "%s\"%s\"", sc->ign_off ? "," : "", ekey);
+    if (w < 0 || sc->ign_off + w >= (int)sizeof sc->ign) {
+        sc->ign[sc->ign_off] = 0; sc->ign_full = 0; return;
     }
-    g_ign_off += w;
+    sc->ign_off += w;
 }
 
-static void defer_add(const char *key)
+static void defer_add(ctrl_scratch_t *sc, const char *key)
 {
-    g_deferred++;
-    if (!g_defer_full) return;                      /* already overflowed */
-    int w = snprintf(g_defer + g_defer_off, sizeof g_defer - (size_t)g_defer_off,
-                     "%s\"%s\"", g_defer_off ? "," : "", key);
-    if (w < 0 || g_defer_off + w >= (int)sizeof g_defer) {
-        g_defer[g_defer_off] = 0; g_defer_full = 0; return;
+    sc->deferred++;
+    if (!sc->defer_full) return;                      /* already overflowed */
+    int w = snprintf(sc->defer + sc->defer_off, sizeof sc->defer - (size_t)sc->defer_off,
+                     "%s\"%s\"", sc->defer_off ? "," : "", key);
+    if (w < 0 || sc->defer_off + w >= (int)sizeof sc->defer) {
+        sc->defer[sc->defer_off] = 0; sc->defer_full = 0; return;
     }
-    g_defer_off += w;
+    sc->defer_off += w;
 }
 
 /* keys from the caps.restart sections (video/sensor) - the only ones the
@@ -228,9 +237,9 @@ static int key_is_restart_section(const char *key)
            !strncmp(key,"sensor.",7);
 }
 
-static void echo_add(const char *key, const char *eff)
+static void echo_add(ctrl_scratch_t *sc, const char *key, const char *eff)
 {
-    if (!g_echo_full) return;                       /* already overflowed */
+    if (!sc->echo_full) return;                       /* already overflowed */
     /* Must go through the SAME escaper the status document uses for every
      * string: an effective value read back from g_cfg can carry a quote or a
      * backslash if timps.conf was hand-edited, and emitting it raw would hand
@@ -240,12 +249,12 @@ static void echo_add(const char *key, const char *eff)
     char ekey[96], eval[336];
     ms_json_esc(key, ekey, sizeof ekey);
     ms_json_esc(eff, eval, sizeof eval);
-    int w = snprintf(g_echo + g_echo_off, sizeof g_echo - (size_t)g_echo_off,
-                     "%s\"%s\":\"%s\"", g_echo_off ? "," : "", ekey, eval);
-    if (w < 0 || g_echo_off + w >= (int)sizeof g_echo) {
-        g_echo[g_echo_off] = 0; g_echo_full = 0; return;
+    int w = snprintf(sc->echo + sc->echo_off, sizeof sc->echo - (size_t)sc->echo_off,
+                     "%s\"%s\":\"%s\"", sc->echo_off ? "," : "", ekey, eval);
+    if (w < 0 || sc->echo_off + w >= (int)sizeof sc->echo) {
+        sc->echo[sc->echo_off] = 0; sc->echo_full = 0; return;
     }
-    g_echo_off += w;
+    sc->echo_off += w;
 }
 
 /* ---------- tiny range-based JSON scanning ---------- */
@@ -432,7 +441,7 @@ static void sanitize_val(const char *in, char *out, size_t cap)
     out[o]=0;
 }
 
-static void timps_apply_setting(ctrl_changes *ch, const char *key, const char *raw)
+static void timps_apply_setting(ctrl_scratch_t *sc, ctrl_changes *ch, const char *key, const char *raw)
 {
     /* null/undefined stay refused, and NOT as a formality: some WebUI clients
      * poll settings and send a null for a field they do not know, so giving it
@@ -449,15 +458,15 @@ static void timps_apply_setting(ctrl_changes *ch, const char *key, const char *r
      * a setting rather than clear it. */
     if (!raw || !strcmp(raw,"null") || !strcmp(raw,"undefined")){
         LOGD(MOD,"ignoring %s = '%s' (not a valid value)", key, raw?raw:"");
-        g_rej++;
+        sc->rej++;
         return;
     }
     if (!raw[0] && !config_key_is_str(key)){
         LOGD(MOD,"ignoring empty %s (only string fields can be cleared)", key);
-        g_rej++;
+        sc->rej++;
         return;
     }
-    g_acc++;   /* recognised and about to be applied, changed or not */
+    sc->acc++;   /* recognised and about to be applied, changed or not */
     char val[160]; sanitize_val(raw, val, sizeof val);
 
     /* Change detection: apply to the in-memory config, then compare the
@@ -494,7 +503,7 @@ static void timps_apply_setting(ctrl_changes *ch, const char *key, const char *r
     config_str_unlock();
     const char *out = canon ? after : val;   /* canonical value for consumers */
     /* posted != effective -> the caller needs to know, changed or not */
-    if (strcmp(out, val) != 0) echo_add(key, out);
+    if (strcmp(out, val) != 0) echo_add(sc, key, out);
     if (known && !strcmp(before, after)){
         /* image.running_mode is a hardware-SYNC command to the ISP, not just a
          * stored value: the ISP's actual day/night state can drift from our
@@ -537,20 +546,20 @@ static void timps_apply_setting(ctrl_changes *ch, const char *key, const char *r
     } else {
         live = hub_control(key, out);    /* live via the HAL (1) or persist-only (0) */
     }
-    if (!live && key_is_restart_section(key)) defer_add(key);
+    if (!live && key_is_restart_section(key)) defer_add(sc, key);
     /* echo to every other /events subscriber ("config" SSE event) so other
      * open WebUI tabs/clients reflect this change instead of only seeing it
      * on next poll. motion- and daynight-prefixed keys additionally still
      * drive their own richer status events from imp_motion.c/daynight.c -
      * this is just the raw settings echo, for everything else too. */
     events_config_push(key, out);
-    g_chg++;
+    sc->chg++;
     if (ch->n < CTRL_MAX_CHG){
         snprintf(ch->key[ch->n], sizeof ch->key[0], "%s", key);
         snprintf(ch->val[ch->n], sizeof ch->val[0], "%s", out);
         ch->n++;
     } else {
-        g_nopersist++;
+        sc->nopersist++;
         LOGW(MOD,"too many settings in one request, %s not persisted", key);
     }
     LOGI(MOD,"set %s = %s", key, out);
@@ -584,7 +593,7 @@ static void timps_apply_setting(ctrl_changes *ch, const char *key, const char *r
  * names of daynight.day_gain/night_gain), got a 200 back, and nothing was
  * saved. The canonical name still wins when a body carries both, and what is
  * applied/persisted/echoed is always the canonical one. */
-static void apply_ctrl_fields(ctrl_changes *ch, const char *prefix,
+static void apply_ctrl_fields(ctrl_scratch_t *sc, ctrl_changes *ch, const char *prefix,
                               const char *s, const char *e,
                               const cfg_field *tbl, int n)
 {
@@ -594,7 +603,7 @@ static void apply_ctrl_fields(ctrl_changes *ch, const char *prefix,
         if (!get_val(s, e, tbl[i].name, v, sizeof v) &&
             !(tbl[i].alias && get_val(s, e, tbl[i].alias, v, sizeof v))) continue;
         snprintf(full, sizeof full, "%s.%s", prefix, tbl[i].name);
-        timps_apply_setting(ch, full, v);
+        timps_apply_setting(sc, ch, full, v);
     }
 }
 
@@ -626,7 +635,7 @@ static void apply_ctrl_fields(ctrl_changes *ch, const char *prefix,
  *   - the top-level legacy flat form is not scanned at all: there every
  *     unknown scalar would be reported under an "image." prefix it does not
  *     have. */
-static void ign_note(const char *prefix, const char *nb, const char *ne,
+static void ign_note(ctrl_scratch_t *sc, const char *prefix, const char *nb, const char *ne,
                      const cfg_field *tbl, int n, const char *extra)
 {
     size_t len = (size_t)(ne - nb);
@@ -634,7 +643,7 @@ static void ign_note(const char *prefix, const char *nb, const char *ne,
     if (len >= CTRL_IGN_NAME){    /* cannot be a field name, and cannot be
                                    * carried verbatim: say the list is short
                                    * rather than report a truncated name */
-        g_ign_full = 0;
+        sc->ign_full = 0;
         return;
     }
     char name[CTRL_IGN_NAME];
@@ -651,10 +660,10 @@ static void ign_note(const char *prefix, const char *nb, const char *ne,
     }
     char full[CTRL_IGN_NAME+40];
     snprintf(full, sizeof full, "%s.%s", prefix, name);
-    ign_add(full);
+    ign_add(sc, full);
 }
 
-static void ign_scan(const char *prefix, const char *s, const char *e,
+static void ign_scan(ctrl_scratch_t *sc, const char *prefix, const char *s, const char *e,
                      const cfg_field *tbl, int n, const char *extra)
 {
     int depth = 0;
@@ -669,7 +678,7 @@ static void ign_scan(const char *prefix, const char *s, const char *e,
         if (c<e && *c==':'){                     /* a NAME, not a string value */
             const char *v = skip_ws(c+1, e);
             if (depth==0 && v<e && *v!='{' && *v!='[')
-                ign_note(prefix, p+1, q, tbl, n, extra);
+                ign_note(sc, prefix, p+1, q, tbl, n, extra);
         }
         p = q;
     }
@@ -685,10 +694,8 @@ int control_apply_json(const char *json, ctrl_result *res)
     /* Not a JSON object at all - the hand-rolled scanner would simply find
      * nothing and the old code answered 200 to it. Say so instead. */
     if (!strchr(json, '{')) return -1;
-    g_acc = g_chg = g_rej = g_nopersist = 0;
-    g_echo[0] = 0; g_echo_off = 0; g_echo_full = 1;
-    g_deferred = 0; g_defer[0] = 0; g_defer_off = 0; g_defer_full = 1;
-    g_ign[0] = 0; g_ign_off = 0; g_ign_full = 1;
+    ctrl_scratch_t sc = {0};
+    sc.echo_full = 1; sc.defer_full = 1; sc.ign_full = 1;
     /* A1 (concurrent-POST class): one HTTP worker thread per connection calls
      * this (httpd.c), so two simultaneous POSTs would otherwise interleave their
      * apply-to-g_cfg + hub_control + persist sequences and leave a partially
@@ -722,15 +729,15 @@ int control_apply_json(const char *json, ctrl_result *res)
      * the value still persists. */
     int nimg; const cfg_field *img_tbl = cfg_fields_image(&nimg);
     const char *se, *sb = find_obj(json, end, "image", &se);
-    apply_ctrl_fields(ch, "image", sb?sb:json, sb?se:end, img_tbl, nimg);
+    apply_ctrl_fields(&sc, ch, "image", sb?sb:json, sb?se:end, img_tbl, nimg);
     /* only the nested form gets the unknown-field scan: in the legacy flat
      * form the "body" is the whole document, whose other members are sections,
      * not image fields (see ign_scan). */
-    if (sb) ign_scan("image", sb, se, img_tbl, nimg, NULL);
+    if (sb) ign_scan(&sc, "image", sb, se, img_tbl, nimg, NULL);
     /* legacy day/night: {"force_mode":"night"|"day"} */
     if (get_val(json, end, "force_mode", v, sizeof v)){
-        if      (!strcmp(v,"night")) timps_apply_setting(ch,"image.running_mode","1");
-        else if (!strcmp(v,"day"))   timps_apply_setting(ch,"image.running_mode","0");
+        if      (!strcmp(v,"night")) timps_apply_setting(&sc, ch,"image.running_mode","1");
+        else if (!strcmp(v,"day"))   timps_apply_setting(&sc, ch,"image.running_mode","0");
     }
 
     /* audio: audio_fields (config.c) covers both the "live" keys (volume/
@@ -744,8 +751,8 @@ int control_apply_json(const char *json, ctrl_result *res)
     sb = find_obj(json, end, "audio", &se);
     if (sb){
         int naud; const cfg_field *aud_tbl = cfg_fields_audio(&naud);
-        apply_ctrl_fields(ch, "audio", sb, se, aud_tbl, naud);
-        ign_scan("audio", sb, se, aud_tbl, naud, NULL);
+        apply_ctrl_fields(&sc, ch, "audio", sb, se, aud_tbl, naud);
+        ign_scan(&sc, "audio", sb, se, aud_tbl, naud, NULL);
     }
 
 #ifdef USE_PLAY
@@ -767,21 +774,21 @@ int control_apply_json(const char *json, ctrl_result *res)
         if (do_stop){
             speaker_play_line("STOP");
             LOGI(MOD,"speaker stop");
-            g_acc++;
+            sc.acc++;
         } else if (get_val(sb, se, "play", v, sizeof v)){
             char full[320], line[400];
             if (sound_path(v, full, sizeof full)){
                 snprintf(line, sizeof line, "PLAY url=%s", full);
                 speaker_play_line(line);
                 LOGI(MOD,"speaker play %s", full);
-                g_acc++;
-            } else { LOGW(MOD,"speaker play: rejected '%s'", v); g_rej++; }
+                sc.acc++;
+            } else { LOGW(MOD,"speaker play: rejected '%s'", v); sc.rej++; }
         } else if (have_stop){
-            g_acc++;   /* "stop":false etc. - recognised, deliberately a no-op */
+            sc.acc++;   /* "stop":false etc. - recognised, deliberately a no-op */
         }
         /* no field table at all here: play/stop are commands, and anything
          * else in this object is a name this build does not know. */
-        ign_scan("speaker", sb, se, NULL, 0, "play stop");
+        ign_scan(&sc, "speaker", sb, se, NULL, 0, "play stop");
     }
 #endif
 
@@ -792,8 +799,8 @@ int control_apply_json(const char *json, ctrl_result *res)
         const char *ge, *gb = find_obj(json, end, "general", &ge);
         if (gb) {
             int ngen; const cfg_field *gen_tbl = cfg_fields_general(&ngen);
-            apply_ctrl_fields(ch, "general", gb, ge, gen_tbl, ngen);
-            ign_scan("general", gb, ge, gen_tbl, ngen, NULL);
+            apply_ctrl_fields(&sc, ch, "general", gb, ge, gen_tbl, ngen);
+            ign_scan(&sc, "general", gb, ge, gen_tbl, ngen, NULL);
         }
     }
 
@@ -817,7 +824,7 @@ int control_apply_json(const char *json, ctrl_result *res)
              * field still POST them (see the T_DNMODE case in config.c). */
             if (!strcmp(v,"auto")||!strcmp(v,"schedule")||
                 !strcmp(v,"sensor")||!strcmp(v,"time")||!strcmp(v,"sun"))
-                timps_apply_setting(ch, "daynight.mode", v);
+                timps_apply_setting(&sc, ch, "daynight.mode", v);
             else
                 LOGW(MOD,"ignoring daynight.mode = '%s' (not auto/schedule)", v);
         }
@@ -833,14 +840,14 @@ int control_apply_json(const char *json, ctrl_result *res)
              * probe ran and found nothing", and the operator goes looking for a
              * fault in the automaton instead of a missing config key. */
             if (get_val(sb, se, "probe", v, sizeof v) && atoi(v) != 0) {
-                if (daynight_request_probe() == 0) g_acc++;
-                else                               g_rej++;
+                if (daynight_request_probe() == 0) sc.acc++;
+                else                               sc.rej++;
             }
         }
-        apply_ctrl_fields(ch, "daynight", sb, se, dn_tbl, ndn);
+        apply_ctrl_fields(&sc, ch, "daynight", sb, se, dn_tbl, ndn);
         /* "mode" is in the table but F_CTRL-less (validated by the token check
          * above, not the generic walker); "probe" is a command. */
-        ign_scan("daynight", sb, se, dn_tbl, ndn, "mode probe");
+        ign_scan(&sc, "daynight", sb, se, dn_tbl, ndn, "mode probe");
     }
 
     /* osd, legacy shared form: {"osd":{"enabled":true,"0":{...},..,"7":{...}}}
@@ -873,8 +880,8 @@ int control_apply_json(const char *json, ctrl_result *res)
                 if (*q == '"') { for (q++; q < se && *q != '"'; q++) if (*q=='\\' && q+1<se) q++; }
                 q++;
             }
-            apply_ctrl_fields(ch, "osd", seg, q, osd_tbl, nosd);
-            ign_scan("osd", seg, q, osd_tbl, nosd, NULL);
+            apply_ctrl_fields(&sc, ch, "osd", seg, q, osd_tbl, nosd);
+            ign_scan(&sc, "osd", seg, q, osd_tbl, nosd, NULL);
             if (q >= se) break;
             const char *nend = NULL;
             int d = 0;
@@ -892,8 +899,8 @@ int control_apply_json(const char *json, ctrl_result *res)
             const char *ie, *ib = find_obj(sb, se, idx, &ie);
             if (!ib) continue;
             char pre[8]; snprintf(pre,sizeof pre,"osd%d",i);
-            apply_ctrl_fields(ch, pre, ib, ie, item_tbl, nitem);
-            ign_scan(pre, ib, ie, item_tbl, nitem, NULL);
+            apply_ctrl_fields(&sc, ch, pre, ib, ie, item_tbl, nitem);
+            ign_scan(&sc, pre, ib, ie, item_tbl, nitem, NULL);
         }
     }
 
@@ -910,8 +917,8 @@ int control_apply_json(const char *json, ctrl_result *res)
             const char *ie, *ib = find_obj(sb, se, idx, &ie);
             if (!ib) continue;
             char pre[12]; snprintf(pre,sizeof pre,"osd%d.%d",s,i);
-            apply_ctrl_fields(ch, pre, ib, ie, item_tbl, nitem);
-            ign_scan(pre, ib, ie, item_tbl, nitem, NULL);
+            apply_ctrl_fields(&sc, ch, pre, ib, ie, item_tbl, nitem);
+            ign_scan(&sc, pre, ib, ie, item_tbl, nitem, NULL);
         }
     }
 
@@ -926,8 +933,8 @@ int control_apply_json(const char *json, ctrl_result *res)
             const char *ie, *ib = find_obj(sb, se, idx, &ie);
             if (!ib) continue;
             char pre[8]; snprintf(pre,sizeof pre,"video%d",i);
-            apply_ctrl_fields(ch, pre, ib, ie, vid_tbl, nvid);
-            ign_scan(pre, ib, ie, vid_tbl, nvid, NULL);
+            apply_ctrl_fields(&sc, ch, pre, ib, ie, vid_tbl, nvid);
+            ign_scan(&sc, pre, ib, ie, vid_tbl, nvid, NULL);
         }
     }
 
@@ -946,8 +953,8 @@ int control_apply_json(const char *json, ctrl_result *res)
                 const char *ne, *nb = find_obj(ssb, sse, nidx, &ne);
                 if (!nb) continue;
                 char pre[16]; snprintf(pre,sizeof pre,"privacy%d.%d",s,n);
-                apply_ctrl_fields(ch, pre, nb, ne, priv_tbl, nprivf);
-                ign_scan(pre, nb, ne, priv_tbl, nprivf, NULL);
+                apply_ctrl_fields(&sc, ch, pre, nb, ne, priv_tbl, nprivf);
+                ign_scan(&sc, pre, nb, ne, priv_tbl, nprivf, NULL);
             }
         }
     }
@@ -957,8 +964,8 @@ int control_apply_json(const char *json, ctrl_result *res)
     sb = find_obj(json, end, "sensor", &se);
     if (sb){
         int nsen; const cfg_field *sen_tbl = cfg_fields_sensor(&nsen);
-        apply_ctrl_fields(ch, "sensor", sb, se, sen_tbl, nsen);
-        ign_scan("sensor", sb, se, sen_tbl, nsen, NULL);
+        apply_ctrl_fields(&sc, ch, "sensor", sb, se, sen_tbl, nsen);
+        ign_scan(&sc, "sensor", sb, se, sen_tbl, nsen, NULL);
     }
 
     /* motion: {"motion":{"enabled":..,"sensitivity":..,"cols":..,"rows":..,
@@ -977,8 +984,8 @@ int control_apply_json(const char *json, ctrl_result *res)
     sb = find_obj(json, end, "motion", &se);
     if (sb){
         int nmot; const cfg_field *mot_tbl = cfg_fields_motion(&nmot);
-        apply_ctrl_fields(ch, "motion", sb, se, mot_tbl, nmot);
-        ign_scan("motion", sb, se, mot_tbl, nmot, NULL);
+        apply_ctrl_fields(&sc, ch, "motion", sb, se, mot_tbl, nmot);
+        ign_scan(&sc, "motion", sb, se, mot_tbl, nmot, NULL);
     }
 
     /* record: {"record":{"active":1|0}} = manual start/stop override (the
@@ -994,7 +1001,7 @@ int control_apply_json(const char *json, ctrl_result *res)
              * no other field for apply_ctrl_fields() to count. */
             record_set_active((!strcmp(v,"true")||!strcmp(v,"1")) ? 1 :
                               (!strcmp(v,"false")||!strcmp(v,"0")) ? 0 : -1);
-            g_acc++;
+            sc.acc++;
         }
         {   /* {"record":{"clip":"/tmp/x.mp4","seconds":6}} -> capture an
              * on-demand fMP4 clip (blocks ~seconds); used by send2 video. */
@@ -1008,14 +1015,14 @@ int control_apply_json(const char *json, ctrl_result *res)
                  * grading exists to prevent. Count it, and let its verdict
                  * (-1 = bad path or no recorder) show up as rejected, so a
                  * caller learns the request was refused without needing SSH. */
-                if (record_clip(clip, secs) == 0) g_acc++;
-                else                              g_rej++;
+                if (record_clip(clip, secs) == 0) sc.acc++;
+                else                              sc.rej++;
             }
         }
         int nrec; const cfg_field *rec_tbl = cfg_fields_record(&nrec);
-        apply_ctrl_fields(ch, "record", sb, se, rec_tbl, nrec);
+        apply_ctrl_fields(&sc, ch, "record", sb, se, rec_tbl, nrec);
         /* active/clip/seconds are commands handled above, not table fields. */
-        ign_scan("record", sb, se, rec_tbl, nrec, "active clip seconds");
+        ign_scan(&sc, "record", sb, se, rec_tbl, nrec, "active clip seconds");
     }
 
     /* timelapse: {"timelapse":{"enabled":..,"channel":..,"dir":..,"name":..,
@@ -1024,8 +1031,8 @@ int control_apply_json(const char *json, ctrl_result *res)
     sb = find_obj(json, end, "timelapse", &se);
     if (sb){
         int ntl; const cfg_field *tl_tbl = cfg_fields_timelapse(&ntl);
-        apply_ctrl_fields(ch, "timelapse", sb, se, tl_tbl, ntl);
-        ign_scan("timelapse", sb, se, tl_tbl, ntl, NULL);
+        apply_ctrl_fields(&sc, ch, "timelapse", sb, se, tl_tbl, ntl);
+        ign_scan(&sc, "timelapse", sb, se, tl_tbl, ntl, NULL);
     }
 
     /* M2: flush any HAL apply that was deferred/batched across the keys of this
@@ -1041,15 +1048,15 @@ int control_apply_json(const char *json, ctrl_result *res)
         config_write_keys(g_cfg_path, keys, vals, ch->n);
     }
     if (res) {
-        res->accepted = g_acc; res->changed = g_chg; res->rejected = g_rej;
-        res->not_persisted = g_nopersist;
-        res->deferred = g_deferred;
-        snprintf(res->echo, sizeof res->echo, "%s", g_echo);
-        res->echo_full = g_echo_full;
-        snprintf(res->defer, sizeof res->defer, "%s", g_defer);
-        res->defer_full = g_defer_full;
-        snprintf(res->ign, sizeof res->ign, "%s", g_ign);
-        res->ign_full = g_ign_full;
+        res->accepted = sc.acc; res->changed = sc.chg; res->rejected = sc.rej;
+        res->not_persisted = sc.nopersist;
+        res->deferred = sc.deferred;
+        snprintf(res->echo, sizeof res->echo, "%s", sc.echo);
+        res->echo_full = sc.echo_full;
+        snprintf(res->defer, sizeof res->defer, "%s", sc.defer);
+        res->defer_full = sc.defer_full;
+        snprintf(res->ign, sizeof res->ign, "%s", sc.ign);
+        res->ign_full = sc.ign_full;
     }
     free(ch);
     pthread_mutex_unlock(&apply_mu);
@@ -1841,7 +1848,14 @@ int control_get_json(char *buf, size_t cap)
      * config file (that is exactly what produces the warning above), but they
      * are INERT in this binary, no listener was ever opened, and echoing them
      * would invite a client to dial a port nothing is bound to. available:0
-     * means "ignore any TLS config you may have seen elsewhere". */
+     * means "ignore any TLS config you may have seen elsewhere".
+     *
+     * "https" is the raw tri-state, and a client must read it as one, not as
+     * a bool: 1 = the http port serves BOTH schemes (dial it with whatever
+     * scheme the page itself was loaded over - that is the whole point of the
+     * per-connection sniff in httpd.c, and forcing https:// from an http://
+     * page is exactly the self-signed-cert failure it exists to avoid), 2 =
+     * https REQUIRED, plaintext gets a 426. 0 = plaintext only. */
 #ifdef USE_TLS
     APP(",\"tls\":{\"available\":1,\"https\":%d,\"rtsps\":%d,\"rtsps_port\":%d}",
         c->http_https, c->rtsp_tls, c->rtsp_tls_port);
