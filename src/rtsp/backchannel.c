@@ -49,8 +49,10 @@ static int64_t     g_owner_last_us = 0;   /* mono clock of the owner's last acce
 #define BC_OWNER_STALE_US (10LL*1000000)
 #endif
 
-/* scratch buffer - only ever touched by the elected owner under g_lock */
-static int16_t g_pcm[8192];     /* decoded PCM (mono) */
+/* scratch buffer - only ever touched by the elected owner under g_lock.
+ * AV-07: sized by BC_PCM_SAMPLES in backchannel.h, which speaker.c reads too
+ * (see the derivation there); 8192 was ~4x the reachable maximum. */
+static int16_t g_pcm[BC_PCM_SAMPLES];   /* decoded PCM (mono) */
 
 #ifdef USE_BC_AAC
 static HAACDecoder g_aac = NULL;
@@ -141,7 +143,7 @@ static int decode_aac(const uint8_t *pl, int plen, int *out_rate)
     /* M-B1: AACDecode writes up to AAC_MAX_NCHANS*AAC_MAX_NSAMPS (2*1024) int16
      * per call into g_pcm+total BEFORE we can clamp `total`. A packet carrying
      * many AU-headers (naus is derived from the network payload) could otherwise
-     * drive total near cap and let one more decode write past g_pcm[8192].
+     * drive total near cap and let one more decode write past g_pcm[].
      * Gate the loop on room for a FULL worst-case block, not just total<cap. */
     for (int a=0; a<naus && data_off < plen && total + BC_AAC_MAX_BLK <= cap; a++){
         int sz = ((pl[2+2*a]<<8) | pl[3+2*a]) >> 3;   /* 13-bit AU-size */

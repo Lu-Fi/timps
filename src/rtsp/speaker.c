@@ -1,6 +1,7 @@
 /* speaker.c - see speaker.h. Compiled only when USE_BACKCHANNEL or USE_PLAY. */
 #if defined(USE_BACKCHANNEL) || defined(USE_PLAY)
 #include "speaker.h"
+#include "backchannel.h"          /* BC_PCM_SAMPLES - sizes SPK_RS_MAX below */
 #include "../hal/hal.h"
 #include "../codec/resample.h"
 #include "../codec/g711.h"
@@ -27,9 +28,14 @@
 
 #define MOD "spk"
 #define SPK_RS_CAP 16384             /* initial resample scratch (samples) */
-/* growth ceiling: the largest legitimate resample output is an 8192-sample
- * backchannel block (bc's g_pcm) stretched 8 kHz -> 48 kHz */
-#define SPK_RS_MAX (8192*6)
+/* Growth ceiling: the largest legitimate resample output is a backchannel
+ * block (backchannel.c's g_pcm, BC_PCM_SAMPLES) stretched 8 kHz -> 48 kHz.
+ * AV-07: that coupling used to be a comment next to two independently written
+ * literals; it is now the actual constant, so shrinking one cannot silently
+ * clamp the other. The +2 matches rs_fit()'s own rounding allowance, which
+ * the old 8192*6 was two samples short of. The play queue's own block
+ * (SPK_DEC_FR) is smaller - asserted where it is defined. */
+#define SPK_RS_MAX (BC_PCM_SAMPLES*6 + 2)
 
 /* -------- ownership + AO device state (the single arbiter) ---------------- */
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -179,7 +185,23 @@ void speaker_set_gain(int gain)
 
 #define SPK_FIFO     "/run/timps/audio_out"
 #define SPK_DIR      "/run/timps"
-#define SPK_DEC_FR   4096                 /* mono output frames per decoder read */
+/* Mono output frames per decoder read. AV-05: 1024 (128 ms at 8 kHz), not
+ * 4096 (512 ms). This sizes g_ilv/g_dec below - 24 KB of BSS resident for the
+ * life of the process even on a camera that never plays a clip, now 6 KB -
+ * plus dec_read()'s companded stack buffer (8 KB -> 2 KB), and it is the
+ * quantum play_write() holds g_lock for while hal_ao_write() splits the block
+ * into blocking IMP_AO_SendFrame calls, so STOP is noticed ~4x sooner. The
+ * cost is 8 decode iterations per second instead of 2. The locking
+ * architecture is deliberately untouched (see PERFORMANCE_REVIEW_2026-08-28,
+ * Tier 2 #10 - "speaker holds g_lock across the blocking AO write" was
+ * measured and declined); only the block size changes. op_read() has no
+ * minimum request size - a smaller buffer just returns less per call - so the
+ * Opus path in dec_read() is unaffected beyond iteration count. */
+#define SPK_DEC_FR   1024
+/* SPK_RS_MAX is derived from BC_PCM_SAMPLES on the assumption that a
+ * backchannel block is the largest thing rs_fit() ever has to size for. */
+_Static_assert(SPK_DEC_FR <= BC_PCM_SAMPLES,
+               "SPK_RS_MAX no longer bounds a resampled play-queue block");
 
 struct pjob {
     char path[512];

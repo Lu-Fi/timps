@@ -7,6 +7,27 @@
  */
 #ifndef MS_BACKCHANNEL_H
 #define MS_BACKCHANNEL_H
+
+/* Samples in backchannel.c's decode scratch (g_pcm). Declared HERE, outside
+ * the USE_BACKCHANNEL guard, because speaker.c derives its resample-scratch
+ * ceiling (SPK_RS_MAX) from it: a backchannel block stretched 8 kHz -> 48 kHz
+ * is the largest thing that path ever resamples, and until now the two
+ * constants were tied together by a comment only (AV-07).
+ *
+ * 4096 is headroom, not a fit. The reachable maxima are:
+ *   G.711  - one sample per payload byte, and the payload is bounded by the
+ *            transport: 1600 B UDP datagram buffer / 2048 B RTSP interleaved
+ *            control buffer in rtsp.c, i.e. <= ~2030 samples. Over-long
+ *            payloads are clamped to the buffer, never overrun.
+ *   AAC    - libhelix emits <= AAC_MAX_NCHANS*AAC_MAX_NSAMPS per AU and
+ *            decode_aac() only enters another iteration while a full
+ *            worst-case block still fits, so it stops at cap; 4096 leaves
+ *            room for three 1024-sample AUs in one RTP packet.
+ *   ws     - talk_ws.c decodes into its own WS_MAX_PAYLOAD (1024) buffer. */
+#ifndef BC_PCM_SAMPLES
+#define BC_PCM_SAMPLES 4096
+#endif
+
 #ifdef USE_BACKCHANNEL
 #include <stdint.h>
 
