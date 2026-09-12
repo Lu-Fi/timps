@@ -156,10 +156,18 @@ size_t ws_base64_encode(const unsigned char *in, size_t len, char *out) {
  *   ---------------------------------------------------------------------
  *   r  >  0                      bytes decrypted                  r
  *   r == 0                       WANT_READ/WANT_WRITE, no data    -1, EAGAIN
- *   r == -1                      PEER_CLOSE_NOTIFY (tls.c's own   0  (EOF)
- *                                explicit -1; every other mbedTLS
- *                                error is a large negative)
+ *   r == -1                      peer gone: PEER_CLOSE_NOTIFY,    0  (EOF)
+ *                                or transport EOF without one
+ *                                (tls.c's own explicit -1; every
+ *                                other mbedTLS error is a large
+ *                                negative)
  *   r  < -1                      transport/protocol error         -1, ECONNRESET
+ *
+ * The "transport EOF without close_notify" half of the -1 row is what B1
+ * (review 2026-09-12) fixed in tls.c: it used to fall through as 0, so the
+ * EAGAIN row below sent read_exact() back into poll_readable() on a FIN'd
+ * socket - permanently POLLIN, no sleep - and pinned the core until the
+ * frame deadline. Do not reintroduce a 0 -> retry mapping for it.
  *
  * Translating rather than "fixing" tls.c is deliberate: ms_tls_read()'s
  * convention is depended on by httpd.c's and rtsp.c's streaming loops, and
@@ -194,7 +202,7 @@ static ssize_t io_read(ws_io *io, void *buf, size_t n) {
       errno = EAGAIN;
       return -1;
     }
-    if (r == -1) /* orderly close_notify -> EOF, becomes WS_CLOSED */
+    if (r == -1) /* close_notify or bare transport EOF -> WS_CLOSED */
       return 0;
     errno = ECONNRESET; /* any other mbedTLS error -> WS_EIO */
     return -1;

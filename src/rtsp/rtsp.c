@@ -1734,9 +1734,9 @@ static void *client_thread(void *arg)
     if (fanqueue_init(&s->q, MS_RTSP_QCAP)==0) {
         /* M-3: publish the queue the play loop blocks on for the whole time it
          * exists, so rtsp_stop() can end that loop. The control-fd shutdown
-         * alone does NOT: over TLS r_recv() maps a closed peer to -1/EAGAIN
-         * (it cannot tell "closed" from "nothing yet"), so the loop's n==0
-         * exit is unreachable on RTSPS - and a UDP-transport session's media
+         * alone is not relied on: the loop's n==0 exit is unreachable on
+         * RTSPS (a closed TLS peer surfaces as -1/ECONNRESET via the errno
+         * branch since B1, never as 0) - and a UDP-transport session's media
          * writes never fail either, so nothing else would end it. Withdrawn
          * before fanqueue_free() so no stop-side close can reach a dead queue. */
         ms_creg_set_queue(&g_clientreg, s->slot, &s->q);
@@ -1888,12 +1888,12 @@ void rtsp_stop(rtsp_server *s)
      * With the H1/M1 socket timeouts this is belt-and-suspenders, but it
      * makes the bounded drain below actually effective at shutdown time.
      * M-3: the same call now also closes each PLAYing session's fanqueue.
-     * The fd shutdown covers plain RTSP (measured: 40 ms), but not RTSPS -
-     * r_recv() cannot report a closed TLS peer as anything but EAGAIN, so the
-     * play loop's n==0 exit never fires there and a UDP-transport session,
-     * whose media writes cannot fail either, would still be running when the
-     * tls_ctx is freed below. Closing the queue ends it regardless of
-     * transport or TLS. */
+     * The fd shutdown covers plain RTSP (measured: 40 ms); on RTSPS it now
+     * also surfaces as -1/ECONNRESET from r_recv() (B1), but the play loop's
+     * n==0 exit still never fires there, and a UDP-transport session parked
+     * on a fanqueue pop between control polls, whose media writes cannot fail
+     * either, could still be running when the tls_ctx is freed below. Closing
+     * the queue ends it regardless of transport or TLS. */
     ms_creg_wake_all(&g_clientreg);
     int64_t drain0 = ms_now_us();
     for (int i = 0; i < (MS_RTSP_DRAIN_MS+9)/10 && g_nclients > 0; i++) usleep(10000);

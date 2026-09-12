@@ -314,6 +314,15 @@ int ms_tls_read(ms_tls_conn *c, void *buf, int len)
     if (r == MBEDTLS_ERR_SSL_WANT_READ || r == MBEDTLS_ERR_SSL_WANT_WRITE)
         return 0;                          /* no data yet */
     if (r == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY) return -1;
+    /* mbedtls_ssl_read() returns 0 when the underlying transport hit EOF
+     * WITHOUT a close_notify (killed browser tab, WiFi drop, RST) - the
+     * session is unusable from here on, exactly like close_notify. This has
+     * to be -1 and not the "no data yet" 0: a caller that retries on 0
+     * re-polls a FIN'd socket, which is permanently POLLIN, and busy-spins
+     * (B1, review 2026-09-12 - /talk pinned the core for seconds per abrupt
+     * disconnect). The <= 0 consumers (httpd.c crecv loops, rtsp.c r_recv)
+     * are unaffected; ws.c's io_read maps -1 to EOF/WS_CLOSED. */
+    if (r == 0) return -1;                 /* transport EOF, no close_notify */
     return r;                              /* >0 bytes, <0 error/closed */
 }
 
