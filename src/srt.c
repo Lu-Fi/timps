@@ -87,6 +87,14 @@
 
 static const ms_config *g_scfg;
 static volatile int     g_run;
+/* P-02 (AV-06): stop-condvar for the ONLY place in this file that used to
+ * sleep on a timer rather than block in libsrt - the caller-mode reconnect
+ * backoff. g_run stays the run flag everywhere else: the listener and sender
+ * loops are woken by srt_stop() closing their sockets, which is what breaks
+ * their blocking srt_accept/srt_connect/srt_sendmsg2 and is unrelated to a
+ * condvar. Init before the thread starts, stopped by srt_stop() before the
+ * join so a 30 s backoff can never be waited out. */
+static ms_stopgate      g_gate;
 static pthread_t        g_thr;
 static int              g_started;
 static SRTSOCKET        g_ls = SRT_INVALID_SOCK; /* listener; srt_stop closes
@@ -764,9 +772,14 @@ static void *caller_thread(void *arg)
                 quiet = 1;
             }
         }
-        /* wakeable backoff: poll g_run at 100 ms so srt_stop's join never
-         * waits out a full 30 s sleep */
-        for (int i = 0; g_run && i < backoff * 10; i++) usleep(100000);
+        /* P-02 (AV-06): wakeable backoff. This was a 10 Hz usleep poll of
+         * g_run - ten nanosleep wakeups per second, for as long as the
+         * receiver stays unreachable, in an otherwise idle daemon. The
+         * stopgate gives the same wakeability the poll was there for and a
+         * better one: srt_stop() wakes it the instant it is called instead of
+         * within 100 ms, and there are no wakeups at all in between. Same
+         * conversion as record.c's and timelapse.c's idle waits. */
+        if (ms_stopgate_wait(&g_gate, backoff * 1000)) break;
         if (backoff < SRT_CALLER_BACKOFF_MAX_S) {
             backoff *= 2;
             if (backoff > SRT_CALLER_BACKOFF_MAX_S)
@@ -793,10 +806,11 @@ void srt_start(const ms_config *cfg)
     /* /control shows -1 until the first stats tick */
     g_stats.rtt_ms = g_stats.bw_mbps = g_stats.rate_mbps = -1;
     g_stats.sent = g_stats.retrans = g_stats.loss = g_stats.drop = -1;
+    ms_stopgate_init(&g_gate);   /* re-arm before the thread can wait on it */
     g_run = 1; g_started = 1;
     if (ms_thread_create(&g_thr, MS_STACK_STREAM,
                          g_caller ? caller_thread : listen_thread, NULL) != 0) {
-        g_started = 0; g_run = 0;
+        g_started = 0; g_run = 0; ms_stopgate_stop(&g_gate);
     }
 }
 
@@ -804,6 +818,7 @@ void srt_stop(void)
 {
     if (!g_started) return;
     g_run = 0;
+    ms_stopgate_stop(&g_gate); /* wake the caller-mode reconnect backoff (AV-06) */
     srt_close_listener();      /* unblock srt_accept; closes at most once (L4) */
     srt_close_caller();        /* unblock srt_connect/srt_sendmsg2 (caller) */
     pthread_join(g_thr, NULL);
