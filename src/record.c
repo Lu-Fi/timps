@@ -418,6 +418,38 @@ static int seg_open(int chn, const ms_record_cfg *rc)
     return 0;
 }
 
+/* AV-04: writev() that resumes across partial writes - the regular-file
+ * analogue of net_sendmsg_all() (net.c), and the same loop. A writev to a
+ * regular file normally completes in one call, but EINTR or a filesystem
+ * running out of room mid-write can stop it short, and a torn fragment
+ * corrupts every fragment after it in the segment. Consumes the accepted
+ * bytes off the FRONT of the array, so `iov` is modified - fine here, the
+ * caller refills it per packet. Returns the byte count written, or -1 with
+ * errno set. Loop bound is the byte total, not niov, for the same reason
+ * net_sendmsg_all uses it: it terminates regardless of what the array holds. */
+static long writev_all(int fd, struct iovec *iov, int niov)
+{
+    size_t total = 0;
+    for (int i = 0; i < niov; i++) total += iov[i].iov_len;
+    size_t done = 0;
+    while (done < total){
+        ssize_t n = writev(fd, iov, niov);
+        if (n <= 0){
+            if (n < 0 && errno == EINTR) continue;
+            if (n == 0) errno = EIO;      /* no progress and no error: bail */
+            return -1;
+        }
+        done += (size_t)n;
+        size_t left = (size_t)n;
+        while (left > 0 && niov > 0){
+            if (left >= iov->iov_len){ left -= iov->iov_len; iov++; niov--; }
+            else { iov->iov_base = (uint8_t*)iov->iov_base + left;
+                   iov->iov_len -= left; left = 0; }
+        }
+    }
+    return (long)total;
+}
+
 static void seg_write(ms_pkt *p)
 {
     if (!w_fp) return;
@@ -427,12 +459,37 @@ static void seg_write(ms_pkt *p)
      * without locking; it grows once to the steady-state fragment size via
      * ms_buf_reserve and is then reused for the life of the process. */
     static ms_buf frag;
-    ms_buf_reset(&frag, 256*1024);   /* reuse, shrink an outlier IDR buffer back */
+    /* ~650 B of the record thread's 128 KB stack, refilled from scratch every
+     * packet (see fmp4.h) - stack rather than another static because it is
+     * write-before-read and small, the same call-local placement stream_mp4()
+     * uses. */
+    fmp4_frag_iov fi;
+    /* AV-04: with the gather-write below the steady state is a ~120 B
+     * moof + mdat header plus the odd small audio fragment, so hand back
+     * anything a >FMP4_NAL_IDX-NAL overflow AU forced us to grow to. The old
+     * 256 KB soft cap was set against fragments that ROUTINELY exceeded it -
+     * util.c:69 says so outright - so ms_buf_reset's shrink run never
+     * completed and the buffer sat at the high-water IDR size (~128 KB at
+     * fleet settings, 512 KB at 4-6 Mbps) for the life of the process. Same
+     * constant and same reasoning as mp4/httpd.c's Z1 conversion. */
+    ms_buf_reset(&frag, 4096);
+    fi.niov = 0;                     /* stale iovecs must never outlive their AU */
     int frag_ok=1;
     if (p->media==MS_MEDIA_VIDEO){
         if (!w_got_key){ if (!p->keyframe){ return; } w_got_key=1; }
-        frag_ok = fmp4_video_fragment(&w_mux,p->data,p->len,p->keyframe,p->pts_us,&frag)==0;
+        /* AV-04: iovec form - moof + the mdat header are built into frag, the
+         * access unit itself is written straight out of the packet. The
+         * iovecs alias p->data, so the write below must happen before the
+         * caller's pkt_unref(); both callers (rec_thread, flush_ring) hold
+         * their reference across the whole seg_write call. An AU with more
+         * than FMP4_NAL_IDX NALs is muxed contiguously into frag and handed
+         * back as one iovec, so there is still only one write path. */
+        frag_ok = fmp4_video_fragment_iov(&w_mux,p->data,p->len,p->keyframe,
+                                          p->pts_us,&frag,&fi)==0;
     } else if (p->media==MS_MEDIA_AUDIO && w_mux.has_audio && w_got_key){
+        /* audio keeps the contiguous path: an AAC fragment is a few hundred
+         * bytes, so there is no copy worth avoiding and no buffer worth not
+         * growing (mp4/httpd.c makes the same split). */
         frag_ok = fmp4_audio_fragment(&w_mux,p->data,p->len,p->pts_us,&frag)==0;
     }
     /* a failed fragment (OOM mid-build) can hold partial, non-box-tree bytes
@@ -444,18 +501,41 @@ static void seg_write(ms_pkt *p)
              p->media==MS_MEDIA_VIDEO?"video":"audio");
         return;
     }
-    if (frag.len){
+    size_t wrote=0;
+    if (fi.niov){
+        /* stdio and the raw fd share one file offset, so anything still in
+         * libc's buffer (the init segment from seg_open, any buffered audio
+         * fragment) MUST be drained before writing around it or the fragments
+         * land out of order. On a video-only recording the buffer is empty and
+         * fflush issues no syscall at all; with audio it issues the write
+         * stdio would have issued at the next large fwrite anyway, so the
+         * syscall count is a wash. Its error is handled exactly like a short
+         * write, same as the periodic-durability fflush below. */
+        int werr = fflush(w_fp)!=0 ? errno : 0;
+        if (!werr){
+            long wn = writev_all(fileno(w_fp), fi.iov, fi.niov);
+            if (wn < 0) werr = errno; else wrote = (size_t)wn;
+        }
+        if (werr){
+            /* SD yanked / disk full: stop the segment so status stops claiming
+             * 'recording'. The writer loop reopens (which then fails -> backs
+             * off and retries) instead of silently looking healthy. */
+            LOGE(MOD,"segment write failed (%s), closing",strerror(werr));
+            note_werr("write", werr);
+            seg_close(); return;
+        }
+    } else if (frag.len){
+        wrote = frag.len;
         size_t wn=fwrite(frag.data,1,frag.len,w_fp);
         if (wn!=frag.len){
-            /* SD yanked / disk full: stop the segment so status stops claiming
-             * 'recording'. The writer loop reopens (fopen then fails -> retries
-             * per packet) instead of silently looking healthy. */
             int e=errno;   /* before LOGE, which may clobber errno */
             LOGE(MOD,"segment write failed (%s), closing",strerror(e));
             note_werr("write", e);
             seg_close(); return;
         }
-        pthread_mutex_lock(&g_lock); g_curbytes+=frag.len; pthread_mutex_unlock(&g_lock);
+    }
+    if (wrote){
+        pthread_mutex_lock(&g_lock); g_curbytes+=wrote; pthread_mutex_unlock(&g_lock);
         /* periodic durability (M7) without stalling the record thread (M-3):
          * fflush hands libc's buffer to the kernel (a real short-write error
          * still surfaces here and closes the segment), then kick ASYNC writeback
