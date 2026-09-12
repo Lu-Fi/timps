@@ -893,8 +893,13 @@ static void stream_mjpeg(hconn *c, int src, const char *bnd)
     ms_creg_set_queue(&g_clientreg, c->slot, &q);
     int64_t last_pkt_us = ms_now_us();   /* H-2: encoder-stall bound, see above */
     while (1) {
-        if (fanqueue_closed(&q)) break;             /* M-1: teardown, see stream_mp4 */
-        ms_pkt *p = fanqueue_pop(&q, 500);
+        /* P-03 (fanqueue): ONE lock/unlock for the pop and the closed? this
+         * loop used to ask the same queue right before it - see stream_mp4. */
+        fq_status qs;
+        ms_pkt *p = fanqueue_pop_ex(&q, 500, &qs);
+        /* M-1: teardown closed our queue - leave NOW, dropping whatever this
+         * pop still had in hand (see stream_mp4). */
+        if (qs.closed) { pkt_unref(p); break; }
         if (!p) {
             char t[8]; int r=crecv(c,t,sizeof t,MSG_DONTWAIT);
             if (r==0) {
