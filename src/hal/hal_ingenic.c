@@ -3929,8 +3929,22 @@ static void *audio_thread(void *arg)
                      * scratch (and the Opus one below) is gone with it, so the
                      * audio worker's thread-local footprint drops by ~12 KB.
                      * A borrow that yields no frame (n==0, or OOM) is returned
-                     * to the pool by the pkt_unref() below. */
-                    ms_pkt *pk = hub_pkt_get(HUB_AUDIO_SRC, 8192);
+                     * to the pool by the pkt_unref() below.
+                     *
+                     * AV-03: borrow what the encoder says it can emit, not a
+                     * flat 8 KB. faac_max is fi.max_output_bytes when
+                     * faac_encoder_get_info() succeeded and the 8192
+                     * initializer otherwise, so the failure case is unchanged;
+                     * for mono AAC-LC libfaac reports ~768 B (1536 stereo).
+                     * The pool grows buffers but never shrinks them and keeps
+                     * HUB_POOL_MAX_FREE idle per source, so the old constant
+                     * pinned ~32 KB of resident heap for frames of a few
+                     * hundred bytes. The floor keeps a pathological info
+                     * report from producing a useless buffer; pk->cap is
+                     * passed to the encoder below either way, so a too-small
+                     * cap fails cleanly instead of overflowing. */
+                    ms_pkt *pk = hub_pkt_get(HUB_AUDIO_SRC,
+                                             faac_max < 1024 ? 1024 : faac_max);
                     uint32_t n = 0;
                     /* FAAC_INPUT_16BIT: pass the int16 PCM directly; in_samples
                      * is the TOTAL interleaved count (frame_samples * channels
@@ -3969,8 +3983,12 @@ static void *audio_thread(void *arg)
              * re-blocking is needed (unlike faac's fixed 1024-sample unit). Mono
              * only, so `samples` is directly opus_encode's per-channel count. */
             /* P-01, audio: pooled packet as the encode target (see the AAC
-             * branch above). 4 KB >> the 1275 B/frame RFC 7587 max. */
-            ms_pkt *pk = hub_pkt_get(HUB_AUDIO_SRC, 4096);
+             * branch above). AV-03: 1500, not 4096 - RFC 7587 caps an Opus
+             * packet at 1275 bytes, and the pool pins whatever is asked for
+             * (grow-only, HUB_POOL_MAX_FREE idle buffers per source).
+             * pk->cap is opus_encode's max_data_bytes, so the bound is
+             * enforced by the encoder, not assumed here. */
+            ms_pkt *pk = hub_pkt_get(HUB_AUDIO_SRC, 1500);
             int on = pk ? opus_encode(opus, pcm, (int)samples, pk->data,
                                       (opus_int32)pk->cap) : 0;
             if (on <= 0) {
@@ -3995,10 +4013,17 @@ static void *audio_thread(void *arg)
         } else {
             /* P-01, audio: pooled packet as the encode target (see above).
              * 1 byte per sample, so the byte cap is also the sample cap - the
-             * same bound the old 2 KB stack buffer imposed. */
+             * same bound the old 2 KB stack buffer imposed. g711_max stays the
+             * sanity clamp on `samples`; AV-03: borrow the CLAMPED count, not
+             * the clamp. g711_{a,u}law_encode() take no output-capacity
+             * argument and write exactly `samples` bytes, so cap == samples is
+             * both exact and the bound that makes that safe. A real AI frame is
+             * 320 samples at 8 kHz / 640 at 16 kHz, i.e. the flat 2048 pinned
+             * 3-6x what the encoder ever writes across the pool's idle
+             * buffers. */
             const size_t g711_max = 2048;
             if (samples>g711_max) samples=g711_max;
-            ms_pkt *pk = hub_pkt_get(HUB_AUDIO_SRC, g711_max);
+            ms_pkt *pk = hub_pkt_get(HUB_AUDIO_SRC, samples);
             if (pk){
                 if (g_acodec==MS_AC_PCMA) g711_alaw_encode(pcm,samples,pk->data);
                 else                      g711_ulaw_encode(pcm,samples,pk->data);
