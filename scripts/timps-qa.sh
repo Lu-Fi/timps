@@ -3383,13 +3383,23 @@ else
 			skip "video1.max_qp: ceiling $rc_mq_hi leaves no room for a low/high pair inside [$rc_mq_lo..51] - cannot build a differential that isolates the ceiling"
 		else
 			rc_baseline
-			# starve to ~0.15x of what the scene actually costs, floored at the
-			# videoN.bitrate config clamp of 16 - low enough that the encoder is
-			# pinned against its ceiling in both halves of the pair. The gate is
-			# not a flat baseline floor but whether that clamp still leaves a real
-			# starve: on a scene delivering under ~32 kbps the floored target is no
-			# longer below what the scene costs, and neither ceiling would bind.
-			rc_starve=$(awk -v m="${rc_base_kbps:-0}" 'BEGIN{v=int(m*0.15); if(v<16)v=16; print v}')
+			# starve relative to what the scene costs AT THE LOW CEILING, not at
+			# the wide-open baseline - a flat 0.15x-of-baseline target can sit
+			# ABOVE what the scene needs once P-frames have already collapsed to
+			# the skip floor by QP+8 (measured on a T23/sc1a4t substream 2026-09-12:
+			# baseline 521 kbps was 81% fine-QP P-frame noise that fell to 19% of
+			# baseline once quantised down to rc_mq_lo+8 - 0.15x landed ABOVE that
+			# floor instead of below it, so neither ceiling could bind and the
+			# probe reported a false differential-too-small FAIL). RC3b already
+			# measured the scene's cost at a comparably coarse QP (rc_mq_hi-5);
+			# anchor to half of that when available, since RC3c's low ceiling is
+			# rc_mq_lo+8 - close enough in QP terms to reuse the measurement
+			# instead of re-deriving it from a baseline that never saw that QP.
+			if fcmp "${rc_mq_kbps:-0}" gt 0; then
+				rc_starve=$(awk -v m="$rc_mq_kbps" 'BEGIN{v=int(m*0.5); if(v<16)v=16; print v}')
+			else
+				rc_starve=$(awk -v m="${rc_base_kbps:-0}" 'BEGIN{v=int(m*0.15); if(v<16)v=16; print v}')
+			fi
 			if [ -z "$rc_base_kbps" ] || ! fcmp "$rc_starve" le "$(awk -v b="${rc_base_kbps:-0}" 'BEGIN{printf "%.0f", b*0.5}')"; then
 				skip "video1.max_qp: baseline '${rc_base_kbps:-none}' kbps leaves no starved target below the 16 kbps config clamp - cannot make the ceiling bind, so a null result would prove nothing"
 				lv_mark_gated video "no-usable-baseline-for-bitstream-check" max_qp
@@ -3399,19 +3409,19 @@ else
 				rc_qc_hi=$((rc_mq_hi+6)); [ "$rc_qc_hi" -gt 51 ] && rc_qc_hi=51
 				LV_PENDING="{\"video\":{\"1\":{\"bitrate\":$rc_b_orig,\"max_qp\":$rc_mq_hi}}}"
 				lv_mark video max_qp bitrate
-				rc_qc_a=""; rc_qc_b=""
+				rc_qc_a=""; rc_qc_b=""; rc_qc_a_iavg=""; rc_qc_b_iavg=""
 				code=$(lv_post_r "{\"video\":{\"1\":{\"bitrate\":$rc_starve,\"max_qp\":$rc_qc_lo}}}" "$OUTDIR/rc_post_maxqp_lo.json")
 				if [ "$code" != "200" ]; then
 					bad "video1.max_qp: POST(live, starve+low ceiling) HTTP $code"
 				else
 					sleep "$rc_settle_s"
-					rc_r=$(enc_measure "$PATH_SUB" "$rc_meas_dur" rc3c_lo) && read -r rc_qc_a _ _ _ _ <<<"$rc_r"
+					rc_r=$(enc_measure "$PATH_SUB" "$rc_meas_dur" rc3c_lo) && read -r rc_qc_a _ rc_qc_a_iavg _ _ <<<"$rc_r"
 					code=$(lv_post_r "{\"video\":{\"1\":{\"max_qp\":$rc_qc_hi}}}" "$OUTDIR/rc_post_maxqp_hi.json")
 					if [ "$code" != "200" ]; then
 						bad "video1.max_qp: POST(live, high ceiling) HTTP $code"
 					else
 						sleep "$rc_settle_s"
-						rc_r=$(enc_measure "$PATH_SUB" "$rc_meas_dur" rc3c_hi) && read -r rc_qc_b _ _ _ _ <<<"$rc_r"
+						rc_r=$(enc_measure "$PATH_SUB" "$rc_meas_dur" rc3c_hi) && read -r rc_qc_b _ rc_qc_b_iavg _ _ <<<"$rc_r"
 					fi
 				fi
 				if [ -z "$rc_qc_a" ] || [ -z "$rc_qc_b" ] || ! fcmp "${rc_qc_b:-0}" gt 0; then
@@ -3420,8 +3430,27 @@ else
 					rc_qc_r=$(awk -v a="$rc_qc_a" -v b="$rc_qc_b" 'BEGIN{printf "%.2f", a/b}')
 					if fcmp "$rc_qc_r" ge 1.5; then
 						ok "video1.max_qp really CONSTRAINS the bitstream: at the same starved ${rc_starve} kbps target, ceiling $rc_qc_lo delivered ${rc_qc_a} kbps and ceiling $rc_qc_hi delivered ${rc_qc_b} kbps (${rc_qc_r}x apart) - a low ceiling forbids the encoder from degrading enough to reach the target, exactly as a QP bound must"
+					elif [ -n "$rc_qc_a_iavg" ] && [ -n "$rc_qc_b_iavg" ] && fcmp "$rc_qc_a_iavg" gt 0 && fcmp "$rc_qc_b_iavg" gt 0 && fcmp "$rc_qc_a_iavg" ge "$(awk -v b="$rc_qc_b_iavg" 'BEGIN{printf "%.0f", b*1.15}')"; then
+						# Total kbps did not separate, but P-frames are already at the
+						# skip floor in both halves on a lot of real scenes (measured:
+						# ~175-200 B, all-skip), which leaves keyframes as the only bits
+						# the ceiling can act on. A low ceiling forbidding a coarser I-frame
+						# QP than a high one is the same proof min_qp gets from total kbps -
+						# it is just carried by keyframe size instead, once P-frames have
+						# nothing left to give.
+						rc_qc_ir=$(awk -v a="$rc_qc_a_iavg" -v b="$rc_qc_b_iavg" 'BEGIN{printf "%.2f", a/b}')
+						ok "video1.max_qp CONSTRAINS the bitstream via keyframe size (total kbps only separated ${rc_qc_r}x - P-frames were likely already at the skip floor in both halves): ceiling $rc_qc_lo held keyframes >= ${rc_qc_a_iavg} B, ceiling $rc_qc_hi allowed keyframes down to ${rc_qc_b_iavg} B (${rc_qc_ir}x apart)"
+					elif ! fcmp "$rc_qc_a" ge "$(awk -v s="$rc_starve" 'BEGIN{printf "%.0f", s*1.5}')"; then
+						# The low half landed close to the starve target itself, i.e. the
+						# starve was not deep enough below what this scene costs at the low
+						# ceiling to force a real differential - the probe's own precondition
+						# ("starved" relative to the scene) was not met, so a null result
+						# proves nothing about whether the ceiling binds (measured on a T23
+						# 2026-09-12: starve 78 kbps, low-half cost 99 kbps - only 1.27x above
+						# target, within the RC loop's own ~1.13x steady-state overshoot).
+						warn "video1.max_qp: inconclusive at a starved ${rc_starve} kbps target - ceiling $rc_qc_lo delivered ${rc_qc_a} kbps, only $(awk -v a="$rc_qc_a" -v s="$rc_starve" 'BEGIN{printf "%.2f", a/s}')x above the target, too close for a starve this shallow to force the ceiling to separate from ${rc_qc_hi}'s ${rc_qc_b} kbps - re-run with a lower target or a busier scene before reading a real result into this"
 					else
-						bad "video1.max_qp: at a starved ${rc_starve} kbps target the ceiling made no difference to the bitstream - $rc_qc_lo delivered ${rc_qc_a} kbps and $rc_qc_hi delivered ${rc_qc_b} kbps (${rc_qc_r}x). Both POSTs were graded live and encoder.1.rc echoes the bound, so this is the ceiling being accepted and IGNORED (the 340fb1f/ff28ee2 class) - unless the stream is content-limited well under ${rc_starve} kbps in both halves, in which case rate control had nothing to express either way"
+						bad "video1.max_qp: at a starved ${rc_starve} kbps target the ceiling made no difference to the bitstream - $rc_qc_lo delivered ${rc_qc_a} kbps and $rc_qc_hi delivered ${rc_qc_b} kbps (${rc_qc_r}x). Both POSTs were graded live and encoder.1.rc echoes the bound, so this is the ceiling being accepted and IGNORED (the 340fb1f/ff28ee2 class) - the starve was deep enough (${rc_qc_a} kbps is well above ${rc_starve}) and keyframe size did not separate either, so this is not the shallow-starve/skip-floor confound"
 					fi
 				fi
 				rc_pid_check video1.max_qp
