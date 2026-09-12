@@ -286,6 +286,22 @@ static int64_t   w_sync_us;    /* last fflush+fsync (M7 periodic durability) */
 #define REC_SYNC_US (5*1000000LL)
 #endif
 
+/* AV-02: how long rec_thread waits before retrying seg_open() after a FAILED
+ * open. Without it the retry runs once per incoming packet - measured ~31/s on
+ * a stuck camera (see the prune_free() comment above) - and every attempt is a
+ * full statvfs + two config-string round trips + time()/localtime_r()/
+ * gethostname() + one mkdir() per path component + open(O_CREAT|O_EXCL), i.e.
+ * ~350-430 syscalls/s, plus an unrate-limited LOGE to the central log
+ * collector, for the whole duration of an SD-removed / read-only / ENOSPC
+ * condition. This costs nothing behaviourally: ring_clear() runs only after a
+ * SUCCESSFUL open, so the pre-roll survives the delay exactly as intended, and
+ * the only visible effect is that recording resumes up to one backoff later
+ * after a transient failure - the window that currently burns 31 futile
+ * attempts per second. */
+#ifndef REC_OPEN_RETRY_US
+#define REC_OPEN_RETRY_US (500*1000LL)
+#endif
+
 static void seg_close(void);   /* fwd: seg_write closes on a write error */
 
 static void status_set(int rec, long long bytes, const char *file)
@@ -298,6 +314,18 @@ static void status_set(int rec, long long bytes, const char *file)
 
 static int seg_open(int chn, const ms_record_cfg *rc)
 {
+    /* AV-02: readiness test BEFORE any filesystem work. fmp4_init_segment()
+     * rejects has_video && !vp_ready outright (mp4/fmp4.c), and this function
+     * always sets has_video, so a cold start / encoder restart / live channel
+     * switch fails EVERY attempt until a keyframe has carried a parameter set
+     * through the hub - roughly one GOP. Testing it down at the mux step meant
+     * each of those attempts did a real prune_free() + mkdirs() +
+     * open(O_CREAT|O_EXCL) + fdopen() + malloc() + fclose() + unlink() on the
+     * card: two SD metadata transactions per incoming packet for a condition
+     * that is not even an error. record_clip() has always tested this first
+     * (see its open site below); seg_open() now matches. */
+    vparam vp;
+    if (!(hub_get_vparam(chn,&vp) && vparam_ready(&vp))) return -1;
     if (prune_free(rc->min_free_mb)!=0) return -1;   /* target unreachable; see prune_free() */
     /* record.dir/name are runtime-mutable via /control: snapshot them under
      * the config string lock before strftime/path building */
@@ -357,8 +385,7 @@ static int seg_open(int chn, const ms_record_cfg *rc)
     w_mux.width =ew;
     w_mux.height=eh;
     w_mux.fps   =g_cfg_boot.video[chn].fps;
-    vparam vp;
-    if (hub_get_vparam(chn,&vp) && vparam_ready(&vp)){ w_mux.vp=vp; w_mux.vp_ready=1; }
+    w_mux.vp=vp; w_mux.vp_ready=1;          /* verified at entry (AV-02) */
     int ac=MS_AC_NONE,asr=0,ach=0;
     if (rc->audio && hub_get_audio(&ac,&asr,&ach) && ac==MS_AC_AAC){
         w_mux.has_audio=1; w_mux.a_timescale=asr; w_mux.a_channels=ach;
@@ -366,9 +393,10 @@ static int seg_open(int chn, const ms_record_cfg *rc)
     }
     ms_buf seg;
     if (ms_buf_init(&seg,4096)){ fclose(w_fp); w_fp=NULL; unlink(path); return -1; }
-    /* fails when the track isn't warmed up yet (no vparam from a keyframe
-     * through the hub, e.g. right at cold start / a live channel switch) or
-     * on OOM mid-build. Writing anyway would produce a moov-less segment
+    /* only OOM mid-build reaches here now - the not-warmed-up-yet case (no
+     * vparam from a keyframe through the hub, e.g. right at cold start or a
+     * live channel switch) is caught at entry before any filesystem work
+     * (AV-02). Writing anyway would produce a moov-less segment
      * file that no player can open - bail and let the writer loop above
      * retry seg_open() on the next packet instead. */
     if (fmp4_init_segment(&w_mux,&seg)!=0){
@@ -524,6 +552,12 @@ static void *rec_thread(void *arg)
     (void)arg;
     fanqueue q; int subscribed=0, sub_audio=0, sub_chn=-1;
     int64_t drop_idr_us=0;   /* rate-limit the safety IDR request on any drop */
+    /* AV-02: earliest time a failed seg_open() may be retried. Independent of
+     * (and composing with) prune_free()'s own refused_until_us backoff: that
+     * one gates just the unreachable-min_free_mb refusal from inside
+     * seg_open(), this one gates the whole call after ANY failure, so
+     * whichever deadline is later is the one that actually delays the retry. */
+    int64_t open_retry_us=0;
 
     while (!ms_stopgate_stopped(&g_gate)){
         /* read the live config every pass so channel / mode / pre-roll changes
@@ -663,17 +697,24 @@ static void *rec_thread(void *arg)
         }
 
         if (writing){
-            if (!w_fp){
+            if (!w_fp && ms_now_us() >= open_retry_us){
                 /* only drop the pre-roll once recording actually started; a
                  * transient seg_open failure keeps the ring for the retry */
-                if (seg_open(chn,&rc)==0){ if (motion_mode) flush_ring(); ring_clear(); }
+                if (seg_open(chn,&rc)==0){
+                    if (motion_mode) flush_ring();
+                    ring_clear();
+                    open_retry_us=0;
+                } else open_retry_us = ms_now_us() + REC_OPEN_RETRY_US;  /* AV-02 */
             }
             if (w_fp){
                 /* rotate at a keyframe once the segment is long enough */
                 if (rc.segment_s>0 && p->media==MS_MEDIA_VIDEO && p->keyframe &&
                     ms_now_us()-w_start_us >= (int64_t)rc.segment_s*1000000){
                     seg_close();
-                    if (seg_open(chn,&rc)!=0){ pkt_unref(p); continue; }
+                    if (seg_open(chn,&rc)!=0){
+                        open_retry_us = ms_now_us() + REC_OPEN_RETRY_US;  /* AV-02 */
+                        pkt_unref(p); continue;
+                    }
                 }
                 seg_write(p);
             }
