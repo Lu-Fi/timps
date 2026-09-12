@@ -1152,17 +1152,48 @@ static int http_cors(const char *buf, char *out, int cap)
 static volatile int g_nsse;      /* current /events connections (sync builtins) */
 static int64_t g_start_us;       /* daemon start, for the stats uptime */
 
-/* one "event: <type>\ndata: <json>\n\n" frame; <0 = client gone (write
- * error). Oversized payloads are dropped, never truncated - a cut data line
- * would poison the whole stream for the parser. */
-static int sse_emit(hconn *c, const char *type, const char *json, int64_t *last_write)
+/* Coalescing output for the SSE frames produced by ONE pass of the
+ * events_stream() loop. One csend() per event meant a burst - a /control POST
+ * that changes eight keys emits eight "config" events, a motion drain several
+ * "motion" ones - went out as that many ~60-200 byte TCP segments (NODELAY is
+ * on), i.e. that many WiFi frames per open WebUI tab. Nothing between two
+ * emits in one pass blocks (they are all local state reads), so buffering
+ * them costs no delivery latency: the buffer is flushed at the end of every
+ * pass, before the loop parks on events_wait(). SSE framing is unchanged -
+ * the same bytes in the same order, just fewer writes. */
+typedef struct {
+    hconn   *c;
+    int64_t *last_write;
+    int      n;
+    char     buf[2048];          /* >= 1 max frame + headroom, see sse_emit */
+} sse_out;
+
+/* push whatever is buffered; <0 = client gone (write error) */
+static int sse_flush(sse_out *o)
+{
+    if (o->n <= 0) return 0;
+    int n = o->n;
+    o->n = 0;                    /* never re-send on error */
+    int rc = csend(o->c, o->buf, n);
+    if (rc >= 0) *o->last_write = ms_now_us();
+    return rc;
+}
+
+/* buffer one "event: <type>\ndata: <json>\n\n" frame; <0 = client gone (a
+ * flush this call had to make failed). Oversized payloads are dropped, never
+ * truncated - a cut data line would poison the whole stream for the parser. */
+static int sse_emit(sse_out *o, const char *type, const char *json)
 {
     char frame[1280];            /* fits a max-grid motion event + headroom */
     int n = snprintf(frame, sizeof frame, "event: %s\ndata: %s\n\n", type, json);
     if (n >= (int)sizeof frame){ LOGW(MOD,"sse %s event too large, dropped",type); return 0; }
-    int rc = csend(c, frame, n);
-    if (rc >= 0) *last_write = ms_now_us();
-    return rc;
+    if (n > (int)sizeof o->buf - o->n) {
+        int rc = sse_flush(o);   /* frame < sizeof buf, so it fits after this */
+        if (rc < 0) return rc;
+    }
+    memcpy(o->buf + o->n, frame, (size_t)n);
+    o->n += n;
+    return 0;
 }
 
 /* the periodic "stats" payload: what timps actually tracks - subscriber
@@ -1314,10 +1345,15 @@ static void events_stream(hconn *c, const char *path, const char *cors)
         "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
         "Cache-Control: no-store\r\nConnection: close\r\n"
         "X-Accel-Buffering: no\r\n%s\r\n", cors);
-    if (hn >= (int)sizeof hdr || csend(c, hdr, hn) < 0) goto out;
-    {   /* preamble: EventSource reconnect delay + a first-byte comment */
+    if (hn >= (int)sizeof hdr) goto out;
+    {   /* headers + preamble (EventSource reconnect delay and a first-byte
+         * comment) in ONE gather-write: they are always sent together, so
+         * two writes were two TCP segments for no reason. */
         static const char pre[] = "retry: 3000\n\n: connected\n\n";
-        if (csend(c, pre, (int)sizeof pre - 1) < 0) goto out;
+        struct iovec iov[2];
+        iov[0].iov_base = hdr;         iov[0].iov_len = (size_t)hn;
+        iov[1].iov_base = (void *)pre; iov[1].iov_len = sizeof pre - 1;
+        if (csendv(c, iov, 2) < 0) goto out;
     }
     LOGI(MOD,"sse client streaming (%d/%d)", g_nsse, max);
 
@@ -1334,6 +1370,8 @@ static void events_stream(hconn *c, const char *path, const char *cors)
     unsigned mq_cur = events_motion_cursor();     /* private snapshot cursor */
     unsigned cfg_cur = events_config_cursor();    /* private config-table cursor */
     char js[1024];                                /* fits max_cells active[] */
+    sse_out so;                                   /* one write per loop pass */
+    so.c = c; so.last_write = &last_write; so.n = 0;
 
     memset(&lm, 0, sizeof lm);
     memset(&lst, 0, sizeof lst);
@@ -1347,7 +1385,7 @@ static void events_stream(hconn *c, const char *path, const char *cors)
             while (rc >= 0 && events_motion_pop(&mq_cur, &m)){
                 lm = m; have_m = 1;
                 if (control_motion_json(js, sizeof js, &m) < (int)sizeof js)
-                    rc = sse_emit(c, "motion", js, &last_write);
+                    rc = sse_emit(&so, "motion", js);
             }
             /* level resync: the initial full state on connect, plus changes
              * that never enter the ring (config edits via /control, the host
@@ -1362,7 +1400,7 @@ static void events_stream(hconn *c, const char *path, const char *cors)
                     memcmp(m.active, lm.active, sizeof m.active)){
                     lm = m; have_m = 1;
                     if (control_motion_json(js, sizeof js, &m) < (int)sizeof js)
-                        rc = sse_emit(c, "motion", js, &last_write);
+                        rc = sse_emit(&so, "motion", js);
                 }
             }
         }
@@ -1381,7 +1419,7 @@ static void events_stream(hconn *c, const char *path, const char *cors)
                 have_d = 1;
                 if (control_daynight_json(js, sizeof js, en, mode, b, g, ex,
                                           lu, nb, dt, ds) < (int)sizeof js)
-                    rc = sse_emit(c, "daynight", js, &last_write);
+                    rc = sse_emit(&so, "daynight", js);
             }
         }
         if (rc >= 0 && ms_now_us() >= next_stats){
@@ -1391,7 +1429,7 @@ static void events_stream(hconn *c, const char *path, const char *cors)
             if (!have_st || stats_changed(&st, &lst)){
                 lst = st; have_st = 1;
                 if (stats_render_json(&st, js, sizeof js) < (int)sizeof js)
-                    rc = sse_emit(c, "stats", js, &last_write);
+                    rc = sse_emit(&so, "stats", js);
             }
         }
         if (rc >= 0 && want_config){
@@ -1402,7 +1440,7 @@ static void events_stream(hconn *c, const char *path, const char *cors)
              * already sanitize_val()-cleaned in control.c (no raw quotes/
              * control bytes), safe to splice into the JSON string as-is. */
             if (events_config_resync(&cfg_cur))
-                rc = sse_emit(c, "config", "{\"resync\":true}", &last_write);
+                rc = sse_emit(&so, "config", "{\"resync\":true}");
             char ck[40], cv[160];
             while (rc >= 0 && events_config_pop(&cfg_cur, ck, sizeof ck, cv, sizeof cv)){
                 /* Escape like every other JSON surface: the value here is the
@@ -1416,9 +1454,12 @@ static void events_stream(hconn *c, const char *path, const char *cors)
                 int jl = snprintf(js, sizeof js,
                     "{\"key\":\"%s\",\"value\":\"%s\"}", eck, ecv);
                 if (jl < (int)sizeof js)
-                    rc = sse_emit(c, "config", js, &last_write);
+                    rc = sse_emit(&so, "config", js);
             }
         }
+        /* everything this pass produced goes out as one write, here, before
+         * the loop parks - see sse_out */
+        if (rc >= 0) rc = sse_flush(&so);
         if (rc < 0) break;                        /* client gone (EPIPE) */
 
         /* block until a producer notifies or the stats/keepalive tick is
