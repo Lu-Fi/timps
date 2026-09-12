@@ -381,7 +381,9 @@ static int send_pes(ts_mux *m, int pid, uint8_t *cc, int stream_id,
             int payload_now = (hn + bn);
             if (payload_now < payload_room) {
                 int stuff = payload_room - payload_now;
-                memmove(p + o + stuff, p + o, 0);        /* no-op; clarity */
+                /* nothing to shift: the header/payload copy below starts at
+                 * the post-stuffing `o`, so the stuffing bytes just extend
+                 * the adaptation field in place. */
                 for (int k = 0; k < stuff; k++) p[o + k] = 0xFF;
                 o += stuff;
             }
