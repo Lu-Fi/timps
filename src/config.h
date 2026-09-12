@@ -695,6 +695,16 @@ typedef struct {
  * hand-written IMG_CAPS/AUD_CAPS arrays in control.c, which re-listed these
  * exact names under the exact same #ifdef conditions a second time. */
 #define F_CAP    0x08
+/* Transport-security on/off key: 0 means "plaintext / unprotected". config.c's
+ * field_set() logs a LOGW when a value on such a key parses as neither an
+ * on/off word nor an in-range number, because the clamp would otherwise turn
+ * a typo (`http.https = strict`) into a silent downgrade - the one place the
+ * documented "clamp a bad value instead of failing" rule fails OPEN (R4,
+ * review 2026-09-12). Carried by http.https and rtsp.tls only - the two keys
+ * whose 0 is "no TLS". NOT audio.talk_ws: its 0 disables /talk outright,
+ * which is the safe direction. This is not a general "warn on clamp" flag
+ * and must not become one. */
+#define F_SECVAL 0x10
 
 /* Accessors handing control.c's generic /control POST walker the section
  * field tables it needs (config.c keeps the tables themselves static - these

@@ -80,6 +80,9 @@ static void copystr(char *dst, const char *src, size_t n)
 }
 
 static int  pbool(const char *v){ return (!strcasecmp(v,"1")||!strcasecmp(v,"true")||!strcasecmp(v,"on")||!strcasecmp(v,"yes")); }
+/* the spellings pbool() deliberately reads as "off" - anything else that
+ * lands on 0 got there by falling through, not by being understood */
+static int  poff(const char *v){ return (!strcasecmp(v,"0")||!strcasecmp(v,"false")||!strcasecmp(v,"off")||!strcasecmp(v,"no")); }
 static int  pint(const char *v){ return (int)strtol(v, NULL, 0); }
 /* M11: pint with a documented sane range. Values a broken client/script
  * persists via /control used to reach the HAL unchecked - a nonsense fps/
@@ -93,6 +96,20 @@ static int  pint_cl(const char *v, int lo, int hi)
     if (x < lo) x = lo;
     if (x > hi) x = hi;
     return x;
+}
+/* strict integer parse: the WHOLE value has to be a number. strtol() stops at
+ * the first junk character and reports 0 for a value that never was one, so
+ * it cannot tell "0" from "strict" - which is the entire point of R4 below. */
+static int pint_exact(const char *v, int *out)
+{
+    char *end = NULL;
+    if (!*v) return 0;
+    long x = strtol(v, &end, 0);
+    if (end == v) return 0;
+    while (*end==' '||*end=='\t') end++;
+    if (*end) return 0;
+    *out = (int)x;
+    return 1;
 }
 /* rotation parser: accepts degrees (0/90/270, plus 180 on T40/T41) and the
  * legacy T31 rotTo90 enum (0/1/2 -> 0/90/270), then whitelists against this
@@ -818,7 +835,7 @@ static const cfg_field rtsp_fields[] = {   /* fields live directly in ms_config 
     F ("mtu",      0,             rtsp_mtu,      T_INT,  0, 548,1472),
     FS("user",     "username",    rtsp_user,     0),
     FS("pass",     "password",    rtsp_pass,     0),
-    F ("tls",      "tls_enabled", rtsp_tls,      T_BOOL, 0, 0,0),
+    F ("tls",      "tls_enabled", rtsp_tls,      T_BOOL, F_SECVAL, 0,0),
     F ("tls_port", 0,             rtsp_tls_port, T_INT,  0, 1,65535),
 };
 static const cfg_field http_fields[] = {
@@ -839,7 +856,7 @@ static const cfg_field http_fields[] = {
      * T_TRISTATE keeps the old true/on/yes spellings parsing as 1; note that
      * here - unlike audio.talk_ws - 1 is no longer the STRICTER of the two
      * on-values, so an operator who wants the old behaviour must say 2. */
-    F ("https",       "tls",      http_https,       T_TRISTATE, 0, 0,2),
+    F ("https",       "tls",      http_https,       T_TRISTATE, F_SECVAL, 0,2),
     FS("tls_cert",    "cert",     http_tls_cert,    0),
     FS("tls_key",     "key",      http_tls_key,     0),
 };
@@ -1212,6 +1229,35 @@ static void key_canonical(const char *key, char *out, size_t cap)
     snprintf(out, cap, "%s", key);
 }
 
+/* R4 (review 2026-09-12): the clamp design is right for numeric keys - a
+ * nonsense fps must not brick the stream (M11) - but on a TRANSPORT-SECURITY
+ * key it fails OPEN and silently: pbool()/pint_cl() turn `http.https =
+ * strict` (or `ture`, or `enabled`) into 0, which is plaintext, and the only
+ * trace is a boot line saying the port is listening. Fields marked F_SECVAL
+ * therefore say so out loud. The parse itself is unchanged - this is a
+ * warning, not a new failure mode - and it stays scoped to the handful of
+ * keys where 0 means "less protected"; wiring it into every clamped field
+ * would just be noise. */
+static void secval_warn(const cfg_field *f, const char *val, int eff)
+{
+    int n;
+    const char *pfx = "";
+    if (!(f->flags & F_SECVAL)) return;
+    if (pbool(val) || poff(val)) return;            /* understood as on/off */
+    if (pint_exact(val,&n) && n>=f->lo && n<=f->hi) return;  /* real number */
+    /* name the key the way the config file spells it - a bare "tls" does not
+     * say which section's line to go and fix */
+    for (size_t i=0;i<sizeof g_sections/sizeof g_sections[0];i++)
+        if (f >= g_sections[i].fields &&
+            f <  g_sections[i].fields + g_sections[i].nfields){
+            pfx = g_sections[i].prefix; break;
+        }
+    LOGW(MOD,"%s%s = '%s' is not a valid value and was read as %d - that is "
+             "PLAINTEXT, no TLS. Valid: %s",
+         pfx, f->name, val, eff,
+         (f->type==T_TRISTATE) ? "0, 1 or 2" : "0 or 1 (false/true)");
+}
+
 static void field_set(void *base, const cfg_field *f, const char *val)
 {
     void *p = (char*)base + f->off;
@@ -1225,7 +1271,7 @@ static void field_set(void *base, const cfg_field *f, const char *val)
         return;
     }
     switch (f->type){
-    case T_BOOL:   *(int*)p = pbool(val); break;
+    case T_BOOL:   *(int*)p = pbool(val); secval_warn(f,val,*(int*)p); break;
     case T_INT:    *(int*)p = (f->lo < f->hi) ? pint_cl(val,f->lo,f->hi)
                                               : pint(val); break;
     case T_CHAN: { int v = pint(val);
@@ -1270,6 +1316,7 @@ static void field_set(void *base, const cfg_field *f, const char *val)
          * The boolean spellings still parse, and still mean the ORIGINAL
          * (stricter) on-value 1 - never the newer, more permissive 2. */
         *(int*)p = pbool(val) ? 1 : pint_cl(val,0,2);
+        secval_warn(f,val,*(int*)p);
         break;
     }
 }
