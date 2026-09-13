@@ -1786,10 +1786,28 @@ static void *conn_thread(void *arg)
                 if (!strcmp(method,"OPTIONS")) {
                     /* CORS preflight: answered before any auth - a preflight
                      * carries no credentials by design. 204, no body. */
+                    /* Private Network Access: browsers enforcing the header
+                     * form of PNA add Access-Control-Request-Private-Network
+                     * when a fetch crosses into a more-private address space,
+                     * and refuse the real request unless the preflight
+                     * consents. Consenting is free here: what PNA protects is
+                     * an UNAUTHENTICATED LAN device being driven by a remote
+                     * page through the user's browser, and every endpoint
+                     * behind this preflight still needs the token/Basic/Digest
+                     * (or localhost) gate on the actual request - so this
+                     * grants a browser no reach a curl on the same network
+                     * does not already have. Echoed only when asked for, never
+                     * volunteered: an unprompted opt-in header is noise on
+                     * every other preflight and says nothing true about them. */
+                    const char *pna = "";
+                    char pnaq[16];
+                    if (http_header(buf, "Access-Control-Request-Private-Network:",
+                                    pnaq, sizeof pnaq) && !strcasecmp(pnaq,"true"))
+                        pna = "Access-Control-Allow-Private-Network: true\r\n";
                     char r[768];
                     int rn = snprintf(r, sizeof r,
-                        "HTTP/1.1 204 No Content\r\n%s"
-                        "Content-Length: 0\r\nConnection: close\r\n\r\n", cors);
+                        "HTTP/1.1 204 No Content\r\n%s%s"
+                        "Content-Length: 0\r\nConnection: close\r\n\r\n", cors, pna);
                     csend(c, r, rn);
                     goto done;
                 }
