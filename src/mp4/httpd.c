@@ -1123,7 +1123,14 @@ static int http_cors(const char *buf, char *out, int cap)
         "Access-Control-Allow-Origin: %s\r\n"
         "Vary: Origin\r\n"
         "Access-Control-Allow-Headers: X-Timps-Token, Content-Type\r\n"
-        "Access-Control-Allow-Methods: GET, POST, OPTIONS\r\n"
+        "Access-Control-Allow-Methods: GET, POST, OPTIONS"
+#ifdef USE_WEBRTC
+        /* WHEP session teardown is a cross-origin DELETE; without it here the
+         * browser's preflight fails and a closing tab silently leaves the
+         * session to time out. #ifdef'd so a USE_WEBRTC=0 build is unchanged. */
+        ", DELETE"
+#endif
+        "\r\n"
         "Access-Control-Max-Age: 600\r\n", origin);
     return 1;
 }
@@ -2152,8 +2159,29 @@ static void *conn_thread(void *arg)
                     http_send_ex(c,"404 Not Found","text/plain",cors,"disabled",8);
                 else if (!c->local && !tok_ok && !user[0])
                     http_send_ex(c,"403 Forbidden","text/plain",cors,"local only",10);
+                else if (!strcmp(method,"DELETE")) {
+                    /* WHEP teardown: the id is the tail of the Location the
+                     * 201 handed out. A bare /webrtc/whep DELETE addresses no
+                     * session, and a query string is not part of the id. */
+                    char sid[64] = "";
+                    if (path[12] == '/') {
+                        int i = 0;
+                        const char *q = path + 13;
+                        while (q[i] && q[i] != '?' && q[i] != '/' &&
+                               i < (int)sizeof(sid)-1) { sid[i] = q[i]; i++; }
+                        sid[i] = 0;
+                    }
+                    if (webrtc_delete(sid) == 200)
+                        http_send_ex(c,"200 OK","text/plain",cors,"closed",6);
+                    else
+                        http_send_ex(c,"404 Not Found","text/plain",cors,
+                                     "no such session",15);
+                }
                 else if (strcmp(method,"POST"))
-                    http_send_ex(c,"405 Method Not Allowed","text/plain",cors,"POST only",9);
+                    http_send_ex(c,"405 Method Not Allowed","text/plain",cors,"POST or DELETE",14);
+                else if (path[12] && path[12] != '?')
+                    /* POST addresses the endpoint itself, never a session id */
+                    http_send_ex(c,"404 Not Found","text/plain",cors,"not found",9);
                 else {
                     const char *st = "400 Bad Request";
                     char *offer = read_body_heap(c, buf, n, &st);
@@ -2166,12 +2194,13 @@ static void *conn_thread(void *arg)
                         struct sockaddr_in loc; socklen_t ll = sizeof loc;
                         if (getsockname(c->fd,(struct sockaddr*)&loc,&ll)==0)
                             inet_ntop(AF_INET,&loc.sin_addr,ip,sizeof ip);
-                        /* the answer now carries an fmtp with
-                         * sprop-parameter-sets, so it is no longer a few
-                         * hundred bytes */
-                        char *ansbuf = (char*)malloc(4096);
+                        /* The answer carries an fmtp with sprop-parameter-sets
+                         * and now repeats the ICE/DTLS block per bundled
+                         * m-section, so it is a few KB, not a few hundred
+                         * bytes. webrtc_whep() 500s rather than truncate. */
+                        char *ansbuf = (char*)malloc(8192);
                         char sid[33] = "";
-                        int rc = ansbuf ? webrtc_whep(offer, ip, ansbuf, 4096,
+                        int rc = ansbuf ? webrtc_whep(offer, ip, ansbuf, 8192,
                                                       sid, sizeof sid) : 503;
                         if (rc == 201) {
                             char extra[768];

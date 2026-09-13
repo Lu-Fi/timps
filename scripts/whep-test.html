@@ -1,6 +1,8 @@
 <!doctype html>
-<!-- Standalone check that POST /webrtc/whep really plays video in a real
-     browser (USE_WEBRTC builds, webrtc.enabled=1): ICE + DTLS + SRTP + H264.
+<!-- Standalone check that POST /webrtc/whep really plays in a real browser
+     (USE_WEBRTC builds, webrtc.enabled=1): ICE + DTLS + SRTP + H264, plus
+     G.711 audio when the daemon's audio.codec is pcmu/pcma, plus the
+     DELETE /webrtc/whep/<id> teardown a closing tab must send.
 
      Serve it over http (NOT file://, whose "null" Origin the daemon's CORS
      reflection cannot answer), e.g.
@@ -9,6 +11,7 @@
        http://127.0.0.1:8099/whep-test.html?cam=<ip>:8880&token=<token>
      with the token from /run/timps.token on the camera. The query form is
      the only credential a cross-origin fetch can present here.
+     &audio=0 offers video only; the default offers both.
 
      Chrome is the target: videoN.profile defaults to High, which Firefox
      cannot decode. -->
@@ -22,33 +25,70 @@
  .ok{color:#7d7}.bad{color:#f77}
  video{background:#000;max-width:640px;width:100%;display:block;margin:8px 0}
  pre{background:#1a1a1a;padding:8px;white-space:pre-wrap;max-height:30vh;overflow:auto}
+ button{font:inherit;background:#333;color:#ddd;border:1px solid #555;padding:4px 10px}
 </style>
-<h1>timps /webrtc/whep - ICE-lite + DTLS-SRTP + H264</h1>
+<h1>timps /webrtc/whep - ICE-lite + DTLS-SRTP + H264 (+ G.711)</h1>
+<!-- muted so autoplay is allowed without a user gesture; unmute with the
+     controls to actually hear the G.711 track (the stats below count its
+     packets either way). -->
 <video id="v" autoplay muted playsinline controls></video>
+<p><button id="stop">DELETE session (same call the tab close makes)</button></p>
 <div id="st">
   <div>signalling: <b id="sig">-</b></div>
+  <div>session: <b id="loc">-</b></div>
   <div>iceConnectionState: <b id="ice">-</b></div>
   <div>connectionState: <b id="pcs">-</b></div>
   <div>transport.dtlsState: <b id="dtls">-</b></div>
   <div>selected pair: <b id="pair">-</b></div>
-  <div>inbound-rtp: <b id="rtp">-</b></div>
+  <div>inbound-rtp video: <b id="rtp">-</b></div>
   <div>decode: <b id="dec">-</b></div>
+  <div>inbound-rtp audio: <b id="aud">-</b></div>
+  <div>teardown: <b id="del">-</b></div>
 </div>
 <h3>answer SDP</h3><pre id="ans"></pre>
 <h3>log</h3><pre id="log"></pre>
 <script>
-const CAM = new URLSearchParams(location.search).get('cam');
-const TOK = new URLSearchParams(location.search).get('token');
-const url = `http://${CAM}/webrtc/whep?token=${encodeURIComponent(TOK)}`;
+const Q = new URLSearchParams(location.search);
+const CAM = Q.get('cam');
+const TOK = Q.get('token');
+const WANT_AUDIO = Q.get('audio') !== '0';
+const base = `http://${CAM}/webrtc/whep`;
+const url = `${base}?token=${encodeURIComponent(TOK)}`;
 const $ = id => document.getElementById(id);
 const log = m => { $('log').textContent += m + "\n"; console.log(m); };
 window.stats = {};
+let resource = null;          // Location of the created session
+
+/* WHEP teardown. keepalive lets it survive the page going away, which is the
+ * whole point: without it a closing tab leaves the camera holding one of its
+ * four session slots until the 30 s idle timeout. sendBeacon cannot be used -
+ * it only does POST. */
+function teardown(why) {
+  if (!resource) return;
+  const u = resource + (resource.includes('?') ? '&' : '?') +
+            'token=' + encodeURIComponent(TOK);
+  resource = null;
+  log('DELETE ' + u + ' (' + why + ')');
+  try {
+    fetch(u, { method: 'DELETE', keepalive: true })
+      .then(r => { $('del').textContent = 'HTTP ' + r.status;
+                   $('del').className = r.status === 200 ? 'ok' : 'bad';
+                   log('DELETE -> ' + r.status); })
+      .catch(e => log('DELETE failed: ' + e));
+  } catch (e) { log('DELETE threw: ' + e); }
+}
+addEventListener('pagehide', () => teardown('pagehide'));
+addEventListener('beforeunload', () => teardown('beforeunload'));
+$('stop').onclick = () => { teardown('button'); window.pc && window.pc.close(); };
 
 (async () => {
   const pc = new RTCPeerConnection({ iceServers: [] });
   window.pc = pc;
   pc.addTransceiver('video', { direction: 'recvonly' });
-  pc.ontrack = e => { $('v').srcObject = e.streams[0] || new MediaStream([e.track]);
+  if (WANT_AUDIO) pc.addTransceiver('audio', { direction: 'recvonly' });
+  pc.ontrack = e => { const el = $('v');
+                      if (!el.srcObject) el.srcObject = new MediaStream();
+                      el.srcObject.addTrack(e.track);
                       log('ontrack ' + e.track.kind); };
   pc.oniceconnectionstatechange = () => {
     $('ice').textContent = pc.iceConnectionState;
@@ -64,7 +104,7 @@ window.stats = {};
 
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
-  log('POST ' + url + ' (' + offer.sdp.length + ' bytes of offer)');
+  log('POST ' + url + ' (' + offer.sdp.length + ' bytes of offer, audio=' + WANT_AUDIO + ')');
   let res;
   try {
     res = await fetch(url, { method: 'POST',
@@ -73,8 +113,13 @@ window.stats = {};
   const body = await res.text();
   $('sig').textContent = res.status + ' ' + res.statusText;
   $('sig').className = res.status === 201 ? 'ok' : 'bad';
-  log('HTTP ' + res.status + '  Location=' + res.headers.get('Location'));
+  const loc = res.headers.get('Location');
+  log('HTTP ' + res.status + '  Location=' + loc);
   if (res.status !== 201) { $('ans').textContent = body; return; }
+  /* Location is relative ("/webrtc/whep/<id>") - resolve it against the
+   * camera, not against the page serving this file. */
+  resource = new URL(loc, `http://${CAM}/`).href;
+  $('loc').textContent = resource;
   $('ans').textContent = body;
   await pc.setRemoteDescription({ type: 'answer', sdp: body });
   log('remote description set');
@@ -99,6 +144,13 @@ window.stats = {};
           ' ' + (r.frameWidth || '?') + 'x' + (r.frameHeight || '?') +
           ' fps=' + (r.framesPerSecond || 0);
         $('dec').className = r.framesDecoded > 0 ? 'ok' : '';
+      }
+      if (r.type === 'inbound-rtp' && r.kind === 'audio') {
+        window.stats.audio = r;
+        $('aud').textContent = 'pkts=' + r.packetsReceived + ' lost=' + r.packetsLost +
+          ' bytes=' + r.bytesReceived + ' samples=' + (r.totalSamplesReceived || 0) +
+          ' concealed=' + (r.concealedSamples || 0);
+        $('aud').className = r.packetsReceived > 0 ? 'ok' : '';
       }
       if (r.type === 'codec' && r.mimeType) window.stats.codec = r;
     });

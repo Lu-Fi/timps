@@ -46,8 +46,9 @@ USE_BC_WS     ?= 0          # 1 = browser-microphone backchannel over a WebSocke
                             #     without it only audio.talk_ws=2 (plain ws://) is usable.
 USE_WEBRTC    ?= 0          # 1 = optional WHEP endpoint at /webrtc/whep: ICE-lite responder
                             #     + DTLS (mbedTLS, needs MBEDTLS_SSL_DTLS_SRTP - buildroot
-                            #     BR2_PACKAGE_MBEDTLS_DTLS_SRTP) + SRTP, sending H264 VIDEO
-                            #     ONLY (no audio, no NACK/FEC, no congestion control).
+                            #     BR2_PACKAGE_MBEDTLS_DTLS_SRTP) + SRTP, sending H264 video
+                            #     plus - only when audio.codec is pcmu/pcma - G.711 audio
+                            #     (no Opus, no AAC, no NACK/FEC, no congestion control).
                             #     Implies USE_TLS (the DTLS/crypto machinery) and USE_CONTROL
                             #     (the route reuses the ?token= auth path).
                             #     Gated at runtime by webrtc.enabled in timps.conf (default 0).
