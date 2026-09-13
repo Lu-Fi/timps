@@ -2166,9 +2166,12 @@ static void *conn_thread(void *arg)
                         struct sockaddr_in loc; socklen_t ll = sizeof loc;
                         if (getsockname(c->fd,(struct sockaddr*)&loc,&ll)==0)
                             inet_ntop(AF_INET,&loc.sin_addr,ip,sizeof ip);
-                        char *ansbuf = (char*)malloc(2048);
+                        /* the answer now carries an fmtp with
+                         * sprop-parameter-sets, so it is no longer a few
+                         * hundred bytes */
+                        char *ansbuf = (char*)malloc(4096);
                         char sid[33] = "";
-                        int rc = ansbuf ? webrtc_whep(offer, ip, ansbuf, 2048,
+                        int rc = ansbuf ? webrtc_whep(offer, ip, ansbuf, 4096,
                                                       sid, sizeof sid) : 503;
                         if (rc == 201) {
                             char extra[768];

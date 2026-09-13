@@ -1,15 +1,22 @@
-/* webrtc.c - WHEP signalling + the ICE-lite/DTLS session (see webrtc.h). */
+/* webrtc.c - WHEP signalling + the ICE-lite/DTLS/SRTP session (see webrtc.h). */
 #ifdef USE_WEBRTC
 #include "webrtc.h"
 #include "stun.h"
 #include "dtls.h"
+#include "srtp.h"
 #include "../log.h"
 #include "../util.h"
 #include "../auth.h"
+#include "../hub.h"
+#include "../frame.h"
+#include "../fanqueue.h"
+#include "../codec/vparam.h"
+#include "../rtsp/rtp.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <unistd.h>
@@ -22,8 +29,8 @@
 
 #define MOD "WEBRTC"
 
-/* One browser tab is one session, and nothing here streams yet, so the cap is
- * about bounding threads/sockets, not about serving an audience. */
+/* One browser tab is one session; the cap bounds threads, sockets and - now
+ * that media flows - hub subscriptions. */
 #ifndef WEBRTC_MAX_SESSIONS
 #define WEBRTC_MAX_SESSIONS 4
 #endif
@@ -33,6 +40,14 @@
 /* A connected browser sends STUN consent checks every few seconds
  * (RFC 7675), so silence this long means the tab is gone. */
 #define WEBRTC_IDLE_US  (30LL * 1000000)
+/* The conventional WebRTC packet size, well under any path MTU once the
+ * 10-byte SRTP tag, UDP and IP are added - and far enough below RTP_MTU_MAX
+ * that the tag can never push a packet past what the sink buffer holds. */
+#define WEBRTC_MTU      1200
+#define WEBRTC_QCAP     16
+/* How long the media loop parks on the fanqueue before looping round to the
+ * socket again: the upper bound on reacting to a PLI or a consent check. */
+#define WEBRTC_POP_MS   20
 
 typedef struct {
     volatile int       used;
@@ -47,12 +62,22 @@ typedef struct {
     int                have_peer;
     ms_dtls           *dtls;
     pthread_t          thr;
+    /* media */
+    int                chn;               /* hub video source */
+    int                pt;                /* negotiated H264 payload type */
+    uint32_t           ssrc;              /* promised in the answer's a=ssrc */
+    srtp_session       srtp;
+    rtp_track          vtrack;
+    fanqueue           q;
+    int                qinit, subbed;
+    int64_t            last_idr_us;
 } wrtc_session;
 
 static wrtc_session   g_sess[WEBRTC_MAX_SESSIONS];
 static pthread_mutex_t g_mx = PTHREAD_MUTEX_INITIALIZER;
 static ms_dtls_ctx    *g_dtls_ctx;
 static int             g_port_cfg;
+static int             g_chn_cfg;
 
 int webrtc_available(void) { return g_dtls_ctx != NULL; }
 
@@ -104,6 +129,88 @@ static int sdp_count(const char *sdp, const char *pre)
     return c;
 }
 
+/* value of `key=` inside the a=fmtp line of `pt`, or "" */
+static void fmtp_param(const char *sdp, const char *pt, const char *key,
+                       char *out, int cap)
+{
+    char want[32], line[512];
+    out[0] = 0;
+    snprintf(want, sizeof want, "a=fmtp:%s ", pt);
+    const char *f = sdp_line(sdp, want);
+    if (!f || sdp_rest(f, line, sizeof line) <= 0) return;
+    size_t kl = strlen(key);
+    for (const char *p = line; p; ) {
+        if (!strncmp(p, key, kl) && p[kl] == '=') {
+            int i = 0;
+            p += kl + 1;
+            while (p[i] && p[i] != ';' && i < cap - 1) { out[i] = p[i]; i++; }
+            out[i] = 0;
+            return;
+        }
+        p = strchr(p, ';');
+        if (p) p++;
+    }
+}
+
+/* Pick the offered payload type to actually send H264 on.
+ *
+ * Milestone 1 echoed the offer's FIRST payload type, which on Chrome is VP8 -
+ * harmless while nothing was sent, fatal now. A browser offers H264 several
+ * times over, once per profile-level-id/packetization-mode combination, and
+ * only the entry whose profile matches what the encoder is really producing
+ * will decode. So: require packetization-mode=1 (FU-A, the only thing
+ * rtp_send_h264() emits), then prefer an exact profile-level-id match against
+ * the live SPS, then a matching profile_idc, then anything.
+ * Returns the payload type, or -1 when the offer carries no usable H264. */
+static int pick_h264_pt(const char *offer, const vparam *vp, char *pt_out,
+                        int pt_cap)
+{
+    const char *m = sdp_line(offer, "m=video ");
+    if (!m) return -1;
+    while (*m && *m != ' ') m++;              /* past the port */
+    while (*m == ' ') m++;
+    while (*m && *m != ' ') m++;              /* past the proto */
+
+    char ours[8];
+    snprintf(ours, sizeof ours, "%02X%02X%02X", vp->sps[1], vp->sps[2],
+             vp->sps[3]);
+    int best = -1, best_score = 0;
+    char pt[8];
+    while (*m) {
+        while (*m == ' ') m++;
+        if (!*m || *m == '\r' || *m == '\n') break;
+        m += sdp_tok(m, pt, sizeof pt);
+        char want[32], rm[64];
+        snprintf(want, sizeof want, "a=rtpmap:%s ", pt);
+        const char *r = sdp_line(offer, want);
+        if (!r || sdp_rest(r, rm, sizeof rm) <= 0) continue;
+        if (strncasecmp(rm, "H264/90000", 10)) continue;
+        char mode[8], plid[16];
+        fmtp_param(offer, pt, "packetization-mode", mode, sizeof mode);
+        if (atoi(mode) != 1) continue;
+        fmtp_param(offer, pt, "profile-level-id", plid, sizeof plid);
+        int score = 1;
+        if (strlen(plid) == 6) {
+            if (!strncasecmp(plid, ours, 4)) score = 3;      /* profile+iop */
+            else if (!strncasecmp(plid, ours, 2)) score = 2; /* profile_idc */
+        }
+        if (score > best_score) {
+            best_score = score;
+            best = atoi(pt);
+            snprintf(pt_out, (size_t)pt_cap, "%s", pt);
+        }
+        if (best_score == 3) break;
+    }
+    /* Normal with Chrome, which offers no High-profile H264 at all: it still
+     * plays, because a receiver initialises its decoder from the in-band SPS
+     * rather than from the SDP. Firefox, which really is baseline-only, will
+     * not - hence the line. */
+    if (best >= 0 && best_score < 2)
+        LOGI(MOD, "no offered H264 matches profile %s - answering pt %s with "
+                  "ours", ours, pt_out);
+    return best;
+}
+
 /* ---------------- session ---------------- */
 
 static int same_addr(const struct sockaddr_in *a, const struct sockaddr_in *b)
@@ -113,11 +220,92 @@ static int same_addr(const struct sockaddr_in *a, const struct sockaddr_in *b)
 
 static void sess_release(wrtc_session *s)
 {
+    if (s->subbed) { hub_unsubscribe(s->chn, &s->q); s->subbed = 0; }
+    if (s->qinit)  { fanqueue_free(&s->q); s->qinit = 0; }
     if (s->dtls) { ms_dtls_free(s->dtls); s->dtls = NULL; }
     if (s->fd >= 0) { close(s->fd); s->fd = -1; }
     s->have_peer = 0;
+    memset(&s->srtp, 0, sizeof s->srtp);
     __sync_synchronize();
     s->used = 0;
+}
+
+/* rtp_out_fn. The hdr/pay split that lets rtsp.c hand the kernel a
+ * scatter/gather write is of no use here: SRTP authenticates and encrypts one
+ * contiguous buffer, so both halves are copied into this stack packet first.
+ * That copy is the deliberate cost of the encrypted transport, and it is why
+ * this sink does no rtp_batch staging either - there is nothing left to keep
+ * zero-copy. */
+static int wrtc_rtp_out(void *ctx, const uint8_t *hdr, int hlen,
+                        const uint8_t *pay, int plen, int rtcp)
+{
+    wrtc_session *s = (wrtc_session *)ctx;
+    uint8_t buf[RTP_MTU_MAX + SRTP_MAX_OVERHEAD];
+    if (hlen < 0 || plen < 0 ||
+        hlen + plen > (int)sizeof buf - SRTP_MAX_OVERHEAD) return -1;
+    memcpy(buf, hdr, (size_t)hlen);
+    if (plen) memcpy(buf + hlen, pay, (size_t)plen);
+    int n = rtcp ? srtp_protect_rtcp(&s->srtp, buf, hlen + plen, (int)sizeof buf)
+                 : srtp_protect_rtp (&s->srtp, buf, hlen + plen, (int)sizeof buf);
+    if (n < 0) return -1;
+    ssize_t r;
+    do {
+        r = sendto(s->fd, buf, (size_t)n, 0,
+                   (struct sockaddr *)&s->peer, sizeof s->peer);
+    } while (r < 0 && errno == EINTR);
+    /* A UDP send error (ENOBUFS, a transient EHOSTUNREACH) abandons the rest
+     * of this access unit but never the session - a WebRTC peer that is really
+     * gone is caught by the consent-check idle timeout instead. */
+    return r < 0 ? -1 : 0;
+}
+
+static void handle_rtcp(wrtc_session *s, const uint8_t *p, int len)
+{
+    int off = 0;
+    while (off + 4 <= len) {
+        int l = ((((int)p[off + 2] << 8) | p[off + 3]) + 1) * 4;
+        if (l < 4 || off + l > len) break;
+        int pt = p[off + 1], fmt = p[off] & 0x1F;
+        /* PSFB (RFC 4585): FMT 1 = PLI, FMT 4 = FIR (RFC 5104 4.3.1). Both
+         * mean "I need a fresh keyframe". Rate-limited like rtsp.c's
+         * overflow-heal path: the IDR request hits the shared encoder, so one
+         * unhappy browser must not spike the bitrate for every subscriber. */
+        if (pt == 206 && (fmt == 1 || fmt == 4)) {
+            int64_t now = ms_now_us();
+            if (now - s->last_idr_us > 1000000) {
+                s->last_idr_us = now;
+                LOGD(MOD, "%s: %s - requesting IDR", s->id,
+                     fmt == 1 ? "PLI" : "FIR");
+                hub_request_idr(s->chn);
+            }
+        }
+        off += l;
+    }
+}
+
+static int sess_start_media(wrtc_session *s)
+{
+    uint8_t km[SRTP_KEYING_LEN];
+    if (ms_dtls_export_srtp(s->dtls, km, sizeof km) != 0) return -1;
+    /* We answered a=setup:passive, so we are the DTLS server and protect with
+     * the server half of the exported keying material. */
+    int r = srtp_init(&s->srtp, km, sizeof km, 1);
+    memset(km, 0, sizeof km);
+    if (r != 0) return -1;
+
+    rtp_track_init(&s->vtrack, s->pt, 90000, WEBRTC_MTU, "timps",
+                   wrtc_rtp_out, s);
+    s->vtrack.ssrc = s->ssrc;      /* the a=ssrc the answer already promised */
+
+    if (fanqueue_init(&s->q, WEBRTC_QCAP) != 0) return -1;
+    s->qinit = 1;
+    if (hub_subscribe(s->chn, &s->q) != 0) return -1;
+    s->subbed = 1;
+    /* Same reason RTSP's PLAY does it: without a keyframe now the tab stays
+     * black until the next scheduled IDR. */
+    hub_request_idr(s->chn);
+    s->last_idr_us = ms_now_us();
+    return 0;
 }
 
 static void *sess_thread(void *arg)
@@ -125,11 +313,13 @@ static void *sess_thread(void *arg)
     wrtc_session *s = (wrtc_session *)arg;
     uint8_t buf[2048];
     int64_t born = ms_now_us(), last_rx = born;
-    int connected = 0;
+    int connected = 0, got_key = 0;
 
     while (s->run) {
         struct pollfd p = { .fd = s->fd, .events = POLLIN, .revents = 0 };
-        int pr = poll(&p, 1, (s->dtls && !connected) ? 20 : 250);
+        /* Once media flows the blocking wait moves to the fanqueue below, so
+         * the socket is only drained, not waited on. */
+        int pr = poll(&p, 1, connected ? 0 : ((s->dtls) ? 20 : 250));
         if (pr < 0) { if (errno == EINTR) continue; break; }
         if (pr > 0 && (p.revents & POLLIN)) {
             struct sockaddr_in from;
@@ -138,8 +328,7 @@ static void *sess_thread(void *arg)
                                   (struct sockaddr *)&from, &fl);
             if (n > 0) {
                 /* RFC 7983 demux on the first byte: 0-3 STUN, 20-63 DTLS,
-                 * 128-191 RTP/RTCP (SRTP is a later milestone - those are
-                 * dropped here rather than silently misrouted). */
+                 * 128-191 RTP/RTCP. */
                 if (buf[0] <= 3) {
                     stun_req rq;
                     if (stun_parse_request(buf, n, s->lpwd, &rq) &&
@@ -175,20 +364,62 @@ static void *sess_thread(void *arg)
                         if (s->dtls && !connected)
                             ms_dtls_feed(s->dtls, buf, n);
                     }
+                } else if (buf[0] >= 128 && buf[0] <= 191) {
+                    /* rtcp-mux (RFC 5761 4): the second byte separates RTCP
+                     * packet types from RTP payload types. A recvonly browser
+                     * sends only RTCP, so anything else is dropped. */
+                    if (connected && n >= 2 && buf[1] >= 192 && buf[1] <= 223 &&
+                        s->have_peer && same_addr(&from, &s->peer)) {
+                        int pl = srtp_unprotect_rtcp(&s->srtp, buf, n);
+                        if (pl > 0) {
+                            last_rx = ms_now_us();
+                            handle_rtcp(s, buf, pl);
+                        }
+                    }
                 }
             }
         }
         if (s->dtls && !connected) {
             int r = ms_dtls_handshake(s->dtls);
             if (r == 0) {
+                if (sess_start_media(s) != 0) {
+                    LOGW(MOD, "%s: DTLS up but media setup failed", s->id);
+                    break;
+                }
                 connected = 1;
-                LOGI(MOD, "%s: DTLS connected (transport up; no media in this "
-                          "build)", s->id);
+                LOGI(MOD, "%s: DTLS+SRTP up, streaming video%d pt=%d ssrc=%u",
+                     s->id, s->chn, s->pt, s->ssrc);
             } else if (r < 0) {
                 break;
             }
         }
         int64_t now = ms_now_us();
+        if (connected) {
+            fq_status qs;
+            ms_pkt *pk = fanqueue_pop_ex(&s->q, WEBRTC_POP_MS, &qs);
+            if (qs.closed) { pkt_unref(pk); break; }
+            now = ms_now_us();
+            if ((qs.dropped_key || qs.dropped_any) &&
+                now - s->last_idr_us > 1000000) {
+                hub_note_drop(s->chn);
+                s->last_idr_us = now;
+                hub_request_idr(s->chn);
+            }
+            if (pk) {
+                if (pk->media == MS_MEDIA_VIDEO) {
+                    if (!got_key && pk->keyframe) got_key = 1;
+                    if (got_key &&
+                        rtp_send_h264(&s->vtrack, pk->data, pk->len,
+                                      pk->pts_us) >= 0)
+                        rtp_sr_anchor(&s->vtrack,
+                                      pk->enq_us > 0 ? pk->enq_us : now);
+                }
+                /* Nothing defers a send here (no batching), so the packet
+                 * reference can go back as soon as rtp_send_h264 returns. */
+                pkt_unref(pk);
+            }
+            rtp_maybe_sr(&s->vtrack, now);
+        }
         if (!connected && now - born > WEBRTC_SETUP_US) {
             LOGW(MOD, "%s: no ICE/DTLS completion within %llds - closing",
                  s->id, (long long)(WEBRTC_SETUP_US / 1000000));
@@ -199,6 +430,7 @@ static void *sess_thread(void *arg)
             break;
         }
     }
+    if (s->subbed) rtp_send_bye(&s->vtrack, ms_now_us());
     sess_release(s);
     return NULL;
 }
@@ -226,12 +458,12 @@ int webrtc_whep(const char *offer, const char *local_ip,
     if (!g_dtls_ctx) return 404;
     if (!offer || strncmp(offer, "v=0", 3)) return 400;
 
-    /* One bundled video m-section is all this milestone answers. Answering
-     * fewer m-lines than the offer carries is not legal SDP, so say no
-     * instead of emitting something the browser will reject obscurely. */
+    /* One bundled video m-section is all this answers. Answering fewer
+     * m-lines than the offer carries is not legal SDP, so say no instead of
+     * emitting something the browser will reject obscurely. */
     if (sdp_count(offer, "m=") != 1 || !sdp_line(offer, "m=video ")) return 400;
 
-    char rufrag[64] = "", mid[32] = "", proto[64] = "", pt[8] = "", rtpmap[64] = "";
+    char rufrag[64] = "", mid[32] = "", proto[64] = "";
     const char *p;
     if ((p = sdp_line(offer, "a=ice-ufrag:")) == NULL) return 400;
     sdp_tok(p, rufrag, sizeof rufrag);
@@ -239,24 +471,48 @@ int webrtc_whep(const char *offer, const char *local_ip,
     if ((p = sdp_line(offer, "a=mid:")) != NULL) sdp_tok(p, mid, sizeof mid);
     if (!mid[0]) strcpy(mid, "0");
 
-    /* m=video <port> <proto> <pt> ... - echo the proto and answer with the
-     * offer's first payload type (and its rtpmap, if any) so the answer is
-     * codec-agnostic; nothing is sent on it either way. */
     p = sdp_line(offer, "m=video ");
     while (*p && *p != ' ') p++;               /* past the port */
     while (*p == ' ') p++;
-    p += sdp_tok(p, proto, sizeof proto);
-    while (*p == ' ') p++;
-    sdp_tok(p, pt, sizeof pt);
-    if (!proto[0] || !pt[0]) return 400;
-    char rtpmap_line[96] = "";
+    sdp_tok(p, proto, sizeof proto);
+    if (!proto[0]) return 400;
+
+    int chn = g_chn_cfg;
     {
-        char want[24];
-        snprintf(want, sizeof want, "a=rtpmap:%s ", pt);
-        const char *r = sdp_line(offer, want);
-        if (r && sdp_rest(r, rtpmap, sizeof rtpmap) > 0)
-            snprintf(rtpmap_line, sizeof rtpmap_line, "a=rtpmap:%s %s\r\n",
-                     pt, rtpmap);
+        int vc = -1;
+        if (hub_get_video_params(chn, &vc, NULL, NULL, NULL) && vc != MS_VC_H264) {
+            LOGW(MOD, "video%d is not H264 - WebRTC carries H264 only", chn);
+            return 400;
+        }
+    }
+
+    /* Same warm-up RTSP's DESCRIBE does: encoding is on-demand, so on a fresh
+     * boot the SPS the answer's profile-level-id and sprop-parameter-sets come
+     * from does not exist until something subscribes. */
+    vparam vp;
+    int vready = hub_get_vparam(chn, &vp) && vparam_ready(&vp);
+    if (!vready) {
+        fanqueue wq;
+        int winit = fanqueue_init(&wq, 4) == 0;
+        int wsub = winit && hub_subscribe(chn, &wq) == 0;
+        hub_request_idr(chn);
+        for (int i = 0; i < 200 && !vready; i++) {
+            if (hub_get_vparam(chn, &vp) && vparam_ready(&vp)) { vready = 1; break; }
+            usleep(10000);
+        }
+        if (wsub)  hub_unsubscribe(chn, &wq);
+        if (winit) fanqueue_free(&wq);
+    }
+    if (!vready) {
+        LOGW(MOD, "no SPS/PPS for video%d - cannot answer", chn);
+        return 503;
+    }
+
+    char ptstr[8] = "";
+    int pt = pick_h264_pt(offer, &vp, ptstr, sizeof ptstr);
+    if (pt < 0) {
+        LOGW(MOD, "offer carries no H264 with packetization-mode=1");
+        return 400;
     }
 
     pthread_mutex_lock(&g_mx);
@@ -268,6 +524,9 @@ int webrtc_whep(const char *offer, const char *local_ip,
     s->used = 1;
     s->fd = -1;
     pthread_mutex_unlock(&g_mx);
+
+    s->chn = chn;
+    s->pt  = pt;
 
     /* ICE credentials: auth_gen_token() is the /dev/urandom-backed generator
      * the control token already uses. 8 hex chars of ufrag and 32 of pwd sit
@@ -283,6 +542,14 @@ int webrtc_whep(const char *offer, const char *local_ip,
     auth_gen_token(s->lpwd);
     memcpy(s->lufrag, lufrag, sizeof lufrag);
     snprintf(s->expect_user, sizeof s->expect_user, "%s:%s", lufrag, rufrag);
+
+    /* The SSRC has to be known here, not in rtp_track_init(): the answer
+     * announces it in a=ssrc so the browser can bind the incoming stream to
+     * this transceiver without waiting to infer it. */
+    auth_gen_token(tok);
+    tok[8] = 0;
+    s->ssrc = (uint32_t)strtoul(tok, NULL, 16);
+    if (!s->ssrc) s->ssrc = 1;
 
     s->fd = udp_bind(g_port_cfg);
     if (s->fd < 0) {
@@ -300,6 +567,9 @@ int webrtc_whep(const char *offer, const char *local_ip,
         s->port = ntohs(a.sin_port);
     }
 
+    char fmtp[768];
+    if (vparam_sdp_fmtp(&vp, pt, fmtp, sizeof fmtp) <= 0) { sess_release(s); return 500; }
+
     /* o= sess-id must be a NUMERIC string (RFC 4566 5.2) - the session's hex
      * id is fine for the Location header but not here. */
     static unsigned long long sdp_sid;
@@ -312,8 +582,8 @@ int webrtc_whep(const char *offer, const char *local_ip,
         "t=0 0\r\n"
         "a=ice-lite\r\n"
         "a=group:BUNDLE %s\r\n"
-        "a=msid-semantic: WMS\r\n"
-        "m=video %d %s %s\r\n"
+        "a=msid-semantic: WMS timps\r\n"
+        "m=video %d %s %d\r\n"
         "c=IN IP4 %s\r\n"
         "a=mid:%s\r\n"
         "a=rtcp-mux\r\n"
@@ -321,13 +591,22 @@ int webrtc_whep(const char *offer, const char *local_ip,
         "a=ice-pwd:%s\r\n"
         "a=fingerprint:sha-256 %s\r\n"
         "a=setup:passive\r\n"
-        "a=inactive\r\n"
+        "a=sendonly\r\n"
+        "a=rtpmap:%d H264/90000\r\n"
+        /* PLI and FIR only: both just ask for a keyframe, which the encoder
+         * can give. Plain "nack" would promise retransmission this does not
+         * implement, so it is deliberately not offered. */
+        "a=rtcp-fb:%d nack pli\r\n"
+        "a=rtcp-fb:%d ccm fir\r\n"
         "%s"
+        "a=msid:timps timps-video\r\n"
+        "a=ssrc:%u cname:timps\r\n"
+        "a=ssrc:%u msid:timps timps-video\r\n"
         "a=candidate:1 1 udp 2130706431 %s %d typ host\r\n"
         "a=end-of-candidates\r\n",
         sdp_sid, local_ip, mid, s->port, proto, pt, local_ip, mid,
         s->lufrag, s->lpwd, ms_dtls_fingerprint(g_dtls_ctx),
-        rtpmap_line, local_ip, s->port);
+        pt, pt, pt, fmtp, s->ssrc, s->ssrc, local_ip, s->port);
     if (n >= anscap) { sess_release(s); return 500; }
     snprintf(sid, (size_t)sidcap, "%s", s->id);
 
@@ -340,8 +619,8 @@ int webrtc_whep(const char *offer, const char *local_ip,
         return 503;
     }
     pthread_detach(s->thr);
-    LOGI(MOD, "%s: answered WHEP offer, ICE-lite candidate %s:%d",
-         s->id, local_ip, s->port);
+    LOGI(MOD, "%s: answered WHEP offer, ICE-lite candidate %s:%d, H264 pt=%d",
+         s->id, local_ip, s->port, pt);
     return 201;
 }
 
@@ -349,6 +628,7 @@ void webrtc_start(const ms_config *cfg)
 {
     if (!cfg->webrtc_enabled) return;
     g_port_cfg = cfg->webrtc_port;
+    g_chn_cfg  = cfg->webrtc_channel;
     g_dtls_ctx = ms_dtls_ctx_new(cfg->http_tls_cert, cfg->http_tls_key);
     if (!g_dtls_ctx) {
         LOGE(MOD, "webrtc.enabled=1 but no usable DTLS certificate (%s / %s) "
@@ -356,8 +636,9 @@ void webrtc_start(const ms_config *cfg)
              cfg->http_tls_cert, cfg->http_tls_key);
         return;
     }
-    LOGI(MOD, "WHEP endpoint /webrtc/whep ready (ICE-lite + DTLS, no media "
-              "yet); fingerprint %s", ms_dtls_fingerprint(g_dtls_ctx));
+    LOGI(MOD, "WHEP endpoint /webrtc/whep ready (ICE-lite + DTLS-SRTP, H264 "
+              "video%d); fingerprint %s", g_chn_cfg,
+         ms_dtls_fingerprint(g_dtls_ctx));
 }
 
 void webrtc_stop(void)

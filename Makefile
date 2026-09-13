@@ -46,10 +46,10 @@ USE_BC_WS     ?= 0          # 1 = browser-microphone backchannel over a WebSocke
                             #     without it only audio.talk_ws=2 (plain ws://) is usable.
 USE_WEBRTC    ?= 0          # 1 = optional WHEP endpoint at /webrtc/whep: ICE-lite responder
                             #     + DTLS (mbedTLS, needs MBEDTLS_SSL_DTLS_SRTP - buildroot
-                            #     BR2_PACKAGE_MBEDTLS_DTLS_SRTP). Transport only for now: the
-                            #     SDP answer marks the video m-section a=inactive, there is no
-                            #     SRTP and no RTP. Implies USE_TLS (the DTLS/crypto machinery)
-                            #     and USE_CONTROL (the route reuses the ?token= auth path).
+                            #     BR2_PACKAGE_MBEDTLS_DTLS_SRTP) + SRTP, sending H264 VIDEO
+                            #     ONLY (no audio, no NACK/FEC, no congestion control).
+                            #     Implies USE_TLS (the DTLS/crypto machinery) and USE_CONTROL
+                            #     (the route reuses the ?token= auth path).
                             #     Gated at runtime by webrtc.enabled in timps.conf (default 0).
 USE_PLAY      ?= 0          # 1 = /run/timps/audio_out play-FIFO queue (system sounds via native IMP_AO); WAV + raw PCM16
 USE_PLAY_OPUS ?= 0          # 1 = also decode Ogg-Opus in the play queue (needs opusfile); implies USE_PLAY
@@ -211,7 +211,7 @@ ifeq ($(USE_PLAY),1)
 USE_AUDIO_OUT := 1
 endif
 # src/sha1.c is wanted by BOTH the WebSocket accept key (USE_BC_WS) and the
-# STUN MESSAGE-INTEGRITY HMAC (USE_WEBRTC). Listing it under each flag puts
+# STUN MESSAGE-INTEGRITY HMAC and the SRTP auth tag (USE_WEBRTC). Listing it under each flag puts
 # sha1.o on the link line twice when both are on - a multiple-definition
 # error, not a harmless duplicate - so the webrtc group only adds it when
 # USE_BC_WS has not already. Written this way round rather than as one shared
@@ -222,7 +222,7 @@ WEBRTC_SHA1 := $(if $(filter 1,$(USE_BC_WS)),,src/sha1.c)
 TARGET_ALLSRC := $(TARGET_SRC) $(if $(filter 1,$(USE_TLS)),src/tls.c) \
                  $(if $(filter 1,$(USE_BACKCHANNEL)),src/rtsp/backchannel.c) \
                  $(if $(filter 1,$(USE_BC_WS)),src/ws.c src/sha1.c src/rtsp/talk_ws.c) \
-                 $(if $(filter 1,$(USE_WEBRTC)),$(WEBRTC_SHA1) src/webrtc/stun.c src/webrtc/dtls.c src/webrtc/webrtc.c) \
+                 $(if $(filter 1,$(USE_WEBRTC)),$(WEBRTC_SHA1) src/webrtc/stun.c src/webrtc/srtp.c src/webrtc/dtls.c src/webrtc/webrtc.c) \
                  $(if $(filter 1,$(USE_AUDIO_OUT)),src/rtsp/speaker.c src/codec/resample.c)
 TARGET_OBJS   := $(notdir $(TARGET_ALLSRC:.c=.o))
 
@@ -277,7 +277,7 @@ IMPLIBS ?= -l:libimp.a -l:libalog.a -l:libsysutils.a
 # against a distro/buildroot that only ships libfaac.so.
 FAACLIB ?= -l:libfaac.a
 
-.PHONY: all target sim clean strip test-auth test-config test-fmp4 test-fanqueue test-hub-pool test-stun
+.PHONY: all target sim clean strip test-auth test-config test-fmp4 test-fanqueue test-hub-pool test-stun test-srtp
 
 all: target
 
@@ -408,6 +408,17 @@ test-stun:
 	$(HOSTCC) $(CFLAGS) -DUSE_WEBRTC -Isrc -Isrc/webrtc $(STUNTEST_SRC) \
 	  $(LDFLAGS) -o $(BIN)-stuntest
 	@python3 scripts/test_stun.py ./$(BIN)-stuntest; rc=$$?; rm -f $(BIN)-stuntest; exit $$rc
+
+# Host-only test for the SRTP/SRTCP transform (src/webrtc/srtp.c) - the piece
+# whose failure mode is silently undecryptable media rather than a crash. Same
+# shape as test-stun: the C side only marshals hex, and the expected bytes are
+# produced by a Python reimplementation (its own AES-128) that is additionally
+# pinned to RFC 3711 B.3's published key-derivation vector.
+SRTPTEST_SRC := scripts/test_srtp.c src/webrtc/srtp.c src/sha1.c
+test-srtp:
+	$(HOSTCC) $(CFLAGS) -DUSE_WEBRTC -Isrc -Isrc/webrtc $(SRTPTEST_SRC) \
+	  $(LDFLAGS) -o $(BIN)-srtptest
+	@python3 scripts/test_srtp.py ./$(BIN)-srtptest; rc=$$?; rm -f $(BIN)-srtptest; exit $$rc
 
 strip: target
 	$(CROSS_COMPILE)strip $(BIN)

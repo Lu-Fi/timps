@@ -1,5 +1,11 @@
 /* dtls.c - DTLS 1.2 server for a WebRTC session (see dtls.h). */
 #ifdef USE_WEBRTC
+/* mbedtls_dtls_srtp_info's chosen profile is an MBEDTLS_PRIVATE field with no
+ * public getter in 3.x, and mbedTLS's own ssl_server2.c reads it exactly this
+ * way. The macro only renames the member (private_<name> otherwise), so the
+ * struct layout this file sees stays identical to the library's. Must precede
+ * every mbedTLS include. */
+#define MBEDTLS_ALLOW_PRIVATE_ACCESS
 #include "dtls.h"
 #include "../log.h"
 #include "../util.h"
@@ -27,6 +33,12 @@
 #endif
 #if !defined(MBEDTLS_THREADING_C)
 #error "timps USE_WEBRTC needs an mbedTLS built with MBEDTLS_THREADING_C: one CTR_DRBG is shared across session threads"
+#endif
+#if !defined(MBEDTLS_SSL_KEYING_MATERIAL_EXPORT)
+/* The SRTP session keys come out of the TLS exporter (RFC 5764 4.2); without
+ * it the handshake would succeed and every media packet would be undecryptable
+ * garbage to the peer. */
+#error "timps USE_WEBRTC needs an mbedTLS built with MBEDTLS_SSL_KEYING_MATERIAL_EXPORT"
 #endif
 
 #include <string.h>
@@ -58,10 +70,12 @@ struct ms_dtls {
     uint32_t            t_int_ms, t_fin_ms;
 };
 
-/* conf keeps the pointer, so this must outlive every session */
+/* conf keeps the pointer, so this must outlive every session.
+ * ONE profile, deliberately: srtp.c implements AES-128-CM with an 80-bit
+ * HMAC-SHA1 tag and nothing else, so offering _32 as well would let a peer
+ * negotiate a transform we cannot produce. Every browser offers _80. */
 static const mbedtls_ssl_srtp_profile g_srtp_profiles[] = {
     MBEDTLS_TLS_SRTP_AES128_CM_HMAC_SHA1_80,
-    MBEDTLS_TLS_SRTP_AES128_CM_HMAC_SHA1_32,
     MBEDTLS_TLS_SRTP_UNSET
 };
 
@@ -147,8 +161,8 @@ ms_dtls_ctx *ms_dtls_ctx_new(const char *cert_file, const char *key_file)
     }
     /* The browser is the DTLS client (we answer a=setup:passive) and offers
      * the use_srtp extension unconditionally; without a profile in common it
-     * aborts the handshake. Keying material is not exported yet - this
-     * milestone establishes the transport only. */
+     * aborts the handshake. ms_dtls_export_srtp() then pulls the SRTP session
+     * keys out of the completed handshake. */
     if (mbedtls_ssl_conf_dtls_srtp_protection_profiles(&c->conf,
                                                        g_srtp_profiles) != 0) {
         LOGE(MOD, "dtls-srtp profile list rejected"); goto fail;
@@ -240,6 +254,52 @@ int ms_dtls_handshake(ms_dtls *d)
         return 1;
     LOGW(MOD, "dtls handshake failed (-0x%x)", -r);
     return -1;
+}
+
+int ms_dtls_export_srtp(ms_dtls *d, uint8_t *out, int len)
+{
+    mbedtls_dtls_srtp_info info;
+    mbedtls_ssl_get_dtls_srtp_negotiation_result(&d->ssl, &info);
+    if (info.chosen_dtls_srtp_profile != MBEDTLS_TLS_SRTP_AES128_CM_HMAC_SHA1_80) {
+        LOGW(MOD, "peer negotiated no usable SRTP profile (%u)",
+             (unsigned)info.chosen_dtls_srtp_profile);
+        return -1;
+    }
+    /* An MKI would have to be carried in every packet srtp.c builds, and no
+     * browser asks for one - refuse rather than emit packets the peer would
+     * parse one field short. */
+    if (info.mki_len) {
+        LOGW(MOD, "peer requested an SRTP MKI (%u bytes) - unsupported",
+             (unsigned)info.mki_len);
+        return -1;
+    }
+    /* mbedTLS 3.6 bug, found the hard way (SIGSEGV inside
+     * mbedtls_ssl_export_keying_material, invalid read at 0x141):
+     * mbedtls_ssl_handshake_wrapup() DEFERS handshake_wrapup_free_hs_transform()
+     * for DTLS so the last flight can still be retransmitted, which leaves
+     * ssl->transform NULL and the finished transform parked in
+     * transform_negotiate. The TLS 1.2 exporter reads its randbytes straight
+     * off ssl->transform without checking - so on DTLS, i.e. on every WebRTC
+     * handshake, it dereferences NULL. Lend it the negotiated transform for
+     * the duration of the call; nothing else touches this context, the
+     * session thread owns it alone and the pointer is put back immediately. */
+    mbedtls_ssl_transform *saved = d->ssl.transform;
+    if (!saved) {
+        if (!d->ssl.transform_negotiate) {
+            LOGW(MOD, "no transform after handshake - cannot export srtp keys");
+            return -1;
+        }
+        d->ssl.transform = d->ssl.transform_negotiate;
+    }
+    static const char lbl[] = "EXTRACTOR-dtls_srtp";
+    int r = mbedtls_ssl_export_keying_material(&d->ssl, out, (size_t)len,
+                                               lbl, sizeof lbl - 1, NULL, 0, 0);
+    d->ssl.transform = saved;
+    if (r != 0) {
+        LOGW(MOD, "srtp keying material export failed (-0x%x)", -r);
+        return -1;
+    }
+    return 0;
 }
 
 #endif /* USE_WEBRTC */

@@ -298,7 +298,7 @@ void config_defaults(ms_config *c)
     copystr(c->http_tls_key,"/etc/ssl/private/timps.key",128);
     c->rtsp_tls=0; c->rtsp_tls_port=322;
 #ifdef USE_WEBRTC
-    c->webrtc_enabled=0; c->webrtc_port=0;
+    c->webrtc_enabled=0; c->webrtc_port=0; c->webrtc_channel=0;
 #endif
     /* optional SRT output (USE_SRT builds): off by default */
     c->srt.enabled=0; c->srt.port=9000; c->srt.channel=0; c->srt.latency_ms=120;
@@ -870,6 +870,7 @@ static const cfg_field http_fields[] = {
 static const cfg_field webrtc_fields[] = {
     F("enabled", 0, webrtc_enabled, T_BOOL, 0, 0,0),
     F("port",    0, webrtc_port,    T_INT,  0, 0,65535),
+    F("channel", 0, webrtc_channel, T_INT,  0, 0,MS_MAX_VSTREAM-1),
 };
 #endif
 /* /events SSE push stream (startup settings, like the http.token* keys

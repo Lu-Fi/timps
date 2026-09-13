@@ -32,6 +32,12 @@ void     ms_dtls_free(ms_dtls *d);
 void     ms_dtls_feed(ms_dtls *d, const uint8_t *p, int len);
 /* Drive the handshake: 1 = still in progress, 0 = completed, -1 = failed. */
 int      ms_dtls_handshake(ms_dtls *d);
+/* RFC 5764 4.2 keying material for the negotiated DTLS-SRTP profile, i.e. the
+ * TLS exporter under the label "EXTRACTOR-dtls_srtp" with no context. Valid
+ * only after ms_dtls_handshake() returned 0; `len` must be exactly what the
+ * profile needs (60 for SRTP_AES128_CM_HMAC_SHA1_80). Returns 0 on success,
+ * and <0 if the export failed or the peer did not settle on that profile. */
+int      ms_dtls_export_srtp(ms_dtls *d, uint8_t *out, int len);
 
 #endif /* USE_WEBRTC */
 #endif

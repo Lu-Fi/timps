@@ -1,7 +1,6 @@
 <!doctype html>
-<!-- Standalone check that POST /webrtc/whep really brings up ICE + DTLS with
-     a real browser (USE_WEBRTC builds, webrtc.enabled=1). No media: this
-     milestone answers a=inactive.
+<!-- Standalone check that POST /webrtc/whep really plays video in a real
+     browser (USE_WEBRTC builds, webrtc.enabled=1): ICE + DTLS + SRTP + H264.
 
      Serve it over http (NOT file://, whose "null" Origin the daemon's CORS
      reflection cannot answer), e.g.
@@ -9,24 +8,31 @@
      then open
        http://127.0.0.1:8099/whep-test.html?cam=<ip>:8880&token=<token>
      with the token from /run/timps.token on the camera. The query form is
-     the only credential a cross-origin fetch can present here. -->
+     the only credential a cross-origin fetch can present here.
+
+     Chrome is the target: videoN.profile defaults to High, which Firefox
+     cannot decode. -->
 <meta charset="utf-8">
-<title>timps WHEP transport test</title>
+<title>timps WHEP test</title>
 <style>
  body{font:13px/1.45 ui-monospace,monospace;background:#111;color:#ddd;margin:16px}
  h1{font-size:15px}
  #st div{padding:2px 0}
  b{color:#8cf}
  .ok{color:#7d7}.bad{color:#f77}
- pre{background:#1a1a1a;padding:8px;white-space:pre-wrap;max-height:40vh;overflow:auto}
+ video{background:#000;max-width:640px;width:100%;display:block;margin:8px 0}
+ pre{background:#1a1a1a;padding:8px;white-space:pre-wrap;max-height:30vh;overflow:auto}
 </style>
-<h1>timps /webrtc/whep - ICE-lite + DTLS transport test</h1>
+<h1>timps /webrtc/whep - ICE-lite + DTLS-SRTP + H264</h1>
+<video id="v" autoplay muted playsinline controls></video>
 <div id="st">
   <div>signalling: <b id="sig">-</b></div>
   <div>iceConnectionState: <b id="ice">-</b></div>
   <div>connectionState: <b id="pcs">-</b></div>
   <div>transport.dtlsState: <b id="dtls">-</b></div>
   <div>selected pair: <b id="pair">-</b></div>
+  <div>inbound-rtp: <b id="rtp">-</b></div>
+  <div>decode: <b id="dec">-</b></div>
 </div>
 <h3>answer SDP</h3><pre id="ans"></pre>
 <h3>log</h3><pre id="log"></pre>
@@ -36,11 +42,14 @@ const TOK = new URLSearchParams(location.search).get('token');
 const url = `http://${CAM}/webrtc/whep?token=${encodeURIComponent(TOK)}`;
 const $ = id => document.getElementById(id);
 const log = m => { $('log').textContent += m + "\n"; console.log(m); };
+window.stats = {};
 
 (async () => {
   const pc = new RTCPeerConnection({ iceServers: [] });
   window.pc = pc;
   pc.addTransceiver('video', { direction: 'recvonly' });
+  pc.ontrack = e => { $('v').srcObject = e.streams[0] || new MediaStream([e.track]);
+                      log('ontrack ' + e.track.kind); };
   pc.oniceconnectionstatechange = () => {
     $('ice').textContent = pc.iceConnectionState;
     $('ice').className = /connected|completed/.test(pc.iceConnectionState) ? 'ok' : '';
@@ -76,10 +85,22 @@ const log = m => { $('log').textContent += m + "\n"; console.log(m); };
       if (r.type === 'transport') {
         $('dtls').textContent = r.dtlsState + ' (' + (r.srtpCipher || 'no srtp') + ')';
         $('dtls').className = r.dtlsState === 'connected' ? 'ok' : '';
+        window.stats.transport = r;
       }
       if (r.type === 'candidate-pair' && r.state === 'succeeded' && r.nominated)
         $('pair').textContent = r.state + ' rtt=' + r.currentRoundTripTime +
                                 ' req=' + r.requestsSent + ' resp=' + r.responsesReceived;
+      if (r.type === 'inbound-rtp' && r.kind === 'video') {
+        window.stats.inbound = r;
+        $('rtp').textContent = 'pkts=' + r.packetsReceived + ' lost=' + r.packetsLost +
+          ' bytes=' + r.bytesReceived + ' pli=' + r.pliCount;
+        $('dec').textContent = 'framesDecoded=' + r.framesDecoded +
+          ' keyFrames=' + r.keyFramesDecoded + ' dropped=' + r.framesDropped +
+          ' ' + (r.frameWidth || '?') + 'x' + (r.frameHeight || '?') +
+          ' fps=' + (r.framesPerSecond || 0);
+        $('dec').className = r.framesDecoded > 0 ? 'ok' : '';
+      }
+      if (r.type === 'codec' && r.mimeType) window.stats.codec = r;
     });
   }, 500);
 })();

@@ -1,10 +1,11 @@
-/* webrtc.h - optional WHEP endpoint: ICE-lite + DTLS transport only.
+/* webrtc.h - optional WHEP endpoint: ICE-lite + DTLS-SRTP + H264 video.
  *
- * What this milestone does: answer a browser's SDP offer, respond to its
- * STUN connectivity checks as an ICE-lite peer, and complete the DTLS
- * handshake as the passive side. What it deliberately does NOT do yet: SRTP,
- * RTP packetisation, media of any kind - the answer marks the video
- * m-section a=inactive. Only compiled with USE_WEBRTC.
+ * Answer a browser's SDP offer, respond to its STUN connectivity checks as an
+ * ICE-lite peer, complete the DTLS handshake as the passive side, then send
+ * the hub's H264 stream through the rtsp/rtp.c packetizer and srtp.c.
+ * Deliberately NOT here: audio in any codec, NACK/retransmission, FEC,
+ * simulcast, congestion control, H265, IPv6, RTP header extensions.
+ * Only compiled with USE_WEBRTC.
  */
 #ifndef MS_WEBRTC_H
 #define MS_WEBRTC_H
