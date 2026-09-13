@@ -283,9 +283,11 @@ Deliberate limitations, all of them current as of this writing:
 - **At most 4 concurrent sessions** (`WEBRTC_MAX_SESSIONS`); a 5th offer gets
   `503`. A session that never completes ICE+DTLS is reclaimed after 30 s, and
   a connected one after 30 s without a STUN consent check.
-- **`webrtc.port` must stay `0` for more than one viewer.** Every session binds
-  its own UDP socket, so a fixed port serves exactly one at a time (the second
-  offer's `bind()` gets `EADDRINUSE` and is answered `503`).
+- **A fixed `webrtc.port` is a range, not a port.** Every session binds its own
+  UDP socket, so a session takes the first free port from `webrtc.port` up to
+  `webrtc.port_max` (default `webrtc.port + 3`, one per session slot); `503`
+  once they are all taken. `webrtc.port = 0` (the default) is one ephemeral
+  port per session, picked by the OS.
 - **The signalling channel is only as trustworthy as the HTTP port.** The
   answer carries our ICE password, and the offer carries the fingerprint the
   peer is then held to — an attacker able to rewrite the `POST` in flight can
@@ -294,7 +296,8 @@ Deliberate limitations, all of them current as of this writing:
 
 Access rules are exactly `/control`'s: localhost, a valid `?token=`, or the
 configured Basic/Digest credentials. Config keys: `webrtc.enabled`,
-`webrtc.port` (UDP media port, `0` = ephemeral), `webrtc.channel`.
+`webrtc.port` (UDP media port, `0` = ephemeral), `webrtc.port_max` (top of that
+range, `0` = `webrtc.port + 3`), `webrtc.channel`.
 
 ### Recording, timelapse & privacy masks
 

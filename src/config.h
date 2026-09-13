@@ -567,6 +567,7 @@ typedef struct {
      * http.tls_cert/http.tls_key for the DTLS identity. */
     int            webrtc_enabled;      /* 0 = /webrtc/whep answers 404 */
     int            webrtc_port;         /* UDP media port, 0 = ephemeral */
+    int            webrtc_port_max;     /* top of the media port range, 0 = port + slots - 1 */
     int            webrtc_channel;      /* video stream to stream (0..MS_MAX_VSTREAM-1) */
 #endif
 

@@ -93,6 +93,7 @@ static pthread_mutex_t g_mx = PTHREAD_MUTEX_INITIALIZER;
 static unsigned        g_gen_ctr;
 static ms_dtls_ctx    *g_dtls_ctx;
 static int             g_port_cfg;
+static int             g_port_max;
 static int             g_chn_cfg;
 
 int webrtc_available(void) { return g_dtls_ctx != NULL; }
@@ -662,6 +663,21 @@ static int udp_bind(int port)
     return fd;
 }
 
+/* Every session owns its own socket, so a single fixed webrtc.port would serve
+ * exactly one viewer - the next bind() gets EADDRINUSE. Walk the configured
+ * range instead (by default webrtc.port .. webrtc.port + cap - 1, so the range
+ * is as wide as the session table). Port 0 stays one ephemeral bind: the OS
+ * hands out a free port every time. */
+static int udp_bind_session(void)
+{
+    if (!g_port_cfg) return udp_bind(0);
+    for (int p = g_port_cfg; p <= g_port_max; p++) {
+        int fd = udp_bind(p);
+        if (fd >= 0) return fd;
+    }
+    return -1;
+}
+
 /* ---------------- WHEP ---------------- */
 
 int webrtc_whep(const char *offer, const char *local_ip,
@@ -827,9 +843,10 @@ int webrtc_whep(const char *offer, const char *local_ip,
         if (!s->assrc) s->assrc = 2;
     }
 
-    s->fd = udp_bind(g_port_cfg);
+    s->fd = udp_bind_session();
     if (s->fd < 0) {
-        LOGE(MOD, "cannot bind udp port %d: %s", g_port_cfg, strerror(errno));
+        LOGE(MOD, "cannot bind udp port %d-%d: %s", g_port_cfg,
+             g_port_cfg ? g_port_max : 0, strerror(errno));
         sess_release(s);
         return 503;
     }
@@ -980,6 +997,12 @@ void webrtc_start(const ms_config *cfg)
 {
     if (!cfg->webrtc_enabled) return;
     g_port_cfg = cfg->webrtc_port;
+    g_port_max = cfg->webrtc_port_max;
+    if (g_port_cfg) {
+        if (g_port_max < g_port_cfg)
+            g_port_max = g_port_cfg + WEBRTC_MAX_SESSIONS - 1;
+        if (g_port_max > 65535) g_port_max = 65535;
+    }
     g_chn_cfg  = cfg->webrtc_channel;
     g_dtls_ctx = ms_dtls_ctx_new(cfg->http_tls_cert, cfg->http_tls_key);
     if (!g_dtls_ctx) {
@@ -991,6 +1014,9 @@ void webrtc_start(const ms_config *cfg)
     LOGI(MOD, "WHEP endpoint /webrtc/whep ready (ICE-lite + DTLS-SRTP, H264 "
               "video%d); fingerprint %s", g_chn_cfg,
          ms_dtls_fingerprint(g_dtls_ctx));
+    if (g_port_cfg)
+        LOGI(MOD, "media udp %d-%d, one port per session (%d slots)",
+             g_port_cfg, g_port_max, WEBRTC_MAX_SESSIONS);
 }
 
 void webrtc_stop(void)

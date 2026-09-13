@@ -194,15 +194,18 @@ http.tls_key    = /etc/ssl/private/timps.key
 # DELETE /webrtc/whep/<id> (the 201's Location) frees the session at once; a
 # session that is never torn down is reclaimed after 30 s of silence.
 # Access rules are the /control ones (localhost / ?token= / Basic).
-# webrtc.enabled = 0
-# webrtc.port    = 0                      # UDP media port (0 = ephemeral).
+# webrtc.enabled  = 0
+# webrtc.port     = 0                     # UDP media port (0 = ephemeral).
                                           # Each session owns its OWN socket, so
-                                          # a FIXED port allows exactly ONE at a
-                                          # time - the second offer's bind gets
-                                          # EADDRINUSE and is answered 503. Set
-                                          # it only behind a pinhole that cannot
-                                          # forward a range; leave it 0 otherwise.
-# webrtc.channel = 0                      # which video stream to send
+                                          # a fixed port is the BOTTOM of a range:
+                                          # sessions bind the first free port from
+                                          # webrtc.port up to webrtc.port_max.
+# webrtc.port_max = 0                     # top of that range (0 = webrtc.port + 3,
+                                          # i.e. one port per session slot, so no
+                                          # extra configuration is needed). A range
+                                          # narrower than the 4 slots just answers
+                                          # 503 once every port in it is taken.
+# webrtc.channel  = 0                     # which video stream to send
 
 # ---- SRT output (USE_SRT builds, libsrt) ----
 # MPEG-TS over SRT. Default mode is listener: ffplay srt://<ip>:9000
