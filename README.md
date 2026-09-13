@@ -283,6 +283,14 @@ Deliberate limitations, all of them current as of this writing:
 - **At most 4 concurrent sessions** (`WEBRTC_MAX_SESSIONS`); a 5th offer gets
   `503`. A session that never completes ICE+DTLS is reclaimed after 30 s, and
   a connected one after 30 s without a STUN consent check.
+- **`webrtc.port` must stay `0` for more than one viewer.** Every session binds
+  its own UDP socket, so a fixed port serves exactly one at a time (the second
+  offer's `bind()` gets `EADDRINUSE` and is answered `503`).
+- **The signalling channel is only as trustworthy as the HTTP port.** The
+  answer carries our ICE password, and the offer carries the fingerprint the
+  peer is then held to — an attacker able to rewrite the `POST` in flight can
+  substitute both. On anything but a trusted LAN or a VPN, serve this port
+  over HTTPS (`http.https=1`).
 
 Access rules are exactly `/control`'s: localhost, a valid `?token=`, or the
 configured Basic/Digest credentials. Config keys: `webrtc.enabled`,

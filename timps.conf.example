@@ -195,7 +195,13 @@ http.tls_key    = /etc/ssl/private/timps.key
 # session that is never torn down is reclaimed after 30 s of silence.
 # Access rules are the /control ones (localhost / ?token= / Basic).
 # webrtc.enabled = 0
-# webrtc.port    = 0                      # UDP media port (0 = ephemeral)
+# webrtc.port    = 0                      # UDP media port (0 = ephemeral).
+                                          # Each session owns its OWN socket, so
+                                          # a FIXED port allows exactly ONE at a
+                                          # time - the second offer's bind gets
+                                          # EADDRINUSE and is answered 503. Set
+                                          # it only behind a pinhole that cannot
+                                          # forward a range; leave it 0 otherwise.
 # webrtc.channel = 0                      # which video stream to send
 
 # ---- SRT output (USE_SRT builds, libsrt) ----
