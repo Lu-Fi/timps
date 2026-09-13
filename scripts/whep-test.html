@@ -12,6 +12,11 @@
      with the token from /run/timps.token on the camera. The query form is
      the only credential a cross-origin fetch can present here.
      &audio=0 offers video only; the default offers both.
+     &tls=1 POSTs to https://<cam>/webrtc/whep instead of http:// - needed
+     when the camera has http.https set and webrtc.enabled=1 (the default),
+     since a plaintext WHEP POST then gets 426 (see httpd.c). Visit
+     https://<cam>:<port>/ directly first and click through the self-signed
+     cert warning once, or this fetch fails with a cert error instead.
 
      Chrome is the target: videoN.profile defaults to High, which Firefox
      cannot decode. -->
@@ -52,7 +57,8 @@ const Q = new URLSearchParams(location.search);
 const CAM = Q.get('cam');
 const TOK = Q.get('token');
 const WANT_AUDIO = Q.get('audio') !== '0';
-const base = `http://${CAM}/webrtc/whep`;
+const SCHEME = Q.get('tls') === '1' ? 'https' : 'http';
+const base = `${SCHEME}://${CAM}/webrtc/whep`;
 const url = `${base}?token=${encodeURIComponent(TOK)}`;
 const $ = id => document.getElementById(id);
 const log = m => { $('log').textContent += m + "\n"; console.log(m); };
@@ -118,7 +124,7 @@ $('stop').onclick = () => { teardown('button'); window.pc && window.pc.close(); 
   if (res.status !== 201) { $('ans').textContent = body; return; }
   /* Location is relative ("/webrtc/whep/<id>") - resolve it against the
    * camera, not against the page serving this file. */
-  resource = new URL(loc, `http://${CAM}/`).href;
+  resource = new URL(loc, `${SCHEME}://${CAM}/`).href;
   $('loc').textContent = resource;
   $('ans').textContent = body;
   await pc.setRemoteDescription({ type: 'answer', sdp: body });
