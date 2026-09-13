@@ -32,14 +32,35 @@ typedef struct {
     srtp_keys rtp, rtcp;
 } srtp_dir;
 
+/* Outbound streams sharing this context: video + audio of one BUNDLE. */
+#ifndef SRTP_MAX_STREAMS
+#define SRTP_MAX_STREAMS 2
+#endif
+
+/* RFC 3711 3.2.1: the rollover counter is part of the cryptographic context,
+ * and there is one context PER SSRC. Two bundled streams over one DTLS-SRTP
+ * association therefore need one of these each - sharing a single roc/last_seq
+ * across SSRCs makes every interleave look like a sequence wrap, inflates the
+ * ROC without bound and produces an IV the receiver cannot reconstruct. */
 typedef struct {
-    srtp_dir out, in;
-    uint32_t roc;            /* outbound rollover counter (RFC 3711 3.3.1) */
+    uint32_t ssrc;
+    uint32_t roc;
     uint16_t last_seq;
     int      have_seq;
-    uint32_t rtcp_index;     /* outbound 31-bit SRTCP index */
-    uint32_t in_rtcp_index;  /* highest accepted inbound SRTCP index */
-    int      ready;
+    int      used;
+} srtp_stream;
+
+typedef struct {
+    srtp_dir    out, in;
+    srtp_stream out_rtp[SRTP_MAX_STREAMS];
+    /* One outbound SRTCP index for the whole association rather than one per
+     * SSRC: the IV already mixes the sender SSRC in, so a shared, strictly
+     * increasing index still gives every (SSRC, index) pair - and therefore
+     * every keystream - exactly once. Per-SSRC replay windows on the receiver
+     * only require the index to increase, which it does. */
+    uint32_t    rtcp_index;     /* outbound 31-bit SRTCP index */
+    uint32_t    in_rtcp_index;  /* highest accepted inbound SRTCP index */
+    int         ready;
 } srtp_session;
 
 /* km/km_len: the DTLS-SRTP keying material (SRTP_KEYING_LEN bytes).
@@ -50,7 +71,10 @@ int srtp_init(srtp_session *s, const uint8_t *km, int km_len, int we_are_server)
 
 /* All three work IN PLACE on a complete packet in `p` and need `cap` bytes of
  * room for the growth. Return the new length, or -1 (and leave the buffer
- * unusable) on a malformed packet, a short buffer or a failed tag check. */
+ * unusable) on a malformed packet, a short buffer or a failed tag check.
+ * srtp_protect_rtp() also returns -1 when the packet's SSRC is one more than
+ * SRTP_MAX_STREAMS distinct ones - it refuses rather than share another
+ * stream's rollover counter. */
 int srtp_protect_rtp  (srtp_session *s, uint8_t *p, int len, int cap);
 int srtp_protect_rtcp (srtp_session *s, uint8_t *p, int len, int cap);
 /* Verifies the tag FIRST, then decrypts; returns the plaintext RTCP length. */

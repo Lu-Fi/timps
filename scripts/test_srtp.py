@@ -173,6 +173,38 @@ for server in (1, 0):
     assert roc == 1, roc
 print("SRTP protect matches byte-for-byte in both roles, ROC rolls over on wrap")
 
+# --- 2b. two bundled SSRCs share one context but NOT one ROC -----------------
+# The audio track of a WebRTC BUNDLE runs its own SSRC and its own sequence
+# space over the same DTLS-SRTP association. With a single shared rollover
+# counter, every interleave looks like a wrap: SSRC B's low seq after SSRC A's
+# high one bumps the ROC, and the receiver - which keeps a context per SSRC -
+# can no longer rebuild the IV. Interleave two streams deliberately out of
+# phase and require each to be protected against ITS OWN roc (0 throughout).
+SSRC_B = 0x0BADF00D
+
+
+def rtp_pkt_ssrc(ssrc, seq, payload):
+    return struct.pack(">BBHII", 0x80, 96, seq, 0x11223344, ssrc) + payload
+
+
+mix = []
+for a_seq, b_seq in ((0xFFF0, 0x0001), (0xFFF1, 0x0002), (0xFFF2, 0x0003)):
+    mix.append(rtp_pkt_ssrc(SSRC, a_seq, os.urandom(80)))
+    mix.append(rtp_pkt_ssrc(SSRC_B, b_seq, os.urandom(80)))
+key, auth, salt = session_keys(sk, ss)
+got = run("rtp", H(KM), "1", *[H(p) for p in mix])
+for i, p in enumerate(mix):
+    want = H(protect_rtp(key, auth, salt, p, 0))
+    assert got[i] == want, "bundled pkt %d:\n  C: %s\n  py:%s" % (i, got[i], want)
+print("two interleaved SSRCs each keep their own ROC (neither is bumped)")
+
+# A third SSRC has no context left. Refusing is the only safe answer: reusing
+# another stream's ROC would emit a packet the peer cannot decrypt, silently.
+out = run("rtp", H(KM), "1", H(mix[0]), H(mix[1]),
+          H(rtp_pkt_ssrc(0xDEADBEEF, 1, os.urandom(16))))
+assert out[2] == "ERR", out
+print("a third outbound SSRC is refused, not given a borrowed ROC")
+
 # --- 3. SRTCP protect --------------------------------------------------------
 sr = struct.pack(">BBH", 0x80, 200, 6) + struct.pack(">I", SSRC) + os.urandom(20)
 key, auth, salt = session_keys(sk, ss, rtcp=True)

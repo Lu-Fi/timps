@@ -215,20 +215,31 @@ int srtp_protect_rtp(srtp_session *s, uint8_t *p, int len, int cap)
     }
     if (hlen > len) return -1;
 
+    uint32_t ssrc = rd32(p + 8);
+    srtp_stream *st = NULL;
+    for (int i = 0; i < SRTP_MAX_STREAMS; i++) {
+        if (s->out_rtp[i].used && s->out_rtp[i].ssrc == ssrc) { st = &s->out_rtp[i]; break; }
+        if (!s->out_rtp[i].used && !st) st = &s->out_rtp[i];   /* first free */
+    }
+    /* Table full and no match: refusing the packet is the only safe answer -
+     * borrowing another SSRC's ROC would build an IV the peer cannot derive. */
+    if (!st) return -1;
+    if (!st->used) { st->used = 1; st->ssrc = ssrc; }
+
     uint16_t seq = (uint16_t)((p[2] << 8) | p[3]);
     /* Our own sequence numbers are emitted strictly increasing, so a seq that
      * went backwards is a wrap, not reordering (RFC 3711 3.3.1). */
-    if (s->have_seq && seq < s->last_seq) s->roc++;
-    s->last_seq = seq;
-    s->have_seq = 1;
+    if (st->have_seq && seq < st->last_seq) st->roc++;
+    st->last_seq = seq;
+    st->have_seq = 1;
 
     uint8_t iv[16];
-    iv_build(iv, s->out.rtp.salt, rd32(p + 8),
-             s->roc >> 16, (s->roc << 16) | seq);
+    iv_build(iv, s->out.rtp.salt, ssrc,
+             st->roc >> 16, (st->roc << 16) | seq);
     aes_ctr(s->out.rtp.rk, iv, p + hlen, len - hlen);
 
     uint8_t roc_be[4], tag[20];
-    wr32(roc_be, s->roc);
+    wr32(roc_be, st->roc);
     hmac_sha1_2(s->out.rtp.auth, 20, p, len, roc_be, 4, tag);
     memcpy(p + len, tag, SRTP_TAG_LEN);
     return len + SRTP_TAG_LEN;
