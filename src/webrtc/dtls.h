@@ -39,5 +39,13 @@ int      ms_dtls_handshake(ms_dtls *d);
  * and <0 if the export failed or the peer did not settle on that profile. */
 int      ms_dtls_export_srtp(ms_dtls *d, uint8_t *out, int len);
 
+/* SHA-256 over the DER of the certificate the PEER presented, i.e. the value
+ * the offer's a=fingerprint line must equal (RFC 8122 / RFC 8827 6.5). That
+ * comparison is the only thing binding the DTLS session to the identity the
+ * signalling channel vouched for, so a peer that presented no certificate is
+ * a failure here, not a 0-filled result. Valid only after
+ * ms_dtls_handshake() returned 0. Returns 0 on success, <0 otherwise. */
+int      ms_dtls_peer_fingerprint(ms_dtls *d, uint8_t out[32]);
+
 #endif /* USE_WEBRTC */
 #endif

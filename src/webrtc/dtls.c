@@ -34,6 +34,12 @@
 #if !defined(MBEDTLS_THREADING_C)
 #error "timps USE_WEBRTC needs an mbedTLS built with MBEDTLS_THREADING_C: one CTR_DRBG is shared across session threads"
 #endif
+#if !defined(MBEDTLS_SSL_KEEP_PEER_CERTIFICATE)
+/* Without it mbedtls_ssl_get_peer_cert() returns NULL once the handshake is
+ * done, so the a=fingerprint check could never run and every peer would be
+ * accepted unauthenticated - refuse to build that. */
+#error "timps USE_WEBRTC needs an mbedTLS built with MBEDTLS_SSL_KEEP_PEER_CERTIFICATE (the a=fingerprint check needs the peer cert)"
+#endif
 #if !defined(MBEDTLS_SSL_KEYING_MATERIAL_EXPORT)
 /* The SRTP session keys come out of the TLS exporter (RFC 5764 4.2); without
  * it the handshake would succeed and every media packet would be undecryptable
@@ -180,10 +186,16 @@ ms_dtls_ctx *ms_dtls_ctx_new(const char *cert_file, const char *key_file)
 #if defined(MBEDTLS_SSL_DTLS_HELLO_VERIFY)
     mbedtls_ssl_conf_dtls_cookies(&c->conf, NULL, NULL, NULL);
 #endif
-    /* No client certificate: WebRTC identifies the peer by matching its
-     * a=fingerprint against the self-signed cert it presents, which is a job
-     * for the media layer, not for a CA chain we do not have. */
-    mbedtls_ssl_conf_authmode(&c->conf, MBEDTLS_SSL_VERIFY_NONE);
+    /* OPTIONAL, not NONE, and the difference is the whole identity binding:
+     * only OPTIONAL makes the server send a CertificateRequest, which is what
+     * gets the browser's self-signed certificate on the wire at all. The
+     * verification mbedTLS then performs is meaningless here - there is no CA
+     * to chain it to, and WebRTC has none by design - so OPTIONAL (record the
+     * failure, continue) is correct where NONE would leave us with no peer
+     * certificate to fingerprint. webrtc.c does the real check: SHA-256 of
+     * that certificate against the offer's a=fingerprint (RFC 8827 6.5).
+     * Dropping back to NONE silently removes peer authentication. */
+    mbedtls_ssl_conf_authmode(&c->conf, MBEDTLS_SSL_VERIFY_OPTIONAL);
 
     unsigned char h[32];
     if (mbedtls_sha256(c->cert.raw.p, c->cert.raw.len, h, 0) != 0) {
@@ -254,6 +266,17 @@ int ms_dtls_handshake(ms_dtls *d)
         return 1;
     LOGW(MOD, "dtls handshake failed (-0x%x)", -r);
     return -1;
+}
+
+int ms_dtls_peer_fingerprint(ms_dtls *d, uint8_t out[32])
+{
+    const mbedtls_x509_crt *pc = mbedtls_ssl_get_peer_cert(&d->ssl);
+    if (!pc || !pc->raw.p || !pc->raw.len) {
+        LOGW(MOD, "peer presented no DTLS certificate");
+        return -1;
+    }
+    if (mbedtls_sha256(pc->raw.p, pc->raw.len, out, 0) != 0) return -1;
+    return 0;
 }
 
 int ms_dtls_export_srtp(ms_dtls *d, uint8_t *out, int len)
