@@ -237,6 +237,40 @@ out = run("unrtcp", H(KM), "0", H(good[1]), H(good[0]), H(good[2]))
 assert out[0] == H(sr) and out[1] == "REJECT" and out[2] == H(sr), out
 print("replayed/old SRTCP index rejected")
 
+# --- 4b. the inbound replay index is per SENDER SSRC -------------------------
+# A bundled peer numbers each of its SSRCs independently, so one shared "highest
+# seen" lets whichever source is ahead swallow the other's reports - the same
+# bug the outbound ROC had, on the receive side (RFC 3711 3.3.2 keeps the replay
+# list in the per-SSRC context). Drive two sources deliberately out of phase:
+# every index B sends is BELOW every index A has already been given.
+def rr(ssrc):
+    return struct.pack(">BBH", 0x81, 201, 7) + struct.pack(">I", ssrc) + os.urandom(28)
+
+
+rr_b = rr(SSRC_B)
+a_pkts = [protect_rtcp(ckey, cauth, csalt, sr, i) for i in (10, 11, 12)]
+b_pkts = [protect_rtcp(ckey, cauth, csalt, rr_b, i) for i in (1, 2, 3)]
+mixed = [a_pkts[0], b_pkts[0], a_pkts[1], b_pkts[1], a_pkts[2], b_pkts[2]]
+want = [H(sr), H(rr_b)] * 3
+out = run("unrtcp", H(KM), "0", *[H(p) for p in mixed])
+assert out == want, "interleaved SRTCP sources:\n  C: %s\n  py:%s" % (out, want)
+print("two interleaved sender SSRCs keep independent SRTCP replay indices")
+
+out = run("unrtcp", H(KM), "0", H(b_pkts[1]), H(a_pkts[0]), H(b_pkts[0]), H(a_pkts[1]))
+assert out == [H(rr_b), H(sr), "REJECT", H(sr)], out
+print("a replay is still rejected inside its own SSRC's index sequence")
+
+# One sender SSRC too many. Refusing is the safe answer - the alternative is
+# sharing a replay index with an unrelated source, which is the bug above.
+MAX_RTCP_SOURCES = 4                        # srtp.h SRTP_MAX_RTCP_SOURCES
+many = [rr(0x11111111 * i) for i in range(1, MAX_RTCP_SOURCES + 2)]
+out = run("unrtcp", H(KM), "0",
+          *[H(protect_rtcp(ckey, cauth, csalt, p, 1)) for p in many])
+assert out[:-1] == [H(p) for p in many[:-1]], out
+assert out[-1] == "REJECT", out
+print("a %dth inbound RTCP source is refused, not given a shared replay index"
+      % (MAX_RTCP_SOURCES + 1))
+
 # --- 5. wrong role must not verify ------------------------------------------
 out = run("unrtcp", H(KM), "1", H(good[0]))
 assert out[0] == "REJECT", out

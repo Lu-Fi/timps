@@ -274,17 +274,28 @@ int srtp_unprotect_rtcp(srtp_session *s, uint8_t *p, int len)
 
     uint32_t w = rd32(p + n - 4);
     uint32_t idx = w & 0x7FFFFFFFu;
-    /* Replay gate. Strictly increasing rather than a sliding window: the only
-     * thing we act on is PLI/FIR, a reordered one is harmless to lose, and a
-     * replayed one would otherwise let a passive attacker drive the encoder's
-     * IDR rate. */
-    if (s->in_rtcp_index && idx <= s->in_rtcp_index) return -1;
-    s->in_rtcp_index = idx;
+    uint32_t ssrc = rd32(p + 4);
+    /* Replay gate, per sender SSRC (srtp.h). Strictly increasing rather than a
+     * sliding window: the only thing we act on is PLI/FIR, a reordered one is
+     * harmless to lose, and a replayed one would otherwise let a passive
+     * attacker drive the encoder's IDR rate.
+     * The tag was verified above, so only an authenticated peer can ever put an
+     * SSRC in this table. */
+    srtp_rtcp_src *src = NULL;
+    for (int i = 0; i < SRTP_MAX_RTCP_SOURCES; i++) {
+        if (s->in_rtcp[i].used && s->in_rtcp[i].ssrc == ssrc) { src = &s->in_rtcp[i]; break; }
+        if (!s->in_rtcp[i].used && !src) src = &s->in_rtcp[i];   /* first free */
+    }
+    if (!src) return -1;
+    if (src->used && idx <= src->index) return -1;
+    src->used  = 1;
+    src->ssrc  = ssrc;
+    src->index = idx;
 
     int plen = n - 4;
     if (w & 0x80000000u) {
         uint8_t iv[16];
-        iv_build(iv, s->in.rtcp.salt, rd32(p + 4), 0, idx);
+        iv_build(iv, s->in.rtcp.salt, ssrc, 0, idx);
         aes_ctr(s->in.rtcp.rk, iv, p + 8, plen - 8);
     }
     return plen;

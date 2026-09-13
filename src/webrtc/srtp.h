@@ -50,6 +50,24 @@ typedef struct {
     int      used;
 } srtp_stream;
 
+/* Inbound SRTCP replay state, one per SENDER SSRC for the same reason the ROC
+ * is (RFC 3711 3.3.2: the replay list is part of the per-SSRC cryptographic
+ * context). One shared index across senders is fail-safe but wrong: the peer
+ * numbers each of its SSRCs independently, so whichever one is ahead silently
+ * swallows the other's reports until it catches up.
+ * Sized above SRTP_MAX_STREAMS on purpose - what we send is two streams, but
+ * what the peer sends RTCP *from* is entirely its own choice, and a refused
+ * report is a dropped PLI. */
+#ifndef SRTP_MAX_RTCP_SOURCES
+#define SRTP_MAX_RTCP_SOURCES 4
+#endif
+
+typedef struct {
+    uint32_t ssrc;
+    uint32_t index;          /* highest accepted inbound SRTCP index */
+    int      used;
+} srtp_rtcp_src;
+
 typedef struct {
     srtp_dir    out, in;
     srtp_stream out_rtp[SRTP_MAX_STREAMS];
@@ -58,8 +76,8 @@ typedef struct {
      * increasing index still gives every (SSRC, index) pair - and therefore
      * every keystream - exactly once. Per-SSRC replay windows on the receiver
      * only require the index to increase, which it does. */
-    uint32_t    rtcp_index;     /* outbound 31-bit SRTCP index */
-    uint32_t    in_rtcp_index;  /* highest accepted inbound SRTCP index */
+    uint32_t      rtcp_index;   /* outbound 31-bit SRTCP index */
+    srtp_rtcp_src in_rtcp[SRTP_MAX_RTCP_SOURCES];
     int         ready;
 } srtp_session;
 
@@ -74,7 +92,8 @@ int srtp_init(srtp_session *s, const uint8_t *km, int km_len, int we_are_server)
  * unusable) on a malformed packet, a short buffer or a failed tag check.
  * srtp_protect_rtp() also returns -1 when the packet's SSRC is one more than
  * SRTP_MAX_STREAMS distinct ones - it refuses rather than share another
- * stream's rollover counter. */
+ * stream's rollover counter. srtp_unprotect_rtcp() refuses the same way past
+ * SRTP_MAX_RTCP_SOURCES sender SSRCs, rather than share a replay index. */
 int srtp_protect_rtp  (srtp_session *s, uint8_t *p, int len, int cap);
 int srtp_protect_rtcp (srtp_session *s, uint8_t *p, int len, int cap);
 /* Verifies the tag FIRST, then decrypts; returns the plaintext RTCP length. */
