@@ -52,6 +52,7 @@ rotation deep-dive), [`docs/sdk-feature-gaps.md`](docs/sdk-feature-gaps.md).
 - **Privacy masks** — solid cover rectangles per stream, live-adjustable
 - **Image rotation** — hardware 90/270 on T31/T40/T41, software 90/270 on T23, plus genuine per-channel 180° on T40/T41 (I2D); on other SoCs a 180° flip is `image.hflip`+`image.vflip`
 - **Optional HTTPS/RTSPS (mbedTLS) and MPEG-TS/SRT output**
+- **Optional WebRTC/WHEP** — H.264 (+ G.711) straight into a browser over ICE-lite/DTLS-SRTP, no plugin and no MSE buffering; LAN/VPN only (no NAT traversal)
 - **Authentication** — RTSP Digest, HTTP Digest/Basic (own MD5) + a `/control` token (per-boot + optional remote secret) with CORS
 - **Logging** — leveled logger to stderr and syslog (visible in `logread`)
 - **Tiny footprint** — small enough for a T10
@@ -71,6 +72,7 @@ rotation deep-dive), [`docs/sdk-feature-gaps.md`](docs/sdk-feature-gaps.md).
 | `…?chn=N` | JPEG / MJPEG at the resolution of `videoN` (needs `videoN.jpeg = true`) |
 | `http://<ip>:8880/events` | SSE push stream: `motion` / `daynight` / `stats` events (`USE_CONTROL` builds — see [HTTP /control API](docs/wiki/HTTP-Control-API.md)) |
 | `wss://<ip>:8880/talk` | WebSocket audio backchannel: browser microphone → camera speaker (`USE_BC_WS` builds; TLS by default, plain `ws://` with `audio.talk_ws=2` — see [Talk](#talk-browser-microphone--camera-speaker-talk)) |
+| `http://<ip>:8880/webrtc/whep` | WHEP: `POST` an SDP offer, get H.264 (+ G.711) over ICE-lite/DTLS-SRTP; `DELETE /webrtc/whep/<id>` tears it down (`USE_WEBRTC` builds, `webrtc.enabled=1` — see [WebRTC / WHEP](#webrtc--whep-webrtcwhep)) |
 
 See [Streaming Protocols](docs/wiki/Streaming-Protocols.md) for transport
 details, codec negotiation and client-compatibility notes.
@@ -159,6 +161,7 @@ paths.
 | `USE_SW_ROTATE` | software 90/270 rotation on SoCs without a hardware path (T23); needs `USE_ROTATE` |
 | `USE_TLS` | HTTPS (`http.https`) + RTSPS (`rtsp.tls`) via mbedTLS. Auto-enabled when `libmbedtls` is linked |
 | `USE_SRT` | MPEG-TS over SRT output, listener (`srt.mode=listener`, default) or caller (`srt.mode=caller`). Auto-enabled when `libsrt` is linked |
+| `USE_WEBRTC` | WHEP endpoint (`/webrtc/whep`): ICE-lite + DTLS-SRTP, H.264 video + optional G.711 audio. Off by default; implies `USE_TLS`+`USE_CONTROL` and needs an mbedTLS with `MBEDTLS_SSL_DTLS_SRTP`. LAN/VPN only — see [WebRTC / WHEP](#webrtc--whep-webrtcwhep) |
 
 Full details, defaults and rationale for each flag: [Building](docs/wiki/Building.md).
 
@@ -246,6 +249,44 @@ camera the browser additionally needs its own secure-context override for
 tri-state, and per-browser (Chrome/Edge/Brave, Firefox, Safari)
 secure-context override instructions:
 [Audio → Browser push-to-talk](docs/wiki/Audio.md#browser-push-to-talk-talk-use_bc_ws).
+
+### WebRTC / WHEP (`/webrtc/whep`)
+
+`USE_WEBRTC` (`BR2_PACKAGE_TIMPS_WEBRTC`, **off by default**, and additionally
+gated at runtime by `webrtc.enabled`) serves a [WHEP](https://www.ietf.org/archive/id/draft-ietf-wish-whep-01.html)-shaped
+endpoint on the HTTP port: `POST /webrtc/whep` takes a browser's SDP offer and
+answers as an **ICE-lite** peer, then completes the DTLS handshake as the
+passive side and sends media over SRTP (`SRTP_AES128_CM_HMAC_SHA1_80`). The
+DTLS identity is the `http.tls_cert`/`http.tls_key` pair; the peer's
+certificate is checked against the offer's `a=fingerprint` (RFC 8827) before
+any key is derived. `DELETE /webrtc/whep/<id>` — the `Location` the `201`
+returned — tears a session down immediately; `scripts/whep-test.html` is a
+standalone test page that sends it from `pagehide`.
+
+What it carries: **H.264 video** (the `webrtc.channel` stream, which must be
+H.264 and must be offered with `packetization-mode=1`), plus **G.711 audio**
+(PCMU/PCMA) *only* when `audio.codec` really is `pcmu`/`pcma`. With any other
+audio codec the answer rejects the audio m-section (`m=audio 0 …`) instead of
+negotiating something no packet would ever be sent on.
+
+Deliberate limitations, all of them current as of this writing:
+
+- **LAN or VPN only.** One host candidate, no STUN/TURN, no NAT traversal, no
+  IPv6, no trickle ICE.
+- **No Opus, no AAC, no H.265** over WebRTC, and no transcoding.
+- **No NACK/retransmission, no FEC, no congestion control.** Only PLI and FIR
+  are advertised (both merely ask the encoder for a keyframe).
+- **Firefox usually will not decode it**: the answer's `profile-level-id`
+  comes from the live SPS, and `videoN.profile` defaults to High. Chrome plays
+  it anyway (it initialises the decoder from the in-band SPS); Firefox is
+  genuinely baseline-only. Chrome/Chromium is the tested target.
+- **At most 4 concurrent sessions** (`WEBRTC_MAX_SESSIONS`); a 5th offer gets
+  `503`. A session that never completes ICE+DTLS is reclaimed after 30 s, and
+  a connected one after 30 s without a STUN consent check.
+
+Access rules are exactly `/control`'s: localhost, a valid `?token=`, or the
+configured Basic/Digest credentials. Config keys: `webrtc.enabled`,
+`webrtc.port` (UDP media port, `0` = ephemeral), `webrtc.channel`.
 
 ### Recording, timelapse & privacy masks
 
