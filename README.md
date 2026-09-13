@@ -292,7 +292,11 @@ Deliberate limitations, all of them current as of this writing:
   answer carries our ICE password, and the offer carries the fingerprint the
   peer is then held to — an attacker able to rewrite the `POST` in flight can
   substitute both. On anything but a trusted LAN or a VPN, serve this port
-  over HTTPS (`http.https=1`).
+  over HTTPS (`http.https=1`). Once it is on, a *plaintext* `POST /webrtc/whep`
+  to that port is refused with `426 Upgrade Required` (the way `/talk` refuses
+  a plain `ws://` upgrade); `webrtc.enabled=2` accepts it anyway, for an
+  operator who terminates TLS somewhere else. A port with no TLS configured at
+  all is unaffected — plaintext WHEP keeps working there.
 
 Access rules are exactly `/control`'s: localhost, a valid `?token=`, or the
 configured Basic/Digest credentials. Config keys: `webrtc.enabled`,

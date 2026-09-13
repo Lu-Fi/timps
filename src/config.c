@@ -869,7 +869,9 @@ static const cfg_field http_fields[] = {
  * not settable via /control (a live cert swap would strand the sessions that
  * already published its fingerprint in an SDP answer). */
 static const cfg_field webrtc_fields[] = {
-    F("enabled",  0, webrtc_enabled,  T_BOOL, 0, 0,0),
+    /* 2 = on, and accept a plaintext /webrtc/whep POST even where the http port
+     * has TLS configured (httpd.c). T_TRISTATE keeps true/on/yes parsing as 1. */
+    F("enabled",  0, webrtc_enabled,  T_TRISTATE, 0, 0,2),
     F("port",     0, webrtc_port,     T_INT,  0, 0,65535),
     /* 0 = webrtc.port + WEBRTC_MAX_SESSIONS - 1: one port per session slot. */
     F("port_max", 0, webrtc_port_max, T_INT,  0, 0,65535),

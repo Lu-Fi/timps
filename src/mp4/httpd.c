@@ -2157,6 +2157,20 @@ static void *conn_thread(void *arg)
                                                         : c->cfg->rtsp_user;
                 if (!webrtc_available())
                     http_send_ex(c,"404 Not Found","text/plain",cors,"disabled",8);
+                else if (!c->tls && c->tls_ctx && c->cfg->webrtc_enabled < 2)
+                    /* The offer carries the fingerprint we hold the peer to and
+                     * the answer carries our ICE password, so a rewritten POST
+                     * hands the whole session to whoever rewrote it - the media
+                     * is encrypted to keys this exchange agrees on. /talk 426s
+                     * plaintext the same way (audio.talk_ws), and webrtc.enabled=2
+                     * is the same deliberate opt-out.
+                     * Unlike /talk this also tests c->tls_ctx: a WHEP playback
+                     * session needs no secure context to work in a browser, so
+                     * refusing one on a port where the operator never configured
+                     * TLS would only break a working setup. Where TLS IS
+                     * configured on this very port, a plaintext POST is a
+                     * downgrade, not a deployment choice. */
+                    http_send_ex(c,"426 Upgrade Required","text/plain",cors,"tls required",12);
                 else if (!c->local && !tok_ok && !user[0])
                     http_send_ex(c,"403 Forbidden","text/plain",cors,"local only",10);
                 else if (!strcmp(method,"DELETE")) {

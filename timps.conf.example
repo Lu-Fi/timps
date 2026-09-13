@@ -193,8 +193,13 @@ http.tls_key    = /etc/ssl/private/timps.key
 # cannot decode (Firefox: baseline only) will not play.
 # DELETE /webrtc/whep/<id> (the 201's Location) frees the session at once; a
 # session that is never torn down is reclaimed after 30 s of silence.
-# Access rules are the /control ones (localhost / ?token= / Basic).
-# webrtc.enabled  = 0
+# Access rules are the /control ones (localhost / ?token= / Basic), and where
+# http.https is on, the POST itself must arrive over https - a rewritten offer
+# swaps the fingerprint we hold the peer to and the answer's ICE password, so a
+# plaintext POST on a TLS-capable port is answered 426 Upgrade Required.
+# webrtc.enabled  = 0                     # 0 off, 1 on, 2 on and accept a
+                                          # plaintext POST anyway (only for an
+                                          # operator who terminates TLS elsewhere)
 # webrtc.port     = 0                     # UDP media port (0 = ephemeral).
                                           # Each session owns its OWN socket, so
                                           # a fixed port is the BOTTOM of a range:
