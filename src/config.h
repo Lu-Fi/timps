@@ -562,6 +562,12 @@ typedef struct {
     char           http_tls_key[128];   /* PEM private key file */
     int            rtsp_tls;            /* 1 = also run an RTSPS (TLS) listener */
     int            rtsp_tls_port;       /* RTSPS port (default 322) */
+#ifdef USE_WEBRTC
+    /* WHEP endpoint on the http port (USE_WEBRTC builds only). Reuses
+     * http.tls_cert/http.tls_key for the DTLS identity. */
+    int            webrtc_enabled;      /* 0 = /webrtc/whep answers 404 */
+    int            webrtc_port;         /* UDP media port, 0 = ephemeral */
+#endif
 
     ms_vstream_cfg video[MS_MAX_VSTREAM];
     ms_audio_cfg   audio;

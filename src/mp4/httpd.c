@@ -18,6 +18,9 @@
 #include "../rtsp/talk_ws.h"
 #include "../rtsp/backchannel.h"   /* bc_available(): backchannel set up at boot */
 #endif
+#ifdef USE_WEBRTC
+#include "../webrtc/webrtc.h"
+#endif
 #include <stdio.h>
 #include <strings.h>
 #include <stdlib.h>
@@ -1578,6 +1581,51 @@ static int peek_first_byte(int fd, int wait_ms)
 }
 #endif /* USE_TLS */
 
+#ifdef USE_WEBRTC
+/* Read a request body into the heap instead of the shared 4 KB stack buffer
+ * conn_thread parses headers in. A real Chrome/Firefox SDP offer is 2.5-5 KB,
+ * so the /control rule ("the body must fit in buf alongside the headers")
+ * would 413 every browser. Same bounded-deadline read loop as that path, just
+ * targeting a malloc'd buffer. Returns the NUL-terminated body (caller frees)
+ * or NULL with *status set to what to answer. */
+#define WEBRTC_BODY_MAX 16384
+static char *read_body_heap(hconn *c, const char *buf, int n, const char **status)
+{
+    const char *hdr_end = strstr(buf, "\r\n\r\n");
+    if (!hdr_end) { *status = "400 Bad Request"; return NULL; }
+    const char *body = hdr_end + 4;
+    const char *te = strcasestr(buf, "Transfer-Encoding:");
+    if (te && te < body) { *status = "411 Length Required"; return NULL; }
+    const char *cl = strcasestr(buf, "Content-Length:");
+    int clen = (cl && cl < body) ? atoi(cl + 15) : 0;
+    if (clen <= 0)               { *status = "411 Length Required";   return NULL; }
+    if (clen > WEBRTC_BODY_MAX)  { *status = "413 Payload Too Large"; return NULL; }
+    char *out = (char *)malloc((size_t)clen + 1);
+    if (!out) { *status = "503 Service Unavailable"; return NULL; }
+    int have = n - (int)(body - buf);
+    if (have > clen) have = clen;
+    if (have > 0) memcpy(out, body, (size_t)have);
+    int64_t deadline = ms_now_us() + 5*1000000LL;
+    while (have < clen) {
+        int64_t left_us = deadline - ms_now_us();
+        if (left_us <= 0) break;
+#ifdef USE_TLS
+        if (!(c->tls && ms_tls_pending((ms_tls_conn *)c->tls) > 0))
+#endif
+        {
+            struct pollfd pfd; pfd.fd = c->fd; pfd.events = POLLIN; pfd.revents = 0;
+            if (poll(&pfd, 1, (int)(left_us/1000)+1) <= 0) break;
+        }
+        int r = crecv(c, out + have, clen - have, 0);
+        if (r <= 0) break;
+        have += r;
+    }
+    if (have < clen) { free(out); *status = "400 Bad Request"; return NULL; }
+    out[clen] = 0;
+    return out;
+}
+#endif /* USE_WEBRTC */
+
 static void *conn_thread(void *arg)
 {
     hconn *c = (hconn*)arg;
@@ -1717,6 +1765,14 @@ static void *conn_thread(void *arg)
                  * cannot set request headers, so "X-Timps-Token:" is not
                  * available to it and the query form is the only option. */
                 || !strncmp(path,"/talk",5)
+#endif
+#ifdef USE_WEBRTC
+                /* WHEP is a cross-origin fetch() from the WebUI page, and it
+                 * is a POST with a body - so it needs both the CORS set and
+                 * the ?token= unlock (a preflighted custom header works too,
+                 * but the query form is what every other browser-facing
+                 * endpoint here already uses). */
+                || !strncmp(path,"/webrtc/",8)
 #endif
                ) {
                 http_cors(buf, cors, sizeof cors);
@@ -2083,6 +2139,59 @@ static void *conn_thread(void *arg)
                     http_send_ex(c,"403 Forbidden","text/plain",cors,"local only",10);
                 else
                     talk_ws_serve(c->fd, c->tls, buf, n, path);
+            }
+#endif
+#ifdef USE_WEBRTC
+            else if (!strncmp(path,"/webrtc/whep",12)) {
+                /* Same access rules as /control: localhost, a valid token, or
+                 * configured credentials (the global gate already enforced
+                 * Basic/Digest). webrtc.c authenticates nothing itself. */
+                const char *user = c->cfg->http_user[0] ? c->cfg->http_user
+                                                        : c->cfg->rtsp_user;
+                if (!webrtc_available())
+                    http_send_ex(c,"404 Not Found","text/plain",cors,"disabled",8);
+                else if (!c->local && !tok_ok && !user[0])
+                    http_send_ex(c,"403 Forbidden","text/plain",cors,"local only",10);
+                else if (strcmp(method,"POST"))
+                    http_send_ex(c,"405 Method Not Allowed","text/plain",cors,"POST only",9);
+                else {
+                    const char *st = "400 Bad Request";
+                    char *offer = read_body_heap(c, buf, n, &st);
+                    if (!offer) {
+                        http_send_ex(c,st,"text/plain",cors,"bad offer",9);
+                    } else {
+                        /* our host candidate is the address this client
+                         * reached us on - the trick gen_sdp() already uses */
+                        char ip[INET_ADDRSTRLEN] = "0.0.0.0";
+                        struct sockaddr_in loc; socklen_t ll = sizeof loc;
+                        if (getsockname(c->fd,(struct sockaddr*)&loc,&ll)==0)
+                            inet_ntop(AF_INET,&loc.sin_addr,ip,sizeof ip);
+                        char *ansbuf = (char*)malloc(2048);
+                        char sid[33] = "";
+                        int rc = ansbuf ? webrtc_whep(offer, ip, ansbuf, 2048,
+                                                      sid, sizeof sid) : 503;
+                        if (rc == 201) {
+                            char extra[768];
+                            snprintf(extra, sizeof extra,
+                                "%sLocation: /webrtc/whep/%s\r\n"
+                                "Access-Control-Expose-Headers: Location\r\n",
+                                cors, sid);
+                            http_send_ex(c,"201 Created","application/sdp",extra,
+                                         ansbuf,(int)strlen(ansbuf));
+                        } else if (rc == 400)
+                            http_send_ex(c,"400 Bad Request","text/plain",cors,
+                                         "unsupported offer",17);
+                        else if (rc == 404)
+                            http_send_ex(c,"404 Not Found","text/plain",cors,"disabled",8);
+                        else if (rc == 503)
+                            http_send_ex(c,"503 Service Unavailable","text/plain",cors,"busy",4);
+                        else
+                            http_send_ex(c,"500 Internal Server Error","text/plain",
+                                         cors,"answer failed",13);
+                        free(ansbuf);
+                        free(offer);
+                    }
+                }
             }
 #endif
 #endif

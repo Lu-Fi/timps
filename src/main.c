@@ -7,6 +7,9 @@
 #include "rtsp/backchannel.h"
 #include "rtsp/speaker.h"
 #include "mp4/httpd.h"
+#ifdef USE_WEBRTC
+#include "webrtc/webrtc.h"
+#endif
 #include "record.h"
 #include "timelapse.h"
 #include "srt.h"
@@ -705,6 +708,11 @@ int main(int argc, char **argv)
     httpd       *http = NULL;
     if (g_cfg.rtsp_enabled) rtsp = rtsp_start(&g_cfg);
     if (g_cfg.http_enabled) http = httpd_start(&g_cfg);
+#ifdef USE_WEBRTC
+    /* before the first request can reach /webrtc/whep; a disabled or
+     * cert-less build just leaves the endpoint answering 404 */
+    if (http) webrtc_start(&g_cfg);
+#endif
 #ifdef USE_DAYNIGHT
     daynight_start();
 #endif
@@ -739,6 +747,11 @@ int main(int argc, char **argv)
 #endif
     if (rtsp) rtsp_stop(rtsp);
     if (http) httpd_stop(http);
+#ifdef USE_WEBRTC
+    /* after httpd_stop(), which drains the conn threads - one of them could
+     * otherwise still be inside webrtc_whep() when the DTLS context is freed */
+    webrtc_stop();
+#endif
 #ifdef USE_PLAY
     speaker_stop();
 #endif

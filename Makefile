@@ -44,6 +44,13 @@ USE_BC_WS     ?= 0          # 1 = browser-microphone backchannel over a WebSocke
                             #     by the g711.c the backchannel already builds; no new library).
                             #     Implies USE_BACKCHANNEL + USE_CONTROL. USE_TLS is optional:
                             #     without it only audio.talk_ws=2 (plain ws://) is usable.
+USE_WEBRTC    ?= 0          # 1 = optional WHEP endpoint at /webrtc/whep: ICE-lite responder
+                            #     + DTLS (mbedTLS, needs MBEDTLS_SSL_DTLS_SRTP - buildroot
+                            #     BR2_PACKAGE_MBEDTLS_DTLS_SRTP). Transport only for now: the
+                            #     SDP answer marks the video m-section a=inactive, there is no
+                            #     SRTP and no RTP. Implies USE_TLS (the DTLS/crypto machinery)
+                            #     and USE_CONTROL (the route reuses the ?token= auth path).
+                            #     Gated at runtime by webrtc.enabled in timps.conf (default 0).
 USE_PLAY      ?= 0          # 1 = /run/timps/audio_out play-FIFO queue (system sounds via native IMP_AO); WAV + raw PCM16
 USE_PLAY_OPUS ?= 0          # 1 = also decode Ogg-Opus in the play queue (needs opusfile); implies USE_PLAY
 OPUSLIB       ?= -lopusfile -lopus -logg  # link flags for opusfile (USE_PLAY_OPUS)
@@ -185,6 +192,15 @@ ifeq ($(USE_BC_WS),1)
 USE_BACKCHANNEL := 1
 USE_CONTROL     := 1
 endif
+# USE_WEBRTC implies TLS (the DTLS handshake, the X.509 parse and the SHA-256
+# fingerprint all come from the same mbedTLS the HTTPS listener links) and the
+# control endpoint (the WHEP route rides the ?token= unlock and the CORS
+# reflection that are only compiled under USE_CONTROL - a browser fetch() has
+# no other credential to offer a camera that has one configured).
+ifeq ($(USE_WEBRTC),1)
+USE_TLS     := 1
+USE_CONTROL := 1
+endif
 # speaker.c (native IMP_AO owner) + the shared resampler are pulled in whenever
 # either audio-output producer is built.
 USE_AUDIO_OUT :=
@@ -194,9 +210,19 @@ endif
 ifeq ($(USE_PLAY),1)
 USE_AUDIO_OUT := 1
 endif
+# src/sha1.c is wanted by BOTH the WebSocket accept key (USE_BC_WS) and the
+# STUN MESSAGE-INTEGRITY HMAC (USE_WEBRTC). Listing it under each flag puts
+# sha1.o on the link line twice when both are on - a multiple-definition
+# error, not a harmless duplicate - so the webrtc group only adds it when
+# USE_BC_WS has not already. Written this way round rather than as one shared
+# variable so the existing USE_BC_WS file ORDER is untouched: the link order
+# decides the binary layout, and a build that gains no feature must not
+# change a byte.
+WEBRTC_SHA1 := $(if $(filter 1,$(USE_BC_WS)),,src/sha1.c)
 TARGET_ALLSRC := $(TARGET_SRC) $(if $(filter 1,$(USE_TLS)),src/tls.c) \
                  $(if $(filter 1,$(USE_BACKCHANNEL)),src/rtsp/backchannel.c) \
                  $(if $(filter 1,$(USE_BC_WS)),src/ws.c src/sha1.c src/rtsp/talk_ws.c) \
+                 $(if $(filter 1,$(USE_WEBRTC)),$(WEBRTC_SHA1) src/webrtc/stun.c src/webrtc/dtls.c src/webrtc/webrtc.c) \
                  $(if $(filter 1,$(USE_AUDIO_OUT)),src/rtsp/speaker.c src/codec/resample.c)
 TARGET_OBJS   := $(notdir $(TARGET_ALLSRC:.c=.o))
 
@@ -251,7 +277,7 @@ IMPLIBS ?= -l:libimp.a -l:libalog.a -l:libsysutils.a
 # against a distro/buildroot that only ships libfaac.so.
 FAACLIB ?= -l:libfaac.a
 
-.PHONY: all target sim clean strip test-auth test-config test-fmp4 test-fanqueue test-hub-pool
+.PHONY: all target sim clean strip test-auth test-config test-fmp4 test-fanqueue test-hub-pool test-stun
 
 all: target
 
@@ -267,6 +293,7 @@ target:
 	  $(if $(filter 1,$(USE_BACKCHANNEL)),-DUSE_BACKCHANNEL) \
 	  $(if $(filter 1,$(USE_BC_AAC)),-DUSE_BC_AAC $(if $(HELIX_INC),-I$(HELIX_INC))) \
 	  $(if $(filter 1,$(USE_BC_WS)),-DUSE_BC_WS) \
+	  $(if $(filter 1,$(USE_WEBRTC)),-DUSE_WEBRTC) \
 	  $(if $(filter 1,$(USE_PLAY)),-DUSE_PLAY) \
 	  $(if $(filter 1,$(USE_PLAY_OPUS)),-DUSE_PLAY_OPUS $(if $(OPUS_INC),-I$(OPUS_INC) -I$(OPUS_INC)/opus)) \
 	  $(if $(filter 1,$(USE_STREAM_OPUS)),-DUSE_STREAM_OPUS $(if $(OPUS_INC),-I$(OPUS_INC))) \
@@ -282,7 +309,7 @@ target:
 	  $(if $(filter 1,$(USE_PLAY_OPUS)),$(OPUSLIB)) \
 	  $(if $(filter 1,$(USE_STREAM_OPUS)),$(OPUS_ENC_LIB)) $(LIBS) -o $(BIN)
 	@rm -f $(TARGET_OBJS)
-	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT) USE_BACKCHANNEL=$(USE_BACKCHANNEL) USE_BC_AAC=$(USE_BC_AAC) USE_BC_WS=$(USE_BC_WS) USE_PLAY=$(USE_PLAY) USE_PLAY_OPUS=$(USE_PLAY_OPUS) USE_STREAM_OPUS=$(USE_STREAM_OPUS) USE_ROTATE=$(USE_ROTATE) USE_SW_ROTATE=$(USE_SW_ROTATE) USE_OSD_HINTING=$(USE_OSD_HINTING) USE_TRACE=$(USE_TRACE))"
+	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT) USE_BACKCHANNEL=$(USE_BACKCHANNEL) USE_BC_AAC=$(USE_BC_AAC) USE_BC_WS=$(USE_BC_WS) USE_WEBRTC=$(USE_WEBRTC) USE_PLAY=$(USE_PLAY) USE_PLAY_OPUS=$(USE_PLAY_OPUS) USE_STREAM_OPUS=$(USE_STREAM_OPUS) USE_ROTATE=$(USE_ROTATE) USE_SW_ROTATE=$(USE_SW_ROTATE) USE_OSD_HINTING=$(USE_OSD_HINTING) USE_TRACE=$(USE_TRACE))"
 
 sim:
 	$(HOSTCC) $(CFLAGS) -DMS_VERSION='"$(VERSION)"' $(if $(filter 1,$(USE_CONTROL)),-DUSE_CONTROL) \
@@ -371,8 +398,19 @@ test-hub-pool:
 	  $(LDFLAGS) -Wl,--wrap=malloc -Wl,--wrap=free -lpthread -o $(BIN)-pooltest
 	@./$(BIN)-pooltest; rc=$$?; rm -f $(BIN)-pooltest; exit $$rc
 
+# Host-only test for the ICE-lite STUN layer (src/webrtc/stun.c). The C side
+# is only a hex-in/hex-out harness; the checking happens in Python against
+# hmac/hashlib/zlib, so MESSAGE-INTEGRITY and FINGERPRINT are validated
+# against an implementation that shares no code with ours (and a tampered one
+# of each must be rejected). No hardware, no daemon; exit code is the result.
+STUNTEST_SRC := scripts/test_stun.c src/webrtc/stun.c src/sha1.c
+test-stun:
+	$(HOSTCC) $(CFLAGS) -DUSE_WEBRTC -Isrc -Isrc/webrtc $(STUNTEST_SRC) \
+	  $(LDFLAGS) -o $(BIN)-stuntest
+	@python3 scripts/test_stun.py ./$(BIN)-stuntest; rc=$$?; rm -f $(BIN)-stuntest; exit $$rc
+
 strip: target
 	$(CROSS_COMPILE)strip $(BIN)
 
 clean:
-	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest
+	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest $(BIN)-stuntest

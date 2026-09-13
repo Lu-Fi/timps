@@ -297,6 +297,9 @@ void config_defaults(ms_config *c)
     copystr(c->http_tls_cert,"/etc/ssl/certs/timps.crt",128);
     copystr(c->http_tls_key,"/etc/ssl/private/timps.key",128);
     c->rtsp_tls=0; c->rtsp_tls_port=322;
+#ifdef USE_WEBRTC
+    c->webrtc_enabled=0; c->webrtc_port=0;
+#endif
     /* optional SRT output (USE_SRT builds): off by default */
     c->srt.enabled=0; c->srt.port=9000; c->srt.channel=0; c->srt.latency_ms=120;
     copystr(c->srt.mode,"listener",sizeof c->srt.mode);
@@ -860,6 +863,15 @@ static const cfg_field http_fields[] = {
     FS("tls_cert",    "cert",     http_tls_cert,    0),
     FS("tls_key",     "key",      http_tls_key,     0),
 };
+#ifdef USE_WEBRTC
+/* WHEP endpoint: startup settings, like the http.token* keys deliberately
+ * not settable via /control (a live cert swap would strand the sessions that
+ * already published its fingerprint in an SDP answer). */
+static const cfg_field webrtc_fields[] = {
+    F("enabled", 0, webrtc_enabled, T_BOOL, 0, 0,0),
+    F("port",    0, webrtc_port,    T_INT,  0, 0,65535),
+};
+#endif
 /* /events SSE push stream (startup settings, like the http.token* keys
  * deliberately not settable via /control) */
 static const cfg_field events_fields[] = {
@@ -1177,6 +1189,9 @@ static const cfg_section g_sections[] = {
     SEC("srt.",       1, offsetof(ms_config,srt),       srt_fields),
     SEC("http.",      1, 0,                             http_fields),
     SEC("events.",    1, 0,                             events_fields),
+#ifdef USE_WEBRTC
+    SEC("webrtc.",    1, 0,                             webrtc_fields),
+#endif
     SEC("osd.",       0, offsetof(ms_config,osd),       osd_fields),
     SEC("motion.",    0, offsetof(ms_config,motion),    motion_fields),
     SEC("record.",    0, offsetof(ms_config,record),    record_fields),

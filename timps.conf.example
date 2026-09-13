@@ -178,6 +178,17 @@ http.tls_key    = /etc/ssl/private/timps.key
 # rtsp.tls      = 1                       # additionally run an RTSPS listener
 # rtsp.tls_port = 322                     # RTSPS port
 
+# ---- WebRTC / WHEP (USE_WEBRTC builds) ----
+# POST /webrtc/whep on the HTTP port takes a browser's SDP offer and answers
+# as an ICE-lite peer (single host candidate, the address the client reached
+# us on), then completes the DTLS handshake as the passive side. The DTLS
+# identity is the http.tls_cert/http.tls_key pair above.
+# THIS BUILD ESTABLISHES THE TRANSPORT ONLY: the answer marks the video
+# m-section a=inactive, there is no SRTP and no RTP, so no media flows.
+# Access rules are the /control ones (localhost / ?token= / Basic).
+# webrtc.enabled = 0
+# webrtc.port    = 0                      # UDP media port (0 = ephemeral)
+
 # ---- SRT output (USE_SRT builds, libsrt) ----
 # MPEG-TS over SRT. Default mode is listener: ffplay srt://<ip>:9000
 # mode=caller dials out instead (camera behind NAT / unreliable uplink) and

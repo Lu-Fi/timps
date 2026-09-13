@@ -1,0 +1,86 @@
+<!doctype html>
+<!-- Standalone check that POST /webrtc/whep really brings up ICE + DTLS with
+     a real browser (USE_WEBRTC builds, webrtc.enabled=1). No media: this
+     milestone answers a=inactive.
+
+     Serve it over http (NOT file://, whose "null" Origin the daemon's CORS
+     reflection cannot answer), e.g.
+       python3 -m http.server 8099 --bind 127.0.0.1
+     then open
+       http://127.0.0.1:8099/whep-test.html?cam=<ip>:8880&token=<token>
+     with the token from /run/timps.token on the camera. The query form is
+     the only credential a cross-origin fetch can present here. -->
+<meta charset="utf-8">
+<title>timps WHEP transport test</title>
+<style>
+ body{font:13px/1.45 ui-monospace,monospace;background:#111;color:#ddd;margin:16px}
+ h1{font-size:15px}
+ #st div{padding:2px 0}
+ b{color:#8cf}
+ .ok{color:#7d7}.bad{color:#f77}
+ pre{background:#1a1a1a;padding:8px;white-space:pre-wrap;max-height:40vh;overflow:auto}
+</style>
+<h1>timps /webrtc/whep - ICE-lite + DTLS transport test</h1>
+<div id="st">
+  <div>signalling: <b id="sig">-</b></div>
+  <div>iceConnectionState: <b id="ice">-</b></div>
+  <div>connectionState: <b id="pcs">-</b></div>
+  <div>transport.dtlsState: <b id="dtls">-</b></div>
+  <div>selected pair: <b id="pair">-</b></div>
+</div>
+<h3>answer SDP</h3><pre id="ans"></pre>
+<h3>log</h3><pre id="log"></pre>
+<script>
+const CAM = new URLSearchParams(location.search).get('cam');
+const TOK = new URLSearchParams(location.search).get('token');
+const url = `http://${CAM}/webrtc/whep?token=${encodeURIComponent(TOK)}`;
+const $ = id => document.getElementById(id);
+const log = m => { $('log').textContent += m + "\n"; console.log(m); };
+
+(async () => {
+  const pc = new RTCPeerConnection({ iceServers: [] });
+  window.pc = pc;
+  pc.addTransceiver('video', { direction: 'recvonly' });
+  pc.oniceconnectionstatechange = () => {
+    $('ice').textContent = pc.iceConnectionState;
+    $('ice').className = /connected|completed/.test(pc.iceConnectionState) ? 'ok' : '';
+    log('iceConnectionState=' + pc.iceConnectionState);
+  };
+  pc.onconnectionstatechange = () => {
+    $('pcs').textContent = pc.connectionState;
+    $('pcs').className = pc.connectionState === 'connected' ? 'ok' : '';
+    log('connectionState=' + pc.connectionState);
+  };
+  pc.onicecandidateerror = e => log('icecandidateerror ' + e.errorCode + ' ' + e.errorText);
+
+  const offer = await pc.createOffer();
+  await pc.setLocalDescription(offer);
+  log('POST ' + url + ' (' + offer.sdp.length + ' bytes of offer)');
+  let res;
+  try {
+    res = await fetch(url, { method: 'POST',
+      headers: { 'Content-Type': 'application/sdp' }, body: offer.sdp });
+  } catch (e) { $('sig').textContent = 'fetch failed: ' + e; $('sig').className='bad'; return; }
+  const body = await res.text();
+  $('sig').textContent = res.status + ' ' + res.statusText;
+  $('sig').className = res.status === 201 ? 'ok' : 'bad';
+  log('HTTP ' + res.status + '  Location=' + res.headers.get('Location'));
+  if (res.status !== 201) { $('ans').textContent = body; return; }
+  $('ans').textContent = body;
+  await pc.setRemoteDescription({ type: 'answer', sdp: body });
+  log('remote description set');
+
+  setInterval(async () => {
+    const s = await pc.getStats();
+    s.forEach(r => {
+      if (r.type === 'transport') {
+        $('dtls').textContent = r.dtlsState + ' (' + (r.srtpCipher || 'no srtp') + ')';
+        $('dtls').className = r.dtlsState === 'connected' ? 'ok' : '';
+      }
+      if (r.type === 'candidate-pair' && r.state === 'succeeded' && r.nominated)
+        $('pair').textContent = r.state + ' rtt=' + r.currentRoundTripTime +
+                                ' req=' + r.requestsSent + ' resp=' + r.responsesReceived;
+    });
+  }, 500);
+})();
+</script>
