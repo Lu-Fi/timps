@@ -1507,20 +1507,21 @@ int control_get_json(char *buf, size_t cap)
         img.highlight_depress,img.backlight_compensation,
         img.core_wb_mode,img.wb_rgain,img.wb_bgain);
     {   /* full audio state: live keys + the persist-only (restart) keys */
-        char cod[16]="none";
+        char cod[16]="none", cod2[16]="none";
         config_get_kv(c, "audio.codec", cod, sizeof cod);   /* restart-only spelling */
+        config_get_kv(c, "audio.codec2", cod2, sizeof cod2);
         APP("\"audio\":{\"volume\":%d,\"gain\":%d,\"alc_gain\":%d,"
             "\"high_pass\":%d,\"agc\":%d,\"agc_target_dbfs\":%d,"
             "\"agc_compression_db\":%d,\"ns\":%d,\"mute\":%d,",
             aud.volume, aud.gain, aud.alc_gain,
             aud.high_pass, aud.agc, aud.agc_target_dbfs,
             aud.agc_compression_db, aud.ns, aud.mute);
-        APP("\"enabled\":%d,\"codec\":\"%s\",\"samplerate\":%d,"
+        APP("\"enabled\":%d,\"codec\":\"%s\",\"codec2\":\"%s\",\"samplerate\":%d,"
             "\"channels\":%d,\"bitrate\":%d,\"force_stereo\":%d,"
             "\"spk_enabled\":%d,\"spk_volume\":%d,\"spk_gain\":%d,"
             "\"backchannel\":%d,\"backchannel_codec\":%d,\"backchannel_rate\":%d,"
             "\"talk_ws\":%d,\"aec\":%d},",
-            aud.enabled, cod, aud.samplerate,
+            aud.enabled, cod, cod2, aud.samplerate,
             aud.channels, aud.bitrate_kbps, aud.force_stereo,
             aud.spk_enabled, aud.spk_volume, aud.spk_gain,
             aud.backchannel, aud.backchannel_codec, aud.backchannel_rate,

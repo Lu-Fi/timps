@@ -79,6 +79,7 @@ typedef struct {
     int                pt;                /* negotiated H264 payload type */
     uint32_t           ssrc;              /* promised in the answer's a=ssrc */
     int                have_audio;
+    int                asrc;              /* HUB_AUDIO_SRC or HUB_AUDIO_SRC2 */
     int                apt;               /* negotiated G.711 payload type */
     uint32_t           assrc;
     srtp_session       srtp;
@@ -394,7 +395,7 @@ static int same_addr(const struct sockaddr_in *a, const struct sockaddr_in *b)
 static void sess_release(wrtc_session *s)
 {
     if (s->subbed)   { hub_unsubscribe(s->chn, &s->q); s->subbed = 0; }
-    if (s->subbed_a) { hub_unsubscribe(HUB_AUDIO_SRC, &s->q); s->subbed_a = 0; }
+    if (s->subbed_a) { hub_unsubscribe(s->asrc, &s->q); s->subbed_a = 0; }
     if (s->qinit)  { fanqueue_free(&s->q); s->qinit = 0; }
     if (s->dtls) { ms_dtls_free(s->dtls); s->dtls = NULL; }
     if (s->fd >= 0) { close(s->fd); s->fd = -1; }
@@ -495,7 +496,7 @@ static int sess_start_media(wrtc_session *s)
      * carry their own media tag, so the ordering the hub published in is the
      * ordering that goes on the wire. */
     if (s->have_audio) {
-        if (hub_subscribe(HUB_AUDIO_SRC, &s->q) != 0) return -1;
+        if (hub_subscribe(s->asrc, &s->q) != 0) return -1;
         s->subbed_a = 1;
     }
     /* Same reason RTSP's PLAY does it: without a keyframe now the tab stays
@@ -781,10 +782,18 @@ int webrtc_whep(const char *offer, const char *local_ip,
      * than negotiating a codec that would never carry a packet. */
     sdp_msec *am = NULL;
     int apt = -1, acodec = MS_AC_NONE, arate = 0, ach = 0;
+    int asrc = HUB_AUDIO_SRC;
     for (int i = 0; i < off.nm; i++)
         if (!strcmp(off.m[i].kind, "audio")) { am = &off.m[i]; break; }
     if (am) {
+        /* Primary source first (unchanged behaviour when audio.codec is
+         * already G.711); otherwise the optional audio.codec2 side-encode,
+         * which exists precisely because AAC cannot ride this transport. */
         if (!hub_get_audio(&acodec, &arate, &ach)) acodec = MS_AC_NONE;
+        if (acodec != MS_AC_PCMU && acodec != MS_AC_PCMA) {
+            if (hub_get_audio2(&acodec, &arate, &ach)) asrc = HUB_AUDIO_SRC2;
+            else acodec = MS_AC_NONE;
+        }
         if ((acodec == MS_AC_PCMU || acodec == MS_AC_PCMA) &&
             strstr(am->proto, "SAVP") &&
             bundle_has(&off, vm->mid) && bundle_has(&off, am->mid))
@@ -808,7 +817,7 @@ int webrtc_whep(const char *offer, const char *local_ip,
     s->chn = chn;
     s->pt  = pt;
     memcpy(s->peer_fp, peer_fp, sizeof s->peer_fp);
-    if (am && am->accept) { s->have_audio = 1; s->apt = apt; }
+    if (am && am->accept) { s->have_audio = 1; s->apt = apt; s->asrc = asrc; }
 
     /* ICE credentials: auth_gen_token() is the /dev/urandom-backed generator
      * the control token already uses. 8 hex chars of ufrag and 32 of pwd sit
@@ -954,9 +963,10 @@ int webrtc_whep(const char *offer, const char *local_ip,
         return 503;
     }
     pthread_detach(s->thr);
-    LOGI(MOD, "%s: answered WHEP offer, ICE-lite candidate %s:%d, H264 pt=%d%s",
+    LOGI(MOD, "%s: answered WHEP offer, ICE-lite candidate %s:%d, H264 pt=%d%s%s",
          s->id, local_ip, s->port, pt,
-         s->have_audio ? (acodec == MS_AC_PCMA ? ", PCMA" : ", PCMU") : "");
+         s->have_audio ? (acodec == MS_AC_PCMA ? ", PCMA" : ", PCMU") : "",
+         s->have_audio && s->asrc == HUB_AUDIO_SRC2 ? " (codec2)" : "");
     return 201;
 }
 

@@ -194,6 +194,19 @@ static int  pacodec(const char *v){
     if (!strcasecmp(v,"none")||!strcasecmp(v,"off")) return MS_AC_NONE;
     return MS_AC_AAC;
 }
+/* audio.codec2: the OPTIONAL second encode, which only ever exists to feed
+ * WebRTC's G.711-only SRTP path. Deliberately NOT pacodec(): that one defaults
+ * an unknown word to AAC, which for a key whose whole point is "G.711 or
+ * nothing" would silently arm a codec the second source cannot produce. */
+static int  pacodec2(const char *v){
+    if (!strcasecmp(v,"pcmu")||!strcasecmp(v,"g711u")||!strcasecmp(v,"ulaw")||
+        !strcasecmp(v,"on")||!strcasecmp(v,"true")||!strcasecmp(v,"yes")||
+        !strcmp(v,"1")) return MS_AC_PCMU;
+    if (!strcasecmp(v,"none")||!strcasecmp(v,"off")||!strcasecmp(v,"false")||
+        !strcasecmp(v,"no")||!strcmp(v,"0")||!*v) return MS_AC_NONE;
+    LOGW(MOD,"audio.codec2 '%s' unsupported (pcmu or off) -> off", v);
+    return MS_AC_NONE;
+}
 /* canonical config-file spelling of an audio codec (inverse of pacodec) */
 static const char *acodec_name(int c){
     switch (c){
@@ -326,7 +339,8 @@ void config_defaults(ms_config *c)
     c->video[1].enabled=1; c->video[1].width=640; c->video[1].height=360;
     c->video[1].bitrate_kbps=512; copystr(c->video[1].rtsp_path,"/ch1",MS_MAX_STR);
 
-    c->audio.enabled=1; c->audio.codec=MS_AC_AAC; c->audio.samplerate=16000;
+    c->audio.enabled=1; c->audio.codec=MS_AC_AAC; c->audio.codec2=MS_AC_NONE;
+    c->audio.samplerate=16000;
     c->audio.channels=1; c->audio.bitrate_kbps=32;
     /* gain 25->15 (2026-09-08): 31 (max) clipped hard on a T20 (jxf23) camera
      * that already ran hot at the old default - listened A/B across a T20, a
@@ -592,6 +606,7 @@ enum {
     T_STR,      /* char[hi]: copystr()   <-> "%s" under config_str_lock   */
     T_VCODEC,   /* int: pvcodec()  <-> vcodec_name()                      */
     T_ACODEC,   /* int: pacodec()  <-> acodec_name()                      */
+    T_ACODEC2,  /* int: pacodec2() <-> acodec_name() ("pcmu"/"none")      */
     T_RC,       /* int: prc()      <-> rc_name()                          */
     T_ROT,      /* int: prot() (degrees/legacy + SoC whitelist) <-> "%d"  */
     T_OSDTYPE,  /* int: "logo"/"text"          <-> same                   */
@@ -776,6 +791,7 @@ static const cfg_field image_fields[] = {
 static const cfg_field audio_fields[] = {
     F ("enabled",            0, enabled,            T_BOOL,   F_CTRL, 0,0),
     F ("codec",              0, codec,              T_ACODEC, F_CTRL, 0,0),
+    F ("codec2",             0, codec2,             T_ACODEC2,F_CTRL, 0,0),
     F ("samplerate",         0, samplerate,         T_INT,    F_CTRL, 8000,96000),   /* F-09 */
     /* 1 = mono (native), 2 = simulated stereo (mono mic duplicated to L=R,
      * AAC only) - anything else would put a bogus channel count in the AAC
@@ -1303,6 +1319,7 @@ static void field_set(void *base, const cfg_field *f, const char *val)
     case T_STR:    copystr((char*)p, val, (size_t)f->hi); break;
     case T_VCODEC: *(int*)p = pvcodec(val); break;
     case T_ACODEC: *(int*)p = pacodec(val); break;
+    case T_ACODEC2:*(int*)p = pacodec2(val); break;
     case T_RC:     *(int*)p = prc(val); break;
     case T_ROT:    *(int*)p = prot(val); break;
     case T_OSDTYPE:*(int*)p = (!strcasecmp(val,"logo")) ? MS_OSD_LOGO
@@ -1367,7 +1384,8 @@ static int field_get(const void *base, const cfg_field *f, char *out, size_t cap
         config_str_unlock();
         break;
     case T_VCODEC: snprintf(out,cap,"%s",vcodec_name(*(const int*)p)); break;
-    case T_ACODEC: snprintf(out,cap,"%s",acodec_name(*(const int*)p)); break;
+    case T_ACODEC:
+    case T_ACODEC2:snprintf(out,cap,"%s",acodec_name(*(const int*)p)); break;
     case T_RC:     snprintf(out,cap,"%s",rc_name(*(const int*)p)); break;
     case T_OSDTYPE:snprintf(out,cap,"%s",
                        (*(const int*)p==MS_OSD_LOGO)?"logo":"text"); break;

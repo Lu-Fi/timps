@@ -314,6 +314,10 @@ static int   g_nv;
 static volatile int g_arun, g_aactive;
 static pthread_t    g_athr;
 static int          g_acodec = MS_AC_PCMU;   /* effective audio codec */
+static int          g_acodec2 = MS_AC_NONE;  /* audio.codec2: MS_AC_PCMU arms the
+                                              * extra G.711 encode on
+                                              * HUB_AUDIO_SRC2 (WebRTC) */
+static volatile int g_a2active;              /* HUB_AUDIO_SRC2 has subscribers */
 static int          g_asr    = 8000;         /* effective audio sample rate */
 static int          g_ach    = 1;            /* effective channel count published
                                               * to the hub: 2 = SIMULATED stereo
@@ -419,7 +423,7 @@ static void act_wait(int (*ready)(void *), void *arg)
  * false and the thread would re-wait up to the full 1 s, delaying shutdown. */
 static int act_ready_vchan(void *a){ vchan *vc=(vchan*)a; return !vc->run  || vc->active || hub_active(vc->chn); }
 static int act_ready_jchan(void *a){ jchan *jc=(jchan*)a; return !jc->run  || jc->active || hub_active(jc->src); }
-static int act_ready_audio(void *a){ (void)a;             return !g_arun  || g_aactive; }
+static int act_ready_audio(void *a){ (void)a;             return !g_arun  || g_aactive || g_a2active; }
 
 /* A FrameSource channel is enabled only while someone consumes its frames.
  * An enabled FS keeps the whole bound pipeline (FS -> OSD -> encoder group)
@@ -3541,6 +3545,43 @@ static int ai_apply_key(const char *k)
     return 0;
 }
 
+/* ---- audio.codec2: 16 kHz -> 8 kHz for the secondary G.711 encode -------
+ * The primary codec dictates the capture rate (AAC runs the AI at 16 kHz),
+ * but RTP G.711 is 8 kHz by definition - RFC 3551 assigns PCMU a fixed 8000
+ * clock and no browser accepts a PCMU/16000 rtpmap. Feeding the 16 kHz PCM
+ * through unchanged would ship double-rate samples under an 8 kHz label
+ * (2x-speed playback, unbounded jitter-buffer growth), so halve it properly.
+ * 11-tap Hamming-windowed sinc at fc = fs/4, Q15, ~3.5k MAC per 40 ms frame.
+ * The AI only ever runs at 8 or 16 kHz (ai_rate_enum), so 2:1 is the only
+ * ratio that ever has to exist here. */
+#define A2_TAPS 11
+static const int32_t A2_H[A2_TAPS] = {
+    166, 0, -1374, 0, 9453, 16278, 9453, 0, -1374, 0, 166
+};
+typedef struct { int16_t z[A2_TAPS-1]; } a2_state;   /* carry across frames */
+
+static size_t a2_decim2(a2_state *st, const int16_t *in, size_t n,
+                        int16_t *out, size_t outcap)
+{
+    int16_t w[(A2_TAPS-1) + 1024];   /* an AI frame is 40 ms: 320@8k, 640@16k */
+    if (n > sizeof w / sizeof w[0] - (A2_TAPS-1)) n = sizeof w / sizeof w[0] - (A2_TAPS-1);
+    memcpy(w, st->z, sizeof st->z);
+    memcpy(w + (A2_TAPS-1), in, n * sizeof(int16_t));
+    size_t m = n / 2;
+    if (m > outcap) m = outcap;
+    for (size_t k = 0; k < m; k++){
+        int32_t acc = 0;
+        for (int j = 0; j < A2_TAPS; j++) acc += A2_H[j] * (int32_t)w[2*k + j];
+        acc >>= 15;
+        if (acc >  32767) acc =  32767;
+        if (acc < -32768) acc = -32768;
+        out[k] = (int16_t)acc;
+    }
+    size_t tot = (A2_TAPS-1) + n;
+    memcpy(st->z, w + tot - (A2_TAPS-1), sizeof st->z);
+    return m;
+}
+
 static void *audio_thread(void *arg)
 {
     (void)arg;
@@ -3773,6 +3814,24 @@ static void *audio_thread(void *arg)
     }
     hub_set_audio_params(g_acodec, g_asr, g_ach);
 
+    /* audio.codec2: a SECOND G.711u encode of the same PCM on HUB_AUDIO_SRC2,
+     * purely for WebRTC. Pointless when the primary already IS G.711 (WebRTC
+     * subscribes to the primary then, exactly as before this key existed). */
+    int use_a2 = (g_acodec2==MS_AC_PCMU &&
+                  g_acodec!=MS_AC_PCMU && g_acodec!=MS_AC_PCMA);
+    int a2_div = 1;
+    if (use_a2){
+        if      (g_asr==8000)  a2_div = 1;
+        else if (g_asr==16000) a2_div = 2;
+        else { LOGW(MOD,"audio.codec2: %dHz capture cannot feed 8kHz G.711 - off",
+                    g_asr); use_a2 = 0; }
+    }
+    if (use_a2){
+        hub_set_audio2_params(MS_AC_PCMU, 8000, 1);
+        LOGI(MOD,"audio.codec2: second stream PCMU 8000Hz%s (WebRTC)",
+             a2_div==2 ? " (16k->8k)" : "");
+    }
+
     LOGI(MOD,"audio in: %dHz %s ch=%d%s vol=%d gain=%d numPerFrm=%d", g_asr,
          use_aac?"AAC":use_opus?"Opus":(g_acodec==MS_AC_PCMA?"PCMA":"PCMU"), g_ach,
          g_ach==2?" (simulated stereo)":"",
@@ -3800,10 +3859,15 @@ static void *audio_thread(void *arg)
      * audio_gap_resync()/fmp4 M2 insert phantom samples -> drift. */
     pts_sanitizer apts;
     memset(&apts, 0, sizeof apts);
+    pts_sanitizer apts2;                 /* codec2: own anchor, own frame rate */
+    memset(&apts2, 0, sizeof apts2);
+    a2_state a2_z; memset(&a2_z, 0, sizeof a2_z);
     int was_idle = 1;   /* also flushes any backlog buffered between AI-enable
                          * and the first subscriber (thread starts before them) */
+    int a1_idle = 1;    /* primary source has no subscribers (codec2 only) */
+    int a2_idle = 1;    /* HUB_AUDIO_SRC2 has no subscribers */
     while (g_arun) {
-        if (!g_aactive){ act_wait(act_ready_audio, NULL); was_idle = 1; continue; }
+        if (!g_aactive && !g_a2active){ act_wait(act_ready_audio, NULL); was_idle = 1; continue; }
         if (was_idle) {
             was_idle = 0;
             /* Resume from idle. Unlike the video encoder (StopRecvPic +
@@ -3838,6 +3902,9 @@ static void *audio_thread(void *arg)
                 drained++;
             }
             memset(&apts, 0, sizeof apts);   /* fresh capture-pts anchor */
+            memset(&apts2, 0, sizeof apts2);
+            memset(&a2_z, 0, sizeof a2_z);
+            a1_idle = 1; a2_idle = 1;
             if (drained)
                 LOGI(MOD, "audio resume: flushed %d stale AI frame(s)", drained);
         }
@@ -3900,7 +3967,45 @@ static void *audio_thread(void *arg)
         }
         const int16_t *pcm=(const int16_t*)frm.virAddr;
         size_t samples=frm.len/2;
-        if (use_aac) {
+        /* codec2: a second, independent G.711u pass over the SAME captured PCM,
+         * before the primary branch below (which clamps `samples` in place).
+         * Never a transcode - this is the pre-encode mic feed either way. */
+        if (use_a2 && !g_a2active) a2_idle = 1;
+        else if (use_a2){
+            int16_t ds[1024];
+            if (a2_idle){        /* new subscriber: fresh filter + pts anchor */
+                a2_idle = 0;
+                memset(&a2_z, 0, sizeof a2_z);
+                memset(&apts2, 0, sizeof apts2);
+            }
+            const int16_t *p2 = pcm;
+            size_t n2 = samples;
+            if (a2_div==2) { n2 = a2_decim2(&a2_z, pcm, samples, ds, sizeof ds/sizeof ds[0]); p2 = ds; }
+            else if (n2 > sizeof ds/sizeof ds[0]) n2 = sizeof ds/sizeof ds[0];
+            ms_pkt *pk2 = n2 ? hub_pkt_get(HUB_AUDIO_SRC2, n2) : NULL;
+            if (pk2){
+                g711_ulaw_encode(p2, n2, pk2->data);
+                pk2->len = n2;
+                int64_t a2_now = ms_now_us();
+                int64_t a2_pts = pts_sanitize(&apts2, frm.timeStamp, a2_now,
+                                              (int64_t)n2*1000000/8000,
+                                              PTS_SKEW_AUDIO_US);
+                hub_publish_take(HUB_AUDIO_SRC2, pk2, a2_pts, 0,
+                                 MS_MEDIA_AUDIO, a2_now);
+            }
+        }
+        if (g_aactive && a1_idle) {
+            /* the primary just got its first subscriber while codec2 alone kept
+             * this thread awake: drop the stale re-blocking remainder, re-anchor */
+            a1_idle = 0;
+#ifdef USE_FAAC
+            acc_n = 0;
+#endif
+            memset(&apts, 0, sizeof apts);
+        }
+        if (!g_aactive) {
+            a1_idle = 1;              /* nothing consumes the primary codec */
+        } else if (use_aac) {
 #ifdef USE_FAAC
             /* append into the accumulator, then drain in faac_in blocks.
              * Simulated stereo (g_ach==2): each mono AI sample is duplicated
@@ -4048,6 +4153,7 @@ static void *audio_thread(void *arg)
 #ifdef USE_STREAM_OPUS
     if (opus) opus_encoder_destroy(opus);
 #endif
+    hub_clear_audio2_params();
     /* Same disable sequence as the faac-fallback rebuild above, and it needs
      * the same lock for the same reason (Item-6/Item-1): clearing g_ai_up is
      * not enough on its own. A /control writer's g_ai_up test and its IMP_AI
@@ -4722,6 +4828,7 @@ static int ing_start(const ms_config *cfg)
          * T-series only does G.711/G.726 - there is no hardware AAC, so an
          * AAC request transparently degrades to PCMU (G.711u @ 8 kHz). */
         g_acodec = cfg->audio.codec;
+        g_acodec2 = cfg->audio.codec2;
 #if !defined(USE_FAAC) && !defined(IMP_AUDIO_ENC_TYPE_AAC)
         if (g_acodec==MS_AC_AAC){
             LOGW(MOD,"no AAC encoder (build with USE_FAAC) -> using PCMU (G.711u)");
@@ -4841,6 +4948,7 @@ fail:
 static void ing_set_active(int src, int on)
 {
     if (src==HUB_AUDIO_SRC){ g_aactive=on; }
+    else if (src==HUB_AUDIO_SRC2){ g_a2active=on; }
     else if (src>=HUB_JPEG_SRC && src<HUB_JPEG_SRC+HUB_NJPEG){
         for (int i=0;i<g_nj;i++) if (g_j[i].src==src){ g_j[i].active=on; break; }
     } else {

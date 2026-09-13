@@ -301,25 +301,25 @@ double hub_get_bitrate(int src)
     return kbps;
 }
 
-void hub_set_audio_params(int acodec, int samplerate, int channels)
+static void audio_set(int src, int acodec, int samplerate, int channels)
 {
-    hub_source *s = hub_get(HUB_AUDIO_SRC); if(!s) return;
+    hub_source *s = hub_get(src); if(!s) return;
     pthread_mutex_lock(&s->lock);
     s->active=1; s->acodec=acodec; s->samplerate=samplerate; s->channels=channels;
     pthread_mutex_unlock(&s->lock);
 }
 
-void hub_clear_audio_params(void)
+static void audio_clear(int src)
 {
-    hub_source *s = hub_get(HUB_AUDIO_SRC); if(!s) return;
+    hub_source *s = hub_get(src); if(!s) return;
     pthread_mutex_lock(&s->lock);
     s->active=0;
     pthread_mutex_unlock(&s->lock);
 }
 
-int hub_get_audio(int *acodec, int *samplerate, int *channels)
+static int audio_get(int src, int *acodec, int *samplerate, int *channels)
 {
-    hub_source *s = hub_get(HUB_AUDIO_SRC); if(!s) return 0;
+    hub_source *s = hub_get(src); if(!s) return 0;
     int act;
     pthread_mutex_lock(&s->lock);
     act = s->active;
@@ -329,6 +329,18 @@ int hub_get_audio(int *acodec, int *samplerate, int *channels)
     pthread_mutex_unlock(&s->lock);
     return act;
 }
+
+void hub_set_audio_params(int acodec, int samplerate, int channels)
+{ audio_set(HUB_AUDIO_SRC, acodec, samplerate, channels); }
+void hub_clear_audio_params(void) { audio_clear(HUB_AUDIO_SRC); }
+int  hub_get_audio(int *acodec, int *samplerate, int *channels)
+{ return audio_get(HUB_AUDIO_SRC, acodec, samplerate, channels); }
+
+void hub_set_audio2_params(int acodec, int samplerate, int channels)
+{ audio_set(HUB_AUDIO_SRC2, acodec, samplerate, channels); }
+void hub_clear_audio2_params(void) { audio_clear(HUB_AUDIO_SRC2); }
+int  hub_get_audio2(int *acodec, int *samplerate, int *channels)
+{ return audio_get(HUB_AUDIO_SRC2, acodec, samplerate, channels); }
 
 int hub_subscribe(int src, fanqueue *q)
 {

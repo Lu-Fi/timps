@@ -14,7 +14,13 @@
 #define HUB_JPEG_SRC    (MS_MAX_VSTREAM+1)
 #define HUB_NJPEG       (1+MS_MAX_VSTREAM)
 #define HUB_JPEG_SRC_N(i) (HUB_JPEG_SRC+1+(i))
-#define HUB_NSRC        (HUB_JPEG_SRC+HUB_NJPEG)
+/* Optional SECOND audio source (audio.codec2 = pcmu): the same captured PCM
+ * encoded a second time as G.711u, published alongside - never instead of -
+ * HUB_AUDIO_SRC. WebRTC is the only consumer: its SRTP audio path carries
+ * G.711 only, while RTSP/fMP4/record want AAC. Appended AFTER the JPEG block
+ * so every existing source id keeps its number. */
+#define HUB_AUDIO_SRC2  (HUB_JPEG_SRC+HUB_NJPEG)
+#define HUB_NSRC        (HUB_AUDIO_SRC2+1)
 #define HUB_MAX_SUBS    16
 
 typedef struct hub_source {
@@ -110,6 +116,12 @@ int         hub_get_audio(int *acodec, int *samplerate, int *channels);
  * config time). Clients that (re)connect after this point no longer see an
  * audio track advertised; already-open sessions are unaffected. */
 void        hub_clear_audio_params(void);
+/* Same three calls for HUB_AUDIO_SRC2. Independent state: the secondary is
+ * advertised only once the HAL really starts the extra encode pass, so a
+ * consumer that finds it inactive simply falls back to the primary source. */
+void        hub_set_audio2_params(int acodec, int samplerate, int channels);
+void        hub_clear_audio2_params(void);
+int         hub_get_audio2(int *acodec, int *samplerate, int *channels);
 
 /* On-demand: HAL registers an activity callback. The hub invokes it with
  * active=1 when a source gets its first subscriber and active=0 when the last

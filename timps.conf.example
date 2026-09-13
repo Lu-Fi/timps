@@ -184,9 +184,11 @@ http.tls_key    = /etc/ssl/private/timps.key
 # us on), then completes the DTLS handshake as the passive side. The DTLS
 # identity is the http.tls_cert/http.tls_key pair above.
 # Media is H264 video over SRTP (SRTP_AES128_CM_HMAC_SHA1_80), plus G.711
-# audio when - and only when - audio.codec below is pcmu or pcma: an offered
-# audio m-section is answered with port 0 for aac/opus/none, rather than
-# negotiating a codec nothing would ever be sent on. No retransmission/NACK,
+# audio when the daemon actually produces G.711: either audio.codec below is
+# pcmu/pcma, or audio.codec2 = pcmu arms the second encode WebRTC can use
+# while RTSP/fMP4/record keep the AAC primary. Without one of those an offered
+# audio m-section is answered with port 0, rather than negotiating a codec
+# nothing would ever be sent on. No retransmission/NACK,
 # no FEC, no congestion control. The browser must offer an H264 payload type
 # with packetization-mode=1 or the offer is refused; the answer's
 # profile-level-id comes from the live SPS, so a videoN.profile the browser
@@ -407,6 +409,14 @@ video1.imp_chn   = 1
 audio.enabled            = 1
 audio.codec              = aac    # aac | pcmu | pcma | opus | none  (persist +
                                   #   restart; opus needs USE_STREAM_OPUS)
+# Second, independent encode of the SAME captured PCM as G.711u, published on
+# its own hub source. It exists for one consumer: WebRTC/WHEP carries G.711 and
+# nothing else, so on the usual audio.codec = aac camera a WHEP session gets no
+# audio at all. With this on, WebRTC takes the G.711 stream and RTSP, the fMP4
+# preview and recordings keep the AAC primary, untouched. Ignored (and not
+# encoded) when audio.codec is already pcmu/pcma. A 16 kHz capture is filtered
+# and halved to the 8 kHz G.711 clock; any other rate disables the key.
+# audio.codec2           = pcmu   # pcmu | off (default off) (persist + restart)
 audio.samplerate         = 16000  # 8000-96000 Hz              (persist + restart)
 audio.channels           = 1      # 1 mono | 2 = simulated stereo (dual-mono),
                                   # AAC only               (persist + restart)
