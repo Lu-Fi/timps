@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.9.15] - 2026-09-15
+
 ### Added
 
 - **`GET /control?dn_history=1` — the day/night tuning series, kept by the
