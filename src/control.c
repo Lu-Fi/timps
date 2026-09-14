@@ -1177,6 +1177,7 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
          * rather than from *d now. */
         "\"ir_ratio_night\":%g,\"ir_ratio_day\":%g,\"ir_min_headroom\":%d,"
         "\"boot_probe\":%d,\"boot_settle_s\":%d,"
+        "\"diagnose_thresholds\":%d,"
         "\"dn_mode\":\"%s\","
         "\"time_night_start\":\"%s\",\"time_day_start\":\"%s\","
         "\"sun_latitude\":%g,\"sun_longitude\":%g,"
@@ -1195,6 +1196,7 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
         d->heartbeat_s, d->heartbeat_max_s,
         (double)DN_IR_RATIO_NIGHT, (double)DN_IR_RATIO_DAY, DN_IR_MIN_HEADROOM,
         d->boot_probe, DN_BOOT_SETTLE_S,
+        d->diagnose_thresholds,
         dnmode,
         etns, etds,
         (double)d->sun_latitude, (double)d->sun_longitude,
