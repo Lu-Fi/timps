@@ -24,21 +24,16 @@ semantic versioning.
     allocated on the first push and resized in place (carrying the retained
     samples over) when the key changes; at the default `0` the allocation
     never happens, so a camera nobody is watching carries nothing.
-  - **The tuning page drives the key**: opening it POSTs `history_s=14400`
-    (4 h) if collection is off, so the graph fills as it did before the ring
-    existed, and closing the tab POSTs it back to `0` via `sendBeacon`. A
-    **"collect in background" switch** on the page suppresses that teardown,
-    which is what leaves the daemon collecting the hours you were not
-    watching. The switch reads the live `retain_s` the endpoint reports, so it
-    shows the truth on load rather than a remembered local state.
-  - A POST of this key applies live but is **never written back to
-    `timps.conf`** — the first key to carry the new `F_NOPERSIST` flag
-    (`src/config.h`, `src/config.c`, `src/control.c`). A key a page toggles
-    twice per visit must not churn flash, and making it transient means a
-    teardown that never ran (browser killed, laptop lid) is undone by the next
-    reboot instead of leaving a camera collecting forever. Setting it by hand
-    in `timps.conf` still works and is the way to ask for collection that
-    outlives a restart.
+  - **Collection is opt-in and decoupled from the page's lifetime.** Merely
+    opening the tuning graph does not turn it on: with the ring off the page
+    collects live over SSE into the tab, exactly as it did before the ring
+    existed. A **"collect in background" switch** is the only thing that POSTs
+    the key, and it stays where the user left it — closing the tab, or opening
+    a second one, changes nothing. Open the page while the ring IS on and it
+    plots the ring instead, which is the point of the daemon holding the
+    series. The switch reads the live `retain_s` the endpoint reports, so it
+    shows the truth on load rather than a remembered local state, and it
+    persists like every other key: an explicit opt-in should survive a reboot.
   - Cursor paging, the same discipline as the motion snapshot ring:
     `?last=N` backfills from the newest N, `?since=S` tails, each response
     carries at most 600 rows plus `head`/`oldest`/`next`/`lapped` so a client

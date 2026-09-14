@@ -543,10 +543,9 @@ void config_defaults(ms_config *c)
     copystr(c->daynight.isp_path,"/proc/jz/isp/isp-m0",sizeof c->daynight.isp_path);
     c->daynight.trace_path[0]=0;   /* trace recorder off by default */
     c->daynight.diagnose_thresholds=0; /* threshold warns off by default */
-    /* Off: a camera nobody is watching must not carry the ring. The tuning
-     * page turns it on for as long as it is open and back off on close; only
-     * an explicit "collect in background" (there, or in timps.conf) leaves it
-     * standing. Nothing is allocated until a sample is pushed at non-zero. */
+    /* Off: a camera nobody is watching must not carry the ring. Collection is
+     * opt-in - the tuning page's switch, or this key by hand - and nothing is
+     * allocated until a sample is pushed at non-zero. */
     c->daynight.history_s=0;
 
     c->sim_video0[0]=0; c->sim_video1[0]=0; c->sim_audio[0]=0;
@@ -1086,9 +1085,8 @@ static const cfg_field daynight_fields[] = {
     F ("interval_ms",                0, interval_ms,                T_INT,   F_CTRL, 100,60000),
     F ("diagnose_thresholds",        0, diagnose_thresholds,        T_INT,   F_CTRL, 0,1),
     /* 172800 = 48 h, the hard ceiling on what the ring may allocate (270 KiB
-     * at 16 B per 10 s sample); 0 = off. F_NOPERSIST: the tuning page toggles
-     * this every time it is opened and closed - see the flag in config.h. */
-    F ("history_s",                  0, history_s,                  T_INT,   F_CTRL|F_NOPERSIST, 0,172800),
+     * at 16 B per 10 s sample); 0 = off. */
+    F ("history_s",                  0, history_s,                  T_INT,   F_CTRL, 0,172800),
     /* NOT F_CTRL - see the comment above (security boundary): a path the
      * daemon writes to as root must never be POSTable (arbitrary-file-write
      * primitive) - file-only. */
@@ -1446,15 +1444,6 @@ int config_key_is_str(const char *key)
 {
     const cfg_field *f = field_for_key(key);
     return f && f->type == T_STR;
-}
-
-/* public: may a /control POST of this key be written back to the config file?
- * Fail-safe in the same direction as the above: an unknown key answers "not
- * transient", i.e. persist, which is what every key did before this existed. */
-int config_key_is_transient(const char *key)
-{
-    const cfg_field *f = field_for_key(key);
-    return f && (f->flags & F_NOPERSIST);
 }
 
 static void set_kv(ms_config *c, const char *key, const char *val)
