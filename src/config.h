@@ -69,9 +69,11 @@ typedef struct {
     int      codec;          /* enum ms_acodec */
     /* Optional SECOND encode of the same captured PCM, published on
      * HUB_AUDIO_SRC2 and consumed only by WebRTC (whose SRTP audio path
-     * carries G.711 and nothing else). MS_AC_NONE (default) = off, or
-     * MS_AC_PCMU. Ignored when `codec` is already G.711 - WebRTC then uses
-     * the primary source, as it always has. Restart-required. */
+     * carries G.711 and nothing else). Defaults to MS_AC_PCMU on USE_WEBRTC
+     * builds (mirrors webrtc_enabled's own default) - a G.711 encode is
+     * cheap enough that there's no reason to make WebRTC audio opt-in.
+     * MS_AC_NONE otherwise. Ignored when `codec` is already G.711 - WebRTC
+     * then uses the primary source, as it always has. Restart-required. */
     int      codec2;         /* MS_AC_NONE or MS_AC_PCMU */
     int      samplerate;
     int      channels;

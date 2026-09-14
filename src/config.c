@@ -339,7 +339,12 @@ void config_defaults(ms_config *c)
     c->video[1].enabled=1; c->video[1].width=640; c->video[1].height=360;
     c->video[1].bitrate_kbps=512; copystr(c->video[1].rtsp_path,"/ch1",MS_MAX_STR);
 
-    c->audio.enabled=1; c->audio.codec=MS_AC_AAC; c->audio.codec2=MS_AC_NONE;
+    c->audio.enabled=1; c->audio.codec=MS_AC_AAC;
+#ifdef USE_WEBRTC
+    c->audio.codec2=MS_AC_PCMU;   /* WebRTC audio needs G.711; see config.h */
+#else
+    c->audio.codec2=MS_AC_NONE;
+#endif
     c->audio.samplerate=16000;
     c->audio.channels=1; c->audio.bitrate_kbps=32;
     /* gain 25->15 (2026-09-08): 31 (max) clipped hard on a T20 (jxf23) camera
