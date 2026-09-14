@@ -1152,6 +1152,9 @@ static int http_cors(const char *buf, char *out, int cap)
  * the oldest), with a resample+dedup pass only as initial-state/resync.
  * daynight/stats stay level-sampled with per-connection dedup; the full
  * state goes out once on connect and stats tick every events.stats_ms.
+ * &raw=1 drops the daynight dedup for that one connection and ticks it at
+ * daynight.interval_ms instead - for the tuning graph, which needs the series,
+ * not the changes.
  * A ": ping" comment goes out when nothing happened for a while so dead
  * clients are detected promptly and proxies keep the stream open. */
 
@@ -1325,6 +1328,12 @@ static void events_stream(hconn *c, const char *path, const char *cors)
 
     /* ?stream= filter: absent = all; present = only the listed types */
     int want_motion = 1, want_dn = 1, want_stats = 1, want_config = 1;
+    /* &raw=1: push a daynight event every daynight.interval_ms instead of only
+     * on a meaningful change. The dedup below exists so an idle WebUI tab costs
+     * nothing, but it makes the tuning graph (tool-sensor-data) useless - a
+     * static scene yields ONE point (the on-connect snapshot) per session while
+     * the detector is sampling all along. Opt-in, per connection. */
+    int dn_raw = strstr(path, "raw=1") != NULL;
     const char *f = strstr(path, "stream=");
     if (f){
         char fl[80]; int i = 0;
@@ -1375,6 +1384,8 @@ static void events_stream(hconn *c, const char *path, const char *cors)
     float ld_b = 0.0f, ld_g = 0.0f;
     int stats_ms = cfg->events_stats_ms;
     int64_t next_stats = (want_stats && stats_ms > 0) ? ms_now_us() : INT64_MAX;
+    int dn_ms = cfg->daynight.interval_ms > 0 ? cfg->daynight.interval_ms : 2000;
+    int64_t next_dn = (want_dn && dn_raw) ? ms_now_us() : INT64_MAX;
     int64_t last_write = ms_now_us();
     unsigned gen = events_generation();
     unsigned mq_cur = events_motion_cursor();     /* private snapshot cursor */
@@ -1421,10 +1432,14 @@ static void events_stream(hconn *c, const char *path, const char *cors)
             daynight_get_status(&en, &mode, &b, &g, &ex, &lu, &nb, &dt, &ds);
             float db = b - ld_b; if (db < 0) db = -db;
             float dg = g - ld_g; if (dg < 0) dg = -dg;
+            int due = dn_raw && ms_now_us() >= next_dn;
+            if (due) next_dn = ms_now_us() + (int64_t)dn_ms * 1000;
             /* change thresholds match the producer filter in daynight.c */
-            if (!have_d || en != ld_en || mode != ld_mode || ds != ld_ds ||
-                db >= 1.0f ||
-                dg >= (ld_g > 0.0f ? ld_g * 0.05f : 8.0f)){
+            if (due ||
+                (!dn_raw &&
+                 (!have_d || en != ld_en || mode != ld_mode || ds != ld_ds ||
+                  db >= 1.0f ||
+                  dg >= (ld_g > 0.0f ? ld_g * 0.05f : 8.0f)))){
                 ld_en = en; ld_mode = mode; ld_b = b; ld_g = g; ld_ds = ds;
                 have_d = 1;
                 if (control_daynight_json(js, sizeof js, en, mode, b, g, ex,
@@ -1478,6 +1493,10 @@ static void events_stream(hconn *c, const char *path, const char *cors)
         if (next_stats != INT64_MAX){
             int sms = (int)((next_stats - ms_now_us())/1000);
             if (sms < wait_ms) wait_ms = sms;
+        }
+        if (next_dn != INT64_MAX){
+            int dms = (int)((next_dn - ms_now_us())/1000);
+            if (dms < wait_ms) wait_ms = dms;
         }
         if (wait_ms < 25) wait_ms = 25;           /* coalesce notify bursts */
         gen = events_wait(gen, wait_ms);
