@@ -6,6 +6,37 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- **`GET /control?dn_history=1` — the day/night tuning series, kept by the
+  daemon** (`src/events.c`, `src/events.h`, `src/daynight.c`, `src/control.c`,
+  `src/mp4/httpd.c`, `src/config.c`, `src/config.h`). The WebUI tuning graph
+  (`tool-sensor-data`) could only ever plot what arrived while its tab was
+  open and focused, and it cannot fix that on its own: the WebUI is plain HTTP
+  on a LAN IP, so `navigator.serviceWorker` is `undefined` (Service Workers
+  need a secure context) and a hidden or closed tab collects nothing. So the
+  series moves into the daemon — a ring the detection thread appends to every
+  10 s, which the page pages through with a cursor.
+  - **`daynight.history_s`** (new, default `14400` = 4 h, `0` = off) sets the
+    retention, clamped to a **48 h ceiling** (`172800`). The ring is 16 bytes
+    per sample — monotonic timestamp, `total_gain`, the exposure index,
+    `ae_luma`, brightness %, mode — so 4 h costs 22.5 KB and the ceiling
+    270 KB. Heap, allocated on the first push and resized in place (carrying
+    the retained samples over) when the key changes, rather than standing at
+    the ceiling on every camera that never opens the page.
+  - Cursor paging, the same discipline as the motion snapshot ring:
+    `?last=N` backfills from the newest N, `?since=S` tails, each response
+    carries at most 600 rows plus `head`/`oldest`/`next`/`lapped` so a client
+    that fell out of the retained window refetches instead of splicing across
+    a hole.
+  - Every response pairs `t_now` (the daemon's monotonic second, which the
+    samples are stamped with) with `wall_now`. The camera boots without NTP
+    and its wall clock steps mid-session; re-deriving labels from that pair on
+    each response moves the whole series together instead of tearing it.
+  - This **replaces** `?stream=daynight&raw=1` (reverted): an SSE tick and a
+    polled ring covering the same series would only create a
+    duplicate-vs-discarded-sample seam at the boundary.
+
 ### Changed
 
 - **The HTTP port serves `http://` and `https://` at the same time, chosen per

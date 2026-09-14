@@ -33,6 +33,7 @@
 #include <stdlib.h>
 #include <ctype.h>
 #include <math.h>
+#include <time.h>
 #include <pthread.h>   /* serialize concurrent control_apply_json POSTs (A1) */
 #ifdef USE_PLAY
 #include <dirent.h>
@@ -1927,6 +1928,64 @@ int control_fields_json(char *buf, size_t cap)
     if (o>0 && o<=cap && buf[o-1]==',') o--;
     APP("}");
     #undef APP
+    if (o >= cap){ if (cap) buf[cap-1]=0; return -1; }   /* truncated */
+    return (int)o;
+}
+
+/* ---------- GET /control?dn_history=1: the daynight tuning series -------- */
+/* See control.h. Rows are arrays, not objects: at 600 rows a per-row key set
+ * would roughly triple the body for no information. */
+int control_dn_history_json(char *buf, size_t cap, unsigned since, int last,
+                            int max)
+{
+    if (max < 1) max = 1;
+    if (max > DN_HISTORY_MAX_ROWS) max = DN_HISTORY_MAX_ROWS;
+
+    unsigned head = 0, oldest = 0;
+    int ringcap = 0, lapped = 0;
+    uint32_t t_now = 0;
+    events_dn_hist_stat(&head, &oldest, &ringcap, &t_now);
+
+    /* ?last=N is "the newest N", i.e. a backfill on page load; ?since=S is
+     * the live tail. last wins when both are given. N is deliberately NOT
+     * capped at max: it only picks the START, so asking for more than one
+     * response holds just means the client follows "next" a few more times. */
+    unsigned from = since;
+    if (last > 0) {
+        unsigned want = (unsigned)last;
+        from = (head - oldest > want) ? head - want : oldest;
+    }
+
+    ms_dn_sample *rows = (ms_dn_sample *)malloc((size_t)max * sizeof *rows);
+    if (!rows) return -2;
+    int n = events_dn_hist_range(&from, max, rows, &lapped);
+
+    ms_daynight_cfg dcfg;
+    config_str_lock();
+    dcfg = g_cfg.daynight;
+    config_str_unlock();
+
+    size_t o = 0;
+    #define APP(...) do { \
+        int _n = snprintf(o<cap?buf+o:buf, o<cap?cap-o:0, __VA_ARGS__); \
+        if (_n>0) o += (size_t)_n; \
+    } while (0)
+    /* t_now/wall_now are paired so the client can place every sample on its
+     * own wall clock: the camera boots without NTP and the wall clock steps
+     * mid-session, which would otherwise smear the whole series. */
+    APP("{\"t_now\":%u,\"wall_now\":%lld,\"period_s\":%d,\"retain_s\":%d,"
+        "\"cap\":%d,\"head\":%u,\"oldest\":%u,\"since\":%u,\"next\":%u,"
+        "\"lapped\":%d,\"day_gain\":%g,\"night_gain\":%g,\"samples\":[",
+        t_now, (long long)time(NULL), DN_HIST_PERIOD_S, dcfg.history_s,
+        ringcap, head, oldest, from - (unsigned)n, from, lapped,
+        (double)dcfg.day_gain, (double)dcfg.night_gain);
+    for (int i = 0; i < n; i++)
+        APP("%s[%u,%.0f,%.0f,%d,%d,%d]", i?",":"",
+            rows[i].t, (double)rows[i].gain, (double)rows[i].exposure,
+            rows[i].luma, rows[i].bright, rows[i].mode);
+    APP("]}");
+    #undef APP
+    free(rows);
     if (o >= cap){ if (cap) buf[cap-1]=0; return -1; }   /* truncated */
     return (int)o;
 }

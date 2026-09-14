@@ -23,7 +23,37 @@
  * /events endpoint to wake). */
 #ifndef MS_EVENTS_H
 #define MS_EVENTS_H
+#include <stdint.h>
 #include "hal/imp_motion.h"    /* ms_motion_status (queued snapshot type) */
+
+/* ---- daynight decision history -----------------------------------------
+ * A second, much longer ring than the motion one: the WebUI tuning graph
+ * (tool-sensor-data) needs a SERIES over hours, and it cannot collect one
+ * itself - the WebUI is plain HTTP on a LAN IP, so navigator.serviceWorker is
+ * undefined and a hidden or closed tab collects nothing. So the daemon keeps
+ * the series and the page just pages through it with a cursor.
+ *
+ * Same cursor discipline as the motion ring: the seq counts every sample ever
+ * pushed and is never reset, so a client cursor stays meaningful across a
+ * resize; a client further behind than the ring retains is told it lapped and
+ * refetches from the oldest sample instead of silently getting a hole. */
+#define DN_HIST_PERIOD_S 10      /* decimation: one retained sample per N s */
+
+typedef struct {
+    uint32_t t;         /* CLOCK_MONOTONIC seconds at push (filled by push) */
+    float    gain;      /* total_gain, IMP [24.8] linear; -1 unknown */
+    float    exposure;  /* the exposure index the decision runs on; -1 unknown */
+    int16_t  luma;      /* ae_luma 0..255, rounded; -1 unknown */
+    int8_t   bright;    /* brightness 0..100 %, rounded; -1 unknown */
+    int8_t   mode;      /* 0 day, 1 night, -1 unknown */
+} ms_dn_sample;         /* 16 B; 48 h at DN_HIST_PERIOD_S = 270 KiB */
+
+/* producer (daynight.c, one call per DN_HIST_PERIOD_S): append a sample.
+ * retain_s (daynight.history_s, already clamped to 0..48 h by config.c) rides
+ * along so the ring follows a live reconfiguration without events.c having to
+ * reach into g_cfg; 0 frees the ring. Never blocks, never fails loudly - a
+ * failed allocation just leaves the previous ring in place. */
+void events_dn_hist_push(ms_dn_sample *s, int retain_s);
 
 /* producers: wake all /events subscribers ("some observable state changed") */
 void events_notify(void);
@@ -71,6 +101,25 @@ int events_motion_pop(unsigned *cursor, ms_motion_status *out);
 unsigned events_config_cursor(void);
 int events_config_resync(unsigned *cursor);
 int events_config_pop(unsigned *cursor, char *key, int keycap, char *val, int valcap);
+
+/* daynight history readers (control.c, serving GET /control?dn_history=1).
+ *
+ * events_dn_hist_stat() reports the window: *head is the seq the next push
+ * will use (i.e. one past the newest sample), *oldest the lowest seq still
+ * retained, *cap the ring's current capacity in samples and *t_now the same
+ * monotonic second the samples are stamped with, so a client can convert a
+ * sample's t into wall time against its own clock and stay correct across an
+ * NTP step. Any pointer may be NULL.
+ *
+ * events_dn_hist_range() copies up to max samples starting at *from into out,
+ * advances *from past them and returns the count. A *from below the retained
+ * window is snapped up to the oldest retained sample and *lapped (may be
+ * NULL) is set to 1 - the client then knows its series has a hole and should
+ * refetch rather than splice. */
+void events_dn_hist_stat(unsigned *head, unsigned *oldest, int *cap,
+                         uint32_t *t_now);
+int  events_dn_hist_range(unsigned *from, int max, ms_dn_sample *out,
+                          int *lapped);
 #endif
 
 #endif

@@ -438,6 +438,18 @@ typedef struct {
      * trace_path it is safe on the /control surface (names no path, writes no
      * file), so it can be toggled live while investigating. */
     int      diagnose_thresholds;
+    /* In-RAM decision-history ring for the WebUI tuning graph, in seconds of
+     * retention (0 = off, ceiling 48 h enforced by the config table's clamp).
+     * One 16-byte sample per DN_HIST_PERIOD_S, so the ceiling costs 270 KiB
+     * and the 4 h default 22.5 KiB - allocated only once a sample is actually
+     * pushed, freed again when this goes to 0.
+     *
+     * Distinct from trace_path above: that one is a write-only CSV for
+     * post-mortem replay, this is a readable, cursor-paged series that
+     * survives the browser tab being hidden, closed or reloaded - which is
+     * the whole point, since the WebUI is served over plain HTTP and so has
+     * no Service Worker to collect in the background with. */
+    int      history_s;
 } ms_daynight_cfg;
 
 typedef struct {

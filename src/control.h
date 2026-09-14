@@ -210,4 +210,22 @@ int  control_get_json(char *buf, size_t cap);
  * index 0. Returns the byte count like control_get_json, or -1 if truncated. */
 int  control_fields_json(char *buf, size_t cap);
 
+/* GET /control?dn_history=1: the daynight decision series the WebUI tuning
+ * graph plots, paged out of the in-RAM ring in events.c.
+ *
+ * ?last=N  backfills from the newest N samples (page load / lapped-cursor
+ * resync); ?since=S tails from a cursor. Either way a response carries at
+ * most DN_HISTORY_MAX_ROWS rows - a client with more to catch up on just
+ * follows "next" again until it equals "head". The answer carries head/oldest/next/lapped so a
+ * client can tell "nothing new" from "I fell out of the window", plus a
+ * t_now/wall_now pair: samples are stamped monotonically because the camera
+ * boots without NTP, so the client re-derives wall times from that pair on
+ * every response and a mid-session clock step moves the whole series
+ * together instead of tearing it.
+ *
+ * Returns the byte count, -1 if truncated, -2 on allocation failure. */
+#define DN_HISTORY_MAX_ROWS 600
+int  control_dn_history_json(char *buf, size_t cap, unsigned since, int last,
+                             int max);
+
 #endif

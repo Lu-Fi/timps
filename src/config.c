@@ -543,6 +543,10 @@ void config_defaults(ms_config *c)
     copystr(c->daynight.isp_path,"/proc/jz/isp/isp-m0",sizeof c->daynight.isp_path);
     c->daynight.trace_path[0]=0;   /* trace recorder off by default */
     c->daynight.diagnose_thresholds=0; /* threshold warns off by default */
+    /* 4 h of tuning history = 22.5 KiB, enough to cover a whole dusk or dawn
+     * (the only transitions worth graphing) without a standing cost that
+     * needs justifying on a camera that never opens the page. */
+    c->daynight.history_s=14400;
 
     c->sim_video0[0]=0; c->sim_video1[0]=0; c->sim_audio[0]=0;
 }
@@ -1080,6 +1084,9 @@ static const cfg_field daynight_fields[] = {
     F ("boot_probe",                 0, boot_probe,                 T_INT,   F_CTRL, 0,1),
     F ("interval_ms",                0, interval_ms,                T_INT,   F_CTRL, 100,60000),
     F ("diagnose_thresholds",        0, diagnose_thresholds,        T_INT,   F_CTRL, 0,1),
+    /* 172800 = 48 h, the hard ceiling on what the ring may allocate (270 KiB
+     * at 16 B per 10 s sample); 0 = off. */
+    F ("history_s",                  0, history_s,                  T_INT,   F_CTRL, 0,172800),
     /* NOT F_CTRL - see the comment above (security boundary): a path the
      * daemon writes to as root must never be POSTable (arbitrary-file-write
      * primitive) - file-only. */

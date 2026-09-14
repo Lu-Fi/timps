@@ -8,7 +8,11 @@
 #include <pthread.h>
 #include <time.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include "log.h"
+
+#define MOD "events"
 
 static pthread_mutex_t g_mu   = PTHREAD_MUTEX_INITIALIZER;
 static pthread_once_t  g_once = PTHREAD_ONCE_INIT;
@@ -172,6 +176,104 @@ int events_config_pop(unsigned *cursor, char *key, int keycap, char *val, int va
     return got;
 }
 
+/* daynight decision history ring - see events.h. Heap, not BSS: the 48 h
+ * ceiling is 270 KiB and most cameras never open the tuning graph, so the
+ * allocation follows daynight.history_s instead of always standing at the
+ * maximum. That is safe to resize under load precisely because every access
+ * (push, stat, range) happens inside g_mu - a reader can never be holding a
+ * pointer into the old buffer while the producer frees it. */
+static pthread_mutex_t g_dnh_mu = PTHREAD_MUTEX_INITIALIZER;
+static ms_dn_sample   *g_dnh;
+static unsigned        g_dnh_cap;
+static unsigned        g_dnh_seq;    /* every sample ever pushed */
+
+static uint32_t mono_sec(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    return (uint32_t)ts.tv_sec;
+}
+
+/* caller holds g_dnh_mu */
+static void dnh_resize(unsigned newcap)
+{
+    if (newcap == g_dnh_cap) return;
+    if (!newcap) {
+        free(g_dnh); g_dnh = NULL; g_dnh_cap = 0;
+        LOGI(MOD, "daynight history off");
+        return;
+    }
+    ms_dn_sample *nb = (ms_dn_sample *)calloc(newcap, sizeof *nb);
+    if (!nb) {
+        static int warned;       /* retried every sample - say so only once */
+        if (!warned++)
+            LOGW(MOD, "daynight history: cannot allocate %u samples, keeping %u",
+                 newcap, g_dnh_cap);
+        return;
+    }
+    /* carry the newest samples over rather than dropping the series on the
+     * floor every time the retention is nudged; g_dnh_seq stays monotonic so
+     * client cursors survive the re-layout */
+    unsigned have = g_dnh_seq < g_dnh_cap ? g_dnh_seq : g_dnh_cap;
+    unsigned keep = have < newcap ? have : newcap;
+    for (unsigned i = 0; i < keep; i++) {
+        unsigned s = g_dnh_seq - keep + i;
+        nb[s % newcap] = g_dnh[s % g_dnh_cap];
+    }
+    free(g_dnh);
+    g_dnh = nb; g_dnh_cap = newcap;
+    LOGI(MOD, "daynight history %u samples (%u s, %u B)",
+         newcap, newcap * DN_HIST_PERIOD_S,
+         (unsigned)(newcap * sizeof *nb));
+}
+
+void events_dn_hist_push(ms_dn_sample *s, int retain_s)
+{
+    unsigned want = (retain_s > 0)
+                  ? (unsigned)retain_s / DN_HIST_PERIOD_S : 0;
+    if (retain_s > 0 && !want) want = 1;
+    pthread_mutex_lock(&g_dnh_mu);
+    dnh_resize(want);
+    if (g_dnh_cap) {
+        s->t = mono_sec();
+        g_dnh[g_dnh_seq % g_dnh_cap] = *s;
+        g_dnh_seq++;
+    }
+    pthread_mutex_unlock(&g_dnh_mu);
+}
+
+void events_dn_hist_stat(unsigned *head, unsigned *oldest, int *cap,
+                         uint32_t *t_now)
+{
+    pthread_mutex_lock(&g_dnh_mu);
+    if (head)   *head   = g_dnh_seq;
+    if (oldest) *oldest = g_dnh_seq > g_dnh_cap ? g_dnh_seq - g_dnh_cap : 0;
+    if (cap)    *cap    = (int)g_dnh_cap;
+    pthread_mutex_unlock(&g_dnh_mu);
+    if (t_now) *t_now = mono_sec();
+}
+
+int events_dn_hist_range(unsigned *from, int max, ms_dn_sample *out, int *lapped)
+{
+    int n = 0;
+    if (lapped) *lapped = 0;
+    pthread_mutex_lock(&g_dnh_mu);
+    if (g_dnh_cap) {
+        unsigned oldest = g_dnh_seq > g_dnh_cap ? g_dnh_seq - g_dnh_cap : 0;
+        /* signed compares, so a cursor kept across a daemon restart (seq back
+         * at 0, client's still in the thousands) reads as "ahead" and resyncs
+         * instead of wrapping into "billions behind" */
+        if ((int)(*from - oldest) < 0 || (int)(*from - g_dnh_seq) > 0) {
+            *from = oldest;
+            if (lapped) *lapped = 1;
+        }
+        while (n < max && *from != g_dnh_seq)
+            out[n++] = g_dnh[(*from)++ % g_dnh_cap];
+    }
+    pthread_mutex_unlock(&g_dnh_mu);
+    return n;
+}
+
 unsigned events_wait(unsigned last_gen, int timeout_ms)
 {
     pthread_once(&g_once, cv_init);
@@ -194,5 +296,6 @@ unsigned events_wait(unsigned last_gen, int timeout_ms)
 void events_notify(void) {}
 void events_motion_push(const ms_motion_status *st) { (void)st; }
 void events_config_push(const char *key, const char *val) { (void)key; (void)val; }
+void events_dn_hist_push(ms_dn_sample *s, int retain_s) { (void)s; (void)retain_s; }
 
 #endif

@@ -1894,6 +1894,42 @@ static void *conn_thread(void *arg)
                         #undef CONTROL_FIELDS_CAP
                         goto control_get_done;
                     }
+                    /* GET /control?dn_history=1[&last=N|&since=S][&max=N]:
+                     * the daynight tuning series (control.h). Same
+                     * own-small-buffer treatment as fields=1 above - it has
+                     * nothing to do with the status dump and sizing them
+                     * together would make every plain GET pay for it. */
+                    if (strstr(path, "dn_history=1")) {
+                        const char *q;
+                        unsigned since = 0;
+                        int last = 0, max = DN_HISTORY_MAX_ROWS;
+                        if ((q = strstr(path, "since=")))
+                            since = (unsigned)strtoul(q+6, NULL, 10);
+                        if ((q = strstr(path, "last=")))
+                            last = (int)strtol(q+5, NULL, 10);
+                        if ((q = strstr(path, "max=")))
+                            max = (int)strtol(q+4, NULL, 10);
+                        /* worst-case row "[172800,1000000,1000000,255,100,1],"
+                         * is 35 B; 48 leaves room and the envelope is small */
+                        #define DN_HIST_CAP (DN_HISTORY_MAX_ROWS*48 + 512)
+                        char *hj = (char *)malloc(DN_HIST_CAP);
+                        if (hj) {
+                            int hn = control_dn_history_json(hj, DN_HIST_CAP,
+                                                             since, last, max);
+                            if (hn == -2)
+                                http_send_ex(c,"503 Service Unavailable","text/plain",cors,"oom",3);
+                            else if (hn < 0)
+                                http_send_ex(c,"500 Internal Server Error","text/plain",
+                                             cors,"history json too large",22);
+                            else
+                                http_send_ex(c,"200 OK","application/json",cors,hj,hn);
+                            free(hj);
+                        } else {
+                            http_send_ex(c,"503 Service Unavailable","text/plain",cors,"oom",3);
+                        }
+                        #undef DN_HIST_CAP
+                        goto control_get_done;
+                    }
                     /* worst case: caps + full image/audio/sensor blocks +
                      * 2 full video stream blocks + 2 per-stream OSD sets
                      * (2 x 8 items) with long texts + the motion status

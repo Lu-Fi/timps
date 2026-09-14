@@ -1013,6 +1013,28 @@ static void dn_diag_threshold(const ms_daynight_cfg *dn, int fails,
          fails, (double)probe_best, (double)dn->day_gain, (double)probe_best);
 }
 
+/* Decimated feed into the /events history ring (events.h), which is what the
+ * WebUI tuning graph pages through. Deliberately NOT dn_trace: that one is a
+ * write-only CSV on a rotating file with a different column set. */
+static void dn_hist_tick(const dn_sample *sm, float luma, int mode, int retain_s)
+{
+    static int64_t next;
+    int64_t now = ms_now_us() / 1000;
+    if (now < next) return;
+    next = now + (int64_t)DN_HIST_PERIOD_S * 1000;
+
+    ms_dn_sample h;
+    h.t        = 0;                       /* stamped by the push */
+    h.gain     = isfinite(sm->gain) ? sm->gain : -1.0f;
+    h.exposure = isfinite(sm->d)    ? sm->d    : -1.0f;
+    h.luma     = (luma >= 0.0f)
+               ? (int16_t)(luma > 32767.0f ? 32767.0f : luma + 0.5f) : -1;
+    h.bright   = (sm->bright >= 0.0f)
+               ? (int8_t)(sm->bright > 100.0f ? 100.0f : sm->bright + 0.5f) : -1;
+    h.mode     = (int8_t)mode;
+    events_dn_hist_push(&h, retain_s);
+}
+
 /* ------------------------------------------------------------------ *
  * Trace recorder (daynight.trace_path, opt-in). The replay harness's
  * input; see docs/wiki/Day-Night-Design-Notes.md section 6.            */
@@ -1291,6 +1313,9 @@ static void *dn_thread(void *arg)
             desync_since = 0; desync_warned = 0;
             dn_status_update(sm.bright, sm.gain, sm.d, luma, DN_UNKNOWN,
                              -1.0f, -1.0f, -1);
+            /* manual mode still measures, so the graph still has a series to
+             * tune the thresholds against before switching auto back on */
+            dn_hist_tick(&sm, luma, DN_UNKNOWN, dn->history_s);
             dn_sleep(interval);
             continue;
         }
@@ -2294,6 +2319,7 @@ static void *dn_thread(void *arg)
                  ema_fast, ema_slow);
         dn_status_update(sm.bright, sm.gain, sm.d, luma, cur, st_ref, st_bar,
                          st_desync);
+        dn_hist_tick(&sm, luma, cur, dn->history_s);
         dn_sleep(interval);
     }
     /* shutdown mid-probe: the illuminator is ours to hand back before the
