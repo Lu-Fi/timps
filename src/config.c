@@ -311,7 +311,7 @@ void config_defaults(ms_config *c)
     copystr(c->http_tls_key,"/etc/ssl/private/timps.key",128);
     c->rtsp_tls=0; c->rtsp_tls_port=322;
 #ifdef USE_WEBRTC
-    c->webrtc_enabled=0; c->webrtc_port=0; c->webrtc_port_max=0;
+    c->webrtc_enabled=1; c->webrtc_port=0; c->webrtc_port_max=0;
     c->webrtc_channel=0;
 #endif
     /* optional SRT output (USE_SRT builds): off by default */
