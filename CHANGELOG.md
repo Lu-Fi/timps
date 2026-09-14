@@ -17,13 +17,28 @@ semantic versioning.
   need a secure context) and a hidden or closed tab collects nothing. So the
   series moves into the daemon — a ring the detection thread appends to every
   10 s, which the page pages through with a cursor.
-  - **`daynight.history_s`** (new, default `14400` = 4 h, `0` = off) sets the
-    retention, clamped to a **48 h ceiling** (`172800`). The ring is 16 bytes
-    per sample — monotonic timestamp, `total_gain`, the exposure index,
-    `ae_luma`, brightness %, mode — so 4 h costs 22.5 KB and the ceiling
-    270 KB. Heap, allocated on the first push and resized in place (carrying
-    the retained samples over) when the key changes, rather than standing at
-    the ceiling on every camera that never opens the page.
+  - **`daynight.history_s`** (new, default `0` = off) sets the retention,
+    clamped to a **48 h ceiling** (`172800`). The ring is 16 bytes per sample
+    — monotonic timestamp, `total_gain`, the exposure index, `ae_luma`,
+    brightness %, mode — so 4 h costs 22.5 KB and the ceiling 270 KB. Heap,
+    allocated on the first push and resized in place (carrying the retained
+    samples over) when the key changes; at the default `0` the allocation
+    never happens, so a camera nobody is watching carries nothing.
+  - **The tuning page drives the key**: opening it POSTs `history_s=14400`
+    (4 h) if collection is off, so the graph fills as it did before the ring
+    existed, and closing the tab POSTs it back to `0` via `sendBeacon`. A
+    **"collect in background" switch** on the page suppresses that teardown,
+    which is what leaves the daemon collecting the hours you were not
+    watching. The switch reads the live `retain_s` the endpoint reports, so it
+    shows the truth on load rather than a remembered local state.
+  - A POST of this key applies live but is **never written back to
+    `timps.conf`** — the first key to carry the new `F_NOPERSIST` flag
+    (`src/config.h`, `src/config.c`, `src/control.c`). A key a page toggles
+    twice per visit must not churn flash, and making it transient means a
+    teardown that never ran (browser killed, laptop lid) is undone by the next
+    reboot instead of leaving a camera collecting forever. Setting it by hand
+    in `timps.conf` still works and is the way to ask for collection that
+    outlives a restart.
   - Cursor paging, the same discipline as the motion snapshot ring:
     `?last=N` backfills from the newest N, `?since=S` tails, each response
     carries at most 600 rows plus `head`/`oldest`/`next`/`lapped` so a client

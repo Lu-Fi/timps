@@ -555,6 +555,11 @@ static void timps_apply_setting(ctrl_scratch_t *sc, ctrl_changes *ch, const char
      * this is just the raw settings echo, for everything else too. */
     events_config_push(key, out);
     sc->chg++;
+    /* applied and echoed like any other change, just never written back */
+    if (config_key_is_transient(key)){
+        LOGI(MOD,"set %s = %s (transient)", key, out);
+        return;
+    }
     if (ch->n < CTRL_MAX_CHG){
         snprintf(ch->key[ch->n], sizeof ch->key[0], "%s", key);
         snprintf(ch->val[ch->n], sizeof ch->val[0], "%s", out);

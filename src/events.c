@@ -186,6 +186,11 @@ static pthread_mutex_t g_dnh_mu = PTHREAD_MUTEX_INITIALIZER;
 static ms_dn_sample   *g_dnh;
 static unsigned        g_dnh_cap;
 static unsigned        g_dnh_seq;    /* every sample ever pushed */
+/* Lowest seq the CURRENT buffer actually holds. Not the same as
+ * g_dnh_seq - g_dnh_cap: a ring that has just been (re)allocated is mostly
+ * empty, and the seq counter deliberately never resets, so without this a
+ * cursor at the window's nominal start reads calloc'd zeroes as samples. */
+static unsigned        g_dnh_base;
 
 static uint32_t mono_sec(void)
 {
@@ -199,7 +204,7 @@ static void dnh_resize(unsigned newcap)
 {
     if (newcap == g_dnh_cap) return;
     if (!newcap) {
-        free(g_dnh); g_dnh = NULL; g_dnh_cap = 0;
+        free(g_dnh); g_dnh = NULL; g_dnh_cap = 0; g_dnh_base = g_dnh_seq;
         LOGI(MOD, "daynight history off");
         return;
     }
@@ -214,14 +219,15 @@ static void dnh_resize(unsigned newcap)
     /* carry the newest samples over rather than dropping the series on the
      * floor every time the retention is nudged; g_dnh_seq stays monotonic so
      * client cursors survive the re-layout */
-    unsigned have = g_dnh_seq < g_dnh_cap ? g_dnh_seq : g_dnh_cap;
+    unsigned have = g_dnh_seq - g_dnh_base;
+    if (have > g_dnh_cap) have = g_dnh_cap;
     unsigned keep = have < newcap ? have : newcap;
     for (unsigned i = 0; i < keep; i++) {
         unsigned s = g_dnh_seq - keep + i;
         nb[s % newcap] = g_dnh[s % g_dnh_cap];
     }
     free(g_dnh);
-    g_dnh = nb; g_dnh_cap = newcap;
+    g_dnh = nb; g_dnh_cap = newcap; g_dnh_base = g_dnh_seq - keep;
     LOGI(MOD, "daynight history %u samples (%u s, %u B)",
          newcap, newcap * DN_HIST_PERIOD_S,
          (unsigned)(newcap * sizeof *nb));
@@ -242,12 +248,21 @@ void events_dn_hist_push(ms_dn_sample *s, int retain_s)
     pthread_mutex_unlock(&g_dnh_mu);
 }
 
+/* caller holds g_dnh_mu: the oldest seq that is both still retained by the
+ * window AND actually written - signed compare so the seq counter's eventual
+ * wrap does not turn the pick into "billions apart" */
+static unsigned dnh_oldest(void)
+{
+    unsigned win = g_dnh_seq > g_dnh_cap ? g_dnh_seq - g_dnh_cap : 0;
+    return (int)(g_dnh_base - win) > 0 ? g_dnh_base : win;
+}
+
 void events_dn_hist_stat(unsigned *head, unsigned *oldest, int *cap,
                          uint32_t *t_now)
 {
     pthread_mutex_lock(&g_dnh_mu);
     if (head)   *head   = g_dnh_seq;
-    if (oldest) *oldest = g_dnh_seq > g_dnh_cap ? g_dnh_seq - g_dnh_cap : 0;
+    if (oldest) *oldest = dnh_oldest();
     if (cap)    *cap    = (int)g_dnh_cap;
     pthread_mutex_unlock(&g_dnh_mu);
     if (t_now) *t_now = mono_sec();
@@ -259,7 +274,7 @@ int events_dn_hist_range(unsigned *from, int max, ms_dn_sample *out, int *lapped
     if (lapped) *lapped = 0;
     pthread_mutex_lock(&g_dnh_mu);
     if (g_dnh_cap) {
-        unsigned oldest = g_dnh_seq > g_dnh_cap ? g_dnh_seq - g_dnh_cap : 0;
+        unsigned oldest = dnh_oldest();
         /* signed compares, so a cursor kept across a daemon restart (seq back
          * at 0, client's still in the thousands) reads as "ahead" and resyncs
          * instead of wrapping into "billions behind" */

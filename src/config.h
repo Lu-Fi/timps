@@ -658,6 +658,7 @@ int  config_get_kv(const ms_config *c, const char *key, char *out, size_t cap);
 /* 1 if `key` names a T_STR field. Lets a caller tell an empty value that MEANS
  * something (clear this text) from one that would silently zero a number. */
 int  config_key_is_str(const char *key);
+int  config_key_is_transient(const char *key);   /* F_NOPERSIST above */
 /* replace/append "key = value" lines in the config file (atomic, keeps
  * comments/order). Returns 0 on success. */
 int  config_write_keys(const char *path, const char *const *keys,
@@ -740,6 +741,15 @@ typedef struct {
  * which is the safe direction. This is not a general "warn on clamp" flag
  * and must not become one. */
 #define F_SECVAL 0x10
+/* Applies live but is never written back to the config file by a /control
+ * POST. For keys a UI turns on and off as a side effect of being looked at:
+ * daynight.history_s is toggled twice per visit to the tuning page, and
+ * persisting that would both churn flash and, if the page's teardown never
+ * ran (browser killed, laptop lid), leave a camera collecting forever across
+ * reboots. Transient means the reboot is the backstop. The key stays fully
+ * settable BY HAND in timps.conf - that is the way to ask for collection that
+ * outlives a reboot, and it is a deliberate act rather than a side effect. */
+#define F_NOPERSIST 0x20
 
 /* Accessors handing control.c's generic /control POST walker the section
  * field tables it needs (config.c keeps the tables themselves static - these

@@ -783,9 +783,12 @@ daynight.isp_path       = /proc/jz/isp/isp-m0  # ISP exposure proc file
 # In-RAM decision history for the WebUI tuning graph (tool-sensor-data), in
 # seconds of retention - 0 = off, ceiling 48 h (172800). One 16-byte sample
 # every 10 s, so 4 h costs 22.5 KB and the ceiling 270 KB, allocated only once
-# the detection thread has a sample to push. The daemon keeps the series, so
-# the graph shows the hours you were NOT looking at the page.
-daynight.history_s      = 14400                # 4 h; 0 = off, max 172800 (48 h)
+# the detection thread has a sample to push - at the default 0 nothing is ever
+# allocated. The tuning page turns this on for as long as it is open and back
+# off when you close it - and that POST is never written back here, so set this
+# by hand to collect unattended across a reboot: the daemon keeps the series,
+# so the graph then shows the hours you were NOT watching.
+# daynight.history_s = 14400                   # 4 h; 0 = off, max 172800 (48 h)
 # Opt-in decision-trace recorder (incident diagnostics / replay harness): one
 # CSV line per 5 samples of the index, its two inputs and the scheduling state.
 # Size-capped (1 MB, rotated once to <path>.1). tmpfs ONLY - never point this
