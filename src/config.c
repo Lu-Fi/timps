@@ -311,7 +311,7 @@ void config_defaults(ms_config *c)
     copystr(c->http_tls_key,"/etc/ssl/private/timps.key",128);
     c->rtsp_tls=0; c->rtsp_tls_port=322;
 #ifdef USE_WEBRTC
-    c->webrtc_enabled=1; c->webrtc_port=0; c->webrtc_port_max=0;
+    c->webrtc_enabled=2; c->webrtc_port=0; c->webrtc_port_max=0;
     c->webrtc_channel=0;
 #endif
     /* optional SRT output (USE_SRT builds): off by default */
@@ -347,11 +347,9 @@ void config_defaults(ms_config *c)
 #endif
     c->audio.samplerate=16000;
     c->audio.channels=1; c->audio.bitrate_kbps=32;
-    /* gain 25->15 (2026-09-08): 31 (max) clipped hard on a T20 (jxf23) camera
-     * that already ran hot at the old default - listened A/B across a T20, a
-     * T23 (sc2336) and a T31 (sc4336p, Garage), 15 was preferred on all three.
+    /* gain back to 25 (2026-09-14): reverts the 25->15 change from 2026-09-08.
      * volume stays 80, already the preferred value on every camera tested. */
-    c->audio.volume=80; c->audio.gain=15;   /* audible defaults */
+    c->audio.volume=80; c->audio.gain=25;   /* audible defaults */
     /* high_pass on by default (2026-09-08): removes DC/low-frequency rumble
      * (fan/structure-borne vibration, mains hum) without touching voice band;
      * confirmed on Garage as a pure win with no observed downside. */

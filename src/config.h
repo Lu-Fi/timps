@@ -575,8 +575,12 @@ typedef struct {
      * http.tls_cert/http.tls_key for the DTLS identity. */
     int            webrtc_enabled;      /* 0 = /webrtc/whep answers 404, 1 = on
                                            (TLS required for the POST where the
-                                           http port has it, default on USE_WEBRTC
-                                           builds), 2 = plaintext ok */
+                                           http port has it), 2 = plaintext ok
+                                           (default on USE_WEBRTC builds - most
+                                           cameras have no http->https redirect
+                                           configured, so defaulting to 1 would
+                                           silently 426 the very feature this
+                                           turns on) */
     int            webrtc_port;         /* UDP media port, 0 = ephemeral */
     int            webrtc_port_max;     /* top of the media port range, 0 = port + slots - 1 */
     int            webrtc_channel;      /* video stream to stream (0..MS_MAX_VSTREAM-1) */
