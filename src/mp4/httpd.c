@@ -2173,7 +2173,15 @@ static void *conn_thread(void *arg)
                  * Basic/Digest). webrtc.c authenticates nothing itself. */
                 const char *user = c->cfg->http_user[0] ? c->cfg->http_user
                                                         : c->cfg->rtsp_user;
-                if (!webrtc_available())
+                /* Split from webrtc_available()'s plain 404 below: this build
+                 * has USE_WEBRTC (the route exists at all, unlike on a build
+                 * without it - that case never reaches this branch, it hits
+                 * the generic 404 for an unknown path instead), it is just
+                 * turned off by config. A client can tell "built in, disabled"
+                 * from "not built" apart without parsing the body. */
+                if (!c->cfg->webrtc_enabled)
+                    http_send_ex(c,"503 Service Unavailable","text/plain",cors,"webrtc.enabled=0",16);
+                else if (!webrtc_available())
                     http_send_ex(c,"404 Not Found","text/plain",cors,"disabled",8);
                 else if (!c->tls && c->tls_ctx && c->cfg->webrtc_enabled < 2)
                     /* The offer carries the fingerprint we hold the peer to and
