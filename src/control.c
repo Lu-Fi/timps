@@ -28,6 +28,7 @@
 #include "record.h"
 #include "timelapse.h"
 #include "srt.h"           /* ms_srt_stats for the srt.* status block */
+#include "webrtc/webrtc.h" /* webrtc_available() for caps.webrtc */
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -1476,6 +1477,30 @@ int control_get_json(char *buf, size_t cap)
     APP("]},");
 #else
     APP("\"play\":{\"available\":0},");
+#endif
+    /* WHEP endpoint. The key is OMITTED on a USE_WEBRTC=0 build (caps.rotation
+     * does the same) - that absence is what separates "no endpoint here" from
+     * "compiled in but turned off", which an {"available":0} alone could not
+     * say. "available" folds compile-time and runtime state like
+     * caps.backchannel's does (the shared DTLS context only exists once
+     * webrtc_start() built it). "enabled" is the RESOLVED signalling
+     * requirement, not the raw config value, with talk_ws's 0/1/2 meaning:
+     *   0  /webrtc/whep would refuse a POST right now (webrtc.enabled=0)
+     *   1  served, TLS required (webrtc.enabled=1 and this port has TLS)
+     *   2  served, a plaintext POST is accepted
+     * webrtc.enabled=1 on a port with no TLS configured therefore reports 2,
+     * because httpd.c only 426s a downgrade, never a deployment choice.
+     * Together these replace the WebUI's old GET-against-a-POST-only-endpoint
+     * probe, which read the 404/503/426/405 status codes for the same four
+     * verdicts. */
+#ifdef USE_WEBRTC
+    {
+        int wen = c->webrtc_enabled;
+        if (wen < 0 || wen > 2) wen = 0;
+        if (wen == 1 && !c->http_https) wen = 2;
+        APP("\"webrtc\":{\"available\":%d,\"enabled\":%d},",
+            webrtc_available(), wen);
+    }
 #endif
 #ifdef USE_TIMELAPSE
     APP("\"timelapse\":{\"available\":1}},");

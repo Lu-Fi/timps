@@ -86,7 +86,7 @@ build/platform actually supports.
             "events_max_clients": 8,
             "motion": {...}, "privacy": {...}, "rotation": [...],
             "record": {...}, "backchannel": {...}, "play": {...},
-            "timelapse": {...} },
+            "webrtc": {...}, "timelapse": {...} },
   "image": { ... }, "audio": { ... }, "sensor": { ... },
   "video": { "0": { ... }, "1": { ... } },
   "osd": { "enabled": 1 }, "osd0": { "0": {...}, ... }, "osd1": { ... },
@@ -117,6 +117,7 @@ cannot actually apply, instead of hardcoding a feature matrix client-side:
 | `caps.rotation` | (Only present in `USE_ROTATE` builds.) The ascending array of rotation values this SoC's build can actually apply, e.g. `[0]`, `[0,90,270]`, or `[0,90,180,270]` on T40/T41. See [Platform & SDK Support](Platform-SDK-Support.md). |
 | `caps.record` / `caps.timelapse` | `{"available":0\|1}` per `USE_RECORD`/`USE_TIMELAPSE`. |
 | `caps.backchannel` | `{"available":<bc_available()>,"talk_ws":0\|1\|2}` — `available` is whether the backchannel was actually configured at boot (restart-only master switch — see [Audio](Audio.md)). `talk_ws` is the browser-microphone WebSocket (`/talk`, `USE_BC_WS`) on the *same* backchannel, reported as a second flag rather than a second caps entry because a camera can perfectly well have the RTSP backchannel without it. It is the **resolved verdict**, not the raw `audio.talk_ws` value: `0` = this port would not serve `/talk` at all right now, `1` = served, TLS required, `2` = served, plain `ws://` accepted. `audio.talk_ws=1` on a plaintext port therefore reports `0` (every request would `426`), so a WebUI can gate its talk button on this one number. Nothing here says which scheme to dial: `1` always means `wss://`; for `2` take the scheme from the same `tls` field the media/control URLs use. |
+| `caps.webrtc` | (Only present in `USE_WEBRTC` builds — the key's **absence** is how a client tells "no WHEP endpoint here" from "compiled in but turned off", which an `{"available":0}` alone could not say.) `{"available":0\|1, "enabled":0\|1\|2}`. `available` folds compile-time and runtime state like `caps.backchannel`'s does: the shared DTLS context only exists once `webrtc_start()` built it. `enabled` is the **resolved** signalling requirement, not the raw `webrtc.enabled`, with the same 0/1/2 meaning as `caps.backchannel.talk_ws`: `0` = `/webrtc/whep` would refuse a POST right now, `1` = served but TLS is required for it, `2` = served and a plaintext POST is accepted. `webrtc.enabled=1` on a port with no TLS configured therefore reports `2`, because the endpoint only `426`s a downgrade, never a deployment choice. Added 1.9.17; before it a client had to `GET` the POST-only endpoint and read its `404`/`503`/`426`/`405`. |
 | `caps.play` | `{"available":0\|1, "sounds":[...]}` — the play queue, with `sounds` live-enumerated from `/usr/share/sounds` (`.wav`/`.ulaw` always; `.opus` only when `USE_PLAY_OPUS` was actually compiled in, capped at 96 entries to bound the JSON response size). |
 
 ### Build-feature discovery — `*.available`
@@ -134,7 +135,7 @@ client should branch on **that**, never on a version comparison:
 | Where | Feature | Emitted when off |
 | --- | --- | --- |
 | `caps.record` / `caps.timelapse` / `caps.play` / `caps.backchannel` / `caps.motion` | `USE_RECORD` / `USE_TIMELAPSE` / `USE_PLAY` / `USE_BACKCHANNEL` / IVS move API | `{"available":0}` |
-| `caps.rotation` | `USE_ROTATE` | key absent entirely |
+| `caps.rotation` / `caps.webrtc` | `USE_ROTATE` / `USE_WEBRTC` | key absent entirely |
 | `srt` (top level) | `USE_SRT` | `{"available":0}` |
 | `tls` (top level) | `USE_TLS` | `{"available":0}` |
 
