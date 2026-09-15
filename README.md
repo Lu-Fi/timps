@@ -280,10 +280,30 @@ Deliberate limitations, all of them current as of this writing:
 - **No Opus, no AAC, no H.265** over WebRTC, and no transcoding.
 - **No NACK/retransmission, no FEC, no congestion control.** Only PLI and FIR
   are advertised (both merely ask the encoder for a keyframe).
-- **Firefox usually will not decode it**: the answer's `profile-level-id`
-  comes from the live SPS, and `videoN.profile` defaults to High. Chrome plays
-  it anyway (it initialises the decoder from the in-band SPS); Firefox is
-  genuinely baseline-only. Chrome/Chromium is the tested target.
+- **Which browsers can play it depends on `videoN.profile`.** The answer's
+  `profile-level-id` comes from the live SPS of the `webrtc.channel` stream,
+  and `videoN.profile` defaults to `2` (High).
+  - **Chrome/Chromium/Edge** accept an answer on any profile and decode it —
+    a receiver initialises its decoder from the in-band SPS, not from the SDP
+    — so every profile works. This is the tested target.
+  - **Firefox** offers H.264 as Constrained Baseline / Baseline only
+    (`42e01f`/`42001f`) and re-checks the answer's `profile-level-id` against
+    its own offer, so a **Main or High answer is refused outright** at
+    `setRemoteDescription()` ("Answer had no codecs in common with offer") —
+    the session never establishes. This is a hard failure, not a degraded
+    picture. Set `videoN.profile = 0` on the `webrtc.channel` stream and
+    Firefox works normally. Measured on Firefox 154 against a `640033`
+    camera, 2026-09-15.
+  - **Safari** is untested here.
+  - **The WebUI detects this itself**, rather than sniffing the user agent:
+    `preview.html` rebuilds the answer timps would send out of the browser's
+    own offer and feeds it to a throwaway `RTCPeerConnection`. If the browser
+    refuses it, the "WebRTC (WHEP)" option is shown **disabled** with the
+    reason in its tooltip, and a first-time visitor gets the buffered fMP4
+    player instead of a black one. `mediaCapabilities.decodingInfo(
+    {type:"webrtc"})` is deliberately not used for this: it describes the
+    decoder, not the negotiation in front of it — Firefox 154 reports High
+    profile as supported and `powerEfficient` while still refusing the answer.
 - **At most 4 concurrent sessions** (`WEBRTC_MAX_SESSIONS`); a 5th offer gets
   `503`. A session that never completes ICE+DTLS is reclaimed after 30 s, and
   a connected one after 30 s without a STUN consent check.
