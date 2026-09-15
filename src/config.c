@@ -1200,21 +1200,31 @@ static const cfg_field privacy_fields[] = {
  * only - not hot. noget marks whole set/persist-only sections (the old
  * getter had no branch for them at all; same dedup rationale as F_NOGET). */
 typedef struct {
-    const char     *prefix;    /* includes the trailing dot */
+    const char     *prefix;    /* scalar: includes the trailing dot.
+                                * indexed (count>0): no dot, key is <prefix><N>. */
     unsigned char   plen;
     unsigned char   noget;
     unsigned short  base_off;  /* offset of the section base in ms_config */
     const cfg_field *fields;
     unsigned char   nfields;
+    unsigned char   count;     /* 0 = scalar; >0 = indexed, N in [0,count) */
+    unsigned short  stride;    /* sizeof one element when count > 0 */
 } cfg_section;
 
 #define NF(t) (unsigned char)(sizeof t / sizeof t[0])
 #define SEC(pfx, ng, boff, tbl) \
-    { pfx, (unsigned char)(sizeof pfx - 1), ng, (unsigned short)(boff), tbl, NF(tbl) }
+    { pfx, (unsigned char)(sizeof pfx - 1), ng, (unsigned short)(boff), tbl, \
+      NF(tbl), 0, 0 }
+/* indexed section: base_off is element 0, elements are <cnt> x sizeof(elty) */
+#define SECI(pfx, ng, boff, tbl, cnt, elty) \
+    { pfx, (unsigned char)(sizeof pfx - 1), ng, (unsigned short)(boff), tbl, \
+      NF(tbl), (unsigned char)(cnt), (unsigned short)sizeof(elty) }
 
 static const cfg_section g_sections[] = {
     SEC("sensor.",    0, offsetof(ms_config,sensor),    sensor_fields),
     SEC("image.",     0, offsetof(ms_config,image),     image_fields),
+    SECI("video",     0, offsetof(ms_config,video),     video_fields,
+         MS_MAX_VSTREAM, ms_vstream_cfg),
     SEC("audio.",     0, offsetof(ms_config,audio),     audio_fields),
     SEC("jpeg.",      1, offsetof(ms_config,jpeg),      jpeg_fields),
     SEC("rtsp.",      1, 0,                             rtsp_fields),
@@ -1237,6 +1247,7 @@ static const cfg_section g_sections[] = {
     SEC("sim.",       1, 0,                             sim_fields),
 };
 #undef SEC
+#undef SECI
 
 static const cfg_field *field_find(const cfg_field *t, int n, const char *k)
 {
@@ -1255,23 +1266,48 @@ static const cfg_field *field_find(const cfg_field *t, int n, const char *k)
  * lose an afternoon. */
 static void key_canonical(const char *key, char *out, size_t cap);
 
-static const cfg_section *section_find(const char *key, const char **field)
+/* *idx is 0 for a scalar section, so every caller can resolve the base as
+ * sec_off(s, idx) without caring which kind it matched. Single-digit indices
+ * only, same as osd_key()/privacy_key() - count never approaches 10. */
+static const cfg_section *section_find(const char *key, const char **field,
+                                       int *idx)
 {
-    for (size_t i=0;i<sizeof g_sections/sizeof g_sections[0];i++)
-        if (!strncmp(key, g_sections[i].prefix, g_sections[i].plen)){
-            *field = key + g_sections[i].plen;
-            return &g_sections[i];
+    *idx = 0;
+    for (size_t i=0;i<sizeof g_sections/sizeof g_sections[0];i++){
+        const cfg_section *s = &g_sections[i];
+        if (strncmp(key, s->prefix, s->plen)) continue;
+        if (s->count){
+            const char *d = key + s->plen;
+            if (d[0] < '0' || d[0] >= '0'+s->count || d[1] != '.') continue;
+            *idx = d[0]-'0';
+            *field = d + 2;
+        } else {
+            *field = key + s->plen;
         }
+        return s;
+    }
     return NULL;
+}
+
+/* byte offset of element idx; stride is 0 for a scalar section, so this is
+ * base_off there whatever idx says */
+static size_t sec_off(const cfg_section *s, int idx)
+{
+    return s->base_off + (size_t)idx * s->stride;
 }
 
 static void key_canonical(const char *key, char *out, size_t cap)
 {
     const char *fname = NULL;
-    const cfg_section *sec = section_find(key, &fname);
+    int idx;
+    const cfg_section *sec = section_find(key, &fname, &idx);
     if (sec){
         const cfg_field *f = field_find(sec->fields, sec->nfields, fname);
-        if (f){ snprintf(out, cap, "%s%s", sec->prefix, f->name); return; }
+        if (f){
+            if (sec->count) snprintf(out, cap, "%s%d.%s", sec->prefix, idx, f->name);
+            else            snprintf(out, cap, "%s%s",    sec->prefix, f->name);
+            return;
+        }
     }
     snprintf(out, cap, "%s", key);
 }
@@ -1428,11 +1464,9 @@ static const cfg_field *field_for_key(const char *key)
     const char *pk = privacy_key(key, &psi, &pii);
     if (pk) return field_find(privacy_fields, NF(privacy_fields), pk);
 
-    if (!strncmp(key,"video0.",7) || !strncmp(key,"video1.",7))
-        return field_find(video_fields, NF(video_fields), key+7);
-
     const char *k;
-    const cfg_section *sec = section_find(key, &k);
+    int idx;
+    const cfg_section *sec = section_find(key, &k, &idx);
     if (sec) return field_find(sec->fields, sec->nfields, k);
     return NULL;
 }
@@ -1466,34 +1500,6 @@ static void set_kv(ms_config *c, const char *key, const char *val)
         const cfg_field *f = field_find(privacy_fields, NF(privacy_fields), pk);
         if (f) field_set(&c->privacy[psi][pii], f, val);
         else   LOGW(MOD,"unknown privacy key %s", pk);
-        return;
-    }
-
-    if (!strncmp(key,"video0.",7) || !strncmp(key,"video1.",7)){
-        ms_vstream_cfg *v = &c->video[key[5]-'0'];
-        const cfg_field *f = field_find(video_fields, NF(video_fields), key+7);
-        if (!f){ LOGW(MOD,"unknown video key %s", key+7); return; }
-        field_set(v, f, val);
-        /* buffers given explicitly: HAL safety clamps (e.g. T31 non-scaled
-         * channel) trust it as-is instead of overriding */
-        if (f->off == offsetof(ms_vstream_cfg,buffers)) v->buffers_explicit = 1;
-        /* F-04: videoN.max_gop is parsed/clamped/persisted/echoed for compat
-         * but NOTHING in any HAL consumes it - the encoder's keyframe
-         * interval comes from videoN.gop (rcAttr.maxGop / gopAttr.uGopLength
-         * = v->gop). videoN.qp IS consumed by enc_create() (iInitialQP /
-         * attrH264FixQp.qp / attrH265FixQp.qp), but only when
-         * videoN.rc_mode=fixqp; under CBR/VBR/etc it has no HAL consumer
-         * since those modes derive QP from rate control instead. Warn once
-         * on a non-zero videoN.max_gop so a user isn't silently losing a
-         * setting they think is active, same as motion.roi_*. */
-        if (!strcmp(key+7,"max_gop") && pint(val)!=0){
-            static int vqp_warned;
-            if (!vqp_warned){
-                vqp_warned=1;
-                LOGW(MOD,"videoN.max_gop is reserved and IGNORED - "
-                         "the keyframe interval comes from videoN.gop");
-            }
-        }
         return;
     }
 
@@ -1671,11 +1677,35 @@ static void set_kv(ms_config *c, const char *key, const char *val)
     }
 
     const char *k;
-    const cfg_section *s = section_find(key, &k);
+    int idx;
+    const cfg_section *s = section_find(key, &k, &idx);
     if (s){
         const cfg_field *f = field_find(s->fields, s->nfields, k);
-        if (f) field_set((char*)c + s->base_off, f, val);
-        else   LOGW(MOD,"unknown key %s", key);
+        if (!f){ LOGW(MOD,"unknown key %s", key); return; }
+        field_set((char*)c + sec_off(s, idx), f, val);
+        if (s->fields == video_fields){
+            ms_vstream_cfg *v = &c->video[idx];
+            /* buffers given explicitly: HAL safety clamps (e.g. T31 non-scaled
+             * channel) trust it as-is instead of overriding */
+            if (f->off == offsetof(ms_vstream_cfg,buffers)) v->buffers_explicit = 1;
+            /* F-04: videoN.max_gop is parsed/clamped/persisted/echoed for compat
+             * but NOTHING in any HAL consumes it - the encoder's keyframe
+             * interval comes from videoN.gop (rcAttr.maxGop / gopAttr.uGopLength
+             * = v->gop). videoN.qp IS consumed by enc_create() (iInitialQP /
+             * attrH264FixQp.qp / attrH265FixQp.qp), but only when
+             * videoN.rc_mode=fixqp; under CBR/VBR/etc it has no HAL consumer
+             * since those modes derive QP from rate control instead. Warn once
+             * on a non-zero videoN.max_gop so a user isn't silently losing a
+             * setting they think is active, same as motion.roi_*. */
+            if (!strcmp(k,"max_gop") && pint(val)!=0){
+                static int vqp_warned;
+                if (!vqp_warned){
+                    vqp_warned=1;
+                    LOGW(MOD,"videoN.max_gop is reserved and IGNORED - "
+                             "the keyframe interval comes from videoN.gop");
+                }
+            }
+        }
         return;
     }
     LOGW(MOD,"unknown key %s", key);
@@ -1746,16 +1776,12 @@ int config_get_kv(const ms_config *c, const char *key, char *out, size_t cap)
         return f ? field_get(&c->privacy[psi][pii], f, out, cap) : 0;
     }
 
-    if (!strncmp(key,"video0.",7) || !strncmp(key,"video1.",7)){
-        const cfg_field *f = field_find(video_fields, NF(video_fields), key+7);
-        return f ? field_get(&c->video[key[5]-'0'], f, out, cap) : 0;
-    }
-
     const char *k;
-    const cfg_section *s = section_find(key, &k);
+    int idx;
+    const cfg_section *s = section_find(key, &k, &idx);
     if (s && !s->noget){
         const cfg_field *f = field_find(s->fields, s->nfields, k);
-        if (f) return field_get((const char*)c + s->base_off, f, out, cap);
+        if (f) return field_get((const char*)c + sec_off(s, idx), f, out, cap);
     }
     return 0;
 }
