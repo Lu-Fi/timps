@@ -386,27 +386,55 @@ M5 before deciding.
 
 ## 4. Day/night
 
-### 4.1 Recommendation: one automaton per sensor, one IR owner
+### 4.1 Decision 2026-09-15: one automaton, sensor-selectable — not one per sensor
 
-**Per sensor:** measurement (`dn_read`), the whole EMA/probe/verdict automaton,
-and the ISP `running_mode` decision. The running mode genuinely *is* per-sensor
-— `IMP_ISP_MultiCamera_Tuning_SetISPRunningMode(IMPVI_NUM, …)` is in the
-shipped libimp.
+Superseded below is the original recommendation (one automaton per sensor plus
+an `ir_master` split for the shared IR-cut/illuminator). The user chose the
+simpler shape instead: **still exactly one `dn_thread`, exactly as today**, but
+a new `daynight.sensor` config key (default `0`) picks *which physical sensor*
+feeds it. Everything else about the automaton — `dn_read`, the EMA/probe/
+verdict logic, `switch_cmd`/`irprobe_cmd` — is untouched.
 
-**Shared, because the hardware is shared:** the IR-cut filter and the
-illuminator.
+The other sensor gets **no** automatic day/night. Its ISP `running_mode` stays
+at whatever it is set to (day, by default) — it does not run its own EMA, does
+not probe, and cannot fire `switch_cmd`. This is deliberate, not a stopgap:
 
-The reasoning for splitting the automaton is not symmetry, it is that the two
-lenses see different scenes. One is fixed wide, one is on the PTZ head pointed
-wherever it was last moved. A shared EMA over both would be wrong for at least
-one of them at any given moment, and the redesign note
-(`DAYNIGHT_REDESIGN_2026-08-17.md`) is built entirely around the exposure index
-tracking *one* scene. The cost is low: §0c established that the automaton is
-already ~60 function locals, so a second instance is a second thread.
+- It matches the actual hardware. §4.2 (below, now informational rather than
+  blocking) shows the board has exactly one IR-cut filter and one illuminator.
+  A camera with a fixed wide lens *and* a PTZ lens plausibly has only one of
+  them behind IR-capable glass at all — there is no guarantee the "other"
+  sensor's day/night would ever be meaningful, only that it would be extra
+  code with no hardware to act on.
+- It removes the relay-chatter risk entirely. With one automaton there is
+  exactly one writer of `switch_cmd`/`irprobe_cmd`, same as single-sensor
+  today — no `ir_master` gate is needed to prevent two automata fighting over
+  one H-bridge, because there is only ever one automaton.
+- **It is single-sensor-identical by construction.** `daynight.sensor` default
+  `0` on a camera with `MS_MAX_SENSOR=1` compiled out entirely is the exact
+  code path that runs today — no new thread, no new branch, no behavior
+  change. Even on a compiled-in dual-sensor build, sensor 0 selected is
+  bit-for-bit today's automaton reading sensor 0's data.
+- It is a one-line operator decision instead of a design guess: whoever wires
+  up the W8U picks the sensor that actually has IR hardware once, in config,
+  rather than the firmware having to infer it or ship two half-automata.
 
-The reasoning for *not* splitting the actuators is that there is only one of
-each. From the board's own `thingino.json` (identical on `ciao` and upstream
-`master`):
+This also **removes the §4.3 `dn_read()` scrape problem as a blocker** rather
+than requiring the full `-double`-firmware two-source disambiguation: only the
+*selected* sensor's data ever needs to be correct, and §4.3's fix (route
+`dn_read` through §3.3's `_n` IMP API variants, treat the `/proc/jz/isp/isp-m0`
+scrape as sensor-0-only / fall back to the IMP path when `daynight.sensor != 0`)
+is scoped to one active reader instead of two.
+
+A future **measure-and-follow** second automaton (the other sensor tracking
+its own AE/running_mode without touching the shared IR actuators) is still a
+reasonable follow-up once real dawn/dusk behavior on both lenses has been
+observed on the bench — nothing here forecloses it, it is just no longer part
+of the baseline.
+
+### 4.2 Unconfirmed: which head the IR hardware serves
+
+Kept for context, not blocking. The GPIO map proves there is exactly one
+IR-cut and one illuminator; it does not say which lens they sit behind.
 
 ```json
 "ir850": 59,
@@ -417,33 +445,14 @@ each. From the board's own `thingino.json` (identical on `ciao` and upstream
 "sensor_switch": 7
 ```
 
-One `ir850`, one `ircut` pin pair (the usual H-bridge forward/reverse), one
-`white` LED. Two independent automata both firing `daynight.switch_cmd` at one
-H-bridge is relay chatter, and it is the kind of bug that shows up as
-mysterious mechanical clicking at dusk rather than as a clean failure.
-
-So: a new `daynight.ir_master` (default 0). Only that sensor's automaton may run
-`switch_cmd` and `irprobe_cmd`. The other runs a **measure-and-follow**
-automaton: it keeps its own AE state and sets its own ISP running mode, but it
-treats the IR-cut/illuminator state as an input it cannot change. Config stays
-single-valued for `switch_cmd`/`irprobe_cmd` — correctly, because the hardware
-is — and gains one integer.
-
-### 4.2 Unconfirmed: which head the IR hardware serves
-
-The GPIO map proves there is exactly one IR-cut and one illuminator. It does
-**not** say which lens they sit behind.
-
 The presence of a `white` LED on GPIO 60 *alongside* a single `ir850` is the
 signature of the common dual-lens arrangement: one full-colour lens with white
-floodlight and no IR-cut, one IR lens with IR-cut and 850 nm illuminator. If
-that is what the W8U is, then `ir_master` must be the IR lens's index, and the
-other sensor's day/night should probably be disabled outright — flipping a mode
-for a filter it does not have is worse than doing nothing.
-
-**Do not guess this before the camera is on the bench.** It is a five-minute
-check with `gpio` and a phone camera, and getting it wrong means shipping a
-day/night state machine that fights hardware that is not there.
+floodlight and no IR-cut, one IR lens with IR-cut and 850 nm illuminator. Under
+§4.1's decision this only matters for picking a sensible *default* for
+`daynight.sensor` (and for the WebUI hint, §7) — getting it wrong just means
+the operator changes one config value, not a firmware bug. Still worth the
+five-minute `gpio` + phone-camera check once the board is on the bench, so the
+shipped default is right without the user having to discover it themselves.
 
 ### 4.3 The part most likely to be underestimated: `dn_read()`
 
@@ -1037,15 +1046,38 @@ Each gains a sensor selector that switches which prefix the form posts to.
 Because §2.3 gives `/control` the `{"sensor":{"0":{…},"1":{…}}}` shape already
 used by `video`, `timps-api.js` needs no transport change.
 
-`config-photosensing.html` is the one that needs more than a selector. §4.1
-splits day/night into per-sensor measurement and a *shared* IR actuator, and the
-page has to show that distinction — `switch_cmd`, `irprobe_cmd` and the new
-`ir_master` belong in a "shared, one per camera" section, visually separate from
-the per-sensor thresholds. Without that, an operator will set `switch_cmd` on
-the sensor 1 tab and file a bug when nothing clicks.
+`config-photosensing.html` turned out simpler than first assessed, following
+§4.1's revised decision (one automaton, `daynight.sensor` picks which physical
+sensor feeds it — not a per-sensor/shared split). The page needs exactly one
+new control: a `daynight.sensor` selector (default 0, so an unmodified page on
+a single-sensor camera is untouched). No "shared vs per-sensor" section split
+is needed — `switch_cmd`/`irprobe_cmd` and the thresholds stay one flat form,
+same as today, just posting against whichever sensor is selected.
 
-`preview.html` needs a second video element or a stream picker, and the
-snapshot endpoint at `www/x/ch0.jpg` needs a `ch2` sibling.
+`preview.html` needs a second video element or a stream picker for the raw
+two-stream case. Two options worth designing before hardware arrives, since
+neither touches shipping code for existing cameras (both live entirely behind
+the same `caps.*`-style capability gate the WebRTC work already established —
+see `caps.webrtc` in `src/control.c` — so a single-sensor `/control` response
+simply omits the key and the page renders exactly as it does today):
+
+- **Tab/picker**: switch which of the two streams `preview.html` shows,
+  reusing the existing single-video-element layout unchanged.
+- **Picture-in-picture**: main video full-size, second sensor as a small
+  overlaid inset (draggable/positionable like the existing PTZ-favorites
+  popover), both decoded from their own MSE/WebRTC session. Preferable if the
+  point of two lenses on one camera is genuinely watching both at once (e.g. a
+  wide overview + a PTZ close-up) rather than switching between them — worth
+  confirming that's the actual use case once the W8U's physical lens layout is
+  known (§4.2), since a picker is meaningfully less client CPU/bandwidth than
+  two simultaneous decodes.
+
+The snapshot endpoint at `www/x/ch0.jpg` needs a `ch2` sibling either way.
+
+This is pure front-end design work and does not depend on hardware — it can be
+drafted (mockup + page structure) ahead of the W8U arriving, same as this
+design document itself, as long as it stays behind the capability gate so a
+single-sensor camera's WebUI is provably unaffected.
 
 ---
 
@@ -1069,7 +1101,7 @@ refactor. See §9.
 | **M1** | config schema refactor: `count`/`stride` on `cfg_section`, migrate `videoN.` off its three hand-rolled sites | no | byte-identical `timps.conf` round-trip and identical `GET /control` on a live T23 (cam-kinder-links). Net diff negative. |
 | **M2** | the gate and the dimensioning: Kconfig, `USE_MULTI_SENSOR`, `ISP_HAS_MULTICAM`, `MS_MAX_SENSOR`, `sensorN.`/`imageN.` + aliases, the `ISPT()` macro layer, the encoder-channel decoupling (§5.4), OSD group pool | no | flag **off**: `timpsd` size delta 0, QA clean on an existing camera. flag **on** with `sensor_count=1`: still streams, and every derived channel/group number matches §5.3.4's flag-off column. |
 | **M4** | second sensor in the HAL: array-ised state, per-sensor init, `fs_kick_chn()`, video2/video3 on fs3/fs4 (enc chn 2/3), RTSP ch2/ch3 | yes | four streams; measured per-stream fps and CPU; the §5.3.4 channel/group table confirmed live, including the 9th-channel probe (risk 3) |
-| **M5** | per-sensor ISP and day/night: `hal_isp_*_n()`, per-sensor `imageN.`, second `dn_thread`, `daynight.ir_master`, the scrape→IMP cutover (§4.3) | yes | both sensors track their own scene through a full dawn, no IR-cut chatter; §4.2 answered |
+| **M5** | per-sensor ISP tuning: `hal_isp_*_n()`, per-sensor `imageN.`; day/night gains `daynight.sensor` (§4.1) and the scrape→IMP cutover (§4.3), still one `dn_thread` | yes | selected sensor's automaton confirmed correct through a full dawn; `daynight.sensor=0` byte-identical to pre-M5 behavior |
 | **M6** | WebUI (§7), `timps.conf.example`, wiki, CHANGELOG | partly | — |
 
 Buildable and fully testable **without** the camera: M0, M1, M2. That is the
@@ -1124,9 +1156,11 @@ reconstruction, which needs validating against a single-sensor camera first. →
 M5, but the scrape output is worth dumping at M3′ while the board is on the
 bench for other reasons.
 
-**5. Which head carries the IR-cut and illuminator.** One of each exists; whose
-they are is unknown (§4.2). Five-minute check on arrival. Determines whether
-`ir_master` is 0 or 1 and whether the other sensor's day/night runs at all.
+**5. Which head carries the IR-cut and illuminator. — lowered 2026-09-15.** One
+of each exists; whose they are is unknown (§4.2). No longer a design blocker
+after §4.1's decision — `daynight.sensor` is a plain config value, so a wrong
+guess costs the operator one setting change, not a firmware fix. Still worth
+the five-minute check on arrival, to ship the right default.
 
 **6. `g_isp_lock` granularity.** One lock across both sensors, deliberately
 (§3.5). Whether that costs measurable `/control` latency is unknown; measure at
@@ -1241,10 +1275,11 @@ symbols it references are defined in the shipped `dl/ingenic-lib/.../T23/lib/
 
 - **M3'** (hardware validation) and everything downstream of it.
 - The W8U dual profile (§6.4) - deliberately, it needs the board.
-- **Day/night per sensor** (§4): still one `dn_thread` on sensor 0.
-  `daynight.ir_master` does not exist, and `dn_read`'s `/proc/jz/isp/isp-m0`
-  scrape is untouched, so under `-double` it would feed both automata one
-  sensor's exposure (§4.3).
+- **Day/night sensor selection** (§4.1, decided 2026-09-15): still one
+  `dn_thread` hardwired to sensor 0. `daynight.sensor` does not exist yet, and
+  `dn_read`'s `/proc/jz/isp/isp-m0` scrape is untouched, so under `-double`
+  reading it would return whichever sensor the ISP last multiplexed in,
+  independent of any future `daynight.sensor` setting (§4.3).
 - **`/control` shape for sensor 1** (§2.3): GET emits the flat
   `{"sensor":{...}}`/`{"image":{...}}` for sensor 0 only; there is no
   `"1":{...}`. POST reaches sensor 0 through the section alias. A `sensor1.`
