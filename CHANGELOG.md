@@ -6,6 +6,25 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.9.18] - 2026-09-15
+
+### Added
+
+- **`GET /control?stats=1`** (`src/control.c`, `src/control.h`,
+  `src/mp4/httpd.c`) — the slow-path complement of the `/events` `stats` push:
+  per-stream `gop`/`profile`/`rc_mode` plus the `IMP_Encoder_Query` backlog
+  (`left_pics`/`left_stream_bytes`/`left_stream_frames`, and `ave_bitrate`
+  where the SoC supplies it). Same sub-object shape as the corresponding parts
+  of the full snapshot, so a client can read either source with one code path.
+  Third scoped sub-endpoint after `?fields=1` and `?dn_history=1`, with the
+  same own-small-buffer treatment (1 KB, returned before `CONTROL_JSON_CAP`
+  is allocated) and the same auth/CORS gate.
+  - The WebUI preview "Stream stats" card was polling the whole ~8.2 KB
+    `/control` document every 5 s for these few hundred bytes. The `daynight`
+    and `motion` blocks it also read off that snapshot are deliberately **not**
+    here: both are already pushed in full on connect and on every change, so
+    the card subscribes to them instead.
+
 ## [1.9.17] - 2026-09-15
 
 ### Added

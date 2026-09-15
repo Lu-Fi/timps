@@ -1894,6 +1894,27 @@ static void *conn_thread(void *arg)
                         #undef CONTROL_FIELDS_CAP
                         goto control_get_done;
                     }
+                    /* GET /control?stats=1: the WebUI stats card's slow path
+                     * (control.h). Same own-small-buffer treatment as
+                     * fields=1 - the point of the endpoint is to not pay for
+                     * the full snapshot on a 5 s poll. */
+                    if (strstr(path, "stats=1")) {
+                        #define CONTROL_STATS_CAP 1024
+                        char *sj = (char *)malloc(CONTROL_STATS_CAP);
+                        if (sj) {
+                            int sn = control_stats_json(sj, CONTROL_STATS_CAP);
+                            if (sn < 0)
+                                http_send_ex(c,"500 Internal Server Error","text/plain",
+                                             cors,"stats json too large",20);
+                            else
+                                http_send_ex(c,"200 OK","application/json",cors,sj,sn);
+                            free(sj);
+                        } else {
+                            http_send_ex(c,"503 Service Unavailable","text/plain",cors,"oom",3);
+                        }
+                        #undef CONTROL_STATS_CAP
+                        goto control_get_done;
+                    }
                     /* GET /control?dn_history=1[&last=N|&since=S][&max=N]:
                      * the daynight tuning series (control.h). Same
                      * own-small-buffer treatment as fields=1 above - it has

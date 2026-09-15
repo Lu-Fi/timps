@@ -210,6 +210,29 @@ int  control_get_json(char *buf, size_t cap);
  * index 0. Returns the byte count like control_get_json, or -1 if truncated. */
 int  control_fields_json(char *buf, size_t cap);
 
+/* GET /control?stats=1: the slow-path complement of the /events "stats" push,
+ * for the WebUI preview stats card.
+ *
+ * Deliberately NOT a subset of the full snapshot: it carries only the fields
+ * the SSE "stats" event cannot (per-stream configured gop/profile/rc_mode, and
+ * the IMP_Encoder_Query backlog ave_bitrate/left_pics/left_stream_bytes/
+ * left_stream_frames), because fps/kbps/dims/codec/subs/drop counters already
+ * arrive pushed. The card used to poll the whole ~8 KB /control document every
+ * 5 s for those few hundred bytes. Anything else that card needs later belongs
+ * here too - the contract is "what the stats push can't carry", not "encoder".
+ *
+ * Shape mirrors the corresponding sub-objects of the full snapshot so a client
+ * can read either source with the same code:
+ *   {"video":{"0":{"gop":..,"profile":..,"rc_mode":".."},..},
+ *    "encoder":{"0":{"left_pics":..,"left_stream_bytes":..,
+ *                    "left_stream_frames":..[,"ave_bitrate":..]},..}}
+ * "video" lists every stream slot; "encoder" omits channels whose query fails
+ * (disabled stream / SW-rotate path / host sim) rather than reporting zeros,
+ * and ave_bitrate only appears where the SoC supplies it - same rules as the
+ * full snapshot. Returns the byte count like control_get_json, or -1 if
+ * truncated. */
+int  control_stats_json(char *buf, size_t cap);
+
 /* GET /control?dn_history=1: the daynight decision series the WebUI tuning
  * graph plots, paged out of the in-RAM ring in events.c.
  *

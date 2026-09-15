@@ -1957,6 +1957,48 @@ int control_fields_json(char *buf, size_t cap)
     return (int)o;
 }
 
+/* ---------- GET /control?stats=1: the stats card's slow path ------------- */
+/* See control.h. Only what the /events "stats" push cannot carry - the rest of
+ * the card is already fed live, so polling the full snapshot for it was ~8 KB
+ * of wire per 5 s tick per open card. */
+int control_stats_json(char *buf, size_t cap)
+{
+    const ms_config *c = &g_cfg;
+    size_t o = 0;
+    #define APP(...) do { \
+        int _n = snprintf(o<cap?buf+o:buf, o<cap?cap-o:0, __VA_ARGS__); \
+        if (_n>0) o += (size_t)_n; \
+    } while (0)
+    APP("{\"video\":{");
+    for (int i=0;i<MS_MAX_VSTREAM;i++){
+        const ms_vstream_cfg *vs=&c->video[i];
+        char key[20], rc[20]="cbr";
+        /* canonical config-file spelling, as the full snapshot does */
+        snprintf(key,sizeof key,"video%d.rc_mode",i);
+        config_get_kv(c, key, rc, sizeof rc);
+        APP("%s\"%d\":{\"gop\":%d,\"profile\":%d,\"rc_mode\":\"%s\"}",
+            i?",":"", i, vs->gop, vs->profile, rc);
+    }
+    APP("},\"encoder\":{");
+    int nemit = 0;
+    for (int i=0;i<MS_MAX_VSTREAM;i++){
+        hal_enc_stat es;
+        if (hal_enc_stats(c->video[i].imp_chn, &es) != 0) continue;
+        APP("%s\"%d\":{\"left_pics\":%u,\"left_stream_bytes\":%u,"
+            "\"left_stream_frames\":%u",
+            nemit?",":"", i, es.left_pics, es.left_stream_bytes,
+            es.left_stream_frames);
+        if (es.ave_bitrate >= 0.0)
+            APP(",\"ave_bitrate\":%.1f", es.ave_bitrate);
+        APP("}");
+        nemit++;
+    }
+    APP("}}");
+    #undef APP
+    if (o >= cap){ if (cap) buf[cap-1]=0; return -1; }   /* truncated */
+    return (int)o;
+}
+
 /* ---------- GET /control?dn_history=1: the daynight tuning series -------- */
 /* See control.h. Rows are arrays, not objects: at 600 rows a per-row key set
  * would roughly triple the body for no information. */
