@@ -6,6 +6,29 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.9.17] - 2026-09-15
+
+### Added
+
+- **`caps.webrtc` in `GET /control`** (`src/control.c`) — `{"available":0|1,
+  "enabled":0|1|2}`, emitted only on `USE_WEBRTC` builds. `available` folds
+  compile-time and runtime state the way `caps.backchannel`'s does (the shared
+  DTLS context only exists once `webrtc_start()` built it); `enabled` is the
+  resolved signalling requirement with `caps.backchannel.talk_ws`'s 0/1/2
+  meaning — `0` off, `1` served but TLS required for the POST, `2` served and
+  a plaintext POST accepted. `webrtc.enabled=1` on a port with no TLS
+  configured reports `2`, matching what `/webrtc/whep` would actually do.
+  The key is **absent** rather than `{"available":0}` on a `USE_WEBRTC=0`
+  build: that absence is what separates "no endpoint here" from "compiled in
+  but turned off", the one distinction an availability flag alone cannot make
+  (same convention as `caps.rotation`).
+  - Closes the gap the WebUI had been working around: with no caps field,
+    `preview.html` had to `GET` the POST-only `/webrtc/whep` and read its
+    `404`/`503`/`426`/`405` as a capability signal. Correct HTTP, but it
+    logged a red line in every visitor's DevTools for a request that had
+    succeeded, and cost one extra round trip per page load. The WebUI now
+    reads this field off the `/control` snapshot it already fetches.
+
 ## [1.9.16] - 2026-09-15
 
 ### Added
