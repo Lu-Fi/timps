@@ -524,7 +524,7 @@ static void fs_use(int chn)
      * then the 0/0/day defaults are harmless). isp_apply_image() no-ops on SoCs
      * where these keys are unwired. */
     if (just_enabled && fs_chn_is_direct(chn) && g_hcfg) {
-        int si = chn / 3;                 /* the sensor this channel belongs to */
+        int si = MS_SENSOR_OF_FS_CHN(chn);
         pthread_mutex_lock(&g_isp_lock);
         isp_apply_image(si, "hflip");
         isp_apply_image(si, "vflip");
