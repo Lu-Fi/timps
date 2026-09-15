@@ -104,6 +104,11 @@ semantic versioning.
     polled ring covering the same series would only create a
     duplicate-vs-discarded-sample seam at the boundary.
 
+- **`daynight.diagnose_thresholds` is reported in `GET /control`**
+  (`src/control.c`). POST-able since it was added, but absent from the status
+  object, so no client could read back what it had set. Stripped `timpsd`
+  unchanged at 360680 B (mipsel).
+
 ### Changed
 
 - **The HTTP port serves `http://` and `https://` at the same time, chosen per
