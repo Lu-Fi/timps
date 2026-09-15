@@ -109,6 +109,189 @@ semantic versioning.
   object, so no client could read back what it had set. Stripped `timpsd`
   unchanged at 360680 B (mipsel).
 
+## [1.9.14] - 2026-09-14
+
+### Added
+
+- **`audio.codec2` — a second, WHEP-only G.711 encode of the same capture**
+  (`src/audio.c`, `src/hub.c`, `src/hub.h`, `src/config.c`, `src/config.h`,
+  `src/webrtc/webrtc.c`). WHEP carries G.711 only and the fMP4 preview carries
+  AAC only, so one daemon-wide `audio.codec` cannot serve both: every fleet
+  camera runs `aac`, and every WHEP answer therefore said `m=audio 0`.
+  `audio.codec2 = pcmu` encodes the same captured PCM a second time onto its
+  own hub source (`HUB_AUDIO_SRC2`), leaving RTSP, the fMP4 preview and
+  recording on the untouched primary. It is skipped when `audio.codec` is
+  already G.711, and a 16 kHz capture is filtered and halved to G.711's 8 kHz
+  clock.
+
+### Changed
+
+- **The `USE_WEBRTC` defaults become ones that actually work out of the box**
+  (`src/config.c`). Three steps in one day, and the order matters:
+  - `webrtc.enabled` left `0`: the feature was compiled in but still needed an
+    explicit config line on every camera to do anything.
+  - `audio.codec2` defaults to `pcmu`, mirroring that — without it the default
+    AAC-only capture gave every camera a video-only WHEP session. The G.711
+    encode is cheap.
+  - `webrtc.enabled` then went from `1` to **`2`**. `1` requires TLS for the
+    signalling POST, and most cameras have no `http`→`https` redirect
+    configured, so the "on" default silently `426`'d the very feature it was
+    supposed to turn on. `2` accepts a plaintext POST.
+
+- **`audio.gain` is back to `25`**, reverting the `15` of 1.9.10.
+
+- **`/webrtc/whep` answers `503`, not `404`, when `webrtc.enabled=0`**
+  (`src/mp4/httpd.c`). Both cases used to be a plain `404`, so a client could
+  not tell "no endpoint exists on this build" from "compiled in but turned
+  off". The distinction is what lets the preview page show WebRTC as a
+  **disabled** option instead of removing it outright — the camera-side
+  capability is worth surfacing even when it is switched off.
+
+## [1.9.13] - 2026-09-13
+
+### Added
+
+- **Optional WebRTC/WHEP endpoint — H.264 (+ G.711) straight into a browser**
+  (`src/webrtc/webrtc.c`, `src/webrtc/dtls.c`, `src/webrtc/srtp.c`,
+  `src/webrtc/stun.c`, `src/mp4/httpd.c`, `Makefile`). New `USE_WEBRTC` build
+  option, off in a plain `make`. `POST /webrtc/whep` takes a browser's SDP
+  offer and answers as an **ICE-lite** peer; `DELETE /webrtc/whep/<id>` — the
+  `Location` the `201` returned — frees the session slot immediately. Off-LAN
+  live view needs a transport that survives NAT and an `https` page, and
+  neither RTSP nor the fMP4 preview is one. Built in four steps:
+  - **Transport.** ICE that only ever *responds* — no gathering, no
+    connectivity checks of our own, the browser does that — and DTLS on the
+    mbedTLS `USE_TLS` already links, so the feature stays dependency-free. At
+    this point the answer still marked the video m-section `a=inactive`.
+  - **Media.** RFC 3711 SRTP/SRTCP (`SRTP_AES128_CM_HMAC_SHA1_80` only), the
+    hub feeding `rtsp/rtp.c`'s existing H.264 packetizer, and PLI/FIR wired to
+    `hub_request_idr()`. `srtp.c` carries its own AES-128 so `make test-srtp`
+    can build it for the host and check it against an independent Python
+    implementation plus the RFC 3711 B.3 vectors — this is the piece that
+    fails as undecryptable video rather than as a crash. Verified on real
+    hardware: **8.7 min continuous 1080p15, 7930 frames and 135 keyframes
+    decoded, 0 lost, 0 PLI**, past an SRTP ROC rollover.
+  - **Lifecycle and audio.** `DELETE` teardown (a closing tab used to hold one
+    of the four session slots for the full 30 s idle timeout), an offered
+    audio m-section answered instead of refused outright, and the offer's
+    `a=fingerprint` actually checked against the certificate the peer
+    presents.
+  - **Port range.** One socket per session meant a non-zero `webrtc.port`
+    allowed exactly one viewer — the next `bind()` got `EADDRINUSE`.
+    `webrtc.port_max` tops the range and defaults to `webrtc.port + slots - 1`.
+  - Config keys: `webrtc.enabled`, `webrtc.port`, `webrtc.port_max`,
+    `webrtc.channel`. `USE_WEBRTC=0` builds stayed byte-identical throughout.
+  - **Known limitation, measured at the time and unchanged since: Firefox will
+    not play it.** The answer's `profile-level-id` comes from the live SPS and
+    `videoN.profile` defaults to `2` (High); Chrome offers no High-profile
+    H.264 in its own SDP but accepts the answer anyway and decodes, because a
+    receiver initialises its decoder from the in-band SPS. Firefox is
+    baseline-only in its SDP and refuses the answer outright. Chrome/Chromium
+    is the tested target. Documented in README's "WebRTC / WHEP" section,
+    along with a fixed `webrtc.port` being a range and the signalling wanting
+    HTTPS off a trusted LAN.
+
+### Fixed
+
+- **The SRTP rollover counter and the SRTCP replay index are keyed per SSRC**
+  (`src/webrtc/srtp.c`). A bundled peer numbers each of its SSRCs
+  independently, so one shared `roc`/`last_seq` turned every video/audio
+  interleave into a sequence wrap, and one shared "highest seen" let whichever
+  source was ahead swallow the other's reports (RFC 3711 3.3.2).
+
+- **DTLS asks for the peer certificate** (`src/webrtc/dtls.c`). `VERIFY_NONE`
+  sends no `CertificateRequest`, so there was nothing to check the offer's
+  `a=fingerprint` against.
+
+- **mbedTLS 3.6 crashed every WebRTC handshake** (`src/webrtc/dtls.c`). It
+  defers freeing the handshake transform on DTLS, so its keying-material
+  exporter dereferenced a `NULL` `ssl->transform` — a `SIGSEGV` per session.
+  Worked around locally.
+
+- **A plaintext WHEP `POST` is refused with `426` where the HTTP port has TLS**
+  (`src/mp4/httpd.c`). The offer's fingerprint and the answer's ICE password
+  are the whole session's security, so a rewritable exchange hands the session
+  over. Same gate `/talk` already applies — but only where TLS is actually
+  configured, since plaintext WHEP does work in a browser and a camera without
+  https keeps working. `webrtc.enabled=2` opts out.
+
+- **The Private Network Access preflight is answered** (`src/mp4/httpd.c`).
+  Browsers enforcing the header form of PNA refuse a cross-address-space fetch
+  unless the preflight answers `Access-Control-Allow-Private-Network`; echoed
+  only when asked.
+
+### Testing
+
+- **`timps-qa.sh`: `video1.max_qp` no longer false-FAILs.** RC3c starved to
+  0.15x of the wide-open baseline, but P-frames can already be at the skip
+  floor by then, leaving the target above what the scene costs — neither
+  ceiling can bind, and the probe read that as a differential-too-small FAIL.
+  The starve is now anchored to RC3b's already-measured cost at a comparable
+  QP, keyframe size is a second grader (P-frames at the skip floor leave only
+  I-frames for the ceiling to act on), and a starve that still was not deep
+  enough is a WARN rather than a FAIL. Verified live on Jooan: the same scene
+  **passes at 6.1x** instead of false-failing at 1.12x.
+
+## [1.9.12] - 2026-09-12
+
+A memory and wakeup pass, driven by `dev_notes/REVIEW_2026-09-12.md` and
+`dev_notes/PERFORMANCE_REVIEW_2026-09-12_av-network.md`.
+
+### Changed
+
+- **Recording gather-writes fMP4 fragments instead of copying whole access
+  units** (`src/record.c`). `seg_write()` now uses
+  `fmp4_video_fragment_iov()` + `writev()`, the conversion `httpd.c` had
+  already made. The fragment buffer's 256 KB soft cap drops to 4 KB, so it no
+  longer sits at the high-water IDR size for the process lifetime: **VmRSS
+  -55 KB at fleet bitrate, -170 KB at 4.5 Mbps 1080p**. Audio keeps the
+  contiguous path, and an `fflush` barrier keeps stdio and the raw fd in
+  order.
+
+- **The always-resident audio decode buffers shrink** (`src/speaker.c`,
+  `src/backchannel.c`). `SPK_DEC_FR` 4096 → 1024 (**24 KB BSS → 6 KB**, an
+  8 KB stack buffer → 2 KB, and the `g_lock` quantum 512 ms → 128 ms), and the
+  backchannel's `g_pcm` 8192 → 4096 samples (**-8 KB BSS**). The
+  `SPK_RS_MAX`/`g_pcm` coupling had been only a comment; it is now
+  `BC_PCM_SAMPLES` plus a static assert. The locking architecture is
+  untouched.
+
+- **Pooled encode borrows are sized to the real frame** (`src/audio.c`).
+  `faac_max` was computed and then only logged, while the AAC borrow
+  hardcoded 8192. AAC now borrows `faac_max` (floor 1024), Opus 1500 (RFC 7587
+  puts the maximum at 1275) and G.711 the clamped sample count — **~45 KB less
+  pinned pool heap**.
+
+- **`seg_open()` retries are backed off, and test `vparam` before touching the
+  card** (`src/record.c`). It ran once per incoming packet (**~31/s measured**)
+  on every failure, each one a full prune/mkdirs/open plus an unrate-limited
+  `LOGE`. Retries are gated at 500 ms, and testing `vparam` readiness first
+  means the cold-start window no longer creates and unlinks a file per packet.
+
+- **The SRT caller reconnect backoff is stop-gated** (`src/srt.c`) — the last
+  of the P-02 poll loops. The 10 Hz `usleep` poll of `g_run` is gone and
+  `srt_stop()` wakes the wait instantly instead of within 100 ms: **160 → 0**
+  100 ms sleeps over a 30 s outage window (`make sim USE_SRT=1`, dead
+  receiver). A dead zero-length `memmove` in the TS stuffing path goes with
+  it.
+
+- **SSE writes are coalesced into one `send()` per pass**, and `stream_mjpeg`
+  moves to `fanqueue_pop_ex` (`src/mp4/httpd.c`).
+
+### Fixed
+
+- **A TLS transport EOF without `close_notify` is treated as closed**
+  (`src/tls.c`). `mbedtls_ssl_read()` returns `0` on transport EOF;
+  `ms_tls_read()` passed that straight through and `ws.c` mapped it to
+  `EAGAIN` — a busy-spin on a socket that had already been FIN'd.
+
+- **`http.https` and `rtsp.tls` warn on an unparseable value**
+  (`src/config.c`). Both clamp to `0` = plaintext, so a typo silently
+  downgraded the transport with no log line at all. New `F_SECVAL` flag, these
+  two keys only.
+
+## [1.9.11] - 2026-09-11
+
 ### Changed
 
 - **The HTTP port serves `http://` and `https://` at the same time, chosen per
@@ -143,6 +326,192 @@ semantic versioning.
     them even in a TLS build.
   - `GET /control`'s `tls.https` is the raw tri-state: a client must read `1` as
     "dial it with the page's own scheme", not as "force https".
+
+- **`control.c`'s scratch space moves from `static __thread` to a stack-local
+  struct passed by pointer** (`src/control.c`). T21's toolchain fails
+  `R_MIPS_TLS_TPREL_HI16`/`LO16` relocation pairing on `__thread` statics;
+  T31 and T41 link fine, so the locality is kept and handed around explicitly
+  rather than given up. The dead T21 `-ftls-model=local-exec` build flag goes
+  with it: no `__thread` variables remain in `src/`, and the flag never fixed
+  that link error anyway.
+
+## [1.9.10] - 2026-09-09
+
+### Changed
+
+- **`audio.high_pass` defaults to on** (`src/config.c`) — it removes
+  low-frequency rumble with no downside. `timps.conf.example`'s "live"
+  annotations on `high_pass`/`agc`/`ns`/`aec` were wrong (all four are
+  restart-required or next-AO-open, never live) and are corrected, and the
+  AEC-leaves-the-mic-noisy-until-restart behaviour found on Garage is now
+  documented rather than rediscovered.
+
+- **`audio.gain` defaults to `15`** (`src/config.c`). `31` (max) clipped hard
+  on a T20 that already ran hot at `25`; `15` was A/B-tested across T20, T23
+  and T31 and preferred on all three over both of the louder settings.
+  *(Reverted to `25` in 1.9.14.)*
+
+### Fixed
+
+- **`motion.sensitivity` read back stale, and a same-level change was lost on
+  the next reboot** (`src/control.c`). Two independent bugs in the same place:
+  - `GET /control` served `motion.sensitivity` from the live IVS status
+    struct, which `imp_motion_stop()` leaves at its last running value. A POST
+    that set sensitivity and disabled motion in one request — the settings
+    page's save, and `timps-qa.sh`'s motion probe — persisted the new value
+    but kept reporting the old one until motion was re-enabled, so the WebUI
+    slider snapped back on every refresh. It reports the configured value now,
+    the same contract `hold_ms`/`skip_frames` already had.
+  - The same-IVS-level quantization guard (128 → 129 has no effect on the
+    SDK's 0..4 range) returned early *after* `config_apply_kv()` had already
+    written the new raw value into `g_cfg`, skipping the persist, the echo and
+    the change tracking below it — so a same-level change left `g_cfg` ahead
+    of `/etc/timps.conf` until the next reboot silently reverted it. Only the
+    IVS work is skipped now, never the persist.
+  - Confirmed on real hardware (Vanhua T55A): `timps-qa.sh`'s standard profile
+    went from one persistent FAIL to **PASS=119 WARN=3 FAIL=0**.
+
+- **The `on_motion` hook is launched with `posix_spawn()`, not `fork()`**
+  (`src/imp_motion.c`). The double-fork copied `timpsd`'s full address space —
+  **~97 MB across ~40 threads** — twice per motion event. On a 29 MB board (a
+  T41LQ's rmem/nmem split leaves ~29.6 MB for Linux) that returned `ENOMEM`
+  under load, and when it *succeeded* the two extra copies pushed the box into
+  the OOM killer, which then killed `timpsd` itself. uClibc-ng's `posix_spawn`
+  takes the `vfork()` path when no spawn attributes are set, sharing the
+  address space until `execve` instead of copying it — confirmed against the
+  actual uClibc-ng source and A/B tested live: the `fork` build failed to
+  launch the hook even with zero memory pressure, the `posix_spawn` build
+  launched it every time under the same conditions.
+  - Also fixes the misleading "cannot be executed" warning, which collapsed
+    `fork()` `ENOMEM`, exec `ENOMEM` and a genuinely broken hook into the same
+    exit code 127 and blamed the script for all three. The verdict now comes
+    from `posix_spawn()`'s return value (a resource failure) versus the
+    child's exit status, so each failure mode gets its own accurate log line —
+    and a transient failure no longer permanently mutes a hook that might
+    break for real later.
+
+- **T40/T41 sensor GPIO defaults, and the OSD pool size**
+  (`src/hal/hal_ingenic.c`). `memset(0)` left `rst`/`pwdn`/`power_gpio` at
+  `0` — which is `GPIO_PA(0)`, a real pin — on T40/T41, unlike the
+  unsigned-short "invalid" sentinel the other SoCs use; they default to `-1`
+  (no pin) now, like every vendor driver's own sentinel. And
+  `IMP_OSD_SetPoolSize` was skipped entirely for T40/T41: on T41 that pool
+  **is** the IPU's OSD scratch buffer, default **1 byte**, so every OSD
+  composite silently failed with "ipu buffer too small" and no overlay was
+  ever drawn. Confirmed live on a Vanhua T55A (T41LQ + GC5603).
+
+### Testing
+
+- **`timps-qa.sh` touches the stream before trusting an `encoder.<n>.rc`
+  readback.** Those fields reflect the encoder's LIVE rate-control state,
+  which only refreshes when the channel actually encodes a frame — not when
+  the IMP setter is called — and timps stops a channel entirely after its idle
+  timeout with no subscriber. So on a camera nobody is watching, a live `rc`
+  POST was invisible in the readback forever: RC2/RC3 read a frozen register
+  and reported it as the live-apply having failed, or worse as a cross-channel
+  bug. Measured on a T41LQ (Vanhua T55A): `min_qp` posted four different
+  values with no client attached and the register stayed frozen through 35 s
+  of polling; 2 s of RTSP and it followed immediately, every time. Not
+  T40/T41-specific — RC4 already documented and worked around the same effect
+  for bitrate, but wrongly carved out `min_qp`/`max_qp`/`i_bias_lvl` as fields
+  that update synchronously. They do not; the T31 run that seemed to confirm
+  they do just had a permanent RTSP client attached throughout. New
+  `rc_touch_stream()` (a 2 s ffmpeg pull) runs before every QP-bound readback
+  in RC2, RC3 and RC9, whose own baseline capture needed the same treatment.
+
+## [1.9.9] - 2026-09-07
+
+See `dev_notes/SESSION_2026-09-06_fleet_incidents_and_fixes.md` for the
+session these came out of.
+
+### Added
+
+- **`image.ae_it_max_us` — an opt-in cap on the AE integration time**
+  (`src/image.c`, `src/hal/hal_ingenic.c`, `src/config.c`, `src/config.h`,
+  `src/video.c`). Bounds motion blur at night by capping how long the AE may
+  expose. Microseconds, not sensor lines: a line is a property of the sensor
+  mode and frame rate, so the HAL converts via the SDK's own
+  `one_line_expr_in_us` and clamps into the sensor's real `[min,max]`. Default
+  `0` = off, i.e. exactly what every camera does today. Two SDK spellings are
+  wired — `IMP_ISP_Tuning_SetAe_IT_MAX` on T23/T31/C100 and
+  `SetIntegrationTime(MODE_RANGE)` on T10/T20/T21/T30 — `MODE_RANGE` rather
+  than `MANUAL`, so the AE keeps ranging and the key shapes auto-exposure
+  instead of replacing it. T40/T41 have neither, so it is `F_CAP`-gated out
+  there.
+  - The header documents no unit for `SetAe_IT_MAX`. Measured on cam-garage
+    (T31X/sc4336p): it is sensor **lines** — 16000 µs → 727 lines, and
+    `GetExpr` reads back exactly 727 (15994 µs).
+  - **The trade is exact and there is no free version.** cam-garage streaming
+    a dark scene, cap off vs 8000 µs: exposure **1496 lines (32912 µs) → 363
+    lines (7986 µs)**, 4.1x shorter; analog gain 126 → 126 (already railed at
+    its 127 maximum); ISP digital gain 7 → 72, about 2 stops; total gain
+    **4657 → 19192**, also 4.1x; `ae_luma` unchanged at 52-55, i.e. the same
+    brightness. 4.1x less blur for 4.1x more gain, all of it digital because
+    analog had nothing left. On a camera whose gain is *already* near its
+    ceiling the picture simply gets darker rather than grainier — the usual
+    "less blur, more grain" framing assumes headroom that is not always there.
+  - **It moves daynight's exposure index**, which is gain x (it/it_max): on
+    cam-garage 4657 → 19192 with the cap on, across that camera's own
+    day<10000 / night>15000 thresholds — enough to flip the decision. Any
+    camera turning this on needs its daynight thresholds re-checked rather
+    than inherited. That, plus the boot-time caveat below, is why it ships
+    default-off.
+  - **The cap only sticks when the SDK write lands while frames are genuinely
+    being delivered**, which the first cut got wrong:
+    `isp_ae_it_max_latch()` faked an active pipeline with `fs_use(0)` + a
+    sleep, and that only *enables* the framesource — nothing consumed from it,
+    so the boot-time cap never took (measured: boot config plus 40 s of a real
+    RTSP client still left max IT at 1496 lines). It is now driven from the
+    real frame path: `video`/`jpeg`/`sw-rot` call `ae_it_max_on_frame()` right
+    after publishing a frame they really pulled from the encoder, which writes,
+    then verifies by `GetExpr` readback (30 s settle — the readback lags a
+    write that DID take by 20-30 s), rechecks every 60 s while the cap holds,
+    and backs off to 5 min with one warning if a SoC never honours it. After
+    the fix: **1496 → 545 lines (11990 µs) within ~30 s** of the client
+    reconnecting. `fs_use()`'s chn0 enable edge arms it too, which closes the
+    previously-undocumented gap of a cap lost to an idle→active recycle. A
+    live POST is unchanged (545 → 363 lines within 4 s) and no longer blocks
+    the `/control` thread for ~900 ms.
+  - **Within one process the cap only ratchets DOWN**: once capped, `GetExpr`
+    reports the cap as the sensor maximum, so raising it again reads as
+    "nothing to cap", and `0` has no restore call. Only a restart clears it —
+    hence the qa allowlist entry, since POSTing this key in an unattended run
+    cannot be undone.
+  - Whole feature: **+1984 B `.text`, +28 B `.data`, +32 B `.bss`**
+    (308927→310911 / 7124→7152 / 189932→189964, T31 `-Os`), about 0.65% of the
+    binary.
+
+### Changed
+
+- **Day/night takes its exposure maximum from IMP when the `/proc` scrape only
+  has an estimate** (`src/daynight.c`, `src/hal/hal_ingenic.c`). A comment in
+  `daynight.c` claimed there was no IMP accessor for the sensor's maximum
+  integration time, so the integration-time half of the exposure index came
+  from scraping `/proc/jz/isp/isp-m0`. The comment was simply wrong:
+  `IMP_ISP_Tuning_GetExpr` is declared on every classic-tuning SoC
+  (T10..T31, C100 — only T40/T41's reworked API lacks it), with an identical
+  `IMPISPExpr` layout, and it publishes the integration time, its minimum and
+  its **maximum**, plus `one_line_expr_in_us`.
+  - It landed as a decision-free **shadow measurement** first — recorded,
+    logged once, and appended to the trace CSV as
+    `ratio_imp`/`imp_it`/`imp_it_max`/`imp_line_us`/`imp_expr_us`, fed into
+    nothing — because every daynight threshold in the fleet was tuned against
+    the scrape, and swapping the measurement underneath them needs a real dusk
+    and dawn compared side by side, not a header reading. On cam-garage, where
+    the scrape does publish a maximum, the two agreed exactly (ratio 1.0000
+    both ways) and the two independent SDK paths cross-checked to within 1%
+    (32912 µs of line arithmetic against `GetEVAttr`'s 33244 µs reported
+    directly). **+1277 B `.text`** (307650→308927, T31 `-Os`).
+  - It then became the source of `o->ratio` **only where the scrape never got
+    a real published maximum** (`mit_real == false` — currently the two T20
+    cellar cameras, which fall back to a high-water mark of the longest
+    exposure ever seen, an under-estimate by construction). Live on
+    cam-wyze-pan: right after a restart the high-water ratio reads **1.0000**,
+    falsely "full daylight", for the first ~2.5 minutes, while `GetExpr` gives
+    an accurate **0.8350** from the very first sample. Once the high-water
+    mark has seen one near-maximum exposure the two agree to within 0.1%, so
+    this changes behaviour only in that boot-time window. The ten T31/T23
+    cameras, which do publish a real maximum, are untouched.
 
 - **The frame pool now recycles the oversized buffers too — every IDR and every
   1080p JPEG** (`src/frame.c`, `src/frame.h`, `src/hub.c`, `src/hub.h`,
@@ -217,6 +586,79 @@ semantic versioning.
     mdat payloads of a 10 s capture are byte-identical to the baseline's.
     `+876 B .text` on T31. See
     `dev_notes/FMP4_ZEROCOPY_2026-09-05.md`.
+
+- **`HTTP_MAX_CLIENTS` doubles to 16** (`src/util.h`). `preview.html` alone
+  holds 3+ slots per open tab (the stream plus two SSE subscriptions), so 8
+  left room for barely two simultaneous viewers before the connection-cap
+  `503` started rejecting legitimate new tabs.
+
+- **The MJPEG client queue is capped at 2 frames** (`src/mp4/httpd.c`). MJPEG
+  has latest-frame semantics, so a deep queue only makes a slow viewer's
+  picture older. New `make test-fanqueue` covers the overflow contract.
+
+- **The T40/T41 headers are pinned to the libimp versions thingino actually
+  ships** (1.3.1 and 1.2.6, `Makefile`). The Makefile had pinned the 1.2.0 set,
+  and T40 1.2.0's `IMPEncoderStream` lacks the trailing `isVI` field 1.3.1
+  added — so `IMP_Encoder_GetStream` in `video_thread()` wrote one word past
+  the struct on every frame, the same bug class as the earlier T23 `fcrop`
+  header mismatch. Not hit by any deployed camera (no T40/T41 in the fleet
+  yet); fixed pre-emptively, with a `(void)st.isVI` compile-time tripwire so a
+  future header regression fails the build instead of corrupting memory
+  silently.
+
+### Fixed
+
+- **Idle framesources are no longer disabled twice at teardown**
+  (`src/hal/hal_ingenic.c`). `ing_stop()` unconditionally called
+  `IMP_FrameSource_DisableChn` on every video/JPEG channel, but the producer
+  threads' own exit path (`fs_unuse()`) had usually already idled a channel
+  with no subscriber, and libimp rejects the second disable — so
+  `teardown: 2 IMP call(s) failed (FrameSource_DisableChn rc=-1)` fired on
+  **100% of clean shutdowns, fleet-wide**, a warning that cried wolf on every
+  restart and defeated the diagnostic it was added for. New `fs_teardown(chn)`
+  is gated on the existing `g_fs_enabled[]` refcount — the single source of
+  truth for hardware state everywhere else in the file — and resets it for the
+  in-process start-retry path. Verified live on cam-garage: three
+  `S95timps restart` cycles, zero false warnings, both RTSP streams recovered
+  each time.
+
+- **The backchannel owner is elected only on real audio packets**
+  (`src/backchannel.c`). `bc_elect_locked()` ran *before* the RTP
+  header/payload-type validation in `bc_feed_rtp()`, so any packet from the
+  current owner — a muxed RTCP RR, a malformed datagram — re-stamped the
+  staleness timer, and a client holding the backchannel open with keepalives
+  while never actually talking blocked the 10 s staleness re-election forever.
+  Validation happens first now (it touches no shared state) and the election
+  runs under the lock only on confirmed audio. Also corrects doc drift, with
+  no code change: `audio.talk_ws` and `audio.spk_enabled` are live (read at
+  the next `/talk` request and the next AO open respectively), not
+  restart-only as documented.
+
+- **The connection-cap `503` sends `Access-Control-Allow-Origin`**
+  (`src/mp4/httpd.c`). Every other response path already sent CORS headers,
+  but this one fires as a bare `503` before per-request CORS handling starts —
+  so a same-origin-but-different-port page (`preview.html` on :80 reaching
+  timpsd on :8880) saw an opaque CORS failure instead of the real status, and
+  the `>=500` retry logic in both players never triggered. Found and
+  live-verified via connection-cap saturation.
+
+### Testing
+
+- **`timps-qa.sh` no longer leaves tmpfs artifacts that cause a false OOM
+  diagnosis.** A QA-induced camera crash was initially blamed by the script
+  itself on a live-DSP-toggle use-after-free; the actual `dmesg` was a plain
+  kernel OOM kill. Five earlier runs against the same camera (a T23 with
+  ~38 MB total RAM) had been launched without `--ssh`, so the `record.clip`
+  test's cleanup — which lives in the SSH-only branch — never ran, leaving
+  five 2 MB clips in tmpfs; a sixth plus normal daemon RSS was enough to tip
+  the system over, and the OOM killer took the largest RSS process, which
+  happened to be `timpsd`. No leak in timpsd itself (verified by fuzzing
+  `audio.agc` with 20 rapid concurrent `/control` writes: ~300 KB transient
+  RSS, freed correctly). Preflight now reports tmpfs headroom and clears stale
+  `/tmp/timps_qa_*.mp4`, the clip test no longer POSTs a clip at all without
+  `--ssh` (it cannot clean up after itself either way), and the OOM grading
+  distinguishes "already dead before the stress ran", "OOM-killed during
+  stress" and a real use-after-free instead of assuming the worst label.
 
 ## [1.9.8] - 2026-09-03
 
