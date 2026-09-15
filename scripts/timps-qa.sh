@@ -2916,6 +2916,49 @@ else
 		fi
 	fi
 
+	# --- daynight.history_s (day/night tuning ring buffer, opt-in background
+	# collection, 2026-09-14/15): does not fit lv_section - control_daynight_json()
+	# (the normal GET /control daynight object) has no history_s field at all;
+	# the only place it is readable is GET /control?dn_history=1's "retain_s"
+	# (control.c ~1979). Real live coverage: POST a distinct non-zero value,
+	# confirm retain_s picks it up (proves src/events.c's dnh_resize() actually
+	# ran and the ring holds samples), then restore the ORIGINAL value - not a
+	# hardcoded 0 - so a camera someone deliberately left collecting is put
+	# back exactly as found, while the fleet default (0 since 2026-09-15)
+	# round-trips back to 0 either way. Leaving background collection running
+	# as a side effect of a QA pass is exactly what this must not do. ---
+	dnh_pre="$OUTDIR/lv_dnhist_pre.json"
+	if curlq 10 "$(http_base)/control?dn_history=1" -o "$dnh_pre" && [ -s "$dnh_pre" ]; then
+		dnh_cur=$(jget "$dnh_pre" retain_s)
+		if [ -n "$dnh_cur" ]; then
+			dnh_new=$(flip_int 0 172800 "$dnh_cur")
+			LV_PENDING="{\"daynight\":{\"history_s\":$dnh_cur}}"   # armed until restore lands
+			code=$(lv_post "{\"daynight\":{\"history_s\":$dnh_new}}")
+			dnh_post="$OUTDIR/lv_dnhist_post.json"
+			curlq 10 "$(http_base)/control?dn_history=1" -o "$dnh_post"
+			dnh_got=$(jget "$dnh_post" retain_s)
+			if [ "$code" = 200 ] && [ "$dnh_got" = "$dnh_new" ]; then
+				ok "daynight.history_s=$dnh_new applied live (retain_s round-trips through GET /control?dn_history=1, confirming the ring resized)"
+			else
+				bad "daynight.history_s=$dnh_new not applied (POST HTTP $code, retain_s reports '$dnh_got')"
+			fi
+			lv_mark daynight history_s
+			lv_post "{\"daynight\":{\"history_s\":$dnh_cur}}" >/dev/null   # restore
+			LV_PENDING=""
+			dnh_restore="$OUTDIR/lv_dnhist_restore.json"
+			curlq 10 "$(http_base)/control?dn_history=1" -o "$dnh_restore"
+			[ "$(jget "$dnh_restore" retain_s)" = "$dnh_cur" ] \
+				&& info "  daynight.history_s: restored to $dnh_cur" \
+				|| warn "daynight.history_s: did not restore to original ($dnh_cur) - camera may be left collecting in the background, check by hand"
+		else
+			warn "daynight.history_s: GET /control?dn_history=1 has no readable 'retain_s' - cannot verify"
+			lv_mark_gated daynight "no-retain_s-in-dn_history-response(daemon-predates-history-ring)" history_s
+		fi
+	else
+		info "  daynight.history_s: GET /control?dn_history=1 not available - this daemon predates the history-ring feature (5b97366), skipping"
+		lv_mark_gated daynight "no-dn_history-endpoint(daemon-predates-history-ring)" history_s
+	fi
+
 	# --- record: the running recorder reads these live. enabled/mode/channel are
 	# left out (they would start/stop capture or depend on stream count); the
 	# rolls/segment/min-free/audio/name/dir round-trip live. seg 0..86400, pre
@@ -4105,6 +4148,43 @@ else
 		LV_PENDING=""
 	fi
 
+	# --- audio.codec2 (optional second G.711 encode for WebRTC, 2026-09-14):
+	# unlike audio.codec's USE_STREAM_OPUS gate, pacodec2() (config.c) accepts
+	# "pcmu"/"none" unconditionally on EVERY build - only the boot DEFAULT
+	# differs by USE_WEBRTC (pcmu when compiled in, none otherwise;
+	# config.c:343-346). So a plain round-trip is real coverage everywhere,
+	# not just WebRTC builds - no caps gate needed, matching pacodec2()'s own
+	# lack of one. Read via the normal GET /control (control.c:1522 echoes
+	# "codec2" right next to "codec"), so this fits a manual round-trip in the
+	# same style as audio.codec just above rather than lv_section (the probe
+	# is a fixed two-value enum, not a generic int/bool/str range). Always
+	# restore the ORIGINAL value - on a build where codec2 is feeding a live
+	# WebRTC session's SRTP audio, leaving it flipped to "none" would silently
+	# kill that session's audio track. ---
+	ac2_cur=$(jget "$LV_BASE" audio.codec2)
+	if [ -n "$ac2_cur" ]; then
+		if [ "$ac2_cur" = pcmu ]; then ac2_probe=none; else ac2_probe=pcmu; fi
+		LV_PENDING="{\"audio\":{\"codec2\":\"$ac2_cur\"}}"   # armed until restore
+		code=$(lv_post "{\"audio\":{\"codec2\":\"$ac2_probe\"}}")
+		lv_get "$OUTDIR/lv_codec2.json"
+		got=$(jget "$OUTDIR/lv_codec2.json" audio.codec2)
+		if [ "$got" = "$ac2_probe" ]; then
+			ok "audio.codec2=$ac2_probe applied ($([ "$ac2_probe" = pcmu ] && echo "second G.711 encode armed" || echo "second G.711 encode disarmed") - pacodec2() accepts this on every build, WebRTC compiled in or not)"
+		else
+			warn "audio.codec2=$ac2_probe: got '$got' (HTTP $code) - pacodec2() should accept this unconditionally, unlike the opus-gated audio.codec above"
+		fi
+		lv_mark audio codec2
+		lv_post "{\"audio\":{\"codec2\":\"$ac2_cur\"}}" >/dev/null   # restore
+		lv_get "$OUTDIR/lv_codec2_restore.json"
+		[ "$(jget "$OUTDIR/lv_codec2_restore.json" audio.codec2)" = "$ac2_cur" ] \
+			&& info "  audio.codec2: restored to $ac2_cur" \
+			|| warn "audio.codec2: did not restore to original ($ac2_cur)"
+		LV_PENDING=""
+	else
+		info "  audio.codec2: GET /control has no readable 'audio.codec2' - this daemon predates the codec2 feature (0a1dece/d071b74), skipping"
+		lv_mark_gated audio "no-audio.codec2-in-status(daemon-predates-codec2)" codec2
+	fi
+
 	# --- shared restart/persist helpers (used by --test-rotation below and by
 	# --test-encoder): restarting the daemon, forcing a key into /etc/timps.conf
 	# over SSH even when the daemon is down, POST-then-confirm-before-restart,
@@ -4730,14 +4810,14 @@ else
 	# lv_gated.txt with a reason when they are off, which satisfies the
 	# promise without attesting a test that never ran.
 	TESTED_image="brightness contrast saturation sharpness hue vflip hflip running_mode anti_flicker ae_compensation max_again max_dgain sinter_strength temper_strength dpc_strength defog_strength drc_strength highlight_depress backlight_compensation core_wb_mode wb_rgain wb_bgain"
-	TESTED_audio="volume gain alc_gain mute spk_volume spk_gain aec codec enabled samplerate channels bitrate high_pass agc ns agc_target_dbfs agc_compression_db force_stereo spk_enabled backchannel backchannel_codec backchannel_rate talk_ws"
+	TESTED_audio="volume gain alc_gain mute spk_volume spk_gain aec codec codec2 enabled samplerate channels bitrate high_pass agc ns agc_target_dbfs agc_compression_db force_stereo spk_enabled backchannel backchannel_codec backchannel_rate talk_ws"
 	TESTED_sensor=""
 	TESTED_osd="monitor_stream font_path vars_file enabled supersample hinting"
 	TESTED_osd_item="text x y font_size color transparency outline outline_color"
 	TESTED_motion="sensitivity monitor_stream enabled hold_ms skip_frames"
 	TESTED_record="segment_s pre_roll_s post_roll_s min_free_mb audio name dir"
 	TESTED_timelapse="interval_s keep_days name dir"
-	TESTED_daynight="day_gain night_gain day_confirm_s boot_probe probe_min_gap_s probe_confirm_s heartbeat_s heartbeat_max_s sun_sunrise_offset_min sun_sunset_offset_min time_night_start time_day_start sun_latitude sun_longitude"
+	TESTED_daynight="day_gain night_gain day_confirm_s boot_probe probe_min_gap_s probe_confirm_s heartbeat_s heartbeat_max_s sun_sunrise_offset_min sun_sunset_offset_min time_night_start time_day_start sun_latitude sun_longitude history_s"
 	TESTED_video="bitrate rotation rc_mode qp min_qp max_qp quality_lvl change_pos i_bias_lvl fluc_lvl gop max_gop profile"
 	TESTED_privacy="enabled x y w h color"
 
