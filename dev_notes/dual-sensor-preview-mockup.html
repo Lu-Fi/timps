@@ -121,12 +121,17 @@
       overflow: hidden;
       cursor: grab;
       pointer-events: auto;
+      /* without this a touch drag scrolls the page instead of moving the
+         inset (Review 2 6) */
+      touch-action: none;
+      /* z-index 5: #motion-overlay and the injected PTZ #motor/.jst carry no
+         z-index of their own (main.css:851-870), so this stacks above both */
       z-index: 5;
-      transition: inset 0.15s ease-out;
+      /* deliberately NO transition: the corners are set as auto <-> px pairs
+         and `transition: inset` never animates across `auto`. */
     }
     .ms-pip.is-dragging {
       cursor: grabbing;
-      transition: none;
       box-shadow: 0 0.75rem 1.5rem rgba(0, 0, 0, 0.75);
       outline: 2px solid var(--bs-primary);
     }
@@ -391,7 +396,9 @@
   var pipBtn = null;      // created only when caps says so (§7.6.5)
   var pip = null;         // the inset element, ditto
   var pipOn = false;
-  var corner = lsGet("ms.pip.corner") || "br";
+  // "tr", not "br": preview.html:213 is <video ... controls>, whose native
+  // control bar owns the bottom edge (Review 2 2i)
+  var corner = lsGet("ms.pip.corner") || "tr";
 
   /* ---- §7.1's derived helpers ------------------------------------- */
   function sensorsCaps() {
@@ -414,17 +421,31 @@
   /* selectedChn(): replaces the three
    *   streamSelect.value === "1" ? "1" : "0"
    * reads at preview.html:847 / :1067 / :1836. With the static two-option
-   * select this is total-equivalent to that ternary - which is the property
-   * the review should check rather than take on faith. */
+   *
+   * It returns a STRING, and that is not cosmetic. Three further sites compare
+   * the same value with === against a string literal - :1086, :2017 and :2018,
+   * all `chn === "1" ? "sub" : "main"`. A numeric return makes all three false
+   * forever, so a plain single-sensor camera would say "Connected (main
+   * stream)" while playing the sub stream. Review 2 2e caught exactly that in
+   * an earlier draft of this file. */
   function selectedChn() {
     var v = parseInt(streamSelect.value, 10);
-    return (v >= 0 && v < streamCount()) ? v : 0;
+    return String((v >= 0 && v < streamCount()) ? v : 0);
   }
+  function selectedChnN() { return parseInt(selectedChn(), 10); }
 
+  /* The `withChn` form models preview.html:507-509's streamLabel(), which is
+   * what the stats table prints - so the single-sensor arm has to be ITS two
+   * strings verbatim, not a plausible-looking pair. 7.6.1 claims those stay
+   * byte-identical; this is where that claim is visible. */
   function labelFor(chn, withChn) {
     var c = sensorsCaps();
+    if (!c) {
+      return withChn
+        ? (chn === 0 ? "Main (chn0)" : chn === 1 ? "Sub (chn1)" : "chn" + chn)
+        : (chn === 0 ? "Main stream" : "Sub stream");
+    }
     var role = roleOf(chn) === 0 ? "Main" : "Sub";
-    if (!c) return (chn === 0 ? "Main stream" : "Sub stream");
     return "Sensor " + sensorOf(chn) + " · " + role + (withChn ? " (chn" + chn + ")" : "");
   }
   function dimsFor(chn) {
@@ -438,7 +459,7 @@
   function buildPicker() {
     var c = sensorsCaps();
     if (!c) return;                      // single-sensor: NO DOM write at all
-    var want = selectedChn();
+    var want = selectedChnN();
     streamSelect.innerHTML = "";
     for (var chn = 0; chn < streamCount(); chn++) {
       var v = CONTROL.video[String(chn)];
@@ -457,7 +478,7 @@
 
   function pipChn() {
     // other sensor, SUB stream; fall back to its main; else -1
-    var other = sensorOf(selectedChn()) === 0 ? 1 : 0;
+    var other = sensorOf(selectedChnN()) === 0 ? 1 : 0;
     var sub = chnFor(other, 1), main = chnFor(other, 0);
     if (CONTROL.video[String(sub)] && CONTROL.video[String(sub)].enabled) return sub;
     if (CONTROL.video[String(main)] && CONTROL.video[String(main)].enabled) return main;
@@ -496,7 +517,7 @@
     var chn = pipChn();
     if (chn < 0) {
       pip.innerHTML = '<div class="ms-pip-empty">Sensor ' +
-        (sensorOf(selectedChn()) === 0 ? 1 : 0) +
+        (sensorOf(selectedChnN()) === 0 ? 1 : 0) +
         ' has no enabled stream</div>';
       return;
     }
@@ -583,7 +604,7 @@
   function swap() {
     var chn = pipChn();
     if (chn < 0) return;
-    var role = roleOf(selectedChn());
+    var role = roleOf(selectedChnN());
     var target = chnFor(sensorOf(chn), role);
     if (!(CONTROL.video[String(target)] && CONTROL.video[String(target)].enabled)) target = chn;
     streamSelect.value = String(target);
@@ -592,18 +613,40 @@
 
   /* ---- render --------------------------------------------------- */
   function render() {
-    var chn = selectedChn();
+    var chn = selectedChnN();
     phMain.className = "ph " + (sensorOf(chn) === 0 ? "ph-s0" : "ph-s1");
     phMain.querySelector(".ph-title").textContent = labelFor(chn, false);
     phMain.querySelector(".ph-sub").textContent = dimsFor(chn);
     var extra = "";
     if (pipOn && pipChn() >= 0) {
       var pv = CONTROL.video[String(pipChn())];
-      extra = " · inset " + labelFor(pipChn(), true) + " (+" + pv.bitrate + " kb/s)";
+      // caps.http_max_clients is already in GET /control (control.c:1369-1373);
+      // 7.6.3 says the PiP should read it and refuse to open below a threshold
+      // rather than eat a slot a second viewer needs.
+      var slots = (CONTROL.caps && CONTROL.caps.http_max_clients) || 16;
+      extra = " · inset " + labelFor(pipChn(), true) + " (+" + pv.bitrate +
+              " kb/s, 1 of " + slots + " client slots)";
     }
-    status.textContent = "Buffered fMP4, 1.5s behind live · " + dimsFor(chn) + extra;
+    status.textContent = "Buffered fMP4, 1.5s behind live · " + dimsFor(chn) +
+                         extra + statusSuffix;
     if (pipOn) renderPip();
   }
+
+  /* 7.6.3 calls these mandatory, so the mockup models them rather than just
+   * describing them: the inset is the third/fourth long-lived connection to
+   * port 8880 per tab (util.h:162, "3+ slots per open tab"), and a hidden tab
+   * must not hold one. Hidden rather than destroyed, so the corner and the
+   * on/off choice survive the round trip. */
+  var statusSuffix = "";
+  document.addEventListener("visibilitychange", function () {
+    if (!pip || !pipOn) return;
+    pip.style.display = document.hidden ? "none" : "";
+    statusSuffix = document.hidden ? " · inset suspended (tab hidden)" : "";
+    render();
+  });
+  window.addEventListener("pagehide", function () {
+    if (pip) pip.style.display = "none";
+  });
 
   function onStreamChange() {
     ssSet("ms.stream", streamSelect.value || "0");

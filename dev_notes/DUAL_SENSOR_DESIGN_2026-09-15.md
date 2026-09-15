@@ -1048,8 +1048,14 @@ inert. That list is the honest form of the claim.
 
 `GET /control`'s `caps` object gains exactly one key, following the
 **omit-when-absent** convention `caps.webrtc` and `caps.rotation` already use
-(`src/control.c:1437-1447` documents that convention from the consumer side:
-*"key absent → USE_WEBRTC=0, no endpoint exists here → remove it"*):
+(`src/control.c:1405-1417` and `:1497-1504` emit them inside the `#ifdef`;
+`preview.html:1440` documents the convention from the consumer side: *"key
+absent → USE_WEBRTC=0, no endpoint exists here → remove it"*). Note it is one of
+two conventions in that object, not the only one — `record`, `timelapse`,
+`motion`, `privacy` and `backchannel` all report `available:0` instead. Omission
+is the right one to copy here precisely because "this build has no second
+sensor" and "this build has one that is off" are not states we need to
+distinguish, and omission is what keeps a flag-off document byte-identical:
 
 ```jsonc
 "caps": {
@@ -1118,9 +1124,14 @@ CGI bridges scan for the last occurrence of a key*, which is why `caps` is
 emitted first. `"sensors"` is a different token than `"sensor"` for any scanner
 that matches the closing quote, and the same-prefix pair `"caps"`/`"caps.image"`
 already coexists — but this is a substring-matching shell bridge and the claim
-is cheap to verify. **Verify it against the CGI bridge before landing, do not
-assume it.** If it does collide, `caps.multisensor` is the fallback spelling and
-nothing else in this section changes.
+is cheap to verify.
+
+**Verified, and closed.** Review 2 §3 went and looked: **no shipped CGI scans
+`/control` for `"sensor"` at all.** `timps-imp.cgi:96` parses only its own
+`POST_DATA` for `"val"`, `timps-heartbeat.sh` reads nothing keyed, and
+`json-sensor-info.cgi` reads `/proc`. The bridges that comment refers to are the
+`json-prudynt*.cgi` files `timps.mk:522-528` deletes. `caps.sensors` is safe; no
+fallback spelling is needed.
 
 ### 7.2 What actually scales by raising a bound — corrected
 
@@ -1166,17 +1177,24 @@ generically (`:691-695`, `parseInt(streamChannel.replace(/^ch/, ""), 10)`) and
 `timpsMediaUrl()` already takes a numeric channel (`:66-76`). `ch2`/`ch3` work
 today.
 
-**OSD pages** are the same shape and cheaper: `a/streamer-osd.js:17` derives its
-stream from `/^page-streamer-osd([01])$/`. Widening that character class to
-`([0-3])` plus two entries in `STREAM_NAME` is the entire JS change. But §5.5
+**OSD pages** are the same shape and *nearly* cheaper: `a/streamer-osd.js:17`
+derives its stream from `/^page-streamer-osd([01])$/`. Widening that character
+class to `([0-3])` plus two entries in `STREAM_NAME` is **not** the entire JS
+change, as this section first claimed — Review 2 §2c: `:20` is
+`var OTHER = 1 - S;`, and the "both streams" scope uses it at `:179`
+(`"osd" + OTHER`), `:237` (`bootEnabled[OTHER]`) and `:342` (the "Also applied
+to" label). On an `osd2` page that is `osd-1`, i.e. a POST to a section that does
+not exist. `OTHER` has to become a real pairing (the other stream *of the same
+sensor*, `S ^ 1` within the sensor) before any third OSD page ships. But §5.5
 caps T23 at two OSD groups (main streams only), so only **`streamer-osd2.html`**
 (stream 2) is worth shipping; a stream-3 OSD page would render controls for a
 group `imp_osd.c` will refuse to create. Note that the *page* has no way to know
-that — §5.5's "logged once" refusal is camera-side. If the OSD-group pool lands
-as §5.5 describes, `caps.privacy.available` (`control.c:1385-1396`, already
-computed per stream via `imp_osd_group_active(s)`) is the honest signal and
-`streamer-osd2.html` should grey itself out on it rather than silently writing
-keys that do nothing.
+that — §5.5's "logged once" refusal is camera-side. The page needs a per-stream
+signal to grey itself out on, and **`caps.privacy.available` is not one.**
+Review 2 §2d: `control.c:1387-1392` ORs `imp_osd_group_active(s)` across *all*
+streams into a single `pav`, so it says "some stream somewhere has a group",
+which tells `streamer-osd2.html` nothing about its own. A genuinely per-stream
+signal has to be added — dependency **D13** in §7.9.
 
 ### 7.3 The three "needs real thought" pages — corrected assessment
 
@@ -1291,15 +1309,18 @@ picker (four entries, main and sub of each sensor), not a sensor picker, and
 conflating them would force the settings pages to carry a stream concept they
 have no use for.
 
-Loading it: `timps.webui.json`'s `"scripts"` array (`files/timps.webui.json`,
-alongside `timps-control-bar.js` / `timps-auth-gate.js`) injects a script into
-**every** page at assembly time. The file's only top-level effect is defining
-`window.timpsSensorSelect` — it mounts nothing on its own — so there is no
-rendered or behavioural delta. The cost is not zero though, and Review 2 §2d is
-right to name it: one extra request per page load and ~2 KB of flash on every
-single-sensor camera in the fleet. If that matters on an 8 MB part, gate the
-install (and the manifest line) in `timps.mk` the same way §7.7 gates
-`ch2.jpg`.
+Loading it: **two plain `<script>` tags**, one in `streamer-image.html` and one
+in `config-photosensing.html`, next to the `a/streamer-image.js` /
+`a/config-photosensing.js` tags those pages already carry.
+
+The first draft put it in `timps.webui.json`'s `"scripts"` array instead, and
+Review 2 §3 is right that that is unmotivated and strictly worse:
+`assemble_plugins.py:355`/`:378` injects manifest scripts into **every** HTML
+file (including `401.html`), so every page load on every single-sensor camera in
+the fleet would fetch and parse a file to define one unused global. Exactly two
+pages use the helper and both are timps-owned, so two `<script>` tags are
+zero-delta everywhere else — and they keep the flash cost gateable in `timps.mk`
+the same way §7.7 gates `ch2.jpg`.
 
 ### 7.5 `/control`'s per-sensor shape — an amendment to §2.3
 
@@ -1339,7 +1360,33 @@ document**: `control.c` emits `"osd0":{…},"osd1":{…}` as sibling top-level k
 }
 ```
 
-Four things fall out of it, all of them good:
+> **BLOCKER found by Review 2 §2a — read this before believing the four points
+> below.** Neither this shape nor §2.3's survives the daemon's *legacy* image
+> path as it stands. `control.c:733-734`:
+>
+> ```c
+> const char *se, *sb = find_obj(json, end, "image", &se);
+> apply_ctrl_fields(&sc, ch, "image", sb?sb:json, sb?se:end, img_tbl, nimg);
+> ```
+>
+> With no `"image"` object in the body, every image field is looked up across
+> the **whole document** — that is the deliberate back-compat path for the old
+> flat `/control`. And `find_field` (`:279-296`) steps literal to literal with
+> **no brace tracking** (its comment is about skipping string *contents*, not
+> nesting). So `POST {"image1":{"brightness":5}}` matches `"brightness":5`
+> *inside* `image1` and writes `image.brightness` to **sensor 0**. Adding an
+> `image1` handler does not help: `sb` for `"image"` is still NULL, so the
+> whole-body scan still runs. §2.3's nested `{"image":{"1":{…}}}` has the same
+> defect one level down, because `get_val` over the `image` object's range also
+> reaches leaves inside `"1":{}`.
+>
+> **A silent write to the wrong sensor's ISP.** Either shape therefore needs a
+> depth-aware scan or a guard on the legacy flat path first — dependency **D11**
+> in §7.9. The `timps-api.js` argument below is still correct and still decides
+> the *spelling*; it does not decide the safety, and this section previously
+> implied it did.
+
+With D11 in place, four things fall out of the sibling shape, all of them good:
 
 1. **`timps-api.js` needs no change at all.** `{"image1":{"brightness":5}}`
    already flattens to `image1.brightness` through the generic `sec + "." + k`
@@ -1351,16 +1398,24 @@ Four things fall out of it, all of them good:
 3. The JSON spelling and the config-file spelling become the **same string**
    (`image1.brightness`), so `streamer-image.js`'s `REVERSE` map (§7.3b) and the
    `/events?stream=config` push line up with no translation layer.
-4. The POST side needs no new machinery either: `apply_ctrl_fields(&sc, ch,
-   "image1", …)` composes `image1.<field>`, and M2d already made that a
-   canonical key.
+4. The POST side needs only a *handler*, no new key machinery:
+   `apply_ctrl_fields(&sc, ch, "image1", …)` composes `image1.<field>` and M2d
+   already made that a canonical key. (It does **not** come for free — D11
+   above, plus D12: `key_is_restart_section()` (`control.c:235-240`) matches
+   `videoN.` and `sensor.` only, and `caps.restart` (`:1335`) lists `"sensor"`,
+   so a `sensor1.model` write would be graded live and the WebUI would never
+   flag the restart it needs. `videoN.` is already bounded by `MS_MAX_VSTREAM`,
+   so video2/video3 grade correctly the moment the bound rises.)
 
 The cost is that `sensor`/`image` and `sensorN`/`imageN` are spelled
 differently, i.e. the same asymmetry §2.3 already accepted on-disk and for the
 same reason (the installed base). Consistency with `videoN`'s nested JSON is
 lost; consistency with `osd0`/`osd1`'s sibling JSON and with the config key
 space is gained. **This is a proposed amendment to §2.3 and needs that
-section's owner to accept or reject it before M5/M6 implement either.**
+section's owner to accept or reject it before M5/M6 implement either.** Review 2
+§5 accepts it **conditionally**: the sibling spelling is the better wire shape,
+but shipped without D11 it is *worse* than §2.3's, not better — because it reads
+like a per-sensor write and is not one.
 
 ### 7.6 `preview.html` — the decision
 
@@ -1390,11 +1445,16 @@ Fifteen lines, no new failure mode, works in all three pipelines.
   They become one `selectedChn()` that parses and range-clamps. With the static
   two-option select the select can only hold `"0"` or `"1"`, so the new function
   is **total-equivalent** to the ternary it replaces — which is the check the
-  review should make rather than take on faith. *(It did, and found one: see
-  Review 2 §2c. `selectedChn()` must return a **String**, because `:1086` does
-  `const label = chn === "1" ? "sub" : "main";` — a strict comparison that a
-  numeric return silently makes false forever. Return a string, or rewrite
-  `:1086` in the same change.)*
+  review should make rather than take on faith.
+
+  *(It did, and it was not. Review 2 §2e: there are **three more** read sites of
+  the same value, all strict string comparisons —* `chn === "1" ? "sub" : "main"`
+  *at `:1086`, `:2017` and `:2018`. A `selectedChn()` that returns a Number
+  makes all three false forever, so a plain single-sensor camera would log and
+  display "Connected (main stream)" while playing the sub stream. **Return a
+  String**, or rewrite all three in the same change. The other consumers coerce
+  and would never have shown it: `:1070` is `"?chn=" + chn`, `:850` is
+  `j.video[chn]`.)*
 - `streamLabel(chn)` (`:507-509`) already falls through to `"chn" + chn` for
   anything past 1, so the stats table is correct-but-terse today. Under
   `count > 1` it gains `Sensor 1 · Main (chn2)` style labels; the existing two
@@ -1440,6 +1500,25 @@ which is `:1945-1978` minus the playback-rate/live-edge logic) in its own
 closure, plus ~60 lines of drag/persist. It cannot wedge the main player because
 it shares no variable with it.
 
+**Two cheaper insets Review 2 §3 says must be priced before those 120 lines are
+written — and it is right that this section skipped them:**
+
+- **Progressive `<video src=…>`.** `preview.html:1853-1854` already falls back
+  to `video.src = "/stream.mp4?chn=…"` when MSE is unavailable. A
+  `<video muted autoplay playsinline src=…>` inset is ~15 lines: no
+  MediaSource, no `pump`/`evict`, nothing shared, and the browser owns the
+  buffering. The cost is uncontrolled live-edge drift — which for an
+  orientation inset may simply not matter, and which only the bench can say.
+- **Polled `<img src="/snapshot.jpg?chn=2">` at ≤ 0.5 fps.** This one holds
+  **no long-lived connection to port 8880 at all** — i.e. it avoids the cost
+  this very section ranks first — at broadly comparable bandwidth, and it needs
+  no new encoder channel because §5.6 already turned `video2.jpeg_enabled` on.
+
+Neither is free of drawbacks, but both are an order of magnitude less code than
+trimmed MSE, and §7.6.2's "120 lines" should be justified against them at M6b
+rather than assumed. **Measure all three on the W8U before writing the MSE
+version.**
+
 #### 7.6.3 The cost, with real numbers rather than an assertion
 
 Defaults from `src/config.c:341-376`: sensor-1 main (`video2`) is 1920×1080 @
@@ -1472,21 +1551,27 @@ one.
 
 The costs that are **not** negligible, and that are why the PiP is default-off:
 
-- **Browser connection pool.** `preview.html:795-805` records a *measured* hang:
-  browsers allow ~6 concurrent HTTP/1.1 connections per origin, and with two
-  preview tabs open (each holding `/stream.mp4` + `/events`) the pool filled and
-  the next fetch to port 8880 queued **forever** — no error, no timeout. The
-  inset adds a third long-lived connection to that same origin per tab. Two tabs
-  with PiP on is six, i.e. exactly at the wall. Mitigations, all mandatory:
-  tear the inset down on `visibilitychange → hidden`, on `pagehide`, and
-  whenever the main player is disconnected; never open it before the main pane
-  has connected.
-- **Camera client slots.** One more against `HTTP_MAX_CLIENTS`, which is 16 by
-  default but **4** on the low-RAM boards in this fleet (`src/util.h:150-170`
-  names `-DHTTP_MAX_CLIENTS=4` as the example). `caps.http_max_clients` is
-  already in `GET /control` (`:1369-1373`) — the PiP should read it and refuse
-  to open below a threshold rather than eating a slot that a second viewer
-  needs.
+- **Browser connection pool — and it is worse than this section first said.**
+  `preview.html:795-805` records a *measured* hang: browsers allow ~6 concurrent
+  HTTP/1.1 connections per origin, and with two preview tabs open the pool
+  filled and the next fetch to port 8880 queued **forever** — no error, no
+  timeout. Review 2 §2f corrects the count: a tab already holds
+  `/stream.mp4`, `/events?stream=motion` (`preview-motion.js:237`) and, with the
+  stats card open, `/events?stream=stats` (`preview.html:664`) — `util.h:162`
+  says "3+ slots per open tab". So the inset makes it **four per tab, and two
+  tabs is eight**, past the wall rather than exactly at it. Mitigations, all
+  mandatory: tear the inset down on `visibilitychange → hidden`, on `pagehide`,
+  and whenever the main player is disconnected; never open it before the main
+  pane has connected.
+- **Camera client slots.** One more against `HTTP_MAX_CLIENTS`. This section
+  originally said that is "**4** on the low-RAM boards in this fleet" — Review 2
+  §2g checked and **that is unsupported**: `-DHTTP_MAX_CLIENTS=4` appears only
+  as a comment example (`timps/Makefile:24`, `util.h:150`), and nothing in
+  `timps.mk`, `user/` or `configs/` sets it. Every fleet camera runs the default
+  **16**. The mitigation is unchanged and cheap either way:
+  `caps.http_max_clients` is already in `GET /control` (`:1369-1373`), so the
+  PiP should read it and refuse to open below a threshold rather than eating a
+  slot a second viewer needs.
 
 #### 7.6.4 Why the PiP is worth building anyway
 
@@ -1525,12 +1610,18 @@ a T23's WiFi uplink (§9.1).
   own rectangle** — which is the argument for corner-snapping (below) rather
   than free positioning, since a corner is the least likely place to want the
   joystick.
-- **Corner snap, not free drag.** Drag with pointer events, then snap to the
-  nearest of four corners on release and persist that corner in
-  `localStorage["ms.pip.corner"]`. Free positioning survives neither a window
-  resize nor a rotation change without extra clamping code, and the PTZ
-  favourites popover next door is anchored rather than floating — so this also
-  matches the visual language rather than inventing a second one.
+- **Corner snap, not free drag — and the default corner is a TOP one.** Drag
+  with pointer events, then snap to the nearest of four corners on release and
+  persist that corner in `localStorage["ms.pip.corner"]`. Free positioning
+  survives neither a window resize nor a rotation change without extra clamping
+  code, and the PTZ favourites popover next door is anchored rather than
+  floating — so this also matches the visual language rather than inventing a
+  second one. Review 2 §2i caught the default: `preview.html:213` is
+  `<video … controls …>`, so a bottom-right inset sits exactly on the native
+  control bar's fullscreen/PiP end. Default to `tr`.
+- **`touch-action: none` on the inset** (Review 2 §6), or a touch drag scrolls
+  the page instead of moving it. Easy to miss on a desktop browser and
+  guaranteed to be reported from a phone.
 - **Click the inset to swap.** The inset becomes the main pane's stream and vice
   versa. One line on top of §7.6.1's picker, and it makes the inset its own
   affordance.
@@ -1571,16 +1662,22 @@ Both are **literal 0/1 whitelists**. A sensor-1 snapshot needs all of:
 4. **nothing for `ch3`.** `/snapshot.jpg?chn=3` is served strictly when a query
    string is present (`src/mp4/httpd.c:794`), tier 1 of `hub_pick_jpeg_src`
    requires `video3.jpeg_enabled`, and §5.3.4/§5.6 deliberately leave that off.
-   A `ch3.jpg` would 502 on a correctly configured camera. Ship `ch2` only.
+   A `ch3.jpg` would 502 on a correctly configured camera. Ship `ch2` only —
+   and note (Review 2 §3) that `hub_pick_jpeg_src` gates on `g_cfg_boot`
+   (`hub.c:88-90`), so even an operator who turns `video3.jpeg_enabled` on live
+   does not get `ch3` until the next restart.
 
 `chn=2` resolving correctly is exactly what §5.6's `video2.jpeg_enabled = 1`
 default buys, which is worth stating because the two decisions look unrelated
 and are not.
 
 **Gate the install on the flag** (`ifeq ($(BR2_PACKAGE_TIMPS_MULTI_SENSOR),y)`
-around the extra names). The script is ~2.5 KB and would otherwise cost every
-8 MB single-sensor camera two more copies of a CGI that can only ever answer
-502 — small, but this fleet counts flash.
+around the extra names). The reason is *not* flash: the script is 3557 bytes and
+the copies are byte-identical, so mksquashfs deduplicates them unless thingino
+passes `-no-duplicates` (Review 2 §2l — the earlier "~2.5 KB × 2" argument was
+both the wrong number and the wrong argument). The reason is that an endpoint
+which can only ever answer 502 should not exist on a camera that has no second
+sensor.
 
 ONVIF is **out of scope**: the symlinks (`onvif/image.cgi`, `image1.cgi`) map to
 ONVIF *profiles*, and what a second sensor means to `onvif_simple_server`'s
@@ -1610,21 +1707,29 @@ Stated explicitly so none of it is silently assumed (§10 mirrors these):
 | # | dependency | needed by | status |
 |---|---|---|---|
 | D1 | `caps.sensors` in `GET /control` (§7.1) | everything here | **not implemented**; M5/M6 |
-| D2 | `hal_sensor_count()` — a runtime sensor count the daemon can report | D1 | **does not exist**; review §3 flagged the same gap for M2's own gate |
+| D2 | `hal_sensor_count()` — a runtime sensor count the daemon can report, **`#if MS_MAX_SENSOR > 1` only** | D1 | **does not exist**; review §3 flagged the same gap for M2's own gate. Review 2 §3: it must compile out entirely on a flag-off build or `timpsd` grows |
 | D3 | `sensor1` / `image1` objects in `GET /control` (§7.5) | `streamer-image` selector | **not implemented**; amendment to §2.3, needs acceptance |
 | D4 | `/events?stream=config` emitting `image1.*` spellings | `streamer-image` live sync | **not implemented** |
-| D5 | `daynight.sensor` config key + its field in the `daynight` JSON | `config-photosensing` | **not implemented**; §4.1 decided it, §10 lists it as not started |
-| D6 | `video2.jpeg_enabled = 1` | `/x/ch2.jpg`, PiP fallback to a JPEG source | **landed** (`config.c:375`, M2c) |
+| D5 | `daynight.sensor` config key + its field in the `daynight` JSON, **`#if`-gated** | `config-photosensing` | **not implemented**; §4.1 decided it, §10 lists it as not started. Review 2 §3: if `cfg_fields_daynight` gains `sensor` unconditionally the key appears on flag-off builds and the 510-key GET harness breaks |
+| D6 | `video2.jpeg_enabled = 1` | `/x/ch2.jpg`, PiP fallback to a JPEG source | **landed** — the per-stream loop default at `config.c:358` (Review 2 §2j: `:375` is `video[3].jpeg_enabled=0`, the *other* half of §5.6's decision) |
 | D7 | `/proc/jz/sensor` content under `-double` | any `streamer-sensor` change | **unknown**; dump at M3′ |
 | D8 | OSD group pool (§5.5) + `imp_osd_group_active(2)` | `streamer-osd2.html` | **not started** |
-| D9 | `timps.mk` able to install a **conditional** `timps.webui.json` (nav / `pages` / `cgi` gated on the Kconfig flag) | `streamer-main2`/`substream2`/`osd2`, `ch2.jpg` | **not started**; added after Review 2 §3, which noted §7.8 stated this in prose but never as a dependency. A zero manifest diff on a flag-off build is M6a's gate. |
-| D10 | a statement of what privacy masks do on streams 2/3 (§5.5, review §3) | `config-privacy.html` | **not started**; §7 does not inventory that page, and it will render controls for streams that may silently do nothing |
+| D9 | a statement of what privacy masks do on streams 2/3 (§5.5, review §3) | `config-privacy.html` | **not started**; §7 does not inventory that page, and it will render controls for streams that may silently do nothing |
+| **D11** | a **guard on `/control`'s legacy whole-body image scan** (`control.c:733-734` + `find_field`'s lack of brace tracking, `:279-296`) | §7.5's `image1` shape — and §2.3's nested shape equally | **not implemented, and a BLOCKER.** Without it `POST {"image1":{…}}` silently writes sensor 0's ISP. Review 2 §2a |
+| **D12** | `key_is_restart_section()` (`control.c:235-240`) and `caps.restart` (`:1335`) accepting `sensor1` | `streamer-image` / any `sensor1.*` write | **not implemented**; today such a write is graded live and the WebUI never flags the restart it needs. Review 2 §2b |
+| D13 | a **per-stream** OSD-group signal in `caps` | `streamer-osd2.html` greying itself out | **not implemented**; `caps.privacy.available` is an OR across all streams (`control.c:1387-1392`), not per-stream. Review 2 §2d |
+| D14 | `timps.mk` able to install a **conditional** second `*.webui.json` manifest (nav / `pages` / `cgi` gated on the Kconfig flag) | `streamer-main2`/`substream2`/`osd2`, `ch2.jpg` | **not started**; §7.8 stated this in prose only. `assemble_plugins.py` globs `*.webui.json` and keys on `name`, so a second manifest is the clean mechanism. A zero manifest diff on a flag-off build is M6a's gate |
 
-None of D1–D5 are in scope for this task, and none of them are assumed to
+None of D1–D14 are in scope for this task, and none of them are assumed to
 already work anywhere above: every consumer described here is written to gate on
 the *absence* of its dependency, which is the same rule the WebRTC work
 established and the only reason this is safe to design before the hardware
 exists.
+
+**D11 and D12 are blockers, not backlog.** Both were found by Review 2, both are
+in the daemon rather than the WebUI, and D11 in particular means the per-sensor
+write surface this section is built on **does not exist safely today in either
+proposed JSON shape**. M6a must not start until they are designed.
 
 ---
 
@@ -1649,6 +1754,7 @@ refactor. See §9.
 | **M2** | the gate and the dimensioning: Kconfig, `USE_MULTI_SENSOR`, `ISP_HAS_MULTICAM`, `MS_MAX_SENSOR`, `sensorN.`/`imageN.` + aliases, the `ISPT()` macro layer, the encoder-channel decoupling (§5.4), OSD group pool | no | flag **off**: `timpsd` size delta 0, QA clean on an existing camera. flag **on** with `sensor_count=1`: still streams, and every derived channel/group number matches §5.3.4's flag-off column. |
 | **M4** | second sensor in the HAL: array-ised state, per-sensor init, `fs_kick_chn()`, video2/video3 on fs3/fs4 (enc chn 2/3), RTSP ch2/ch3 | yes | four streams; measured per-stream fps and CPU; the §5.3.4 channel/group table confirmed live, including the 9th-channel probe (risk 3) |
 | **M5** | per-sensor ISP tuning: `hal_isp_*_n()`, per-sensor `imageN.`; day/night gains `daynight.sensor` (§4.1) and the scrape→IMP cutover (§4.3), still one `dn_thread` | yes | selected sensor's automaton confirmed correct through a full dawn; `daynight.sensor=0` byte-identical to pre-M5 behavior |
+| **M6a′** | **daemon prerequisites Review 2 found (§7.9 D11, D12)**: guard `/control`'s legacy whole-body image scan so a `image1`/`sensor1` POST cannot write sensor 0, and teach `key_is_restart_section()`/`caps.restart` about `sensor1` | no | a `POST {"image1":{"brightness":N}}` on a flag-on/one-sensor build changes **nothing** (today it silently changes sensor 0); `sensor1.model` comes back with a `deferred` entry |
 | **M6a** | WebUI, gate + no-hardware half (§7): `caps.sensors` (§7.1), `a/timps-sensor-select.js` (§7.4), the `sensorN`/`imageN` GET shape (§7.5), `streamer-image` selector, `config-photosensing`'s `daynight.sensor` field, `preview.html`'s stream picker (§7.6.1), `/x/ch2.jpg` (§7.7) | no | flag **off**: `GET /control` key-for-key identical (the M1 510-key harness), `timps.webui.json` diff empty, and every page renders unchanged on cam-garage. flag **on**, `count:1`: same. |
 | **M6b** | WebUI, hardware half: `preview.html` PiP inset (§7.6.2-7.6.5), `streamer-main2`/`substream2`/`osd2` pages + manifest (§7.2, §7.8), `timps.conf.example`, wiki, CHANGELOG | yes | inset holds ≥ 10 min on the real second sensor; measured uplink delta vs. §7.6.3's predicted +17 %; connection-pool behaviour with two tabs open |
 
@@ -1844,7 +1950,11 @@ symbols it references are defined in the shipped `dl/ingenic-lib/.../T23/lib/
   Nothing in `package/timps/files/www/` has been touched; the only artifact is
   `dev_notes/dual-sensor-preview-mockup.html`, a standalone mockup of §7.6's
   `preview.html` decision (picker + opt-in PiP inset) that is wired to nothing.
-  §7.9 lists the eight dependencies; D1 (`caps.sensors` in `GET /control`),
+  §7.9 lists fourteen dependencies, two of which Review 2 raised to **blockers**:
+  **D11** (`/control`'s legacy whole-body image scan, `control.c:733-734`, makes
+  a `{"image1":{…}}` POST silently write sensor 0) and **D12** (`sensor1.*` is
+  not graded restart-required). Neither is fixed; both are specified, and M6a′
+  in §8 exists for them. Of the rest: D1 (`caps.sensors` in `GET /control`),
   D2 (a runtime sensor count for it to report), D3 (`sensor1`/`image1` GET
   objects - an amendment to §2.3 that still needs accepting), D4 (`image1.*`
   spellings on the config SSE) and D5 (`daynight.sensor`) are all **not
