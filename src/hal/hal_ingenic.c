@@ -724,7 +724,7 @@ static int isp_apply_image(const char *k)
     (void)k;
     return 1;
 #else
-    const ms_image_cfg *im = &g_hcfg->image;
+    const ms_image_cfg *im = &g_hcfg->image[0];
 #ifdef ISP_NEW_TUNING_API           /* T40/T41: IMPVI_NUM + pointer args */
     if (!strcmp(k,"brightness")){ unsigned char u=(unsigned char)im->brightness;
         IMP_ISP_Tuning_SetBrightness(IMPVI_MAIN,&u); return 1; }
@@ -955,7 +955,7 @@ static void apply_image_tuning(void)
     for (size_t i=0;i<sizeof keys/sizeof keys[0];i++)
         if (!isp_apply_image(keys[i]))
             LOGD(MOD,"image.%s unsupported on this platform (skipped)",keys[i]);
-    const ms_image_cfg *im = &g_hcfg->image;
+    const ms_image_cfg *im = &g_hcfg->image[0];
     LOGI(MOD,"image tuning applied (bri=%d con=%d sat=%d sharp=%d)",
          im->brightness,im->contrast,im->saturation,im->sharpness);
 #endif
@@ -1052,7 +1052,7 @@ static void ae_it_max_check(int64_t now)
     pthread_mutex_lock(&g_isp_lock);
     /* another encode thread may have just done this round */
     if (now < g_ae_it_next_us){ pthread_mutex_unlock(&g_isp_lock); return; }
-    int us = g_hcfg ? g_hcfg->image.ae_it_max_us : 0;
+    int us = g_hcfg ? g_hcfg->image[0].ae_it_max_us : 0;
     hal_isp_expo ex;
     if (us <= 0 || hal_isp_exposure(&ex) != 0 || ex.line_us == 0 || ex.it_max_lines == 0){
         /* no reference to judge by (or the key was just turned off): stay quiet,
@@ -1098,7 +1098,7 @@ static void ae_it_max_check(int64_t now)
 static inline void ae_it_max_on_frame(void)
 {
 #ifdef AE_IT_SUPERVISE
-    if (!g_hcfg || g_hcfg->image.ae_it_max_us <= 0) return;   /* opt-in, default off */
+    if (!g_hcfg || g_hcfg->image[0].ae_it_max_us <= 0) return;   /* opt-in, default off */
     if (__sync_add_and_fetch(&g_ae_it_frames, 1) < AE_IT_MIN_FRAMES) return;
     g_ae_it_frames = 0;                  /* count the next batch either way */
     int64_t now = ms_now_us();
@@ -1129,12 +1129,12 @@ static int isp_init(void)
      * config_str_lock rather than directly off g_hcfg (M3). */
     config_str_lock();
     snprintf(g_sensor.name, sizeof g_sensor.name, "%.*s",
-             (int)sizeof(g_sensor.name)-1, g_hcfg->sensor.model);
+             (int)sizeof(g_sensor.name)-1, g_hcfg->sensor[0].model);
     g_sensor.cbus_type = TX_SENSOR_CONTROL_INTERFACE_I2C;
     snprintf(g_sensor.i2c.type, sizeof g_sensor.i2c.type, "%.*s",
-             (int)sizeof(g_sensor.i2c.type)-1, g_hcfg->sensor.model);
+             (int)sizeof(g_sensor.i2c.type)-1, g_hcfg->sensor[0].model);
     config_str_unlock();
-    g_sensor.i2c.addr = g_hcfg->sensor.i2c_addr;
+    g_sensor.i2c.addr = g_hcfg->sensor[0].i2c_addr;
 
     /* NOT optional on any SoC, T40/T41 included: on T41 libimp's `pool_size`
      * defaults to 1 BYTE, and that pool IS the IPU's OSD scratch buffer
@@ -1208,13 +1208,13 @@ static int isp_init(void)
         LOGW(MOD,"IMP_ISP_EnableTuning failed - image tuning unavailable");
     apply_image_tuning();   /* full image.* block incl. running_mode */
 #if defined(PLATFORM_T41)
-    { IMPISPSensorFps fps={ .num=(uint32_t)g_hcfg->sensor.fps, .den=1 };
+    { IMPISPSensorFps fps={ .num=(uint32_t)g_hcfg->sensor[0].fps, .den=1 };
       IMP_ISP_Tuning_SetSensorFPS(IMPVI_MAIN,&fps); }
 #elif defined(ISP_NEW_TUNING_API)   /* T40 */
-    { uint32_t fn=(uint32_t)g_hcfg->sensor.fps, fd=1;
+    { uint32_t fn=(uint32_t)g_hcfg->sensor[0].fps, fd=1;
       IMP_ISP_Tuning_SetSensorFPS(IMPVI_MAIN,&fn,&fd); }
 #else
-    IMP_ISP_Tuning_SetSensorFPS(g_hcfg->sensor.fps, 1);
+    IMP_ISP_Tuning_SetSensorFPS(g_hcfg->sensor[0].fps, 1);
 #endif
     IMP_System_GetVersion(NULL);
 
@@ -1238,7 +1238,7 @@ static int isp_init(void)
 #endif
 
     config_str_lock();
-    LOGI(MOD,"ISP up, sensor=%s fps=%d", g_hcfg->sensor.model, g_hcfg->sensor.fps);
+    LOGI(MOD,"ISP up, sensor=%s fps=%d", g_hcfg->sensor[0].model, g_hcfg->sensor[0].fps);
     config_str_unlock();
     return 0;
 }
@@ -1308,8 +1308,8 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
      * chip), else the configured/detected one. This drives both the scale
      * decision and the crop dimensions, so a full-FOV downscale stays correct
      * even on a 4MP sensor whose /proc reports nothing. */
-    int sw = g_isp_sensor_w>0 ? g_isp_sensor_w : g_hcfg->sensor.width;
-    int sh = g_isp_sensor_h>0 ? g_isp_sensor_h : g_hcfg->sensor.height;
+    int sw = g_isp_sensor_w>0 ? g_isp_sensor_w : g_hcfg->sensor[0].width;
+    int sh = g_isp_sensor_h>0 ? g_isp_sensor_h : g_hcfg->sensor[0].height;
     int scale = (sw!=v->width)||(sh!=v->height);
     a.nrVBs = v->buffers>0 ? v->buffers : 2;
     /* T31(L): clamp chn0 to one buffer ONLY when the kernel's pre-dequeue

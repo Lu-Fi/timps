@@ -274,14 +274,14 @@ void config_defaults(ms_config *c)
     /* sensor.* start UNSET so config_sensor_finalize() can auto-detect them
      * from /proc/jz/sensor/<X>/ (raptor/prudynt style); a config value or,
      * failing that, a safe fallback fills whatever the sensor registry lacks */
-    c->sensor.model[0] = 0;
-    c->sensor.i2c_addr = 0;
-    c->sensor.fps = 0;
-    c->sensor.width = 0;
-    c->sensor.height = 0;
+    c->sensor[0].model[0] = 0;
+    c->sensor[0].i2c_addr = 0;
+    c->sensor[0].fps = 0;
+    c->sensor[0].width = 0;
+    c->sensor[0].height = 0;
 
     /* ISP image defaults (128 = neutral, like the old streamer) */
-    ms_image_cfg *im = &c->image;
+    ms_image_cfg *im = &c->image[0];
     im->brightness=128; im->contrast=128; im->saturation=128; im->sharpness=128; im->hue=128;
     im->vflip=0; im->hflip=0; im->running_mode=0; im->anti_flicker=2; im->ae_compensation=128;
     im->max_again=160; im->max_dgain=80;
@@ -1238,7 +1238,14 @@ static const cfg_field privacy_fields[] = {
 typedef struct {
     const char     *prefix;    /* scalar: includes the trailing dot.
                                 * indexed (count>0): no dot, key is <prefix><N>. */
+    /* Unindexed spelling accepted for element 0 of an indexed section, dot
+     * included ("sensor."), or NULL. This is what keeps `sensor.fps` working
+     * once sensors become an array: `sensor.` and `sensor0.` are the same key,
+     * in both directions, forever. videoN. deliberately has none - it has never
+     * had an unindexed spelling, so there is nothing to be compatible with. */
+    const char     *alias;
     unsigned char   plen;
+    unsigned char   alen;
     unsigned char   noget;
     unsigned short  base_off;  /* offset of the section base in ms_config */
     const cfg_field *fields;
@@ -1249,16 +1256,23 @@ typedef struct {
 
 #define NF(t) (unsigned char)(sizeof t / sizeof t[0])
 #define SEC(pfx, ng, boff, tbl) \
-    { pfx, (unsigned char)(sizeof pfx - 1), ng, (unsigned short)(boff), tbl, \
-      NF(tbl), 0, 0 }
+    { pfx, NULL, (unsigned char)(sizeof pfx - 1), 0, ng, (unsigned short)(boff), \
+      tbl, NF(tbl), 0, 0 }
 /* indexed section: base_off is element 0, elements are <cnt> x sizeof(elty) */
 #define SECI(pfx, ng, boff, tbl, cnt, elty) \
-    { pfx, (unsigned char)(sizeof pfx - 1), ng, (unsigned short)(boff), tbl, \
-      NF(tbl), (unsigned char)(cnt), (unsigned short)sizeof(elty) }
+    { pfx, NULL, (unsigned char)(sizeof pfx - 1), 0, ng, (unsigned short)(boff), \
+      tbl, NF(tbl), (unsigned char)(cnt), (unsigned short)sizeof(elty) }
+/* indexed section that also answers to an unindexed spelling for element 0 */
+#define SECIA(pfx, ali, ng, boff, tbl, cnt, elty) \
+    { pfx, ali, (unsigned char)(sizeof pfx - 1), (unsigned char)(sizeof ali - 1), \
+      ng, (unsigned short)(boff), tbl, NF(tbl), (unsigned char)(cnt), \
+      (unsigned short)sizeof(elty) }
 
 static const cfg_section g_sections[] = {
-    SEC("sensor.",    0, offsetof(ms_config,sensor),    sensor_fields),
-    SEC("image.",     0, offsetof(ms_config,image),     image_fields),
+    SECIA("sensor",   "sensor.", 0, offsetof(ms_config,sensor), sensor_fields,
+          MS_MAX_SENSOR, ms_sensor_cfg),
+    SECIA("image",    "image.",  0, offsetof(ms_config,image),  image_fields,
+          MS_MAX_SENSOR, ms_image_cfg),
     SECI("video",     0, offsetof(ms_config,video),     video_fields,
          MS_MAX_VSTREAM, ms_vstream_cfg),
     SEC("audio.",     0, offsetof(ms_config,audio),     audio_fields),
@@ -1284,6 +1298,7 @@ static const cfg_section g_sections[] = {
 };
 #undef SEC
 #undef SECI
+#undef SECIA
 
 static const cfg_field *field_find(const cfg_field *t, int n, const char *k)
 {
@@ -1311,6 +1326,10 @@ static const cfg_section *section_find(const char *key, const char **field,
     *idx = 0;
     for (size_t i=0;i<sizeof g_sections/sizeof g_sections[0];i++){
         const cfg_section *s = &g_sections[i];
+        if (s->alias && !strncmp(key, s->alias, s->alen)){
+            *field = key + s->alen;      /* unindexed spelling: element 0 */
+            return s;
+        }
         if (strncmp(key, s->prefix, s->plen)) continue;
         if (s->count){
             const char *d = key + s->plen;
@@ -1340,8 +1359,15 @@ static void key_canonical(const char *key, char *out, size_t cap)
     if (sec){
         const cfg_field *f = field_find(sec->fields, sec->nfields, fname);
         if (f){
-            if (sec->count) snprintf(out, cap, "%s%d.%s", sec->prefix, idx, f->name);
-            else            snprintf(out, cap, "%s%s",    sec->prefix, f->name);
+            /* An aliased section keeps the UNINDEXED spelling canonical for
+             * element 0 while there is only one element: every /etc/timps.conf
+             * on the fleet holds `image.hflip`, and canonicalising it to
+             * `image0.hflip` would rewrite (and fsync) all of them for nothing.
+             * Two sensors flip it: there the index is the honest spelling. */
+            if (sec->alias && idx==0 && sec->count<2)
+                                snprintf(out, cap, "%s%s",    sec->alias,  f->name);
+            else if (sec->count) snprintf(out, cap, "%s%d.%s", sec->prefix, idx, f->name);
+            else                 snprintf(out, cap, "%s%s",    sec->prefix, f->name);
             return;
         }
     }
@@ -2014,39 +2040,39 @@ void config_sensor_finalize(ms_config *c)
       char name_path[80];
       snprintf(name_path, sizeof name_path, "/proc/jz/sensor/%sname", prefix);
       if (avail && read_proc_line(name_path, name, sizeof name) == 0 && name[0]){
-          if (c->sensor.model[0] && strcasecmp(c->sensor.model, name) != 0)
+          if (c->sensor[0].model[0] && strcasecmp(c->sensor[0].model, name) != 0)
               LOGW(MOD,"config sensor.model '%s' != loaded driver '%s' - using '%s' "
-                       "(the config value would crash the ISP)", c->sensor.model, name, name);
-          copystr(c->sensor.model, name, MS_MAX_STR);
+                       "(the config value would crash the ISP)", c->sensor[0].model, name, name);
+          copystr(c->sensor[0].model, name, MS_MAX_STR);
       }
     }
     { long v=read_sensor_proc("i2c_addr",0);
       if(v>0){
-          if(c->sensor.i2c_addr && c->sensor.i2c_addr!=(int)v)
+          if(c->sensor[0].i2c_addr && c->sensor[0].i2c_addr!=(int)v)
               LOGW(MOD,"config sensor.i2c 0x%02x != loaded driver 0x%02lx - using 0x%02lx",
-                   c->sensor.i2c_addr,v,v);
-          c->sensor.i2c_addr=(int)v;
+                   c->sensor[0].i2c_addr,v,v);
+          c->sensor[0].i2c_addr=(int)v;
       }
     }
-    if (c->sensor.width   == 0){ long v=read_sensor_proc("width",10);    if(v>0) c->sensor.width  =(int)v; }
-    if (c->sensor.height  == 0){ long v=read_sensor_proc("height",10);   if(v>0) c->sensor.height =(int)v; }
-    if (c->sensor.fps     == 0){ long v=read_sensor_proc("max_fps",10);
-                                 if(v<=0) v=read_sensor_proc("fps",10);  if(v>0) c->sensor.fps    =(int)v; }
+    if (c->sensor[0].width   == 0){ long v=read_sensor_proc("width",10);    if(v>0) c->sensor[0].width  =(int)v; }
+    if (c->sensor[0].height  == 0){ long v=read_sensor_proc("height",10);   if(v>0) c->sensor[0].height =(int)v; }
+    if (c->sensor[0].fps     == 0){ long v=read_sensor_proc("max_fps",10);
+                                 if(v<=0) v=read_sensor_proc("fps",10);  if(v>0) c->sensor[0].fps    =(int)v; }
 
     /* safe fallbacks when neither the config nor the sensor registry had it */
-    if (!c->sensor.model[0]) copystr(c->sensor.model, "gc2053", MS_MAX_STR);
-    if (c->sensor.i2c_addr == 0) c->sensor.i2c_addr = 0x37;
+    if (!c->sensor[0].model[0]) copystr(c->sensor[0].model, "gc2053", MS_MAX_STR);
+    if (c->sensor[0].i2c_addr == 0) c->sensor[0].i2c_addr = 0x37;
     /* Resolution: like raptor, when neither config nor the sensor registry
      * report it (some drivers, e.g. sc2336, expose no width/height in /proc),
      * derive the sensor resolution from the main stream (video0) so a 2K/4MP
      * camera whose driver reports 0 still crops/scales correctly; final safety
      * net is 1080p. */
-    if (c->sensor.width   == 0)  c->sensor.width  = c->video[0].width  > 0 ? c->video[0].width  : 1920;
-    if (c->sensor.height  == 0)  c->sensor.height = c->video[0].height > 0 ? c->video[0].height : 1080;
-    if (c->sensor.fps     == 0)  c->sensor.fps    = c->video[0].fps    > 0 ? c->video[0].fps    : 25;
+    if (c->sensor[0].width   == 0)  c->sensor[0].width  = c->video[0].width  > 0 ? c->video[0].width  : 1920;
+    if (c->sensor[0].height  == 0)  c->sensor[0].height = c->video[0].height > 0 ? c->video[0].height : 1080;
+    if (c->sensor[0].fps     == 0)  c->sensor[0].fps    = c->video[0].fps    > 0 ? c->video[0].fps    : 25;
 
-    LOGI(MOD, "sensor: %s i2c=0x%02x %dx%d @%dfps", c->sensor.model,
-         c->sensor.i2c_addr, c->sensor.width, c->sensor.height, c->sensor.fps);
+    LOGI(MOD, "sensor: %s i2c=0x%02x %dx%d @%dfps", c->sensor[0].model,
+         c->sensor[0].i2c_addr, c->sensor[0].width, c->sensor[0].height, c->sensor[0].fps);
 }
 
 /* Write one "key = value" line, quoting whenever the loader would otherwise

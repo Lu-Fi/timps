@@ -1516,7 +1516,7 @@ int control_get_json(char *buf, size_t cap)
     ms_image_cfg img;
     ms_audio_cfg aud;
     config_str_lock();
-    img = c->image;
+    img = c->image[0];
     aud = c->audio;
     config_str_unlock();
     APP("\"image\":{\"brightness\":%d,\"contrast\":%d,\"saturation\":%d,"
@@ -1561,9 +1561,9 @@ int control_get_json(char *buf, size_t cap)
          * POST-able (F-01) - snapshot the string and the numerics together. */
         int s_i2c, s_fps, s_w, s_h;
         config_str_lock();
-        jesc(c->sensor.model, sm, sizeof sm);
-        s_i2c = c->sensor.i2c_addr; s_fps = c->sensor.fps;
-        s_w = c->sensor.width; s_h = c->sensor.height;
+        jesc(c->sensor[0].model, sm, sizeof sm);
+        s_i2c = c->sensor[0].i2c_addr; s_fps = c->sensor[0].fps;
+        s_w = c->sensor[0].width; s_h = c->sensor[0].height;
         config_str_unlock();
         APP("\"sensor\":{\"model\":\"%s\",\"i2c_addr\":%d,\"fps\":%d,"
             "\"width\":%d,\"height\":%d},",

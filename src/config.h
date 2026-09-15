@@ -544,8 +544,12 @@ typedef struct {
     int            imp_polling_timeout;
     int            osd_pool_size;
 
-    ms_sensor_cfg  sensor;
-    ms_image_cfg   image;
+    /* Per sensor. The on-disk/wire spelling stays `sensor.`/`image.` for
+     * index 0 (the fleet's config files, the WebUI and /control all use it);
+     * `sensor0.`/`image0.` are accepted aliases, and become canonical only
+     * where a second sensor exists. */
+    ms_sensor_cfg  sensor[MS_MAX_SENSOR];
+    ms_image_cfg   image[MS_MAX_SENSOR];
 
     /* rtsp */
     int            rtsp_enabled;

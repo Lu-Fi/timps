@@ -1234,7 +1234,7 @@ static void *dn_thread(void *arg)
         int running_mode;
         config_str_lock();
         dncfg        = g_cfg.daynight;
-        running_mode = g_cfg.image.running_mode;
+        running_mode = g_cfg.image[0].running_mode;
         config_str_unlock();
         /* The two thresholds are a hysteresis BAND (see config.h): day_gain is
          * the lower edge ("is it day"), night_gain the upper one ("has day
@@ -2372,7 +2372,7 @@ void daynight_get_status(int *enabled, int *mode,
      * snapshot under the config string lock instead of reading lock-free. */
     int running_mode, dn_enabled;
     config_str_lock();
-    running_mode = g_cfg.image.running_mode;
+    running_mode = g_cfg.image[0].running_mode;
     dn_enabled   = g_cfg.daynight.enabled;
     config_str_unlock();
     if (m == DN_UNKNOWN)   /* manual mode / before the first auto switch */
@@ -2429,7 +2429,7 @@ void daynight_get_status(int *enabled, int *mode,
     if (enabled) *enabled = 0;
     if (mode){          /* F-03: live-mutable, read under the config string lock */
         config_str_lock();
-        int rm = g_cfg.image.running_mode;
+        int rm = g_cfg.image[0].running_mode;
         config_str_unlock();
         *mode = rm ? 1 : 0;
     }
