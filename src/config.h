@@ -5,7 +5,12 @@
 #include <stdint.h>
 #include <stddef.h>   /* size_t */
 
-#define MS_MAX_VSTREAM 2
+/* Sensors, and the video streams they carry. MS_MAX_VSTREAM is what everything
+ * downstream (hub slots, OSD, RTSP, fMP4, record, timelapse) is already sized
+ * by, so raising the sensor count is the whole change for those. */
+#define MS_MAX_SENSOR  1
+#define MS_VSTREAM_PER_SENSOR 2
+#define MS_MAX_VSTREAM (MS_MAX_SENSOR * MS_VSTREAM_PER_SENSOR)
 #define MS_MAX_OSD     8
 #define MS_MAX_PRIVACY 4
 #define MS_MAX_STR     64
@@ -757,5 +762,27 @@ const cfg_field *cfg_fields_daynight(int *n);
 const cfg_field *cfg_fields_general(int *n);
 const cfg_field *cfg_fields_video(int *n);     /* one videoN stream */
 const cfg_field *cfg_fields_privacy(int *n);   /* one privacy region */
+
+/* Encoder channel of a stream / of the dedicated JPEG channel.
+ *
+ * videoN.imp_chn is the FRAMESOURCE channel, and on a single-sensor camera the
+ * encoder channel happens to hold the same number, which is why one field has
+ * served as both since the beginning. They are separate namespaces in the SDK
+ * (imp_system.h: a bind carries {deviceID, groupID} only - an encoder channel
+ * number never appears in one), and the moment a second sensor claims
+ * framesources 3/4 they have to diverge. Every EXISTING encoder-channel use
+ * goes through these two, so the place where they diverge is one edit, not
+ * sixty. Identity today, deliberately including a hand-set imp_chn: an
+ * operator who moved a stream to another framesource also moved its encoder
+ * channel, and this must not quietly change that. */
+#define MS_ENC_CHN_VIDEO(v,i)  ((void)(i), (v)->imp_chn)
+#define MS_ENC_CHN_JPEG(cfg)   ((cfg)->jpeg.imp_chn)
+
+/* Framesource channels are blocked by sensor: 3i, 3i+1, 3i+2 belong to sensor
+ * i, and 3i is the ISP's DIRECT-output channel for that sensor - the one whose
+ * enable edge re-latches flip/running_mode (see fs_use). The vendor states the
+ * blocking in imp_isp.h's splice-mode comments ("fs0 is spliced with fs3",
+ * "fs1 with fs4"). 0 for the only sensor a single-sensor build has. */
+#define MS_FS_DIRECT_CHN(si)   ((si) * 3)
 
 #endif

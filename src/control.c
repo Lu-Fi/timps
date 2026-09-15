@@ -1711,7 +1711,7 @@ int control_get_json(char *buf, size_t cap)
         int nemit = 0;
         for (int i=0;i<MS_MAX_VSTREAM;i++){
             hal_enc_stat es;
-            if (hal_enc_stats(c->video[i].imp_chn, &es) != 0) continue;
+            if (hal_enc_stats(MS_ENC_CHN_VIDEO(&c->video[i],i), &es) != 0) continue;
             /* au_drops: cumulative producer-side frame drops (oversized AU /
              * pool OOM in the HAL encode thread). The log throttles these to
              * every 20th event; this is the only exact count. Distinct from
@@ -1735,7 +1735,7 @@ int control_get_json(char *buf, size_t cap)
                  * writes (ip_delta/pb_delta/rc_options/max_picture_size/
                  * max_psnr) - readable here for the first time. */
                 hal_enc_rc rc;
-                if (hal_enc_rc_read(c->video[i].imp_chn, &rc) == 0){
+                if (hal_enc_rc_read(MS_ENC_CHN_VIDEO(&c->video[i],i), &rc) == 0){
                     APP(",\"rc\":{\"rc_mode\":\"%s\"", rc.mode);
                     if (rc.bitrate       >= 0) APP(",\"bitrate\":%lld", rc.bitrate);
                     if (rc.max_bitrate   >= 0) APP(",\"max_bitrate\":%lld", rc.max_bitrate);
@@ -1983,7 +1983,7 @@ int control_stats_json(char *buf, size_t cap)
     int nemit = 0;
     for (int i=0;i<MS_MAX_VSTREAM;i++){
         hal_enc_stat es;
-        if (hal_enc_stats(c->video[i].imp_chn, &es) != 0) continue;
+        if (hal_enc_stats(MS_ENC_CHN_VIDEO(&c->video[i],i), &es) != 0) continue;
         APP("%s\"%d\":{\"left_pics\":%u,\"left_stream_bytes\":%u,"
             "\"left_stream_frames\":%u",
             nemit?",":"", i, es.left_pics, es.left_stream_bytes,

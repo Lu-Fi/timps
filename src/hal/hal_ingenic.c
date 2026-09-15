@@ -242,8 +242,18 @@ typedef struct {
     int     pts_have_off;   /* pts_offset established from a good hw value */
 } pts_sanitizer;
 
+/* chn/fs_chn/si are three DIFFERENT namespaces that only happen to hold the
+ * same number on a single-sensor camera (where imp_chn == stream index). Under
+ * MS_MAX_SENSOR>1 they diverge - sensor 1's streams sit on framesource 3/4 but
+ * encoder channels 2/3 - so every use has to name which one it means. Same
+ * split jchan has carried since the piggyback JPEG landed. */
 typedef struct {
-    int chn, grp, codec, w, h;
+    int chn;                     /* IMP encoder channel */
+    int fs_chn;                  /* framesource channel feeding it */
+    int si;                      /* video stream index; ALSO this stream's hub
+                                  * source id (hub slots 0..MS_MAX_VSTREAM-1 are
+                                  * the video streams, see hub.h) */
+    int grp, codec, w, h;
     int og;                      /* OSD group id spliced between fs and enc for
                                   * this stream (imp_osd_setup), -1 = none: fs is
                                   * bound straight to enc. Teardown must unbind
@@ -280,7 +290,6 @@ typedef struct {
      * unbound IMP_Encoder_Yuv* encoder. grp/og/nbound stay -1/-1/0 so the
      * generic teardown never touches encoder/bind state for these slots. */
     int          sw_rot;      /* 0 = normal bound path, else 90 (CW) / 270 (CCW) */
-    int          si;          /* video stream index (OSD item set owner) */
     int          src_w, src_h;/* PRE-rotation framesource dims */
     void        *yuv_h;       /* IMP_Encoder_YuvInit handle */
     uint8_t     *bounce;      /* rotated NV12 frame (IMP_Encoder_VbmAlloc:
@@ -421,7 +430,7 @@ static void act_wait(int (*ready)(void *), void *arg)
  * run/g_arun then act_wake()s once to make every idle-blocked thread return
  * promptly for the join - without the flag here the predicate would still be
  * false and the thread would re-wait up to the full 1 s, delaying shutdown. */
-static int act_ready_vchan(void *a){ vchan *vc=(vchan*)a; return !vc->run  || vc->active || hub_active(vc->chn); }
+static int act_ready_vchan(void *a){ vchan *vc=(vchan*)a; return !vc->run  || vc->active || hub_active(vc->si); }
 static int act_ready_jchan(void *a){ jchan *jc=(jchan*)a; return !jc->run  || jc->active || hub_active(jc->src); }
 static int act_ready_audio(void *a){ (void)a;             return !g_arun  || g_aactive || g_a2active; }
 
@@ -462,6 +471,16 @@ static int isp_apply_image(const char *k);
  * enable edge re-arms it, so the value the edge is known to reset is re-written
  * as soon as the caller's frame loop is actually delivering. */
 static void ae_it_max_arm(void);
+/* The ISP direct-output framesource of SOME sensor (MS_FS_DIRECT_CHN): only
+ * those carry the flip/running_mode latch. One sensor -> exactly channel 0, so
+ * this is today's `chn == 0` test spelled so a second sensor's channel 3 also
+ * qualifies. */
+static int fs_chn_is_direct(int chn)
+{
+    for (int si=0; si<MS_MAX_SENSOR; si++)
+        if (chn == MS_FS_DIRECT_CHN(si)) return 1;
+    return 0;
+}
 static void fs_use(int chn)
 {
     if (chn < 0 || chn >= MS_FS_MAXCHN) return;
@@ -501,7 +520,7 @@ static void fs_use(int chn)
      * is no cycle. Guarded on g_hcfg (NULL only very early pre-config, and even
      * then the 0/0/day defaults are harmless). isp_apply_image() no-ops on SoCs
      * where these keys are unwired. */
-    if (just_enabled && chn == 0 && g_hcfg) {
+    if (just_enabled && fs_chn_is_direct(chn) && g_hcfg) {
         pthread_mutex_lock(&g_isp_lock);
         isp_apply_image("hflip");
         isp_apply_image("vflip");
@@ -608,15 +627,24 @@ static int fs_teardown(int chn)
  * under that lock; and fs_use() now takes g_isp_lock itself on the chn0 enable
  * edge, so a caller already holding it would deadlock). */
 #define FS0_KICK_US 500000
-static void fs_kick_chn0(void)
+static void fs_kick_chn(int fs_chn)
 {
-    /* the latch belongs to the ISP's direct-output channel 0; per-stream
-     * imp_chn maps stream 0 -> fs chn 0 (see fs_create) */
-    if (!g_hcfg || !g_hcfg->video[0].enabled) return;
-    fs_use(0);
+    /* Nothing to kick unless a stream that is actually up owns this
+     * framesource: fs_use() on a channel no stream created would enable a
+     * channel that does not exist. */
+    if (!g_hcfg) return;
+    int owned = 0;
+    for (int i=0;i<MS_MAX_VSTREAM;i++)
+        if (g_hcfg->video[i].enabled && g_hcfg->video[i].imp_chn==fs_chn){ owned=1; break; }
+    if (!owned) return;
+    fs_use(fs_chn);
     usleep(FS0_KICK_US);
-    fs_unuse(0);
+    fs_unuse(fs_chn);
 }
+/* TODO(M4/dual-sensor): the three callers below apply a whole-camera image.*
+ * key, so they kick sensor 0's latch. Once imageN. is per-sensor they must
+ * kick MS_FS_DIRECT_CHN(si) of the sensor whose key changed. */
+#define fs_kick_chn0() fs_kick_chn(MS_FS_DIRECT_CHN(0))
 
 /* ================= motion detection lifecycle ================= */
 /* Bring the IVS motion grid in sync with the current config. ANY runtime
@@ -1641,14 +1669,14 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
                      "keyframes, near or above the %d KB AU buffer - keyframes "
                      "will be dropped and clients may never get a decodable "
                      "stream; lower videoN.bitrate or raise MS_AU_BUF_MAX",
-                 v->imp_chn, v->bitrate_kbps, v->fps, idr_est/1024,
+                 chn, v->bitrate_kbps, v->fps, idr_est/1024,
                  MS_AU_BUF_MAX/1024);
     }
     if (IMP_Encoder_SetDefaultParam(&a, prof, rc,
             ew, eh, v->fps, 1, v->gop, 1, initial_qp, v->bitrate_kbps) != 0)
         LOGW(MOD,"IMP_Encoder_SetDefaultParam(chn%d) failed - the attr struct "
                  "below is only partly filled; CreateChn will likely reject it",
-             v->imp_chn);
+             chn);
     a.gopAttr.uGopLength       = (uint16_t)v->gop;   /* config.c clamps 1..1000 */
     a.gopAttr.uMaxSameSenceCnt = 1;
     /* Non-default classic rc knobs on the new API: say once what happens to
@@ -2005,19 +2033,15 @@ static void *video_thread(void *arg)
 #if defined(PLATFORM_T31)
     /* Item-2 (T31 only): IMP_Encoder_GetChnAveBitrate averages over a frame
      * count that must be an integral multiple of the GOP length. Resolve this
-     * channel's configured GOP once (vc->chn == video[].imp_chn). */
+     * channel's configured GOP once. */
     int ave_gop = 1;
-    for (int i=0;i<MS_MAX_VSTREAM;i++)
-        if (g_hcfg->video[i].imp_chn == vc->chn){
-            if (g_hcfg->video[i].gop > 0) ave_gop = g_hcfg->video[i].gop;
-            break;
-        }
+    if (g_hcfg->video[vc->si].gop > 0) ave_gop = g_hcfg->video[vc->si].gop;
 #endif
     while (vc->run) {
         /* on-demand: encode while there are consumers. The hub subscriber
          * count is the truth source (level, not edge), so a racing stale
          * "inactive" flag can never stop a stream that still has clients. */
-        int want = vc->active || hub_active(vc->chn);
+        int want = vc->active || hub_active(vc->si);
         if (!want) {
             /* fully idle: block until ing_set_active() wakes us (1 s safety
              * timeout). No polling, no frame flow - the framesource is off. */
@@ -2028,14 +2052,14 @@ static void *video_thread(void *arg)
             if (idle_since==0) idle_since = now;
             if (now - idle_since >= MS_IDLE_STOP_US) {
                 IMP_Encoder_StopRecvPic(vc->chn);
-                fs_unuse(vc->chn);            /* stop the frame flow entirely */
+                fs_unuse(vc->fs_chn);         /* stop the frame flow entirely */
                 /* R-01: no more frames from this source until a client comes
                  * back, so hand back the retained IDR-sized pool buffer rather
                  * than sit on it for the whole idle period. Reaching here means
                  * MS_IDLE_STOP_US with no subscriber, so every packet has long
                  * since been returned; a late return would simply refill the
                  * slot, which is harmless. */
-                hub_pool_trim(vc->chn);
+                hub_pool_trim(vc->si);
                 receiving=0; idle_since=0;
                 LOGI(MOD,"video chn%d idle",vc->chn);
                 continue;
@@ -2045,7 +2069,7 @@ static void *video_thread(void *arg)
         } else {
             idle_since = 0;
             if (!receiving){
-                fs_use(vc->chn);
+                fs_use(vc->fs_chn);
                 /* an unchecked StartRecvPic failure used to flip receiving=1
                  * anyway: the pipeline looked "streaming" but delivered
                  * nothing (H6). Back off and retry while consumers remain. */
@@ -2053,7 +2077,7 @@ static void *video_thread(void *arg)
                     if ((dbg_startfail++ % 20)==0)
                         LOGE(MOD,"chn%d: StartRecvPic failed (attempt %d)",
                              vc->chn, dbg_startfail);
-                    fs_unuse(vc->chn);
+                    fs_unuse(vc->fs_chn);
                     usleep(200000);
                     continue;
                 }
@@ -2117,13 +2141,13 @@ static void *video_thread(void *arg)
                      * primitive, tracked as a follow-up, not implemented
                      * here to avoid disrupting the co-holder's own frame
                      * flow without hardware validation). */
-                    fs_unuse(vc->chn);
-                    fs_use(vc->chn);
+                    fs_unuse(vc->fs_chn);
+                    fs_use(vc->fs_chn);
                     if (IMP_Encoder_StartRecvPic(vc->chn)==0){
                         vc->idr_req=0; IMP_Encoder_RequestIDR(vc->chn);
                         dbg_first=0;             /* log the recovered first frame */
                     } else {
-                        fs_unuse(vc->chn);        /* fully release; top-of-loop's
+                        fs_unuse(vc->fs_chn);     /* fully release; top-of-loop's
                                                     * !receiving path fs_use()s fresh */
                         receiving=0;
                     }
@@ -2174,7 +2198,7 @@ static void *video_thread(void *arg)
         /* P-01: assemble straight into a pooled packet - no au[] scratch, no
          * copy at publish. pkt_get returns cap >= need, so assembly cannot
          * overflow (the guard below is defensive only). */
-        ms_pkt *pk = hub_pkt_get(vc->chn, need);
+        ms_pkt *pk = hub_pkt_get(vc->si, need);
         if (!pk){
             __sync_fetch_and_add(&vc->au_drops, 1u);
             if ((dbg_ovf++ % 20)==0)
@@ -2214,7 +2238,7 @@ static void *video_thread(void *arg)
         int64_t pts = pts_sanitize(&vc->pts, hw_us, pub_now,
                                    1000000 / (vc->fps > 0 ? vc->fps : 25),
                                    PTS_SKEW_VIDEO_US);
-        hub_publish_take(vc->chn, pk, pts, key, MS_MEDIA_VIDEO, pub_now);
+        hub_publish_take(vc->si, pk, pts, key, MS_MEDIA_VIDEO, pub_now);
         /* A frame was really pulled from the encoder and handed on - the one
          * pipeline state in which the ISP honours the AE integration-time cap
          * (see ae_it_max_on_frame). Cheap no-op unless image.ae_it_max_us is
@@ -2238,7 +2262,7 @@ static void *video_thread(void *arg)
 #endif
         IMP_Encoder_ReleaseStream(vc->chn,&st);
     }
-    if (receiving){ IMP_Encoder_StopRecvPic(vc->chn); fs_unuse(vc->chn); }
+    if (receiving){ IMP_Encoder_StopRecvPic(vc->chn); fs_unuse(vc->fs_chn); }
     return NULL;
 }
 
@@ -2501,30 +2525,30 @@ static void *sw_rot_thread(void *arg)
     int64_t cad_due=0, cad_t0=0;
     int cad_seen=0, cad_enc=0, cad_reported=0;
     while (vc->run) {
-        int want = vc->active || hub_active(vc->chn);
+        int want = vc->active || hub_active(vc->si);
         if (!want) {
             if (!receiving){ act_wait(act_ready_vchan, vc); continue; }
             int64_t now = ms_now_us();
             if (idle_since==0) idle_since = now;
             if (now - idle_since >= MS_IDLE_STOP_US) {
-                fs_unuse(vc->chn);            /* stop the frame flow entirely */
+                fs_unuse(vc->fs_chn);            /* stop the frame flow entirely */
                 receiving=0; idle_since=0;
-                LOGI(MOD,"sw-rot chn%d idle",vc->chn);
+                LOGI(MOD,"sw-rot chn%d idle",vc->fs_chn);
                 continue;
             }
             /* debounce window: keep encoding below (publish no-ops, 0 subs) */
         } else {
             idle_since = 0;
             if (!receiving){
-                fs_use(vc->chn);                 /* EnableChn (refcounted) */
+                fs_use(vc->fs_chn);                 /* EnableChn (refcounted) */
                 /* depth for GetFrame must be set AFTER EnableChn on this libimp;
                  * re-set on every re-enable (DisableChn on idle clears it) */
-                if (IMP_FrameSource_SetFrameDepth(vc->chn, 2)!=0)
-                    LOGW(MOD,"sw-rot chn%d: SetFrameDepth failed",vc->chn);
+                if (IMP_FrameSource_SetFrameDepth(vc->fs_chn, 2)!=0)
+                    LOGW(MOD,"sw-rot chn%d: SetFrameDepth failed",vc->fs_chn);
                 receiving=1;
                 cad_due=0; cad_t0=0; cad_seen=0; cad_enc=0;  /* re-arm the gate */
                 vc->idr_req=0; IMP_Encoder_YuvRequestIDR(vc->yuv_h);
-                LOGI(MOD,"sw-rot chn%d streaming",vc->chn);
+                LOGI(MOD,"sw-rot chn%d streaming",vc->fs_chn);
             }
         }
         if (vc->idr_req){ vc->idr_req=0; IMP_Encoder_YuvRequestIDR(vc->yuv_h); }
@@ -2567,10 +2591,10 @@ static void *sw_rot_thread(void *arg)
          * honours the divider for this consumer, nothing arrives early and the
          * gate simply stops dropping. */
         IMPFrameInfo *frm = NULL;
-        if (IMP_FrameSource_GetFrame(vc->chn, &frm)!=0 || !frm){
+        if (IMP_FrameSource_GetFrame(vc->fs_chn, &frm)!=0 || !frm){
             if (receiving && (dbg_getfail++ % 100)==0)
                 LOGW(MOD,"sw-rot chn%d: GetFrame delivered nothing (miss#%d)",
-                     vc->chn, dbg_getfail);
+                     vc->fs_chn, dbg_getfail);
             usleep(10000);
             continue;
         }
@@ -2606,7 +2630,7 @@ static void *sw_rot_thread(void *arg)
         else if (cad_key < cad_due - MS_SW_ROT_CAD_RESET_US)
             cad_due = cad_key;                             /* clock reset/wrap */
         if (cad_key + cad_tol < cad_due) {                 /* not due yet -> drop */
-            IMP_FrameSource_ReleaseFrame(vc->chn, frm);
+            IMP_FrameSource_ReleaseFrame(vc->fs_chn, frm);
             continue;
         }
         cad_due += cad_period;
@@ -2621,14 +2645,14 @@ static void *sw_rot_thread(void *arg)
             cad_reported = 1;
             LOGI(MOD,"sw-rot chn%d: framesource delivered %d.%02d fps, encoded "
                      "%d.%02d fps (target %d) over %ds",
-                 vc->chn, in_x100/100, in_x100%100, out_x100/100, out_x100%100,
+                 vc->fs_chn, in_x100/100, in_x100%100, out_x100/100, out_x100%100,
                  vc->fps, (int)(span/1000000));
         }
         /* transpose into the phys-contiguous bounce buffer, then release the
          * source frame BEFORE encoding so the FS depth-2 pool never starves */
         nv12_rotate90((const uint8_t*)(uintptr_t)frm->virAddr,
                       vc->src_w, vc->src_h, vc->bounce, vc->sw_rot);
-        IMP_FrameSource_ReleaseFrame(vc->chn, frm);
+        IMP_FrameSource_ReleaseFrame(vc->fs_chn, frm);
         sw_osd_compose(vc);                   /* 5b: text OSD in eff coords */
         IMPFrameInfo f; memset(&f,0,sizeof f);
         f.width    = (uint32_t)vc->w;         /* EFF (rotated) dims */
@@ -2647,7 +2671,7 @@ static void *sw_rot_thread(void *arg)
         if (IMP_Encoder_YuvEncode(vc->yuv_h, f, &out)!=0){
             if ((dbg_encfail++ % 100)==0)
                 LOGW(MOD,"sw-rot chn%d: YuvEncode failed (miss#%d)",
-                     vc->chn, dbg_encfail);
+                     vc->fs_chn, dbg_encfail);
             continue;
         }
         dbg_encfail=0;
@@ -2656,7 +2680,7 @@ static void *sw_rot_thread(void *arg)
                             (size_t)out.outLen);
         if (!dbg_first){ dbg_first=1;
             LOGI(MOD,"sw-rot chn%d: first encoded frame len=%u key=%d",
-                 vc->chn, out.outLen, key); }
+                 vc->fs_chn, out.outLen, key); }
         /* hub_publish copies the AU into its own refcounted pkt, so the
          * encoder-owned out.outAddr is done with by the time we loop.
          *
@@ -2720,7 +2744,7 @@ static void *sw_rot_thread(void *arg)
         int64_t pts = pts_sanitize(&vc->pts, ts, pub_now,
                                    1000000 / (vc->fps > 0 ? vc->fps : 25),
                                    PTS_SKEW_VIDEO_US);
-        hub_publish(vc->chn, (const uint8_t*)out.outAddr, (size_t)out.outLen,
+        hub_publish(vc->si, (const uint8_t*)out.outAddr, (size_t)out.outLen,
                     pts, key, MS_MEDIA_VIDEO, pub_now);
         ae_it_max_on_frame();   /* real delivery: see video_thread's call */
 
@@ -2756,12 +2780,12 @@ static void *sw_rot_thread(void *arg)
                                 jn, 1, MS_MEDIA_JPEG, jn);
                 } else if (jlen > 0 && (uint32_t)jlen > vc->jbuf_cap) {
                     LOGW(MOD,"sw-rot chn%d: JPEG (%d) exceeds buf (%u) - dropped",
-                         vc->chn, jlen, vc->jbuf_cap);
+                         vc->fs_chn, jlen, vc->jbuf_cap);
                 }
             }
         }
     }
-    if (receiving) fs_unuse(vc->chn);
+    if (receiving) fs_unuse(vc->fs_chn);
     return NULL;
 }
 
@@ -2769,13 +2793,13 @@ static void *sw_rot_thread(void *arg)
  * the caller). No encoder group/chn, no OSD group, no binds to undo. */
 static void sw_rot_teardown(vchan *vc)
 {
-    fs_teardown(vc->chn);
+    fs_teardown(vc->fs_chn);
     if (vc->yuv_h){ IMP_Encoder_YuvExit(vc->yuv_h); vc->yuv_h=NULL; }
     if (vc->bounce){ IMP_Encoder_VbmFree(vc->bounce); vc->bounce=NULL; }
     if (vc->ybuf){ free(vc->ybuf); vc->ybuf=NULL; }
     if (vc->jbuf){ free(vc->jbuf); vc->jbuf=NULL; }   /* Batch 7 JPEG buffer */
     sw_osd_free(vc);
-    IMP_FrameSource_DestroyChn(vc->chn);
+    IMP_FrameSource_DestroyChn(vc->fs_chn);
     vc->sw_rot=0;
 }
 
@@ -2966,7 +2990,7 @@ static int sw_rot_start(const ms_config *cfg, int i)
         return -1;
     }
     vchan *vc = &g_v[g_nv++];
-    vc->chn=chn; vc->grp=-1; vc->codec=v->codec;
+    vc->chn=-1; vc->fs_chn=chn; vc->grp=-1; vc->codec=v->codec;
     vc->w=ew; vc->h=eh;                      /* EFF dims (AU sizing unused here) */
     vc->fps=v->fps;                          /* Fix 1: nominal frame interval */
     memset(&vc->pts, 0, sizeof vc->pts);     /* reset capture-pts sanitizer */
@@ -3402,42 +3426,46 @@ static void jpeg_chan_start(int chn, int fs_chn, int src, int w, int h,
 /* dedicated JPEG channel: own framesource + own encoder group (jpeg.*) */
 static int jpeg_setup(const ms_config *cfg)
 {
-    int chn = cfg->jpeg.imp_chn;
+    /* jpeg.imp_chn is the framesource channel (and, as for every video stream,
+     * the encoder group and both bind cells). The encoder CHANNEL is a
+     * separate namespace - see MS_ENC_CHN_JPEG in config.h. */
+    int fs_chn = cfg->jpeg.imp_chn;
+    int chn    = MS_ENC_CHN_JPEG(cfg);
     ms_vstream_cfg jv; memset(&jv,0,sizeof jv);
     jv.width=cfg->jpeg.width; jv.height=cfg->jpeg.height; jv.fps=cfg->jpeg.fps>0?cfg->jpeg.fps:5;
     jv.buffers=2; jv.codec=MS_VC_H264; /* framesource is codec-agnostic */
-    if (fs_create(chn,&jv)!=0) return -1;
+    if (fs_create(fs_chn,&jv)!=0) return -1;
     if (jpeg_enc_create(chn, cfg->jpeg.width, cfg->jpeg.height, cfg->jpeg.quality,
                         cfg->jpeg.fps)!=0){
-        IMP_FrameSource_DestroyChn(chn);
+        IMP_FrameSource_DestroyChn(fs_chn);
         return -1;
     }
     /* the group/register/bind chain must succeed or the channel never emits
      * a frame - unwind exactly what was created on each failure (H6/M8) */
-    if (IMP_Encoder_CreateGroup(chn)<0){
-        LOGE(MOD,"JPEG CreateGroup %d failed",chn);
+    if (IMP_Encoder_CreateGroup(fs_chn)<0){
+        LOGE(MOD,"JPEG CreateGroup %d failed",fs_chn);
         IMP_Encoder_DestroyChn(chn);
-        IMP_FrameSource_DestroyChn(chn);
+        IMP_FrameSource_DestroyChn(fs_chn);
         return -1;
     }
-    if (IMP_Encoder_RegisterChn(chn, chn)!=0){
+    if (IMP_Encoder_RegisterChn(fs_chn, chn)!=0){
         LOGE(MOD,"JPEG RegisterChn %d failed",chn);
-        IMP_Encoder_DestroyGroup(chn);
+        IMP_Encoder_DestroyGroup(fs_chn);
         IMP_Encoder_DestroyChn(chn);
-        IMP_FrameSource_DestroyChn(chn);
+        IMP_FrameSource_DestroyChn(fs_chn);
         return -1;
     }
-    IMPCell fs={DEV_ID_FS,chn,0}, enc={DEV_ID_ENC,chn,0};
+    IMPCell fs={DEV_ID_FS,fs_chn,0}, enc={DEV_ID_ENC,fs_chn,0};
     if (IMP_System_Bind(&fs,&enc)<0){
-        LOGE(MOD,"JPEG Bind fs%d->enc%d failed",chn,chn);
+        LOGE(MOD,"JPEG Bind fs%d->enc%d failed",fs_chn,fs_chn);
         IMP_Encoder_UnRegisterChn(chn);
-        IMP_Encoder_DestroyGroup(chn);
+        IMP_Encoder_DestroyGroup(fs_chn);
         IMP_Encoder_DestroyChn(chn);
-        IMP_FrameSource_DestroyChn(chn);
+        IMP_FrameSource_DestroyChn(fs_chn);
         return -1;
     }
     /* framesource is enabled on demand by jpeg_thread (fs_use/fs_unuse) */
-    jpeg_chan_start(chn, chn, HUB_JPEG_SRC, cfg->jpeg.width, cfg->jpeg.height,
+    jpeg_chan_start(chn, fs_chn, HUB_JPEG_SRC, cfg->jpeg.width, cfg->jpeg.height,
                     cfg->jpeg.fps, cfg->jpeg.snapshot_path[0]!=0);
     LOGI(MOD,"JPEG channel %d ready (%dx%d q%d)",chn,cfg->jpeg.width,cfg->jpeg.height,cfg->jpeg.quality);
     return 0;
@@ -3457,7 +3485,7 @@ static int jpeg_setup(const ms_config *cfg)
  * (1920x1080), and the mismatched (and typically non-16-aligned) picWidth makes
  * IMP_Encoder_CreateChn fail - silently killing /snapshot.jpg on that channel
  * even though the video/RTSP path fell back to unrotated cleanly. */
-static int jpeg_attach(const ms_vstream_cfg *v, int vi, int grp)
+static int jpeg_attach(const ms_vstream_cfg *v, int vi, int fs_chn, int grp)
 {
     int chn = v->jpeg_chn;
     int q   = (v->jpeg_quality>0 && v->jpeg_quality<=100) ? v->jpeg_quality : 75;
@@ -3469,7 +3497,7 @@ static int jpeg_attach(const ms_vstream_cfg *v, int vi, int grp)
         IMP_Encoder_DestroyChn(chn);
         return -1;
     }
-    jpeg_chan_start(chn, grp, HUB_JPEG_SRC_N(vi), ew, eh, jfps, 0);
+    jpeg_chan_start(chn, fs_chn, HUB_JPEG_SRC_N(vi), ew, eh, jfps, 0);
     LOGI(MOD,"JPEG-on-video%d: encoder chn %d in group %d (%dx%d q%d)",
          vi,chn,grp,ew,eh,q);
     return 0;
@@ -4231,9 +4259,8 @@ static int rc_key_live(const char *k)
 static vchan *rc_live_vchan(int si)
 {
     if (!g_hcfg || si<0 || si>=MS_MAX_VSTREAM) return NULL;
-    int chn = g_hcfg->video[si].imp_chn;
     for (int i=0;i<g_nv;i++)
-        if (g_v[i].chn==chn) return &g_v[i];
+        if (g_v[i].si==si) return &g_v[i];
     return NULL;
 }
 
@@ -4703,11 +4730,15 @@ static int ing_start(const ms_config *cfg)
             lv = cfg->video[i]; lv.rotation = 0; v = &lv;
         }
 #endif
-        int chn=v->imp_chn, grp=v->imp_chn;
+        /* three namespaces, deliberately spelled apart: the framesource
+         * channel (== the encoder GROUP it binds into, unchanged) and the
+         * encoder channel, which only coincides with it while one sensor owns
+         * every framesource. See MS_ENC_CHN_VIDEO in config.h. */
+        int fs_chn=v->imp_chn, grp=v->imp_chn, chn=MS_ENC_CHN_VIDEO(v,i);
 #ifdef ROT_HAS_FS_ROTATE
         ms_vstream_cfg flv;   /* local UNROTATED fallback copy (cfg is const) */
         {
-            int r = fs_create(chn,v);
+            int r = fs_create(fs_chn,v);
             if (r<0) goto fail;             /* unrecoverable */
             if (r==FS_ROT_FALLBACK){
                 /* T31: fs_create refused the rotation (outside the safe
@@ -4720,11 +4751,11 @@ static int ing_start(const ms_config *cfg)
                  * (in-memory only, does not persist to the file); the encoder
                  * dims below then follow the unrotated geometry too. */
                 flv = cfg->video[i]; flv.rotation = 0; v = &flv;
-                if (fs_create(chn,v)!=0) goto fail;
+                if (fs_create(fs_chn,v)!=0) goto fail;
             }
         }
 #else
-        if (fs_create(chn,v)!=0) goto fail;
+        if (fs_create(fs_chn,v)!=0) goto fail;
 #endif
         /* v now points at the config this stream is ACTUALLY coming up with
          * (retargeted at an unrotated local copy above if a rotation safe-
@@ -4739,12 +4770,12 @@ static int ing_start(const ms_config *cfg)
          * no SPS). T31's newer libimp happened to tolerate the wrong order. */
         if (IMP_Encoder_CreateGroup(grp)<0){
             LOGE(MOD,"Encoder_CreateGroup %d failed",grp);
-            IMP_FrameSource_DestroyChn(chn);
+            IMP_FrameSource_DestroyChn(fs_chn);
             goto fail;
         }
         if (enc_create(chn,grp,v)!=0){
             IMP_Encoder_DestroyGroup(grp);
-            IMP_FrameSource_DestroyChn(chn);
+            IMP_FrameSource_DestroyChn(fs_chn);
             goto fail;
         }
         /* record the slot as soon as its IMP channels exist: g_nv drives the
@@ -4769,7 +4800,8 @@ static int ing_start(const ms_config *cfg)
          * makes the first OSD render see the correct answer immediately. */
         hub_set_video_params(i, v->codec, ew, eh, v->fps);
         vchan *vc=&g_v[g_nv++];
-        vc->chn=chn; vc->grp=grp; vc->codec=v->codec;
+        vc->chn=chn; vc->fs_chn=fs_chn; vc->si=i;
+        vc->grp=grp; vc->codec=v->codec;
         vc->w=ew; vc->h=eh;
         vc->fps=v->fps;                          /* Fix 1: nominal frame interval */
         memset(&vc->pts, 0, sizeof vc->pts);     /* reset capture-pts sanitizer */
@@ -4779,25 +4811,25 @@ static int ing_start(const ms_config *cfg)
 #ifdef ROT_HAS_SW_90
         /* slots are static + reused across start/stop cycles: make sure a
          * bound-path slot never carries stale sw-rotate state into teardown */
-        vc->sw_rot=0; vc->si=i; vc->yuv_h=NULL; vc->bounce=NULL;
+        vc->sw_rot=0; vc->yuv_h=NULL; vc->bounce=NULL;
 #endif
 
         /* optional per-stream JPEG encoder in the same group (videoN.jpeg);
          * non-fatal: the video stream works without it (logged inside) */
-        if (v->jpeg_enabled) jpeg_attach(v, i, grp);
+        if (v->jpeg_enabled) jpeg_attach(v, i, fs_chn, grp);
 
         /* pipeline: FrameSource -> [OSD] -> Encoder. Every stream gets its
          * own OSD group so overlays appear on all streams. An unchecked
          * failed bind used to leave a "running" pipeline that never moves a
          * single frame (H6). */
-        IMPCell fs  = { DEV_ID_FS,  chn, 0 };
+        IMPCell fs  = { DEV_ID_FS,  fs_chn, 0 };
         IMPCell enc = { DEV_ID_ENC, grp, 0 };
         int og = imp_osd_setup(cfg, i, ew, eh);
         vc->og = og;                   /* teardown must unbind the REAL pairs */
         if (og >= 0) {
             IMPCell osd = { DEV_ID_OSD, og, 0 };
             if (IMP_System_Bind(&fs,&osd)<0){
-                LOGE(MOD,"Bind fs%d->osd%d failed",chn,og);
+                LOGE(MOD,"Bind fs%d->osd%d failed",fs_chn,og);
                 goto fail;             /* slot recorded: teardown handles it */
             }
             vc->nbound=1;
@@ -4808,7 +4840,7 @@ static int ing_start(const ms_config *cfg)
             vc->nbound=2;
         } else {
             if (IMP_System_Bind(&fs,&enc)<0){
-                LOGE(MOD,"Bind fs%d->enc%d failed",chn,grp);
+                LOGE(MOD,"Bind fs%d->enc%d failed",fs_chn,grp);
                 goto fail;
             }
             vc->nbound=1;
@@ -4915,9 +4947,9 @@ fail:
          * their whole teardown is FS + YuvExit + VbmFree (thread joined above) */
         if (g_v[k].sw_rot){ sw_rot_teardown(&g_v[k]); continue; }
 #endif
-        int c=g_v[k].chn, g=g_v[k].grp, og=g_v[k].og;
-        IMPCell f={DEV_ID_FS,c,0}, e={DEV_ID_ENC,g,0};
-        td(fs_teardown(c),"FrameSource_DisableChn");
+        int c=g_v[k].chn, f_c=g_v[k].fs_chn, g=g_v[k].grp, og=g_v[k].og;
+        IMPCell f={DEV_ID_FS,f_c,0}, e={DEV_ID_ENC,g,0};
+        td(fs_teardown(f_c),"FrameSource_DisableChn");
         /* unbind the pairs that were REALLY bound, downstream pair first.
          * With OSD the pipeline is fs->osd->enc (M-1) - unbinding fs->enc
          * there would leave both real bindings in place and the Destroy
@@ -4933,7 +4965,7 @@ fail:
         td(IMP_Encoder_UnRegisterChn(c),"Encoder_UnRegisterChn");
         td(IMP_Encoder_DestroyChn(c),"Encoder_DestroyChn");
         td(IMP_Encoder_DestroyGroup(g),"Encoder_DestroyGroup");
-        td(IMP_FrameSource_DestroyChn(c),"FrameSource_DestroyChn");
+        td(IMP_FrameSource_DestroyChn(f_c),"FrameSource_DestroyChn");
     }
     g_nv=0;
     /* OSD groups/regions/fonts built by imp_osd_setup: destroy them AFTER
@@ -4952,7 +4984,7 @@ static void ing_set_active(int src, int on)
     else if (src>=HUB_JPEG_SRC && src<HUB_JPEG_SRC+HUB_NJPEG){
         for (int i=0;i<g_nj;i++) if (g_j[i].src==src){ g_j[i].active=on; break; }
     } else {
-        for (int i=0;i<g_nv;i++) if (g_v[i].chn==src){ g_v[i].active=on; break; }
+        for (int i=0;i<g_nv;i++) if (g_v[i].si==src){ g_v[i].active=on; break; }
     }
     if (on) act_wake();   /* unblock idle producer threads immediately */
 }
@@ -4962,7 +4994,7 @@ static void ing_request_idr(int src)
     /* IMP_Encoder is not safe to touch from foreign threads. Just flag the
      * request; the owning video_thread issues the actual IMP_Encoder_RequestIDR
      * so each encoder channel is only ever accessed from its own thread. */
-    for (int i=0;i<g_nv;i++) if (g_v[i].chn==src) g_v[i].idr_req=1;
+    for (int i=0;i<g_nv;i++) if (g_v[i].si==src) g_v[i].idr_req=1;
 }
 
 static void ing_stop(void)
@@ -4993,13 +5025,13 @@ static void ing_stop(void)
         jchan *jc=&g_j[i];
         if (jc->src==HUB_JPEG_SRC){
             /* dedicated channel: own framesource + own group */
-            IMPCell fs={DEV_ID_FS,jc->chn,0}, enc={DEV_ID_ENC,jc->chn,0};
-            td(fs_teardown(jc->chn),"FrameSource_DisableChn");
+            IMPCell fs={DEV_ID_FS,jc->fs_chn,0}, enc={DEV_ID_ENC,jc->fs_chn,0};
+            td(fs_teardown(jc->fs_chn),"FrameSource_DisableChn");
             td(IMP_System_UnBind(&fs,&enc),"System_UnBind fs->enc");
             td(IMP_Encoder_UnRegisterChn(jc->chn),"Encoder_UnRegisterChn");
             td(IMP_Encoder_DestroyChn(jc->chn),"Encoder_DestroyChn");
-            td(IMP_Encoder_DestroyGroup(jc->chn),"Encoder_DestroyGroup");
-            td(IMP_FrameSource_DestroyChn(jc->chn),"FrameSource_DestroyChn");
+            td(IMP_Encoder_DestroyGroup(jc->fs_chn),"Encoder_DestroyGroup");
+            td(IMP_FrameSource_DestroyChn(jc->fs_chn),"FrameSource_DestroyChn");
         } else {
             /* piggyback: only the encoder channel; framesource and group
              * belong to the video stream and are torn down below */
@@ -5018,9 +5050,9 @@ static void ing_stop(void)
 #ifdef ROT_HAS_SW_90
         if (g_v[i].sw_rot) continue;   /* nothing bound - torn down whole below */
 #endif
-        int chn=g_v[i].chn, grp=g_v[i].grp, og=g_v[i].og;
-        IMPCell fs={DEV_ID_FS,chn,0}, enc={DEV_ID_ENC,grp,0};
-        td(fs_teardown(chn),"FrameSource_DisableChn");
+        int fs_chn=g_v[i].fs_chn, grp=g_v[i].grp, og=g_v[i].og;
+        IMPCell fs={DEV_ID_FS,fs_chn,0}, enc={DEV_ID_ENC,grp,0};
+        td(fs_teardown(fs_chn),"FrameSource_DisableChn");
         if (og>=0){
             had_osd=1;
             IMPCell osd={DEV_ID_OSD,og,0};
@@ -5044,7 +5076,7 @@ static void ing_stop(void)
         td(IMP_Encoder_UnRegisterChn(chn),"Encoder_UnRegisterChn");
         td(IMP_Encoder_DestroyChn(chn),"Encoder_DestroyChn");
         td(IMP_Encoder_DestroyGroup(grp),"Encoder_DestroyGroup");
-        td(IMP_FrameSource_DestroyChn(chn),"FrameSource_DestroyChn");
+        td(IMP_FrameSource_DestroyChn(g_v[i].fs_chn),"FrameSource_DestroyChn");
     }
     g_nv=0;
 #ifdef ROT_HAS_SW_90
