@@ -196,12 +196,16 @@ http.tls_key    = /etc/ssl/private/timps.key
 # DELETE /webrtc/whep/<id> (the 201's Location) frees the session at once; a
 # session that is never torn down is reclaimed after 30 s of silence.
 # Access rules are the /control ones (localhost / ?token= / Basic), and where
-# http.https is on, the POST itself must arrive over https - a rewritten offer
-# swaps the fingerprint we hold the peer to and the answer's ICE password, so a
-# plaintext POST on a TLS-capable port is answered 426 Upgrade Required.
-# webrtc.enabled  = 0                     # 0 off, 1 on, 2 on and accept a
-                                          # plaintext POST anyway (only for an
-                                          # operator who terminates TLS elsewhere)
+# http.https is on, webrtc.enabled = 1 additionally requires the POST itself to
+# arrive over https - a rewritten offer swaps the fingerprint we hold the peer
+# to and the answer's ICE password, so a plaintext POST on a TLS-capable port is
+# then answered 426 Upgrade Required. The default (2) accepts it anyway.
+# webrtc.enabled  = 2                     # 0 off, 1 on (TLS required for the
+                                          # POST), 2 on and accept a plaintext
+                                          # POST anyway. Default 2 on USE_WEBRTC
+                                          # builds: most cameras have no
+                                          # http->https redirect, so 1 would
+                                          # silently 426 the feature.
 # webrtc.port     = 0                     # UDP media port (0 = ephemeral).
                                           # Each session owns its OWN socket, so
                                           # a fixed port is the BOTTOM of a range:
@@ -414,9 +418,11 @@ audio.codec              = aac    # aac | pcmu | pcma | opus | none  (persist +
 # nothing else, so on the usual audio.codec = aac camera a WHEP session gets no
 # audio at all. With this on, WebRTC takes the G.711 stream and RTSP, the fMP4
 # preview and recordings keep the AAC primary, untouched. Ignored (and not
-# encoded) when audio.codec is already pcmu/pcma. A 16 kHz capture is filtered
-# and halved to the 8 kHz G.711 clock; any other rate disables the key.
-# audio.codec2           = pcmu   # pcmu | off (default off) (persist + restart)
+# encoded) when audio.codec is already pcmu/pcma. Needs an 8 or 16 kHz capture
+# (16 kHz is filtered and halved to the 8 kHz G.711 clock); any other rate logs
+# a warning and disables the key.
+# audio.codec2           = pcmu   # pcmu | off (default pcmu on USE_WEBRTC
+                                  #   builds, off otherwise)  (persist + restart)
 audio.samplerate         = 16000  # 8000-96000 Hz              (persist + restart)
 audio.channels           = 1      # 1 mono | 2 = simulated stereo (dual-mono),
                                   # AAC only               (persist + restart)

@@ -21,6 +21,19 @@ Configured under `audio.*` (see
 | **G.711 (µ-law/A-law)** | none — `src/codec/g711.c` is pure C (canonical Sun/CCITT expand/compress tables) | Always available, no library dependency. RTSP-only for capture playback; cannot be muxed into fMP4 or SRT's TS mux. |
 | **Opus** | bare `libopus` **encoder** (`USE_STREAM_OPUS`, ~337 KB) — **not** `opusfile`/`libogg` | Compile-time optional (off by default). Select with `audio.codec=opus`; unrecognized on a build without `USE_STREAM_OPUS`. The mic is encoded at its capture rate (16 kHz default) in `OPUS_APPLICATION_VOIP` mode as one Opus frame per 40 ms AI capture frame; `audio.bitrate_kbps` sets the encoder bitrate (default 32). RTSP/RTP only (RFC 7587), exactly like G.711 — **not** muxable into fMP4 or SRT. The RTP track is always advertised as `opus/48000/2` regardless of the real 16 kHz/mono encoding; the actual mono layout is signalled out-of-band via `sprop-stereo=0` and `rtp_send_opus()` timestamps against the mandatory 48 kHz clock. If `opus_encoder_create` fails at stream start, timps falls back to PCMU. Entirely separate from the play-queue `USE_PLAY_OPUS` decode feature below. |
 
+### `audio.codec2` — the second G.711 encode, for WebRTC
+
+WHEP carries G.711 and nothing else, so on the default `audio.codec = aac`
+camera a WebRTC session would be video-only. `audio.codec2 = pcmu` (the
+`USE_WEBRTC` default) runs a **second, independent** G.711u pass over the same
+captured PCM and publishes it on its own hub source (`HUB_AUDIO_SRC2`): WebRTC
+subscribes to that one while RTSP, the fMP4 preview and recording keep the AAC
+primary untouched. It is ignored — and not encoded at all — when `audio.codec`
+is itself `pcmu`/`pcma`, since WebRTC then just subscribes to the primary. Needs
+an 8 kHz or 16 kHz `audio.samplerate` (16 kHz is filtered and halved to G.711's
+8 kHz clock); any other rate logs a warning and turns the key off. Restart-only,
+like `audio.codec`.
+
 `audio.channels=2` / `audio.force_stereo=1` produce "simulated stereo": the
 mono mic signal duplicated to L=R, AAC only — not a genuine stereo
 capture path (the hardware is mono).

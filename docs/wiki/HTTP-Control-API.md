@@ -261,6 +261,75 @@ send `Authorization`, e.g. `<img>`):
 curl "http://127.0.0.1:8880/snapshot.jpg?token=$(cat /run/timps.token)" -o snap.jpg
 ```
 
+### Scoped sub-endpoints — `?fields=1`, `?stats=1`, `?dn_history=1`
+
+Three `GET /control` query flags return a *different, much smaller* document
+instead of the full snapshot. They share the same auth/CORS gate as the plain
+`GET`, and each gets its own small heap buffer rather than the snapshot's
+`CONTROL_JSON_CAP`, so a frequent poll never pays for the whole document. They
+are matched by substring (`strstr`), the same convention as `chn=`/`token=`
+elsewhere in `src/mp4/httpd.c` — there is no full query parser.
+
+| Flag | Returns | Added |
+| --- | --- | --- |
+| `?fields=1` | The inventory of every `F_CTRL`-flagged (i.e. POST-able) config field, grouped by section. Walked from the same tables `POST /control` applies, so it cannot drift from what the POST really accepts; `scripts/timps-qa.sh` section 8 diffs its own coverage list against it. | 1.8.1 |
+| `?stats=1` | The slow-path complement of the `/events` `stats` push. | 1.9.18 |
+| `?dn_history=1` | The day/night decision series out of the in-RAM ring. | 1.9.15 |
+
+#### `?stats=1`
+
+Deliberately **not** a subset of the snapshot: it carries only what the SSE
+`stats` event cannot — the config-level `gop`/`profile`/`rc_mode` per stream and
+the `IMP_Encoder_Query` backlog — because fps/kbps/dims/codec/subs/drop already
+arrive pushed. The contract is "what the stats push can't carry", not "encoder".
+
+```json
+{"video":{"0":{"gop":50,"profile":2,"rc_mode":"cbr"},
+          "1":{"gop":50,"profile":0,"rc_mode":"cbr"}},
+ "encoder":{"0":{"left_pics":0,"left_stream_bytes":0,
+                 "left_stream_frames":0,"ave_bitrate":1180.0}}}
+```
+
+`video` lists every stream slot. `encoder` **omits** channels whose query fails
+(disabled stream, SW-rotate path, host sim) rather than reporting zeros, and
+`ave_bitrate` appears only where the SoC supplies it — the same rules the full
+snapshot's `encoder` object follows. The shape mirrors the corresponding
+sub-objects of the snapshot, so a client can read either source with one code
+path.
+
+#### `?dn_history=1`
+
+Paged out of the ring `daynight.history_s` sizes (default `0` = off, no ring, no
+allocation — see [Configuration Reference](Configuration-Reference.md)).
+
+- `?last=N` backfills from the newest N samples (page load, or a resync after a
+  lapped cursor); `?since=S` tails from a cursor. `last` wins if both are given.
+- `?max=N` caps rows per response at `DN_HISTORY_MAX_ROWS` (600). `last` is
+  **not** capped by it — it only picks the start, so a client with more to catch
+  up on just follows `next` again until it equals `head`.
+
+```json
+{"t_now":41230,"wall_now":1757900000,"period_s":10,"retain_s":14400,
+ "cap":1440,"head":4123,"oldest":2683,"since":4083,"next":4123,"lapped":0,
+ "day_gain":180,"night_gain":600,
+ "samples":[[41220,512,33000,84,42,0], ...]}
+```
+
+Each sample row is an **array**, not an object (`[t, gain, exposure, luma,
+bright, mode]`): at 600 rows a per-row key set would roughly triple the body for
+no information. `head`/`oldest`/`next`/`lapped` let a client tell "nothing new"
+from "I fell out of the retained window" — on `lapped` it refetches with `last`
+rather than splicing across a hole.
+
+`t_now` is the daemon's **monotonic** second, which the samples are stamped
+with; `wall_now` is the wall clock at the same instant. The camera boots without
+NTP and steps its clock mid-session, so a client re-derives wall times from that
+pair on **every** response — which moves the whole series together instead of
+tearing it.
+
+Errors on either endpoint: `500` if the document did not fit its buffer, `503`
+on an allocation failure.
+
 ## `POST /control` — apply settings
 
 Takes a nested JSON body; every recognized setting is:
@@ -447,6 +516,12 @@ latency is just the producer's own sampling rate, never HTTP polling.
 | `daynight` | Mode flipped, or brightness moved ≥1%, or gain moved ≥5% relative (or ≥8 absolute near zero) | Identical shape to `/control`'s `"daynight"` object | Level-sampled with a per-connection dedup threshold matching the producer's own event-worthy-change filter in `daynight.c`, so brightness/gain jitter every sample doesn't spam the stream. |
 | `stats` | Every `events.stats_ms` (default 2000ms; `0` disables) | `{"uptime_s":N,"clients":N,"video":[{"chn":0,"subs":N,"fps":F,"kbps":F,"width":N,"height":N,"codec":"h264","drop_frames":N,"drop_bytes":N},...]}` | Periodic tick. `video[]` only lists streams enabled **at boot** (`g_cfg_boot`), so the reported geometry/codec always matches what the fps/kbps numbers were actually measured on. |
 | `config` | Another client's `/control` POST changed a setting | `{"key":"<key>","value":"<value>"}`, or `{"resync":true}` once if this connection fell behind a bounded coalescing table and may have missed an update | A small fixed 24-slot table (sized so one bulk image-tuning POST fits in a single push) coalesces rapid repeated changes to the same key into one entry; a genuinely new key evicts the globally-oldest slot when full and flags lapped subscribers to re-`GET /control` instead of silently missing the update. |
+
+`motion` and `daynight` also emit their **full current state once on connect**,
+before any change occurs — a subscriber never has to prime itself with a `GET
+/control` first. (The preview page's stats card relies on exactly this: it
+subscribes to `?stream=daynight,motion` for those two summaries and polls only
+`?stats=1` for the fields no push carries.)
 
 The thingino WebUI's preview overlay subscribes to `?stream=motion` and
 falls back to 4Hz `/control` polling if `/events` is unavailable.

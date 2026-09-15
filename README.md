@@ -72,7 +72,7 @@ rotation deep-dive), [`docs/sdk-feature-gaps.md`](docs/sdk-feature-gaps.md).
 | `…?chn=N` | JPEG / MJPEG at the resolution of `videoN` (needs `videoN.jpeg = true`) |
 | `http://<ip>:8880/events` | SSE push stream: `motion` / `daynight` / `stats` events (`USE_CONTROL` builds — see [HTTP /control API](docs/wiki/HTTP-Control-API.md)) |
 | `wss://<ip>:8880/talk` | WebSocket audio backchannel: browser microphone → camera speaker (`USE_BC_WS` builds; TLS by default, plain `ws://` with `audio.talk_ws=2` — see [Talk](#talk-browser-microphone--camera-speaker-talk)) |
-| `http://<ip>:8880/webrtc/whep` | WHEP: `POST` an SDP offer, get H.264 (+ G.711) over ICE-lite/DTLS-SRTP; `DELETE /webrtc/whep/<id>` tears it down (`USE_WEBRTC` builds, `webrtc.enabled=1` — see [WebRTC / WHEP](#webrtc--whep-webrtcwhep)) |
+| `http://<ip>:8880/webrtc/whep` | WHEP: `POST` an SDP offer, get H.264 (+ G.711) over ICE-lite/DTLS-SRTP; `DELETE /webrtc/whep/<id>` tears it down (`USE_WEBRTC` builds; `webrtc.enabled` defaults to `2` = on — see [WebRTC / WHEP](#webrtc--whep-webrtcwhep)) |
 
 See [Streaming Protocols](docs/wiki/Streaming-Protocols.md) for transport
 details, codec negotiation and client-compatibility notes.
@@ -252,8 +252,9 @@ secure-context override instructions:
 
 ### WebRTC / WHEP (`/webrtc/whep`)
 
-`USE_WEBRTC` (`BR2_PACKAGE_TIMPS_WEBRTC`, **off by default**, and additionally
-gated at runtime by `webrtc.enabled`) serves a [WHEP](https://www.ietf.org/archive/id/draft-ietf-wish-whep-01.html)-shaped
+`USE_WEBRTC` (off in a plain `make`; `BR2_PACKAGE_TIMPS_WEBRTC` defaults to **y**
+in thingino, and the runtime gate `webrtc.enabled` defaults to `2` = on, plaintext
+signalling accepted) serves a [WHEP](https://www.ietf.org/archive/id/draft-ietf-wish-whep-01.html)-shaped
 endpoint on the HTTP port: `POST /webrtc/whep` takes a browser's SDP offer and
 answers as an **ICE-lite** peer, then completes the DTLS handshake as the
 passive side and sends media over SRTP (`SRTP_AES128_CM_HMAC_SHA1_80`). The
@@ -265,9 +266,12 @@ standalone test page that sends it from `pagehide`.
 
 What it carries: **H.264 video** (the `webrtc.channel` stream, which must be
 H.264 and must be offered with `packetization-mode=1`), plus **G.711 audio**
-(PCMU/PCMA) *only* when `audio.codec` really is `pcmu`/`pcma`. With any other
-audio codec the answer rejects the audio m-section (`m=audio 0 …`) instead of
-negotiating something no packet would ever be sent on.
+(PCMU/PCMA) whenever the daemon actually produces G.711 — either `audio.codec`
+is itself `pcmu`/`pcma`, or `audio.codec2 = pcmu` (the `USE_WEBRTC` default) runs
+a second, independent G.711u encode of the same PCM on its own hub source while
+RTSP, the fMP4 preview and recordings keep the AAC primary. With neither, the
+answer rejects the audio m-section (`m=audio 0 …`) instead of negotiating
+something no packet would ever be sent on.
 
 Deliberate limitations, all of them current as of this writing:
 
@@ -299,9 +303,12 @@ Deliberate limitations, all of them current as of this writing:
   all is unaffected — plaintext WHEP keeps working there.
 
 Access rules are exactly `/control`'s: localhost, a valid `?token=`, or the
-configured Basic/Digest credentials. Config keys: `webrtc.enabled`,
-`webrtc.port` (UDP media port, `0` = ephemeral), `webrtc.port_max` (top of that
-range, `0` = `webrtc.port + 3`), `webrtc.channel`.
+configured Basic/Digest credentials. Config keys: `webrtc.enabled` (`0` off,
+`1` on with TLS required for the POST, `2` on and plaintext accepted — the
+default), `webrtc.port` (UDP media port, `0` = ephemeral), `webrtc.port_max`
+(top of that range, `0` = `webrtc.port + 3`), `webrtc.channel`, plus
+`audio.codec2` for the audio. `GET /control` reports the resolved state as
+`caps.webrtc`; a client should branch on that, never on a version comparison.
 
 ### Recording, timelapse & privacy masks
 

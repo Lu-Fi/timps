@@ -126,6 +126,7 @@ on a running capture channel).
 | `audio.spk_gain` | int | 25 | 0–100 (effective 0–31: `IMP_AO_SetGain`'s range, −39 dB … +6 dB in 1.5 dB steps; higher values are clamped to 31) | **Live** (same gate as `spk_volume`) | Speaker output gain. |
 | `audio.enabled` | bool | 1 | 0/1 | Restart-only | Master audio capture enable. |
 | `audio.codec` | enum | `aac` | `aac`\|`pcmu`\|`pcma`\|`opus`\|`none` (aliases `g711u`/`ulaw`→pcmu, `g711a`/`alaw`→pcma, `off`→none) | Restart-only | Audio codec. AAC needs `USE_FAAC`; `opus` needs `USE_STREAM_OPUS` (RTSP-only, RFC 7587 — see [Audio](Audio.md)/[Streaming Protocols](Streaming-Protocols.md)) and is only an accepted token on such a build. Falls back to AAC at parse time for any unrecognized token. |
+| `audio.codec2` | enum | `pcmu` on `USE_WEBRTC` builds, `none` otherwise | `pcmu`\|`off`/`none` | Restart-only | Optional **second**, independent G.711u encode of the same captured PCM, published on its own hub source. It exists for WebRTC/WHEP, which carries G.711 and nothing else: without it a camera on the default `audio.codec = aac` gets a video-only WHEP session. RTSP, the fMP4 preview and recordings keep the AAC primary untouched. Ignored (and not encoded) when `audio.codec` is already `pcmu`/`pcma`. Needs an 8 kHz or 16 kHz capture (16 kHz is filtered and halved to G.711's 8 kHz clock); any other `audio.samplerate` logs a warning and disables the second encode. |
 | `audio.samplerate` | int | 16000 | 8000–96000 | Restart-only | Capture sample rate in Hz. G.711 is pinned to 8000 Hz regardless of this value (see [Audio](Audio.md)). |
 | `audio.channels` | int | 1 | 1–2 | Restart-only | 1 = mono (native). 2 = "simulated stereo" — the mono mic duplicated to L=R, AAC only. |
 | `audio.bitrate` | int | 32 | 8–320 (kbps) | Restart-only | AAC encode bitrate. |
@@ -223,6 +224,26 @@ File-only. See [HTTP /control API Reference](HTTP-Control-API.md) and
 > configured credentials. Set `rtsp.user`/`rtsp.pass` and/or
 > `http.user`/`http.pass` to require auth for the media too. See
 > [HTTP /control API Reference § Empty credentials](HTTP-Control-API.md#empty-credentials-the-shipped-default--media-is-open-control-is-not).
+
+## `webrtc.*` — WebRTC/WHEP endpoint
+
+File-only, and the whole section only exists on `USE_WEBRTC` builds (which
+imply `USE_TLS` + `USE_CONTROL`). `GET /control` reports the resolved state as
+`caps.webrtc`. The top-level `README.md` § "WebRTC / WHEP" carries the media
+contract and its deliberate limitations (LAN/VPN only, H.264 + G.711 only, no
+NACK/FEC/congestion control, 4 concurrent sessions).
+
+| Key | Type | Default | Range | Live? | Description |
+| --- | --- | --- | --- | --- | --- |
+| `webrtc.enabled` | tri-state | 2 | 0/1/2 (`true`/`on`/`yes` → 1) | File-only | Serve `POST /webrtc/whep`. **0** = the endpoint answers `503`. **1** = served, but a *plaintext* POST on a port that has TLS configured is refused with `426 Upgrade Required` (same rule as `audio.talk_ws=1`) — the offer carries the fingerprint the peer is held to and the answer carries our ICE password, so a rewritable exchange hands over the whole session. **2** = served over either scheme. The default is `2` rather than `1` because most cameras have no `http`→`https` redirect, so `1` would silently `426` the feature; a port with no TLS configured at all behaves the same either way. |
+| `webrtc.port` | int | 0 | 0–65535 | File-only | Bottom of the UDP media port range; `0` = one OS-picked ephemeral port per session. Every session binds its **own** socket, so a fixed value is a range start, not a single port. |
+| `webrtc.port_max` | int | 0 | 0–65535 | File-only | Top of that range. `0` = `webrtc.port + WEBRTC_MAX_SESSIONS - 1` (one port per session slot, so no extra configuration is needed). A range narrower than the 4 slots just answers `503` once every port in it is taken. |
+| `webrtc.channel` | int | 0 | 0–(`MS_MAX_VSTREAM`-1) | File-only | Which video stream to send. It must be H.264 — there is no H.265 or transcoding over WebRTC. |
+
+Audio over WHEP needs G.711 on the wire: either `audio.codec` is already
+`pcmu`/`pcma`, or `audio.codec2 = pcmu` (the `USE_WEBRTC` default) arms the
+second encode. With neither, the answer rejects the audio m-section
+(`m=audio 0 …`) and the session is video-only.
 
 ## `events.*` — Server-Sent-Events push stream
 
