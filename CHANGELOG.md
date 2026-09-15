@@ -6,6 +6,19 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.9.16] - 2026-09-15
+
+### Added
+
+- **`timps-qa.sh` covers `audio.codec2` and `daynight.history_s`** in section
+  8b's live field matrix, closing the two field-inventory drift warnings
+  8d reported against a v1.9.15 camera. `daynight.history_s` gets a
+  dedicated round-trip (it doesn't echo through the normal `GET /control`
+  daynight object, only through `?dn_history=1`'s `retain_s`) that always
+  restores the original value, never a hardcoded 0. `audio.codec2` round-trips
+  unconditionally on every build, since `pacodec2()` accepts `pcmu`/`none`
+  regardless of `USE_WEBRTC`.
+
 ## [1.9.15] - 2026-09-15
 
 ### Added
