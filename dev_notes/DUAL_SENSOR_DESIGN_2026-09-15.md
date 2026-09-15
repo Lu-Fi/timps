@@ -1030,9 +1030,19 @@ optimistic in three places that reading the actual pages closed off, and left
 the one decision it should have made (`preview.html`) open. Both are fixed
 below. Nothing in this section is implemented; §10 tracks that.
 
-Everything here is gated on **one** new capability key, and the gate is the
-whole zero-delta argument: a camera that does not announce it executes not one
-line of the code below, because the code is never created.
+Everything here is gated on **one** new capability key. The invariant has three
+tiers, not two, and Review 2 §2a is right that saying "zero delta" flattens it:
+
+| build | `GET /control` | rendered UI |
+|---|---|---|
+| flag **off** (the whole fleet today) | **byte-identical** | identical |
+| flag **on**, `count:1` | carries the new `caps.sensors` key | identical |
+| flag **on**, `count:2` | new keys | new controls |
+
+Rendering is unchanged in the first two rows because the controls are never
+*created*, not because they are hidden. Execution is not quite zero even in the
+first row — Review 2 §(b) enumerates the four places it differs and why each is
+inert. That list is the honest form of the claim.
 
 ### 7.1 The gate: `caps.sensors`
 
@@ -1056,6 +1066,11 @@ line of the code below, because the code is never created.
         hal_sensor_count(), MS_MAX_SENSOR, MS_VSTREAM_PER_SENSOR);
 #endif
 ```
+
+`hal_sensor_count()` **does not exist yet** — there is no symbol of that name in
+`src/hal/hal.h`, and the daemon has no runtime notion of how many sensors came
+up (the review above flagged the same gap for M2's own acceptance gate). It is
+dependency D2 in §7.9; the block above is a specification, not a patch.
 
 On every build the fleet runs today `MS_MAX_SENSOR` is 1, the `#if` drops the
 whole statement, and the `caps` object is **byte-identical** — not "equivalent",
@@ -1278,9 +1293,13 @@ have no use for.
 
 Loading it: `timps.webui.json`'s `"scripts"` array (`files/timps.webui.json`,
 alongside `timps-control-bar.js` / `timps-auth-gate.js`) injects a script into
-**every** page at assembly time. That is acceptable precisely because the file's
-only top-level effect is defining `window.timpsSensorSelect`; it mounts nothing
-on its own.
+**every** page at assembly time. The file's only top-level effect is defining
+`window.timpsSensorSelect` — it mounts nothing on its own — so there is no
+rendered or behavioural delta. The cost is not zero though, and Review 2 §2d is
+right to name it: one extra request per page load and ~2 KB of flash on every
+single-sensor camera in the fleet. If that matters on an 8 MB part, gate the
+install (and the manifest line) in `timps.mk` the same way §7.7 gates
+`ch2.jpg`.
 
 ### 7.5 `/control`'s per-sensor shape — an amendment to §2.3
 
@@ -1371,7 +1390,11 @@ Fifteen lines, no new failure mode, works in all three pipelines.
   They become one `selectedChn()` that parses and range-clamps. With the static
   two-option select the select can only hold `"0"` or `"1"`, so the new function
   is **total-equivalent** to the ternary it replaces — which is the check the
-  review should make rather than take on faith.
+  review should make rather than take on faith. *(It did, and found one: see
+  Review 2 §2c. `selectedChn()` must return a **String**, because `:1086` does
+  `const label = chn === "1" ? "sub" : "main";` — a strict comparison that a
+  numeric return silently makes false forever. Return a string, or rewrite
+  `:1086` in the same change.)*
 - `streamLabel(chn)` (`:507-509`) already falls through to `"chn" + chn` for
   anything past 1, so the stats table is correct-but-terse today. Under
   `count > 1` it gains `Sensor 1 · Main (chn2)` style labels; the existing two
@@ -1430,9 +1453,22 @@ flag (`:349-352`). Piggyback JPEG is quality 75 at 5 fps (`:358`).
 | MJPEG `<img>` on `/stream.mjpeg?chn=2` | 1080p JPEG q75 at 5 fps — **unmeasured, but certainly the largest of the three**; and `video2`'s piggyback rides its *main* framesource, so there is no low-resolution JPEG of sensor 1 to fetch | 5 JPEG decodes/s | rejected |
 | MJPEG `<img>` on `/stream.mjpeg?chn=3` | small, but needs `video3.jpeg_enabled=1`, which claims **encoder channel 8** — the single spare §5.3.4 deliberately left free, inside the budget §9's risk 3 says is not closed | trivial | rejected |
 
-"+11 % decode" is arithmetic on pixel rate, not a hunch, and it is the only
-honest way to state it: a client that can decode the main pane at all has ~9×
-that headroom in reserve for the inset.
+"+11 % decode" is arithmetic on pixel rate — a **bound**, not a prediction: it
+ignores per-frame overhead, a second `MediaSource`/`SourceBuffer`'s fixed cost
+and compositing a second painted surface. The conclusion survives all three: a
+client that can decode the main pane at all has ~9× that headroom in reserve.
+
+**The row this table was missing, added after Review 2 §2e — and it is probably
+the largest term.** timps **encodes on demand**: `hal_ingenic.c:2088-2091` gates
+`IMP_Encoder_StartRecvPic` on `vc->active || hub_active(vc->si)`, and `:440-445`
+records why — an enabled framesource with no clients was measured at **~19 %
+idle CPU**. (`httpd.c:797-800` says the same for the JPEG path: subscribing is
+what *wakes* the encoder.) So the inset does not ride along on an encoder that
+was running anyway; it **starts** sensor 1's substream framesource and encoder
+channel, on a T23 whose dual-sensor CPU headroom §9.1 says nobody has measured.
+That does not overturn the recommendation — it is why the inset is opt-in, and
+it makes **M6b's gate a camera-side CPU measurement**, not only a client-side
+one.
 
 The costs that are **not** negligible, and that are why the PiP is default-off:
 
@@ -1581,6 +1617,8 @@ Stated explicitly so none of it is silently assumed (§10 mirrors these):
 | D6 | `video2.jpeg_enabled = 1` | `/x/ch2.jpg`, PiP fallback to a JPEG source | **landed** (`config.c:375`, M2c) |
 | D7 | `/proc/jz/sensor` content under `-double` | any `streamer-sensor` change | **unknown**; dump at M3′ |
 | D8 | OSD group pool (§5.5) + `imp_osd_group_active(2)` | `streamer-osd2.html` | **not started** |
+| D9 | `timps.mk` able to install a **conditional** `timps.webui.json` (nav / `pages` / `cgi` gated on the Kconfig flag) | `streamer-main2`/`substream2`/`osd2`, `ch2.jpg` | **not started**; added after Review 2 §3, which noted §7.8 stated this in prose but never as a dependency. A zero manifest diff on a flag-off build is M6a's gate. |
+| D10 | a statement of what privacy masks do on streams 2/3 (§5.5, review §3) | `config-privacy.html` | **not started**; §7 does not inventory that page, and it will render controls for streams that may silently do nothing |
 
 None of D1–D5 are in scope for this task, and none of them are assumed to
 already work anywhere above: every consumer described here is written to gate on
