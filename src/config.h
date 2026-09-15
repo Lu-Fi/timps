@@ -7,10 +7,16 @@
 
 /* Sensors, and the video streams they carry. MS_MAX_VSTREAM is what everything
  * downstream (hub slots, OSD, RTSP, fMP4, record, timelapse) is already sized
- * by, so raising the sensor count is the whole change for those. */
+ * by, so raising the sensor count is the whole change for those. Streams stay
+ * globally numbered: sensor = stream / MS_VSTREAM_PER_SENSOR. */
+#ifdef USE_MULTI_SENSOR
+#define MS_MAX_SENSOR  2
+#else
 #define MS_MAX_SENSOR  1
+#endif
 #define MS_VSTREAM_PER_SENSOR 2
 #define MS_MAX_VSTREAM (MS_MAX_SENSOR * MS_VSTREAM_PER_SENSOR)
+#define MS_SENSOR_OF_VSTREAM(i) ((i) / MS_VSTREAM_PER_SENSOR)
 #define MS_MAX_OSD     8
 #define MS_MAX_PRIVACY 4
 #define MS_MAX_STR     64
@@ -48,7 +54,10 @@ typedef struct {
                                  * safety clamps (e.g. T31 non-scaled channel)
                                  * should trust it as-is instead of overriding */
     char     rtsp_path[MS_MAX_STR];
-    int      imp_chn;        /* encoder channel */
+    int      imp_chn;        /* FrameSource channel (also this stream's encoder
+                              * GROUP). The encoder CHANNEL is MS_ENC_CHN_VIDEO,
+                              * a separate namespace that only holds the same
+                              * number while one sensor owns every framesource. */
     /* optional extra JPEG encoder piggybacked on this stream: it is
      * registered into the SAME encoder group, so it shares the stream's
      * FrameSource (no additional rmem for video buffers) and produces
@@ -775,8 +784,25 @@ const cfg_field *cfg_fields_privacy(int *n);   /* one privacy region */
  * sixty. Identity today, deliberately including a hand-set imp_chn: an
  * operator who moved a stream to another framesource also moved its encoder
  * channel, and this must not quietly change that. */
+#ifdef USE_MULTI_SENSOR
+/* Encoder channels are packed: video streams take 0..MS_MAX_VSTREAM-1, the
+ * dedicated JPEG channel MS_MAX_VSTREAM, and the piggyback JPEG of stream i
+ * MS_MAX_VSTREAM+1+i - which is the formula videoN.jpeg_chn has always used.
+ * At one sensor that reproduces today's 0,1 / 2 / 3,4 exactly, which is why
+ * the flag-off arms below are the same numbers by a different route. At two it
+ * gives 0..3 / 4 / 5..8: nine channels, and libimp's own bound is nine. */
+#define MS_ENC_CHN_VIDEO(v,i)  ((void)(v), (i))
+#define MS_ENC_CHN_JPEG(cfg)   ((void)(cfg), MS_MAX_VSTREAM)
+#else
 #define MS_ENC_CHN_VIDEO(v,i)  ((void)(i), (v)->imp_chn)
 #define MS_ENC_CHN_JPEG(cfg)   ((cfg)->jpeg.imp_chn)
+#endif
+
+/* Framesource channel of video stream i: sensor si owns 3si..3si+2 (§5.2 of
+ * the design note), and a stream takes its sensor's first two. 0,1 at one
+ * sensor - today's videoN.imp_chn default - and 0,1,3,4 at two. */
+#define MS_FS_CHN_VIDEO(i) \
+    (3 * MS_SENSOR_OF_VSTREAM(i) + (i) % MS_VSTREAM_PER_SENSOR)
 
 /* Framesource channels are blocked by sensor: 3i, 3i+1, 3i+2 belong to sensor
  * i, and 3i is the ISP's DIRECT-output channel for that sensor - the one whose

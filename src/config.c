@@ -244,6 +244,25 @@ static const char *rc_name(int m){
     }
 }
 
+/* The channel layout, asserted rather than described. Both columns were worked
+ * out against the T23 1.3.0 headers and a disassembly of the shipped libimp
+ * (IMP_Encoder_CreateChn/CreateGroup/RegisterChn and IMP_FrameSource_CreateChn
+ * all bound their arguments at < 9); the one-sensor column is additionally what
+ * the fleet has been running all along, so a change to it is a regression by
+ * definition. Keeping this here means a future edit to any of the three macros
+ * fails the build instead of shipping a silently renumbered camera. */
+_Static_assert(MS_FS_CHN_VIDEO(0)==0 && MS_FS_CHN_VIDEO(1)==1,
+               "sensor 0's framesources must stay 0 and 1");
+#if MS_MAX_SENSOR > 1
+_Static_assert(MS_FS_CHN_VIDEO(2)==3 && MS_FS_CHN_VIDEO(3)==4,
+               "sensor 1 owns framesources 3,4,5 (imp_isp.h: fs0/fs3, fs1/fs4)");
+_Static_assert(MS_MAX_VSTREAM==4 && 2*MS_MAX_VSTREAM+1==9,
+               "two sensors claim exactly the nine encoder channels libimp has");
+#else
+_Static_assert(MS_MAX_VSTREAM==2 && 2*MS_MAX_VSTREAM+1==5,
+               "one sensor: 2 video + 1 dedicated JPEG + 2 piggyback = 5");
+#endif
+
 void config_defaults(ms_config *c)
 {
     memset(c, 0, sizeof(*c));
@@ -326,7 +345,12 @@ void config_defaults(ms_config *c)
         /* the values the classic rc fills used as literals before these became
          * config keys, so an unset config keeps the previous encoder behaviour */
         v->quality_lvl=2; v->change_pos=80; v->i_bias_lvl=0; v->fluc_lvl=0;
-        v->rotation=0; v->buffers=2; v->imp_chn=i;
+        v->rotation=0; v->buffers=2; v->imp_chn=MS_FS_CHN_VIDEO(i);
+#if MS_MAX_SENSOR > 1
+        /* both sc2336 halves of a dual-sensor T23 cap at 15 and refuse more
+         * (sensor_set_fps), so 25 would be rejected per stream, not clamped */
+        v->fps=15;
+#endif
         /* piggyback JPEG encoder: on by default (snapshot.jpg/MJPEG preview
          * and the thingino WebUI thumbnail both expect it to just work).
          * channels 0..MS_MAX_VSTREAM-1 = video, MS_MAX_VSTREAM = dedicated
@@ -338,6 +362,18 @@ void config_defaults(ms_config *c)
     c->video[0].bitrate_kbps=3000; copystr(c->video[0].rtsp_path,"/ch0",MS_MAX_STR);
     c->video[1].enabled=1; c->video[1].width=640; c->video[1].height=360;
     c->video[1].bitrate_kbps=512; copystr(c->video[1].rtsp_path,"/ch1",MS_MAX_STR);
+#if MS_MAX_SENSOR > 1
+    c->video[2].enabled=1; c->video[2].width=1920; c->video[2].height=1080;
+    c->video[2].bitrate_kbps=3000; copystr(c->video[2].rtsp_path,"/ch2",MS_MAX_STR);
+    c->video[3].enabled=1; c->video[3].width=640; c->video[3].height=360;
+    c->video[3].bitrate_kbps=512; copystr(c->video[3].rtsp_path,"/ch3",MS_MAX_STR);
+    /* video2 keeps its piggyback JPEG: it is the ONLY correct JPEG source for
+     * sensor 1. hub_pick_jpeg_src's non-strict fallback would otherwise hand
+     * timelapse.channel=2 sensor 0's picture, silently and under sensor 1's
+     * name - the dedicated jpeg.* channel sits on framesource 2, which belongs
+     * to sensor 0. video3's stays off so encoder channel 8 is left free. */
+    c->video[3].jpeg_enabled=0;
+#endif
 
     c->audio.enabled=1; c->audio.codec=MS_AC_AAC;
 #ifdef USE_WEBRTC

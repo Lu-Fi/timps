@@ -30,6 +30,15 @@
 #define ISP_PLATFORM_KNOWN 1
 #endif
 
+/* T23 1.3.0 only: IMP_ISP_MultiCamera_Tuning_*(IMPVI_NUM, val) - the classic
+ * argument shapes with a leading sensor index. All 30 tunings the classic path
+ * uses have a twin there (verified by nm -D on the shipped libimp.so). NOT the
+ * same thing as ISP_NEW_TUNING_API below, which is T40/T41's different ABI.
+ * UNVERIFIED ON HARDWARE: no dual-sensor board has run any of this. */
+#if defined(PLATFORM_T23) && defined(USE_MULTI_SENSOR)
+#define ISP_HAS_MULTICAM 1
+#endif
+
 /* T40/T41: reworked tuning API (IMPVI_NUM + pointer arguments) with a
  * reduced tuning feature set; flips go through SetHVFLIP. */
 #if defined(PLATFORM_T40)||defined(PLATFORM_T41)

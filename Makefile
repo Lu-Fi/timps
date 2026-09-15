@@ -44,6 +44,10 @@ USE_BC_WS     ?= 0          # 1 = browser-microphone backchannel over a WebSocke
                             #     by the g711.c the backchannel already builds; no new library).
                             #     Implies USE_BACKCHANNEL + USE_CONTROL. USE_TLS is optional:
                             #     without it only audio.talk_ws=2 (plain ws://) is usable.
+USE_MULTI_SENSOR ?= 0       # 1 = dual-sensor support (T23 only, PROTOTYPE, unverified on
+                            #     hardware): a second sensor as video2/video3 with its own
+                            #     sensorN./imageN. sections and MultiCamera ISP tuning.
+                            #     Off = the single-sensor daemon, unchanged.
 USE_WEBRTC    ?= 0          # 1 = optional WHEP endpoint at /webrtc/whep: ICE-lite responder
                             #     + DTLS (mbedTLS, needs MBEDTLS_SSL_DTLS_SRTP - buildroot
                             #     BR2_PACKAGE_MBEDTLS_DTLS_SRTP) + SRTP, sending H264 video
@@ -302,6 +306,7 @@ target:
 	  $(if $(filter 1,$(USE_SW_ROTATE)),-DMS_ENABLE_SW_ROTATE) \
 	  $(if $(filter 1,$(USE_OSD_HINTING)),-DUSE_OSD_HINTING) \
 	  $(if $(filter 1,$(USE_TRACE)),-DUSE_TRACE) \
+	  $(if $(filter 1,$(USE_MULTI_SENSOR)),-DUSE_MULTI_SENSOR) \
 	  -DHAL_INGENIC -DPLATFORM_$(PLATFORM) $(PLATFORM_CFLAGS) -DMS_VERSION='"$(VERSION)"' -Isrc -I$(IMP_INC) -I$(IMP_INC)/imp \
 	  -c $(TARGET_ALLSRC)
 	$(LINK_DRV) $(TARGET_OBJS) \
@@ -310,7 +315,7 @@ target:
 	  $(if $(filter 1,$(USE_PLAY_OPUS)),$(OPUSLIB)) \
 	  $(if $(filter 1,$(USE_STREAM_OPUS)),$(OPUS_ENC_LIB)) $(LIBS) -o $(BIN)
 	@rm -f $(TARGET_OBJS)
-	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT) USE_BACKCHANNEL=$(USE_BACKCHANNEL) USE_BC_AAC=$(USE_BC_AAC) USE_BC_WS=$(USE_BC_WS) USE_WEBRTC=$(USE_WEBRTC) USE_PLAY=$(USE_PLAY) USE_PLAY_OPUS=$(USE_PLAY_OPUS) USE_STREAM_OPUS=$(USE_STREAM_OPUS) USE_ROTATE=$(USE_ROTATE) USE_SW_ROTATE=$(USE_SW_ROTATE) USE_OSD_HINTING=$(USE_OSD_HINTING) USE_TRACE=$(USE_TRACE))"
+	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT) USE_BACKCHANNEL=$(USE_BACKCHANNEL) USE_BC_AAC=$(USE_BC_AAC) USE_BC_WS=$(USE_BC_WS) USE_WEBRTC=$(USE_WEBRTC) USE_PLAY=$(USE_PLAY) USE_PLAY_OPUS=$(USE_PLAY_OPUS) USE_STREAM_OPUS=$(USE_STREAM_OPUS) USE_ROTATE=$(USE_ROTATE) USE_SW_ROTATE=$(USE_SW_ROTATE) USE_OSD_HINTING=$(USE_OSD_HINTING) USE_TRACE=$(USE_TRACE) USE_MULTI_SENSOR=$(USE_MULTI_SENSOR))"
 
 sim:
 	$(HOSTCC) $(CFLAGS) -DMS_VERSION='"$(VERSION)"' $(if $(filter 1,$(USE_CONTROL)),-DUSE_CONTROL) \
