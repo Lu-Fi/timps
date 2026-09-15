@@ -1025,59 +1025,568 @@ for A/B testing during M3–M5.
 
 ## 7. WebUI
 
-Shallow by design — per the feasibility pass this is the low-risk half, and
-§1.1's global stream numbering is what makes it so.
+Rewritten 2026-09-15 (evening) from the earlier one-page sketch. The sketch was
+optimistic in three places that reading the actual pages closed off, and left
+the one decision it should have made (`preview.html`) open. Both are fixed
+below. Nothing in this section is implemented; §10 tracks that.
 
-**Scales by raising a bound.** `streamer-main.html` (video0),
-`streamer-substream.html` (video1) and `streamer-encoder.js` are already
-parameterised by stream index. Streams 2 and 3 reuse the same pages with a
-different index behind a sensor tab strip. `streamer-osd0.html`/`osd1.html`
-follow the same shape and are bounded by §5.5's two-group reality rather than
-by the JS.
+Everything here is gated on **one** new capability key, and the gate is the
+whole zero-delta argument: a camera that does not announce it executes not one
+line of the code below, because the code is never created.
 
-**Needs real thought.** Three pages currently render exactly one sensor's worth
-of fields:
+### 7.1 The gate: `caps.sensors`
 
-- `streamer-sensor.html` / `streamer-sensor.js` → `sensorN.`
-- `streamer-image.html` / `streamer-image.js` → `imageN.`
-- `config-photosensing.html` / `config-photosensing.js` → day/night
+`GET /control`'s `caps` object gains exactly one key, following the
+**omit-when-absent** convention `caps.webrtc` and `caps.rotation` already use
+(`src/control.c:1437-1447` documents that convention from the consumer side:
+*"key absent → USE_WEBRTC=0, no endpoint exists here → remove it"*):
 
-Each gains a sensor selector that switches which prefix the form posts to.
-Because §2.3 gives `/control` the `{"sensor":{"0":{…},"1":{…}}}` shape already
-used by `video`, `timps-api.js` needs no transport change.
+```jsonc
+"caps": {
+  …,
+  "sensors": { "count": 2, "max": 2, "streams_per_sensor": 2 },
+  …
+}
+```
 
-`config-photosensing.html` turned out simpler than first assessed, following
-§4.1's revised decision (one automaton, `daynight.sensor` picks which physical
-sensor feeds it — not a per-sensor/shared split). The page needs exactly one
-new control: a `daynight.sensor` selector (default 0, so an unmodified page on
-a single-sensor camera is untouched). No "shared vs per-sensor" section split
-is needed — `switch_cmd`/`irprobe_cmd` and the thresholds stay one flat form,
-same as today, just posting against whichever sensor is selected.
+```c
+/* src/control.c, inside the caps object */
+#if MS_MAX_SENSOR > 1
+    APP("\"sensors\":{\"count\":%d,\"max\":%d,\"streams_per_sensor\":%d},",
+        hal_sensor_count(), MS_MAX_SENSOR, MS_VSTREAM_PER_SENSOR);
+#endif
+```
 
-`preview.html` needs a second video element or a stream picker for the raw
-two-stream case. Two options worth designing before hardware arrives, since
-neither touches shipping code for existing cameras (both live entirely behind
-the same `caps.*`-style capability gate the WebRTC work already established —
-see `caps.webrtc` in `src/control.c` — so a single-sensor `/control` response
-simply omits the key and the page renders exactly as it does today):
+On every build the fleet runs today `MS_MAX_SENSOR` is 1, the `#if` drops the
+whole statement, and the `caps` object is **byte-identical** — not "equivalent",
+byte-identical, which is what the M1/M2 "510 keys identical" harness already
+measures (§10).
 
-- **Tab/picker**: switch which of the two streams `preview.html` shows,
-  reusing the existing single-video-element layout unchanged.
-- **Picture-in-picture**: main video full-size, second sensor as a small
-  overlaid inset (draggable/positionable like the existing PTZ-favorites
-  popover), both decoded from their own MSE/WebRTC session. Preferable if the
-  point of two lenses on one camera is genuinely watching both at once (e.g. a
-  wide overview + a PTZ close-up) rather than switching between them — worth
-  confirming that's the actual use case once the W8U's physical lens layout is
-  known (§4.2), since a picker is meaningfully less client CPU/bandwidth than
-  two simultaneous decodes.
+Three fields, none of them redundant:
 
-The snapshot endpoint at `www/x/ch0.jpg` needs a `ch2` sibling either way.
+- **`count`** — how many sensors the HAL actually brought up *this boot*, not
+  how many the build could support. This is the field every consumer gates on.
+  It is what makes M2's own acceptance gate ("flag **on** with `sensor_count=1`:
+  still streams") renderable-identical as well as streamable-identical: a
+  flag-on build on a one-sensor board reports `count:1`, every `count > 1` test
+  is false, and the WebUI draws exactly what it draws today.
+- **`max`** — `MS_MAX_SENSOR`. Not used for gating; it exists so a support
+  question ("is this a dual-sensor *build* that only found one sensor, or a
+  single-sensor build?") is answerable from one `curl`, which today it is not.
+- **`streams_per_sensor`** — `MS_VSTREAM_PER_SENSOR`. §1.1's `sensor =
+  stream / 2` is a C constant; without this the client would have to hardcode
+  the same 2 and the two would drift independently. With it the client derives
+  both directions:
 
-This is pure front-end design work and does not depend on hardware — it can be
-drafted (mockup + page structure) ahead of the W8U arriving, same as this
-design document itself, as long as it stays behind the capability gate so a
-single-sensor camera's WebUI is provably unaffected.
+  ```js
+  const S = caps.sensors.streams_per_sensor;
+  const sensorOf = (chn) => Math.floor(chn / S);   // 0,1 -> s0   2,3 -> s1
+  const roleOf   = (chn) => chn % S;               // 0 = main, 1 = sub
+  const chnFor   = (s, role) => s * S + role;
+  ```
+
+**Why an object and not a bare `"sensors": 2`.** A scalar cannot express the
+count/max split, and the count/max split is the only thing that makes a
+flag-on/one-sensor build indistinguishable from a flag-off build *to the UI*.
+That distinction is the M2 gate, so it has to be representable.
+
+**Why not derive the count from the `video` object instead.** A two-sensor
+camera can legitimately ship with `video2.enabled=0` and `video3.enabled=0`
+(an operator who only wants the wide lens). Counting enabled streams would then
+report one sensor and hide the controls that turn the second one back on.
+`count` is about hardware, `video[n].enabled` is about configuration; conflating
+them makes the UI unable to recover from its own configuration.
+
+**One naming check before this lands.** The document already has a top-level
+`"sensor"` object, and the comment at `src/control.c:1294-1296` warns that *the
+CGI bridges scan for the last occurrence of a key*, which is why `caps` is
+emitted first. `"sensors"` is a different token than `"sensor"` for any scanner
+that matches the closing quote, and the same-prefix pair `"caps"`/`"caps.image"`
+already coexists — but this is a substring-matching shell bridge and the claim
+is cheap to verify. **Verify it against the CGI bridge before landing, do not
+assume it.** If it does collide, `caps.multisensor` is the fallback spelling and
+nothing else in this section changes.
+
+### 7.2 What actually scales by raising a bound — corrected
+
+The sketch said `streamer-main.html` / `streamer-substream.html` /
+`streamer-encoder.js` "are already parameterised by stream index" and that
+"streams 2 and 3 reuse the same pages with a different index". **Both halves are
+wrong**, and the second one is wrong in a way that would have been discovered
+only when someone tried it.
+
+`a/streamer-encoder.js:26-31`:
+
+```js
+var idx =
+  body.id === "page-streamer-main" ? 0 :
+  body.id === "page-streamer-substream" ? 1 : -1;
+if (idx < 0) return;
+var P = "stream" + idx + "_";   // page field id prefix
+```
+
+That is a two-entry lookup table, not a bound — and the second line is the real
+obstacle: **every field id in the HTML carries the index** (`stream0_width`,
+`stream0_bitrate`, … / `stream1_*`). A "sensor tab strip" on one page would
+therefore need either two full sets of ids in one document or a rewrite that
+makes `P` dynamic and re-points ~20 `getElementById` lookups on every tab
+switch. Neither is "reuse the same page".
+
+The cheap shape is the one the file was already built for: **two more pages.**
+
+| new page | body id | field prefix | stream |
+|---|---|---|---|
+| `streamer-main2.html` | `page-streamer-main2` | `stream2_` | 2 (sensor 1 main) |
+| `streamer-substream2.html` | `page-streamer-substream2` | `stream3_` | 3 (sensor 1 sub) |
+
+The markup is 175 lines of near-duplicate per page and is generated
+mechanically (`sed 's/stream0_/stream2_/g'` plus the body id, the `<h3>` and the
+`data-stream="ch2"` preview attribute). `streamer-encoder.js` gains two entries
+in the map above — a four-line diff whose flag-off inertness is *structural*,
+not reviewed: on a single-sensor camera no document with those body ids exists,
+so the two new arms are unreachable.
+
+`a/timps-preview.js` needs nothing at all: `data-stream="chN"` is already parsed
+generically (`:691-695`, `parseInt(streamChannel.replace(/^ch/, ""), 10)`) and
+`timpsMediaUrl()` already takes a numeric channel (`:66-76`). `ch2`/`ch3` work
+today.
+
+**OSD pages** are the same shape and cheaper: `a/streamer-osd.js:17` derives its
+stream from `/^page-streamer-osd([01])$/`. Widening that character class to
+`([0-3])` plus two entries in `STREAM_NAME` is the entire JS change. But §5.5
+caps T23 at two OSD groups (main streams only), so only **`streamer-osd2.html`**
+(stream 2) is worth shipping; a stream-3 OSD page would render controls for a
+group `imp_osd.c` will refuse to create. Note that the *page* has no way to know
+that — §5.5's "logged once" refusal is camera-side. If the OSD-group pool lands
+as §5.5 describes, `caps.privacy.available` (`control.c:1385-1396`, already
+computed per stream via `imp_osd_group_active(s)`) is the honest signal and
+`streamer-osd2.html` should grey itself out on it rather than silently writing
+keys that do nothing.
+
+### 7.3 The three "needs real thought" pages — corrected assessment
+
+Read end to end, the three pages are **not** three instances of one problem, and
+the sketch's "each gains a sensor selector that switches which prefix the form
+posts to" is wrong for two of the three.
+
+**a. `streamer-sensor.html` / `streamer-sensor.js` — no selector, no `sensorN.`,
+nothing to do.** The page's own header comment (`a/streamer-sensor.js:3-10`) is
+explicit: *"The page has no timps-settable fields"*. Sensor model / resolution /
+fps are read-only and come from `/x/json-sensor-info.cgi`, a **filesystem**
+helper that reads `/proc/jz/sensor` and the `/etc/sensor/*.bin` md5 — not a
+timps bridge (`a/timps-preview.js:928-962`). The only write on the page is a
+multipart IQ-binary upload to `/x/preview.cgi` with `form=sensor`. Grepping the
+whole timps www tree confirms it: **nothing in the WebUI POSTs a `sensor.*` key
+today.** `sensor.*` is reachable only from `streamer-config.html` (the raw
+`timps.conf` editor).
+
+So the dual-sensor work here is not a selector. It is:
+
+- `/x/json-sensor-info.cgi` reports one sensor (one `/proc/jz/sensor` read, one
+  `/etc/sensor/*.bin`). Under `-double` that proc node's content is unverified
+  (§9.4 says the same about `isp-m0`). **Dependency, not a design: dump
+  `/proc/jz/sensor` at M3′ before designing anything for this page.**
+- The IQ upload form has no notion of which sensor's IQ file it is replacing.
+  Both SC2336 halves are the same part, so on the W8U specifically this is
+  probably moot — but it is a thingino-webui CGI, not a timps file, and it is
+  out of scope here.
+
+**Recommendation: leave this page alone in M6.** Add a one-line note under the
+sensor details ("this camera has 2 sensors; IQ files are shared") only once
+M3′ has said what the proc node actually reports.
+
+**b. `streamer-image.html` / `a/streamer-image.js` — a real selector, and the
+only one.** This page is a genuine `/control` client: it populates from
+`json.image`, enables controls from `caps.image`, and writes
+`timpsApi.setDebounced({image:{key:val}})` (`:104-116`, `:170-184`). All 15
+field ids are **unprefixed** (`brightness`, `contrast`, `image_hflip`, …), so a
+sensor selector on this page is a pure section swap with no id collisions. This
+is the page the shared helper in §7.4 exists for.
+
+Two things it needs from the daemon, both dependencies (§7.7):
+
+- the per-sensor `image` object in `GET /control`, and
+- a per-sensor spelling for the `/events?stream=config` push. The page's
+  `REVERSE` map (`:191-197`) keys on the canonical config spelling
+  (`"image.brightness" → "brightness"`), so under two sensors that map has to
+  become `"image1.brightness" → …` for the second sensor or a live change made
+  in another tab lands on the wrong sensor's slider.
+
+**c. `config-photosensing.html` / `a/config-photosensing.js` — one new field,
+and explicitly NOT a selector.** §4.1 decided there is exactly **one**
+automaton and exactly **one** `daynight.*` section; `daynight.sensor` names
+which physical sensor feeds it. The sketch's own text contradicts itself here
+("switches which prefix the form posts to" … "just posting against whichever
+sensor is selected") — there is no per-sensor prefix to switch to, because there
+is no per-sensor day/night state.
+
+Concretely, the page gains **one `<select id="daynight_sensor">`** in the
+"Decision source" column, directly under `#daynight_mode`
+(`config-photosensing.html:100-104`), and `"sensor"` is appended to
+`INT_FIELDS` (`a/config-photosensing.js:84-88`) — after which `fillTimps()` and
+`collectTimps()` carry it with no further code, because both iterate that array.
+The `<select>` is created by the shared helper (§7.4) and therefore does not
+exist at all when `caps.sensors` is absent; `INT_FIELDS` gaining an entry whose
+`getElementById` returns `null` is a no-op in both directions (`fillTimps`:
+`if (!el) return;` — `collectTimps`: same guard), so the array change is inert
+on a single-sensor camera without needing its own gate.
+
+The helper needs the sensor's model name for its labels ("Sensor 0 — sc2336ps0")
+so the operator can tell which lens they are pointing day/night at, which is
+§4.2's open question made answerable in the UI instead of only on the bench.
+
+### 7.4 One shared widget, three different behaviours
+
+**Recommendation: share the widget, not the behaviour.** One new file,
+`a/timps-sensor-select.js`, ~60 lines, mounted by the pages that want it.
+
+The justification for *not* going further: §7.3 shows the three pages need three
+genuinely different things — a section-prefix swap (image), a single ordinary
+config field (photosensing), and nothing at all (sensor IQ). A helper that tried
+to own "what changing the sensor means" would be a false generalisation over a
+set of one. What they *do* share is the widget, its availability rule, and its
+labels — which is exactly the part that must be identical everywhere, because it
+is the part that has to disappear on a single-sensor camera.
+
+```js
+// returns null — and inserts NOTHING into the DOM — unless the camera
+// announces more than one live sensor. That early return is the entire
+// zero-delta argument for every page that calls this.
+window.timpsSensorSelect.mount({
+  anchor: el,            // inserted before this element
+  control: control,      // the GET /control snapshot the page already holds
+  storageKey: "ms.sensor.image",   // sessionStorage; per-page
+  onChange: function (s) { … }     // s = 0 .. count-1
+});
+// -> null | { el, value(), set(s), on(cb) }
+```
+
+Behaviour, in full:
+
+1. `if (!control.caps || !control.caps.sensors || control.caps.sensors.count < 2) return null;`
+2. build a `<select class="form-select form-select-sm">` with one option per
+   sensor, labelled `Sensor <n>` plus the model name when the daemon reports
+   one (`control.sensor.model` for 0, `control.sensor1.model` for 1 — §7.5);
+3. restore the last choice from `sessionStorage[storageKey]`, clamped to
+   `count`;
+4. `onChange` fires with the numeric index; the page decides what that means.
+
+It is deliberately **not** used by `preview.html`: that page needs a *stream*
+picker (four entries, main and sub of each sensor), not a sensor picker, and
+conflating them would force the settings pages to carry a stream concept they
+have no use for.
+
+Loading it: `timps.webui.json`'s `"scripts"` array (`files/timps.webui.json`,
+alongside `timps-control-bar.js` / `timps-auth-gate.js`) injects a script into
+**every** page at assembly time. That is acceptable precisely because the file's
+only top-level effect is defining `window.timpsSensorSelect`; it mounts nothing
+on its own.
+
+### 7.5 `/control`'s per-sensor shape — an amendment to §2.3
+
+§2.3 proposed that `sensor` and `image` gain `video`'s index-keyed shape,
+`{"sensor":{"0":{…},"1":{…}}}`, with the flat object continuing to mean sensor
+0. Reading the WebUI's transport says **do not do that**, for a reason that is
+in the code rather than in taste.
+
+`a/timps-api.js:131-145`, `flattenBody()` — the function that maps a POST body
+onto the daemon's key space so the `applied` echo can be matched back to the
+control that produced it:
+
+```js
+// video and privacy fuse the stream index INTO the section name in
+// the daemon's key space (video0.fps, privacy0.3.x) - a plain dotted
+// join would never match their echoes
+var pfx = (sec === "video" || sec === "privacy") ? sec + k : sec + "." + k;
+```
+
+That is a **hardcoded two-element whitelist**. A POST of
+`{"sensor":{"1":{"model":"x"}}}` flattens to `sensor.1.model`; the daemon echoes
+`sensor1.model`; the two never match, and `computeCorrections()` silently
+reports no correction for a value the daemon clamped. Not a crash — a quiet
+wrong answer, which is worse. Adopting §2.3's shape therefore forces an edit to
+`timps-api.js`, i.e. to a file every single-sensor camera loads on every page.
+
+The alternative costs nothing and is already precedented **in the same
+document**: `control.c` emits `"osd0":{…},"osd1":{…}` as sibling top-level keys
+(`:1655-1670`). Do the same here:
+
+```jsonc
+{
+  "sensor":  { "model": "sc2336ps0", … },   // sensor 0 — unchanged, always
+  "image":   { "brightness": 128, … },      // sensor 0 — unchanged, always
+  "sensor1": { "model": "sc2336ps1", … },   // present only when count > 1
+  "image1":  { "brightness": 128, … }       // present only when count > 1
+}
+```
+
+Four things fall out of it, all of them good:
+
+1. **`timps-api.js` needs no change at all.** `{"image1":{"brightness":5}}`
+   already flattens to `image1.brightness` through the generic `sec + "." + k`
+   arm, which is exactly the canonical config key M2d landed.
+2. **Single-sensor GET is byte-identical**, not merely
+   backward-compatible — the sensor-0 objects are untouched and the sensor-1
+   ones are absent, versus §2.3's nesting which would have had to add a `"0"`
+   level or produce a mixed object with both scalars and an index key.
+3. The JSON spelling and the config-file spelling become the **same string**
+   (`image1.brightness`), so `streamer-image.js`'s `REVERSE` map (§7.3b) and the
+   `/events?stream=config` push line up with no translation layer.
+4. The POST side needs no new machinery either: `apply_ctrl_fields(&sc, ch,
+   "image1", …)` composes `image1.<field>`, and M2d already made that a
+   canonical key.
+
+The cost is that `sensor`/`image` and `sensorN`/`imageN` are spelled
+differently, i.e. the same asymmetry §2.3 already accepted on-disk and for the
+same reason (the installed base). Consistency with `videoN`'s nested JSON is
+lost; consistency with `osd0`/`osd1`'s sibling JSON and with the config key
+space is gained. **This is a proposed amendment to §2.3 and needs that
+section's owner to accept or reject it before M5/M6 implement either.**
+
+### 7.6 `preview.html` — the decision
+
+The sketch floated a stream picker and a picture-in-picture inset and picked
+neither. The answer is that they are not alternatives:
+
+> **Ship the picker unconditionally. Build the PiP as an opt-in layer on top of
+> it, default off, fed by the *other sensor's substream*, buffered-MSE only.**
+
+The picker is not optional even if the PiP ships, because *something* has to
+choose which sensor is the main pane and which is the inset. So the question is
+not "which one" but "does the PiP earn its cost on top of the picker" — and with
+real numbers, on the substream, it does.
+
+#### 7.6.1 The picker (M6a)
+
+Fifteen lines, no new failure mode, works in all three pipelines.
+
+- `#ms-stream`'s two `<option>`s (`preview.html:165-168`) are **left exactly as
+  authored** and rebuilt from `caps.sensors` + the `video` object **only** when
+  `caps.sensors.count > 1`. On a single-sensor camera there is no DOM write at
+  all, not even an idempotent one.
+- Labels `Sensor 0 · Main`, `Sensor 0 · Sub`, `Sensor 1 · Main`, `Sensor 1 · Sub`;
+  an option is `disabled` when `video[n].enabled` is 0.
+- Three sites read the selection as `streamSelect.value === "1" ? "1" : "0"`
+  (`:847` `refreshRtOption`, `:1067` `startRtStream`, `:1836` `startMseStream`).
+  They become one `selectedChn()` that parses and range-clamps. With the static
+  two-option select the select can only hold `"0"` or `"1"`, so the new function
+  is **total-equivalent** to the ternary it replaces — which is the check the
+  review should make rather than take on faith.
+- `streamLabel(chn)` (`:507-509`) already falls through to `"chn" + chn` for
+  anything past 1, so the stats table is correct-but-terse today. Under
+  `count > 1` it gains `Sensor 1 · Main (chn2)` style labels; the existing two
+  strings stay byte-identical.
+- `sessionStorage["ms.stream"]` already stores a string and `:2250` clamps it
+  (`defaultStream === "1" ? "1" : "0"`); that clamp widens with the same
+  `selectedChn()` rule.
+- **WHEP is unaffected and stays unaffected.** `webrtc.channel` is a camera-side
+  config value, the selector already does not apply in that mode, and the
+  existing explanatory message (`:2063-2068`) is still accurate with four
+  streams. `refreshWhepOption()`'s "highest profile among enabled H.264 streams"
+  loop (`:1480-1485`) already iterates `j.video` generically and needs nothing.
+
+#### 7.6.2 The PiP (M6b) — and why it is *not* a second player
+
+The naive PiP — "both decoded from their own MSE/WebRTC session", as the sketch
+put it — is the single most invasive change available to this file, and the
+sketch did not price it. `preview.html`'s player is 1600 lines of
+**module-level singletons**: `mediaSource`, `abortCtrl`, `running`, `session`,
+`rt`, `rtRetries`, `mseRetries`, `whepRetries`, `wantStream`, `reconnectPending`,
+`lastProgressAt`, the whole watchdog block (`:2166-2248`) and the WHEP session
+teardown that exists so an abandoned peer connection does not hold one of the
+camera's slots (`:888-892`). Two simultaneous sessions means either duplicating
+all of that or refactoring it into per-player objects — in a file whose recovery
+logic was written against measured failures (a parked `await rd.read()` in a
+backgrounded Edge tab; a connection-pool exhaustion that froze the page on
+"Connecting…" forever). That refactor is not a WebUI feature; it is a rewrite
+with a regression surface on every single-sensor camera in the fleet.
+
+So the inset is deliberately **less** than the main pane:
+
+| | main pane | PiP inset |
+|---|---|---|
+| stream | selected sensor, selected role | **other** sensor, **sub** stream |
+| pipeline | MSE / WebCodecs / WHEP | buffered MSE only |
+| audio | yes (AAC when muxed) | never — muted, video-only buffer |
+| watchdog | yes | no; it just stops and shows a placeholder |
+| retries | 5 with backoff | 1, then give up silently |
+| shared state with the main player | — | **none** |
+
+That is ~120 lines of trimmed MSE (fetch → `SourceBuffer` → `pump`/`evict`,
+which is `:1945-1978` minus the playback-rate/live-edge logic) in its own
+closure, plus ~60 lines of drag/persist. It cannot wedge the main player because
+it shares no variable with it.
+
+#### 7.6.3 The cost, with real numbers rather than an assertion
+
+Defaults from `src/config.c:341-376`: sensor-1 main (`video2`) is 1920×1080 @
+3000 kbps, sensor-1 sub (`video3`) is 640×360 @ 512 kbps, both 15 fps under the
+flag (`:349-352`). Piggyback JPEG is quality 75 at 5 fps (`:358`).
+
+| inset variant | camera uplink added | browser decode added | verdict |
+|---|---|---|---|
+| **substream H.264 (`video3`)** | **+512 kbps** on top of the main pane's 3000 — **+17 %** | 640×360×15 = **3.46 Mpx/s** on top of the main pane's 1920×1080×15 = 31.1 Mpx/s — **+11 %** | **chosen** |
+| second main stream (`video2`) | +3000 kbps — **+100 %** | +31.1 Mpx/s — **+100 %** | rejected |
+| MJPEG `<img>` on `/stream.mjpeg?chn=2` | 1080p JPEG q75 at 5 fps — **unmeasured, but certainly the largest of the three**; and `video2`'s piggyback rides its *main* framesource, so there is no low-resolution JPEG of sensor 1 to fetch | 5 JPEG decodes/s | rejected |
+| MJPEG `<img>` on `/stream.mjpeg?chn=3` | small, but needs `video3.jpeg_enabled=1`, which claims **encoder channel 8** — the single spare §5.3.4 deliberately left free, inside the budget §9's risk 3 says is not closed | trivial | rejected |
+
+"+11 % decode" is arithmetic on pixel rate, not a hunch, and it is the only
+honest way to state it: a client that can decode the main pane at all has ~9×
+that headroom in reserve for the inset.
+
+The costs that are **not** negligible, and that are why the PiP is default-off:
+
+- **Browser connection pool.** `preview.html:795-805` records a *measured* hang:
+  browsers allow ~6 concurrent HTTP/1.1 connections per origin, and with two
+  preview tabs open (each holding `/stream.mp4` + `/events`) the pool filled and
+  the next fetch to port 8880 queued **forever** — no error, no timeout. The
+  inset adds a third long-lived connection to that same origin per tab. Two tabs
+  with PiP on is six, i.e. exactly at the wall. Mitigations, all mandatory:
+  tear the inset down on `visibilitychange → hidden`, on `pagehide`, and
+  whenever the main player is disconnected; never open it before the main pane
+  has connected.
+- **Camera client slots.** One more against `HTTP_MAX_CLIENTS`, which is 16 by
+  default but **4** on the low-RAM boards in this fleet (`src/util.h:150-170`
+  names `-DHTTP_MAX_CLIENTS=4` as the example). `caps.http_max_clients` is
+  already in `GET /control` (`:1369-1373`) — the PiP should read it and refuse
+  to open below a threshold rather than eating a slot that a second viewer
+  needs.
+
+#### 7.6.4 Why the PiP is worth building anyway
+
+§4.2's GPIO map is the argument: one `ir850` + one `ircut` + one `white` LED is
+the signature of *two different lens roles* — a colour/floodlit wide lens and an
+IR lens — not two of the same camera. For a wide-overview + PTZ-detail pairing,
+switching between them is exactly what loses the point: the wide view exists to
+tell you where to point the other one. That is the one use case a picker cannot
+serve, and it is the plausible W8U use case.
+
+It is still *opt-in* rather than default, because the cost above is real and
+because until M3′ nobody has measured what two encoders plus two viewers does to
+a T23's WiFi uplink (§9.1).
+
+#### 7.6.5 Interaction and layout
+
+- **The toggle is created in JS, not authored in the HTML.** A
+  `btn btn-outline-secondary` with `<i class="bi bi-pip">`, inserted into the
+  card-header row next to `#ms-motion` / `#ms-talk` / `#ms-stats-toggle`, using
+  the same anchoring `motors-ui/preview-motors-settings.js:545-563` already
+  uses (*"anchor off `#ms-stats-toggle`'s parent (that row has no class of its
+  own)"*). This is strictly stronger than the `style="display:none"` pattern
+  `#ms-motion` uses: the shipped `preview.html` is not edited at all for the
+  button, so there is nothing to render differently.
+- **The inset is appended to `.ms-video-wrap`**, which is already
+  `position: relative` (`:67-74`).
+- **Pointer events are the real hazard.** That wrapper already stacks
+  `#motion-overlay` and the injected PTZ `#motor-overlay` / `.jst`, and the
+  page's `<style>` block (`:104-123`) goes out of its way to keep them
+  non-capturing so the video controls and the joystick both work — including the
+  note that `visibility:hidden` elements are never hit-tested, which is why the
+  joystick reveal uses opacity. The inset is the first element on that surface
+  that genuinely *needs* the pointer (it is draggable and clickable). It must
+  therefore take `pointer-events: auto` and a `z-index` above both overlays, and
+  the design must accept that the joystick is unreachable **under the inset's
+  own rectangle** — which is the argument for corner-snapping (below) rather
+  than free positioning, since a corner is the least likely place to want the
+  joystick.
+- **Corner snap, not free drag.** Drag with pointer events, then snap to the
+  nearest of four corners on release and persist that corner in
+  `localStorage["ms.pip.corner"]`. Free positioning survives neither a window
+  resize nor a rotation change without extra clamping code, and the PTZ
+  favourites popover next door is anchored rather than floating — so this also
+  matches the visual language rather than inventing a second one.
+- **Click the inset to swap.** The inset becomes the main pane's stream and vice
+  versa. One line on top of §7.6.1's picker, and it makes the inset its own
+  affordance.
+- **Degradation, explicit.** `video[pip].enabled == 0` → fall back to that
+  sensor's main stream; that one disabled too → the button is still created but
+  `disabled`, with a title saying sensor 1 has no enabled stream. Never a black
+  rectangle with no explanation.
+
+A working mockup of this — real Bootstrap 5.3.8, the real card/header markup,
+the real `.ms-video-wrap` rules, working drag + corner snap + swap — is
+`dev_notes/dual-sensor-preview-mockup.html`. It is a design artifact: no
+`/control`, no video, two labelled placeholder surfaces.
+
+### 7.7 Snapshot CGI — `/x/chN.jpg`
+
+The sketch's "needs a `ch2` sibling either way" is right but under-specified.
+`files/www/x/ch0.jpg` is one script installed under four names by
+`timps.mk:545-560` (`ch0/ch1/dl0/dl1`), plus two ONVIF symlinks. It derives its
+channel from `$0` and accepts a query override:
+
+```sh
+case "$SELF" in
+	ch1.* | dl1.* | image1.*) CHN=1 ;;
+esac
+…
+	case "$KV" in
+		chn=0) CHN=0 ;;
+		chn=1) CHN=1 ;;
+	esac
+```
+
+Both are **literal 0/1 whitelists**. A sensor-1 snapshot needs all of:
+
+1. a `ch2.* | dl2.* | image2.*) CHN=2 ;;` arm,
+2. `chn=2` added to the query whitelist,
+3. `ch2.jpg` / `dl2.jpg` added to `timps.mk`'s install loop **and** to
+   `timps.webui.json`'s `"cgi"` array,
+4. **nothing for `ch3`.** `/snapshot.jpg?chn=3` is served strictly when a query
+   string is present (`src/mp4/httpd.c:794`), tier 1 of `hub_pick_jpeg_src`
+   requires `video3.jpeg_enabled`, and §5.3.4/§5.6 deliberately leave that off.
+   A `ch3.jpg` would 502 on a correctly configured camera. Ship `ch2` only.
+
+`chn=2` resolving correctly is exactly what §5.6's `video2.jpeg_enabled = 1`
+default buys, which is worth stating because the two decisions look unrelated
+and are not.
+
+**Gate the install on the flag** (`ifeq ($(BR2_PACKAGE_TIMPS_MULTI_SENSOR),y)`
+around the extra names). The script is ~2.5 KB and would otherwise cost every
+8 MB single-sensor camera two more copies of a CGI that can only ever answer
+502 — small, but this fleet counts flash.
+
+ONVIF is **out of scope**: the symlinks (`onvif/image.cgi`, `image1.cgi`) map to
+ONVIF *profiles*, and what a second sensor means to `onvif_simple_server`'s
+profile list is a separate question from what it means to the WebUI.
+
+### 7.8 Nav and manifest — a zero-delta hazard the sketch missed
+
+`files/timps.webui.json` is a **static manifest installed on every camera**, and
+`assemble_plugins.py` bakes its `nav` array into every page at build time. Two
+consequences:
+
+- Adding `RTSP Stream 3` / `Stream 3 OSD` entries unconditionally would put
+  dead menu items on all ~12 single-sensor cameras. The new nav entries and the
+  new `"pages"`/`"cgi"` entries must be **conditional in `timps.mk`** (a second
+  manifest fragment, or a `sed` under `ifeq`), and that conditionality is itself
+  a thing to verify at M6 — a manifest diff on a flag-off build must be empty.
+- This is the strongest argument for §7.4's "selector inside the existing page"
+  over "a page per sensor" wherever a selector is possible: `streamer-image` and
+  `config-photosensing` need **no** manifest change at all, because the control
+  they gain does not exist unless `caps.sensors` says so. Only the encoder/OSD
+  pages, which §7.2 shows cannot take a selector cheaply, pay the manifest cost.
+
+### 7.9 Dependencies — what this section assumes and does not build
+
+Stated explicitly so none of it is silently assumed (§10 mirrors these):
+
+| # | dependency | needed by | status |
+|---|---|---|---|
+| D1 | `caps.sensors` in `GET /control` (§7.1) | everything here | **not implemented**; M5/M6 |
+| D2 | `hal_sensor_count()` — a runtime sensor count the daemon can report | D1 | **does not exist**; review §3 flagged the same gap for M2's own gate |
+| D3 | `sensor1` / `image1` objects in `GET /control` (§7.5) | `streamer-image` selector | **not implemented**; amendment to §2.3, needs acceptance |
+| D4 | `/events?stream=config` emitting `image1.*` spellings | `streamer-image` live sync | **not implemented** |
+| D5 | `daynight.sensor` config key + its field in the `daynight` JSON | `config-photosensing` | **not implemented**; §4.1 decided it, §10 lists it as not started |
+| D6 | `video2.jpeg_enabled = 1` | `/x/ch2.jpg`, PiP fallback to a JPEG source | **landed** (`config.c:375`, M2c) |
+| D7 | `/proc/jz/sensor` content under `-double` | any `streamer-sensor` change | **unknown**; dump at M3′ |
+| D8 | OSD group pool (§5.5) + `imp_osd_group_active(2)` | `streamer-osd2.html` | **not started** |
+
+None of D1–D5 are in scope for this task, and none of them are assumed to
+already work anywhere above: every consumer described here is written to gate on
+the *absence* of its dependency, which is the same rule the WebRTC work
+established and the only reason this is safe to design before the hardware
+exists.
 
 ---
 
@@ -1102,7 +1611,8 @@ refactor. See §9.
 | **M2** | the gate and the dimensioning: Kconfig, `USE_MULTI_SENSOR`, `ISP_HAS_MULTICAM`, `MS_MAX_SENSOR`, `sensorN.`/`imageN.` + aliases, the `ISPT()` macro layer, the encoder-channel decoupling (§5.4), OSD group pool | no | flag **off**: `timpsd` size delta 0, QA clean on an existing camera. flag **on** with `sensor_count=1`: still streams, and every derived channel/group number matches §5.3.4's flag-off column. |
 | **M4** | second sensor in the HAL: array-ised state, per-sensor init, `fs_kick_chn()`, video2/video3 on fs3/fs4 (enc chn 2/3), RTSP ch2/ch3 | yes | four streams; measured per-stream fps and CPU; the §5.3.4 channel/group table confirmed live, including the 9th-channel probe (risk 3) |
 | **M5** | per-sensor ISP tuning: `hal_isp_*_n()`, per-sensor `imageN.`; day/night gains `daynight.sensor` (§4.1) and the scrape→IMP cutover (§4.3), still one `dn_thread` | yes | selected sensor's automaton confirmed correct through a full dawn; `daynight.sensor=0` byte-identical to pre-M5 behavior |
-| **M6** | WebUI (§7), `timps.conf.example`, wiki, CHANGELOG | partly | — |
+| **M6a** | WebUI, gate + no-hardware half (§7): `caps.sensors` (§7.1), `a/timps-sensor-select.js` (§7.4), the `sensorN`/`imageN` GET shape (§7.5), `streamer-image` selector, `config-photosensing`'s `daynight.sensor` field, `preview.html`'s stream picker (§7.6.1), `/x/ch2.jpg` (§7.7) | no | flag **off**: `GET /control` key-for-key identical (the M1 510-key harness), `timps.webui.json` diff empty, and every page renders unchanged on cam-garage. flag **on**, `count:1`: same. |
+| **M6b** | WebUI, hardware half: `preview.html` PiP inset (§7.6.2-7.6.5), `streamer-main2`/`substream2`/`osd2` pages + manifest (§7.2, §7.8), `timps.conf.example`, wiki, CHANGELOG | yes | inset holds ≥ 10 min on the real second sensor; measured uplink delta vs. §7.6.3's predicted +17 %; connection-pool behaviour with two tabs open |
 
 Buildable and fully testable **without** the camera: M0, M1, M2. That is the
 majority of the config and plumbing risk, and all of it can be regression-tested
@@ -1292,7 +1802,18 @@ symbols it references are defined in the shipped `dl/ingenic-lib/.../T23/lib/
 - **Privacy masks on sensor 1** (review §3): same OSD group, same open
   question, and safety-relevant.
 - **QA harness** (review §3): `timps-qa.sh` knows video0/video1 only.
-- WebUI (§7), `timps.conf.example`, wiki, CHANGELOG.
+- **WebUI** (§7) - designed in full 2026-09-15 evening, none of it built.
+  Nothing in `package/timps/files/www/` has been touched; the only artifact is
+  `dev_notes/dual-sensor-preview-mockup.html`, a standalone mockup of §7.6's
+  `preview.html` decision (picker + opt-in PiP inset) that is wired to nothing.
+  §7.9 lists the eight dependencies; D1 (`caps.sensors` in `GET /control`),
+  D2 (a runtime sensor count for it to report), D3 (`sensor1`/`image1` GET
+  objects - an amendment to §2.3 that still needs accepting), D4 (`image1.*`
+  spellings on the config SSE) and D5 (`daynight.sensor`) are all **not
+  implemented**, and every consumer in §7 is specified to gate on their
+  absence rather than assume them. M6a is buildable without the W8U; M6b is
+  not.
+- `timps.conf.example`, wiki, CHANGELOG.
 
 ### First things to check when the W8U arrives
 

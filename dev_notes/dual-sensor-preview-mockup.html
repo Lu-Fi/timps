@@ -1,0 +1,654 @@
+<!DOCTYPE html>
+<!--
+  dual-sensor-preview-mockup.html - DESIGN ARTIFACT, NOT SHIPPING CODE.
+
+  A standalone mockup of the decision in DUAL_SENSOR_DESIGN_2026-09-15.md §7.6:
+  preview.html's second-sensor UI = a stream PICKER (always) plus an opt-in
+  picture-in-picture INSET (default off, other sensor's substream).
+
+  It exists so the look and the interaction can be argued about before the
+  Jooan W8-U is on the bench. It is wired to nothing: no /control, no
+  /stream.mp4, no token, no player. The two video surfaces are labelled
+  placeholder boxes.
+
+  What IS faithful to the real page, on purpose:
+    - Bootstrap 5.3.8 + bootstrap-icons 1.13.1 from the same CDN URLs, with
+      the same integrity hash, and data-bs-theme="dark" on <html>
+    - Montserrat, and the :root / .card-header / .card-body overrides copied
+      from package/thingino-webui/files/www/a/main.css
+    - the Live View card header markup copied from preview.html:150-231
+      (caption block, #ms-stream, #ms-latency, #ms-motion, #ms-talk,
+      #ms-stats-toggle, #ms-connect) and its .ms-video-wrap / #ms-canvas /
+      #motion-overlay / .ms-hint style block copied from preview.html:66-140
+    - the JS-created toggle button following motors-ui/preview-motors-settings.js
+      :545-563 (anchor off #ms-stats-toggle's parent, btn btn-outline-secondary,
+      a bi icon, insertBefore #ms-connect) rather than editing the markup
+
+  What is mockup-only: the grey "Mockup controls" strip at the top. It fakes
+  the caps.sensors object so the single-sensor case can be SEEN - flip it to
+  "single-sensor" and every control below reverts to exactly what a camera in
+  the fleet renders today, which is the claim §7 is making.
+
+  Open it with file:// - it needs no server.
+-->
+<html lang="en" data-bs-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>timps · dual-sensor preview mockup</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Montserrat:wght@400;500;600;700&display=swap">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css"
+    integrity="sha384-sRIl4kxILFvY47J16cr9ZwB07vP4J8+LH7qKQnuqkuIAvNWLzeN8tE5YBujZqJLB" crossorigin="anonymous">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.13.1/font/bootstrap-icons.min.css">
+  <style>
+    /* ---- copied from thingino-webui a/main.css (the parts that shape this
+           card; the rest of that 1000-line file is nav/forms/tables) ---- */
+    :root {
+      --bs-font-sans-serif: "Montserrat", sans-serif;
+      --bs-btn-active-color: #ffffff;
+      --bs-btn-active-bg: #008040;
+      --bs-btn-active-border-color: #00a050;
+    }
+    .card-header { position: relative; }
+    .card-header h2.card-title {
+      color: darkorange;
+      font-size: x-large;
+      margin-bottom: 0;
+      margin-top: 0.5rem;
+    }
+    .card-header h2 + small { color: lightgray; }
+    .card-header .btn {
+      --bs-btn-padding-y: 0.2rem;
+      --bs-btn-padding-x: 0.4rem;
+      --bs-btn-font-size: 0.75rem;
+    }
+    .card-body { position: relative; }
+
+    /* ---- copied verbatim from preview.html:66-140 ---- */
+    .ms-video-wrap {
+      position: relative;
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: #000;
+      border-radius: 0.5rem;
+      overflow: hidden;
+    }
+    .ms-video-wrap video {
+      width: 100%;
+      height: 100%;
+      background: #000;
+      object-fit: contain;
+    }
+    #ms-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      background: #000;
+      object-fit: contain;
+      pointer-events: none;
+    }
+    #motion-overlay {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+    .ms-hint {
+      font-size: 0.875rem;
+      color: var(--bs-secondary-color);
+    }
+
+    /* ---- NEW: the PiP inset (§7.6.5). Everything below is the proposal. ----
+       pointer-events:auto + a z-index above #motion-overlay and the injected
+       PTZ #motor-overlay: this is the first element on that surface that
+       genuinely needs the pointer, and §7.6.5 accepts that the joystick is
+       unreachable under the inset's own rectangle - which is the argument for
+       snapping to a corner instead of free positioning. */
+    .ms-pip {
+      position: absolute;
+      width: 30%;
+      min-width: 132px;
+      max-width: 320px;
+      aspect-ratio: 16 / 9;
+      background: #000;
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      border-radius: var(--bs-border-radius);
+      box-shadow: 0 0.5rem 1rem rgba(0, 0, 0, 0.6);
+      overflow: hidden;
+      cursor: grab;
+      pointer-events: auto;
+      z-index: 5;
+      transition: inset 0.15s ease-out;
+    }
+    .ms-pip.is-dragging {
+      cursor: grabbing;
+      transition: none;
+      box-shadow: 0 0.75rem 1.5rem rgba(0, 0, 0, 0.75);
+      outline: 2px solid var(--bs-primary);
+    }
+    .ms-pip:hover .ms-pip-actions { opacity: 1; }
+    .ms-pip-actions {
+      position: absolute;
+      top: 0.25rem;
+      right: 0.25rem;
+      display: flex;
+      gap: 0.25rem;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+    .ms-pip-actions .btn {
+      --bs-btn-padding-y: 0.05rem;
+      --bs-btn-padding-x: 0.25rem;
+      --bs-btn-font-size: 0.7rem;
+      line-height: 1.1;
+    }
+    .ms-pip-label {
+      position: absolute;
+      left: 0;
+      bottom: 0;
+      right: 0;
+      padding: 0.15rem 0.4rem;
+      font-size: 0.7rem;
+      line-height: 1.2;
+      color: #fff;
+      background: rgba(0, 0, 0, 0.55);
+      pointer-events: none;
+    }
+    /* "no enabled stream on the other sensor" - §7.6.5's degradation rule:
+       never a black rectangle with no explanation */
+    .ms-pip-empty {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      padding: 0.5rem;
+      text-align: center;
+      font-size: 0.72rem;
+      color: var(--bs-secondary-color);
+    }
+
+    /* ---- placeholder video surfaces (mockup-only; the real page has a
+           <video> and a <canvas> here) ---- */
+    .ph {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 0.35rem;
+      font-weight: 600;
+      letter-spacing: 0.04em;
+      text-shadow: 0 1px 3px rgba(0, 0, 0, 0.8);
+      user-select: none;
+    }
+    .ph-s0 {
+      background:
+        repeating-linear-gradient(45deg, rgba(255,255,255,.035) 0 12px, transparent 12px 24px),
+        linear-gradient(135deg, #123 0%, #24506b 55%, #2f6f8f 100%);
+      color: #cfe9f7;
+    }
+    .ph-s1 {
+      background:
+        repeating-linear-gradient(45deg, rgba(255,255,255,.035) 0 12px, transparent 12px 24px),
+        linear-gradient(135deg, #2a1a10 0%, #6b4524 55%, #8f5f2f 100%);
+      color: #f7e2cf;
+    }
+    .ph .ph-title { font-size: clamp(0.9rem, 2.4vw, 1.5rem); }
+    .ph .ph-sub {
+      font-size: clamp(0.62rem, 1.2vw, 0.82rem);
+      font-weight: 400;
+      opacity: 0.85;
+    }
+    .ms-pip .ph .ph-title { font-size: 0.78rem; }
+    .ms-pip .ph .ph-sub { display: none; }
+
+    /* ---- mockup-only chrome ---- */
+    .mock-bar {
+      border-bottom: 1px solid var(--bs-border-color);
+      background: var(--bs-tertiary-bg);
+    }
+    .mock-bar code { font-size: 0.78rem; }
+    /* width:auto on a <select> sizes it to its longest option, which at 375px
+       gave the whole document a horizontal scrollbar - the same failure
+       package/timps/files/www/a/timps.css documents for the brand bar. */
+    .mock-bar select { min-width: 0; max-width: 100%; }
+    .mock-bar .mock-caps-row { min-width: 0; flex-wrap: wrap; }
+  </style>
+</head>
+
+<body>
+
+<!-- ============ MOCKUP-ONLY: not part of preview.html ============ -->
+<div class="mock-bar py-2 mb-3">
+  <div class="container">
+    <div class="d-flex flex-wrap align-items-center gap-3">
+      <span class="badge text-bg-warning">mockup</span>
+      <small class="text-secondary">
+        <code>dev_notes/dual-sensor-preview-mockup.html</code> &middot; design artifact for
+        <code>DUAL_SENSOR_DESIGN_2026-09-15.md</code> &sect;7.6. Wired to nothing.
+      </small>
+      <div class="ms-auto d-flex align-items-center gap-2 mock-caps-row">
+        <label class="form-label mb-0 small text-secondary" for="mock-caps">Fake <code>caps.sensors</code></label>
+        <select id="mock-caps" class="form-select form-select-sm">
+          <option value="dual" selected>count 2 &middot; dual-sensor W8U</option>
+          <option value="one">count 1 &middot; flag-on build, one sensor found</option>
+          <option value="absent">key absent &middot; today's fleet</option>
+        </select>
+      </div>
+    </div>
+    <div class="mt-2"><small id="mock-explain" class="text-secondary"></small></div>
+  </div>
+</div>
+<!-- ============ /MOCKUP-ONLY ============ -->
+
+<main class="pb-4">
+  <div class="container" style="min-height:80vh">
+
+    <section>
+      <!-- markup below copied from preview.html:150-231 -->
+      <div class="card mb-3">
+        <div class="card-header d-flex flex-wrap justify-content-between gap-2">
+          <div style="flex:1 1 0%; min-width:0;">
+            <h2 class="card-title mb-0">timps Live View</h2>
+            <small id="ms-format-desc">Native fMP4 player (no iframe), stream from port 8880</small>
+          </div>
+          <div class="d-flex flex-wrap align-self-end gap-2">
+            <select class="form-select form-select-sm" id="ms-stream" title="Select stream" style="width:auto; min-width: 140px;">
+              <option value="0">Main stream</option>
+              <option value="1">Sub stream</option>
+            </select>
+            <select class="form-select form-select-sm" id="ms-latency" title="Target buffer margin behind live (lower = less delay, more risk of stalls on a weak link)" style="width:auto;">
+              <option value="rt">Real-time (no audio)</option>
+              <option value="whep">WebRTC (WHEP)</option>
+              <option value="0">No buffer (0s)</option>
+              <option value="0.5">Low latency (0.5s)</option>
+              <option value="1.5" selected>Balanced (1.5s)</option>
+              <option value="3">Stable (3s)</option>
+            </select>
+            <button type="button" class="btn btn-outline-secondary" id="ms-motion" title="Motion grid overlay">
+              <i class="bi bi-grid-3x3"></i>
+            </button>
+            <button type="button" class="btn btn-outline-secondary" id="ms-talk" title="Talk to the camera (microphone -&gt; camera speaker)">
+              <i class="bi bi-mic"></i>
+            </button>
+            <button type="button" class="btn btn-outline-secondary" id="ms-stats-toggle" title="Stream stats">
+              <i class="bi bi-graph-up"></i>
+            </button>
+            <button type="button" class="btn btn-outline-secondary" id="ms-connect" title="Connect/Disconnect stream">
+              <i class="bi bi-stop-circle"></i> Disconnect
+            </button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="ms-video-wrap" id="ms-wrap">
+            <!-- the real page has <video id="ms-video"> + <canvas id="ms-canvas">
+                 + <canvas id="motion-overlay"> here; this is a stand-in -->
+            <div class="ph ph-s0" id="ph-main">
+              <div class="ph-title">Sensor 0 &middot; Main</div>
+              <div class="ph-sub">1920&times;1080 &middot; 15 fps &middot; 3000 kb/s &middot; chn0</div>
+            </div>
+            <canvas id="motion-overlay" style="display:none" aria-hidden="true"></canvas>
+            <!-- PLUGIN_PREVIEW_BODY marker sits here on the real page; the PTZ
+                 joystick overlay is injected at build time. The inset is
+                 appended after it by JS, which is why z-index matters. -->
+          </div>
+          <div class="ms-hint mt-2" id="ms-status">Buffered fMP4, 1.5s behind live &middot; 1920x1080 &middot; 15.0 fps</div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="card mb-3">
+        <div class="card-header">
+          <h2 class="card-title mb-0">What this mockup is claiming</h2>
+          <small>&sect;7.6 of the design doc, in the smallest number of words</small>
+        </div>
+        <div class="card-body">
+          <ul class="mb-0 small">
+            <li><strong>The picker always ships.</strong> Even with the inset on, something has to
+              say which sensor is the main pane &mdash; so the picker is the substrate, not the
+              alternative. On a single-sensor camera its two <code>&lt;option&gt;</code>s are left
+              exactly as authored and no DOM write happens at all.</li>
+            <li><strong>The inset is deliberately less than the main pane.</strong> Other sensor,
+              <em>sub</em> stream, buffered MSE only, muted, no watchdog, no WHEP, and it shares no
+              variable with the main player &mdash; so it cannot wedge it.</li>
+            <li><strong>Cost, from <code>src/config.c:341-376</code>:</strong> +512 kb/s on a
+              3000 kb/s main pane (<strong>+17 %</strong> uplink) and 640&times;360&times;15 =
+              3.46 Mpx/s on top of 31.1 Mpx/s (<strong>+11 %</strong> decode). The cost that is
+              <em>not</em> negligible is the third long-lived connection to port 8880 &mdash; see
+              <code>preview.html:795-805</code>, a measured hang &mdash; which is why the inset is
+              default-off and torn down whenever the tab is hidden.</li>
+            <li><strong>And it costs the camera, not just the client.</strong> timps encodes
+              on demand: <code>hal_ingenic.c:2091</code> gates
+              <code>IMP_Encoder_StartRecvPic</code> on
+              <code>vc-&gt;active || hub_active(vc-&gt;si)</code>, and <code>:440-445</code>
+              records that leaving a framesource enabled with no clients was
+              <strong>~19 % idle CPU</strong>. Opening the inset wakes sensor 1's substream
+              framesource and encoder that were otherwise stopped &mdash; on a T23 whose
+              dual-sensor headroom &sect;9.1 says nobody has measured.</li>
+            <li><strong>Drag then corner-snap</strong>, not free positioning: a corner survives a
+              resize, and it is the least likely place to want the PTZ joystick that lives under
+              this same surface.</li>
+            <li><strong>Click the inset to swap.</strong> It is its own affordance.</li>
+          </ul>
+        </div>
+      </div>
+    </section>
+
+  </div>
+</main>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js"
+  integrity="sha384-FKyoEForCGlyvwx9Hj09JcYn3nv7wiPVlz7YYwJrWVcXK/BmnVDxM+D2scQbITxI" crossorigin="anonymous"></script>
+<script>
+(function () {
+  "use strict";
+
+  /* ------------------------------------------------------------------
+   * Fake GET /control. On the real page this is controlSnapshot()'s
+   * cached answer. Only the parts §7 reads are present.
+   * ------------------------------------------------------------------ */
+  var CAPS_VARIANTS = {
+    dual:   { count: 2, max: 2, streams_per_sensor: 2 },
+    one:    { count: 1, max: 2, streams_per_sensor: 2 },
+    absent: null
+  };
+  var CONTROL = {
+    caps: { sensors: CAPS_VARIANTS.dual, http_max_clients: 16 },
+    sensor:  { model: "sc2336ps0" },
+    sensor1: { model: "sc2336ps1" },
+    video: {
+      "0": { enabled: 1, width: 1920, height: 1080, fps: 15, bitrate: 3000, codec: "h264" },
+      "1": { enabled: 1, width:  640, height:  360, fps: 15, bitrate:  512, codec: "h264" },
+      "2": { enabled: 1, width: 1920, height: 1080, fps: 15, bitrate: 3000, codec: "h264" },
+      "3": { enabled: 1, width:  640, height:  360, fps: 15, bitrate:  512, codec: "h264" }
+    }
+  };
+
+  var wrap = document.getElementById("ms-wrap");
+  var streamSelect = document.getElementById("ms-stream");
+  var status = document.getElementById("ms-status");
+  var phMain = document.getElementById("ph-main");
+  var connectBtn = document.getElementById("ms-connect");
+  var statsBtn = document.getElementById("ms-stats-toggle");
+
+  /* Storage is wrapped because an opaque origin (file:// in some browsers, a
+   * data: URL in an embedded preview pane) makes localStorage THROW on access,
+   * not return null - and an unguarded read at module scope takes the whole
+   * IIFE down before anything renders. The real preview.html reads
+   * localStorage/sessionStorage unguarded in several places (:349, :372, :459,
+   * :690); it gets away with it because it is always served over http://, but
+   * the same guard would not hurt there either. */
+  function lsGet(k) { try { return localStorage.getItem(k); } catch (e) { return null; } }
+  function lsSet(k, v) { try { localStorage.setItem(k, v); } catch (e) { /* ignore */ } }
+  function ssSet(k, v) { try { sessionStorage.setItem(k, v); } catch (e) { /* ignore */ } }
+
+  var pipBtn = null;      // created only when caps says so (§7.6.5)
+  var pip = null;         // the inset element, ditto
+  var pipOn = false;
+  var corner = lsGet("ms.pip.corner") || "br";
+
+  /* ---- §7.1's derived helpers ------------------------------------- */
+  function sensorsCaps() {
+    var c = CONTROL.caps && CONTROL.caps.sensors;
+    return (c && c.count > 1) ? c : null;   // the ONE gate, everywhere
+  }
+  function perSensor() { var c = sensorsCaps(); return c ? c.streams_per_sensor : 2; }
+  function sensorOf(chn) { return Math.floor(chn / perSensor()); }
+  function roleOf(chn) { return chn % perSensor(); }
+  function chnFor(s, role) { return s * perSensor() + role; }
+  function sensorModel(s) {
+    var o = s === 0 ? CONTROL.sensor : CONTROL["sensor" + s];
+    return (o && o.model) || "";
+  }
+  function streamCount() {
+    var c = sensorsCaps();
+    return c ? c.count * c.streams_per_sensor : 2;
+  }
+
+  /* selectedChn(): replaces the three
+   *   streamSelect.value === "1" ? "1" : "0"
+   * reads at preview.html:847 / :1067 / :1836. With the static two-option
+   * select this is total-equivalent to that ternary - which is the property
+   * the review should check rather than take on faith. */
+  function selectedChn() {
+    var v = parseInt(streamSelect.value, 10);
+    return (v >= 0 && v < streamCount()) ? v : 0;
+  }
+
+  function labelFor(chn, withChn) {
+    var c = sensorsCaps();
+    var role = roleOf(chn) === 0 ? "Main" : "Sub";
+    if (!c) return (chn === 0 ? "Main stream" : "Sub stream");
+    return "Sensor " + sensorOf(chn) + " · " + role + (withChn ? " (chn" + chn + ")" : "");
+  }
+  function dimsFor(chn) {
+    var v = CONTROL.video[String(chn)];
+    if (!v) return "";
+    return v.width + "×" + v.height + " · " + v.fps + " fps · " +
+           v.bitrate + " kb/s · chn" + chn;
+  }
+
+  /* ---- §7.6.1 the picker ------------------------------------------ */
+  function buildPicker() {
+    var c = sensorsCaps();
+    if (!c) return;                      // single-sensor: NO DOM write at all
+    var want = selectedChn();
+    streamSelect.innerHTML = "";
+    for (var chn = 0; chn < streamCount(); chn++) {
+      var v = CONTROL.video[String(chn)];
+      var o = document.createElement("option");
+      o.value = String(chn);
+      o.textContent = labelFor(chn, false);
+      o.disabled = !(v && v.enabled);
+      streamSelect.appendChild(o);
+    }
+    streamSelect.value = String(want);
+    streamSelect.style.minWidth = "170px";
+  }
+
+  /* ---- §7.6.5 the inset ------------------------------------------- */
+  var PIP_BTN_TITLE = "Picture-in-picture: show the other sensor";
+
+  function pipChn() {
+    // other sensor, SUB stream; fall back to its main; else -1
+    var other = sensorOf(selectedChn()) === 0 ? 1 : 0;
+    var sub = chnFor(other, 1), main = chnFor(other, 0);
+    if (CONTROL.video[String(sub)] && CONTROL.video[String(sub)].enabled) return sub;
+    if (CONTROL.video[String(main)] && CONTROL.video[String(main)].enabled) return main;
+    return -1;
+  }
+
+  function makePipButton() {
+    // anchoring copied from motors-ui/preview-motors-settings.js:545-563:
+    // that row has no class of its own, so anchor off a known button's parent
+    var row = (statsBtn && statsBtn.parentNode) || (connectBtn && connectBtn.parentNode);
+    if (!row) return null;
+    var b = document.createElement("button");
+    b.type = "button";
+    b.className = "btn btn-outline-secondary";
+    b.id = "ms-pip-toggle";
+    b.title = PIP_BTN_TITLE;
+    b.setAttribute("aria-label", PIP_BTN_TITLE);
+    b.innerHTML = '<i class="bi bi-pip"></i>';
+    if (connectBtn && connectBtn.parentNode === row) row.insertBefore(b, connectBtn);
+    else row.appendChild(b);
+    b.addEventListener("click", function () { setPip(!pipOn); });
+    return b;
+  }
+
+  function applyCorner() {
+    if (!pip) return;
+    var pad = "0.75rem";
+    pip.style.top = (corner === "tl" || corner === "tr") ? pad : "auto";
+    pip.style.bottom = (corner === "bl" || corner === "br") ? pad : "auto";
+    pip.style.left = (corner === "tl" || corner === "bl") ? pad : "auto";
+    pip.style.right = (corner === "tr" || corner === "br") ? pad : "auto";
+  }
+
+  function renderPip() {
+    if (!pip) return;
+    var chn = pipChn();
+    if (chn < 0) {
+      pip.innerHTML = '<div class="ms-pip-empty">Sensor ' +
+        (sensorOf(selectedChn()) === 0 ? 1 : 0) +
+        ' has no enabled stream</div>';
+      return;
+    }
+    var cls = sensorOf(chn) === 0 ? "ph-s0" : "ph-s1";
+    pip.innerHTML =
+      '<div class="ph ' + cls + '"><div class="ph-title">' + labelFor(chn, false) + '</div></div>' +
+      '<div class="ms-pip-actions">' +
+      '  <button type="button" class="btn btn-outline-light" data-act="swap" title="Make this the main view"><i class="bi bi-arrow-left-right"></i></button>' +
+      '  <button type="button" class="btn btn-outline-light" data-act="close" title="Hide the inset"><i class="bi bi-x-lg"></i></button>' +
+      "</div>" +
+      '<div class="ms-pip-label">' + labelFor(chn, true) + "</div>";
+  }
+
+  function setPip(on) {
+    pipOn = !!on && !!sensorsCaps();
+    if (pipBtn) pipBtn.classList.toggle("active", pipOn);
+    if (pipOn && !pip) {
+      pip = document.createElement("div");
+      pip.className = "ms-pip";
+      pip.id = "ms-pip";
+      wrap.appendChild(pip);
+      applyCorner();
+      wirePipPointer();
+    }
+    if (pip) pip.style.display = pipOn ? "" : "none";
+    if (pipOn) renderPip();
+    render();
+  }
+
+  /* drag, then snap to the nearest corner on release (§7.6.5) */
+  function wirePipPointer() {
+    var dragging = false, moved = false, sx = 0, sy = 0, box = null;
+
+    pip.addEventListener("pointerdown", function (e) {
+      if (e.target.closest("[data-act]")) return;    // the action buttons
+      dragging = true; moved = false;
+      sx = e.clientX; sy = e.clientY;
+      box = pip.getBoundingClientRect();
+      pip.classList.add("is-dragging");
+      pip.setPointerCapture(e.pointerId);
+      e.preventDefault();
+    });
+
+    pip.addEventListener("pointermove", function (e) {
+      if (!dragging) return;
+      var dx = e.clientX - sx, dy = e.clientY - sy;
+      if (Math.abs(dx) > 3 || Math.abs(dy) > 3) moved = true;
+      var w = wrap.getBoundingClientRect();
+      // free during the drag; clamped to the wrapper so it can never leave
+      var left = Math.min(Math.max(box.left - w.left + dx, 0), w.width - box.width);
+      var top = Math.min(Math.max(box.top - w.top + dy, 0), w.height - box.height);
+      pip.style.left = left + "px";
+      pip.style.top = top + "px";
+      pip.style.right = "auto";
+      pip.style.bottom = "auto";
+    });
+
+    function end(e) {
+      if (!dragging) return;
+      dragging = false;
+      pip.classList.remove("is-dragging");
+      try { pip.releasePointerCapture(e.pointerId); } catch (err) { /* ignore */ }
+      if (!moved) { swap(); return; }                // a click, not a drag
+      var w = wrap.getBoundingClientRect(), p = pip.getBoundingClientRect();
+      var cx = (p.left + p.width / 2) - w.left, cy = (p.top + p.height / 2) - w.top;
+      corner = (cy < w.height / 2 ? "t" : "b") + (cx < w.width / 2 ? "l" : "r");
+      lsSet("ms.pip.corner", corner);
+      pip.style.left = pip.style.top = pip.style.right = pip.style.bottom = "";
+      applyCorner();
+    }
+    pip.addEventListener("pointerup", end);
+    pip.addEventListener("pointercancel", end);
+
+    pip.addEventListener("click", function (e) {
+      var act = e.target.closest("[data-act]");
+      if (!act) return;
+      e.stopPropagation();
+      if (act.dataset.act === "swap") swap();
+      else setPip(false);
+    });
+  }
+
+  /* click the inset = it becomes the main pane, keeping the role (§7.6.5) */
+  function swap() {
+    var chn = pipChn();
+    if (chn < 0) return;
+    var role = roleOf(selectedChn());
+    var target = chnFor(sensorOf(chn), role);
+    if (!(CONTROL.video[String(target)] && CONTROL.video[String(target)].enabled)) target = chn;
+    streamSelect.value = String(target);
+    onStreamChange();
+  }
+
+  /* ---- render --------------------------------------------------- */
+  function render() {
+    var chn = selectedChn();
+    phMain.className = "ph " + (sensorOf(chn) === 0 ? "ph-s0" : "ph-s1");
+    phMain.querySelector(".ph-title").textContent = labelFor(chn, false);
+    phMain.querySelector(".ph-sub").textContent = dimsFor(chn);
+    var extra = "";
+    if (pipOn && pipChn() >= 0) {
+      var pv = CONTROL.video[String(pipChn())];
+      extra = " · inset " + labelFor(pipChn(), true) + " (+" + pv.bitrate + " kb/s)";
+    }
+    status.textContent = "Buffered fMP4, 1.5s behind live · " + dimsFor(chn) + extra;
+    if (pipOn) renderPip();
+  }
+
+  function onStreamChange() {
+    ssSet("ms.stream", streamSelect.value || "0");
+    render();
+  }
+  streamSelect.addEventListener("change", onStreamChange);
+
+  /* ---- boot / re-boot under a different fake caps ------------------ */
+  var EXPLAIN = {
+    dual: "caps.sensors = {count:2,max:2,streams_per_sensor:2}. The picker is rebuilt to four " +
+          "entries and the PiP toggle is created. Drag the inset, drop it anywhere, click it to swap.",
+    one:  "caps.sensors = {count:1,max:2,...} - a flag-on build that found one sensor (M2's own " +
+          "acceptance gate). count > 1 is false everywhere, so this renders exactly like the fleet " +
+          "does today. That is the point of splitting count from max.",
+    absent: "caps.sensors absent - every camera in the fleet today. The picker keeps its two " +
+          "authored options untouched, no PiP button is created, and not one line of the " +
+          "dual-sensor code runs."
+  };
+
+  function boot(variant) {
+    CONTROL.caps.sensors = CAPS_VARIANTS[variant];
+    // tear down anything a previous variant created (mockup-only; the real
+    // page reads caps once at boot and never changes it)
+    if (pip) { pip.remove(); pip = null; }
+    if (pipBtn) { pipBtn.remove(); pipBtn = null; }
+    pipOn = false;
+    streamSelect.innerHTML =
+      '<option value="0">Main stream</option><option value="1">Sub stream</option>';
+    streamSelect.style.minWidth = "140px";
+
+    if (sensorsCaps()) {
+      buildPicker();
+      pipBtn = makePipButton();
+      setPip(true);   // mockup-only: on the real page the default is OFF (§7.6.2)
+    }
+    document.getElementById("mock-explain").textContent = EXPLAIN[variant];
+    render();
+  }
+
+  document.getElementById("mock-caps").addEventListener("change", function (e) {
+    boot(e.target.value);
+  });
+
+  boot("dual");
+})();
+</script>
+</body>
+</html>
