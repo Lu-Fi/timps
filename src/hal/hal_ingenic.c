@@ -199,10 +199,13 @@ typedef IMPEncoderCHNStat IMPEncoderChnStat;
 #define MS_JPEG_WATCHDOG_MAX_RECOVERIES 5
 #endif
 
-static IMPSensorInfo    g_sensor;
-static const ms_config *g_hcfg;
-static int              g_isp_sensor_w, g_isp_sensor_h;  /* real sensor res from
+static IMPSensorInfo    g_sensor[MS_MAX_SENSOR];
+static const ms_config *g_hcfg;          /* the whole config: still one object */
+static int              g_isp_sensor_w[MS_MAX_SENSOR],
+                        g_isp_sensor_h[MS_MAX_SENSOR];   /* real sensor res from
                                                           * the ISP (0 = unknown) */
+/* Which sensor a framesource channel belongs to: sensor i owns 3i..3i+2. */
+#define MS_SENSOR_OF_FS_CHN(chn) ((chn) / 3)
 #ifdef ROT_HAS_SW_90
 /* Software OSD state for the unbound SW-rotate path (Batch 5b). There is no
  * IMP_OSD on an unbound stream (nothing to splice a hardware OSD group into),
@@ -466,7 +469,7 @@ static int g_fs_enabled[MS_FS_MAXCHN];
  * build, USE_CONTROL or not. isp_apply_image() is defined further down in the
  * ISP section; forward-declared so fs_use()'s chn0 relatch can reach it. */
 static pthread_mutex_t g_isp_lock = PTHREAD_MUTEX_INITIALIZER;
-static int isp_apply_image(const char *k);
+static int isp_apply_image(int si, const char *k);
 /* AE integration-time cap supervisor (see ae_it_max_on_frame): fs_use()'s chn0
  * enable edge re-arms it, so the value the edge is known to reset is re-written
  * as soon as the caller's frame loop is actually delivering. */
@@ -521,10 +524,11 @@ static void fs_use(int chn)
      * then the 0/0/day defaults are harmless). isp_apply_image() no-ops on SoCs
      * where these keys are unwired. */
     if (just_enabled && fs_chn_is_direct(chn) && g_hcfg) {
+        int si = chn / 3;                 /* the sensor this channel belongs to */
         pthread_mutex_lock(&g_isp_lock);
-        isp_apply_image("hflip");
-        isp_apply_image("vflip");
-        isp_apply_image("running_mode");
+        isp_apply_image(si, "hflip");
+        isp_apply_image(si, "vflip");
+        isp_apply_image(si, "running_mode");
         pthread_mutex_unlock(&g_isp_lock);
         /* image.ae_it_max_us is reset by this same edge but must NOT be written
          * here: the enable edge is before any frame has been delivered, and the
@@ -712,19 +716,34 @@ static void motion_sync(const ms_config *cfg)
 }
 
 /* ================= system / sensor / ISP ================= */
-/* Apply one image.* (ISP tuning) key from the current config (g_hcfg->image).
+/* One ISP tuning call, dispatched to sensor si.
+ *
+ * With the flag off this expands to exactly the call that was written here
+ * before, with the index compiled away - which is what makes "no change when
+ * disabled" a property of the expansion rather than of a review. With it on it
+ * becomes the MultiCamera twin; all 30 of the tunings the classic path uses
+ * have one (verified by nm -D on the shipped T23 libimp.so).
+ *
+ * UNVERIFIED ON HARDWARE for si != 0: no dual-sensor board has run this. */
+#ifdef ISP_HAS_MULTICAM
+#define ISPT(fn, si, ...) IMP_ISP_MultiCamera_Tuning_##fn((IMPVI_NUM)(si), __VA_ARGS__)
+#else
+#define ISPT(fn, si, ...) ((void)(si), IMP_ISP_Tuning_##fn(__VA_ARGS__))
+#endif
+
+/* Apply one image.* (ISP tuning) key from sensor si's config block.
  * Returns 1 when the key is wired on this PLATFORM's IMP SDK, 0 when the SoC
  * cannot do it (the value is still parsed/persisted by the config layer).
  * The per-SoC guards come from ../isp_caps.h - keep them in sync with the
  * caps.image list control.c reports. Callers serialize ISP access (g_isp_lock
  * for live control; init is single-threaded). */
-static int isp_apply_image(const char *k)
+static int isp_apply_image(int si, const char *k)
 {
 #if defined(NO_TUNINGS)
-    (void)k;
+    (void)si; (void)k;
     return 1;
 #else
-    const ms_image_cfg *im = &g_hcfg->image[0];
+    const ms_image_cfg *im = &g_hcfg->image[si];
 #ifdef ISP_NEW_TUNING_API           /* T40/T41: IMPVI_NUM + pointer args */
     if (!strcmp(k,"brightness")){ unsigned char u=(unsigned char)im->brightness;
         IMP_ISP_Tuning_SetBrightness(IMPVI_MAIN,&u); return 1; }
@@ -773,24 +792,24 @@ static int isp_apply_image(const char *k)
         IMP_ISP_Tuning_SetAntiFlickerAttr(IMPVI_MAIN,&fl); return 1;
     }
 #else                               /* classic API (T10..T31, C100) */
-    if (!strcmp(k,"brightness")){ IMP_ISP_Tuning_SetBrightness((unsigned char)im->brightness); return 1; }
-    if (!strcmp(k,"contrast")){   IMP_ISP_Tuning_SetContrast((unsigned char)im->contrast);     return 1; }
-    if (!strcmp(k,"saturation")){ IMP_ISP_Tuning_SetSaturation((unsigned char)im->saturation); return 1; }
-    if (!strcmp(k,"sharpness")){  IMP_ISP_Tuning_SetSharpness((unsigned char)im->sharpness);   return 1; }
+    if (!strcmp(k,"brightness")){ ISPT(SetBrightness, si, (unsigned char)im->brightness); return 1; }
+    if (!strcmp(k,"contrast")){   ISPT(SetContrast, si, (unsigned char)im->contrast);     return 1; }
+    if (!strcmp(k,"saturation")){ ISPT(SetSaturation, si, (unsigned char)im->saturation); return 1; }
+    if (!strcmp(k,"sharpness")){  ISPT(SetSharpness, si, (unsigned char)im->sharpness);   return 1; }
     if (!strcmp(k,"hue")){
 #ifdef ISP_HAS_HUE
-        IMP_ISP_Tuning_SetBcshHue((unsigned char)im->hue); return 1;
+        ISPT(SetBcshHue, si, (unsigned char)im->hue); return 1;
 #else
         return 0;
 #endif
     }
-    if (!strcmp(k,"hflip")){ IMP_ISP_Tuning_SetISPHflip((IMPISPTuningOpsMode)(im->hflip?1:0)); return 1; }
-    if (!strcmp(k,"vflip")){ IMP_ISP_Tuning_SetISPVflip((IMPISPTuningOpsMode)(im->vflip?1:0)); return 1; }
+    if (!strcmp(k,"hflip")){ ISPT(SetISPHflip, si, (IMPISPTuningOpsMode)(im->hflip?1:0)); return 1; }
+    if (!strcmp(k,"vflip")){ ISPT(SetISPVflip, si, (IMPISPTuningOpsMode)(im->vflip?1:0)); return 1; }
     if (!strcmp(k,"running_mode")){
         /* the SDK returns a status; a drop at the dusk day->night crossover left
          * the sensor colour under IR while the config claimed night. It used to
          * be ignored - surface it so an apply failure is visible, not silent. */
-        int rc = IMP_ISP_Tuning_SetISPRunningMode(im->running_mode ? IMPISP_RUNNING_MODE_NIGHT
+        int rc = ISPT(SetISPRunningMode, si, im->running_mode ? IMPISP_RUNNING_MODE_NIGHT
                                                                    : IMPISP_RUNNING_MODE_DAY);
         if (rc) LOGW(MOD,"SetISPRunningMode(%s) failed (rc=%d)",
                      im->running_mode?"night":"day", rc);
@@ -800,29 +819,29 @@ static int isp_apply_image(const char *k)
          * latched; it only helps spot a gross SDK disagreement if one ever shows
          * up during a stuck recurrence with debug logging enabled. */
         { IMPISPRunningMode gm = (IMPISPRunningMode)-1;
-          int gr = IMP_ISP_Tuning_GetISPRunningMode(&gm);
+          int gr = ISPT(GetISPRunningMode, si, &gm);
           LOGD(MOD,"running_mode set=%d GetISPRunningMode->%d (rc=%d, cached echo)",
                im->running_mode?1:0, (gr==0)?(int)gm:-1, gr); }
         return 1;
     }
     if (!strcmp(k,"anti_flicker")){ /* enum: 0 off, 1 = 50 Hz, 2 = 60 Hz */
-        IMP_ISP_Tuning_SetAntiFlickerAttr((IMPISPAntiflickerAttr)im->anti_flicker);
+        ISPT(SetAntiFlickerAttr, si, (IMPISPAntiflickerAttr)im->anti_flicker);
         return 1;
     }
     if (!strcmp(k,"ae_compensation")){
 #ifdef ISP_HAS_AECOMP
-        IMP_ISP_Tuning_SetAeComp(im->ae_compensation); return 1;
+        ISPT(SetAeComp, si, im->ae_compensation); return 1;
 #else
         return 0;
 #endif
     }
-    if (!strcmp(k,"max_again")){ IMP_ISP_Tuning_SetMaxAgain((uint32_t)im->max_again); return 1; }
-    if (!strcmp(k,"max_dgain")){ IMP_ISP_Tuning_SetMaxDgain((uint32_t)im->max_dgain); return 1; }
-    if (!strcmp(k,"sinter_strength")){ IMP_ISP_Tuning_SetSinterStrength((uint32_t)im->sinter_strength); return 1; }
-    if (!strcmp(k,"temper_strength")){ IMP_ISP_Tuning_SetTemperStrength((uint32_t)im->temper_strength); return 1; }
+    if (!strcmp(k,"max_again")){ ISPT(SetMaxAgain, si, (uint32_t)im->max_again); return 1; }
+    if (!strcmp(k,"max_dgain")){ ISPT(SetMaxDgain, si, (uint32_t)im->max_dgain); return 1; }
+    if (!strcmp(k,"sinter_strength")){ ISPT(SetSinterStrength, si, (uint32_t)im->sinter_strength); return 1; }
+    if (!strcmp(k,"temper_strength")){ ISPT(SetTemperStrength, si, (uint32_t)im->temper_strength); return 1; }
     if (!strcmp(k,"dpc_strength")){
 #ifdef ISP_HAS_DPC
-        IMP_ISP_Tuning_SetDPC_Strength((unsigned int)im->dpc_strength); return 1;
+        ISPT(SetDPC_Strength, si, (unsigned int)im->dpc_strength); return 1;
 #else
         return 0;
 #endif
@@ -830,24 +849,24 @@ static int isp_apply_image(const char *k)
     if (!strcmp(k,"defog_strength")){
 #ifdef ISP_HAS_DEFOG
         uint8_t d=(uint8_t)im->defog_strength;
-        IMP_ISP_Tuning_SetDefog_Strength(&d); return 1;
+        ISPT(SetDefog_Strength, si, &d); return 1;
 #else
         return 0;
 #endif
     }
     if (!strcmp(k,"drc_strength")){
 #ifdef ISP_HAS_DRC
-        IMP_ISP_Tuning_SetDRC_Strength((unsigned int)im->drc_strength); return 1;
+        ISPT(SetDRC_Strength, si, (unsigned int)im->drc_strength); return 1;
 #else
         return 0;
 #endif
     }
     if (!strcmp(k,"highlight_depress")){ /* 0 disables */
-        IMP_ISP_Tuning_SetHiLightDepress((uint32_t)im->highlight_depress); return 1;
+        ISPT(SetHiLightDepress, si, (uint32_t)im->highlight_depress); return 1;
     }
     if (!strcmp(k,"backlight_compensation")){
 #ifdef ISP_HAS_BACKLIGHT
-        IMP_ISP_Tuning_SetBacklightComp((uint32_t)im->backlight_compensation); return 1;
+        ISPT(SetBacklightComp, si, (uint32_t)im->backlight_compensation); return 1;
 #else
         return 0;
 #endif
@@ -887,7 +906,7 @@ static int isp_apply_image(const char *k)
             return 1;
         }
 #if defined(ISP_HAS_AE_IT_MAX)          /* T23/T31/C100 */
-        int rc = IMP_ISP_Tuning_SetAe_IT_MAX(want);
+        int rc = ISPT(SetAe_IT_MAX, si, want);
 #else                                   /* T10/T20/T21/T30 */
         /* The older SDK sets the whole AE exposure attribute at once. MODE_RANGE
          * is the one mode that bounds the AE without seizing it: MODE_AUTO
@@ -897,7 +916,7 @@ static int isp_apply_image(const char *k)
         it.mode                 = IMPISP_TUNING_MODE_RANGE;
         it.integration_time     = (uint16_t)(ex.it_min_lines ? ex.it_min_lines : 1);
         it.max_integration_time = (uint16_t)want;
-        int rc = IMP_ISP_Tuning_SetIntegrationTime(&it);
+        int rc = ISPT(SetIntegrationTime, si, &it);
 #endif
         if (rc) {
             LOGW(MOD,"image.ae_it_max_us=%d: SDK rejected the cap (%lu lines, "
@@ -929,7 +948,7 @@ static int isp_apply_image(const char *k)
         IMPISPWB wb; memset(&wb,0,sizeof wb);
         wb.mode=(enum isp_core_wb_mode)im->core_wb_mode;
         wb.rgain=(uint16_t)im->wb_rgain; wb.bgain=(uint16_t)im->wb_bgain;
-        IMP_ISP_Tuning_SetWB(&wb); return 1;
+        ISPT(SetWB, si, &wb); return 1;
     }
 #endif /* ISP_NEW_TUNING_API */
     return 0;
@@ -952,12 +971,15 @@ static void apply_image_tuning(void)
          * the tuning (running_mode above all) already applied. */
         "ae_it_max_us"
     };
-    for (size_t i=0;i<sizeof keys/sizeof keys[0];i++)
-        if (!isp_apply_image(keys[i]))
-            LOGD(MOD,"image.%s unsupported on this platform (skipped)",keys[i]);
-    const ms_image_cfg *im = &g_hcfg->image[0];
-    LOGI(MOD,"image tuning applied (bri=%d con=%d sat=%d sharp=%d)",
-         im->brightness,im->contrast,im->saturation,im->sharpness);
+    for (int si=0; si<MS_MAX_SENSOR; si++){
+        for (size_t i=0;i<sizeof keys/sizeof keys[0];i++)
+            if (!isp_apply_image(si, keys[i]))
+                LOGD(MOD,"image%d.%s unsupported on this platform (skipped)",
+                     si, keys[i]);
+        const ms_image_cfg *im = &g_hcfg->image[si];
+        LOGI(MOD,"image tuning applied (bri=%d con=%d sat=%d sharp=%d)",
+             im->brightness,im->contrast,im->saturation,im->sharpness);
+    }
 #endif
 }
 
@@ -1073,7 +1095,7 @@ static void ae_it_max_check(int64_t now)
         g_ae_it_warned = 0;
         g_ae_it_next_us = now + AE_IT_HOLD_US;
     } else {
-        isp_apply_image("ae_it_max_us");   /* logs the write and its readback */
+        isp_apply_image(0, "ae_it_max_us"); /* logs the write and its readback */
         g_ae_it_fails++;
         if (g_ae_it_fails >= AE_IT_LOUD_TRIES && !g_ae_it_warned){
             g_ae_it_warned = 1;
@@ -1110,31 +1132,34 @@ static inline void ae_it_max_on_frame(void)
 static int isp_init(void)
 {
     int ret;
-    memset(&g_sensor,0,sizeof g_sensor);
+    memset(g_sensor,0,sizeof g_sensor);
+    for (int si=0; si<MS_MAX_SENSOR; si++){
+        IMPSensorInfo *sn = &g_sensor[si];
 #if defined(PLATFORM_T40)||defined(PLATFORM_T41)
-    /* T40/T41 only: rst_gpio/pwdn_gpio/power_gpio are `int` here and are
-     * real, active pin numbers - unlike the same-named `unsigned short`
-     * fields on T20/T23/T31, marked "invalid now" and left untouched by
-     * those drivers. GPIO_PA(0) is 0, a valid pin, so the memset default
-     * asks the T40/T41 sensor driver to toggle PA0 as both reset and
-     * power-down on any board that doesn't wire the sensor there. -1 is
-     * every vendor driver's own "no such pin" sentinel (checked before any
-     * gpio_request), same convention prudynt uses. */
-    g_sensor.rst_gpio = -1;
-    g_sensor.pwdn_gpio = -1;
-    g_sensor.power_gpio = -1;
+        /* T40/T41 only: rst_gpio/pwdn_gpio/power_gpio are `int` here and are
+         * real, active pin numbers - unlike the same-named `unsigned short`
+         * fields on T20/T23/T31, marked "invalid now" and left untouched by
+         * those drivers. GPIO_PA(0) is 0, a valid pin, so the memset default
+         * asks the T40/T41 sensor driver to toggle PA0 as both reset and
+         * power-down on any board that doesn't wire the sensor there. -1 is
+         * every vendor driver's own "no such pin" sentinel (checked before any
+         * gpio_request), same convention prudynt uses. */
+        sn->rst_gpio = -1;
+        sn->pwdn_gpio = -1;
+        sn->power_gpio = -1;
 #endif
-    /* bounded copies: sensor.model (64) is larger than name (32) / i2c.type (20).
-     * sensor.model is runtime-mutable via /control, so read it under
-     * config_str_lock rather than directly off g_hcfg (M3). */
-    config_str_lock();
-    snprintf(g_sensor.name, sizeof g_sensor.name, "%.*s",
-             (int)sizeof(g_sensor.name)-1, g_hcfg->sensor[0].model);
-    g_sensor.cbus_type = TX_SENSOR_CONTROL_INTERFACE_I2C;
-    snprintf(g_sensor.i2c.type, sizeof g_sensor.i2c.type, "%.*s",
-             (int)sizeof(g_sensor.i2c.type)-1, g_hcfg->sensor[0].model);
-    config_str_unlock();
-    g_sensor.i2c.addr = g_hcfg->sensor[0].i2c_addr;
+        /* bounded copies: sensorN.model (64) is larger than name (32) /
+         * i2c.type (20). sensorN.model is runtime-mutable via /control, so read
+         * it under config_str_lock rather than directly off g_hcfg (M3). */
+        config_str_lock();
+        snprintf(sn->name, sizeof sn->name, "%.*s",
+                 (int)sizeof(sn->name)-1, g_hcfg->sensor[si].model);
+        sn->cbus_type = TX_SENSOR_CONTROL_INTERFACE_I2C;
+        snprintf(sn->i2c.type, sizeof sn->i2c.type, "%.*s",
+                 (int)sizeof(sn->i2c.type)-1, g_hcfg->sensor[si].model);
+        config_str_unlock();
+        sn->i2c.addr = g_hcfg->sensor[si].i2c_addr;
+    }
 
     /* NOT optional on any SoC, T40/T41 included: on T41 libimp's `pool_size`
      * defaults to 1 BYTE, and that pool IS the IPU's OSD scratch buffer
@@ -1158,26 +1183,41 @@ static int isp_init(void)
      * pipeline that could never deliver a frame (silent no-video). Fail hard
      * here instead, unwinding exactly what was already opened. */
 #if defined(PLATFORM_T40)||defined(PLATFORM_T41)
-    if (IMP_ISP_AddSensor(IMPVI_MAIN, &g_sensor) < 0){
-        LOGE(MOD,"IMP_ISP_AddSensor failed (sensor=%s)", g_sensor.name);
+    if (IMP_ISP_AddSensor(IMPVI_MAIN, &g_sensor[0]) < 0){
+        LOGE(MOD,"IMP_ISP_AddSensor failed (sensor=%s)", g_sensor[0].name);
         IMP_ISP_Close();
         return -1;
     }
-    if (IMP_ISP_EnableSensor(IMPVI_MAIN, &g_sensor) < 0){
-        LOGE(MOD,"IMP_ISP_EnableSensor failed (sensor=%s)", g_sensor.name);
-        IMP_ISP_DelSensor(IMPVI_MAIN, &g_sensor);
+    if (IMP_ISP_EnableSensor(IMPVI_MAIN, &g_sensor[0]) < 0){
+        LOGE(MOD,"IMP_ISP_EnableSensor failed (sensor=%s)", g_sensor[0].name);
+        IMP_ISP_DelSensor(IMPVI_MAIN, &g_sensor[0]);
         IMP_ISP_Close();
         return -1;
     }
 #else
-    if (IMP_ISP_AddSensor(&g_sensor) < 0){
-        LOGE(MOD,"IMP_ISP_AddSensor failed (sensor=%s)", g_sensor.name);
-        IMP_ISP_Close();
-        return -1;
+    /* T23 keeps the CLASSIC signatures even in multi-sensor mode: AddSensor
+     * takes no IMPVI_NUM and a single EnableSensor() enables everything
+     * registered. That is the opposite of T32/T40/T41, where both are
+     * per-sensor - raptor's HAL carries both branches and they do not resemble
+     * each other. UNVERIFIED ON HARDWARE for MS_MAX_SENSOR > 1.
+     *
+     * Deliberately NOT called here: IMP_ISP_MultiCamera_SetSwitchgpio(). The
+     * T23 ISP kernel module owns the MIPI mux via its own mipi_switch_gpio
+     * module parameter, and two owners for one GPIO is a bug waiting to
+     * happen. Also NOT IMP_ISP_SetCameraInputMode(): that is the SPLICING
+     * path (two sensors glued into one wide frame); we want two independent
+     * pass-through pipelines. */
+    for (int si=0; si<MS_MAX_SENSOR; si++){
+        if (IMP_ISP_AddSensor(&g_sensor[si]) < 0){
+            LOGE(MOD,"IMP_ISP_AddSensor(%d) failed (sensor=%s)", si, g_sensor[si].name);
+            while (si-- > 0) IMP_ISP_DelSensor(&g_sensor[si]);
+            IMP_ISP_Close();
+            return -1;
+        }
     }
     if (IMP_ISP_EnableSensor() < 0){
-        LOGE(MOD,"IMP_ISP_EnableSensor failed (sensor=%s)", g_sensor.name);
-        IMP_ISP_DelSensor(&g_sensor);
+        LOGE(MOD,"IMP_ISP_EnableSensor failed (sensor=%s)", g_sensor[0].name);
+        for (int si=MS_MAX_SENSOR; si-- > 0; ) IMP_ISP_DelSensor(&g_sensor[si]);
         IMP_ISP_Close();
         return -1;
     }
@@ -1191,10 +1231,10 @@ static int isp_init(void)
                 LOGE(MOD,"IMP_System_Init failed after %d tries", si_tries);
 #if defined(PLATFORM_T40)||defined(PLATFORM_T41)
                 IMP_ISP_DisableSensor(IMPVI_MAIN);
-                IMP_ISP_DelSensor(IMPVI_MAIN, &g_sensor);
+                IMP_ISP_DelSensor(IMPVI_MAIN, &g_sensor[0]);
 #else
                 IMP_ISP_DisableSensor();
-                IMP_ISP_DelSensor(&g_sensor);
+                for (int si=MS_MAX_SENSOR; si-- > 0; ) IMP_ISP_DelSensor(&g_sensor[si]);
 #endif
                 IMP_ISP_Close();
                 return -1;
@@ -1214,31 +1254,37 @@ static int isp_init(void)
     { uint32_t fn=(uint32_t)g_hcfg->sensor[0].fps, fd=1;
       IMP_ISP_Tuning_SetSensorFPS(IMPVI_MAIN,&fn,&fd); }
 #else
-    IMP_ISP_Tuning_SetSensorFPS(g_hcfg->sensor[0].fps, 1);
+    for (int si=0; si<MS_MAX_SENSOR; si++)
+        ISPT(SetSensorFPS, si, g_hcfg->sensor[si].fps, 1);
 #endif
     IMP_System_GetVersion(NULL);
 
-    /* Ask the ISP for the sensor's REAL output resolution (chip-independent).
+    /* Ask the ISP for each sensor's REAL output resolution (chip-independent).
      * Some sensor drivers report 0x0 to the framesource, which makes IMP reject
      * a non-cropped/non-scaled channel; using this for the crop/scale decision
      * in fs_create fixes video for ANY sensor. Falls back to the configured
-     * resolution when the API is absent (T10/T20/T21/T30) or returns 0. */
+     * resolution when the API is absent (T10/T20/T21/T30) or returns 0 - and
+     * the dual-sensor drivers are reported to answer 0x0, which is why
+     * sensorN.width/height stop being optional there. */
 #ifdef ISP_HAS_SENSOR_ATTR
-    { IMPISPSENSORAttr sa; memset(&sa,0,sizeof sa);
+    for (int si=0; si<MS_MAX_SENSOR; si++){
+      IMPISPSENSORAttr sa; memset(&sa,0,sizeof sa);
 #if defined(PLATFORM_T40)||defined(PLATFORM_T41)
-      int sret = IMP_ISP_Tuning_GetSensorAttr(IMPVI_MAIN, &sa);
+      int sret = (si==0) ? IMP_ISP_Tuning_GetSensorAttr(IMPVI_MAIN, &sa) : -1;
 #else
-      int sret = IMP_ISP_Tuning_GetSensorAttr(&sa);
+      int sret = ISPT(GetSensorAttr, si, &sa);
 #endif
       if (sret==0 && sa.width>0 && sa.height>0){
-          g_isp_sensor_w=(int)sa.width; g_isp_sensor_h=(int)sa.height;
-          LOGI(MOD,"ISP sensor resolution %ux%u", sa.width, sa.height);
+          g_isp_sensor_w[si]=(int)sa.width; g_isp_sensor_h[si]=(int)sa.height;
+          LOGI(MOD,"ISP sensor %d resolution %ux%u", si, sa.width, sa.height);
       }
     }
 #endif
 
     config_str_lock();
-    LOGI(MOD,"ISP up, sensor=%s fps=%d", g_hcfg->sensor[0].model, g_hcfg->sensor[0].fps);
+    for (int si=0; si<MS_MAX_SENSOR; si++)
+        LOGI(MOD,"ISP up, sensor=%s fps=%d",
+             g_hcfg->sensor[si].model, g_hcfg->sensor[si].fps);
     config_str_unlock();
     return 0;
 }
@@ -1308,8 +1354,9 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
      * chip), else the configured/detected one. This drives both the scale
      * decision and the crop dimensions, so a full-FOV downscale stays correct
      * even on a 4MP sensor whose /proc reports nothing. */
-    int sw = g_isp_sensor_w>0 ? g_isp_sensor_w : g_hcfg->sensor[0].width;
-    int sh = g_isp_sensor_h>0 ? g_isp_sensor_h : g_hcfg->sensor[0].height;
+    int si = MS_SENSOR_OF_FS_CHN(chn);
+    int sw = g_isp_sensor_w[si]>0 ? g_isp_sensor_w[si] : g_hcfg->sensor[si].width;
+    int sh = g_isp_sensor_h[si]>0 ? g_isp_sensor_h[si] : g_hcfg->sensor[si].height;
     int scale = (sw!=v->width)||(sh!=v->height);
     a.nrVBs = v->buffers>0 ? v->buffers : 2;
     /* T31(L): clamp chn0 to one buffer ONLY when the kernel's pre-dequeue
@@ -4394,12 +4441,15 @@ static int ing_control(const char *key, const char *val)
 {
     int v = (int)strtol(val, NULL, 0);
 
-    if (!strncmp(key,"image.",6)){
+    if (!strncmp(key,"image",5) &&
+        (key[5]=='.' || (key[5]>='0' && key[5]<'0'+MS_MAX_SENSOR && key[6]=='.'))){
         /* the control layer already stored the value in g_cfg (config_apply_kv
-         * runs before hub_control), so the HAL applies from the config */
-        const char *k = key+6;
+         * runs before hub_control), so the HAL applies from the config.
+         * `image.` is sensor 0's unindexed spelling (config.c's section alias). */
+        int si = (key[5]=='.') ? 0 : key[5]-'0';
+        const char *k = key + (key[5]=='.' ? 6 : 7);
         pthread_mutex_lock(&g_isp_lock);
-        int ok = isp_apply_image(k);
+        int ok = isp_apply_image(si, k);
         /* Belt-and-braces for the fs_use() chn0 relatch below: a running_mode
          * (day/night) switch is suspected of being able to reset hflip/vflip
          * on some ISP/driver combos even WITHOUT a chn0 Disable/Enable cycle
@@ -4409,8 +4459,8 @@ static int ing_control(const char *key, const char *val)
          * idempotent no-op when nothing actually reset, and closes that
          * window regardless of which mechanism is the real cause. */
         if (ok && !strcmp(k,"running_mode")){
-            isp_apply_image("hflip");
-            isp_apply_image("vflip");
+            isp_apply_image(si, "hflip");
+            isp_apply_image(si, "vflip");
         }
         pthread_mutex_unlock(&g_isp_lock);
         if (ok) LOGI(MOD,"control %s=%d", key, v);
@@ -4420,7 +4470,7 @@ static int ing_control(const char *key, const char *val)
          * /control connection threads and the daynight thread). Kept INLINE
          * (not deferred to commit) because daynight.c calls hub_control(
          * "image.running_mode") directly, without a hub_control_commit(). */
-        if (ok && !strcmp(k,"running_mode")) fs_kick_chn0();
+        if (ok && !strcmp(k,"running_mode")) fs_kick_chn(MS_FS_DIRECT_CHN(si));
         /* hflip/vflip are the same latch class (fs_kick_chn0): a boot-time or
          * chn0-idle apply otherwise never takes effect. Coalesce to a single
          * kick in ing_control_commit() so a POST carrying both hflip and vflip
@@ -5085,10 +5135,11 @@ static void ing_stop(void)
     td(IMP_System_Exit(),"System_Exit");
 #if defined(PLATFORM_T40)||defined(PLATFORM_T41)
     td(IMP_ISP_DisableSensor(IMPVI_MAIN),"ISP_DisableSensor");
-    td(IMP_ISP_DelSensor(IMPVI_MAIN,&g_sensor),"ISP_DelSensor");
+    td(IMP_ISP_DelSensor(IMPVI_MAIN,&g_sensor[0]),"ISP_DelSensor");
 #else
     td(IMP_ISP_DisableSensor(),"ISP_DisableSensor");
-    td(IMP_ISP_DelSensor(&g_sensor),"ISP_DelSensor");
+    for (int si=MS_MAX_SENSOR; si-- > 0; )
+        td(IMP_ISP_DelSensor(&g_sensor[si]),"ISP_DelSensor");
 #endif
     td(IMP_ISP_DisableTuning(),"ISP_DisableTuning");
     td(IMP_ISP_Close(),"ISP_Close");
