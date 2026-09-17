@@ -31,7 +31,7 @@ module tag, is rejected with a WARN rather than silently dropped — and is
 live-applicable over `POST /control` — no restart, no config file edit:
 
 ```
-curl -s -X POST http://<cam>:8880/control -H "X-Auth-Token: $T" \
+curl -s -X POST http://<cam>:8880/control -H "X-Timps-Token: $T" \
      -d '{"general":{"debug_modules":"daynight"}}'
 ```
 

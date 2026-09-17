@@ -953,9 +953,9 @@ static const cfg_field osd_fields[] = {
     FS("font_path",      0, font_path,      F_CTRL),
     FS("vars_file",      0, vars_file,      F_CTRL),
     F ("supersample",    0, supersample,    T_INT,  F_CTRL, 1,4),
-    /* opt-in geometric autohint, default off: see the ms_osd_cfg.hinting
-     * comment in config.h and msttf_set_hinting() for what this does and why
-     * it's not a real TrueType hint-bytecode interpreter. Same File-only/
+    /* geometric autohint, default on: see the ms_osd_cfg.hinting comment
+     * in config.h and msttf_set_hinting() for what this does and why it's
+     * not a real TrueType hint-bytecode interpreter. Same File-only/
      * restart-only handling as supersample: read once by imp_osd_setup(). */
     F ("hinting",        0, hinting,        T_BOOL, F_CTRL, 0,0),
 };

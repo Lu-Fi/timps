@@ -253,7 +253,8 @@ events.max_clients = 8       # concurrent /events connections (above -> 503)
 
 # ---- JPEG / MJPEG stream (the old streamer's "stream2") ----
 # HTTP endpoints:  /snapshot.jpg (single frame)   /stream.mjpeg (motion JPEG)
-jpeg.enabled       = 1
+jpeg.enabled       = 1        # compiled default is 0 (off); shown here as 1 to
+                               # document the section, not because it's the default
 jpeg.width         = 640
 jpeg.height        = 360
 jpeg.quality       = 75          # 1..100
@@ -480,10 +481,10 @@ audio.talk_ws            = 0      # restart — 0 off, 1 TLS-only, 2 also ws://
 
 # ---- ONVIF audio backchannel (client speaks -> camera speaker) -----------
 # OPTIONAL, compile-time gated (USE_BACKCHANNEL; AAC needs USE_BC_AAC). The
-# decoded audio is piped to thingino's audio daemon client /bin/iac, exactly
-# like prudynt/raptor - timps never opens IMP_AO itself, so there is NO device
-# conflict with portal/motion sounds. Requires the ingenic-audiodaemon package
-# (/bin/iac) AND a camera that actually has a speaker wired.
+# decoded audio is fed straight to a native IMP_AO speaker (speaker.c) -
+# unlike prudynt/raptor, timps does not shell out to /bin/iac, so there is no
+# separate audio-daemon dependency. Requires only a camera that actually has
+# a speaker wired.
 #   codec  pcmu (default, 8 kHz, lowest latency, universal ONVIF support)
 #          pcma (8 kHz A-law)
 #          aac  (better quality, needs USE_BC_AAC + libhelix-aac, more latency)
@@ -504,18 +505,17 @@ osd.supersample    = 2                        # TTF rasterizer AA: samples/axis/
                                                # higher CPU; 1 = cheapest, visibly
                                                # rougher edges. No effect on the
                                                # embedded bitmap font (font_path empty).
-# osd.hinting      = 0                        # Opt-in lightweight geometric autohint
-                                               # (0/1). The TTF rasterizer does not
-                                               # execute the font's embedded hint
-                                               # bytecode, so small text (e.g. the
+# osd.hinting      = 1                        # Lightweight geometric autohint
+                                               # (0/1, default 1). The TTF rasterizer
+                                               # does not execute the font's embedded
+                                               # hint bytecode, so small text (e.g. the
                                                # substream default 12px) can show
                                                # uneven stroke widths between glyphs.
-                                               # Enabling this snaps stem-like outline
-                                               # edges to the pixel grid to reduce
-                                               # that unevenness - a coarse heuristic,
-                                               # not real hinting. Default off: zero
-                                               # change to existing OSD rendering
-                                               # unless explicitly enabled. Restart-
+                                               # This snaps stem-like outline edges to
+                                               # the pixel grid to reduce that
+                                               # unevenness - a coarse heuristic, not
+                                               # real hinting. Set to 0 for byte-for-
+                                               # byte unhinted OSD bitmaps. Restart-
                                                # required, like supersample above.
 #
 # Every video stream carries its OWN independent overlay set.
