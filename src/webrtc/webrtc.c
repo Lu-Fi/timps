@@ -451,7 +451,7 @@ static void handle_rtcp(wrtc_session *s, const uint8_t *p, int len)
                 s->last_idr_us = now;
                 LOGD(MOD, "%s: %s - requesting IDR", s->id,
                      fmt == 1 ? "PLI" : "FIR");
-                hub_request_idr(s->chn);
+                hub_request_idr_recovery(s->chn);
             }
         }
         off += l;
@@ -605,9 +605,9 @@ static void *sess_thread(void *arg)
             now = ms_now_us();
             if ((qs.dropped_key || qs.dropped_any) &&
                 now - s->last_idr_us > 1000000) {
-                hub_note_drop(s->chn);
+                hub_note_drop(s->chn, HUB_DROP_WEBRTC);
                 s->last_idr_us = now;
-                hub_request_idr(s->chn);
+                hub_request_idr_recovery(s->chn);
             }
             if (pk) {
                 if (pk->media == MS_MEDIA_VIDEO) {

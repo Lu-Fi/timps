@@ -644,7 +644,7 @@ static void stream_mp4(hconn *c, int chn)
              * every other subscriber (Frigate, recording, healthy viewers)
              * just because one link is weak. Worst case this client gets a
              * keyframe-only slideshow - honest degradation, never corruption. */
-            if (lost_key || lost_any) { hub_note_drop(chn); dropping = 1; }
+            if (lost_key || lost_any) { hub_note_drop(chn, HUB_DROP_MP4); dropping = 1; }
             if (!dropping && qs.count >= MS_MP4_DROP_HIWAT) dropping = 1;
             if (dropping) {
                 if (p->media == MS_MEDIA_VIDEO && p->keyframe) {
@@ -665,7 +665,7 @@ static void stream_mp4(hconn *c, int chn)
                     if (now - drop_idr_us > 1000000) {
                         LOGD(MOD,"mp4 chn=%d: overflow backlog - freezing "
                                  "client, IDR re-requested", chn);
-                        hub_request_idr(chn);
+                        hub_request_idr_recovery(chn);
                         drop_idr_us = now;
                     }
                     __sync_fetch_and_add(&g_drop_frames[chn], 1u);
@@ -681,12 +681,12 @@ static void stream_mp4(hconn *c, int chn)
              * equivalent branch: a non-key drop can repeat every push while a
              * client stays behind, and the IDR request is global to the
              * shared encoder. */
-            hub_note_drop(chn);
+            hub_note_drop(chn, HUB_DROP_MP4);
             int64_t now = ms_now_us();
             if (lost_key || now - drop_idr_us > 1000000) {
                 LOGD(MOD,"mp4 chn=%d: overflow dropped %s - IDR re-requested",
                      chn, lost_key ? "a keyframe" : "P-frame(s)");
-                hub_request_idr(chn);
+                hub_request_idr_recovery(chn);
                 drop_idr_us = now;
             }
         }
@@ -741,7 +741,7 @@ static void stream_mp4(hconn *c, int chn)
         if (!frag_ok) {
             LOGW(MOD,"dropped a corrupt %s fragment (OOM?)",
                  p->media==MS_MEDIA_VIDEO?"video":"audio");
-            if (p->media==MS_MEDIA_VIDEO && p->keyframe) hub_request_idr(chn);
+            if (p->media==MS_MEDIA_VIDEO && p->keyframe) hub_request_idr_recovery(chn);
         } else if (fi.niov) {
             /* one sendmsg() for head + every NAL - same bytes, same single
              * TCP write, without staging the AU anywhere first */

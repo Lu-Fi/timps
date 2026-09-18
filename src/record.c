@@ -631,7 +631,11 @@ static void *rec_thread(void *arg)
 {
     (void)arg;
     fanqueue q; int subscribed=0, sub_audio=0, sub_chn=-1;
-    int64_t drop_idr_us=0;   /* rate-limit the safety IDR request on any drop */
+    /* drop recovery (mirrors mp4/httpd.c's adaptive drop): after an eviction
+     * every queued packet up to the next keyframe belongs to a headless GOP,
+     * so freeze the segment rather than write frames whose references are not
+     * in the file. Cleared on the first keyframe popped afterwards. */
+    int regate=0, drop_warned=0;
     /* AV-02: earliest time a failed seg_open() may be retried. Independent of
      * (and composing with) prune_free()'s own refused_until_us backoff: that
      * one gates just the unreachable-min_free_mb refusal from inside
@@ -692,7 +696,7 @@ static void *rec_thread(void *arg)
                 hub_unsubscribe(sub_chn,&q); if (sub_audio) hub_unsubscribe(HUB_AUDIO_SRC,&q);
                 fanqueue_free(&q); subscribed=0; sub_audio=0; sub_chn=-1;
             }
-            ring_clear();
+            ring_clear(); regate=0;
             /* P-02: idle (recording disabled) - one stop-aware wait instead
              * of a 300 ms poll. 1 s poll cadence (was ~3.3 wakeups/s) only
              * bounds how fast a /control ENABLE (or manual trigger) is noticed
@@ -706,7 +710,7 @@ static void *rec_thread(void *arg)
             if (w_fp) seg_close();
             hub_unsubscribe(sub_chn,&q); if (sub_audio) hub_unsubscribe(HUB_AUDIO_SRC,&q);
             fanqueue_free(&q); subscribed=0; sub_audio=0; sub_chn=-1;
-            ring_clear();
+            ring_clear(); regate=0;
         }
         if (!subscribed){
             if (fanqueue_init(&q,REC_QCAP)){ if (ms_stopgate_wait(&g_gate,300)) break; continue; }
@@ -728,7 +732,7 @@ static void *rec_thread(void *arg)
                          have_a?"unknown":"none/disabled");
                 }
             }
-            hub_request_idr(chn); subscribed=1; sub_chn=chn;
+            hub_request_idr(chn); subscribed=1; sub_chn=chn; drop_warned=0;
         }
 
         /* record.audio is re-read live like channel/mode/pre_roll above:
@@ -753,26 +757,45 @@ static void *rec_thread(void *arg)
             }
         }
 
-        ms_pkt *p=fanqueue_pop(&q,200);
+        /* P-03 (as rtsp.c/httpd.c): one lock cycle for the pop and both
+         * overflow flags. It also stops a keyframe drop from leaving
+         * dropped_any set for the NEXT pop to count a second time. */
+        fq_status qs;
+        ms_pkt *p=fanqueue_pop_ex(&q,200,&qs);
         int writing=want_write(&rc);
         if (!p){ if (w_fp && !writing) seg_close(); continue; }
         /* a dropped keyframe corrupts the GOP outright; a dropped P-frame is
          * silent but breaks it just the same for anyone decoding this
-         * recording later. Self-heal both, P-frame drops rate-limited to
-         * once/sec since the IDR request is global to the shared encoder
-         * (see src/rtsp/rtsp.c for the same pattern and its rationale). */
-        if (fanqueue_take_dropped_key(&q)) {
-            hub_note_drop(chn);   /* /control "queue_drops" */
-            LOGD(MOD,"chn=%d: overflow dropped a keyframe - IDR re-requested",chn);
-            hub_request_idr(chn);
-            drop_idr_us = ms_now_us();
-        } else if (fanqueue_take_dropped(&q)) {
-            hub_note_drop(chn);
-            int64_t now = ms_now_us();
-            if (now - drop_idr_us > 1000000) {
-                LOGD(MOD,"chn=%d: overflow dropped P-frame(s) - IDR re-requested",chn);
-                hub_request_idr(chn);
-                drop_idr_us = now;
+         * recording later. Freeze until the next keyframe and ask the encoder
+         * for one - rate-limited across ALL consumers of this stream, since a
+         * forced IDR hits the one shared encoder (hub.h). */
+        if (qs.dropped_key || qs.dropped_any) {
+            hub_note_drop(chn, HUB_DROP_REC);   /* /control "queue_drops" */
+            if (!drop_warned++)
+                LOGW(MOD,"chn=%d: record queue overflowed, dropping frames "
+                         "(storage/consumer too slow) - details at DEBUG",chn);
+            LOGD(MOD,"chn=%d: overflow dropped %s - re-gating on the next "
+                     "keyframe, IDR re-requested",
+                 chn, qs.dropped_key?"a keyframe":"P-frame(s)");
+            regate = 1;
+            hub_request_idr_recovery(chn);
+            /* whatever pre-roll is buffered now has a hole in it, and
+             * flush_ring() would write straight across it */
+            if (!writing) ring_clear();
+        }
+
+        /* stopping writing still closes the segment on this packet, exactly as
+         * the else-branch below used to - the freeze must not keep a segment
+         * open (and "recording") after want_write went false */
+        if (!writing && w_fp) seg_close();
+        if (regate){
+            if (p->media==MS_MEDIA_VIDEO && p->keyframe) regate = 0;
+            else {
+                /* keep asking while frozen: drops stop as soon as we are no
+                 * longer writing, so nothing else would re-arm the request
+                 * (mp4/httpd.c's freeze path does the same) */
+                if (p->media==MS_MEDIA_VIDEO) hub_request_idr_recovery(chn);
+                pkt_unref(p); continue;
             }
         }
 
@@ -799,7 +822,6 @@ static void *rec_thread(void *arg)
                 seg_write(p);
             }
         } else {
-            if (w_fp) seg_close();
             if (motion_mode) ring_push(p,pre_us);   /* buffer for pre-roll */
         }
         pkt_unref(p);
@@ -913,7 +935,7 @@ int record_clip(const char *path, int seconds)
     fmp4_mux mux; FILE *fp=NULL; int rc=-1;
     int ac=MS_AC_NONE,asr=0,ach=0;
     int64_t deadline=0, giveup=ms_now_us()+(int64_t)(seconds+5)*1000000;
-    int64_t drop_idr_us=0;   /* rate-limit the safety IDR request on any drop */
+    int regate=0;            /* see rec_thread(): no headless GOP in the clip */
 
     if (fanqueue_init(&q,REC_QCAP)) goto out; have_q=1;
     if (hub_subscribe(chn,&q)!=0) goto out; sub_v=1;
@@ -925,17 +947,16 @@ int record_clip(const char *path, int seconds)
     while (!ms_stopgate_stopped(&g_gate)){
         int64_t now=ms_now_us();
         if (!fp && now>=giveup) break;           /* no start point ever arrived */
-        ms_pkt *p=fanqueue_pop(&q,200);
+        fq_status qs;
+        ms_pkt *p=fanqueue_pop_ex(&q,200,&qs);
         if (!p){ if (fp && now>=deadline) break; continue; }
-        /* see the matching comment in rec_thread() above / src/rtsp/rtsp.c:
-         * self-heal a dropped P-frame too, rate-limited (global IDR request). */
-        if (fanqueue_take_dropped_key(&q)) {
-            hub_request_idr(chn);
-            drop_idr_us = now;
-        } else if (fanqueue_take_dropped(&q)) {
-            if (now - drop_idr_us > 1000000) {
-                hub_request_idr(chn);
-                drop_idr_us = now;
+        /* see the matching block in rec_thread() above */
+        if (qs.dropped_key || qs.dropped_any) { regate=1; hub_request_idr_recovery(chn); }
+        if (regate){
+            if (p->media==MS_MEDIA_VIDEO && p->keyframe) regate=0;
+            else {
+                if (p->media==MS_MEDIA_VIDEO) hub_request_idr_recovery(chn);
+                pkt_unref(p); continue;
             }
         }
 
