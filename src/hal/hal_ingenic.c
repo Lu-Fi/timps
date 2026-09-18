@@ -1079,6 +1079,40 @@ static inline void ae_it_max_on_frame(void)
 #endif
 }
 
+/* The driver may refuse or clamp the requested rate; log what it holds. */
+static void isp_set_sensor_fps(int want)
+{
+    int rc, grc = -1;
+    uint32_t hn = 0, hd = 0;
+#if defined(PLATFORM_T41)
+    IMPISPSensorFps f = { .num=(uint32_t)want, .den=1 }, g = { 0, 0 };
+    rc  = IMP_ISP_Tuning_SetSensorFPS(IMPVI_MAIN, &f);
+    grc = IMP_ISP_Tuning_GetSensorFPS(IMPVI_MAIN, &g);
+    hn = g.num; hd = g.den;
+#elif defined(ISP_NEW_TUNING_API)   /* T40 */
+    uint32_t fn = (uint32_t)want, fd = 1;
+    rc  = IMP_ISP_Tuning_SetSensorFPS(IMPVI_MAIN, &fn, &fd);
+    grc = IMP_ISP_Tuning_GetSensorFPS(IMPVI_MAIN, &hn, &hd);
+#else
+    rc = IMP_ISP_Tuning_SetSensorFPS(want, 1);
+#if defined(ISP_HAS_GET_SENSOR_FPS)
+    grc = IMP_ISP_Tuning_GetSensorFPS(&hn, &hd);
+#endif
+#endif
+    if (grc != 0 || !hd) {
+        LOGW(MOD, "sensor fps: requested %d, set rc=%d, readback unavailable (rc=%d)",
+             want, rc, grc);
+        return;
+    }
+    /* compare as fractions: hn/hd == want */
+    if (rc != 0 || hn != (uint32_t)want * hd)
+        LOGW(MOD, "sensor fps: requested %d, driver holds %u/%u (%.2f), set rc=%d",
+             want, hn, hd, (double)hn / hd, rc);
+    else
+        LOGI(MOD, "sensor fps: requested %d, driver holds %u/%u, set rc=%d",
+             want, hn, hd, rc);
+}
+
 static int isp_init(void)
 {
     int ret;
@@ -1179,15 +1213,7 @@ static int isp_init(void)
     if (IMP_ISP_EnableTuning() < 0)
         LOGW(MOD,"IMP_ISP_EnableTuning failed - image tuning unavailable");
     apply_image_tuning();   /* full image.* block incl. running_mode */
-#if defined(PLATFORM_T41)
-    { IMPISPSensorFps fps={ .num=(uint32_t)g_hcfg->sensor.fps, .den=1 };
-      IMP_ISP_Tuning_SetSensorFPS(IMPVI_MAIN,&fps); }
-#elif defined(ISP_NEW_TUNING_API)   /* T40 */
-    { uint32_t fn=(uint32_t)g_hcfg->sensor.fps, fd=1;
-      IMP_ISP_Tuning_SetSensorFPS(IMPVI_MAIN,&fn,&fd); }
-#else
-    IMP_ISP_Tuning_SetSensorFPS(g_hcfg->sensor.fps, 1);
-#endif
+    isp_set_sensor_fps(g_hcfg->sensor.fps);
     IMP_System_GetVersion(NULL);
 
     /* Ask the ISP for the sensor's REAL output resolution (chip-independent).

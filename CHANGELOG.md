@@ -6,6 +6,17 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- **Auto `sensor.fps` is capped at 30** (`src/config.c`). Left unset, the value
+  still comes from the driver's `max_fps`, but no longer above 30 (some
+  drivers advertise a rate their clock cannot deliver, e.g. GC2053 reports 40
+  on a 30 fps mode). An explicit `sensor.fps` is used as given.
+- **The sensor-rate call is now read back and logged** (`src/hal/hal_ingenic.c`,
+  `src/isp_caps.h`): `sensor fps: requested N, driver holds n/d, set rc=R`, at
+  WARN when the return code is non-zero or the driver holds a different rate.
+  `videoN.fps` is documented as the stream rate only, not the sensor rate.
+
 ## [1.9.18] - 2026-09-15
 
 ### Added
