@@ -62,8 +62,8 @@ Names as they appear in the log and as `debug_modules` accepts them.
 | `OSD` | `hal/imp_osd.c` | 4 | 8 | 6 | 3 | overlay placement and region updates |
 | `RTSP` | `rtsp/rtsp.c` | 4 | 7 | 4 | 2 | per-drop queue-overflow detail, dropped P-frames, IDR re-requests (the *first* keyframe drop of a session is a WARN) |
 | `HTTP` | `mp4/httpd.c` | 2 | 11 | 7 | 2 | same for the fMP4/MJPEG side, including adaptive freeze (first keyframe drop per client is a WARN) |
-| `HUB` | `hub.c` | 0 | 0 | 0 | 2 | fan-out subscribe/unsubscribe — this module logs *nothing* below debug; drops are counted in `/control` `queue_drops` and warned about by the consumers (RTSP/HTTP) |
-| `REC` | `record.c` | 9 | 6 | 6 | 2 | segment and writer detail |
+| `HUB` | `hub.c` | 0 | 1 | 0 | 2 | fan-out subscribe/unsubscribe at debug, plus the one always-on line: a per-(consumer kind, stream) queue-overflow summary, at most once per 60 s — the counter behind it is `/control` `queue_drops` |
+| `REC` | `record.c` | 9 | 7 | 6 | 1 | segment and writer detail, plus the overflow re-gate (which keyframe the segment resumed on); the *first* queue drop per subscription is a WARN |
 | `TLS` | `tls.c` | 5 | 1 | 1 | 1 | handshakes that are ordinary peer noise (EOF, close_notify, reset); the interesting ones are WARN |
 | `CONFIG` | `config.c` | 0 | 23 | 3 | 0 | — |
 | `SRT` | `srt.c` | 7 | 9 | 3 | 1 | the 10-second key=value `stats:` line (RTT, loss, retransmits, send rate) while a receiver is connected |
