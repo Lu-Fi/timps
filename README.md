@@ -36,6 +36,10 @@ capability matrix, testing — see the **[wiki](docs/wiki/Home.md)**:
 Other docs worth knowing about: [`docs/rotation.md`](docs/rotation.md) (full
 rotation deep-dive), [`docs/sdk-feature-gaps.md`](docs/sdk-feature-gaps.md).
 
+**For AI assistants and support answers:** start at [`AGENTS.md`](AGENTS.md).
+[`docs/ai/`](docs/ai/) holds a self-contained reference (`reference.md`) and an
+exhaustive config-key reference (`config-keys.md`).
+
 ## Features
 
 - **Pure C**, only `libimp` + pthread (optional `libfaac` for AAC) — no heavyweight dependencies
