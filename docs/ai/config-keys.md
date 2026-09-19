@@ -1,5 +1,7 @@
 # timps configuration keys — complete reference
 
+**Applies to timps v1.9.18 (source: `main`, 2026-09-15).**
+
 Authoritative source: `src/config.c` (the `cfg_field` tables and
 `config_defaults()`), `src/config.h` (struct field sizes and doctrine),
 `src/control.c` (what is reachable over HTTP), `src/hal/hal_ingenic.c`
@@ -66,13 +68,32 @@ POST of `999` to a `0..255` field succeeds and the camera reports `255`.
 | **file-only** | The `cfg_field` entry has no `F_CTRL` flag (or the whole section is not wired into `control_apply_json`). The key can **only** be changed by editing `/etc/timps.conf` and restarting. A POST carrying it is silently skipped (it shows up in the reply's `ignored` array). |
 | **capability-gated** | The key parses and persists on every build/SoC, but the HAL only issues the corresponding IMP call where the `*_caps.h` matrix says the SDK has it. Elsewhere it is stored, echoed, and does nothing. |
 
-`F_CTRL` is a per-field **security allowlist**, not a default. Anything without
-it — `motion.on_motion`, `motion.cooldown_ms`, `daynight.switch_cmd`,
-`daynight.isp_path`, `daynight.irprobe_cmd`, `daynight.trace_path`, every
-`rtsp.*`/`http.*` credential and token, `videoN.imp_chn`/`jpeg*`, the whole
-`jpeg.*`, `rtsp.*`, `http.*`, `events.*`, `webrtc.*`, `srt.*`, `sim.*` sections
-and `general.loglevel`/`imp_polling_timeout`/`osd_pool_size` — is unreachable
-over HTTP by design.
+`F_CTRL` is a per-field **security allowlist**, not a default. Unreachable over
+HTTP, verified against `control_apply_json()` (`src/control.c`) and the
+`cfg_field` tables:
+
+* **Whole sections `control_apply_json()` never walks:** `http.*`, `rtsp.*`,
+  `jpeg.*`, `events.*`, `webrtc.*`, `srt.*`, `sim.*`. The POST surface only
+  knows `image`, `audio`, `general`, `daynight`, `osd`/`osd<S>`, `video`,
+  `privacy`, `sensor`, `motion`, `record`, `timelapse`.
+* **Individual keys inside a walked section that carry no `F_CTRL`:**
+  `general.loglevel`, `general.imp_polling_timeout`, `general.osd_pool_size`
+  (only `general.debug_modules` is POST-able);
+  `video<N>.imp_chn`/`jpeg`/`jpeg_quality`/`jpeg_fps`/`jpeg_chn`;
+  `osd<S>.<N>.logo`/`logo_w`/`logo_h`/`font_path`;
+  `motion.on_motion`, `motion.cooldown_ms`;
+  `daynight.switch_cmd`, `daynight.isp_path`, `daynight.irprobe_cmd`,
+  `daynight.trace_path`.
+* `general.syslog`, `general.trace` and `general.trace_ms` have no table entry
+  at all (side effects in `set_kv()`), so they are file-only too.
+* `daynight.mode` is the one exception in the other direction: no `F_CTRL`, but
+  hand-validated in `control.c`, so a POST *does* reach it (and an unknown
+  token is rejected rather than coerced).
+
+A key in the second group **does** show up in the POST reply's `ignored` array
+— `ign_note()` reports any member of a walked object that lacks `F_CTRL`. So
+`{"motion":{"on_motion":"/x"}}` answers `200` with
+`"ignored":["motion.on_motion"]`.
 
 `F_NOGET` marks fields `GET /control` never reads back. `F_SECVAL` (only
 `http.https` and `rtsp.tls`) makes an unparseable value log a loud WARN, because
@@ -99,7 +120,7 @@ nesting are defined in `src/control.h`:
   "osd":    {"enabled":1},
   "osd0":   {"0":{"text":"%Y-%m-%d %H:%M:%S","x":10}},
   "osd1":   {"0":{"font_size":12}},
-  "privacy0": {"0":{"enabled":1,"x":100,"y":80,"w":320,"h":180}},
+  "privacy": {"0":{"0":{"enabled":1,"x":100,"y":80,"w":320,"h":180}}},
   "motion": {"enabled":1,"sensitivity":160},
   "record": {"enabled":1,"mode":"motion"},
   "timelapse": {"interval_s":60},
@@ -109,10 +130,21 @@ nesting are defined in `src/control.h`:
 
 Notes on the POST surface:
 
-* The JSON section name maps to the config prefix: `image`→`image.`,
-  `video.<N>`→`video<N>.`, `osd<S>.<N>`→`osd<S>.<N>.`,
-  `privacy<S>.<N>`→`privacy<S>.<N>.`. `{"osd":{"0":{...}}}` is the **legacy**
-  shared form and writes the item onto **every** stream.
+* The JSON section name maps to the config prefix, but **not uniformly** —
+  note that OSD items and privacy masks nest differently:
+  * `{"image":{…}}` → `image.*`
+  * `{"video":{"<N>":{…}}}` → `video<N>.*`
+  * `{"osd<S>":{"<N>":{…}}}` → `osd<S>.<N>.*` — the **stream index is part of
+    the section name** (`"osd0"`, `"osd1"`).
+  * `{"privacy":{"<S>":{"<N>":{…}}}}` → `privacy<S>.<N>.*` — the section is the
+    bare word `privacy` and **both** indices are nested inside it. There is no
+    `"privacy0"` section: `control_apply_json()` looks up the literal name
+    `privacy` and then walks stream then region. A body using `"privacy0"` is
+    an unknown top-level section — it is **not** applied and, because only
+    known sections are scanned, it is **not** listed under `ignored` either.
+    It answers `422 unknown_fields` if it was the only thing in the body.
+  * `{"osd":{"0":{...}}}` is the **legacy** shared form and writes the item
+    onto **every** stream.
 * A legacy flat top-level form still works for image keys only
   (`{"brightness":140}`) plus `{"force_mode":"night"|"day"}` →
   `image.running_mode`.
@@ -159,8 +191,11 @@ Yes, on every `POST /control` that changed at least one key — but it is a
 
 ### 1.6 Platform names
 
-`PLATFORM` values the build system accepts (`Makefile`): **T10, T20, T21, T23,
-T30, T31, T40, T41, C100**. `T32`, `T33` and `A1` are **not** selectable
+`PLATFORM` values the `Makefile` has a branch for: **T10, T20, T21, T23,
+T30, T31, T40, T41, C100**. There is **no validation**: the `IMP_INC` selection
+ends in an `else` branch that falls back to the **T31** headers, so an unknown
+or misspelled `PLATFORM` builds silently against T31 headers while
+`-DPLATFORM_<X>` matches no `*_caps.h` condition. `T32`, `T33` and `A1` are **not** selectable
 PLATFORM values in this tree — a `T32`/`T33` mention exists only inside
 `isp_caps.h`'s `ISP_HAS_SENSOR_ATTR` condition and is unreachable; `A1` does not
 appear at all. A build with no `PLATFORM_*` macro (the x86 host sim) enables
@@ -218,8 +253,10 @@ the POST reply lists them under `deferred`.
    `width`/`height`/`fps` from `video0.*`, final safety net `1920x1080 @25`.
 
 Pitfalls
-* `/proc/jz/sensor` does not exist on T40/T41 or the host sim, so autodetect
-  silently does nothing there and only config + fallback apply.
+* `/proc/jz/sensor` is reported not to exist on T40/T41 (and it never does on
+  the host sim), so autodetect silently does nothing there and only config +
+  fallback apply. **(unverified — kernel side; `config_sensor_finalize()` has
+  no `PLATFORM` gate and probes the path on every build.)**
 * **`sensor.fps` vs `videoN.fps`:** `sensor.fps` is the sensor/ISP frame rate;
   `videoN.fps` is the per-encoder-channel rate. Setting `videoN.fps` above
   `sensor.fps` cannot create frames — you get the sensor rate. Setting it below
@@ -235,8 +272,11 @@ Every `image.*` key is `F_CTRL` and **live** (applied by `isp_apply_image()`
 under `g_isp_lock` on each POST). Every key is also **capability-gated**: a key
 whose `ISP_HAS_*` macro is undefined on this SoC is still parsed, clamped,
 persisted and echoed, but the IMP call is never issued and the log says
-`image.<k> unsupported on this platform (persisted only)`. The `caps.image`
-array of `GET /control` lists exactly the supported subset.
+`image.<k> unsupported on this platform (persisted only)`. That line is a
+**LOGD**, i.e. invisible at the default `general.loglevel = 2` — add
+`general.debug_modules = HAL_ING` to see it. The `caps.image`
+array of `GET /control` lists exactly the supported subset, and is the reliable
+way to check.
 
 | Key | Type | Default | Range | Supported on | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -317,7 +357,7 @@ internal channel wiring, deliberately not exposed over HTTP.
 | Key | Type | Default (video0 / video1) | Range | Apply | Notes |
 | --- | --- | --- | --- | --- | --- |
 | `enabled` | bool | `1` / `1` | — | restart | Restart-only in the strongest sense: all consumers read `g_cfg_boot`, so a live-enabled stream is "servable" but has no publisher and the client just hangs. |
-| `codec` | enum | `h264` / `h264` | `h264`, `h265` (`hevc` = `h265`); anything else → `h264` | restart | **Coerced to `h264` with a warning on T10, T20 and T23.** T10/T20 have no H.265 encoder; T23's SDK marks every H.265 rc struct unsupported, so `IMP_Encoder_CreateChn` fails and the whole daemon exits. |
+| `codec` | enum | `h264` / `h264` | `h264`, `h265` (`hevc` = `h265`); anything else → `h264` | restart | **Coerced to `h264` with a warning on T10, T20 and T23.** T10/T20 have no H.265 encoder; T23's SDK marks every H.265 rc struct unsupported, so `IMP_Encoder_CreateChn` fails. The coercion is what keeps that out of the bring-up path: since 1.9.3 a `start()` failure is no longer fatal — it retries up to `MS_STARTUP_MAX_START_FAILS` (10) times and then escalates to one reboot (`src/main.c`), so an uncoerced H.265 on T23 would be a reboot loop rather than a clean exit. |
 | `width` | int | `1920` / `640` | 64..4096 | restart | |
 | `height` | int | `1080` / `360` | 64..4096 | restart | |
 | `fps` | int | `25` / `25` | 1..120 | restart | Per-channel rate. Cannot exceed what `sensor.fps` delivers. |
@@ -331,10 +371,10 @@ internal channel wiring, deliberately not exposed over HTTP.
 | `max_qp` | int | `45` / `45` | 1..51 | **live** everywhere | |
 | `quality_lvl` | int | `2` / `2` | 0..7 | live on classic SoCs; **no effect** on T31/C100/T40/T41 | VBR/Smart: `minBitRate = bitrate * quality[lvl]`. No new-API equivalent exists anywhere; the HAL warns once if it deviates from the default. |
 | `change_pos` | int | `80` / `80` | 50..100 | live on classic SoCs; **no effect** on T31/C100/T40/T41 | VBR/Smart: % of bitrate above which QP is raised. |
-| `i_bias_lvl` | int | `0` / `0` | -3..3 | live on classic SoCs and T31/C100; restart on T40/T41 | VBR+CBR I-frame QP bias. T40 has no `SetChnQpIPDelta`. |
-| `fluc_lvl` | int | `0` / `0` | 0..4 | live on classic SoCs; **no effect** on T31/C100/T40/T41 | **H.265 only** — the H.264 rc structs have no `flucLvl` field. |
+| `i_bias_lvl` | int | `0` / `0` | -3..3 | live on classic SoCs and T31/C100; **no effect at all** on T40/T41 | VBR+CBR I-frame QP bias. `ENC_HAS_QPIPDELTA` is defined for **T31/C100 only** (`src/hal/hal_ingenic.c`): T40 and T41 have no `IMP_Encoder_SetChnQpIPDelta` and no new-API struct field, so the value is parsed, clamped, persisted, echoed and **ignored** (one WARN per session). A restart does not help. |
+| `fluc_lvl` | int | `0` / `0` | 0..4 | **never live anywhere**; classic-SoC restart only | **H.265 only** — the H.264 rc structs have no `flucLvl` field. It is written into `attrH265Vbr`/`attrH265Cbr` in `classic_rc_fill()` and nowhere else, so: no effect on T31/C100/T40/T41 (no new-API equivalent), and inert on T10/T20/T23 because `codec = h265` is coerced away there. On T21/T30 it reaches the struct at channel creation, but classic H.265 channels are restart-bound (the classic `SetChnAttrRcMode` is H.264-only), so it never applies live. |
 | `rotation` | enum/int | `0` / `0` | `0`, `90`, `270`, plus `180` on T40/T41; legacy `1`→90, `2`→270 | restart | See the prose below. Unsupported values coerce to `0` with a warning. |
-| `buffers` | int | `2` / `2` | 1..8 | restart | IMP `nrVBs`. Setting it explicitly also sets an internal `buffers_explicit` flag, so HAL safety clamps (e.g. the T31 non-scaled channel) trust your value instead of overriding it. |
+| `buffers` | int | `2` / `2` | 1..8 | restart | IMP `nrVBs`. Setting it explicitly also sets an internal `buffers_explicit` flag, so the T31 safety clamp trusts your value instead of overriding it. The clamp gate is exactly `chn == 0 && isp_ch0_pre_dequeue_time != 0` (unreadable counts as active) — **scaled or not**; the older "non-scaled channel" theory was superseded in 2026-08. With the flag set the HAL warns and leaves `nrVBs` alone, which is why an explicit `buffers = 2` is *not* the same as omitting the line. |
 | `rtsp_path` | string[64] | `/ch0` / `/ch1` | — | **live** | The one `videoN.*` key that is genuinely live — a DESCRIBE re-matches it on every request, and it is read from the live `g_cfg`, not the boot snapshot. |
 | `imp_chn` | int | `0` / `1` | 0..8 | **file-only**, restart | IMP encoder channel index. libimp's own bound is `chn < 9`; above `MS_FS_MAXCHN` the frame source silently returns nothing — no video, no diagnostic. Must be unique across all encoders. |
 | `jpeg` | bool | `1` / `1` | — | **file-only**, restart | Alias `jpeg_enabled`. Piggyback JPEG encoder in the same encoder group, sharing this stream's FrameSource (no extra rmem) at this stream's resolution. |
@@ -394,7 +434,8 @@ change takes effect at the next IDR/GOP, not instantly.
   (`quality_lvl`, `change_pos`, `fluc_lvl`) do nothing.
 * **`qp` under CBR does nothing.** A very common mistake: use `min_qp`/`max_qp`.
 * **`max_gop` does nothing.** Use `gop`.
-* **`fluc_lvl` on an H.264 stream does nothing.**
+* **`fluc_lvl` does nothing on an H.264 stream, and never applies live on any
+  SoC** — see its row above.
 * Enabling a boot-disabled stream over `/control` reports success and leaves a
   hanging client — you must restart.
 * `videoN.fps` above `sensor.fps` is silently capped by the sensor.
@@ -406,7 +447,10 @@ change takes effect at the next IDR/GOP, not instantly.
 ## 6. `audio.*`
 
 Every `audio.*` key is `F_CTRL` (POST-able). The **live vs restart** split is a
-HAL concern, listed per key below.
+HAL concern, listed per key below. An audio key the SoC does not have logs
+`audio.<k> unsupported on this platform (persisted only)` — like the `image.*`
+twin this is a **LOGD**, invisible at `general.loglevel = 2`; use `caps.audio`
+from `GET /control` instead.
 
 | Key | Type | Default | Range | Apply | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -490,7 +534,7 @@ once in `imp_osd_setup()` at startup, and `ing_control()` logs
 | `osd.font_path` | string[128] | `/usr/share/fonts/default.ttf` | — | restart | Default TTF for text items. Empty = built-in bitmap font. |
 | `osd.vars_file` | string[128] | `/tmp/timps_osd.vars` | — | restart | Extra placeholder source: `name=value` lines, looked up for any `{name}` the built-ins do not resolve. |
 | `osd.supersample` | int | `2` | 1..4 | restart | TTF rasterizer AA samples per axis per pixel. Cost is roughly quadratic (4 → 16 samples/px). `2` is visually indistinguishable from `4` at OSD sizes and roughly halves rasterizer CPU. |
-| `osd.hinting` | bool | `1` | — | restart | Lightweight geometric autohint (snaps stem-like outline edges to the pixel grid at small sizes). **Not** a TrueType bytecode interpreter. |
+| `osd.hinting` | bool | `1` | — | restart | Lightweight geometric autohint (snaps stem-like outline edges to the pixel grid at small sizes). **Not** a TrueType bytecode interpreter. **The Kconfig help text is wrong** — `BR2_PACKAGE_TIMPS_OSD_HINTING`'s help says the runtime key defaults to "0 (off) either way"; `config_defaults()` sets `hinting = 1`. The code wins. |
 
 Pitfalls
 * **`osd.hinting` does nothing unless the build has `USE_OSD_HINTING`**
@@ -570,6 +614,18 @@ Pitfalls
 Every key is `F_CTRL` and **live** — the IMP OSD cover region is created,
 shown, hidden or moved at runtime.
 
+**POST shape** (`control_apply_json()` looks up the literal section name
+`privacy`, then the stream index, then the region index):
+
+```json
+{"privacy": {"0": {"1": {"enabled":1,"x":100,"y":80,"w":320,"h":180}}}}
+```
+
+`{"privacy0":{"1":{…}}}` does **not** work — it is an unknown top-level
+section, silently unapplied and absent from the reply's `ignored` list. This is
+the one place where the JSON nesting differs from the OSD-item convention
+(`{"osd0":{"1":{…}}}`), so it is an easy mistake to make.
+
 | Key | Type | Default | Range | Apply | Notes |
 | --- | --- | --- | --- | --- | --- |
 | `enabled` | bool | `0` | — | live | |
@@ -610,7 +666,7 @@ support reports `caps.motion.available = 0` and the feature is a stub.
 | `motion.cooldown_ms` | int | `5000` | **250..INT_MAX** | **file-only** | Minimum gap between motion events. **Not POST-able by design** — it is the floor that bounds how often the `on_motion` hook can be re-exec'd. `0` is no longer accepted. |
 | `motion.hold_ms` | int | `800` | 0..INT_MAX | **live** | Keep a cell "active" this long after its last hit, so asynchronous `/events`/`/control` readers reliably observe single-frame motion. `0` = no hold. Takes effect through a grid re-sync. |
 | `motion.skip_frames` | int | `5` | 1..INT_MAX | **live** | `IMP_IVS_MoveParam.skipFrameCnt` — analyse every Nth frame. Higher = cheaper but more latency. Takes effect through a grid re-sync. |
-| `motion.on_motion` | string[128] | `""` | — | **file-only**, `F_NOGET` | Program run on motion via `fork()` + `execlp()` — **not** a shell command line, **no arguments**. Never POST-able and never read back: it is an exec primitive. Read from `g_cfg` per event, so a file edit + restart is what applies it. |
+| `motion.on_motion` | string[128] | `""` | — | **file-only**, `F_NOGET` | Program run on motion via **`posix_spawn()`** with the value as the literal path (`src/hal/imp_motion.c`) — **not** a shell command line, **no arguments**, and **no `PATH` search**, because `posix_spawn` execs with `execve`. A bare command name therefore always fails: uClibc-ng's `__spawni` `_exit(127)`s, which surfaces as `on_motion '<cmd>' cannot be executed - is the script installed and executable?`. **Use an absolute path.** Never POST-able and never read back: it is an exec primitive. Read from `g_cfg` per event, so a file edit + restart is what applies it. |
 | `motion.roi_x` | int | `0` | unclamped | **deprecated, ignored** | Legacy single-ROI keys, replaced by the cell grid. Still parsed and persisted; a non-zero value logs one WARN per session and nothing consumes them. |
 | `motion.roi_y` | int | `0` | unclamped | **deprecated, ignored** | |
 | `motion.roi_w` | int | `0` | unclamped | **deprecated, ignored** | |
@@ -712,9 +768,9 @@ tick) **except**:
 | `daynight.heartbeat_max_s` | int | `43200` (12 h) | 300..604800 | live | Interval once the scene demonstrably has not moved since the last probe. The automaton takes the smaller of the two when the scene is moving. |
 | `daynight.boot_probe` | int | `1` | 0..1 | takes effect at the next boot | `1` = **every** boot measures before deciding, regardless of the persisted mode: boot into the day pipeline, read against `day_gain`, then assert the result on the board once. `0` = adopt the persisted mode without measuring — **except** when the AE is railed (zero reserve), where it measures anyway. Boot asserts the mode it ends up with on the board either way. |
 | `daynight.interval_ms` | int | `2000` | 100..60000 | live | Sample interval. The exposure index needs a `/proc` scrape per tick (integration time has no IMP API). |
-| `daynight.diagnose_thresholds` | int | `0` | 0..1 | live | When a probe fails and the best day-pipeline reading of that excursion was still clear of `day_gain`, warn that the threshold is unreachable for this scene and name the value to raise it above. Off by default because it is a WARN that repeats once per probe, forever, on flash-backed syslog. |
+| `daynight.diagnose_thresholds` | int | `0` | 0..1 | live | When probes keep failing and the best day-pipeline reading of that excursion was still clear of `day_gain`, warn that the threshold is unreachable for this scene and name the value to raise it above. It needs **`DN_DIAG_FAILS` = 3 consecutive failed probes** before it fires, and then warns **once per daemon session** (`diag_warned` in `src/daynight.c`) — not once per probe. Off by default anyway, because on a camera that genuinely never sees day it is a WARN nobody asked for. |
 | `daynight.history_s` | int | `0` | 0..172800 (48 h) | live | In-RAM decision-history ring for the WebUI tuning graph, in seconds of retention. `0` = off; nothing is allocated until a sample is pushed. One 16-byte sample per period, so the 48 h ceiling costs ~270 KiB. |
-| `daynight.switch_cmd` | string[64] | `daynight` | — | **file-only**, `F_NOGET` | Board script, run as `<cmd> day\|night` via `fork()`+`execlp()` (no shell). |
+| `daynight.switch_cmd` | string[64] | `daynight` | — | **file-only**, `F_NOGET` | Board script, run as `<cmd> day\|night` via `fork()`+`execlp()` (no shell). **Unlike `motion.on_motion`, this one *does* search `PATH`** — `execlp`, not `execve` — which is why the bare default `daynight` works. Same for `daynight.irprobe_cmd`. |
 | `daynight.isp_path` | string[128] | `/proc/jz/isp/isp-m0` | — | **file-only**, `F_NOGET` | ISP exposure proc file that is scraped. |
 | `daynight.irprobe_cmd` | string[64] | `timps-irprobe` | — | **file-only**, `F_NOGET` | Run as `<cmd> on\|off`. Empty disables the **silent** probe entirely and every night→day question falls back to the audible IR-cut probe. |
 | `daynight.trace_path` | string[128] | `""` | — | **file-only**, `F_NOGET` | Opt-in CSV decision-trace recorder, one line per N samples. Size-capped and rotated once, so bounded at 2× the cap. **Must live on tmpfs** (`/tmp`, `/run`) — a LOGW reminds you if the path does not look like tmpfs. |
@@ -855,9 +911,18 @@ Important behaviours
   (scheme+host+**port**), and Safari gives `fetch()`/XHR no click-through at
   all, so a second cert on `:8880` makes the preview fail with a bare
   "Load failed" for anyone who only ever trusted the web UI's.
-* The thingino WebUI's `/mjpeg` and `/onvif/image.cgi` loopback proxies are
-  wired to `http://127.0.0.1:8880` at **build** time, so changing `http.port` or
-  setting `http.https = 2` breaks them.
+* **The `/mjpeg` busybox proxy no longer exists.** The preview reaches
+  `:8880/stream.mp4` and `:8880/stream.mjpeg` directly. `/onvif/image.cgi` is a
+  symlink onto `x/ch0.jpg`, which *reads* `http.port` and `http.https` out of
+  `/etc/timps.conf` — so a non-default port is fine, but its `case` has no arm
+  for `http.https = 2` and falls back to plain `http`, which the daemon then
+  `426`s. (The comment still in the shipped `files/timps.conf` about two
+  loopback proxies in `/etc/httpd.conf` is stale.)
+* What genuinely hardcodes `http://127.0.0.1:8880` is **`send2common`**
+  (its `copy_photo` snapshot fetch); **`timps-motion`** reads `http.port` but
+  hardcodes the `http://` scheme. Both break on `http.https = 2`. See
+  `docs/ai/troubleshooting.md` §8.4 for the full list of which shipped scripts
+  accept `2` and which do not.
 
 ---
 
@@ -1006,7 +1071,7 @@ Every one maps to `USE_<X>=$(if $(BR2_PACKAGE_TIMPS_<X>),1,0)` in
 | --- | --- | --- | --- | --- | --- |
 | `BR2_PACKAGE_TIMPS_FAAC` | **y** | selects `BR2_PACKAGE_FAAC` | `-DUSE_FAAC` | Software AAC encode | Only G.711 audio. `audio.codec = aac` cannot be satisfied, so the fMP4 browser preview and SRT have no usable audio track. |
 | `BR2_PACKAGE_TIMPS_STREAM_OPUS` | **n** | selects `BR2_PACKAGE_OPUS` | `-DUSE_STREAM_OPUS` | RTP/RTSP Opus encoder (RFC 7587), signalled `opus/48000/2` | `opus` is **not an accepted `audio.codec` token** — it falls through the parser to `aac`, silently. |
-| `BR2_PACKAGE_TIMPS_CONTROL` | **y** | — | `-DUSE_CONTROL` | `/control` JSON API, `/events` SSE, the token machinery | `/control` and `/events` gone (404); **no WebUI plugin installed at all**; no send2 bridge; no motors UI. `/talk` would 401 any browser (hence `BC_WS`'s dependency). ~15 KB smaller. |
+| `BR2_PACKAGE_TIMPS_CONTROL` | **y** | — | `-DUSE_CONTROL` | `/control` JSON API, `/events` SSE, the token machinery | `/control` and `/events` gone (404); **no WebUI plugin installed at all**; no motors UI. The whole `TIMPS_INSTALL_SEND2` hook drops out, so `send2common`, `telegram-cam-register` and the `send2*` tools are not installed. **`/usr/sbin/timps-motion` still installs unconditionally**, so the motion bridge keeps running and its `record.clip` POST to `/control` fails every time (it logs once per boot and sends the notification without video). `/talk` would 401 any browser (hence `BC_WS`'s dependency). ~15 KB smaller. |
 | `BR2_PACKAGE_TIMPS_DAYNIGHT` | **y** | — | `-DUSE_DAYNIGHT` | The detection thread; installs `/usr/sbin/color`, `/usr/sbin/daynight`, `/etc/init.d/S06ircut`; removes daynightd's autostart scripts | No automatic day/night. `daynight.*` keys parse and persist and do nothing. daynightd's scripts are **not** removed. (`/usr/sbin/ircut` and `/usr/sbin/light` install unconditionally.) |
 | `BR2_PACKAGE_TIMPS_RECORD` | **y** | — | `-DUSE_RECORD` | fMP4 segment recording **and** the on-demand clip capture used by send2/Telegram motion videos | `GET /control` reports `record.available = 0`, the WebUI hides record controls, Telegram motion *videos* stop working. ~11 KB saved. |
 | `BR2_PACKAGE_TIMPS_TIMELAPSE` | **y** | — | `-DUSE_TIMELAPSE` | Periodic JPEG snapshots + pruning | `timelapse.available = 0`, WebUI hides the page. ~4 KB saved. |
@@ -1059,6 +1124,20 @@ and `-DMS_VERSION='"<version>"'` — the last of which is what `GET /control`
 reports as `version`, derived from `git describe` when an override srcdir is
 set, so it catches stale-build drift.
 
+**Build hardening is dropped by the package.** The upstream `Makefile` defines
+`CFLAGS ?=`/`LDFLAGS ?=` including `HARDEN_CFLAGS`/`HARDEN_LDFLAGS`
+(`-fstack-protector-strong`, `-D_FORTIFY_SOURCE=2`, `-Wl,-z,relro -Wl,-z,now
+-Wl,-z,noexecstack`, gated by `HARDEN=1`/`FORTIFY=1`). `timps.mk` passes
+`CFLAGS="$(TIMPS_CFLAGS)"` and `LDFLAGS="$(TARGET_LDFLAGS) …"` **explicitly** on
+the make command line, which overrides a `?=` default outright — so none of
+those hardening flags reach a Buildroot build unless Buildroot's own
+`TARGET_CFLAGS`/`TARGET_LDFLAGS` already carry them (via `BR2_SSP_*`,
+`BR2_FORTIFY_SOURCE_*`, `BR2_RELRO_*`). **(unverified — whether this firmware's
+toolchain config actually supplies them was not checked; read the
+`BR2_SSP_`/`BR2_RELRO_`/`BR2_FORTIFY_SOURCE_` symbols in the generated
+`.config`.)** `HARDEN=0`/`FORTIFY=0` are therefore not the lever here; the
+Buildroot-side symbols are.
+
 Implications the upstream `Makefile` applies no matter what the package passes:
 `USE_SW_ROTATE=1 ⇒ USE_ROTATE`; `USE_BC_AAC=1 ⇒ USE_BACKCHANNEL`;
 `USE_PLAY_OPUS=1 ⇒ USE_PLAY`; `USE_BC_WS=1 ⇒ USE_BACKCHANNEL + USE_CONTROL`;
@@ -1088,9 +1167,17 @@ Implications the upstream `Makefile` applies no matter what the package passes:
 * Commands: **`start | stop | restart | status`**. There is **no `reload`** —
   live reconfiguration is `/control`'s job, and anything restart-required needs
   a full `S95timps restart`.
-* `stop` and `restart` wait up to ~5 s for the old process to go
-  (`wait_stop()`), because IMP/rmem teardown takes a while and starting a new
-  instance too early makes ISP init fail.
+* `stop` and `restart` wait for the old process to go (`wait_stop()`), because
+  IMP/rmem teardown takes a while and starting a new instance too early makes
+  ISP init fail. The loop is **50 iterations of
+  `usleep 100000 2>/dev/null || sleep 1`** — so ~5 s where busybox `usleep`
+  exists, and **50 s where it does not**.
+* **`stop` deletes the pidfile unconditionally**, even when `wait_stop` timed
+  out and printed `timpsd still stopping...`. `restart`'s second `wait_stop`
+  then returns immediately (no pidfile = "gone"), so `start` can land on top of
+  a still-exiting instance and the singleton `flock` becomes the only guard —
+  and it refuses the *new* process, leaving the camera dark. See
+  `docs/ai/troubleshooting.md` §11.6.
 * `ensure_tls_certs()` runs before `start`, in this order:
   1. Proceed only if `http.https` is `1`/`2`/`true`/`yes`/`on`, **or**
      `rtsp.tls` is exactly `1`, **or** `webrtc.enabled` is `1` or `2`. (Note the
@@ -1105,8 +1192,75 @@ Implications the upstream `Makefile` applies no matter what the package passes:
      present the same certificate and one browser trust decision covers both).
      A symlink, not a copy, because `S02ssl` regenerates uhttpd's cert whenever
      it is missing and a copy would go stale.
+     **If either `ln -sf` fails**, *both* paths are removed again (a half-made
+     link would leave timpsd with a cert and no key), `logger -t timps` records
+     `TLS: could not link /etc/ssl/certs/uhttpd.crt, generating our own`, and
+     the step falls through to 5.
   5. Otherwise run `/usr/bin/generate-timps-tls-certs.sh <crt> <key>` if it is
-     installed (it is only installed by `BR2_PACKAGE_TIMPS_TLS`).
+     installed (it is only installed by `BR2_PACKAGE_TIMPS_TLS`); if it is not
+     installed the function simply returns and timpsd starts with no cert. A
+     generator failure logs `TLS cert generation failed: <output>`, again via
+     `logger -t timps` — so these two lines live in `logread`, not in timpsd's
+     own log stream.
+
+### 22.9 Shipped configuration vs compiled defaults
+
+`package/timps/files/timps.conf` is **not** a copy of `config_defaults()`, and
+it is **not** `timps.conf.example` either. Three different files, three
+different values for several keys. What the shipped template changes:
+
+| Key | Shipped `/etc/timps.conf` | Compiled default | Why it matters |
+| --- | --- | --- | --- |
+| `general.osd_pool_size` | `1000` | `1024` | Harmless, but a `GET /control` read-back of 1000 is the file, not a clamp. |
+| `general.debug_modules` | `daynight` | `""` | **DAYNIGHT logs at DEBUG on every shipped camera.** With `general.loglevel = 2` this is the baseline log volume an operator sees — the per-probe day/night lines are not a leftover from someone debugging. |
+| `rtsp.user` / `rtsp.pass` | `thingino` / `thingino` | `""` / `""` (= open) | The "empty credentials" behaviour described for `rtsp.*`/`http.*` is **not** the shipped state. |
+| `http.user` / `http.pass` | `thingino` / `thingino` | `""` / `""` | Same. Default credentials, fleet-wide. |
+| `sensor.model`, `sensor.i2c_addr` | `gc2053` / `0x37`, then `sed`-adapted per board | *(unset → autodetect)* | `TIMPS_INSTALL_TARGET_CMDS` rewrites `sensor.model` from `BR2_SENSOR_1_NAME`, and forces `i2c_addr = 0x31` for `gc5603`. |
+| `motion.on_motion` | `/usr/sbin/timps-motion` | `""` | Which is why that script installs unconditionally (§22.2). |
+| `http.https`, `audio.backchannel`, `audio.talk_ws` | commented, **uncommented by the build** when the matching Kconfig symbol is on | `0`, `0`, `0` | `http.https = 1` needs `TIMPS_TLS` **and** `THINGINO_UHTTPD_TLS`; `audio.talk_ws` is only ever uncommented as `1`, never `2`. |
+| `record.enabled` | `0`, active line | `0` | Same value, but present in the file. |
+| `srt.enabled` | `0` | `0` | — |
+
+And where the repo's own `timps.conf.example` disagrees with the shipped
+template (it is a documentation file, not something installed — see §14 #2 of
+the troubleshooting doc):
+
+| Key | `timps.conf.example` | Shipped template |
+| --- | --- | --- |
+| `srt.enabled` | `1`, active (with a comment saying the compiled default is 0) | `0` |
+| `general.osd_pool_size` | `1024` | `1000` |
+| `general.debug_modules` | commented out | `daynight`, active |
+| `rtsp.user` / `http.user` | active but **empty** | `thingino` |
+| `audio.talk_ws` | `0`, active | commented `= 1` (uncommented by the build) |
+| `record.enabled` | commented out | `0`, active |
+| `motion.on_motion` | commented `/etc/scripts/on_motion.sh` | `/usr/sbin/timps-motion`, active |
+| `http.adaptive_drop`, `motion.skip_frames` | present | absent |
+| `sensor.fps/width/height` | active | commented out |
+| `jpeg.*`, `video*.*`, `osd*.*`, `daynight.*`, `timelapse.*`, `privacy*.*` | fully enumerated | absent — the shipped template relies on the compiled defaults |
+
+**Practical consequence:** never answer "what is this camera set to?" from
+either file. Read `GET /control`.
+
+### 22.10 Other conditional installs
+
+Beyond the feature symbols in §22.2, these files land (or do not) on rules of
+their own, all in `timps.mk`:
+
+| File | Rule |
+| --- | --- |
+| `/usr/libexec/agent/adapter.sh` (from `files/agent-adapter`) | **Unconditional**, inside `TIMPS_INSTALL_TARGET_CMDS`; overwrites the null fallback thingino-agent installs. |
+| `/etc/init.d/S48webui-config` | `TIMPS_INSTALL_WEBUI_CONFIG_FIX`, only when `BR2_PACKAGE_THINGINO_WEBUI=y`. |
+| `/etc/init.d/S96onvif_discovery` | `TIMPS_INSTALL_ONVIF_DISCOVERY`, a **target-finalize hook that probes the target** — it installs only if `usr/sbin/wsd_simple_server`, `var/www/onvif/onvif.cgi` or an existing `S96onvif_discovery` is present. It is deliberately **not** gated on `BR2_PACKAGE_THINGINO_ONVIF`, and on an ONVIF-free image nothing is shipped. |
+| `rm -f /etc/init.d/*daynightd /etc/init.d/*dusk2dawn` | `TIMPS_DISABLE_DAYNIGHTD`, only when `BR2_PACKAGE_TIMPS_DAYNIGHT=y`. A glob, because a 2.0.0 rename (`S97daynightd` → `S10daynightd`) broke the old literal name. |
+| Stock-WebUI purge | `TIMPS_PURGE_STOCK_WEBUI`, a finalize hook appended inside the `THINGINO_WEBUI` + `TIMPS_CONTROL` guard. |
+| Five forked WebUI files re-applied | `TIMPS_REAPPLY_WEBUI_OVERLAY`, **prepended** to `TARGET_FINALIZE_HOOKS` so it wins the per-package merge. |
+| motors UI (`config-motors.html`, `json-motor*.cgi`, …) | `TIMPS_REAPPLY_MOTORS_UI`, only when `BR2_PACKAGE_THINGINO_MOTORS` **and** `BR2_PACKAGE_THINGINO_STREAMER_TIMPS` are both `y`; `json-motor-token.cgi` additionally needs `BR2_PACKAGE_THINGINO_MOTORS_WS=y`. |
+| `/usr/sbin/{daynight,ircut,light}`, `S06ircut` | `TIMPS_INSTALL_DAYNIGHT_SCRIPTS`, from the **daynightd package's** `files/`; `ircut` and `light` unconditionally, `daynight` and `S06ircut` under `BR2_PACKAGE_TIMPS_DAYNIGHT`. |
+
+One documentation disagreement worth knowing: the upstream `Makefile`'s comment
+next to `USE_WEBRTC` says the runtime key is "gated at runtime by
+`webrtc.enabled` in timps.conf (default 0)". `Config.in` and
+`config_defaults()` both say **2**. The code wins.
 
 ---
 
@@ -1156,3 +1310,24 @@ Counting notes:
   `MS_MAX_VSTREAM = 2`, `MS_MAX_OSD = 8`, `MS_MAX_PRIVACY = 4`,
   `MS_MAX_STR = 64`; and from `src/motion_caps.h`, `MOTION_MAX_CELLS` =
   `IMP_IVS_MOVE_MAX_ROI_CNT` (52, or 4 on the T10/T20 3.9.0 SDK).
+
+---
+
+## 24. Per-SoC differences that change what a key does
+
+The `*_caps.h` matrices in §4, §5 and §5's `video_live` table cover which keys
+apply. These are the *behavioural* differences behind them — the ones that turn
+into support questions.
+
+| SoC(s) | Difference | Where |
+| --- | --- | --- |
+| **T40, T41** | `ISP_NEW_TUNING_API`: no `GetTotalGain`, no `ISP_HAS_EXPR` (no `GetExpr`/integration-time readback), and no `ISP_HAS_AELUMA`. `hal_isp_total_gain()` and `hal_isp_ae_luma()` return −1, so **day/night runs on the `/proc` scrape alone** — no IMP cross-check, and the exposure index degrades to whatever the dump publishes. | `src/isp_caps.h`, `src/hal/hal_ingenic.c` |
+| **T21, T23, T31, C100** | The only SoCs with `IMP_ISP_Tuning_GetAeLuma` (`ISP_HAS_AELUMA`), day/night's secondary photosensing metric. | `src/isp_caps.h` |
+| **T20** (old SDK) | The ISP dump is `/proc/jz/isp/isp_info`, not `isp-m0` — `isp-m0` does not exist in that SDK and never will. `daynight.c` carries an explicit fallback list, so `daynight.isp_path` does not have to be changed, but the `is not readable, using … instead` warning is expected there. | `src/daynight.c` |
+| **T10** | `jpeg.quality` / `videoN.jpeg_quality` are **never applied** — custom quantization tables are known to degrade JPEG quality on T10, so the SDK default is kept and one WARN is logged. | `src/hal/hal_ingenic.c` |
+| **T10, T20, T21, T30** | No `ISP_HAS_SENSOR_ATTR` (`GetSensorAttr`), so the framesource input geometry comes **only** from `sensor.width`/`sensor.height`. A sensor driver that reports `0x0` cannot be compensated for there. | `src/isp_caps.h` |
+| **T31 only** | `encoder.<n>.ave_bitrate` appears in `GET /control?stats=1` (`IMP_Encoder_GetChnAveBitrate`). Elsewhere the key is simply absent, not zero. | `src/hal/hal.h`, `src/control.c` |
+| **T41** | No `IMP_Encoder_SetChnAttrRcMode` at all (`ENC_HAS_SETRCMODE` undefined) — only `bitrate` and the QP bounds can be touched live. T40 **does** attempt the live call. | `src/hal/hal_ingenic.c` |
+| **T40, T41** | Flips go through `IMP_ISP_Tuning_SetHVFLIP` instead of `SetISPHflip`/`SetISPVflip`, and `g_sensor.rst_gpio`/`pwdn_gpio`/`power_gpio` are forced to `-1` (the fields are plain `int` in that SDK). | `src/hal/hal_ingenic.c` |
+| **T31/C100 vs T40/T41** | `ENC_HAS_QPIPDELTA` (hence a working `videoN.i_bias_lvl`) is T31/C100 only. | `src/hal/hal_ingenic.c` |
+| **T31** | The `isp_ch0_pre_dequeue_time` one-buffer gate on framechan0 — see `videoN.buffers` in §5. | `src/hal/hal_ingenic.c` |

@@ -97,8 +97,11 @@ leaving the channel in a half-updated state.
 
 ## `cooldown_ms`, `hold_ms`, and `skip_frames`
 
-These three are related but distinct, and are all **config-file-only** —
-none of them has a `/control` POST path:
+These three are related but distinct. `hold_ms` and `skip_frames` are
+POST-able over `/control` and applied live (they ride the deferred IVS grid
+re-sync that runs once at the end of the request); `cooldown_ms` is
+**config-file-only** by design, as the floor that bounds how often the
+`on_motion` hook can be re-exec'd:
 
 - **`motion.skip_frames`** (default 5, floor 1) maps directly to
   `IMP_IVS_MoveParam.skipFrameCnt` — an IVS-native "analyze every Nth
@@ -125,11 +128,14 @@ none of them has a `/control` POST path:
 `motion.on_motion` (default `""` = disabled, config-file-only, and —
 unlike almost every other config key — not even readable back via
 `GET /control`) names a program to run when **any** cell trips. It is
-invoked via `fork()` + `execlp()`, **never** `system()` — the hook has no
+invoked via `posix_spawn()`, **never** `system()` — the hook has no
 shell and takes no arguments, so a malicious or malformed `on_motion`
-value can only fail to exec, never inject shell metacharacters. The fork
-is double-forked so the actual script is reparented to init and reaped
-there — motion detection is never blocked waiting on the hook's runtime.
+value can only fail to exec, never inject shell metacharacters. Because
+`posix_spawn()` execs through `execve`, there is **no `PATH` search**: give
+it an absolute path. It replaced the old double `fork()` (which copied the
+whole daemon's address space twice per event and caused `ENOMEM` on low-RAM
+boards) and hands back a direct child that the detection thread reaps
+without blocking on the hook's runtime.
 
 The hook receives context via **environment variables** (avoiding the
 need for the script to poll `/control` and race the `hold_ms` decay

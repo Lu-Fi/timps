@@ -180,7 +180,7 @@ int  control_daynight_json(char *buf, size_t cap, int enabled, int mode,
  * master "enabled" needs a restart); "restart" lists the sections (video,
  * sensor) whose keys are persist-only and need a daemon restart;
  * rtsp_max_clients/http_max_clients/events_max_clients are the concurrent-
- * client ceilings each server refuses past (453 / 503 / 503) - not inferable
+ * client ceilings each server refuses past (503 / 503 / 503) - not inferable
  * from anywhere else, and per-board, since the first two are -D overridable.
  * Top-level "srt" and "tls" objects report per-BUILD feature availability the
  * same way ({"available":0} when the binary was compiled without it): the

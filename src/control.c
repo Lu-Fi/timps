@@ -1348,7 +1348,7 @@ int control_get_json(char *buf, size_t cap)
     }
 #endif
     APP("],");
-    /* Concurrent-client ceilings. These are REFUSAL points - RTSP answers 453
+    /* Concurrent-client ceilings. These are REFUSAL points - RTSP answers 503
      * and drops, HTTP and /events answer 503 "busy" - and until now a client
      * had no way at all to learn them short of opening connections until one
      * failed, which on a live camera means deliberately DoSing the thing you

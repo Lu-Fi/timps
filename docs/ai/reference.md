@@ -4,7 +4,21 @@
 This document describes `timps`, one of the streamer choices in thingino
 firmware. Everything here is verified against the `main` branch of
 <https://github.com/Lu-Fi/timps> and against `package/timps/` in a thingino
-firmware tree, as of **v1.9.18 (2026-09-15)**.
+firmware tree.
+
+Applies to timps v1.9.18 (source: `main`, 2026-09-15)
+
+## Where to find what
+
+| Question | Document |
+| --- | --- |
+| "What is the exact default / range / apply mode of key `X`?" | **`docs/ai/config-keys.md`** — every config key, verified key by key against `src/config.c`. It owns the key tables; this file only summarizes them. |
+| "What does this log line mean?" / "Why is the camera doing X?" | **`docs/ai/troubleshooting.md`** — log dictionary, error/status codes, misconfiguration gallery, and a "what NOT to advise" list of plausible-but-wrong answers. |
+| Feature background and design rationale | **`docs/wiki/`** — the human wiki (`Configuration-Reference.md`, `Day-Night.md`, `Audio.md`, `Motion-Detection.md`, `Rate-Control-*.md`, …). |
+| Everything else — what timps is, how it is built and gated, how to answer a user | this file. |
+
+If this file and `config-keys.md` disagree about a key, `config-keys.md` wins;
+if either disagrees with the source, the source wins.
 
 Rules for using this document:
 
@@ -28,7 +42,8 @@ Rules for using this document:
 `timps` = "Tiny IMP Streamer". A single-binary (`/usr/bin/timpsd`), pure-C
 RTSP / fragmented-MP4 / MJPEG streamer for Ingenic-SoC IP cameras, written
 directly against the vendor `libimp` library. No live555, no libconfig, no
-libwebsockets, no libschrift. Stripped binary is roughly **360 KB** (mipsel).
+libwebsockets, no libschrift. Stripped binary is roughly **360 KB** (mipsel)
+(unverified — depends on the enabled `USE_*` set; measure the actual build).
 
 - Source: <https://github.com/Lu-Fi/timps>
 - Docs (in-repo wiki, `docs/wiki/`): `Home.md`, `Architecture.md`,
@@ -166,9 +181,9 @@ Changes made through `POST /control` are written back into this file (only the
 changed keys, atomic tmp+rename). Hand edits need a restart:
 `/etc/init.d/S95timps restart`.
 
-The thingino package ships a **minimal** `/etc/timps.conf` — most keys are
-absent and the compiled-in defaults apply. Notably it ships
-`rtsp.user`/`rtsp.pass` and `http.user`/`http.pass` all set to
+The thingino package ships a **trimmed** `/etc/timps.conf` (about 46 active
+keys) — most keys are absent and the compiled-in defaults apply. Notably it
+ships `rtsp.user`/`rtsp.pass` and `http.user`/`http.pass` all set to
 **`thingino`/`thingino`**, `motion.on_motion = /usr/sbin/timps-motion`, and
 `general.debug_modules = daynight`.
 
@@ -196,6 +211,10 @@ absent and the compiled-in defaults apply. Notably it ships
 | `sim.` | Host-simulation file inputs (ignored on device) |
 
 ### Key reference with real defaults
+
+A **summary** only. `docs/ai/config-keys.md` is the exhaustive, code-verified
+table (default, range, apply mode, and what each key actually does) and is the
+one to quote when a user asks about a specific key.
 
 **`general.`**
 ```
@@ -280,8 +299,8 @@ stream that has `videoN.jpeg = true` (which defaults to on), so they still work
 
 **`osd.`** — `enabled` 1, `monitor_stream` 0, `font_path`
 `/usr/share/fonts/default.ttf` (empty = built-in bitmap font), `vars_file`
-`/tmp/timps_osd.vars`, `supersample` 2 (1–4), `hinting` (see §12 discrepancy
-note). Items: `osd<S>.<N>.{enabled,type,text,x,y,font_size,color,transparency,
+`/tmp/timps_osd.vars`, `supersample` 2 (1–4), `hinting` 1. Items:
+`osd<S>.<N>.{enabled,type,text,x,y,font_size,color,transparency,
 outline,outline_color,logo,logo_w,logo_h,font_path}`. `type` is `text` or
 `logo`. Position convention: `0` = centered on that axis, positive = from
 left/top, negative = from right/bottom. Text placeholders: strftime tokens plus
@@ -318,7 +337,9 @@ plus the optional calendar: `time_night_start` / `time_day_start` (HH:MM),
 `sun_sunset_offset_min`.
 
 **Keys that are file-only (never settable over HTTP)** — say so if a user
-reports a POST being ignored: `general.loglevel`, `motion.cooldown_ms`,
+reports a POST being ignored (the common ones; `config-keys.md` marks every
+key): `general.loglevel`, `general.imp_polling_timeout`,
+`general.osd_pool_size`, `motion.cooldown_ms`,
 `motion.on_motion`, `daynight.switch_cmd`, `daynight.isp_path`,
 `daynight.irprobe_cmd`, `daynight.trace_path`, `events.*`, `rtsp.*`, `http.*`,
 `srt.*`, `webrtc.*`, `jpeg.*`. By contrast `osd.supersample` and `osd.hinting`
@@ -350,7 +371,9 @@ removed `daynight.learn` / `daynight.state_path`.
 | `http://<ip>:8880/stream.mp4` | Fragmented MP4 — works in ffplay/VLC and browsers. |
 | `http://<ip>:8880/snapshot.jpg` | Latest JPEG frame. |
 | `http://<ip>:8880/stream.mjpeg` (alias `/mjpeg`) | MJPEG multipart. |
-| `…?chn=N` | JPEG/MJPEG at `videoN`'s resolution; requires `videoN.jpeg = true`. |
+| `…?chn=N` | Selects a video stream. On `/snapshot.jpg` and `/stream.mjpeg` it is **strict** — it picks that stream's piggyback JPEG encoder and 404s if `videoN.jpeg` is off, with no fallback. On `/stream.mp4` and the player page `/` it falls back to `http.preview_chn`, then to `0` if that stream is boot-disabled. |
+| `…?embed` | Player page only: any path containing the substring `embed` renders without the heading, for an `<iframe>`. |
+| `/stream.mjpeg?boundary=X` | Overrides the multipart boundary (to match what a proxy already announced). Sanitised to `[A-Za-z0-9_-]`, other bytes become `_`; default and empty-result fallback is `msmjpeg`. |
 | `http://<ip>:8880/control` | JSON control API (`USE_CONTROL`). |
 | `http://<ip>:8880/events` | SSE push stream (`USE_CONTROL`). |
 | `wss://<ip>:8880/talk` | Browser mic → camera speaker (`USE_BC_WS`). |
@@ -368,11 +391,33 @@ removed `daynight.learn` / `daynight.state_path`.
 - **Contribution over an unreliable/NAT'd link to a remote receiver** → SRT in
   `caller` mode.
 
+**RTSP path matching is forgiving, not strict.** `find_video_by_path()`
+(`src/rtsp/rtsp.c`) tries each **boot-enabled** stream's `rtsp_path` as a
+prefix, and if none matches **falls back to the first boot-enabled stream**.
+So `rtsp://<ip>/anything` serves `ch0`, and `rtsp://<ip>/ch1` on a camera with
+`video1.enabled = 0` also serves `ch0` — silently, at ch0's resolution.
+`404 Not Found` on DESCRIBE/SETUP means **no video stream is enabled at all**,
+not "that path is wrong". A user who insists they are watching the substream
+and sees main-stream dimensions has usually hit this.
+
 **On-demand encoding:** every stream is only captured and encoded while at
 least one client is attached. There is nothing to configure. Two consequences
 worth telling users: idle CPU is near zero, and **a live `encoder.<n>.rc`
 readback will look frozen on a camera nobody is watching** — attach a client
 for a couple of seconds before trusting it.
+
+**`HEAD` for health checks.** Three different behaviours, and the difference
+matters if a monitoring system polls the camera:
+
+| Path | `HEAD` behaviour |
+| --- | --- |
+| `/snapshot.jpg` | **Grabs a real frame** and returns its true `Content-Length`, body suppressed. This *does* wake the JPEG pipeline — it is a full snapshot minus the bytes. |
+| `/stream.mp4`, `/stream.mjpeg` | Headers only (including the MJPEG boundary). **No encoder wake-up**, no subscription. |
+| `/events` | Headers only, **no SSE body and no client slot consumed** — it does not count against `events.max_clients`. |
+| `/control` | Same as `GET`: the JSON is built and its `Content-Length` reported, then the body is suppressed. |
+
+So a `HEAD /stream.mp4` liveness probe is free, while a `HEAD /snapshot.jpg`
+probe costs a frame every time.
 
 ---
 
@@ -393,7 +438,37 @@ passes if **any** of these holds:
 3. **HTTP Basic or Digest** — `http.user`/`http.pass`, falling back to
    `rtsp.user`/`rtsp.pass`. The 401 challenge offers Digest first, then Basic.
 
-RTSP itself uses **Digest** auth, enabled by setting `rtsp.user`/`rtsp.pass`.
+**The token list is exactly these paths**, and nothing else:
+`/stream.mp4`, `/snapshot.jpg`, `/stream.mjpeg`, `/mjpeg`, `/control`,
+`/events`, `/talk` (`USE_BC_WS`) and `/webrtc/…` (`USE_WEBRTC`). **The player
+page `/` and `/index.html` are deliberately not on it.** With `http.user` set,
+`http://<cam>:8880/?token=…` answers **401** while
+`http://<cam>:8880/stream.mp4?token=…` works — the page is reachable only from
+loopback or with Basic/Digest. A WebUI that embeds the player in an
+`<iframe>` therefore needs real credentials, not a token; embedding
+`/stream.mp4?token=…` in a `<video>` does not.
+
+**CORS and preflight.** The same path list gets `Access-Control-Allow-Origin`
+reflection and answers `OPTIONS` with `204` **before any auth** (a preflight
+carries no credentials by design). Two details worth knowing:
+
+- **Private Network Access.** When a browser sends
+  `Access-Control-Request-Private-Network: true` (Chrome's PNA, for a page
+  hosted off the LAN reaching a LAN device), the preflight echoes
+  `Access-Control-Allow-Private-Network: true`. It is echoed **only when
+  asked**, never volunteered. It grants nothing: the real request still has to
+  pass the token/Basic/Digest/loopback gate.
+- The WHEP `201 Created` adds
+  `Access-Control-Expose-Headers: Location`, so the browser can actually read
+  the session id it has to `DELETE` later.
+
+**RTSP accepts Basic *and* Digest.** `rtsp_check_auth()` tries
+`auth_rtsp_digest()` and then `auth_http_basic()`, and the `401` offers both
+challenges — so `rtsp://user:pass@<ip>/ch0` works with Basic-only clients and
+embedded NVRs, not just Digest-capable ones. Digest is additionally bound to
+the nonce issued on **that connection**, so a sniffed Digest header cannot be
+replayed; a sniffed Basic header can, which is the reason to prefer RTSPS on
+an untrusted segment. Auth is enabled by setting `rtsp.user`/`rtsp.pass`.
 
 ### The empty-credentials case (important for security questions)
 
@@ -440,6 +515,25 @@ Returns the full in-memory config plus read-only status as one JSON document
 - `last_errors` holds the last WARN/ERROR per module — useful when the syslog
   ring has already recycled.
 
+#### Read-only status leaves
+
+Everything above is echoed config *except* these. None of them is settable;
+several answer a support question no other endpoint can. (`GET /control` can
+answer **`500 control json too large`** if the document overruns its 22 528-byte
+cap — see the POST limits below.)
+
+| Object | Leaves | Notes |
+| --- | --- | --- |
+| `encoder.<N>` | `registered`, `left_pics`, `left_stream_bytes`, `left_stream_frames`, `cur_packs`, `work_done`, `au_drops`, and `ave_bitrate` **on T31 only** | Straight from `IMP_Encoder_Query`. A channel whose query fails (stream disabled, SW-rotate path, host sim) is **omitted entirely** rather than reported as zeros. **`au_drops` = producer-side drops** (oversized AU, pool OOM in the encode thread) — the only exact count, since the log throttles those to every 20th event. Distinct from the top-level **`queue_drops[]`, which counts consumer-queue evictions.** |
+| `encoder.<N>.rc` | `rc_mode`, then whichever of `bitrate`, `max_bitrate`, `qp`, `min_qp`, `max_qp`, `i_bias_lvl`, `change_pos`, `quality_lvl`, `static_time`, `frm_qp_step`, `gop_qp_step`, `adaptive_mode`, `gop_relation`, `fluc_lvl`, `ip_delta`, `pb_delta`, `max_psnr`, `rc_options`, `max_picture_size` the current mode and SDK actually carry | What the encoder **holds right now**, read back from `IMP_Encoder_GetChnAttrRcMode` — deliberately separate from the configured `videoN.*` block so written and held values can be compared. Fields the mode/API does not carry are omitted, not zeroed. On new-API SoCs `bitrate`/`max_bitrate` are raw SDK values (**unit unverified**). Frozen on a camera with no client attached (see §4). |
+| `srt` | `enabled`, `port`, `channel`, `mode` (`listener`/`caller`), `connected`, `stats_age_s`, `rtt_ms`, `bw_mbps`, `rate_mbps`, `retrans`, `loss`, `drop` | **`stats_age_s = -1` means no receiver has been connected long enough for a sample** — the other numbers are then meaningless, not zero-valued facts. |
+| `timelapse` | `count`, `last_t`, `free_mb`, `last_file` | |
+| `record` | `recording`, `write_errors`, `last_error`, `last_error_age_s`, `motion_gate_enabled`, `manual_off`, `bytes`, `free_mb`, `file` | `last_error_age_s = -1` = no error recorded. `manual_off` is the manual stop latch (§6 commands). |
+| `motion` | `active[]`, `last_ms`, `max_cells`, plus the echoed grid config | **`active[]` is row-major**: index = `row * cols + col`, length `cols * rows`. **`last_ms = -1` means "never"**, not "just now". `max_cells` is the SDK budget, the same number as `caps.motion.max_cells`. |
+| `daynight` | `mode` (**int** 0 = day / 1 = night) *and* `dn_mode` (**string**), `brightness` (%), `total_gain`, `exposure`, `ae_luma`, `night_baseline`, `day_trigger`, `sun_computed_sunrise`, `sun_computed_sunset`, … | `total_gain` is the IMP `[24.8]` linear scale (**256 = 1.0×**). **`exposure` is the value the decision actually runs on** — `total_gain` scaled by the AE integration-time ratio, so it equals `total_gain` in a dark scene and drops far below it in a bright one. Quote `exposure`, not `total_gain`, when answering a day/night question; `total_gain` is kept for continuity with existing pages. `night_baseline`/`day_trigger` are `-1` outside night. `sun_computed_*` read `"--:--"` where the sun does not rise or set (polar latitudes). The object also echoes the **frozen internal constants** (`ir_ratio_night`, `ir_ratio_day`, `probe_settle_s`, `ref_delay_s`, `ir_min_headroom`, `boot_settle_s`, `transition_s`, `probe_jump_pct`) — readable, **not settable**. |
+| `last_errors` | `{"<MOD>": {"level","age_s","count","msg"}}` | One entry per module that has logged, with the most recent message and how many times it repeated. Useful once the 64 KB syslog ring has recycled. |
+| `osd<S>.<N>.type` | `"text"` or `"logo"` | Read back as a **word**, unlike `record.mode` and `audio.backchannel_codec`, which read back as numbers. |
+
 ### The `caps` object — capability announcement
 
 **This is the mechanism that tells a client what this specific build on this
@@ -454,7 +548,7 @@ differently-compiled binaries.
 | `caps.osd[]` | The OSD item fields that apply **live** (`text,x,y,font_size,color,transparency,outline,outline_color`) |
 | `caps.restart[]` | Sections whose keys are persist-only: `["video","sensor","osd.enabled"]` |
 | `caps.video_live[]` | The `videoN.*` keys this build can push to a running encoder |
-| `caps.rtsp_max_clients` / `http_max_clients` / `events_max_clients` | Concurrent-client ceilings (refusal points: RTSP 453, HTTP/events 503) |
+| `caps.rtsp_max_clients` / `http_max_clients` / `events_max_clients` | Concurrent-client ceilings (refusal points: RTSP, HTTP and events all answer `503`) |
 | `caps.motion` | `{available, max_cells}` — `available` = build has the IMP_IVS move API |
 | `caps.privacy` | `{available, max_regions}` — `available` reflects whether an OSD group actually exists in the running pipeline |
 | `caps.rotation[]` | Applicable rotation values, e.g. `[0,90,180,270]`. **Key absent entirely** when `USE_ROTATE=0` |
@@ -500,7 +594,14 @@ Non-setting **commands** that also go through POST:
 
 - `{"record":{"active":1|0}}` — manual start/stop override
 - `{"record":{"clip":"/tmp/x.mp4","seconds":6}}` — one-shot fMP4 clip (this is
-  what send2/Telegram motion videos use)
+  what send2/Telegram motion videos use). Constraints, all in `record_clip()`:
+  the path **must start with `/tmp/`** and must contain no `..` component;
+  `seconds <= 0` becomes **6** and `seconds > 30` is clamped to **30**; only
+  one clip at a time (a second request is dropped with `clip busy, skipped`).
+  **The POST blocks for roughly `seconds`** — it runs the capture on the HTTP
+  worker thread — so a client timeout below that looks like a failure on a clip
+  that was actually taken. A refused clip counts as `rejected`, so a body
+  carrying nothing else answers **409**, not 200.
 - `{"daynight":{"probe":1}}` — arm one silent IR probe on the next tick;
   **rejected** (not silently ignored) if the camera has no `daynight.irprobe_cmd`
 - `{"speaker":{"play":"chime_1.wav"}}` / `{"speaker":{"stop":1}}` — play queue
@@ -526,6 +627,22 @@ Response body (same shape whatever the status):
 - `ignored` — key names this build did not apply (typo, wrong section, gated
   out, or no write path). Fully prefixed, e.g. `"video1.quality_level"`.
 - `applied` — echo of the **effective** value after clamping.
+- `truncated` / `deferred_truncated` / `ignored_truncated` — present and `true`
+  when the matching list overran its buffer (`applied` 512 B, `deferred_keys`
+  1024 B, `ignored` 512 B). **The counts stay exact; only the lists are
+  short.** When one of these flags appears, do not reason from the list —
+  re-read the state with `GET /control`.
+
+**Request size limits.** The request line, headers **and** body must fit one
+**4096-byte** connection buffer, so the usable JSON is 4096 minus whatever the
+headers consumed — roughly **3.5 KB** in practice. A larger declared
+`Content-Length` is refused with **`413 Payload Too Large` / `body too large`**
+rather than silently truncated and half-applied. A full OSD or privacy batch
+can reach this; split it. A request using **`Transfer-Encoding`** instead of
+`Content-Length` gets **`411 Length Required`** — this catches some proxies and
+Python `requests` called with a generator body. In the other direction,
+`GET /control` answers **`500` / `control json too large`** if the response
+overruns its 22 528-byte cap.
 
 Status codes and their `reason` discriminators:
 
@@ -535,7 +652,8 @@ Status codes and their `reason` discriminators:
 | 400 | `not_json` | Body was not a JSON object | Client bug |
 | 422 | `unknown_fields` | Parsed, but **no key this build knows** | Check spelling **and** whether the feature is compiled in (`caps`) — retrying identically will never work |
 | 409 | `values_rejected` | Keys were all known, all values refused | Key names were right, fix the values |
-| 413 | — | Body too large | Split the request |
+| 411 | — | `Transfer-Encoding` instead of `Content-Length`, or a missing/zero length | Send a fixed-length body |
+| 413 | — | Headers + body exceed the 4096-byte buffer | Split the request |
 | 503 | `oom` | Allocation failure | Retry; not a client error |
 
 ### `GET /events` (SSE)
@@ -546,11 +664,39 @@ curl -N "http://<cam>:8880/events?stream=motion,daynight,stats&token=$T"
 
 Event types: `motion`, `daynight`, `stats`, `config`. `?stream=` selects a
 subset (default: all four). `motion` and `daynight` emit their full current
-state once on connect. `stats` ticks every `events.stats_ms`. `config` reports
-another client's `/control` writes. A `: ping` comment arrives every ~12 s.
+state once on connect. The stream opens with the preamble
+`retry: 3000` followed by the comment `: connected`, and a `: ping` comment
+arrives whenever nothing else has gone out for ~12 s.
 `events.enabled = 0` → the endpoint answers `404`; above `events.max_clients`
 → `503 busy`. Browsers must use `?token=` because `EventSource` cannot set
 headers.
+
+**`stats` is change-gated, not periodic.** `events.stats_ms` is the *sampling*
+period; an event is emitted only when `stats_changed()` says something moved:
+`clients`, the channel count, or per channel `chn`, `subs`, `width`, `height`,
+`codec`, `drop_frames`, `drop_bytes` (all **exact** comparisons), `fps` by
+**≥ 0.1**, or `kbps` by **≥ 5 %** (floor 8 kbps when the previous value was 0).
+**On an idle camera you therefore get one `stats` on connect and then nothing
+but `: ping`** — that is not a stalled stream, and a client must not treat the
+gap as a liveness failure. Payload:
+
+```json
+{"uptime_s":1234,"clients":2,
+ "video":[{"chn":0,"subs":1,"fps":25.0,"kbps":2980,"width":1920,"height":1080,
+           "codec":"h264","drop_frames":0,"drop_bytes":0}]}
+```
+
+**`config` reports another client's `/control` writes**, one event per key:
+
+```json
+{"key":"image.brightness","value":"140"}
+```
+
+`value` is **always a JSON string**, even for numbers and booleans — parse
+accordingly. The key/value table holds **24 slots**; if a bulk save evicted a
+key this client had not seen yet, it first receives
+`{"resync":true}`, which means *the incremental stream lapsed — re-read
+`GET /control`* rather than assuming the missed key is unchanged.
 
 ---
 
@@ -573,19 +719,25 @@ measurably did nothing. Treat per-SoC behavior as measured-on-T23, not
 guaranteed everywhere.
 
 Classic-SoC-only keys (warn once if set on T31+): `quality_lvl` (0–7; the SDK
-derives a **hard lower bound** `minBitRate = bitrate × quality[lvl]`, so the
-default 2 refuses to drop below 60 % of the configured bitrate no matter how
-still the scene is — raise it to let quiet scenes get cheap), `change_pos`
-(50–100), `i_bias_lvl` (−3…3, also CBR), `fluc_lvl` (H.265 only).
+header suggests a hard lower bound `minBitRate = bitrate × quality[lvl]`, but
+the project's own T23 measurements never found that floor binding at any
+setting measured — what the key does do is shift the whole operating point
+uniformly, 2→7 ≈ −27 %), `change_pos` (50–100), `i_bias_lvl` (−3…3, also CBR),
+`fluc_lvl` (H.265 only).
 
 Live-applicable rate-control keys by SoC (the rest need a restart):
 
 | SoC | Live keys |
 | --- | --- |
 | T10–T30 (incl. T23) | `rc_mode`, `bitrate`, `qp`, `min_qp`, `max_qp`, `quality_lvl`, `change_pos`, `i_bias_lvl` (H.264 streams only) |
-| T31 / C100 | `bitrate`, `min_qp`, `max_qp`, `qp` (fixqp), `i_bias_lvl` |
-| T40 | `bitrate`, `min_qp`, `max_qp`, `qp` (fixqp) |
+| T31 / C100 | `bitrate`, `min_qp`, `max_qp`, `i_bias_lvl` |
+| T40 | `bitrate`, `min_qp`, `max_qp` |
 | T41 | `bitrate`, `min_qp`, `max_qp` |
+
+`qp` (fixqp) is **not** live on any new-API SoC (T31/C100/T40/T41) — deliberately:
+measured on a T31X (2026-08-22) the boot path spans 6.4× across qp 25 vs 42
+while the live path does not move the bitstream at all. Setting `qp` there
+needs a restart.
 
 Verify against `caps.video_live`, and read back `encoder.<n>.rc` in
 `GET /control` — that object is what the encoder actually holds, as opposed to
@@ -748,8 +900,9 @@ best day-pipeline reading was 9.79×) still need an explicit per-camera
 
 1. `curl .../control` and read the `daynight` object: `total_gain`, `exposure`,
    `night_baseline`, `day_trigger`, `day_gain`, `night_gain`, `isp_desync`.
-2. Set `daynight.diagnose_thresholds = 1` — it warns once a day if no probe has
-   ever confirmed day, and names the value to raise.
+2. Set `daynight.diagnose_thresholds = 1` — after three consecutive failed
+   probes it warns once per daemon session that no probe has ever confirmed
+   day, and names the value to raise.
 3. Set `daynight.history_s = 14400` (or use the tuning page's "collect in
    background" switch) and read `GET /control?dn_history=1&last=600`, or use
    the WebUI's `tool-sensor-data` page, to see where the index actually sits.
@@ -812,9 +965,10 @@ Distinguish **compiled out** from **misconfigured**:
   being asked for extra IDRs on its behalf, which spikes bitrate for everyone.
 - **RTSP over a VPN drops or fragments** — lower `rtsp.mtu` (default 1200 is
   already the VPN-safe value; 1400 is the LAN-only optimization).
-- **RTSP refuses a client with 453** — `caps.rtsp_max_clients` reached (a
-  compile-time bound, `-D`-overridable per board; low-RAM boards often build
-  with 4).
+- **RTSP refuses a client with `503 Service Unavailable`** —
+  `caps.rtsp_max_clients` reached (a compile-time bound, `-D`-overridable per
+  board; low-RAM boards often build with 4). `src/rtsp/rtsp.c` sends no other
+  refusal code for this; `453` does not appear in it at all.
 - **MJPEG/snapshot at a stream's resolution 404s** — needs `videoN.jpeg = true`
   and a unique `videoN.jpeg_chn`.
 
@@ -912,16 +1066,16 @@ There is also a QA harness in the repo:
   `1` or `0` — the source is authoritative.
 - **`jpeg.enabled` compiled default is `0`**, although `timps.conf.example`
   shows it as `1`. Per-stream piggyback JPEG (`videoN.jpeg`) defaults to on.
-- **`osd.hinting`**: the runtime default was changed to `1` in the source, while
-  `timps.conf.example` and the Buildroot help text still describe it as
-  default-off. Either way it does nothing unless
-  `BR2_PACKAGE_TIMPS_OSD_HINTING` compiled the pass in.
-- **The token header is `X-Timps-Token`.** One wiki example uses
-  `X-Auth-Token`; that spelling is wrong.
+- **`osd.hinting`**: the runtime default is `1`. The Buildroot `Config.in` help
+  text still says "default 0 (off) either way" — that text is stale. Either way
+  it does nothing unless `BR2_PACKAGE_TIMPS_OSD_HINTING` compiled the pass in.
+  It and `osd.supersample` are POST-able but restart-required.
+- **The token header is `X-Timps-Token`** (or `?token=` in a URL). No other
+  spelling works — `X-Auth-Token` in particular is not recognized.
 - **The speaker is native `IMP_AO`** — timps owns the audio-output device and
-  needs no `/bin/iac` (ingenic-audiodaemon). A comment block in
-  `timps.conf.example`'s backchannel section still describes the old `/bin/iac`
-  piping; it is stale.
+  needs no `/bin/iac` (ingenic-audiodaemon). The `src/config.h` comment on
+  `audio.backchannel_rate` still calls it the rate "fed to iac"; that wording
+  is stale.
 - When unsure whether a feature exists on a user's camera, say so and ask for
   `GET /control` output rather than guessing. The `caps` object is designed
   exactly for that question.

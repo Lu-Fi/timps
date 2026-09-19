@@ -19,7 +19,7 @@ Configured under `audio.*` (see
 | --- | --- | --- |
 | **AAC** | `libfaac` (`USE_FAAC`) | Default codec. Needed for audio on the HTTP fMP4 preview and SRT (neither can carry G.711 — see [Streaming Protocols](Streaming-Protocols.md)). `src/codec/aac.c` supplies the ADTS/AudioSpecificConfig bookkeeping (sample-rate table lookup, 2-byte ASC construction, ADTS-header stripping) that both the RTSP SDP builder and the SRT TS mux use — the actual encode call lives in the HAL. |
 | **G.711 (µ-law/A-law)** | none — `src/codec/g711.c` is pure C (canonical Sun/CCITT expand/compress tables) | Always available, no library dependency. RTSP-only for capture playback; cannot be muxed into fMP4 or SRT's TS mux. |
-| **Opus** | bare `libopus` **encoder** (`USE_STREAM_OPUS`, ~337 KB) — **not** `opusfile`/`libogg` | Compile-time optional (off by default). Select with `audio.codec=opus`; unrecognized on a build without `USE_STREAM_OPUS`. The mic is encoded at its capture rate (16 kHz default) in `OPUS_APPLICATION_VOIP` mode as one Opus frame per 40 ms AI capture frame; `audio.bitrate_kbps` sets the encoder bitrate (default 32). RTSP/RTP only (RFC 7587), exactly like G.711 — **not** muxable into fMP4 or SRT. The RTP track is always advertised as `opus/48000/2` regardless of the real 16 kHz/mono encoding; the actual mono layout is signalled out-of-band via `sprop-stereo=0` and `rtp_send_opus()` timestamps against the mandatory 48 kHz clock. If `opus_encoder_create` fails at stream start, timps falls back to PCMU. Entirely separate from the play-queue `USE_PLAY_OPUS` decode feature below. |
+| **Opus** | bare `libopus` **encoder** (`USE_STREAM_OPUS`, ~337 KB) — **not** `opusfile`/`libogg` | Compile-time optional (off by default). Select with `audio.codec=opus`; unrecognized on a build without `USE_STREAM_OPUS`. The mic is encoded at its capture rate (16 kHz default) in `OPUS_APPLICATION_VOIP` mode as one Opus frame per 40 ms AI capture frame; `audio.bitrate` sets the encoder bitrate (default 32). RTSP/RTP only (RFC 7587), exactly like G.711 — **not** muxable into fMP4 or SRT. The RTP track is always advertised as `opus/48000/2` regardless of the real 16 kHz/mono encoding; the actual mono layout is signalled out-of-band via `sprop-stereo=0` and `rtp_send_opus()` timestamps against the mandatory 48 kHz clock. If `opus_encoder_create` fails at stream start, timps falls back to PCMU. Entirely separate from the play-queue `USE_PLAY_OPUS` decode feature below. |
 
 ### `audio.codec2` — the second G.711 encode, for WebRTC
 
@@ -98,7 +98,8 @@ default; enabling it is restart-only (`audio.backchannel`, see
 
 - **Codecs**: G.711 PCMU/PCMA always (pure C, `g711.c`); AAC additionally
   with `USE_BC_AAC` (needs `libhelix-aac`).
-- **Echo cancellation** (`audio.aec`, opt-in, off by default, **live** —
+- **Echo cancellation** (`audio.aec`, opt-in, off by default, POST-able but
+  **not live** — it persists now and engages at the next AO open;
   see [Configuration Reference](Configuration-Reference.md#audio--capture-encode-speaker-defaults)):
   engages `IMP_AI_EnableAec` to subtract the speaker's own output from
   the mic capture, so the far end doesn't hear itself echoed back through

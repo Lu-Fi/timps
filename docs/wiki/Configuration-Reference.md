@@ -130,18 +130,18 @@ on a running capture channel).
 | `audio.samplerate` | int | 16000 | 8000–96000 | Restart-only | Capture sample rate in Hz. G.711 is pinned to 8000 Hz regardless of this value (see [Audio](Audio.md)). |
 | `audio.channels` | int | 1 | 1–2 | Restart-only | 1 = mono (native). 2 = "simulated stereo" — the mono mic duplicated to L=R, AAC only. |
 | `audio.bitrate` | int | 32 | 8–320 (kbps) | Restart-only | AAC encode bitrate. |
-| `audio.high_pass` | bool | 0 | 0/1 | Restart-only | High-pass filter. **Not live**: libimp runs HPF/AGC/NS on its own record thread and frees state unlocked — a live toggle would race the vendor thread (use-after-free risk), so this is restart-required by design, not merely unimplemented. |
+| `audio.high_pass` | bool | 1 | 0/1 | Restart-only | High-pass filter. **Not live**: libimp runs HPF/AGC/NS on its own record thread and frees state unlocked — a live toggle would race the vendor thread (use-after-free risk), so this is restart-required by design, not merely unimplemented. |
 | `audio.agc` | bool | 0 | 0/1 | Restart-only | Automatic gain control on/off (same race-avoidance rationale as `high_pass`). |
 | `audio.agc_target_dbfs` | int | 10 | 0–31 | Restart-only | AGC target level (dBFS). |
 | `audio.agc_compression_db` | int | 0 | 0–90 | Restart-only | AGC compression gain (dB). |
 | `audio.ns` | int | 0 | 0–3 | Restart-only | Noise suppression level (0 = off). |
-| `audio.force_stereo` | bool | 0 | 0/1 | Restart-only | Alias/companion to `channels=2`. |
+| `audio.force_stereo` | bool | 0 | 0/1 | Restart-only | Separate companion field to `channels=2` (not an alias — both are settable independently). |
 | `audio.spk_enabled` | bool | 1 | 0/1 | **Live** (at the next AO open; `USE_PLAY`/`USE_BACKCHANNEL` builds) | Master speaker-output enable. Read by `speaker.c` every time it is about to open the `IMP_AO` device, so `0` silences the *next* backchannel/play session without a restart; a session already holding the speaker keeps it until it ends. |
 | `audio.backchannel` | bool | 0 | 0/1 | Restart-only | Enable the ONVIF two-way audio backchannel (`USE_BACKCHANNEL` build). |
 | `audio.backchannel_codec` | enum | `pcmu` (0) | `pcmu`(0)\|`pcma`(1)\|`aac`(2) | Restart-only | Advertised/accepted backchannel codec. |
 | `audio.backchannel_rate` | int | 16000 | 8000–48000 | Restart-only | Speaker sample rate fed by the backchannel decoder. |
 | `audio.talk_ws` | tri-state | 0 | 0\|1\|2 (`true`/`on`/`yes` → 1) | **Live** (next `/talk` request; the backchannel it rides on is still restart-only) | Serve the browser push-to-talk WebSocket at `/talk` (`USE_BC_WS` builds, and only when the backchannel itself came up at boot). `httpd.c` reads the value on every `/talk` upgrade request, so a `/control` POST changes the answer for the next connection immediately — including switching from `1` to `2`, which drops the TLS requirement; treat it with the same care as a hand edit. `0` = not served; `1` = served over TLS only, a plaintext port answers `426`; `2` = also served over plain `ws://`, a deliberate hand edit since the microphone audio and its token then cross the network in the clear. `GET /control` reports the resolved verdict as `caps.backchannel.talk_ws` (`1` on a plaintext port resolves to `0`). See [Audio](Audio.md#browser-push-to-talk-talk-use_bc_ws). |
-| `audio.aec` | bool | 0 | 0/1 | **Live** (only if `USE_PLAY` or `USE_BACKCHANNEL` compiled in) | Opt-in Acoustic Echo Cancellation (`IMP_AI_EnableAec`) for the backchannel — subtracts the speaker output from the mic capture. Engages only once both AI capture and AO output are actually live, applied at the next AO open (same timing contract as `spk_volume`/`spk_gain`). Off by default since AEC quality/latency varies per SoC/mic/speaker pairing. |
+| `audio.aec` | bool | 0 | 0/1 | **Not live** — persists now, engages at the next AO open (only if `USE_PLAY` or `USE_BACKCHANNEL` compiled in) | Opt-in Acoustic Echo Cancellation (`IMP_AI_EnableAec`) for the backchannel — subtracts the speaker output from the mic capture. Engages only once both AI capture and AO output are actually live, applied at the next AO open (same timing contract as `spk_volume`/`spk_gain`). Off by default since AEC quality/latency varies per SoC/mic/speaker pairing. |
 
 See [Audio](Audio.md) for the backchannel/play-queue feature details.
 
@@ -267,7 +267,7 @@ overlay fields are documented separately below (`osd<S>.<N>.*`).
 | `osd.font_path` | string | `/usr/share/fonts/default.ttf` | — | Restart-only | Default TTF font for text items without a per-item `font_path` override. Settable via `/control`, same restart-required class as `osd.enabled`. |
 | `osd.vars_file` | string | `/tmp/timps_osd.vars` | — | Restart-only | Custom placeholder source file (see "Custom placeholders" below). Settable via `/control`, same restart-required class as `osd.enabled`. |
 | `osd.supersample` | int | 2 | 1–4 | Restart-only | TTF rasterizer anti-aliasing quality (samples per axis per pixel); cost scales ~quadratically, 2 is visually close to 4 at typical OSD sizes for roughly a quarter of the CPU cost. Settable via `/control`, same restart-required class as `osd.enabled`. |
-| `osd.hinting` | bool | 0 | 0/1 | Restart-only (only if `USE_OSD_HINTING` compiled in) | Opt-in lightweight geometric autohint for the TTF rasterizer. The rasterizer (`msttf.c`) does not execute the font's embedded TrueType hint bytecode (a real hint interpreter is real interpreter-writing work with a real correctness/security surface for an on-device, unsandboxed daemon); at small sizes (e.g. the substream OSD's default 12px) that shows up as visibly uneven stroke widths between glyphs. Enabling this snaps long, near-vertical/near-horizontal outline edges (typical letter stems/serifs) to the pixel grid before rasterizing, which measurably reduces that unevenness — it is a coarse heuristic, not real hinting, and does not preserve the font's authored hint intent. Off by default: existing installs render byte-for-byte identical OSD bitmaps unless this is explicitly enabled. Verified against the shipped UbuntuMono Regular (`/usr/share/fonts/default.ttf`); untested against other TTF files if a user swaps `osd.font_path`. Also gated at COMPILE time by `USE_OSD_HINTING` (`BR2_PACKAGE_TIMPS_OSD_HINTING` in the buildroot package, off by default — measured ~2.1KB smaller `.text` on T31/GCC 16.1.0/-Os when left off): on a build without it, setting this key is accepted but has no effect. Settable via `/control`, same restart-required class as `osd.enabled`. |
+| `osd.hinting` | bool | 1 | 0/1 | Restart-only (only if `USE_OSD_HINTING` compiled in) | Opt-in lightweight geometric autohint for the TTF rasterizer. The rasterizer (`msttf.c`) does not execute the font's embedded TrueType hint bytecode (a real hint interpreter is real interpreter-writing work with a real correctness/security surface for an on-device, unsandboxed daemon); at small sizes (e.g. the substream OSD's default 12px) that shows up as visibly uneven stroke widths between glyphs. Enabling this snaps long, near-vertical/near-horizontal outline edges (typical letter stems/serifs) to the pixel grid before rasterizing, which measurably reduces that unevenness — it is a coarse heuristic, not real hinting, and does not preserve the font's authored hint intent. On by default in the runtime config; set it to `0` for byte-for-byte unhinted OSD bitmaps. Verified against the shipped UbuntuMono Regular (`/usr/share/fonts/default.ttf`); untested against other TTF files if a user swaps `osd.font_path`. Also gated at COMPILE time by `USE_OSD_HINTING` (`BR2_PACKAGE_TIMPS_OSD_HINTING` in the buildroot package, off by default — measured ~2.1KB smaller `.text` on T31/GCC 16.1.0/-Os when left off): on a build without it, setting this key is accepted but has no effect. Settable via `/control`, same restart-required class as `osd.enabled`. |
 
 ### Custom placeholders (show any value you want in the OSD)
 
@@ -326,7 +326,7 @@ Default layout: item 0 = timestamp (top-left), item 1 = `{hostname}`
 | `logo_h` (alias `logo_height`) | int | 30 (item 3) | 0–4096 | File-only | Logo height in px. |
 | `x` | int | per-item | — | **Live** | X position: `0` = centered, `>0` = pixels from the left edge, `<0` = pixels from the right edge. |
 | `y` | int | per-item | — | **Live** | Y position: same convention, top/bottom. |
-| `font_size` | int | 32 (stream 0) / 12 (other streams) | 8–256 | **Live** | Absolute pixel font size (no per-stream auto-scaling). |
+| `font_size` | int | 32 (stream 0) / 12 (other streams) | 8–128 | **Live** | Absolute pixel font size (no per-stream auto-scaling). |
 | `color` (alias `font_color`) | hex (0xAARRGGBB) | `0xFFFFFFFF` | — | **Live** | Text fill color. |
 | `transparency` | int | 255 | 0–255 | **Live** | Group alpha. |
 | `outline` (alias `stroke`) | int | 1 | 0–64 | **Live** | Text outline/stroke width in px (`0` = off). On by default so overlays stay legible on light backgrounds. |
@@ -356,12 +356,11 @@ otherwise the value persists but has no visible effect until restart.
 
 See [Motion Detection](Motion-Detection.md) for the full grid model.
 `enabled`/`sensitivity`/`cols`/`rows`/`monitor_stream` are POST-able and
-**Live**; `hold_ms`/`skip_frames` are also POST-able (persist + echo)
-but **Restart-only** — they feed the IVS grid/hold logic only at
-create/resync time, so a POST takes effect at the next
-enabled/cols/rows/monitor_stream-triggered resync or daemon restart, not
-immediately. `cooldown_ms`/`on_motion` stay config-file-only by design
-(see below).
+**Live**; `hold_ms`/`skip_frames` are POST-able and **Live** too — they feed
+the IVS grid/hold logic only at create/resync time, so `ing_control()` routes
+them through the same deferred grid re-sync as the geometry keys, which runs
+once at the end of the POST. `cooldown_ms`/`on_motion` stay config-file-only
+by design (see below).
 
 | Key | Type | Default | Range | Live? | Description |
 | --- | --- | --- | --- | --- | --- |
@@ -371,9 +370,9 @@ immediately. `cooldown_ms`/`on_motion` stay config-file-only by design
 | `motion.cols` | int | 5 (or 2/1 on SDKs with a smaller ROI budget) | ≥1, `cols*rows` clamped to `MOTION_CELL_LIMIT` | **Live** | Grid columns. Setting one axis clamps against the *current* value of the other, never the reverse, so re-applying the same pair is idempotent. |
 | `motion.rows` | int | 5 (or 2/1) | ≥1, same clamp | **Live** | Grid rows. |
 | `motion.cooldown_ms` | int | 5000 | 250–`INT_MAX` (floor enforced) | File-only | Minimum gap between `on_motion` hook executions. |
-| `motion.hold_ms` | int | 800 | 0–`INT_MAX` | Restart-only | How long a cell reports "active" after its last hit, so an async `/events`/`/control` reader reliably observes single-frame motion instead of racing IVS's own immediate clear. `0` = no hold. Settable via `/control`; persists and applies at the next grid create/resync (or restart), not immediately. |
-| `motion.skip_frames` | int | 5 | 1–`INT_MAX` | Restart-only | `IMP_IVS_MoveParam.skipFrameCnt` — analyze every Nth frame. Higher = cheaper/higher latency. Settable via `/control`; persists and applies at the next grid create/resync (or restart), not immediately. |
-| `motion.on_motion` | string(128) | `""` | — | File-only, **not GET-readable either** | Program to `fork()`+`execlp()` on motion (no shell, no arguments). `""` = disabled. Receives `MOTION_COLS`/`MOTION_ROWS`/`MOTION_CELLS`/`MOTION_TIME` via the environment — see [Motion Detection](Motion-Detection.md). |
+| `motion.hold_ms` | int | 800 | 0–`INT_MAX` | **Live** | How long a cell reports "active" after its last hit, so an async `/events`/`/control` reader reliably observes single-frame motion instead of racing IVS's own immediate clear. `0` = no hold. Settable via `/control`; applied through the grid re-sync batched at the end of the request. |
+| `motion.skip_frames` | int | 5 | 1–`INT_MAX` | **Live** | `IMP_IVS_MoveParam.skipFrameCnt` — analyze every Nth frame. Higher = cheaper/higher latency. Settable via `/control`; applied through the grid re-sync batched at the end of the request. |
+| `motion.on_motion` | string(128) | `""` | — | File-only, **not GET-readable either** | Program launched by `posix_spawn()` on motion (no shell, no arguments, no `PATH` search — use an absolute path). `""` = disabled. Receives `MOTION_COLS`/`MOTION_ROWS`/`MOTION_CELLS`/`MOTION_TIME` via the environment — see [Motion Detection](Motion-Detection.md). |
 | `motion.roi_x`/`roi_y`/`roi_w`/`roi_h` | int | 0 | — | File-only, **deprecated** | Legacy single-ROI keys, still parsed for old configs but **ignored** — the grid replaced them. Setting a non-zero value logs a one-time warning. |
 
 ## `record.*` — local SD recording
@@ -471,7 +470,7 @@ diagnostics.
 | `daynight.heartbeat_max_s` | int | 43200 (12h) | 300–604800 | **Live** | Interval once the scene has demonstrably not moved since the last probe (nothing new to spend a click on) — and the hard ceiling on the deferral. Only applied while the spontaneous trigger can actually see. |
 | `daynight.boot_probe` | int | 1 | 0/1 | **Live** | `1` = boot **measures** before it decides: one probe into the day pipeline, read against `day_gain`, regardless of what was persisted. `0` = adopt the persisted mode without measuring. Either way boot asserts the mode it ends up with on the board exactly once (`switch_cmd`), so a reboot can no longer leave the IR-cut filter and the LEDs in the other mode. Cost: one `switch_cmd` call when the answer is day, two when it is night; on a board that comes up in its reset (day) position the first moves nothing. |
 | `daynight.interval_ms` | int | 2000 | 100–60000 | **Live** | Sample interval. 2 s, not the pre-2026-08-17 500 ms: the exposure index needs the `/proc` scrape every tick and no confirmation window is shorter than 8 s. |
-| `daynight.diagnose_thresholds` | int | 0 | 0/1 | **Live** | Warn once a day when no probe has ever confirmed day and the best day-pipeline reading is still clear of `day_gain`. |
+| `daynight.diagnose_thresholds` | int | 0 | 0/1 | **Live** | Warn once per daemon session — after three consecutive failed probes — when no probe has ever confirmed day and the best day-pipeline reading is still clear of `day_gain`. |
 | `daynight.history_s` | int | 0 (off) | 0–172800 (48h) | **Live** | Seconds of decision history kept in RAM for the WebUI tuning graph, served by `GET /control?dn_history=1`; `0` = off, and at `0` nothing is allocated at all. One 16-byte sample per 10 s, allocated on first push and resized in place when this changes, so 4 h costs 22.5 KB and the 48 h ceiling 270 KB. Anything above the ceiling is clamped (the POST response echoes the clamped value, and the daemon logs the effective size). Opt-in and decoupled from the tuning page's lifetime: the page's "collect in background" switch is the only thing that POSTs it, and it persists like any other key, so an explicit opt-in survives a reboot. With it off the page collects live into the tab over SSE instead; with it on the daemon owns the series, which is what lets the graph show the hours no tab was open (the WebUI is plain HTTP and therefore has no Service Worker to collect with). |
 | `daynight.irprobe_cmd` | string(64) | `timps-irprobe` | — | File-only, not GET-readable | Board script run as `<cmd> on\|off` to drive the IR illuminator **alone**, without moving the IR-cut filter. Its presence is what arms the silent probe and the trend path; set it empty to fall back to the audible probe only. Run via `fork`+`execlp`, never a shell. |
 | `daynight.switch_cmd` | string(64) | `daynight` | — | File-only, not GET-readable | Board script run as `<cmd> day\|night` on a switch. |

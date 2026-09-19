@@ -68,8 +68,12 @@ prudynt-t / raptor.
   (0–7), `change_pos` (50–100), `i_bias_lvl` (−3…3) und `fluc_lvl` (nur H.265).
 * **Live-Anwendung eines Teils der Encoder-Keys** ohne Neustart, je nach SoC:
   T10–T30 `rc_mode/bitrate/qp/min_qp/max_qp/quality_lvl/change_pos/i_bias_lvl`;
-  T31/C100 `bitrate/min_qp/max_qp/qp/i_bias_lvl`; T40 `bitrate/min_qp/max_qp/qp`;
-  T41 `bitrate/min_qp/max_qp`. Was dieser Build live kann, steht in
+  T31/C100 `bitrate/min_qp/max_qp/i_bias_lvl`; T40 `bitrate/min_qp/max_qp`;
+  T41 `bitrate/min_qp/max_qp`. `qp` (fixqp) ist auf den Neu-API-SoCs
+  (T31/C100/T40/T41) bewusst **nicht** live – auf einem T31X gemessen
+  (2026-08-22) bewegt der Live-Pfad den Bitstrom überhaupt nicht, während der
+  Boot-Pfad zwischen qp 25 und 42 um den Faktor 6,4 spreizt.
+  Was dieser Build live kann, steht in
   `caps.video_live`; was pro Request *nicht* live ging, listet die POST-Antwort
   unter `deferred_keys`.
 * **Encoder-Telemetrie** in `GET /control` unter `encoder.<n>` – inklusive
@@ -132,7 +136,8 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   wird als `<cmd> day|night` per `fork()+execlp()` aufgerufen (nie `system()`).
   Das Skript treibt IR-Cut und IR-LEDs und meldet den Modus über
   `POST /control {"image":{"running_mode":0|1}}` zurück.
-* **Diagnose**: `daynight.diagnose_thresholds` warnt einmal täglich, wenn nie
+* **Diagnose**: `daynight.diagnose_thresholds` warnt nach drei
+  aufeinanderfolgenden fehlgeschlagenen Proben einmal pro Daemon-Lauf, wenn nie
   eine Probe Tag bestätigt hat; `daynight.trace_path` schreibt (nur auf tmpfs!)
   eine CSV-Entscheidungsspur; `daynight.history_s` (Default 0 = aus, max. 48 h)
   hält eine RAM-Serie, die die WebUI-Tuningkurve über
@@ -150,7 +155,10 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
 * `motion.enabled`, `motion.sensitivity` (0–255, auf die SDK-Stufen 0–4
   abgebildet), `motion.hold_ms` (Nachleuchten einer Zelle, Default 800),
   `motion.skip_frames` (jeder N-te Frame, Default 5),
-  `motion.cooldown_ms` (Default 5000).
+  `motion.cooldown_ms` (Default 5000). `hold_ms` und `skip_frames` sind
+  POST-bar und werden live über die gebündelte IVS-Raster-Neusynchronisation
+  am Ende des Requests angewandt; `cooldown_ms` und `on_motion` sind bewusst
+  nur in der Konfigurationsdatei setzbar.
 * **Hook** `motion.on_motion` (thingino-Default `/usr/sbin/timps-motion`) wird
   ratenbegrenzt und ohne Shell per `posix_spawn()` gestartet – bewusst nur aus
   der Konfigurationsdatei setzbar, nicht über HTTP.
@@ -235,8 +243,9 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   schreiben kann.
 * Globale OSD-Keys: `osd.enabled`, `osd.monitor_stream`, `osd.font_path`,
   `osd.supersample` (Kantenglättung 1–4, Default 2), `osd.hinting`
-  (optionales geometrisches Autohinting für kleine Schrift,
-  `BR2_PACKAGE_TIMPS_OSD_HINTING`).
+  (geometrisches Autohinting für kleine Schrift, Laufzeit-Default 1, wirkt aber
+  nur, wenn `BR2_PACKAGE_TIMPS_OSD_HINTING` den Pass einkompiliert hat).
+  Beide sind per `/control` setzbar, greifen aber erst nach einem Neustart.
 * **Privatsphäre-Masken**: bis zu 4 Rechtecke pro Stream
   (`privacy<S>.<N>.{enabled,x,y,w,h,color}`), als IMP-OSD-Cover-Regionen,
   live verschiebbar. Verfügbarkeit meldet `caps.privacy`.
@@ -419,3 +428,18 @@ zusammenschaltet – FULL passt auf T31-Boards, MINIMAL auch auf ein T20 mit
 Direktes Cross-Kompilieren ohne Firmware-Baum ist ebenfalls möglich:
 `make PLATFORM=T31 CROSS_COMPILE=mipsel-linux-` (IMP-Header kommen als
 Git-Submodul aus `gtxaspec/ingenic-headers`).
+
+## Wo steht was
+
+Diese Datei ist eine Feature-Übersicht, keine Nachschlagetabelle. Für Details:
+
+* **`docs/ai/reference.md`** – die englische Gesamtübersicht für den
+  Support-Assistenten: Build-Gating, Endpunkte, Authentifizierung, `/control`,
+  Tag/Nacht, Fehlersuche.
+* **`docs/ai/config-keys.md`** – jeder Konfigurationsschlüssel einzeln, gegen
+  `src/config.c` geprüft: Default, Wertebereich, live oder Neustart. Bei
+  Abweichungen zwischen dieser Datei und `config-keys.md` gilt
+  `config-keys.md`; bei Abweichungen zum Quelltext gilt der Quelltext.
+* **`docs/ai/troubleshooting.md`** – Log-Wörterbuch, Status- und Fehlercodes,
+  typische Fehlkonfigurationen und eine Liste plausibel klingender, aber
+  falscher Antworten.

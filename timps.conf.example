@@ -225,7 +225,8 @@ http.tls_key    = /etc/ssl/private/timps.key
 # is then the REMOTE port. While a receiver is connected, a machine-readable
 # "stats:" line (retransmits/loss/RTT/bandwidth) is logged every 10 s and the
 # latest sample is visible under "srt" in GET /control.
-srt.enabled    = 1
+srt.enabled    = 1            # compiled default is 0 (off); shown here as 1 to
+                              # document the section, not because it's the default
 srt.port       = 9000
 # srt.mode       = listener               # listener (default) | caller
 # srt.host       =                        # caller mode: receiver host/IP
@@ -314,9 +315,12 @@ video1.jpeg_chn     = 4
 # where the SoC's SDK allows it:
 #   T10..T30 (incl. T23): rc_mode, bitrate, qp, min_qp, max_qp, quality_lvl,
 #                         change_pos, i_bias_lvl   (H264 streams only)
-#   T31/C100:             bitrate, min_qp, max_qp, qp (fixqp), i_bias_lvl
-#   T40:                  bitrate, min_qp, max_qp, qp (fixqp)
+#   T31/C100:             bitrate, min_qp, max_qp, i_bias_lvl
+#   T40:                  bitrate, min_qp, max_qp
 #   T41:                  bitrate, min_qp, max_qp
+# qp (fixqp) is deliberately NOT live on the new-API SoCs: measured on a T31X
+# (2026-08-22) the boot path spans 6.4x across qp 25 vs 42 while the live path
+# does not move the bitstream at all. Set it and restart.
 # GET /control advertises the set as caps.video_live; each POST reply lists
 # what did NOT apply live under "deferred"/"deferred_keys" (e.g. the encoder
 # channel is not running). The actual values the encoder holds are readable
@@ -352,13 +356,13 @@ video0.max_qp    = 45
 # Classic-SoC rate control (T10..T30). No effect on T31/C100/T40/T41, whose
 # encoder API has no equivalent fields - timps warns once if you set them there.
 #
-#   quality_lvl  0..7   VBR/Smart only. The vendor SDK derives a HARD lower
-#                       bound from it: minBitRate = bitrate * quality[lvl] with
-#                       quality[] = {0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.1}. The
-#                       default 2 therefore refuses to go below 60% of
-#                       video0.bitrate no matter how still the scene is; raise
-#                       it to let quiet scenes get cheap. Lower = better
-#                       picture, higher floor.
+#   quality_lvl  0..7   VBR/Smart only. The SDK header suggests a hard lower
+#                       bound (minBitRate = bitrate * quality[lvl] with
+#                       quality[] = {0.8,0.7,0.6,0.5,0.4,0.3,0.2,0.1}), but the
+#                       T23 measurements refuted that: no such floor was ever
+#                       binding at any setting measured. What it does do is
+#                       shift the whole operating point uniformly (2->7: -27%).
+#                       See docs/wiki/Rate-Control-Parameters.md.
 #   change_pos   50..100  VBR/Smart only. Percentage of bitrate above which the
 #                       encoder starts raising qp. Default 80.
 #   i_bias_lvl   -3..3  VBR and CBR. I-frame qp bias: negative spends more bits
@@ -429,7 +433,7 @@ audio.channels           = 1      # 1 mono | 2 = simulated stereo (dual-mono),
                                   # AAC only               (persist + restart)
 audio.bitrate            = 32     # kbps, aac                 (persist + restart)
 audio.volume             = 80     # live — IMP_AI_SetVol
-audio.gain               = 15     # live — IMP_AI_SetGain
+audio.gain               = 25     # live — IMP_AI_SetGain
 audio.alc_gain           = 0      # live — IMP_AI_SetAlcGain PGA 0..7 (T21/T31/C100)
 # high_pass/agc/ns: NOT live despite being POST-able. libimp runs these DSP
 # modules on its own internal record thread and frees module state with no
@@ -466,7 +470,8 @@ audio.aec                = 0      # persists now, engages at next AO open — 0 
 # secure context by hand (see the wiki's Audio page). Default off: this is a
 # path from a visitor's microphone to the camera's speaker. Consider
 # audio.aec=1 alongside it, or the far end hears itself.
-audio.talk_ws            = 0      # restart — 0 off, 1 TLS-only, 2 also ws://
+audio.talk_ws            = 0      # live (governs the next /talk request) —
+                                  # 0 off, 1 TLS-only, 2 also ws://
 # speaker (AO) - active on USE_PLAY / USE_BACKCHANNEL builds:
 #   spk_enabled = master gate for the physical speaker; when 0 neither the
 #                 backchannel nor local playback produces any sound.
@@ -475,8 +480,8 @@ audio.talk_ws            = 0      # restart — 0 off, 1 TLS-only, 2 also ws://
 # audio.spk_enabled  = 1
 # audio.spk_volume   = 80
 # audio.spk_gain     = 25
-# alias for audio.channels = 2: simulated stereo (dual-mono), AAC only,
-# applies on restart
+# companion to audio.channels = 2 (a separate field, not an alias): simulated
+# stereo (dual-mono), AAC only, applies on restart
 # audio.force_stereo = 0
 
 # ---- ONVIF audio backchannel (client speaks -> camera speaker) -----------
@@ -491,7 +496,7 @@ audio.talk_ws            = 0      # restart — 0 off, 1 TLS-only, 2 also ws://
 # Half/one-talker: one RTSP client owns the speaker at a time. Restart-required.
 # audio.backchannel        = 0      # master on/off
 # audio.backchannel_codec  = pcmu   # pcmu | pcma | aac
-# audio.backchannel_rate   = 16000  # speaker sample rate fed to iac (Hz)
+# audio.backchannel_rate   = 16000  # speaker sample rate fed to IMP_AO (Hz)
 
 # ---- OSD (up to 8 overlays PER video stream; own TrueType rasterizer) ----
 osd.enabled        = 1
@@ -533,7 +538,7 @@ osd.supersample    = 2                        # TTF rasterizer AA: samples/axis/
 #   custom:  any {name} is read from osd.vars_file (key = value lines),
 #            so a script can write e.g.  site = Frontdoor  into that file.
 # Text outline (readability stroke, drawn under the fill):
-#   outline       = width in px (0 = off, default)
+#   outline       = width in px (0 = off; default 1)
 #   outline_color = 0xAARRGGBB (default 0xFF000000 black)
 # font_size is an ABSOLUTE pixel height and is NOT auto-scaled per stream, so
 # set the sub-stream (osd1.*) size directly for legibility - a small sub-stream
@@ -555,7 +560,7 @@ osd0.0.type      = text
 osd0.0.text      = %Y-%m-%d %H:%M:%S
 osd0.0.x         = 10                         # from the left
 osd0.0.y         = 10
-osd0.0.font_size = 128
+osd0.0.font_size = 32
 osd0.0.color     = 0xFFFFFFFF                 # ARGB
 osd0.0.transparency = 255
 osd0.0.outline       = 1                      # 1 px black stroke (on by default)
@@ -596,7 +601,7 @@ osd0.3.logo_w    = 100
 osd0.3.logo_h    = 30
 osd0.3.x         = -10                        # bottom-right
 osd0.3.y         = -10
-osd0.3.transparency = 200
+osd0.3.transparency = 255
 
 # substream: same 4-item layout applies automatically (config_defaults()
 # seeds it per-stream), just at a smaller absolute font_size - override
@@ -768,7 +773,10 @@ daynight.irprobe_cmd     = timps-irprobe       # run as "<cmd> on|off"; empty = 
 # pairs a day, and never any at all if it also never changes.
 daynight.heartbeat_s     = 14400               # 4 h while the scene is moving
 daynight.heartbeat_max_s = 43200               # 12 h once it demonstrably is not
-daynight.boot_probe      = 1                   # 1 = one probe per boot when the persisted mode is night
+daynight.boot_probe      = 1                   # 1 = measure once at every boot.
+                                               # 0 adopts the persisted mode instead,
+                                               # unless the AE is railed (no headroom),
+                                               # in which case it measures anyway.
 # boot_settle_s (5) used to be settable here too; as of the 2026-08-22 config
 # consolidation it is the fixed DN_BOOT_SETTLE_S constant (src/daynight.h).
 #
@@ -783,8 +791,9 @@ daynight.interval_ms    = 2000                 # sample interval
 # consolidation it is the fixed DN_TRANSITION_S constant (src/daynight.h).
 daynight.switch_cmd     = daynight             # run as "<cmd> day|night"
 daynight.isp_path       = /proc/jz/isp/isp-m0  # ISP exposure proc file
-# Opt-in threshold diagnostic: warn once a day if no probe has ever confirmed
-# day and the best day-pipeline reading is still clear of day_gain.
+# Opt-in threshold diagnostic: warn once per daemon session, after three
+# consecutive failed probes, if no probe has ever confirmed day and the best
+# day-pipeline reading is still clear of day_gain.
 # daynight.diagnose_thresholds = 1
 # In-RAM decision history for the WebUI tuning graph (tool-sensor-data), in
 # seconds of retention - 0 = off, ceiling 48 h (172800). One 16-byte sample
