@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.9.19] - 2026-09-22
+
 ### Changed
 
 - **Auto `sensor.fps` is capped at 30** (`src/config.c`). Left unset, the value
