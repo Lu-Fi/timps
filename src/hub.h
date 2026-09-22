@@ -96,11 +96,46 @@ int         hub_get_video_params(int src, int *vcodec, int *w, int *h, int *fps)
 int         hub_get_vparam(int src, vparam *out);
 /* IDR request plumbing: HAL registers a callback; sinks call request. */
 void        hub_set_idr_cb(void (*cb)(int src));
+/* A client that cannot START without a keyframe (subscribe, RTSP PLAY/DESCRIBE,
+ * a fresh fMP4 GET, a WebRTC answer): issued immediately, never deferred. */
 void        hub_request_idr(int src);
+
+/* Minimum spacing between IDRs forced by drop RECOVERY. One second is exactly
+ * the cadence rtsp.c/httpd.c/record.c each already promised themselves, so a
+ * single slow consumer heals no slower than before; what changes is that the
+ * budget is now the STREAM's, not the consumer's, and N slow consumers can no
+ * longer force N IDRs/s onto the one shared encoder. Deliberately not tied to
+ * videoN.gop: at the fleet's gop=50 / fps=15-25 the natural GOP is 2-3.3 s, so
+ * a GOP-length interval would have made recovery two to three times slower
+ * than it is today for the common single-consumer case, which is a regression
+ * the fleet would feel. No config key - recovery latency is not something an
+ * operator should have to tune. */
+#ifndef HUB_IDR_RECOVERY_MIN_US
+#define HUB_IDR_RECOVERY_MIN_US (1000000LL)
+#endif
+/* A consumer healing from a fanqueue overflow. Rate-limited per stream against
+ * every other consumer's recovery request (and against any start request, which
+ * delivers the same keyframe anyway). Returns 1 if the request went to the
+ * encoder now, 0 if it was COALESCED: a deferred request is remembered and
+ * issued by the next published frame once the interval has passed, so a
+ * consumer frozen until its next keyframe always gets one even if it never
+ * asks again. */
+int         hub_request_idr_recovery(int src);
+
 /* Consumers (RTSP/fMP4/record) report a fanqueue overflow-heal event here;
  * GET /control sums them per video stream as "queue_drops" - the only
- * always-on trace of the silent drop->IDR->bitrate-spike cycle. */
-void        hub_note_drop(int src);
+ * always-on trace of the silent drop->IDR->bitrate-spike cycle. `kind` labels
+ * the reporter for the rate-limited summary WARN only; it does not change what
+ * "queue_drops" counts. */
+enum {
+    HUB_DROP_REC = 0, HUB_DROP_RTSP, HUB_DROP_MP4, HUB_DROP_WEBRTC,
+    HUB_DROP_SRT, HUB_DROP_NKIND
+};
+/* How often at most a (kind, stream) pair may emit its overflow summary. */
+#ifndef HUB_DROP_REPORT_US
+#define HUB_DROP_REPORT_US (60*1000000LL)
+#endif
+void        hub_note_drop(int src, int kind);
 unsigned    hub_get_drops(int src);
 /* measured video frame rate of the stream; 0 when idle (no producer, i.e. the
  * last 1s measurement window is stale) - same rule as hub_get_bitrate(). */

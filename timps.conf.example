@@ -41,7 +41,9 @@ image.sharpness              = 128
 image.hue                    = 128
 image.hflip                  = 0
 image.vflip                  = 0
-image.anti_flicker           = 2     # 0 off, 1 = 50Hz, 2 = 60Hz
+# 0 off, 1 = 50Hz, 2 = 60Hz. Puts a floor under the exposure: use 0 if a very
+# bright close-up scene pulses (wiki Configuration-Reference.md).
+image.anti_flicker           = 2
 image.running_mode           = 0     # 0 day, 1 night
 image.ae_compensation        = 128
 image.max_again              = 160

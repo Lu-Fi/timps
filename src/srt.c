@@ -492,7 +492,10 @@ static void stream_run(ts_mux *m)
             continue;
         }
         last_pkt_us = now;
-        if (fanqueue_take_dropped_key(&q)) hub_request_idr(chn);
+        if (fanqueue_take_dropped_key(&q)) {
+            hub_note_drop(chn, HUB_DROP_SRT);
+            hub_request_idr_recovery(chn);
+        }
 
         /* (re)send PAT/PMT ~every second and before the first packet */
         if (!psi || now - psi_t > 1000000) {

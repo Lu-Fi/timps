@@ -109,6 +109,20 @@ latch-kick this triggers.
 | `image.wb_rgain` | int | 0 | 0–65535 | Live | `ISP_HAS_WB` | Manual WB red gain (used when `core_wb_mode` selects manual). |
 | `image.wb_bgain` | int | 0 | 0–65535 | Live | `ISP_HAS_WB` | Manual WB blue gain. |
 
+### Picking `image.anti_flicker`
+
+Anti-flicker quantises the AE's exposure time to whole mains half-periods, so
+it puts a **floor** under the exposure. The default `2` (60 Hz) mirrors
+prudynt and raptor; use `1` in 50 Hz regions. Use `0` (off) for a very bright
+close-up scene whose exposure visibly pulses: there the AE needs an exposure
+below the first node, and it oscillates between honouring the node
+(overexposed) and breaking it.
+
+At `sensor.fps = 30` the GC2053 T31 driver publishes a 25 fps line model at
+probe time, so the ISP scales the nodes by 1.2× and neither `1` nor `2` lands
+on a true mains period; at `sensor.fps = 25` the model is consistent and both
+settings are correct.
+
 ## `audio.*` — capture, encode, speaker defaults
 
 Split between live-applicable knobs (real-time DSP/gain calls) and

@@ -1304,7 +1304,7 @@ static void stream_loop(session *s)
         /* if the queue overflowed and dropped a keyframe, request a fresh IDR
          * so the client doesn't decode garbage until the next GOP */
         if (sub_v && qs.dropped_key) {
-            hub_note_drop(s->vchn);   /* /control "queue_drops" */
+            hub_note_drop(s->vchn, HUB_DROP_RTSP);   /* /control "queue_drops" */
             /* WARN once per session: sustained overflow was otherwise
              * invisible below DEBUG - only the /control counter moved */
             if (!drop_warned++)
@@ -1313,7 +1313,7 @@ static void stream_loop(session *s)
                      s->session, s->vchn);
             LOGD(MOD,"session=%s chn=%d: overflow dropped a keyframe - "
                      "IDR re-requested", s->session, s->vchn);
-            hub_request_idr(s->vchn);
+            hub_request_idr_recovery(s->vchn);
             drop_idr_us = now;
         }
         /* a dropped P-frame is silent (no keyframe lost) but still breaks the
@@ -1327,11 +1327,11 @@ static void stream_loop(session *s)
          * subscriber. The keyframe-drop path above resets the timer, so it
          * won't double-fire. */
         else if (sub_v && qs.dropped_any) {
-            hub_note_drop(s->vchn);
+            hub_note_drop(s->vchn, HUB_DROP_RTSP);
             if (now - drop_idr_us > 1000000) {
                 LOGD(MOD,"session=%s chn=%d: overflow dropped P-frame(s) - "
                          "IDR re-requested", s->session, s->vchn);
-                hub_request_idr(s->vchn);
+                hub_request_idr_recovery(s->vchn);
                 drop_idr_us = now;
             }
         }

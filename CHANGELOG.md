@@ -16,6 +16,64 @@ semantic versioning.
   `src/isp_caps.h`): `sensor fps: requested N, driver holds n/d, set rc=R`, at
   WARN when the return code is non-zero or the driver holds a different rate.
   `videoN.fps` is documented as the stream rate only, not the sensor rate.
+- **Drop-recovery IDR requests are rate-limited per stream, not per consumer**
+  (`src/hub.c`, `src/hub.h`, `src/record.c`, `src/rtsp/rtsp.c`,
+  `src/mp4/httpd.c`, `src/webrtc/webrtc.c`, `src/srt.c`) — every consumer
+  healing an overflow asked for an IDR at its own once-per-second cadence, and
+  the encoder is shared, so *N* slow consumers cost *N* IDRs/s. Each forced
+  IDR at CBR is the largest frame there is, which lengthens every other
+  consumer's queue and provokes the next round of drops. Recovery requests now
+  go through `hub_request_idr_recovery()`, which enforces
+  `HUB_IDR_RECOVERY_MIN_US` (1 s) across all consumers of a stream; a request
+  that loses the race is *coalesced*, not dropped, and issued by the next
+  published frame once the interval has passed. Requests a client needs to
+  **start** decoding (subscribe, RTSP `DESCRIBE`/`PLAY`, a fresh fMP4 `GET`,
+  the WebRTC answer, the pre-first-keyframe probe) still go through
+  `hub_request_idr()` and are never delayed. No config key: the interval is
+  the cadence every consumer already promised itself, so a single slow
+  consumer heals exactly as fast as before.
+- **Sustained queue drops are visible at the shipped log level**
+  (`src/hub.c`, `src/record.c`) — the consumers WARN once per session on their
+  *first keyframe* drop and log everything else at DEBUG, so an operator with
+  dozens of drops saw a silent log and only a moving `queue_drops` counter.
+  `hub_note_drop()` now takes the reporting consumer's kind and emits at most
+  one WARN per 60 s per (consumer kind, stream):
+  `chn=0 rec: 12 queue overflows in the last 60s (consumer too slow, IDR
+  re-requested)`. It covers P-frame drops and the recorder, which had no WARN
+  at all; the existing first-drop-per-session lines are unchanged and the
+  recorder gained one to match. `queue_drops` in `GET /control` is unchanged
+  in meaning and the key set is byte-identical.
+  - A keyframe drop no longer also counts as a P-frame drop on the *next* pop:
+    `rec_thread()`/`record_clip()` moved to `fanqueue_pop_ex()`, which reads
+    and clears both overflow flags in one critical section the way
+    `rtsp.c`/`httpd.c` already did.
+
+### Fixed
+
+- **The recorder no longer writes a headless GOP after a queue overflow**
+  (`src/record.c` `rec_thread()`, `record_clip()`) — an eviction on the
+  recorder's fanqueue leaves every queued P-frame referencing access units
+  that are not in the file, and `w_got_key` is per *segment*, so those frames
+  were muxed anyway and the recording carried up to a full GOP of decoder
+  residue. It now freezes the segment on a drop and resumes at the next
+  keyframe, the same shape `http.adaptive_drop` already gave the fMP4 clients.
+  Reproduced on cam-garage (T31X, NFS `record.dir`, server blackholed for
+  30 s): the frame directly after the 28.4 s hole used to be a P-frame with
+  visible OSD ghosting for the following 1.2 s.
+  - Audio is frozen with the video (as `mp4/httpd.c` does) so the two tracks
+    resume together; the fMP4 muxer's M6 re-anchor turns the hole into a
+    forward `tfdt` jump rather than a compressed timeline.
+  - Segment rotation is unaffected: it can only fire on a keyframe, which is
+    the packet that also ends the freeze, so a segment never starts mid-hole.
+  - A drop while buffering motion pre-roll clears the ring — `flush_ring()`
+    starts at the oldest buffered keyframe and would otherwise write straight
+    across the hole.
+
+### Documentation
+
+- **`image.anti_flicker`** (`docs/wiki/Configuration-Reference.md`,
+  `timps.conf.example`) — why the default is `2`, when to use `1` or `0`, and
+  the GC2053-at-30 fps caveat that makes neither node a true mains period.
 
 ## [1.9.18] - 2026-09-15
 

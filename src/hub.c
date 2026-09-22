@@ -10,15 +10,128 @@ static void (*g_idr_cb)(int) = NULL;
 static void (*g_act_cb)(int,int) = NULL;
 
 void hub_set_idr_cb(void (*cb)(int src)){ g_idr_cb = cb; }
-void hub_request_idr(int src){ if (g_idr_cb) g_idr_cb(src); }
+
+/* One IDR clock per video source, shared by every consumer (hub.h). The
+ * encoder is shared, so N slow consumers each self-healing at their own
+ * once-per-second cadence used to cost N IDRs per second - and an IDR at CBR
+ * is the largest frame there is, so it lengthens every consumer's queue and
+ * provokes the next round of drops. */
+static pthread_mutex_t  g_idr_lock = PTHREAD_MUTEX_INITIALIZER;
+static int64_t          g_idr_last_us[MS_MAX_VSTREAM];
+static volatile int     g_idr_pending[MS_MAX_VSTREAM];
+
+void hub_request_idr(int src)
+{
+    if ((unsigned)src < MS_MAX_VSTREAM) {
+        pthread_mutex_lock(&g_idr_lock);
+        g_idr_last_us[src] = ms_now_us();
+        g_idr_pending[src] = 0;   /* this IDR also serves any deferred recovery */
+        pthread_mutex_unlock(&g_idr_lock);
+    }
+    if (g_idr_cb) g_idr_cb(src);
+}
+
+int hub_request_idr_recovery(int src)
+{
+    if ((unsigned)src >= MS_MAX_VSTREAM) { hub_request_idr(src); return 1; }
+    int64_t now = ms_now_us();
+    int go;
+    pthread_mutex_lock(&g_idr_lock);
+    go = (now - g_idr_last_us[src] >= HUB_IDR_RECOVERY_MIN_US);
+    if (go) { g_idr_last_us[src] = now; g_idr_pending[src] = 0; }
+    else      g_idr_pending[src] = 1;   /* coalesce, never drop - see hub_tick */
+    pthread_mutex_unlock(&g_idr_lock);
+    if (go && g_idr_cb) g_idr_cb(src);
+    return go;
+}
 
 /* queue-overflow heal events per video stream (hub.h). 32-bit + __sync,
  * the same lock-free pattern httpd.c's g_drop_frames already uses. */
 static volatile unsigned g_qdrops[MS_MAX_VSTREAM];
-void hub_note_drop(int src)
+
+/* Rate-limited per-(consumer kind, stream) overflow summary. Sustained drops
+ * were invisible at the shipped loglevel: the consumers WARN once per session
+ * on their first KEYFRAME drop and log everything else at DEBUG, so an
+ * operator with dozens of drops saw a silent log and a moving /control
+ * counter. */
+static const char *const g_dropkind[HUB_DROP_NKIND] = {
+    "rec", "rtsp", "mp4", "webrtc", "srt"
+};
+static pthread_mutex_t g_dropsum_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct { unsigned n; int64_t t0; } g_dropsum[HUB_DROP_NKIND][MS_MAX_VSTREAM];
+/* earliest open window deadline, 0 = no window open. Read unlocked once per
+ * published frame (hub_tick), so a torn/stale read only delays a summary. */
+static volatile int64_t g_dropsum_due;
+
+static void drop_report(int kind, int src, unsigned n, int64_t span_us)
 {
-    if ((unsigned)src < MS_MAX_VSTREAM) __sync_fetch_and_add(&g_qdrops[src], 1u);
+    LOGW(MOD,"chn=%d %s: %u queue overflow%s in the last %llds "
+             "(consumer too slow, IDR re-requested)",
+         src, g_dropkind[kind], n, n==1?"":"s",
+         (long long)((span_us + 500000) / 1000000));
 }
+
+void hub_note_drop(int src, int kind)
+{
+    if ((unsigned)src >= MS_MAX_VSTREAM) return;
+    __sync_fetch_and_add(&g_qdrops[src], 1u);
+    if ((unsigned)kind >= HUB_DROP_NKIND) return;
+    int64_t now = ms_now_us();
+    unsigned rep_n = 0; int64_t rep_span = 0;
+    pthread_mutex_lock(&g_dropsum_lock);
+    if (g_dropsum[kind][src].t0 == 0) g_dropsum[kind][src].t0 = now;
+    g_dropsum[kind][src].n++;
+    if (now - g_dropsum[kind][src].t0 >= HUB_DROP_REPORT_US) {
+        rep_n = g_dropsum[kind][src].n; rep_span = now - g_dropsum[kind][src].t0;
+        g_dropsum[kind][src].n = 0; g_dropsum[kind][src].t0 = 0;
+    }
+    /* cheapest correct deadline: the oldest open window can only be at or
+     * before this one, so arm on the first opener and let hub_tick rescan */
+    if (!g_dropsum_due) g_dropsum_due = now + HUB_DROP_REPORT_US;
+    pthread_mutex_unlock(&g_dropsum_lock);
+    if (rep_n) drop_report(kind, src, rep_n, rep_span);
+}
+
+/* Producer-side tick, called once per published frame. Two jobs, both of them
+ * "a deadline passed and nobody is going to come back and ask": issue a
+ * recovery IDR that was coalesced away, and close a drop-summary window whose
+ * consumer went quiet. Both fast paths are one load of a volatile. */
+static void hub_tick(int src, int64_t now)
+{
+    if ((unsigned)src < MS_MAX_VSTREAM && g_idr_pending[src]) {
+        int go = 0;
+        pthread_mutex_lock(&g_idr_lock);
+        if (g_idr_pending[src] &&
+            now - g_idr_last_us[src] >= HUB_IDR_RECOVERY_MIN_US) {
+            g_idr_pending[src] = 0; g_idr_last_us[src] = now; go = 1;
+        }
+        pthread_mutex_unlock(&g_idr_lock);
+        if (go && g_idr_cb) g_idr_cb(src);
+    }
+    if (g_dropsum_due && now >= g_dropsum_due) {
+        struct { int k, s; unsigned n; int64_t span; } rep[HUB_DROP_NKIND*MS_MAX_VSTREAM];
+        int nrep = 0;
+        int64_t next = 0;
+        pthread_mutex_lock(&g_dropsum_lock);
+        for (int k=0;k<HUB_DROP_NKIND;k++)
+            for (int s=0;s<MS_MAX_VSTREAM;s++){
+                if (!g_dropsum[k][s].t0) continue;
+                if (now - g_dropsum[k][s].t0 >= HUB_DROP_REPORT_US){
+                    rep[nrep].k=k; rep[nrep].s=s; rep[nrep].n=g_dropsum[k][s].n;
+                    rep[nrep].span=now-g_dropsum[k][s].t0; nrep++;
+                    g_dropsum[k][s].n=0; g_dropsum[k][s].t0=0;
+                } else {
+                    int64_t d = g_dropsum[k][s].t0 + HUB_DROP_REPORT_US;
+                    if (!next || d < next) next = d;
+                }
+            }
+        g_dropsum_due = next;
+        pthread_mutex_unlock(&g_dropsum_lock);
+        for (int i=0;i<nrep;i++)
+            if (rep[i].n) drop_report(rep[i].k, rep[i].s, rep[i].n, rep[i].span);
+    }
+}
+
 unsigned hub_get_drops(int src)
 {
     return (unsigned)src < MS_MAX_VSTREAM ? g_qdrops[src] : 0u;
@@ -400,6 +513,7 @@ static int hub_prepare_locked(hub_source *s, int src,
 {
     int nsub_snap;
     *pushing = 0;
+    hub_tick(src, now);
     pthread_mutex_lock(&s->lock);
     if (media == MS_MEDIA_VIDEO) {
         if (keyframe || !s->vp_ready) {

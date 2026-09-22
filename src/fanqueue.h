@@ -77,8 +77,8 @@ void  fanqueue_close(fanqueue *q);
  * needs this to know it should leave instead of spinning. */
 int   fanqueue_closed(fanqueue *q);
 /* read-and-clear the dropped-keyframe flag. The consumer (which knows its
- * hub source) should call hub_request_idr() when this returns nonzero, so
- * clients don't decode garbage until the next natural GOP boundary. */
+ * hub source) should call hub_request_idr_recovery() when this returns nonzero,
+ * so clients don't decode garbage until the next natural GOP boundary. */
 int   fanqueue_take_dropped_key(fanqueue *q);
 /* read-and-clear the "any packet dropped" flag (keyframe OR P-frame). Mirrors
  * fanqueue_take_dropped_key() but fires on any overflow eviction. A dropped
