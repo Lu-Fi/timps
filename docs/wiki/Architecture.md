@@ -207,17 +207,24 @@ until a fresh keyframe reaches the head. This guarantees a slow client can
 never stall the shared encoder and never pins unbounded memory, while
 self-healing as soon as the stream naturally reaches its next keyframe.
 
-Two read-and-clear flags let a consumer detect and react to loss:
+Read-and-clear flags let a consumer detect and react to loss:
 
 - `fanqueue_take_dropped_key()` — a keyframe was evicted; the consumer
   should request a fresh IDR from the hub source.
 - `fanqueue_take_dropped()` — *any* packet was evicted (including a
   P-frame, which silently corrupts the rest of that GOP for a
   frame-by-frame consumer just like a lost keyframe, but leaves no
-  keyframe to trip the first flag); consumers that decode every frame
-  (RTSP) should also request an IDR here, rate-limited, since an IDR
-  request is a shared, global cost across every other subscriber of that
-  source.
+  keyframe to trip the first flag).
+- `fq_status.dropped_video` (**since v1.9.19, unreleased**) — the eviction
+  hit a *video* packet, key or not. This is the flag the heal paths act on:
+  consumers that decode every frame (RTSP, SRT, WebRTC) request an IDR here,
+  rate-limited, since an IDR request is a shared, global cost across every
+  other subscriber of that source, and the recorder/fMP4 freeze on it until
+  the next keyframe. `dropped_any` alone could not say that — an evicted
+  *audio* packet raises it too, and discarding a GOP of decodable video over
+  one lost audio frame helps nobody. An audio-only eviction still counts as
+  an overflow (`queue_drops`, the summary WARN) and still feeds the fMP4
+  mute-vs-congestion check.
 
 **Since v1.9.19 (unreleased)** that rate limit is no longer each consumer's
 own. A consumer healing an overflow calls `hub_request_idr_recovery(src)`
@@ -228,14 +235,20 @@ forced IDR at CBR is the largest frame there is, so it lengthened every other
 consumer's queue and provoked the next round of drops. A request that loses the
 race is *coalesced*, not dropped: it is remembered and issued by the next
 published frame once the interval has passed, so a consumer frozen until its
-next keyframe always gets one even if it never asks again. Requests a client
+next keyframe always gets one even if it never asks again — unless a video
+keyframe is published first, which cancels the coalesced request, because that
+keyframe is what the consumers were waiting for and a second forced IDR would
+land in queues that had just recovered. Requests a client
 needs to **start** decoding (subscribe, RTSP `DESCRIBE`/`PLAY`, a fresh fMP4
 `GET`, the WebRTC answer) keep using `hub_request_idr()` and are never delayed.
 
 The same call reports the eviction with `hub_note_drop(src, kind)`, whose
 `kind` (`HUB_DROP_REC`/`RTSP`/`MP4`/`WEBRTC`/`SRT`) drives a WARN summary of at
-most one line per 60 s per (kind, stream). The counter behind it is unchanged:
-`queue_drops` in `GET /control`. There is no config key for either interval.
+most one line per 60 s per (kind, stream); an open window is also flushed when
+its stream loses its last subscriber, so an on-demand stream that idle-stops
+does not hold the line back until the next viewer. The counter behind it is
+unchanged: `queue_drops` in `GET /control`. There is no config key for either
+interval.
 
 `fanqueue_depth()` lets a consumer inspect its own backlog (used by
 `http.adaptive_drop` in the HTTP fMP4 path to freeze-and-resume-at-keyframe

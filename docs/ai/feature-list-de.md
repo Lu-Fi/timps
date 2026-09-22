@@ -90,7 +90,9 @@ prudynt-t / raptor.
   IDR-Anforderungen zur Fehlerbehebung **pro Stream** auf 1/s begrenzt (vorher
   pro Konsument), sodass mehrere langsame Clients den gemeinsamen Encoder nicht
   mehr vervielfacht mit Keyframes belasten; eine unterdrückte Anforderung geht
-  nicht verloren, sondern wird nachgeholt. Kein Konfigurationsschlüssel.
+  nicht verloren, sondern wird nachgeholt – es sei denn, vorher wird ohnehin
+  ein Keyframe veröffentlicht, dann entfällt sie (ein Überlauf kostet so ein
+  erzwungenes IDR, nicht zwei). Kein Konfigurationsschlüssel.
 * **Bildrotation (optional, `USE_ROTATE`)** – `videoN.rotation = 0|90|180|270`.
   Hardware-90/270 auf T40/T41 (I2D) und T31 (FrameSource), Software-90/270 auf
   T23 (`USE_SW_ROTATE`, CPU-intensiv, nur H.264). Echte per-Kanal-180°-Drehung
@@ -201,7 +203,8 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   setzt erst am nächsten Keyframe wieder ein – dieselbe Logik wie
   `http.adaptive_drop` bei den fMP4-Clients. Die Lücke wird dadurch etwas
   länger, das Bild danach aber sauber; im `motion`-Modus wird zusätzlich der
-  Pre-Roll-Ring verworfen. Audio pausiert mit.
+  Pre-Roll-Ring verworfen. Audio pausiert mit. Ein Überlauf, der nur **Audio**
+  getroffen hat, löst nichts davon aus – die GOP ist intakt.
 * **Ehrliches Speicherplatz-Management**: alte Segmente werden geprunt, bis
   `min_free_mb` frei sind – ist der Wert für die Karte unerreichbar, verweigert
   der Recorder die Aufnahme und begründet das in `record.last_error`, statt alle
@@ -418,7 +421,7 @@ wird die WebSocket-Variante (statt CGI-Polling) aktiviert.
 * **Optionale Diagnose-Skripte im Image** (`BR2_PACKAGE_TIMPS_DIAG_TOOLS`,
   Default aus): `timps-selftest`, `timps-logcat-ship`, `timps-dn-isp-log`.
 * Host-Tests für heikle Bausteine: `make test-srtp`, `test-stun`, `test-fmp4`,
-  `test-config`, `test-fanqueue`, `test-hub-pool`.
+  `test-config`, `test-fanqueue`, `test-hub-pool`, `test-hub-idr`.
 
 ## Build-Optionen (thingino / Buildroot)
 

@@ -47,6 +47,14 @@ semantic versioning.
     `rec_thread()`/`record_clip()` moved to `fanqueue_pop_ex()`, which reads
     and clears both overflow flags in one critical section the way
     `rtsp.c`/`httpd.c` already did.
+- **SRT heals P-frame evictions too** (`src/srt.c`) — it was the one consumer
+  still reacting to keyframe drops only, so a mid-GOP eviction on an SRT queue
+  was neither counted in `queue_drops` nor healed. It now follows the same
+  shape as `rtsp.c`: keyframe drops heal at once, P-frame drops rate-limited.
+- **`sensor fps` readback is available on T10 too** (`src/isp_caps.h`) — the
+  capability was gated off for T10 on the grounds that no header declared
+  `IMP_ISP_Tuning_GetSensorFPS`. Both the T10 header set and the T20 set the
+  Makefile maps T10 onto declare it, and the vendored T10 `libimp` exports it.
 
 ### Fixed
 
@@ -68,6 +76,30 @@ semantic versioning.
   - A drop while buffering motion pre-roll clears the ring — `flush_ring()`
     starts at the oldest buffered keyframe and would otherwise write straight
     across the hole.
+- **One overflow no longer costs two forced IDRs** (`src/hub.c`) — a drop
+  burst issues one recovery IDR and coalesces the rest of the burst's
+  requests. Nothing retired those once the keyframe arrived, so `hub_tick()`
+  forced a second IDR an interval later into an encoder whose consumers had
+  already resynced — at CBR the largest frame there is, straight back into the
+  queues that had just overflowed. A published video keyframe now cancels the
+  pending request. Regression-tested by `make test-hub-idr`.
+- **An evicted audio packet no longer discards a GOP of good video**
+  (`src/fanqueue.c`, `src/fanqueue.h`, `src/record.c`, `src/mp4/httpd.c`,
+  `src/rtsp/rtsp.c`, `src/webrtc/webrtc.c`) — the consumers froze (recorder,
+  fMP4) or asked for an IDR (RTSP, WebRTC) on `dropped_any`, which an audio
+  eviction raises just as a video one does. The queue now reports
+  `dropped_video` separately; an audio-only eviction still counts as an
+  overflow and still feeds the mute-vs-congestion check, but leaves the video
+  path alone.
+- **A frozen clip still ends at its deadline** (`src/record.c` `record_clip()`)
+  — the freeze path skipped the deadline check, so a clip frozen near the end
+  of its requested duration ran up to a GOP long while holding `clip_lock` and
+  the `/control` HTTP worker.
+- **A drop-summary window is flushed when its stream goes idle** (`src/hub.c`)
+  — the summary WARN is emitted by the producer, so a window opened on an
+  on-demand stream that then idle-stopped stayed open until the next viewer
+  arrived, reporting the burst as `in the last 7200s`. Losing the last
+  subscriber now closes and emits it.
 
 ### Documentation
 

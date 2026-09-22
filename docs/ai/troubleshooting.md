@@ -424,10 +424,11 @@ One line per bring-up, from `isp_set_sensor_fps()` in
   rate (`driver holds 25/1 (25.00)` against a requested 30 means the driver
   refused). The number the driver holds is the truth; `GET /control` keeps
   echoing what was requested.
-- **WARN** `readback unavailable (rc=…)` on T10 (no
-  `IMP_ISP_Tuning_GetSensorFPS` in that SDK, `ISP_HAS_GET_SENSOR_FPS` in
-  `src/isp_caps.h`) or when the driver's getter fails. The set call may still
-  have worked; this line says only that it could not be verified.
+- **WARN** `readback unavailable (rc=…)` when the driver's
+  `IMP_ISP_Tuning_GetSensorFPS` fails or returns a zero denominator. The set
+  call may still have worked; this line says only that it could not be
+  verified. (Up to the fix in v1.9.19 this was also the permanent state on
+  T10, whose SDK was wrongly assumed not to declare the getter.)
 
 Pitfalls:
 
@@ -544,7 +545,10 @@ level, at most once per 60 s per (consumer kind, stream):
 
 The kinds are `rec`, `rtsp`, `mp4`, `webrtc`, `srt` (`HUB_DROP_*` in
 `src/hub.h`), the module tag is `HUB`, and the counter behind the line is the
-same `queue_drops`. Before v1.9.19 each consumer WARNed once per session on its
+same `queue_drops`. The window is emitted by the producer, so an open one is
+also flushed when its stream loses its last subscriber — otherwise an
+on-demand stream that idle-stops would hold the line back until the next
+viewer attached. Before v1.9.19 each consumer WARNed once per session on its
 *first keyframe* drop and logged everything else at DEBUG, so a camera dropping
 steadily showed a silent log and only a moving counter — the usual reason a
 user reports "the number goes up and nothing is in the log".
@@ -588,7 +592,10 @@ Three separate mechanisms, all real:
    *N* slow consumers can no longer cost *N* IDRs/s on the one shared encoder.
    A request that loses the race is coalesced, not dropped — it is issued by
    the next published frame once the interval has passed, so a frozen consumer
-   always gets its keyframe. Requests a client needs to **start** decoding
+   always gets its keyframe. A keyframe published before that interval elapses
+   **cancels** the coalesced request (it is what the consumers were waiting
+   for), so a single drop burst costs one forced IDR, not two. Requests a
+   client needs to **start** decoding
    (subscribe, RTSP `DESCRIBE`/`PLAY`, a fresh fMP4 `GET`, the WebRTC answer)
    still go out immediately. A single slow consumer heals exactly as fast as
    on v1.9.18; what changes is the multi-consumer case, which is where the
@@ -1228,6 +1235,9 @@ Consequences worth stating:
   the packet that also ends the freeze.
 - In `motion` mode a drop while buffering pre-roll **clears the ring**, so that
   event's clip starts at the trigger rather than writing across the hole.
+- An eviction that hit only **audio** does none of this: the video GOP is
+  intact, so freezing would throw away good video for nothing. It still counts
+  as an overflow (`queue_drops`, the WARN, the summary).
 - There is no key to turn this off, and a frozen recorder keeps asking for an
   IDR until it gets one.
 
@@ -2255,7 +2265,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `IMP_ISP_EnableTuning failed - image tuning unavailable` | W | **No `image.*` key will do anything this run.** | Restart. §3.8 |
 | `sensor fps: requested %d, driver holds %u/%u, set rc=%d` | I | **since v1.9.19 (unreleased).** The sensor driver accepted the rate and reads it back unchanged. One line per bring-up. | Nothing. §1.10 |
 | `sensor fps: requested %d, driver holds %u/%u (%.2f), set rc=%d` | W | **since v1.9.19 (unreleased).** The set call failed (`rc != 0`) or the driver holds a **different** rate than was asked for. The rate the driver holds is the real one; `GET /control` keeps echoing the request. | Set `sensor.fps` to what the driver will hold, or accept it. Not a config error if it persists. §1.10 |
-| `sensor fps: requested %d, set rc=%d, readback unavailable (rc=%d)` | W | **since v1.9.19 (unreleased).** `IMP_ISP_Tuning_GetSensorFPS` is missing (T10 — `ISP_HAS_GET_SENSOR_FPS` in `src/isp_caps.h`) or failed. The set call may well have worked; only the verification is missing. | Expected on T10. §1.10 |
+| `sensor fps: requested %d, set rc=%d, readback unavailable (rc=%d)` | W | **since v1.9.19 (unreleased).** `IMP_ISP_Tuning_GetSensorFPS` failed or reported a zero denominator (`ISP_HAS_GET_SENSOR_FPS` in `src/isp_caps.h` is set on every supported SoC). The set call may well have worked; only the verification is missing. | Driver-specific; not a config error. §1.10 |
 | `cannot read isp_ch0_pre_dequeue_time - assuming the pre-dequeue one-buffer schedule is active on framechan0` | W | T31 only: the module parameter could not be read, so `nrVBs` is forced to 1. | Cosmetic. |
 | `chn0: explicit buffers=%d but isp_ch0_pre_dequeue_time=%d forces a one-buffer schedule on framechan0 - EnableChn will fail (dmesg: 'one buffer schedule') unless pre-dequeue is disabled at the driver` | W | T31 with `isp_ch0_pre_dequeue_time > 0` **and** an explicit `videoN.buffers`. | **Delete the `videoN.buffers` line** (see §13). The real fps lever is removing `BR2_ISP_CH0_PRE_DEQUEUE_TIME` from the board defconfig — measured 13.5 → 24.9 fps. |
 | `framesource %d: EnableChn failed%s (retry)` | E | The framesource channel would not enable. | See the line above; also §2.2. |

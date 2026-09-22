@@ -279,9 +279,10 @@ Pitfalls
   `sensor fps: requested N, driver holds n/d, set rc=R` (INFO when they agree,
   **WARN** when the return code is non-zero or the driver holds a different
   rate). That line, not the echoed config value, is what the sensor is actually
-  running at. The readback needs `IMP_ISP_Tuning_GetSensorFPS`, which every SDK
-  header except T10's has (`ISP_HAS_GET_SENSOR_FPS` in `src/isp_caps.h`); on
-  T10 the line degrades to `readback unavailable`.
+  running at. The readback needs `IMP_ISP_Tuning_GetSensorFPS`
+  (`ISP_HAS_GET_SENSOR_FPS` in `src/isp_caps.h`), which every SDK header set
+  timps builds against declares, T10 included; the line degrades to
+  `readback unavailable` only when the driver's getter itself fails.
 * Editing `sensor.model` to "fix" a wrong-looking camera is almost always
   wrong — the loaded `.ko` decides, not the config.
 

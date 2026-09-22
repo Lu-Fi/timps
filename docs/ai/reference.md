@@ -967,8 +967,9 @@ Distinguish **compiled out** from **misconfigured**:
 - **`queue_drops` climbing** — some consumer is behind and the shared encoder is
   being asked for extra IDRs on its behalf, which spikes bitrate for everyone.
   **since v1.9.19 (unreleased):** those recovery IDRs are rate-limited per
-  *stream* (1 s) rather than per consumer, so many slow clients no longer
-  multiply the cost, and the log names the culprit once a minute —
+  *stream* (1 s) rather than per consumer, a coalesced one is cancelled by the
+  keyframe that satisfies it (so one drop burst costs one IDR, not two), and
+  the log names the culprit once a minute —
   `chn=0 rec: 12 queue overflows in the last 60s (consumer too slow, IDR
   re-requested)`, with the kind being `rec`/`rtsp`/`mp4`/`webrtc`/`srt`. On
   v1.9.18 the only trace was the counter itself. No config key either way.

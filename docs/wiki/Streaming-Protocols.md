@@ -234,6 +234,10 @@ bit-twiddling is easy to get subtly wrong.
 - **Audio limitation**: if `audio.enabled` but the configured codec isn't
   AAC (i.e. G.711 or Opus), SRT streams **video-only** with a one-time
   warning — the TS mux here only knows how to carry AAC.
+- **Queue overflow**: **since v1.9.19 (unreleased)** an evicted *P-frame* is
+  counted and healed like an evicted keyframe (rate-limited to once a second,
+  as RTSP does) — SRT reacted to keyframe drops only, so a mid-GOP eviction
+  was neither counted in `queue_drops` nor healed.
 - **Access control**: `srt.streamid`, if set, is enforced at accept time
   in listener mode — a connecting client must present the matching
   `STREAMID` or is rejected (this was previously checked nowhere at
