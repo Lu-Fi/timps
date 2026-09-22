@@ -278,7 +278,7 @@ IMPLIBS ?= -l:libimp.a -l:libalog.a -l:libsysutils.a
 # against a distro/buildroot that only ships libfaac.so.
 FAACLIB ?= -l:libfaac.a
 
-.PHONY: all target sim clean strip test-auth test-config test-fmp4 test-fanqueue test-hub-pool test-stun test-srtp
+.PHONY: all target sim clean strip test-auth test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp
 
 all: target
 
@@ -399,6 +399,19 @@ test-hub-pool:
 	  $(LDFLAGS) -Wl,--wrap=malloc -Wl,--wrap=free -lpthread -o $(BIN)-pooltest
 	@./$(BIN)-pooltest; rc=$$?; rm -f $(BIN)-pooltest; exit $$rc
 
+# Host-only unit test for the hub's shared IDR clock (src/hub.c): a coalesced
+# recovery request is retired by the keyframe that satisfies it, and still
+# issued when no keyframe arrives. Links the real src/hub.c with the recovery
+# interval shortened so the cases run in milliseconds. Needs no hardware and no
+# running daemon; exit code is the test result.
+HUBIDRTEST_SRC := scripts/test_hub_idr.c src/hub.c src/frame.c src/fanqueue.c \
+                  src/util.c src/log.c src/config.c src/codec/vparam.c \
+                  src/codec/nal.c
+test-hub-idr:
+	$(HOSTCC) $(CFLAGS) -DMS_VERSION='"$(VERSION)"' -DHUB_IDR_RECOVERY_MIN_US=50000LL \
+	  -Isrc $(HUBIDRTEST_SRC) $(LDFLAGS) -lpthread -lm -o $(BIN)-hubidrtest
+	@./$(BIN)-hubidrtest; rc=$$?; rm -f $(BIN)-hubidrtest; exit $$rc
+
 # Host-only test for the ICE-lite STUN layer (src/webrtc/stun.c). The C side
 # is only a hex-in/hex-out harness; the checking happens in Python against
 # hmac/hashlib/zlib, so MESSAGE-INTEGRITY and FINGERPRINT are validated
@@ -425,4 +438,4 @@ strip: target
 	$(CROSS_COMPILE)strip $(BIN)
 
 clean:
-	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest $(BIN)-stuntest
+	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest $(BIN)-hubidrtest $(BIN)-stuntest

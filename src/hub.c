@@ -45,6 +45,18 @@ int hub_request_idr_recovery(int src)
     return go;
 }
 
+/* A keyframe reaching the fan-out is what every deferred recovery request was
+ * waiting for: consumers resync on it. Without cancelling the request here,
+ * hub_tick() would force a SECOND IDR one interval later into an encoder whose
+ * consumers have already recovered - so a single overflow burst cost two. */
+static void hub_note_keyframe(int src)
+{
+    if ((unsigned)src >= MS_MAX_VSTREAM || !g_idr_pending[src]) return;
+    pthread_mutex_lock(&g_idr_lock);
+    g_idr_pending[src] = 0;
+    pthread_mutex_unlock(&g_idr_lock);
+}
+
 /* queue-overflow heal events per video stream (hub.h). 32-bit + __sync,
  * the same lock-free pattern httpd.c's g_drop_frames already uses. */
 static volatile unsigned g_qdrops[MS_MAX_VSTREAM];
@@ -90,6 +102,30 @@ void hub_note_drop(int src, int kind)
     if (!g_dropsum_due) g_dropsum_due = now + HUB_DROP_REPORT_US;
     pthread_mutex_unlock(&g_dropsum_lock);
     if (rep_n) drop_report(kind, src, rep_n, rep_span);
+}
+
+/* Emit and close any open drop-summary window for a stream. Called when a
+ * stream loses its last subscriber: an on-demand stream then idle-stops and
+ * publishes nothing more, so hub_tick() would hold the window open until the
+ * next viewer arrives - minutes or hours later - and report the burst as if
+ * it had just happened. */
+static void hub_drop_flush(int src)
+{
+    if ((unsigned)src >= MS_MAX_VSTREAM) return;
+    struct { int k; unsigned n; int64_t span; } rep[HUB_DROP_NKIND];
+    int nrep = 0;
+    int64_t now = ms_now_us();
+    pthread_mutex_lock(&g_dropsum_lock);
+    for (int k=0;k<HUB_DROP_NKIND;k++){
+        if (!g_dropsum[k][src].n) continue;
+        rep[nrep].k=k; rep[nrep].n=g_dropsum[k][src].n;
+        rep[nrep].span=now-g_dropsum[k][src].t0; nrep++;
+        g_dropsum[k][src].n=0; g_dropsum[k][src].t0=0;
+    }
+    pthread_mutex_unlock(&g_dropsum_lock);
+    /* g_dropsum_due may now name a window that is gone; hub_tick() rescans and
+     * recomputes it, so a stale deadline costs one scan and nothing else. */
+    for (int i=0;i<nrep;i++) drop_report(rep[i].k, src, rep[i].n, rep[i].span);
 }
 
 /* Producer-side tick, called once per published frame. Two jobs, both of them
@@ -489,6 +525,7 @@ void hub_unsubscribe(int src, fanqueue *q)
     int nsnap = s->nsub;   /* L11: snapshot for logging (see hub_subscribe) */
     pthread_mutex_unlock(&s->lock);
     LOGD(MOD,"unsubscribe src=%d nsub=%d", src, nsnap);
+    if (nsnap == 0) hub_drop_flush(src);
     hub_notify_activity(src);          /* level based, not edge based */
 }
 
@@ -513,6 +550,7 @@ static int hub_prepare_locked(hub_source *s, int src,
 {
     int nsub_snap;
     *pushing = 0;
+    if (media == MS_MEDIA_VIDEO && keyframe) hub_note_keyframe(src);
     hub_tick(src, now);
     pthread_mutex_lock(&s->lock);
     if (media == MS_MEDIA_VIDEO) {
