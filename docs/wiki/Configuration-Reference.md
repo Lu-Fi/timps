@@ -63,7 +63,7 @@ trusted, because a mismatching name/i2c address would crash the ISP driver.
 | --- | --- | --- | --- | --- | --- |
 | `sensor.model` | string | *(unset → auto-detected, fallback `gc2053`)* | — | Restart-only | Sensor driver name; auto-filled from `/proc/jz/sensor/sensor0/name` if present. |
 | `sensor.i2c_addr` (alias `i2c_address`) | int | *(unset → auto-detected, fallback `0x37`)* | 0–0x7F | Restart-only | Sensor I2C address. |
-| `sensor.fps` | int | *(unset → auto/video0.fps, fallback 25)* | 0–120 | Restart-only | Sensor capture frame rate. |
+| `sensor.fps` | int | *(unset → driver `max_fps`, capped at 30; else video0.fps, else 25)* | 0–120 | Restart-only | Sensor capture frame rate, applied once at ISP init. The auto value is never above 30; set it explicitly to go higher. The log line `sensor fps: requested N, driver holds n/d` shows what the driver accepted. Not the same as `video<N>.fps`. |
 | `sensor.width` | int | *(unset → auto/video0.width, fallback 1920)* | 0–8192 | Restart-only | Sensor native width. |
 | `sensor.height` | int | *(unset → auto/video0.height, fallback 1080)* | 0–8192 | Restart-only | Sensor native height. |
 
@@ -553,7 +553,7 @@ that also appears in `caps.video_live` is the per-key exception.
 | `video<N>.codec` | enum | `h264` / `h264` | `h264`\|`h265` (aliases `hevc`) | Restart-only | Video codec. H.265 only where the platform's encoder API supports it — see [Platform & SDK Support](Platform-SDK-Support.md). |
 | `video<N>.width` | int | 1920 / 640 | 64–4096 | Restart-only | Encode width (pre-rotation). |
 | `video<N>.height` | int | 1080 / 360 | 64–4096 | Restart-only | Encode height (pre-rotation). |
-| `video<N>.fps` | int | 25 / 25 | 1–120 | Restart-only | Encode frame rate. |
+| `video<N>.fps` | int | 25 / 25 | 1–120 | Restart-only | Encode frame rate of this stream only. It does **not** set the sensor rate; that is `sensor.fps`. |
 | `video<N>.bitrate` | int | 3000 / 512 | 16–50000 (kbps) | **Mixed** (live on every SoC as of 2026-08-21, see below) | Target bitrate. |
 | `video<N>.rc_mode` (alias `mode`) | enum | `cbr` / `cbr` | `cbr`\|`vbr`\|`fixqp`\|`smart`\|`capped_vbr`\|`capped_quality` | **Mixed** (live on classic SoCs only, see below) | Rate-control mode. |
 | `video<N>.gop` | int | 50 / 50 | 1–1000 | Restart-only | GOP length (I-frame interval). |

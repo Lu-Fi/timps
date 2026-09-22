@@ -23,6 +23,10 @@ general.osd_pool_size       = 1024   # KB, IMP OSD pool (this is the default)
 # width/height/max_fps), like raptor/prudynt - so one config works across
 # cameras. A value set here always wins; a safe fallback applies if neither the
 # config nor the registry has it (host sim / T40/T41 have no registry).
+# sensor.fps is the SENSOR rate (applied once at ISP init); videoN.fps only
+# sets that stream's frame rate. Left unset it follows the driver's max_fps but
+# is never auto-raised above 30; an explicit value is used as given. The log
+# shows the rate the driver actually holds ("sensor fps: requested N, ...").
 sensor.model    = gc2053
 sensor.i2c_addr = 0x37
 sensor.fps      = 25
@@ -331,7 +335,7 @@ video0.enabled   = 1
 video0.codec     = h264      # h264 | h265
 video0.width     = 1920
 video0.height    = 1080
-video0.fps       = 25
+video0.fps       = 25        # stream rate only - the sensor rate is sensor.fps
 # bitrate means DIFFERENT things per SoC generation (deliberate, documented
 # rather than papered over):
 #   classic (T10..T30, T23): written into maxBitRate/outBitRate - under vbr/

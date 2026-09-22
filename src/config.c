@@ -21,6 +21,7 @@
 #include <stdatomic.h>  /* atomic_load/atomic_store for F_ATOMIC live-int fields */
 
 #define MOD "CONFIG"
+#define SENSOR_AUTO_FPS_CAP 30   /* auto sensor.fps never above this; explicit values are not capped */
 ms_config g_cfg;
 ms_config g_cfg_boot;            /* see config.h: immutable boot snapshot */
 const char *g_cfg_path = NULL;   /* config file in use, set by config_load() */
@@ -1969,7 +1970,13 @@ void config_sensor_finalize(ms_config *c)
     if (c->sensor.width   == 0){ long v=read_sensor_proc("width",10);    if(v>0) c->sensor.width  =(int)v; }
     if (c->sensor.height  == 0){ long v=read_sensor_proc("height",10);   if(v>0) c->sensor.height =(int)v; }
     if (c->sensor.fps     == 0){ long v=read_sensor_proc("max_fps",10);
-                                 if(v<=0) v=read_sensor_proc("fps",10);  if(v>0) c->sensor.fps    =(int)v; }
+                                 if(v<=0) v=read_sensor_proc("fps",10);
+                                 if(v>SENSOR_AUTO_FPS_CAP){
+                                     LOGI(MOD,"sensor.fps: driver max_fps=%ld, auto capped to %d "
+                                          "(set sensor.fps to override)",v,SENSOR_AUTO_FPS_CAP);
+                                     v=SENSOR_AUTO_FPS_CAP;
+                                 }
+                                 if(v>0) c->sensor.fps    =(int)v; }
 
     /* safe fallbacks when neither the config nor the sensor registry had it */
     if (!c->sensor.model[0]) copystr(c->sensor.model, "gc2053", MS_MAX_STR);

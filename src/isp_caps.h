@@ -130,4 +130,10 @@
 #define ISP_HAS_SENSOR_ATTR 1
 #endif
 
+/* IMP_ISP_Tuning_GetSensorFPS - read back the rate the sensor driver actually
+ * holds. Every SDK header we have carries it except T10's (none available). */
+#if !defined(PLATFORM_T10)
+#define ISP_HAS_GET_SENSOR_FPS 1
+#endif
+
 #endif /* MS_ISP_CAPS_H */
