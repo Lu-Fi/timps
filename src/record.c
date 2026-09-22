@@ -963,7 +963,12 @@ int record_clip(const char *path, int seconds)
             if (p->media==MS_MEDIA_VIDEO && p->keyframe) regate=0;
             else {
                 if (p->media==MS_MEDIA_VIDEO) hub_request_idr_recovery(chn);
-                pkt_unref(p); continue;
+                pkt_unref(p);
+                /* the deadline still binds while frozen: this runs on the
+                 * /control HTTP worker and holds clip_lock, so waiting out a
+                 * whole GOP past `seconds` blocks the caller for nothing */
+                if (fp && now>=deadline) break;
+                continue;
             }
         }
 
