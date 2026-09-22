@@ -603,8 +603,9 @@ static void *sess_thread(void *arg)
             ms_pkt *pk = fanqueue_pop_ex(&s->q, WEBRTC_POP_MS, &qs);
             if (qs.closed) { pkt_unref(pk); break; }
             now = ms_now_us();
-            if ((qs.dropped_key || qs.dropped_any) &&
-                now - s->last_idr_us > 1000000) {
+            /* video only: an evicted audio packet is an overflow but leaves the
+             * GOP intact, and the IDR hits the one shared encoder */
+            if (qs.dropped_video && now - s->last_idr_us > 1000000) {
                 hub_note_drop(s->chn, HUB_DROP_WEBRTC);
                 s->last_idr_us = now;
                 hub_request_idr_recovery(s->chn);

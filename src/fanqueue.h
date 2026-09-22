@@ -24,6 +24,12 @@ typedef struct fanqueue {
                                     * P-frames), read-and-clear separately from
                                     * dropped_key so consumers can self-heal a
                                     * mid-GOP P-frame gap too */
+    int             dropped_video; /* a VIDEO packet (key or not) was dropped on
+                                    * overflow - i.e. the GOP really is broken.
+                                    * dropped_any alone cannot say that: an
+                                    * evicted AUDIO packet sets it too, and
+                                    * discarding a GOP of good video over one
+                                    * lost audio frame helps nobody */
     int             dropped_audio; /* an AUDIO packet was dropped on overflow.
                                     * Lets a consumer whose audio stopped
                                     * ARRIVING tell "produced but evicted from
@@ -46,6 +52,7 @@ typedef struct {
     int closed;        /* as fanqueue_closed() */
     int dropped_key;   /* as fanqueue_take_dropped_key() - read AND cleared */
     int dropped_any;   /* as fanqueue_take_dropped()     - read AND cleared */
+    int dropped_video; /* q->dropped_video               - read AND cleared */
     int count, cap;    /* as fanqueue_depth(), sampled AFTER this pop */
 } fq_status;
 
@@ -55,9 +62,9 @@ typedef struct {
  * remaining backlog. Each of those was a separate lock/unlock cycle on the
  * very mutex the producer contends for, up to four per frame per client.
  *
- * dropped_key/dropped_any are read-and-cleared exactly as their take_*
- * functions do, but ONLY on a pop that returns a packet: an overflow always
- * leaves its packet queued behind it, so the flags travel WITH that packet,
+ * dropped_key/dropped_any/dropped_video are read-and-cleared exactly as the
+ * take_* functions do, but ONLY on a pop that returns a packet: an overflow
+ * always leaves its packet queued behind it, so the flags travel WITH it,
  * and a pop that merely timed out must not swallow a signal it has no packet
  * to deliver alongside. dropped_audio is deliberately not included - its
  * read-and-clear timing is load-bearing in mp4/httpd.c, see

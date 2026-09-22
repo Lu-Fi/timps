@@ -11,7 +11,7 @@
  *     (MS_MJPEG_QCAP = 2 included, which is where MJPEG clients now sit);
  *   - the FQ_MAX_BYTES budget bounds pinned payload independently of the slot
  *     count, and a single oversized packet is still admissible;
- *   - the drop flags (dropped_key/dropped_any/dropped_audio) and the
+ *   - the drop flags (dropped_key/dropped_any/dropped_video/dropped_audio) and
  *     headless-GOP forward drop still fire at small capacities;
  *   - close/timeout semantics;
  *   - and, under a real producer thread with a deliberately slow consumer,
@@ -185,15 +185,23 @@ static void t_flags_at_cap2(void)
     ck_eq(p ? (long)p->pts_us : -1, 3, "and it is the newest one");
     ck_eq(st.dropped_key, 1, "dropped_key reported with the packet");
     ck_eq(st.dropped_any, 1, "dropped_any reported with the packet");
+    ck_eq(st.dropped_video, 1, "dropped_video reported with the packet");
     ck_eq(st.cap, 2, "status carries the capacity");
     pkt_unref(p);
     ck_eq(fanqueue_take_dropped_key(&q), 0, "flags were cleared by pop_ex");
     ck_eq(fanqueue_take_dropped(&q), 0, "dropped_any cleared by pop_ex");
 
-    /* audio eviction raises its own flag (the mute-vs-congestion signal) */
+    /* audio eviction raises its own flag (the mute-vs-congestion signal) and
+     * must NOT claim the video GOP is broken - consumers freeze on that */
     fanqueue_push(&q, mk(MS_MEDIA_AUDIO, 0, 512, 10));
     fanqueue_push(&q, mk(MS_MEDIA_AUDIO, 0, 512, 11));
     fanqueue_push(&q, mk(MS_MEDIA_AUDIO, 0, 512, 12));
+    fq_status sta;
+    ms_pkt *pa = fanqueue_pop_ex(&q, 0, &sta);
+    ck_eq(sta.dropped_any, 1, "an evicted audio packet is still an overflow");
+    ck_eq(sta.dropped_video, 0, "but does not report a video drop");
+    ck_eq(sta.dropped_key, 0, "nor a keyframe drop");
+    pkt_unref(pa);
     ck_eq(fanqueue_take_dropped_audio(&q), 1, "dropped_audio raised");
     ck_eq(fanqueue_take_dropped_audio(&q), 0, "and read-and-cleared");
     fanqueue_free(&q);

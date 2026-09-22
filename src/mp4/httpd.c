@@ -614,11 +614,11 @@ static void stream_mp4(hconn *c, int chn)
         if (lost_key && !drop_warned++)
             LOGW(MOD,"mp4 chn=%d: send queue overflowed, dropping frames "
                      "(client/network too slow) - details at DEBUG", chn);
-        /* ANY eviction breaks GOP integrity for this client, not just a lost
-         * keyframe: dropped mid-GOP P-frames leave every later P-frame of that
-         * GOP referencing AUs the decoder never got (same defect rtsp.c heals
-         * via its fanqueue_take_dropped() branch). This client's queue can
-         * evict without ever tripping the two old triggers: the FQ_MAX_BYTES
+        /* ANY VIDEO eviction breaks GOP integrity for this client, not just a
+         * lost keyframe: dropped mid-GOP P-frames leave every later P-frame of
+         * that GOP referencing AUs the decoder never got (same defect rtsp.c
+         * heals via its dropped_video branch). This client's queue can evict
+         * without ever tripping the two old triggers: the FQ_MAX_BYTES
          * byte budget binds below MS_MP4_DROP_HIWAT slots during a bitrate
          * spike (2 MB / 48 slots = ~43 KB/frame, an ordinary motion burst at
          * 1080p), and a hole shorter than one GOP need not contain a keyframe.
@@ -627,6 +627,10 @@ static void stream_mp4(hconn *c, int chn)
          * P-frames - silent corruption the adaptive path was built to
          * prevent. */
         int lost_any = qs.dropped_any;
+        /* ...an evicted AUDIO packet does not: it still counts as an overflow,
+         * but freezing video on it would discard a whole good GOP for nothing
+         * (the audio gap has its own handling above). */
+        int lost_video = qs.dropped_video;
         if (adaptive) {
             /* Per-client adaptive frame-dropping. This client's fanqueue is
              * its own private buffer; if it backs up (a weak link that can't
@@ -644,7 +648,8 @@ static void stream_mp4(hconn *c, int chn)
              * every other subscriber (Frigate, recording, healthy viewers)
              * just because one link is weak. Worst case this client gets a
              * keyframe-only slideshow - honest degradation, never corruption. */
-            if (lost_key || lost_any) { hub_note_drop(chn, HUB_DROP_MP4); dropping = 1; }
+            if (lost_any) hub_note_drop(chn, HUB_DROP_MP4);
+            if (lost_video) dropping = 1;
             if (!dropping && qs.count >= MS_MP4_DROP_HIWAT) dropping = 1;
             if (dropping) {
                 if (p->media == MS_MEDIA_VIDEO && p->keyframe) {
@@ -674,7 +679,7 @@ static void stream_mp4(hconn *c, int chn)
                     continue;
                 }
             }
-        } else if (lost_key || lost_any) {
+        } else if (lost_any) {
             /* legacy (adaptive_drop off): the queue overflowed - ask the
              * encoder for a fresh IDR so the client doesn't decode garbage
              * until the next natural GOP. Rate-limited like rtsp.c's
@@ -683,7 +688,7 @@ static void stream_mp4(hconn *c, int chn)
              * shared encoder. */
             hub_note_drop(chn, HUB_DROP_MP4);
             int64_t now = ms_now_us();
-            if (lost_key || now - drop_idr_us > 1000000) {
+            if (lost_video && (lost_key || now - drop_idr_us > 1000000)) {
                 LOGD(MOD,"mp4 chn=%d: overflow dropped %s - IDR re-requested",
                      chn, lost_key ? "a keyframe" : "P-frame(s)");
                 hub_request_idr_recovery(chn);

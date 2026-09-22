@@ -1326,7 +1326,7 @@ static void stream_loop(session *s)
          * chronically slow client must not spike the bitrate for every other
          * subscriber. The keyframe-drop path above resets the timer, so it
          * won't double-fire. */
-        else if (sub_v && qs.dropped_any) {
+        else if (sub_v && qs.dropped_video) {
             hub_note_drop(s->vchn, HUB_DROP_RTSP);
             if (now - drop_idr_us > 1000000) {
                 LOGD(MOD,"session=%s chn=%d: overflow dropped P-frame(s) - "

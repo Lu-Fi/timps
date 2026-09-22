@@ -769,19 +769,26 @@ static void *rec_thread(void *arg)
          * recording later. Freeze until the next keyframe and ask the encoder
          * for one - rate-limited across ALL consumers of this stream, since a
          * forced IDR hits the one shared encoder (hub.h). */
-        if (qs.dropped_key || qs.dropped_any) {
+        if (qs.dropped_any) {
             hub_note_drop(chn, HUB_DROP_REC);   /* /control "queue_drops" */
             if (!drop_warned++)
                 LOGW(MOD,"chn=%d: record queue overflowed, dropping frames "
                          "(storage/consumer too slow) - details at DEBUG",chn);
-            LOGD(MOD,"chn=%d: overflow dropped %s - re-gating on the next "
-                     "keyframe, IDR re-requested",
-                 chn, qs.dropped_key?"a keyframe":"P-frame(s)");
-            regate = 1;
-            hub_request_idr_recovery(chn);
-            /* whatever pre-roll is buffered now has a hole in it, and
-             * flush_ring() would write straight across it */
-            if (!writing) ring_clear();
+            /* only a VIDEO eviction breaks the GOP. An evicted audio packet
+             * costs a few ms of sound; freezing on it would throw away a whole
+             * GOP of perfectly decodable video for nothing. */
+            if (qs.dropped_video) {
+                LOGD(MOD,"chn=%d: overflow dropped %s - re-gating on the next "
+                         "keyframe, IDR re-requested",
+                     chn, qs.dropped_key?"a keyframe":"P-frame(s)");
+                regate = 1;
+                hub_request_idr_recovery(chn);
+                /* whatever pre-roll is buffered now has a hole in it, and
+                 * flush_ring() would write straight across it */
+                if (!writing) ring_clear();
+            } else {
+                LOGD(MOD,"chn=%d: overflow dropped audio only - video kept",chn);
+            }
         }
 
         /* stopping writing still closes the segment on this packet, exactly as
@@ -951,7 +958,7 @@ int record_clip(const char *path, int seconds)
         ms_pkt *p=fanqueue_pop_ex(&q,200,&qs);
         if (!p){ if (fp && now>=deadline) break; continue; }
         /* see the matching block in rec_thread() above */
-        if (qs.dropped_key || qs.dropped_any) { regate=1; hub_request_idr_recovery(chn); }
+        if (qs.dropped_video) { regate=1; hub_request_idr_recovery(chn); }
         if (regate){
             if (p->media==MS_MEDIA_VIDEO && p->keyframe) regate=0;
             else {
