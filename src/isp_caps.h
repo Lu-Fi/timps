@@ -131,9 +131,10 @@
 #endif
 
 /* IMP_ISP_Tuning_GetSensorFPS - read back the rate the sensor driver actually
- * holds. Every SDK header we have carries it except T10's (none available). */
-#if !defined(PLATFORM_T10)
+ * holds. Declared by every classic-tuning SDK header set we vendor, T10
+ * included (include/T10/3.12.0 and the T20/3.12.0 set the Makefile maps T10
+ * onto both declare it, and the T10 libimp exports the symbol), and by the
+ * T40/T41 reworked API in its own IMPVI_NUM form. */
 #define ISP_HAS_GET_SENSOR_FPS 1
-#endif
 
 #endif /* MS_ISP_CAPS_H */
