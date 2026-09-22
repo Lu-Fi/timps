@@ -467,8 +467,10 @@ static void stream_run(ts_mux *m)
     int got_key = 0, psi = 0; int64_t psi_t = 0;
     int64_t last_pkt_us = ms_now_us();   /* S-1: encoder-stall bound, see above */
     int64_t stats_t = last_pkt_us;
+    int64_t drop_idr_us = 0; int drop_warned = 0;
     while (g_run) {
-        ms_pkt *p = fanqueue_pop(&q, 200);
+        fq_status qs;
+        ms_pkt *p = fanqueue_pop_ex(&q, 200, &qs);
         /* P-03: no vDSO on this MIPS target, so every ms_now_us() is a real
          * syscall. Read it ONCE per iteration, right after the pop, and reuse
          * that instant for the stats tick, the stall bound, the pop stamp and
@@ -492,9 +494,24 @@ static void stream_run(ts_mux *m)
             continue;
         }
         last_pkt_us = now;
-        if (fanqueue_take_dropped_key(&q)) {
+        /* as rtsp.c: a lost keyframe heals at once, a lost P-frame - equally
+         * fatal for the rest of the GOP at the receiver, just silent - heals
+         * rate-limited, since the IDR hits the one shared encoder. */
+        if (qs.dropped_key) {
             hub_note_drop(chn, HUB_DROP_SRT);
+            if (!drop_warned++)
+                LOGW(MOD,"chn=%d: send queue overflowed, dropping frames "
+                         "(client/network too slow) - details at DEBUG", chn);
+            LOGD(MOD,"chn=%d: overflow dropped a keyframe - IDR re-requested", chn);
             hub_request_idr_recovery(chn);
+            drop_idr_us = now;
+        } else if (qs.dropped_video) {
+            hub_note_drop(chn, HUB_DROP_SRT);
+            if (now - drop_idr_us > 1000000) {
+                LOGD(MOD,"chn=%d: overflow dropped P-frame(s) - IDR re-requested", chn);
+                hub_request_idr_recovery(chn);
+                drop_idr_us = now;
+            }
         }
 
         /* (re)send PAT/PMT ~every second and before the first packet */
