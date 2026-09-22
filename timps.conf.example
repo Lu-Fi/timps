@@ -645,6 +645,11 @@ osd1.0.outline_color = 0xFF000000
 # in /control's record.last_error, rather than delete every recording it has
 # and still miss the target. The /control "record" action (WebUI record button)
 # is a manual start/stop override on top of this.
+# Since v1.9.19: if the storage cannot keep up and the recorder's queue drops
+# frames, the segment freezes and resumes at the next keyframe instead of
+# writing a headless GOP - the gap is a little longer and the picture after it
+# is clean. Logged once per subscription ("record queue overflowed"), counted
+# in /control's queue_drops. Nothing to configure.
 # record.enabled     = 1
 # record.channel      = 0
 # record.mode         = motion          # or: continuous

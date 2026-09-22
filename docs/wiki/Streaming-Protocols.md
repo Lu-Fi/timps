@@ -162,6 +162,13 @@ supported` (RFC 2326 §12.32) rather than being silently ignored. See
   per-client delivery decision that never touches the shared encoder or
   any other subscriber; a resulting IDR request is rate-limited to once/sec
   so one weak client can't spike the bitrate for everyone else.
+  **Since v1.9.19 (unreleased)** that once-a-second budget belongs to the
+  *stream*, not to each client: every consumer's drop-recovery IDR request goes
+  through `hub_request_idr_recovery()`, so ten weak clients still cost at most
+  one recovery IDR per second between them. A suppressed request is issued by
+  the next published frame rather than lost, and requests needed to *start*
+  decoding are never delayed — see the fan-out queue section of
+  [Architecture](Architecture.md).
 - **MSE player details**: the built-in player handles iOS's
   `ManagedMediaSource` vs. desktop `MediaSource`, nudges playback rate to
   stay ~1.5s behind live (hard-seeking on >5s drift), and evicts

@@ -12,7 +12,9 @@ prudynt-t / raptor.
   Recording-Timelapse, Rate-Control-\*, Building, Logging, Testing-QA,
   Platform-SDK-Support)
 * Stand dieses Dokuments: `main`, Version v1.9.18 (2026-09-15);
-  gestripptes `timpsd` ca. 360 KB (mipsel)
+  gestripptes `timpsd` ca. 360 KB (mipsel). Mit **seit v1.9.19 (unveröffentlicht)**
+  markierte Aussagen stehen bereits im Quellcode, aber in noch keinem Release –
+  auf einer v1.9.18-Kamera gilt jeweils das vorher beschriebene Verhalten.
 * Konfiguration: eine flache Textdatei `/etc/timps.conf` im Format `key = value`
 * Ein einziges Binary (`/usr/bin/timpsd`), gestartet über `/etc/init.d/S95timps`
 
@@ -80,6 +82,15 @@ prudynt-t / raptor.
   `encoder.<n>.rc`: das, was der Encoder wirklich hält (Rückleseweg über
   `IMP_Encoder_GetChnAttrRcMode`), getrennt von der konfigurierten Sollgröße.
   Dazu Backlog-Zähler und `queue_drops` je Stream.
+* **Nachvollziehbare Queue-Überläufe** (*seit v1.9.19, unveröffentlicht*):
+  `queue_drops` zählt Verwürfe in der Warteschlange eines *Konsumenten*. Eine
+  Sammelmeldung nennt jetzt höchstens einmal pro 60 s je (Konsumentenart,
+  Stream) auch die Art – `rec`, `rtsp`, `mp4`, `webrtc`, `srt`:
+  `chn=0 rec: 12 queue overflows in the last 60s`. Zusätzlich sind die
+  IDR-Anforderungen zur Fehlerbehebung **pro Stream** auf 1/s begrenzt (vorher
+  pro Konsument), sodass mehrere langsame Clients den gemeinsamen Encoder nicht
+  mehr vervielfacht mit Keyframes belasten; eine unterdrückte Anforderung geht
+  nicht verloren, sondern wird nachgeholt. Kein Konfigurationsschlüssel.
 * **Bildrotation (optional, `USE_ROTATE`)** – `videoN.rotation = 0|90|180|270`.
   Hardware-90/270 auf T40/T41 (I2D) und T31 (FrameSource), Software-90/270 auf
   T23 (`USE_SW_ROTATE`, CPU-intensiv, nur H.264). Echte per-Kanal-180°-Drehung
@@ -100,7 +111,13 @@ prudynt-t / raptor.
 * **Sensor-Autoerkennung** – `sensor.model/i2c_addr/fps/width/height` dürfen
   fehlen; timps liest sie dann aus der Kernel-Registry
   `/proc/jz/sensor/sensor0/`. Eine Konfigurationsdatei passt damit für viele
-  Kameras.
+  Kameras. *Seit v1.9.19 (unveröffentlicht)* wird die **automatisch** ermittelte
+  `sensor.fps` bei **30** gedeckelt (manche Treiber melden eine Rate, die ihr
+  Takt nicht liefert – der GC2053 meldet 40 bei einem 30-fps-Modus); ein
+  explizit gesetzter Wert gilt unverändert. Zusätzlich wird die gesetzte Rate
+  zurückgelesen und protokolliert: `sensor fps: requested N, driver holds n/d,
+  set rc=R` (WARN, wenn der Treiber etwas anderes hält). `videoN.fps` ist nur
+  die Rate *dieses Streams* und setzt nie die Sensorrate.
 * Optionale Deckelung der AE-Integrationszeit (`image.ae_it_max_us`) für
   Szenen, in denen die Automatik zu lange belichtet.
 
@@ -176,6 +193,15 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   `record.pre_roll_s`, `record.post_roll_s`, `record.min_free_mb`,
   `record.audio`. Ablage unter `<dir>/<hostname>/records/<name>.mp4`,
   Segmentwechsel immer am Keyframe.
+* **Sauberer Schnitt statt Decoder-Müll nach einem Queue-Überlauf**
+  (*seit v1.9.19, unveröffentlicht*): Ist die Aufnahme-Warteschlange
+  übergelaufen, beziehen sich alle noch anstehenden P-Frames auf Bilder, die
+  nicht in der Datei stehen. Bis v1.9.18 wurden sie trotzdem geschrieben (bis zu
+  eine ganze GOP sichtbarer Rest nach der Lücke); jetzt pausiert das Segment und
+  setzt erst am nächsten Keyframe wieder ein – dieselbe Logik wie
+  `http.adaptive_drop` bei den fMP4-Clients. Die Lücke wird dadurch etwas
+  länger, das Bild danach aber sauber; im `motion`-Modus wird zusätzlich der
+  Pre-Roll-Ring verworfen. Audio pausiert mit.
 * **Ehrliches Speicherplatz-Management**: alte Segmente werden geprunt, bis
   `min_free_mb` frei sind – ist der Wert für die Karte unerreichbar, verweigert
   der Recorder die Aufnahme und begründet das in `record.last_error`, statt alle

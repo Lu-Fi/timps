@@ -55,6 +55,29 @@ one GOP, whatever `pre_roll_s` said; that was the behaviour until
 at the stream's current bitrate/fps, a one-time warning is logged (the
 ring silently truncates otherwise).
 
+### Queue overflow (since v1.9.19, unreleased)
+
+The recorder subscribes with its own `fanqueue`, so storage that cannot keep up
+(a full or slow card, a stalled NFS mount) makes that queue evict packets.
+Everything still queued up to the next keyframe then references access units
+that are not in the file. Up to v1.9.18 those frames were muxed anyway —
+`w_got_key` is per *segment*, so it did not re-arm — and the recording carried
+up to a full GOP of decoder residue after the hole.
+
+The recorder now **freezes the segment on a drop and resumes at the next
+keyframe**, the same shape `http.adaptive_drop` gives fMP4 clients, and asks
+the encoder for that keyframe (rate-limited across all consumers of the
+stream). The visible trade: the gap is up to one GOP longer and what follows it
+is clean. Audio freezes with the video so both tracks resume together; segment
+rotation is unaffected, since it can only fire on the keyframe that also ends
+the freeze; and a drop while buffering motion pre-roll clears the ring, because
+`flush_ring()` starts at the oldest buffered keyframe and would otherwise write
+straight across the hole. `record_clip()` does the same. There is no key to
+turn it off. The first drop per subscription is a WARN
+(`chn=0: record queue overflowed, dropping frames (storage/consumer too slow)`)
+and sustained drops appear in the `HUB` 60-second summary; the count is
+`queue_drops` in `GET /control`.
+
 ### Segment rotation
 
 If `record.segment_s > 0`, a segment is closed and a new one opened as

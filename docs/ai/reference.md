@@ -8,6 +8,9 @@ firmware tree.
 
 Applies to timps v1.9.18 (source: `main`, 2026-09-15)
 
+A statement marked **since v1.9.19 (unreleased)** is in the source but in no
+tagged release yet — on a v1.9.18 camera describe the previous behaviour.
+
 ## Where to find what
 
 | Question | Document |
@@ -963,6 +966,20 @@ Distinguish **compiled out** from **misconfigured**:
   frame and resumes at the next keyframe, instead of being fed a headless GOP.
 - **`queue_drops` climbing** — some consumer is behind and the shared encoder is
   being asked for extra IDRs on its behalf, which spikes bitrate for everyone.
+  **since v1.9.19 (unreleased):** those recovery IDRs are rate-limited per
+  *stream* (1 s) rather than per consumer, so many slow clients no longer
+  multiply the cost, and the log names the culprit once a minute —
+  `chn=0 rec: 12 queue overflows in the last 60s (consumer too slow, IDR
+  re-requested)`, with the kind being `rec`/`rtsp`/`mp4`/`webrtc`/`srt`. On
+  v1.9.18 the only trace was the counter itself. No config key either way.
+- **A recording has a gap, then a second of smeared picture** — up to v1.9.18
+  the recorder muxed the headless GOP after a queue overflow.
+  **since v1.9.19 (unreleased)** it freezes and resumes at the next keyframe,
+  so the gap is slightly longer and clean.
+- **"The camera won't do more than 30 fps"** — **since v1.9.19 (unreleased)** an
+  *autodetected* `sensor.fps` is capped at 30; set `sensor.fps` explicitly to
+  go higher, and read the `sensor fps: requested N, driver holds n/d` line to
+  see what the driver actually took. `videoN.fps` is the stream rate only.
 - **RTSP over a VPN drops or fragments** — lower `rtsp.mtu` (default 1200 is
   already the VPN-safe value; 1400 is the LAN-only optimization).
 - **RTSP refuses a client with `503 Service Unavailable`** —

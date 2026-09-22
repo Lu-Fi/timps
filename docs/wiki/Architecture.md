@@ -219,6 +219,24 @@ Two read-and-clear flags let a consumer detect and react to loss:
   request is a shared, global cost across every other subscriber of that
   source.
 
+**Since v1.9.19 (unreleased)** that rate limit is no longer each consumer's
+own. A consumer healing an overflow calls `hub_request_idr_recovery(src)`
+instead of `hub_request_idr(src)`, and the hub enforces
+`HUB_IDR_RECOVERY_MIN_US` (1 s) **per video stream** across every consumer, so
+*N* slow consumers can no longer cost *N* IDRs/s on the one shared encoder — a
+forced IDR at CBR is the largest frame there is, so it lengthened every other
+consumer's queue and provoked the next round of drops. A request that loses the
+race is *coalesced*, not dropped: it is remembered and issued by the next
+published frame once the interval has passed, so a consumer frozen until its
+next keyframe always gets one even if it never asks again. Requests a client
+needs to **start** decoding (subscribe, RTSP `DESCRIBE`/`PLAY`, a fresh fMP4
+`GET`, the WebRTC answer) keep using `hub_request_idr()` and are never delayed.
+
+The same call reports the eviction with `hub_note_drop(src, kind)`, whose
+`kind` (`HUB_DROP_REC`/`RTSP`/`MP4`/`WEBRTC`/`SRT`) drives a WARN summary of at
+most one line per 60 s per (kind, stream). The counter behind it is unchanged:
+`queue_drops` in `GET /control`. There is no config key for either interval.
+
 `fanqueue_depth()` lets a consumer inspect its own backlog (used by
 `http.adaptive_drop` in the HTTP fMP4 path to freeze-and-resume-at-keyframe
 a single slow client without touching any other subscriber or the shared

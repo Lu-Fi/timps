@@ -52,24 +52,38 @@ months.
 
 ## Modules
 
-Names as they appear in the log and as `debug_modules` accepts them.
+Names as they appear in the log and as `debug_modules` accepts them. The four
+numeric columns are the count of distinct `LOGE`/`LOGW`/`LOGI`/`LOGD` call
+sites in that module's source file — **how many different messages that
+module can produce at each level**, not how often they fire at runtime. A
+module with `warn=29` has 29 different situations it can WARN about, not 29
+warnings a minute; a chatty module like `DAYNIGHT` (13 debug call sites) can
+still be perfectly quiet if none of its probes are unusual. Read the column
+as "surface area", and read `err=0` as "this module never gives up on its own
+— whatever it reports at worst degrades or falls back". The counts are
+per-module-tag, i.e. per `MOD` `#define` in that source file, not per file —
+`log.c` here is the logger's own module (its rejected-`debug_modules`-name
+diagnostics), not a count of every `LOG*(` call in the codebase. Recounted
+against `main` on every `CHANGELOG.md` release; if you're reading this next
+to a checkout, `grep -oE 'LOG[EWID]\(' src/<file> | sort | uniq -c` reproduces
+a row.
 
 | module | source | err | warn | info | debug | what its debug output adds |
 |---|---|---:|---:|---:|---:|---|
-| `DAYNIGHT` | `daynight.c` | 0 | 25 | 20 | 13 | every probe: ratio verdict and its branch, the structured `probe: r=… lit=… dark=… hr=… verdict=…` line, exposure vs night reference, illuminator-off readings, ISP readback confirmations |
-| `HAL_ING` | `hal/hal_ingenic.c` | 44 | 57 | 39 | 10 | encoder/framesource internals, polling and teardown detail |
+| `DAYNIGHT` | `daynight.c` | 1 | 26 | 20 | 15 | every probe: ratio verdict and its branch, the structured `probe: r=… lit=… dark=… hr=… verdict=…` line, exposure vs night reference, illuminator-off readings, ISP readback confirmations |
+| `HAL_ING` | `hal/hal_ingenic.c` | 44 | 77 | 48 | 10 | encoder/framesource internals, polling and teardown detail, the sensor-fps requested-vs-held readback (`sensor fps: requested N, driver holds n/d, set rc=R`) |
 | `CTRL` | `control.c` | 0 | 4 | 3 | 5 | request/field handling on `/control` |
 | `OSD` | `hal/imp_osd.c` | 4 | 8 | 6 | 3 | overlay placement and region updates |
-| `RTSP` | `rtsp/rtsp.c` | 4 | 7 | 4 | 2 | per-drop queue-overflow detail, dropped P-frames, IDR re-requests (the *first* keyframe drop of a session is a WARN) |
-| `HTTP` | `mp4/httpd.c` | 2 | 11 | 7 | 2 | same for the fMP4/MJPEG side, including adaptive freeze (first keyframe drop per client is a WARN) |
+| `RTSP` | `rtsp/rtsp.c` | 4 | 8 | 5 | 2 | per-drop queue-overflow detail, dropped P-frames, IDR re-requests (the *first* keyframe drop of a session is a WARN) |
+| `HTTP` | `mp4/httpd.c` | 3 | 13 | 10 | 5 | same for the fMP4/MJPEG side, including adaptive freeze (first keyframe drop per client is a WARN) |
 | `HUB` | `hub.c` | 0 | 1 | 0 | 2 | fan-out subscribe/unsubscribe at debug, plus the one always-on line: a per-(consumer kind, stream) queue-overflow summary, at most once per 60 s — the counter behind it is `/control` `queue_drops` |
-| `REC` | `record.c` | 9 | 7 | 6 | 1 | segment and writer detail, plus the overflow re-gate (which keyframe the segment resumed on); the *first* queue drop per subscription is a WARN |
-| `TLS` | `tls.c` | 5 | 1 | 1 | 1 | handshakes that are ordinary peer noise (EOF, close_notify, reset); the interesting ones are WARN |
-| `CONFIG` | `config.c` | 0 | 23 | 3 | 0 | — |
+| `REC` | `record.c` | 11 | 9 | 6 | 1 | segment and writer detail, plus the overflow re-gate (which keyframe the segment resumed on); the *first* queue drop per subscription is a WARN |
+| `TLS` | `tls.c` | 5 | 3 | 1 | 3 | handshakes that are ordinary peer noise (EOF, close_notify, reset); the interesting ones are WARN |
+| `CONFIG` | `config.c` | 1 | 29 | 4 | 0 | — |
 | `SRT` | `srt.c` | 7 | 9 | 3 | 1 | the 10-second key=value `stats:` line (RTT, loss, retransmits, send rate) while a receiver is connected |
 | `spk` | `rtsp/speaker.c` | 0 | 8 | 7 | 0 | — |
-| `MAIN` | `main.c` | 4 | 4 | 7 | 0 | — |
-| `MOTION` | `hal/imp_motion.c` | 9 | 6 | 5 | 0 | — |
+| `MAIN` | `main.c` | 8 | 5 | 8 | 0 | — |
+| `MOTION` | `hal/imp_motion.c` | 9 | 8 | 5 | 0 | — |
 | `TL` | `timelapse.c` | 4 | 1 | 5 | 0 | — |
 | `HAL_SIM` | `hal/hal_sim.c` | 4 | 2 | 4 | 0 | — |
 | `TRACE` | `trace.c` | 0 | 4 | 0 | 0 | — (deliberately WARN-only: its output is gated by its own `general.trace*` switch) |
