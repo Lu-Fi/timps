@@ -1767,10 +1767,10 @@ int control_get_json(char *buf, size_t cap)
         }
         APP("}");
     }
-    {   /* cumulative fanqueue overflow-heal events per video stream, summed
-         * over all consumers (RTSP/fMP4/record) - hub_note_drop(). Nonzero
-         * and climbing = some client is behind and the shared encoder is
-         * being asked for extra IDRs on its behalf (bitrate spikes for
+    {   /* cumulative fanqueue overflow events per video stream, summed over
+         * all consumers (RTSP/fMP4/record/WebRTC/SRT) - hub_note_drop().
+         * Nonzero and climbing = some client is behind and the shared encoder
+         * is being asked for extra IDRs on its behalf (bitrate spikes for
          * everyone), which the log otherwise never shows. */
         APP(",\"queue_drops\":[");
         for (int i=0;i<MS_MAX_VSTREAM;i++)

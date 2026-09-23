@@ -603,13 +603,12 @@ static void *sess_thread(void *arg)
             ms_pkt *pk = fanqueue_pop_ex(&s->q, WEBRTC_POP_MS, &qs);
             if (qs.closed) { pkt_unref(pk); break; }
             now = ms_now_us();
-            /* video only: an evicted audio packet is an overflow but leaves the
-             * GOP intact, and the IDR hits the one shared encoder */
-            if (qs.dropped_video && now - s->last_idr_us > 1000000) {
-                hub_note_drop(s->chn, HUB_DROP_WEBRTC);
-                s->last_idr_us = now;
-                hub_request_idr_recovery(s->chn);
-            }
+            /* every eviction counts; only a video one breaks the GOP. Not
+             * gated on last_idr_us: that throttles PLI/FIR, and a drop inside
+             * its window would go uncounted and unhealed - the hub rate-limits
+             * recovery per stream and coalesces instead. */
+            if (qs.dropped_any) hub_note_drop(s->chn, HUB_DROP_WEBRTC);
+            if (qs.dropped_video) hub_request_idr_recovery(s->chn);
             if (pk) {
                 if (pk->media == MS_MEDIA_VIDEO) {
                     if (!got_key && pk->keyframe) got_key = 1;

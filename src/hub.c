@@ -34,6 +34,10 @@ void hub_request_idr(int src)
 int hub_request_idr_recovery(int src)
 {
     if ((unsigned)src >= MS_MAX_VSTREAM) { hub_request_idr(src); return 1; }
+    /* already coalesced: hub_tick() or a keyframe settles it. Consumers frozen
+     * until a keyframe re-ask per packet; without this each of those costs a
+     * syscall (no vDSO here) and a global lock for nothing. */
+    if (g_idr_pending[src]) return 0;
     int64_t now = ms_now_us();
     int go;
     pthread_mutex_lock(&g_idr_lock);

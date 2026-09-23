@@ -643,11 +643,12 @@ static void stream_mp4(hconn *c, int chn)
              * backlog until the next NATURAL keyframe, then resume cleanly at
              * that fresh, self-contained GOP boundary. Draining pops (no mux,
              * no send) also let this client catch back up to the live edge.
-             * Crucially we never call hub_request_idr() here: an IDR request
-             * is global to the shared encoder and would spike the bitrate for
-             * every other subscriber (Frigate, recording, healthy viewers)
-             * just because one link is weak. Worst case this client gets a
-             * keyframe-only slideshow - honest degradation, never corruption. */
+             * The freeze itself asks the shared encoder for nothing: only the
+             * progress guarantee below does, via the hub's per-stream
+             * rate-limited recovery path, so one weak link cannot spike the
+             * bitrate for every other subscriber (Frigate, recording, healthy
+             * viewers). Worst case this client gets a keyframe-only slideshow
+             * - honest degradation, never corruption. */
             if (lost_any) hub_note_drop(chn, HUB_DROP_MP4);
             if (lost_video) dropping = 1;
             if (!dropping && qs.count >= MS_MP4_DROP_HIWAT) dropping = 1;
@@ -682,17 +683,13 @@ static void stream_mp4(hconn *c, int chn)
         } else if (lost_any) {
             /* legacy (adaptive_drop off): the queue overflowed - ask the
              * encoder for a fresh IDR so the client doesn't decode garbage
-             * until the next natural GOP. Rate-limited like rtsp.c's
-             * equivalent branch: a non-key drop can repeat every push while a
-             * client stays behind, and the IDR request is global to the
-             * shared encoder. */
+             * until the next natural GOP. The hub rate-limits per stream and
+             * coalesces, so every video eviction may ask. */
             hub_note_drop(chn, HUB_DROP_MP4);
-            int64_t now = ms_now_us();
-            if (lost_video && (lost_key || now - drop_idr_us > 1000000)) {
+            if (lost_video) {
                 LOGD(MOD,"mp4 chn=%d: overflow dropped %s - IDR re-requested",
                      chn, lost_key ? "a keyframe" : "P-frame(s)");
                 hub_request_idr_recovery(chn);
-                drop_idr_us = now;
             }
         }
         ms_buf_reset(&frag, frag_soft);  /* reuse, shrink an outlier buffer back */

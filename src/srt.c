@@ -467,7 +467,7 @@ static void stream_run(ts_mux *m)
     int got_key = 0, psi = 0; int64_t psi_t = 0;
     int64_t last_pkt_us = ms_now_us();   /* S-1: encoder-stall bound, see above */
     int64_t stats_t = last_pkt_us;
-    int64_t drop_idr_us = 0; int drop_warned = 0;
+    int drop_warned = 0;
     while (g_run) {
         fq_status qs;
         ms_pkt *p = fanqueue_pop_ex(&q, 200, &qs);
@@ -494,24 +494,18 @@ static void stream_run(ts_mux *m)
             continue;
         }
         last_pkt_us = now;
-        /* as rtsp.c: a lost keyframe heals at once, a lost P-frame - equally
-         * fatal for the rest of the GOP at the receiver, just silent - heals
-         * rate-limited, since the IDR hits the one shared encoder. */
-        if (qs.dropped_key) {
+        /* as rtsp.c: every eviction counts, every VIDEO eviction heals via the
+         * hub, which rate-limits per stream and coalesces */
+        if (qs.dropped_any) {
             hub_note_drop(chn, HUB_DROP_SRT);
-            if (!drop_warned++)
+            if (qs.dropped_key && !drop_warned++)
                 LOGW(MOD,"chn=%d: send queue overflowed, dropping frames "
                          "(client/network too slow) - details at DEBUG", chn);
-            LOGD(MOD,"chn=%d: overflow dropped a keyframe - IDR re-requested", chn);
+        }
+        if (qs.dropped_video) {
+            LOGD(MOD,"chn=%d: overflow dropped %s - IDR re-requested", chn,
+                 qs.dropped_key ? "a keyframe" : "P-frame(s)");
             hub_request_idr_recovery(chn);
-            drop_idr_us = now;
-        } else if (qs.dropped_video) {
-            hub_note_drop(chn, HUB_DROP_SRT);
-            if (now - drop_idr_us > 1000000) {
-                LOGD(MOD,"chn=%d: overflow dropped P-frame(s) - IDR re-requested", chn);
-                hub_request_idr_recovery(chn);
-                drop_idr_us = now;
-            }
         }
 
         /* (re)send PAT/PMT ~every second and before the first packet */

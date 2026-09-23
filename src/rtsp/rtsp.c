@@ -1257,7 +1257,6 @@ static void stream_loop(session *s)
      * (we poll for control input with MSG_DONTWAIT instead) */
     char ctl[2048]; int ctlhave = 0;
     int got_key = 0;   /* start clients on a keyframe for clean decode */
-    int64_t drop_idr_us = 0;   /* rate-limit the safety IDR request on any drop */
     int drop_warned = 0;   /* one WARN per session; per-drop detail stays LOGD */
     int64_t last_ctl_poll_us = 0;   /* P-04: rate-limit the nonblocking ctl poll */
     int64_t last_rtcp_drain_us = 0; /* same, for the RTCP liveness drain below */
@@ -1301,39 +1300,25 @@ static void stream_loop(session *s)
          * syscalls per media frame. Read AFTER the pop: a reading taken before
          * a wait of up to pop_ms would report a producer stall as our own. */
         int64_t now = ms_now_us();
-        /* if the queue overflowed and dropped a keyframe, request a fresh IDR
-         * so the client doesn't decode garbage until the next GOP */
-        if (sub_v && qs.dropped_key) {
+        /* Any eviction counts toward "queue_drops" (as record.c/httpd.c). Only
+         * a VIDEO eviction breaks the GOP: a lost keyframe outright, a lost
+         * P-frame silently for every later P-frame of that GOP (observed as a
+         * subject flickering/vanishing mid-motion in a Frigate recording from a
+         * weak-WiFi RTSP/TCP session). Every such request goes to the hub,
+         * which rate-limits per stream and coalesces rather than drops. */
+        if (sub_v && qs.dropped_any) {
             hub_note_drop(s->vchn, HUB_DROP_RTSP);   /* /control "queue_drops" */
             /* WARN once per session: sustained overflow was otherwise
              * invisible below DEBUG - only the /control counter moved */
-            if (!drop_warned++)
+            if (qs.dropped_key && !drop_warned++)
                 LOGW(MOD,"session=%s chn=%d: send queue overflowed, dropping "
                          "frames (client/network too slow) - details at DEBUG",
                      s->session, s->vchn);
-            LOGD(MOD,"session=%s chn=%d: overflow dropped a keyframe - "
-                     "IDR re-requested", s->session, s->vchn);
-            hub_request_idr_recovery(s->vchn);
-            drop_idr_us = now;
         }
-        /* a dropped P-frame is silent (no keyframe lost) but still breaks the
-         * rest of the GOP for this client: subsequent P-frames reference an AU
-         * the decoder never got. Observed as a subject (a cat walking) flicker/
-         * vanish mid-motion in a Frigate recording when a weak-WiFi RTSP/TCP
-         * session backs up and hits the fanqueue byte cap. Self-heal by asking
-         * for a fresh IDR too, but RATE-LIMITED to once/sec (mirrors httpd.c's
-         * adaptive-drop): the IDR request is global to the shared encoder, so a
-         * chronically slow client must not spike the bitrate for every other
-         * subscriber. The keyframe-drop path above resets the timer, so it
-         * won't double-fire. */
-        else if (sub_v && qs.dropped_video) {
-            hub_note_drop(s->vchn, HUB_DROP_RTSP);
-            if (now - drop_idr_us > 1000000) {
-                LOGD(MOD,"session=%s chn=%d: overflow dropped P-frame(s) - "
-                         "IDR re-requested", s->session, s->vchn);
-                hub_request_idr_recovery(s->vchn);
-                drop_idr_us = now;
-            }
+        if (sub_v && qs.dropped_video) {
+            LOGD(MOD,"session=%s chn=%d: overflow dropped %s - IDR re-requested",
+                 s->session, s->vchn, qs.dropped_key ? "a keyframe" : "P-frame(s)");
+            hub_request_idr_recovery(s->vchn);
         }
         if (p) {
             /* trace.h: `now` IS the post-pop instant, so t_pop costs nothing

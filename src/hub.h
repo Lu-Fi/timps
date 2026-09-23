@@ -119,14 +119,16 @@ void        hub_request_idr(int src);
  * encoder now, 0 if it was COALESCED: a deferred request is remembered and
  * issued by the next published frame once the interval has passed, so a
  * consumer frozen until its next keyframe always gets one even if it never
- * asks again. */
+ * asks again. While a request is pending, calling again is free (no clock
+ * read, no lock), so a frozen consumer may simply ask per packet. */
 int         hub_request_idr_recovery(int src);
 
-/* Consumers (RTSP/fMP4/record) report a fanqueue overflow-heal event here;
+/* Consumers (RTSP/fMP4/record/WebRTC/SRT) report a fanqueue overflow here;
  * GET /control sums them per video stream as "queue_drops" - the only
- * always-on trace of the silent drop->IDR->bitrate-spike cycle. `kind` labels
- * the reporter for the rate-limited summary WARN only; it does not change what
- * "queue_drops" counts. */
+ * always-on trace of the silent drop->IDR->bitrate-spike cycle. Every consumer
+ * reports ANY eviction (audio included), whether or not it also requests
+ * recovery. `kind` labels the reporter for the rate-limited summary WARN only;
+ * it does not change what "queue_drops" counts. */
 enum {
     HUB_DROP_REC = 0, HUB_DROP_RTSP, HUB_DROP_MP4, HUB_DROP_WEBRTC,
     HUB_DROP_SRT, HUB_DROP_NKIND
