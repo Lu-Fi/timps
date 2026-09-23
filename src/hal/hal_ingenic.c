@@ -1094,10 +1094,8 @@ static void isp_set_sensor_fps(int want)
     rc  = IMP_ISP_Tuning_SetSensorFPS(IMPVI_MAIN, &fn, &fd);
     grc = IMP_ISP_Tuning_GetSensorFPS(IMPVI_MAIN, &hn, &hd);
 #else
-    rc = IMP_ISP_Tuning_SetSensorFPS(want, 1);
-#if defined(ISP_HAS_GET_SENSOR_FPS)
+    rc  = IMP_ISP_Tuning_SetSensorFPS(want, 1);
     grc = IMP_ISP_Tuning_GetSensorFPS(&hn, &hd);
-#endif
 #endif
     if (grc != 0 || !hd) {
         LOGW(MOD, "sensor fps: requested %d, set rc=%d, readback unavailable (rc=%d)",
@@ -1652,7 +1650,7 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
      * config.c lets videoN.bitrate reach 50000 kbps. An IDR runs roughly 8x an
      * average frame, i.e. about bitrate*1000/fps bytes; past ~0.8 MB every
      * keyframe is dropped at :1560, and the downstream healing path
-     * (fanqueue_take_dropped_key -> hub_request_idr) then asks for another one
+     * (dropped_key -> hub_request_idr_recovery) then asks for another one
      * that is just as large - a livelock in which P-frames flow and no client
      * ever gets a keyframe. Dropping the config clamp would forbid legitimate
      * high-bitrate use, and growing the buffer costs RAM on every channel, so
@@ -2182,7 +2180,7 @@ static void *video_thread(void *arg)
          * so forcing one after a size overflow only guarantees the next frame
          * overflows too (the historical permanent-stall "only ch0 works" bug);
          * clients ride out a broken GOP until the next SCHEDULED IDR (<=
-         * videoN.gop frames). Note fanqueue_take_dropped_key/hub_request_idr do
+         * videoN.gop frames). Note the consumers' dropped_key/IDR recovery do
          * NOT fire here - they only see consumer-queue evictions, and a frame
          * dropped at the producer never enters any fanqueue. */
         size_t need=0;

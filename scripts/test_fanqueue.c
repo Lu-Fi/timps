@@ -188,8 +188,9 @@ static void t_flags_at_cap2(void)
     ck_eq(st.dropped_video, 1, "dropped_video reported with the packet");
     ck_eq(st.cap, 2, "status carries the capacity");
     pkt_unref(p);
-    ck_eq(fanqueue_take_dropped_key(&q), 0, "flags were cleared by pop_ex");
-    ck_eq(fanqueue_take_dropped(&q), 0, "dropped_any cleared by pop_ex");
+    ck_eq(q.dropped_key, 0, "flags were cleared by pop_ex");
+    ck_eq(q.dropped_any, 0, "dropped_any cleared by pop_ex");
+    ck_eq(q.dropped_video, 0, "dropped_video cleared by pop_ex");
 
     /* audio eviction raises its own flag (the mute-vs-congestion signal) and
      * must NOT claim the video GOP is broken - consumers freeze on that */

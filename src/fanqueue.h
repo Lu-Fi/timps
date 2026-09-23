@@ -50,9 +50,9 @@ ms_pkt *fanqueue_pop(fanqueue *q, int timeout_ms);
 /* what fanqueue_pop_ex() reports alongside the packet */
 typedef struct {
     int closed;        /* as fanqueue_closed() */
-    int dropped_key;   /* as fanqueue_take_dropped_key() - read AND cleared */
-    int dropped_any;   /* as fanqueue_take_dropped()     - read AND cleared */
-    int dropped_video; /* q->dropped_video               - read AND cleared */
+    int dropped_key;   /* a video keyframe was evicted  - read AND cleared */
+    int dropped_any;   /* any packet was evicted        - read AND cleared */
+    int dropped_video; /* a video packet was evicted    - read AND cleared */
     int count, cap;    /* as fanqueue_depth(), sampled AFTER this pop */
 } fq_status;
 
@@ -62,11 +62,10 @@ typedef struct {
  * remaining backlog. Each of those was a separate lock/unlock cycle on the
  * very mutex the producer contends for, up to four per frame per client.
  *
- * dropped_key/dropped_any/dropped_video are read-and-cleared exactly as the
- * take_* functions do, but ONLY on a pop that returns a packet: an overflow
- * always leaves its packet queued behind it, so the flags travel WITH it,
- * and a pop that merely timed out must not swallow a signal it has no packet
- * to deliver alongside. dropped_audio is deliberately not included - its
+ * dropped_key/dropped_any/dropped_video are read-and-cleared, but ONLY on a
+ * pop that returns a packet: an overflow always leaves its packet queued
+ * behind it, so the flags travel WITH it, and a pop that merely timed out must
+ * not swallow a signal it has no packet to deliver alongside. dropped_audio is deliberately not included - its
  * read-and-clear timing is load-bearing in mp4/httpd.c, see
  * fanqueue_take_dropped_audio(). `st` may be NULL (then this is plain
  * fanqueue_pop()). */
@@ -83,19 +82,6 @@ void  fanqueue_close(fanqueue *q);
  * ordinary timeout - so a loop that treats NULL as "nothing yet, keep going"
  * needs this to know it should leave instead of spinning. */
 int   fanqueue_closed(fanqueue *q);
-/* read-and-clear the dropped-keyframe flag. The consumer (which knows its
- * hub source) should call hub_request_idr_recovery() when this returns nonzero,
- * so clients don't decode garbage until the next natural GOP boundary. */
-int   fanqueue_take_dropped_key(fanqueue *q);
-/* read-and-clear the "any packet dropped" flag (keyframe OR P-frame). Mirrors
- * fanqueue_take_dropped_key() but fires on any overflow eviction. A dropped
- * P-frame silently corrupts the rest of the GOP for a frame-by-frame consumer
- * just like a dropped keyframe does, but leaves no keyframe to trip
- * dropped_key - so a consumer that decodes/displays every frame (RTSP) should
- * also request an IDR here, RATE-LIMITED, since IDR requests are global to the
- * shared encoder and a chronically slow client must not spike the bitrate for
- * every other subscriber. */
-int   fanqueue_take_dropped(fanqueue *q);
 /* read-and-clear the "an audio packet was evicted" flag. The mp4 consumer
  * clears it on every audio packet it actually delivers, so at any later
  * point "flag set" means audio was produced-but-evicted SINCE the last

@@ -78,9 +78,9 @@ int fanqueue_push(fanqueue *q, ms_pkt *p)
      * place (audio decodes independently of the video GOP). Stops as
      * soon as a keyframe (fresh or otherwise) reaches the head, so this
      * never discards packets belonging to an already-valid GOP.
-     * dropped_key is cleared by the consumer via
-     * fanqueue_take_dropped_key(); until then this is a no-op once the
-     * head is back at a keyframe or non-video packet. */
+     * dropped_key is cleared by the consumer's next fanqueue_pop_ex();
+     * until then this is a no-op once the head is back at a keyframe or
+     * non-video packet. */
     if (dropped && q->dropped_key) {
         while (q->count > 0) {
             ms_pkt *h = q->slots[q->head];
@@ -147,24 +147,6 @@ ms_pkt *fanqueue_pop_ex(fanqueue *q, int timeout_ms, fq_status *st)
     }
     pthread_mutex_unlock(&q->lock);
     return p;
-}
-
-int fanqueue_take_dropped_key(fanqueue *q)
-{
-    pthread_mutex_lock(&q->lock);
-    int k = q->dropped_key;
-    q->dropped_key = 0;
-    pthread_mutex_unlock(&q->lock);
-    return k;
-}
-
-int fanqueue_take_dropped(fanqueue *q)
-{
-    pthread_mutex_lock(&q->lock);
-    int d = q->dropped_any;
-    q->dropped_any = 0;
-    pthread_mutex_unlock(&q->lock);
-    return d;
 }
 
 int fanqueue_take_dropped_audio(fanqueue *q)
