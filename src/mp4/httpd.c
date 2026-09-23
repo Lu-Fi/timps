@@ -387,6 +387,7 @@ static void stream_mp4(hconn *c, int chn)
 
     fanqueue q;
     if (fanqueue_init(&q, MS_MP4_QCAP)) { c->tr = NULL; return; }
+    hub_count_drops(&q, chn, HUB_DROP_MP4);
     if (hub_subscribe(chn, &q) != 0) {           /* source full (>HUB_MAX_SUBS) */
         http_send_ex(c,"503 Service Unavailable","text/plain",MEDIA_CORS,"busy",4);
         fanqueue_free(&q);
@@ -625,11 +626,10 @@ static void stream_mp4(hconn *c, int chn)
          * Observed on cam-L (T23/atbm6062 weak WiFi) QA 2026-08-11:
          * ~1.4-1.6 s eviction holes whose delivery resumed on mid-GOP
          * P-frames - silent corruption the adaptive path was built to
-         * prevent. */
-        int lost_any = qs.dropped_any;
-        /* ...an evicted AUDIO packet does not: it still counts as an overflow,
-         * but freezing video on it would discard a whole good GOP for nothing
-         * (the audio gap has its own handling above). */
+         * prevent. An evicted AUDIO packet does not: it still counts as an
+         * overflow (the hub counts it), but freezing video on it would discard
+         * a whole good GOP for nothing (the audio gap has its own handling
+         * above). */
         int lost_video = qs.dropped_video;
         if (adaptive) {
             /* Per-client adaptive frame-dropping. This client's fanqueue is
@@ -649,7 +649,6 @@ static void stream_mp4(hconn *c, int chn)
              * bitrate for every other subscriber (Frigate, recording, healthy
              * viewers). Worst case this client gets a keyframe-only slideshow
              * - honest degradation, never corruption. */
-            if (lost_any) hub_note_drop(chn, HUB_DROP_MP4);
             if (lost_video) dropping = 1;
             if (!dropping && qs.count >= MS_MP4_DROP_HIWAT) dropping = 1;
             if (dropping) {
@@ -680,17 +679,14 @@ static void stream_mp4(hconn *c, int chn)
                     continue;
                 }
             }
-        } else if (lost_any) {
+        } else if (lost_video) {
             /* legacy (adaptive_drop off): the queue overflowed - ask the
              * encoder for a fresh IDR so the client doesn't decode garbage
              * until the next natural GOP. The hub rate-limits per stream and
              * coalesces, so every video eviction may ask. */
-            hub_note_drop(chn, HUB_DROP_MP4);
-            if (lost_video) {
-                LOGD(MOD,"mp4 chn=%d: overflow dropped %s - IDR re-requested",
-                     chn, lost_key ? "a keyframe" : "P-frame(s)");
-                hub_request_idr_recovery(chn);
-            }
+            LOGD(MOD,"mp4 chn=%d: overflow dropped %s - IDR re-requested",
+                 chn, lost_key ? "a keyframe" : "P-frame(s)");
+            hub_request_idr_recovery(chn);
         }
         ms_buf_reset(&frag, frag_soft);  /* reuse, shrink an outlier buffer back */
         int frag_ok = 1;

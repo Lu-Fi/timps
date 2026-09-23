@@ -428,6 +428,7 @@ static void stream_run(ts_mux *m)
 
     fanqueue q;
     if (fanqueue_init(&q, SRT_QCAP)) return;
+    hub_count_drops(&q, chn, HUB_DROP_SRT);
     if (hub_subscribe(chn, &q) != 0) { fanqueue_free(&q); return; }
     __sync_fetch_and_add(&g_connected, 1);
 
@@ -494,14 +495,11 @@ static void stream_run(ts_mux *m)
             continue;
         }
         last_pkt_us = now;
-        /* as rtsp.c: every eviction counts, every VIDEO eviction heals via the
-         * hub, which rate-limits per stream and coalesces */
-        if (qs.dropped_any) {
-            hub_note_drop(chn, HUB_DROP_SRT);
-            if (qs.dropped_key && !drop_warned++)
-                LOGW(MOD,"chn=%d: send queue overflowed, dropping frames "
-                         "(client/network too slow) - details at DEBUG", chn);
-        }
+        /* as rtsp.c: every VIDEO eviction heals via the hub, which
+         * rate-limits per stream and coalesces (and counts every eviction) */
+        if (qs.dropped_key && !drop_warned++)
+            LOGW(MOD,"chn=%d: send queue overflowed, dropping frames "
+                     "(client/network too slow) - details at DEBUG", chn);
         if (qs.dropped_video) {
             LOGD(MOD,"chn=%d: overflow dropped %s - IDR re-requested", chn,
                  qs.dropped_key ? "a keyframe" : "P-frame(s)");

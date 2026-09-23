@@ -36,6 +36,11 @@ typedef struct fanqueue {
                                     * my queue" (congestion) apart from "never
                                     * produced" (source muted) - see the
                                     * MS_MP4_AUDIO_GAP_US check in mp4/httpd.c */
+    int             drop_src;      /* video stream and HUB_DROP_* kind the hub  */
+    int             drop_kind;     /* counts this queue's evictions under (-1 =
+                                    * not counted, e.g. a JPEG grab's helper
+                                    * queue that overflows by design). Set by
+                                    * hub_count_drops() before subscribing. */
 } fanqueue;
 
 int   fanqueue_init(fanqueue *q, int cap);

@@ -490,6 +490,7 @@ static int sess_start_media(wrtc_session *s)
 
     if (fanqueue_init(&s->q, WEBRTC_QCAP) != 0) return -1;
     s->qinit = 1;
+    hub_count_drops(&s->q, s->chn, HUB_DROP_WEBRTC);
     if (hub_subscribe(s->chn, &s->q) != 0) return -1;
     s->subbed = 1;
     /* One queue for both sources, exactly as an RTSP session does it: packets
@@ -603,11 +604,10 @@ static void *sess_thread(void *arg)
             ms_pkt *pk = fanqueue_pop_ex(&s->q, WEBRTC_POP_MS, &qs);
             if (qs.closed) { pkt_unref(pk); break; }
             now = ms_now_us();
-            /* every eviction counts; only a video one breaks the GOP. Not
-             * gated on last_idr_us: that throttles PLI/FIR, and a drop inside
-             * its window would go uncounted and unhealed - the hub rate-limits
-             * recovery per stream and coalesces instead. */
-            if (qs.dropped_any) hub_note_drop(s->chn, HUB_DROP_WEBRTC);
+            /* only a video eviction breaks the GOP. Not gated on last_idr_us:
+             * that throttles PLI/FIR, and a drop inside its window would go
+             * unhealed - the hub rate-limits recovery per stream and
+             * coalesces instead. */
             if (qs.dropped_video) hub_request_idr_recovery(s->chn);
             if (pk) {
                 if (pk->media == MS_MEDIA_VIDEO) {

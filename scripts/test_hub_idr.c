@@ -10,7 +10,8 @@
  * encoder whose consumers have already recovered.
  *
  * Both halves of that contract are pinned here: a keyframe cancels a pending
- * request, and an absent keyframe still gets one.
+ * request, and an absent keyframe still gets one. Also pinned: the hub counts
+ * a consumer's evictions itself, so one that never pops again is counted too.
  *
  * Built with a shortened HUB_IDR_RECOVERY_MIN_US so the test does not have to
  * sleep a real second per case (the header's #ifndef makes the override move
@@ -109,6 +110,28 @@ static void t_cancel_is_per_stream(void)
     ck_eq(g_idr[b] - base_b, 2, "stream b's deferred request survived");
 }
 
+/* A consumer blocked in send never pops again, so it cannot report its own
+ * drops; the hub has to count them at the push that evicted. A queue never
+ * registered with hub_count_drops() is not counted. */
+static void t_stalled_consumer_counted(void)
+{
+    const int src = 0;
+    cur = "a stalled consumer's evictions are counted";
+    fanqueue q, u;
+    ck_eq(fanqueue_init(&q, 2), 0, "init counted queue");
+    ck_eq(fanqueue_init(&u, 2), 0, "init uncounted queue");
+    hub_count_drops(&q, src, HUB_DROP_RTSP);
+    ck_eq(hub_subscribe(src, &q), 0, "subscribe counted queue");
+    ck_eq(hub_subscribe(src, &u), 0, "subscribe uncounted queue");
+    unsigned base = hub_get_drops(src);
+    for (int i = 0; i < 5; i++) publish(src, 0);   /* nobody ever pops */
+    ck_eq((long)(hub_get_drops(src) - base), 3, "three evicting pushes, three counts");
+    hub_unsubscribe(src, &q);
+    hub_unsubscribe(src, &u);
+    fanqueue_free(&q);
+    fanqueue_free(&u);
+}
+
 int main(void)
 {
     printf("hub shared IDR clock\n\n");
@@ -120,6 +143,7 @@ int main(void)
     t_keyframe_cancels_pending();
     t_pending_still_fires_without_keyframe();
     t_cancel_is_per_stream();
+    t_stalled_consumer_counted();
 
     printf("\n%d/%d checks passed\n", checks - failures, checks);
     return failures ? 1 : 0;

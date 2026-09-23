@@ -123,12 +123,15 @@ void        hub_request_idr(int src);
  * read, no lock), so a frozen consumer may simply ask per packet. */
 int         hub_request_idr_recovery(int src);
 
-/* Consumers (RTSP/fMP4/record/WebRTC/SRT) report a fanqueue overflow here;
- * GET /control sums them per video stream as "queue_drops" - the only
- * always-on trace of the silent drop->IDR->bitrate-spike cycle. Every consumer
- * reports ANY eviction (audio included), whether or not it also requests
- * recovery. `kind` labels the reporter for the rate-limited summary WARN only;
- * it does not change what "queue_drops" counts. */
+/* Queue-overflow accounting. The hub counts an eviction where it happens - in
+ * its own fan-out push - so a consumer that has stopped popping altogether (a
+ * wedged peer blocked in send) is counted too; consumer-side reporting only
+ * ever saw the drops of consumers that were still reading. GET /control sums
+ * them per video stream as "queue_drops" - the only always-on trace of the
+ * silent drop->IDR->bitrate-spike cycle. One count per published packet that
+ * had to evict from a counted queue, audio included. `kind` labels the queue
+ * for the rate-limited summary WARN only; it does not change what
+ * "queue_drops" counts. */
 enum {
     HUB_DROP_REC = 0, HUB_DROP_RTSP, HUB_DROP_MP4, HUB_DROP_WEBRTC,
     HUB_DROP_SRT, HUB_DROP_NKIND
@@ -137,7 +140,10 @@ enum {
 #ifndef HUB_DROP_REPORT_US
 #define HUB_DROP_REPORT_US (60*1000000LL)
 #endif
-void        hub_note_drop(int src, int kind);
+/* Count `q`'s evictions against video stream `src` under `kind`. Call after
+ * fanqueue_init() and before the first hub_subscribe() of `q`; a queue never
+ * passed here is not counted. */
+void        hub_count_drops(fanqueue *q, int src, int kind);
 unsigned    hub_get_drops(int src);
 /* measured video frame rate of the stream; 0 when idle (no producer, i.e. the
  * last 1s measurement window is stale) - same rule as hub_get_bitrate(). */

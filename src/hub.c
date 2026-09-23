@@ -61,7 +61,7 @@ static void hub_note_keyframe(int src)
     pthread_mutex_unlock(&g_idr_lock);
 }
 
-/* queue-overflow heal events per video stream (hub.h). 32-bit + __sync,
+/* queue-overflow events per video stream (hub.h). 32-bit + __sync,
  * the same lock-free pattern httpd.c's g_drop_frames already uses. */
 static volatile unsigned g_qdrops[MS_MAX_VSTREAM];
 
@@ -82,17 +82,24 @@ static volatile int64_t g_dropsum_due;
 static void drop_report(int kind, int src, unsigned n, int64_t span_us)
 {
     LOGW(MOD,"chn=%d %s: %u queue overflow%s in the last %llds "
-             "(consumer too slow, IDR re-requested)",
+             "(consumer too slow)",
          src, g_dropkind[kind], n, n==1?"":"s",
          (long long)((span_us + 500000) / 1000000));
 }
 
-void hub_note_drop(int src, int kind)
+void hub_count_drops(fanqueue *q, int src, int kind)
 {
-    if ((unsigned)src >= MS_MAX_VSTREAM) return;
+    q->drop_src = src; q->drop_kind = kind;
+}
+
+/* Runs on the producer thread, once per push that evicted: `now` is the
+ * publish instant the caller already holds, so no clock read of its own. */
+static void note_drop(const fanqueue *q, int64_t now)
+{
+    int src = q->drop_src, kind = q->drop_kind;
+    if ((unsigned)src >= MS_MAX_VSTREAM || (unsigned)kind >= HUB_DROP_NKIND)
+        return;
     __sync_fetch_and_add(&g_qdrops[src], 1u);
-    if ((unsigned)kind >= HUB_DROP_NKIND) return;
-    int64_t now = ms_now_us();
     unsigned rep_n = 0; int64_t rep_span = 0;
     pthread_mutex_lock(&g_dropsum_lock);
     if (g_dropsum[kind][src].t0 == 0) g_dropsum[kind][src].t0 = now;
@@ -625,7 +632,8 @@ void hub_publish(int src, const uint8_t *data, size_t len,
         /* push after releasing s->lock; each push takes its own ref, the
          * builder's own reference is released once below. */
         for (int i=0;i<nsub_snap;i++)
-            fanqueue_push(subs_snap[i], pkt_ref(p));
+            if (fanqueue_push(subs_snap[i], pkt_ref(p)))
+                note_drop(subs_snap[i], now_us);
         pkt_unref(p);
     }
 
@@ -665,7 +673,8 @@ void hub_publish_take(int src, ms_pkt *p,
      * reference is released once below (its buffer returns to the pool only
      * once the last subscriber has drained it). */
     for (int i=0;i<nsub_snap;i++)
-        fanqueue_push(subs_snap[i], pkt_ref(p));
+        if (fanqueue_push(subs_snap[i], pkt_ref(p)))
+            note_drop(subs_snap[i], now_us);
     pkt_unref(p);
 
     if (pushing) hub_finish_push(src);

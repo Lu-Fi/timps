@@ -714,6 +714,7 @@ static void *rec_thread(void *arg)
         }
         if (!subscribed){
             if (fanqueue_init(&q,REC_QCAP)){ if (ms_stopgate_wait(&g_gate,300)) break; continue; }
+            hub_count_drops(&q,chn,HUB_DROP_REC);
             if (hub_subscribe(chn,&q)!=0){ fanqueue_free(&q); if (ms_stopgate_wait(&g_gate,500)) break; continue; }
             int ac=MS_AC_NONE,asr=0,ach=0;
             int have_a = hub_get_audio(&ac,&asr,&ach);
@@ -770,7 +771,6 @@ static void *rec_thread(void *arg)
          * for one - rate-limited across ALL consumers of this stream, since a
          * forced IDR hits the one shared encoder (hub.h). */
         if (qs.dropped_any) {
-            hub_note_drop(chn, HUB_DROP_REC);   /* /control "queue_drops" */
             if (!drop_warned++)
                 LOGW(MOD,"chn=%d: record queue overflowed, dropping frames "
                          "(storage/consumer too slow) - details at DEBUG",chn);
@@ -945,6 +945,7 @@ int record_clip(const char *path, int seconds)
     int regate=0;            /* see rec_thread(): no headless GOP in the clip */
 
     if (fanqueue_init(&q,REC_QCAP)) goto out; have_q=1;
+    hub_count_drops(&q,chn,HUB_DROP_REC);
     if (hub_subscribe(chn,&q)!=0) goto out; sub_v=1;
     if (rc_audio && hub_get_audio(&ac,&asr,&ach) && ac==MS_AC_AAC)
         sub_audio=(hub_subscribe(HUB_AUDIO_SRC,&q)==0);

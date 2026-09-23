@@ -22,6 +22,7 @@ int fanqueue_init(fanqueue *q, int cap)
     q->cap = cap; q->head=q->tail=q->count=0; q->bytes=0;
     q->closed = 0; q->dropped = 0; q->dropped_key = 0; q->dropped_any = 0;
     q->dropped_audio = 0; q->dropped_video = 0;
+    q->drop_src = -1; q->drop_kind = -1;
     pthread_mutex_init(&q->lock, NULL);
     /* condvar on CLOCK_MONOTONIC: a wall-clock step (NTP sync on boot) must
      * never stretch a consumer's pop timeout (like events.c does) */
