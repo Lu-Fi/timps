@@ -16,9 +16,15 @@ semantic versioning.
   lost within a second of the previous request left the GOP broken until the
   next natural keyframe. WebRTC shared the gate with PLI/FIR and did not count
   such drops either.
-- **`queue_drops` counts the same thing for every consumer** — any eviction,
-  audio included. RTSP and SRT counted video evictions only, WebRTC only those
-  outside its PLI window, while the recorder and fMP4 counted all.
+- **A client wedged in `send()` now shows up in `queue_drops`** (`src/hub.c`,
+  `src/fanqueue.h`) — each consumer counted its own drops when it next popped
+  a packet, so one that never popped again was never counted, and the summary
+  WARN never fired for it. The hub now counts at the push that evicts, one per
+  published packet, for every consumer alike and audio included (RTSP and SRT
+  had counted video evictions only, WebRTC only those outside its PLI window).
+  Consumers register their queue with `hub_count_drops()`; the summary line
+  now ends `(consumer too slow)`, since a stalled consumer requests no IDR.
+  Numbers run higher than on v1.9.19 for the same situation.
 - **Auto `sensor.fps` no longer starves a stream configured above 30**
   (`src/config.c`) — the cap is raised to the fastest enabled `videoN.fps`,
   and the log names the registry key the value came from (`max_fps` or

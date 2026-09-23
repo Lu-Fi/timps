@@ -541,17 +541,22 @@ healthy 4 Mbps stream.) Lowering the bitrate is still the right answer when it
 video stream `n`: a subscriber (RTSP session, fMP4 client, WebRTC session, SRT,
 the recorder) fell behind and its own `fanqueue` dropped the oldest packets.
 It is *not* an encoder-side counter — that is `encoder.<n>.au_drops` — and it
-says nothing about which consumer was slow. On v1.9.19 the consumers did not
-count the same thing: the recorder and fMP4 counted every eviction, RTSP and
-SRT only video ones, WebRTC only video ones outside its PLI throttle window.
-**since v1.9.20 (unreleased)** every consumer counts every eviction, audio
-included, so the per-kind numbers compare.
+says nothing about which consumer was slow. **since v1.9.20 (unreleased)** the
+hub counts at the push that evicts: one count per published packet that had
+to evict from a consumer's queue, audio included, for every consumer alike. On
+v1.9.19 each consumer counted its own drops when it next popped a packet - so
+a client wedged in `send()`, which never pops again, was **never counted**
+(the classic "a viewer is stuck but `queue_drops` stays 0"), and RTSP/SRT
+counted only video evictions, WebRTC only those outside its PLI window. Expect
+higher numbers from v1.9.20 for the same situation; compare rates, not
+absolute values across versions.
 
 **since v1.9.19** the log says which one, at the shipped log
 level, at most once per 60 s per (consumer kind, stream):
 
-> `chn=0 rec: 12 queue overflows in the last 60s (consumer too slow, IDR
-> re-requested)`
+> `chn=0 rec: 12 queue overflows in the last 60s (consumer too slow)`
+
+(on v1.9.19 the line ended `(consumer too slow, IDR re-requested)`)
 
 The kinds are `rec`, `rtsp`, `mp4`, `webrtc`, `srt` (`HUB_DROP_*` in
 `src/hub.h`), the module tag is `HUB`, and the counter behind the line is the
@@ -2572,7 +2577,7 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 
 | Module | Message pattern | Level | Meaning |
 | --- | --- | --- | --- |
-| `HUB` | `chn=%d %s: %u queue overflow%s in the last %llds (consumer too slow, IDR re-requested)` | W | **since v1.9.19.** The only line `HUB` emits above DEBUG. `%s` is the consumer kind — `rec`, `rtsp`, `mp4`, `webrtc` or `srt` — and the line is rate-limited to one per 60 s per (kind, stream). Same events as `queue_drops` in `GET /control`. §2.3 |
+| `HUB` | `chn=%d %s: %u queue overflow%s in the last %llds (consumer too slow)` | W | **since v1.9.19** (until v1.9.20 it ended `(consumer too slow, IDR re-requested)`). The only line `HUB` emits above DEBUG. `%s` is the consumer kind — `rec`, `rtsp`, `mp4`, `webrtc` or `srt` — and the line is rate-limited to one per 60 s per (kind, stream). Same events as `queue_drops` in `GET /control`. §2.3 |
 | `AAC` | `unsupported AAC samplerate %d Hz, using 16k index fallback` | W | The ASC/ADTS index could not be derived; the stream is tagged 16 kHz. Use a standard rate. |
 | `bc` | `AACInitDecoder failed` | W | The AAC backchannel decoder could not start (`USE_BC_AAC` builds). |
 | `talk` | `refused: unsupported rate= in %s` | W | `?rate=` must be 8000/16000/24000/32000/44100/48000. iOS Safari commonly forces 48000. |

@@ -215,9 +215,7 @@ packet they were raised behind, let a consumer detect and react to loss:
 - `fq_status.dropped_any` — *any* packet was evicted (including a
   P-frame, which silently corrupts the rest of that GOP for a
   frame-by-frame consumer just like a lost keyframe, but leaves no
-  keyframe to trip the first flag). Every consumer reports this to
-  `hub_note_drop()` (**since v1.9.20, unreleased**; before, RTSP/SRT/WebRTC
-  reported only video evictions).
+  keyframe to trip the first flag).
 - `fq_status.dropped_video` (**since v1.9.19**) — the eviction
   hit a *video* packet, key or not. This is the flag the heal paths act on:
   consumers that decode every frame (RTSP, SRT, WebRTC) request an IDR here,
@@ -252,13 +250,20 @@ second of the previous request stayed unhealed until the next natural
 keyframe. While a request is pending, calling again costs nothing (no clock
 read, no lock), which is what lets a frozen consumer ask per packet.
 
-The same call reports the eviction with `hub_note_drop(src, kind)`, whose
+Evictions are counted by the hub itself, in its fan-out push (**since
+v1.9.20, unreleased**): a consumer registers its queue with
+`hub_count_drops(q, src, kind)` before subscribing, and every published packet
+that has to evict from that queue counts once against video stream `src`,
+audio included. Until then each consumer reported its own drops when it next
+popped a packet, so a peer wedged in `send()` - which never pops again - was
+never counted at all, and RTSP/SRT/WebRTC counted only video evictions. The
 `kind` (`HUB_DROP_REC`/`RTSP`/`MP4`/`WEBRTC`/`SRT`) drives a WARN summary of at
 most one line per 60 s per (kind, stream); an open window is also flushed when
 its stream loses its last subscriber, so an on-demand stream that idle-stops
 does not hold the line back until the next viewer. The counter behind it is
-unchanged: `queue_drops` in `GET /control`. There is no config key for either
-interval.
+`queue_drops` in `GET /control`. A queue never registered (a JPEG grab's helper
+queue, which overflows by design) is not counted. There is no config key for
+either interval.
 
 `fanqueue_depth()` lets a consumer inspect its own backlog (used by
 `http.adaptive_drop` in the HTTP fMP4 path to freeze-and-resume-at-keyframe

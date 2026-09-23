@@ -970,9 +970,13 @@ Distinguish **compiled out** from **misconfigured**:
   *stream* (1 s) rather than per consumer, a coalesced one is cancelled by the
   keyframe that satisfies it (so one drop burst costs one IDR, not two), and
   the log names the culprit once a minute —
-  `chn=0 rec: 12 queue overflows in the last 60s (consumer too slow, IDR
-  re-requested)`, with the kind being `rec`/`rtsp`/`mp4`/`webrtc`/`srt`. On
-  v1.9.18 the only trace was the counter itself. No config key either way.
+  `chn=0 rec: 12 queue overflows in the last 60s (consumer too slow)` (on
+  v1.9.19 the line ended `(consumer too slow, IDR re-requested)`), with the
+  kind being `rec`/`rtsp`/`mp4`/`webrtc`/`srt`. On v1.9.18 the only trace was
+  the counter itself. **since v1.9.20 (unreleased)** the hub counts the
+  eviction itself, so a client wedged in `send()` shows up too - before, a
+  consumer that never popped again was never counted. No config key either
+  way.
 - **A recording has a gap, then a second of smeared picture** — up to v1.9.18
   the recorder muxed the headless GOP after a queue overflow.
   **since v1.9.19** it freezes and resumes at the next keyframe,

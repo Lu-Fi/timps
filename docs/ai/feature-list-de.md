@@ -92,10 +92,12 @@ prudynt-t / raptor.
   mehr vervielfacht mit Keyframes belasten; eine unterdrückte Anforderung geht
   nicht verloren, sondern wird nachgeholt – es sei denn, vorher wird ohnehin
   ein Keyframe veröffentlicht, dann entfällt sie (ein Überlauf kostet so ein
-  erzwungenes IDR, nicht zwei). *Seit v1.9.20 (unveröffentlicht)* zählen alle
-  Konsumenten jeden Verwurf (auch Audio) gleich, und RTSP, SRT und WebRTC
-  reichen jeden Video-Verlust an den Hub weiter, statt Anforderungen innerhalb
-  einer eigenen 1-s-Sperre zu verwerfen. Kein Konfigurationsschlüssel.
+  erzwungenes IDR, nicht zwei). *Seit v1.9.20 (unveröffentlicht)* zählt der
+  Hub jeden Verwurf selbst beim Verteilen (auch Audio, für alle Konsumenten
+  gleich) – damit erscheint auch ein Client, der hängt und nie mehr abholt, in
+  `queue_drops`. RTSP, SRT und WebRTC reichen jeden Video-Verlust an den Hub
+  weiter, statt Anforderungen innerhalb einer eigenen 1-s-Sperre zu verwerfen.
+  Kein Konfigurationsschlüssel.
 * **Bildrotation (optional, `USE_ROTATE`)** – `videoN.rotation = 0|90|180|270`.
   Hardware-90/270 auf T40/T41 (I2D) und T31 (FrameSource), Software-90/270 auf
   T23 (`USE_SW_ROTATE`, CPU-intensiv, nur H.264). Echte per-Kanal-180°-Drehung
