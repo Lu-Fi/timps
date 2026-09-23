@@ -21,7 +21,7 @@
 #include <stdatomic.h>  /* atomic_load/atomic_store for F_ATOMIC live-int fields */
 
 #define MOD "CONFIG"
-#define SENSOR_AUTO_FPS_CAP 30   /* auto sensor.fps never above this; explicit values are not capped */
+#define SENSOR_AUTO_FPS_CAP 30   /* auto sensor.fps cap, raised to the fastest enabled stream; explicit values are not capped */
 ms_config g_cfg;
 ms_config g_cfg_boot;            /* see config.h: immutable boot snapshot */
 const char *g_cfg_path = NULL;   /* config file in use, set by config_load() */
@@ -1969,12 +1969,18 @@ void config_sensor_finalize(ms_config *c)
     }
     if (c->sensor.width   == 0){ long v=read_sensor_proc("width",10);    if(v>0) c->sensor.width  =(int)v; }
     if (c->sensor.height  == 0){ long v=read_sensor_proc("height",10);   if(v>0) c->sensor.height =(int)v; }
-    if (c->sensor.fps     == 0){ long v=read_sensor_proc("max_fps",10);
-                                 if(v<=0) v=read_sensor_proc("fps",10);
-                                 if(v>SENSOR_AUTO_FPS_CAP){
-                                     LOGI(MOD,"sensor.fps: driver max_fps=%ld, auto capped to %d "
-                                          "(set sensor.fps to override)",v,SENSOR_AUTO_FPS_CAP);
-                                     v=SENSOR_AUTO_FPS_CAP;
+    if (c->sensor.fps     == 0){ const char *k="max_fps";
+                                 long v=read_sensor_proc(k,10);
+                                 if(v<=0){ k="fps"; v=read_sensor_proc(k,10); }
+                                 /* a stream asking for more than the cap needs
+                                  * the sensor to deliver it */
+                                 int cap=SENSOR_AUTO_FPS_CAP;
+                                 for(int i=0;i<MS_MAX_VSTREAM;i++)
+                                     if(c->video[i].enabled && c->video[i].fps>cap) cap=c->video[i].fps;
+                                 if(v>cap){
+                                     LOGI(MOD,"sensor.fps: driver %s=%ld, auto capped to %d "
+                                          "(set sensor.fps to override)",k,v,cap);
+                                     v=cap;
                                  }
                                  if(v>0) c->sensor.fps    =(int)v; }
 
