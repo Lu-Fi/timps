@@ -207,15 +207,18 @@ until a fresh keyframe reaches the head. This guarantees a slow client can
 never stall the shared encoder and never pins unbounded memory, while
 self-healing as soon as the stream naturally reaches its next keyframe.
 
-Read-and-clear flags let a consumer detect and react to loss:
+Read-and-clear flags, reported by `fanqueue_pop_ex()` together with the
+packet they were raised behind, let a consumer detect and react to loss:
 
-- `fanqueue_take_dropped_key()` — a keyframe was evicted; the consumer
+- `fq_status.dropped_key` — a keyframe was evicted; the consumer
   should request a fresh IDR from the hub source.
-- `fanqueue_take_dropped()` — *any* packet was evicted (including a
+- `fq_status.dropped_any` — *any* packet was evicted (including a
   P-frame, which silently corrupts the rest of that GOP for a
   frame-by-frame consumer just like a lost keyframe, but leaves no
-  keyframe to trip the first flag).
-- `fq_status.dropped_video` (**since v1.9.19, unreleased**) — the eviction
+  keyframe to trip the first flag). Every consumer reports this to
+  `hub_note_drop()` (**since v1.9.20, unreleased**; before, RTSP/SRT/WebRTC
+  reported only video evictions).
+- `fq_status.dropped_video` (**since v1.9.19**) — the eviction
   hit a *video* packet, key or not. This is the flag the heal paths act on:
   consumers that decode every frame (RTSP, SRT, WebRTC) request an IDR here,
   rate-limited, since an IDR request is a shared, global cost across every
@@ -226,7 +229,7 @@ Read-and-clear flags let a consumer detect and react to loss:
   an overflow (`queue_drops`, the summary WARN) and still feeds the fMP4
   mute-vs-congestion check.
 
-**Since v1.9.19 (unreleased)** that rate limit is no longer each consumer's
+**Since v1.9.19** that rate limit is no longer each consumer's
 own. A consumer healing an overflow calls `hub_request_idr_recovery(src)`
 instead of `hub_request_idr(src)`, and the hub enforces
 `HUB_IDR_RECOVERY_MIN_US` (1 s) **per video stream** across every consumer, so
@@ -241,6 +244,13 @@ keyframe is what the consumers were waiting for and a second forced IDR would
 land in queues that had just recovered. Requests a client
 needs to **start** decoding (subscribe, RTSP `DESCRIBE`/`PLAY`, a fresh fMP4
 `GET`, the WebRTC answer) keep using `hub_request_idr()` and are never delayed.
+
+**Since v1.9.20 (unreleased)** RTSP, SRT and WebRTC no longer keep a 1 s gate
+of their own in front of that call: a gate there discarded any request inside
+its window instead of letting the hub coalesce it, so a P-frame lost within a
+second of the previous request stayed unhealed until the next natural
+keyframe. While a request is pending, calling again costs nothing (no clock
+read, no lock), which is what lets a frozen consumer ask per packet.
 
 The same call reports the eviction with `hub_note_drop(src, kind)`, whose
 `kind` (`HUB_DROP_REC`/`RTSP`/`MP4`/`WEBRTC`/`SRT`) drives a WARN summary of at

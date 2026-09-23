@@ -21,8 +21,9 @@ Companion to `docs/ai/reference.md` (what timps *is*) and
 6. §15 is the closing note for the assistant; **§16 follows it** and catalogues
    the shipped scripts and CGIs.
 
-Everything else here was read out of this repository at **v1.9.18
-(2026-09-15)**. Source files are named; line numbers deliberately are not.
+Everything else here was read out of this repository at **v1.9.19
+(2026-09-22)**; a statement marked **since v1.9.20 (unreleased)** is in the
+source but in no tagged release yet. Source files are named; line numbers deliberately are not.
 
 ---
 
@@ -235,11 +236,12 @@ Consequences worth stating to a user:
   The axis *being set* is clamped against the current other axis.
 - `daynight.mode` with an unknown word logs
   `daynight.mode: unknown '<x>', keeping auto` and stays on `auto`.
-- **since v1.9.19 (unreleased):** an *autodetected* `sensor.fps` is capped at
+- **since v1.9.19:** an *autodetected* `sensor.fps` is capped at
   **30** and says so (`sensor.fps: driver max_fps=<N>, auto capped to 30 (set
-  sensor.fps to override)`). This is the one clamp that does **not** apply to a
-  configured value — write `sensor.fps` explicitly and it is passed through.
-  §1.10
+  sensor.fps to override)`). **since v1.9.20 (unreleased)** the cap rises to
+  the fastest enabled `videoN.fps` when that is higher. This is the one clamp
+  that does **not** apply to a configured value — write `sensor.fps`
+  explicitly and it is passed through. §1.10
 - Rotation and codec are coerced at parse time — see §2.
 - `"nan"` in a float key lands on the lower rail rather than poisoning every
   comparison downstream (`pflt_cl()`).
@@ -403,7 +405,7 @@ signal stack is installed, so a stack-overflow `SIGSEGV` is still captured;
 
 ### 1.10 `sensor.fps` — what auto gives you, and what the driver holds
 
-**All of this section is since v1.9.19 (unreleased).** On v1.9.18 and earlier
+**All of this section is since v1.9.19.** On v1.9.18 and earlier
 the sensor rate was set and never checked, and nothing was logged at all.
 
 Three different numbers get confused here:
@@ -432,11 +434,15 @@ One line per bring-up, from `isp_set_sensor_fps()` in
 
 Pitfalls:
 
-- **Auto never goes above 30.** Leaving `sensor.fps` unset on a sensor whose
-  driver advertises more caps it at 30 and logs
+- **Auto is capped.** Leaving `sensor.fps` unset on a sensor whose driver
+  advertises more caps it at 30 and logs
   `sensor.fps: driver max_fps=40, auto capped to 30`. The GC2053 is the
   motivating case: it reports `max_fps = 40` on a mode its clock runs at 30.
-  To ask for more, write the value explicitly.
+  To ask for more, write the value explicitly. On v1.9.19 this also capped a
+  stream configured above 30 (e.g. `video0.fps = 60` on a 60 fps sensor) to
+  a 30 fps sensor; **since v1.9.20 (unreleased)** the cap is the fastest
+  enabled `videoN.fps` when that is higher, and the log says which registry
+  key (`max_fps` or `fps`) the value came from.
 - **`videoN.fps` is the stream rate only.** It is passed to the framesource,
   never to the sensor driver, so raising it does not raise capture. §13 #18
 - **`sensor.fps` is restart-only** (like every `sensor.*` key): a POST persists
@@ -535,9 +541,13 @@ healthy 4 Mbps stream.) Lowering the bitrate is still the right answer when it
 video stream `n`: a subscriber (RTSP session, fMP4 client, WebRTC session, SRT,
 the recorder) fell behind and its own `fanqueue` dropped the oldest packets.
 It is *not* an encoder-side counter — that is `encoder.<n>.au_drops` — and it
-says nothing about which consumer was slow.
+says nothing about which consumer was slow. On v1.9.19 the consumers did not
+count the same thing: the recorder and fMP4 counted every eviction, RTSP and
+SRT only video ones, WebRTC only video ones outside its PLI throttle window.
+**since v1.9.20 (unreleased)** every consumer counts every eviction, audio
+included, so the per-kind numbers compare.
 
-**since v1.9.19 (unreleased)** the log says which one, at the shipped log
+**since v1.9.19** the log says which one, at the shipped log
 level, at most once per 60 s per (consumer kind, stream):
 
 > `chn=0 rec: 12 queue overflows in the last 60s (consumer too slow, IDR
@@ -561,6 +571,11 @@ What `queue_drops` means, unchanged in v1.9.19:
 - **It never resets** except on restart (`g_qdrops[]` in `src/hub.c` is only
   ever incremented), so compare two reads a minute apart rather than reacting
   to an absolute value.
+- **Recovery requests are never lost.** **since v1.9.20 (unreleased)** RTSP,
+  SRT and WebRTC hand every video eviction to the hub instead of dropping
+  requests inside their own 1 s window; on v1.9.19 a P-frame lost within a
+  second of the previous request stayed unhealed until the next natural
+  keyframe (2–3 s at `gop=50`).
 - **There is no config key for any of this.** The recovery interval
   (`HUB_IDR_RECOVERY_MIN_US`, 1 s) and the summary interval
   (`HUB_DROP_REPORT_US`, 60 s) are compile-time constants in `src/hub.h`, and
@@ -587,7 +602,7 @@ Three separate mechanisms, all real:
    One slow viewer therefore raises the bitrate for everyone. Look at
    `queue_drops` in `GET /control` and at
    `… send queue overflowed, dropping frames (client/network too slow)`.
-   **since v1.9.19 (unreleased):** recovery IDRs are rate-limited **per video
+   **since v1.9.19:** recovery IDRs are rate-limited **per video
    stream** (`hub_request_idr_recovery()`, 1 s) instead of per consumer, so
    *N* slow consumers can no longer cost *N* IDRs/s on the one shared encoder.
    A request that loses the race is coalesced, not dropped — it is issued by
@@ -1215,10 +1230,10 @@ behaviour — oldest recordings are deleted to keep `min_free_mb` free.
 | `clip busy, skipped <name>` | A `record.clip` request arrived while another clip was still being written. |
 | `clip: no frames for <name>` | The clip window contained no frames — the encoder was idle (see §2.1: on-demand encoding). |
 | `record.pre_roll_s=<N> cannot be held: the pre-roll ring caps at ~<X>s for ch<n> (<B> kbps, <F> fps, <P> packets / <M> MB max) - actual pre-roll is shorter` | The pre-roll ring is bounded by packet count and bytes, not by seconds. A high bitrate buys fewer seconds. | 
-| `chn=<n>: record queue overflowed, dropping frames (storage/consumer too slow) - details at DEBUG` | **since v1.9.19 (unreleased).** The recorder's own queue evicted packets — the storage could not keep up. Once per subscription; the per-60 s `HUB` summary (§2.3) counts the rest. |
+| `chn=<n>: record queue overflowed, dropping frames (storage/consumer too slow) - details at DEBUG` | **since v1.9.19.** The recorder's own queue evicted packets — the storage could not keep up. Once per subscription; the per-60 s `HUB` summary (§2.3) counts the rest. |
 
 **A gap in a recording is now a clean cut, not decoder residue
-(since v1.9.19, unreleased).** When the recorder's queue overflows, every
+(since v1.9.19).** When the recorder's queue overflows, every
 packet still queued up to the next keyframe references access units that are
 not in the file. Up to and including v1.9.18 they were muxed anyway
 (`w_got_key` is per *segment*, so it did not re-arm), and the recording
@@ -2119,11 +2134,10 @@ mbedTLS.
 
 ### 11.7 Upgrade targets — "upgrade to ≥ vX"
 
-Latest release in `CHANGELOG.md` is **1.9.18 (2026-09-15)**; `[Unreleased]`
-now holds the sensor-fps and drop-recovery changes described throughout this
-file as "since v1.9.19 (unreleased)" — quote that phrasing, not a real
-version number, until a v1.9.19 tag exists. Two caveats before quoting a
-released version at a user:
+Latest release in `CHANGELOG.md` is **1.9.19 (2026-09-22)**. Anything this
+file marks "since v1.9.20 (unreleased)" is only in `[Unreleased]` — quote that
+phrasing, not a version number, until the tag exists. Two caveats before
+quoting a released version at a user:
 
 - `CHANGELOG.md` **jumps from `[1.2.0]` to `[1.5.0]`**. The 1.3.x/1.4.x fixes
   are documented only in `dev_notes/RELEASE_v1.3.4.md`, `RELEASE_v1.3.5.md`,
@@ -2232,7 +2246,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `%s is obsolete and IGNORED - %s` | W | A day/night key retired by the 2026-08-17 / 2026-08-22 redesigns. The message names the replacement. | Delete the line. §1.7 |
 | `daynight.%s=%s is now a fixed internal constant (%d) and can no longer be tuned per camera - the configured value is being ignored` | W | An int key frozen fleet-wide. Only warns when the configured value differs. | §1.7 |
 | `daynight.%s=%s is now a fixed internal constant (%g) and can no longer be tuned per camera - the configured value is being ignored` | W | Same, for `ir_ratio_night` / `ir_ratio_day`. | §1.7 |
-| `sensor.fps: driver max_fps=%ld, auto capped to %d (set sensor.fps to override)` | I | **since v1.9.19 (unreleased).** `sensor.fps` was left unset and the driver advertised more than 30 (GC2053 reports 40 on a 30 fps mode). The cap applies to the autodetected value only. | Nothing, unless more than 30 is really wanted — then set `sensor.fps` explicitly. §1.10 |
+| `sensor.fps: driver max_fps=%ld, auto capped to %d (set sensor.fps to override)` | I | **since v1.9.19.** `sensor.fps` was left unset and the driver advertised more than the cap (GC2053 reports 40 on a 30 fps mode). The cap is 30, or since v1.9.20 (unreleased) the fastest enabled `videoN.fps` if higher; from v1.9.20 the message reads `sensor.fps: driver %s=%ld, auto capped to %d (set sensor.fps to override)`, `%s` being `max_fps` or `fps`. The cap applies to the autodetected value only. | Nothing, unless more is really wanted — then set `sensor.fps` explicitly. §1.10 |
 | `config %s not found, using defaults` | W | No config file. Not fatal. | §1.3 |
 | `config: line longer than %zu chars skipped (starts \"%.40s...\")` | W | A line over ~510 characters is **dropped whole**. | Shorten it. |
 | `config: %s has an opening quote but no closing one - keeping the value verbatim, quotes included` | W | Unbalanced quote. | Fix the quoting. |
@@ -2263,9 +2277,9 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `IMP_System_Init failed after %d tries` | E | The vendor system layer never came up. | Usually rmem still held by a previous instance. §1.2 |
 | `IMP_System_Init busy, retry %d/5 in 1s (ISP still releasing?)` | W | Previous instance's rmem not yet released. | Normally clears itself. |
 | `IMP_ISP_EnableTuning failed - image tuning unavailable` | W | **No `image.*` key will do anything this run.** | Restart. §3.8 |
-| `sensor fps: requested %d, driver holds %u/%u, set rc=%d` | I | **since v1.9.19 (unreleased).** The sensor driver accepted the rate and reads it back unchanged. One line per bring-up. | Nothing. §1.10 |
-| `sensor fps: requested %d, driver holds %u/%u (%.2f), set rc=%d` | W | **since v1.9.19 (unreleased).** The set call failed (`rc != 0`) or the driver holds a **different** rate than was asked for. The rate the driver holds is the real one; `GET /control` keeps echoing the request. | Set `sensor.fps` to what the driver will hold, or accept it. Not a config error if it persists. §1.10 |
-| `sensor fps: requested %d, set rc=%d, readback unavailable (rc=%d)` | W | **since v1.9.19 (unreleased).** `IMP_ISP_Tuning_GetSensorFPS` failed or reported a zero denominator (`ISP_HAS_GET_SENSOR_FPS` in `src/isp_caps.h` is set on every supported SoC). The set call may well have worked; only the verification is missing. | Driver-specific; not a config error. §1.10 |
+| `sensor fps: requested %d, driver holds %u/%u, set rc=%d` | I | **since v1.9.19.** The sensor driver accepted the rate and reads it back unchanged. One line per bring-up. | Nothing. §1.10 |
+| `sensor fps: requested %d, driver holds %u/%u (%.2f), set rc=%d` | W | **since v1.9.19.** The set call failed (`rc != 0`) or the driver holds a **different** rate than was asked for. The rate the driver holds is the real one; `GET /control` keeps echoing the request. | Set `sensor.fps` to what the driver will hold, or accept it. Not a config error if it persists. §1.10 |
+| `sensor fps: requested %d, set rc=%d, readback unavailable (rc=%d)` | W | **since v1.9.19.** `IMP_ISP_Tuning_GetSensorFPS` failed or reported a zero denominator (the getter is called on every supported SoC). The set call may well have worked; only the verification is missing. | Driver-specific; not a config error. §1.10 |
 | `cannot read isp_ch0_pre_dequeue_time - assuming the pre-dequeue one-buffer schedule is active on framechan0` | W | T31 only: the module parameter could not be read, so `nrVBs` is forced to 1. | Cosmetic. |
 | `chn0: explicit buffers=%d but isp_ch0_pre_dequeue_time=%d forces a one-buffer schedule on framechan0 - EnableChn will fail (dmesg: 'one buffer schedule') unless pre-dequeue is disabled at the driver` | W | T31 with `isp_ch0_pre_dequeue_time > 0` **and** an explicit `videoN.buffers`. | **Delete the `videoN.buffers` line** (see §13). The real fps lever is removing `BR2_ISP_CH0_PRE_DEQUEUE_TIME` from the board defconfig — measured 13.5 → 24.9 fps. |
 | `framesource %d: EnableChn failed%s (retry)` | E | The framesource channel would not enable. | See the line above; also §2.2. |
@@ -2494,7 +2508,7 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | `write %s: %s` / `segment write failed (%s), closing` / `segment flush failed (%s), closing` | E | The volume went away or filled. | §5.2 |
 | `segment close/sync failed: %s (tail may be truncated)` | E | **The last seconds of that file may be unreadable.** | §5.2 |
 | `dropped a corrupt %s fragment while recording (OOM?)` | W | Memory pressure; that fragment is missing. | §5.5 |
-| `chn=%d: record queue overflowed, dropping frames (storage/consumer too slow) - details at DEBUG` | W | **since v1.9.19 (unreleased).** Once per subscription: the recorder's own queue evicted packets, so the segment freezes and resumes at the next keyframe. Sustained drops are summarised by `HUB` once per 60 s (§12.17). | Faster storage, a lower `record.channel` bitrate, or a local card instead of a network share. §5.2 |
+| `chn=%d: record queue overflowed, dropping frames (storage/consumer too slow) - details at DEBUG` | W | **since v1.9.19.** Once per subscription: the recorder's own queue evicted packets, so the segment freezes and resumes at the next keyframe. Sustained drops are summarised by `HUB` once per 60 s (§12.17). | Faster storage, a lower `record.channel` bitrate, or a local card instead of a network share. §5.2 |
 | `record.pre_roll_s=%d cannot be held: the pre-roll ring caps at ~%.0fs for ch%d (%d kbps, %d fps, %d packets / %d MB max) - actual pre-roll is shorter` | W | The ring is bounded by packets and bytes, not seconds. The byte cap is 4 MB — at a high `pre_roll_s` that is 11 % of a 37 MB board. | Lower `record.pre_roll_s`. |
 | `record.audio=1 but audio codec is %s - recordings are video-only; AAC (build with USE_FAAC=1) required` | W | fMP4 carries AAC. | `audio.codec = aac`. §5.3 |
 | `thread` | E | The recorder (or timelapse) thread could not start. | §5.5 |
@@ -2558,7 +2572,7 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 
 | Module | Message pattern | Level | Meaning |
 | --- | --- | --- | --- |
-| `HUB` | `chn=%d %s: %u queue overflow%s in the last %llds (consumer too slow, IDR re-requested)` | W | **since v1.9.19 (unreleased).** The only line `HUB` emits above DEBUG. `%s` is the consumer kind — `rec`, `rtsp`, `mp4`, `webrtc` or `srt` — and the line is rate-limited to one per 60 s per (kind, stream). Same events as `queue_drops` in `GET /control`. §2.3 |
+| `HUB` | `chn=%d %s: %u queue overflow%s in the last %llds (consumer too slow, IDR re-requested)` | W | **since v1.9.19.** The only line `HUB` emits above DEBUG. `%s` is the consumer kind — `rec`, `rtsp`, `mp4`, `webrtc` or `srt` — and the line is rate-limited to one per 60 s per (kind, stream). Same events as `queue_drops` in `GET /control`. §2.3 |
 | `AAC` | `unsupported AAC samplerate %d Hz, using 16k index fallback` | W | The ASC/ADTS index could not be derived; the stream is tagged 16 kHz. Use a standard rate. |
 | `bc` | `AACInitDecoder failed` | W | The AAC backchannel decoder could not start (`USE_BC_AAC` builds). |
 | `talk` | `refused: unsupported rate= in %s` | W | `?rate=` must be 8000/16000/24000/32000/44100/48000. iOS Safari commonly forces 48000. |

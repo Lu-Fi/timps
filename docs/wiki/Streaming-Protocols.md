@@ -162,7 +162,7 @@ supported` (RFC 2326 §12.32) rather than being silently ignored. See
   per-client delivery decision that never touches the shared encoder or
   any other subscriber; a resulting IDR request is rate-limited to once/sec
   so one weak client can't spike the bitrate for everyone else.
-  **Since v1.9.19 (unreleased)** that once-a-second budget belongs to the
+  **Since v1.9.19** that once-a-second budget belongs to the
   *stream*, not to each client: every consumer's drop-recovery IDR request goes
   through `hub_request_idr_recovery()`, so ten weak clients still cost at most
   one recovery IDR per second between them. A suppressed request is issued by
@@ -234,10 +234,13 @@ bit-twiddling is easy to get subtly wrong.
 - **Audio limitation**: if `audio.enabled` but the configured codec isn't
   AAC (i.e. G.711 or Opus), SRT streams **video-only** with a one-time
   warning — the TS mux here only knows how to carry AAC.
-- **Queue overflow**: **since v1.9.19 (unreleased)** an evicted *P-frame* is
-  counted and healed like an evicted keyframe (rate-limited to once a second,
-  as RTSP does) — SRT reacted to keyframe drops only, so a mid-GOP eviction
-  was neither counted in `queue_drops` nor healed.
+- **Queue overflow**: **since v1.9.19** an evicted *P-frame* is
+  counted and healed like an evicted keyframe — SRT reacted to keyframe drops
+  only, so a mid-GOP eviction was neither counted in `queue_drops` nor healed.
+  **Since v1.9.20 (unreleased)** every eviction counts (audio too) and every
+  video eviction goes to the hub's per-stream recovery path; the session no
+  longer keeps its own once-a-second gate, which discarded a request instead
+  of letting the hub coalesce it.
 - **Access control**: `srt.streamid`, if set, is enforced at accept time
   in listener mode — a connecting client must present the matching
   `STREAMID` or is rejected (this was previously checked nowhere at

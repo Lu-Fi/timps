@@ -6,10 +6,10 @@ firmware. Everything here is verified against the `main` branch of
 <https://github.com/Lu-Fi/timps> and against `package/timps/` in a thingino
 firmware tree.
 
-Applies to timps v1.9.18 (source: `main`, 2026-09-15)
+Applies to timps v1.9.19 (source: `main`, 2026-09-22)
 
-A statement marked **since v1.9.19 (unreleased)** is in the source but in no
-tagged release yet — on a v1.9.18 camera describe the previous behaviour.
+A statement marked **since v1.9.20 (unreleased)** is in the source but in no
+tagged release yet — on a v1.9.19 camera describe the previous behaviour.
 
 ## Where to find what
 
@@ -966,7 +966,7 @@ Distinguish **compiled out** from **misconfigured**:
   frame and resumes at the next keyframe, instead of being fed a headless GOP.
 - **`queue_drops` climbing** — some consumer is behind and the shared encoder is
   being asked for extra IDRs on its behalf, which spikes bitrate for everyone.
-  **since v1.9.19 (unreleased):** those recovery IDRs are rate-limited per
+  **since v1.9.19:** those recovery IDRs are rate-limited per
   *stream* (1 s) rather than per consumer, a coalesced one is cancelled by the
   keyframe that satisfies it (so one drop burst costs one IDR, not two), and
   the log names the culprit once a minute —
@@ -975,11 +975,12 @@ Distinguish **compiled out** from **misconfigured**:
   v1.9.18 the only trace was the counter itself. No config key either way.
 - **A recording has a gap, then a second of smeared picture** — up to v1.9.18
   the recorder muxed the headless GOP after a queue overflow.
-  **since v1.9.19 (unreleased)** it freezes and resumes at the next keyframe,
+  **since v1.9.19** it freezes and resumes at the next keyframe,
   so the gap is slightly longer and clean.
-- **"The camera won't do more than 30 fps"** — **since v1.9.19 (unreleased)** an
-  *autodetected* `sensor.fps` is capped at 30; set `sensor.fps` explicitly to
-  go higher, and read the `sensor fps: requested N, driver holds n/d` line to
+- **"The camera won't do more than 30 fps"** — **since v1.9.19** an
+  *autodetected* `sensor.fps` is capped at 30 (**since v1.9.20 (unreleased)**
+  at the fastest enabled `videoN.fps` if that is higher); set `sensor.fps`
+  explicitly to go higher, and read the `sensor fps: requested N, driver holds n/d` line to
   see what the driver actually took. `videoN.fps` is the stream rate only.
 - **RTSP over a VPN drops or fragments** — lower `rtsp.mtu` (default 1200 is
   already the VPN-safe value; 1400 is the LAN-only optimization).

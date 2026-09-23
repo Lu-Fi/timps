@@ -57,7 +57,7 @@ numeric columns are the count of distinct `LOGE`/`LOGW`/`LOGI`/`LOGD` call
 sites in that module's source file — **how many different messages that
 module can produce at each level**, not how often they fire at runtime. A
 module with `warn=29` has 29 different situations it can WARN about, not 29
-warnings a minute; a chatty module like `DAYNIGHT` (13 debug call sites) can
+warnings a minute; a chatty module like `DAYNIGHT` (15 debug call sites) can
 still be perfectly quiet if none of its probes are unusual. Read the column
 as "surface area", and read `err=0` as "this module never gives up on its own
 — whatever it reports at worst degrades or falls back". The counts are
@@ -74,13 +74,13 @@ a row.
 | `HAL_ING` | `hal/hal_ingenic.c` | 44 | 77 | 48 | 10 | encoder/framesource internals, polling and teardown detail, the sensor-fps requested-vs-held readback (`sensor fps: requested N, driver holds n/d, set rc=R`) |
 | `CTRL` | `control.c` | 0 | 4 | 3 | 5 | request/field handling on `/control` |
 | `OSD` | `hal/imp_osd.c` | 4 | 8 | 6 | 3 | overlay placement and region updates |
-| `RTSP` | `rtsp/rtsp.c` | 4 | 8 | 5 | 2 | per-drop queue-overflow detail, dropped P-frames, IDR re-requests (the *first* keyframe drop of a session is a WARN) |
+| `RTSP` | `rtsp/rtsp.c` | 4 | 8 | 5 | 1 | per-drop queue-overflow detail, dropped P-frames, IDR re-requests (the *first* keyframe drop of a session is a WARN) |
 | `HTTP` | `mp4/httpd.c` | 3 | 13 | 10 | 5 | same for the fMP4/MJPEG side, including adaptive freeze (first keyframe drop per client is a WARN) |
 | `HUB` | `hub.c` | 0 | 1 | 0 | 2 | fan-out subscribe/unsubscribe at debug, plus the one always-on line: a per-(consumer kind, stream) queue-overflow summary, at most once per 60 s — the counter behind it is `/control` `queue_drops` |
 | `REC` | `record.c` | 11 | 9 | 6 | 2 | segment and writer detail, plus the overflow re-gate (which keyframe the segment resumed on, and whether the eviction was video or audio-only); the *first* queue drop per subscription is a WARN |
 | `TLS` | `tls.c` | 5 | 3 | 1 | 3 | handshakes that are ordinary peer noise (EOF, close_notify, reset); the interesting ones are WARN |
 | `CONFIG` | `config.c` | 1 | 29 | 4 | 0 | — |
-| `SRT` | `srt.c` | 7 | 10 | 3 | 3 | the 10-second key=value `stats:` line (RTT, loss, retransmits, send rate) while a receiver is connected, plus queue-overflow detail and IDR re-requests (the *first* drop of a session is a WARN) |
+| `SRT` | `srt.c` | 7 | 10 | 3 | 2 | the 10-second key=value `stats:` line (RTT, loss, retransmits, send rate) while a receiver is connected, plus queue-overflow detail and IDR re-requests (the *first* keyframe drop of a session is a WARN) |
 | `spk` | `rtsp/speaker.c` | 0 | 8 | 7 | 0 | — |
 | `MAIN` | `main.c` | 8 | 5 | 8 | 0 | — |
 | `MOTION` | `hal/imp_motion.c` | 9 | 8 | 5 | 0 | — |

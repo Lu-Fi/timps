@@ -55,7 +55,7 @@ one GOP, whatever `pre_roll_s` said; that was the behaviour until
 at the stream's current bitrate/fps, a one-time warning is logged (the
 ring silently truncates otherwise).
 
-### Queue overflow (since v1.9.19, unreleased)
+### Queue overflow (since v1.9.19)
 
 The recorder subscribes with its own `fanqueue`, so storage that cannot keep up
 (a full or slow card, a stalled NFS mount) makes that queue evict packets.

@@ -1,10 +1,10 @@
 # timps configuration keys — complete reference
 
-**Applies to timps v1.9.18 (source: `main`, 2026-09-15).**
+**Applies to timps v1.9.19 (source: `main`, 2026-09-22).**
 
-A statement marked **since v1.9.19 (unreleased)** is already in the source but
-not in any tagged release yet — on a v1.9.18 camera the *previous* behaviour is
-the one to describe. Nothing else in this file changed with v1.9.19.
+A statement marked **since v1.9.20 (unreleased)** is already in the source but
+not in any tagged release yet — on a v1.9.19 camera the *previous* behaviour is
+the one to describe.
 
 Authoritative source: `src/config.c` (the `cfg_field` tables and
 `config_defaults()`), `src/config.h` (struct field sizes and doctrine),
@@ -239,7 +239,7 @@ the POST reply lists them under `deferred`.
 | --- | --- | --- | --- | --- | --- |
 | `sensor.model` | string[64] | *(unset)* → autodetect | — | restart | Sensor driver name, e.g. `gc2053`. |
 | `sensor.i2c_addr` | int | *(unset)* → autodetect | 0..0x7F | restart | Alias `sensor.i2c_address`. Hex (`0x37`) accepted. |
-| `sensor.fps` | int | *(unset)* → autodetect, **capped at 30** | 0..120 | restart | `0` = auto. **since v1.9.19 (unreleased):** the autodetected value is never above **30** (`SENSOR_AUTO_FPS_CAP` in `src/config.c`) — an explicit value is used as given, and is the only way to ask for more. Before v1.9.19 the driver's `max_fps` was taken verbatim. |
+| `sensor.fps` | int | *(unset)* → autodetect, **capped** | 0..120 | restart | `0` = auto. **since v1.9.19:** the autodetected value is capped at **30** (`SENSOR_AUTO_FPS_CAP` in `src/config.c`); **since v1.9.20 (unreleased)** the cap is raised to the fastest *enabled* `videoN.fps` when that is higher, so a stream configured above 30 still gets its frames. An explicit value is used as given. Before v1.9.19 the driver's `max_fps` was taken verbatim. |
 | `sensor.width` | int | *(unset)* → autodetect | 0..8192 | restart | `0` = auto. |
 | `sensor.height` | int | *(unset)* → autodetect | 0..8192 | restart | `0` = auto. |
 
@@ -253,12 +253,15 @@ the POST reply lists them under `deferred`.
    and divide by zero (SIGFPE in the kernel).
 2. `width`/`height`/`fps` are **config-first**: only a `0`/unset value is filled
    from the registry (`width`, `height`, `max_fps`, then `fps`).
-   **since v1.9.19 (unreleased):** a registry `fps` above **30** is capped to 30
-   and logged (`sensor.fps: driver max_fps=%ld, auto capped to 30 (set
-   sensor.fps to override)`). Some drivers advertise a rate their clock cannot
-   deliver — the GC2053 reports `max_fps = 40` on a 30 fps mode. The cap applies
-   to the *autodetected* value only; a configured `sensor.fps = 50` still goes
-   to the ISP unchanged.
+   **since v1.9.19:** a registry `fps` above the cap is capped and logged
+   (`sensor.fps: driver max_fps=%ld, auto capped to 30 (set sensor.fps to
+   override)`). The cap is **30**, or — **since v1.9.20 (unreleased)** — the
+   fastest enabled `videoN.fps` if that is higher, and the log names the
+   registry key the value came from (`driver max_fps=…` or `driver fps=…`).
+   Some drivers advertise a rate their clock cannot deliver — the GC2053
+   reports `max_fps = 40` on a 30 fps mode. The cap applies to the
+   *autodetected* value only; a configured `sensor.fps = 50` still goes to the
+   ISP unchanged.
 3. Remaining unset values get fallbacks: `model=gc2053`, `i2c_addr=0x37`,
    `width`/`height`/`fps` from `video0.*`, final safety net `1920x1080 @25`.
 
@@ -274,15 +277,14 @@ Pitfalls
   the sensor driver at all, so raising it is not a way to raise the capture
   rate.
 * **The sensor driver can refuse or clamp the rate, and until v1.9.19 nothing
-  said so.** **since v1.9.19 (unreleased)** the `IMP_ISP_Tuning_SetSensorFPS`
+  said so.** **since v1.9.19** the `IMP_ISP_Tuning_SetSensorFPS`
   call is read back and logged once per bring-up as
   `sensor fps: requested N, driver holds n/d, set rc=R` (INFO when they agree,
   **WARN** when the return code is non-zero or the driver holds a different
   rate). That line, not the echoed config value, is what the sensor is actually
-  running at. The readback needs `IMP_ISP_Tuning_GetSensorFPS`
-  (`ISP_HAS_GET_SENSOR_FPS` in `src/isp_caps.h`), which every SDK header set
-  timps builds against declares, T10 included; the line degrades to
-  `readback unavailable` only when the driver's getter itself fails.
+  running at. The readback uses `IMP_ISP_Tuning_GetSensorFPS`, which every SDK
+  header set timps builds against declares, T10 included; the line degrades
+  to `readback unavailable` only when the driver's getter itself fails.
 * Editing `sensor.model` to "fix" a wrong-looking camera is almost always
   wrong — the loaded `.ko` decides, not the config.
 
@@ -382,7 +384,7 @@ internal channel wiring, deliberately not exposed over HTTP.
 | `codec` | enum | `h264` / `h264` | `h264`, `h265` (`hevc` = `h265`); anything else → `h264` | restart | **Coerced to `h264` with a warning on T10, T20 and T23.** T10/T20 have no H.265 encoder; T23's SDK marks every H.265 rc struct unsupported, so `IMP_Encoder_CreateChn` fails. The coercion is what keeps that out of the bring-up path: since 1.9.3 a `start()` failure is no longer fatal — it retries up to `MS_STARTUP_MAX_START_FAILS` (10) times and then escalates to one reboot (`src/main.c`), so an uncoerced H.265 on T23 would be a reboot loop rather than a clean exit. |
 | `width` | int | `1920` / `640` | 64..4096 | restart | |
 | `height` | int | `1080` / `360` | 64..4096 | restart | |
-| `fps` | int | `25` / `25` | 1..120 | restart | Per-channel rate — **this stream only**. It does not set the sensor rate (that is `sensor.fps`) and cannot exceed what `sensor.fps` delivers. Documented explicitly **since v1.9.19 (unreleased)**; the behaviour is unchanged. |
+| `fps` | int | `25` / `25` | 1..120 | restart | Per-channel rate — **this stream only**. It does not set the sensor rate (that is `sensor.fps`) and cannot exceed what `sensor.fps` delivers. Documented explicitly **since v1.9.19**; the behaviour is unchanged. |
 | `bitrate` | int | `3000` / `512` | 16..50000 | **live** on every Ingenic SoC (see below) | **kbps.** |
 | `rc_mode` | enum | `cbr` / `cbr` | `cbr`, `vbr`, `fixqp`, `smart`, `capped_vbr`, `capped_quality`; anything else → `cbr` | live on classic SoCs, restart on T31/C100/T40/T41 | Alias: `mode`. |
 | `gop` | int | `50` / `50` | 1..1000 | restart | The real keyframe interval (`rcAttr.maxGop` / `gopAttr.uGopLength`). |
@@ -463,7 +465,7 @@ change takes effect at the next IDR/GOP, not instantly.
 * `videoN.fps` above `sensor.fps` is silently capped by the sensor — and
   `videoN.fps` is not a way to raise `sensor.fps`. Compare the requested rate
   with the `sensor fps: requested N, driver holds n/d` line
-  (**since v1.9.19 (unreleased)**) before blaming the encoder.
+  (**since v1.9.19**) before blaming the encoder.
 * Two streams sharing an `imp_chn` or `jpeg_chn` is a silent failure mode: no
   video and no clear diagnostic.
 

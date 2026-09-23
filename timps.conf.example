@@ -24,8 +24,9 @@ general.osd_pool_size       = 1024   # KB, IMP OSD pool (this is the default)
 # cameras. A value set here always wins; a safe fallback applies if neither the
 # config nor the registry has it (host sim / T40/T41 have no registry).
 # sensor.fps is the SENSOR rate (applied once at ISP init); videoN.fps only
-# sets that stream's frame rate. Left unset it follows the driver's max_fps but
-# is never auto-raised above 30; an explicit value is used as given. The log
+# sets that stream's frame rate. Left unset it follows the driver's max_fps,
+# capped at 30 (or at the fastest enabled videoN.fps if higher); an explicit
+# value is used as given. The log
 # shows the rate the driver actually holds ("sensor fps: requested N, ...").
 sensor.model    = gc2053
 sensor.i2c_addr = 0x37

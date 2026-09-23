@@ -63,7 +63,7 @@ trusted, because a mismatching name/i2c address would crash the ISP driver.
 | --- | --- | --- | --- | --- | --- |
 | `sensor.model` | string | *(unset → auto-detected, fallback `gc2053`)* | — | Restart-only | Sensor driver name; auto-filled from `/proc/jz/sensor/sensor0/name` if present. |
 | `sensor.i2c_addr` (alias `i2c_address`) | int | *(unset → auto-detected, fallback `0x37`)* | 0–0x7F | Restart-only | Sensor I2C address. |
-| `sensor.fps` | int | *(unset → driver `max_fps`, capped at 30; else video0.fps, else 25)* | 0–120 | Restart-only | Sensor capture frame rate, applied once at ISP init. The auto value is never above 30; set it explicitly to go higher. The log line `sensor fps: requested N, driver holds n/d` shows what the driver accepted. Not the same as `video<N>.fps`. |
+| `sensor.fps` | int | *(unset → driver `max_fps`, capped at 30 or the fastest enabled `video<N>.fps` if higher; else video0.fps, else 25)* | 0–120 | Restart-only | Sensor capture frame rate, applied once at ISP init. The auto value is capped at 30, or at the fastest enabled `video<N>.fps` if that is higher; set it explicitly to go higher. The log line `sensor fps: requested N, driver holds n/d` shows what the driver accepted. Not the same as `video<N>.fps`. |
 | `sensor.width` | int | *(unset → auto/video0.width, fallback 1920)* | 0–8192 | Restart-only | Sensor native width. |
 | `sensor.height` | int | *(unset → auto/video0.height, fallback 1080)* | 0–8192 | Restart-only | Sensor native height. |
 

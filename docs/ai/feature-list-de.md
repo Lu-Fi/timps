@@ -11,10 +11,10 @@ prudynt-t / raptor.
   HTTP-Control-API, Streaming-Protocols, Day-Night, Audio, Motion-Detection,
   Recording-Timelapse, Rate-Control-\*, Building, Logging, Testing-QA,
   Platform-SDK-Support)
-* Stand dieses Dokuments: `main`, Version v1.9.18 (2026-09-15);
-  gestripptes `timpsd` ca. 360 KB (mipsel). Mit **seit v1.9.19 (unveröffentlicht)**
+* Stand dieses Dokuments: `main`, Version v1.9.19 (2026-09-22);
+  gestripptes `timpsd` ca. 360 KB (mipsel). Mit **seit v1.9.20 (unveröffentlicht)**
   markierte Aussagen stehen bereits im Quellcode, aber in noch keinem Release –
-  auf einer v1.9.18-Kamera gilt jeweils das vorher beschriebene Verhalten.
+  auf einer v1.9.19-Kamera gilt jeweils das vorher beschriebene Verhalten.
 * Konfiguration: eine flache Textdatei `/etc/timps.conf` im Format `key = value`
 * Ein einziges Binary (`/usr/bin/timpsd`), gestartet über `/etc/init.d/S95timps`
 
@@ -82,7 +82,7 @@ prudynt-t / raptor.
   `encoder.<n>.rc`: das, was der Encoder wirklich hält (Rückleseweg über
   `IMP_Encoder_GetChnAttrRcMode`), getrennt von der konfigurierten Sollgröße.
   Dazu Backlog-Zähler und `queue_drops` je Stream.
-* **Nachvollziehbare Queue-Überläufe** (*seit v1.9.19, unveröffentlicht*):
+* **Nachvollziehbare Queue-Überläufe** (*seit v1.9.19*):
   `queue_drops` zählt Verwürfe in der Warteschlange eines *Konsumenten*. Eine
   Sammelmeldung nennt jetzt höchstens einmal pro 60 s je (Konsumentenart,
   Stream) auch die Art – `rec`, `rtsp`, `mp4`, `webrtc`, `srt`:
@@ -92,7 +92,10 @@ prudynt-t / raptor.
   mehr vervielfacht mit Keyframes belasten; eine unterdrückte Anforderung geht
   nicht verloren, sondern wird nachgeholt – es sei denn, vorher wird ohnehin
   ein Keyframe veröffentlicht, dann entfällt sie (ein Überlauf kostet so ein
-  erzwungenes IDR, nicht zwei). Kein Konfigurationsschlüssel.
+  erzwungenes IDR, nicht zwei). *Seit v1.9.20 (unveröffentlicht)* zählen alle
+  Konsumenten jeden Verwurf (auch Audio) gleich, und RTSP, SRT und WebRTC
+  reichen jeden Video-Verlust an den Hub weiter, statt Anforderungen innerhalb
+  einer eigenen 1-s-Sperre zu verwerfen. Kein Konfigurationsschlüssel.
 * **Bildrotation (optional, `USE_ROTATE`)** – `videoN.rotation = 0|90|180|270`.
   Hardware-90/270 auf T40/T41 (I2D) und T31 (FrameSource), Software-90/270 auf
   T23 (`USE_SW_ROTATE`, CPU-intensiv, nur H.264). Echte per-Kanal-180°-Drehung
@@ -113,10 +116,12 @@ prudynt-t / raptor.
 * **Sensor-Autoerkennung** – `sensor.model/i2c_addr/fps/width/height` dürfen
   fehlen; timps liest sie dann aus der Kernel-Registry
   `/proc/jz/sensor/sensor0/`. Eine Konfigurationsdatei passt damit für viele
-  Kameras. *Seit v1.9.19 (unveröffentlicht)* wird die **automatisch** ermittelte
+  Kameras. *Seit v1.9.19* wird die **automatisch** ermittelte
   `sensor.fps` bei **30** gedeckelt (manche Treiber melden eine Rate, die ihr
-  Takt nicht liefert – der GC2053 meldet 40 bei einem 30-fps-Modus); ein
-  explizit gesetzter Wert gilt unverändert. Zusätzlich wird die gesetzte Rate
+  Takt nicht liefert – der GC2053 meldet 40 bei einem 30-fps-Modus); *seit
+  v1.9.20 (unveröffentlicht)* liegt die Grenze beim schnellsten aktiven
+  `videoN.fps`, falls das höher ist. Ein explizit gesetzter Wert gilt
+  unverändert. Zusätzlich wird die gesetzte Rate
   zurückgelesen und protokolliert: `sensor fps: requested N, driver holds n/d,
   set rc=R` (WARN, wenn der Treiber etwas anderes hält). `videoN.fps` ist nur
   die Rate *dieses Streams* und setzt nie die Sensorrate.
@@ -196,7 +201,7 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   `record.audio`. Ablage unter `<dir>/<hostname>/records/<name>.mp4`,
   Segmentwechsel immer am Keyframe.
 * **Sauberer Schnitt statt Decoder-Müll nach einem Queue-Überlauf**
-  (*seit v1.9.19, unveröffentlicht*): Ist die Aufnahme-Warteschlange
+  (*seit v1.9.19*): Ist die Aufnahme-Warteschlange
   übergelaufen, beziehen sich alle noch anstehenden P-Frames auf Bilder, die
   nicht in der Datei stehen. Bis v1.9.18 wurden sie trotzdem geschrieben (bis zu
   eine ganze GOP sichtbarer Rest nach der Lücke); jetzt pausiert das Segment und

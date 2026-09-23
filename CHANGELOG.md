@@ -6,6 +6,34 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Drop-recovery requests are no longer lost** (`src/rtsp/rtsp.c`,
+  `src/srt.c`, `src/webrtc/webrtc.c`, `src/mp4/httpd.c`) — RTSP, SRT, WebRTC
+  and the fMP4 legacy path (`http.adaptive_drop = 0`) each kept a 1 s gate of
+  their own in front of `hub_request_idr_recovery()`, so a video eviction
+  inside that window was discarded instead of coalesced by the hub: a P-frame
+  lost within a second of the previous request left the GOP broken until the
+  next natural keyframe. WebRTC shared the gate with PLI/FIR and did not count
+  such drops either.
+- **`queue_drops` counts the same thing for every consumer** — any eviction,
+  audio included. RTSP and SRT counted video evictions only, WebRTC only those
+  outside its PLI window, while the recorder and fMP4 counted all.
+- **Auto `sensor.fps` no longer starves a stream configured above 30**
+  (`src/config.c`) — the cap is raised to the fastest enabled `videoN.fps`,
+  and the log names the registry key the value came from (`max_fps` or
+  `fps`).
+
+### Changed
+
+- **`hub_request_idr_recovery()` returns at once while a request is already
+  pending** (`src/hub.c`) — no clock read, no lock. The recorder, frozen until
+  a keyframe, asks once per packet; each of those was a syscall and a global
+  lock for nothing.
+- Removed the unused `fanqueue_take_dropped_key()`/`fanqueue_take_dropped()`
+  (`fanqueue_pop_ex()` reports the flags) and the always-true
+  `ISP_HAS_GET_SENSOR_FPS`.
+
 ## [1.9.19] - 2026-09-22
 
 ### Changed
