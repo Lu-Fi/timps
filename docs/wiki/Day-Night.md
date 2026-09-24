@@ -21,7 +21,7 @@ filter and IR LEDs, and then call back into timps's own `/control` to set
 dn_thread decides day/night
         │
         ▼
-fork()+execlp(switch_cmd, "day"|"night")   (e.g. thingino's `daynight` script)
+vfork()+execlp(switch_cmd, "day"|"night")   (e.g. thingino's `daynight` script)
         │
         ▼
 board script: flips IR-cut filter + IR LEDs, then...

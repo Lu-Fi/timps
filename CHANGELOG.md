@@ -8,6 +8,13 @@ semantic versioning.
 
 ### Fixed
 
+- **Day/night commands start under memory pressure** (`src/daynight.c`) —
+  `daynight.switch_cmd` and `daynight.irprobe_cmd` are launched with
+  `vfork()` instead of `fork()`. A `fork()` of the daemon reserves its whole
+  writable address space (~100 MB of VM) and can fail with `ENOMEM` on a small
+  board; then the IR-cut did not switch, or the silent probe fell back to the
+  audible one. Same fix the motion hook got earlier (`posix_spawn`).
+
 - **Drop-recovery requests are no longer lost** (`src/rtsp/rtsp.c`,
   `src/srt.c`, `src/webrtc/webrtc.c`, `src/mp4/httpd.c`) — RTSP, SRT, WebRTC
   and the fMP4 legacy path (`http.adaptive_drop = 0`) each kept a 1 s gate of
