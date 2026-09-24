@@ -244,6 +244,10 @@ always wins. T40/T41 and the host sim have no registry, so set them there.
 `defog_strength`, `drc_strength`, `highlight_depress` (0), `backlight_compensation`
 (0), `core_wb_mode` (0 = auto), `wb_rgain`, `wb_bgain`, `ae_it_max_us`
 (opt-in cap on AE integration time).
+**since v1.9.21 (unreleased)** `GET /control` also returns read-only
+`image.wb_live` = `{"rgain":R,"bgain":B}`, the gains in effect right now (in
+auto: what AWB picked). POSTing them with `core_wb_mode=1` switches to manual
+without a visible change. Missing where `ISP_HAS_WB` is unset (T40/T41).
 Which of these the SoC really supports is listed in `caps.image`. Unsupported
 values still persist; the HAL skips them.
 

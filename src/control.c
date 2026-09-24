@@ -1541,12 +1541,18 @@ int control_get_json(char *buf, size_t cap)
         "\"max_dgain\":%d,\"sinter_strength\":%d,\"temper_strength\":%d,"
         "\"dpc_strength\":%d,\"defog_strength\":%d,\"drc_strength\":%d,"
         "\"highlight_depress\":%d,\"backlight_compensation\":%d,"
-        "\"core_wb_mode\":%d,\"wb_rgain\":%d,\"wb_bgain\":%d},",
+        "\"core_wb_mode\":%d,\"wb_rgain\":%d,\"wb_bgain\":%d",
         img.anti_flicker,img.ae_compensation,img.max_again,
         img.max_dgain,img.sinter_strength,img.temper_strength,
         img.dpc_strength,img.defog_strength,img.drc_strength,
         img.highlight_depress,img.backlight_compensation,
         img.core_wb_mode,img.wb_rgain,img.wb_bgain);
+    {   /* gains AWB applies right now: a manual start that matches auto */
+        int wr, wbg;
+        if (hal_isp_wb_gains(&wr, &wbg) == 0)
+            APP(",\"wb_live\":{\"rgain\":%d,\"bgain\":%d}", wr, wbg);
+    }
+    APP("},");
     {   /* full audio state: live keys + the persist-only (restart) keys */
         char cod[16]="none", cod2[16]="none";
         config_get_kv(c, "audio.codec", cod, sizeof cod);   /* restart-only spelling */

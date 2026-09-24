@@ -6,6 +6,14 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- **`image.wb_live` in `GET /control`** (`src/control.c`, `src/hal/*`) —
+  `{"rgain":R,"bgain":B}`, the white-balance gains the ISP applies right
+  now (`IMP_ISP_Tuning_GetWB`, same scale as `wb_rgain`/`wb_bgain`). In auto
+  mode these are the AWB result, so a client can switch to manual with them
+  and the picture does not change. Omitted where `ISP_HAS_WB` is unset.
+
 ## [1.9.20] - 2026-09-24
 
 ### Fixed

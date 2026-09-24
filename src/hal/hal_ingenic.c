@@ -5108,6 +5108,18 @@ int hal_isp_total_gain(uint32_t *gain)
 #endif
 }
 
+int hal_isp_wb_gains(int *rgain, int *bgain)
+{
+#ifdef ISP_HAS_WB
+    IMPISPWB wb; memset(&wb,0,sizeof wb);
+    if (!rgain || !bgain || IMP_ISP_Tuning_GetWB(&wb) != 0) return -1;
+    *rgain = wb.rgain; *bgain = wb.bgain;
+    return 0;
+#else
+    (void)rgain; (void)bgain; return -1;
+#endif
+}
+
 int hal_isp_ae_luma(uint32_t *luma)
 {
 #ifdef ISP_HAS_AELUMA

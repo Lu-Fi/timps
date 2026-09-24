@@ -108,7 +108,7 @@ latch-kick this triggers.
 | `image.backlight_compensation` | int | 0 | 0–10 | Live | `ISP_HAS_BACKLIGHT`: T23/T31/C100 | Backlight compensation. |
 | `image.core_wb_mode` | int | 0 | 0–1 | Live | `ISP_HAS_WB`: all except T40/T41 | White balance mode. |
 | `image.wb_rgain` | int | 0 | 0–65535 | Live | `ISP_HAS_WB` | Manual WB red gain (used when `core_wb_mode` selects manual). |
-| `image.wb_bgain` | int | 0 | 0–65535 | Live | `ISP_HAS_WB` | Manual WB blue gain. |
+| `image.wb_bgain` | int | 0 | 0–65535 | Live | `ISP_HAS_WB` | Manual WB blue gain. Since v1.9.21 (unreleased), `GET /control` reports the gains in effect as read-only `image.wb_live` `{"rgain","bgain"}`, a start value for manual mode that matches auto. |
 
 ### Picking `image.anti_flicker`
 

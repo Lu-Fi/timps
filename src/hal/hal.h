@@ -27,6 +27,9 @@ int hal_isp_total_gain(uint32_t *gain);
  * IMP_ISP_Tuning_GetAeLuma exists on T21/T23/T31/C100 only; returns 0 and fills
  * *luma on success, <0 when unavailable (other SoCs, sim, ISP down). */
 int hal_isp_ae_luma(uint32_t *luma);
+/* WB gains in effect (in auto: what AWB currently applies), SetWB's scale.
+ * -1 where the SDK has no IMPISPWB (ISP_HAS_WB unset). */
+int hal_isp_wb_gains(int *rgain, int *bgain);
 
 /* ISP AE exposure readback, straight from IMP_ISP_Tuning_GetExpr (+GetEVAttr).
  *
