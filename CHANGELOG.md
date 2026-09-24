@@ -8,6 +8,27 @@ semantic versioning.
 
 ### Fixed
 
+- **`/control` reports live vs. restart correctly** (`src/config.c`,
+  `src/control.c`, `src/hal/hal_ingenic.c`) — a new `F_RESTART` field flag
+  marks the restart-only keys of the otherwise-live `audio.*` and `osd.*`
+  sections (`audio.codec`, `codec2`, `samplerate`, `agc`, `ns`,
+  `backchannel*`, …; `osd.enabled`, `font_path`, `supersample`, `hinting`).
+  They are now listed in `caps.restart` by full name and come back in the
+  POST reply's `deferred_keys`; before, only `video`/`sensor` were ever
+  reported, so the WebUI showed these as applied. `audio.codec2` also logged
+  "unsupported on this platform" instead of "applies on restart".
+- **`video<N>.rtsp_path` is no longer reported deferred** (`src/control.c`) —
+  the new path already serves the next DESCRIBE, but the POST reply listed it
+  under `deferred_keys`, so the WebUI asked for a needless restart.
+- **`osd.monitor_stream` and `osd.vars_file` are graded live**
+  (`src/hal/hal_ingenic.c`) — the OSD thread re-reads both on every refresh;
+  the HAL logged "persisted, applies on restart" for them.
+- **Live rate control on T21/T30 ignores a pending `codec` change**
+  (`src/hal/hal_ingenic.c`) — the classic-API re-fill took `codec` and
+  `fluc_lvl` from the live config, so after POSTing `codec` without a
+  restart, live `bitrate` changes were refused, or an H.264 union was sent to
+  a running H.265 channel. Both now come from the boot snapshot.
+
 - **Drop-recovery requests are no longer lost** (`src/rtsp/rtsp.c`,
   `src/srt.c`, `src/webrtc/webrtc.c`, `src/mp4/httpd.c`) — RTSP, SRT, WebRTC
   and the fMP4 legacy path (`http.adaptive_drop = 0`) each kept a 1 s gate of

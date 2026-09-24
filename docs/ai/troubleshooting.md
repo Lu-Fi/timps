@@ -197,7 +197,7 @@ Four distinct causes, distinguishable from the `POST /control` reply body:
 | Reply field | Meaning | What to do |
 | --- | --- | --- |
 | `"ignored":["…"]` | The build does not know that field name (typo, or feature compiled out). Counts are unaffected — a request mixing one good key with one typo still answers `200`. | Check the spelling against `GET /control?fields=1`. |
-| `"deferred":N,"deferred_keys":[…]` | Changed `video*`/`sensor.*` fields that were **persisted but did not reach the running pipeline**. | Restart `timpsd`. |
+| `"deferred":N,"deferred_keys":[…]` | Changed fields that were **persisted but did not reach the running pipeline**: `video*`/`sensor.*`, and since v1.9.20 (unreleased) the restart-only `audio.*`/`osd.*` keys (`caps.restart`). | Restart `timpsd`. |
 | `"not_persisted":N` | The value is live in memory but was **not written to the file**. | Split the request; see below. |
 | `"rejected":N` | A value was refused outright (e.g. `speaker play` with a bad path). | Fix the value. |
 

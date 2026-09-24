@@ -660,6 +660,8 @@ int  config_get_kv(const ms_config *c, const char *key, char *out, size_t cap);
 /* 1 if `key` names a T_STR field. Lets a caller tell an empty value that MEANS
  * something (clear this text) from one that would silently zero a number. */
 int  config_key_is_str(const char *key);
+/* 1 when the key's table entry carries F_RESTART */
+int  config_key_restart(const char *key);
 /* replace/append "key = value" lines in the config file (atomic, keeps
  * comments/order). Returns 0 on success. */
 int  config_write_keys(const char *path, const char *const *keys,
@@ -742,6 +744,11 @@ typedef struct {
  * which is the safe direction. This is not a general "warn on clamp" flag
  * and must not become one. */
 #define F_SECVAL 0x10
+/* POST-able, but the running daemon keeps its old behaviour until a restart.
+ * Drives GET /control's caps.restart entries and the POST reply's "deferred"
+ * list for the sections whose other keys apply live (audio.*, osd.*); the
+ * videoN.* and sensor.* sections are graded per section instead. */
+#define F_RESTART 0x20
 
 /* Accessors handing control.c's generic /control POST walker the section
  * field tables it needs (config.c keeps the tables themselves static - these

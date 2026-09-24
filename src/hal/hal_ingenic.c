@@ -4271,7 +4271,12 @@ static int rc_live_apply(int si, const char *k)
 #ifdef ROT_HAS_SW_90
     if (vc->sw_rot) return 0;   /* unbound Yuv encoder: no runtime rc API */
 #endif
-    const ms_vstream_cfg *v = &g_hcfg->video[si];
+    /* codec and fluc_lvl are restart-only: take them from what the channel
+     * was built with, not from a POST still waiting for the restart */
+    ms_vstream_cfg lv = g_hcfg->video[si];
+    lv.codec    = g_cfg_boot.video[si].codec;
+    lv.fluc_lvl = g_cfg_boot.video[si].fluc_lvl;
+    const ms_vstream_cfg *v = &lv;
     int chn = vc->chn;
 #ifndef ENC_NEW_API
     /* Classic API: SetChnAttrRcMode takes the whole rc union, so ANY live rc
@@ -4478,18 +4483,11 @@ static int ing_control(const char *key, const char *val)
          * module state with no lock, so toggling it live races the vendor
          * thread -> use-after-free / SIGSEGV inside libaudioProcess.so
          * (epc=0, ra in libimp). Boot-apply (before g_ai_up, single-threaded,
-         * one-shot Enable, never a Disable) is the only safe place. */
-        if (!strcmp(k,"enabled")   || !strcmp(k,"codec")    ||
-            !strcmp(k,"samplerate")|| !strcmp(k,"bitrate")  ||
-            !strcmp(k,"channels")  || !strcmp(k,"force_stereo") ||
-            !strcmp(k,"high_pass") || !strcmp(k,"agc")      ||
-            !strcmp(k,"agc_target_dbfs") || !strcmp(k,"agc_compression_db") ||
-            !strcmp(k,"ns")        ||
-            /* backchannel pipeline setup (bc_configure/speaker_configure)
-             * happens once in main.c at boot; rtsp.c gates on that boot-time
-             * state (bc_available), not the live value */
-            !strcmp(k,"backchannel") || !strcmp(k,"backchannel_codec") ||
-            !strcmp(k,"backchannel_rate")){
+         * one-shot Enable, never a Disable) is the only safe place. The
+         * backchannel keys too: bc_configure/speaker_configure run once at
+         * boot and rtsp.c gates on bc_available. The list is F_RESTART in
+         * config.c's audio_fields[]. */
+        if (config_key_restart(key)){
             LOGI(MOD,"%s persisted, applies on restart", key);
             return 0;
         }
@@ -4622,12 +4620,16 @@ static int ing_control(const char *key, const char *val)
         return 1;
     }
 
-    /* osd.* (master switch/global font/vars file): config-only - the OSD
-     * groups are built once in imp_osd_setup at startup, so these take
-     * effect on the next daemon restart */
+    /* osd.* globals: enabled/font_path/supersample/hinting are read once by
+     * imp_osd_setup (F_RESTART); monitor_stream and vars_file are re-read by
+     * the OSD thread on every refresh. */
     if (!strncmp(key,"osd.",4)){
-        LOGI(MOD,"%s persisted, applies on restart", key);
-        return 0;
+        if (config_key_restart(key)){
+            LOGI(MOD,"%s persisted, applies on restart", key);
+            return 0;
+        }
+        LOGI(MOD,"control %s applied (next OSD refresh)", key);
+        return 1;
     }
     return 0;   /* unknown to the HAL: persisted only */
 }

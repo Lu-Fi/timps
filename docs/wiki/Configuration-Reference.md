@@ -35,10 +35,10 @@ Two important caveats:
   (see the per-key notes below and `caps.image` in `GET /control`). On an
   unsupported platform the value is stored/echoed but has no visible
   effect.
-- **`videoN.rtsp_path` is a documented exception**: it is POSTed through
-  the same code path as the other (persist-only) `video.N.*` keys and
-  `GET /control`'s `caps.restart` array lists the whole `video` section as
-  restart-required — but `config.h` explicitly carves it out: RTSP
+- **`videoN.rtsp_path` is a documented exception**: `GET /control`'s
+  `caps.restart` array lists the whole `video` section as restart-required,
+  but `config.h` explicitly carves it out (and since v1.9.20 the POST reply
+  no longer lists it under `deferred_keys`): RTSP
   `DESCRIBE` matches the request path against the **live** config on every
   request, not the boot snapshot, so a `/control` edit to `rtsp_path`
   actually changes which URL serves that stream immediately, with no
@@ -68,7 +68,8 @@ trusted, because a mismatching name/i2c address would crash the ISP driver.
 | `sensor.height` | int | *(unset → auto/video0.height, fallback 1080)* | 0–8192 | Restart-only | Sensor native height. |
 
 `sensor.*` **is** accepted by `POST /control` (`{"sensor":{...}}`) for
-persistence — it is listed in `caps.restart` alongside `video` — but has
+persistence — it is listed in `caps.restart` alongside `video`, and a
+changed key comes back in the POST reply's `deferred_keys` — but has
 no live-apply path; the value is written to the config file and takes
 effect at the next ISP init.
 
@@ -128,7 +129,9 @@ settings are correct.
 Split between live-applicable knobs (real-time DSP/gain calls) and
 persist-only attribute keys (codec/format/pipeline-init settings that
 `IMP_AI_SetPubAttr`/encoder init need at bring-up time and cannot change
-on a running capture channel).
+on a running capture channel). The Restart-only keys are listed in `GET /control`'s
+`caps.restart` as `audio.<key>`, and since v1.9.20 a changed one comes back
+in the POST reply's `deferred_keys`.
 
 | Key | Type | Default | Range | Live? | Description |
 | --- | --- | --- | --- | --- | --- |
@@ -279,7 +282,7 @@ overlay fields are documented separately below (`osd<S>.<N>.*`).
 | `osd.enabled` | bool | 1 | 0/1 | Restart-only | Master OSD on/off switch, global across all streams. Settable via `/control` (`{"osd":{"enabled":...}}`) and persists, but the OSD groups are only ever built once at startup (`imp_osd_setup`), so the effect needs a restart. |
 | `osd.monitor_stream` | int | 0 | — | **Live** | Which stream's measured fps/bitrate feeds the `{fps}` and `{bitrate}` placeholders — for every OSD layer, on every stream. Use the numbered `{fpsN}`/`{bitrateN}` forms instead when a layer should show its own stream's figures. Settable via `/control` (`{"osd":{"monitor_stream":...}}`); read directly off `g_cfg` on every OSD text refresh, so a POST applies on the next render, no restart needed. |
 | `osd.font_path` | string | `/usr/share/fonts/default.ttf` | — | Restart-only | Default TTF font for text items without a per-item `font_path` override. Settable via `/control`, same restart-required class as `osd.enabled`. |
-| `osd.vars_file` | string | `/tmp/timps_osd.vars` | — | Restart-only | Custom placeholder source file (see "Custom placeholders" below). Settable via `/control`, same restart-required class as `osd.enabled`. |
+| `osd.vars_file` | string | `/tmp/timps_osd.vars` | — | **Live** | Custom placeholder source file (see "Custom placeholders" below). Settable via `/control`; the OSD thread re-reads the path on every text refresh. |
 | `osd.supersample` | int | 2 | 1–4 | Restart-only | TTF rasterizer anti-aliasing quality (samples per axis per pixel); cost scales ~quadratically, 2 is visually close to 4 at typical OSD sizes for roughly a quarter of the CPU cost. Settable via `/control`, same restart-required class as `osd.enabled`. |
 | `osd.hinting` | bool | 1 | 0/1 | Restart-only (only if `USE_OSD_HINTING` compiled in) | Opt-in lightweight geometric autohint for the TTF rasterizer. The rasterizer (`msttf.c`) does not execute the font's embedded TrueType hint bytecode (a real hint interpreter is real interpreter-writing work with a real correctness/security surface for an on-device, unsandboxed daemon); at small sizes (e.g. the substream OSD's default 12px) that shows up as visibly uneven stroke widths between glyphs. Enabling this snaps long, near-vertical/near-horizontal outline edges (typical letter stems/serifs) to the pixel grid before rasterizing, which measurably reduces that unevenness — it is a coarse heuristic, not real hinting, and does not preserve the font's authored hint intent. On by default in the runtime config; set it to `0` for byte-for-byte unhinted OSD bitmaps. Verified against the shipped UbuntuMono Regular (`/usr/share/fonts/default.ttf`); untested against other TTF files if a user swaps `osd.font_path`. Also gated at COMPILE time by `USE_OSD_HINTING` (`BR2_PACKAGE_TIMPS_OSD_HINTING` in the buildroot package, off by default — measured ~2.1KB smaller `.text` on T31/GCC 16.1.0/-Os when left off): on a build without it, setting this key is accepted but has no effect. Settable via `/control`, same restart-required class as `osd.enabled`. |
 
@@ -557,9 +560,9 @@ restart](Rate-Control-Parameters.md#live-vs-restart-per-soc) for the exact
 key × SoC table, or query the running build's own `caps.video_live` (never
 hardcode the table into a client — see
 [HTTP Control API](HTTP-Control-API.md#the-caps-object)).
-`GET /control` still groups this whole section under `caps.restart:
-["video", "sensor", "osd.enabled"]` as the conservative default; a key
-that also appears in `caps.video_live` is the per-key exception.
+`GET /control` still groups this whole section under `caps.restart`
+(entry `"video"`) as the conservative default; a key that also appears in
+`caps.video_live`, and `rtsp_path`, are the per-key exceptions.
 
 | Key | Type | Default (video0 / video1) | Range | Live? | Description |
 | --- | --- | --- | --- | --- | --- |

@@ -549,7 +549,7 @@ differently-compiled binaries.
 | `caps.image[]` | The `image.*` keys this SoC actually supports |
 | `caps.audio[]` | The `audio.*` keys this build/SoC supports |
 | `caps.osd[]` | The OSD item fields that apply **live** (`text,x,y,font_size,color,transparency,outline,outline_color`) |
-| `caps.restart[]` | Sections whose keys are persist-only: `["video","sensor","osd.enabled"]` |
+| `caps.restart[]` | Restart-only keys: the sections `"video"`/`"sensor"` (except `rtsp_path` and `caps.video_live`), plus — since v1.9.20 (unreleased) — every `F_RESTART` key of `audio.*`/`osd.*` as `"audio.codec"`, `"osd.font_path"`, …. v1.9.19: `["video","sensor","osd.enabled"]` |
 | `caps.video_live[]` | The `videoN.*` keys this build can push to a running encoder |
 | `caps.rtsp_max_clients` / `http_max_clients` / `events_max_clients` | Concurrent-client ceilings (refusal points: RTSP, HTTP and events all answer `503`) |
 | `caps.motion` | `{available, max_cells}` — `available` = build has the IMP_IVS move API |
@@ -625,8 +625,10 @@ Response body (same shape whatever the status):
 - `not_persisted` — applied live but not written, because the request changed
   more keys than the 48-slot persist list holds. Tell the user to split the
   request; those values are gone after a reboot.
-- `deferred` / `deferred_keys` — `videoN.*`/`sensor.*` keys persisted but not
-  applied to the running pipeline this request.
+- `deferred` / `deferred_keys` — changed keys persisted but not applied to the
+  running pipeline this request: `videoN.*`/`sensor.*` (never `rtsp_path`, which
+  is live), and since v1.9.20 (unreleased) the restart-only `audio.*`/`osd.*`
+  keys too.
 - `ignored` — key names this build did not apply (typo, wrong section, gated
   out, or no write path). Fully prefixed, e.g. `"video1.quality_level"`.
 - `applied` — echo of the **effective** value after clamping.
