@@ -32,6 +32,14 @@ semantic versioning.
 
 ### Changed
 
+- **WebRTC SRTP is 2.4× faster** (`src/webrtc/srtp.c`) — AES-128
+  uses a 1 KB T-table instead of the byte-wise S-box/xtime rounds, and the
+  HMAC-SHA1 key pads are absorbed once per session. `srtp_protect_rtp()` on a
+  T31: 390 → 165 µs per 1200-byte packet; one WHEP session at 1.2 Mbit/s
+  dropped from ~8.6 % to ~5 % of the free CPU, at 4 Mbit/s from ~29 % to
+  ~15 %. Output is bit-identical (`make test-srtp`). +1.5 KB `.text`,
+  +3 KB `.bss`.
+
 - **`hub_request_idr_recovery()` returns at once while a request is already
   pending** (`src/hub.c`) — no clock read, no lock. The recorder, frozen until
   a keyframe, asks once per packet; each of those was a syscall and a global
