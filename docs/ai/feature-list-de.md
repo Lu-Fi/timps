@@ -370,11 +370,14 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   WebUI-Baum installiert (ca. 45 Dateien).
 * Eigene bzw. ersetzte Seiten: `preview.html` (nativer MSE/fMP4-Player mit
   WebRTC-Option, Bewegungs-Overlay, Talk-Knopf, Steuerleiste),
-  `streamer-main/-config/-image/-sensor/-substream/-osd0/-osd1.html`,
-  `config-audio.html`, `config-motion.html`, `config-photosensing.html`,
-  `config-privacy.html`, `tool-record.html`, `tool-timelapse.html`,
-  `tool-sensor-data.html` (Day/Night-Tuningkurve), `recordings.html`,
-  `timelapse-player.html`.
+  `streamer-video.html` (Encoder beider Streams als Tabs, Live/Restart-Kennzeichnung,
+  Neustart-Leiste, Live-Werte), `streamer-overlays.html` (Tabs „Text & logo“ und
+  „Privacy masks“ für beide Streams, Position per Anker/Pixel, Ziehen oder Pfeiltasten),
+  `recordings.html` (Tabs Clips/Settings), `timelapse-player.html` (Tabs Player/Settings),
+  `streamer-config/-image/-sensor.html`, `config-audio.html`, `config-motion.html`,
+  `config-photosensing.html`, `tool-sensor-data.html` (Day/Night-Tuningkurve).
+  Die alten Adressen `streamer-main/-substream/-osd0/-osd1.html`, `config-privacy.html`,
+  `tool-record.html` und `tool-timelapse.html` leiten auf die neuen Seiten weiter.
 * Die Vorschauen holen `/stream.mjpeg?chn=N` und `/snapshot.jpg?chn=N` direkt
   vom timps-Port (mit `?token=`), ohne Proxy-CGI.
 * Brücken-CGIs unter `/var/www/x/` (`timps-imp.cgi`, `timps-token.cgi`,
