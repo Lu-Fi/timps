@@ -367,7 +367,10 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   WebUI-Baum installiert (ca. 45 Dateien).
 * Eigene bzw. ersetzte Seiten: `preview.html` (nativer MSE/fMP4-Player mit
   WebRTC-Option, Bewegungs-Overlay, Talk-Knopf, Steuerleiste),
-  `streamer-main/-config/-image/-sensor/-substream/-osd0/-osd1.html`,
+  `streamer-video.html` (Encoder beider Streams als Tabs, Live/Restart-Kennzeichnung,
+  Neustart-Leiste, Live-Werte), `streamer-overlays.html` (OSD beider Streams als Tabs,
+  Position per Anker/Pixel, Ziehen oder Pfeiltasten), `streamer-config/-image/-sensor.html`
+  (die alten `streamer-main/-substream/-osd0/-osd1.html` leiten dorthin weiter),
   `config-audio.html`, `config-motion.html`, `config-photosensing.html`,
   `config-privacy.html`, `tool-record.html`, `tool-timelapse.html`,
   `tool-sensor-data.html` (Day/Night-Tuningkurve), `recordings.html`,
