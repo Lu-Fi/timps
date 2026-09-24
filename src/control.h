@@ -38,19 +38,20 @@
  * still parsed and mirrors the item onto EVERY stream (backward compat).
  * applied live through hub_control() -> HAL, and finally persisted into the
  * config file (only the changed keys; comments/order preserved). Live audio
- * keys are volume/gain/alc_gain/high_pass/agc/agc_target_dbfs/
- * agc_compression_db/ns; the attribute-level audio keys (enabled/codec/
- * samplerate/channels/bitrate/force_stereo/spk_*) are persist-only and take
- * effect on restart. videoN.* and sensor.* keys are persist-first: every one
+ * keys are volume/gain/alc_gain/mute/talk_ws (spk_* and aec at the next AO
+ * open);
+ * the F_RESTART ones (codec, samplerate, agc, ns, ...) take effect on
+ * restart. videoN.* and sensor.* keys are persist-first: every one
  * is stored + persisted, and MOST take effect on the next restart only
  * (encoder/FrameSource/sensor attributes are not reconfigured on the running
  * pipeline) - EXCEPT the rate-control subset this platform can apply to the
  * live encoder (enc_caps.h; classic SoCs: the whole rc block incl. rc_mode,
  * new-API SoCs: bitrate/min_qp/max_qp plus i_bias_lvl on T31/C100; host sim:
  * none). GET /control advertises that subset as "caps":{"video_live":[...]}
- * next to the conservative "restart":["video","sensor"] section list, and
+ * next to the conservative "restart":["video","sensor",...] list, and
  * each POST reply reports in "deferred"/"deferred_keys" which of ITS changed
- * video/sensor fields did NOT reach the running pipeline (channel down,
+ * video/sensor fields (never rtsp_path, which is live) and F_RESTART
+ * audio or osd fields did NOT reach the running pipeline (channel down,
  * classic H265, rejected IMP call, sim) - so a caller can tell what is in
  * effect now from what waits for a restart, per request, not per platform
  * guess. Unknown keys and missing fields are ignored - and the unknown ones are
@@ -114,9 +115,9 @@ typedef struct {
      * keys than the persist list holds. Live now, gone after a reboot - and
      * until this counter existed the caller had no way to learn that. */
     int not_persisted;
-    /* CHANGED videoN.* / sensor.* fields that were persisted but did NOT reach
-     * the running pipeline (hub_control() returned 0): they take effect on
-     * the next daemon restart. Subset of `changed` - an unchanged re-post
+    /* CHANGED videoN.* / sensor.* / F_RESTART fields that were persisted but
+     * did NOT reach the running pipeline (hub_control() returned 0): they take
+     * effect on the next daemon restart. Subset of `changed` - an unchanged re-post
      * reports nothing here, exactly like the echo. defer[] carries the keys
      * as a ready-made JSON array body ("\"video0.width\",\"sensor.fps\"");
      * defer_full mirrors echo_full (0 = list overflowed, count still exact). */
@@ -178,7 +179,8 @@ int  control_daynight_json(char *buf, size_t cap, int enabled, int mode,
  * "osd" lists the per-item leaf keys /control accepts (incl. outline/
  * outline_color; the sets are dumped per stream as "osd0"/"osd1" and the
  * master "enabled" needs a restart); "restart" lists the sections (video,
- * sensor) whose keys are persist-only and need a daemon restart;
+ * sensor) whose keys are persist-only plus every F_RESTART key of audio.* and
+ * osd.* by full name ("audio.codec", "osd.font_path", ...);
  * rtsp_max_clients/http_max_clients/events_max_clients are the concurrent-
  * client ceilings each server refuses past (503 / 503 / 503) - not inferable
  * from anywhere else, and per-board, since the first two are -D overridable.

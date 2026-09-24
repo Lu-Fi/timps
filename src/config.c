@@ -797,31 +797,31 @@ static const cfg_field image_fields[] = {
 #define CAP_SPK 0
 #endif
 static const cfg_field audio_fields[] = {
-    F ("enabled",            0, enabled,            T_BOOL,   F_CTRL, 0,0),
-    F ("codec",              0, codec,              T_ACODEC, F_CTRL, 0,0),
-    F ("codec2",             0, codec2,             T_ACODEC2,F_CTRL, 0,0),
-    F ("samplerate",         0, samplerate,         T_INT,    F_CTRL, 8000,96000),   /* F-09 */
+    F ("enabled",            0, enabled,            T_BOOL,   F_CTRL|F_RESTART, 0,0),
+    F ("codec",              0, codec,              T_ACODEC, F_CTRL|F_RESTART, 0,0),
+    F ("codec2",             0, codec2,             T_ACODEC2,F_CTRL|F_RESTART, 0,0),
+    F ("samplerate",         0, samplerate,         T_INT,    F_CTRL|F_RESTART, 8000,96000),   /* F-09 */
     /* 1 = mono (native), 2 = simulated stereo (mono mic duplicated to L=R,
      * AAC only) - anything else would put a bogus channel count in the AAC
      * ASC / SDP / fMP4 stsd */
-    F ("channels",           0, channels,           T_INT,    F_CTRL, 1,2),
-    F ("bitrate",            0, bitrate_kbps,       T_INT,    F_CTRL, 8,320),
+    F ("channels",           0, channels,           T_INT,    F_CTRL|F_RESTART, 1,2),
+    F ("bitrate",            0, bitrate_kbps,       T_INT,    F_CTRL|F_RESTART, 8,320),
     F ("volume",             0, volume,             T_INT,    F_CTRL|F_CAP, 0,100),
     F ("gain",               0, gain,               T_INT,    F_CTRL|F_CAP, 0,31),
-    F ("high_pass",          0, high_pass,          T_BOOL,   F_CTRL, 0,0),
-    F ("agc",                0, agc,                T_BOOL,   F_CTRL, 0,0),
-    F ("ns",                 0, ns,                 T_INT,    F_CTRL, 0,3),
+    F ("high_pass",          0, high_pass,          T_BOOL,   F_CTRL|F_RESTART, 0,0),
+    F ("agc",                0, agc,                T_BOOL,   F_CTRL|F_RESTART, 0,0),
+    F ("ns",                 0, ns,                 T_INT,    F_CTRL|F_RESTART, 0,3),
     F ("alc_gain",           0, alc_gain,           T_INT,    F_CTRL|CAP_ALC, 0,7),
-    F ("agc_target_dbfs",    0, agc_target_dbfs,    T_INT,    F_CTRL, 0,31),
-    F ("agc_compression_db", 0, agc_compression_db, T_INT,    F_CTRL, 0,90),
+    F ("agc_target_dbfs",    0, agc_target_dbfs,    T_INT,    F_CTRL|F_RESTART, 0,31),
+    F ("agc_compression_db", 0, agc_compression_db, T_INT,    F_CTRL|F_RESTART, 0,90),
     F ("mute",               0, mute,               T_BOOL,   F_ATOMIC|F_CTRL|F_CAP, 0,0),
-    F ("force_stereo",       0, force_stereo,       T_BOOL,   F_CTRL, 0,0),
+    F ("force_stereo",       0, force_stereo,       T_BOOL,   F_CTRL|F_RESTART, 0,0),
     F ("spk_enabled",        0, spk_enabled,        T_BOOL,   F_CTRL, 0,0),
     F ("spk_volume",         0, spk_volume,         T_INT,    F_CTRL|CAP_SPK, 0,100),
     F ("spk_gain",           0, spk_gain,           T_INT,    F_CTRL|CAP_SPK, 0,100),
-    F ("backchannel",        0, backchannel,        T_BOOL,   F_CTRL, 0,0),
-    F ("backchannel_codec",  0, backchannel_codec,  T_BCCODEC,F_CTRL, 0,0),
-    F ("backchannel_rate",   0, backchannel_rate,   T_INT,    F_CTRL, 8000,48000),
+    F ("backchannel",        0, backchannel,        T_BOOL,   F_CTRL|F_RESTART, 0,0),
+    F ("backchannel_codec",  0, backchannel_codec,  T_BCCODEC,F_CTRL|F_RESTART, 0,0),
+    F ("backchannel_rate",   0, backchannel_rate,   T_INT,    F_CTRL|F_RESTART, 8000,48000),
     F ("aec",                0, aec,                T_BOOL,   F_CTRL|CAP_SPK, 0,0),
     /* F_CTRL only, deliberately NOT CAP_SPK: httpd.c reads talk_ws live on
      * every /talk request, but the backchannel it rides on is boot-bound
@@ -945,20 +945,20 @@ static const cfg_field srt_fields[] = {
 #undef TT
 
 #define TT ms_osd_cfg
-/* every osd.* global is F_CTRL (POST-able), matching the old hand-written
- * osd.enabled special-case + OSD_GLOBAL_KEYS[] in control.c combined - all
- * restart-required (imp_osd_setup() builds the OSD groups once at startup). */
+/* every osd.* global is F_CTRL (POST-able). enabled/font_path/supersample/
+ * hinting are read once by imp_osd_setup() (F_RESTART); monitor_stream and
+ * vars_file are read by the OSD thread on every refresh, so they are live. */
 static const cfg_field osd_fields[] = {
-    F ("enabled",        0, enabled,        T_BOOL, F_CTRL, 0,0),
+    F ("enabled",        0, enabled,        T_BOOL, F_CTRL|F_RESTART, 0,0),
     F ("monitor_stream", 0, monitor_stream, T_INT,  F_CTRL, 0,0),
-    FS("font_path",      0, font_path,      F_CTRL),
+    FS("font_path",      0, font_path,      F_CTRL|F_RESTART),
     FS("vars_file",      0, vars_file,      F_CTRL),
-    F ("supersample",    0, supersample,    T_INT,  F_CTRL, 1,4),
+    F ("supersample",    0, supersample,    T_INT,  F_CTRL|F_RESTART, 1,4),
     /* geometric autohint, default on: see the ms_osd_cfg.hinting comment
      * in config.h and msttf_set_hinting() for what this does and why it's
      * not a real TrueType hint-bytecode interpreter. Same File-only/
      * restart-only handling as supersample: read once by imp_osd_setup(). */
-    F ("hinting",        0, hinting,        T_BOOL, F_CTRL, 0,0),
+    F ("hinting",        0, hinting,        T_BOOL, F_CTRL|F_RESTART, 0,0),
 };
 #undef TT
 
@@ -1441,6 +1441,15 @@ static const cfg_field *field_for_key(const char *key)
 /* public: is this key a string field? control.c needs it to tell "clear this
  * text" from "zero this number" - an empty value is meaningful for the first
  * and silently destructive for the second (pint("") is 0). */
+int config_key_restart(const char *key)
+{
+    const char *k;
+    const cfg_section *sec = section_find(key, &k);
+    if (!sec) return 0;
+    const cfg_field *f = field_find(sec->fields, sec->nfields, k);
+    return f && (f->flags & F_RESTART);
+}
+
 int config_key_is_str(const char *key)
 {
     const cfg_field *f = field_for_key(key);

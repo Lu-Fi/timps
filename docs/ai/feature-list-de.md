@@ -281,7 +281,10 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   `osd.supersample` (Kantenglättung 1–4, Default 2), `osd.hinting`
   (geometrisches Autohinting für kleine Schrift, Laufzeit-Default 1, wirkt aber
   nur, wenn `BR2_PACKAGE_TIMPS_OSD_HINTING` den Pass einkompiliert hat).
-  Beide sind per `/control` setzbar, greifen aber erst nach einem Neustart.
+  `enabled`, `font_path`, `supersample` und `hinting` sind per `/control`
+  setzbar, greifen aber erst nach einem Neustart; `monitor_stream` und
+  `vars_file` wirken sofort (ab v1.9.20 meldet die API das auch so:
+  `caps.restart` und `deferred_keys`).
 * **Privatsphäre-Masken**: bis zu 4 Rechtecke pro Stream
   (`privacy<S>.<N>.{enabled,x,y,w,h,color}`), als IMP-OSD-Cover-Regionen,
   live verschiebbar. Verfügbarkeit meldet `caps.privacy`.

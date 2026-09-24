@@ -2543,27 +2543,51 @@ else
 		"text str" "x int 0 200" "y int 0 200" "font_size int 8 128" \
 		"transparency int 0 255" "outline int 0 4" "color hex" "outline_color hex"
 
-	# --- osd.* globals (Finding #1): monitor_stream/font_path/vars_file are
-	# LIVE - control.c's GET /control comment says so explicitly ("osd.font_path/
-	# vars_file are runtime-mutable via POST"), and per the caps-builder doc
-	# comment above control_get_json(), "'osd.enabled' ... lives in the osd.*
-	# section whose OTHER keys are live, but itself only takes effect on
-	# restart" - i.e. enabled is the one documented exception, not the rule.
-	# font_path/vars_file briefly point at a nonexistent "qa_probe" path during
-	# the test, same accepted risk as record.dir/timelapse.dir below. ---
+	# --- osd.* globals, live half: the OSD thread re-reads monitor_stream and
+	# vars_file on every refresh. vars_file briefly points at a nonexistent
+	# "qa_probe" path, same accepted risk as record.dir/timelapse.dir below. ---
 	lv_section osd '{"osd":' '}' osd \
-		"monitor_stream int 0 1" "font_path str" "vars_file str"
+		"monitor_stream int 0 1" "vars_file str"
 
-	# --- osd.* globals, restart-required half: enabled is the documented
-	# exception above; supersample/hinting are explicitly commented in
-	# config.h as "File-only, takes effect on restart" (imp_osd_setup() only
-	# builds groups / configures the TTF rasterizer once at startup) despite
-	# being F_CTRL (POST-able + persisted). All three were entirely missing
-	# from 8b's coverage before this fix. ---
+	# --- osd.* globals, restart half: imp_osd_setup() reads these once
+	# (F_RESTART in config.c). font_path briefly points at "qa_probe". ---
 	LV_MODE=persist
 	lv_section osd_persist '{"osd":' '}' osd \
-		"enabled bool" "supersample int 1 4" "hinting bool"
+		"enabled bool" "font_path str" "supersample int 1 4" "hinting bool"
 	LV_MODE=live
+
+	# --- restart grading outside video/sensor: F_RESTART keys must come back
+	# deferred and be listed in caps.restart; the live osd.* globals and
+	# videoN.rtsp_path must not. ---
+	rs_caps=$(jget "$LV_BASE" caps.restart)
+	case "$rs_caps" in
+	*'"osd.font_path"'*'"osd.supersample"'*)
+		for rs_k in audio.codec audio.agc osd.enabled osd.font_path osd.supersample osd.hinting; do
+			case "$rs_caps" in *"\"$rs_k\""*) ;; *) bad "caps.restart lacks $rs_k (restart-only, F_RESTART)";; esac
+		done
+		case "$rs_caps" in *'"osd.monitor_stream"'*|*'"osd.vars_file"'*|*'"audio.volume"'*)
+			bad "caps.restart lists a live key: $rs_caps";; esac
+		rs_defer_has() { case "$(jget "$1" deferred_keys)" in *"\"$2\""*) return 0;; esac; return 1; }
+		rs_ss=$(jget "$LV_BASE" osd.supersample); rs_ms=$(jget "$LV_BASE" osd.monitor_stream)
+		rs_rp=$(jget "$LV_BASE" video.1.rtsp_path)
+		if [ -n "$rs_ss" ] && [ -n "$rs_ms" ] && [ -n "$rs_rp" ]; then
+			rs_f="$OUTDIR/rs_grading.json"
+			LV_PENDING="{\"osd\":{\"supersample\":$rs_ss,\"monitor_stream\":$rs_ms},\"video\":{\"1\":{\"rtsp_path\":\"$rs_rp\"}}}"
+			code=$(lv_post_r "{\"osd\":{\"supersample\":$(flip_int 1 4 "$rs_ss"),\"monitor_stream\":$(flip_int 0 1 "$rs_ms")},\"video\":{\"1\":{\"rtsp_path\":\"/qa_probe_rp\"}}}" "$rs_f")
+			if [ "$code" != "200" ]; then
+				bad "restart grading: POST HTTP $code"
+			else
+				rs_ok=1
+				rs_defer_has "$rs_f" osd.supersample || { rs_ok=0; bad "osd.supersample changed but is not in deferred_keys ($(jget "$rs_f" deferred_keys)) - restart-only key reported as live"; }
+				rs_defer_has "$rs_f" osd.monitor_stream && { rs_ok=0; bad "osd.monitor_stream is reported deferred, but the OSD thread applies it on the next refresh"; }
+				rs_defer_has "$rs_f" video1.rtsp_path && { rs_ok=0; bad "video1.rtsp_path is reported deferred, but rtsp.c re-matches it on every DESCRIBE"; }
+				[ "$rs_ok" = 1 ] && ok "restart grading: osd.supersample deferred, osd.monitor_stream + video1.rtsp_path live (deferred_keys=$(jget "$rs_f" deferred_keys))"
+			fi
+			lv_post "$LV_PENDING" >/dev/null; LV_PENDING=""
+		fi
+		;;
+	*) skip "restart grading: caps.restart has no per-key osd/audio entries - daemon predates F_RESTART";;
+	esac
 
 	# --- privacy cover mask stream 0 region 0: applied live when an OSD group
 	# exists (else persisted). enabled bool, geometry px, color hex ---

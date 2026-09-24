@@ -182,7 +182,7 @@ int         hub_video_subs(void);
  * RUNNING pipeline, 0 when it only persisted (applies on restart, or is
  * unsupported on this platform/build) - the control endpoint uses that to
  * report per-key what took effect now and what waits for a restart (the
- * videoN.* / sensor.* "deferred" grading in control.c). Returns 0 if no
+ * "deferred" grading in control.c). Returns 0 if no
  * handler is registered (host sim). */
 void        hub_set_control_cb(int (*cb)(const char *key, const char *val));
 int         hub_control(const char *key, const char *val);

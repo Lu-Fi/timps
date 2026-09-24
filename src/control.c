@@ -229,9 +229,8 @@ static void defer_add(ctrl_scratch_t *sc, const char *key)
     sc->defer_off += w;
 }
 
-/* keys from the caps.restart sections (video/sensor) - the only ones the
- * deferred grading covers; other sections have their own live/restart
- * contracts documented above and unchanged semantics. */
+/* the caps.restart sections (video/sensor), graded per section; audio.* and
+ * osd.* keys are graded per field through F_RESTART instead. */
 static int key_is_restart_section(const char *key)
 {
     return (!strncmp(key,"video",5) && key[5]>='0' &&
@@ -545,10 +544,15 @@ static void timps_apply_setting(ctrl_scratch_t *sc, ctrl_changes *ch, const char
         LOGD(MOD,"%s = %s: same effective sensitivity level, grid update skipped "
                  "(value still persisted)", key, out);
         live = 1;                        /* nothing to do in the HAL */
+    } else if (!strncmp(key,"video",5) && key_is_restart_section(key) &&
+               !strcmp(key+7,"rtsp_path")){
+        live = 1;                        /* rtsp.c re-matches it on every DESCRIBE */
+        LOGI(MOD,"%s governs new RTSP requests", key);
     } else {
         live = hub_control(key, out);    /* live via the HAL (1) or persist-only (0) */
     }
-    if (!live && key_is_restart_section(key)) defer_add(sc, key);
+    if (!live && (key_is_restart_section(key) || config_key_restart(key)))
+        defer_add(sc, key);
     /* echo to every other /events subscriber ("config" SSE event) so other
      * open WebUI tabs/clients reflect this change instead of only seeing it
      * on next poll. motion- and daynight-prefixed keys additionally still
@@ -1326,13 +1330,22 @@ int control_get_json(char *buf, size_t cap)
      * like every key outside this list. */
     APP("],\"osd\":[\"text\",\"x\",\"y\","
         "\"font_size\",\"color\",\"transparency\",\"outline\",\"outline_color\"");
-    /* restart-required sections: every key under these objects is persist-
-     * only (config + restart, never applied to the running pipeline). The
-     * WebUI bridge reads this to flag such changes as "restart_required".
-     * "osd.enabled" (the master switch) rides along explicitly: it lives in
-     * the osd.* section whose other keys are live, but itself only takes
-     * effect on restart (groups are built once in imp_osd_setup). */
-    APP("],\"restart\":[\"video\",\"sensor\",\"osd.enabled\"],");
+    /* restart-required keys: whole sections (video/sensor, persist-only
+     * except rtsp_path and caps.video_live) plus every F_RESTART field of the
+     * sections whose other keys are live. */
+    APP("],\"restart\":[\"video\",\"sensor\"");
+    {
+        static const struct { const char *pfx; const cfg_field *(*get)(int *); } rs[] = {
+            { "audio", cfg_fields_audio }, { "osd", cfg_fields_osd },
+        };
+        for (size_t ri=0; ri<sizeof rs/sizeof rs[0]; ri++){
+            int nf; const cfg_field *tbl = rs[ri].get(&nf);
+            for (int i=0;i<nf;i++)
+                if (tbl[i].flags & F_RESTART)
+                    APP(",\"%s.%s\"", rs[ri].pfx, tbl[i].name);
+        }
+    }
+    APP("],");
     /* videoN.* keys THIS build can apply to the running encoder (enc_caps.h)
      * - the per-key exception to the conservative "video" entry above. A
      * listed key can still fall back to restart at runtime (channel down,

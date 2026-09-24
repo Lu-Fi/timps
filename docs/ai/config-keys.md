@@ -158,8 +158,10 @@ Notes on the POST surface:
 * At most **48** changed keys persist per request (`CTRL_MAX_CHG`). Beyond that
   the value is live but unsaved and the reply's `not_persisted` counter says so.
 * The reply reports `accepted`, `changed`, `rejected`, `not_persisted`,
-  `deferred`/`deferred_keys` (changed `video*`/`sensor.*` keys that did **not**
-  reach the running pipeline), `applied` (effective, post-clamp values) and
+  `deferred`/`deferred_keys` (changed keys that did **not** reach the running
+  pipeline: `video*`/`sensor.*` graded per request, plus — **since v1.9.20
+  (unreleased)** — every restart-only `audio.*`/`osd.*` global; on v1.9.19 only
+  `video*`/`sensor.*` were ever listed), `applied` (effective, post-clamp values) and
   `ignored` (field names inside a known section that this build did not apply).
 * `null`, `undefined` and (for non-string fields) `""` are rejected. An empty
   string on a **string** field means "clear this".
@@ -399,7 +401,7 @@ internal channel wiring, deliberately not exposed over HTTP.
 | `fluc_lvl` | int | `0` / `0` | 0..4 | **never live anywhere**; classic-SoC restart only | **H.265 only** — the H.264 rc structs have no `flucLvl` field. It is written into `attrH265Vbr`/`attrH265Cbr` in `classic_rc_fill()` and nowhere else, so: no effect on T31/C100/T40/T41 (no new-API equivalent), and inert on T10/T20/T23 because `codec = h265` is coerced away there. On T21/T30 it reaches the struct at channel creation, but classic H.265 channels are restart-bound (the classic `SetChnAttrRcMode` is H.264-only), so it never applies live. |
 | `rotation` | enum/int | `0` / `0` | `0`, `90`, `270`, plus `180` on T40/T41; legacy `1`→90, `2`→270 | restart | See the prose below. Unsupported values coerce to `0` with a warning. |
 | `buffers` | int | `2` / `2` | 1..8 | restart | IMP `nrVBs`. Setting it explicitly also sets an internal `buffers_explicit` flag, so the T31 safety clamp trusts your value instead of overriding it. The clamp gate is exactly `chn == 0 && isp_ch0_pre_dequeue_time != 0` (unreadable counts as active) — **scaled or not**; the older "non-scaled channel" theory was superseded in 2026-08. With the flag set the HAL warns and leaves `nrVBs` alone, which is why an explicit `buffers = 2` is *not* the same as omitting the line. |
-| `rtsp_path` | string[64] | `/ch0` / `/ch1` | — | **live** | The one `videoN.*` key that is genuinely live — a DESCRIBE re-matches it on every request, and it is read from the live `g_cfg`, not the boot snapshot. |
+| `rtsp_path` | string[64] | `/ch0` / `/ch1` | — | **live** | The one `videoN.*` key that is genuinely live — a DESCRIBE re-matches it on every request, and it is read from the live `g_cfg`, not the boot snapshot. **Since v1.9.20 (unreleased)** the POST reply no longer lists it under `deferred` (v1.9.19 did, although the change was already live). Not in `caps.video_live`, which is the rate-control list only. |
 | `imp_chn` | int | `0` / `1` | 0..8 | **file-only**, restart | IMP encoder channel index. libimp's own bound is `chn < 9`; above `MS_FS_MAXCHN` the frame source silently returns nothing — no video, no diagnostic. Must be unique across all encoders. |
 | `jpeg` | bool | `1` / `1` | — | **file-only**, restart | Alias `jpeg_enabled`. Piggyback JPEG encoder in the same encoder group, sharing this stream's FrameSource (no extra rmem) at this stream's resolution. |
 | `jpeg_quality` | int | `75` / `75` | 1..100 | **file-only**, restart | |
@@ -409,7 +411,9 @@ internal channel wiring, deliberately not exposed over HTTP.
 ### Live vs restart for `videoN.*`
 
 `GET /control` reports the conservative `caps.restart: ["video","sensor",…]`
-plus a per-build `caps.video_live` list (`src/enc_caps.h`):
+plus a per-build `caps.video_live` list (`src/enc_caps.h`). `rtsp_path` is the
+other live exception; it is not a rate-control key, so it is not in
+`caps.video_live`.
 
 | Platform | `video_live` keys |
 | --- | --- |
@@ -423,6 +427,14 @@ A listed key can still fall back to restart at runtime (channel not running, a
 classic-API H.265 channel, a rejected IMP call). The per-request truth is the
 POST reply's `deferred`/`deferred_keys`, not this list. A live rate-control
 change takes effect at the next IDR/GOP, not instantly.
+
+On the classic SoCs a live rate-control key re-fills the whole rc union. **Since
+v1.9.20 (unreleased)** `codec` and `fluc_lvl` in that re-fill come from the
+boot snapshot, i.e. from what the channel was actually built with. On v1.9.19 a
+POSTed-but-not-yet-restarted `codec` leaked into it: after `codec = h265` on a
+running H.264 stream, every later live `bitrate` was refused as "H265"; the
+reverse sent an H.264 union to a running H.265 channel. Only T21 and T30 could
+hit this — T10, T20 and T23 coerce `codec` to `h264` at parse time.
 
 ### `rotation` in detail (`src/rotate_caps.h`)
 
@@ -473,8 +485,10 @@ change takes effect at the next IDR/GOP, not instantly.
 
 ## 6. `audio.*`
 
-Every `audio.*` key is `F_CTRL` (POST-able). The **live vs restart** split is a
-HAL concern, listed per key below. An audio key the SoC does not have logs
+Every `audio.*` key is `F_CTRL` (POST-able). The **live vs restart** split is
+listed per key below; the restart keys carry `F_RESTART` in `audio_fields[]`,
+and **since v1.9.20 (unreleased)** they are listed in `caps.restart` as
+`audio.<key>` and a changed one comes back in the POST reply's `deferred_keys`. An audio key the SoC does not have logs
 `audio.<k> unsupported on this platform (persisted only)` — like the `image.*`
 twin this is a **LOGD**, invisible at `general.loglevel = 2`; use `caps.audio`
 from `GET /control` instead.
@@ -550,16 +564,24 @@ otherwise the first boot-enabled stream with a piggyback encoder.
 
 ## 8. `osd.*` (globals)
 
-All six keys are `F_CTRL` (POST-able) but **restart** — the OSD groups are built
-once in `imp_osd_setup()` at startup, and `ing_control()` logs
-`persisted, applies on restart` for every `osd.*` global.
+All six keys are `F_CTRL` (POST-able). `enabled`, `font_path`, `supersample`
+and `hinting` are **restart** (`F_RESTART`): `imp_osd_setup()` reads them once at
+startup. `monitor_stream` and `vars_file` are **live**: the OSD thread re-reads
+them on every text refresh (about once a second).
+
+**Since v1.9.20 (unreleased)** the API says so: the four restart keys are in
+`caps.restart` and come back in the POST reply's `deferred_keys`, and
+`ing_control()` logs `persisted, applies on restart` only for them. v1.9.19
+listed only `osd.enabled` in `caps.restart`, never reported an `osd.*` key as
+deferred, and logged "applies on restart" for all six — including the two that
+already applied live.
 
 | Key | Type | Default | Range | Apply | Notes |
 | --- | --- | --- | --- | --- | --- |
-| `osd.enabled` | bool | `1` | — | restart | Master switch. Explicitly listed in `caps.restart` alongside `video`/`sensor`. |
-| `osd.monitor_stream` | int | `0` | **unclamped** | restart | Which stream's measured rate feeds the `{fps}`/`{bitrate}` placeholders. Out of range is not rejected — the lookup just returns `0.0`, so `{fps}` prints `0.0`. (Contrast `motion.monitor_stream`, which is `T_CHAN` and coerces to 0.) |
+| `osd.enabled` | bool | `1` | — | restart | Master switch. Listed in `caps.restart`. |
+| `osd.monitor_stream` | int | `0` | **unclamped** | **live** | Which stream's measured rate feeds the `{fps}`/`{bitrate}` placeholders. Out of range is not rejected — the lookup just returns `0.0`, so `{fps}` prints `0.0`. (Contrast `motion.monitor_stream`, which is `T_CHAN` and coerces to 0.) |
 | `osd.font_path` | string[128] | `/usr/share/fonts/default.ttf` | — | restart | Default TTF for text items. Empty = built-in bitmap font. |
-| `osd.vars_file` | string[128] | `/tmp/timps_osd.vars` | — | restart | Extra placeholder source: `name=value` lines, looked up for any `{name}` the built-ins do not resolve. |
+| `osd.vars_file` | string[128] | `/tmp/timps_osd.vars` | — | **live** | Extra placeholder source: `name=value` lines, looked up for any `{name}` the built-ins do not resolve. |
 | `osd.supersample` | int | `2` | 1..4 | restart | TTF rasterizer AA samples per axis per pixel. Cost is roughly quadratic (4 → 16 samples/px). `2` is visually indistinguishable from `4` at OSD sizes and roughly halves rasterizer CPU. |
 | `osd.hinting` | bool | `1` | — | restart | Lightweight geometric autohint (snaps stem-like outline edges to the pixel grid at small sizes). **Not** a TrueType bytecode interpreter. **The Kconfig help text is wrong** — `BR2_PACKAGE_TIMPS_OSD_HINTING`'s help says the runtime key defaults to "0 (off) either way"; `config_defaults()` sets `hinting = 1`. The code wins. |
 

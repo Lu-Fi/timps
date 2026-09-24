@@ -91,6 +91,26 @@ int main(void)
     check("unterminated quote kept verbatim",
           "record.name = \"oops\n", "record.name", "\"oops");
 
+    /* F_RESTART: what caps.restart and the POST reply's "deferred" list say */
+    static const struct { const char *key; int want; } rk[] = {
+        { "audio.codec", 1 }, { "audio.codec2", 1 }, { "audio.agc", 1 },
+        { "audio.backchannel_rate", 1 }, { "audio.volume", 0 },
+        { "audio.mute", 0 }, { "audio.talk_ws", 0 },
+        { "osd.enabled", 1 }, { "osd.font_path", 1 }, { "osd.supersample", 1 },
+        { "osd.hinting", 1 }, { "osd.monitor_stream", 0 }, { "osd.vars_file", 0 },
+        { "osd0.1.enabled", 0 }, { "video0.bitrate", 0 }, { "nosuch.key", 0 },
+    };
+    for (size_t i = 0; i < sizeof rk / sizeof rk[0]; i++) {
+        int got = config_key_restart(rk[i].key);
+        if (got != rk[i].want) {
+            printf("FAIL %-46s config_key_restart(%s) = %d, expected %d\n",
+                   "restart flag", rk[i].key, got, rk[i].want);
+            g_fail++;
+        } else
+            printf("ok   %-46s config_key_restart(%s) = %d\n",
+                   "restart flag", rk[i].key, got);
+    }
+
     unlink(g_path);
     if (g_fail){ printf("\n%d config parser test(s) FAILED\n", g_fail); return 1; }
     printf("\nall config parser tests passed\n");
