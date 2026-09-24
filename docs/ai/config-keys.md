@@ -1,9 +1,9 @@
 # timps configuration keys — complete reference
 
-**Applies to timps v1.9.19 (source: `main`, 2026-09-22).**
+**Applies to timps v1.9.20 (source: `main`, 2026-09-24).**
 
-A statement marked **since v1.9.20 (unreleased)** is already in the source but
-not in any tagged release yet — on a v1.9.19 camera the *previous* behaviour is
+A statement marked **since v1.9.21 (unreleased)** is already in the source but
+not in any tagged release yet — on a v1.9.20 camera the *previous* behaviour is
 the one to describe.
 
 Authoritative source: `src/config.c` (the `cfg_field` tables and
@@ -159,8 +159,7 @@ Notes on the POST surface:
   the value is live but unsaved and the reply's `not_persisted` counter says so.
 * The reply reports `accepted`, `changed`, `rejected`, `not_persisted`,
   `deferred`/`deferred_keys` (changed keys that did **not** reach the running
-  pipeline: `video*`/`sensor.*` graded per request, plus — **since v1.9.20
-  (unreleased)** — every restart-only `audio.*`/`osd.*` global; on v1.9.19 only
+  pipeline: `video*`/`sensor.*` graded per request, plus — **since v1.9.20** — every restart-only `audio.*`/`osd.*` global; on v1.9.19 only
   `video*`/`sensor.*` were ever listed), `applied` (effective, post-clamp values) and
   `ignored` (field names inside a known section that this build did not apply).
 * `null`, `undefined` and (for non-string fields) `""` are rejected. An empty
@@ -241,7 +240,7 @@ the POST reply lists them under `deferred`.
 | --- | --- | --- | --- | --- | --- |
 | `sensor.model` | string[64] | *(unset)* → autodetect | — | restart | Sensor driver name, e.g. `gc2053`. |
 | `sensor.i2c_addr` | int | *(unset)* → autodetect | 0..0x7F | restart | Alias `sensor.i2c_address`. Hex (`0x37`) accepted. |
-| `sensor.fps` | int | *(unset)* → autodetect, **capped** | 0..120 | restart | `0` = auto. **since v1.9.19:** the autodetected value is capped at **30** (`SENSOR_AUTO_FPS_CAP` in `src/config.c`); **since v1.9.20 (unreleased)** the cap is raised to the fastest *enabled* `videoN.fps` when that is higher, so a stream configured above 30 still gets its frames. An explicit value is used as given. Before v1.9.19 the driver's `max_fps` was taken verbatim. |
+| `sensor.fps` | int | *(unset)* → autodetect, **capped** | 0..120 | restart | `0` = auto. **since v1.9.19:** the autodetected value is capped at **30** (`SENSOR_AUTO_FPS_CAP` in `src/config.c`); **since v1.9.20** the cap is raised to the fastest *enabled* `videoN.fps` when that is higher, so a stream configured above 30 still gets its frames. An explicit value is used as given. Before v1.9.19 the driver's `max_fps` was taken verbatim. |
 | `sensor.width` | int | *(unset)* → autodetect | 0..8192 | restart | `0` = auto. |
 | `sensor.height` | int | *(unset)* → autodetect | 0..8192 | restart | `0` = auto. |
 
@@ -257,7 +256,7 @@ the POST reply lists them under `deferred`.
    from the registry (`width`, `height`, `max_fps`, then `fps`).
    **since v1.9.19:** a registry `fps` above the cap is capped and logged
    (`sensor.fps: driver max_fps=%ld, auto capped to 30 (set sensor.fps to
-   override)`). The cap is **30**, or — **since v1.9.20 (unreleased)** — the
+   override)`). The cap is **30**, or — **since v1.9.20** — the
    fastest enabled `videoN.fps` if that is higher, and the log names the
    registry key the value came from (`driver max_fps=…` or `driver fps=…`).
    Some drivers advertise a rate their clock cannot deliver — the GC2053
@@ -401,7 +400,7 @@ internal channel wiring, deliberately not exposed over HTTP.
 | `fluc_lvl` | int | `0` / `0` | 0..4 | **never live anywhere**; classic-SoC restart only | **H.265 only** — the H.264 rc structs have no `flucLvl` field. It is written into `attrH265Vbr`/`attrH265Cbr` in `classic_rc_fill()` and nowhere else, so: no effect on T31/C100/T40/T41 (no new-API equivalent), and inert on T10/T20/T23 because `codec = h265` is coerced away there. On T21/T30 it reaches the struct at channel creation, but classic H.265 channels are restart-bound (the classic `SetChnAttrRcMode` is H.264-only), so it never applies live. |
 | `rotation` | enum/int | `0` / `0` | `0`, `90`, `270`, plus `180` on T40/T41; legacy `1`→90, `2`→270 | restart | See the prose below. Unsupported values coerce to `0` with a warning. |
 | `buffers` | int | `2` / `2` | 1..8 | restart | IMP `nrVBs`. Setting it explicitly also sets an internal `buffers_explicit` flag, so the T31 safety clamp trusts your value instead of overriding it. The clamp gate is exactly `chn == 0 && isp_ch0_pre_dequeue_time != 0` (unreadable counts as active) — **scaled or not**; the older "non-scaled channel" theory was superseded in 2026-08. With the flag set the HAL warns and leaves `nrVBs` alone, which is why an explicit `buffers = 2` is *not* the same as omitting the line. |
-| `rtsp_path` | string[64] | `/ch0` / `/ch1` | — | **live** | The one `videoN.*` key that is genuinely live — a DESCRIBE re-matches it on every request, and it is read from the live `g_cfg`, not the boot snapshot. **Since v1.9.20 (unreleased)** the POST reply no longer lists it under `deferred` (v1.9.19 did, although the change was already live). Not in `caps.video_live`, which is the rate-control list only. |
+| `rtsp_path` | string[64] | `/ch0` / `/ch1` | — | **live** | The one `videoN.*` key that is genuinely live — a DESCRIBE re-matches it on every request, and it is read from the live `g_cfg`, not the boot snapshot. **Since v1.9.20** the POST reply no longer lists it under `deferred` (v1.9.19 did, although the change was already live). Not in `caps.video_live`, which is the rate-control list only. |
 | `imp_chn` | int | `0` / `1` | 0..8 | **file-only**, restart | IMP encoder channel index. libimp's own bound is `chn < 9`; above `MS_FS_MAXCHN` the frame source silently returns nothing — no video, no diagnostic. Must be unique across all encoders. |
 | `jpeg` | bool | `1` / `1` | — | **file-only**, restart | Alias `jpeg_enabled`. Piggyback JPEG encoder in the same encoder group, sharing this stream's FrameSource (no extra rmem) at this stream's resolution. |
 | `jpeg_quality` | int | `75` / `75` | 1..100 | **file-only**, restart | |
@@ -429,7 +428,7 @@ POST reply's `deferred`/`deferred_keys`, not this list. A live rate-control
 change takes effect at the next IDR/GOP, not instantly.
 
 On the classic SoCs a live rate-control key re-fills the whole rc union. **Since
-v1.9.20 (unreleased)** `codec` and `fluc_lvl` in that re-fill come from the
+v1.9.20** `codec` and `fluc_lvl` in that re-fill come from the
 boot snapshot, i.e. from what the channel was actually built with. On v1.9.19 a
 POSTed-but-not-yet-restarted `codec` leaked into it: after `codec = h265` on a
 running H.264 stream, every later live `bitrate` was refused as "H265"; the
@@ -487,7 +486,7 @@ hit this — T10, T20 and T23 coerce `codec` to `h264` at parse time.
 
 Every `audio.*` key is `F_CTRL` (POST-able). The **live vs restart** split is
 listed per key below; the restart keys carry `F_RESTART` in `audio_fields[]`,
-and **since v1.9.20 (unreleased)** they are listed in `caps.restart` as
+and **since v1.9.20** they are listed in `caps.restart` as
 `audio.<key>` and a changed one comes back in the POST reply's `deferred_keys`. An audio key the SoC does not have logs
 `audio.<k> unsupported on this platform (persisted only)` — like the `image.*`
 twin this is a **LOGD**, invisible at `general.loglevel = 2`; use `caps.audio`
@@ -569,7 +568,7 @@ and `hinting` are **restart** (`F_RESTART`): `imp_osd_setup()` reads them once a
 startup. `monitor_stream` and `vars_file` are **live**: the OSD thread re-reads
 them on every text refresh (about once a second).
 
-**Since v1.9.20 (unreleased)** the API says so: the four restart keys are in
+**Since v1.9.20** the API says so: the four restart keys are in
 `caps.restart` and come back in the POST reply's `deferred_keys`, and
 `ing_control()` logs `persisted, applies on restart` only for them. v1.9.19
 listed only `osd.enabled` in `caps.restart`, never reported an `osd.*` key as

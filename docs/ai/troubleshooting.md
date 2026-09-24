@@ -21,8 +21,8 @@ Companion to `docs/ai/reference.md` (what timps *is*) and
 6. §15 is the closing note for the assistant; **§16 follows it** and catalogues
    the shipped scripts and CGIs.
 
-Everything else here was read out of this repository at **v1.9.19
-(2026-09-22)**; a statement marked **since v1.9.20 (unreleased)** is in the
+Everything else here was read out of this repository at **v1.9.20
+(2026-09-24)**; a statement marked **since v1.9.21 (unreleased)** is in the
 source but in no tagged release yet. Source files are named; line numbers deliberately are not.
 
 ---
@@ -197,7 +197,7 @@ Four distinct causes, distinguishable from the `POST /control` reply body:
 | Reply field | Meaning | What to do |
 | --- | --- | --- |
 | `"ignored":["…"]` | The build does not know that field name (typo, or feature compiled out). Counts are unaffected — a request mixing one good key with one typo still answers `200`. | Check the spelling against `GET /control?fields=1`. |
-| `"deferred":N,"deferred_keys":[…]` | Changed fields that were **persisted but did not reach the running pipeline**: `video*`/`sensor.*`, and since v1.9.20 (unreleased) the restart-only `audio.*`/`osd.*` keys (`caps.restart`). | Restart `timpsd`. |
+| `"deferred":N,"deferred_keys":[…]` | Changed fields that were **persisted but did not reach the running pipeline**: `video*`/`sensor.*`, and since v1.9.20 the restart-only `audio.*`/`osd.*` keys (`caps.restart`). | Restart `timpsd`. |
 | `"not_persisted":N` | The value is live in memory but was **not written to the file**. | Split the request; see below. |
 | `"rejected":N` | A value was refused outright (e.g. `speaker play` with a bad path). | Fix the value. |
 
@@ -238,7 +238,7 @@ Consequences worth stating to a user:
   `daynight.mode: unknown '<x>', keeping auto` and stays on `auto`.
 - **since v1.9.19:** an *autodetected* `sensor.fps` is capped at
   **30** and says so (`sensor.fps: driver max_fps=<N>, auto capped to 30 (set
-  sensor.fps to override)`). **since v1.9.20 (unreleased)** the cap rises to
+  sensor.fps to override)`). **since v1.9.20** the cap rises to
   the fastest enabled `videoN.fps` when that is higher. This is the one clamp
   that does **not** apply to a configured value — write `sensor.fps`
   explicitly and it is passed through. §1.10
@@ -440,7 +440,7 @@ Pitfalls:
   motivating case: it reports `max_fps = 40` on a mode its clock runs at 30.
   To ask for more, write the value explicitly. On v1.9.19 this also capped a
   stream configured above 30 (e.g. `video0.fps = 60` on a 60 fps sensor) to
-  a 30 fps sensor; **since v1.9.20 (unreleased)** the cap is the fastest
+  a 30 fps sensor; **since v1.9.20** the cap is the fastest
   enabled `videoN.fps` when that is higher, and the log says which registry
   key (`max_fps` or `fps`) the value came from.
 - **`videoN.fps` is the stream rate only.** It is passed to the framesource,
@@ -541,7 +541,7 @@ healthy 4 Mbps stream.) Lowering the bitrate is still the right answer when it
 video stream `n`: a subscriber (RTSP session, fMP4 client, WebRTC session, SRT,
 the recorder) fell behind and its own `fanqueue` dropped the oldest packets.
 It is *not* an encoder-side counter — that is `encoder.<n>.au_drops` — and it
-says nothing about which consumer was slow. **since v1.9.20 (unreleased)** the
+says nothing about which consumer was slow. **since v1.9.20** the
 hub counts at the push that evicts: one count per published packet that had
 to evict from a consumer's queue, audio included, for every consumer alike. On
 v1.9.19 each consumer counted its own drops when it next popped a packet - so
@@ -576,7 +576,7 @@ What `queue_drops` means, unchanged in v1.9.19:
 - **It never resets** except on restart (`g_qdrops[]` in `src/hub.c` is only
   ever incremented), so compare two reads a minute apart rather than reacting
   to an absolute value.
-- **Recovery requests are never lost.** **since v1.9.20 (unreleased)** RTSP,
+- **Recovery requests are never lost.** **since v1.9.20** RTSP,
   SRT and WebRTC hand every video eviction to the hub instead of dropping
   requests inside their own 1 s window; on v1.9.19 a P-frame lost within a
   second of the previous request stayed unhealed until the next natural
@@ -2139,8 +2139,8 @@ mbedTLS.
 
 ### 11.7 Upgrade targets — "upgrade to ≥ vX"
 
-Latest release in `CHANGELOG.md` is **1.9.19 (2026-09-22)**. Anything this
-file marks "since v1.9.20 (unreleased)" is only in `[Unreleased]` — quote that
+Latest release in `CHANGELOG.md` is **1.9.20 (2026-09-24)**. Anything this
+file marks "since v1.9.21 (unreleased)" is only in `[Unreleased]` — quote that
 phrasing, not a version number, until the tag exists. Two caveats before
 quoting a released version at a user:
 
@@ -2251,7 +2251,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `%s is obsolete and IGNORED - %s` | W | A day/night key retired by the 2026-08-17 / 2026-08-22 redesigns. The message names the replacement. | Delete the line. §1.7 |
 | `daynight.%s=%s is now a fixed internal constant (%d) and can no longer be tuned per camera - the configured value is being ignored` | W | An int key frozen fleet-wide. Only warns when the configured value differs. | §1.7 |
 | `daynight.%s=%s is now a fixed internal constant (%g) and can no longer be tuned per camera - the configured value is being ignored` | W | Same, for `ir_ratio_night` / `ir_ratio_day`. | §1.7 |
-| `sensor.fps: driver max_fps=%ld, auto capped to %d (set sensor.fps to override)` | I | **since v1.9.19.** `sensor.fps` was left unset and the driver advertised more than the cap (GC2053 reports 40 on a 30 fps mode). The cap is 30, or since v1.9.20 (unreleased) the fastest enabled `videoN.fps` if higher; from v1.9.20 the message reads `sensor.fps: driver %s=%ld, auto capped to %d (set sensor.fps to override)`, `%s` being `max_fps` or `fps`. The cap applies to the autodetected value only. | Nothing, unless more is really wanted — then set `sensor.fps` explicitly. §1.10 |
+| `sensor.fps: driver max_fps=%ld, auto capped to %d (set sensor.fps to override)` | I | **since v1.9.19.** `sensor.fps` was left unset and the driver advertised more than the cap (GC2053 reports 40 on a 30 fps mode). The cap is 30, or since v1.9.20 the fastest enabled `videoN.fps` if higher; from v1.9.20 the message reads `sensor.fps: driver %s=%ld, auto capped to %d (set sensor.fps to override)`, `%s` being `max_fps` or `fps`. The cap applies to the autodetected value only. | Nothing, unless more is really wanted — then set `sensor.fps` explicitly. §1.10 |
 | `config %s not found, using defaults` | W | No config file. Not fatal. | §1.3 |
 | `config: line longer than %zu chars skipped (starts \"%.40s...\")` | W | A line over ~510 characters is **dropped whole**. | Shorten it. |
 | `config: %s has an opening quote but no closing one - keeping the value verbatim, quotes included` | W | Unbalanced quote. | Fix the quoting. |

@@ -237,7 +237,7 @@ bit-twiddling is easy to get subtly wrong.
 - **Queue overflow**: **since v1.9.19** an evicted *P-frame* is
   counted and healed like an evicted keyframe — SRT reacted to keyframe drops
   only, so a mid-GOP eviction was neither counted in `queue_drops` nor healed.
-  **Since v1.9.20 (unreleased)** every eviction counts (audio too) and every
+  **Since v1.9.20** every eviction counts (audio too) and every
   video eviction goes to the hub's per-stream recovery path; the session no
   longer keeps its own once-a-second gate, which discarded a request instead
   of letting the hub coalesce it.

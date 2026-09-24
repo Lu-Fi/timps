@@ -243,7 +243,7 @@ land in queues that had just recovered. Requests a client
 needs to **start** decoding (subscribe, RTSP `DESCRIBE`/`PLAY`, a fresh fMP4
 `GET`, the WebRTC answer) keep using `hub_request_idr()` and are never delayed.
 
-**Since v1.9.20 (unreleased)** RTSP, SRT and WebRTC no longer keep a 1 s gate
+**Since v1.9.20** RTSP, SRT and WebRTC no longer keep a 1 s gate
 of their own in front of that call: a gate there discarded any request inside
 its window instead of letting the hub coalesce it, so a P-frame lost within a
 second of the previous request stayed unhealed until the next natural

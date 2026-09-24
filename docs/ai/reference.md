@@ -6,10 +6,10 @@ firmware. Everything here is verified against the `main` branch of
 <https://github.com/Lu-Fi/timps> and against `package/timps/` in a thingino
 firmware tree.
 
-Applies to timps v1.9.19 (source: `main`, 2026-09-22)
+Applies to timps v1.9.20 (source: `main`, 2026-09-24)
 
-A statement marked **since v1.9.20 (unreleased)** is in the source but in no
-tagged release yet — on a v1.9.19 camera describe the previous behaviour.
+A statement marked **since v1.9.21 (unreleased)** is in the source but in no
+tagged release yet — on a v1.9.20 camera describe the previous behaviour.
 
 ## Where to find what
 
@@ -549,7 +549,7 @@ differently-compiled binaries.
 | `caps.image[]` | The `image.*` keys this SoC actually supports |
 | `caps.audio[]` | The `audio.*` keys this build/SoC supports |
 | `caps.osd[]` | The OSD item fields that apply **live** (`text,x,y,font_size,color,transparency,outline,outline_color`) |
-| `caps.restart[]` | Restart-only keys: the sections `"video"`/`"sensor"` (except `rtsp_path` and `caps.video_live`), plus — since v1.9.20 (unreleased) — every `F_RESTART` key of `audio.*`/`osd.*` as `"audio.codec"`, `"osd.font_path"`, …. v1.9.19: `["video","sensor","osd.enabled"]` |
+| `caps.restart[]` | Restart-only keys: the sections `"video"`/`"sensor"` (except `rtsp_path` and `caps.video_live`), plus — since v1.9.20 — every `F_RESTART` key of `audio.*`/`osd.*` as `"audio.codec"`, `"osd.font_path"`, …. v1.9.19: `["video","sensor","osd.enabled"]` |
 | `caps.video_live[]` | The `videoN.*` keys this build can push to a running encoder |
 | `caps.rtsp_max_clients` / `http_max_clients` / `events_max_clients` | Concurrent-client ceilings (refusal points: RTSP, HTTP and events all answer `503`) |
 | `caps.motion` | `{available, max_cells}` — `available` = build has the IMP_IVS move API |
@@ -627,7 +627,7 @@ Response body (same shape whatever the status):
   request; those values are gone after a reboot.
 - `deferred` / `deferred_keys` — changed keys persisted but not applied to the
   running pipeline this request: `videoN.*`/`sensor.*` (never `rtsp_path`, which
-  is live), and since v1.9.20 (unreleased) the restart-only `audio.*`/`osd.*`
+  is live), and since v1.9.20 the restart-only `audio.*`/`osd.*`
   keys too.
 - `ignored` — key names this build did not apply (typo, wrong section, gated
   out, or no write path). Fully prefixed, e.g. `"video1.quality_level"`.
@@ -975,7 +975,7 @@ Distinguish **compiled out** from **misconfigured**:
   `chn=0 rec: 12 queue overflows in the last 60s (consumer too slow)` (on
   v1.9.19 the line ended `(consumer too slow, IDR re-requested)`), with the
   kind being `rec`/`rtsp`/`mp4`/`webrtc`/`srt`. On v1.9.18 the only trace was
-  the counter itself. **since v1.9.20 (unreleased)** the hub counts the
+  the counter itself. **since v1.9.20** the hub counts the
   eviction itself, so a client wedged in `send()` shows up too - before, a
   consumer that never popped again was never counted. No config key either
   way.
@@ -984,7 +984,7 @@ Distinguish **compiled out** from **misconfigured**:
   **since v1.9.19** it freezes and resumes at the next keyframe,
   so the gap is slightly longer and clean.
 - **"The camera won't do more than 30 fps"** — **since v1.9.19** an
-  *autodetected* `sensor.fps` is capped at 30 (**since v1.9.20 (unreleased)**
+  *autodetected* `sensor.fps` is capped at 30 (**since v1.9.20**
   at the fastest enabled `videoN.fps` if that is higher); set `sensor.fps`
   explicitly to go higher, and read the `sensor fps: requested N, driver holds n/d` line to
   see what the driver actually took. `videoN.fps` is the stream rate only.
