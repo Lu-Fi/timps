@@ -14,6 +14,7 @@
 #ifdef USE_WEBRTC
 
 #include <stdint.h>
+#include "../sha1.h"
 
 /* RFC 5764 4.2: the DTLS exporter output for this profile is
  * 2*(16-byte key + 14-byte salt). */
@@ -23,9 +24,9 @@
 #define SRTP_MAX_OVERHEAD (4 + SRTP_TAG_LEN)
 
 typedef struct {
-    uint8_t rk[176];        /* AES-128 encryption round keys */
-    uint8_t salt[14];
-    uint8_t auth[20];
+    uint32_t rk[44];        /* AES-128 encryption round keys */
+    uint8_t  salt[14];
+    sha1_ctx hmac_in, hmac_out; /* auth key's ipad/opad blocks, pre-absorbed */
 } srtp_keys;
 
 typedef struct {
