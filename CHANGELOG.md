@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.9.20] - 2026-09-24
+
 ### Fixed
 
 - **`/control` reports live vs. restart correctly** (`src/config.c`,
