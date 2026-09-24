@@ -848,7 +848,7 @@ timps replaces thingino's separate `daynightd` (the package disables
 
 **What timps does and does not drive.** A thread decides day vs night; on a
 change it runs `<daynight.switch_cmd> day|night` (default script name
-`daynight`) via `fork()+execlp()` — never `system()`. **The board script** flips
+`daynight`) via `vfork()+execlp()` — never `system()`. **The board script** flips
 the physical IR-cut filter and IR LEDs, then calls back with
 `POST /control {"image":{"running_mode":0|1}}`. So a camera that switches IR
 hardware but stays colour-tinted usually has a board-script problem, not a

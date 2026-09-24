@@ -26,7 +26,7 @@
 #include <string.h>
 #include <stdlib.h>    /* strtol(): the ISP /proc field parser */
 #include <ctype.h>     /* isspace(): ditto */
-#include <unistd.h>    /* F-01: fork/execlp/dup2 instead of system() */
+#include <unistd.h>    /* F-01: vfork/execlp/dup2 instead of system() */
 #include <sys/wait.h>
 #include <signal.h>    /* SIGKILL: a board hook that wedges is not waited on forever */
 #include <fcntl.h>
@@ -722,6 +722,21 @@ static int dn_reap(pid_t pid, const char *cmd, const char *arg, int timeout_ms)
 /* run "<switch_cmd> day|night" (the thingino board script: ircut/light/color).
  * The mode change is committed even if the command fails so a missing script
  * warns once per switch instead of retrying every sample. */
+/* "<cmd> <arg>" with stdout/stderr on /dev/null. vfork, not fork: copying
+ * the whole daemon can ENOMEM on a small board (NEU-01b in imp_motion.c).
+ * Its own noinline frame, so the child cannot clobber the caller's locals. */
+static pid_t __attribute__((noinline)) dn_spawn(const char *cmd, const char *arg)
+{
+    pid_t pid = vfork();
+    if (pid == 0){
+        int nul = open("/dev/null", O_WRONLY);
+        if (nul >= 0){ dup2(nul,1); dup2(nul,2); if (nul>2) close(nul); }
+        execlp(cmd, cmd, arg, (char*)NULL);
+        _exit(127);              /* exec failed (script missing / not a program) */
+    }
+    return pid;
+}
+
 /* The tail is machine-readable on purpose. Everything in it is already in
  * the surrounding prose, but the dashboards count these lines with a grep,
  * and a reworded sentence would empty them silently - the same failure the
@@ -732,19 +747,13 @@ static void dn_switch(int mode, const char *why, const char *cmd,
     const char *arg = (mode == DN_NIGHT) ? "night" : "day";
     LOGI(MOD, "switching to %s (%s): %s %s [mode=%s exp=%.0f ref=%.0f bar=%.0f]",
          arg, why, cmd, arg, arg, (double)s, (double)ref, (double)bar);
-    /* F-01: fork()+execlp() instead of system(). switch_cmd comes from the
+    /* F-01: vfork()+execlp() instead of system(). switch_cmd comes from the
      * config file; system() would let a value like "reboot; nc ..." inject
      * shell commands (as root). exec'ing it as a single program with the fixed
      * arg "day"/"night" removes the shell entirely - a malicious value just
      * fails to exec, it cannot inject. */
-    pid_t pid = fork();
-    if (pid < 0){ LOGW(MOD,"daynight: fork failed: %s", strerror(errno)); return; }
-    if (pid == 0){
-        int nul = open("/dev/null", O_WRONLY);
-        if (nul >= 0){ dup2(nul,1); dup2(nul,2); if (nul>2) close(nul); }
-        execlp(cmd, cmd, arg, (char*)NULL);
-        _exit(127);              /* exec failed (script missing / not a program) */
-    }
+    pid_t pid = dn_spawn(cmd, arg);
+    if (pid < 0){ LOGW(MOD,"daynight: vfork failed: %s", strerror(errno)); return; }
     int rc = dn_reap(pid, cmd, arg, DN_CMD_TIMEOUT_MS);
     if (rc != 0)
         LOGW(MOD, "'%s %s' failed (rc=%d) - is the script installed?", cmd, arg, rc);
@@ -760,7 +769,7 @@ static void dn_switch(int mode, const char *why, const char *cmd,
  * night image. Conflating them would throw away the entire reason the ratio
  * measurement is affordable.
  *
- * Same fork+execlp discipline as dn_switch: never a shell, so a hostile
+ * Same vfork+execlp discipline as dn_switch: never a shell, so a hostile
  * config value fails to exec instead of injecting. Returns 0 when the command
  * ran and succeeded; anything else means the caller must fall back to the
  * audible probe rather than assume the illuminator moved. */
@@ -787,14 +796,8 @@ static int dn_irprobe(const char *cmd, int on)
 {
     if (!cmd || !cmd[0]) return -1;
     const char *arg = on ? "on" : "off";
-    pid_t pid = fork();
-    if (pid < 0) { LOGW(MOD, "irprobe: fork failed: %s", strerror(errno)); return -1; }
-    if (pid == 0) {
-        int nul = open("/dev/null", O_WRONLY);
-        if (nul >= 0) { dup2(nul,1); dup2(nul,2); if (nul>2) close(nul); }
-        execlp(cmd, cmd, arg, (char*)NULL);
-        _exit(127);
-    }
+    pid_t pid = dn_spawn(cmd, arg);
+    if (pid < 0) { LOGW(MOD, "irprobe: vfork failed: %s", strerror(errno)); return -1; }
     int rc = dn_reap(pid, cmd, arg, DN_IRPROBE_TIMEOUT_MS);
     if (rc != 0)
         LOGW(MOD, "'%s %s' failed (rc=%d) - silent probe unavailable, "

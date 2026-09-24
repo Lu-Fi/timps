@@ -28,6 +28,12 @@ semantic versioning.
   `fluc_lvl` from the live config, so after POSTing `codec` without a
   restart, live `bitrate` changes were refused, or an H.264 union was sent to
   a running H.265 channel. Both now come from the boot snapshot.
+- **Day/night commands start under memory pressure** (`src/daynight.c`) —
+  `daynight.switch_cmd` and `daynight.irprobe_cmd` are launched with
+  `vfork()` instead of `fork()`. A `fork()` of the daemon reserves its whole
+  writable address space (~100 MB of VM) and can fail with `ENOMEM` on a small
+  board; then the IR-cut did not switch, or the silent probe fell back to the
+  audible one. Same fix the motion hook got earlier (`posix_spawn`).
 
 - **Drop-recovery requests are no longer lost** (`src/rtsp/rtsp.c`,
   `src/srt.c`, `src/webrtc/webrtc.c`, `src/mp4/httpd.c`) — RTSP, SRT, WebRTC
