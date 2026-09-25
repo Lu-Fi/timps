@@ -1276,15 +1276,15 @@ SKEW $skewline"
 			rtp_missed=$(awk '/RTP: missed/{for(i=1;i<NF;i++)if($i=="missed"){s+=$(i+1)+0}}END{print s+0}' "$err")
 			ffe=$((ffe - rtp_lines)); [ "$ffe" -lt 0 ] && ffe=0
 			# Loss that overflowed THIS host's receive buffer never was on the
-			# wire: a sender burst (the IDR) outran a client that had just sent
-			# PLAY. 2026-09-25 cam-vorne: "4.2 % / 100 % lost" were exactly the
-			# host's RcvbufErrors, 0 with a 4 MB buffer. Report it apart and
-			# rule the network only on the rest.
+			# wire: ffmpeg wasn't reading yet (stream start/analysis) while a
+			# fast link kept delivering. 2026-09-25 cam-vorne: "4.2 % / 100 %
+			# lost" were exactly the host's RcvbufErrors, 0 with a 4 MB buffer.
+			# Report it apart and rule the network only on the rest.
 			local host_drop=${rcvbuf_drops:-0}
 			[ "$host_drop" -lt 0 ] && host_drop=0
 			[ "$host_drop" -gt "$rtp_missed" ] && host_drop=$rtp_missed
 			if [ "$host_drop" -gt 0 ]; then
-				warn "$label: $host_drop of the $rtp_missed lost RTP packet(s) overflowed this host's UDP receive buffer (RcvbufErrors) - a send burst outran the client, not the network; the camera paces UDP with rtsp.udp_pace_kbps (0 = off, pre-v1.9.23 unpaced)"
+				warn "$label: $host_drop of the $rtp_missed lost RTP packet(s) overflowed this host's UDP receive buffer (RcvbufErrors) - the client was not reading yet (stream start/analysis), not the network; a real UDP client needs a bigger receive buffer (ffmpeg -buffer_size) or TCP"
 				rtp_missed=$((rtp_missed - host_drop))
 				# all of it was the host's own overflow: the concealment lines
 				# are that loss's decoder fallout, not decode trouble
