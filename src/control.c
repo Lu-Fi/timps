@@ -1511,7 +1511,7 @@ int control_get_json(char *buf, size_t cap)
         int wen = c->webrtc_enabled;
         if (wen < 0 || wen > 2) wen = 0;
         if (wen == 1 && !c->http_https) wen = 2;
-        APP("\"webrtc\":{\"available\":%d,\"enabled\":%d},",
+        APP("\"webrtc\":{\"available\":%d,\"enabled\":%d,\"chn_select\":1},",
             webrtc_available(), wen);
     }
 #endif

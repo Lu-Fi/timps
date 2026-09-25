@@ -998,7 +998,7 @@ published a fingerprint in an SDP answer.
 | `webrtc.enabled` | tri-state int | `2` | 0..2 | file-only, restart | `0` = `/webrtc/whep` answers 404. `1` = on, TLS required for the signalling POST where the HTTP port has it. `2` = on and accept a plaintext POST too. Default is `2` on purpose: most cameras have no http→https redirect, so `1` would silently 426 the feature it enables. Legacy `true`/`on`/`yes` parse as `1`. |
 | `webrtc.port` | int | `0` | 0..65535 | file-only, restart | UDP media port. `0` = ephemeral. |
 | `webrtc.port_max` | int | `0` | 0..65535 | file-only, restart | Top of the media port range. `0` = `webrtc.port + WEBRTC_MAX_SESSIONS - 1` (one port per session slot; `WEBRTC_MAX_SESSIONS` is 4). |
-| `webrtc.channel` | int | `0` | **0..1** (`MS_MAX_VSTREAM-1`) | file-only, restart | Which video stream to send. |
+| `webrtc.channel` | int | `0` | **0..1** (`MS_MAX_VSTREAM-1`) | file-only, restart | Which video stream to send by default; `POST /webrtc/whep?chn=N` overrides it per session (`400` if stream N is not running or not H.264). |
 
 WebRTC reuses `http.tls_cert`/`http.tls_key` for the DTLS identity, so a camera
 with no usable cert has `/webrtc/whep` disabled outright. Media is H.264 over

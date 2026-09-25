@@ -2289,14 +2289,23 @@ static void *conn_thread(void *arg)
                         struct sockaddr_in loc; socklen_t ll = sizeof loc;
                         if (getsockname(c->fd,(struct sockaddr*)&loc,&ll)==0)
                             inet_ntop(AF_INET,&loc.sin_addr,ip,sizeof ip);
+                        /* a malformed ?chn= must not quietly become
+                         * webrtc.channel: map it out of range -> 400 */
+                        const char *cq = strstr(path, "chn=");
+                        int rchn = -1;
+                        if (cq) {
+                            long v = (cq[4] >= '0' && cq[4] <= '9')
+                                     ? strtol(cq+4, NULL, 10) : MS_MAX_VSTREAM;
+                            rchn = v > MS_MAX_VSTREAM ? MS_MAX_VSTREAM : (int)v;
+                        }
                         /* The answer carries an fmtp with sprop-parameter-sets
                          * and now repeats the ICE/DTLS block per bundled
                          * m-section, so it is a few KB, not a few hundred
                          * bytes. webrtc_whep() 500s rather than truncate. */
                         char *ansbuf = (char*)malloc(8192);
                         char sid[33] = "";
-                        int rc = ansbuf ? webrtc_whep(offer, ip, ansbuf, 8192,
-                                                      sid, sizeof sid) : 503;
+                        int rc = ansbuf ? webrtc_whep(offer, ip, rchn, ansbuf,
+                                                      8192, sid, sizeof sid) : 503;
                         if (rc == 201) {
                             char extra[768];
                             snprintf(extra, sizeof extra,

@@ -47,7 +47,8 @@ prudynt-t / raptor.
   SDP-Angebot des Browsers entgegen und antwortet als ICE-lite-Peer;
   DTLS-SRTP (`SRTP_AES128_CM_HMAC_SHA1_80`), H.264-Video plus G.711-Audio,
   `DELETE /webrtc/whep/<id>` beendet die Sitzung sofort. Keys: `webrtc.enabled`
-  (0/1/2, Default 2), `webrtc.port`, `webrtc.port_max`, `webrtc.channel`.
+  (0/1/2, Default 2), `webrtc.port`, `webrtc.port_max`, `webrtc.channel` (Default-Stream; `?chn=N` am POST wählt
+  pro Sitzung einen anderen).
   Maximal 4 gleichzeitige Sitzungen. Bewusste Grenzen: nur LAN/VPN (ein
   einziger Host-Kandidat, kein STUN/TURN, kein IPv6), kein Opus/AAC/H.265,
   kein NACK/FEC, keine Staukontrolle.

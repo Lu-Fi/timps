@@ -25,10 +25,11 @@ int  webrtc_available(void);
 
 /* POST /webrtc/whep. `offer` is the request body (an SDP offer), `local_ip`
  * the dotted address the client reached us on (getsockname on the HTTP
- * connection), which becomes our single host candidate. Returns the HTTP
- * status code to send; on 201 `ans` holds the SDP answer and `sid` the
- * session id for the Location header. */
-int  webrtc_whep(const char *offer, const char *local_ip,
+ * connection), which becomes our single host candidate. `req_chn` is the
+ * ?chn= video stream, -1 for webrtc.channel. Returns the HTTP status code to
+ * send; on 201 `ans` holds the SDP answer and `sid` the session id for the
+ * Location header. */
+int  webrtc_whep(const char *offer, const char *local_ip, int req_chn,
                  char *ans, int anscap, char *sid, int sidcap);
 
 /* DELETE /webrtc/whep/<id> (the Location the 201 handed out). Stops the

@@ -268,8 +268,9 @@ any key is derived. `DELETE /webrtc/whep/<id>` — the `Location` the `201`
 returned — tears a session down immediately; `scripts/whep-test.html` is a
 standalone test page that sends it from `pagehide`.
 
-What it carries: **H.264 video** (the `webrtc.channel` stream, which must be
-H.264 and must be offered with `packetization-mode=1`), plus **G.711 audio**
+What it carries: **H.264 video** (the `webrtc.channel` stream, or the one a
+`POST /webrtc/whep?chn=N` asks for; it must be H.264 and must be offered with
+`packetization-mode=1`), plus **G.711 audio**
 (PCMU/PCMA) whenever the daemon actually produces G.711 — either `audio.codec`
 is itself `pcmu`/`pcma`, or `audio.codec2 = pcmu` (the `USE_WEBRTC` default) runs
 a second, independent G.711u encode of the same PCM on its own hub source while

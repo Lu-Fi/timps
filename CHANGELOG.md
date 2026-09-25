@@ -6,6 +6,14 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- **`POST /webrtc/whep?chn=N`** — picks the video stream per session, so a
+  client can switch main/sub without touching `webrtc.channel`, which stays
+  the default when `chn=` is absent. A stream that is out of range, not
+  running, or not H.264 gets `400`. `caps.webrtc.chn_select:1` in `GET /control`
+  tells a client the daemon honours it.
+
 ### Fixed
 
 - **`timps-qa.sh`: UDP loss that overflowed the QA host's own receive buffer

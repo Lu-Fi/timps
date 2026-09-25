@@ -681,7 +681,7 @@ static int udp_bind_session(void)
 
 /* ---------------- WHEP ---------------- */
 
-int webrtc_whep(const char *offer, const char *local_ip,
+int webrtc_whep(const char *offer, const char *local_ip, int req_chn,
                 char *ans, int anscap, char *sid, int sidcap)
 {
     if (!g_dtls_ctx) return 404;
@@ -737,6 +737,16 @@ int webrtc_whep(const char *offer, const char *local_ip,
         }
 
     int chn = g_chn_cfg;
+    if (req_chn >= 0) {
+        /* an explicit ?chn= for a stream that is not running is the client's
+         * mistake, not a warm-up to wait out */
+        if (req_chn >= MS_MAX_VSTREAM ||
+            !hub_get_video_params(req_chn, NULL, NULL, NULL, NULL)) {
+            LOGW(MOD, "offer asks for video%d, which is not running", req_chn);
+            return 400;
+        }
+        chn = req_chn;
+    }
     {
         int vc = -1;
         if (hub_get_video_params(chn, &vc, NULL, NULL, NULL) && vc != MS_VC_H264) {

@@ -384,7 +384,7 @@ removed `daynight.learn` / `daynight.state_path`.
 | `http://<ip>:8880/control` | JSON control API (`USE_CONTROL`). |
 | `http://<ip>:8880/events` | SSE push stream (`USE_CONTROL`). |
 | `wss://<ip>:8880/talk` | Browser mic → camera speaker (`USE_BC_WS`). |
-| `http://<ip>:8880/webrtc/whep` | `POST` SDP offer; `DELETE /webrtc/whep/<id>` (`USE_WEBRTC`). |
+| `http://<ip>:8880/webrtc/whep` | `POST` SDP offer (`?chn=N` picks the stream, default `webrtc.channel`); `DELETE /webrtc/whep/<id>` (`USE_WEBRTC`). |
 | `srt://<ip>:9000` | MPEG-TS over SRT listener (`USE_SRT`, `srt.enabled = 1`). |
 
 **Which transport to recommend:**
@@ -562,7 +562,7 @@ differently-compiled binaries.
 | `caps.record` / `caps.timelapse` | `{available: 0|1}` |
 | `caps.backchannel` | `{available, talk_ws}` — `talk_ws` is the *effective* mode: 0 not served, 1 served TLS-required, 2 served plaintext-ok |
 | `caps.play` | `{available, sounds:[...]}` — enumerates playable files |
-| `caps.webrtc` | `{available, enabled}` — same 0/1/2 meaning as `talk_ws`. **Key absent entirely** when `USE_WEBRTC=0` |
+| `caps.webrtc` | `{available, enabled, chn_select}` — same 0/1/2 meaning as `talk_ws`; `chn_select:1` = the POST honours `?chn=N`. **Key absent entirely** when `USE_WEBRTC=0` |
 
 Note the deliberate convention: a key that is **absent** (`caps.rotation`,
 `caps.webrtc`) means "this binary has no such endpoint/feature at all", which
