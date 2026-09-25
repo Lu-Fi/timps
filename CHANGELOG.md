@@ -6,6 +6,11 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.9.22] - 2026-09-25
+
+No functional changes since v1.9.21 — release-only bump so the tag matches
+`main` for downstream (thingino-firmware) packaging.
+
 ## [1.9.21] - 2026-09-25
 
 ### Added
