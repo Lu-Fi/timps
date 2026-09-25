@@ -11,10 +11,10 @@ prudynt-t / raptor.
   HTTP-Control-API, Streaming-Protocols, Day-Night, Audio, Motion-Detection,
   Recording-Timelapse, Rate-Control-\*, Building, Logging, Testing-QA,
   Platform-SDK-Support)
-* Stand dieses Dokuments: `main`, Version v1.9.19 (2026-09-22);
-  gestripptes `timpsd` ca. 360 KB (mipsel). Mit **seit v1.9.20 (unveröffentlicht)**
+* Stand dieses Dokuments: `main`, Version v1.9.21 (2026-09-25);
+  gestripptes `timpsd` ca. 360 KB (mipsel). Mit **seit v1.9.22 (unveröffentlicht)**
   markierte Aussagen stehen bereits im Quellcode, aber in noch keinem Release –
-  auf einer v1.9.19-Kamera gilt jeweils das vorher beschriebene Verhalten.
+  auf einer v1.9.21-Kamera gilt jeweils das vorher beschriebene Verhalten.
 * Konfiguration: eine flache Textdatei `/etc/timps.conf` im Format `key = value`
 * Ein einziges Binary (`/usr/bin/timpsd`), gestartet über `/etc/init.d/S95timps`
 
@@ -92,7 +92,7 @@ prudynt-t / raptor.
   mehr vervielfacht mit Keyframes belasten; eine unterdrückte Anforderung geht
   nicht verloren, sondern wird nachgeholt – es sei denn, vorher wird ohnehin
   ein Keyframe veröffentlicht, dann entfällt sie (ein Überlauf kostet so ein
-  erzwungenes IDR, nicht zwei). *Seit v1.9.20 (unveröffentlicht)* zählt der
+  erzwungenes IDR, nicht zwei). *Seit v1.9.20* zählt der
   Hub jeden Verwurf selbst beim Verteilen (auch Audio, für alle Konsumenten
   gleich) – damit erscheint auch ein Client, der hängt und nie mehr abholt, in
   `queue_drops`. RTSP, SRT und WebRTC reichen jeden Video-Verlust an den Hub
@@ -111,7 +111,9 @@ prudynt-t / raptor.
   `max_again`, `max_dgain`, `sinter_strength` / `temper_strength` (räumliche /
   zeitliche Rauschunterdrückung), `dpc_strength`, `defog_strength`,
   `drc_strength`, `highlight_depress`, `backlight_compensation`,
-  `core_wb_mode`, `wb_rgain`, `wb_bgain`.
+  `core_wb_mode`, `wb_rgain`, `wb_bgain`. *Seit v1.9.21* meldet `GET /control`
+  unter `image.wb_live` die aktuell wirksamen WB-Gains (im Auto-Modus das
+  AWB-Ergebnis) – ein Wechsel auf manuell damit ändert das Bild nicht.
 * **Kein blindes Setzen**: welche dieser Regler der jeweilige SoC wirklich
   unterstützt, meldet `caps.image` in `GET /control` – die WebUI graut den Rest
   aus. Nicht unterstützte Werte werden trotzdem gespeichert.
@@ -121,7 +123,7 @@ prudynt-t / raptor.
   Kameras. *Seit v1.9.19* wird die **automatisch** ermittelte
   `sensor.fps` bei **30** gedeckelt (manche Treiber melden eine Rate, die ihr
   Takt nicht liefert – der GC2053 meldet 40 bei einem 30-fps-Modus); *seit
-  v1.9.20 (unveröffentlicht)* liegt die Grenze beim schnellsten aktiven
+  v1.9.20* liegt die Grenze beim schnellsten aktiven
   `videoN.fps`, falls das höher ist. Ein explizit gesetzter Wert gilt
   unverändert. Zusätzlich wird die gesetzte Rate
   zurückgelesen und protokolliert: `sensor fps: requested N, driver holds n/d,

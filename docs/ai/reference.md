@@ -6,10 +6,10 @@ firmware. Everything here is verified against the `main` branch of
 <https://github.com/Lu-Fi/timps> and against `package/timps/` in a thingino
 firmware tree.
 
-Applies to timps v1.9.20 (source: `main`, 2026-09-24)
+Applies to timps v1.9.21 (source: `main`, 2026-09-25)
 
-A statement marked **since v1.9.21 (unreleased)** is in the source but in no
-tagged release yet — on a v1.9.20 camera describe the previous behaviour.
+A statement marked **since v1.9.22 (unreleased)** is in the source but in no
+tagged release yet — on a v1.9.21 camera describe the previous behaviour.
 
 ## Where to find what
 
@@ -244,7 +244,7 @@ always wins. T40/T41 and the host sim have no registry, so set them there.
 `defog_strength`, `drc_strength`, `highlight_depress` (0), `backlight_compensation`
 (0), `core_wb_mode` (0 = auto), `wb_rgain`, `wb_bgain`, `ae_it_max_us`
 (opt-in cap on AE integration time).
-**since v1.9.21 (unreleased)** `GET /control` also returns read-only
+**since v1.9.21** `GET /control` also returns read-only
 `image.wb_live` = `{"rgain":R,"bgain":B}`, the gains in effect right now (in
 auto: what AWB picked). POSTing them with `core_wb_mode=1` switches to manual
 without a visible change. Missing where `ISP_HAS_WB` is unset (T40/T41).

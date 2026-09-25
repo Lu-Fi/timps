@@ -251,7 +251,7 @@ keyframe. While a request is pending, calling again costs nothing (no clock
 read, no lock), which is what lets a frozen consumer ask per packet.
 
 Evictions are counted by the hub itself, in its fan-out push (**since
-v1.9.20, unreleased**): a consumer registers its queue with
+v1.9.20**): a consumer registers its queue with
 `hub_count_drops(q, src, kind)` before subscribing, and every published packet
 that has to evict from that queue counts once against video stream `src`,
 audio included. Until then each consumer reported its own drops when it next
