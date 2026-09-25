@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.9.23] - 2026-09-25
+
 ### Added
 
 - **`POST /webrtc/whep?chn=N`** — picks the video stream per session, so a
