@@ -1,9 +1,9 @@
 # timps configuration keys — complete reference
 
-**Applies to timps v1.9.21 (source: `main`, 2026-09-25).**
+**Applies to timps v1.9.22 (source: `main`, 2026-09-25).**
 
-A statement marked **since v1.9.22 (unreleased)** is already in the source but
-not in any tagged release yet — on a v1.9.21 camera the *previous* behaviour is
+A statement marked **since v1.9.23 (unreleased)** is already in the source but
+not in any tagged release yet — on a v1.9.22 camera the *previous* behaviour is
 the one to describe.
 
 Authoritative source: `src/config.c` (the `cfg_field` tables and

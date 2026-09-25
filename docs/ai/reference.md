@@ -6,10 +6,10 @@ firmware. Everything here is verified against the `main` branch of
 <https://github.com/Lu-Fi/timps> and against `package/timps/` in a thingino
 firmware tree.
 
-Applies to timps v1.9.21 (source: `main`, 2026-09-25)
+Applies to timps v1.9.22 (source: `main`, 2026-09-25)
 
-A statement marked **since v1.9.22 (unreleased)** is in the source but in no
-tagged release yet — on a v1.9.21 camera describe the previous behaviour.
+A statement marked **since v1.9.23 (unreleased)** is in the source but in no
+tagged release yet — on a v1.9.22 camera describe the previous behaviour.
 
 ## Where to find what
 
