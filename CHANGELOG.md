@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.9.21] - 2026-09-25
+
 ### Added
 
 - **`image.wb_live` in `GET /control`** (`src/control.c`, `src/hal/*`) —
