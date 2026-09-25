@@ -1075,9 +1075,20 @@ rt_stats() {
 
 # --------------------------------------------------- stream integrity + A/V sync core
 # analyze_stream <url> <label> <dur> <input-opts...>
+# UDP datagrams THIS host dropped because a socket receive buffer was full
+# (/proc/net/snmp Udp RcvbufErrors, column found by name). Host-wide, so it is
+# capped to the capture's own loss below.
+host_rcvbuf_errs() {
+	awk '/^Udp:/{n++; if(n==1){for(i=2;i<=NF;i++) if($i=="RcvbufErrors") c=i} else if(n==2){print (c? $c : 0); exit}}' /proc/net/snmp 2>/dev/null || echo 0
+}
+
 analyze_stream() {
 	local url="$1" label="$2" dur="$3"; shift 3
 	local inopts=("$@")
+	# a start-of-stream loss leaves packets without timestamps and the mkv muxer
+	# then aborts the whole capture after ~2 s; +genpts keeps it recording
+	case "$label" in *udp*) inopts+=(-fflags +genpts);; esac
+	local rcv0; rcv0=$(host_rcvbuf_errs)
 	local seg="$OUTDIR/rec_${label}.mkv" err="$OUTDIR/rec_${label}.log"
 	local t0 t1 wall
 	info "$label: recording ${dur}s ..."
@@ -1102,6 +1113,7 @@ analyze_stream() {
 	timeout -k 5 "$((dur+6))" ffmpeg -hide_banner -nostdin -y -loglevel warning "${inopts[@]}" \
 		-i "$url" -t "$dur" -c copy "$seg" </dev/null 2>"$err" || true
 	t1=$(date +%s.%N)
+	local rcvbuf_drops=$(( $(host_rcvbuf_errs) - rcv0 ))
 	if [ -n "$pingpid" ]; then
 		wait "$pingpid" 2>/dev/null || true
 		ping_loss=$(grep -oE '[0-9.]+% packet loss' "$pingf" 2>/dev/null | grep -oE '^[0-9.]+' | head -1)
@@ -1263,6 +1275,27 @@ SKEW $skewline"
 		if [ "$rtp_lines" -gt 0 ]; then
 			rtp_missed=$(awk '/RTP: missed/{for(i=1;i<NF;i++)if($i=="missed"){s+=$(i+1)+0}}END{print s+0}' "$err")
 			ffe=$((ffe - rtp_lines)); [ "$ffe" -lt 0 ] && ffe=0
+			# Loss that overflowed THIS host's receive buffer never was on the
+			# wire: a sender burst (the IDR) outran a client that had just sent
+			# PLAY. 2026-09-25 cam-vorne: "4.2 % / 100 % lost" were exactly the
+			# host's RcvbufErrors, 0 with a 4 MB buffer. Report it apart and
+			# rule the network only on the rest.
+			local host_drop=${rcvbuf_drops:-0}
+			[ "$host_drop" -lt 0 ] && host_drop=0
+			[ "$host_drop" -gt "$rtp_missed" ] && host_drop=$rtp_missed
+			if [ "$host_drop" -gt 0 ]; then
+				warn "$label: $host_drop of the $rtp_missed lost RTP packet(s) overflowed this host's UDP receive buffer (RcvbufErrors) - a send burst outran the client, not the network; the camera paces UDP with rtsp.udp_pace_kbps (0 = off, pre-v1.9.23 unpaced)"
+				rtp_missed=$((rtp_missed - host_drop))
+				# all of it was the host's own overflow: the concealment lines
+				# are that loss's decoder fallout, not decode trouble
+				if [ "$rtp_missed" -eq 0 ]; then
+					local hconceal
+					hconceal=$(grep -icE 'concealing|corrupt|error while|decode_slice' "$err" 2>/dev/null)
+					ffe=$((ffe - ${hconceal:-0})); [ "$ffe" -lt 0 ] && ffe=0
+				fi
+			fi
+		fi
+		if [ "$rtp_missed" -gt 0 ]; then
 			# estimated datagram count: capture bytes / the 1200-byte default
 			# rtsp.mtu (undercounts small audio packets -> overstates the loss
 			# fraction, i.e. errs on the strict side)
