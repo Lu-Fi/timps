@@ -6,6 +6,19 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`timps-qa.sh`: UDP loss that overflowed the QA host's own receive buffer
+  is no longer blamed on the network.** On cam-vorne (T23, 114 Mbit/s WiFi)
+  the rtsp_main_udp check reported "4.2 % / ~100 % lost, network degraded";
+  every lost packet was exactly the QA host's `RcvbufErrors` (ffmpeg not yet
+  reading while it analyses the stream), and 0 with a 4 MB buffer. The check
+  now reads `RcvbufErrors` around each capture and reports that share as a
+  WARN; the 0.5 % degraded-link line applies to the rest. UDP captures add
+  `-fflags +genpts`, so a start-of-stream loss no longer aborts the mkv
+  capture after ~2 s. Pacing the sender was measured and rejected: only a
+  pace that added up to 1.8 s of IDR delay removed the loss.
+
 ## [1.9.22] - 2026-09-25
 
 No functional changes since v1.9.21 — release-only bump so the tag matches

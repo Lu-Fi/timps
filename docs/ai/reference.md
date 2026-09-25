@@ -994,6 +994,10 @@ Distinguish **compiled out** from **misconfigured**:
   see what the driver actually took. `videoN.fps` is the stream rate only.
 - **RTSP over a VPN drops or fragments** — lower `rtsp.mtu` (default 1200 is
   already the VPN-safe value; 1400 is the LAN-only optimization).
+- **A UDP client loses 100-400 packets in its first seconds** — its own
+  receive buffer overflowed while it wasn't reading yet (its `RcvbufErrors`
+  grow by the same count), not the network. Use a bigger client buffer
+  (ffmpeg `-buffer_size 4194304`) or TCP; timps deliberately doesn't pace.
 - **RTSP refuses a client with `503 Service Unavailable`** —
   `caps.rtsp_max_clients` reached (a compile-time bound, `-D`-overridable per
   board; low-RAM boards often build with 4). `src/rtsp/rtsp.c` sends no other

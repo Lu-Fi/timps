@@ -1014,6 +1014,16 @@ prefer TCP interleaved, and check `rtsp.mtu` — the default **1200** is
 already the VPN-safe value; 1400 is a LAN-only optimisation and will
 fragment over most tunnels. Range is 548..1472.
 
+**A UDP client loses a block of packets in its first seconds** (ffmpeg:
+`RTP: missed 100..400 packets`, typically on a fast WiFi link): check the
+client host's `/proc/net/snmp` Udp `RcvbufErrors`. If it grew by the same
+count, the client's receive buffer overflowed while the client was not
+reading yet (stream start/analysis) - it never was network loss, and the
+camera cannot fix it without adding IDR latency (pacing was measured: only
+~3 Mbit/s, i.e. up to 1.8 s of IDR delay, removed it). Give the client a
+bigger buffer (ffmpeg `-buffer_size 4194304`) or use TCP. `timps-qa.sh`
+reports this share separately as a WARN.
+
 **RTSPS (`rtsp.tls = 1`, `rtsp.tls_port`)** is a **second port**, and unlike
 HTTPS it is **not fail-closed**: if the TLS context or the bind fails, plain
 RTSP keeps serving and you get `RTSPS requested but TLS context failed -
