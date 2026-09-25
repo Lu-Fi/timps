@@ -764,6 +764,23 @@ throughout — `osd0.0.enabled`, `osd1.3.font_size` (`osd_key()` in
 `{"osd0":{"0":{"enabled":1}}}`; `{"osd":{"0":{…}}}` is the legacy shared form
 that writes the item onto **every** stream.
 
+**"How much CPU does the OSD cost, and can I lower it?"** Measured on a T31
+(Garage, single core, 2026-09-25, `nice 19` spinner A/B, 3 interleaved
+rounds, 4 items per stream: date/time, `{hostname}`, `{uptime}`, logo):
+- **In total ~8-9 points of the core.** In one run it was 36.8 % vs 28.8 %
+  with `osd.enabled = 0`, in another 23.6 % vs 14.4 %.
+- **`osd.enabled = 1` with every item disabled costs nothing** (+0.2).
+- **The same items with fixed text still cost +6.6.** The per-second
+  re-render of a changing time/uptime adds only about +2.6.
+- **`osd.supersample = 1` and `osd.hinting = 0` make no measurable
+  difference.**
+
+So nearly all of it is the per-frame overlay of every shown region, not the
+TTF rasterizer. A glyph cache would save 2 points at most, and the overlay
+cost is SDK/SoC dependent. To save CPU on a weak camera (T20), drop items
+that change every second (`{uptime}`, seconds in the time format) or disable
+the OSD items on the substream. Lowering the render quality doesn't help.
+
 ---
 
 ## 3. Image / ISP / day-night
