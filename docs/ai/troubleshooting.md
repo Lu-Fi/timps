@@ -1187,16 +1187,27 @@ returns 200 after waiting up to 600 ms. Harmless.
 shutdown-time, deliberate, like the HTTP one.
 
 **"WebRTC has ~400 ms delay, I expected ~100".** Measured on Garage (T31,
-LAN, Chrome/Edge, 2026-09-26) with the preview's `delay ≈` readout: camera
-18 ms (`?clients=1` `lat_ms`), network ~10 ms, decode ~5 ms, but a video
-jitter buffer of ~350 ms. `getStats()` shows why: the video's
-`jitterBufferMinimumDelay` is ~65 ms, its `jitterBufferTargetDelay` ~330 ms:
-the browser holds video back to lip-sync it with the audio (audio jitter
-buffer ~140 ms plus the audio path's own lag). The same session without an
-audio track: **≈ 84 ms** in total. So the big number is A/V sync, not the
-camera or the network; a viewer who only needs the picture gets the low
-latency by leaving audio off. Why the audio side sits that far behind is
-open (see the audio pts/SR anchoring in `src/hal/hal_ingenic.c`).
+LAN, Chrome/Edge on Linux, 2026-09-26) with the preview's `delay ≈` readout
+and `getStats()`: camera 18 ms (`?clients=1` `lat_ms`), network ~10 ms,
+decode ~5 ms, but a video jitter buffer of ~350 ms whose own need
+(`jitterBufferMinimumDelay`) is only ~50-65 ms. The rest is the browser
+holding video back to lip-sync it with the audio, and the audio was slow
+because of the **viewer's audio output**: `AudioContext.outputLatency` and
+the `media-playout` stats showed ~240 ms on a Bluetooth headset. Audio and
+video `estimatedPlayoutTimestamp` agreed within ~12 ms, so timps's RTCP SR
+timelines are consistent; nothing on the camera side delays the audio.
+
+| Same camera, same session type | total |
+| --- | --- |
+| audio to a Bluetooth headset (~240 ms output latency) | ≈ 360-385 ms |
+| audio to the laptop's built-in speaker | ≈ 170-200 ms |
+| no audio track | ≈ 84 ms |
+
+The remaining audio share is Chrome's NetEq buffer (~120-150 ms) for the
+40 ms G.711 packets (one AI capture frame each). Splitting them into two
+20 ms packets was tried and made it **worse** (NetEq ~190 ms, total 471 ms):
+both halves leave back-to-back and NetEq treats that as a burst. So: for the
+lowest latency, leave audio off or play it on a wired/built-in output.
 
 ### 4.4 SRT
 
