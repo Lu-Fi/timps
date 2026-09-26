@@ -523,6 +523,8 @@ static void stream_run(ts_mux *m)
             if (!got_key) { if (!p->keyframe) { pkt_unref(p); continue; } got_key = 1; }
             rc = send_pes(m, VPID, &m->cc_v, 0xE0, p->data, (int)p->len,
                           p->pts_us, 1, p->keyframe);
+            if (rc >= 0 && p->enq_us > 0)
+                clients_latency(m->cid, now - p->enq_us + p->cap_age_us);
         } else if (p->media == MS_MEDIA_AUDIO && m->have_audio && got_key) {
             /* Publishers aren't guaranteed to hand us bare raw AAC: the real
              * HW encoder path (hal_ingenic.c, FAAC_STREAM_RAW) does, but

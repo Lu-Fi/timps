@@ -765,6 +765,8 @@ static void stream_mp4(hconn *c, int chn)
         if (t_pop)
             ms_trace_au_end(&trc, p->media, p->keyframe, p->len, p->enq_us,
                             t_pop, ms_now_us(), tr_q, tr_qcap);
+        if (rc >= 0 && frag_ok && p->media == MS_MEDIA_VIDEO && p->enq_us > 0)
+            clients_latency(c->cid, ms_now_us() - p->enq_us + p->cap_age_us);
         pkt_unref(p);
         if (rc<0) {
             log_send_fail("mp4 chn", chn, serr, ms_now_us()-conn0_us);
@@ -949,6 +951,8 @@ static void stream_mjpeg(hconn *c, int src, const char *bnd)
             rc = csendv(c, iov, 3);
         }
         int serr = rc<0 ? errno : 0;
+        if (rc >= 0 && p->enq_us > 0)
+            clients_latency(c->cid, last_pkt_us - p->enq_us + p->cap_age_us);
         pkt_unref(p);
         if (rc<0) {
             log_send_fail("mjpeg src", src, serr, ms_now_us()-conn0_us);

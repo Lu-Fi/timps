@@ -3235,6 +3235,7 @@ static void *jpeg_thread(void *arg)
         }
         dbg_jempty=0;
         pk->len = jlen;
+        int64_t jhw = st.packCount > 0 ? st.pack[0].timestamp : 0;
         /* Give the IMP stream buffer back HERE, not after the snapshot
          * write and publish below. enc_assemble_packs() above has copied every
          * pack into pk->data, so nothing past this point reads `st` - while the
@@ -3246,6 +3247,10 @@ static void *jpeg_thread(void *arg)
          * BEFORE the hand-off: after hub_publish_take() the packet may already
          * be recycled or in flight to a subscriber. */
         int64_t pub_now = ms_now_us();
+        if (jhw > 0) {
+            int64_t age = IMP_System_GetTimeStamp() - jhw;
+            if (age > 0 && age < 2000000) pk->cap_age_us = (int32_t)age;
+        }
         if (snap_configured &&
             pub_now - jc->last_snapshot_us >= MS_SNAPSHOT_INTERVAL_US) {
             /* copy the path under config_str_lock, then do the (blocking)

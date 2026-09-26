@@ -354,8 +354,8 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   `?stats=1` (schlanker Zahlensatz für die Stats-Karte statt des 8-KB-Dokuments),
   `?dn_history=1[&last=N|&since=S][&max=N]` (Day/Night-Serie mit Cursor-Paging),
   `?clients=1` (verbundene Clients: IP, Protokoll, Stream, Verbindungsdauer,
-  Datenrate, übertragene Summe und – bei RTSP/WebRTC – Kamera-Latenz
-  (Aufnahme bis Versand) pro Client, User-Agent – z. B. Frigate,
+  Datenrate, übertragene Summe und Kamera-Latenz (Aufnahme bis Versand)
+  pro Client, User-Agent – z. B. Frigate,
   VLC, ffmpeg, Browser). **Seit v1.9.26 (unveröffentlicht)** zusätzlich im Log
   (Modul `CLIENT`): eine Zeile beim Verbinden mit User-Agent, eine beim Trennen
   mit Dauer und Bytes.
