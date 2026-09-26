@@ -275,7 +275,7 @@ elsewhere in `src/mp4/httpd.c` — there is no full query parser.
 | `?fields=1` | The inventory of every `F_CTRL`-flagged (i.e. POST-able) config field, grouped by section. Walked from the same tables `POST /control` applies, so it cannot drift from what the POST really accepts; `scripts/timps-qa.sh` section 8 diffs its own coverage list against it. | 1.8.1 |
 | `?stats=1` | The slow-path complement of the `/events` `stats` push. | 1.9.18 |
 | `?dn_history=1` | The day/night decision series out of the in-RAM ring. | 1.9.15 |
-| `?clients=1` | The connected streaming clients with protocol, stream, rate and User-Agent. | 1.9.24 |
+| `?clients=1` | The connected streaming clients with protocol, stream, rate, total bytes and User-Agent. | 1.9.24 |
 
 #### `?stats=1`
 
@@ -308,9 +308,9 @@ not listed.
 ```json
 {"clients":[
  {"ip":"192.168.178.17","port":32834,"proto":"rtsp/tcp","chn":0,
-  "since_s":41,"kbps":1600,"agent":"FFmpeg Frigate/0.17.2-3d4dd3a"},
+  "since_s":41,"kbps":1600,"bytes":8200000,"agent":"FFmpeg Frigate/0.17.2-3d4dd3a"},
  {"ip":"192.168.178.103","port":46712,"proto":"rtsp/udp","chn":1,
-  "since_s":36,"kbps":214,"agent":"LibVLC/3.0.20 (LIVE555 Streaming Media v2016.11.28)"}]}
+  "since_s":36,"kbps":214,"bytes":962000,"agent":"LibVLC/3.0.20 (LIVE555 Streaming Media v2016.11.28)"}]}
 ```
 
 - `chn` is the source stream (`0` main, `1` sub); `-1` where none applies
@@ -319,6 +319,8 @@ not listed.
   header on TCP, fMP4/MJPEG body bytes, SRTP, TS packets), averaged since the
   previous read but over at least 1 s, so several pollers cannot shrink the
   window to noise. The first read averages since the connection started.
+- `bytes` is the total sent to that client since it connected, counted the
+  same way as `kbps` (64-bit, no wrap).
 - `agent` is the request's `User-Agent`, truncated to 159 characters, `""`
   when the client sent none. SRT has no such header and is always `""`.
   WebRTC takes it from the WHEP `POST`.

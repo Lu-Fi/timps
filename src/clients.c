@@ -13,10 +13,10 @@ typedef struct {
     int                kind, chn;
     struct sockaddr_in peer;
     int64_t            since_us;
-    /* 32 bits on purpose: MIPS32 has no native 64-bit store, and a rate only
-     * needs the difference, which survives the wrap (~4 GB). */
-    volatile uint32_t  bytes;
-    uint32_t           q_bytes;   /* rate baseline, advanced by clients_json */
+    /* 64-bit total as two words (MIPS32 has no 64-bit store); only the rare
+     * carry is guarded by seq, so the per-send cost stays one add */
+    volatile uint32_t  lo, hi, seq;
+    uint64_t           q_bytes;   /* rate baseline, advanced by clients_json */
     int64_t            q_us;
     unsigned           kbps;
     char               agent[CLIENTS_AGENT_MAX];
@@ -82,7 +82,29 @@ void clients_del(int id)
 
 void clients_bytes(int id, int n)
 {
-    if (id >= 0 && id < CLIENTS_MAX && n > 0) g_cl[id].bytes += (uint32_t)n;
+    if (id < 0 || id >= CLIENTS_MAX || n <= 0) return;
+    cl_entry *e = &g_cl[id];
+    uint32_t lo = e->lo + (uint32_t)n;
+    if (lo >= e->lo) { e->lo = lo; return; }
+    e->seq++;
+    __sync_synchronize();
+    e->lo = lo;
+    e->hi++;
+    __sync_synchronize();
+    e->seq++;
+}
+
+static uint64_t cl_total(const cl_entry *e)
+{
+    uint32_t s, lo, hi;
+    do {
+        s = e->seq;
+        __sync_synchronize();
+        lo = e->lo;
+        hi = e->hi;
+        __sync_synchronize();
+    } while ((s & 1) || s != e->seq);
+    return (uint64_t)hi << 32 | lo;
 }
 
 int clients_json(char *out, int cap)
@@ -96,10 +118,10 @@ int clients_json(char *out, int cap)
         if (!e->used) continue;
         /* rate over at least 1 s, so several pollers can't shrink the window
          * to noise; the first read averages since the connection began */
-        uint32_t b = e->bytes;
+        uint64_t b = cl_total(e);
         int64_t dt = now - e->q_us;
         if (dt >= 1000000) {
-            e->kbps = (unsigned)((uint64_t)(uint32_t)(b - e->q_bytes) * 8000 / (uint64_t)dt);
+            e->kbps = (unsigned)((b - e->q_bytes) * 8000 / (uint64_t)dt);
             e->q_bytes = b;
             e->q_us = now;
         }
@@ -109,10 +131,11 @@ int clients_json(char *out, int cap)
         ms_json_esc(e->agent, ag, sizeof ag);
         len += snprintf(out + len, (size_t)(cap - len),
             "%s{\"ip\":\"%s\",\"port\":%u,\"proto\":\"%s\",\"chn\":%d,"
-            "\"since_s\":%lld,\"kbps\":%u,\"agent\":\"%s\"}",
+            "\"since_s\":%lld,\"kbps\":%u,\"bytes\":%llu,\"agent\":\"%s\"}",
             first ? "" : ",", ip, (unsigned)ntohs(e->peer.sin_port),
             (e->kind >= 0 && e->kind < (int)(sizeof KIND / sizeof KIND[0])) ? KIND[e->kind] : "?",
-            e->chn, (long long)((now - e->since_us) / 1000000), e->kbps, ag);
+            e->chn, (long long)((now - e->since_us) / 1000000), e->kbps,
+            (unsigned long long)b, ag);
         first = 0;
     }
     pthread_mutex_unlock(&g_cl_mx);

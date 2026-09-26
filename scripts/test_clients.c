@@ -44,6 +44,11 @@ int main(void)
     const char *k = strstr(buf, "\"kbps\":");
     if (k) sscanf(k + 7, "%u", &kbps);
     ok(kbps >= 800 && kbps <= 1000, "rate ~1 Mbit over ~1 s");
+    ok(strstr(buf, "\"bytes\":125000,") != NULL, "total bytes");
+
+    for (int i = 0; i < 40; i++) clients_bytes(id, 125000000);   /* 5 GB, past the 32-bit carry */
+    clients_json(buf, sizeof buf);
+    ok(strstr(buf, "\"bytes\":5000125000,") != NULL, "total survives 4 GB");
 
     int ids[CLIENTS_MAX];
     int got = 0;
