@@ -21,8 +21,8 @@ Companion to `docs/ai/reference.md` (what timps *is*) and
 6. §15 is the closing note for the assistant; **§16 follows it** and catalogues
    the shipped scripts and CGIs.
 
-Everything else here was read out of this repository at **v1.9.24
-(2026-09-26)**; a statement marked **since v1.9.25 (unreleased)** is in the
+Everything else here was read out of this repository at **v1.9.25
+(2026-09-26)**; a statement marked **since v1.9.26 (unreleased)** is in the
 source but in no tagged release yet. Source files are named; line numbers deliberately are not.
 
 ---
@@ -2166,8 +2166,8 @@ mbedTLS.
 
 ### 11.7 Upgrade targets — "upgrade to ≥ vX"
 
-Latest release in `CHANGELOG.md` is **1.9.24 (2026-09-26)**. Anything this
-file marks "since v1.9.25 (unreleased)" is only in `[Unreleased]` — quote that
+Latest release in `CHANGELOG.md` is **1.9.25 (2026-09-26)**. Anything this
+file marks "since v1.9.26 (unreleased)" is only in `[Unreleased]` — quote that
 phrasing, not a version number, until the tag exists. Two caveats before
 quoting a released version at a user:
 

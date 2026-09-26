@@ -11,10 +11,10 @@ prudynt-t / raptor.
   HTTP-Control-API, Streaming-Protocols, Day-Night, Audio, Motion-Detection,
   Recording-Timelapse, Rate-Control-\*, Building, Logging, Testing-QA,
   Platform-SDK-Support)
-* Stand dieses Dokuments: `main`, Version v1.9.24 (2026-09-26);
-  gestripptes `timpsd` ca. 360 KB (mipsel). Mit **seit v1.9.25 (unveröffentlicht)**
+* Stand dieses Dokuments: `main`, Version v1.9.25 (2026-09-26);
+  gestripptes `timpsd` ca. 360 KB (mipsel). Mit **seit v1.9.26 (unveröffentlicht)**
   markierte Aussagen stehen bereits im Quellcode, aber in noch keinem Release –
-  auf einer v1.9.24-Kamera gilt jeweils das vorher beschriebene Verhalten.
+  auf einer v1.9.25-Kamera gilt jeweils das vorher beschriebene Verhalten.
 * Konfiguration: eine flache Textdatei `/etc/timps.conf` im Format `key = value`
 * Ein einziges Binary (`/usr/bin/timpsd`), gestartet über `/etc/init.d/S95timps`
 
@@ -354,7 +354,8 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   `?stats=1` (schlanker Zahlensatz für die Stats-Karte statt des 8-KB-Dokuments),
   `?dn_history=1[&last=N|&since=S][&max=N]` (Day/Night-Serie mit Cursor-Paging),
   `?clients=1` (verbundene Clients: IP, Protokoll, Stream, Verbindungsdauer,
-  Datenrate pro Client und User-Agent – z. B. Frigate, VLC, ffmpeg, Browser).
+  Datenrate und übertragene Summe pro Client, User-Agent – z. B. Frigate,
+  VLC, ffmpeg, Browser).
 * **`GET /events`** – Server-Sent-Events statt Polling:
   `?stream=motion,daynight,stats,config`. `motion` und `daynight` senden beim
   Verbinden einmal den vollen Zustand, `stats` tickt alle `events.stats_ms`
