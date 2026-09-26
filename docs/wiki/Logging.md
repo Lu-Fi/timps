@@ -70,7 +70,7 @@ a row.
 
 | module | source | err | warn | info | debug | what its debug output adds |
 |---|---|---:|---:|---:|---:|---|
-| `DAYNIGHT` | `daynight.c` | 1 | 26 | 20 | 15 | every probe: ratio verdict and its branch, the structured `probe: r=… lit=… dark=… hr=… verdict=…` line, exposure vs night reference, illuminator-off readings, ISP readback confirmations |
+| `DAYNIGHT` | `daynight.c` | 1 | 25 | 21 | 15 | every probe: ratio verdict and its branch, the structured `probe: r=… lit=… dark=… hr=… verdict=…` line, exposure vs night reference, illuminator-off readings, ISP readback confirmations |
 | `HAL_ING` | `hal/hal_ingenic.c` | 44 | 77 | 48 | 10 | encoder/framesource internals, polling and teardown detail, the sensor-fps requested-vs-held readback (`sensor fps: requested N, driver holds n/d, set rc=R`) |
 | `CTRL` | `control.c` | 0 | 4 | 3 | 5 | request/field handling on `/control` |
 | `OSD` | `hal/imp_osd.c` | 4 | 8 | 6 | 3 | overlay placement and region updates |

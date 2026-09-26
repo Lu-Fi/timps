@@ -831,8 +831,10 @@ First: `daynight.enabled` must be **1**, and `GET /control`'s `daynight`
 object tells you what the machine currently believes.
 
 The decision inputs come from an ISP dump file, `daynight.isp_path`. If it
-is unreadable you get `<path> is not readable, using <other> instead - set
-daynight.isp_path to silence this` or, worse, `<path> not readable,
+is unreadable but a known alternative works (T20: `isp_info`) you get the
+INFO line `<path> is not readable, using <other> instead` — harmless, the
+fallback is the normal path there (a WARN before v1.9.26, which made the WebUI
+health tile show "Check · errors: DAYNIGHT"). Worse is `<path> not readable,
 detection idle` — **detection does nothing at all**.
 
 | Warning (`src/daynight.c`) | What it really means | Fix |
@@ -2463,7 +2465,7 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 
 | Message pattern | Level | Meaning |
 | --- | --- | --- |
-| `%s is not readable, using %s instead - set daynight.isp_path to silence this` | W | The configured ISP dump path is wrong; a fallback is in use. |
+| `%s is not readable, using %s instead` | I (W before v1.9.26, with `- set daynight.isp_path to silence this`) | The configured ISP dump path does not exist; the known alternative is in use. Normal on T20. |
 | `%s not readable, detection idle` | W | **Detection does nothing at all.** Fix `daynight.isp_path`. |
 | `the ISP dump reports no gain ceilings (MAX SENSOR analog gain / MAX ISP digital gain), so the AE reserve is unknown here: a railed meter cannot be told from a dark scene, the railed-boot re-tune never fires, and the night reference is NOT protected against clipped readings. Ratio probes without a clear answer fall back to the audible probe on this camera` | W | Several safety mechanisms are disabled; probes fall back to the audible IR-cut probe. |
 | `the night reference sits at the sensor's gain floor and no integration-time reading is available…` | W | Night→day can only come from the heartbeat. |

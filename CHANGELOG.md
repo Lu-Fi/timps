@@ -13,6 +13,13 @@ semantic versioning.
   `- … after 8s, 377529 bytes` when it leaves, for every protocol. `/events`
   connections log at DEBUG only, so an open WebUI tab doesn't fill the log.
 
+### Changed
+
+- **T20: the `isp-m0 is not readable, using isp_info` line is INFO, no longer
+  a WARN.** `isp_info` is the normal ISP dump on the older SDK, but as a WARN
+  it landed in `last_errors` and the WebUI health tile said "Check · errors:
+  DAYNIGHT" on every T20 while day/night worked fine.
+
 ## [1.9.25] - 2026-09-26
 
 ### Added

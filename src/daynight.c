@@ -409,8 +409,9 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
                 fp = fopen(ALT[i], "r");
                 if (fp && used != ALT[i]) {
                     used = ALT[i];
-                    LOGW(MOD, "%s is not readable, using %s instead - set "
-                              "daynight.isp_path to silence this",
+                    /* INFO, not WARN: on T20 this is the normal path, and a
+                     * WARN lands in last_errors and turns the WebUI health tile */
+                    LOGI(MOD, "%s is not readable, using %s instead",
                          dn->isp_path, ALT[i]);
                 }
             }
