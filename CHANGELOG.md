@@ -6,6 +6,13 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.9.25] - 2026-09-26
+
+### Added
+
+- **`GET /control?clients=1`: `bytes`** — the total sent to each client since
+  it connected (64-bit, no wrap); the WebUI shows it as "Total".
+
 ## [1.9.24] - 2026-09-26
 
 ### Added
