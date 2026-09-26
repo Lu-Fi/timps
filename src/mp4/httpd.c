@@ -13,6 +13,7 @@
 #include "../control.h"
 #include "../daynight.h"
 #include "../events.h"
+#include "../clients.h"
 #endif
 #ifdef USE_BC_WS
 #include "../rtsp/talk_ws.h"
@@ -143,7 +144,10 @@ struct httpd {
  * NULL test on all the short-lived endpoints. */
 typedef struct { int fd; const ms_config *cfg; int local; int head; void *tls; void *tls_ctx;
                  ms_trace_ctx *tr;
-                 int slot;   /* g_clientreg index, -1 = unregistered */ } hconn;
+                 int slot;   /* g_clientreg index, -1 = unregistered */
+                 struct sockaddr_in peer;
+                 int cid;    /* clients.h entry while streaming, else -1 */
+                 char ua[CLIENTS_AGENT_MAX]; } hconn;
 
 /* connection I/O that transparently uses TLS when this is an HTTPS connection
  * (c->tls set), otherwise the plain socket. Without USE_TLS these are exactly
@@ -164,6 +168,7 @@ static int csend(hconn *c, const void *buf, int len)
         rc = net_sendall(c->fd, buf, len);
     }
     ms_trace_wr_end(c->tr, t_wr, rc >= 0 ? len : 0);
+    if (rc >= 0) clients_bytes(c->cid, len);
     return rc;
 }
 
@@ -193,6 +198,7 @@ static int csendv(hconn *c, struct iovec *iov, int niov)
         rc = net_sendmsg_all(c->fd, iov, niov);
     }
     ms_trace_wr_end(c->tr, t_wr, rc >= 0 ? total : 0);
+    if (rc >= 0) clients_bytes(c->cid, total);
     return rc;
 }
 /* one-line exit-reason log for the streaming loops: a failed csend() is the
@@ -404,6 +410,7 @@ static void stream_mp4(hconn *c, int chn)
      * having, but for the OTHER parking spot: a csend() blocked on a client
      * that stopped reading, which no queue close can reach. */
     ms_creg_set_queue(&g_clientreg, c->slot, &q);
+    c->cid = clients_add(CLI_FMP4, &c->peer, chn, c->ua);
     /* fMP4 can only carry AAC; use it only if the HAL actually produces AAC */
     int acodec=MS_AC_NONE, asr=0, ach=0;
     /* the return value is the source's "active" flag: hub_clear_audio_params()
@@ -770,6 +777,7 @@ out:
     if (can_audio) hub_unsubscribe(HUB_AUDIO_SRC, &q);
     /* withdraw before the queue dies: after this returns no stop-side
      * fanqueue_close() can reach it any more (see ms_client_reg in util.h) */
+    clients_del(c->cid); c->cid = -1;
     ms_creg_set_queue(&g_clientreg, c->slot, NULL);
     fanqueue_free(&q);
     c->tr = NULL;           /* trc dies with this frame; unhook before return */
@@ -892,6 +900,9 @@ static void stream_mjpeg(hconn *c, int src, const char *bnd)
      * it - see stream_mp4 above. The csend()s before this point are covered by
      * the fd shutdown instead. */
     ms_creg_set_queue(&g_clientreg, c->slot, &q);
+    /* list the video stream the JPEG rides on; -1 = the dedicated jpeg.* channel */
+    c->cid = clients_add(CLI_MJPEG, &c->peer, src > HUB_JPEG_SRC ? src - HUB_JPEG_SRC - 1 : -1,
+                         c->ua);
     int64_t last_pkt_us = ms_now_us();   /* H-2: encoder-stall bound, see above */
     while (1) {
         /* P-03 (fanqueue): ONE lock/unlock for the pop and the closed? this
@@ -945,6 +956,7 @@ static void stream_mjpeg(hconn *c, int src, const char *bnd)
         }
     }
     hub_unsubscribe(src, &q);
+    clients_del(c->cid); c->cid = -1;
     ms_creg_set_queue(&g_clientreg, c->slot, NULL);
     fanqueue_free(&q);
 }
@@ -1364,6 +1376,7 @@ static void events_stream(hconn *c, const char *path, const char *cors)
         if (csendv(c, iov, 2) < 0) goto out;
     }
     LOGI(MOD,"sse client streaming (%d/%d)", g_nsse, max);
+    c->cid = clients_add(CLI_EVENTS, &c->peer, -1, c->ua);
 
     {
     ms_motion_status lm;                          /* last-sent snapshots */
@@ -1490,6 +1503,7 @@ static void events_stream(hconn *c, const char *path, const char *cors)
     }
     }
 out:
+    clients_del(c->cid); c->cid = -1;
     __sync_fetch_and_sub(&g_nsse, 1);
     LOGI(MOD,"sse client disconnected (%d left)", g_nsse);
 }
@@ -1737,6 +1751,7 @@ static void *conn_thread(void *arg)
     }
     if (n>0) {
         buf[n]=0;
+        clients_agent_from(buf, c->ua, sizeof c->ua);
         char method[8], path[256];
         if (sscanf(buf,"%7s %255s",method,path)==2) {
             /* HEAD = GET semantics with the body suppressed everywhere
@@ -1890,6 +1905,23 @@ static void *conn_thread(void *arg)
                             http_send_ex(c,"503 Service Unavailable","text/plain",cors,"oom",3);
                         }
                         #undef CONTROL_FIELDS_CAP
+                        goto control_get_done;
+                    }
+                    /* GET /control?clients=1: who streams what (clients.h),
+                     * for the WebUI's client list. Own buffer like stats=1. */
+                    if (strstr(path, "clients=1")) {
+                        char *cj = (char *)malloc(CLIENTS_JSON_CAP);
+                        if (cj) {
+                            int cn = clients_json(cj, CLIENTS_JSON_CAP);
+                            if (cn < 0)
+                                http_send_ex(c,"500 Internal Server Error","text/plain",
+                                             cors,"clients json too large",22);
+                            else
+                                http_send_ex(c,"200 OK","application/json",cors,cj,cn);
+                            free(cj);
+                        } else {
+                            http_send_ex(c,"503 Service Unavailable","text/plain",cors,"oom",3);
+                        }
                         goto control_get_done;
                     }
                     /* GET /control?stats=1: the WebUI stats card's slow path
@@ -2304,7 +2336,7 @@ static void *conn_thread(void *arg)
                          * bytes. webrtc_whep() 500s rather than truncate. */
                         char *ansbuf = (char*)malloc(8192);
                         char sid[33] = "";
-                        int rc = ansbuf ? webrtc_whep(offer, ip, rchn, ansbuf,
+                        int rc = ansbuf ? webrtc_whep(offer, ip, rchn, c->ua, ansbuf,
                                                       8192, sid, sizeof sid) : 503;
                         if (rc == 201) {
                             char extra[768];
@@ -2426,6 +2458,7 @@ static void *accept_thread(void *arg)
         hconn *c = (hconn*)calloc(1,sizeof(hconn));
         if (!c){ close(fd); continue; }
         c->fd=fd; c->cfg=h->cfg; c->slot=-1;   /* real slot assigned in conn_thread */
+        c->peer=peer; c->cid=-1;
         /* loopback (127.0.0.0/8) clients skip auth: the local web UI must always
          * be able to reach the streamer, external clients still need the
          * password. This replaces prudynt's "web UI auth key". */

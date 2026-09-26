@@ -6,6 +6,16 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- **`GET /control?clients=1`** — who is streaming what: one entry per RTSP
+  session, fMP4 / MJPEG / `/events` connection, WebRTC session and SRT receiver
+  with `ip`, `port`, `proto`, `chn`, `since_s`, `kbps` and the client's
+  `agent` (User-Agent, e.g. `FFmpeg Frigate/0.17.2`, `LibVLC/3.0.20`, the
+  browser). Rates are measured per client at read time over at least 1 s.
+  One-shot requests (`/control`, snapshots) are not listed. Costs ~8 KB of
+  static RAM for 40 entries, one plain add per send, and +4 KB binary (T31).
+
 ## [1.9.23] - 2026-09-25
 
 ### Added

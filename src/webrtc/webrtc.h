@@ -30,7 +30,7 @@ int  webrtc_available(void);
  * send; on 201 `ans` holds the SDP answer and `sid` the session id for the
  * Location header. */
 int  webrtc_whep(const char *offer, const char *local_ip, int req_chn,
-                 char *ans, int anscap, char *sid, int sidcap);
+                 const char *agent, char *ans, int anscap, char *sid, int sidcap);
 
 /* DELETE /webrtc/whep/<id> (the Location the 201 handed out). Stops the
  * session's media thread and returns only once it has actually released its

@@ -352,7 +352,9 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
 * **Unter-Endpunkte**: `GET /control?fields=1` (Inventar aller POST-baren
   Felder, direkt aus denselben Tabellen erzeugt, die der POST benutzt),
   `?stats=1` (schlanker Zahlensatz für die Stats-Karte statt des 8-KB-Dokuments),
-  `?dn_history=1[&last=N|&since=S][&max=N]` (Day/Night-Serie mit Cursor-Paging).
+  `?dn_history=1[&last=N|&since=S][&max=N]` (Day/Night-Serie mit Cursor-Paging),
+  `?clients=1` (verbundene Clients: IP, Protokoll, Stream, Verbindungsdauer,
+  Datenrate pro Client und User-Agent – z. B. Frigate, VLC, ffmpeg, Browser).
 * **`GET /events`** – Server-Sent-Events statt Polling:
   `?stream=motion,daynight,stats,config`. `motion` und `daynight` senden beim
   Verbinden einmal den vollen Zustand, `stats` tickt alle `events.stats_ms`

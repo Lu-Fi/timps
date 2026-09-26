@@ -12,6 +12,7 @@
 #include "../fanqueue.h"
 #include "../codec/vparam.h"
 #include "../rtsp/rtp.h"
+#include "../clients.h"
 
 #include <stdio.h>
 #include <stdarg.h>
@@ -86,6 +87,8 @@ typedef struct {
     rtp_track          vtrack, atrack;
     fanqueue           q;
     int                qinit, subbed, subbed_a;
+    int                cid;               /* clients.h entry while streaming */
+    char               ua[CLIENTS_AGENT_MAX];   /* the WHEP POST's User-Agent */
     int64_t            last_idr_us;
 } wrtc_session;
 
@@ -394,6 +397,7 @@ static int same_addr(const struct sockaddr_in *a, const struct sockaddr_in *b)
 
 static void sess_release(wrtc_session *s)
 {
+    clients_del(s->cid); s->cid = -1;
     if (s->subbed)   { hub_unsubscribe(s->chn, &s->q); s->subbed = 0; }
     if (s->subbed_a) { hub_unsubscribe(s->asrc, &s->q); s->subbed_a = 0; }
     if (s->qinit)  { fanqueue_free(&s->q); s->qinit = 0; }
@@ -428,6 +432,7 @@ static int wrtc_rtp_out(void *ctx, const uint8_t *hdr, int hlen,
         r = sendto(s->fd, buf, (size_t)n, 0,
                    (struct sockaddr *)&s->peer, sizeof s->peer);
     } while (r < 0 && errno == EINTR);
+    if (r > 0) clients_bytes(s->cid, (int)r);
     /* A UDP send error (ENOBUFS, a transient EHOSTUNREACH) abandons the rest
      * of this access unit but never the session - a WebRTC peer that is really
      * gone is caught by the consent-check idle timeout instead. */
@@ -493,6 +498,7 @@ static int sess_start_media(wrtc_session *s)
     hub_count_drops(&s->q, s->chn, HUB_DROP_WEBRTC);
     if (hub_subscribe(s->chn, &s->q) != 0) return -1;
     s->subbed = 1;
+    s->cid = clients_add(CLI_WEBRTC, &s->peer, s->chn, s->ua);   /* peer is bound by now */
     /* One queue for both sources, exactly as an RTSP session does it: packets
      * carry their own media tag, so the ordering the hub published in is the
      * ordering that goes on the wire. */
@@ -682,7 +688,7 @@ static int udp_bind_session(void)
 /* ---------------- WHEP ---------------- */
 
 int webrtc_whep(const char *offer, const char *local_ip, int req_chn,
-                char *ans, int anscap, char *sid, int sidcap)
+                const char *agent, char *ans, int anscap, char *sid, int sidcap)
 {
     if (!g_dtls_ctx) return 404;
     if (!offer || strncmp(offer, "v=0", 3)) return 400;
@@ -822,9 +828,14 @@ int webrtc_whep(const char *offer, const char *local_ip, int req_chn,
     s->gen  = ++g_gen_ctr;
     s->used = 1;
     s->fd = -1;
+    s->cid = -1;
     pthread_mutex_unlock(&g_mx);
 
     s->chn = chn;
+    if (agent) {
+        strncpy(s->ua, agent, sizeof s->ua - 1);
+        s->ua[sizeof s->ua - 1] = 0;
+    }
     s->pt  = pt;
     memcpy(s->peer_fp, peer_fp, sizeof s->peer_fp);
     if (am && am->accept) { s->have_audio = 1; s->apt = apt; s->asrc = asrc; }

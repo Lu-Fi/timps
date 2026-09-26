@@ -18,6 +18,7 @@
 #include "util.h"
 #include "codec/aac.h"
 #include "config.h"
+#include "clients.h"
 
 #include <srt/srt.h>
 /* srt/srt.h drags in <syslog.h> (via logging_api.h), whose LOG_INFO/LOG_DEBUG
@@ -154,6 +155,8 @@ typedef struct {
     int       a_idx;       /* sampling_frequency_index (cached) */
     uint8_t   batch[TS_BATCH_PKTS * 188];  /* accumulated, not-yet-sent packets */
     int       batch_n;                     /* packets currently in batch[] */
+    struct sockaddr_in peer;               /* receiver (listener) / target (caller) */
+    int       cid;                         /* clients.h entry while streaming */
 } ts_mux;
 
 /* One srt_bstats() sample per SRT_STATS_PERIOD_S while a receiver is being
@@ -238,7 +241,9 @@ static int ts_flush(ts_mux *m)
                                             * the caller tears the client
                                             * down anyway, and we must not
                                             * resend stale packets on retry */
-    return srt_sendmsg2(m->sock, (const char *)m->batch, n * 188, NULL) < 0 ? -1 : 0;
+    if (srt_sendmsg2(m->sock, (const char *)m->batch, n * 188, NULL) < 0) return -1;
+    clients_bytes(m->cid, n * 188);
+    return 0;
 }
 
 /* Previously issued one srt_sendmsg2() syscall per 188-byte TS packet - a
@@ -430,6 +435,7 @@ static void stream_run(ts_mux *m)
     if (fanqueue_init(&q, SRT_QCAP)) return;
     hub_count_drops(&q, chn, HUB_DROP_SRT);
     if (hub_subscribe(chn, &q) != 0) { fanqueue_free(&q); return; }
+    m->cid = clients_add(CLI_SRT, &m->peer, chn, NULL);
     __sync_fetch_and_add(&g_connected, 1);
 
     int ac = MS_AC_NONE, asr = 0, ach = 0, sub_a = 0;
@@ -548,6 +554,7 @@ static void stream_run(ts_mux *m)
         if (rc < 0) break;                               /* client gone */
     }
 
+    clients_del(m->cid); m->cid = -1;
     hub_unsubscribe(chn, &q);
     if (sub_a) hub_unsubscribe(HUB_AUDIO_SRC, &q);
     fanqueue_free(&q);
@@ -675,6 +682,7 @@ static void *listen_thread(void *arg)
         if (!m) { srt_close(cs); continue; }
         m->slot = srt_client_reg(cs);   /* -1 when full: this thread stays sole owner */
         m->sock = cs;
+        if (peer.ss_family == AF_INET) memcpy(&m->peer, &peer, sizeof m->peer);
         __sync_fetch_and_add(&g_srt_clients, 1);
         pthread_t t;
         if (ms_thread_create(&t, MS_STACK_CONN, client_thread, m) == 0) pthread_detach(t);
@@ -743,6 +751,8 @@ static void *caller_thread(void *arg)
 
         const char *why = NULL;
         struct addrinfo hints, *ai = NULL;
+        struct sockaddr_in cpeer;
+        memset(&cpeer, 0, sizeof cpeer);
         memset(&hints, 0, sizeof hints);
         hints.ai_family = AF_INET; hints.ai_socktype = SOCK_DGRAM;
         char ps[8]; snprintf(ps, sizeof ps, "%d", port);
@@ -755,6 +765,8 @@ static void *caller_thread(void *arg)
         } else {
             if (srt_connect(s, ai->ai_addr, (int)ai->ai_addrlen) == SRT_ERROR)
                 why = srt_getlasterror_str();
+            else if (ai->ai_family == AF_INET)
+                memcpy(&cpeer, ai->ai_addr, sizeof cpeer);
             freeaddrinfo(ai);
         }
 
@@ -762,7 +774,7 @@ static void *caller_thread(void *arg)
             LOGI(MOD, "connected to %s:%d", host, port);
             quiet = 0;
             ts_mux m; memset(&m, 0, sizeof m);
-            m.sock = s; m.slot = -1;
+            m.sock = s; m.slot = -1; m.peer = cpeer;
             int64_t t0 = ms_now_us();
             stream_run(&m);        /* returns on send error / stall / stop */
             srt_close_caller();

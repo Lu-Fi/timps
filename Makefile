@@ -156,7 +156,7 @@ CXXRT_LDFLAGS :=
 endif
 
 BASE := src/util.c src/log.c src/config.c src/frame.c src/fanqueue.c src/net.c \
-        src/hub.c src/md5.c src/auth.c src/codec/nal.c src/codec/vparam.c src/codec/aac.c src/codec/g711.c \
+        src/hub.c src/clients.c src/md5.c src/auth.c src/codec/nal.c src/codec/vparam.c src/codec/aac.c src/codec/g711.c \
         src/rtsp/rtp.c src/rtsp/rtsp.c src/mp4/fmp4.c src/mp4/httpd.c src/record.c src/timelapse.c src/srt.c src/main.c \
         $(if $(filter 1,$(USE_TRACE)),src/trace.c)
 
@@ -278,7 +278,7 @@ IMPLIBS ?= -l:libimp.a -l:libalog.a -l:libsysutils.a
 # against a distro/buildroot that only ships libfaac.so.
 FAACLIB ?= -l:libfaac.a
 
-.PHONY: all target sim clean strip test-auth test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp
+.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp
 
 all: target
 
@@ -373,6 +373,12 @@ test-fmp4:
 # (MS_MJPEG_QCAP = 2). Links the real src/fanqueue.c, needs no hardware and no
 # running daemon; exit code is the test result.
 FQTEST_SRC := scripts/test_fanqueue.c src/fanqueue.c src/frame.c
+# Host-only unit test for the streaming-client table (src/clients.c)
+test-clients:
+	$(HOSTCC) $(CFLAGS) -Isrc scripts/test_clients.c src/clients.c src/util.c src/log.c \
+	  $(LDFLAGS) -lpthread -o $(BIN)-clientstest
+	@./$(BIN)-clientstest; rc=$$?; rm -f $(BIN)-clientstest; exit $$rc
+
 test-fanqueue:
 	$(HOSTCC) $(CFLAGS) -Isrc $(FQTEST_SRC) \
 	  $(LDFLAGS) -lpthread -o $(BIN)-fqtest

@@ -9,6 +9,7 @@
 #include "../tls.h"
 #include "../trace.h"
 #include "backchannel.h"
+#include "../clients.h"
 #if defined(USE_TLS) || defined(USE_BACKCHANNEL)
 #include <fcntl.h>
 #endif
@@ -138,6 +139,7 @@ typedef struct {
                                       * succeeded on this sink (see reap_check) */
     ms_trace_ctx      *tr;           /* opt-in send trace (trace.h); NULL/off =
                                       * every hook below is one global-int test */
+    int                cid;          /* clients.h entry, -1 = not listed */
 #ifdef USE_TLS
     void              *tls;          /* ms_tls_conn* when interleaved over RTSPS */
 #endif
@@ -230,6 +232,7 @@ static int sink_send(void *ctx, const uint8_t *hdr, int hlen,
     rtp_sink *s = (rtp_sink*)ctx;
     int len = hlen + plen;
     if (len > RTSP_ILV_MAX) return -1;
+    clients_bytes(s->cid, s->tcp ? 4 + len : len);   /* batched or not, once */
     if (s->tcp) {
         /* one write = one TCP segment: the 4-byte interleave header, the RTP
          * header and the payload go to the kernel in ONE syscall (avoids a
@@ -386,6 +389,7 @@ typedef struct {
     int                 playing;
     int                 play_cseq;     /* CSeq of PLAY; 200 sent after subscribe */
     int                 logged_exit;   /* stream_loop() already logged why (see log_send_fail) */
+    char                ua[CLIENTS_AGENT_MAX];   /* first User-Agent seen, for clients.h */
 #ifdef USE_BACKCHANNEL
     int                 have_bc;               /* client SETUP the backchannel (trackID=2) */
     int                 bc_udp[2];             /* server rtp,rtcp recv fds (UDP), -1 none */
@@ -840,6 +844,7 @@ static int handle_request(session *s, char *req)
 {
     int cseq = hdr_int(req, "CSeq", 0);
     char path[256]; extract_path(req, path, sizeof path);
+    if (!s->ua[0]) clients_agent_from(req, s->ua, sizeof s->ua);
 
     if (!strncmp(req, "OPTIONS", 7)) {
         send_resp(s, cseq,
@@ -1723,7 +1728,15 @@ static void *client_thread(void *arg)
          * writes never fail either, so nothing else would end it. Withdrawn
          * before fanqueue_free() so no stop-side close can reach a dead queue. */
         ms_creg_set_queue(&g_clientreg, s->slot, &s->q);
+        int kind = s->tcp ? CLI_RTSP_TCP : CLI_RTSP_UDP;
+#ifdef USE_TLS
+        if (s->tls) kind = CLI_RTSPS;
+#endif
+        int cid = clients_add(kind, &s->peer, s->vchn, s->ua);
+        s->vsink.cid = s->asink.cid = cid;
         stream_loop(s);
+        s->vsink.cid = s->asink.cid = -1;
+        clients_del(cid);
         ms_creg_set_queue(&g_clientreg, s->slot, NULL);
         fanqueue_free(&s->q);
     }
@@ -1785,6 +1798,7 @@ static void accept_loop(rtsp_server *sv, int lfd, int port, void *tls_ctx)
         session *s = (session*)calloc(1,sizeof(session));
         if (!s){ close(cfd); __sync_fetch_and_sub(&g_nclients, 1); continue; }
         s->fd=cfd; s->peer=peer; s->cfg=sv->cfg; s->vchn=-1;
+        s->vsink.cid = s->asink.cid = -1;   /* listed only while playing */
         s->slot = ms_creg_add(&g_clientreg, cfd);   /* M3: visible to rtsp_stop() */
         /* L15: fds are 0 (calloc), not "unbound", after this - a bound fd
          * can legitimately be 0 (stdin closed at startup) or overlap with

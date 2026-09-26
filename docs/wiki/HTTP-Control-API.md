@@ -261,9 +261,9 @@ send `Authorization`, e.g. `<img>`):
 curl "http://127.0.0.1:8880/snapshot.jpg?token=$(cat /run/timps.token)" -o snap.jpg
 ```
 
-### Scoped sub-endpoints — `?fields=1`, `?stats=1`, `?dn_history=1`
+### Scoped sub-endpoints — `?fields=1`, `?stats=1`, `?dn_history=1`, `?clients=1`
 
-Three `GET /control` query flags return a *different, much smaller* document
+Four `GET /control` query flags return a *different, much smaller* document
 instead of the full snapshot. They share the same auth/CORS gate as the plain
 `GET`, and each gets its own small heap buffer rather than the snapshot's
 `CONTROL_JSON_CAP`, so a frequent poll never pays for the whole document. They
@@ -275,6 +275,7 @@ elsewhere in `src/mp4/httpd.c` — there is no full query parser.
 | `?fields=1` | The inventory of every `F_CTRL`-flagged (i.e. POST-able) config field, grouped by section. Walked from the same tables `POST /control` applies, so it cannot drift from what the POST really accepts; `scripts/timps-qa.sh` section 8 diffs its own coverage list against it. | 1.8.1 |
 | `?stats=1` | The slow-path complement of the `/events` `stats` push. | 1.9.18 |
 | `?dn_history=1` | The day/night decision series out of the in-RAM ring. | 1.9.15 |
+| `?clients=1` | The connected streaming clients with protocol, stream, rate and User-Agent. | 1.9.24 |
 
 #### `?stats=1`
 
@@ -296,6 +297,35 @@ arrive pushed. The contract is "what the stats push can't carry", not "encoder".
 snapshot's `encoder` object follows. The shape mirrors the corresponding
 sub-objects of the snapshot, so a client can read either source with one code
 path.
+
+#### `?clients=1`
+
+One entry per streaming consumer: RTSP session (`rtsp/udp`, `rtsp/tcp`,
+`rtsps`), fMP4 (`fmp4`), MJPEG (`mjpeg`), SSE (`events`), WebRTC (`webrtc`)
+and SRT (`srt`). One-shot requests such as `/control` or `/snapshot.jpg` are
+not listed.
+
+```json
+{"clients":[
+ {"ip":"192.168.178.17","port":32834,"proto":"rtsp/tcp","chn":0,
+  "since_s":41,"kbps":1600,"agent":"FFmpeg Frigate/0.17.2-3d4dd3a"},
+ {"ip":"192.168.178.103","port":46712,"proto":"rtsp/udp","chn":1,
+  "since_s":36,"kbps":214,"agent":"LibVLC/3.0.20 (LIVE555 Streaming Media v2016.11.28)"}]}
+```
+
+- `chn` is the source stream (`0` main, `1` sub); `-1` where none applies
+  (`events`, the plain MJPEG snapshot stream).
+- `kbps` is what timps sent to that client (RTP incl. the 4-byte interleave
+  header on TCP, fMP4/MJPEG body bytes, SRTP, TS packets), averaged since the
+  previous read but over at least 1 s, so several pollers cannot shrink the
+  window to noise. The first read averages since the connection started.
+- `agent` is the request's `User-Agent`, truncated to 159 characters, `""`
+  when the client sent none. SRT has no such header and is always `""`.
+  WebRTC takes it from the WHEP `POST`.
+- `ip`/`port` is the TCP peer (the RTSP control connection for `rtsp/udp`);
+  for `webrtc` and `srt` it is the UDP media peer.
+- The table holds 40 entries; a client beyond that streams normally but is
+  not listed.
 
 #### `?dn_history=1`
 

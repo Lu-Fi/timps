@@ -578,6 +578,7 @@ with it" semantics.
 | --- | --- |
 | `?fields=1` | Inventory of every POST-able config field, grouped by section. Generated from the same tables the POST walks, so it cannot drift. |
 | `?stats=1` | Small object: per-stream `gop`/`profile`/`rc_mode` + `IMP_Encoder_Query` backlog. Exists so a stats card does not poll the whole document. |
+| `?clients=1` | Connected streaming clients: `ip`, `port`, `proto` (`rtsp/udp`, `rtsp/tcp`, `rtsps`, `fmp4`, `mjpeg`, `events`, `webrtc`, `srt`), `chn`, `since_s`, `kbps` (per client, measured at read time), `agent` (User-Agent; Frigate sends `FFmpeg Frigate/<ver>`). Snapshots and `/control` itself are not listed. Since 1.9.24. |
 | `?dn_history=1[&last=N\|&since=S][&max=N]` | Day/night decision series from the in-RAM ring sized by `daynight.history_s`. Rows are arrays `[t, gain, exposure, luma, bright%, mode]`; ≤600 rows/response, cursor paging via `next`/`head`/`oldest`/`lapped`. |
 
 ### `POST /control`
