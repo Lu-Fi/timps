@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.9.24] - 2026-09-26
+
 ### Added
 
 - **`GET /control?clients=1`** — who is streaming what: one entry per RTSP
