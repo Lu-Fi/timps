@@ -34,6 +34,16 @@ an 8 kHz or 16 kHz `audio.samplerate` (16 kHz is filtered and halved to G.711's
 8 kHz clock); any other rate logs a warning and turns the key off. Restart-only,
 like `audio.codec`.
 
+**Audio sets the WebRTC delay.** The browser holds the picture back until the
+matching sound is audible, so with audio on, the viewer's audio output decides
+the delay. Measured on a T31 in the LAN (2026-09-26): ≈ 360 ms with a
+Bluetooth headset (~240 ms output latency alone), ≈ 180 ms on a laptop's
+built-in speaker, ≈ 85 ms without an audio track. The camera's own share is
+~20 ms (`GET /control?clients=1`, `lat_ms`); the WebRTC preview shows the
+sum as `delay ≈ N ms`. Sending the G.711 as 20 ms instead of 40 ms packets
+was tried and made it worse (the two halves leave back-to-back, which the
+browser's audio buffer treats as a burst).
+
 `audio.channels=2` / `audio.force_stereo=1` produce "simulated stereo": the
 mono mic signal duplicated to L=R, AAC only — not a genuine stereo
 capture path (the hardware is mono).
