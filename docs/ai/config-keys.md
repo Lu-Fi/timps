@@ -1,9 +1,9 @@
 # timps configuration keys — complete reference
 
-**Applies to timps v1.9.25 (source: `main`, 2026-09-26).**
+**Applies to timps v1.9.26 (source: `main`, 2026-09-26).**
 
-A statement marked **since v1.9.26 (unreleased)** is already in the source but
-not in any tagged release yet — on a v1.9.25 camera the *previous* behaviour is
+A statement marked **since v1.9.27 (unreleased)** is already in the source but
+not in any tagged release yet — on a v1.9.26 camera the *previous* behaviour is
 the one to describe.
 
 Authoritative source: `src/config.c` (the `cfg_field` tables and
@@ -1371,7 +1371,7 @@ into support questions.
 | --- | --- | --- |
 | **T40, T41** | `ISP_NEW_TUNING_API`: no `GetTotalGain`, no `ISP_HAS_EXPR` (no `GetExpr`/integration-time readback), and no `ISP_HAS_AELUMA`. `hal_isp_total_gain()` and `hal_isp_ae_luma()` return −1, so **day/night runs on the `/proc` scrape alone** — no IMP cross-check, and the exposure index degrades to whatever the dump publishes. | `src/isp_caps.h`, `src/hal/hal_ingenic.c` |
 | **T21, T23, T31, C100** | The only SoCs with `IMP_ISP_Tuning_GetAeLuma` (`ISP_HAS_AELUMA`), day/night's secondary photosensing metric. | `src/isp_caps.h` |
-| **T20** (old SDK) | The ISP dump is `/proc/jz/isp/isp_info`, not `isp-m0` — `isp-m0` does not exist in that SDK and never will. `daynight.c` carries an explicit fallback list, so `daynight.isp_path` does not have to be changed, and the `is not readable, using … instead` line there is expected (INFO since v1.9.26 (unreleased), a WARN before that). | `src/daynight.c` |
+| **T20** (old SDK) | The ISP dump is `/proc/jz/isp/isp_info`, not `isp-m0` — `isp-m0` does not exist in that SDK and never will. `daynight.c` carries an explicit fallback list, so `daynight.isp_path` does not have to be changed, and the `is not readable, using … instead` line there is expected (INFO since v1.9.26, a WARN before that). | `src/daynight.c` |
 | **T10** | `jpeg.quality` / `videoN.jpeg_quality` are **never applied** — custom quantization tables are known to degrade JPEG quality on T10, so the SDK default is kept and one WARN is logged. | `src/hal/hal_ingenic.c` |
 | **T10, T20, T21, T30** | No `ISP_HAS_SENSOR_ATTR` (`GetSensorAttr`), so the framesource input geometry comes **only** from `sensor.width`/`sensor.height`. A sensor driver that reports `0x0` cannot be compensated for there. | `src/isp_caps.h` |
 | **T31 only** | `encoder.<n>.ave_bitrate` appears in `GET /control?stats=1` (`IMP_Encoder_GetChnAveBitrate`). Elsewhere the key is simply absent, not zero. | `src/hal/hal.h`, `src/control.c` |
