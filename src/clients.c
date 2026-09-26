@@ -1,4 +1,5 @@
 #include "clients.h"
+#include "log.h"
 #include "util.h"
 
 #include <arpa/inet.h>
@@ -8,7 +9,8 @@
 #include <string.h>
 #include <strings.h>
 
-typedef struct {
+typedef struct cl_entry cl_entry;
+struct cl_entry {
     int                used;
     int                kind, chn;
     struct sockaddr_in peer;
@@ -20,7 +22,9 @@ typedef struct {
     int64_t            q_us;
     unsigned           kbps;
     char               agent[CLIENTS_AGENT_MAX];
-} cl_entry;
+};
+
+static uint64_t cl_total(const cl_entry *e);
 
 static cl_entry        g_cl[CLIENTS_MAX];
 static pthread_mutex_t g_cl_mx = PTHREAD_MUTEX_INITIALIZER;
@@ -28,6 +32,17 @@ static pthread_mutex_t g_cl_mx = PTHREAD_MUTEX_INITIALIZER;
 static const char *const KIND[] = {
     "rtsp/udp", "rtsp/tcp", "rtsps", "fmp4", "mjpeg", "events", "webrtc", "srt",
 };
+
+#define MOD "CLIENT"
+#define KNAME(k) ((k) >= 0 && (k) < (int)(sizeof KIND / sizeof KIND[0]) ? KIND[k] : "?")
+/* every WebUI tab holds a few /events streams; keep those out of the INFO log */
+#define CL_LOG(k, ...) log_printf((k) == CLI_EVENTS ? LOG_DEBUG : LOG_INFO, MOD, __VA_ARGS__)
+
+static const char *cl_ip(const cl_entry *e, char *buf, int cap)
+{
+    if (!inet_ntop(AF_INET, &e->peer.sin_addr, buf, (socklen_t)cap)) snprintf(buf, (size_t)cap, "?");
+    return buf;
+}
 
 void clients_agent_from(const char *hdrs, char *out, int cap)
 {
@@ -69,14 +84,25 @@ int clients_add(int kind, const struct sockaddr_in *peer, int chn, const char *a
             break;
         }
     pthread_mutex_unlock(&g_cl_mx);
+    char ip[INET_ADDRSTRLEN];
+    if (id >= 0)
+        CL_LOG(kind, "+ %s %s:%u chn=%d agent=\"%s\"", KNAME(kind), cl_ip(&g_cl[id], ip, sizeof ip),
+               (unsigned)ntohs(g_cl[id].peer.sin_port), chn, g_cl[id].agent);
+    else
+        LOGW(MOD, "table full, %s client not listed", KNAME(kind));
     return id;
 }
 
 void clients_del(int id)
 {
     if (id < 0 || id >= CLIENTS_MAX) return;
+    cl_entry *e = &g_cl[id];
+    char ip[INET_ADDRSTRLEN];
+    CL_LOG(e->kind, "- %s %s:%u after %llds, %llu bytes", KNAME(e->kind), cl_ip(e, ip, sizeof ip),
+           (unsigned)ntohs(e->peer.sin_port), (long long)((ms_now_us() - e->since_us) / 1000000),
+           (unsigned long long)cl_total(e));
     pthread_mutex_lock(&g_cl_mx);
-    g_cl[id].used = 0;
+    e->used = 0;
     pthread_mutex_unlock(&g_cl_mx);
 }
 
@@ -125,15 +151,15 @@ int clients_json(char *out, int cap)
             e->q_bytes = b;
             e->q_us = now;
         }
-        char ip[INET_ADDRSTRLEN] = "?";
-        inet_ntop(AF_INET, &e->peer.sin_addr, ip, sizeof ip);
+        char ip[INET_ADDRSTRLEN];
+        cl_ip(e, ip, sizeof ip);
         char ag[CLIENTS_AGENT_MAX * 2];
         ms_json_esc(e->agent, ag, sizeof ag);
         len += snprintf(out + len, (size_t)(cap - len),
             "%s{\"ip\":\"%s\",\"port\":%u,\"proto\":\"%s\",\"chn\":%d,"
             "\"since_s\":%lld,\"kbps\":%u,\"bytes\":%llu,\"agent\":\"%s\"}",
             first ? "" : ",", ip, (unsigned)ntohs(e->peer.sin_port),
-            (e->kind >= 0 && e->kind < (int)(sizeof KIND / sizeof KIND[0])) ? KIND[e->kind] : "?",
+            KNAME(e->kind),
             e->chn, (long long)((now - e->since_us) / 1000000), e->kbps,
             (unsigned long long)b, ag);
         first = 0;

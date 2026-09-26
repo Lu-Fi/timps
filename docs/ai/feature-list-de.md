@@ -355,7 +355,9 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   `?dn_history=1[&last=N|&since=S][&max=N]` (Day/Night-Serie mit Cursor-Paging),
   `?clients=1` (verbundene Clients: IP, Protokoll, Stream, Verbindungsdauer,
   Datenrate und übertragene Summe pro Client, User-Agent – z. B. Frigate,
-  VLC, ffmpeg, Browser).
+  VLC, ffmpeg, Browser). **Seit v1.9.26 (unveröffentlicht)** zusätzlich im Log
+  (Modul `CLIENT`): eine Zeile beim Verbinden mit User-Agent, eine beim Trennen
+  mit Dauer und Bytes.
 * **`GET /events`** – Server-Sent-Events statt Polling:
   `?stream=motion,daynight,stats,config`. `motion` und `daynight` senden beim
   Verbinden einmal den vollen Zustand, `stats` tickt alle `events.stats_ms`

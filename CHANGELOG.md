@@ -6,6 +6,13 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- **Client log lines** (module `CLIENT`): `+ rtsp/tcp 192.168.178.17:40904
+  chn=0 agent="FFmpeg Frigate/0.17.2"` when a streaming client connects and
+  `- … after 8s, 377529 bytes` when it leaves, for every protocol. `/events`
+  connections log at DEBUG only, so an open WebUI tab doesn't fill the log.
+
 ## [1.9.25] - 2026-09-26
 
 ### Added

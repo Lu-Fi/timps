@@ -77,6 +77,7 @@ a row.
 | `RTSP` | `rtsp/rtsp.c` | 4 | 8 | 5 | 1 | per-drop queue-overflow detail, dropped P-frames, IDR re-requests (the *first* keyframe drop of a session is a WARN) |
 | `HTTP` | `mp4/httpd.c` | 3 | 13 | 10 | 5 | same for the fMP4/MJPEG side, including adaptive freeze (first keyframe drop per client is a WARN) |
 | `HUB` | `hub.c` | 0 | 1 | 0 | 2 | fan-out subscribe/unsubscribe at debug, plus the one always-on line: a per-(consumer kind, stream) queue-overflow summary, at most once per 60 s — the counter behind it is `/control` `queue_drops` |
+| `CLIENT` | `clients.c` | 0 | 1 | 2 | 0 | — (one line per streaming client: `+ <proto> <ip>:<port> chn=N agent="<User-Agent>"` on connect, `- <proto> <ip>:<port> after Ns, N bytes` on disconnect. The WebUI's own `/events` connections use the same two lines at DEBUG, so `debug_modules = client` shows them too; a full client table is the WARN) |
 | `REC` | `record.c` | 11 | 9 | 6 | 2 | segment and writer detail, plus the overflow re-gate (which keyframe the segment resumed on, and whether the eviction was video or audio-only); the *first* queue drop per subscription is a WARN |
 | `TLS` | `tls.c` | 5 | 3 | 1 | 3 | handshakes that are ordinary peer noise (EOF, close_notify, reset); the interesting ones are WARN |
 | `CONFIG` | `config.c` | 1 | 29 | 4 | 0 | — |
