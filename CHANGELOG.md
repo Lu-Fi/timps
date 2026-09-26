@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.9.26] - 2026-09-26
+
 ### Added
 
 - **Client log lines** (module `CLIENT`): `+ rtsp/tcp 192.168.178.17:40904
