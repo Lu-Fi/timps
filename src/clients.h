@@ -33,9 +33,11 @@ int  clients_add(int kind, const struct sockaddr_in *peer, int chn, const char *
 void clients_del(int id);
 /* owner thread only; id -1 is a no-op */
 void clients_bytes(int id, int n);
+/* owner thread only: capture -> send age of one video frame, averaged */
+void clients_latency(int id, int64_t us);
 /* copy the User-Agent value out of a raw request header block ("" if none) */
 void clients_agent_from(const char *hdrs, char *out, int cap);
-/* {"clients":[{"ip","port","proto","chn","since_s","kbps","bytes","agent"},..]};
+/* {"clients":[{"ip","port","proto","chn","since_s","kbps","bytes","lat_ms","agent"},..]};
  * -1 if cap is too small */
 int  clients_json(char *out, int cap);
 

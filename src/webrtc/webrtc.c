@@ -620,9 +620,12 @@ static void *sess_thread(void *arg)
                     if (!got_key && pk->keyframe) got_key = 1;
                     if (got_key &&
                         rtp_send_h264(&s->vtrack, pk->data, pk->len,
-                                      pk->pts_us) >= 0)
+                                      pk->pts_us) >= 0) {
                         rtp_sr_anchor(&s->vtrack,
                                       pk->enq_us > 0 ? pk->enq_us : now);
+                        if (pk->enq_us > 0)
+                            clients_latency(s->cid, now - pk->enq_us + pk->cap_age_us);
+                    }
                 } else if (pk->media == MS_MEDIA_AUDIO && s->have_audio) {
                     if (rtp_send_g711(&s->atrack, pk->data, pk->len,
                                       pk->pts_us) >= 0)

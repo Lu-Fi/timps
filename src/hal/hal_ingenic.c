@@ -2235,6 +2235,11 @@ static void *video_thread(void *arg)
          * capture time; pack[0] is representative. */
         int64_t hw_us = (st.packCount > 0) ? st.pack[0].timestamp : 0;
         int64_t pub_now = ms_now_us();
+        /* pack timestamps are on the IMP clock, so the age needs no mapping */
+        if (hw_us > 0) {
+            int64_t age = IMP_System_GetTimeStamp() - hw_us;
+            if (age > 0 && age < 2000000) pk->cap_age_us = (int32_t)age;
+        }
         int64_t pts = pts_sanitize(&vc->pts, hw_us, pub_now,
                                    1000000 / (vc->fps > 0 ? vc->fps : 25),
                                    PTS_SKEW_VIDEO_US);

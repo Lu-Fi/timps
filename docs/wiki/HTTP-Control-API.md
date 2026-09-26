@@ -308,9 +308,9 @@ not listed.
 ```json
 {"clients":[
  {"ip":"192.168.178.17","port":32834,"proto":"rtsp/tcp","chn":0,
-  "since_s":41,"kbps":1600,"bytes":8200000,"agent":"FFmpeg Frigate/0.17.2-3d4dd3a"},
+  "since_s":41,"kbps":1600,"bytes":8200000,"lat_ms":18,"agent":"FFmpeg Frigate/0.17.2-3d4dd3a"},
  {"ip":"192.168.178.103","port":46712,"proto":"rtsp/udp","chn":1,
-  "since_s":36,"kbps":214,"bytes":962000,"agent":"LibVLC/3.0.20 (LIVE555 Streaming Media v2016.11.28)"}]}
+  "since_s":36,"kbps":214,"bytes":962000,"lat_ms":12,"agent":"LibVLC/3.0.20 (LIVE555 Streaming Media v2016.11.28)"}]}
 ```
 
 - `chn` is the source stream (`0` main, `1` sub); `-1` where none applies
@@ -321,6 +321,13 @@ not listed.
   window to noise. The first read averages since the connection started.
 - `bytes` is the total sent to that client since it connected, counted the
   same way as `kbps` (64-bit, no wrap).
+- `lat_ms` (RTSP and WebRTC; since 1.9.26) is the camera's share of the
+  latency: from the sensor capture of a video frame (the IMP pack timestamp,
+  compared on the IMP clock) to the moment timps sends it to this client,
+  averaged over the last frames (1/8 weight per frame). It covers ISP,
+  encoder and the queue to this client, not sensor exposure. `-1` for other
+  protocols, before the first video frame, and on paths without a capture
+  timestamp (SW-rotate on T23, the simulator).
 - `agent` is the request's `User-Agent`, truncated to 159 characters, `""`
   when the client sent none. SRT has no such header and is always `""`.
   WebRTC takes it from the WHEP `POST`.

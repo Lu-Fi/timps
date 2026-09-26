@@ -19,6 +19,7 @@ struct cl_entry {
      * carry is guarded by seq, so the per-send cost stays one add */
     volatile uint32_t  lo, hi, seq;
     uint64_t           q_bytes;   /* rate baseline, advanced by clients_json */
+    volatile int32_t   lat_us;    /* EWMA, -1 = no video frame measured */
     int64_t            q_us;
     unsigned           kbps;
     char               agent[CLIENTS_AGENT_MAX];
@@ -79,6 +80,7 @@ int clients_add(int kind, const struct sockaddr_in *peer, int chn, const char *a
                 e->agent[sizeof e->agent - 1] = 0;
             }
             e->since_us = e->q_us = now;
+            e->lat_us = -1;
             e->used = 1;
             id = i;
             break;
@@ -120,6 +122,14 @@ void clients_bytes(int id, int n)
     e->seq++;
 }
 
+void clients_latency(int id, int64_t us)
+{
+    if (id < 0 || id >= CLIENTS_MAX || us < 0 || us > 10000000) return;
+    cl_entry *e = &g_cl[id];
+    int32_t v = (int32_t)us, o = e->lat_us;
+    e->lat_us = o < 0 ? v : o + (v - o) / 8;
+}
+
 static uint64_t cl_total(const cl_entry *e)
 {
     uint32_t s, lo, hi;
@@ -157,11 +167,11 @@ int clients_json(char *out, int cap)
         ms_json_esc(e->agent, ag, sizeof ag);
         len += snprintf(out + len, (size_t)(cap - len),
             "%s{\"ip\":\"%s\",\"port\":%u,\"proto\":\"%s\",\"chn\":%d,"
-            "\"since_s\":%lld,\"kbps\":%u,\"bytes\":%llu,\"agent\":\"%s\"}",
+            "\"since_s\":%lld,\"kbps\":%u,\"bytes\":%llu,\"lat_ms\":%d,\"agent\":\"%s\"}",
             first ? "" : ",", ip, (unsigned)ntohs(e->peer.sin_port),
             KNAME(e->kind),
             e->chn, (long long)((now - e->since_us) / 1000000), e->kbps,
-            (unsigned long long)b, ag);
+            (unsigned long long)b, e->lat_us < 0 ? -1 : (int)((e->lat_us + 500) / 1000), ag);
         first = 0;
     }
     pthread_mutex_unlock(&g_cl_mx);

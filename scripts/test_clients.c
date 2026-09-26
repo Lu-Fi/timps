@@ -4,6 +4,7 @@
 
 #include <arpa/inet.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
 
@@ -45,6 +46,13 @@ int main(void)
     if (k) sscanf(k + 7, "%u", &kbps);
     ok(kbps >= 800 && kbps <= 1000, "rate ~1 Mbit over ~1 s");
     ok(strstr(buf, "\"bytes\":125000,") != NULL, "total bytes");
+    ok(strstr(buf, "\"lat_ms\":-1,") != NULL, "no latency yet");
+    clients_latency(id, 80000);
+    for (int i = 0; i < 40; i++) clients_latency(id, 120000);
+    clients_json(buf, sizeof buf);
+    const char *l = strstr(buf, "\"lat_ms\":");
+    int lat = l ? atoi(l + 9) : -1;
+    ok(lat >= 115 && lat <= 120, "latency averages toward 120 ms");
 
     for (int i = 0; i < 40; i++) clients_bytes(id, 125000000);   /* 5 GB, past the 32-bit carry */
     clients_json(buf, sizeof buf);

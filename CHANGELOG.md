@@ -13,6 +13,14 @@ semantic versioning.
   `- … after 8s, 377529 bytes` when it leaves, for every protocol. `/events`
   connections log at DEBUG only, so an open WebUI tab doesn't fill the log.
 
+- **`GET /control?clients=1`: `lat_ms`** — per RTSP and WebRTC client, how
+  old a video frame is when timps sends it: sensor capture (the IMP pack
+  timestamp) to send, averaged; `-1` for other protocols and before the first
+  frame. Typically 12-20 ms on T31 (ISP + encoder + queue). The WebUI's
+  WebRTC preview adds it to the browser's own share (network, jitter buffer,
+  decode from `getStats()`) and shows `delay ≈ N ms` with the breakdown as a
+  tooltip.
+
 ### Changed
 
 - **T20: the `isp-m0 is not readable, using isp_info` line is INFO, no longer

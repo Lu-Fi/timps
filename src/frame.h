@@ -23,6 +23,9 @@ typedef struct ms_pkt {
      * is the sanitized/slewed CAPTURE timestamp, which is exactly the thing
      * a stall investigation must not have to trust. */
     int64_t      enq_us;
+    /* how old the frame already was at enq_us (sensor capture -> publish,
+     * i.e. ISP + encoder), 0 = unknown; video on the bound IMP path only */
+    int32_t      cap_age_us;
     int          keyframe;  /* video IDR */
     int          media;     /* enum ms_media */
     int          _ref;

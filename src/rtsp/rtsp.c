@@ -1369,8 +1369,11 @@ static void stream_loop(session *s)
                  * it is the same instant the media timestamp was current,
                  * whether the packet is sent 1 ms or 500 ms later. Fallback
                  * to `now` only for a hypothetical unstamped packet. */
-                if (sendrc >= 0)
+                if (sendrc >= 0) {
                     rtp_sr_anchor(&s->vtrack, p->enq_us > 0 ? p->enq_us : now);
+                    if (p->enq_us > 0)
+                        clients_latency(s->vsink.cid, now - p->enq_us + p->cap_age_us);
+                }
             } else if (p->media==MS_MEDIA_AUDIO && s->have_audio) {
                 if (ac==MS_AC_AAC) sendrc = rtp_send_aac(&s->atrack,p->data,p->len,p->pts_us);
 #ifdef USE_STREAM_OPUS

@@ -1186,6 +1186,18 @@ returns 200 after waiting up to 600 ms. Harmless.
 `N session(s) still running at stop - leaving the DTLS context allocated` —
 shutdown-time, deliberate, like the HTTP one.
 
+**"WebRTC has ~400 ms delay, I expected ~100".** Measured on Garage (T31,
+LAN, Chrome/Edge, 2026-09-26) with the preview's `delay ≈` readout: camera
+18 ms (`?clients=1` `lat_ms`), network ~10 ms, decode ~5 ms, but a video
+jitter buffer of ~350 ms. `getStats()` shows why: the video's
+`jitterBufferMinimumDelay` is ~65 ms, its `jitterBufferTargetDelay` ~330 ms:
+the browser holds video back to lip-sync it with the audio (audio jitter
+buffer ~140 ms plus the audio path's own lag). The same session without an
+audio track: **≈ 84 ms** in total. So the big number is A/V sync, not the
+camera or the network; a viewer who only needs the picture gets the low
+latency by leaving audio off. Why the audio side sits that far behind is
+open (see the audio pts/SR anchoring in `src/hal/hal_ingenic.c`).
+
 ### 4.4 SRT
 
 `src/srt.c`. Limits: `SRT_MAX_CLIENTS` = **8**.
