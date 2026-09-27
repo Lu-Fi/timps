@@ -627,6 +627,46 @@ static void px_blend(uint32_t *img, size_t idx, uint32_t color, float a)
     img[idx]=(aa<<24)|(rr<<16)|(gg<<8)|bbb;
 }
 
+/* Canvas geometry shared by msttf_render() and msttf_measure(): clamps
+ * pixel_h/outline in place and returns the canvas W x H. */
+static void canvas_dims(msttf_font *f, const char *s, int *pixel_h,
+                        int *outline, uint32_t oc, int *pad, int *pw, int *ph)
+{
+    /* H4: pixel_h derives from config font_size (live-settable via /control)
+     * scaled by the stream height - hard-clamp it HERE too, independent of
+     * any caller-side clamp, so the canvas math below can never be pushed
+     * toward overflow by a bad config value. */
+    if (*pixel_h < 8)   *pixel_h = 8;
+    if (*pixel_h > 512) *pixel_h = 512;
+    float scale = (float)*pixel_h / f->units_per_em;
+    if (*outline<0) *outline=0;
+    if (*outline>*pixel_h/4+1) *outline=*pixel_h/4+1;   /* keep the stroke sane */
+    if (((oc>>24)&0xFF)==0) *outline=0;                 /* fully transparent = off */
+    *pad = *pixel_h/4 + 1 + *outline;   /* outline enlarges the canvas */
+    /* first pass: total advance width */
+    int totalAdv=0; const char *q=s;
+    for (; *q; q++){ int gid=glyph_index(f,(unsigned char)*q); totalAdv+=advance(f,gid); }
+    /* H4: bound the canvas. totalAdv is summed per character with no limit,
+     * so a long string at a big font size used to size W past any sane frame
+     * - and (size_t)W*H*4 on 32-bit could wrap and under-allocate, after
+     * which the (previously int-indexed) fill loops corrupted the heap.
+     * Compute in double/uint64_t and clamp both axes; 4096 comfortably
+     * covers every frame size this daemon can produce. */
+    double Wf = (double)totalAdv*scale + 2.0*(*pad);
+    int W = (Wf < 1.0) ? 1 : (Wf > 4096.0 ? 4096 : (int)Wf);
+    int H = *pixel_h + 2*(*pad);
+    if (H<1) H=1; if (H>4096) H=4096;
+    W = (W + 1) & ~1;   /* IMP_OSD needs an even picture width (avoids row shear) */
+    *pw = W; *ph = H;
+}
+
+void msttf_measure(msttf_font *f, const char *s, int pixel_h, int outline,
+                   uint32_t oc, int *w, int *h)
+{
+    int pad;
+    canvas_dims(f, s, &pixel_h, &outline, oc, &pad, w, h);
+}
+
 int msttf_render(msttf_font *f, const char *s, int pixel_h,
                  uint32_t fg, uint32_t bg, int outline, uint32_t oc,
                  uint8_t **out, int *w, int *h)
@@ -643,33 +683,9 @@ int msttf_render(msttf_font *f, const char *s, int pixel_h,
 #ifdef USE_OSD_HINTING
     const int hinting = g_hinting;
 #endif
-    /* H4: pixel_h derives from config font_size (live-settable via /control)
-     * scaled by the stream height - hard-clamp it HERE too, independent of
-     * any caller-side clamp, so the canvas math below can never be pushed
-     * toward overflow by a bad config value. */
-    if (pixel_h < 8)   pixel_h = 8;
-    if (pixel_h > 512) pixel_h = 512;
+    int pad, W, H;
+    canvas_dims(f, s, &pixel_h, &outline, oc, &pad, &W, &H);
     float scale = (float)pixel_h / f->units_per_em;
-    int ascent = (int)(f->units_per_em*1.0f);   /* use em box */
-    (void)ascent;
-    if (outline<0) outline=0;
-    if (outline>pixel_h/4+1) outline=pixel_h/4+1;   /* keep the stroke sane */
-    if (((oc>>24)&0xFF)==0) outline=0;              /* fully transparent = off */
-    int pad = pixel_h/4 + 1 + outline;   /* outline enlarges the canvas */
-    /* first pass: total advance width */
-    int totalAdv=0; const char *q=s;
-    for (; *q; q++){ int gid=glyph_index(f,(unsigned char)*q); totalAdv+=advance(f,gid); }
-    /* H4: bound the canvas. totalAdv is summed per character with no limit,
-     * so a long string at a big font size used to size W past any sane frame
-     * - and (size_t)W*H*4 on 32-bit could wrap and under-allocate, after
-     * which the (previously int-indexed) fill loops corrupted the heap.
-     * Compute in double/uint64_t and clamp both axes; 4096 comfortably
-     * covers every frame size this daemon can produce. */
-    double Wf = (double)totalAdv*scale + 2.0*pad;
-    int W = (Wf < 1.0) ? 1 : (Wf > 4096.0 ? 4096 : (int)Wf);
-    int H = pixel_h + 2*pad;
-    if (H<1) H=1; if (H>4096) H=4096;
-    W = (W + 1) & ~1;   /* IMP_OSD needs an even picture width (avoids row shear) */
     uint64_t npx = (uint64_t)W * (uint64_t)H;
     if (npx == 0 || npx > (uint64_t)4096*4096 ||
         npx*4 > (uint64_t)SIZE_MAX) return -1;    /* keep the guard explicit */

@@ -52,5 +52,9 @@ void msttf_set_hinting(int enable);
 int  msttf_render(msttf_font *f, const char *s, int pixel_h,
                   uint32_t fg, uint32_t bg, int outline, uint32_t oc,
                   uint8_t **out, int *w, int *h);
+/* The w x h msttf_render() would produce, without rasterizing: lets a
+ * caller skip a render its frame cannot hold. */
+void msttf_measure(msttf_font *f, const char *s, int pixel_h, int outline,
+                   uint32_t oc, int *w, int *h);
 
 #endif

@@ -221,6 +221,10 @@ typedef struct {
     msttf_font *font;       /* per-item TTF (owned) / shared TTF / NULL=bitmap font */
     int         font_owned; /* 1 = malloc'd + msttf_load'd here: free on teardown */
     char        last[256];  /* last expanded text (change detection) */
+    char        failed[256];/* text whose render was discarded ... */
+    int64_t     fail_until; /* ... and until when not to retry it */
+    int64_t     warn_us;    /* last oversize WARN (rate limit) */
+    int         key[4];     /* font_size/color/outline/outline_color rendered */
 } sw_osd_slot;
 typedef struct {
     int         active;           /* any usable text item on this stream */
@@ -2443,10 +2447,8 @@ static void sw_osd_compose(vchan *vc)
         sw_osd_slot *sl = &vc->osd.it[i];
         if (!sl->used) continue;
         ms_osd_item it;
-        /* osd.vars_file comes along in the SAME critical section as the item:
-         * it is POST-settable too, and osd_expand() below reads it - the one
-         * lock-free live-mutable-string read this path had left (imp_osd.c's
-         * refresh_text() snapshots it for the same reason). */
+        /* osd.vars_file comes along in the SAME critical section as the item
+         * (imp_osd.c's refresh_text() does the same). */
         char vars_file[sizeof g_hcfg->osd.vars_file];
         config_str_lock();
         it = g_hcfg->osd.items[vc->si][i];
@@ -2456,37 +2458,53 @@ static void sw_osd_compose(vchan *vc)
             if (sl->bgra){ free(sl->bgra); sl->bgra=NULL; sl->last[0]=0; }
             continue;
         }
-        if (refresh || !sl->bgra){
+        /* a live style edit re-renders even when the text is unchanged */
+        int key[4] = { it.font_size, (int)it.color, it.outline, (int)it.outline_color };
+        if (memcmp(key, sl->key, sizeof key)){
+            memcpy(sl->key, key, sizeof key);
+            sl->last[0]=0; sl->failed[0]=0;
+            refresh=1;
+        }
+        /* !bgra alone must not force a per-frame retry: a discarded render
+         * latches sl->failed and waits for the next 1 Hz refresh */
+        if (refresh || (!sl->bgra && !sl->failed[0])){
             char txt[256];
             osd_expand(it.text, vars_file, txt, sizeof txt);
-            if (!sl->bgra || strcmp(txt, sl->last)!=0){
-                /* scale font with stream height like imp_osd.c refresh_text
-                 * (font_size is calibrated for 1080p) */
-                int fs = it.font_size * fh / 1080;
-                if (fs < 12) fs = 12;
-                if (fs > it.font_size) fs = it.font_size;
+            if ((!sl->bgra || strcmp(txt, sl->last)!=0) &&
+                !(strcmp(txt, sl->failed)==0 && now < sl->fail_until)){
+                /* font_size is absolute pixels, as in imp_osd.c refresh_text */
+                int fs = it.font_size;
+                if (fs < 8) fs = 8;
                 uint8_t *bgra=NULL; int w=0, h=0, ok;
-                if (sl->font)
-                    ok = msttf_render(sl->font, txt, fs, it.color, 0x00000000,
+                if (sl->font){
+                    msttf_measure(sl->font, txt, fs, it.outline, it.outline_color, &w, &h);
+                    ok = (w > fw || h > fh) ||
+                         msttf_render(sl->font, txt, fs, it.color, 0x00000000,
                                       it.outline, it.outline_color,
                                       &bgra,&w,&h)==0;
-                else {
+                } else {
                     int scale = fs/16; if (scale<1) scale=1;
                     ok = osd_text_render(txt, scale, it.color, 0x00000000,
                                          it.outline, it.outline_color,
                                          &bgra,&w,&h)==0;
                 }
-                if (ok){
-                    if (w > fw || h > fh){       /* same H5 discard as imp_osd */
+                if (!ok){
+                    snprintf(sl->failed, sizeof sl->failed, "%s", txt);
+                    sl->fail_until = now + 10*1000000LL;      /* OOM: retry later */
+                } else if (!bgra || w > fw || h > fh){      /* same H5 discard as imp_osd */
+                    if (now - sl->warn_us >= 60*1000000LL){
+                        sl->warn_us = now;
                         LOGW(MOD,"sw-rot stream %d item %d: rendered %dx%d "
                                  "exceeds frame %dx%d - skipped",
                              vc->si, i, w, h, fw, fh);
-                        free(bgra);
-                    } else {
-                        free(sl->bgra);
-                        sl->bgra=bgra; sl->w=w; sl->h=h;
-                        snprintf(sl->last, sizeof sl->last, "%s", txt);
                     }
+                    free(bgra);
+                    snprintf(sl->failed, sizeof sl->failed, "%s", txt);
+                    sl->fail_until = INT64_MAX;
+                } else {
+                    free(sl->bgra);
+                    sl->bgra=bgra; sl->w=w; sl->h=h;
+                    snprintf(sl->last, sizeof sl->last, "%s", txt);
                 }
             }
         }

@@ -42,6 +42,9 @@ typedef struct {
                               * may still read them for in-flight frames */
     msttf_font *font;        /* per-item font, or shared */
     char        last[256];   /* last rendered text (change detection) */
+    char        failed[256]; /* text whose render was discarded ... */
+    int64_t     fail_until;  /* ... and until when not to retry it */
+    int64_t     warn_us;     /* last oversize WARN (rate limit) */
 } osd_region;
 
 typedef struct {
@@ -254,6 +257,12 @@ static void osd_retire(osd_region *rg, uint8_t *newbuf)
     rg->buf = newbuf;
 }
 
+static void osd_text_failed(osd_region *rg, const char *txt, int64_t until)
+{
+    snprintf(rg->failed, sizeof rg->failed, "%s", txt);
+    rg->fail_until = until;
+}
+
 static void refresh_text(osd_stream *s, osd_region *rg)
 {
     if (osd_test_static_mode() && rg->buf) return;  /* test mode: only the very first render counts */
@@ -262,11 +271,9 @@ static void refresh_text(osd_stream *s, osd_region *rg)
      * once, then work from the snapshot, so one render never mixes e.g. a new
      * font_size with an old x/y or outline (previously only ->text was
      * snapshotted and the numeric fields were read lock-free mid-update).
-     * osd.vars_file is snapshotted in the SAME critical section: it became
-     * POST-settable alongside the other osd.* globals (control.c) but
-     * osd_expand() below reads it - without this it'd be the one lock-free
-     * live-mutable-string read left in this function, same UB class as the
-     * .enabled check this comment already fixed. */
+     * osd.vars_file comes along in the SAME critical section: it is file-only
+     * now, but a config string read lock-free is the UB class this comment
+     * is about, and the copy is cheap. */
     ms_osd_item it;
     char vars_file[sizeof g_hcfg->osd.vars_file];
     config_str_lock();
@@ -282,9 +289,12 @@ static void refresh_text(osd_stream *s, osd_region *rg)
     char txt[256];
     osd_expand(it.text, vars_file, txt, sizeof txt);
     if (strcmp(txt, rg->last)==0) return;               /* unchanged: skip render */
-    /* L-3: rg->last is latched only AFTER a successful apply (below), so a
-     * discarded/failed render (oversize, msttf OOM) doesn't mark this text as
-     * "done" - fixing font_size then re-renders on the next tick. */
+    /* L-3: rg->last is latched only AFTER a successful apply (below). A
+     * discarded one latches rg->failed instead, or the same failure re-ran
+     * the full raster and its WARN every tick; imp_osd_apply() clears both,
+     * so fixing font_size still re-renders on the next tick. */
+    int64_t now = ms_now_us();
+    if (strcmp(txt, rg->failed)==0 && now < rg->fail_until) return;
 
     /* font_size is an ABSOLUTE pixel height, per stream (osd0.* / osd1.* ...).
      * No auto-scaling: sub-stream OSD used to be shrunk by stream_height/1080,
@@ -293,17 +303,29 @@ static void refresh_text(osd_stream *s, osd_region *rg)
     int fs = it.font_size;
     if (fs < 8) fs = 8;
 
-    uint8_t *bgra; int w,h;
+    int rotated = osd_rotated(s);   /* requested AND actually applied (not refused) */
+    int hlim = rotated ? s->width : s->height;
+    uint8_t *bgra=NULL; int w,h;
     if (rg->font){
-        if (msttf_render(rg->font, txt, fs, it.color, 0x00000000,
-                         it.outline, it.outline_color, &bgra,&w,&h)!=0) return;
+        /* measure first: an oversize text would rasterize (and dilate) a
+         * canvas up to 4096 px wide only to be discarded below */
+        msttf_measure(rg->font, txt, fs, it.outline, it.outline_color, &w, &h);
+        if (rotated) h += h & 1;
+        if (w <= s->width && h <= hlim &&
+            msttf_render(rg->font, txt, fs, it.color, 0x00000000,
+                         it.outline, it.outline_color, &bgra,&w,&h)!=0){
+            osd_text_failed(rg, txt, now + 10*1000000LL);   /* OOM: retry later */
+            return;
+        }
     } else {
         int scale=fs/16; if(scale<1)scale=1;
         if (osd_text_render(txt, scale, it.color, 0x00000000,
-                            it.outline, it.outline_color, &bgra,&w,&h)!=0) return;
+                            it.outline, it.outline_color, &bgra,&w,&h)!=0){
+            osd_text_failed(rg, txt, now + 10*1000000LL);
+            return;
+        }
     }
-    int rotated = osd_rotated(s);   /* requested AND actually applied (not refused) */
-    if (rotated) osd_even_pad(&bgra, &w, &h);   /* even dims only for the rotated IPU-OSD path */
+    if (bgra && rotated) osd_even_pad(&bgra, &w, &h);   /* even dims only for the rotated IPU-OSD path */
     /* H5: a bitmap larger than the frame cannot be composited safely -
      * resolve_pos() clamps the origin to 0 but the far edge (x+w-1) would
      * still land outside the frame, and on several T-SoCs IMP_OSD then
@@ -311,13 +333,16 @@ static void refresh_text(osd_stream *s, osd_region *rg)
      * stream the usable OSD height is only the top picHeight band (= s->width);
      * a taller bitmap can't be clamped in and would re-trigger the libimp
      * range-check IPU error every frame, so discard it there too. */
-    int hlim = rotated ? s->width : s->height;
-    if (w > s->width || h > hlim){
-        LOGW(MOD,"osd stream %d item %d: rendered %dx%d exceeds usable %dx%d%s - "
-                 "skipped (reduce font_size/text length)",
-             s->si, rg->item, w, h, s->width, hlim,
-             rotated?" (rotated: OSD limited to top band)":"");
+    if (!bgra || w > s->width || h > hlim){
+        if (now - rg->warn_us >= 60*1000000LL) {
+            rg->warn_us = now;
+            LOGW(MOD,"osd stream %d item %d: rendered %dx%d exceeds usable %dx%d%s - "
+                     "skipped (reduce font_size/text length)",
+                 s->si, rg->item, w, h, s->width, hlim,
+                 rotated?" (rotated: OSD limited to top band)":"");
+        }
         free(bgra);
+        osd_text_failed(rg, txt, INT64_MAX);   /* deterministic: until the text/config changes */
         return;
     }
     int Px,Py; resolve_pos(s->width, s->height, w, h, it.x, it.y, &Px,&Py);
@@ -463,7 +488,7 @@ int imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height)
         const ms_osd_item *it=&cfg->osd.items[stream_idx][i];
         if (!it->enabled) continue;
         osd_region *rg=&s->r[i];
-        rg->item=i; rg->last[0]=0;
+        rg->item=i; rg->last[0]=0; rg->failed[0]=0; rg->warn_us=0;
         rg->rgn=IMP_OSD_CreateRgn(NULL);
         /* Finding 5: CreateRgn returns <0 on failure (reachable via OSD region-
          * pool exhaustion, osd_pool_size). Skip the rest of this region's setup
@@ -644,6 +669,7 @@ void imp_osd_apply(int stream, int item)
         if (!it->enabled) continue;
         if (rg->is_text){
             rg->last[0]=0;              /* invalidate -> full re-render */
+            rg->failed[0]=0;
             refresh_text(s, rg);
         } else {
             setup_logo(s, rg);          /* reload + reposition (retires old buf) */
