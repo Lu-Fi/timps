@@ -157,6 +157,10 @@ typedef struct {
     int       batch_n;                     /* packets currently in batch[] */
     struct sockaddr_in peer;               /* receiver (listener) / target (caller) */
     int       cid;                         /* clients.h entry while streaming */
+    int64_t   t0_us;                       /* session timestamp base */
+    int       have_t0;
+    int64_t   last_pcr;                    /* 33-bit, for wrap detection */
+    int       have_pcr;
 } ts_mux;
 
 /* One srt_bstats() sample per SRT_STATS_PERIOD_S while a receiver is being
@@ -329,13 +333,21 @@ static int send_pmt(ts_mux *m)
     return send_section(m, PMTPID, &m->cc_pmt, s, i);
 }
 
+/* PCR runs this far behind PTS (90 kHz): PCR == PTS signals zero decode
+ * delay, which strict hardware demuxers treat as an underflow. */
+#define TS_PCR_LEAD 27000                     /* 300 ms */
+#define TS_33BIT    ((1LL << 33) - 1)
+
 /* one PES (with PTS) for an access unit, chunked into TS packets on `pid`.
  * First video packet carries an adaptation field with PCR + random-access. */
 static int send_pes(ts_mux *m, int pid, uint8_t *cc, int stream_id,
                     const uint8_t *data, int len, int64_t pts_us,
                     int is_video, int keyframe)
 {
-    int64_t pts = (pts_us > 0 ? pts_us : 0) * 9 / 100;   /* us -> 90 kHz */
+    /* relative to the session start, so the 33-bit clock wraps after ~26.5 h
+     * of one session instead of ~26.5 h of camera uptime */
+    if (!m->have_t0) { m->t0_us = pts_us; m->have_t0 = 1; }
+    int64_t pts = ((pts_us - m->t0_us) * 9 / 100 + TS_PCR_LEAD) & TS_33BIT;
 
     uint8_t hdr[19]; int h = 0;
     hdr[h++] = 0x00; hdr[h++] = 0x00; hdr[h++] = 0x01; hdr[h++] = (uint8_t)stream_id;
@@ -369,11 +381,16 @@ static int send_pes(ts_mux *m, int pid, uint8_t *cc, int stream_id,
             *cc = (*cc + 1) & 0x0F;
             int aflen_pos = o; p[o++] = 0;               /* adaptation_field_length */
             uint8_t flags = 0;
-            if (want_pcr) flags |= 0x10;                 /* PCR present */
+            int64_t pcr = (pts - TS_PCR_LEAD) & TS_33BIT;  /* base; ext 0 */
+            if (want_pcr) {
+                flags |= 0x10;                           /* PCR present */
+                if (m->have_pcr && pcr < m->last_pcr)
+                    flags |= 0x80;                       /* discontinuity: wrapped */
+                m->last_pcr = pcr; m->have_pcr = 1;
+            }
             if (first && is_video && keyframe) flags |= 0x40; /* random access */
             p[o++] = flags;
             if (want_pcr) {
-                int64_t pcr = pts;                       /* base; ext 0 */
                 p[o++] = (pcr >> 25) & 0xFF;
                 p[o++] = (pcr >> 17) & 0xFF;
                 p[o++] = (pcr >> 9) & 0xFF;
@@ -743,8 +760,11 @@ static void *caller_thread(void *arg)
             LOGE(MOD, "create_socket: %s", srt_getlasterror_str());
             break;
         }
-        if (srt_common_opts(s) < 0) {      /* H3: no unencrypted fallback */
-            srt_close(s); break;
+        /* publish at once: a srt_stop() between create and a later publish
+         * found nothing to close and waited out a whole SRTO_CONNTIMEO */
+        g_cs = s;
+        if (!g_run || srt_common_opts(s) < 0) {   /* H3: no unencrypted fallback */
+            srt_close_caller(); break;
         }
         /* on a caller SRTO_STREAMID is what actually reaches the peer */
         if (g_scfg->srt.streamid[0])
@@ -759,13 +779,13 @@ static void *caller_thread(void *arg)
         hints.ai_family = AF_INET; hints.ai_socktype = SOCK_DGRAM;
         char ps[8]; snprintf(ps, sizeof ps, "%d", port);
         int gaerr = getaddrinfo(host, ps, &hints, &ai);
-        g_cs = s;   /* publish first: srt_stop() closing g_cs is what breaks a
-                     * blocking srt_connect (worst case the default 3 s
-                     * SRTO_CONNTIMEO bounds the join if stop wins the race) */
         if (gaerr != 0) {
             why = gai_strerror(gaerr);
         } else {
-            if (srt_connect(s, ai->ai_addr, (int)ai->ai_addrlen) == SRT_ERROR)
+            /* srt_stop() closing g_cs is what breaks a blocking srt_connect */
+            if (!g_run)
+                why = "stopping";
+            else if (srt_connect(s, ai->ai_addr, (int)ai->ai_addrlen) == SRT_ERROR)
                 why = srt_getlasterror_str();
             else if (ai->ai_family == AF_INET)
                 memcpy(&cpeer, ai->ai_addr, sizeof cpeer);
