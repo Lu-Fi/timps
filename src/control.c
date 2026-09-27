@@ -1477,7 +1477,9 @@ int control_get_json(char *buf, size_t cap)
 #ifdef USE_BACKCHANNEL
 #ifdef USE_BC_WS
     {
+        config_str_lock();          /* live-writable via /control */
         int tws = c->audio.talk_ws;
+        config_str_unlock();
         if (tws < 0 || tws > 2 || !bc_available()) tws = 0;
 #ifdef USE_TLS
         if (tws == 1 && !c->http_https) tws = 0;   /* strict mode, no TLS */
@@ -1613,15 +1615,18 @@ int control_get_json(char *buf, size_t cap)
      * config_get_kv for the canonical config-file spelling. */
     APP("\"video\":{");
     for (int i=0;i<MS_MAX_VSTREAM;i++){
-        const ms_vstream_cfg *vs=&c->video[i];
+        /* every videoN.* is POST-able: one snapshot under the lock */
+        ms_vstream_cfg vsc;
+        const ms_vstream_cfg *vs=&vsc;
         char key[20], cod[12]="h264", rc[20]="cbr", rp[sizeof vs->rtsp_path * 3];
+        config_str_lock();
+        vsc = c->video[i];
         snprintf(key,sizeof key,"video%d.codec",i);
         config_get_kv(c, key, cod, sizeof cod);
         snprintf(key,sizeof key,"video%d.rc_mode",i);
         config_get_kv(c, key, rc, sizeof rc);
-        config_str_lock();     /* rtsp_path is runtime-mutable via POST */
-        jesc(vs->rtsp_path, rp, sizeof rp);
         config_str_unlock();
+        jesc(vs->rtsp_path, rp, sizeof rp);
 #ifdef USE_ROTATE
         /* ACTUAL running dims - but only when vs (the live/persist-only
          * config, possibly POSTed-but-not-yet-restarted) still matches what
@@ -1680,23 +1685,27 @@ int control_get_json(char *buf, size_t cap)
      * tell text overlays from the logo */
     {
         char ofp[sizeof c->osd.font_path * 3], ovf[sizeof c->osd.vars_file * 3];
-        config_str_lock();     /* osd.font_path/vars_file are runtime-mutable via POST */
+        int o_en, o_mon, o_ss, o_hint;
+        config_str_lock();     /* the osd.* globals are runtime-mutable via POST */
         jesc(c->osd.font_path, ofp, sizeof ofp);
         jesc(c->osd.vars_file, ovf, sizeof ovf);
+        o_en = c->osd.enabled; o_mon = c->osd.monitor_stream;
+        o_ss = c->osd.supersample; o_hint = c->osd.hinting;
         config_str_unlock();
         APP("},\"osd\":{\"enabled\":%d,\"monitor_stream\":%d,\"font_path\":\"%s\","
             "\"vars_file\":\"%s\",\"supersample\":%d,\"hinting\":%d}",
-            c->osd.enabled, c->osd.monitor_stream, ofp, ovf,
-            c->osd.supersample, c->osd.hinting);
+            o_en, o_mon, ofp, ovf, o_ss, o_hint);
     }
     for (int s=0;s<MS_MAX_VSTREAM;s++){
         APP(",\"osd%d\":{", s);
         for (int i=0;i<MS_MAX_OSD;i++){
-            const ms_osd_item *it=&c->osd.items[s][i];
+            ms_osd_item itc;
+            const ms_osd_item *it=&itc;
             char t[sizeof it->text * 3];
-            config_str_lock();     /* osd text is runtime-mutable via POST */
-            jesc(it->text, t, sizeof t);
+            config_str_lock();     /* every item field is runtime-mutable via POST */
+            itc = c->osd.items[s][i];
             config_str_unlock();
+            jesc(it->text, t, sizeof t);
             APP("%s\"%d\":{\"enabled\":%d,\"type\":\"%s\",\"text\":\"%s\","
                 "\"x\":%d,\"y\":%d,\"font_size\":%d,\"color\":\"0x%08X\","
                 "\"transparency\":%d,\"outline\":%d,\"outline_color\":\"0x%08X\"}",
@@ -1712,7 +1721,11 @@ int control_get_json(char *buf, size_t cap)
     for (int s=0;s<MS_MAX_VSTREAM;s++){
         APP("%s\"%d\":{", s?",":"", s);
         for (int n=0;n<MS_MAX_PRIVACY;n++){
-            const ms_privacy_region *p=&c->privacy[s][n];
+            ms_privacy_region pc;
+            const ms_privacy_region *p=&pc;
+            config_str_lock();
+            pc = c->privacy[s][n];
+            config_str_unlock();
             APP("%s\"%d\":{\"enabled\":%d,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,"
                 "\"color\":\"0x%08X\"}",
                 n?",":"", n, p->enabled, p->x, p->y, p->w, p->h, p->color);
@@ -1824,10 +1837,12 @@ int control_get_json(char *buf, size_t cap)
         char jf[sizeof rst.file * 3]; jesc(rst.file, jf, sizeof jf);
         char je[sizeof rst.last_error * 3]; jesc(rst.last_error, je, sizeof je);
         char jd[sizeof c->record.dir * 3], jn[sizeof c->record.name * 3];
-        config_str_lock();     /* record.dir/name are runtime-mutable via POST */
-        jesc(c->record.dir, jd, sizeof jd);
-        jesc(c->record.name, jn, sizeof jn);
+        ms_record_cfg rc;
+        config_str_lock();     /* every record.* is runtime-mutable via POST */
+        rc = c->record;
         config_str_unlock();
+        jesc(rc.dir, jd, sizeof jd);
+        jesc(rc.name, jn, sizeof jn);
         APP(",\"record\":{\"available\":%d,\"enabled\":%d,\"recording\":%d,"
             "\"channel\":%d,\"mode\":%d,\"bytes\":%lld,\"free_mb\":%lld,\"file\":\"%s\","
             "\"dir\":\"%s\",\"name\":\"%s\",\"segment_s\":%d,\"pre_roll_s\":%d,"
@@ -1844,8 +1859,8 @@ int control_get_json(char *buf, size_t cap)
             "\"write_errors\":%lld,\"last_error_age_s\":%lld,\"last_error\":\"%s\"}",
             rst.available, rst.enabled, rst.recording, rst.channel, rst.mode,
             (long long)rst.bytes, (long long)rst.free_mb, jf,
-            jd, jn, c->record.segment_s, c->record.pre_roll_s,
-            c->record.post_roll_s, c->record.min_free_mb, c->record.audio,
+            jd, jn, rc.segment_s, rc.pre_roll_s,
+            rc.post_roll_s, rc.min_free_mb, rc.audio,
             rst.motion_gate_available, rst.motion_gate_enabled, rst.manual_off,
             rst.write_errors,
             rst.last_error_us ? (long long)((ms_now_us()-rst.last_error_us)/1000000) : -1LL,
@@ -1857,15 +1872,17 @@ int control_get_json(char *buf, size_t cap)
         ms_timelapse_status tst; timelapse_get_status(&tst);
         char jf[sizeof tst.file * 3]; jesc(tst.file, jf, sizeof jf);
         char jd[sizeof c->timelapse.dir * 3], jn[sizeof c->timelapse.name * 3];
-        config_str_lock();  /* timelapse.dir/name are runtime-mutable via POST */
-        jesc(c->timelapse.dir, jd, sizeof jd);
-        jesc(c->timelapse.name, jn, sizeof jn);
+        ms_timelapse_cfg tl;
+        config_str_lock();  /* every timelapse.* is runtime-mutable via POST */
+        tl = c->timelapse;
         config_str_unlock();
+        jesc(tl.dir, jd, sizeof jd);
+        jesc(tl.name, jn, sizeof jn);
         APP(",\"timelapse\":{\"available\":%d,\"enabled\":%d,\"channel\":%d,"
             "\"interval_s\":%d,\"keep_days\":%d,\"count\":%lld,\"last_t\":%lld,"
             "\"free_mb\":%lld,\"last_file\":\"%s\",\"dir\":\"%s\",\"name\":\"%s\"}",
-            tst.available, tst.enabled, c->timelapse.channel,
-            c->timelapse.interval_s, c->timelapse.keep_days,
+            tst.available, tst.enabled, tl.channel,
+            tl.interval_s, tl.keep_days,
             (long long)tst.count, (long long)tst.last_t,
             (long long)tst.free_mb, jf, jd, jn);
     }
@@ -2010,13 +2027,16 @@ int control_stats_json(char *buf, size_t cap)
     } while (0)
     APP("{\"video\":{");
     for (int i=0;i<MS_MAX_VSTREAM;i++){
-        const ms_vstream_cfg *vs=&c->video[i];
         char key[20], rc[20]="cbr";
+        int gop, profile;
+        config_str_lock();          /* POST-able: read under the lock */
+        gop = c->video[i].gop; profile = c->video[i].profile;
         /* canonical config-file spelling, as the full snapshot does */
         snprintf(key,sizeof key,"video%d.rc_mode",i);
         config_get_kv(c, key, rc, sizeof rc);
+        config_str_unlock();
         APP("%s\"%d\":{\"gop\":%d,\"profile\":%d,\"rc_mode\":\"%s\"}",
-            i?",":"", i, vs->gop, vs->profile, rc);
+            i?",":"", i, gop, profile, rc);
     }
     APP("},\"encoder\":{");
     int nemit = 0;
