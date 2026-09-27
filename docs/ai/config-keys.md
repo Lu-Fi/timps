@@ -619,8 +619,8 @@ Over `POST /control` the canonical form is `{"osd0":{"0":{...}}}` /
 | `logo` | string[128] | item 3: `/usr/share/images/thingino_100x30.bgra`, else `""` | — | **file-only** | Alias `logo_path`. Raw BGRA file. |
 | `logo_w` | int | item 3: `100`, else `0` | 0..4096 | **file-only** | Alias `logo_width`. |
 | `logo_h` | int | item 3: `30`, else `0` | 0..4096 | **file-only** | Alias `logo_height`. |
-| `x` | int | see layout | **unclamped** | live | `0` = centred horizontally; positive = px from the left; negative = px from the right. |
-| `y` | int | see layout | **unclamped** | live | `0` = centred vertically; positive = from the top; negative = from the bottom. |
+| `x` | int | see layout | -8192..8192 | live | `0` = centred horizontally; positive = px from the left; negative = px from the right. |
+| `y` | int | see layout | -8192..8192 | live | `0` = centred vertically; positive = from the top; negative = from the bottom. |
 | `font_size` | int | `32` on stream 0, `12` on stream 1 | **8..128** | live | Absolute pixels, no per-stream auto-scaling. Ceiling lowered from 256 to 128 because a 255-char item at 256 px could transiently allocate a ~14 MB canvas. |
 | `color` | hex | `0xFFFFFFFF` | — | live | `0xAARRGGBB`. Alias `font_color`. Reads back as `0x%08X`. |
 | `transparency` | int | `255` | 0..255 | live | Group alpha. Clamped so e.g. `300` does not wrap to 44 while the config echoes 300. |
@@ -679,10 +679,10 @@ the one place where the JSON nesting differs from the OSD-item convention
 | Key | Type | Default | Range | Apply | Notes |
 | --- | --- | --- | --- | --- | --- |
 | `enabled` | bool | `0` | — | live | |
-| `x` | int | `0` | unclamped | live | Pixels in that stream's frame. |
-| `y` | int | `0` | unclamped | live | |
-| `w` | int | `0` | unclamped | live | Alias `width`. |
-| `h` | int | `0` | unclamped | live | Alias `height`. |
+| `x` | int | `0` | -8192..8192 | live | Pixels in that stream's frame. |
+| `y` | int | `0` | -8192..8192 | live | |
+| `w` | int | `0` | 0..8192 | live | Alias `width`. |
+| `h` | int | `0` | 0..8192 | live | Alias `height`. |
 | `color` | hex | `0xFF000000` (opaque black) | — | live | `0xAARRGGBB` fill. Alias `fill_color`. |
 
 Caveat that matters in support: `caps.privacy.available` is **0** when no IMP

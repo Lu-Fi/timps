@@ -2319,12 +2319,14 @@ static void *video_thread(void *arg)
 static void sw_resolve_pos(int W, int H, int w, int h, int x, int y,
                            int *ox, int *oy)
 {
-    *ox = (x>0) ? x : (x<0 ? W-w+x : (W-w)/2);
-    *oy = (y>0) ? y : (y<0 ? H-h+y : (H-h)/2);
-    if (*ox<0) *ox=0;
-    if (*oy<0) *oy=0;
-    if (*ox+w>W) *ox = (W-w>0) ? (W-w) : 0;
-    if (*oy+h>H) *oy = (H-h>0) ? (H-h) : 0;
+    /* 64-bit: see imp_osd.c resolve_pos() */
+    long long px = (x>0) ? x : (x<0 ? (long long)W-w+x : ((long long)W-w)/2);
+    long long py = (y>0) ? y : (y<0 ? (long long)H-h+y : ((long long)H-h)/2);
+    if (px<0) px=0;
+    if (py<0) py=0;
+    if (px+w>W) px = (W-w>0) ? (W-w) : 0;
+    if (py+h>H) py = (H-h>0) ? (H-h) : 0;
+    *ox=(int)px; *oy=(int)py;
 }
 
 /* shared default TTF for the SW-OSD path (imp_osd.c's g_shared is static

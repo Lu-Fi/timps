@@ -1161,8 +1161,9 @@ static const cfg_field osd_item_fields[] = {
     FS("logo",          "logo_path",    logo_path,     F_NOGET),
     F ("logo_w",        "logo_width",   logo_w,        T_INT,    F_NOGET, 0,4096),
     F ("logo_h",        "logo_height",  logo_h,        T_INT,    F_NOGET, 0,4096),
-    F ("x",             0,              x,             T_INT,    F_CTRL,  0,0),
-    F ("y",             0,              y,             T_INT,    F_CTRL,  0,0),
+    /* sane bounds keep the OSD edge math far from int overflow */
+    F ("x",             0,              x,             T_INT,    F_CTRL,  -8192,8192),
+    F ("y",             0,              y,             T_INT,    F_CTRL,  -8192,8192),
     /* H4: font_size feeds the OSD canvas allocation (msttf_render); clamped
      * at parse so a bad /control write can never request an absurd raster
      * (the rasterizer additionally hard-clamps its own pixel height).
@@ -1188,10 +1189,10 @@ static const cfg_field osd_item_fields[] = {
 #define TT ms_privacy_region
 static const cfg_field privacy_fields[] = {
     F("enabled", 0,            enabled, T_BOOL, F_CTRL, 0,0),
-    F("x",       0,            x,       T_INT,  F_CTRL, 0,0),
-    F("y",       0,            y,       T_INT,  F_CTRL, 0,0),
-    F("w",       "width",      w,       T_INT,  F_CTRL, 0,0),
-    F("h",       "height",     h,       T_INT,  F_CTRL, 0,0),
+    F("x",       0,            x,       T_INT,  F_CTRL, -8192,8192),
+    F("y",       0,            y,       T_INT,  F_CTRL, -8192,8192),
+    F("w",       "width",      w,       T_INT,  F_CTRL, 0,8192),
+    F("h",       "height",     h,       T_INT,  F_CTRL, 0,8192),
     F("color",   "fill_color", color,   T_HEX,  F_CTRL, 0,0),
 };
 #undef TT

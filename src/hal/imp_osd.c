@@ -77,12 +77,15 @@ static pthread_mutex_t  g_osd_lock = PTHREAD_MUTEX_INITIALIZER;
  * x/y == 0: centered on that axis */
 static void resolve_pos(int W, int H, int w, int h, int x, int y, int *ox, int *oy)
 {
-    *ox = (x>0) ? x : (x<0 ? W-w+x : (W-w)/2);
-    *oy = (y>0) ? y : (y<0 ? H-h+y : (H-h)/2);
-    if (*ox<0) *ox=0;
-    if (*oy<0) *oy=0;
-    if (*ox+w>W) *ox = (W-w>0) ? (W-w) : 0;
-    if (*oy+h>H) *oy = (H-h>0) ? (H-h) : 0;
+    /* 64-bit: x/y come from /control, and an overflowing x+w>W check would
+     * hand the SDK a rectangle past the frame buffer */
+    long long px = (x>0) ? x : (x<0 ? (long long)W-w+x : ((long long)W-w)/2);
+    long long py = (y>0) ? y : (y<0 ? (long long)H-h+y : ((long long)H-h)/2);
+    if (px<0) px=0;
+    if (py<0) py=0;
+    if (px+w>W) px = (W-w>0) ? (W-w) : 0;
+    if (py+h>H) py = (H-h>0) ? (H-h) : 0;
+    *ox=(int)px; *oy=(int)py;
 }
 
 /* per-path font cache (L7): items configured with the same font_path (e.g.
@@ -384,8 +387,9 @@ static void setup_cover(osd_stream *s, int n)
     int W=s->width, H=s->height;
     int x=p->x, y=p->y, w=p->w, h=p->h;
     if (x<0) x=0; if (y<0) y=0;
-    if (w>0 && x+w>W) w=W-x;
-    if (h>0 && y+h>H) h=H-y;
+    if (x>W) x=W; if (y>H) y=H;
+    if (w>0 && (long long)x+w>W) w=W-x;
+    if (h>0 && (long long)y+h>H) h=H-y;
     /* even-align origin+size ONLY on the rotated IPU-OSD path (non-rotated
      * privacy behaves exactly as before); a solid cover taller than the top
      * picHeight band (= s->width) is shortened to fit rather than flooding the
