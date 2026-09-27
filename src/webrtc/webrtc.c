@@ -802,7 +802,7 @@ int webrtc_whep(const char *offer, const char *local_ip, int req_chn,
         fanqueue wq;
         int winit = fanqueue_init(&wq, 4) == 0;
         int wsub = winit && hub_subscribe(chn, &wq) == 0;
-        hub_request_idr(chn);
+        hub_request_idr_warmup(chn);
         for (int i = 0; i < 200 && !vready; i++) {
             if (hub_get_vparam(chn, &vp) && vparam_ready(&vp)) { vready = 1; break; }
             usleep(10000);

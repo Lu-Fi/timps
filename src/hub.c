@@ -46,6 +46,29 @@ void hub_request_idr(int src)
     if (g_idr_cb) g_idr_cb(src);
 }
 
+/* Its own clock, never g_idr_last_us: the keyframe it produces lands in a
+ * throwaway queue, so charging it to the start gate made the client's real
+ * start request, moments later, wait out the whole interval. */
+static int64_t g_idr_warm_us[MS_MAX_VSTREAM];
+
+void hub_request_idr_warmup(int src)
+{
+    if ((unsigned)src >= MS_MAX_VSTREAM) return;
+    hub_source *s = &g_src[src];
+    pthread_mutex_lock(&s->lock);
+    int ready = s->vp_ready;
+    pthread_mutex_unlock(&s->lock);
+    if (ready) return;
+    int64_t now = ms_now_us();
+    int go;
+    pthread_mutex_lock(&g_idr_lock);
+    go = (!g_idr_warm_us[src] || now - g_idr_warm_us[src] >= HUB_IDR_START_MIN_US)
+      && (!g_idr_last_us[src] || now - g_idr_last_us[src] >= HUB_IDR_START_MIN_US);
+    if (go) g_idr_warm_us[src] = now;
+    pthread_mutex_unlock(&g_idr_lock);
+    if (go && g_idr_cb) g_idr_cb(src);
+}
+
 int hub_request_idr_recovery(int src)
 {
     if ((unsigned)src >= MS_MAX_VSTREAM) { hub_request_idr(src); return 1; }

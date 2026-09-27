@@ -919,7 +919,7 @@ static int handle_request(session *s, char *req)
         { vparam vp; vready = hub_get_vparam(vchn,&vp) && vparam_ready(&vp); }
         /* only a cold hub needs the keyframe: DESCRIBE is unauthenticated on
          * an open camera and PLAY asks for its own */
-        if (!vready) hub_request_idr(vchn);
+        if (!vready) hub_request_idr_warmup(vchn);
         if (!vready) {
             fanqueue wq; int winit = fanqueue_init(&wq, 4) == 0;
             int wsub = winit && hub_subscribe(vchn, &wq) == 0;

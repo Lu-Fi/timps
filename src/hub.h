@@ -105,6 +105,13 @@ void        hub_request_idr(int src);
 #ifndef HUB_IDR_START_MIN_US
 #define HUB_IDR_START_MIN_US (500000LL)
 #endif
+/* A keyframe wanted only to capture SPS/PPS on a cold hub (RTSP DESCRIBE,
+ * WebRTC offer, fMP4/player warm-up). A no-op once the parameter sets are
+ * cached; otherwise at most one per HUB_IDR_START_MIN_US, skipped (not
+ * coalesced) if any forced IDR is already that fresh. It does not arm the
+ * start gate, so the client's own hub_request_idr() right after is not
+ * deferred behind it. */
+void        hub_request_idr_warmup(int src);
 
 /* Minimum spacing between IDRs forced by drop RECOVERY. One second is exactly
  * the cadence rtsp.c/httpd.c/record.c each already promised themselves, so a

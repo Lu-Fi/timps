@@ -439,7 +439,8 @@ test-hub-pool:
 
 # Host-only unit test for the hub's shared IDR clock (src/hub.c): a coalesced
 # recovery request is retired by the keyframe that satisfies it, and still
-# issued when no keyframe arrives. Links the real src/hub.c with the recovery
+# issued when no keyframe arrives; a cold-start warm-up does not defer the
+# start request behind it. Links the real src/hub.c with the recovery
 # interval shortened so the cases run in milliseconds. Needs no hardware and no
 # running daemon; exit code is the test result.
 HUBIDRTEST_SRC := scripts/test_hub_idr.c src/hub.c src/frame.c src/fanqueue.c \

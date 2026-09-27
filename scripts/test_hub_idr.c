@@ -10,8 +10,10 @@
  * encoder whose consumers have already recovered.
  *
  * Both halves of that contract are pinned here: a keyframe cancels a pending
- * request, and an absent keyframe still gets one. Also pinned: the hub counts
- * a consumer's evictions itself, so one that never pops again is counted too.
+ * request, and an absent keyframe still gets one. Also pinned: a cold-start
+ * warm-up request does not defer the client's own start request, and the hub
+ * counts a consumer's evictions itself, so one that never pops again is
+ * counted too.
  *
  * Built with a shortened HUB_IDR_RECOVERY_MIN_US so the test does not have to
  * sleep a real second per case (the header's #ifndef makes the override move
@@ -141,6 +143,67 @@ static void t_start_requests_coalesce(void)
     ck_eq(g_idr[src] - base, 1, "no second IDR after the keyframe");
 }
 
+/* Cold start: RTSP DESCRIBE / a WebRTC offer / the fMP4 audio warm-up spend a
+ * keyframe on a throwaway queue just to capture SPS/PPS, and the client's own
+ * start request follows within the start interval. When the warm-up request
+ * armed the start gate, that real request was deferred by up to a whole
+ * interval - latency on every cold first connect. */
+static void t_cold_start_warmup_does_not_defer_start(void)
+{
+    static const uint8_t ps_au[] = {
+        0,0,0,1, 0x67, 0x64, 0x00, 0x28,
+        0,0,0,1, 0x68, 0xee, 0x3c, 0x80,
+        0,0,0,1, 0x65, 0x11, 0x22, 0x33 };
+    const int src = 0;
+    vparam vp;
+    cur = "cold start: warm-up does not defer the start request";
+    usleep(HUB_IDR_RECOVERY_MIN_US * 2);
+    hub_set_video_params(src, MS_VC_H264, 640, 480, 15);   /* cold again */
+    int base = g_idr[src];
+    hub_request_idr_warmup(src);
+    ck_eq(g_idr[src] - base, 1, "the warm-up keyframe is requested");
+    hub_publish(src, ps_au, sizeof ps_au, ms_now_us(), 1,
+                MS_MEDIA_VIDEO, ms_now_us());
+    ck_eq(hub_get_vparam(src, &vp), 1, "parameter sets captured");
+    hub_request_idr(src);
+    ck_eq(g_idr[src] - base, 2, "the client's start request goes out at once");
+
+    cur = "cold start: the start gate still holds";
+    hub_request_idr(src);
+    ck_eq(g_idr[src] - base, 2, "a second start request is coalesced");
+    publish(src, 1);                       /* retire it */
+
+    cur = "warm hub: warm-up requests are free";
+    usleep(HUB_IDR_RECOVERY_MIN_US * 2);
+    base = g_idr[src];
+    for (int i = 0; i < 5; i++) hub_request_idr_warmup(src);
+    publish(src, 0);
+    ck_eq(g_idr[src] - base, 0, "no IDR once SPS/PPS are cached");
+}
+
+/* A DESCRIBE flood against a cold hub: warm-ups are rate limited among
+ * themselves and against any fresh forced IDR. */
+static void t_warmup_flood_bounded(void)
+{
+    const int src = 1;
+    cur = "cold hub: a warm-up flood is bounded";
+    usleep(HUB_IDR_RECOVERY_MIN_US * 2);
+    hub_set_video_params(src, MS_VC_H264, 640, 480, 15);
+    int base = g_idr[src];
+    for (int i = 0; i < 10; i++) hub_request_idr_warmup(src);
+    ck_eq(g_idr[src] - base, 1, "ten warm-ups ask the encoder once");
+    usleep(HUB_IDR_START_MIN_US * 2);
+    publish(src, 0);
+    ck_eq(g_idr[src] - base, 1, "a skipped warm-up is not deferred");
+    hub_request_idr_warmup(src);
+    ck_eq(g_idr[src] - base, 2, "one more after the interval");
+
+    usleep(HUB_IDR_START_MIN_US * 2);
+    hub_request_idr(src);
+    hub_request_idr_warmup(src);
+    ck_eq(g_idr[src] - base, 3, "no warm-up right after a start request");
+}
+
 /* A consumer blocked in send never pops again, so it cannot report its own
  * drops; the hub has to count them at the push that evicted. A queue never
  * registered with hub_count_drops() is not counted. */
@@ -175,6 +238,8 @@ int main(void)
     t_pending_still_fires_without_keyframe();
     t_cancel_is_per_stream();
     t_start_requests_coalesce();
+    t_cold_start_warmup_does_not_defer_start();
+    t_warmup_flood_bounded();
     t_stalled_consumer_counted();
 
     printf("\n%d/%d checks passed\n", checks - failures, checks);
