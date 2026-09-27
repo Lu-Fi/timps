@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <sys/stat.h>
 
 static int g_fail;
 static char g_path[256];
@@ -141,6 +142,36 @@ int main(void)
                   &cc.video[1].jpeg_chn, 2, &cc);
         check_int("defaults stay untouched",
                   "video1.enabled = 1\njpeg.enabled = 1\n", &cc.video[1].jpeg_chn, 4, &cc);
+    }
+
+    /* an embedded NUL used to truncate the value silently (strlen) instead
+     * of being reported; the line is now dropped as a whole */
+    {
+        static const char body[] = "record.dir = /mnt/a\0/b\nrecord.name = ok\n";
+        FILE *f = fopen(g_path, "w");
+        fwrite(body, 1, sizeof body - 1, f);
+        fclose(f);
+        static ms_config c; char got[256] = "";
+        config_load(&c, g_path);
+        config_get_kv(&c, "record.dir", got, sizeof got);
+        if (!strcmp(got, "/mnt/a")) { printf("FAIL embedded NUL truncated the value to [%s]\n", got); g_fail++; }
+        else printf("ok   %-46s record.dir = [%s]\n", "line with embedded NUL dropped", got);
+        config_get_kv(&c, "record.name", got, sizeof got);
+        if (strcmp(got, "ok")) { printf("FAIL line after the NUL line lost: [%s]\n", got); g_fail++; }
+        else printf("ok   %-46s record.name = [%s]\n", "next line still parsed", got);
+    }
+
+    /* the rewrite must keep a hand-applied chmod 600 on a file of secrets */
+    {
+        write_conf("record.dir = /mnt/a\n");
+        chmod(g_path, 0600);
+        const char *k[] = { "record.dir" }, *v[] = { "/mnt/b" };
+        config_write_keys(g_path, k, v, 1);
+        struct stat st;
+        if (stat(g_path, &st) != 0 || (st.st_mode & 0777) != 0600) {
+            printf("FAIL config rewrite changed mode to %o\n", (unsigned)(st.st_mode & 0777));
+            g_fail++;
+        } else printf("ok   %-46s mode = 600\n", "rewrite keeps the file mode");
     }
 
     if (g_fail){ printf("\n%d config parser test(s) FAILED\n", g_fail); return 1; }

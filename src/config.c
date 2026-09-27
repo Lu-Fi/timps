@@ -1896,21 +1896,34 @@ int config_load(ms_config *c, const char *path)
     if (!f) { LOGW(MOD,"config %s not found, using defaults", path); return -1; }
     char line[512];
     int n=0;
-    while (fgets(line, sizeof line, f)) {
+    /* zeroed before every read, so how much fgets() really stored can be told
+     * apart from strlen(), which stops at an embedded NUL */
+    for (memset(line, 0, sizeof line); fgets(line, sizeof line, f);
+         memset(line, 0, sizeof line)) {
+        size_t ll = strlen(line);
+        const char *nlp = memchr(line, '\n', sizeof line - 1);
+        size_t got = nlp ? (size_t)(nlp - line) + 1 : 0;
+        if (!nlp) { got = sizeof line - 1; while (got > ll && !line[got-1]) got--; }
+        /* only the key goes to the log: the value may be a password */
+        int kl = (int)strcspn(line, "= \t"); if (kl > 40) kl = 40;
         /* L9: a physical line longer than the buffer used to be silently
          * chopped into two logical lines (truncated value + a garbage "key").
          * Detect the missing trailing '\n', drop the whole line and warn. */
-        size_t ll = strlen(line);
-        if (ll+1 == sizeof line && line[ll-1] != '\n'){
+        if (!nlp && got == sizeof line - 1){
             int ch = fgetc(f);
             if (ch != EOF){        /* genuinely longer than the buffer: drop rest + warn */
                 while (ch!=EOF && ch!='\n') ch=fgetc(f);
-                LOGW(MOD,"config: line longer than %zu chars skipped (starts \"%.40s...\")",
-                     sizeof line - 2, line);
+                LOGW(MOD,"config: line longer than %zu chars skipped (key \"%.*s\")",
+                     sizeof line - 2, kl, line);
                 continue;
             }
             /* L-1: EOF right after a full buffer = a legit final line with no
              * trailing '\n' (exactly sizeof-1 chars) - parse it, don't skip. */
+        }
+        if (got > ll){
+            LOGW(MOD,"config: line with an embedded NUL byte skipped (key \"%.*s\")",
+                 kl, line);
+            continue;
         }
         char *s = trim(line);
         if (!*s || *s=='#' || *s==';') continue;
@@ -2172,7 +2185,11 @@ int config_write_keys(const char *path, const char *const *keys,
         goto unlock;
     int tfd = mkstemp(tmp);
     if (tfd < 0){ LOGW(MOD,"cannot create tmp for %s: %s", path, strerror(errno)); goto unlock; }
-    fchmod(tfd, 0644);                       /* mkstemp makes it 0600; match a normal conf */
+    {   /* keep the live file's mode: it holds passwords and tokens, and a
+         * hand-applied chmod 600 must survive the next POST */
+        struct stat st;
+        fchmod(tfd, stat(path, &st) == 0 ? (st.st_mode & 07777) : 0600);
+    }
     FILE *out = fdopen(tfd, "w");
     if (!out){ LOGW(MOD,"fdopen tmp failed"); close(tfd); unlink(tmp); goto unlock; }
 
