@@ -273,6 +273,12 @@ int ms_path_unsafe(const char *dir, const char *name);
  * sync carries a ~1970 mtime; the pruners must not read that as "oldest". */
 #define MS_SANE_EPOCH 1735689600L
 
+/* 1 if dir (or, while it does not exist yet, its nearest existing ancestor)
+ * is on the root filesystem - e.g. an SD mount point with no card in it.
+ * record.dir/timelapse.dir are POSTable; recording there wears out the flash.
+ * /tmp is exempt (tmpfs on the camera; the host sim records there). */
+int ms_dir_on_rootfs(const char *dir);
+
 /* free space on the filesystem holding dir, in MB; -1 on error */
 long long ms_free_mb(const char *dir);
 

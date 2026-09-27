@@ -403,7 +403,7 @@ within its ~300 ms poll cycle without a restart.
 | `record.enabled` | bool | 0 | 0/1 | **Live (next cycle)** | Master enable; also gates on-boot start. |
 | `record.channel` | int (channel) | 0 | valid stream index | **Live (next cycle)** | Video stream to record. |
 | `record.mode` | enum | `1` (motion) | `continuous`(0)\|`motion`(1)\|raw number | **Live (next cycle)** | Continuous vs. motion-triggered recording. |
-| `record.dir` | string(128) | `/mnt/mmcblk0p1` | — | **Live (next cycle)** | SD base directory. |
+| `record.dir` | string(128) | `/mnt/mmcblk0p1` | — | **Live (next cycle)** | SD base directory. Refused if it is on the root filesystem (card not mounted). |
 | `record.name` | string(96) | `%Y%m%d/%H/%Y%m%dT%H%M%S` | `strftime` template | **Live (next cycle)** | Path template under `<dir>/<hostname>/records/`. |
 | `record.segment_s` (alias `segment`) | int | 60 | 0–86400 | **Live (next cycle)** | Max segment length in seconds; rotation only happens at a video keyframe. `0` = single file, no rotation. |
 | `record.pre_roll_s` (alias `pre_roll`) | int | 3 | 0–60 | **Live (next cycle)** | Motion mode: seconds of buffered video kept before the trigger (ring buffer). |
@@ -425,7 +425,7 @@ running thread re-reads these live.
 | --- | --- | --- | --- | --- | --- |
 | `timelapse.enabled` | bool | 0 | 0/1 | **Live (next cycle)** | Master enable; also gates on-boot start. |
 | `timelapse.channel` | int (channel) | 0 | valid stream index | **Live (next cycle)** | Video stream whose JPEG is captured. |
-| `timelapse.dir` | string(128) | `/mnt/mmcblk0p1` | — | **Live (next cycle)** | Base directory (SD, NFS, any writable path). |
+| `timelapse.dir` | string(128) | `/mnt/mmcblk0p1` | — | **Live (next cycle)** | Base directory (SD, NFS, any writable path not on the root filesystem). |
 | `timelapse.name` | string(96) | `%Y%m%d/%H/%Y%m%dT%H%M%S` | `strftime` template | **Live (next cycle)** | Path template under `<dir>/<hostname>/timelapses/`. |
 | `timelapse.interval_s` (alias `interval`) | int | 60 | ≥1 | **Live (next cycle)** | Seconds between shots. |
 | `timelapse.keep_days` | int | 7 | 0–3650 | **Live (next cycle)** | Delete shots older than this; `0` = keep forever. |

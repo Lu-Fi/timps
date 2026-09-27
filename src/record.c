@@ -387,6 +387,16 @@ static int seg_open(int chn, const ms_record_cfg *rc)
         LOGE(MOD,"unsafe record.dir/name ('..' or absolute name), not recording");
         return -1;
     }
+    static int rootfs_warned;
+    if (ms_dir_on_rootfs(dir)){
+        if (!rootfs_warned++){
+            LOGE(MOD,"record.dir %s is on the root filesystem (card not mounted?) "
+                     "- not recording", dir);
+            note_werr("record.dir on rootfs", EROFS);
+        }
+        return -1;
+    }
+    rootfs_warned=0;
     /* O_EXCL, not fopen("wb"): the segment name is only as unique as the
      * strftime pattern's own granularity (default: one second). A stop/start
      * inside the same window - motion re-triggering right after post_roll

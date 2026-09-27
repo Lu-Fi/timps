@@ -285,6 +285,21 @@ int ms_path_unsafe(const char *dir, const char *name)
     return 0;
 }
 
+int ms_dir_on_rootfs(const char *dir)
+{
+    if (!strncmp(dir, "/tmp", 4) && (dir[4] == 0 || dir[4] == '/')) return 0;
+    if (dir[0] != '/') return 1;
+    struct stat rs, ds;
+    if (stat("/", &rs) != 0) return 0;
+    char p[256]; snprintf(p, sizeof p, "%s", dir);
+    for (;;){
+        if (stat(p, &ds) == 0) return ds.st_dev == rs.st_dev;
+        char *s = strrchr(p, '/');
+        if (!s || s == p) return 1;
+        *s = 0;
+    }
+}
+
 long long ms_free_mb(const char *dir)
 {
     struct statvfs vf;

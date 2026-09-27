@@ -149,6 +149,14 @@ static int shot_write(const ms_pkt *p)
         LOGE(MOD,"unsafe timelapse.dir/name ('..' or absolute name), skipping shot");
         return -1;
     }
+    static int rootfs_warned;
+    if (ms_dir_on_rootfs(dir)){
+        if (!rootfs_warned++)
+            LOGE(MOD,"timelapse.dir %s is on the root filesystem (card not "
+                     "mounted?) - skipping shots", dir);
+        return -1;
+    }
+    rootfs_warned=0;
     char path[512], tmp[520];
     time_t t = ms_media_path(path,sizeof path,dir,"timelapses",name,".jpg");
     snprintf(tmp,sizeof tmp,"%s.tmp",path);

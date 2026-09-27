@@ -750,7 +750,7 @@ Every key is `F_CTRL` and the running recorder reads them **live** — no restar
 | `record.enabled` | bool | `0` | — | live | Also gates the on-boot start. |
 | `record.channel` | int | `0` | `T_CHAN`: out of `0..1` → 0 | live | |
 | `record.mode` | enum | `1` (motion) | `motion` → 1, `continuous` → 0, or a raw number | live | **Reads back as a number**, not a word. |
-| `record.dir` | string[128] | `/mnt/mmcblk0p1` | — | live | Segments land under `<dir>/<hostname>/records/`. |
+| `record.dir` | string[128] | `/mnt/mmcblk0p1` | — | live | Segments land under `<dir>/<hostname>/records/`. A dir on the root filesystem (e.g. the mount point with no card) is refused (`[ERR] ... on the root filesystem`); `/tmp` is allowed. |
 | `record.name` | string[96] | `%Y%m%d/%H/%Y%m%dT%H%M%S` | — | live | strftime path template. |
 | `record.segment_s` | int | `60` | 0..86400 | live | `0` = single file, no rotation. Alias `record.segment`. |
 | `record.pre_roll_s` | int | `3` | 0..60 | live | Motion mode: buffered seconds kept before the trigger. Alias `record.pre_roll`. |
@@ -774,7 +774,7 @@ Requires `USE_TIMELAPSE` (`BR2_PACKAGE_TIMPS_TIMELAPSE`, default y). Every key i
 | --- | --- | --- | --- | --- | --- |
 | `timelapse.enabled` | bool | `0` | — | live | Also gates the on-boot start. |
 | `timelapse.channel` | int | `0` | `T_CHAN`: out of `0..1` → 0 | live | The stream whose piggyback JPEG encoder is captured; falls back to the dedicated `jpeg.*` channel. |
-| `timelapse.dir` | string[128] | `/mnt/mmcblk0p1` | — | live | Shots land under `<dir>/<hostname>/timelapses/`. |
+| `timelapse.dir` | string[128] | `/mnt/mmcblk0p1` | — | live | Shots land under `<dir>/<hostname>/timelapses/`. Same root-filesystem refusal as `record.dir`. |
 | `timelapse.name` | string[96] | `%Y%m%d/%H/%Y%m%dT%H%M%S` | — | live | strftime template, `.jpg` appended. |
 | `timelapse.interval_s` | int | `60` | 1..INT_MAX | live | Alias `timelapse.interval`. |
 | `timelapse.keep_days` | int | `7` | 0..3650 | live | `0` = keep forever. |
