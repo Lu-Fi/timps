@@ -113,7 +113,7 @@ int main(void)
         { "audio.backchannel_rate", 1 }, { "audio.volume", 0 },
         { "audio.mute", 0 }, { "audio.talk_ws", 0 },
         { "osd.enabled", 1 }, { "osd.font_path", 1 }, { "osd.supersample", 1 },
-        { "osd.hinting", 1 }, { "osd.monitor_stream", 0 }, { "osd.vars_file", 0 },
+        { "osd.hinting", 1 }, { "osd.monitor_stream", 0 },
         { "osd0.1.enabled", 0 }, { "video0.bitrate", 0 }, { "nosuch.key", 0 },
     };
     for (size_t i = 0; i < sizeof rk / sizeof rk[0]; i++) {
