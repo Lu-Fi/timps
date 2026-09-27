@@ -3234,6 +3234,13 @@ static void *jpeg_thread(void *arg)
             LOGW(MOD,"jpeg chn%d: GetStream failed after PollingStream OK", jc->chn);
             continue;
         }
+        /* idle-stop linger: drain the encoder, but a frame nobody receives is
+         * not worth a pool buffer and a full-frame copy. Re-checked here so a
+         * subscriber that arrived during the poll still gets this frame. */
+        if (!jwant && !jc->active && !hub_active(jc->src)){
+            IMP_Encoder_ReleaseStream(jc->chn,&st);
+            continue;
+        }
         /* Size to the actual frame and assemble the JPEG straight into a
          * pooled buffer (see video_thread for the pool rationale). Summing the
          * pack lengths is exact - the old ~0.5 byte/pixel estimate under-sized
