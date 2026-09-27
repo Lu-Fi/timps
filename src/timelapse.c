@@ -147,7 +147,7 @@ static int shot_write(const ms_pkt *p)
     time_t t = ms_media_path(path,sizeof path,dir,"timelapses",name,".jpg");
     snprintf(tmp,sizeof tmp,"%s.tmp",path);
     ms_mkdirs(path);
-    FILE *f=fopen(tmp,"wb");
+    FILE *f=ms_fopen_wb(tmp);
     if (!f){ LOGE(MOD,"open %s: %s",tmp,strerror(errno)); return -1; }
     /* short write = SD yanked / disk full: drop the shot, keep the loop alive */
     int werr = (fwrite(p->data,1,p->len,f) != p->len);

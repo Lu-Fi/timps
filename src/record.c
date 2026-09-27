@@ -380,10 +380,11 @@ static int seg_open(int chn, const ms_record_cfg *rc)
     ms_media_path(stem,sizeof stem,dir,"records",name,"");
     snprintf(path,sizeof path,"%s.mp4",stem);
     ms_mkdirs(path);
-    int fd=open(path,O_WRONLY|O_CREAT|O_EXCL,0644);
+    /* O_CLOEXEC: see ms_fopen_wb() */
+    int fd=open(path,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0644);
     for (int i=1; fd<0 && errno==EEXIST && i<1000; i++){
         snprintf(path,sizeof path,"%s-%d.mp4",stem,i);
-        fd=open(path,O_WRONLY|O_CREAT|O_EXCL,0644);
+        fd=open(path,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0644);
         if (fd>=0) LOGW(MOD,"segment name collision, wrote %s instead",path);
     }
     if (fd<0){ LOGE(MOD,"open %s: %s",path,strerror(errno)); return -1; }
@@ -1014,7 +1015,7 @@ int record_clip(const char *path, int seconds)
             ms_mkdirs(path);
             /* O_EXCL|O_NOFOLLOW: never follow a pre-planted symlink or clobber an
              * existing file (send2 hands us a fresh mktemp -u name). */
-            int fd=open(path,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW,0600);
+            int fd=open(path,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
             if (fd<0){ LOGW(MOD,"clip open %s: %s",path,strerror(errno)); pkt_unref(p); break; }
             fp=fdopen(fd,"wb");
             if (!fp){ close(fd); unlink(path); pkt_unref(p); break; }

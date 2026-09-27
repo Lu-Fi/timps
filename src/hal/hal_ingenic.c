@@ -3285,7 +3285,7 @@ static void *jpeg_thread(void *arg)
              * fclose means a full/yanked SD card, and an unconditional rename()
              * would then replace the last GOOD snapshot with a truncated one.
              * Same handling timelapse.c:159-166 already does for its shots. */
-            FILE *f=fopen(tmp,"wb");
+            FILE *f=ms_fopen_wb(tmp);
             if (f){
                 int werr = (fwrite(jbuf,1,jlen,f) != (size_t)jlen);
                 if (fclose(f)!=0) werr=1;

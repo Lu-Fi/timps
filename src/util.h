@@ -276,6 +276,10 @@ long long ms_free_mb(const char *dir);
  * config-settable) would otherwise block the reader forever. */
 FILE *ms_fopen_regular(const char *path);
 
+/* fopen(path,"wb") with O_CLOEXEC: hook scripts the daemon spawns must not
+ * inherit a write fd to a file on the SD card (the unmount then fails EBUSY) */
+FILE *ms_fopen_wb(const char *path);
+
 /* create every parent directory of a file path (mkdir -p on dirname) */
 void ms_mkdirs(const char *path);
 

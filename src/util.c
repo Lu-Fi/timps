@@ -305,6 +305,15 @@ FILE *ms_fopen_regular(const char *path)
     return f;
 }
 
+FILE *ms_fopen_wb(const char *path)
+{
+    int fd = open(path, O_WRONLY|O_CREAT|O_TRUNC|O_CLOEXEC, 0644);
+    if (fd < 0) return NULL;
+    FILE *f = fdopen(fd, "wb");
+    if (!f) close(fd);
+    return f;
+}
+
 void ms_mkdirs(const char *path)
 {
     char tmp[512]; snprintf(tmp, sizeof tmp, "%s", path);
