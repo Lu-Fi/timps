@@ -162,13 +162,17 @@ int rec_ring_count_test(void) { return r_count; }
  * the card). */
 #define PRUNE_BATCH 32
 
-typedef struct { time_t mt; char path[336]; } prune_cand;
+typedef struct { int64_t mt; char path[336]; } prune_cand;
 
 /* insertion into a bounded array kept sorted oldest-first: with PRUNE_BATCH
  * small this beats a heap in both code size and constant factor, and the
- * common case (a file NEWER than every candidate held) is a single compare. */
-static void cand_add(prune_cand *c, int *n, const char *path, time_t mt)
+ * common case (a file NEWER than every candidate held) is a single compare.
+ * A pre-NTP-sync mtime sorts as NEWEST (keeping its relative order): that
+ * footage was written right after a boot/power cut, which is exactly what
+ * must not go first. */
+static void cand_add(prune_cand *c, int *n, const char *path, time_t t)
 {
+    int64_t mt = (int64_t)t < MS_SANE_EPOCH ? (int64_t)t + ((int64_t)1 << 40) : (int64_t)t;
     if (*n==PRUNE_BATCH && mt>=c[PRUNE_BATCH-1].mt) return;
     int i = (*n<PRUNE_BATCH) ? (*n)++ : PRUNE_BATCH-1;
     for (; i>0 && c[i-1].mt>mt; i--) c[i]=c[i-1];

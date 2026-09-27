@@ -67,7 +67,9 @@ static void prune_old(const char *base, time_t cutoff, int depth)
             rmdir(p);
         } else if (S_ISREG(s.st_mode)){
             size_t l=strlen(p);
-            if (l>4 && !strcmp(p+l-4,".jpg") && s.st_mtime<cutoff){
+            /* a pre-NTP-sync mtime says nothing about the shot's age */
+            if (l>4 && !strcmp(p+l-4,".jpg") && s.st_mtime<cutoff &&
+                (long)s.st_mtime >= MS_SANE_EPOCH){
                 if (unlink(p)==0) LOGI(MOD,"pruned %s",p);
             }
         }
