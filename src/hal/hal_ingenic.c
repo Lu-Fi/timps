@@ -131,12 +131,13 @@ typedef IMPEncoderCHNStat IMPEncoderChnStat;
 #endif
 /* Watchdog: IMP_AI_EnableChn can appear to succeed yet the channel never
  * actually yields a frame (same failure class as an unchecked EnableChn
- * error - seen on some T-series + sensor combos). PollingFrame is polled
- * every 10 ms on the no-frame path, so this many consecutive misses is ~5 s. */
-#ifndef MS_AI_WATCHDOG_ITERS
-#define MS_AI_WATCHDOG_ITERS 500
+ * error - seen on some T-series + sensor combos). Time-based: a PollingFrame
+ * miss blocks up to general.imp_polling_timeout, so the old 500-miss count was
+ * ~255 s at the default, not the ~5 s intended. */
+#ifndef MS_AI_WATCHDOG_US
+#define MS_AI_WATCHDOG_US (5*1000000LL)
 #endif
-/* Watchdog: same failure class as MS_AI_WATCHDOG_ITERS above, but for video -
+/* Watchdog: same failure class as MS_AI_WATCHDOG_US above, but for video -
  * IMP_Encoder_StartRecvPic can succeed while the underlying framesource
  * enable silently didn't take (fs_use()'s EnableChn is unchecked and only
  * fires on the 0->1 user-count edge), leaving PollingStream returning
@@ -188,7 +189,7 @@ typedef IMPEncoderCHNStat IMPEncoderChnStat;
  * regardless of whether it actually worked, so a dead-but-"successfully
  * restarted" JPEG channel would retry forever too. Unlike video, JPEG/
  * snapshot is not the primary feature (same tier as audio - see
- * MS_AI_WATCHDOG_ITERS), so after this many consecutive failed recovery
+ * MS_AI_WATCHDOG_US), so after this many consecutive failed recovery
  * cycles the thread gives up on JUST this channel (mirrors audio_thread's
  * "disable and exit the thread" pattern) instead of taking the whole
  * process down: a video-only ISP fault has no business killing a still-
@@ -3906,6 +3907,7 @@ static void *audio_thread(void *arg)
 #endif
 
     int ai_fail_streak = 0;
+    int64_t ai_fail_t0 = 0;     /* first miss of the current streak */
     /* A1: capture-pts sanitizer for audio (own instance, never shared with a
      * video channel). Feeds the AI hardware timeStamp through pts_sanitize() so
      * a publish-thread stall (audio starved by the video encoders, then the AI
@@ -3966,7 +3968,8 @@ static void *audio_thread(void *arg)
         /* sleep on the no-frame path so a non-blocking/failing PollingFrame
          * can never spin the CPU (audio input may be idle on some boards) */
         if (IMP_AI_PollingFrame(dev,chnid, g_hcfg->imp_polling_timeout)!=0){
-            if (++ai_fail_streak >= MS_AI_WATCHDOG_ITERS){
+            if (!ai_fail_streak++) ai_fail_t0 = ms_now_us();
+            if (ms_now_us() - ai_fail_t0 >= MS_AI_WATCHDOG_US){
                 /* the channel never delivered a single frame since it was
                  * (apparently) enabled - stop advertising it and let the
                  * thread exit through the normal teardown below instead of
@@ -4002,7 +4005,8 @@ static void *audio_thread(void *arg)
              * never trip the watchdog (the counter was reset every tick) and
              * this bare `continue` had no usleep, so audio died silently and
              * permanently while potentially hot-spinning this core. */
-            if (++ai_fail_streak >= MS_AI_WATCHDOG_ITERS){
+            if (!ai_fail_streak++) ai_fail_t0 = ms_now_us();
+            if (ms_now_us() - ai_fail_t0 >= MS_AI_WATCHDOG_US){
                 LOGE(MOD,"no audio frames received - disabling audio input");
                 hub_clear_audio_params();
                 break;
