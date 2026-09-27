@@ -104,7 +104,8 @@ void log_set_syslog(int on){ g_syslog = on; }
 static struct lerr {
     char     mod[16];
     char     msg[LERR_MSG];
-    long     t;          /* unix time of the latest capture */
+    long     t;          /* CLOCK_MONOTONIC s of the latest capture: a wall
+                          * stamp from before NTP sync aged ~56 years */
     unsigned count;      /* WARN+ lines from this module since start; 0 = free */
     int      level;
 } g_lerr[LERR_SLOTS];
@@ -143,7 +144,9 @@ int log_last_errors_json(char *buf, size_t cap)
         int _n = snprintf(o<cap?buf+o:buf, o<cap?cap-o:0, __VA_ARGS__); \
         if (_n>0) o += (size_t)_n; \
     } while (0)
-    long now = (long)time(NULL);
+    struct timespec mt;
+    clock_gettime(CLOCK_MONOTONIC, &mt);
+    long now = (long)mt.tv_sec;
     APP("{");
     pthread_mutex_lock(&g_lock);
     int first = 1;
@@ -182,8 +185,11 @@ void log_printf(int level, const char *module, const char *fmt, ...)
     strftime(tbuf, sizeof tbuf, "%H:%M:%S", &tm);
 
     pthread_mutex_lock(&g_lock);
-    if (level <= LOG_WARN)
-        lerr_note(level, module ? module : "", msg, (long)ts.tv_sec);
+    if (level <= LOG_WARN){
+        struct timespec mt;
+        clock_gettime(CLOCK_MONOTONIC, &mt);
+        lerr_note(level, module ? module : "", msg, (long)mt.tv_sec);
+    }
     fprintf(stderr, "%s.%03ld [%s] %-12s %s\n", tbuf, ts.tv_nsec/1000000,
             lvl_str[level & 3], module ? module : "", msg);
     if (g_syslog){
