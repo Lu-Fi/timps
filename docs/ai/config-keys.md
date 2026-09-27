@@ -401,11 +401,11 @@ internal channel wiring, deliberately not exposed over HTTP.
 | `rotation` | enum/int | `0` / `0` | `0`, `90`, `270`, plus `180` on T40/T41; legacy `1`→90, `2`→270 | restart | See the prose below. Unsupported values coerce to `0` with a warning. |
 | `buffers` | int | `2` / `2` | 1..8 | restart | IMP `nrVBs`. Setting it explicitly also sets an internal `buffers_explicit` flag, so the T31 safety clamp trusts your value instead of overriding it. The clamp gate is exactly `chn == 0 && isp_ch0_pre_dequeue_time != 0` (unreadable counts as active) — **scaled or not**; the older "non-scaled channel" theory was superseded in 2026-08. With the flag set the HAL warns and leaves `nrVBs` alone, which is why an explicit `buffers = 2` is *not* the same as omitting the line. |
 | `rtsp_path` | string[64] | `/ch0` / `/ch1` | — | **live** | The one `videoN.*` key that is genuinely live — a DESCRIBE re-matches it on every request, and it is read from the live `g_cfg`, not the boot snapshot. **Since v1.9.20** the POST reply no longer lists it under `deferred` (v1.9.19 did, although the change was already live). Not in `caps.video_live`, which is the rate-control list only. |
-| `imp_chn` | int | `0` / `1` | 0..8 | **file-only**, restart | IMP encoder channel index. libimp's own bound is `chn < 9`; above `MS_FS_MAXCHN` the frame source silently returns nothing — no video, no diagnostic. Must be unique across all encoders. |
+| `imp_chn` | int | `0` / `1` | 0..8 | **file-only**, restart | IMP encoder channel index. Must equal the stream index `N` (it doubles as the hub slot): any other value is reset to `N` at load with an `[ERR]` line. |
 | `jpeg` | bool | `1` / `1` | — | **file-only**, restart | Alias `jpeg_enabled`. Piggyback JPEG encoder in the same encoder group, sharing this stream's FrameSource (no extra rmem) at this stream's resolution. |
 | `jpeg_quality` | int | `75` / `75` | 1..100 | **file-only**, restart | |
 | `jpeg_fps` | int | `5` / `5` | 1..120 | **file-only**, restart | Max snapshot/MJPEG publish rate. |
-| `jpeg_chn` | int | `3` / `4` | 0..8 | **file-only**, restart | `MS_MAX_VSTREAM + 1 + N`. Must be unique. |
+| `jpeg_chn` | int | `3` / `4` | 0..8 | **file-only**, restart | `MS_MAX_VSTREAM + 1 + N`. Must be unique; a collision is moved to the lowest free channel at load with an `[ERR]` line. |
 
 ### Live vs restart for `videoN.*`
 
@@ -477,8 +477,9 @@ hit this — T10, T20 and T23 coerce `codec` to `h264` at parse time.
   `videoN.fps` is not a way to raise `sensor.fps`. Compare the requested rate
   with the `sensor fps: requested N, driver holds n/d` line
   (**since v1.9.19**) before blaming the encoder.
-* Two streams sharing an `imp_chn` or `jpeg_chn` is a silent failure mode: no
-  video and no clear diagnostic.
+* Channel collisions (`imp_chn` != stream index, duplicate `jpeg_chn`,
+  `jpeg.imp_chn` on a video channel) are corrected at load and logged as
+  `[ERR] config: ... collides ...` / `... must equal the stream index`.
 
 ---
 
@@ -549,7 +550,7 @@ marked `noget`, so `GET /control` never echoes it either.
 | `jpeg.height` | int | `360` | 64..4096 | file-only, restart | |
 | `jpeg.quality` | int | `75` | 1..100 | file-only, restart | |
 | `jpeg.fps` | int | `5` | 1..120 | file-only, restart | Max MJPEG frame rate. |
-| `jpeg.imp_chn` | int | `2` | 0..8 | file-only, restart | Must not collide with `videoN.imp_chn` (0, 1) or `videoN.jpeg_chn` (3, 4). |
+| `jpeg.imp_chn` | int | `2` | 0..8 | file-only, restart | Must not collide with an enabled `videoN.imp_chn` (0, 1); a collision is moved to the lowest free channel at load with an `[ERR]` line. |
 | `jpeg.snapshot_path` | string[128] | `""` | — | file-only, restart | Periodic file snapshot; `""` = none. |
 
 Pitfall: `timps.conf.example` shows `jpeg.enabled = 1`; the **compiled default

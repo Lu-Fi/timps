@@ -1833,6 +1833,61 @@ static char *unquote_value(char *val, int *unterminated)
     return val;
 }
 
+/* The HAL publishes videoN into hub source videoN.imp_chn, but everything
+ * downstream reads hub source N - so the two must be equal (a video1.imp_chn
+ * of 2 published into the AUDIO slot). The JPEG encoder channels must not
+ * collide with those or each other: IMP_Encoder_CreateChn then fails and
+ * start() goes into its retry/reboot escalation. File-only keys, so this runs
+ * once at load; a bad value is reset with an error naming the key. */
+static int chn_taken(const ms_config *c, int chn, int upto_jpeg)
+{
+    for (int i=0;i<MS_MAX_VSTREAM;i++)
+        if (c->video[i].enabled && c->video[i].imp_chn==chn) return 1;
+    if (c->jpeg.enabled && c->jpeg.imp_chn==chn) return 1;
+    for (int i=0;i<upto_jpeg;i++)
+        if (c->video[i].enabled && c->video[i].jpeg_enabled &&
+            c->video[i].jpeg_chn==chn) return 1;
+    return 0;
+}
+
+static int chn_free(const ms_config *c, int upto_jpeg)
+{
+    for (int ch=0; ch<=8; ch++) if (!chn_taken(c,ch,upto_jpeg)) return ch;
+    return -1;
+}
+
+static void check_channels(ms_config *c)
+{
+    for (int i=0;i<MS_MAX_VSTREAM;i++)
+        if (c->video[i].enabled && c->video[i].imp_chn != i){
+            LOGE(MOD,"config: video%d.imp_chn=%d must equal the stream index "
+                     "(its hub slot) - using %d", i, c->video[i].imp_chn, i);
+            c->video[i].imp_chn = i;
+        }
+    if (c->jpeg.enabled){
+        int bad = 0;
+        for (int i=0;i<MS_MAX_VSTREAM;i++)
+            bad |= c->video[i].enabled && c->video[i].imp_chn == c->jpeg.imp_chn;
+        if (bad){
+            c->jpeg.enabled = 0;               /* not taken while searching */
+            int ch = chn_free(c, 0);
+            LOGE(MOD,"config: jpeg.imp_chn=%d collides with a video stream's "
+                     "channel - using %d (-1: none free, jpeg disabled)",
+                 c->jpeg.imp_chn, ch);
+            if (ch >= 0){ c->jpeg.imp_chn = ch; c->jpeg.enabled = 1; }
+        }
+    }
+    for (int i=0;i<MS_MAX_VSTREAM;i++){
+        ms_vstream_cfg *v = &c->video[i];
+        if (!v->enabled || !v->jpeg_enabled || !chn_taken(c, v->jpeg_chn, i)) continue;
+        int ch = chn_free(c, i);
+        LOGE(MOD,"config: video%d.jpeg_chn=%d collides with another encoder "
+                 "channel - using %d (-1: none free, jpeg disabled)",
+             i, v->jpeg_chn, ch);
+        if (ch < 0) v->jpeg_enabled = 0; else v->jpeg_chn = ch;
+    }
+}
+
 int config_load(ms_config *c, const char *path)
 {
     config_defaults(c);
@@ -1877,6 +1932,7 @@ int config_load(ms_config *c, const char *path)
     fclose(f);
     log_set_level(c->loglevel);
     log_set_debug_modules(c->debug_modules);
+    check_channels(c);
     LOGI(MOD,"loaded %d settings from %s", n, path);
     return 0;
 }

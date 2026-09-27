@@ -47,6 +47,21 @@ static void check(const char *what, const char *body,
     printf("ok   %-46s %s = [%s]\n", what, key, got);
 }
 
+/* load `body` and assert an int the loader ends up with (the channel-wiring
+ * keys are F_NOGET, so config_get_kv() cannot read them back) */
+static void check_int(const char *what, const char *body, const int *field,
+                      int want, ms_config *c)
+{
+    write_conf(body);
+    config_load(c, g_path);
+    if (*field != want){
+        printf("FAIL %-46s = %d, expected %d\n", what, *field, want);
+        g_fail++;
+        return;
+    }
+    printf("ok   %-46s = %d\n", what, *field);
+}
+
 int main(void)
 {
     /* config_load() sets the log level from the file it just read, so the
@@ -112,6 +127,22 @@ int main(void)
     }
 
     unlink(g_path);
+    /* channel wiring: videoN publishes into hub slot videoN.imp_chn, so a
+     * mismatch silently fed another stream's (or the audio) slot, and a
+     * duplicate JPEG encoder channel failed start() into its reboot path */
+    {
+        static ms_config cc;
+        check_int("video1.imp_chn forced to the stream index",
+                  "video1.enabled = 1\nvideo1.imp_chn = 2\n", &cc.video[1].imp_chn, 1, &cc);
+        check_int("jpeg.imp_chn colliding with video0 moved",
+                  "jpeg.enabled = 1\njpeg.imp_chn = 0\n", &cc.jpeg.imp_chn, 2, &cc);
+        check_int("video1.jpeg_chn duplicating video0's moved",
+                  "video1.enabled = 1\nvideo0.jpeg_chn = 3\nvideo1.jpeg_chn = 3\n",
+                  &cc.video[1].jpeg_chn, 2, &cc);
+        check_int("defaults stay untouched",
+                  "video1.enabled = 1\njpeg.enabled = 1\n", &cc.video[1].jpeg_chn, 4, &cc);
+    }
+
     if (g_fail){ printf("\n%d config parser test(s) FAILED\n", g_fail); return 1; }
     printf("\nall config parser tests passed\n");
     return 0;
