@@ -1817,7 +1817,13 @@ static void *conn_thread(void *arg)
         buf[n]=0;
         clients_agent_from(buf, c->ua, sizeof c->ua);
         char method[8], path[256];
-        if (sscanf(buf,"%7s %255s",method,path)==2) {
+        /* a target %255s would truncate is refused, not silently cut: the
+         * cut copy would e.g. never match a Digest uri= */
+        const char *tgt = strchr(buf, ' ');
+        size_t tlen = tgt ? strcspn(tgt + 1, " \r\n") : 0;
+        if (tlen >= sizeof path)
+            http_send(c,"414 URI Too Long","text/plain","uri too long",12);
+        else if (sscanf(buf,"%7s %255s",method,path)==2) {
             /* HEAD = GET semantics with the body suppressed everywhere
              * (http_send_ex + the per-handler checks below) */
             c->head = (strcmp(method,"HEAD")==0);
