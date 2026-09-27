@@ -278,7 +278,7 @@ IMPLIBS ?= -l:libimp.a -l:libalog.a -l:libsysutils.a
 # against a distro/buildroot that only ships libfaac.so.
 FAACLIB ?= -l:libfaac.a
 
-.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun test-timelapse-prune
+.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun test-timelapse-prune test-record-ring
 
 all: target
 
@@ -405,6 +405,17 @@ test-timelapse-prune:
 	  -Isrc $(TLPRUNETEST_SRC) $(LDFLAGS) -lpthread -lm -o $(BIN)-tlprunetest
 	@./$(BIN)-tlprunetest; rc=$$?; rm -f $(BIN)-tlprunetest; exit $$rc
 
+# Host-only unit test for the motion pre-roll ring (src/record.c: ring_push(),
+# opened for test via -DREC_RING_TEST). Needs no hardware and no running
+# daemon; exit code is the test result.
+RECRINGTEST_SRC := scripts/test_record_ring.c src/record.c src/hub.c \
+                   src/frame.c src/fanqueue.c src/util.c src/log.c src/config.c \
+                   src/mp4/fmp4.c src/codec/aac.c src/codec/vparam.c src/codec/nal.c
+test-record-ring:
+	$(HOSTCC) $(CFLAGS) -DMS_VERSION='"$(VERSION)"' -DUSE_RECORD -DREC_RING_TEST \
+	  -Isrc $(RECRINGTEST_SRC) $(LDFLAGS) -lpthread -lm -o $(BIN)-recringtest
+	@./$(BIN)-recringtest; rc=$$?; rm -f $(BIN)-recringtest; exit $$rc
+
 # Host-only unit test for the packet recycling pool (src/frame.c): the
 # oversized-buffer slot recycles every IDR/JPEG instead of malloc+free-ing it,
 # is handed out only to over-keep_cap borrows (so no published packet carries
@@ -465,4 +476,4 @@ strip: target
 	$(CROSS_COMPILE)strip $(BIN)
 
 clean:
-	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest $(BIN)-hubidrtest $(BIN)-stuntest $(BIN)-tlprunetest
+	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest $(BIN)-hubidrtest $(BIN)-stuntest $(BIN)-tlprunetest $(BIN)-recringtest

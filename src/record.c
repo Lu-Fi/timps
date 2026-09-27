@@ -102,11 +102,21 @@ static void ring_push(ms_pkt *p, int64_t pre_us)
         pkt_unref(r_buf[r_head]); r_head=(r_head+1)%RING_CAP; r_count--;
     }
     r_buf[(r_head+r_count)%RING_CAP]=pkt_ref(p); r_count++; r_bytes+=p->len;
-    /* trim by time (keep ~pre_us), correctness of the keyframe start is handled
-     * at flush time */
-    while (r_count>1){
+    /* trim by time, but keep the newest keyframe at or before the cutoff: the
+     * window starts decoding there, and a plain time trim dropped it and cut
+     * the pre-roll to whatever followed the next keyframe (often ~nothing).
+     * Without such a keyframe everything older than the cutoff is useless -
+     * flush_ring() starts at a keyframe anyway. */
+    int64_t cut = p->pts_us - pre_us;
+    int n_old = 0, lastkey = -1;
+    for (; n_old<r_count-1; n_old++){
+        ms_pkt *f=r_buf[(r_head+n_old)%RING_CAP];
+        if (f->pts_us > cut) break;
+        if (f->media==MS_MEDIA_VIDEO && f->keyframe) lastkey=n_old;
+    }
+    int drop = pre_us<=0 ? r_count-1 : lastkey>=0 ? lastkey : n_old;
+    for (int i=0;i<drop;i++){
         ms_pkt *f=r_buf[r_head];
-        if (p->pts_us - f->pts_us <= pre_us) break;
         r_bytes-=f->len; pkt_unref(f); r_head=(r_head+1)%RING_CAP; r_count--;
     }
     /* hard byte backstop, independent of the time trim above (see
@@ -116,6 +126,22 @@ static void ring_push(ms_pkt *p, int64_t pre_us)
         r_bytes-=f->len; pkt_unref(f); r_head=(r_head+1)%RING_CAP; r_count--;
     }
 }
+
+#ifdef REC_RING_TEST
+/* test-only view of the ring - see scripts/test_record_ring.c */
+void rec_ring_push_test(ms_pkt *p, int64_t pre_us) { ring_push(p, pre_us); }
+void rec_ring_clear_test(void) { ring_clear(); }
+/* pts of the oldest buffered keyframe (the pre-roll start), -1 if none */
+int64_t rec_ring_start_test(void)
+{
+    for (int i=0;i<r_count;i++){
+        ms_pkt *p=r_buf[(r_head+i)%RING_CAP];
+        if (p->media==MS_MEDIA_VIDEO && p->keyframe) return p->pts_us;
+    }
+    return -1;
+}
+int rec_ring_count_test(void) { return r_count; }
+#endif
 
 /* ---- filesystem helpers ----
  * ms_path_unsafe / ms_free_mb / ms_mkdirs / ms_media_path live in util.c,
@@ -580,17 +606,17 @@ static void seg_close(void)
  * first instead would pick the most recent keyframe and cap every pre-roll at
  * roughly one GOP no matter what pre_roll_s says, which is not what the ring
  * is trimmed to hold (ring_push) nor what the cap warning in rec_thread
- * measures. */
-static void flush_ring(void)
+ * measures. Returns 0 when the ring held no keyframe (a live start). */
+static int flush_ring(void)
 {
-    if (r_count<=0) return;
     int start=-1;
     for (int i=0;i<r_count;i++){
         ms_pkt *p=r_buf[(r_head+i)%RING_CAP];
         if (p->media==MS_MEDIA_VIDEO && p->keyframe){ start=i; break; }
     }
-    if (start<0) return;                 /* no keyframe buffered -> live start */
+    if (start<0) return 0;
     for (int i=start;i<r_count;i++) seg_write(r_buf[(r_head+i)%RING_CAP]);
+    return 1;
 }
 
 /* ---- decision ---- */
@@ -811,7 +837,9 @@ static void *rec_thread(void *arg)
                 /* only drop the pre-roll once recording actually started; a
                  * transient seg_open failure keeps the ring for the retry */
                 if (seg_open(chn,&rc)==0){
-                    if (motion_mode) flush_ring();
+                    /* a live start waits for the next keyframe - ask for it
+                     * instead of losing up to a GOP of the event */
+                    if (motion_mode && !flush_ring()) hub_request_idr(chn);
                     ring_clear();
                     open_retry_us=0;
                 } else open_retry_us = ms_now_us() + REC_OPEN_RETRY_US;  /* AV-02 */
@@ -827,6 +855,11 @@ static void *rec_thread(void *arg)
                     }
                 }
                 seg_write(p);
+            } else if (motion_mode) {
+                /* open keeps failing (card missing/read-only): keep the ring
+                 * rolling, or a much later successful open spliced minutes-old
+                 * pre-roll straight onto live frames */
+                ring_push(p,pre_us);
             }
         } else {
             if (motion_mode) ring_push(p,pre_us);   /* buffer for pre-roll */
