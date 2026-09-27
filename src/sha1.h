@@ -4,12 +4,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* Minimal SHA-1 (RFC 3174). Used ONLY for the WebSocket handshake's
- * Sec-WebSocket-Accept computation (RFC 6455 section 1.3) - a non-adversarial
- * proof that the peer speaks WebSocket, not a security boundary. Never use
- * this for anything that actually needs collision resistance (passwords,
- * signatures, token storage) - for those see ws_token.h, which never hashes
- * with this. */
+/* Minimal SHA-1 (RFC 3174). Used for the WebSocket handshake's
+ * Sec-WebSocket-Accept (RFC 6455 section 1.3) AND, as HMAC-SHA1, for STUN
+ * MESSAGE-INTEGRITY and the SRTP/SRTCP auth tags (webrtc/stun.c, srtp.c) -
+ * the latter two ARE a security boundary. HMAC-SHA1 is sound there (it does
+ * not rely on collision resistance), so do not drop or swap this file without
+ * those users in mind. Never use bare SHA-1 where collision resistance
+ * matters (passwords, signatures, token storage). */
 
 typedef struct {
   uint32_t state[5];
