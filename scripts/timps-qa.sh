@@ -2576,11 +2576,12 @@ else
 		"text str" "x int 0 200" "y int 0 200" "font_size int 8 128" \
 		"transparency int 0 255" "outline int 0 4" "color hex" "outline_color hex"
 
-	# --- osd.* globals, live half: the OSD thread re-reads monitor_stream and
-	# vars_file on every refresh. vars_file briefly points at a nonexistent
-	# "qa_probe" path, same accepted risk as record.dir/timelapse.dir below. ---
+	# --- osd.* globals, live half: the OSD thread re-reads monitor_stream on
+	# every refresh. (vars_file used to be a settable key tested here too; it
+	# no longer exists at all - the {placeholder} source path is fixed in
+	# osd_vars.c, see section 8c's OSD_VARS_FILE for the on-device test.) ---
 	lv_section osd '{"osd":' '}' osd \
-		"monitor_stream int 0 1" "vars_file str"
+		"monitor_stream int 0 1"
 
 	# --- osd.* globals, restart half: imp_osd_setup() reads these once
 	# (F_RESTART in config.c). font_path briefly points at "qa_probe". ---
@@ -2598,7 +2599,7 @@ else
 		for rs_k in audio.codec audio.agc osd.enabled osd.font_path osd.supersample osd.hinting; do
 			case "$rs_caps" in *"\"$rs_k\""*) ;; *) bad "caps.restart lacks $rs_k (restart-only, F_RESTART)";; esac
 		done
-		case "$rs_caps" in *'"osd.monitor_stream"'*|*'"osd.vars_file"'*|*'"audio.volume"'*)
+		case "$rs_caps" in *'"osd.monitor_stream"'*|*'"audio.volume"'*)
 			bad "caps.restart lists a live key: $rs_caps";; esac
 		rs_defer_has() { case "$(jget "$1" deferred_keys)" in *"\"$2\""*) return 0;; esac; return 1; }
 		rs_ss=$(jget "$LV_BASE" osd.supersample); rs_ms=$(jget "$LV_BASE" osd.monitor_stream)
@@ -4869,7 +4870,7 @@ else
 	TESTED_image="brightness contrast saturation sharpness hue vflip hflip running_mode anti_flicker ae_compensation max_again max_dgain sinter_strength temper_strength dpc_strength defog_strength drc_strength highlight_depress backlight_compensation core_wb_mode wb_rgain wb_bgain"
 	TESTED_audio="volume gain alc_gain mute spk_volume spk_gain aec codec codec2 enabled samplerate channels bitrate high_pass agc ns agc_target_dbfs agc_compression_db force_stereo spk_enabled backchannel backchannel_codec backchannel_rate talk_ws"
 	TESTED_sensor=""
-	TESTED_osd="monitor_stream font_path vars_file enabled supersample hinting"
+	TESTED_osd="monitor_stream font_path enabled supersample hinting"
 	TESTED_osd_item="text x y font_size color transparency outline outline_color"
 	TESTED_motion="sensitivity monitor_stream enabled hold_ms skip_frames"
 	TESTED_record="segment_s pre_roll_s post_roll_s min_free_mb audio name dir"
