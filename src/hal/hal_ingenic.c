@@ -972,7 +972,10 @@ static void apply_image_tuning(void)
  * So the write is driven from the real frame path instead: the encode threads
  * call ae_it_max_on_frame() after each frame they have actually pulled from the
  * encoder and published, which is by construction the same state a live
- * /control POST lands in - the one state that is measured to work. Nothing
+ * /control POST lands in - the one state that is measured to work. Only frames
+ * fed by framesource 0 count: a consumer of another framesource alone (the
+ * dedicated jpeg.* channel, e.g. a boot snapshot) is not that state, and its
+ * frames used to drive a "cap in effect" verdict off a stale readback. Nothing
  * else in the ISP block needs this; hflip/vflip/running_mode latch off a mere
  * enable (fs_kick_chn0), which is why they are not routed through here.
  *
@@ -1080,9 +1083,10 @@ static void ae_it_max_check(int64_t now)
  * The unlocked 64-bit deadline read can tear on 32-bit MIPS; the worst outcome
  * is one extra ae_it_max_check(), which re-validates the deadline under the
  * lock, so it is not worth an atomic. */
-static inline void ae_it_max_on_frame(void)
+static inline void ae_it_max_on_frame(int fs_chn)
 {
 #ifdef AE_IT_SUPERVISE
+    if (fs_chn != 0) return;
     if (!g_hcfg || g_hcfg->image.ae_it_max_us <= 0) return;   /* opt-in, default off */
     if (__sync_add_and_fetch(&g_ae_it_frames, 1) < AE_IT_MIN_FRAMES) return;
     g_ae_it_frames = 0;                  /* count the next batch either way */
@@ -2261,7 +2265,7 @@ static void *video_thread(void *arg)
          * pipeline state in which the ISP honours the AE integration-time cap
          * (see ae_it_max_on_frame). Cheap no-op unless image.ae_it_max_us is
          * set, and this is exactly where a working live /control POST lands. */
-        ae_it_max_on_frame();
+        ae_it_max_on_frame(vc->chn);
 #if defined(PLATFORM_T31)
         /* Item-2 (T31 only): cache the running average bitrate for the read-only
          * /control encoder-stats getter. Must run while 'st' is still held (the
@@ -2780,7 +2784,7 @@ static void *sw_rot_thread(void *arg)
                                    PTS_SKEW_VIDEO_US);
         hub_publish(vc->chn, (const uint8_t*)out.outAddr, (size_t)out.outLen,
                     pts, key, MS_MEDIA_VIDEO, pub_now);
-        ae_it_max_on_frame();   /* real delivery: see video_thread's call */
+        ae_it_max_on_frame(vc->chn);   /* real delivery: see video_thread's call */
 
         /* ---- Batch 7: standalone JPEG on the SW-rotate stream ----------------
          * On-demand + throttled, mirroring jpeg_thread's contract:
@@ -3309,7 +3313,7 @@ static void *jpeg_thread(void *arg)
          * straight to the pool - equivalent to the old jc->active/hub_active
          * gate, which only ever skipped the now-eliminated malloc+copy. */
         hub_publish_take(jc->src, pk, pub_now, 1, MS_MEDIA_JPEG, pub_now);
-        ae_it_max_on_frame();   /* real delivery: see video_thread's call */
+        ae_it_max_on_frame(jc->fs_chn);   /* real delivery: see video_thread's call */
     }
     if (receiving){ IMP_Encoder_StopRecvPic(jc->chn); fs_unuse(jc->fs_chn); }
     /* This thread also leaves the loop for good on the watchdog give-up above,
