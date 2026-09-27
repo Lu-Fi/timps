@@ -187,7 +187,8 @@ Verified in `src/config.c`:
   `rtsp.username`, `daynight.total_gain_day_threshold`) is *replaced* by its
   canonical spelling rather than left behind alongside a new line.
 - **Long lines are dropped, not truncated:** `config: line longer than 510
-  chars skipped (starts "…")`.
+  chars skipped (key "…")`. A line with an embedded NUL byte is dropped the
+  same way. Only the key is logged, never a prefix of the value.
 - **Unbalanced quotes are kept verbatim, quotes included:**
   `config: <key> has an opening quote but no closing one`.
 - **Inline comments are stripped** from unquoted values. `osd0.text = Kamera
@@ -1448,7 +1449,7 @@ restart. Same for the RTSP `trackID=2` backchannel, which answers
 | `426 Upgrade Required` / `tls required` | `audio.talk_ws = 1` on a plaintext connection. | Serve over `https://`, or set `audio.talk_ws = 2` to accept plain `ws://` deliberately. |
 | `403` / `local only` | §8.2. | |
 | `405` / `GET required`, `400` / `not a websocket upgrade`, `426` / `websocket version 13 required` | Not a valid WebSocket handshake. | Client/proxy problem. |
-| `400` / `bad rate` | `?rate=` must be one of 8000, 16000, 24000, 32000, 44100, 48000. Log: `refused: unsupported rate= in <path>`. | |
+| `400` / `bad rate` | `?rate=` must be one of 8000, 16000, 24000, 32000, 44100, 48000. Log: `refused: unsupported rate=<value>` (only the value: the query string also carries the token). | |
 | `403` / `bad origin` | Log: `refused: cross-origin upgrade`. The `Origin` host must match the `Host` host (**ports are deliberately not compared**, because the WebUI is served by uhttpd on a different port). An `Origin` of `null` (sandboxed iframe) is refused; **no** `Origin` at all is allowed. | Serve the talk page from the camera's own hostname/IP. |
 | WebSocket close **1008** `speaker busy` | Another talker holds the speaker. Log: `another talker holds the speaker - closing`. The owner is stolen only after 10 s of silence (`backchannel owner idle >10s - releasing speaker for queued playback`). | Wait, or close the other session. |
 | WebSocket close **1001** `idle` | 10 s with no frames. | |
@@ -2313,7 +2314,8 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `daynight.%s=%s is now a fixed internal constant (%g) and can no longer be tuned per camera - the configured value is being ignored` | W | Same, for `ir_ratio_night` / `ir_ratio_day`. | §1.7 |
 | `sensor.fps: driver max_fps=%ld, auto capped to %d (set sensor.fps to override)` | I | **since v1.9.19.** `sensor.fps` was left unset and the driver advertised more than the cap (GC2053 reports 40 on a 30 fps mode). The cap is 30, or since v1.9.20 the fastest enabled `videoN.fps` if higher; from v1.9.20 the message reads `sensor.fps: driver %s=%ld, auto capped to %d (set sensor.fps to override)`, `%s` being `max_fps` or `fps`. The cap applies to the autodetected value only. | Nothing, unless more is really wanted — then set `sensor.fps` explicitly. §1.10 |
 | `config %s not found, using defaults` | W | No config file. Not fatal. | §1.3 |
-| `config: line longer than %zu chars skipped (starts \"%.40s...\")` | W | A line over ~510 characters is **dropped whole**. | Shorten it. |
+| `config: line longer than %zu chars skipped (key \"%.*s\")` | W | A line over ~510 characters is **dropped whole**. | Shorten it. |
+| `config: line with an embedded NUL byte skipped (key \"%.*s\")` | W | The line held a NUL byte (binary junk, a bad editor); it is dropped whole instead of silently truncated. | Rewrite the line. |
 | `config: %s has an opening quote but no closing one - keeping the value verbatim, quotes included` | W | Unbalanced quote. | Fix the quoting. |
 | `config sensor.model '%s' != loaded driver '%s' - using '%s' (the config value would crash the ISP)` | W | The kernel sensor driver wins. A mismatch would divide by zero in the kernel. | Fix `sensor.model`. §1.8 |
 | `config sensor.i2c 0x%02x != loaded driver 0x%02lx - using 0x%02lx` | W | Same for the I²C address. | §1.8 |
@@ -2321,6 +2323,8 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `cannot create tmp for %s: %s` / `fdopen tmp failed` | W | The atomic-rewrite temp file could not be created. | Filesystem full or read-only. |
 | `read error on %s (%s) - ABORTING the config rewrite so the truncated copy is not committed over it. The setting is live but NOT persisted; this flash needs attention` | E | **A bad flash block.** The old file is intact; the change is live only. | Take it seriously — the flash is failing. |
 | `fsync %s failed: %s` / `rename %s -> %s failed` / `fsync dir %s failed: %s` | W | Durability steps of the atomic rewrite failed. A power cut can lose the change. | Check the filesystem. |
+| `config: video%d.imp_chn=%d must equal the stream index (its hub slot) - using %d` | E | `videoN.imp_chn` doubles as the hub slot; any other value fed another stream's (or the audio) slot. | Remove the key or set it to `N`. |
+| `config: jpeg.imp_chn=%d collides with a video stream's channel - using %d (-1: none free, jpeg disabled)` / `config: video%d.jpeg_chn=%d collides with another encoder channel - using %d (...)` | E | Two encoders on one channel would fail `start()` into the retry/reboot path; the value was moved. | Fix the channel numbers in the file. |
 
 ### 12.3 `CTRL` (`src/control.c`)
 
@@ -2330,6 +2334,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `control_apply_json: OOM` | W | The ~9.6 KB change buffer could not be allocated; the POST answers 503 `oom`. | §5.5 |
 | `speaker play: rejected '%s'` | W | The filename failed the path check. | Use a plain path under the sounds directory. |
 | `ignoring daynight.mode = '%s' (not auto/schedule)` | W | `daynight.mode` is hand-validated, not table-driven. | Use `auto` or `schedule`. |
+| `a /control POST was still applying at shutdown` | W | Shutdown waited 1 s for an in-flight POST (e.g. a slow config fsync) and gave up. | Only matters if it recurs; the file itself is replaced atomically. |
 
 ### 12.4 `HAL_ING` (`src/hal/hal_ingenic.c`) — bring-up and teardown
 
@@ -2347,7 +2352,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `sensor fps: requested %d, set rc=%d, readback unavailable (rc=%d)` | W | **since v1.9.19.** `IMP_ISP_Tuning_GetSensorFPS` failed or reported a zero denominator (the getter is called on every supported SoC). The set call may well have worked; only the verification is missing. | Driver-specific; not a config error. §1.10 |
 | `cannot read isp_ch0_pre_dequeue_time - assuming the pre-dequeue one-buffer schedule is active on framechan0` | W | T31 only: the module parameter could not be read, so `nrVBs` is forced to 1. | Cosmetic. |
 | `chn0: explicit buffers=%d but isp_ch0_pre_dequeue_time=%d forces a one-buffer schedule on framechan0 - EnableChn will fail (dmesg: 'one buffer schedule') unless pre-dequeue is disabled at the driver` | W | T31 with `isp_ch0_pre_dequeue_time > 0` **and** an explicit `videoN.buffers`. | **Delete the `videoN.buffers` line** (see §13). The real fps lever is removing `BR2_ISP_CH0_PRE_DEQUEUE_TIME` from the board defconfig — measured 13.5 → 24.9 fps. |
-| `framesource %d: EnableChn failed%s (retry)` | E | The framesource channel would not enable. | See the line above; also §2.2. |
+| `framesource %d: EnableChn failed (attempt %d)` | E | The framesource channel would not enable. Logged on the 1st and every 20th attempt. | See the line above; also §2.2. |
 | `framesource %d: %d reference(s) still held at teardown` | W | Subscriber accounting leak at shutdown. | Report as a bug. |
 | `FS_CreateChn %d` / `FS_SetChnAttr %d failed` | E | Framesource geometry rejected. | Check `videoN.width`/`height` against the sensor. |
 | `FS_SetI2dAttr %d failed (rotation may stay inactive)` | W | T40/T41 belt-and-braces rotation call. | §2.6 |
@@ -2435,6 +2440,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `image.ae_it_max_us: GetExpr gave no line/max reference (%s) - cannot convert microseconds to sensor lines, cap not applied` | W | This sensor reports no line time; the key cannot work here. | §3.7 |
 | `image.ae_it_max_us=%d: SDK rejected the cap (%lu lines, rc=%d) - AE maximum unchanged` | W | Rejected. | §3.7 |
 | `image.ae_it_max_us=%d: %d writes on a live, delivering pipeline and the AE maximum is still %lu lines - this sensor/ISP is not honouring the cap; retrying slowly` | W | The sensor ignores it. | Stop raising the value. §3.7 |
+| `image.ae_it_max_us=%d: %lu lines exceeds this SDK's 16-bit field - capping at 65535` | W | T10/T20/T21/T30 only: the requested cap does not fit the SDK field. | Lower `image.ae_it_max_us`. |
 
 ### 12.8 `HAL_ING` — audio
 
@@ -2458,6 +2464,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `audio output (speaker) unavailable` | E | No AO pipeline. The board may have no speaker. | §6.5 |
 | `IMP_AI_EnableAec failed - continuing without echo cancellation` | W | The vendor DSP could not be engaged — often because `libaudioProcess.so` was stubbed out to save flash, which silently also costs `ns`, `agc` and `high_pass`. | §6.6 |
 | `IMP_AO_SendFrame failed` | W | A transient speaker write failure. | |
+| `faac frame of %u samples does not fit the %d-sample accumulator -> PCMU` | E | libfaac reported an unexpected frame size; audio falls back to G.711. | Report it with the libfaac version. |
 
 ### 12.9 `OSD` (`src/hal/imp_osd.c`)
 
@@ -2524,6 +2531,7 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | `cannot open trace_path %s: %s - tracing disabled until the path changes` | W | Bad path. |
 | `trace rotate %s -> %s failed: %s` | W | Trace file rotation failed. |
 | `cannot start detection thread` | W | Day/night is off for this run. |
+| `daynight.time_night_start/time_day_start ("%s"/"%s") is not a usable window (both must be HH:MM and differ) - ignored%s` | W | A half-set, malformed or zero-length time window is ignored (the sun calendar is used if a location is set). | Fix both values. |
 
 ### 12.12 `RTSP` (`src/rtsp/rtsp.c`)
 
@@ -2541,6 +2549,9 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | `session=%s chn=%d: send queue overflowed, dropping frames (client/network too slow) - details at DEBUG` | W | `MS_RTSP_QCAP` = 64. | Lower `videoN.bitrate`, use TCP. §4.1 |
 | `send_resp: response too large (hdr=%d body=%d cap=%d), dropping` | E | Practically unreachable. | Report as a bug. |
 | `%d client thread(s) still live after a %lld ms drain - proceeding to teardown` | W | Shutdown-time; deliberate. | Ignore. |
+| `no PLAY within %llds of connecting, closing` | W | A connection must reach PLAY within 60 s; this frees a slot held by an idle or scanning client. | Normal for scanners; check the client if a real one hits it. |
+| `SDP for chn%d exceeds %d bytes - refusing DESCRIBE` | W | The SDP would not fit; the client gets a 500 instead of a truncated SDP. | Report it (parameter sets unusually large). |
+| `%d client thread(s) still live after a %lld ms drain - leaking tls_ctx/server rather than risking a use-after-free` | W | Shutdown only; deliberate, like the HTTP one. | None. |
 
 ### 12.13 `HTTP` (`src/mp4/httpd.c`)
 
@@ -2562,6 +2573,7 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | `dropped a corrupt %s fragment (OOM?)` | W | Memory pressure. | §5.5 |
 | `%s=%d: send failed after %llds (%s) - dropping client; the write is torn mid-frame, so the peer logs a truncated tail` | W | `SO_SNDTIMEO` 15 s. **Not a data-path bug** — every byte sent before the cut was valid. ffmpeg reports `Stream ends prematurely` / `Invalid NAL unit size`. | Network. |
 | `%d connection thread(s) still live after a %lld ms drain - leaking tls_ctx/h rather than risking a use-after-free on process exit` | W | Shutdown-time; deliberate. | Ignore. |
+| `refused cross-origin POST %.64s` | W | A POST authenticated by Basic/Digest came from a page on another host (CSRF guard; token and localhost requests are exempt). | Use the `X-Timps-Token`/`?token=` from the WebUI, or post from the camera's own host. |
 
 ### 12.14 `REC` (`src/record.c`) and `TL` (`src/timelapse.c`)
 
@@ -2584,6 +2596,7 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | `unsafe timelapse.dir/name ('..' or absolute name), skipping shot` | E | Same path rule. | §5.4 |
 | `open %s: %s` / `write %s: %s` (TL) | E | Storage problem. | §5.4 |
 | `no frame from src=%d within %d ms - retrying in %ds` | W | **The JPEG source produced nothing.** | Enable `videoN.jpeg`; check the JPEG channel. §5.4 |
+| `record.dir %s is on the root filesystem (card not mounted?) - not recording` / `timelapse.dir %s is on the root filesystem (card not mounted?) - skipping shots` | E | The dir (or its nearest existing parent) lives on the flash rootfs, typically an SD mount point with no card. Logged once per episode. | Mount the card / fix the dir. `/tmp` is allowed. |
 
 ### 12.15 `TLS` (`src/tls.c`) and `WEBRTC` (`src/webrtc/`)
 
@@ -2633,6 +2646,7 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | `unknown srt.mode '%s' - using listener` | W | Valid: `listener`, `caller`. | |
 | `srt.mode=caller but srt.host is empty - SRT disabled` | E | | Set `srt.host`. |
 | `%d client thread(s) still in libsrt after the drain - proceeding to srt_cleanup()` | W | Shutdown-time. | Ignore. |
+| `SRT listener on port %d has NO access control (srt.passphrase unset) - it bypasses the configured RTSP/HTTP credentials; set srt.passphrase (10-79 chars)` | W | Listener mode without a passphrase serves video to anyone, whatever RTSP/HTTP require. | Set `srt.passphrase`. |
 
 ### 12.17 Smaller modules
 
@@ -2641,7 +2655,7 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | `HUB` | `chn=%d %s: %u queue overflow%s in the last %llds (consumer too slow)` | W | **since v1.9.19** (until v1.9.20 it ended `(consumer too slow, IDR re-requested)`). The only line `HUB` emits above DEBUG. `%s` is the consumer kind — `rec`, `rtsp`, `mp4`, `webrtc` or `srt` — and the line is rate-limited to one per 60 s per (kind, stream). Same events as `queue_drops` in `GET /control`. §2.3 |
 | `AAC` | `unsupported AAC samplerate %d Hz, using 16k index fallback` | W | The ASC/ADTS index could not be derived; the stream is tagged 16 kHz. Use a standard rate. |
 | `bc` | `AACInitDecoder failed` | W | The AAC backchannel decoder could not start (`USE_BC_AAC` builds). |
-| `talk` | `refused: unsupported rate= in %s` | W | `?rate=` must be 8000/16000/24000/32000/44100/48000. iOS Safari commonly forces 48000. |
+| `talk` | `refused: unsupported rate=%.*s` | W | `?rate=` must be 8000/16000/24000/32000/44100/48000. iOS Safari commonly forces 48000. |
 | `talk` | `refused: cross-origin upgrade` | W | The `Origin` host must match the `Host` host (ports are not compared). `Origin: null` is refused. §6.4 |
 | `talk` | `another talker holds the speaker - closing` | W | Speaker contention; close code 1008. The owner is stolen only after 10 s of silence. |
 | `spk` | `play: cannot open %s: %s` / `play: bad WAV header in %s` / `play: op_open_file(%s) failed (%d)` | W | The sound file is missing or not a supported format. |
