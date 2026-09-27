@@ -1890,6 +1890,10 @@ static void accept_loop(rtsp_server *sv, int lfd, int port, void *tls_ctx)
          * thread forever in recv()/TLS-handshake/send. Streaming clients
          * read/write continuously and never trip these. */
         net_set_timeouts(cfd, 30, 15);
+        /* a UDP session's control connection idles between keepalives, so a
+         * host that vanished (power, WiFi) sends no FIN and no ICMP: without
+         * probes only the 2x session-timeout reaper ends it. ~40 s instead. */
+        net_set_keepalive(cfd, 20, 5, 4);
         /* global client cap: each client costs a thread + bounded queue.
          * L1: reserve the slot atomically (add-then-check) - the old plain
          * read of g_nclients let two racing accepts both pass the cap. */

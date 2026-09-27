@@ -23,6 +23,16 @@ int net_set_nodelay(int fd)
     return setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof one);
 }
 
+int net_set_keepalive(int fd, int idle_s, int intvl_s, int cnt)
+{
+    int one = 1, rc;
+    rc  = setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof one);
+    rc |= setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle_s, sizeof idle_s);
+    rc |= setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &intvl_s, sizeof intvl_s);
+    rc |= setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &cnt, sizeof cnt);
+    return rc;
+}
+
 /* H1/H2: bounded socket I/O for accepted control connections. Without these,
  * a client that connects and then goes silent (or stops reading) parks the
  * per-connection thread forever in recv()/send(), pinning one of the few
