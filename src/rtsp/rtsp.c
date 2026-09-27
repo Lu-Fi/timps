@@ -58,6 +58,12 @@
 #endif
 /* rejected credential attempts before the connection is closed */
 #define RTSP_MAX_AUTH_FAILS 5
+/* A connection must reach PLAY within this long. OPTIONS needs no auth and a
+ * request every <30 s (SO_RCVTIMEO) otherwise held one of the few client
+ * slots forever; a real client gets from connect to PLAY in seconds. */
+#ifndef RTSP_PREPLAY_MAX_US
+#define RTSP_PREPLAY_MAX_US (60*1000000LL)
+#endif
 /* Shutdown drain window (rtsp_stop): how long teardown waits for the detached
  * per-client threads to return. -D overridable (mirrors MS_HTTP_DRAIN_MS in
  * mp4/httpd.c) so a shutdown-latency measurement can widen it and see how long
@@ -1707,6 +1713,7 @@ static void *client_thread(void *arg)
     char buf[4096];
     int have=0, playing=0;
     int64_t req_start = 0;      /* when the bytes now in buf first arrived */
+    int64_t conn_start = ms_now_us();
 
     /* control phase: read requests until PLAY */
     while (!playing) {
@@ -1745,6 +1752,11 @@ static void *client_thread(void *arg)
         if (have && ms_now_us() - req_start > RTSP_REQ_TIMEOUT_US) {
             LOGW(MOD,"control request incomplete after %llds, closing",
                  (long long)(RTSP_REQ_TIMEOUT_US/1000000LL));
+            goto done;
+        }
+        if (!playing && ms_now_us() - conn_start > RTSP_PREPLAY_MAX_US) {
+            LOGW(MOD,"no PLAY within %llds of connecting, closing",
+                 (long long)(RTSP_PREPLAY_MAX_US/1000000LL));
             goto done;
         }
     }
