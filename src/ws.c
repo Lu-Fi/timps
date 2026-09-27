@@ -263,13 +263,12 @@ static int poll_readable(ws_io *io, int timeout_ms) {
   return poll_fd(io->fd, POLLIN, timeout_ms);
 }
 
-/* How long a blocked write may wait before the connection is given up on.
- * Only ever reached on the TLS path (the plain socket is blocking, so send()
- * does this waiting inside the kernel); it exists so a peer that stops reading
- * cannot pin a connection thread forever once mbedTLS starts returning
- * WANT_WRITE. Generous, because a genuinely slow WiFi client must not be
- * dropped mid-frame - and a torn write is not resynchronisable, so the only
- * thing to do when it does expire is close. */
+/* How long a blocked write may wait before the connection is given up on,
+ * on the TLS path (mbedTLS returning WANT_WRITE). On a plain socket an EAGAIN
+ * means SO_SNDTIMEO already expired, which is final. Generous, because a
+ * genuinely slow WiFi client must not be dropped mid-frame - and a torn write
+ * is not resynchronisable, so the only thing to do when it does expire is
+ * close. */
 #define WS_WRITE_TIMEOUT_MS 10000
 
 /* Read exactly n bytes or fail. deadline_ms is an ABSOLUTE ws_now_ms() instant,
@@ -318,19 +317,27 @@ static int read_exact(ws_io *io, void *buf, size_t n, long long deadline_ms) {
 static int write_all(ws_io *io, const void *buf, size_t n) {
   const unsigned char *p = (const unsigned char *)buf;
   size_t sent = 0;
+  long long deadline = 0;
 
   while (sent < n) {
     ssize_t w = io_write(io, p + sent, n - sent);
     if (w < 0) {
       if (errno == EINTR)
         continue;
-      if (errno == EAGAIN || errno == EWOULDBLOCK) {
+      if ((errno == EAGAIN || errno == EWOULDBLOCK) && io->tls) {
         /* POLLIN as well as POLLOUT: mbedTLS can need to READ to make
          * progress on a write (a post-handshake message it has to consume
          * first), and ws_tls_write() reports both as EAGAIN. Waiting only for
          * writability would then spin until the timeout on a socket that is
-         * perfectly writable. */
-        if (poll_fd(io->fd, POLLOUT | POLLIN, WS_WRITE_TIMEOUT_MS) != WS_OK)
+         * perfectly writable. One absolute deadline: POLLIN from a peer that
+         * keeps sending would otherwise restart the wait forever. */
+        long long now = ws_now_ms();
+        if (!deadline)
+          deadline = now + WS_WRITE_TIMEOUT_MS;
+        else
+          usleep(10000); /* unread peer data keeps POLLIN set: no busy spin */
+        if (now >= deadline ||
+            poll_fd(io->fd, POLLOUT | POLLIN, (int)(deadline - now)) != WS_OK)
           return WS_EIO;
         continue;
       }
@@ -656,6 +663,10 @@ int ws_read_message(ws_conn *c, int *opcode, unsigned char *out, size_t cap,
      * from smuggling a compressed frame past the length accounting. */
     if (rsv)
       return WS_EPROTO;
+    /* reserved opcodes (data 3-7, control 0xB-0xF) MUST fail the
+     * connection (RFC 6455 section 5.2) */
+    if ((op >= 0x3 && op <= 0x7) || op >= 0xB)
+      return WS_EPROTO;
 
     /* "The server MUST close the connection upon receiving a frame that is
      * not masked" (RFC 6455 section 5.1). Not optional: an unmasked client
@@ -742,8 +753,11 @@ int ws_read_message(ws_conn *c, int *opcode, unsigned char *out, size_t cap,
       c->frag_len = 0;
     }
 
-    if (c->frag_len + (size_t)plen > sizeof(c->frag))
+    if (c->frag_len + (size_t)plen > sizeof(c->frag)) {
+      c->frag_op = 0;
+      c->frag_len = 0;
       return WS_ETOOBIG;
+    }
     if (plen > 0) {
       memcpy(c->frag + c->frag_len, payload, (size_t)plen);
       c->frag_len += (size_t)plen;
@@ -752,8 +766,11 @@ int ws_read_message(ws_conn *c, int *opcode, unsigned char *out, size_t cap,
     if (!fin)
       continue; /* wait for the rest, under the same deadline */
 
-    if (c->frag_len >= cap)
+    if (c->frag_len >= cap) {
+      c->frag_op = 0;
+      c->frag_len = 0;
       return WS_ETOOBIG;
+    }
     memcpy(out, c->frag, c->frag_len);
     out[c->frag_len] = '\0'; /* callers parse TEXT frames as C strings */
     *out_len = c->frag_len;
