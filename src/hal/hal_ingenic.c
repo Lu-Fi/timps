@@ -123,6 +123,7 @@ typedef IMPEncoderCHNStat IMPEncoderChnStat;
  * encoder on a single-core SoC for >80 ms, the driver dropped captured frames ->
  * audible G.711 gaps. Depth 4 (~160 ms) absorbs that jitter; correct
  * sample-count RTP timestamps (see rtp.c) keep A/V sync exact despite the slack. */
+#define MS_AAC_ACC 4096          /* AAC re-blocking accumulator, interleaved samples */
 #ifndef MS_AI_FRM_NUM
 #define MS_AI_FRM_NUM   6
 #endif
@@ -3773,6 +3774,16 @@ static void *audio_thread(void *arg)
             faac_in *= (uint32_t)g_ach;
             LOGI(MOD,"faac AAC encoder: %dHz ch=%d frame=%u max=%u",
                  g_asr,g_ach,faac_in,faac_max);
+            /* the re-blocking accumulator below (MS_AAC_ACC) must hold a whole
+             * unit plus a frame, or its fill loop stops making progress */
+            if (!faac_in || faac_in > MS_AAC_ACC/2){
+                LOGE(MOD,"faac frame of %u samples does not fit the %d-sample "
+                         "accumulator -> PCMU", faac_in, MS_AAC_ACC);
+                faac_encoder_close(&faac);
+                faac = NULL;
+                use_aac=0; g_acodec=MS_AC_PCMU;
+                g_ach=1;
+            }
         } else {
             LOGW(MOD,"faac_encoder_open failed (%s) -> PCMU", faac_strerror(st));
             faac = NULL;
@@ -3898,7 +3909,7 @@ static void *audio_thread(void *arg)
      * duplicated to L=R on append, so acc_n and faac_in use the same unit.
      * Capacity check: worst case is faac_in-1 leftover (stereo LC: 2047) plus
      * one doubled 40 ms frame (16 kHz: 2*640=1280) = 3327 < 4096. */
-    int16_t   acc[4096];
+    int16_t   acc[MS_AAC_ACC];
     size_t    acc_n = 0;
     int dbg_logged = 0;
 #endif
