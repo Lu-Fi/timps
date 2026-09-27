@@ -287,25 +287,22 @@ static void hard_exit(int s)
 /* L-4: hard-exit deadline for the whole shutdown path. It is a guillotine, not
  * a timeout - it _exit()s wherever teardown happens to be, so anything still
  * unfinished (a recording segment whose moov has not been written) is lost.
- * Kept at 3 s deliberately: the network servers no longer NEED it (their stop
- * paths now END their client threads instead of outwaiting them, see
- * ms_creg_wake_all() in util.h), so what remains inside the window is
- * record_stop()/timelapse_stop() finalising their files plus the vendor IMP
- * teardown - and the vendor side is precisely what cannot be trusted to
- * return, which is the reason this exists.
- * Lengthening it to give the recorder more room would be the wrong trade in
- * both directions. The recorder does not actually compete for the tail of this
- * window: main() below stops it BEFORE rtsp_stop()/httpd_stop(), so it gets the
- * front of the budget, and what used to eat the rest (stream threads that never
- * returned - measured at >20 s, i.e. the alarm was firing every single time a
- * client was connected) is now gone: the same measurement is 40 ms after the
- * change. Meanwhile a longer alarm lengthens EVERY wedged-vendor shutdown on a
- * device whose recovery path is a watchdog restart. So: unchanged at 3 s, but
- * for a different reason than before - it is a backstop again rather than the
- * routine exit path. -D overridable for the shutdown-latency measurements,
- * which must outlive the deadline to be able to report what happened. */
+ * The network servers no longer NEED it (their stop paths END their client
+ * threads instead of outwaiting them, see ms_creg_wake_all() in util.h), so
+ * what remains inside the window is record_stop()/timelapse_stop() finalising
+ * their files plus the vendor IMP teardown - and the vendor side is precisely
+ * what cannot be trusted to return, which is the reason this exists.
+ * ONE deadline for the whole path, armed once in on_signal() and never
+ * re-armed: S95timps' wait_stop SIGKILLs after 5 s, so a budget that can add
+ * up past that only moves the cut from our guillotine to the init script's
+ * (a re-arm before g_hal->stop() used to make the worst case 2x this). 4 s
+ * leaves a second for the init script's own polling; the fleet's measured
+ * shutdowns take 0-2 s, nearly all of it inside g_hal->stop(), which gets
+ * whatever the earlier stops left - normally almost all of it. -D overridable
+ * for the shutdown-latency measurements, which must outlive the deadline to
+ * be able to report what happened. */
 #ifndef MS_SHUTDOWN_ALARM_S
-#define MS_SHUTDOWN_ALARM_S 3
+#define MS_SHUTDOWN_ALARM_S 4
 #endif
 static void on_signal(int s)
 {
@@ -338,7 +335,7 @@ static void on_signal(int s)
  * call and returns control to the loop via siglongjmp, which is safe
  * precisely because the alternative is a permanent hang in the same thread.
  *
- * Deliberately NOT MS_SHUTDOWN_ALARM_S (3 s): that number is chosen for
+ * Deliberately NOT MS_SHUTDOWN_ALARM_S (4 s): that number is chosen for
  * shutdown latency (S95timps' wait_stop budget), and nothing waits on us
  * during bring-up. Being wrong here is expensive - a stop() that is merely
  * slow would be declared wedged and cost the incident its one-shot reboot -
@@ -568,7 +565,7 @@ int main(int argc, char **argv)
      * SIGTERM during the (potentially slow) init used to abort the process
      * with no HAL teardown at all. With the handlers in place, an interrupt
      * during init just clears g_run - init/start complete, the main loop is
-     * skipped and the normal orderly teardown below runs (the handler's 3 s
+     * skipped and the normal orderly teardown below runs (the handler's 4 s
      * alarm still force-exits if a vendor call wedges). */
     signal(SIGINT,  on_signal);
     signal(SIGTERM, on_signal);
@@ -755,15 +752,8 @@ int main(int argc, char **argv)
 #ifdef USE_PLAY
     speaker_stop();
 #endif
-    /* Re-arm the guillotine with a FULL budget for the vendor teardown: the
-     * single alarm armed in on_signal covers everything above too, so a slow
-     * recorder finalize or server stop could eat the whole 3 s and leave the
-     * IMP teardown to be cut short mid-way - which leaves the rmem carve-out
-     * dirty for the NEXT instance (the 2026-08-22 T31 incident: encoder
-     * allocs failing after a restart). Worst case is now bounded at
-     * ~2*MS_SHUTDOWN_ALARM_S instead of teardown silently getting only the
-     * leftovers; S95timps' wait_stop polls long enough to cover that. */
-    alarm(MS_SHUTDOWN_ALARM_S);
+    /* no re-arm here: on_signal()'s single deadline covers the vendor
+     * teardown too (see MS_SHUTDOWN_ALARM_S) */
     g_hal->stop();
     /* the counterpart to hard_exit()'s write(): its absence after "shutting
      * down" is what identifies a shutdown the alarm cut short. */

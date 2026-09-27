@@ -71,7 +71,7 @@ touching hub internals directly.
    (`auth_gen_token`) and, if `http.token_file` is set, publish it.
 8. Install `SIGINT`/`SIGTERM` handlers *before* HAL init — a signal during
    a slow ISP bring-up now just clears the run flag and lets the normal
-   teardown path run afterwards, with a 3-second watchdog `alarm()` that
+   teardown path run afterwards, with a 4-second watchdog `alarm()` that
    force-`_exit()`s if a second signal or a wedged vendor call prevents a
    clean shutdown.
 9. `hub_init()` + register the HAL's IDR-request and activity callbacks

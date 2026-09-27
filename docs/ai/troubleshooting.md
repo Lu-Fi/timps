@@ -325,7 +325,8 @@ All of this is `src/main.c`.
 - `-h` on the command line (prints version + usage).
 - A normal shutdown. The marker is the last line, `teardown complete -
   exiting`, after `shutting down`.
-- `hard_exit()`: the 3 s shutdown guillotine (`MS_SHUTDOWN_ALARM_S`) fired, or
+- `hard_exit()`: the 4 s shutdown guillotine (`MS_SHUTDOWN_ALARM_S`, one deadline
+  for the whole teardown including the vendor HAL stop) fired, or
   a **second** `SIGINT`/`SIGTERM` arrived while the first was being handled. It
   `_exit(0)`s wherever teardown happens to be — an unfinished recording segment
   loses its `moov`. It writes `timpsd: shutdown alarm fired - hard exit` to
@@ -369,7 +370,7 @@ signal stack is installed, so a stack-overflow `SIGSEGV` is still captured;
   teardown, no log line, no crash file. `S95timps` has no `reload` for exactly
   this reason; do not suggest `kill -HUP`.
 - `SIGPIPE` is ignored (a dead client must not kill the daemon).
-- `SIGALRM` is used for **two different deadlines**: the 3 s shutdown
+- `SIGALRM` is used for **two different deadlines**: the 4 s shutdown
   guillotine above, and a 20 s **bring-up** teardown deadline
   (`MS_STARTUP_STOP_ALARM_S`). The second does not kill the process — it
   abandons the wedged `g_hal->stop()` via `siglongjmp` and writes
