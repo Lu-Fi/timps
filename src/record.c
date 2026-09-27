@@ -75,6 +75,25 @@ static char             g_curfile[160];
 static long long        g_werrs;
 static long long        g_werr_us;
 static char             g_werr[64];
+/* statvfs result for /control (under g_lock), refreshed by rec_thread: run on
+ * the HTTP thread, a wedged SD card or hard-mounted NFS blocked every poll */
+static long long        g_free_mb = -1;
+#define REC_FREE_POLL_US (10*1000000LL)
+
+static void free_mb_refresh(int64_t *next_us)
+{
+    int64_t now = ms_now_us();
+    if (now < *next_us) return;
+    *next_us = now + REC_FREE_POLL_US;
+    char dir[128];
+    config_str_lock();
+    snprintf(dir,sizeof dir,"%s",g_rc->record.dir);
+    config_str_unlock();
+    long long fm = ms_free_mb(dir);
+    pthread_mutex_lock(&g_lock);
+    g_free_mb = fm;
+    pthread_mutex_unlock(&g_lock);
+}
 
 static void note_werr(const char *op, int err)
 {
@@ -672,9 +691,10 @@ static void *rec_thread(void *arg)
      * one gates just the unreachable-min_free_mb refusal from inside
      * seg_open(), this one gates the whole call after ANY failure, so
      * whichever deadline is later is the one that actually delays the retry. */
-    int64_t open_retry_us=0;
+    int64_t open_retry_us=0, free_next_us=0;
 
     while (!ms_stopgate_stopped(&g_gate)){
+        free_mb_refresh(&free_next_us);
         /* read the live config every pass so channel / mode / pre-roll changes
          * from /control take effect WITHOUT a daemon restart (the thread used to
          * freeze these at start, so picking "Substream" or switching mode in the
@@ -904,21 +924,17 @@ void record_get_status(ms_record_status *st)
     if (!st) return;
     memset(st,0,sizeof *st);
     st->available=1;
-    st->free_mb=-1;
     if (g_rc){
-        /* F-02/F-03: record.dir (string) AND the enabled/channel/mode ints are
-         * runtime-mutable via /control - snapshot them together under the config
-         * string lock; statfs happens outside it. */
-        char dir[128];
+        /* F-02/F-03: the enabled/channel/mode ints are runtime-mutable via
+         * /control - snapshot them under the config string lock. */
         config_str_lock();
         st->enabled=g_rc->record.enabled;
         st->channel=g_rc->record.channel;
         st->mode=g_rc->record.mode;
-        snprintf(dir,sizeof dir,"%s",g_rc->record.dir);
         config_str_unlock();
-        st->free_mb=ms_free_mb(dir);
     }
     pthread_mutex_lock(&g_lock);
+    st->free_mb=g_free_mb;
     st->recording=g_recording; st->bytes=g_curbytes;
     st->manual_off = (g_manual==0);
     snprintf(st->file,sizeof st->file,"%s",g_curfile);

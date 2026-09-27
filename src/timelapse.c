@@ -45,6 +45,10 @@ static pthread_mutex_t  g_lock = PTHREAD_MUTEX_INITIALIZER;
 static long long        g_count;
 static time_t           g_last_t;
 static char             g_lastfile[160];
+/* statvfs result for /control, refreshed by tl_thread - same reason as
+ * record.c's g_free_mb (a wedged mount blocked every status poll) */
+static long long        g_free_mb = -1;
+static int64_t          g_free_next_us;
 
 /* ---- filesystem helpers ----
  * ms_path_unsafe / ms_free_mb / ms_mkdirs / ms_media_path live in util.c,
@@ -203,6 +207,11 @@ static void *tl_thread(void *arg)
         config_str_lock();
         tl = g_tc->timelapse;
         config_str_unlock();
+        if (ms_now_us() >= g_free_next_us){
+            g_free_next_us = ms_now_us() + 10*1000000LL;
+            long long fm = ms_free_mb(tl.dir);
+            pthread_mutex_lock(&g_lock); g_free_mb = fm; pthread_mutex_unlock(&g_lock);
+        }
         int chn=tl.channel; if (chn<0||chn>=MS_MAX_VSTREAM) chn=0;
         int src = tl.enabled ? hub_pick_jpeg_src(g_tc,chn,0) : -1;
 
@@ -277,20 +286,16 @@ void timelapse_get_status(ms_timelapse_status *st)
     if (!st) return;
     memset(st,0,sizeof *st);
     st->available=1;
-    st->free_mb=-1;
     if (g_tc){
-        /* F-02/F-03: timelapse.dir (string) AND enabled/interval_s (ints) are
-         * runtime-mutable via /control - snapshot them together under the config
-         * string lock; statfs happens outside it. */
-        char dir[128];
+        /* F-02/F-03: enabled/interval_s are runtime-mutable via /control -
+         * snapshot them under the config string lock. */
         config_str_lock();
         st->enabled=g_tc->timelapse.enabled;
         st->interval_s=g_tc->timelapse.interval_s;
-        snprintf(dir,sizeof dir,"%s",g_tc->timelapse.dir);
         config_str_unlock();
-        st->free_mb=ms_free_mb(dir);
     }
     pthread_mutex_lock(&g_lock);
+    st->free_mb=g_free_mb;
     st->count=g_count; st->last_t=(long long)g_last_t;
     snprintf(st->file,sizeof st->file,"%s",g_lastfile);
     pthread_mutex_unlock(&g_lock);
