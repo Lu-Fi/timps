@@ -9,9 +9,16 @@
 #include <string.h>
 #include <strings.h>
 
+/* An id is slot | generation << CL_SLOT_BITS: a straggling clients_bytes()
+ * from a thread that already called clients_del() then misses instead of
+ * crediting whoever reused the slot. */
+#define CL_SLOT_BITS 8
+typedef char cl_slots_fit[CLIENTS_MAX <= (1 << CL_SLOT_BITS) ? 1 : -1];
+
 typedef struct cl_entry cl_entry;
 struct cl_entry {
     int                used;
+    volatile unsigned  gen;       /* 0 = free */
     int                kind, chn;
     struct sockaddr_in peer;
     int64_t            since_us;
@@ -29,6 +36,16 @@ static uint64_t cl_total(const cl_entry *e);
 
 static cl_entry        g_cl[CLIENTS_MAX];
 static pthread_mutex_t g_cl_mx = PTHREAD_MUTEX_INITIALIZER;
+static unsigned        g_gen;     /* under g_cl_mx */
+
+static cl_entry *cl_get(int id)
+{
+    if (id < 0) return NULL;
+    unsigned slot = (unsigned)id & ((1u << CL_SLOT_BITS) - 1);
+    if (slot >= CLIENTS_MAX) return NULL;
+    cl_entry *e = &g_cl[slot];
+    return e->gen == (unsigned)id >> CL_SLOT_BITS ? e : NULL;
+}
 
 static const char *const KIND[] = {
     "rtsp/udp", "rtsp/tcp", "rtsps", "fmp4", "mjpeg", "events", "webrtc", "srt",
@@ -54,7 +71,13 @@ void clients_agent_from(const char *hdrs, char *out, int cap)
             p += 11;
             while (*p == ' ' || *p == '\t') p++;
             int n = 0;
-            while (p[n] && p[n] != '\r' && p[n] != '\n' && n < cap - 1) { out[n] = p[n]; n++; }
+            /* it is logged verbatim: no terminal escapes or other control
+             * bytes from a client into anyone's log viewer */
+            while (p[n] && p[n] != '\r' && p[n] != '\n' && n < cap - 1) {
+                unsigned char ch = (unsigned char)p[n];
+                out[n] = (ch >= 0x20 && ch < 0x7f) ? (char)ch : '?';
+                n++;
+            }
             out[n] = 0;
             return;
         }
@@ -82,14 +105,19 @@ int clients_add(int kind, const struct sockaddr_in *peer, int chn, const char *a
             e->since_us = e->q_us = now;
             e->lat_us = -1;
             e->used = 1;
-            id = i;
+            g_gen = (g_gen + 1) & ((1u << (31 - CL_SLOT_BITS)) - 1);
+            if (!g_gen) g_gen = 1;
+            e->gen = g_gen;
+            id = (int)(g_gen << CL_SLOT_BITS | (unsigned)i);
             break;
         }
     pthread_mutex_unlock(&g_cl_mx);
     char ip[INET_ADDRSTRLEN];
-    if (id >= 0)
-        CL_LOG(kind, "+ %s %s:%u chn=%d agent=\"%s\"", KNAME(kind), cl_ip(&g_cl[id], ip, sizeof ip),
-               (unsigned)ntohs(g_cl[id].peer.sin_port), chn, g_cl[id].agent);
+    if (id >= 0) {
+        const cl_entry *e = &g_cl[id & ((1 << CL_SLOT_BITS) - 1)];
+        CL_LOG(kind, "+ %s %s:%u chn=%d agent=\"%s\"", KNAME(kind), cl_ip(e, ip, sizeof ip),
+               (unsigned)ntohs(e->peer.sin_port), chn, e->agent);
+    }
     else
         LOGW(MOD, "table full, %s client not listed", KNAME(kind));
     return id;
@@ -97,21 +125,22 @@ int clients_add(int kind, const struct sockaddr_in *peer, int chn, const char *a
 
 void clients_del(int id)
 {
-    if (id < 0 || id >= CLIENTS_MAX) return;
-    cl_entry *e = &g_cl[id];
+    cl_entry *e = cl_get(id);
+    if (!e) return;
     char ip[INET_ADDRSTRLEN];
     CL_LOG(e->kind, "- %s %s:%u after %llds, %llu bytes", KNAME(e->kind), cl_ip(e, ip, sizeof ip),
            (unsigned)ntohs(e->peer.sin_port), (long long)((ms_now_us() - e->since_us) / 1000000),
            (unsigned long long)cl_total(e));
     pthread_mutex_lock(&g_cl_mx);
     e->used = 0;
+    e->gen = 0;
     pthread_mutex_unlock(&g_cl_mx);
 }
 
 void clients_bytes(int id, int n)
 {
-    if (id < 0 || id >= CLIENTS_MAX || n <= 0) return;
-    cl_entry *e = &g_cl[id];
+    cl_entry *e = cl_get(id);
+    if (!e || n <= 0) return;
     uint32_t lo = e->lo + (uint32_t)n;
     if (lo >= e->lo) { e->lo = lo; return; }
     e->seq++;
@@ -124,8 +153,8 @@ void clients_bytes(int id, int n)
 
 void clients_latency(int id, int64_t us)
 {
-    if (id < 0 || id >= CLIENTS_MAX || us < 0 || us > 10000000) return;
-    cl_entry *e = &g_cl[id];
+    cl_entry *e = cl_get(id);
+    if (!e || us < 0 || us > 10000000) return;
     int32_t v = (int32_t)us, o = e->lat_us;
     e->lat_us = o < 0 ? v : o + (v - o) / 8;
 }

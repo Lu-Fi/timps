@@ -73,6 +73,20 @@ int main(void)
     clients_del(-1);
     ok(clients_json(buf, sizeof buf) > 0 && !strcmp(buf, "{\"clients\":[]}"), "empty after delete");
 
+    /* a straggler still holding a deleted id must not credit the client
+     * that reused its slot */
+    int old = clients_add(CLI_FMP4, &a, 0, NULL);
+    clients_del(old);
+    int nw = clients_add(CLI_FMP4, &a, 0, NULL);
+    clients_bytes(old, 777);
+    clients_json(buf, sizeof buf);
+    ok(old != nw && strstr(buf, "\"bytes\":0,") != NULL, "stale id does not credit a reused slot");
+    clients_del(nw);
+
+    char uab[64];
+    clients_agent_from("GET / HTTP/1.1\r\nUser-Agent: evil\x1b[2Jx\x7f\r\n\r\n", uab, sizeof uab);
+    ok(!strcmp(uab, "evil?[2Jx?"), "control bytes in User-Agent are replaced");
+
     printf("%d/%d checks passed\n", g_n - g_fail, g_n);
     return g_fail ? 1 : 0;
 }
