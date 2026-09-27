@@ -1863,6 +1863,14 @@ static void *conn_thread(void *arg)
                 if (rn < (int)sizeof r) csend(c, r, rn);
                 goto done;
             }
+            /* CSRF: a browser re-sends cached Basic/Digest credentials on a
+             * cross-site form POST, so only the token and localhost are
+             * non-ambient. */
+            if (!c->local && !tok_ok && !strcmp(method,"POST") && !auth_origin_ok(buf)) {
+                LOGW(MOD,"refused cross-origin POST %.64s", path);
+                http_send_ex(c,"403 Forbidden","text/plain",cors,"bad origin",10);
+                goto done;
+            }
             if (!strcmp(path,"/") || !strncmp(path,"/?",2) || !strncmp(path,"/index.html",11))
                 serve_player(c, path);
             else if (!strncmp(path,"/stream.mp4",11))

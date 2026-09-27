@@ -6,6 +6,7 @@
 #include "../codec/g711.h"
 #include "../log.h"
 #include "../util.h"
+#include "../auth.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -67,89 +68,11 @@ static const int TALK_RATES[] = {8000, 16000, 24000, 32000, 44100, 48000};
 
 /* ---- request-head helpers ------------------------------------------------
  *
- * talk_ws.c does its own header scanning rather than calling httpd.c's
- * http_header(): that one is static, and de-static-ing it (plus exporting
- * hconn) is more churn than the ~20 lines below. ws.c's own ws_header() is
- * not usable either - it reads out of a ws_handshake that only
- * ws_handshake_read() fills, and that function cannot run here because
- * conn_thread has already consumed the head off the socket. */
-
-/* Copy the value of header `name` (WITHOUT the colon) out of an HTTP request
- * head. Case-insensitive and anchored at a line start, so a header VALUE can
- * never impersonate a header name. `out` is always NUL-terminated. Returns 1
- * when found. */
-static int hdr_get(const char *head, const char *name, char *out, int cap)
-{
-    size_t nlen = strlen(name);
-    const char *p = strchr(head, '\n');   /* skip the request line */
-    out[0] = 0;
-    while (p) {
-        p++;
-        if (*p == '\r' || *p == '\n' || *p == 0) break;      /* end of head */
-        if (!strncasecmp(p, name, nlen) && p[nlen] == ':') {
-            const char *v = p + nlen + 1;
-            while (*v == ' ' || *v == '\t') v++;
-            int i = 0;
-            while (v[i] && v[i] != '\r' && v[i] != '\n' && i < cap-1) {
-                out[i] = v[i]; i++;
-            }
-            out[i] = 0;
-            return 1;
-        }
-        p = strchr(p, '\n');
-    }
-    return 0;
-}
-
-/* Reduce an Origin or Host value to its bare host: strip any scheme, any
- * port, any path. "https://cam.lan:8080/x" and "cam.lan:8080" both -> "cam.lan". */
-static void host_of(const char *in, char *out, int cap)
-{
-    const char *p = strstr(in, "://");
-    p = p ? p + 3 : in;
-    int i = 0;
-    while (p[i] && p[i] != ':' && p[i] != '/' && i < cap-1) { out[i] = p[i]; i++; }
-    out[i] = 0;
-}
-
-/* Origin policy.
- *
- * WebSocket is NOT covered by CORS - the http_cors() headers httpd.c attaches
- * to /talk do nothing to protect the upgrade itself, so this has to be
- * policed here. The credential is still the ?token=, which a cross-origin
- * page cannot read; this is defence in depth for the case where a token has
- * leaked into a URL, a referrer or a proxy log.
- *
- *   - No Origin header at all -> allowed. RFC 6455 4.1 requires browsers to
- *     send one, so its absence means a non-browser client, which has no
- *     ambient credentials to hijack and still had to present a valid token.
- *   - Origin present -> its host must equal the Host header's host, i.e. the
- *     page came from this camera. An explicitly empty or "null" Origin (a
- *     sandboxed iframe, a data: document) is refused: it is opaque, so it can
- *     never be matched against anything, and treating it as absent would let
- *     any sandboxed frame through.
- *
- * Deliberately no configurable allow-list yet (motors has motors.ws_origins);
- * the WebUI page is served from this same camera. */
-static int origin_ok(const char *head)
-{
-    char origin[192], host[128], oh[128], hh[128];
-
-    if (!hdr_get(head, "Origin", origin, sizeof origin))
-        return 1;                                   /* absent: non-browser */
-    if (!origin[0] || !strcasecmp(origin, "null"))
-        return 0;                                   /* opaque: unmatchable */
-    if (!hdr_get(head, "Host", host, sizeof host))
-        return 0;                                   /* HTTP/1.1 requires Host */
-
-    host_of(origin, oh, sizeof oh);
-    host_of(host,   hh, sizeof hh);
-    /* Ports are deliberately NOT compared: the WebUI page is served by uhttpd
-     * on :443 while timps' own listener is on a different port by
-     * construction, so requiring port equality would reject every legitimate
-     * same-camera request. Host equality is the property that matters. */
-    return oh[0] && hh[0] && !strcasecmp(oh, hh);
-}
+ * Header scanning and the Origin policy live in auth.c (auth_hdr_get(),
+ * auth_origin_ok()), shared with httpd.c's POST gate. ws.c's own ws_header()
+ * is not usable - it reads out of a ws_handshake that only ws_handshake_read()
+ * fills, and that function cannot run here because conn_thread has already
+ * consumed the head off the socket. */
 
 /* Read one query parameter out of a request target. Anchored on '?' or '&' so
  * "rate=" cannot be matched inside some other parameter's name or value.
@@ -210,28 +133,28 @@ void talk_ws_serve(int fd, void *tls, const char *head, int head_len,
         ws_handshake_reject(&io, 400, "Bad Request", "bad rate");
         return;
     }
-    if (!hdr_get(head, "Sec-WebSocket-Key", key, sizeof key) || !key[0]) {
+    if (!auth_hdr_get(head, "Sec-WebSocket-Key", key, sizeof key) || !key[0]) {
         ws_handshake_reject(&io, 400, "Bad Request", "not a websocket upgrade");
         return;
     }
-    if (!hdr_get(head, "Upgrade", val, sizeof val) ||
+    if (!auth_hdr_get(head, "Upgrade", val, sizeof val) ||
         strcasecmp(val, "websocket") != 0) {
         ws_handshake_reject(&io, 400, "Bad Request", "not a websocket upgrade");
         return;
     }
     /* "Connection: keep-alive, Upgrade" is legal and common, so this is a
      * token search rather than an equality test (RFC 6455 section 4.1). */
-    if (!hdr_get(head, "Connection", val, sizeof val) ||
+    if (!auth_hdr_get(head, "Connection", val, sizeof val) ||
         strcasestr(val, "upgrade") == NULL) {
         ws_handshake_reject(&io, 400, "Bad Request", "not a websocket upgrade");
         return;
     }
-    if (!hdr_get(head, "Sec-WebSocket-Version", val, sizeof val) ||
+    if (!auth_hdr_get(head, "Sec-WebSocket-Version", val, sizeof val) ||
         atoi(val) != 13) {
         ws_handshake_reject(&io, 426, "Upgrade Required", "websocket version 13 required");
         return;
     }
-    if (!origin_ok(head)) {
+    if (!auth_origin_ok(head)) {
         LOGW(MOD, "refused: cross-origin upgrade");
         ws_handshake_reject(&io, 403, "Forbidden", "bad origin");
         return;

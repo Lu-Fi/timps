@@ -258,3 +258,86 @@ void auth_fail_note(const char *mod, const char *ifc, const char *peer)
     }
     pthread_mutex_unlock(&mtx);
 }
+
+/* ---- request-head helpers (talk_ws.c, httpd.c) ---- */
+
+/* Copy the value of header `name` (WITHOUT the colon) out of an HTTP request
+ * head. Case-insensitive and anchored at a line start, so a header VALUE can
+ * never impersonate a header name. `out` is always NUL-terminated. Returns 1
+ * when found. */
+int auth_hdr_get(const char *head, const char *name, char *out, int cap)
+{
+    size_t nlen = strlen(name);
+    const char *p = strchr(head, '\n');   /* skip the request line */
+    out[0] = 0;
+    while (p) {
+        p++;
+        if (*p == '\r' || *p == '\n' || *p == 0) break;      /* end of head */
+        if (!strncasecmp(p, name, nlen) && p[nlen] == ':') {
+            const char *v = p + nlen + 1;
+            while (*v == ' ' || *v == '\t') v++;
+            int i = 0;
+            while (v[i] && v[i] != '\r' && v[i] != '\n' && i < cap-1) {
+                out[i] = v[i]; i++;
+            }
+            out[i] = 0;
+            return 1;
+        }
+        p = strchr(p, '\n');
+    }
+    return 0;
+}
+
+/* Reduce an Origin or Host value to its bare host: strip any scheme, any
+ * port, any path. "https://cam.lan:8080/x" and "cam.lan:8080" both -> "cam.lan". */
+static void host_of(const char *in, char *out, int cap)
+{
+    const char *p = strstr(in, "://");
+    p = p ? p + 3 : in;
+    int i = 0;
+    while (p[i] && p[i] != ':' && p[i] != '/' && i < cap-1) { out[i] = p[i]; i++; }
+    out[i] = 0;
+}
+
+/* Origin policy.
+ *
+ * WebSocket is NOT covered by CORS - the http_cors() headers httpd.c attaches
+ * to /talk do nothing to protect the upgrade itself, so this has to be
+ * policed here. The credential is still the ?token=, which a cross-origin
+ * page cannot read; this is defence in depth for the case where a token has
+ * leaked into a URL, a referrer or a proxy log.
+ *
+ *   - No Origin header at all -> allowed. RFC 6455 4.1 requires browsers to
+ *     send one, so its absence means a non-browser client, which has no
+ *     ambient credentials to hijack and still had to present a valid token.
+ *   - Origin present -> its host must equal the Host header's host, i.e. the
+ *     page came from this camera. An explicitly empty or "null" Origin (a
+ *     sandboxed iframe, a data: document) is refused: it is opaque, so it can
+ *     never be matched against anything, and treating it as absent would let
+ *     any sandboxed frame through.
+ *
+ * Deliberately no configurable allow-list yet (motors has motors.ws_origins);
+ * the WebUI page is served from this same camera.
+ *
+ * Also httpd.c's CSRF gate for POSTs authenticated by Basic/Digest: browsers
+ * re-send cached HTTP auth on cross-site form posts, so those credentials ARE
+ * ambient there. */
+int auth_origin_ok(const char *head)
+{
+    char origin[192], host[128], oh[128], hh[128];
+
+    if (!auth_hdr_get(head, "Origin", origin, sizeof origin))
+        return 1;                                   /* absent: non-browser */
+    if (!origin[0] || !strcasecmp(origin, "null"))
+        return 0;                                   /* opaque: unmatchable */
+    if (!auth_hdr_get(head, "Host", host, sizeof host))
+        return 0;                                   /* HTTP/1.1 requires Host */
+
+    host_of(origin, oh, sizeof oh);
+    host_of(host,   hh, sizeof hh);
+    /* Ports are deliberately NOT compared: the WebUI page is served by uhttpd
+     * on :443 while timps' own listener is on a different port by
+     * construction, so requiring port equality would reject every legitimate
+     * same-camera request. Host equality is the property that matters. */
+    return oh[0] && hh[0] && !strcasecmp(oh, hh);
+}

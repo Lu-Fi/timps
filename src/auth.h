@@ -58,4 +58,12 @@ void auth_gen_token(char out[33]);
  * content mismatch; the length itself is not secret). Returns 1 if equal. */
 int  auth_token_eq(const char *a, const char *b);
 
+/* Copy the value of header `name` (no colon) out of an HTTP request head;
+ * case-insensitive, anchored at a line start. Returns 1 when found. */
+int  auth_hdr_get(const char *head, const char *name, char *out, int cap);
+/* Origin policy for browser-reachable requests: an absent Origin passes (a
+ * non-browser client), an opaque one fails, otherwise its host must equal
+ * the Host header's host. Ports are not compared. Returns 1 if acceptable. */
+int  auth_origin_ok(const char *head);
+
 #endif
