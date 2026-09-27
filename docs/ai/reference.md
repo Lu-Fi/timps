@@ -292,6 +292,8 @@ stream that has `videoN.jpeg = true` (which defaults to on), so they still work
 
 **`srt.`** — `enabled`, `port` 9000, `mode` (`listener` default | `caller`),
 `host` (caller), `channel` 0, `latency_ms` 120, `streamid`, `passphrase`.
+Without a passphrase a listener is open to anyone — `streamid` is plaintext;
+**since v1.9.28 (unreleased)** timps says so at start when RTSP/HTTP credentials are set.
 
 **`events.`** — `enabled` 1, `stats_ms` 2000 (0 = no stats events),
 `max_clients` 8. Startup-only, deliberately not settable via `/control`.
@@ -312,8 +314,10 @@ outline,outline_color,logo,logo_w,logo_h,font_path}`. `type` is `text` or
 `logo`. Position convention: `0` = centered on that axis, positive = from
 left/top, negative = from right/bottom. Text placeholders: strftime tokens plus
 `{hostname} {ip} {mac} {fps} {bitrate} {uptime}`, stream-scoped `{fpsN}` /
-`{bitrateN}`, and any `{name}` written into the fixed `/tmp/timps_osd.vars`
-(`name = value` lines - not a config key, see `docs/ai/config-keys.md` §8).
+`{bitrateN}`, and any `{name}` written into `/tmp/timps_osd.vars`
+(`name = value` lines). **since v1.9.28 (unreleased)** that path is fixed and `osd.vars_file` no
+longer exists (see `docs/ai/config-keys.md` §8); on v1.9.27 the key still
+works.
 `font_size` is absolute pixels and is **not** auto-scaled per stream.
 Legacy `osd<N>.<field>` keys still load and apply to every stream.
 
@@ -329,9 +333,12 @@ without arguments).
 default motion), `dir` `/mnt/mmcblk0p1`, `name`
 `%Y%m%d/%H/%Y%m%dT%H%M%S`, `segment_s` 60, `pre_roll_s` 3, `post_roll_s` 10,
 `min_free_mb` 200, `audio` 1. Files land in `<dir>/<hostname>/records/`.
+**since v1.9.28 (unreleased)** a `record.dir`/`timelapse.dir` on the root filesystem (the SD
+mount point with no card) is refused instead of recording into flash; `/tmp`
+is allowed.
 
 **`timelapse.`** — `enabled` 0, `channel` 0, `dir` `/mnt/mmcblk0p1`, `name`
-same strftime pattern, `interval_s` 60, `keep_days` 7. Files land in
+same strftime pattern, `interval_s` 60, `keep_days` 7 (0..3650 **since v1.9.28 (unreleased)**). Files land in
 `<dir>/<hostname>/timelapses/`.
 
 **`daynight.`** — `enabled` 1, `mode` `auto` (|`schedule`), `day_gain` 768,
@@ -477,6 +484,9 @@ embedded NVRs, not just Digest-capable ones. Digest is additionally bound to
 the nonce issued on **that connection**, so a sniffed Digest header cannot be
 replayed; a sniffed Basic header can, which is the reason to prefer RTSPS on
 an untrusted segment. Auth is enabled by setting `rtsp.user`/`rtsp.pass`.
+**since v1.9.28 (unreleased)** an RTSP connection is closed after **5 rejected logins**, and one
+that has not reached `PLAY` within **60 s** of connecting — not a lockout, a
+client can reconnect.
 
 ### The empty-credentials case (important for security questions)
 
@@ -496,6 +506,12 @@ CORS: media endpoints send `Access-Control-Allow-Origin: *`; `/control` and
 `/events` reflect the request `Origin` (with `Vary: Origin`, allow-listing the
 `X-Timps-Token` header, no credentials). `OPTIONS` preflight is answered `204`
 before auth runs.
+
+**since v1.9.28 (unreleased)** a `POST` authenticated by Basic/Digest whose `Origin` host differs
+from its `Host` header's host is refused with `403 bad origin` (CSRF: browsers
+re-send cached HTTP credentials on cross-site form posts). Token and loopback
+requests, and clients that send no `Origin` (curl, scripts), are unaffected.
+Ports are not compared.
 
 Useful shell snippet for a user on the camera or a LAN host:
 
@@ -535,11 +551,11 @@ cap — see the POST limits below.)
 | `encoder.<N>` | `registered`, `left_pics`, `left_stream_bytes`, `left_stream_frames`, `cur_packs`, `work_done`, `au_drops`, and `ave_bitrate` **on T31 only** | Straight from `IMP_Encoder_Query`. A channel whose query fails (stream disabled, SW-rotate path, host sim) is **omitted entirely** rather than reported as zeros. **`au_drops` = producer-side drops** (oversized AU, pool OOM in the encode thread) — the only exact count, since the log throttles those to every 20th event. Distinct from the top-level **`queue_drops[]`, which counts consumer-queue evictions.** |
 | `encoder.<N>.rc` | `rc_mode`, then whichever of `bitrate`, `max_bitrate`, `qp`, `min_qp`, `max_qp`, `i_bias_lvl`, `change_pos`, `quality_lvl`, `static_time`, `frm_qp_step`, `gop_qp_step`, `adaptive_mode`, `gop_relation`, `fluc_lvl`, `ip_delta`, `pb_delta`, `max_psnr`, `rc_options`, `max_picture_size` the current mode and SDK actually carry | What the encoder **holds right now**, read back from `IMP_Encoder_GetChnAttrRcMode` — deliberately separate from the configured `videoN.*` block so written and held values can be compared. Fields the mode/API does not carry are omitted, not zeroed. On new-API SoCs `bitrate`/`max_bitrate` are raw SDK values (**unit unverified**). Frozen on a camera with no client attached (see §4). |
 | `srt` | `enabled`, `port`, `channel`, `mode` (`listener`/`caller`), `connected`, `stats_age_s`, `rtt_ms`, `bw_mbps`, `rate_mbps`, `retrans`, `loss`, `drop` | **`stats_age_s = -1` means no receiver has been connected long enough for a sample** — the other numbers are then meaningless, not zero-valued facts. |
-| `timelapse` | `count`, `last_t`, `free_mb`, `last_file` | |
-| `record` | `recording`, `write_errors`, `last_error`, `last_error_age_s`, `motion_gate_enabled`, `manual_off`, `bytes`, `free_mb`, `file` | `last_error_age_s = -1` = no error recorded. `manual_off` is the manual stop latch (§6 commands). |
+| `timelapse` | `count`, `last_t`, `free_mb`, `last_file` | **since v1.9.28 (unreleased)** `free_mb` is refreshed every 10 s by the timelapse thread (`-1` until the first sample), not measured per request. |
+| `record` | `recording`, `write_errors`, `last_error`, `last_error_age_s`, `motion_gate_enabled`, `manual_off`, `bytes`, `free_mb`, `file` | `last_error_age_s = -1` = no error recorded. `manual_off` is the manual stop latch (§6 commands). **since v1.9.28 (unreleased)** `free_mb` is refreshed every 10 s by the recorder thread, so a wedged card no longer stalls `GET /control`. |
 | `motion` | `active[]`, `last_ms`, `max_cells`, plus the echoed grid config | **`active[]` is row-major**: index = `row * cols + col`, length `cols * rows`. **`last_ms = -1` means "never"**, not "just now". `max_cells` is the SDK budget, the same number as `caps.motion.max_cells`. |
 | `daynight` | `mode` (**int** 0 = day / 1 = night) *and* `dn_mode` (**string**), `brightness` (%), `total_gain`, `exposure`, `ae_luma`, `night_baseline`, `day_trigger`, `sun_computed_sunrise`, `sun_computed_sunset`, … | `total_gain` is the IMP `[24.8]` linear scale (**256 = 1.0×**). **`exposure` is the value the decision actually runs on** — `total_gain` scaled by the AE integration-time ratio, so it equals `total_gain` in a dark scene and drops far below it in a bright one. Quote `exposure`, not `total_gain`, when answering a day/night question; `total_gain` is kept for continuity with existing pages. `night_baseline`/`day_trigger` are `-1` outside night. `sun_computed_*` read `"--:--"` where the sun does not rise or set (polar latitudes). The object also echoes the **frozen internal constants** (`ir_ratio_night`, `ir_ratio_day`, `probe_settle_s`, `ref_delay_s`, `ir_min_headroom`, `boot_settle_s`, `transition_s`, `probe_jump_pct`) — readable, **not settable**. |
-| `last_errors` | `{"<MOD>": {"level","age_s","count","msg"}}` | One entry per module that has logged, with the most recent message and how many times it repeated. Useful once the 64 KB syslog ring has recycled. |
+| `last_errors` | `{"<MOD>": {"level","age_s","count","msg"}}` | One entry per module that has logged, with the most recent message and how many times it repeated. Useful once the 64 KB syslog ring has recycled. On v1.9.27 an entry captured before NTP sync shows an `age_s` of ~56 years; **since v1.9.28 (unreleased)** ages are monotonic. |
 | `osd<S>.<N>.type` | `"text"` or `"logo"` | Read back as a **word**, unlike `record.mode` and `audio.backchannel_codec`, which read back as numbers. |
 
 ### The `caps` object — capability announcement
@@ -606,11 +622,16 @@ Non-setting **commands** that also go through POST:
   what send2/Telegram motion videos use). Constraints, all in `record_clip()`:
   the path **must start with `/tmp/`** and must contain no `..` component;
   `seconds <= 0` becomes **6** and `seconds > 30` is clamped to **30**; only
-  one clip at a time (a second request is dropped with `clip busy, skipped`).
-  **The POST blocks for roughly `seconds`** — it runs the capture on the HTTP
-  worker thread — so a client timeout below that looks like a failure on a clip
-  that was actually taken. A refused clip counts as `rejected`, so a body
-  carrying nothing else answers **409**, not 200.
+  one clip at a time. **The POST blocks for roughly `seconds`** — it runs the
+  capture on the HTTP worker thread — so a client timeout below that looks like
+  a failure on a clip that was actually taken. A refused clip counts as
+  `rejected`, so a body carrying nothing else answers **409**, not 200.
+  On v1.9.27 the capture held the apply lock, so every other `POST /control`
+  (and a second clip) waited behind it for up to `seconds + 5` s.
+  **since v1.9.28 (unreleased)** it runs after that lock is released: other POSTs proceed, and a
+  clip requested while one is still being written is refused (`clip busy,
+  skipped …`, counted in `rejected`). A symlink in **any** component of the
+  path is refused, not just in the last one.
 - `{"daynight":{"probe":1}}` — arm one silent IR probe on the next tick;
   **rejected** (not silently ignored) if the camera has no `daynight.irprobe_cmd`
 - `{"speaker":{"play":"chime_1.wav"}}` / `{"speaker":{"stop":1}}` — play queue
@@ -665,7 +686,8 @@ Status codes and their `reason` discriminators:
 | 409 | `values_rejected` | Keys were all known, all values refused | Key names were right, fix the values |
 | 411 | — | `Transfer-Encoding` instead of `Content-Length`, or a missing/zero length | Send a fixed-length body |
 | 413 | — | Headers + body exceed the 4096-byte buffer | Split the request |
-| 503 | `oom` | Allocation failure | Retry; not a client error |
+| 503 | `oom` | Allocation failure, or (**since v1.9.28 (unreleased)**) the daemon is shutting down — the reason says `oom` in both cases | Retry; not a client error |
+| 403 | — (plain-text body `bad origin`) | **since v1.9.28 (unreleased)**: a Basic/Digest-authenticated POST from a page on another host (CSRF guard) | Use the token, or post from the camera's own host |
 
 ### `GET /events` (SSE)
 

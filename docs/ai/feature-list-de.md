@@ -98,6 +98,11 @@ prudynt-t / raptor.
   gleich) – damit erscheint auch ein Client, der hängt und nie mehr abholt, in
   `queue_drops`. RTSP, SRT und WebRTC reichen jeden Video-Verlust an den Hub
   weiter, statt Anforderungen innerhalb einer eigenen 1-s-Sperre zu verwerfen.
+  **seit v1.9.28 (unveröffentlicht)** gilt auch für die IDR-Anforderung eines *startenden* Clients
+  eine Sperre von 500 ms pro Stream (danach wird sie ebenso nachgeholt), und
+  RTSP-`DESCRIBE` sowie die Player-Seite fordern nur noch bei kaltem Stream
+  ein IDR an – eine Reconnect-Schleife oder eine `DESCRIBE`-Flut kann so nicht
+  mehr jedes Bild zum Keyframe machen.
   Kein Konfigurationsschlüssel.
 * **Bildrotation (optional, `USE_ROTATE`)** – `videoN.rotation = 0|90|180|270`.
   Hardware-90/270 auf T40/T41 (I2D) und T31 (FrameSource), Software-90/270 auf
@@ -204,7 +209,13 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   `record.dir`, `record.name` (strftime), `record.segment_s`,
   `record.pre_roll_s`, `record.post_roll_s`, `record.min_free_mb`,
   `record.audio`. Ablage unter `<dir>/<hostname>/records/<name>.mp4`,
-  Segmentwechsel immer am Keyframe.
+  Segmentwechsel immer am Keyframe. **seit v1.9.28 (unveröffentlicht)**: ein `record.dir` bzw.
+  `timelapse.dir` auf dem Root-Dateisystem (typisch: SD-Mountpunkt ohne
+  Karte) wird abgelehnt, statt in den Flash zu schreiben (`/tmp` bleibt
+  erlaubt); der Pre-Roll behält den Keyframe, an dem sein Fenster beginnt
+  (vorher fiel er oft auf fast nichts zusammen); Dateien mit Zeitstempel vor
+  der NTP-Synchronisation (~1970) gelten beim Aufräumen als die neuesten,
+  statt als erste gelöscht zu werden.
 * **Sauberer Schnitt statt Decoder-Müll nach einem Queue-Überlauf**
   (*seit v1.9.19*): Ist die Aufnahme-Warteschlange
   übergelaufen, beziehen sich alle noch anstehenden P-Frames auf Bilder, die
@@ -224,11 +235,15 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
 * **Manuelles Start/Stopp** über `POST /control {"record":{"active":1|0}}`
   (der Aufnahmeknopf der WebUI) sowie **Einzelclip auf Zuruf**
   (`{"record":{"clip":"/tmp/x.mp4","seconds":6}}`) – das ist der Weg, über den
-  send2/Telegram Bewegungsvideos holen.
+  send2/Telegram Bewegungsvideos holen. **seit v1.9.28 (unveröffentlicht)** blockiert ein laufender
+  Clip keine anderen `POST /control` mehr; ein zweiter Clip währenddessen wird
+  abgelehnt (`rejected`).
 * **Timelapse** (`USE_TIMELAPSE`): periodische JPEGs nach
   `<dir>/<hostname>/timelapses/<name>.jpg`, `timelapse.enabled/channel/dir/
   name/interval_s/keep_days`, atomar geschrieben (tmp + rename), ältere Bilder
-  werden nach `keep_days` geprunt. Alle Keys live über `/control`.
+  werden nach `keep_days` geprunt (0–3650, **seit v1.9.28 (unveröffentlicht)**; ein riesiger Wert
+  löschte vorher auf 32-Bit-`time_t` das ganze Archiv). Alle Keys live über
+  `/control`.
 
 ## Audio
 
@@ -279,7 +294,7 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
 * **Platzhalter**: strftime-Tokens plus `{hostname} {ip} {mac} {fps} {bitrate}
   {uptime}`, stream-bezogen `{fpsN}`/`{bitrateN}`, sowie beliebige eigene
   `{name}` aus einer fest einkompilierten Datei (`/tmp/timps_osd.vars`), die
-  ein Skript schreiben kann - der Pfad ist **nicht** konfigurierbar (auch
+  ein Skript schreiben kann - der Pfad ist **seit v1.9.28 (unveröffentlicht)** **nicht** konfigurierbar (auch
   nicht per Config-Datei): er war es mal (`osd.vars_file`), aber ein
   einstellbarer Pfad konnte auf `timps.conf` selbst zeigen und dessen
   Zugangsdaten über einen `{platzhalter}` ins Video rendern.
@@ -299,7 +314,10 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
 
 * **RTSP-Digest-Auth** (`rtsp.user`/`rtsp.pass`) und **HTTP Digest/Basic**
   (`http.user`/`http.pass`, fällt auf die RTSP-Zugangsdaten zurück) – eigene
-  MD5-Implementierung, kein OpenSSL.
+  MD5-Implementierung, kein OpenSSL. **seit v1.9.28 (unveröffentlicht)**: RTSP schließt eine
+  Verbindung nach 5 abgewiesenen Logins und eine, die nach 60 s noch kein
+  `PLAY` erreicht hat; HTTP-Digest hält höchstens 4 Nonces pro Client-IP, damit
+  eine Flut von einer Adresse nicht die Challenges anderer Clients verdrängt.
 * **Wichtig zum Auslieferungszustand**: solange *beide* Benutzernamen leer sind,
   sind die Medienendpunkte (RTSP-Stream, `/snapshot.jpg`, `/stream.mjpeg`,
   `/stream.mp4`) ohne Authentifizierung im Netz erreichbar. `/control` und
@@ -328,6 +346,16 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
 * **CORS**: Medienendpunkte senden `Access-Control-Allow-Origin: *`;
   `/control` und `/events` spiegeln stattdessen den `Origin:`-Header
   (mit `Vary: Origin`, ohne Credentials).
+* **CSRF-Schutz** (**seit v1.9.28 (unveröffentlicht)**): ein per Basic/Digest authentifizierter
+  `POST`, dessen `Origin`-Host nicht dem `Host`-Header entspricht, bekommt
+  `403 bad origin` – Browser senden gespeicherte HTTP-Zugangsdaten auch bei
+  fremden Formular-POSTs mit. Token-, Loopback- und Anfragen ganz ohne
+  `Origin` (curl, Skripte) sind nicht betroffen.
+* **SRT ohne Passphrase** ist für jeden offen, `srt.streamid` ist Klartext;
+  **seit v1.9.28 (unveröffentlicht)** warnt timps beim Start, wenn gleichzeitig RTSP-/HTTP-Zugangsdaten
+  gesetzt sind.
+* **Config-Datei**: ein Rewrite behält **seit v1.9.28 (unveröffentlicht)** die Dateirechte bei (ein
+  `chmod 600 /etc/timps.conf` bleibt bestehen; vorher erzwang jeder POST 0644).
 * Konfigurierbare Client-Obergrenzen werden gemeldet, statt dass ein Client sie
   durch Ausprobieren findet: `caps.rtsp_max_clients`, `caps.http_max_clients`,
   `events.max_clients`.
@@ -446,7 +474,9 @@ wird die WebSocket-Variante (statt CGI-Polling) aktiviert.
 * **Optionale Diagnose-Skripte im Image** (`BR2_PACKAGE_TIMPS_DIAG_TOOLS`,
   Default aus): `timps-selftest`, `timps-logcat-ship`, `timps-dn-isp-log`.
 * Host-Tests für heikle Bausteine: `make test-srtp`, `test-stun`, `test-fmp4`,
-  `test-config`, `test-fanqueue`, `test-hub-pool`, `test-hub-idr`.
+  `test-config`, `test-fanqueue`, `test-hub-pool`, `test-hub-idr`,
+  `test-auth`, `test-clients`, `test-daynight-sun`, sowie **seit v1.9.28 (unveröffentlicht)**
+  `test-timelapse-prune` und `test-record-ring`.
 
 ## Build-Optionen (thingino / Buildroot)
 

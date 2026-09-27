@@ -60,10 +60,14 @@ breakage they fix:
   (`sprop-parameter-sets`/`profile-level-id`) — the code comment is
   blunt about why: *"never ship an SDP without the a=fmtp line...
   hardware-decoder NVRs and some mobile SDKs init their decoder strictly
-  from the SDP and stay black"* without it. `DESCRIBE` briefly subscribes
-  to the encoder (up to 2s) to force an IDR/SPS-PPS capture before
-  answering, falling back to `503` + `Retry-After: 1` rather than sending
-  a degraded SDP.
+  from the SDP and stay black"* without it. When no parameter sets are
+  cached yet, `DESCRIBE` briefly subscribes to the encoder (up to 2s) to
+  force an IDR/SPS-PPS capture before answering, falling back to `503` +
+  `Retry-After: 1` rather than sending a degraded SDP. **Since v1.9.28
+  (unreleased)** a `DESCRIBE` against a warm stream answers from the cache
+  and forces no keyframe (it is unauthenticated on an open camera, and
+  `PLAY` asks for its own), and an SDP that would not fit its buffer gets a
+  `500` instead of being sent truncated.
 - The audio m-line is `mpeg4-generic/<rate>/<channels>` (AAC, RFC 3640
   `fmtp`: `streamtype=5;mode=AAC-hbr;config=<ASC hex>`) or G.711 PCMU
   (payload type 0) / PCMA (payload type 8) at 8kHz.
@@ -113,6 +117,13 @@ request-line target (anti cross-URI replay) and that the nonce is one
 this server actually issued this session (anti offline replay — a
 sniffed Authorization header is otherwise fully reproducible and
 replayable forever against any connection).
+
+**Since v1.9.28 (unreleased)** a connection is closed after **5 rejected
+logins** (credentials presented and refused), so one TCP connection no longer
+allows unlimited password guesses, and a connection that has not reached
+`PLAY` within **60 s** of connecting is closed too: `OPTIONS` needs no auth,
+so a client sending one every <30 s could otherwise hold one of the 8 client
+slots forever.
 
 ### ONVIF audio backchannel (trackID=2)
 
@@ -166,9 +177,12 @@ supported` (RFC 2326 §12.32) rather than being silently ignored. See
   *stream*, not to each client: every consumer's drop-recovery IDR request goes
   through `hub_request_idr_recovery()`, so ten weak clients still cost at most
   one recovery IDR per second between them. A suppressed request is issued by
-  the next published frame rather than lost, and requests needed to *start*
-  decoding are never delayed — see the fan-out queue section of
-  [Architecture](Architecture.md).
+  the next published frame rather than lost. Requests needed to *start*
+  decoding go out at once — **since v1.9.28 (unreleased)** unless the
+  stream had a forced IDR less than 500 ms ago, in which case they are
+  coalesced the same way, so a reconnect loop cannot turn every frame into a
+  keyframe; the player page itself only asks when the stream is cold. See the
+  fan-out queue section of [Architecture](Architecture.md).
 - **MSE player details**: the built-in player handles iOS's
   `ManagedMediaSource` vs. desktop `MediaSource`, nudges playback rate to
   stay ~1.5s behind live (hard-seeking on >5s drift), and evicts
@@ -183,11 +197,22 @@ token-authorized `/control`/`/events`/media path needs credentials.
 Supports **HTTP Digest** (RFC 7616 `qop=auth`, plus legacy RFC 2069
 no-qop) and **Basic**, falling back to `rtsp.user`/`rtsp.pass` if
 `http.user` is unset. Unlike RTSP (one nonce per connection), HTTP is
-one-connection-per-request, so nonces are tracked in a small global ring
-(32 entries, 5-minute TTL); `qop=auth` clients must present a
+one-connection-per-request, so nonces are tracked in a small global table
+(32 entries, 5-minute TTL; **since v1.9.28 (unreleased)** 64 entries with at
+most 4 per client IP, so a flood of credential-less requests from one address
+recycles its own nonces instead of evicting other clients' challenges);
+`qop=auth` clients must present a
 strictly-increasing nonce-count (`nc`) per nonce, which is what lets a
 legitimate repeat client (e.g. an NVR's periodic snapshot poller) reuse a
 nonce without it being treated as a replay.
+
+**Since v1.9.28 (unreleased):** a `POST` authenticated by Basic/Digest whose
+`Origin` host differs from the `Host` header's host gets `403 bad origin`
+(CSRF — see [HTTP /control API](HTTP-Control-API.md)); a request target
+longer than 255 characters gets `414 URI Too Long` instead of being silently
+truncated; an unparsable request line gets `400`; and an fMP4/MJPEG request
+that fails before streaming (queue OOM, no parameter sets within the warm-up)
+gets a `503` instead of an empty reply, so the WebUI's retry-on-5xx can fire.
 
 ## MJPEG (`/stream.mjpeg`, `/mjpeg`)
 
@@ -228,7 +253,11 @@ bit-twiddling is easy to get subtly wrong.
 - **Muxing**: a hand-rolled MPEG-TS mux — video on PID `0x100`, AAC audio
   on PID `0x101` (ADTS-wrapped for `stream_type=0x0F`), PMT on PID
   `0x1000`, PCR carried on the video PID, PAT/PMT resent roughly every
-  second. TS packets are batched 7-at-a-time (1316 bytes, the
+  second. **Since v1.9.28 (unreleased)** PTS/PCR count from the start of
+  the session (the 33-bit clock wraps after ~26.5 h of one session, not of
+  camera uptime, and a wrap sets the discontinuity flag), and PCR runs
+  300 ms behind PTS — PCR equal to PTS signalled zero decode delay, which
+  strict hardware demuxers treat as an underflow. TS packets are batched 7-at-a-time (1316 bytes, the
   conventional TS-over-UDP/SRT payload size) and flushed at the end of
   every access unit to bound added latency.
 - **Audio limitation**: if `audio.enabled` but the configured codec isn't
@@ -249,7 +278,11 @@ bit-twiddling is easy to get subtly wrong.
   (10–79 chars, libsrt's AES-based encryption) is validated when the
   socket is set up; if libsrt rejects it, **SRT gives up** — the listener
   never binds, the caller stops dialling — rather than silently running
-  unencrypted.
+  unencrypted. `srt.streamid` travels in plaintext and is no secret: a
+  listener without a passphrase serves video to anyone, whatever
+  `rtsp.user`/`http.user` demand. **Since v1.9.28 (unreleased)** that
+  combination logs `SRT listener on port N has NO access control …` at
+  start.
 
 Playing back a listener-mode camera:
 

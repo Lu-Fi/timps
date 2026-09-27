@@ -178,7 +178,7 @@ relate.)
 | `jpeg.height` | int | 360 | 64–4096 | File-only | JPEG channel height. |
 | `jpeg.quality` | int | 75 | 1–100 | File-only | JPEG quality. |
 | `jpeg.fps` | int | 5 | 1–120 | File-only | Max snapshot/MJPEG publish rate for this channel. |
-| `jpeg.imp_chn` | int | 2 | — | File-only | IMP encoder channel number (internal). |
+| `jpeg.imp_chn` | int | 2 | 0–8 | File-only | IMP encoder channel number (internal). (since v1.9.28, unreleased) a value that collides with an enabled video stream's channel is moved to the lowest free channel at load, with an `[ERR]` line. |
 | `jpeg.snapshot_path` | string | `""` | — | File-only | Optional path to periodically write the latest JPEG to disk (`""` = disabled). |
 
 ## `rtsp.*` — RTSP server
@@ -210,7 +210,7 @@ File-only. `USE_SRT` builds only (see [Streaming Protocols](Streaming-Protocols.
 | `srt.channel` | int | 0 | — | File-only | Video stream served over SRT. |
 | `srt.latency_ms` (alias `latency`) | int | 120 | — | File-only | SRT latency (ms). |
 | `srt.streamid` | string | `""` | — | File-only | Listener: required `STREAMID` for a connecting client (`""` = not enforced). Caller: the `STREAMID` timps presents to the receiver. |
-| `srt.passphrase` | string | `""` | — | File-only | AES passphrase for SRT encryption (10–79 chars if set; an invalid passphrase stops SRT — the listener never binds, the caller stops dialling — rather than running unencrypted). |
+| `srt.passphrase` | string | `""` | — | File-only | AES passphrase for SRT encryption (10–79 chars if set; an invalid passphrase stops SRT — the listener never binds, the caller stops dialling — rather than running unencrypted). `srt.streamid` is plaintext, so without a passphrase a listener serves video to anyone regardless of `rtsp.user`/`http.user`; (since v1.9.28, unreleased) that combination logs `SRT listener on port N has NO access control …` at start. |
 
 ## `http.*` — HTTP server (fMP4/MJPEG/snapshot/control/events)
 
@@ -295,7 +295,7 @@ placeholders (`hostname`, `ip`, `mac`, `fps`, `fpsN`, `bitrate`, `bitrateN`,
 drive OSD content with no timps code changes at all: temperature readings,
 a doorbell state, whatever.
 
-The path is **`/tmp/timps_osd.vars`, fixed in `src/hal/osd_vars.c`
+Since v1.9.28 (unreleased) the path is **`/tmp/timps_osd.vars`, fixed in `src/hal/osd_vars.c`
 (`OSD_VARS_FILE`) and not configurable** - not even file-only via
 `timps.conf`. It used to be (`osd.vars_file`), but any settable path could
 point it at `/etc/timps.conf` itself and render its credentials into the
@@ -346,8 +346,8 @@ Default layout: item 0 = timestamp (top-left), item 1 = `{hostname}`
 | `logo` (alias `logo_path`) | string(128) | `/usr/share/images/thingino_100x30.bgra` (item 3) | — | File-only | Raw BGRA logo file path. |
 | `logo_w` (alias `logo_width`) | int | 100 (item 3) | 0–4096 | File-only | Logo width in px. |
 | `logo_h` (alias `logo_height`) | int | 30 (item 3) | 0–4096 | File-only | Logo height in px. |
-| `x` | int | per-item | — | **Live** | X position: `0` = centered, `>0` = pixels from the left edge, `<0` = pixels from the right edge. |
-| `y` | int | per-item | — | **Live** | Y position: same convention, top/bottom. |
+| `x` | int | per-item | -8192–8192 (since v1.9.28, unreleased) | **Live** | X position: `0` = centered, `>0` = pixels from the left edge, `<0` = pixels from the right edge. |
+| `y` | int | per-item | -8192–8192 (since v1.9.28, unreleased) | **Live** | Y position: same convention, top/bottom. |
 | `font_size` | int | 32 (stream 0) / 12 (other streams) | 8–128 | **Live** | Absolute pixel font size (no per-stream auto-scaling). |
 | `color` (alias `font_color`) | hex (0xAARRGGBB) | `0xFFFFFFFF` | — | **Live** | Text fill color. |
 | `transparency` | int | 255 | 0–255 | **Live** | Group alpha. |
@@ -365,10 +365,10 @@ boot — `GET /control`'s `caps.privacy.available` reflects this).
 | Key | Type | Default | Range | Live? | Description |
 | --- | --- | --- | --- | --- | --- |
 | `enabled` | bool | 0 | 0/1 | **Live**\* | Show/hide this cover region. |
-| `x` | int | 0 | — | **Live**\* | Rectangle X origin, pixels, in the stream's frame. |
-| `y` | int | 0 | — | **Live**\* | Rectangle Y origin. |
-| `w` (alias `width`) | int | 0 | — | **Live**\* | Rectangle width. |
-| `h` (alias `height`) | int | 0 | — | **Live**\* | Rectangle height. |
+| `x` | int | 0 | -8192–8192 (since v1.9.28, unreleased) | **Live**\* | Rectangle X origin, pixels, in the stream's frame. |
+| `y` | int | 0 | -8192–8192 (since v1.9.28, unreleased) | **Live**\* | Rectangle Y origin. |
+| `w` (alias `width`) | int | 0 | 0–8192 (since v1.9.28, unreleased) | **Live**\* | Rectangle width. |
+| `h` (alias `height`) | int | 0 | 0–8192 (since v1.9.28, unreleased) | **Live**\* | Rectangle height. |
 | `color` (alias `fill_color`) | hex (0xAARRGGBB) | `0xFF000000` (opaque black) | — | **Live**\* | Fill color. |
 
 \* Live only if an OSD group already exists for that stream at boot;
@@ -408,7 +408,7 @@ within its ~300 ms poll cycle without a restart.
 | `record.enabled` | bool | 0 | 0/1 | **Live (next cycle)** | Master enable; also gates on-boot start. |
 | `record.channel` | int (channel) | 0 | valid stream index | **Live (next cycle)** | Video stream to record. |
 | `record.mode` | enum | `1` (motion) | `continuous`(0)\|`motion`(1)\|raw number | **Live (next cycle)** | Continuous vs. motion-triggered recording. |
-| `record.dir` | string(128) | `/mnt/mmcblk0p1` | — | **Live (next cycle)** | SD base directory. Refused if it is on the root filesystem (card not mounted). |
+| `record.dir` | string(128) | `/mnt/mmcblk0p1` | — | **Live (next cycle)** | SD base directory. Since v1.9.28 (unreleased) refused if it (or its nearest existing parent) is on the root filesystem — typically the mount point with no card — instead of recording into flash; `/tmp` is allowed. |
 | `record.name` | string(96) | `%Y%m%d/%H/%Y%m%dT%H%M%S` | `strftime` template | **Live (next cycle)** | Path template under `<dir>/<hostname>/records/`. |
 | `record.segment_s` (alias `segment`) | int | 60 | 0–86400 | **Live (next cycle)** | Max segment length in seconds; rotation only happens at a video keyframe. `0` = single file, no rotation. |
 | `record.pre_roll_s` (alias `pre_roll`) | int | 3 | 0–60 | **Live (next cycle)** | Motion mode: seconds of buffered video kept before the trigger (ring buffer). |
@@ -430,10 +430,10 @@ running thread re-reads these live.
 | --- | --- | --- | --- | --- | --- |
 | `timelapse.enabled` | bool | 0 | 0/1 | **Live (next cycle)** | Master enable; also gates on-boot start. |
 | `timelapse.channel` | int (channel) | 0 | valid stream index | **Live (next cycle)** | Video stream whose JPEG is captured. |
-| `timelapse.dir` | string(128) | `/mnt/mmcblk0p1` | — | **Live (next cycle)** | Base directory (SD, NFS, any writable path not on the root filesystem). |
+| `timelapse.dir` | string(128) | `/mnt/mmcblk0p1` | — | **Live (next cycle)** | Base directory (SD, NFS, any writable path; since v1.9.28, unreleased: not on the root filesystem, same rule as `record.dir`). |
 | `timelapse.name` | string(96) | `%Y%m%d/%H/%Y%m%dT%H%M%S` | `strftime` template | **Live (next cycle)** | Path template under `<dir>/<hostname>/timelapses/`. |
 | `timelapse.interval_s` (alias `interval`) | int | 60 | ≥1 | **Live (next cycle)** | Seconds between shots. |
-| `timelapse.keep_days` | int | 7 | 0–3650 | **Live (next cycle)** | Delete shots older than this; `0` = keep forever. |
+| `timelapse.keep_days` | int | 7 | 0–3650 (since v1.9.28, unreleased) | **Live (next cycle)** | Delete shots older than this; `0` = keep forever. Shots with a pre-2025 (pre-NTP) mtime are never age-pruned (since v1.9.28, unreleased). |
 
 ## `daynight.*` — automatic day/night
 
@@ -477,11 +477,11 @@ diagnostics.
 | --- | --- | --- | --- | --- | --- |
 | `daynight.enabled` | bool | 1 | 0/1 | **Live** | Auto-detection on/off; `0` = manual (thread still samples but forces nothing). |
 | `daynight.mode` | enum | `auto` | `auto`\|`schedule` | **Live** | `auto` = the sensor automaton (calendar optional). `schedule` = the calendar decides outright, no sensor and no probes. The pre-2026-08-17 tokens still parse: `sensor`→`auto`, `time`/`sun`→`schedule`. |
-| `daynight.time_night_start` | string(6) | `""` | `"HH:MM"` | **Live** | Calendar: local time night begins. Set together with `time_day_start`; takes precedence over the sun calendar. |
+| `daynight.time_night_start` | string(6) | `""` | `"HH:MM"` | **Live** | Calendar: local time night begins. Set together with `time_day_start`; takes precedence over the sun calendar. (since v1.9.28, unreleased) a window with only one edge set, a malformed value or two equal edges is ignored with a startup warning (and the sun calendar used if a location is set). |
 | `daynight.time_day_start` | string(6) | `""` | `"HH:MM"` | **Live** | Calendar: local time day begins. |
 | `daynight.sun_latitude` | float | 0.0 | -90–90 | **Live** | Sun calendar: latitude. Used when no time window is set and either coordinate is non-zero. |
 | `daynight.sun_longitude` | float | 0.0 | -180–180 | **Live** | Sun calendar: longitude. |
-| `daynight.sun_sunrise_offset_min` | int | 0 | -1440–1440 | **Live** | Minutes added to computed sunrise. |
+| `daynight.sun_sunrise_offset_min` | int | 0 | -1440–1440 | **Live** | Minutes added to computed sunrise. (since v1.9.28, unreleased) an offset that pushes an edge across solar midnight is honoured; it used to be clipped to the current solar day. |
 | `daynight.sun_sunset_offset_min` | int | 0 | -1440–1440 | **Live** | Minutes added to computed sunset. |
 | `daynight.day_gain` | float | 768 | 1–1,000,000 | **Live** | Exposure index below which the **day pipeline** confirms day. 768 = 3× gain: "day is confirmed when the day pipeline can hold the scene at ≤3×". Alias: `total_gain_day_threshold`. |
 | `daynight.night_gain` | float | 4096 | 1–1,000,000 | **Live** | Exposure index above which day ends. 4096 = 16×, "colour is hopeless". Alias: `total_gain_night_threshold`. |
@@ -594,8 +594,8 @@ hardcode the table into a client — see
 | `video<N>.jpeg` (alias `jpeg_enabled`) | bool | 1 / 1 | 0/1 | File-only | Enable a piggyback JPEG encoder sharing this stream's FrameSource (used by `/snapshot.jpg`/`/stream.mjpeg?chn=N` and [timelapse](Recording-Timelapse.md)). |
 | `video<N>.jpeg_quality` | int | 75 / 75 | 1–100 | File-only | Piggyback JPEG quality. |
 | `video<N>.jpeg_fps` | int | 5 / 5 | 1–120 | File-only | Piggyback JPEG max publish rate. |
-| `video<N>.jpeg_chn` | int | `MS_MAX_VSTREAM+1+N` | — | File-only | IMP encoder channel number for the piggyback JPEG encoder (internal). |
-| `video<N>.imp_chn` | int | `N` | — | File-only, internal | IMP encoder channel number for the video stream itself. |
+| `video<N>.jpeg_chn` | int | `MS_MAX_VSTREAM+1+N` | 0–8 | File-only | IMP encoder channel number for the piggyback JPEG encoder (internal). Must be unique; (since v1.9.28, unreleased) a collision is moved to the lowest free channel at load (or that JPEG encoder disabled if none is free), with an `[ERR]` line. |
+| `video<N>.imp_chn` | int | `N` | 0–8 | File-only, internal | IMP encoder channel number for the video stream itself. It doubles as the stream's hub slot, so it must equal `N`; (since v1.9.28, unreleased) any other value is reset to `N` at load with an `[ERR]` line (before, it silently fed another stream's or the audio slot). |
 
 ---
 

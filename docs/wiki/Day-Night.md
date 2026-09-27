@@ -371,7 +371,16 @@ unbounded one (×4, plus a skip gate, plus a 12 h outer bound).
 * scene flat (smoothed range within 15%) **and** path C sighted →
   deferred, but never past `heartbeat_max_s` (12 h) since the last probe
 * a configured calendar can only pull the deadline **in**, to the next
-  sunrise — never push it out
+  sunrise — never push it out. **Since v1.9.28 (unreleased)** that pull-in
+  applies at every re-arm of the heartbeat; before, it ran at only one of the
+  re-arm sites, so after the first re-arm of a night the calendar was not
+  consulted again. The calendar's sunrise here includes
+  `daynight.sun_sunrise_offset_min`. In `mode=schedule`, where the calendar
+  decides outright, a sunrise/sunset offset that pushes an edge across solar
+  midnight is now honoured too (it used to be clipped to the current solar
+  day, while `sun_computed_*` showed the shifted time). A time window counts
+  only when both edges are valid `HH:MM` and differ; anything else is ignored
+  with a startup warning.
 
 A dark closet therefore costs two click pairs a day, and a camera that sees
 anything at all costs six. Note what the calendar is *not* doing: it never

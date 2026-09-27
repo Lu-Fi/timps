@@ -241,7 +241,10 @@ srt.port       = 9000
 # srt.latency_ms = 120
 # srt.streamid   =                        # listener: required STREAMID;
 #                                         # caller: STREAMID to present
-# srt.passphrase =                        # optional AES passphrase
+# srt.passphrase =                        # optional AES passphrase (10-79 chars).
+#                                         # Without it a listener serves video to
+#                                         # anyone, whatever rtsp.*/http.* demand
+#                                         # (warned at start when those are set).
 
 # ---- /events push stream (SSE, USE_CONTROL builds) ----
 # GET /events on the HTTP port is a long-lived text/event-stream that PUSHES
@@ -267,7 +270,7 @@ jpeg.width         = 640
 jpeg.height        = 360
 jpeg.quality       = 75          # 1..100
 jpeg.fps           = 5           # max MJPEG frame rate
-jpeg.imp_chn       = 2           # JPEG encoder channel
+jpeg.imp_chn       = 2           # JPEG encoder channel; a collision is moved at load
 # jpeg.snapshot_path = /tmp/snapshot.jpg   # also write a periodic file snapshot
 #
 # Additional JPEG resolutions: an extra JPEG encoder can piggyback on any
@@ -281,7 +284,7 @@ jpeg.imp_chn       = 2           # JPEG encoder channel
 video0.jpeg         = true      # JPEG at video0 resolution (e.g. 1920x1080)
 video0.jpeg_quality = 75
 video0.jpeg_fps     = 5
-video0.jpeg_chn     = 3         # unique IMP encoder channel
+video0.jpeg_chn     = 3         # unique IMP encoder channel (moved at load if not)
 video1.jpeg         = true      # JPEG at video1 resolution (e.g. 640x360)
 video1.jpeg_chn     = 4
 
@@ -394,7 +397,7 @@ video0.max_qp    = 45
 video0.rotation  = 0         # 0|90|180|270 - build-gated & SoC-dependent (see block above)
 video0.buffers   = 2
 video0.rtsp_path = /ch0
-video0.imp_chn   = 0
+video0.imp_chn   = 0         # must equal the stream index (reset at load)
 
 # ---- sub video stream (channel 1) ----
 video1.enabled   = 1
@@ -509,7 +512,6 @@ audio.talk_ws            = 0      # live (governs the next /talk request) —
 osd.enabled        = 1
 osd.monitor_stream = 0                        # stream feeding {fps}/{bitrate}
 osd.font_path      = /usr/share/fonts/default.ttf   # default TTF; empty = bitmap font
-osd.vars_file      = /tmp/timps_osd.vars                  # custom placeholder source
 osd.supersample    = 2                        # TTF rasterizer AA: samples/axis/pixel
                                                # (1-4). 2 = default, visually identical
                                                # to 4 at typical OSD sizes but ~2x
@@ -542,8 +544,11 @@ osd.supersample    = 2                        # TTF rasterizer AA: samples/axis/
 #            {fpsN}/{bitrateN} (e.g. {fps1}, {bitrate1}) are stream N's own
 #            figures; the no-number pair reads osd.monitor_stream for every
 #            layer, whichever stream the layer belongs to
-#   custom:  any {name} is read from osd.vars_file (key = value lines),
-#            so a script can write e.g.  site = Frontdoor  into that file.
+#   custom:  any {name} is read from /tmp/timps_osd.vars (key = value
+#            lines), so a script can write e.g.  site = Frontdoor  into it.
+#            The path is fixed, not a config key (osd.vars_file is gone: a
+#            settable path could point at this file and put its passwords
+#            on the video).
 # Text outline (readability stroke, drawn under the fill):
 #   outline       = width in px (0 = off; default 1)
 #   outline_color = 0xAARRGGBB (default 0xFF000000 black)
@@ -651,6 +656,8 @@ osd1.0.outline_color = 0xFF000000
 # writing a headless GOP - the gap is a little longer and the picture after it
 # is clean. Logged once per subscription ("record queue overflowed"), counted
 # in /control's queue_drops. Nothing to configure.
+# A record.dir on the root filesystem (typically the SD mount point with no
+# card in it) is refused rather than filling the flash; /tmp is allowed.
 # record.enabled     = 1
 # record.channel      = 0
 # record.mode         = motion          # or: continuous
@@ -667,9 +674,10 @@ osd1.0.outline_color = 0xFF000000
 # <dir>/<hostname>/timelapses/<name>.jpg (mkdir -p, atomic tmp+rename).
 # channel picks the video stream whose piggyback JPEG encoder is captured
 # (videoN.jpeg = true; falls back to the dedicated jpeg.* channel). dir may be
-# ANY writable path (SD, NFS, ...). Shots older than keep_days are pruned
-# (0 = keep forever). All keys are live via /control ("timelapse" section);
-# the control-bar timelapse button toggles timelapse.enabled.
+# any writable path (SD, NFS, ...) that is not on the root filesystem. Shots
+# older than keep_days (0..3650) are pruned (0 = keep forever). All keys are
+# live via /control ("timelapse" section); the control-bar timelapse button
+# toggles timelapse.enabled.
 # timelapse.enabled    = 1
 # timelapse.channel    = 0
 # timelapse.dir        = /mnt/mmcblk0p1

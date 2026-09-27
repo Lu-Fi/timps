@@ -550,7 +550,8 @@
       <h3>RTSP control detail</h3>
       <ul>
         <li>DESCRIBE briefly subscribes just to wait for SPS/PPS before
-          building the SDP answer
+          building the SDP answer (only while none are cached; a warm
+          stream answers at once and forces no keyframe)
           <code>rtsp.c:807</code>
         </li>
         <li>SETUP picks a TCP-interleaved channel or a UDP client_port

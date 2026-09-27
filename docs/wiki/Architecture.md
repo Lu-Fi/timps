@@ -73,7 +73,10 @@ touching hub internals directly.
    a slow ISP bring-up now just clears the run flag and lets the normal
    teardown path run afterwards, with a 4-second watchdog `alarm()` that
    force-`_exit()`s if a second signal or a wedged vendor call prevents a
-   clean shutdown.
+   clean shutdown. Since v1.9.28 (unreleased) that is one deadline for the
+   whole teardown, vendor HAL stop included; v1.9.27 armed 3 s and re-armed
+   another 3 s before `g_hal->stop()`, which could run past `S95timps`' 5 s
+   `wait_stop`.
 9. `hub_init()` + register the HAL's IDR-request and activity callbacks
    with the hub.
 10. `g_hal->init(&g_cfg)` then `g_hal->start(&g_cfg)` — brings up the
@@ -89,6 +92,9 @@ touching hub internals directly.
 14. On shutdown: stop protocol servers and the day/night/record/timelapse
     threads, stop the speaker, then `g_hal->stop()` tears down the HAL
     (IVS → threads → IMP objects → sensor → ISP, in dependency order).
+    `httpd_stop()` first makes `/control` refuse new POSTs (`503`) and waits
+    up to 1 s for one still applying/persisting, so exit never cuts a config
+    write in half (since v1.9.28, unreleased).
 
 ## The HAL abstraction (`src/hal/hal.h`)
 
@@ -240,8 +246,16 @@ next keyframe always gets one even if it never asks again — unless a video
 keyframe is published first, which cancels the coalesced request, because that
 keyframe is what the consumers were waiting for and a second forced IDR would
 land in queues that had just recovered. Requests a client
-needs to **start** decoding (subscribe, RTSP `DESCRIBE`/`PLAY`, a fresh fMP4
-`GET`, the WebRTC answer) keep using `hub_request_idr()` and are never delayed.
+needs to **start** decoding (subscribe, RTSP `PLAY`, a fresh fMP4 `GET`, the
+WebRTC answer, a recorder or clip start) keep using `hub_request_idr()` and go
+out at once. **Since v1.9.28 (unreleased)** that path is rate-limited too,
+by `HUB_IDR_START_MIN_US` (500 ms) per stream: a start request within 500 ms
+of the last forced IDR is coalesced exactly like a recovery request (the
+earliest pending deadline wins, and a keyframe published meanwhile retires
+it), because an unthrottled start path let a reconnect loop, or a flood of
+unauthenticated `DESCRIBE`s, force a keyframe on nearly every frame. RTSP
+`DESCRIBE` and the fMP4 player page now ask only while the stream has no
+parameter sets yet; on v1.9.27 both asked unconditionally.
 
 **Since v1.9.20** RTSP, SRT and WebRTC no longer keep a 1 s gate
 of their own in front of that call: a gate there discarded any request inside
