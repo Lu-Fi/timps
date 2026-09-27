@@ -2203,6 +2203,10 @@ static void *video_thread(void *arg)
         size_t need=0;
         for (uint32_t i=0;i<st.packCount;i++)
             if (st.pack[i].length) need += (size_t)st.pack[i].length + 4; /* +startcode */
+        if (!need){                       /* every pack empty: nothing to publish */
+            IMP_Encoder_ReleaseStream(vc->chn,&st);
+            continue;
+        }
         if (need > MS_AU_BUF_MAX){
             __sync_fetch_and_add(&vc->au_drops, 1u);
             if ((dbg_ovf++ % 20)==0)
