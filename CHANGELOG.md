@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.9.27] - 2026-09-27
+
 ### Fixed
 
 - **`mode=schedule` with a sunrise/sunset calendar: switched at UTC midnight,
