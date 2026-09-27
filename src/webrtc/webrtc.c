@@ -241,10 +241,12 @@ static void fmtp_param(const sdp_msec *ms, const char *pt, const char *key,
     if (!f || sdp_rest(f, line, sizeof line) <= 0) return;
     size_t kl = strlen(key);
     for (const char *p = line; p; ) {
+        while (*p == ' ' || *p == '\t') p++;   /* "a=1; b=2" is legal too */
         if (!strncmp(p, key, kl) && p[kl] == '=') {
             int i = 0;
             p += kl + 1;
             while (p[i] && p[i] != ';' && i < cap - 1) { out[i] = p[i]; i++; }
+            while (i > 0 && (out[i-1] == ' ' || out[i-1] == '\t')) i--;
             out[i] = 0;
             return;
         }
