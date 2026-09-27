@@ -29,6 +29,20 @@ static void     wr32(uint8_t *p, uint32_t v)
  * whole datagram to patch four bytes, every primitive below takes the patched
  * 20-byte header and the body separately. */
 
+/* constant-time compare for the MAC; volatile wipe the compiler cannot drop */
+static int ct_eq(const uint8_t *a, const uint8_t *b, int n)
+{
+    uint8_t d = 0;
+    for (int i = 0; i < n; i++) d |= (uint8_t)(a[i] ^ b[i]);
+    return d == 0;
+}
+
+static void wipe(void *p, size_t n)
+{
+    volatile uint8_t *v = (volatile uint8_t *)p;
+    while (n--) *v++ = 0;
+}
+
 static uint32_t crc32_2(const uint8_t *a, int alen, const uint8_t *b, int blen)
 {
     uint32_t c = 0xFFFFFFFFu;
@@ -70,6 +84,8 @@ static void hmac_sha1_2(const uint8_t *key, int klen,
     sha1_update(&c, pad, 64);
     sha1_update(&c, inner, 20);
     sha1_final(&c, out);
+    wipe(k, sizeof k); wipe(pad, sizeof pad); wipe(inner, sizeof inner);
+    wipe(&c, sizeof c);
 }
 
 int stun_is_stun(const uint8_t *p, int len)
@@ -96,6 +112,9 @@ int stun_parse_request(const uint8_t *p, int len, const char *pwd,
         int type = rd16(p + off), alen = rd16(p + off + 2);
         int val = off + 4;
         if (val + alen > len) return 0;
+        /* after MESSAGE-INTEGRITY only FINGERPRINT counts (RFC 5389 15.4):
+         * anything else there is not covered by the HMAC */
+        if (integrity_ok && type != A_FINGERPRINT) type = -1;
         switch (type) {
         case A_USERNAME:
             if (alen >= (int)sizeof out->username) return 0;
@@ -114,7 +133,7 @@ int stun_parse_request(const uint8_t *p, int len, const char *pwd,
             wr16(hdr + 2, (uint16_t)(off - 20 + 24));
             hmac_sha1_2((const uint8_t *)pwd, (int)strlen(pwd),
                         hdr, 20, p + 20, off - 20, mac);
-            if (memcmp(mac, p + val, 20) != 0) return 0;
+            if (!ct_eq(mac, p + val, 20)) return 0;
             integrity_ok = 1;
             break;
         }

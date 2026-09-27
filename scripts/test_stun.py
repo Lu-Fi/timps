@@ -60,7 +60,8 @@ print("response OK: XOR-MAPPED-ADDRESS, MESSAGE-INTEGRITY, FINGERPRINT all verif
 
 
 # --- 2. hand the C code a request it must accept -----------------------------
-def build_request(username, use_candidate, break_mi=False, break_fp=False):
+def build_request(username, use_candidate, break_mi=False, break_fp=False,
+                  late_candidate=False):
     txid = os.urandom(12)
     body = b""
 
@@ -77,6 +78,8 @@ def build_request(username, use_candidate, break_mi=False, break_fp=False):
     if break_mi:
         mi = bytes(b ^ 1 for b in mi)
     body += struct.pack(">HH", 0x0008, 20) + mi
+    if late_candidate:                                 # outside the MI's coverage
+        body += attr(0x0025, b"")
     hdr = struct.pack(">HHI", 0x0001, len(body), MAGIC) + txid
     fp = fingerprint(hdr + body)
     if break_fp:
@@ -104,4 +107,7 @@ print("tampered MESSAGE-INTEGRITY rejected")
 r = run_parse(build_request(b"LFRG:RFRG", True, break_fp=True))
 assert r.startswith("0"), r
 print("tampered FINGERPRINT rejected")
+r = run_parse(build_request(b"LFRG:RFRG", False, late_candidate=True))
+assert r == "1 LFRG:RFRG 0", r
+print("USE-CANDIDATE after MESSAGE-INTEGRITY ignored:", r)
 print("ALL OK")

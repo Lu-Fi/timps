@@ -405,6 +405,10 @@ static void sess_release(wrtc_session *s)
     if (s->fd >= 0) { close(s->fd); s->fd = -1; }
     s->have_peer = 0;
     memset(&s->srtp, 0, sizeof s->srtp);
+    /* the ICE password is a session credential like the SRTP keys */
+    memset(s->lpwd, 0, sizeof s->lpwd);
+    memset(s->lufrag, 0, sizeof s->lufrag);
+    memset(s->expect_user, 0, sizeof s->expect_user);
     __sync_synchronize();
     s->used = 0;
 }
