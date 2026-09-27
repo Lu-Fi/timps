@@ -426,7 +426,12 @@ static void stream_mp4(hconn *c, int chn)
     c->tr = &trc;
 
     fanqueue q;
-    if (fanqueue_init(&q, MS_MP4_QCAP)) { c->tr = NULL; return; }
+    /* every exit before the 200 answers with a status: the WebUI preview
+     * retries on >=500, never on a bare empty reply */
+    if (fanqueue_init(&q, MS_MP4_QCAP)) {
+        http_send_ex(c,"503 Service Unavailable","text/plain",MEDIA_CORS,"oom",3);
+        c->tr = NULL; return;
+    }
     hub_count_drops(&q, chn, HUB_DROP_MP4);
     if (hub_subscribe(chn, &q) != 0) {           /* source full (>HUB_MAX_SUBS) */
         http_send_ex(c,"503 Service Unavailable","text/plain",MEDIA_CORS,"busy",4);
@@ -483,7 +488,9 @@ static void stream_mp4(hconn *c, int chn)
     }
     if (!ok){
         if (fanqueue_closed(&q)) goto out;          /* shutting down, not a fault */
-        LOGW(MOD,"no video params, abort mp4"); goto out;
+        LOGW(MOD,"no video params, abort mp4");
+        http_send_ex(c,"503 Service Unavailable","text/plain",MEDIA_CORS,"no video",8);
+        goto out;
     }
 
     /* Only declare an audio track if AAC frames are actually flowing. A track
@@ -906,7 +913,10 @@ static void stream_mjpeg(hconn *c, int src, const char *bnd)
 
     /* subscribe BEFORE sending headers so a full source can answer 503 */
     fanqueue q;
-    if (fanqueue_init(&q,MS_MJPEG_QCAP)) return;
+    if (fanqueue_init(&q,MS_MJPEG_QCAP)){
+        http_send_ex(c,"503 Service Unavailable","text/plain",MEDIA_CORS,"oom",3);
+        return;
+    }
     if (hub_subscribe(src, &q) != 0) {   /* too many subscribers */
         http_send_ex(c,"503 Service Unavailable","text/plain",MEDIA_CORS,"busy",4);
         fanqueue_free(&q);
@@ -2424,7 +2434,8 @@ static void *conn_thread(void *arg)
 #endif
             else
                 http_send(c,"404 Not Found","text/plain","not found",9);
-        }
+        } else
+            http_send(c,"400 Bad Request","text/plain","bad request",11);
     }
 done:
 #ifdef USE_TLS
