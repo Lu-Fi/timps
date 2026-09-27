@@ -122,7 +122,9 @@ static void get_net_tx(const char *ifname, char *out, int outsz)
         char path[128]; snprintf(path,sizeof path,"/sys/class/net/%s/statistics/tx_bytes",ifname);
         unsigned long long tx=0; FILE *f=fopen(path,"r");
         if (f){ if(fscanf(f,"%llu",&tx)!=1) tx=last_tx; fclose(f); }
-        if (last_us){
+        /* a counter that went backwards was reset (ifdown/up): skip that
+         * sample instead of showing a wrapped-around rate */
+        if (last_us && tx >= last_tx){
             double dt=(now-last_us)/1000000.0;
             double kbps = dt>0 ? (double)(tx-last_tx)*8.0/1000.0/dt : 0.0;
             if (kbps >= 1000.0) snprintf(cached,sizeof cached,"%.1f Mbit/s", kbps/1000.0);
