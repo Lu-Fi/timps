@@ -11,10 +11,10 @@ prudynt-t / raptor.
   HTTP-Control-API, Streaming-Protocols, Day-Night, Audio, Motion-Detection,
   Recording-Timelapse, Rate-Control-\*, Building, Logging, Testing-QA,
   Platform-SDK-Support)
-* Stand dieses Dokuments: `main`, Version v1.9.26 (2026-09-26);
-  gestripptes `timpsd` ca. 375 KB (mipsel, T31). Mit **seit v1.9.27 (unveröffentlicht)**
+* Stand dieses Dokuments: `main`, Version v1.9.27 (2026-09-27);
+  gestripptes `timpsd` ca. 375 KB (mipsel, T31). Mit **seit v1.9.28 (unveröffentlicht)**
   markierte Aussagen stehen bereits im Quellcode, aber in noch keinem Release –
-  auf einer v1.9.26-Kamera gilt jeweils das vorher beschriebene Verhalten.
+  auf einer v1.9.27-Kamera gilt jeweils das vorher beschriebene Verhalten.
 * Konfiguration: eine flache Textdatei `/etc/timps.conf` im Format `key = value`
 * Ein einziges Binary (`/usr/bin/timpsd`), gestartet über `/etc/init.d/S95timps`
 
