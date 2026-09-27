@@ -422,7 +422,8 @@ static void stream_mp4(hconn *c, int chn)
     int can_audio = (aactive && acodec==MS_AC_AAC);
     if (can_audio && hub_subscribe(HUB_AUDIO_SRC, &q) != 0)
         can_audio = 0;                           /* degrade to video-only */
-    hub_request_idr(chn);
+    /* the keyframe that matters is requested after the audio warmup below */
+    { vparam vp; if (!hub_get_vparam(chn,&vp) || !vparam_ready(&vp)) hub_request_idr(chn); }
 
     /* wait for parameter sets */
     fmp4_mux mux; fmp4_init(&mux);
@@ -1530,7 +1531,8 @@ static void serve_player(hconn *c, const char *path)
     if (chn<0||chn>=MS_MAX_VSTREAM||!g_cfg_boot.video[chn].enabled) chn=0;  /* restart-only */
 
     char vcodec[48] = "avc1.640028";               /* High@4.0 fallback */
-    hub_request_idr(chn);
+    /* only a cold hub needs the keyframe; a page load must not force one */
+    { vparam vp; if (!hub_get_vparam(chn,&vp) || !vparam_ready(&vp)) hub_request_idr(chn); }
     for (int i=0;i<100;i++){
         vparam vp;
         if (hub_get_vparam(chn,&vp) && vparam_ready(&vp)){

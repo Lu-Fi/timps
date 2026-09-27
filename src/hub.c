@@ -18,16 +18,31 @@ void hub_set_idr_cb(void (*cb)(int src)){ g_idr_cb = cb; }
  * provokes the next round of drops. */
 static pthread_mutex_t  g_idr_lock = PTHREAD_MUTEX_INITIALIZER;
 static int64_t          g_idr_last_us[MS_MAX_VSTREAM];
+static int64_t          g_idr_due_us[MS_MAX_VSTREAM];   /* valid while pending */
 static volatile int     g_idr_pending[MS_MAX_VSTREAM];
+
+/* 1 = issue now; else the request is coalesced until last+min_us (the
+ * earliest of all pending deadlines wins), never dropped - see hub_tick */
+static int idr_gate(int src, int64_t min_us)
+{
+    int64_t now = ms_now_us();
+    int go;
+    pthread_mutex_lock(&g_idr_lock);
+    go = !g_idr_last_us[src] || now - g_idr_last_us[src] >= min_us;
+    if (go) { g_idr_last_us[src] = now; g_idr_pending[src] = 0; }
+    else {
+        int64_t due = g_idr_last_us[src] + min_us;
+        if (!g_idr_pending[src] || due < g_idr_due_us[src]) g_idr_due_us[src] = due;
+        g_idr_pending[src] = 1;
+    }
+    pthread_mutex_unlock(&g_idr_lock);
+    return go;
+}
 
 void hub_request_idr(int src)
 {
-    if ((unsigned)src < MS_MAX_VSTREAM) {
-        pthread_mutex_lock(&g_idr_lock);
-        g_idr_last_us[src] = ms_now_us();
-        g_idr_pending[src] = 0;   /* this IDR also serves any deferred recovery */
-        pthread_mutex_unlock(&g_idr_lock);
-    }
+    if ((unsigned)src < MS_MAX_VSTREAM && !idr_gate(src, HUB_IDR_START_MIN_US))
+        return;
     if (g_idr_cb) g_idr_cb(src);
 }
 
@@ -38,13 +53,7 @@ int hub_request_idr_recovery(int src)
      * until a keyframe re-ask per packet; without this each of those costs a
      * syscall (no vDSO here) and a global lock for nothing. */
     if (g_idr_pending[src]) return 0;
-    int64_t now = ms_now_us();
-    int go;
-    pthread_mutex_lock(&g_idr_lock);
-    go = (now - g_idr_last_us[src] >= HUB_IDR_RECOVERY_MIN_US);
-    if (go) { g_idr_last_us[src] = now; g_idr_pending[src] = 0; }
-    else      g_idr_pending[src] = 1;   /* coalesce, never drop - see hub_tick */
-    pthread_mutex_unlock(&g_idr_lock);
+    int go = idr_gate(src, HUB_IDR_RECOVERY_MIN_US);
     if (go && g_idr_cb) g_idr_cb(src);
     return go;
 }
@@ -148,8 +157,7 @@ static void hub_tick(int src, int64_t now)
     if ((unsigned)src < MS_MAX_VSTREAM && g_idr_pending[src]) {
         int go = 0;
         pthread_mutex_lock(&g_idr_lock);
-        if (g_idr_pending[src] &&
-            now - g_idr_last_us[src] >= HUB_IDR_RECOVERY_MIN_US) {
+        if (g_idr_pending[src] && now >= g_idr_due_us[src]) {
             g_idr_pending[src] = 0; g_idr_last_us[src] = now; go = 1;
         }
         pthread_mutex_unlock(&g_idr_lock);

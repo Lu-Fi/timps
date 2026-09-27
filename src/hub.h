@@ -96,9 +96,15 @@ int         hub_get_video_params(int src, int *vcodec, int *w, int *h, int *fps)
 int         hub_get_vparam(int src, vparam *out);
 /* IDR request plumbing: HAL registers a callback; sinks call request. */
 void        hub_set_idr_cb(void (*cb)(int src));
-/* A client that cannot START without a keyframe (subscribe, RTSP PLAY/DESCRIBE,
- * a fresh fMP4 GET, a WebRTC answer): issued immediately, never deferred. */
+/* A client that cannot START without a keyframe (subscribe, RTSP PLAY, a
+ * fresh fMP4 GET, a WebRTC answer). Issued immediately unless the stream had
+ * a forced IDR less than HUB_IDR_START_MIN_US ago; then it is coalesced like a
+ * recovery request (a keyframe arriving meanwhile retires it), so a client
+ * reconnecting in a loop cannot turn every frame into an IDR. */
 void        hub_request_idr(int src);
+#ifndef HUB_IDR_START_MIN_US
+#define HUB_IDR_START_MIN_US (500000LL)
+#endif
 
 /* Minimum spacing between IDRs forced by drop RECOVERY. One second is exactly
  * the cadence rtsp.c/httpd.c/record.c each already promised themselves, so a

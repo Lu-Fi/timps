@@ -435,7 +435,7 @@ HUBIDRTEST_SRC := scripts/test_hub_idr.c src/hub.c src/frame.c src/fanqueue.c \
                   src/util.c src/log.c src/config.c src/codec/vparam.c \
                   src/codec/nal.c
 test-hub-idr:
-	$(HOSTCC) $(CFLAGS) -DMS_VERSION='"$(VERSION)"' -DHUB_IDR_RECOVERY_MIN_US=50000LL \
+	$(HOSTCC) $(CFLAGS) -DMS_VERSION='"$(VERSION)"' -DHUB_IDR_RECOVERY_MIN_US=50000LL -DHUB_IDR_START_MIN_US=25000LL \
 	  -Isrc $(HUBIDRTEST_SRC) $(LDFLAGS) -lpthread -lm -o $(BIN)-hubidrtest
 	@./$(BIN)-hubidrtest; rc=$$?; rm -f $(BIN)-hubidrtest; exit $$rc
 

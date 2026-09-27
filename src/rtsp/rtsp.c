@@ -888,9 +888,11 @@ static int handle_request(session *s, char *req)
          * running only if someone else is still consuming. Only if that
          * fails within 2 s (encoder wedged) answer 503 + Retry-After
          * instead of a degraded SDP the client would cache all session. */
-        hub_request_idr(vchn);
         int vready = 0;
         { vparam vp; vready = hub_get_vparam(vchn,&vp) && vparam_ready(&vp); }
+        /* only a cold hub needs the keyframe: DESCRIBE is unauthenticated on
+         * an open camera and PLAY asks for its own */
+        if (!vready) hub_request_idr(vchn);
         if (!vready) {
             fanqueue wq; int winit = fanqueue_init(&wq, 4) == 0;
             int wsub = winit && hub_subscribe(vchn, &wq) == 0;

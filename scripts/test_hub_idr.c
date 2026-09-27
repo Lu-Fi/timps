@@ -25,7 +25,7 @@
 #include "hub.h"
 #include "util.h"
 
-#if HUB_IDR_RECOVERY_MIN_US > 200000LL
+#if HUB_IDR_RECOVERY_MIN_US > 200000LL || HUB_IDR_START_MIN_US > 100000LL
 #error "build with a shortened HUB_IDR_RECOVERY_MIN_US - see the Makefile target"
 #endif
 
@@ -110,6 +110,37 @@ static void t_cancel_is_per_stream(void)
     ck_eq(g_idr[b] - base_b, 2, "stream b's deferred request survived");
 }
 
+/* Start requests (hub_request_idr) used to bypass the clock: a client
+ * hammering RTSP DESCRIBE or reconnecting in a loop forced a keyframe on
+ * nearly every frame. Now they coalesce like recovery requests, on the
+ * shorter start interval. */
+static void t_start_requests_coalesce(void)
+{
+    const int src = 0;
+    cur = "start requests are rate limited";
+    usleep(HUB_IDR_RECOVERY_MIN_US * 2);
+    int base = g_idr[src];
+    for (int i = 0; i < 5; i++) hub_request_idr(src);
+    ck_eq(g_idr[src] - base, 1, "a burst of five asks the encoder once");
+    publish(src, 0);
+    ck_eq(g_idr[src] - base, 1, "not before the start interval has passed");
+    usleep(HUB_IDR_START_MIN_US * 2);
+    publish(src, 0);
+    ck_eq(g_idr[src] - base, 2, "the coalesced start request is issued");
+    publish(src, 0);
+    ck_eq(g_idr[src] - base, 2, "and only once");
+
+    cur = "a keyframe retires a coalesced start request";
+    usleep(HUB_IDR_RECOVERY_MIN_US * 2);
+    base = g_idr[src];
+    hub_request_idr(src);
+    hub_request_idr(src);
+    publish(src, 1);
+    usleep(HUB_IDR_START_MIN_US * 2);
+    publish(src, 0);
+    ck_eq(g_idr[src] - base, 1, "no second IDR after the keyframe");
+}
+
 /* A consumer blocked in send never pops again, so it cannot report its own
  * drops; the hub has to count them at the push that evicted. A queue never
  * registered with hub_count_drops() is not counted. */
@@ -143,6 +174,7 @@ int main(void)
     t_keyframe_cancels_pending();
     t_pending_still_fires_without_keyframe();
     t_cancel_is_per_stream();
+    t_start_requests_coalesce();
     t_stalled_consumer_counted();
 
     printf("\n%d/%d checks passed\n", checks - failures, checks);
