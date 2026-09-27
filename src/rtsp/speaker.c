@@ -240,33 +240,43 @@ struct dec {
 static uint32_t rd_le32(const uint8_t *p){ return p[0]|(p[1]<<8)|(p[2]<<16)|((uint32_t)p[3]<<24); }
 static uint16_t rd_le16(const uint8_t *p){ return p[0]|(p[1]<<8); }
 
-/* parse a canonical RIFF/WAVE header; leaves fp positioned at PCM data. */
+/* parse a canonical RIFF/WAVE header; leaves fp positioned at PCM data.
+ * Every chunk size is untrusted: each seek target is computed unsigned and
+ * bounded by the real file size, or a crafted size (0xFFFFFFF8 = -8 as a
+ * long) seeks back onto the same header forever. */
 static int wav_open(struct dec *d)
 {
+    struct stat st;
+    if (fstat(fileno(d->fp), &st) != 0 || st.st_size < 12) return -1;
+    uint64_t fsize = (uint64_t)st.st_size, pos = 12;
     uint8_t h[12];
     if (fread(h,1,12,d->fp)!=12) return -1;
     if (memcmp(h,"RIFF",4) || memcmp(h+8,"WAVE",4)) return -1;
     int have_fmt = 0;
-    for (;;){
+    for (int nchunk = 0;; nchunk++){
         uint8_t ch[8];
-        if (fread(ch,1,8,d->fp)!=8) return -1;
+        if (nchunk >= 64 || fread(ch,1,8,d->fp)!=8) return -1;
+        pos += 8;
         uint32_t sz = rd_le32(ch+4);
+        uint64_t left = fsize - pos;
+        if (!memcmp(ch,"data",4)){
+            /* a streamed WAV's unset size (0xFFFFFFFF) means play to EOF */
+            d->data_left = ((uint64_t)sz <= left) ? (long)sz : -1;
+            break;
+        }
+        uint64_t next = pos + sz + (sz & 1);          /* chunks are word-aligned */
+        if ((uint64_t)sz > left) return -1;
         if (!memcmp(ch,"fmt ",4)){
             uint8_t f[16];
-            uint32_t take = sz < 16 ? sz : 16;
-            if (fread(f,1,take,d->fp)!=take) return -1;
+            if (sz < 16 || fread(f,1,16,d->fp)!=16) return -1;
             d->fmt      = rd_le16(f);
             d->channels = rd_le16(f+2);
             d->rate     = (int)rd_le32(f+4);
             have_fmt = 1;
-            if (sz > take) fseek(d->fp,(long)(sz-take),SEEK_CUR);
-        } else if (!memcmp(ch,"data",4)){
-            d->data_left = (long)sz;
-            break;
-        } else {
-            fseek(d->fp,(long)sz,SEEK_CUR);           /* skip LIST/fact/etc. */
         }
-        if (sz & 1) fseek(d->fp,1,SEEK_CUR);          /* chunks are word-aligned */
+        if (next > fsize) next = fsize;
+        if (fseek(d->fp,(long)next,SEEK_SET) != 0) return -1;
+        pos = next;
     }
     if (!have_fmt || d->channels < 1 || d->channels > 2 || d->rate <= 0) return -1;
     if (d->fmt != 1 && d->fmt != 6 && d->fmt != 7) return -1;
@@ -583,12 +593,13 @@ int speaker_play_line(const char *line)
     if (!line || !line[0]) return -1;
     /* the reader holds the FIFO O_RDWR, so this write side never blocks on a
      * missing reader; one line stays under PIPE_BUF, so the write is atomic. */
-    int fd = open(SPK_FIFO, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
-    if (fd < 0) return -1;
     char b[600];
     int n = snprintf(b, sizeof b, "%s\n", line);
-    if (n < 0){ close(fd); return -1; }
-    if (n > (int)sizeof b) n = (int)sizeof b;
+    /* too long: refuse rather than truncate, a cut line has no '\n' and
+     * would be glued onto the next command */
+    if (n < 0 || n >= (int)sizeof b) return -1;
+    int fd = open(SPK_FIFO, O_WRONLY | O_NONBLOCK | O_CLOEXEC);
+    if (fd < 0) return -1;
     ssize_t w = write(fd, b, (size_t)n);
     close(fd);
     return (w == n) ? 0 : -1;
