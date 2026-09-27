@@ -1,4 +1,5 @@
 #include "msttf.h"
+#include "../util.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,7 +14,7 @@ static uint32_t u32(const uint8_t *p){ return ((uint32_t)p[0]<<24)|(p[1]<<16)|(p
 int msttf_load(msttf_font *f, const char *path)
 {
     memset(f,0,sizeof *f);
-    FILE *fp=fopen(path,"rb"); if(!fp) return -1;
+    FILE *fp=ms_fopen_regular(path); if(!fp) return -1;
     fseek(fp,0,SEEK_END); long n=ftell(fp); fseek(fp,0,SEEK_SET);
     /* smaller than any usable sfnt header (version+numTables+3 shorts) -
      * also rejects ftell() returning -1/0 on a weird fopen */

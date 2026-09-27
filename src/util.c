@@ -266,6 +266,7 @@ void ms_json_esc(const char *s, char *out, size_t cap)
 
 #include <stdio.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 #include <sys/statvfs.h>
 
@@ -289,6 +290,19 @@ long long ms_free_mb(const char *dir)
     struct statvfs vf;
     if (statvfs(dir, &vf) != 0) return -1;
     return (long long)((vf.f_bavail * (unsigned long long)vf.f_frsize) / (1024*1024));
+}
+
+FILE *ms_fopen_regular(const char *path)
+{
+    struct stat st;
+    /* stat first: merely opening some devices has side effects */
+    if (!path || stat(path, &st) != 0 || !S_ISREG(st.st_mode)) return NULL;
+    int fd = open(path, O_RDONLY|O_NONBLOCK|O_CLOEXEC);
+    if (fd < 0) return NULL;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)){ close(fd); return NULL; }
+    FILE *f = fdopen(fd, "r");
+    if (!f) close(fd);
+    return f;
 }
 
 void ms_mkdirs(const char *path)

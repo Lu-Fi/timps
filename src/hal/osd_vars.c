@@ -1,5 +1,6 @@
 #include "osd_vars.h"
 #include "../hub.h"
+#include "../util.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -176,7 +177,7 @@ static void get_mem(char *out, int outsz)   /* free RAM in MB */
 static int lookup_file(const char *file, const char *name, char *out, int outsz)
 {
     if (!file || !file[0]) return 0;
-    FILE *f=fopen(file,"r"); if(!f) return 0;
+    FILE *f=ms_fopen_regular(file); if(!f) return 0;
     char line[256]; int found=0; size_t nl=strlen(name);
     while (fgets(line,sizeof line,f)){
         char *s=line; while(*s==' '||*s=='\t')s++;

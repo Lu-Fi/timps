@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 #include <time.h>
 
@@ -270,6 +271,10 @@ int ms_path_unsafe(const char *dir, const char *name);
 
 /* free space on the filesystem holding dir, in MB; -1 on error */
 long long ms_free_mb(const char *dir);
+
+/* fopen(path,"r") for a regular file only: a FIFO or device path (these are
+ * config-settable) would otherwise block the reader forever. */
+FILE *ms_fopen_regular(const char *path);
 
 /* create every parent directory of a file path (mkdir -p on dirname) */
 void ms_mkdirs(const char *path);

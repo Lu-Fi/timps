@@ -139,7 +139,7 @@ static void font_cache_put(msttf_font *f)
 static uint8_t *load_bgra(const char *path, int w, int h)
 {
     if (w<=0||h<=0) return NULL;
-    FILE *f=fopen(path,"rb"); if(!f) return NULL;
+    FILE *f=ms_fopen_regular(path); if(!f) return NULL;
     size_t need=(size_t)w*h*4;
     uint8_t *b=malloc(need);
     if (b && fread(b,1,need,f)!=need){ free(b); b=NULL; }
