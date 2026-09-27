@@ -114,7 +114,7 @@ struct rtsp_server {
  * per-packet framing beyond the 4-byte '$' prefix that is staged in front of
  * each RTP header, so the whole batch is one iovec array (msgs[] goes unused
  * on this path - ~0.5 KB per TCP client, cheaper than a second struct shape).
- * NOT used for RTSPS: see the TLS note in sink_send(). */
+ * NOT used for RTSPS, which stages copies instead (RTSP_TLS_STAGE). */
 #define RTP_BATCH_N 16
 typedef struct {
     int             n;          /* packets staged */
@@ -150,13 +150,50 @@ typedef struct {
     int                cid;          /* clients.h entry, -1 = not listed */
 #ifdef USE_TLS
     void              *tls;          /* ms_tls_conn* when interleaved over RTSPS */
+    uint8_t           *tls_buf;      /* RTSPS video staging, NULL = per packet */
+    int                tls_len;
 #endif
 } rtp_sink;
+
+#ifdef USE_TLS
+/* one ms_tls_write per RTSP_TLS_STAGE bytes instead of per RTP packet: a
+ * 200 KB IDR was ~170 records and send()s. Packets may straddle a flush -
+ * TLS is a byte stream, and a failed write ends the session anyway (H-1). */
+#define RTSP_TLS_STAGE 16384
+
+static int sink_tls_flush(rtp_sink *s)
+{
+    if (!s->tls_len) return 0;
+    int n = s->tls_len;
+    s->tls_len = 0;
+    int64_t t_wr = ms_trace_wr_begin();
+    int rc = ms_tls_write((ms_tls_conn*)s->tls, s->tls_buf, n);
+    ms_trace_wr_end(s->tr, t_wr, rc < 0 ? 0 : n);
+    if (rc < 0) return -1;
+    s->wrote_tcp = 1;
+    return 0;
+}
+
+static int sink_tls_stage(rtp_sink *s, const uint8_t *d, int n)
+{
+    while (n > 0) {
+        int k = RTSP_TLS_STAGE - s->tls_len;
+        if (k > n) k = n;
+        memcpy(s->tls_buf + s->tls_len, d, (size_t)k);
+        s->tls_len += k; d += k; n -= k;
+        if (s->tls_len == RTSP_TLS_STAGE && sink_tls_flush(s) < 0) return -1;
+    }
+    return 0;
+}
+#endif
 
 /* flush the pending batch; 0 = ok (or nothing pending), <0 = error
  * (same contract as a failed sendto: caller stops the session) */
 static int sink_flush(rtp_sink *s)
 {
+#ifdef USE_TLS
+    if (s->tls_buf) return sink_tls_flush(s);
+#endif
     rtp_batch *b = s->batch;
     if (!b || b->n == 0) return 0;
     /* trace.h: one bracket around the whole batch, not per datagram - a
@@ -216,10 +253,13 @@ static int sink_flush(rtp_sink *s)
  * error path, where the rest of the AU is abandoned and no flush follows, the
  * batch must be emptied BEFORE that pkt_unref rather than left holding
  * pointers into a buffer that may go back to the pool. No-op for a sink
- * without a batch (audio, RTSPS). */
+ * without a batch (audio); RTSPS staging holds copies but is dropped too. */
 static void sink_discard(rtp_sink *s)
 {
     if (s->batch) { s->batch->n = 0; s->batch->niov = 0; }
+#ifdef USE_TLS
+    s->tls_len = 0;
+#endif
 }
 
 /* Largest interleaved RTP/RTCP packet this sink will frame. Sized
@@ -286,6 +326,18 @@ static int sink_send(void *ctx, const uint8_t *hdr, int hlen,
                 return len;
             }
         }
+#ifdef USE_TLS
+        if (s->tls_buf) {
+            if (!rtcp) {
+                if (sink_tls_stage(s, ilv, 4) < 0 ||
+                    sink_tls_stage(s, hdr, hlen) < 0 ||
+                    sink_tls_stage(s, pay, plen) < 0) return -1;
+                return len;
+            }
+            /* RTCP must not overtake RTP bytes already staged */
+            if (sink_tls_flush(s) < 0) return -1;
+        }
+#endif
         /* trace.h: this is THE interesting write on a TCP-interleaved session -
          * it is where a stalled peer / closed receive window parks us for up to
          * SO_SNDTIMEO. Bracketing it (only while MS_TR_WR is on) is what lets a
@@ -301,7 +353,9 @@ static int sink_send(void *ctx, const uint8_t *hdr, int hlen,
          * three TLS records per RTP packet (each with its own header+MAC, more
          * overhead than the memcpy it saves) and widen exactly the torn-frame
          * window H-1 is about. So zero-copy applies to plain RTSP only; the
-         * limit is TLS's API, not the packet's lifetime. */
+         * limit is TLS's API, not the packet's lifetime. Video is staged above
+         * (tls_buf); this per-packet write is left for audio, RTCP and a
+         * failed staging allocation. */
         if (s->tls) {
             uint8_t buf[4 + RTSP_ILV_MAX];
             memcpy(buf, ilv, 4);
@@ -1224,10 +1278,9 @@ static void stream_loop(session *s)
                        sink_send, &s->vsink);
         /* P3: batch video packets into one sendmmsg (UDP) / one sendmsg (TCP
          * interleaved); audio stays direct (one packet per frame - nothing to
-         * batch). Allocation failure just keeps the per-packet path. RTSPS is
-         * excluded: TLS has no scatter/gather write, so batching there would
-         * only trade one memcpy for one TLS record per packet either way (see
-         * sink_send).
+         * batch). Allocation failure just keeps the per-packet path. RTSPS
+         * gets a copying stage buffer instead: TLS has no scatter/gather
+         * write (see sink_send).
          * A batched sink DEFERS the send, and since the packets it stages
          * reference the access unit rather than copying it (rtp_out_fn), every
          * batch must be emptied before the play loop drops its packet
@@ -1236,7 +1289,11 @@ static void stream_loop(session *s)
          * barrier before you do. */
         int can_batch = 1;
 #ifdef USE_TLS
-        if (s->vsink.tls) can_batch = 0;
+        if (s->vsink.tls) {
+            can_batch = 0;
+            s->vsink.tls_buf = (uint8_t*)malloc(RTSP_TLS_STAGE);
+            s->vsink.tls_len = 0;
+        }
 #endif
         if (can_batch)
             s->vsink.batch = (rtp_batch*)calloc(1, sizeof(rtp_batch));
@@ -1688,12 +1745,18 @@ static void stream_loop(session *s)
     if (sub_v) hub_unsubscribe(s->vchn, &s->q);
     if (sub_a) hub_unsubscribe(HUB_AUDIO_SRC, &s->q);
     free(s->vsink.batch); s->vsink.batch = NULL;   /* P3 */
+#ifdef USE_TLS
+    free(s->vsink.tls_buf); s->vsink.tls_buf = NULL;
+#endif
     return;
 
 full:
     /* source subscriber table full (> HUB_MAX_SUBS consumers) */
     if (sub_v) hub_unsubscribe(s->vchn, &s->q);
     free(s->vsink.batch); s->vsink.batch = NULL;   /* P3 */
+#ifdef USE_TLS
+    free(s->vsink.tls_buf); s->vsink.tls_buf = NULL;
+#endif
     send_err(s, s->play_cseq, 503, "Service Unavailable", NULL);
     LOGW(MOD,"subscribe failed (source full), closing session=%s", s->session);
 }
