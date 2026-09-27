@@ -127,6 +127,13 @@ The one-shot-ness lives in a marker file, `/etc/timps-startup-reboot.flag`
   mounted read-only?)` — the rootfs is full or read-only. Fix that first;
   until then timps deliberately stays down rather than boot-loop.
 
+After an **abandoned** teardown the same three outcomes happen, but only as
+`timpsd: HAL teardown abandoned - …` lines on **stderr** (not syslog): the
+`siglongjmp` out of the wedged `g_hal->stop()` may have left the log lock
+held, so that path does not risk a `LOGE`. In `logread` it shows as the last
+`HAL start failed (N/10) - unwinding and retrying` followed by a reboot or
+silence.
+
 Related: `could not clear the startup-reboot marker … Remove it by hand`
 means a **stale** marker is sitting there and the *next*, unrelated incident
 will skip its recovery reboot. `rm /etc/timps-startup-reboot.flag`.

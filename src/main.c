@@ -462,6 +462,34 @@ static int startup_give_up(const char *why)
     return 1;
 }
 
+/* startup_give_up() for a teardown abandoned by siglongjmp: the jump may have
+ * left log.c's lock or the malloc lock held, so a LOGE here could deadlock and
+ * cost the incident its one-shot reboot. Async-signal-safe calls only; the
+ * messages reach stderr alone. Does not return. */
+static void startup_give_up_abandoned(void)
+{
+    static const char spent[] = "timpsd: HAL teardown abandoned, one-shot "
+                                "reboot already spent - giving up\n";
+    static const char nomark[] = "timpsd: HAL teardown abandoned, reboot marker "
+                                 "not writable - giving up without reboot\n";
+    static const char boot[] = "timpsd: HAL teardown abandoned - rebooting once\n";
+    ssize_t ign;
+    if (access(MS_STARTUP_REBOOT_MARKER, F_OK) == 0){
+        ign = write(STDERR_FILENO, spent, sizeof spent - 1); (void)ign;
+        _exit(1);
+    }
+    int mf = open(MS_STARTUP_REBOOT_MARKER, O_CREAT|O_WRONLY|O_TRUNC, 0644);
+    int ok = mf >= 0 && close(mf) == 0;
+    sync();
+    if (!ok || access(MS_STARTUP_REBOOT_MARKER, F_OK) != 0){
+        ign = write(STDERR_FILENO, nomark, sizeof nomark - 1); (void)ign;
+        _exit(1);
+    }
+    ign = write(STDERR_FILENO, boot, sizeof boot - 1); (void)ign;
+    reboot(RB_AUTOBOOT);
+    _exit(1);
+}
+
 static void idr_trampoline(int src){ if (g_hal && g_hal->request_idr) g_hal->request_idr(src); }
 /* rand() seed for the remaining non-secret rand() users (UDP port picks
  * etc.). Seeding from time^pid made every rand()-derived value guessable
@@ -643,7 +671,7 @@ int main(int argc, char **argv)
                 /* bounded like every other teardown here: a wedge in this one
                  * would strand us one statement short of the escalation that
                  * this whole branch exists to perform */
-                hal_stop_bounded();
+                if (hal_stop_bounded() != 0) startup_give_up_abandoned();
                 snprintf(why, sizeof why, "HAL start failed %d times in a row "
                          "and retries alone did not clear whatever this board "
                          "is waiting on", start_fails);
@@ -664,16 +692,10 @@ int main(int argc, char **argv)
                  * and hand this to the same one-shot, marker-gated escalation
                  * the exhausted budget uses: reboot once, and if the marker
                  * says that reboot has already been tried, stay down. */
-                if (!g_run) return 1;      /* operator asked us to stop */
-                snprintf(why, sizeof why, "HAL teardown after start failure "
-                         "%d/%d did not return within %ds and had to be "
-                         "abandoned, leaving the vendor library in an unknown "
-                         "state", start_fails, MS_STARTUP_MAX_START_FAILS,
-                         MS_STARTUP_STOP_ALARM_S);
-                int rc = startup_give_up(why);
-                /* a vendor thread is still wedged somewhere inside libimp;
-                 * running libc's exit handlers on top of that buys nothing */
-                _exit(rc);
+                /* _exit, not return: exit handlers flush stdio, whose lock the
+                 * jump may have left held */
+                if (!g_run) _exit(1);      /* operator asked us to stop */
+                startup_give_up_abandoned();
             }
         } else {
             LOGE(MOD,"HAL init failed - retrying in %ds", backoff);
