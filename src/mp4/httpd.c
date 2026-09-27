@@ -243,6 +243,17 @@ static int crecv(hconn *c, void *buf, int len, int flags)
     return recv(c->fd, buf, len, flags);
 }
 
+/* Value of header `name` (given with its ':') in the head that ends at body,
+ * matched only at a line start - a header VALUE that happens to contain the
+ * name must not match. NULL if absent. */
+static const char *head_find(const char *buf, const char *body, const char *name)
+{
+    size_t nl = strlen(name);
+    for (const char *p = strchr(buf, '\n'); p && p + 1 < body; p = strchr(p + 1, '\n'))
+        if (!strncasecmp(p + 1, name, nl)) return p + 1 + nl;
+    return NULL;
+}
+
 /* One read for the deadline-bounded head/body loops: >0 bytes, 0 = nothing
  * yet (retry under the caller's deadline), <0 = EOF/error. ms_tls_read()'s 0
  * is "no data yet" (a non-application record), not EOF. TLS reads run
@@ -1657,10 +1668,9 @@ static char *read_body_heap(hconn *c, const char *buf, int n, const char **statu
     const char *hdr_end = strstr(buf, "\r\n\r\n");
     if (!hdr_end) { *status = "400 Bad Request"; return NULL; }
     const char *body = hdr_end + 4;
-    const char *te = strcasestr(buf, "Transfer-Encoding:");
-    if (te && te < body) { *status = "411 Length Required"; return NULL; }
-    const char *cl = strcasestr(buf, "Content-Length:");
-    int clen = (cl && cl < body) ? atoi(cl + 15) : 0;
+    if (head_find(buf, body, "Transfer-Encoding:")) { *status = "411 Length Required"; return NULL; }
+    const char *cl = head_find(buf, body, "Content-Length:");
+    int clen = cl ? atoi(cl) : 0;
     if (clen <= 0)               { *status = "411 Length Required";   return NULL; }
     if (clen > WEBRTC_BODY_MAX)  { *status = "413 Payload Too Large"; return NULL; }
     char *out = (char *)malloc((size_t)clen + 1);
@@ -2080,22 +2090,19 @@ static void *conn_thread(void *arg)
                          * mis-parsing is still worse than saying so. No
                          * decoder exists here, so reject rather than guess.
                          *
-                         * Scoped to the header block (< body): buf already
-                         * holds whatever body bytes arrived in the same
-                         * read, and a plain strcasestr(buf,...) would also
-                         * fire on the string appearing INSIDE the JSON (an
-                         * OSD text, say) - a 411 on a perfectly well-formed
-                         * request. Headers precede body, so the first match
-                         * below body is the real header. */
-                        const char *te = strcasestr(buf,"Transfer-Encoding:");
-                        if (te && te < body) {
+                         * head_find() scopes it to header line starts: buf
+                         * already holds whatever body bytes arrived in the
+                         * same read, and the string inside the JSON (an OSD
+                         * text, say) or inside another header's value must
+                         * not 411 a well-formed request. */
+                        if (head_find(buf, body, "Transfer-Encoding:")) {
                             http_send_ex(c,"411 Length Required","text/plain",cors,
                                         "Transfer-Encoding not supported, use Content-Length",51);
                             goto done;
                         }
-                        /* Header-scoped for the same reason as the
-                         * Transfer-Encoding check above, and it matters more
-                         * here: an unscoped scan finds a match INSIDE the JSON
+                        /* Header-scoped like the Transfer-Encoding check
+                         * above, and it matters more here: an unscoped scan
+                         * finds a match INSIDE the JSON
                          * whenever the request carries no real Content-Length
                          * header, and then atoi()s whatever digits follow it in
                          * the body. Body content would be deciding the declared
@@ -2106,8 +2113,8 @@ static void *conn_thread(void *arg)
                          * vanishes. With the scope, a missing header means
                          * clen stays 0, which is exactly what a request that
                          * genuinely has no Content-Length already got. */
-                        const char *cl = strcasestr(buf,"Content-Length:");
-                        if (cl && cl < body) clen = atoi(cl+15);
+                        const char *cl = head_find(buf, body, "Content-Length:");
+                        if (cl) clen = atoi(cl);
                         /* how many body bytes this fixed buffer can hold
                          * alongside the headers already consumed. A clen
                          * bigger than that used to get silently clamped and
