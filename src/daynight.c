@@ -850,29 +850,39 @@ static int dn_time_target(const char *hhmm_night, const char *hhmm_day,
 
 /* Today's sunrise/sunset for lat/lon as epoch time_t (UTC), via the standard
  * low-precision "sunrise equation" (NOAA/Meeus). Everything stays in one time
- * base (epoch seconds); gmtime_r is used ONLY to locate the UTC calendar day
- * of `now` (floored to UTC midnight - a few minutes of skew right at UTC
- * midnight is acceptable for light scheduling). Returns 0 with sr_out/ss_out
- * set on a normal day, +1 for polar day, -1 for polar night. */
+ * base (epoch seconds). The calendar day is chosen by LOCAL SOLAR time, not
+ * UTC: lon*240 s (= lon/15 h) shifts `now` into local solar time before
+ * flooring to a day, because solar midnight is by definition the middle of
+ * the night and can never land next to a sunrise/sunset. Keying on UTC
+ * midnight instead (gmtime_r + floor, the previous approach) rolled the
+ * calendar to TOMORROW at UTC midnight, which is 17:00 PDT / 16:00 PST in
+ * Vancouver - so every evening the schedule calendar adopted tomorrow's
+ * sunset (a near-identical time, off by the ~2 min/day drift) with tomorrow's
+ * sunRISE still hours away, and dn_cal_target's "wall >= sr" failed
+ * immediately: an instant, exact-to-the-second switch to night at UTC
+ * midnight instead of at the real sunset (2026-09-26, reported for
+ * Vancouver). Returns 0 with sr_out/ss_out set on a normal day, +1 for polar
+ * day, -1 for polar night. */
 static int dn_sun_times(float lat, float lon, time_t now,
                         time_t *sr_out, time_t *ss_out)
 {
-    struct tm g;
-    gmtime_r(&now, &g);
-    time_t midnight = now - (g.tm_hour * 3600 + g.tm_min * 60 + g.tm_sec);
+    time_t day = (now + (time_t)(lon * 240.0f)) / 86400;
+    time_t midnight = day * 86400;
 
-    /* Memoized per UTC day: the answer is constant for the whole day by
-     * construction (it is derived from `midnight`, nothing else time-varying),
-     * yet mode=schedule asked for it on every 2 s tick - ~10 double-precision
-     * libm calls (sin/cos/asin/acos/fmod) on a soft-float SoC, ~43k times a
-     * day, all returning the same two instants. Keyed on lat/lon as well, so a
-     * coordinate change via /control takes effect on the next tick; the
-     * sunrise/sunset OFFSETS are applied by the callers AFTER this returns and
-     * so need no invalidation. Two slots because dn_secs_to_dawn() asks for
-     * today and tomorrow within one call, which a single slot would thrash.
-     * No locking: the detection thread is the only caller. */
+    /* Memoized per local-solar day: the answer is constant for the whole day
+     * by construction (it is derived from `midnight`, nothing else
+     * time-varying), yet mode=schedule asked for it on every 2 s tick - ~10
+     * double-precision libm calls (sin/cos/asin/acos/fmod) on a soft-float
+     * SoC, ~43k times a day, all returning the same two instants. Keyed on
+     * lat/lon as well, so a coordinate change via /control takes effect on
+     * the next tick; the sunrise/sunset OFFSETS are applied by the callers
+     * AFTER this returns and so need no invalidation. Two slots because
+     * dn_secs_to_dawn() asks for today and tomorrow within one call, which a
+     * single slot would thrash. No locking: the detection thread is the only
+     * caller (daynight_sun_status() below reads/writes the same statics
+     * unlocked from the control thread - a known, separate issue). */
     static struct { time_t day, sr, ss; float lat, lon; int r, valid; } memo[2];
-    int slot = (int)((midnight / 86400) & 1);
+    int slot = (int)(day & 1);
     if (memo[slot].valid && memo[slot].day == midnight &&
         memo[slot].lat == lat && memo[slot].lon == lon) {
         if (sr_out) *sr_out = memo[slot].sr;
@@ -912,6 +922,14 @@ static int dn_sun_times(float lat, float lon, time_t now,
     if (ss_out) *ss_out = ss;
     return r;
 }
+
+#ifdef DN_SUN_TEST
+/* test-only opening for dn_sun_times() - see scripts/test_daynight_sun.c */
+int dn_sun_times_test(float lat, float lon, time_t now, time_t *sr, time_t *ss)
+{
+    return dn_sun_times(lat, lon, now, sr, ss);
+}
+#endif
 
 /* Is a calendar configured at all, and which one?
  *

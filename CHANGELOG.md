@@ -6,6 +6,21 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`mode=schedule` with a sunrise/sunset calendar: switched at UTC midnight,
+  not at sunset/sunrise, for any location far enough from Greenwich.** The
+  calendar day was chosen by flooring to UTC midnight, which falls in the
+  evening/afternoon local time west of roughly -75° longitude (and morning
+  east of +105°) - so the schedule adopted tomorrow's sunset hours before it
+  actually happened, and `wall >= sr` failed immediately: an instant switch to
+  night at UTC midnight (17:00 PDT / 16:00 PST for the Vancouver report this
+  came from) instead of at the real sunset. Happened every single day west of
+  the US Pacific coast and similar longitudes; seasonally further east/west
+  in between (e.g. ~223 of 365 days in Chicago). The day is now chosen by
+  local solar time (shift by `lon/15` hours before flooring), which can never
+  land next to a sunrise/sunset.
+
 ## [1.9.26] - 2026-09-26
 
 ### Added

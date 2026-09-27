@@ -278,7 +278,7 @@ IMPLIBS ?= -l:libimp.a -l:libalog.a -l:libsysutils.a
 # against a distro/buildroot that only ships libfaac.so.
 FAACLIB ?= -l:libfaac.a
 
-.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp
+.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun
 
 all: target
 
@@ -383,6 +383,16 @@ test-fanqueue:
 	$(HOSTCC) $(CFLAGS) -Isrc $(FQTEST_SRC) \
 	  $(LDFLAGS) -lpthread -o $(BIN)-fqtest
 	@./$(BIN)-fqtest; rc=$$?; rm -f $(BIN)-fqtest; exit $$rc
+
+# Host-only unit test for the sunrise/sunset calendar's day-selection
+# (src/daynight.c: dn_sun_times(), opened for test via -DDN_SUN_TEST). Links
+# the real src/daynight.c; needs no hardware and no running daemon; exit code
+# is the test result.
+DNSUNTEST_SRC := scripts/test_daynight_sun.c src/daynight.c
+test-daynight-sun:
+	$(HOSTCC) $(CFLAGS) -DUSE_DAYNIGHT -DDN_SUN_TEST -Isrc $(DNSUNTEST_SRC) \
+	  $(LDFLAGS) -lm -o $(BIN)-dnsuntest
+	@./$(BIN)-dnsuntest; rc=$$?; rm -f $(BIN)-dnsuntest; exit $$rc
 
 # Host-only unit test for the packet recycling pool (src/frame.c): the
 # oversized-buffer slot recycles every IDR/JPEG instead of malloc+free-ing it,
