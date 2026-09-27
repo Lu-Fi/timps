@@ -945,14 +945,16 @@ static const cfg_field srt_fields[] = {
 #undef TT
 
 #define TT ms_osd_cfg
-/* every osd.* global is F_CTRL (POST-able). enabled/font_path/supersample/
- * hinting are read once by imp_osd_setup() (F_RESTART); monitor_stream and
- * vars_file are read by the OSD thread on every refresh, so they are live. */
+/* enabled/font_path/supersample/hinting are read once by imp_osd_setup()
+ * (F_RESTART); monitor_stream and vars_file are read by the OSD thread on
+ * every refresh, so they are live. vars_file is NOT F_CTRL: any root-readable
+ * "key = value" file (timps.conf itself) would render its values - passwords
+ * and tokens included - into the video through a {placeholder}. */
 static const cfg_field osd_fields[] = {
     F ("enabled",        0, enabled,        T_BOOL, F_CTRL|F_RESTART, 0,0),
     F ("monitor_stream", 0, monitor_stream, T_INT,  F_CTRL, 0,0),
     FS("font_path",      0, font_path,      F_CTRL|F_RESTART),
-    FS("vars_file",      0, vars_file,      F_CTRL),
+    FS("vars_file",      0, vars_file,      0),
     F ("supersample",    0, supersample,    T_INT,  F_CTRL|F_RESTART, 1,4),
     /* geometric autohint, default on: see the ms_osd_cfg.hinting comment
      * in config.h and msttf_set_hinting() for what this does and why it's

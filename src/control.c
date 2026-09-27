@@ -866,9 +866,9 @@ int control_apply_json(const char *json, ctrl_result *res)
      * groups once at startup, so they take effect on restart. */
     sb = find_obj(json, end, "osd", &se);
     if (sb){
-        /* osd.* globals (enabled/monitor_stream/font_path/vars_file/
-         * supersample/hinting): all restart-required, all F_CTRL in
-         * osd_fields (config.c) - one generic walk covers what used to be
+        /* osd.* globals (enabled/monitor_stream/font_path/supersample/
+         * hinting; vars_file is file-only): the F_CTRL ones in osd_fields
+         * (config.c) - one generic walk covers what used to be
          * the hand-written "enabled" special-case plus OSD_GLOBAL_KEYS[].
          *
          * Walk the TOP LEVEL only, in segments between the nested item
@@ -1652,8 +1652,8 @@ int control_get_json(char *buf, size_t cap)
 #endif /* USE_ROTATE */
     }
     /* osd: master switch + the other osd.* globals (monitor_stream/font_path/
-     * vars_file/supersample/hinting - all restart-only, same as "enabled",
-     * and all POST-able via the "osd" section handler above) as their own
+     * vars_file/supersample/hinting; all but vars_file POST-able via the
+     * "osd" section handler above) as their own
      * tiny object (kept directly after "video" - the CGI bridge scopes its
      * video scan up to the "osd" marker), then one independent item set per
      * video stream as "osd0"/"osd1", incl. the item type so the bridge can

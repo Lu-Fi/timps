@@ -563,10 +563,12 @@ otherwise the first boot-enabled stream with a piggyback encoder.
 
 ## 8. `osd.*` (globals)
 
-All six keys are `F_CTRL` (POST-able). `enabled`, `font_path`, `supersample`
-and `hinting` are **restart** (`F_RESTART`): `imp_osd_setup()` reads them once at
-startup. `monitor_stream` and `vars_file` are **live**: the OSD thread re-reads
-them on every text refresh (about once a second).
+All keys except `vars_file` are `F_CTRL` (POST-able). `enabled`, `font_path`,
+`supersample` and `hinting` are **restart** (`F_RESTART`): `imp_osd_setup()`
+reads them once at startup. `monitor_stream` is **live**: the OSD thread
+re-reads it on every text refresh (about once a second). `vars_file` is
+**file-only**: a POSTable path could point it at `/etc/timps.conf` and render
+its credentials into the video through a `{placeholder}`.
 
 **Since v1.9.20** the API says so: the four restart keys are in
 `caps.restart` and come back in the POST reply's `deferred_keys`, and
@@ -580,7 +582,7 @@ already applied live.
 | `osd.enabled` | bool | `1` | — | restart | Master switch. Listed in `caps.restart`. |
 | `osd.monitor_stream` | int | `0` | **unclamped** | **live** | Which stream's measured rate feeds the `{fps}`/`{bitrate}` placeholders. Out of range is not rejected — the lookup just returns `0.0`, so `{fps}` prints `0.0`. (Contrast `motion.monitor_stream`, which is `T_CHAN` and coerces to 0.) |
 | `osd.font_path` | string[128] | `/usr/share/fonts/default.ttf` | — | restart | Default TTF for text items. Empty = built-in bitmap font. |
-| `osd.vars_file` | string[128] | `/tmp/timps_osd.vars` | — | **live** | Extra placeholder source: `name=value` lines, looked up for any `{name}` the built-ins do not resolve. |
+| `osd.vars_file` | string[128] | `/tmp/timps_osd.vars` | — | **file-only** (re-read live) | Extra placeholder source: `name=value` lines, looked up for any `{name}` the built-ins do not resolve. Must be a regular file. Not settable via `/control`. |
 | `osd.supersample` | int | `2` | 1..4 | restart | TTF rasterizer AA samples per axis per pixel. Cost is roughly quadratic (4 → 16 samples/px). `2` is visually indistinguishable from `4` at OSD sizes and roughly halves rasterizer CPU. |
 | `osd.hinting` | bool | `1` | — | restart | Lightweight geometric autohint (snaps stem-like outline edges to the pixel grid at small sizes). **Not** a TrueType bytecode interpreter. **The Kconfig help text is wrong** — `BR2_PACKAGE_TIMPS_OSD_HINTING`'s help says the runtime key defaults to "0 (off) either way"; `config_defaults()` sets `hinting = 1`. The code wins. |
 

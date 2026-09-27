@@ -4631,8 +4631,8 @@ static int ing_control(const char *key, const char *val)
     }
 
     /* osd.* globals: enabled/font_path/supersample/hinting are read once by
-     * imp_osd_setup (F_RESTART); monitor_stream and vars_file are re-read by
-     * the OSD thread on every refresh. */
+     * imp_osd_setup (F_RESTART); monitor_stream is re-read by the OSD thread
+     * on every refresh. */
     if (!strncmp(key,"osd.",4)){
         if (config_key_restart(key)){
             LOGI(MOD,"%s persisted, applies on restart", key);
