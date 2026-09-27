@@ -690,6 +690,29 @@ static void ign_scan(ctrl_scratch_t *sc, const char *prefix, const char *s, cons
     }
 }
 
+/* A1 (concurrent-POST class): one HTTP worker thread per connection calls
+ * control_apply_json() (httpd.c), so two simultaneous POSTs would otherwise
+ * interleave their apply-to-g_cfg + hub_control + persist sequences and leave
+ * a partially applied config. The whole apply-and-notify body is serialized
+ * by this mutex. It is orthogonal to config_str_lock (which guards individual
+ * writes against background READERS); this guards apply-vs-apply. */
+static pthread_mutex_t apply_mu = PTHREAD_MUTEX_INITIALIZER;
+static volatile int    g_ctl_closing;
+
+void control_quiesce(int timeout_ms)
+{
+    g_ctl_closing = 1;
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec  += timeout_ms / 1000;
+    ts.tv_nsec += (long)(timeout_ms % 1000) * 1000000L;
+    if (ts.tv_nsec >= 1000000000L){ ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
+    if (pthread_mutex_timedlock(&apply_mu, &ts) == 0)
+        pthread_mutex_unlock(&apply_mu);
+    else
+        LOGW(MOD,"a /control POST was still applying at shutdown");
+}
+
 int control_apply_json(const char *json, ctrl_result *res)
 {
     if (res) { res->accepted = res->changed = res->rejected = 0; res->not_persisted = 0;
@@ -702,16 +725,11 @@ int control_apply_json(const char *json, ctrl_result *res)
     if (!strchr(json, '{')) return -1;
     ctrl_scratch_t sc = {0};
     sc.echo_full = 1; sc.defer_full = 1; sc.ign_full = 1;
-    /* A1 (concurrent-POST class): one HTTP worker thread per connection calls
-     * this (httpd.c), so two simultaneous POSTs would otherwise interleave their
-     * apply-to-g_cfg + hub_control + persist sequences and leave a partially
-     * applied config. Serialize the whole apply-and-notify body with a single
-     * mutex so one POST completes before the next starts. This is orthogonal to
-     * config_str_lock (which guards individual writes against background
-     * READERS); this guards apply-vs-apply. hub_control()/hub_control_commit()
-     * still run after each field's config_str_unlock() as before. */
-    static pthread_mutex_t apply_mu = PTHREAD_MUTEX_INITIALIZER;
+    /* hub_control()/hub_control_commit() still run after each field's
+     * config_str_unlock(); see apply_mu above. */
     pthread_mutex_lock(&apply_mu);
+    /* shutting down: g_hal->stop() is about to destroy what this would touch */
+    if (g_ctl_closing){ pthread_mutex_unlock(&apply_mu); return -2; }
     const char *end = json + strlen(json);
     /* heap, not stack: 48*(40+160) = 9.6 KB is the largest single frame in
      * the daemon's hottest request path (a dragged slider posts often) and

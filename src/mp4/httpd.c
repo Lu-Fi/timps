@@ -2612,6 +2612,9 @@ void httpd_stop(httpd *h)
     shutdown(h->lfd, SHUT_RDWR);   /* close() alone does not wake accept() */
     close(h->lfd);
     pthread_join(h->thr,NULL);
+#ifdef USE_CONTROL
+    control_quiesce(1000);
+#endif
     /* Finding 3: the per-connection threads are pthread_detach'd, so the join
      * above only reaped the accept thread - an in-flight /control POST handler
      * can still be inside isp_apply_image / imp_osd_apply / motion_sync (direct
