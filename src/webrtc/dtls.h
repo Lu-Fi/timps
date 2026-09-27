@@ -32,6 +32,12 @@ void     ms_dtls_free(ms_dtls *d);
 void     ms_dtls_feed(ms_dtls *d, const uint8_t *p, int len);
 /* Drive the handshake: 1 = still in progress, 0 = completed, -1 = failed. */
 int      ms_dtls_handshake(ms_dtls *d);
+/* After the handshake: process the fed datagram. This is what lets mbedTLS
+ * resend its final flight when the peer retransmits its own (i.e. ours was
+ * lost). 0 = keep going, -1 = the peer closed the session. */
+int      ms_dtls_read_post(ms_dtls *d);
+/* Re-point the transport at a newly nominated ICE candidate (pre-handshake). */
+void     ms_dtls_set_peer(ms_dtls *d, const struct sockaddr_in *peer);
 /* RFC 5764 4.2 keying material for the negotiated DTLS-SRTP profile, i.e. the
  * TLS exporter under the label "EXTRACTOR-dtls_srtp" with no context. Valid
  * only after ms_dtls_handshake() returned 0; `len` must be exactly what the

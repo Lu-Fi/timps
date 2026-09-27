@@ -241,6 +241,9 @@ ms_dtls *ms_dtls_new(ms_dtls_ctx *ctx, int fd, const struct sockaddr_in *peer)
     }
     mbedtls_ssl_set_bio(&d->ssl, d, bio_send, bio_recv, NULL);
     mbedtls_ssl_set_timer_cb(&d->ssl, d, timer_set, timer_get);
+    /* keeps each handshake flight datagram under the path MTU instead of
+     * relying on IP fragmentation, which some paths drop */
+    mbedtls_ssl_set_mtu(&d->ssl, 1200);
     return d;
 }
 
@@ -266,6 +269,25 @@ int ms_dtls_handshake(ms_dtls *d)
         return 1;
     LOGW(MOD, "dtls handshake failed (-0x%x)", -r);
     return -1;
+}
+
+void ms_dtls_set_peer(ms_dtls *d, const struct sockaddr_in *peer)
+{
+    d->peer = *peer;
+}
+
+int ms_dtls_read_post(ms_dtls *d)
+{
+    unsigned char tmp[256];
+    int r;
+    do r = mbedtls_ssl_read(&d->ssl, tmp, sizeof tmp);
+    while (r > 0);                    /* no application data is expected */
+    d->rx = NULL;
+    if (r == MBEDTLS_ERR_SSL_PEER_CLOSE_NOTIFY ||
+        r == MBEDTLS_ERR_SSL_FATAL_ALERT_MESSAGE) return -1;
+    if (r != 0 && r != MBEDTLS_ERR_SSL_WANT_READ && r != MBEDTLS_ERR_SSL_WANT_WRITE)
+        LOGD(MOD, "post-handshake dtls read (-0x%x)", -r);
+    return 0;
 }
 
 int ms_dtls_peer_fingerprint(ms_dtls *d, uint8_t out[32])

@@ -513,6 +513,28 @@ static int sess_start_media(wrtc_session *s)
     return 0;
 }
 
+/* 0 = keep going, -1 = session over */
+static int drive_handshake(wrtc_session *s, int *connected)
+{
+    int r = ms_dtls_handshake(s->dtls);
+    if (r == 0) {
+        if (sess_start_media(s) != 0) {
+            LOGW(MOD, "%s: DTLS up but media setup failed", s->id);
+            return -1;
+        }
+        *connected = 1;
+        LOGI(MOD, "%s: DTLS+SRTP up, streaming video%d pt=%d ssrc=%u%s",
+             s->id, s->chn, s->pt, s->ssrc,
+             s->have_audio ? " + G.711 audio" : "");
+    }
+    return r < 0 ? -1 : 0;
+}
+
+/* Datagrams drained per loop pass. One recvfrom() per pass let a trivial UDP
+ * flood to the (guessable) media port tail-drop the consent checks, DTLS and
+ * RTCP this session lives on. */
+#define WEBRTC_RX_BURST 32
+
 static void *sess_thread(void *arg)
 {
     wrtc_session *s = (wrtc_session *)arg;
@@ -526,11 +548,13 @@ static void *sess_thread(void *arg)
          * the socket is only drained, not waited on. */
         int pr = poll(&p, 1, connected ? 0 : ((s->dtls) ? 20 : 250));
         if (pr < 0) { if (errno == EINTR) continue; break; }
-        if (pr > 0 && (p.revents & POLLIN)) {
+        int dead = 0;
+        for (int k = 0; !dead && pr > 0 && (p.revents & POLLIN) && k < WEBRTC_RX_BURST; k++) {
             struct sockaddr_in from;
             socklen_t fl = sizeof from;
-            int n = (int)recvfrom(s->fd, buf, sizeof buf, 0,
+            int n = (int)recvfrom(s->fd, buf, sizeof buf, MSG_DONTWAIT,
                                   (struct sockaddr *)&from, &fl);
+            if (n < 0) { if (errno == EINTR) continue; break; }   /* EAGAIN: drained */
             if (n > 0) {
                 /* RFC 7983 demux on the first byte: 0-3 STUN, 20-63 DTLS,
                  * 128-191 RTP/RTCP. */
@@ -547,13 +571,16 @@ static void *sess_thread(void *arg)
                                    (struct sockaddr *)&from, sizeof from);
                         /* Peer-reflexive learning (RFC 8445 7.3.1.3): the
                          * first authenticated source becomes the peer, and a
-                         * nominated one replaces it as long as DTLS has not
-                         * started - after that the transport is bound. */
+                         * nominated one replaces it until the handshake has
+                         * completed - a multi-homed client's DTLS may already
+                         * have started on a pair it then did not nominate.
+                         * After that the transport is bound. */
                         if (!s->have_peer ||
-                            (rq.use_candidate && !s->dtls &&
+                            (rq.use_candidate && !connected &&
                              !same_addr(&from, &s->peer))) {
                             s->peer = from;
                             s->have_peer = 1;
+                            if (s->dtls) ms_dtls_set_peer(s->dtls, &from);
                             char ip[INET_ADDRSTRLEN] = "?";
                             inet_ntop(AF_INET, &from.sin_addr, ip, sizeof ip);
                             LOGI(MOD, "%s: ICE peer %s:%u%s", s->id, ip,
@@ -571,8 +598,16 @@ static void *sess_thread(void *arg)
                         last_rx = ms_now_us();
                         if (!s->dtls)
                             s->dtls = ms_dtls_new(g_dtls_ctx, s->fd, &s->peer);
-                        if (s->dtls && !connected)
+                        if (s->dtls) {
+                            /* one datagram per feed: drive it right away */
                             ms_dtls_feed(s->dtls, buf, n);
+                            if (!connected) {
+                                if (drive_handshake(s, &connected) < 0) dead = 1;
+                            } else if (ms_dtls_read_post(s->dtls) < 0) {
+                                LOGI(MOD, "%s: peer closed DTLS", s->id);
+                                dead = 1;
+                            }
+                        }
                     }
                 } else if (buf[0] >= 128 && buf[0] <= 191) {
                     /* rtcp-mux (RFC 5761 4): the second byte separates RTCP
@@ -589,21 +624,9 @@ static void *sess_thread(void *arg)
                 }
             }
         }
-        if (s->dtls && !connected) {
-            int r = ms_dtls_handshake(s->dtls);
-            if (r == 0) {
-                if (sess_start_media(s) != 0) {
-                    LOGW(MOD, "%s: DTLS up but media setup failed", s->id);
-                    break;
-                }
-                connected = 1;
-                LOGI(MOD, "%s: DTLS+SRTP up, streaming video%d pt=%d ssrc=%u%s",
-                     s->id, s->chn, s->pt, s->ssrc,
-                     s->have_audio ? " + G.711 audio" : "");
-            } else if (r < 0) {
-                break;
-            }
-        }
+        if (dead) break;
+        /* no datagram: still drives the handshake retransmission timer */
+        if (s->dtls && !connected && drive_handshake(s, &connected) < 0) break;
         int64_t now = ms_now_us();
         if (connected) {
             fq_status qs;
