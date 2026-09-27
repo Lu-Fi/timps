@@ -877,17 +877,20 @@ static int dn_sun_times(float lat, float lon, time_t now,
      * lat/lon as well, so a coordinate change via /control takes effect on
      * the next tick; the sunrise/sunset OFFSETS are applied by the callers
      * AFTER this returns and so need no invalidation. Two slots because
-     * dn_secs_to_dawn() asks for today and tomorrow within one call, which a
-     * single slot would thrash. No locking: the detection thread is the only
-     * caller (daynight_sun_status() below reads/writes the same statics
-     * unlocked from the control thread - a known, separate issue). */
-    static struct { time_t day, sr, ss; float lat, lon; int r, valid; } memo[2];
-    int slot = (int)(day & 1);
+     * dn_cal_target() looks at yesterday, today and tomorrow, which fewer
+     * slots would thrash. Locked: daynight_sun_status() calls this from the
+     * control thread too. */
+    static struct { time_t day, sr, ss; float lat, lon; int r, valid; } memo[3];
+    static pthread_mutex_t memo_mu = PTHREAD_MUTEX_INITIALIZER;
+    int slot = (int)(((day % 3) + 3) % 3);
+    pthread_mutex_lock(&memo_mu);
     if (memo[slot].valid && memo[slot].day == midnight &&
         memo[slot].lat == lat && memo[slot].lon == lon) {
         if (sr_out) *sr_out = memo[slot].sr;
         if (ss_out) *ss_out = memo[slot].ss;
-        return memo[slot].r;
+        int mr = memo[slot].r;
+        pthread_mutex_unlock(&memo_mu);
+        return mr;
     }
 
     const double D2R = M_PI / 180.0, R2D = 180.0 / M_PI;
@@ -918,6 +921,7 @@ static int dn_sun_times(float lat, float lon, time_t now,
     memo[slot].day = midnight; memo[slot].lat = lat; memo[slot].lon = lon;
     memo[slot].sr  = sr;       memo[slot].ss  = ss;  memo[slot].r   = r;
     memo[slot].valid = 1;
+    pthread_mutex_unlock(&memo_mu);
     if (sr_out) *sr_out = sr;
     if (ss_out) *ss_out = ss;
     return r;
@@ -949,9 +953,11 @@ enum { DN_CAL_NONE = 0, DN_CAL_TIME = 1, DN_CAL_SUN = 2 };
 static int dn_cal_kind(const ms_daynight_cfg *dn, time_t wall)
 {
     if (wall < DN_CLOCK_SANE) return DN_CAL_NONE;
-    if (dn->time_night_start[0] && dn->time_day_start[0] &&
-        dn_hhmm_min(dn->time_night_start) >= 0 &&
-        dn_hhmm_min(dn->time_day_start)   >= 0) return DN_CAL_TIME;
+    /* exactly the condition dn_time_target() can answer: both valid, and
+     * distinct (equal edges make it return DN_UNKNOWN) */
+    int n = dn->time_night_start[0] ? dn_hhmm_min(dn->time_night_start) : -1;
+    int d = dn->time_day_start[0]   ? dn_hhmm_min(dn->time_day_start)   : -1;
+    if (n >= 0 && d >= 0 && n != d) return DN_CAL_TIME;
     if (dn->sun_latitude != 0.0f || dn->sun_longitude != 0.0f) return DN_CAL_SUN;
     return DN_CAL_NONE;
 }
@@ -969,9 +975,17 @@ static int dn_cal_target(const ms_daynight_cfg *dn, time_t wall)
         int r = dn_sun_times(dn->sun_latitude, dn->sun_longitude, wall, &sr, &ss);
         if (r > 0) return DN_DAY;      /* polar day   */
         if (r < 0) return DN_NIGHT;    /* polar night */
-        sr += (time_t)dn->sun_sunrise_offset_min * 60;
-        ss += (time_t)dn->sun_sunset_offset_min  * 60;
-        return (wall >= sr && wall < ss) ? DN_DAY : DN_NIGHT;
+        /* an offset (up to +-1 day) can push an edge across solar midnight,
+         * so the neighbouring days' shifted windows count too - otherwise the
+         * decision clipped them while daynight_sun_status() showed them */
+        for (int k = -1; k <= 1; k++) {
+            if (dn_sun_times(dn->sun_latitude, dn->sun_longitude,
+                             wall + (time_t)k * 86400, &sr, &ss) != 0) continue;
+            sr += (time_t)dn->sun_sunrise_offset_min * 60;
+            ss += (time_t)dn->sun_sunset_offset_min  * 60;
+            if (wall >= sr && wall < ss) return DN_DAY;
+        }
+        return DN_NIGHT;
     }
     default: return DN_UNKNOWN;
     }
@@ -1006,6 +1020,33 @@ static int64_t dn_secs_to_dawn(const ms_daynight_cfg *dn, time_t wall)
     default: return -1;
     }
 }
+
+/* The next heartbeat: heartbeat_s out, pulled in to the calendar's next day
+ * edge. Every re-arm goes through here; the pull-in used to happen at just
+ * one of them, so after the first re-arm of a night the calendar was never
+ * consulted again. */
+static int64_t dn_hb_next_at(const ms_daynight_cfg *dn, int64_t now, time_t wall)
+{
+    int64_t hb = now + (int64_t)dn->heartbeat_s * 1000;
+    int64_t dawn = dn_secs_to_dawn(dn, wall);
+    if (dawn >= 0 && now + dawn * 1000 < hb) hb = now + dawn * 1000;
+    return hb;
+}
+static int64_t dn_hb_next(const ms_daynight_cfg *dn, int64_t now)
+{
+    return dn_hb_next_at(dn, now, time(NULL));
+}
+
+#ifdef DN_SUN_TEST
+int dn_cal_target_test(const ms_daynight_cfg *dn, time_t wall)
+{
+    return dn_cal_target(dn, wall);
+}
+int64_t dn_hb_next_test(const ms_daynight_cfg *dn, int64_t now, time_t wall)
+{
+    return dn_hb_next_at(dn, now, wall);
+}
+#endif
 
 /* The unreachable-threshold diagnostic.
  *
@@ -1233,7 +1274,12 @@ static void *dn_thread(void *arg)
            ck == DN_CAL_TIME ? "time window" : ck == DN_CAL_SUN ? "sun" : "none",
            dn0.boot_probe, dn0.interval_ms, DN_TRANSITION_S,
            dn0.isp_path, dn0.switch_cmd);
-      if (dn0.time_night_start[0] && dn0.time_day_start[0] &&
+      if ((dn0.time_night_start[0] || dn0.time_day_start[0]) && ck != DN_CAL_TIME)
+          LOGW(MOD, "daynight.time_night_start/time_day_start (\"%s\"/\"%s\") "
+                    "is not a usable window (both must be HH:MM and differ) - "
+                    "ignored%s", dn0.time_night_start, dn0.time_day_start,
+               ck == DN_CAL_SUN ? ", the sun calendar is used instead" : "");
+      if (ck == DN_CAL_TIME &&
           (dn0.sun_latitude != 0.0f || dn0.sun_longitude != 0.0f))
           LOGW(MOD, "both a time window (%s..%s) and a location (%g/%g) are "
                     "configured - the time window wins and the sun settings "
@@ -1539,6 +1585,9 @@ static void *dn_thread(void *arg)
                 }
                 warned_nocal = 0;
                 target = t;
+                /* the calendar is this mode's boot decision: without this the
+                 * standing-desync notice and isp_desync never left "unknown" */
+                booted = 1;
                 snprintf(why, sizeof why, "calendar");
                 break;
             }
@@ -1741,7 +1790,7 @@ static void *dn_thread(void *arg)
                               "two clips, staying night",
                          ir_why ? ir_why : "?", (double)r, d_lit_hr);
                     trig_since = 0;
-                    hb_at = now + (int64_t)dn->heartbeat_s * 1000;
+                    hb_at = dn_hb_next(dn, now);
                     sust_min = win_max = -1.0f; win_at = 0;
                     ema_fast = ema_slow = -1.0f; trend_since = 0;
                 } else if (r >= DN_IR_RATIO_NIGHT) {
@@ -1776,7 +1825,7 @@ static void *dn_thread(void *arg)
                         }
                     }
                     trig_since = 0;
-                    hb_at = now + (int64_t)dn->heartbeat_s * 1000;
+                    hb_at = dn_hb_next(dn, now);
                     sust_min = win_max = -1.0f; win_at = 0;
                     /* re-anchor the trend pair on a verdict, exactly as the
                      * decision note specifies. A probe that has just been
@@ -1835,7 +1884,7 @@ static void *dn_thread(void *arg)
                             }
                         }
                         trig_since = 0;
-                        hb_at = now + (int64_t)dn->heartbeat_s * 1000;
+                        hb_at = dn_hb_next(dn, now);
                         sust_min = win_max = -1.0f; win_at = 0;
                         ema_fast = ema_slow = -1.0f; trend_since = 0;
                     } else {
@@ -1859,7 +1908,7 @@ static void *dn_thread(void *arg)
                               "end, which is itself night", 
                          ir_why ? ir_why : "?", (double)r, room);
                     trig_since = 0;
-                    hb_at = now + (int64_t)dn->heartbeat_s * 1000;
+                    hb_at = dn_hb_next(dn, now);
                     sust_min = win_max = -1.0f; win_at = 0;
                     ema_fast = ema_slow = -1.0f; trend_since = 0;
                 } else {
@@ -2145,7 +2194,7 @@ static void *dn_thread(void *arg)
              * deferred - but only while path C can actually see, and never
              * past heartbeat_max_s since the last probe. That hard bound is
              * why this is not a backoff. */
-            if (!hb_at) hb_at = now + (int64_t)dn->heartbeat_s * 1000;
+            if (!hb_at) hb_at = dn_hb_next(dn, now);
             if (now >= hb_at) {
                 /* no reference means no evidence test either way, so an
                  * unanchored ref must not defer the heartbeat - it did
@@ -2158,7 +2207,7 @@ static void *dn_thread(void *arg)
                 int64_t since = last_probe ? now - last_probe : INT64_MAX;
                 if (flat && sighted &&
                     since < (int64_t)dn->heartbeat_max_s * 1000) {
-                    hb_at = now + (int64_t)dn->heartbeat_s * 1000;
+                    hb_at = dn_hb_next(dn, now);
                     /* INFO, not DEBUG: fires once per episode and is the
                      * one line that answers "why did no heartbeat probe
                      * run all day" */
@@ -2313,10 +2362,7 @@ static void *dn_thread(void *arg)
                     ref_due = now + (int64_t)DN_REF_DELAY_S * 1000;
                     ref_wait_logged = 0;
                 }
-                hb_at = now + (int64_t)dn->heartbeat_s * 1000;
-                { int64_t dawn = dn_secs_to_dawn(dn, time(NULL));
-                  if (dawn >= 0 && now + dawn * 1000 < hb_at)
-                      hb_at = now + dawn * 1000; }
+                hb_at = dn_hb_next(dn, now);
             } else {
                 ref = -1.0f; ref_due = 0; hb_at = 0;
             }

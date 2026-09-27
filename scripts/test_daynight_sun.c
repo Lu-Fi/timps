@@ -12,10 +12,15 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
 #include <time.h>
+#include "config.h"
 
 extern int dn_sun_times_test(float lat, float lon, time_t now,
                               time_t *sr, time_t *ss);
+extern int dn_cal_target_test(const ms_daynight_cfg *dn, time_t wall);
+extern int64_t dn_hb_next_test(const ms_daynight_cfg *dn, int64_t now, time_t wall);
 
 static int g_fail;
 
@@ -55,6 +60,45 @@ int main(void)
      * PDT): must agree with the case above - the day must not flip within
      * this same local evening. */
     check_today("Vancouver just before UTC midnight", 49.2827f, -123.121f, 1790467199);
+
+    /* A sunset offset pushing the edge past solar midnight: Berlin, 21 June,
+     * sunset ~19:33 UTC + 240 min = ~23:33 UTC, but the solar day turns at
+     * ~23:06 UTC. At 23:20 UTC it is still (shifted) day; the calendar used to
+     * look at the new solar day alone and say night. */
+    {
+        ms_daynight_cfg dn; memset(&dn, 0, sizeof dn);
+        dn.sun_latitude = 52.52f; dn.sun_longitude = 13.405f;
+        dn.sun_sunset_offset_min = 240;
+        int t = dn_cal_target_test(&dn, 1782084000);   /* 2026-06-21 23:20 UTC */
+        if (t != 0) { fprintf(stderr, "FAIL shifted sunset across solar midnight: got %d, want day\n", t); g_fail = 1; }
+        else printf("ok shifted sunset across solar midnight is still day\n");
+        t = dn_cal_target_test(&dn, 1782088800);       /* 00:40 UTC: past it */
+        if (t != 1) { fprintf(stderr, "FAIL after the shifted sunset: got %d, want night\n", t); g_fail = 1; }
+        else printf("ok after the shifted sunset it is night\n");
+    }
+    /* equal HH:MM edges are not a time window: fall through to the sun */
+    {
+        ms_daynight_cfg dn; memset(&dn, 0, sizeof dn);
+        snprintf(dn.time_night_start, sizeof dn.time_night_start, "20:00");
+        snprintf(dn.time_day_start, sizeof dn.time_day_start, "20:00");
+        int t = dn_cal_target_test(&dn, 1782068400);
+        if (t != -1) { fprintf(stderr, "FAIL equal edges gave %d, want unknown\n", t); g_fail = 1; }
+        dn.sun_latitude = 52.52f; dn.sun_longitude = 13.405f;
+        t = dn_cal_target_test(&dn, 1782068400);       /* 19:00 UTC: sun up */
+        if (t != 0) { fprintf(stderr, "FAIL equal edges + location gave %d, want day (sun)\n", t); g_fail = 1; }
+        else printf("ok equal time edges fall through to the sun calendar\n");
+    }
+    /* every heartbeat re-arm is pulled in to the calendar's dawn */
+    {
+        setenv("TZ", "UTC", 1); tzset();
+        ms_daynight_cfg dn; memset(&dn, 0, sizeof dn);
+        snprintf(dn.time_night_start, sizeof dn.time_night_start, "22:00");
+        snprintf(dn.time_day_start, sizeof dn.time_day_start, "06:00");
+        dn.heartbeat_s = 4 * 3600;
+        int64_t hb = dn_hb_next_test(&dn, 1000, 1782104400);   /* 05:00 UTC */
+        if (hb != 1000 + 3600 * 1000LL) { fprintf(stderr, "FAIL heartbeat at +%llds, want dawn +3600s\n", (long long)(hb - 1000) / 1000); g_fail = 1; }
+        else printf("ok heartbeat pulled in to the 06:00 day edge\n");
+    }
 
     if (g_fail) { fprintf(stderr, "FAILED\n"); return 1; }
     printf("all daynight sun tests passed\n");
