@@ -328,6 +328,8 @@ static int       w_got_key;
 static int64_t   w_start_us;
 static int       w_chn;
 static int64_t   w_sync_us;    /* last fflush+fsync (M7 periodic durability) */
+static off_t     w_sub_off;    /* bytes handed to writeback at the last sync tick */
+static off_t     w_adv_off;    /* bytes already dropped from the page cache */
 
 /* how often the open segment is flushed+fsync'd to media; without this a
  * power cut loses up to segment_s of recording from the page cache (M7) */
@@ -473,6 +475,7 @@ static int seg_open(int chn, const ms_record_cfg *rc)
     }
     ms_buf_free(&seg);
     w_got_key=0; w_start_us=ms_now_us(); w_chn=chn; w_sync_us=w_start_us;
+    w_sub_off=0; w_adv_off=0;
     status_set(1,(long long)n,path);
     LOGI(MOD,"recording -> %s",path);
     return 0;
@@ -610,7 +613,18 @@ static void seg_write(ms_pkt *p)
                 note_werr("flush", e);
                 seg_close(); return;
             }
-            sync_file_range(fileno(w_fp), 0, 0, SYNC_FILE_RANGE_WRITE);
+            int fd=fileno(w_fp);
+            /* drop what the PREVIOUS tick submitted: append-only data nobody
+             * reads back would otherwise fill the page cache of a 64 MB board.
+             * Pages still under writeback are skipped by the kernel anyway. */
+            if (w_sub_off > w_adv_off){
+                posix_fadvise(fd, w_adv_off, w_sub_off - w_adv_off,
+                              POSIX_FADV_DONTNEED);
+                w_adv_off = w_sub_off;
+            }
+            sync_file_range(fd, 0, 0, SYNC_FILE_RANGE_WRITE);
+            off_t cur = lseek(fd, 0, SEEK_CUR);
+            if (cur > 0) w_sub_off = cur;
             w_sync_us=now;
         }
     }
@@ -626,6 +640,7 @@ static void seg_close(void)
     int err=0;
     if (fflush(fp)!=0) err=errno;
     else if (fsync(fileno(fp))!=0) err=errno;
+    else posix_fadvise(fileno(fp), 0, 0, POSIX_FADV_DONTNEED);   /* all durable */
     if (fclose(fp)!=0 && !err) err=errno;
     if (err){
         LOGE(MOD,"segment close/sync failed: %s (tail may be truncated)",strerror(err));
