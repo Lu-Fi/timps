@@ -729,8 +729,12 @@ int control_apply_json(const char *json, ctrl_result *res)
     /* hub_control()/hub_control_commit() still run after each field's
      * config_str_unlock(); see apply_mu above. */
     pthread_mutex_lock(&apply_mu);
-    /* shutting down: g_hal->stop() is about to destroy what this would touch */
-    if (g_ctl_closing){ pthread_mutex_unlock(&apply_mu); return -2; }
+    /* shutting down: g_hal->stop() is about to destroy what this would touch.
+     * -3, not -2: -2 is "allocation failed", a transient server problem the
+     * client should just retry; this is a permanent "not on this daemon
+     * instance" answer, and conflating the two would blame OOM for a status
+     * that has nothing to do with memory. */
+    if (g_ctl_closing){ pthread_mutex_unlock(&apply_mu); return -3; }
     const char *end = json + strlen(json);
     /* heap, not stack: 48*(40+160) = 9.6 KB is the largest single frame in
      * the daemon's hottest request path (a dragged slider posts often) and

@@ -155,9 +155,10 @@ typedef struct {
 } ctrl_result;
 
 /* Returns 0 if the body was a JSON object, -1 if it was not parseable at all,
- * -2 on an internal failure (OOM) - which is NOT the caller's fault and must
- * not be reported to it as a bad request (httpd.c answers 503 to -2, 400 to
- * -1). res may be NULL; on -2 only its counters are set, not its echo. */
+ * -2 on an internal failure (OOM), -3 if control_quiesce() has already been
+ * called (shutting down) - none of which is the caller's fault and must not
+ * be reported to it as a bad request (httpd.c answers 503 to -2/-3, 400 to
+ * -1). res may be NULL; on -2/-3 only its counters are set, not its echo. */
 int control_apply_json(const char *json, ctrl_result *res);
 /* Shutdown: refuse new POSTs (-2 -> 503) and wait up to timeout_ms for one
  * still applying/persisting, so process exit cannot cut its config write. */

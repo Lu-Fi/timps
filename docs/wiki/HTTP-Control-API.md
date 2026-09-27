@@ -504,7 +504,8 @@ shape, whatever the status:
 | `422 Unprocessable Content` | `unknown_fields` | It parsed, but carried **no field this build knows**: a typo, the wrong section, or a key gated out of this binary. Nothing was applied; `ignored` names the keys. | Check spelling — and check the `*.available` flags above, because the key may simply not exist in *this* build. Retrying the identical body will never succeed. |
 | `409 Conflict` | `values_rejected` | It parsed and every field in it **was** known, but every one of them was refused: bad values, or a command that failed. Nothing was applied. | The key names were right; re-send with valid **values**. |
 | `413 Payload Too Large` | — | `Content-Length` negative, or larger than the request buffer. | Split the request. |
-| `503 Service Unavailable` | `oom` | The daemon could not allocate to service the request, or (since v1.9.28, unreleased) it is shutting down and no longer accepts POSTs — the `reason` is `oom` either way. | Retry later; not a client error. |
+| `503 Service Unavailable` | `oom` | The daemon could not allocate to service the request. | Retry later; not a client error. |
+| `503 Service Unavailable` | `shutting_down` | Since v1.9.28 (unreleased): the daemon is shutting down and no longer accepts POSTs. | Not a client error; the next boot will accept it. |
 | `403 Forbidden` | — (plain-text body `bad origin`, not JSON) | Since v1.9.28 (unreleased): the POST was authenticated by Basic/Digest and its `Origin` host differs from the `Host` header's host. Browsers re-send cached HTTP credentials on cross-site form posts, so this is the CSRF guard. Token and loopback requests, and clients that send no `Origin` at all (curl, scripts), are not affected; ports are not compared. | Post from a page served by the camera itself, or authenticate with the token. |
 
 `422` and `409` were **one code until now**, and they are opposite

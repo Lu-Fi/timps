@@ -2244,7 +2244,8 @@ static void *conn_thread(void *arg)
                     ctrl_result cr;
                     int prc = control_apply_json(body ? body : "", &cr);
                     const char *st, *reason;
-                    if (prc == -2)                              { st = "503 Service Unavailable"; reason = "oom"; }
+                    if (prc == -3)                              { st = "503 Service Unavailable"; reason = "shutting_down"; }
+                    else if (prc == -2)                          { st = "503 Service Unavailable"; reason = "oom"; }
                     else if (prc != 0)                          { st = "400 Bad Request";         reason = "not_json"; }
                     else if (cr.accepted == 0 && cr.rejected>0) { st = "409 Conflict";            reason = "values_rejected"; }
                     else if (cr.accepted == 0)                  { st = "422 Unprocessable Content"; reason = "unknown_fields"; }

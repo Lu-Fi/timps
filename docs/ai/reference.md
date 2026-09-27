@@ -686,7 +686,8 @@ Status codes and their `reason` discriminators:
 | 409 | `values_rejected` | Keys were all known, all values refused | Key names were right, fix the values |
 | 411 | — | `Transfer-Encoding` instead of `Content-Length`, or a missing/zero length | Send a fixed-length body |
 | 413 | — | Headers + body exceed the 4096-byte buffer | Split the request |
-| 503 | `oom` | Allocation failure, or (**since v1.9.28 (unreleased)**) the daemon is shutting down — the reason says `oom` in both cases | Retry; not a client error |
+| 503 | `oom` | Allocation failure | Retry; not a client error |
+| 503 | `shutting_down` | **since v1.9.28 (unreleased)**: the daemon is shutting down and no longer accepts POSTs | Not a client error; the next boot will |
 | 403 | — (plain-text body `bad origin`) | **since v1.9.28 (unreleased)**: a Basic/Digest-authenticated POST from a page on another host (CSRF guard) | Use the token, or post from the camera's own host |
 
 ### `GET /events` (SSE)
