@@ -873,7 +873,14 @@ static int isp_apply_image(const char *k)
          * the auto-exposure this key exists to shape rather than replace. */
         IMPISPITAttr it; memset(&it,0,sizeof it);
         it.mode                 = IMPISP_TUNING_MODE_RANGE;
-        it.integration_time     = (uint16_t)(ex.it_min_lines ? ex.it_min_lines : 1);
+        /* 16-bit fields: clamp, a silent wrap would set a tiny cap */
+        if (want > 0xFFFF) {
+            LOGW(MOD,"image.ae_it_max_us=%d: %lu lines exceeds this SDK's 16-bit "
+                     "field - capping at 65535", im->ae_it_max_us, (unsigned long)want);
+            want = 0xFFFF;
+        }
+        it.integration_time     = (uint16_t)(ex.it_min_lines ? (ex.it_min_lines > 0xFFFF ?
+                                             0xFFFF : ex.it_min_lines) : 1);
         it.max_integration_time = (uint16_t)want;
         int rc = IMP_ISP_Tuning_SetIntegrationTime(&it);
 #endif
