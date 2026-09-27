@@ -203,7 +203,7 @@ static void quad(poly *pl, pt a, pt c, pt b){
 /* parse a simple/composite glyph, appending flattened contours (in font units,
  * y-up) to polys[]; returns number of contours added. transform tx,ty offset. */
 static int parse_glyph(msttf_font *f, int gid, poly **polys, int *npoly, int *cappoly,
-                       float ox, float oy, float sx, float sy, int depth);
+                       float ox, float oy, float sx, float sy, int depth, int *comps);
 
 static int parse_simple(msttf_font *f, const uint8_t *g, uint32_t len,
                         poly **polys, int *npoly, int *cappoly,
@@ -319,8 +319,11 @@ fail:
     return 0;
 }
 
+/* comps: components left for the whole top-level glyph. The depth cap alone
+ * still let a crafted font fan out to N^5 components. */
+#define MSTTF_MAX_COMPONENTS 64
 static int parse_glyph(msttf_font *f, int gid, poly **polys, int *npoly, int *cappoly,
-                       float ox, float oy, float sx, float sy, int depth)
+                       float ox, float oy, float sx, float sy, int depth, int *comps)
 {
     if (depth>4 || gid<0 || gid>=f->num_glyphs) return 0;
     uint32_t len, off=glyf_offset(f,gid,&len);
@@ -347,7 +350,8 @@ static int parse_glyph(msttf_font *f, int gid, poly **polys, int *npoly, int *ca
         else if (flags&0x80){ if (pend-p<8) break; a=s16(p)/16384.0f; b2=s16(p+2)/16384.0f; c2=s16(p+4)/16384.0f; dd=s16(p+6)/16384.0f; p+=8; }
         /* only ARGS_ARE_XY_VALUES supported for placement */
         float nox=ox+sx*dx, noy=oy+sy*dy;
-        parse_glyph(f,cgid,polys,npoly,cappoly,nox,noy,sx*a,sy*dd,depth+1);
+        if (--*comps < 0) break;
+        parse_glyph(f,cgid,polys,npoly,cappoly,nox,noy,sx*a,sy*dd,depth+1,comps);
         (void)b2;(void)c2;
         if (!(flags&0x20)) break; /* no MORE_COMPONENTS */
     }
@@ -707,7 +711,8 @@ int msttf_render(msttf_font *f, const char *s, int pixel_h,
         int gid=glyph_index(f,cp);
         poly *polys=NULL; int npoly=0, cap=0;
         /* y-up font units -> device: x = penx + sx*X ; y = baseline - scale*Y */
-        parse_glyph(f,gid,&polys,&npoly,&cap, penx, baseline, scale, -scale, 0);
+        int comps = MSTTF_MAX_COMPONENTS;
+        parse_glyph(f,gid,&polys,&npoly,&cap, penx, baseline, scale, -scale, 0, &comps);
         /* opt-in geometric autohinting: snap stem-like edges to the pixel
          * grid in device space, before the bbox is measured off these same
          * points (so the dilated outline pass and coverage rasterization
