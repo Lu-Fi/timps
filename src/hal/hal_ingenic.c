@@ -2279,12 +2279,6 @@ static void *video_thread(void *arg)
         int64_t pts = pts_sanitize(&vc->pts, hw_us, pub_now,
                                    1000000 / (vc->fps > 0 ? vc->fps : 25),
                                    PTS_SKEW_VIDEO_US);
-        hub_publish_take(vc->chn, pk, pts, key, MS_MEDIA_VIDEO, pub_now);
-        /* A frame was really pulled from the encoder and handed on - the one
-         * pipeline state in which the ISP honours the AE integration-time cap
-         * (see ae_it_max_on_frame). Cheap no-op unless image.ae_it_max_us is
-         * set, and this is exactly where a working live /control POST lands. */
-        ae_it_max_on_frame(vc->chn);
 #if defined(PLATFORM_T31)
         /* Item-2 (T31 only): cache the running average bitrate for the read-only
          * /control encoder-stats getter. Must run while 'st' is still held (the
@@ -2301,7 +2295,15 @@ static void *video_thread(void *arg)
             }
         }
 #endif
+        /* nothing below reads `st`: hand the encoder its buffer back before the
+         * fan-out, as jpeg_thread does */
         IMP_Encoder_ReleaseStream(vc->chn,&st);
+        hub_publish_take(vc->chn, pk, pts, key, MS_MEDIA_VIDEO, pub_now);
+        /* A frame was really pulled from the encoder and handed on - the one
+         * pipeline state in which the ISP honours the AE integration-time cap
+         * (see ae_it_max_on_frame). Cheap no-op unless image.ae_it_max_us is
+         * set, and this is exactly where a working live /control POST lands. */
+        ae_it_max_on_frame(vc->chn);
     }
     if (receiving){ IMP_Encoder_StopRecvPic(vc->chn); fs_unuse(vc->chn); }
     return NULL;
