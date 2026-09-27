@@ -727,6 +727,7 @@ int control_apply_json(const char *json, ctrl_result *res)
     if (!ch) { LOGW(MOD,"control_apply_json: OOM"); pthread_mutex_unlock(&apply_mu); return -2; }
     ch->n = 0;
     char v[160];
+    char clip[160]; int clip_secs = -1;     /* -1 = no clip requested */
 
     /* image: nested "image":{...} preferred; the legacy flat keys of the old
      * /control (top-level brightness/... ) keep working via a whole-body scan.
@@ -1009,22 +1010,13 @@ int control_apply_json(const char *json, ctrl_result *res)
                               (!strcmp(v,"false")||!strcmp(v,"0")) ? 0 : -1);
             sc.acc++;
         }
-        {   /* {"record":{"clip":"/tmp/x.mp4","seconds":6}} -> capture an
-             * on-demand fMP4 clip (blocks ~seconds); used by send2 video. */
-            char clip[160];
-            if (get_val(sb, se, "clip", clip, sizeof clip)){
-                int secs = get_val(sb, se, "seconds", v, sizeof v) ? atoi(v) : 6;
-                /* A COMMAND, not a setting: it never goes through
-                 * timps_apply_setting, so without this it left accepted at 0
-                 * and the new grading answered 422 to a clip request that had
-                 * actually been taken - which is exactly the false alarm the
-                 * grading exists to prevent. Count it, and let its verdict
-                 * (-1 = bad path or no recorder) show up as rejected, so a
-                 * caller learns the request was refused without needing SSH. */
-                if (record_clip(clip, secs) == 0) sc.acc++;
-                else                              sc.rej++;
-            }
-        }
+        /* {"record":{"clip":"/tmp/x.mp4","seconds":6}} -> capture an
+         * on-demand fMP4 clip; used by send2 video, which uploads the file
+         * once this POST returns. The capture itself runs after apply_mu is
+         * released (below): it blocks for up to seconds+5 s, and every other
+         * POST used to wait behind it. */
+        if (get_val(sb, se, "clip", clip, sizeof clip))
+            clip_secs = get_val(sb, se, "seconds", v, sizeof v) ? atoi(v) : 6;
         int nrec; const cfg_field *rec_tbl = cfg_fields_record(&nrec);
         apply_ctrl_fields(&sc, ch, "record", sb, se, rec_tbl, nrec);
         /* active/clip/seconds are commands handled above, not table fields. */
@@ -1066,6 +1058,15 @@ int control_apply_json(const char *json, ctrl_result *res)
     }
     free(ch);
     pthread_mutex_unlock(&apply_mu);
+    if (clip_secs >= 0) {
+        /* A COMMAND, not a setting: it never goes through timps_apply_setting,
+         * so without this it left accepted at 0 and the grading answered 422 to
+         * a clip request that had actually been taken. Its verdict (-1 = bad
+         * path, no recorder, or another clip already running) shows up as
+         * rejected, so a caller learns the request was refused without SSH. */
+        int ok = (record_clip(clip, clip_secs) == 0);
+        if (res) { if (ok) res->accepted++; else res->rejected++; }
+    }
     return 0;
 }
 
