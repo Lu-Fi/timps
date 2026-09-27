@@ -21,6 +21,7 @@
 #include "timelapse.h"
 #include "hub.h"
 #include "frame.h"
+#include "fanqueue.h"
 #include "log.h"
 #include "util.h"
 
@@ -194,6 +195,20 @@ static int shot_write(const ms_pkt *p)
  * only ever receives frames published AFTER the subscribe, and every JPEG
  * is standalone - no keyframe wait needed. */
 
+/* The grab parks on its own queue for up to 2 x HUB_JPEG_GRAB_WAIT_MS with a
+ * silent JPEG source; publish it so timelapse_stop() can close it, or that
+ * wait eats most of main()'s 4 s shutdown budget before the HAL teardown. */
+static fanqueue *g_grab_q;     /* under g_lock */
+static int       g_grab_stop;  /* under g_lock */
+static void grab_qhook(struct fanqueue *q, void *ctx)
+{
+    (void)ctx;
+    pthread_mutex_lock(&g_lock);
+    if (q && g_grab_stop) fanqueue_close(q);
+    g_grab_q = q;
+    pthread_mutex_unlock(&g_lock);
+}
+
 /* re-try delay after a frameless grab (encoder cold-start hiccup); a failed
  * WRITE (SD yanked/full) still waits the full interval like it always did */
 #define TL_RETRY_US (5*1000000LL)
@@ -255,7 +270,7 @@ static void *tl_thread(void *arg)
         int iv=tl.interval_s; if (iv<1) iv=1;
         int64_t retry = TL_RETRY_US < (int64_t)iv*1000000 ? TL_RETRY_US
                                                           : (int64_t)iv*1000000;
-        ms_pkt *p=hub_grab_jpeg(src,HUB_JPEG_GRAB_WAIT_MS,NULL,NULL,NULL);
+        ms_pkt *p=hub_grab_jpeg(src,HUB_JPEG_GRAB_WAIT_MS,NULL,grab_qhook,NULL);
         if (p){
             int ok = (shot_write(p)==0);
             pkt_unref(p);
@@ -285,7 +300,12 @@ void timelapse_start(const ms_config *cfg)
 void timelapse_stop(void)
 {
     if (!g_started) return;
+    pthread_mutex_lock(&g_lock);
+    g_grab_stop = 1;
+    if (g_grab_q) fanqueue_close(g_grab_q);
+    pthread_mutex_unlock(&g_lock);
     ms_stopgate_stop(&g_gate); pthread_join(g_thr,NULL); g_started=0;
+    g_grab_stop = 0;
 }
 
 #ifdef USE_CONTROL

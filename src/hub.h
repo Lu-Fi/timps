@@ -241,8 +241,7 @@ int         hub_pick_jpeg_src(const ms_config *cfg, int chn, int strict);
  * through a TLS context that had already been freed. The hook lets a caller
  * publish the queue somewhere a wake can find it (mp4/httpd.c registers it in
  * its ms_client_reg slot) without hub.c having to know what that somewhere is.
- * NULL for callers that do not need it - timelapse.c runs on its own thread,
- * which main() stops before the servers. */
+ * timelapse.c uses it the same way, so timelapse_stop() is not held up by it. */
 struct fanqueue;   /* fanqueue.h; only the pointer is needed here */
 typedef void (*hub_grab_hook)(struct fanqueue *q, void *ctx);
 ms_pkt     *hub_grab_jpeg(int src, int wait_ms, int *busy,
