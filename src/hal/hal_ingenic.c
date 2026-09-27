@@ -4120,11 +4120,15 @@ static void *audio_thread(void *arg)
                     if (n>0){
                         if (!dbg_logged){ LOGI(MOD,"AAC encoder producing (%u bytes/frame)",n); dbg_logged=1; }
                         /* A1: stamp with the AI capture time (frm.timeStamp),
-                         * sanitized to the ms_now_us base. At most one AAC frame
-                         * drains per AI frame (640 samples in, 1024-sample unit),
-                         * so successive drains carry distinct, increasing capture
-                         * stamps; the AAC nominal frame (1024/g_asr) is the
-                         * fallback interval. */
+                         * sanitized to the ms_now_us base. Up to 32 kHz at most
+                         * one AAC frame drains per AI frame (e.g. 640 samples
+                         * in, 1024-sample unit), so successive drains carry
+                         * distinct, increasing capture stamps. At 48 kHz an AI
+                         * frame (1920) can drain two: the second repeats the
+                         * stamp, fails pts_sanitize()'s monotonic check and
+                         * takes the nominal-interval fallback (1024/g_asr) -
+                         * RTP/fMP4 time audio by sample count, so only SRT's
+                         * PES PTS sees it. */
                         int64_t a_now = ms_now_us();
                         int64_t a_pts = pts_sanitize(&apts, frm.timeStamp, a_now,
                                                      (int64_t)1024*1000000/(g_asr>0?g_asr:16000),
