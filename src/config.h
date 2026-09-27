@@ -194,7 +194,8 @@ typedef struct {
      *    against it sooner and answer the shortfall with gain, so a camera
      *    running this key needs its daynight.*_gain thresholds re-checked
      *    rather than inherited. */
-    int      ae_it_max_us;
+    _Atomic int ae_it_max_us;       /* read lock-free per frame by the HAL's AE
+                                     * cap supervisor, hence F_ATOMIC */
 } ms_image_cfg;
 
 /* one OSD overlay: text (with placeholders) or a BGRA logo */

@@ -408,7 +408,11 @@ static void setup_cover(osd_stream *s, int n)
 {
     int rgn = s->pr_rgn[n];
     if (rgn < 0) return;
-    const ms_privacy_region *p=&g_hcfg->privacy[s->si][n];
+    ms_privacy_region pr;
+    config_str_lock();          /* POST-able: one consistent rectangle */
+    pr = g_hcfg->privacy[s->si][n];
+    config_str_unlock();
+    const ms_privacy_region *p=&pr;
     int W=s->width, H=s->height;
     int x=p->x, y=p->y, w=p->w, h=p->h;
     if (x<0) x=0; if (y<0) y=0;
@@ -570,8 +574,11 @@ static void *osd_thread(void *arg)
         int need = osd_needed();
         if (need){
             idle_cycles = 0;
-            osd_vars_set_fps(hub_get_fps(g_hcfg->osd.monitor_stream));
-            osd_vars_set_bitrate(hub_get_bitrate(g_hcfg->osd.monitor_stream));
+            config_str_lock();
+            int mon = g_hcfg->osd.monitor_stream;
+            config_str_unlock();
+            osd_vars_set_fps(hub_get_fps(mon));
+            osd_vars_set_bitrate(hub_get_bitrate(mon));
             OSD_LOCK();
             for (int si=0; si<MS_MAX_VSTREAM; si++){
                 if (!g_os[si].used) continue;
@@ -650,7 +657,11 @@ void imp_osd_apply(int stream, int item)
         if (stream>=0 && si!=stream) continue;
         osd_stream *s=&g_os[si];
         if (!s->used) continue;
-        const ms_osd_item *it=&g_hcfg->osd.items[si][item];
+        ms_osd_item itc;
+        config_str_lock();      /* every item field is POST-able */
+        itc = g_hcfg->osd.items[si][item];
+        config_str_unlock();
+        const ms_osd_item *it=&itc;
         osd_region *rg=&s->r[item];
         if (rg->rgn<0){
             if (it->enabled)
@@ -692,13 +703,15 @@ void imp_osd_privacy_apply(int stream, int item)
     osd_stream *s=&g_os[stream];
     if (s->used){
         if (s->pr_rgn[item] < 0){
-            if (g_hcfg->privacy[stream][item].enabled)
+            config_str_lock();
+            int pen = g_hcfg->privacy[stream][item].enabled;
+            config_str_unlock();
+            if (pen)
                 LOGW(MOD,"privacy %d: no region on stream %d (OSD+privacy off at "
                          "startup) - persisted, applies on restart", item, stream);
         } else {
             setup_cover(s, item);
-            LOGI(MOD,"privacy stream %d region %d re-applied (enabled=%d)",
-                 stream, item, g_hcfg->privacy[stream][item].enabled);
+            LOGI(MOD,"privacy stream %d region %d re-applied", stream, item);
         }
     }
     OSD_UNLOCK();

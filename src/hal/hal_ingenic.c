@@ -2471,8 +2471,11 @@ static void sw_osd_compose(vchan *vc)
         vc->osd.next_refresh_us = now + 1000000;
         /* keep {fps} fresh even when no bound stream runs imp_osd's updater
          * (all-sw-rotated config -> imp_osd_setup never ran) */
-        osd_vars_set_fps(hub_get_fps(g_hcfg->osd.monitor_stream));
-        osd_vars_set_bitrate(hub_get_bitrate(g_hcfg->osd.monitor_stream));
+        config_str_lock();
+        int mon = g_hcfg->osd.monitor_stream;
+        config_str_unlock();
+        osd_vars_set_fps(hub_get_fps(mon));
+        osd_vars_set_bitrate(hub_get_bitrate(mon));
     }
     int fw = vc->w, fh = vc->h;                  /* EFF (rotated) frame dims */
     for (int i=0; i<MS_MAX_OSD; i++){
@@ -4352,7 +4355,10 @@ static int rc_live_apply(int si, const char *k)
 #endif
     /* codec and fluc_lvl are restart-only: take them from what the channel
      * was built with, not from a POST still waiting for the restart */
-    ms_vstream_cfg lv = g_hcfg->video[si];
+    ms_vstream_cfg lv;
+    config_str_lock();          /* POST-able fields, rtsp_path string included */
+    lv = g_hcfg->video[si];
+    config_str_unlock();
     lv.codec    = g_cfg_boot.video[si].codec;
     lv.fluc_lvl = g_cfg_boot.video[si].fluc_lvl;
     const ms_vstream_cfg *v = &lv;
@@ -4691,11 +4697,14 @@ static int ing_control(const char *key, const char *val)
          * FrameSource with the cover, which would otherwise trip motion). If this
          * region is on the monitored stream and motion is running, rebuild the
          * grid so the mask takes/loses effect live. */
+        config_str_lock();
         int mon = g_hcfg->motion.monitor_stream;
         if (mon<0 || mon>=MS_MAX_VSTREAM || !g_hcfg->video[mon].enabled) mon=0;
+        int men = g_hcfg->motion.enabled;
+        config_str_unlock();
         /* M2: same deferral - dragging one privacy rectangle posts x+y+w+h in a
          * single request; rebuild the grid once at commit, not four times. */
-        if (g_hcfg->motion.enabled && s==mon) g_motion_resync_pending = 1;
+        if (men && s==mon) g_motion_resync_pending = 1;
         return 1;
     }
 

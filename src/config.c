@@ -750,7 +750,7 @@ static const cfg_field image_fields[] = {
     /* 0 = off. The ceiling is 1 s because a sensor line maximum on these parts
      * is well under that at any usable frame rate; the HAL clamps to the real
      * sensor range anyway, so this only rejects nonsense. */
-    F("ae_it_max_us",           0, ae_it_max_us,           T_INT, F_CTRL|CAP_AEITMAX,    0,1000000),
+    F("ae_it_max_us",           0, ae_it_max_us,           T_INT, F_ATOMIC|F_CTRL|CAP_AEITMAX, 0,1000000),
 };
 #undef CAP_HUE
 #undef CAP_AECOMP
