@@ -56,6 +56,8 @@
 #ifndef RTSP_SESSION_TIMEOUT_S
 #define RTSP_SESSION_TIMEOUT_S 60
 #endif
+/* rejected credential attempts before the connection is closed */
+#define RTSP_MAX_AUTH_FAILS 5
 /* Shutdown drain window (rtsp_stop): how long teardown waits for the detached
  * per-client threads to return. -D overridable (mirrors MS_HTTP_DRAIN_MS in
  * mp4/httpd.c) so a shutdown-latency measurement can widen it and see how long
@@ -375,6 +377,7 @@ typedef struct {
     char                session[16];
     char                nonce[36];      /* per-connection digest nonce */
     int                 authed;
+    int                 auth_fails;   /* presented-and-rejected credentials */
     int                 vchn;          /* video source index, -1 none */
     int                 have_video, have_audio;
     /* transport */
@@ -531,10 +534,11 @@ static void extract_path(const char *req, char *out, int outsz)
     strncpy(out, p, outsz-1); out[outsz-1]=0;
 }
 
-static void gen_sdp(session *s, const ms_config *c, int vchn, char *sdp, int sdpsz, int want_bc)
+/* 0 = ok, -1 = the SDP did not fit (never ship a silently truncated one) */
+static int gen_sdp(session *s, const ms_config *c, int vchn, char *sdp, int sdpsz, int want_bc)
 {
     (void)want_bc;
-    char body[2048]; int n=0;
+    char body[2600]; int n=0;
     struct sockaddr_in local; socklen_t sl=sizeof local;
     char ip[INET_ADDRSTRLEN];
     /* L12: getsockname() can fail (e.g. fd race on a fast disconnect); its
@@ -678,8 +682,9 @@ static void gen_sdp(session *s, const ms_config *c, int vchn, char *sdp, int sdp
                 pt, (pt==97?clk/667:64), pt, bc_rtpmap_name(), clk, fmtp);
     }
 #endif
-    (void)sdpsz;
-    snprintf(sdp, sdpsz, "%s", body);
+    if (n < 0 || n >= (int)sizeof(body) || n >= sdpsz) return -1;
+    memcpy(sdp, body, (size_t)n + 1);
+    return 0;
 }
 
 static void send_resp(session *s, int cseq, const char *extra, const char *body)
@@ -749,6 +754,17 @@ static void get_auth_hdr(const char *req, char *out, int outsz)
     memcpy(out,v,n); out[n]=0;
 }
 
+/* even base in 6000..14190 for a UDP port pair. rand() is not guaranteed
+ * thread-safe on uClibc and every client thread picks ports. */
+static int udp_port_base(void)
+{
+    static pthread_mutex_t mu = PTHREAD_MUTEX_INITIALIZER;
+    pthread_mutex_lock(&mu);
+    int r = rand();
+    pthread_mutex_unlock(&mu);
+    return 6000 + ((r % 8192) & ~1);
+}
+
 /* returns 1 if request is authenticated (or auth not required) */
 static int rtsp_check_auth(session *s, char *req)
 {
@@ -774,6 +790,7 @@ static int rtsp_check_auth(session *s, char *req)
         char ip[INET_ADDRSTRLEN];
         if (!inet_ntop(AF_INET, &s->peer.sin_addr, ip, sizeof ip)) ip[0] = 0;
         auth_fail_note(MOD, ifc, ip);
+        s->auth_fails++;
     }
     return 0;
 }
@@ -852,7 +869,11 @@ static int handle_request(session *s, char *req)
         return 0;
     }
     /* every method except OPTIONS requires authentication */
-    if (!rtsp_check_auth(s, req)) { rtsp_send_401(s, cseq); return 0; }
+    if (!rtsp_check_auth(s, req)) {
+        rtsp_send_401(s, cseq);
+        /* no unlimited password guessing on one connection */
+        return s->auth_fails >= RTSP_MAX_AUTH_FAILS ? -1 : 0;
+    }
     /* A5: a stale/garbage Session id must not silently act on the one
      * session this connection owns (RFC 2326 12.37) */
     if (!session_matches(s, req)) {
@@ -916,7 +937,12 @@ static int handle_request(session *s, char *req)
          * a=sendonly backchannel m-line in the SDP. */
         { const char *rq = hdr_find(req, "Require"); want_bc = rq && strstr(rq,"backchannel"); }
 #endif
-        char sdp[2600]; gen_sdp(s, s->cfg, vchn, sdp, sizeof sdp, want_bc);
+        char sdp[2600];
+        if (gen_sdp(s, s->cfg, vchn, sdp, sizeof sdp, want_bc) != 0) {
+            LOGW(MOD, "SDP for chn%d exceeds %d bytes - refusing DESCRIBE", vchn, (int)sizeof sdp);
+            send_err(s, cseq, 500, "Internal Server Error", NULL);
+            return 0;
+        }
         /* A6: explicit Content-Base (request URL, '/'-terminated per RFC
          * 2326 C.1.1) so strict parsers resolve the relative
          * a=control:trackID=N against it instead of guessing a base from
@@ -975,7 +1001,7 @@ static int handle_request(session *s, char *req)
                 if (s->bc_udp[1]>=0){ close(s->bc_udp[1]); s->bc_udp[1]=-1; }
                 int base=0, bound=-1;
                 for (int t=0;t<64 && bound<0;t++){
-                    base = 6000 + ((rand()%8192)&~1);
+                    base = udp_port_base();
                     bound = net_bind_udp_pair(&s->bc_udp[0], &s->bc_udp[1], base);
                 }
                 if (bound<0){ send_err(s, cseq, 500, "Internal Server Error", NULL); return -1; }
@@ -1049,7 +1075,7 @@ static int handle_request(session *s, char *req)
              * as soon as a few clients streamed concurrently -> bind failed. */
             int base = 0, bound = -1;
             for (int t = 0; t < 64 && bound < 0; t++) {
-                base = 6000 + ((rand() % 8192) & ~1);       /* even, 6000..14190 */
+                base = udp_port_base();
                 bound = net_bind_udp_pair(&udp[0], &udp[1], base);
             }
             if (bound < 0){
