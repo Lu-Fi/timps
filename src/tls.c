@@ -128,6 +128,11 @@ ms_tls_ctx *ms_tls_ctx_new(const char *cert_file, const char *key_file)
                                  MBEDTLS_SSL_MINOR_VERSION_3);
 #endif
     mbedtls_ssl_conf_rng(&c->conf, mbedtls_ctr_drbg_random, &c->drbg);
+    /* No ciphersuite list on purpose. The default already puts ChaCha20 first
+     * and TLS 1.2 honours the server's order; TLS 1.3 follows the client's
+     * (no server-preference knob in 3.6), so AES-first clients cost software
+     * AES on this MIPS core. Dropping AES-256-GCM would steer some clients to
+     * ChaCha20, but is an interop risk nobody has measured the payoff of. */
 #ifdef MS_TLS_TICKETS
     /* Resumption saves a full handshake (an RSA/ECDHE signature on a 1 GHz
      * MIPS core) whenever the WebUI reopens a connection. Tickets only - the
