@@ -30,6 +30,7 @@
 #include <unistd.h>
 #include <pthread.h>
 #include <poll.h>
+#include <fcntl.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
 
@@ -240,6 +241,28 @@ static int crecv(hconn *c, void *buf, int len, int flags)
     }
 #endif
     return recv(c->fd, buf, len, flags);
+}
+
+/* One read for the deadline-bounded head/body loops: >0 bytes, 0 = nothing
+ * yet (retry under the caller's deadline), <0 = EOF/error. ms_tls_read()'s 0
+ * is "no data yet" (a non-application record), not EOF. TLS reads run
+ * non-blocking: on the blocking fd each trickled partial record restarted the
+ * 30 s SO_RCVTIMEO while the caller's 5 s deadline was only checked between
+ * records. */
+static int crecv_dl(hconn *c, void *buf, int len)
+{
+#ifdef USE_TLS
+    if (c->tls) {
+        int fl = fcntl(c->fd, F_GETFL, 0);
+        if (fl >= 0) fcntl(c->fd, F_SETFL, fl | O_NONBLOCK);
+        int r = ms_tls_read((ms_tls_conn *)c->tls, buf, len);
+        if (fl >= 0) fcntl(c->fd, F_SETFL, fl);
+        return r;
+    }
+#endif
+    int r = (int)recv(c->fd, buf, (size_t)len, 0);
+    if (r < 0 && errno == EINTR) return 0;
+    return r == 0 ? -1 : r;
 }
 
 /* the player HTML is split so the correct MSE codec string (derived from the
@@ -1656,8 +1679,8 @@ static char *read_body_heap(hconn *c, const char *buf, int n, const char **statu
             struct pollfd pfd; pfd.fd = c->fd; pfd.events = POLLIN; pfd.revents = 0;
             if (poll(&pfd, 1, (int)(left_us/1000)+1) <= 0) break;
         }
-        int r = crecv(c, out + have, clen - have, 0);
-        if (r <= 0) break;
+        int r = crecv_dl(c, out + have, clen - have);
+        if (r < 0) break;
         have += r;
     }
     if (have < clen) { free(out); *status = "400 Bad Request"; return NULL; }
@@ -1764,8 +1787,8 @@ static void *conn_thread(void *arg)
             int pr = poll(&pfd, 1, (int)(left_us/1000)+1);
             if (pr <= 0) break;                /* timeout or poll error */
         }
-        int r = crecv(c, buf+n, sizeof(buf)-1-n, 0);
-        if (r <= 0) break;
+        int r = crecv_dl(c, buf+n, sizeof(buf)-1-n);
+        if (r < 0) break;
         n += r;
         buf[n] = 0;
         if (strstr(buf,"\r\n\r\n") || n >= (int)sizeof(buf)-1) break;
@@ -2118,8 +2141,8 @@ static void *conn_thread(void *arg)
                                 pfd.fd = c->fd; pfd.events = POLLIN; pfd.revents = 0;
                                 if (poll(&pfd, 1, (int)(left_us/1000)+1) <= 0) break;
                             }
-                            int r = crecv(c, buf+n, sizeof(buf)-1-n, 0);
-                            if (r <= 0) break;
+                            int r = crecv_dl(c, buf+n, sizeof(buf)-1-n);
+                            if (r < 0) break;
                             n += r; have += r; buf[n] = 0;
                         }
                         /* Found by review: Content-Length was validated above
