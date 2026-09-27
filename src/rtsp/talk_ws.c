@@ -124,12 +124,18 @@ void talk_ws_serve(int fd, void *tls, const char *head, int head_len,
      * Sec-* headers is not something a browser form can produce, but nothing
      * upstream of this point rejects one either. */
     if (strncmp(head, "GET ", 4) != 0) {
-        ws_handshake_reject(&io, 405, "Method Not Allowed", "GET required");
+        /* a HEAD response never carries a body */
+        ws_handshake_reject(&io, 405, "Method Not Allowed",
+                            strncmp(head, "HEAD ", 5) ? "GET required" : "");
         return;
     }
     rate = talk_rate(path);
     if (!rate) {
-        LOGW(MOD, "refused: unsupported rate= in %s", path);
+        /* the value only: the query also carries the auth token, and these
+         * logs are shipped off the camera */
+        const char *rv = qparam(path, "rate");
+        int rl = rv ? (int)strcspn(rv, "&") : 0;
+        LOGW(MOD, "refused: unsupported rate=%.*s", rl > 16 ? 16 : rl, rv ? rv : "");
         ws_handshake_reject(&io, 400, "Bad Request", "bad rate");
         return;
     }
