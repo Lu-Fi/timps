@@ -6,6 +6,224 @@ semantic versioning.
 
 ## [Unreleased]
 
+A security and reliability hardening pass over the whole daemon (two audit
+rounds: bugs, reliability, performance, security).
+
+### Changed
+
+- **`osd.vars_file` is gone; the `{placeholder}` file is fixed at
+  `/tmp/timps_osd.vars`.** The key was POST-able, so any `/control` caller
+  could point it at `/etc/timps.conf` and render its passwords and tokens into
+  the video through a `{placeholder}`. It is no longer a config key at all,
+  not even file-only, and `GET /control`'s `osd` object no longer carries it.
+  An old `osd.vars_file` line logs `unknown key osd.vars_file` and is dropped
+  on the next rewrite; scripts that wrote to the default path need no change.
+- **`record.dir` / `timelapse.dir` on the root filesystem are refused.** Both
+  are POST-able and took any absolute path, and an SD mount point with no card
+  in it silently recorded into flash. A dir (or its nearest existing parent) on
+  the rootfs device now logs one `[ERR] record.dir … is on the root filesystem
+  (card not mounted?)` (same for `timelapse.dir`) and nothing is written until
+  the card is back; the recorder also shows it in `record.last_error`. `/tmp`
+  stays allowed.
+- **Tighter ranges:** `timelapse.keep_days` is clamped to 0..3650, OSD item
+  `x`/`y` and privacy `x`/`y` to -8192..8192, privacy `w`/`h` to 0..8192. All
+  were unbounded; the OSD/privacy ones could overflow the edge math (see
+  Fixed).
+- **Channel wiring is validated at load.** `videoN.imp_chn` must equal `N`
+  (it doubles as the hub slot) and is reset to `N` with an `[ERR]` line;
+  a `jpeg.imp_chn` or `videoN.jpeg_chn` that collides with another encoder
+  channel is moved to the lowest free one (or the JPEG encoder disabled if
+  none is free). Before, a wrong `imp_chn` fed another stream's or the audio
+  slot, and a collision failed `start()` into its retry/reboot path.
+- **Cross-origin POSTs authenticated by Basic/Digest get `403 bad origin`.**
+  Browsers re-send cached HTTP credentials on a cross-site form post, so any
+  web page could drive `/control` on a camera the viewer had logged into. A
+  POST whose `Origin` host differs from the `Host` header's host is refused
+  (log: `refused cross-origin POST …`); token and loopback requests, and
+  clients that send no `Origin` (curl, scripts), are unaffected. Same rule
+  `/talk` already applied.
+- **RTSP closes a connection after 5 rejected logins, and one that has not
+  reached `PLAY` within 60 s.** One connection allowed unlimited password
+  guesses, and since `OPTIONS` needs no auth, eight idle connections sending
+  one every <30 s locked RTSP out for everyone.
+- **Keyframe requests from starting clients are rate-limited per stream.**
+  `hub_request_idr()` was unthrottled, so a reconnect loop or a flood of
+  `DESCRIBE`/page loads forced an IDR on nearly every frame (unauthenticated
+  on an open camera). A start request within 500 ms of the last forced IDR is
+  now coalesced like a recovery request, and `DESCRIBE` and the player page
+  ask only when the hub has no parameter sets yet.
+- **`{"record":{"clip":…}}` no longer blocks every other `POST /control`.**
+  The capture held the apply lock for up to `seconds + 5` s. It now runs after
+  the lock is released (the POST still returns once the clip is written, which
+  send2 relies on); a clip requested while another is still being written is
+  refused and counted in `rejected` instead of queueing.
+- **Shutdown: one 4 s deadline instead of 3 s re-armed to up to 6 s.** The
+  re-arm before the HAL teardown pushed the worst case past `S95timps`' 5 s
+  `wait_stop`, which then `SIGKILL`ed mid-teardown anyway. Shutdown also stops
+  accepting POSTs (`503`) and waits up to 1 s for one still writing the
+  config, which process exit used to cut mid-write, losing the change and
+  leaving a stray temp file.
+- **Config rewrites keep the file's mode.** Every POST forced `0644` on
+  `/etc/timps.conf`, undoing a hand-applied `chmod 600` on a file of
+  passwords and tokens; a newly created file is `0600`. A line with an
+  embedded NUL byte is now dropped with a warning instead of silently
+  truncated, and config warnings name only the key, never a prefix of a
+  possibly secret value.
+- **SRT timestamps are session-relative, with PCR 300 ms behind PTS.** The
+  33-bit MPEG-TS clock wrapped after ~26.5 h of camera uptime mid-session; it
+  now wraps after 26.5 h of one session and sets the discontinuity flag when
+  it does. PCR equal to PTS signalled zero decode delay, which strict hardware
+  demuxers treat as an underflow.
+- **SRT warns when the listener has no passphrase but RTSP/HTTP credentials
+  are set:** `SRT listener on port N has NO access control …`. `srt.streamid`
+  is plaintext, so such a listener serves video to anyone regardless of the
+  credentials the other protocols demand.
+- **T23 software-rotated OSD: `font_size` is absolute pixels,** as on every
+  other path. It used to be scaled by stream height / 1080 (minimum 12), so
+  text on a rotated sub-1080 stream now renders at the configured size and
+  may need a smaller value.
+- **HTTP answers early failures with a status:** `503` for fMP4/MJPEG queue
+  OOM and for "no video params" (was a bare close, which kept the WebUI's
+  ≥500 retry from ever firing), `400` for an unparsable request line, `414`
+  for a request target over 255 characters (was silently truncated, so e.g. a
+  Digest `uri=` for a long URL could never match).
+- **Digest nonces: 64 slots, at most 4 per peer.** Every 401 minted a nonce
+  into a 32-slot ring, so a modest flood of credential-less requests evicted a
+  legitimate client's challenge before it could answer; a flooding peer now
+  recycles its own.
+- **`record.free_mb` / `timelapse.free_mb` in `GET /control` are refreshed
+  every 10 s by the recorder/timelapse threads** instead of a `statvfs` on
+  every status poll: a wedged SD card or hard-mounted NFS dir blocked every
+  `GET /control`. The value can be up to 10 s old.
+
+### Fixed
+
+- **Timelapse: a large `timelapse.keep_days` deleted the whole archive.** On
+  32-bit `time_t` the cutoff `now - days*86400` overflowed into the future
+  (e.g. `99999` meant as "keep forever"), so every shot looked expired. The
+  cutoff is computed in 64 bits and pruning is skipped when nothing can be
+  that old.
+- **Pruning deleted the footage from right after a power cut first.** Without
+  an RTC, files written before NTP sync carry a ~1970 mtime: the recorder's
+  free-space prune took them as the oldest, and the timelapse age prune
+  deleted such shots on its first pass. Pre-2025 mtimes now sort as newest and
+  are never age-pruned.
+- **Motion pre-roll came out anywhere from `pre_roll_s` down to ~0.** The
+  time trim dropped the keyframe the pre-roll window starts at; the ring now
+  keeps the newest keyframe at or before the cutoff, and a start with no
+  buffered keyframe requests an IDR instead of losing up to a GOP of the
+  event. While segment opens kept failing (card missing or read-only) the ring
+  was frozen, and a later successful open spliced minutes-old pre-roll onto
+  live frames; it now keeps rolling.
+- **Hook scripts inherited write fds to open SD files,** so unmounting the
+  card failed with `EBUSY` until the hook exited. Recording segments, clips,
+  timelapse shots and snapshots are opened `O_CLOEXEC`.
+- **`record.clip` followed a symlink in any path component but the last**
+  (`O_NOFOLLOW` covers only the last), so a planted `/tmp/x -> /etc`
+  redirected the write. The path is walked with `openat(O_NOFOLLOW)`. The
+  strftime-expanded `record.name`/`timelapse.name` is vetted for `..` too,
+  not just the template.
+- **OSD: a FIFO or device as font, logo or vars file blocked the OSD thread
+  (or startup, for `font_path`) forever.** Only regular files are opened.
+- **OSD/privacy geometry overflow:** an `x` near `INT_MAX` overflowed the
+  `x + w > W` check and handed `IMP_OSD_SetRgnAttr` a rectangle past the frame
+  buffer. Edge math is 64-bit, on top of the new ranges above.
+- **An oversize OSD text was rasterized and WARNed again every tick** —
+  every frame on the T23 software-rotate path. A discarded render is latched
+  until the text or the item's style changes, its WARN is limited to one per
+  60 s, and the size is measured before rasterizing instead of building a
+  canvas up to 4096 px wide only to throw it away. On the software-rotate
+  path a live style edit (size, colour, outline) now re-renders even when the
+  text is unchanged.
+- **OSD custom placeholders re-read the vars file once per placeholder per
+  render;** it is read at most once per ~0.9 s (up to 4 KB). `{net}` no longer
+  shows a wrapped-around rate after an interface counter reset. A crafted font
+  could fan composite glyphs out to N^5 components; now capped at 64 per
+  glyph.
+- **The audio watchdog fired after ~255 s instead of ~5 s.** It counted
+  `PollingFrame` misses, each of which blocks up to
+  `general.imp_polling_timeout`; it now measures elapsed time.
+- **An encoder start that never succeeded retried forever**, logging
+  `EnableChn failed` up to 5×/s. Failed starts now count toward the same
+  give-up as the stall watchdog (`StartRecvPic kept failing for N attempts -
+  … exiting`), and the `EnableChn` error is logged on the 1st and every 20th
+  attempt.
+- **`image.ae_it_max_us` on T10/T20/T21/T30 could wrap the SDK's 16-bit line
+  count** into a tiny cap; it is clamped at 65535 with a warning. The AE cap
+  supervisor is driven only by framesource-0 frames: frames of the dedicated
+  `jpeg.*` channel alone (a boot snapshot) produced a misleading "cap in
+  effect" verdict.
+- **An all-empty encoder pack batch was published as a 0-byte access unit**
+  (the JPEG path already guarded this). A libfaac frame size the AAC
+  re-blocking buffer cannot hold now falls back to PCMU instead of spinning
+  (not reachable with AAC-LC today).
+- **Day/night calendar:** after the first heartbeat re-arm of a night the
+  calendar's dawn pull-in was never applied again (it ran at one of seven
+  re-arm sites); a sunrise/sunset offset that crosses solar midnight was
+  clipped (Berlin, +240 min: night at 23:07 UTC instead of 00:26) while
+  `sun_computed_*` showed the right time; a time window with equal or invalid
+  edges was reported as a calendar it could not answer and is now ignored with
+  a startup warning; the sun-time memo is locked (the control thread reads
+  it); `mode=schedule` leaves `isp_desync` "unknown" after boot.
+- **WebRTC under load and on lossy paths:** one datagram per loop pass let a
+  UDP flood to the media port tail-drop consent checks, DTLS and RTCP (now up
+  to 32 per pass); a lost final DTLS flight was never resent, and the peer's
+  `close_notify` now ends the session; a candidate re-nominated before the
+  handshake completes is accepted; handshake datagrams are kept under a
+  1200-byte MTU instead of relying on IP fragmentation. Offers with `; `
+  (space after the semicolon) in `a=fmtp` — legal, and sent by some non-browser
+  WHEP clients — were rejected.
+- **STUN:** MESSAGE-INTEGRITY is compared in constant time, attributes after
+  it (outside the HMAC) other than FINGERPRINT are ignored, and HMAC key
+  material and a session's ICE credentials are wiped after use.
+- **HTTP over TLS:** a non-application TLS record between requests was taken
+  for EOF (spurious `400`/`401`), and a peer trickling a record byte by byte
+  renewed the 30 s socket timeout, so the 5 s header deadline did not bound it.
+  `Content-Length` / `Transfer-Encoding` are matched only at header line
+  starts, not inside another header's value.
+- **WebSocket (`/talk`):** reserved opcodes now fail the connection
+  (RFC 6455 §5.2), a TLS write waits against one absolute deadline (a peer
+  that kept sending restarted it forever), and an oversized fragmented message
+  resets reassembly. The rejected-`rate=` log no longer prints the query
+  string, which carries the auth token; `HEAD` gets a bodyless `405`.
+- **Log hygiene:** the User-Agent is logged verbatim, and only CR/LF were
+  stripped, so a client could inject terminal escapes into log viewers; control
+  bytes are now `?`. `last_errors` aged a warning captured before NTP sync as
+  ~56 years old forever (now `CLOCK_MONOTONIC`). A late byte count from a
+  client thread could be credited to the client that reused its slot in
+  `?clients=1`.
+- **JSON replies could silently show a shortened value:** several escape
+  buffers were sized for 2× the raw field, but an invalid byte becomes a
+  3-byte U+FFFD.
+- **RTSP:** an SDP that outgrew its buffer was sent truncated (now `500`);
+  UDP port picks called `rand()` from every client thread.
+- **SRT caller: `srt_stop()` could wait out a whole `SRTO_CONNTIMEO`** when
+  it ran between socket creation and publication.
+- **Shutdown and crash paths:** `rtsp_stop()` freed the TLS context and
+  `webrtc_stop()` dropped the DTLS one while client threads were still live
+  (both now leak at exit, as `httpd_stop()` does); a stalled JPEG grab in
+  timelapse ate up to 3 s of the shutdown budget; a stack overflow in a worker
+  thread died without the `/run/timps.crash` record (`sigaltstack` is per
+  thread); and after a bring-up teardown had to be abandoned, the one-shot
+  reboot could deadlock on a lock the jump left held (the give-up now uses
+  async-signal-safe calls only and reports on stderr).
+- **Speaker play queue:** a WAV chunk size of `0xFFFFFFF8` seeked back onto
+  its own header forever and a short `fmt ` chunk left fields uninitialized;
+  a FIFO line too long for the buffer was truncated without its newline and
+  glued onto the next command (now refused).
+- Several POST-able fields (OSD items and globals, privacy regions,
+  `motion.*`, `videoN.*` including `rtsp_path`, `record.*`, `timelapse.*`,
+  `audio.talk_ws`) were read without the config lock by `GET /control`, the
+  OSD threads and the HAL; `image.ae_it_max_us`, read per frame, is atomic.
+  `eg_ue()` no longer shifts by 32 on a malformed Exp-Golomb code.
+
+### Testing
+
+- `make test-timelapse-prune` (retention cutoff) and `make test-record-ring`
+  (pre-roll ring); new cases in `test-config` (channel wiring, embedded NUL,
+  file mode), `test-clients`, `test-daynight-sun`, `test-hub-idr` and
+  `test-stun`.
+
 ## [1.9.27] - 2026-09-27
 
 ### Fixed
