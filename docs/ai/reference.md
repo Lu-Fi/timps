@@ -305,14 +305,15 @@ stream that has `videoN.jpeg = true` (which defaults to on), so they still work
 `backchannel_codec` `pcmu`, `backchannel_rate` 16000.
 
 **`osd.`** — `enabled` 1, `monitor_stream` 0, `font_path`
-`/usr/share/fonts/default.ttf` (empty = built-in bitmap font), `vars_file`
-`/tmp/timps_osd.vars`, `supersample` 2 (1–4), `hinting` 1. Items:
+`/usr/share/fonts/default.ttf` (empty = built-in bitmap font),
+`supersample` 2 (1–4), `hinting` 1. Items:
 `osd<S>.<N>.{enabled,type,text,x,y,font_size,color,transparency,
 outline,outline_color,logo,logo_w,logo_h,font_path}`. `type` is `text` or
 `logo`. Position convention: `0` = centered on that axis, positive = from
 left/top, negative = from right/bottom. Text placeholders: strftime tokens plus
 `{hostname} {ip} {mac} {fps} {bitrate} {uptime}`, stream-scoped `{fpsN}` /
-`{bitrateN}`, and any `{name}` written into `osd.vars_file` as `name = value`.
+`{bitrateN}`, and any `{name}` written into the fixed `/tmp/timps_osd.vars`
+(`name = value` lines - not a config key, see `docs/ai/config-keys.md` §8).
 `font_size` is absolute pixels and is **not** auto-scaled per stream.
 Legacy `osd<N>.<field>` keys still load and apply to every stream.
 

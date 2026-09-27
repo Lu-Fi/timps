@@ -175,24 +175,29 @@ static void get_mem(char *out, int outsz)   /* free RAM in MB */
 }
 
 
-/* look up 'name' in a key=value file; returns 1 if found. The file is read
- * at most once per ~0.9 s (the same TTL as the other caches here) instead of
- * once per unknown {placeholder} per render; two OSD threads share the copy. */
+/* Fixed path, not configurable: osd.vars_file used to be a POSTable/settable
+ * config key, which meant it could be pointed at timps.conf itself and
+ * render credentials onto the video through a {placeholder}. Scripts write
+ * here instead. */
+#define OSD_VARS_FILE "/tmp/timps_osd.vars"
+
+/* look up 'name' in the key=value file above; returns 1 if found. The file
+ * is read at most once per ~0.9 s (the same TTL as the other caches here)
+ * instead of once per unknown {placeholder} per render; two OSD threads
+ * share the copy. */
 #define VARS_CACHE_MAX 4096
-static int lookup_file(const char *file, const char *name, char *out, int outsz)
+static int lookup_file(const char *name, char *out, int outsz)
 {
-    static char path[128], data[VARS_CACHE_MAX];
+    static char data[VARS_CACHE_MAX];
     static int64_t read_us;
-    if (!file || !file[0]) return 0;
     int found = 0;
     size_t nl = strlen(name);
     int64_t now = mono_us();
     pthread_mutex_lock(&g_mu);
-    if (strcmp(path, file) || !read_us || now - read_us >= 900000){
-        snprintf(path, sizeof path, "%s", file);
+    if (!read_us || now - read_us >= 900000){
         read_us = now;
         data[0] = 0;
-        FILE *f = ms_fopen_regular(file);
+        FILE *f = ms_fopen_regular(OSD_VARS_FILE);
         if (f){
             size_t n = fread(data, 1, sizeof data - 1, f);
             data[n] = 0;
@@ -223,7 +228,7 @@ static int lookup_file(const char *file, const char *name, char *out, int outsz)
     return found;
 }
 
-static void resolve(const char *name, const char *vars_file, char *out, int outsz)
+static void resolve(const char *name, char *out, int outsz)
 {
     /* The interface is resolved ONCE and then kept - it does not change under
      * a running daemon, and getifaddrs() per placeholder per tick is exactly
@@ -281,10 +286,10 @@ static void resolve(const char *name, const char *vars_file, char *out, int outs
     else if (!strcmp(name,"cpu"))      get_cpu(out,outsz);
     else if (!strcmp(name,"mem"))      get_mem(out,outsz);
     else if (!strcmp(name,"clients"))  snprintf(out,outsz,"%d",hub_video_subs());
-    else if (!lookup_file(vars_file,name,out,outsz)) out[0]=0; /* unknown -> empty */
+    else if (!lookup_file(name,out,outsz)) out[0]=0; /* unknown -> empty */
 }
 
-int osd_expand(const char *tmpl, const char *vars_file, char *out, int outsz)
+int osd_expand(const char *tmpl, char *out, int outsz)
 {
     char stage1[512]; int o=0;
     for (const char *p=tmpl; *p && o<(int)sizeof(stage1)-1; ){
@@ -294,7 +299,7 @@ int osd_expand(const char *tmpl, const char *vars_file, char *out, int outsz)
                 char name[64]; int n=(int)(e-p-1);
                 if (n>0 && n<(int)sizeof name){
                     memcpy(name,p+1,n); name[n]=0;
-                    char val[128]; resolve(name,vars_file,val,sizeof val);
+                    char val[128]; resolve(name,val,sizeof val);
                     for (const char *q=val; *q && o<(int)sizeof(stage1)-1; ) stage1[o++]=*q++;
                 }
                 p=e+1; continue;

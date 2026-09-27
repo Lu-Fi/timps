@@ -278,8 +278,11 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   links/oben, negativ = von rechts/unten.
 * **Platzhalter**: strftime-Tokens plus `{hostname} {ip} {mac} {fps} {bitrate}
   {uptime}`, stream-bezogen `{fpsN}`/`{bitrateN}`, sowie beliebige eigene
-  `{name}` aus `osd.vars_file` (z. B. `/tmp/timps_osd.vars`), die ein Skript
-  schreiben kann.
+  `{name}` aus einer fest einkompilierten Datei (`/tmp/timps_osd.vars`), die
+  ein Skript schreiben kann - der Pfad ist **nicht** konfigurierbar (auch
+  nicht per Config-Datei): er war es mal (`osd.vars_file`), aber ein
+  einstellbarer Pfad konnte auf `timps.conf` selbst zeigen und dessen
+  Zugangsdaten über einen `{platzhalter}` ins Video rendern.
 * Globale OSD-Keys: `osd.enabled`, `osd.monitor_stream`, `osd.font_path`,
   `osd.supersample` (Kantenglättung 1–4, Default 2), `osd.hinting`
   (geometrisches Autohinting für kleine Schrift, Laufzeit-Default 1, wirkt aber
@@ -287,7 +290,7 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   `enabled`, `font_path`, `supersample` und `hinting` sind per `/control`
   setzbar, greifen aber erst nach einem Neustart; `monitor_stream` wirkt
   sofort (ab v1.9.20 meldet die API das auch so: `caps.restart` und
-  `deferred_keys`). `osd.vars_file` ist nur per Config-Datei setzbar.
+  `deferred_keys`).
 * **Privatsphäre-Masken**: bis zu 4 Rechtecke pro Stream
   (`privacy<S>.<N>.{enabled,x,y,w,h,color}`), als IMP-OSD-Cover-Regionen,
   live verschiebbar. Verfügbarkeit meldet `caps.privacy`.

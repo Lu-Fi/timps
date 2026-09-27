@@ -372,7 +372,6 @@ void config_defaults(ms_config *c)
      * every stream (time / hostname / uptime / logo) */
     c->osd.enabled=1; c->osd.monitor_stream=0; c->osd.supersample=2; c->osd.hinting=1;
     copystr(c->osd.font_path,"/usr/share/fonts/default.ttf",128);
-    copystr(c->osd.vars_file,"/tmp/timps_osd.vars",128);
     for (int s=0;s<MS_MAX_VSTREAM;s++){
         ms_osd_item *it=c->osd.items[s];
         for (int i=0;i<MS_MAX_OSD;i++){
@@ -946,15 +945,15 @@ static const cfg_field srt_fields[] = {
 
 #define TT ms_osd_cfg
 /* enabled/font_path/supersample/hinting are read once by imp_osd_setup()
- * (F_RESTART); monitor_stream and vars_file are read by the OSD thread on
- * every refresh, so they are live. vars_file is NOT F_CTRL: any root-readable
- * "key = value" file (timps.conf itself) would render its values - passwords
- * and tokens included - into the video through a {placeholder}. */
+ * (F_RESTART); monitor_stream is read by the OSD thread on every refresh, so
+ * it is live. The {placeholder} source file (osd_vars.c's OSD_VARS_FILE) has
+ * no config key at all, not even file-only: it used to (osd.vars_file), but
+ * any root-readable "key = value" file - timps.conf itself included - would
+ * render its values, passwords and tokens included, into the video. */
 static const cfg_field osd_fields[] = {
     F ("enabled",        0, enabled,        T_BOOL, F_CTRL|F_RESTART, 0,0),
     F ("monitor_stream", 0, monitor_stream, T_INT,  F_CTRL, 0,0),
     FS("font_path",      0, font_path,      F_CTRL|F_RESTART),
-    FS("vars_file",      0, vars_file,      0),
     F ("supersample",    0, supersample,    T_INT,  F_CTRL|F_RESTART, 1,4),
     /* geometric autohint, default on: see the ms_osd_cfg.hinting comment
      * in config.h and msttf_set_hinting() for what this does and why it's

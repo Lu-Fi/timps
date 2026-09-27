@@ -282,7 +282,6 @@ overlay fields are documented separately below (`osd<S>.<N>.*`).
 | `osd.enabled` | bool | 1 | 0/1 | Restart-only | Master OSD on/off switch, global across all streams. Settable via `/control` (`{"osd":{"enabled":...}}`) and persists, but the OSD groups are only ever built once at startup (`imp_osd_setup`), so the effect needs a restart. |
 | `osd.monitor_stream` | int | 0 | — | **Live** | Which stream's measured fps/bitrate feeds the `{fps}` and `{bitrate}` placeholders — for every OSD layer, on every stream. Use the numbered `{fpsN}`/`{bitrateN}` forms instead when a layer should show its own stream's figures. Settable via `/control` (`{"osd":{"monitor_stream":...}}`); read directly off `g_cfg` on every OSD text refresh, so a POST applies on the next render, no restart needed. |
 | `osd.font_path` | string | `/usr/share/fonts/default.ttf` | — | Restart-only | Default TTF font for text items without a per-item `font_path` override. Settable via `/control`, same restart-required class as `osd.enabled`. |
-| `osd.vars_file` | string | `/tmp/timps_osd.vars` | — | **Live** | Custom placeholder source file (see "Custom placeholders" below). File-only (not settable via `/control`); the OSD thread re-reads the file on every text refresh. Must be a regular file. |
 | `osd.supersample` | int | 2 | 1–4 | Restart-only | TTF rasterizer anti-aliasing quality (samples per axis per pixel); cost scales ~quadratically, 2 is visually close to 4 at typical OSD sizes for roughly a quarter of the CPU cost. Settable via `/control`, same restart-required class as `osd.enabled`. |
 | `osd.hinting` | bool | 1 | 0/1 | Restart-only (only if `USE_OSD_HINTING` compiled in) | Opt-in lightweight geometric autohint for the TTF rasterizer. The rasterizer (`msttf.c`) does not execute the font's embedded TrueType hint bytecode (a real hint interpreter is real interpreter-writing work with a real correctness/security surface for an on-device, unsandboxed daemon); at small sizes (e.g. the substream OSD's default 12px) that shows up as visibly uneven stroke widths between glyphs. Enabling this snaps long, near-vertical/near-horizontal outline edges (typical letter stems/serifs) to the pixel grid before rasterizing, which measurably reduces that unevenness — it is a coarse heuristic, not real hinting, and does not preserve the font's authored hint intent. On by default in the runtime config; set it to `0` for byte-for-byte unhinted OSD bitmaps. Verified against the shipped UbuntuMono Regular (`/usr/share/fonts/default.ttf`); untested against other TTF files if a user swaps `osd.font_path`. Also gated at COMPILE time by `USE_OSD_HINTING` (`BR2_PACKAGE_TIMPS_OSD_HINTING` in the buildroot package, off by default — measured ~2.1KB smaller `.text` on T31/GCC 16.1.0/-Os when left off): on a build without it, setting this key is accepted but has no effect. Settable via `/control`, same restart-required class as `osd.enabled`. |
 
@@ -291,14 +290,20 @@ overlay fields are documented separately below (`osd<S>.<N>.*`).
 Any `{name}` token in an OSD `text` template that isn't one of the built-in
 placeholders (`hostname`, `ip`, `mac`, `fps`, `fpsN`, `bitrate`, `bitrateN`,
 `uptime`, `net`/`tx`,
-`cpu`, `mem`, `clients`) is looked up in `osd.vars_file` instead - a plain
+`cpu`, `mem`, `clients`) is looked up in a fixed file instead - a plain
 `key = value` text file, one entry per line. This lets an external script
 drive OSD content with no timps code changes at all: temperature readings,
 a doorbell state, whatever.
 
+The path is **`/tmp/timps_osd.vars`, fixed in `src/hal/osd_vars.c`
+(`OSD_VARS_FILE`) and not configurable** - not even file-only via
+`timps.conf`. It used to be (`osd.vars_file`), but any settable path could
+point it at `/etc/timps.conf` itself and render its credentials into the
+video through a `{placeholder}`.
+
 1. Pick a name and use it in the OSD text, e.g. `osd0.4.text = Temp: {room_temp}C`.
 2. From any script/cron job with filesystem access, write matching lines to
-   the configured `vars_file` (default `/tmp/timps_osd.vars`):
+   `/tmp/timps_osd.vars`:
    ```
    room_temp = 21.5
    doorbell = idle
@@ -320,8 +325,8 @@ Limits: each resolved value is capped at 127 bytes, and the whole expanded
 `text` string (all placeholders combined, before `strftime()` substitution)
 at 511 bytes - long enough for typical single-line status text, not a
 replacement for a full custom rendering pipeline. Unmatched names (typo, or
-the vars_file doesn't exist yet) resolve to an empty string rather than an
-error, so a missing file just shows blank text for that placeholder.
+`/tmp/timps_osd.vars` doesn't exist yet) resolve to an empty string rather
+than an error, so a missing file just shows blank text for that placeholder.
 
 ## `osd<S>.<N>.*` — per-stream OSD overlay items
 

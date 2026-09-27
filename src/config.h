@@ -227,7 +227,6 @@ typedef struct {
     int         enabled;            /* master switch (global, restart) */
     int         monitor_stream;     /* stream whose fps feeds the {fps} var */
     char        font_path[128];     /* default TTF for text items */
-    char        vars_file[128];     /* custom placeholder source (e.g. /tmp/..) */
     int         supersample;        /* TTF rasterizer AA quality: samples/axis
                                       * per pixel (1-4, default 2). Cost scales
                                       * ~quadratically (4=16 samples/px, 2=4);
