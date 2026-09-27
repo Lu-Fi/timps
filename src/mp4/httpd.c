@@ -2302,9 +2302,13 @@ static void *conn_thread(void *arg)
                  * nothing itself. */
                 const char *user = c->cfg->http_user[0] ? c->cfg->http_user
                                                         : c->cfg->rtsp_user;
-                if (!c->cfg->audio.talk_ws || !bc_available())
+                /* live-writable via /control: one read under the lock */
+                config_str_lock();
+                int talk_ws = c->cfg->audio.talk_ws;
+                config_str_unlock();
+                if (!talk_ws || !bc_available())
                     http_send_ex(c,"404 Not Found","text/plain",cors,"disabled",8);
-                else if (!c->tls && c->cfg->audio.talk_ws < 2)
+                else if (!c->tls && talk_ws < 2)
                     /* audio.talk_ws=1 (the historical "on") is strict:
                      * getUserMedia() is refused outside a secure context, so
                      * a browser on a plaintext listener could normally never
