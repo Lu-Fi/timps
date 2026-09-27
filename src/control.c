@@ -207,7 +207,7 @@ typedef struct {
 static void ign_add(ctrl_scratch_t *sc, const char *key)
 {
     if (!sc->ign_full) return;                        /* already overflowed */
-    char ekey[CTRL_IGN_NAME*2+8];
+    char ekey[CTRL_IGN_NAME*3+8];
     ms_json_esc(key, ekey, sizeof ekey);
     int w = snprintf(sc->ign + sc->ign_off, sizeof sc->ign - (size_t)sc->ign_off,
                      "%s\"%s\"", sc->ign_off ? "," : "", ekey);
@@ -246,8 +246,9 @@ static void echo_add(ctrl_scratch_t *sc, const char *key, const char *eff)
      * backslash if timps.conf was hand-edited, and emitting it raw would hand
      * the client malformed JSON - from the very reply whose job is to tell it
      * what is true. jesc also folds invalid UTF-8, which strict parsers reject.
-     * Values are capped at 160 chars and escaping at most doubles them. */
-    char ekey[96], eval[336];
+     * Values are capped at 160 chars and escaping at most triples them (an
+     * invalid byte becomes a 3-byte U+FFFD). */
+    char ekey[96], eval[3*160+1];
     ms_json_esc(key, ekey, sizeof ekey);
     ms_json_esc(eff, eval, sizeof eval);
     int w = snprintf(sc->echo + sc->echo_off, sizeof sc->echo - (size_t)sc->echo_off,
@@ -1594,7 +1595,7 @@ int control_get_json(char *buf, size_t cap)
             aud.talk_ws, aud.aec);
     }
     {   /* sensor (all persist-only / restart-required, but POST-able) */
-        char sm[136];
+        char sm[sizeof c->sensor.model * 3];
         /* F-03: model is runtime-mutable AND i2c_addr/fps/width/height are
          * POST-able (F-01) - snapshot the string and the numerics together. */
         int s_i2c, s_fps, s_w, s_h;
@@ -1613,7 +1614,7 @@ int control_get_json(char *buf, size_t cap)
     APP("\"video\":{");
     for (int i=0;i<MS_MAX_VSTREAM;i++){
         const ms_vstream_cfg *vs=&c->video[i];
-        char key[20], cod[12]="h264", rc[20]="cbr", rp[136];
+        char key[20], cod[12]="h264", rc[20]="cbr", rp[sizeof vs->rtsp_path * 3];
         snprintf(key,sizeof key,"video%d.codec",i);
         config_get_kv(c, key, cod, sizeof cod);
         snprintf(key,sizeof key,"video%d.rc_mode",i);
@@ -1692,7 +1693,7 @@ int control_get_json(char *buf, size_t cap)
         APP(",\"osd%d\":{", s);
         for (int i=0;i<MS_MAX_OSD;i++){
             const ms_osd_item *it=&c->osd.items[s][i];
-            char t[256];
+            char t[sizeof it->text * 3];
             config_str_lock();     /* osd text is runtime-mutable via POST */
             jesc(it->text, t, sizeof t);
             config_str_unlock();
@@ -1820,9 +1821,9 @@ int control_get_json(char *buf, size_t cap)
          * segment/roll/min_free/audio); enabled/channel/mode already mirror
          * the config via record_get_status */
         ms_record_status rst; record_get_status(&rst);
-        char jf[200]; jesc(rst.file, jf, sizeof jf);
-        char je[200]; jesc(rst.last_error, je, sizeof je);
-        char jd[200], jn[200];
+        char jf[sizeof rst.file * 3]; jesc(rst.file, jf, sizeof jf);
+        char je[sizeof rst.last_error * 3]; jesc(rst.last_error, je, sizeof je);
+        char jd[sizeof c->record.dir * 3], jn[sizeof c->record.name * 3];
         config_str_lock();     /* record.dir/name are runtime-mutable via POST */
         jesc(c->record.dir, jd, sizeof jd);
         jesc(c->record.name, jn, sizeof jn);
@@ -1854,8 +1855,8 @@ int control_get_json(char *buf, size_t cap)
          * WebUI timelapse page can read the settings back (dir/name/channel/
          * interval_s/keep_days) */
         ms_timelapse_status tst; timelapse_get_status(&tst);
-        char jf[200]; jesc(tst.file, jf, sizeof jf);
-        char jd[200], jn[200];
+        char jf[sizeof tst.file * 3]; jesc(tst.file, jf, sizeof jf);
+        char jd[sizeof c->timelapse.dir * 3], jn[sizeof c->timelapse.name * 3];
         config_str_lock();  /* timelapse.dir/name are runtime-mutable via POST */
         jesc(c->timelapse.dir, jd, sizeof jd);
         jesc(c->timelapse.name, jn, sizeof jn);

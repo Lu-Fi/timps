@@ -1533,7 +1533,7 @@ static void events_stream(hconn *c, const char *path, const char *cors)
                  * timps.conf by hand (POSTed values are stripped of both) would
                  * otherwise emit a broken event and desync the client's parser
                  * mid-stream. Same escaper as GET /control and the POST reply. */
-                char eck[96], ecv[336];
+                char eck[sizeof ck * 3], ecv[sizeof cv * 3];
                 ms_json_esc(ck, eck, sizeof eck);
                 ms_json_esc(cv, ecv, sizeof ecv);
                 int jl = snprintf(js, sizeof js,
