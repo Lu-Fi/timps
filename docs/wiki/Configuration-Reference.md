@@ -428,7 +428,7 @@ running thread re-reads these live.
 | `timelapse.dir` | string(128) | `/mnt/mmcblk0p1` | — | **Live (next cycle)** | Base directory (SD, NFS, any writable path). |
 | `timelapse.name` | string(96) | `%Y%m%d/%H/%Y%m%dT%H%M%S` | `strftime` template | **Live (next cycle)** | Path template under `<dir>/<hostname>/timelapses/`. |
 | `timelapse.interval_s` (alias `interval`) | int | 60 | ≥1 | **Live (next cycle)** | Seconds between shots. |
-| `timelapse.keep_days` | int | 7 | ≥0 | **Live (next cycle)** | Delete shots older than this; `0` = keep forever. |
+| `timelapse.keep_days` | int | 7 | 0–3650 | **Live (next cycle)** | Delete shots older than this; `0` = keep forever. |
 
 ## `daynight.*` — automatic day/night
 

@@ -774,7 +774,7 @@ Requires `USE_TIMELAPSE` (`BR2_PACKAGE_TIMPS_TIMELAPSE`, default y). Every key i
 | `timelapse.dir` | string[128] | `/mnt/mmcblk0p1` | — | live | Shots land under `<dir>/<hostname>/timelapses/`. |
 | `timelapse.name` | string[96] | `%Y%m%d/%H/%Y%m%dT%H%M%S` | — | live | strftime template, `.jpg` appended. |
 | `timelapse.interval_s` | int | `60` | 1..INT_MAX | live | Alias `timelapse.interval`. |
-| `timelapse.keep_days` | int | `7` | 0..INT_MAX | live | `0` = keep forever. |
+| `timelapse.keep_days` | int | `7` | 0..3650 | live | `0` = keep forever. |
 
 Pitfall: a `timelapse.channel` pointing at a stream whose `videoN.jpeg` is off
 (or that was boot-disabled) falls back rather than failing loudly.

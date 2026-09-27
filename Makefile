@@ -278,7 +278,7 @@ IMPLIBS ?= -l:libimp.a -l:libalog.a -l:libsysutils.a
 # against a distro/buildroot that only ships libfaac.so.
 FAACLIB ?= -l:libfaac.a
 
-.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun
+.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun test-timelapse-prune
 
 all: target
 
@@ -394,6 +394,17 @@ test-daynight-sun:
 	  $(LDFLAGS) -lm -o $(BIN)-dnsuntest
 	@./$(BIN)-dnsuntest; rc=$$?; rm -f $(BIN)-dnsuntest; exit $$rc
 
+# Host-only unit test for the timelapse retention cutoff (src/timelapse.c:
+# prune_cutoff(), opened for test via -DTL_PRUNE_TEST). Needs no hardware and
+# no running daemon; exit code is the test result.
+TLPRUNETEST_SRC := scripts/test_timelapse_prune.c src/timelapse.c src/hub.c \
+                   src/frame.c src/fanqueue.c src/util.c src/log.c src/config.c \
+                   src/codec/vparam.c src/codec/nal.c
+test-timelapse-prune:
+	$(HOSTCC) $(CFLAGS) -DMS_VERSION='"$(VERSION)"' -DUSE_TIMELAPSE -DTL_PRUNE_TEST \
+	  -Isrc $(TLPRUNETEST_SRC) $(LDFLAGS) -lpthread -lm -o $(BIN)-tlprunetest
+	@./$(BIN)-tlprunetest; rc=$$?; rm -f $(BIN)-tlprunetest; exit $$rc
+
 # Host-only unit test for the packet recycling pool (src/frame.c): the
 # oversized-buffer slot recycles every IDR/JPEG instead of malloc+free-ing it,
 # is handed out only to over-keep_cap borrows (so no published packet carries
@@ -454,4 +465,4 @@ strip: target
 	$(CROSS_COMPILE)strip $(BIN)
 
 clean:
-	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest $(BIN)-hubidrtest $(BIN)-stuntest
+	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest $(BIN)-hubidrtest $(BIN)-stuntest $(BIN)-tlprunetest

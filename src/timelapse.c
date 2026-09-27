@@ -84,11 +84,31 @@ static void prune_old(const char *base, time_t cutoff, int depth)
  * grab below). */
 #define TL_PRUNE_US (3600*1000000LL)
 
+/* 0 = nothing can be that old yet (or the clock is unset): skip pruning.
+ * 64-bit math: on 32-bit time_t a large keep_days wrapped the cutoff into
+ * the future and pruned the whole archive. */
+static int prune_cutoff(int64_t now, int days, time_t *cutoff)
+{
+    if (days<=0) return 0;
+    int64_t span=(int64_t)days*86400;
+    if (now<=0 || span>=now) return 0;
+    *cutoff=(time_t)(now-span);
+    return 1;
+}
+
+#ifdef TL_PRUNE_TEST
+int tl_prune_cutoff_test(int64_t now, int days, time_t *cutoff)
+{
+    return prune_cutoff(now, days, cutoff);
+}
+#endif
+
 /* keep_days comes from the caller's under-lock timelapse snapshot (F-02). */
 static void prune(int keep_days)
 {
     int days=keep_days;
-    if (days<=0) return;
+    time_t cutoff;
+    if (!prune_cutoff((int64_t)time(NULL),days,&cutoff)) return;
     /* only tl_thread calls prune(), so the guard needs no locking. Starts at 0
      * so the first shot after a start/restart prunes immediately - that is the
      * one time the backlog can be arbitrarily old (the daemon was down). */
@@ -105,7 +125,7 @@ static void prune(int keep_days)
     if (ms_path_unsafe(dir,NULL)) return;  /* never prune outside the tree (L10) */
     char host[64]; ms_hostname(host,sizeof host);   /* F4 handling lives in ms_hostname */
     char base[208]; snprintf(base,sizeof base,"%s/%s/timelapses",dir,host);
-    prune_old(base, time(NULL)-(time_t)days*86400, 0);
+    prune_old(base, cutoff, 0);
 }
 
 /* ---- shot writer ---- */

@@ -1035,7 +1035,7 @@ static const cfg_field timelapse_fields[] = {
     FS("dir",        0,          dir,        F_CTRL),
     FS("name",       0,          name,       F_CTRL),
     F ("interval_s", "interval", interval_s, T_INT,  F_CTRL, 1,INT_MAX),
-    F ("keep_days",  0,          keep_days,  T_INT,  F_CTRL, 0,INT_MAX),
+    F ("keep_days",  0,          keep_days,  T_INT,  F_CTRL, 0,3650),
 };
 #undef TT
 
