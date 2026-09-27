@@ -986,25 +986,40 @@ static void stream_mjpeg(hconn *c, int src, const char *bnd)
  * validity window. Nonce values themselves come from auth_make_nonce()
  * (/dev/urandom-backed, 128 bit). */
 #ifndef HTTP_NONCE_MAX
-#define HTTP_NONCE_MAX 32
+#define HTTP_NONCE_MAX 64
 #endif
 #define HTTP_NONCE_TTL_US (300*1000000LL)          /* 5 min challenge life */
+/* Every 401 mints a nonce, credential-less probes included. Capping what one
+ * peer can hold means a flood from one address recycles its own entries
+ * instead of evicting another client's challenge before it can answer it. */
+#define HTTP_NONCE_PER_PEER 4
 
-static struct hnonce { char n[33]; int64_t born; uint64_t nc_hi; }
+static struct hnonce { char n[33]; int64_t born; uint64_t nc_hi; uint32_t ip; }
                        g_nonces[HTTP_NONCE_MAX];
-static int             g_nonce_next;
 static pthread_mutex_t g_nonce_mx = PTHREAD_MUTEX_INITIALIZER;
 
-/* mint + remember a fresh challenge nonce for a 401 */
-static void http_new_nonce(char out[33])
+/* mint + remember a fresh challenge nonce for a 401 to peer ip */
+static void http_new_nonce(char out[33], uint32_t ip)
 {
     auth_make_nonce(out);
+    int64_t now = ms_now_us();
     pthread_mutex_lock(&g_nonce_mx);
-    struct hnonce *e = &g_nonces[g_nonce_next];
-    g_nonce_next = (g_nonce_next + 1) % HTTP_NONCE_MAX;
+    struct hnonce *e = NULL, *free_e = NULL, *oldest = NULL, *peer_oldest = NULL;
+    int peer_n = 0;
+    for (int i = 0; i < HTTP_NONCE_MAX; i++) {
+        struct hnonce *x = &g_nonces[i];
+        if (!x->n[0] || now - x->born > HTTP_NONCE_TTL_US) { if (!free_e) free_e = x; continue; }
+        if (!oldest || x->born < oldest->born) oldest = x;
+        if (x->ip == ip) {
+            peer_n++;
+            if (!peer_oldest || x->born < peer_oldest->born) peer_oldest = x;
+        }
+    }
+    e = peer_n >= HTTP_NONCE_PER_PEER ? peer_oldest : free_e ? free_e : oldest;
     snprintf(e->n, sizeof e->n, "%s", out);
-    e->born  = ms_now_us();
+    e->born  = now;
     e->nc_hi = 0;
+    e->ip    = ip;
     pthread_mutex_unlock(&g_nonce_mx);
 }
 
@@ -1852,7 +1867,7 @@ static void *conn_thread(void *arg)
                     auth_fail_note(MOD, c->tls ? "https" : "http", ip);
                 }
                 char nonce[33];
-                http_new_nonce(nonce);
+                http_new_nonce(nonce, c->peer.sin_addr.s_addr);
                 char r[1024];
                 int rn = snprintf(r, sizeof r,
                     "HTTP/1.1 401 Unauthorized\r\n"
