@@ -1902,13 +1902,16 @@ void rtsp_stop(rtsp_server *s)
     /* Same reason httpd_stop() reports its drain: "still live here" is exactly
      * the state that makes the tls_ctx free below a use-after-free, and it was
      * previously indistinguishable from a clean shutdown in the log. */
-    if (g_nclients > 0)
+    if (g_nclients > 0) {
+        /* leak rather than free under a live thread, as httpd_stop() does:
+         * this runs right before process exit */
         LOGW(MOD,"%d client thread(s) still live after a %lld ms drain - "
-                 "proceeding to teardown", g_nclients,
-             (long long)((ms_now_us()-drain0)/1000));
-    else
-        LOGI(MOD,"all client threads gone after %lld ms",
-             (long long)((ms_now_us()-drain0)/1000));
+                 "leaking tls_ctx/server rather than risking a use-after-free",
+             g_nclients, (long long)((ms_now_us()-drain0)/1000));
+        return;
+    }
+    LOGI(MOD,"all client threads gone after %lld ms",
+         (long long)((ms_now_us()-drain0)/1000));
 #ifdef USE_TLS
     if (s->tls_ctx) {
         /* detached client threads referenced conf/cert/drbg from this ctx;

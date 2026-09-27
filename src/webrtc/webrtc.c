@@ -1092,10 +1092,11 @@ void webrtc_stop(void)
     }
     if (live) {
         /* A session thread still holds this config (and its ssl contexts point
-         * into it). Leaking one struct at shutdown is the lesser evil. */
+         * into it). Leaking one struct at shutdown is the lesser evil - and
+         * the pointer stays set too: a pre-DTLS session still passes it to
+         * ms_dtls_new(). */
         LOGW(MOD, "%d session(s) still running at stop - leaving the DTLS "
                   "context allocated", live);
-        g_dtls_ctx = NULL;
         return;
     }
     ms_dtls_ctx_free(g_dtls_ctx);
