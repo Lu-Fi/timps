@@ -831,6 +831,13 @@ void srt_start(const ms_config *cfg)
         LOGE(MOD, "srt.mode=caller but srt.host is empty - SRT disabled");
         return;
     }
+    /* srt.streamid is plaintext, not a secret: without a passphrase the
+     * listener serves video to anyone, whatever RTSP/HTTP demand */
+    if (!g_caller && !cfg->srt.passphrase[0] &&
+        (cfg->rtsp_user[0] || cfg->http_user[0]))
+        LOGW(MOD, "SRT listener on port %d has NO access control (srt.passphrase "
+                  "unset) - it bypasses the configured RTSP/HTTP credentials; "
+                  "set srt.passphrase (10-79 chars)", cfg->srt.port);
     /* /control shows -1 until the first stats tick */
     g_stats.rtt_ms = g_stats.bw_mbps = g_stats.rate_mbps = -1;
     g_stats.sent = g_stats.retrans = g_stats.loss = g_stats.drop = -1;
