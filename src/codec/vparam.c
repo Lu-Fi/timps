@@ -91,6 +91,7 @@ static uint32_t eg_ue(eg_reader *r)
 {
     int zeros=0;
     while (r->pos<r->nbits && eg_bit(r)==0 && zeros<32) zeros++;
+    if (zeros>31) return 0;               /* 1<<32 is undefined; not a valid ue(v) here */
     uint32_t val=0;
     for (int i=0;i<zeros;i++) val=(val<<1)|(uint32_t)eg_bit(r);
     return ((uint32_t)1<<zeros)-1+val;
