@@ -472,16 +472,19 @@ static void fs_use(int chn)
 {
     if (chn < 0 || chn >= MS_FS_MAXCHN) return;
     pthread_mutex_lock(&g_fs_mtx);
-    int first = (g_fs_users[chn]++ == 0);
     int just_enabled = 0;
+    g_fs_users[chn]++;
     if (!g_fs_enabled[chn]) {
-        if (IMP_FrameSource_EnableChn(chn) != 0)
-            LOGE(MOD,"framesource %d: EnableChn failed%s", chn,
-                 first ? "" : " (retry)");
-        else {
+        /* a start-retry loop calls this up to 5x/s: log the 1st and every 20th */
+        static int enfail[MS_FS_MAXCHN];
+        if (IMP_FrameSource_EnableChn(chn) != 0){
+            if ((enfail[chn]++ % 20) == 0)
+                LOGE(MOD,"framesource %d: EnableChn failed (attempt %d)", chn, enfail[chn]);
+        } else {
             LOGI(MOD,"framesource %d enabled", chn);
             g_fs_enabled[chn] = 1;
             just_enabled = 1;
+            enfail[chn] = 0;
         }
     }
     pthread_mutex_unlock(&g_fs_mtx);
@@ -2095,6 +2098,18 @@ static void *video_thread(void *arg)
                         LOGE(MOD,"chn%d: StartRecvPic failed (attempt %d)",
                              vc->chn, dbg_startfail);
                     fs_unuse(vc->chn);
+                    /* ~5 s of failed starts is one failed recovery cycle, same
+                     * budget as MS_VIDEO_WATCHDOG_ITERS misses below; without
+                     * this a start that never succeeds retried forever */
+                    if ((dbg_startfail % 25) == 0 &&
+                        ++dbg_recover_fails >= MS_VIDEO_WATCHDOG_MAX_RECOVERIES){
+                        LOGE(MOD,"chn%d: StartRecvPic kept failing for %d attempts - "
+                             "encoder/ISP is not coming back on its own; exiting "
+                             "(camera needs a manual/scheduled restart)",
+                             vc->chn, dbg_startfail);
+                        raise(SIGTERM);
+                        break;
+                    }
                     usleep(200000);
                     continue;
                 }

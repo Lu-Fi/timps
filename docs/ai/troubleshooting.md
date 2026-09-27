@@ -2376,6 +2376,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `chn%d: PollingStream idle (rc=%d, miss#%d) - encoder emits no frames` | W | Watchdog window with no output. | §2.2 |
 | `chn%d: encoder dead after %d consecutive misses - forcing a framesource disable/enable cycle to recover (recovery attempt %d/%d)` | E | Automatic recovery, max 5. | §2.2 |
 | `chn%d: %d consecutive forced-recovery cycles never produced a frame - encoder/ISP is not coming back on its own; exiting` | E | **The process exits and nothing restarts it.** | §2.2 |
+| `chn%d: StartRecvPic kept failing for %d attempts - encoder/ISP is not coming back on its own; exiting` | E | Same give-up, reached when the encoder never even starts (~25 s of failed starts with a client attached). **The process exits and nothing restarts it.** | §2.2 |
 | `jpeg chn%d: PollingStream idle (miss#%d) - encoder emits no frames` | W | Same on the JPEG channel. | |
 | `jpeg chn%d: encoder dead after %d consecutive misses - forcing a framesource disable/enable cycle to recover (recovery attempt %d/%d)` | E | JPEG recovery. | |
 | `jpeg chn%d: %d consecutive forced-recovery cycles never produced a frame - giving up on this channel (MJPEG/snapshot output disabled until restart)` | E | **JPEG only** is disabled; video survives. | Restart to get snapshots back. |
