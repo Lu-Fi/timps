@@ -351,7 +351,9 @@ time_t ms_media_path(char *out, size_t cap, const char *dir, const char *sub,
 {
     time_t t = time(NULL); struct tm tmv; localtime_r(&t, &tmv);
     char rel[160];
-    if (strftime(rel, sizeof rel, name, &tmv) == 0)
+    /* the caller vetted the template; a conversion expanding to nothing can
+     * still assemble a ".." component, so vet the result too */
+    if (strftime(rel, sizeof rel, name, &tmv) == 0 || ms_path_unsafe(NULL, rel))
         snprintf(rel, sizeof rel, "%ld", (long)t);
     char host[64];
     ms_hostname(host, sizeof host);
