@@ -964,6 +964,38 @@ int record_set_active(int on)
  * finalized-enough fMP4 (same format the SD segments use). Blocks. Path is
  * restricted to /tmp/ (send2 uses mktemp there) so a /control caller can't
  * overwrite arbitrary files. */
+/* Open (O_CREAT) a file below /tmp without following a symlink in ANY path
+ * component - O_NOFOLLOW alone covers only the last one, so a planted
+ * /tmp/x -> /etc redirected the write. Missing directories are created. On
+ * success *dfd holds the parent directory and *leaf the file name within it
+ * (for unlinkat); the caller closes *dfd. */
+static int clip_open(const char *path, int *dfd, char *leaf, size_t lcap)
+{
+    int d = open("/tmp", O_RDONLY|O_DIRECTORY|O_CLOEXEC);
+    if (d < 0) return -1;
+    char buf[256]; snprintf(buf, sizeof buf, "%s", path + 5);
+    char *p = buf, *slash;
+    while ((slash = strchr(p, '/'))){
+        *slash = 0;
+        if (*p){
+            if (mkdirat(d, p, 0755) != 0 && errno != EEXIST){ close(d); return -1; }
+            int nd = openat(d, p, O_RDONLY|O_DIRECTORY|O_NOFOLLOW|O_CLOEXEC);
+            close(d);
+            if (nd < 0) return -1;
+            d = nd;
+        }
+        p = slash + 1;
+    }
+    if (!*p){ close(d); errno = EISDIR; return -1; }
+    /* O_EXCL|O_NOFOLLOW: never clobber an existing file or follow a planted
+     * symlink (send2 hands us a fresh mktemp -u name) */
+    int fd = openat(d, p, O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC, 0600);
+    if (fd < 0){ int e = errno; close(d); errno = e; return -1; }
+    snprintf(leaf, lcap, "%s", p);
+    *dfd = d;
+    return fd;
+}
+
 int record_clip(const char *path, int seconds)
 {
     /* /tmp/ only AND no ".." component: strncmp alone lets "/tmp/../etc/x"
@@ -994,6 +1026,7 @@ int record_clip(const char *path, int seconds)
     fanqueue q; int have_q=0, sub_v=0, sub_audio=0;
     ms_buf frag;  int have_frag=0;
     fmp4_mux mux; FILE *fp=NULL; int rc=-1;
+    int cdfd=-1; char leaf[256];
     int ac=MS_AC_NONE,asr=0,ach=0;
     int64_t deadline=0, giveup=ms_now_us()+(int64_t)(seconds+5)*1000000;
     int regate=0;            /* see rec_thread(): no headless GOP in the clip */
@@ -1032,13 +1065,10 @@ int record_clip(const char *path, int seconds)
             if (!(p->media==MS_MEDIA_VIDEO && p->keyframe)){ pkt_unref(p); continue; }
             vparam vp;
             if (!(hub_get_vparam(chn,&vp) && vparam_ready(&vp))){ pkt_unref(p); continue; }
-            ms_mkdirs(path);
-            /* O_EXCL|O_NOFOLLOW: never follow a pre-planted symlink or clobber an
-             * existing file (send2 hands us a fresh mktemp -u name). */
-            int fd=open(path,O_WRONLY|O_CREAT|O_EXCL|O_NOFOLLOW|O_CLOEXEC,0600);
+            int fd=clip_open(path,&cdfd,leaf,sizeof leaf);
             if (fd<0){ LOGW(MOD,"clip open %s: %s",path,strerror(errno)); pkt_unref(p); break; }
             fp=fdopen(fd,"wb");
-            if (!fp){ close(fd); unlink(path); pkt_unref(p); break; }
+            if (!fp){ close(fd); unlinkat(cdfd,leaf,0); pkt_unref(p); break; }
             fmp4_init(&mux);
             /* restart-only codec/geometry/fps -> boot snapshot (see config.h) */
             mux.has_video=1; mux.vcodec=g_cfg_boot.video[chn].codec;
@@ -1055,7 +1085,7 @@ int record_clip(const char *path, int seconds)
             frag.len=0; frag.err=0;
             if (fmp4_init_segment(&mux,&frag)!=0 ||
                 (frag.len && fwrite(frag.data,1,frag.len,fp)!=frag.len)){
-                fclose(fp); fp=NULL; unlink(path); pkt_unref(p); break;
+                fclose(fp); fp=NULL; unlinkat(cdfd,leaf,0); pkt_unref(p); break;
             }
             deadline=now+(int64_t)seconds*1000000;
         }
@@ -1068,7 +1098,7 @@ int record_clip(const char *path, int seconds)
             wrote=(fmp4_audio_fragment(&mux,p->data,p->len,p->pts_us,&frag)==0);
         if (wrote && frag.len && fwrite(frag.data,1,frag.len,fp)!=frag.len){
             LOGE(MOD,"clip write failed (%s), dropping",strerror(errno));
-            fclose(fp); fp=NULL; unlink(path); pkt_unref(p); break;
+            fclose(fp); fp=NULL; unlinkat(cdfd,leaf,0); pkt_unref(p); break;
         }
         pkt_unref(p);
         if (now>=deadline) break;
@@ -1079,12 +1109,13 @@ int record_clip(const char *path, int seconds)
          * clip is truncated and must not be reported as success (L5) */
         if (fclose(fp)!=0){
             LOGE(MOD,"clip close %s: %s",path,strerror(errno));
-            unlink(path);
+            unlinkat(cdfd,leaf,0);
         } else { rc=0; LOGI(MOD,"clip -> %s (%ds)",path,seconds); }
     }
     else LOGW(MOD,"clip: no frames for %s",path);
 
 out:
+    if (cdfd>=0) close(cdfd);
     if (have_frag) ms_buf_free(&frag);
     if (sub_v) hub_unsubscribe(chn,&q);
     if (sub_audio) hub_unsubscribe(HUB_AUDIO_SRC,&q);
