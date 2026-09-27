@@ -173,22 +173,51 @@ static void get_mem(char *out, int outsz)   /* free RAM in MB */
 }
 
 
-/* look up 'name' in a key=value file; returns 1 if found */
+/* look up 'name' in a key=value file; returns 1 if found. The file is read
+ * at most once per ~0.9 s (the same TTL as the other caches here) instead of
+ * once per unknown {placeholder} per render; two OSD threads share the copy. */
+#define VARS_CACHE_MAX 4096
 static int lookup_file(const char *file, const char *name, char *out, int outsz)
 {
+    static char path[128], data[VARS_CACHE_MAX];
+    static int64_t read_us;
     if (!file || !file[0]) return 0;
-    FILE *f=ms_fopen_regular(file); if(!f) return 0;
-    char line[256]; int found=0; size_t nl=strlen(name);
-    while (fgets(line,sizeof line,f)){
-        char *s=line; while(*s==' '||*s=='\t')s++;
-        if (strncmp(s,name,nl)==0){
-            char *p=s+nl; while(*p==' '||*p=='\t')p++;
-            if (*p=='='){ p++; while(*p==' '||*p=='\t')p++;
-                char *e=p+strlen(p); while(e>p&&(e[-1]=='\n'||e[-1]=='\r'||e[-1]==' '))*--e=0;
-                snprintf(out,outsz,"%s",p); found=1; break; }
+    int found = 0;
+    size_t nl = strlen(name);
+    int64_t now = mono_us();
+    pthread_mutex_lock(&g_mu);
+    if (strcmp(path, file) || !read_us || now - read_us >= 900000){
+        snprintf(path, sizeof path, "%s", file);
+        read_us = now;
+        data[0] = 0;
+        FILE *f = ms_fopen_regular(file);
+        if (f){
+            size_t n = fread(data, 1, sizeof data - 1, f);
+            data[n] = 0;
+            fclose(f);
         }
     }
-    fclose(f);
+    for (const char *ln = data; *ln; ){
+        const char *eol = strchr(ln, '\n');
+        size_t len = eol ? (size_t)(eol - ln) : strlen(ln);
+        const char *s = ln, *end = ln + len;
+        while (s < end && (*s==' '||*s=='\t')) s++;
+        if ((size_t)(end - s) > nl && strncmp(s, name, nl) == 0){
+            const char *p = s + nl;
+            while (p < end && (*p==' '||*p=='\t')) p++;
+            if (p < end && *p == '='){
+                p++; while (p < end && (*p==' '||*p=='\t')) p++;
+                const char *e = end;
+                while (e > p && (e[-1]=='\r'||e[-1]==' ')) e--;
+                snprintf(out, (size_t)outsz, "%.*s", (int)(e - p), p);
+                found = 1;
+                break;
+            }
+        }
+        if (!eol) break;
+        ln = eol + 1;
+    }
+    pthread_mutex_unlock(&g_mu);
     return found;
 }
 
