@@ -1,10 +1,9 @@
 # timps configuration keys — complete reference
 
-**Applies to timps v1.9.27 (source: `main`, 2026-09-27).**
+**Applies to timps v1.9.28 (source: `main`, 2026-09-28).**
 
-A statement marked **since v1.9.28 (unreleased)** is already in the source but
-not in any tagged release yet — on a v1.9.27 camera the *previous* behaviour is
-the one to describe.
+A statement marked **since v1.9.28** is new in that release — on a v1.9.27 or
+older camera the *previous* behaviour is the one to describe.
 
 Authoritative source: `src/config.c` (the `cfg_field` tables and
 `config_defaults()`), `src/config.h` (struct field sizes and doctrine),
@@ -35,10 +34,10 @@ Overview / architecture doc: `docs/ai/reference.md`.
   follows it. An opening quote with no closing one logs a warning and the value
   is kept verbatim, quotes included.
 * Physical lines longer than 510 characters are dropped entirely with a warning
-  (they are not truncated into a bogus second key). **since v1.9.28 (unreleased)** a line with an
+  (they are not truncated into a bogus second key). **since v1.9.28** a line with an
   embedded NUL byte is dropped the same way, and both warnings name only the
   key, never a prefix of the (possibly secret) value.
-* Unknown keys log `unknown key <name>` at WARN and are ignored. **since v1.9.28 (unreleased)** that
+* Unknown keys log `unknown key <name>` at WARN and are ignored. **since v1.9.28** that
   includes a leftover `osd.vars_file` line (§8).
 * **Later lines win.** A duplicate key later in the file overrides the earlier
   one.
@@ -194,7 +193,7 @@ Yes, on every `POST /control` that changed at least one key — but it is a
 * Values are re-quoted when needed (empty, or containing space, `#`, `"`, `'`,
   `;`); control characters are folded to spaces.
 * The write is atomic (`mkstemp` + `fsync` + `rename` + directory `fsync`).
-  **since v1.9.28 (unreleased)** the rewritten file keeps the old file's mode (a hand-applied
+  **since v1.9.28** the rewritten file keeps the old file's mode (a hand-applied
   `chmod 600` survives) and a newly created one is `0600`; before, every
   rewrite forced 0644. A read error on the old file aborts the rewrite entirely rather
   than committing a truncated copy.
@@ -406,11 +405,11 @@ internal channel wiring, deliberately not exposed over HTTP.
 | `rotation` | enum/int | `0` / `0` | `0`, `90`, `270`, plus `180` on T40/T41; legacy `1`→90, `2`→270 | restart | See the prose below. Unsupported values coerce to `0` with a warning. |
 | `buffers` | int | `2` / `2` | 1..8 | restart | IMP `nrVBs`. Setting it explicitly also sets an internal `buffers_explicit` flag, so the T31 safety clamp trusts your value instead of overriding it. The clamp gate is exactly `chn == 0 && isp_ch0_pre_dequeue_time != 0` (unreadable counts as active) — **scaled or not**; the older "non-scaled channel" theory was superseded in 2026-08. With the flag set the HAL warns and leaves `nrVBs` alone, which is why an explicit `buffers = 2` is *not* the same as omitting the line. |
 | `rtsp_path` | string[64] | `/ch0` / `/ch1` | — | **live** | The one `videoN.*` key that is genuinely live — a DESCRIBE re-matches it on every request, and it is read from the live `g_cfg`, not the boot snapshot. **Since v1.9.20** the POST reply no longer lists it under `deferred` (v1.9.19 did, although the change was already live). Not in `caps.video_live`, which is the rate-control list only. |
-| `imp_chn` | int | `0` / `1` | 0..8 | **file-only**, restart | IMP encoder channel index. Must equal the stream index `N` (it doubles as the hub slot): any other value is reset to `N` at load with an `[ERR]` line (**since v1.9.28 (unreleased)**; before, a wrong value silently fed another stream's or the audio hub slot). |
+| `imp_chn` | int | `0` / `1` | 0..8 | **file-only**, restart | IMP encoder channel index. Must equal the stream index `N` (it doubles as the hub slot): any other value is reset to `N` at load with an `[ERR]` line (**since v1.9.28**; before, a wrong value silently fed another stream's or the audio hub slot). |
 | `jpeg` | bool | `1` / `1` | — | **file-only**, restart | Alias `jpeg_enabled`. Piggyback JPEG encoder in the same encoder group, sharing this stream's FrameSource (no extra rmem) at this stream's resolution. |
 | `jpeg_quality` | int | `75` / `75` | 1..100 | **file-only**, restart | |
 | `jpeg_fps` | int | `5` / `5` | 1..120 | **file-only**, restart | Max snapshot/MJPEG publish rate. |
-| `jpeg_chn` | int | `3` / `4` | 0..8 | **file-only**, restart | `MS_MAX_VSTREAM + 1 + N`. Must be unique; **since v1.9.28 (unreleased)** a collision is moved to the lowest free channel at load with an `[ERR]` line (JPEG disabled if none is free). |
+| `jpeg_chn` | int | `3` / `4` | 0..8 | **file-only**, restart | `MS_MAX_VSTREAM + 1 + N`. Must be unique; **since v1.9.28** a collision is moved to the lowest free channel at load with an `[ERR]` line (JPEG disabled if none is free). |
 
 ### Live vs restart for `videoN.*`
 
@@ -482,7 +481,7 @@ hit this — T10, T20 and T23 coerce `codec` to `h264` at parse time.
   `videoN.fps` is not a way to raise `sensor.fps`. Compare the requested rate
   with the `sensor fps: requested N, driver holds n/d` line
   (**since v1.9.19**) before blaming the encoder.
-* **since v1.9.28 (unreleased)** channel collisions (`imp_chn` != stream index, duplicate
+* **since v1.9.28** channel collisions (`imp_chn` != stream index, duplicate
   `jpeg_chn`, `jpeg.imp_chn` on a video channel) are corrected at load and
   logged as
   `[ERR] config: ... collides ...` / `... must equal the stream index`.
@@ -556,7 +555,7 @@ marked `noget`, so `GET /control` never echoes it either.
 | `jpeg.height` | int | `360` | 64..4096 | file-only, restart | |
 | `jpeg.quality` | int | `75` | 1..100 | file-only, restart | |
 | `jpeg.fps` | int | `5` | 1..120 | file-only, restart | Max MJPEG frame rate. |
-| `jpeg.imp_chn` | int | `2` | 0..8 | file-only, restart | Must not collide with an enabled `videoN.imp_chn` (0, 1); a collision is moved to the lowest free channel at load with an `[ERR]` line (**since v1.9.28 (unreleased)**). |
+| `jpeg.imp_chn` | int | `2` | 0..8 | file-only, restart | Must not collide with an enabled `videoN.imp_chn` (0, 1); a collision is moved to the lowest free channel at load with an `[ERR]` line (**since v1.9.28**). |
 | `jpeg.snapshot_path` | string[128] | `""` | — | file-only, restart | Periodic file snapshot; `""` = none. |
 
 Pitfall: `timps.conf.example` shows `jpeg.enabled = 1`; the **compiled default
@@ -575,7 +574,7 @@ All keys are `F_CTRL` (POST-able). `enabled`, `font_path`, `supersample` and
 startup. `monitor_stream` is **live**: the OSD thread re-reads it on every
 text refresh (about once a second).
 
-**since v1.9.28 (unreleased)** the `{placeholder}` source file (see below) has no config key at
+**since v1.9.28** the `{placeholder}` source file (see below) has no config key at
 all - not even file-only. It used to (`osd.vars_file`), but any settable path,
 POSTable or not, could point it at `/etc/timps.conf` and render its
 credentials into the video through a `{placeholder}`. The path is now fixed
@@ -629,7 +628,7 @@ Over `POST /control` the canonical form is `{"osd0":{"0":{...}}}` /
 | `logo` | string[128] | item 3: `/usr/share/images/thingino_100x30.bgra`, else `""` | — | **file-only** | Alias `logo_path`. Raw BGRA file. |
 | `logo_w` | int | item 3: `100`, else `0` | 0..4096 | **file-only** | Alias `logo_width`. |
 | `logo_h` | int | item 3: `30`, else `0` | 0..4096 | **file-only** | Alias `logo_height`. |
-| `x` | int | see layout | -8192..8192 (**since v1.9.28 (unreleased)**; unclamped before) | live | `0` = centred horizontally; positive = px from the left; negative = px from the right. |
+| `x` | int | see layout | -8192..8192 (**since v1.9.28**; unclamped before) | live | `0` = centred horizontally; positive = px from the left; negative = px from the right. |
 | `y` | int | see layout | -8192..8192 (same) | live | `0` = centred vertically; positive = from the top; negative = from the bottom. |
 | `font_size` | int | `32` on stream 0, `12` on stream 1 | **8..128** | live | Absolute pixels, no per-stream auto-scaling. Ceiling lowered from 256 to 128 because a 255-char item at 256 px could transiently allocate a ~14 MB canvas. |
 | `color` | hex | `0xFFFFFFFF` | — | live | `0xAARRGGBB`. Alias `font_color`. Reads back as `0x%08X`. |
@@ -690,7 +689,7 @@ the one place where the JSON nesting differs from the OSD-item convention
 | Key | Type | Default | Range | Apply | Notes |
 | --- | --- | --- | --- | --- | --- |
 | `enabled` | bool | `0` | — | live | |
-| `x` | int | `0` | -8192..8192 (**since v1.9.28 (unreleased)**; unclamped before) | live | Pixels in that stream's frame. |
+| `x` | int | `0` | -8192..8192 (**since v1.9.28**; unclamped before) | live | Pixels in that stream's frame. |
 | `y` | int | `0` | -8192..8192 (same) | live | |
 | `w` | int | `0` | 0..8192 (same) | live | Alias `width`. |
 | `h` | int | `0` | 0..8192 (same) | live | Alias `height`. |
@@ -760,7 +759,7 @@ Every key is `F_CTRL` and the running recorder reads them **live** — no restar
 | `record.enabled` | bool | `0` | — | live | Also gates the on-boot start. |
 | `record.channel` | int | `0` | `T_CHAN`: out of `0..1` → 0 | live | |
 | `record.mode` | enum | `1` (motion) | `motion` → 1, `continuous` → 0, or a raw number | live | **Reads back as a number**, not a word. |
-| `record.dir` | string[128] | `/mnt/mmcblk0p1` | — | live | Segments land under `<dir>/<hostname>/records/`. **since v1.9.28 (unreleased)** a dir on the root filesystem (e.g. the mount point with no card) is refused: one `[ERR] record.dir … is on the root filesystem (card not mounted?)` per episode, also in `record.last_error`, nothing written; `/tmp` is allowed. The check follows the nearest existing parent when the dir does not exist yet. |
+| `record.dir` | string[128] | `/mnt/mmcblk0p1` | — | live | Segments land under `<dir>/<hostname>/records/`. **since v1.9.28** a dir on the root filesystem (e.g. the mount point with no card) is refused: one `[ERR] record.dir … is on the root filesystem (card not mounted?)` per episode, also in `record.last_error`, nothing written; `/tmp` is allowed. The check follows the nearest existing parent when the dir does not exist yet. |
 | `record.name` | string[96] | `%Y%m%d/%H/%Y%m%dT%H%M%S` | — | live | strftime path template. |
 | `record.segment_s` | int | `60` | 0..86400 | live | `0` = single file, no rotation. Alias `record.segment`. |
 | `record.pre_roll_s` | int | `3` | 0..60 | live | Motion mode: buffered seconds kept before the trigger. Alias `record.pre_roll`. |
@@ -772,7 +771,7 @@ Non-config commands on the same section (not persisted):
 `{"record":{"active":1|0}}` = manual start/stop override (omit or `<0` returns
 to config mode); `{"record":{"clip":"/tmp/x.mp4","seconds":6}}` = on-demand
 fMP4 clip; the POST returns once it is written (roughly `seconds`).
-**since v1.9.28 (unreleased)** the capture runs outside the apply lock, so it no longer holds
+**since v1.9.28** the capture runs outside the apply lock, so it no longer holds
 up other POSTs for that long, and a clip requested while another is still
 being written is refused and counted in `rejected`.
 
@@ -787,10 +786,10 @@ Requires `USE_TIMELAPSE` (`BR2_PACKAGE_TIMPS_TIMELAPSE`, default y). Every key i
 | --- | --- | --- | --- | --- | --- |
 | `timelapse.enabled` | bool | `0` | — | live | Also gates the on-boot start. |
 | `timelapse.channel` | int | `0` | `T_CHAN`: out of `0..1` → 0 | live | The stream whose piggyback JPEG encoder is captured; falls back to the dedicated `jpeg.*` channel. |
-| `timelapse.dir` | string[128] | `/mnt/mmcblk0p1` | — | live | Shots land under `<dir>/<hostname>/timelapses/`. Same root-filesystem refusal as `record.dir` (**since v1.9.28 (unreleased)**). |
+| `timelapse.dir` | string[128] | `/mnt/mmcblk0p1` | — | live | Shots land under `<dir>/<hostname>/timelapses/`. Same root-filesystem refusal as `record.dir` (**since v1.9.28**). |
 | `timelapse.name` | string[96] | `%Y%m%d/%H/%Y%m%dT%H%M%S` | — | live | strftime template, `.jpg` appended. |
 | `timelapse.interval_s` | int | `60` | 1..INT_MAX | live | Alias `timelapse.interval`. |
-| `timelapse.keep_days` | int | `7` | 0..3650 | live | `0` = keep forever. **since v1.9.28 (unreleased)** clamped to 3650 (was 0..INT_MAX; a huge value overflowed the cutoff on 32-bit `time_t` and pruned everything). Files with a pre-2025 (pre-NTP) mtime are never age-pruned. |
+| `timelapse.keep_days` | int | `7` | 0..3650 | live | `0` = keep forever. **since v1.9.28** clamped to 3650 (was 0..INT_MAX; a huge value overflowed the cutoff on 32-bit `time_t` and pruned everything). Files with a pre-2025 (pre-NTP) mtime are never age-pruned. |
 
 Pitfall: a `timelapse.channel` pointing at a stream whose `videoN.jpeg` is off
 (or that was boot-disabled) falls back rather than failing loudly.
@@ -817,7 +816,7 @@ tick) **except**:
 | --- | --- | --- | --- | --- | --- |
 | `daynight.enabled` | bool | `1` | — | live | `0` = manual mode; the thread idles and nothing forces the ISP mode. |
 | `daynight.mode` | enum | `auto` | `auto`, `schedule`; legacy `sensor`→auto, `time`/`sun`→schedule. From the **file**, an unknown token logs a warning and falls back to `auto`; from **POST** it is rejected. | live (hand-validated) | `auto` = full automaton (measurement + probes, calendar optional). `schedule` = the calendar decides outright: no sensor, no probes, two IR-cut clicks a day. Only matters when `enabled=1`. |
-| `daynight.time_night_start` | string[6] | `""` | `"HH:MM"` local, **unvalidated** at parse | live | Night at/after this time. Empty = that edge unset. **since v1.9.28 (unreleased)** a window the calendar cannot use (one edge set, a malformed value, or both edges equal) is ignored with one startup WARN, and the sun calendar is used if a location is set. |
+| `daynight.time_night_start` | string[6] | `""` | `"HH:MM"` local, **unvalidated** at parse | live | Night at/after this time. Empty = that edge unset. **since v1.9.28** a window the calendar cannot use (one edge set, a malformed value, or both edges equal) is ignored with one startup WARN, and the sun calendar is used if a location is set. |
 | `daynight.time_day_start` | string[6] | `""` | `"HH:MM"` local, **unvalidated** | live | Day at/after this time. The window may wrap past midnight. |
 | `daynight.sun_latitude` | float | `0.0` | -90..90 | live | Degrees, +N/−S. |
 | `daynight.sun_longitude` | float | `0.0` | -180..180 | live | Degrees, +E/−W. |
@@ -915,7 +914,7 @@ Their effective values are still readable in the `daynight` status object of
 * Setting `time_night_start`/`time_day_start` **or** a non-zero lat/lon switches
   the calendar source on even in `auto` mode (an explicit time window wins over
   lat/lon). The window must be two valid, distinct `HH:MM` values to count.
-  **since v1.9.28 (unreleased)** a sunrise/sunset offset that pushes an edge across solar
+  **since v1.9.28** a sunrise/sunset offset that pushes an edge across solar
   midnight is honoured (it was clipped to the current solar day), and the
   calendar's pull-in of the next heartbeat applies on every re-arm, not only the
   first one of a night. In `auto` the calendar only schedules probes; in `schedule` it
@@ -1041,7 +1040,7 @@ Requires `USE_SRT` (`BR2_PACKAGE_TIMPS_SRT`, default **n**). Whole section is
 | `srt.mode` | string[16] | `listener` | `listener`, `caller`; anything else → listener (validated in `srt.c`, not by the config table) | file-only, restart | `caller` dials out — for cameras behind NAT or on unreliable uplinks. |
 | `srt.host` | string[64] | `""` | — | file-only, restart | Caller mode: remote host/address. |
 | `srt.streamid` | string[64] | `""` | — | file-only, restart | Listener: **required** STREAMID. Caller: STREAMID to present. |
-| `srt.passphrase` | string[64] | `""` | — | file-only, restart | Optional AES passphrase (10..79 chars, else SRT refuses to run); `""` = none. **since v1.9.28 (unreleased)** a listener with no passphrase while `rtsp.user`/`http.user` is set logs `SRT listener on port N has NO access control …` at start: it serves video to anyone, whatever the other credentials demand. |
+| `srt.passphrase` | string[64] | `""` | — | file-only, restart | Optional AES passphrase (10..79 chars, else SRT refuses to run); `""` = none. **since v1.9.28** a listener with no passphrase while `rtsp.user`/`http.user` is set logs `SRT listener on port N has NO access control …` at start: it serves video to anyone, whatever the other credentials demand. |
 
 ---
 

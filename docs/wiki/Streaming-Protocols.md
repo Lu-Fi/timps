@@ -39,8 +39,8 @@ the code goes out of its way to get right.
   SETUP response's `Session: ...;timeout=60` (clients like ffmpeg/live555/VLC
   send keepalives at half that). UDP-transport sessions are additionally
   reaped after 2× timeout of control-channel/RTCP silence; TCP-interleaved
-  sessions rely on the socket's own send timeout instead. **Since v1.9.28
-  (unreleased)** the control connection also has TCP keepalive (20 s idle,
+  sessions rely on the socket's own send timeout instead. **Since v1.9.28**
+  the control connection also has TCP keepalive (20 s idle,
   4 probes 5 s apart), so a UDP client whose host vanished without a FIN
   (power cut, WiFi drop) is dropped after ~40 s instead of 120 s.
 - **RTP payload types**: fixed `96` (video), `97` (audio).
@@ -48,8 +48,8 @@ the code goes out of its way to get right.
   (16 packets per call) instead of one `sendto()` per packet, with a
   per-packet fallback if the kernel lacks `sendmmsg`. TCP-interleaved video
   is batched the same way into one `sendmsg()`. RTSPS has no scatter/gather
-  write, so it used one TLS record per RTP packet; **since v1.9.28
-  (unreleased)** its video is copied into a 16 KB stage and written as one
+  write, so it used one TLS record per RTP packet; **since v1.9.28**
+  its video is copied into a 16 KB stage and written as one
   `ms_tls_write()` when that fills or the access unit ends.
 
 ### SDP (DESCRIBE)
@@ -70,8 +70,8 @@ breakage they fix:
   from the SDP and stay black"* without it. When no parameter sets are
   cached yet, `DESCRIBE` briefly subscribes to the encoder (up to 2s) to
   force an IDR/SPS-PPS capture before answering, falling back to `503` +
-  `Retry-After: 1` rather than sending a degraded SDP. **Since v1.9.28
-  (unreleased)** a `DESCRIBE` against a warm stream answers from the cache
+  `Retry-After: 1` rather than sending a degraded SDP. **Since v1.9.28**
+  a `DESCRIBE` against a warm stream answers from the cache
   and forces no keyframe (it is unauthenticated on an open camera, and
   `PLAY` asks for its own), and an SDP that would not fit its buffer gets a
   `500` instead of being sent truncated. The keyframe a cold `DESCRIBE` asks
@@ -127,7 +127,7 @@ this server actually issued this session (anti offline replay — a
 sniffed Authorization header is otherwise fully reproducible and
 replayable forever against any connection).
 
-**Since v1.9.28 (unreleased)** a connection is closed after **5 rejected
+**Since v1.9.28** a connection is closed after **5 rejected
 logins** (credentials presented and refused), so one TCP connection no longer
 allows unlimited password guesses, and a connection that has not reached
 `PLAY` within **60 s** of connecting is closed too: `OPTIONS` needs no auth,
@@ -187,7 +187,7 @@ supported` (RFC 2326 §12.32) rather than being silently ignored. See
   through `hub_request_idr_recovery()`, so ten weak clients still cost at most
   one recovery IDR per second between them. A suppressed request is issued by
   the next published frame rather than lost. Requests needed to *start*
-  decoding go out at once — **since v1.9.28 (unreleased)** unless the
+  decoding go out at once — **since v1.9.28** unless the
   stream had a forced IDR less than 500 ms ago, in which case they are
   coalesced the same way, so a reconnect loop cannot turn every frame into a
   keyframe; the player page itself only asks when the stream is cold, and
@@ -209,7 +209,7 @@ Supports **HTTP Digest** (RFC 7616 `qop=auth`, plus legacy RFC 2069
 no-qop) and **Basic**, falling back to `rtsp.user`/`rtsp.pass` if
 `http.user` is unset. Unlike RTSP (one nonce per connection), HTTP is
 one-connection-per-request, so nonces are tracked in a small global table
-(32 entries, 5-minute TTL; **since v1.9.28 (unreleased)** 64 entries with at
+(32 entries, 5-minute TTL; **since v1.9.28** 64 entries with at
 most 4 per client IP, so a flood of credential-less requests from one address
 recycles its own nonces instead of evicting other clients' challenges);
 `qop=auth` clients must present a
@@ -217,7 +217,7 @@ strictly-increasing nonce-count (`nc`) per nonce, which is what lets a
 legitimate repeat client (e.g. an NVR's periodic snapshot poller) reuse a
 nonce without it being treated as a replay.
 
-**Since v1.9.28 (unreleased):** a `POST` authenticated by Basic/Digest whose
+**Since v1.9.28:** a `POST` authenticated by Basic/Digest whose
 `Origin` host differs from the `Host` header's host gets `403 bad origin`
 (CSRF — see [HTTP /control API](HTTP-Control-API.md)); a request target
 longer than 255 characters gets `414 URI Too Long` instead of being silently
@@ -264,7 +264,7 @@ bit-twiddling is easy to get subtly wrong.
 - **Muxing**: a hand-rolled MPEG-TS mux — video on PID `0x100`, AAC audio
   on PID `0x101` (ADTS-wrapped for `stream_type=0x0F`), PMT on PID
   `0x1000`, PCR carried on the video PID, PAT/PMT resent roughly every
-  second. **Since v1.9.28 (unreleased)** PTS/PCR count from the start of
+  second. **Since v1.9.28** PTS/PCR count from the start of
   the session (the 33-bit clock wraps after ~26.5 h of one session, not of
   camera uptime, and a wrap sets the discontinuity flag), and PCR runs
   300 ms behind PTS — PCR equal to PTS signalled zero decode delay, which
@@ -291,7 +291,7 @@ bit-twiddling is easy to get subtly wrong.
   never binds, the caller stops dialling — rather than silently running
   unencrypted. `srt.streamid` travels in plaintext and is no secret: a
   listener without a passphrase serves video to anyone, whatever
-  `rtsp.user`/`http.user` demand. **Since v1.9.28 (unreleased)** that
+  `rtsp.user`/`http.user` demand. **Since v1.9.28** that
   combination logs `SRT listener on port N has NO access control …` at
   start.
 

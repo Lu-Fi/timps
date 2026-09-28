@@ -21,12 +21,12 @@ dir `/mnt/mmcblk0p1`, default name template `%Y%m%d/%H/%Y%m%dT%H%M%S`.
 against `..` path components and an absolute `record.name` before every
 open, since `record.dir`/`record.name` are themselves runtime-mutable via
 `/control` and an authenticated caller could otherwise escape the
-records tree. **Since v1.9.28 (unreleased)** the strftime-*expanded* name
+records tree. **Since v1.9.28** the strftime-*expanded* name
 is vetted too (a conversion that expands to nothing can still assemble a
 `..`); an expansion that fails the check is replaced by the Unix timestamp,
 as a failed `strftime()` already was.
 
-**Since v1.9.28 (unreleased)** a `record.dir` (or, while it does not exist yet, its nearest
+**Since v1.9.28** a `record.dir` (or, while it does not exist yet, its nearest
 existing parent) on the **root filesystem** is refused: the usual case is the
 SD mount point with no card in it, where earlier versions silently recorded
 into flash. One `[ERR] record.dir … is on the root filesystem (card not
@@ -63,7 +63,7 @@ one GOP, whatever `pre_roll_s` said; that was the behaviour until
 `dd7946a`.) The ring's time trim keeps the newest keyframe at or before the
 `pre_roll_s` cutoff, since that is where the window starts decoding; until
 v1.9.27 the trim dropped it, so the pre-roll came out anywhere from
-`pre_roll_s` down to almost nothing. **Since v1.9.28 (unreleased)** also: a start with no
+`pre_roll_s` down to almost nothing. **Since v1.9.28** also: a start with no
 keyframe buffered asks the encoder for one instead of waiting out the GOP,
 and while segment opens keep failing (card missing, read-only) the ring keeps
 rolling, so a later successful open no longer splices minutes-old pre-roll
@@ -115,7 +115,7 @@ the threshold is met or no candidate remains — one directory walk
 collects the 32 oldest at a time (rather than re-walking the whole tree
 per deleted file, which on a full card costs dropped frames), and
 traversal uses `lstat`, never following a symlink out of the tree.
-"Oldest" is by mtime; **since v1.9.28 (unreleased)** an mtime before 2025
+"Oldest" is by mtime; **since v1.9.28** an mtime before 2025
 counts as *newest*: without an RTC, footage written after a power cut but
 before NTP sync carries a ~1970 mtime, and earlier versions deleted exactly
 that footage first.
@@ -162,7 +162,7 @@ Every ~5 seconds, an open segment gets a non-blocking `fflush()` +
 `sync_file_range()` (bounding data loss on a power cut to roughly that
 window without risking a slow SD card stalling the writer thread and
 dropping frames); the real blocking `fsync()` happens once, at segment
-close. **Since v1.9.28 (unreleased)** data already handed to writeback is
+close. **Since v1.9.28** data already handed to writeback is
 dropped from the page cache (`POSIX_FADV_DONTNEED`) one tick later, and the
 whole segment after that closing `fsync()`, so recording does not fill the
 RAM of a small board with footage nobody reads back. A short write (SD card
@@ -198,7 +198,7 @@ completely independent of the rotating SD recorder — it works even with
 `record.enabled=0`, since subscribing to the hub wakes the shared encoder
 on demand. Notable safety details:
 
-- `path` must live under `/tmp/` and contain no `..`. **Since v1.9.28 (unreleased)** no
+- `path` must live under `/tmp/` and contain no `..`. **Since v1.9.28** no
   component may be a symlink (the path is walked with `openat(O_NOFOLLOW)`,
   missing directories created); before, only the last component was
   checked, so a planted `/tmp/x -> /etc` redirected the write.
@@ -208,7 +208,7 @@ on demand. Notable safety details:
   RAM-backed captures during a burst of motion events. (Until v1.9.27 the
   capture ran under `/control`'s apply lock, so a second request — and every
   other POST — actually waited behind the first for up to `seconds + 5` s.
-  **Since v1.9.28 (unreleased)** the capture runs after that lock is released, and a busy
+  **Since v1.9.28** the capture runs after that lock is released, and a busy
   request comes back `rejected`.) The POST itself still returns only once the
   clip is written, which is what send2 relies on.
 - The output file is opened `O_CREAT|O_EXCL|O_NOFOLLOW` — never follows a
@@ -236,14 +236,14 @@ announce themselves there rather than only in a log ring that recycles in
 hours.
 
 `free_mb` is sampled every 10 s by the recorder thread (`-1` until the first
-sample) — **since v1.9.28 (unreleased)**; before, every status
+sample) — **since v1.9.28**; before, every status
 poll ran `statvfs` itself, and a wedged SD card or hard-mounted NFS
 `record.dir` blocked every `GET /control`.
 
 ### Hook scripts and open files
 
 Segments, clips, timelapse shots and snapshots are opened `O_CLOEXEC`
-(**since v1.9.28 (unreleased)**), so a hook the daemon spawns (the motion
+(**since v1.9.28**), so a hook the daemon spawns (the motion
 hook, a day/night script) no longer inherits a write descriptor to the open
 SD file — which made unmounting the card fail with `EBUSY` until the hook
 exited.
@@ -299,7 +299,7 @@ into place — readers never see a partial JPEG. If `timelapse.keep_days >
 older than `keep_days*86400` seconds under the timelapses tree
 (directory-depth-bounded), removing any directory left empty afterward.
 
-**Since v1.9.28 (unreleased)** `keep_days` is clamped to 0..3650, the cutoff is computed in 64
+**Since v1.9.28** `keep_days` is clamped to 0..3650, the cutoff is computed in 64
 bits, and pruning is skipped while nothing can be that old yet: on 32-bit
 `time_t` a huge value (say `99999`, meant as "forever") overflowed the
 cutoff into the future and **deleted every shot**. Shots with a pre-2025

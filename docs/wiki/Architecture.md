@@ -73,7 +73,7 @@ touching hub internals directly.
    a slow ISP bring-up now just clears the run flag and lets the normal
    teardown path run afterwards, with a 4-second watchdog `alarm()` that
    force-`_exit()`s if a second signal or a wedged vendor call prevents a
-   clean shutdown. Since v1.9.28 (unreleased) that is one deadline for the
+   clean shutdown. Since v1.9.28 that is one deadline for the
    whole teardown, vendor HAL stop included; v1.9.27 armed 3 s and re-armed
    another 3 s before `g_hal->stop()`, which could run past `S95timps`' 5 s
    `wait_stop`.
@@ -94,7 +94,7 @@ touching hub internals directly.
     (IVS → threads → IMP objects → sensor → ISP, in dependency order).
     `httpd_stop()` first makes `/control` refuse new POSTs (`503`) and waits
     up to 1 s for one still applying/persisting, so exit never cuts a config
-    write in half (since v1.9.28, unreleased), and then up to 1 s more for an
+    write in half (since v1.9.28), and then up to 1 s more for an
     applied POST's response to be written, so a change that landed is not
     reported to its client as failed when the connections are closed.
 
@@ -182,7 +182,7 @@ queues per source.
   **skipped entirely when there are zero subscribers**, so a source can
   keep "publishing" through the idle-stop debounce window at effectively
   no cost. (The JPEG thread assembles each frame into a pool buffer before
-  publishing it, so **since v1.9.28 (unreleased)** it skips that too and
+  publishing it, so **since v1.9.28** it skips that too and
   releases the frame straight after `GetStream` while nobody wants one.)
 - **`hub_subscribe`/`hub_unsubscribe`** — callers supply their own
   [fanqueue](#fan-out-queues-fanqueuec); the hub tracks a per-source
@@ -252,7 +252,7 @@ keyframe is what the consumers were waiting for and a second forced IDR would
 land in queues that had just recovered. Requests a client
 needs to **start** decoding (subscribe, RTSP `PLAY`, a fresh fMP4 `GET`, the
 WebRTC answer, a recorder or clip start) keep using `hub_request_idr()` and go
-out at once. **Since v1.9.28 (unreleased)** that path is rate-limited too,
+out at once. **Since v1.9.28** that path is rate-limited too,
 by `HUB_IDR_START_MIN_US` (500 ms) per stream: a start request within 500 ms
 of the last forced IDR is coalesced exactly like a recovery request (the
 earliest pending deadline wins, and a keyframe published meanwhile retires

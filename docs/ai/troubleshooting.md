@@ -21,9 +21,9 @@ Companion to `docs/ai/reference.md` (what timps *is*) and
 6. §15 is the closing note for the assistant; **§16 follows it** and catalogues
    the shipped scripts and CGIs.
 
-Everything else here was read out of this repository at **v1.9.27
-(2026-09-27)**; a statement marked **since v1.9.28 (unreleased)** is in the
-source but in no tagged release yet. Source files are named; line numbers deliberately are not.
+Everything else here was read out of this repository at **v1.9.28
+(2026-09-28)**; a statement marked **since v1.9.28** is new in that release
+(on an older camera the previous behaviour applies). Source files are named; line numbers deliberately are not.
 
 ---
 
@@ -127,7 +127,7 @@ The one-shot-ness lives in a marker file, `/etc/timps-startup-reboot.flag`
   mounted read-only?)` — the rootfs is full or read-only. Fix that first;
   until then timps deliberately stays down rather than boot-loop.
 
-**since v1.9.28 (unreleased)**: after an **abandoned** teardown the same three outcomes happen, but only as
+**since v1.9.28**: after an **abandoned** teardown the same three outcomes happen, but only as
 `timpsd: HAL teardown abandoned - …` lines on **stderr** (not syslog): the
 `siglongjmp` out of the wedged `g_hal->stop()` may have left the log lock
 held, so that path does not risk a `LOGE`. In `logread` it shows as the last
@@ -178,7 +178,7 @@ Verified in `src/config.c`:
   `key = value`. So "the daemon will eat your comments" is wrong *in general*
   and right *for the trailing comment on a key you then change from the WebUI*.
   Matches `docs/ai/config-keys.md` §1.5. On v1.9.27 every rewrite also reset
-  the file to mode 0644; **since v1.9.28 (unreleased)** it keeps the existing mode, so a
+  the file to mode 0644; **since v1.9.28** it keeps the existing mode, so a
   `chmod 600 /etc/timps.conf` sticks.
 - **Duplicate lines for the same key:** the *first* occurrence is replaced,
   later duplicates are **dropped** on the next rewrite. Before a rewrite, the
@@ -189,7 +189,7 @@ Verified in `src/config.c`:
   `rtsp.username`, `daynight.total_gain_day_threshold`) is *replaced* by its
   canonical spelling rather than left behind alongside a new line.
 - **Long lines are dropped, not truncated:** `config: line longer than 510
-  chars skipped (key "…")`. **since v1.9.28 (unreleased)** a line with an embedded NUL byte is dropped the
+  chars skipped (key "…")`. **since v1.9.28** a line with an embedded NUL byte is dropped the
   same way. Only the key is logged, never a prefix of the value.
 - **Unbalanced quotes are kept verbatim, quotes included:**
   `config: <key> has an opening quote but no closing one`.
@@ -198,7 +198,7 @@ Verified in `src/config.c`:
   `space # " ' ;` for exactly this reason, but a *hand-edited* unquoted value
   loses everything from the `#`. Quote it.
 - **Unknown keys log `unknown key <name>` and are dropped.** They are not
-  stored, not echoed, and do not survive a rewrite. **since v1.9.28 (unreleased)** the most likely
+  stored, not echoed, and do not survive a rewrite. **since v1.9.28** the most likely
   one after an upgrade is `unknown key osd.vars_file`: the key was removed
   (the `{placeholder}` file is fixed at `/tmp/timps_osd.vars`). Delete the
   line; nothing else changes.
@@ -338,7 +338,7 @@ All of this is `src/main.c`.
 - `-h` on the command line (prints version + usage).
 - A normal shutdown. The marker is the last line, `teardown complete -
   exiting`, after `shutting down`.
-- `hard_exit()`: the 4 s shutdown guillotine (**since v1.9.28 (unreleased)**; 3 s, re-armed once, on v1.9.27) (`MS_SHUTDOWN_ALARM_S`, one deadline
+- `hard_exit()`: the 4 s shutdown guillotine (**since v1.9.28**; 3 s, re-armed once, on v1.9.27) (`MS_SHUTDOWN_ALARM_S`, one deadline
   for the whole teardown including the vendor HAL stop) fired, or
   a **second** `SIGINT`/`SIGTERM` arrived while the first was being handled. It
   `_exit(0)`s wherever teardown happens to be — an unfinished recording segment
@@ -377,7 +377,7 @@ That one line decides whether the bug is ours or the vendor's. An alternate
 signal stack is installed, so a stack-overflow `SIGSEGV` is still captured;
 `sigaltstack failed` in the log means it is not. On v1.9.27 only the main
 thread had one, so a stack overflow in a worker thread died with no crash
-record; **since v1.9.28 (unreleased)** every thread timps starts gets its own (vendor threads
+record; **since v1.9.28** every thread timps starts gets its own (vendor threads
 inside `libimp` still do not).
 
 **Signals that are *not* handled:**
@@ -501,7 +501,7 @@ timps starts the framesource/encoder **when a client attaches** and stops it
 > reason it stays dead until a human or a cron job notices.** A user who says
 > "the camera went dark and came back only after I rebooted" has usually hit
 > exactly this, not a hardware fault.
-| `chnN: StartRecvPic kept failing for N attempts - encoder/ISP is not coming back on its own; exiting …` | **since v1.9.28 (unreleased)**: the encoder never *starts* (with a client attached, ~25 s of failed starts, logged as `framesource N: EnableChn failed (attempt N)` on the 1st and every 20th try). Same exit and same consequences as the line above; v1.9.27 retried such a start forever. | As above. |
+| `chnN: StartRecvPic kept failing for N attempts - encoder/ISP is not coming back on its own; exiting …` | **since v1.9.28**: the encoder never *starts* (with a client attached, ~25 s of failed starts, logged as `framesource N: EnableChn failed (attempt N)` on the 1st and every 20th try). Same exit and same consequences as the line above; v1.9.27 retried such a start forever. | As above. |
 | `jpeg chnN: … giving up on this channel (MJPEG/snapshot output disabled until restart)` | Same watchdog on the JPEG channel, but it only disables **JPEG**; video keeps running. | Restart `timpsd` to get snapshots back. |
 | `chnN: GetStream failed after PollingStream OK` | Transient SDK hiccup. | Ignore unless constant. |
 | `video pipeline bring-up failed - tearing down partial state` | `ing_start()` failed; `main()`'s retry loop takes over (§1.1). | Read the LOGE immediately above it — that one names the real failure. |
@@ -635,7 +635,7 @@ Three separate mechanisms, all real:
    for), so a single drop burst costs one forced IDR, not two. Requests a
    client needs to **start** decoding
    (subscribe, RTSP `DESCRIBE`/`PLAY`, a fresh fMP4 `GET`, the WebRTC answer)
-   still go out immediately — **since v1.9.28 (unreleased)** unless the stream had a forced IDR
+   still go out immediately — **since v1.9.28** unless the stream had a forced IDR
    less than 500 ms ago, in which case they are coalesced the same way; and
    `DESCRIBE` and the fMP4 player page only ask while the stream is cold (that
    request does not arm the 500 ms limit, so the client's own start IDR right
@@ -755,9 +755,9 @@ privacy regions, `MS_MAX_STR` = 64 bytes per string field.
 
 | Log (`src/hal/imp_osd.c`) | Meaning / fix |
 | --- | --- |
-| `osd stream N item M: rendered WxH exceeds usable WxH - skipped (reduce font_size/text length)` | The rendered text does not fit. Shorten it or lower `osd<S>.<N>.font_size`. **since v1.9.28 (unreleased)** logged at most once per 60 s per item, and that text is not rendered again until it or the item's style changes (v1.9.27 re-rasterized and re-warned every tick). |
+| `osd stream N item M: rendered WxH exceeds usable WxH - skipped (reduce font_size/text length)` | The rendered text does not fit. Shorten it or lower `osd<S>.<N>.font_size`. **since v1.9.28** logged at most once per 60 s per item, and that text is not rendered again until it or the item's style changes (v1.9.27 re-rasterized and re-warned every tick). |
 | `logo <path> (WxH) exceeds usable WxH - skipped` | Logo bigger than the frame. |
-| `logo <path> not loaded` | File missing/unreadable/not a supported bitmap — **since v1.9.28 (unreleased)** or not a regular file: a FIFO or device path for a logo, font or the vars file is refused instead of blocking the OSD thread (or, for `font_path`, startup) forever. |
+| `logo <path> not loaded` | File missing/unreadable/not a supported bitmap — **since v1.9.28** or not a regular file: a FIFO or device path for a logo, font or the vars file is refused instead of blocking the OSD thread (or, for `font_path`, startup) forever. |
 | `stream N rotated D: hardware OSD/privacy limited to the top P px of the WxH frame (libimp picHeight range-check); lower overlays are clamped up. Use a square stream, 180, or ch1 for full coverage.` | **T31 rotated streams: OSD/privacy only work in a top band.** This is a libimp range-check, not something timps can widen. |
 | `osd stream N item M: CreateRgn failed (region pool exhausted?)` / `osd stream N privacy M: CreateRgn failed` | The SDK's region pool ran out. Reduce the number of overlays/masks. |
 | `IMP_OSD_SetPoolSize(N KB) failed - OSD overlays may not composite` | The OSD memory pool could not be sized at ISP init. |
@@ -783,7 +783,7 @@ item was enabled at boot**, but it **pre-creates all four privacy regions**
   restart **once**; after that every mask is live.
 
 **T23 software-rotated streams:** on v1.9.27 that path scaled `font_size` by
-stream height / 1080 (minimum 12 px); **since v1.9.28 (unreleased)** it is absolute pixels like
+stream height / 1080 (minimum 12 px); **since v1.9.28** it is absolute pixels like
 everywhere else, so text on a rotated sub-1080 stream gets bigger after the
 upgrade and may need a smaller `font_size`. A live style edit (size, colour,
 outline) now re-renders there even when the text is unchanged.
@@ -911,7 +911,7 @@ refused the mode change outright — seen on some T41/GC5603 bring-ups.
   usable clock**, so schedule mode cannot work before time sync.
 - `mode=schedule but no usable calendar … - forcing nothing` — same, seen at
   run time.
-- **since v1.9.28 (unreleased)** `daynight.time_night_start/time_day_start ("<a>"/"<b>") is not a
+- **since v1.9.28** `daynight.time_night_start/time_day_start ("<a>"/"<b>") is not a
   usable window (both must be HH:MM and differ) - ignored[, the sun calendar
   is used instead]` — only one edge set, a malformed value, or both edges
   equal. v1.9.27 treated such a window as configured and then could not
@@ -919,7 +919,7 @@ refused the mode change outright — seen on some T41/GC5603 bring-ups.
 - A sunrise/sunset offset that pushes an edge past solar midnight (a large
   positive sunset offset, say) was clipped to the current solar day on
   v1.9.27 — night began at local midnight-ish while `sun_computed_*` showed
-  the later time. **since v1.9.28 (unreleased)** the neighbouring days' windows count too.
+  the later time. **since v1.9.28** the neighbouring days' windows count too.
 - `both a time window (<a>..<b>) and a location (<lat>/<lon>) are configured
   - the time window wins and the sun settings are ignored. Clear one of the
   two so the active schedule is not a matter of precedence` — configure
@@ -958,7 +958,7 @@ Three failure logs, all from `HAL_ING`:
   not report a line time. The key cannot work on this camera.
 - `image.ae_it_max_us=<n>: SDK rejected the cap (<lines>, rc=…) - AE maximum
   unchanged`.
-- **since v1.9.28 (unreleased)** `image.ae_it_max_us=<n>: <lines> lines exceeds this SDK's 16-bit
+- **since v1.9.28** `image.ae_it_max_us=<n>: <lines> lines exceeds this SDK's 16-bit
   field - capping at 65535` (T10/T20/T21/T30) — on v1.9.27 the value
   silently wrapped into a tiny cap.
 - `image.ae_it_max_us=<n>: <k> writes on a live, delivering pipeline and the
@@ -1017,7 +1017,7 @@ Shared facts:
 | `455 Method Not Valid in This State` | `PLAY` before any `SETUP`. Connection closed. | Client bug. |
 | `461 Unsupported Transport` | No `Transport:` header, `client_port=0`, an unparseable port, or a multicast-only request. Connection kept. | timps supports RTP/AVP UDP unicast and RTP/AVP/TCP interleaved. **Multicast is not supported.** VLC falls back to TCP by itself. |
 | `405 Method Not Allowed` with `Allow: OPTIONS, GET_PARAMETER, TEARDOWN` | `PAUSE` or a mid-session `DESCRIBE` while playing. Media keeps running. | **timps does not implement PAUSE.** The player's pause button gets a clean 405 instead of hanging. |
-| `500 Internal Server Error` | The server could not bind a UDP port pair after 64 tries in 6000–14190. Connection closed. **since v1.9.28 (unreleased)**: also on `DESCRIBE` when the SDP does not fit its buffer (log `SDP for chnN exceeds N bytes - refusing DESCRIBE`; v1.9.27 sent it truncated). | Something else holds the whole range, or the box is out of sockets. Use TCP interleaved. |
+| `500 Internal Server Error` | The server could not bind a UDP port pair after 64 tries in 6000–14190. Connection closed. **since v1.9.28**: also on `DESCRIBE` when the SDP does not fit its buffer (log `SDP for chnN exceeds N bytes - refusing DESCRIBE`; v1.9.27 sent it truncated). | Something else holds the whole range, or the box is out of sockets. Use TCP interleaved. |
 | `503 Service Unavailable` with `Retry-After: 1` on DESCRIBE | No SPS/PPS after a 2 s warm-up — the encoder has not produced parameter sets yet. | Retry. Persistent → §2.2. |
 | `503 Service Unavailable` on PLAY | `hub_subscribe()` failed: the source is at `HUB_MAX_SUBS` = 16. Log: `subscribe failed (source full), closing session=…` | Close other viewers. |
 | Raw `RTSP/1.0 503 Service Unavailable` with **no CSeq**, socket closed immediately | `RTSP_MAX_CLIENTS` = **8** concurrent clients reached. Log: `client limit (8) reached, rejecting`. | Close viewers, or rebuild with `-DRTSP_MAX_CLIENTS=N`. |
@@ -1060,7 +1060,7 @@ resolution and bitrate. A user reporting "my substream URL gives me the full
 whose `Content-Length` would overflow the 4096-byte buffer; an incomplete
 request pending longer than `RTSP_REQ_TIMEOUT_US` = **10 s** (log: `control
 request incomplete after 10s, closing`); a bogus interleaved frame length; a
-TLS handshake failure on the RTSPS port. **since v1.9.28 (unreleased)** also: the **5th rejected
+TLS handshake failure on the RTSPS port. **since v1.9.28** also: the **5th rejected
 login** on one connection (after its `401`), and a connection that has not
 reached `PLAY` within **60 s** of connecting (log: `no PLAY within 60s of
 connecting, closing`) — the latter is normal for port scanners and for an NVR
@@ -1070,7 +1070,7 @@ that only probes with `OPTIONS`.
 `;timeout=60`; sessions are reaped at **2× = 120 s** of idleness, and only
 for UDP transports. Log: `session=… idle >120s (client gone without
 TEARDOWN), reaping`. A TCP-interleaved client that vanishes is noticed by
-the failing send instead. **since v1.9.28 (unreleased)** the control
+the failing send instead. **since v1.9.28** the control
 connection has TCP keepalive (20 s idle, 4 probes 5 s apart), so a UDP client
 whose host vanished without a FIN (power cut, WiFi drop) is dropped after
 ~40 s, before the 120 s reaper.
@@ -1113,9 +1113,9 @@ practically only reachable with an enormous SDP; report it as a bug.
 | --- | --- |
 | `503 Service Unavailable` / `busy`, with `Access-Control-Allow-Origin: *` | `HTTP_MAX_CLIENTS` = **16** concurrent connections. Log: `connection limit (16) reached, rejecting client`. **`preview.html` alone holds 3+ slots per open tab** (the media stream plus two SSE subscriptions), so ~5 tabs is the real ceiling. |
 | Connection closed with no bytes at all | Same cap, but on a TLS port where the peer already sent a ClientHello (a plaintext 503 into a TLS handshake looks like a TLS fault); or the 5 s header deadline expired; or (v1.9.27 only) the request line was malformed. |
-| `400 Bad Request` / `bad request` | **since v1.9.28 (unreleased)**: the request line could not be parsed. |
-| `414 URI Too Long` | **since v1.9.28 (unreleased)**: the request target is longer than 255 characters (v1.9.27 cut it silently, so e.g. a Digest `uri=` for a long URL never matched). |
-| `403 Forbidden` / `bad origin` on a `POST` | **since v1.9.28 (unreleased)**: a Basic/Digest-authenticated POST from a page on another host (CSRF guard). Log: `refused cross-origin POST <path>`. See §8.1. |
+| `400 Bad Request` / `bad request` | **since v1.9.28**: the request line could not be parsed. |
+| `414 URI Too Long` | **since v1.9.28**: the request target is longer than 255 characters (v1.9.27 cut it silently, so e.g. a Digest `uri=` for a long URL never matched). |
+| `403 Forbidden` / `bad origin` on a `POST` | **since v1.9.28**: a Basic/Digest-authenticated POST from a page on another host (CSRF guard). Log: `refused cross-origin POST <path>`. See §8.1. |
 | `404 Not Found` / `no jpeg` on `/snapshot.jpg`, `/stream.mjpeg`, `/mjpeg` | No JPEG source. An explicit `?chn=N` is **strict** — if that stream's `videoN.jpeg` is off you get 404, with no fallback to the other stream. |
 | `503 Service Unavailable` / `busy` on a media path | The source is at `HUB_MAX_SUBS` = 16, or a snapshot grab collided with another. |
 | `503 Unavailable` / `no frame` on `/snapshot.jpg` (note the non-standard reason phrase) | Subscribed fine, but no JPEG arrived within `HUB_JPEG_GRAB_WAIT_MS` = 1500 ms (worst case ~3 s). The JPEG channel is stalled — see §2.2. |
@@ -1147,7 +1147,7 @@ in order:
    video-only.
 4. `no video params, abort mp4` — no SPS/PPS within a 2 s wait. On v1.9.27
    the connection is closed **with no HTTP response at all**, so the browser
-   reports a network error, not a status code; **since v1.9.28 (unreleased)** it answers
+   reports a network error, not a status code; **since v1.9.28** it answers
    `503` `no video` (as does a queue allocation failure, body `oom`), which
    lets the WebUI's retry-on-5xx kick in.
 5. `no AAC within warmup -> video-only mp4` — audio was configured but the
@@ -1234,7 +1234,7 @@ must be resamplable to 8 kHz. LOGI `audio m-section answered with port 0
 (hub codec …, no matching G.711 payload type in one BUNDLE)` is the "no
 audio negotiated" case.
 
-**since v1.9.28 (unreleased)**: an `a=fmtp` with a space after `;` (`packetization-mode=1;
+**since v1.9.28**: an `a=fmtp` with a space after `;` (`packetization-mode=1;
 profile-level-id=…`, legal and sent by some non-browser WHEP clients) is
 accepted — v1.9.27 answered those offers `400 unsupported offer`. A session
 whose final DTLS flight was lost now recovers when the browser retransmits
@@ -1297,7 +1297,7 @@ other numbers mean nothing at that point.
 | SRT never starts, daemon otherwise fine | `SRTO_PASSPHRASE rejected (need 10-79 chars): … - refusing to run unencrypted` — the passphrase is too short or too long. **timps refuses rather than falling back to unencrypted.** | Use a 10–79 character `srt.passphrase`. |
 | `srt.mode=caller but srt.host is empty - SRT disabled` | Caller mode without a destination. | Set `srt.host`. |
 | `unknown srt.mode '<x>' - using listener` | Typo. Valid: `listener`, `caller`. | |
-| `SRT listener on port <n> has NO access control (srt.passphrase unset) - …` | **since v1.9.28 (unreleased)**. Listener without a passphrase while `rtsp.user`/`http.user` is set: anyone who can reach the port gets the video; `srt.streamid` is plaintext and no secret. | Set a 10–79 character `srt.passphrase`. |
+| `SRT listener on port <n> has NO access control (srt.passphrase unset) - …` | **since v1.9.28**. Listener without a passphrase while `rtsp.user`/`http.user` is set: anyone who can reach the port gets the video; `srt.streamid` is plaintext and no secret. | Set a 10–79 character `srt.passphrase`. |
 | `bind/listen on <port> failed: …` | Port in use. Only SRT dies; the rest of the daemon runs. | |
 | `client limit (8) reached, rejecting` | Enforced **after** `srt_accept()`, so the client sees an accepted-then-closed connection with no message. | |
 | `connection to <host>:<port> lost - reconnecting (quiet retries, backoff up to <N>s)` / `connect to … failed: … - retrying` | Caller mode, destination unreachable. Retries are quiet by design — the log does **not** spam. | Fix the destination. |
@@ -1322,13 +1322,13 @@ other numbers mean nothing at that point.
 | A manual stop latch is set | `manual_off` in the status. It **overrides the config**. | `POST /control {"record":{"active":1}}` or clear the latch. |
 | Unsafe path | `unsafe record.dir/name ('..' or absolute name), not recording` (LOGE) | `record.name` must be **relative** and must not contain `..`. It is a `strftime` pattern under `<record.dir>/<host>/records/`. |
 | The directory is not writable | `open <path>: <errno>` / `fdopen <path>: <errno>` | Mount it, check permissions. |
-| `record.dir` is on the root filesystem | **since v1.9.28 (unreleased)**: `record.dir <dir> is on the root filesystem (card not mounted?) - not recording` (LOGE, once per episode), `last_error` `record.dir on rootfs`. Almost always the SD mount point with no card mounted — v1.9.27 recorded into flash there. | Mount the card; `/tmp` is allowed for testing. |
+| `record.dir` is on the root filesystem | **since v1.9.28**: `record.dir <dir> is on the root filesystem (card not mounted?) - not recording` (LOGE, once per episode), `last_error` `record.dir on rootfs`. Almost always the SD mount point with no card mounted — v1.9.27 recorded into flash there. | Mount the card; `/tmp` is allowed for testing. |
 
 `pruned <file> (free <N> MB < <M>)` (LOGI) is the **normal** retention
 behaviour — oldest recordings are deleted to keep `min_free_mb` free.
 "Oldest" is by mtime, and on a camera without an RTC the footage written after
 a power cut but before NTP sync carries a ~1970 mtime: v1.9.27 deleted exactly
-that footage first. **since v1.9.28 (unreleased)** pre-2025 mtimes count as newest.
+that footage first. **since v1.9.28** pre-2025 mtimes count as newest.
 
 **How the three record switches actually combine** (`want_write()` in
 `src/record.c`), because the precedence surprises people:
@@ -1351,7 +1351,7 @@ that footage first. **since v1.9.28 (unreleased)** pre-2025 mtimes count as newe
 | `segment close/sync failed: <e> (tail may be truncated)` | The final `fsync` failed — **the last seconds of that file may be unreadable.** |
 | `segment name collision, wrote <other> instead` | Two segments resolved to the same name. Make `record.name` more specific (it is a `strftime` pattern — include `%S`). |
 | `dropped a corrupt video/audio fragment while recording (OOM?)` | Memory pressure; that fragment is missing from the file. |
-| `clip busy, skipped <name>` | A `record.clip` request arrived while another clip was still being written. **since v1.9.28 (unreleased)** the second request is refused and counted in `rejected` (on v1.9.27 it waited behind the first one, and so did every other `POST /control`). |
+| `clip busy, skipped <name>` | A `record.clip` request arrived while another clip was still being written. **since v1.9.28** the second request is refused and counted in `rejected` (on v1.9.27 it waited behind the first one, and so did every other `POST /control`). |
 | `clip: no frames for <name>` | The clip window contained no frames — the encoder was idle (see §2.1: on-demand encoding). |
 | `record.pre_roll_s=<N> cannot be held: the pre-roll ring caps at ~<X>s for ch<n> (<B> kbps, <F> fps, <P> packets / <M> MB max) - actual pre-roll is shorter` | The pre-roll ring is bounded by packet count and bytes, not by seconds. A high bitrate buys fewer seconds. | 
 | `chn=<n>: record queue overflowed, dropping frames (storage/consumer too slow) - details at DEBUG` | **since v1.9.19.** The recorder's own queue evicted packets — the storage could not keep up. Once per subscription; the per-60 s `HUB` summary (§2.3) counts the rest. |
@@ -1408,9 +1408,9 @@ build lacks `USE_FAAC` (see §6.1).
   that the JPEG channel is healthy (§2.2).
 - `thread` (LOGE) — thread creation failed at start-up; timelapse is off.
 - `timelapse.dir <dir> is on the root filesystem (card not mounted?) -
-  skipping shots` — **since v1.9.28 (unreleased)**, same rule as `record.dir` (§5.1).
+  skipping shots` — **since v1.9.28**, same rule as `record.dir` (§5.1).
 - `timelapse.interval_s` is 1..INT_MAX; `keep_days` 0 = keep forever,
-  clamped to 3650 **since v1.9.28 (unreleased)**. On v1.9.27 a huge `keep_days` (e.g. 99999
+  clamped to 3650 **since v1.9.28**. On v1.9.27 a huge `keep_days` (e.g. 99999
   meant as "forever") overflowed the cutoff on 32-bit `time_t` and **deleted
   every shot**; if a user reports a vanished timelapse archive, that is the
   first question. Shots with a pre-2025 (pre-NTP) mtime were also pruned on
@@ -1447,7 +1447,7 @@ Work down this list:
 2. `audio input unavailable` (LOGE) or `no audio frames received - disabling
    audio input` (LOGE) — the SoC AI never delivered. (That watchdog was meant
    to fire after ~5 s; on v1.9.27 it counted polling misses, each up to
-   `general.imp_polling_timeout`, and took ~255 s. **since v1.9.28 (unreleased)** it is 5 s.) The mic is not wired, or
+   `general.imp_polling_timeout`, and took ~255 s. **since v1.9.28** it is 5 s.) The mic is not wired, or
    the AI could not be opened: look for `IMP_AI_Enable failed`,
    `IMP_AI_SetChnParam failed`, `IMP_AI_EnableChn failed`.
 3. `IMP_AI_SetPubAttr <N>Hz failed -> falling back` /
@@ -1709,7 +1709,7 @@ Verified in `src/auth.c`, `src/auth.h` and the gate in `src/mp4/httpd.c`:
 
 - No session cookie, no `Set-Cookie`, no `Secure`/`HttpOnly`/`SameSite`
   handling, no login endpoint, no logout.
-- No CSRF token or header. **since v1.9.28 (unreleased)** there **is** an Origin check: a
+- No CSRF token or header. **since v1.9.28** there **is** an Origin check: a
   `POST` authenticated by Basic/Digest whose `Origin` host differs from the
   `Host` header's host gets `403 bad origin` (browsers re-send cached HTTP
   credentials on cross-site form posts). Token and loopback requests, and
@@ -1720,7 +1720,7 @@ Verified in `src/auth.c`, `src/auth.h` and the gate in `src/mp4/httpd.c`:
   forgotten after 10 minutes of quiet. The line reads `<N> failed login
   attempts on <listener> since the last report (last from <peer>)`. A user who
   sees it is being scanned; it does not mean anything was blocked.
-- **since v1.9.28 (unreleased)** RTSP closes a connection after its **5th rejected login**. That is
+- **since v1.9.28** RTSP closes a connection after its **5th rejected login**. That is
   not a lockout either — the client can reconnect at once — it only stops one
   connection from guessing forever.
 - **No `auth_bypass` key.** The equivalents are the loopback rule and the
@@ -1780,7 +1780,7 @@ The 401 carries both a Digest and a Basic challenge. If the client loops:
 - `stale=true` in the `WWW-Authenticate` header means the digest was
   cryptographically **correct** but the nonce was expired, evicted or
   replayed. The nonce table holds **32** entries with a **300 s** TTL
-  (**since v1.9.28 (unreleased)**: 64 entries, at most 4 per client IP, so one scanning
+  (**since v1.9.28**: 64 entries, at most 4 per client IP, so one scanning
   address can no longer evict everyone else's challenge), and
   under `qop=auth` the `nc` counter must strictly increase. A client that
   reuses an `nc` gets a fresh challenge. Normal clients retry silently.
@@ -2277,9 +2277,9 @@ mbedTLS.
 
 ### 11.7 Upgrade targets — "upgrade to ≥ vX"
 
-Latest release in `CHANGELOG.md` is **1.9.27 (2026-09-27)**. Anything this
-file marks "since v1.9.28 (unreleased)" is only in `[Unreleased]` — quote that
-phrasing, not a version number, until the tag exists. Two caveats before
+Latest release in `CHANGELOG.md` is **1.9.28 (2026-09-28)**. Anything this
+file marks "since v1.9.28" first shipped in that release, so **1.9.28** is the
+upgrade target for it. Two caveats before
 quoting a released version at a user:
 
 - `CHANGELOG.md` **jumps from `[1.2.0]` to `[1.5.0]`**. The 1.3.x/1.4.x fixes
@@ -2322,7 +2322,7 @@ quoting a released version at a user:
 | **Preview unusable when the page and the stream are on different schemes** | **1.9.11** (read the hazard in §8.4) |
 | A killed tab / WiFi drop **busy-spun a core** on `/talk` (a TLS transport EOF without `close_notify` came back as `EAGAIN` in `ws.c`); **a typo in `http.https`/`rtsp.tls` silently downgraded the transport with no log**. *The specific "pinned the core for 3–10 s" figure is **(unverified)** — the CHANGELOG records the busy-spin, not a duration.* | **1.9.12** |
 | WebRTC at all | **1.9.13**, and really **1.9.14** — before that every POST got a 426 and every session was video-only |
-| **Timelapse archive wiped** by a huge `keep_days`; **post-power-cut footage pruned first**; motion **pre-roll far shorter than `pre_roll_s`**; recording into **flash with no SD card mounted**; `GET /control` **hanging on a wedged SD/NFS mount**; any web page could drive `/control` through cached Basic/Digest credentials; `osd.vars_file` could render `timps.conf` passwords into the video | **since v1.9.28 (unreleased)** — quote that phrasing, not a version number |
+| **Timelapse archive wiped** by a huge `keep_days`; **post-power-cut footage pruned first**; motion **pre-roll far shorter than `pre_roll_s`**; recording into **flash with no SD card mounted**; `GET /control` **hanging on a wedged SD/NFS mount**; any web page could drive `/control` through cached Basic/Digest credentials; `osd.vars_file` could render `timps.conf` passwords into the video | **since v1.9.28** — quote that phrasing, not a version number |
 
 Two upgrade side effects to warn about:
 
@@ -2383,7 +2383,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `audio.codec2 '%s' unsupported (pcmu or off) -> off` | W | `audio.codec2` takes `pcmu` or `off` only — deliberately not defaulting to AAC. | `audio.codec2 = pcmu`. |
 | `%s%s = '%s' is not a valid value and was read as %d - that is PLAINTEXT, no TLS. Valid: %s` | W | A typo in `http.https` or `rtsp.tls`. **TLS is off.** | Fix the value (0/1/2). §1.5, §8.4 |
 | `daynight.mode: unknown '%s', keeping auto` | W | Valid: `auto`, `schedule` (plus the legacy `sensor`/`time`/`sun`). | |
-| `unknown osd item key %s` / `unknown privacy key %s` / `unknown video key %s` / `unknown key %s` | W | The key does not exist in this build. **It is dropped.** **since v1.9.28 (unreleased)** `unknown key osd.vars_file` is expected on an old config: the key was removed and the path is fixed at `/tmp/timps_osd.vars`. | Check `GET /control?fields=1`; delete an `osd.vars_file` line. |
+| `unknown osd item key %s` / `unknown privacy key %s` / `unknown video key %s` / `unknown key %s` | W | The key does not exist in this build. **It is dropped.** **since v1.9.28** `unknown key osd.vars_file` is expected on an old config: the key was removed and the path is fixed at `/tmp/timps_osd.vars`. | Check `GET /control?fields=1`; delete an `osd.vars_file` line. |
 | `videoN.max_gop is reserved and IGNORED - the keyframe interval comes from videoN.gop` | W | Compat-only key. | Use `videoN.gop`. §1.6 |
 | `osd.hinting is stored but has no effect in this build (compiled without OSD text autohinting)` | W | Built without `USE_OSD_HINTING`. | §1.6 |
 | `motion.roi_* is deprecated and IGNORED - use the motion grid` | W | Replaced by the cell grid. | §7.5 |
@@ -2392,8 +2392,8 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `daynight.%s=%s is now a fixed internal constant (%g) and can no longer be tuned per camera - the configured value is being ignored` | W | Same, for `ir_ratio_night` / `ir_ratio_day`. | §1.7 |
 | `sensor.fps: driver max_fps=%ld, auto capped to %d (set sensor.fps to override)` | I | **since v1.9.19.** `sensor.fps` was left unset and the driver advertised more than the cap (GC2053 reports 40 on a 30 fps mode). The cap is 30, or since v1.9.20 the fastest enabled `videoN.fps` if higher; from v1.9.20 the message reads `sensor.fps: driver %s=%ld, auto capped to %d (set sensor.fps to override)`, `%s` being `max_fps` or `fps`. The cap applies to the autodetected value only. | Nothing, unless more is really wanted — then set `sensor.fps` explicitly. §1.10 |
 | `config %s not found, using defaults` | W | No config file. Not fatal. | §1.3 |
-| `config: line longer than %zu chars skipped (key \"%.*s\")` | W | **since v1.9.28 (unreleased)**. Until v1.9.27 the line read `(starts \"%.40s...\")`, i.e. logged a prefix of the value. A line over ~510 characters is **dropped whole**. | Shorten it. |
-| `config: line with an embedded NUL byte skipped (key \"%.*s\")` | W | **since v1.9.28 (unreleased)**. The line held a NUL byte (binary junk, a bad editor); it is dropped whole instead of silently truncated. | Rewrite the line. |
+| `config: line longer than %zu chars skipped (key \"%.*s\")` | W | **since v1.9.28**. Until v1.9.27 the line read `(starts \"%.40s...\")`, i.e. logged a prefix of the value. A line over ~510 characters is **dropped whole**. | Shorten it. |
+| `config: line with an embedded NUL byte skipped (key \"%.*s\")` | W | **since v1.9.28**. The line held a NUL byte (binary junk, a bad editor); it is dropped whole instead of silently truncated. | Rewrite the line. |
 | `config: %s has an opening quote but no closing one - keeping the value verbatim, quotes included` | W | Unbalanced quote. | Fix the quoting. |
 | `config sensor.model '%s' != loaded driver '%s' - using '%s' (the config value would crash the ISP)` | W | The kernel sensor driver wins. A mismatch would divide by zero in the kernel. | Fix `sensor.model`. §1.8 |
 | `config sensor.i2c 0x%02x != loaded driver 0x%02lx - using 0x%02lx` | W | Same for the I²C address. | §1.8 |
@@ -2401,8 +2401,8 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `cannot create tmp for %s: %s` / `fdopen tmp failed` | W | The atomic-rewrite temp file could not be created. | Filesystem full or read-only. |
 | `read error on %s (%s) - ABORTING the config rewrite so the truncated copy is not committed over it. The setting is live but NOT persisted; this flash needs attention` | E | **A bad flash block.** The old file is intact; the change is live only. | Take it seriously — the flash is failing. |
 | `fsync %s failed: %s` / `rename %s -> %s failed` / `fsync dir %s failed: %s` | W | Durability steps of the atomic rewrite failed. A power cut can lose the change. | Check the filesystem. |
-| `config: video%d.imp_chn=%d must equal the stream index (its hub slot) - using %d` | E | **since v1.9.28 (unreleased)**. `videoN.imp_chn` doubles as the hub slot; any other value fed another stream's (or the audio) slot. | Remove the key or set it to `N`. |
-| `config: jpeg.imp_chn=%d collides with a video stream's channel - using %d (-1: none free, jpeg disabled)` / `config: video%d.jpeg_chn=%d collides with another encoder channel - using %d (...)` | E | **since v1.9.28 (unreleased)**. Two encoders on one channel would fail `start()` into the retry/reboot path; the value was moved. | Fix the channel numbers in the file. |
+| `config: video%d.imp_chn=%d must equal the stream index (its hub slot) - using %d` | E | **since v1.9.28**. `videoN.imp_chn` doubles as the hub slot; any other value fed another stream's (or the audio) slot. | Remove the key or set it to `N`. |
+| `config: jpeg.imp_chn=%d collides with a video stream's channel - using %d (-1: none free, jpeg disabled)` / `config: video%d.jpeg_chn=%d collides with another encoder channel - using %d (...)` | E | **since v1.9.28**. Two encoders on one channel would fail `start()` into the retry/reboot path; the value was moved. | Fix the channel numbers in the file. |
 
 ### 12.3 `CTRL` (`src/control.c`)
 
@@ -2412,8 +2412,8 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `control_apply_json: OOM` | W | The ~9.6 KB change buffer could not be allocated; the POST answers 503 `oom`. | §5.5 |
 | `speaker play: rejected '%s'` | W | The filename failed the path check. | Use a plain path under the sounds directory. |
 | `ignoring daynight.mode = '%s' (not auto/schedule)` | W | `daynight.mode` is hand-validated, not table-driven. | Use `auto` or `schedule`. |
-| `a /control POST was still applying at shutdown` | W | **since v1.9.28 (unreleased)**. Shutdown waited 1 s for an in-flight POST (e.g. a slow config fsync) and gave up. | Only matters if it recurs; the file itself is replaced atomically. |
-| `a /control response was still being written at shutdown` | W | **since v1.9.28 (unreleased)**. A POST was applied and saved, but its response was not out after 1 s more; the client may report a failure for a change that did land. | Re-read the value with `GET /control` before retrying. |
+| `a /control POST was still applying at shutdown` | W | **since v1.9.28**. Shutdown waited 1 s for an in-flight POST (e.g. a slow config fsync) and gave up. | Only matters if it recurs; the file itself is replaced atomically. |
+| `a /control response was still being written at shutdown` | W | **since v1.9.28**. A POST was applied and saved, but its response was not out after 1 s more; the client may report a failure for a change that did land. | Re-read the value with `GET /control` before retrying. |
 
 ### 12.4 `HAL_ING` (`src/hal/hal_ingenic.c`) — bring-up and teardown
 
@@ -2431,7 +2431,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `sensor fps: requested %d, set rc=%d, readback unavailable (rc=%d)` | W | **since v1.9.19.** `IMP_ISP_Tuning_GetSensorFPS` failed or reported a zero denominator (the getter is called on every supported SoC). The set call may well have worked; only the verification is missing. | Driver-specific; not a config error. §1.10 |
 | `cannot read isp_ch0_pre_dequeue_time - assuming the pre-dequeue one-buffer schedule is active on framechan0` | W | T31 only: the module parameter could not be read, so `nrVBs` is forced to 1. | Cosmetic. |
 | `chn0: explicit buffers=%d but isp_ch0_pre_dequeue_time=%d forces a one-buffer schedule on framechan0 - EnableChn will fail (dmesg: 'one buffer schedule') unless pre-dequeue is disabled at the driver` | W | T31 with `isp_ch0_pre_dequeue_time > 0` **and** an explicit `videoN.buffers`. | **Delete the `videoN.buffers` line** (see §13). The real fps lever is removing `BR2_ISP_CH0_PRE_DEQUEUE_TIME` from the board defconfig — measured 13.5 → 24.9 fps. |
-| `framesource %d: EnableChn failed (attempt %d)` | E | **since v1.9.28 (unreleased)**. Until v1.9.27 `framesource %d: EnableChn failed%s` (`%s` = ` (retry)`), logged on every attempt. The framesource channel would not enable. Logged on the 1st and every 20th attempt. | See the line above; also §2.2. |
+| `framesource %d: EnableChn failed (attempt %d)` | E | **since v1.9.28**. Until v1.9.27 `framesource %d: EnableChn failed%s` (`%s` = ` (retry)`), logged on every attempt. The framesource channel would not enable. Logged on the 1st and every 20th attempt. | See the line above; also §2.2. |
 | `framesource %d: %d reference(s) still held at teardown` | W | Subscriber accounting leak at shutdown. | Report as a bug. |
 | `FS_CreateChn %d` / `FS_SetChnAttr %d failed` | E | Framesource geometry rejected. | Check `videoN.width`/`height` against the sensor. |
 | `FS_SetI2dAttr %d failed (rotation may stay inactive)` | W | T40/T41 belt-and-braces rotation call. | §2.6 |
@@ -2460,7 +2460,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `chn%d: PollingStream idle (rc=%d, miss#%d) - encoder emits no frames` | W | Watchdog window with no output. | §2.2 |
 | `chn%d: encoder dead after %d consecutive misses - forcing a framesource disable/enable cycle to recover (recovery attempt %d/%d)` | E | Automatic recovery, max 5. | §2.2 |
 | `chn%d: %d consecutive forced-recovery cycles never produced a frame - encoder/ISP is not coming back on its own; exiting` | E | **The process exits and nothing restarts it.** | §2.2 |
-| `chn%d: StartRecvPic kept failing for %d attempts - encoder/ISP is not coming back on its own; exiting` | E | **since v1.9.28 (unreleased)**. Same give-up, reached when the encoder never even starts (~25 s of failed starts with a client attached). **The process exits and nothing restarts it.** | §2.2 |
+| `chn%d: StartRecvPic kept failing for %d attempts - encoder/ISP is not coming back on its own; exiting` | E | **since v1.9.28**. Same give-up, reached when the encoder never even starts (~25 s of failed starts with a client attached). **The process exits and nothing restarts it.** | §2.2 |
 | `jpeg chn%d: PollingStream idle (miss#%d) - encoder emits no frames` | W | Same on the JPEG channel. | |
 | `jpeg chn%d: encoder dead after %d consecutive misses - forcing a framesource disable/enable cycle to recover (recovery attempt %d/%d)` | E | JPEG recovery. | |
 | `jpeg chn%d: %d consecutive forced-recovery cycles never produced a frame - giving up on this channel (MJPEG/snapshot output disabled until restart)` | E | **JPEG only** is disabled; video survives. | Restart to get snapshots back. |
@@ -2507,7 +2507,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `sw-rot chn%d: YuvEncode failed (miss#%d)` | W | The software encode failed. | |
 | `sw-rot chn%d: JPEG (%d) exceeds buf (%u) - dropped` | W | JPEG over the (deliberately oversized) buffer. | |
 | `sw-rot stream %d: OSD item %d is a logo - not composited on the SW-rotate path (text only)` | W | **No logos on the T23 SW-rotate path.** Also no privacy masks. | Move the logo to the unrotated stream. |
-| `sw-rot stream %d item %d: rendered %dx%d exceeds frame %dx%d - skipped` | W | Text too big for the rotated frame; coordinates are in **rotated** space. **since v1.9.28 (unreleased)** at most once per 60 s per item (v1.9.27: every frame). `font_size` is absolute px here now too (§2.7). | Lower `font_size` or shorten the text. |
+| `sw-rot stream %d item %d: rendered %dx%d exceeds frame %dx%d - skipped` | W | Text too big for the rotated frame; coordinates are in **rotated** space. **since v1.9.28** at most once per 60 s per item (v1.9.27: every frame). `font_size` is absolute px here now too (§2.7). | Lower `font_size` or shorten the text. |
 | `video%d.jpeg: rotated %dx%d not 32/8-aligned for InputJpege (need width%%32==0, height%%8==0; make source height a multiple of 32, e.g. 704) - JPEG disabled on this stream` | W | JPEG needs stricter alignment than the encoder. | §2.6 |
 | `video%d.jpeg: no memory for SW-rotate JPEG buf (%u) - JPEG disabled on this stream` | W | OOM. | §5.5 |
 
@@ -2519,7 +2519,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `image.ae_it_max_us: GetExpr gave no line/max reference (%s) - cannot convert microseconds to sensor lines, cap not applied` | W | This sensor reports no line time; the key cannot work here. | §3.7 |
 | `image.ae_it_max_us=%d: SDK rejected the cap (%lu lines, rc=%d) - AE maximum unchanged` | W | Rejected. | §3.7 |
 | `image.ae_it_max_us=%d: %d writes on a live, delivering pipeline and the AE maximum is still %lu lines - this sensor/ISP is not honouring the cap; retrying slowly` | W | The sensor ignores it. | Stop raising the value. §3.7 |
-| `image.ae_it_max_us=%d: %lu lines exceeds this SDK's 16-bit field - capping at 65535` | W | **since v1.9.28 (unreleased)**. T10/T20/T21/T30 only: the requested cap does not fit the SDK field. | Lower `image.ae_it_max_us`. |
+| `image.ae_it_max_us=%d: %lu lines exceeds this SDK's 16-bit field - capping at 65535` | W | **since v1.9.28**. T10/T20/T21/T30 only: the requested cap does not fit the SDK field. | Lower `image.ae_it_max_us`. |
 
 ### 12.8 `HAL_ING` — audio
 
@@ -2543,13 +2543,13 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `audio output (speaker) unavailable` | E | No AO pipeline. The board may have no speaker. | §6.5 |
 | `IMP_AI_EnableAec failed - continuing without echo cancellation` | W | The vendor DSP could not be engaged — often because `libaudioProcess.so` was stubbed out to save flash, which silently also costs `ns`, `agc` and `high_pass`. | §6.6 |
 | `IMP_AO_SendFrame failed` | W | A transient speaker write failure. | |
-| `faac frame of %u samples does not fit the %d-sample accumulator -> PCMU` | E | **since v1.9.28 (unreleased)**. libfaac reported an unexpected frame size; audio falls back to G.711. | Report it with the libfaac version. |
+| `faac frame of %u samples does not fit the %d-sample accumulator -> PCMU` | E | **since v1.9.28**. libfaac reported an unexpected frame size; audio falls back to G.711. | Report it with the libfaac version. |
 
 ### 12.9 `OSD` (`src/hal/imp_osd.c`)
 
 | Message pattern | Level | Meaning | Action |
 | --- | --- | --- | --- |
-| `osd stream %d item %d: rendered %dx%d exceeds usable %dx%d%s - skipped (reduce font_size/text length)` | W | Text does not fit. **since v1.9.28 (unreleased)** at most once per 60 s per item; the text is not re-rendered until it or the item changes. | Shorten it or lower `font_size` (8..128). |
+| `osd stream %d item %d: rendered %dx%d exceeds usable %dx%d%s - skipped (reduce font_size/text length)` | W | Text does not fit. **since v1.9.28** at most once per 60 s per item; the text is not re-rendered until it or the item changes. | Shorten it or lower `font_size` (8..128). |
 | `logo %s (%dx%d) exceeds usable %dx%d%s - skipped` | W | Logo too big. | |
 | `logo %s (%dx%d) not loaded` | W | Missing/unreadable/unsupported file. | |
 | `stream %d rotated %d: hardware OSD/privacy limited to the top %d px of the %dx%d frame (libimp picHeight range-check); lower overlays are clamped up. Use a square stream, 180, or ch1 for full coverage.` | W | **T31 rotated streams: OSD/privacy only in a top band.** A libimp range-check timps cannot widen. | Square rotated stream (≤ 704×704), or put the OSD on `ch1`. |
@@ -2610,7 +2610,7 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | `cannot open trace_path %s: %s - tracing disabled until the path changes` | W | Bad path. |
 | `trace rotate %s -> %s failed: %s` | W | Trace file rotation failed. |
 | `cannot start detection thread` | W | Day/night is off for this run. |
-| `daynight.time_night_start/time_day_start ("%s"/"%s") is not a usable window (both must be HH:MM and differ) - ignored%s` | W | **since v1.9.28 (unreleased)**. A half-set, malformed or zero-length time window is ignored (the sun calendar is used if a location is set). | Fix both values. |
+| `daynight.time_night_start/time_day_start ("%s"/"%s") is not a usable window (both must be HH:MM and differ) - ignored%s` | W | **since v1.9.28**. A half-set, malformed or zero-length time window is ignored (the sun calendar is used if a location is set). | Fix both values. |
 
 ### 12.12 `RTSP` (`src/rtsp/rtsp.c`)
 
@@ -2627,9 +2627,9 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | `session=%s: send failed after %llds (%s) - dropping client; the write is torn mid-frame/mid-interleave` | W | The client stopped reading; `SO_SNDTIMEO` 15 s. The peer logs a truncated tail — expected. | Network. |
 | `session=%s chn=%d: send queue overflowed, dropping frames (client/network too slow) - details at DEBUG` | W | `MS_RTSP_QCAP` = 64. | Lower `videoN.bitrate`, use TCP. §4.1 |
 | `send_resp: response too large (hdr=%d body=%d cap=%d), dropping` | E | Practically unreachable. | Report as a bug. |
-| `no PLAY within %llds of connecting, closing` | W | **since v1.9.28 (unreleased)**. A connection must reach PLAY within 60 s; this frees a slot held by an idle or scanning client. | Normal for scanners; check the client if a real one hits it. |
-| `SDP for chn%d exceeds %d bytes - refusing DESCRIBE` | W | **since v1.9.28 (unreleased)**. The SDP would not fit; the client gets a 500 instead of a truncated SDP. | Report it (parameter sets unusually large). |
-| `%d client thread(s) still live after a %lld ms drain - leaking tls_ctx/server rather than risking a use-after-free` | W | **since v1.9.28 (unreleased)**. Shutdown only; deliberate, like the HTTP one. Until v1.9.27 it read `… - proceeding to teardown` and the TLS context was then freed under the live thread. | None. |
+| `no PLAY within %llds of connecting, closing` | W | **since v1.9.28**. A connection must reach PLAY within 60 s; this frees a slot held by an idle or scanning client. | Normal for scanners; check the client if a real one hits it. |
+| `SDP for chn%d exceeds %d bytes - refusing DESCRIBE` | W | **since v1.9.28**. The SDP would not fit; the client gets a 500 instead of a truncated SDP. | Report it (parameter sets unusually large). |
+| `%d client thread(s) still live after a %lld ms drain - leaking tls_ctx/server rather than risking a use-after-free` | W | **since v1.9.28**. Shutdown only; deliberate, like the HTTP one. Until v1.9.27 it read `… - proceeding to teardown` and the TLS context was then freed under the live thread. | None. |
 
 ### 12.13 `HTTP` (`src/mp4/httpd.c`)
 
@@ -2642,7 +2642,7 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | `connection limit (%d) reached, rejecting client` | W | `HTTP_MAX_CLIENTS` = 16. Each preview tab holds 3+. | §4.2 |
 | `sse client limit (%d) reached, rejecting` | W | `events.max_clients`, default 8. | |
 | `sse %s event too large, dropped` | W | One event overflowed its buffer. | |
-| `no video params, abort mp4` | W | No SPS/PPS within 2 s. On v1.9.27 **the connection is closed with no HTTP response**, so the browser reports a network error; **since v1.9.28 (unreleased)** the client gets `503` `no video`. | §2.2 |
+| `no video params, abort mp4` | W | No SPS/PPS within 2 s. On v1.9.27 **the connection is closed with no HTTP response**, so the browser reports a network error; **since v1.9.28** the client gets `503` `no video`. | §2.2 |
 | `no AAC within warmup -> video-only mp4` | W | Audio was configured but produced nothing in time. | §6 |
 | `mp4 chn=%d: no packets for %llds - encoder stall, dropping this client` | W | 60 s with nothing from the encoder. | §2.2 |
 | `mp4 chn=%d: no audio for %llds but video still flowing (muted mid-stream?) - dropping this client so it reconnects video-only` | W | 5 s audio gap after the `moov` declared an audio track. Usually `audio.mute = 1`. | One reconnect, then video-only. |
@@ -2651,7 +2651,7 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | `dropped a corrupt %s fragment (OOM?)` | W | Memory pressure. | §5.5 |
 | `%s=%d: send failed after %llds (%s) - dropping client; the write is torn mid-frame, so the peer logs a truncated tail` | W | `SO_SNDTIMEO` 15 s. **Not a data-path bug** — every byte sent before the cut was valid. ffmpeg reports `Stream ends prematurely` / `Invalid NAL unit size`. | Network. |
 | `%d connection thread(s) still live after a %lld ms drain - leaking tls_ctx/h rather than risking a use-after-free on process exit` | W | Shutdown-time; deliberate. | Ignore. |
-| `refused cross-origin POST %.64s` | W | **since v1.9.28 (unreleased)**. A POST authenticated by Basic/Digest came from a page on another host (CSRF guard; token and localhost requests are exempt). | Use the `X-Timps-Token`/`?token=` from the WebUI, or post from the camera's own host. |
+| `refused cross-origin POST %.64s` | W | **since v1.9.28**. A POST authenticated by Basic/Digest came from a page on another host (CSRF guard; token and localhost requests are exempt). | Use the `X-Timps-Token`/`?token=` from the WebUI, or post from the camera's own host. |
 
 ### 12.14 `REC` (`src/record.c`) and `TL` (`src/timelapse.c`)
 
@@ -2668,13 +2668,13 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | `record.pre_roll_s=%d cannot be held: the pre-roll ring caps at ~%.0fs for ch%d (%d kbps, %d fps, %d packets / %d MB max) - actual pre-roll is shorter` | W | The ring is bounded by packets and bytes, not seconds. The byte cap is 4 MB — at a high `pre_roll_s` that is 11 % of a 37 MB board. | Lower `record.pre_roll_s`. |
 | `record.audio=1 but audio codec is %s - recordings are video-only; AAC (build with USE_FAAC=1) required` | W | fMP4 carries AAC. | `audio.codec = aac`. §5.3 |
 | `thread` | E | The recorder (or timelapse) thread could not start. | §5.5 |
-| `clip busy, skipped %s` | W | A clip was already being written. **since v1.9.28 (unreleased)** the request is refused (counted in `rejected`) instead of waiting. | Space the requests out. |
+| `clip busy, skipped %s` | W | A clip was already being written. **since v1.9.28** the request is refused (counted in `rejected`) instead of waiting. | Space the requests out. |
 | `clip open %s: %s` / `clip write failed (%s), dropping` / `clip close %s: %s` | W/E | Clip I/O failed. | Storage. |
 | `clip: no frames for %s` | W | The window contained no frames — the encoder was idle. | §2.1 |
 | `unsafe timelapse.dir/name ('..' or absolute name), skipping shot` | E | Same path rule. | §5.4 |
 | `open %s: %s` / `write %s: %s` (TL) | E | Storage problem. | §5.4 |
 | `no frame from src=%d within %d ms - retrying in %ds` | W | **The JPEG source produced nothing.** | Enable `videoN.jpeg`; check the JPEG channel. §5.4 |
-| `record.dir %s is on the root filesystem (card not mounted?) - not recording` / `timelapse.dir %s is on the root filesystem (card not mounted?) - skipping shots` | E | **since v1.9.28 (unreleased)**. The dir (or its nearest existing parent) lives on the flash rootfs, typically an SD mount point with no card. Logged once per episode. | Mount the card / fix the dir. `/tmp` is allowed. |
+| `record.dir %s is on the root filesystem (card not mounted?) - not recording` / `timelapse.dir %s is on the root filesystem (card not mounted?) - skipping shots` | E | **since v1.9.28**. The dir (or its nearest existing parent) lives on the flash rootfs, typically an SD mount point with no card. Logged once per episode. | Mount the card / fix the dir. `/tmp` is allowed. |
 
 ### 12.15 `TLS` (`src/tls.c`) and `WEBRTC` (`src/webrtc/`)
 
@@ -2724,7 +2724,7 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | `unknown srt.mode '%s' - using listener` | W | Valid: `listener`, `caller`. | |
 | `srt.mode=caller but srt.host is empty - SRT disabled` | E | | Set `srt.host`. |
 | `%d client thread(s) still in libsrt after the drain - proceeding to srt_cleanup()` | W | Shutdown-time. | Ignore. |
-| `SRT listener on port %d has NO access control (srt.passphrase unset) - it bypasses the configured RTSP/HTTP credentials; set srt.passphrase (10-79 chars)` | W | **since v1.9.28 (unreleased)**. Listener mode without a passphrase serves video to anyone, whatever RTSP/HTTP require. | Set `srt.passphrase`. |
+| `SRT listener on port %d has NO access control (srt.passphrase unset) - it bypasses the configured RTSP/HTTP credentials; set srt.passphrase (10-79 chars)` | W | **since v1.9.28**. Listener mode without a passphrase serves video to anyone, whatever RTSP/HTTP require. | Set `srt.passphrase`. |
 
 ### 12.17 Smaller modules
 
@@ -2733,7 +2733,7 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | `HUB` | `chn=%d %s: %u queue overflow%s in the last %llds (consumer too slow)` | W | **since v1.9.19** (until v1.9.20 it ended `(consumer too slow, IDR re-requested)`). The only line `HUB` emits above DEBUG. `%s` is the consumer kind — `rec`, `rtsp`, `mp4`, `webrtc` or `srt` — and the line is rate-limited to one per 60 s per (kind, stream). Same events as `queue_drops` in `GET /control`. §2.3 |
 | `AAC` | `unsupported AAC samplerate %d Hz, using 16k index fallback` | W | The ASC/ADTS index could not be derived; the stream is tagged 16 kHz. Use a standard rate. |
 | `bc` | `AACInitDecoder failed` | W | The AAC backchannel decoder could not start (`USE_BC_AAC` builds). |
-| `talk` | `refused: unsupported rate=%.*s` | W | **since v1.9.28 (unreleased)**. Until v1.9.27 `refused: unsupported rate= in %s`, which logged the whole query string, token included. `?rate=` must be 8000/16000/24000/32000/44100/48000. iOS Safari commonly forces 48000. |
+| `talk` | `refused: unsupported rate=%.*s` | W | **since v1.9.28**. Until v1.9.27 `refused: unsupported rate= in %s`, which logged the whole query string, token included. `?rate=` must be 8000/16000/24000/32000/44100/48000. iOS Safari commonly forces 48000. |
 | `talk` | `refused: cross-origin upgrade` | W | The `Origin` host must match the `Host` host (ports are not compared). `Origin: null` is refused. §6.4 |
 | `talk` | `another talker holds the speaker - closing` | W | Speaker contention; close code 1008. The owner is stolen only after 10 s of silence. |
 | `spk` | `play: cannot open %s: %s` / `play: bad WAV header in %s` / `play: op_open_file(%s) failed (%d)` | W | The sound file is missing or not a supported format. |
@@ -2956,13 +2956,13 @@ against the source named.
 **Auth and TLS**
 
 20. **"Log out / clear the session cookie / send the CSRF token."** timps has
-    **no cookies, no sessions and no CSRF token** (**since v1.9.28 (unreleased)** only an
+    **no cookies, no sessions and no CSRF token** (**since v1.9.28** only an
     `Origin` check on Basic/Digest POSTs, §8.1). Authentication is Basic,
     Digest, the `X-Timps-Token` header (or `?token=`), or the hard-coded
     127.0.0.0/8 bypass.
 21. **"You are locked out after too many failed logins — wait it out."**
     There is **no rate limiting, no lockout and no 429**. `auth_fail_note()`
-    only writes a log line. (**since v1.9.28 (unreleased)** RTSP drops the *connection* after
+    only writes a log line. (**since v1.9.28** RTSP drops the *connection* after
     5 rejected logins; reconnecting works immediately.) A `<N> failed login attempts` warning means
     someone is scanning, not that anything was blocked.
 22. **"Set `auth_bypass`."** No such key exists.

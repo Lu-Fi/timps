@@ -371,7 +371,7 @@ unbounded one (×4, plus a skip gate, plus a 12 h outer bound).
 * scene flat (smoothed range within 15%) **and** path C sighted →
   deferred, but never past `heartbeat_max_s` (12 h) since the last probe
 * a configured calendar can only pull the deadline **in**, to the next
-  sunrise — never push it out. **Since v1.9.28 (unreleased)** that pull-in
+  sunrise — never push it out. **Since v1.9.28** that pull-in
   applies at every re-arm of the heartbeat; before, it ran at only one of the
   re-arm sites, so after the first re-arm of a night the calendar was not
   consulted again. The calendar's sunrise here includes

@@ -4,7 +4,7 @@ All notable changes to timps are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
-## [Unreleased]
+## [1.9.28] - 2026-09-28
 
 A security and reliability hardening pass over the whole daemon (two audit
 rounds: bugs, reliability, performance, security).
