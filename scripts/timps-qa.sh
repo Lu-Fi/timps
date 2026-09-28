@@ -2399,9 +2399,49 @@ else
 		lv_post "$LV_PENDING" >/dev/null 2>&1 || true
 		LV_PENDING=""
 	}
-	trap 'lv_restore_pending' EXIT
-	trap 'lv_restore_pending; trap - INT;  kill -INT  $$' INT
-	trap 'lv_restore_pending; trap - TERM; kill -TERM $$' TERM
+	# A POST restore puts the VALUE back, but config_write_keys() can only
+	# write lines: a key that had none (compiled-in default) is left as an
+	# explicit line, and a replaced line loses its inline comment. A full 8b
+	# run left ~80 such lines, incl. video1.max_gop, which then logs
+	# "reserved and IGNORED" on every boot. With --ssh, put the file back
+	# byte-identical at the end of 8b (or on interrupt).
+	LV_CONF_SNAP=""
+	if [ -n "$SSH_TARGET" ] && sshx "cat /etc/timps.conf" > "$OUTDIR/lv_conf_before.conf" 2>/dev/null \
+		&& [ -s "$OUTDIR/lv_conf_before.conf" ]; then
+		LV_CONF_SNAP="$OUTDIR/lv_conf_before.conf"
+	fi
+	lv_conf_kv() {  # $1=conf file -> "key<TAB>value", roughly as the loader reads it
+		awk '{ s=$0; sub(/^[ \t]+/,"",s); if (s=="" || s ~ /^[#;]/ || index(s,"=")==0) next
+			k=substr(s,1,index(s,"=")-1); v=substr(s,index(s,"=")+1)
+			gsub(/^[ \t]+|[ \t]+$/,"",k); sub(/^[ \t]+/,"",v)
+			q=substr(v,1,1)
+			if ((q=="\"" || q=="\047") && (e=index(substr(v,2),q)) > 0) v=substr(v,2,e-1)
+			else { sub(/(^|[ \t])#.*$/,"",v); gsub(/[ \t]+$/,"",v) }
+			print k "\t" v }' "$1" | sort -t "$(printf '\t')" -u -k1,1
+	}
+	lv_conf_restore() {
+		[ -n "${LV_CONF_SNAP:-}" ] || return 0
+		local snap="$LV_CONF_SNAP" cur="$OUTDIR/lv_conf_after.conf" tab added changed
+		LV_CONF_SNAP=""
+		if ! sshx "cat /etc/timps.conf" > "$cur" 2>/dev/null || [ ! -s "$cur" ]; then
+			warn "/etc/timps.conf: could not read it back to undo 8b's config-file changes - the pre-8b copy is at $snap"
+			return 1
+		fi
+		cmp -s "$snap" "$cur" && { info "  /etc/timps.conf: byte-identical to before 8b"; return 0; }
+		tab=$(printf '\t')
+		added=$(join -t "$tab" -v 2 <(lv_conf_kv "$snap") <(lv_conf_kv "$cur") | cut -f1 | tr '\n' ' ')
+		changed=$(join -t "$tab" <(lv_conf_kv "$snap") <(lv_conf_kv "$cur") | awk -F'\t' '$2!=$3{printf "%s(%s->%s) ", $1, $2, $3}')
+		sshx "cp -p /etc/timps.conf /etc/timps.conf.qa_restore && cat > /etc/timps.conf.qa_restore && mv /etc/timps.conf.qa_restore /etc/timps.conf" < "$snap"
+		if [ "$(sshx "md5sum /etc/timps.conf" 2>/dev/null | cut -d' ' -f1)" = "$(md5sum < "$snap" | cut -d' ' -f1)" ]; then
+			info "  /etc/timps.conf: put back byte-identical to before 8b (removed $(printf '%s' "$added" | wc -w) explicit line(s) the restore POSTs had added, reverted reformatted lines)"
+		else
+			warn "/etc/timps.conf: failed to put back the pre-8b copy ($snap) - the file keeps 8b's explicit restore lines"
+		fi
+		[ -z "$changed" ] || warn "/etc/timps.conf: 8b left different VALUES for: ${changed}- the file holds the originals again, but the running daemon keeps the test value until its next restart"
+	}
+	trap 'lv_restore_pending; lv_conf_restore' EXIT
+	trap 'lv_restore_pending; lv_conf_restore; trap - INT;  kill -INT  $$' INT
+	trap 'lv_restore_pending; lv_conf_restore; trap - TERM; kill -TERM $$' TERM
 	# pick a valid value != cur within [lo,hi]
 	flip_int()  { awk -v lo="$1" -v hi="$2" -v c="$3" 'BEGIN{
 		m=int((lo+hi)/2); if(m!=c){print m} else if(m<hi){print m+1} else{print m-1}}'; }
@@ -4739,6 +4779,8 @@ else
 			fi
 		fi
 	fi
+
+	lv_conf_restore
 
 	fi
 fi
