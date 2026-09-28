@@ -643,7 +643,7 @@ dev_proc_sample() {
 #    table; bare "panic"/"watchdog" matched the two benign lines above. The
 #    fatal forms are word-anchored, and the specific verified-benign strings
 #    are denylisted as well so they cannot come back through the no-anchor path.
-DMESG_BAD_RE='Kernel panic|\bOops\b|BUG:|soft lockup|oom-killer|[Oo]ut of memory|SYN flooding|segfault|do_page_fault|error|fail|timeout'
+DMESG_BAD_RE='Kernel panic|\bOops\b|BUG:|soft lockup|oom-killer|[Oo]ut of memory|SYN flooding|segfault|do_page_fault|error|fail|timeout|Call Trace|Tainted:'
 DMESG_BENIGN_RE='collect2: error|RESET ERROR|Kernel command line|cgu clk gate get error|pls check processor_id|sc_jz not support|watchdog initialized|jz-wdt|\[atbm_log\]|NOHZ:|loops_per_jiffy|jzmmc.*Error status|streamoff|wait stop|num_buffers|done_count|link_stream|sensor_probe|probe ok|Error Recovery|failover|no error|error_code=0|tisp_netlink_init'
 # last boot-stage marker; everything after it is runtime. Sensor-model agnostic
 # (sc2336/sc4336p/... all print "<model> stream on").
@@ -667,7 +667,24 @@ dmesg_capture() {
 		cp "$f" "$rt"; anchored=0
 	fi
 	scanned=$(grep -c . "$rt" 2>/dev/null); scanned=${scanned:-0}
-	c=$(grep -iE "$DMESG_BAD_RE" "$rt" 2>/dev/null | grep -civE "$DMESG_BENIGN_RE")
+	# the ISP driver's known-benign tisp_netlink_init failure (see
+	# DMESG_BENIGN_RE) prints a full Tainted/Call-Trace backtrace on every
+	# timpsd (re)start, on every board, since well before this QA script
+	# tracked kernel state (confirmed in the fleet's central syslog back to
+	# 2026-09-18). DMESG_BENIGN_RE matches the "error" line itself, but the
+	# Call Trace/Tainted/Stack/frame lines that follow carry no "error"-class
+	# token of their own for it to match against - now that those are their
+	# own bad-line triggers, strip the whole known block by context (starts
+	# at tisp_netlink_init, ends at the first line that is not backtrace
+	# noise) so a genuine, unrelated oops is still caught.
+	rtf="${rt%.txt}_filtered.txt"
+	awk '
+		{ rest=$0; sub(/^\[[^]]*\][ \t]*/, "", rest) }
+		/tisp_netlink_init/ { skip=1; print; next }
+		skip && (rest ~ /^(CPU:|Stack :|Call Trace|\[<[0-9a-fA-F]+>\]|[0-9a-fA-F]{8}([ \t]+[0-9a-fA-F]{8})*[ \t]*$|\.\.\.$)/) { next }
+		{ skip=0; print }
+	' "$rt" > "$rtf"
+	c=$(grep -iE "$DMESG_BAD_RE" "$rtf" 2>/dev/null | grep -civE "$DMESG_BENIGN_RE")
 	printf '%s %s %s %s' "${c:-0}" "$scanned" "$anchored" "$rt"
 }
 
@@ -1474,7 +1491,7 @@ if [ -n "$SSH_TARGET" ]; then
 		case "$mot_ver" in
 			'')                    warn "\`motors --version\` printed nothing - build predates the version flag";;
 			unknown)               warn "motors reports version \"unknown\" - built without -DMOTORS_BUILD_VERSION";;
-			*[!A-Za-z0-9._-]*)     warn "\`motors --version\` did not print a version (got: $mot_ver) - build predates the version flag";;
+			*[!A-Za-z0-9._+-]*)    warn "\`motors --version\` did not print a version (got: $mot_ver) - build predates the version flag";;
 			*)                     ok "camera $CAM reports: motors $mot_ver";;
 		esac
 	fi
@@ -6140,6 +6157,22 @@ elif [ -z "$SSH_TARGET" ]; then
 	skip "reboot-persistence test needs --ssh"
 else
 	echo "  -- the camera will now REBOOT; expect ~1-2 minutes of downtime --"
+	# do not snapshot inside a boot-probe transient: a restart earlier in
+	# this run (section 14's own restart test, or 8b/8g) makes daynight.c
+	# run its boot probe, which flips image.running_mode (and rewrites
+	# timps.conf) a few seconds after the daemon comes back. Sampling
+	# rb_cfg0/rb_base mid-probe captures a value that is about to change
+	# out from under us with no action of ours - same reasoning as 8f's
+	# fl_wait (see its comment). Symptom seen on 2026-09-28: rb_cfg1 was
+	# taken before the probe's write landed, so it silently went stale
+	# relative to the file's real pre-reboot content.
+	if [ -n "$DAEMON_BACK_AT" ]; then
+		rb_wait=$(( DN_BOOT_WINDOW_S - ( $(date +%s) - DAEMON_BACK_AT ) ))
+		if [ "$rb_wait" -gt 0 ]; then
+			info "  the daemon restarted earlier in this run - waiting ${rb_wait}s for daynight's boot probe to settle before the reboot-persistence baseline"
+			sleep "$rb_wait"
+		fi
+	fi
 	rb_base="$OUTDIR/reboot_before.json"
 	if ! curlq 12 "$(http_base)/control" -o "$rb_base" || [ ! -s "$rb_base" ]; then
 		bad "reboot test: cannot GET the /control baseline - aborting before touching anything"
@@ -6200,6 +6233,11 @@ else
 			else
 				rb_secs=$(( $(date +%s) - rb_t0 ))
 				ok "reboot test: camera came back and /control answered ${rb_secs}s after the reboot was issued"
+				# same boot-probe transient as above, now on the far side of the
+				# reboot itself - wait it out before the "after" snapshot
+				DAEMON_BACK_AT=$(date +%s)
+				info "  waiting ${DN_BOOT_WINDOW_S}s for daynight's post-reboot boot probe to settle before the after-snapshot"
+				sleep "$DN_BOOT_WINDOW_S"
 				rb_after="$OUTDIR/reboot_after.json"; curlq 12 "$(http_base)/control" -o "$rb_after"
 				rb_ver1=$(jget "$rb_after" version)
 				rb_bin1=$(sshx "md5sum /usr/bin/timpsd 2>/dev/null | cut -d' ' -f1")
@@ -6238,7 +6276,15 @@ VOL_ANY={"uptime_s","clients","subs","fps","kbps","bytes","free_mb","file","last
          "count","last_t","total_gain","exposure","ae_luma","night_baseline","day_trigger",
          "stalled","active","recording","registered","left_pics","work_done",
          "cur_packs","left_stream_bytes","left_stream_frames","ave_bitrate",
-         "drop_frames","drop_bytes","sun_computed_sunrise","sun_computed_sunset","temp"}
+         "drop_frames","drop_bytes","sun_computed_sunrise","sun_computed_sunset","temp",
+         # wb_live is a pure ISP telemetry readout (hal_isp_wb_gains()), never
+         # persisted; isp_desync flips with the same boot-probe transient as
+         # image.running_mode; last_errors is a whole subtree of age/count
+         # fields plus whatever error type most recently fired - excluding
+         # the component covers a freshly-appearing key too, not just the
+         # ones already seen (a bare "age_s"/"isp_desync" name would miss a
+         # reboot that makes an all-new error type appear as None -> {...})
+         "wb_live","isp_desync","last_errors"}
 VOL_PATH={"daynight.mode","daynight.enabled","daynight.brightness","motion.enabled",
           "image.running_mode"}
 out=[]
@@ -7002,8 +7048,11 @@ if [ -n "$SSH_TARGET" ] && want 16 ssh; then
 	# fault isn't buried under benign matches. "re-asserting" (the daynight
 	# ISP running_mode latch-kick retry, working exactly as designed) contains
 	# "assert" as a bare substring and must be excluded too - found by hand
-	# after this pattern flagged a perfectly healthy camera.
-	errs=$(sshx "logread 2>/dev/null | grep -iE 'error|fail|assert|segfault|oom|IMP_.*failed' | grep -cviE 'dropbear|telegrambot|Exited normally|before auth|[0-9]+ fails|re-asserting'")
+	# after this pattern flagged a perfectly healthy camera. Same story for
+	# bare "oom": it also matches inside "r(oom)", which the daynight debug
+	# line "the room supplies the light" hits on Garage - excluded rather than
+	# word-bounded (\b) since busybox grep's ERE support for \b is not a given.
+	errs=$(sshx "logread 2>/dev/null | grep -iE 'error|fail|assert|segfault|oom|IMP_.*failed' | grep -cviE 'dropbear|telegrambot|Exited normally|before auth|[0-9]+ fails|re-asserting|room supplies'")
 	[ "${errs:-0}" -le 2 ] && ok "logread: ${errs:-0} error-ish lines" || warn "logread: ${errs} error-ish lines (review with: logread | grep -iE 'error|fail')"
 
 	# --- watchdog escalation: SILENT LIMBO, always a FAIL ---------------------
