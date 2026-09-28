@@ -35,6 +35,7 @@
 #include <ctype.h>
 #include <math.h>
 #include <time.h>
+#include <unistd.h>    /* usleep in control_quiesce() */
 #include <pthread.h>   /* serialize concurrent control_apply_json POSTs (A1) */
 #ifdef USE_PLAY
 #include <dirent.h>
@@ -699,6 +700,10 @@ static void ign_scan(ctrl_scratch_t *sc, const char *prefix, const char *s, cons
  * writes against background READERS); this guards apply-vs-apply. */
 static pthread_mutex_t apply_mu = PTHREAD_MUTEX_INITIALIZER;
 static volatile int    g_ctl_closing;
+static volatile int    g_ctl_resp_inflight;   /* see control_response_begin() */
+
+void control_response_begin(void) { __atomic_add_fetch(&g_ctl_resp_inflight, 1, __ATOMIC_SEQ_CST); }
+void control_response_end(void)   { __atomic_sub_fetch(&g_ctl_resp_inflight, 1, __ATOMIC_SEQ_CST); }
 
 void control_quiesce(int timeout_ms)
 {
@@ -712,6 +717,25 @@ void control_quiesce(int timeout_ms)
         pthread_mutex_unlock(&apply_mu);
     else
         LOGW(MOD,"a /control POST was still applying at shutdown");
+    /* apply_mu free only means the config mutation itself is done - the
+     * connection thread that just ran it still has to serialize and write
+     * the HTTP response, and the caller (httpd_stop()) is about to force-
+     * close every open connection right after this returns. One extra
+     * second, bounded, so that write is not cut off underneath a change
+     * that already landed and persisted (see control_response_begin()). */
+    struct timespec deadline;
+    clock_gettime(CLOCK_REALTIME, &deadline);
+    deadline.tv_sec += 1;
+    while (__atomic_load_n(&g_ctl_resp_inflight, __ATOMIC_SEQ_CST) > 0){
+        struct timespec now;
+        clock_gettime(CLOCK_REALTIME, &now);
+        if (now.tv_sec > deadline.tv_sec ||
+            (now.tv_sec == deadline.tv_sec && now.tv_nsec >= deadline.tv_nsec)){
+            LOGW(MOD,"a /control response was still being written at shutdown");
+            break;
+        }
+        usleep(5000);
+    }
 }
 
 int control_apply_json(const char *json, ctrl_result *res)

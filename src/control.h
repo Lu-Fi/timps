@@ -163,6 +163,19 @@ int control_apply_json(const char *json, ctrl_result *res);
 /* Shutdown: refuse new POSTs (-2 -> 503) and wait up to timeout_ms for one
  * still applying/persisting, so process exit cannot cut its config write. */
 void control_quiesce(int timeout_ms);
+/* Bracket the HTTP response write for a successfully applied POST (prc==0),
+ * httpd.c only. control_apply_json() returning is not the end of the story:
+ * the connection thread still has to serialize and write the response, and
+ * httpd_stop()'s ms_creg_wake_all() (right after control_quiesce()) force-
+ * closes every open connection's fd, response in flight or not. Without
+ * this, a change that landed and persisted fine can still be reported to
+ * the client as a failure if it races shutdown - seen for real: a
+ * switch_cmd hook's self-loopback POST persisted image.running_mode
+ * correctly and then logged "POST failed" because the 200 it should have
+ * gotten was cut off mid-write. control_quiesce() waits (bounded) for this
+ * to reach 0 before the caller is allowed to start closing connections. */
+void control_response_begin(void);
+void control_response_end(void);
 
 /* Shared read-only status object builders: GET /control embeds these and the
  * /events SSE stream pushes them stand-alone, so both endpoints emit the

@@ -2282,7 +2282,14 @@ static void *conn_thread(void *arg)
                         reason ? ",\"reason\":\"" : "", reason ? reason : "",
                         reason ? "\"" : "");
                     if (rn >= (int)sizeof rb) rn = (int)sizeof rb - 1;
+                    /* prc==0: a change was actually applied/persisted -
+                     * bracket the write so control_quiesce() can wait for it
+                     * instead of httpd_stop()'s post-quiesce connection-wake
+                     * cutting it off underneath an already-successful apply
+                     * (see control_response_begin()'s comment in control.h). */
+                    if (prc == 0) control_response_begin();
                     http_send_ex(c,st,"application/json",cors,rb,rn);
+                    if (prc == 0) control_response_end();
                 }
             }
             else if (!strncmp(path,"/events",7)) {
