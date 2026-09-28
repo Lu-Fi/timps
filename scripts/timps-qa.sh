@@ -3565,25 +3565,53 @@ else
 				rc_qc_hi=$((rc_mq_hi+6)); [ "$rc_qc_hi" -gt 51 ] && rc_qc_hi=51
 				LV_PENDING="{\"video\":{\"1\":{\"bitrate\":$rc_b_orig,\"max_qp\":$rc_mq_hi}}}"
 				lv_mark video max_qp bitrate
-				rc_qc_a=""; rc_qc_b=""; rc_qc_a_iavg=""; rc_qc_b_iavg=""
+				# Two samples per ceiling, both taken before switching to the
+				# other ceiling (switching resets the encoder's own convergence,
+				# so a "come back later" second sample is only meaningful while
+				# the config hasn't moved again). rate control re-plans at each
+				# IDR, but keyframe SIZE itself keeps drifting for several more
+				# GOPs after that - measured on a starved T20 substream
+				# (2026-09-28): 31 -> 28.7 -> 14 -> 7.4 KB at 10/25/40s after the
+				# same POST. rc_settle_s (~3 GOPs) catches sample 1 mid-drift on
+				# that hardware; sample 2 (~3 more GOPs later) is close enough to
+				# converged to grade on, and the two samples together tell drift-
+				# in-progress (grade as inconclusive, not broken) apart from
+				# already-flat (grade as broken) - a fixed longer wait alone
+				# cannot make that distinction, it can only guess a bigger number.
+				rc_qc_a1=""; rc_qc_b1=""; rc_qc_a2=""; rc_qc_b2=""
+				rc_qc_a_iavg=""; rc_qc_b_iavg=""
 				code=$(lv_post_r "{\"video\":{\"1\":{\"bitrate\":$rc_starve,\"max_qp\":$rc_qc_lo}}}" "$OUTDIR/rc_post_maxqp_lo.json")
 				if [ "$code" != "200" ]; then
 					bad "video1.max_qp: POST(live, starve+low ceiling) HTTP $code"
 				else
 					sleep "$rc_settle_s"
-					rc_r=$(enc_measure "$PATH_SUB" "$rc_meas_dur" rc3c_lo) && read -r rc_qc_a _ rc_qc_a_iavg _ _ <<<"$rc_r"
+					rc_r=$(enc_measure "$PATH_SUB" "$rc_meas_dur" rc3c_lo1) && read -r rc_qc_a1 _ rc_qc_a_iavg _ _ <<<"$rc_r"
+					sleep "$rc_settle_s"
+					rc_r=$(enc_measure "$PATH_SUB" "$rc_meas_dur" rc3c_lo2) && read -r rc_qc_a2 _ rc_qc_a_iavg _ _ <<<"$rc_r"
 					code=$(lv_post_r "{\"video\":{\"1\":{\"max_qp\":$rc_qc_hi}}}" "$OUTDIR/rc_post_maxqp_hi.json")
 					if [ "$code" != "200" ]; then
 						bad "video1.max_qp: POST(live, high ceiling) HTTP $code"
 					else
 						sleep "$rc_settle_s"
-						rc_r=$(enc_measure "$PATH_SUB" "$rc_meas_dur" rc3c_hi) && read -r rc_qc_b _ rc_qc_b_iavg _ _ <<<"$rc_r"
+						rc_r=$(enc_measure "$PATH_SUB" "$rc_meas_dur" rc3c_hi1) && read -r rc_qc_b1 _ rc_qc_b_iavg _ _ <<<"$rc_r"
+						sleep "$rc_settle_s"
+						rc_r=$(enc_measure "$PATH_SUB" "$rc_meas_dur" rc3c_hi2) && read -r rc_qc_b2 _ rc_qc_b_iavg _ _ <<<"$rc_r"
 					fi
 				fi
+				# Grade on the later (more converged) pair; the earlier pair is
+				# only consulted below to classify a still-under-threshold result.
+				rc_qc_a="$rc_qc_a2"; rc_qc_b="$rc_qc_b2"
 				if [ -z "$rc_qc_a" ] || [ -z "$rc_qc_b" ] || ! fcmp "${rc_qc_b:-0}" gt 0; then
 					warn "video1.max_qp: could not measure both halves of the ceiling differential (low=${rc_qc_a:-none}, high=${rc_qc_b:-none} kbps) - the ceiling stays unverified against the bitstream"
 				else
 					rc_qc_r=$(awk -v a="$rc_qc_a" -v b="$rc_qc_b" 'BEGIN{printf "%.2f", a/b}')
+					# trending: did the gap between the two ceilings widen from the
+					# first sample to the second? Only meaningful with both pairs.
+					rc_qc_trend=0
+					if [ -n "$rc_qc_a1" ] && [ -n "$rc_qc_b1" ] && fcmp "${rc_qc_b1:-0}" gt 0; then
+						rc_qc_r1=$(awk -v a="$rc_qc_a1" -v b="$rc_qc_b1" 'BEGIN{printf "%.3f", a/b}')
+						fcmp "$rc_qc_r" gt "$(awk -v r="$rc_qc_r1" 'BEGIN{printf "%.3f", r*1.03}')" && rc_qc_trend=1
+					fi
 					if fcmp "$rc_qc_r" ge 1.5; then
 						ok "video1.max_qp really CONSTRAINS the bitstream: at the same starved ${rc_starve} kbps target, ceiling $rc_qc_lo delivered ${rc_qc_a} kbps and ceiling $rc_qc_hi delivered ${rc_qc_b} kbps (${rc_qc_r}x apart) - a low ceiling forbids the encoder from degrading enough to reach the target, exactly as a QP bound must"
 					elif [ -n "$rc_qc_a_iavg" ] && [ -n "$rc_qc_b_iavg" ] && fcmp "$rc_qc_a_iavg" gt 0 && fcmp "$rc_qc_b_iavg" gt 0 && fcmp "$rc_qc_a_iavg" ge "$(awk -v b="$rc_qc_b_iavg" 'BEGIN{printf "%.0f", b*1.15}')"; then
@@ -3596,8 +3624,15 @@ else
 						# enough to force a real differential, so a null result proves
 						# nothing about whether the ceiling binds.
 						warn "video1.max_qp: inconclusive at a starved ${rc_starve} kbps target - ceiling $rc_qc_lo delivered ${rc_qc_a} kbps, only $(awk -v a="$rc_qc_a" -v s="$rc_starve" 'BEGIN{printf "%.2f", a/s}')x above the target, too close for a starve this shallow to force the ceiling to separate from ${rc_qc_hi}'s ${rc_qc_b} kbps - re-run with a lower target or a busier scene before reading a real result into this"
+					elif [ "$rc_qc_trend" = 1 ]; then
+						# The gap widened between the two samples - the ceiling IS
+						# constraining, just not finished converging within either
+						# sample window on this hardware. Reported, not failed: a
+						# still-flat gap (no widening at all) below is the real
+						# "ceiling ignored" signature, this is only slow to show it.
+						warn "video1.max_qp: still converging, not yet failing - the gap widened from ${rc_qc_r1}x (first sample, ${rc_settle_s}s after the POST) to ${rc_qc_r}x (second sample, $((2*rc_settle_s))s after) but has not reached 1.5x yet. Ceiling $rc_qc_lo delivered ${rc_qc_a} kbps, ceiling $rc_qc_hi delivered ${rc_qc_b} kbps. This SoC/scene needs more than $((2*rc_settle_s))s to fully express a live max_qp change - re-run with a longer settle before treating this as broken"
 					else
-						bad "video1.max_qp: at a starved ${rc_starve} kbps target the ceiling made no difference to the bitstream - $rc_qc_lo delivered ${rc_qc_a} kbps and $rc_qc_hi delivered ${rc_qc_b} kbps (${rc_qc_r}x). Both POSTs were graded live and encoder.1.rc echoes the bound, so this is the ceiling being accepted and IGNORED (the 340fb1f/ff28ee2 class) - the starve was deep enough (${rc_qc_a} kbps is well above ${rc_starve}) and keyframe size did not separate either, so this is not the shallow-starve/skip-floor confound"
+						bad "video1.max_qp: at a starved ${rc_starve} kbps target the ceiling made no difference to the bitstream - $rc_qc_lo delivered ${rc_qc_a} kbps and $rc_qc_hi delivered ${rc_qc_b} kbps (${rc_qc_r}x). Both POSTs were graded live and encoder.1.rc echoes the bound, so this is the ceiling being accepted and IGNORED (the 340fb1f/ff28ee2 class) - the starve was deep enough (${rc_qc_a} kbps is well above ${rc_starve}) and keyframe size did not separate either (${rc_qc_r1:-$rc_qc_r}x -> ${rc_qc_r}x, no widening trend), so this is not the shallow-starve/skip-floor confound or a slow-converging platform"
 					fi
 				fi
 				rc_pid_check video1.max_qp
