@@ -307,8 +307,8 @@ Profiles:
   longrun   hours   : standard + RTSP, fMP4 and MJPEG held open concurrently
                       for one long window, each judged on its own reliability
                       trend (default 2h; set --longrun-dur/--longrun-seg).
-                      Use this - not `drift` - to answer "is EVERY stream type
-                      still healthy after hours"; `drift` stays the isolated,
+                      Use this - not 'drift' - to answer "is EVERY stream type
+                      still healthy after hours"; 'drift' stays the isolated,
                       contention-free RTSP-only A/V measurement.
 EOF
 	exit 1
@@ -643,8 +643,14 @@ dev_proc_sample() {
 #    table; bare "panic"/"watchdog" matched the two benign lines above. The
 #    fatal forms are word-anchored, and the specific verified-benign strings
 #    are denylisted as well so they cannot come back through the no-anchor path.
-DMESG_BAD_RE='Kernel panic|\bOops\b|BUG:|soft lockup|oom-killer|[Oo]ut of memory|SYN flooding|segfault|do_page_fault|error|fail|timeout|Call Trace|Tainted:'
-DMESG_BENIGN_RE='collect2: error|RESET ERROR|Kernel command line|cgu clk gate get error|pls check processor_id|sc_jz not support|watchdog initialized|jz-wdt|\[atbm_log\]|NOHZ:|loops_per_jiffy|jzmmc.*Error status|streamoff|wait stop|num_buffers|done_count|link_stream|sensor_probe|probe ok|Error Recovery|failover|no error|error_code=0|tisp_netlink_init'
+#
+# T20 IPU wedges (firmware linux/patches/jz_ipu_v13-wedge-mitigation.patch):
+# the first-attempt "done_ipu timeout ... (attempt 1/2 ...) - resetting" is the
+# driver's reset+retry healing a known silicon hang, hundreds of times a day on
+# the fleet's T20s - benign, and counted separately in section 16. A failed
+# retry (attempt 2/2), a tripped fuse (attempt 1/1) and "op abandoned" are not.
+DMESG_BAD_RE='Kernel panic|\bOops\b|BUG:|soft lockup|oom-killer|[Oo]ut of memory|SYN flooding|segfault|do_page_fault|error|fail|timeout|Call Trace|Tainted:|op abandoned'
+DMESG_BENIGN_RE='collect2: error|RESET ERROR|Kernel command line|cgu clk gate get error|pls check processor_id|sc_jz not support|watchdog initialized|jz-wdt|\[atbm_log\]|NOHZ:|loops_per_jiffy|jzmmc.*Error status|streamoff|wait stop|num_buffers|done_count|link_stream|sensor_probe|probe ok|Error Recovery|failover|no error|error_code=0|tisp_netlink_init|done_ipu timeout after [0-9]+ ms .attempt 1/2,'
 # last boot-stage marker; everything after it is runtime. Sensor-model agnostic
 # (sc2336/sc4336p/... all print "<model> stream on").
 DMESG_BOOT_ANCHOR='stream on|chip found @|sensor driver version|sensor_detect|codec_set_device|codec_codec_ctl'
@@ -7141,6 +7147,10 @@ if [ -n "$SSH_TARGET" ] && want 16 ssh; then
 		elif [ "$kerr" -le 3 ]; then warn "dmesg: ${kerr} kernel/driver error-ish line(s) logged DURING streaming - review $dm_rt"
 		else bad "dmesg: ${kerr} kernel/driver error-ish lines logged DURING streaming - review $dm_rt (driver/DMA/ISP-level trouble is invisible to logread)"; fi
 		[ "$kerr" -gt 0 ] && grep -iE "$DMESG_BAD_RE" "$dm_rt" | grep -ivE "$DMESG_BENIGN_RE" | tail -5 | sed 's/^/    /' | tee -a "$SUMMARY"
+		# the recovered wedges are benign per line, but their rate is an open
+		# hardware question - keep it in every report instead of dropping it
+		ipu_w=$(grep -o 'total wedges [0-9]*' "$dmg" | tail -1 | grep -o '[0-9]*$')
+		[ -n "$ipu_w" ] && info "  IPU wedge mitigation: ${ipu_w} wedge(s) since boot (uptime $(sshx "cut -d. -f1 /proc/uptime" 2>/dev/null)s)"
 	fi
 
 	# --- idle CPU / fd / thread baseline --------------------------------------
