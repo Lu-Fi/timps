@@ -2120,10 +2120,14 @@ old "conflicts with prudynt-t" caveat is gone. The real hazards are leftovers:
   Deliberately *not* gated on `BR2_PACKAGE_THINGINO_ONVIF` (which is often
   "not set" on images that do have ONVIF), but on a genuinely ONVIF-free image
   nothing is shipped at all.
-  At **run** time the script also exits early: with `/run/portal_mode` present,
-  or when the default gateway does not answer a 1-second ping, it prints
-  `Disabled` and **exits 1**. So "ONVIF discovery says Disabled" on a camera
-  that is still bringing up WiFi is normal, not a misconfiguration.
+  At **run** time the script also exits early: with `/run/portal_mode` present
+  it prints `Disabled` and **exits 1**. When the default gateway does not answer
+  a 1-second ping yet (slow WiFi association: the DHCP lease lands after rcS
+  has passed S96), it logs `No reachable gateway yet, retrying in the
+  background` and re-runs itself once the gateway answers, for up to 10 min;
+  only then does it log `Disabled: no reachable gateway`. Before firmware
+  `cf463ffc3` it gave up immediately, leaving `wsd_simple_server` down and
+  `/etc/onvif.json` at the image's template values until the next reboot.
 - **Building from a bare worktree without `THINGINO_USER_DIR`** silently
   regenerates `.config` from the board defconfig — which for most boards
   defaults to **PRUDYNT**, not timps.
@@ -3076,7 +3080,7 @@ Everything the thingino package puts on the camera besides `timpsd` itself
 | File | What it does | Trigger | On failure | Pitfalls |
 | --- | --- | --- | --- | --- |
 | `/etc/init.d/S95timps` | `start \| stop \| restart \| status`. Provisions TLS certs, then `start-stop-daemon -S -b -m`. | Boot (runlevel 95), or by hand. | `stop` prints `timpsd still stopping...` and deletes the pidfile anyway. | `wait_stop` is ~5 s **or 50 s** (§11.6); `restart` can start on a still-exiting instance; no `reload`. |
-| `/etc/init.d/S96onvif_discovery` | Builds `/etc/onvif.json` from `/etc/timps.conf` (+ a live `GET /control` fallback for auto-detected values) and starts `wsd_simple_server` per interface. | Boot, after S95timps. | Prints `Disabled` and **exits 1** in portal mode or when the default gateway does not ping. | **Probe-gated install** — absent on an ONVIF-free image. Advertises a `snapurl` only for channels whose `videoN.jpeg` is on. |
+| `/etc/init.d/S96onvif_discovery` | Builds `/etc/onvif.json` from `/etc/timps.conf` (+ a live `GET /control` fallback for auto-detected values) and starts `wsd_simple_server` per interface. | Boot, after S95timps. | Prints `Disabled` and **exits 1** in portal mode; with no reachable gateway yet it retries in the background for up to 10 min. | **Probe-gated install** — absent on an ONVIF-free image. Advertises a `snapurl` only for channels whose `videoN.jpeg` is on. |
 | `/etc/init.d/S48webui-config` | Fixes stock `device.motors=true` reporting so a non-PTZ camera does not get a joystick. | Boot. | — | Installed only with `BR2_PACKAGE_THINGINO_WEBUI`; can be lost to the per-package merge (§9.2). |
 | `/usr/bin/generate-timps-tls-certs.sh` | Self-signed cert/key generator. | `ensure_tls_certs()` step 5. | `S95timps` logs `TLS cert generation failed: <out>` via `logger -t timps`. | Installed only with `BR2_PACKAGE_TIMPS_TLS`; without it `ensure_tls_certs` silently gives up. |
 | `/usr/libexec/agent/adapter.sh` (`agent-adapter`) | thingino-agent backend: reads file-only keys from `/etc/timps.conf` and live ones from `GET /control`. | thingino-agent. | — | Installed **unconditionally**, overwriting thingino-agent's null fallback. |
