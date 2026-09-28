@@ -162,8 +162,12 @@ Every ~5 seconds, an open segment gets a non-blocking `fflush()` +
 `sync_file_range()` (bounding data loss on a power cut to roughly that
 window without risking a slow SD card stalling the writer thread and
 dropping frames); the real blocking `fsync()` happens once, at segment
-close. A short write (SD card yanked, disk full) closes the segment
-immediately rather than continuing to falsely report "recording."
+close. **Since v1.9.28 (unreleased)** data already handed to writeback is
+dropped from the page cache (`POSIX_FADV_DONTNEED`) one tick later, and the
+whole segment after that closing `fsync()`, so recording does not fill the
+RAM of a small board with footage nobody reads back. A short write (SD card
+yanked, disk full) closes the segment immediately rather than continuing to
+falsely report "recording."
 
 ### Boot-snapshot geometry (important detail)
 

@@ -94,7 +94,9 @@ touching hub internals directly.
     (IVS → threads → IMP objects → sensor → ISP, in dependency order).
     `httpd_stop()` first makes `/control` refuse new POSTs (`503`) and waits
     up to 1 s for one still applying/persisting, so exit never cuts a config
-    write in half (since v1.9.28, unreleased).
+    write in half (since v1.9.28, unreleased), and then up to 1 s more for an
+    applied POST's response to be written, so a change that landed is not
+    reported to its client as failed when the connections are closed.
 
 ## The HAL abstraction (`src/hal/hal.h`)
 
@@ -179,7 +181,9 @@ queues per source.
   to ~1MB) happens *after* releasing the lock, and — critically — is
   **skipped entirely when there are zero subscribers**, so a source can
   keep "publishing" through the idle-stop debounce window at effectively
-  no cost.
+  no cost. (The JPEG thread assembles each frame into a pool buffer before
+  publishing it, so **since v1.9.28 (unreleased)** it skips that too and
+  releases the frame straight after `GetStream` while nobody wants one.)
 - **`hub_subscribe`/`hub_unsubscribe`** — callers supply their own
   [fanqueue](#fan-out-queues-fanqueuec); the hub tracks a per-source
   busy flag (`g_pushing[]`) so an in-flight `hub_publish()` push that
@@ -255,7 +259,12 @@ earliest pending deadline wins, and a keyframe published meanwhile retires
 it), because an unthrottled start path let a reconnect loop, or a flood of
 unauthenticated `DESCRIBE`s, force a keyframe on nearly every frame. RTSP
 `DESCRIBE` and the fMP4 player page now ask only while the stream has no
-parameter sets yet; on v1.9.27 both asked unconditionally.
+parameter sets yet; on v1.9.27 both asked unconditionally. Those cold-stream
+requests, and the WebRTC offer's and a fresh fMP4 `GET`'s, only need SPS/PPS,
+so they go through `hub_request_idr_warmup()`: a no-op on a warm stream,
+otherwise at most one per 500 ms on its own clock, and it does not arm the
+start gate. Charged to the gate, it made the client's real start request
+moments later wait out the whole 500 ms.
 
 **Since v1.9.20** RTSP, SRT and WebRTC no longer keep a 1 s gate
 of their own in front of that call: a gate there discarded any request inside

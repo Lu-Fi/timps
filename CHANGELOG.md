@@ -51,7 +51,12 @@ rounds: bugs, reliability, performance, security).
   `DESCRIBE`/page loads forced an IDR on nearly every frame (unauthenticated
   on an open camera). A start request within 500 ms of the last forced IDR is
   now coalesced like a recovery request, and `DESCRIBE` and the player page
-  ask only when the hub has no parameter sets yet.
+  ask only when the hub has no parameter sets yet. That cold-stream request
+  (also made by the WebRTC offer and a fresh fMP4 `GET`) only captures
+  SPS/PPS, so it has its own 500 ms clock and does not arm the start gate:
+  charged to the gate, it made the client's own start IDR moments later wait
+  out the whole interval. First frame on a cold stream, measured on a camera:
+  64 ms for a bare `PLAY`, 137 ms for `DESCRIBE` then `PLAY`.
 - **`{"record":{"clip":…}}` no longer blocks every other `POST /control`.**
   The capture held the apply lock for up to `seconds + 5` s. It now runs after
   the lock is released (the POST still returns once the clip is written, which
@@ -95,6 +100,23 @@ rounds: bugs, reliability, performance, security).
   every 10 s by the recorder/timelapse threads** instead of a `statvfs` on
   every status poll: a wedged SD card or hard-mounted NFS dir blocked every
   `GET /control`. The value can be up to 10 s old.
+- **RTSPS video goes out in 16 KB TLS writes instead of one TLS record per
+  RTP packet.** A 200 KB IDR was ~170 records, each with its own header, MAC
+  and `send()`. mbedTLS has no scatter/gather write, so the packets are copied
+  into a 16 KB stage and flushed when it fills and at the end of each access
+  unit, trading the memcpy for far fewer records and syscalls. ffmpeg pulling
+  RTSPS from the host sim: 1460 -> 514 send syscalls for the same 6 s. On a
+  camera, streaming to one RTSPS client cost 13.6% CPU against 7.4% over
+  plain RTSP (software AES-GCM). Audio and RTCP still go per packet, and an
+  RTCP packet flushes the staged video first so it cannot overtake it.
+- **The JPEG encoder no longer assembles frames nobody receives.** During the
+  ~2 s idle-stop debounce after the last MJPEG/snapshot consumer leaves, every
+  frame was still copied into a pool buffer and published to no one; it is
+  now released straight after `GetStream`.
+- **The video thread returns the encoder's stream buffer before the hub
+  fan-out** rather than after it, as the JPEG thread already did; nothing
+  past that point reads it. No measurable change across two QA runs on a
+  camera.
 
 ### Fixed
 
@@ -118,6 +140,13 @@ rounds: bugs, reliability, performance, security).
 - **Hook scripts inherited write fds to open SD files,** so unmounting the
   card failed with `EBUSY` until the hook exited. Recording segments, clips,
   timelapse shots and snapshots are opened `O_CLOEXEC`.
+- **Recording filled the page cache with footage nobody reads back.** On a
+  42-78 MB board that crowds out everything else cached. Each 5 s sync tick
+  now drops the range already handed to writeback on the tick before
+  (`POSIX_FADV_DONTNEED`), and a closed segment is dropped whole after its
+  `fsync`. 12 min of continuous recording on a camera (~80 MB written):
+  `Cached` stayed at ~13 MB and timpsd's RSS at 4.4-5.0 MB; segments decode
+  clean.
 - **`record.clip` followed a symlink in any path component but the last**
   (`O_NOFOLLOW` covers only the last), so a planted `/tmp/x -> /etc`
   redirected the write. The path is walked with `openat(O_NOFOLLOW)`. The
@@ -197,6 +226,12 @@ rounds: bugs, reliability, performance, security).
   3-byte U+FFFD.
 - **RTSP:** an SDP that outgrew its buffer was sent truncated (now `500`);
   UDP port picks called `rand()` from every client thread.
+- **A UDP RTSP client that vanished without a `TEARDOWN`** (power cut, WiFi
+  drop, pulled cable: no FIN, no RST) was streamed to for 120 s, until the
+  2x session-timeout reaper. RTSP/RTSPS control connections now use TCP
+  keepalive (20 s idle, 4 probes 5 s apart), which ends such a session after
+  ~40 s. With a client's traffic dropped by iptables, a T31 closed the
+  connection after ~34 s.
 - **SRT caller: `srt_stop()` could wait out a whole `SRTO_CONNTIMEO`** when
   it ran between socket creation and publication.
 - **Shutdown and crash paths:** `rtsp_stop()` freed the TLS context and
@@ -207,6 +242,14 @@ rounds: bugs, reliability, performance, security).
   thread); and after a bring-up teardown had to be abandoned, the one-shot
   reboot could deadlock on a lock the jump left held (the give-up now uses
   async-signal-safe calls only and reports on stderr).
+- **A `/control` POST that raced shutdown could be applied and saved but
+  reported as failed.** The shutdown wait for an in-flight POST ended when the
+  config change was done, and every open connection was force-closed right
+  after, cutting off the `200` still being written. Seen for real: a
+  `switch_cmd` hook's own loopback POST persisted `image.running_mode` and
+  then logged `POST failed`. Shutdown now also waits up to 1 s for the
+  response of an applied POST (`a /control response was still being written
+  at shutdown` if it gives up).
 - **Speaker play queue:** a WAV chunk size of `0xFFFFFFF8` seeked back onto
   its own header forever and a short `fmt ` chunk left fields uninitialized;
   a FIFO line too long for the buffer was truncated without its newline and
@@ -1738,10 +1781,10 @@ session these came out of.
   `sink_discard()` drops staged pointers on the error path. An interleaved
   RTCP packet flushes the batch before it is written rather than being
   staged, so it can never jump ahead of RTP bytes already queued on the
-  stream. RTSPS deliberately keeps its one-record-per-packet path: mbedTLS
-  has no scatter/gather write, so batching there would only trade the memcpy
-  for extra TLS records (same reasoning as the existing note in
-  `sink_send()`), and such sinks simply get no batch allocated.
+  stream. RTSPS sinks get no batch and keep one TLS record per packet:
+  mbedTLS has no scatter/gather write. (Superseded in 1.9.28 above: RTSPS
+  video is now copied into 16 KB staged TLS writes, trading the memcpy for
+  far fewer records and `send()`s.)
 
 - **The RTCP liveness drain is throttled to 1 Hz instead of running per
   media frame** (`src/rtsp/rtsp.c`). Every UDP-transport session did a

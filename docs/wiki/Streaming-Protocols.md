@@ -39,11 +39,18 @@ the code goes out of its way to get right.
   SETUP response's `Session: ...;timeout=60` (clients like ffmpeg/live555/VLC
   send keepalives at half that). UDP-transport sessions are additionally
   reaped after 2× timeout of control-channel/RTCP silence; TCP-interleaved
-  sessions rely on the socket's own send timeout instead.
+  sessions rely on the socket's own send timeout instead. **Since v1.9.28
+  (unreleased)** the control connection also has TCP keepalive (20 s idle,
+  4 probes 5 s apart), so a UDP client whose host vanished without a FIN
+  (power cut, WiFi drop) is dropped after ~40 s instead of 120 s.
 - **RTP payload types**: fixed `96` (video), `97` (audio).
 - **Performance**: UDP video RTP packets are batched via `sendmmsg()`
   (16 packets per call) instead of one `sendto()` per packet, with a
-  per-packet fallback if the kernel lacks `sendmmsg`.
+  per-packet fallback if the kernel lacks `sendmmsg`. TCP-interleaved video
+  is batched the same way into one `sendmsg()`. RTSPS has no scatter/gather
+  write, so it used one TLS record per RTP packet; **since v1.9.28
+  (unreleased)** its video is copied into a 16 KB stage and written as one
+  `ms_tls_write()` when that fills or the access unit ends.
 
 ### SDP (DESCRIBE)
 
@@ -67,7 +74,9 @@ breakage they fix:
   (unreleased)** a `DESCRIBE` against a warm stream answers from the cache
   and forces no keyframe (it is unauthenticated on an open camera, and
   `PLAY` asks for its own), and an SDP that would not fit its buffer gets a
-  `500` instead of being sent truncated.
+  `500` instead of being sent truncated. The keyframe a cold `DESCRIBE` asks
+  for does not count against the 500 ms start-IDR limit below, so the
+  `PLAY` that follows gets its own at once.
 - The audio m-line is `mpeg4-generic/<rate>/<channels>` (AAC, RFC 3640
   `fmtp`: `streamtype=5;mode=AAC-hbr;config=<ASC hex>`) or G.711 PCMU
   (payload type 0) / PCMA (payload type 8) at 8kHz.
@@ -181,7 +190,9 @@ supported` (RFC 2326 §12.32) rather than being silently ignored. See
   decoding go out at once — **since v1.9.28 (unreleased)** unless the
   stream had a forced IDR less than 500 ms ago, in which case they are
   coalesced the same way, so a reconnect loop cannot turn every frame into a
-  keyframe; the player page itself only asks when the stream is cold. See the
+  keyframe; the player page itself only asks when the stream is cold, and
+  that cold-stream request (like `DESCRIBE`'s) does not arm the 500 ms limit
+  for the client that follows. See the
   fan-out queue section of [Architecture](Architecture.md).
 - **MSE player details**: the built-in player handles iOS's
   `ManagedMediaSource` vs. desktop `MediaSource`, nudges playback rate to

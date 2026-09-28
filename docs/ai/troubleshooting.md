@@ -637,7 +637,9 @@ Three separate mechanisms, all real:
    (subscribe, RTSP `DESCRIBE`/`PLAY`, a fresh fMP4 `GET`, the WebRTC answer)
    still go out immediately — **since v1.9.28 (unreleased)** unless the stream had a forced IDR
    less than 500 ms ago, in which case they are coalesced the same way; and
-   `DESCRIBE` and the fMP4 player page only ask while the stream is cold. So a
+   `DESCRIBE` and the fMP4 player page only ask while the stream is cold (that
+   request does not arm the 500 ms limit, so the client's own start IDR right
+   after is not delayed). So a
    client reconnecting in a loop, or a monitor hammering `DESCRIBE`, can no
    longer turn every frame into a keyframe. A single slow consumer heals exactly as fast as
    on v1.9.18; what changes is the multi-consumer case, which is where the
@@ -1068,7 +1070,10 @@ that only probes with `OPTIONS`.
 `;timeout=60`; sessions are reaped at **2× = 120 s** of idleness, and only
 for UDP transports. Log: `session=… idle >120s (client gone without
 TEARDOWN), reaping`. A TCP-interleaved client that vanishes is noticed by
-the failing send instead.
+the failing send instead. **since v1.9.28 (unreleased)** the control
+connection has TCP keepalive (20 s idle, 4 probes 5 s apart), so a UDP client
+whose host vanished without a FIN (power cut, WiFi drop) is dropped after
+~40 s, before the 120 s reaper.
 
 **Choppy RTSP / drops over a VPN or WiFi:**
 `session=… chn=N: send queue overflowed, dropping frames (client/network too
@@ -2408,6 +2413,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `speaker play: rejected '%s'` | W | The filename failed the path check. | Use a plain path under the sounds directory. |
 | `ignoring daynight.mode = '%s' (not auto/schedule)` | W | `daynight.mode` is hand-validated, not table-driven. | Use `auto` or `schedule`. |
 | `a /control POST was still applying at shutdown` | W | **since v1.9.28 (unreleased)**. Shutdown waited 1 s for an in-flight POST (e.g. a slow config fsync) and gave up. | Only matters if it recurs; the file itself is replaced atomically. |
+| `a /control response was still being written at shutdown` | W | **since v1.9.28 (unreleased)**. A POST was applied and saved, but its response was not out after 1 s more; the client may report a failure for a change that did land. | Re-read the value with `GET /control` before retrying. |
 
 ### 12.4 `HAL_ING` (`src/hal/hal_ingenic.c`) — bring-up and teardown
 
