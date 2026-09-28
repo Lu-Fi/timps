@@ -7052,7 +7052,12 @@ if [ -n "$SSH_TARGET" ] && want 16 ssh; then
 	# bare "oom": it also matches inside "r(oom)", which the daynight debug
 	# line "the room supplies the light" hits on Garage - excluded rather than
 	# word-bounded (\b) since busybox grep's ERE support for \b is not a given.
-	errs=$(sshx "logread 2>/dev/null | grep -iE 'error|fail|assert|segfault|oom|IMP_.*failed' | grep -cviE 'dropbear|telegrambot|Exited normally|before auth|[0-9]+ fails|re-asserting|room supplies'")
+	# logread also carries the kernel ring buffer (syslog forwards it), so the
+	# same benign boot-time driver noise DMESG_BENIGN_RE already knows about
+	# (jzmmc mmc-init retries, the cgu clk gate probe, the CPU0 reset-cause
+	# readout, ...) shows up here too on a fresh boot - reuse that list rather
+	# than maintaining a second copy that drifts.
+	errs=$(sshx "logread 2>/dev/null | grep -iE 'error|fail|assert|segfault|oom|IMP_.*failed' | grep -cviE 'dropbear|telegrambot|Exited normally|before auth|[0-9]+ fails|re-asserting|room supplies|$DMESG_BENIGN_RE'")
 	[ "${errs:-0}" -le 2 ] && ok "logread: ${errs:-0} error-ish lines" || warn "logread: ${errs} error-ish lines (review with: logread | grep -iE 'error|fail')"
 
 	# --- watchdog escalation: SILENT LIMBO, always a FAIL ---------------------
