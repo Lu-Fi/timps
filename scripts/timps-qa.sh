@@ -577,7 +577,7 @@ rc_touch_stream() {   # $1 = rtsp path (default $PATH_SUB)
 # are safe to index positionally here because the comm field ("(timpsd)")
 # contains no spaces.
 #
-# dev_snap        -> "<rss_kB> <fds> <threads> <cpu_ticks> <uptime_s>" (1 ssh,
+# dev_snap        -> "<rss_kB> <fds> <threads> <cpu_ticks> <uptime_s> <pid>" (1 ssh,
 #                    no sleep - cheap enough to bracket any existing test)
 # dev_cpu_between A B -> %CPU between two dev_snap results
 # dev_proc_sample [w] -> "<rss> <fds> <threads> <cpu_pct>" over its own w-second
@@ -590,7 +590,7 @@ dev_snap() {
 	      f=\$(ls /proc/\$p/fd 2>/dev/null | wc -l);
 	      c=\$(awk '{print \$14+\$15}' /proc/\$p/stat);
 	      u=\$(awk '{print \$1}' /proc/uptime);
-	      echo \"\$r \$f \$t \$c \$u\"" 2>/dev/null
+	      echo \"\$r \$f \$t \$c \$u \$p\"" 2>/dev/null
 }
 dev_cpu_between() {
 	[ -n "${1:-}" ] && [ -n "${2:-}" ] || { printf '0.0'; return 1; }
@@ -6016,10 +6016,17 @@ fi
 if [ "$DO_RESTART" = "1" ] && want 14 restart; then
 	hdr "14. Restart resilience"
 	if [ -n "$SSH_TARGET" ]; then
+		rs_pid0=$(sshx "pidof timpsd" 2>/dev/null | awk '{print $1}')
 		sshx "service timps restart >/dev/null 2>&1 || /etc/init.d/S95timps restart >/dev/null 2>&1" &
-		rt0=$(date +%s.%N); recovered=0
-		for i in $(seq 1 30); do
+		rt0=$(date +%s.%N); recovered=0; rs_end=$(( $(date +%s) + 60 ))
+		while [ "$(date +%s)" -lt "$rs_end" ]; do
+			# the old daemon answers until the init script gets to it: a probe
+			# that lands there "recovers" in 0.4s and leaves every later
+			# section (14c, the soak) racing the real restart
+			rs_pid=$(sshx "pidof timpsd" 2>/dev/null | awk '{print $1}')
+			if [ -z "$rs_pid" ] || [ "$rs_pid" = "$rs_pid0" ]; then sleep 1; continue; fi
 			if timeout 6 ffprobe -v error -rtsp_transport tcp -i "$(rtsp_url "$PATH_SUB")" -show_entries format=start_time -of csv=p=0 >/dev/null 2>&1; then
+				DAEMON_BACK_AT=$(date +%s)
 				rt1=$(date +%s.%N); recovered=$(awk -v a="$rt0" -v b="$rt1" 'BEGIN{printf "%.1f",b-a}'); break
 			fi; sleep 2
 		done
@@ -6292,7 +6299,7 @@ if [ "${SOAK_DUR:-0}" -gt 0 ] && want 15 soak; then
 	hdr "15. Soak (${SOAK_DUR}s continuous, ${SOAK_SAMPLE}s slices)"
 	soaklog="$OUTDIR/soak.log"; : > "$soaklog"
 	slice="$SOAK_SAMPLE"; n_slices=$(( SOAK_DUR / slice )); [ "$n_slices" -lt 1 ] && n_slices=1
-	err_total=0; bad_slices=0; rss_first=""; rss_last=""
+	err_total=0; bad_slices=0; rss_first=""; rss_last=""; soak_pid=""
 	rec="$OUTDIR/rec_soak.mkv"; rlog="$OUTDIR/rec_soak.log"
 	# Per-slice resource series. RSS alone (the old <2MB gate) cannot see the
 	# leaks this codebase actually has: an unreaped session costs an fd pair, a
@@ -6316,11 +6323,20 @@ if [ "${SOAK_DUR:-0}" -gt 0 ] && want 15 soak; then
 		if [ -n "$SSH_TARGET" ]; then
 			snap1=$(dev_snap)
 			if [ -n "$snap1" ]; then
-				read -r rss nfd nthr _ _ <<<"$snap1"
+				read -r rss nfd nthr _ _ spid <<<"$snap1"
 				cpu=$(dev_cpu_between "${snap0:-}" "$snap1")
-				[ -z "$rss_first" ] && rss_first="$rss"; rss_last="$rss"
-				echo "$nfd"  >> "$fd_series"
-				echo "$nthr" >> "$thr_series"
+				# a slice that got no stream sampled a daemon still starting up,
+				# whose fd/thread ramp is not a leak; a new pid starts a new series
+				if [ -s "$rec" ]; then
+					if [ -n "$soak_pid" ] && [ "$spid" != "$soak_pid" ]; then
+						info "  soak: timpsd restarted (pid $soak_pid -> $spid) at slice $s - RSS/fd/thread series restarted"
+						: > "$fd_series"; : > "$thr_series"; rss_first=""
+					fi
+					soak_pid="$spid"
+					[ -z "$rss_first" ] && rss_first="$rss"; rss_last="$rss"
+					echo "$nfd"  >> "$fd_series"
+					echo "$nthr" >> "$thr_series"
+				fi
 				echo "$cpu"  >> "$cpu_series"
 			fi
 		fi
