@@ -957,7 +957,8 @@ Three failure logs, all from `HAL_ING`:
   convert microseconds to sensor lines, cap not applied` — the sensor does
   not report a line time. The key cannot work on this camera.
 - `image.ae_it_max_us=<n>: SDK rejected the cap (<lines>, rc=…) - AE maximum
-  unchanged`.
+  unchanged` (**since v1.9.29** "rejected the removal" when the write was the
+  uncapped maximum going back).
 - **since v1.9.28** `image.ae_it_max_us=<n>: <lines> lines exceeds this SDK's 16-bit
   field - capping at 65535` (T10/T20/T21/T30) — on v1.9.27 the value
   silently wrapped into a tiny cap.
@@ -967,8 +968,28 @@ Three failure logs, all from `HAL_ING`:
   value; it will not help.
 
 `image.ae_it_max_us=<n> … is above the sensor mode's own maximum … - nothing
-to cap` (LOGI) means the value is larger than what the sensor can do anyway.
-Range is 0..1000000 µs; 0 = off.
+to cap` (LOGI) means the value is larger than what the sensor can do anyway
+and no cap of ours is in force. Range is 0..1000000 µs; 0 = off.
+
+**since v1.9.29** the cap changes live in both directions. Each write logs one
+`INFO` line:
+
+- `image.ae_it_max_us=<n>: AE cap set to|raised to|lowered to <L> lines (<us>us), was …; sensor mode max <M> lines (…); GetExpr now reports max=<R> lines`
+- `image.ae_it_max_us=<n>: AE cap removed - wrote back the sensor mode's own maximum of <M> lines (…), was capped at <L> lines (…); GetExpr now reports max=<R> lines`
+  (`<n>` is `0`, or a value at/above the mode's maximum)
+- `… re-applied …` / `… removal re-applied …` — the frame-path supervisor
+  re-writing because the readback did not match yet (normal once after a POST
+  with nobody watching), followed by `cap in effect …` / `cap removal in
+  effect … after <k> write(s) on the live frame path`.
+
+`<M>` is the remembered uncapped maximum; `GetExpr`'s own maximum reads the
+cap while one is in force, so do not compare against that. A boot with the
+key set logs `sensor mode's own AE max <M> lines (…); the cap is written once
+frames are delivered`, and a later `sensor mode's own AE max is now …` means
+the reference was re-read (new sensor mode, e.g. after a day/night switch).
+A removal that never shows up in the readback warns `… removal writes on a
+live, delivering pipeline and the AE maximum is still <R> lines, not the
+sensor mode's <M> …`; a restart clears it.
 
 ### 3.8 Image knobs that silently do nothing on this SoC
 
@@ -2521,7 +2542,9 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | --- | --- | --- | --- |
 | `SetISPRunningMode(%s) failed (rc=%d)` | W | The SDK refused the day/night colour-pipeline change. Seen on some T41/GC5603 bring-ups. | §3.4 |
 | `image.ae_it_max_us: GetExpr gave no line/max reference (%s) - cannot convert microseconds to sensor lines, cap not applied` | W | This sensor reports no line time; the key cannot work here. | §3.7 |
-| `image.ae_it_max_us=%d: SDK rejected the cap (%lu lines, rc=%d) - AE maximum unchanged` | W | Rejected. | §3.7 |
+| `image.ae_it_max_us=%d: SDK rejected the %s (%lu lines, rc=%d) - AE maximum unchanged` | W | Rejected (`cap` or, **since v1.9.29**, `removal`). | §3.7 |
+| `image.ae_it_max_us=%d: %d removal writes on a live, delivering pipeline and the AE maximum is still %lu lines, not the sensor mode's %lu - this sensor/ISP is not honouring the removal; retrying slowly` | W | **since v1.9.29**. Writing the uncapped maximum back does not show in the readback. | Restart timps. §3.7 |
+| `image.ae_it_max_us: SetIntegrationTime(MODE_AUTO) failed (rc=%d) - AE left in MODE_RANGE at the sensor mode's own maximum` | W | **since v1.9.29**, T10/T20/T21/T30. Removal half-done; exposure behaviour is the same as uncapped. | None needed. |
 | `image.ae_it_max_us=%d: %d writes on a live, delivering pipeline and the AE maximum is still %lu lines - this sensor/ISP is not honouring the cap; retrying slowly` | W | The sensor ignores it. | Stop raising the value. §3.7 |
 | `image.ae_it_max_us=%d: %lu lines exceeds this SDK's 16-bit field - capping at 65535` | W | **since v1.9.28**. T10/T20/T21/T30 only: the requested cap does not fit the SDK field. | Lower `image.ae_it_max_us`. |
 
