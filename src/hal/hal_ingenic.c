@@ -3544,7 +3544,8 @@ static void *jpeg_thread(void *arg)
 
         if (IMP_Encoder_PollingStream(jc->chn, g_hcfg->imp_polling_timeout)!=0){
             dbg_jpollfail++;
-            if ((dbg_jpollfail % 20)==1)
+            /* a lone miss is the normal cold start of an idle JPEG channel */
+            if ((dbg_jpollfail % 20)==2)
                 LOGW(MOD,"jpeg chn%d: PollingStream idle (miss#%d) - encoder emits no frames",
                      jc->chn, dbg_jpollfail);
             if (dbg_jpollfail >= MS_JPEG_WATCHDOG_ITERS){
