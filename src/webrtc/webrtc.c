@@ -47,7 +47,16 @@
  * 10-byte SRTP tag, UDP and IP are added - and far enough below RTP_MTU_MAX
  * that the tag can never push a packet past what the sink buffer holds. */
 #define WEBRTC_MTU      1200
-#define WEBRTC_QCAP     16
+/* Was 16 from 80e59ae, when this queue carried video only. bd028ef put G.711
+ * audio (25 pkt/s) in the same queue without re-sizing it, which halved the
+ * time budget a burst has to drain into (~640ms -> ~320ms at a typical GOP
+ * cadence) - measured on the fleet as real overflow events (hundreds across
+ * Garage and cam-vorne). Doubled to restore the original time budget; still
+ * the shallowest media queue in the codebase on purpose (RTSP/fMP4: 64,
+ * SRT/record: 128) - WebRTC is the one consumer that wants to drop rather
+ * than buffer when it falls behind. Bounded by FQ_MAX_BYTES regardless, so
+ * the cost of being wrong here is latency, not memory. */
+#define WEBRTC_QCAP     32
 /* How long the media loop parks on the fanqueue before looping round to the
  * socket again: the upper bound on reacting to a PLI or a consent check. */
 #define WEBRTC_POP_MS   20
