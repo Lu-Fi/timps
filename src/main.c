@@ -538,9 +538,10 @@ int main(int argc, char **argv)
     install_fatal_handlers();
 
     const char *cfgpath = "/etc/timps.conf";
+    int verbose = 0;
     for (int i=1;i<argc;i++){
         if (!strcmp(argv[i],"-c") && i+1<argc) cfgpath=argv[++i];
-        else if (!strcmp(argv[i],"-v")) log_set_level(LOG_DEBUG);
+        else if (!strcmp(argv[i],"-v")){ verbose = 1; log_set_level(LOG_DEBUG); }
         else if (!strcmp(argv[i],"-h")){
             printf("timps %s\nusage: %s [-c config] [-v]\n",MS_VERSION,argv[0]);
             return 0;
@@ -548,6 +549,10 @@ int main(int argc, char **argv)
     }
 
     config_load(&g_cfg, cfgpath);
+    /* config_load() ends by applying general.loglevel (default 2 = info),
+     * which silently undid -v: every LOGD after this point was dropped and
+     * -v only ever covered the config parse itself. The command line wins. */
+    if (verbose) log_set_level(LOG_DEBUG);
     config_sensor_finalize(&g_cfg);   /* auto-detect sensor from /proc/jz/sensor */
     /* Freeze the boot view of the config BEFORE the HAL/servers (and thus any
      * /control thread) run. Restart-only videoN.* fields (codec/enabled/dims/
