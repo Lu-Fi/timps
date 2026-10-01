@@ -2456,6 +2456,7 @@ static void *video_thread(void *arg)
                              "encoder/ISP is not coming back on its own; exiting "
                              "(camera needs a manual/scheduled restart)",
                              vc->chn, dbg_startfail);
+                        g_hal_watchdog_gave_up = 1;  /* see hal.h */
                         raise(SIGTERM);
                         break;
                     }
@@ -2490,14 +2491,17 @@ static void *video_thread(void *arg)
                          * still-live subsystem, backstopped by its own
                          * existing 3 s hard_exit alarm if any of that wedges
                          * against the same dead ISP. S95timps does NOT
-                         * auto-respawn (plain SysV start/stop) - this exit
-                         * leaves the camera down until a human or an external
-                         * scheduler restarts it, which is still strictly
-                         * better than the prior silent, unbounded hang. */
+                         * auto-respawn (plain SysV start/stop); main()
+                         * escalates this exit to the same one-shot recovery
+                         * reboot a bring-up failure gets (g_hal_watchdog_
+                         * gave_up, see hal.h), so this is no longer a dark
+                         * camera forever - only until the one reboot either
+                         * fixes it or proves it will not. */
                         LOGE(MOD,"chn%d: %d consecutive forced-recovery cycles never "
                              "produced a frame - encoder/ISP is not coming back on its "
                              "own; exiting (camera needs a manual/scheduled restart)",
                              vc->chn, dbg_recover_fails);
+                        g_hal_watchdog_gave_up = 1;  /* see hal.h */
                         raise(SIGTERM);
                         break;
                     }

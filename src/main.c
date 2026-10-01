@@ -40,6 +40,7 @@
 
 static volatile int g_run = 1;
 static const hal_backend *g_hal;
+volatile int g_hal_watchdog_gave_up;   /* see hal.h */
 
 /* ---- fatal-signal handler (SIGSEGV/SIGBUS/SIGFPE/SIGABRT) --------------
  * timpsd links closed-source Ingenic vendor libraries (libimp.so for video/
@@ -399,15 +400,17 @@ static int hal_stop_bounded(void)
 #define MS_STARTUP_REBOOT_MARKER "/etc/timps-startup-reboot.flag"
 #endif
 
-/* Bring-up has failed for good ("why" says how). Escalate to ONE real reboot
- * - but ONLY one, ever, per incident: cam-kinder-rechts' hardware-verified
- * run (2026-08-22) showed process-level retries never cleared that board's
- * stuck rmem while a real `reboot` cleared it every single time, so the
- * reboot is worth taking; a second failure after it means the reboot did not
- * help either and repeating it would be a silent boot loop instead of a fix.
+/* Bring-up, or (via g_hal_watchdog_gave_up, see hal.h) a runtime watchdog,
+ * has given up for good ("why" says how). Escalate to ONE real reboot - but
+ * ONLY one, ever, per incident: cam-kinder-rechts' hardware-verified run
+ * (2026-08-22) showed process-level retries never cleared that board's stuck
+ * rmem while a real `reboot` cleared it every single time, so the reboot is
+ * worth taking; a second failure after it means the reboot did not help
+ * either and repeating it would be a silent boot loop instead of a fix.
  * The marker is cleared the moment start() next succeeds, so a genuinely new
  * incident later (even after months of uptime) gets its own fresh one-shot
- * reboot rather than a permanently spent one.
+ * reboot rather than a permanently spent one - true whether the incident that
+ * spent it was a bring-up failure or a runtime one.
  * Returns the process exit status; does not return at all when it reboots. */
 static int startup_give_up(const char *why)
 {
@@ -791,5 +794,16 @@ int main(int argc, char **argv)
     /* the counterpart to hard_exit()'s write(): its absence after "shutting
      * down" is what identifies a shutdown the alarm cut short. */
     LOGI(MOD,"teardown complete - exiting");
+    if (g_hal_watchdog_gave_up)
+        /* The HAL itself decided it cannot recover (its own LOGE already said
+         * why) and asked for this exit via g_hal_watchdog_gave_up, not an
+         * operator/init-system SIGTERM - route it through the same one-shot
+         * recovery reboot a bring-up failure already gets, instead of just
+         * leaving the camera dark until someone notices (the actual gap this
+         * closes: a runtime give-up previously had nothing after it). Shares
+         * the marker with bring-up failures on purpose: whichever one fires
+         * first spends the one reboot the board gets, and a start() that
+         * succeeds afterward clears it for either kind of future incident. */
+        return startup_give_up("runtime watchdog exited the process");
     return 0;
 }

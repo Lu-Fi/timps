@@ -13,6 +13,19 @@ typedef struct {
     void (*stop)(void);                   /* stop + teardown */
 } hal_backend;
 
+/* A video/encode worker sets this just before raise(SIGTERM) when IT decided
+ * the process must exit (the watchdog's recovery budget is spent, or
+ * StartRecvPic never recovers) - as opposed to an operator- or init-system-
+ * requested SIGTERM, which leaves it 0. main(), once its normal orderly
+ * shutdown finishes, checks it to tell the two apart: only a HAL give-up
+ * escalates to the same one-shot recovery reboot bring-up failures already
+ * get (see startup_give_up() in main.c) - a plain `S95timps stop` must never
+ * reboot the camera. Set from the HAL thread, read from main() after that
+ * thread's raise(SIGTERM) has already joined every subsystem via the normal
+ * shutdown path, so there is no concurrent writer left by the time it is
+ * read; plain int is enough. */
+extern volatile int g_hal_watchdog_gave_up;
+
 /* returns the backend selected at compile time */
 const hal_backend *hal_get(void);
 
