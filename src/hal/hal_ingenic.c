@@ -3787,7 +3787,19 @@ static void *audio_thread(void *arg)
     faac_encoder *faac = NULL;
     uint32_t faac_in = 1024, faac_max = 8192;   /* filled from encoder info below */
     if (use_aac) {
-        faac_params fp; faac_params_init(&fp);
+        faac_params fp;
+        /* SONAME 2 (FreewareAdvancedAudio/faac) added a caller_size argument so
+         * the library can tell how much of a newer, larger faac_params a caller
+         * built against an older header actually filled in; SONAME 1 (knik0/faac,
+         * the "modern" API this file already targets) takes none. Guarded on the
+         * header actually in the build rather than on a thingino Kconfig symbol,
+         * so this keeps compiling against either SONAME without a build-time
+         * switch of our own. */
+#if defined(FAAC_VERSION_MAJOR) && (FAAC_VERSION_MAJOR >= 2)
+        faac_params_init(&fp, sizeof fp);
+#else
+        faac_params_init(&fp);
+#endif
         fp.sample_rate   = (uint32_t)g_asr;
         fp.num_channels  = (uint32_t)g_ach;     /* 2 = simulated stereo (dual-mono) */
         fp.mpeg_version  = FAAC_MPEG4;
