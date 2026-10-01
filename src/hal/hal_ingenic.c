@@ -721,6 +721,36 @@ static void motion_sync(const ms_config *cfg)
  * our caps replaces it. FS disable/enable edges do not change the sensor mode;
  * they only reset the cap, which the rule above already turns into a fresh
  * reading, and they re-arm the supervisor (ae_it_max_arm) that takes it.
+ * (Measured on cam-garage: GetExpr's maximum is the ISP AE's own limit, not
+ * the sensor's VTS - it stayed at 2246 lines at 15 and 20 fps while /proc's
+ * "SENSOR Max Integration Time" followed the VTS to 2996.)
+ *
+ * Where the reading comes from (ae_it_read):
+ *   - GetExpr's integration_time_max + one_line_expr_in_us, on every SoC that
+ *     fills them (T23/T31/C100 measured).
+ *   - T10/T20/T21/T30 (Apical ISP): the kernel answers GetExpr from the sensor
+ *     driver's attribute block, and 29 of the 52 T20 sensor drivers in
+ *     ingenic-sdk never set one_line_expr_in_us (jxf23 among them); on the
+ *     Wyze Cam v2 (T20X/jxf23, stock libimp 3.12.0) GetExpr comes back all
+ *     zero, max included (the kernel's get handler returns 0 without copying
+ *     anything when its own AE query fails). The AE's real limit
+ *     on that ISP is the system-table field global_max_integration_time,
+ *     which IMP_ISP_Tuning_GetIntegrationTime returns as max_integration_time
+ *     (libimp 3.12.0 disassembled: GetIntegrationTime reads the system table,
+ *     SetIntegrationTime(MODE_RANGE) writes exactly that one field, MODE_AUTO
+ *     only clears the manual-IT flag). The kernel resets it to the sensor's
+ *     VTS-minus-margin on every sensor (re)sync, sensor fps changes included,
+ *     so before our first cap it is VTS - margin at the CURRENT fps. With no
+ *     line time from GetExpr, the line time is derived from it and
+ *     GetSensorFPS: line = 1 s / (fps * max). The margin (4 lines on jxf23,
+ *     ~0.3 % of a 1350-line frame) makes the derived line slightly long, i.e.
+ *     a cap converts to slightly FEWER lines than asked - the safe side.
+ *     Checked against ingenic-sdk's T20 Apical source and the T20 3.12.0
+ *     libimp; the T21 1.0.33 libimp's GetIntegrationTime reads the same table
+ *     field (same control id, same offsets). T30 was not checked - the -v
+ *     dump below shows what any of them fill.
+ * With neither, the key cannot convert microseconds and says so once per ISP
+ * start; -v (LOGD) dumps the raw fields of every source on each read.
  *
  * Every field is serialized on g_isp_lock (isp_init runs single-threaded,
  * before any encode thread exists). ae_it_max_on_frame() peeks at
@@ -731,49 +761,99 @@ static void motion_sync(const ms_config *cfg)
 #endif
 #ifdef AE_IT_SUPERVISE
 static uint32_t g_ae_it_mode_lines;     /* the sensor mode's own AE max; 0 = unknown */
-static uint32_t g_ae_it_mode_line_us;   /* ...and its line time, for the logs */
+static uint32_t g_ae_it_mode_line_ns;   /* ...and its line time in ns; 0 = unknown */
+static int      g_ae_it_line_derived;   /* line time derived from fps, not GetExpr */
 static int      g_ae_it_mode_stale;     /* a mode switch happened under our cap */
 static uint32_t g_ae_it_cap_lines;      /* our cap; 0 = nothing of ours outstanding */
 static uint32_t g_ae_it_hi_lines;       /* highest value we wrote since clean */
 static int      g_ae_it_removing;       /* removal written, awaiting readback */
 static int      g_ae_it_rmode = -1;     /* running_mode the reference belongs to */
-#if defined(ISP_HAS_AE_IT_RANGE)
-static int      g_ae_it_was_auto;       /* AE was in MODE_AUTO before our first cap */
-#endif
+static int      g_ae_it_noref_warned;   /* "no reference" said once per ISP start */
+
+/* One reading of the AE maximum, from whichever source this SoC fills. */
+typedef struct {
+    uint32_t max, min;                  /* sensor lines; 0 = not supplied */
+    uint32_t line_ns;                   /* GetExpr's line time; 0 = not supplied */
+    uint32_t fps_num, fps_den;          /* GetSensorFPS, for deriving one */
+    const char *src;                    /* where max came from */
+} ae_it_rd;
 
 /* Slack for "GetExpr reads what we wrote": ~3 %, at least one line. Exact on
  * cam-garage (545 written, 545 read back), but the readback is the SDK's and a
  * rounding SDK must not turn the supervisor into an endless rewrite loop. */
 static uint32_t ae_it_slack(uint32_t lines){ return lines / 32 + 1; }
 
-/* Take a GetExpr reading as the mode's own maximum when it can only be that. */
-static void ae_it_learn(const hal_isp_expo *ex)
+/* lines -> microseconds with the remembered line time, for the logs */
+static unsigned long ae_it_us(uint32_t lines)
 {
-    if (!ex->it_max_lines || !ex->line_us) return;
+    return (unsigned long)((uint64_t)lines * g_ae_it_mode_line_ns / 1000);
+}
+
+/* Read the AE maximum (see the source list above). 0 = a maximum was found. */
+static int ae_it_read(ae_it_rd *r)
+{
+    memset(r, 0, sizeof *r);
+    hal_isp_expo ex;
+    int erc = hal_isp_exposure(&ex);
+    if (erc == 0 && ex.it_max_lines){
+        r->max = ex.it_max_lines; r->min = ex.it_min_lines; r->src = "GetExpr";
+    }
+    if (erc == 0) r->line_ns = ex.line_us * 1000;
+    LOGD(MOD,"ae_it: GetExpr rc=%d it=%lu min=%lu max=%lu line_us=%lu "
+             "(EVAttr expr_us=%lu)", erc,
+         (unsigned long)(erc ? 0 : ex.it_lines), (unsigned long)(erc ? 0 : ex.it_min_lines),
+         (unsigned long)(erc ? 0 : ex.it_max_lines), (unsigned long)(erc ? 0 : ex.line_us),
+         (unsigned long)(erc ? 0 : ex.expr_us));
+#if defined(ISP_HAS_AE_IT_RANGE)
+    IMPISPITAttr it; memset(&it,0,sizeof it);
+    int irc = IMP_ISP_Tuning_GetIntegrationTime(&it);
+    uint32_t fn = 0, fd = 0;
+    int frc = IMP_ISP_Tuning_GetSensorFPS(&fn, &fd);
+    LOGD(MOD,"ae_it: GetIntegrationTime rc=%d mode=%d it=%u max=%u | "
+             "GetSensorFPS rc=%d %lu/%lu", irc, (int)it.mode,
+         (unsigned)it.integration_time, (unsigned)it.max_integration_time,
+         frc, (unsigned long)fn, (unsigned long)fd);
+    if (!r->max && irc == 0 && it.max_integration_time){
+        r->max = it.max_integration_time; r->src = "GetIntegrationTime";
+    }
+    if (frc == 0 && fn && fd){ r->fps_num = fn; r->fps_den = fd; }
+#endif
+    return r->max ? 0 : -1;
+}
+
+/* Take a reading as the mode's own maximum when it can only be that. */
+static void ae_it_learn(const ae_it_rd *r)
+{
+    if (!r->max) return;
     if (g_ae_it_cap_lines &&
-        ex->it_max_lines <= g_ae_it_hi_lines + ae_it_slack(g_ae_it_hi_lines))
+        r->max <= g_ae_it_hi_lines + ae_it_slack(g_ae_it_hi_lines))
         return;                         /* possibly one of ours: not a reference */
-    if (g_ae_it_mode_lines && g_ae_it_mode_lines != ex->it_max_lines)
-        LOGI(MOD,"image.ae_it_max_us: sensor mode's own AE max is now %lu lines "
-                 "(%luus), was %lu lines (%luus)",
-             (unsigned long)ex->it_max_lines,
-             (unsigned long)(ex->it_max_lines * ex->line_us),
-             (unsigned long)g_ae_it_mode_lines,
-             (unsigned long)(g_ae_it_mode_lines * g_ae_it_mode_line_us));
-    g_ae_it_mode_lines   = ex->it_max_lines;
-    g_ae_it_mode_line_us = ex->line_us;
+    uint32_t ns = r->line_ns;
+    int derived = 0;
+    if (!ns && r->fps_num && r->fps_den){       /* line = 1 s / (fps * max) */
+        ns = (uint32_t)((uint64_t)1000000000ULL * r->fps_den /
+                        ((uint64_t)r->fps_num * r->max));
+        derived = 1;
+    }
+    if (g_ae_it_mode_lines && g_ae_it_mode_lines != r->max)
+        LOGI(MOD,"image.ae_it_max_us: sensor mode's own AE max is now %lu lines, "
+                 "was %lu lines (%luus)", (unsigned long)r->max,
+             (unsigned long)g_ae_it_mode_lines, ae_it_us(g_ae_it_mode_lines));
+    g_ae_it_mode_lines   = r->max;
+    g_ae_it_mode_line_ns = ns;
+    g_ae_it_line_derived = derived;
     g_ae_it_mode_stale   = 0;
 }
 
 /* The cap a value asks for, in lines, clamped into the sensor's real range;
- * 0 = no cap (off, or at/above the mode's own maximum). Needs a learned
- * reference: callers run ae_it_learn() on the same reading first. */
-static uint32_t ae_it_target(int us, const hal_isp_expo *ex)
+ * 0 = no cap (off, at/above the mode's own maximum, or no line time). Needs
+ * a learned reference: callers run ae_it_learn() on the same reading first. */
+static uint32_t ae_it_target(int us, const ae_it_rd *r)
 {
-    if (us <= 0 || !ex->line_us || !g_ae_it_mode_lines) return 0;
-    uint32_t want = (uint32_t)us / ex->line_us;
+    if (us <= 0 || !g_ae_it_mode_line_ns || !g_ae_it_mode_lines) return 0;
+    uint32_t want = (uint32_t)((uint64_t)us * 1000 / g_ae_it_mode_line_ns);
     if (want == 0) want = 1;
-    if (ex->it_min_lines && want < ex->it_min_lines) want = ex->it_min_lines;
+    if (r->min && want < r->min) want = r->min;
     return want >= g_ae_it_mode_lines ? 0 : want;
 }
 
@@ -781,12 +861,13 @@ static uint32_t ae_it_target(int us, const hal_isp_expo *ex)
  * so forget everything and take the new mode's maximum as the reference. */
 static void ae_it_max_reset(int running_mode)
 {
-    g_ae_it_mode_lines = g_ae_it_mode_line_us = 0;
+    g_ae_it_mode_lines = g_ae_it_mode_line_ns = 0;
     g_ae_it_cap_lines  = g_ae_it_hi_lines = 0;
     g_ae_it_mode_stale = g_ae_it_removing = 0;
+    g_ae_it_line_derived = g_ae_it_noref_warned = 0;
     g_ae_it_rmode      = running_mode;
-    hal_isp_expo ex;
-    if (hal_isp_exposure(&ex) == 0) ae_it_learn(&ex);
+    ae_it_rd r;
+    if (ae_it_read(&r) == 0) ae_it_learn(&r);
 }
 
 /* A live running_mode (day/night) switch may load another sensor setting with
@@ -813,16 +894,16 @@ static int ae_it_write(uint32_t lines, uint32_t min_lines, int restore)
      * ignores the values, MODE_MANUAL would pin the exposure and take away
      * the auto-exposure this key exists to shape rather than replace.
      *
-     * A removal writes MODE_RANGE with the mode's own maximum FIRST: that is
-     * the exact path that set the cap, so it is known to move the bound,
-     * whereas whether a bare MODE_AUTO also discards a range bound left in the
-     * driver is not documented ("ignores the values" may well mean "keeps
-     * them"). Then, if the AE was in MODE_AUTO before our first cap (read
-     * back with GetIntegrationTime), MODE_AUTO is written on top: that returns
-     * the attribute to the state we found it in, and an AUTO AE follows a
-     * later mode change on its own, where a lingering RANGE bound would turn
-     * into a stale cap. Either half failing leaves at worst RANGE at the
-     * mode's own maximum - the same exposure behaviour. */
+     * A removal is the same MODE_RANGE write with the mode's own maximum, NOT
+     * a MODE_AUTO write. libimp 3.12.0 (T10/T20), disassembled: RANGE stores
+     * max_integration_time into the Apical system table's
+     * global_max_integration_time and touches nothing else (integration_time
+     * is ignored in this mode); AUTO only clears global_manual_integration_time
+     * and leaves the maximum where it is. So AUTO would "remove" nothing, and
+     * since the AE is already automatic (our RANGE write never set the manual
+     * flag) there is no state of ours for it to undo either. The kernel also
+     * re-seeds that maximum from the sensor on every sensor (re)sync (fps
+     * change, ISP start), so a RANGE bound cannot outlive a mode change. */
     IMPISPITAttr it; memset(&it,0,sizeof it);
     it.mode = IMPISP_TUNING_MODE_RANGE;
     /* 16-bit fields: clamp, a silent wrap would set a tiny cap */
@@ -830,15 +911,8 @@ static int ae_it_write(uint32_t lines, uint32_t min_lines, int restore)
     it.integration_time     = (uint16_t)(min_lines ? (min_lines > 0xFFFF ?
                                          0xFFFF : min_lines) : 1);
     it.max_integration_time = (uint16_t)lines;
-    int rc = IMP_ISP_Tuning_SetIntegrationTime(&it);
-    if (!rc && restore && g_ae_it_was_auto){
-        it.mode = IMPISP_TUNING_MODE_AUTO;
-        int arc = IMP_ISP_Tuning_SetIntegrationTime(&it);
-        if (arc) LOGW(MOD,"image.ae_it_max_us: SetIntegrationTime(MODE_AUTO) "
-                          "failed (rc=%d) - AE left in MODE_RANGE at the sensor "
-                          "mode's own maximum", arc);
-    }
-    return rc;
+    (void)restore;
+    return IMP_ISP_Tuning_SetIntegrationTime(&it);
 #endif
 }
 #endif /* AE cap reference */
@@ -1005,28 +1079,30 @@ static int isp_apply_image(const char *k)
 #if defined(ISP_HAS_AE_IT_MAX) || defined(ISP_HAS_AE_IT_RANGE)
         int us = im->ae_it_max_us;
         if (us <= 0 && !g_ae_it_cap_lines) return 1;  /* off, none of ours: write nothing */
-        hal_isp_expo ex;
-        int have = (hal_isp_exposure(&ex) == 0);
-        if (!have || ex.line_us == 0 || ex.it_max_lines == 0){
-            LOGW(MOD,"image.ae_it_max_us: GetExpr gave no line/max reference "
-                     "(%s) - cannot convert microseconds to sensor lines, "
-                     "cap not applied", have ? "zero line_us/it_max" : "call failed");
-            return 1;
-        }
-        ae_it_learn(&ex);
+        ae_it_rd rd;
+        int have = (ae_it_read(&rd) == 0);
+        if (have) ae_it_learn(&rd);
         uint32_t mode = g_ae_it_mode_lines;
-        uint32_t mlus = g_ae_it_mode_line_us ? g_ae_it_mode_line_us : ex.line_us;
-        if (!mode){                     /* a cap outstanding with no reference: */
-            LOGW(MOD,"image.ae_it_max_us=%d: no uncapped AE maximum on record - "
-                     "AE maximum unchanged", us);   /* cannot happen, see learn */
+        /* A cap needs the maximum AND a line time; a removal only the
+         * maximum. Said once per ISP start (a POST per change, plus the
+         * supervisor's rounds, would otherwise repeat it forever), then LOGD. */
+        if (!mode || (us > 0 && !g_ae_it_cap_lines && !g_ae_it_mode_line_ns)){
+            if (!g_ae_it_noref_warned++)
+                LOGW(MOD,"image.ae_it_max_us: GetExpr gave no line/max reference "
+                         "(%s) - cannot convert microseconds to sensor lines, "
+                         "cap not applied (said once; -v shows the raw readings)",
+                         !mode ? "no AE maximum from any source"
+                               : "zero line time and no sensor fps");
+            else
+                LOGD(MOD,"image.ae_it_max_us=%d: still no line/max reference", us);
             return 1;
         }
-        uint32_t want = ae_it_target(us, &ex);
+        uint32_t want = ae_it_target(us, &rd);
         if (!want && !g_ae_it_cap_lines){
             LOGI(MOD,"image.ae_it_max_us=%d (%lu lines) is above the sensor "
                      "mode's own maximum of %lu lines (%luus) - nothing to cap",
-                 us, (unsigned long)((uint32_t)us / ex.line_us),
-                 (unsigned long)mode, (unsigned long)(mode * mlus));
+                 us, (unsigned long)((uint64_t)us * 1000 / g_ae_it_mode_line_ns),
+                 (unsigned long)mode, ae_it_us(mode));
             return 1;
         }
         int restore = (want == 0);
@@ -1037,13 +1113,8 @@ static int isp_apply_image(const char *k)
                      "field - capping at 65535", us, (unsigned long)wr);
             wr = 0xFFFF;
         }
-        if (!g_ae_it_cap_lines){        /* first cap: remember what we found */
-            IMPISPITAttr was; memset(&was,0,sizeof was);
-            g_ae_it_was_auto = (IMP_ISP_Tuning_GetIntegrationTime(&was) == 0 &&
-                                was.mode == IMPISP_TUNING_MODE_AUTO);
-        }
 #endif
-        int rc = ae_it_write(wr, ex.it_min_lines, restore);
+        int rc = ae_it_write(wr, rd.min, restore);
         if (rc) {
             LOGW(MOD,"image.ae_it_max_us=%d: SDK rejected the %s (%lu lines, "
                      "rc=%d) - AE maximum unchanged",
@@ -1061,29 +1132,33 @@ static int isp_apply_image(const char *k)
          * the readback is what establishes that lines were the right unit, and
          * it is also what tells daynight's exposure ratio that its denominator
          * just moved. 0 = readback failed. A write into a pipeline that is not
-         * delivering echoes here but does not take: the supervisor judges it. */
-        hal_isp_expo af;
-        unsigned long rb = (hal_isp_exposure(&af) == 0) ? (unsigned long)af.it_max_lines : 0;
+         * delivering echoes here but does not take: the supervisor judges it.
+         * The reading comes from the same source as the reference (GetExpr,
+         * or GetIntegrationTime on the older SDK - named in the line). */
+        ae_it_rd af;
+        unsigned long rb = (ae_it_read(&af) == 0) ? (unsigned long)af.max : 0;
+        const char *rbsrc = af.src ? af.src : (rd.src ? rd.src : "GetExpr");
         if (restore)
             LOGI(MOD,"image.ae_it_max_us=%d: AE cap %s - wrote back the sensor mode's "
                      "own maximum of %lu lines (%luus)%s, was capped at %lu lines "
-                     "(%luus); GetExpr now reports max=%lu lines",
+                     "(%luus); %s now reports max=%lu lines",
                  us, again ? "removal re-applied" : "removed",
-                 (unsigned long)wr, (unsigned long)(wr * mlus),
+                 (unsigned long)wr, ae_it_us(wr),
                  g_ae_it_mode_stale ? " (reference from before a running_mode switch)" : "",
-                 (unsigned long)g_ae_it_cap_lines,
-                 (unsigned long)(g_ae_it_cap_lines * ex.line_us), rb);
+                 (unsigned long)g_ae_it_cap_lines, ae_it_us(g_ae_it_cap_lines),
+                 rbsrc, rb);
         else {
             uint32_t from = prev ? prev : mode;
             LOGI(MOD,"image.ae_it_max_us=%d: AE cap %s %lu lines (%luus), was %lu "
-                     "lines (%luus)%s; sensor mode max %lu lines (%luus); GetExpr "
+                     "lines (%luus)%s; sensor mode max %lu lines (%luus%s); %s "
                      "now reports max=%lu lines",
                  us, again ? "re-applied at" : !prev ? "set to" :
                      wr > prev ? "raised to" : "lowered to",
-                 (unsigned long)wr, (unsigned long)(wr * ex.line_us),
-                 (unsigned long)from, (unsigned long)(from * ex.line_us),
-                 prev ? "" : " uncapped", (unsigned long)mode,
-                 (unsigned long)(mode * mlus), rb);
+                 (unsigned long)wr, ae_it_us(wr),
+                 (unsigned long)from, ae_it_us(from),
+                 prev ? "" : " uncapped", (unsigned long)mode, ae_it_us(mode),
+                 g_ae_it_line_derived ? ", line time from sensor fps" : "",
+                 rbsrc, rb);
         }
         return 1;
 #else
@@ -1230,9 +1305,8 @@ static void ae_it_max_check(int64_t now)
     /* another encode thread may have just done this round */
     if (now < g_ae_it_next_us){ pthread_mutex_unlock(&g_isp_lock); return; }
     int us = g_hcfg ? g_hcfg->image.ae_it_max_us : 0;
-    hal_isp_expo ex;
-    if ((us <= 0 && !g_ae_it_cap_lines) ||
-        hal_isp_exposure(&ex) != 0 || ex.line_us == 0 || ex.it_max_lines == 0){
+    ae_it_rd ex;
+    if ((us <= 0 && !g_ae_it_cap_lines) || ae_it_read(&ex) != 0){
         /* no reference to judge by (or the key is off with nothing of ours to
          * remove): stay quiet, isp_apply_image() would only log the same
          * non-answer every round */
@@ -1249,7 +1323,7 @@ static void ae_it_max_check(int64_t now)
         pthread_mutex_unlock(&g_isp_lock);
         return;
     }
-    uint32_t m = ex.it_max_lines;
+    uint32_t m = ex.max;
     int held = want ? (m <= want && m + ae_it_slack(want) >= want)
                     : (m + ae_it_slack(g_ae_it_mode_lines) >= g_ae_it_mode_lines);
     if (held){                                          /* in effect */
@@ -1258,14 +1332,13 @@ static void ae_it_max_check(int64_t now)
             if (g_ae_it_fails)
                 LOGI(MOD,"image.ae_it_max_us=%d: cap removal in effect (AE max %lu "
                          "lines, %luus) after %d write(s) on the live frame path",
-                     us, (unsigned long)m, (unsigned long)(m * ex.line_us),
-                     g_ae_it_fails);
+                     us, (unsigned long)m, ae_it_us(m), g_ae_it_fails);
             g_ae_it_cap_lines = g_ae_it_hi_lines = 0;
             g_ae_it_removing  = 0;
         } else if (g_ae_it_fails)
             LOGI(MOD,"image.ae_it_max_us=%d: cap in effect (AE max %lu lines, %luus) "
                      "after %d write(s) on the live frame path",
-                 us, (unsigned long)m, (unsigned long)(m * ex.line_us), g_ae_it_fails);
+                 us, (unsigned long)m, ae_it_us(m), g_ae_it_fails);
         g_ae_it_fails  = 0;
         g_ae_it_warned = 0;
         g_ae_it_next_us = now + AE_IT_HOLD_US;
@@ -1455,9 +1528,12 @@ static int isp_init(void)
     ae_it_max_reset(g_hcfg->image.running_mode);
     if (g_hcfg->image.ae_it_max_us > 0)
         LOGI(MOD,"image.ae_it_max_us=%d: sensor mode's own AE max %lu lines "
-                 "(%luus); the cap is written once frames are delivered",
+                 "(%luus%s); the cap is written once frames are delivered",
              g_hcfg->image.ae_it_max_us, (unsigned long)g_ae_it_mode_lines,
-             (unsigned long)(g_ae_it_mode_lines * g_ae_it_mode_line_us));
+             ae_it_us(g_ae_it_mode_lines),
+             !g_ae_it_mode_lines ? " - NO reference, the cap cannot work here" :
+             !g_ae_it_mode_line_ns ? " - NO line time, the cap cannot work here" :
+             g_ae_it_line_derived ? ", line time derived from sensor fps" : "");
 #endif
     IMP_System_GetVersion(NULL);
 

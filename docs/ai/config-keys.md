@@ -363,8 +363,9 @@ Prose and pitfalls
      the sensor mode's own, uncapped maximum from before its first write and
      compares against that; `0`, or a value at or above that maximum, writes it
      back (T23/T31/C100: `SetAe_IT_MAX(uncapped)`; T10/T20/T21/T30:
-     `MODE_RANGE` at the uncapped maximum, then `MODE_AUTO` if that is what the
-     AE was in before). A removal is verified from the frame path like a cap.
+     `SetIntegrationTime(MODE_RANGE)` at the uncapped maximum — `MODE_AUTO`
+     would not lift the bound on that SDK). A removal is verified from the
+     frame path like a cap.
      `0` on a camera that never wrote a cap still touches nothing. Up to
      v1.9.28 the cap only ratcheted **down**; raising it or setting `0` needed
      a restart.
@@ -376,7 +377,13 @@ Prose and pitfalls
   on every SoC except T40/T41 (see `videoN.rotation`).
 * Unit note: `ae_it_max_us` is **microseconds**, deliberately not sensor lines —
   the HAL converts with the SDK's `one_line_expr_in_us` and clamps into the
-  sensor's real range at apply time.
+  sensor's real range at apply time. **since v1.9.29** on T10/T20/T21/T30, where
+  `GetExpr` is often empty (all zero on a Wyze Cam v2, T20X/jxf23, so the key
+  never worked there before), the maximum comes from `GetIntegrationTime` and
+  the line time is derived from the sensor fps (1 s / (fps × maximum), a
+  fraction of a percent long, so the cap errs short). If neither source gives
+  a maximum and a line time, the key logs one warning per start and does
+  nothing; `-v` shows the raw readings (troubleshooting §3.7).
 ---
 
 ## 5. `video<N>.*` (encoder streams)

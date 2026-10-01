@@ -17,13 +17,22 @@ semantic versioning.
   `running_mode` switch) and compares against that. `0`, or a value at or above
   it, writes the uncapped maximum back — `SetAe_IT_MAX(uncapped)` on
   T23/T31/C100; on T10/T20/T21/T30 `SetIntegrationTime(MODE_RANGE)` at the
-  uncapped maximum, then `MODE_AUTO` when `GetIntegrationTime` had reported
-  AUTO before the first cap. The removal is driven and verified from the frame
+  uncapped maximum (`MODE_AUTO` only clears the manual flag in libimp 3.12.0
+  and would leave the bound). The removal is driven and verified from the frame
   path like the cap itself. `0` on a camera that never wrote a cap still
   touches nothing. Set/raise/lower/remove each log one `INFO` line with lines
   and µs. The boot-time write from `isp_init()` is gone: it ran before
   `sensor.fps` was applied (wrong reference) and into a pipeline that was not
   delivering (ignored anyway); the supervisor makes the first write.
+- **`image.ae_it_max_us` works on T10/T20/T21/T30.** It never did on a Wyze
+  Cam v2 (T20X/jxf23, stock libimp 3.12.0): `GetExpr` comes back all zero
+  there, so every set logged "GetExpr gave no line/max reference … cap not
+  applied". The older SDK's reference is now the Apical AE's own limit from
+  `GetIntegrationTime` (`max_integration_time`, re-seeded from the sensor on
+  every fps change), and when `GetExpr` has no line time it is derived from
+  `GetSensorFPS` as 1 s / (fps × that maximum). If no source gives one, the
+  warning is logged once per start instead of on every set, and `-v` dumps
+  the raw `GetExpr` / `GetIntegrationTime` / `GetSensorFPS` readings.
 
 ## [1.9.28] - 2026-09-28
 
