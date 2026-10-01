@@ -3736,6 +3736,14 @@ static const uint8_t k_jpeg_chroma_q50[64] = {
     99, 99, 99, 99, 99, 99, 99, 99,
     99, 99, 99, 99, 99, 99, 99, 99
 };
+/* Classic libimp copies qmem_table verbatim into the DQT segment, which
+ * T.81 defines in zigzag order (ijpege_write_header, T20/T21/T23/T30). */
+static const uint8_t k_jpeg_zigzag[64] = {
+     0,  1,  8, 16,  9,  2,  3, 10, 17, 24, 32, 25, 18, 11,  4,  5,
+    12, 19, 26, 33, 40, 48, 41, 34, 27, 20, 13,  6,  7, 14, 21, 28,
+    35, 42, 49, 56, 57, 50, 43, 36, 29, 22, 15, 23, 30, 37, 44, 51,
+    58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54, 47, 55, 62, 63
+};
 static uint8_t jpeg_scale_q(uint8_t base, int scale)
 {
     int v = ((int)base * scale + 50) / 100;   /* IJG: round(base*scale/100) */
@@ -3759,15 +3767,15 @@ static void jpeg_apply_quality(int chn, int quality)
              "to degrade JPEG quality on T10 (JPEG left at SDK default)", quality);
 #else
     /* T20/T21/T23/T30: fill the qtable's first 128 bytes - 64 luma then 64
-     * chroma, 8-bit, natural order (T20's is 256 bytes total; see the comment
+     * chroma, 8-bit, zigzag order (T20's is 256 bytes total; see the comment
      * above). IJG quality->scale (base tables = q50). */
     int s = (quality < 50) ? (5000 / quality) : (200 - quality * 2);
     IMPEncoderJpegeQl ql; memset(&ql, 0, sizeof ql);
     _Static_assert(sizeof ql.qmem_table >= 128, "JPEG qtable smaller than 128B");
     ql.user_ql_en = 1;
     for (int i = 0; i < 64; i++){
-        ql.qmem_table[i]      = jpeg_scale_q(k_jpeg_luma_q50[i],   s);
-        ql.qmem_table[64 + i] = jpeg_scale_q(k_jpeg_chroma_q50[i], s);
+        ql.qmem_table[i]      = jpeg_scale_q(k_jpeg_luma_q50[k_jpeg_zigzag[i]],   s);
+        ql.qmem_table[64 + i] = jpeg_scale_q(k_jpeg_chroma_q50[k_jpeg_zigzag[i]], s);
     }
     if (IMP_Encoder_SetJpegeQl(chn, &ql) != 0)
         LOGW(MOD,"IMP_Encoder_SetJpegeQl(chn%d,q%d) failed (JPEG left at default)",
