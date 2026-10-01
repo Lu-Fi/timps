@@ -32,7 +32,15 @@ semantic versioning.
   every fps change), and when `GetExpr` has no line time it is derived from
   `GetSensorFPS` as 1 s / (fps × that maximum). If no source gives one, the
   warning is logged once per start instead of on every set, and `-v` dumps
-  the raw `GetExpr` / `GetIntegrationTime` / `GetSensorFPS` readings.
+  the raw `GetExpr` / `GetIntegrationTime` / `GetSensorFPS` readings. The
+  readback that verifies a cap also comes from `GetIntegrationTime` there:
+  `GetExpr`'s maximum is the sensor attribute, never moved by a cap, and
+  judging by it made the supervisor re-write every few seconds. A readback
+  that ignores 3 writes in a row now stops the verification for good (one
+  warning) instead of looping.
+- **`-v` works.** It raised the level to DEBUG, and `config_load()` lowered it
+  straight back to `general.loglevel`, so `-v` only ever covered the config
+  parse. The command line now wins.
 
 ## [1.9.28] - 2026-09-28
 

@@ -87,8 +87,10 @@ logread | grep -i timps | tail -n 100
 `timpsd` writes to syslog because `general.syslog` defaults to on; the init
 script backgrounds the process, so **stderr is discarded** — `logread` is the
 only log. `src/main.c` parses three arguments — `-c <config>`, `-v` (raise the
-level to DEBUG) and `-h` (print `timps <version>` plus a one-line usage and
-exit 0). **Anything else is silently ignored**, so a typo'd flag looks like it
+level to DEBUG; **up to v1.9.28 it was undone a moment later** by the config
+file's `general.loglevel`, so it only covered the config parse — use
+`general.debug_modules` there) and `-h` (print `timps <version>` plus a
+one-line usage and exit 0). **Anything else is silently ignored**, so a typo'd flag looks like it
 worked. The default config path is `/etc/timps.conf`.
 
 | Log line (`src/main.c`) | Cause | Fix |
@@ -960,8 +962,9 @@ Three failure logs, all from `HAL_ING`:
   set) with the reason in the parentheses (`no AE maximum from any source` /
   `zero line time and no sensor fps`), and the boot line says the same:
   `sensor mode's own AE max 0 lines (0us - NO reference, the cap cannot work
-  here)`. Run timps with `-v` (or `general.debug_modules` including
-  `HAL_ING`) to see the raw readings on every attempt: `ae_it: GetExpr rc=…
+  here)`. Run timps with `-v` (**since v1.9.29**; before, `-v` was overridden by
+  `general.loglevel`) or POST `{"general":{"debug_modules":"HAL_ING"}}` (live,
+  any version) to see the raw readings on every attempt: `ae_it: GetExpr rc=…
   it=… min=… max=… line_us=…` and, on T10/T20/T21/T30, `ae_it:
   GetIntegrationTime rc=… mode=… it=… max=… | GetSensorFPS rc=… n/d`.
 - `image.ae_it_max_us=<n>: SDK rejected the cap (<lines>, rc=…) - AE maximum
@@ -1001,6 +1004,15 @@ before), so the maximum comes from `GetIntegrationTime`'s
 VTS − margin on every sensor fps change) and, when `GetExpr` has no line time,
 the line time is derived as 1 s / (sensor fps × that maximum). The INFO lines
 then say `line time from sensor fps` and `GetIntegrationTime now reports …`.
+`GetIntegrationTime` is used even where `GetExpr` does fill a maximum: on the
+older SDK `GetExpr`'s maximum is the sensor driver's attribute, which a cap
+never moves (Wyze Cam v2: 1121 after every write, so the supervisor kept
+re-writing). If the readback source does not move after
+3 writes in a row, timps logs once `image.ae_it_max_us: <source> never
+reflected a write (3 writes in a row, still max=<R> lines) - the cap cannot be
+verified on this SDK; it is written once per change and no longer re-applied
+by the supervisor` and from then on writes once per POST and once per chn0
+re-enable, without judging (until the next timps start).
 The margin makes the derived line ~0.3 % long, so the cap ends up a fraction
 of a percent *shorter* than asked.
 
@@ -2564,6 +2576,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | --- | --- | --- | --- |
 | `SetISPRunningMode(%s) failed (rc=%d)` | W | The SDK refused the day/night colour-pipeline change. Seen on some T41/GC5603 bring-ups. | §3.4 |
 | `image.ae_it_max_us: GetExpr gave no line/max reference (%s) - cannot convert microseconds to sensor lines, cap not applied (said once; -v shows the raw readings)` | W | No AE maximum or no line time from any source; the key cannot work here. **since v1.9.29** once per start (the suffix is new). | `-v`, §3.7 |
+| `image.ae_it_max_us: %s never reflected a write (%d writes in a row, still max=%lu lines) - the cap cannot be verified on this SDK; it is written once per change and no longer re-applied by the supervisor` | W | **since v1.9.29**. The readback source ignores the write. Either the write does nothing on this SDK, or the source is the wrong field. | `-v`, §3.7 |
 | `image.ae_it_max_us=%d: SDK rejected the %s (%lu lines, rc=%d) - AE maximum unchanged` | W | Rejected (`cap` or, **since v1.9.29**, `removal`). | §3.7 |
 | `image.ae_it_max_us=%d: %d removal writes on a live, delivering pipeline and the AE maximum is still %lu lines, not the sensor mode's %lu - this sensor/ISP is not honouring the removal; retrying slowly` | W | **since v1.9.29**. Writing the uncapped maximum back does not show in the readback. | Restart timps. §3.7 |
 | `image.ae_it_max_us=%d: %d writes on a live, delivering pipeline and the AE maximum is still %lu lines - this sensor/ISP is not honouring the cap; retrying slowly` | W | The sensor ignores it. | Stop raising the value. §3.7 |

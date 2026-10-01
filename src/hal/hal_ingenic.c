@@ -733,7 +733,9 @@ static void motion_sync(const ms_config *cfg)
  *     ingenic-sdk never set one_line_expr_in_us (jxf23 among them); on the
  *     Wyze Cam v2 (T20X/jxf23, stock libimp 3.12.0) GetExpr comes back all
  *     zero, max included (the kernel's get handler returns 0 without copying
- *     anything when its own AE query fails). The AE's real limit
+ *     anything when its own AE query fails) - and where it does fill the
+ *     maximum (the Wyze Cam v2 on a later boot: 1121 at 30 fps) that is the
+ *     sensor attribute, which a cap never moves. The AE's real limit
  *     on that ISP is the system-table field global_max_integration_time,
  *     which IMP_ISP_Tuning_GetIntegrationTime returns as max_integration_time
  *     (libimp 3.12.0 disassembled: GetIntegrationTime reads the system table,
@@ -769,6 +771,10 @@ static uint32_t g_ae_it_hi_lines;       /* highest value we wrote since clean */
 static int      g_ae_it_removing;       /* removal written, awaiting readback */
 static int      g_ae_it_rmode = -1;     /* running_mode the reference belongs to */
 static int      g_ae_it_noref_warned;   /* "no reference" said once per ISP start */
+static int      g_ae_it_noecho;         /* consecutive writes the readback ignored */
+static int      g_ae_it_unverified;     /* readback cannot confirm writes here */
+static int      g_ae_it_unv_written;    /* ...and this arm's one write is done */
+#define AE_IT_NOECHO_MAX 3              /* ...before treating the SDK as such */
 
 /* One reading of the AE maximum, from whichever source this SoC fills. */
 typedef struct {
@@ -813,7 +819,12 @@ static int ae_it_read(ae_it_rd *r)
              "GetSensorFPS rc=%d %lu/%lu", irc, (int)it.mode,
          (unsigned)it.integration_time, (unsigned)it.max_integration_time,
          frc, (unsigned long)fn, (unsigned long)fd);
-    if (!r->max && irc == 0 && it.max_integration_time){
+    /* PREFERRED over GetExpr's maximum on this SDK, not just a fallback:
+     * GetExpr's integration_time_max is the sensor driver's attribute
+     * (jxf23: VTS - 4), which our MODE_RANGE write never changes - measured
+     * on the Wyze Cam v2, it read 1121 after every cap. The AE's own limit,
+     * the field the write moves, is this one. */
+    if (irc == 0 && it.max_integration_time){
         r->max = it.max_integration_time; r->src = "GetIntegrationTime";
     }
     if (frc == 0 && fn && fd){ r->fps_num = fn; r->fps_den = fd; }
@@ -865,6 +876,7 @@ static void ae_it_max_reset(int running_mode)
     g_ae_it_cap_lines  = g_ae_it_hi_lines = 0;
     g_ae_it_mode_stale = g_ae_it_removing = 0;
     g_ae_it_line_derived = g_ae_it_noref_warned = 0;
+    g_ae_it_noecho     = g_ae_it_unverified = 0;
     g_ae_it_rmode      = running_mode;
     ae_it_rd r;
     if (ae_it_read(&r) == 0) ae_it_learn(&r);
@@ -1138,6 +1150,23 @@ static int isp_apply_image(const char *k)
         ae_it_rd af;
         unsigned long rb = (ae_it_read(&af) == 0) ? (unsigned long)af.max : 0;
         const char *rbsrc = af.src ? af.src : (rd.src ? rd.src : "GetExpr");
+        /* Echo check. Every SoC measured so far echoes a write in the
+         * readback at once, even one the pipeline then ignores (T31: idle
+         * writes echo and decay later). A readback that does NOT move at all
+         * means this source cannot see our writes, and the supervisor would
+         * re-write forever judging by it. After AE_IT_NOECHO_MAX such writes
+         * in a row, stop verifying: the cap is written once per change (and
+         * once per supervisor arm), never judged. Not reset by ae_it_max_arm,
+         * so arms cannot restart the loop; only a fresh ISP clears it. */
+        if (rb + ae_it_slack(wr) >= wr && rb <= wr + ae_it_slack(wr))
+            g_ae_it_noecho = 0;
+        else if (++g_ae_it_noecho >= AE_IT_NOECHO_MAX && !g_ae_it_unverified){
+            g_ae_it_unverified = 1;
+            LOGW(MOD,"image.ae_it_max_us: %s never reflected a write (%d writes in "
+                     "a row, still max=%lu lines) - the cap cannot be verified on "
+                     "this SDK; it is written once per change and no longer "
+                     "re-applied by the supervisor", rbsrc, g_ae_it_noecho, rb);
+        }
         if (restore)
             LOGI(MOD,"image.ae_it_max_us=%d: AE cap %s - wrote back the sensor mode's "
                      "own maximum of %lu lines (%luus)%s, was capped at %lu lines "
@@ -1290,6 +1319,9 @@ static int     g_ae_it_warned = 0;
  * costs at most one extra GetExpr, and the check re-validates under g_isp_lock. */
 static void ae_it_max_arm(void)
 {
+#ifdef AE_IT_SUPERVISE
+    g_ae_it_unv_written = 0;
+#endif
     g_ae_it_frames  = 0;
     g_ae_it_next_us = 0;
     g_ae_it_fails   = 0;
@@ -1326,6 +1358,20 @@ static void ae_it_max_check(int64_t now)
     uint32_t m = ex.max;
     int held = want ? (m <= want && m + ae_it_slack(want) >= want)
                     : (m + ae_it_slack(g_ae_it_mode_lines) >= g_ae_it_mode_lines);
+    if (g_ae_it_unverified){
+        /* the readback cannot confirm anything here (see the echo check in
+         * isp_apply_image): one write per arm - which is what a chn0 enable
+         * edge or a POST needs - then trust it, quietly */
+        if (!g_ae_it_unv_written){
+            isp_apply_image("ae_it_max_us");
+            g_ae_it_unv_written = 1;
+            g_ae_it_next_us = now + AE_IT_SETTLE_US;
+            pthread_mutex_unlock(&g_isp_lock);
+            return;
+        }
+        held = 1;
+        g_ae_it_fails = 0;              /* no "in effect after k writes" claim */
+    }
     if (held){                                          /* in effect */
         if (!want){
             /* removal verified: forget the cap, the supervisor goes quiet */
