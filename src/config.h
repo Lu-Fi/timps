@@ -185,10 +185,13 @@ typedef struct {
      *    readback, so a persisted value takes hold as soon as the first real
      *    client streams after boot - typically within ~30 s of that client
      *    connecting. See ae_it_max_on_frame() for the full measurement.
-     *  - Within one daemon lifetime the cap only ratchets DOWN. Once a cap is
-     *    in force GetExpr reports it as the sensor mode's maximum, so raising
-     *    the value again reads as "above the maximum, nothing to cap" and 0 has
-     *    no restore call at all: both need a restart to take effect.
+     *  - Once a cap is in force GetExpr reports IT as the sensor mode's
+     *    maximum. The HAL therefore remembers the mode's own, uncapped maximum
+     *    from before its first write (re-read after a fresh ISP init or a
+     *    running_mode switch) and compares new values against that: raising
+     *    and lowering both work live, and 0 (or a value at or above the mode's
+     *    maximum) writes that remembered maximum back. 0 on a camera that never
+     *    wrote a cap still touches nothing.
      *  - It MOVES daynight's exposure index. The index is gain x
      *    (integration_time / max), and capping the maximum makes the AE rail
      *    against it sooner and answer the shortfall with gain, so a camera

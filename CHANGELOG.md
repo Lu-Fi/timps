@@ -20,6 +20,42 @@ semantic versioning.
   both headers and, on a test camera, by actually linking and running
   against the new SONAME 2 library.
 
+### Fixed
+
+- **`image.ae_it_max_us` can be raised and removed live.** Once a cap was in
+  force, `GetExpr` reported it as the sensor mode's maximum, so a higher value
+  read as "above the sensor mode's own maximum - nothing to cap" and `0` wrote
+  nothing: on cam-garage (T31X/sc4336p) a 10000 µs cap stayed at 454 lines until
+  a restart. The HAL now remembers the mode's own, uncapped maximum (read while
+  no cap of ours is in force; re-read after an ISP init and after a day/night
+  `running_mode` switch) and compares against that. `0`, or a value at or above
+  it, writes the uncapped maximum back — `SetAe_IT_MAX(uncapped)` on
+  T23/T31/C100; on T10/T20/T21/T30 `SetIntegrationTime(MODE_RANGE)` at the
+  uncapped maximum (`MODE_AUTO` only clears the manual flag in libimp 3.12.0
+  and would leave the bound). The removal is driven and verified from the frame
+  path like the cap itself. `0` on a camera that never wrote a cap still
+  touches nothing. Set/raise/lower/remove each log one `INFO` line with lines
+  and µs. The boot-time write from `isp_init()` is gone: it ran before
+  `sensor.fps` was applied (wrong reference) and into a pipeline that was not
+  delivering (ignored anyway); the supervisor makes the first write.
+- **`image.ae_it_max_us` works on T10/T20/T21/T30.** It never did on a Wyze
+  Cam v2 (T20X/jxf23, stock libimp 3.12.0): `GetExpr` comes back all zero
+  there, so every set logged "GetExpr gave no line/max reference … cap not
+  applied". The older SDK's reference is now the Apical AE's own limit from
+  `GetIntegrationTime` (`max_integration_time`, re-seeded from the sensor on
+  every fps change), and when `GetExpr` has no line time it is derived from
+  `GetSensorFPS` as 1 s / (fps × that maximum). If no source gives one, the
+  warning is logged once per start instead of on every set, and `-v` dumps
+  the raw `GetExpr` / `GetIntegrationTime` / `GetSensorFPS` readings. The
+  readback that verifies a cap also comes from `GetIntegrationTime` there:
+  `GetExpr`'s maximum is the sensor attribute, never moved by a cap, and
+  judging by it made the supervisor re-write every few seconds. A readback
+  that ignores 3 writes in a row now stops the verification for good (one
+  warning) instead of looping.
+- **`-v` works.** It raised the level to DEBUG, and `config_load()` lowered it
+  straight back to `general.loglevel`, so `-v` only ever covered the config
+  parse. The command line now wins.
+
 ## [1.9.28] - 2026-09-28
 
 A security and reliability hardening pass over the whole daemon (two audit

@@ -331,7 +331,7 @@ way to check.
 | `image.core_wb_mode` | int | `0` | 0..1 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_WB`. `0` = auto WB, `1` = manual (then `wb_rgain`/`wb_bgain` apply). |
 | `image.wb_rgain` | int | `0` | 0..65535 | T10 T20 T21 T23 T30 T31 C100 | Only meaningful with `core_wb_mode=1`. |
 | `image.wb_bgain` | int | `0` | 0..65535 | T10 T20 T21 T23 T30 T31 C100 | Only meaningful with `core_wb_mode=1`. **since v1.9.21** start value: read-only `image.wb_live.rgain`/`.bgain` in `GET /control` = gains AWB applies now. |
-| `image.ae_it_max_us` | int | `0` | 0..1000000 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_AE_IT_MAX` (T23/T31/C100) or `ISP_HAS_AE_IT_RANGE` (T10/T20/T21/T30). Inert on T40/T41. `0` = leave the sensor mode's own AE maximum alone. |
+| `image.ae_it_max_us` | int | `0` | 0..1000000 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_AE_IT_MAX` (T23/T31/C100) or `ISP_HAS_AE_IT_RANGE` (T10/T20/T21/T30). Inert on T40/T41. `0` = no cap: touches nothing if no cap was ever written, otherwise writes the sensor mode's own (remembered, uncapped) AE maximum back (**since v1.9.29**; before that `0` needed a restart). |
 
 Prose and pitfalls
 
@@ -358,8 +358,17 @@ Prose and pitfalls
      `GetExpr`, and silently ignored by the sensor. The HAL re-applies and
      verifies it from the encode threads' frame path, so a persisted value takes
      hold roughly within ~30 s of the first real client after boot.
-  2. Within one daemon lifetime the cap only ratchets **down**. Raising it
-     again, or setting `0`, needs a restart.
+  2. **since v1.9.29** the cap can be raised, lowered and removed live. Once a
+     cap is in force `GetExpr` reports *it* as the maximum, so the HAL remembers
+     the sensor mode's own, uncapped maximum from before its first write and
+     compares against that; `0`, or a value at or above that maximum, writes it
+     back (T23/T31/C100: `SetAe_IT_MAX(uncapped)`; T10/T20/T21/T30:
+     `SetIntegrationTime(MODE_RANGE)` at the uncapped maximum — `MODE_AUTO`
+     would not lift the bound on that SDK). A removal is verified from the
+     frame path like a cap.
+     `0` on a camera that never wrote a cap still touches nothing. Up to
+     v1.9.28 the cap only ratcheted **down**; raising it or setting `0` needed
+     a restart.
   3. It **moves the day/night exposure index**: capping the AE's maximum
      integration time makes the AE answer a shortfall with gain instead, so a
      camera running this key needs its `daynight.day_gain`/`night_gain`
@@ -368,7 +377,13 @@ Prose and pitfalls
   on every SoC except T40/T41 (see `videoN.rotation`).
 * Unit note: `ae_it_max_us` is **microseconds**, deliberately not sensor lines —
   the HAL converts with the SDK's `one_line_expr_in_us` and clamps into the
-  sensor's real range at apply time.
+  sensor's real range at apply time. **since v1.9.29** on T10/T20/T21/T30, where
+  `GetExpr` is often empty (all zero on a Wyze Cam v2, T20X/jxf23, so the key
+  never worked there before), the maximum comes from `GetIntegrationTime` and
+  the line time is derived from the sensor fps (1 s / (fps × maximum), a
+  fraction of a percent long, so the cap errs short). If neither source gives
+  a maximum and a line time, the key logs one warning per start and does
+  nothing; `-v` shows the raw readings (troubleshooting §3.7).
 ---
 
 ## 5. `video<N>.*` (encoder streams)
