@@ -542,9 +542,15 @@ int main(int argc, char **argv)
     for (int i=1;i<argc;i++){
         if (!strcmp(argv[i],"-c") && i+1<argc) cfgpath=argv[++i];
         else if (!strcmp(argv[i],"-v")){ verbose = 1; log_set_level(LOG_DEBUG); }
-        else if (!strcmp(argv[i],"-h")){
+        else if (!strcmp(argv[i],"-h") || !strcmp(argv[i],"--help")){
             printf("timps %s\nusage: %s [-c config] [-v]\n",MS_VERSION,argv[0]);
             return 0;
+        }
+        /* an ignored unknown option would start the daemon on the live camera */
+        else {
+            fprintf(stderr,"timps: invalid argument '%s'\nusage: %s [-c config] [-v]\n",
+                    argv[i],argv[0]);
+            return 2;
         }
     }
 
