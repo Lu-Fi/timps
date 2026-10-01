@@ -4,6 +4,22 @@ All notable changes to timps are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [1.9.29] - 2026-10-01
+
+### Changed
+
+- **Software AAC (`USE_FAAC`) builds against either libfaac ABI.** The
+  thingino project plans to move its `faac` package from `knik0/faac`
+  (SONAME 1) to `FreewareAdvancedAudio/faac` (SONAME 2), which adds a
+  `caller_size` argument to `faac_params_init()`. `src/hal/hal_ingenic.c`
+  now picks the right call via `#if FAAC_VERSION_MAJOR >= 2`, resolved
+  against whichever `faac.h` the build picks up - no Kconfig switch of our
+  own. Every other field, enum constant and function signature the encoder
+  uses is unchanged between the two SONAMEs. No user-visible behavior
+  change on today's pinned library; verified by cross-building against
+  both headers and, on a test camera, by actually linking and running
+  against the new SONAME 2 library.
+
 ## [1.9.28] - 2026-09-28
 
 A security and reliability hardening pass over the whole daemon (two audit
