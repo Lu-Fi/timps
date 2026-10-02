@@ -199,6 +199,24 @@ static int osd_rotated(const osd_stream *s)
     return (ew == v->height && eh == v->width);   /* swapped vs raw = applied */
 }
 
+/* OpenIMP (the open libimp replacement) exports OpenIMP_P0_GetState on every
+ * SoC it targets; the vendor libimp does not. Weak, so the vendor library
+ * simply leaves it NULL and nothing needs libdl or a build flag. */
+extern void OpenIMP_P0_GetState(void) __attribute__((weak));
+static int libimp_is_openimp(void)
+{
+    return &OpenIMP_P0_GetState != NULL;
+}
+
+/* The top-band restriction on a rotated stream exists only because the VENDOR
+ * libimp range-checks OSD/privacy rects against the pre-rotation picHeight
+ * (see osd_rot_place). OpenIMP stores the region and draws after rotation,
+ * clipping against the rotated frame, so there the whole frame is usable. */
+static int osd_band_limited(const osd_stream *s)
+{
+    return osd_rotated(s) && !libimp_is_openimp();
+}
+
 /* The IPU OSD compositor on these SoCs wants EVEN region dimensions: an odd
  * width or height makes the per-frame OSD composite pass fail ("ipu: error ipu
  * start ret=-1") on a 90/270-rotated frame and poisons the WHOLE group pass
@@ -239,8 +257,10 @@ static void osd_rot_place(osd_stream *s, int Px, int Py,
      * safe envelope), in which case the stream runs UNROTATED and this clamp
      * must be an identity, not a top-band clamp against the wrong axis. */
     if (!osd_rotated(s)) return;             /* non-rotated: identity (unchanged) */
-    int cap = s->width;                      /* = picHeight = OSD y range limit */
-    if (*oy + *h > cap) *oy = (cap - *h > 0) ? cap - *h : 0;
+    if (osd_band_limited(s)) {               /* vendor libimp only, see osd_band_limited */
+        int cap = s->width;                  /* = picHeight = OSD y range limit */
+        if (*oy + *h > cap) *oy = (cap - *h > 0) ? cap - *h : 0;
+    }
     if (*ox < 0) *ox = 0;
     if (*oy < 0) *oy = 0;
     *ox &= ~1; *oy &= ~1;                     /* IPU wants even origin on rotated composite */
@@ -299,7 +319,8 @@ static void refresh_text(osd_stream *s, osd_region *rg)
     if (fs < 8) fs = 8;
 
     int rotated = osd_rotated(s);   /* requested AND actually applied (not refused) */
-    int hlim = rotated ? s->width : s->height;
+    int banded = osd_band_limited(s);
+    int hlim = banded ? s->width : s->height;
     uint8_t *bgra=NULL; int w,h;
     if (rg->font){
         /* measure first: an oversize text would rasterize (and dilate) a
@@ -334,7 +355,7 @@ static void refresh_text(osd_stream *s, osd_region *rg)
             LOGW(MOD,"osd stream %d item %d: rendered %dx%d exceeds usable %dx%d%s - "
                      "skipped (reduce font_size/text length)",
                  s->si, rg->item, w, h, s->width, hlim,
-                 rotated?" (rotated: OSD limited to top band)":"");
+                 banded?" (rotated: OSD limited to top band)":"");
         }
         free(bgra);
         osd_text_failed(rg, txt, INT64_MAX);   /* deterministic: until the text/config changes */
@@ -368,11 +389,12 @@ static void setup_logo(osd_stream *s, osd_region *rg)
      * a rotated stream the usable height is only the top picHeight band
      * (= s->width), else it re-triggers the per-frame range-check IPU error. */
     int lrot = osd_rotated(s);   /* requested AND actually applied (not refused) */
-    int lhlim = lrot ? s->width : s->height;
+    int lband = osd_band_limited(s);
+    int lhlim = lband ? s->width : s->height;
     if (it.logo_w > s->width || it.logo_h > lhlim){
         LOGW(MOD,"logo %s (%dx%d) exceeds usable %dx%d%s - skipped",
              it.logo_path, it.logo_w, it.logo_h, s->width, lhlim,
-             lrot?" (rotated: OSD limited to top band)":"");
+             lband?" (rotated: OSD limited to top band)":"");
         return;
     }
     uint8_t *b=load_bgra(it.logo_path, it.logo_w, it.logo_h);
@@ -419,7 +441,7 @@ static void setup_cover(osd_stream *s, int n)
      * picHeight band (= s->width) is shortened to fit rather than flooding the
      * range-check IPU error (osd_rot_place then clamps its y into the band). */
     if (osd_rotated(s)){   /* requested AND actually applied (not refused) */
-        if (h > s->width) h = s->width;
+        if (osd_band_limited(s) && h > s->width) h = s->width;
         x&=~1; y&=~1; w&=~1; h&=~1;
     }
     if (!p->enabled || w<=0 || h<=0){
@@ -472,7 +494,7 @@ int imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height)
      * clamped up (osd_rot_place). Warn once so the operator isn't surprised. */
     {
         int rot = g_cfg_boot.video[stream_idx].rotation;   /* A2: restart-only, use boot snapshot */
-        if ((rot==90 || rot==270) && height > width)
+        if ((rot==90 || rot==270) && height > width && !libimp_is_openimp())
             LOGW(MOD,"stream %d rotated %d: hardware OSD/privacy limited to the top "
                      "%d px of the %dx%d frame (libimp picHeight range-check); lower "
                      "overlays are clamped up. Use a square stream, 180, or ch1 for "
