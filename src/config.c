@@ -404,7 +404,11 @@ void config_defaults(ms_config *c)
         for (int i=0;i<MS_MAX_PRIVACY;i++)
             c->privacy[s][i].color=0xFF000000;
 
-    c->motion.enabled=0; c->motion.monitor_stream=0; c->motion.sensitivity=128;
+    /* monitor_stream=1: the sub stream when there is one (IVS runs a frame-diff on
+     * the CPU on every SoC here, so its cost scales with the pixels it is fed -
+     * the 640x360 sub stream is ~1/9 of 1080p). motion_sync() falls back to
+     * stream 0 when video1 is not enabled. */
+    c->motion.enabled=0; c->motion.monitor_stream=1; c->motion.sensitivity=128;
     c->motion.cooldown_ms=5000; c->motion.hold_ms=800; c->motion.skip_frames=5;
     /* detection grid default: 5x5 where the SDK's ROI budget allows it,
      * 2x2 on small-budget SDKs (T10/T20 3.9.0: MOTION_MAX_CELLS = 4) */

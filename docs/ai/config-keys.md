@@ -734,7 +734,7 @@ support reports `caps.motion.available = 0` and the feature is a stub.
 | Key | Type | Default | Range | Apply | Notes |
 | --- | --- | --- | --- | --- | --- |
 | `motion.enabled` | bool | `0` | — | **live** | Rebuilds the IVS grid. |
-| `motion.monitor_stream` | int | `0` | `T_CHAN`: out of `0..1` **coerces to 0** | **live** | |
+| `motion.monitor_stream` | int | `1` | `T_CHAN`: out of `0..1` **coerces to 0** | **live** | Stream whose frames IVS compares. Default is the sub stream (about 1/9 of the pixels of 1080p, so far less CPU); falls back to `0` when `video1` is not enabled. `GET /control` reports the configured value, not the fallback. |
 | `motion.sensitivity` | int | `128` | 0..255 | **live** | Mapped to the SDK's 0..4 as `v*4/255`. A change that maps to the same level skips the grid rebuild but **is** still persisted. |
 | `motion.cols` | int | `5` (see below) | ≥1, and `cols*rows ≤ MOTION_CELL_LIMIT` | **live** | Clamped against the *current* other axis, never the other way round, so re-applying the same pair is idempotent. |
 | `motion.rows` | int | `5` (see below) | same | **live** | |

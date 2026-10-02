@@ -387,7 +387,7 @@ by design (see below).
 | Key | Type | Default | Range | Live? | Description |
 | --- | --- | --- | --- | --- | --- |
 | `motion.enabled` | bool | 0 | 0/1 | **Live** | Enable/disable IVS motion detection (stops/recreates the whole IVS grid). |
-| `motion.monitor_stream` | int (channel) | 0 | valid stream index | **Live** | Which video stream's frame the grid is computed over. |
+| `motion.monitor_stream` | int (channel) | 1 | valid stream index | **Live** | Which video stream's frame the grid is computed over. Default is the sub stream (far less CPU than 1080p); stream 0 is used when `video1` is not enabled. |
 | `motion.sensitivity` | int | 128 | 0–255 | **Live** | UI-facing sensitivity; mapped to the SDK's native 0–4 range (`v*4/255`) applied uniformly to every cell. A change that maps to the same SDK level as before is treated as unchanged (no IVS rebuild). |
 | `motion.cols` | int | 5 (or 2/1 on SDKs with a smaller ROI budget) | ≥1, `cols*rows` clamped to `MOTION_CELL_LIMIT` | **Live** | Grid columns. Setting one axis clamps against the *current* value of the other, never the reverse, so re-applying the same pair is idempotent. |
 | `motion.rows` | int | 5 (or 2/1) | ≥1, same clamp | **Live** | Grid rows. |

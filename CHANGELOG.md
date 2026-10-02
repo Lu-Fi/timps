@@ -4,6 +4,30 @@ All notable changes to timps are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/), and the project aims to follow
 semantic versioning.
 
+## [Unreleased]
+
+### Changed
+
+- **Motion detection runs on the sub stream by default** (`motion.monitor_stream`
+  `0` -> `1`). IVS compares frames on the CPU on every SoC timps supports, so
+  its cost follows the pixel count: on a Wyze (T20) timps took ~8 % CPU with
+  motion on against ~0.4 % off while feeding IVS the 1920x1080 main stream, and
+  the 640x360 sub stream has about a ninth of those pixels. The cell grid is
+  relative to the monitored frame, so zones and privacy masks need no
+  rescaling, and stream `0` is still used when `video1` is not enabled. A
+  camera with an explicit `motion.monitor_stream` line keeps it; set `0` to
+  keep detecting on the main stream (finer detail for small, distant objects).
+
+### Fixed
+
+- **Rotated 90/270 streams under OpenIMP no longer clamp OSD and privacy masks
+  into the top `width` px.** The clamp mirrors the vendor libimp's range check
+  against the pre-rotation picHeight; OpenIMP draws after rotation against the
+  rotated frame, so there it pushed a bottom timestamp mid-frame and left the
+  lower part of the frame without OSD or privacy mask, and logged a warning
+  about a limit that does not exist. OpenIMP is detected through the
+  `OpenIMP_P0_GetState` symbol it exports; the vendor libimp is unchanged.
+
 ## [1.9.29] - 2026-10-01
 
 ### Changed

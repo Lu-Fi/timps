@@ -51,7 +51,12 @@ rebuild.
 ## `monitor_stream` and FrameSource sharing
 
 `motion.monitor_stream` selects which video stream's FrameSource feeds
-the IVS grid. The HAL pins that stream's FrameSource channel active for
+the IVS grid. The default is `1`, the sub stream: IVS compares frames on the
+CPU on every SoC here, so its cost follows the pixel count (a 640x360 sub
+stream is about a ninth of 1080p). When `video1` is not enabled the HAL falls
+back to stream `0`. The cell grid is relative to the monitored frame, so zones
+and privacy masks need no rescaling. Set `0` to run detection on the main
+stream (finer detail for small, distant objects). The HAL pins that stream's FrameSource channel active for
 as long as motion detection is running (via the same refcounted
 `fs_use()`/`fs_unuse()` mechanism [Architecture](Architecture.md) uses for
 on-demand video/JPEG start), specifically so the framesource's normal
