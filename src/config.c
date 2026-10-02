@@ -721,6 +721,17 @@ static const cfg_field sensor_fields[] = {
 #else
 #define CAP_WB 0
 #endif
+/* core_wb_mode is the SDK's enum isp_core_wb_mode, passed straight to
+ * IMP_ISP_Tuning_SetWB: auto, manual, daylight, cloudy, incandescent,
+ * fluorescent, twilight, shade, warm fluorescent (0..8) and, from the T21
+ * SDK on, custom (9; T10/T20/T30 have none). The F-09 audit clamped it to
+ * 0..1 as if it were auto/manual only, which silently turned every preset
+ * the WebUI offers into manual (1). */
+#if defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T30)
+#define ISP_WB_MODE_MAX 8
+#else
+#define ISP_WB_MODE_MAX 9
+#endif
 /* either SDK spelling of the AE integration-time cap counts as support */
 #if defined(ISP_HAS_AE_IT_MAX) || defined(ISP_HAS_AE_IT_RANGE)
 #define CAP_AEITMAX F_CAP
@@ -747,7 +758,7 @@ static const cfg_field image_fields[] = {
     F("drc_strength",           0, drc_strength,           T_INT, F_CTRL|CAP_DRC,        0,255),
     F("highlight_depress",      0, highlight_depress,      T_INT, F_CTRL|CAP_HILIGHT,    0,10),
     F("backlight_compensation", 0, backlight_compensation, T_INT, F_CTRL|CAP_BACKLIGHT,  0,10),
-    F("core_wb_mode",           0, core_wb_mode,           T_INT, F_CTRL|CAP_WB,         0,1),   /* F-09 */
+    F("core_wb_mode",           0, core_wb_mode,           T_INT, F_CTRL|CAP_WB,         0,ISP_WB_MODE_MAX),
     F("wb_rgain",               0, wb_rgain,               T_INT, F_CTRL|CAP_WB,         0,65535),
     F("wb_bgain",               0, wb_bgain,               T_INT, F_CTRL|CAP_WB,         0,65535),
     /* 0 = off. The ceiling is 1 s because a sensor line maximum on these parts

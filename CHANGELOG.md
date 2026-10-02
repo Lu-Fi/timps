@@ -20,6 +20,13 @@ semantic versioning.
 
 ### Fixed
 
+- **`image.core_wb_mode` accepts the SDK's white-balance presets again** (0..9,
+  0..8 on T10/T20/T30). The 2026-08 range audit clamped it to 0..1 as if it
+  were auto/manual only, so every preset the WebUI offers (daylight, cloudy,
+  incandescent, fluorescent, twilight, shade, warm fluorescent, custom) came
+  back as `1` with "outside the allowed range - the streamer applied 1" and
+  was persisted as manual. It is the SDK's `isp_core_wb_mode`, passed straight
+  to `IMP_ISP_Tuning_SetWB`.
 - **Rotated 90/270 streams under OpenIMP no longer clamp OSD and privacy masks
   into the top `width` px.** The clamp mirrors the vendor libimp's range check
   against the pre-rotation picHeight; OpenIMP draws after rotation against the

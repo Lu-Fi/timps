@@ -328,7 +328,7 @@ way to check.
 | `image.drc_strength` | int | `128` | 0..255 | T21 T23 T31 C100 | `ISP_HAS_DRC` (WDR). |
 | `image.highlight_depress` | int | `0` | **0..10** | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_HILIGHT`. Note the 0..10 domain, not 0..255. |
 | `image.backlight_compensation` | int | `0` | **0..10** | T23 T31 C100 | `ISP_HAS_BACKLIGHT`. |
-| `image.core_wb_mode` | int | `0` | 0..1 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_WB`. `0` = auto WB, `1` = manual (then `wb_rgain`/`wb_bgain` apply). |
+| `image.core_wb_mode` | int | `0` | 0..9 (0..8 on T10/T20/T30) | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_WB`. The SDK's `isp_core_wb_mode`: `0` auto, `1` manual (then `wb_rgain`/`wb_bgain` apply), `2` daylight, `3` cloudy, `4` incandescent, `5` fluorescent, `6` twilight, `7` shade, `8` warm fluorescent, `9` custom (T21/T23/T31/C100 only). Before the next release the range was 0..1, so `2..9` came back as `1`. |
 | `image.wb_rgain` | int | `0` | 0..65535 | T10 T20 T21 T23 T30 T31 C100 | Only meaningful with `core_wb_mode=1`. |
 | `image.wb_bgain` | int | `0` | 0..65535 | T10 T20 T21 T23 T30 T31 C100 | Only meaningful with `core_wb_mode=1`. **since v1.9.21** start value: read-only `image.wb_live.rgain`/`.bgain` in `GET /control` = gains AWB applies now. |
 | `image.ae_it_max_us` | int | `0` | 0..1000000 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_AE_IT_MAX` (T23/T31/C100) or `ISP_HAS_AE_IT_RANGE` (T10/T20/T21/T30). Inert on T40/T41. `0` = no cap: touches nothing if no cap was ever written, otherwise writes the sensor mode's own (remembered, uncapped) AE maximum back (**since v1.9.29**; before that `0` needed a restart). |

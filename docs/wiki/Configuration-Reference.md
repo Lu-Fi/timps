@@ -106,7 +106,7 @@ latch-kick this triggers.
 | `image.drc_strength` | int | 128 | 0–255 | Live | `ISP_HAS_DRC` (WDR): T21/T23/T31/C100 | Dynamic range compression (WDR) strength. |
 | `image.highlight_depress` | int | 0 | 0–10 | Live | `ISP_HAS_HILIGHT`: all except T40/T41 | Highlight suppression. |
 | `image.backlight_compensation` | int | 0 | 0–10 | Live | `ISP_HAS_BACKLIGHT`: T23/T31/C100 | Backlight compensation. |
-| `image.core_wb_mode` | int | 0 | 0–1 | Live | `ISP_HAS_WB`: all except T40/T41 | White balance mode. |
+| `image.core_wb_mode` | int | 0 | 0–9 (0–8 on T10/T20/T30) | Live | `ISP_HAS_WB`: all except T40/T41 | White balance mode: 0 auto, 1 manual, 2 daylight, 3 cloudy, 4 incandescent, 5 fluorescent, 6 twilight, 7 shade, 8 warm fluorescent, 9 custom. |
 | `image.wb_rgain` | int | 0 | 0–65535 | Live | `ISP_HAS_WB` | Manual WB red gain (used when `core_wb_mode` selects manual). |
 | `image.wb_bgain` | int | 0 | 0–65535 | Live | `ISP_HAS_WB` | Manual WB blue gain. Since v1.9.21, `GET /control` reports the gains in effect as read-only `image.wb_live` `{"rgain","bgain"}`, a start value for manual mode that matches auto. |
 
