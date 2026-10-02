@@ -18,6 +18,18 @@ semantic versioning.
   camera with an explicit `motion.monitor_stream` line keeps it; set `0` to
   keep detecting on the main stream (finer detail for small, distant objects).
 
+- **Day/night adopts a mode change made from outside.** When the ISP has been
+  rendering a different mode than the one timps decided for 20 s (a `color
+  on/off`, a `/control` POST of `image.running_mode`), outside any switch
+  readback window, timps now takes it as its current mode and lets the
+  measurement judge it, as after a boot: a night adopted in daylight is undone
+  by the next heartbeat probe, a day adopted in the dark by the exposure
+  rule. Nothing is switched or re-asserted. Before, the mismatch was only
+  warned about and `isp_desync` stayed `1` until a probe was requested. In
+  `daynight.mode = schedule` the calendar still decides and the old warning
+  remains. Corpus scenario `28-standing-desync-reported` became
+  `28-standing-desync-adopted`.
+
 ### Fixed
 
 - **`image.core_wb_mode` accepts the SDK's white-balance presets again** (0..9,

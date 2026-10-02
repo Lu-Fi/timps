@@ -1541,14 +1541,47 @@ static void *dn_thread(void *arg)
                 if (!desync_since) desync_since = now;
                 if (!desync_warned && now - desync_since >= DN_DESYNC_MS) {
                     desync_warned = 1;
-                    LOGW(MOD, "decided mode is %s but the ISP has been "
-                              "rendering %s for %d s - not enforcing, this "
-                              "may be a manual override. To re-measure and "
-                              "resolve, request a probe: POST /control "
-                              "{\"daynight\":{\"probe\":1}}",
-                         cur == DN_NIGHT ? "night" : "day",
-                         sm.isp == DN_NIGHT ? "Night" : "Day",
-                         (int)((now - desync_since) / 1000));
+                    if (dn->mode == DN_MODE_SCHEDULE) {
+                        LOGW(MOD, "decided mode is %s but the ISP has been "
+                                  "rendering %s for %d s - the calendar "
+                                  "decides in schedule mode, not adopting",
+                             cur == DN_NIGHT ? "night" : "day",
+                             sm.isp == DN_NIGHT ? "Night" : "Day",
+                             (int)((now - desync_since) / 1000));
+                    } else {
+                        /* Someone else set the mode (color on/off, /control)
+                         * and it stuck past any switch transient: take it as
+                         * the new starting point and let the measurement
+                         * judge it, exactly like a boot - a night adopted in
+                         * daylight is undone by the heartbeat probe, a day
+                         * adopted in the dark by the exposure rule. Nothing
+                         * is switched and nothing re-asserted: the ISP and
+                         * image.running_mode already hold the foreign value. */
+                        LOGI(MOD, "ISP has been rendering %s for %d s while "
+                                  "the decided mode was %s - adopting the "
+                                  "external change",
+                             sm.isp == DN_NIGHT ? "night" : "day",
+                             (int)((now - desync_since) / 1000),
+                             cur == DN_NIGHT ? "night" : "day");
+                        cur = sm.isp; mode_since = now;
+                        s = -1.0f; stable_n = 0;
+                        trig_since = dark_since = verdict_at = 0;
+                        ir_verdict_at = 0; d_lit = -1.0f; ir_why = NULL;
+                        sust_min = win_max = -1.0f; win_at = 0;
+                        ema_fast = ema_slow = -1.0f; trend_since = 0;
+                        reassert_at = 0; reassert_left = 0;
+                        hb_defer_logged = 0;
+                        pre_probe = -1.0f; pre_probe_hr = -1;
+                        if (cur == DN_NIGHT) {
+                            ref = -1.0f;
+                            ref_due = now + (int64_t)DN_REF_DELAY_S * 1000;
+                            ref_wait_logged = 0;
+                            hb_at = dn_hb_next(dn, now);
+                        } else {
+                            ref = -1.0f; ref_due = 0; hb_at = 0;
+                        }
+                        desync_warned = 0;
+                    }
                 }
             } else {
                 desync_since = 0;       /* gate active or no longer standing */

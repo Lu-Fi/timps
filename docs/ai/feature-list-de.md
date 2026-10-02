@@ -176,8 +176,10 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   eine CSV-Entscheidungsspur; `daynight.history_s` (Default 0 = aus, max. 48 h)
   hält eine RAM-Serie, die die WebUI-Tuningkurve über
   `GET /control?dn_history=1` abruft – auch für Stunden, in denen kein Tab offen
-  war. Zusätzlich meldet der Status `isp_desync`, wenn der entschiedene Modus
-  und der ISP-Rücklesewert dauerhaft auseinanderlaufen.
+  war. Ändert jemand den ISP-Modus von außen (`color on/off`, `/control`) und
+  bleibt das 20 s stehen, übernimmt timps ihn und bewertet ihn neu, wie nach
+  einem Boot. Nur im Modus `schedule` meldet der Status `isp_desync`, wenn der
+  entschiedene Modus und der ISP-Rücklesewert auseinanderlaufen.
 * Manueller Betrieb jederzeit über `daynight.enabled = 0` plus
   `image.running_mode` bzw. den WebUI-Umschalter.
 

@@ -950,9 +950,12 @@ sensor, no probes) — a reasonable fallback for a camera whose optics defeat th
 measurement. `daynight.enabled = 0` is full manual (`image.running_mode` or the
 WebUI toggle).
 
-`isp_desync = 1` in the status means the decided mode and the ISP readback have
-disagreed persistently — usually a board-script/`running_mode` loop that is not
-closing.
+An external change of the ISP mode (`color on/off`, a POST of
+`image.running_mode`) that stands for 20 s outside a switch's readback window
+is adopted as the current mode and then judged by the measurement like a boot;
+nothing is re-switched. `isp_desync = 1` therefore only stays set in
+`daynight.mode = schedule`, where the calendar decides and the mismatch is
+reported but not adopted.
 
 ---
 

@@ -1,0 +1,85 @@
+{
+  "name": "28-standing-desync-adopted",
+  "incident": "cam-wohn-ofen, 2026-08-21, operator-created reverse desync",
+  "description": "A standing disagreement outside the readback-gate window - decided mode night, ISP rendering Day - is an external change (the operator's `color on`, a /control POST), first met on cam-wohn-ofen 2026-08-21 where it stood unreported for 90 s. It was first made visible (WARN, nothing enforced); the next step is that the automaton ADOPTS it once it has stood DN_DESYNC_MS (20 s, well past any switch transient, and the gate window already covers the 18 s after a commanded switch): cur takes the ISP's mode, nothing is switched or re-asserted, and the ordinary measurement judges it from there, as after a boot.\n\nThe shape: a stable lit interior at night (illuminator carries it, boot verify is silent, r=4). At t=60 the override forces the served ISP mode to Day; the day pipeline deliberately reads the SAME 2000 as the night pipeline so no trigger fires and the adopted day STANDS (a scene where a rule fires would test the rule, not the adoption). At t=150 the override is lifted: the ISP returns to the mode the board last commanded (night), which now disagrees with the adopted day and is adopted in turn. The budgets are the teeth: 2 board switches (the boot measurement's own pair) prove adoption drives nothing - a build that enforced or re-asserted would spend more - and the forbids on the gate's own lines prove the adoption did not fire THROUGH the gate.",
+  "scale": 30,
+  "duration_s": 220,
+  "initial_mode": "night",
+  "isp_override": [
+    [
+      60,
+      "day"
+    ],
+    [
+      150,
+      null
+    ]
+  ],
+  "config": {
+    "daynight.day_gain": 768,
+    "daynight.night_gain": 4096
+  },
+  "interp": "step",
+  "noise_pct": 0,
+  "night_gain": [
+    [
+      0,
+      2000
+    ],
+    [
+      220,
+      2000
+    ]
+  ],
+  "night_gain_noir": [
+    [
+      0,
+      8000
+    ],
+    [
+      220,
+      8000
+    ]
+  ],
+  "day_gain": [
+    [
+      0,
+      2000
+    ],
+    [
+      220,
+      2000
+    ]
+  ],
+  "expect": {
+    "mode_at": [
+      [
+        50,
+        "night"
+      ],
+      [
+        100,
+        "day"
+      ],
+      [
+        210,
+        "night"
+      ]
+    ],
+    "max_switches": 2,
+    "max_ir_probes": 1,
+    "expect_log": [
+      "ISP has been rendering day for \\d+ s while the decided mode was night - adopting the external change",
+      "ISP has been rendering night for \\d+ s while the decided mode was day - adopting the external change"
+    ],
+    "forbid_log": [
+      "forcing one transition",
+      "isp readback enforce",
+      "giving up until the next mode change",
+      "switching to day \\((?!boot measure\\))",
+      "switching to night \\((?!boot: measured night)",
+      "not enforcing, this may be a manual override"
+    ],
+    "monotonicity": "warn"
+  }
+}
