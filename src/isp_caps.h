@@ -56,6 +56,29 @@
 #define ISP_HAS_DRC 1
 #endif
 
+/* OpenIMP + open-tx-isp (USE_OPENIMP=1, set by thingino's timps.mk when
+ * BR2_PACKAGE_OPENIMP is on) implement strength controls the vendor stack
+ * does not offer on these SoCs. Only device-tested ones, 0..255 with 128 the
+ * vendor picture; BACKLIGHT stays where it is (T23/T31/C100). The vendor
+ * headers of these SoCs do not declare the setters, so the prototypes below
+ * are the OpenIMP ones; they are only reachable under USE_OPENIMP, so vendor
+ * builds stay byte-identical.
+ *   DPC    T10 T20 T21   defog  T20   DRC  T20
+ * (T10: defog/DRC stay off, its IQ bank bypasses Iridix.) */
+#if defined(USE_OPENIMP)
+#include <stdint.h>
+#if defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)
+#define ISP_HAS_DPC 1
+int IMP_ISP_Tuning_SetDPC_Strength(uint32_t ratio);
+#endif
+#if defined(PLATFORM_T20)
+#define ISP_HAS_DEFOG 1
+#define ISP_HAS_DRC 1
+int IMP_ISP_Tuning_SetDefog_Strength(uint8_t *ratio);
+int IMP_ISP_Tuning_SetDRC_Strength(uint32_t ratio);
+#endif
+#endif
+
 /* classic-API-only tunings, absent from the T40/T41 SDK:
  * SetHiLightDepress, SetSinterStrength/SetTemperStrength,
  * SetMaxAgain/SetMaxDgain, SetWB, SetISPHflip/SetISPVflip */

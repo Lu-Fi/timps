@@ -323,9 +323,9 @@ way to check.
 | `image.max_dgain` | int | `80` | 0..255 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_GAINS`. |
 | `image.sinter_strength` | int | `128` | 0..255 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_NR`, spatial NR. T10/T20/T21 with the vendor libimp: accepted but no effect (the vendor firmware renormalises it); acts with the open libimp (OpenIMP; 128 = the vendor picture). |
 | `image.temper_strength` | int | `128` | 0..255 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_NR`, temporal NR. Same OpenIMP note as `sinter_strength`. |
-| `image.dpc_strength` | int | `128` | 0..255 | T23 T31 C100 | `ISP_HAS_DPC`. |
-| `image.defog_strength` | int | `128` | 0..255 | T23 T31 C100 | `ISP_HAS_DEFOG`. |
-| `image.drc_strength` | int | `128` | 0..255 | T21 T23 T31 C100 | `ISP_HAS_DRC` (WDR). |
+| `image.dpc_strength` | int | `128` | 0..255 | T23 T31 C100; with `USE_OPENIMP` also T10 T20 T21 | `ISP_HAS_DPC`. |
+| `image.defog_strength` | int | `128` | 0..255 | T23 T31 C100; with `USE_OPENIMP` also T20 | `ISP_HAS_DEFOG`. On T20 (open stack) it is an Iridix floor, not a defog block. |
+| `image.drc_strength` | int | `128` | 0..255 | T21 T23 T31 C100; with `USE_OPENIMP` also T20 | `ISP_HAS_DRC` (WDR). |
 | `image.highlight_depress` | int | `0` | **0..10** | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_HILIGHT`. Note the 0..10 domain, not 0..255. |
 | `image.backlight_compensation` | int | `0` | **0..10** | T23 T31 C100 | `ISP_HAS_BACKLIGHT`. |
 | `image.core_wb_mode` | int | `0` | 0..9 (0..8 on T10/T20/T30) | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_WB`. The SDK's `isp_core_wb_mode`: `0` auto, `1` manual (then `wb_rgain`/`wb_bgain` apply), `2` daylight, `3` cloudy, `4` incandescent, `5` fluorescent, `6` twilight, `7` shade, `8` warm fluorescent, `9` custom (T21/T23/T31/C100 only). Before the next release the range was 0..1, so `2..9` came back as `1`. |

@@ -41,23 +41,16 @@ semantic versioning.
 
 - **`USE_OPENIMP=1` build switch for the open libimp.** Compile-time only (no
   runtime query): `make USE_OPENIMP=1` defines `-DUSE_OPENIMP`, and thingino's
-  `timps.mk` sets it when the OpenIMP package is selected. It currently changes
-  nothing; `isp_caps.h`/`enc_caps.h` will use it for features the open stack
-  adds once they are device-tested. Without it every object is byte-identical
-  to before (checked for T20/T21/T31).
-
-- **Day/night: a restart at night no longer flips the cut filter twice.** A
-  boot that came up in night used to switch to the day pipeline to measure,
-  read the day level and switch straight back (IR-cut click and a colour flash
-  on every timpsd start, seen on T20 and T23). When the board has a switchable
-  illuminator (`daynight.irprobe_cmd`, default `timps-irprobe`) the boot now
-  asks one silent probe first - LEDs off for a few seconds, nothing else. A
-  clean night (illuminator ratio >= 1.5) ends the boot measurement with
-  nothing switched and anchors the night reference; anything else (lit room,
-  LEDs off at boot, unusable reading, railed meter, no illuminator) falls
-  through to the previous audible day probe, so those boots behave as before.
-  Corpus: `31-boot-night-silent-confirms` (0 switches) and
-  `32-boot-night-lit-room-falls-back`; all 32 scenarios pass.
+  `timps.mk` sets it when the OpenIMP package is selected. Under it
+  `isp_caps.h` advertises what the open stack implements beyond the vendor SDK
+  (device-tested only): `image.dpc_strength` on T10/T20/T21, and
+  `image.defog_strength` and `image.drc_strength` on T20. The vendor headers
+  of those SoCs lack the setters, so the OpenIMP prototypes are declared
+  under the switch. Without it every object is byte-identical to before
+  (checked for T20/T21/T31); with it the text grows by ~110 bytes on T20, ~50
+  on T21, ~65 on T10 and is unchanged on T31. The pinned openimp and
+  open-tx-isp (Lu-Fi forks) must contain the controls; thingino's pins were
+  moved accordingly.
 
 ### Fixed
 
