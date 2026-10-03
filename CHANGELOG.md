@@ -61,6 +61,15 @@ semantic versioning.
 
 ### Fixed
 
+- **Hooks started by timps no longer inherit libimp's device fds.** The vendor
+  and the open libimp keep `/dev/isp-m0` and the frame channels open without
+  `O_CLOEXEC`, and the day/night switch command and the motion hook inherited
+  them. A background child of such a script (`timps-irprobe`'s 60 s watchdog
+  sleeper) then kept the kernel module busy after timps had stopped
+  (`rmmod tx_isp_*: busy`). Both spawn sites now close every fd above stderr
+  in the child (`dn_spawn` in `daynight.c`, `posix_spawn` file actions in
+  `imp_motion.c`).
+
 - **The OSD clock is current in the first frame after an idle period.** The
   text updater sleeps while nobody watches, so the first `/snapshot.jpg` (or
   the first frames of a new stream) showed the time and uptime of the last

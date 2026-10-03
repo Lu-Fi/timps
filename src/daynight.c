@@ -732,6 +732,13 @@ static pid_t __attribute__((noinline)) dn_spawn(const char *cmd, const char *arg
     if (pid == 0){
         int nul = open("/dev/null", O_WRONLY);
         if (nul >= 0){ dup2(nul,1); dup2(nul,2); if (nul>2) close(nul); }
+        /* The vendor/open libimp keeps its device nodes (/dev/isp-m0, the
+         * frame channels) open without O_CLOEXEC, and a board hook may leave a
+         * background child behind (timps-irprobe's 60 s watchdog sleeper). An
+         * inherited fd keeps the kernel module "busy" after timps has stopped
+         * (rmmod tx_isp_*: busy). This child has its own fd table, so closing
+         * everything above stderr costs the daemon nothing. */
+        for (int fd = 3; fd < 1024; fd++) close(fd);
         execlp(cmd, cmd, arg, (char*)NULL);
         _exit(127);              /* exec failed (script missing / not a program) */
     }

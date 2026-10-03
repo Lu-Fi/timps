@@ -50,7 +50,8 @@ _Static_assert(MOTION_MAX_CELLS <= MOTION_STATUS_MAX,
 #include <stdlib.h>
 #include <time.h>
 #include <sys/wait.h>   /* NEU-01: posix_spawn instead of system() */
-#include <spawn.h>      /* NEU-01b: vfork-backed hook launch, no fork() copy */
+#include <spawn.h>
+#include <dirent.h>      /* NEU-01b: vfork-backed hook launch, no fork() copy */
 #include <errno.h>
 
 extern char **environ;   /* child env is built explicitly for posix_spawn */
@@ -370,7 +371,28 @@ static void *motion_thread(void *arg)
 
                         char *argv[2]; argv[0] = (char*)cmd; argv[1] = NULL;
                         pid_t pid = 0;
-                        int rc = posix_spawn(&pid, cmd, NULL, NULL, argv, envp);
+                        /* the hook must not inherit libimp's device fds (see
+                         * dn_spawn in daynight.c): close every open fd above
+                         * stderr in the child */
+                        posix_spawn_file_actions_t fa;
+                        int have_fa = (posix_spawn_file_actions_init(&fa) == 0);
+                        if (have_fa) {
+                            DIR *d = opendir("/proc/self/fd");
+                            if (d) {
+                                struct dirent *de;
+                                while ((de = readdir(d)) != NULL) {
+                                    char *end;
+                                    long fd = strtol(de->d_name, &end, 10);
+                                    if (*end || end == de->d_name || fd < 3 ||
+                                        fd == dirfd(d)) continue;
+                                    posix_spawn_file_actions_addclose(&fa, (int)fd);
+                                }
+                                closedir(d);
+                            }
+                        }
+                        int rc = posix_spawn(&pid, cmd, have_fa ? &fa : NULL,
+                                             NULL, argv, envp);
+                        if (have_fa) posix_spawn_file_actions_destroy(&fa);
                         if (rc != 0){
                             /* vfork/fork itself failed: a RESOURCE shortage,
                              * never the hook's fault. Say so plainly, and do not
