@@ -248,8 +248,12 @@ always wins. T40/T41 and the host sim have no registry, so set them there.
 `image.wb_live` = `{"rgain":R,"bgain":B}`, the gains in effect right now (in
 auto: what AWB picked). POSTing them with `core_wb_mode=1` switches to manual
 without a visible change. Missing where `ISP_HAS_WB` is unset (T40/T41).
-Which of these the SoC really supports is listed in `caps.image`. Unsupported
-values still persist; the HAL skips them.
+Which of these the SoC really supports is listed in `caps.image`. A key outside
+it is not applied and not persisted by `POST /control`; the reply names it in
+`"unsupported"` (422 `not_supported_on_soc`, `"ok":false`, when nothing else
+was accepted). A value already in the config file (for example left from
+another libimp or build) is read and silently skipped, so switching back to a
+vendor libimp is safe.
 
 **`video0.` / `video1.`**
 ```
