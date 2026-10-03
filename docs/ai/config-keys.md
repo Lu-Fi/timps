@@ -72,7 +72,7 @@ POST of `999` to a `0..255` field succeeds and the camera reports `255`.
 | **live** | A `POST /control` changes the running pipeline immediately (`ing_control()` returns 1). |
 | **restart** | The key is POST-able and persists, but the running daemon keeps its old behaviour until `/etc/init.d/S95timps restart`. |
 | **file-only** | The `cfg_field` entry has no `F_CTRL` flag (or the whole section is not wired into `control_apply_json`). The key can **only** be changed by editing `/etc/timps.conf` and restarting. A POST carrying it is silently skipped (it shows up in the reply's `ignored` array). |
-| **capability-gated** | The key parses and persists on every build/SoC, but the HAL only issues the corresponding IMP call where the `*_caps.h` matrix says the SDK has it. Elsewhere it is stored, echoed, and does nothing. |
+| **capability-gated** | The HAL only issues the IMP call where the `*_caps.h` matrix says the SDK has it. Elsewhere a `POST /control` does not apply and does **not persist** the key (reply `"unsupported"`, 422 `not_supported_on_soc` if nothing else was accepted); a value already in the config file is read and silently skipped. `caps.image`/`caps.audio` list the capabilities. |
 
 `F_CTRL` is a per-field **security allowlist**, not a default. Unreachable over
 HTTP, verified against `control_apply_json()` (`src/control.c`) and the
@@ -299,9 +299,12 @@ Pitfalls
 
 Every `image.*` key is `F_CTRL` and **live** (applied by `isp_apply_image()`
 under `g_isp_lock` on each POST). Every key is also **capability-gated**: a key
-whose `ISP_HAS_*` macro is undefined on this SoC is still parsed, clamped,
-persisted and echoed, but the IMP call is never issued and the log says
-`image.<k> unsupported on this platform (persisted only)`. That line is a
+whose `ISP_HAS_*` macro is undefined on this SoC is not applied and **not
+persisted** by `POST /control`: the reply lists it in `"unsupported"`, and a
+body carrying only such keys answers **422** `not_supported_on_soc` with
+`"ok":false`. A value for it in `/etc/timps.conf` is still read, and at start
+the HAL skips it with `image.<k> unsupported on this platform (skipped)` — so
+a config that moves back to a vendor libimp keeps working. That line is a
 **LOGD**, i.e. invisible at the default `general.loglevel = 2` — add
 `general.debug_modules = HAL_ING` to see it. The `caps.image`
 array of `GET /control` lists exactly the supported subset, and is the reliable
@@ -511,7 +514,7 @@ Every `audio.*` key is `F_CTRL` (POST-able). The **live vs restart** split is
 listed per key below; the restart keys carry `F_RESTART` in `audio_fields[]`,
 and **since v1.9.20** they are listed in `caps.restart` as
 `audio.<key>` and a changed one comes back in the POST reply's `deferred_keys`. An audio key the SoC does not have logs
-`audio.<k> unsupported on this platform (persisted only)` — like the `image.*`
+`audio.<k> unsupported on this platform` — like the `image.*`
 twin this is a **LOGD**, invisible at `general.loglevel = 2`; use `caps.audio`
 from `GET /control` instead.
 
@@ -534,12 +537,12 @@ from `GET /control` instead.
 | `audio.mute` | bool | `0` | — | **live** | The only `_Atomic` config field: the per-frame audio worker reads it lock-free. `1` = captured frames are dropped before the encoder/hub, so **no** client gets audio. |
 | `audio.force_stereo` | bool | `0` | — | restart | Persist-only companion to `channels`; read at the next audio init. |
 | `audio.spk_enabled` | bool | `1` | — | takes effect at the **next AO open** | Master gate for the physical speaker; `0` keeps the AO closed, so neither the backchannel nor local playback makes any sound. A session already holding the speaker keeps it. |
-| `audio.spk_volume` | int | `80` | 0..100 | **live** if a play/backchannel session holds the speaker; otherwise applied at the next AO open | Needs `USE_PLAY` or `USE_BACKCHANNEL`, else persist-only. |
+| `audio.spk_volume` | int | `80` | 0..100 | **live** if a play/backchannel session holds the speaker; otherwise applied at the next AO open | Needs `USE_PLAY` or `USE_BACKCHANNEL`, else `"unsupported"` (not persisted). |
 | `audio.spk_gain` | int | `25` | 0..100 | same as `spk_volume` | |
 | `audio.backchannel` | bool | `0` | — | restart | ONVIF audio backchannel (client → speaker). Needs `USE_BACKCHANNEL`. The pipeline is configured once at boot and RTSP gates on that boot state, so a live change does nothing until restart. |
 | `audio.backchannel_codec` | enum | `pcmu` (0) | `pcmu`→0, `pcma`→1, `aac`→2, or a number clamped 0..2 | restart | `aac` additionally needs `USE_BC_AAC`. **Reads back as a number**, not a word. |
 | `audio.backchannel_rate` | int | `16000` | 8000..48000 | restart | Speaker sample rate. |
-| `audio.aec` | bool | `0` | — | applied at the **next AO open** | Acoustic echo cancellation (`IMP_AI_EnableAec`). A live POST persists and returns "not live". Needs `USE_PLAY`/`USE_BACKCHANNEL`; otherwise persist-only. Opt-in because quality/latency varies per SoC/mic/speaker pairing. |
+| `audio.aec` | bool | `0` | — | applied at the **next AO open** | Acoustic echo cancellation (`IMP_AI_EnableAec`). A live POST persists and returns "not live". Needs `USE_PLAY`/`USE_BACKCHANNEL`; otherwise `"unsupported"` (not persisted). Opt-in because quality/latency varies per SoC/mic/speaker pairing. |
 | `audio.talk_ws` | tri-state int | `0` | 0..2 | **live** for new requests | Browser-microphone backchannel over a WebSocket at `/talk` on the HTTP port. `0` off; `1` on with **TLS required** (`/talk` answers 426 on a plaintext port); `2` on with TLS preferred but a plain `ws://` upgrade accepted. Legacy `true`/`on`/`yes` parse as the **strict** `1`. Needs `USE_BC_WS` (which implies `USE_BACKCHANNEL` + `USE_CONTROL`). |
 
 ### `audio.*` pitfalls

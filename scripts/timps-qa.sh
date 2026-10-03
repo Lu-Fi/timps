@@ -2594,8 +2594,8 @@ else
 		fi
 	}
 
-	# --- image: every ISP knob (accepted + persisted on any SoC; live where the
-	# HAL supports it). uchar knobs 0..255, highlight/backlight 0..10,
+	# --- image: every ISP knob in caps.image (live; keys outside it are gated
+	# below). uchar knobs 0..255, highlight/backlight 0..10,
 	# hflip/vflip/running_mode bool, anti_flicker 0..2, core_wb 0..1.
 	# WB gains: the config accepts 0..65535 but the probe range is deliberately
 	# 0..2048 so flip_int's midpoint lands on 1024 = unity gain on Ingenic ISPs.
@@ -2603,7 +2603,31 @@ else
 	# with the trap defeated (kill -9, network drop) the stranded state is
 	# manual WB at ~neutral gains - a usable image - instead of the magenta
 	# rgain/bgain=32767 that hit cam-K on 2026-08-02. ---
-	lv_section image '{"image":' '}' image \
+	# Gated on caps.image, like spk_* on caps.audio below - never on the SoC
+	# name. A key outside caps.image is not applied and not persisted by the
+	# daemon ("unsupported"), so it cannot round-trip: it goes to the 8d
+	# ledger as gated, and one POST of all of them must answer 422
+	# not_supported_on_soc with ok:false.
+	lv_caps_split() {   # <caps-json-array> <section> <spec>... -> LV_IN[] specs, LV_OUT[] keys
+		local caps="$1" sec="$2" spec k; shift 2
+		LV_IN=(); LV_OUT=()
+		for spec in "$@"; do
+			k=${spec%% *}
+			case "$caps" in *"\"$k\""*) LV_IN+=("$spec");; *) LV_OUT+=("$k");; esac
+		done
+		[ "${#LV_OUT[@]}" -eq 0 ] && return 0
+		info "$sec: not in caps.$sec (this SoC) - gated: ${LV_OUT[*]}"
+		lv_mark_gated "$sec" "not-in-caps.$sec" "${LV_OUT[@]}"
+		local b="" f="$OUTDIR/lv_${sec}_unsupported.json" code
+		for k in "${LV_OUT[@]}"; do b="$b${b:+,}\"$k\":0"; done
+		code=$(lv_post_r "{\"$sec\":{$b}}" "$f")
+		if [ "$code" = "422" ] && grep -q '"reason":"not_supported_on_soc"' "$f" && grep -q '"ok":false' "$f"; then
+			ok "$sec: keys outside caps.$sec answer 422 not_supported_on_soc (not applied, not persisted)"
+		else
+			bad "$sec: POST of keys outside caps.$sec gave HTTP $code, expected 422 not_supported_on_soc: $(head -c 300 "$f")"
+		fi
+	}
+	lv_caps_split "$(jget "$LV_BASE" caps.image)" image \
 		"brightness int 0 255" "contrast int 0 255" "saturation int 0 255" \
 		"sharpness int 0 255" "hue int 0 255" "ae_compensation int 0 255" \
 		"max_again int 0 255" "max_dgain int 0 255" "sinter_strength int 0 255" \
@@ -2612,14 +2636,17 @@ else
 		"backlight_compensation int 0 10" "wb_rgain int 0 2048" "wb_bgain int 0 2048" \
 		"hflip bool" "vflip bool" "running_mode bool" "anti_flicker int 0 2" \
 		"core_wb_mode int 0 1"
+	lv_section image '{"image":' '}' image "${LV_IN[@]}"
 
 	# --- audio: only the keys the HAL applies LIVE (caps.audio). volume is
 	# 0..100; gain is clamped server-side to the IMP mic PGA range 0..31
 	# (F-03); alc_gain to the PGA 0..7; mute is the live publish gate. The
 	# restart-only audio keys (codec/samplerate/agc/ns/...) are covered by
 	# the persist check ---
-	lv_section audio '{"audio":' '}' audio \
+	# alc_gain is F_NOHW without AUDIO_HAS_ALC_GAIN: gated on caps.audio too
+	lv_caps_split "$(jget "$LV_BASE" caps.audio)" audio \
 		"volume int 0 100" "gain int 0 31" "alc_gain int 0 7" "mute bool"
+	lv_section audio '{"audio":' '}' audio "${LV_IN[@]}"
 
 	# --- speaker (AO) live keys (F-08): spk_volume/spk_gain/aec are live only on
 	# USE_PLAY / USE_BACKCHANNEL builds, where caps.audio lists them (they own the

@@ -24,6 +24,16 @@ semantic versioning.
 
 ### Changed
 
+- **Keys the SoC/driver cannot apply are no longer persisted.** `POST
+  /control` names them in `"unsupported"` (with `"unsupported_reason"`) and
+  neither applies nor writes them; a body carrying only such keys answers
+  **422** `not_supported_on_soc` with `"ok":false`. Before, they were stored
+  and echoed without effect. This includes the audio keys of builds without
+  the hardware path: `audio.alc_gain` without `AUDIO_HAS_ALC_GAIN` (CAP_ALC)
+  and `audio.spk_volume`/`spk_gain`/`aec` without `USE_PLAY`/`USE_BACKCHANNEL`
+  (CAP_SPK) are now `F_NOHW`. Values already in the config file are still
+  read and skipped at start.
+
 - **Motion detection runs on the sub stream by default** (`motion.monitor_stream`
   `0` -> `1`). IVS compares frames on the CPU on every SoC timps supports, so
   its cost follows the pixel count: on a Wyze (T20) timps took ~8 % CPU with
