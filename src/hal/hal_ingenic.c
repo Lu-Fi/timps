@@ -3569,6 +3569,17 @@ static void *jpeg_thread(void *arg)
                 receiving=0; idle_since=0;
                 continue;
             }
+#ifdef PLATFORM_T20
+            /* Debounce window: stay started (no Start/StopRecvPic churn) but
+             * do NOT poll. JPEG frames are requested per poll, so polling
+             * here made the VPU encode a full-size JPEG at jpeg_fps for the
+             * whole idle debounce after every snapshot - on a T20 with a 1080p
+             * snapshot every second that is a saturated shared VPU, and chn0
+             * fell from 15 to ~11 fps (chn1 15 -> ~14) for frames nobody
+             * wanted. */
+            usleep(50000);
+            continue;
+#endif
         } else idle_since = 0;
         if (!receiving){
             fs_use(jc->fs_chn);
