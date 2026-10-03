@@ -1591,11 +1591,13 @@ int control_get_json(char *buf, size_t cap)
         "\"max_dgain\":%d,\"sinter_strength\":%d,\"temper_strength\":%d,"
         "\"dpc_strength\":%d,\"defog_strength\":%d,\"drc_strength\":%d,"
         "\"highlight_depress\":%d,\"backlight_compensation\":%d,"
+        "\"colorfx\":%d,\"scene\":%d,"
         "\"core_wb_mode\":%d,\"wb_rgain\":%d,\"wb_bgain\":%d",
         img.anti_flicker,img.ae_compensation,img.max_again,
         img.max_dgain,img.sinter_strength,img.temper_strength,
         img.dpc_strength,img.defog_strength,img.drc_strength,
         img.highlight_depress,img.backlight_compensation,
+        img.colorfx,img.scene,
         img.core_wb_mode,img.wb_rgain,img.wb_bgain);
     {   /* gains AWB applies right now: a manual start that matches auto */
         int wr, wbg;

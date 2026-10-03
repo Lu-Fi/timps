@@ -7,7 +7,7 @@
  *               "anti_flicker":2,"ae_compensation":128,"max_again":160,
  *               "max_dgain":80,"sinter_strength":128,"temper_strength":128,
  *               "dpc_strength":128,"defog_strength":128,"drc_strength":128,
- *               "highlight_depress":0,"backlight_compensation":0,
+ *               "highlight_depress":0,"backlight_compensation":0,"colorfx":0,"scene":0,
  *               "core_wb_mode":0,"wb_rgain":0,"wb_bgain":0},
  *     "audio": {"volume":90,"gain":30,"alc_gain":0,"high_pass":1,"agc":1,
  *               "agc_target_dbfs":10,"agc_compression_db":0,"ns":2,

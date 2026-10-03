@@ -270,6 +270,7 @@ void config_defaults(ms_config *c)
     im->sinter_strength=128; im->temper_strength=128; im->dpc_strength=128;
     im->defog_strength=128; im->drc_strength=128;
     im->highlight_depress=0; im->backlight_compensation=0;
+    im->colorfx=0; im->scene=0;
     im->core_wb_mode=0; im->wb_rgain=0; im->wb_bgain=0;
     /* opt-in: 0 leaves the sensor mode's own AE maximum untouched, i.e. the
      * exact behaviour every camera had before the key existed */
@@ -716,6 +717,16 @@ static const cfg_field sensor_fields[] = {
 #else
 #define CAP_BACKLIGHT 0
 #endif
+#ifdef ISP_HAS_COLORFX
+#define CAP_COLORFX F_CAP
+#else
+#define CAP_COLORFX 0
+#endif
+#ifdef ISP_HAS_SCENE
+#define CAP_SCENE F_CAP
+#else
+#define CAP_SCENE 0
+#endif
 #ifdef ISP_HAS_WB
 #define CAP_WB F_CAP
 #else
@@ -758,6 +769,11 @@ static const cfg_field image_fields[] = {
     F("drc_strength",           0, drc_strength,           T_INT, F_CTRL|CAP_DRC,        0,255),
     F("highlight_depress",      0, highlight_depress,      T_INT, F_CTRL|CAP_HILIGHT,    0,10),
     F("backlight_compensation", 0, backlight_compensation, T_INT, F_CTRL|CAP_BACKLIGHT,  0,10),
+    /* colorfx: the driver accepts only 0 none, 1 BW, 3 negative, 9 vivid and
+     * answers EINVAL otherwise (the HAL logs that and keeps running); scene is
+     * the SDK's IMPISPSceneMode enum. Both need open-tx-isp support. */
+    F("colorfx",                0, colorfx,                T_INT, F_CTRL|CAP_COLORFX,    0,9),
+    F("scene",                  0, scene,                  T_INT, F_CTRL|CAP_SCENE,      0,14),
     F("core_wb_mode",           0, core_wb_mode,           T_INT, F_CTRL|CAP_WB,         0,ISP_WB_MODE_MAX),
     F("wb_rgain",               0, wb_rgain,               T_INT, F_CTRL|CAP_WB,         0,65535),
     F("wb_bgain",               0, wb_bgain,               T_INT, F_CTRL|CAP_WB,         0,65535),
@@ -766,6 +782,8 @@ static const cfg_field image_fields[] = {
      * sensor range anyway, so this only rejects nonsense. */
     F("ae_it_max_us",           0, ae_it_max_us,           T_INT, F_ATOMIC|F_CTRL|CAP_AEITMAX, 0,1000000),
 };
+#undef CAP_COLORFX
+#undef CAP_SCENE
 #undef CAP_HUE
 #undef CAP_AECOMP
 #undef CAP_GAINS

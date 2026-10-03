@@ -78,6 +78,8 @@ of hardcoding this table into a client.
 | `min_qp` / `max_qp` | Live | Restart | Live | Live | Live |
 | `quality_lvl` / `change_pos` | Live | Restart | No effect | No effect | No effect |
 | `i_bias_lvl` | Live | Restart | Live | No effect (no `SetChnQpIPDelta`) | No effect (no `SetChnQpIPDelta`) |
+| `fps` | Live (`SetChnFrmRate`, only down from the boot rate) | Live | Live | Live | Live |
+| `gop` | Restart (no `SetChnGopLength`) | Restart | Live (`SetChnGopLength`) | Live | Live |
 | `fluc_lvl` | Restart-only (H.265-only field; classic live-apply is H.264-only) | Restart | No effect | No effect | No effect |
 
 `qp` was listed Live on T31/C100/T40 until 2026-08-22 and is not. Measured

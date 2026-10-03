@@ -56,6 +56,16 @@
 #define ISP_HAS_DRC 1
 #endif
 
+/* IMP_ISP_Tuning_SetColorfxMode / SetSceneMode (+ Get). Declared in the vendor
+ * T20/T21/T30 headers; absent from the T23/T31 headers but exported by
+ * open-tx-isp (T21, T23, T31 verified). hal_ingenic.c binds them through weak
+ * symbols, so a libimp without them only costs a logged warning. */
+#if defined(PLATFORM_T20)||defined(PLATFORM_T21)||defined(PLATFORM_T23)|| \
+    defined(PLATFORM_T30)||defined(PLATFORM_T31)||!defined(ISP_PLATFORM_KNOWN)
+#define ISP_HAS_COLORFX 1
+#define ISP_HAS_SCENE 1
+#endif
+
 /* classic-API-only tunings, absent from the T40/T41 SDK:
  * SetHiLightDepress, SetSinterStrength/SetTemperStrength,
  * SetMaxAgain/SetMaxDgain, SetWB, SetISPHflip/SetISPVflip */

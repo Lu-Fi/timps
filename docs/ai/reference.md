@@ -242,7 +242,7 @@ always wins. T40/T41 and the host sim have no registry, so set them there.
 `ae_compensation`, `max_again` (160), `max_dgain` (80), `sinter_strength`
 (spatial NR), `temper_strength` (temporal NR), `dpc_strength`,
 `defog_strength`, `drc_strength`, `highlight_depress` (0), `backlight_compensation`
-(0), `core_wb_mode` (0 = auto), `wb_rgain`, `wb_bgain`, `ae_it_max_us`
+(0), `colorfx` (0 none / 1 BW / 3 negative / 9 vivid), `scene` (0 auto; need open-tx-isp support), `core_wb_mode` (0 = auto), `wb_rgain`, `wb_bgain`, `ae_it_max_us`
 (opt-in cap on AE integration time).
 **since v1.9.21** `GET /control` also returns read-only
 `image.wb_live` = `{"rgain":R,"bgain":B}`, the gains in effect right now (in
