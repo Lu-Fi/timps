@@ -754,6 +754,10 @@ typedef struct {
  * list for the sections whose other keys apply live (audio.*, osd.*); the
  * videoN.* and sensor.* sections are graded per section instead. */
 #define F_RESTART 0x20
+/* F_CTRL field whose feature this SoC/SDK build lacks (the CAP_* macros in
+ * config.c, mirror of F_CAP). POST /control does not apply or persist it; the
+ * reply names it in "unsupported" with reason "not supported on this SoC". */
+#define F_NOHW   0x40
 
 /* Accessors handing control.c's generic /control POST walker the section
  * field tables it needs (config.c keeps the tables themselves static - these

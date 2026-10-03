@@ -2248,6 +2248,7 @@ static void *conn_thread(void *arg)
                     else if (prc == -2)                          { st = "503 Service Unavailable"; reason = "oom"; }
                     else if (prc != 0)                          { st = "400 Bad Request";         reason = "not_json"; }
                     else if (cr.accepted == 0 && cr.rejected>0) { st = "409 Conflict";            reason = "values_rejected"; }
+                    else if (cr.accepted == 0 && cr.uns_n>0)    { st = "422 Unprocessable Content"; reason = "not_supported_on_soc"; }
                     else if (cr.accepted == 0)                  { st = "422 Unprocessable Content"; reason = "unknown_fields"; }
                     else                                        { st = "200 OK";                  reason = NULL; }
                     /* "deferred"/"deferred_keys": changed video/sensor
@@ -2269,6 +2270,7 @@ static void *conn_thread(void *arg)
                         "\"rejected\":%d,\"not_persisted\":%d,"
                         "\"deferred\":%d,\"deferred_keys\":[%s]%s,"
                         "\"ignored\":[%s]%s,"
+                        "\"unsupported\":[%s]%s,"
                         "\"applied\":{%s}%s%s%s%s}",
                         (prc==0 && cr.accepted>0) ? "true" : "false",
                         cr.accepted, cr.changed, cr.rejected, cr.not_persisted,
@@ -2277,6 +2279,8 @@ static void *conn_thread(void *arg)
                         (prc==0 && !cr.defer_full) ? ",\"deferred_truncated\":true" : "",
                         prc==0 ? cr.ign : "",
                         (prc==0 && !cr.ign_full) ? ",\"ignored_truncated\":true" : "",
+                        prc==0 ? cr.uns : "",
+                        (prc==0 && cr.uns_n>0) ? ",\"unsupported_reason\":\"not supported on this SoC\"" : "",
                         prc==0 ? cr.echo : "",
                         (prc==0 && !cr.echo_full) ? ",\"truncated\":true" : "",
                         reason ? ",\"reason\":\"" : "", reason ? reason : "",
