@@ -56,6 +56,10 @@ image.defog_strength         = 128
 image.drc_strength           = 128
 image.highlight_depress      = 0
 image.backlight_compensation = 0
+# colorfx: 0 none, 1 BW, 3 negative, 9 vivid; scene: 0 auto (IMPISPSceneMode).
+# Both need open-tx-isp scene/colorfx support (T21, T23, T31 tested).
+image.colorfx                = 0
+image.scene                  = 0
 image.core_wb_mode           = 0     # 0 auto
 image.wb_rgain               = 0
 image.wb_bgain               = 0

@@ -19,6 +19,13 @@
  *   T41: only SetChnBitRate and SetChnQpBounds - no rc-mode setter at all.
  * quality_lvl/change_pos/fluc_lvl have no new-API equivalent anywhere.
  *
+ * fps: IMP_Encoder_SetChnFrmRate, declared on every SoC (live only down from
+ * the boot rate - the framesource is fixed at boot, see rc_live_apply).
+ * gop: IMP_Encoder_SetChnGopLength, declared only in the T31/T40/T41/C100
+ * headers; the classic SoCs (T10..T30, T23) have no such call and keep gop
+ * restart-bound. Both are bound through weak symbols, so a libimp without
+ * them falls back to "applies on restart" with a warning.
+ *
  * `qp` is deliberately NOT live on any new-API SoC. SetChnAttrRcMode writes
  * attrFixQp.iInitialQP into the struct the next Get reads back but never
  * re-programs the running channel: measured on cam-garage (T31X) 2026-08-22,
@@ -44,15 +51,15 @@
     defined(PLATFORM_T41)
 #define ENC_RC_API_NEW 1
 #if defined(PLATFORM_T41)
-#define ENC_LIVE_KEYS "bitrate", "min_qp", "max_qp"
+#define ENC_LIVE_KEYS "bitrate", "min_qp", "max_qp", "fps", "gop"
 #elif defined(PLATFORM_T40)
-#define ENC_LIVE_KEYS "bitrate", "min_qp", "max_qp"
+#define ENC_LIVE_KEYS "bitrate", "min_qp", "max_qp", "fps", "gop"
 #else /* T31/C100 */
-#define ENC_LIVE_KEYS "bitrate", "min_qp", "max_qp", "i_bias_lvl"
+#define ENC_LIVE_KEYS "bitrate", "min_qp", "max_qp", "i_bias_lvl", "fps", "gop"
 #endif
 #else /* classic API: full union re-fill, H264 channels */
 #define ENC_LIVE_KEYS "rc_mode", "bitrate", "qp", "min_qp", "max_qp", \
-                      "quality_lvl", "change_pos", "i_bias_lvl"
+                      "quality_lvl", "change_pos", "i_bias_lvl", "fps"
 #endif
 #endif /* HAL_INGENIC */
 

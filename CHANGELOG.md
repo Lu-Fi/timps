@@ -6,6 +6,18 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- **`image.colorfx` and `image.scene`** (IMP_ISP_Tuning_SetColorfxMode / SetSceneMode):
+  colour effect (0 none, 1 BW, 3 negative, 9 vivid; other values are rejected by
+  the driver) and ISP scene mode, live via `/control`, listed in `caps.image`,
+  persisted. They need open-tx-isp scene/colorfx support (T21, T23, T31 tested);
+  where the call fails a warning is logged and the daemon keeps running.
+- **Live `videoN.fps` and `videoN.gop`** via IMP_Encoder_SetChnFrmRate (all SoCs,
+  down from the boot rate only) and IMP_Encoder_SetChnGopLength (T31/C100/T40/T41),
+  without restarting the channel. A failing call falls back to the old
+  apply-on-restart behaviour with a warning. Listed in `caps.video_live`.
+
 ### Changed
 
 - **Motion detection runs on the sub stream by default** (`motion.monitor_stream`

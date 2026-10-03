@@ -929,6 +929,16 @@ static int ae_it_write(uint32_t lines, uint32_t min_lines, int restore)
 }
 #endif /* AE cap reference */
 
+#if defined(ISP_HAS_COLORFX) || defined(ISP_HAS_SCENE)
+/* SetColorfxMode/SetSceneMode are declared by some vendor headers (T20/T21/T30,
+ * with an enum argument) and not by others (T23/T31, served by open-tx-isp).
+ * Re-declaring them under private names bound to the real symbols via asm
+ * labels avoids any prototype clash; "weak" turns a missing symbol into a NULL
+ * pointer instead of a link/load failure. Enum and int are passed identically. */
+extern int ms_isp_colorfx_set(int mode) __asm__("IMP_ISP_Tuning_SetColorfxMode") __attribute__((weak));
+extern int ms_isp_scene_set(int mode)   __asm__("IMP_ISP_Tuning_SetSceneMode")   __attribute__((weak));
+#endif
+
 /* Apply one image.* (ISP tuning) key from the current config (g_hcfg->image).
  * Returns 1 when the key is wired on this PLATFORM's IMP SDK, 0 when the SoC
  * cannot do it (the value is still parsed/persisted by the config layer).
@@ -1194,6 +1204,33 @@ static int isp_apply_image(const char *k)
         return 0;                       /* T40/T41: no such call in that SDK */
 #endif
     }
+#if defined(ISP_HAS_COLORFX) || defined(ISP_HAS_SCENE)
+    /* colorfx/scene: bound through weak aliases (see ms_isp_colorfx_set) so a
+     * libimp without them, or a driver that rejects the value (EINVAL), only
+     * logs a warning - the value stays persisted and the daemon keeps running. */
+    if (!strcmp(k,"colorfx") || !strcmp(k,"scene")){
+        int is_cfx = !strcmp(k,"colorfx");
+        int val = is_cfx ? im->colorfx : im->scene;
+        int (*fn)(int) = is_cfx ? ms_isp_colorfx_set : ms_isp_scene_set;
+        if (!fn){
+            LOGW(MOD,"image.%s: libimp has no IMP_ISP_Tuning_Set%sMode - persisted only",
+                 k, is_cfx ? "Colorfx" : "Scene");
+            return 0;
+        }
+        if (is_cfx && val!=0 && val!=1 && val!=3 && val!=9){
+            LOGW(MOD,"image.colorfx=%d is not supported (0 none, 1 BW, 3 negative, "
+                     "9 vivid) - not applied", val);
+            return 0;
+        }
+        int rc = fn(val);
+        if (rc){
+            LOGW(MOD,"IMP_ISP_Tuning_Set%sMode(%d) failed (rc=%d) - not applied",
+                 is_cfx ? "Colorfx" : "Scene", val, rc);
+            return 0;
+        }
+        return 1;
+    }
+#endif
     /* white balance: mode + gains are one IMPISPWB, applied on any of them */
     if (!strcmp(k,"core_wb_mode")||!strcmp(k,"wb_rgain")||!strcmp(k,"wb_bgain")){
         IMPISPWB wb; memset(&wb,0,sizeof wb);
@@ -1228,6 +1265,11 @@ static void apply_image_tuning(void)
         if (!isp_apply_image(keys[i]))
             LOGD(MOD,"image.%s unsupported on this platform (skipped)",keys[i]);
     const ms_image_cfg *im = &g_hcfg->image;
+    /* colorfx/scene: 0 is the driver default - only touch them when set, so an
+     * unconfigured camera never calls into (or warns about) a libimp that lacks
+     * them */
+    if (im->colorfx) isp_apply_image("colorfx");
+    if (im->scene)   isp_apply_image("scene");
     LOGI(MOD,"image tuning applied (bri=%d con=%d sat=%d sharp=%d)",
          im->brightness,im->contrast,im->saturation,im->sharpness);
 #endif
@@ -4697,6 +4739,14 @@ static int g_isp_flip_kick_pending = 0;
  * stream N's own encoder channel and no other. The caller (control.c) has
  * already stored the new value in g_cfg, so the appliers read from there. */
 
+/* Live encoder frame rate / GOP. Private names + asm labels (the isp
+ * colorfx pattern): no prototype clash with any vendor header, and a libimp
+ * lacking the symbol yields a NULL pointer -> restart fallback, not a crash. */
+extern int ms_enc_set_frmrate(int chn, const IMPEncoderFrmRate *fr)
+    __asm__("IMP_Encoder_SetChnFrmRate") __attribute__((weak));
+extern int ms_enc_set_gop(int chn, int gop)
+    __asm__("IMP_Encoder_SetChnGopLength") __attribute__((weak));
+
 /* is this videoN.* leaf one of the keys this BUILD can apply live? */
 static int rc_key_live(const char *k)
 {
@@ -4732,6 +4782,45 @@ static int rc_live_apply(int si, const char *k)
 #ifdef ROT_HAS_SW_90
     if (vc->sw_rot) return 0;   /* unbound Yuv encoder: no runtime rc API */
 #endif
+    /* fps / gop: dedicated runtime calls, not part of the rc union. On any
+     * failure (symbol missing in this libimp, call rejected, rate above what
+     * the framesource was built for) warn and return 0: the value stays
+     * persisted and the old restart path remains the fallback. */
+    if (!strcmp(k,"fps")){
+        int nf = g_hcfg->video[si].fps, bf = g_cfg_boot.video[si].fps;
+        if (nf<1 || nf>bf){
+            LOGW(MOD,"video%d.fps=%d above the running framesource rate (%d) - "
+                     "applies on restart", si, nf, bf);
+            return 0;
+        }
+        if (!ms_enc_set_frmrate){
+            LOGW(MOD,"libimp has no IMP_Encoder_SetChnFrmRate - video%d.fps applies on restart", si);
+            return 0;
+        }
+        IMPEncoderFrmRate fr; memset(&fr,0,sizeof fr);
+        fr.frmRateNum = (uint32_t)nf; fr.frmRateDen = 1;
+        int rc = ms_enc_set_frmrate(vc->chn,&fr);
+        if (rc){
+            LOGW(MOD,"SetChnFrmRate chn%d failed (rc=%d) - video%d.fps applies on restart",
+                 vc->chn, rc, si);
+            return 0;
+        }
+        vc->fps = nf;      /* nominal frame interval for the pts sanitizer */
+        return 1;
+    }
+    if (!strcmp(k,"gop")){
+        if (!ms_enc_set_gop){
+            LOGW(MOD,"libimp has no IMP_Encoder_SetChnGopLength - video%d.gop applies on restart", si);
+            return 0;
+        }
+        int rc = ms_enc_set_gop(vc->chn, g_hcfg->video[si].gop);
+        if (rc){
+            LOGW(MOD,"SetChnGopLength chn%d failed (rc=%d) - video%d.gop applies on restart",
+                 vc->chn, rc, si);
+            return 0;
+        }
+        return 1;
+    }
     /* codec and fluc_lvl are restart-only: take them from what the channel
      * was built with, not from a POST still waiting for the restart */
     ms_vstream_cfg lv;
@@ -4993,8 +5082,8 @@ static int ing_control(const char *key, const char *val)
         return ok ? 1 : 0;
     }
 
-    /* videoN.*: geometry/codec/fps keys stay config-only (a live change
-     * would need a stream-killing channel/ISP reconfig) - but the rate-
+    /* videoN.*: geometry/codec keys stay config-only (a live change
+     * would need a stream-killing channel/ISP reconfig) - but fps/gop (IMP_Encoder_SetChnFrmRate/GopLength) and the rate-
      * control subset CAN reach the running encoder on this build
      * (ENC_LIVE_KEYS, enc_caps.h). Strictly per channel: stream N's key
      * touches stream N's encoder channel only. On any fallback (channel not
