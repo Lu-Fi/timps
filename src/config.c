@@ -782,27 +782,37 @@ static const cfg_field image_fields[] = {
      * sensor range anyway, so this only rejects nonsense. */
     F("ae_it_max_us",           0, ae_it_max_us,           T_INT, F_ATOMIC|F_CTRL|CAP_AEITMAX, 0,1000000),
 };
-/* Runtime restriction of the baseline above (isp_caps.h ISPCAP_RT_*): which
+/* Runtime adjustment of the baseline above (isp_caps.h ISPCAP_RT_*): which
  * IMPISPCaps bit stands for which image.* key. core_wb_mode/wb_rgain/wb_bgain
- * are one SetWB call, so they share a bit. */
-static const struct { const char *key; unsigned char bit; } image_rt_bits[] = {
-    {"brightness", ISPCAP_RT_BRIGHTNESS},   {"contrast", ISPCAP_RT_CONTRAST},
-    {"saturation", ISPCAP_RT_SATURATION},   {"sharpness", ISPCAP_RT_SHARPNESS},
-    {"hue", ISPCAP_RT_HUE},                 {"hflip", ISPCAP_RT_HFLIP},
-    {"vflip", ISPCAP_RT_VFLIP},             {"running_mode", ISPCAP_RT_RUNNING_MODE},
-    {"anti_flicker", ISPCAP_RT_ANTIFLICKER},{"ae_compensation", ISPCAP_RT_AE_COMP},
-    {"max_again", ISPCAP_RT_MAX_AGAIN},     {"max_dgain", ISPCAP_RT_MAX_DGAIN},
-    {"sinter_strength", ISPCAP_RT_SINTER},  {"temper_strength", ISPCAP_RT_TEMPER},
-    {"dpc_strength", ISPCAP_RT_DPC},        {"defog_strength", ISPCAP_RT_DEFOG},
-    {"drc_strength", ISPCAP_RT_DRC},        {"highlight_depress", ISPCAP_RT_HILIGHT},
-    {"backlight_compensation", ISPCAP_RT_BACKLIGHT},
-    {"colorfx", ISPCAP_RT_COLORFX},         {"scene", ISPCAP_RT_SCENE},
-    {"core_wb_mode", ISPCAP_RT_WB},         {"wb_rgain", ISPCAP_RT_WB},
-    {"wb_bgain", ISPCAP_RT_WB},             {"ae_it_max_us", ISPCAP_RT_AE_IT_MAX},
+ * are one SetWB call, so they share a bit. ext = 1: the key may be EXTENDED
+ * (F_NOHW in this build, but the loaded libimp says the driver applies it) -
+ * only simple single-call setters with one value argument. Never extended:
+ * the WB triple (one struct, SDK-specific enum ranges), ae_it_max_us (two SDK
+ * spellings plus the frame supervisor and its timers), the flips (T40/T41
+ * SetHVFLIP path) and the always-present base keys. The HAL further limits
+ * extension to SoCs whose prototype is identical (isp_caps.h
+ * ISP_EXT_CANDIDATES) and to symbols the loaded libimp really exports. */
+static const struct { const char *key; unsigned char bit, ext; } image_rt_bits[] = {
+    {"brightness", ISPCAP_RT_BRIGHTNESS, 0},   {"contrast", ISPCAP_RT_CONTRAST, 0},
+    {"saturation", ISPCAP_RT_SATURATION, 0},   {"sharpness", ISPCAP_RT_SHARPNESS, 0},
+    {"hue", ISPCAP_RT_HUE, 1},                 {"hflip", ISPCAP_RT_HFLIP, 0},
+    {"vflip", ISPCAP_RT_VFLIP, 0},             {"running_mode", ISPCAP_RT_RUNNING_MODE, 0},
+    {"anti_flicker", ISPCAP_RT_ANTIFLICKER, 0},{"ae_compensation", ISPCAP_RT_AE_COMP, 1},
+    {"max_again", ISPCAP_RT_MAX_AGAIN, 0},     {"max_dgain", ISPCAP_RT_MAX_DGAIN, 0},
+    {"sinter_strength", ISPCAP_RT_SINTER, 1},  {"temper_strength", ISPCAP_RT_TEMPER, 1},
+    {"dpc_strength", ISPCAP_RT_DPC, 1},        {"defog_strength", ISPCAP_RT_DEFOG, 1},
+    {"drc_strength", ISPCAP_RT_DRC, 1},        {"highlight_depress", ISPCAP_RT_HILIGHT, 0},
+    {"backlight_compensation", ISPCAP_RT_BACKLIGHT, 1},
+    {"colorfx", ISPCAP_RT_COLORFX, 1},         {"scene", ISPCAP_RT_SCENE, 1},
+    {"core_wb_mode", ISPCAP_RT_WB, 0},         {"wb_rgain", ISPCAP_RT_WB, 0},
+    {"wb_bgain", ISPCAP_RT_WB, 0},             {"ae_it_max_us", ISPCAP_RT_AE_IT_MAX, 0},
 };
-/* bit i set = image_fields[i] is not applied by the loaded libimp/driver.
- * Written once by the HAL at init, before httpd starts; read-only after. */
-static uint64_t image_rt_nohw;
+/* The one runtime caps state, indexed by image_fields[] position:
+ *   image_rt_nohw bit i - F_CAP key the loaded libimp does NOT apply
+ *   image_rt_ext  bit i - F_NOHW key the loaded libimp DOES apply
+ * Written only by cfg_image_caps_adjust(), once, before httpd starts;
+ * read-only afterwards (no lock: no writer once readers exist). */
+static uint64_t image_rt_nohw, image_rt_ext;
 
 #undef CAP_COLORFX
 #undef CAP_SCENE
@@ -2350,24 +2360,46 @@ unlock:
 const cfg_field *cfg_fields_image(int *n)     { *n = NF(image_fields);     return image_fields; }
 const cfg_field *cfg_fields_audio(int *n)     { *n = NF(audio_fields);     return audio_fields; }
 
-int cfg_image_caps_restrict(uint64_t known, uint64_t applied, char *out, size_t outsz)
+static void caps_name_add(char *out, size_t outsz, size_t *off, const char *name)
 {
+    if (!out || *off >= outsz) return;
+    int w = snprintf(out + *off, outsz - *off, "%s%s", *off ? "," : "", name);
+    if (w > 0) *off += (size_t)w;
+}
+
+/* MUST only run before httpd_start() (main.c: hal init precedes it) and only
+ * once per process - never again from the ing_stop()/ing_init() start-retry
+ * path: the readers (control.c, isp_apply_image) take no lock. The once-guard
+ * below enforces it even if a caller forgets. */
+int cfg_image_caps_adjust(uint64_t known, uint64_t applied, uint64_t extendable,
+                          char *rs, size_t rsz, char *es, size_t esz)
+{
+    static int done;
     int n = 0;
-    size_t off = 0;
-    if (out && outsz) out[0] = 0;
-    for (size_t i = 0; i < NF(image_fields); i++){
-        if (image_fields[i].flags & F_NOHW) continue;     /* already out */
+    size_t roff = 0, eoff = 0;
+    if (rs && rsz) rs[0] = 0;
+    if (es && esz) es[0] = 0;
+    if (done) return 0;
+    done = 1;
+    applied &= known;
+#if !defined(ISP_CAN_EXTEND)
+    extendable = 0;     /* T40/T41 tuning API, host sim: restrict only */
+#endif
+    for (size_t i = 0; i < NF(image_fields) && i < 64; i++){
         for (size_t j = 0; j < NF(image_rt_bits); j++){
             if (strcmp(image_rt_bits[j].key, image_fields[i].name)) continue;
             uint64_t b = 1ULL << image_rt_bits[j].bit;
-            if ((known & b) && !(applied & b)){
-                image_rt_nohw |= 1ULL << i;
-                n++;
-                if (out && off < outsz){
-                    int w = snprintf(out + off, outsz - off, "%s%s",
-                                     off ? "," : "", image_fields[i].name);
-                    if (w > 0) off += (size_t)w;
+            if (image_fields[i].flags & F_NOHW){
+                /* extend: driver applies it AND the HAL can call it */
+                if (image_rt_bits[j].ext && (applied & b) && (extendable & b)){
+                    image_rt_ext |= 1ULL << i;
+                    caps_name_add(es, esz, &eoff, image_fields[i].name);
+                    n++;
                 }
+            } else if ((image_fields[i].flags & F_CAP) && (known & b) && !(applied & b)){
+                image_rt_nohw |= 1ULL << i;            /* restrict */
+                caps_name_add(rs, rsz, &roff, image_fields[i].name);
+                n++;
             }
             break;
         }
@@ -2378,10 +2410,16 @@ int cfg_image_caps_restrict(uint64_t known, uint64_t applied, char *out, size_t 
 int cfg_field_nohw(const cfg_field *f)
 {
     if (!f) return 0;
-    if (f->flags & F_NOHW) return 1;
-    if (f >= image_fields && f < image_fields + NF(image_fields))
-        return (int)((image_rt_nohw >> (f - image_fields)) & 1);
-    return 0;
+    int in_img = f >= image_fields && f < image_fields + NF(image_fields);
+    uint64_t bit = in_img ? 1ULL << (f - image_fields) : 0;
+    if (f->flags & F_NOHW) return !(image_rt_ext & bit);   /* unless extended */
+    return (image_rt_nohw & bit) != 0;                      /* unless restricted */
+}
+
+int cfg_field_capped(const cfg_field *f)
+{
+    return f && (f->flags & F_CTRL) && (f->flags & (F_CAP|F_NOHW)) &&
+           !cfg_field_nohw(f);
 }
 
 int cfg_image_key_nohw(const char *key)

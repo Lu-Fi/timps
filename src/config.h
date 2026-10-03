@@ -765,14 +765,25 @@ typedef struct {
  * returned table are POST-eligible; see the flag's doc comment above. */
 const cfg_field *cfg_fields_image(int *n);
 const cfg_field *cfg_fields_audio(int *n);
-/* Runtime restriction of image_fields[]' F_CAP baseline (isp_caps.h), from
- * OpenIMP's IMP_ISP_QueryCaps: every key whose ISPCAP_RT_* bit is in known
- * but not in applied becomes "no hardware" like F_NOHW. Only restricts.
- * Call once before httpd starts. Returns the number of keys restricted;
- * out (optional) gets their comma-separated names. */
-int cfg_image_caps_restrict(uint64_t known, uint64_t applied, char *out, size_t outsz);
-/* F_NOHW, or restricted at run time by cfg_image_caps_restrict() */
+/* Runtime adjustment of image_fields[]' F_CAP baseline (isp_caps.h), from
+ * OpenIMP's IMP_ISP_QueryCaps (bits = ISPCAP_RT_*):
+ *  - restrict: an F_CAP key whose bit is in known but not in applied becomes
+ *    "no hardware" like F_NOHW;
+ *  - extend: an F_NOHW key whose bit is applied AND in extendable (the HAL
+ *    can call that setter: identical prototype on this SoC, symbol exported)
+ *    AND that config.c marks extendable becomes a normal capability - listed
+ *    in caps.image, accepted and persisted by POST, applied by the HAL.
+ * Only before httpd_start(), once per process (never from the ing_stop ->
+ * ing_init retry path); a second call is a no-op. Not calling it at all (a
+ * vendor libimp without the symbol) leaves the baseline byte-identical.
+ * Returns the number of keys changed; rs/es (optional) get the restricted /
+ * extended names, comma-separated. */
+int cfg_image_caps_adjust(uint64_t known, uint64_t applied, uint64_t extendable,
+                          char *rs, size_t rsz, char *es, size_t esz);
+/* "no hardware": F_NOHW and not extended, or F_CAP and restricted */
 int cfg_field_nohw(const cfg_field *f);
+/* listed in GET /control caps: F_CTRL, capability-gated, not cfg_field_nohw */
+int cfg_field_capped(const cfg_field *f);
 int cfg_image_key_nohw(const char *key);   /* same, by image.* key name */
 const cfg_field *cfg_fields_sensor(int *n);
 const cfg_field *cfg_fields_osd(int *n);       /* osd.* globals (not items) */

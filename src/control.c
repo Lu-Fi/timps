@@ -613,8 +613,9 @@ static void apply_ctrl_fields(ctrl_scratch_t *sc, ctrl_changes *ch, const char *
         if (!get_val(s, e, tbl[i].name, v, sizeof v) &&
             !(tbl[i].alias && get_val(s, e, tbl[i].alias, v, sizeof v))) continue;
         snprintf(full, sizeof full, "%s.%s", prefix, tbl[i].name);
-        if (cfg_field_nohw(&tbl[i])) {        /* feature absent on this SoC (F_NOHW,
-                                               * or restricted by IMP_ISP_QueryCaps) */
+        if (cfg_field_nohw(&tbl[i])) {        /* feature absent on this SoC (F_NOHW and
+                                               * not extended, or restricted - see
+                                               * cfg_image_caps_adjust) */
             int w = snprintf(sc->uns + sc->uns_off, sizeof sc->uns - (size_t)sc->uns_off,
                              "%s\"%s\"", sc->uns_off ? "," : "", full);
             if (w > 0 && sc->uns_off + w < (int)sizeof sc->uns) sc->uns_off += w;
@@ -1362,13 +1363,13 @@ int control_get_json(char *buf, size_t cap)
      * object below, not the caps name */
     APP("\"caps\":{\"image\":[");
     {
-        int nf; const cfg_field *tbl = cfg_fields_image(&nf);
         int first = 1;
-        /* minus what the loaded libimp says it does not apply (OpenIMP
-         * IMP_ISP_QueryCaps, see cfg_image_caps_restrict) */
+        /* the F_CAP baseline, adjusted by what the loaded libimp says it
+         * applies (OpenIMP IMP_ISP_QueryCaps, see cfg_image_caps_adjust);
+         * table order, so a vendor libimp gives exactly the baseline list */
+        int nf; const cfg_field *tbl = cfg_fields_image(&nf);
         for (int i=0;i<nf;i++)
-            if ((tbl[i].flags & (F_CTRL|F_CAP)) == (F_CTRL|F_CAP) &&
-                !cfg_field_nohw(&tbl[i])) {
+            if (cfg_field_capped(&tbl[i])) {
                 APP("%s\"%s\"", first?"":",", tbl[i].name);
                 first = 0;
             }

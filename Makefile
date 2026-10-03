@@ -286,7 +286,7 @@ IMPLIBS ?= -l:libimp.a -l:libalog.a -l:libsysutils.a
 # against a distro/buildroot that only ships libfaac.so.
 FAACLIB ?= -l:libfaac.a
 
-.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun test-timelapse-prune test-record-ring
+.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun test-timelapse-prune test-record-ring test-image-caps
 
 all: target
 
@@ -361,6 +361,20 @@ test-config:
 	$(HOSTCC) $(CFLAGS) -DMS_VERSION='"$(VERSION)"' -Isrc $(CFGTEST_SRC) \
 	  $(LDFLAGS) -lpthread -lm -o $(BIN)-cfgtest
 	@./$(BIN)-cfgtest; rc=$$?; rm -f $(BIN)-cfgtest; exit $$rc
+
+# Host-only test for GET /control caps.image and its run-time adjustment by
+# OpenIMP's IMP_ISP_QueryCaps: config.c built once per PLATFORM (no IMP
+# headers needed), regression boundary = a vendor libimp (no symbol) gives the
+# exact pre-QueryCaps list. Exit code is the test result.
+IMGCAPSTEST_SRC := scripts/test_image_caps.c src/config.c src/log.c src/util.c \
+                   src/fanqueue.c src/frame.c
+IMGCAPSTEST_PLATFORMS ?= T10 T20 T21 T23 T30 T31 T40 T41 C100 HOST
+test-image-caps:
+	@rc=0; for p in $(IMGCAPSTEST_PLATFORMS); do \
+	  $(HOSTCC) $(CFLAGS) -DMS_VERSION='"$(VERSION)"' $$( [ $$p = HOST ] || echo -DPLATFORM_$$p ) \
+	    -Isrc $(IMGCAPSTEST_SRC) $(LDFLAGS) -lpthread -lm -o $(BIN)-imgcapstest || exit 1; \
+	  ./$(BIN)-imgcapstest $$p || rc=1; rm -f $(BIN)-imgcapstest; \
+	done; exit $$rc
 
 # Host-only unit test for the fMP4 muxer's gather-write path: proves
 # fmp4_video_fragment_iov() emits byte-for-byte what fmp4_video_fragment()

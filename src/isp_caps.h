@@ -22,13 +22,19 @@
  * A build without any PLATFORM_* macro (host sim) enables everything so the
  * WebUI can be exercised against timpsd-sim.
  *
- * This is the BASELINE: what the SDK headers declare. A setter that exists
- * may still be ignored by the driver. When the loaded libimp is OpenIMP it
- * exports IMP_ISP_QueryCaps(), and hal_ingenic.c uses it once at init to
- * RESTRICT this baseline at run time (never to extend it) - see
- * ISPCAP_RT_* below and cfg_image_caps_restrict() in config.c. Restricted
- * keys then behave exactly like the compile-time F_NOHW ones: missing from
- * GET /control "caps", named in the POST reply's "unsupported".
+ * This is the BASELINE: what the SDK headers declare, i.e. what the VENDOR
+ * libimp offers. A setter that exists may still be ignored by the driver,
+ * and the open driver may act on setters the vendor SDK lacks. When the
+ * loaded libimp is OpenIMP it exports IMP_ISP_QueryCaps(), and hal_ingenic.c
+ * uses it once at init to adjust this baseline at run time - see ISPCAP_RT_*
+ * and ISP_EXT_CANDIDATES below and cfg_image_caps_adjust() in config.c:
+ *  - RESTRICT: a baseline key the driver does not apply behaves exactly like
+ *    a compile-time F_NOHW one (missing from GET /control "caps", named in
+ *    the POST reply's "unsupported", not persisted);
+ *  - EXTEND: a key outside the baseline that the driver applies, whose setter
+ *    is a simple single-value call with the same prototype on this SoC and
+ *    whose symbol the loaded libimp exports, becomes a normal capability.
+ * Without that export (vendor libimp) the baseline is used unchanged.
  *
  * Audited 2026-10-03 against the vendored headers (include/<SoC>/<ver>) and
  * the device tests of that day: every key the tests saw as "ok:true but no
@@ -158,7 +164,7 @@
 #define ISP_HAS_SENSOR_ATTR 1
 #endif
 
-/* Runtime restriction: bit numbers of OpenIMP's IMPISPCaps (openimp
+/* Runtime restriction/extension: bit numbers of OpenIMP's IMPISPCaps (openimp
  * include/openimp/openimp_caps.h, IMP_ISP_CAP_*). Fixed by that ABI - never
  * renumber. hal_ingenic.c binds IMP_ISP_QueryCaps through a weak symbol, so a
  * vendor libimp (no such export) leaves the baseline untouched. */
@@ -186,5 +192,18 @@
 #define ISPCAP_RT_SCENE        20
 #define ISPCAP_RT_WB           21
 #define ISPCAP_RT_AE_IT_MAX    22
+
+/* Run-time EXTENSION (see the header comment) is compiled only for the
+ * classic tuning API: there every extendable setter (hue, ae_compensation,
+ * sinter/temper, dpc, defog, drc, backlight, colorfx, scene) has one
+ * single-value prototype on every SoC, so hal_ingenic.c can bind the ones
+ * missing from this SoC's header weakly under private names. Sinter/temper
+ * are baseline on every classic SoC, so in practice they are only ever
+ * restricted. T40/T41 (ISP_NEW_TUNING_API): the SDK has none of these
+ * setters (hue is baseline there) and any variant would take IMPVI_NUM plus
+ * a pointer - no extension. Host sim: everything is baseline already. */
+#if defined(ISP_PLATFORM_KNOWN) && !defined(ISP_NEW_TUNING_API)
+#define ISP_CAN_EXTEND 1
+#endif
 
 #endif /* MS_ISP_CAPS_H */

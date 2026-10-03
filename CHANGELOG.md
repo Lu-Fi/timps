@@ -18,7 +18,30 @@ semantic versioning.
   without restarting the channel. A failing call falls back to the old
   apply-on-restart behaviour with a warning. Listed in `caps.video_live`.
 
+- **`caps.image` follows the loaded libimp (OpenIMP `IMP_ISP_QueryCaps`).**
+  When the libimp exports it, timps reads it once at start (before httpd) and
+  adjusts the SDK-header matrix in both directions: keys the open driver
+  ignores are dropped (e.g. T21 `ae_it_max_us`, T41 `hflip`/`vflip`), and
+  simple single-value setters it applies beyond the vendor SDK are added
+  (`hue`, `ae_compensation`, `sinter_strength`, `temper_strength`,
+  `dpc_strength`, `defog_strength`, `drc_strength`, `backlight_compensation`,
+  `colorfx`, `scene`; classic tuning API only, never on T40/T41, and only if
+  the libimp exports the setter). Extended keys are accepted, persisted and
+  applied like any other. With a vendor libimp `caps.image` is byte-identical
+  to before (`make test-image-caps`). After switching back to a vendor libimp,
+  extended keys already persisted are read and silently skipped. The per-SoC
+  tables in the docs describe the vendor libimp only.
+
 ### Changed
+
+- **Keys the SoC/driver cannot apply are no longer persisted.** `POST
+  /control` names them in `"unsupported"` (with `"unsupported_reason"`) and
+  neither applies nor writes them; a body carrying only such keys answers
+  **422** `not_supported_on_soc` with `"ok":false`. Before, they were stored
+  and echoed without effect. This includes the audio keys of builds without
+  the hardware path: `audio.alc_gain` without `AUDIO_HAS_ALC_GAIN` (CAP_ALC)
+  and `audio.spk_volume`/`spk_gain`/`aec` without `USE_PLAY`/`USE_BACKCHANNEL`
+  (CAP_SPK) are now `F_NOHW`.
 
 - **Motion detection runs on the sub stream by default** (`motion.monitor_stream`
   `0` -> `1`). IVS compares frames on the CPU on every SoC timps supports, so

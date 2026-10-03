@@ -250,10 +250,15 @@ auto: what AWB picked). POSTing them with `core_wb_mode=1` switches to manual
 without a visible change. Missing where `ISP_HAS_WB` is unset (T40/T41).
 Which of these the SoC really supports is listed in `caps.image`. A key outside
 it is not applied and not persisted by `POST /control`; the reply names it in
-`"unsupported"` (see the response fields below). Since the caps query, the list
-is the compile-time SDK matrix (`src/isp_caps.h`) **minus** what an OpenIMP
-libimp reports it does not apply (`IMP_ISP_QueryCaps`, read once at start); a
-vendor libimp leaves the matrix unchanged.
+`"unsupported"` (see the response fields below). **`caps.image` depends on the
+loaded libimp:** it is the compile-time SDK matrix (`src/isp_caps.h`), adjusted
+once at start when an OpenIMP libimp exports `IMP_ISP_QueryCaps` — keys the
+open driver ignores are removed, and simple single-value setters the open
+driver applies beyond the vendor SDK (classic tuning API only, symbol
+exported) are added. A vendor libimp leaves the matrix unchanged. Per-SoC
+limit tables (here and in `config-keys.md` section 4) describe the vendor
+libimp only; check `caps.image`. After switching back to a vendor libimp,
+extended keys persisted earlier are read from the config and silently skipped.
 
 **`video0.` / `video1.`**
 ```
@@ -571,7 +576,7 @@ differently-compiled binaries.
 
 | `caps` field | Meaning |
 | --- | --- |
-| `caps.image[]` | The `image.*` keys this SoC actually supports: the SDK matrix (`src/isp_caps.h`), narrowed at start by OpenIMP's `IMP_ISP_QueryCaps` when the loaded libimp exports it (keys the open driver stores but ignores drop out; nothing is ever added) |
+| `caps.image[]` | The `image.*` keys this camera actually supports **with the loaded libimp**: the SDK matrix (`src/isp_caps.h`), adjusted at start by OpenIMP's `IMP_ISP_QueryCaps` when the libimp exports it (keys the open driver ignores drop out; single-value setters it applies beyond the vendor SDK are added). Same order and format either way; a vendor libimp gives exactly the matrix |
 | `caps.audio[]` | The `audio.*` keys this build/SoC supports |
 | `caps.osd[]` | The OSD item fields that apply **live** (`text,x,y,font_size,color,transparency,outline,outline_color`) |
 | `caps.restart[]` | Restart-only keys: the sections `"video"`/`"sensor"` (except `rtsp_path` and `caps.video_live`), plus — since v1.9.20 — every `F_RESTART` key of `audio.*`/`osd.*` as `"audio.codec"`, `"osd.font_path"`, …. v1.9.19: `["video","sensor","osd.enabled"]` |
@@ -665,8 +670,9 @@ Response body (same shape whatever the status):
 - `unsupported` — known keys this SoC/driver cannot apply (outside
   `caps.image`/`caps.audio`): not applied, not persisted, **not** counted in
   `accepted` or `rejected`. When non-empty, `"unsupported_reason":"not
-  supported on this SoC"` follows. Covers the compile-time matrix and the
-  keys an OpenIMP libimp reported as not applied (`IMP_ISP_QueryCaps`).
+  supported on this SoC"` follows. Covers the compile-time matrix as adjusted
+  by an OpenIMP libimp (`IMP_ISP_QueryCaps`), and the audio keys of a build
+  without them (`alc_gain`, `spk_volume`/`spk_gain`/`aec`).
 - `applied` — echo of the **effective** value after clamping.
 - `truncated` / `deferred_truncated` / `ignored_truncated` — present and `true`
   when the matching list overran its buffer (`applied` 512 B, `deferred_keys`

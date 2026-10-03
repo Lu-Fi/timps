@@ -929,7 +929,7 @@ static int ae_it_write(uint32_t lines, uint32_t min_lines, int restore)
 }
 #endif /* AE cap reference */
 
-#if defined(ISP_HAS_COLORFX) || defined(ISP_HAS_SCENE)
+#if defined(ISP_HAS_COLORFX) || defined(ISP_HAS_SCENE) || defined(ISP_CAN_EXTEND)
 /* SetColorfxMode/SetSceneMode are declared by some vendor headers (T20/T21/T30,
  * with an enum argument) and not by others (T23/T31, served by open-tx-isp).
  * Re-declaring them under private names bound to the real symbols via asm
@@ -938,10 +938,42 @@ static int ae_it_write(uint32_t lines, uint32_t min_lines, int restore)
 extern int ms_isp_colorfx_set(int mode) __asm__("IMP_ISP_Tuning_SetColorfxMode") __attribute__((weak));
 extern int ms_isp_scene_set(int mode)   __asm__("IMP_ISP_Tuning_SetSceneMode")   __attribute__((weak));
 #endif
+#if defined(ISP_CAN_EXTEND)
+/* Setters this SoC's vendor header may lack but OpenIMP's libimp can export
+ * and its open driver apply (run-time extension, isp_caps.h). Same pattern as
+ * colorfx/scene: timps' own prototypes (identical on every classic-API SDK
+ * that has them), weak, private names. Only declared where the baseline does
+ * not already call the header's own declaration, so a vendor build's
+ * baseline calls stay strong references exactly as before. Called only when
+ * the symbol is non-NULL AND the caps allow it (isp_ext_ok). */
+#ifndef ISP_HAS_HUE
+extern int ms_isp_hue_set(unsigned char hue)     __asm__("IMP_ISP_Tuning_SetBcshHue")       __attribute__((weak));
+#endif
+#ifndef ISP_HAS_AECOMP
+extern int ms_isp_aecomp_set(int comp)           __asm__("IMP_ISP_Tuning_SetAeComp")        __attribute__((weak));
+#endif
+#ifndef ISP_HAS_DPC
+extern int ms_isp_dpc_set(unsigned int ratio)    __asm__("IMP_ISP_Tuning_SetDPC_Strength")  __attribute__((weak));
+#endif
+#ifndef ISP_HAS_DEFOG
+extern int ms_isp_defog_set(uint8_t *ratio)      __asm__("IMP_ISP_Tuning_SetDefog_Strength") __attribute__((weak));
+#endif
+#ifndef ISP_HAS_DRC
+extern int ms_isp_drc_set(unsigned int ratio)    __asm__("IMP_ISP_Tuning_SetDRC_Strength")  __attribute__((weak));
+#endif
+#ifndef ISP_HAS_BACKLIGHT
+extern int ms_isp_backlight_set(uint32_t s)      __asm__("IMP_ISP_Tuning_SetBacklightComp") __attribute__((weak));
+#endif
+/* an extended key: symbol present AND the run-time caps list it (the
+ * F_NOHW baseline says no, cfg_image_caps_adjust may have said yes) */
+#define isp_ext_ok(fn, key) ((fn) != NULL && !cfg_image_key_nohw(key))
+#endif
 
 /* Apply one image.* (ISP tuning) key from the current config (g_hcfg->image).
- * Returns 1 when the key is wired on this PLATFORM's IMP SDK, 0 when the SoC
- * cannot do it (the value is still parsed/persisted by the config layer).
+ * Returns 1 when the key is wired on this PLATFORM's IMP SDK (or extended at
+ * run time, see isp_query_caps), 0 when the SoC cannot do it. POST /control
+ * never gets here for such a key (cfg_field_nohw: "unsupported", not
+ * persisted); a value from the config file is read and silently skipped.
  * The per-SoC guards come from ../isp_caps.h - keep them in sync with the
  * caps.image list control.c reports. Callers serialize ISP access (g_isp_lock
  * for live control; init is single-threaded). */
@@ -1009,6 +1041,9 @@ static int isp_apply_image(const char *k)
     if (!strcmp(k,"hue")){
 #ifdef ISP_HAS_HUE
         IMP_ISP_Tuning_SetBcshHue((unsigned char)im->hue); return 1;
+#elif defined(ISP_CAN_EXTEND)
+        if (!isp_ext_ok(ms_isp_hue_set, k)) return 0;
+        ms_isp_hue_set((unsigned char)im->hue); return 1;
 #else
         return 0;
 #endif
@@ -1041,6 +1076,9 @@ static int isp_apply_image(const char *k)
     if (!strcmp(k,"ae_compensation")){
 #ifdef ISP_HAS_AECOMP
         IMP_ISP_Tuning_SetAeComp(im->ae_compensation); return 1;
+#elif defined(ISP_CAN_EXTEND)
+        if (!isp_ext_ok(ms_isp_aecomp_set, k)) return 0;
+        ms_isp_aecomp_set(im->ae_compensation); return 1;
 #else
         return 0;
 #endif
@@ -1052,6 +1090,9 @@ static int isp_apply_image(const char *k)
     if (!strcmp(k,"dpc_strength")){
 #ifdef ISP_HAS_DPC
         IMP_ISP_Tuning_SetDPC_Strength((unsigned int)im->dpc_strength); return 1;
+#elif defined(ISP_CAN_EXTEND)
+        if (!isp_ext_ok(ms_isp_dpc_set, k)) return 0;
+        ms_isp_dpc_set((unsigned int)im->dpc_strength); return 1;
 #else
         return 0;
 #endif
@@ -1060,6 +1101,10 @@ static int isp_apply_image(const char *k)
 #ifdef ISP_HAS_DEFOG
         uint8_t d=(uint8_t)im->defog_strength;
         IMP_ISP_Tuning_SetDefog_Strength(&d); return 1;
+#elif defined(ISP_CAN_EXTEND)
+        if (!isp_ext_ok(ms_isp_defog_set, k)) return 0;
+        uint8_t d=(uint8_t)im->defog_strength;
+        ms_isp_defog_set(&d); return 1;
 #else
         return 0;
 #endif
@@ -1067,6 +1112,9 @@ static int isp_apply_image(const char *k)
     if (!strcmp(k,"drc_strength")){
 #ifdef ISP_HAS_DRC
         IMP_ISP_Tuning_SetDRC_Strength((unsigned int)im->drc_strength); return 1;
+#elif defined(ISP_CAN_EXTEND)
+        if (!isp_ext_ok(ms_isp_drc_set, k)) return 0;
+        ms_isp_drc_set((unsigned int)im->drc_strength); return 1;
 #else
         return 0;
 #endif
@@ -1077,6 +1125,9 @@ static int isp_apply_image(const char *k)
     if (!strcmp(k,"backlight_compensation")){
 #ifdef ISP_HAS_BACKLIGHT
         IMP_ISP_Tuning_SetBacklightComp((uint32_t)im->backlight_compensation); return 1;
+#elif defined(ISP_CAN_EXTEND)
+        if (!isp_ext_ok(ms_isp_backlight_set, k)) return 0;
+        ms_isp_backlight_set((uint32_t)im->backlight_compensation); return 1;
 #else
         return 0;
 #endif
@@ -1206,7 +1257,7 @@ static int isp_apply_image(const char *k)
         return 0;                       /* T40/T41: no such call in that SDK */
 #endif
     }
-#if defined(ISP_HAS_COLORFX) || defined(ISP_HAS_SCENE)
+#if defined(ISP_HAS_COLORFX) || defined(ISP_HAS_SCENE) || defined(ISP_CAN_EXTEND)
     /* colorfx/scene: bound through weak aliases (see ms_isp_colorfx_set) so a
      * libimp without them, or a driver that rejects the value (EINVAL), only
      * logs a warning - the value stays persisted and the daemon keeps running. */
@@ -5261,12 +5312,55 @@ static void td_report(const char *what)
  * which tuning setters the open driver really applies on this SoC. Bound
  * weakly like SetColorfxMode above: a vendor libimp has no such export and the
  * isp_caps.h baseline stays exactly as it is. The struct mirrors IMPISPCaps
- * (ABI: size/version/known/applied, bit numbers = ISPCAP_RT_*). */
+ * (ABI: size/version/known/applied, bit numbers = ISPCAP_RT_*). Ranges: the
+ * extendable keys keep config.c's clamps (0..255, colorfx 0..9, scene 0..14);
+ * OpenIMP's setters take the same scale (sinter/temper 128 = neutral on
+ * T10/T20/T21, colorfx/scene the V4L2 enums), so IMPISPCaps carries no range. */
 typedef struct { uint32_t size, version; uint64_t known, applied; } ms_isp_caps_rt;
 extern int ms_isp_query_caps(ms_isp_caps_rt *c) __asm__("IMP_ISP_QueryCaps") __attribute__((weak));
 
+/* ISPCAP_RT_* bits whose setter this build can call for a key outside the
+ * baseline: compiled in (ISP_CAN_EXTEND, single-value prototype) and exported
+ * by the loaded libimp. Baseline keys are not listed - they need no extension. */
+static uint64_t isp_ext_callable(void)
+{
+    uint64_t m = 0;
+#if defined(ISP_CAN_EXTEND)
+#define EXT_IF(fn, bit) do { if (fn) m |= 1ULL << (bit); } while (0)
+#ifndef ISP_HAS_HUE
+    EXT_IF(ms_isp_hue_set, ISPCAP_RT_HUE);
+#endif
+#ifndef ISP_HAS_AECOMP
+    EXT_IF(ms_isp_aecomp_set, ISPCAP_RT_AE_COMP);
+#endif
+#ifndef ISP_HAS_DPC
+    EXT_IF(ms_isp_dpc_set, ISPCAP_RT_DPC);
+#endif
+#ifndef ISP_HAS_DEFOG
+    EXT_IF(ms_isp_defog_set, ISPCAP_RT_DEFOG);
+#endif
+#ifndef ISP_HAS_DRC
+    EXT_IF(ms_isp_drc_set, ISPCAP_RT_DRC);
+#endif
+#ifndef ISP_HAS_BACKLIGHT
+    EXT_IF(ms_isp_backlight_set, ISPCAP_RT_BACKLIGHT);
+#endif
+#ifndef ISP_HAS_COLORFX
+    EXT_IF(ms_isp_colorfx_set, ISPCAP_RT_COLORFX);
+#endif
+#ifndef ISP_HAS_SCENE
+    EXT_IF(ms_isp_scene_set, ISPCAP_RT_SCENE);
+#endif
+#undef EXT_IF
+#endif
+    return m;
+}
+
 /* Once per process, before httpd starts (main.c: hal init precedes
  * httpd_start), so the first GET/POST /control already sees the result.
+ * MUST NOT run again from main.c's in-process start retry (ing_stop ->
+ * ing_init): /control readers take no lock on the caps state. The static
+ * guard here (and cfg_image_caps_adjust's own) makes the retry a no-op.
  * A static table lookup in the library: no ISP access, no measurable cost. */
 static void isp_query_caps(void)
 {
@@ -5281,13 +5375,16 @@ static void isp_query_caps(void)
              rc, (unsigned)c.version);
         return;
     }
-    char names[400];
-    int n = cfg_image_caps_restrict(c.known, c.applied, names, sizeof names);
-    if (n) LOGI(MOD,"libimp caps query: %d image key(s) not applied by this "
-                    "driver, reported as unsupported: %s", n, names);
-    else   LOGI(MOD,"libimp caps query: all advertised image keys applied "
-                    "(known=0x%llx applied=0x%llx)",
-                (unsigned long long)c.known, (unsigned long long)c.applied);
+    char rs[300], es[300];
+    int n = cfg_image_caps_adjust(c.known, c.applied, isp_ext_callable(),
+                                  rs, sizeof rs, es, sizeof es);
+    if (rs[0]) LOGI(MOD,"libimp caps query: not applied by this driver, reported "
+                        "as unsupported: %s", rs);
+    if (es[0]) LOGI(MOD,"libimp caps query: applied by this driver beyond the "
+                        "vendor SDK, offered as capabilities: %s", es);
+    if (!n) LOGI(MOD,"libimp caps query: baseline caps unchanged "
+                     "(known=0x%llx applied=0x%llx)",
+                 (unsigned long long)c.known, (unsigned long long)c.applied);
 }
 
 static int ing_init(const ms_config *cfg)
