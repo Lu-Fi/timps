@@ -30,6 +30,15 @@ semantic versioning.
   remains. Corpus scenario `28-standing-desync-reported` became
   `28-standing-desync-adopted`.
 
+- **T23: the access-unit buffer is 2 MiB + 64 KiB** (`MS_AU_BUF_MAX`, T23
+  build only; every other SoC keeps 1 MiB). A 1080p T23 IDR can exceed 1 MiB,
+  and an IDR dropped by timps - an access unit the encoder had delivered as
+  valid - left a client without a keyframe until the next GOP (seen as a
+  failed mp4 pull after a cold start at night, first IDR 1.09 MB). The buffer
+  is allocated on demand and one big buffer is recycled per source, so the
+  cost is about 1 MB after the first large IDR. `encoder.<n>.au_drops` still
+  counts what is dropped above the new limit.
+
 ### Fixed
 
 - **`image.core_wb_mode` accepts the SDK's white-balance presets again** (0..9,

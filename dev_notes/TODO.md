@@ -1168,6 +1168,11 @@ are a T23-specific `-DMS_AU_BUF_MAX` bump or raising `video0.min_qp` (the
 proven T23 lever from the 2026-08-21 investigation) - pick whichever the
 actual drop rate justifies, not preemptively.
 
+Update 2026-10-03: the T23-specific bump was made (`-DMS_AU_BUF_MAX=2162688` in
+the Makefile's T23 branch) after a cold-start night IDR of 1.09 MB was dropped
+and an mp4 pull failed; OpenIMP's T23 bitstream window is 2 MiB, so anything
+below it is a valid AU. Other SoCs stay at 1 MiB.
+
 ## HARDWARE-VERIFIED (v1.9.3, escalation paths 2026-08-25): seven review findings (A1, A3, A4, B1, B2, B5, B7)
 
 Update 2026-08-25: the three "Still open" hardware items below (A1's two

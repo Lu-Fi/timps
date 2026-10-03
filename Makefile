@@ -113,6 +113,14 @@ else ifeq ($(PLATFORM),T23)
 # framesource silently delivers NO frames (encoder PollingStream times out
 # forever). fs_create() has a compile-time tripwire against this.
 IMP_INC ?= $(INC_ROOT)/T23/1.3.0/en
+# Access-unit assembly buffer: 2 MiB + 64 KiB instead of the 1 MiB default. A
+# 1080p T23 IDR legitimately exceeds 1 MiB (classic controller is quality-led;
+# OpenIMP's bitstream window is 2 MiB and the encoder hands out anything below
+# it as valid), and a dropped IDR costs a whole GOP of unwatchable stream. The
+# extra 64 KiB covers the 4 start-code bytes added per pack. Pool memory is
+# demand-driven with one recycled big buffer per source, so the real cost is
+# about +1 MB after the first large IDR.
+PLATFORM_CFLAGS += -DMS_AU_BUF_MAX=2162688
 else ifeq ($(PLATFORM),T30)
 IMP_INC ?= $(INC_ROOT)/T30/1.0.5/zh
 else ifeq ($(PLATFORM),T40)
