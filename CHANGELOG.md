@@ -6,6 +6,15 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- **The startup recovery reboot releases the optional open-ISP boot guard
+  first.** `reboot(2)` skips init's stop scripts, so an image with thingino's
+  `S10isp-guard` (a crash-loop guard) would have counted timps' own one-shot
+  recovery reboot as a failed boot and kept the streamer off after it. The
+  reboot path now runs `/etc/init.d/S10isp-guard stop` if it exists (bounded to
+  ~3 s); images without the guard are unaffected.
+
 ## [1.9.32] - 2026-10-04
 
 ### Fixed

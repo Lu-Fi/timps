@@ -30,6 +30,7 @@
 #include <time.h>
 #include <errno.h>
 #include <sys/file.h>
+#include <sys/wait.h>
 #include <sys/reboot.h>
 #include <ucontext.h>
 
@@ -400,6 +401,32 @@ static int hal_stop_bounded(void)
 #define MS_STARTUP_REBOOT_MARKER "/etc/timps-startup-reboot.flag"
 #endif
 
+/* This reboot is intentional, but reboot(2) skips init's stop scripts. The
+ * optional open-ISP boot guard (thingino BR2_PACKAGE_THINGINO_ISP_GUARD, a
+ * crash-loop guard that treats a boot which did not stay up as a failed one)
+ * clears its mark in "stop"; run it by hand so the recovery reboot is not
+ * mistaken for the loop it exists to break. Best effort, bounded, and a no-op
+ * on images without the guard. */
+#ifndef MS_ISP_GUARD_SCRIPT
+#define MS_ISP_GUARD_SCRIPT "/etc/init.d/S10isp-guard"
+#endif
+static void guard_release(void)
+{
+    if (access(MS_ISP_GUARD_SCRIPT, X_OK) != 0) return;
+    pid_t pid = vfork();
+    if (pid < 0) return;
+    if (pid == 0) {
+        execl(MS_ISP_GUARD_SCRIPT, MS_ISP_GUARD_SCRIPT, "stop", (char *)NULL);
+        _exit(127);
+    }
+    for (int i = 0; i < 30; i++) {          /* up to ~3 s */
+        if (waitpid(pid, NULL, WNOHANG) != 0) return;
+        usleep(100000);
+    }
+    kill(pid, SIGKILL);
+    waitpid(pid, NULL, 0);
+}
+
 /* Bring-up, or (via g_hal_watchdog_gave_up, see hal.h) a runtime watchdog,
  * has given up for good ("why" says how). Escalate to ONE real reboot - but
  * ONLY one, ever, per incident: cam-04' hardware-verified run
@@ -456,6 +483,7 @@ static int startup_give_up(const char *why)
     LOGE(MOD,"%s - escalating to ONE reboot before giving up permanently "
              "(2026-08-22 T31 precedent: retries alone did not clear whatever "
              "the board was waiting on, only a real reboot did)", why);
+    guard_release();
     sync();
     reboot(RB_AUTOBOOT);
     /* unreachable if the syscall works; fall through to the normal give-up
