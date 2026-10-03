@@ -11,6 +11,8 @@ int  imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height);
 
 /* Start the shared 1 Hz text updater (call once, after all streams set up). */
 void imp_osd_start_updater(void);
+/* redraw all text regions once, synchronously (a source just became active) */
+void imp_osd_refresh_now(void);
 
 /* Tear down all OSD groups and stop the updater. */
 void imp_osd_stop(void);

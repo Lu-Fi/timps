@@ -41,6 +41,14 @@ semantic versioning.
 
 ### Fixed
 
+- **The OSD clock is current in the first frame after an idle period.** The
+  text updater sleeps while nobody watches, so the first `/snapshot.jpg` (or
+  the first frames of a new stream) showed the time and uptime of the last
+  moment anything had been active - minutes to hours old on a camera nobody
+  streams from. A source going idle -> active now redraws all text regions once
+  before its pipeline delivers frames (`imp_osd_refresh_now()`); while
+  streaming nothing changes, and an idle camera still spends no CPU on it.
+
 - **`image.core_wb_mode` accepts the SDK's white-balance presets again** (0..9,
   0..8 on T10/T20/T30). The 2026-08 range audit clamped it to 0..1 as if it
   were auto/manual only, so every preset the WebUI offers (daylight, cloudy,

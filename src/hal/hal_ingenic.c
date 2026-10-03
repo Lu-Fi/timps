@@ -5453,7 +5453,10 @@ static void ing_set_active(int src, int on)
     } else {
         for (int i=0;i<g_nv;i++) if (g_v[i].chn==src){ g_v[i].active=on; break; }
     }
-    if (on) act_wake();   /* unblock idle producer threads immediately */
+    if (on) {
+        imp_osd_refresh_now();   /* idle updater: fresh clock for the first frame */
+        act_wake();   /* unblock idle producer threads immediately */
+    }
 }
 
 static void ing_request_idr(int src)

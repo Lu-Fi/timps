@@ -583,6 +583,36 @@ static int osd_needed(void)
     return 0;
 }
 
+/* Re-render every text region. refresh_text() snapshots the item under
+ * config_str_lock and skips disabled ones (was gated on a lock-free .enabled). */
+static void osd_refresh_all(void)
+{
+    config_str_lock();
+    int mon = g_hcfg->osd.monitor_stream;
+    config_str_unlock();
+    osd_vars_set_fps(hub_get_fps(mon));
+    osd_vars_set_bitrate(hub_get_bitrate(mon));
+    OSD_LOCK();
+    for (int si=0; si<MS_MAX_VSTREAM; si++){
+        if (!g_os[si].used) continue;
+        for (int i=0;i<MS_MAX_OSD;i++)
+            if (g_os[si].r[i].rgn>=0 && g_os[si].r[i].is_text)
+                refresh_text(&g_os[si], &g_os[si].r[i]);
+    }
+    OSD_UNLOCK();
+}
+
+/* A source going idle -> active: the updater has been asleep since the last
+ * consumer left, so the regions still show that moment (measured 3 h stale on
+ * an idle camera, and the first /snapshot.jpg is taken before the updater's
+ * next tick). Redraw once now, before the pipeline delivers its first frame.
+ * Cheap and rare: only on the activation edge, never while streaming. */
+void imp_osd_refresh_now(void)
+{
+    if (!g_started || !g_hcfg) return;
+    osd_refresh_all();
+}
+
 static void *osd_thread(void *arg)
 {
     (void)arg;
@@ -591,21 +621,7 @@ static void *osd_thread(void *arg)
         int need = osd_needed();
         if (need){
             idle_cycles = 0;
-            config_str_lock();
-            int mon = g_hcfg->osd.monitor_stream;
-            config_str_unlock();
-            osd_vars_set_fps(hub_get_fps(mon));
-            osd_vars_set_bitrate(hub_get_bitrate(mon));
-            OSD_LOCK();
-            for (int si=0; si<MS_MAX_VSTREAM; si++){
-                if (!g_os[si].used) continue;
-                for (int i=0;i<MS_MAX_OSD;i++)
-                    if (g_os[si].r[i].rgn>=0 && g_os[si].r[i].is_text)
-                        refresh_text(&g_os[si], &g_os[si].r[i]);  /* refresh_text
-                            snapshots the item under config_str_lock and skips
-                            disabled ones (was gated on a lock-free .enabled) */
-            }
-            OSD_UNLOCK();
+            osd_refresh_all();
         } else if (++idle_cycles == 2){
             /* L16: 'retired' (the BGRA buffer replaced by the last update) is
              * normally only freed on the NEXT refresh_text()/setup_logo(),
@@ -786,6 +802,7 @@ void imp_osd_stop(void)
 int  imp_osd_setup(const ms_config *cfg, int s, int w, int h){ (void)cfg;(void)s;(void)w;(void)h; return -1; }
 void imp_osd_start_updater(void){}
 void imp_osd_stop(void){}
+void imp_osd_refresh_now(void){}
 #ifdef USE_CONTROL
 void imp_osd_apply(int stream, int item){ (void)stream; (void)item; }
 void imp_osd_privacy_apply(int stream, int item){ (void)stream; (void)item; }
