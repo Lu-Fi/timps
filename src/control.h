@@ -152,6 +152,10 @@ typedef struct {
      * in the body was understood. */
     char ign[CTRL_IGN_CAP];
     int  ign_full;
+    /* "unsupported": F_NOHW keys the body carried (feature absent on this SoC);
+     * not applied, not counted in accepted. JSON array body, prefixed names. */
+    char uns[CTRL_IGN_CAP];
+    int  uns_n;
 } ctrl_result;
 
 /* Returns 0 if the body was a JSON object, -1 if it was not parseable at all,
