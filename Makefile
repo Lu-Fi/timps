@@ -29,6 +29,8 @@ PLATFORM      ?= T31
 IMP_LIB       ?=            # directory containing libimp.a/.so (adds -L)
 SYSROOT       ?=            # optional --sysroot for the cross toolchain
 USE_FAAC      ?= 0          # 1 = software AAC audio via libfaac (browser audio)
+USE_OPENIMP   ?= 0          # 1 = built against OpenIMP (open libimp) instead of the vendor libimp: isp_caps.h/
+                            #     enc_caps.h advertise what the open stack really does. Default off = byte-identical build.
 USE_CONTROL   ?= 1          # live control endpoint (/control); optional, on by default (0 = off)
 USE_DAYNIGHT  ?= 1          # native automatic day/night detection thread; on by default (0 = off)
 USE_RECORD    ?= 1          # local SD recording (fMP4 segments + /control clips); on by default (0 = off, saves ~11KB)
@@ -293,6 +295,7 @@ all: target
 target:
 	$(CC) $(CFLAGS) $(if $(SYSROOT),--sysroot=$(SYSROOT)) \
 	  $(if $(filter 1,$(USE_FAAC)),-DUSE_FAAC) \
+	  $(if $(filter 1,$(USE_OPENIMP)),-DUSE_OPENIMP) \
 	  $(if $(filter 1,$(USE_CONTROL)),-DUSE_CONTROL) \
 	  $(if $(filter 1,$(USE_DAYNIGHT)),-DUSE_DAYNIGHT) \
 	  $(if $(filter 1,$(USE_RECORD)),-DUSE_RECORD) \
@@ -318,7 +321,7 @@ target:
 	  $(if $(filter 1,$(USE_PLAY_OPUS)),$(OPUSLIB)) \
 	  $(if $(filter 1,$(USE_STREAM_OPUS)),$(OPUS_ENC_LIB)) $(LIBS) -o $(BIN)
 	@rm -f $(TARGET_OBJS)
-	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT) USE_BACKCHANNEL=$(USE_BACKCHANNEL) USE_BC_AAC=$(USE_BC_AAC) USE_BC_WS=$(USE_BC_WS) USE_WEBRTC=$(USE_WEBRTC) USE_PLAY=$(USE_PLAY) USE_PLAY_OPUS=$(USE_PLAY_OPUS) USE_STREAM_OPUS=$(USE_STREAM_OPUS) USE_ROTATE=$(USE_ROTATE) USE_SW_ROTATE=$(USE_SW_ROTATE) USE_OSD_HINTING=$(USE_OSD_HINTING) USE_TRACE=$(USE_TRACE))"
+	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_OPENIMP=$(USE_OPENIMP) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT) USE_BACKCHANNEL=$(USE_BACKCHANNEL) USE_BC_AAC=$(USE_BC_AAC) USE_BC_WS=$(USE_BC_WS) USE_WEBRTC=$(USE_WEBRTC) USE_PLAY=$(USE_PLAY) USE_PLAY_OPUS=$(USE_PLAY_OPUS) USE_STREAM_OPUS=$(USE_STREAM_OPUS) USE_ROTATE=$(USE_ROTATE) USE_SW_ROTATE=$(USE_SW_ROTATE) USE_OSD_HINTING=$(USE_OSD_HINTING) USE_TRACE=$(USE_TRACE))"
 
 sim:
 	$(HOSTCC) $(CFLAGS) -DMS_VERSION='"$(VERSION)"' $(if $(filter 1,$(USE_CONTROL)),-DUSE_CONTROL) \

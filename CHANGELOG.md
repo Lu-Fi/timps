@@ -39,6 +39,13 @@ semantic versioning.
   cost is about 1 MB after the first large IDR. `encoder.<n>.au_drops` still
   counts what is dropped above the new limit.
 
+- **`USE_OPENIMP=1` build switch for the open libimp.** Compile-time only (no
+  runtime query): `make USE_OPENIMP=1` defines `-DUSE_OPENIMP`, and thingino's
+  `timps.mk` sets it when the OpenIMP package is selected. It currently changes
+  nothing; `isp_caps.h`/`enc_caps.h` will use it for features the open stack
+  adds once they are device-tested. Without it every object is byte-identical
+  to before (checked for T20/T21/T31).
+
 ### Fixed
 
 - **The OSD clock is current in the first frame after an idle period.** The

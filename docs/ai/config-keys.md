@@ -321,8 +321,8 @@ way to check.
 | `image.ae_compensation` | int | `128` | 0..255 | T10 T20 T23 T30 T31 C100 | `ISP_HAS_AECOMP` — **absent on T21** and on T40/T41. |
 | `image.max_again` | int | `160` | 0..255 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_GAINS`; absent on T40/T41. |
 | `image.max_dgain` | int | `80` | 0..255 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_GAINS`. |
-| `image.sinter_strength` | int | `128` | 0..255 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_NR`, spatial NR. |
-| `image.temper_strength` | int | `128` | 0..255 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_NR`, temporal NR. |
+| `image.sinter_strength` | int | `128` | 0..255 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_NR`, spatial NR. T10/T20/T21 with the vendor libimp: accepted but no effect (the vendor firmware renormalises it); acts with the open libimp (OpenIMP; 128 = the vendor picture). |
+| `image.temper_strength` | int | `128` | 0..255 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_NR`, temporal NR. Same OpenIMP note as `sinter_strength`. |
 | `image.dpc_strength` | int | `128` | 0..255 | T23 T31 C100 | `ISP_HAS_DPC`. |
 | `image.defog_strength` | int | `128` | 0..255 | T23 T31 C100 | `ISP_HAS_DEFOG`. |
 | `image.drc_strength` | int | `128` | 0..255 | T21 T23 T31 C100 | `ISP_HAS_DRC` (WDR). |
@@ -413,8 +413,8 @@ internal channel wiring, deliberately not exposed over HTTP.
 | `qp` | int | `35` / `35` | 1..51 | live on classic SoCs only | **Only consumed when `rc_mode = fixqp`** (it becomes `iInitialQP` / `attrH264FixQp.qp`). Under CBR/VBR/smart/capped_* it has no consumer at all — use `min_qp`/`max_qp` there. Deliberately **not** live on T31/C100/T40/T41: `SetChnAttrRcMode` writes it into the struct the next Get reads back but never re-programs the running channel (measured on T31X). |
 | `min_qp` | int | `20` / `20` | 1..51 | **live** everywhere | |
 | `max_qp` | int | `45` / `45` | 1..51 | **live** everywhere | |
-| `quality_lvl` | int | `2` / `2` | 0..7 | live on classic SoCs; **no effect** on T31/C100/T40/T41 | VBR/Smart: `minBitRate = bitrate * quality[lvl]`. No new-API equivalent exists anywhere; the HAL warns once if it deviates from the default. |
-| `change_pos` | int | `80` / `80` | 50..100 | live on classic SoCs; **no effect** on T31/C100/T40/T41 | VBR/Smart: % of bitrate above which QP is raised. |
+| `quality_lvl` | int | `2` / `2` | 0..7 | live on classic SoCs; **no effect** on T31/C100/T40/T41| VBR/Smart: `minBitRate = bitrate * quality[lvl]`. No new-API equivalent exists anywhere; the HAL warns once if it deviates from the default. |
+| `change_pos` | int | `80` / `80` | 50..100 | live on classic SoCs; **no effect** on T31/C100/T40/T41| VBR/Smart: % of bitrate above which QP is raised. |
 | `i_bias_lvl` | int | `0` / `0` | -3..3 | live on classic SoCs and T31/C100; **no effect at all** on T40/T41 | VBR+CBR I-frame QP bias. `ENC_HAS_QPIPDELTA` is defined for **T31/C100 only** (`src/hal/hal_ingenic.c`): T40 and T41 have no `IMP_Encoder_SetChnQpIPDelta` and no new-API struct field, so the value is parsed, clamped, persisted, echoed and **ignored** (one WARN per session). A restart does not help. |
 | `fluc_lvl` | int | `0` / `0` | 0..4 | **never live anywhere**; classic-SoC restart only | **H.265 only** — the H.264 rc structs have no `flucLvl` field. It is written into `attrH265Vbr`/`attrH265Cbr` in `classic_rc_fill()` and nowhere else, so: no effect on T31/C100/T40/T41 (no new-API equivalent), and inert on T10/T20/T23 because `codec = h265` is coerced away there. On T21/T30 it reaches the struct at channel creation, but classic H.265 channels are restart-bound (the classic `SetChnAttrRcMode` is H.264-only), so it never applies live. |
 | `rotation` | enum/int | `0` / `0` | `0`, `90`, `270`, plus `180` on T40/T41; legacy `1`→90, `2`→270 | restart | See the prose below. Unsupported values coerce to `0` with a warning. |
