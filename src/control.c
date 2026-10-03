@@ -203,6 +203,8 @@ typedef struct {
      * name too long to carry), the same contract as echo_full/defer_full. */
     char ign[CTRL_IGN_CAP];
     int  ign_off, ign_full;
+    char uns[CTRL_IGN_CAP];     /* F_NOHW keys carried by the body (names from tables) */
+    int  uns_off, uns_n;
 } ctrl_scratch_t;
 
 static void ign_add(ctrl_scratch_t *sc, const char *key)
@@ -611,6 +613,15 @@ static void apply_ctrl_fields(ctrl_scratch_t *sc, ctrl_changes *ch, const char *
         if (!get_val(s, e, tbl[i].name, v, sizeof v) &&
             !(tbl[i].alias && get_val(s, e, tbl[i].alias, v, sizeof v))) continue;
         snprintf(full, sizeof full, "%s.%s", prefix, tbl[i].name);
+        if (tbl[i].flags & F_NOHW) {          /* feature absent on this SoC */
+            int w = snprintf(sc->uns + sc->uns_off, sizeof sc->uns - (size_t)sc->uns_off,
+                             "%s\"%s\"", sc->uns_off ? "," : "", full);
+            if (w > 0 && sc->uns_off + w < (int)sizeof sc->uns) sc->uns_off += w;
+            else sc->uns[sc->uns_off] = 0;
+            sc->uns_n++;
+            LOGW(MOD,"%s: not supported on this SoC, ignored", full);
+            continue;
+        }
         timps_apply_setting(sc, ch, full, v);
     }
 }
@@ -743,7 +754,7 @@ int control_apply_json(const char *json, ctrl_result *res)
     if (res) { res->accepted = res->changed = res->rejected = 0; res->not_persisted = 0;
                res->deferred = 0; res->echo[0] = 0; res->echo_full = 1;
                res->defer[0] = 0; res->defer_full = 1;
-               res->ign[0] = 0; res->ign_full = 1; }
+               res->ign[0] = 0; res->ign_full = 1; res->uns[0] = 0; res->uns_n = 0; }
     if (!json || !json[0]) return -1;
     /* Not a JSON object at all - the hand-rolled scanner would simply find
      * nothing and the old code answered 200 to it. Say so instead. */
@@ -1102,6 +1113,8 @@ int control_apply_json(const char *json, ctrl_result *res)
         res->defer_full = sc.defer_full;
         snprintf(res->ign, sizeof res->ign, "%s", sc.ign);
         res->ign_full = sc.ign_full;
+        snprintf(res->uns, sizeof res->uns, "%s", sc.uns);
+        res->uns_n = sc.uns_n;
     }
     free(ch);
     pthread_mutex_unlock(&apply_mu);

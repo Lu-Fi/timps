@@ -675,62 +675,62 @@ static const cfg_field sensor_fields[] = {
 #ifdef ISP_HAS_HUE
 #define CAP_HUE F_CAP
 #else
-#define CAP_HUE 0
+#define CAP_HUE F_NOHW
 #endif
 #ifdef ISP_HAS_AECOMP
 #define CAP_AECOMP F_CAP
 #else
-#define CAP_AECOMP 0
+#define CAP_AECOMP F_NOHW
 #endif
 #ifdef ISP_HAS_GAINS
 #define CAP_GAINS F_CAP
 #else
-#define CAP_GAINS 0
+#define CAP_GAINS F_NOHW
 #endif
 #ifdef ISP_HAS_NR
 #define CAP_NR F_CAP
 #else
-#define CAP_NR 0
+#define CAP_NR F_NOHW
 #endif
 #ifdef ISP_HAS_DPC
 #define CAP_DPC F_CAP
 #else
-#define CAP_DPC 0
+#define CAP_DPC F_NOHW
 #endif
 #ifdef ISP_HAS_DEFOG
 #define CAP_DEFOG F_CAP
 #else
-#define CAP_DEFOG 0
+#define CAP_DEFOG F_NOHW
 #endif
 #ifdef ISP_HAS_DRC
 #define CAP_DRC F_CAP
 #else
-#define CAP_DRC 0
+#define CAP_DRC F_NOHW
 #endif
 #ifdef ISP_HAS_HILIGHT
 #define CAP_HILIGHT F_CAP
 #else
-#define CAP_HILIGHT 0
+#define CAP_HILIGHT F_NOHW
 #endif
 #ifdef ISP_HAS_BACKLIGHT
 #define CAP_BACKLIGHT F_CAP
 #else
-#define CAP_BACKLIGHT 0
+#define CAP_BACKLIGHT F_NOHW
 #endif
 #ifdef ISP_HAS_COLORFX
 #define CAP_COLORFX F_CAP
 #else
-#define CAP_COLORFX 0
+#define CAP_COLORFX F_NOHW
 #endif
 #ifdef ISP_HAS_SCENE
 #define CAP_SCENE F_CAP
 #else
-#define CAP_SCENE 0
+#define CAP_SCENE F_NOHW
 #endif
 #ifdef ISP_HAS_WB
 #define CAP_WB F_CAP
 #else
-#define CAP_WB 0
+#define CAP_WB F_NOHW
 #endif
 /* core_wb_mode is the SDK's enum isp_core_wb_mode, passed straight to
  * IMP_ISP_Tuning_SetWB: auto, manual, daylight, cloudy, incandescent,
@@ -747,7 +747,7 @@ static const cfg_field sensor_fields[] = {
 #if defined(ISP_HAS_AE_IT_MAX) || defined(ISP_HAS_AE_IT_RANGE)
 #define CAP_AEITMAX F_CAP
 #else
-#define CAP_AEITMAX 0
+#define CAP_AEITMAX F_NOHW
 #endif
 static const cfg_field image_fields[] = {
     F("brightness",             0, brightness,             T_INT, F_CTRL|F_CAP,          0,255),
@@ -821,12 +821,12 @@ static const cfg_field image_fields[] = {
 #ifdef AUDIO_HAS_ALC_GAIN
 #define CAP_ALC F_CAP
 #else
-#define CAP_ALC 0
+#define CAP_ALC F_NOHW
 #endif
 #if defined(USE_PLAY) || defined(USE_BACKCHANNEL)
 #define CAP_SPK F_CAP
 #else
-#define CAP_SPK 0
+#define CAP_SPK F_NOHW
 #endif
 static const cfg_field audio_fields[] = {
     F ("enabled",            0, enabled,            T_BOOL,   F_CTRL|F_RESTART, 0,0),
