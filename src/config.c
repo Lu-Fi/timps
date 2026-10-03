@@ -782,6 +782,28 @@ static const cfg_field image_fields[] = {
      * sensor range anyway, so this only rejects nonsense. */
     F("ae_it_max_us",           0, ae_it_max_us,           T_INT, F_ATOMIC|F_CTRL|CAP_AEITMAX, 0,1000000),
 };
+/* Runtime restriction of the baseline above (isp_caps.h ISPCAP_RT_*): which
+ * IMPISPCaps bit stands for which image.* key. core_wb_mode/wb_rgain/wb_bgain
+ * are one SetWB call, so they share a bit. */
+static const struct { const char *key; unsigned char bit; } image_rt_bits[] = {
+    {"brightness", ISPCAP_RT_BRIGHTNESS},   {"contrast", ISPCAP_RT_CONTRAST},
+    {"saturation", ISPCAP_RT_SATURATION},   {"sharpness", ISPCAP_RT_SHARPNESS},
+    {"hue", ISPCAP_RT_HUE},                 {"hflip", ISPCAP_RT_HFLIP},
+    {"vflip", ISPCAP_RT_VFLIP},             {"running_mode", ISPCAP_RT_RUNNING_MODE},
+    {"anti_flicker", ISPCAP_RT_ANTIFLICKER},{"ae_compensation", ISPCAP_RT_AE_COMP},
+    {"max_again", ISPCAP_RT_MAX_AGAIN},     {"max_dgain", ISPCAP_RT_MAX_DGAIN},
+    {"sinter_strength", ISPCAP_RT_SINTER},  {"temper_strength", ISPCAP_RT_TEMPER},
+    {"dpc_strength", ISPCAP_RT_DPC},        {"defog_strength", ISPCAP_RT_DEFOG},
+    {"drc_strength", ISPCAP_RT_DRC},        {"highlight_depress", ISPCAP_RT_HILIGHT},
+    {"backlight_compensation", ISPCAP_RT_BACKLIGHT},
+    {"colorfx", ISPCAP_RT_COLORFX},         {"scene", ISPCAP_RT_SCENE},
+    {"core_wb_mode", ISPCAP_RT_WB},         {"wb_rgain", ISPCAP_RT_WB},
+    {"wb_bgain", ISPCAP_RT_WB},             {"ae_it_max_us", ISPCAP_RT_AE_IT_MAX},
+};
+/* bit i set = image_fields[i] is not applied by the loaded libimp/driver.
+ * Written once by the HAL at init, before httpd starts; read-only after. */
+static uint64_t image_rt_nohw;
+
 #undef CAP_COLORFX
 #undef CAP_SCENE
 #undef CAP_HUE
@@ -2327,6 +2349,47 @@ unlock:
  * caller must never walk a table's fields unconditionally. */
 const cfg_field *cfg_fields_image(int *n)     { *n = NF(image_fields);     return image_fields; }
 const cfg_field *cfg_fields_audio(int *n)     { *n = NF(audio_fields);     return audio_fields; }
+
+int cfg_image_caps_restrict(uint64_t known, uint64_t applied, char *out, size_t outsz)
+{
+    int n = 0;
+    size_t off = 0;
+    if (out && outsz) out[0] = 0;
+    for (size_t i = 0; i < NF(image_fields); i++){
+        if (image_fields[i].flags & F_NOHW) continue;     /* already out */
+        for (size_t j = 0; j < NF(image_rt_bits); j++){
+            if (strcmp(image_rt_bits[j].key, image_fields[i].name)) continue;
+            uint64_t b = 1ULL << image_rt_bits[j].bit;
+            if ((known & b) && !(applied & b)){
+                image_rt_nohw |= 1ULL << i;
+                n++;
+                if (out && off < outsz){
+                    int w = snprintf(out + off, outsz - off, "%s%s",
+                                     off ? "," : "", image_fields[i].name);
+                    if (w > 0) off += (size_t)w;
+                }
+            }
+            break;
+        }
+    }
+    return n;
+}
+
+int cfg_field_nohw(const cfg_field *f)
+{
+    if (!f) return 0;
+    if (f->flags & F_NOHW) return 1;
+    if (f >= image_fields && f < image_fields + NF(image_fields))
+        return (int)((image_rt_nohw >> (f - image_fields)) & 1);
+    return 0;
+}
+
+int cfg_image_key_nohw(const char *key)
+{
+    for (size_t i = 0; i < NF(image_fields); i++)
+        if (!strcmp(image_fields[i].name, key)) return cfg_field_nohw(&image_fields[i]);
+    return 0;
+}
 const cfg_field *cfg_fields_sensor(int *n)    { *n = NF(sensor_fields);    return sensor_fields; }
 const cfg_field *cfg_fields_osd(int *n)       { *n = NF(osd_fields);       return osd_fields; }
 const cfg_field *cfg_fields_osd_item(int *n)  { *n = NF(osd_item_fields);  return osd_item_fields; }

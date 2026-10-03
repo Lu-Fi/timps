@@ -298,14 +298,31 @@ Pitfalls
 ## 4. `image.*` (ISP tuning)
 
 Every `image.*` key is `F_CTRL` and **live** (applied by `isp_apply_image()`
-under `g_isp_lock` on each POST). Every key is also **capability-gated**: a key
-whose `ISP_HAS_*` macro is undefined on this SoC is still parsed, clamped,
-persisted and echoed, but the IMP call is never issued and the log says
-`image.<k> unsupported on this platform (persisted only)`. That line is a
-**LOGD**, i.e. invisible at the default `general.loglevel = 2` — add
-`general.debug_modules = HAL_ING` to see it. The `caps.image`
-array of `GET /control` lists exactly the supported subset, and is the reliable
-way to check.
+under `g_isp_lock` on each POST). Every key is also **capability-gated** in two
+steps:
+
+1. **Compile time** — a key whose `ISP_HAS_*` macro (`src/isp_caps.h`, the
+   vendor SDK header matrix) is undefined on this SoC is `F_NOHW`.
+2. **Run time** — when the loaded libimp is OpenIMP it exports
+   `IMP_ISP_QueryCaps` (OpenIMP extension, weak-bound like
+   `SetColorfxMode`). `hal_ingenic.c` calls it once in `ing_init()`, before
+   httpd starts, and every key the query marks *known but not applied* is
+   treated like `F_NOHW` too (`cfg_image_caps_restrict()` in `config.c`). It
+   only removes keys, never adds one; a vendor libimp has no such symbol and
+   step 1 alone applies. The start log says which keys it removed:
+   `libimp caps query: N image key(s) not applied by this driver, ...`.
+   Examples (OpenIMP 2026-10): T21 `ae_it_max_us`, T41 `hflip`/`vflip`,
+   T23 `ae_compensation`/`backlight_compensation`/`highlight_depress` when
+   the driver runs with `source_ae_oem=0`.
+
+A gated key in a `POST /control` body is not applied and not persisted; the
+reply lists it in `"unsupported"` (422 `not_supported_on_soc` when nothing else
+was accepted). In a config file it is still parsed and kept, and at start the
+HAL skips it with `image.<k> unsupported on this platform (skipped)` — a
+**LOGD**, i.e. invisible at the default `general.loglevel = 2`; add
+`general.debug_modules = HAL_ING` to see it. The `caps.image` array of
+`GET /control` lists exactly the supported subset, and is the reliable way to
+check.
 
 | Key | Type | Default | Range | Supported on | Notes |
 | --- | --- | --- | --- | --- | --- |

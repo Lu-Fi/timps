@@ -951,6 +951,8 @@ static int isp_apply_image(const char *k)
     (void)k;
     return 1;
 #else
+    /* the loaded libimp said the hardware ignores it (isp_query_caps) */
+    if (cfg_image_key_nohw(k)) return 0;
     const ms_image_cfg *im = &g_hcfg->image;
 #ifdef ISP_NEW_TUNING_API           /* T40/T41: IMPVI_NUM + pointer args */
     if (!strcmp(k,"brightness")){ unsigned char u=(unsigned char)im->brightness;
@@ -5255,9 +5257,43 @@ static void td_report(const char *what)
 }
 
 /* ================= HAL entry points ================= */
+/* OpenIMP extension IMP_ISP_QueryCaps (openimp include/openimp/openimp_caps.h):
+ * which tuning setters the open driver really applies on this SoC. Bound
+ * weakly like SetColorfxMode above: a vendor libimp has no such export and the
+ * isp_caps.h baseline stays exactly as it is. The struct mirrors IMPISPCaps
+ * (ABI: size/version/known/applied, bit numbers = ISPCAP_RT_*). */
+typedef struct { uint32_t size, version; uint64_t known, applied; } ms_isp_caps_rt;
+extern int ms_isp_query_caps(ms_isp_caps_rt *c) __asm__("IMP_ISP_QueryCaps") __attribute__((weak));
+
+/* Once per process, before httpd starts (main.c: hal init precedes
+ * httpd_start), so the first GET/POST /control already sees the result.
+ * A static table lookup in the library: no ISP access, no measurable cost. */
+static void isp_query_caps(void)
+{
+    static int done;
+    if (done) return;
+    done = 1;
+    if (!ms_isp_query_caps) return;
+    ms_isp_caps_rt c; memset(&c, 0, sizeof c); c.size = sizeof c;
+    int rc = ms_isp_query_caps(&c);
+    if (rc != 0 || c.version < ISPCAP_RT_VERSION){
+        LOGW(MOD,"IMP_ISP_QueryCaps failed (rc=%d ver=%u) - static caps kept",
+             rc, (unsigned)c.version);
+        return;
+    }
+    char names[400];
+    int n = cfg_image_caps_restrict(c.known, c.applied, names, sizeof names);
+    if (n) LOGI(MOD,"libimp caps query: %d image key(s) not applied by this "
+                    "driver, reported as unsupported: %s", n, names);
+    else   LOGI(MOD,"libimp caps query: all advertised image keys applied "
+                    "(known=0x%llx applied=0x%llx)",
+                (unsigned long long)c.known, (unsigned long long)c.applied);
+}
+
 static int ing_init(const ms_config *cfg)
 {
     g_hcfg=cfg;
+    isp_query_caps();
     int r = isp_init();
 #ifdef USE_CONTROL
     if (r==0){ hub_set_control_cb(ing_control); hub_set_control_commit_cb(ing_control_commit); }

@@ -248,8 +248,12 @@ always wins. T40/T41 and the host sim have no registry, so set them there.
 `image.wb_live` = `{"rgain":R,"bgain":B}`, the gains in effect right now (in
 auto: what AWB picked). POSTing them with `core_wb_mode=1` switches to manual
 without a visible change. Missing where `ISP_HAS_WB` is unset (T40/T41).
-Which of these the SoC really supports is listed in `caps.image`. Unsupported
-values still persist; the HAL skips them.
+Which of these the SoC really supports is listed in `caps.image`. A key outside
+it is not applied and not persisted by `POST /control`; the reply names it in
+`"unsupported"` (see the response fields below). Since the caps query, the list
+is the compile-time SDK matrix (`src/isp_caps.h`) **minus** what an OpenIMP
+libimp reports it does not apply (`IMP_ISP_QueryCaps`, read once at start); a
+vendor libimp leaves the matrix unchanged.
 
 **`video0.` / `video1.`**
 ```
@@ -567,7 +571,7 @@ differently-compiled binaries.
 
 | `caps` field | Meaning |
 | --- | --- |
-| `caps.image[]` | The `image.*` keys this SoC actually supports |
+| `caps.image[]` | The `image.*` keys this SoC actually supports: the SDK matrix (`src/isp_caps.h`), narrowed at start by OpenIMP's `IMP_ISP_QueryCaps` when the loaded libimp exports it (keys the open driver stores but ignores drop out; nothing is ever added) |
 | `caps.audio[]` | The `audio.*` keys this build/SoC supports |
 | `caps.osd[]` | The OSD item fields that apply **live** (`text,x,y,font_size,color,transparency,outline,outline_color`) |
 | `caps.restart[]` | Restart-only keys: the sections `"video"`/`"sensor"` (except `rtsp_path` and `caps.video_live`), plus — since v1.9.20 — every `F_RESTART` key of `audio.*`/`osd.*` as `"audio.codec"`, `"osd.font_path"`, …. v1.9.19: `["video","sensor","osd.enabled"]` |
@@ -641,7 +645,7 @@ Response body (same shape whatever the status):
 
 ```json
 {"ok":true,"accepted":2,"changed":1,"rejected":0,"not_persisted":0,
- "deferred":0,"deferred_keys":[],"ignored":[],
+ "deferred":0,"deferred_keys":[],"ignored":[],"unsupported":[],
  "applied":{"image.brightness":"255"}}
 ```
 
@@ -658,6 +662,11 @@ Response body (same shape whatever the status):
   keys too.
 - `ignored` — key names this build did not apply (typo, wrong section, gated
   out, or no write path). Fully prefixed, e.g. `"video1.quality_level"`.
+- `unsupported` — known keys this SoC/driver cannot apply (outside
+  `caps.image`/`caps.audio`): not applied, not persisted, **not** counted in
+  `accepted` or `rejected`. When non-empty, `"unsupported_reason":"not
+  supported on this SoC"` follows. Covers the compile-time matrix and the
+  keys an OpenIMP libimp reported as not applied (`IMP_ISP_QueryCaps`).
 - `applied` — echo of the **effective** value after clamping.
 - `truncated` / `deferred_truncated` / `ignored_truncated` — present and `true`
   when the matching list overran its buffer (`applied` 512 B, `deferred_keys`
@@ -684,6 +693,7 @@ Status codes and their `reason` discriminators:
 | 400 | `not_json` | Body was not a JSON object | Client bug |
 | 422 | `unknown_fields` | Parsed, but **no key this build knows** | Check spelling **and** whether the feature is compiled in (`caps`) — retrying identically will never work |
 | 409 | `values_rejected` | Keys were all known, all values refused | Key names were right, fix the values |
+| 422 | `not_supported_on_soc` | Every known key in the body is in `unsupported` | The SoC/driver cannot do it; see `caps.image` |
 | 411 | — | `Transfer-Encoding` instead of `Content-Length`, or a missing/zero length | Send a fixed-length body |
 | 413 | — | Headers + body exceed the 4096-byte buffer | Split the request |
 | 503 | `oom` | Allocation failure | Retry; not a client error |

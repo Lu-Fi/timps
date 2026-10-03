@@ -765,6 +765,15 @@ typedef struct {
  * returned table are POST-eligible; see the flag's doc comment above. */
 const cfg_field *cfg_fields_image(int *n);
 const cfg_field *cfg_fields_audio(int *n);
+/* Runtime restriction of image_fields[]' F_CAP baseline (isp_caps.h), from
+ * OpenIMP's IMP_ISP_QueryCaps: every key whose ISPCAP_RT_* bit is in known
+ * but not in applied becomes "no hardware" like F_NOHW. Only restricts.
+ * Call once before httpd starts. Returns the number of keys restricted;
+ * out (optional) gets their comma-separated names. */
+int cfg_image_caps_restrict(uint64_t known, uint64_t applied, char *out, size_t outsz);
+/* F_NOHW, or restricted at run time by cfg_image_caps_restrict() */
+int cfg_field_nohw(const cfg_field *f);
+int cfg_image_key_nohw(const char *key);   /* same, by image.* key name */
 const cfg_field *cfg_fields_sensor(int *n);
 const cfg_field *cfg_fields_osd(int *n);       /* osd.* globals (not items) */
 const cfg_field *cfg_fields_osd_item(int *n);  /* one OSD overlay item */

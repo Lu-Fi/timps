@@ -20,7 +20,23 @@
  *   SetAeComp                            -> T10 T20 T23 T30 T31 C100 (not T21)
  *   SetHVFLIP                            -> flip path on T40/T41
  * A build without any PLATFORM_* macro (host sim) enables everything so the
- * WebUI can be exercised against timpsd-sim. */
+ * WebUI can be exercised against timpsd-sim.
+ *
+ * This is the BASELINE: what the SDK headers declare. A setter that exists
+ * may still be ignored by the driver. When the loaded libimp is OpenIMP it
+ * exports IMP_ISP_QueryCaps(), and hal_ingenic.c uses it once at init to
+ * RESTRICT this baseline at run time (never to extend it) - see
+ * ISPCAP_RT_* below and cfg_image_caps_restrict() in config.c. Restricted
+ * keys then behave exactly like the compile-time F_NOHW ones: missing from
+ * GET /control "caps", named in the POST reply's "unsupported".
+ *
+ * Audited 2026-10-03 against the vendored headers (include/<SoC>/<ver>) and
+ * the device tests of that day: every key the tests saw as "ok:true but no
+ * effect" (drc on T10/T20, defog on T10/T20, dpc on T10/T20/T21) is already
+ * outside this baseline, i.e. F_NOHW; the ok:true came from a timps build
+ * before the "unsupported" reply. Keys whose SDK setter exists but whose open
+ * driver ignores it (T21 ae_it_max_us, T41 hflip/vflip) are left to the
+ * runtime query because the vendor stack may honour them. */
 #ifndef MS_ISP_CAPS_H
 #define MS_ISP_CAPS_H
 
@@ -57,7 +73,9 @@
 #endif
 
 /* IMP_ISP_Tuning_SetColorfxMode / SetSceneMode (+ Get). Declared in the vendor
- * T20/T21/T30 headers; absent from the T23/T31 headers but exported by
+ * T20/T21/T30 headers (T10 builds use the T20 3.12.0 header, which declares
+ * them too, but T10 is not device-tested yet, so it stays out); absent from
+ * the T23/T31 headers but exported by OpenIMP's libimp and applied by
  * open-tx-isp (T21, T23, T31 verified). hal_ingenic.c binds them through weak
  * symbols, so a libimp without them only costs a logged warning. */
 #if defined(PLATFORM_T20)||defined(PLATFORM_T21)||defined(PLATFORM_T23)|| \
@@ -139,5 +157,34 @@
     defined(PLATFORM_C100)||!defined(ISP_PLATFORM_KNOWN)
 #define ISP_HAS_SENSOR_ATTR 1
 #endif
+
+/* Runtime restriction: bit numbers of OpenIMP's IMPISPCaps (openimp
+ * include/openimp/openimp_caps.h, IMP_ISP_CAP_*). Fixed by that ABI - never
+ * renumber. hal_ingenic.c binds IMP_ISP_QueryCaps through a weak symbol, so a
+ * vendor libimp (no such export) leaves the baseline untouched. */
+#define ISPCAP_RT_VERSION      1
+#define ISPCAP_RT_BRIGHTNESS   0
+#define ISPCAP_RT_CONTRAST     1
+#define ISPCAP_RT_SATURATION   2
+#define ISPCAP_RT_SHARPNESS    3
+#define ISPCAP_RT_HUE          4
+#define ISPCAP_RT_HFLIP        5
+#define ISPCAP_RT_VFLIP        6
+#define ISPCAP_RT_RUNNING_MODE 7
+#define ISPCAP_RT_ANTIFLICKER  8
+#define ISPCAP_RT_AE_COMP      9
+#define ISPCAP_RT_MAX_AGAIN    10
+#define ISPCAP_RT_MAX_DGAIN    11
+#define ISPCAP_RT_SINTER       12
+#define ISPCAP_RT_TEMPER       13
+#define ISPCAP_RT_DPC          14
+#define ISPCAP_RT_DEFOG        15
+#define ISPCAP_RT_DRC          16
+#define ISPCAP_RT_HILIGHT      17
+#define ISPCAP_RT_BACKLIGHT    18
+#define ISPCAP_RT_COLORFX      19
+#define ISPCAP_RT_SCENE        20
+#define ISPCAP_RT_WB           21
+#define ISPCAP_RT_AE_IT_MAX    22
 
 #endif /* MS_ISP_CAPS_H */
