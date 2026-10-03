@@ -1,0 +1,65 @@
+{
+  "name": "32-boot-night-lit-room-falls-back",
+  "incident": "guard for 31: the silent boot measurement must not turn a lit room into night",
+  "description": "The counterpart of scenario 31: the camera restarts in night mode in a room that is actually lit. With the LEDs off the scene still reads 2300 against 2498 lit (r = 0.92), so the illuminator is not what makes this light and the silent probe cannot confirm night. The boot measurement must then do what it always did - switch to the day pipeline and read it - and finding 600 there (below day_gain 768) it stays day. The expected log pair proves the fallback was taken and that the day verdict came from the audible probe, not from the silent ratio.",
+  "scale": 60,
+  "duration_s": 180,
+  "initial_mode": "night",
+  "config": {
+    "daynight.day_gain": 768,
+    "daynight.night_gain": 4096
+  },
+  "interp": "log",
+  "day_gain": [
+    [
+      0,
+      600
+    ],
+    [
+      180,
+      600
+    ]
+  ],
+  "night_gain": [
+    [
+      0,
+      2498
+    ],
+    [
+      180,
+      2498
+    ]
+  ],
+  "night_gain_noir": [
+    [
+      0,
+      2300
+    ],
+    [
+      180,
+      2300
+    ]
+  ],
+  "expect": {
+    "mode_at": [
+      [
+        120,
+        "day"
+      ],
+      [
+        170,
+        "day"
+      ]
+    ],
+    "max_switches": 2,
+    "max_ir_probes": 1,
+    "monotonicity": "skip",
+    "expect_log": [
+      "boot: silent measurement is not a clean night",
+      "boot: measured day"
+    ],
+    "forbid_log": [
+      "boot: night confirmed by the silent probe"
+    ]
+  }
+}

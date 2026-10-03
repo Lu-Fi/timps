@@ -46,6 +46,19 @@ semantic versioning.
   adds once they are device-tested. Without it every object is byte-identical
   to before (checked for T20/T21/T31).
 
+- **Day/night: a restart at night no longer flips the cut filter twice.** A
+  boot that came up in night used to switch to the day pipeline to measure,
+  read the day level and switch straight back (IR-cut click and a colour flash
+  on every timpsd start, seen on T20 and T23). When the board has a switchable
+  illuminator (`daynight.irprobe_cmd`, default `timps-irprobe`) the boot now
+  asks one silent probe first - LEDs off for a few seconds, nothing else. A
+  clean night (illuminator ratio >= 1.5) ends the boot measurement with
+  nothing switched and anchors the night reference; anything else (lit room,
+  LEDs off at boot, unusable reading, railed meter, no illuminator) falls
+  through to the previous audible day probe, so those boots behave as before.
+  Corpus: `31-boot-night-silent-confirms` (0 switches) and
+  `32-boot-night-lit-room-falls-back`; all 32 scenarios pass.
+
 ### Fixed
 
 - **The OSD clock is current in the first frame after an idle period.** The

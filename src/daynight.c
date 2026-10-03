@@ -1242,6 +1242,10 @@ static void *dn_thread(void *arg)
      * its verdict can name itself and so it does not arm the running_mode
      * re-assert off a value nothing has written yet (see both call sites). */
     int     boot_deciding = 0;
+    /* the boot measurement went the SILENT way (illuminator off, no click) and
+     * its verdict is still pending; anything but a clean night falls back to
+     * the audible boot probe, i.e. exactly the old behaviour. */
+    int     boot_silent = 0;
     /* what the IR-cut filter costs in THIS scene, measured: the day pipeline
      * reading divided by the night reading that the ratio verdict left. The
      * silent probe answers "is the illuminator earning its keep"; the mode
@@ -1402,7 +1406,7 @@ static void *dn_thread(void *arg)
             filter_cost = ir_night_at = -1.0f;   /* re-measure from scratch */
             ir_night_ms = 0;
             ir_fails = 0; g_ir_unusable = 0;     /* and re-test the illuminator */
-            booted = 0; boot_at = now; boot_deciding = 0;
+            booted = 0; boot_at = now; boot_deciding = 0; boot_silent = 0;
             warned_noisp = 0; hb_defer_logged = 0; blind_warned = 0;
             LOGI(MOD, "auto day/night enabled");
         }
@@ -1752,6 +1756,34 @@ static void *dn_thread(void *arg)
                               "not an unverified mode, and adopting a value "
                               "read off a rail would be adopting nothing");
 
+                /* Came up in NIGHT with an illuminator that can be switched on
+                 * its own: ask the cheap question first. One silent probe -
+                 * LEDs off for a few seconds, no cut-filter click, no colour
+                 * switch - answers "is this light mine?". Only a clean "yes"
+                 * ends the boot measurement here (a dark room, the common
+                 * case after a restart at night); every other outcome falls
+                 * through to the audible day probe below, so a lit room, an
+                 * unusable ratio or a board whose LEDs were not on at boot
+                 * behave exactly as before. */
+                {
+                    int came = (sm.isp >= 0) ? sm.isp
+                             : (running_mode ? DN_NIGHT : DN_DAY);
+                    if (came == DN_NIGHT && dn->irprobe_cmd[0] &&
+                        !g_ir_unusable && s > 0.0f &&
+                        !dn_clipped(sm.headroom)) {
+                        boot_silent = 1;
+                        cur = DN_NIGHT;
+                        ref = -1.0f; ref_due = 0; ref_wait_logged = 0;
+                        sust_min = win_max = -1.0f; win_at = 0;
+                        ema_fast = ema_slow = -1.0f; trend_since = 0;
+                        want_probe = 1; probe_why = "boot measure";
+                        LOGI(MOD, "boot: came up in night (exposure %.0f) - "
+                                  "measuring silently first (illuminator off "
+                                  "for %ds, no cut-filter click)",
+                             (double)s, DN_PROBE_SETTLE_S);
+                        break;
+                    }
+                }
                 boot_deciding = 1;
                 /* The probe path is the only route into the day reference
                  * state, and by construction it starts from night. cur here
@@ -1804,8 +1836,31 @@ static void *dn_thread(void *arg)
                 dn_irprobe(dn->irprobe_cmd, 1);      /* light first, judge after */
                 s = -1.0f; stable_n = 0;             /* the reading changes back */
                 float r = (d_lit > 0.0f && d_dark > 0.0f) ? d_dark / d_lit : -1.0f;
+                float boot_lit = d_lit;
                 d_lit = -1.0f;
-                if (r <= 0.0f) {
+                int boot_fb = 0, boot_ok = 0;
+                if (boot_silent) {
+                    boot_silent = 0;
+                    boot_ok = (r > 0.0f && !dn_clipped(d_lit_hr) &&
+                               r >= DN_IR_RATIO_NIGHT);
+                    boot_fb = !boot_ok;
+                }
+                if (boot_fb) {
+                    /* not a clean night: read the day pipeline, as boot
+                     * always did. The lit level is kept as the probe's
+                     * pre-level, exactly like the audible boot's `s`. */
+                    boot_deciding = 1;
+                    cur = DN_NIGHT;
+                    ref = -1.0f; ref_due = 0; ref_wait_logged = 0;
+                    sust_min = win_max = -1.0f; win_at = 0;
+                    ema_fast = ema_slow = -1.0f; trend_since = 0;
+                    s = boot_lit;
+                    want_probe = 1; probe_why = "boot measure";
+                    no_silent = 1;
+                    LOGI(MOD, "boot: silent measurement is not a clean night "
+                              "(r=%.2f) - switching to the day pipeline and "
+                              "reading it in %ds", (double)r, DN_PROBE_SETTLE_S);
+                } else if (r <= 0.0f) {
                     LOGW(MOD, "silent probe gave no usable reading - falling "
                               "back to the IR-cut probe");
                     want_probe = 1; probe_why = ir_why ? ir_why : "probe";
@@ -1856,6 +1911,19 @@ static void *dn_thread(void *arg)
                                  (double)(ref * (float)DN_PROBE_JUMP_PCT
                                           / 100.0f));
                         }
+                    }
+                    if (boot_ok) {
+                        /* the illuminator carries the scene: that is proof of
+                         * night at the lit level, so it anchors the
+                         * reference exactly like a day probe that came back
+                         * dark would - and the board keeps the mode it is in,
+                         * with no switch_cmd spent. */
+                        ref = d_dark / r; ref_due = 0;
+                        if (!running_mode)
+                            hub_control("image.running_mode", "1");
+                        LOGI(MOD, "boot: night confirmed by the silent probe "
+                                  "(r=%.2f, night reference %.0f) - nothing "
+                                  "switched", (double)r, (double)ref);
                     }
                     trig_since = 0;
                     hb_at = dn_hb_next(dn, now);
@@ -2303,6 +2371,11 @@ static void *dn_thread(void *arg)
                           "leaving the jump trigger and the heartbeat",
                      dn->irprobe_cmd, ir_fails);
             }
+        }
+        if (boot_silent && want_probe && !ir_verdict_at) {
+            /* the silent probe could not start (dn_irprobe() said why):
+             * the boot measurement is the audible one after all */
+            boot_silent = 0; boot_deciding = 1; no_silent = 1;
         }
         if (want_probe && cur == DN_NIGHT && !ir_verdict_at &&
             (!last_probe ||

@@ -1,0 +1,66 @@
+{
+  "name": "31-boot-night-silent-confirms",
+  "incident": "cam-C T20 and cam-B T23, 2026-10-03: day->night pair after every timpsd start at night",
+  "description": "A dark room, the camera restarted at night (cut filter open, illuminator on). The night pipeline reads 2498 - between day_gain 768 and night_gain 4096 - and no night reference exists yet. The boot measurement used to answer by switching to the day pipeline (IR-cut click, colour flash), read 3587 there and switch straight back: a visible day->night pair on every start. It now asks the cheap question first: one silent probe, illuminator off, no click. Without the LEDs the scene reads 10000 (r = 4), so the illuminator carries it and night is confirmed with nothing switched; the lit level anchors the night reference. The click budget of 0 is the proof: the old behaviour spends 2 here. A boot that is NOT a clean night (lit room, unusable ratio) still ends in the audible day probe - scenarios 02, 04, 07, 09 and 16 keep covering that path.",
+  "scale": 60,
+  "duration_s": 180,
+  "initial_mode": "night",
+  "config": {
+    "daynight.day_gain": 768,
+    "daynight.night_gain": 4096
+  },
+  "interp": "log",
+  "day_gain": [
+    [
+      0,
+      3587
+    ],
+    [
+      180,
+      3587
+    ]
+  ],
+  "night_gain": [
+    [
+      0,
+      2498
+    ],
+    [
+      180,
+      2498
+    ]
+  ],
+  "night_gain_noir": [
+    [
+      0,
+      10000
+    ],
+    [
+      180,
+      10000
+    ]
+  ],
+  "expect": {
+    "mode_at": [
+      [
+        60,
+        "night"
+      ],
+      [
+        170,
+        "night"
+      ]
+    ],
+    "max_switches": 0,
+    "max_ir_probes": 1,
+    "monotonicity": "skip",
+    "expect_log": [
+      "boot: night confirmed by the silent probe"
+    ],
+    "forbid_log": [
+      "switching to day",
+      "boot: measured night",
+      "silent measurement is not a clean night"
+    ]
+  }
+}
