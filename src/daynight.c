@@ -24,6 +24,7 @@
 #include "log.h"
 #include "util.h"      /* ms_now_us(): monotonic clock for every deadline */
 #include <string.h>
+#include <strings.h>
 #include <stdlib.h>    /* strtol(): the ISP /proc field parser */
 #include <ctype.h>     /* isspace(): ditto */
 #include <unistd.h>    /* F-01: vfork/execlp/dup2 instead of system() */
@@ -421,6 +422,7 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
         char line[256];
         int it = -1, mit = -1, ag = -1, dg = -1, idg = -1, cb = -1;
         int mag = -1, midg = -1;          /* the ceilings, for the reserve */
+        int tgq = -1;                     /* open-tx-isp T41: total gain, log2 in Q16 */
         char m[32] = {0};
 
         /* one bit per field; stop reading once the dump has supplied all of
@@ -447,14 +449,29 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
                 { dn_field_int(v, &idg);         got |= 1u<<7; }
             else if ((v = DN_FIELD(line, "Brightness :")))
                 { dn_field_int(v, &cb);          got |= 1u<<8; }
+            /* open-tx-isp on T41 prints its own, differently spelled dump:
+             * "AeIntegrationTime : 1750", "AeMaxIntegrationTime : 2092",
+             * "TotalGainDb : 390142" (log2 of the total gain in Q16; the
+             * ExposureValue line is integration time x that gain) and a
+             * lower-case "ISP Runing Mode : day" */
+            else if ((v = DN_FIELD(line, "AeIntegrationTime :")))
+                { dn_field_int(v, &it);          got |= 1u<<9; }
+            else if ((v = DN_FIELD(line, "AeMaxIntegrationTime :")))
+                { dn_field_int(v, &mit);         got |= 1u<<10; }
+            else if ((v = DN_FIELD(line, "TotalGainDb :")))
+                { dn_field_int(v, &tgq);         got |= 1u<<11; }
             else continue;
             if (got == 0x1ffu) break;
         }
         fclose(fp);
 
-        if      (!strcmp(m, "Day"))   o->isp = DN_DAY;
-        else if (!strcmp(m, "Night")) o->isp = DN_NIGHT;
+        if      (!strcasecmp(m, "Day"))   o->isp = DN_DAY;
+        else if (!strcasecmp(m, "Night")) o->isp = DN_NIGHT;
 
+        if (o->gain < 0.0f && tgq >= 0) {
+            o->gain = 256.0f * exp2f((float)tgq / 65536.0f);   /* [24.8], 256 = 1x */
+            if (!isfinite(o->gain)) o->gain = -1.0f;
+        }
         if (o->gain < 0.0f && (ag >= 0 || dg >= 0 || idg >= 0)) {
             float units = 0.0f;                 /* log2 gain, 32 units per stop */
             if (ag  > 0) units += (float)ag;
@@ -530,8 +547,8 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
         } else if (cb >= 0) {
             o->bright = ((float)cb / 255.0f) * 100.0f;
         } else if (m[0]) {
-            if      (!strcmp(m, "Day"))   o->bright = 75.0f;
-            else if (!strcmp(m, "Night")) o->bright = 25.0f;
+            if      (!strcasecmp(m, "Day"))   o->bright = 75.0f;
+            else if (!strcasecmp(m, "Night")) o->bright = 25.0f;
         }
     }
 
