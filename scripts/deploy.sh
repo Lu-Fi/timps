@@ -45,7 +45,7 @@ done
 if [ -n "${CAMERA:-}" ]; then
     PROFILE="$CAMERA"
 else
-    PROFILE="$(for d in "$THINGINO"/output/*/*-"$CAM"; do
+    PROFILE="$(for d in "$THINGINO"/output/*/*-"$CAM" "$THINGINO"/output/*/*-"$CAM"-*; do
                    [ -d "$d" ] && basename "$d" | sed -E 's/-[0-9].*$//'
                done | sort -u)"
     if [ "$(printf '%s\n' "$PROFILE" | grep -c .)" -gt 1 ]; then
@@ -70,14 +70,35 @@ if [ "$DO_BUILD" = 1 ]; then
 fi
 
 # newest timpsd for THIS camera profile (not some other camera's build)
-BIN="$(ls -t "$THINGINO"/output/*/"$PROFILE"-*/build/timps-*/timpsd 2>/dev/null | head -1 || true)"
+# this camera's output dir first (also suffixed ones), then any of the profile
+BIN="$(ls -t "$THINGINO"/output/*/"$PROFILE"-*-"$CAM"/build/timps-*/timpsd \
+             "$THINGINO"/output/*/"$PROFILE"-*-"$CAM"-*/build/timps-*/timpsd 2>/dev/null | head -1 || true)"
+[ -n "$BIN" ] || BIN="$(ls -t "$THINGINO"/output/*/"$PROFILE"-*/build/timps-*/timpsd 2>/dev/null | head -1 || true)"
 [ -n "$BIN" ] || { echo "!! binary not found for $PROFILE - run once with --build"; exit 1; }
 echo ">> binary: $BIN"
 
-# stop the running streamer FIRST (raptor is thingino's default now; it also
-# frees the ISP/encoder so timps can grab it), and any old timps.
-echo ">> stopping raptor + old timps on $CAM ..."
-ssh root@"$CAM" '/etc/init.d/S31raptor stop 2>/dev/null; killall -9 timpsd 2>/dev/null; killall -q rwd rhd rwc prudynt 2>/dev/null; sleep 1; true'
+# remember which production streamer ran, so restore_streamer can start it again
+STOP_REMOTE='if [ ! -e /tmp/.timps-dev-restore ]; then r=""; \
+        pidof timpsd >/dev/null && [ -x /etc/init.d/S95timps ] && r="$r S95timps"; \
+        pidof raptor >/dev/null && [ -x /etc/init.d/S31raptor ] && r="$r S31raptor"; \
+        echo "$r" >/tmp/.timps-dev-restore; fi; \
+    /etc/init.d/S95timps stop >/dev/null 2>&1; /etc/init.d/S31raptor stop >/dev/null 2>&1; \
+    killall -9 timpsd 2>/dev/null; killall -q rwd rhd rwc prudynt 2>/dev/null; sleep 1; true'
+restore_streamer() {
+    trap - EXIT
+    echo ">> stopping the test timpsd, restarting the production streamer on $CAM ..."
+    ssh root@"$CAM" 'killall -9 timpsd 2>/dev/null; sleep 1; \
+        for s in $(cat /tmp/.timps-dev-restore 2>/dev/null); do /etc/init.d/$s start; done; \
+        rm -f /tmp/.timps-dev-restore; true' || true
+}
+
+# stop the running streamer FIRST (it holds the ISP/encoder). From here on any
+# exit - Ctrl-C, an error, the end of the live run - restarts it, except a
+# successful --no-run, which leaves the camera ready for a manual/headless run.
+trap restore_streamer EXIT
+trap 'exit 130' INT TERM
+echo ">> stopping the production streamer + old timps on $CAM ..."
+ssh root@"$CAM" "$STOP_REMOTE"
 
 echo ">> copying to $CAM:/tmp ..."
 scp -O "$BIN" root@"$CAM":/tmp/timpsd
@@ -111,11 +132,14 @@ if [ -n "${MS_ROTATE_PRUDYNT_STYLE:-}" ]; then
 fi
 
 if [ "$DO_RUN" = 0 ]; then
+    trap - EXIT
     echo ">> deployed (NOT started; --no-run): /tmp/timpsd + $CONF on $CAM"
+    echo ">>   production streamer stays stopped; osd-rot-test.sh restarts it, or:"
+    echo ">>   ssh root@$CAM 'for s in \$(cat /tmp/.timps-dev-restore); do /etc/init.d/\$s start; done'"
     echo ">>   headless test:   CAM=$CAM CAMERA=<profile> ./scripts/osd-rot-test.sh <conf>"
     echo ">>   or run manually:  ssh root@$CAM '${ENV_PREFIX}/tmp/timpsd -c $CONF -v'"
     exit 0
 fi
 
 echo ">> starting timps against $CONF (Ctrl-C stops it) ..."
-ssh -t root@"$CAM" "chmod +x /tmp/timpsd; exec env ${ENV_PREFIX}/tmp/timpsd -c $CONF -v"
+ssh -t root@"$CAM" "chmod +x /tmp/timpsd; exec env ${ENV_PREFIX}/tmp/timpsd -c $CONF -v" || true

@@ -113,10 +113,11 @@ SNAP_COUNT="${SNAP_COUNT:-30}"     # snapshot requests
 RECONNECT_CYCLES="${RECONNECT_CYCLES:-20}"
 LOAD_CLIENTS="${LOAD_CLIENTS:-1 2 4 8}"   # concurrent-client ramp
 LOAD_DUR="${LOAD_DUR:-30}"         # seconds per load step
-# Hard concurrent-RTSP-client cap compiled into the daemon (RTSP_MAX_CLIENTS,
-# src/rtsp/rtsp.c:32). Not reported by /control, so it is a constant here;
-# override only if a build changes the #define. Used to tell "correctly
-# enforced admission control" apart from "degrading under load".
+# Hard concurrent-RTSP-client cap compiled into the daemon (RTSP_MAX_CLIENTS).
+# Read from GET /control caps.rtsp_max_clients in 1b; 8 only if that fails, and
+# an env RTSP_CAP wins. Used to tell "correctly enforced admission control"
+# apart from "degrading under load".
+RTSP_CAP_ENV="${RTSP_CAP:-}"
 RTSP_CAP="${RTSP_CAP:-8}"
 SOAK_DUR="${SOAK_DUR:-0}"          # seconds of soak (0 = skip unless profile sets it)
 SOAK_SAMPLE="${SOAK_SAMPLE:-60}"   # health sample interval during soak
@@ -207,7 +208,7 @@ usage() {
 
 Options (also settable as env vars):
   --cam IP            camera address (required)
-  --profile P         quick | standard | load | soak | drift  (default: standard)
+  --profile P         quick | standard | load | soak | drift | longrun  (default: standard)
   --rtsp-user U       --rtsp-pass P    --http-user U   --http-pass P
   --expect-channels N assert audio channel count (e.g. 2 = stereo); FAIL on mismatch
   --main PATH         RTSP main path (default ch0)   --sub PATH (default ch1)
@@ -887,6 +888,21 @@ qa_conf_run_snapshot() {
 		QA_CONF_RUN_SNAP="$f"
 	fi
 }
+# qa_push_conf <local file>: replace /etc/timps.conf with it, but only once the
+# copy on the camera has the same md5 (a cut ssh must not truncate the config)
+qa_push_conf() {
+	local want; want=$(md5sum < "$1" | cut -d' ' -f1)
+	sshx "cp -p /etc/timps.conf /etc/timps.conf.qa_restore && cat > /etc/timps.conf.qa_restore && \
+		[ \"\$(md5sum < /etc/timps.conf.qa_restore | cut -d' ' -f1)\" = $want ] && \
+		mv /etc/timps.conf.qa_restore /etc/timps.conf || { rm -f /etc/timps.conf.qa_restore; false; }" < "$1"
+}
+# qa_traps '<section restore cmds>': one trap per signal in bash, so every
+# section's trap also runs the whole-run config restore
+qa_traps() {
+	trap "$1; qa_conf_run_restore" EXIT
+	trap "$1; qa_conf_run_restore; trap - INT;  kill -INT  \$\$" INT
+	trap "$1; qa_conf_run_restore; trap - TERM; kill -TERM \$\$" TERM
+}
 qa_conf_run_restore() {
 	[ -n "$QA_CONF_RUN_SNAP" ] || return 0
 	local snap="$QA_CONF_RUN_SNAP" cur="$OUTDIR/conf_run_after.conf"
@@ -899,7 +915,7 @@ qa_conf_run_restore() {
 		info "/etc/timps.conf: byte-identical to before the run"
 		return 0
 	fi
-	sshx "cp -p /etc/timps.conf /etc/timps.conf.qa_restore && cat > /etc/timps.conf.qa_restore && mv /etc/timps.conf.qa_restore /etc/timps.conf" < "$snap"
+	qa_push_conf "$snap"
 	if [ "$(sshx "md5sum /etc/timps.conf" 2>/dev/null | cut -d' ' -f1)" = "$(md5sum < "$snap" | cut -d' ' -f1)" ]; then
 		info "/etc/timps.conf: put back byte-identical to before the run (the sections after 8b had left changes; the running daemon keeps any value it was last given until its next restart)"
 	else
@@ -1495,6 +1511,10 @@ if want 1b version identity; then
 hdr "1b. Build identity"
 vj="$OUTDIR/version.json"
 if curlq 8 "$(http_base)/control" -o "$vj" && [ -s "$vj" ]; then
+	if [ -z "$RTSP_CAP_ENV" ]; then
+		c=$(jget "$vj" caps.rtsp_max_clients)
+		[ -n "$c" ] && [ -z "${c//[0-9]/}" ] && RTSP_CAP=$((10#$c))
+	fi
 	dev_ver=$(jget "$vj" version)
 	if [ -n "$dev_ver" ]; then
 		info "camera $CAM reports: timps $dev_ver"
@@ -1538,6 +1558,7 @@ fi
 
 fi
 qa_conf_run_snapshot
+qa_traps :
 if want 2 discovery; then
 # --- 2. discovery -----------------------------------------------------------
 hdr "2. Discovery (ffprobe)"
@@ -2471,7 +2492,7 @@ else
 		tab=$(printf '\t')
 		added=$(join -t "$tab" -v 2 <(lv_conf_kv "$snap") <(lv_conf_kv "$cur") | cut -f1 | tr '\n' ' ')
 		changed=$(join -t "$tab" <(lv_conf_kv "$snap") <(lv_conf_kv "$cur") | awk -F'\t' '$2!=$3{printf "%s(%s->%s) ", $1, $2, $3}')
-		sshx "cp -p /etc/timps.conf /etc/timps.conf.qa_restore && cat > /etc/timps.conf.qa_restore && mv /etc/timps.conf.qa_restore /etc/timps.conf" < "$snap"
+		qa_push_conf "$snap"
 		if [ "$(sshx "md5sum /etc/timps.conf" 2>/dev/null | cut -d' ' -f1)" = "$(md5sum < "$snap" | cut -d' ' -f1)" ]; then
 			info "  /etc/timps.conf: put back byte-identical to before 8b (removed $(printf '%s' "$added" | wc -w) explicit line(s) the restore POSTs had added, reverted reformatted lines)"
 		else
@@ -2479,9 +2500,7 @@ else
 		fi
 		[ -z "$changed" ] || warn "/etc/timps.conf: 8b left different VALUES for: ${changed}- the file holds the originals again, but the running daemon keeps the test value until its next restart"
 	}
-	trap 'lv_restore_pending; lv_conf_restore' EXIT
-	trap 'lv_restore_pending; lv_conf_restore; trap - INT;  kill -INT  $$' INT
-	trap 'lv_restore_pending; lv_conf_restore; trap - TERM; kill -TERM $$' TERM
+	qa_traps 'lv_restore_pending; lv_conf_restore'
 	# pick a valid value != cur within [lo,hi]
 	flip_int()  { awk -v lo="$1" -v hi="$2" -v c="$3" 'BEGIN{
 		m=int((lo+hi)/2); if(m!=c){print m} else if(m<hi){print m+1} else{print m-1}}'; }
@@ -4928,9 +4947,7 @@ else
 				sshx "grep -v '^$OV_NAME ' '$OV_FILE' > '$OV_FILE.qa_tmp' 2>/dev/null && mv '$OV_FILE.qa_tmp' '$OV_FILE'" >/dev/null 2>&1 || true
 				OV_PENDING=""
 			}
-			trap 'ov_restore_pending' EXIT
-			trap 'ov_restore_pending; trap - INT;  kill -INT  $$'  INT
-			trap 'ov_restore_pending; trap - TERM; kill -TERM $$' TERM
+			qa_traps ov_restore_pending
 			OV_PENDING="$OV_ORIG"
 
 			# Write the probe line the documented safe way: temp file + mv
@@ -4967,7 +4984,7 @@ else
 				if [ "$rgot" = "$OV_ORIG" ]; then info "  restored original text ('$OV_ORIG')"
 				else warn "OSD vars_file test: original text not confirmed restored (got '$rgot', want '$OV_ORIG')"; fi
 			fi
-			trap - EXIT INT TERM
+			qa_traps :
 		fi
 	fi
 fi
@@ -5229,9 +5246,7 @@ mb6_restore_pending() {
 		-X POST "$(http_base)/control" -d "$MB6_PENDING" >/dev/null 2>&1 || true
 	MB6_PENDING=""
 }
-trap 'mb3_restore_pending; mb6_restore_pending' EXIT
-trap 'mb3_restore_pending; mb6_restore_pending; trap - INT;  kill -INT  $$' INT
-trap 'mb3_restore_pending; mb6_restore_pending; trap - TERM; kill -TERM $$' TERM
+qa_traps 'mb3_restore_pending; mb6_restore_pending'
 mb3_bf="$OUTDIR/mb3_before.json"; curlq 12 "$(http_base)/control" -o "$mb3_bf"
 mb3_cur=$(jget "$mb3_bf" image.brightness)
 if [ -n "$mb3_cur" ]; then
@@ -5448,7 +5463,7 @@ else
 		curl -s -o /dev/null --max-time 8 -u "$HTTP_USER:$HTTP_PASS" -X POST "$(http_base)/control" -d "$FLIP_PENDING" >/dev/null 2>&1 || true
 		FLIP_PENDING=""
 	}
-	trap 'flip_restore_pending; command -v lv_restore_pending >/dev/null 2>&1 && lv_restore_pending' EXIT
+	trap 'flip_restore_pending; command -v lv_restore_pending >/dev/null 2>&1 && lv_restore_pending; qa_conf_run_restore' EXIT
 
 	fj="$fl_dir/base.json"
 	if ! curlq 10 "$(http_base)/control" -o "$fj" || [ ! -s "$fj" ]; then
@@ -5586,9 +5601,7 @@ ev9_restore_pending() {
 		-X POST "$(http_base)/control" -d "$EV9_PENDING" >/dev/null 2>&1 || true
 	EV9_PENDING=""
 }
-trap 'ev9_restore_pending' EXIT
-trap 'ev9_restore_pending; trap - INT;  kill -INT  $$' INT
-trap 'ev9_restore_pending; trap - TERM; kill -TERM $$' TERM
+qa_traps ev9_restore_pending
 timeout 8 curl -s -N -u "$HTTP_USER:$HTTP_PASS" "$(http_base)/events" > "$ev" 2>/dev/null &
 evpid=$!
 sleep 2   # let the SSE connection establish before poking a setting
@@ -5936,7 +5949,7 @@ for n in $LOAD_CLIENTS; do
 		fi
 	fi
 	nf="${NOM_FPS[main]:-0}"; lo=$(awk -v x="$nf" 'BEGIN{printf "%.1f",x*0.9}')
-	# RTSP_MAX_CLIENTS (rtsp.c:32) is a HARD cap of 8: the 9th client on the
+	# RTSP_MAX_CLIENTS is a HARD cap (RTSP_CAP, default 8): one more client on the
 	# server is rejected on purpose, with a "client limit (%d) reached,
 	# rejecting" log line, because each client costs a thread plus a
 	# fanqueue. This step's own HEADROOM is that cap minus whatever an
@@ -5944,8 +5957,7 @@ for n in $LOAD_CLIENTS; do
 	# this step started (see `base` above) - an 8-client ramp against a cap
 	# of 8 with one baseline client already attached can only seat 7 of its
 	# own, and that 8th rejection is the cap working exactly as designed, not
-	# degradation. Not exposed via /control (checked), hence the constant +
-	# citation; override with RTSP_CAP= if a build changes it.
+	# degradation. RTSP_CAP comes from caps.rtsp_max_clients (section 1b).
 	# Digits only, and normalised through 10# - `[ 08 -ge 0 ]` passes (test
 	# parses base 10) but `$((8-08))` then dies on the octal literal, leaving
 	# `avail` unset, which `set -u` turns into a hard abort of the whole run.
@@ -5961,10 +5973,10 @@ for n in $LOAD_CLIENTS; do
 		# Nothing left to test with: the pre-existing clients already fill the
 		# cap, so every outcome of this step - all served, all rejected - says
 		# something about them, not about this build.
-		warn "load ${n} clients: no headroom - ${base} client(s) were already attached when this step started, filling RTSP_MAX_CLIENTS=${RTSP_CAP} (rtsp.c:32); ${okcli} ok / ${failcli} failed grades nothing. Re-run with no external viewer on the camera${extra}"
+		warn "load ${n} clients: no headroom - ${base} client(s) were already attached when this step started, filling RTSP_MAX_CLIENTS=${RTSP_CAP}; ${okcli} ok / ${failcli} failed grades nothing. Re-run with no external viewer on the camera${extra}"
 	elif [ "$n" -gt "$avail" ]; then
 		if [ "$okcli" -eq "$avail" ] && { fcmp "$nf" le 0 || fcmp "$minfps" ge "$lo"; }; then
-			ok "load ${n} clients: at cap - exactly ${avail} served at full fps (min ${minfps}), ${failcli} correctly rejected by RTSP_MAX_CLIENTS=${RTSP_CAP} (rtsp.c:32)${basemsg}${extra}"
+			ok "load ${n} clients: at cap - exactly ${avail} served at full fps (min ${minfps}), ${failcli} correctly rejected by RTSP_MAX_CLIENTS=${RTSP_CAP}${basemsg}${extra}"
 		elif [ "$okcli" -eq "$avail" ]; then
 			warn "load ${n} clients: at cap (${avail} served, ${failcli} rejected as designed) but min fps ${minfps} is below 90% of nominal ${nf} - the served clients are degrading${basemsg}${extra}"
 		elif [ "$okcli" -gt "$avail" ] && [ "$base" -gt 0 ] && [ "$okcli" -le "$RTSP_CAP" ]; then
@@ -5981,7 +5993,7 @@ for n in $LOAD_CLIENTS; do
 				warn "load ${n} clients: ${okcli} ok / ${failcli} failed, min fps ${minfps} - more got in than the ${avail}-slot headroom predicted, so the ${base}-client baseline was stale; judge this step by hand${extra}"
 			fi
 		elif [ "$okcli" -gt "$avail" ]; then
-			warn "load ${n} clients: ${okcli} served at once, more than RTSP_MAX_CLIENTS=${RTSP_CAP} (rtsp.c:32) allows - the cap is NOT being enforced (${failcli} failed)${basemsg}${extra}"
+			warn "load ${n} clients: ${okcli} served at once, more than RTSP_MAX_CLIENTS=${RTSP_CAP} allows - the cap is NOT being enforced (${failcli} failed)${basemsg}${extra}"
 		elif [ "$okcli" -gt 0 ]; then
 			warn "load ${n} clients: only ${okcli} served, expected ${avail} before rejections start (${failcli} failed)${basemsg}${extra}"
 		else

@@ -20,10 +20,12 @@
 # WHAT IT INSTALLS, so it can be undone by hand if this script is not around:
 #   /etc/dn-isp-log.sh          one-shot sampler, ~30 lines of ash
 #   /etc/cron/crontabs/root     one added line: "* * * * * /etc/dn-isp-log.sh"
-#   /tmp/dn-isp.csv             the samples - TMPFS, capped at 4000 lines
+#   dn-isp.csv                  the samples, capped at 4000 lines, on the SD
+#                               card (/mnt/mmcblk0p1, /media/mmcblk0p1, /sdcard)
+#                               if one is writable, else /tmp
 # Nothing else is touched. /etc is a jffs2 overlay so the cron line survives a
 # reboot (which is the point - the interesting hours are unattended); /tmp does
-# not, so a reboot costs the samples taken so far and nothing else.
+# not, so without a card a reboot costs the samples taken so far.
 #
 #   ./scripts/dn-isp-probe.sh install <ip>...
 #   ./scripts/dn-isp-probe.sh status  <ip>...
@@ -73,7 +75,8 @@ install_one() {
             else /usr/sbin/crond -b -c /etc/cron/crontabs; fi
             echo "(crond was not running - restarted)"
         }
-        echo "installed, $(wc -l < /tmp/dn-isp.csv 2>/dev/null || echo 0) line(s)"' \
+        F=$(ls /mnt/mmcblk0p1/dn-isp.csv /media/mmcblk0p1/dn-isp.csv /sdcard/dn-isp.csv /tmp/dn-isp.csv 2>/dev/null | head -1)
+        echo "installed, $(wc -l < "$F" 2>/dev/null || echo 0) line(s) in ${F:-?}"' \
         | sed "s/^/   $host: /"
 }
 
@@ -81,9 +84,10 @@ status_one() {
     local ip="$1"
     $SSH "root@$ip" '
         H=$(hostname)
-        N=$(wc -l < /tmp/dn-isp.csv 2>/dev/null || echo 0)
-        C=$(grep -c dn-isp-log.sh /etc/cron/crontabs/root 2>/dev/null || echo 0)
-        MODES=$(tail -n +2 /tmp/dn-isp.csv 2>/dev/null | cut -d, -f2 | sort | uniq -c | tr "\n" " ")
+        F=$(ls /mnt/mmcblk0p1/dn-isp.csv /media/mmcblk0p1/dn-isp.csv /sdcard/dn-isp.csv /tmp/dn-isp.csv 2>/dev/null | head -1)
+        N=$(wc -l < "$F" 2>/dev/null || echo 0)
+        C=$(grep -c dn-isp-log.sh /etc/cron/crontabs/root 2>/dev/null); C=${C:-0}
+        MODES=$(tail -n +2 "$F" 2>/dev/null | cut -d, -f2 | sort | uniq -c | tr "\n" " ")
         printf "%-20s cron=%s samples=%-5s %s\n" "$H" "$C" "$N" "$MODES"' 2>/dev/null \
         || echo "!! $ip unreachable"
 }
@@ -91,7 +95,7 @@ status_one() {
 fetch_one() {
     local ip="$1" host
     host=$($SSH "root@$ip" hostname 2>/dev/null) || { echo "!! $ip unreachable"; return 1; }
-    if $SSH "root@$ip" 'cat /tmp/dn-isp.csv' > "dn-isp-$host.csv" 2>/dev/null &&
+    if $SSH "root@$ip" 'F=$(ls /mnt/mmcblk0p1/dn-isp.csv /media/mmcblk0p1/dn-isp.csv /sdcard/dn-isp.csv /tmp/dn-isp.csv 2>/dev/null | head -1); cat "$F"' > "dn-isp-$host.csv" 2>/dev/null &&
        [ -s "dn-isp-$host.csv" ]; then
         echo "   $host: $(($(wc -l < "dn-isp-$host.csv") - 1)) samples -> dn-isp-$host.csv"
     else
@@ -106,13 +110,13 @@ remove_one() {
         if [ -f "$C" ]; then
             grep -v "dn-isp-log.sh" "$C" > "$C.new"; mv "$C.new" "$C"
         fi
-        rm -f /etc/dn-isp-log.sh /tmp/dn-isp.csv
+        rm -f /etc/dn-isp-log.sh /tmp/dn-isp.csv /mnt/mmcblk0p1/dn-isp.csv /media/mmcblk0p1/dn-isp.csv /sdcard/dn-isp.csv
         echo "$(hostname): removed"' 2>/dev/null | sed 's/^/   /' \
         || echo "!! $ip unreachable"
 }
 
 case "$CMD" in
-    install) echo "installing sampler (1/min, tmpfs, capped):"; for ip; do install_one "$ip"; done ;;
+    install) echo "installing sampler (1/min, SD card or tmpfs, capped):"; for ip; do install_one "$ip"; done ;;
     status)  for ip; do status_one "$ip"; done ;;
     fetch)   echo "fetching:"; for ip; do fetch_one "$ip"; done ;;
     remove)  echo "removing:"; for ip; do remove_one "$ip"; done ;;

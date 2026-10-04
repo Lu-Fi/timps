@@ -31,12 +31,15 @@ OUT="$SRCDIR/osd-test-out"
 if [ -n "${CAMERA:-}" ]; then
     PROFILE="$CAMERA"
 else
-    PROFILE="$(for d in "$THINGINO"/output/*/*-"$CAM"; do
+    PROFILE="$(for d in "$THINGINO"/output/*/*-"$CAM" "$THINGINO"/output/*/*-"$CAM"-*; do
                    [ -d "$d" ] && basename "$d" | sed -E 's/-[0-9].*$//'
                done | sort -u)"
 fi
 [ -n "$PROFILE" ] || { echo "!! no thingino profile for IP $CAM - build once first"; exit 1; }
-BIN="$(ls -t "$THINGINO"/output/*/"$PROFILE"-*/build/timps-*/timpsd 2>/dev/null | head -1 || true)"
+# this camera's output dir first (also suffixed ones), then any of the profile
+BIN="$(ls -t "$THINGINO"/output/*/"$PROFILE"-*-"$CAM"/build/timps-*/timpsd \
+             "$THINGINO"/output/*/"$PROFILE"-*-"$CAM"-*/build/timps-*/timpsd 2>/dev/null | head -1 || true)"
+[ -n "$BIN" ] || BIN="$(ls -t "$THINGINO"/output/*/"$PROFILE"-*/build/timps-*/timpsd 2>/dev/null | head -1 || true)"
 [ -n "$BIN" ] || { echo "!! timpsd not found for $PROFILE - run deploy.sh --build once"; exit 1; }
 
 # ports from the conf (fallbacks match the shipped test conf)
@@ -52,8 +55,28 @@ echo ">> bin=$BIN"
 echo ">> conf=$CONF   run=${SECS}s   rtsp=$RTSP_PORT"
 echo ">> out=$OUT"
 
-echo ">> stopping other streamers + clearing dmesg/logcat on $CAM ..."
-ssh root@"$CAM" '/etc/init.d/S31raptor stop 2>/dev/null; killall -9 timpsd 2>/dev/null; killall -q rwd rhd rwc prudynt 2>/dev/null; dmesg -c >/dev/null 2>&1; logcat -c 2>/dev/null; sleep 1; true'
+# remember which production streamer ran, so restore_streamer can start it again
+STOP_REMOTE='if [ ! -e /tmp/.timps-dev-restore ]; then r=""; \
+        pidof timpsd >/dev/null && [ -x /etc/init.d/S95timps ] && r="$r S95timps"; \
+        pidof raptor >/dev/null && [ -x /etc/init.d/S31raptor ] && r="$r S31raptor"; \
+        echo "$r" >/tmp/.timps-dev-restore; fi; \
+    /etc/init.d/S95timps stop >/dev/null 2>&1; /etc/init.d/S31raptor stop >/dev/null 2>&1; \
+    killall -9 timpsd 2>/dev/null; killall -q rwd rhd rwc prudynt 2>/dev/null; sleep 1; true'
+restore_streamer() {
+    trap - EXIT
+    echo ">> stopping the test timpsd, restarting the production streamer on $CAM ..."
+    ssh root@"$CAM" 'killall -9 timpsd 2>/dev/null; sleep 1; \
+        for s in $(cat /tmp/.timps-dev-restore 2>/dev/null); do /etc/init.d/$s start; done; \
+        rm -f /tmp/.timps-dev-restore; true' || true
+}
+
+# logs are not cleared (other tools read them): mark the start in the kernel
+# ring buffer and cut dmesg there at the end
+MARK="osd-rot-test $STAMP"
+trap restore_streamer EXIT
+trap 'exit 130' INT TERM
+echo ">> stopping the production streamer on $CAM ..."
+ssh root@"$CAM" "$STOP_REMOTE; echo '$MARK' >/dev/kmsg 2>/dev/null; true"
 
 echo ">> copying binary + conf to /tmp ..."
 scp -O "$BIN"  root@"$CAM":/tmp/timpsd     >/dev/null
@@ -97,11 +120,12 @@ REST=$(( SECS - 5 )); [ "$REST" -gt 0 ] && { echo ">> letting it run ${REST}s mo
 echo ">> collecting log + dmesg + logcat (IMP_LOG), stopping timps ..."
 # logcat = Ingenic libimp's own IMP_LOG channel (often the only place the real
 # OSD/IPU reason is printed). This device's logcat has no -d (dump) - it follows;
-# it was cleared at start, so a short timed follow BEFORE we kill timps captures
-# everything libimp logged during the run.
+# a short timed follow BEFORE we kill timps captures what libimp logged (plus
+# older buffered lines - the buffer is no longer cleared).
 ssh root@"$CAM" 'command -v logcat >/dev/null 2>&1 && timeout 3 logcat >/tmp/timps-logcat.log 2>&1 || echo "(no logcat on device)" >/tmp/timps-logcat.log; true'
 ssh root@"$CAM" 'kill "$(cat /tmp/timps-osd.pid 2>/dev/null)" 2>/dev/null; sleep 1; \
-    killall -9 timpsd 2>/dev/null; dmesg | tail -n 160 >/tmp/timps-dmesg.log 2>&1; true'
+    killall -9 timpsd 2>/dev/null; true'
+ssh root@"$CAM" "dmesg | sed -n '/$MARK/,\$p' | tail -n 160 >/tmp/timps-dmesg.log 2>&1; true"
 scp -O root@"$CAM":/tmp/timps-osd.log    "$LOG"            >/dev/null 2>&1 || echo "   (log fetch failed)"
 scp -O root@"$CAM":/tmp/timps-dmesg.log  "$DMESG"          >/dev/null 2>&1 || echo "   (dmesg fetch failed)"
 scp -O root@"$CAM":/tmp/timps-logcat.log "$OUT/$NAME.logcat.log" >/dev/null 2>&1 || echo "   (logcat fetch failed)"
