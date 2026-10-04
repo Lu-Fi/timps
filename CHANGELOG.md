@@ -103,7 +103,10 @@ semantic versioning.
   `rtsp.user` both empty, `/stream.mp4`, `/snapshot.jpg` and the MJPEG stream
   no longer send `Access-Control-Allow-Origin: *`, and their preflight no
   longer grants Private Network Access, unless the request carries a valid
-  token (or comes from loopback): any web page could read the video before.
+  `?token=` (or comes from loopback): any web page could read the video before.
+  On such an open camera, `http.token_file = ""` or a `USE_CONTROL=0` build
+  (no token at all) therefore breaks the thingino WebUI's cross-origin
+  `fetch()` MSE/RT preview.
 - **Integer config keys are decimal; hex needs `0x`.** `08` was read as 0 and
   `010` as 8 (octal). Hex-typed keys (colours) are unchanged. `video<N>.imp_chn` and `jpeg.imp_chn` are clamped to 0..7,
   `motion.hold_ms` to 0..60000 and `motion.skip_frames` to 1..100.
