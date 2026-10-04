@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.9.31] - 2026-10-04
+
 ### Changed
 
 - **Keys the SoC/driver cannot apply are no longer persisted.** `POST
