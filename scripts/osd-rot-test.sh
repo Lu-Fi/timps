@@ -125,7 +125,9 @@ echo ">> collecting log + dmesg + logcat (IMP_LOG), stopping timps ..."
 ssh root@"$CAM" 'command -v logcat >/dev/null 2>&1 && timeout 3 logcat >/tmp/timps-logcat.log 2>&1 || echo "(no logcat on device)" >/tmp/timps-logcat.log; true'
 ssh root@"$CAM" 'kill "$(cat /tmp/timps-osd.pid 2>/dev/null)" 2>/dev/null; sleep 1; \
     killall -9 timpsd 2>/dev/null; true'
-ssh root@"$CAM" "dmesg | sed -n '/$MARK/,\$p' | tail -n 160 >/tmp/timps-dmesg.log 2>&1; true"
+# marker lost (no /dev/kmsg, ring wrapped): fall back to the plain tail
+ssh root@"$CAM" "dmesg | sed -n '/$MARK/,\$p' | tail -n 160 >/tmp/timps-dmesg.log 2>&1; \
+    [ -s /tmp/timps-dmesg.log ] || dmesg | tail -n 160 >/tmp/timps-dmesg.log 2>&1; true"
 scp -O root@"$CAM":/tmp/timps-osd.log    "$LOG"            >/dev/null 2>&1 || echo "   (log fetch failed)"
 scp -O root@"$CAM":/tmp/timps-dmesg.log  "$DMESG"          >/dev/null 2>&1 || echo "   (dmesg fetch failed)"
 scp -O root@"$CAM":/tmp/timps-logcat.log "$OUT/$NAME.logcat.log" >/dev/null 2>&1 || echo "   (logcat fetch failed)"
