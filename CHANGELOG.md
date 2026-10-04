@@ -47,7 +47,7 @@ semantic versioning.
   longer fires at the next night; a sample without the integration time no
   longer switches the exposure index to bare gain for one tick (which could fake
   a night verdict in a silent probe); after a shutdown request no new
-  `switch_cmd` runs and the illuminator hand-back is bounded to ~0.8 s, so the
+  `switch_cmd` runs and the illuminator hand-back is bounded to ~1.5 s, so the
   detection thread stays inside the 4 s shutdown budget.
 - **OSD: the region lock is no longer compiled out in `USE_CONTROL=0` builds**,
   where the activation-edge redraw raced the OSD updater thread; and a font
