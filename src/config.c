@@ -84,7 +84,15 @@ static int  pbool(const char *v){ return (!strcasecmp(v,"1")||!strcasecmp(v,"tru
 /* the spellings pbool() deliberately reads as "off" - anything else that
  * lands on 0 got there by falling through, not by being understood */
 static int  poff(const char *v){ return (!strcasecmp(v,"0")||!strcasecmp(v,"false")||!strcasecmp(v,"off")||!strcasecmp(v,"no")); }
-static int  pint(const char *v){ return (int)strtol(v, NULL, 0); }
+/* base 10, hex only with an explicit 0x: base 0 read "08" as 0 and "010" as 8 */
+static long pnum(const char *v, char **end)
+{
+    const char *p = v;
+    while (*p==' '||*p=='\t') p++;
+    if (*p=='+'||*p=='-') p++;
+    return strtol(v, end, (p[0]=='0' && (p[1]=='x'||p[1]=='X')) ? 16 : 10);
+}
+static int  pint(const char *v){ return (int)pnum(v, NULL); }
 /* M11: pint with a documented sane range. Values a broken client/script
  * persists via /control used to reach the HAL unchecked - a nonsense fps/
  * width/port makes HAL init fail, main exit and the respawn loop crash
@@ -105,7 +113,7 @@ static int pint_exact(const char *v, int *out)
 {
     char *end = NULL;
     if (!*v) return 0;
-    long x = strtol(v, &end, 0);
+    long x = pnum(v, &end);
     if (end == v) return 0;
     while (*end==' '||*end=='\t') end++;
     if (*end) return 0;
@@ -884,12 +892,9 @@ static const cfg_field jpeg_fields[] = {
     F ("height",        0, height,  T_INT,  0, 64,4096),
     F ("quality",       0, quality, T_INT,  0, 1,100),
     F ("fps",           0, fps,     T_INT,  0, 1,120),
-    /* 0,8: same bound as video_fields' imp_chn/jpeg_chn just below - libimp's
-     * own bound is chn<9 (GetStream_Impl), and above MS_FS_MAXCHN fs_use()
-     * returns silently. Found by review: this field used the placeholder
-     * 0,0 (no clamp) instead, the one channel-index field that had never
-     * gotten the same treatment. */
-    F ("imp_chn",       0, imp_chn, T_INT,  0, 0,8),
+    /* 0,7: a FrameSource channel, and fs_use() silently ignores
+     * chn >= MS_FS_MAXCHN (8) */
+    F ("imp_chn",       0, imp_chn, T_INT,  0, 0,7),
     FS("snapshot_path", 0, snapshot_path, 0),
 };
 #undef TT
@@ -1031,8 +1036,8 @@ static const cfg_field motion_fields[] = {
      * legitimate sub-second fast-alert use; 0 (disabled/no floor) is no longer
      * accepted. NOT F_CTRL - see the security-boundary comment above. */
     F ("cooldown_ms",    0, cooldown_ms,    T_INT,  0,      250,INT_MAX),
-    F ("hold_ms",        0, hold_ms,        T_INT,  F_CTRL, 0,INT_MAX),
-    F ("skip_frames",    0, skip_frames,    T_INT,  F_CTRL, 1,INT_MAX),
+    F ("hold_ms",        0, hold_ms,        T_INT,  F_CTRL, 0,60000),
+    F ("skip_frames",    0, skip_frames,    T_INT,  F_CTRL, 1,100),
     /* NOT F_CTRL - see the security-boundary comment above. */
     FS("on_motion",      0, on_motion,      F_NOGET),
 };
@@ -1173,11 +1178,9 @@ static const cfg_field video_fields[] = {
     F ("rotation",     0,              rotation,     T_ROT,   F_CTRL,  0,0),
     F ("buffers",      0,              buffers,      T_INT,   F_CTRL,  1,8),
     FS("rtsp_path",    0,              rtsp_path,    F_CTRL),
-    /* libimp's own bound is chn<9 (GetStream_Impl); above MS_FS_MAXCHN fs_use()
-     * returns silently, so an out-of-range channel gives no video and no clear
-     * diagnostic. Config-file only (F_NOGET, no F_CTRL) - a footgun, not an
-     * attack surface, but a one-line one to close. */
-    F ("imp_chn",      0,              imp_chn,      T_INT,   F_NOGET, 0,8),
+    /* 0,7: fs_use() silently ignores chn >= MS_FS_MAXCHN (8), which gives no
+     * video and no diagnostic. jpeg_chn is an encoder channel (libimp: <9). */
+    F ("imp_chn",      0,              imp_chn,      T_INT,   F_NOGET, 0,7),
     F ("jpeg",         "jpeg_enabled", jpeg_enabled, T_BOOL,  F_NOGET, 0,0),
     F ("jpeg_quality", 0,              jpeg_quality, T_INT,   F_NOGET, 1,100),
     F ("jpeg_fps",     0,              jpeg_fps,     T_INT,   F_NOGET, 1,120),
@@ -2193,6 +2196,20 @@ static void write_kv_line(FILE *f, const char *k, const char *vin)
  * to drop the tail without a word, which is the one way a persist may not
  * fail: the values are live in g_cfg and look applied, and the loss only
  * surfaces at the next restart. Say so if it ever fires. */
+/* Same OSD item and field, one key legacy (osdN.f, all streams) and the other
+ * per-stream (osdS.N.f)? Returns 1 when kw (written) is legacy, 2 when kl
+ * (file line) is, else 0. Without this a stale line of the other form, later
+ * in the file, reverts the written value on the next load. */
+static int osd_form_pair(const char *kl, const char *kw)
+{
+    int ls, li, ws, wi;
+    const char *lf = osd_key(kl, &ls, &li), *wf = osd_key(kw, &ws, &wi);
+    if (!lf || !wf || li != wi || (ls < 0) == (ws < 0)) return 0;
+    const cfg_field *a = field_find(osd_item_fields, NF(osd_item_fields), lf);
+    if (!a || a != field_find(osd_item_fields, NF(osd_item_fields), wf)) return 0;
+    return ws < 0 ? 1 : 2;
+}
+
 int config_write_keys(const char *path, const char *const *keys,
                       const char *const *vals, int n)
 {
@@ -2260,6 +2277,33 @@ int config_write_keys(const char *path, const char *const *keys,
                         handled = 1;
                         break;
                     }
+                    for (int i=0; !handled && i<n; i++){
+                        int pf = osd_form_pair(k, keys[i]);
+                        if (pf == 1){            /* legacy write covers this stream line */
+                            if (!done[i]){ write_kv_line(out, keys[i], vals[i]); done[i]=1; }
+                            handled = 1;
+                        } else if (pf == 2){     /* split the legacy line per stream */
+                            char *v = trim(eq+1);
+                            strip_inline_comment(v);
+                            int unt = 0;
+                            v = unquote_value(trim(v), &unt);
+                            int li, ls;
+                            const char *lf = osd_key(k, &ls, &li);
+                            for (int st=0; st<MS_MAX_VSTREAM; st++){
+                                char sk[80], ck[80];
+                                snprintf(sk, sizeof sk, "osd%d.%d.%s", st, li, lf);
+                                key_canonical(sk, ck, sizeof ck);
+                                int written = 0;
+                                for (int j=0;j<n && !written;j++){
+                                    char cj[80];
+                                    key_canonical(keys[j], cj, sizeof cj);
+                                    written = !strcmp(ck, cj);
+                                }
+                                if (!written) write_kv_line(out, sk, v);
+                            }
+                            handled = 1;
+                        }
+                    }
                 }
             }
             if (handled) { last_nl = 1; }     /* write_kv_line always ends in '\n' */
@@ -2299,10 +2343,12 @@ int config_write_keys(const char *path, const char *const *keys,
      * on jffs2/ubifs (this file's usual home) that is not durable yet. A
      * power cut right after "success" here (this is called on nearly every
      * /control POST) can leave the config file empty/zero-length. */
-    if (fsync(fileno(out))!=0)
+    if (fsync(fileno(out))!=0 && errno != EINVAL){
         LOGW(MOD,"fsync %s failed: %s", tmp, strerror(errno));
-    fclose(out);
-    if (rename(tmp, path)!=0){ LOGW(MOD,"rename %s -> %s failed", tmp, path); remove(tmp); goto unlock; }
+        fclose(out); remove(tmp); goto unlock;
+    }
+    if (fclose(out)!=0){ LOGW(MOD,"close %s failed: %s", tmp, strerror(errno)); remove(tmp); goto unlock; }
+    if (rename(tmp, path)!=0){ LOGW(MOD,"rename %s -> %s failed: %s", tmp, path, strerror(errno)); remove(tmp); goto unlock; }
     /* the rename()'s directory-entry update needs its own durability flush
      * too - otherwise a power cut right after a successful rename() can
      * still leave the directory pointing at the old (or no) file even

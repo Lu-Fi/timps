@@ -23,6 +23,23 @@ semantic versioning.
   no-op under the motion pin or a piggyback JPEG), and both watchdogs wait at
   least 4 s since the first miss, so a short `general.imp_polling_timeout` does
   not turn a slow cold start into a recovery cycle.
+- **`POST /control` reports a failed config write.** A failed `mkstemp`/`fsync`/
+  `rename` answered 200 with `not_persisted:0`, and re-posting the same value
+  was "unchanged", so it was never saved. Such keys now count in
+  `not_persisted` and every later POST retries them.
+- **`POST /control` reads each section only at its own level.** A nested key
+  of the same name (`{"record":{"audio":1},"audio":{...}}`) used to shadow the
+  whole `audio` section.
+- **`POST /control` no longer applies a partial body.** A body shorter than
+  `Content-Length` (peer close, deadline) answers `400 body_truncated`; unbalanced
+  braces, an unterminated string or trailing data answer `400 not_json`. Methods
+  other than GET/HEAD/POST answer 405, and a reply with every list full is no
+  longer cut (500 instead of truncated JSON).
+- **`last_errors` in `GET /control` stays valid UTF-8** (non-ASCII bytes of a
+  stored log message become `?`).
+- **A legacy `osdN.*` line no longer reverts a per-stream `osdS.N.*` write after
+  a reboot** (or the other way round): the config writer replaces or splits the
+  other form's line instead of leaving both.
 
 ### Added
 
@@ -36,6 +53,9 @@ semantic versioning.
 
 ### Changed
 
+- **Config integers are decimal; hex needs `0x`.** `08` was read as 0 and `010`
+  as 8 (octal). `video<N>.imp_chn` and `jpeg.imp_chn` are clamped to 0..7,
+  `motion.hold_ms` to 0..60000 and `motion.skip_frames` to 1..100.
 - **The "detection idle" warning no longer claims the ISP dump is unreadable.**
   It fired whenever no gain could be parsed - also for a perfectly readable dump
   in a format an older build did not know (the T41 open stack). It now says no

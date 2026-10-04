@@ -180,7 +180,7 @@ relate.)
 | `jpeg.height` | int | 360 | 64–4096 | File-only | JPEG channel height. |
 | `jpeg.quality` | int | 75 | 1–100 | File-only | JPEG quality. |
 | `jpeg.fps` | int | 5 | 1–120 | File-only | Max snapshot/MJPEG publish rate for this channel. |
-| `jpeg.imp_chn` | int | 2 | 0–8 | File-only | IMP encoder channel number (internal). (since v1.9.28) a value that collides with an enabled video stream's channel is moved to the lowest free channel at load, with an `[ERR]` line. |
+| `jpeg.imp_chn` | int | 2 | 0–7 | File-only | IMP encoder channel number (internal). (since v1.9.28) a value that collides with an enabled video stream's channel is moved to the lowest free channel at load, with an `[ERR]` line. |
 | `jpeg.snapshot_path` | string | `""` | — | File-only | Optional path to periodically write the latest JPEG to disk (`""` = disabled). |
 
 ## `rtsp.*` — RTSP server
@@ -394,8 +394,8 @@ by design (see below).
 | `motion.cols` | int | 5 (or 2/1 on SDKs with a smaller ROI budget) | ≥1, `cols*rows` clamped to `MOTION_CELL_LIMIT` | **Live** | Grid columns. Setting one axis clamps against the *current* value of the other, never the reverse, so re-applying the same pair is idempotent. |
 | `motion.rows` | int | 5 (or 2/1) | ≥1, same clamp | **Live** | Grid rows. |
 | `motion.cooldown_ms` | int | 5000 | 250–`INT_MAX` (floor enforced) | File-only | Minimum gap between `on_motion` hook executions. |
-| `motion.hold_ms` | int | 800 | 0–`INT_MAX` | **Live** | How long a cell reports "active" after its last hit, so an async `/events`/`/control` reader reliably observes single-frame motion instead of racing IVS's own immediate clear. `0` = no hold. Settable via `/control`; applied through the grid re-sync batched at the end of the request. |
-| `motion.skip_frames` | int | 5 | 1–`INT_MAX` | **Live** | `IMP_IVS_MoveParam.skipFrameCnt` — analyze every Nth frame. Higher = cheaper/higher latency. Settable via `/control`; applied through the grid re-sync batched at the end of the request. |
+| `motion.hold_ms` | int | 800 | 0–60000 | **Live** | How long a cell reports "active" after its last hit, so an async `/events`/`/control` reader reliably observes single-frame motion instead of racing IVS's own immediate clear. `0` = no hold. Settable via `/control`; applied through the grid re-sync batched at the end of the request. |
+| `motion.skip_frames` | int | 5 | 1–100 | **Live** | `IMP_IVS_MoveParam.skipFrameCnt` — analyze every Nth frame. Higher = cheaper/higher latency. Settable via `/control`; applied through the grid re-sync batched at the end of the request. |
 | `motion.on_motion` | string(128) | `""` | — | File-only, **not GET-readable either** | Program launched by `posix_spawn()` on motion (no shell, no arguments, no `PATH` search — use an absolute path). `""` = disabled. Receives `MOTION_COLS`/`MOTION_ROWS`/`MOTION_CELLS`/`MOTION_TIME` via the environment — see [Motion Detection](Motion-Detection.md). |
 | `motion.roi_x`/`roi_y`/`roi_w`/`roi_h` | int | 0 | — | File-only, **deprecated** | Legacy single-ROI keys, still parsed for old configs but **ignored** — the grid replaced them. Setting a non-zero value logs a one-time warning. |
 
@@ -597,7 +597,7 @@ hardcode the table into a client — see
 | `video<N>.jpeg_quality` | int | 75 / 75 | 1–100 | File-only | Piggyback JPEG quality. |
 | `video<N>.jpeg_fps` | int | 5 / 5 | 1–120 | File-only | Piggyback JPEG max publish rate. |
 | `video<N>.jpeg_chn` | int | `MS_MAX_VSTREAM+1+N` | 0–8 | File-only | IMP encoder channel number for the piggyback JPEG encoder (internal). Must be unique; (since v1.9.28) a collision is moved to the lowest free channel at load (or that JPEG encoder disabled if none is free), with an `[ERR]` line. |
-| `video<N>.imp_chn` | int | `N` | 0–8 | File-only, internal | IMP encoder channel number for the video stream itself. It doubles as the stream's hub slot, so it must equal `N`; (since v1.9.28) any other value is reset to `N` at load with an `[ERR]` line (before, it silently fed another stream's or the audio slot). |
+| `video<N>.imp_chn` | int | `N` | 0–7 | File-only, internal | IMP encoder channel number for the video stream itself. It doubles as the stream's hub slot, so it must equal `N`; (since v1.9.28) any other value is reset to `N` at load with an `[ERR]` line (before, it silently fed another stream's or the audio slot). |
 
 ---
 

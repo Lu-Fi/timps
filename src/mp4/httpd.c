@@ -1957,6 +1957,11 @@ static void *conn_thread(void *arg)
                                                         : c->cfg->rtsp_user;
                 if (!c->local && !tok_ok && !user[0])
                     http_send_ex(c,"403 Forbidden","text/plain",cors,"local only",10);
+                else if (strcmp(method,"GET") && !c->head && strcmp(method,"POST")) {
+                    char hx[sizeof cors + 32];
+                    snprintf(hx, sizeof hx, "Allow: GET, HEAD, POST\r\n%s", cors);
+                    http_send_ex(c,"405 Method Not Allowed","text/plain",hx,"method not allowed",18);
+                }
                 else if (!strcmp(method,"GET") || c->head) {
                     /* HEAD previously fell into the POST branch below and
                      * ran control_apply_json("") - GET semantics instead */
@@ -2185,7 +2190,14 @@ static void *conn_thread(void *arg)
                          * read (have < clen, already truncated by the
                          * deadline above) is a separate, pre-existing
                          * condition this isn't meant to paper over. */
-                        if (have >= clen) body[clen] = 0;
+                        if (have < clen) {
+                            /* deadline or peer close: never apply a prefix */
+                            static const char bt[] = "{\"ok\":false,\"reason\":\"body_truncated\"}";
+                            http_send_ex(c,"400 Bad Request","application/json",cors,
+                                         bt,(int)sizeof bt - 1);
+                            goto done;
+                        }
+                        body[clen] = 0;
                     }
                     /* The old code answered {"ok":true} 200 to everything -
                      * garbage, truncated JSON, unknown keys and real writes
@@ -2265,7 +2277,8 @@ static void *conn_thread(void *arg)
                      * typo used to answer 200 accepted:1 and drop the typo
                      * silently; only an ALL-unknown body was visible, as 422.
                      * Same overflow contract as applied/deferred_keys. */
-                    char rb[CTRL_ECHO_CAP + CTRL_DEFER_CAP + CTRL_IGN_CAP + 320];
+                    char rb[sizeof cr.echo + sizeof cr.defer + sizeof cr.ign +
+                            sizeof cr.uns + 512];
                     int rn = snprintf(rb, sizeof rb,
                         "{\"ok\":%s,\"accepted\":%d,\"changed\":%d,"
                         "\"rejected\":%d,\"not_persisted\":%d,"
@@ -2286,7 +2299,11 @@ static void *conn_thread(void *arg)
                         (prc==0 && !cr.echo_full) ? ",\"truncated\":true" : "",
                         reason ? ",\"reason\":\"" : "", reason ? reason : "",
                         reason ? "\"" : "");
-                    if (rn >= (int)sizeof rb) rn = (int)sizeof rb - 1;
+                    if (rn < 0 || rn >= (int)sizeof rb) {
+                        LOGW(MOD,"/control reply too large (%d)", rn);
+                        st = "500 Internal Server Error";
+                        rn = snprintf(rb, sizeof rb, "{\"ok\":false,\"reason\":\"reply_too_large\"}");
+                    }
                     /* prc==0: a change was actually applied/persisted -
                      * bracket the write so control_quiesce() can wait for it
                      * instead of httpd_stop()'s post-quiesce connection-wake

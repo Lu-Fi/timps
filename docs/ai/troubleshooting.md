@@ -213,12 +213,16 @@ Four distinct causes, distinguishable from the `POST /control` reply body:
 | --- | --- | --- |
 | `"ignored":["…"]` | The build does not know that field name (typo, or feature compiled out). Counts are unaffected — a request mixing one good key with one typo still answers `200`. | Check the spelling against `GET /control?fields=1`. |
 | `"deferred":N,"deferred_keys":[…]` | Changed fields that were **persisted but did not reach the running pipeline**: `video*`/`sensor.*`, and since v1.9.20 the restart-only `audio.*`/`osd.*` keys (`caps.restart`). | Restart `timpsd`. |
-| `"not_persisted":N` | The value is live in memory but was **not written to the file**. | Split the request; see below. |
+| `"not_persisted":N` | The value is live in memory but was **not written to the file**. | Split the request, or fix the failed write; see below. |
 | `"rejected":N` | A value was refused outright (e.g. `speaker play` with a bad path). | Fix the value. |
 
 `not_persisted` in practice: `control.c` batches at most `CTRL_MAX_CHG` =
 **48** changed keys per request. Past that the tail stays live-but-unsaved and
 `too many settings in one request, <key> not persisted` appears in the log.
+A failed config write (no space, read-only overlay, `fsync`/`rename` error) is
+counted too, with `<n> setting(s) are live but NOT saved to <path>` (ERR) after
+the `cannot create tmp …`/`fsync …`/`rename …` warning. The next POST, even
+one repeating the same value, retries those keys.
 
 `config_write_keys()` has a second, higher cap of **64** keys per call, whose
 warning is `config_write_keys: <n> keys in one call, only the first 64 are

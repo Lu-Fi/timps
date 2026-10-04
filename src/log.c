@@ -132,7 +132,9 @@ static void lerr_note(int level, const char *module, const char *msg, long t)
     int j = 0;
     for (const char *p = msg; *p && j < LERR_MSG-1; p++){
         unsigned char ch = (unsigned char)*p;
-        s->msg[j++] = ch=='"' ? '\'' : ch=='\\' ? '/' : ch < 0x20 ? ' ' : (char)ch;
+        /* >= 0x7f: a cut multi-byte sequence would be invalid UTF-8 */
+        s->msg[j++] = ch=='"' ? '\'' : ch=='\\' ? '/' : ch < 0x20 ? ' ' :
+                      ch >= 0x7f ? '?' : (char)ch;
     }
     s->msg[j] = 0;
 }
