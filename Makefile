@@ -72,8 +72,10 @@ USE_SW_ROTATE ?= 0          # 1 = opt-in software 90/270 rotation on T23 (CPU tr
                             #     unbound YuvEncode; no HW OSD/privacy on rotated streams).
                             #     Only effective with PLATFORM=T23; default off = byte-identical build.
                             #     Implies USE_ROTATE (the SW path is part of the rotation feature).
+# The implications below use `override`: a plain := is ignored for a variable
+# given on the make command line, which is how thingino passes every USE_*.
 ifeq ($(USE_SW_ROTATE),1)
-USE_ROTATE    := 1
+override USE_ROTATE := 1
 endif
 USE_OSD_HINTING ?= 0        # 1 = compile in the opt-in geometric OSD-text autohinter
                             #     (autohint_glyph() and friends in src/hal/msttf.c).
@@ -179,10 +181,10 @@ SIM_SRC    := $(BASE) src/hal/osd_text.c src/hal/hal_sim.c src/hal/imp_motion.c 
 # for the compile-then-link two-step
 # USE_BC_AAC implies the backchannel feature; USE_PLAY_OPUS implies the play queue
 ifeq ($(USE_BC_AAC),1)
-USE_BACKCHANNEL := 1
+override USE_BACKCHANNEL := 1
 endif
 ifeq ($(USE_PLAY_OPUS),1)
-USE_PLAY := 1
+override USE_PLAY := 1
 endif
 # USE_BC_WS implies the backchannel (it feeds bc_feed_pcm) AND the control
 # endpoint: a browser's WebSocket constructor cannot set request headers, so
@@ -200,8 +202,8 @@ endif
 # secure-context override to reach its microphone at all. httpd_start() warns
 # about the unsatisfiable combination at boot.
 ifeq ($(USE_BC_WS),1)
-USE_BACKCHANNEL := 1
-USE_CONTROL     := 1
+override USE_BACKCHANNEL := 1
+override USE_CONTROL     := 1
 endif
 # USE_WEBRTC implies TLS (the DTLS handshake, the X.509 parse and the SHA-256
 # fingerprint all come from the same mbedTLS the HTTPS listener links) and the
@@ -209,8 +211,8 @@ endif
 # reflection that are only compiled under USE_CONTROL - a browser fetch() has
 # no other credential to offer a camera that has one configured).
 ifeq ($(USE_WEBRTC),1)
-USE_TLS     := 1
-USE_CONTROL := 1
+override USE_TLS     := 1
+override USE_CONTROL := 1
 endif
 # speaker.c (native IMP_AO owner) + the shared resampler are pulled in whenever
 # either audio-output producer is built.
@@ -258,7 +260,9 @@ TARGET_OBJS   := $(notdir $(TARGET_ALLSRC:.c=.o))
 #
 # build.sh drives the MIPS cross build and passes its own CFLAGS/LDFLAGS (which
 # override the defaults below), so it carries an equivalent, libc-aware copy of
-# this logic. These defaults cover `make sim` and any direct `make target`.
+# this logic. thingino's package/timps/timps.mk passes its own CFLAGS/LDFLAGS
+# too and gets none of this - only what buildroot's TARGET_CFLAGS/LDFLAGS carry.
+# These defaults cover `make sim` and any direct `make target`.
 HARDEN  ?= 1
 FORTIFY ?= 1
 
@@ -276,7 +280,7 @@ CFLAGS  ?= -std=c11 -D_GNU_SOURCE -Os -Wall -Wextra -Wno-unused-parameter -Wno-m
 LDFLAGS ?= -Wl,--gc-sections $(HARDEN_LDFLAGS)
 LIBS    ?= -lpthread -lrt -lm
 
-# Version baked into the binary (timps -v / startup log). git-describe for local
+# Version baked into the binary (timps -h / startup log). git-describe for local
 # builds; the buildroot package overrides it with VERSION=$(TIMPS_VERSION).
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo 0.1.0)
 

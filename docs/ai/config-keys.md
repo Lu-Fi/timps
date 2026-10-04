@@ -1,16 +1,16 @@
 # timps configuration keys — complete reference
 
-**Applies to timps v1.9.28 (source: `main`, 2026-09-28).**
+**Applies to timps v1.9.32 (source: `main`, 2026-10-04).**
 
-A statement marked **since v1.9.28** is new in that release — on a v1.9.27 or
-older camera the *previous* behaviour is the one to describe.
+A statement marked **since vX** is new in that release — on an older camera
+the *previous* behaviour is the one to describe. Changes listed under
+`[Unreleased]` in `CHANGELOG.md` are marked **since the next release**.
 
 Authoritative source: `src/config.c` (the `cfg_field` tables and
 `config_defaults()`), `src/config.h` (struct field sizes and doctrine),
 `src/control.c` (what is reachable over HTTP), `src/hal/hal_ingenic.c`
 (`ing_control()` — what applies live), and `src/*_caps.h` (platform gating).
-Where an existing doc contradicts the code, the code wins here and the
-disagreement is listed in `docs/ai/_doc-drift.md`.
+Where an existing doc contradicts the code, the code wins here.
 
 Overview / architecture doc: `docs/ai/reference.md`.
 
@@ -42,8 +42,8 @@ Overview / architecture doc: `docs/ai/reference.md`.
 * **Later lines win.** A duplicate key later in the file overrides the earlier
   one.
 * Integers are decimal; hex needs an explicit `0x` (`0x37`). A leading zero is
-  just decimal (`08` = 8, `010` = 10; until the next release `strtol` base 0
-  read these as octal).
+  just decimal (`08` = 8, `010` = 10; up to v1.9.32 `strtol` base 0 read
+  these as octal).
 * Booleans: `1`, `true`, `on`, `yes` are true (case-insensitive). Anything else
   is false — including typos. Two keys warn loudly about this (see `F_SECVAL`
   below).
@@ -336,7 +336,7 @@ way to check.
 | `image.backlight_compensation` | int | `0` | **0..10** | T23 T31 C100 | `ISP_HAS_BACKLIGHT`. |
 | `image.colorfx` | int | `0` | 0..9 (0 none, 1 B/W, 2 sepia, 3 negative, 9 vivid) | only with `USE_OPENIMP`: T10 T20 T21 T23 T31 | `ISP_HAS_COLORFX`. The vendor SDKs expose the call on some SoCs but their kernels ignore it. The open driver answers `EINVAL` for values it does not know (sepia only on T20): the HAL logs it, the value stays persisted. Not in `caps.image` on vendor builds. |
 | `image.scene` | int | `0` | 0..14 (SDK `IMPISPSceneMode`: 0 auto, 2..9, 11..14; 1 and 10 invalid) | only with `USE_OPENIMP`: T10 T20 T21 T23 T31 | `ISP_HAS_SCENE`. Same notes as `image.colorfx`. |
-| `image.core_wb_mode` | int | `0` | 0..9 (0..8 on T10/T20/T30) | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_WB`. The SDK's `isp_core_wb_mode`: `0` auto, `1` manual (then `wb_rgain`/`wb_bgain` apply), `2` daylight, `3` cloudy, `4` incandescent, `5` fluorescent, `6` twilight, `7` shade, `8` warm fluorescent, `9` custom (T21/T23/T31/C100 only). Before the next release the range was 0..1, so `2..9` came back as `1`. |
+| `image.core_wb_mode` | int | `0` | 0..9 (0..8 on T10/T20/T30) | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_WB`. The SDK's `isp_core_wb_mode`: `0` auto, `1` manual (then `wb_rgain`/`wb_bgain` apply), `2` daylight, `3` cloudy, `4` incandescent, `5` fluorescent, `6` twilight, `7` shade, `8` warm fluorescent, `9` custom (T21/T23/T31/C100 only). Before v1.9.30 the range was 0..1, so `2..9` came back as `1`. |
 | `image.wb_rgain` | int | `0` | 0..65535 | T10 T20 T21 T23 T30 T31 C100 | Only meaningful with `core_wb_mode=1`. |
 | `image.wb_bgain` | int | `0` | 0..65535 | T10 T20 T21 T23 T30 T31 C100 | Only meaningful with `core_wb_mode=1`. **since v1.9.21** start value: read-only `image.wb_live.rgain`/`.bgain` in `GET /control` = gains AWB applies now. |
 | `image.ae_it_max_us` | int | `0` | 0..1000000 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_AE_IT_MAX` (T23/T31/C100) or `ISP_HAS_AE_IT_RANGE` (T10/T20/T21/T30). Inert on T40/T41. `0` = no cap: touches nothing if no cap was ever written, otherwise writes the sensor mode's own (remembered, uncapped) AE maximum back (**since v1.9.30**; before that `0` needed a restart). |
@@ -958,7 +958,7 @@ echoed by `GET /control`. Changes need a restart.
 | `rtsp.enabled` | bool | `1` | — | file-only, restart | |
 | `rtsp.port` | int | `554` | 1..65535 | file-only, restart | |
 | `rtsp.mtu` | int | `1200` | **548..1472** | file-only, restart | Max RTP packet size (header + payload) for UDP packetization. 1200 leaves room for WireGuard/OpenVPN/PPPoE/IPv6 tunnel overhead; raise to 1400 for LAN-only setups. |
-| `rtsp.user` | string[64] | `""` | — | file-only, restart | Alias `rtsp.username`. **Empty = RTSP is open, no authentication.** Non-empty enables Digest auth. |
+| `rtsp.user` | string[64] | `""` | — | file-only, restart | Alias `rtsp.username`. **Empty = RTSP is open, no authentication.** Non-empty enables Digest **and** Basic (the `401` offers both). |
 | `rtsp.pass` | string[64] | `""` | — | file-only, restart | Alias `rtsp.password`. |
 | `rtsp.tls` | bool | `0` | — | file-only, restart | Alias `rtsp.tls_enabled`. `1` = additionally run an RTSPS listener. Needs `USE_TLS`. **`F_SECVAL`**: a value that parses as neither an on/off word nor an in-range number logs a loud WARN, because the fall-through to `0` is plaintext. |
 | `rtsp.tls_port` | int | `322` | 1..65535 | file-only, restart | |
@@ -1037,7 +1037,7 @@ published a fingerprint in an SDP answer.
 
 | Key | Type | Default | Range | Apply | Notes |
 | --- | --- | --- | --- | --- | --- |
-| `webrtc.enabled` | tri-state int | `2` | 0..2 | file-only, restart | `0` = `/webrtc/whep` answers 404. `1` = on, TLS required for the signalling POST where the HTTP port has it. `2` = on and accept a plaintext POST too. Default is `2` on purpose: most cameras have no http→https redirect, so `1` would silently 426 the feature it enables. Legacy `true`/`on`/`yes` parse as `1`. |
+| `webrtc.enabled` | tri-state int | `2` | 0..2 | file-only, restart | `0` = `/webrtc/whep` answers `503` (body `webrtc.enabled=0`; a 404 means the build has no WebRTC or the DTLS context failed). `1` = on, TLS required for the signalling POST where the HTTP port has it. `2` = on and accept a plaintext POST too. Default is `2` on purpose: most cameras have no http→https redirect, so `1` would silently 426 the feature it enables. Legacy `true`/`on`/`yes` parse as `1`. |
 | `webrtc.port` | int | `0` | 0..65535 | file-only, restart | UDP media port. `0` = ephemeral. |
 | `webrtc.port_max` | int | `0` | 0..65535 | file-only, restart | Top of the media port range. `0` = `webrtc.port + WEBRTC_MAX_SESSIONS - 1` (one port per session slot; `WEBRTC_MAX_SESSIONS` is 4). |
 | `webrtc.channel` | int | `0` | **0..1** (`MS_MAX_VSTREAM-1`) | file-only, restart | Which video stream to send by default; `POST /webrtc/whep?chn=N` overrides it per session (`400` if stream N is not running or not H.264). |

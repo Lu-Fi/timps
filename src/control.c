@@ -44,7 +44,7 @@
 
 #define MOD "CTRL"
 
-/* Same compile-time constant main.c uses for `timpsd -v` and its startup log
+/* Same compile-time constant main.c uses for `timpsd -h` and its startup log
  * line - passed in via -DMS_VERSION on the whole build's command line
  * (Makefile), so it is already defined here too on a normal build. The
  * fallback mirrors main.c's, only for a standalone/tooling compile of this
@@ -1402,7 +1402,7 @@ int control_get_json(char *buf, size_t cap)
      * script's own success signal only proves a reboot was triggered, not
      * that the new binary is what came back up. MS_VERSION is git describe's
      * tag+commit+dirty-flag string, already compiled in and used for
-     * `timpsd -v`/the startup log line (main.c) - this just exposes the same
+     * `timpsd -h`/the startup log line (main.c) - this just exposes the same
      * compile-time constant here too, so a one-line `curl .../control | jget
      * version` (or scripts/timps-qa.sh's new check) catches exactly this
      * class of "reboot happened, binary didn't" drift without needing an SSH

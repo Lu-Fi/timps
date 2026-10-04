@@ -78,6 +78,11 @@ semantic versioning.
   8 kHz AI re-init disables the AI device again; `fs_unuse()` skips the
   `DisableChn` of a framesource whose enable had failed; and on T23 with SW
   rotation a JPEG-only client (MJPEG/snapshot) now wakes the rotate thread.
+- **Makefile feature implications hold on the command line too.**
+  `USE_SW_ROTATE` -> `USE_ROTATE`, `USE_WEBRTC` -> `USE_TLS`+`USE_CONTROL`,
+  `USE_BC_WS`, `USE_BC_AAC` and `USE_PLAY_OPUS` were plain assignments, which
+  make ignores for a variable given on the command line - the way thingino
+  passes every `USE_*`.
 
 ### Added
 

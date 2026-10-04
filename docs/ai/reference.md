@@ -6,10 +6,11 @@ firmware. Everything here is verified against the `main` branch of
 <https://github.com/Lu-Fi/timps> and against `package/timps/` in a thingino
 firmware tree.
 
-Applies to timps v1.9.28 (source: `main`, 2026-09-28)
+Applies to timps v1.9.32 (source: `main`, 2026-10-04)
 
-A statement marked **since v1.9.28** is new in that release — on a v1.9.27 or
-older camera describe the previous behaviour.
+A statement marked **since vX** is new in that release — on an older camera
+describe the previous behaviour. Changes listed under `[Unreleased]` in
+`CHANGELOG.md` are marked **since the next release**.
 
 ## Where to find what
 
@@ -228,7 +229,8 @@ general.imp_polling_timeout = 500    # ms
 general.osd_pool_size       = 1024   # KB
 ```
 Module tags for `debug_modules`: `MAIN CONFIG CTRL DAYNIGHT HAL_ING HTTP HUB
-MOTION OSD REC RTSP SRT TL HAL_SIM TLS AAC bc spk TRACE`. This key is live over
+MOTION OSD REC RTSP SRT TL HAL_SIM TLS AAC bc spk TRACE WEBRTC talk events
+CLIENT`. This key is live over
 `/control` — no restart needed, which matters because raising the global level
 destroys the 64 KB syslog ring you were trying to read.
 
@@ -686,7 +688,9 @@ headers consumed — roughly **3.5 KB** in practice. A larger declared
 rather than silently truncated and half-applied. A full OSD or privacy batch
 can reach this; split it. A request using **`Transfer-Encoding`** instead of
 `Content-Length` gets **`411 Length Required`** — this catches some proxies and
-Python `requests` called with a generator body. In the other direction,
+Python `requests` called with a generator body. A POST with no
+`Content-Length` at all has an empty body and answers **`400` / `not_json`**
+(the 411-on-missing-length rule is the WHEP endpoint's, not `/control`'s). In the other direction,
 `GET /control` answers **`500` / `control json too large`** if the response
 overruns its 22 528-byte cap.
 
@@ -695,10 +699,13 @@ Status codes and their `reason` discriminators:
 | Status | `reason` | Meaning | Advice to the user |
 | --- | --- | --- | --- |
 | 200 | — | At least one known field applied (partial success is still 200) | Check `rejected` and `ignored` |
-| 400 | `not_json` | Body was not a JSON object | Client bug |
+| 400 | `not_json` | Body was not one balanced JSON object (also: no `Content-Length`, trailing data) | Client bug |
+| 400 | `body_truncated` | Since the next release: fewer body bytes than `Content-Length` arrived; nothing applied | Resend |
+| 405 | — | Since the next release: a method other than GET/HEAD/POST (OPTIONS is the preflight) | Use POST |
+| 500 | `reply_too_large` | Since the next release: the reply did not fit its buffer; the change was applied | Re-`GET`, report it |
 | 422 | `unknown_fields` | Parsed, but **no key this build knows** | Check spelling **and** whether the feature is compiled in (`caps`) — retrying identically will never work |
 | 409 | `values_rejected` | Keys were all known, all values refused | Key names were right, fix the values |
-| 411 | — | `Transfer-Encoding` instead of `Content-Length`, or a missing/zero length | Send a fixed-length body |
+| 411 | — | `Transfer-Encoding` instead of `Content-Length` | Send a fixed-length body |
 | 413 | — | Headers + body exceed the 4096-byte buffer | Split the request |
 | 503 | `oom` | Allocation failure | Retry; not a client error |
 | 503 | `shutting_down` | **since v1.9.28**: the daemon is shutting down and no longer accepts POSTs | Not a client error; the next boot will |

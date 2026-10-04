@@ -1504,7 +1504,7 @@ if want 1b version identity; then
 # the flash script's own success signal only proves a reboot was triggered,
 # not that the new binary is what came back up. GET /control now reports a
 # "version" key (git describe's tag+commit+dirty string, the same constant
-# `timpsd -v` prints); surface it prominently, early, before the bulk of
+# `timpsd -h` prints); surface it prominently, early, before the bulk of
 # testing, so a human glancing at the run immediately sees what build is
 # actually answering - this is a visibility fix, not a pass/fail gate (there
 # is no "expected version" to compare against from the host side in general).
