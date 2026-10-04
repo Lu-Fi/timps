@@ -1277,6 +1277,10 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
  *   active         per-cell 0/1 from the latest IVS result (empty
  *                  when unavailable or not running)
  *   last_ms        ms since the last motion event, -1 = never
+ *   v2, suppress, objects  OpenIMP motion v2 only (present while its analysis
+ *                  runs): suppress = hold-off reasons (1 day/night, 2 gain,
+ *                  4 brightness, 0 none); objects = [{id,x0,y0,x1,y1,
+ *                  strength,age}] in pixels of the monitored stream
  *   hold_ms/skip_frames  configured values (g_cfg, not st: baked into the
  *                  IVS grid/hold logic only at the next create/resync, see
  *                  imp_motion.c) - read-only feedback for the settings page,
@@ -1315,7 +1319,19 @@ int control_motion_json(char *buf, size_t cap, const ms_motion_status *st)
     int mcells = st->cells;
     if (mcells > MOTION_STATUS_MAX) mcells = MOTION_STATUS_MAX;
     for (int i=0;i<mcells;i++) APP("%s%d", i?",":"", st->active[i]);
-    APP("],\"last_ms\":%lld}", (long long)st->last_ms);
+    APP("],\"last_ms\":%lld", (long long)st->last_ms);
+    if (st->v2) {   /* OpenIMP motion v2 detail: objects + hold-off reasons */
+        APP(",\"v2\":1,\"suppress\":%u,\"objects\":[", st->suppress);
+        int n = st->nobj;
+        if (n > MOTION_OBJ_MAX) n = MOTION_OBJ_MAX;
+        for (int i=0;i<n;i++)
+            APP("%s{\"id\":%u,\"x0\":%d,\"y0\":%d,\"x1\":%d,\"y1\":%d,"
+                "\"strength\":%u,\"age\":%u}", i?",":"", (unsigned)st->obj[i].id,
+                st->obj[i].x0, st->obj[i].y0, st->obj[i].x1, st->obj[i].y1,
+                (unsigned)st->obj[i].strength, (unsigned)st->obj[i].age);
+        APP("]");
+    }
+    APP("}");
     #undef APP
     return (int)o;
 }

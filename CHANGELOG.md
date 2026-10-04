@@ -6,6 +6,20 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- **OpenIMP motion v2 detail in the `motion` status (`/control` and `/events`).**
+  With a `USE_OPENIMP` build on a libimp that exports
+  `OpenIMP_IVS_MoveGetResultEx` (OpenIMP `next` from 636b6ac; weak symbol, a
+  vendor libimp leaves it NULL), the motion object gains `v2`, `suppress`
+  (hold-off reasons: day/night, gain jump, brightness jump) and `objects`
+  (id, bounding box in pixels of the monitored stream, strength 0..1000, age).
+  A `/events` snapshot is queued when the set of objects or the hold-off
+  changes, not for every moving box. Hold-off start and end are logged once
+  (`motion v2: ...`). The detection itself needs no timps change: OpenIMP's
+  v2 analysis already drives `IMP_IVS_MoveOutput`. Vendor builds are unchanged
+  apart from two JSON keys that are absent there.
+
 ## [1.9.30] - 2026-10-04
 
 ### Changed

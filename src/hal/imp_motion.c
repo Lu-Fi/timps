@@ -44,6 +44,13 @@ _Static_assert(MOTION_MAX_CELLS <= MOTION_STATUS_MAX,
 #include <imp/imp_ivs.h>
 #include <imp/imp_ivs_move.h>
 #include <imp/imp_system.h>
+#ifdef USE_OPENIMP
+#include "openimp_ivs_move_ex.h"
+/* OpenIMP beyond-vendor extension, weak: NULL on a vendor libimp or an older
+ * OpenIMP, in which case nothing below runs. */
+extern int OpenIMP_IVS_MoveGetResultEx(int channel, OpenIMP_IVS_MoveOutputEx *out)
+    __attribute__((weak));
+#endif
 #include <stdio.h>
 #include <pthread.h>
 #include <unistd.h>
@@ -262,6 +269,17 @@ static void *motion_thread(void *arg)
         uint64_t hitmask = 0;   /* M3: cells with raw motion THIS frame, for the hook */
         int64_t nowm = now_ms();
         ms_motion_status snap;
+#ifdef USE_OPENIMP
+        /* motion v2 detail of THIS result (objects, hold-off reasons): fetched
+         * before the lock, applied under it below */
+        OpenIMP_IVS_MoveOutputEx ex;
+        int have_ex = 0;
+        if (OpenIMP_IVS_MoveGetResultEx) {
+            memset(&ex, 0, sizeof ex);
+            ex.size = sizeof ex; ex.version = OPENIMP_IVS_MOVE_EX_VERSION;
+            have_ex = (OpenIMP_IVS_MoveGetResultEx(g_chn, &ex) == 0);
+        }
+#endif
         pthread_mutex_lock(&g_st_lock);
         /* retRoi[i] is per ROI SLOT; map back to the grid cell. Privacy-masked
          * cells have no slot, so they stay 0 in active[] (memset at start). */
@@ -281,6 +299,33 @@ static void *motion_thread(void *arg)
             if (held != g_st.active[cell]){ g_st.active[cell] = held; changed = 1; }
         }
         g_st.any = any_held;
+#ifdef USE_OPENIMP
+        unsigned prev_supp = g_st.suppress;
+        if (have_ex) {
+            int v2 = (ex.flags & OPENIMP_MOVE_EX_ACTIVE) ? 1 : 0;
+            int n = (int)ex.obj_cnt;
+            if (!v2) n = 0;
+            if (n > OPENIMP_IVS_MOVE_EX_MAX_OBJ) n = OPENIMP_IVS_MOVE_EX_MAX_OBJ;
+            if (n > MOTION_OBJ_MAX) n = MOTION_OBJ_MAX;
+            /* a snapshot is queued for /events only when the SET of objects or
+             * the hold-off changes; boxes that merely move ride along with the
+             * next push, so a moving object does not flood the event stream */
+            if (v2 != g_st.v2 || n != g_st.nobj ||
+                (ex.suppress & 7u) != g_st.suppress) changed = 1;
+            for (int i = 0; i < n && !changed; i++)
+                if (g_st.obj[i].id != ex.obj[i].id) changed = 1;
+            g_st.v2 = v2;
+            g_st.suppress = ex.suppress & 7u;
+            g_st.nobj = n;
+            for (int i = 0; i < n; i++) {
+                g_st.obj[i].x0 = ex.obj[i].x0; g_st.obj[i].y0 = ex.obj[i].y0;
+                g_st.obj[i].x1 = ex.obj[i].x1; g_st.obj[i].y1 = ex.obj[i].y1;
+                g_st.obj[i].strength = ex.obj[i].strength;
+                g_st.obj[i].age = ex.obj[i].age;
+                g_st.obj[i].id = ex.obj[i].id;
+            }
+        }
+#endif
         if (detected) g_last_event = nowm;
         if (changed){                        /* snapshot under the lock ... */
             snap = g_st;
@@ -288,6 +333,12 @@ static void *motion_thread(void *arg)
             snap.available = 1;
         }
         pthread_mutex_unlock(&g_st_lock);
+#ifdef USE_OPENIMP
+        if (have_ex && (ex.suppress & 7u) != prev_supp)
+            LOGI(MOD,"motion v2: %s", (ex.suppress & 7u)
+                 ? "events held off after a day/night, gain or brightness change"
+                 : "hold-off over, detection live again");
+#endif
         if (changed) events_motion_push(&snap);  /* ... queue outside it:
              every grid change reaches /events, none can coalesce away */
         if (detected) {

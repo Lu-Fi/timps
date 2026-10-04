@@ -15,6 +15,8 @@
 /* fixed status-array size, >= any SDK's IMP_IVS_MOVE_MAX_ROI_CNT (52 max
  * across the vendored SDKs) so the struct layout never depends on the SDK */
 #define MOTION_STATUS_MAX 64
+/* objects kept per status snapshot (the library reports up to 16) */
+#define MOTION_OBJ_MAX 8
 
 typedef struct {
     int      available;    /* 1 = IMP_IVS move usable in this build */
@@ -29,6 +31,19 @@ typedef struct {
     int64_t  last_ms;      /* ms since the last motion event, -1 = never */
     unsigned char active[MOTION_STATUS_MAX]; /* per-cell 0/1, row-major
                                               * (index = row*cols + col) */
+    /* OpenIMP motion v2 (USE_OPENIMP; zero everywhere else): the objects the
+     * library grouped the moving cells into, in pixels of the monitored
+     * stream's frame. v2 = 1 while its analysis is running. */
+    int      v2;
+    unsigned suppress;     /* OPENIMP_MOVE_SUPP_* of the current hold-off: 1 day/night,
+                            * 2 gain jump, 4 brightness jump; 0 = none */
+    int      nobj;         /* valid entries of obj[] */
+    struct {
+        short          x0, y0, x1, y1;   /* inclusive */
+        unsigned short strength;         /* 0..1000 */
+        unsigned short age;              /* analysed frames seen */
+        unsigned short id;               /* track id */
+    } obj[MOTION_OBJ_MAX];
 } ms_motion_status;
 
 /* mon = monitored stream index the caller resolved (motion.monitor_stream with
