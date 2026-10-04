@@ -252,6 +252,10 @@ static void dn_status_update(float brightness, float gain, float exposure,
 /* high-water mark of the observed integration time, for SDKs that do not
  * publish its maximum - see dn_read(). Touched only by the detection thread. */
 static int g_int_hwm;
+/* last integration-time ratio, held over a few unreadable ticks - see dn_read() */
+#define DN_RATIO_HOLD_TICKS 5
+static float g_ratio_last = -1.0f;
+static int   g_ratio_miss;
 
 typedef struct {
     float d;       /* THE exposure index (higher = darker); <0 = unknown */
@@ -576,6 +580,15 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
         }
     }
 
+    /* A tick without the integration time would switch d to bare gain, a
+     * different metric: one such sample in a silent probe's EMA can fake r>=2.
+     * Hold the last ratio across a short gap. */
+    if (o->ratio > 0.0f) {
+        g_ratio_last = o->ratio; g_ratio_miss = 0;
+    } else if (g_ratio_last > 0.0f && ++g_ratio_miss <= DN_RATIO_HOLD_TICKS) {
+        o->ratio = g_ratio_last;
+    }
+
     if (o->gain > 0.0f) {
         o->d = (o->ratio > 0.0f) ? o->gain * o->ratio : o->gain;
         if (!isfinite(o->d) || o->d <= 0.0f) o->d = -1.0f;
@@ -681,6 +694,11 @@ static void dn_blind_check(const dn_sample *sm, float ref, int *warned)
 #ifndef DN_CMD_STOP_MS
 #define DN_CMD_STOP_MS 1000
 #endif
+/* ... and to one started after the stop request (the illuminator hand-back):
+ * a GPIO write, so a short grace; the shutdown alarm budget is 4 s in all. */
+#ifndef DN_CMD_LATE_MS
+#define DN_CMD_LATE_MS 300
+#endif
 #define DN_CMD_POLL_MS 20            /* waitpid(WNOHANG) cadence */
 #define DN_CMD_KILL_MS 500           /* reap window after SIGKILL */
 
@@ -700,6 +718,7 @@ static int dn_reap(pid_t pid, const char *cmd, const char *arg, int timeout_ms)
 {
     int64_t deadline = ms_now_us() / 1000 + timeout_ms;
     int killed = 0, shortened = 0;
+    int stop_ms = ms_stopgate_stopped(&g_gate) ? DN_CMD_LATE_MS : DN_CMD_STOP_MS;
     for (;;){
         int st = 0;
         pid_t r = waitpid(pid, &st, WNOHANG);
@@ -712,7 +731,7 @@ static int dn_reap(pid_t pid, const char *cmd, const char *arg, int timeout_ms)
         int stopping = ms_stopgate_stopped(&g_gate);
         if (stopping && !shortened && !killed){
             shortened = 1;
-            if (deadline > now + DN_CMD_STOP_MS) deadline = now + DN_CMD_STOP_MS;
+            if (deadline > now + stop_ms) deadline = now + stop_ms;
         }
         if (now >= deadline){
             if (killed){
@@ -773,6 +792,10 @@ static void dn_switch(int mode, const char *why, const char *cmd,
                       float s, float ref, float bar)
 {
     const char *arg = (mode == DN_NIGHT) ? "night" : "day";
+    if (ms_stopgate_stopped(&g_gate)) {     /* shutdown budget: no new motor drive */
+        LOGD(MOD, "stopping - not switching to %s (%s)", arg, why);
+        return;
+    }
     LOGI(MOD, "switching to %s (%s): %s %s [mode=%s exp=%.0f ref=%.0f bar=%.0f]",
          arg, why, cmd, arg, arg, (double)s, (double)ref, (double)bar);
     /* F-01: vfork()+execlp() instead of system(). switch_cmd comes from the
@@ -838,6 +861,7 @@ static int dn_irprobe(const char *cmd, int on)
  * more try (not more: a hung hook costs DN_IRPROBE_TIMEOUT_MS each). */
 static void dn_light_on(const char *cmd, int tries)
 {
+    if (ms_stopgate_stopped(&g_gate)) tries = 1;
     for (int i = 0; i < tries; i++)
         if (dn_irprobe(cmd, 1) == 0) return;
     LOGW(MOD, "illuminator could not be switched back on after the silent "
@@ -1329,6 +1353,7 @@ static void *dn_thread(void *arg)
     int     diag_warned = 0;           /* the diagnostic is once per session */
 
     g_int_hwm = 0;                     /* see dn_read(): sensor mode may differ */
+    g_ratio_last = -1.0f; g_ratio_miss = 0;
     { ms_daynight_cfg dn0;
       config_str_lock();
       dn0 = g_cfg.daynight;
@@ -1451,6 +1476,7 @@ static void *dn_thread(void *arg)
             dn_probe_abandon(dn->irprobe_cmd, &ir_verdict_at, &d_lit, &d_lit_hr);
             verify_at = enforce_at = 0; verify_cyc = 0;
             desync_since = 0; desync_warned = 0; readback_untrusted = 0;
+            g_probe_req = 0;                /* nothing to serve it here */
             dn_status_update(sm.bright, sm.gain, sm.d, luma, DN_UNKNOWN,
                              -1.0f, -1.0f, -1);
             /* manual mode still measures, so the graph still has a series to
@@ -2590,6 +2616,9 @@ static void *dn_thread(void *arg)
          * here is what keeps it from suppressing every LATER probe's
          * re-assert for the rest of the session. */
         if (boot_deciding && !verdict_at) boot_deciding = 0;
+        /* only the night branch serves a probe request: do not let one made
+         * in day (or schedule mode) fire at the next night */
+        if (cur != DN_NIGHT || dn->mode == DN_MODE_SCHEDULE) g_probe_req = 0;
         float st_ref = (cur == DN_NIGHT) ? ref : -1.0f;
         float st_bar = (cur == DN_NIGHT && ref > 0.0f)
                      ? ref * (float)DN_PROBE_JUMP_PCT / 100.0f : -1.0f;

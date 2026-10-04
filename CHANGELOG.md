@@ -42,6 +42,13 @@ semantic versioning.
   adopted as an external change 20 s later and everything began again - a
   night/day/night drive every ~100 s. It is now adopted only after the ISP
   agrees with the decided mode again.
+- **Day/night: smaller fixes.** A probe requested with
+  `{"daynight":{"probe":1}}` while day, manual or schedule mode is active no
+  longer fires at the next night; a sample without the integration time no
+  longer switches the exposure index to bare gain for one tick (which could fake
+  a night verdict in a silent probe); after a shutdown request no new
+  `switch_cmd` runs and the illuminator hand-back is bounded to ~0.8 s, so the
+  detection thread stays inside the 4 s shutdown budget.
 
 ### Added
 
