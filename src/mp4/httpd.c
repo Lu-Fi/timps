@@ -112,7 +112,12 @@
  * follows it - a peer that sends nothing at all would have been dropped there
  * anyway, this just does it before a thread is committed to either path. */
 #ifndef MS_HTTP_SNIFF_MS
-#define MS_HTTP_SNIFF_MS 5000
+#define MS_HTTP_SNIFF_MS 3000
+#endif
+/* once half the slots are in use: unauthenticated connections older than 1 s
+ * one peer may hold (a browser's burst authenticates long before that) */
+#ifndef HTTP_PREAUTH_PER_PEER
+#define HTTP_PREAUTH_PER_PEER 4
 #endif
 
 static volatile int g_nconn;   /* current connection count (sync builtins) */
@@ -122,6 +127,9 @@ static volatile int g_nconn;   /* current connection count (sync builtins) */
  * util.h; rtsp.c registers its clients in the same one. */
 static ms_client_slot g_clients[HTTP_MAX_CLIENTS];
 static ms_client_reg  g_clientreg = MS_CREG_INIT(g_clients);
+static ms_peer_slot   g_preauth_s[HTTP_MAX_CLIENTS];
+static ms_peercap     g_preauth = MS_PEERCAP_INIT(g_preauth_s);
+static volatile int   g_stopping;   /* httpd_stop() ran: /events loops leave */
 /* adaptive-drop visibility (http.adaptive_drop): frames a client-side fanqueue
  * discarded while frozen waiting for a keyframe (see the dropping state in
  * mp4_stream below). Per-channel, summed across every mp4 client on that
@@ -148,11 +156,31 @@ typedef struct { int fd; const ms_config *cfg; int local; int head; void *tls; v
                  int slot;   /* g_clientreg index, -1 = unregistered */
                  struct sockaddr_in peer;
                  int cid;    /* clients.h entry while streaming, else -1 */
+                 int mcors;  /* media responses may carry the CORS header */
+                 int preauth;/* g_preauth handle until the auth gate, 0 = none */
                  char ua[CLIENTS_AGENT_MAX]; } hconn;
 
 /* connection I/O that transparently uses TLS when this is an HTTPS connection
  * (c->tls set), otherwise the plain socket. Without USE_TLS these are exactly
  * the old net_sendall(c->fd,...) / recv(c->fd,...) calls. */
+static void preauth_put(hconn *c)
+{
+    if (!c->preauth) return;
+    ms_peercap_put(&g_preauth, c->preauth);
+    c->preauth = 0;
+}
+
+/* rejection logs a scanner can trigger at will: once a minute, with a count */
+static void reject_warn(const char *why, const struct sockaddr_in *peer)
+{
+    static ms_ratelog rl = MS_RATELOG_INIT;
+    unsigned muted;
+    if (!ms_ratelog_due(&rl, &muted)) return;
+    char ip[INET_ADDRSTRLEN] = "?";
+    inet_ntop(AF_INET, &peer->sin_addr, ip, sizeof ip);
+    LOGW(MOD,"%s, rejecting client %s (%u more suppressed)", why, ip, muted);
+}
+
 static int csend(hconn *c, const void *buf, int len)
 {
     /* trace.h: the fMP4 body is ONE TCP connection carrying muxed A/V, so this
@@ -1557,6 +1585,7 @@ static void events_stream(hconn *c, const char *path, const char *cors)
         }
         if (wait_ms < 25) wait_ms = 25;           /* coalesce notify bursts */
         gen = events_wait(gen, wait_ms);
+        if (g_stopping) break;
 
         /* detect an orderly close even while nothing is being pushed */
         char t[8]; int r = crecv(c, t, sizeof t, MSG_DONTWAIT);
@@ -1591,8 +1620,9 @@ static void serve_player(hconn *c, const char *path)
     if (chn<0||chn>=MS_MAX_VSTREAM||!g_cfg_boot.video[chn].enabled) chn=0;  /* restart-only */
 
     char vcodec[48] = "avc1.640028";               /* High@4.0 fallback */
-    /* only a cold hub needs the keyframe; a page load must not force one */
-    hub_request_idr_warmup(chn);
+    /* only a cold hub needs the keyframe; a page load must not force one.
+     * HEAD only probes: no encoder wake-up and no wait for the SPS. */
+    if (!c->head) hub_request_idr_warmup(chn);
     for (int i=0;i<100;i++){
         vparam vp;
         if (hub_get_vparam(chn,&vp) && vparam_ready(&vp)){
@@ -1606,6 +1636,7 @@ static void serve_player(hconn *c, const char *path)
             }
             break;
         }
+        if (c->head) break;
         usleep(10000);
     }
     int acodec=MS_AC_NONE; hub_get_audio(&acodec,NULL,NULL);
@@ -1642,6 +1673,7 @@ static void serve_player(hconn *c, const char *path)
  * (there is no TLS connection yet on any path that calls this). */
 static void conn_drop(hconn *c)
 {
+    preauth_put(c);
     ms_creg_del(&g_clientreg, c->slot);   /* before close(): fd reuse */
     close(c->fd);
     free(c);
@@ -1709,6 +1741,21 @@ static char *read_body_heap(hconn *c, const char *buf, int n, const char **statu
     return out;
 }
 #endif /* USE_WEBRTC */
+
+/* "METHOD SP target SP": 0 = ok, -2 = target too long, -1 = malformed (no
+ * leading whitespace, no method longer than the buffer spilling into path) */
+static int req_line(const char *b, char *m, size_t mcap, char *t, size_t tcap)
+{
+    size_t ml = strcspn(b, " \r\n");
+    if (ml == 0 || ml >= mcap || b[ml] != ' ') return -1;
+    const char *p = b + ml + 1;
+    size_t tl = strcspn(p, " \r\n");
+    if (tl == 0) return -1;
+    if (tl >= tcap) return -2;
+    memcpy(m, b, ml); m[ml] = 0;
+    memcpy(t, p, tl); t[tl] = 0;
+    return 0;
+}
 
 static void *conn_thread(void *arg)
 {
@@ -1818,13 +1865,12 @@ static void *conn_thread(void *arg)
         buf[n]=0;
         clients_agent_from(buf, c->ua, sizeof c->ua);
         char method[8], path[256];
-        /* a target %255s would truncate is refused, not silently cut: the
-         * cut copy would e.g. never match a Digest uri= */
-        const char *tgt = strchr(buf, ' ');
-        size_t tlen = tgt ? strcspn(tgt + 1, " \r\n") : 0;
-        if (tlen >= sizeof path)
+        /* a target that does not fit is refused, not silently cut: the cut
+         * copy would e.g. never match a Digest uri= */
+        int rl = req_line(buf, method, sizeof method, path, sizeof path);
+        if (rl == -2)
             http_send(c,"414 URI Too Long","text/plain","uri too long",12);
-        else if (sscanf(buf,"%7s %255s",method,path)==2) {
+        else if (rl == 0) {
             /* HEAD = GET semantics with the body suppressed everywhere
              * (http_send_ex + the per-handler checks below) */
             c->head = (strcmp(method,"HEAD")==0);
@@ -1930,6 +1976,7 @@ static void *conn_thread(void *arg)
                 if (rn < (int)sizeof r) csend(c, r, rn);
                 goto done;
             }
+            preauth_put(c);
             /* CSRF: a browser re-sends cached Basic/Digest credentials on a
              * cross-site form POST, so only the token and localhost are
              * non-ambient. */
@@ -2484,6 +2531,7 @@ done:
     /* M-1: unregister BEFORE close() - once closed, this fd number can be
      * handed to another accept(), and httpd_stop() must never shutdown() a
      * reused fd (same rule as rtsp.c's registry). */
+    preauth_put(c);
     ms_creg_del(&g_clientreg, c->slot);
     close(c->fd);
     free(c);
@@ -2510,8 +2558,25 @@ static void *accept_thread(void *arg)
          * the syscall-batching tradeoff that made RTSP interleave carefully
          * does not apply. */
         net_set_nodelay(fd);
+        /* a dead /events or stream peer must not hold its thread for the
+         * ~15 min of TCP retransmits */
+        net_set_keepalive(fd, 20, 5, 4);
+        net_set_user_timeout(fd, 45000);
+        int local = ((ntohl(peer.sin_addr.s_addr) & 0xFF000000u) == 0x7F000000u);
+        char why[96] = "";
+        int counted = 0;
         /* global connection cap: each client costs a thread + queue */
         if (g_nconn >= HTTP_MAX_CLIENTS) {
+            /* free a slot held by a stale unauthenticated connection: this
+             * client's retry gets it */
+            int ev = ms_peercap_evict(&g_preauth);
+            snprintf(why, sizeof why, "connection limit (%d) reached%s", HTTP_MAX_CLIENTS,
+                     ev ? ", oldest unauthenticated connection dropped" : "");
+        }
+        else if (!local && !(counted = ms_peercap_take(&g_preauth, peer.sin_addr.s_addr, fd,
+                      g_nconn >= HTTP_MAX_CLIENTS/2 ? HTTP_PREAUTH_PER_PEER : 0)))
+            snprintf(why, sizeof why, "too many unauthenticated connections from one peer");
+        if (why[0]) {
             /* The cap is checked BEFORE the TLS handshake - deliberately, since
              * the whole point is to spend nothing on a client we are turning
              * away. But that means this plaintext 503 used to be written onto a
@@ -2562,22 +2627,25 @@ static void *accept_thread(void *arg)
                 net_sendall(fd, r, (int)strlen(r));
             }
             close(fd);
-            LOGW(MOD,"connection limit (%d) reached, rejecting client",HTTP_MAX_CLIENTS);
+            reject_warn(why, &peer);
             continue;
         }
         hconn *c = (hconn*)calloc(1,sizeof(hconn));
-        if (!c){ close(fd); continue; }
+        if (!c){
+            ms_peercap_put(&g_preauth, counted);
+            close(fd); continue;
+        }
         c->fd=fd; c->cfg=h->cfg; c->slot=-1;   /* real slot assigned in conn_thread */
-        c->peer=peer; c->cid=-1;
+        c->peer=peer; c->cid=-1; c->preauth=counted;
         /* loopback (127.0.0.0/8) clients skip auth: the local web UI must always
          * be able to reach the streamer, external clients still need the
          * password. This replaces prudynt's "web UI auth key". */
-        c->local = ((ntohl(peer.sin_addr.s_addr) & 0xFF000000u) == 0x7F000000u);
+        c->local = local;
         c->tls_ctx = h->tls_ctx;   /* NULL unless http.https (USE_TLS) */
         __sync_fetch_and_add(&g_nconn, 1);
         pthread_t t;
         if (ms_thread_create(&t,MS_STACK_CONN,conn_thread,c)==0) pthread_detach(t);
-        else { close(fd); free(c); __sync_fetch_and_sub(&g_nconn, 1); }
+        else { preauth_put(c); close(fd); free(c); __sync_fetch_and_sub(&g_nconn, 1); }
     }
     return NULL;
 }
@@ -2706,8 +2774,8 @@ void httpd_stop(httpd *h)
     if (!h) return;
     h->run=0;
     shutdown(h->lfd, SHUT_RDWR);   /* close() alone does not wake accept() */
+    pthread_join(h->thr,NULL);     /* before close(): the fd must not be reused under accept4 */
     close(h->lfd);
-    pthread_join(h->thr,NULL);
 #ifdef USE_CONTROL
     control_quiesce(1000);
 #endif
@@ -2735,7 +2803,11 @@ void httpd_stop(httpd *h)
      * something that will actually finish inside its window. main()'s hard-exit
      * alarm stays the ultimate backstop, but is no longer what this path
      * depends on. */
+    g_stopping = 1;
     ms_creg_wake_all(&g_clientreg);
+#ifdef USE_CONTROL
+    events_notify();               /* /events loops sleep up to 12 s in events_wait */
+#endif
     int64_t drain0 = ms_now_us();
     for (int i = 0; i < (MS_HTTP_DRAIN_MS+9)/10 && g_nconn > 0; i++) usleep(10000);
     /* Say whether the drain actually drained. Without this the failure mode is

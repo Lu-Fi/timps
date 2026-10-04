@@ -40,6 +40,27 @@ semantic versioning.
 - **A legacy `osdN.*` line no longer reverts a per-stream `osdS.N.*` write after
   a reboot** (or the other way round): the config writer replaces or splits the
   other form's line instead of leaving both.
+- **One host can no longer hold every HTTP/RTSP slot with idle connections.**
+  Once half the slots are taken, a peer may keep at most 4 (HTTP) / 3 (RTSP)
+  unauthenticated connections older than 1 s (a parallel burst from one NVR or
+  browser authenticates long before that); with every slot taken the oldest
+  such connection is closed so a retry gets in; an RTSP connection that has not
+  authenticated within 15 s is closed (was 60 s), the HTTP first-byte wait is
+  3 s, the TLS handshake limit 10 s (was 30 s) with at most two handshakes
+  computing at once, and the rejection warnings are rate-limited.
+- **Failed logins are slowed down:** each rejected Basic/Digest attempt (HTTP and
+  RTSP) waits 500 ms before its `401`.
+- **Dead HTTP clients are dropped in about a minute**, not after the ~15 min of
+  TCP retransmits (keepalive plus `TCP_USER_TIMEOUT`), and an open `/events`
+  stream no longer delays shutdown into the "connection thread(s) still live"
+  leak.
+- **RTSP over UDP survives transient send errors** (`ENOBUFS`, `EAGAIN`,
+  unreachable route): the datagram is dropped instead of ending the session.
+- **Request parsing:** HTTP request lines are parsed by hand (a leading space
+  or an 8+ character method no longer slips past the 414 check or into the
+  path), RTSP `Transport:` and the request URL are read from their own line
+  only, Digest `uri=` takes up to 511 characters, and `HEAD /` no longer wakes
+  the encoder.
 
 ### Added
 

@@ -490,7 +490,12 @@ replayed; a sniffed Basic header can, which is the reason to prefer RTSPS on
 an untrusted segment. Auth is enabled by setting `rtsp.user`/`rtsp.pass`.
 **since v1.9.28** an RTSP connection is closed after **5 rejected logins**, and one
 that has not reached `PLAY` within **60 s** of connecting — not a lockout, a
-client can reconnect.
+client can reconnect. Since the next release a connection that has not
+authenticated within **15 s** is closed too, each failed Basic/Digest attempt
+(RTSP and HTTP) waits 500 ms before its `401`, and once half the slots are
+taken one peer may hold only 3 (RTSP) / 4 (HTTP) unauthenticated connections
+older than 1 s; with every slot taken the oldest such connection is closed so
+the next client's retry gets in.
 
 ### The empty-credentials case (important for security questions)
 

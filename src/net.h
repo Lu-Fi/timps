@@ -21,6 +21,9 @@ int  net_accept_cloexec(int lfd, struct sockaddr *sa, socklen_t *sl);
 int  net_udp_socket(void);                        /* unbound udp socket */
 int  net_set_nodelay(int fd);
 int  net_set_keepalive(int fd, int idle_s, int intvl_s, int cnt);
+/* drop the connection when sent data stays unacked this long (a dead peer
+ * otherwise holds it for the ~15 min of TCP retransmits) */
+int  net_set_user_timeout(int fd, int ms);
 /* SO_RCVTIMEO/SO_SNDTIMEO in seconds (0 = leave unset); recv()/send() then
  * fail with EAGAIN after that long blocked, so silent clients get dropped */
 int  net_set_timeouts(int fd, int rcv_s, int snd_s);
