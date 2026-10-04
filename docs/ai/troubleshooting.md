@@ -509,7 +509,7 @@ timps starts the framesource/encoder **when a client attaches** and stops it
 > exactly this, not a hardware fault.
 | `chnN: StartRecvPic kept failing for N attempts - encoder/ISP is not coming back on its own; exiting …` | **since v1.9.28**: the encoder never *starts* (with a client attached, ~25 s of failed starts, logged as `framesource N: EnableChn failed (attempt N)` on the 1st and every 20th try). Same exit and same consequences as the line above; v1.9.27 retried such a start forever. | As above. |
 | `jpeg chnN: … giving up on this channel (MJPEG/snapshot output disabled until restart)` | Same watchdog on the JPEG channel, but it only disables **JPEG**; video keeps running. | Restart `timpsd` to get snapshots back. |
-| `chnN: GetStream failed after PollingStream OK` | Transient SDK hiccup. | Ignore unless constant. |
+| `chnN: GetStream failed after PollingStream OK (#n)` | Transient SDK hiccup. Logged on the 1st and every 20th in a row. | Ignore unless constant. |
 | `video pipeline bring-up failed - tearing down partial state` | `ing_start()` failed; `main()`'s retry loop takes over (§1.1). | Read the LOGE immediately above it — that one names the real failure. |
 
 Bring-up LOGEs that precede it, in pipeline order:
@@ -2541,7 +2541,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `jpeg chn%d: PollingStream idle (miss#%d) - encoder emits no frames` | W | Same on the JPEG channel. | |
 | `jpeg chn%d: encoder dead after %d consecutive misses - forcing a framesource disable/enable cycle to recover (recovery attempt %d/%d)` | E | JPEG recovery. | |
 | `jpeg chn%d: %d consecutive forced-recovery cycles never produced a frame - giving up on this channel (MJPEG/snapshot output disabled until restart)` | E | **JPEG only** is disabled; video survives. | Restart to get snapshots back. |
-| `chn%d: GetStream failed after PollingStream OK` / `jpeg chn%d: GetStream failed after PollingStream OK` | W | Transient SDK hiccup. | Ignore unless constant. |
+| `chn%d: GetStream failed after PollingStream OK (#%d)` / `jpeg chn%d: GetStream failed after PollingStream OK (#%d)` | W | Transient SDK hiccup; 1st and every 20th of a streak. | Ignore unless constant. |
 | `chn%d: AU exceeds max buffer (need=%zu, max=%d, packCount=%u) - dropping frame (%u dropped so far)` | W | An access unit over `MS_AU_BUF_MAX` (1 MB; 2 MiB + 64 KiB on T23 builds). Deliberately **no** IDR is forced — that was the historical permanent-stall bug. | §2.3. On T23 at 1080p this is expected at stock defaults; the proven lever is raising `video0.min_qp`. |
 | `chn%d: no memory for AU packet (need=%zu) - dropping frame` / `chn%d: AU assembly overflow (cap=%zu, need=%zu, packCount=%u) - dropping frame` | W | OOM / assembly overflow. | §5.5 |
 | `chn%d: JPEG exceeds max buffer (need=%zu, max=%d) - dropping frame` / `chn%d: no memory for JPEG packet (need=%zu) - dropping frame` / `chn%d: JPEG assembly overflow (cap=%zu, need=%zu) - dropping frame` | W | Same for JPEG (`MS_JPEG_BUF_MAX` 1 MB). | |

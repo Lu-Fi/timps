@@ -445,7 +445,12 @@ static void act_wait(int (*ready)(void *), void *arg)
  * run/g_arun then act_wake()s once to make every idle-blocked thread return
  * promptly for the join - without the flag here the predicate would still be
  * false and the thread would re-wait up to the full 1 s, delaying shutdown. */
-static int act_ready_vchan(void *a){ vchan *vc=(vchan*)a; return !vc->run  || vc->active || hub_active(vc->chn); }
+static int act_ready_vchan(void *a){ vchan *vc=(vchan*)a; return !vc->run  || vc->active || hub_active(vc->chn)
+#ifdef ROT_HAS_SW_90
+    /* the SW-rotate stream's standalone JPEG has no thread of its own */
+    || (vc->jpeg_on && hub_active(HUB_JPEG_SRC_N(vc->si)))
+#endif
+    ; }
 static int act_ready_jchan(void *a){ jchan *jc=(jchan*)a; return !jc->run  || jc->active || hub_active(jc->src); }
 static int act_ready_audio(void *a){ (void)a;             return !g_arun  || g_aactive || g_a2active; }
 
@@ -554,7 +559,8 @@ static void fs_unuse(int chn)
 {
     if (chn < 0 || chn >= MS_FS_MAXCHN) return;
     pthread_mutex_lock(&g_fs_mtx);
-    if (g_fs_users[chn] > 0 && --g_fs_users[chn] == 0) {
+    /* not enabled (EnableChn failed): a DisableChn would only fail in libimp */
+    if (g_fs_users[chn] > 0 && --g_fs_users[chn] == 0 && g_fs_enabled[chn]) {
         IMP_FrameSource_DisableChn(chn);
         g_fs_enabled[chn] = 0;
         LOGI(MOD,"framesource %d disabled (idle)", chn);
@@ -2508,6 +2514,7 @@ static void *video_thread(void *arg)
     int receiving=0;
     int64_t idle_since=0;
     int dbg_first=0, dbg_pollfail=0;   /* one-shot encoder diagnostics */
+    int dbg_getfail=0;                 /* rate-limits GetStream failures */
     int64_t miss_t0=0;                 /* first miss of the current streak */
     int dbg_startfail=0;               /* rate-limits StartRecvPic failures */
     int dbg_recover_fails=0;           /* consecutive forced-recovery cycles
@@ -2662,10 +2669,21 @@ static void *video_thread(void *arg)
         (void)st.isVI;
 #endif
         if (IMP_Encoder_GetStream(vc->chn,&st,1)!=0){
-            LOGW(MOD,"chn%d: GetStream failed after PollingStream OK",vc->chn); continue; }
+            /* a persistent failure here must not spin a core or flood the log */
+            if ((dbg_getfail++ % 20)==0)
+                LOGW(MOD,"chn%d: GetStream failed after PollingStream OK (#%d)",
+                     vc->chn, dbg_getfail);
+            usleep(10000);
+            continue;
+        }
+        dbg_getfail=0;
         dbg_pollfail=0;
         dbg_recover_fails=0;   /* a real frame arrived: the channel has genuinely
                                  * recovered, not just "successfully" restarted */
+        if (!want && !vc->active && !hub_active(vc->chn)){   /* idle debounce: nobody to copy for */
+            IMP_Encoder_ReleaseStream(vc->chn,&st);
+            continue;
+        }
         /* Size the packet to the actual frame: sum the pack lengths (+4 for a
          * possible start code each) as a safe UPPER BOUND on the assembled
          * length, then borrow a pooled buffer of exactly that size. A frame
@@ -3046,7 +3064,8 @@ static void *sw_rot_thread(void *arg)
     int64_t cad_due=0, cad_t0=0;
     int cad_seen=0, cad_enc=0, cad_reported=0;
     while (vc->run) {
-        int want = vc->active || hub_active(vc->chn);
+        int want = vc->active || hub_active(vc->chn) ||
+                   (vc->jpeg_on && hub_active(HUB_JPEG_SRC_N(vc->si)));
         if (!want) {
             if (!receiving){ act_wait(act_ready_vchan, vc); continue; }
             int64_t now = ms_now_us();
@@ -3603,6 +3622,7 @@ static void *jpeg_thread(void *arg)
                                          * that never yielded a real frame -
                                          * see MS_JPEG_WATCHDOG_MAX_RECOVERIES */
     int dbg_jempty=0;                  /* rate-limits the empty-stream drop */
+    int dbg_jgetfail=0;                /* rate-limits GetStream failures */
     int64_t cold_since=0;              /* StartRecvPic time until the first frame */
     int64_t jmiss_t0=0;                /* first miss of the current streak */
     int cold_recycles=0;
@@ -3657,8 +3677,10 @@ static void *jpeg_thread(void *arg)
             cold_since = ms_now_us(); cold_recycles = 0;
             dbg_jpollfail = 0; dbg_jrecover_fails = 0;
         }
-        int64_t now=ms_now_us();
-        if (now<next){ usleep(next-now); }
+        /* in slices: at jpeg.fps=1 one sleep would hold up the stop join */
+        for (int64_t now=ms_now_us(); now<next && jc->run; now=ms_now_us())
+            usleep((useconds_t)(next-now > 100000 ? 100000 : next-now));
+        if (!jc->run) break;
         next=ms_now_us()+period;
 
         if (IMP_Encoder_PollingStream(jc->chn, g_hcfg->imp_polling_timeout)!=0){
@@ -3722,9 +3744,12 @@ static void *jpeg_thread(void *arg)
         dbg_jrecover_fails=0;   /* a real frame arrived: genuinely recovered */
         IMPEncoderStream st;
         if (IMP_Encoder_GetStream(jc->chn,&st,1)!=0){
-            LOGW(MOD,"jpeg chn%d: GetStream failed after PollingStream OK", jc->chn);
+            if ((dbg_jgetfail++ % 20)==0)
+                LOGW(MOD,"jpeg chn%d: GetStream failed after PollingStream OK (#%d)",
+                     jc->chn, dbg_jgetfail);
             continue;
         }
+        dbg_jgetfail=0;
         /* idle-stop linger: drain the encoder, but a frame nobody receives is
          * not worth a pool buffer and a full-frame copy. Re-checked here so a
          * subscriber that arrived during the poll still gets this frame. */
@@ -4402,9 +4427,11 @@ static void *audio_thread(void *arg)
         aio.frmNum     = MS_AI_FRM_NUM;
         aio.numPerFrm  = 8000*40/1000;     /* 320 samples / 40 ms */
         aio.chnCnt     = 1;
-        if (IMP_AI_SetPubAttr(dev,&aio)!=0 || IMP_AI_Enable(dev)!=0 ||
+        int dev_en = 0;
+        if (IMP_AI_SetPubAttr(dev,&aio)!=0 || !(dev_en = (IMP_AI_Enable(dev)==0)) ||
             IMP_AI_SetChnParam(dev,chnid,&chnp)!=0 || IMP_AI_EnableChn(dev,chnid)!=0) {
             LOGE(MOD,"AI re-init at 8000 failed");
+            if (dev_en) IMP_AI_Disable(dev);   /* EnableChn is last: chn is not up */
 #if defined(USE_CONTROL) || defined(USE_BACKCHANNEL) || defined(USE_PLAY)
             pthread_mutex_unlock(&g_ai_lock);   /* g_ai_up stays 0: AI is down */
 #endif
@@ -4519,6 +4546,9 @@ static void *audio_thread(void *arg)
             memset(&apts2, 0, sizeof apts2);
             memset(&a2_z, 0, sizeof a2_z);
             a1_idle = 1; a2_idle = 1;
+            /* a streak from before the idle spell would trip the watchdog on
+             * the first miss after it */
+            ai_fail_streak = 0; ai_fail_t0 = 0;
             if (drained)
                 LOGI(MOD, "audio resume: flushed %d stale AI frame(s)", drained);
         }

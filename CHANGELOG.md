@@ -70,6 +70,14 @@ semantic versioning.
   once on shutdown and removes `*.jpg.tmp` left by a power cut; a hostname that
   is not one safe path component falls back to `camera`; on shutdown the
   recording is finalised first, before SRT and timelapse.
+- **Ingenic HAL robustness:** a `GetStream` failure after a successful poll no
+  longer spins a core and floods the log (throttled, 10 ms back-off); the video
+  idle debounce no longer copies every frame for nobody; the JPEG thread's frame
+  pacing sleep wakes for shutdown; the audio watchdog starts a fresh streak after
+  an idle spell (a stale one could disable audio on the first miss); a failed
+  8 kHz AI re-init disables the AI device again; `fs_unuse()` skips the
+  `DisableChn` of a framesource whose enable had failed; and on T23 with SW
+  rotation a JPEG-only client (MJPEG/snapshot) now wakes the rotate thread.
 
 ### Added
 
