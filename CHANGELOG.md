@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.9.30] - 2026-10-04
+
 ### Changed
 
 - **Motion detection runs on the sub stream by default** (`motion.monitor_stream`
@@ -57,6 +59,25 @@ semantic versioning.
   open-tx-isp (Lu-Fi forks) must contain the controls; thingino's pins were
   moved accordingly.
 
+- **WebRTC media queue depth doubles, 16 -> 32.** It was sized for video-only;
+  G.711 audio was later put in the same queue without re-sizing it, halving
+  the time a burst has to drain into (~640 ms -> ~320 ms at a typical GOP
+  cadence), and real overflow events were measured on the fleet. This
+  restores the original time budget; it is still the shallowest media queue
+  on purpose (RTSP/fMP4: 64, SRT/record: 128).
+
+- **A runtime watchdog give-up takes the one-shot recovery reboot.** A
+  video/encode watchdog that exhausted its recovery budget already exited
+  cleanly, but nothing restarted the camera afterwards (`S95timps` does not
+  respawn), so the exit was permanent until someone noticed. It now shares
+  the start-up give-up's one-shot reboot and its marker
+  (`/etc/timps-startup-reboot.flag`); either kind of incident spends the one
+  reboot, and a later successful start clears it again.
+
+- **`--help` prints usage and unknown arguments exit before start-up.** An
+  unrecognized option used to be ignored and the daemon started on the live
+  camera; it now exits with status 2.
+
 ### Fixed
 
 - **Hooks started by timps no longer inherit libimp's device fds.** The vendor
@@ -90,25 +111,6 @@ semantic versioning.
   lower part of the frame without OSD or privacy mask, and logged a warning
   about a limit that does not exist. OpenIMP is detected through the
   `OpenIMP_P0_GetState` symbol it exports; the vendor libimp is unchanged.
-
-## [1.9.29] - 2026-10-01
-
-### Changed
-
-- **Software AAC (`USE_FAAC`) builds against either libfaac ABI.** The
-  thingino project plans to move its `faac` package from `knik0/faac`
-  (SONAME 1) to `FreewareAdvancedAudio/faac` (SONAME 2), which adds a
-  `caller_size` argument to `faac_params_init()`. `src/hal/hal_ingenic.c`
-  now picks the right call via `#if FAAC_VERSION_MAJOR >= 2`, resolved
-  against whichever `faac.h` the build picks up - no Kconfig switch of our
-  own. Every other field, enum constant and function signature the encoder
-  uses is unchanged between the two SONAMEs. No user-visible behavior
-  change on today's pinned library; verified by cross-building against
-  both headers and, on a test camera, by actually linking and running
-  against the new SONAME 2 library.
-
-### Fixed
-
 - **`image.ae_it_max_us` can be raised and removed live.** Once a cap was in
   force, `GetExpr` reported it as the sensor mode's maximum, so a higher value
   read as "above the sensor mode's own maximum - nothing to cap" and `0` wrote
@@ -142,6 +144,29 @@ semantic versioning.
 - **`-v` works.** It raised the level to DEBUG, and `config_load()` lowered it
   straight back to `general.loglevel`, so `-v` only ever covered the config
   parse. The command line now wins.
+- **Classic-SoC `jpeg.quality` tables are written in zigzag order** (T20/T21/
+  T23/T30). The classic libimp copies the table verbatim into the JPEG DQT
+  segment, which T.81 defines in zigzag order; timps handed it natural order,
+  so the quantization steps landed on the wrong coefficients.
+- **A lone JPEG cold-start poll miss no longer warns.** The first miss of an
+  idle JPEG channel is its normal cold start; the throttled warning now fires
+  from the second consecutive miss.
+
+## [1.9.29] - 2026-10-01
+
+### Changed
+
+- **Software AAC (`USE_FAAC`) builds against either libfaac ABI.** The
+  thingino project plans to move its `faac` package from `knik0/faac`
+  (SONAME 1) to `FreewareAdvancedAudio/faac` (SONAME 2), which adds a
+  `caller_size` argument to `faac_params_init()`. `src/hal/hal_ingenic.c`
+  now picks the right call via `#if FAAC_VERSION_MAJOR >= 2`, resolved
+  against whichever `faac.h` the build picks up - no Kconfig switch of our
+  own. Every other field, enum constant and function signature the encoder
+  uses is unchanged between the two SONAMEs. No user-visible behavior
+  change on today's pinned library; verified by cross-building against
+  both headers and, on a test camera, by actually linking and running
+  against the new SONAME 2 library.
 
 ## [1.9.28] - 2026-09-28
 

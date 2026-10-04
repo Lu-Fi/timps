@@ -5021,7 +5021,7 @@ else
 	# ae_it_max_us: up to v1.9.28 the one image key a probe could not restore:
 	# 0 meant "never wrote anything" and raising it again was refused (measured
 	# on cam-01 2026-09-06: 12000 -> 8000 took, 8000 -> 12000 did not), so a
-	# POST here left the night exposure changed until a restart. Since v1.9.29
+	# POST here left the night exposure changed until a restart. Since v1.9.30
 	# the HAL remembers the uncapped maximum and 0 writes it back, but the
 	# removal only lands once frames are delivered and a cap meanwhile moves the
 	# daynight exposure index, so an unattended probe still leaves it alone.
