@@ -23,6 +23,17 @@ semantic versioning.
   WDR/defog/DRC, noise reduction, DPC, highlight, backlight) now answer
   `unsupported` instead of `ok:true` or a silent clamp.
 
+### Fixed
+
+- **Day/night reads the open-tx-isp T41 ISP dump.** That driver prints its own
+  spelling (`AeIntegrationTime :`, `AeMaxIntegrationTime :`, `TotalGainDb :` =
+  log2 of the total gain in Q16, lower-case `ISP Runing Mode : day`), none of
+  which the detection thread knew: it logged "no usable exposure reading" for
+  minutes after every start on a camera whose `isp-m0` was readable. The
+  total gain comes out as the usual [24.8] value (256 = 1x) and the exposure
+  index as before; the AE reserve stays unknown there because the dump has no
+  gain ceilings.
+
 ### Added
 
 - **OpenIMP motion v2 detail in the `motion` status (`/control` and `/events`).**
