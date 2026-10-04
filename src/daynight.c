@@ -20,6 +20,9 @@
 
 #ifdef USE_DAYNIGHT
 #include "hub.h"       /* hub_control(): re-assert running_mode into the ISP */
+#ifdef USE_CONTROL
+#include "control.h"   /* control_apply_json(): set image.running_mode like a POST */
+#endif
 #include "events.h"    /* wake /events SSE subscribers on real changes */
 #include "log.h"
 #include "util.h"      /* ms_now_us(): monotonic clock for every deadline */
@@ -830,6 +833,41 @@ static int dn_irprobe(const char *cmd, int on)
     return rc == 0 ? 0 : -1;
 }
 
+/* Switch the illuminator back on after a silent probe. A failure here leaves
+ * the LEDs off for the rest of the night with nothing else to retry it, so one
+ * more try (not more: a hung hook costs DN_IRPROBE_TIMEOUT_MS each). */
+static void dn_light_on(const char *cmd, int tries)
+{
+    for (int i = 0; i < tries; i++)
+        if (dn_irprobe(cmd, 1) == 0) return;
+    LOGW(MOD, "illuminator could not be switched back on after the silent "
+              "probe (%d %s) - it may stay off until the next switch",
+         tries, tries == 1 ? "try" : "tries");
+}
+
+/* Set image.running_mode the way a POST /control would (config, persistence and
+ * the ISP): hub_control() alone applies whatever the config already says. */
+static void dn_set_running_mode(int rm)
+{
+#ifdef USE_CONTROL
+    ctrl_result *r = calloc(1, sizeof *r);      /* large: keep it off this stack */
+    if (r) {
+        control_apply_json(rm ? "{\"image\":{\"running_mode\":1}}"
+                              : "{\"image\":{\"running_mode\":0}}", r);
+        free(r);
+        return;
+    }
+#endif
+    config_str_lock();
+    g_cfg.image.running_mode = rm;
+    config_str_unlock();
+    hub_control("image.running_mode", rm ? "1" : "0");
+    if (g_cfg_path && g_cfg_path[0]) {
+        const char *k = "image.running_mode", *v = rm ? "1" : "0";
+        config_write_keys(g_cfg_path, &k, &v, 1);
+    }
+}
+
 /* Abandon a silent probe that will never be judged. The verdict block is the
  * only place that lights the illuminator again, so every path that leaves the
  * probe behind instead of reaching one - detection switched off, mode switched
@@ -839,7 +877,7 @@ static void dn_probe_abandon(const char *cmd, int64_t *ir_verdict_at,
                              float *d_lit, int *d_lit_hr)
 {
     if (!*ir_verdict_at) return;
-    dn_irprobe(cmd, 1);
+    dn_light_on(cmd, 1);
     *ir_verdict_at = 0; *d_lit = -1.0f; *d_lit_hr = -1;
 }
 
@@ -1260,6 +1298,8 @@ static void *dn_thread(void *arg)
     int64_t enforce_at  = 0;           /* mid-cycle: when to switch back to cur */
     int64_t desync_since = 0;          /* standing cur/readback mismatch start */
     int     desync_warned = 0;         /* the notice, once per episode */
+    int64_t silent_hold = 0;           /* no silent probe before this (set when
+                                        * its audible escalation is rationed) */
     int     booted      = 0;
     int64_t boot_at     = ms_now_us() / 1000;
     /* the boot MEASUREMENT is in flight: an ordinary probe, flagged only so
@@ -1423,7 +1463,8 @@ static void *dn_thread(void *arg)
             ir_verdict_at = 0; d_lit = -1.0f; d_lit_hr = -1;
             verify_at = enforce_at = 0; verify_cyc = 0;
             desync_since = 0; desync_warned = 0;
-            last_probe = 0; pre_probe = -1.0f; pre_probe_hr = -1;
+            last_probe = 0; silent_hold = 0;
+            pre_probe = -1.0f; pre_probe_hr = -1;
             ref_wait_logged = 0;
             sust_min = win_max = -1.0f; win_at = 0;
             ema_fast = ema_slow = -1.0f; trend_since = 0;
@@ -1510,6 +1551,7 @@ static void *dn_thread(void *arg)
         int   force      = 0;               /* bypass the dwell (probe revert) */
         int   want_probe = 0;
         int   no_silent  = 0;               /* this probe may not go the silent route */
+        int   requested  = 0;               /* operator probe: not held by silent_hold */
         const char *probe_why = NULL;
         char  why[80];
         why[0] = 0;
@@ -1594,6 +1636,8 @@ static void *dn_thread(void *arg)
                         cur = sm.isp; mode_since = now;
                         s = -1.0f; stable_n = 0;
                         trig_since = dark_since = verdict_at = 0;
+                        dn_probe_abandon(dn->irprobe_cmd, &ir_verdict_at, &d_lit, &d_lit_hr);
+                        boot_silent = 0;
                         ir_verdict_at = 0; d_lit = -1.0f; ir_why = NULL;
                         sust_min = win_max = -1.0f; win_at = 0;
                         ema_fast = ema_slow = -1.0f; trend_since = 0;
@@ -1655,6 +1699,14 @@ static void *dn_thread(void *arg)
 
             /* ---------------- auto mode --------------------------------- */
             if (sm.d <= 0.0f) {             /* no ISP (sim/host/wedged) */
+                /* a silent probe still unjudged a settle period past its
+                 * verdict: light up; a boot one leaves boot undecided, so
+                 * boot again */
+                if (ir_verdict_at &&
+                    now >= ir_verdict_at + (int64_t)DN_PROBE_SETTLE_S * 1000) {
+                    dn_probe_abandon(dn->irprobe_cmd, &ir_verdict_at, &d_lit, &d_lit_hr);
+                    if (boot_silent) { boot_silent = 0; booted = 0; cur = DN_UNKNOWN; }
+                }
                 if (!warned_noisp) {
                     warned_noisp = 1;
                     LOGW(MOD, "no exposure reading from %s (missing or in a format this build does not parse), detection idle", dn->isp_path);
@@ -1857,7 +1909,7 @@ static void *dn_thread(void *arg)
                 float d_dark = s;
                 int   room   = sm.headroom;
                 ir_verdict_at = 0;
-                dn_irprobe(dn->irprobe_cmd, 1);      /* light first, judge after */
+                dn_light_on(dn->irprobe_cmd, 2);     /* light first, judge after */
                 s = -1.0f; stable_n = 0;             /* the reading changes back */
                 float r = (d_lit > 0.0f && d_dark > 0.0f) ? d_dark / d_lit : -1.0f;
                 float boot_lit = d_lit;
@@ -1888,6 +1940,7 @@ static void *dn_thread(void *arg)
                     LOGW(MOD, "silent probe gave no usable reading - falling "
                               "back to the IR-cut probe");
                     want_probe = 1; probe_why = ir_why ? ir_why : "probe";
+                    s = boot_lit;       /* the lit level is the probe's pre-level */
                     /* escalations may not re-enter the silent path: d_lit is
                      * cleared, so a second silent probe reads r=-1 and the
                      * loop never reaches the audible judge it asked for. */
@@ -1944,7 +1997,7 @@ static void *dn_thread(void *arg)
                          * with no switch_cmd spent. */
                         ref = d_dark / r; ref_due = 0;
                         if (!running_mode)
-                            hub_control("image.running_mode", "1");
+                            dn_set_running_mode(1);
                         LOGI(MOD, "boot: night confirmed by the silent probe "
                                   "(r=%.2f, night reference %.0f) - nothing "
                                   "switched", (double)r, (double)ref);
@@ -1973,6 +2026,7 @@ static void *dn_thread(void *arg)
                               "railed meter, asking the day pipeline",
                          ir_why ? ir_why : "?", (double)r);
                     want_probe = 1; probe_why = ir_why ? ir_why : "probe";
+                    s = boot_lit;
                     no_silent = 1;          /* see the r<=0 branch */
                 } else if (r <= DN_IR_RATIO_DAY && room >= DN_IR_MIN_HEADROOM) {
                     /* the room supplies the light - but that alone does not
@@ -2045,6 +2099,7 @@ static void *dn_thread(void *arg)
                          ir_why ? ir_why : "?", (double)r,
                          (double)DN_IR_RATIO_DAY, (double)DN_IR_RATIO_NIGHT);
                     want_probe = 1; probe_why = ir_why ? ir_why : "probe";
+                    s = boot_lit;
                     no_silent = 1;          /* see the r<=0 branch */
                 }
                 /* The measurement itself, in columns, once per probe at the
@@ -2306,7 +2361,7 @@ static void *dn_thread(void *arg)
              * fired anyway - the point of asking is to get an answer NOW. */
             if (g_probe_req && !want_probe) {
                 g_probe_req = 0;
-                want_probe = 1; probe_why = "requested";
+                want_probe = 1; probe_why = "requested"; requested = 1;
             }
             if (trend_since && !want_probe &&
                 now - trend_since >= (int64_t)dn->probe_confirm_s * 1000) {
@@ -2366,6 +2421,7 @@ static void *dn_thread(void *arg)
          * separate rules existed to ration it. Making the common case free is
          * what let all nine go. */
         if (want_probe && !no_silent && cur == DN_NIGHT && !ir_verdict_at &&
+            (now >= silent_hold || requested) &&
             dn->irprobe_cmd[0] && !g_ir_unusable &&
             (!mode_since ||
              now - mode_since >= (int64_t)DN_TRANSITION_S * 1000)) {
@@ -2387,7 +2443,10 @@ static void *dn_thread(void *arg)
                 goto tail;
             }
             /* dn_irprobe() failing has already logged why; want_probe stays
-             * set and the audible path below takes over this tick. */
+             * set and the audible path below takes over this tick. The
+             * failed "off" may have written the GPIO before its hook was
+             * killed, so make sure the LEDs are on. */
+            dn_irprobe(dn->irprobe_cmd, 1);
             if (++ir_fails >= DN_IR_MAX_FAILS) {
                 g_ir_unusable = 1;
                 LOGW(MOD, "'%s' failed %d times - retiring the silent probe "
@@ -2400,6 +2459,17 @@ static void *dn_thread(void *arg)
             /* the silent probe could not start (dn_irprobe() said why):
              * the boot measurement is the audible one after all */
             boot_silent = 0; boot_deciding = 1; no_silent = 1;
+        }
+        if (want_probe && no_silent && cur == DN_NIGHT && !ir_verdict_at &&
+            last_probe &&
+            now - last_probe < (int64_t)dn->probe_min_gap_s * 1000) {
+            /* the escalation is rationed: without this the silent probe that
+             * asked for it repeats every tick (illuminator off most of the
+             * time) until the ration allows the audible one */
+            silent_hold = last_probe + (int64_t)dn->probe_min_gap_s * 1000;
+            want_probe = 0; probe_why = NULL;
+            trig_since = 0;
+            if (hb_at < silent_hold) hb_at = silent_hold;
         }
         if (want_probe && cur == DN_NIGHT && !ir_verdict_at &&
             (!last_probe ||

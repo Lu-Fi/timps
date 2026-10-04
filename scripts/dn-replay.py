@@ -159,6 +159,9 @@ Scenario JSON (all times virtual seconds, all gains IMP [24.8] linear):
     monotonicity                - "enforce"|"warn" (default)|"skip"; see
                                   check_monotonicity()
     expect_log / forbid_log     - regexes the sim log must / must not match
+    expect_config               - {"<key>": "<value>", ...} the sim's config
+                                  file must hold at the end of the run (what
+                                  the daemon persisted, e.g. via /control)
 
 Exit code 0 iff every run scenario passed. Output is plain text, no ANSI.
 """
@@ -1021,6 +1024,20 @@ def run_regression(scn, binary, keep=False, scale_override=None):
         for rx in exp.get("forbid_log", []):
             rep.check(re.search(rx, logtext) is None, "forbid-log",
                       repr(rx))
+        if exp.get("expect_config"):
+            conf = {}
+            try:
+                with open(sim.conf) as f:
+                    for line in f:
+                        k, sep, v = line.partition("=")
+                        if sep and not k.strip().startswith("#"):
+                            conf[k.strip()] = v.strip()
+            except OSError:
+                pass
+            for k, want in exp["expect_config"].items():
+                got = conf.get(k)
+                rep.check(got == str(want), "config",
+                          "%s: want %s, got %s" % (k, want, got))
     except SystemExit:
         rep.aborted = True
         raise

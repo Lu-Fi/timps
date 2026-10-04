@@ -23,6 +23,20 @@ semantic versioning.
   no-op under the motion pin or a piggyback JPEG), and both watchdogs wait at
   least 4 s since the first miss, so a short `general.imp_polling_timeout` does
   not turn a slow cold start into a recovery cycle.
+- **Day/night: an undecided silent probe no longer loops.** When the silent
+  probe escalated to the audible one and `daynight.probe_min_gap_s` held that
+  back, the illuminator was switched off again every few seconds until the
+  gap was over, and the audible probe then re-anchored the old night reference,
+  so a dim room light cost an audible day/night pair every `probe_min_gap_s`
+  all night. The silent probe now waits for the gap, and the audible probe
+  starts from the lit level.
+- **Day/night: a silent boot confirmation of night sets `image.running_mode` to
+  1** (config and file, like a POST to `/control`); it re-asserted the
+  persisted value instead.
+- **Day/night: the illuminator is handed back more reliably after a silent
+  probe:** one retry when switching it on fails, an "on" after a failed "off",
+  and a probe that can no longer be judged (no exposure reading, external mode
+  change) switches it back on.
 
 ### Added
 

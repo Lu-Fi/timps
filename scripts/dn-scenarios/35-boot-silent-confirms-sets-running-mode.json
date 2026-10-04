@@ -1,0 +1,65 @@
+{
+  "name": "35-boot-silent-confirms-sets-running-mode",
+  "incident": "2026-10-04 review: the silent boot confirmation re-asserted the persisted running_mode=0 instead of setting 1",
+  "description": "Scenario 31 with image.running_mode=0 persisted while the ISP comes up in Night (cut filter open, illuminator on). The silent boot probe confirms night with nothing switched, so no board hook runs and nothing else will correct the config. The old code called hub_control(\"image.running_mode\", \"1\"), which applies g_cfg - still 0 - so the config and the persisted file kept saying day. It now goes through control_apply_json like a POST: running_mode ends as 1 in the config file.",
+  "scale": 60,
+  "duration_s": 180,
+  "initial_mode": "night",
+  "config": {
+    "daynight.day_gain": 768,
+    "daynight.night_gain": 4096,
+    "image.running_mode": 0
+  },
+  "interp": "log",
+  "day_gain": [
+    [
+      0,
+      3587
+    ],
+    [
+      180,
+      3587
+    ]
+  ],
+  "night_gain": [
+    [
+      0,
+      2498
+    ],
+    [
+      180,
+      2498
+    ]
+  ],
+  "night_gain_noir": [
+    [
+      0,
+      10000
+    ],
+    [
+      180,
+      10000
+    ]
+  ],
+  "expect": {
+    "mode_at": [
+      [
+        60,
+        "night"
+      ],
+      [
+        170,
+        "night"
+      ]
+    ],
+    "max_switches": 0,
+    "max_ir_probes": 1,
+    "monotonicity": "skip",
+    "expect_log": [
+      "boot: night confirmed by the silent probe"
+    ],
+    "expect_config": {
+      "image.running_mode": "1"
+    }
+  }
+}

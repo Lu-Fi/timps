@@ -1,0 +1,102 @@
+{
+  "name": "33-dim-room-light-no-ceilings",
+  "incident": "2026-10-04 review: escalation rationed by probe_min_gap_s repeated the silent probe every tick, and the audible probe re-anchored on the stale reference",
+  "description": "A dark room at night on a dump without gain ceilings (AE reserve unknown). The boot silent probe confirms night (r=4) and anchors the reference at ~2000. At t=300 a dim room light comes on: the night pipeline steps 2000 -> 900, the illuminator-off curve reads the same 900 (r~1), and the day pipeline stays dark (6000 > night_gain), so the honest answer is night. Path C fires, the silent probe reads r~1 with unknown reserve and escalates to the audible probe, which finds night. At t=600 a second lamp takes it to 400 - inside probe_min_gap_s of that probe, so the next escalation is rationed. Two defects turned this into a loop. The audible probe's pre-level was the reset smoother, so pre_probe fell back to the old reference and the revert re-anchored ~2000 - path C fired again at once. And an escalation rationed by probe_min_gap_s was simply dropped, so the next tick asked the silent probe again. Measured on the pre-fix build: 295 silent probes and 12 board drives (an audible day/night pair every 600 s) in this hour. Now the lit level is the probe's pre-level (the reference follows the scene to ~900 and then ~400), and a rationed escalation holds the silent probe until the ration allows the audible one: two pairs, four silent probes.",
+  "scale": 60,
+  "duration_s": 3600,
+  "initial_mode": "night",
+  "no_ceilings": true,
+  "config": {
+    "daynight.day_gain": 768,
+    "daynight.night_gain": 4096
+  },
+  "interp": "step",
+  "noise_pct": 0,
+  "night_gain": [
+    [
+      0,
+      2000
+    ],
+    [
+      299,
+      2000
+    ],
+    [
+      300,
+      900
+    ],
+    [
+      599,
+      900
+    ],
+    [
+      600,
+      400
+    ],
+    [
+      3600,
+      400
+    ]
+  ],
+  "night_gain_noir": [
+    [
+      0,
+      8000
+    ],
+    [
+      299,
+      8000
+    ],
+    [
+      300,
+      900
+    ],
+    [
+      599,
+      900
+    ],
+    [
+      600,
+      400
+    ],
+    [
+      3600,
+      400
+    ]
+  ],
+  "day_gain": [
+    [
+      0,
+      6000
+    ],
+    [
+      3600,
+      6000
+    ]
+  ],
+  "expect": {
+    "mode_at": [
+      [
+        200,
+        "night"
+      ],
+      [
+        1800,
+        "night"
+      ],
+      [
+        3500,
+        "night"
+      ]
+    ],
+    "max_switches": 4,
+    "max_ir_probes": 5,
+    "monotonicity": "skip",
+    "expect_log": [
+      "boot: night confirmed by the silent probe",
+      "AE reserve is unknown - cannot tell a lit room from a railed meter",
+      "night reference 9\\d\\d, proven by the probe",
+      "night reference 4\\d\\d, proven by the probe"
+    ]
+  }
+}
