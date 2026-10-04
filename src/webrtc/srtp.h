@@ -13,6 +13,7 @@
 #define MS_SRTP_H
 #ifdef USE_WEBRTC
 
+#include <stddef.h>
 #include <stdint.h>
 #include "../sha1.h"
 
@@ -87,6 +88,8 @@ typedef struct {
  * a=setup:passive, so it is the DTLS server and writes with the server key.
  * Returns 0 on success. */
 int srtp_init(srtp_session *s, const uint8_t *km, int km_len, int we_are_server);
+/* zero key material in a way the compiler cannot drop as a dead store */
+void srtp_wipe(void *p, size_t n);
 
 /* All three work IN PLACE on a complete packet in `p` and need `cap` bytes of
  * room for the growth. Return the new length, or -1 (and leave the buffer

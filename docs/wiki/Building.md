@@ -86,7 +86,10 @@ unless `FORTIFY=0`) plus linker RELRO/`noexecstack`. Set `HARDEN=0` for a
 bare build if the target toolchain lacks `libssp`/fortified libc wrappers
 (`build.sh`, the scripted MIPS cross-build driver, carries its own
 libc-aware copy of this logic — see `docs/M14-build-hardening.md` for the
-full rationale).
+full rationale). The thingino package (`package/timps/timps.mk`) passes its
+own `CFLAGS`/`LDFLAGS` and so bypasses this block: a firmware build gets only
+the hardening buildroot's `TARGET_CFLAGS`/`TARGET_LDFLAGS` carry
+(`BR2_SSP_*`, `BR2_RELRO_*`, `BR2_FORTIFY_SOURCE_*`).
 
 ## Feature flags (`USE_*`)
 
@@ -132,7 +135,7 @@ handled automatically by the Makefile's `USE_AUDIO_OUT` derived variable.
 - The real target build compiles then links in two steps so vendor static
   libs (`IMPLIBS`) can be linked last; the object files are removed after a
   successful link (`@rm -f $(TARGET_OBJS)`).
-- `VERSION` is baked into the binary (`timps -v` / the startup log line) via
+- `VERSION` is baked into the binary (`timps -h` / the startup log line) via
   `git describe --tags --always --dirty`; the buildroot package overrides
   it with `VERSION=$(TIMPS_VERSION)`.
 

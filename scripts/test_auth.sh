@@ -255,7 +255,15 @@ test_http() {
 	http_negative "/stream.mp4?chn=0"   "/stream.mp4"
 	http_negative "/stream.mjpeg?chn=0" "/stream.mjpeg"
 	http_negative "/control"            "/control (GET)"
-	http_negative "/control"            "/control (POST)" -X POST --data '{"image":{"contrast":50}}'
+	# a no-op body, so a gate that fails open changes nothing; past the
+	# gate it is a 422, so anything but 401/403 means the gate let it in
+	local pcode
+	pcode=$(http_code -X POST --data '{}' "$(http_url "/control")")
+	case "$pcode" in
+		401|403) pass "/control (POST) blocks unauthenticated request (HTTP $pcode)";;
+		000)     skip "/control (POST) unreachable (HTTP 000)";;
+		*)       fail "/control (POST) passed the auth gate WITHOUT auth (HTTP $pcode)";;
+	esac
 	http_negative "/events?stream=motion" "/events"
 
 	# --- negatives with a WRONG password (proves 'any credential' is not accepted)

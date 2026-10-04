@@ -237,6 +237,33 @@ void ms_creg_del(ms_client_reg *r, int slot);
  * closes queues, then shuts fds down. Safe to call more than once. */
 void ms_creg_wake_all(ms_client_reg *r);
 
+/* Connections that have not authenticated yet, per peer, so one host cannot
+ * hold every slot with silent or trickling connections. One slot per possible
+ * client, same static init shape as ms_client_reg. */
+typedef struct { uint32_t ip; int fd, ev; int64_t t0; } ms_peer_slot;   /* t0 0 = free */
+typedef struct {
+    pthread_mutex_t lock;
+    ms_peer_slot   *s;
+    int             n;
+} ms_peercap;
+#define MS_PEERCAP_INIT(slots) \
+    { PTHREAD_MUTEX_INITIALIZER, (slots), (int)(sizeof(slots)/sizeof((slots)[0])) }
+/* Record fd for ip and return its handle (> 0). With cap > 0 returns 0
+ * (refused) when ip already holds cap such connections older than 1 s - a
+ * client's parallel burst authenticates long before that. put() MUST come
+ * before the owner close()s fd. */
+int  ms_peercap_take(ms_peercap *p, uint32_t ip, int fd, int cap);
+void ms_peercap_put(ms_peercap *p, int handle);
+/* All slots taken: shut down the oldest recorded connection older than 1 s
+ * (its thread then frees the slot). Returns 1 if one was evicted. */
+int  ms_peercap_evict(ms_peercap *p);
+
+/* At most one log line a minute: returns 1 when the caller should log now,
+ * with *muted = calls swallowed since the last one. */
+typedef struct { pthread_mutex_t lock; time_t t_last; unsigned muted; } ms_ratelog;
+#define MS_RATELOG_INIT { PTHREAD_MUTEX_INITIALIZER, 0, 0 }
+int  ms_ratelog_due(ms_ratelog *r, unsigned *muted);
+
 /* Escape a string for embedding between JSON double quotes: escapes " and \\,
  * folds control characters to spaces, and replaces invalid UTF-8 so strict
  * parsers do not reject the document. THE one escaper - GET /control, the POST

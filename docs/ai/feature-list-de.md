@@ -11,10 +11,10 @@ prudynt-t / raptor.
   HTTP-Control-API, Streaming-Protocols, Day-Night, Audio, Motion-Detection,
   Recording-Timelapse, Rate-Control-\*, Building, Logging, Testing-QA,
   Platform-SDK-Support)
-* Stand dieses Dokuments: `main`, Version v1.9.28 (2026-09-28);
-  gestripptes `timpsd` ca. 375 KB (mipsel, T31). Mit **seit v1.9.28**
-  markierte Aussagen sind in diesem Release neu – auf einer Kamera mit
-  v1.9.27 oder älter gilt jeweils das vorher beschriebene Verhalten.
+* Stand dieses Dokuments: `main`, Version v1.9.32 (2026-10-04);
+  gestripptes `timpsd` ca. 375 KB (mipsel, T31, Stand v1.9.28). Mit
+  **seit vX** markierte Aussagen sind in diesem Release neu – auf einer
+  Kamera mit älterer Version gilt jeweils das vorher beschriebene Verhalten.
 * Konfiguration: eine flache Textdatei `/etc/timps.conf` im Format `key = value`
 * Ein einziges Binary (`/usr/bin/timpsd`), gestartet über `/etc/init.d/S95timps`
 
@@ -345,7 +345,9 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   auf deren `uhttpd`-Zertifikat, damit `:443` und `:8880` dasselbe Zertifikat
   zeigen – sonst müsste der Browser Selbstsigniertes pro Port einzeln
   vertrauen, was für `fetch()`-Unterressourcen (Safari!) gar nicht möglich ist.
-* **CORS**: Medienendpunkte senden `Access-Control-Allow-Origin: *`;
+* **CORS**: Medienendpunkte senden `Access-Control-Allow-Origin: *`, wenn
+  Zugangsdaten gesetzt sind, ein gültiges Token mitkommt oder der Client
+  lokal ist (offene Kamera ohne Token: kein CORS, keine PNA-Freigabe);
   `/control` und `/events` spiegeln stattdessen den `Origin:`-Header
   (mit `Vary: Origin`, ohne Credentials).
 * **CSRF-Schutz** (**seit v1.9.28**): ein per Basic/Digest authentifizierter

@@ -52,6 +52,71 @@ semantic versioning.
 - **OSD: the region lock is no longer compiled out in `USE_CONTROL=0` builds**,
   where the activation-edge redraw raced the OSD updater thread; and a font
   glyph shorter than its 10-byte header no longer reads past the font buffer.
+- **`POST /control` reports a failed config write.** A failed `mkstemp`/`fsync`/
+  `rename` answered 200 with `not_persisted:0`, and re-posting the same value
+  was "unchanged", so it was never saved. Such keys now count in
+  `not_persisted` and every later POST retries them.
+- **`POST /control` reads each section only at its own level.** A nested key
+  of the same name (`{"record":{"audio":1},"audio":{...}}`) used to shadow the
+  whole `audio` section.
+- **`POST /control` no longer applies a partial body.** A body shorter than
+  `Content-Length` (peer close, deadline) answers `400 body_truncated`; unbalanced
+  braces, an unterminated string or trailing data answer `400 not_json`. Methods
+  other than GET/HEAD/POST answer 405, and a reply with every list full is no
+  longer cut (500 instead of truncated JSON).
+- **`last_errors` in `GET /control` stays valid UTF-8** (non-ASCII bytes of a
+  stored log message become `?`).
+- **A legacy `osdN.*` line no longer reverts a per-stream `osdS.N.*` write after
+  a reboot** (or the other way round): the config writer replaces or splits the
+  other form's line instead of leaving both.
+- **One host can no longer hold every HTTP/RTSP slot with idle connections.**
+  Once half the slots are taken, a peer may keep at most 4 (HTTP) / 3 (RTSP)
+  unauthenticated connections older than 1 s (a parallel burst from one NVR or
+  browser authenticates long before that); with every slot taken the oldest
+  such connection (unauthenticated, older than 1 s) is closed so a retry gets
+  in; an RTSP connection that has not authenticated within 15 s is closed (was
+  60 s until PLAY; a player that prompts the user for a password now has 15 s
+  from connect), the HTTP first-byte wait is
+  3 s, the TLS handshake limit 10 s (was 30 s) with at most two handshakes
+  computing at once, and the rejection warnings are rate-limited.
+- **Failed logins are slowed down:** each rejected Basic/Digest attempt (HTTP and
+  RTSP) waits 500 ms before its `401`.
+- **Dead HTTP clients are dropped in about a minute**, not after the ~15 min of
+  TCP retransmits (keepalive plus `TCP_USER_TIMEOUT`), and an open `/events`
+  stream no longer delays shutdown into the "connection thread(s) still live"
+  leak.
+- **RTSP over UDP survives transient send errors** (`ENOBUFS`, `EAGAIN`,
+  unreachable route): the datagram is dropped instead of ending the session,
+  and counted in the new `drops` field of `GET /control?clients=1`.
+- **Request parsing:** HTTP request lines are parsed by hand (a leading space
+  or an 8+ character method no longer slips past the 414 check or into the
+  path), RTSP `Transport:` and the request URL are read from their own line
+  only, Digest `uri=` takes up to 511 characters, and `HEAD /` no longer wakes
+  the encoder.
+- **WebRTC: ICE consent is bound to the peer.** Only STUN checks from the
+  session's bound address refresh its idle timer; a remote `ice-ufrag` longer
+  than 63 characters answers 400 instead of being cut (it then never matched),
+  and SRTP/ICE key material is wiped with stores the compiler cannot drop.
+- **Recording and timelapse:** a failing segment `open` logs once a minute (or
+  on a new errno) instead of on every packet; the timelapse prune stops at
+  once on shutdown and removes `*.jpg.tmp` older than 60 s that a power cut
+  left in this camera's own subtree; a hostname that
+  is not one safe path component falls back to `camera`; on shutdown the
+  recording is finalised first, before SRT and timelapse.
+- **Ingenic HAL robustness:** a `GetStream` failure after a successful poll no
+  longer spins a core and floods the log (throttled, 10 ms back-off) and counts
+  as a miss for the video watchdog, so a persistent one triggers recovery; the video
+  idle debounce no longer copies every frame for nobody; the JPEG thread's frame
+  pacing sleep wakes for shutdown; the audio watchdog starts a fresh streak after
+  an idle spell (a stale one could disable audio on the first miss); a failed
+  8 kHz AI re-init disables the AI device again; `fs_unuse()` skips the
+  `DisableChn` of a framesource whose enable had failed; and on T23 with SW
+  rotation a JPEG-only client (MJPEG/snapshot) now wakes the rotate thread.
+- **Makefile feature implications hold on the command line too.**
+  `USE_SW_ROTATE` -> `USE_ROTATE`, `USE_WEBRTC` -> `USE_TLS`+`USE_CONTROL`,
+  `USE_BC_WS`, `USE_BC_AAC` and `USE_PLAY_OPUS` were plain assignments, which
+  make ignores for a variable given on the command line - the way thingino
+  passes every `USE_*`.
 
 ### Added
 
@@ -65,6 +130,17 @@ semantic versioning.
 
 ### Changed
 
+- **Media CORS only where access is controlled.** With `http.user` and
+  `rtsp.user` both empty, `/stream.mp4`, `/snapshot.jpg` and the MJPEG stream
+  no longer send `Access-Control-Allow-Origin: *`, and their preflight no
+  longer grants Private Network Access, unless the request carries a valid
+  `?token=` (or comes from loopback): any web page could read the video before.
+  On such an open camera, `http.token_file = ""` or a `USE_CONTROL=0` build
+  (no token at all) therefore breaks the thingino WebUI's cross-origin
+  `fetch()` MSE/RT preview.
+- **Integer config keys are decimal; hex needs `0x`.** `08` was read as 0 and
+  `010` as 8 (octal). Hex-typed keys (colours) are unchanged. `video<N>.imp_chn` and `jpeg.imp_chn` are clamped to 0..7,
+  `motion.hold_ms` to 0..60000 and `motion.skip_frames` to 1..100.
 - **The "detection idle" warning no longer claims the ISP dump is unreadable.**
   It fired whenever no gain could be parsed - also for a perfectly readable dump
   in a format an older build did not know (the T41 open stack). It now says no

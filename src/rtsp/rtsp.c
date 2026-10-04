@@ -71,8 +71,23 @@
 #ifndef MS_RTSP_DRAIN_MS
 #define MS_RTSP_DRAIN_MS 1000
 #endif
+/* A connection that has not authenticated (or, on an open camera, has not
+ * passed an OPTIONS-only phase) is closed after this; once half the slots are
+ * taken, one peer may hold RTSP_PREAUTH_PER_PEER such connections older than
+ * 1 s (an NVR's parallel burst authenticates in ms), and with every slot taken
+ * the oldest of them is dropped for the next client. */
+#ifndef RTSP_PREAUTH_S
+#define RTSP_PREAUTH_S 15
+#endif
+#ifndef RTSP_PREAUTH_PER_PEER
+#define RTSP_PREAUTH_PER_PEER 3
+#endif
 
 static volatile int g_nclients;   /* current client count (sync builtins) */
+static volatile int g_rtsp_stopping;
+static ms_peer_slot g_preauth_s[RTSP_MAX_CLIENTS];
+static ms_peercap   g_preauth = MS_PEERCAP_INIT(g_preauth_s);
+static ms_ratelog   g_rejlog = MS_RATELOG_INIT;
 
 /* M3/M-3: live accepted clients, so rtsp_stop() can END their detached threads
  * instead of only waiting for them - their control fd to unblock a thread in
@@ -187,6 +202,14 @@ static int sink_tls_stage(rtp_sink *s, const uint8_t *d, int n)
 }
 #endif
 
+/* A full socket buffer or a transient route error loses datagrams - UDP
+ * media is lossy by design - and must not end the session. */
+static int udp_soft_err(int e)
+{
+    return e == ENOBUFS || e == EAGAIN || e == EWOULDBLOCK ||
+           e == EHOSTUNREACH || e == ENETUNREACH;
+}
+
 /* flush the pending batch; 0 = ok (or nothing pending), <0 = error
  * (same contract as a failed sendto: caller stops the session) */
 static int sink_flush(rtp_sink *s)
@@ -232,8 +255,14 @@ static int sink_flush(rtp_sink *s)
                  * in two iovecs, so the fallback has to be scatter/gather too.
                  * The address is already in each msg_hdr. */
                 for (; off < b->n; off++)
-                    if (sendmsg(s->fd, &b->msgs[off].msg_hdr, 0) < 0)
-                        { b->n = 0; ms_trace_wr_end(s->tr, t_wr, 0); return -1; }
+                    if (sendmsg(s->fd, &b->msgs[off].msg_hdr, 0) < 0) {
+                        if (udp_soft_err(errno)) { clients_drops(s->cid, 1); continue; }
+                        b->n = 0; ms_trace_wr_end(s->tr, t_wr, 0); return -1;
+                    }
+                break;
+            }
+            if (udp_soft_err(errno)) {         /* drop the rest of this batch */
+                clients_drops(s->cid, (unsigned)(b->n - off));
                 break;
             }
             b->n = 0;
@@ -425,6 +454,7 @@ static int sink_send(void *ctx, const uint8_t *hdr, int hlen,
          * TCP path above this needs no resume loop. */
         int rc = (int)sendmsg(fd, &m, 0);
         ms_trace_wr_end(s->tr, t_wr, rc > 0 ? rc : 0);
+        if (rc < 0 && udp_soft_err(errno)) { clients_drops(s->cid, 1); return len; }
         return rc;
     }
 }
@@ -436,7 +466,8 @@ typedef struct {
     const ms_config    *cfg;
     char                session[16];
     char                nonce[36];      /* per-connection digest nonce */
-    int                 authed;
+    int                 authed;        /* credentials ok, or none required */
+    int                 preauth;       /* g_preauth handle, 0 = none */
     int                 auth_fails;   /* presented-and-rejected credentials */
     int                 vchn;          /* video source index, -1 none */
     int                 have_video, have_audio;
@@ -564,8 +595,8 @@ static void extract_url(const char *req, char *out, int outsz)
     const char *sp = strchr(req, ' ');
     if (!sp) return;
     const char *url = sp+1;
-    const char *end = strchr(url, ' ');
-    if (!end) return;
+    const char *end = url + strcspn(url, " \r\n");
+    if (*end != ' ') return;             /* not "METHOD url VERSION" on one line */
     int n = (int)(end-url);
     if (n >= outsz) n = outsz-1;
     memcpy(out, url, n); out[n]=0;
@@ -578,8 +609,8 @@ static void extract_path(const char *req, char *out, int outsz)
     const char *sp = strchr(req, ' ');
     if (!sp) return;
     const char *url = sp+1;
-    const char *end = strchr(url, ' ');
-    if (!end) return;
+    const char *end = url + strcspn(url, " \r\n");
+    if (*end != ' ') return;
     char tmp[512]; int n = (int)(end-url);
     if (n >= (int)sizeof tmp) n = sizeof(tmp)-1;
     memcpy(tmp, url, n); tmp[n]=0;
@@ -828,8 +859,8 @@ static int udp_port_base(void)
 /* returns 1 if request is authenticated (or auth not required) */
 static int rtsp_check_auth(session *s, char *req)
 {
-    if (!s->cfg->rtsp_user[0]) return 1;          /* auth disabled */
     if (s->authed) return 1;                       /* already validated */
+    if (!s->cfg->rtsp_user[0]) { s->authed = 1; return 1; }   /* auth disabled */
     char method[16]={0}; sscanf(req,"%15s",method);
     char av[512]; get_auth_hdr(req, av, sizeof av);
     /* the RTSP request-line target the client also puts in its digest uri=
@@ -977,7 +1008,7 @@ static int handle_request(session *s, char *req)
         if (!vready) {
             fanqueue wq; int winit = fanqueue_init(&wq, 4) == 0;
             int wsub = winit && hub_subscribe(vchn, &wq) == 0;
-            for (int i=0;i<200 && !vready;i++){
+            for (int i=0;i<200 && !vready && !g_rtsp_stopping;i++){
                 vparam vp;
                 if (hub_get_vparam(vchn,&vp) && vparam_ready(&vp)) { vready=1; break; }
                 usleep(10000);
@@ -1017,7 +1048,14 @@ static int handle_request(session *s, char *req)
         return 0;
     }
     if (!strncmp(req, "SETUP", 5)) {
-        const char *tr = hdr_find(req, "Transport");
+        /* the value only: strstr() below must not match a later header */
+        char trv[512]; const char *tr = NULL;
+        const char *trh = hdr_find(req, "Transport");
+        if (trh) {
+            size_t tl = strcspn(trh, "\r\n");
+            if (tl >= sizeof trv) tl = sizeof trv - 1;
+            memcpy(trv, trh, tl); trv[tl] = 0; tr = trv;
+        }
         int is_audio = strstr(path,"trackID=1") != NULL;
         if (s->vchn < 0) s->vchn = find_video_by_path(s->cfg, path);
         /* no valid video source -> refuse; otherwise vchn==-1 would index
@@ -1774,7 +1812,7 @@ static void *client_thread(void *arg)
     }
 #endif
     char buf[4096];
-    int have=0, playing=0;
+    int have=0, playing=0, authed_seen=0;
     int64_t req_start = 0;      /* when the bytes now in buf first arrived */
     int64_t conn_start = ms_now_us();
 
@@ -1808,6 +1846,12 @@ static void *client_thread(void *arg)
             memmove(buf, buf+reqlen, have-reqlen+1);
             have -= reqlen;
             req_start = ms_now_us();   /* any leftover starts its own clock */
+            if (s->authed && !authed_seen) {
+                authed_seen = 1;
+                net_set_timeouts(s->fd, 30, 0);
+                ms_peercap_put(&g_preauth, s->preauth);
+                s->preauth = 0;
+            }
             if (r < 0) goto done;
             if (r == 1) { playing=1; break; }
         }
@@ -1815,6 +1859,11 @@ static void *client_thread(void *arg)
         if (have && ms_now_us() - req_start > RTSP_REQ_TIMEOUT_US) {
             LOGW(MOD,"control request incomplete after %llds, closing",
                  (long long)(RTSP_REQ_TIMEOUT_US/1000000LL));
+            goto done;
+        }
+        if (!s->authed && ms_now_us() - conn_start > RTSP_PREAUTH_S*1000000LL) {
+            LOGD(MOD,"not authenticated within %ds of connecting, closing",
+                 RTSP_PREAUTH_S);
             goto done;
         }
         if (!playing && ms_now_us() - conn_start > RTSP_PREPLAY_MAX_US) {
@@ -1857,6 +1906,7 @@ done:
 #ifdef USE_TLS
     if (s->tls) ms_tls_close((ms_tls_conn*)s->tls);
 #endif
+    ms_peercap_put(&g_preauth, s->preauth);
     /* M3: unregister BEFORE close() - once closed, the fd number can be
      * reused, and rtsp_stop() must never shutdown() a reused fd */
     ms_creg_del(&g_clientreg, s->slot);
@@ -1889,7 +1939,7 @@ static void accept_loop(rtsp_server *sv, int lfd, int port, void *tls_ctx)
          * (or stops reading) must time out instead of pinning this slot's
          * thread forever in recv()/TLS-handshake/send. Streaming clients
          * read/write continuously and never trip these. */
-        net_set_timeouts(cfd, 30, 15);
+        net_set_timeouts(cfd, RTSP_PREAUTH_S, 15);   /* 30 s once authenticated */
         /* a UDP session's control connection idles between keepalives, so a
          * host that vanished (power, WiFi) sends no FIN and no ICMP: without
          * probes only the 2x session-timeout reaper ends it. ~40 s instead. */
@@ -1897,17 +1947,37 @@ static void accept_loop(rtsp_server *sv, int lfd, int port, void *tls_ctx)
         /* global client cap: each client costs a thread + bounded queue.
          * L1: reserve the slot atomically (add-then-check) - the old plain
          * read of g_nclients let two racing accepts both pass the cap. */
-        if (__sync_add_and_fetch(&g_nclients, 1) > RTSP_MAX_CLIENTS) {
+        int nc = __sync_add_and_fetch(&g_nclients, 1);
+        int loopback = (ntohl(peer.sin_addr.s_addr) & 0xFF000000u) == 0x7F000000u;
+        int counted = 0;
+        if (nc > RTSP_MAX_CLIENTS ||
+            (!loopback && !(counted = ms_peercap_take(&g_preauth, peer.sin_addr.s_addr, cfd,
+                       nc > RTSP_MAX_CLIENTS/2 ? RTSP_PREAUTH_PER_PEER : 0)))) {
+            int ev = nc > RTSP_MAX_CLIENTS && ms_peercap_evict(&g_preauth);
             __sync_fetch_and_sub(&g_nclients, 1);
             const char *e503 = "RTSP/1.0 503 Service Unavailable\r\n\r\n";
             net_sendall(cfd, e503, (int)strlen(e503));
             close(cfd);
-            LOGW(MOD,"client limit (%d) reached, rejecting", RTSP_MAX_CLIENTS);
+            unsigned muted;
+            if (ms_ratelog_due(&g_rejlog, &muted)) {
+                char ip[INET_ADDRSTRLEN] = "?";
+                inet_ntop(AF_INET, &peer.sin_addr, ip, sizeof ip);
+                if (nc > RTSP_MAX_CLIENTS)
+                    LOGW(MOD,"client limit (%d) reached, rejecting %s%s (%u more suppressed)",
+                         RTSP_MAX_CLIENTS, ip,
+                         ev ? ", oldest unauthenticated connection dropped" : "", muted);
+                else
+                    LOGW(MOD,"too many unauthenticated connections from %s, "
+                             "rejecting (%u more suppressed)", ip, muted);
+            }
             continue;
         }
         session *s = (session*)calloc(1,sizeof(session));
-        if (!s){ close(cfd); __sync_fetch_and_sub(&g_nclients, 1); continue; }
-        s->fd=cfd; s->peer=peer; s->cfg=sv->cfg; s->vchn=-1;
+        if (!s){
+            ms_peercap_put(&g_preauth, counted);
+            close(cfd); __sync_fetch_and_sub(&g_nclients, 1); continue;
+        }
+        s->fd=cfd; s->peer=peer; s->cfg=sv->cfg; s->vchn=-1; s->preauth=counted;
         s->vsink.cid = s->asink.cid = -1;   /* listed only while playing */
         s->slot = ms_creg_add(&g_clientreg, cfd);   /* M3: visible to rtsp_stop() */
         /* L15: fds are 0 (calloc), not "unbound", after this - a bound fd
@@ -1922,7 +1992,8 @@ static void accept_loop(rtsp_server *sv, int lfd, int port, void *tls_ctx)
 #endif
         pthread_t t;
         if (ms_thread_create(&t,MS_STACK_CONN,client_thread,s)==0) pthread_detach(t);
-        else { ms_creg_del(&g_clientreg, s->slot); close(cfd); free(s);
+        else { ms_peercap_put(&g_preauth, counted);
+               ms_creg_del(&g_clientreg, s->slot); close(cfd); free(s);
                __sync_fetch_and_sub(&g_nclients, 1); }
     }
 }
@@ -1950,7 +2021,10 @@ rtsp_server *rtsp_start(const ms_config *cfg)
     s->lfd = net_listen_tcp(cfg->rtsp_port, NET_TCP_BACKLOG);
     if (s->lfd < 0){ LOGE(MOD,"cannot bind rtsp port %d",cfg->rtsp_port); free(s); return NULL; }
     s->run = 1;
-    ms_thread_create(&s->thr, MS_STACK_UTIL, accept_thread, s);
+    if (ms_thread_create(&s->thr, MS_STACK_UTIL, accept_thread, s) != 0) {
+        LOGE(MOD,"cannot start the rtsp accept thread");
+        close(s->lfd); free(s); return NULL;
+    }
 #ifdef USE_TLS
     s->lfd_tls = -1;
     if (cfg->rtsp_tls) {
@@ -1977,14 +2051,16 @@ void rtsp_stop(rtsp_server *s)
 {
     if (!s) return;
     s->run = 0;
+    g_rtsp_stopping = 1;
+    /* join before close(): the fd must not be reused under accept4 */
     shutdown(s->lfd, SHUT_RDWR);   /* close() alone does not wake accept() */
-    close(s->lfd);
     pthread_join(s->thr, NULL);
+    close(s->lfd);
 #ifdef USE_TLS
     if (s->lfd_tls >= 0) {
         shutdown(s->lfd_tls, SHUT_RDWR);
-        close(s->lfd_tls);
         pthread_join(s->thr_tls, NULL);
+        close(s->lfd_tls);
     }
 #endif
     /* M3: both accept loops are joined (no new clients can register). Wake

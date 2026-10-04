@@ -44,7 +44,8 @@ void auth_make_nonce(char out[33]);
 /* Rate-limited report of a failed login that PRESENTED credentials (never
  * the credential-less first round-trip of a digest exchange, never a stale
  * nonce). mod = caller's log module tag, ifc = listener ("rtsp"/"https"...),
- * peer = client address. Emits at most one WARN line per minute total. */
+ * peer = client address. Emits at most one WARN line per minute total.
+ * Blocks the caller ~500 ms (brute-force brake): never call it under a lock. */
 void auth_fail_note(const char *mod, const char *ifc, const char *peer);
 
 /* --- /control token auth --- */

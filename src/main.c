@@ -809,9 +809,11 @@ int main(int argc, char **argv)
     while (g_run) sleep(1);
 
     LOGI(MOD,"shutting down");
+    /* first: finalising the open segment is the one step that loses data
+     * if the shutdown alarm cuts it */
+    record_stop();
     srt_stop();
     timelapse_stop();
-    record_stop();
 #ifdef USE_DAYNIGHT
     daynight_stop();
 #endif

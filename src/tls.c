@@ -68,7 +68,29 @@
  * per-recv SO_RCVTIMEO and the wall-clock cap in ms_tls_accept() use it; the
  * callers' own post-handshake timeouts (net_set_timeouts()) are the same
  * magnitude. */
-#define MS_TLS_HANDSHAKE_S 30
+#define MS_TLS_HANDSHAKE_S 10
+/* Handshake steps (the RSA/ECDHE math is what costs, ~100s of ms on the MIPS
+ * core) run at most this many at a time. Held only around each non-blocking
+ * mbedtls_ssl_handshake() call, never across the poll() waits, so a slow peer
+ * cannot hold a slot. */
+#define MS_TLS_HS_CONCURRENT 2
+static pthread_mutex_t g_hs_mx = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_hs_cv = PTHREAD_COND_INITIALIZER;
+static int             g_hs_busy;
+
+static int hs_step(mbedtls_ssl_context *ssl)
+{
+    pthread_mutex_lock(&g_hs_mx);
+    while (g_hs_busy >= MS_TLS_HS_CONCURRENT) pthread_cond_wait(&g_hs_cv, &g_hs_mx);
+    g_hs_busy++;
+    pthread_mutex_unlock(&g_hs_mx);
+    int r = mbedtls_ssl_handshake(ssl);
+    pthread_mutex_lock(&g_hs_mx);
+    g_hs_busy--;
+    pthread_cond_signal(&g_hs_cv);
+    pthread_mutex_unlock(&g_hs_mx);
+    return r;
+}
 
 struct ms_tls_ctx {
     mbedtls_ssl_config       conf;
@@ -238,6 +260,9 @@ ms_tls_conn *ms_tls_accept(ms_tls_ctx *ctx, int fd)
     ms_tls_conn *c = calloc(1, sizeof *c);
     if (!c) return NULL;
     int fl = fcntl(fd, F_GETFL, 0);   /* the blocking mode to put back, see below */
+    struct timeval rcv0 = { 0, 0 };   /* the caller's SO_RCVTIMEO, put back too */
+    socklen_t rcvl = sizeof rcv0;
+    int have_rcv0 = getsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &rcv0, &rcvl) == 0;
     mbedtls_ssl_init(&c->ssl);
     mbedtls_net_init(&c->net);
     c->net.fd = fd;
@@ -267,7 +292,7 @@ ms_tls_conn *ms_tls_accept(ms_tls_ctx *ctx, int fd)
     if (fl >= 0) fcntl(fd, F_SETFL, fl | O_NONBLOCK);
     int64_t hs_deadline = ms_now_us() + (int64_t)MS_TLS_HANDSHAKE_S * 1000000;
     int r;
-    while ((r = mbedtls_ssl_handshake(&c->ssl)) != 0) {
+    while ((r = hs_step(&c->ssl)) != 0) {
         if (r != MBEDTLS_ERR_SSL_WANT_READ && r != MBEDTLS_ERR_SSL_WANT_WRITE) {
             /* peer noise (dead/mute/garbage-speaking connections: scanners,
              * timeouts, resets) stays on DEBUG; everything else - which
@@ -305,6 +330,7 @@ ms_tls_conn *ms_tls_accept(ms_tls_ctx *ctx, int fd)
         goto fail;
     }
     if (fl >= 0) fcntl(fd, F_SETFL, fl);
+    if (have_rcv0) setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &rcv0, sizeof rcv0);
     return c;
 fail:
     if (fl >= 0) fcntl(fd, F_SETFL, fl);

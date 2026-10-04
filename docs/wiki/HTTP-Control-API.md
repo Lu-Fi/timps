@@ -61,9 +61,11 @@ and/or `http.user`/`http.pass`. See the SECURITY block in
 `timps.conf.example` and
 [Configuration Reference](Configuration-Reference.md).
 
-CORS: the three media endpoints send `Access-Control-Allow-Origin: *`
-unconditionally (safe because their auth never relies on ambient browser
-credentials); `/control` and `/events` instead **reflect** the request's
+CORS: the three media endpoints send `Access-Control-Allow-Origin: *` when
+credentials are configured, a valid token is presented, or the peer is
+loopback (safe because their auth never relies on ambient browser
+credentials; on an open camera without a token there is no CORS header and no
+Private Network Access grant, so a random web page cannot read the video); `/control` and `/events` instead **reflect** the request's
 `Origin:` header (with `Vary: Origin`, allow-listing the `X-Timps-Token`
 header, no `Access-Control-Allow-Credentials`) so a WebUI served from a
 different port can call `/control` directly. An `OPTIONS` preflight is
@@ -318,7 +320,7 @@ not listed.
 ```json
 {"clients":[
  {"ip":"192.0.2.17","port":32834,"proto":"rtsp/tcp","chn":0,
-  "since_s":41,"kbps":1600,"bytes":8200000,"lat_ms":18,"agent":"FFmpeg Frigate/0.17.2-3d4dd3a"},
+  "since_s":41,"kbps":1600,"bytes":8200000,"lat_ms":18,"drops":0,"agent":"FFmpeg Frigate/0.17.2-3d4dd3a"},
  {"ip":"192.0.2.103","port":46712,"proto":"rtsp/udp","chn":1,
   "since_s":36,"kbps":214,"bytes":962000,"lat_ms":12,"agent":"LibVLC/3.0.20 (LIVE555 Streaming Media v2016.11.28)"}]}
 ```
@@ -489,7 +491,7 @@ shape, whatever the status:
 | `accepted` | Known fields applied, **including** no-op rewrites of the value a field already held — re-posting the current value is a success, not a silent failure. Clamped writes count here too: clamping is the documented contract, not an error. Also counts *commands* that were carried out (`record.clip`, `daynight.probe`), which never go through the settings path at all. |
 | `changed` | The subset that actually differed and was persisted. |
 | `rejected` | Known fields whose **value** was refused (`null`, `undefined`, or an empty string on a non-string field), plus commands that were understood and failed (`record.clip` to an unwritable path, or — since v1.9.28 — while another clip is still being written). |
-| `not_persisted` | Of `accepted`, the number that were applied live but **not** written to `/etc/timps.conf` because the request changed more keys than the 48-slot persist list holds. Those values are live now and gone after the next reboot; a caller changing many keys at once should split the request or re-`GET` to confirm what survived. |
+| `not_persisted` | At most `accepted`: settings applied live but **not** written to `/etc/timps.conf`, because the request changed more keys than the 48-slot persist list holds, or because the config write failed (this one or an earlier one whose keys are still pending; every later POST retries them). Those values are live now and gone after the next reboot; a caller changing many keys at once should split the request or re-`GET` to confirm what survived. |
 | `deferred` / `deferred_keys` | (2026-08-21) Of `changed`, the keys that were persisted but did **not** reach the running pipeline this request: `video<N>.*`/`sensor.*` graded per request (`rtsp_path` never, it is live), and since v1.9.20 every restart-only `audio.*`/`osd.*` key named in `caps.restart` — `deferred` is always the exact count, `deferred_keys` lists them (subject to `deferred_truncated`, same overflow contract as `applied`/`truncated`). A key absent from `deferred_keys` after a successful `changed` count on a `video`/`sensor` field DID apply live — see `caps.video_live` and [Rate Control Parameters](Rate-Control-Parameters.md#live-vs-restart-per-soc). The remaining sections (`image`, `motion`, `privacy`, `record`, `timelapse`, `daynight`, OSD items) are graded by the [section-by-section table](#section-by-section-behavior) above instead; `deferred` never lists them. |
 | `ignored` | (2026-08-22) Field names the request carried that this build did **not** apply — a typo, a key from another section, a key gated out of this binary, or one with no `/control` write path (`motion.on_motion`, `video<N>.imp_chn`, …). Fully prefixed (`"video1.quality_level"`). It changes no count and nothing about what was applied: `{"quality_lvl":7,"quality_level":5}` still applies the first key and still answers `200 accepted:1` — it now also says the second one went nowhere, instead of leaving that request looking like a clean success. (A body carrying *only* unknown keys was always visible as the `422` below; the mixed body, which is what a real client produces, was not.) Reports unknown **fields inside sections this build understands** — an unknown top-level section, an out-of-range stream/item index and an object-valued member are not fields and are not listed, so an empty array is not a promise that every name in the body was understood. |
 | `ignored_truncated` | Present (`true`) only if the `ignored` list is short — more names than the 512-byte buffer holds, or a name too long to carry. |
@@ -500,7 +502,10 @@ shape, whatever the status:
 | Status | `reason` | Meaning | What the client should do |
 | --- | --- | --- | --- |
 | `200 OK` | — | At least one known field was applied (or one command carried out). A partial request — some fields applied, others rejected or unknown — is a `200`; check `rejected` and `ignored`. | Nothing. Read `applied` for clamped values. |
-| `400 Bad Request` | `not_json` | The body was not a JSON object at all (garbage, empty, truncated before the first `{`). | Fix the caller — this is a client bug. |
+| `400 Bad Request` | `not_json` | The body was not one balanced JSON object (garbage, empty, unbalanced braces, an unterminated string, trailing data). | Fix the caller — this is a client bug. |
+| `400 Bad Request` | `body_truncated` | Fewer body bytes arrived than `Content-Length` announced (peer closed, or the 5 s body deadline). Nothing was applied. | Resend. |
+| `405 Method Not Allowed` | — | Anything but `GET`, `HEAD`, `POST` (and the `OPTIONS` preflight). | Use `POST`. |
+| `500 Internal Server Error` | `reply_too_large` | The reply did not fit its buffer. The change itself was applied. | Re-`GET /control`; report it. |
 | `422 Unprocessable Content` | `unknown_fields` | It parsed, but carried **no field this build knows**: a typo, the wrong section, or a key gated out of this binary. Nothing was applied; `ignored` names the keys. | Check spelling — and check the `*.available` flags above, because the key may simply not exist in *this* build. Retrying the identical body will never succeed. |
 | `409 Conflict` | `values_rejected` | It parsed and every field in it **was** known, but every one of them was refused: bad values, or a command that failed. Nothing was applied. | The key names were right; re-send with valid **values**. |
 | `413 Payload Too Large` | — | `Content-Length` negative, or larger than the request buffer. | Split the request. |

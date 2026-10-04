@@ -415,11 +415,11 @@ static void sess_release(wrtc_session *s)
     if (s->dtls) { ms_dtls_free(s->dtls); s->dtls = NULL; }
     if (s->fd >= 0) { close(s->fd); s->fd = -1; }
     s->have_peer = 0;
-    memset(&s->srtp, 0, sizeof s->srtp);
+    srtp_wipe(&s->srtp, sizeof s->srtp);
     /* the ICE password is a session credential like the SRTP keys */
-    memset(s->lpwd, 0, sizeof s->lpwd);
-    memset(s->lufrag, 0, sizeof s->lufrag);
-    memset(s->expect_user, 0, sizeof s->expect_user);
+    srtp_wipe(s->lpwd, sizeof s->lpwd);
+    srtp_wipe(s->lufrag, sizeof s->lufrag);
+    srtp_wipe(s->expect_user, sizeof s->expect_user);
     __sync_synchronize();
     s->used = 0;
 }
@@ -496,7 +496,7 @@ static int sess_start_media(wrtc_session *s)
     /* We answered a=setup:passive, so we are the DTLS server and protect with
      * the server half of the exported keying material. */
     int r = srtp_init(&s->srtp, km, sizeof km, 1);
-    memset(km, 0, sizeof km);
+    srtp_wipe(km, sizeof km);
     if (r != 0) return -1;
 
     rtp_track_init(&s->vtrack, s->pt, 90000, WEBRTC_MTU, "timps",
@@ -577,7 +577,6 @@ static void *sess_thread(void *arg)
                     stun_req rq;
                     if (stun_parse_request(buf, n, s->lpwd, &rq) &&
                         !strcmp(rq.username, s->expect_user)) {
-                        last_rx = ms_now_us();
                         uint8_t rsp[STUN_MAX_MSG];
                         int rn = stun_build_response(rsp, sizeof rsp, rq.txid,
                                                      &from, s->lpwd);
@@ -602,6 +601,9 @@ static void *sess_thread(void *arg)
                                  ntohs(from.sin_port),
                                  rq.use_candidate ? " (nominated)" : "");
                         }
+                        /* consent (RFC 7675) only from the bound peer: another
+                         * pair's checks must not keep a dead session alive */
+                        if (same_addr(&from, &s->peer)) last_rx = ms_now_us();
                     }
                 } else if (buf[0] >= 20 && buf[0] <= 63) {
                     /* SECURITY INVARIANT (see the cookie note in dtls.c): DTLS
@@ -749,7 +751,11 @@ int webrtc_whep(const char *offer, const char *local_ip, int req_chn,
     char rufrag[64] = "";
     const char *p;
     if ((p = sdp_attr(&off, vm, "a=ice-ufrag:")) == NULL) return 400;
-    sdp_tok(p, rufrag, sizeof rufrag);
+    if (sdp_tok(p, rufrag, sizeof rufrag) == (int)sizeof rufrag - 1 &&
+        p[sizeof rufrag - 1] && !strchr(" \r\n", p[sizeof rufrag - 1])) {
+        LOGW(MOD, "offer's ice-ufrag is longer than %d characters", (int)sizeof rufrag - 1);
+        return 400;          /* a cut ufrag would never match the checks */
+    }
     if (!rufrag[0]) return 400;
     /* We never send a Binding Request (ICE-lite), so the remote pwd is never
      * used - but an offer without one is malformed, and answering it would

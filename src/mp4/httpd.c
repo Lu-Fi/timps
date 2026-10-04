@@ -112,7 +112,12 @@
  * follows it - a peer that sends nothing at all would have been dropped there
  * anyway, this just does it before a thread is committed to either path. */
 #ifndef MS_HTTP_SNIFF_MS
-#define MS_HTTP_SNIFF_MS 5000
+#define MS_HTTP_SNIFF_MS 3000
+#endif
+/* once half the slots are in use: unauthenticated connections older than 1 s
+ * one peer may hold (a browser's burst authenticates long before that) */
+#ifndef HTTP_PREAUTH_PER_PEER
+#define HTTP_PREAUTH_PER_PEER 4
 #endif
 
 static volatile int g_nconn;   /* current connection count (sync builtins) */
@@ -122,6 +127,9 @@ static volatile int g_nconn;   /* current connection count (sync builtins) */
  * util.h; rtsp.c registers its clients in the same one. */
 static ms_client_slot g_clients[HTTP_MAX_CLIENTS];
 static ms_client_reg  g_clientreg = MS_CREG_INIT(g_clients);
+static ms_peer_slot   g_preauth_s[HTTP_MAX_CLIENTS];
+static ms_peercap     g_preauth = MS_PEERCAP_INIT(g_preauth_s);
+static volatile int   g_stopping;   /* httpd_stop() ran: /events loops leave */
 /* adaptive-drop visibility (http.adaptive_drop): frames a client-side fanqueue
  * discarded while frozen waiting for a keyframe (see the dropping state in
  * mp4_stream below). Per-channel, summed across every mp4 client on that
@@ -148,11 +156,31 @@ typedef struct { int fd; const ms_config *cfg; int local; int head; void *tls; v
                  int slot;   /* g_clientreg index, -1 = unregistered */
                  struct sockaddr_in peer;
                  int cid;    /* clients.h entry while streaming, else -1 */
+                 int mcors;  /* media responses may carry the CORS header */
+                 int preauth;/* g_preauth handle until the auth gate, 0 = none */
                  char ua[CLIENTS_AGENT_MAX]; } hconn;
 
 /* connection I/O that transparently uses TLS when this is an HTTPS connection
  * (c->tls set), otherwise the plain socket. Without USE_TLS these are exactly
  * the old net_sendall(c->fd,...) / recv(c->fd,...) calls. */
+static void preauth_put(hconn *c)
+{
+    if (!c->preauth) return;
+    ms_peercap_put(&g_preauth, c->preauth);
+    c->preauth = 0;
+}
+
+/* rejection logs a scanner can trigger at will: once a minute, with a count */
+static void reject_warn(const char *why, const struct sockaddr_in *peer)
+{
+    static ms_ratelog rl = MS_RATELOG_INIT;
+    unsigned muted;
+    if (!ms_ratelog_due(&rl, &muted)) return;
+    char ip[INET_ADDRSTRLEN] = "?";
+    inet_ntop(AF_INET, &peer->sin_addr, ip, sizeof ip);
+    LOGW(MOD,"%s, rejecting client %s (%u more suppressed)", why, ip, muted);
+}
+
 static int csend(hconn *c, const void *buf, int len)
 {
     /* trace.h: the fMP4 body is ONE TCP connection carrying muxed A/V, so this
@@ -395,13 +423,18 @@ static void http_send(hconn *c, const char *status, const char *ctype,
  * Sent unconditionally: harmless without an Origin, and it keeps the
  * fMP4/MJPEG/snapshot responses fetch()able cross-origin (the WebUI MSE
  * preview loads /stream.mp4 via fetch). */
-#define MEDIA_CORS "Access-Control-Allow-Origin: *\r\n"
+#define MEDIA_CORS_HDR "Access-Control-Allow-Origin: *\r\n"
+/* Only with credentials configured, a valid token or a local peer: on an open
+ * camera '*' would let any web page the viewer opens read the video. */
+#define MEDIA_CORS (c->mcors ? MEDIA_CORS_HDR : "")
 
 /* HTTP response headers for /stream.mp4 (streamed body, no length) */
-static const char MP4_RESP_HDR[] =
-    "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\n"
-    "Cache-Control: no-cache\r\nConnection: close\r\n"
-    MEDIA_CORS "\r\n";
+static int mp4_resp_hdr(hconn *c, char *out, int cap)
+{
+    return snprintf(out, (size_t)cap,
+        "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\n"
+        "Cache-Control: no-cache\r\nConnection: close\r\n%s\r\n", MEDIA_CORS);
+}
 
 static void stream_mp4(hconn *c, int chn)
 {
@@ -413,7 +446,9 @@ static void stream_mp4(hconn *c, int chn)
 
     /* HEAD: the headers a GET would send, no body - and no encoder
      * pipeline wake-up for a mere probe */
-    if (c->head) { csend(c, MP4_RESP_HDR, (int)sizeof MP4_RESP_HDR - 1); return; }
+    char rh[160];
+    int rhn = mp4_resp_hdr(c, rh, sizeof rh);
+    if (c->head) { csend(c, rh, rhn); return; }
 
     /* trace.h: per-connection send trace. Lives on this thread's stack for the
      * whole streaming request and is unhooked before returning, so csend() on
@@ -522,7 +557,7 @@ static void stream_mp4(hconn *c, int chn)
     }
     hub_request_idr(chn);                               /* fresh keyframe after warmup */
 
-    if (csend(c, MP4_RESP_HDR, (int)sizeof MP4_RESP_HDR - 1)<0) goto out;
+    if (csend(c, rh, rhn)<0) goto out;
 
     ms_buf seg;
     if (ms_buf_init(&seg, 4096)) goto out;
@@ -871,7 +906,7 @@ static void snapshot_jpg(hconn *c, int src)
         char hdr[224];
         int n=snprintf(hdr,sizeof hdr,
             "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: %zu\r\n"
-            "Cache-Control: no-cache\r\nConnection: close\r\n" MEDIA_CORS "\r\n", p->len);
+            "Cache-Control: no-cache\r\nConnection: close\r\n%s\r\n", p->len, MEDIA_CORS);
         /* never send a truncated header (n >= sizeof hdr means snprintf's
          * would-be length overran the buffer) - same guard as http_send_ex.
          * HEAD gets the true Content-Length of the grabbed frame, no body. */
@@ -907,7 +942,7 @@ static void stream_mjpeg(hconn *c, int src, const char *bnd)
     char rh[288];
     int n=snprintf(rh,sizeof rh,
         "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=%s\r\n"
-        "Cache-Control: no-cache\r\nConnection: close\r\n" MEDIA_CORS "\r\n", BND);
+        "Cache-Control: no-cache\r\nConnection: close\r\n%s\r\n", BND, MEDIA_CORS);
     /* HEAD: same headers a GET would send (incl. the boundary), no body,
      * no encoder wake-up */
     if (c->head){ csend(c,rh,n); return; }
@@ -1557,6 +1592,7 @@ static void events_stream(hconn *c, const char *path, const char *cors)
         }
         if (wait_ms < 25) wait_ms = 25;           /* coalesce notify bursts */
         gen = events_wait(gen, wait_ms);
+        if (g_stopping) break;
 
         /* detect an orderly close even while nothing is being pushed */
         char t[8]; int r = crecv(c, t, sizeof t, MSG_DONTWAIT);
@@ -1591,8 +1627,9 @@ static void serve_player(hconn *c, const char *path)
     if (chn<0||chn>=MS_MAX_VSTREAM||!g_cfg_boot.video[chn].enabled) chn=0;  /* restart-only */
 
     char vcodec[48] = "avc1.640028";               /* High@4.0 fallback */
-    /* only a cold hub needs the keyframe; a page load must not force one */
-    hub_request_idr_warmup(chn);
+    /* only a cold hub needs the keyframe; a page load must not force one.
+     * HEAD only probes: no encoder wake-up and no wait for the SPS. */
+    if (!c->head) hub_request_idr_warmup(chn);
     for (int i=0;i<100;i++){
         vparam vp;
         if (hub_get_vparam(chn,&vp) && vparam_ready(&vp)){
@@ -1606,6 +1643,7 @@ static void serve_player(hconn *c, const char *path)
             }
             break;
         }
+        if (c->head) break;
         usleep(10000);
     }
     int acodec=MS_AC_NONE; hub_get_audio(&acodec,NULL,NULL);
@@ -1642,6 +1680,7 @@ static void serve_player(hconn *c, const char *path)
  * (there is no TLS connection yet on any path that calls this). */
 static void conn_drop(hconn *c)
 {
+    preauth_put(c);
     ms_creg_del(&g_clientreg, c->slot);   /* before close(): fd reuse */
     close(c->fd);
     free(c);
@@ -1709,6 +1748,21 @@ static char *read_body_heap(hconn *c, const char *buf, int n, const char **statu
     return out;
 }
 #endif /* USE_WEBRTC */
+
+/* "METHOD SP target SP": 0 = ok, -2 = target too long, -1 = malformed (no
+ * leading whitespace, no method longer than the buffer spilling into path) */
+static int req_line(const char *b, char *m, size_t mcap, char *t, size_t tcap)
+{
+    size_t ml = strcspn(b, " \r\n");
+    if (ml == 0 || ml >= mcap || b[ml] != ' ') return -1;
+    const char *p = b + ml + 1;
+    size_t tl = strcspn(p, " \r\n");
+    if (tl == 0) return -1;
+    if (tl >= tcap) return -2;
+    memcpy(m, b, ml); m[ml] = 0;
+    memcpy(t, p, tl); t[tl] = 0;
+    return 0;
+}
 
 static void *conn_thread(void *arg)
 {
@@ -1818,13 +1872,12 @@ static void *conn_thread(void *arg)
         buf[n]=0;
         clients_agent_from(buf, c->ua, sizeof c->ua);
         char method[8], path[256];
-        /* a target %255s would truncate is refused, not silently cut: the
-         * cut copy would e.g. never match a Digest uri= */
-        const char *tgt = strchr(buf, ' ');
-        size_t tlen = tgt ? strcspn(tgt + 1, " \r\n") : 0;
-        if (tlen >= sizeof path)
+        /* a target that does not fit is refused, not silently cut: the cut
+         * copy would e.g. never match a Digest uri= */
+        int rl = req_line(buf, method, sizeof method, path, sizeof path);
+        if (rl == -2)
             http_send(c,"414 URI Too Long","text/plain","uri too long",12);
-        else if (sscanf(buf,"%7s %255s",method,path)==2) {
+        else if (rl == 0) {
             /* HEAD = GET semantics with the body suppressed everywhere
              * (http_send_ex + the per-handler checks below) */
             c->head = (strcmp(method,"HEAD")==0);
@@ -1836,6 +1889,8 @@ static void *conn_thread(void *arg)
              * headers. */
             char cors[512]; cors[0]=0;
             int tok_ok = 0;
+            int creds = c->cfg->http_user[0] || c->cfg->rtsp_user[0];
+            c->mcors = creds || c->local;
 #ifdef USE_CONTROL
             /* media endpoints: the /control token also unlocks VIEWING here
              * (never RTSP), so the thingino WebUI preview <img>/players can
@@ -1866,7 +1921,11 @@ static void *conn_thread(void *arg)
                 || !strncmp(path,"/webrtc/",8)
 #endif
                ) {
-                http_cors(buf, cors, sizeof cors);
+                /* also in a preflight: its URL carries the ?token= */
+                tok_ok = http_check_token(c->cfg, buf, path);
+                if (tok_ok) c->mcors = 1;
+                int cors_ok = !media || c->mcors;
+                if (cors_ok) http_cors(buf, cors, sizeof cors);
                 if (!strcmp(method,"OPTIONS")) {
                     /* CORS preflight: answered before any auth - a preflight
                      * carries no credentials by design. 204, no body. */
@@ -1885,7 +1944,8 @@ static void *conn_thread(void *arg)
                      * every other preflight and says nothing true about them. */
                     const char *pna = "";
                     char pnaq[16];
-                    if (http_header(buf, "Access-Control-Request-Private-Network:",
+                    if (cors_ok &&
+                        http_header(buf, "Access-Control-Request-Private-Network:",
                                     pnaq, sizeof pnaq) && !strcasecmp(pnaq,"true"))
                         pna = "Access-Control-Allow-Private-Network: true\r\n";
                     char r[768];
@@ -1895,7 +1955,6 @@ static void *conn_thread(void *arg)
                     csend(c, r, rn);
                     goto done;
                 }
-                tok_ok = http_check_token(c->cfg, buf, path);
             }
 #endif
             /* global gate: localhost, a valid token (tok_ok is only ever
@@ -1930,6 +1989,7 @@ static void *conn_thread(void *arg)
                 if (rn < (int)sizeof r) csend(c, r, rn);
                 goto done;
             }
+            preauth_put(c);
             /* CSRF: a browser re-sends cached Basic/Digest credentials on a
              * cross-site form POST, so only the token and localhost are
              * non-ambient. */
@@ -1957,6 +2017,11 @@ static void *conn_thread(void *arg)
                                                         : c->cfg->rtsp_user;
                 if (!c->local && !tok_ok && !user[0])
                     http_send_ex(c,"403 Forbidden","text/plain",cors,"local only",10);
+                else if (strcmp(method,"GET") && !c->head && strcmp(method,"POST")) {
+                    char hx[sizeof cors + 32];
+                    snprintf(hx, sizeof hx, "Allow: GET, HEAD, POST\r\n%s", cors);
+                    http_send_ex(c,"405 Method Not Allowed","text/plain",hx,"method not allowed",18);
+                }
                 else if (!strcmp(method,"GET") || c->head) {
                     /* HEAD previously fell into the POST branch below and
                      * ran control_apply_json("") - GET semantics instead */
@@ -2185,7 +2250,14 @@ static void *conn_thread(void *arg)
                          * read (have < clen, already truncated by the
                          * deadline above) is a separate, pre-existing
                          * condition this isn't meant to paper over. */
-                        if (have >= clen) body[clen] = 0;
+                        if (have < clen) {
+                            /* deadline or peer close: never apply a prefix */
+                            static const char bt[] = "{\"ok\":false,\"reason\":\"body_truncated\"}";
+                            http_send_ex(c,"400 Bad Request","application/json",cors,
+                                         bt,(int)sizeof bt - 1);
+                            goto done;
+                        }
+                        body[clen] = 0;
                     }
                     /* The old code answered {"ok":true} 200 to everything -
                      * garbage, truncated JSON, unknown keys and real writes
@@ -2265,7 +2337,8 @@ static void *conn_thread(void *arg)
                      * typo used to answer 200 accepted:1 and drop the typo
                      * silently; only an ALL-unknown body was visible, as 422.
                      * Same overflow contract as applied/deferred_keys. */
-                    char rb[CTRL_ECHO_CAP + CTRL_DEFER_CAP + CTRL_IGN_CAP + 320];
+                    char rb[sizeof cr.echo + sizeof cr.defer + sizeof cr.ign +
+                            sizeof cr.uns + 512];
                     int rn = snprintf(rb, sizeof rb,
                         "{\"ok\":%s,\"accepted\":%d,\"changed\":%d,"
                         "\"rejected\":%d,\"not_persisted\":%d,"
@@ -2286,7 +2359,11 @@ static void *conn_thread(void *arg)
                         (prc==0 && !cr.echo_full) ? ",\"truncated\":true" : "",
                         reason ? ",\"reason\":\"" : "", reason ? reason : "",
                         reason ? "\"" : "");
-                    if (rn >= (int)sizeof rb) rn = (int)sizeof rb - 1;
+                    if (rn < 0 || rn >= (int)sizeof rb) {
+                        LOGW(MOD,"/control reply too large (%d)", rn);
+                        st = "500 Internal Server Error";
+                        rn = snprintf(rb, sizeof rb, "{\"ok\":false,\"reason\":\"reply_too_large\"}");
+                    }
                     /* prc==0: a change was actually applied/persisted -
                      * bracket the write so control_quiesce() can wait for it
                      * instead of httpd_stop()'s post-quiesce connection-wake
@@ -2467,6 +2544,7 @@ done:
     /* M-1: unregister BEFORE close() - once closed, this fd number can be
      * handed to another accept(), and httpd_stop() must never shutdown() a
      * reused fd (same rule as rtsp.c's registry). */
+    preauth_put(c);
     ms_creg_del(&g_clientreg, c->slot);
     close(c->fd);
     free(c);
@@ -2493,8 +2571,25 @@ static void *accept_thread(void *arg)
          * the syscall-batching tradeoff that made RTSP interleave carefully
          * does not apply. */
         net_set_nodelay(fd);
+        /* a dead /events or stream peer must not hold its thread for the
+         * ~15 min of TCP retransmits */
+        net_set_keepalive(fd, 20, 5, 4);
+        net_set_user_timeout(fd, 45000);
+        int local = ((ntohl(peer.sin_addr.s_addr) & 0xFF000000u) == 0x7F000000u);
+        char why[96] = "";
+        int counted = 0;
         /* global connection cap: each client costs a thread + queue */
         if (g_nconn >= HTTP_MAX_CLIENTS) {
+            /* free a slot held by a stale unauthenticated connection: this
+             * client's retry gets it */
+            int ev = ms_peercap_evict(&g_preauth);
+            snprintf(why, sizeof why, "connection limit (%d) reached%s", HTTP_MAX_CLIENTS,
+                     ev ? ", oldest unauthenticated connection dropped" : "");
+        }
+        else if (!local && !(counted = ms_peercap_take(&g_preauth, peer.sin_addr.s_addr, fd,
+                      g_nconn >= HTTP_MAX_CLIENTS/2 ? HTTP_PREAUTH_PER_PEER : 0)))
+            snprintf(why, sizeof why, "too many unauthenticated connections from one peer");
+        if (why[0]) {
             /* The cap is checked BEFORE the TLS handshake - deliberately, since
              * the whole point is to spend nothing on a client we are turning
              * away. But that means this plaintext 503 used to be written onto a
@@ -2545,22 +2640,25 @@ static void *accept_thread(void *arg)
                 net_sendall(fd, r, (int)strlen(r));
             }
             close(fd);
-            LOGW(MOD,"connection limit (%d) reached, rejecting client",HTTP_MAX_CLIENTS);
+            reject_warn(why, &peer);
             continue;
         }
         hconn *c = (hconn*)calloc(1,sizeof(hconn));
-        if (!c){ close(fd); continue; }
+        if (!c){
+            ms_peercap_put(&g_preauth, counted);
+            close(fd); continue;
+        }
         c->fd=fd; c->cfg=h->cfg; c->slot=-1;   /* real slot assigned in conn_thread */
-        c->peer=peer; c->cid=-1;
+        c->peer=peer; c->cid=-1; c->preauth=counted;
         /* loopback (127.0.0.0/8) clients skip auth: the local web UI must always
          * be able to reach the streamer, external clients still need the
          * password. This replaces prudynt's "web UI auth key". */
-        c->local = ((ntohl(peer.sin_addr.s_addr) & 0xFF000000u) == 0x7F000000u);
+        c->local = local;
         c->tls_ctx = h->tls_ctx;   /* NULL unless http.https (USE_TLS) */
         __sync_fetch_and_add(&g_nconn, 1);
         pthread_t t;
         if (ms_thread_create(&t,MS_STACK_CONN,conn_thread,c)==0) pthread_detach(t);
-        else { close(fd); free(c); __sync_fetch_and_sub(&g_nconn, 1); }
+        else { preauth_put(c); close(fd); free(c); __sync_fetch_and_sub(&g_nconn, 1); }
     }
     return NULL;
 }
@@ -2689,8 +2787,8 @@ void httpd_stop(httpd *h)
     if (!h) return;
     h->run=0;
     shutdown(h->lfd, SHUT_RDWR);   /* close() alone does not wake accept() */
+    pthread_join(h->thr,NULL);     /* before close(): the fd must not be reused under accept4 */
     close(h->lfd);
-    pthread_join(h->thr,NULL);
 #ifdef USE_CONTROL
     control_quiesce(1000);
 #endif
@@ -2718,7 +2816,11 @@ void httpd_stop(httpd *h)
      * something that will actually finish inside its window. main()'s hard-exit
      * alarm stays the ultimate backstop, but is no longer what this path
      * depends on. */
+    g_stopping = 1;
     ms_creg_wake_all(&g_clientreg);
+#ifdef USE_CONTROL
+    events_notify();               /* /events loops sleep up to 12 s in events_wait */
+#endif
     int64_t drain0 = ms_now_us();
     for (int i = 0; i < (MS_HTTP_DRAIN_MS+9)/10 && g_nconn > 0; i++) usleep(10000);
     /* Say whether the drain actually drained. Without this the failure mode is

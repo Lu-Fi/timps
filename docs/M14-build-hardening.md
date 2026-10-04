@@ -1,49 +1,64 @@
 # M14 – Build hardening flags (umgesetzt)
 
 Befund M14: Der Dienst läuft als root und öffnet Netzwerk-Sockets, das Build
-nutzte aber keine Compiler-/Linker-Härtung (`Makefile:93–95`, `build.sh:273–283`).
+nutzte aber keine Compiler-/Linker-Härtung (damals die `CFLAGS`/`LDFLAGS`-Defaults
+im `Makefile` und die ldflags in `build.sh`).
 
 ## Was geändert wurde
 
-**Makefile** – zentraler Härtungsblock vor den `CFLAGS`/`LDFLAGS`-Defaults:
+**Makefile** – zentraler Härtungsblock ("Build hardening (M14)") vor den
+`CFLAGS`/`LDFLAGS`-Defaults:
 
-- `Makefile:114–115` – zwei zentrale Schalter: `HARDEN ?= 1`, `FORTIFY ?= 1`.
-- `Makefile:117–123` – `HARDEN_CFLAGS`/`HARDEN_LDFLAGS` abgeleitet aus den Schaltern.
-- `Makefile:127` – `CFLAGS` erhält `$(HARDEN_CFLAGS)` (SSP + FORTIFY).
-- `Makefile:128` – `LDFLAGS` erhält `$(HARDEN_LDFLAGS)` (RELRO/NOW/noexecstack).
-  Ersetzt das alte `-Wl,-z,relro,-z,now` und ergänzt `-Wl,-z,noexecstack`.
+- zwei zentrale Schalter: `HARDEN ?= 1`, `FORTIFY ?= 1`;
+- `HARDEN_CFLAGS`/`HARDEN_LDFLAGS` abgeleitet aus den Schaltern;
+- die `CFLAGS ?=`-Defaults enthalten `$(HARDEN_CFLAGS)` (SSP + FORTIFY), die
+  `LDFLAGS ?=`-Defaults `$(HARDEN_LDFLAGS)` (RELRO/NOW/noexecstack).
+  Das gilt nur, solange `CFLAGS`/`LDFLAGS` nicht von außen übergeben werden.
 
 **build.sh** – libc-bewusste, äquivalente Logik (build.sh übergibt eigene
 CFLAGS/LDFLAGS und überschreibt damit die Makefile-Defaults):
 
-- `build.sh:68–69` – `HARDEN`/`FORTIFY`-Env-Schalter (Default 1).
-- `build.sh:70–85` – `apply_libc_env()`: musl → `-fstack-protector-strong`
-  (+ `-D_FORTIFY_SOURCE=2`, wenn `FORTIFY=1`); uClibc → `-fno-stack-protector`.
-- `build.sh:317` – ldflags um `-Wl,-z,noexecstack` ergänzt.
-- `build.sh:371–372` – `HARDEN`/`FORTIFY` in der Usage dokumentiert.
+- `HARDEN`/`FORTIFY`-Env-Schalter (Default 1);
+- `apply_libc_env()`: musl → `-fstack-protector-strong`
+  (+ `-D_FORTIFY_SOURCE=2`, wenn `FORTIFY=1`); uClibc → `-fno-stack-protector`;
+- die ldflags enthalten `-Wl,-z,relro,-z,now -Wl,-z,noexecstack`;
+- `HARDEN`/`FORTIFY` stehen in der Usage.
+
+**thingino** (`package/timps/timps.mk`) – übergibt **eigene** `CFLAGS`
+(`$(TARGET_CFLAGS)` + Warn-/Section-Flags) und `LDFLAGS`
+(`$(TARGET_LDFLAGS) -Wl,--gc-sections …`) und umgeht damit den Härtungsblock
+des Makefiles vollständig. Eine Firmware-Build bekommt nur, was buildroot in
+`TARGET_CFLAGS`/`TARGET_LDFLAGS` legt (`BR2_SSP_*`, `BR2_RELRO_*`,
+`BR2_FORTIFY_SOURCE_*` der jeweiligen Konfiguration) – kein `noexecstack`,
+kein SSP/FORTIFY aus timps selbst.
 
 ## Aktive Flags
 
 | Flag | Zweck | Wo aktiv |
 |---|---|---|
-| `-fstack-protector-strong` | Stack-Canary (SSP) | host/sim, musl-Cross |
-| `-D_FORTIFY_SOURCE=2` | abgesicherte libc-Wrapper (`*_chk`), braucht `-Os`/`-O2` | host/sim, musl-Cross (FORTIFY=1) |
-| `-Wl,-z,relro` + `-Wl,-z,now` | Full RELRO (read-only GOT nach Reloc) | überall |
-| `-Wl,-z,noexecstack` | nicht ausführbarer Stack (NX) | überall (auch bei HARDEN=0) |
+| `-fstack-protector-strong` | Stack-Canary (SSP) | host/sim, build.sh musl-Cross |
+| `-D_FORTIFY_SOURCE=2` | abgesicherte libc-Wrapper (`*_chk`), braucht `-Os`/`-O2` | host/sim, build.sh musl-Cross (FORTIFY=1) |
+| `-Wl,-z,relro` + `-Wl,-z,now` | Full RELRO (read-only GOT nach Reloc) | Makefile-Defaults (HARDEN=1), build.sh |
+| `-Wl,-z,noexecstack` | nicht ausführbarer Stack (NX) | Makefile-Defaults (auch bei HARDEN=0), build.sh |
+
+Nicht in der thingino-Firmware-Build (siehe oben): dort entscheidet allein die
+buildroot-Konfiguration.
 
 `-no-pie` bleibt erzwungen (non-PIC Vendor-Archive), daher kein PIE/ASLR fürs
 Hauptbinary — nachvollziehbar und unverändert.
 
 ## Zentrale Konfigurierbarkeit
 
-- `make sim` / `make target` → `HARDEN=0` (alles aus) bzw. `FORTIFY=0` (nur FORTIFY aus).
-- `./build.sh timps <SOC>` → `HARDEN=0` / `FORTIFY=0` als Env-Variablen.
-- RELRO/NOW/noexecstack sind linker-only und bleiben unabhängig davon an.
+- `make sim` / `make target` → `HARDEN=0` (SSP/FORTIFY/RELRO aus, `noexecstack`
+  bleibt) bzw. `FORTIFY=0` (nur FORTIFY aus).
+- `./build.sh timps <SOC>` → `HARDEN=0` / `FORTIFY=0` als Env-Variablen;
+  RELRO/NOW/noexecstack sind dort linker-only und bleiben immer an.
 
 ## Build-Verifikation (`make sim`, Host x86-64)
 
-Build läuft sauber durch, keine neuen Warnungen, Binär läuft (`timpsd-sim -v`
-→ Version, Usage). Härtungsmarker im ELF bestätigt:
+Build läuft sauber durch, keine neuen Warnungen, Binär läuft (`timpsd-sim -h`
+→ Version, Usage; `-v` ist dagegen "verbose" und startet den Dienst).
+Härtungsmarker im ELF bestätigt:
 
 - FORTIFY aktiv: `__memcpy_chk`, `__printf_chk`, `__snprintf_chk`, `__syslog_chk` …
 - SSP aktiv: `__stack_chk_fail`
@@ -51,7 +66,7 @@ Build läuft sauber durch, keine neuen Warnungen, Binär läuft (`timpsd-sim -v`
 - NX-Stack: `GNU_STACK … RW` (nicht ausführbar)
 
 Toggle-Test bestätigt: `FORTIFY=0` entfernt nur `-D_FORTIFY_SOURCE=2` (SSP bleibt);
-`HARDEN=0` entfernt SSP+FORTIFY, `noexecstack` bleibt.
+`HARDEN=0` entfernt SSP+FORTIFY und RELRO/NOW, `noexecstack` bleibt.
 
 **Binärgröße:** sim unverändert bei 156.248 Bytes (Baseline = geändert), also
 kein Größenregress; der Cross-Compile-Ablauf (compile-then-link, `-no-pie`,

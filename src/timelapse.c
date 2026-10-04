@@ -64,6 +64,7 @@ static void prune_old(const char *base, time_t cutoff, int depth)
     DIR *d=opendir(base); if(!d) return;
     struct dirent *e;
     while ((e=readdir(d))){
+        if (ms_stopgate_stopped(&g_gate)) break;   /* a big card walk must not delay stop */
         if (!strcmp(e->d_name,".")||!strcmp(e->d_name,"..")) continue;
         char p[336]; snprintf(p,sizeof p,"%s/%s",base,e->d_name);
         struct stat s; if (lstat(p,&s)!=0) continue;
@@ -72,6 +73,12 @@ static void prune_old(const char *base, time_t cutoff, int depth)
             rmdir(p);
         } else if (S_ISREG(s.st_mode)){
             size_t l=strlen(p);
+            /* a shot interrupted by power loss. This host's subtree only, and
+             * old: a camera sharing the hostname on one NAS may be mid-write */
+            if (l>8 && !strcmp(p+l-8,".jpg.tmp") && time(NULL)-s.st_mtime > 60){
+                if (unlink(p)==0) LOGI(MOD,"removed orphaned %s",p);
+                continue;
+            }
             /* a pre-NTP-sync mtime says nothing about the shot's age */
             if (l>4 && !strcmp(p+l-4,".jpg") && s.st_mtime<cutoff &&
                 (long)s.st_mtime >= MS_SANE_EPOCH){

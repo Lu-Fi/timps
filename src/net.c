@@ -33,6 +33,15 @@ int net_set_keepalive(int fd, int idle_s, int intvl_s, int cnt)
     return rc;
 }
 
+#ifndef TCP_USER_TIMEOUT
+#define TCP_USER_TIMEOUT 18      /* Linux >= 2.6.37; older libc headers lack it */
+#endif
+int net_set_user_timeout(int fd, int ms)
+{
+    unsigned v = (unsigned)ms;
+    return setsockopt(fd, IPPROTO_TCP, TCP_USER_TIMEOUT, &v, sizeof v);
+}
+
 /* H1/H2: bounded socket I/O for accepted control connections. Without these,
  * a client that connects and then goes silent (or stops reading) parks the
  * per-connection thread forever in recv()/send(), pinning one of the few

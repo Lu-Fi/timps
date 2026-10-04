@@ -213,12 +213,16 @@ Four distinct causes, distinguishable from the `POST /control` reply body:
 | --- | --- | --- |
 | `"ignored":["…"]` | The build does not know that field name (typo, or feature compiled out). Counts are unaffected — a request mixing one good key with one typo still answers `200`. | Check the spelling against `GET /control?fields=1`. |
 | `"deferred":N,"deferred_keys":[…]` | Changed fields that were **persisted but did not reach the running pipeline**: `video*`/`sensor.*`, and since v1.9.20 the restart-only `audio.*`/`osd.*` keys (`caps.restart`). | Restart `timpsd`. |
-| `"not_persisted":N` | The value is live in memory but was **not written to the file**. | Split the request; see below. |
+| `"not_persisted":N` | The value is live in memory but was **not written to the file**. | Split the request, or fix the failed write; see below. |
 | `"rejected":N` | A value was refused outright (e.g. `speaker play` with a bad path). | Fix the value. |
 
 `not_persisted` in practice: `control.c` batches at most `CTRL_MAX_CHG` =
 **48** changed keys per request. Past that the tail stays live-but-unsaved and
 `too many settings in one request, <key> not persisted` appears in the log.
+A failed config write (no space, read-only overlay, `fsync`/`rename` error) is
+counted too, with `<n> setting(s) are live but NOT saved to <path> (<m> more failed writes)` (ERR, at most once a minute) after
+the `cannot create tmp …`/`fsync …`/`rename …` warning. The next POST, even
+one repeating the same value, retries those keys.
 
 `config_write_keys()` has a second, higher cap of **64** keys per call, whose
 warning is `config_write_keys: <n> keys in one call, only the first 64 are
@@ -505,7 +509,7 @@ timps starts the framesource/encoder **when a client attaches** and stops it
 > exactly this, not a hardware fault.
 | `chnN: StartRecvPic kept failing for N attempts - encoder/ISP is not coming back on its own; exiting …` | **since v1.9.28**: the encoder never *starts* (with a client attached, ~25 s of failed starts, logged as `framesource N: EnableChn failed (attempt N)` on the 1st and every 20th try). Same exit and same consequences as the line above; v1.9.27 retried such a start forever. | As above. |
 | `jpeg chnN: … giving up on this channel (MJPEG/snapshot output disabled until restart)` | Same watchdog on the JPEG channel, but it only disables **JPEG**; video keeps running. | Restart `timpsd` to get snapshots back. |
-| `chnN: GetStream failed after PollingStream OK` | Transient SDK hiccup. | Ignore unless constant. |
+| `chnN: GetStream failed after PollingStream OK (#n)` | Transient SDK hiccup. Logged on the 1st and every 20th in a row. | Ignore unless constant. |
 | `video pipeline bring-up failed - tearing down partial state` | `ing_start()` failed; `main()`'s retry loop takes over (§1.1). | Read the LOGE immediately above it — that one names the real failure. |
 
 Bring-up LOGEs that precede it, in pipeline order:
@@ -1078,7 +1082,7 @@ Shared facts:
 | `500 Internal Server Error` | The server could not bind a UDP port pair after 64 tries in 6000–14190. Connection closed. **since v1.9.28**: also on `DESCRIBE` when the SDP does not fit its buffer (log `SDP for chnN exceeds N bytes - refusing DESCRIBE`; v1.9.27 sent it truncated). | Something else holds the whole range, or the box is out of sockets. Use TCP interleaved. |
 | `503 Service Unavailable` with `Retry-After: 1` on DESCRIBE | No SPS/PPS after a 2 s warm-up — the encoder has not produced parameter sets yet. | Retry. Persistent → §2.2. |
 | `503 Service Unavailable` on PLAY | `hub_subscribe()` failed: the source is at `HUB_MAX_SUBS` = 16. Log: `subscribe failed (source full), closing session=…` | Close other viewers. |
-| Raw `RTSP/1.0 503 Service Unavailable` with **no CSeq**, socket closed immediately | `RTSP_MAX_CLIENTS` = **8** concurrent clients reached. Log: `client limit (8) reached, rejecting`. | Close viewers, or rebuild with `-DRTSP_MAX_CLIENTS=N`. |
+| Raw `RTSP/1.0 503 Service Unavailable` with **no CSeq**, socket closed immediately | `RTSP_MAX_CLIENTS` = **8** concurrent clients reached. Log (at most once a minute): `client limit (8) reached, rejecting <ip> (<n> more suppressed)`; with `, oldest unauthenticated connection dropped` a connection that had not authenticated for over 1 s was closed to make room, and a retry gets in. Or, once more than half the slots are taken, this peer already holds `RTSP_PREAUTH_PER_PEER` = **3** unauthenticated connections older than 1 s: `too many unauthenticated connections from <ip>, rejecting`. | Close viewers, or rebuild with `-DRTSP_MAX_CLIENTS=N`. |
 | `551 Option not supported` | A `Require:` tag other than `backchannel`. | Client bug. |
 
 > **At the RTSP client limit the server answers a bare
@@ -1122,7 +1126,10 @@ TLS handshake failure on the RTSPS port. **since v1.9.28** also: the **5th rejec
 login** on one connection (after its `401`), and a connection that has not
 reached `PLAY` within **60 s** of connecting (log: `no PLAY within 60s of
 connecting, closing`) — the latter is normal for port scanners and for an NVR
-that only probes with `OPTIONS`.
+that only probes with `OPTIONS`. A connection that has not authenticated (on
+an open camera: has sent nothing but `OPTIONS`) is closed after
+`RTSP_PREAUTH_S` = **15 s** (DEBUG: `not authenticated within 15s of
+connecting, closing`); its receive timeout is 15 s until then, 30 s after.
 
 **Session reaping:** `RTSP_SESSION_TIMEOUT_S` = 60 is advertised as
 `;timeout=60`; sessions are reaped at **2× = 120 s** of idleness, and only
@@ -1169,9 +1176,9 @@ practically only reachable with an enormous SDP; report it as a bug.
 
 | Response | Cause |
 | --- | --- |
-| `503 Service Unavailable` / `busy`, with `Access-Control-Allow-Origin: *` | `HTTP_MAX_CLIENTS` = **16** concurrent connections. Log: `connection limit (16) reached, rejecting client`. **`preview.html` alone holds 3+ slots per open tab** (the media stream plus two SSE subscriptions), so ~5 tabs is the real ceiling. |
-| Connection closed with no bytes at all | Same cap, but on a TLS port where the peer already sent a ClientHello (a plaintext 503 into a TLS handshake looks like a TLS fault); or the 5 s header deadline expired; or (v1.9.27 only) the request line was malformed. |
-| `400 Bad Request` / `bad request` | **since v1.9.28**: the request line could not be parsed. |
+| `503 Service Unavailable` / `busy`, with `Access-Control-Allow-Origin: *` | `HTTP_MAX_CLIENTS` = **16** concurrent connections. Log (at most once a minute): `connection limit (16) reached, rejecting client <ip> (<n> more suppressed)`; with `, oldest unauthenticated connection dropped` a connection stuck before the auth gate for over 1 s was closed to make room, and a retry gets in. Also, once 8 slots are taken, a peer already holding `HTTP_PREAUTH_PER_PEER` = **4** connections older than 1 s that have not passed the auth gate: `too many unauthenticated connections from one peer, rejecting client <ip>`. Loopback is exempt. **`preview.html` alone holds 3+ slots per open tab** (the media stream plus two SSE subscriptions), so ~5 tabs is the real ceiling. |
+| Connection closed with no bytes at all | Same cap, but on a TLS port where the peer already sent a ClientHello (a plaintext 503 into a TLS handshake looks like a TLS fault); or the 5 s header deadline expired (3 s for the first byte on a TLS-capable port); or (v1.9.27 only) the request line was malformed. |
+| `400 Bad Request` / `bad request` | **since v1.9.28**: the request line could not be parsed (since the next release also: leading whitespace, or a method longer than 7 characters). |
 | `414 URI Too Long` | **since v1.9.28**: the request target is longer than 255 characters (v1.9.27 cut it silently, so e.g. a Digest `uri=` for a long URL never matched). |
 | `403 Forbidden` / `bad origin` on a `POST` | **since v1.9.28**: a Basic/Digest-authenticated POST from a page on another host (CSRF guard). Log: `refused cross-origin POST <path>`. See §8.1. |
 | `404 Not Found` / `no jpeg` on `/snapshot.jpg`, `/stream.mjpeg`, `/mjpeg` | No JPEG source. An explicit `?chn=N` is **strict** — if that stream's `videoN.jpeg` is off you get 404, with no fallback to the other stream. |
@@ -1231,6 +1238,9 @@ a deliberate, safe choice during teardown, not a leak to report.
 `src/webrtc/`, endpoint `/webrtc/whep`. Limits: `WEBRTC_MAX_SESSIONS` = **4**
 (one UDP port per slot, `webrtc.port` … `webrtc.port_max`), setup deadline
 30 s, idle timeout 30 s, MTU 1200, offer body cap `WEBRTC_BODY_MAX` = 16384.
+Only STUN checks from the bound peer address refresh the idle timer (ICE
+consent); checks on another candidate pair are still answered but do not keep
+a session alive.
 
 | Response | Cause | Fix |
 | --- | --- | --- |
@@ -1258,6 +1268,8 @@ a deliberate, safe choice during teardown, not a leak to report.
   DTLS-passive; the offer must be `actpass` or `active`).
 - No `video` m-section, or a plain `RTP/AVP` (non-`SAVP`) offer, or a missing
   `a=ice-ufrag:` / `a=ice-pwd:`.
+- `offer's ice-ufrag is longer than 63 characters` (it used to be cut and then
+  never matched the browser's checks).
 
 **Session established but the picture stays black:**
 
@@ -1460,6 +1472,8 @@ build lacks `USE_FAAC` (see §6.1).
 - `unsafe timelapse.dir/name ('..' or absolute name), skipping shot` — same
   path rule as recording.
 - `open <path>: <e>` / `write <path>: <e>` — storage problem.
+- `removed orphaned <path>.jpg.tmp` (INFO) — a shot cut by a power loss,
+  cleaned up by the hourly prune (this camera's subtree, older than 60 s).
 - `no frame from src=<n> within <N> ms - retrying in <N>s` — **the JPEG
   source produced nothing.** Timelapse is "just-in-time": it subscribes only
   when a shot is due. Check that `videoN.jpeg = true` (or `jpeg.enabled`) and
@@ -1773,9 +1787,10 @@ Verified in `src/auth.c`, `src/auth.h` and the gate in `src/mp4/httpd.c`:
   credentials on cross-site form posts). Token and loopback requests, and
   clients that send no `Origin` (curl, scripts, NVRs), are unaffected; ports
   are not compared.
-- **No login rate limiting, no lockout, no 429.** `auth_fail_note()` is
-  *logging only*: from the 3rd failure, at most one line per minute,
-  forgotten after 10 minutes of quiet. The line reads `<N> failed login
+- **No lockout, no 429.** Since the next release every failed Basic/Digest
+  attempt (HTTP and RTSP) waits **500 ms** before its `401`, on its own
+  connection thread. `auth_fail_note()` otherwise only logs: from the 3rd
+  failure, at most one line per minute, forgotten after 10 minutes of quiet. The line reads `<N> failed login
   attempts on <listener> since the last report (last from <peer>)`. A user who
   sees it is being scanned; it does not mean anything was blocked.
 - **since v1.9.28** RTSP closes a connection after its **5th rejected login**. That is
@@ -1911,9 +1926,9 @@ Earlier editions of this file had this table backwards — `timps-selftest.sh`
 and `timps-imp.cgi` are the two that *do* handle `2`.
 
 Connections that just close with nothing: the 5 s header deadline expired
-(`MS_HTTP_SNIFF_MS` = 5000 ms for the first byte), or the request line was
-malformed. Note the request line is parsed with `%7s %255s` — **a URI over
-255 characters is truncated and then 404s.**
+(`MS_HTTP_SNIFF_MS` = 3000 ms for the first byte), the TLS handshake took more
+than `MS_TLS_HANDSHAKE_S` = 10 s, or the request line was malformed. A target
+over 255 characters answers `414`.
 
 ### 8.5 Certificate warnings in the browser
 
@@ -2526,7 +2541,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `jpeg chn%d: PollingStream idle (miss#%d) - encoder emits no frames` | W | Same on the JPEG channel. | |
 | `jpeg chn%d: encoder dead after %d consecutive misses - forcing a framesource disable/enable cycle to recover (recovery attempt %d/%d)` | E | JPEG recovery. | |
 | `jpeg chn%d: %d consecutive forced-recovery cycles never produced a frame - giving up on this channel (MJPEG/snapshot output disabled until restart)` | E | **JPEG only** is disabled; video survives. | Restart to get snapshots back. |
-| `chn%d: GetStream failed after PollingStream OK` / `jpeg chn%d: GetStream failed after PollingStream OK` | W | Transient SDK hiccup. | Ignore unless constant. |
+| `chn%d: GetStream failed after PollingStream OK (#%d)` / `jpeg chn%d: GetStream failed after PollingStream OK (#%d)` | W | Transient SDK hiccup; 1st and every 20th of a streak. | Ignore unless constant. |
 | `chn%d: AU exceeds max buffer (need=%zu, max=%d, packCount=%u) - dropping frame (%u dropped so far)` | W | An access unit over `MS_AU_BUF_MAX` (1 MB; 2 MiB + 64 KiB on T23 builds). Deliberately **no** IDR is forced — that was the historical permanent-stall bug. | §2.3. On T23 at 1080p this is expected at stock defaults; the proven lever is raising `video0.min_qp`. |
 | `chn%d: no memory for AU packet (need=%zu) - dropping frame` / `chn%d: AU assembly overflow (cap=%zu, need=%zu, packCount=%u) - dropping frame` | W | OOM / assembly overflow. | §5.5 |
 | `chn%d: JPEG exceeds max buffer (need=%zu, max=%d) - dropping frame` / `chn%d: no memory for JPEG packet (need=%zu) - dropping frame` / `chn%d: JPEG assembly overflow (cap=%zu, need=%zu) - dropping frame` | W | Same for JPEG (`MS_JPEG_BUF_MAX` 1 MB). | |
@@ -2685,7 +2700,8 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | `RTSPS requested but TLS context failed - plain RTSP only` | E | RTSPS is silently not active. | Fix the cert/key. |
 | `cannot bind rtsps port %d` | E | Same; plain RTSP keeps serving. | |
 | `RTSPS requested but built without USE_TLS` | W | Rebuild with `BR2_PACKAGE_TIMPS_TLS`. | |
-| `client limit (%d) reached, rejecting` | W | `RTSP_MAX_CLIENTS` = 8. The client sees a bare `503`. | §4.1 |
+| `client limit (%d) reached, rejecting %s[, oldest unauthenticated connection dropped] (%u more suppressed)` | W | `RTSP_MAX_CLIENTS` = 8, at most once a minute. The client sees a bare `503`. | §4.1 |
+| `too many unauthenticated connections from %s, rejecting (%u more suppressed)` | W | Per-peer pre-auth cap (3 older than 1 s), only once half the RTSP slots are taken. | §4.1 |
 | `subscribe failed (source full), closing session=%s` | W | `HUB_MAX_SUBS` = 16 on that source. | Close viewers. |
 | `session=%s idle >%ds (client gone without TEARDOWN), reaping` | W | Normal cleanup after 120 s, UDP transports only. | Ignore. |
 | `control request incomplete after %llds, closing` | W | 10 s without a complete request. | Client or proxy problem. |
@@ -2704,7 +2720,8 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | `http.https=%d but the TLS context could not be built from cert %s / key %s (see the TLS error above) - REFUSING to serve port %d at all rather than silently downgrading it to plaintext and leaking credentials. Fix or regenerate the cert/key pair, or set http.https=0 to accept plain HTTP deliberately` | E | **Fail-closed: the listener is never bound**, so every client gets a connection refusal. | Fix the cert/key, or `http.https = 0`. §8.4 |
 | `http.https=%d but this build has no USE_TLS - port %d serves PLAIN HTTP and any password or token sent to it goes over the network in the clear` | E | The one deliberate asymmetry — the operator cannot fix it without a different binary, so it serves rather than dies. | Rebuild with TLS. |
 | `audio.talk_ws=1 requires TLS on the http port, but port %d is plaintext%s - /talk stays disabled. Set audio.talk_ws=2 to accept plain ws:// deliberately (the browser then needs a secure-context override to reach its microphone at all)` | W | `/talk` will answer 426. | §6.4 |
-| `connection limit (%d) reached, rejecting client` | W | `HTTP_MAX_CLIENTS` = 16. Each preview tab holds 3+. | §4.2 |
+| `connection limit (%d) reached[, oldest unauthenticated connection dropped], rejecting client %s (%u more suppressed)` | W | `HTTP_MAX_CLIENTS` = 16, at most once a minute. Each preview tab holds 3+. | §4.2 |
+| `too many unauthenticated connections from one peer, rejecting client %s (%u more suppressed)` | W | Per-peer pre-auth cap (4 older than 1 s), only once 8 HTTP slots are taken. | §4.2 |
 | `sse client limit (%d) reached, rejecting` | W | `events.max_clients`, default 8. | |
 | `sse %s event too large, dropped` | W | One event overflowed its buffer. | |
 | `no video params, abort mp4` | W | No SPS/PPS within 2 s. On v1.9.27 **the connection is closed with no HTTP response**, so the browser reports a network error; **since v1.9.28** the client gets `503` `no video`. | §2.2 |
@@ -2724,7 +2741,7 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | --- | --- | --- | --- |
 | `record.min_free_mb=%d unreachable (only %lldMB free, %lldMB even if every existing recording were deleted) - refusing to record rather than empty the archive` | W | Deliberate refusal (since 1.9.8; before that it emptied the archive). | Lower `record.min_free_mb`. §5.1 |
 | `unsafe record.dir/name ('..' or absolute name), not recording` | E | `record.name` must be relative and contain no `..`. | §5.1 |
-| `open %s: %s` / `fdopen %s: %s` | E | The segment file could not be created. | Mount/permissions. |
+| `open %s: %s` / `fdopen %s: %s` | E | The segment file could not be created. `open` repeats at most once a minute for the same errno. | Mount/permissions. |
 | `segment name collision, wrote %s instead` | W | Two segments resolved to the same name. | Add `%S` to `record.name`. |
 | `write %s: %s` / `segment write failed (%s), closing` / `segment flush failed (%s), closing` | E | The volume went away or filled. | §5.2 |
 | `segment close/sync failed: %s (tail may be truncated)` | E | **The last seconds of that file may be unreadable.** | §5.2 |
@@ -3026,8 +3043,8 @@ against the source named.
     Digest, the `X-Timps-Token` header (or `?token=`), or the hard-coded
     127.0.0.0/8 bypass.
 21. **"You are locked out after too many failed logins — wait it out."**
-    There is **no rate limiting, no lockout and no 429**. `auth_fail_note()`
-    only writes a log line. (**since v1.9.28** RTSP drops the *connection* after
+    There is **no lockout and no 429**; a failed login only waits 500 ms
+    before its `401`, and `auth_fail_note()` writes a log line. (**since v1.9.28** RTSP drops the *connection* after
     5 rejected logins; reconnecting works immediately.) A `<N> failed login attempts` warning means
     someone is scanning, not that anything was blocked.
 22. **"Set `auth_bypass`."** No such key exists.

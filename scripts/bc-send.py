@@ -53,7 +53,10 @@ def rtsp(method, url, extra=""):
     if m:
         start = data.find(b"\r\n\r\n") + 4
         while len(data) - start < int(m.group(1)):
-            data += s.recv(4096)
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            data += chunk
     return data.decode(errors="replace")
 
 # 1) DESCRIBE with the ONVIF backchannel Require header

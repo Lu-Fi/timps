@@ -244,6 +244,63 @@ void ms_creg_wake_all(ms_client_reg *r)
     pthread_mutex_unlock(&r->lock);
 }
 
+int ms_peercap_take(ms_peercap *p, uint32_t ip, int fd, int cap)
+{
+    int64_t now = ms_now_us();
+    if (!now) now = 1;
+    int fr = -1, stale = 0, rc;
+    pthread_mutex_lock(&p->lock);
+    for (int i = 0; i < p->n; i++) {
+        if (!p->s[i].t0) { if (fr < 0) fr = i; continue; }
+        if (p->s[i].ip == ip && now - p->s[i].t0 >= 1000000) stale++;
+    }
+    if (cap > 0 && stale >= cap) rc = 0;
+    else if (fr < 0) rc = p->n + 1;   /* full: cannot happen, fail open */
+    else {
+        p->s[fr].ip = ip; p->s[fr].fd = fd; p->s[fr].ev = 0; p->s[fr].t0 = now;
+        rc = fr + 1;
+    }
+    pthread_mutex_unlock(&p->lock);
+    return rc;
+}
+
+int ms_peercap_evict(ms_peercap *p)
+{
+    int64_t now = ms_now_us();
+    int old = -1;
+    pthread_mutex_lock(&p->lock);
+    for (int i = 0; i < p->n; i++)
+        if (p->s[i].t0 && !p->s[i].ev && now - p->s[i].t0 >= 1000000 &&
+            (old < 0 || p->s[i].t0 < p->s[old].t0)) old = i;
+    if (old >= 0) {
+        p->s[old].ev = 1;
+        shutdown(p->s[old].fd, SHUT_RDWR);   /* the owner still closes it */
+    }
+    pthread_mutex_unlock(&p->lock);
+    return old >= 0;
+}
+
+void ms_peercap_put(ms_peercap *p, int handle)
+{
+    if (handle < 1 || handle > p->n) return;
+    pthread_mutex_lock(&p->lock);
+    p->s[handle-1].t0 = 0;
+    pthread_mutex_unlock(&p->lock);
+}
+
+int ms_ratelog_due(ms_ratelog *r, unsigned *muted)
+{
+    int due = 0;
+    pthread_mutex_lock(&r->lock);
+    time_t now = time(NULL);
+    if (!r->t_last || now - r->t_last >= 60) {
+        *muted = r->muted;
+        r->t_last = now; r->muted = 0; due = 1;
+    } else r->muted++;
+    pthread_mutex_unlock(&r->lock);
+    return due;
+}
+
 void ms_json_esc(const char *s, char *out, size_t cap)
 {
     const unsigned char *p = (const unsigned char *)s;
@@ -379,6 +436,9 @@ void ms_hostname(char *out, size_t cap)
     if (!cap) return;
     if (gethostname(out, cap) != 0) snprintf(out, cap, "camera");
     out[cap-1] = 0;   /* F4: an overlong hostname may come back unterminated */
+    /* it becomes a path component (record/timelapse write and prune) */
+    if (!out[0] || strchr(out, '/') || !strcmp(out, ".") || ms_path_unsafe(NULL, out))
+        snprintf(out, cap, "camera");
 }
 
 time_t ms_media_path(char *out, size_t cap, const char *dir, const char *sub,

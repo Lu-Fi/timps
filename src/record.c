@@ -422,7 +422,16 @@ static int seg_open(int chn, const ms_record_cfg *rc)
         fd=open(path,O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0644);
         if (fd>=0) LOGW(MOD,"segment name collision, wrote %s instead",path);
     }
-    if (fd<0){ LOGE(MOD,"open %s: %s",path,strerror(errno)); return -1; }
+    if (fd<0){
+        /* retried on every packet: log a new errno at once, a repeat once a minute */
+        static int last_e; static time_t last_t;
+        int e=errno; time_t now=time(NULL);
+        if (e!=last_e || now-last_t>=60){
+            LOGE(MOD,"open %s: %s",path,strerror(e));
+            last_e=e; last_t=now;
+        }
+        return -1;
+    }
     w_fp=fdopen(fd,"wb");
     if (!w_fp){
         LOGE(MOD,"fdopen %s: %s",path,strerror(errno));

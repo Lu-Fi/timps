@@ -69,7 +69,7 @@ int auth_rtsp_digest(const char *method, const char *req_uri, const char *value,
     while (*value==' ') value++;
     if (strncasecmp(value,"Digest ",7)!=0) return 0;
     const char *d=value+7;
-    char u[64],realm[64],nonce[64],uri[256],resp[64];
+    char u[64],realm[64],nonce[64],uri[512],resp[64];
     if (!field(d,"username",u,sizeof u)) return 0;
     if (!field(d,"realm",realm,sizeof realm)) return 0;
     if (!field(d,"nonce",nonce,sizeof nonce)) return 0;
@@ -99,7 +99,7 @@ int auth_rtsp_digest(const char *method, const char *req_uri, const char *value,
      * header is rejected too. */
     if (!server_nonce || !server_nonce[0] || strcmp(nonce,server_nonce)!=0) return 0;
 
-    char buf[512], ha1[33], ha2[33], expect[33];
+    char buf[768], ha1[33], ha2[33], expect[33];
     snprintf(buf,sizeof buf,"%s:%s:%s",user,realm,pass);        md5_hex(buf,ha1);
     snprintf(buf,sizeof buf,"%s:%s",method,uri);                md5_hex(buf,ha2);
     snprintf(buf,sizeof buf,"%s:%s:%s",ha1,nonce,ha2);          md5_hex(buf,expect);
@@ -128,7 +128,7 @@ int auth_http_digest(const char *method, const char *req_uri, const char *value,
     while (*value==' ') value++;
     if (strncasecmp(value,"Digest ",7)!=0) return 0;
     const char *d=value+7;
-    char u[64],realm[64],nonce[64],uri[256],resp[64],qop[16],nc[16],cnonce[128];
+    char u[64],realm[64],nonce[64],uri[512],resp[64],qop[16],nc[16],cnonce[128];
     if (!field(d,"username",u,sizeof u)) return 0;
     if (!field(d,"realm",realm,sizeof realm)) return 0;
     if (!field(d,"nonce",nonce,sizeof nonce)) return 0;
@@ -239,6 +239,9 @@ void auth_gen_token(char out[33])
 #define AUTH_FAIL_MIN     3
 #define AUTH_FAIL_GAP_S  60
 #define AUTH_FAIL_IDLE_S 600
+/* each failed attempt costs its own connection thread this long before the
+ * 401, which caps a password sweep at a few guesses per second per connection */
+#define AUTH_FAIL_DELAY_US 500000
 void auth_fail_note(const char *mod, const char *ifc, const char *peer)
 {
     static pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
@@ -257,6 +260,7 @@ void auth_fail_note(const char *mod, const char *ifc, const char *peer)
         n = 0;
     }
     pthread_mutex_unlock(&mtx);
+    usleep(AUTH_FAIL_DELAY_US);
 }
 
 /* ---- request-head helpers (talk_ws.c, httpd.c) ---- */

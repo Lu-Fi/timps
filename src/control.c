@@ -44,7 +44,7 @@
 
 #define MOD "CTRL"
 
-/* Same compile-time constant main.c uses for `timpsd -v` and its startup log
+/* Same compile-time constant main.c uses for `timpsd -h` and its startup log
  * line - passed in via -DMS_VERSION on the whole build's command line
  * (Makefile), so it is already defined here too on a normal build. The
  * fallback mirrors main.c's, only for a standalone/tooling compile of this
@@ -278,15 +278,21 @@ static const char *skip_ws(const char *p, const char *e)
  * uses for its brace matching, and for the same reason. A raw memcmp sweep
  * matched the pattern anywhere in the range, so a POSTed string VALUE whose
  * bytes contained  "x":  (an OSD text, say) could bind a LATER field's lookup
- * to that substring instead of to the object's real "x" member. */
+ * to that substring instead of to the object's real "x" member.
+ *
+ * Only members at the range's own level match: [s,e) is an object's inside,
+ * and a nested {"record":{"audio":1}} must not stand in for "audio". */
 static const char *find_field(const char *s, const char *e, const char *name)
 {
     char pat[40];
     int pl = snprintf(pat, sizeof pat, "\"%s\"", name);
     if (pl<=0 || pl>=(int)sizeof pat) return NULL;
+    int depth = 0;
     for (const char *p=s; p<e; p++){
+        if (*p=='{' || *p=='['){ depth++; continue; }
+        if (*p=='}' || *p==']'){ if (depth>0) depth--; continue; }
         if (*p != '"') continue;
-        if (e-p >= pl && !memcmp(p, pat, pl)){
+        if (depth==0 && e-p >= pl && !memcmp(p, pat, pl)){
             const char *q = skip_ws(p+pl, e);
             if (q<e && *q==':') return skip_ws(q+1, e);
             /* "name" not followed by ':' (e.g. a string value): keep looking */
@@ -300,24 +306,33 @@ static const char *find_field(const char *s, const char *e, const char *name)
 /* find the object value of "name" within [s,e): returns pointer just past its
  * '{' and sets *oend to the matching '}'. Brace matching skips string
  * literals so OSD texts containing '{placeholders}' cannot derail it. */
-static const char *find_obj(const char *s, const char *e, const char *name,
-                            const char **oend)
+static const char *obj_end(const char *p, const char *e)
 {
-    const char *p = find_field(s, e, name);
-    if (!p || p>=e || *p!='{') return NULL;
     int depth = 0;
     for (const char *q=p; q<e; q++){
         if (*q=='"'){                          /* skip string literal */
             for (q++; q<e && *q!='"'; q++)
                 if (*q=='\\' && q+1<e) q++;
+            if (q>=e) return NULL;             /* unterminated */
             continue;
         }
         if (*q=='{') depth++;
         else if (*q=='}'){
-            if (--depth==0){ *oend=q; return p+1; }
+            if (--depth==0) return q;
         }
     }
     return NULL;
+}
+
+static const char *find_obj(const char *s, const char *e, const char *name,
+                            const char **oend)
+{
+    const char *p = find_field(s, e, name);
+    if (!p || p>=e || *p!='{') return NULL;
+    const char *q = obj_end(p, e);
+    if (!q) return NULL;
+    *oend = q;
+    return p+1;
 }
 
 static int hexdig(char c)
@@ -406,6 +421,7 @@ static int get_val(const char *s, const char *e, const char *name,
             } else cp = (unsigned char)*p;
             o += utf8_enc(cp, out, o, cap);
         }
+        if (p >= e) return 0;                  /* unterminated string */
     } else {
         for (; p<e && *p!=',' && *p!='}' && *p!=']' &&
                *p!=' ' && *p!='\t' && *p!='\r' && *p!='\n'; p++)
@@ -711,6 +727,8 @@ static void ign_scan(ctrl_scratch_t *sc, const char *prefix, const char *s, cons
  * writes against background READERS); this guards apply-vs-apply. */
 static pthread_mutex_t apply_mu = PTHREAD_MUTEX_INITIALIZER;
 static volatile int    g_ctl_closing;
+static char g_unsaved[CTRL_MAX_CHG][40];   /* failed persist, under apply_mu */
+static int  g_unsaved_n;
 static volatile int    g_ctl_resp_inflight;   /* see control_response_begin() */
 
 void control_response_begin(void) { __atomic_add_fetch(&g_ctl_resp_inflight, 1, __ATOMIC_SEQ_CST); }
@@ -757,8 +775,13 @@ int control_apply_json(const char *json, ctrl_result *res)
                res->ign[0] = 0; res->ign_full = 1; res->uns[0] = 0; res->uns_n = 0; }
     if (!json || !json[0]) return -1;
     /* Not a JSON object at all - the hand-rolled scanner would simply find
-     * nothing and the old code answered 200 to it. Say so instead. */
-    if (!strchr(json, '{')) return -1;
+     * nothing and the old code answered 200 to it. Say so instead. Unbalanced
+     * or trailing data is refused too: a truncated body must not apply. */
+    const char *end = json + strlen(json);
+    const char *jb = skip_ws(json, end);
+    const char *je = (jb<end && *jb=='{') ? obj_end(jb, end) : NULL;
+    if (!je || skip_ws(je+1, end) != end) return -1;
+    jb++;
     ctrl_scratch_t sc = {0};
     sc.echo_full = 1; sc.defer_full = 1; sc.ign_full = 1;
     /* hub_control()/hub_control_commit() still run after each field's
@@ -770,7 +793,6 @@ int control_apply_json(const char *json, ctrl_result *res)
      * instance" answer, and conflating the two would blame OOM for a status
      * that has nothing to do with memory. */
     if (g_ctl_closing){ pthread_mutex_unlock(&apply_mu); return -3; }
-    const char *end = json + strlen(json);
     /* heap, not stack: 48*(40+160) = 9.6 KB is the largest single frame in
      * the daemon's hottest request path (a dragged slider posts often) and
      * this sits under buf[] in conn_thread too - same reasoning as the
@@ -793,14 +815,14 @@ int control_apply_json(const char *json, ctrl_result *res)
      * regardless of SoC support: the HAL skips what the platform cannot do,
      * the value still persists. */
     int nimg; const cfg_field *img_tbl = cfg_fields_image(&nimg);
-    const char *se, *sb = find_obj(json, end, "image", &se);
-    apply_ctrl_fields(&sc, ch, "image", sb?sb:json, sb?se:end, img_tbl, nimg);
+    const char *se, *sb = find_obj(jb, je, "image", &se);
+    apply_ctrl_fields(&sc, ch, "image", sb?sb:jb, sb?se:je, img_tbl, nimg);
     /* only the nested form gets the unknown-field scan: in the legacy flat
      * form the "body" is the whole document, whose other members are sections,
      * not image fields (see ign_scan). */
     if (sb) ign_scan(&sc, "image", sb, se, img_tbl, nimg, NULL);
     /* legacy day/night: {"force_mode":"night"|"day"} */
-    if (get_val(json, end, "force_mode", v, sizeof v)){
+    if (get_val(jb, je, "force_mode", v, sizeof v)){
         if      (!strcmp(v,"night")) timps_apply_setting(&sc, ch,"image.running_mode","1");
         else if (!strcmp(v,"day"))   timps_apply_setting(&sc, ch,"image.running_mode","0");
     }
@@ -813,7 +835,7 @@ int control_apply_json(const char *json, ctrl_result *res)
      * force_stereo/spk_enabled/backchannel*), applied on the next restart -
      * that live-vs-restart split is a HAL-side concern, not a POST-
      * reachability one, so one table walk covers both. */
-    sb = find_obj(json, end, "audio", &se);
+    sb = find_obj(jb, je, "audio", &se);
     if (sb){
         int naud; const cfg_field *aud_tbl = cfg_fields_audio(&naud);
         apply_ctrl_fields(&sc, ch, "audio", sb, se, aud_tbl, naud);
@@ -824,7 +846,7 @@ int control_apply_json(const char *json, ctrl_result *res)
     /* speaker: {"speaker":{"play":"<file>"}} plays a system sound (validated
      * against SOUNDS_DIR), {"speaker":{"stop":1}} stops it. Not persisted - a
      * transient action that just enqueues on the play FIFO speaker.c reads. */
-    sb = find_obj(json, end, "speaker", &se);
+    sb = find_obj(jb, je, "speaker", &se);
     if (sb){
         /* only stop on a TRUTHY "stop" - {"stop":false|0|null} must not stop,
          * and (else-if below) must not shadow a "play" sent in the same object.
@@ -861,7 +883,7 @@ int control_apply_json(const char *json, ctrl_result *res)
          * debug_modules alone - loglevel stays file-only. Live matters here:
          * turning debugging on by restarting destroys the state one is trying
          * to observe. */
-        const char *ge, *gb = find_obj(json, end, "general", &ge);
+        const char *ge, *gb = find_obj(jb, je, "general", &ge);
         if (gb) {
             int ngen; const cfg_field *gen_tbl = cfg_fields_general(&ngen);
             apply_ctrl_fields(&sc, ch, "general", gb, ge, gen_tbl, ngen);
@@ -874,7 +896,7 @@ int control_apply_json(const char *json, ctrl_result *res)
      * detection switch + its gain thresholds (config-only keys: the detection
      * thread polls g_cfg, the HAL ignores them). Parsed even in a
      * USE_DAYNIGHT=0 build, where they just persist. */
-    sb = find_obj(json, end, "daynight", &se);
+    sb = find_obj(jb, je, "daynight", &se);
     if (sb){
         /* mode: string token, validated here so garbage never corrupts state
          * (config_apply_kv would coerce an unknown token to sensor, but reject
@@ -923,7 +945,7 @@ int control_apply_json(const char *json, ctrl_result *res)
      * never mistaken for them (the WebUI bridge emits the osd-level keys
      * first). All of them are config-only: imp_osd_setup builds the OSD
      * groups once at startup, so they take effect on restart. */
-    sb = find_obj(json, end, "osd", &se);
+    sb = find_obj(jb, je, "osd", &se);
     if (sb){
         /* osd.* globals (enabled/monitor_stream/font_path/supersample/
          * hinting): the F_CTRL ones in osd_fields (config.c) - one
@@ -974,7 +996,7 @@ int control_apply_json(const char *json, ctrl_result *res)
      * applied LIVE via imp_osd_apply(stream,item). */
     for (int s=0;s<MS_MAX_VSTREAM;s++){
         char sec[8]; snprintf(sec,sizeof sec,"osd%d",s);
-        sb = find_obj(json, end, sec, &se);
+        sb = find_obj(jb, je, sec, &se);
         if (!sb) continue;
         int nitem; const cfg_field *item_tbl = cfg_fields_osd_item(&nitem);
         for (int i=0;i<MS_MAX_OSD;i++){
@@ -990,7 +1012,7 @@ int control_apply_json(const char *json, ctrl_result *res)
     /* video: {"video":{"0":{"bitrate":3500,"codec":"h264",...},"1":{...}}}
      * -> videoN.* (persist-only: the HAL does not reconfigure the running
      * encoder; changes apply on the next restart) */
-    sb = find_obj(json, end, "video", &se);
+    sb = find_obj(jb, je, "video", &se);
     if (sb){
         int nvid; const cfg_field *vid_tbl = cfg_fields_video(&nvid);
         for (int i=0;i<MS_MAX_VSTREAM;i++){
@@ -1006,7 +1028,7 @@ int control_apply_json(const char *json, ctrl_result *res)
     /* privacy: {"privacy":{"<s>":{"<n>":{enabled,x,y,w,h,color}}}} -> the
      * privacy<S>.<N>.* cover-mask keys. Applied LIVE (the HAL creates/shows/
      * moves the IMP OSD cover region on that stream) and persisted. */
-    sb = find_obj(json, end, "privacy", &se);
+    sb = find_obj(jb, je, "privacy", &se);
     if (sb){
         int nprivf; const cfg_field *priv_tbl = cfg_fields_privacy(&nprivf);
         for (int s=0;s<MS_MAX_VSTREAM;s++){
@@ -1026,7 +1048,7 @@ int control_apply_json(const char *json, ctrl_result *res)
 
     /* sensor: {"sensor":{"model":"gc2053","fps":25,...}} -> sensor.*
      * (persist-only, applied at the next ISP init) */
-    sb = find_obj(json, end, "sensor", &se);
+    sb = find_obj(jb, je, "sensor", &se);
     if (sb){
         int nsen; const cfg_field *sen_tbl = cfg_fields_sensor(&nsen);
         apply_ctrl_fields(&sc, ch, "sensor", sb, se, sen_tbl, nsen);
@@ -1046,7 +1068,7 @@ int control_apply_json(const char *json, ctrl_result *res)
      * is the floor that bounds how often it re-fires - see the security-
      * boundary comment on motion_fields in config.c before ever adding
      * F_CTRL to either. */
-    sb = find_obj(json, end, "motion", &se);
+    sb = find_obj(jb, je, "motion", &se);
     if (sb){
         int nmot; const cfg_field *mot_tbl = cfg_fields_motion(&nmot);
         apply_ctrl_fields(&sc, ch, "motion", sb, se, mot_tbl, nmot);
@@ -1056,7 +1078,7 @@ int control_apply_json(const char *json, ctrl_result *res)
     /* record: {"record":{"active":1|0}} = manual start/stop override (the
      * control-bar record button); active omitted or <0 returns to config mode.
      * record.* config keys persist and the running recorder reads them live. */
-    sb = find_obj(json, end, "record", &se);
+    sb = find_obj(jb, je, "record", &se);
     if (sb){
         if (get_val(sb, se, "active", v, sizeof v)){
             /* A COMMAND, not a setting: same false-422 shape as the clip
@@ -1084,7 +1106,7 @@ int control_apply_json(const char *json, ctrl_result *res)
     /* timelapse: {"timelapse":{"enabled":..,"channel":..,"dir":..,"name":..,
      * "interval_s":..,"keep_days":..}} -> timelapse.*. All persist; the
      * running timelapse thread reads them live (no restart). */
-    sb = find_obj(json, end, "timelapse", &se);
+    sb = find_obj(jb, je, "timelapse", &se);
     if (sb){
         int ntl; const cfg_field *tl_tbl = cfg_fields_timelapse(&ntl);
         apply_ctrl_fields(&sc, ch, "timelapse", sb, se, tl_tbl, ntl);
@@ -1098,10 +1120,44 @@ int control_apply_json(const char *json, ctrl_result *res)
     hub_control_commit();
 
     /* persist all changed keys back into the config file */
-    if (ch->n > 0 && g_cfg_path && g_cfg_path[0]){
+    if ((ch->n > 0 || g_unsaved_n > 0) && g_cfg_path && g_cfg_path[0]){
+        /* keys a failed write left unsaved ride along until one succeeds: a
+         * repeat POST of the same value is "unchanged" and adds nothing itself.
+         * One that cannot ride along (no room, or no longer readable - a
+         * legacy osdN.* key once the streams diverged) stays pending. */
+        int left_n = 0;
+        char left[CTRL_MAX_CHG][40];
+        for (int u=0; u<g_unsaved_n; u++){
+            int dup = 0, ok = 0;
+            for (int i=0; i<ch->n && !dup; i++) dup = !strcmp(ch->key[i], g_unsaved[u]);
+            if (dup) continue;
+            if (ch->n < CTRL_MAX_CHG){
+                config_str_lock();
+                ok = config_get_kv(&g_cfg, g_unsaved[u], ch->val[ch->n], sizeof ch->val[0]);
+                config_str_unlock();
+            }
+            if (ok) snprintf(ch->key[ch->n++], sizeof ch->key[0], "%.39s", g_unsaved[u]);
+            else    snprintf(left[left_n++], sizeof left[0], "%.39s", g_unsaved[u]);
+        }
+        sc.nopersist += left_n;
         const char *keys[CTRL_MAX_CHG], *vals[CTRL_MAX_CHG];
         for (int i=0;i<ch->n;i++){ keys[i]=ch->key[i]; vals[i]=ch->val[i]; }
-        config_write_keys(g_cfg_path, keys, vals, ch->n);
+        int fail = ch->n > 0 && config_write_keys(g_cfg_path, keys, vals, ch->n) != 0;
+        g_unsaved_n = 0;
+        if (fail){
+            static ms_ratelog rl = MS_RATELOG_INIT;   /* a dragged slider posts often */
+            unsigned muted;
+            if (ms_ratelog_due(&rl, &muted))
+                LOGE(MOD,"%d setting(s) are live but NOT saved to %s (%u more failed writes)",
+                     ch->n, g_cfg_path, muted);
+            sc.nopersist += ch->n;
+            for (int i=0; i<ch->n; i++)
+                snprintf(g_unsaved[g_unsaved_n++], sizeof g_unsaved[0], "%s", ch->key[i]);
+        }
+        for (int i=0; i<left_n && g_unsaved_n<CTRL_MAX_CHG; i++)
+            snprintf(g_unsaved[g_unsaved_n++], sizeof g_unsaved[0], "%s", left[i]);
+        /* ride-along keys are not this request's: report at most what it carried */
+        if (sc.nopersist > sc.acc) sc.nopersist = sc.acc;
     }
     if (res) {
         res->accepted = sc.acc; res->changed = sc.chg; res->rejected = sc.rej;
@@ -1363,7 +1419,7 @@ int control_get_json(char *buf, size_t cap)
      * script's own success signal only proves a reboot was triggered, not
      * that the new binary is what came back up. MS_VERSION is git describe's
      * tag+commit+dirty-flag string, already compiled in and used for
-     * `timpsd -v`/the startup log line (main.c) - this just exposes the same
+     * `timpsd -h`/the startup log line (main.c) - this just exposes the same
      * compile-time constant here too, so a one-line `curl .../control | jget
      * version` (or scripts/timps-qa.sh's new check) catches exactly this
      * class of "reboot happened, binary didn't" drift without needing an SSH

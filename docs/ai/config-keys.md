@@ -1,16 +1,16 @@
 # timps configuration keys — complete reference
 
-**Applies to timps v1.9.28 (source: `main`, 2026-09-28).**
+**Applies to timps v1.9.32 (source: `main`, 2026-10-04).**
 
-A statement marked **since v1.9.28** is new in that release — on a v1.9.27 or
-older camera the *previous* behaviour is the one to describe.
+A statement marked **since vX** is new in that release — on an older camera
+the *previous* behaviour is the one to describe. Changes listed under
+`[Unreleased]` in `CHANGELOG.md` are marked **since the next release**.
 
 Authoritative source: `src/config.c` (the `cfg_field` tables and
 `config_defaults()`), `src/config.h` (struct field sizes and doctrine),
 `src/control.c` (what is reachable over HTTP), `src/hal/hal_ingenic.c`
 (`ing_control()` — what applies live), and `src/*_caps.h` (platform gating).
-Where an existing doc contradicts the code, the code wins here and the
-disagreement is listed in `docs/ai/_doc-drift.md`.
+Where an existing doc contradicts the code, the code wins here.
 
 Overview / architecture doc: `docs/ai/reference.md`.
 
@@ -41,8 +41,10 @@ Overview / architecture doc: `docs/ai/reference.md`.
   includes a leftover `osd.vars_file` line (§8).
 * **Later lines win.** A duplicate key later in the file overrides the earlier
   one.
-* Values are parsed with `strtol(v, NULL, 0)` for integers, so `0x37` (hex) and
-  `055` (octal) are accepted wherever an integer is.
+* Integer keys are decimal; hex needs an explicit `0x` (`0x37`). A leading
+  zero is just decimal (`08` = 8, `010` = 10; up to v1.9.32 `strtol` base 0
+  read these as octal). Hex-typed keys (colours, `0xAARRGGBB`) keep the C
+  notation (`strtoul` base 0).
 * Booleans: `1`, `true`, `on`, `yes` are true (case-insensitive). Anything else
   is false — including typos. Two keys warn loudly about this (see `F_SECVAL`
   below).
@@ -159,6 +161,8 @@ Notes on the POST surface:
   that did not change are not rewritten (deliberate flash-wear avoidance).
 * At most **48** changed keys persist per request (`CTRL_MAX_CHG`). Beyond that
   the value is live but unsaved and the reply's `not_persisted` counter says so.
+  A failed config write (read-only or full flash) is counted there too, and the
+  next POST, even of the same value, retries it.
 * The reply reports `accepted`, `changed`, `rejected`, `not_persisted`,
   `deferred`/`deferred_keys` (changed keys that did **not** reach the running
   pipeline: `video*`/`sensor.*` graded per request, plus — **since v1.9.20** — every restart-only `audio.*`/`osd.*` global; on v1.9.19 only
@@ -333,7 +337,7 @@ way to check.
 | `image.backlight_compensation` | int | `0` | **0..10** | T23 T31 C100 | `ISP_HAS_BACKLIGHT`. |
 | `image.colorfx` | int | `0` | 0..9 (0 none, 1 B/W, 2 sepia, 3 negative, 9 vivid) | only with `USE_OPENIMP`: T10 T20 T21 T23 T31 | `ISP_HAS_COLORFX`. The vendor SDKs expose the call on some SoCs but their kernels ignore it. The open driver answers `EINVAL` for values it does not know (sepia only on T20): the HAL logs it, the value stays persisted. Not in `caps.image` on vendor builds. |
 | `image.scene` | int | `0` | 0..14 (SDK `IMPISPSceneMode`: 0 auto, 2..9, 11..14; 1 and 10 invalid) | only with `USE_OPENIMP`: T10 T20 T21 T23 T31 | `ISP_HAS_SCENE`. Same notes as `image.colorfx`. |
-| `image.core_wb_mode` | int | `0` | 0..9 (0..8 on T10/T20/T30) | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_WB`. The SDK's `isp_core_wb_mode`: `0` auto, `1` manual (then `wb_rgain`/`wb_bgain` apply), `2` daylight, `3` cloudy, `4` incandescent, `5` fluorescent, `6` twilight, `7` shade, `8` warm fluorescent, `9` custom (T21/T23/T31/C100 only). Before the next release the range was 0..1, so `2..9` came back as `1`. |
+| `image.core_wb_mode` | int | `0` | 0..9 (0..8 on T10/T20/T30) | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_WB`. The SDK's `isp_core_wb_mode`: `0` auto, `1` manual (then `wb_rgain`/`wb_bgain` apply), `2` daylight, `3` cloudy, `4` incandescent, `5` fluorescent, `6` twilight, `7` shade, `8` warm fluorescent, `9` custom (T21/T23/T31/C100 only). Before v1.9.30 the range was 0..1, so `2..9` came back as `1`. |
 | `image.wb_rgain` | int | `0` | 0..65535 | T10 T20 T21 T23 T30 T31 C100 | Only meaningful with `core_wb_mode=1`. |
 | `image.wb_bgain` | int | `0` | 0..65535 | T10 T20 T21 T23 T30 T31 C100 | Only meaningful with `core_wb_mode=1`. **since v1.9.21** start value: read-only `image.wb_live.rgain`/`.bgain` in `GET /control` = gains AWB applies now. |
 | `image.ae_it_max_us` | int | `0` | 0..1000000 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_AE_IT_MAX` (T23/T31/C100) or `ISP_HAS_AE_IT_RANGE` (T10/T20/T21/T30). Inert on T40/T41. `0` = no cap: touches nothing if no cap was ever written, otherwise writes the sensor mode's own (remembered, uncapped) AE maximum back (**since v1.9.30**; before that `0` needed a restart). |
@@ -425,7 +429,7 @@ internal channel wiring, deliberately not exposed over HTTP.
 | `rotation` | enum/int | `0` / `0` | `0`, `90`, `270`, plus `180` on T40/T41; legacy `1`→90, `2`→270 | restart | See the prose below. Unsupported values coerce to `0` with a warning. |
 | `buffers` | int | `2` / `2` | 1..8 | restart | IMP `nrVBs`. Setting it explicitly also sets an internal `buffers_explicit` flag, so the T31 safety clamp trusts your value instead of overriding it. The clamp gate is exactly `chn == 0 && isp_ch0_pre_dequeue_time != 0` (unreadable counts as active) — **scaled or not**; the older "non-scaled channel" theory was superseded in 2026-08. With the flag set the HAL warns and leaves `nrVBs` alone, which is why an explicit `buffers = 2` is *not* the same as omitting the line. |
 | `rtsp_path` | string[64] | `/ch0` / `/ch1` | — | **live** | The one `videoN.*` key that is genuinely live — a DESCRIBE re-matches it on every request, and it is read from the live `g_cfg`, not the boot snapshot. **Since v1.9.20** the POST reply no longer lists it under `deferred` (v1.9.19 did, although the change was already live). Not in `caps.video_live`, which is the rate-control list only. |
-| `imp_chn` | int | `0` / `1` | 0..8 | **file-only**, restart | IMP encoder channel index. Must equal the stream index `N` (it doubles as the hub slot): any other value is reset to `N` at load with an `[ERR]` line (**since v1.9.28**; before, a wrong value silently fed another stream's or the audio hub slot). |
+| `imp_chn` | int | `0` / `1` | 0..7 | **file-only**, restart | IMP encoder channel index. Must equal the stream index `N` (it doubles as the hub slot): any other value is reset to `N` at load with an `[ERR]` line (**since v1.9.28**; before, a wrong value silently fed another stream's or the audio hub slot). |
 | `jpeg` | bool | `1` / `1` | — | **file-only**, restart | Alias `jpeg_enabled`. Piggyback JPEG encoder in the same encoder group, sharing this stream's FrameSource (no extra rmem) at this stream's resolution. |
 | `jpeg_quality` | int | `75` / `75` | 1..100 | **file-only**, restart | |
 | `jpeg_fps` | int | `5` / `5` | 1..120 | **file-only**, restart | Max snapshot/MJPEG publish rate. |
@@ -575,7 +579,7 @@ marked `noget`, so `GET /control` never echoes it either.
 | `jpeg.height` | int | `360` | 64..4096 | file-only, restart | |
 | `jpeg.quality` | int | `75` | 1..100 | file-only, restart | |
 | `jpeg.fps` | int | `5` | 1..120 | file-only, restart | Max MJPEG frame rate. |
-| `jpeg.imp_chn` | int | `2` | 0..8 | file-only, restart | Must not collide with an enabled `videoN.imp_chn` (0, 1); a collision is moved to the lowest free channel at load with an `[ERR]` line (**since v1.9.28**). |
+| `jpeg.imp_chn` | int | `2` | 0..7 | file-only, restart | Must not collide with an enabled `videoN.imp_chn` (0, 1); a collision is moved to the lowest free channel at load with an `[ERR]` line (**since v1.9.28**). |
 | `jpeg.snapshot_path` | string[128] | `""` | — | file-only, restart | Periodic file snapshot; `""` = none. |
 
 Pitfall: `timps.conf.example` shows `jpeg.enabled = 1`; the **compiled default
@@ -744,8 +748,8 @@ support reports `caps.motion.available = 0` and the feature is a stub.
 | `motion.cols` | int | `5` (see below) | ≥1, and `cols*rows ≤ MOTION_CELL_LIMIT` | **live** | Clamped against the *current* other axis, never the other way round, so re-applying the same pair is idempotent. |
 | `motion.rows` | int | `5` (see below) | same | **live** | |
 | `motion.cooldown_ms` | int | `5000` | **250..INT_MAX** | **file-only** | Minimum gap between motion events. **Not POST-able by design** — it is the floor that bounds how often the `on_motion` hook can be re-exec'd. `0` is no longer accepted. |
-| `motion.hold_ms` | int | `800` | 0..INT_MAX | **live** | Keep a cell "active" this long after its last hit, so asynchronous `/events`/`/control` readers reliably observe single-frame motion. `0` = no hold. Takes effect through a grid re-sync. |
-| `motion.skip_frames` | int | `5` | 1..INT_MAX | **live** | `IMP_IVS_MoveParam.skipFrameCnt` — analyse every Nth frame. Higher = cheaper but more latency. Takes effect through a grid re-sync. |
+| `motion.hold_ms` | int | `800` | 0..60000 | **live** | Keep a cell "active" this long after its last hit, so asynchronous `/events`/`/control` readers reliably observe single-frame motion. `0` = no hold. Takes effect through a grid re-sync. |
+| `motion.skip_frames` | int | `5` | 1..100 | **live** | `IMP_IVS_MoveParam.skipFrameCnt` — analyse every Nth frame. Higher = cheaper but more latency. Takes effect through a grid re-sync. |
 | `motion.on_motion` | string[128] | `""` | — | **file-only**, `F_NOGET` | Program run on motion via **`posix_spawn()`** with the value as the literal path (`src/hal/imp_motion.c`) — **not** a shell command line, **no arguments**, and **no `PATH` search**, because `posix_spawn` execs with `execve`. A bare command name therefore always fails: uClibc-ng's `__spawni` `_exit(127)`s, which surfaces as `on_motion '<cmd>' cannot be executed - is the script installed and executable?`. **Use an absolute path.** Never POST-able and never read back: it is an exec primitive. Read from `g_cfg` per event, so a file edit + restart is what applies it. |
 | `motion.roi_x` | int | `0` | unclamped | **deprecated, ignored** | Legacy single-ROI keys, replaced by the cell grid. Still parsed and persisted; a non-zero value logs one WARN per session and nothing consumes them. |
 | `motion.roi_y` | int | `0` | unclamped | **deprecated, ignored** | |
@@ -955,7 +959,7 @@ echoed by `GET /control`. Changes need a restart.
 | `rtsp.enabled` | bool | `1` | — | file-only, restart | |
 | `rtsp.port` | int | `554` | 1..65535 | file-only, restart | |
 | `rtsp.mtu` | int | `1200` | **548..1472** | file-only, restart | Max RTP packet size (header + payload) for UDP packetization. 1200 leaves room for WireGuard/OpenVPN/PPPoE/IPv6 tunnel overhead; raise to 1400 for LAN-only setups. |
-| `rtsp.user` | string[64] | `""` | — | file-only, restart | Alias `rtsp.username`. **Empty = RTSP is open, no authentication.** Non-empty enables Digest auth. |
+| `rtsp.user` | string[64] | `""` | — | file-only, restart | Alias `rtsp.username`. **Empty = RTSP is open, no authentication.** Non-empty enables Digest **and** Basic (the `401` offers both). |
 | `rtsp.pass` | string[64] | `""` | — | file-only, restart | Alias `rtsp.password`. |
 | `rtsp.tls` | bool | `0` | — | file-only, restart | Alias `rtsp.tls_enabled`. `1` = additionally run an RTSPS listener. Needs `USE_TLS`. **`F_SECVAL`**: a value that parses as neither an on/off word nor an in-range number logs a loud WARN, because the fall-through to `0` is plaintext. |
 | `rtsp.tls_port` | int | `322` | 1..65535 | file-only, restart | |
@@ -1034,7 +1038,7 @@ published a fingerprint in an SDP answer.
 
 | Key | Type | Default | Range | Apply | Notes |
 | --- | --- | --- | --- | --- | --- |
-| `webrtc.enabled` | tri-state int | `2` | 0..2 | file-only, restart | `0` = `/webrtc/whep` answers 404. `1` = on, TLS required for the signalling POST where the HTTP port has it. `2` = on and accept a plaintext POST too. Default is `2` on purpose: most cameras have no http→https redirect, so `1` would silently 426 the feature it enables. Legacy `true`/`on`/`yes` parse as `1`. |
+| `webrtc.enabled` | tri-state int | `2` | 0..2 | file-only, restart | `0` = `/webrtc/whep` answers `503` (body `webrtc.enabled=0`; a 404 means the build has no WebRTC or the DTLS context failed). `1` = on, TLS required for the signalling POST where the HTTP port has it. `2` = on and accept a plaintext POST too. Default is `2` on purpose: most cameras have no http→https redirect, so `1` would silently 426 the feature it enables. Legacy `true`/`on`/`yes` parse as `1`. |
 | `webrtc.port` | int | `0` | 0..65535 | file-only, restart | UDP media port. `0` = ephemeral. |
 | `webrtc.port_max` | int | `0` | 0..65535 | file-only, restart | Top of the media port range. `0` = `webrtc.port + WEBRTC_MAX_SESSIONS - 1` (one port per session slot; `WEBRTC_MAX_SESSIONS` is 4). |
 | `webrtc.channel` | int | `0` | **0..1** (`MS_MAX_VSTREAM-1`) | file-only, restart | Which video stream to send by default; `POST /webrtc/whep?chn=N` overrides it per session (`400` if stream N is not running or not H.264). |

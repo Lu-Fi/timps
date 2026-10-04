@@ -6,10 +6,11 @@ firmware. Everything here is verified against the `main` branch of
 <https://github.com/Lu-Fi/timps> and against `package/timps/` in a thingino
 firmware tree.
 
-Applies to timps v1.9.28 (source: `main`, 2026-09-28)
+Applies to timps v1.9.32 (source: `main`, 2026-10-04)
 
-A statement marked **since v1.9.28** is new in that release — on a v1.9.27 or
-older camera describe the previous behaviour.
+A statement marked **since vX** is new in that release — on an older camera
+describe the previous behaviour. Changes listed under `[Unreleased]` in
+`CHANGELOG.md` are marked **since the next release**.
 
 ## Where to find what
 
@@ -228,7 +229,8 @@ general.imp_polling_timeout = 500    # ms
 general.osd_pool_size       = 1024   # KB
 ```
 Module tags for `debug_modules`: `MAIN CONFIG CTRL DAYNIGHT HAL_ING HTTP HUB
-MOTION OSD REC RTSP SRT TL HAL_SIM TLS AAC bc spk TRACE`. This key is live over
+MOTION OSD REC RTSP SRT TL HAL_SIM TLS AAC bc spk TRACE WEBRTC talk events
+CLIENT`. This key is live over
 `/control` — no restart needed, which matters because raising the global level
 destroys the 64 KB syslog ring you were trying to read.
 
@@ -476,7 +478,9 @@ carries no credentials by design). Two details worth knowing:
   hosted off the LAN reaching a LAN device), the preflight echoes
   `Access-Control-Allow-Private-Network: true`. It is echoed **only when
   asked**, never volunteered. It grants nothing: the real request still has to
-  pass the token/Basic/Digest/loopback gate.
+  pass the token/Basic/Digest/loopback gate. On the media paths of an open
+  camera (no `http.user`/`rtsp.user`) neither the PNA grant nor any CORS header
+  is sent unless the URL carries a valid `?token=`.
 - The WHEP `201 Created` adds
   `Access-Control-Expose-Headers: Location`, so the browser can actually read
   the session id it has to `DELETE` later.
@@ -490,7 +494,13 @@ replayed; a sniffed Basic header can, which is the reason to prefer RTSPS on
 an untrusted segment. Auth is enabled by setting `rtsp.user`/`rtsp.pass`.
 **since v1.9.28** an RTSP connection is closed after **5 rejected logins**, and one
 that has not reached `PLAY` within **60 s** of connecting — not a lockout, a
-client can reconnect.
+client can reconnect. Since the next release a connection that has not
+authenticated within **15 s** is closed too (a player that prompts the user
+for the password has 15 s from connect), each failed Basic/Digest attempt
+(RTSP and HTTP) waits 500 ms before its `401`, and once half the slots are
+taken one peer may hold only 3 (RTSP) / 4 (HTTP) unauthenticated connections
+older than 1 s; with every slot taken the oldest such connection is closed so
+the next client's retry gets in.
 
 ### The empty-credentials case (important for security questions)
 
@@ -506,7 +516,10 @@ While **both** `http.user` and `rtsp.user` are empty:
 The thingino package ships `thingino`/`thingino` for both, so most fielded
 cameras are not in the empty case. Advise users to change these.
 
-CORS: media endpoints send `Access-Control-Allow-Origin: *`; `/control` and
+CORS: media endpoints send `Access-Control-Allow-Origin: *` only when
+credentials are configured, a valid token was presented, or the peer is
+loopback (on an open camera any web page could otherwise read the video);
+`/control` and
 `/events` reflect the request `Origin` (with `Vary: Origin`, allow-listing the
 `X-Timps-Token` header, no credentials). `OPTIONS` preflight is answered `204`
 before auth runs.
@@ -599,7 +612,7 @@ with it" semantics.
 | --- | --- |
 | `?fields=1` | Inventory of every POST-able config field, grouped by section. Generated from the same tables the POST walks, so it cannot drift. |
 | `?stats=1` | Small object: per-stream `gop`/`profile`/`rc_mode` + `IMP_Encoder_Query` backlog. Exists so a stats card does not poll the whole document. |
-| `?clients=1` | Connected streaming clients: `ip`, `port`, `proto` (`rtsp/udp`, `rtsp/tcp`, `rtsps`, `fmp4`, `mjpeg`, `events`, `webrtc`, `srt`), `chn`, `since_s`, `kbps` (per client, measured at read time), `bytes` (total sent since connect, since 1.9.25), `lat_ms` (sensor capture -> send per client, averaged; all media protocols, -1 for `events`; since v1.9.26), `agent` (User-Agent; Frigate sends `FFmpeg Frigate/<ver>`). Snapshots and `/control` itself are not listed. Since 1.9.24. **Since v1.9.26** the log has the same per client: `[CLIENT] + <proto> <ip>:<port> chn=N agent="…"` on connect and `- … after Ns, N bytes` on disconnect (`/events` only at DEBUG) — `logread \| grep CLIENT` answers "who was connected when" after the fact. |
+| `?clients=1` | Connected streaming clients: `ip`, `port`, `proto` (`rtsp/udp`, `rtsp/tcp`, `rtsps`, `fmp4`, `mjpeg`, `events`, `webrtc`, `srt`), `chn`, `since_s`, `kbps` (per client, measured at read time), `bytes` (total sent since connect, since 1.9.25), `lat_ms` (sensor capture -> send per client, averaged; all media protocols, -1 for `events`; since v1.9.26), `drops` (media packets dropped on send, today RTSP/UDP on `ENOBUFS`/unreachable; since the next release), `agent` (User-Agent; Frigate sends `FFmpeg Frigate/<ver>`). Snapshots and `/control` itself are not listed. Since 1.9.24. **Since v1.9.26** the log has the same per client: `[CLIENT] + <proto> <ip>:<port> chn=N agent="…"` on connect and `- … after Ns, N bytes` on disconnect (`/events` only at DEBUG) — `logread \| grep CLIENT` answers "who was connected when" after the fact. |
 | `?dn_history=1[&last=N\|&since=S][&max=N]` | Day/night decision series from the in-RAM ring sized by `daynight.history_s`. Rows are arrays `[t, gain, exposure, luma, bright%, mode]`; ≤600 rows/response, cursor paging via `next`/`head`/`oldest`/`lapped`. |
 
 ### `POST /control`
@@ -676,7 +689,9 @@ headers consumed — roughly **3.5 KB** in practice. A larger declared
 rather than silently truncated and half-applied. A full OSD or privacy batch
 can reach this; split it. A request using **`Transfer-Encoding`** instead of
 `Content-Length` gets **`411 Length Required`** — this catches some proxies and
-Python `requests` called with a generator body. In the other direction,
+Python `requests` called with a generator body. A POST with no
+`Content-Length` at all has an empty body and answers **`400` / `not_json`**
+(the 411-on-missing-length rule is the WHEP endpoint's, not `/control`'s). In the other direction,
 `GET /control` answers **`500` / `control json too large`** if the response
 overruns its 22 528-byte cap.
 
@@ -685,10 +700,13 @@ Status codes and their `reason` discriminators:
 | Status | `reason` | Meaning | Advice to the user |
 | --- | --- | --- | --- |
 | 200 | — | At least one known field applied (partial success is still 200) | Check `rejected` and `ignored` |
-| 400 | `not_json` | Body was not a JSON object | Client bug |
+| 400 | `not_json` | Body was not one balanced JSON object (also: no `Content-Length`, trailing data) | Client bug |
+| 400 | `body_truncated` | Since the next release: fewer body bytes than `Content-Length` arrived; nothing applied | Resend |
+| 405 | — | Since the next release: a method other than GET/HEAD/POST (OPTIONS is the preflight) | Use POST |
+| 500 | `reply_too_large` | Since the next release: the reply did not fit its buffer; the change was applied | Re-`GET`, report it |
 | 422 | `unknown_fields` | Parsed, but **no key this build knows** | Check spelling **and** whether the feature is compiled in (`caps`) — retrying identically will never work |
 | 409 | `values_rejected` | Keys were all known, all values refused | Key names were right, fix the values |
-| 411 | — | `Transfer-Encoding` instead of `Content-Length`, or a missing/zero length | Send a fixed-length body |
+| 411 | — | `Transfer-Encoding` instead of `Content-Length` | Send a fixed-length body |
 | 413 | — | Headers + body exceed the 4096-byte buffer | Split the request |
 | 503 | `oom` | Allocation failure | Retry; not a client error |
 | 503 | `shutting_down` | **since v1.9.28**: the daemon is shutting down and no longer accepts POSTs | Not a client error; the next boot will |
