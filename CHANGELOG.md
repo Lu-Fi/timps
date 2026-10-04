@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.9.32] - 2026-10-04
+
 ### Fixed
 
 - **First `/snapshot.jpg` after idle sometimes answered 503 on the open-stack
