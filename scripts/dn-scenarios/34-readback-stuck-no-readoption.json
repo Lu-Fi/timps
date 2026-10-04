@@ -1,0 +1,60 @@
+{
+  "name": "34-readback-stuck-no-readoption",
+  "incident": "2026-10-04 review: after the verify budget gave up, the standing desync was adopted as an external change and the cycle restarted",
+  "description": "From t=60 the ISP is forced to render Day and never follows a switch again; the day pipeline it serves is dark (8000 > night_gain). The machine adopts the standing Day as an external change (as in scenario 28), the dark day pipeline sends it back to night, the readback never confirms, and the one forced transition of the verify budget does not help either - 'giving up' is the right end state. The pre-fix build then treated the same standing mismatch as a NEW external change 20 s later, adopted Day again and started over: a night/day/night triplet every ~98 s, 24 board drives in 900 s. Once the budget has given up, the readback is the thing that stopped following and is not adopted again until it agrees with the decided mode. Budget: the switch back to night plus one forced cycle = 3 drives.",
+  "scale": 30,
+  "duration_s": 900,
+  "initial_mode": "night",
+  "isp_override": [
+    [
+      60,
+      "day"
+    ]
+  ],
+  "config": {
+    "daynight.day_gain": 768,
+    "daynight.night_gain": 4096
+  },
+  "interp": "step",
+  "noise_pct": 0,
+  "night_gain": [
+    [
+      0,
+      2000
+    ],
+    [
+      900,
+      2000
+    ]
+  ],
+  "night_gain_noir": [
+    [
+      0,
+      8000
+    ],
+    [
+      900,
+      8000
+    ]
+  ],
+  "day_gain": [
+    [
+      0,
+      8000
+    ],
+    [
+      900,
+      8000
+    ]
+  ],
+  "expect": {
+    "max_switches": 3,
+    "max_ir_probes": 1,
+    "monotonicity": "skip",
+    "expect_log": [
+      "adopting the external change",
+      "forcing one transition through",
+      "giving up until the next mode change"
+    ]
+  }
+}

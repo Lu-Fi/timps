@@ -37,6 +37,11 @@ semantic versioning.
   probe:** one retry when switching it on fails, an "on" after a failed "off",
   and a probe that can no longer be judged (no exposure reading, external mode
   change) switches it back on.
+- **Day/night: an ISP readback that stays stuck no longer restarts the switch
+  cycle.** After the one forced transition gave up, the standing mismatch was
+  adopted as an external change 20 s later and everything began again - a
+  night/day/night drive every ~100 s. It is now adopted only after the ISP
+  agrees with the decided mode again.
 
 ### Added
 

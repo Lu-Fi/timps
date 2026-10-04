@@ -1298,6 +1298,10 @@ static void *dn_thread(void *arg)
     int64_t enforce_at  = 0;           /* mid-cycle: when to switch back to cur */
     int64_t desync_since = 0;          /* standing cur/readback mismatch start */
     int     desync_warned = 0;         /* the notice, once per episode */
+    int     readback_untrusted = 0;    /* a forced cycle did not move the ISP:
+                                        * its readback is not a mode change by
+                                        * someone else - no adoption, no more
+                                        * forced cycles, until it agrees again */
     int64_t silent_hold = 0;           /* no silent probe before this (set when
                                         * its audible escalation is rationed) */
     int     booted      = 0;
@@ -1446,7 +1450,7 @@ static void *dn_thread(void *arg)
             ema_fast = ema_slow = -1.0f; trend_since = 0;
             dn_probe_abandon(dn->irprobe_cmd, &ir_verdict_at, &d_lit, &d_lit_hr);
             verify_at = enforce_at = 0; verify_cyc = 0;
-            desync_since = 0; desync_warned = 0;
+            desync_since = 0; desync_warned = 0; readback_untrusted = 0;
             dn_status_update(sm.bright, sm.gain, sm.d, luma, DN_UNKNOWN,
                              -1.0f, -1.0f, -1);
             /* manual mode still measures, so the graph still has a series to
@@ -1462,7 +1466,7 @@ static void *dn_thread(void *arg)
             trig_since = dark_since = verdict_at = hb_at = mode_since = 0;
             ir_verdict_at = 0; d_lit = -1.0f; d_lit_hr = -1;
             verify_at = enforce_at = 0; verify_cyc = 0;
-            desync_since = 0; desync_warned = 0;
+            desync_since = 0; desync_warned = 0; readback_untrusted = 0;
             last_probe = 0; silent_hold = 0;
             pre_probe = -1.0f; pre_probe_hr = -1;
             ref_wait_logged = 0;
@@ -1580,6 +1584,9 @@ static void *dn_thread(void *arg)
                 LOGD(MOD, "ISP does not report its running mode - switch to "
                           "%s stays unverified",
                      cur == DN_NIGHT ? "night" : "day");
+            } else if (readback_untrusted) {
+                LOGD(MOD, "ISP readback did not follow an earlier forced "
+                          "cycle - not forcing another");
             } else if (verify_cyc < DN_VERIFY_MAX_CYCLES) {
                 verify_cyc++;
                 LOGW(MOD, "ISP still reports %s %d s after the switch to %s "
@@ -1600,6 +1607,7 @@ static void *dn_thread(void *arg)
                           "does not match the decided mode %s",
                      cur == DN_NIGHT ? "Day" : "Night",
                      cur == DN_NIGHT ? "night" : "day");
+                readback_untrusted = 1;
             }
         }
 
@@ -1618,6 +1626,11 @@ static void *dn_thread(void *arg)
                              cur == DN_NIGHT ? "night" : "day",
                              sm.isp == DN_NIGHT ? "Night" : "Day",
                              (int)((now - desync_since) / 1000));
+                    } else if (readback_untrusted) {
+                        /* the readback is the thing that stopped following:
+                         * not a foreign change, and adopting it would restart
+                         * the verify budget with a fresh switch */
+                        desync_warned = 1;
                     } else {
                         /* Someone else set the mode (color on/off, /control)
                          * and it stuck past any switch transient: take it as
@@ -1657,6 +1670,7 @@ static void *dn_thread(void *arg)
                 }
             } else {
                 desync_since = 0;       /* gate active or no longer standing */
+                if (agree == 1) readback_untrusted = 0;
                 if (desync_warned && agree == 1) {
                     desync_warned = 0;
                     LOGI(MOD, "decided mode and ISP agree again (%s)",
