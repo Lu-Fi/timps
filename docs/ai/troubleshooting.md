@@ -2648,7 +2648,7 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | Message pattern | Level | Meaning |
 | --- | --- | --- |
 | `%s is not readable, using %s instead` | I (W before v1.9.26, with `- set daynight.isp_path to silence this`) | The configured ISP dump path does not exist; the known alternative is in use. Normal on T20. |
-| `%s not readable, detection idle` | W | **Detection does nothing at all.** Fix `daynight.isp_path`. |
+| `no exposure reading from %s (missing or in a format this build does not parse), detection idle` | W | **Detection does nothing at all.** Either `daynight.isp_path` is wrong or the dump is in a format this build does not parse (the T41 open-stack dump needs timps >= 1.9.30). |
 | `the ISP dump reports no gain ceilings (MAX SENSOR analog gain / MAX ISP digital gain), so the AE reserve is unknown here: a railed meter cannot be told from a dark scene, the railed-boot re-tune never fires, and the night reference is NOT protected against clipped readings. Ratio probes without a clear answer fall back to the audible probe on this camera` | W | Several safety mechanisms are disabled; probes fall back to the audible IR-cut probe. |
 | `the night reference sits at the sensor's gain floor and no integration-time reading is available…` | W | Night→day can only come from the heartbeat. |
 | `no probe has ever confirmed day (%d in a row found night): the best day-pipeline exposure seen was %.0f but daynight.day_gain is %.0f…` | W | **The line that hands you the number.** Raise `daynight.day_gain` above the reported value. |
