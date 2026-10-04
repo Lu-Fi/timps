@@ -694,10 +694,13 @@ static void dn_blind_check(const dn_sample *sm, float ref, int *warned)
 #ifndef DN_CMD_STOP_MS
 #define DN_CMD_STOP_MS 1000
 #endif
-/* ... and to one started after the stop request (the illuminator hand-back):
- * a GPIO write, so a short grace; the shutdown alarm budget is 4 s in all. */
+/* ... and to one started after the stop request (the illuminator hand-back).
+ * Not shorter: the board hook spawns several processes and a killed "on" also
+ * disarms its own watchdog. Worst chain after stop: one hook in flight
+ * (STOP+KILL 1.5 s) + one hand-back (LATE+KILL 1.5 s) = 3 s < the 4 s alarm;
+ * dn_switch() starts nothing once stopping. */
 #ifndef DN_CMD_LATE_MS
-#define DN_CMD_LATE_MS 300
+#define DN_CMD_LATE_MS 1000
 #endif
 #define DN_CMD_POLL_MS 20            /* waitpid(WNOHANG) cadence */
 #define DN_CMD_KILL_MS 500           /* reap window after SIGKILL */
