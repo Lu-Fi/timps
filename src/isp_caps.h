@@ -80,6 +80,16 @@
 #define ISP_HAS_DPC 1
 int IMP_ISP_Tuning_SetDPC_Strength(uint32_t ratio);
 #endif
+/* T41 (new tuning API): ae_compensation is AeScenceAttr.AeTargetComp and
+ * sinter_strength is Module_Ratio entry 0, both 0..255 with 128 the vendor
+ * picture (measured: AE target 18/58/89 mean luma at 30/128/230, sinter
+ * noise 488/351/216 at 0/128/255). Module_Ratio's temper entry changes nothing
+ * on the open stack, so temper_strength stays unsupported; the other keys of
+ * those structs (HLC/BLC, DRC, DPC, defog) are not wired. */
+#if defined(PLATFORM_T41)
+#define ISP_HAS_AECOMP 1
+#define ISP_HAS_SINTER 1
+#endif
 #if defined(PLATFORM_T20)
 #define ISP_HAS_DEFOG 1
 #define ISP_HAS_DRC 1

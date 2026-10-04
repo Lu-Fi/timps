@@ -1027,6 +1027,39 @@ static int isp_apply_image(const char *k)
                      im->running_mode?"night":"day", rc);
         return 1;
     }
+#if defined(USE_OPENIMP) && defined(PLATFORM_T41)
+    /* both read-modify-write a struct the stack fills in, so a value
+     * still at its 128 default is left alone until something else was written */
+    if (!strcmp(k,"ae_compensation")){
+        static int touched;
+        if (im->ae_compensation == 128 && !touched) return 1;
+        IMPISPAEScenceAttr a; memset(&a,0,sizeof a);
+        if (IMP_ISP_Tuning_GetAeScenceAttr(IMPVI_MAIN,&a) != 0){
+            LOGW(MOD,"GetAeScenceAttr failed - ae_compensation not applied"); return 1; }
+        a.AeTargetCompEn = im->ae_compensation == 128 ? IMP_ISP_AE_SCENCE_DISABLE
+                                                      : TISP_AE_SCENCE_GLOBAL_ENABLE;
+        a.AeTargetComp   = (uint32_t)im->ae_compensation;
+        int rc = IMP_ISP_Tuning_SetAeScenceAttr(IMPVI_MAIN,&a);
+        if (rc) LOGW(MOD,"SetAeScenceAttr(ae_compensation=%d) failed (rc=%d)", im->ae_compensation, rc);
+        else touched = 1;
+        return 1;
+    }
+    if (!strcmp(k,"sinter_strength")){
+        static int touched;
+        if (im->sinter_strength == 128 && !touched) return 1;
+        IMPISPModuleRatioAttr r; memset(&r,0,sizeof r);
+        if (IMP_ISP_Tuning_GetModule_Ratio(IMPVI_MAIN,&r) != 0){
+            LOGW(MOD,"GetModule_Ratio failed - sinter_strength not applied"); return 1; }
+        /* en stays ENABLE: 128 is the neutral ratio, a DISABLE did not reliably
+         * restore the default picture */
+        r.ratio_attr[IMP_ISP_MODULE_SINTER].en = IMPISP_TUNING_OPS_MODE_ENABLE;
+        r.ratio_attr[IMP_ISP_MODULE_SINTER].ratio = (uint8_t)im->sinter_strength;
+        int rc = IMP_ISP_Tuning_SetModule_Ratio(IMPVI_MAIN,&r);
+        if (rc) LOGW(MOD,"SetModule_Ratio(sinter_strength=%d) failed (rc=%d)", im->sinter_strength, rc);
+        else touched = 1;
+        return 1;
+    }
+#endif
     if (!strcmp(k,"anti_flicker")){ /* 0 off, 1 = 50 Hz, 2 = 60 Hz */
         IMPISPAntiflickerAttr fl; memset(&fl,0,sizeof fl);
         fl.mode = im->anti_flicker ? IMPISP_ANTIFLICKER_NORMAL_MODE

@@ -321,11 +321,11 @@ way to check.
 | `image.hflip` | bool | `0` | — | all | Global ISP flip (every channel). |
 | `image.running_mode` | int | `0` | 0..1 | all | `0` day, `1` night (IR-cut/mono pipeline). |
 | `image.anti_flicker` | int | `2` | 0..2 | all | `0` off, `1` 50 Hz, `2` 60 Hz. |
-| `image.ae_compensation` | int | `128` | 0..255 | T10 T20 T23 T30 T31 C100 | `ISP_HAS_AECOMP` — **absent on T21** and on T40/T41. |
+| `image.ae_compensation` | int | `128` | 0..255 | T10 T20 T23 T30 T31 C100, T41 with the open libimp | `ISP_HAS_AECOMP` — **absent on T21** and on T40; on T41 only with OpenIMP (`AeScenceAttr.AeTargetComp`; measured mean luma 8 / 57 / 98 at 40 / 128 / 230), unsupported with the vendor libimp. |
 | `image.max_again` | int | `160` | 0..255 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_GAINS`; absent on T40/T41. |
 | `image.max_dgain` | int | `80` | 0..255 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_GAINS`. |
-| `image.sinter_strength` | int | `128` | 0..255 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_NR`, spatial NR. T10/T20/T21 with the vendor libimp: accepted but no effect (the vendor firmware renormalises it); acts with the open libimp (OpenIMP; 128 = the vendor picture). |
-| `image.temper_strength` | int | `128` | 0..255 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_NR`, temporal NR. Same OpenIMP note as `sinter_strength`. |
+| `image.sinter_strength` | int | `128` | 0..255 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_NR`, spatial NR. T10/T20/T21 with the vendor libimp: accepted but no effect (the vendor firmware renormalises it); acts with the open libimp (OpenIMP; 128 = the vendor picture). **T41**: only with OpenIMP (Module_Ratio entry 0; image noise 488 / 351 / 216 at 0 / 128 / 255). |
+| `image.temper_strength` | int | `128` | 0..255 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_NR`, temporal NR. Same OpenIMP note as `sinter_strength`. **Unsupported on T41** (the Module_Ratio temper entry changes neither spatial nor temporal noise there). |
 | `image.dpc_strength` | int | `128` | 0..255 | T23 T31 C100; with `USE_OPENIMP` also T10 T20 T21 | `ISP_HAS_DPC`. |
 | `image.defog_strength` | int | `128` | 0..255 | T23 T31 C100; with `USE_OPENIMP` also T20 | `ISP_HAS_DEFOG`. On T20 (open stack) it is an Iridix floor, not a defog block. |
 | `image.drc_strength` | int | `128` | 0..255 | T21 T23 T31 C100; with `USE_OPENIMP` also T20 | `ISP_HAS_DRC` (WDR). |

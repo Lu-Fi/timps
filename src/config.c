@@ -692,6 +692,11 @@ static const cfg_field sensor_fields[] = {
 #else
 #define CAP_NR F_NOHW
 #endif
+#if defined(ISP_HAS_NR) || defined(ISP_HAS_SINTER)
+#define CAP_SINTER F_CAP
+#else
+#define CAP_SINTER F_NOHW
+#endif
 #ifdef ISP_HAS_DPC
 #define CAP_DPC F_CAP
 #else
@@ -762,7 +767,7 @@ static const cfg_field image_fields[] = {
     F("ae_compensation",        0, ae_compensation,        T_INT, F_CTRL|CAP_AECOMP,     0,255),
     F("max_again",              0, max_again,              T_INT, F_CTRL|CAP_GAINS,      0,255),
     F("max_dgain",              0, max_dgain,              T_INT, F_CTRL|CAP_GAINS,      0,255),
-    F("sinter_strength",        0, sinter_strength,        T_INT, F_CTRL|CAP_NR,         0,255),
+    F("sinter_strength",        0, sinter_strength,        T_INT, F_CTRL|CAP_SINTER,     0,255),
     F("temper_strength",        0, temper_strength,        T_INT, F_CTRL|CAP_NR,         0,255),
     F("dpc_strength",           0, dpc_strength,           T_INT, F_CTRL|CAP_DPC,        0,255),
     F("defog_strength",         0, defog_strength,         T_INT, F_CTRL|CAP_DEFOG,      0,255),

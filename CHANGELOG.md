@@ -6,6 +6,16 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- **T41 with the open stack: `image.ae_compensation` and `image.sinter_strength`.**
+  OpenIMP serves them through `SetAeScenceAttr` (AE luma target, 0..255, 128 =
+  untouched) and `SetModule_Ratio` entry 0 (spatial denoise, 128 = the vendor
+  picture); measured on a T41/GC5603: mean luma 8 / 57 / 98 at 40 / 128 / 230,
+  Laplacian noise 488 / 351 / 216 at sinter 0 / 128 / 255. `temper_strength`
+  stays unsupported (the temper entry changes nothing on this stack). Only built
+  with `USE_OPENIMP`; vendor-libimp builds are unchanged.
+
 ### Changed
 
 - **The startup recovery reboot releases the optional open-ISP boot guard
