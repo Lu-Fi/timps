@@ -61,6 +61,15 @@ semantic versioning.
   path), RTSP `Transport:` and the request URL are read from their own line
   only, Digest `uri=` takes up to 511 characters, and `HEAD /` no longer wakes
   the encoder.
+- **WebRTC: ICE consent is bound to the peer.** Only STUN checks from the
+  session's bound address refresh its idle timer; a remote `ice-ufrag` longer
+  than 63 characters answers 400 instead of being cut (it then never matched),
+  and SRTP/ICE key material is wiped with stores the compiler cannot drop.
+- **Recording and timelapse:** a failing segment `open` logs once a minute (or
+  on a new errno) instead of on every packet; the timelapse prune stops at
+  once on shutdown and removes `*.jpg.tmp` left by a power cut; a hostname that
+  is not one safe path component falls back to `camera`; on shutdown the
+  recording is finalised first, before SRT and timelapse.
 
 ### Added
 

@@ -1238,6 +1238,9 @@ a deliberate, safe choice during teardown, not a leak to report.
 `src/webrtc/`, endpoint `/webrtc/whep`. Limits: `WEBRTC_MAX_SESSIONS` = **4**
 (one UDP port per slot, `webrtc.port` … `webrtc.port_max`), setup deadline
 30 s, idle timeout 30 s, MTU 1200, offer body cap `WEBRTC_BODY_MAX` = 16384.
+Only STUN checks from the bound peer address refresh the idle timer (ICE
+consent); checks on another candidate pair are still answered but do not keep
+a session alive.
 
 | Response | Cause | Fix |
 | --- | --- | --- |
@@ -1265,6 +1268,8 @@ a deliberate, safe choice during teardown, not a leak to report.
   DTLS-passive; the offer must be `actpass` or `active`).
 - No `video` m-section, or a plain `RTP/AVP` (non-`SAVP`) offer, or a missing
   `a=ice-ufrag:` / `a=ice-pwd:`.
+- `offer's ice-ufrag is longer than 63 characters` (it used to be cut and then
+  never matched the browser's checks).
 
 **Session established but the picture stays black:**
 
@@ -1467,6 +1472,8 @@ build lacks `USE_FAAC` (see §6.1).
 - `unsafe timelapse.dir/name ('..' or absolute name), skipping shot` — same
   path rule as recording.
 - `open <path>: <e>` / `write <path>: <e>` — storage problem.
+- `removed orphaned <path>.jpg.tmp` (INFO) — a shot cut by a power loss,
+  cleaned up by the hourly prune.
 - `no frame from src=<n> within <N> ms - retrying in <N>s` — **the JPEG
   source produced nothing.** Timelapse is "just-in-time": it subscribes only
   when a shot is due. Check that `videoN.jpeg = true` (or `jpeg.enabled`) and
@@ -2734,7 +2741,7 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | --- | --- | --- | --- |
 | `record.min_free_mb=%d unreachable (only %lldMB free, %lldMB even if every existing recording were deleted) - refusing to record rather than empty the archive` | W | Deliberate refusal (since 1.9.8; before that it emptied the archive). | Lower `record.min_free_mb`. §5.1 |
 | `unsafe record.dir/name ('..' or absolute name), not recording` | E | `record.name` must be relative and contain no `..`. | §5.1 |
-| `open %s: %s` / `fdopen %s: %s` | E | The segment file could not be created. | Mount/permissions. |
+| `open %s: %s` / `fdopen %s: %s` | E | The segment file could not be created. `open` repeats at most once a minute for the same errno. | Mount/permissions. |
 | `segment name collision, wrote %s instead` | W | Two segments resolved to the same name. | Add `%S` to `record.name`. |
 | `write %s: %s` / `segment write failed (%s), closing` / `segment flush failed (%s), closing` | E | The volume went away or filled. | §5.2 |
 | `segment close/sync failed: %s (tail may be truncated)` | E | **The last seconds of that file may be unreadable.** | §5.2 |

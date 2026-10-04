@@ -158,6 +158,12 @@ static void aes_ctr(const uint32_t rk[44], uint8_t ctr[16],
  * hoisting this into a common file would drag AES into that link. The key is
  * fixed per session, so its ipad/opad blocks are absorbed once here and every
  * packet starts from a copy. */
+void srtp_wipe(void *p, size_t n)
+{
+    volatile uint8_t *v = (volatile uint8_t *)p;
+    while (n--) *v++ = 0;
+}
+
 static void hmac_sha1_key(srtp_keys *k, const uint8_t key[20])
 {
     uint8_t pad[64];
@@ -169,7 +175,7 @@ static void hmac_sha1_key(srtp_keys *k, const uint8_t key[20])
     for (int i = 0; i < 20; i++) pad[i] ^= key[i];
     sha1_init(&k->hmac_out);
     sha1_update(&k->hmac_out, pad, 64);
-    memset(pad, 0, sizeof pad);
+    srtp_wipe(pad, sizeof pad);
 }
 
 static void hmac_sha1_2(const srtp_keys *k,
@@ -217,6 +223,8 @@ void srtp_kdf(const uint8_t master_key[16], const uint8_t master_salt[14],
         memcpy(out + n, o, (size_t)c);
         n += c;
     }
+    srtp_wipe(rk, sizeof rk);
+    srtp_wipe(o, sizeof o);
 }
 
 static void derive_dir(srtp_dir *d, const uint8_t mk[16], const uint8_t ms[14])
@@ -228,8 +236,8 @@ static void derive_dir(srtp_dir *d, const uint8_t mk[16], const uint8_t ms[14])
     srtp_kdf(mk, ms, 0x03, k, 16);           aes128_expand(k, d->rtcp.rk);
     srtp_kdf(mk, ms, 0x04, a, 20);           hmac_sha1_key(&d->rtcp, a);
     srtp_kdf(mk, ms, 0x05, d->rtcp.salt, 14);
-    memset(k, 0, sizeof k);
-    memset(a, 0, sizeof a);
+    srtp_wipe(k, sizeof k);
+    srtp_wipe(a, sizeof a);
 }
 
 int srtp_init(srtp_session *s, const uint8_t *km, int km_len, int we_are_server)
