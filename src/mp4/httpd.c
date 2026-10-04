@@ -423,13 +423,18 @@ static void http_send(hconn *c, const char *status, const char *ctype,
  * Sent unconditionally: harmless without an Origin, and it keeps the
  * fMP4/MJPEG/snapshot responses fetch()able cross-origin (the WebUI MSE
  * preview loads /stream.mp4 via fetch). */
-#define MEDIA_CORS "Access-Control-Allow-Origin: *\r\n"
+#define MEDIA_CORS_HDR "Access-Control-Allow-Origin: *\r\n"
+/* Only with credentials configured, a valid token or a local peer: on an open
+ * camera '*' would let any web page the viewer opens read the video. */
+#define MEDIA_CORS (c->mcors ? MEDIA_CORS_HDR : "")
 
 /* HTTP response headers for /stream.mp4 (streamed body, no length) */
-static const char MP4_RESP_HDR[] =
-    "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\n"
-    "Cache-Control: no-cache\r\nConnection: close\r\n"
-    MEDIA_CORS "\r\n";
+static int mp4_resp_hdr(hconn *c, char *out, int cap)
+{
+    return snprintf(out, (size_t)cap,
+        "HTTP/1.1 200 OK\r\nContent-Type: video/mp4\r\n"
+        "Cache-Control: no-cache\r\nConnection: close\r\n%s\r\n", MEDIA_CORS);
+}
 
 static void stream_mp4(hconn *c, int chn)
 {
@@ -441,7 +446,9 @@ static void stream_mp4(hconn *c, int chn)
 
     /* HEAD: the headers a GET would send, no body - and no encoder
      * pipeline wake-up for a mere probe */
-    if (c->head) { csend(c, MP4_RESP_HDR, (int)sizeof MP4_RESP_HDR - 1); return; }
+    char rh[160];
+    int rhn = mp4_resp_hdr(c, rh, sizeof rh);
+    if (c->head) { csend(c, rh, rhn); return; }
 
     /* trace.h: per-connection send trace. Lives on this thread's stack for the
      * whole streaming request and is unhooked before returning, so csend() on
@@ -550,7 +557,7 @@ static void stream_mp4(hconn *c, int chn)
     }
     hub_request_idr(chn);                               /* fresh keyframe after warmup */
 
-    if (csend(c, MP4_RESP_HDR, (int)sizeof MP4_RESP_HDR - 1)<0) goto out;
+    if (csend(c, rh, rhn)<0) goto out;
 
     ms_buf seg;
     if (ms_buf_init(&seg, 4096)) goto out;
@@ -899,7 +906,7 @@ static void snapshot_jpg(hconn *c, int src)
         char hdr[224];
         int n=snprintf(hdr,sizeof hdr,
             "HTTP/1.1 200 OK\r\nContent-Type: image/jpeg\r\nContent-Length: %zu\r\n"
-            "Cache-Control: no-cache\r\nConnection: close\r\n" MEDIA_CORS "\r\n", p->len);
+            "Cache-Control: no-cache\r\nConnection: close\r\n%s\r\n", p->len, MEDIA_CORS);
         /* never send a truncated header (n >= sizeof hdr means snprintf's
          * would-be length overran the buffer) - same guard as http_send_ex.
          * HEAD gets the true Content-Length of the grabbed frame, no body. */
@@ -935,7 +942,7 @@ static void stream_mjpeg(hconn *c, int src, const char *bnd)
     char rh[288];
     int n=snprintf(rh,sizeof rh,
         "HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary=%s\r\n"
-        "Cache-Control: no-cache\r\nConnection: close\r\n" MEDIA_CORS "\r\n", BND);
+        "Cache-Control: no-cache\r\nConnection: close\r\n%s\r\n", BND, MEDIA_CORS);
     /* HEAD: same headers a GET would send (incl. the boundary), no body,
      * no encoder wake-up */
     if (c->head){ csend(c,rh,n); return; }
@@ -1882,6 +1889,8 @@ static void *conn_thread(void *arg)
              * headers. */
             char cors[512]; cors[0]=0;
             int tok_ok = 0;
+            int creds = c->cfg->http_user[0] || c->cfg->rtsp_user[0];
+            c->mcors = creds || c->local;
 #ifdef USE_CONTROL
             /* media endpoints: the /control token also unlocks VIEWING here
              * (never RTSP), so the thingino WebUI preview <img>/players can
@@ -1912,7 +1921,11 @@ static void *conn_thread(void *arg)
                 || !strncmp(path,"/webrtc/",8)
 #endif
                ) {
-                http_cors(buf, cors, sizeof cors);
+                /* also in a preflight: its URL carries the ?token= */
+                tok_ok = http_check_token(c->cfg, buf, path);
+                if (tok_ok) c->mcors = 1;
+                int cors_ok = !media || c->mcors;
+                if (cors_ok) http_cors(buf, cors, sizeof cors);
                 if (!strcmp(method,"OPTIONS")) {
                     /* CORS preflight: answered before any auth - a preflight
                      * carries no credentials by design. 204, no body. */
@@ -1931,7 +1944,8 @@ static void *conn_thread(void *arg)
                      * every other preflight and says nothing true about them. */
                     const char *pna = "";
                     char pnaq[16];
-                    if (http_header(buf, "Access-Control-Request-Private-Network:",
+                    if (cors_ok &&
+                        http_header(buf, "Access-Control-Request-Private-Network:",
                                     pnaq, sizeof pnaq) && !strcasecmp(pnaq,"true"))
                         pna = "Access-Control-Allow-Private-Network: true\r\n";
                     char r[768];
@@ -1941,7 +1955,6 @@ static void *conn_thread(void *arg)
                     csend(c, r, rn);
                     goto done;
                 }
-                tok_ok = http_check_token(c->cfg, buf, path);
             }
 #endif
             /* global gate: localhost, a valid token (tok_ok is only ever

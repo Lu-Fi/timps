@@ -74,6 +74,11 @@ semantic versioning.
 
 ### Changed
 
+- **Media CORS only where access is controlled.** With `http.user` and
+  `rtsp.user` both empty, `/stream.mp4`, `/snapshot.jpg` and the MJPEG stream
+  no longer send `Access-Control-Allow-Origin: *`, and their preflight no
+  longer grants Private Network Access, unless the request carries a valid
+  token (or comes from loopback): any web page could read the video before.
 - **Config integers are decimal; hex needs `0x`.** `08` was read as 0 and `010`
   as 8 (octal). `video<N>.imp_chn` and `jpeg.imp_chn` are clamped to 0..7,
   `motion.hold_ms` to 0..60000 and `motion.skip_frames` to 1..100.

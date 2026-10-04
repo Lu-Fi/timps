@@ -345,7 +345,9 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   auf deren `uhttpd`-Zertifikat, damit `:443` und `:8880` dasselbe Zertifikat
   zeigen – sonst müsste der Browser Selbstsigniertes pro Port einzeln
   vertrauen, was für `fetch()`-Unterressourcen (Safari!) gar nicht möglich ist.
-* **CORS**: Medienendpunkte senden `Access-Control-Allow-Origin: *`;
+* **CORS**: Medienendpunkte senden `Access-Control-Allow-Origin: *`, wenn
+  Zugangsdaten gesetzt sind, ein gültiges Token mitkommt oder der Client
+  lokal ist (offene Kamera ohne Token: kein CORS, keine PNA-Freigabe);
   `/control` und `/events` spiegeln stattdessen den `Origin:`-Header
   (mit `Vary: Origin`, ohne Credentials).
 * **CSRF-Schutz** (**seit v1.9.28**): ein per Basic/Digest authentifizierter

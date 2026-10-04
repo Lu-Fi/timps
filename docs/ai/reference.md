@@ -476,7 +476,9 @@ carries no credentials by design). Two details worth knowing:
   hosted off the LAN reaching a LAN device), the preflight echoes
   `Access-Control-Allow-Private-Network: true`. It is echoed **only when
   asked**, never volunteered. It grants nothing: the real request still has to
-  pass the token/Basic/Digest/loopback gate.
+  pass the token/Basic/Digest/loopback gate. On the media paths of an open
+  camera (no `http.user`/`rtsp.user`) neither the PNA grant nor any CORS header
+  is sent unless the URL carries a valid `?token=`.
 - The WHEP `201 Created` adds
   `Access-Control-Expose-Headers: Location`, so the browser can actually read
   the session id it has to `DELETE` later.
@@ -511,7 +513,10 @@ While **both** `http.user` and `rtsp.user` are empty:
 The thingino package ships `thingino`/`thingino` for both, so most fielded
 cameras are not in the empty case. Advise users to change these.
 
-CORS: media endpoints send `Access-Control-Allow-Origin: *`; `/control` and
+CORS: media endpoints send `Access-Control-Allow-Origin: *` only when
+credentials are configured, a valid token was presented, or the peer is
+loopback (on an open camera any web page could otherwise read the video);
+`/control` and
 `/events` reflect the request `Origin` (with `Vary: Origin`, allow-listing the
 `X-Timps-Token` header, no credentials). `OPTIONS` preflight is answered `204`
 before auth runs.

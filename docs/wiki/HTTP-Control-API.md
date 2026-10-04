@@ -61,9 +61,11 @@ and/or `http.user`/`http.pass`. See the SECURITY block in
 `timps.conf.example` and
 [Configuration Reference](Configuration-Reference.md).
 
-CORS: the three media endpoints send `Access-Control-Allow-Origin: *`
-unconditionally (safe because their auth never relies on ambient browser
-credentials); `/control` and `/events` instead **reflect** the request's
+CORS: the three media endpoints send `Access-Control-Allow-Origin: *` when
+credentials are configured, a valid token is presented, or the peer is
+loopback (safe because their auth never relies on ambient browser
+credentials; on an open camera without a token there is no CORS header and no
+Private Network Access grant, so a random web page cannot read the video); `/control` and `/events` instead **reflect** the request's
 `Origin:` header (with `Vary: Origin`, allow-listing the `X-Timps-Token`
 header, no `Access-Control-Allow-Credentials`) so a WebUI served from a
 different port can call `/control` directly. An `OPTIONS` preflight is
