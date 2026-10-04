@@ -327,7 +327,7 @@ static int parse_glyph(msttf_font *f, int gid, poly **polys, int *npoly, int *ca
 {
     if (depth>4 || gid<0 || gid>=f->num_glyphs) return 0;
     uint32_t len, off=glyf_offset(f,gid,&len);
-    if (len==0) return 0;
+    if (len < 10) return 0;     /* shorter than the glyph header: s16(g) would overread */
     const uint8_t *g=f->data+off;
     int nc=s16(g);
     if (nc>=0) return parse_simple(f,g,len,polys,npoly,cappoly,ox,oy,sx,sy);
@@ -335,7 +335,6 @@ static int parse_glyph(msttf_font *f, int gid, poly **polys, int *npoly, int *ca
      * check against the glyph's declared length at all, so a truncated or
      * corrupt composite glyph (or one whose MORE_COMPONENTS chain never
      * terminates) would walk p arbitrarily far past the glyf buffer. */
-    if (len < 10) return 0;
     const uint8_t *pend = g + len;
     const uint8_t *p=g+10;
     while (1){

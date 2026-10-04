@@ -62,17 +62,12 @@ static msttf_font       g_shared; static int g_shared_ok;
 static ms_stopgate      g_gate;   static pthread_t g_thr;
 static int              g_started;   /* P-02: gate replaces the old volatile run flag */
 
-/* live control (imp_osd_apply) touches the regions from the HTTP thread, so
- * region access is serialized against the updater thread. Zero-cost in a
- * minimal build (no USE_CONTROL -> no second toucher, macros empty). */
-#ifdef USE_CONTROL
+/* Region access is serialized against the updater thread: live control
+ * (imp_osd_apply, HTTP thread) and imp_osd_refresh_now() (HAL activation
+ * path, also without USE_CONTROL) touch the regions too. */
 static pthread_mutex_t  g_osd_lock = PTHREAD_MUTEX_INITIALIZER;
 #define OSD_LOCK()   pthread_mutex_lock(&g_osd_lock)
 #define OSD_UNLOCK() pthread_mutex_unlock(&g_osd_lock)
-#else
-#define OSD_LOCK()   do{}while(0)
-#define OSD_UNLOCK() do{}while(0)
-#endif
 
 /* position a w x h region in a W x H frame using the old-streamer convention:
  * x/y > 0 : from the left/top edge

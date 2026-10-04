@@ -49,6 +49,9 @@ semantic versioning.
   a night verdict in a silent probe); after a shutdown request no new
   `switch_cmd` runs and the illuminator hand-back is bounded to ~0.8 s, so the
   detection thread stays inside the 4 s shutdown budget.
+- **OSD: the region lock is no longer compiled out in `USE_CONTROL=0` builds**,
+  where the activation-edge redraw raced the OSD updater thread; and a font
+  glyph shorter than its 10-byte header no longer reads past the font buffer.
 
 ### Added
 
