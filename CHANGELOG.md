@@ -75,7 +75,8 @@ semantic versioning.
   is not one safe path component falls back to `camera`; on shutdown the
   recording is finalised first, before SRT and timelapse.
 - **Ingenic HAL robustness:** a `GetStream` failure after a successful poll no
-  longer spins a core and floods the log (throttled, 10 ms back-off); the video
+  longer spins a core and floods the log (throttled, 10 ms back-off) and counts
+  as a miss for the video watchdog, so a persistent one triggers recovery; the video
   idle debounce no longer copies every frame for nobody; the JPEG thread's frame
   pacing sleep wakes for shutdown; the audio watchdog starts a fresh streak after
   an idle spell (a stale one could disable audio on the first miss); a failed
