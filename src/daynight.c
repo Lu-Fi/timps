@@ -1657,7 +1657,7 @@ static void *dn_thread(void *arg)
             if (sm.d <= 0.0f) {             /* no ISP (sim/host/wedged) */
                 if (!warned_noisp) {
                     warned_noisp = 1;
-                    LOGW(MOD, "%s not readable, detection idle", dn->isp_path);
+                    LOGW(MOD, "no exposure reading from %s (missing or in a format this build does not parse), detection idle", dn->isp_path);
                 }
                 /* Boot still has to reach a decision and assert it. If no
                  * exposure reading has turned up within DN_STABLE_MAX_MS of

@@ -18,6 +18,11 @@ semantic versioning.
 
 ### Changed
 
+- **The "detection idle" warning no longer claims the ISP dump is unreadable.**
+  It fired whenever no gain could be parsed - also for a perfectly readable dump
+  in a format an older build did not know (the T41 open stack). It now says no
+  exposure reading came from the file.
+
 - **The startup recovery reboot releases the optional open-ISP boot guard
   first.** `reboot(2)` skips init's stop scripts, so an image with thingino's
   `S10isp-guard` (a crash-loop guard) would have counted timps' own one-shot
