@@ -354,7 +354,7 @@ void config_defaults(ms_config *c)
     c->audio.volume=80; c->audio.gain=25;   /* audible defaults */
     /* high_pass on by default (2026-09-08): removes DC/low-frequency rumble
      * (fan/structure-borne vibration, mains hum) without touching voice band;
-     * confirmed on Garage as a pure win with no observed downside. */
+     * confirmed on cam-01 as a pure win with no observed downside. */
     c->audio.high_pass=1; c->audio.agc=0; c->audio.ns=0;
     c->audio.alc_gain=0;                                   /* PGA off */
     c->audio.agc_target_dbfs=10; c->audio.agc_compression_db=0;

@@ -1,7 +1,7 @@
 # Known limitation: talk/backchannel use can leave the mic noisier until restart
 
 **Date:** 2026-09-08
-**Camera:** Garage (`wuuk_y0510_t31x_sc4336p_ssv6158`, T31X/sc4336p)
+**Camera:** cam-01 (`wuuk_y0510_t31x_sc4336p_ssv6158`, T31X/sc4336p)
 **Status:** understood, not fixed - documenting so this doesn't get re-investigated from scratch
 
 ## Symptom
@@ -75,7 +75,7 @@ line) still left the mic noisy until `timps` was actually restarted.
   `NS_enable=false`, or dial back `set_compression_gain_db`/`set_level`) -
   untested, not yet tried on real hardware.
 - Camera-specific gain tuning (`gain=31`/`alc_gain=1`/`volume=100`) is only
-  applied to Garage so far, live via `/control`, not yet reflected in the
-  repo's `user/wuuk_y0510_t31x_sc4336p_ssv6158/192.168.10.21/overlay/etc/timps.conf`
-  - a future rebuild+reflash of Garage would revert it unless that overlay
+  applied to cam-01 so far, live via `/control`, not yet reflected in the
+  repo's `user/wuuk_y0510_t31x_sc4336p_ssv6158/192.0.2.21/overlay/etc/timps.conf`
+  - a future rebuild+reflash of cam-01 would revert it unless that overlay
   is updated too.

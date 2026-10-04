@@ -627,7 +627,7 @@ static void stream_mp4(hconn *c, int chn)
              * (fanqueue drop-oldest is media-blind), and last_audio_us only
              * advances on a POP - so a congested client (long csend() stalls,
              * queue wrapping meanwhile) trips this gap with the mic wide
-             * open. Observed on cam-garage QA 2026-08-22: the fMP4 client got
+             * open. Observed on cam-01 QA 2026-08-22: the fMP4 client got
              * "muted mid-stream?"-dropped 3 min into a congestion event that
              * two RTSP sessions rode out with mere frame drops. Evicted-since-
              * last-delivered audio proves the source is alive: keep the client

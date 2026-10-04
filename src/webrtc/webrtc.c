@@ -51,7 +51,7 @@
  * audio (25 pkt/s) in the same queue without re-sizing it, which halved the
  * time budget a burst has to drain into (~640ms -> ~320ms at a typical GOP
  * cadence) - measured on the fleet as real overflow events (hundreds across
- * Garage and cam-vorne). Doubled to restore the original time budget; still
+ * cam-01 and cam-02). Doubled to restore the original time budget; still
  * the shallowest media queue in the codebase on purpose (RTSP/fMP4: 64,
  * SRT/record: 128) - WebRTC is the one consumer that wants to drop rather
  * than buffer when it falls behind. Bounded by FQ_MAX_BYTES regardless, so

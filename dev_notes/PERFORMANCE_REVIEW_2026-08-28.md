@@ -165,7 +165,7 @@ The original finding conflated "cache and/or tickets." A dedicated
 security-focused assessment found TLS is compiled into 100% of the fleet
 but **enabled on 0% of cameras today** (all `http.https`/`rtsp.tls`
 overlays shipped commented-out; the one historical exception was RTSPS on
-the disposable Garage test camera for ~90 minutes, since reverted) — so
+the disposable cam-01 test camera for ~90 minutes, since reverted) — so
 this was a theoretical finding, not a live one. It also found the
 **session cache is dead code under TLS 1.3** (mbedTLS 3.6.6's cache path
 is only read by the TLS-1.2 server branch; this build negotiates up to
@@ -246,7 +246,7 @@ cache).
   returns closed/dropped/depth state from inside the pop's own critical
   section. One deliberate exclusion: `dropped_audio` stayed separate,
   because folding it in would silently re-break a real prior fix (the
-  2026-08-22 mute-vs-eviction distinction on cam-garage).
+  2026-08-22 mute-vs-eviction distinction on cam-01).
 - **`fanqueue_push` signals the condvar even with no possible waiter** —
   ✅ **Implemented.** Gated on "queue was empty before this push",
   relying on the documented single-consumer contract.
@@ -377,16 +377,16 @@ retry/backoff.
 
 ## Measured result
 
-Before/after CPU, same concurrent RTSP(TCP)+fMP4+MJPEG load, cam-garage
+Before/after CPU, same concurrent RTSP(TCP)+fMP4+MJPEG load, cam-01
 (T31): **22.55% → ~14.5%**, roughly **35% CPU reduction**. Before figure
 is a stable 2h-longrun average (95 samples, `v1.9.3-21`); after figure is
 two independent 10s `/proc/<pid>/stat`-delta samples (14.59%, 14.39%) on
 `v1.9.3-47`, agreeing within 2%. RSS: 5764 KB avg → 5128 KB under load,
-~11% less. Two full 2h longruns (Garage + cam-vorne-garage) were kicked
+~11% less. Two full 2h longruns (cam-01 + cam-02) were kicked
 off after this round of fixes specifically to get a durable, equal-length
 before/after data point for the future — see
-`dev_notes/qa-runs/longrun-cam-garage-2026-08-28/` and
-`dev_notes/qa-runs/longrun-cam-vorne-garage-2026-08-28/` once those land.
+`dev_notes/qa-runs/longrun-cam-01-2026-08-28/` and
+`dev_notes/qa-runs/longrun-cam-02-2026-08-28/` once those land.
 
 ## What's left, if picked back up later
 

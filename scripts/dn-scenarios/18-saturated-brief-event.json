@@ -1,6 +1,6 @@
 {
   "name": "18-saturated-brief-event",
-  "incident": "operator switched a garage light on 22:26:58, off 22:27:12 (14 s)",
+  "incident": "operator switched a room light on 22:26:58, off 22:27:12 (14 s)",
   "description": "MEASURED, not reconstructed. Source: cam-A.csv, 2026-08-17 22:25:30-22:28:30 local.\n\nThe camera whose exposure automation sits at ALL its ceilings - integration, analog gain and ISP digital gain all at max - and which therefore reads a constant 19840 for thirteen hours. A 14 s light drops it to 1748, a factor of 11, in a single 5 s sample, and it returns to the ceiling immediately. Two things at once: the ceiling is not blindness (the value leaves it the moment anything happens, restoring the AE headroom a differential measurement needs), and the event is far too short to react to - detection plus probe plus confirmation cannot fit in 14 s, and moving the IR-cut twice for 14 s of colour would be the worse trade.\n\nPipeline provenance - night curve: measured, day curve: inferred. A curve marked 'inferred' has no measurement behind it in this window and pins nothing about that pipeline; only the 'measured' side carries evidence. ASSERTION, sharpened: budget 2 - the boot verification only. A 14 s event MUST NOT trigger a switch: moving the filter twice to gain fourteen seconds of colour would be the worse trade. If this number rises, the machine is reacting too eagerly.",
   "scale": 30,
   "duration_s": 180,

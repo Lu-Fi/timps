@@ -84,7 +84,7 @@ Scenario JSON (all times virtual seconds, all gains IMP [24.8] linear):
                                   harness form of the latch defect class
                                   (hal_ingenic.c): re-asserting a believed
                                   value is a no-op, only a real transition
-                                  acts - cam-wohn 2026-08-21. With isp_sticky
+                                  acts - cam-10 2026-08-21. With isp_sticky
                                   the mode_at / expected_mode assertions
                                   judge the RENDERED timeline (what was
                                   served), not the switch log, because with a
@@ -104,7 +104,7 @@ Scenario JSON (all times virtual seconds, all gains IMP [24.8] linear):
                                   regardless of switch_cmd; null releases the
                                   force. Models an operator driving the board
                                   script by hand while the daemon stands on
-                                  its own decision - the cam-wohn-ofen
+                                  its own decision - the cam-09
                                   reverse-desync of 2026-08-21. Overrides win
                                   over isp_sticky while active; like sticky,
                                   the mode assertions judge the rendered

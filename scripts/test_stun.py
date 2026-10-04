@@ -32,7 +32,7 @@ def attrs(msg):
 
 # --- 1. check the response the C code builds ---------------------------------
 txid = os.urandom(12)
-ip, port = "192.168.10.77", 51234
+ip, port = "192.0.2.77", 51234
 hexout = subprocess.check_output(
     [BIN, "resp", binascii.hexlify(txid).decode(), ip, str(port)]).strip()
 msg = binascii.unhexlify(hexout)

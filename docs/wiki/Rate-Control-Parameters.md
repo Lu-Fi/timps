@@ -81,7 +81,7 @@ of hardcoding this table into a client.
 | `fluc_lvl` | Restart-only (H.265-only field; classic live-apply is H.264-only) | Restart | No effect | No effect | No effect |
 
 `qp` was listed Live on T31/C100/T40 until 2026-08-22 and is not. Measured
-on cam-garage (T31X, substream in `fixqp`): the live POST is graded
+on cam-01 (T31X, substream in `fixqp`): the live POST is graded
 `deferred:0`, `encoder.<n>.rc.qp` echoes the new value — and the encoded
 bitstream does not move, while the same QP pair applied at boot spans 6.4×.
 `IMP_Encoder_SetChnAttrRcMode` stores `attrFixQp.iInitialQP` where the next

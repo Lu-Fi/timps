@@ -30,7 +30,7 @@ being written, one fresh behind it) is the useful depth.
 
 ## What it is worth, on this fleet's numbers
 
-Schuppen's live daemon serves **~380 KB** JPEGs (1080p, five consecutive
+cam-06's live daemon serves **~380 KB** JPEGs (1080p, five consecutive
 `/snapshot.jpg` fetches: 381557, 380385, 379908, 379112, 378659 B). At that size
 the `FQ_MAX_BYTES` (2 MB) budget is what bound cap 8, not its slots:
 
@@ -121,12 +121,12 @@ constant costs nothing in flash either way.
 Deliberate. The working tree carries another change in progress
 (`src/frame.c`/`src/frame.h`), so a camera binary built from it today would put
 *that* unfinished work on a production camera rather than isolating this
-one-constant change — the opposite of a conservative test. Garage
-(192.168.10.21) is also still on the raptor+WebRTC build (see
+one-constant change — the opposite of a conservative test. cam-01
+(192.0.2.21) is also still on the raptor+WebRTC build (see
 `FMP4_ZEROCOPY_2026-09-05.md`), so it is not a free target either.
 
 What *was* taken from real hardware is the thing the argument actually rests
-on — Schuppen's live JPEG sizes (~380 KB), which is what puts cap 8 against the
+on — cam-06's live JPEG sizes (~380 KB), which is what puts cap 8 against the
 byte budget rather than its slot count. The behaviour itself is exercised at
 unit level against the real `fanqueue.c` and end-to-end through the real
 `stream_mjpeg()` in the sim.

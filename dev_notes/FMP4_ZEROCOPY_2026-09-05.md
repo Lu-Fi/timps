@@ -129,7 +129,7 @@ i.e. the case where `ms_buf_reserve`'s power-of-two growth pins 512 KB):
 **~410 kB saved per streaming client**, 3.2 MB across 8. The 136 kB that
 remains is the client's fanqueue and packet references, not the fragment
 buffer. At `HTTP_MAX_CLIENTS` = 16 (raised in `462cd49`) that is ~6.6 MB of
-headroom recovered on a daemon whose loaded RSS is around 5 MB — on Schuppen,
+headroom recovered on a daemon whose loaded RSS is around 5 MB — on cam-06,
 a camera with **37 MB of RAM in total**.
 
 The pre-existing behaviour this fixes: `ms_buf_reserve` grows by powers of two,
@@ -223,10 +223,10 @@ pixel-identical to both the normal run and the baseline.
 fleet's cameras build with `BR2_PACKAGE_TIMPS_TLS=y`, so the TLS branch is
 compiled in even where `http.https` is off).
 
-**6. Real hardware — Schuppen (192.168.10.25, T31L / SC2336 / ATBM6031).**
+**6. Real hardware — cam-06 (192.0.2.25, T31L / SC2336 / ATBM6031).**
 
 Built through Buildroot with the camera's own options (`rebuild-timps` against
-the existing `output/ciao/…-192.168.10.25` dir, so the binary carries exactly
+the existing `output/ciao/…-192.0.2.25` dir, so the binary carries exactly
 this camera's flags — including `BR2_PACKAGE_TIMPS_TLS=y`, while `http.https`
 is off, which is precisely the configuration the change targets).
 
@@ -272,7 +272,7 @@ output dir from `git rev-parse --abbrev-ref HEAD`, which returns the literal
 string `HEAD` when the firmware checkout is in detached HEAD — so it starts a
 **new from-scratch build** under `output/HEAD/…` instead of reusing
 `output/ciao/…`. Pass `THINGINO_OUTPUT_DIR=<existing dir>` to target the real
-one. (A partial `output/HEAD/cinnado_d1_t31l_sc2336_atbm6031-…-192.168.10.25`
+one. (A partial `output/HEAD/cinnado_d1_t31l_sc2336_atbm6031-…-192.0.2.25`
 tree, ~3.4 GB, was created and abandoned this way before the mistake was
 caught; it is safe to delete.)
 
@@ -280,19 +280,19 @@ caught; it is safe to delete.)
 
 ## Residual risk and follow-up
 
-- **No long-duration multi-client soak on real hardware yet.** The Schuppen
+- **No long-duration multi-client soak on real hardware yet.** The cam-06
   run above is a ~50 s functional check on a production camera, not a soak, and
   its bitrate is too low to exercise the large-fragment case the change is
-  really aimed at. Garage (192.168.10.21) came free during this work but is
+  really aimed at. cam-01 (192.0.2.21) came free during this work but is
   currently flashed with the raptor+WebRTC build, so using it would mean a full
   reflash back to timps first — out of scope here. `timps-qa.sh --profile soak`
-  on Garage with several concurrent fMP4 clients at a realistic bitrate is the
+  on cam-01 with several concurrent fMP4 clients at a realistic bitrate is the
   natural next step, and the thing that would turn the sim's CPU/RSS numbers
   into fleet numbers.
 - **The 512 KB/1 MB buffer case has not been observed on real hardware**, only
   reasoned from `ms_buf_reserve`'s growth rule and reproduced in the sim. It
   needs a camera running a high enough bitrate that IDR fragments clear 256 KB
-  — the 1440p cameras, not Schuppen's 1.2 Mbit stream.
+  — the 1440p cameras, not cam-06's 1.2 Mbit stream.
 - **The TLS path keeps the old cost.** Cameras that actually turn on
   `http.https` see no benefit — neither the copy nor the 512 KB buffer. If
   HTTPS fMP4 becomes common, the fix is batching the iovecs into one TLS record

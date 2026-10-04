@@ -21,7 +21,7 @@
  *
  * `qp` is deliberately NOT live on any new-API SoC. SetChnAttrRcMode writes
  * attrFixQp.iInitialQP into the struct the next Get reads back but never
- * re-programs the running channel: measured on cam-garage (T31X) 2026-08-22,
+ * re-programs the running channel: measured on cam-01 (T31X) 2026-08-22,
  * the boot path spans 6.4x across qp 25 vs 42 while the live path does not
  * move the bitstream at all, with deferred:0 and a complicit readback (see
  * dev_notes/TODO.md). Listing it here would promise a caller that no restart

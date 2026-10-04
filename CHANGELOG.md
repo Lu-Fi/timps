@@ -112,7 +112,7 @@ semantic versioning.
 - **`image.ae_it_max_us` can be raised and removed live.** Once a cap was in
   force, `GetExpr` reported it as the sensor mode's maximum, so a higher value
   read as "above the sensor mode's own maximum - nothing to cap" and `0` wrote
-  nothing: on cam-garage (T31X/sc4336p) a 10000 µs cap stayed at 454 lines until
+  nothing: on cam-01 (T31X/sc4336p) a 10000 µs cap stayed at 454 lines until
   a restart. The HAL now remembers the mode's own, uncapped maximum (read while
   no cap of ours is in force; re-read after an ISP init and after a day/night
   `running_mode` switch) and compares against that. `0`, or a value at or above
@@ -427,7 +427,7 @@ rounds: bugs, reliability, performance, security).
 
 ### Added
 
-- **Client log lines** (module `CLIENT`): `+ rtsp/tcp 192.168.178.17:40904
+- **Client log lines** (module `CLIENT`): `+ rtsp/tcp 192.0.2.17:40904
   chn=0 agent="FFmpeg Frigate/0.17.2"` when a streaming client connects and
   `- … after 8s, 377529 bytes` when it leaves, for every protocol. `/events`
   connections log at DEBUG only, so an open WebUI tab doesn't fill the log.
@@ -481,7 +481,7 @@ rounds: bugs, reliability, performance, security).
 ### Fixed
 
 - **`timps-qa.sh`: UDP loss that overflowed the QA host's own receive buffer
-  is no longer blamed on the network.** On cam-vorne (T23, 114 Mbit/s WiFi)
+  is no longer blamed on the network.** On cam-02 (T23, 114 Mbit/s WiFi)
   the rtsp_main_udp check reported "4.2 % / ~100 % lost, network degraded";
   every lost packet was exactly the QA host's `RcvbufErrors` (ffmpeg not yet
   reading while it analyses the stream), and 0 with a 4 MB buffer. The check
@@ -638,7 +638,7 @@ No functional changes since v1.9.21 — release-only bump so the tag matches
   were muxed anyway and the recording carried up to a full GOP of decoder
   residue. It now freezes the segment on a drop and resumes at the next
   keyframe, the same shape `http.adaptive_drop` already gave the fMP4 clients.
-  Reproduced on cam-garage (T31X, NFS `record.dir`, server blackholed for
+  Reproduced on cam-01 (T31X, NFS `record.dir`, server blackholed for
   30 s): the frame directly after the 28.4 s hole used to be a P-frame with
   visible OSD ghosting for the following 1.2 s.
   - Audio is frozen with the video (as `mp4/httpd.c` does) so the two tracks
@@ -1017,7 +1017,7 @@ A memory and wakeup pass, driven by `dev_notes/REVIEW_2026-09-12.md` and
   low-frequency rumble with no downside. `timps.conf.example`'s "live"
   annotations on `high_pass`/`agc`/`ns`/`aec` were wrong (all four are
   restart-required or next-AO-open, never live) and are corrected, and the
-  AEC-leaves-the-mic-noisy-until-restart behaviour found on Garage is now
+  AEC-leaves-the-mic-noisy-until-restart behaviour found on cam-01 is now
   documented rather than rediscovered.
 
 - **`audio.gain` defaults to `15`** (`src/config.c`). `31` (max) clipped hard
@@ -1112,10 +1112,10 @@ session these came out of.
   than `MANUAL`, so the AE keeps ranging and the key shapes auto-exposure
   instead of replacing it. T40/T41 have neither, so it is `F_CAP`-gated out
   there.
-  - The header documents no unit for `SetAe_IT_MAX`. Measured on cam-garage
+  - The header documents no unit for `SetAe_IT_MAX`. Measured on cam-01
     (T31X/sc4336p): it is sensor **lines** — 16000 µs → 727 lines, and
     `GetExpr` reads back exactly 727 (15994 µs).
-  - **The trade is exact and there is no free version.** cam-garage streaming
+  - **The trade is exact and there is no free version.** cam-01 streaming
     a dark scene, cap off vs 8000 µs: exposure **1496 lines (32912 µs) → 363
     lines (7986 µs)**, 4.1x shorter; analog gain 126 → 126 (already railed at
     its 127 maximum); ISP digital gain 7 → 72, about 2 stops; total gain
@@ -1125,7 +1125,7 @@ session these came out of.
     ceiling the picture simply gets darker rather than grainier — the usual
     "less blur, more grain" framing assumes headroom that is not always there.
   - **It moves daynight's exposure index**, which is gain x (it/it_max): on
-    cam-garage 4657 → 19192 with the cap on, across that camera's own
+    cam-01 4657 → 19192 with the cap on, across that camera's own
     day<10000 / night>15000 thresholds — enough to flip the decision. Any
     camera turning this on needs its daynight thresholds re-checked rather
     than inherited. That, plus the boot-time caveat below, is why it ships
@@ -1171,7 +1171,7 @@ session these came out of.
     `ratio_imp`/`imp_it`/`imp_it_max`/`imp_line_us`/`imp_expr_us`, fed into
     nothing — because every daynight threshold in the fleet was tuned against
     the scrape, and swapping the measurement underneath them needs a real dusk
-    and dawn compared side by side, not a header reading. On cam-garage, where
+    and dawn compared side by side, not a header reading. On cam-01, where
     the scrape does publish a maximum, the two agreed exactly (ratio 1.0000
     both ways) and the two independent SDK paths cross-checked to within 1%
     (32912 µs of line arithmetic against `GetEVAttr`'s 33244 µs reported
@@ -1180,7 +1180,7 @@ session these came out of.
     a real published maximum** (`mit_real == false` — currently the two T20
     cellar cameras, which fall back to a high-water mark of the longest
     exposure ever seen, an under-estimate by construction). Live on
-    cam-wyze-pan: right after a restart the high-water ratio reads **1.0000**,
+    cam-07: right after a restart the high-water ratio reads **1.0000**,
     falsely "full daylight", for the first ~2.5 minutes, while `GetExpr` gives
     an accurate **0.8350** from the very first sample. Once the high-water
     mark has seen one near-maximum exposure the two agree to within 0.1%, so
@@ -1292,7 +1292,7 @@ session these came out of.
   restart and defeated the diagnostic it was added for. New `fs_teardown(chn)`
   is gated on the existing `g_fs_enabled[]` refcount — the single source of
   truth for hardware state everywhere else in the file — and resets it for the
-  in-process start-retry path. Verified live on cam-garage: three
+  in-process start-retry path. Verified live on cam-01: three
   `S95timps restart` cycles, zero false warnings, both RTSP streams recovered
   each time.
 
@@ -1662,7 +1662,7 @@ session these came out of.
 
 - **A stable AE-meter clip now seeds both the day/night trend pair and the
   night reference** (`src/daynight.c`). On a board whose true dark rest state
-  *is* a clip - 0 units of headroom, e.g. cam-wyze-pan's T20 - both detection
+  *is* a clip - 0 units of headroom, e.g. cam-07's T20 - both detection
   paths could get permanently stuck: `ref` refused to anchor from a clip at
   all (to keep a still-ramping boot sample from being read as a "dawn"), and
   the trend EMA pair was frozen while clipped. On a camera that rests at the
@@ -1673,7 +1673,7 @@ session these came out of.
   bound nothing changes. Also, an unanchored `ref` no longer defers the
   heartbeat, which is how a permanently clipped meter managed to silence the
   one bound meant to survive every other failure mode. Live-verified on
-  cam-wyze-pan: `ref` anchors at the true 8171 dark baseline ~150 s after
+  cam-07: `ref` anchors at the true 8171 dark baseline ~150 s after
   night entry instead of sitting at -1 all night, and a real light-on event
   fires the fast jump trigger (~20-25 s, IR-ratio confirmed) rather than only
   the 3-minute trend fallback. Corpus: 35/35 dn-scenarios pass, cost-neutral
@@ -2078,7 +2078,7 @@ session these came out of.
   with that packet and a timed-out pop cannot swallow a signal it has no
   packet to deliver alongside. `dropped_audio` is deliberately left out - its
   read-and-clear timing is what lets `httpd.c` tell a real mute apart from a
-  congestion eviction (2026-08-22, cam-garage), and folding it in would have
+  congestion eviction (2026-08-22, cam-01), and folding it in would have
   cleared it on every pop and re-broken exactly that. Both loops also stopped
   needing a second clock read: the iteration's `now` is now taken after the
   pop, which is where the trace's `t_pop` wanted it anyway.
@@ -2264,7 +2264,7 @@ session these came out of.
   remaining session, with no drift and no error anywhere - the shape that
   makes it look like a clean stream that is simply out of sync.
   Reproduced exactly against the real muxer: a 24 s gap yields a dead-flat
-  +23.99 s skew (`cam-vorne-garage`, 2 h `--profile longrun` on
+  +23.99 s skew (`cam-02`, 2 h `--profile longrun` on
   2026-08-28: ~0.03 s skew for 45 minutes, one WiFi stall, then 24.0 s flat
   for the remaining 65 minutes, `FAIL longrun fmp4 LEVEL/TREND`). RTSP over
   the same link at the same moment was unaffected, because RTP timestamps
@@ -2467,7 +2467,7 @@ session these came out of.
   init's small allocs squeak through. The QA evidence matches exactly: the
   five dead cameras were each observed minutes later still alive with 2
   threads/0 listeners (parked in the init retry loop), then gone for good
-  (the one unguarded start-failure exit); cam-garage recovered because its
+  (the one unguarded start-failure exit); cam-01 recovered because its
   pool drained before start ran. `start()` failure now unwinds via
   `g_hal->stop()` (safe: `ing_start`'s fail path already leaves no channels,
   and `ing_stop`/`imp_osd_stop` tolerate empty state) and re-enters the same
@@ -2476,7 +2476,7 @@ session these came out of.
   full `MS_SHUTDOWN_ALARM_S` budget instead of whatever the recorder/server
   stops left over - shrinking the window in which a guillotined teardown
   leaves the pool dirty for the next instance in the first place.
-  Hardware-verified same evening on cam-kinder-rechts: the daemon stayed
+  Hardware-verified same evening on cam-04: the daemon stayed
   alive and kept retrying instead of dying, though on that board the
   rmem carve-out needed a real reboot to actually clear rather than
   clearing on its own within ~9 minutes of retries - which is why the
@@ -2495,14 +2495,14 @@ session these came out of.
   to fix the config rather than a bounded resource race.
 - **Exhausting the start() retry budget now escalates to one real reboot
   before giving up** (`src/main.c`) - retries alone did not fix
-  cam-kinder-rechts' incident, a real `reboot` did, every time this class of
+  cam-04' incident, a real `reboot` did, every time this class of
   problem occurred tonight. A persistent marker file
   (`/etc/timps-startup-reboot.flag`, survives the reboot unlike anything in
   `/run`) makes the escalation exactly one-shot per incident: if the SAME
   problem is still failing after the reboot, the daemon gives up for good
   instead of rebooting again, so this cannot become a boot loop. The marker
   clears the moment `start()` next succeeds, so a later, unrelated incident
-  gets its own fresh attempt. Hardware-verified on cam-kinder-rechts by
+  gets its own fresh attempt. Hardware-verified on cam-04 by
   deliberately reproducing the stuck state again: counted 1/10 through
   9/10 over ~8 minutes, escalated to a real reboot at attempt 10, back to
   serving within ~15s with no manual intervention, marker file cleared.
@@ -2677,7 +2677,7 @@ session these came out of.
   that had three cameras stuck in night on 2026-08-16. In practice its own
   safety clamp (never raise the threshold past `night_gain/2`) could not
   raise it far enough for the cameras that actually needed it: the live
-  fleet measurements show `cam-sz`/`cam-wohn-ofen` need `day_gain` up
+  fleet measurements show `cam-05`/`cam-09` need `day_gain` up
   around 2528-3238 while the clamp caps a raised value at `night_gain/2` =
   2048 under their current `night_gain`
   (`private/fleet/camera-fleet.md`, "Konsequenz für die Schwellwerte"). A
@@ -2728,7 +2728,7 @@ session these came out of.
   the OSD and the `fps` field of the HTTP `/stats` payload, both of which now
   match their bitrate counterparts. **Not confirmed** as the explanation for
   the one field report that prompted this (`dev_notes/TODO.md`, an OSD reading
-  13 instead of ~25 on cam-kinder-rechts); the check that would have decided it
+  13 instead of ~25 on cam-04); the check that would have decided it
   was never run, and the fps ceiling on those cameras turned out to have a
   driver-level cause. Applied because a frozen reading on an idle channel is
   wrong on its own terms.
@@ -2736,7 +2736,7 @@ session these came out of.
 - **`video<N>.qp` no longer claims a live apply it cannot make** on the
   new-API SoCs (`src/enc_caps.h`, `src/hal/hal_ingenic.c`, `src/control.h`,
   `scripts/timps-qa.sh`, `docs/wiki/Rate-Control-Parameters.md`,
-  `docs/wiki/HTTP-Control-API.md`). Measured on cam-garage (T31X, substream in
+  `docs/wiki/HTTP-Control-API.md`). Measured on cam-01 (T31X, substream in
   `fixqp`): a live POST is answered `deferred:0` and `encoder.<n>.rc.qp`
   echoes the new value, while the encoded bitstream does not move at all - the
   same QP pair applied at boot spans 6.4x. `IMP_Encoder_SetChnAttrRcMode`
@@ -2759,7 +2759,7 @@ session these came out of.
   `src/control.c`, `src/mp4/httpd.c`). The readback gate below covers one
   direction with a bounded window: "I commanded X and the ISP did not
   follow within 18 s." The field morning of 2026-08-21 produced the other
-  direction by hand: while unsticking cam-wohn-ofen the operator drove the
+  direction by hand: while unsticking cam-09 the operator drove the
   board script to day while timps stood on night, and afterwards nothing
   said that the two disagreed - the automaton would simply have flipped the
   ISP back at its next opportunity. That case must NOT be enforced: outside
@@ -2794,7 +2794,7 @@ session these came out of.
 
 - **A mode switch only counts once the ISP confirms it - and a stuck ISP is
   now unstuck by the one thing that acts on it, a real transition**
-  (`src/daynight.c`, `scripts/dn-replay.py`). Field incident, cam-wohn
+  (`src/daynight.c`, `scripts/dn-replay.py`). Field incident, cam-10
   (cinnado_d1_t31l, T31L), 2026-08-21: at 10:29:07 the automaton decided day
   ("IR ratio 0.97"), `switch_cmd` ran with rc=0, the board hook chain POSTed
   `running_mode=0`, both post-switch re-asserts fired - and
@@ -2847,7 +2847,7 @@ session these came out of.
   (the driver-view edge), and the mode assertions then judge the rendered
   timeline instead of the switch log, which is exactly the pair that
   diverges. Corpus scenario `27-isp-does-not-follow`, built from the
-  cam-wohn morning; pre-fix it reproduces the incident (1 switch, night for
+  cam-10 morning; pre-fix it reproduces the incident (1 switch, night for
   the rest of the run, 110 s past the wrong-mode bound), post-fix it passes
   with the exact field click count: 1 dropped + 2 for the cycle = 3.
 
@@ -2875,7 +2875,7 @@ session these came out of.
   night", added with the `21-ir-ratio-flap` fix) is a proven night verdict at
   a level below the probe bar, and it left the reference standing. On a scene
   resting below the bar the jump trigger therefore re-armed and fired every
-  `probe_confirm_s`, indefinitely - measured on cam-schuppen on the morning of
+  `probe_confirm_s`, indefinitely - measured on cam-06 on the morning of
   2026-08-21: reference 5753, scene at 1040, `verdict=night` every 26 seconds,
   each one dimming the image for the 8 s settle. The verdicts themselves were
   CORRECT (day mode had been measured at 5.6x that same morning and re-learned
@@ -3022,7 +3022,7 @@ session these came out of.
   gone. At real dawn the night reading falls and the switch happens by itself,
   with no special case. The factor is measured per scene rather than
   configured, and is re-measured after a restart rather than persisted.
-  Corpus scenarios `21-ir-ratio-flap-cam-sz` and `22-ir-ratio-flap-t20`, both
+  Corpus scenarios `21-ir-ratio-flap-cam-05` and `22-ir-ratio-flap-t20`, both
   built from measured numbers, hold this to two switches where the unguarded
   automaton spent twelve.
   The factor may be **below** 1, and the first version of this guard rejected
@@ -3410,7 +3410,7 @@ session these came out of.
 
   Shorter memories fire later and find fewer, because they track the twilight
   instead of noticing it. The two cameras nobody finds are the permanently
-  dark garage and one whose AE never leaves its rail - both heartbeat-carried
+  dark room and one whose AE never leaves its rail - both heartbeat-carried
   by construction. A **third, medium (~10 min) constant** was proposed after
   that night and is **not** implemented: the event that motivated it (a
   bedroom light inside the ongoing dusk, a factor of 1.54) bottoms at 0.87
@@ -3430,7 +3430,7 @@ session these came out of.
   columns (`trend_fast`, `trend_slow`) and **432 bytes of `.text` on MIPS**
   (`mipsel-linux-gcc -Os`, 21,620 -> 22,052; `.bss` unchanged at 272), most of
   it the two new log call sites. New corpus scenario
-  **20-dawn-trend-schuppen**, built on that measured dawn: the pre-change
+  **20-dawn-trend-cam-c**, built on that measured dawn: the pre-change
   build spends **2570 virtual seconds in the wrong mode**, the post-change
   build **0**, for one audible click either way.
 - **day/night: `daynight.learn` (default 0) - opt-in threshold learning with a

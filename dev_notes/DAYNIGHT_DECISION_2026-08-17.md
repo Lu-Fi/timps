@@ -67,7 +67,7 @@ two pipelines rail at different ceilings (T20/jxf22 caps ISP digital gain at
 32 log2-units in day against 45 in night - an index ceiling of 6166 vs 8171
 at its pinned 0.7527 ratio). A `night_gain` raised into that gap made
 `s > night_gain` unsatisfiable, and day mode - no probe, no history, by
-design - had no other door: cam-wyze-pan spent 88 minutes railed dark in day
+design - had no other door: cam-07 spent 88 minutes railed dark in day
 mode until a manual override. A meter pegged at its dark end is a floor, not
 a level, and cannot happen in a bright scene - the silent probe's
 pegged-is-night argument, applied where the mode cannot otherwise ask.
@@ -330,7 +330,7 @@ this table and now reports **both** halves of the verdict: an earlier version
 reported only false fires, which is half a verdict, since a threshold of zero
 has a perfect false-fire rate and finds nothing.
 
-Acceptance test: corpus scenario **20-dawn-trend-schuppen**, built on the
+Acceptance test: corpus scenario **20-dawn-trend-cam-c**, built on the
 measured dawn of `cam-C` (11839 -> 5312 over two hours, a factor of
 2.23 - this note's "natural twilight is slow", in one measurement). The jump
 bar is not reached until 07:31; the trend fires at 06:45. On the recorded

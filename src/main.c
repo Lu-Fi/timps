@@ -402,7 +402,7 @@ static int hal_stop_bounded(void)
 
 /* Bring-up, or (via g_hal_watchdog_gave_up, see hal.h) a runtime watchdog,
  * has given up for good ("why" says how). Escalate to ONE real reboot - but
- * ONLY one, ever, per incident: cam-kinder-rechts' hardware-verified run
+ * ONLY one, ever, per incident: cam-04' hardware-verified run
  * (2026-08-22) showed process-level retries never cleared that board's stuck
  * rmem while a real `reboot` cleared it every single time, so the reboot is
  * worth taking; a second failure after it means the reboot did not help
@@ -638,7 +638,7 @@ int main(int argc, char **argv)
      * the log and matches "needs a manual/scheduled restart" rather than an
      * indefinitely spinning process that LOOKS alive but never serves a
      * frame. init() failures do not count against this limit. */
-    /* Giving up is not the end of the story: cam-kinder-rechts' own
+    /* Giving up is not the end of the story: cam-04' own
      * hardware-verification run (2026-08-22) showed 10 retries is not
      * always enough time, but a real `reboot` fixed it every single time
      * that resource-drain incident occurred tonight, on every affected

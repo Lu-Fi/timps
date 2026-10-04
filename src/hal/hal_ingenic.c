@@ -697,7 +697,7 @@ static void motion_sync(const ms_config *cfg)
  *
  * The cap is written in sensor lines and judged against GetExpr's own
  * integration_time_max - but once a cap of ours is in force GetExpr reports
- * THAT as the maximum (measured on cam-garage, T31X/sc4336p: 454 lines after a
+ * THAT as the maximum (measured on cam-01, T31X/sc4336p: 454 lines after a
  * 10000 us cap, where the mode's own maximum is ~1500). Comparing a new value
  * against the live reading therefore made the cap a one-way ratchet: a higher
  * value read as "above the sensor mode's own maximum - nothing to cap", and 0
@@ -721,7 +721,7 @@ static void motion_sync(const ms_config *cfg)
  * our caps replaces it. FS disable/enable edges do not change the sensor mode;
  * they only reset the cap, which the rule above already turns into a fresh
  * reading, and they re-arm the supervisor (ae_it_max_arm) that takes it.
- * (Measured on cam-garage: GetExpr's maximum is the ISP AE's own limit, not
+ * (Measured on cam-01: GetExpr's maximum is the ISP AE's own limit, not
  * the sensor's VTS - it stayed at 2246 lines at 15 and 20 fps while /proc's
  * "SENSOR Max Integration Time" followed the VTS to 2996.)
  *
@@ -785,7 +785,7 @@ typedef struct {
 } ae_it_rd;
 
 /* Slack for "GetExpr reads what we wrote": ~3 %, at least one line. Exact on
- * cam-garage (545 written, 545 read back), but the readback is the SDK's and a
+ * cam-01 (545 written, 545 read back), but the readback is the SDK's and a
  * rounding SDK must not turn the supervisor into an endless rewrite loop. */
 static uint32_t ae_it_slack(uint32_t lines){ return lines / 32 + 1; }
 
@@ -1280,7 +1280,7 @@ static void apply_image_tuning(void)
  *
  * The AE integration-time cap is the one ISP key whose Set is honoured only
  * while the pipeline is genuinely DELIVERING frames to a consumer - not merely
- * while framesource chn0 is enabled. Measured on cam-garage (T31X / sc4336p,
+ * while framesource chn0 is enabled. Measured on cam-01 (T31X / sc4336p,
  * ISP H20221206a) 2026-09-06:
  *   - written into an idle pipeline (boot, or a /control POST with nobody
  *     watching), IMP_ISP_Tuning_SetAe_IT_MAX returns 0 and GetExpr echoes the
@@ -1345,7 +1345,7 @@ static void apply_image_tuning(void)
  * a live POST into an already-streaming pipeline), GetExpr still reports the
  * OLD maximum for another 20-30 s. Judging a write sooner than that just
  * produces redundant - idempotent, harmless - rewrites and log lines: 10 s gave
- * three writes per boot on cam-garage where 30 s gives one. */
+ * three writes per boot on cam-01 where 30 s gives one. */
 #define AE_IT_SETTLE_US   30000000LL    /* after a write, before judging it */
 #define AE_IT_HOLD_US     60000000LL    /* recheck cadence once the cap holds */
 #define AE_IT_SLOW_US    300000000LL    /* ...and after giving up on it sticking */
@@ -4806,7 +4806,7 @@ static int rc_live_apply(int si, const char *k)
      * outside fixqp - the whole-union refill below "succeeds" either way, so
      * without this gate a qp POST under cbr/vbr/smart would be graded live
      * (deferred:0) despite having no observable effect on the running
-     * channel (2026-08-22 hardware measurement, cam-vorne/T23N; the same
+     * channel (2026-08-22 hardware measurement, cam-02/T23N; the same
      * honest-vs-optimistic gap the new-API path already closes for qp). */
     if (!strcmp(k,"qp") && v->rc_mode!=MS_RC_FIXQP) return 0;
     IMPEncoderAttrRcMode m; memset(&m,0,sizeof m);
@@ -4873,7 +4873,7 @@ static int rc_live_apply(int si, const char *k)
          * any new-API SoC, so rc_key_live() never lets it in here. Kept as the
          * record of what SetChnAttrRcMode actually does - it stores the value
          * where the next Get reads it back and never re-programs the running
-         * channel (measured on cam-garage; see enc_caps.h). Restoring a live
+         * channel (measured on cam-01; see enc_caps.h). Restoring a live
          * qp means IMP_Encoder_SetChnQp() plus a bitstream measurement, not
          * re-listing the key.
          *

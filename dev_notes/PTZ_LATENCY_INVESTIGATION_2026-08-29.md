@@ -1,8 +1,8 @@
 # PTZ latency investigation — 2026-08-29
 
 Code-level follow-up to `dev_notes/PTZ_LATENCY_2026-08-29.md` (the black-box
-measurement pass). Same hardware: cam-garage (Wuuk Y0510, T31X/sc4336p,
-`192.168.10.21`), base build `v1.9.3-60-g2a19efd`, video0 1200 kbps @ 15 fps,
+measurement pass). Same hardware: cam-01 (Wuuk Y0510, T31X/sc4336p,
+`192.0.2.21`), base build `v1.9.3-60-g2a19efd`, video0 1200 kbps @ 15 fps,
 video1 384 kbps CBR gop=50 @ 15 fps, both H.264 High. All work below was done
 with **Frigate disconnected and verified absent** (no established sessions on
 554/8880 before starting — `ss`/`netstat` on the camera), which the measurement

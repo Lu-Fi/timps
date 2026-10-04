@@ -72,7 +72,7 @@ enum { DN_DAY = 0, DN_NIGHT = 1, DN_UNKNOWN = -1 };
  * the new mode (dn_read sees the line every tick anyway). If it has not
  * after the whole assert chain (script + both re-asserts) had time, force
  * ONE real transition through the counter mode - re-asserting an already-
- * believed value is a no-op to a stuck ISP, only an edge acts (cam-wohn
+ * believed value is a no-op to a stuck ISP, only an edge acts (cam-10
  * 2026-08-21; same rule as the railed-boot cycle). One cycle, then give up
  * loudly: a second identical cycle has no new mechanism, and a permanently
  * stuck ISP must not turn this into a click generator. Cost trade-off in
@@ -506,7 +506,7 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
         /* Cutover 2026-09-06: where the SDK never publishes a real max (both
          * T20 cellar cameras - see mit_real above), the high-water-mark ratio
          * just computed is a boot-time-blind estimate (rails at 1.0 for
-         * minutes after every restart, confirmed live on cam-wyze-pan:
+         * minutes after every restart, confirmed live on cam-07:
          * ratio_imp=0.8350 vs ratio=1.0000 at t=21s, converging to within
          * 0.1% of each other by ~2.5 min). IMP_ISP_Tuning_GetExpr's own
          * it_max_lines is authoritative from sample 1, so prefer it whenever
@@ -1454,7 +1454,7 @@ static void *dn_thread(void *arg)
              * rail, the repair then reads as a dawn, one wasted probe per
              * boot, measured. But outright is too strong, because it
              * deadlocks the pair on a board whose genuine rest state IS a
-             * clip - measured on cam-wyze-pan (T20) 2026-08-30: d=8171 with
+             * clip - measured on cam-07 (T20) 2026-08-30: d=8171 with
              * 0 units of reserve for the whole night, so neither EMA was
              * ever seeded and path T could not fire once in the session.
              *
@@ -2219,7 +2219,7 @@ static void *dn_thread(void *arg)
                      * question too, because both are asking whether a rail is
                      * a level on its way somewhere or the scene's rest state.
                      * Waiting unconditionally is right for the first, and a
-                     * deadlock for the second: measured on cam-wyze-pan (T20)
+                     * deadlock for the second: measured on cam-07 (T20)
                      * 2026-08-30, d=8171 with 0 units of reserve all night,
                      * so `ref` never anchored, path C never had a bar, and a
                      * cellar light took the trend's 3 minutes to find instead

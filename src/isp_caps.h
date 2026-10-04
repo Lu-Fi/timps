@@ -116,7 +116,7 @@ int IMP_ISP_Tuning_SetDRC_Strength(uint32_t ratio);
  * against the vendored headers):
  *   ISP_HAS_AE_IT_MAX   - IMP_ISP_Tuning_SetAe_IT_MAX(unsigned int), on
  *                         T23/T31/C100. The header documents no unit; measured
- *                         on cam-garage (T31X/sc4336p) it is SENSOR LINES, the
+ *                         on cam-01 (T31X/sc4336p) it is SENSOR LINES, the
  *                         same unit GetExpr reports and reads back through it.
  *   ISP_HAS_AE_IT_RANGE - IMP_ISP_Tuning_SetIntegrationTime(IMPISPITAttr*), on
  *                         T10/T20/T21/T30 - the older SDK, which expresses the

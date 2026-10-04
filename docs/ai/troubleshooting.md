@@ -797,7 +797,7 @@ throughout — `osd0.0.enabled`, `osd1.3.font_size` (`osd_key()` in
 that writes the item onto **every** stream.
 
 **"How much CPU does the OSD cost, and can I lower it?"** Measured on a T31
-(Garage, single core, 2026-09-25, `nice 19` spinner A/B, 3 interleaved
+(cam-01, single core, 2026-09-25, `nice 19` spinner A/B, 3 interleaved
 rounds, 4 items per stream: date/time, `{hostname}`, `{uptime}`, logo):
 - **In total ~8-9 points of the core.** In one run it was 36.8 % vs 28.8 %
   with `osd.enabled = 0`, in another 23.6 % vs 14.4 %.
@@ -998,7 +998,7 @@ and no cap of ours is in force. Range is 0..1000000 µs; 0 = off.
 
 **Where the numbers come from.** T23/T31/C100: `GetExpr`
 (`integration_time_max`, `one_line_expr_in_us`). Its maximum is the ISP AE's
-own limit, not the sensor's VTS: on cam-garage it stayed 2246 lines at 15 and
+own limit, not the sensor's VTS: on cam-01 it stayed 2246 lines at 15 and
 20 fps while `/proc/jz/isp/isp-m0`'s "SENSOR Max Integration Time" followed
 the VTS to 2996. T10/T20/T21/T30 (**since v1.9.29**): `GetExpr` is often empty
 there (all zero on a Wyze Cam v2, T20X/jxf23 — the key never worked on it
@@ -1306,7 +1306,7 @@ returns 200 after waiting up to 600 ms. Harmless.
 `N session(s) still running at stop - leaving the DTLS context allocated` —
 shutdown-time, deliberate, like the HTTP one.
 
-**"WebRTC has ~400 ms delay, I expected ~100".** Measured on Garage (T31,
+**"WebRTC has ~400 ms delay, I expected ~100".** Measured on cam-01 (T31,
 LAN, Chrome/Edge on Linux, 2026-09-26) with the preview's `delay ≈` readout
 and `getStats()`: camera 18 ms (`?clients=1` `lat_ms`), network ~10 ms,
 decode ~5 ms, but a video jitter buffer of ~350 ms whose own need
@@ -2161,7 +2161,7 @@ old "conflicts with prudynt-t" caveat is gone. The real hazards are leftovers:
   silently broke the old literal name.
 - **The inverse:** on a clean timps image `/usr/sbin/{daynight,ircut,light}`
   are not built at all — they live in `thingino-daynightd/files/`. The
-  recorded incident (Garage, T31/SC4336P, 2026-08-12) is exactly the
+  recorded incident (cam-01, T31/SC4336P, 2026-08-12) is exactly the
   purple-image case from §3.2: **every `switch_cmd` invocation failed with
   `rc=127`, the IR-cut filter was never removed, total gain climbed from
   3500 to 22000+ over minutes, and the image went purple/IR-tinted.**

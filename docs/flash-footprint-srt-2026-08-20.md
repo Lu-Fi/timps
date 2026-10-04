@@ -1,7 +1,7 @@
 # Making SRT fit: where 765952 bytes came from
 
-Date: 2026-08-20. Board: wuuk_y0510_t31x_sc4336p_ssv6158 at 192.168.15.190
-("garage", the designated test camera). Partition `mtd4` = 5242880 bytes.
+Date: 2026-08-20. Board: wuuk_y0510_t31x_sc4336p_ssv6158 at 192.0.2.190
+("cam-01", the designated test camera). Partition `mtd4` = 5242880 bytes.
 
 > ## ⚠ READ THIS FIRST: the 5 MB limit this document optimises against is not real
 >
@@ -173,8 +173,8 @@ timps source tree or per-device configuration, which are not packages.
 |---|---|---|---|
 | libsrt section flags | `package/libsrt/libsrt.mk` | firmware, **both** `piuma` and `.ciao-wt` (`ciao`) | every camera that builds SRT |
 | static C++ runtime | `Makefile` | **timps** source repo | every SRT build |
-| five `TIMPS_*` switches | `user/wuuk_y0510_t31x_sc4336p_ssv6158/192.168.15.190/local.fragment` | firmware (shared, see below) | this camera |
-| sound + library stubs | `user/wuuk_y0510_t31x_sc4336p_ssv6158/192.168.15.190/overlay/` | firmware (shared) | this camera |
+| five `TIMPS_*` switches | `user/wuuk_y0510_t31x_sc4336p_ssv6158/192.0.2.190/local.fragment` | firmware (shared, see below) | this camera |
+| sound + library stubs | `user/wuuk_y0510_t31x_sc4336p_ssv6158/192.0.2.190/overlay/` | firmware (shared) | this camera |
 
 No other package `.mk`, `Config.in` or hook was modified for this work. In
 particular `package/timps/timps.mk` was **not** touched: its
@@ -477,7 +477,7 @@ build**. Verify by binary size (1278396) or by the SRT block in `/control`.
 
 ## What is actually in place now
 
-`U` below is `user/wuuk_y0510_t31x_sc4336p_ssv6158/192.168.15.190`.
+`U` below is `user/wuuk_y0510_t31x_sc4336p_ssv6158/192.0.2.190`.
 
 Kept, fleet-wide (the libsrt flags are free; the static link only pays off if
 the two libraries are also removed, which costs the audio filters):

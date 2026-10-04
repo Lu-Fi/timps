@@ -126,7 +126,7 @@ static uint64_t pts_track_time(fmp4_mux *m, int64_t pts_us, int64_t *last_pts_io
              * the audio track re-anchored via M2 and stayed correct. The two
              * tracks then sat at a fixed A/V offset equal to the stall, which
              * never healed because the offset is an accumulator, not a
-             * measurement (cam-vorne-garage 2h fMP4 longrun 2026-08-28: ~0.03 s
+             * measurement (cam-02 2h fMP4 longrun 2026-08-28: ~0.03 s
              * skew for 45 min, one WiFi stall, then a dead-flat 24.0 s for the
              * remaining 65 min; RTSP over the same link was unaffected because
              * RTP timestamps are absolute and simply resume at the right

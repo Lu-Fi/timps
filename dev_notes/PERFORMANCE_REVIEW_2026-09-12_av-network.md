@@ -9,7 +9,7 @@ tonight's `control.c`/`httpd.c` changes), and not a review of `config.c`,
 pipeline.
 
 **Basis:** static reading of the current tree at `61733fb`, plus **live
-per-thread CPU sampling on two production cameras** (cam-schuppen T31,
+per-thread CPU sampling on two production cameras** (cam-06 T31,
 Galayou T23) — read-only, no config change, no restart, no flash write.
 The live data is the novel part of this pass and it changes where the
 remaining effort should go.
@@ -55,7 +55,7 @@ is in the recorder's failure path, not on the wire.
 Per-thread `utime+stime` deltas from `/proc/<pid>/task/*/stat`, 20 s windows,
 on cameras carrying their normal production load.
 
-### cam-schuppen (T31L / sc2336, 37 MB RAM), 2 RTSP-over-TCP clients
+### cam-06 (T31L / sc2336, 37 MB RAM), 2 RTSP-over-TCP clients
 
 | thread | ticks / 20 s | % of one core |
 |---|---|---|
@@ -120,7 +120,7 @@ ticks/10 s = 17.9 %. `record.enabled = 0` on this camera.
 This is the reframing the measurement forces, and it is why there is no
 Tier-1 C-level finding in this review.
 
-On cam-schuppen under its normal two-RTSP-client load, timps' thirteen own
+On cam-06 under its normal two-RTSP-client load, timps' thirteen own
 threads account for **6.8 % of a core** — the encoder drain, AU assembly,
 `au_is_key`, RTP packetization, the fan-out, two client loops, OSD
 rasterization, day/night, motion, everything. The six libimp `group_update`
@@ -154,7 +154,7 @@ cache not worth it — but nobody has measured the **libimp-side per-frame
 compositing** cost, which this data says is 2–5× larger and paid on every
 frame.
 
-**Suggested next step, not a change:** settle it on the Garage test camera
+**Suggested next step, not a change:** settle it on the cam-01 test camera
 (currently down; it is the disposable unit per the fleet notes, and the only
 one where toggling OSD is acceptable). Sample `group_update`/`OSD-N` per-thread
 ticks over 20 s in four states — OSD on with the default 4 items, OSD with 1
@@ -164,8 +164,8 @@ tells you whether "drop OSD on the substream" is worth several percent of a
 core fleet-wide, or nothing at all. **Do not change fleet config on the
 strength of this note alone** — the attribution is genuinely open.
 
-**Update 2026-09-12, measured on Garage (T31, `wuuk_y0510_t31x_sc4336p_ssv6158`,
-192.168.10.21):** one RTSP/TCP client on the main stream throughout (`ffmpeg`
+**Update 2026-09-12, measured on cam-01 (T31, `wuuk_y0510_t31x_sc4336p_ssv6158`,
+192.0.2.21):** one RTSP/TCP client on the main stream throughout (`ffmpeg`
 pulling `ch0` to `/dev/null`), 20 s `group_update` tick samples via
 `/proc/<pid>/task/*/stat`, `osd0`/`osd1` item state changed live via
 `POST /control` (nested-JSON form, e.g. `{"osd0":{"1":{"enabled":0}}}` - flat
@@ -208,7 +208,7 @@ otherwise acceptable - but this is a **product/UX tradeoff (less on-screen
 info), not a free code optimization**, and the substream-specific question
 (D) needs a cleaner repeat (multiple samples, or averaging over a longer
 window) before drawing a fleet-config conclusion from it specifically.
-Garage was restored to its normal 4-items-both-streams default and
+cam-01 was restored to its normal 4-items-both-streams default and
 `timpsd` restarted before this measurement was written up.
 
 ### AV-02 — `seg_open()` retry storm on any recording failure
@@ -456,7 +456,7 @@ compile-time constant divisor.
 
 Separately, the SW-rotate path this lives on is inactive: it is gated on
 `USE_SW_ROTATE` *and* a configured 90/270 rotation, and neither T23 in the
-fleet (Galayou 192.168.10.28, cam-kinder-links 192.168.10.124) sets
+fleet (Galayou 192.0.2.28, cam-03 192.0.2.124) sets
 `videoN.rotation` — checked live.
 
 Two small nits remain on that path and are worth folding into any future edit
@@ -630,7 +630,7 @@ paths carry no instrumentation cost in production.
 
 ## Recommended order
 
-1. **AV-01's measurement on Garage** (~10 min once that camera is back up).
+1. **AV-01's measurement on cam-01** (~10 min once that camera is back up).
    It is the only thing in this document that could be worth several percent
    of a core fleet-wide, and it is currently an open attribution question,
    not a change.

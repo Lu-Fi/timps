@@ -27,7 +27,7 @@ A second disable on an already-idle channel is rejected by libimp
 existing `g_fs_enabled[]` refcount (the single source of truth for hardware
 state elsewhere in the file) — only calls `DisableChn` when the channel is
 actually enabled, and resets the refcount for the in-process start-retry
-path (`ing_stop → ing_init → ing_start`). Verified live on cam-garage: 3×
+path (`ing_stop → ing_init → ing_start`). Verified live on cam-01: 3×
 `S95timps restart`, zero false warnings, both RTSP streams recovered
 normally each time.
 
@@ -121,7 +121,7 @@ reported maximum, raising the target again is rejected as "above the
 maximum", and `0` (disable) has no restore call. Only a process restart
 clears it fully.
 
-**Measured on cam-garage (T31X/sc4336p), real night scene:**
+**Measured on cam-01 (T31X/sc4336p), real night scene:**
 
 | | before fix | after fix |
 |---|---|---|
@@ -135,7 +135,7 @@ whole feature (both commits) is **+1984 .text / +28 .data / +32 .bss**
 310 KB binary.
 
 **Real-world caveat found while demoing this:** on a camera whose gain is
-already near its ceiling before the cap is applied (cam-garage's analog
+already near its ceiling before the cap is applied (cam-01's analog
 gain was 126/127 even uncapped), there's no headroom left to trade shorter
 exposure for more gain — the image just gets darker, not just noisier. The
 usual "less blur, more grain" framing assumes gain headroom that isn't

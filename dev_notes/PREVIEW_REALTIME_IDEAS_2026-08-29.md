@@ -38,7 +38,7 @@ of each `moof`, feed each video `mdat` — already AVCC length-prefixed — to a
 true}`) → draw each `VideoFrame` to a canvas on arrival. No SourceBuffer, no
 playback clock, no cushion: the newest frame is simply shown when it arrives.
 
-**Prototyped 2026-08-29 against cam-garage** (Chromium, sub stream chn=1,
+**Prototyped 2026-08-29 against cam-01** (Chromium, sub stream chn=1,
 `avc1.640033`, ~90-line player core): side-by-side with the current MSE logic
 on the same camera, the WebCodecs path decoded/rendered 1124/1124 frames with
 **arrival→render avg 1.0 ms, max 14.6 ms, decode queue ≤3, standing buffer
@@ -149,7 +149,7 @@ WebUI's own origin — not a WebRTC stack.
 
 1. Idea 1 behind feature detection, as a new "Real-time" entry in the
    existing latency selector (fallback: current MSE). One file, testable on
-   cam-garage in an afternoon; the prototype's parser/decoder core is above.
+   cam-01 in an afternoon; the prototype's parser/decoder core is above.
 2. Idea 2's PTZ-aware snap (tiny, immediate perceived win even for MSE
    fallback users), then the adaptive margin.
 3. Leave MJPEG and WebRTC as documented options for the specific situations
@@ -165,7 +165,7 @@ implement.
 
 After this document was written, Idea 1 was verified a second time from
 scratch, independently of the agent that wrote it above, by hand-building a
-standalone test page against cam-garage rather than trusting the write-up
+standalone test page against cam-01 rather than trusting the write-up
 alone. This surfaced two real bugs in box parsing that are worth recording
 so nobody reintroduces them during the real integration:
 
@@ -204,7 +204,7 @@ integration, but it is the reason a quick standalone reproduction (e.g. for
 a future regression check) must not "simplify" to an Authorization header.**
 
 With both bugs fixed and using the `?token=` form: repeated fresh-tab runs
-against cam-garage decoded 145-185 frames per run with **arrival-to-render
+against cam-01 decoded 145-185 frames per run with **arrival-to-render
 averaging 0.6-1.7 ms** and decode queue depth 0 throughout - consistent with
 the original prototype's numbers (1.0 ms avg, 14.6 ms max) and confirming
 the approach is real, not a one-off measurement artifact.
@@ -229,7 +229,7 @@ as a real feature (not left as a proposal), with these constraints agreed:
 - Reuses the existing `?token=` auth flow and stream selector (`chn=0/1`)
   rather than duplicating them - it should read as a mode of the same
   preview, not a bolted-on second page.
-- Built and verified on cam-garage specifically (fast live-patch to
+- Built and verified on cam-01 specifically (fast live-patch to
   `/var/www/preview.html` via SSH for iteration, then a real
   package-rebuild + reflash to prove the build pipeline actually produces
   what was tested - a live-patch alone was explicitly called out as

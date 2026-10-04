@@ -5,7 +5,7 @@ self-signed-cert usability findings (iOS Safari multi-origin trust pain, see
 PREVIEW_REALTIME_IDEAS_2026-08-29.md) and MOTORS_WSS_SIZE_REVIEW_2026-08-29.md.
 
 Reference build used for all numbers:
-`output/ciao/cinnado_d1_t31l_sc2336_atbm6031-...-192.168.10.33` (T31L, 8 MB NOR),
+`output/ciao/cinnado_d1_t31l_sc2336_atbm6031-...-192.0.2.33` (T31L, 8 MB NOR),
 built 2026-08-29 14:11 UTC.
 
 ---
@@ -30,7 +30,7 @@ The honest recommendations, in order:
    must import the CA root once, and *we* are the CA (key hygiene matters).
 2. If a real public cert is truly wanted: obtain it **centrally, not
    on-camera** — one DNS-01 wildcard cert (e.g. `*.cam.example.com`) on an
-   always-on LAN box (the docker host at 192.168.178.17 qualifies), pushed
+   always-on LAN box (the docker host at 192.0.2.17 qualifies), pushed
    to cameras over SSH + `S60uhttpd restart`. On-camera cost: ~6 KB of cert
    files in the data overlay, no new binaries at all.
 3. On-camera ACME client: feasible in principle **only via uacme** (~35 KB,
@@ -41,10 +41,10 @@ The honest recommendations, in order:
 ### Feasibility: why LE structurally doesn't fit
 
 - Public CAs **cannot issue for private IPs or mDNS names at all**. No cert
-  for `192.168.10.33`, none for `cam-vorne.local`, ever. (LE's 2025 IP-cert
+  for `192.0.2.33`, none for `cam-02.local`, ever. (LE's 2025 IP-cert
   offering covers *public* IPs only.) Today the fleet is addressed by raw
   RFC1918 IP — a real cert forces a naming migration: every camera needs a
-  public DNS record (`cam-vorne.cam.example.com` → A 192.168.10.33 is legal;
+  public DNS record (`cam-02.cam.example.com` → A 192.0.2.33 is legal;
   DNS-01 never contacts the host) and every client must switch to browsing
   by that name. That migration, not any binary, is the real adoption cost.
 - **HTTP-01 is out**: it needs LE to reach port 80 on the *validated name*,
@@ -119,7 +119,7 @@ Verified three independent ways:
 - `S60uhttpd` `build_uhttpd_args()` passes `-s 443 -C ... -K ... -p 80` and
   never `-q`. The startup message `"HTTP: http://...:80/ (redirects to
   HTTPS)"` (line 146) is aspirational text only.
-- Live check against cam 192.168.10.33 port 80: `HTTP/1.1 200 OK` — content
+- Live check against cam 192.0.2.33 port 80: `HTTP/1.1 200 OK` — content
   served in plaintext, no redirect.
 - Bonus finding: **`BR2_PACKAGE_THINGINO_UHTTPD_HTTP_REDIRECT` is a dead
   Kconfig symbol.** It exists in `package/thingino-uhttpd/Config.in`

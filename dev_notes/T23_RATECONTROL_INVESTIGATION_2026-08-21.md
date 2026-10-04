@@ -12,7 +12,7 @@ proportions than expected".
 
 ## The two cameras
 
-| | cam-kinder-links | cam-kinder-rechts |
+| | cam-03 | cam-04 |
 |---|---|---|
 | SoC | T23 (`cinnado_d1_t23n_sc2336_atbm6012bx`) | T31 (`cinnado_d1_t31l_sc2336_atbm6031`) |
 | Sensor | sc2336 1920x1080 | sc2336 1920x1080 |
@@ -139,7 +139,7 @@ On T23, `rc_mode = vbr` with `quality_lvl = 7` delivers 1243 kbit/s against
 not scene adaptation: busy scenes pay the same reduced quality. Decoded frames
 at the three settings differ by about 7% in PNG size (2.01 / 1.93 / 1.88 MB),
 against 1.24 MB for the fixqp=42 frame, so the visible cost is far smaller than
-the fixed-qp comparison would suggest. Left running on cam-kinder-links for
+the fixed-qp comparison would suggest. Left running on cam-03 for
 evaluation; not yet in any user overlay, so a flash reverts it.
 
 ## Open items
@@ -178,7 +178,7 @@ is a translation error.
 
 ## Follow-up: min_qp is the actual lever (2026-08-21, later)
 
-Swept `min_qp` on cam-kinder-links under vbr, quality_lvl held at the default
+Swept `min_qp` on cam-03 under vbr, quality_lvl held at the default
 2 so min_qp was the only variable:
 
     min_qp=20: 2052 1379 2426 1358 2054 1370 2064 1389 2071 1386 2086 1287   mean 1743

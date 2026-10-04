@@ -23,7 +23,7 @@ int main(void)
     memset(&a, 0, sizeof a);
     a.sin_family = AF_INET;
     a.sin_port = htons(5000);
-    inet_pton(AF_INET, "192.168.178.17", &a.sin_addr);
+    inet_pton(AF_INET, "192.0.2.17", &a.sin_addr);
 
     ok(clients_json(buf, sizeof buf) > 0 && !strcmp(buf, "{\"clients\":[]}"), "empty list");
 
@@ -33,7 +33,7 @@ int main(void)
     clients_bytes(id, 125000);                       /* 1 Mbit */
     sleep(1);
     ok(clients_json(buf, sizeof buf) > 0, "json fits");
-    ok(strstr(buf, "\"ip\":\"192.168.178.17\"") && strstr(buf, "\"port\":5000") &&
+    ok(strstr(buf, "\"ip\":\"192.0.2.17\"") && strstr(buf, "\"port\":5000") &&
        strstr(buf, "\"proto\":\"rtsp/udp\"") && strstr(buf, "\"chn\":1"), "fields");
     ok(strstr(buf, "\"agent\":\"Lavf61.7.100 \\\"quoted\\\"\"") != NULL, "agent escaped");
     char ua[CLIENTS_AGENT_MAX];

@@ -464,7 +464,7 @@ audio.mute               = 0      # live — mic mute (1 = drop captured frames,
 # open, not immediately (same "not truly live" caveat as high_pass/agc/ns
 # above). Also note: IMP_AI_EnableAec brings up the vendor's full WebRTC audio
 # processing chain (AGC+NS+HPF, configured by /etc/webrtc_profile.ini, not by
-# these settings) on the mic while engaged - observed on Garage to sometimes
+# these settings) on the mic while engaged - observed on cam-01 to sometimes
 # leave the mic path audibly noisier even after AEC disengages, until timps is
 # restarted.
 audio.aec                = 0      # persists now, engages at next AO open — 0 off, 1 on (USE_BACKCHANNEL/USE_PLAY)

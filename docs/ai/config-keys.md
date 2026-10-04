@@ -1129,7 +1129,7 @@ Other legacy forms that are **not** aliases but are still accepted:
 
 ## 22. Build-time options (thingino firmware Kconfig)
 
-Source: `/home/lfiebach/thingino-firmware-LuFi/package/timps/Config.in` and
+Source: `<thingino-firmware>/package/timps/Config.in` and
 `package/timps/timps.mk`. **Every symbol is `bool`** — there are no string or int
 symbols. A config key can be perfectly valid and still do nothing because the
 feature behind it was not compiled in, which is the single most common cause of

@@ -191,7 +191,7 @@ TEST_REBOOT="${TEST_REBOOT:-0}"  # 14c: real reboot, config/binary/version persi
 # inside it compares two black frames.
 # The budget is DN_BOOT_SETTLE_S 5 + DN_PROBE_SETTLE_S 8 + DN_TRANSITION_S 5
 # (daynight.h) plus room for the ISP to confirm the switch back and AE to
-# reconverge. Measured against 192.168.10.21 on 2026-09-02, from the daemon's
+# reconverge. Measured against 192.0.2.21 on 2026-09-02, from the daemon's
 # own syslog: thread start 22:05:07, probe out at :13, back to night at :22,
 # ISP confirmed at :24 - so the dark window ran start+6 to start+17 and 30 s
 # clears it with most of a window to spare.
@@ -467,7 +467,7 @@ ffwarn_count() { local n; n=$(grep -icE "$FFWARN_RE" "$1" 2>/dev/null); printf '
 # over that shared log cannot tell which component complained, and BOTH muxers
 # log a timestamp-bookkeeping warning for the same harmless event (duplicate
 # wallclock arrival stamps): the copy side's "Non-monotonic DTS" matches
-# FFWARN_RE and read as decode failures on two separate clean cam-garage
+# FFWARN_RE and read as decode failures on two separate clean cam-01
 # longruns (2026-08-22/24, all "failures" were [vost#0:0/copy DTS lines, zero
 # corruption terms anywhere); the null side's "Application provided invalid,
 # non monotonically increasing dts" escapes FFWARN_RE only by wording accident
@@ -1333,7 +1333,7 @@ SKEW $skewline"
 			ffe=$((ffe - rtp_lines)); [ "$ffe" -lt 0 ] && ffe=0
 			# Loss that overflowed THIS host's receive buffer never was on the
 			# wire: ffmpeg wasn't reading yet (stream start/analysis) while a
-			# fast link kept delivering. 2026-09-25 cam-vorne: "4.2 % / 100 %
+			# fast link kept delivering. 2026-09-25 cam-02: "4.2 % / 100 %
 			# lost" were exactly the host's RcvbufErrors, 0 with a 4 MB buffer.
 			# Report it apart and rule the network only on the rest.
 			local host_drop=${rcvbuf_drops:-0}
@@ -1436,7 +1436,7 @@ if [ -n "$SSH_TARGET" ]; then
 		ok "no stale /run/timps.crash on $CAM (no unnoticed crash evidence since last boot)"
 	fi
 
-	# RAM headroom + this script's OWN tmpfs leftovers (cam-vorne 2026-09-06).
+	# RAM headroom + this script's OWN tmpfs leftovers (cam-02 2026-09-06).
 	# /tmp is tmpfs on thingino, so every byte parked there is RAM the kernel
 	# cannot reclaim. Five earlier runs without --ssh each left a 2 MB
 	# section-11 clip behind (the old section 11 POSTed the clip even when it
@@ -3860,7 +3860,7 @@ else
 		else
 			# Bracketed -3 / +3 / -3, not a bare A/B pair. Keyframe size on a real
 			# camera drifts with the light: the same config measured across one
-			# session on cam-garage produced 26.7k B in the afternoon and 13.9k B at
+			# session on cam-01 produced 26.7k B in the afternoon and 13.9k B at
 			# dusk, and an unbracketed pair duly reported a 41.9% "effect" with the
 			# opposite sign to three earlier controlled runs that had agreed on 0.1%.
 			# Repeating the -3 half at the end costs one capture and turns that
@@ -5020,7 +5020,7 @@ else
 	# bad idea, never just "nobody got to it yet" (that case should WARN).
 	# ae_it_max_us: up to v1.9.28 the one image key a probe could not restore:
 	# 0 meant "never wrote anything" and raising it again was refused (measured
-	# on cam-garage 2026-09-06: 12000 -> 8000 took, 8000 -> 12000 did not), so a
+	# on cam-01 2026-09-06: 12000 -> 8000 took, 8000 -> 12000 did not), so a
 	# POST here left the night exposure changed until a restart. Since v1.9.29
 	# the HAL remembers the uncapped maximum and 0 writes it back, but the
 	# removal only lands once frames are delivered and a cap meanwhile moves the
@@ -5723,7 +5723,7 @@ if [ -z "$SSH_TARGET" ]; then
 	# control.c), so without SSH there is no observable that distinguishes
 	# "clip written" from "no SD card / bad path / USE_RECORD regression",
 	# AND nothing can delete the clip afterwards. The clip lands on /tmp,
-	# which is tmpfs = RAM: five SSH-less runs against cam-vorne (38 MB T23)
+	# which is tmpfs = RAM: five SSH-less runs against cam-02 (38 MB T23)
 	# each left 2 MB behind, and the sixth run's clip tipped the kernel
 	# OOM-killer onto timpsd (2026-09-06). The /control status has no
 	# clip-result field either (record.file is the continuous recorder's) -
@@ -7168,7 +7168,7 @@ if [ -n "$SSH_TARGET" ] && want 16 ssh; then
 	# "assert" as a bare substring and must be excluded too - found by hand
 	# after this pattern flagged a perfectly healthy camera. Same story for
 	# bare "oom": it also matches inside "r(oom)", which the daynight debug
-	# line "the room supplies the light" hits on Garage - excluded rather than
+	# line "the room supplies the light" hits on cam-01 - excluded rather than
 	# word-bounded (\b) since busybox grep's ERE support for \b is not a given.
 	# logread also carries the kernel ring buffer (syslog forwards it), so the
 	# same benign boot-time driver noise DMESG_BENIGN_RE already knows about
@@ -7251,7 +7251,7 @@ if [ -n "$SSH_TARGET" ] && want 16 ssh; then
 	# prevent, quietly reintroduced by this section's own stress load.
 	agc_bj="$OUTDIR/agc_base.json"; curlq 8 "$(http_base)/control" -o "$agc_bj" 2>/dev/null || true
 	agc0=$(jget "$agc_bj" audio.agc)
-	# Baseline liveness too: on cam-vorne 2026-09-06 the daemon had been
+	# Baseline liveness too: on cam-02 2026-09-06 the daemon had been
 	# OOM-killed in section 11, sections 12-15 failed one after another, and
 	# this section then announced "DIED during rapid agc writes - UAF
 	# regression" about a process that had been dead for two hours. Only a

@@ -150,7 +150,7 @@ Nothing is load-bearing on any single sample the way `night_baseline` was:
 It can also be lowered directly, with no probe needed: a silent probe
 verdict of "night" — the illuminator carries the scene (`r >=
 ir_ratio_night`), or day mode is measured-to-bounce (the filter-cost
-projection; that branch forgot the rule until 2026-08-21 and cam-schuppen
+projection; that branch forgot the rule until 2026-08-21 and cam-06
 re-fired every 26 s against a stale bar, scenario
 `26-projection-verdict-no-way-down`) — at a level *below* the current
 probe bar (`ref * probe_jump_pct / 100`) is proof in the other direction —
@@ -337,7 +337,7 @@ its own, and the switch happens — no special case, no calendar. `filter_cost`
 is measured per scene rather than configured, and is deliberately not
 persisted: a quantity that moves with the scene is cheaper to re-measure once
 per restart than to keep correct in flash. Corpus scenarios
-`21-ir-ratio-flap-cam-sz` (factor above 1) and `22-ir-ratio-flap-t20` (factor
+`21-ir-ratio-flap-cam-05` (factor above 1) and `22-ir-ratio-flap-t20` (factor
 below 1) hold this to two switches where the unguarded automaton spent
 twelve.
 

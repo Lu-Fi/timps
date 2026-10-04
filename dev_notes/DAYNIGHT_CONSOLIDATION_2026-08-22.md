@@ -54,15 +54,15 @@ cameras actually demand are above that. From
 
 | camera | figure | where it comes from |
 |---|---|---|
-| cam-sz (Schlafzimmer) | 3238, then 2712 | failed morning verifies, "Live-Verify-Messungen nach Umstellung", 2026-08-17 |
-| cam-db (Dachboden) | 2528 | same table, same morning |
-| cam-wohn-ofen | 3025 | the 10:40 snapshot table - its exposure index while in NIGHT, over `day_gain` 768 "deutlich" |
+| cam-05 | 3238, then 2712 | failed morning verifies, "Live-Verify-Messungen nach Umstellung", 2026-08-17 |
+| cam-11 | 2528 | same table, same morning |
+| cam-09 | 3025 | the 10:40 snapshot table - its exposure index while in NIGHT, over `day_gain` 768 "deutlich" |
 
 **A correction worth carrying forward:** `d97f76b`'s own commit message, the
 CHANGELOG entry, and the fleet document's "Konsequenz für die Schwellwerte"
-paragraph all attribute the span "2528-3238" to cam-sz/cam-wohn-ofen. That is
-sloppy: 3238 is cam-sz and 2528 is **cam-db**, from the failed-verify table;
-cam-wohn-ofen never appears in that table at all (it was in the fast
+paragraph all attribute the span "2528-3238" to cam-05/cam-09. That is
+sloppy: 3238 is cam-05 and 2528 is **cam-11**, from the failed-verify table;
+cam-09 never appears in that table at all (it was in the fast
 day->night bounce-back group) and its own figure is **3025**, measured in the
 snapshot table. The argument is unaffected - 2528, 3025 and 3238 are all above
 the 2048 ceiling, and it is the ceiling that decides - but the three cameras

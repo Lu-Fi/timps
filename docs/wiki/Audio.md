@@ -208,7 +208,7 @@ Chromium):
 1. Open the flag URL above.
 2. In the **Insecure origins treated as secure** text box, enter the
    camera's origin **including any non-default port**, e.g.
-   `http://192.168.10.21` (port 80) or `http://192.168.10.21:8080`. Scheme
+   `http://192.0.2.21` (port 80) or `http://192.0.2.21:8080`. Scheme
    required, no trailing slash. Multiple origins: comma-separated;
    wildcard host patterns are also accepted.
 3. Set the dropdown next to it to **Enabled**.
@@ -226,9 +226,9 @@ each launch, and no per-tab or per-session repetition.
 **Firefox** has two different overrides depending on what you need:
 
 - `dom.securecontext.allowlist` in `about:config` — a comma-separated list
-  of **hostnames** (no scheme, no port — `192.168.10.21`, not
-  `http://192.168.10.21` or `192.168.10.21:8080`; multiple cameras:
-  `192.168.10.21,192.168.10.22`). This is Firefox's equivalent of the
+  of **hostnames** (no scheme, no port — `192.0.2.21`, not
+  `http://192.0.2.21` or `192.0.2.21:8080`; multiple cameras:
+  `192.0.2.21,192.0.2.22`). This is Firefox's equivalent of the
   Chromium flag: matching hosts get `isSecureContext === true` (verified
   in `nsGlobalWindowOuter::ComputeIsSecureContext` →
   `nsMixedContentBlocker::IsPotentiallyTrustworthyOrigin`), unlocking both
@@ -239,7 +239,7 @@ each launch, and no per-tab or per-session repetition.
   2. Search `dom.securecontext.allowlist`. Don't confuse it with the
      unrelated sibling `dom.securecontext.allowlist_onions` (Tor `.onion`
      addresses, nothing to do with LAN cameras).
-  3. Set the value to the camera's hostname, e.g. `192.168.10.21`.
+  3. Set the value to the camera's hostname, e.g. `192.0.2.21`.
   4. Reload the camera page — no browser restart needed, the pref is
      read at page-load/navigation time.
 - `media.devices.insecure.enabled` **and**

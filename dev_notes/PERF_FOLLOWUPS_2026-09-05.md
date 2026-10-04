@@ -15,8 +15,8 @@ measurements are the deliverable.
 
 ## Measurement rig
 
-Everything below was measured on the **Garage T31** (`cam-garage`,
-192.168.10.21, kernel 3.10.14 `isvp_swan_1.0`, uClibc-ng), the disposable test
+Everything below was measured on the **cam-01 T31** (`cam-01`,
+192.0.2.21, kernel 3.10.14 `isvp_swan_1.0`, uClibc-ng), the disposable test
 unit, with a static MIPS scratch binary — the same approach the frame-pool work
 used. Load average was 1.8 throughout, so the syscall figures are if anything
 pessimistic. Three runs, spread ≤3%:
@@ -32,7 +32,7 @@ The first row is the important one and it is **not** what the findings assumed.
 no vDSO, so it is a full syscall" argument implies. Every "N syscalls/s"
 estimate in findings #5 and #7 is therefore roughly **4x too pessimistic**.
 
-Also confirmed here: Garage's `libimp.so` is **byte-identical**
+Also confirmed here: cam-01's `libimp.so` is **byte-identical**
 (`md5 97ca48de…`) to the vendored
 `dl/ingenic-lib/git/T31/lib/1.1.6/uclibc/5.4.0/libimp.so`, which is what makes
 the static analysis in #6 binding on the fleet and not just on one camera.
@@ -105,18 +105,18 @@ If the byte budget ever binds (high bitrate, or >1 MB JPEGs):
 Against real board RAM:
 
 - **37–38 MB** `MemTotal`, `rmem=22M` — `cinnado_d1_t31l` / `wuuk_y0510_t31x`,
-  **5 of the 12 fleet cameras** (cam-db, cam-schuppen, cam-wintergarten,
-  cam-sz, cam-kinder-rechts; see `TODO.md` under the 2026-08-22 encoder-init
+  **5 of the 12 fleet cameras** (cam-11, cam-06, cam-12,
+  cam-05, cam-04; see `TODO.md` under the 2026-08-22 encoder-init
   finding).
-- **74 MB** `MemTotal`, `rmem=50M` — cam-garage, measured today.
-- `timpsd` RSS on Garage right now: **4.8 MB** (VSZ 101 MB).
+- **74 MB** `MemTotal`, `rmem=50M` — cam-01, measured today.
+- `timpsd` RSS on cam-01 right now: **4.8 MB** (VSZ 101 MB).
 
 ### The actionable part
 
 The P-08 build flag is keyed on **SoC generation** (`T10`/`T20`/`T21` get
 `-DFQ_MAX_BYTES=1048576`), but the constraint is **board RAM**, and the
 tightest boards in this fleet are 37 MB **T31**s — which get the 2 MB default.
-`PLATFORM=T31` cannot distinguish them from the 74 MB Garage, so this can never
+`PLATFORM=T31` cannot distinguish them from the 74 MB cam-01, so this can never
 be a Makefile switch; it belongs in the per-camera Kconfig / `local.fragment`
 in the firmware repo.
 
@@ -147,7 +147,7 @@ buffer. Confirmed by reading the parser, not assumed.
 
 ### What it actually costs
 
-Measured on Garage by replaying exactly that call sequence against a prefilled
+Measured on cam-01 by replaying exactly that call sequence against a prefilled
 socketpair, versus the proposed shape (one `poll` + one `read` into a 4 KB
 staging buffer + one clock read):
 
@@ -308,10 +308,10 @@ a guard whose only job is to stop the loop spinning.
 ## What was not done
 
 - **No hardware deploy.** Nothing was changed, so there was nothing to deploy.
-  Garage was used read-only: a static scratch benchmark in `/tmp` (removed
+  cam-01 was used read-only: a static scratch benchmark in `/tmp` (removed
   afterwards) and a `cat` of `/usr/lib/libimp.so`. `timpsd` was not restarted,
-  no flash was written, and no production camera was touched. Schuppen
-  (192.168.10.25) was down for the whole session and was not needed.
+  no flash was written, and no production camera was touched. cam-06
+  (192.0.2.25) was down for the whole session and was not needed.
 - **No new unit test.** The two candidates for one (#5's frame parser, #7's
   pacing) were both declined, and a test for behaviour that did not change
   would only assert the status quo.

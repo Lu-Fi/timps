@@ -1,6 +1,6 @@
 # PTZ joystick-to-motion latency — 2026-08-29
 
-Raw measurement pass on cam-garage (Wuuk Y0510, T31, `192.168.10.21`,
+Raw measurement pass on cam-01 (Wuuk Y0510, T31, `192.0.2.21`,
 build `v1.9.3-60-g2a19efd`), commissioned to find out how long it takes
 from issuing a pan command to the movement actually being visible in each
 of timps' stream types. This document records only what was **measured**;
@@ -14,7 +14,7 @@ normal production use and this run did not explicitly check for or
 exclude that. Section "Consumer-mix effect" below shows RTSP latency is
 *sensitive to what else is connected*, so a silent fifth consumer is a
 real confound on the absolute numbers, not just a footnote. The user is
-disconnecting Frigate from cam-garage before the follow-up investigation
+disconnecting Frigate from cam-01 before the follow-up investigation
 specifically to remove this variable — any future measurement should
 verify session count first (e.g. via `/control` or on-device connection
 state) rather than assume a clean baseline.
@@ -152,7 +152,7 @@ for the code investigation (genuinely candidates, not conclusions):
 ## Next step
 
 A Fable-model agent will investigate this in the actual timps source
-(not just this document) on cam-garage, adding real debug/timing
+(not just this document) on cam-01, adding real debug/timing
 instrumentation where needed to pin down where each stream's latency is
 actually spent, and assess what (if anything) can be safely reduced.
 That work — and its findings — belongs in a separate, later dev_notes

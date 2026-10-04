@@ -46,7 +46,7 @@ The finding that prompted this work predicted that these allocations cross
 uClibc-ng's mmap threshold and cost "~0.3-1 ms per large frame". That is a
 claim about the target's allocator, so it was measured there rather than
 reasoned about: a small static MIPS binary (`scratchpad`, not committed) run
-on the Garage T31, comparing
+on the cam-01 T31, comparing
 
 - **A** — `malloc(sz)` + write the whole frame + `free()` — what a >96 KB frame
   costs today, and
@@ -107,7 +107,7 @@ What that adds up to per second:
 All 11 reachable cameras run `video0.bitrate = 1200` at 15 fps. That puts an
 IDR at roughly 80 KB — **under** the existing 96 KB split, so those already
 recycled and still do. Minor-fault rates sampled on the live daemons (6-14/s
-across cameras with 10-28 h uptime, 1.8/s on Schuppen over a 30 s window) are
+across cameras with 10-28 h uptime, 1.8/s on cam-06 over a 30 s window) are
 flat, exactly as that predicts: at these settings nothing in the video path is
 mmap-churning, and this change is a no-op for it.
 
@@ -269,8 +269,8 @@ of the 8 per-source pools.
 
 ### Not tested on hardware
 
-No camera was flashed. Garage was in use by a concurrent unrelated soak and
-Schuppen is a live production camera; the only things done to either were
+No camera was flashed. cam-01 was in use by a concurrent unrelated soak and
+cam-06 is a live production camera; the only things done to either were
 read-only `/proc` sampling, one config read, one `/snapshot.jpg` fetch (normal
 on-demand behaviour, self-limiting via the idle stop) and the standalone
 microbenchmark above, which never touches `timpsd`. So:

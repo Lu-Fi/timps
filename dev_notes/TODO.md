@@ -3,7 +3,7 @@
 Working list. Newest block first; each entry says what is established and what
 is still guesswork, so nobody has to re-derive it.
 
-## RESOLVED: day mode with no exit - cam-wyze-pan stuck in day, railed dark, for 88 minutes; the day->night rule assumed the day pipeline can read above night_gain, and on this camera it cannot
+## RESOLVED: day mode with no exit - cam-07 stuck in day, railed dark, for 88 minutes; the day->night rule assumed the day pipeline can read above night_gain, and on this camera it cannot
 
 Found 2026-08-28 evening, the direct follow-on of the night_gain=7000 change
 from that afternoon (entry below, now superseded). Legitimate silent-probe day
@@ -45,7 +45,7 @@ blind - the pre-`e361b3b` high-water-mark bonus reported hr=32 for a meter
 railed on both gains, so `dn_clipped()` said "not clipped". The two fixes
 ship together or not at all.
 
-**Fleet state**: cam-wyze-pan still runs v1.9.3-36-gd51dcd9 (neither fix).
+**Fleet state**: cam-07 still runs v1.9.3-36-gd51dcd9 (neither fix).
 `night_gain` reverted to the 4096 default (live via /control, self-persisted
 to /etc/timps.conf, and in the thingino-firmware-LuFi overlay) - on that
 binary 7000 was a re-armed trap: filter_cost is currently unmeasured (the
@@ -147,7 +147,7 @@ description says tightening it belongs to the `probe_backoff` revisit.
 
 ## RESOLVED: the AE-reserve test granted a stop of integration-time credit against a high-water mark, disabling every clip protection on both T20s
 
-Found 2026-08-28 as a side finding of the cam-wyze-pan investigation below,
+Found 2026-08-28 as a side finding of the cam-07 investigation below,
 then given its own pass. It is worse than that entry recorded it: not latent,
 and not confined to jxf22.
 
@@ -165,8 +165,8 @@ re-derived for the reserve, where the mark is an *over*-estimate relative to an
 integration time the AE has since pinned lower, and the test then fires
 forever.
 
-**Evidence, first-hand.** Live `/proc/jz/isp/isp_info` on cam-wyze-pan
-(192.168.10.163) at the time of writing: no `SENSOR Max Integration Time` line
+**Evidence, first-hand.** Live `/proc/jz/isp/isp_info` on cam-07
+(192.0.2.163) at the time of writing: no `SENSOR Max Integration Time` line
 at all, `SENSOR Integration Time : 843`, `SENSOR analog gain : 128` against
 `MAX SENSOR analog gain : 128`, `ISP digital gain : 45` against `MAX ISP
 digital gain : 45`. Real reserve: **0**. Mark: 1120 (843 / 0.7527), so
@@ -179,10 +179,10 @@ was zero.
 **Not jxf22-specific, and not latent.** Probed all twelve fleet cameras the
 same day. The split is by SoC generation, exactly as `dn_read()`'s path
 fallback already documents: both T20s read `isp_info` and publish **no**
-maximum (cam-wyze-pan/jxf22 ratio a constant 0.7527; cam-wyze-cam2/jxf23,
-192.168.10.107, a constant 0.3333 on 7073 of 7165 samples) - both permanently
+maximum (cam-07/jxf22 ratio a constant 0.7527; cam-08-cam2/jxf23,
+192.0.2.107, a constant 0.3333 on 7073 of 7165 samples) - both permanently
 credited. The T23/T31s read `isp-m0`, publish a real maximum, **and reach it
-exactly** when dark (192.168.10.25 `1196/1196`, 192.168.10.21 `1496/1496`), so
+exactly** when dark (192.0.2.25 `1196/1196`, 192.0.2.21 `1496/1496`), so
 their integration-time test works as designed and the fix is a no-op there.
 The two affected cameras are cam-J and cam-K - the two dark cellar cameras,
 i.e. precisely the "two of the twelve sit entirely at the rail" that
@@ -201,7 +201,7 @@ below): against the pre-fix binary a pitch-dark railed room switches to **day
 at t=325 and back at t=359**, and would do so once per heartbeat - two audible
 clicks and 34 s of wrong mode, forever, in a room with no light in it. The
 earlier entry's "harmless here since the branch it feeds still reached the
-right answer" was true only because cam-wyze-pan happened to have a measured
+right answer" was true only because cam-07 happened to have a measured
 `filter_cost` whose day-reading projection vetoed the switch inside the wrong
 branch - a downstream net catching a decision that had already gone wrong, and
 one that is itself learned through the same broken gate.
@@ -254,7 +254,7 @@ cam-J's illuminator contributing nothing (`r` never above ~1.10 even when
 gain-railed) is still the more consequential problem for that room, and is
 recorded in the entry below.
 
-## SUPERSEDED (the fix below caused the "day mode with no exit" incident the same evening - see the 2026-08-28 entry at the top; night_gain is back at 4096): cam-wyze-pan never confirmed day mode after a manual basement-light event - windowless room, not a bug
+## SUPERSEDED (the fix below caused the "day mode with no exit" incident the same evening - see the 2026-08-28 entry at the top; night_gain is back at 4096): cam-07 never confirmed day mode after a manual basement-light event - windowless room, not a bug
 
 Found 2026-08-28: user was in the basement (light on) for ~17 minutes
 (17:41:59-17:59:20, confirmed via `daynight.trace_path` on-device, the
@@ -298,7 +298,7 @@ day/night logic.
 
 **Fix applied**: `daynight.night_gain` raised from the package default 4096
 to **7000** for this camera only (`daynight.night_gain = 7000` in
-`user/wyze_campan1_t20x_jxf22_rtl8189etv/192.168.10.163/overlay/etc/
+`user/wyze_campan1_t20x_jxf22_rtl8189etv/192.0.2.163/overlay/etc/
 timps.conf` in thingino-firmware-LuFi, applied live via `/control` first,
 took effect immediately - `bitrate`/`fps`-style fields defer to a restart,
 `night_gain` did not). Math: `962 * 6.13 = 5897 < 7000` - light-on now
@@ -313,15 +313,15 @@ of the gain heuristic, since "day" in a windowless room is inherently a
 transient, manually-triggered state rather than something a light-level
 probe should have to infer. Not pursued because no suitable HA entity for
 the basement light was found in a first pass - the only `light.*` entity in
-the "Keller" area (`light.tasmotalifepo4`) is almost certainly a LiFePO4
+the basement area (`light.tasmotalifepo4`) is almost certainly a LiFePO4
 battery-system indicator, not the room light, and none of the ~30 `switch.*`
 entities there look like a light switch either. Worth revisiting if the
 gain-threshold fix above turns out not to hold up.
 
-## RESOLVED (explained, not a bug): cam-vorne's `E/VBM`/`E/Framesource ... not bind pool` lines are harmless vendor-SDK chatter from a real, idle-only chn0 enable cycle
+## RESOLVED (explained, not a bug): cam-02's `E/VBM`/`E/Framesource ... not bind pool` lines are harmless vendor-SDK chatter from a real, idle-only chn0 enable cycle
 
 Found 2026-08-26 checking the fleet syslog for the first night after the
-2026-08-25 rebuild: cam-vorne logged 48 `E/`-level lines overnight that no
+2026-08-25 rebuild: cam-02 logged 48 `E/`-level lines overnight that no
 other camera logged, in two bursts each lining up with a day/night switch:
 
 ```
@@ -349,13 +349,13 @@ Confirmed by matching the logcat lines' embedded Unix timestamps
 second-for-second against three `framesource 0 enabled/disabled (idle)`
 pairs in timpsd's own log at the same switch.
 
-**Why only cam-vorne**: not a T23-vs-T31 thing - `cam-kinder-links` (also
+**Why only cam-02**: not a T23-vs-T31 thing - `cam-03` (also
 T23) shows the identical lines once per daemon start, then never again,
 because Frigate holds its chn0 open 24/7 (pulls both `/ch0` record and
-`/ch1` detect from every other fleet camera). cam-vorne is the one exception
+`/ch1` detect from every other fleet camera). cam-02 is the one exception
 - Frigate's own config (`/frigate/config/config.yaml` on the syslog/services
 host, camera key `cam-v`) has its `/ch0` record input commented out, only
-`/ch1` (detect+record) is active - so cam-vorne's chn0 genuinely idles
+`/ch1` (detect+record) is active - so cam-02's chn0 genuinely idles
 between clients, and every overnight daynight switch does real enable
 cycles instead of a refcounted no-op. (The "no other camera logged this last
 night" observation only held for the night window - all cameras logged it
@@ -408,7 +408,7 @@ there's an actual UI need for it rather than doing it preemptively.
 ## RESOLVED (thingino-firmware-LuFi, not this repo): every board now has a generic default `presets[0]` "Home" that silently overrides the camera's real calibrated `pos_0`
 
 Found 2026-08-25 immediately after today's upstream merge, during the
-6/7-camera fleet rollout (galayou, both kinder cameras, schuppen, cam-garage
+6/7-camera fleet rollout (galayou, cam-03 and cam-04, cam-06, cam-01
 all reflashed before this was caught): the same merge that added the PTZ
 presets feature above also ships a generic per-board-model `presets[0]`
 "Home" entry in every `configs/cameras/<board>/thingino.json` (rough factory
@@ -422,29 +422,29 @@ silently homes to the generic board-template position instead of its own
 per-camera calibrated one, even though `pos_0` itself was never touched and
 sat correctly in the merged config the whole time.
 
-Confirmed via `motors -p` immediately after each reflash: kinder-links and
-kinder-rechts (different board families, both cinnado_d1_t2xx) both reported
-the identical `1850,500`; cam-garage reported `2025,500` instead of its own
-`2630,0`; galayou/cam-vorne reported `2025,575` instead of `2879,575` - the
+Confirmed via `motors -p` immediately after each reflash: cam-03 and
+cam-04 (different board families, both cinnado_d1_t2xx) both reported
+the identical `1850,500`; cam-01 reported `2025,500` instead of its own
+`2630,0`; galayou/cam-02 reported `2025,575` instead of `2879,575` - the
 shared/generic values were the tell, not a random-looking failure.
 
 Fixed by adding a matching `presets[0]` entry (id 0, description "Home", x/y
 = that camera's own `pos_0`) to each affected camera's own
 `user/<board>/<ip>/thingino.json` profile, so the new upstream logic picks
 the correct per-camera value instead of falling through to the board
-template. Applied to all 6 PTZ-capable fleet cameras: kinder-links
-(192.168.10.124), kinder-rechts (192.168.10.151), cam-garage
-(192.168.15.190), galayou/cam-vorne (192.168.15.129), cam-schuppen
-(192.168.10.25, itself just migrated from 192.168.241.102 the same day - see
-below), and cam-wyze-pan (192.168.10.163). cam-wyze (192.168.10.107) has no
+template. Applied to all 6 PTZ-capable fleet cameras: cam-03
+(192.0.2.124), cam-04 (192.0.2.151), cam-01
+(192.0.2.190), galayou/cam-02 (192.0.2.129), cam-06
+(192.0.2.25, itself just migrated from 192.0.2.102 the same day - see
+below), and cam-07 (192.0.2.163). cam-08 (192.0.2.107) has no
 `motors` block in its profile at all - not a pan/tilt camera, unaffected.
 
-The 5 cameras already reflashed before this was caught (kinder-links,
-kinder-rechts, cam-garage, galayou, cam-schuppen) were also fixed live and
+The 5 cameras already reflashed before this was caught (cam-03,
+cam-04, cam-01, galayou, cam-06) were also fixed live and
 re-homed without a second reflash: `jct /etc/thingino.json set
 motors.presets.0.x/y <value>` followed by `motors -d h -x <x> -y <y>`
 (mirroring `S59motor`'s own `position_motors()`), verified via `motors -p`
-matching the camera's real `pos_0` afterward. cam-wyze-pan picked up the fix
+matching the camera's real `pos_0` afterward. cam-07 picked up the fix
 automatically since its profile was corrected before that camera's own
 build/flash ran.
 
@@ -459,15 +459,15 @@ instruction for `fw_ota.sh`.
 
 ## RESOLVED (explained, not a bug): the 8h-longrun's two FAILs were ONE network stall - RTSP reset came from the path, not timpsd
 
-From the overnight 2026-08-24/25 `--profile longrun` against cam-garage
+From the overnight 2026-08-24/25 `--profile longrun` against cam-01
 (28800s, rtsp+fmp4+mjpeg concurrent, `v1.9.3-21-gb100f52`; artifacts in
-`dev_notes/qa-runs/longrun-cam-garage-2026-08-25/`). Two FAILs, both in
+`dev_notes/qa-runs/longrun-cam-01-2026-08-25/`). Two FAILs, both in
 section 15c: (1) the single RTSP TCP session died after 9918s with
 `Connection reset by peer` on the client; (2) one 9.76s MJPEG inter-frame
 gap. Investigated 2026-08-25 from the raw artifacts plus the central
-syslog (`/opt/camlogs/logs/cam-garage/`, read directly, not via Loki's
+syslog (`/opt/camlogs/logs/cam-01/`, read directly, not via Loki's
 1000-line cap): **both are the same single event**, a ~2-3 minute
-congestion/stall on cam-garage's link around 01:48-01:52, the same
+congestion/stall on cam-01's link around 01:48-01:52, the same
 RF-disturbance mechanism class documented further down this file. No timps
 code change; not a timps bug.
 
@@ -503,13 +503,13 @@ by what it did NOT say:
   the mp4 one that survived.
 - The A3 keepalive reaper is UDP-transport-only; this session was TCP.
 - The camera's kernel didn't give up either: `tcp_retries2` is the
-  default 15 (checked live on cam-garage) - a ~15+ minute give-up, not
+  default 15 (checked live on cam-01) - a ~15+ minute give-up, not
   2.3 minutes. And a retransmission-timeout death doesn't send RST anyway.
 
 So timpsd OBSERVED the death (its recv saw the connection reset, 13s
 after the client did) rather than causing it. With both endpoints ruled
 out, the first RST originated in the network path between the QA host
-(192.168.178.103) and the camera's separate subnet (192.168.15.x) -
+(192.0.2.103) and the camera's separate subnet (192.0.2.x) -
 consistent with a stateful middlebox/conntrack entry dying during the
 multi-minute stall and RST-ing both directions. Which exact box can't be
 pinned without a packet capture of the moment, which doesn't exist; that
@@ -523,11 +523,11 @@ sliver stays formally unproven but nothing in timps depends on it.
 - Daemon wedge/restart/leak: fMP4 + MJPEG survived the full window on the
   same daemon; fd/thread/RSS flat over 95 samples; dmesg silent (no WiFi
   disassoc logged, no kernel events at all in the window).
-- A cam-garage-specific software fault: the RF context matches the known
-  household pattern - both Zyxel APs' chanlog held sustained `HOCH` 2.4GHz
-  busy through the night (Zyxcel 71-80%, Zyxel2 63-69% around the window).
+- A cam-01-specific software fault: the RF context matches the known
+  household pattern - both APs' chanlog held sustained `HOCH` 2.4GHz
+  busy through the night (AP-A 71-80%, AP-B 63-69% around the window).
   No OTHER camera logged symptoms in 01:40-02:05 though, so this
-  particular stall was local to cam-garage's link within an ambient
+  particular stall was local to cam-01's link within an ambient
   congested night - same shape as the 2h/4h-run incidents further down.
 
 **Verdict**: both FAILs are environmental. Section 15c's "one unbroken
@@ -540,11 +540,11 @@ pin the RST origin, and `--longrun-protos rtsp` for a cheaper repro
 window). Raw recordings stay uncommitted per the existing qa-runs
 convention (directory has never been tracked).
 
-## HARDWARE-VERIFIED (cam-garage, 2026-08-25): A1's one-shot escalation reboot, both give-up branches, and B7's TLS fail-closed
+## HARDWARE-VERIFIED (cam-01, 2026-08-25): A1's one-shot escalation reboot, both give-up branches, and B7's TLS fail-closed
 
 Closes the "Still open" hardware-verification items of the seven-findings
 entry below (kept there for the implementation details). Method and results,
-all on cam-garage (`v1.9.3-29-g6b7e6cd`, sc4336p/2560x1440):
+all on cam-01 (`v1.9.3-29-g6b7e6cd`, sc4336p/2560x1440):
 
 **Fault recipe** (reusable): append `video0.width = 4096` /
 `video0.height = 4096` to `/etc/timps.conf`. Passes config validation,
@@ -600,7 +600,7 @@ suspecting the daemon.
 ## RESOLVED (thingino-firmware-LuFi, not this repo): the WebUI's "Restart" button has 404'd fleet-wide since 2026-08-16
 
 Found 2026-08-24: a user's persist-only setting change (fps/rc_mode on
-cam-kinder-rechts) correctly said "applies on restart", but clicking
+cam-04) correctly said "applies on restart", but clicking
 Restart appeared to do nothing. Root cause was in `thingino-firmware-LuFi`,
 not timps itself: `package/timps/timps.mk`'s `TIMPS_PURGE_STOCK_WEBUI`
 hook deletes files that belong to the stock prudynt/raptor streamers and
@@ -612,7 +612,7 @@ script, calls that literal path, not anything in the stock/base WebUI).
 Both hooks run in the same `target-finalize` pass; the purge ran after
 the install and silently deleted timps's own file on every single image
 built since the file was added (2026-08-16) - checked two independently
-flashed cameras (cam-garage, cam-kinder-rechts) tonight, both missing it
+flashed cameras (cam-01, cam-04) tonight, both missing it
 regardless of build recency. Fixed by dropping that one path from the
 purge list; verified end-to-end on both cameras (file now present,
 `curl .../x/restart-prudynt.cgi` returns 401 auth-required instead of 404
@@ -645,7 +645,7 @@ opt-in (not a "CGI href = action" heuristic) because `/x/reboot.cgi` and
 actual packed `rootfs.squashfs` content (desktop + offcanvas paths, cancel
 vs accept, double-click guard, 5 different CGI error-response shapes, and
 a regression check that Reboot/Logout still navigate normally) before
-ever touching a real camera. Flashed and verified on cam-kinder-rechts
+ever touching a real camera. Flashed and verified on cam-04
 (md5 of the served `navigation.js` matches source -> package -> squashfs
 -> device -> HTTP chain exactly). Real-browser-click confirmation against
 an authenticated session still needs the user's own eyes (agent
@@ -664,21 +664,21 @@ yet fixed with an actual guard.
 
 Committed locally in `thingino-firmware-LuFi` only (`a7236bc2`), same "nur
 timps" convention, fast-forward merged onto the same local branch as the
-404 fix above. Not yet rolled out beyond cam-kinder-rechts.
+404 fix above. Not yet rolled out beyond cam-04.
 
-## OPEN: cam-wyze-pan (.163) has a constant, boot-persistent IPU wedge rate ~1800x the documented baseline - separate from the RF disturbance
+## OPEN: cam-07 (.163) has a constant, boot-persistent IPU wedge rate ~1800x the documented baseline - separate from the RF disturbance
 
 Follow-up to the `ipu_osd error` entry below and the RF-disturbance entries
 further down: dispatched a Fable agent (in `thingino-firmware-LuFi`, not
 this repo - see `dev_notes/IPU_WEDGE_INVESTIGATION_2026-08-24.md` there,
 not pushed/committed there per the "nur timps" convention, but the file
 exists locally) after the user asked whether the T20 IPU wedge messages
-seen live via `dmesg` on cam-wyze-pan (192.168.10.163) could be a
+seen live via `dmesg` on cam-07 (192.0.2.163) could be a
 timing/binding bug rather than "just silicon lottery."
 
-**Finding: two separate phenomena.** cam-wyze (.107) shows genuine
+**Finding: two separate phenomena.** cam-08 (.107) shows genuine
 RF-disturbance-correlated wedge bursts matching this file's own documented
-incident windows - confirms that mechanism further. But cam-wyze-pan
+incident windows - confirms that mechanism further. But cam-07
 (.163) shows something different: a FLAT ~1/283 per-op wedge rate that has
 held constant since its last boot (~13:14 the day before, well before the
 23:05 RF onset) - i.e. not caused by tonight's network disturbance at all.
@@ -718,7 +718,7 @@ reboot, no repeat measurement, and the RF disturbance may still have been
 partially active during either window) - but shifts the leading theory
 away from "just reboot it and it's fine."
 
-**Update 2026-08-25: compared against cam-wyze (.107), found a separate real
+**Update 2026-08-25: compared against cam-08 (.107), found a separate real
 bug instead of a matching pattern.** .107 turned out to be running a kernel
 from *before* the mitigation patch even existed (Aug 13 build, patch landed
 Aug 15) - `rebuild-timps` refreshed the userspace daemon but Buildroot's
@@ -744,9 +744,9 @@ Found 2026-08-24 checking the fleet syslog server for the same night as the
 entries below (user pointed out I'd missed it - my first fleet sweep only
 grepped for LOGE/FATAL/panic/crash/watchdog/reboot/oom-style terms, which
 this doesn't match, and it's a `logcat`-shipped OSD-module line, not a
-`timpsd[N]:`-tagged one). `ing-wyze-cam2-8071` (this is cam-wyze under its
+`timpsd[N]:`-tagged one). `ing-wyze-cam2-8071` (this is cam-08 under its
 raw hostname - promtail was never given a friendly-name mapping for it,
-easy to confuse with cam-wyze-pan) logged `E/OSD ipu: ipu_osd error ret =
+easy to confuse with cam-07) logged `E/OSD ipu: ipu_osd error ret =
 -1` **63 times** overnight. Every occurrence's embedded logcat timestamp
 lines up with a `[HAL_ING] framesource N enabled` event in the same
 window - i.e. an ordinary channel start (a client connecting causes
@@ -755,11 +755,11 @@ window - i.e. an ordinary channel start (a client connecting causes
 This is the SAME failure signature already documented further down in this
 file (search `ipu_osd error`) from 2026-08-22, but that entry frames it as
 something seen only during a botched boot after an RMEM_MB change on a
-*different* board family (cinnado T31). Tonight's cam-wyze occurrences (a
+*different* board family (cinnado T31). Tonight's cam-08 occurrences (a
 T20 board, no boot, no RMEM change, just normal client churn) show the same
 OSD-compositor-races-the-ISP race fires on ordinary channel re-enable too -
 the boot case was one trigger for the same underlying race, not the only
-one. cam-wyze saw unusually frequent channel churn tonight because of the
+one. cam-08 saw unusually frequent channel churn tonight because of the
 household-wide RF disturbance documented in the entries below (repeated
 client disconnect/reconnect cycles each re-trigger `EnableChn`), which is
 presumably why it surfaced so clearly here and not on quieter cameras.
@@ -777,9 +777,9 @@ rather than a rare one (only on boot after specific config changes).
 rebuild, not independently investigated/fixed.** Checked the raw syslog
 files directly on the central log server (`/opt/camlogs/logs/<camera>/`,
 bypassing Loki's 1000-line query cap) for every camera, yesterday vs today:
-`ing-wyze-cam2-8071` (cam-wyze, .107) went 1339 -> 22, and `cam-garage` went
+`ing-wyze-cam2-8071` (cam-08, .107) went 1339 -> 22, and `cam-01` went
 21 -> 0; the other ten cameras were already at 0 both days. All 22 remaining
-cam-wyze occurrences land before 00:30, i.e. inside the OLD `timpsd`
+cam-08 occurrences land before 00:30, i.e. inside the OLD `timpsd`
 instance that was still running while the from-scratch kernel rebuild
 (`linux-dirclean` + rebuild + reflash, done to fix the unrelated
 `IPU_STATUS=0x80010030` wedge issue in the entry above) was in progress;
@@ -794,15 +794,15 @@ theory: the full from-scratch kernel build changed something incidental
 (compiler flags, timing, an unrelated upstream patch already queued in the
 tree) that happens to close the race, rather than the known wedge-mitigation
 patch itself. Correlation over one clean day on one rebuilt camera, not
-proof - cam-wyze-pan (.163) and the T31 boards that showed this in the
+proof - cam-07 (.163) and the T31 boards that showed this in the
 2026-08-22 boot/RMEM incident were never rebuilt this way and have not been
 re-checked. Downgrading from "open, not investigated" to "open, watching for
-recurrence" rather than closing outright; worth re-checking cam-wyze again
+recurrence" rather than closing outright; worth re-checking cam-08 again
 in a few days, and worth trying the same from-scratch rebuild on a camera
 that still shows the error (if one turns up) to see if it's reproducibly the
 rebuild itself and not just this one unit's own reflash.
 
-Found 2026-08-24 in the second `--profile longrun` against cam-garage (4h, on
+Found 2026-08-24 in the second `--profile longrun` against cam-01 (4h, on
 `v1.9.3-13-g91c7f03` which carries the `b824b3c` mute fix - that symptom was
 confirmed gone). The fMP4 client survived 17 clean checkpoints (~85 min, A/V
 skew ~0.02s, pacing 0.995x) then died inside checkpoint 18 with ffmpeg demux
@@ -837,21 +837,21 @@ Timeline fits a link stall: last delivered media 5382s, death at wall 5416s
 (~34s = buffer drain + 15s send timeout). Fleet syslog adds support: another
 camera on a different subnet logged an isolated `send queue overflowed` at
 04:20, ~19 min before this death (~04:39) - a household-wide RF disturbance
-window, not a garage- or mp4-specific event.
+window, not a camera- or mp4-specific event.
 
 **Update 2026-08-24, confirmed the trigger**: checked the router logs on the
-same central syslog server (the "Zyxcel" OpenWrt AP, which several fleet
-cameras but NOT cam-garage sit behind - cam-garage is on its own separate
+same central syslog server (the "AP-A" OpenWrt AP, which several fleet
+cameras but NOT cam-01 sit behind - cam-01 is on its own separate
 subnet/AP). Its own `chanlog` self-monitoring shows the 2.4GHz channel
 jumping from a normal ~59% busy to a router-flagged `HOCH` 67% at 23:05,
 climbing to 75-84% by 23:15, and then STAYING at 80-84% continuously for
 over 5.5 hours (through at least 04:45 the next morning) - not a brief
 blip, a sustained high-congestion RF environment spanning BOTH this
 incident (23:09 on the first, 2h run) and the 04:39 death investigated
-above (on the second, 4h run), with the isolated cam-kinder-rechts overflow
-at 04:20 landing inside the same window. That cam-garage (a different
+above (on the second, 4h run), with the isolated cam-04 overflow
+at 04:20 landing inside the same window. That cam-01 (a different
 subnet/AP entirely) shows correlated symptoms during a period when only the
-Zyxcel AP's own channel measurement is elevated suggests the disturbance
+AP-A AP's own channel measurement is elevated suggests the disturbance
 is physical/ambient (a device transmitting on an overlapping 2.4GHz
 channel-agnostic of which AP a camera associates with) rather than confined
 to one AP's own congestion. The morning cluster (~08:45-09:20, a separate
@@ -868,7 +868,7 @@ torn send (EAGAIN spelled out as "no TCP progress for 15s, SO_SNDTIMEO"),
 INFO for everyday EPIPE/ECONNRESET departures and orderly closes. Verified
 against the host sim: stalled-reader repro now logs the WARN 54s in;
 curl-abort logs INFO; b824b3c's mute-vs-eviction behavior untouched.
-Hardware verification pending: next cam-garage longrun should show the
+Hardware verification pending: next cam-01 longrun should show the
 exit-reason line if this recurs. NOT a timps data-path bug - the bytes sent
 up to the disconnect were valid (the 17 clean checkpoints are themselves
 2900+ decoded-clean segments).
@@ -876,7 +876,7 @@ up to the disconnect were valid (the 17 clean checkpoints are themselves
 ## RESOLVED: section 15c's MJPEG decode-failure count was a false positive - counted benign copy-side DTS warnings, not real corruption
 
 Found 2026-08-23 running the first real hardware `--profile longrun` against
-cam-garage (2h, all three protocols concurrent): reported "8 JPEG frame(s)
+cam-01 (2h, all three protocols concurrent): reported "8 JPEG frame(s)
 failed to decode cleanly" (FAIL), and again "9" on the re-run two entries
 above. Checked the raw log (`longrun_mjpeg_ffmpeg.log`) both times: every
 match was a `Non-monotonic DTS` line from the segment `-c copy` OUTPUT
@@ -884,7 +884,7 @@ match was a `Non-monotonic DTS` line from the segment `-c copy` OUTPUT
 validate - zero lines contained any actual corruption marker. Root cause:
 the MJPEG slot's single ffmpeg process writes BOTH outputs' stderr into one
 shared log, and the shared `FFWARN_RE` (via `ffwarn_count`) can't tell which
-output a warning came from. cam-garage's MJPEG delivery was healthy both
+output a warning came from. cam-01's MJPEG delivery was healthy both
 times; the FAIL was the script's.
 
 Dispatched to a Fable agent (same one that fixed the mp4 mute issue above),
@@ -897,7 +897,7 @@ x=N", which the old list never anticipated (measured 0 where a fixed
 detector correctly counted 183, against a sim-fed garbled JPEG). Fixed with
 a new `mjdecode_count()` helper that filters by ffmpeg COMPONENT TAG
 (`[mjpeg @`/`[mpjpeg @`) instead of wording, with a timestamp-wording
-exclusion as a second line of defense. Verified: both real cam-garage logs
+exclusion as a second line of defense. Verified: both real cam-01 logs
 now read 0 (previously 8 and 9); sim good/truncated/garbled feeds read
 0/123/183 (old logic read 0/123/0 - missed the garbled case entirely);
 end-to-end `--only longrun --longrun-protos mjpeg` against the sim passes
@@ -907,7 +907,7 @@ of my own (unrelated to the agent's test case) - real ffmpeg tags the result
 `[mjpeg @ ...] huffman table decode error`, which the new tag-based filter
 correctly catches. Merged `854b7f6` (fast-forward, no conflicts).
 
-## RESOLVED: cam-garage's fMP4 client got force-dropped under congestion, misread as a mid-stream mute
+## RESOLVED: cam-01's fMP4 client got force-dropped under congestion, misread as a mid-stream mute
 
 Found 2026-08-24 in the FIRST real-hardware `--profile longrun` run against a
 build that actually carries `74c29c4` (see the entry below): the fMP4 client
@@ -945,11 +945,11 @@ Not addressed; no evidence yet that this variant actually occurs.
 ## HARDWARE-VERIFIED (2h + 8h clean runs): SYN-flood backlog fix (`74c29c4`)
 
 Update 2026-08-25: second, longer confirmation run. Overnight
-`--profile longrun` against cam-garage (`v1.9.3-21-gb100f52`, 2026-08-24
+`--profile longrun` against cam-01 (`v1.9.3-21-gb100f52`, 2026-08-24
 22:55 -> 07:05, 28800s window, rtsp+fmp4+mjpeg concurrent plus the usual
 load ramp to 8 clients): **zero `SYN flooding` lines** anywhere - QA log,
 logread, and both saved dmesg tails
-(`dev_notes/qa-runs/longrun-cam-garage-2026-08-25/`). Together with the
+(`dev_notes/qa-runs/longrun-cam-01-2026-08-25/`). Together with the
 clean 2h run below that is 10h of concurrent-protocol load without the
 kernel drop ever firing; calling the backlog fix verified. NOTE the run's
 overall RESULT was still FAIL for two reasons UNRELATED to SYN flooding
@@ -957,7 +957,7 @@ overall RESULT was still FAIL for two reasons UNRELATED to SYN flooding
 investigated and resolved as one environmental network stall, see the
 "the 8h-longrun's two FAILs were ONE network stall" entry above.
 
-Update 2026-08-24: rebuilt and reflashed cam-garage from `main` tip
+Update 2026-08-24: rebuilt and reflashed cam-01 from `main` tip
 (`v1.9.3-9-g483b749`, confirmed via `strings /usr/bin/timpsd`), so the fix
 described below was actually running this time (see the prior write-up for
 why the first attempt tested an unfixed binary). Re-ran `--profile longrun`,
@@ -968,7 +968,7 @@ but it is one data point, not proof the ceiling can never be hit again under
 worse WiFi conditions - leaving this "partially verified" rather than
 "resolved" until it's held up across more runs.
 
-## RESOLVED (explained, not a bug): cam-garage's timpsd CPU step from ~14% to ~22% was legitimate NVR load, not a leak
+## RESOLVED (explained, not a bug): cam-01's timpsd CPU step from ~14% to ~22% was legitimate NVR load, not a leak
 
 Found 2026-08-24: `timpsd` CPU stepped from 14.3-14.4% to a sustained
 21.4-22.4% partway through the longrun QA run and never came back down,
@@ -1013,13 +1013,13 @@ sessions still ESTABLISHED, no disconnect since 23:06:03, current CPU 17.8%
 ## SUPERSEDED by the "PARTIALLY VERIFIED, ONE CLEAN RUN" entry above: SYN-flood backlog fix (`74c29c4`) not yet tested on hardware
 
 Correction 2026-08-23: an earlier version of this entry claimed the first
-real-hardware run of `--profile longrun` against cam-garage showed the fix
+real-hardware run of `--profile longrun` against cam-01 showed the fix
 (backlog 8->128) as "partially effective" because the
 `TCP: Possible SYN flooding on port 8880` dmesg line still appeared once
 during the 2h run. A Fable agent dispatched to independently verify this
 found BOTH supporting claims wrong:
 
-1. **cam-garage was not running the fix at all.** `strings
+1. **cam-01 was not running the fix at all.** `strings
    /usr/bin/timpsd | grep -m1 '^v[0-9]'` reports plain `v1.9.3` with no
    `-N-g<hash>` suffix, i.e. the binary is built exactly at the `v1.9.3` tag
    commit (`08f645e`). `74c29c4` is 3 commits AFTER that tag
@@ -1042,7 +1042,7 @@ which says nothing either way about `74c29c4`'s effectiveness, since no SYN
 flood was provoked during the window at all, fixed or not.
 
 **Next step**: rebuild a `main`-tip image (which does carry the fix, plus
-`au_drops`) and reflash cam-garage - remember the `TIMPS_VERSION`/`timps.hash`
+`au_drops`) and reflash cam-01 - remember the `TIMPS_VERSION`/`timps.hash`
 pairing rule if this goes through the thingino-firmware-LuFi package path -
 then re-run `--profile longrun` and actually check whether the fix holds.
 
@@ -1090,7 +1090,7 @@ on-demand/scene-dependent behavior, and running the leak-trend checks with
 
 ## SUPERSEDED by the "NOT YET TESTED ON HARDWARE" entry above: hardcoded listen() backlog of 8 caused a kernel SYN-flood drop
 
-Found 2026-08-23 in cam-vorne's `dmesg` during a `timps-qa.sh --profile soak`
+Found 2026-08-23 in cam-02's `dmesg` during a `timps-qa.sh --profile soak`
 run: `TCP: Possible SYN flooding on port 8880. Dropping request.` All three
 TCP listeners (HTTP, RTSP, RTSPS) called `net_listen_tcp()` with a hardcoded
 backlog of 8 (`src/rtsp/rtsp.c`, `src/mp4/httpd.c`), capping the half-open
@@ -1119,7 +1119,7 @@ Found 2026-08-23 investigating the SYN-flood finding above (same
 investigation, different root cause than the SYN issue - not a timps daemon
 bug, a QA-script labeling bug). Section 13's 8-client load ramp assumes it
 is the only consumer and labels a rejected 9th connection "NOT admission
-control - degradation". On cam-vorne during the soak run, `events.log`
+control - degradation". On cam-02 during the soak run, `events.log`
 showed an EXTERNAL client (NVR/Home Assistant/go2rtc - whichever fleet
 component holds a standing substream subscription) already holding 1 RTSP
 session before the QA ramp even started. Baseline 1 + QA's 8 = 9 >
@@ -1136,16 +1136,16 @@ correct cap enforcement rather than "NOT admission control". Without this,
 every camera with a standing external viewer will keep producing this same
 false alarm on every future QA run.
 
-## RESOLVED (diagnostics), OPEN (root cause acceptable, not acted on): cam-vorne AU-drop during 2h drift QA
+## RESOLVED (diagnostics), OPEN (root cause acceptable, not acted on): cam-02 AU-drop during 2h drift QA
 
-Found 2026-08-23 in a `timps-qa.sh --profile drift` run against cam-vorne
+Found 2026-08-23 in a `timps-qa.sh --profile drift` run against cam-02
 (T23N, 1080p `cbr` 2000 kbit/s): one throttled `AU exceeds max buffer` line
 (need=1116108, max=1048576 `MS_AU_BUF_MAX`). Root-caused via the T23
 rate-control investigation: the classic-API controller is quality-seeking,
 not rate-seeking (min_qp=20 default), so a complex-scene IDR at 1080p
 legitimately reaches ~1 MB regardless of the configured bitrate target -
 this can happen on ANY T23 board at 1080p, not something specific to
-cam-vorne's config (verified stock defaults). The no-force-IDR design
+cam-02's config (verified stock defaults). The no-force-IDR design
 (commit `8128201`, a real prior stall incident on the same board family) is
 correct and untouched; actual recovery is simply the next scheduled IDR
 (<= `videoN.gop` frames, ~2s at the default gop=50/25fps) - NOT the
@@ -1177,8 +1177,8 @@ below it is a valid AU. Other SoCs stay at 1 MiB.
 
 Update 2026-08-25: the three "Still open" hardware items below (A1's two
 give-up branches, B1's bounded teardown under real repeated start failure,
-B7 against real mbedTLS) are now verified on cam-garage - full method and
-results in the "HARDWARE-VERIFIED (cam-garage, 2026-08-25)" entry near the
+B7 against real mbedTLS) are now verified on cam-01 - full method and
+results in the "HARDWARE-VERIFIED (cam-01, 2026-08-25)" entry near the
 top of this file. Only B1's wedged-stop leg remains sim-only (cannot be
 forced on hardware; accepted). The original entry follows unchanged.
 
@@ -1187,8 +1187,8 @@ Implemented 2026-08-23 on worktree branch `agent-fixes-a2492577`, on top of
 per finding so they can be cherry-picked individually. Builds clean (`make
 sim`, `make test-config` 12/12, `make test-auth` 4/4).
 
-**Normal-operation hardware verification, same day**: flashed to cam-garage
-and cam-vorne (v1.9.3), full `timps-qa.sh --profile standard` run against
+**Normal-operation hardware verification, same day**: flashed to cam-01
+and cam-02 (v1.9.3), full `timps-qa.sh --profile standard` run against
 both - 0 FAIL on either (144/1 warn, 142/3 warn; warnings pre-existing and
 already understood: motion-gated recorder with motion off, one ffmpeg
 warning, expected fps degradation at the 8-client load ceiling). This
@@ -1196,11 +1196,11 @@ confirms nothing here broke ordinary operation.
 
 **Still NOT verified**: A1 and B1's actual escalation/alarm paths. Neither
 run above deliberately drove the daemon into 10 failed starts the way
-cam-kinder-rechts' `--test-encoder` stress test did for the retry-cap fix
+cam-04' `--test-encoder` stress test did for the retry-cap fix
 (2026-08-22) - a clean QA pass says these two boards work normally, not that
 the reboot escalation or the bring-up teardown deadline fire correctly under
 real fault conditions. That still needs the same kind of deliberate
-reproduction cam-kinder-rechts got. B7's fail-closed TLS path is likewise
+reproduction cam-04 got. B7's fail-closed TLS path is likewise
 unexercised against a real broken cert on hardware.
 
 - **A1** (`main.c`): the escalation branch rebooted even when the one-shot
@@ -1260,9 +1260,9 @@ Still open on these:
 ## RESOLVED: cinnado_d1_t31l "idle" CPU was Frigate, not a bug
 
 Found 2026-08-23 via `timps-qa.sh`'s "expected near-idle - possible busy-wait
-loop" check on cam-kinder-rechts (24.1%, WARN). Cross-checked two sibling
-`cinnado_d1_t31l_sc2336_atbm6031` boards (cam-db 16.6%, cam-sz 36.3%) against
-one different board (cam-garage, 0.0%) and initially read this as a
+loop" check on cam-04 (24.1%, WARN). Cross-checked two sibling
+`cinnado_d1_t31l_sc2336_atbm6031` boards (cam-11 16.6%, cam-05 36.3%) against
+one different board (cam-01, 0.0%) and initially read this as a
 board-family characteristic worth investigating. User confirmed same day:
 these boards are pulled continuously by Frigate (NVR), which QA's own
 client-tracking has no visibility into - "zero clients" only meant "zero
@@ -1286,7 +1286,7 @@ boot -> correct `night` decision -> `/sbin/daynight night` actually run,
 `/run/thingino/daynight_mode`=night, IR-cut/LEDs physically correct - no
 manual re-assert needed, unlike the pre-fix behaviour that started this
 whole redesign). The RUNTIME transition logic was independently confirmed
-by a genuine dawn crossing during the same session: cam-vorne's own silent
+by a genuine dawn crossing during the same session: cam-02's own silent
 brightness probes (r=1.00-1.95, room light not IR reflection) correctly
 detected first light and switched to day with an ISP-confirmed re-assert,
 unprompted - real evidence the daynight state machine still works after
@@ -1429,8 +1429,8 @@ their day (LED off) position indefinitely - the ISP is correctly night-tuned
 (color/exposure), but there is no IR light to see anything by.
 
 Confirmed on the fleet 2026-08-22 ~22:30: exactly the 5 cameras rebooted
-after dark that evening (cam-db, cam-schuppen, cam-sz, cam-wintergarten,
-cam-kinder-rechts) had an empty/missing `daynight_mode`; the 7 cameras that
+after dark that evening (cam-11, cam-06, cam-05, cam-12,
+cam-04) had an empty/missing `daynight_mode`; the 7 cameras that
 had been running continuously since before dusk all correctly showed
 "night". Fixed by hand for tonight (`ssh <ip> /sbin/daynight night` on the 5)
 - this is not a software fix, just a physical re-assert. Left unfixed, it
@@ -1462,12 +1462,12 @@ T31 boards init's small allocs eventually pass while start's big contiguous
 QA logs show exactly this two-phase death on all 5 cameras: section 16 found
 timpsd still "alive" with 2 threads/0 listeners (= parked in the init retry
 loop, all services down), and it was gone later (the one-shot start exit).
-cam-garage self-recovered because its pool drained before start ran. Fix:
+cam-01 self-recovered because its pool drained before start ran. Fix:
 start failure now unwinds via `g_hal->stop()` and re-enters the retry loop;
 plus the shutdown path re-arms the alarm before `g_hal->stop()` so IMP
 teardown gets the full 3 s budget. See CHANGELOG [Unreleased].
 
-**Hardware-verified same evening on cam-kinder-rechts** (T31,
+**Hardware-verified same evening on cam-04** (T31,
 `--test-encoder`'s exact restore-restart step that killed it before): the
 fix worked as designed - the daemon stayed alive and logged `HAL start
 failed - unwinding and retrying in 60s` every ~60 s instead of vanishing.
@@ -1496,7 +1496,7 @@ which is hard to arrange on purpose) - reviewed by reading the existing
 watchdog precedent and confirmed by `make sim`.
 
 **Second follow-up, same evening**: user feedback on the cap above - retries
-alone weren't what fixed cam-kinder-rechts, a real `reboot` was, every time
+alone weren't what fixed cam-04, a real `reboot` was, every time
 this incident happened tonight. So after `MS_STARTUP_MAX_START_FAILS` is
 reached, `main.c` now escalates to exactly ONE real reboot (`sync()` +
 `reboot(RB_AUTOBOOT)`) before giving up for good - "for good" meaning a
@@ -1510,7 +1510,7 @@ future) gets its own fresh one-shot reboot rather than inheriting a
 permanently spent one.
 
 **Hardware-verified the same night**, deliberately reproducing the exact
-stuck state on cam-kinder-rechts again (same `--test-encoder` restore-restart
+stuck state on cam-04 again (same `--test-encoder` restore-restart
 that caused the original incident): `start_fails` counted cleanly 1/10
 through 9/10 over ~8 minutes (each log line matching `HAL start failed
 (N/10) - unwinding and retrying in 60s`), SSH went briefly unreachable right
@@ -1525,12 +1525,12 @@ Found 2026-08-22 during the post-rollout fleet QA (`--test-encoder`, which
 deliberately forces a real restart to make a restart-bound `rc_mode` change
 effective - see RC6b's "rc_mode=vbr is restart-bound here, restarting for
 real" in `timps-qa.sh`). On 5 of 12 fleet cameras (all `cinnado_d1_t31l` /
-`wuuk_y0510_t31x`, i.e. the T31 boards with 37-38 MB total RAM: cam-db,
-cam-schuppen, cam-wintergarten, cam-sz, cam-kinder-rechts) the restart's
+`wuuk_y0510_t31x`, i.e. the T31 boards with 37-38 MB total RAM: cam-11,
+cam-06, cam-12, cam-05, cam-04) the restart's
 encoder re-init hit a repeating `E/Encoder: encoder_init failed` loop (dozens
-of attempts over ~20-30s), then on cam-garage's occurrence self-recovered
+of attempts over ~20-30s), then on cam-01's occurrence self-recovered
 (matches the earlier 2026-08-22 "did not come back after the final
-restore-restart" QA finding on cam-garage, which turned out to be slow, not
+restore-restart" QA finding on cam-01, which turned out to be slow, not
 dead), but on these 5 the daemon gave up entirely: `E/Alloc Manager: allocMem
 mem_manager->alloc is failed`, `E/IMP Alloc APIs: g_alloc.alloc_mem failed`,
 `Codec_Encode_Create failed`, then no live `timpsd` process at all - `/control`
@@ -1839,14 +1839,14 @@ generic `"restart":[...]` list (`src/control.c:1071`) does not list
 list (checked — no `restart` consumer found under
 `package/timps/files/www/`), so today that omission has no visible effect.
 
-## OSD `{fps}`/`{bitrate}`: cam-kinder-rechts showing 13 instead of ~25
+## OSD `{fps}`/`{bitrate}`: cam-04 showing 13 instead of ~25
 
 **PARTLY CLOSED 2026-08-22.** Two separate things live in this entry and only
 one of them is settled.
 
 *The magnitude question is answered and was never this bug*: the ffprobe
 counts and the driver work below traced the ~13.5 fps to
-`isp_ch0_pre_dequeue_time`, fixed and verified on cam-kinder-rechts (see
+`isp_ch0_pre_dequeue_time`, fixed and verified on cam-04 (see
 "RESOLVED: T31+sc2336 fps ceiling fixed" further down).
 
 *The asymmetry the investigation turned up is now fixed*: `hub_get_fps()` has
@@ -1857,7 +1857,7 @@ host with the `osd_vars.c` + `hub.c` harness from the `{bitrateN}` item: after
 the guard both read 0.
 
 **What is still NOT established**: whether that asymmetry is what
-cam-kinder-rechts was showing. The suggested quick check - what `{bitrate}`
+cam-04 was showing. The suggested quick check - what `{bitrate}`
 read at the same moment as the 13 - was never run, and the fix was applied
 because a frozen fps reading on an idle channel is wrong on its own terms, not
 because it was confirmed as the cause. Nobody should read this as "the field
@@ -1905,7 +1905,7 @@ rate-control work; this was analysis only, nothing here was applied).
   systematic rate-conversion bug.
 
 **Working hypothesis (not confirmed on hardware):** `video0` on
-cam-kinder-rechts had no active subscriber (or was between the last
+cam-04 had no active subscriber (or was between the last
 subscriber leaving and the idle-stop happening) when the OSD read 13. The
 displayed 13 is very plausibly a *stale* `mfps` frozen from some earlier,
 atypical 1 s window (e.g. right after `StartRecvPic`/a forced-recovery cycle,
@@ -1919,7 +1919,7 @@ confirms channel 0 was idle (`hub_get_bitrate()`'s 2 s staleness check would
 have already zeroed it) while `{fps}` kept showing a leftover number — direct
 proof of this exact asymmetry, no further hardware access needed.
 
-**Still to check on hardware (cam-kinder-rechts) if the bitrate reading above
+**Still to check on hardware (cam-04) if the bitrate reading above
 isn't already conclusive:**
 
 - Whether `video0` currently has any subscriber (RTSP/HTTP client open on the
@@ -2165,20 +2165,20 @@ wired: header presence is not proof libimp exports it, and re-advertising `qp`
 live on the strength of a doc comment would recreate the same broken promise
 this entry is about. To land it: call it in `rc_live_apply`'s `qp` branch,
 re-add `qp` to `ENC_LIVE_KEYS` for T31/C100 only, and re-run the RC6b
-bitstream measurement on cam-garage - if the two QP values do not span like
+bitstream measurement on cam-01 - if the two QP values do not span like
 the boot path does, revert and leave the key restart-bound.
 
 **2026-08-22, classic path (T23N) closed too**: "the classic path is
 unchanged" above turned out to be the remaining gap. RC6 (which pins the
 same deferred-outside-fixqp/live-inside-fixqp contract already enforced on
-the new API) FAILed on cam-vorne: `video1.qp` posted under `rc_mode=cbr`
+the new API) FAILed on cam-02: `video1.qp` posted under `rc_mode=cbr`
 graded `deferred:0` even though classic `rc_live_apply` ignores `k` entirely
 and just re-fills the whole `IMPEncoderAttrRcMode` union from `g_cfg` -
 `SetChnAttrRcMode` succeeds regardless of which field the caller cared about,
 so a fixqp-only field reported "live" while doing nothing observable. Fixed
 in `rc_live_apply`'s classic branch: `qp` now returns 0 (persisted, applies
 on restart) when `v->rc_mode!=MS_RC_FIXQP`, before the union re-fill. Verified
-on hardware (cam-vorne, T23N): RC6 now reads "correctly DEFERRED under
+on hardware (cam-02, T23N): RC6 now reads "correctly DEFERRED under
 rc_mode=cbr". Also fixes T20X (wyze/wyze-pan), which shares the classic
 branch. This narrows the "grading is honest per call, not per effect" note
 below - that acceptance no longer covers `qp` on classic, only the other
@@ -2188,7 +2188,7 @@ The original report follows.
 
 #### Original report (2026-08-22)
 
-**Measured on cam-garage (T31X/sc4336p) 2026-08-22, substream in `fixqp`,
+**Measured on cam-01 (T31X/sc4336p) 2026-08-22, substream in `fixqp`,
 daemon pid pinned across the whole sequence.** Found by the new `timps-qa.sh`
 RC6b check, which is why that check exists.
 
@@ -2324,7 +2324,7 @@ first; comment-level corrections were applied in the same pass.
 
 Both agents work without camera access. Everything they build has to be checked
 against real hardware afterwards, on both SoC generations:
-cam-kinder-links (T23) and cam-kinder-rechts (T31).
+cam-03 (T23) and cam-04 (T31).
 
 What to check:
 
@@ -2345,7 +2345,7 @@ What to check:
   substitution on the T31, and the reworded new-API warning. And, just as
   important, that they do *not* fire on the T23.
 - **`i_bias_lvl` on T31** via `SetChnQpIPDelta` — **measured 2026-08-22 on
-  cam-garage (T31X/sc4336p), and the answer is that the call does nothing to
+  cam-01 (T31X/sc4336p), and the answer is that the call does nothing to
   the bitstream.** Transfer: settled and correct. `encoder.<n>.rc.ip_delta`
   echoes the posted value 1:1, in scale and sign, live and after a restart —
   the 443584e pass-through lands as sent, so nothing to fix there. Semantics:
@@ -2367,7 +2367,7 @@ What to check:
   The sweep itself is now repeatable as `timps-qa.sh` RC5b under
   `--test-encoder`; point it at any T31/C100 camera to re-check. It measures
   `-3 / +3 / -3` and requires the effect to beat the drift the two `-3` legs
-  measure between them — an unbracketed A/B pair run at dusk on cam-garage
+  measure between them — an unbracketed A/B pair run at dusk on cam-01
   reported a 41.9 % "effect" with the opposite sign, purely from the light
   changing, against 0.1 % from three controlled runs earlier the same day.
   Keyframe size is not stable enough on a real camera to compare across two
@@ -2380,13 +2380,13 @@ What to check:
   conversion is right. Cross-check `ave_bitrate` against a real stream
   measurement.
 - **T23 live rc actually applies.** POST `video0.bitrate` (and `min_qp`)
-  on cam-kinder-links without restart; `deferred_keys` must be empty for
+  on cam-03 without restart; `deferred_keys` must be empty for
   them, the readback and the measured stream must follow within one GOP.
 - **`flucLvl`** is H265-only and the T23 SDK has no H265 at all, so it cannot
   be tested on the T23. Check whether any fleet camera can exercise it; if not,
   say so rather than claiming it works.
 
-Currently running: `min_qp` sweep (20 -> 30 -> 38) on cam-kinder-links under
+Currently running: `min_qp` sweep (20 -> 30 -> 38) on cam-03 under
 vbr with quality_lvl back at 2, so min_qp is the only variable. Tests whether
 the controller is quality-seeking and where its operating qp actually sits.
 
@@ -2404,8 +2404,8 @@ Requirements:
 
 - Frames from the **H.264 stream**, not JPEG snapshots — those come from a
   separate encoder and would show nothing about rate control.
-- **Both SoCs**: the same settings on T23 (cam-kinder-links) and T31
-  (cam-kinder-rechts), so the reader can see the generational difference and
+- **Both SoCs**: the same settings on T23 (cam-03) and T31
+  (cam-04), so the reader can see the generational difference and
   not just read about it.
 - One frame per setting: cbr baseline, vbr at quality_lvl 2 / 5 / 7, and fixqp
   42 as the "what the scene actually costs" reference. Full frame plus a 1:1
@@ -2497,24 +2497,24 @@ against the sim and pass.
 
 `audio.backchannel` defaults to 0 (`config.c:295`) and no user overlay sets it,
 so every full flash turns two-way audio off. It was only on before because an
-earlier runtime setting had persisted. Restored on cam-garage 2026-08-21 and
+earlier runtime setting had persisted. Restored on cam-01 2026-08-21 and
 verified by acoustic loopback at 30.6 dB, but it will be lost at the next
 flash.
 
 Making it durable means `audio.backchannel = 1` in the user overlay
 `timps.conf` — a privacy-relevant change, so it needs the user's decision:
-garage only, whole fleet, or not at all.
+cam-01 only, whole fleet, or not at all.
 
 ### Give the wyze cam2 a real hostname
 
-192.168.10.107 still reports the factory hostname `ing-wyze-cam2-3737` and
+192.0.2.107 still reports the factory hostname `ing-wyze-cam2-3737` and
 appears in Loki under the older, stale `ing-wyze-cam2-8071`. Set a proper
 hostname in the user profile so it survives flashing, then confirm the
 collector picks up the new label.
 
 ### Bring the fleet back to one version
 
-Ten cameras run the v1.9.2 release; cam-kinder-links and cam-kinder-rechts run
+Ten cameras run the v1.9.2 release; cam-03 and cam-04 run
 `v1.9.2-1-g8f3c84c` with the three new rate-control keys. Fine while the T23
 work is in progress, not permanent.
 
@@ -2524,10 +2524,10 @@ separate pack run**, verified by extracting timpsd from the squashfs. A plain
 `rebuild-timps && make` packs before the install lands. See
 `.ciao-wt/docs/ota-rootfs-hang-and-partition-layout.md`.
 
-### Prove the T23 boot repair on cam-vorne
+### Prove the T23 boot repair on cam-02
 
 The railed-boot repair (treat a pegged AE reading at boot as a transition, not
-a re-assert) has never run on real hardware in the dark. cam-vorne is a T23 and
+a re-assert) has never run on real hardware in the dark. cam-02 is a T23 and
 the natural candidate. Reboot after nightfall and check it does not anchor its
 reference to a clipped reading — `dn_clipped()` should suppress the anchor and
 the daynight log should show the deferred verdict.
@@ -2574,7 +2574,7 @@ the daynight log should show the deferred verdict.
   `docs/wiki/images/<page-slug>/` convention, both waiting on the motif
   decision tracked under "Screenshots for the wiki" above.
 
-## Follow-up: ISP module parameters ruled out entirely (2026-08-21, live test on cam-kinder-rechts)
+## Follow-up: ISP module parameters ruled out entirely (2026-08-21, live test on cam-04)
 
 Two reboot tests, both reverted afterward:
 
@@ -2596,7 +2596,7 @@ independent of every ISP module parameter tried. `buf:0` and `buf:1` in
 `/proc/jz/isp/isp-fs` always report identical counts, consistent with both
 video streams sharing one upstream frame source - the drop happens before
 that split, not per-encoder-channel. Next avenue: compare this against
-cam-garage (T31 + sc4336p, full rate) at the same procfs level to see if the
+cam-01 (T31 + sc4336p, full rate) at the same procfs level to see if the
 working pairing shows near-zero drops there, which would confirm the drop
 counter itself is the right diagnostic and shift the search to what's
 upstream of it (sensor readout timing, i2c bus contention, ISP pipeline
@@ -2604,7 +2604,7 @@ config unrelated to these three module parameters).
 
 ## Follow-up 2: sensor itself is not throttled (i2c VTS/HTS readback, 2026-08-21)
 
-Live register read on cam-kinder-rechts, `i2ctransfer -f -y 0 w2@0x30 0x32 0x0e r2`
+Live register read on cam-04, `i2ctransfer -f -y 0 w2@0x30 0x32 0x0e r2`
 (VTS) and `... 0x32 0x0c r2` (HTS):
 
     VTS = 0x04b0 = 1200   (init-table default was 1440 - AE lowered it, normal)
@@ -2623,18 +2623,18 @@ touch it.
 This is very likely a kernel/ISP-driver-level bug in the tx-isp t31 binding
 for this sensor mode, not something fixable via Buildroot Kconfig. Next step
 (not yet done): read the same `ch0_pre_dequeue_drop`/`buf_qcnt` counters on
-cam-garage (T31 + sc4336p, confirmed full rate) to see whether that pairing
+cam-01 (T31 + sc4336p, confirmed full rate) to see whether that pairing
 shows near-zero drops at the same procfs location - if so, the counter is the
 right diagnostic and the search moves to what differs in the two sensors'
 timing/interrupt behavior at the driver level, which likely requires reading
 tx-isp kernel source (SDK checkout, not just the sensor driver) rather than
 further Buildroot config changes.
 
-## Incident: video<N>.buffers=3 crashed cam-kinder-rechts channel 0 (2026-08-21)
+## Incident: video<N>.buffers=3 crashed cam-04 channel 0 (2026-08-21)
 
 Testing whether a deeper video buffer pool (nrVBs) would reduce the
 `ch0_pre_dequeue_drop` losses from the fps investigation above. Set
-`video0.buffers=3` and `video1.buffers=3` via `/control` on cam-kinder-rechts,
+`video0.buffers=3` and `video1.buffers=3` via `/control` on cam-04,
 restarted the daemon.
 
 **Result: channel 0 (main, 1920x1080) could not initialize at all.**
@@ -2677,7 +2677,7 @@ whole fps investigation, already documented in timps' own source
 (`hal_ingenic.c`, PLATFORM_T31 nrVBs clamp, "Confirmed on a Cinnado D1
 T31L/SC2336 board 2026-07-26" - the exact board family in this fleet):
 
-cam-kinder-rechts' video0 is 1920x1080 against a 1920x1080 sensor, so
+cam-04' video0 is 1920x1080 against a 1920x1080 sensor, so
 `scale = (sw!=width)||(sh!=height)` evaluates false - the "non-scaled full-res
 physical channel". The code silently clamps `nrVBs` to **1** for this case
 whenever `buffers_explicit` is unset (the normal state, untouched before
@@ -2689,7 +2689,7 @@ start of the investigation. A single buffer gives the ISP nowhere to put the
 next frame if the encoder falls even slightly behind, which is a far more
 direct explanation for the drop ratio than anything tested so far.
 
-**Cross-check against `prudynt-t`** (`/mnt/NVMe/git/prudynt-t/src/IMPFramesource.cpp`):
+**Cross-check against `prudynt-t`** (`<prudynt-t>/src/IMPFramesource.cpp`):
 independently hit the same wall. A commented-out block there implements the
 same conditional (scale only if resolution differs) with the note "That's a
 great idea but it does not work as intended. Needs more investigation" -
@@ -2719,7 +2719,7 @@ from `/proc/jz/isp/isp-fs`, both already used throughout tonight's
 investigation.
 
 This supersedes the "next avenue" note in the ISP-module-parameters
-follow-up above (comparing cam-garage's drop counters) - cam-garage's main
+follow-up above (comparing cam-01's drop counters) - cam-01's main
 channel is presumably in the scaled path already (different sensor/board),
 so a cross-camera procfs comparison is less informative than this scale=1
 hypothesis, which is now the highest-priority thing to try.
@@ -2750,11 +2750,11 @@ Why the fleet splits the way it does (`/etc/modules.d/20-isp` per board):
     cinnado d1 (all six sc2336 cams):
         tx_isp_t31 isp_ch0_pre_dequeue_time=24 isp_ch0_pre_dequeue_interrupt_process=0 isp_memopt=1 print_level=1
         (from BR2_ISP_CH0_PRE_DEQUEUE_TIME_VALUE=24 in the board defconfig)
-    wuuk y0510 (cam-garage, full 24.7 fps):
+    wuuk y0510 (cam-01, full 24.7 fps):
         tx_isp_t31 isp_clk=200000000 print_level=1
         (no pre-dequeue parameter -> gate never active)
 
-So the cam-garage cross-check is answered, just one level deeper than the
+So the cam-01 cross-check is answered, just one level deeper than the
 question was posed: whether its video0 is scaled or not is irrelevant -
 its driver is simply loaded without the pre-dequeue parameter. Further
 confirmation: `package/thingino-daynightd/samples/t31-proc-jz-isp-fs.txt`
@@ -2820,7 +2820,7 @@ with the new build will show the diagnostic LOGI line; correlate its
 timestamp plus the recovery-cycle log lines against the dmesg error
 timestamps (`dmesg -T`-equivalent via /proc/uptime deltas). Also worth one
 `cat /sys/module/tx_isp_t31/parameters/isp_ch0_pre_dequeue_time` on
-cam-kinder-rechts (expect 24) and on cam-garage (expect file absent).
+cam-04 (expect 24) and on cam-01 (expect file absent).
 The related stability question: the watchdog exits the daemon after 5
 consecutive fruitless recovery cycles (~5 s of misses each at the 500 ms
 polling timeout); a boot-time stall (day/night switch storm) lasting the
@@ -2859,7 +2859,7 @@ disabled (`=0`, as on the post-a7bec4c92 fix) on the same camera/scene,
 and check `isp_ch0_pre_dequeue_valid_lines`'s current value/effect if the
 symptom reproduces.
 
-## Fix 868696b verified on hardware (2026-08-22, cam-kinder-rechts)
+## Fix 868696b verified on hardware (2026-08-22, cam-04)
 
 Built (rebuild-timps + separate pack, version confirmed from the packed
 squashfs: v1.9.2-21-g868696b), flashed via `make ota`, PTZ preserved
@@ -2886,7 +2886,7 @@ more rmem (plus `isp_memopt=1` is currently paired with this parameter,
 worth understanding why before removing it) for the removed frame-drop
 constraint.
 
-## RESOLVED: T31+sc2336 fps ceiling fixed, verified on cam-kinder-rechts (2026-08-22, 01:01)
+## RESOLVED: T31+sc2336 fps ceiling fixed, verified on cam-04 (2026-08-22, 01:01)
 
 Full result, before/after on the same camera:
 
@@ -2914,7 +2914,7 @@ project's own `rebuild-<pkg>` target (`Makefile.ota`) does
 `make CAMERA=... IP=... rebuild-<pkg>` for any post-defconfig-change
 package rebuild, never manual `-dirclean pkg` alone.**
 
-**Live verification, cam-kinder-rechts, 2026-08-22 01:01**: clean boot, no
+**Live verification, cam-04, 2026-08-22 01:01**: clean boot, no
 `EnableChn failed`, no `one buffer schedule` kernel errors, PTZ preserved
 (1360,157), version `v1.9.2-21-g868696b`. `free -m`: 33440K total (Linux
 side), 2176K free + 17324K buff/cache right after boot - tighter than
@@ -2925,13 +2925,13 @@ it holds over hours.
 
 **Not yet done, needs the user's decision in the morning**: rolling this
 defconfig change to the other five cinnado_d1_t31l_sc2336_atbm6031 cameras
-in the fleet (cam-sz, cam-schuppen, cam-wohn, cam-wohn-ofen,
-cam-wintergarten). Recommend watching cam-kinder-rechts for real-world
+in the fleet (cam-05, cam-06, cam-10, cam-09,
+cam-12). Recommend watching cam-04 for real-world
 stability (a day of normal use, ideally including an overnight recording
 window) before touching the other five - this is the first and only unit
 running the new RMEM/buffer configuration.
 
-## Isolated: RMEM_MB increase was unnecessary (2026-08-22, cam-kinder-rechts)
+## Isolated: RMEM_MB increase was unnecessary (2026-08-22, cam-04)
 
 Split the two changes from the fix above and tested each build separately,
 same camera:
@@ -2965,7 +2965,7 @@ alloc_kmem_init mmap Addr 2600000 and Size 0 error`, plus a burst of
 `ipu_osd error` from the OSD compositor racing the half-initialized ISP) -
 so this is not shrink-specific after all. **Update 2026-08-24: this race is
 not boot-specific either - see the entry near the top of this file for
-`ipu_osd error` recurring 63 times in one night on cam-wyze during ordinary
+`ipu_osd error` recurring 63 times in one night on cam-08 during ordinary
 channel re-enable cycles, no boot or RMEM change involved.** It self-healed on its own that
 time (timpsd's retry-with-backoff loop happened to succeed before hitting
 its give-up limit); this morning's shrink case did not self-heal and needed
@@ -2982,30 +2982,30 @@ pre_dequeue removal never triggers this shrink case at all.
 ## Candidate: raise the package-default night_gain from 4096
 
 `night_gain` (= `total_gain_night_threshold`) has now been raised to 8000 on
-four cameras: cam-sz (2026-08-21, confirmed working - switched to day
-earlier the next morning, 2026-08-22), cam-wohn, cam-schuppen, and cam-vorne
+four cameras: cam-05 (2026-08-21, confirmed working - switched to day
+earlier the next morning, 2026-08-22), cam-10, cam-06, and cam-02
 (2026-08-22, all applied but not yet individually confirmed).
 
-**Only cam-sz has a clean before/after result.** The other three are
+**Only cam-05 has a clean before/after result.** The other three are
 confounded:
 
-- **cam-schuppen has direct prior history against a clean win**: a
+- **cam-06 has direct prior history against a clean win**: a
   2026-08-16 note in its own overlay says night_gain=8000 (paired with
   day_trigger=2500 back then, not restored here) was already tried on this
   exact camera and "may not fully close" its dead zone. Re-raising to 8000
   alone repeats a value already documented as insufficient there.
-- **cam-vorne was mid-dawn-transition when set** (projected day exposure
+- **cam-02 was mid-dawn-transition when set** (projected day exposure
   falling from ~992000 to ~6700 over ~40 minutes that morning, per the
   fleet-wide log review) - it may have crossed into day shortly regardless
   of the threshold change, so its outcome won't isolate the setting's effect.
-- **cam-wohn** has no confounding history noted, but also no dedicated
+- **cam-10** has no confounding history noted, but also no dedicated
   before/after measurement yet - it happened to be mid-transition too during
   the same log review.
 
 Before making 8000 (or any other value) the package default in
 `package/timps/files/timps.conf` / `src/config.c`'s compiled-in default:
 confirm each of these four independently over a few real dawn/dusk cycles,
-and settle cam-schuppen's case specifically given its contradicting history
+and settle cam-06's case specifically given its contradicting history
 (may need day_trigger raised too, not night_gain alone, per the 2026-08-16
-note). A single confirmed camera (cam-sz) is not enough evidence for a
+note). A single confirmed camera (cam-05) is not enough evidence for a
 fleet-wide default change.

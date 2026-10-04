@@ -3,7 +3,7 @@
 Review of the binary-size cost of the wss:// (TLS WebSocket) support added to
 thingino-motors today, plus the root cause of the Kconfig `default y` that
 never fired. All numbers measured on the real production build: cross gcc from
-`output/ciao/wuuk_y0510_...-192.168.10.21/per-package/thingino-motors/host/bin/mipsel-linux-gcc`,
+`output/ciao/wuuk_y0510_...-192.0.2.21/per-package/thingino-motors/host/bin/mipsel-linux-gcc`,
 production flags (`-Os -s -ffunction-sections -fdata-sections
 -Wl,-z,max-page-size=0x1000 -Wl,--gc-sections`). Local rebuilds reproduce the
 fleet numbers exactly: 59,576 bytes WS-only, 67,936 bytes WS+TLS, matching
@@ -94,7 +94,7 @@ per-connection knob that mattered (OUT buffer 16 KB -> 4 KB) was already taken
 ## 5. Root-caused and fixed: the Kconfig `default y` that never fired
 
 `BR2_PACKAGE_THINGINO_MOTORS_WS_TLS`'s `default y if
-BR2_PACKAGE_THINGINO_UHTTPD_TLS_MBEDTLS` failing to auto-apply on cam-garage's
+BR2_PACKAGE_THINGINO_UHTTPD_TLS_MBEDTLS` failing to auto-apply on cam-01's
 regen was NOT merge-ordering or visibility — the new option itself created a
 **Kconfig recursive dependency**, verbatim from kconfig:
 
@@ -112,7 +112,7 @@ BR2_PACKAGE_MBEDTLS` reads MBEDTLS; WS_TLS's `select BR2_PACKAGE_MBEDTLS`
 closes the loop. kconfig breaks such cycles by ignoring the involved defaults —
 so WS_TLS never defaulted on, and worse, with WS_TLS absent from .config,
 `olddefconfig` even flipped `BR2_PACKAGE_THINGINO_UHTTPD_TLS_MBEDTLS` itself to
-"not set" (reproduced empirically on a copy of the garage .config).
+"not set" (reproduced empirically on a copy of the cam-01 .config).
 
 **Fix applied** (uncommitted, `package/thingino-motors/Config.in`): replace
 `select BR2_PACKAGE_MBEDTLS` with `depends on BR2_PACKAGE_MBEDTLS`. Verified
@@ -120,7 +120,7 @@ against the real regen input (`.config_original` minus the local.fragment
 workaround line): recursion error gone, `BR2_PACKAGE_THINGINO_MOTORS_WS_TLS=y`
 and `BR2_PACKAGE_THINGINO_UHTTPD_TLS_MBEDTLS=y` both land from defaults alone.
 The explicit `BR2_PACKAGE_THINGINO_MOTORS_WS_TLS=y` workaround in
-`user/wuuk_y0510_t31x_sc4336p_ssv6158/192.168.10.21/local.fragment` is now
+`user/wuuk_y0510_t31x_sc4336p_ssv6158/192.0.2.21/local.fragment` is now
 redundant (harmless to keep; its comment block should be updated or the line
 dropped when convenient). Semantics change: on an image with no mbedTLS at all
 the option is now hidden instead of self-enabling mbedTLS — every camera in
