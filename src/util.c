@@ -436,6 +436,9 @@ void ms_hostname(char *out, size_t cap)
     if (!cap) return;
     if (gethostname(out, cap) != 0) snprintf(out, cap, "camera");
     out[cap-1] = 0;   /* F4: an overlong hostname may come back unterminated */
+    /* it becomes a path component (record/timelapse write and prune) */
+    if (!out[0] || strchr(out, '/') || !strcmp(out, ".") || ms_path_unsafe(NULL, out))
+        snprintf(out, cap, "camera");
 }
 
 time_t ms_media_path(char *out, size_t cap, const char *dir, const char *sub,
@@ -449,9 +452,6 @@ time_t ms_media_path(char *out, size_t cap, const char *dir, const char *sub,
         snprintf(rel, sizeof rel, "%ld", (long)t);
     char host[64];
     ms_hostname(host, sizeof host);
-    /* exactly one safe path component */
-    if (!host[0] || strchr(host, '/') || !strcmp(host, ".") || ms_path_unsafe(NULL, host))
-        snprintf(host, sizeof host, "camera");
     snprintf(out, cap, "%s/%s/%s/%s%s", dir, host, sub, rel, ext);
     return t;
 }

@@ -1473,7 +1473,7 @@ build lacks `USE_FAAC` (see §6.1).
   path rule as recording.
 - `open <path>: <e>` / `write <path>: <e>` — storage problem.
 - `removed orphaned <path>.jpg.tmp` (INFO) — a shot cut by a power loss,
-  cleaned up by the hourly prune.
+  cleaned up by the hourly prune (this camera's subtree, older than 60 s).
 - `no frame from src=<n> within <N> ms - retrying in <N>s` — **the JPEG
   source produced nothing.** Timelapse is "just-in-time": it subscribes only
   when a shot is due. Check that `videoN.jpeg = true` (or `jpeg.enabled`) and

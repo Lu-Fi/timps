@@ -70,7 +70,8 @@ semantic versioning.
   and SRTP/ICE key material is wiped with stores the compiler cannot drop.
 - **Recording and timelapse:** a failing segment `open` logs once a minute (or
   on a new errno) instead of on every packet; the timelapse prune stops at
-  once on shutdown and removes `*.jpg.tmp` left by a power cut; a hostname that
+  once on shutdown and removes `*.jpg.tmp` older than 60 s that a power cut
+  left in this camera's own subtree; a hostname that
   is not one safe path component falls back to `camera`; on shutdown the
   recording is finalised first, before SRT and timelapse.
 - **Ingenic HAL robustness:** a `GetStream` failure after a successful poll no

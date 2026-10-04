@@ -73,8 +73,9 @@ static void prune_old(const char *base, time_t cutoff, int depth)
             rmdir(p);
         } else if (S_ISREG(s.st_mode)){
             size_t l=strlen(p);
-            /* a shot interrupted by power loss; only this thread writes them */
-            if (l>8 && !strcmp(p+l-8,".jpg.tmp")){
+            /* a shot interrupted by power loss. This host's subtree only, and
+             * old: a camera sharing the hostname on one NAS may be mid-write */
+            if (l>8 && !strcmp(p+l-8,".jpg.tmp") && time(NULL)-s.st_mtime > 60){
                 if (unlink(p)==0) LOGI(MOD,"removed orphaned %s",p);
                 continue;
             }
