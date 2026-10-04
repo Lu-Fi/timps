@@ -195,7 +195,7 @@ static int shot_write(const ms_pkt *p)
  * only ever receives frames published AFTER the subscribe, and every JPEG
  * is standalone - no keyframe wait needed. */
 
-/* The grab parks on its own queue for up to 2 x HUB_JPEG_GRAB_WAIT_MS with a
+/* The grab parks on its own queue for up to 2 x HUB_JPEG_GRAB_WAIT_MS + HUB_JPEG_COLD_EXTRA_MS with a
  * silent JPEG source; publish it so timelapse_stop() can close it, or that
  * wait eats most of main()'s 4 s shutdown budget before the HAL teardown. */
 static fanqueue *g_grab_q;     /* under g_lock */

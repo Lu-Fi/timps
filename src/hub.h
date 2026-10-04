@@ -227,6 +227,15 @@ int         hub_pick_jpeg_src(const ms_config *cfg, int chn, int strict);
 #ifndef HUB_JPEG_GRAB_WAIT_MS
 #define HUB_JPEG_GRAB_WAIT_MS 1500
 #endif
+/* Extra time for the 2nd half of a piggyback grab, i.e. when the parent video
+ * pipeline had to be woken from idle. The open-stack T23 sometimes starts a
+ * JPEG channel that stays empty until its framesource is cycled: the HAL
+ * recycles it after MS_JPEG_COLD_STALL_US without a frame, and the grab has to
+ * outlast that recycle instead of answering 503 after 3.0 s. A warm source
+ * still answers within the first half. */
+#ifndef HUB_JPEG_COLD_EXTRA_MS
+#define HUB_JPEG_COLD_EXTRA_MS 1500
+#endif
 
 /* One on-demand JPEG grab: subscribe to 'src' (a HUB_JPEG_SRC/_N id), wait
  * up to two bounded halves of 'wait_ms' each for a fresh JPEG (the 2nd half

@@ -185,6 +185,18 @@ typedef IMPEncoderCHNStat IMPEncoderChnStat;
 #ifndef MS_JPEG_WATCHDOG_ITERS
 #define MS_JPEG_WATCHDOG_ITERS 10
 #endif
+/* A JPEG channel that has delivered nothing this long after StartRecvPic is
+ * recycled (at most MS_JPEG_COLD_RECYCLES times per start) instead of waiting for
+ * MS_JPEG_WATCHDOG_ITERS misses (~5 s): the open-stack T23 sometimes starts a
+ * channel that stays empty until its framesource is cycled, and the snapshot
+ * grab gives up before the miss-based watchdog fires. Healthy cold starts
+ * deliver within 0.3-1.6 s. */
+#ifndef MS_JPEG_COLD_STALL_US
+#define MS_JPEG_COLD_STALL_US 2000000
+#endif
+#ifndef MS_JPEG_COLD_RECYCLES
+#define MS_JPEG_COLD_RECYCLES 2
+#endif
 /* Same infinite-retry risk as MS_VIDEO_WATCHDOG_MAX_RECOVERIES above:
  * dbg_jpollfail used to reset to 0 after every forced recovery cycle
  * regardless of whether it actually worked, so a dead-but-"successfully
@@ -468,26 +480,10 @@ static int isp_apply_image(const char *k);
  * enable edge re-arms it, so the value the edge is known to reset is re-written
  * as soon as the caller's frame loop is actually delivering. */
 static void ae_it_max_arm(void);
-static void fs_use(int chn)
+/* Re-latch the chn0 state a real EnableChn is suspected to wipe;
+ * shared by fs_use()'s enable edge and fs_recycle(). */
+static void fs_edge_relatch(int chn)
 {
-    if (chn < 0 || chn >= MS_FS_MAXCHN) return;
-    pthread_mutex_lock(&g_fs_mtx);
-    int just_enabled = 0;
-    g_fs_users[chn]++;
-    if (!g_fs_enabled[chn]) {
-        /* a start-retry loop calls this up to 5x/s: log the 1st and every 20th */
-        static int enfail[MS_FS_MAXCHN];
-        if (IMP_FrameSource_EnableChn(chn) != 0){
-            if ((enfail[chn]++ % 20) == 0)
-                LOGE(MOD,"framesource %d: EnableChn failed (attempt %d)", chn, enfail[chn]);
-        } else {
-            LOGI(MOD,"framesource %d enabled", chn);
-            g_fs_enabled[chn] = 1;
-            just_enabled = 1;
-            enfail[chn] = 0;
-        }
-    }
-    pthread_mutex_unlock(&g_fs_mtx);
     /* A real chn0 EnableChn (the genuine 0->1 hardware edge, NOT a refcount
      * bump on an already-live channel) is suspected of wiping the ISP-side
      * flip/running_mode latch, so an ALREADY-correct value can silently revert
@@ -510,7 +506,7 @@ static void fs_use(int chn)
      * is no cycle. Guarded on g_hcfg (NULL only very early pre-config, and even
      * then the 0/0/day defaults are harmless). isp_apply_image() no-ops on SoCs
      * where these keys are unwired. */
-    if (just_enabled && chn == 0 && g_hcfg) {
+    if (chn == 0 && g_hcfg) {
         pthread_mutex_lock(&g_isp_lock);
         isp_apply_image("hflip");
         isp_apply_image("vflip");
@@ -526,6 +522,28 @@ static void fs_use(int chn)
         ae_it_max_arm();
     }
 }
+static void fs_use(int chn)
+{
+    if (chn < 0 || chn >= MS_FS_MAXCHN) return;
+    pthread_mutex_lock(&g_fs_mtx);
+    int just_enabled = 0;
+    g_fs_users[chn]++;
+    if (!g_fs_enabled[chn]) {
+        /* a start-retry loop calls this up to 5x/s: log the 1st and every 20th */
+        static int enfail[MS_FS_MAXCHN];
+        if (IMP_FrameSource_EnableChn(chn) != 0){
+            if ((enfail[chn]++ % 20) == 0)
+                LOGE(MOD,"framesource %d: EnableChn failed (attempt %d)", chn, enfail[chn]);
+        } else {
+            LOGI(MOD,"framesource %d enabled", chn);
+            g_fs_enabled[chn] = 1;
+            just_enabled = 1;
+            enfail[chn] = 0;
+        }
+    }
+    pthread_mutex_unlock(&g_fs_mtx);
+    if (just_enabled) fs_edge_relatch(chn);
+}
 static void fs_unuse(int chn)
 {
     if (chn < 0 || chn >= MS_FS_MAXCHN) return;
@@ -536,6 +554,24 @@ static void fs_unuse(int chn)
         LOGI(MOD,"framesource %d disabled (idle)", chn);
     }
     pthread_mutex_unlock(&g_fs_mtx);
+}
+/* Refcount-neutral Disable+Enable of a live FS: the force-recycle that the
+ * fs_unuse()+fs_use() pair in the watchdogs cannot be while a second holder
+ * (piggyback video wake, motion pin) keeps the count above 0. A co-holder sees
+ * a short frame gap. Returns 0 on success, -1 if the channel was not enabled or
+ * EnableChn failed (then g_fs_enabled is 0 and the next fs_use() retries). */
+static int fs_recycle(int chn)
+{
+    if (chn < 0 || chn >= MS_FS_MAXCHN) return -1;
+    pthread_mutex_lock(&g_fs_mtx);
+    if (!g_fs_enabled[chn]) { pthread_mutex_unlock(&g_fs_mtx); return -1; }
+    IMP_FrameSource_DisableChn(chn);
+    int rc = IMP_FrameSource_EnableChn(chn);
+    g_fs_enabled[chn] = (rc == 0);
+    LOGI(MOD,"framesource %d recycled%s", chn, rc ? " - EnableChn failed" : "");
+    pthread_mutex_unlock(&g_fs_mtx);
+    if (rc == 0) fs_edge_relatch(chn);
+    return rc ? -1 : 0;
 }
 /* Teardown counterpart of fs_use()/fs_unuse(): hard-stop one FS channel. By
  * the time ing_stop() or the bring-up unwind reach a channel, every producer
@@ -3536,6 +3572,8 @@ static void *jpeg_thread(void *arg)
                                          * that never yielded a real frame -
                                          * see MS_JPEG_WATCHDOG_MAX_RECOVERIES */
     int dbg_jempty=0;                  /* rate-limits the empty-stream drop */
+    int64_t cold_since=0;              /* StartRecvPic time until the first frame */
+    int cold_recycles=0;
     int64_t next=0, idle_since=0;
     int64_t period = 1000000/(jc->fps>0?jc->fps:5);
     while (jc->run) {
@@ -3584,6 +3622,7 @@ static void *jpeg_thread(void *arg)
                 continue;
             }
             dbg_jstartfail=0; receiving=1;
+            cold_since = ms_now_us(); cold_recycles = 0;
         }
         int64_t now=ms_now_us();
         if (now<next){ usleep(next-now); }
@@ -3595,6 +3634,24 @@ static void *jpeg_thread(void *arg)
             if ((dbg_jpollfail % 20)==2)
                 LOGW(MOD,"jpeg chn%d: PollingStream idle (miss#%d) - encoder emits no frames",
                      jc->chn, dbg_jpollfail);
+            if (cold_since && cold_recycles < MS_JPEG_COLD_RECYCLES &&
+                dbg_jpollfail < MS_JPEG_WATCHDOG_ITERS &&
+                ms_now_us() - cold_since >= MS_JPEG_COLD_STALL_US){
+                LOGW(MOD,"jpeg chn%d: no frame %d ms after start - recycling the framesource (%d/%d)",
+                     jc->chn, MS_JPEG_COLD_STALL_US/1000, cold_recycles+1, MS_JPEG_COLD_RECYCLES);
+                cold_recycles++;
+                IMP_Encoder_StopRecvPic(jc->chn);
+                if (fs_recycle(jc->fs_chn) != 0){
+                    fs_unuse(jc->fs_chn);
+                    fs_use(jc->fs_chn);
+                }
+                if (IMP_Encoder_StartRecvPic(jc->chn)!=0){
+                    fs_unuse(jc->fs_chn);
+                    receiving=0;
+                }
+                cold_since = ms_now_us();
+                continue;
+            }
             if (dbg_jpollfail >= MS_JPEG_WATCHDOG_ITERS){
                 dbg_jrecover_fails++;
                 if (dbg_jrecover_fails >= MS_JPEG_WATCHDOG_MAX_RECOVERIES){
@@ -3627,6 +3684,7 @@ static void *jpeg_thread(void *arg)
             continue;
         }
         dbg_jpollfail=0;
+        cold_since=0;
         dbg_jrecover_fails=0;   /* a real frame arrived: genuinely recovered */
         IMPEncoderStream st;
         if (IMP_Encoder_GetStream(jc->chn,&st,1)!=0){

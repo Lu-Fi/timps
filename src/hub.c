@@ -331,7 +331,7 @@ ms_pkt *hub_grab_jpeg(int src, int wait_ms, int *busy,
             if (fanqueue_init(&vq,2)!=0) vsrc=-1;
             else if (hub_subscribe(vsrc,&vq)!=0){ fanqueue_free(&vq); vsrc=-1; }
         }
-        p = jpeg_pop(&q,wait_ms);
+        p = jpeg_pop(&q, vsrc >= 0 ? wait_ms + HUB_JPEG_COLD_EXTRA_MS : wait_ms);
     }
     /* release the helper video subscription FIRST (it was taken last), then
      * the JPEG one; hub_unsubscribe waits out any in-flight publish before

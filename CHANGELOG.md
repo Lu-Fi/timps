@@ -6,6 +6,16 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- **First `/snapshot.jpg` after idle sometimes answered 503 on the open-stack
+  T23.** A freshly started JPEG channel occasionally stays empty until its
+  framesource is cycled; the miss-based watchdog needed ~5 s, the grab gave up
+  after 3.0 s. A JPEG channel without a frame 2 s after start is now recycled
+  (Disable+Enable of its framesource, also while the piggyback video wake holds
+  a second reference), and a snapshot that had to wake the video pipeline waits
+  `HUB_JPEG_COLD_EXTRA_MS` (1500 ms) longer.
+
 ## [1.9.31] - 2026-10-04
 
 ### Changed

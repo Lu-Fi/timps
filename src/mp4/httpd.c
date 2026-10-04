@@ -852,8 +852,9 @@ static int jpeg_src_from_path(const char *path, const ms_config *cfg)
  * itself (piggyback parent-video wake included) is shared with timelapse.c
  * as hub_grab_jpeg() - see hub.h/hub.c for the full mechanism. This function
  * only owns the HTTP side: the 404/503 responses and writing the JPEG bytes
- * out as a response. Worst-case wait is unchanged: 2 x HUB_JPEG_GRAB_WAIT_MS
- * (3 s at the default), never hangs the connection. */
+ * out as a response. Worst case is HUB_JPEG_GRAB_WAIT_MS plus
+ * HUB_JPEG_GRAB_WAIT_MS + HUB_JPEG_COLD_EXTRA_MS (4.5 s at the defaults), never
+ * hangs the connection. */
 /* publish the grab's queue into this connection's registry slot, so
  * ms_creg_wake_all() can close it on shutdown (see hub_grab_hook in hub.h) */
 static void snap_qhook(struct fanqueue *q, void *ctx)
