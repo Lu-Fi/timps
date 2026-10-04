@@ -44,8 +44,10 @@ semantic versioning.
   Once half the slots are taken, a peer may keep at most 4 (HTTP) / 3 (RTSP)
   unauthenticated connections older than 1 s (a parallel burst from one NVR or
   browser authenticates long before that); with every slot taken the oldest
-  such connection is closed so a retry gets in; an RTSP connection that has not
-  authenticated within 15 s is closed (was 60 s), the HTTP first-byte wait is
+  such connection (unauthenticated, older than 1 s) is closed so a retry gets
+  in; an RTSP connection that has not authenticated within 15 s is closed (was
+  60 s until PLAY; a player that prompts the user for a password now has 15 s
+  from connect), the HTTP first-byte wait is
   3 s, the TLS handshake limit 10 s (was 30 s) with at most two handshakes
   computing at once, and the rejection warnings are rate-limited.
 - **Failed logins are slowed down:** each rejected Basic/Digest attempt (HTTP and
@@ -55,7 +57,8 @@ semantic versioning.
   stream no longer delays shutdown into the "connection thread(s) still live"
   leak.
 - **RTSP over UDP survives transient send errors** (`ENOBUFS`, `EAGAIN`,
-  unreachable route): the datagram is dropped instead of ending the session.
+  unreachable route): the datagram is dropped instead of ending the session,
+  and counted in the new `drops` field of `GET /control?clients=1`.
 - **Request parsing:** HTTP request lines are parsed by hand (a leading space
   or an 8+ character method no longer slips past the 414 check or into the
   path), RTSP `Transport:` and the request URL are read from their own line

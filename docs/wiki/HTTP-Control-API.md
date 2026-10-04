@@ -320,7 +320,7 @@ not listed.
 ```json
 {"clients":[
  {"ip":"192.0.2.17","port":32834,"proto":"rtsp/tcp","chn":0,
-  "since_s":41,"kbps":1600,"bytes":8200000,"lat_ms":18,"agent":"FFmpeg Frigate/0.17.2-3d4dd3a"},
+  "since_s":41,"kbps":1600,"bytes":8200000,"lat_ms":18,"drops":0,"agent":"FFmpeg Frigate/0.17.2-3d4dd3a"},
  {"ip":"192.0.2.103","port":46712,"proto":"rtsp/udp","chn":1,
   "since_s":36,"kbps":214,"bytes":962000,"lat_ms":12,"agent":"LibVLC/3.0.20 (LIVE555 Streaming Media v2016.11.28)"}]}
 ```

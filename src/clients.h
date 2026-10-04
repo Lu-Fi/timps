@@ -35,9 +35,11 @@ void clients_del(int id);
 void clients_bytes(int id, int n);
 /* owner thread only: capture -> send age of one video frame, averaged */
 void clients_latency(int id, int64_t us);
+/* media packets dropped on the way out (RTSP/UDP: ENOBUFS, unreachable) */
+void clients_drops(int id, unsigned n);
 /* copy the User-Agent value out of a raw request header block ("" if none) */
 void clients_agent_from(const char *hdrs, char *out, int cap);
-/* {"clients":[{"ip","port","proto","chn","since_s","kbps","bytes","lat_ms","agent"},..]};
+/* {"clients":[{"ip","port","proto","chn","since_s","kbps","bytes","lat_ms","drops","agent"},..]};
  * -1 if cap is too small */
 int  clients_json(char *out, int cap);
 

@@ -163,7 +163,6 @@ typedef struct {
     ms_trace_ctx      *tr;           /* opt-in send trace (trace.h); NULL/off =
                                       * every hook below is one global-int test */
     int                cid;          /* clients.h entry, -1 = not listed */
-    unsigned           udp_drop;     /* UDP datagrams the kernel refused */
 #ifdef USE_TLS
     void              *tls;          /* ms_tls_conn* when interleaved over RTSPS */
     uint8_t           *tls_buf;      /* RTSPS video staging, NULL = per packet */
@@ -257,13 +256,13 @@ static int sink_flush(rtp_sink *s)
                  * The address is already in each msg_hdr. */
                 for (; off < b->n; off++)
                     if (sendmsg(s->fd, &b->msgs[off].msg_hdr, 0) < 0) {
-                        if (udp_soft_err(errno)) { s->udp_drop++; continue; }
+                        if (udp_soft_err(errno)) { clients_drops(s->cid, 1); continue; }
                         b->n = 0; ms_trace_wr_end(s->tr, t_wr, 0); return -1;
                     }
                 break;
             }
             if (udp_soft_err(errno)) {         /* drop the rest of this batch */
-                s->udp_drop += (unsigned)(b->n - off);
+                clients_drops(s->cid, (unsigned)(b->n - off));
                 break;
             }
             b->n = 0;
@@ -455,7 +454,7 @@ static int sink_send(void *ctx, const uint8_t *hdr, int hlen,
          * TCP path above this needs no resume loop. */
         int rc = (int)sendmsg(fd, &m, 0);
         ms_trace_wr_end(s->tr, t_wr, rc > 0 ? rc : 0);
-        if (rc < 0 && udp_soft_err(errno)) { s->udp_drop++; return len; }
+        if (rc < 0 && udp_soft_err(errno)) { clients_drops(s->cid, 1); return len; }
         return rc;
     }
 }
@@ -1050,7 +1049,7 @@ static int handle_request(session *s, char *req)
     }
     if (!strncmp(req, "SETUP", 5)) {
         /* the value only: strstr() below must not match a later header */
-        char trv[256]; const char *tr = NULL;
+        char trv[512]; const char *tr = NULL;
         const char *trh = hdr_find(req, "Transport");
         if (trh) {
             size_t tl = strcspn(trh, "\r\n");

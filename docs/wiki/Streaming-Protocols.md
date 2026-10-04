@@ -132,7 +132,12 @@ logins** (credentials presented and refused), so one TCP connection no longer
 allows unlimited password guesses, and a connection that has not reached
 `PLAY` within **60 s** of connecting is closed too: `OPTIONS` needs no auth,
 so a client sending one every <30 s could otherwise hold one of the 8 client
-slots forever.
+slots forever. Since the next release a connection must have authenticated
+(on an open camera: sent a request other than `OPTIONS`) within **15 s** of
+connecting: a player that prompts the user for the password has 15 s from
+connect before the socket is closed (it then has to reconnect). With every
+slot taken, an unauthenticated connection older than 1 s is closed to make
+room for the next client.
 
 ### ONVIF audio backchannel (trackID=2)
 

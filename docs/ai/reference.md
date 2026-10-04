@@ -495,7 +495,8 @@ an untrusted segment. Auth is enabled by setting `rtsp.user`/`rtsp.pass`.
 **since v1.9.28** an RTSP connection is closed after **5 rejected logins**, and one
 that has not reached `PLAY` within **60 s** of connecting — not a lockout, a
 client can reconnect. Since the next release a connection that has not
-authenticated within **15 s** is closed too, each failed Basic/Digest attempt
+authenticated within **15 s** is closed too (a player that prompts the user
+for the password has 15 s from connect), each failed Basic/Digest attempt
 (RTSP and HTTP) waits 500 ms before its `401`, and once half the slots are
 taken one peer may hold only 3 (RTSP) / 4 (HTTP) unauthenticated connections
 older than 1 s; with every slot taken the oldest such connection is closed so
@@ -611,7 +612,7 @@ with it" semantics.
 | --- | --- |
 | `?fields=1` | Inventory of every POST-able config field, grouped by section. Generated from the same tables the POST walks, so it cannot drift. |
 | `?stats=1` | Small object: per-stream `gop`/`profile`/`rc_mode` + `IMP_Encoder_Query` backlog. Exists so a stats card does not poll the whole document. |
-| `?clients=1` | Connected streaming clients: `ip`, `port`, `proto` (`rtsp/udp`, `rtsp/tcp`, `rtsps`, `fmp4`, `mjpeg`, `events`, `webrtc`, `srt`), `chn`, `since_s`, `kbps` (per client, measured at read time), `bytes` (total sent since connect, since 1.9.25), `lat_ms` (sensor capture -> send per client, averaged; all media protocols, -1 for `events`; since v1.9.26), `agent` (User-Agent; Frigate sends `FFmpeg Frigate/<ver>`). Snapshots and `/control` itself are not listed. Since 1.9.24. **Since v1.9.26** the log has the same per client: `[CLIENT] + <proto> <ip>:<port> chn=N agent="…"` on connect and `- … after Ns, N bytes` on disconnect (`/events` only at DEBUG) — `logread \| grep CLIENT` answers "who was connected when" after the fact. |
+| `?clients=1` | Connected streaming clients: `ip`, `port`, `proto` (`rtsp/udp`, `rtsp/tcp`, `rtsps`, `fmp4`, `mjpeg`, `events`, `webrtc`, `srt`), `chn`, `since_s`, `kbps` (per client, measured at read time), `bytes` (total sent since connect, since 1.9.25), `lat_ms` (sensor capture -> send per client, averaged; all media protocols, -1 for `events`; since v1.9.26), `drops` (media packets dropped on send, today RTSP/UDP on `ENOBUFS`/unreachable; since the next release), `agent` (User-Agent; Frigate sends `FFmpeg Frigate/<ver>`). Snapshots and `/control` itself are not listed. Since 1.9.24. **Since v1.9.26** the log has the same per client: `[CLIENT] + <proto> <ip>:<port> chn=N agent="…"` on connect and `- … after Ns, N bytes` on disconnect (`/events` only at DEBUG) — `logread \| grep CLIENT` answers "who was connected when" after the fact. |
 | `?dn_history=1[&last=N\|&since=S][&max=N]` | Day/night decision series from the in-RAM ring sized by `daynight.history_s`. Rows are arrays `[t, gain, exposure, luma, bright%, mode]`; ≤600 rows/response, cursor paging via `next`/`head`/`oldest`/`lapped`. |
 
 ### `POST /control`
