@@ -149,6 +149,12 @@ typedef IMPEncoderCHNStat IMPEncoderChnStat;
  * misses, force a real Stop/Disable/Enable/Start cycle instead. PollingStream
  * blocks up to general.imp_polling_timeout per miss (default 500 ms), so
  * this is ~5 s at the default. */
+/* The miss-count watchdogs also wait at least this long since the first miss of
+ * a streak, so a short imp_polling_timeout cannot turn a slow cold start into a
+ * recovery cycle (five of them end in the give-up reboot). */
+#ifndef MS_WATCHDOG_MIN_US
+#define MS_WATCHDOG_MIN_US 4000000
+#endif
 #ifndef MS_VIDEO_WATCHDOG_ITERS
 #define MS_VIDEO_WATCHDOG_ITERS 10
 #endif
@@ -2502,6 +2508,7 @@ static void *video_thread(void *arg)
     int receiving=0;
     int64_t idle_since=0;
     int dbg_first=0, dbg_pollfail=0;   /* one-shot encoder diagnostics */
+    int64_t miss_t0=0;                 /* first miss of the current streak */
     int dbg_startfail=0;               /* rate-limits StartRecvPic failures */
     int dbg_recover_fails=0;           /* consecutive forced-recovery cycles
                                          * that never yielded a real frame -
@@ -2576,6 +2583,7 @@ static void *video_thread(void *arg)
                     continue;
                 }
                 dbg_startfail=0; receiving=1;
+                dbg_pollfail=0; dbg_recover_fails=0;
                 vc->idr_req=0; IMP_Encoder_RequestIDR(vc->chn);
                 LOGI(MOD,"video chn%d streaming",vc->chn);
             }
@@ -2585,11 +2593,12 @@ static void *video_thread(void *arg)
         int pr = IMP_Encoder_PollingStream(vc->chn, g_hcfg->imp_polling_timeout);
         if (pr!=0){
             if (receiving){
-                dbg_pollfail++;
+                if (++dbg_pollfail == 1) miss_t0 = ms_now_us();
                 if ((dbg_pollfail % 20)==1)
                     LOGW(MOD,"chn%d: PollingStream idle (rc=%d, miss#%d) - encoder emits no frames",
                          vc->chn, pr, dbg_pollfail);
-                if (dbg_pollfail >= MS_VIDEO_WATCHDOG_ITERS){
+                if (dbg_pollfail >= MS_VIDEO_WATCHDOG_ITERS &&
+                    ms_now_us() - miss_t0 >= MS_WATCHDOG_MIN_US){
                     dbg_recover_fails++;
                     if (dbg_recover_fails >= MS_VIDEO_WATCHDOG_MAX_RECOVERIES){
                         /* N consecutive recovery cycles all reported success
@@ -2622,24 +2631,13 @@ static void *video_thread(void *arg)
                          "(recovery attempt %d/%d)",
                          vc->chn, dbg_pollfail, dbg_recover_fails, MS_VIDEO_WATCHDOG_MAX_RECOVERIES);
                     IMP_Encoder_StopRecvPic(vc->chn);
-                    /* V2 (partial): when this is the SOLE holder of the FS
-                     * channel, this fs_unuse()+fs_use() pair now genuinely
-                     * retries EnableChn (see g_fs_enabled - F-fs), where it
-                     * used to be a permanent no-op after any failed 0->1
-                     * enable. It is STILL a no-op when another holder (e.g.
-                     * motion detection pinning this same channel) keeps the
-                     * refcount above 0 across the cycle: fs_unuse() only
-                     * calls DisableChn (and clears g_fs_enabled) on the ->0
-                     * edge, so under a co-holder neither Disable nor Enable
-                     * actually run here and this degenerates to the
-                     * Stop/StartRecvPic below only - identical to pre-fix
-                     * behavior for that specific case (reviewed 2026-08-03;
-                     * a true fix needs a refcount-independent force-recycle
-                     * primitive, tracked as a follow-up, not implemented
-                     * here to avoid disrupting the co-holder's own frame
-                     * flow without hardware validation). */
-                    fs_unuse(vc->chn);
-                    fs_use(vc->chn);
+                    /* fs_recycle() works under a co-holder (motion pin, piggyback
+                     * JPEG); the unuse/use pair only when the channel was not
+                     * enabled at all (EnableChn had failed, retried by fs_use) */
+                    if (fs_recycle(vc->chn) != 0){
+                        fs_unuse(vc->chn);
+                        fs_use(vc->chn);
+                    }
                     if (IMP_Encoder_StartRecvPic(vc->chn)==0){
                         vc->idr_req=0; IMP_Encoder_RequestIDR(vc->chn);
                         dbg_first=0;             /* log the recovered first frame */
@@ -3606,6 +3604,7 @@ static void *jpeg_thread(void *arg)
                                          * see MS_JPEG_WATCHDOG_MAX_RECOVERIES */
     int dbg_jempty=0;                  /* rate-limits the empty-stream drop */
     int64_t cold_since=0;              /* StartRecvPic time until the first frame */
+    int64_t jmiss_t0=0;                /* first miss of the current streak */
     int cold_recycles=0;
     int64_t next=0, idle_since=0;
     int64_t period = 1000000/(jc->fps>0?jc->fps:5);
@@ -3656,19 +3655,19 @@ static void *jpeg_thread(void *arg)
             }
             dbg_jstartfail=0; receiving=1;
             cold_since = ms_now_us(); cold_recycles = 0;
+            dbg_jpollfail = 0; dbg_jrecover_fails = 0;
         }
         int64_t now=ms_now_us();
         if (now<next){ usleep(next-now); }
         next=ms_now_us()+period;
 
         if (IMP_Encoder_PollingStream(jc->chn, g_hcfg->imp_polling_timeout)!=0){
-            dbg_jpollfail++;
+            if (++dbg_jpollfail == 1) jmiss_t0 = ms_now_us();
             /* a lone miss is the normal cold start of an idle JPEG channel */
             if ((dbg_jpollfail % 20)==2)
                 LOGW(MOD,"jpeg chn%d: PollingStream idle (miss#%d) - encoder emits no frames",
                      jc->chn, dbg_jpollfail);
             if (cold_since && cold_recycles < MS_JPEG_COLD_RECYCLES &&
-                dbg_jpollfail < MS_JPEG_WATCHDOG_ITERS &&
                 ms_now_us() - cold_since >= MS_JPEG_COLD_STALL_US){
                 LOGW(MOD,"jpeg chn%d: no frame %d ms after start - recycling the framesource (%d/%d)",
                      jc->chn, MS_JPEG_COLD_STALL_US/1000, cold_recycles+1, MS_JPEG_COLD_RECYCLES);
@@ -3683,9 +3682,11 @@ static void *jpeg_thread(void *arg)
                     receiving=0;
                 }
                 cold_since = ms_now_us();
+                dbg_jpollfail = 0;
                 continue;
             }
-            if (dbg_jpollfail >= MS_JPEG_WATCHDOG_ITERS){
+            if (dbg_jpollfail >= MS_JPEG_WATCHDOG_ITERS &&
+                ms_now_us() - jmiss_t0 >= MS_WATCHDOG_MIN_US){
                 dbg_jrecover_fails++;
                 if (dbg_jrecover_fails >= MS_JPEG_WATCHDOG_MAX_RECOVERIES){
                     /* Same reasoning as video_thread's escalation, but give

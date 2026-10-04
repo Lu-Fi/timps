@@ -274,6 +274,7 @@ static int acquire_singleton_lock(void)
     return 0;
 }
 
+static void startup_give_up_abandoned(void);
 static void hard_exit(int s)
 {
     (void)s;
@@ -284,6 +285,9 @@ static void hard_exit(int s)
     static const char m[] = "timpsd: shutdown alarm fired - hard exit\n";
     ssize_t ignored = write(STDERR_FILENO, m, sizeof m - 1);
     (void)ignored;
+    /* a watchdog that gave up is exactly when the vendor stop is likely to
+     * wedge: still take the one-shot recovery reboot */
+    if (g_hal_watchdog_gave_up) startup_give_up_abandoned();
     _exit(0);
 }
 /* L-4: hard-exit deadline for the whole shutdown path. It is a guillotine, not
@@ -441,6 +445,10 @@ static void guard_release(void)
  * Returns the process exit status; does not return at all when it reboots. */
 static int startup_give_up(const char *why)
 {
+    /* the shutdown alarm would _exit(0) in the middle of this and spend the
+     * one reboot (the marker) without taking it */
+    alarm(0);
+    signal(SIGALRM, SIG_IGN);
     if (access(MS_STARTUP_REBOOT_MARKER, F_OK) == 0){
         LOGE(MOD,"%s - AGAIN, after the one-shot recovery reboot already tried "
                  "for this. A real reboot does not fix this board's problem "
@@ -517,6 +525,7 @@ static void startup_give_up_abandoned(void)
         _exit(1);
     }
     ign = write(STDERR_FILENO, boot, sizeof boot - 1); (void)ign;
+    guard_release();
     reboot(RB_AUTOBOOT);
     _exit(1);
 }

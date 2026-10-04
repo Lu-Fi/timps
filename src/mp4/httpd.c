@@ -9,11 +9,11 @@
 #include "../auth.h"
 #include "../tls.h"
 #include "../trace.h"
+#include "../clients.h"
 #ifdef USE_CONTROL
 #include "../control.h"
 #include "../daynight.h"
 #include "../events.h"
-#include "../clients.h"
 #endif
 #ifdef USE_BC_WS
 #include "../rtsp/talk_ws.h"

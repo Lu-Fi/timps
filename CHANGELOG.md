@@ -6,6 +6,24 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- **`USE_CONTROL=0` builds compile again.** `clients.h` was only included under
+  `USE_CONTROL` but `httpd.c` uses it unconditionally (broken since 1.9.27).
+- **The recovery reboot after a watchdog give-up no longer races the shutdown
+  alarm.** The 4 s alarm was still armed while the reboot path ran (marker,
+  syncs, boot-guard release) and could `_exit(0)` after the one-shot marker was
+  written but before the reboot. The path now disarms it, a hard exit after a
+  watchdog give-up takes the one-shot reboot instead of exiting, and the
+  abandoned-teardown reboot releases the boot guard first.
+- **The JPEG cold-start recycle and the miss watchdogs start clean.** Their
+  counters carried over from an aborted start, which switched the cold-start
+  recycle off and counted recoveries without real misses; the video watchdog
+  now recycles the framesource with `fs_recycle()` (the unuse/use pair was a
+  no-op under the motion pin or a piggyback JPEG), and both watchdogs wait at
+  least 4 s since the first miss, so a short `general.imp_polling_timeout` does
+  not turn a slow cold start into a recovery cycle.
+
 ### Added
 
 - **T41 with the open stack: `image.ae_compensation` and `image.sinter_strength`.**
