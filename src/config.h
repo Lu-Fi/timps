@@ -156,6 +156,8 @@ typedef struct {
     int      sinter_strength, temper_strength, dpc_strength;
     int      defog_strength, drc_strength;
     int      highlight_depress, backlight_compensation;
+    int      colorfx;               /* 0 none, 1 B/W, 2 sepia (T20), 3 negative, 9 vivid; OpenIMP only */
+    int      scene;                 /* IMPISPSceneMode: 0 auto, 2..9, 11..14; OpenIMP only */
     int      core_wb_mode, wb_rgain, wb_bgain;
     /* Upper bound on the AE's integration time, in MICROSECONDS; 0 = off (the
      * default), leave the sensor mode's own maximum alone.

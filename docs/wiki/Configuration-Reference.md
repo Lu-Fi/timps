@@ -105,6 +105,8 @@ latch-kick this triggers.
 | `image.defog_strength` | int | 128 | 0–255 | Live | `ISP_HAS_DEFOG`: T23/T31/C100 | Defog strength. |
 | `image.drc_strength` | int | 128 | 0–255 | Live | `ISP_HAS_DRC` (WDR): T21/T23/T31/C100 | Dynamic range compression (WDR) strength. |
 | `image.highlight_depress` | int | 0 | 0–10 | Live | `ISP_HAS_HILIGHT`: all except T40/T41 | Highlight suppression. |
+| `image.colorfx` | int | 0 | 0–9 | Live | Colour effect (0 none, 1 B/W, 2 sepia on T20, 3 negative, 9 vivid). Only with an OpenIMP build (`USE_OPENIMP`); not in `caps.image` otherwise. |
+| `image.scene` | int | 0 | 0–14 | Live | Scene preset (SDK `IMPISPSceneMode`). Only with an OpenIMP build (`USE_OPENIMP`). |
 | `image.backlight_compensation` | int | 0 | 0–10 | Live | `ISP_HAS_BACKLIGHT`: T23/T31/C100 | Backlight compensation. |
 | `image.core_wb_mode` | int | 0 | 0–9 (0–8 on T10/T20/T30) | Live | `ISP_HAS_WB`: all except T40/T41 | White balance mode: 0 auto, 1 manual, 2 daylight, 3 cloudy, 4 incandescent, 5 fluorescent, 6 twilight, 7 shade, 8 warm fluorescent, 9 custom. |
 | `image.wb_rgain` | int | 0 | 0–65535 | Live | `ISP_HAS_WB` | Manual WB red gain (used when `core_wb_mode` selects manual). |

@@ -5025,7 +5025,9 @@ else
 	# the HAL remembers the uncapped maximum and 0 writes it back, but the
 	# removal only lands once frames are delivered and a cap meanwhile moves the
 	# daynight exposure index, so an unattended probe still leaves it alone.
-	ALLOW_image="ae_it_max_us"
+	# colorfx/scene: OpenIMP-only enums (the driver answers EINVAL for values it
+	# does not know), so 8b's midpoint round-trip would exercise rejection, not the key.
+	ALLOW_image="ae_it_max_us colorfx scene"
 	ALLOW_audio=""
 	ALLOW_sensor="model i2c_addr fps width height"             # persist-only imaging config - risky to fuzz (all of sensor.*)
 	ALLOW_osd=""

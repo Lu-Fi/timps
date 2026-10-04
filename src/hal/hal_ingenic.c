@@ -929,6 +929,15 @@ static int ae_it_write(uint32_t lines, uint32_t min_lines, int restore)
 }
 #endif /* AE cap reference */
 
+#if defined(ISP_HAS_COLORFX) || defined(ISP_HAS_SCENE)
+/* SetColorfxMode/SetSceneMode are declared by some vendor headers (with an enum
+ * argument) and not by others. Private names bound to the real symbols via asm
+ * labels avoid any prototype clash; "weak" turns a missing symbol into a NULL
+ * pointer instead of a load failure. Enum and int are passed identically. */
+extern int ms_isp_colorfx_set(int mode) __asm__("IMP_ISP_Tuning_SetColorfxMode") __attribute__((weak));
+extern int ms_isp_scene_set(int mode)   __asm__("IMP_ISP_Tuning_SetSceneMode")   __attribute__((weak));
+#endif
+
 /* Apply one image.* (ISP tuning) key from the current config (g_hcfg->image).
  * Returns 1 when the key is wired on this PLATFORM's IMP SDK, 0 when the SoC
  * cannot do it (the value is still parsed/persisted by the config layer).
@@ -1194,6 +1203,34 @@ static int isp_apply_image(const char *k)
         return 0;                       /* T40/T41: no such call in that SDK */
 #endif
     }
+#if defined(ISP_HAS_COLORFX) || defined(ISP_HAS_SCENE)
+    /* colorfx/scene: a libimp without the call, or a driver that rejects the
+     * value (EINVAL), only logs a warning - the value stays persisted and the
+     * daemon keeps running. */
+    if (!strcmp(k,"colorfx") || !strcmp(k,"scene")){
+        int is_cfx = !strcmp(k,"colorfx");
+        int val = is_cfx ? im->colorfx : im->scene;
+        int (*fn)(int) = is_cfx ? ms_isp_colorfx_set : ms_isp_scene_set;
+        if (!fn){
+            LOGW(MOD,"image.%s: libimp has no IMP_ISP_Tuning_Set%sMode - persisted only",
+                 k, is_cfx ? "Colorfx" : "Scene");
+            return 0;
+        }
+        if (is_cfx && val!=0 && val!=1 && val!=2 && val!=3 && val!=9){
+            LOGW(MOD,"image.colorfx=%d is not a colour effect (0 none, 1 B/W, "
+                     "2 sepia, 3 negative, 9 vivid) - not applied", val);
+            return 0;
+        }
+        int rc = fn(val);
+        if (rc){
+            LOGW(MOD,"IMP_ISP_Tuning_Set%sMode(%d) failed (rc=%d) - not supported "
+                     "on this SoC/driver, not applied",
+                 is_cfx ? "Colorfx" : "Scene", val, rc);
+            return 0;
+        }
+        return 1;
+    }
+#endif
     /* white balance: mode + gains are one IMPISPWB, applied on any of them */
     if (!strcmp(k,"core_wb_mode")||!strcmp(k,"wb_rgain")||!strcmp(k,"wb_bgain")){
         IMPISPWB wb; memset(&wb,0,sizeof wb);
@@ -1228,6 +1265,12 @@ static void apply_image_tuning(void)
         if (!isp_apply_image(keys[i]))
             LOGD(MOD,"image.%s unsupported on this platform (skipped)",keys[i]);
     const ms_image_cfg *im = &g_hcfg->image;
+#if defined(ISP_HAS_COLORFX) || defined(ISP_HAS_SCENE)
+    /* 0 is the driver default: only touch colorfx/scene when set, so an
+     * unconfigured camera never calls into (or warns about) a libimp without them */
+    if (im->colorfx) isp_apply_image("colorfx");
+    if (im->scene)   isp_apply_image("scene");
+#endif
     LOGI(MOD,"image tuning applied (bri=%d con=%d sat=%d sharp=%d)",
          im->brightness,im->contrast,im->saturation,im->sharpness);
 #endif

@@ -328,6 +328,8 @@ way to check.
 | `image.drc_strength` | int | `128` | 0..255 | T21 T23 T31 C100; with `USE_OPENIMP` also T20 | `ISP_HAS_DRC` (WDR). |
 | `image.highlight_depress` | int | `0` | **0..10** | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_HILIGHT`. Note the 0..10 domain, not 0..255. |
 | `image.backlight_compensation` | int | `0` | **0..10** | T23 T31 C100 | `ISP_HAS_BACKLIGHT`. |
+| `image.colorfx` | int | `0` | 0..9 (0 none, 1 B/W, 2 sepia, 3 negative, 9 vivid) | only with `USE_OPENIMP`: T10 T20 T21 T23 T31 | `ISP_HAS_COLORFX`. The vendor SDKs expose the call on some SoCs but their kernels ignore it. The open driver answers `EINVAL` for values it does not know (sepia only on T20): the HAL logs it, the value stays persisted. Not in `caps.image` on vendor builds. |
+| `image.scene` | int | `0` | 0..14 (SDK `IMPISPSceneMode`: 0 auto, 2..9, 11..14; 1 and 10 invalid) | only with `USE_OPENIMP`: T10 T20 T21 T23 T31 | `ISP_HAS_SCENE`. Same notes as `image.colorfx`. |
 | `image.core_wb_mode` | int | `0` | 0..9 (0..8 on T10/T20/T30) | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_WB`. The SDK's `isp_core_wb_mode`: `0` auto, `1` manual (then `wb_rgain`/`wb_bgain` apply), `2` daylight, `3` cloudy, `4` incandescent, `5` fluorescent, `6` twilight, `7` shade, `8` warm fluorescent, `9` custom (T21/T23/T31/C100 only). Before the next release the range was 0..1, so `2..9` came back as `1`. |
 | `image.wb_rgain` | int | `0` | 0..65535 | T10 T20 T21 T23 T30 T31 C100 | Only meaningful with `core_wb_mode=1`. |
 | `image.wb_bgain` | int | `0` | 0..65535 | T10 T20 T21 T23 T30 T31 C100 | Only meaningful with `core_wb_mode=1`. **since v1.9.21** start value: read-only `image.wb_live.rgain`/`.bgain` in `GET /control` = gains AWB applies now. |

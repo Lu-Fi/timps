@@ -44,7 +44,12 @@ semantic versioning.
   `timps.mk` sets it when the OpenIMP package is selected. Under it
   `isp_caps.h` advertises what the open stack implements beyond the vendor SDK
   (device-tested only): `image.dpc_strength` on T10/T20/T21, and
-  `image.defog_strength` and `image.drc_strength` on T20. The vendor headers
+  `image.defog_strength` and `image.drc_strength` on T20, and the new keys
+  `image.colorfx` (none, B/W, sepia on T20, negative, vivid) and `image.scene`
+  (SDK scene presets) on T10/T20/T21/T23/T31; the WebUI image page gets an
+  Effects card and a dead-pixel slider, both shown only where `caps.image`
+  lists the key. The two new keys are also read and persisted on vendor
+  builds (and appear in `GET /control`, value 0) but not applied there. The vendor headers
   of those SoCs lack the setters, so the OpenIMP prototypes are declared
   under the switch. Without it every object is byte-identical to before
   (checked for T20/T21/T31); with it the text grows by ~110 bytes on T20, ~50
