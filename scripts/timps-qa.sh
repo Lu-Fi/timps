@@ -874,6 +874,39 @@ is_loopback() {
 
 sshx() { [ -n "$SSH_TARGET" ] || return 2; ssh $SSH_OPTS "$SSH_TARGET" "$@"; }
 
+# Whole-run /etc/timps.conf safety net. 8b has its own snapshot/restore, but the
+# sections after it (8c osd text, the config-write stress, the overflow tests)
+# write config too and left explicit lines, a reformatted image.brightness line
+# and audio.agc behind. With --ssh, snapshot the file once after preflight and
+# put it back byte-identical just before the summary (8b's own restore stays).
+QA_CONF_RUN_SNAP=""
+qa_conf_run_snapshot() {
+	[ -n "$SSH_TARGET" ] || return 0
+	local f="$OUTDIR/conf_run_before.conf"
+	if sshx "cat /etc/timps.conf" > "$f" 2>/dev/null && [ -s "$f" ]; then
+		QA_CONF_RUN_SNAP="$f"
+	fi
+}
+qa_conf_run_restore() {
+	[ -n "$QA_CONF_RUN_SNAP" ] || return 0
+	local snap="$QA_CONF_RUN_SNAP" cur="$OUTDIR/conf_run_after.conf"
+	QA_CONF_RUN_SNAP=""
+	if ! sshx "cat /etc/timps.conf" > "$cur" 2>/dev/null || [ ! -s "$cur" ]; then
+		warn "/etc/timps.conf: could not read it back at the end of the run - the pre-run copy is at $snap"
+		return 1
+	fi
+	if cmp -s "$snap" "$cur"; then
+		info "/etc/timps.conf: byte-identical to before the run"
+		return 0
+	fi
+	sshx "cp -p /etc/timps.conf /etc/timps.conf.qa_restore && cat > /etc/timps.conf.qa_restore && mv /etc/timps.conf.qa_restore /etc/timps.conf" < "$snap"
+	if [ "$(sshx "md5sum /etc/timps.conf" 2>/dev/null | cut -d' ' -f1)" = "$(md5sum < "$snap" | cut -d' ' -f1)" ]; then
+		info "/etc/timps.conf: put back byte-identical to before the run (the sections after 8b had left changes; the running daemon keeps any value it was last given until its next restart)"
+	else
+		warn "/etc/timps.conf: failed to put back the pre-run copy ($snap) - the file still holds this run's changes"
+	fi
+}
+
 # json get (python if present, else grep). usage: jget <file> <dotted.key>
 jget() {
 	if have python3; then
@@ -1504,6 +1537,7 @@ if [ -n "$SSH_TARGET" ]; then
 fi
 
 fi
+qa_conf_run_snapshot
 if want 2 discovery; then
 # --- 2. discovery -----------------------------------------------------------
 hdr "2. Discovery (ffprobe)"
@@ -7273,6 +7307,8 @@ if [ -n "$SSH_TARGET" ] && want 16 ssh; then
 	[ "${q:-0}" -eq 0 ] && ok "agc/ns/high_pass are persist-only (no live 'queued' applies)" \
 		|| warn "${q} 'queued for audio thread' lines - build predates v1.4.5 (buggy deferred path)"
 fi
+
+qa_conf_run_restore
 
 # ----------------------------------------------------------------------------- summary
 hdr "SUMMARY"
