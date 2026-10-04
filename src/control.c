@@ -1122,25 +1122,42 @@ int control_apply_json(const char *json, ctrl_result *res)
     /* persist all changed keys back into the config file */
     if ((ch->n > 0 || g_unsaved_n > 0) && g_cfg_path && g_cfg_path[0]){
         /* keys a failed write left unsaved ride along until one succeeds: a
-         * repeat POST of the same value is "unchanged" and adds nothing itself */
-        for (int u=0; u<g_unsaved_n && ch->n < CTRL_MAX_CHG; u++){
-            int dup = 0;
+         * repeat POST of the same value is "unchanged" and adds nothing itself.
+         * One that cannot ride along (no room, or no longer readable - a
+         * legacy osdN.* key once the streams diverged) stays pending. */
+        int left_n = 0;
+        char left[CTRL_MAX_CHG][40];
+        for (int u=0; u<g_unsaved_n; u++){
+            int dup = 0, ok = 0;
             for (int i=0; i<ch->n && !dup; i++) dup = !strcmp(ch->key[i], g_unsaved[u]);
             if (dup) continue;
-            config_str_lock();
-            int ok = config_get_kv(&g_cfg, g_unsaved[u], ch->val[ch->n], sizeof ch->val[0]);
-            config_str_unlock();
-            if (ok) snprintf(ch->key[ch->n++], sizeof ch->key[0], "%s", g_unsaved[u]);
+            if (ch->n < CTRL_MAX_CHG){
+                config_str_lock();
+                ok = config_get_kv(&g_cfg, g_unsaved[u], ch->val[ch->n], sizeof ch->val[0]);
+                config_str_unlock();
+            }
+            if (ok) snprintf(ch->key[ch->n++], sizeof ch->key[0], "%.39s", g_unsaved[u]);
+            else    snprintf(left[left_n++], sizeof left[0], "%.39s", g_unsaved[u]);
         }
+        sc.nopersist += left_n;
         const char *keys[CTRL_MAX_CHG], *vals[CTRL_MAX_CHG];
         for (int i=0;i<ch->n;i++){ keys[i]=ch->key[i]; vals[i]=ch->val[i]; }
-        if (ch->n > 0 && config_write_keys(g_cfg_path, keys, vals, ch->n) != 0){
-            LOGE(MOD,"%d setting(s) are live but NOT saved to %s", ch->n, g_cfg_path);
+        int fail = ch->n > 0 && config_write_keys(g_cfg_path, keys, vals, ch->n) != 0;
+        g_unsaved_n = 0;
+        if (fail){
+            static ms_ratelog rl = MS_RATELOG_INIT;   /* a dragged slider posts often */
+            unsigned muted;
+            if (ms_ratelog_due(&rl, &muted))
+                LOGE(MOD,"%d setting(s) are live but NOT saved to %s (%u more failed writes)",
+                     ch->n, g_cfg_path, muted);
             sc.nopersist += ch->n;
             for (int i=0; i<ch->n; i++)
-                snprintf(g_unsaved[i], sizeof g_unsaved[0], "%s", ch->key[i]);
-            g_unsaved_n = ch->n;
-        } else g_unsaved_n = 0;
+                snprintf(g_unsaved[g_unsaved_n++], sizeof g_unsaved[0], "%s", ch->key[i]);
+        }
+        for (int i=0; i<left_n && g_unsaved_n<CTRL_MAX_CHG; i++)
+            snprintf(g_unsaved[g_unsaved_n++], sizeof g_unsaved[0], "%s", left[i]);
+        /* ride-along keys are not this request's: report at most what it carried */
+        if (sc.nopersist > sc.acc) sc.nopersist = sc.acc;
     }
     if (res) {
         res->accepted = sc.acc; res->changed = sc.chg; res->rejected = sc.rej;

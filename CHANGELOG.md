@@ -101,8 +101,8 @@ semantic versioning.
   no longer send `Access-Control-Allow-Origin: *`, and their preflight no
   longer grants Private Network Access, unless the request carries a valid
   token (or comes from loopback): any web page could read the video before.
-- **Config integers are decimal; hex needs `0x`.** `08` was read as 0 and `010`
-  as 8 (octal). `video<N>.imp_chn` and `jpeg.imp_chn` are clamped to 0..7,
+- **Integer config keys are decimal; hex needs `0x`.** `08` was read as 0 and
+  `010` as 8 (octal). Hex-typed keys (colours) are unchanged. `video<N>.imp_chn` and `jpeg.imp_chn` are clamped to 0..7,
   `motion.hold_ms` to 0..60000 and `motion.skip_frames` to 1..100.
 - **The "detection idle" warning no longer claims the ISP dump is unreadable.**
   It fired whenever no gain could be parsed - also for a perfectly readable dump

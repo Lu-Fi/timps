@@ -41,9 +41,10 @@ Overview / architecture doc: `docs/ai/reference.md`.
   includes a leftover `osd.vars_file` line (§8).
 * **Later lines win.** A duplicate key later in the file overrides the earlier
   one.
-* Integers are decimal; hex needs an explicit `0x` (`0x37`). A leading zero is
-  just decimal (`08` = 8, `010` = 10; up to v1.9.32 `strtol` base 0 read
-  these as octal).
+* Integer keys are decimal; hex needs an explicit `0x` (`0x37`). A leading
+  zero is just decimal (`08` = 8, `010` = 10; up to v1.9.32 `strtol` base 0
+  read these as octal). Hex-typed keys (colours, `0xAARRGGBB`) keep the C
+  notation (`strtoul` base 0).
 * Booleans: `1`, `true`, `on`, `yes` are true (case-insensitive). Anything else
   is false — including typos. Two keys warn loudly about this (see `F_SECVAL`
   below).

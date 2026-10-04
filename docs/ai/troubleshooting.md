@@ -220,7 +220,7 @@ Four distinct causes, distinguishable from the `POST /control` reply body:
 **48** changed keys per request. Past that the tail stays live-but-unsaved and
 `too many settings in one request, <key> not persisted` appears in the log.
 A failed config write (no space, read-only overlay, `fsync`/`rename` error) is
-counted too, with `<n> setting(s) are live but NOT saved to <path>` (ERR) after
+counted too, with `<n> setting(s) are live but NOT saved to <path> (<m> more failed writes)` (ERR, at most once a minute) after
 the `cannot create tmp …`/`fsync …`/`rename …` warning. The next POST, even
 one repeating the same value, retries those keys.
 
