@@ -2616,11 +2616,12 @@ else
 	# --- image: every ISP knob in caps.image (live; keys outside it are gated
 	# below). uchar knobs 0..255, highlight/backlight 0..10,
 	# hflip/vflip/running_mode bool, anti_flicker 0..2, core_wb 0..1.
-	# WB gains: the config accepts 0..65535 but the probe range is deliberately
-	# 0..2048 so flip_int's midpoint lands on 1024 = unity gain on Ingenic ISPs.
+	# WB gains: the limit is per SoC (255 on T10/T20/T30, 4095 on T21/T23/T31)
+	# and so is unity (128 Q7 vs 256 Q8), so the probe range is 0..256: flip_int
+	# picks 127..129, valid everywhere, unity on Q7 and half gain on Q8.
 	# core_wb_mode DOES flip to 1 (manual) during the test, so if a run dies
 	# with the trap defeated (kill -9, network drop) the stranded state is
-	# manual WB at ~neutral gains - a usable image - instead of the magenta
+	# manual WB at moderate gains - a usable image - instead of the magenta
 	# rgain/bgain=32767 that hit cam-K on 2026-08-02. ---
 	# Gated on caps.image, like spk_* on caps.audio below - never on the SoC
 	# name. A key outside caps.image is not applied and not persisted by the
@@ -2652,7 +2653,7 @@ else
 		"max_again int 0 255" "max_dgain int 0 255" "sinter_strength int 0 255" \
 		"temper_strength int 0 255" "dpc_strength int 0 255" "defog_strength int 0 255" \
 		"drc_strength int 0 255" "highlight_depress int 0 10" \
-		"backlight_compensation int 0 10" "wb_rgain int 0 2048" "wb_bgain int 0 2048" \
+		"backlight_compensation int 0 10" "wb_rgain int 0 256" "wb_bgain int 0 256" \
 		"hflip bool" "vflip bool" "running_mode bool" "anti_flicker int 0 2" \
 		"core_wb_mode int 0 1"
 	lv_section image '{"image":' '}' image "${LV_IN[@]}"
