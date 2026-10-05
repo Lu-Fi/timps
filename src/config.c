@@ -613,9 +613,9 @@ static const char *privacy_key(const char *key, int *stream, int *item)
  * for the full rationale): M11 (dims/fps/ports/bitrates/gop/qp/buffers),
  * F-03 (audio volume/gain/PGA/spk), F-04 (OSD logo dims/outline), H4
  * (font_size), L-1/L-2 (audio.bitrate 8..320), imp_isp.h domains (image.*
- * knobs 0..255, highlight/backlight 0..10, WB gains 0..65535), imp_audio.h
- * domains (ns 0..3, agc_target_dbfs 0..31, agc_compression_db 0..90),
- * F3 2026-07-31 (daynight.* numerics, see daynight_fields).
+ * knobs 0..255, highlight/backlight 0..10, WB gains 0..WB_GAIN_MAX),
+ * imp_audio.h domains (ns 0..3, agc_target_dbfs 0..31, agc_compression_db
+ * 0..90), F3 2026-07-31 (daynight.* numerics, see daynight_fields).
  */
 enum {
     T_BOOL,     /* int:      pbool()                        <-> "%d"     */
@@ -739,12 +739,6 @@ static const cfg_field sensor_fields[] = {
 #define CAP_WB F_CAP
 #else
 #define CAP_WB F_NOHW
-#endif
-/* the T20 kernel's AWB gain register is 8 bit (Q7), wider values wrap */
-#if defined(PLATFORM_T20)
-#define WB_GAIN_MAX 255
-#else
-#define WB_GAIN_MAX 65535
 #endif
 /* core_wb_mode is the SDK's enum isp_core_wb_mode, passed straight to
  * IMP_ISP_Tuning_SetWB: auto, manual, daylight, cloudy, incandescent,

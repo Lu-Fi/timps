@@ -109,6 +109,16 @@ int IMP_ISP_Tuning_SetDRC_Strength(uint32_t ratio);
 #define ISP_HAS_WB 1
 #endif
 
+/* manual WB gain ceiling: the kernel register is 8 bit Q7 on T10/T20/T30
+ * (wider values wrap) and 14 bit Q8 on T21/T23/T31 (value<<2 saturates) */
+#if defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T30)
+#define WB_GAIN_MAX 255
+#elif defined(PLATFORM_T21)||defined(PLATFORM_T23)||defined(PLATFORM_T31)
+#define WB_GAIN_MAX 4095
+#else
+#define WB_GAIN_MAX 65535
+#endif
+
 /* IMP_ISP_Tuning_SetAeComp (missing from the T21 SDK as well) */
 #if !defined(ISP_NEW_TUNING_API) && !defined(PLATFORM_T21)
 #define ISP_HAS_AECOMP 1

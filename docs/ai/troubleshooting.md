@@ -2847,7 +2847,7 @@ write instead.**
 | 1 | `image.anti_flicker = 2` on 50 Hz mains | 2 means **60 Hz**. Rolling horizontal bands under LED/fluorescent light. This is the **built-in default**, so every camera outside 60 Hz countries ships wrong. | `image.anti_flicker = 1` |
 | 2 | `image.running_mode = 0` posted by hand to "get colour back" at night | The ISP renders the day pipeline while the IR-cut filter is still out and the IR LEDs are on → **purple/magenta image**. | Let day/night do it, or drive `daynight.switch_cmd` as well. |
 | 3 | `image.brightness = 255` | A blown-out white picture. Usually left behind by an interrupted QA run rather than typed. | `image.brightness = 128` |
-| 4 | `image.wb_rgain = 32767` / `image.wb_bgain = 32767` | A magenta image. Also a classic interrupted-QA leftover; unity is **1024** **(unverified — an IMP-documentation fact; `src/` only clamps these to 0..65535 and passes them through)**. | `1024`, or `image.core_wb_mode = 0` for auto. |
+| 4 | `image.wb_rgain = 32767` / `image.wb_bgain = 32767` | A magenta image. Also a classic interrupted-QA leftover. Builds after 1.9.33 clamp such values (255 on T10/T20/T30, 4095 on T21/T23/T31), still far off neutral. Unity is **128** on T10/T20/T30 (Q7) and **256** on T21/T23/T31 (Q8). | Copy `image.wb_live` (the gains AWB uses now), or `image.core_wb_mode = 0` for auto. |
 | 5 | `image.defog_strength = 200` on a T30 | Accepted, persisted, echoed back — and **ignored**, because the SoC has no defog. | Check `caps.image` first. |
 
 ### Video and encoder

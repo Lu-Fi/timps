@@ -16,8 +16,11 @@ semantic versioning.
 
 ### Fixed
 
-- **T20: `image.wb_rgain` / `image.wb_bgain` clamp to 0..255.** The kernel's AWB
-  gain register is 8 bit, so 300 used to wrap to 44 and tint the picture.
+- **`image.wb_rgain` / `image.wb_bgain` clamp to the SoC's register width.**
+  T10/T20/T30: 0..255, the kernel register is 8 bit (Q7, 128 = 1.0), so 300
+  used to wrap to 44 and tint the picture. T21/T23/T31: 0..4095, the 14-bit
+  register (Q8, 256 = 1.0) saturates there, so the echo now matches what is
+  applied. Other SoCs keep 0..65535.
 
 ## [1.9.33] - 2026-10-05
 
