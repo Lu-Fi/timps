@@ -99,8 +99,8 @@ latch-kick this triggers.
 | `image.ae_compensation` | int | 128 | 0–255 | Live | `ISP_HAS_AECOMP`: all except T21, T40/T41 | AE (auto-exposure) compensation/EV bias. |
 | `image.max_again` | int | 160 | 0–255 | Live | `ISP_HAS_GAINS`: all except T40/T41 | Max analog gain ceiling. |
 | `image.max_dgain` | int | 80 | 0–255 | Live | `ISP_HAS_GAINS` | Max digital gain ceiling. |
-| `image.sinter_strength` | int | 128 | 0–255 | Live | `ISP_HAS_NR`: all except T40/T41 | Spatial noise reduction strength. |
-| `image.temper_strength` | int | 128 | 0–255 | Live | `ISP_HAS_NR` | Temporal noise reduction strength. |
+| `image.sinter_strength` | int | 128 | 0–255 | Live | `ISP_HAS_NR`: all except T40; T41 only with OpenIMP | Spatial noise reduction strength. |
+| `image.temper_strength` | int | 128 | 0–255 | Live | `ISP_HAS_NR`: all except T40; T41 only with OpenIMP | Temporal noise reduction strength; on T41 visible only at high gain. |
 | `image.dpc_strength` | int | 128 | 0–255 | Live | `ISP_HAS_DPC`: T23/T31/C100 | Defective pixel correction strength. |
 | `image.defog_strength` | int | 128 | 0–255 | Live | `ISP_HAS_DEFOG`: T23/T31/C100 | Defog strength. |
 | `image.drc_strength` | int | 128 | 0–255 | Live | `ISP_HAS_DRC` (WDR): T21/T23/T31/C100 | Dynamic range compression (WDR) strength. |

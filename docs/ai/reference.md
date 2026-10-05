@@ -95,7 +95,8 @@ exclusion:
   T30**. This is why `videoN.bitrate` means different things (see §7).
 - ISP tuning API split: `ISP_NEW_TUNING_API` only on **T40/T41** — several
   `image.*` knobs do not exist there (highlight depress, sinter/temper NR,
-  max again/dgain, manual WB, ISP hflip/vflip).
+  max again/dgain, manual WB, ISP hflip/vflip). Exception: T41 built with
+  OpenIMP (`USE_OPENIMP`) has `ae_compensation` and sinter/temper NR.
 - `audio.alc_gain` (analog PGA) exists only on **T21, T31, C100**.
 - Rotation: hardware I2D on **T40/T41**, FrameSource rotate on **T31**,
   software on **T23** (opt-in), none on **T10/T20/T21/T30/C100**.

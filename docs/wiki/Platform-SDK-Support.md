@@ -62,7 +62,7 @@ for the full per-key table. Summary:
 | Hue (`SetBcshHue`) | T23, T31, T40, T41, C100 |
 | Backlight comp / defog / DPC strength | T23, T31, C100 |
 | DRC / WDR strength | T21, T23, T31, C100 |
-| Highlight depress, sinter/temper NR, max analog/digital gain, manual WB, ISP-level hflip/vflip | All **except** T40/T41 (`ISP_NEW_TUNING_API`) |
+| Highlight depress, sinter/temper NR, max analog/digital gain, manual WB, ISP-level hflip/vflip | All **except** T40/T41 (`ISP_NEW_TUNING_API`); sinter/temper NR on T41 with OpenIMP |
 | AE compensation | All except T21 and T40/T41 |
 | AE average luminance (`GetAeLuma`, secondary day/night metric) | T21, T23, T31, C100 |
 | Real sensor-attr readback (`GetSensorAttr`) | T23, T31, T32, T33, T40, T41, C100 (absent on T10/T20/T21/T30) |

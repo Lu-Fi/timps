@@ -986,6 +986,25 @@ extern int ms_isp_colorfx_set(int mode) __asm__("IMP_ISP_Tuning_SetColorfxMode")
 extern int ms_isp_scene_set(int mode)   __asm__("IMP_ISP_Tuning_SetSceneMode")   __attribute__((weak));
 #endif
 
+#if defined(USE_OPENIMP) && defined(PLATFORM_T41)
+/* read-modify-write one Module_Ratio entry, the others keep what the driver
+ * reports. en stays ENABLE: 128 is the neutral ratio, a DISABLE did not
+ * reliably restore the default picture. */
+static void t41_set_module_ratio(IMPISPModuleRatioArrayList m, const char *key,
+                                 int v, int *touched)
+{
+    if (v == 128 && !*touched) return;
+    IMPISPModuleRatioAttr r; memset(&r,0,sizeof r);
+    if (IMP_ISP_Tuning_GetModule_Ratio(IMPVI_MAIN,&r) != 0){
+        LOGW(MOD,"GetModule_Ratio failed - %s not applied", key); return; }
+    r.ratio_attr[m].en = IMPISP_TUNING_OPS_MODE_ENABLE;
+    r.ratio_attr[m].ratio = (uint8_t)v;
+    int rc = IMP_ISP_Tuning_SetModule_Ratio(IMPVI_MAIN,&r);
+    if (rc) LOGW(MOD,"SetModule_Ratio(%s=%d) failed (rc=%d)", key, v, rc);
+    else *touched = 1;
+}
+#endif
+
 /* Apply one image.* (ISP tuning) key from the current config (g_hcfg->image).
  * Returns 1 when the key is wired on this PLATFORM's IMP SDK, 0 when the SoC
  * cannot do it (the value is still parsed/persisted by the config layer).
@@ -1040,8 +1059,8 @@ static int isp_apply_image(const char *k)
         return 1;
     }
 #if defined(USE_OPENIMP) && defined(PLATFORM_T41)
-    /* both read-modify-write a struct the stack fills in, so a value
-     * still at its 128 default is left alone until something else was written */
+    /* read-modify-write of structs the stack fills in: a value still at its
+     * 128 default is left alone until something else was written */
     if (!strcmp(k,"ae_compensation")){
         static int touched;
         if (im->ae_compensation == 128 && !touched) return 1;
@@ -1058,17 +1077,12 @@ static int isp_apply_image(const char *k)
     }
     if (!strcmp(k,"sinter_strength")){
         static int touched;
-        if (im->sinter_strength == 128 && !touched) return 1;
-        IMPISPModuleRatioAttr r; memset(&r,0,sizeof r);
-        if (IMP_ISP_Tuning_GetModule_Ratio(IMPVI_MAIN,&r) != 0){
-            LOGW(MOD,"GetModule_Ratio failed - sinter_strength not applied"); return 1; }
-        /* en stays ENABLE: 128 is the neutral ratio, a DISABLE did not reliably
-         * restore the default picture */
-        r.ratio_attr[IMP_ISP_MODULE_SINTER].en = IMPISP_TUNING_OPS_MODE_ENABLE;
-        r.ratio_attr[IMP_ISP_MODULE_SINTER].ratio = (uint8_t)im->sinter_strength;
-        int rc = IMP_ISP_Tuning_SetModule_Ratio(IMPVI_MAIN,&r);
-        if (rc) LOGW(MOD,"SetModule_Ratio(sinter_strength=%d) failed (rc=%d)", im->sinter_strength, rc);
-        else touched = 1;
+        t41_set_module_ratio(IMP_ISP_MODULE_SINTER,k,im->sinter_strength,&touched);
+        return 1;
+    }
+    if (!strcmp(k,"temper_strength")){
+        static int touched;
+        t41_set_module_ratio(IMP_ISP_MODULE_TEMPER,k,im->temper_strength,&touched);
         return 1;
     }
 #endif

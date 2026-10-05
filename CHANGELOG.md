@@ -6,6 +6,14 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- **T41 with the open stack: `image.temper_strength`.** `SetModule_Ratio`
+  entry 1 is temporal denoise, visible only at high gain: frame-to-frame noise
+  9.8 at 0 vs 2.5 at 128 (no further change at 255), independent of
+  `sinter_strength`. Supersedes the 1.9.33 note that it stays unsupported.
+  Only built with `USE_OPENIMP`.
+
 ### Fixed
 
 - **T20: `image.wb_rgain` / `image.wb_bgain` clamp to 0..255.** The kernel's AWB
