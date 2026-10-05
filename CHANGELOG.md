@@ -6,6 +6,11 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Fixed
+
+- **T20: `image.wb_rgain` / `image.wb_bgain` clamp to 0..255.** The kernel's AWB
+  gain register is 8 bit, so 300 used to wrap to 44 and tint the picture.
+
 ## [1.9.33] - 2026-10-05
 
 ### Added

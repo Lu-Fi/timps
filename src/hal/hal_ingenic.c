@@ -1317,6 +1317,10 @@ static int isp_apply_image(const char *k)
         IMPISPWB wb; memset(&wb,0,sizeof wb);
         wb.mode=(enum isp_core_wb_mode)im->core_wb_mode;
         wb.rgain=(uint16_t)im->wb_rgain; wb.bgain=(uint16_t)im->wb_bgain;
+#ifdef PLATFORM_T20
+        /* 8-bit register; older config files may hold wider values */
+        if (wb.rgain>255) wb.rgain=255; if (wb.bgain>255) wb.bgain=255;
+#endif
         IMP_ISP_Tuning_SetWB(&wb); return 1;
     }
 #endif /* ISP_NEW_TUNING_API */

@@ -745,6 +745,12 @@ static const cfg_field sensor_fields[] = {
 #else
 #define CAP_WB F_NOHW
 #endif
+/* the T20 kernel's AWB gain register is 8 bit (Q7), wider values wrap */
+#if defined(PLATFORM_T20)
+#define WB_GAIN_MAX 255
+#else
+#define WB_GAIN_MAX 65535
+#endif
 /* core_wb_mode is the SDK's enum isp_core_wb_mode, passed straight to
  * IMP_ISP_Tuning_SetWB: auto, manual, daylight, cloudy, incandescent,
  * fluorescent, twilight, shade, warm fluorescent (0..8) and, from the T21
@@ -789,8 +795,8 @@ static const cfg_field image_fields[] = {
     F("colorfx",                0, colorfx,                T_INT, F_CTRL|CAP_COLORFX,    0,9),
     F("scene",                  0, scene,                  T_INT, F_CTRL|CAP_SCENE,      0,14),
     F("core_wb_mode",           0, core_wb_mode,           T_INT, F_CTRL|CAP_WB,         0,ISP_WB_MODE_MAX),
-    F("wb_rgain",               0, wb_rgain,               T_INT, F_CTRL|CAP_WB,         0,65535),
-    F("wb_bgain",               0, wb_bgain,               T_INT, F_CTRL|CAP_WB,         0,65535),
+    F("wb_rgain",               0, wb_rgain,               T_INT, F_CTRL|CAP_WB,         0,WB_GAIN_MAX),
+    F("wb_bgain",               0, wb_bgain,               T_INT, F_CTRL|CAP_WB,         0,WB_GAIN_MAX),
     /* 0 = off. The ceiling is 1 s because a sensor line maximum on these parts
      * is well under that at any usable frame rate; the HAL clamps to the real
      * sensor range anyway, so this only rejects nonsense. */
