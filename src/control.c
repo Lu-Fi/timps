@@ -1152,10 +1152,10 @@ int control_apply_json(const char *json, ctrl_result *res)
                      ch->n, g_cfg_path, muted);
             sc.nopersist += ch->n;
             for (int i=0; i<ch->n; i++)
-                snprintf(g_unsaved[g_unsaved_n++], sizeof g_unsaved[0], "%s", ch->key[i]);
+                snprintf(g_unsaved[g_unsaved_n++], sizeof g_unsaved[0], "%.39s", ch->key[i]);
         }
         for (int i=0; i<left_n && g_unsaved_n<CTRL_MAX_CHG; i++)
-            snprintf(g_unsaved[g_unsaved_n++], sizeof g_unsaved[0], "%s", left[i]);
+            snprintf(g_unsaved[g_unsaved_n++], sizeof g_unsaved[0], "%.39s", left[i]);
         /* ride-along keys are not this request's: report at most what it carried */
         if (sc.nopersist > sc.acc) sc.nopersist = sc.acc;
     }
