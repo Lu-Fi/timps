@@ -411,8 +411,8 @@ internal channel wiring, deliberately not exposed over HTTP.
 | --- | --- | --- | --- | --- | --- |
 | `enabled` | bool | `1` / `1` | — | restart | Restart-only in the strongest sense: all consumers read `g_cfg_boot`, so a live-enabled stream is "servable" but has no publisher and the client just hangs. |
 | `codec` | enum | `h264` / `h264` | `h264`, `h265` (`hevc` = `h265`); anything else → `h264` | restart | **Coerced to `h264` with a warning on T10, T20 and T23.** T10/T20 have no H.265 encoder; T23's SDK marks every H.265 rc struct unsupported, so `IMP_Encoder_CreateChn` fails. The coercion is what keeps that out of the bring-up path: since 1.9.3 a `start()` failure is no longer fatal — it retries up to `MS_STARTUP_MAX_START_FAILS` (10) times and then escalates to one reboot (`src/main.c`), so an uncoerced H.265 on T23 would be a reboot loop rather than a clean exit. |
-| `width` | int | `1920` / `640` | 64..4096 | restart | |
-| `height` | int | `1080` / `360` | 64..4096 | restart | |
+| `width` | int | `1920` / `640` | 64..4096 | restart | Unset (neither `width` nor `height` given): a known sensor size that fits inside the default is used instead, so a 1280x720 sensor streams 1280x720 (since the release after 1.9.33). |
+| `height` | int | `1080` / `360` | 64..4096 | restart | See `width`. |
 | `fps` | int | `25` / `25` | 1..120 | restart | Per-channel rate — **this stream only**. It does not set the sensor rate (that is `sensor.fps`) and cannot exceed what `sensor.fps` delivers. Documented explicitly **since v1.9.19**; the behaviour is unchanged. |
 | `bitrate` | int | `3000` / `512` | 16..50000 | **live** on every Ingenic SoC (see below) | **kbps.** |
 | `rc_mode` | enum | `cbr` / `cbr` | `cbr`, `vbr`, `fixqp`, `smart`, `capped_vbr`, `capped_quality`; anything else → `cbr` | live on classic SoCs, restart on T31/C100/T40/T41 | Alias: `mode`. |

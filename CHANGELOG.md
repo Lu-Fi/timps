@@ -16,6 +16,8 @@ semantic versioning.
 
 ### Fixed
 
+- **No upscaling by default.** With `video0.width`/`height` unset, a smaller
+  known sensor size (e.g. 1280x720) is now the stream size instead of 1920x1080.
 - **`image.wb_rgain` / `image.wb_bgain` clamp to the SoC's register width.**
   T10/T20/T30: 0..255, the kernel register is 8 bit (Q7, 128 = 1.0), so 300
   used to wrap to 44 and tint the picture. T21/T23/T31: 0..4095, the 14-bit

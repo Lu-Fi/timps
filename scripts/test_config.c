@@ -63,6 +63,26 @@ static void check_int(const char *what, const char *body, const int *field,
     printf("ok   %-46s = %d\n", what, *field);
 }
 
+/* load + sensor finalize (no /proc/jz/sensor on the host, so the sensor size
+ * comes from sensor.width/height in `body`) and assert videoN's dims */
+static const ms_config *check_dims(const char *what, const char *body,
+                                   int stream, int want_w, int want_h)
+{
+    static ms_config c;
+    write_conf(body);
+    config_load(&c, g_path);
+    config_sensor_finalize(&c);
+    const ms_vstream_cfg *v = &c.video[stream];
+    if (v->width != want_w || v->height != want_h){
+        printf("FAIL %-46s video%d = %dx%d, expected %dx%d\n", what, stream,
+               v->width, v->height, want_w, want_h);
+        g_fail++;
+        return &c;
+    }
+    printf("ok   %-46s video%d = %dx%d\n", what, stream, v->width, v->height);
+    return &c;
+}
+
 int main(void)
 {
     /* config_load() sets the log level from the file it just read, so the
@@ -142,6 +162,29 @@ int main(void)
                   &cc.video[1].jpeg_chn, 2, &cc);
         check_int("defaults stay untouched",
                   "video1.enabled = 1\njpeg.enabled = 1\n", &cc.video[1].jpeg_chn, 4, &cc);
+    }
+
+    /* default stream size follows a smaller sensor, never upscales */
+    {
+        const char *s720 = "sensor.width = 1280\nsensor.height = 720\n";
+        char b[256];
+        check_dims("720p sensor, dims unset", s720, 0, 1280, 720);
+        check_dims("720p sensor, sub stream unchanged", s720, 1, 640, 360);
+        snprintf(b, sizeof b, "%svideo0.width = 1920\nvideo0.height = 1080\n", s720);
+        check_dims("720p sensor, explicit 1920x1080 wins", b, 0, 1920, 1080);
+        snprintf(b, sizeof b, "%svideo0.width = 1920\n", s720);
+        check_dims("720p sensor, only width explicit", b, 0, 1920, 1080);
+        check_dims("1440p sensor keeps the 1080p default",
+                   "sensor.width = 2560\nsensor.height = 1440\n", 0, 1920, 1080);
+        const ms_config *u = check_dims("unknown sensor keeps the 1080p default",
+                                        "", 0, 1920, 1080);
+        if (u->sensor.width != 1920 || u->sensor.height != 1080){
+            printf("FAIL unknown sensor fallback = %dx%d, expected 1920x1080\n",
+                   u->sensor.width, u->sensor.height);
+            g_fail++;
+        } else printf("ok   %-46s sensor = 1920x1080\n", "unknown sensor fallback");
+        check_dims("sensor smaller than the sub stream",
+                   "sensor.width = 320\nsensor.height = 240\n", 1, 320, 240);
     }
 
     /* an embedded NUL used to truncate the value silently (strlen) instead

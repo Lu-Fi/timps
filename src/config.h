@@ -42,6 +42,7 @@ typedef struct {
     int      buffers_explicit; /* 1 if "buffers" was set in timps.conf, so HAL
                                  * safety clamps (e.g. T31 non-scaled channel)
                                  * should trust it as-is instead of overriding */
+    int      dims_explicit;  /* width or height set: no sensor-size default */
     char     rtsp_path[MS_MAX_STR];
     int      imp_chn;        /* encoder channel */
     /* optional extra JPEG encoder piggybacked on this stream: it is

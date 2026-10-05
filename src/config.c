@@ -606,8 +606,8 @@ static const char *privacy_key(const char *key, int *stream, int *item)
  * {name, offset, type, clamp} shape stay explicit code in set_kv() below:
  * motion.cols/rows (cross-axis ROI-budget clamp), the deprecated
  * motion.roi_* (parse + one-shot warning), general.syslog (side effect
- * only, not stored in g_cfg) and videoN.buffers (extra buffers_explicit
- * flag).
+ * only, not stored in g_cfg) and videoN.buffers/width/height (extra
+ * buffers_explicit/dims_explicit flags).
  *
  * Clamp provenance (values unchanged from the old cascades, see git history
  * for the full rationale): M11 (dims/fps/ports/bitrates/gop/qp/buffers),
@@ -1140,7 +1140,7 @@ static const cfg_field daynight_fields[] = {
 #undef TT
 
 #define TT ms_vstream_cfg
-/* videoN.buffers additionally sets buffers_explicit=1 in set_kv() */
+/* videoN.buffers/width/height additionally set buffers_explicit/dims_explicit in set_kv() */
 /* enabled..rtsp_path (16 keys) are F_CTRL (POST-able), matching the old
  * VID_REST[] array in control.c verbatim - all persist-only/restart-
  * required (the HAL does not reconfigure the running encoder).
@@ -1526,6 +1526,8 @@ static void set_kv(ms_config *c, const char *key, const char *val)
         /* buffers given explicitly: HAL safety clamps (e.g. T31 non-scaled
          * channel) trust it as-is instead of overriding */
         if (f->off == offsetof(ms_vstream_cfg,buffers)) v->buffers_explicit = 1;
+        if (f->off == offsetof(ms_vstream_cfg,width) ||
+            f->off == offsetof(ms_vstream_cfg,height)) v->dims_explicit = 1;
         /* F-04: videoN.max_gop is parsed/clamped/persisted/echoed for compat
          * but NOTHING in any HAL consumes it - the encoder's keyframe
          * interval comes from videoN.gop (rcAttr.maxGop / gopAttr.uGopLength
@@ -2100,6 +2102,20 @@ void config_sensor_finalize(ms_config *c)
                                      v=cap;
                                  }
                                  if(v>0) c->sensor.fps    =(int)v; }
+
+    /* the stream defaults would upscale a smaller sensor; only a known size
+     * counts, the fallback below derives the sensor from video0 instead */
+    if (c->sensor.width > 0 && c->sensor.height > 0)
+        for (int i=0;i<MS_MAX_VSTREAM;i++){
+            ms_vstream_cfg *v=&c->video[i];
+            if (v->dims_explicit || c->sensor.width > v->width ||
+                c->sensor.height > v->height) continue;
+            if (c->sensor.width == v->width && c->sensor.height == v->height) continue;
+            LOGI(MOD,"video%d: %dx%d -> %dx%d (sensor size; set video%d.width/height "
+                     "to override)", i, v->width, v->height,
+                 c->sensor.width, c->sensor.height, i);
+            v->width=c->sensor.width; v->height=c->sensor.height;
+        }
 
     /* safe fallbacks when neither the config nor the sensor registry had it */
     if (!c->sensor.model[0]) copystr(c->sensor.model, "gc2053", MS_MAX_STR);
