@@ -61,6 +61,14 @@ prudynt-t / raptor.
 * **On-Demand-Encoding** – jeder Stream (H.264/H.265, Audio, JPEG/MJPEG) wird
   nur erzeugt, solange mindestens ein Client zusieht. Im Leerlauf praktisch
   0 % CPU. Nicht konfigurierbar, das ist das Grundverhalten.
+* **FrameSource-Keepalive** (**seit dem nächsten Release**) –
+  `general.fs_keepalive` (`-1` auto, `0` aus, `1` an; nur per Datei, Neustart):
+  hält die FrameSources von Start bis Stopp an, die Encoder bleiben on-demand.
+  Auto = an nur bei OpenIMP-Builds auf T23 und T41, wo ein FrameSource-
+  Disable/Enable bei laufendem Sensor den SoC aufhängen kann; sonst aus, weil
+  die Leerlaufkosten (CPU, Wärme, ~6,3 MB rmem für einen 1080p-Hauptstream)
+  dort nicht gemessen sind. Wirksamer Wert: `caps.framesource` in
+  `GET /control`.
 
 ## Encoder & Ratenkontrolle
 

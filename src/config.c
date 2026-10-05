@@ -260,6 +260,7 @@ void config_defaults(ms_config *c)
     c->debug_modules[0] = 0;
     c->imp_polling_timeout = 500;
     c->osd_pool_size = 1024;   /* max on T-series; holds small OSD regions */
+    c->fs_keepalive = -1;
 
     /* sensor.* start UNSET so config_sensor_finalize() can auto-detect them
      * from /proc/jz/sensor/<X>/ (raptor/prudynt style); a config value or,
@@ -958,6 +959,9 @@ static const cfg_field general_fields[] = {   /* + general.syslog in set_kv() */
     /* 1024 is the T-series maximum (see the default above); anything larger is
      * rejected by libimp anyway, and 0 leaves the OSD pool unusable. */
     F("osd_pool_size",       0, osd_pool_size,       T_INT, 0, 1,1024),
+    /* file-only: read once by ing_start, and the edges it avoids are the
+     * reason a live toggle would be a bad idea */
+    F("fs_keepalive",        0, fs_keepalive,        T_INT, 0, -1,1),
 };
 static const cfg_field sim_fields[] = {
     FS("video0", 0, sim_video0, 0),

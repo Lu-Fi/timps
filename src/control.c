@@ -1650,6 +1650,10 @@ int control_get_json(char *buf, size_t cap)
             webrtc_available(), wen);
     }
 #endif
+    /* general.fs_keepalive: "keepalive" is what start() resolved (1 = every
+     * video framesource held enabled until stop), "cfg" the raw -1/0/1 */
+    APP("\"framesource\":{\"keepalive\":%d,\"cfg\":%d},",
+        hal_fs_keepalive(), c->fs_keepalive);
 #ifdef USE_TIMELAPSE
     APP("\"timelapse\":{\"available\":1}},");
 #else

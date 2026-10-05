@@ -13,6 +13,14 @@ semantic versioning.
   9.8 at 0 vs 2.5 at 128 (no further change at 255), independent of
   `sinter_strength`. Supersedes the 1.9.33 note that it stays unsupported.
   Only built with `USE_OPENIMP`.
+- **`general.fs_keepalive`** (`-1` auto, `0` off, `1` on; file-only,
+  restart). On, every video FrameSource (and the dedicated `jpeg.*` one) is
+  enabled once at start and held until stop; encoders stay on-demand.
+  `caps.framesource` in `GET /control` reports the resolved value. Auto is on
+  only for OpenIMP builds on T23 and T41 (see Fixed). Elsewhere `1` is an
+  opt-in: its idle CPU/heat/power cost is unmeasured, and the pools stay
+  allocated (~6.3 MB rmem for a 1080p main stream, peak unchanged). Numbers
+  only: `auto`/`on` read as `0`. T23 SW-rotate streams are exempt.
 - **T10/T20/T21 with the open stack: `videoN.rotation` 90/270 on sub streams**
   (OpenIMP FrameSource rotate; 16-aligned, at most 704x576, never `video0`;
   otherwise the stream starts unrotated). Not yet tested on hardware.
@@ -30,6 +38,15 @@ semantic versioning.
 
 ### Fixed
 
+- **T23/T41 with the open stack: no FrameSource disable/enable at runtime.**
+  A FrameSource stopped and restarted while another channel streams can hang
+  these SoCs (T41: 3 of 3 attempts within ~200 ms; a T23 hung in a wake
+  sequence), and an idle camera produced such pairs for every timelapse shot
+  (1440 a day at 60 s), snapshot and day/night kick. `general.fs_keepalive`
+  defaults to on there; the JPEG cold-start recovery then restarts only the
+  encoder. Left: one enable per channel at start, one disable at stop, the
+  video watchdog's recovery cycle. `general.fs_keepalive = 0` restores the old
+  behaviour. Rationale and open measurements: `dev_notes/FS_KEEPALIVE_2026-10.md`.
 - **T41 with the open stack: day/night knows the AE reserve.** It is read from
   `GetAeExprInfo` (capped gain ceiling); before, it was unknown and every
   `r ~ 1` silent probe escalated to the audible probe.

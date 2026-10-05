@@ -29,7 +29,9 @@ is the place to start.
   (`srt.mode=listener`, the default; e.g. `ffplay srt://<ip>:9000`) or as a
   caller dialling out to `srt.host` (`srt.mode=caller`).
 - **On-demand encoding** — a stream's encoder only runs while at least one
-  client is subscribed; idle streams cost ~0% CPU.
+  client is subscribed; idle streams cost ~0% CPU. On open-stack T23/T41 the
+  FrameSources stay running from start to stop (`general.fs_keepalive`), see
+  [Architecture](Architecture.md#framesource-keepalive-generalfs_keepalive).
 - **Live control API** (`/control`, `USE_CONTROL`) — read and change ISP
   image tuning, audio, OSD, motion and more without a restart, with changes
   persisted back to the config file.

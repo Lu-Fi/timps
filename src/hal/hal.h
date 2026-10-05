@@ -29,6 +29,10 @@ extern volatile int g_hal_watchdog_gave_up;
 /* returns the backend selected at compile time */
 const hal_backend *hal_get(void);
 
+/* general.fs_keepalive as resolved at start(): 1 = the video framesources are
+ * held enabled until stop(). The sim reports the resolution, it has no FS. */
+int hal_fs_keepalive(void);
+
 /* ISP total gain for day/night detection: the ISP's own overall gain
  * (IMP [24.8] linear, 256 = 1x - the value prudynt/raptor plot), read straight
  * from the IMP API instead of scraping /proc/jz/isp/isp-m0. Returns 0 and fills

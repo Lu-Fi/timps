@@ -173,6 +173,47 @@ second), never right after the kick. The refcount itself lives in
 `src/hal/fs_ref.h` with its IMP calls injected, so `make test-fs-ref` runs it
 on the host.
 
+### FrameSource keepalive (`general.fs_keepalive`)
+
+On the open stack (OpenIMP with open-tx-isp) on **T23**, and on **T41**, a
+FrameSource `DisableChn`/`EnableChn` while the sensor and another channel
+stream can hang the SoC: on a T41 one channel idle-stopped and restarted
+within ~200 ms while the other ran hung it 3 times out of 3, and a T23 hung
+during a wake sequence. The on-demand model above produces exactly those edges
+with nobody watching — every timelapse shot (1440 per day at a 60 s
+interval), every snapshot poll, every day/night switch and its two
+re-asserts, the boot kick followed a few ms later by the first timelapse shot.
+
+`general.fs_keepalive` (`-1` auto, `0` off, `1` on; file-only, restart)
+removes them: `ing_start()` takes one reference on every video stream's
+FrameSource and on the dedicated `jpeg.*` one, after all channels exist and
+before motion and the boot kick, and `fs_teardown()` releases it at stop. The
+refcount never reaches 0 at runtime, so every other holder — encoder threads,
+the piggyback JPEG, the motion pin, the latch kick — is a plain reference bump.
+The **encoders stay on-demand** (`StartRecvPic`/`StopRecvPic` with the same
+2 s debounce), which is the model prudynt-t and raptor use for the
+FrameSource, minus their always-running video encoders.
+
+* **Auto** resolves to on for `USE_OPENIMP` builds on T23 and T41 only. Vendor
+  libimp builds and T10/T20/T21/T30/T31/T40 with OpenIMP keep the on-demand
+  FrameSource: no hang is known there, and the cost of a FrameSource that runs
+  24/7 (CPU in libimp's workers, OSD blending, DDR bandwidth, heat, the ~6.3 MB
+  + ~0.7 MB of rmem pools held instead of released) has not been measured.
+  `1` is the opt-in there.
+* **Exempt:** T23 SW-rotate streams (90/270, `USE_SW_ROTATE`) — their
+  unbound `GetFrame` path has never run with an enabled FrameSource and no
+  reader.
+* **JPEG cold start:** with the FrameSource kept, the open-stack T23 JPEG
+  cold-start recovery restarts only the encoder, never the FrameSource.
+* **Left:** one enable per channel at start, one disable at stop, and the video
+  watchdog's recovery cycle (an error path).
+* **Visible:** `framesource keepalive on (general.fs_keepalive=-1, auto)` at
+  start, `framesource N enabled` once per stream, no `framesource N disabled
+  (idle)` afterwards; `caps.framesource` in `GET /control`.
+
+The full reasoning, the evidence and the open measurements are in
+`dev_notes/FS_KEEPALIVE_2026-10.md`.
+
 ## The hub (`src/hub.c` / `src/hub.h`)
 
 The hub is a small, fixed-size pub/sub registry: one `hub_source` per

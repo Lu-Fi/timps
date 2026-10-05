@@ -164,6 +164,16 @@ int main(void)
                   "video1.enabled = 1\njpeg.enabled = 1\n", &cc.video[1].jpeg_chn, 4, &cc);
     }
 
+    /* general.fs_keepalive: -1 auto by default, clamped to -1..1 */
+    {
+        static ms_config kc;
+        check_int("fs_keepalive default is auto (-1)", "", &kc.fs_keepalive, -1, &kc);
+        check_int("fs_keepalive = 1", "general.fs_keepalive = 1\n", &kc.fs_keepalive, 1, &kc);
+        check_int("fs_keepalive = 0", "general.fs_keepalive = 0\n", &kc.fs_keepalive, 0, &kc);
+        check_int("fs_keepalive = 5 clamped", "general.fs_keepalive = 5\n", &kc.fs_keepalive, 1, &kc);
+        check_int("fs_keepalive = -9 clamped", "general.fs_keepalive = -9\n", &kc.fs_keepalive, -1, &kc);
+    }
+
     /* default stream size follows a smaller sensor, never upscales */
     {
         const char *s720 = "sensor.width = 1280\nsensor.height = 720\n";

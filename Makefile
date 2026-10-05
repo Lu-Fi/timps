@@ -503,11 +503,23 @@ test-fs-rot:
 	$(HOSTCC) $(CFLAGS) -Isrc scripts/test_fs_rot.c -o $(BIN)-fsrottest
 	@./$(BIN)-fsrottest; rc=$$?; rm -f $(BIN)-fsrottest; exit $$rc
 
-# Host-only test for the FrameSource refcount and the chn0 latch-kick hold
-# (src/hal/fs_ref.h), IMP enable/disable stubbed. Exit code is the result.
+# Host-only test for the FrameSource refcount, the chn0 latch-kick hold and
+# the keepalive reference (src/hal/fs_ref.h), IMP enable/disable stubbed; then
+# the general.fs_keepalive = -1 resolution, built per PLATFORM:USE_OPENIMP
+# with the expected result (HOST = the sim, no PLATFORM_*). Exit code is the
+# result.
+FSREF_MATRIX := T10:0:0 T10:1:0 T20:0:0 T20:1:0 T21:0:0 T21:1:0 T23:0:0 T23:1:1 \
+                T30:0:0 T31:0:0 T31:1:0 T40:0:0 T40:1:0 T41:0:0 T41:1:1 C100:0:0 HOST:0:0
 test-fs-ref:
 	$(HOSTCC) $(CFLAGS) -Isrc scripts/test_fs_ref.c -o $(BIN)-fsreftest
-	@./$(BIN)-fsreftest; rc=$$?; rm -f $(BIN)-fsreftest; exit $$rc
+	@./$(BIN)-fsreftest; rc=$$?; \
+	 for m in $(FSREF_MATRIX); do \
+	   p=$${m%%:*}; o=$$(echo $$m | cut -d: -f2); w=$${m##*:}; \
+	   d="-DFSR_EXPECT_AUTO=$$w"; [ $$p = HOST ] || d="$$d -DPLATFORM_$$p"; \
+	   [ $$o = 1 ] && d="$$d -DUSE_OPENIMP"; \
+	   $(HOSTCC) $(CFLAGS) -Isrc $$d -DFSR_LABEL='"'$$p/$$o'"' scripts/test_fs_ref.c \
+	     -o $(BIN)-fsreftest && ./$(BIN)-fsreftest || rc=1; \
+	 done; rm -f $(BIN)-fsreftest; exit $$rc
 
 strip: target
 	$(CROSS_COMPILE)strip $(BIN)

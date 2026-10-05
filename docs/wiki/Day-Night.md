@@ -550,7 +550,11 @@ that changed `hflip`/`vflip`, the HAL makes sure FrameSource channel 0 runs:
   `MS_IDLE_STOP_US` (2 s) and the idle producer loops release it, so chn0 is
   disabled about 2–3 s after the kick instead of right after the 500 ms.
 - **chn0 already running** (a client, the motion pin or a previous kick): no
-  edge and no wait. The kick only takes (or
+  edge and no wait.
+- **chn0 kept alive** (`general.fs_keepalive`, the default on open-stack
+  T23/T41): the kick does nothing at all; chn0 has been running since start,
+  so the Set latches on the next frames (assumed, not yet measured on that
+  stack). The kick only takes (or
   extends) the same 2 s hold, so the channel cannot idle-stop before the Set
   has latched.
 
@@ -560,7 +564,7 @@ after the 500 ms, even when chn0 was already running (and then still waited
 next thing that happened was the first timelapse shot, an `EnableChn` a few
 milliseconds later. A disable followed by an enable within a few hundred
 milliseconds while another channel streams is the pattern that hangs
-open-stack T23/T41 SoCs.
+open-stack T23/T41 SoCs (`dev_notes/FS_KEEPALIVE_2026-10.md`).
 On the vendor SoCs the latch behaviour is unchanged: chn0 still runs at least
 500 ms after an idle-time Set, now longer. What differs is that chn0 is
 disabled 2–3 s later, and that a consumer arriving inside those seconds

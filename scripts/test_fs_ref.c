@@ -1,6 +1,9 @@
-/* test_fs_ref.c - host-only test for the FrameSource refcount and the chn0
- * latch-kick hold (src/hal/fs_ref.h). IMP Enable/DisableChn are stubs that
- * record every hardware edge. Build/run: make test-fs-ref */
+/* test_fs_ref.c - host-only test for the FrameSource refcount, the chn0
+ * latch-kick hold and the keepalive reference (src/hal/fs_ref.h). IMP
+ * Enable/DisableChn are stubs that record every hardware edge.
+ * Built once plain (the state machine) and once per SoC/stack with
+ * -DFSR_EXPECT_AUTO (the general.fs_keepalive = -1 resolution).
+ * Build/run: make test-fs-ref */
 #include <stdio.h>
 #include <string.h>
 #include "hal/fs_ref.h"
@@ -168,8 +171,114 @@ static void t_teardown(void)
     EDGES("E1D1");
 }
 
+/* keepalive: one enable per channel, consumers never cause an edge */
+static void t_keep_consumers(void)
+{
+    fsr_state s; reset(&s);
+    CK(fsr_keep_acquire(&s, &ops, 0) == FSR_EDGE, "acquire enables chn0");
+    CK(fsr_keep_acquire(&s, &ops, 1) == FSR_EDGE, "acquire enables chn1");
+    CK(fsr_keep_acquire(&s, &ops, 0) == FSR_BUMP && s.users[0] == 1,
+       "second acquire takes no second reference");
+    for (int i = 0; i < 100; i++) {             /* client churn, timelapse */
+        fsr_use(&s, &ops, i & 1);
+        fsr_unuse(&s, &ops, i & 1);
+    }
+    fsr_use(&s, &ops, 1);                       /* motion pin */
+    fsr_unuse(&s, &ops, 1);
+    EDGES("E0E1");
+    CK(fsr_kept(&s, 0) && fsr_kept(&s, 1) && !fsr_kept(&s, 2), "kept flags");
+}
+
+/* the T41 repro: chn0 idle-stopped and restarted within 200 ms while chn1
+ * streams. With the keepalive it is no edge at all. */
+static void t_keep_t41_repro(void)
+{
+    fsr_state s; reset(&s);
+    fsr_keep_acquire(&s, &ops, 0);
+    fsr_keep_acquire(&s, &ops, 1);
+    fsr_use(&s, &ops, 1);                       /* sub stream client */
+    edges[0] = 0;
+    fsr_use(&s, &ops, 0);
+    fsr_unuse(&s, &ops, 0);                     /* idle stop */
+    fsr_use(&s, &ops, 0);                       /* < 200 ms later */
+    EDGES("");
+}
+
+/* with chn0 kept the kick is a no-op: no hold, no wait */
+static void t_keep_kick(void)
+{
+    fsr_state s; reset(&s);
+    fsr_keep_acquire(&s, &ops, 0);
+    edges[0] = 0;
+    CK(fsr_kick_begin(&s, &ops, 0, KICK, IDLE) == FSR_BUMP, "kick is a bump");
+    CK(!s.kick_held && s.users[0] == 1, "kick takes no reference");
+    CK(fsr_kick_reap(&s, &ops, 10 * IDLE) == 0, "nothing to reap");
+    EDGES("");
+}
+
+/* EnableChn failed at acquire: the reference stays, the next user retries,
+ * and the kick still works as without keepalive */
+static void t_keep_enable_fail(void)
+{
+    fsr_state s; reset(&s);
+    fail_enable = 1;
+    CK(fsr_keep_acquire(&s, &ops, 0) == FSR_FAIL, "failed acquire reported");
+    CK(fsr_kept(&s, 0) && s.users[0] == 1, "keep reference held anyway");
+    fail_enable = 0;
+    CK(fsr_kick_begin(&s, &ops, 0, KICK, IDLE) == FSR_EDGE, "kick retries the enable");
+    fsr_kick_end(&s, KICK, IDLE);
+    CK(fsr_kick_reap(&s, &ops, KICK + IDLE) == 0, "kick release keeps the kept channel on");
+    EDGES("E0");
+}
+
+/* the video watchdog's recycle stays a real D+E (error path only) */
+static void t_keep_recycle(void)
+{
+    fsr_state s; reset(&s);
+    fsr_keep_acquire(&s, &ops, 0);
+    fsr_use(&s, &ops, 0);
+    CK(fsr_recycle(&s, &ops, 0) == 0 && s.users[0] == 2, "recycle refcount neutral");
+    EDGES("E0D0E0");
+}
+
+/* teardown: keep released first, no leak warning, exactly one disable each,
+ * and a restart (ing_stop -> ing_start) starts from zero */
+static void t_keep_teardown(void)
+{
+    fsr_state s; reset(&s);
+    int leaked;
+    fsr_keep_acquire(&s, &ops, 0);
+    fsr_keep_acquire(&s, &ops, 1);
+    fsr_use(&s, &ops, 0); fsr_unuse(&s, &ops, 0);   /* threads joined */
+    CK(fsr_teardown(&s, &ops, 0, &leaked) == 0 && leaked == 0, "chn0 no leak");
+    CK(fsr_teardown(&s, &ops, 1, &leaked) == 0 && leaked == 0, "chn1 no leak");
+    CK(!fsr_kept(&s, 0) && !fsr_kept(&s, 1), "keep cleared");
+    EDGES("E0E1D0D1");
+    CK(fsr_keep_acquire(&s, &ops, 0) == FSR_EDGE, "restart acquires afresh");
+
+    reset(&s);
+    fsr_keep_acquire(&s, &ops, 2);
+    fsr_use(&s, &ops, 2);                         /* a holder that leaked */
+    fsr_teardown(&s, &ops, 2, &leaked);
+    CK(leaked == 1, "a real leak is still reported");
+}
+
+static void t_resolve(void)
+{
+    CK(fs_keepalive_resolve(-1, 1) == 1 && fs_keepalive_resolve(-1, 0) == 0, "auto follows the platform");
+    CK(fs_keepalive_resolve(0, 1) == 0, "0 overrides auto on");
+    CK(fs_keepalive_resolve(1, 0) == 1, "1 overrides auto off");
+}
+
 int main(void)
 {
+#ifdef FSR_EXPECT_AUTO
+    CK(FS_KEEPALIVE_AUTO == FSR_EXPECT_AUTO, "FS_KEEPALIVE_AUTO = %d, want %d",
+       FS_KEEPALIVE_AUTO, FSR_EXPECT_AUTO);
+    CK(fs_keepalive_resolve(-1, FS_KEEPALIVE_AUTO) == FSR_EXPECT_AUTO, "auto resolution");
+    CK(fs_keepalive_resolve(0, FS_KEEPALIVE_AUTO) == 0, "explicit 0");
+    CK(fs_keepalive_resolve(1, FS_KEEPALIVE_AUTO) == 1, "explicit 1");
+#endif
     t_refcount();
     t_enable_retry();
     t_recycle();
@@ -180,6 +289,18 @@ int main(void)
     t_kick_concurrent();
     t_no_disable_enable_pair();
     t_teardown();
+    t_keep_consumers();
+    t_keep_t41_repro();
+    t_keep_kick();
+    t_keep_enable_fail();
+    t_keep_recycle();
+    t_keep_teardown();
+    t_resolve();
+#ifdef FSR_EXPECT_AUTO
+    printf("test_fs_ref %-7s auto=%d: %d/%d checks passed\n", FSR_LABEL,
+           FS_KEEPALIVE_AUTO, checks - failures, checks);
+#else
     printf("test_fs_ref: %d/%d checks passed\n", checks - failures, checks);
+#endif
     return failures ? 1 : 0;
 }

@@ -112,6 +112,21 @@ kept that way specifically for numeric compatibility with prudynt-t's raw
 `rotTo90` enum values) — see `docs/rotation.md` for the full rationale and
 on-device test history.
 
+## FrameSource keepalive default
+
+`general.fs_keepalive = -1` (the default) resolves per build, from
+`FS_KEEPALIVE_AUTO` in `src/hal/fs_ref.h`:
+
+| Build | Auto resolves to | Why |
+| --- | --- | --- |
+| T23 with `USE_OPENIMP` | **on** | FrameSource disable/enable edges while streaming hung a T23 on the open stack. |
+| T41 with `USE_OPENIMP` | **on** | Reproduced hang (3/3): one channel stopped and restarted within ~200 ms while the other ran. |
+| T10, T20, T21, T30, T31, T40 with `USE_OPENIMP` | off | No hang known; idle cost of a 24/7 FrameSource unmeasured on these (mostly small-RAM) SoCs. |
+| Every vendor-libimp build (incl. T23, T41) | off | Same; the vendor T41 has not been tested for the fault. |
+
+`general.fs_keepalive = 1` turns it on anywhere (opt-in), `0` turns it off
+anywhere. See [Architecture](Architecture.md#framesource-keepalive-generalfs_keepalive).
+
 ## Where to go deeper
 
 - **`docs/sdk-feature-gaps.md`** — an independent, function-by-function

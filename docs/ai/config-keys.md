@@ -85,8 +85,8 @@ HTTP, verified against `control_apply_json()` (`src/control.c`) and the
   knows `image`, `audio`, `general`, `daynight`, `osd`/`osd<S>`, `video`,
   `privacy`, `sensor`, `motion`, `record`, `timelapse`.
 * **Individual keys inside a walked section that carry no `F_CTRL`:**
-  `general.loglevel`, `general.imp_polling_timeout`, `general.osd_pool_size`
-  (only `general.debug_modules` is POST-able);
+  `general.loglevel`, `general.imp_polling_timeout`, `general.osd_pool_size`,
+  `general.fs_keepalive` (only `general.debug_modules` is POST-able);
   `video<N>.imp_chn`/`jpeg`/`jpeg_quality`/`jpeg_fps`/`jpeg_chn`;
   `osd<S>.<N>.logo`/`logo_w`/`logo_h`/`font_path`;
   `motion.on_motion`, `motion.cooldown_ms`;
@@ -226,6 +226,7 @@ Section is readable via `GET /control`; only `debug_modules` is POST-able.
 | `general.debug_modules` | string[64] | `""` | — | **live** | Comma-separated module names forced to DEBUG regardless of `loglevel`, e.g. `HAL_ING,DAYNIGHT`. Live on purpose: restarting to enable debugging destroys the state you are trying to observe. |
 | `general.imp_polling_timeout` | int | `500` | 10..10000 | file-only, restart | ms, `IMP_*_PollingStream` timeout. `0` would make the video thread spin and the watchdog `SIGTERM` the daemon seconds after the first client — hence the floor of 10. |
 | `general.osd_pool_size` | int | `1024` | 1..1024 | file-only, restart | KB of IMP OSD pool. 1024 is the T-series maximum; larger is rejected by libimp anyway. |
+| `general.fs_keepalive` | int | `-1` | -1..1 | file-only, restart | **since the next release.** `-1` auto, `0` off, `1` on. On: `ing_start()` holds every video FrameSource (and the dedicated `jpeg.*` one) enabled until the daemon stops, so no FrameSource is ever disabled at runtime; encoders stay on-demand. **Auto resolves to on only for `USE_OPENIMP` builds on T23 and T41** (the stacks where a FrameSource disable/enable while the sensor streams can hang the SoC), off on every vendor-libimp build and on T10/T20/T21/T30/T31/T40 with OpenIMP. The resolved value is `caps.framesource.keepalive` in `GET /control` (`caps.framesource.cfg` is the raw value) and the start-up line `framesource keepalive on|off (general.fs_keepalive=N[, auto])`. See pitfalls below and `dev_notes/FS_KEEPALIVE_2026-10.md`. |
 | `general.syslog` | bool | `1` | — | file-only, restart | **Not a stored field** — handled as a side effect in `set_kv()` (`log_set_syslog()`). Never appears in `GET /control` and cannot be POSTed. `0` = stdout only, no `logread`. |
 | `general.trace` | int (bitmask) | `0` | unclamped | file-only, restart | Developer send-pipeline tracing. Bits: `1` per-AU gap/age/send, `2` per-write timing, `4` fanqueue backlog, `8` periodic summary, `15` = all. **Only does anything in a `USE_TRACE=1` build**; parsed and ignored otherwise. Side-effecting key like `general.syslog`: no table entry, no `F_CTRL`, not in `?fields=1`. |
 | `general.trace_ms` | int | `250` | unclamped | file-only, restart | Report threshold in ms for `general.trace`. Takes effect in file order, so list it **before** `general.trace` if you want the startup banner to print the right threshold (cosmetic only). |
@@ -235,6 +236,32 @@ Pitfalls
   `general.debug_modules` for one subsystem instead.
 * `general.trace` on a normal firmware build is accepted, persisted and inert —
   there is no warning.
+* **`general.fs_keepalive` takes numbers only.** `-1`, `0`, `1`; values
+  outside are clamped. Words are **not** understood: `auto`, `on`, `true` all
+  parse as `0`, i.e. **off** — on an open-stack T23/T41 that silently re-enables
+  the runtime FrameSource edges the auto default exists to prevent. Check
+  `caps.framesource` after a restart.
+* **What `general.fs_keepalive = 1` costs** (why auto stays off outside
+  open-stack T23/T41): the FrameSource pools are held permanently instead of
+  only while someone watches — about 6.3 MB rmem for a 1080p FS0 (2 × 3 133 440 B,
+  from a T23 log) plus ~0.7 MB for a 640×360 FS1 (estimate). The **peak** rmem
+  is unchanged (a camera with a client on every stream holds the same pools).
+  CPU, OSD blending, DDR bandwidth, heat and power of a FrameSource that runs
+  without an encoder consumer are **unmeasured** on every SoC. On T10/T20/T21/
+  T30/T31/T40 and on vendor builds `1` is an explicit opt-in on that basis.
+* **What is still on-demand with the keepalive on:** the encoders
+  (`video chnN idle` still appears 2 s after the last client), and
+  SW-rotate streams (T23 `USE_SW_ROTATE`, 90/270), which are exempt — the log
+  says `framesource N: no keepalive (software-rotate stream)`.
+* **Remaining runtime FrameSource edges with the keepalive on:** only the video
+  watchdog's recovery cycle (`chnN: encoder dead after N consecutive misses -
+  forcing a framesource disable/enable cycle`), an error path. The JPEG
+  cold-start recycle becomes an encoder restart (`recycling the encoder
+  (framesource kept alive)`). Start and stop still enable/disable each kept
+  channel once.
+* **Turning it off on T23/T41** (`general.fs_keepalive = 0`) restores the
+  on-demand FrameSources, with every timelapse shot, snapshot and day/night kick
+  waking chn0 again — the configuration that produced the hangs.
 
 ---
 
@@ -1401,10 +1428,10 @@ The key inventory in this file was verified mechanically, not by hand. A script
    index pattern (`video<N>`/`videoN`/`video0`, `osd<S>.<N>`/`osdS.N`/`osd0.0`,
    `privacy<S>.<N>` …, or a leaf name in that section's table).
 
-**Result: 225 canonical config keys documented, 0 missing.** The breakdown:
+**Result: 226 canonical config keys documented, 0 missing.** The breakdown:
 
-* **199** from the `cfg_field` tables — `sensor` 5, `image` 23, `audio` 24,
-  `jpeg` 7, `rtsp` 7, `http` 11, `webrtc` 4, `events` 3, `general` 4, `sim` 4,
+* **200** from the `cfg_field` tables — `sensor` 5, `image` 23, `audio` 24,
+  `jpeg` 7, `rtsp` 7, `http` 11, `webrtc` 4, `events` 3, `general` 5, `sim` 4,
   `srt` 8, `osd` 6, `motion` 9, `record` 10, `timelapse` 6, `daynight` 23,
   `video<N>` 25, `osd<S>.<N>` 14, `privacy<S>.<N>` 6.
 * **7** handled by explicit code in `set_kv()` outside the tables:
@@ -1412,7 +1439,7 @@ The key inventory in this file was verified mechanically, not by hand. A script
 * **19** retired or now-constant `daynight.*` names that the loader still
   recognises and warns about (11 removed, 8 turned into fixed constants).
 
-Plus **27 aliases** (§21), all present, and **244 key occurrences extracted from
+Plus **27 aliases** (§21), all present, and **245 key occurrences extracted from
 `timps.conf.example`** (active and commented out), all covered — 0 missing.
 
 Counting notes:
@@ -1448,3 +1475,4 @@ into support questions.
 | **T40, T41** | Flips go through `IMP_ISP_Tuning_SetHVFLIP` instead of `SetISPHflip`/`SetISPVflip`, and `g_sensor.rst_gpio`/`pwdn_gpio`/`power_gpio` are forced to `-1` (the fields are plain `int` in that SDK). | `src/hal/hal_ingenic.c` |
 | **T31/C100 vs T40/T41** | `ENC_HAS_QPIPDELTA` (hence a working `videoN.i_bias_lvl`) is T31/C100 only. | `src/hal/hal_ingenic.c` |
 | **T31** | The `isp_ch0_pre_dequeue_time` one-buffer gate on framechan0 — see `videoN.buffers` in §5. | `src/hal/hal_ingenic.c` |
+| **T23, T41 with `USE_OPENIMP`** | `general.fs_keepalive = -1` (the default) resolves to **on**: the FrameSources run from start to stop, so `framesource N disabled (idle)` never appears and day/night kicks are no-ops. Everywhere else it resolves to off. | `src/hal/fs_ref.h` (`FS_KEEPALIVE_AUTO`) |

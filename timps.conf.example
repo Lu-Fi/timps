@@ -16,6 +16,12 @@ general.syslog              = 1      # 1 = also log to syslog so messages show u
                                      #     0 = stderr only (foreground / host sim)
 general.imp_polling_timeout = 500    # ms, encoder poll timeout
 general.osd_pool_size       = 1024   # KB, IMP OSD pool (this is the default)
+# FrameSource keepalive: -1 auto (on only for the open stack on T23/T41, where
+# a FrameSource disable/enable while the sensor streams can hang the SoC),
+# 0 off (FrameSources run only while something consumes), 1 on (opt-in
+# elsewhere; idle CPU/heat/rmem cost unmeasured). Numbers only - "auto"/"on"
+# parse as 0. Restart to apply. GET /control: caps.framesource.
+# general.fs_keepalive      = -1
 
 # ---- sensor ----
 # OPTIONAL: leave any of these out (or empty/0) and timps auto-detects it from

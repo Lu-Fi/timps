@@ -229,6 +229,7 @@ general.debug_modules       =        # comma list, max 8; raises those modules t
 general.syslog              = 1      # also log to syslog (visible in `logread`)
 general.imp_polling_timeout = 500    # ms
 general.osd_pool_size       = 1024   # KB
+general.fs_keepalive        = -1     # -1 auto (on: open-stack T23/T41), 0 off, 1 on; restart
 ```
 Module tags for `debug_modules`: `MAIN CONFIG CTRL DAYNIGHT HAL_ING HTTP HUB
 MOTION OSD REC RTSP SRT TL HAL_SIM TLS AAC bc spk TRACE WEBRTC talk events
@@ -599,6 +600,7 @@ differently-compiled binaries.
 | `caps.backchannel` | `{available, talk_ws}` — `talk_ws` is the *effective* mode: 0 not served, 1 served TLS-required, 2 served plaintext-ok |
 | `caps.play` | `{available, sounds:[...]}` — enumerates playable files |
 | `caps.webrtc` | `{available, enabled, chn_select}` — same 0/1/2 meaning as `talk_ws`; `chn_select:1` = the POST honours `?chn=N`. **Key absent entirely** when `USE_WEBRTC=0` |
+| `caps.framesource` | `{keepalive, cfg}` — **since the next release.** `keepalive` = 1 when this start resolved `general.fs_keepalive` to on (video FrameSources held enabled until stop), `cfg` = the raw `-1`/`0`/`1`. On the sim it reports the resolution only (no FrameSource there). |
 
 Note the deliberate convention: a key that is **absent** (`caps.rotation`,
 `caps.webrtc`) means "this binary has no such endpoint/feature at all", which
@@ -1057,6 +1059,50 @@ Distinguish **compiled out** from **misconfigured**:
 - **MJPEG/snapshot at a stream's resolution 404s** — needs `videoN.jpeg = true`
   and a unique `videoN.jpeg_chn`.
 
+### Camera hangs (T23 / T41 with the open stack)
+
+**Symptom:** the camera freezes completely — no RTSP, no HTTP, no SSH, nothing
+more in the central syslog — and only a power cycle brings it back. The last
+lines before the silence show FrameSource activity with nobody watching:
+`framesource 0 enabled` / `framesource 0 disabled (idle)` pairs, a timelapse
+shot, a day/night switch, `re-asserting running_mode` or a probe. It is
+reported on **T23 builds with OpenIMP/open-tx-isp** and reproduced on **T41**
+(3/3): one FrameSource channel disabled and re-enabled within ~200 ms while
+another channel kept streaming hangs the SoC. A driver fix is in progress
+upstream of timps.
+
+**What timps does about it (since the next release):**
+`general.fs_keepalive = -1` (the default) resolves to **on** for `USE_OPENIMP`
+builds on T23 and T41: every video FrameSource is enabled once at start and
+never disabled until the daemon stops, so timelapse shots, snapshots,
+day/night kicks and client churn no longer touch it. Encoders stay
+on-demand. On every other SoC/stack auto is **off**. Separately, on all SoCs
+the day/night/flip latch kick no longer disables chn0 right after its 500 ms
+wait (2 s debounce instead).
+
+**Check:**
+1. `GET /control` → `caps.framesource`: `{"keepalive":1,"cfg":-1}` on an
+   open-stack T23/T41 with the default. `keepalive:0` there means the key was
+   set to `0` — or to a word: `auto`/`on` parse as `0`.
+2. `logread | grep 'framesource'`: once per start
+   `framesource keepalive on (general.fs_keepalive=-1, auto)` and one
+   `framesource N enabled` per stream, then **no** `disabled (idle)` until a
+   stop. Still normal: `video chnN idle` (the encoder idles).
+3. Remaining edges with the keepalive on: start/stop, a SW-rotate stream
+   (`framesource N: no keepalive (software-rotate stream)`), and the video
+   watchdog's `forcing a framesource disable/enable cycle` (error path).
+
+**Switching it:** edit `/etc/timps.conf` (file-only, not POST-able), then
+`/etc/init.d/S95timps restart`. `general.fs_keepalive = 1` turns it on on any
+other SoC — an opt-in: its idle CPU/heat/power cost is unmeasured and it keeps
+~6.3 MB (1080p FS0) + ~0.7 MB (640×360 FS1) of rmem allocated permanently
+(peak unchanged). `general.fs_keepalive = 0` turns it off on T23/T41 —
+only to diagnose, since that brings the hang pattern back.
+
+A hang on a **vendor** (non-OpenIMP) build, or with the keepalive confirmed on,
+is not explained by this; collect the central syslog around the last line and
+the kernel log and escalate.
+
 ### Audio problems
 
 - **No audio in the browser preview** — `audio.codec` must be `aac` for fMP4;
@@ -1161,6 +1207,18 @@ There is also a QA harness in the repo:
   needs no `/bin/iac` (ingenic-audiodaemon). The `src/config.h` comment on
   `audio.backchannel_rate` still calls it the rate "fed to iac"; that wording
   is stale.
+- **`general.fs_keepalive` — what is measured and what is not.** Measured /
+  observed: the T41 hang (3/3 repros of a stop/restart within ~200 ms while the
+  other channel ran), the T23 hang at a wake sequence, the wake sequence itself
+  in the central syslog, and the 6 266 880 B FS0 pool from a T23 log. Assumed,
+  not measured: that the keepalive prevents the hang (it removes the pattern;
+  there is no soak result yet), that `running_mode`/flip latch with the
+  FrameSource running but no encoder consumer, that AE statistics stay fresh
+  in that state (so day/night measures without a client), the FS1 rmem
+  (~0.7 MB, arithmetic), and every CPU/heat/power figure. Do not quote a CPU
+  cost; say it is unmeasured. The default rule (auto = on only for open-stack
+  T23/T41) is a deliberate decision, not a capability limit — `1` works on
+  every SoC.
 - When unsure whether a feature exists on a user's camera, say so and ask for
   `GET /control` output rather than guessing. The `caps` object is designed
   exactly for that question.

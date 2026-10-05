@@ -455,7 +455,8 @@ static int act_ready_vchan(void *a){ vchan *vc=(vchan*)a; return !vc->run  || vc
 static int act_ready_jchan(void *a){ jchan *jc=(jchan*)a; return !jc->run  || jc->active || hub_active(jc->src); }
 static int act_ready_audio(void *a){ (void)a;             return !g_arun  || g_aactive || g_a2active; }
 
-/* A FrameSource channel is enabled only while someone consumes its frames.
+/* A FrameSource channel is enabled only while someone consumes its frames
+ * (unless general.fs_keepalive holds it from start to stop, see ing_start).
  * An enabled FS keeps the whole bound pipeline (FS -> OSD -> encoder group)
  * pumping frames at sensor fps inside libimp's worker threads even when the
  * encoder channel has StopRecvPic'd - that was ~19 % idle CPU with zero
@@ -685,6 +686,26 @@ static void fs_kick_reap(void)
     if (fsr_kick_reap(&g_fsr, &g_fs_ops, ms_now_us()))
         LOGI(MOD,"framesource 0 disabled (idle)");
     pthread_mutex_unlock(&g_fs_mtx);
+}
+
+/* general.fs_keepalive, resolved by ing_start. The references are dropped by
+ * fs_teardown(), so every stop/unwind path releases them in order. */
+static int g_fs_keepalive;
+static void fs_keep_acquire(int chn)
+{
+    if (chn < 0 || chn >= MS_FS_MAXCHN) return;
+    pthread_mutex_lock(&g_fs_mtx);
+    int r = fsr_keep_acquire(&g_fsr, &g_fs_ops, chn);
+    fs_log_enable(chn, r);
+    pthread_mutex_unlock(&g_fs_mtx);
+    if (r == FSR_EDGE) fs_edge_relatch(chn);
+}
+static int fs_kept(int chn)
+{
+    pthread_mutex_lock(&g_fs_mtx);
+    int k = fsr_kept(&g_fsr, chn);
+    pthread_mutex_unlock(&g_fs_mtx);
+    return k;
 }
 
 /* ================= motion detection lifecycle ================= */
@@ -3726,11 +3747,16 @@ static void *jpeg_thread(void *arg)
                      jc->chn, dbg_jpollfail);
             if (cold_since && cold_recycles < MS_JPEG_COLD_RECYCLES &&
                 ms_now_us() - cold_since >= MS_JPEG_COLD_STALL_US){
-                LOGW(MOD,"jpeg chn%d: no frame %d ms after start - recycling the framesource (%d/%d)",
-                     jc->chn, MS_JPEG_COLD_STALL_US/1000, cold_recycles+1, MS_JPEG_COLD_RECYCLES);
+                /* a kept framesource is never cycled: that edge is what the
+                 * keepalive exists to avoid, so restart the encoder only */
+                int kept = fs_kept(jc->fs_chn);
+                LOGW(MOD,"jpeg chn%d: no frame %d ms after start - recycling the %s (%d/%d)",
+                     jc->chn, MS_JPEG_COLD_STALL_US/1000,
+                     kept ? "encoder (framesource kept alive)" : "framesource",
+                     cold_recycles+1, MS_JPEG_COLD_RECYCLES);
                 cold_recycles++;
                 IMP_Encoder_StopRecvPic(jc->chn);
-                if (fs_recycle(jc->fs_chn) != 0){
+                if (!kept && fs_recycle(jc->fs_chn) != 0){
                     fs_unuse(jc->fs_chn);
                     fs_use(jc->fs_chn);
                 }
@@ -5513,7 +5539,8 @@ static int ing_start(const ms_config *cfg)
             vc->nbound=1;
         }
         /* NOT enabled here: the framesource runs on demand (fs_use/fs_unuse
-         * from the consumer threads) so an idle timps pumps no frames at all */
+         * from the consumer threads) so an idle timps pumps no frames at all,
+         * unless general.fs_keepalive holds it (after this loop) */
 
         vc->run=1;
         if (ms_thread_create(&vc->thr,MS_STACK_STREAM,video_thread,vc)==0) vc->has_thr=1;
@@ -5568,6 +5595,28 @@ static int ing_start(const ms_config *cfg)
      * jpeg_setup unwinds its own partial state on failure */
     if (cfg->jpeg.enabled && jpeg_setup(cfg)!=0)
         LOGW(MOD,"dedicated JPEG channel unavailable");
+    /* Before motion and the boot kick, so those become plain ref bumps and
+     * every framesource sees exactly one enable edge per start. */
+    g_fs_keepalive = fs_keepalive_resolve(cfg->fs_keepalive, FS_KEEPALIVE_AUTO);
+    LOGI(MOD,"framesource keepalive %s (general.fs_keepalive=%d%s)",
+         g_fs_keepalive ? "on" : "off", cfg->fs_keepalive,
+         cfg->fs_keepalive < 0 ? ", auto" : "");
+    if (g_fs_keepalive){
+        for (int k=0;k<g_nv;k++){
+#ifdef ROT_HAS_SW_90
+            /* nobody calls GetFrame on an idle SW-rotate framesource; holding
+             * it enabled with a frame depth set is untested */
+            if (g_v[k].sw_rot){
+                LOGI(MOD,"framesource %d: no keepalive (software-rotate stream)",
+                     g_v[k].chn);
+                continue;
+            }
+#endif
+            fs_keep_acquire(g_v[k].chn);
+        }
+        for (int k=0;k<g_nj;k++)
+            if (g_j[k].src==HUB_JPEG_SRC) fs_keep_acquire(g_j[k].fs_chn);
+    }
     motion_sync(cfg);      /* start the IVS motion grid if motion.enabled */
     /* Latch the boot-time ISP tuning that only takes effect while fs chn0 runs.
      * apply_image_tuning() (isp_init, before any FS existed) already issued
@@ -5772,6 +5821,8 @@ static const hal_backend g_ingenic = {
     .request_idr=ing_request_idr, .set_active=ing_set_active, .stop=ing_stop
 };
 const hal_backend *hal_get(void){ return &g_ingenic; }
+
+int hal_fs_keepalive(void) { return g_fs_keepalive; }
 
 /* daynight gain source: the ISP's own total gain (see hal.h). GetTotalGain is
  * absent from the T40/T41 new tuning API - return unavailable there so daynight

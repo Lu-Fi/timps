@@ -492,6 +492,13 @@ timps starts the framesource/encoder **when a client attaches** and stops it
   `running_mode` or flip change (day/night switch, re-assert, probe); **since
   the next release** the disable comes after the 2 s debounce, before it came
   500 ms after the enable.
+- **Open-stack T23/T41 (since the next release):** `general.fs_keepalive`
+  defaults to on there, so each stream logs `framesource N enabled` once at
+  start and `framesource N disabled (idle)` **never** while the daemon runs;
+  `video chnN idle` (the encoder) still appears. A `disabled (idle)` line on
+  such a camera means the keepalive is off — check `caps.framesource` and
+  `general.fs_keepalive` (words like `auto`/`on` parse as `0`). See
+  `docs/ai/reference.md` §11 "Camera hangs".
 - `GET /control` omits a channel from the `encoder.<n>` object when it is not
   running. An *absent* channel is not the same as a broken one.
 - "No video" reported from a `GET /control` snapshot alone is meaningless.
@@ -1187,7 +1194,7 @@ practically only reachable with an enormous SDP; report it as a bug.
 | `403 Forbidden` / `bad origin` on a `POST` | **since v1.9.28**: a Basic/Digest-authenticated POST from a page on another host (CSRF guard). Log: `refused cross-origin POST <path>`. See §8.1. |
 | `404 Not Found` / `no jpeg` on `/snapshot.jpg`, `/stream.mjpeg`, `/mjpeg` | No JPEG source. An explicit `?chn=N` is **strict** — if that stream's `videoN.jpeg` is off you get 404, with no fallback to the other stream. |
 | `503 Service Unavailable` / `busy` on a media path | The source is at `HUB_MAX_SUBS` = 16, or a snapshot grab collided with another. |
-| `503 Unavailable` / `no frame` on `/snapshot.jpg` (note the non-standard reason phrase) | Subscribed fine, but no JPEG arrived within `HUB_JPEG_GRAB_WAIT_MS` = 1500 ms (idle source: the parent video pipeline is woken and the wait extended by `HUB_JPEG_COLD_EXTRA_MS` = 1500 ms, worst case ~4.5 s; a JPEG channel that delivers nothing 2 s after start has its framesource recycled, `MS_JPEG_COLD_STALL_US`). The JPEG channel is stalled — see §2.2. |
+| `503 Unavailable` / `no frame` on `/snapshot.jpg` (note the non-standard reason phrase) | Subscribed fine, but no JPEG arrived within `HUB_JPEG_GRAB_WAIT_MS` = 1500 ms (idle source: the parent video pipeline is woken and the wait extended by `HUB_JPEG_COLD_EXTRA_MS` = 1500 ms, worst case ~4.5 s; a JPEG channel that delivers nothing 2 s after start has its framesource recycled, `MS_JPEG_COLD_STALL_US` — with `general.fs_keepalive` on only its encoder is restarted, logged `recycling the encoder (framesource kept alive)`). The JPEG channel is stalled — see §2.2. |
 | `404 Not Found` / `not found` | Unknown path. This one is sent **without** CORS headers, so a cross-origin fetch reports a CORS error rather than a 404. Don't be misled. |
 | `500 Internal Server Error` / `player page too large` | The generated player HTML exceeded its 4096-byte buffer. |
 | `503 Service Unavailable` / `busy` on `/events` | SSE cap reached: `events.max_clients` if > 0, otherwise `EVENTS_MAX_CLIENTS_DEF` = **8**. Log: `sse client limit (<n>) reached, rejecting`. |
@@ -2514,6 +2521,9 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `chn0: explicit buffers=%d but isp_ch0_pre_dequeue_time=%d forces a one-buffer schedule on framechan0 - EnableChn will fail (dmesg: 'one buffer schedule') unless pre-dequeue is disabled at the driver` | W | T31 with `isp_ch0_pre_dequeue_time > 0` **and** an explicit `videoN.buffers`. | **Delete the `videoN.buffers` line** (see §13). The real fps lever is removing `BR2_ISP_CH0_PRE_DEQUEUE_TIME` from the board defconfig — measured 13.5 → 24.9 fps. |
 | `framesource %d: EnableChn failed (attempt %d)` | E | **since v1.9.28**. Until v1.9.27 `framesource %d: EnableChn failed%s` (`%s` = ` (retry)`), logged on every attempt. The framesource channel would not enable. Logged on the 1st and every 20th attempt. | See the line above; also §2.2. |
 | `framesource %d: %d reference(s) still held at teardown` | W | Subscriber accounting leak at shutdown. | Report as a bug. |
+| `framesource %d enabled` / `framesource %d disabled (idle)` | I | A real `EnableChn`/`DisableChn` edge. On-demand: per wake (client, snapshot, timelapse shot, latch kick). With `general.fs_keepalive` on: `enabled` once per start, `disabled (idle)` never. | Nothing; see §2.1. |
+| `framesource keepalive %s (general.fs_keepalive=%d%s)` | I | **since the next release.** Once per start: `on`/`off`, the raw value, `, auto` when it was `-1`. | `off` on an open-stack T23/T41 → §2.1. |
+| `framesource %d: no keepalive (software-rotate stream)` | I | **since the next release.** T23 `USE_SW_ROTATE` 90/270 stream: exempt from the keepalive, stays on-demand. | Nothing. |
 | `FS_CreateChn %d` / `FS_SetChnAttr %d failed` | E | Framesource geometry rejected. | Check `videoN.width`/`height` against the sensor. |
 | `FS_SetI2dAttr %d failed (rotation may stay inactive)` | W | T40/T41 belt-and-braces rotation call. | §2.6 |
 | `Encoder_CreateGroup %d failed` / `Encoder_CreateChn %d` / `Encoder_RegisterChn %d to group %d failed` | E | Encoder bring-up failed. | Check resolution, codec and `rc_mode` against the SoC. |

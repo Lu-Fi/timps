@@ -1,8 +1,8 @@
 #ifndef MS_FS_REF_H
 #define MS_FS_REF_H
-/* FrameSource enable refcount and the chn0 latch-kick hold. Pure (IMP calls
- * injected, caller holds the lock, caller logs) so the host test
- * (scripts/test_fs_ref.c) runs the code the HAL runs. */
+/* FrameSource enable refcount, the chn0 latch-kick hold and the keepalive
+ * reference. Pure (IMP calls injected, caller holds the lock, caller logs) so
+ * the host test (scripts/test_fs_ref.c) runs the code the HAL runs. */
 
 #define FSR_MAXCHN 8
 
@@ -14,9 +14,24 @@ typedef struct {
 typedef struct {
     int users[FSR_MAXCHN];
     int enabled[FSR_MAXCHN];    /* EnableChn succeeded, independent of users */
+    int keep[FSR_MAXCHN];       /* keepalive reference held */
     int kick_held;              /* one chn0 reference owned by the latch kick */
     long long kick_until;       /* us; the kick reference is released after */
 } fsr_state;
+
+/* general.fs_keepalive = -1 resolves to this: on where FrameSource edges are
+ * known to hang the SoC (open stack T23/T41), off where the cost of a
+ * permanently running FrameSource is unmeasured. */
+#if defined(USE_OPENIMP) && (defined(PLATFORM_T23) || defined(PLATFORM_T41))
+#define FS_KEEPALIVE_AUTO 1
+#else
+#define FS_KEEPALIVE_AUTO 0
+#endif
+
+static inline int fs_keepalive_resolve(int cfg, int auto_on)
+{
+    return cfg < 0 ? (auto_on != 0) : (cfg != 0);
+}
 
 enum { FSR_FAIL = -1, FSR_BUMP = 0, FSR_EDGE = 1 };
 
@@ -57,6 +72,18 @@ static inline int fsr_recycle(fsr_state *s, const fsr_ops *o, int chn)
     return rc;
 }
 
+static inline int fsr_keep_acquire(fsr_state *s, const fsr_ops *o, int chn)
+{
+    if (chn < 0 || chn >= FSR_MAXCHN || s->keep[chn]) return FSR_BUMP;
+    s->keep[chn] = 1;
+    return fsr_use(s, o, chn);
+}
+
+static inline int fsr_kept(const fsr_state *s, int chn)
+{
+    return chn >= 0 && chn < FSR_MAXCHN && s->keep[chn];
+}
+
 /* Latch kick on chn0. FSR_EDGE: chn0 was just enabled, the caller lets it run
  * kick_us and then calls fsr_kick_end(). Otherwise chn0 already runs and the
  * hold only keeps it running another idle_us - no edge, no wait. The hold is
@@ -65,6 +92,7 @@ static inline int fsr_recycle(fsr_state *s, const fsr_ops *o, int chn)
 static inline int fsr_kick_begin(fsr_state *s, const fsr_ops *o, long long now,
                                  long long kick_us, long long idle_us)
 {
+    if (s->keep[0] && s->enabled[0]) return FSR_BUMP;
     int r;
     if (s->kick_held) r = fsr_try_enable(s, o, 0);
     else { s->kick_held = 1; r = fsr_use(s, o, 0); }
@@ -88,13 +116,14 @@ static inline int fsr_kick_reap(fsr_state *s, const fsr_ops *o, long long now)
     return fsr_unuse(s, o, 0);
 }
 
-/* Hard stop at teardown. The kick reference is ours and goes first; *leaked
- * is what any other holder still has. Returns the DisableChn rc, 0 when the
- * channel was already off. */
+/* Hard stop at teardown. The keepalive and kick references are ours and go
+ * first; *leaked is what any other holder still has. Returns the DisableChn
+ * rc, 0 when the channel was already off. */
 static inline int fsr_teardown(fsr_state *s, const fsr_ops *o, int chn, int *leaked)
 {
     *leaked = 0;
     if (chn < 0 || chn >= FSR_MAXCHN) return 0;
+    if (s->keep[chn]) { s->keep[chn] = 0; if (s->users[chn] > 0) s->users[chn]--; }
     if (chn == 0 && s->kick_held) {
         s->kick_held = 0; s->kick_until = 0;
         if (s->users[0] > 0) s->users[0]--;
