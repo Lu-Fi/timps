@@ -376,6 +376,25 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
         }
     }
 
+    /* T41 open stack: /proc prints only the sensor maximum, which overstates
+     * the reserve once a gain cap is set - a railed meter would pass for a
+     * lit room. So only the SDK's capped ceiling counts. */
+    int ae_hr = -1;
+    {
+        hal_isp_ae ae;
+        if (hal_isp_ae_info(&ae) == 0) {
+            float ev = log2f((float)ae.again_max / 1024.0f)
+                     - (float)ae.total_log2_q16 / 65536.0f;
+            ae_hr = ev > 0.0f ? (int)(32.0f * ev + 0.5f) : 0;
+            /* the stop from integration time only while gain is still 1x:
+             * once gain rises the AE sits at its own limit, which can be
+             * below it_max (T55A: 1750 of 2092 lines at 6.9x) */
+            if (ae.total_log2_q16 < 65536 / 32 && ae.it > 0 &&
+                ae.it < ae.it_max * 9 / 10)
+                ae_hr += 32;
+        }
+    }
+
     /* The configured path first, then the known alternatives. Measured on the
      * live fleet 2026-08-17, and it splits cleanly by SoC generation: all ten
      * T31/T23 cameras have /proc/jz/isp/isp-m0 (the default), and both T20
@@ -558,6 +577,7 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
             else if (!strcasecmp(m, "Night")) o->bright = 25.0f;
         }
     }
+    if (o->headroom < 0) o->headroom = ae_hr;
 
     /* One-shot, at the first sample where the SDK answers: say what the two
      * measurements make of the same instant. This is the line that tells you,
@@ -638,6 +658,19 @@ static int dn_clipped(int headroom)
     return headroom >= 0 && headroom < DN_IR_MIN_HEADROOM;
 }
 
+#ifdef DN_READ_TEST
+/* test-only opening for dn_read() - see scripts/test_daynight_read.c */
+int dn_read_test(const ms_daynight_cfg *dn, float *gain, float *ratio,
+                 float *d, int *headroom, int *clipped)
+{
+    dn_sample o;
+    dn_read(dn, &o);
+    *gain = o.gain; *ratio = o.ratio; *d = o.d; *headroom = o.headroom;
+    *clipped = dn_clipped(o.headroom);
+    return o.isp;
+}
+#endif
+
 /* Say so, once per session, when the ISP dump carries no gain ceilings.
  * Without them the AE reserve is unknown, dn_clipped() must count unknown
  * as usable, and nothing on this camera protects the reference from a
@@ -650,7 +683,8 @@ static void dn_ceiling_check(const dn_sample *sm, int *miss, int *warned)
     if (*warned || ++*miss < 3) return;
     *warned = 1;
     LOGW(MOD, "the ISP dump reports no gain ceilings (MAX SENSOR analog "
-              "gain / MAX ISP digital gain), so the AE reserve is unknown "
+              "gain / MAX ISP digital gain, or GetAeExprInfo on T41), so "
+              "the AE reserve is unknown "
               "here: a railed meter cannot be told from a dark scene, the "
               "railed-boot re-tune never fires, and the night reference is "
               "NOT protected against clipped readings. Ratio probes without "
@@ -2366,7 +2400,9 @@ static void *dn_thread(void *arg)
 
             /* (3b) path C - spontaneous brightening, edge-triggered against a
              * reference that only ever moves on PROOF. */
-            if (ref > 0.0f && s < ref * (float)DN_PROBE_JUMP_PCT / 100.0f) {
+            /* s < 0 is "no level this tick" (a reset), not a brightening */
+            if (ref > 0.0f && s > 0.0f &&
+                s < ref * (float)DN_PROBE_JUMP_PCT / 100.0f) {
                 if (!trig_since) trig_since = now;
             } else trig_since = 0;
             if (trig_since &&

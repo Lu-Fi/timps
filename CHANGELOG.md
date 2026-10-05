@@ -19,6 +19,9 @@ semantic versioning.
 
 ### Fixed
 
+- **T41 with the open stack: day/night knows the AE reserve.** It is read from
+  `GetAeExprInfo` (capped gain ceiling); before, it was unknown and every
+  `r ~ 1` silent probe escalated to the audible probe.
 - **No upscaling by default.** With `video0.width`/`height` unset, a smaller
   known sensor size (e.g. 1280x720) is now the stream size instead of 1920x1080.
 - **`image.wb_rgain` / `image.wb_bgain` clamp to the SoC's register width.**

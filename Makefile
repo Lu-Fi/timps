@@ -293,7 +293,7 @@ IMPLIBS ?= -l:libimp.a -l:libalog.a -l:libsysutils.a
 # against a distro/buildroot that only ships libfaac.so.
 FAACLIB ?= -l:libfaac.a
 
-.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun test-timelapse-prune test-record-ring test-fs-rot
+.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun test-daynight-read test-timelapse-prune test-record-ring test-fs-rot
 
 all: target
 
@@ -409,6 +409,14 @@ test-daynight-sun:
 	$(HOSTCC) $(CFLAGS) -DUSE_DAYNIGHT -DDN_SUN_TEST -Isrc $(DNSUNTEST_SRC) \
 	  $(LDFLAGS) -lm -o $(BIN)-dnsuntest
 	@./$(BIN)-dnsuntest; rc=$$?; rm -f $(BIN)-dnsuntest; exit $$rc
+
+# Host-only unit test for dn_read() (src/daynight.c, opened via -DDN_READ_TEST):
+# the open-tx-isp T41 dump and the GetAeExprInfo AE reserve, HAL stubbed.
+DNREADTEST_SRC := scripts/test_daynight_read.c src/daynight.c
+test-daynight-read:
+	$(HOSTCC) $(CFLAGS) -DUSE_DAYNIGHT -DDN_READ_TEST -Isrc $(DNREADTEST_SRC) \
+	  $(LDFLAGS) -lm -o $(BIN)-dnreadtest
+	@./$(BIN)-dnreadtest; rc=$$?; rm -f $(BIN)-dnreadtest; exit $$rc
 
 # Host-only unit test for the timelapse retention cutoff (src/timelapse.c:
 # prune_cutoff(), opened for test via -DTL_PRUNE_TEST). Needs no hardware and

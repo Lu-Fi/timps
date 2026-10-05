@@ -282,6 +282,20 @@ int hal_isp_total_gain(uint32_t *gain){ (void)gain; return -1; }
 int hal_isp_wb_gains(int *rgain, int *bgain){ (void)rgain; (void)bgain; return -1; }
 int hal_isp_ae_luma(uint32_t *luma){ (void)luma; return -1; }
 int hal_isp_exposure(hal_isp_expo *out){ (void)out; return -1; }
+/* dn-replay fixture: "it it_min it_max again again_max total_log2_q16" */
+int hal_isp_ae_info(hal_isp_ae *out)
+{
+    const char *p = getenv("TIMPS_SIM_AE_INFO");
+    FILE *f = (p && out) ? fopen(p, "r") : NULL;
+    if (!f) return -1;
+    unsigned v[6];
+    int n = fscanf(f, "%u %u %u %u %u %u", &v[0],&v[1],&v[2],&v[3],&v[4],&v[5]);
+    fclose(f);
+    if (n != 6 || v[4] < 1024) return -1;
+    out->it = v[0]; out->it_min = v[1]; out->it_max = v[2];
+    out->again = v[3]; out->again_max = v[4]; out->total_log2_q16 = v[5];
+    return 0;
+}
 /* no encoder telemetry on the host sim: caller omits the stats object */
 int hal_enc_stats(int enc_chn, hal_enc_stat *out){ (void)enc_chn; (void)out; return -1; }
 int hal_enc_rc_read(int enc_chn, hal_enc_rc *out){ (void)enc_chn; (void)out; return -1; }

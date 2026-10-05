@@ -255,8 +255,13 @@ clip protection either. That is announced once per session as a WARN
 ("the ISP dump reports no gain ceilings …"), not left to be inferred from
 `hr=-1` in a probe line. Both fleet T20s do publish the ceilings (jxf23:
 32 units ISP digital, jxf22: 45 — same SoC, different sensors, so a
-hard-coded value would be wrong on one of them); the warning exists for the
-dump variant nobody has met yet.
+hard-coded value would be wrong on one of them). The open-tx-isp T41 dump is
+such a variant: its `AeMaxAGain` is the uncapped sensor maximum, not the AE's
+ceiling, so it is not used. On T41 with the open stack the reserve comes from
+`IMP_ISP_Tuning_GetAeExprInfo` instead (capped `AeMaxAGain` against
+`TotalGainDb`, log2 in Q16); integration time adds a stop only while the gain
+is still 1x, because above that the AE sits at its own limit, which can be
+below the published maximum (T55A dump: 1750 of 2092 lines at 6.9x).
 
 Both ratio thresholds ship at `2.0`, so with the defaults the "escalate" row
 never fires. Setting `ir_ratio_day` below `ir_ratio_night` opens a deliberate

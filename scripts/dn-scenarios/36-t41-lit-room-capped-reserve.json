@@ -1,0 +1,95 @@
+{
+  "name": "36-t41-lit-room-capped-reserve",
+  "incident": "2026-10-05 Vanhua T55A (T41, open-tx-isp): hr=-1 on every silent probe",
+  "description": "Scenario 19 on the open-tx-isp T41 dump. That dump has no MAX SENSOR gain lines, and its AeMaxAGain is the uncapped sensor maximum, so the AE reserve used to stay unknown and every r~1 silent probe escalated to the audible one. With the capped ceiling from GetAeExprInfo (here 256x) the reserve is known and the same verdicts as scenario 19 come out of the ratio alone.",
+  "scale": 30,
+  "duration_s": 780,
+  "initial_mode": "night",
+  "config": {
+    "daynight.day_gain": 768,
+    "daynight.night_gain": 4096,
+    "daynight.heartbeat_s": 300,
+    "daynight.heartbeat_max_s": 300
+  },
+  "interp": "step",
+  "noise_pct": 0,
+  "night_gain": [
+    [
+      0,
+      12160
+    ],
+    [
+      88,
+      3226
+    ],
+    [
+      355,
+      12038
+    ]
+  ],
+  "night_gain_noir": [
+    [
+      0,
+      45000
+    ],
+    [
+      88,
+      3550
+    ],
+    [
+      355,
+      45000
+    ]
+  ],
+  "day_gain": [
+    [
+      0,
+      16000
+    ],
+    [
+      88,
+      3700
+    ],
+    [
+      355,
+      16000
+    ]
+  ],
+  "expect": {
+    "expected_mode": [
+      [
+        0,
+        "night"
+      ],
+      [
+        88,
+        "any"
+      ],
+      [
+        130,
+        "day"
+      ],
+      [
+        355,
+        "any"
+      ],
+      [
+        400,
+        "night"
+      ]
+    ],
+    "max_wrong_mode_s": 90,
+    "max_switches": 4,
+    "max_ir_probes": 6,
+    "monotonicity": "warn",
+    "expect_log": [
+      "the room supplies the light",
+      "the illuminator carries this scene"
+    ],
+    "forbid_log": [
+      "AE reserve is unknown"
+    ]
+  },
+  "t41_dump": true,
+  "ae_cap_gain": 65536
+}

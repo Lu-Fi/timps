@@ -72,6 +72,17 @@ typedef struct {
 } hal_isp_expo;
 int hal_isp_exposure(hal_isp_expo *out);
 
+/* AE state from IMP_ISP_Tuning_GetAeExprInfo (T41 open stack, ISP_HAS_AE_EXPR_INFO).
+ * again_max is the AE's effective ceiling (the configured cap if one is set),
+ * unlike the sensor maximum /proc prints. <0 = unavailable (other builds, sim
+ * without a fixture, or before the first AE run). */
+typedef struct {
+    uint32_t it, it_min, it_max;   /* sensor lines */
+    uint32_t again, again_max;     /* Q10, 1024 = 1x */
+    uint32_t total_log2_q16;       /* TotalGainDb: log2(total gain) in Q16 */
+} hal_isp_ae;
+int hal_isp_ae_info(hal_isp_ae *out);
+
 /* Read-only encoder queue/buffer telemetry for one encoder channel, from
  * IMP_Encoder_Query (IMPEncoderChnStat/CHNStat, present on all 9 platforms).
  * All counts are instantaneous. On T31, ave_bitrate is additionally filled from

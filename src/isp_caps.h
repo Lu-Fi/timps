@@ -90,6 +90,9 @@ int IMP_ISP_Tuning_SetDPC_Strength(uint32_t ratio);
 #if defined(PLATFORM_T41)
 #define ISP_HAS_AECOMP 1
 #define ISP_HAS_NR 1
+/* IMP_ISP_Tuning_GetAeExprInfo: the AE gain ceiling incl. a configured cap,
+ * which the /proc dump does not show; daynight's AE reserve */
+#define ISP_HAS_AE_EXPR_INFO 1
 #endif
 #if defined(PLATFORM_T20)
 #define ISP_HAS_DEFOG 1

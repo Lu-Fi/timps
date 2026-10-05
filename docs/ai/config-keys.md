@@ -906,6 +906,16 @@ room supplies the light → day, whatever the absolute level. This exists becaus
 genuine daylight measured across a twelve-camera fleet at one instant spanned a
 factor of **63**, so no absolute day threshold can be right everywhere.
 
+`r ≈ 1` only means "day" when the AE still had **reserve** (at least 1/4 stop
+of gain below its ceiling); a railed meter also returns `r ≈ 1`. The reserve
+comes from the ceiling fields of the ISP dump (`MAX SENSOR analog gain` /
+`MAX ISP digital gain`). The open-tx-isp **T41** dump has none (its
+`AeMaxAGain` is the uncapped sensor maximum, which would overstate the reserve
+once a gain cap is set), so on T41 with `USE_OPENIMP` the reserve comes from
+`IMP_ISP_Tuning_GetAeExprInfo` (capped `AeMaxAGain` vs `TotalGainDb`). Where
+neither is available the reserve is unknown (`hr=-1` in the probe line) and an
+`r ≈ 1` silent probe escalates to the audible IR-cut probe.
+
 ### Retired `daynight.*` keys
 
 These are **parsed and ignored with one warning each** (not reported as unknown

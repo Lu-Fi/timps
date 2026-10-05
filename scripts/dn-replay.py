@@ -64,6 +64,18 @@ Scenario JSON (all times virtual seconds, all gains IMP [24.8] linear):
                                   every clip protection is structurally
                                   absent - the case dn_ceiling_check() warns
                                   about.
+  t41_dump                      - OPTIONAL bool: serve the open-tx-isp T41
+                                  dump instead (AeIntegrationTime/AeAGain/
+                                  AeMaxAGain/TotalGainDb, lower-case mode).
+                                  Its AeMaxAGain is the uncapped sensor
+                                  maximum, which the daemon must not take as
+                                  the AE ceiling, so without ae_cap_gain the
+                                  reserve stays unknown (hr=-1).
+  ae_cap_gain                   - OPTIONAL linear [24.8] gain (t41_dump only):
+                                  the AE gain cap. Served gains are clamped
+                                  to it, and the sim's GetAeExprInfo stand-in
+                                  (TIMPS_SIM_AE_INFO) reports it as AeMaxAGain,
+                                  so the reserve is known.
   no_max_int                    - OPTIONAL bool: publish the integration time
                                   but NOT its maximum, so the daemon falls
                                   back to its own high-water mark (dn_read's
@@ -364,15 +376,19 @@ class SimRun:
 
     def __init__(self, binary, scale, initial_mode, config, keep=False,
                  model_illuminator=False, no_ceilings=False,
-                 no_max_int=False, watch_reads=False):
+                 no_max_int=False, watch_reads=False, t41_dump=False,
+                 ae_cap=None):
         self.no_ceilings = no_ceilings
         self.no_max_int = no_max_int
+        self.t41_dump = t41_dump
+        self.ae_cap = ae_cap
         # short prefix: daynight.switch_cmd is a 64-byte field on the target
         self.dir = tempfile.mkdtemp(prefix="dnrp-")
         self.keep = keep
         self.scale = scale
         self.initial_mode = initial_mode          # "day"|"night"
         self.isp = os.path.join(self.dir, "isp-m0")
+        self.ae_info = os.path.join(self.dir, "ae-info")
         self.switch_log = os.path.join(self.dir, "switch.log")
         self.mode_file = os.path.join(self.dir, "mode.txt")
         self.trace = os.path.join(self.dir, "trace.csv")
@@ -467,6 +483,8 @@ class SimRun:
         total_gain and every pre-2026-08-17 scenario keeps its meaning. A
         ratio drives the other half of the metric - MAX_INT is a round 1000
         "lines" so the served ratio is exact to a part in a thousand."""
+        if self.t41_dump:
+            return self.serve_t41(gain, isp_mode, ratio)
         u = gain_to_units(gain)
         tmp = self.isp + ".tmp"
         with open(tmp, "w") as f:
@@ -498,12 +516,48 @@ class SimRun:
                     f.write("SENSOR Max Integration Time : %d lines\n" % mx)
         os.replace(tmp, self.isp)
 
+    def t41_gain(self, gain):
+        """the gain a T41 AE can apply: clamped at its cap"""
+        return min(gain, self.ae_cap) if self.ae_cap else gain
+
+    def serve_t41(self, gain, isp_mode, ratio):
+        """the open-tx-isp T41 dump (driver/t41 isp-m0 seq_printf), plus the
+        GetAeExprInfo fixture when the scenario declares a gain cap"""
+        g = self.t41_gain(gain)
+        again = max(1024, int(round(g * 4.0)))           # Q10
+        tg = max(0, int(round(65536.0 * math.log2(g / 256.0))))
+        mx = 1000
+        it = max(1, min(mx, int(round(ratio * mx)))) if ratio is not None else 0
+        tmp = self.isp + ".tmp"
+        with open(tmp, "w") as f:
+            f.write("ISP Runing Mode : %s\n" % isp_mode)
+            f.write("********* Ae Expr Info *********\n")
+            if ratio is not None:
+                f.write("AeIntegrationTime : %d\n" % it)
+            f.write("AeAGain : %d\n" % again)
+            f.write("AeMinIntegrationTime : 1\n")
+            if ratio is not None:
+                f.write("AeMaxIntegrationTime : %d\n" % mx)
+            f.write("AeMaxAGain : 63443\n")              # sensor max, uncapped
+            f.write("TotalGainDb : %d\n" % tg)
+        os.replace(tmp, self.isp)
+        if self.ae_cap:
+            tmp = self.ae_info + ".tmp"
+            with open(tmp, "w") as f:
+                f.write("%d 1 %d %d %d %d\n" % (it, mx if ratio is not None else 0,
+                                                again, int(round(self.ae_cap * 4.0)),
+                                                tg))
+            os.replace(tmp, self.ae_info)
+
     def start(self, first_gain, first_ratio=None):
         self.serve(first_gain, self.initial_mode, first_ratio)
         logf = open(self.log, "w")
+        env = dict(os.environ)
+        if self.ae_cap:
+            env["TIMPS_SIM_AE_INFO"] = self.ae_info
         self.proc = subprocess.Popen([self.binary, "-c", self.conf],
                                      stdout=logf, stderr=subprocess.STDOUT,
-                                     cwd=self.dir)
+                                     cwd=self.dir, env=env)
         self.t0 = time.monotonic()
         self.check_clock()
 
@@ -854,7 +908,9 @@ def run_regression(scn, binary, keep=False, scale_override=None):
                  model_illuminator=bool(scn.get("night_gain_noir")),
                  no_ceilings=bool(scn.get("no_ceilings")),
                  no_max_int=bool(scn.get("no_max_int")),
-                 watch_reads=bool(noise))
+                 watch_reads=bool(noise),
+                 t41_dump=bool(scn.get("t41_dump")),
+                 ae_cap=scn.get("ae_cap_gain"))
     def ratio_at(mode, t):
         c = scn.get("night_int_ratio" if mode == "night" else "day_int_ratio")
         return None if not c else max(0.0, min(1.0, interp_gain(c, t, "linear")))
@@ -947,7 +1003,8 @@ def run_regression(scn, binary, keep=False, scale_override=None):
             r = ratio_at(m, t)
             sim.serve(g, m, r)
             # what the machine will actually decide on: the exposure index
-            served = units_to_gain(gain_to_units(g))
+            served = (sim.t41_gain(g) if sim.t41_dump
+                      else units_to_gain(gain_to_units(g)))
             fed.append((t, served * (r if r is not None else 1.0), m))
             time.sleep(step)
         sim.stop()

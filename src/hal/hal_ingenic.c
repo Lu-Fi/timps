@@ -5829,6 +5829,25 @@ int hal_isp_exposure(hal_isp_expo *out)
 #endif
 }
 
+int hal_isp_ae_info(hal_isp_ae *out)
+{
+#ifdef ISP_HAS_AE_EXPR_INFO
+    if (!out) return -1;
+    IMPISPAEExprInfo e; memset(&e,0,sizeof e);
+    if (IMP_ISP_Tuning_GetAeExprInfo(IMPVI_MAIN,&e) != 0 || e.AeMaxAGain < 1024)
+        return -1;
+    out->it = e.AeIntegrationTime;
+    out->it_min = e.AeMinIntegrationTime;
+    out->it_max = e.AeMaxIntegrationTime;
+    out->again = e.AeAGain;
+    out->again_max = e.AeMaxAGain;
+    out->total_log2_q16 = e.TotalGainDb;
+    return 0;
+#else
+    (void)out; return -1;
+#endif
+}
+
 /* Item-2: read-only encoder queue/buffer telemetry via IMP_Encoder_Query (all
  * 9 platforms). Fills *out and returns 0 on success; <0 (caller omits the
  * stats) when the query fails - e.g. a channel that doesn't exist (disabled
