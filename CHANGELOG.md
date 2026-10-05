@@ -57,6 +57,11 @@ semantic versioning.
   used to wrap to 44 and tint the picture. T21/T23/T31: 0..4095, the 14-bit
   register (Q8, 256 = 1.0) saturates there, so the echo now matches what is
   applied. Other SoCs keep 0..65535.
+- **Firmware `timps-irprobe` darkens every illuminator the board's `daynight`
+  script drives** (ir850, ir940, white per `thingino.json`
+  `daynight.controls.*`), not just the first IR type: on dual-LED or
+  white-light boards the silent probe read lit and judged day. Host test:
+  `scripts/test_irprobe.sh`.
 
 ## [1.9.33] - 2026-10-05
 
