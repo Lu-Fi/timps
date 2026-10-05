@@ -6,6 +6,43 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.9.33] - 2026-10-05
+
+### Added
+
+- **T41 with the open stack: `image.ae_compensation` and `image.sinter_strength`.**
+  OpenIMP serves them through `SetAeScenceAttr` (AE luma target, 0..255, 128 =
+  untouched) and `SetModule_Ratio` entry 0 (spatial denoise, 128 = the vendor
+  picture); measured on a T41/GC5603: mean luma 8 / 57 / 98 at 40 / 128 / 230,
+  Laplacian noise 488 / 351 / 216 at sinter 0 / 128 / 255. `temper_strength`
+  stays unsupported (the temper entry changes nothing on this stack). Only built
+  with `USE_OPENIMP`; vendor-libimp builds are unchanged.
+
+### Changed
+
+- **Media CORS only where access is controlled.** With `http.user` and
+  `rtsp.user` both empty, `/stream.mp4`, `/snapshot.jpg` and the MJPEG stream
+  no longer send `Access-Control-Allow-Origin: *`, and their preflight no
+  longer grants Private Network Access, unless the request carries a valid
+  `?token=` (or comes from loopback): any web page could read the video before.
+  On such an open camera, `http.token_file = ""` or a `USE_CONTROL=0` build
+  (no token at all) therefore breaks the thingino WebUI's cross-origin
+  `fetch()` MSE/RT preview.
+- **Integer config keys are decimal; hex needs `0x`.** `08` was read as 0 and
+  `010` as 8 (octal). Hex-typed keys (colours) are unchanged.
+  `video<N>.imp_chn` and `jpeg.imp_chn` are clamped to 0..7, `motion.hold_ms`
+  to 0..60000 and `motion.skip_frames` to 1..100.
+- **The "detection idle" warning no longer claims the ISP dump is unreadable.**
+  It fired whenever no gain could be parsed - also for a perfectly readable dump
+  in a format an older build did not know (the T41 open stack). It now says no
+  exposure reading came from the file.
+- **The recovery reboot releases the optional open-ISP boot guard first.** `reboot(2)` skips init's stop scripts, so an image with thingino's
+  `S10isp-guard` (a crash-loop guard) would have counted timps' own one-shot
+  recovery reboot as a failed boot and kept the streamer off after it. Both
+  reboot paths (startup give-up and abandoned teardown) now run
+  `/etc/init.d/S10isp-guard stop` if it exists (bounded to ~3 s); images
+  without the guard are unaffected.
+
 ### Fixed
 
 - **`USE_CONTROL=0` builds compile again.** `clients.h` was only included under
@@ -14,8 +51,7 @@ semantic versioning.
   alarm.** The 4 s alarm was still armed while the reboot path ran (marker,
   syncs, boot-guard release) and could `_exit(0)` after the one-shot marker was
   written but before the reboot. The path now disarms it, a hard exit after a
-  watchdog give-up takes the one-shot reboot instead of exiting, and the
-  abandoned-teardown reboot releases the boot guard first.
+  watchdog give-up takes the one-shot reboot instead of exiting.
 - **The JPEG cold-start recycle and the miss watchdogs start clean.** Their
   counters carried over from an aborted start, which switched the cold-start
   recycle off and counted recoveries without real misses; the video watchdog
@@ -76,8 +112,7 @@ semantic versioning.
   such connection (unauthenticated, older than 1 s) is closed so a retry gets
   in; an RTSP connection that has not authenticated within 15 s is closed (was
   60 s until PLAY; a player that prompts the user for a password now has 15 s
-  from connect), the HTTP first-byte wait is
-  3 s, the TLS handshake limit 10 s (was 30 s) with at most two handshakes
+  from connect), the HTTP first-byte wait is 3 s, the TLS handshake limit 10 s (was 30 s) with at most two handshakes
   computing at once, and the rejection warnings are rate-limited.
 - **Failed logins are slowed down:** each rejected Basic/Digest attempt (HTTP and
   RTSP) waits 500 ms before its `401`.
@@ -117,41 +152,6 @@ semantic versioning.
   `USE_BC_WS`, `USE_BC_AAC` and `USE_PLAY_OPUS` were plain assignments, which
   make ignores for a variable given on the command line - the way thingino
   passes every `USE_*`.
-
-### Added
-
-- **T41 with the open stack: `image.ae_compensation` and `image.sinter_strength`.**
-  OpenIMP serves them through `SetAeScenceAttr` (AE luma target, 0..255, 128 =
-  untouched) and `SetModule_Ratio` entry 0 (spatial denoise, 128 = the vendor
-  picture); measured on a T41/GC5603: mean luma 8 / 57 / 98 at 40 / 128 / 230,
-  Laplacian noise 488 / 351 / 216 at sinter 0 / 128 / 255. `temper_strength`
-  stays unsupported (the temper entry changes nothing on this stack). Only built
-  with `USE_OPENIMP`; vendor-libimp builds are unchanged.
-
-### Changed
-
-- **Media CORS only where access is controlled.** With `http.user` and
-  `rtsp.user` both empty, `/stream.mp4`, `/snapshot.jpg` and the MJPEG stream
-  no longer send `Access-Control-Allow-Origin: *`, and their preflight no
-  longer grants Private Network Access, unless the request carries a valid
-  `?token=` (or comes from loopback): any web page could read the video before.
-  On such an open camera, `http.token_file = ""` or a `USE_CONTROL=0` build
-  (no token at all) therefore breaks the thingino WebUI's cross-origin
-  `fetch()` MSE/RT preview.
-- **Integer config keys are decimal; hex needs `0x`.** `08` was read as 0 and
-  `010` as 8 (octal). Hex-typed keys (colours) are unchanged. `video<N>.imp_chn` and `jpeg.imp_chn` are clamped to 0..7,
-  `motion.hold_ms` to 0..60000 and `motion.skip_frames` to 1..100.
-- **The "detection idle" warning no longer claims the ISP dump is unreadable.**
-  It fired whenever no gain could be parsed - also for a perfectly readable dump
-  in a format an older build did not know (the T41 open stack). It now says no
-  exposure reading came from the file.
-
-- **The startup recovery reboot releases the optional open-ISP boot guard
-  first.** `reboot(2)` skips init's stop scripts, so an image with thingino's
-  `S10isp-guard` (a crash-loop guard) would have counted timps' own one-shot
-  recovery reboot as a failed boot and kept the streamer off after it. The
-  reboot path now runs `/etc/init.d/S10isp-guard stop` if it exists (bounded to
-  ~3 s); images without the guard are unaffected.
 
 ## [1.9.32] - 2026-10-04
 
