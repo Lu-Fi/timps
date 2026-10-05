@@ -179,6 +179,10 @@ import time
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
+
+class ClockCheckFailed(SystemExit):
+    """the startup clock handshake failed (see SimRun.check_clock)"""
+
 # ---------------------------------------------------------------- gain plumbing
 
 # Ceilings of the synthetic sensor, in isp-m0 log2 units (32 = one stop).
@@ -523,8 +527,12 @@ class SimRun:
         its scale in its startup banner (see MS_CLOCK_SCALE in src/main.c) and
         a mismatch is a hard error."""
         want = "MS_CLOCK_SCALE=%d" % self.scale
-        deadline = time.monotonic() + 5.0
-        while time.monotonic() < deadline:
+        # The scale line is logged right AFTER the "starting (backend=" line,
+        # so a read between the two must not count as "no scale line". Only a
+        # complete line after the banner (or a quiet grace) proves its absence.
+        t_end = time.monotonic() + 20.0
+        banner_at = None
+        while time.monotonic() < t_end:
             try:
                 with open(self.log) as f:
                     text = f.read()
@@ -532,36 +540,38 @@ class SimRun:
                 text = ""
             if want in text:
                 return
-            if "starting (backend=" in text and "MS_CLOCK_SCALE" not in text:
-                raise SystemExit(
-                    "sim binary %s runs on the REAL clock - it was built "
-                    "without -DMS_CLOCK_SCALE, so SIM_CFLAGS was silently "
-                    "dropped (no such hook before e06bf41). Driving it at "
-                    "scale %d would replay the scenario %dx faster than the "
-                    "machine experiences it: every deadline becomes "
-                    "unreachable, the incident never reproduces, and the run "
-                    "comes back falsely green. Rebuild with:\n"
-                    "  make sim SIM_CFLAGS=\"-DMS_CLOCK_SCALE=%d\"\n"
-                    "To bisect a historical fix, revert the fix's hunk in a "
-                    "copy of the CURRENT tree instead of building the old "
-                    "tree - that keeps the clock/trace contract the harness "
-                    "depends on while isolating the behaviour under test."
-                    % (self.binary, self.scale, self.scale, self.scale))
             m = re.search(r"MS_CLOCK_SCALE=(\d+)", text)
             if m:
-                raise SystemExit(
+                raise ClockCheckFailed(
                     "sim binary %s was built with MS_CLOCK_SCALE=%s but the "
                     "scenario asks for %d - rebuild, or pass --scale %s"
                     % (self.binary, m.group(1), self.scale, m.group(1)))
-            # 1 ms, not the 50 it used to be: this handshake sits between the
-            # spawn and the driver's first serve, and every millisecond spent
-            # here is a millisecond in which the daemon could take a sample the
-            # driver has not caught up with yet (IspReads). The banner is
-            # printed long before daynight_start(), so a tight poll leaves the
-            # whole of the rest of main() as margin.
+            i = text.find("starting (backend=")
+            if i >= 0:
+                if banner_at is None:
+                    banner_at = time.monotonic()
+                nl = text.find("\n", i)
+                later = nl >= 0 and "\n" in text[nl + 1:]
+                if later or time.monotonic() - banner_at > 2.0:
+                    raise ClockCheckFailed(
+                        "sim binary %s runs on the REAL clock - it was built "
+                        "without -DMS_CLOCK_SCALE, so SIM_CFLAGS was silently "
+                        "dropped (no such hook before e06bf41). Driving it at "
+                        "scale %d would replay the scenario %dx faster than the "
+                        "machine experiences it: every deadline becomes "
+                        "unreachable, the incident never reproduces, and the run "
+                        "comes back falsely green. Rebuild with:\n"
+                        "  make sim SIM_CFLAGS=\"-DMS_CLOCK_SCALE=%d\"\n"
+                        "To bisect a historical fix, revert the fix's hunk in a "
+                        "copy of the CURRENT tree instead of building the old "
+                        "tree - that keeps the clock/trace contract the harness "
+                        "depends on while isolating the behaviour under test."
+                        % (self.binary, self.scale, self.scale, self.scale))
+            # 1 ms: every millisecond here is one in which the daemon could
+            # take a sample the driver has not caught up with yet (IspReads).
             time.sleep(0.001)
-        raise SystemExit("sim binary %s produced no startup banner within 5s"
-                         % self.binary)
+        raise ClockCheckFailed("sim binary %s produced no startup banner "
+                               "within 20s" % self.binary)
 
     def vnow(self):
         return (time.monotonic() - self.t0) * self.scale
@@ -1186,11 +1196,21 @@ def main():
         with open(path) as f:
             scn = json.load(f)
         scn["config"] = {**scn.get("config", {}), **cfg}
-        if run_regression(scn, args.bin, keep=args.keep,
-                          scale_override=args.scale):
-            passed += 1
-        else:
-            failed += 1
+        ok = False
+        for attempt in (1, 2):
+            try:
+                ok = run_regression(scn, args.bin, keep=args.keep,
+                                    scale_override=args.scale)
+                break
+            except ClockCheckFailed as e:
+                print("  clock check: %s" % e)
+                if attempt == 1:
+                    print("  retrying %s once" % scn["name"])
+            except SystemExit as e:
+                print("  aborted: %s" % e)
+                break
+        passed += ok
+        failed += not ok
         print()
     print("corpus: %d passed, %d failed" % (passed, failed))
     sys.exit(0 if failed == 0 else 1)
