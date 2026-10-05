@@ -471,12 +471,26 @@ hit this — T10, T20 and T23 coerce `codec` to `h264` at parse time.
   `caps.rotation` key entirely.
 * With `USE_ROTATE`, 90/270 need a real transpose path:
   * **T40/T41** — hardware I2D (`ROT_HAS_HW_I2D`).
-  * **T31** — libimp FrameSource rotate (`ROT_HAS_FS_ROTATE`).
+  * **T31** — libimp FrameSource rotate (`ROT_HAS_FS_ROTATE`). Envelope:
+    width and height multiples of 64, at most 1280x704, at most 15 fps.
+  * **T10 T20 T21, OpenIMP builds only** (`USE_OPENIMP`, i.e.
+    `BR2_PACKAGE_OPENIMP`), **since the next release** — the same FrameSource
+    rotate, done in software by OpenIMP. Sub stream only: `video0` (IMP
+    channel 0) is always refused.
+    Width and height must be multiples of 16 (`640x368` works, `640x360` does
+    not) and at most 704x576 pixels. No fps cap; 15 fps is recommended for
+    the rotated sub stream (estimated 5-11% CPU at 15 fps).
+    Needs an OpenIMP with T1x rotation; an older one refuses. **Not yet tested
+    on hardware.** Vendor-libimp T10/T20/T21 builds have no path.
   * **T23** — software NV12 transpose, only with the extra opt-in
     `BR2_PACKAGE_TIMPS_SW_ROTATE` (`-DMS_ENABLE_SW_ROTATE`). Costs real CPU on
     the single-core T23, is H.264 only, and loses hardware OSD/privacy on the
     rotated stream.
-  * **T10 T20 T21 T30 C100** — no path at all; 90/270 coerce to `0`.
+  * **T30 C100** — no path at all; 90/270 coerce to `0`.
+* Outside the envelope (T31, T10/T20/T21) the stream starts **unrotated** with a
+  `refusing FS-rotate ...` warning; `videoN.rotation` keeps the configured
+  value, and `GET /control` shows the running geometry in
+  `videoN.eff_width`/`eff_height` (unswapped).
 * **`180` is not a rotation on most SoCs.** On every classic-API SoC it was only
   a global ISP Hflip+Vflip, falsely modelled as per-stream, and was removed —
   it coerces to `0` with a log line telling you to use

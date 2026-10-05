@@ -13,6 +13,9 @@ semantic versioning.
   9.8 at 0 vs 2.5 at 128 (no further change at 255), independent of
   `sinter_strength`. Supersedes the 1.9.33 note that it stays unsupported.
   Only built with `USE_OPENIMP`.
+- **T10/T20/T21 with the open stack: `videoN.rotation` 90/270 on sub streams**
+  (OpenIMP FrameSource rotate; 16-aligned, at most 704x576, never `video0`;
+  otherwise the stream starts unrotated). Not yet tested on hardware.
 
 ### Fixed
 

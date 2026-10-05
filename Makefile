@@ -64,7 +64,8 @@ USE_STREAM_OPUS ?= 0        # 1 = offer Opus as an RTSP/RTP streaming audio code
                             #     code compiled in and "opus" is not an accepted audio.codec value.
 OPUS_ENC_LIB  ?= -lopus     # link flag for the libopus encoder (USE_STREAM_OPUS)
 USE_ROTATE    ?= 0          # 1 = image rotation feature (real 90/270 transpose: HW on
-                            #     T40/T41 + T31, opt-in SW on T23). 180 is NOT a rotation
+                            #     T40/T41 + T31, T10/T20/T21 sub streams with USE_OPENIMP,
+                            #     opt-in SW on T23). 180 is NOT a rotation
                             #     value (use image.hflip+image.vflip). Default off = no
                             #     ROT_HAS_* macros defined, so all rotation code compiles
                             #     out (byte-identical build).
@@ -292,7 +293,7 @@ IMPLIBS ?= -l:libimp.a -l:libalog.a -l:libsysutils.a
 # against a distro/buildroot that only ships libfaac.so.
 FAACLIB ?= -l:libfaac.a
 
-.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun test-timelapse-prune test-record-ring
+.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun test-timelapse-prune test-record-ring test-fs-rot
 
 all: target
 
@@ -488,8 +489,14 @@ test-srtp:
 	  $(LDFLAGS) -o $(BIN)-srtptest
 	@python3 scripts/test_srtp.py ./$(BIN)-srtptest; rc=$$?; rm -f $(BIN)-srtptest; exit $$rc
 
+# Host-only test for the FrameSource-rotate safe envelope (src/hal/fs_rot_env.h):
+# which 90/270 requests fs_create() refuses per SoC family. Exit code is the result.
+test-fs-rot:
+	$(HOSTCC) $(CFLAGS) -Isrc scripts/test_fs_rot.c -o $(BIN)-fsrottest
+	@./$(BIN)-fsrottest; rc=$$?; rm -f $(BIN)-fsrottest; exit $$rc
+
 strip: target
 	$(CROSS_COMPILE)strip $(BIN)
 
 clean:
-	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest $(BIN)-hubidrtest $(BIN)-stuntest $(BIN)-tlprunetest $(BIN)-recringtest
+	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest $(BIN)-hubidrtest $(BIN)-stuntest $(BIN)-tlprunetest $(BIN)-recringtest $(BIN)-fsrottest
