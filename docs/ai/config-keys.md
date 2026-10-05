@@ -349,7 +349,9 @@ Prose and pitfalls
   re-asserted to the ISP anyway (without re-persisting), because a
   `SetISPRunningMode` issued mid-AE-ramp at dusk is accepted and does not always
   latch. The HAL also kicks FrameSource channel 0 after the change, because the
-  ISP only latches a running-mode change while chn0 delivers frames, and
+  ISP only latches a running-mode change while chn0 delivers frames (an idle
+  chn0 runs 500 ms and then stays on for the 2 s idle debounce; a running chn0
+  is only held on, no wait — **since the next release**), and
   re-asserts `hflip`/`vflip` afterwards (a mode switch can reset them on some
   driver combinations).
 * **Do not force `running_mode` when the scene is genuinely dark.** Setting it

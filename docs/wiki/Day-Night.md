@@ -36,7 +36,7 @@ control.c: timps_apply_setting("image.running_mode", ...)
 hal_ingenic.c: IMP_ISP_Tuning_SetISPRunningMode(...)
         │
         ▼
-fs_kick_running_mode()   (see below)
+fs_kick_chn0()   (see below)
 ```
 
 This indirection keeps the whole board in sync: the same script that
@@ -521,7 +521,7 @@ Two of them exist as a pair and should stay that way:
 The difference between the two is the entire argument for changing the metric,
 written as an assertion rather than a claim.
 
-## The ISP running-mode latch quirk and `fs_kick_running_mode()`
+## The ISP running-mode latch quirk and `fs_kick_chn0()`
 
 Even with all of the above working correctly, one more hardware quirk
 remained and was root-caused on a real deployed camera (cam-L Y4,
@@ -539,34 +539,39 @@ day→night switch (plus both automatic re-asserts) all reported success,
 `/proc/jz/isp/isp-m0` kept reporting "Running Mode: Day," and the
 always-on substream showed a visibly magenta, IR-lit image all evening.
 
-The fix, in `src/hal/hal_ingenic.c`:
+The fix, in `src/hal/hal_ingenic.c` (`fs_kick_chn0()`, state machine in
+`src/hal/fs_ref.h`): after every `running_mode` apply, and once per request
+that changed `hflip`/`vflip`, the HAL makes sure FrameSource channel 0 runs:
 
-```c
-#define FS0_MODE_KICK_US 500000
-static void fs_kick_running_mode(void)
-{
-    if (!g_hcfg || !g_hcfg->video[0].enabled) return;
-    fs_use(0);
-    usleep(FS0_MODE_KICK_US);
-    fs_unuse(0);
-}
-```
+- **chn0 idle:** enable it (a real `EnableChn` edge, which also re-applies
+  `hflip`/`vflip`/`running_mode`), let it run 500 ms (roughly 12 frames at
+  25 fps, generous margin over the 1–2 frames empirically needed to latch the
+  mode), then return. The kick keeps its reference for another
+  `MS_IDLE_STOP_US` (2 s) and the idle producer loops release it, so chn0 is
+  disabled about 2–3 s after the kick instead of right after the 500 ms.
+- **chn0 already running** (a client, the motion pin or a previous kick): no
+  edge and no wait. The kick only takes (or
+  extends) the same 2 s hold, so the channel cannot idle-stop before the Set
+  has latched.
 
-After every `running_mode` apply, the HAL briefly forces FrameSource
-channel 0 active — via the same refcounted `fs_use()`/`fs_unuse()` pair
-that on-demand streaming already uses — for 500ms (roughly 12 frames at
-25fps, generous margin over the 1–2 frames empirically needed to latch
-the mode). If chn0 is already streaming (a client is watching the main
-stream), this is a cheap no-op ref bump; if chn0 was idle, it's a real
-but transient wake that guarantees the queued mode change actually
-applies before the channel is allowed to idle-stop again.
+Until the next release after v1.9.33 the kick dropped its reference right
+after the 500 ms, even when chn0 was already running (and then still waited
+500 ms). That made the end of every kick a `DisableChn`, and at start-up the
+next thing that happened was the first timelapse shot, an `EnableChn` a few
+milliseconds later. A disable followed by an enable within a few hundred
+milliseconds while another channel streams is the pattern that hangs
+open-stack T23/T41 SoCs.
+On the vendor SoCs the latch behaviour is unchanged: chn0 still runs at least
+500 ms after an idle-time Set, now longer. What differs is that chn0 is
+disabled 2–3 s later, and that a consumer arriving inside those seconds
+finds it running instead of re-enabling it.
 
 This means the return code of `SetISPRunningMode()` is now also checked
 and logged (`LOGW` on failure) rather than ignored outright, and a
 diagnostic (debug-level only) read-back via `GetISPRunningMode` is
 logged, with the caveat that this readback is a libimp *userspace* value
 (there is no kernel read path on T23) and so isn't by itself proof the
-pipeline actually latched — it's `fs_kick_running_mode()` that provides
+pipeline actually latched — it's `fs_kick_chn0()` that provides
 the actual fix.
 
 ## Machine-readable log lines

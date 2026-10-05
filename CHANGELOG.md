@@ -17,6 +17,17 @@ semantic versioning.
   (OpenIMP FrameSource rotate; 16-aligned, at most 704x576, never `video0`;
   otherwise the stream starts unrotated). Not yet tested on hardware.
 
+### Changed
+
+- **The ISP latch kick no longer disables framesource 0 right away.** After a
+  `running_mode` or flip change an idle chn0 still runs 500 ms, but its
+  reference is now released through the normal 2 s idle debounce; when chn0
+  already runs, the kick only holds it on and no longer waits 500 ms. Before,
+  the end of every kick was a `DisableChn`, and at start-up the first
+  timelapse shot re-enabled chn0 a few ms later - the edge pattern that hangs
+  open-stack T23/T41. On every SoC chn0 still runs at least 500 ms after the
+  Set; it is now disabled 2-3 s later.
+
 ### Fixed
 
 - **T41 with the open stack: day/night knows the AE reserve.** It is read from

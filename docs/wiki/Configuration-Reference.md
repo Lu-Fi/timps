@@ -82,7 +82,7 @@ echoed back — it just has no visible effect until/unless a firmware update
 adds support. `image.running_mode` is additionally special: re-posting the
 *same* value still re-drives the ISP (skipping the flash write) because it
 is treated as a hardware-sync command, not just stored state — see
-[Day/Night](Day-Night.md) for why, including the `fs_kick_running_mode()`
+[Day/Night](Day-Night.md) for why, including the `fs_kick_chn0()`
 latch-kick this triggers.
 
 | Key | Type | Default | Range | Live? | ISP capability gate | Description |

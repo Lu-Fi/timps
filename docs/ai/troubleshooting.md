@@ -487,7 +487,11 @@ timps starts the framesource/encoder **when a client attaches** and stops it
 (`src/hal/hal_ingenic.c`). So:
 
 - `framesource N disabled (idle)` and `video chnN idle` in the log are
-  **normal**, not a fault.
+  **normal**, not a fault. `framesource 0 enabled` followed 2–3 s later by
+  `framesource 0 disabled (idle)` with no client is the ISP latch kick after a
+  `running_mode` or flip change (day/night switch, re-assert, probe); **since
+  the next release** the disable comes after the 2 s debounce, before it came
+  500 ms after the enable.
 - `GET /control` omits a channel from the `encoder.<n>` object when it is not
   running. An *absent* channel is not the same as a broken one.
 - "No video" reported from a `GET /control` snapshot alone is meaningless.

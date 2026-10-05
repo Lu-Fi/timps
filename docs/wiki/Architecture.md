@@ -164,6 +164,15 @@ the full pipeline teardown/rebuild cost. A watchdog (10 consecutive
 `PollingStream` misses) forces a Stop/Disable/Enable/Start recovery cycle
 if the encoder appears to have wedged.
 
+The ISP latch kick (`fs_kick_chn0()`, see
+[Day/Night](Day-Night.md#the-isp-running-mode-latch-quirk-and-fs_kick_chn0))
+holds one more chn0 reference. It goes through the same debounce: the
+reference is kept for `MS_IDLE_STOP_US` after the kick and released by
+whichever producer loop is idle next (`fs_kick_reap()`, at least once a
+second), never right after the kick. The refcount itself lives in
+`src/hal/fs_ref.h` with its IMP calls injected, so `make test-fs-ref` runs it
+on the host.
+
 ## The hub (`src/hub.c` / `src/hub.h`)
 
 The hub is a small, fixed-size pub/sub registry: one `hub_source` per

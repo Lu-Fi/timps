@@ -293,7 +293,7 @@ IMPLIBS ?= -l:libimp.a -l:libalog.a -l:libsysutils.a
 # against a distro/buildroot that only ships libfaac.so.
 FAACLIB ?= -l:libfaac.a
 
-.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun test-daynight-read test-timelapse-prune test-record-ring test-fs-rot
+.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun test-daynight-read test-timelapse-prune test-record-ring test-fs-rot test-fs-ref
 
 all: target
 
@@ -503,8 +503,14 @@ test-fs-rot:
 	$(HOSTCC) $(CFLAGS) -Isrc scripts/test_fs_rot.c -o $(BIN)-fsrottest
 	@./$(BIN)-fsrottest; rc=$$?; rm -f $(BIN)-fsrottest; exit $$rc
 
+# Host-only test for the FrameSource refcount and the chn0 latch-kick hold
+# (src/hal/fs_ref.h), IMP enable/disable stubbed. Exit code is the result.
+test-fs-ref:
+	$(HOSTCC) $(CFLAGS) -Isrc scripts/test_fs_ref.c -o $(BIN)-fsreftest
+	@./$(BIN)-fsreftest; rc=$$?; rm -f $(BIN)-fsreftest; exit $$rc
+
 strip: target
 	$(CROSS_COMPILE)strip $(BIN)
 
 clean:
-	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest $(BIN)-hubidrtest $(BIN)-stuntest $(BIN)-tlprunetest $(BIN)-recringtest $(BIN)-fsrottest
+	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest $(BIN)-hubidrtest $(BIN)-stuntest $(BIN)-tlprunetest $(BIN)-recringtest $(BIN)-fsrottest $(BIN)-fsreftest

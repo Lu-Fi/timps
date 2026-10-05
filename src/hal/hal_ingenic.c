@@ -18,6 +18,7 @@
 #include "../enc_caps.h"      /* ENC_LIVE_KEYS: live rc keys of this build */
 #include "imp_osd.h"
 #include "imp_motion.h"
+#include "fs_ref.h"
 #include "../rtsp/speaker.h"   /* speaker_set_volume/gain (spk_* live apply) */
 #ifdef ROT_HAS_SW_90
 /* Batch 5 (T23 + USE_SW_ROTATE=1 only): software 90/270 rotate + unbound
@@ -460,12 +461,11 @@ static int act_ready_audio(void *a){ (void)a;             return !g_arun  || g_a
  * encoder channel has StopRecvPic'd - that was ~19 % idle CPU with zero
  * clients. Refcounted because a video stream and its piggybacked JPEG
  * encoder share one FS (and motion detection pins the monitored stream). */
-#define MS_FS_MAXCHN 8
+#define MS_FS_MAXCHN FSR_MAXCHN
 static pthread_mutex_t g_fs_mtx = PTHREAD_MUTEX_INITIALIZER;
-static int g_fs_users[MS_FS_MAXCHN];
-/* F-fs/V2 hardening: tracks whether EnableChn has actually SUCCEEDED for this
- * channel, independent of the refcount. The refcount alone used to gate the
- * EnableChn attempt (only tried on the 0->1 edge) and was kept even when
+/* F-fs/V2 hardening: enabled[] tracks whether EnableChn has actually SUCCEEDED
+ * for a channel, independent of the refcount. The refcount alone used to gate
+ * the EnableChn attempt (only tried on the 0->1 edge) and was kept even when
  * EnableChn failed - callers still symmetrically fs_unuse() what they
  * fs_use()'d regardless of whether the hardware call inside it succeeded, so
  * unwinding the refcount on failure would desync it from callers' own
@@ -477,8 +477,24 @@ static int g_fs_users[MS_FS_MAXCHN];
  * a no-op whenever another holder kept the count above 0 across the cycle
  * (V2) - the exact failure class those watchdogs exist to recover from.
  * Retrying independently of the refcount transition fixes both: any fs_use()
- * call retries the real hardware enable until it actually reports success. */
-static int g_fs_enabled[MS_FS_MAXCHN];
+ * call retries the real hardware enable until it actually reports success.
+ * The state machine itself lives in fs_ref.h (host-tested). */
+static fsr_state g_fsr;
+static int fs_imp_enable(int chn)  { return IMP_FrameSource_EnableChn(chn); }
+static int fs_imp_disable(int chn) { return IMP_FrameSource_DisableChn(chn); }
+static const fsr_ops g_fs_ops = { fs_imp_enable, fs_imp_disable };
+/* a start-retry loop calls fs_use() up to 5x/s: log the 1st and every 20th */
+static int g_fs_enfail[MS_FS_MAXCHN];
+static void fs_log_enable(int chn, int r)
+{
+    if (r == FSR_FAIL) {
+        if ((g_fs_enfail[chn]++ % 20) == 0)
+            LOGE(MOD,"framesource %d: EnableChn failed (attempt %d)", chn, g_fs_enfail[chn]);
+    } else if (r == FSR_EDGE) {
+        LOGI(MOD,"framesource %d enabled", chn);
+        g_fs_enfail[chn] = 0;
+    }
+}
 /* ISP tuning access lock. Defined HERE (not down in the USE_CONTROL /control
  * block alongside its only other user, ing_control()) because fs_use() below
  * now re-applies image tuning under it on every real chn0 enable edge (see the
@@ -537,49 +553,30 @@ static void fs_use(int chn)
 {
     if (chn < 0 || chn >= MS_FS_MAXCHN) return;
     pthread_mutex_lock(&g_fs_mtx);
-    int just_enabled = 0;
-    g_fs_users[chn]++;
-    if (!g_fs_enabled[chn]) {
-        /* a start-retry loop calls this up to 5x/s: log the 1st and every 20th */
-        static int enfail[MS_FS_MAXCHN];
-        if (IMP_FrameSource_EnableChn(chn) != 0){
-            if ((enfail[chn]++ % 20) == 0)
-                LOGE(MOD,"framesource %d: EnableChn failed (attempt %d)", chn, enfail[chn]);
-        } else {
-            LOGI(MOD,"framesource %d enabled", chn);
-            g_fs_enabled[chn] = 1;
-            just_enabled = 1;
-            enfail[chn] = 0;
-        }
-    }
+    int r = fsr_use(&g_fsr, &g_fs_ops, chn);
+    fs_log_enable(chn, r);
     pthread_mutex_unlock(&g_fs_mtx);
-    if (just_enabled) fs_edge_relatch(chn);
+    if (r == FSR_EDGE) fs_edge_relatch(chn);
 }
 static void fs_unuse(int chn)
 {
     if (chn < 0 || chn >= MS_FS_MAXCHN) return;
     pthread_mutex_lock(&g_fs_mtx);
-    /* not enabled (EnableChn failed): a DisableChn would only fail in libimp */
-    if (g_fs_users[chn] > 0 && --g_fs_users[chn] == 0 && g_fs_enabled[chn]) {
-        IMP_FrameSource_DisableChn(chn);
-        g_fs_enabled[chn] = 0;
+    if (fsr_unuse(&g_fsr, &g_fs_ops, chn))
         LOGI(MOD,"framesource %d disabled (idle)", chn);
-    }
     pthread_mutex_unlock(&g_fs_mtx);
 }
 /* Refcount-neutral Disable+Enable of a live FS: the force-recycle that the
  * fs_unuse()+fs_use() pair in the watchdogs cannot be while a second holder
  * (piggyback video wake, motion pin) keeps the count above 0. A co-holder sees
  * a short frame gap. Returns 0 on success, -1 if the channel was not enabled or
- * EnableChn failed (then g_fs_enabled is 0 and the next fs_use() retries). */
+ * EnableChn failed (then enabled[] is 0 and the next fs_use() retries). */
 static int fs_recycle(int chn)
 {
     if (chn < 0 || chn >= MS_FS_MAXCHN) return -1;
     pthread_mutex_lock(&g_fs_mtx);
-    if (!g_fs_enabled[chn]) { pthread_mutex_unlock(&g_fs_mtx); return -1; }
-    IMP_FrameSource_DisableChn(chn);
-    int rc = IMP_FrameSource_EnableChn(chn);
-    g_fs_enabled[chn] = (rc == 0);
+    if (!g_fsr.enabled[chn]) { pthread_mutex_unlock(&g_fs_mtx); return -1; }
+    int rc = fsr_recycle(&g_fsr, &g_fs_ops, chn);
     LOGI(MOD,"framesource %d recycled%s", chn, rc ? " - EnableChn failed" : "");
     pthread_mutex_unlock(&g_fs_mtx);
     if (rc == 0) fs_edge_relatch(chn);
@@ -601,17 +598,13 @@ static int fs_recycle(int chn)
 static int fs_teardown(int chn)
 {
     if (chn < 0 || chn >= MS_FS_MAXCHN) return 0;
-    int rc = 0;
+    int leaked;
     pthread_mutex_lock(&g_fs_mtx);
-    if (g_fs_users[chn])
-        LOGW(MOD,"framesource %d: %d reference(s) still held at teardown",
-             chn, g_fs_users[chn]);
-    if (g_fs_enabled[chn]) {
-        rc = IMP_FrameSource_DisableChn(chn);
-        g_fs_enabled[chn] = 0;
-    }
-    g_fs_users[chn] = 0;
+    int rc = fsr_teardown(&g_fsr, &g_fs_ops, chn, &leaked);
     pthread_mutex_unlock(&g_fs_mtx);
+    if (leaked)
+        LOGW(MOD,"framesource %d: %d reference(s) still held at teardown",
+             chn, leaked);
     return rc;
 }
 
@@ -658,21 +651,40 @@ static int fs_teardown(int chn)
  * fs_use().
  *
  * So: after applying any of these, run chn0 for a few frames if it is idle.
- * Refcounted fs_use makes this a cheap ref bump / no-op when chn0 is already
- * streaming (a subscriber, or a motion pin on stream 0). ~500 ms = ~12 frames
- * @25fps, generous margin over the 1-2 frames the latch needs. Callers must NOT
- * hold g_isp_lock (fs_use -> IMP_FrameSource_EnableChn must not race an ISP Set
- * under that lock; and fs_use() now takes g_isp_lock itself on the chn0 enable
- * edge, so a caller already holding it would deadlock). */
+ * ~500 ms = ~12 frames @25fps, generous margin over the 1-2 frames the latch
+ * needs. The kick's reference is NOT dropped after that wait: it is held for
+ * another MS_IDLE_STOP_US and released by fs_kick_reap() from the idle loops,
+ * the same debounce an idle encoder gets. Dropping it at once put a Disable
+ * right before the next wake (boot kick -> first timelapse shot within ms),
+ * the edge pattern that hangs open-stack T23/T41. When chn0 already runs, the
+ * kick only extends that hold: no edge and no wait. Callers must NOT hold
+ * g_isp_lock (fs_use -> IMP_FrameSource_EnableChn must not race an ISP Set
+ * under that lock; and the enable edge takes g_isp_lock itself in
+ * fs_edge_relatch(), so a caller already holding it would deadlock). */
 #define FS0_KICK_US 500000
 static void fs_kick_chn0(void)
 {
     /* the latch belongs to the ISP's direct-output channel 0; per-stream
      * imp_chn maps stream 0 -> fs chn 0 (see fs_create) */
     if (!g_hcfg || !g_hcfg->video[0].enabled) return;
-    fs_use(0);
+    pthread_mutex_lock(&g_fs_mtx);
+    int r = fsr_kick_begin(&g_fsr, &g_fs_ops, ms_now_us(), FS0_KICK_US, MS_IDLE_STOP_US);
+    fs_log_enable(0, r);
+    pthread_mutex_unlock(&g_fs_mtx);
+    if (r != FSR_EDGE) return;
+    fs_edge_relatch(0);
     usleep(FS0_KICK_US);
-    fs_unuse(0);
+    pthread_mutex_lock(&g_fs_mtx);
+    fsr_kick_end(&g_fsr, ms_now_us(), MS_IDLE_STOP_US);
+    pthread_mutex_unlock(&g_fs_mtx);
+}
+/* called by every idle producer loop (act_wait wakes them at least 1/s) */
+static void fs_kick_reap(void)
+{
+    pthread_mutex_lock(&g_fs_mtx);
+    if (fsr_kick_reap(&g_fsr, &g_fs_ops, ms_now_us()))
+        LOGI(MOD,"framesource 0 disabled (idle)");
+    pthread_mutex_unlock(&g_fs_mtx);
 }
 
 /* ================= motion detection lifecycle ================= */
@@ -2562,7 +2574,7 @@ static void *video_thread(void *arg)
         if (!want) {
             /* fully idle: block until ing_set_active() wakes us (1 s safety
              * timeout). No polling, no frame flow - the framesource is off. */
-            if (!receiving){ act_wait(act_ready_vchan, vc); continue; }
+            if (!receiving){ fs_kick_reap(); act_wait(act_ready_vchan, vc); continue; }
             /* debounce the stop: only shut the encoder down after a sustained
              * idle period; rapid client churn must not toggle Start/StopRecvPic */
             int64_t now = ms_now_us();
@@ -3090,7 +3102,7 @@ static void *sw_rot_thread(void *arg)
         int want = vc->active || hub_active(vc->chn) ||
                    (vc->jpeg_on && hub_active(HUB_JPEG_SRC_N(vc->si)));
         if (!want) {
-            if (!receiving){ act_wait(act_ready_vchan, vc); continue; }
+            if (!receiving){ fs_kick_reap(); act_wait(act_ready_vchan, vc); continue; }
             int64_t now = ms_now_us();
             if (idle_since==0) idle_since = now;
             if (now - idle_since >= MS_IDLE_STOP_US) {
@@ -3673,7 +3685,7 @@ static void *jpeg_thread(void *arg)
         if (!jwant) {
             /* fully idle: block until reactivated (see act_wait). snap_due is
              * time-based (no act_wake), so it rides the 1 s timeout re-poll. */
-            if (!receiving){ act_wait(act_ready_jchan, jc); continue; }
+            if (!receiving){ fs_kick_reap(); act_wait(act_ready_jchan, jc); continue; }
             int64_t nowi = ms_now_us();
             if (idle_since==0) idle_since = nowi;
             if (nowi - idle_since >= MS_IDLE_STOP_US) {
@@ -5076,8 +5088,8 @@ static int ing_control(const char *key, const char *val)
         if (ok) LOGI(MOD,"control %s=%d", key, v);
         else    LOGD(MOD,"image.%s unsupported on this platform (persisted only)", k);
         /* day/night: the ISP only latches a running-mode change while fs chn0
-         * runs - kick it if idle (see fs_kick_chn0; blocks ~500 ms, fine for
-         * /control connection threads and the daynight thread). Kept INLINE
+         * runs - kick it (see fs_kick_chn0; blocks ~500 ms only when chn0 was
+         * idle, fine for /control connection threads and the daynight thread). Kept INLINE
          * (not deferred to commit) because daynight.c calls hub_control(
          * "image.running_mode") directly, without a hub_control_commit(). */
         if (ok && !strcmp(k,"running_mode")) fs_kick_chn0();
@@ -5563,7 +5575,9 @@ static int ing_start(const ms_config *cfg)
      * boot, so those Sets sit queued and never apply - the sensor comes up
      * unflipped / in the wrong day-night mode until a live /control re-apply.
      * Run chn0 briefly now (all FS channels exist at this point) to latch them.
-     * No-op ref bump when motion pinned chn0 above; ~500 ms one-time otherwise.
+     * Ref bump without a wait when motion pinned chn0 above; ~500 ms one-time
+     * otherwise. Either way chn0 then stays on for the idle debounce, so the
+     * first timelapse shot right after start finds it running (no D->E).
      * Must run here (end of ing_start), NOT at the apply_image_tuning() call in
      * isp_init, where fs chn0 does not yet exist. */
     fs_kick_chn0();
