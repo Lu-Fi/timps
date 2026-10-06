@@ -29,7 +29,6 @@ semantic versioning.
   states and the FrontCrop state, from the new `src/roi_caps.h`. Both setters
   are weak imports, so a libimp without them reports `unsupported`.
   `make test-roi` covers the validation and the tier matrix of all SoCs.
-
 - **`timpsd` refuses a libimp that does not fit the build** instead of
   crashing on it. Before the config, the lock or any IMP call it opens the
   loaded `libimp.so` and exits **78** when the flavour differs (an OpenIMP build

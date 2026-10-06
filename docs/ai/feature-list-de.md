@@ -116,6 +116,12 @@ prudynt-t / raptor.
   ein IDR an – eine Reconnect-Schleife oder eine `DESCRIBE`-Flut kann so nicht
   mehr jedes Bild zum Keyframe machen.
   Kein Konfigurationsschlüssel.
+* **Encoder-ROI (seit dem nächsten Release)** – `roi<S>.<N>.*` (`enabled`,
+  `x`, `y`, `w`, `h`, `qp`, `qp_mode`), bis zu 4 Regionen pro Stream mit
+  eigenem QP (absolut oder Delta), live, nur H.264 und ungedrehte Streams.
+  Auf Hardware getestet nur T20 mit OpenIMP; T10, T20 vendor, T21 und T23
+  experimentell; T30, T31, T40, T41 und C100 lehnen ab. Die Stufe meldet
+  `caps.roi.tier` in `GET /control`.
 * **Bildrotation (optional, `USE_ROTATE`)** – `videoN.rotation = 0|90|180|270`.
   Hardware-90/270 auf T40/T41 (I2D) und T31 (FrameSource), Software-90/270 auf
   T23 (`USE_SW_ROTATE`, CPU-intensiv, nur H.264). **Seit dem nächsten Release**
@@ -159,6 +165,13 @@ prudynt-t / raptor.
   die Rate *dieses Streams* und setzt nie die Sensorrate.
 * Optionale Deckelung der AE-Integrationszeit (`image.ae_it_max_us`) für
   Szenen, in denen die Automatik zu lange belichtet.
+* **ISP-FrontCrop / Zoom (seit dem nächsten Release)** – `image.fcrop_enable`,
+  `fcrop_x/y/w/h` in Sensorpixeln: der ISP liefert nur diesen Ausschnitt,
+  jeder Stream skaliert ihn auf seine Größe (min. 64×64, live). Getestet auf
+  T20 und T21 mit OpenIMP (T20: nur herunterskalierte Streams); T10 OpenIMP
+  und T31 experimentell. **T23 lehnt ab** (auch aus der Datei – ein
+  Crop-Wechsel stoppt die T23-Pipeline bis zum Reboot), ebenso T30, T40/T41,
+  C100 und vendor T10/T20/T21. Stufe und Zustand: `caps.fcrop`.
 
 ## Day/Night (automatische Tag-/Nachtumschaltung)
 
@@ -438,7 +451,7 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   WebRTC-Option, Bewegungs-Overlay, Talk-Knopf, Steuerleiste),
   `streamer-video.html` (Encoder beider Streams als Tabs, Live/Restart-Kennzeichnung,
   Neustart-Leiste, Live-Werte), `streamer-overlays.html` (Tabs „Text & logo“ und
-  „Privacy masks“ für beide Streams, Position per Anker/Pixel, Ziehen oder Pfeiltasten),
+  „Privacy masks“ für beide Streams, dazu „ROI“ und „Crop / zoom“, Position per Anker/Pixel, Ziehen oder Pfeiltasten),
   `recordings.html` (Tabs Clips/Settings), `timelapse-player.html` (Tabs Player/Settings),
   `streamer-config/-image/-sensor.html`, `config-audio.html`, `config-motion.html`,
   `config-photosensing.html`, `tool-sensor-data.html` (Day/Night-Tuningkurve).
