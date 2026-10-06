@@ -1259,7 +1259,9 @@ back on immediately.
 
 `daynight.ir_idle.reason` when it does **not** act: `disabled`, `schedule`,
 `keepalive` (no FrameSource keepalive; auto only on OpenIMP T23/T41),
-`no_illuminator`, `white_light`, `hook`.
+`no_illuminator`, `white_light`, `hook`. The WebUI's Day / Night page shows
+the same as a chip ("not available: …" with the fix); while that page is
+open its own preview counts as a viewer, so it reads "IR on · watched".
 
 | Log line (`src/daynight.c`) | Level | Meaning / fix |
 | --- | --- | --- |

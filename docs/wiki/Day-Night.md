@@ -632,6 +632,129 @@ in `/etc/timps.conf`; without it the line simply stops, and a counting
 dashboard reads "no probes" where it should read "not logged". The
 `switching to` line above stays at `LOGI` unconditionally.
 
+## Idle-Dark (IR LED off while nobody watches)
+
+**Since the next release**, off by default: `daynight.ir_idle_off = 1`,
+`daynight.ir_idle_linger_s` (default 60 s, 0..3600), both live via
+`/control`. WebUI: Day / Night → Settings → "IR light when idle".
+
+### What it does
+
+At night the IR LED normally burns all night, whether anyone looks or not.
+With Idle-Dark, once no picture consumer has been there for
+`ir_idle_linger_s`, timps switches **only the IR LED** off. The IR-cut filter
+stays open and the ISP stays in night mode, so nothing clicks and no colour
+switch happens. Picture consumers are video and JPEG subscribers (RTSP,
+WebRTC, fMP4, MJPEG, SRT, `/snapshot.jpg`, timelapse, the recorder), motion
+detection's FrameSource and a set `jpeg.snapshot_path`. Audio-only clients do
+not count. A consumer inside the linger is not an event; the linger covers
+10 s snapshot polling, DESCRIBE→PLAY and the 60 s timelapse.
+
+### Requirements
+
+* **FrameSource keepalive** (`general.fs_keepalive`; auto = on only for
+  OpenIMP builds on T23 and T41). Without it the AE stops when the last
+  consumer leaves and nothing can be measured while idle. Elsewhere it
+  needs `general.fs_keepalive = 1` and a restart, untested there.
+* **A switchable illuminator**: `daynight.irprobe_cmd` (default
+  `timps-irprobe`) with the verbs `idle` (LED off, no watchdog) and `state`
+  (prints `on`/`off`). Firmware must ship the new hook (thingino `ciao`
+  from commit `67fbc42e9`, 2026-10). The illuminators it switches are the
+  ones ticked in `daynight.controls` (IR 850/940 nm); a ticked **white
+  light** makes it refuse, because it would light every reading.
+* **Automatic switching by light level**: `daynight.enabled = 1` and
+  `daynight.mode = auto`. Calendar mode (`schedule`) hands the LED back.
+
+### Why off by default
+
+With 850 nm LEDs the red glow is visible. When it goes out, anyone in front
+of the camera can tell that nobody is watching or recording - "IR off" means
+"nobody is watching". The first seconds of a new stream are also darker, and
+the decision path has not yet been measured on enough cameras (see the
+measurement list in `dev_notes/DN_IDLE_DARK_2026-10.md`). For 940 nm or
+indoor cameras the tell does not matter.
+
+### How it decides, in plain words
+
+1. **Going dark.** At night, in auto mode, after the boot measurement, with
+   no probe in flight, at least 5 s after the last switch and with the
+   linger over, timps runs `<irprobe_cmd> idle`. The next 8 s are a silent
+   probe that does **not** relight: a large drop (ratio ≥ 2) confirms night,
+   a small one with exposure reserve left means the room is lit (day, one
+   switch, nobody watches). Anything unclear stays night and dark. An
+   unwatched boot whose silent probe proves night goes dark straight away.
+2. **Measuring while dark.** The IR-cut is still open and the LED off, so the
+   AE now reads the ambient light without the LED ("noir"). timps keeps that
+   reading; the LED is re-asserted off after 8 s, 16 s and then every 10 min
+   in case the board script lit it.
+3. **Freshness check.** If the exposure has not moved at all in the 8 s after
+   the LED went off, the AE is not running without a consumer on this
+   SoC/stack. timps logs a WARN, turns the LED back on and does not try
+   again until the next day/night switch.
+4. **Dawn without a viewer (noir day rule).** Noir below `day_gain` for
+   `probe_confirm_s`, and the hook's `state` says the LED really is off →
+   switch to day. Noir is optimistic (the filter is open), so if the day
+   optics turn out too dark, path A switches back within ~30 s and timps
+   learns how much darker the scene gets with the filter closed
+   (`noir_cost`); that veto stops the same false day the next morning.
+5. **A viewer arrives (wake).** The subscribe kicks the day/night thread
+   (not the next 2 s tick): the LED goes on at once (one hook call). If the
+   noir reading is valid, already below `day_gain` and `state` confirms the
+   LED is off, timps switches to day instead and the LED stays off.
+6. **Warm-up hold.** After a wake, JPEG grabs (`/snapshot.jpg`, timelapse)
+   wait for the AE for ~3.5 s, at most 5 s. Streams are not held.
+7. **Giving the LED back.** `ir_idle_off = 0`, `daynight.enabled = 0`,
+   `mode = schedule`, a failing re-assert and a timps stop all turn the LED
+   on. After a crash with the LED off, the boot assertion relights it.
+
+### What the user sees
+
+* The IR glow goes out about `ir_idle_linger_s` after the last viewer.
+* A new viewer: LED on within one hook call; the first 1-4 s of video are
+  dark or overexposed while the AE settles on the LED.
+* `/snapshot.jpg` after a dark period answers up to ~3.5 s (max 5 s) later
+  than usual. Home Assistant's default timeout is 10 s.
+* WebUI chip: "IR off (idle)", "IR on · watched", "IR on · off in N s",
+  "IR on · going dark", "ready (day)", "off" or "not available: …". The
+  page's own preview counts as a viewer.
+
+### Trade-offs
+
+* The 850 nm tell above.
+* First-snapshot delay after every wake; a poll slower than the linger pays
+  one LED on/off pair and one held snapshot per poll.
+* **Heartbeat probes in the dark are audible** (every `heartbeat_s` /
+  `heartbeat_max_s`, 4-12 h by default): a silent probe cannot work while
+  the LED is already off, so the heartbeat uses the IR-cut probe.
+* Cameras with a permanent consumer (Frigate/NVR, `record.enabled`,
+  `motion.enabled`, `jpeg.snapshot_path`) never go idle: no effect, no cost.
+
+### Troubleshooting: `daynight.ir_idle.reason`
+
+`GET /control` → `daynight.ir_idle` = `{cfg, available, reason, dark,
+watched, linger_left_s}`; `caps.daynight.ir_idle` says whether this start can
+use it at all (keepalive).
+
+| `reason` | Meaning | Fix |
+| --- | --- | --- |
+| `disabled` | `ir_idle_off = 0` (`cfg` 0), or `daynight.enabled = 0` | turn the switch / automatic switching on |
+| `schedule` | `daynight.mode = schedule` | "Decided by: Light level" (`mode = auto`) |
+| `keepalive` | no FrameSource keepalive on this start (one WARN) | `general.fs_keepalive` (auto on OpenIMP T23/T41; elsewhere `1` + restart, untested) |
+| `no_illuminator` | `daynight.irprobe_cmd` empty, or the illuminator was retired after two failed switches | set the hook, tick IR 850/940 nm, check the board's IR GPIOs; a restart re-tests |
+| `white_light` | the hook refused `idle` (exit 3): white light is in `daynight.controls` | untick "White light" |
+| `hook` | `idle` exit 1/2 (hook without the verb, nothing switchable) or repeated failures | update the firmware's `timps-irprobe`; switching the key off and on retries |
+
+`available = 1` but the LED never goes out: someone is watching
+(`watched = 1`, check `GET /control?clients=1`, motion detection, the
+recorder), or the log has `exposure did not move in 8s with the illuminator
+off` (the AE stops without a consumer here: leave the feature off on this
+camera). The WARN lines are listed in `docs/ai/troubleshooting.md` §3.9.
+
+### How to turn it off
+
+POST `{"daynight":{"ir_idle_off":0}}` (or the WebUI switch): the LED comes
+back on at once and the key is persisted.
+
 ## Live control and status
 
 | Action | Effect |
@@ -640,7 +763,7 @@ dashboard reads "no probes" where it should read "not logged". The
 | `POST /control {"daynight":{"mode":"schedule",...}}` | Switches decision source; validated against `auto`/`schedule` (and the legacy `sensor`/`time`/`sun` spellings) before being applied. |
 | `POST /control {"image":{"running_mode":1}}` | Manually forces the ISP mode (what the board switch script itself calls). Re-posting the *same* value still re-drives the ISP (see [HTTP /control API Reference](HTTP-Control-API.md)) — necessary precisely because of the latch quirk above. |
 | `POST /control {"daynight":{"probe":1}}` | Arms one silent IR probe for the next tick, without waiting for the jump trigger, the trend or the heartbeat. A command, not a setting — counted in `accepted`/`rejected` like `record.clip`. Rejected when there is no `daynight.irprobe_cmd` configured or the silent probe has retired itself for the session (see "When the illuminator command doesn't work" above). |
-| `GET /control` `"daynight"` object | Read-only status: `enabled`, `mode` (0 day/1 night), `brightness` (%), `total_gain` (IMP `[24.8]` linear), **`exposure`** (the index the decision actually runs on — plot this one when diagnosing), `ae_luma`, `night_baseline`/`day_trigger` (kept under their old key names, now carrying the proven night reference and the probe bar, `-1` outside night), the configured thresholds, `diagnose_thresholds`, and — always — today's computed `sun_computed_sunrise`/`sun_computed_sunset`. |
+| `GET /control` `"daynight"` object | Read-only status: `enabled`, `mode` (0 day/1 night), `brightness` (%), `total_gain` (IMP `[24.8]` linear), **`exposure`** (the index the decision actually runs on — plot this one when diagnosing), `ae_luma`, `night_baseline`/`day_trigger` (kept under their old key names, now carrying the proven night reference and the probe bar, `-1` outside night), the configured thresholds, `diagnose_thresholds`, the Idle-Dark state `ir_idle` (`cfg`, `available`, `reason`, `dark`, `watched`, `linger_left_s`, see above), and — always — today's computed `sun_computed_sunrise`/`sun_computed_sunset`. |
 | `GET /events?stream=daynight` | Pushes the same status object on connect and then whenever mode flips, brightness moves ≥1%, or gain moves ≥5% relative (or ≥8 absolute near zero) — see [HTTP /control API Reference](HTTP-Control-API.md#event-types). |
 | `GET /control?dn_history=1` | The decision series (gain, exposure index, `ae_luma`, brightness, mode, one sample per 10 s) out of the in-RAM ring `daynight.history_s` sizes — off by default. Unlike the SSE stream this keeps accumulating with no client connected, which is what lets the WebUI tuning graph plot hours nobody was watching. Cursor-paged; see [HTTP /control API Reference](HTTP-Control-API.md#dn_history1). |
 

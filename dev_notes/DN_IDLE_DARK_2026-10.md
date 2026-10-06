@@ -1,7 +1,8 @@
 # Idle-Dark (`daynight.ir_idle_off`) - 2026-10
 
-**Status:** stage 2 of 3 landed (C4-C7): Idle-Dark acts when
-`daynight.ir_idle_off = 1` (default 0). Stage 3 (C8, WebUI) is open. Design:
+**Status:** all three stages landed (C0-C8): Idle-Dark acts when
+`daynight.ir_idle_off = 1` (default 0); WebUI card and docs are in (stage 3).
+The default stays off until the measurements at the end are done. Design:
 scratch document `dn-idle-ir-design.md` (recommendation "Idle-Dark", commit
 plan C0..C9). C0 is in the firmware tree: `cfa79f9f4` (every illuminator
 `daynight.controls` enables) and `67fbc42e9` (verbs `idle`/`state`, exit 3/4),
@@ -281,3 +282,105 @@ assertions `ir_state_at`, `max_led_toggles`, `led_on_within_s`,
   latency of `timps-irprobe on/idle/state`, first-frame luma after a wake
   (hold length, IDR use), dual-IR boards (both LEDs off with `idle`), real
   poll cadences of HA/agent-adapter (linger default), LED power.
+
+## Idle-Dark stage 3 status
+
+Commits (local, not pushed):
+
+| Repo | Commit | Design | What |
+| --- | --- | --- | --- |
+| firmware `ciao` | `e4411e7ff` | C8 | Day / Night page: card "IR light when idle" (switch `daynight.ir_idle_off`, field `daynight.ir_idle_linger_s` 0..3600, status chip, 850 nm note), `WEBUI-NOTES.md` |
+| timps | see `git log` | C8 | `scripts/test_webui_idle.js`; wiki Day-Night section "Idle-Dark", Configuration-Reference rows, `feature-list-de.md`, `reference.md`/`troubleshooting.md` WebUI notes, CHANGELOG, this section |
+
+### WebUI
+
+* Lives in `package/timps/files/www/config-photosensing.html` and
+  `a/config-photosensing.js` (right column of the Settings tab, below "On
+  switch, toggle"). That page is timps-only: `timps.mk` installs it over
+  thingino-daynightd's, prudynt/raptor images keep daynightd's page, which is
+  untouched. No new libraries, no plugin manifest change (the page script is
+  already listed in the page itself; `assemble_plugins.py` only adds the
+  plugin script tags at target-finalize).
+* Visibility: hidden unless the status has `ir_idle` (older timps: the two
+  keys are then not POSTed either, it would reject them). `caps.daynight
+  .ir_idle = 0` hides it too, **except while the key is on**: then the chip
+  says "not available: no keepalive" and the switch can turn it off. This
+  deviates from "hide when caps = 0" on purpose.
+* Chip per state (pure `idleView()`): key off → "off"; `available = 0` →
+  "not available: <short reason>" plus a line with the fix (`disabled`,
+  `schedule`, `keepalive`, `no_illuminator`, `white_light`, `hook`, unknown
+  reasons passed through); `dark` → "IR off (idle)"; day → "ready (day)";
+  `watched` → "IR on · watched"; linger running → "IR on · off in N s"
+  (counted down locally from the last `linger_left_s`, since `/events` only
+  pushes on `available`/`dark`/`reason` changes); linger over → "IR on ·
+  going dark".
+* The page's own MJPEG preview (ch1) runs even on the Settings tab and is a
+  picture consumer: with the page open the chip reads "watched". Stopping the
+  preview on the Settings tab would fix that but touches `timps-preview.js`
+  (watchdog/retry), left for later.
+
+### Tests run for stage 3
+
+* `node scripts/test_webui_idle.js <fw>/package/timps/files/www/a/config-photosensing.js
+  [control.json ...]`: 46 checks (every reason, hide rules incl. caps 0 + key
+  on, dark/day/watched/linger/age countdown, string and boolean values, the
+  page's ids and the 0..3600 range); mutation checks (hide rule, age, dark)
+  fail as expected. Fed with sim `GET /control` documents (keepalive 1/0,
+  empty `irprobe_cmd`, `TIMPS_SIM_WATCH` 0/1): chips as expected.
+* Sim POST with the page's payload shape: 10 accepted, linger 9999 clamped to
+  3600 and reported in `applied`, persisted.
+* `node --check`, HTML tag balance/duplicate ids (python `html.parser`);
+  a static render of the card in four states at 390 px (headless Firefox,
+  page CSS + Bootstrap 5.3.8): no overflow, the chip wraps inside the header.
+* Not verifiable here: the real page against a camera (load, save, live
+  `/events` updates, slider buttons, preview interplay).
+* Every host test (`test-config`, `-dn-idle` 90, `-hub-hold` 14, `-roi`,
+  `-daynight-read`, `-daynight-sun`, `-fs-ref`, `-fs-rot`, `-libimp-check`,
+  `-clients`, `-fanqueue`, `-hub-pool`, `-hub-idr`, `-timelapse-prune`,
+  `-record-ring`, `-stun`, `-srtp`, `-auth`) and `scripts/test_irprobe.sh` on
+  the `ciao` hook (98): pass; `make sim` warning-free. No timps source
+  changed in stage 3, so no binary size delta.
+* Firmware ships the hook: `timps.mk` installs `files/timps-irprobe` to
+  `/usr/bin/timps-irprobe`; `ciao` has `cfa79f9f4` and `67fbc42e9` (verbs
+  `idle`/`state`), `daynight.irprobe_cmd` defaults to `timps-irprobe`.
+
+## Before the default may be switched on
+
+Each on at least one T23 and one T41 (OpenIMP, keepalive auto), plus one
+dual-IR board; results into this note:
+
+1. **M-A per SoC, long idle**: AE keeps regulating without a consumer for
+   hours (not just minutes); the freshness WARN never fires on a working
+   stack, and fires on a stack without keepalive forced on.
+2. **AE settle after "IR on"** with and without a consumer, light to dark
+   scenes: time to a usable frame. Sets `DN_IR_WAKE_SETTLE_MS` (3500) and
+   whether `HUB_IMAGE_HOLD_MAX_MS` (5000) is enough.
+3. **Hook latency** of `timps-irprobe on`, `idle` and `state` on the target
+   (fork + `jct` + `light`), cold and warm.
+4. **First-frame luma after a wake** for RTSP, WebRTC, fMP4, MJPEG and
+   `/snapshot.jpg`: how many seconds dark/overexposed; whether an IDR at
+   `ready_at` is worth adding.
+5. **Dusk and dawn pairs**, several nights, idle all night: noir vs day-optics
+   readings over the twilight, how often the noir day rule fires early and
+   `noir_cost` has to learn, number of clicks per night (target: dusk 1,
+   dawn 1, at most one learnt false day per camera).
+6. **Dual-IR boards** (850 + 940 nm): `idle` turns both off, `state` reads
+   both, rollback (exit 4) leaves both on.
+7. **Real poll cadences** of Home Assistant, the agent-adapter and NVRs that
+   poll snapshots: confirm or change the 60 s linger default; HA's 10 s
+   timeout vs the hold.
+8. **Heartbeat in the dark**: audible probe count per night with the default
+   `heartbeat_s`/`heartbeat_max_s`; acceptable in bedrooms?
+9. **External LED drivers**: `daynight night` from cron/WebUI while idle
+   (re-assert, `state` check before every day verdict) - no stuck-on LED,
+   no false day.
+10. **Restart/crash with the LED off**: SIGKILL and `S95timps restart` relight
+    within the boot assertion.
+11. **LED power** saved per night (current draw on/off) - the benefit side.
+12. **WebUI on a camera**: card states live, save/reload, phone width; with
+    the preview stopped the chip reaches "IR off (idle)".
+13. **Fleet share**: how many cameras are idle at night at all (no Frigate,
+    recorder or motion) - decides whether a default change matters.
+
+Even then the default should only change for 940 nm / indoor profiles; at
+850 nm the tell stays a user decision.

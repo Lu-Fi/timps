@@ -81,6 +81,9 @@ semantic versioning.
   verbs; without them it reports why in `daynight.ir_idle.reason` and does
   nothing. An AE that does not move without a consumer is detected and the
   LED handed back.
+- **WebUI (firmware): "IR light when idle" card on the Day / Night page** -
+  switch, linger and a status chip (`IR off (idle)`, `not available: …` with
+  the fix); shown only for a timps that reports `daynight.ir_idle`.
 
 ### Changed
 

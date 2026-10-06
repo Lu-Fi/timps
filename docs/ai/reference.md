@@ -1012,7 +1012,11 @@ The status is `daynight.ir_idle` in `GET /control` and `/events`:
 `{cfg, available, reason, dark, watched, linger_left_s}`; `reason` is
 `disabled`, `schedule`, `keepalive` (needs `general.fs_keepalive` on, auto
 only on OpenIMP T23/T41), `no_illuminator`, `white_light`, `hook` (the
-firmware's `timps-irprobe` lacks the `idle` verb) or empty.
+firmware's `timps-irprobe` lacks the `idle` verb) or empty. WebUI: Day / Night
+→ Settings → card "IR light when idle" (switch, linger, status chip; hidden
+on a timps without `ir_idle`, and while `caps.daynight.ir_idle = 0` unless
+the key is on). The page's own preview counts as a viewer. Details:
+`docs/wiki/Day-Night.md` → "Idle-Dark".
 
 ---
 

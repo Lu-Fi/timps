@@ -215,6 +215,23 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   bleibt das 20 s stehen, übernimmt timps ihn und bewertet ihn neu, wie nach
   einem Boot. Nur im Modus `schedule` meldet der Status `isp_desync`, wenn der
   entschiedene Modus und der ISP-Rücklesewert auseinanderlaufen.
+* **Idle-Dark (seit dem nächsten Release, Default aus)** –
+  `daynight.ir_idle_off = 1`: nachts, wenn seit `daynight.ir_idle_linger_s`
+  (60 s, 0..3600) kein Stream, Snapshot, Recorder, Timelapse und keine
+  Bewegungserkennung ein Bild braucht, schaltet timps **nur die IR-LED** aus;
+  IR-Cut und ISP bleiben in Nacht, es klickt nichts. Die AE misst währenddessen
+  das Umgebungslicht ohne LED weiter. Der erste neue Zuschauer bekommt die LED
+  sofort (Kick, nicht erst der nächste Tick) oder – ist die Szene ohne LED
+  schon unter `day_gain` und meldet der Hook die LED als aus – direkt Tag.
+  Snapshots direkt danach warten bis zu ~3,5 s (max. 5 s) auf die AE, Streams
+  sind die ersten 1-4 s dunkel. Voraussetzungen: FrameSource-Keepalive (auto
+  nur OpenIMP T23/T41), Modus `auto`, `timps-irprobe` mit den Verben
+  `idle`/`state` (Firmware ab 2026-10), kein Weißlicht in
+  `daynight.controls`. Warum aus: Bei 850 nm sieht man am Erlöschen des
+  Glimmens, dass niemand zusieht oder aufnimmt; Heartbeat-Proben im Dunkeln
+  sind hörbar (alle 4-12 h). Status `daynight.ir_idle` (`reason`: `disabled`,
+  `schedule`, `keepalive`, `no_illuminator`, `white_light`, `hook`), in der
+  WebUI als Karte „IR light when idle“ auf der Day/Night-Seite.
 * Manueller Betrieb jederzeit über `daynight.enabled = 0` plus
   `image.running_mode` bzw. den WebUI-Umschalter.
 
@@ -454,7 +471,8 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   „Privacy masks“ für beide Streams, dazu „ROI“ und „Crop / zoom“, Position per Anker/Pixel, Ziehen oder Pfeiltasten),
   `recordings.html` (Tabs Clips/Settings), `timelapse-player.html` (Tabs Player/Settings),
   `streamer-config/-image/-sensor.html`, `config-audio.html`, `config-motion.html`,
-  `config-photosensing.html`, `tool-sensor-data.html` (Day/Night-Tuningkurve).
+  `config-photosensing.html` (inkl. Idle-Dark-Karte mit Statuschip),
+  `tool-sensor-data.html` (Day/Night-Tuningkurve).
   Die alten Adressen `streamer-main/-substream/-osd0/-osd1.html`, `config-privacy.html`,
   `tool-record.html` und `tool-timelapse.html` leiten auf die neuen Seiten weiter.
 * Die Vorschauen holen `/stream.mjpeg?chn=N` und `/snapshot.jpg?chn=N` direkt
