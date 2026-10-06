@@ -173,10 +173,10 @@ BASE := src/util.c src/log.c src/config.c src/frame.c src/fanqueue.c src/net.c \
         src/rtsp/rtp.c src/rtsp/rtsp.c src/mp4/fmp4.c src/mp4/httpd.c src/record.c src/timelapse.c src/srt.c src/main.c \
         $(if $(filter 1,$(USE_TRACE)),src/trace.c)
 
-TARGET_SRC := $(BASE) src/hal/osd_text.c src/hal/msttf.c src/hal/osd_vars.c src/hal/hal_ingenic.c \
+TARGET_SRC := $(BASE) src/hal/osd_text.c src/hal/msttf.c src/hal/osd_vars.c src/hal/hal_ingenic.c src/hal/libimp_check.c \
               src/hal/imp_osd.c src/hal/imp_motion.c src/control.c src/events.c src/daynight.c \
               $(if $(filter 1,$(USE_SW_ROTATE)),src/hal/nv12_rot.c)
-SIM_SRC    := $(BASE) src/hal/osd_text.c src/hal/hal_sim.c src/hal/imp_motion.c src/control.c src/events.c src/daynight.c
+SIM_SRC    := $(BASE) src/hal/osd_text.c src/hal/hal_sim.c src/hal/libimp_check.c src/hal/imp_motion.c src/control.c src/events.c src/daynight.c
 
 # full target source list (+ optional tls.c) and the .o names (unique basenames)
 # for the compile-then-link two-step
@@ -293,7 +293,7 @@ IMPLIBS ?= -l:libimp.a -l:libalog.a -l:libsysutils.a
 # against a distro/buildroot that only ships libfaac.so.
 FAACLIB ?= -l:libfaac.a
 
-.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun test-daynight-read test-timelapse-prune test-record-ring test-fs-rot test-fs-ref
+.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun test-daynight-read test-timelapse-prune test-record-ring test-fs-rot test-fs-ref test-libimp-check
 
 all: target
 
@@ -496,6 +496,15 @@ test-srtp:
 	$(HOSTCC) $(CFLAGS) -DUSE_WEBRTC -Isrc -Isrc/webrtc $(SRTPTEST_SRC) \
 	  $(LDFLAGS) -o $(BIN)-srtptest
 	@python3 scripts/test_srtp.py ./$(BIN)-srtptest; rc=$$?; rm -f $(BIN)-srtptest; exit $$rc
+
+# Host-only test for the libimp fit decision (src/hal/libimp_check.c) with an
+# injected symbol lookup: flavour mismatch, missing required name, exit codes;
+# then the dlopen/dlsym glue against fake host libimp.so files.
+test-libimp-check:
+	$(HOSTCC) $(CFLAGS) -Isrc scripts/test_libimp_check.c src/hal/libimp_check.c \
+	  -o $(BIN)-libimptest
+	@./$(BIN)-libimptest; rc=$$?; rm -f $(BIN)-libimptest; [ $$rc = 0 ] || exit $$rc; \
+	 scripts/test_libimp_dl.sh $(HOSTCC)
 
 # Host-only test for the FrameSource-rotate safe envelope (src/hal/fs_rot_env.h):
 # which 90/270 requests fs_create() refuses per SoC family, and how the T1x

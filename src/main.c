@@ -3,6 +3,7 @@
 #include "log.h"
 #include "hub.h"
 #include "hal/hal.h"
+#include "hal/libimp_check.h"
 #include "rtsp/rtsp.h"
 #include "rtsp/backchannel.h"
 #include "rtsp/speaker.h"
@@ -578,20 +579,34 @@ int main(int argc, char **argv)
     install_fatal_handlers();
 
     const char *cfgpath = "/etc/timps.conf";
-    int verbose = 0;
+    int verbose = 0, check_libs = 0;
+    static const char usage[] = "usage: %s [-c config] [-v] [-V|--version] [--check-libs]\n";
     for (int i=1;i<argc;i++){
         if (!strcmp(argv[i],"-c") && i+1<argc) cfgpath=argv[++i];
         else if (!strcmp(argv[i],"-v")){ verbose = 1; log_set_level(LOG_DEBUG); }
+        else if (!strcmp(argv[i],"-V") || !strcmp(argv[i],"--version")){
+            printf("timps %s\n",MS_VERSION);
+            return 0;
+        }
+        else if (!strcmp(argv[i],"--check-libs")) check_libs = 1;
         else if (!strcmp(argv[i],"-h") || !strcmp(argv[i],"--help")){
-            printf("timps %s\nusage: %s [-c config] [-v]\n",MS_VERSION,argv[0]);
+            printf("timps %s\n",MS_VERSION);
+            printf(usage,argv[0]);
             return 0;
         }
         /* an ignored unknown option would start the daemon on the live camera */
         else {
-            fprintf(stderr,"timps: invalid argument '%s'\nusage: %s [-c config] [-v]\n",
-                    argv[i],argv[0]);
+            fprintf(stderr,"timps: invalid argument '%s'\n",argv[i]);
+            fprintf(stderr,usage,argv[0]);
             return 2;
         }
+    }
+    /* before the config, the lock and any IMP call: a libimp that does not
+     * fit this build ends here with a reason instead of a NULL call later */
+    if (check_libs) return libimp_preflight(1);
+    {
+        int rc = libimp_preflight(0);
+        if (rc) return rc;
     }
 
     config_load(&g_cfg, cfgpath);
