@@ -11,6 +11,7 @@
 #include "../codec/aac.h"
 #include "../rotate_caps.h"   /* ms_vstream_eff_dims (post-rotation dims) */
 #include "fs_ref.h"          /* fs_keepalive_resolve */
+#include "../daynight.h"     /* daynight_watch_kick (TIMPS_SIM_WATCH fixture) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -193,10 +194,42 @@ static void jpg_start(const char *path, int src, int fps)
 
 static int sim_init(const ms_config *cfg){ (void)cfg; return 0; }
 
+static int sim_watch_count(void)
+{
+    const char *p = getenv("TIMPS_SIM_WATCH");
+    FILE *f = p ? fopen(p, "r") : NULL;
+    if (!f) return 0;
+    int n = 0;
+    if (fscanf(f, "%d", &n) != 1 || n < 0) n = 0;
+    fclose(f);
+    return n;
+}
+
+/* the fixture's consumers arrive like hub subscribers: with a kick */
+static pthread_t    g_watch_thr;
+static volatile int g_watch_run;
+static void *watch_thread(void *arg)
+{
+    (void)arg;
+    int last = 0;
+    while (g_watch_run) {
+        int n = sim_watch_count();
+        if (n > last) daynight_watch_kick();
+        last = n;
+        usleep(2000);
+    }
+    return NULL;
+}
+
 static int g_sim_keepalive;
 static int sim_start(const ms_config *cfg)
 {
     g_sim_keepalive = fs_keepalive_resolve(cfg->fs_keepalive, FS_KEEPALIVE_AUTO);
+    if (getenv("TIMPS_SIM_WATCH")) {
+        g_watch_run = 1;
+        if (ms_thread_create(&g_watch_thr, MS_STACK_UTIL, watch_thread, NULL) != 0)
+            g_watch_run = 0;
+    }
     g_nvid=0; g_njpg=0; g_epoch=ms_now_us();
     for (int i=0;i<MS_MAX_VSTREAM;i++){
         if (!cfg->video[i].enabled) continue;
@@ -271,6 +304,7 @@ static void sim_stop(void)
     if (g_aud.run){ g_aud.run=0; pthread_join(g_aud.thr,NULL); }
     for (int i=0;i<g_njpg;i++){ g_jpg[i].run=0; pthread_join(g_jpg[i].thr,NULL); }
     g_njpg=0;
+    if (g_watch_run){ g_watch_run=0; pthread_join(g_watch_thr,NULL); }
 }
 
 static const hal_backend g_sim = {
@@ -280,16 +314,7 @@ static const hal_backend g_sim = {
 
 const hal_backend *hal_get(void){ return &g_sim; }
 int hal_fs_keepalive(void){ return g_sim_keepalive; }
-int hal_image_pinned(void)
-{
-    const char *p = getenv("TIMPS_SIM_WATCH");
-    FILE *f = p ? fopen(p, "r") : NULL;
-    if (!f) return 0;
-    int n = 0;
-    if (fscanf(f, "%d", &n) != 1 || n < 0) n = 0;
-    fclose(f);
-    return n;
-}
+int hal_image_pinned(void) { return sim_watch_count(); }
 
 /* no ISP on the host: daynight uses its proc-scrape / brightness fallback */
 int hal_isp_total_gain(uint32_t *gain){ (void)gain; return -1; }

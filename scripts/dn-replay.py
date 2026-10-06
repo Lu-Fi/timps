@@ -146,6 +146,30 @@ Scenario JSON (all times virtual seconds, all gains IMP [24.8] linear):
                                   the index has BELOW the 256 gain floor, i.e.
                                   the IR-saturated scenes bare gain cannot
                                   see. The decision metric is gain * ratio.
+  consumers                     - OPTIONAL [[t_on, t_off], ...]: picture
+                                  consumers (Idle-Dark). The driver writes
+                                  their count to the file TIMPS_SIM_WATCH
+                                  names; the sim reads it as
+                                  hal_image_pinned() and kicks the day/night
+                                  thread when it rises, like a hub subscribe.
+  switch_drives_led             - OPTIONAL bool: the switch_cmd stub lights the
+                                  illuminator on "night" and darkens it on
+                                  "day", like the board script. With
+                                  switch_led_delay_s the LED follows that many
+                                  virtual seconds later (the script's `&`).
+  ir_hook_rc                    - OPTIONAL int or {"<verb>": rc}: exit code of
+                                  the irprobe stub (int: every verb). The stub
+                                  knows on/off/idle (= off, no watchdog) and
+                                  state (prints the LED state); an unknown verb
+                                  exits 2. {"idle": 2, "state": 2} is a hook
+                                  from before Idle-Dark, {"idle": 3} a board
+                                  whose white light is in the switched set, 1
+                                  a board with nothing to switch.
+  led_external                  - OPTIONAL [[t, "on"|"off"], ...]: someone else
+                                  (WebUI, cron) sets the LED at t.
+  restart_at                    - OPTIONAL [t, "term"|"kill"]: restart the sim
+                                  at t; "kill" loses the state with the LED as
+                                  it was.
   interp                        - "log" (default, geometric - gain ramps are
                                   exponential), "linear" or "step"
   noise_pct                     - stochastic +-% AGC jitter (2 sigma), seeded.
@@ -174,6 +198,14 @@ Scenario JSON (all times virtual seconds, all gains IMP [24.8] linear):
     expect_config               - {"<key>": "<value>", ...} the sim's config
                                   file must hold at the end of the run (what
                                   the daemon persisted, e.g. via /control)
+    ir_state_at                 - [[t, "on"|"off"], ...] illuminator state at t
+                                  (the stubs' record; starts "on")
+    max_led_toggles             - max illuminator state changes in the run
+    led_on_within_s             - every consumer arriving at night with the LED
+                                  off sees it on within this many seconds
+    max_led_on_unwatched_s      - max continuous LED-on time at night with no
+                                  consumer (the linger counts; set the bound
+                                  above it)
 
 Exit code 0 iff every run scenario passed. Output is plain text, no ANSI.
 """
@@ -377,7 +409,8 @@ class SimRun:
     def __init__(self, binary, scale, initial_mode, config, keep=False,
                  model_illuminator=False, no_ceilings=False,
                  no_max_int=False, watch_reads=False, t41_dump=False,
-                 ae_cap=None):
+                 ae_cap=None, switch_drives_led=False, switch_led_delay=0.0,
+                 ir_hook_rc=None, consumers=False):
         self.no_ceilings = no_ceilings
         self.no_max_int = no_max_int
         self.t41_dump = t41_dump
@@ -393,6 +426,11 @@ class SimRun:
         self.mode_file = os.path.join(self.dir, "mode.txt")
         self.trace = os.path.join(self.dir, "trace.csv")
         self.log = os.path.join(self.dir, "sim.log")
+        # every illuminator state change, from any stub: "<epoch> on|off <who>"
+        self.led_log = os.path.join(self.dir, "led.log")
+        self.ir_file = os.path.join(self.dir, "ir.txt")
+        self.watch = os.path.join(self.dir, "watch") if consumers else None
+        self._watch_n = None
         stub = os.path.join(self.dir, "switch.sh")
         with open(stub, "w") as f:
             f.write("#!/bin/sh\n"
@@ -400,6 +438,15 @@ class SimRun:
                     "# drive (one line = one audible IR-cut click pair)\n"
                     "echo \"$(date +%s.%N) $1\" >> " + self.switch_log + "\n"
                     "echo \"$1\" > " + self.mode_file + "\n")
+            if switch_drives_led:
+                led = ("echo $v > %s; echo \"$(date +%%s.%%N) $v switch\" >> %s"
+                       % (self.ir_file, self.led_log))
+                f.write("case \"$1\" in night) v=on ;; *) v=off ;; esac\n")
+                if switch_led_delay > 0:
+                    f.write("( sleep %.3f; %s ) >/dev/null 2>&1 &\n"
+                            % (switch_led_delay / float(scale), led))
+                else:
+                    f.write(led + "\n")
         os.chmod(stub, 0o755)
         # The illuminator stub. Deliberately a SEPARATE script from switch.sh:
         # on real hardware these are different mechanisms - the IR-cut is a
@@ -408,12 +455,24 @@ class SimRun:
         # the redesign turns on. Every call is logged with its argument, so a
         # scenario can assert "n silent probes, m audible clicks" separately.
         self.ir_log = os.path.join(self.dir, "irprobe.log")
-        self.ir_file = os.path.join(self.dir, "ir.txt")
         irstub = os.path.join(self.dir, "irprobe.sh")
+        rc = ir_hook_rc if isinstance(ir_hook_rc, dict) else (
+            {v: ir_hook_rc for v in ("on", "off", "idle", "state")}
+            if ir_hook_rc else {})
         with open(irstub, "w") as f:
             f.write("#!/bin/sh\n"
                     "echo \"$(date +%s.%N) $1\" >> " + self.ir_log + "\n"
-                    "echo \"$1\" > " + self.ir_file + "\n")
+                    "case \"$1\" in\n")
+            for verb, code in sorted(rc.items()):
+                if code:
+                    f.write("%s) exit %d ;;\n" % (verb, int(code)))
+            f.write("on | off | idle)\n"
+                    "  v=$1; [ \"$v\" = idle ] && v=off\n"
+                    "  echo $v > " + self.ir_file + "\n"
+                    "  echo \"$(date +%s.%N) $v $1\" >> " + self.led_log + " ;;\n"
+                    "state) cat " + self.ir_file + " ;;\n"
+                    "*) exit 2 ;;\n"
+                    "esac\n")
         os.chmod(irstub, 0o755)
         with open(self.ir_file, "w") as f:
             f.write("on\n")
@@ -551,15 +610,66 @@ class SimRun:
 
     def start(self, first_gain, first_ratio=None):
         self.serve(first_gain, self.initial_mode, first_ratio)
-        logf = open(self.log, "w")
+        if self.watch:
+            self.set_watch(0)
+        self._spawn("w")
+        self.t0 = time.monotonic()
+        self.check_clock()
+
+    def _spawn(self, mode):
+        logf = open(self.log, mode)
         env = dict(os.environ)
         if self.ae_cap:
             env["TIMPS_SIM_AE_INFO"] = self.ae_info
+        if self.watch:
+            env["TIMPS_SIM_WATCH"] = self.watch
         self.proc = subprocess.Popen([self.binary, "-c", self.conf],
                                      stdout=logf, stderr=subprocess.STDOUT,
                                      cwd=self.dir, env=env)
-        self.t0 = time.monotonic()
-        self.check_clock()
+
+    def restart(self, kind):
+        """stop ("term": orderly, "kill": state and LED left as they are)
+        and start again on the same rundir; the log is appended to"""
+        if self.proc:
+            if kind == "kill":
+                self.proc.kill()
+                self.proc.wait()
+            else:
+                self.proc.send_signal(signal.SIGTERM)
+                try:
+                    self.proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
+                    self.proc.wait()
+        self._spawn("a")
+
+    def set_watch(self, n):
+        if n == self._watch_n:
+            return
+        tmp = self.watch + ".tmp"
+        with open(tmp, "w") as f:
+            f.write("%d\n" % n)
+        os.replace(tmp, self.watch)
+        self._watch_n = n
+
+    def set_led(self, state):
+        with open(self.ir_file, "w") as f:
+            f.write(state + "\n")
+        with open(self.led_log, "a") as f:
+            f.write("%.6f %s external\n" % (time.time(), state))
+
+    def leds(self):
+        """[(t_virtual, 'on'|'off')] - every illuminator state write"""
+        out = []
+        try:
+            with open(self.led_log) as f:
+                for line in f:
+                    p = line.split()
+                    if len(p) >= 2 and p[1] in ("on", "off"):
+                        out.append((self._real_to_virtual(float(p[0])), p[1]))
+        except (OSError, ValueError):
+            pass
+        return sorted(out)
 
     def check_clock(self):
         """Verify the binary actually applies the virtual clock we are driving
@@ -893,6 +1003,65 @@ def check_monotonicity(rep, trace_path, policy):
                  (": " + viol[0]) if viol else ""),
               warn_only=(policy != "enforce"))
 
+def check_led(rep, exp, leds, segs, dur, consumers, watchers_at, samples):
+    """Idle-Dark assertions on the illuminator timeline (see expect:)."""
+    keys = ("ir_state_at", "max_led_toggles", "led_on_within_s",
+            "max_led_on_unwatched_s")
+    if not any(k in exp for k in keys):
+        return
+    changes, cur = [], "on"
+    for t, st in leds:
+        if t >= dur:        # the stop's hand-back
+            break
+        if st != cur:
+            changes.append((t, st))
+            cur = st
+
+    def led_at(t):
+        st = "on"
+        for tt, s in changes:
+            if tt <= t:
+                st = s
+            else:
+                break
+        return st
+    rep.note("led", "%d changes: %s" % (len(changes), ", ".join(
+        "%.0f %s" % c for c in changes[:12]) + (" ..." if len(changes) > 12 else "")))
+    for t, want in exp.get("ir_state_at", []):
+        got = led_at(t)
+        rep.check(got == want, "led@%ds" % t, "want %s, got %s" % (want, got))
+    if "max_led_toggles" in exp:
+        rep.check(len(changes) <= exp["max_led_toggles"], "led-toggles",
+                  "%d changes (budget %d)" % (len(changes), exp["max_led_toggles"]))
+    if "led_on_within_s" in exp:
+        worst, n = 0.0, 0
+        for a, b in consumers:
+            # an arrival answered with day keeps the LED off by design
+            if (a >= dur or mode_at(segs, a) != "night" or led_at(a) == "on"
+                    or mode_at(segs, a + exp["led_on_within_s"]) != "night"):
+                continue
+            n += 1
+            on = next((tt for tt, s in changes if tt >= a and s == "on"), None)
+            lat = (on - a) if on is not None else dur - a
+            worst = max(worst, lat)
+        rep.check(worst <= exp["led_on_within_s"], "led-on-latency",
+                  "%d dark arrivals, worst %.1fs (bound %.1fs)"
+                  % (n, worst, exp["led_on_within_s"]))
+    if "max_led_on_unwatched_s" in exp:
+        run = mx = 0.0
+        prev = None
+        for t in samples:
+            dt = 0.0 if prev is None else t - prev
+            prev = t
+            if (mode_at(segs, t) == "night" and led_at(t) == "on"
+                    and not watchers_at(t)):
+                run += dt
+                mx = max(mx, run)
+            else:
+                run = 0.0
+        rep.check(mx <= exp["max_led_on_unwatched_s"], "led-on-unwatched",
+                  "longest %.0fs (bound %.0fs)" % (mx, exp["max_led_on_unwatched_s"]))
+
 # ---------------------------------------------------------------- regression
 
 def run_regression(scn, binary, keep=False, scale_override=None):
@@ -903,6 +1072,7 @@ def run_regression(scn, binary, keep=False, scale_override=None):
     noise = scn.get("noise_pct", 0)
     nseed = scn.get("noise_seed", 0)
     exp = scn.get("expect", {})
+    consumers = scn.get("consumers")
     sim = SimRun(binary, scale, scn["initial_mode"], scn.get("config"),
                  keep=keep,
                  model_illuminator=bool(scn.get("night_gain_noir")),
@@ -910,7 +1080,17 @@ def run_regression(scn, binary, keep=False, scale_override=None):
                  no_max_int=bool(scn.get("no_max_int")),
                  watch_reads=bool(noise),
                  t41_dump=bool(scn.get("t41_dump")),
-                 ae_cap=scn.get("ae_cap_gain"))
+                 ae_cap=scn.get("ae_cap_gain"),
+                 switch_drives_led=bool(scn.get("switch_drives_led")),
+                 switch_led_delay=float(scn.get("switch_led_delay_s", 0)),
+                 ir_hook_rc=scn.get("ir_hook_rc"),
+                 consumers=consumers is not None)
+
+    def watchers_at(t):
+        return sum(1 for a, b in (consumers or []) if a <= t < b)
+
+    ext_led = list(scn.get("led_external", []))
+    restart = scn.get("restart_at")
     def ratio_at(mode, t):
         c = scn.get("night_int_ratio" if mode == "night" else "day_int_ratio")
         return None if not c else max(0.0, min(1.0, interp_gain(c, t, "linear")))
@@ -973,6 +1153,13 @@ def run_regression(scn, binary, keep=False, scale_override=None):
             t = sim.vnow()
             if t >= dur:
                 break
+            if consumers is not None:
+                sim.set_watch(watchers_at(t))
+            while ext_led and t >= ext_led[0][0]:
+                sim.set_led(ext_led.pop(0)[1])
+            if restart and t >= restart[0]:
+                sim.restart(restart[1] if len(restart) > 1 else "term")
+                restart = None
             m = isp_mode_now()
             # THREE optical states, not two. The illuminator is independent of
             # the IR-cut filter, so a camera in night mode with the IR switched
@@ -1085,6 +1272,8 @@ def run_regression(scn, binary, keep=False, scale_override=None):
                 logtext = f.read()
         except OSError:
             pass
+        check_led(rep, exp, sim.leds(), segs, dur, consumers or [],
+                  watchers_at, [f[0] for f in fed])
         for rx in exp.get("expect_log", []):
             rep.check(re.search(rx, logtext) is not None, "expect-log",
                       repr(rx))

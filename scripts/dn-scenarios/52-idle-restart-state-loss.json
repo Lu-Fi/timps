@@ -1,0 +1,64 @@
+{
+  "name": "52-idle-restart-state-loss",
+  "incident": "Idle-Dark (daynight.ir_idle_off), 2026-10",
+  "description": "timpsd is killed while the LED is off for idle and restarts without its state: the LED is still off. The boot's silent measurement then reads noir on both sides (r = 1, not a clean night) and falls back to the audible day probe, which finds night and relights through the board script; with nobody watching the camera goes idle-dark again. Never a day verdict.",
+  "scale": 60,
+  "duration_s": 700,
+  "initial_mode": "night",
+  "config": {
+    "general.fs_keepalive": 1,
+    "daynight.ir_idle_off": 1,
+    "daynight.ir_idle_linger_s": 60
+  },
+  "switch_drives_led": true,
+  "interp": "step",
+  "day_gain": [
+    [
+      0,
+      16000
+    ]
+  ],
+  "night_gain": [
+    [
+      0,
+      2500
+    ]
+  ],
+  "night_gain_noir": [
+    [
+      0,
+      20000
+    ]
+  ],
+  "restart_at": [
+    300,
+    "kill"
+  ],
+  "expect": {
+    "max_switches": 2,
+    "mode_at": [
+      [
+        290,
+        "night"
+      ],
+      [
+        690,
+        "night"
+      ]
+    ],
+    "ir_state_at": [
+      [
+        290,
+        "off"
+      ],
+      [
+        690,
+        "off"
+      ]
+    ],
+    "forbid_log": [
+      "verdict=day"
+    ],
+    "monotonicity": "skip"
+  }
+}

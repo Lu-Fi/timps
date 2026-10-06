@@ -1,0 +1,60 @@
+{
+  "name": "48-idle-no-switchable-illuminator",
+  "incident": "Idle-Dark (daynight.ir_idle_off), 2026-10",
+  "description": "A board with nothing the hook can switch (every verb exits 1): the boot measurement falls back to the audible probe as it always did, the 'idle' verb fails and Idle-Dark stays off with reason 'hook'.",
+  "scale": 60,
+  "duration_s": 600,
+  "initial_mode": "night",
+  "config": {
+    "general.fs_keepalive": 1,
+    "daynight.ir_idle_off": 1,
+    "daynight.ir_idle_linger_s": 60
+  },
+  "switch_drives_led": true,
+  "interp": "step",
+  "day_gain": [
+    [
+      0,
+      16000
+    ]
+  ],
+  "night_gain": [
+    [
+      0,
+      2500
+    ]
+  ],
+  "night_gain_noir": [
+    [
+      0,
+      20000
+    ]
+  ],
+  "ir_hook_rc": 1,
+  "expect": {
+    "max_switches": 2,
+    "mode_at": [
+      [
+        590,
+        "night"
+      ]
+    ],
+    "ir_state_at": [
+      [
+        300,
+        "on"
+      ],
+      [
+        590,
+        "on"
+      ]
+    ],
+    "expect_log": [
+      "has no 'idle' verb"
+    ],
+    "forbid_log": [
+      "idle: no consumer"
+    ],
+    "monotonicity": "skip"
+  }
+}

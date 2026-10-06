@@ -1,0 +1,60 @@
+{
+  "name": "47-idle-frozen-ae",
+  "incident": "Idle-Dark (daynight.ir_idle_off), 2026-10",
+  "description": "The AE does not run without a consumer (no keepalive effect on this SoC): with the LED off the reading stays exactly where it was (r = 1.00, which a ratio verdict would take for a lit room). The idle entry sees that nothing moved, refuses a verdict, relights and suspends Idle-Dark until the next switch.",
+  "scale": 60,
+  "duration_s": 600,
+  "initial_mode": "night",
+  "config": {
+    "general.fs_keepalive": 1,
+    "daynight.ir_idle_off": 1,
+    "daynight.ir_idle_linger_s": 60
+  },
+  "switch_drives_led": true,
+  "interp": "step",
+  "day_gain": [
+    [
+      0,
+      16000
+    ]
+  ],
+  "night_gain": [
+    [
+      0,
+      2500
+    ]
+  ],
+  "night_gain_noir": [
+    [
+      0,
+      2500
+    ]
+  ],
+  "expect": {
+    "max_switches": 2,
+    "mode_at": [
+      [
+        590,
+        "night"
+      ]
+    ],
+    "ir_state_at": [
+      [
+        300,
+        "on"
+      ],
+      [
+        590,
+        "on"
+      ]
+    ],
+    "expect_log": [
+      "the exposure did not move"
+    ],
+    "forbid_log": [
+      "verdict=day",
+      "switching to day \\(idle"
+    ],
+    "monotonicity": "skip"
+  }
+}

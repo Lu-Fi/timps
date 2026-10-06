@@ -1,0 +1,57 @@
+{
+  "name": "50-idle-white-light-board",
+  "incident": "Idle-Dark (daynight.ir_idle_off), 2026-10",
+  "description": "daynight.controls.white puts the white light in the switched set: the hook refuses 'idle' with exit 3 (a visible light of our own would be part of every reading) and Idle-Dark stays off.",
+  "scale": 60,
+  "duration_s": 600,
+  "initial_mode": "night",
+  "config": {
+    "general.fs_keepalive": 1,
+    "daynight.ir_idle_off": 1,
+    "daynight.ir_idle_linger_s": 60
+  },
+  "switch_drives_led": true,
+  "interp": "step",
+  "day_gain": [
+    [
+      0,
+      16000
+    ]
+  ],
+  "night_gain": [
+    [
+      0,
+      2500
+    ]
+  ],
+  "night_gain_noir": [
+    [
+      0,
+      20000
+    ]
+  ],
+  "ir_hook_rc": {
+    "idle": 3
+  },
+  "expect": {
+    "max_switches": 0,
+    "max_led_toggles": 2,
+    "ir_state_at": [
+      [
+        300,
+        "on"
+      ],
+      [
+        590,
+        "on"
+      ]
+    ],
+    "expect_log": [
+      "refused \\(white light"
+    ],
+    "forbid_log": [
+      "idle: no consumer"
+    ],
+    "monotonicity": "skip"
+  }
+}
