@@ -166,4 +166,9 @@ void daynight_get_status(int *enabled, int *mode,
  * USE_DAYNIGHT (strings then read "--:--"). */
 int daynight_sun_status(char *sr_hhmm, char *ss_hhmm, size_t cap);
 
+/* A picture consumer arrived (hub activity callback, any video/JPEG source).
+ * Non-blocking: a flag and, while Idle-Dark is armed, a gate kick; the
+ * day/night thread reads the consumer level itself. Always linkable. */
+void daynight_watch_kick(void);
+
 #endif

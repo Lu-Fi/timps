@@ -146,9 +146,10 @@ void ms_stopgate_init(ms_stopgate *g)
     pthread_cond_init(&g->cond, &a);
     pthread_condattr_destroy(&a);
     g->stop = 0;
+    g->kick = 0;
 }
 
-int ms_stopgate_wait(ms_stopgate *g, int ms)
+static int stopgate_wait(ms_stopgate *g, int ms, int kickable)
 {
     /* MS_CLOCK_SCALE (sim builds only, see ms_now_us() in util.h): callers
      * pass VIRTUAL milliseconds; divide down to real ones so periodic
@@ -169,13 +170,25 @@ int ms_stopgate_wait(ms_stopgate *g, int ms)
      * is caught here (we never enter the wait); a stop set while blocked is
      * delivered by the broadcast in ms_stopgate_stop(). ETIMEDOUT (interval
      * elapsed) or a spurious wake just re-tests the predicate. */
-    while (!g->stop) {
+    while (!g->stop && !(kickable && g->kick)) {
         int r = pthread_cond_timedwait(&g->cond, &g->lock, &ts);
         if (r == ETIMEDOUT) break;
     }
-    int stopped = g->stop;
+    int rc = g->stop ? 1 : (kickable && g->kick) ? 2 : 0;
+    if (kickable) g->kick = 0;
     pthread_mutex_unlock(&g->lock);
-    return stopped;
+    return rc;
+}
+
+int ms_stopgate_wait(ms_stopgate *g, int ms) { return stopgate_wait(g, ms, 0); }
+int ms_stopgate_wait_kick(ms_stopgate *g, int ms) { return stopgate_wait(g, ms, 1); }
+
+void ms_stopgate_kick(ms_stopgate *g)
+{
+    pthread_mutex_lock(&g->lock);
+    g->kick = 1;
+    pthread_cond_broadcast(&g->cond);
+    pthread_mutex_unlock(&g->lock);
 }
 
 void ms_stopgate_stop(ms_stopgate *g)

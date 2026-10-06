@@ -280,6 +280,16 @@ static const hal_backend g_sim = {
 
 const hal_backend *hal_get(void){ return &g_sim; }
 int hal_fs_keepalive(void){ return g_sim_keepalive; }
+int hal_image_pinned(void)
+{
+    const char *p = getenv("TIMPS_SIM_WATCH");
+    FILE *f = p ? fopen(p, "r") : NULL;
+    if (!f) return 0;
+    int n = 0;
+    if (fscanf(f, "%d", &n) != 1 || n < 0) n = 0;
+    fclose(f);
+    return n;
+}
 
 /* no ISP on the host: daynight uses its proc-scrape / brightness fallback */
 int hal_isp_total_gain(uint32_t *gain){ (void)gain; return -1; }

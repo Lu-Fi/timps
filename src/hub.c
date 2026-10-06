@@ -260,6 +260,16 @@ int hub_video_subs(void)
     return total;
 }
 
+int hub_image_subs(void)
+{
+    int total = hub_video_subs();
+    for (int i=HUB_JPEG_SRC;i<HUB_JPEG_SRC+HUB_NJPEG;i++){
+        hub_source *s=hub_get(i); if(!s) continue;
+        pthread_mutex_lock(&s->lock); total+=s->nsub; pthread_mutex_unlock(&s->lock);
+    }
+    return total;
+}
+
 static int (*g_control_cb)(const char*,const char*) = NULL;
 void hub_set_control_cb(int (*cb)(const char *key, const char *val)){ g_control_cb = cb; }
 int hub_control(const char *key, const char *val){ return g_control_cb ? g_control_cb(key, val) : 0; }

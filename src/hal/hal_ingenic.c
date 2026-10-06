@@ -749,7 +749,7 @@ static void motion_sync(const ms_config *cfg)
     if (g_motion_pin >= 0) {                     /* running -> stop first */
         imp_motion_stop();
         fs_unuse(g_motion_pin);
-        g_motion_pin = -1;
+        __atomic_store_n(&g_motion_pin, -1, __ATOMIC_RELAXED);
     }
     if (cfg->motion.enabled) {
         int mon = cfg->motion.monitor_stream;
@@ -768,7 +768,7 @@ static void motion_sync(const ms_config *cfg)
         if (imp_motion_start(cfg, &mv, mon) == 0) {
             /* IVS needs the monitored stream's frames independent of
              * clients: pin that framesource until motion stops */
-            g_motion_pin = mv.imp_chn;
+            __atomic_store_n(&g_motion_pin, mv.imp_chn, __ATOMIC_RELAXED);
             fs_use(g_motion_pin);
         }
     }
@@ -5802,7 +5802,7 @@ static void ing_stop(void)
     if (g_motion_pin >= 0){
         imp_motion_stop();
         fs_unuse(g_motion_pin);
-        g_motion_pin = -1;
+        __atomic_store_n(&g_motion_pin, -1, __ATOMIC_RELAXED);
     }
     pthread_mutex_unlock(&g_motion_mtx);
     /* raise all stop flags first, then wake the idle-blocked threads once so
@@ -5898,6 +5898,15 @@ static const hal_backend g_ingenic = {
 const hal_backend *hal_get(void){ return &g_ingenic; }
 
 int hal_fs_keepalive(void) { return g_fs_keepalive; }
+
+/* g_motion_mtx is held across a whole IVS rebuild, so it is not taken here */
+int hal_image_pinned(void)
+{
+    int n = __atomic_load_n(&g_motion_pin, __ATOMIC_RELAXED) >= 0;
+    for (int i = 0; i < g_nj; i++)
+        if (g_j[i].snapshot && g_j[i].run) { n++; break; }
+    return n;
+}
 
 /* daynight gain source: the ISP's own total gain (see hal.h). GetTotalGain is
  * absent from the T40/T41 new tuning API - return unavailable there so daynight

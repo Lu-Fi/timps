@@ -125,6 +125,7 @@ typedef struct {
     pthread_mutex_t lock;
     pthread_cond_t  cond;
     int             stop;
+    int             kick;
 } ms_stopgate;
 
 /* Initialise (stop cleared). Safe to call again on restart to re-arm. */
@@ -133,6 +134,13 @@ void ms_stopgate_init(ms_stopgate *g);
  * Returns 1 if stop has been requested (caller should exit its loop), else 0
  * (the interval elapsed). A already-stopped gate returns 1 without waiting. */
 int  ms_stopgate_wait(ms_stopgate *g, int ms);
+/* Like ms_stopgate_wait(), but a pending ms_stopgate_kick() also ends the
+ * wait early (and is consumed). Returns 1 stop, 2 kicked, 0 elapsed. A plain
+ * ms_stopgate_wait() ignores kicks, so they never shorten a periodic tick. */
+int  ms_stopgate_wait_kick(ms_stopgate *g, int ms);
+/* Wake an ms_stopgate_wait_kick() waiter (or the next one). Non-blocking
+ * apart from the gate mutex, which no waiter holds across a sleep. */
+void ms_stopgate_kick(ms_stopgate *g);
 /* Request stop and wake the waiter immediately. Idempotent. */
 void ms_stopgate_stop(ms_stopgate *g);
 /* Non-blocking predicate read (1 if stop requested). */

@@ -33,6 +33,12 @@ const hal_backend *hal_get(void);
  * held enabled until stop(). The sim reports the resolution, it has no FS. */
 int hal_fs_keepalive(void);
 
+/* Picture consumers that do not go through the hub: the motion pin and a
+ * configured jpeg.snapshot_path (counted for good, its grab is periodic).
+ * Lock-free, so the day/night thread can poll it every tick. The sim reads
+ * the count from the file named by TIMPS_SIM_WATCH (dn-replay fixture). */
+int hal_image_pinned(void);
+
 /* ISP total gain for day/night detection: the ISP's own overall gain
  * (IMP [24.8] linear, 256 = 1x - the value prudynt/raptor plot), read straight
  * from the IMP API instead of scraping /proc/jz/isp/isp-m0. Returns 0 and fills

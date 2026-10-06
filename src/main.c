@@ -548,7 +548,13 @@ static unsigned rand_seed(void)
     }
     return (unsigned)(time(NULL) ^ getpid());
 }
-static void act_trampoline(int src, int on){ if (g_hal && g_hal->set_active) g_hal->set_active(src, on); }
+static void act_trampoline(int src, int on)
+{
+#ifdef USE_DAYNIGHT
+    if (on && src != HUB_AUDIO_SRC && src != HUB_AUDIO_SRC2) daynight_watch_kick();
+#endif
+    if (g_hal && g_hal->set_active) g_hal->set_active(src, on);
+}
 
 #ifdef USE_CONTROL
 /* Publish the per-boot /control token for local privileged readers (the

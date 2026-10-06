@@ -880,6 +880,20 @@ int daynight_request_probe(void)
     return 0;
 }
 
+/* Idle-Dark consumer kick. Called from the hub's activity callback under its
+ * lock, so it only sets a flag and signals; the gate is kicked only while the
+ * thread has armed it (it waits kickable then), so a kick never shortens an
+ * ordinary sampling tick. */
+static int g_watch_kick;
+static int g_dni_armed;
+
+void daynight_watch_kick(void)
+{
+    __atomic_store_n(&g_watch_kick, 1, __ATOMIC_RELAXED);
+    if (__atomic_load_n(&g_dni_armed, __ATOMIC_ACQUIRE))
+        ms_stopgate_kick(&g_gate);
+}
+
 static int dn_irprobe(const char *cmd, int on)
 {
     if (!cmd || !cmd[0]) return -1;
@@ -2697,6 +2711,7 @@ void daynight_start(void)
 void daynight_stop(void)
 {
     if (!g_started) return;
+    __atomic_store_n(&g_dni_armed, 0, __ATOMIC_RELEASE);
     ms_stopgate_stop(&g_gate);
     pthread_join(g_thr, NULL);
     g_started = 0;
@@ -2801,5 +2816,7 @@ int daynight_sun_status(char *sr_hhmm, char *ss_hhmm, size_t cap)
 
 /* no detection thread to arm a probe on */
 int daynight_request_probe(void) { return -1; }
+
+void daynight_watch_kick(void) {}
 
 #endif /* USE_DAYNIGHT */

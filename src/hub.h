@@ -187,6 +187,9 @@ int         hub_active(int src);   /* nonzero if the source has subscribers */
 int         hub_subs(int src);     /* subscriber count of one source */
 /* total subscribers across all video streams (rough "viewer" count for OSD) */
 int         hub_video_subs(void);
+/* subscribers on every source that needs a picture (video + JPEG, not
+ * audio): the day/night idle accounting */
+int         hub_image_subs(void);
 
 /* optional live control: HAL registers a handler; the control endpoint forwards
  * parsed settings as dotted config keys with the raw value string (e.g.
