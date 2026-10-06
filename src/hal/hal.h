@@ -87,6 +87,10 @@ typedef struct {
 } hal_isp_ae;
 int hal_isp_ae_info(hal_isp_ae *out);
 
+/* 1 when image.<key> is built in but this libimp lacks its (weak, OpenIMP-only)
+ * setter. Defined only where isp_caps.h sets ISP_WEAK_KEYS. */
+int hal_isp_key_missing(const char *key);
+
 /* Read-only encoder queue/buffer telemetry for one encoder channel, from
  * IMP_Encoder_Query (IMPEncoderChnStat/CHNStat, present on all 9 platforms).
  * All counts are instantaneous. On T31, ave_bitrate is additionally filled from

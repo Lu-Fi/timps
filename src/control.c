@@ -24,6 +24,7 @@
 #include "hal/imp_motion.h"
 #include "hal/imp_osd.h"
 #include "hal/hal.h"       /* hal_enc_stats: read-only encoder telemetry */
+#include "isp_caps.h"      /* ISP_WEAK_KEYS */
 #include "util.h"          /* RTSP_MAX_CLIENTS/HTTP_MAX_CLIENTS/EVENTS_MAX_CLIENTS_DEF */
 #include "record.h"
 #include "timelapse.h"
@@ -1437,6 +1438,9 @@ int control_get_json(char *buf, size_t cap)
         int first = 1;
         for (int i=0;i<nf;i++)
             if ((tbl[i].flags & (F_CTRL|F_CAP)) == (F_CTRL|F_CAP)) {
+#ifdef ISP_WEAK_KEYS
+                if (hal_isp_key_missing(tbl[i].name)) continue;
+#endif
                 APP("%s\"%s\"", first?"":",", tbl[i].name);
                 first = 0;
             }

@@ -60,13 +60,14 @@
  * BR2_PACKAGE_OPENIMP is on) implement strength controls the vendor stack
  * does not offer on these SoCs. Only device-tested ones, 0..255 with 128 the
  * vendor picture; BACKLIGHT stays where it is (T23/T31/C100). The vendor
- * headers of these SoCs do not declare the setters, so the prototypes below
- * are the OpenIMP ones; they are only reachable under USE_OPENIMP, so vendor
- * builds stay byte-identical.
+ * headers of these SoCs do not declare the setters and the vendor libimp
+ * does not export them, so hal_ingenic.c binds them weak (ISP_WEAK_DPC /
+ * ISP_WEAK_DEFOG_DRC): an OpenIMP build started on a vendor libimp reports the
+ * key unsupported instead of calling NULL. Only reachable under USE_OPENIMP,
+ * so vendor builds stay byte-identical.
  *   DPC    T10 T20 T21   defog  T20   DRC  T20
  * (T10: defog/DRC stay off, its IQ bank bypasses Iridix.) */
 #if defined(USE_OPENIMP)
-#include <stdint.h>
 /* IMP_ISP_Tuning_SetColorfxMode / SetSceneMode act on the open stack (the
  * vendor kernels ignore them); hal_ingenic.c binds them through weak symbols,
  * so no header prototype is involved. Device-tested: colorfx on T20 T21 T23
@@ -78,7 +79,7 @@
 #endif
 #if defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)
 #define ISP_HAS_DPC 1
-int IMP_ISP_Tuning_SetDPC_Strength(uint32_t ratio);
+#define ISP_WEAK_DPC 1
 #endif
 /* T41 (new tuning API): ae_compensation is AeScenceAttr.AeTargetComp,
  * sinter/temper_strength are Module_Ratio entries 0/1, all 0..255 with 128 the
@@ -97,8 +98,13 @@ int IMP_ISP_Tuning_SetDPC_Strength(uint32_t ratio);
 #if defined(PLATFORM_T20)
 #define ISP_HAS_DEFOG 1
 #define ISP_HAS_DRC 1
-int IMP_ISP_Tuning_SetDefog_Strength(uint8_t *ratio);
-int IMP_ISP_Tuning_SetDRC_Strength(uint32_t ratio);
+#define ISP_WEAK_DEFOG_DRC 1
+#endif
+/* image.* keys whose setter may be absent at run time (GET /control asks
+ * hal_isp_key_missing() before listing them in caps.image) */
+#if defined(ISP_HAS_COLORFX)||defined(ISP_HAS_SCENE)||defined(ISP_WEAK_DPC)|| \
+    defined(ISP_WEAK_DEFOG_DRC)
+#define ISP_WEAK_KEYS 1
 #endif
 #endif
 

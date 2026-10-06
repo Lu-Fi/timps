@@ -1020,6 +1020,41 @@ static int ae_it_write(uint32_t lines, uint32_t min_lines, int restore)
 extern int ms_isp_colorfx_set(int mode) __asm__("IMP_ISP_Tuning_SetColorfxMode") __attribute__((weak));
 extern int ms_isp_scene_set(int mode)   __asm__("IMP_ISP_Tuning_SetSceneMode")   __attribute__((weak));
 #endif
+/* OpenIMP-only setters (isp_caps.h): weak, because a strong import a vendor
+ * libimp lacks resolves to 0 under BIND_NOW and the first apply jumps there */
+#ifdef ISP_WEAK_DPC
+extern int ms_isp_dpc_set(uint32_t ratio) __asm__("IMP_ISP_Tuning_SetDPC_Strength") __attribute__((weak));
+#endif
+#ifdef ISP_WEAK_DEFOG_DRC
+extern int ms_isp_defog_set(uint8_t *ratio) __asm__("IMP_ISP_Tuning_SetDefog_Strength") __attribute__((weak));
+extern int ms_isp_drc_set(uint32_t ratio)   __asm__("IMP_ISP_Tuning_SetDRC_Strength")   __attribute__((weak));
+#endif
+#ifdef ISP_WEAK_KEYS
+static int isp_sym_missing(int *said, const char *sym, const char *k)
+{
+    if (!*said){
+        *said = 1;
+        LOGW(MOD,"%s not in this libimp - image.%s unavailable (persisted only)", sym, k);
+    }
+    return 0;
+}
+
+int hal_isp_key_missing(const char *k)
+{
+#if defined(ISP_HAS_COLORFX) || defined(ISP_HAS_SCENE)
+    if (!ms_isp_colorfx_set && !strcmp(k,"colorfx")) return 1;
+    if (!ms_isp_scene_set && !strcmp(k,"scene")) return 1;
+#endif
+#ifdef ISP_WEAK_DPC
+    if (!ms_isp_dpc_set && !strcmp(k,"dpc_strength")) return 1;
+#endif
+#ifdef ISP_WEAK_DEFOG_DRC
+    if (!ms_isp_defog_set && !strcmp(k,"defog_strength")) return 1;
+    if (!ms_isp_drc_set && !strcmp(k,"drc_strength")) return 1;
+#endif
+    return 0;
+}
+#endif
 
 #if defined(USE_OPENIMP) && defined(PLATFORM_T41)
 /* read-modify-write one Module_Ratio entry, the others keep what the driver
@@ -1177,14 +1212,23 @@ static int isp_apply_image(const char *k)
     if (!strcmp(k,"sinter_strength")){ IMP_ISP_Tuning_SetSinterStrength((uint32_t)im->sinter_strength); return 1; }
     if (!strcmp(k,"temper_strength")){ IMP_ISP_Tuning_SetTemperStrength((uint32_t)im->temper_strength); return 1; }
     if (!strcmp(k,"dpc_strength")){
-#ifdef ISP_HAS_DPC
+#if defined(ISP_WEAK_DPC)
+        static int said;
+        if (!ms_isp_dpc_set) return isp_sym_missing(&said,"IMP_ISP_Tuning_SetDPC_Strength",k);
+        ms_isp_dpc_set((uint32_t)im->dpc_strength); return 1;
+#elif defined(ISP_HAS_DPC)
         IMP_ISP_Tuning_SetDPC_Strength((unsigned int)im->dpc_strength); return 1;
 #else
         return 0;
 #endif
     }
     if (!strcmp(k,"defog_strength")){
-#ifdef ISP_HAS_DEFOG
+#if defined(ISP_WEAK_DEFOG_DRC)
+        static int said;
+        if (!ms_isp_defog_set) return isp_sym_missing(&said,"IMP_ISP_Tuning_SetDefog_Strength",k);
+        uint8_t d=(uint8_t)im->defog_strength;
+        ms_isp_defog_set(&d); return 1;
+#elif defined(ISP_HAS_DEFOG)
         uint8_t d=(uint8_t)im->defog_strength;
         IMP_ISP_Tuning_SetDefog_Strength(&d); return 1;
 #else
@@ -1192,7 +1236,11 @@ static int isp_apply_image(const char *k)
 #endif
     }
     if (!strcmp(k,"drc_strength")){
-#ifdef ISP_HAS_DRC
+#if defined(ISP_WEAK_DEFOG_DRC)
+        static int said;
+        if (!ms_isp_drc_set) return isp_sym_missing(&said,"IMP_ISP_Tuning_SetDRC_Strength",k);
+        ms_isp_drc_set((uint32_t)im->drc_strength); return 1;
+#elif defined(ISP_HAS_DRC)
         IMP_ISP_Tuning_SetDRC_Strength((unsigned int)im->drc_strength); return 1;
 #else
         return 0;
@@ -1342,9 +1390,10 @@ static int isp_apply_image(const char *k)
         int val = is_cfx ? im->colorfx : im->scene;
         int (*fn)(int) = is_cfx ? ms_isp_colorfx_set : ms_isp_scene_set;
         if (!fn){
-            LOGW(MOD,"image.%s: libimp has no IMP_ISP_Tuning_Set%sMode - persisted only",
-                 k, is_cfx ? "Colorfx" : "Scene");
-            return 0;
+            static int said_cfx, said_scene;
+            return isp_sym_missing(is_cfx ? &said_cfx : &said_scene,
+                                   is_cfx ? "IMP_ISP_Tuning_SetColorfxMode"
+                                          : "IMP_ISP_Tuning_SetSceneMode", k);
         }
         if (is_cfx && val!=0 && val!=1 && val!=2 && val!=3 && val!=9){
             LOGW(MOD,"image.colorfx=%d is not a colour effect (0 none, 1 B/W, "
