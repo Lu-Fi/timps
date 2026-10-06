@@ -48,6 +48,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stddef.h>     /* offsetof (layout asserts) */
 #include <unistd.h>
 #include <pthread.h>
 #include <signal.h>
@@ -5894,6 +5895,16 @@ int hal_isp_exposure(hal_isp_expo *out)
 #endif
 }
 
+#ifdef ISP_HAS_AE_EXPR_INFO
+/* open-tx-isp tx_isp_tuning_t41_ae_expr_pack() fills these offsets */
+_Static_assert(sizeof(IMPISPAEExprInfo) == 232, "IMPISPAEExprInfo size");
+_Static_assert(offsetof(IMPISPAEExprInfo, AeIntegrationTime) == 24, "AeIntegrationTime");
+_Static_assert(offsetof(IMPISPAEExprInfo, AeAGain) == 28, "AeAGain");
+_Static_assert(offsetof(IMPISPAEExprInfo, AeMinIntegrationTime) == 72, "AeMinIntegrationTime");
+_Static_assert(offsetof(IMPISPAEExprInfo, AeMaxIntegrationTime) == 88, "AeMaxIntegrationTime");
+_Static_assert(offsetof(IMPISPAEExprInfo, AeMaxAGain) == 92, "AeMaxAGain");
+_Static_assert(offsetof(IMPISPAEExprInfo, TotalGainDb) == 204, "TotalGainDb");
+#endif
 int hal_isp_ae_info(hal_isp_ae *out)
 {
 #ifdef ISP_HAS_AE_EXPR_INFO
