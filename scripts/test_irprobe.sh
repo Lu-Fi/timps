@@ -4,8 +4,10 @@
 #
 #   scripts/test_irprobe.sh <path/to/timps-irprobe>
 #
-# Stubs `light` and `jct` on PATH; the hook's /run and 60 s watchdog are
-# redirected via STAMP_DIR and IRPROBE_WATCHDOG_S. Runs every case under
+# Stubs `light` and `jct` on PATH; the hook's /run, its 60 s and 900 s
+# watchdogs and the board's mode file are redirected via STAMP_DIR,
+# IRPROBE_WATCHDOG_S, IRPROBE_IDLE_WATCHDOG_S and DAYNIGHT_MODE_FILE
+# (WD, IWD, SD below). Runs every case under
 # `sh` and, if present, `busybox sh`. Exit 0 = all passed.
 HOOK=${1:-$IRPROBE}
 [ -f "$HOOK" ] || {
@@ -78,7 +80,8 @@ setup() {
 }
 
 hook() {
-	THINGINO_CONFIG="$T/cfg" STAMP_DIR="$T" IRPROBE_WATCHDOG_S=${WD:-1} \
+	THINGINO_CONFIG="$T/cfg" STAMP_DIR=${SD:-$T} IRPROBE_WATCHDOG_S=${WD:-1} \
+		IRPROBE_IDLE_WATCHDOG_S=${IWD:-30} DAYNIGHT_MODE_FILE="$T/mode" \
 		$SH "$HOOK" "$@" >/dev/null 2>&1
 }
 
@@ -86,7 +89,8 @@ st() { cat "$T/state.$1" 2>/dev/null || echo none; }
 
 # stdout of the hook (the "state" verb)
 out() {
-	THINGINO_CONFIG="$T/cfg" STAMP_DIR="$T" IRPROBE_WATCHDOG_S=${WD:-1} \
+	THINGINO_CONFIG="$T/cfg" STAMP_DIR=${SD:-$T} IRPROBE_WATCHDOG_S=${WD:-1} \
+		IRPROBE_IDLE_WATCHDOG_S=${IWD:-30} DAYNIGHT_MODE_FILE="$T/mode" \
 		$SH "$HOOK" "$@" 2>/dev/null
 }
 
@@ -195,13 +199,72 @@ run_cases() {
 	sleep 1.2
 	expect "newer off: newer watchdog fires" ir850=on
 
-	# idle: off without a watchdog, older watchdogs void
+	# idle: off with a long watchdog, older watchdogs void
 	setup "ir850"
 	rc_is "idle" 0 idle
 	expect "idle: off" ir850=off
-	[ ! -e "$T/timps-irprobe" ] && ok "idle: no stamp" || bad "idle: stamp written"
+	[ -s "$T/timps-irprobe" ] && ok "idle: stamp written" || bad "idle: no stamp"
 	sleep 2
-	expect "idle: no watchdog relight" ir850=off
+	expect "idle: dark inside its watchdog" ir850=off
+
+	# the daemon died: nothing renews the idle watchdog
+	setup "ir850 ir940"
+	IWD=1 rc_is "idle watchdog" 0 idle
+	expect "idle watchdog: dark" ir850=off ir940=off
+	sleep 2
+	expect "idle watchdog: relights both" ir850=on ir940=on
+	[ "$(grep -c 'ir850 on' "$T/log")" -eq 1 ] && ok "idle watchdog: one relight" ||
+		bad "idle watchdog: $(grep -c 'ir850 on' "$T/log") relights"
+
+	setup "ir850"
+	echo night >"$T/mode"
+	IWD=1 hook idle
+	sleep 2
+	expect "idle watchdog, board in night: relights" ir850=on
+
+	setup "ir850"
+	IWD=1 hook idle
+	echo day >"$T/mode"
+	sleep 2
+	expect "idle watchdog, board switched to day: stands down" ir850=off
+
+	# the re-assert renews it
+	setup "ir850"
+	IWD=2 hook idle
+	sleep 1.2
+	IWD=2 hook idle
+	sleep 1.2
+	expect "idle renewed: older watchdog void" ir850=off
+	sleep 1.2
+	expect "idle renewed: newer watchdog fires" ir850=on
+
+	setup "ir850"
+	IWD=2 hook idle
+	s1=$(cat "$T/timps-irprobe")
+	sleep 1
+	out state >/dev/null
+	[ "$(cat "$T/timps-irprobe")" = "$s1" ] && ok "state: stamp untouched" ||
+		bad "state: stamp changed"
+	sleep 1.5
+	expect "state: does not renew the idle watchdog" ir850=on
+
+	setup "ir850"
+	IWD=1 hook idle
+	hook on
+	[ ! -e "$T/timps-irprobe" ] && ok "on after idle: stamp removed" || bad "on after idle: stamp left"
+	echo off >"$T/state.ir850"
+	sleep 2
+	expect "on after idle: idle watchdog cancelled" ir850=off
+
+	setup "ir850"
+	IWD=1 hook idle
+	WD=30 hook off
+	sleep 2
+	expect "off after idle: idle watchdog void" ir850=off
+
+	setup "ir850"
+	SD="$T/missing" rc_is "idle without a stamp dir" 4 idle
+	expect "idle without a stamp dir: stays lit" ir850=on
 
 	setup "ir850"
 	hook off
@@ -235,8 +298,9 @@ run_cases() {
 
 	setup "ir850 ir940"
 	STUB_FAIL="ir940:off"
-	rc_is "failing idle" 4 idle
+	IWD=1 rc_is "failing idle" 4 idle
 	expect "failing idle: rolled back" ir850=on ir940=on
+	[ ! -e "$T/timps-irprobe" ] && ok "failing idle: stamp removed" || bad "failing idle: stamp left"
 	STUB_FAIL=
 
 	setup "ir850"
