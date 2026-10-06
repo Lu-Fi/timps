@@ -197,6 +197,22 @@ Commits (local, not pushed):
   again, `mode = schedule` relights (`reason schedule`), `enabled = 0`
   relights.
 
+* Cross-builds from `513f830` against `887054b`, warning-free; stripped size
+  and `size` dec (text+data+bss), binaries + md5 in
+  `scratch-builds/idle-ir-s2/`:
+
+| Flavour | stripped | dec |
+| --- | --- | --- |
+| T23 OpenIMP | 406024 → 414228 | 597267 → 605077 (+7810) |
+| T41 OpenIMP | 344116 → 352320 | 513483 → 521373 (+7890) |
+| T21 OpenIMP | 393664 → 401868 | 575028 → 582806 (+7778) |
+| T21 vendor | 389544 → 397748 | 571743 → 579537 (+7794) |
+| T31 vendor | 393684 → 401888 | 574559 → 582353 (+7794) |
+
+  More than the design's 2-4 KB: `dn_thread` +5.0 KB on T23 (entry verdict,
+  noir rule, idle pass with its inputs and logs inlined), `dn_irhook` 468 B
+  (stdout capture), `dn_idle_hook` 308, hub hold ~0.4 KB, the rest strings.
+
 ### Scenarios 39-54
 
 39 night first consumer + external LED (state check), 40 unwatched dawn with
