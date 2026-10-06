@@ -561,6 +561,8 @@ void config_defaults(ms_config *c)
      * opt-in - the tuning page's switch, or this key by hand - and nothing is
      * allocated until a sample is pushed at non-zero. */
     c->daynight.history_s=0;
+    c->daynight.ir_idle_off=0;
+    c->daynight.ir_idle_linger_s=60;
 
     c->sim_video0[0]=0; c->sim_video1[0]=0; c->sim_audio[0]=0;
 }
@@ -1133,6 +1135,8 @@ static const cfg_field daynight_fields[] = {
     /* 172800 = 48 h, the hard ceiling on what the ring may allocate (270 KiB
      * at 16 B per 10 s sample); 0 = off. */
     F ("history_s",                  0, history_s,                  T_INT,   F_CTRL, 0,172800),
+    F ("ir_idle_off",                0, ir_idle_off,                T_INT,   F_CTRL, 0,1),
+    F ("ir_idle_linger_s",           0, ir_idle_linger_s,           T_INT,   F_CTRL, 0,3600),
     /* NOT F_CTRL - see the comment above (security boundary): a path the
      * daemon writes to as root must never be POSTable (arbitrary-file-write
      * primitive) - file-only. */

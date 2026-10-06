@@ -1276,6 +1276,8 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
     char etns[sizeof d->time_night_start * 3], etds[sizeof d->time_day_start * 3];
     jesc(d->time_night_start, etns, sizeof etns);
     jesc(d->time_day_start, etds, sizeof etds);
+    dn_ir_idle_status ii;
+    daynight_ir_idle_status(&ii);
     return snprintf(buf, cap,
         "{\"enabled\":%d,\"mode\":%d,\"brightness\":%.1f,\"total_gain\":%.0f,"
         "\"exposure\":%.0f,\"ae_luma\":%.0f,"
@@ -1307,7 +1309,10 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
         "\"sun_latitude\":%g,\"sun_longitude\":%g,"
         "\"sun_sunrise_offset_min\":%d,\"sun_sunset_offset_min\":%d,"
         "\"sun_computed_sunrise\":\"%s\",\"sun_computed_sunset\":\"%s\","
-        "\"interval_ms\":%d,\"transition_s\":%d}",
+        "\"interval_ms\":%d,\"transition_s\":%d,"
+        "\"ir_idle_off\":%d,\"ir_idle_linger_s\":%d,"
+        "\"ir_idle\":{\"cfg\":%d,\"available\":%d,\"reason\":\"%s\","
+        "\"dark\":%d,\"watched\":%d,\"linger_left_s\":%d}}",
         enabled, mode, (double)brightness, (double)total_gain,
         (double)exposure, (double)ae_luma,
         (double)night_ref, (double)probe_bar,
@@ -1326,7 +1331,9 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
         (double)d->sun_latitude, (double)d->sun_longitude,
         d->sun_sunrise_offset_min, d->sun_sunset_offset_min,
         sun_sr, sun_ss,
-        d->interval_ms, DN_TRANSITION_S);
+        d->interval_ms, DN_TRANSITION_S,
+        d->ir_idle_off, d->ir_idle_linger_s,
+        ii.cfg, ii.available, ii.reason, ii.dark, ii.watched, ii.linger_left_s);
 }
 
 /* Read-only motion status object (shared /control + /events shape, see
@@ -1658,6 +1665,13 @@ int control_get_json(char *buf, size_t cap)
      * video framesource held enabled until stop), "cfg" the raw -1/0/1 */
     APP("\"framesource\":{\"keepalive\":%d,\"cfg\":%d},",
         hal_fs_keepalive(), c->fs_keepalive);
+    /* ir_idle: daynight.ir_idle_off can act on this build/start (it needs
+     * the keepalive); daynight.ir_idle.reason says why not at runtime */
+#ifdef USE_DAYNIGHT
+    APP("\"daynight\":{\"available\":1,\"ir_idle\":%d},", hal_fs_keepalive() ? 1 : 0);
+#else
+    APP("\"daynight\":{\"available\":0,\"ir_idle\":0},");
+#endif
 #ifdef USE_TIMELAPSE
     APP("\"timelapse\":{\"available\":1}},");
 #else

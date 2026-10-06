@@ -1482,7 +1482,7 @@ static void events_stream(hconn *c, const char *path, const char *cors)
     ms_motion_status lm;                          /* last-sent snapshots */
     stats_snapshot lst;
     int have_m = 0, have_d = 0, have_st = 0;
-    int ld_en = 0, ld_mode = 0, ld_ds = -2;
+    int ld_en = 0, ld_mode = 0, ld_ds = -2, ld_ii = -1;
     float ld_b = 0.0f, ld_g = 0.0f;
     int stats_ms = cfg->events_stats_ms;
     int64_t next_stats = (want_stats && stats_ms > 0) ? ms_now_us() : INT64_MAX;
@@ -1490,7 +1490,7 @@ static void events_stream(hconn *c, const char *path, const char *cors)
     unsigned gen = events_generation();
     unsigned mq_cur = events_motion_cursor();     /* private snapshot cursor */
     unsigned cfg_cur = events_config_cursor();    /* private config-table cursor */
-    char js[1024];                                /* fits max_cells active[] */
+    char js[1280];                                /* max_cells active[]; daynight ~1 KiB worst case */
     sse_out so;                                   /* one write per loop pass */
     so.c = c; so.last_write = &last_write; so.n = 0;
 
@@ -1530,13 +1530,17 @@ static void events_stream(hconn *c, const char *path, const char *cors)
             float b = -1.0f, g = -1.0f, lu = -1.0f;
             float ex = -1.0f, nb = -1.0f, dt = -1.0f;
             daynight_get_status(&en, &mode, &b, &g, &ex, &lu, &nb, &dt, &ds);
+            dn_ir_idle_status ii;
+            daynight_ir_idle_status(&ii);
+            int iis = ii.cfg | ii.available << 1 | ii.dark << 2;
             float db = b - ld_b; if (db < 0) db = -db;
             float dg = g - ld_g; if (dg < 0) dg = -dg;
             /* change thresholds match the producer filter in daynight.c */
             if (!have_d || en != ld_en || mode != ld_mode || ds != ld_ds ||
-                db >= 1.0f ||
+                iis != ld_ii || db >= 1.0f ||
                 dg >= (ld_g > 0.0f ? ld_g * 0.05f : 8.0f)){
                 ld_en = en; ld_mode = mode; ld_b = b; ld_g = g; ld_ds = ds;
+                ld_ii = iis;
                 have_d = 1;
                 if (control_daynight_json(js, sizeof js, en, mode, b, g, ex,
                                           lu, nb, dt, ds) < (int)sizeof js)

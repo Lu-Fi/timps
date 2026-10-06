@@ -614,6 +614,7 @@ differently-compiled binaries.
 | `caps.play` | `{available, sounds:[...]}` — enumerates playable files |
 | `caps.webrtc` | `{available, enabled, chn_select}` — same 0/1/2 meaning as `talk_ws`; `chn_select:1` = the POST honours `?chn=N`. **Key absent entirely** when `USE_WEBRTC=0` |
 | `caps.framesource` | `{keepalive, cfg}` — **since the next release.** `keepalive` = 1 when this start resolved `general.fs_keepalive` to on (video FrameSources held enabled until stop), `cfg` = the raw `-1`/`0`/`1`. On the sim it reports the resolution only (no FrameSource there). |
+| `caps.daynight` | `{available, ir_idle}` — **since the next release.** `available` = built with `USE_DAYNIGHT`; `ir_idle` = 1 when `daynight.ir_idle_off` could act on this start (it needs the FrameSource keepalive). |
 
 Note the deliberate convention: a key that is **absent** (`caps.rotation`,
 `caps.webrtc`) means "this binary has no such endpoint/feature at all", which
@@ -995,6 +996,16 @@ is adopted as the current mode and then judged by the measurement like a boot;
 nothing is re-switched. `isp_desync = 1` therefore only stays set in
 `daynight.mode = schedule`, where the calendar decides and the mismatch is
 reported but not adopted.
+
+**Idle-Dark (`daynight.ir_idle_off`, since the next release, off by default):**
+planned to switch only the IR illuminator off at night while no stream,
+snapshot, recording or motion detection needs a picture, and to decide at the
+next consumer from what the AE measured meanwhile. **In the next release only
+the keys and the status exist; nothing is switched yet.** The status is
+`daynight.ir_idle` in `GET /control` and `/events`:
+`{cfg, available, reason, dark, watched, linger_left_s}`; `reason` is
+`disabled`, `keepalive` (needs `general.fs_keepalive` on, auto only on OpenIMP
+T23/T41), `no_illuminator`, `white_light`, `hook` or empty.
 
 ---
 

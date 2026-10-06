@@ -180,6 +180,23 @@ int main(void)
         check_int("fs_keepalive = junk keeps auto", "general.fs_keepalive = always\n", &kc.fs_keepalive, -1, &kc);
     }
 
+    /* daynight.ir_idle_off / ir_idle_linger_s: off and 60 s by default, clamped */
+    {
+        static ms_config ic;
+        check_int("ir_idle_off default 0", "", &ic.daynight.ir_idle_off, 0, &ic);
+        check_int("ir_idle_linger_s default 60", "", &ic.daynight.ir_idle_linger_s, 60, &ic);
+        check_int("ir_idle_off = 1", "daynight.ir_idle_off = 1\n", &ic.daynight.ir_idle_off, 1, &ic);
+        check_int("ir_idle_off = 7 clamped", "daynight.ir_idle_off = 7\n", &ic.daynight.ir_idle_off, 1, &ic);
+        check_int("ir_idle_linger_s = 0", "daynight.ir_idle_linger_s = 0\n", &ic.daynight.ir_idle_linger_s, 0, &ic);
+        check_int("ir_idle_linger_s = 9999 clamped", "daynight.ir_idle_linger_s = 9999\n",
+                  &ic.daynight.ir_idle_linger_s, 3600, &ic);
+        check_int("ir_idle_linger_s = -5 clamped", "daynight.ir_idle_linger_s = -5\n",
+                  &ic.daynight.ir_idle_linger_s, 0, &ic);
+        check("ir_idle_off readable", "daynight.ir_idle_off = 1\n", "daynight.ir_idle_off", "1");
+        check("ir_idle_linger_s readable", "daynight.ir_idle_linger_s = 120\n",
+              "daynight.ir_idle_linger_s", "120");
+    }
+
     /* default stream size follows a smaller sensor, never upscales */
     {
         const char *s720 = "sensor.width = 1280\nsensor.height = 720\n";

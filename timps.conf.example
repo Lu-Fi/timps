@@ -841,6 +841,16 @@ daynight.isp_path       = /proc/jz/isp/isp-m0  # ISP exposure proc file
 # the open tab only; on, the daemon keeps the series, so the graph shows the
 # hours you were NOT watching.
 # daynight.history_s = 14400                   # 4 h; 0 = off, max 172800 (48 h)
+# Idle-Dark: at night, once nothing has needed a picture (stream, snapshot,
+# timelapse, recording, motion detection, jpeg.snapshot_path) for
+# ir_idle_linger_s, switch only the IR illuminator off and decide at the next
+# consumer from what the AE measured meanwhile. Needs the framesource
+# keepalive (general.fs_keepalive; auto = on for OpenIMP T23/T41), otherwise
+# it stays inactive with a warning. Off by default: at 850 nm the glow then
+# shows whether anyone is watching. This release only reports the status
+# (GET /control daynight.ir_idle); the illuminator is not switched yet.
+# daynight.ir_idle_off      = 0                # 0 | 1, live
+# daynight.ir_idle_linger_s = 60               # seconds, 0..3600, live
 # Opt-in decision-trace recorder (incident diagnostics / replay harness): one
 # CSV line per 5 samples of the index, its two inputs and the scheduling state.
 # Size-capped (1 MB, rotated once to <path>.1). tmpfs ONLY - never point this

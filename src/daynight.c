@@ -14,6 +14,7 @@
  *
  * Compiled only with -DUSE_DAYNIGHT; uses nothing but libc + pthread. */
 #include "daynight.h"
+#include "dn_idle.h"
 #include "config.h"
 #include "hal/hal.h"   /* hal_isp_total_gain()/hal_isp_exposure(): ISP via IMP */
 #include <stdio.h>     /* snprintf() - needed by the !USE_DAYNIGHT stub too */
@@ -886,6 +887,44 @@ int daynight_request_probe(void)
  * ordinary sampling tick. */
 static int g_watch_kick;
 static int g_dni_armed;
+/* what the illuminator hook answered to "idle" (DNI_HOOK_*) */
+static int g_dni_hook = DNI_HOOK_OK;
+
+/* Idle-Dark status, under g_st_mu */
+static dn_ir_idle_status g_st_idle = { 0, 0, 0, 0, 0, "disabled" };
+
+/* Status only: watched/linger and why Idle-Dark may not act. */
+static void dn_idle_status_tick(const ms_daynight_cfg *dn, dni_state *dni,
+                                int *warned_ka)
+{
+    dni_in in;
+    memset(&in, 0, sizeof in);
+    in.now_ms    = ms_now_us() / 1000;
+    in.cfg       = dn->ir_idle_off;
+    in.linger_s  = dn->ir_idle_linger_s;
+    in.enabled   = dn->enabled;
+    in.keepalive = hal_fs_keepalive();
+    in.hook      = (!dn->irprobe_cmd[0] || g_ir_unusable) ? DNI_HOOK_NONE : g_dni_hook;
+    in.consumers = hub_image_subs() + hal_image_pinned();
+    in.kicked    = __atomic_exchange_n(&g_watch_kick, 0, __ATOMIC_RELAXED);
+    int watched  = dni_watch(dni, &in);
+    int r        = dni_gate(&in);
+    if (r == DNI_U_KEEPALIVE && !*warned_ka) {
+        LOGW(MOD, "daynight.ir_idle_off=1 needs the framesource keepalive "
+                  "(general.fs_keepalive) - without it nothing is measured "
+                  "while idle; Idle-Dark stays inactive");
+        *warned_ka = 1;
+    }
+    dn_ir_idle_status st = { dn->ir_idle_off ? 1 : 0, r == DNI_OK, dni->dark,
+                             watched, dni_linger_left_s(dni, &in),
+                             dni_unavail_str(r) };
+    pthread_mutex_lock(&g_st_mu);
+    int changed = st.available != g_st_idle.available || st.dark != g_st_idle.dark ||
+                  st.reason != g_st_idle.reason;
+    g_st_idle = st;
+    pthread_mutex_unlock(&g_st_mu);
+    if (changed) events_notify();
+}
 
 void daynight_watch_kick(void)
 {
@@ -1402,6 +1441,9 @@ static void *dn_thread(void *arg)
     int     day_seen    = 0;           /* has day ever been confirmed? */
     int     probe_fails = 0;           /* consecutive probes that found night */
     int     diag_warned = 0;           /* the diagnostic is once per session */
+    dni_state dni;                     /* Idle-Dark (status only so far) */
+    int     dni_warned_ka = 0;
+    memset(&dni, 0, sizeof dni);
 
     g_int_hwm = 0;                     /* see dn_read(): sensor mode may differ */
     g_ratio_last = -1.0f; g_ratio_miss = 0;
@@ -1515,6 +1557,7 @@ static void *dn_thread(void *arg)
         dn_read(dn, &sm);
         float luma = -1.0f;
         { uint32_t al; if (hal_isp_ae_luma(&al) == 0) luma = (float)al; }
+        dn_idle_status_tick(dn, &dni, &dni_warned_ka);
 
         if (!dn->enabled) {                 /* manual: measure, force nothing */
             was_enabled = 0;
@@ -2753,6 +2796,16 @@ void daynight_get_status(int *enabled, int *mode,
     if (isp_desync) *isp_desync = ds;
 }
 
+void daynight_ir_idle_status(dn_ir_idle_status *o)
+{
+    pthread_mutex_lock(&g_st_mu);
+    *o = g_st_idle;
+    pthread_mutex_unlock(&g_st_mu);
+    config_str_lock();
+    o->cfg = g_cfg.daynight.ir_idle_off ? 1 : 0;
+    config_str_unlock();
+}
+
 /* see daynight.h: today's computed sunrise/sunset for the configured
  * lat/long+offsets, as local "HH:MM" strings (for the WebUI readout). */
 int daynight_sun_status(char *sr_hhmm, char *ss_hhmm, size_t cap)
@@ -2818,5 +2871,13 @@ int daynight_sun_status(char *sr_hhmm, char *ss_hhmm, size_t cap)
 int daynight_request_probe(void) { return -1; }
 
 void daynight_watch_kick(void) {}
+
+void daynight_ir_idle_status(dn_ir_idle_status *o)
+{
+    config_str_lock();
+    int cfg = g_cfg.daynight.ir_idle_off ? 1 : 0;
+    config_str_unlock();
+    *o = (dn_ir_idle_status){ cfg, 0, 0, 0, 0, "disabled" };
+}
 
 #endif /* USE_DAYNIGHT */

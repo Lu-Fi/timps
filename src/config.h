@@ -458,6 +458,13 @@ typedef struct {
      * the whole point, since the WebUI is served over plain HTTP and so has
      * no Service Worker to collect in the background with. */
     int      history_s;
+    /* Idle-Dark (src/dn_idle.h): at night with no picture consumer for
+     * ir_idle_linger_s, switch only the illuminator off and decide at the
+     * first consumer from what the AE measured meanwhile. Needs the
+     * FrameSource keepalive (otherwise nothing is measured while idle). Off
+     * by default: at 850 nm the glow shows whether anyone is watching. */
+    int      ir_idle_off;
+    int      ir_idle_linger_s;
 } ms_daynight_cfg;
 
 typedef struct {

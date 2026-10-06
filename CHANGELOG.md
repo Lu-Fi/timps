@@ -47,6 +47,11 @@ semantic versioning.
   `ciao`) reports success without rotating; timps tells the stub apart with a
   0x0 `SetChnRotate` probe at start, and in both cases the stream starts
   unrotated with a warning naming the OpenIMP to upgrade.
+- **`daynight.ir_idle_off` / `daynight.ir_idle_linger_s`** (off / 60 s, live;
+  Idle-Dark: illuminator off at night while nothing needs a picture). Plumbing
+  only for now: the keys, consumer accounting and the `daynight.ir_idle`
+  status in `GET /control`/`/events` (plus `caps.daynight`) exist, but
+  nothing is switched until the day/night automaton is wired up.
 
 ### Changed
 

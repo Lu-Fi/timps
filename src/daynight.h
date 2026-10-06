@@ -171,4 +171,15 @@ int daynight_sun_status(char *sr_hhmm, char *ss_hhmm, size_t cap);
  * day/night thread reads the consumer level itself. Always linkable. */
 void daynight_watch_kick(void);
 
+/* Idle-Dark status (daynight.ir_idle_off) for GET /control and /events:
+ * cfg the configured switch, available whether it may act (reason says why
+ * not: "disabled", "keepalive", "no_illuminator", "white_light", "hook"),
+ * dark the illuminator is off for idle, watched a consumer is present,
+ * linger_left_s until an unwatched night may go dark. */
+typedef struct {
+    int cfg, available, dark, watched, linger_left_s;
+    const char *reason;
+} dn_ir_idle_status;
+void daynight_ir_idle_status(dn_ir_idle_status *o);
+
 #endif

@@ -923,6 +923,8 @@ tick) **except**:
 | `daynight.interval_ms` | int | `2000` | 100..60000 | live | Sample interval. The exposure index needs a `/proc` scrape per tick (integration time has no IMP API). |
 | `daynight.diagnose_thresholds` | int | `0` | 0..1 | live | When probes keep failing and the best day-pipeline reading of that excursion was still clear of `day_gain`, warn that the threshold is unreachable for this scene and name the value to raise it above. It needs **`DN_DIAG_FAILS` = 3 consecutive failed probes** before it fires, and then warns **once per daemon session** (`diag_warned` in `src/daynight.c`) — not once per probe. Off by default anyway, because on a camera that genuinely never sees day it is a WARN nobody asked for. |
 | `daynight.history_s` | int | `0` | 0..172800 (48 h) | live | In-RAM decision-history ring for the WebUI tuning graph, in seconds of retention. `0` = off; nothing is allocated until a sample is pushed. One 16-byte sample per period, so the 48 h ceiling costs ~270 KiB. |
+| `daynight.ir_idle_off` | int | `0` | 0..1 | live | **since the next release.** Idle-Dark: at night, once no picture consumer (video/JPEG hub subscriber: RTSP, WebRTC, fMP4, MJPEG, SRT, snapshot, timelapse, recorder; plus the motion FrameSource pin and a set `jpeg.snapshot_path`) has been present for `ir_idle_linger_s`, switch only the IR illuminator off (IR-cut and ISP stay in night) and decide at the next consumer from the AE reading taken meanwhile. **Only effective with the FrameSource keepalive** (`general.fs_keepalive`, auto = on for OpenIMP T23/T41); otherwise one WARN and `daynight.ir_idle.reason = "keepalive"`. **In this release the key and the status exist, but nothing is switched yet** (the decision is not wired into the automaton). Status: `daynight.ir_idle` in `GET /control` / `/events`. |
+| `daynight.ir_idle_linger_s` | int | `60` | 0..3600 | live | **since the next release.** How long after the last picture consumer the illuminator may go off; a consumer inside it is not an event (covers 10 s snapshot polling, DESCRIBE→PLAY, the 60 s timelapse). |
 | `daynight.switch_cmd` | string[64] | `daynight` | — | **file-only**, `F_NOGET` | Board script, run as `<cmd> day\|night` via `vfork()`+`execlp()` (no shell; `fork()` on v1.9.19). **Unlike `motion.on_motion`, this one *does* search `PATH`** — `execlp`, not `execve` — which is why the bare default `daynight` works. Same for `daynight.irprobe_cmd`. |
 | `daynight.isp_path` | string[128] | `/proc/jz/isp/isp-m0` | — | **file-only**, `F_NOGET` | ISP exposure proc file that is scraped. |
 | `daynight.irprobe_cmd` | string[64] | `timps-irprobe` | — | **file-only**, `F_NOGET` | Run as `<cmd> on\|off`. Empty disables the **silent** probe entirely and every night→day question falls back to the audible IR-cut probe. |
@@ -1025,6 +1027,15 @@ Their effective values are still readable in the `daynight` status object of
 * `{"daynight":{"probe":1}}` over `/control` requests one silent probe on the
   next tick; it is **rejected** if `irprobe_cmd` is empty, so "nothing happened"
   is distinguishable from "the probe ran and found nothing".
+* `daynight.ir_idle_off = 1` (Idle-Dark, **since the next release**): status
+  only so far — the illuminator is not switched in this release. Once it acts,
+  an 850 nm glow that goes out tells an onlooker that nobody watches or
+  records, which is why it is off by default; cameras with a permanent
+  consumer (Frigate/NVR, `record.enabled`, `motion.enabled`,
+  `jpeg.snapshot_path`) never go idle at all. `reason` in
+  `daynight.ir_idle`: `disabled` (key 0 or `daynight.enabled = 0`),
+  `keepalive`, `no_illuminator` (no `irprobe_cmd` or the illuminator was
+  retired after failures), `white_light`, `hook` (board hook too old).
 ---
 
 ## 15. `rtsp.*`
@@ -1457,18 +1468,18 @@ The key inventory in this file was verified mechanically, not by hand. A script
    index pattern (`video<N>`/`videoN`/`video0`, `osd<S>.<N>`/`osdS.N`/`osd0.0`,
    `privacy<S>.<N>` …, or a leaf name in that section's table).
 
-**Result: 226 canonical config keys documented, 0 missing.** The breakdown:
+**Result: 228 canonical config keys documented, 0 missing.** The breakdown:
 
-* **200** from the `cfg_field` tables — `sensor` 5, `image` 23, `audio` 24,
+* **202** from the `cfg_field` tables — `sensor` 5, `image` 23, `audio` 24,
   `jpeg` 7, `rtsp` 7, `http` 11, `webrtc` 4, `events` 3, `general` 5, `sim` 4,
-  `srt` 8, `osd` 6, `motion` 9, `record` 10, `timelapse` 6, `daynight` 23,
+  `srt` 8, `osd` 6, `motion` 9, `record` 10, `timelapse` 6, `daynight` 25,
   `video<N>` 25, `osd<S>.<N>` 14, `privacy<S>.<N>` 6.
 * **7** handled by explicit code in `set_kv()` outside the tables:
   `general.syslog`, `general.trace`, `general.trace_ms`, `motion.roi_x/y/w/h`.
 * **19** retired or now-constant `daynight.*` names that the loader still
   recognises and warns about (11 removed, 8 turned into fixed constants).
 
-Plus **27 aliases** (§21), all present, and **245 key occurrences extracted from
+Plus **27 aliases** (§21), all present, and **247 key occurrences extracted from
 `timps.conf.example`** (active and commented out), all covered — 0 missing.
 
 Counting notes:
@@ -1505,3 +1516,4 @@ into support questions.
 | **T31/C100 vs T40/T41** | `ENC_HAS_QPIPDELTA` (hence a working `videoN.i_bias_lvl`) is T31/C100 only. | `src/hal/hal_ingenic.c` |
 | **T31** | The `isp_ch0_pre_dequeue_time` one-buffer gate on framechan0 — see `videoN.buffers` in §5. | `src/hal/hal_ingenic.c` |
 | **T23, T41 with `USE_OPENIMP`** | **Since the next release** `general.fs_keepalive = -1` (the default) resolves to **on**: the FrameSources run from start to stop, so `framesource N disabled (idle)` never appears and day/night kicks are no-ops. Everywhere else it resolves to off. | `src/hal/fs_ref.h` (`FS_KEEPALIVE_AUTO`) |
+| **T23, T41 with `USE_OPENIMP`** | **Since the next release** the only SoCs where `daynight.ir_idle_off` can become available without touching `general.fs_keepalive` (it needs the keepalive). Elsewhere it reports `reason = "keepalive"` unless the keepalive is forced on (untested there). | `src/dn_idle.h`, `src/daynight.c` |
