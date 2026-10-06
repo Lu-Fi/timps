@@ -206,11 +206,12 @@ ships `rtsp.user`/`rtsp.pass` and `http.user`/`http.pass` all set to
 | --- | --- |
 | `general.` | Log level, per-module debug, syslog, IMP polling timeout, OSD pool size |
 | `sensor.` | Sensor model / I²C address / fps / width / height (all optional — auto-detected from `/proc/jz/sensor/sensor0/`) |
-| `image.` | ISP tuning: brightness, contrast, NR, WB, flips, day/night running mode |
+| `image.` | ISP tuning: brightness, contrast, NR, WB, flips, day/night running mode, FrontCrop window (`image.fcrop_*`, **since the next release**) |
 | `video0.` / `video1.` | Per-stream encoder: codec, geometry, fps, bitrate, rate control, GOP, QP, rotation, RTSP path, piggyback JPEG |
 | `jpeg.` | The dedicated JPEG/MJPEG encoder channel (`/snapshot.jpg`, `/stream.mjpeg`) |
 | `osd.` and `osd<S>.<N>.` | Global OSD settings, and per-stream overlay items |
 | `privacy<S>.<N>.` | Privacy cover rectangles per stream |
+| `roi<S>.<N>.` | Encoder ROI regions (per-region QP) per stream — **since the next release**, tiered per SoC |
 | `audio.` | Mic capture, codecs, DSP, speaker, backchannel, `/talk` |
 | `rtsp.` | RTSP server: enable, port, MTU, credentials, RTSPS |
 | `http.` | HTTP server: enable, port, preview channel, credentials, token, TLS cert paths, `http.https` |
@@ -614,6 +615,7 @@ differently-compiled binaries.
 | `caps.play` | `{available, sounds:[...]}` — enumerates playable files |
 | `caps.webrtc` | `{available, enabled, chn_select}` — same 0/1/2 meaning as `talk_ws`; `chn_select:1` = the POST honours `?chn=N`. **Key absent entirely** when `USE_WEBRTC=0` |
 | `caps.framesource` | `{keepalive, cfg}` — **since the next release.** `keepalive` = 1 when this start resolved `general.fs_keepalive` to on (video FrameSources held enabled until stop), `cfg` = the raw `-1`/`0`/`1`. On the sim it reports the resolution only (no FrameSource there). |
+| `caps.roi` / `caps.fcrop` | **Since the next release.** Encoder ROI and ISP FrontCrop: `tier` = `effective` (device-tested), `experimental` (call returns 0, effect unverified), `unsupported`, or `sim`. `caps.roi` adds `regions`, `align:16`, the QP ranges and `streams[]` (`ok`/`off`/`h265`/`rotated`/`unsupported`); `caps.fcrop` adds `live`, `min:64`, `sensor:[w,h]` and `state` (`off`/`on`/`rejected`/`failed`/`unsupported`). Only T20 ROI and T20/T21 FrontCrop with OpenIMP are `effective`; tier table in config-keys.md §10a. |
 | `caps.daynight` | `{available, ir_idle}` — **since the next release.** `available` = built with `USE_DAYNIGHT`; `ir_idle` = 1 when `daynight.ir_idle_off` could act on this start (it needs the FrameSource keepalive). |
 
 Note the deliberate convention: a key that is **absent** (`caps.rotation`,
@@ -1267,6 +1269,20 @@ the kernel log and escalate.
   is downscaled from the sensor.
 - Rotation is restart-required; the advertised dimensions swap
   (`eff_width`/`eff_height` in `GET /control`).
+
+### ROI and crop/zoom problems (since the next release)
+
+- First read `caps.roi.tier` / `caps.fcrop.tier`. `experimental` means the SDK
+  accepts the call but nobody has seen it work on that SoC (T21 ROI is known to
+  do nothing) — do not promise an effect.
+- ROI regions only act on unrotated H.264 streams (`caps.roi.streams[S]`), are
+  rounded out to 16×16 macroblocks, and no bitrate effect has been measured.
+- FrontCrop on **T23 is refused on purpose**: a crop change stops the T23
+  pipeline until a reboot. On T20 only the downscaled streams show the crop.
+  `caps.fcrop.state = "failed"` means the SDK refused the window (no stream can
+  show it), `"rejected"` that timps refused it (under 64×64).
+- A crop does not move privacy masks, OSD or ROI regions: they stay at their
+  stream-frame position while the scene moves under them.
 
 ### Diagnostics to ask a user for
 

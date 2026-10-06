@@ -152,6 +152,27 @@ probe time, so the ISP scales the nodes by 1.2× and neither `1` nor `2` lands
 on a true mains period; at `sensor.fps = 25` the model is consistent and both
 settings are correct.
 
+### FrontCrop: `image.fcrop_*` (since the next release)
+
+| Key | Type | Default | Range | Live? | Description |
+| --- | --- | --- | --- | --- | --- |
+| `fcrop_enable` | bool | 0 | 0/1 | **Live** where `caps.fcrop.live` | ISP FrontCrop ("zoom"): only the window below reaches the streams; each stream scales it to its own size. |
+| `fcrop_x` | int | 0 | 0–8192 | as above | Left edge, sensor pixels (unrotated). |
+| `fcrop_y` | int | 0 | 0–8192 | as above | Top edge. |
+| `fcrop_w` | int | 0 | 0–8192 | as above | Width; at least 64. |
+| `fcrop_h` | int | 0 | 0–8192 | as above | Height; at least 64. |
+
+x/y/w/h follow the FrameSource crop convention (left, top); the SDK struct
+is ordered top, left and the HAL maps it. timps evens the values, moves the
+window inside the sensor and refuses anything under 64×64; the SDK then
+refuses a window no stream can show (`caps.fcrop.state` = `failed`). Keep the
+stream aspect ratio or the picture is stretched. Device-tested only on T20 and
+T21 with OpenIMP — on T20 only the downscaled streams show the window. T23
+refuses it completely (a crop change stops its pipeline until reboot); see
+[Platform & SDK Support](Platform-SDK-Support.md#roi-and-frontcrop-tiers) for
+all SoCs. Privacy masks, OSD and ROI regions stay in stream-frame coordinates:
+the scene moves under them.
+
 ## `audio.*` — capture, encode, speaker defaults
 
 Split between live-applicable knobs (real-time DSP/gain calls) and
@@ -401,6 +422,28 @@ boot — `GET /control`'s `caps.privacy.available` reflects this).
 
 \* Live only if an OSD group already exists for that stream at boot;
 otherwise the value persists but has no visible effect until restart.
+
+## `roi<S>.<N>.*` — encoder ROI (since the next release)
+
+`S` = video stream (0/1), `N` = region slot (0–3, `MS_MAX_ROI`; the SDK has 8,
+timps uses 4). Per-region QP for H.264 via `IMP_Encoder_SetChnROI`. POST as
+`{"roi":{"0":{"1":{"enabled":1,"x":640,"y":320,"w":320,"h":240,"qp":-6}}}}`.
+
+| Key | Type | Default | Range | Live? | Description |
+| --- | --- | --- | --- | --- | --- |
+| `enabled` | bool | 0 | 0/1 | **Live** | Region on/off. |
+| `x`, `y` | int | 0 | 0–8192 | **Live** | Top-left corner, pixels of the encoded stream. |
+| `w`, `h` | int | 0 | 0–8192 | **Live** | Size; rounded outwards to 16×16 macroblocks. |
+| `qp` | int | -5 | -51–51 | **Live** | Delta -26..25 or absolute 0..51, clamped per `qp_mode`. |
+| `qp_mode` | int | 1 | 0/1 | **Live** | `1` delta to the frame QP, `0` absolute QP. |
+
+The encode thread applies a change before its next frame; an idle stream gets
+its regions when it starts. The SDK rectangle holds two inclusive corners, not
+a width/height, and libimp clips nothing — timps converts and clamps. Only
+unrotated H.264 streams take regions (`caps.roi.streams`). Device-tested only
+on T20 with OpenIMP (a QP51 block is visible, QP15 clean; bitrate effect not
+measured); T10, T20 vendor, T21 (no effect seen) and T23 are experimental,
+everything else refuses the keys. `caps.roi.tier` reports it.
 
 ## `motion.*` — motion detection
 

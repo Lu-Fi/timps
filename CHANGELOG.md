@@ -8,6 +8,28 @@ semantic versioning.
 
 ### Added
 
+- **Encoder ROI: `roi<S>.<N>.*`** (`enabled`, `x`, `y`, `w`, `h`, `qp`,
+  `qp_mode`; 4 regions per stream), per-region QP for H.264 via
+  `IMP_Encoder_SetChnROI`, live (applied by the encode thread before its next
+  frame). timps converts x/y/w/h to the SDK's two inclusive corners, rounds out
+  to 16x16 macroblocks, clamps into the picture and clamps qp (absolute 0..51,
+  delta -26..25); H.265 and rotated streams ignore their regions with a WARN.
+  Device-tested only on T20 with OpenIMP (QP51 block visible, QP15 clean,
+  bitrate effect not measured); T10, T20 vendor, T21 (no effect seen) and T23
+  are experimental; T30, T31, T40, T41 and C100 refuse the keys.
+- **ISP FrontCrop: `image.fcrop_enable`/`fcrop_x`/`fcrop_y`/`fcrop_w`/`fcrop_h`**
+  (sensor pixels, x/y = left/top; the SDK orders top, left). Evened, moved
+  inside the sensor, at least 64x64, applied once per POST and at start.
+  Device-tested only on T20 and T21 with OpenIMP (T20: downscaled streams
+  only); T10 OpenIMP and T31 experimental. **T23 refuses it entirely**, also
+  from the config file: a crop change stops the T23 pipeline until a reboot.
+  T40/T41, T30, C100 and vendor T10/T20/T21 refuse it too.
+- **`caps.roi` / `caps.fcrop`** in `GET /control`: the tier (`effective`,
+  `experimental`, `unsupported`, `sim`) this build and libimp allow, ROI stream
+  states and the FrontCrop state, from the new `src/roi_caps.h`. Both setters
+  are weak imports, so a libimp without them reports `unsupported`.
+  `make test-roi` covers the validation and the tier matrix of all SoCs.
+
 - **`timpsd` refuses a libimp that does not fit the build** instead of
   crashing on it. Before the config, the lock or any IMP call it opens the
   loaded `libimp.so` and exits **78** when the flavour differs (an OpenIMP build

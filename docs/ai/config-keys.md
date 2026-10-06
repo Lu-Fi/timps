@@ -87,7 +87,8 @@ HTTP, verified against `control_apply_json()` (`src/control.c`) and the
 * **Whole sections `control_apply_json()` never walks:** `http.*`, `rtsp.*`,
   `jpeg.*`, `events.*`, `webrtc.*`, `srt.*`, `sim.*`. The POST surface only
   knows `image`, `audio`, `general`, `daynight`, `osd`/`osd<S>`, `video`,
-  `privacy`, `sensor`, `motion`, `record`, `timelapse`.
+  `privacy`, `roi` (**since the next release**), `sensor`, `motion`, `record`,
+  `timelapse`.
 * **Individual keys inside a walked section that carry no `F_CTRL`:**
   `general.loglevel`, `general.imp_polling_timeout`, `general.osd_pool_size`,
   `general.fs_keepalive` (only `general.debug_modules` is POST-able);
@@ -372,6 +373,11 @@ way to check.
 | `image.core_wb_mode` | int | `0` | 0..9 (0..8 on T10/T20/T30) | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_WB`. The SDK's `isp_core_wb_mode`: `0` auto, `1` manual (then `wb_rgain`/`wb_bgain` apply), `2` daylight, `3` cloudy, `4` incandescent, `5` fluorescent, `6` twilight, `7` shade, `8` warm fluorescent, `9` custom (T21/T23/T31/C100 only). Before v1.9.30 the range was 0..1, so `2..9` came back as `1`. |
 | `image.wb_rgain` | int | `0` | 0..255 (T10/T20/T30, Q7: 128 = 1.0), 0..4095 (T21/T23/T31, Q8: 256 = 1.0), 0..65535 elsewhere | T10 T20 T21 T23 T30 T31 C100 | Only meaningful with `core_wb_mode=1`. The neutral (1.0) value differs per SoC. **Since the next release** the value is clamped per SoC: T10/T20/T30: the kernel register is 8 bit, wider values are clamped to 255 (up to v1.9.33 they wrapped, 300 -> 44). T21/T23/T31: the register saturates at 4095 (~16x), wider values are clamped to it (up to v1.9.33 accepted up to 65535 and echoed unchanged). |
 | `image.wb_bgain` | int | `0` | 0..255 (T10/T20/T30, Q7: 128 = 1.0), 0..4095 (T21/T23/T31, Q8: 256 = 1.0), 0..65535 elsewhere | T10 T20 T21 T23 T30 T31 C100 | Only meaningful with `core_wb_mode=1`. Same per-SoC limits and scale as `image.wb_rgain`. **since v1.9.21** start value: read-only `image.wb_live.rgain`/`.bgain` in `GET /control` = gains AWB applies now. |
+| `image.fcrop_enable` | bool | `0` | — | see the tier table in §10a | **Since the next release.** ISP FrontCrop ("zoom"): `1` = the ISP delivers only the `fcrop_x/y/w/h` window of the sensor, and every stream scales it to its own size. Live where `caps.fcrop.live` is 1; on T23, T40/T41, T30, C100 and vendor T10/T20/T21 a POST answers `"unsupported"` and a file value is ignored with one WARN at start. Not in `caps.image` — `caps.fcrop` carries the tier. |
+| `image.fcrop_x` | int | `0` | 0..8192 | as above | Left edge in **sensor** pixels (unrotated, before any stream scaler), like the FrameSource crop. The SDK struct orders **top before left** — the HAL maps `x`→`fcrop_left`, `y`→`fcrop_top`. |
+| `image.fcrop_y` | int | `0` | 0..8192 | as above | Top edge, sensor pixels. |
+| `image.fcrop_w` | int | `0` | 0..8192 | as above | Window width. The HAL evens x/y/w/h, moves (never shrinks) the window inside the sensor and refuses anything under 64×64 (`state":"rejected"`, WARN). Keep the stream aspect ratio, or every stream is stretched. |
+| `image.fcrop_h` | int | `0` | 0..8192 | as above | Window height. |
 | `image.ae_it_max_us` | int | `0` | 0..1000000 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_AE_IT_MAX` (T23/T31/C100) or `ISP_HAS_AE_IT_RANGE` (T10/T20/T21/T30). Inert on T40/T41. `0` = no cap: touches nothing if no cap was ever written, otherwise writes the sensor mode's own (remembered, uncapped) AE maximum back (**since v1.9.30**; before that `0` needed a restart). |
 
 Prose and pitfalls
@@ -418,6 +424,23 @@ Prose and pitfalls
      re-checked rather than inherited.
 * `image.hflip=1` + `image.vflip=1` is the supported way to get a 180° picture
   on every SoC except T40/T41 (see `videoN.rotation`).
+* **FrontCrop (`image.fcrop_*`, since the next release).** One window for the
+  whole ISP, in sensor pixels; the request is applied **once per POST** (after
+  all four coordinates arrived) and at start after every channel exists.
+  `GET /control` reports `caps.fcrop` = `{tier, live, min:64, even:1,
+  sensor:[w,h], state}`; `state` is `off`, `on`, `rejected` (timps refused the
+  window: below 64×64 or no sensor size), `failed` (the SDK refused it — the
+  window is invalid or no stream can show it) or `unsupported`. Device-tested
+  only on **T20 and T21 with OpenIMP**; on **T20 only the downscaled streams
+  show the window** (a main stream at sensor resolution keeps the full
+  picture). T10 (OpenIMP) and T31 are `experimental` (T31: Get/Set round-trip
+  only; the OpenIMP source at d810050 stores the value without programming the ISP).
+  **T23 refuses it completely**, even from the file: a crop change stops the
+  T23 pipeline until a reboot (open OpenIMP blocker). Max zoom is undocumented.
+  OSD, privacy masks, ROI regions and the motion grid stay in **stream-frame**
+  coordinates — the scene moves under them; the HAL logs a WARN when a crop
+  is applied while a privacy mask is enabled. Interaction with `hflip`/`vflip`
+  and rotation is untested.
 * Unit note: `ae_it_max_us` is **microseconds**, deliberately not sensor lines —
   the HAL converts with the SDK's `one_line_expr_in_us` and clamps into the
   sensor's real range at apply time. **since v1.9.30** on T10/T20/T21/T30, where
@@ -795,6 +818,83 @@ A privacy region on the motion-monitored stream is excluded from the IVS grid
 (they share the FrameSource, and the cover would otherwise trip motion), so
 changing one rebuilds the motion grid live. Dragging a rectangle posts
 `x`+`y`+`w`+`h` in one request and the rebuild is batched to once per request.
+
+---
+
+## 10a. Encoder ROI — `roi<S>.<N>.*`
+
+**Since the next release.** Per-stream regions with their own QP
+(`IMP_Encoder_SetChnROI`, the T10..T23 SDK API), e.g. a sharper face area or
+a coarser sky. `S` = stream `0..1`, `N` = region `0..3` (`MS_MAX_ROI = 4`; the
+SDK has 8 slots, timps uses 0..3 to keep the key table and `GET /control` at
+the privacy-mask size). POST shape like privacy:
+
+```json
+{"roi": {"0": {"1": {"enabled":1,"x":640,"y":320,"w":320,"h":240,"qp":-6,"qp_mode":1}}}}
+```
+
+| Key | Type | Default | Range | Apply | Notes |
+| --- | --- | --- | --- | --- | --- |
+| `enabled` | bool | `0` | — | live | |
+| `x` | int | `0` | 0..8192 | live | Pixels of the **encoded stream picture** (`videoN.width` × `height`). |
+| `y` | int | `0` | 0..8192 | live | |
+| `w` | int | `0` | 0..8192 | live | |
+| `h` | int | `0` | 0..8192 | live | |
+| `qp` | int | `-5` | -51..51 | live | Clamped by the HAL per mode: absolute 0..51, delta -26..25. |
+| `qp_mode` | int | `1` | 0..1 | live | `0` absolute QP, `1` delta to the frame QP (SDK `bRelatedQp`). |
+
+"live" = the stream's encode thread re-applies all its regions before the next
+frame (the SDK takes it from the next frame on); an idle stream gets them when
+it starts. Where `caps.roi.tier` is `unsupported` the keys are capability-gated
+(POST → `"unsupported"`, a file value logs one WARN at start).
+
+Pitfalls:
+
+* **Corners, not sizes.** The SDK `IMPRect` is two inclusive corners `p0/p1`
+  (OpenIMP's header calls the same four ints x/y/width/height but reads them as
+  corners). timps converts: `p0 = (x, y)`, `p1 = (x+w-1, y+h-1)`.
+* **Macroblocks.** The SDK truncates to 16×16 macroblocks and clips nothing;
+  timps rounds the rectangle **outwards** to 16 and clamps it into the picture.
+  `p1` is the last pixel of the last macroblock, so it stays inside the
+  macroblock grid whether libimp treats it as inclusive or exclusive (at worst
+  one macroblock short). A region fully outside the picture is turned off with a
+  WARN. The aligned corners are logged at INFO.
+* **H.264, unrotated streams only.** An H.265 stream (`caps.roi.streams[S]` =
+  `h265`) and a 90/270 stream (`rotated`: the encoder input is the rotated frame
+  and how the SDK addresses it is unverified) ignore their regions with one
+  WARN. The coordinates are meant in the picture as the viewer sees it, so a
+  future rotated mode needs no new keys.
+* Delta behaviour at the QP limits, the interaction with each rate-control mode
+  and with OSD/privacy covers are untested. A bitrate effect has **not** been
+  measured anywhere.
+
+`GET /control`: `roi.<S>.<N>.*` echoes the config; `caps.roi` =
+`{tier, regions:4, slots:8, align:16, qp_abs:[0,51], qp_delta:[-26,25],
+streams:[...]}`, `streams[S]` one of `ok`, `off`, `h265`, `rotated`,
+`unsupported`.
+
+### Tier table (ROI and FrontCrop, `src/roi_caps.h`)
+
+`effective` = device-tested, `experimental` = the call exists and returns 0,
+effect unverified (or known absent), `unsupported` = refused. Both setters are
+bound weak: a libimp without the symbol reports `unsupported` at run time.
+
+| SoC | ROI, vendor libimp | ROI, OpenIMP | FrontCrop, vendor | FrontCrop, OpenIMP |
+| --- | --- | --- | --- | --- |
+| T10 | experimental | experimental (host-tested registers) | unsupported (no symbol) | experimental (untested) |
+| T20 | experimental | **effective** (QP51 block visible, QP15 clean) | unsupported (no symbol) | **effective** (downscaled streams only) |
+| T21 | experimental (returns 0, no effect seen) | experimental (no effect without `OPENIMP_T21_ROI=1`) | unsupported (no symbol) | **effective** (all streams, 5 runs) |
+| T23 | experimental | experimental (passed to the vendor i264e) | unsupported (pipeline-stop blocker) | unsupported (same) |
+| T30, C100 | unsupported (not investigated) | — | unsupported (not investigated) | — |
+| T31 | unsupported (no ROI call) | unsupported | experimental (Get/Set only) | experimental (d810050 stores it, programs nothing) |
+| T40, T41 | unsupported (`SetChnRoiAttr` API, not wired) | unsupported | unsupported (no FrontCrop; live fs crop stops T41) | unsupported |
+| host sim | sim | | sim | |
+
+Raising a tier after a device test is one line in `src/roi_caps.h` plus the
+`ROI_MATRIX` expectation in the Makefile (`make test-roi`). What to measure
+first: the ROI bitrate/QP effect on T20 (CBR and VBR), any effect on T10/T21/
+T23 (vendor and OpenIMP), the FrontCrop picture on T10 and T31, and whether a
+start-only FrontCrop survives on T23.
 
 ---
 
@@ -1478,9 +1578,9 @@ The key inventory in this file was verified mechanically, not by hand. A script
 
 1. It extracts every `static const cfg_field <name>_fields[] = { … }` table and
    every `F(...)` / `FS(...)` entry inside it (name + alias), mapping each table
-   to its section prefix from `g_sections[]` — including the three indexed
+   to its section prefix from `g_sections[]` — including the four indexed
    tables (`video_fields` → `video<N>.`, `osd_item_fields` → `osd<S>.<N>.`,
-   `privacy_fields` → `privacy<S>.<N>.`).
+   `privacy_fields` → `privacy<S>.<N>.`, `roi_fields` → `roi<S>.<N>.`).
 2. It adds the keys handled by explicit code in `set_kv()` outside the tables:
    `general.syslog`, `general.trace`, `general.trace_ms`, the four deprecated
    `motion.roi_*`, and the retired/now-constant `daynight.*` names extracted
@@ -1491,12 +1591,14 @@ The key inventory in this file was verified mechanically, not by hand. A script
    index pattern (`video<N>`/`videoN`/`video0`, `osd<S>.<N>`/`osdS.N`/`osd0.0`,
    `privacy<S>.<N>` …, or a leaf name in that section's table).
 
-**Result: 228 canonical config keys documented, 0 missing.** The breakdown:
+**Result: 240 canonical config keys documented, 0 missing** (the next
+release adds `image.fcrop_*` and `roi<S>.<N>.*`; the earlier count was 228).
+The breakdown:
 
-* **202** from the `cfg_field` tables — `sensor` 5, `image` 23, `audio` 24,
+* **214** from the `cfg_field` tables — `sensor` 5, `image` 28, `audio` 24,
   `jpeg` 7, `rtsp` 7, `http` 11, `webrtc` 4, `events` 3, `general` 5, `sim` 4,
   `srt` 8, `osd` 6, `motion` 9, `record` 10, `timelapse` 6, `daynight` 25,
-  `video<N>` 25, `osd<S>.<N>` 14, `privacy<S>.<N>` 6.
+  `video<N>` 25, `osd<S>.<N>` 14, `privacy<S>.<N>` 6, `roi<S>.<N>` 7.
 * **7** handled by explicit code in `set_kv()` outside the tables:
   `general.syslog`, `general.trace`, `general.trace_ms`, `motion.roi_x/y/w/h`.
 * **19** retired or now-constant `daynight.*` names that the loader still
@@ -1514,7 +1616,7 @@ Counting notes:
 * `webrtc.*` (4 keys) only exists in a `USE_WEBRTC` build; it is counted because
   the table exists in the source.
 * Limits used for the index ranges, all from `src/config.h`:
-  `MS_MAX_VSTREAM = 2`, `MS_MAX_OSD = 8`, `MS_MAX_PRIVACY = 4`,
+  `MS_MAX_VSTREAM = 2`, `MS_MAX_OSD = 8`, `MS_MAX_PRIVACY = 4`, `MS_MAX_ROI = 4`,
   `MS_MAX_STR = 64`; and from `src/motion_caps.h`, `MOTION_MAX_CELLS` =
   `IMP_IVS_MOVE_MAX_ROI_CNT` (52, or 4 on the T10/T20 3.9.0 SDK).
 
@@ -1538,5 +1640,6 @@ into support questions.
 | **T40, T41** | Flips go through `IMP_ISP_Tuning_SetHVFLIP` instead of `SetISPHflip`/`SetISPVflip`, and `g_sensor.rst_gpio`/`pwdn_gpio`/`power_gpio` are forced to `-1` (the fields are plain `int` in that SDK). | `src/hal/hal_ingenic.c` |
 | **T31/C100 vs T40/T41** | `ENC_HAS_QPIPDELTA` (hence a working `videoN.i_bias_lvl`) is T31/C100 only. | `src/hal/hal_ingenic.c` |
 | **T31** | The `isp_ch0_pre_dequeue_time` one-buffer gate on framechan0 — see `videoN.buffers` in §5. | `src/hal/hal_ingenic.c` |
+| **all** | **Since the next release** encoder ROI and ISP FrontCrop are tiered per SoC and libimp flavour (`caps.roi.tier`, `caps.fcrop.tier`): only T20 ROI and T20/T21 FrontCrop, all with OpenIMP, are device-tested. T23 refuses FrontCrop entirely (a crop change stops its pipeline until reboot). Table in §10a. | `src/roi_caps.h` |
 | **T23, T41 with `USE_OPENIMP`** | **Since the next release** `general.fs_keepalive = -1` (the default) resolves to **on**: the FrameSources run from start to stop, so `framesource N disabled (idle)` never appears and day/night kicks are no-ops. Everywhere else it resolves to off. | `src/hal/fs_ref.h` (`FS_KEEPALIVE_AUTO`) |
 | **T23, T41 with `USE_OPENIMP`** | **Since the next release** the only SoCs where `daynight.ir_idle_off` can become available without touching `general.fs_keepalive` (it needs the keepalive). Elsewhere it reports `reason = "keepalive"` unless the keepalive is forced on (untested there). | `src/dn_idle.h`, `src/daynight.c` |

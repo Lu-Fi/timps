@@ -69,6 +69,17 @@ image.backlight_compensation = 0
 image.core_wb_mode           = 0     # 0 auto
 image.wb_rgain               = 0
 image.wb_bgain               = 0
+# ISP FrontCrop ("zoom"): only this window of the SENSOR (x/y = left/top,
+# unrotated sensor pixels, even, >= 64x64) reaches the streams, each scales it
+# to its own size - keep the stream aspect ratio. Device-tested on T20/T21 with
+# OpenIMP only (T20: downscaled streams only); T10 OpenIMP and T31 experimental;
+# refused on T23 (a crop change stops its pipeline until reboot), T40/T41,
+# T30, C100 and vendor T10/T20/T21. caps.fcrop in GET /control has the tier.
+# image.fcrop_enable = 1
+# image.fcrop_x      = 480
+# image.fcrop_y      = 270
+# image.fcrop_w      = 960
+# image.fcrop_h      = 540
 
 # ---- SECURITY --------------------------------------------------------------
 # Authentication is OFF while user/pass are empty (the shipped default). Set
@@ -658,6 +669,20 @@ osd1.0.outline_color = 0xFF000000
 # privacy0.0.w       = 320
 # privacy0.0.h       = 180
 # privacy0.0.color   = 0xFF000000
+
+# ---- encoder ROI (per-region QP) ----
+# Up to 4 regions per stream (roi<S>.<N>, N 0..3), H.264 and unrotated streams
+# only. x/y/w/h in the stream's pixels, rounded outwards to 16x16 macroblocks.
+# qp_mode 1 = delta to the frame QP (-26..25), 0 = absolute QP (0..51).
+# Device-tested on T20 with OpenIMP only; T10/T20 vendor/T21/T23 experimental
+# (T21: no effect seen), T30/T31/T40/T41/C100 refused. caps.roi has the tier.
+# roi0.0.enabled = 1
+# roi0.0.x       = 640
+# roi0.0.y       = 320
+# roi0.0.w       = 320
+# roi0.0.h       = 240
+# roi0.0.qp      = -6
+# roi0.0.qp_mode = 1
 
 # ---- local recording (fragmented MP4 to SD, like raptor's RMR) ----
 # Records one video stream to <dir>/<hostname>/records/<name>.mp4, rotating

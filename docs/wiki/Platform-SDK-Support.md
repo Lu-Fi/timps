@@ -112,6 +112,28 @@ kept that way specifically for numeric compatibility with prudynt-t's raw
 `rotTo90` enum values) — see `docs/rotation.md` for the full rationale and
 on-device test history.
 
+## ROI and FrontCrop tiers
+
+Since the next release, encoder ROI (`roi<S>.<N>.*`) and ISP FrontCrop
+(`image.fcrop_*`) carry a per-SoC tier in `src/roi_caps.h`, reported as
+`caps.roi.tier` / `caps.fcrop.tier`: **effective** = device-tested,
+**experimental** = the call exists and returns 0 but the effect is unverified
+(or known absent), **unsupported** = refused. Both setters are bound weak, so a
+libimp without the symbol reports unsupported at run time.
+
+| SoC | ROI vendor | ROI OpenIMP | FrontCrop vendor | FrontCrop OpenIMP |
+| --- | --- | --- | --- | --- |
+| T10 | experimental | experimental | unsupported | experimental |
+| T20 | experimental | **effective** | unsupported | **effective** (downscaled streams only) |
+| T21 | experimental (no effect seen) | experimental (no effect) | unsupported | **effective** |
+| T23 | experimental | experimental | unsupported (crop change stops the pipeline) | unsupported (same) |
+| T30, C100 | unsupported | — | unsupported | — |
+| T31 | unsupported (no ROI call) | unsupported | experimental | experimental |
+| T40, T41 | unsupported (`SetChnRoiAttr`, not wired) | unsupported | unsupported | unsupported |
+
+Raising a tier after a device test is one line in `src/roi_caps.h` plus its
+`ROI_MATRIX` entry in the Makefile (`make test-roi`).
+
 ## FrameSource keepalive default
 
 `general.fs_keepalive = -1` (the default) resolves per build, from

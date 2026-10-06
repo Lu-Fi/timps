@@ -126,6 +126,7 @@ cannot actually apply, instead of hardcoding a feature matrix client-side:
 | `caps.events_max_clients` | Concurrent `/events` (SSE) subscribers before `503 busy`. Unlike the two above this is a **config** key (`events.max_clients`, default 8), so it is per-camera, not per-build. |
 | `caps.motion` | `{"available":0\|1, "max_cells":N}` — whether this build/SDK has the `IMP_IVS` move API, and the compile-time cell budget (`IMP_IVS_MOVE_MAX_ROI_CNT`, 52 on most SDKs, 4 on the old T10/T20 3.9.0 SDK). |
 | `caps.privacy` | `{"available":0\|1, "max_regions":N}` — `available` reflects whether an OSD group actually exists on **any** stream (it only does if OSD or a privacy region was enabled at boot), not a hardcoded 1. |
+| `caps.roi` / `caps.fcrop` | Since the next release. `{"tier":"effective\|experimental\|unsupported\|sim", ...}` for encoder ROI (`regions`, `slots`, `align`, `qp_abs`, `qp_delta`, `streams[]`) and ISP FrontCrop (`live`, `min`, `even`, `sensor:[w,h]`, `state`). See [Platform & SDK Support](Platform-SDK-Support.md#roi-and-frontcrop-tiers). |
 | `caps.rotation` | (Only present in `USE_ROTATE` builds.) The ascending array of rotation values this SoC's build can actually apply, e.g. `[0]`, `[0,90,270]`, or `[0,90,180,270]` on T40/T41. See [Platform & SDK Support](Platform-SDK-Support.md). |
 | `caps.record` / `caps.timelapse` | `{"available":0\|1}` per `USE_RECORD`/`USE_TIMELAPSE`. |
 | `caps.backchannel` | `{"available":<bc_available()>,"talk_ws":0\|1\|2}` — `available` is whether the backchannel was actually configured at boot (restart-only master switch — see [Audio](Audio.md)). `talk_ws` is the browser-microphone WebSocket (`/talk`, `USE_BC_WS`) on the *same* backchannel, reported as a second flag rather than a second caps entry because a camera can perfectly well have the RTSP backchannel without it. It is the **resolved verdict**, not the raw `audio.talk_ws` value: `0` = this port would not serve `/talk` at all right now, `1` = served, TLS required, `2` = served, plain `ws://` accepted. `audio.talk_ws=1` on a plaintext port therefore reports `0` (every request would `426`), so a WebUI can gate its talk button on this one number. Nothing here says which scheme to dial: `1` always means `wss://`; for `2` take the scheme from the same `tls` field the media/control URLs use. |
@@ -426,6 +427,7 @@ Nested per-section objects, matching the config-file section prefixes:
   "osd1":  {"0":{"text":"sub cam"}},
   "video": {"0":{"bitrate":3500},"1":{"bitrate":600}},
   "privacy": {"0":{"0":{"enabled":1,"x":0,"y":0,"w":200,"h":100,"color":"0xFF000000"}}},
+  "roi": {"0":{"0":{"enabled":1,"x":640,"y":320,"w":320,"h":240,"qp":-6,"qp_mode":1}}},
   "sensor": {"model":"gc2053","i2c_addr":55,"fps":25,"width":1920,"height":1080},
   "daynight": {"mode":"sun","sun_latitude":52.52,"sun_longitude":13.40},
   "motion": {"enabled":1,"sensitivity":128,"cols":5,"rows":5},
