@@ -82,6 +82,7 @@
     "forbid_log": [
       "switching to day"
     ],
-    "monotonicity": "skip"
+    "monotonicity": "skip",
+    "max_idle_gap_s": 840
   }
 }

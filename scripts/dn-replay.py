@@ -159,7 +159,9 @@ Scenario JSON (all times virtual seconds, all gains IMP [24.8] linear):
                                   virtual seconds later (the script's `&`).
   ir_hook_rc                    - OPTIONAL int or {"<verb>": rc}: exit code of
                                   the irprobe stub (int: every verb). The stub
-                                  knows on/off/idle (= off, no watchdog) and
+                                  knows on/off/idle (= off; the hook's
+                                  watchdogs are not modelled, see
+                                  max_idle_gap_s) and
                                   state (prints the LED state); an unknown verb
                                   exits 2. {"idle": 2, "state": 2} is a hook
                                   from before Idle-Dark, {"idle": 3} a board
@@ -206,6 +208,13 @@ Scenario JSON (all times virtual seconds, all gains IMP [24.8] linear):
     max_led_on_unwatched_s      - max continuous LED-on time at night with no
                                   consumer (the linger counts; set the bound
                                   above it)
+    led_on_in                   - [[t0, t1], ...] the illuminator is on at
+                                  some point in each window
+    max_idle_gap_s              - every "idle" hook call is followed by the
+                                  next idle/on/off call or a board switch
+                                  within this many seconds (the end of the run
+                                  counts): the hook's idle watchdog (900 s)
+                                  relights on its own after that
 
 Exit code 0 iff every run scenario passed. Output is plain text, no ANSI.
 """
@@ -1003,10 +1012,24 @@ def check_monotonicity(rep, trace_path, policy):
                  (": " + viol[0]) if viol else ""),
               warn_only=(policy != "enforce"))
 
+def check_idle_gap(rep, exp, hooks, switches, dur):
+    if "max_idle_gap_s" not in exp:
+        return
+    ends = sorted([t for t, v in hooks if v in ("idle", "on", "off")] +
+                  [t for t, _ in switches])
+    idles = [t for t, v in hooks if v == "idle" and t < dur]
+    worst = 0.0
+    for t in idles:
+        nxt = next((e for e in ends if e > t), dur)
+        worst = max(worst, min(nxt, dur) - t)
+    rep.check(bool(idles) and worst <= exp["max_idle_gap_s"], "idle-gap",
+              "%d idle calls, longest unrenewed %.0fs (bound %.0fs)"
+              % (len(idles), worst, exp["max_idle_gap_s"]))
+
 def check_led(rep, exp, leds, segs, dur, consumers, watchers_at, samples):
     """Idle-Dark assertions on the illuminator timeline (see expect:)."""
     keys = ("ir_state_at", "max_led_toggles", "led_on_within_s",
-            "max_led_on_unwatched_s")
+            "max_led_on_unwatched_s", "led_on_in")
     if not any(k in exp for k in keys):
         return
     changes, cur = [], "on"
@@ -1030,6 +1053,10 @@ def check_led(rep, exp, leds, segs, dur, consumers, watchers_at, samples):
     for t, want in exp.get("ir_state_at", []):
         got = led_at(t)
         rep.check(got == want, "led@%ds" % t, "want %s, got %s" % (want, got))
+    for t0, t1 in exp.get("led_on_in", []):
+        lit = led_at(t0) == "on" or any(
+            t0 <= tt <= t1 and s == "on" for tt, s in changes)
+        rep.check(lit, "led-on@%d-%ds" % (t0, t1), "never on" if not lit else "on")
     if "max_led_toggles" in exp:
         rep.check(len(changes) <= exp["max_led_toggles"], "led-toggles",
                   "%d changes (budget %d)" % (len(changes), exp["max_led_toggles"]))
@@ -1274,6 +1301,7 @@ def run_regression(scn, binary, keep=False, scale_override=None):
             pass
         check_led(rep, exp, sim.leds(), segs, dur, consumers or [],
                   watchers_at, [f[0] for f in fed])
+        check_idle_gap(rep, exp, sim.ir_probes(), switches, dur)
         for rx in exp.get("expect_log", []):
             rep.check(re.search(rx, logtext) is not None, "expect-log",
                       repr(rx))

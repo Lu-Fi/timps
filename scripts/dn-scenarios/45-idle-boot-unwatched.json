@@ -54,6 +54,7 @@
     "expect_log": [
       "boot: night confirmed by the silent probe"
     ],
-    "monotonicity": "skip"
+    "monotonicity": "skip",
+    "max_idle_gap_s": 840
   }
 }
