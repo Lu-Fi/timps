@@ -54,7 +54,7 @@ exhaustive config-key reference (`config-keys.md`).
 - **Native speaker output** — timps owns `IMP_AO` directly: ONVIF audio backchannel (two-way audio) and a system-sound play queue (WAV/Opus/PCM/G.711), no `/bin/iac` dependency
 - **Local recording & timelapse** — continuous or motion-triggered fragmented-MP4 segments to SD (pre/post-roll, free-space pruning), plus periodic JPEG timelapse capture
 - **Privacy masks** — solid cover rectangles per stream, live-adjustable
-- **Image rotation** — hardware 90/270 on T31/T40/T41, software 90/270 on T23, plus genuine per-channel 180° on T40/T41 (I2D); on other SoCs a 180° flip is `image.hflip`+`image.vflip`
+- **Image rotation** — hardware 90/270 on T31/T40/T41, software 90/270 on T23 and (OpenIMP builds with an OpenIMP that has T1x rotation, sub streams) T10/T20/T21, plus genuine per-channel 180° on T40/T41 (I2D); on other SoCs a 180° flip is `image.hflip`+`image.vflip`
 - **Optional HTTPS/RTSPS (mbedTLS) and MPEG-TS/SRT output**
 - **Optional WebRTC/WHEP** — H.264 (+ G.711) straight into a browser over ICE-lite/DTLS-SRTP, no plugin and no MSE buffering; LAN/VPN only (no NAT traversal)
 - **Authentication** — RTSP Digest, HTTP Digest/Basic (own MD5) + a `/control` token (per-boot + optional remote secret) with CORS
@@ -348,7 +348,10 @@ by default (as long as OSD or a privacy region was on at startup). Details:
 
 `videoN.rotation = 0|90|270` (plus `180` on T40/T41), `USE_ROTATE` (off by
 default, restart-required). Hardware 90/270 on T31/T40/T41; software 90/270
-(`USE_SW_ROTATE`) on T23 at the cost of CPU and H.264-only encoding.
+(`USE_SW_ROTATE`) on T23 at the cost of CPU and H.264-only encoding; with
+`USE_OPENIMP`, 90/270 on T10/T20/T21 sub streams (16-aligned, at most 704x576)
+when the OpenIMP has T1x rotation (commit `6b7f5ae`; with any other OpenIMP the
+stream starts unrotated).
 `rotation=180` is a genuine per-channel capability **only on T40/T41** (I2D);
 on every other SoC it's redundant with a global ISP flip and is coerced to 0
 there — use `image.hflip=1` + `image.vflip=1` instead. Full per-SoC matrix,

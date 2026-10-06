@@ -134,8 +134,13 @@ encoder channel stopped) — see 5.2.
   500 ms (unchanged), and **keep** the reference for another
   `MS_IDLE_STOP_US` (2 s). It is released by `fs_kick_reap()`, which every idle
   producer loop (video, sw-rot, jpeg) calls before blocking in `act_wait()`;
-  those loops wake at least once a second. So chn0 is disabled 2-3 s after the
-  kick instead of immediately.
+  an idle loop wakes at least once a second. A loop that streams does not
+  reap, but then chn0 is held anyway: the hold matters only once stream 0's
+  own loop is idle, and that loop then reaps within about a second. So chn0 is
+  disabled 2-3 s after the kick instead of immediately. Only if the stream-0
+  thread were missing (thread creation failed) and every other loop streamed
+  for good would the hold outlive its deadline (chn0 keeps running, no hang
+  risk).
 * **chn0 already running:** take (or extend) the same hold, **no edge and no
   wait**. The brief asked for "do nothing" here. A pure no-op would reopen a
   small hole: if the only holder is an encoder thread in its own 2 s debounce
@@ -169,7 +174,9 @@ enable.
 
 * `ing_start()`, after all video channels, the audio thread and the dedicated
   JPEG channel exist and **before** `motion_sync()` and the boot kick, resolves
-  `general.fs_keepalive` and, when on, calls `fs_keep_acquire()` for every
+  `general.fs_keepalive` (`-1`/`auto`, `0`/`off`/`false`/`no`, `1`/`on`/`true`/
+  `yes`; an unknown word logs a warning and stays `-1`) and, when on, calls
+  `fs_keep_acquire()` for every
   video stream's FrameSource in stream order (FS0 first) and for the dedicated
   `jpeg.*` channel's FrameSource. One enable edge per channel per start, before
   any client can connect (RTSP/HTTP start after `start()` returns).
@@ -205,10 +212,14 @@ enable.
   (`StopRecvPic`/`StartRecvPic`), never `fs_recycle()`. Log:
   `recycling the encoder (framesource kept alive)`. This is the minimal safe
   variant: it never creates the edge the keepalive exists to avoid. If the
-  encoder still delivers nothing, the existing miss watchdog runs (its
-  `fs_unuse()`/`fs_use()` pair is a reference bump under the keepalive, so it
-  is an encoder restart too) and after `MS_JPEG_WATCHDOG_MAX_RECOVERIES` it
-  gives up on that JPEG channel only; video is unaffected. Whether the
+  encoder still delivers nothing, the miss watchdog runs; with the FrameSource
+  kept it restarts only the encoder as well (no `fs_unuse()`/`fs_use()`, which
+  would only be a reference bump), logged `jpeg chnN: encoder dead after N
+  consecutive misses - restarting the encoder (framesource kept alive) to
+  recover`. Without the keepalive it keeps its `fs_unuse()`/`fs_use()` cycle
+  and the old `forcing a framesource disable/enable cycle` text. After
+  `MS_JPEG_WATCHDOG_MAX_RECOVERIES` (5) it gives up on that JPEG channel only;
+  video is unaffected. Whether the
   "empty until recycled" fault happens at all with a warm FrameSource is
   unknown (M5).
 * **Video watchdog** (encoder dead for ~5 s with a client attached): still
@@ -240,7 +251,11 @@ enable.
 
 The replay corpus (`scripts/dn-replay.py`) runs against the sim, which has no
 FrameSource; it is unchanged by construction and was re-run as a regression
-(38/38).
+(38/38). The harness needs a sim built with the virtual clock of each
+scenario's `scale`: `make sim SIM_CFLAGS=-DMS_CLOCK_SCALE=30` for the 18
+scale-30 scenarios and `=60` for the 20 scale-60 ones (pass the binary with
+`--bin`). A plain `make sim` runs in real time, and the harness then aborts
+every scenario at its clock check (`corpus: 0 passed, 38 failed`).
 
 ### 3.4 Default rule and why
 

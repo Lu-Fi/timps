@@ -6,7 +6,7 @@ firmware. Everything here is verified against the `main` branch of
 <https://github.com/Lu-Fi/timps> and against `package/timps/` in a thingino
 firmware tree.
 
-Applies to timps v1.9.32 (source: `main`, 2026-10-04)
+Applies to timps v1.9.33 (source: `main`, 2026-10-05)
 
 A statement marked **since vX** is new in that release — on an older camera
 describe the previous behaviour. Changes listed under `[Unreleased]` in
@@ -96,10 +96,12 @@ exclusion:
 - ISP tuning API split: `ISP_NEW_TUNING_API` only on **T40/T41** — several
   `image.*` knobs do not exist there (highlight depress, sinter/temper NR,
   max again/dgain, manual WB, ISP hflip/vflip). Exception: T41 built with
-  OpenIMP (`USE_OPENIMP`) has `ae_compensation` and sinter/temper NR.
+  OpenIMP (`USE_OPENIMP`) has `ae_compensation` and sinter NR (since v1.9.33)
+  and temper NR (since the next release).
 - `audio.alc_gain` (analog PGA) exists only on **T21, T31, C100**.
 - Rotation: hardware I2D on **T40/T41**, FrameSource rotate on **T31** and,
-  with OpenIMP only, on **T10/T20/T21** sub streams (see `config-keys.md`),
+  with OpenIMP only, on **T10/T20/T21** sub streams (since the next release;
+  needs an OpenIMP with T1x rotation, see `config-keys.md`),
   software on **T23** (opt-in), none on **T30/C100**.
 - A host build with no `PLATFORM_*` macro (`make sim`) reports every
   capability, so the WebUI can be exercised without hardware.
@@ -229,7 +231,7 @@ general.debug_modules       =        # comma list, max 8; raises those modules t
 general.syslog              = 1      # also log to syslog (visible in `logread`)
 general.imp_polling_timeout = 500    # ms
 general.osd_pool_size       = 1024   # KB
-general.fs_keepalive        = -1     # -1 auto (on: open-stack T23/T41), 0 off, 1 on; restart
+general.fs_keepalive        = -1     # -1/auto (on: open-stack T23/T41), 0/off, 1/on; restart
 ```
 Module tags for `debug_modules`: `MAIN CONFIG CTRL DAYNIGHT HAL_ING HTTP HUB
 MOTION OSD REC RTSP SRT TL HAL_SIM TLS AAC bc spk TRACE WEBRTC talk events
@@ -249,6 +251,9 @@ always wins. T40/T41 and the host sim have no registry, so set them there.
 `defog_strength`, `drc_strength`, `highlight_depress` (0), `backlight_compensation`
 (0), `core_wb_mode` (0 = auto), `wb_rgain`, `wb_bgain`, `ae_it_max_us`
 (opt-in cap on AE integration time).
+`wb_rgain`/`wb_bgain` (manual WB, `core_wb_mode = 1`): **since the next
+release** clamped per SoC — 0..255 on T10/T20/T30 (Q7, unity 128), 0..4095 on
+T21/T23/T31 (Q8, unity 256), 0..65535 elsewhere.
 **since v1.9.21** `GET /control` also returns read-only
 `image.wb_live` = `{"rgain":R,"bgain":B}`, the gains in effect right now (in
 auto: what AWB picked). POSTing them with `core_wb_mode=1` switches to manual
@@ -264,7 +269,8 @@ vendor libimp is safe.
 ```
 videoN.enabled   = 1
 videoN.codec     = h264            # h264 | h265
-videoN.width/height/fps
+videoN.width/height/fps          # 1920x1080 / 640x360; unset: a smaller known
+                                  #   sensor size instead (no upscale, since the next release)
 videoN.bitrate   = 3000 / 512      # kbps (meaning differs per SoC, see §7)
 videoN.rc_mode   = cbr             # cbr|vbr|fixqp|smart|capped_vbr|capped_quality
 videoN.gop       = 50
@@ -1083,14 +1089,17 @@ wait (2 s debounce instead).
 **Check:**
 1. `GET /control` → `caps.framesource`: `{"keepalive":1,"cfg":-1}` on an
    open-stack T23/T41 with the default. `keepalive:0` there means the key was
-   set to `0` — or to a word: `auto`/`on` parse as `0`.
+   set to `0` (or `off`/`false`/`no`). An unknown word logs `is not a valid
+   value, using -1 (auto)`.
 2. `logread | grep 'framesource'`: once per start
    `framesource keepalive on (general.fs_keepalive=-1, auto)` and one
    `framesource N enabled` per stream, then **no** `disabled (idle)` until a
    stop. Still normal: `video chnN idle` (the encoder idles).
 3. Remaining edges with the keepalive on: start/stop, a SW-rotate stream
    (`framesource N: no keepalive (software-rotate stream)`), and the video
-   watchdog's `forcing a framesource disable/enable cycle` (error path).
+   watchdog's `forcing a framesource disable/enable cycle` (error path). The
+   JPEG cold-start recycle and the JPEG miss watchdog only restart the encoder
+   (`... (framesource kept alive)`).
 
 **Switching it:** edit `/etc/timps.conf` (file-only, not POST-able), then
 `/etc/init.d/S95timps restart`. `general.fs_keepalive = 1` turns it on on any
@@ -1154,13 +1163,22 @@ the kernel log and escalate.
   `videoN.rotation` is coerced to 0 with a warning.
 - `rotation = 180` is a real per-channel capability **only on T40/T41**.
   Everywhere else use `image.hflip = 1` + `image.vflip = 1`.
-- `90`/`270` do not exist on T10/T20/T21/T30/C100 at all.
+- `90`/`270` do not exist on T30/C100 at all, nor on T10/T20/T21 with the
+  vendor libimp. **Since the next release** T10/T20/T21 OpenIMP builds rotate
+  sub streams (not `video0`; 16-aligned, at most 704x576, e.g. 640x368), but
+  only with an OpenIMP that has T1x rotation (commit `6b7f5ae`, branch
+  `claude/t1x-rotation`; none of the thingino `ciao` OpenIMP pins has it).
+  Any other OpenIMP: the stream starts unrotated with a warning naming the
+  reason
+  (`accepted a 0x0 picture, so it cannot rotate` = the `9cab219` stub,
+  `SetChnRotate refused` = a refusing OpenIMP). Not yet tested on hardware.
 - T23 90/270 needs `USE_SW_ROTATE`: CPU transpose + software H.264 encode,
   H.264 only, software text OSD only (no logo/privacy), substream-class
   resolution, and JPEG needs the rotated width (= source height) to be a
   multiple of 32 — e.g. 1280×704 → 704×1280, not 1280×720.
-- Direction is not uniform: on T23/T40/T41, 90 = clockwise; on T31, 90 =
-  counter-clockwise (kept numerically aligned with prudynt-t/raptor).
+- Direction is not uniform: on T23/T40/T41, 90 = clockwise; on T31 and
+  T10/T20/T21 (same `SetChnRotate` enum), 90 = counter-clockwise (kept
+  numerically aligned with prudynt-t/raptor).
 - On T31, hardware OSD/privacy currently do not work on 90/270 when the stream
   is downscaled from the sensor.
 - Rotation is restart-required; the advertised dimensions swap

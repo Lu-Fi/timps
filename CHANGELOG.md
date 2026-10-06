@@ -19,11 +19,18 @@ semantic versioning.
   `caps.framesource` in `GET /control` reports the resolved value. Auto is on
   only for OpenIMP builds on T23 and T41 (see Fixed). Elsewhere `1` is an
   opt-in: its idle CPU/heat/power cost is unmeasured, and the pools stay
-  allocated (~6.3 MB rmem for a 1080p main stream, peak unchanged). Numbers
-  only: `auto`/`on` read as `0`. T23 SW-rotate streams are exempt.
+  allocated (~6.3 MB rmem for a 1080p main stream, peak unchanged). Also
+  takes `auto`, `on`/`true`/`yes` and `off`/`false`/`no`; any other word logs a
+  warning and stays auto. T23 SW-rotate streams are exempt.
 - **T10/T20/T21 with the open stack: `videoN.rotation` 90/270 on sub streams**
   (OpenIMP FrameSource rotate; 16-aligned, at most 704x576, never `video0`;
-  otherwise the stream starts unrotated). Not yet tested on hardware.
+  otherwise the stream starts unrotated). Not yet tested on hardware. Needs an
+  OpenIMP with T1x rotation: commit `6b7f5ae` (branch `claude/t1x-rotation`,
+  not yet in OpenIMP `next` or any thingino `ciao` pin). OpenIMP `6857610`,
+  `0c02f45` and `636b6ac` refuse 90/270, and the `9cab219` stub (thingino
+  `ciao`) reports success without rotating; timps tells the stub apart with a
+  0x0 `SetChnRotate` probe at start, and in both cases the stream starts
+  unrotated with a warning naming the OpenIMP to upgrade.
 
 ### Changed
 
@@ -43,15 +50,25 @@ semantic versioning.
   these SoCs (T41: 3 of 3 attempts within ~200 ms; a T23 hung in a wake
   sequence), and an idle camera produced such pairs for every timelapse shot
   (1440 a day at 60 s), snapshot and day/night kick. `general.fs_keepalive`
-  defaults to on there; the JPEG cold-start recovery then restarts only the
-  encoder. Left: one enable per channel at start, one disable at stop, the
-  video watchdog's recovery cycle. `general.fs_keepalive = 0` restores the old
-  behaviour. Rationale and open measurements: `dev_notes/FS_KEEPALIVE_2026-10.md`.
+  defaults to on there; the JPEG cold-start recovery and the JPEG miss
+  watchdog then restart only the encoder (the miss watchdog used to log a
+  FrameSource cycle it did not do). Left: one enable per channel at start,
+  one disable at stop, the video watchdog's recovery cycle.
+  `general.fs_keepalive = 0` restores the old behaviour. Rationale and open
+  measurements: `dev_notes/FS_KEEPALIVE_2026-10.md`.
 - **T41 with the open stack: day/night knows the AE reserve.** It is read from
   `GetAeExprInfo` (capped gain ceiling); before, it was unknown and every
-  `r ~ 1` silent probe escalated to the audible probe.
+  `r ~ 1` silent probe escalated to the audible probe. The struct layout the
+  read depends on (232 bytes, open-tx-isp's packer) is checked at compile time.
+- **Day/night: a tick without a level no longer counts as a brightening.**
+  After a probe or reset (`s < 0`) path C could arm the `brightening` trigger
+  against the reference while readings were missing; it now needs a real level
+  (`src/daynight.c` path C).
 - **No upscaling by default.** With `video0.width`/`height` unset, a smaller
   known sensor size (e.g. 1280x720) is now the stream size instead of 1920x1080.
+  Visible after the update on cameras with a 720p or 4:3 sensor and no explicit
+  size: clients configured for a fixed resolution (Frigate, Home Assistant)
+  get the sensor size; set `video0.width`/`height` to keep 1920x1080.
 - **`image.wb_rgain` / `image.wb_bgain` clamp to the SoC's register width.**
   T10/T20/T30: 0..255, the kernel register is 8 bit (Q7, 128 = 1.0), so 300
   used to wrap to 44 and tint the picture. T21/T23/T31: 0..4095, the 14-bit
@@ -60,7 +77,9 @@ semantic versioning.
 - **Firmware `timps-irprobe` darkens every illuminator the board's `daynight`
   script drives** (ir850, ir940, white per `thingino.json`
   `daynight.controls.*`), not just the first IR type: on dual-LED or
-  white-light boards the silent probe read lit and judged day. Host test:
+  white-light boards the silent probe read lit and judged day. One stamp
+  `/run/timps-irprobe` replaces `/run/timps-irprobe.<type>`; the `ir` alias is
+  no longer tried (it only resolved to the ir850/ir940 pins anyway). Host test:
   `scripts/test_irprobe.sh`.
 
 ## [1.9.33] - 2026-10-05

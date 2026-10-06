@@ -19,8 +19,9 @@ general.osd_pool_size       = 1024   # KB, IMP OSD pool (this is the default)
 # FrameSource keepalive: -1 auto (on only for the open stack on T23/T41, where
 # a FrameSource disable/enable while the sensor streams can hang the SoC),
 # 0 off (FrameSources run only while something consumes), 1 on (opt-in
-# elsewhere; idle CPU/heat/rmem cost unmeasured). Numbers only - "auto"/"on"
-# parse as 0. Restart to apply. GET /control: caps.framesource.
+# elsewhere; idle CPU/heat/rmem cost unmeasured). auto/on/off are accepted
+# too; an unknown word warns and stays auto. Restart to apply.
+# GET /control: caps.framesource.
 # general.fs_keepalive      = -1
 
 # ---- sensor ----
@@ -295,9 +296,10 @@ video1.jpeg         = true      # JPEG at video1 resolution (e.g. 640x360)
 video1.jpeg_chn     = 4
 
 # ---- image rotation (videoN.rotation) -------------------------------------
-# 0 | 90 | 180 | 270. 90 = clockwise on T23/T40/T41; on T31, 90 = counter-
-# clockwise instead (kept numerically aligned with prudynt-t/raptor's raw
-# rotation=1|2 config values - see docs/rotation.md "Notes on direction").
+# 0 | 90 | 270, plus 180 on T40/T41 only (elsewhere use image.hflip=1 +
+# image.vflip=1). 90 = clockwise on T23/T40/T41; on T31 and T10/T20/T21, 90 =
+# counter-clockwise instead (kept numerically aligned with prudynt-t/raptor's
+# raw rotation=1|2 config values - see docs/rotation.md "Notes on direction").
 # NOTE: on T31, hardware OSD/privacy currently do NOT work on 90 or 270 when
 # the stream is downscaled from the sensor - see docs/rotation.md "Known
 # limitation". Restart-required (applied at build time of the pipeline). The
@@ -305,20 +307,26 @@ video1.jpeg_chn     = 4
 # 1080x1920). See docs/rotation.md for full detail.
 #
 # OFF BY DEFAULT - must be enabled at build time (menuconfig), like AAC/TLS:
-#   BR2_PACKAGE_TIMPS_ROTATE      -> 180 on all SoCs + HW 90/270 on T31/T40/T41
+#   BR2_PACKAGE_TIMPS_ROTATE      -> 90/270 on T31/T40/T41 (+180 on T40/T41),
+#                                    T10/T20/T21 sub streams with OpenIMP
 #   BR2_PACKAGE_TIMPS_SW_ROTATE   -> software 90/270 on T23 (needs the above)
 # Without these, 90/180/270 in this file are ignored (coerced to 0 with a warn).
 #
 # What each chip supports:
 #   T40, T41 : 90/180/270 in HARDWARE (I2D) - full fps, OSD+privacy work, any res
-#   T31      : 90/180/270 - 90/270 is libimp SOFTWARE rotate: <=1280x704 @ <=15fps,
+#   T31      : 90/270 - libimp SOFTWARE rotate: <=1280x704 @ <=15fps,
 #              64-px aligned, extra rmem, no soft-zoom
-#   T23      : 180 in HW; 90/270 only with SW_ROTATE = CPU transpose + software
+#   T10/T20/T21 : 90/270 only in OpenIMP builds, sub streams only (never
+#              video0), 16-px aligned (640x368, not 640x360), <=704x576, and
+#              only with an OpenIMP that has T1x rotation (commit 6b7f5ae);
+#              any other OpenIMP: the stream starts unrotated with a warning.
+#              Not yet tested on hardware.
+#   T23      : 90/270 only with SW_ROTATE = CPU transpose + software
 #              H.264 encode. H264 only, SW text-OSD only (no logo/privacy),
 #              substream-class res (~<=704x576 @ <=15fps). Snapshot+MJPEG work,
 #              but JPEG needs the rotated width (= source HEIGHT) %32==0: use
 #              e.g. 1280x704 -> 704x1280, not 1280x720.
-#   T10/T20/T21/T30/C100 : 180 only (no 90/270 primitive)
+#   T30/C100 : none (no 90/270 primitive)
 #
 # Cost: 180 + HW 90/270 add ~none (binary +<1KB, no runtime cost). The T23 SW
 # path adds ~7KB binary AND ~6MB of frame buffers + ~1 CPU core per rotated

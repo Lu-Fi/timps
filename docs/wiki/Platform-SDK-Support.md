@@ -62,8 +62,8 @@ for the full per-key table. Summary:
 | Hue (`SetBcshHue`) | T23, T31, T40, T41, C100 |
 | Backlight comp / defog / DPC strength | T23, T31, C100 |
 | DRC / WDR strength | T21, T23, T31, C100 |
-| Highlight depress, sinter/temper NR, max analog/digital gain, manual WB, ISP-level hflip/vflip | All **except** T40/T41 (`ISP_NEW_TUNING_API`); sinter/temper NR on T41 with OpenIMP |
-| AE compensation | All except T21 and T40/T41 |
+| Highlight depress, sinter/temper NR, max analog/digital gain, manual WB, ISP-level hflip/vflip | All **except** T40/T41 (`ISP_NEW_TUNING_API`); sinter NR (since 1.9.33) and temper NR (since the next release) on T41 with OpenIMP |
+| AE compensation | All except T21 and T40; T41 with OpenIMP (since 1.9.33) |
 | AE average luminance (`GetAeLuma`, secondary day/night metric) | T21, T23, T31, C100 |
 | Real sensor-attr readback (`GetSensorAttr`) | T23, T31, T32, T33, T40, T41, C100 (absent on T10/T20/T21/T30) |
 
@@ -101,13 +101,13 @@ lives in `docs/rotation.md`; the tiers are:
 | --- | --- | --- | --- |
 | No rotation primitive | *(none)* | T30, C100; T10, T20, T21 with the vendor libimp | `rotation` accepts only `0`; any 90/180/270 request is coerced to 0 with a warning. |
 | Software 90/270 (opt-in) | `ROT_HAS_SW_90` | T23 (needs `USE_SW_ROTATE=1`) | CPU NV12 transpose per frame + libimp's unbound `IMP_Encoder_YuvEncode` path. Real CPU cost on the single core, H.264-only, software text-OSD only (no logos/privacy covers on the rotated stream), and the [motion grid](Motion-Detection.md#the-t23-software-rotation-coordinate-caveat) needs an explicit coordinate-mapping fix since IVS itself still sees the pre-rotation frame. |
-| FrameSource software rotate | `ROT_HAS_FS_ROTATE` | T31; T10, T20, T21 with OpenIMP | `IMP_FrameSource_SetChnRotate` — rotation happens inside libimp, not visible to the rest of timps as "software," but still not true hardware. Hardware OSD/privacy overlays work on rotated 90/270 streams (fixed 2026-07-23) but are confined to a top-band region on non-square rotated streams due to an OSD coordinate range-check quirk (vendor libimp only). On T10/T20/T21 (OpenIMP only, not yet tested on hardware): sub streams only, 16-aligned, at most 704x576; `video0` and anything larger start unrotated. |
+| FrameSource software rotate | `ROT_HAS_FS_ROTATE` | T31; T10, T20, T21 with OpenIMP | `IMP_FrameSource_SetChnRotate` — rotation happens inside libimp, not visible to the rest of timps as "software," but still not true hardware. Hardware OSD/privacy overlays work on rotated 90/270 streams (fixed 2026-07-23) but are confined to a top-band region on non-square rotated streams due to an OSD coordinate range-check quirk (vendor libimp only). On T10/T20/T21 (OpenIMP only, since the next release, not yet tested on hardware): sub streams only, 16-aligned, at most 704x576; `video0` and anything larger start unrotated. Needs an OpenIMP with T1x rotation (commit `6b7f5ae`, branch `claude/t1x-rotation`, not in OpenIMP `next` or any thingino `ciao` OpenIMP pin); timps probes `SetChnRotate` with a 0x0 picture at start and brings the stream up unrotated when the OpenIMP stubs (`9cab219`, returns success without rotating) or refuses (`6857610`, `0c02f45`, `636b6ac`) it. |
 | True hardware I2D rotate | `ROT_HAS_HW_I2D` | T40, T41 | The dedicated I2D hardware block. Full framerate, all resolutions, no OSD/privacy limitations. The only tier where `rotation=180` is a real, distinct, **per-channel** capability (elsewhere, 180 was removed as a redundant, incorrectly-per-stream-modeled *global* ISP flip — use `image.hflip`+`image.vflip` instead, which is always available independent of `USE_ROTATE`). |
 
 `ROT_HAS_90` (gating whether 90/270 are accepted at all) is defined
 whenever any of the three apply-path macros above is active, or on the
 host sim. Rotation direction conventions are **not** uniform across
-platforms (T23 and T40/T41: 90° = clockwise; T31: 90° = counter-clockwise,
+platforms (T23 and T40/T41: 90° = clockwise; T31 and T10/T20/T21: 90° = counter-clockwise,
 kept that way specifically for numeric compatibility with prudynt-t's raw
 `rotTo90` enum values) — see `docs/rotation.md` for the full rationale and
 on-device test history.

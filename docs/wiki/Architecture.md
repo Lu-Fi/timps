@@ -168,10 +168,13 @@ The ISP latch kick (`fs_kick_chn0()`, see
 [Day/Night](Day-Night.md#the-isp-running-mode-latch-quirk-and-fs_kick_chn0))
 holds one more chn0 reference. It goes through the same debounce: the
 reference is kept for `MS_IDLE_STOP_US` after the kick and released by
-whichever producer loop is idle next (`fs_kick_reap()`, at least once a
-second), never right after the kick. The refcount itself lives in
-`src/hal/fs_ref.h` with its IMP calls injected, so `make test-fs-ref` runs it
-on the host.
+whichever producer loop is idle next (`fs_kick_reap()`, called by every idle
+video, SW-rotate and JPEG loop before it blocks; an idle loop wakes at least
+once a second, so the stream-0 loop releases it within about a second once
+it is idle itself), never right after the kick. While every loop streams,
+the reference waits for the next idle pass; chn0 then runs anyway. The
+refcount itself lives in `src/hal/fs_ref.h` with its IMP calls injected, so
+`make test-fs-ref` runs it on the host.
 
 ### FrameSource keepalive (`general.fs_keepalive`)
 
@@ -184,7 +187,8 @@ with nobody watching — every timelapse shot (1440 per day at a 60 s
 interval), every snapshot poll, every day/night switch and its two
 re-asserts, the boot kick followed a few ms later by the first timelapse shot.
 
-`general.fs_keepalive` (`-1` auto, `0` off, `1` on; file-only, restart)
+`general.fs_keepalive` (`-1`/`auto`, `0`/`off`, `1`/`on`; file-only, restart;
+since the next release)
 removes them: `ing_start()` takes one reference on every video stream's
 FrameSource and on the dedicated `jpeg.*` one, after all channels exist and
 before motion and the boot kick, and `fs_teardown()` releases it at stop. The
@@ -203,8 +207,9 @@ FrameSource, minus their always-running video encoders.
 * **Exempt:** T23 SW-rotate streams (90/270, `USE_SW_ROTATE`) — their
   unbound `GetFrame` path has never run with an enabled FrameSource and no
   reader.
-* **JPEG cold start:** with the FrameSource kept, the open-stack T23 JPEG
-  cold-start recovery restarts only the encoder, never the FrameSource.
+* **JPEG recovery:** with the FrameSource kept, the open-stack T23 JPEG
+  cold-start recovery and the JPEG miss watchdog restart only the encoder,
+  never the FrameSource.
 * **Left:** one enable per channel at start, one disable at stop, and the video
   watchdog's recovery cycle (an error path).
 * **Visible:** `framesource keepalive on (general.fs_keepalive=-1, auto)` at

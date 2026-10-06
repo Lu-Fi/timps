@@ -1,6 +1,6 @@
 # timps configuration keys — complete reference
 
-**Applies to timps v1.9.32 (source: `main`, 2026-10-04).**
+**Applies to timps v1.9.33 (source: `main`, 2026-10-05).**
 
 A statement marked **since vX** is new in that release — on an older camera
 the *previous* behaviour is the one to describe. Changes listed under
@@ -226,7 +226,7 @@ Section is readable via `GET /control`; only `debug_modules` is POST-able.
 | `general.debug_modules` | string[64] | `""` | — | **live** | Comma-separated module names forced to DEBUG regardless of `loglevel`, e.g. `HAL_ING,DAYNIGHT`. Live on purpose: restarting to enable debugging destroys the state you are trying to observe. |
 | `general.imp_polling_timeout` | int | `500` | 10..10000 | file-only, restart | ms, `IMP_*_PollingStream` timeout. `0` would make the video thread spin and the watchdog `SIGTERM` the daemon seconds after the first client — hence the floor of 10. |
 | `general.osd_pool_size` | int | `1024` | 1..1024 | file-only, restart | KB of IMP OSD pool. 1024 is the T-series maximum; larger is rejected by libimp anyway. |
-| `general.fs_keepalive` | int | `-1` | -1..1 | file-only, restart | **since the next release.** `-1` auto, `0` off, `1` on. On: `ing_start()` holds every video FrameSource (and the dedicated `jpeg.*` one) enabled until the daemon stops, so no FrameSource is ever disabled at runtime; encoders stay on-demand. **Auto resolves to on only for `USE_OPENIMP` builds on T23 and T41** (the stacks where a FrameSource disable/enable while the sensor streams can hang the SoC), off on every vendor-libimp build and on T10/T20/T21/T30/T31/T40 with OpenIMP. The resolved value is `caps.framesource.keepalive` in `GET /control` (`caps.framesource.cfg` is the raw value) and the start-up line `framesource keepalive on|off (general.fs_keepalive=N[, auto])`. See pitfalls below and `dev_notes/FS_KEEPALIVE_2026-10.md`. |
+| `general.fs_keepalive` | int or word | `-1` | -1..1 | file-only, restart | **since the next release.** `-1` or `auto`, `0` or `off`/`false`/`no`, `1` or `on`/`true`/`yes`; numbers outside -1..1 are clamped, anything else logs a warning and stays auto (`-1`). On: `ing_start()` holds every video FrameSource (and the dedicated `jpeg.*` one) enabled until the daemon stops, so no FrameSource is ever disabled at runtime; encoders stay on-demand. **Auto resolves to on only for `USE_OPENIMP` builds on T23 and T41** (the stacks where a FrameSource disable/enable while the sensor streams can hang the SoC), off on every vendor-libimp build and on T10/T20/T21/T30/T31/T40 with OpenIMP. The resolved value is `caps.framesource.keepalive` in `GET /control` (`caps.framesource.cfg` is the raw value) and the start-up line `framesource keepalive on|off (general.fs_keepalive=N[, auto])`. See pitfalls below and `dev_notes/FS_KEEPALIVE_2026-10.md`. |
 | `general.syslog` | bool | `1` | — | file-only, restart | **Not a stored field** — handled as a side effect in `set_kv()` (`log_set_syslog()`). Never appears in `GET /control` and cannot be POSTed. `0` = stdout only, no `logread`. |
 | `general.trace` | int (bitmask) | `0` | unclamped | file-only, restart | Developer send-pipeline tracing. Bits: `1` per-AU gap/age/send, `2` per-write timing, `4` fanqueue backlog, `8` periodic summary, `15` = all. **Only does anything in a `USE_TRACE=1` build**; parsed and ignored otherwise. Side-effecting key like `general.syslog`: no table entry, no `F_CTRL`, not in `?fields=1`. |
 | `general.trace_ms` | int | `250` | unclamped | file-only, restart | Report threshold in ms for `general.trace`. Takes effect in file order, so list it **before** `general.trace` if you want the startup banner to print the right threshold (cosmetic only). |
@@ -236,11 +236,11 @@ Pitfalls
   `general.debug_modules` for one subsystem instead.
 * `general.trace` on a normal firmware build is accepted, persisted and inert —
   there is no warning.
-* **`general.fs_keepalive` takes numbers only.** `-1`, `0`, `1`; values
-  outside are clamped. Words are **not** understood: `auto`, `on`, `true` all
-  parse as `0`, i.e. **off** — on an open-stack T23/T41 that silently re-enables
-  the runtime FrameSource edges the auto default exists to prevent. Check
-  `caps.framesource` after a restart.
+* **`general.fs_keepalive` words.** `auto`, `on`/`true`/`yes` and
+  `off`/`false`/`no` are understood (case-insensitive). Any other word logs
+  `general.fs_keepalive = '<value>' is not a valid value, using -1 (auto)` and
+  keeps the auto default. Development builds between 1.9.33 and this change
+  read every word as `0` (off). Check `caps.framesource` after a restart.
 * **What `general.fs_keepalive = 1` costs** (why auto stays off outside
   open-stack T23/T41): the FrameSource pools are held permanently instead of
   only while someone watches — about 6.3 MB rmem for a 1080p FS0 (2 × 3 133 440 B,
@@ -256,9 +256,10 @@ Pitfalls
 * **Remaining runtime FrameSource edges with the keepalive on:** only the video
   watchdog's recovery cycle (`chnN: encoder dead after N consecutive misses -
   forcing a framesource disable/enable cycle`), an error path. The JPEG
-  cold-start recycle becomes an encoder restart (`recycling the encoder
-  (framesource kept alive)`). Start and stop still enable/disable each kept
-  channel once.
+  cold-start recycle and the JPEG miss watchdog become encoder restarts
+  (`recycling the encoder (framesource kept alive)`, `jpeg chnN: encoder dead
+  after N consecutive misses - restarting the encoder (framesource kept alive)
+  to recover`). Start and stop still enable/disable each kept channel once.
 * **Turning it off on T23/T41** (`general.fs_keepalive = 0`) restores the
   on-demand FrameSources, with every timelapse shot, snapshot and day/night kick
   waking chn0 again — the configuration that produced the hangs.
@@ -352,11 +353,11 @@ way to check.
 | `image.hflip` | bool | `0` | — | all | Global ISP flip (every channel). |
 | `image.running_mode` | int | `0` | 0..1 | all | `0` day, `1` night (IR-cut/mono pipeline). |
 | `image.anti_flicker` | int | `2` | 0..2 | all | `0` off, `1` 50 Hz, `2` 60 Hz. |
-| `image.ae_compensation` | int | `128` | 0..255 | T10 T20 T23 T30 T31 C100, T41 with the open libimp | `ISP_HAS_AECOMP` — **absent on T21** and on T40; on T41 only with OpenIMP (`AeScenceAttr.AeTargetComp`; measured mean luma 8 / 57 / 98 at 40 / 128 / 230), unsupported with the vendor libimp. |
+| `image.ae_compensation` | int | `128` | 0..255 | T10 T20 T23 T30 T31 C100, T41 with the open libimp | `ISP_HAS_AECOMP` — **absent on T21** and on T40; on T41 only with OpenIMP, **since v1.9.33** (`AeScenceAttr.AeTargetComp`; measured mean luma 8 / 57 / 98 at 40 / 128 / 230), unsupported with the vendor libimp. |
 | `image.max_again` | int | `160` | 0..255 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_GAINS`; absent on T40/T41. |
 | `image.max_dgain` | int | `80` | 0..255 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_GAINS`. |
-| `image.sinter_strength` | int | `128` | 0..255 | T10 T20 T21 T23 T30 T31 C100, T41 with the open libimp | `ISP_HAS_NR`, spatial NR. T10/T20/T21 with the vendor libimp: accepted but no effect (the vendor firmware renormalises it); acts with the open libimp (OpenIMP; 128 = the vendor picture). **T41**: only with OpenIMP (Module_Ratio entry 0; image noise 488 / 351 / 216 at 0 / 128 / 255); not on T40. |
-| `image.temper_strength` | int | `128` | 0..255 | T10 T20 T21 T23 T30 T31 C100, T41 with the open libimp | `ISP_HAS_NR`, temporal NR. Same OpenIMP note as `sinter_strength`. **T41**: only with OpenIMP (Module_Ratio entry 1); temporal denoise, visible only at high gain (frame-to-frame noise 9.8 at 0 vs 2.5 at 128), saturates above ~128; independent of `sinter_strength`. |
+| `image.sinter_strength` | int | `128` | 0..255 | T10 T20 T21 T23 T30 T31 C100, T41 with the open libimp | `ISP_HAS_NR`, spatial NR. T10/T20/T21 with the vendor libimp: accepted but no effect (the vendor firmware renormalises it); acts with the open libimp (OpenIMP; 128 = the vendor picture). **T41**: only with OpenIMP, **since v1.9.33** (Module_Ratio entry 0; image noise 488 / 351 / 216 at 0 / 128 / 255); not on T40. |
+| `image.temper_strength` | int | `128` | 0..255 | T10 T20 T21 T23 T30 T31 C100, T41 with the open libimp | `ISP_HAS_NR`, temporal NR. Same OpenIMP note as `sinter_strength`. **T41**: only with OpenIMP, **since the next release** (Module_Ratio entry 1; v1.9.33 left it unsupported); temporal denoise, visible only at high gain (frame-to-frame noise 9.8 at 0 vs 2.5 at 128), saturates above ~128; independent of `sinter_strength`. |
 | `image.dpc_strength` | int | `128` | 0..255 | T23 T31 C100; with `USE_OPENIMP` also T10 T20 T21 | `ISP_HAS_DPC`. |
 | `image.defog_strength` | int | `128` | 0..255 | T23 T31 C100; with `USE_OPENIMP` also T20 | `ISP_HAS_DEFOG`. On T20 (open stack) it is an Iridix floor, not a defog block. |
 | `image.drc_strength` | int | `128` | 0..255 | T21 T23 T31 C100; with `USE_OPENIMP` also T20 | `ISP_HAS_DRC` (WDR). |
@@ -365,7 +366,7 @@ way to check.
 | `image.colorfx` | int | `0` | 0..9 (0 none, 1 B/W, 2 sepia, 3 negative, 9 vivid) | only with `USE_OPENIMP`: T10 T20 T21 T23 T31 | `ISP_HAS_COLORFX`. The vendor SDKs expose the call on some SoCs but their kernels ignore it. The open driver answers `EINVAL` for values it does not know (sepia only on T20): the HAL logs it, the value stays persisted. Not in `caps.image` on vendor builds. |
 | `image.scene` | int | `0` | 0..14 (SDK `IMPISPSceneMode`: 0 auto, 2..9, 11..14; 1 and 10 invalid) | only with `USE_OPENIMP`: T10 T20 T21 T23 T31 | `ISP_HAS_SCENE`. Same notes as `image.colorfx`. |
 | `image.core_wb_mode` | int | `0` | 0..9 (0..8 on T10/T20/T30) | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_WB`. The SDK's `isp_core_wb_mode`: `0` auto, `1` manual (then `wb_rgain`/`wb_bgain` apply), `2` daylight, `3` cloudy, `4` incandescent, `5` fluorescent, `6` twilight, `7` shade, `8` warm fluorescent, `9` custom (T21/T23/T31/C100 only). Before v1.9.30 the range was 0..1, so `2..9` came back as `1`. |
-| `image.wb_rgain` | int | `0` | 0..255 (T10/T20/T30, Q7: 128 = 1.0), 0..4095 (T21/T23/T31, Q8: 256 = 1.0), 0..65535 elsewhere | T10 T20 T21 T23 T30 T31 C100 | Only meaningful with `core_wb_mode=1`. The neutral (1.0) value differs per SoC. T10/T20/T30: the kernel register is 8 bit, wider values are clamped to 255 (they used to wrap, 300 -> 44). T21/T23/T31: the register saturates at 4095 (~16x), wider values are clamped to it. |
+| `image.wb_rgain` | int | `0` | 0..255 (T10/T20/T30, Q7: 128 = 1.0), 0..4095 (T21/T23/T31, Q8: 256 = 1.0), 0..65535 elsewhere | T10 T20 T21 T23 T30 T31 C100 | Only meaningful with `core_wb_mode=1`. The neutral (1.0) value differs per SoC. **Since the next release** the value is clamped per SoC: T10/T20/T30: the kernel register is 8 bit, wider values are clamped to 255 (up to v1.9.33 they wrapped, 300 -> 44). T21/T23/T31: the register saturates at 4095 (~16x), wider values are clamped to it (up to v1.9.33 accepted up to 65535 and echoed unchanged). |
 | `image.wb_bgain` | int | `0` | 0..255 (T10/T20/T30, Q7: 128 = 1.0), 0..4095 (T21/T23/T31, Q8: 256 = 1.0), 0..65535 elsewhere | T10 T20 T21 T23 T30 T31 C100 | Only meaningful with `core_wb_mode=1`. Same per-SoC limits and scale as `image.wb_rgain`. **since v1.9.21** start value: read-only `image.wb_live.rgain`/`.bgain` in `GET /control` = gains AWB applies now. |
 | `image.ae_it_max_us` | int | `0` | 0..1000000 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_AE_IT_MAX` (T23/T31/C100) or `ISP_HAS_AE_IT_RANGE` (T10/T20/T21/T30). Inert on T40/T41. `0` = no cap: touches nothing if no cap was ever written, otherwise writes the sensor mode's own (remembered, uncapped) AE maximum back (**since v1.9.30**; before that `0` needed a restart). |
 
@@ -440,7 +441,7 @@ internal channel wiring, deliberately not exposed over HTTP.
 | --- | --- | --- | --- | --- | --- |
 | `enabled` | bool | `1` / `1` | — | restart | Restart-only in the strongest sense: all consumers read `g_cfg_boot`, so a live-enabled stream is "servable" but has no publisher and the client just hangs. |
 | `codec` | enum | `h264` / `h264` | `h264`, `h265` (`hevc` = `h265`); anything else → `h264` | restart | **Coerced to `h264` with a warning on T10, T20 and T23.** T10/T20 have no H.265 encoder; T23's SDK marks every H.265 rc struct unsupported, so `IMP_Encoder_CreateChn` fails. The coercion is what keeps that out of the bring-up path: since 1.9.3 a `start()` failure is no longer fatal — it retries up to `MS_STARTUP_MAX_START_FAILS` (10) times and then escalates to one reboot (`src/main.c`), so an uncoerced H.265 on T23 would be a reboot loop rather than a clean exit. |
-| `width` | int | `1920` / `640` | 64..4096 | restart | Unset (neither `width` nor `height` given): a known sensor size that fits inside the default is used instead, so a 1280x720 sensor streams 1280x720 (since the release after 1.9.33). |
+| `width` | int | `1920` / `640` | 64..4096 | restart | Unset (neither `width` nor `height` given): a known sensor size that fits inside the default is used instead, so a 1280x720 sensor streams 1280x720 (**since the next release**; before, 1920x1080 upscaled). |
 | `height` | int | `1080` / `360` | 64..4096 | restart | See `width`. |
 | `fps` | int | `25` / `25` | 1..120 | restart | Per-channel rate — **this stream only**. It does not set the sensor rate (that is `sensor.fps`) and cannot exceed what `sensor.fps` delivers. Documented explicitly **since v1.9.19**; the behaviour is unchanged. |
 | `bitrate` | int | `3000` / `512` | 16..50000 | **live** on every Ingenic SoC (see below) | **kbps.** |
@@ -509,15 +510,33 @@ hit this — T10, T20 and T23 coerce `codec` to `h264` at parse time.
     Width and height must be multiples of 16 (`640x368` works, `640x360` does
     not) and at most 704x576 pixels. No fps cap; 15 fps is recommended for
     the rotated sub stream (estimated 5-11% CPU at 15 fps).
-    Needs an OpenIMP with T1x rotation; an older one refuses. **Not yet tested
-    on hardware.** Vendor-libimp T10/T20/T21 builds have no path.
+    **Needs an OpenIMP with T1x rotation**: OpenIMP commit `6b7f5ae` (branch
+    `claude/t1x-rotation`, 2026-10-05), not yet in OpenIMP `next` or in any
+    thingino `ciao` OpenIMP pin (`9cab219` ciao, `6857610` ciao-t20/t21,
+    `0c02f45` ciao-openstack, `636b6ac` ciao-t41). timps checks this at
+    start: it first calls `IMP_FrameSource_SetChnRotate` with a 0x0 picture,
+    which a rotating
+    OpenIMP refuses; a libimp that accepts it is a stub. Outcomes, each with
+    the stream starting **unrotated** and a warning:
+    * OpenIMP `9cab219` (the thingino `ciao` pin) stubs the call with a plain
+      success → `libimp's SetChnRotate accepted a 0x0 picture, so it cannot
+      rotate`. Without this check (development builds between 1.9.33 and
+      this fix) the stream came up with swapped encoder dims.
+    * OpenIMP `6857610`, `0c02f45`, `636b6ac` refuse 90/270 →
+      `SetChnRotate refused WxH`.
+    * No `IMP_FrameSource_SetChnRotate` in libimp → `libimp has no
+      IMP_FrameSource_SetChnRotate`.
+    With a rotating OpenIMP the probe makes OpenIMP print one line on stderr,
+    `[FS] SetChnRotate chN: unsupported rotTo90=M 0x0`; that is expected.
+    **Not yet tested on hardware.** Vendor-libimp T10/T20/T21 builds have no path.
   * **T23** — software NV12 transpose, only with the extra opt-in
     `BR2_PACKAGE_TIMPS_SW_ROTATE` (`-DMS_ENABLE_SW_ROTATE`). Costs real CPU on
     the single-core T23, is H.264 only, and loses hardware OSD/privacy on the
     rotated stream.
   * **T30 C100** — no path at all; 90/270 coerce to `0`.
 * Outside the envelope (T31, T10/T20/T21) the stream starts **unrotated** with a
-  `refusing FS-rotate ...` warning; `videoN.rotation` keeps the configured
+  `refusing FS-rotate ...` warning (on T10/T20/T21 also when the OpenIMP cannot
+  rotate, see above); `videoN.rotation` keeps the configured
   value, and `GET /control` shows the running geometry in
   `videoN.eff_width`/`eff_height` (unswapped).
 * **`180` is not a rotation on most SoCs.** On every classic-API SoC it was only
@@ -941,7 +960,9 @@ comes from the ceiling fields of the ISP dump (`MAX SENSOR analog gain` /
 `MAX ISP digital gain`). The open-tx-isp **T41** dump has none (its
 `AeMaxAGain` is the uncapped sensor maximum, which would overstate the reserve
 once a gain cap is set), so on T41 with `USE_OPENIMP` the reserve comes from
-`IMP_ISP_Tuning_GetAeExprInfo` (capped `AeMaxAGain` vs `TotalGainDb`). Where
+`IMP_ISP_Tuning_GetAeExprInfo` (**since the next release**; `AeMaxAGain` vs
+`TotalGainDb`; open-tx-isp fills `AeMaxAGain` with the smaller of the sensor
+maximum and the configured gain cap, `t41_tuning_copy_ae_expr()`). Where
 neither is available the reserve is unknown (`hr=-1` in the probe line) and an
 `r ≈ 1` silent probe escalates to the audible IR-cut probe.
 
@@ -1475,4 +1496,4 @@ into support questions.
 | **T40, T41** | Flips go through `IMP_ISP_Tuning_SetHVFLIP` instead of `SetISPHflip`/`SetISPVflip`, and `g_sensor.rst_gpio`/`pwdn_gpio`/`power_gpio` are forced to `-1` (the fields are plain `int` in that SDK). | `src/hal/hal_ingenic.c` |
 | **T31/C100 vs T40/T41** | `ENC_HAS_QPIPDELTA` (hence a working `videoN.i_bias_lvl`) is T31/C100 only. | `src/hal/hal_ingenic.c` |
 | **T31** | The `isp_ch0_pre_dequeue_time` one-buffer gate on framechan0 — see `videoN.buffers` in §5. | `src/hal/hal_ingenic.c` |
-| **T23, T41 with `USE_OPENIMP`** | `general.fs_keepalive = -1` (the default) resolves to **on**: the FrameSources run from start to stop, so `framesource N disabled (idle)` never appears and day/night kicks are no-ops. Everywhere else it resolves to off. | `src/hal/fs_ref.h` (`FS_KEEPALIVE_AUTO`) |
+| **T23, T41 with `USE_OPENIMP`** | **Since the next release** `general.fs_keepalive = -1` (the default) resolves to **on**: the FrameSources run from start to stop, so `framesource N disabled (idle)` never appears and day/night kicks are no-ops. Everywhere else it resolves to off. | `src/hal/fs_ref.h` (`FS_KEEPALIVE_AUTO`) |

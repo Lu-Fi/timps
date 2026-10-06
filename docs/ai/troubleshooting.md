@@ -249,7 +249,12 @@ Consequences worth stating to a user:
   becomes **16** kbps (range 16..50000).
 - `videoN.width/height` clamp to 64..4096, `sensor.width/height` to 0..8192.
 - `image.*` knobs clamp to the `imp_isp.h` domains (mostly 0..255;
-  `highlight_depress`/`backlight_compensation` 0..10; WB gains 0..65535).
+  `highlight_depress`/`backlight_compensation` 0..10; WB gains per SoC,
+  **since the next release**: 0..255 on T10/T20/T30, 0..4095 on
+  T21/T23/T31, 0..65535 elsewhere — up to v1.9.33 0..65535 everywhere).
+- `general.fs_keepalive` takes `-1`/`0`/`1` (clamped) or `auto`/`on`/`off`
+  (and `true`/`false`/`yes`/`no`); any other word logs a warning and stays
+  `-1` (auto).
 - `motion.cols`/`motion.rows` clamp so that `cols × rows ≤ MOTION_CELL_LIMIT`
   (`src/motion_caps.h`; 52 on most SDKs, **4** on the old T10/T20 3.9.0 SDK).
   The axis *being set* is clamped against the current other axis.
@@ -497,7 +502,8 @@ timps starts the framesource/encoder **when a client attaches** and stops it
   start and `framesource N disabled (idle)` **never** while the daemon runs;
   `video chnN idle` (the encoder) still appears. A `disabled (idle)` line on
   such a camera means the keepalive is off — check `caps.framesource` and
-  `general.fs_keepalive` (words like `auto`/`on` parse as `0`). See
+  `general.fs_keepalive` (`0`/`off`/`false`/`no` is off; an unknown word
+  logs `is not a valid value, using -1 (auto)`). See
   `docs/ai/reference.md` §11 "Camera hangs".
 - `GET /control` omits a channel from the `encoder.<n>` object when it is not
   running. An *absent* channel is not the same as a broken one.
@@ -700,7 +706,8 @@ Capability matrix (`src/rotate_caps.h`):
 | T40, T41 | `ROT_HAS_HW_I2D` — true hardware I2D rotate | **Yes**, genuine per-channel |
 | T31 | `ROT_HAS_FS_ROTATE` — libimp FrameSource rotate | No |
 | T23 | `ROT_HAS_SW_90`, **only** with `USE_SW_ROTATE` / `-DMS_ENABLE_SW_ROTATE` | No |
-| T10, T20, T21, T30, C100 | **No** — coerced to 0 | No |
+| T10, T20, T21 | OpenIMP builds only (`ROT_HAS_FS_ROTATE`, **since the next release**): sub streams, 16-aligned, at most 704x576, and only with an OpenIMP that has T1x rotation (`6b7f5ae`); otherwise the stream starts unrotated. Vendor libimp: **No** — coerced to 0 | No |
+| T30, C100 | **No** — coerced to 0 | No |
 
 On every SoC except T40/T41, `rotation = 180` logs
 `rotation 180 unsupported on this SoC -> 0 (use image.hflip+image.vflip)`.
@@ -712,21 +719,47 @@ Hflip+Vflip falsely modelled as per-stream. `image.hflip = 1` +
 `rotTo90` enum (1 → 90, 2 → 270), so a `prudynt.cfg`-style `rotation=1`
 lands on the same physical direction it did there.
 
-**Direction is not uniform.** On T23/T40/T41, 90 = clockwise; on T31, 90 =
-counter-clockwise (kept numerically aligned with prudynt-t/raptor).
+**Direction is not uniform.** On T23/T40/T41, 90 = clockwise; on T31 and
+T10/T20/T21, 90 = counter-clockwise (kept numerically aligned with
+prudynt-t/raptor).
 
 **T31 FrameSource rotate rejections** — the stream comes up **unrotated**
 and says so:
 
-- `videoN: refusing FS-rotate WxH not 64-aligned (T31 FS-rotate wants
-  64-alignment) - stream will run UNROTATED` (`MS_FS_ROT_ALIGN` = 64)
-- `videoN: refusing FS-rotate WxH@F exceeds vendor FS-rotate cap (<=1280x704,
+- `videoN: refusing FS-rotate WxH not 64-aligned - stream will run
+  UNROTATED` (`FS_ROT_ENV_T31` in `src/hal/fs_rot_env.h`: 64-aligned)
+- `videoN: refusing FS-rotate WxH@F exceeds FS-rotate cap (<=1280x704,
   <=15fps; past it libimp software-rotates and the oversized geometry fails
-  Encoder bring-up) - stream will run UNROTATED`
-  (`MS_FS_ROT_MAX_PIXELS` = 1280×704, `MS_FS_ROT_MAX_FPS` = 15)
+  Encoder bring-up) - stream will run UNROTATED` (at most 1280×704 pixels,
+  15 fps)
 - `videoN: FS-rotate enable (SetChnRotate) failed - disabling rotation for
   this stream, bringing it up UNROTATED`
 - `FS_SetI2dAttr N failed (rotation may stay inactive)`
+
+**T10/T20/T21 FrameSource rotate rejections** (OpenIMP builds, **since the
+next release**) — the stream comes up **unrotated** and says so:
+
+- `videoN: refusing FS-rotate on the main stream (this SoC rotates sub streams
+  only, e.g. video1 at 640x368) - stream will run UNROTATED` — `video0` is
+  never rotated here.
+- `videoN: refusing FS-rotate WxH not 16-aligned - stream will run UNROTATED`
+  — e.g. the default 640x360; use 640x368.
+- `videoN: refusing FS-rotate WxH@F exceeds FS-rotate cap (<=704x576 pixels,
+  OpenIMP software rotate is sub-stream only) - stream will run UNROTATED`
+- `videoN: libimp's SetChnRotate accepted a 0x0 picture, so it cannot rotate
+  (OpenIMP stub, e.g. 9cab219) - stream will run UNROTATED; upgrade OpenIMP to
+  one with T1x rotation (6b7f5ae or later)` — the OpenIMP of the thingino
+  `ciao` pin. timps calls `SetChnRotate` with a 0x0 picture first; a rotating
+  OpenIMP refuses that, this stub reports success for anything.
+- `videoN: SetChnRotate refused WxH - stream will run UNROTATED (an OpenIMP
+  without T1x rotation refuses every 90/270; it needs 6b7f5ae or later)` —
+  OpenIMP `6857610`, `0c02f45`, `636b6ac` and other builds without
+  `claude/t1x-rotation`.
+- `videoN: libimp has no IMP_FrameSource_SetChnRotate - stream will run
+  UNROTATED (90/270 needs OpenIMP with T1x rotation, 6b7f5ae or later)`
+- On stderr, from OpenIMP itself (not a timps line):
+  `[FS] SetChnRotate chN: unsupported rotTo90=M 0x0` once per rotated stream
+  start — the 0x0 check above, expected with a rotating OpenIMP.
 
 **T23 software rotate** (`MS_SW_ROT_MAX_PIXELS` = 704×576,
 `MS_SW_ROT_MAX_FPS` = 15, `MS_SW_ROT_WIDTH_ALIGN` = 16,
@@ -888,7 +921,7 @@ detection idle` — **detection does nothing at all**.
 | --- | --- | --- |
 | `no probe has ever confirmed day (<N> in a row found night): the best day-pipeline exposure seen was <X> but daynight.day_gain is <Y>. Either this scene never gets bright, or the threshold is too strict - raise daynight.day_gain above <X>` | **The single most useful line in the whole day/night system.** It hands you the number to use. | Set `daynight.day_gain` just above the reported best exposure, keeping `night_gain` well above that. |
 | `daynight.day_gain (<a>) is above night_gain (<b>) - the thresholds are swapped; using day<<b> night><a>` | The two thresholds are the wrong way round. timps swaps them and carries on. | `day_gain` must be the **lower** number. |
-| `the ISP dump reports no gain ceilings (MAX SENSOR analog gain / MAX ISP digital gain), so the AE reserve is unknown here: a railed meter cannot be told from a dark scene …` | This sensor/ISP build does not expose gain ceilings. Several safety mechanisms are disabled: railed-boot re-tune, night-reference clipping protection, and ratio probes fall back to the audible IR-cut probe. | Nothing to configure. Expect a *clicking* IR-cut probe instead of a silent one, and accept coarser behaviour. |
+| `the ISP dump reports no gain ceilings (MAX SENSOR analog gain / MAX ISP digital gain, or GetAeExprInfo on T41), so the AE reserve is unknown here: a railed meter cannot be told from a dark scene …` | This sensor/ISP build does not expose gain ceilings (on T41 with OpenIMP, **since the next release**, `GetAeExprInfo` failed or reported no gain ceiling). Several safety mechanisms are disabled: railed-boot re-tune, night-reference clipping protection, and ratio probes fall back to the audible IR-cut probe. | Nothing to configure. Expect a *clicking* IR-cut probe instead of a silent one, and accept coarser behaviour. |
 | `the night reference sits at the sensor's gain floor and no integration-time reading is available, so a brightening scene cannot be detected here - the heartbeat carries this camera alone. If this sensor does report SENSOR Integration Time, check daynight.isp_path` | Night→day can only be found by the periodic heartbeat, not by the trend. | Check `daynight.isp_path`; otherwise tune `daynight.heartbeat_s` / `heartbeat_max_s` down for faster (but more disruptive) recovery. |
 | `boot: came up in night (exposure %.0f) - measuring silently first (illuminator off for %ds, no cut-filter click)` | **I** | Boot at night: one silent probe before the audible day probe. Normal. |
 | `boot: night confirmed by the silent probe (r=%.2f, night reference %.0f) - nothing switched` | **I** | The boot measurement ended in night without moving the cut filter. |
@@ -2471,6 +2504,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `audio.codec2 '%s' unsupported (pcmu or off) -> off` | W | `audio.codec2` takes `pcmu` or `off` only — deliberately not defaulting to AAC. | `audio.codec2 = pcmu`. |
 | `%s%s = '%s' is not a valid value and was read as %d - that is PLAINTEXT, no TLS. Valid: %s` | W | A typo in `http.https` or `rtsp.tls`. **TLS is off.** | Fix the value (0/1/2). §1.5, §8.4 |
 | `daynight.mode: unknown '%s', keeping auto` | W | Valid: `auto`, `schedule` (plus the legacy `sensor`/`time`/`sun`). | |
+| `%s%s = '%s' is not a valid value, using -1 (auto). Valid: auto, on, off, -1, 0, 1` | W | **since the next release.** `general.fs_keepalive` with a word it does not know; auto applies. | Fix the line. |
 | `unknown osd item key %s` / `unknown privacy key %s` / `unknown video key %s` / `unknown key %s` | W | The key does not exist in this build. **It is dropped.** **since v1.9.28** `unknown key osd.vars_file` is expected on an old config: the key was removed and the path is fixed at `/tmp/timps_osd.vars`. | Check `GET /control?fields=1`; delete an `osd.vars_file` line. |
 | `videoN.max_gop is reserved and IGNORED - the keyframe interval comes from videoN.gop` | W | Compat-only key. | Use `videoN.gop`. §1.6 |
 | `osd.hinting is stored but has no effect in this build (compiled without OSD text autohinting)` | W | Built without `USE_OSD_HINTING`. | §1.6 |
@@ -2491,6 +2525,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `fsync %s failed: %s` / `rename %s -> %s failed` / `fsync dir %s failed: %s` | W | Durability steps of the atomic rewrite failed. A power cut can lose the change. | Check the filesystem. |
 | `config: video%d.imp_chn=%d must equal the stream index (its hub slot) - using %d` | E | **since v1.9.28**. `videoN.imp_chn` doubles as the hub slot; any other value fed another stream's (or the audio) slot. | Remove the key or set it to `N`. |
 | `config: jpeg.imp_chn=%d collides with a video stream's channel - using %d (-1: none free, jpeg disabled)` / `config: video%d.jpeg_chn=%d collides with another encoder channel - using %d (...)` | E | **since v1.9.28**. Two encoders on one channel would fail `start()` into the retry/reboot path; the value was moved. | Fix the channel numbers in the file. |
+| `video%d: %dx%d -> %dx%d (sensor size; set video%d.width/height to override)` | I | **since the next release.** `videoN.width/height` unset and the sensor is smaller than the default: the stream takes the sensor size instead of upscaling. | Set `videoN.width/height` to keep the old size. |
 
 ### 12.3 `CTRL` (`src/control.c`)
 
@@ -2553,7 +2588,8 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `chn%d: %d consecutive forced-recovery cycles never produced a frame - encoder/ISP is not coming back on its own; exiting` | E | **The process exits and nothing restarts it.** | §2.2 |
 | `chn%d: StartRecvPic kept failing for %d attempts - encoder/ISP is not coming back on its own; exiting` | E | **since v1.9.28**. Same give-up, reached when the encoder never even starts (~25 s of failed starts with a client attached). **The process exits and nothing restarts it.** | §2.2 |
 | `jpeg chn%d: PollingStream idle (miss#%d) - encoder emits no frames` | W | Same on the JPEG channel. | |
-| `jpeg chn%d: encoder dead after %d consecutive misses - forcing a framesource disable/enable cycle to recover (recovery attempt %d/%d)` | E | JPEG recovery. | |
+| `jpeg chn%d: encoder dead after %d consecutive misses - %s to recover (recovery attempt %d/%d)` | E | JPEG recovery, max 5 (`MS_JPEG_WATCHDOG_MAX_RECOVERIES`). `%s` is `forcing a framesource disable/enable cycle`, or **since the next release** with a kept FrameSource (`general.fs_keepalive` on) `restarting the encoder (framesource kept alive)`. | |
+| `jpeg chn%d: no frame %d ms after start - recycling the %s (%d/%d)` | W | The JPEG cold-start recovery (`MS_JPEG_COLD_STALL_US`): `framesource`, or `encoder (framesource kept alive)` with the keepalive on. | §2.2 |
 | `jpeg chn%d: %d consecutive forced-recovery cycles never produced a frame - giving up on this channel (MJPEG/snapshot output disabled until restart)` | E | **JPEG only** is disabled; video survives. | Restart to get snapshots back. |
 | `chn%d: GetStream failed after PollingStream OK (#%d)` / `jpeg chn%d: GetStream failed after PollingStream OK (#%d)` | W | Transient SDK hiccup; 1st and every 20th of a streak. | Ignore unless constant. |
 | `chn%d: AU exceeds max buffer (need=%zu, max=%d, packCount=%u) - dropping frame (%u dropped so far)` | W | An access unit over `MS_AU_BUF_MAX` (1 MB; 2 MiB + 64 KiB on T23 builds). Deliberately **no** IDR is forced — that was the historical permanent-stall bug. | §2.3. On T23 at 1080p this is expected at stock defaults; the proven lever is raising `video0.min_qp`. |
@@ -2581,9 +2617,13 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 
 | Message pattern | Level | Meaning | Action |
 | --- | --- | --- | --- |
-| `video%d: refusing FS-rotate %dx%d not %d-aligned (T31 FS-rotate wants %d-alignment) - stream will run UNROTATED` | W | T31 needs 64-aligned geometry. | §2.6 |
-| `video%d: refusing FS-rotate %dx%d@%d exceeds vendor FS-rotate cap (<=1280x704, <=15fps; …) - stream will run UNROTATED` | W | Past the vendor cap. | §2.6 |
-| `video%d: FS-rotate enable (SetChnRotate) failed - disabling rotation for this stream, bringing it up UNROTATED` | W | The SDK call failed. | §2.6 |
+| `video%d: refusing FS-rotate %dx%d not %d-aligned - stream will run UNROTATED` | W | T31 needs 64-aligned geometry, T10/T20/T21 16-aligned. | §2.6 |
+| `video%d: refusing FS-rotate %dx%d@%d exceeds FS-rotate cap (%s) - stream will run UNROTATED` | W | Past the cap: T31 1280x704 at 15 fps, T10/T20/T21 704x576. | §2.6 |
+| `video%d: refusing FS-rotate on the main stream (this SoC rotates sub streams only, e.g. video1 at 640x368) - stream will run UNROTATED` | W | **since the next release.** T10/T20/T21: `video0` is never rotated. | §2.6 |
+| `video%d: FS-rotate enable (SetChnRotate) failed - disabling rotation for this stream, bringing it up UNROTATED` | W | T31: the SDK call failed. | §2.6 |
+| `video%d: libimp's SetChnRotate accepted a 0x0 picture, so it cannot rotate (OpenIMP stub, e.g. 9cab219) - stream will run UNROTATED; upgrade OpenIMP to one with T1x rotation (6b7f5ae or later)` | W | **since the next release.** T10/T20/T21: the OpenIMP stubs `SetChnRotate`. | Upgrade OpenIMP or set rotation 0. §2.6 |
+| `video%d: SetChnRotate refused %dx%d - stream will run UNROTATED (an OpenIMP without T1x rotation refuses every 90/270; it needs 6b7f5ae or later)` | W | **since the next release.** T10/T20/T21: this OpenIMP cannot rotate. | §2.6 |
+| `video%d: libimp has no IMP_FrameSource_SetChnRotate - stream will run UNROTATED (90/270 needs OpenIMP with T1x rotation, 6b7f5ae or later)` | W | **since the next release.** T10/T20/T21: no rotate entry point in libimp. | §2.6 |
 | `video%d: SW rotate at %dx%d@%dfps is CPU-HEAVY on this SoC - strongly consider a substream-class setting (<=704x576, <=15fps)` | W | T23 software rotate; it still runs. Costs ~6 MB and roughly one CPU core. | Use a substream-class size. |
 | `video%d: refusing SW rotate at %dx%d@%dfps (exceeds safe envelope <=704x576 <=15fps) - stream will run UNROTATED` | W | Past the envelope. | §2.6 |
 | `video%d: SW rotate post-rotation width %d unusable for the encoder (needs picWidth%%16==0 and >=256; a 90/270 rotate makes encoder width = source height %d) - refusing rotation, stream will run UNROTATED (use a source HEIGHT that is a multiple of 16 and >=256, e.g. 704x576 -> 576x704)` | W | **The source height becomes the encoder width.** | Use 1280×704, not 1280×720. §2.6 |
@@ -2613,6 +2653,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `image.ae_it_max_us=%d: %d removal writes on a live, delivering pipeline and the AE maximum is still %lu lines, not the sensor mode's %lu - this sensor/ISP is not honouring the removal; retrying slowly` | W | **since v1.9.30**. Writing the uncapped maximum back does not show in the readback. | Restart timps. §3.7 |
 | `image.ae_it_max_us=%d: %d writes on a live, delivering pipeline and the AE maximum is still %lu lines - this sensor/ISP is not honouring the cap; retrying slowly` | W | The sensor ignores it. | Stop raising the value. §3.7 |
 | `image.ae_it_max_us=%d: %lu lines exceeds this SDK's 16-bit field - capping at 65535` | W | **since v1.9.28**. T10/T20/T21/T30 only: the requested cap does not fit the SDK field. | Lower `image.ae_it_max_us`. |
+| `GetModule_Ratio failed - %s not applied` / `SetModule_Ratio(%s=%d) failed (rc=%d)` | W | T41 with OpenIMP: `sinter_strength` (since v1.9.33) or `temper_strength` (**since the next release**) could not be written; the value stays persisted. | Check the OpenIMP/open-tx-isp build. |
 
 ### 12.8 `HAL_ING` — audio
 
@@ -2678,7 +2719,7 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | --- | --- | --- |
 | `%s is not readable, using %s instead` | I (W before v1.9.26, with `- set daynight.isp_path to silence this`) | The configured ISP dump path does not exist; the known alternative is in use. Normal on T20. |
 | `no exposure reading from %s (missing or in a format this build does not parse), detection idle` | W | **Detection does nothing at all.** Either `daynight.isp_path` is wrong or the dump is in a format this build does not parse (the T41 open-stack dump needs timps >= 1.9.30). |
-| `the ISP dump reports no gain ceilings (MAX SENSOR analog gain / MAX ISP digital gain), so the AE reserve is unknown here: a railed meter cannot be told from a dark scene, the railed-boot re-tune never fires, and the night reference is NOT protected against clipped readings. Ratio probes without a clear answer fall back to the audible probe on this camera` | W | Several safety mechanisms are disabled; probes fall back to the audible IR-cut probe. |
+| `the ISP dump reports no gain ceilings (MAX SENSOR analog gain / MAX ISP digital gain, or GetAeExprInfo on T41), so the AE reserve is unknown here: a railed meter cannot be told from a dark scene, the railed-boot re-tune never fires, and the night reference is NOT protected against clipped readings. Ratio probes without a clear answer fall back to the audible probe on this camera` | W | Several safety mechanisms are disabled; probes fall back to the audible IR-cut probe. |
 | `the night reference sits at the sensor's gain floor and no integration-time reading is available…` | W | Night→day can only come from the heartbeat. |
 | `no probe has ever confirmed day (%d in a row found night): the best day-pipeline exposure seen was %.0f but daynight.day_gain is %.0f…` | W | **The line that hands you the number.** Raise `daynight.day_gain` above the reported value. |
 | `daynight.day_gain (%.0f) is above night_gain (%.0f) - the thresholds are swapped; using day<%.0f night>%.0f` | W | `day_gain` must be the lower number. |
@@ -2861,7 +2902,7 @@ write instead.**
 | 1 | `image.anti_flicker = 2` on 50 Hz mains | 2 means **60 Hz**. Rolling horizontal bands under LED/fluorescent light. This is the **built-in default**, so every camera outside 60 Hz countries ships wrong. | `image.anti_flicker = 1` |
 | 2 | `image.running_mode = 0` posted by hand to "get colour back" at night | The ISP renders the day pipeline while the IR-cut filter is still out and the IR LEDs are on → **purple/magenta image**. | Let day/night do it, or drive `daynight.switch_cmd` as well. |
 | 3 | `image.brightness = 255` | A blown-out white picture. Usually left behind by an interrupted QA run rather than typed. | `image.brightness = 128` |
-| 4 | `image.wb_rgain = 32767` / `image.wb_bgain = 32767` | A magenta image. Also a classic interrupted-QA leftover. Builds after 1.9.33 clamp such values (255 on T10/T20/T30, 4095 on T21/T23/T31), still far off neutral. Unity is **128** on T10/T20/T30 (Q7) and **256** on T21/T23/T31 (Q8). | Copy `image.wb_live` (the gains AWB uses now), or `image.core_wb_mode = 0` for auto. |
+| 4 | `image.wb_rgain = 32767` / `image.wb_bgain = 32767` | A magenta image. Also a classic interrupted-QA leftover. **Since the next release** such values are clamped (255 on T10/T20/T30, 4095 on T21/T23/T31), still far off neutral. Unity is **128** on T10/T20/T30 (Q7) and **256** on T21/T23/T31 (Q8). | Copy `image.wb_live` (the gains AWB uses now), or `image.core_wb_mode = 0` for auto. |
 | 5 | `image.defog_strength = 200` on a T30 | Accepted, persisted, echoed back — and **ignored**, because the SoC has no defog. | Check `caps.image` first. |
 
 ### Video and encoder

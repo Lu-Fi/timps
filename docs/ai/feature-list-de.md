@@ -11,7 +11,7 @@ prudynt-t / raptor.
   HTTP-Control-API, Streaming-Protocols, Day-Night, Audio, Motion-Detection,
   Recording-Timelapse, Rate-Control-\*, Building, Logging, Testing-QA,
   Platform-SDK-Support)
-* Stand dieses Dokuments: `main`, Version v1.9.32 (2026-10-04);
+* Stand dieses Dokuments: `main`, Version v1.9.33 (2026-10-05);
   gestripptes `timpsd` ca. 375 KB (mipsel, T31, Stand v1.9.28). Mit
   **seit vX** markierte Aussagen sind in diesem Release neu – auf einer
   Kamera mit älterer Version gilt jeweils das vorher beschriebene Verhalten.
@@ -27,7 +27,10 @@ prudynt-t / raptor.
   (`video0.rtsp_path = /ch0`, `video1.rtsp_path = /ch1`).
 * **Zwei Videostreams** (`video0.*` = Haupt-, `video1.*` = Substream), jeweils
   H.264 oder H.265 (`videoN.codec = h264 | h265`), eigene Auflösung, FPS,
-  Bitrate und Ratenkontrolle.
+  Bitrate und Ratenkontrolle. Ohne `videoN.width/height` gelten 1920x1080 bzw.
+  640x360; **seit dem nächsten Release** wird stattdessen eine kleinere
+  bekannte Sensorgröße genommen (ein 1280x720-Sensor streamt 1280x720, kein
+  Hochskalieren mehr).
 * **RTP-MTU einstellbar** (`rtsp.mtu`, 548–1472, Default 1200) – überlebt
   WireGuard-/OpenVPN-/PPPoE-Pfade ohne IP-Fragmentierung.
 * **Browser-Vorschau über fragmentiertes MP4 (MSE)** – `http://<ip>:8880/`
@@ -62,7 +65,8 @@ prudynt-t / raptor.
   nur erzeugt, solange mindestens ein Client zusieht. Im Leerlauf praktisch
   0 % CPU. Nicht konfigurierbar, das ist das Grundverhalten.
 * **FrameSource-Keepalive** (**seit dem nächsten Release**) –
-  `general.fs_keepalive` (`-1` auto, `0` aus, `1` an; nur per Datei, Neustart):
+  `general.fs_keepalive` (`-1`/`auto`, `0`/`off`, `1`/`on`; nur per Datei,
+  Neustart; ein unbekanntes Wort wird mit Warnung als `auto` gelesen):
   hält die FrameSources von Start bis Stopp an, die Encoder bleiben on-demand.
   Auto = an nur bei OpenIMP-Builds auf T23 und T41, wo ein FrameSource-
   Disable/Enable bei laufendem Sensor den SoC aufhängen kann; sonst aus, weil
@@ -114,8 +118,14 @@ prudynt-t / raptor.
   Kein Konfigurationsschlüssel.
 * **Bildrotation (optional, `USE_ROTATE`)** – `videoN.rotation = 0|90|180|270`.
   Hardware-90/270 auf T40/T41 (I2D) und T31 (FrameSource), Software-90/270 auf
-  T23 (`USE_SW_ROTATE`, CPU-intensiv, nur H.264). Echte per-Kanal-180°-Drehung
-  nur auf T40/T41; sonst stattdessen `image.hflip` + `image.vflip`.
+  T23 (`USE_SW_ROTATE`, CPU-intensiv, nur H.264). **Seit dem nächsten Release**
+  auch FrameSource-Rotation auf T10/T20/T21, nur in OpenIMP-Builds und nur mit
+  einem OpenIMP, das T1x-Rotation kann (Commit `6b7f5ae`, Branch
+  `claude/t1x-rotation`, in keinem der `ciao`-OpenIMP-Pins), nur Sub-Streams,
+  16-aligned, max. 704x576 (z. B. 640x368); auf Hardware noch ungetestet.
+  Ein OpenIMP ohne Rotation erkennt timps beim Start, der Stream läuft dann
+  ungedreht. Echte per-Kanal-180°-Drehung nur auf T40/T41; sonst stattdessen
+  `image.hflip` + `image.vflip`.
 
 ## Bild & ISP-Tuning
 
@@ -125,7 +135,11 @@ prudynt-t / raptor.
   `max_again`, `max_dgain`, `sinter_strength` / `temper_strength` (räumliche /
   zeitliche Rauschunterdrückung), `dpc_strength`, `defog_strength`,
   `drc_strength`, `highlight_depress`, `backlight_compensation`,
-  `core_wb_mode`, `wb_rgain`, `wb_bgain`. *Seit v1.9.21* meldet `GET /control`
+  `core_wb_mode`, `wb_rgain`, `wb_bgain`. `wb_rgain`/`wb_bgain` sind **seit dem
+  nächsten Release** je SoC begrenzt (0..255 auf T10/T20/T30, Neutral 128;
+  0..4095 auf T21/T23/T31, Neutral 256). Auf T41 gibt es mit OpenIMP
+  `ae_compensation` und `sinter_strength` (seit v1.9.33) sowie
+  `temper_strength` (**seit dem nächsten Release**). *Seit v1.9.21* meldet `GET /control`
   unter `image.wb_live` die aktuell wirksamen WB-Gains (im Auto-Modus das
   AWB-Ergebnis) – ein Wechsel auf manuell damit ändert das Bild nicht.
 * **Kein blindes Setzen**: welche dieser Regler der jeweilige SoC wirklich
@@ -459,8 +473,9 @@ wird die WebSocket-Variante (statt CGI-Polling) aktiviert.
 * **ISP-Tuning-API** weicht nur auf T40/T41 ab (`ISP_NEW_TUNING_API`), was dort
   einige `image.*`-Regler entfallen lässt – nachzulesen in `caps.image`.
 * **Audio**: `IMP_AI_SetAlcGain` (`audio.alc_gain`) nur auf T21/T31/C100.
-* **Rotation**: Hardware-I2D auf T40/T41, FrameSource-Rotate auf T31,
-  Software auf T23, gar nicht auf T10/T20/T21/T30/C100.
+* **Rotation**: Hardware-I2D auf T40/T41, FrameSource-Rotate auf T31 und
+  (seit dem nächsten Release, nur OpenIMP mit T1x-Rotation, nur Sub-Streams)
+  T10/T20/T21, Software auf T23, gar nicht auf T30/C100.
 * **Host-Simulation** ohne Hardware: `make sim` baut `timpsd-sim`, das Dateien
   statt des ISP einspeist (`sim.video0`, `sim.audio`, …) – praktisch für
   WebUI- und API-Arbeit am Schreibtisch.

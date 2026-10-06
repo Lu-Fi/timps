@@ -96,11 +96,11 @@ latch-kick this triggers.
 | `image.vflip` | bool | 0 | 0/1 | Live | all SoCs | Vertical flip. Global (all streams). |
 | `image.running_mode` | int | 0 | 0 = day, 1 = night | Live | all SoCs | ISP day/night running mode. Normally driven by the [Day/Night](Day-Night.md) thread's switch script, not set directly by a user. |
 | `image.anti_flicker` | int | 2 | 0 = off, 1 = 50 Hz, 2 = 60 Hz | Live | all SoCs | Anti-flicker (banding) compensation. |
-| `image.ae_compensation` | int | 128 | 0–255 | Live | `ISP_HAS_AECOMP`: all except T21, T40/T41 | AE (auto-exposure) compensation/EV bias. |
+| `image.ae_compensation` | int | 128 | 0–255 | Live | `ISP_HAS_AECOMP`: all except T21 and T40; T41 only with OpenIMP (since 1.9.33) | AE (auto-exposure) compensation/EV bias. |
 | `image.max_again` | int | 160 | 0–255 | Live | `ISP_HAS_GAINS`: all except T40/T41 | Max analog gain ceiling. |
 | `image.max_dgain` | int | 80 | 0–255 | Live | `ISP_HAS_GAINS` | Max digital gain ceiling. |
-| `image.sinter_strength` | int | 128 | 0–255 | Live | `ISP_HAS_NR`: all except T40; T41 only with OpenIMP | Spatial noise reduction strength. |
-| `image.temper_strength` | int | 128 | 0–255 | Live | `ISP_HAS_NR`: all except T40; T41 only with OpenIMP | Temporal noise reduction strength; on T41 visible only at high gain. |
+| `image.sinter_strength` | int | 128 | 0–255 | Live | `ISP_HAS_NR`: all except T40; T41 only with OpenIMP (since 1.9.33) | Spatial noise reduction strength. |
+| `image.temper_strength` | int | 128 | 0–255 | Live | `ISP_HAS_NR`: all except T40; T41 only with OpenIMP (since the next release) | Temporal noise reduction strength; on T41 visible only at high gain. |
 | `image.dpc_strength` | int | 128 | 0–255 | Live | `ISP_HAS_DPC`: T23/T31/C100 | Defective pixel correction strength. |
 | `image.defog_strength` | int | 128 | 0–255 | Live | `ISP_HAS_DEFOG`: T23/T31/C100 | Defog strength. |
 | `image.drc_strength` | int | 128 | 0–255 | Live | `ISP_HAS_DRC` (WDR): T21/T23/T31/C100 | Dynamic range compression (WDR) strength. |
@@ -109,7 +109,7 @@ latch-kick this triggers.
 | `image.scene` | int | 0 | 0–14 | Live | Scene preset (SDK `IMPISPSceneMode`). Only with an OpenIMP build (`USE_OPENIMP`). |
 | `image.backlight_compensation` | int | 0 | 0–10 | Live | `ISP_HAS_BACKLIGHT`: T23/T31/C100 | Backlight compensation. |
 | `image.core_wb_mode` | int | 0 | 0–9 (0–8 on T10/T20/T30) | Live | `ISP_HAS_WB`: all except T40/T41 | White balance mode: 0 auto, 1 manual, 2 daylight, 3 cloudy, 4 incandescent, 5 fluorescent, 6 twilight, 7 shade, 8 warm fluorescent, 9 custom. |
-| `image.wb_rgain` | int | 0 | 0–255 (T10/T20/T30), 0–4095 (T21/T23/T31), 0–65535 elsewhere | Live | `ISP_HAS_WB` | Manual WB red gain (used when `core_wb_mode` selects manual). The scale differs per SoC: 128 = 1.0 on T10/T20/T30, 256 = 1.0 on T21/T23/T31. |
+| `image.wb_rgain` | int | 0 | 0–255 (T10/T20/T30), 0–4095 (T21/T23/T31), 0–65535 elsewhere | Live | `ISP_HAS_WB` | Manual WB red gain (used when `core_wb_mode` selects manual). The scale differs per SoC: 128 = 1.0 on T10/T20/T30, 256 = 1.0 on T21/T23/T31. The per-SoC clamp is new in the next release (up to 1.9.33: 0–65535 everywhere, T10/T20/T30 wrapped values above 255). |
 | `image.wb_bgain` | int | 0 | same as `wb_rgain` | Live | `ISP_HAS_WB` | Manual WB blue gain. Since v1.9.21, `GET /control` reports the gains in effect as read-only `image.wb_live` `{"rgain","bgain"}`, a start value for manual mode that matches auto. |
 
 ### Picking `image.anti_flicker`
@@ -538,7 +538,7 @@ them.
 | `general.debug_modules` | string(64) | `""` | comma list of log tags | **Live** | Modules raised to DEBUG regardless of `loglevel` (`HAL_ING,DAYNIGHT`). Names rather than a bitmask: a mask in a config file silently means something else once a module is added, and nothing warns. It matters because the ring buffer is 64 KB and recycles in minutes under load - raising the global level to reach one subsystem loses the lines it was raised for. Case-insensitive, up to 8 names; over-long or surplus names are rejected with a WARN, an unknown (but well-formed) name simply never matches. A listed module passes at **every** level, not only its DEBUG lines. See [Logging](Logging.md). |
 | `general.imp_polling_timeout` | int | 500 | — | File-only | `IMP_Encoder_PollingStream` timeout, ms. |
 | `general.osd_pool_size` | int | 1024 | — | File-only | Max OSD pool size (KB) reserved for small OSD regions. |
-| `general.fs_keepalive` | int | -1 | -1..1 | File-only | FrameSource keepalive. `1`: every video FrameSource is enabled once at start and held until the daemon stops (encoders stay on-demand), so nothing disables a FrameSource at runtime. `0`: FrameSources run only while something consumes them (the classic on-demand model). `-1` (auto): **on for OpenIMP builds on T23 and T41**, where a FrameSource disable/enable while the sensor streams can hang the SoC; off everywhere else, because the idle cost of a permanently running FrameSource (CPU, heat, ~6.3 MB rmem for a 1080p main stream) is unmeasured there. Numbers only — `auto`/`on` read as `0`. Effective value: `caps.framesource` in `GET /control`. See [Architecture](Architecture.md#framesource-keepalive-generalfs_keepalive). |
+| `general.fs_keepalive` | int | -1 | -1..1 | File-only | FrameSource keepalive. `1`: every video FrameSource is enabled once at start and held until the daemon stops (encoders stay on-demand), so nothing disables a FrameSource at runtime. `0`: FrameSources run only while something consumes them (the classic on-demand model). `-1` (auto): **on for OpenIMP builds on T23 and T41**, where a FrameSource disable/enable while the sensor streams can hang the SoC; off everywhere else, because the idle cost of a permanently running FrameSource (CPU, heat, ~6.3 MB rmem for a 1080p main stream) is unmeasured there. Also `auto`, `on`/`true`/`yes`, `off`/`false`/`no`; an unknown word logs a warning and stays auto. Effective value: `caps.framesource` in `GET /control`. See [Architecture](Architecture.md#framesource-keepalive-generalfs_keepalive). |
 | `general.syslog` | bool | on | 0/1 | File-only | Also mirror log output to syslog (`logread`). A side-effecting key: applied immediately at config-load time via `log_set_syslog()`, but not stored as a field, so it cannot be echoed back by any getter. |
 
 ## `sim.*` — host simulation backend
@@ -576,8 +576,8 @@ hardcode the table into a client — see
 | --- | --- | --- | --- | --- | --- |
 | `video<N>.enabled` | bool | 1 / 1 | 0/1 | Restart-only | Enable this stream. |
 | `video<N>.codec` | enum | `h264` / `h264` | `h264`\|`h265` (aliases `hevc`) | Restart-only | Video codec. H.265 only where the platform's encoder API supports it — see [Platform & SDK Support](Platform-SDK-Support.md). |
-| `video<N>.width` | int | 1920 / 640 | 64–4096 | Restart-only | Encode width (pre-rotation). |
-| `video<N>.height` | int | 1080 / 360 | 64–4096 | Restart-only | Encode height (pre-rotation). |
+| `video<N>.width` | int | 1920 / 640 | 64–4096 | Restart-only | Encode width (pre-rotation). With neither `width` nor `height` set, a known sensor size that fits inside the default is used instead, so nothing is upscaled (a 1280x720 sensor streams 1280x720; since the next release). |
+| `video<N>.height` | int | 1080 / 360 | 64–4096 | Restart-only | Encode height (pre-rotation). Unset: see `width`. |
 | `video<N>.fps` | int | 25 / 25 | 1–120 | Restart-only | Encode frame rate of this stream only. It does **not** set the sensor rate; that is `sensor.fps`. |
 | `video<N>.bitrate` | int | 3000 / 512 | 16–50000 (kbps) | **Mixed** (live on every SoC as of 2026-08-21, see below) | Target bitrate. |
 | `video<N>.rc_mode` (alias `mode`) | enum | `cbr` / `cbr` | `cbr`\|`vbr`\|`fixqp`\|`smart`\|`capped_vbr`\|`capped_quality` | **Mixed** (live on classic SoCs only, see below) | Rate-control mode. |
@@ -591,7 +591,7 @@ hardcode the table into a client — see
 | `video<N>.change_pos` | int | 80 / 80 | 50–100 | Restart-only | Classic-SoC VBR/Smart only: percentage of `bitrate` above which the controller starts raising QP. Measured to have no observable effect on a T23 (80/65/50 gave identical output) — treat as unverified rather than a reliable lever. No equivalent on the new API; same one-shot warning as `quality_lvl`. |
 | `video<N>.i_bias_lvl` | int | 0 / 0 | -3–3 | **Mixed** (live on classic SoCs and T31/C100, see below) | I-frame QP bias (negative = more bits on keyframes). Classic SoCs: both CBR and VBR/Smart. New API: wired on T31/C100 via `IMP_Encoder_SetChnQpIPDelta` (readable back as `encoder.<n>.rc.ip_delta`); T40/T41 have no such call and warn once instead. |
 | `video<N>.fluc_lvl` | int | 0 / 0 | 0–4 | Restart-only, H265 only | Classic-SoC H265 CBR/VBR/Smart: bitrate fluctuation allowed relative to the average. No H264 equivalent field, and the T23 SW-rotate path is H264-only so never sees this key. No equivalent on the new API. |
-| `video<N>.rotation` | int | 0 / 0 | `0`\|`90`\|`270` (+`180` on T40/T41 only); legacy `1`/`2` accepted as raw `rotTo90` values | Restart-only, `USE_ROTATE` builds only | Image rotation — see [Platform & SDK Support](Platform-SDK-Support.md) and `docs/rotation.md`. Unsupported values on a given SoC are coerced to `0` with a warning. |
+| `video<N>.rotation` | int | 0 / 0 | `0`\|`90`\|`270` (+`180` on T40/T41 only); legacy `1`/`2` accepted as raw `rotTo90` values | Restart-only, `USE_ROTATE` builds only | Image rotation — see [Platform & SDK Support](Platform-SDK-Support.md) and `docs/rotation.md`. Unsupported values on a given SoC are coerced to `0` with a warning. T10/T20/T21 (OpenIMP builds, since the next release): sub streams only, 16-aligned, ≤704x576, and only with an OpenIMP that has T1x rotation (`6b7f5ae`); otherwise the stream starts unrotated with a warning. |
 | `video<N>.buffers` | int | 2 / 2 | 1–8 | Restart-only | IMP video buffer count (`nrVBs`). Explicitly setting this makes the HAL trust it as-is instead of applying its own safety clamp. |
 | `video<N>.rtsp_path` | string(64) | `/ch0` / `/ch1` | — | **Live** (documented exception, see above) | RTSP mount path for this stream. |
 | `video<N>.jpeg` (alias `jpeg_enabled`) | bool | 1 / 1 | 0/1 | File-only | Enable a piggyback JPEG encoder sharing this stream's FrameSource (used by `/snapshot.jpg`/`/stream.mjpeg?chn=N` and [timelapse](Recording-Timelapse.md)). |

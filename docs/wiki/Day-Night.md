@@ -257,8 +257,9 @@ clip protection either. That is announced once per session as a WARN
 32 units ISP digital, jxf22: 45 — same SoC, different sensors, so a
 hard-coded value would be wrong on one of them). The open-tx-isp T41 dump is
 such a variant: its `AeMaxAGain` is the uncapped sensor maximum, not the AE's
-ceiling, so it is not used. On T41 with the open stack the reserve comes from
-`IMP_ISP_Tuning_GetAeExprInfo` instead (capped `AeMaxAGain` against
+ceiling, so it is not used. On T41 with the open stack the reserve comes, since
+the next release, from `IMP_ISP_Tuning_GetAeExprInfo` instead (`AeMaxAGain`,
+which open-tx-isp fills with the smaller of sensor maximum and gain cap, against
 `TotalGainDb`, log2 in Q16); integration time adds a stop only while the gain
 is still 1x, because above that the AE sits at its own limit, which can be
 below the published maximum (T55A dump: 1750 of 2092 lines at 6.9x).
@@ -558,7 +559,7 @@ that changed `hflip`/`vflip`, the HAL makes sure FrameSource channel 0 runs:
   extends) the same 2 s hold, so the channel cannot idle-stop before the Set
   has latched.
 
-Until the next release after v1.9.33 the kick dropped its reference right
+Up to v1.9.33 the kick dropped its reference right
 after the 500 ms, even when chn0 was already running (and then still waited
 500 ms). That made the end of every kick a `DisableChn`, and at start-up the
 next thing that happened was the first timelapse shot, an `EnableChn` a few

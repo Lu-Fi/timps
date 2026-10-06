@@ -46,6 +46,11 @@ separately.
 1. **Preflight** — required tools present, optional SSH connectivity,
    camera reachability (ping is warn-only, not fail — it may be
    firewalled), and that the RTSP/HTTP TCP ports are actually open.
+   - **1b Build identity** — the `version` the camera reports in
+     `GET /control`, next to the local checkout's `git describe`; and
+     `caps.framesource` checked against `general.fs_keepalive` (an explicit
+     `0`/`1` must resolve to itself, auto `-1` to `0` or `1`; a timpsd without
+     the key is reported as info).
 2. **Discovery (ffprobe)** — probes both the main (`ch0`) and sub (`ch1`)
    RTSP streams for codec/resolution/fps/audio, recording nominal fps for
    later comparison.

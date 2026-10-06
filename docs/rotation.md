@@ -2,7 +2,8 @@
 
 Config key: `videoN.rotation`, values `0 | 90 | 270` (plus `180` on T40/T41 —
 see the note below). **90 = clockwise on
-T23 and T40/T41. On T31 specifically, 90 rotates counter-clockwise** (kept for
+T23 and T40/T41. On T31 (and T10/T20/T21 with OpenIMP, same `SetChnRotate`
+enum), 90 rotates counter-clockwise** (kept for
 consistency with prudynt-t/raptor's raw `rotation=1|2` config values, see
 "Notes on direction" below) — but **on T31, neither 90 nor 270 currently
 produce a working hardware OSD/privacy overlay** when the stream is
@@ -34,7 +35,7 @@ Rotation is **off by default** and selectable like `USE_CONTROL`/`USE_TLS`/
 
 | menuconfig option | make flag | what it adds |
 |---|---|---|
-| `BR2_PACKAGE_TIMPS_ROTATE` | `USE_ROTATE=1` | real 90/270 transpose on the SoCs that have it (T31, T40, T41; T23 via `SW_ROTATE`), plus genuine per-channel 180° on T40/T41 (I2D). No effect on SoCs without a 90/270 path — for a 180° flip there use `image.hflip`+`image.vflip` instead |
+| `BR2_PACKAGE_TIMPS_ROTATE` | `USE_ROTATE=1` | real 90/270 transpose on the SoCs that have it (T31, T40, T41; T23 via `SW_ROTATE`; since the next release T10/T20/T21 sub streams in OpenIMP builds, see below), plus genuine per-channel 180° on T40/T41 (I2D). No effect on SoCs without a 90/270 path — for a 180° flip there use `image.hflip`+`image.vflip` instead |
 | `BR2_PACKAGE_TIMPS_SW_ROTATE` (needs `TIMPS_ROTATE`) | `USE_SW_ROTATE=1` | the **software** 90/270 path for T23 (CPU transpose + software JPEG + software OSD) — the large/CPU-heavy part |
 
 ## What it costs
@@ -44,6 +45,10 @@ Binary (code, measured as object `.text`; MIPS target ≈ 1.2–1.4× these host
 - `USE_ROTATE` alone: the config/caps plumbing plus the hardware 90/270 apply is
   only a few hundred bytes on T31/T40/T41. Negligible. (On a SoC with no 90/270
   path it adds nothing usable — `rotation` accepts no non-zero value there.)
+- T10/T20/T21 with OpenIMP: the rotation runs inside OpenIMP (one heap
+  scratch of w×h×1.5 per rotated channel, ~345 KB for 640×368, no extra rmem;
+  OpenIMP estimates 3.5-7.5 ms per frame, i.e. ~5-11 % CPU at 15 fps — not
+  measured on hardware). timps itself adds a few hundred bytes.
 - `USE_SW_ROTATE` (T23): **~7 KB** total (CPU NV12 transpose `nv12_rot.o` ≈ 0.6 KB
   + the software encode/JPEG/OSD path in the HAL ≈ 6.2 KB).
 
@@ -68,7 +73,8 @@ the global `image.hflip`+`image.vflip` there instead.)
 
 | SoC | 180° | 90/270° | Mechanism for 90/270 | Constraints |
 |-----|------|---------|----------------------|-------------|
-| T10, T20, T21, T30, C100 | ❌ (use `image.hflip`+`vflip`) | ❌ | none (no rotate primitive in libimp) | 90/270 in config is coerced to 0 with a warning; `rotation` accepts no non-zero value (180 also coerces to 0) |
+| T30, C100; T10, T20, T21 with the vendor libimp | ❌ (use `image.hflip`+`vflip`) | ❌ | none (no rotate primitive in libimp) | 90/270 in config is coerced to 0 with a warning; `rotation` accepts no non-zero value (180 also coerces to 0) |
+| **T10, T20, T21** with OpenIMP (since the next release) | ❌ (use `image.hflip`+`vflip`) | ✅ *(OpenIMP with T1x rotation only; not yet tested on hardware)* | `IMP_FrameSource_SetChnRotate`, a software rotate inside OpenIMP (commit `6b7f5ae`) | **sub streams only** (`video0` is refused); width and height multiples of **16** (640×368 works, the default 640×360 does not); at most **704×576** pixels; no fps cap (15 fps recommended). Any other OpenIMP: the stream starts unrotated, see below |
 | **T23** | ❌ (use `image.hflip`+`vflip`) | ✅ *(opt-in)* | CPU NV12 transpose → unbound software H.264 encoder (`IMP_Encoder_YuvEncode`, SDK 1.3.0) | build with `USE_SW_ROTATE=1`; **H.264 only**; substream-class res (~≤704×576 @ ≤15 fps); real CPU cost on the single core; **software text-OSD only** (no logos, no privacy covers); snapshot + MJPEG work via the standalone JPEG encoder, but it needs the rotated width (= source height) to be a multiple of 32 and height a multiple of 8 (use e.g. 1280×704 → 704×1280, not 1280×720); motion grid stays pre-rotation |
 | **T31** | ❌ (use `image.hflip`+`vflip`) | ✅ | `IMP_FrameSource_SetChnRotate` (software inside libimp) | libimp SDK ≥ 1.1.6; 64-px-aligned resolution; **≤1280×704 @ ≤15 fps** recommended; extra rmem; not combinable with encoder soft-zoom; **hardware OSD/privacy DO work on 90/270** (fixed 2026-07-23) — on a **non-square** rotated stream overlays are confined to the top `picHeight` band (see note below); square streams = anywhere |
 | **T40, T41** | ✅ **per-channel** (I2D flip+mirror) | ✅ | true **hardware** I2D rotate (`IMPFSI2DAttr` + `IMP_FrameSource_SetI2dAttr`) | full frame rate, all resolutions, OSD + privacy keep working. 180 flips only the requesting channel (unlike the global `image.hflip`/`vflip`). `rotate_angle` units await on-device confirmation (degrees) |
@@ -76,6 +82,35 @@ the global `image.hflip`+`image.vflip` there instead.)
 Note: without `USE_ROTATE` (the default), all rotation code compiles out and
 every 90/180/270 request coerces to 0 — the build is byte-identical to
 no-rotation.
+
+### T10/T20/T21 with OpenIMP: which OpenIMP rotates
+
+The vendor T10/T20/T21 libimp has no `IMP_FrameSource_SetChnRotate`; OpenIMP
+has the symbol on every pin, but only commit `6b7f5ae` (branch
+`claude/t1x-rotation` in OpenIMP, 2026-10-05) actually rotates there. It is
+not in OpenIMP `next` and none of the thingino `ciao` OpenIMP pins below carries it. The other
+known OpenIMPs:
+
+| OpenIMP | `SetChnRotate(chn, 90/270, w, h)` on T10/T20/T21 | timps (since the next release) |
+| --- | --- | --- |
+| `9cab219` (thingino `ciao` pin) | stub, returns 0 for any value and rotates nothing | detected, stream starts unrotated: `libimp's SetChnRotate accepted a 0x0 picture, so it cannot rotate …` |
+| `6857610` (ciao-t20/t21), `0c02f45` (ciao-openstack), `636b6ac` (ciao-t41) | refuses with -1 | stream starts unrotated: `SetChnRotate refused WxH …` |
+| `6b7f5ae` (`claude/t1x-rotation`) | rotates; refuses non-16-aligned, > 704×576 and invalid geometry | rotated |
+| none (vendor libimp linked by mistake) | symbol missing | stream starts unrotated: `libimp has no IMP_FrameSource_SetChnRotate …` |
+
+How timps tells them apart: before the real call, `fs_create()` calls
+`SetChnRotate` with a **0x0** picture (`fs_rot_set()` in
+`src/hal/fs_rot_env.h`, host test `make test-fs-rot`). A rotating OpenIMP
+refuses 0x0 (it validates the geometry), the `9cab219` stub reports success,
+so success on 0x0 means "cannot rotate" and the stream falls back to
+unrotated (the stub is then reset with rotation 0). Before this check a
+`9cab219` build reported the rotation as active and created the encoder with
+swapped (portrait) dims while the FrameSource still delivered landscape — a
+broken sub stream. The check is behavioural: a future OpenIMP that accepted
+0x0 would be treated as a stub (fail-safe: unrotated, with the warning). With
+a rotating OpenIMP the probe makes OpenIMP print
+`[FS] SetChnRotate chN: unsupported rotTo90=M 0x0` on stderr once per rotated
+stream start; that line is expected.
 
 ### OSD/privacy on 90/270-rotated T31 streams: works, top-band limit (fixed 2026-07-23)
 
@@ -167,6 +202,7 @@ global `image.hflip`/`image.vflip`, not via the `rotation` key.)
   the same physical direction in timps.
 - T31 `IMP_FrameSource_SetChnRotate` takes **pre-rotation** width/height and
   must be called **before** `CreateChn`; only the encoder gets swapped dims.
+  The same holds for OpenIMP on T10/T20/T21.
 - T40/T41 `rotate_angle` units are undocumented in every SDK header; timps uses
   plain degrees for the 90/270 rotate; raptor-hal uses plain degrees too. 180 on
   T40/T41 does not use `rotate_angle` at all — it is `flip_enable`+`mirr_enable`
