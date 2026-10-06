@@ -290,7 +290,7 @@ Commits (local, not pushed):
 | Repo | Commit | Design | What |
 | --- | --- | --- | --- |
 | firmware `ciao` | `e4411e7ff` | C8 | Day / Night page: card "IR light when idle" (switch `daynight.ir_idle_off`, field `daynight.ir_idle_linger_s` 0..3600, status chip, 850 nm note), `WEBUI-NOTES.md` |
-| timps | see `git log` | C8 | `scripts/test_webui_idle.js`; wiki Day-Night section "Idle-Dark", Configuration-Reference rows, `feature-list-de.md`, `reference.md`/`troubleshooting.md` WebUI notes, CHANGELOG, this section |
+| timps | `1500d4a` | C8 | `scripts/test_webui_idle.js`; wiki Day-Night section "Idle-Dark", Configuration-Reference rows, `feature-list-de.md`, `reference.md`/`troubleshooting.md` WebUI notes, CHANGELOG, this section |
 
 ### WebUI
 
