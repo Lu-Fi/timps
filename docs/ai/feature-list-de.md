@@ -12,7 +12,8 @@ prudynt-t / raptor.
   Recording-Timelapse, Rate-Control-\*, Building, Logging, Testing-QA,
   Platform-SDK-Support)
 * Stand dieses Dokuments: `main`, Version v1.9.33 (2026-10-05);
-  gestripptes `timpsd` ca. 375 KB (mipsel, T31, Stand v1.9.28). Mit
+  gestripptes `timpsd` ca. 410 KB (410 108 Byte: mipsel, T31 mit
+  Hersteller-libimp, WebRTC, TLS und Rotation an; Stand `main` 2026-10-06). Mit
   **seit vX** markierte Aussagen sind in diesem Release neu – auf einer
   Kamera mit älterer Version gilt jeweils das vorher beschriebene Verhalten.
 * Konfiguration: eine flache Textdatei `/etc/timps.conf` im Format `key = value`
@@ -118,7 +119,10 @@ prudynt-t / raptor.
   Kein Konfigurationsschlüssel.
 * **Encoder-ROI (seit dem nächsten Release)** – `roi<S>.<N>.*` (`enabled`,
   `x`, `y`, `w`, `h`, `qp`, `qp_mode`), bis zu 4 Regionen pro Stream mit
-  eigenem QP (absolut oder Delta), live, nur H.264 und ungedrehte Streams.
+  eigenem QP (absolut oder Delta), live, nur H.264 und ungedrehte Streams
+  (auf einem H.265- oder gedrehten Stream: Dateiwert eine WARN beim Start, ein
+  POST wird angenommen und gespeichert, wirkt aber nicht und loggt nichts –
+  nur `caps.roi.streams` zeigt es).
   Auf Hardware getestet nur T20 mit OpenIMP; T10, T20 vendor, T21 und T23
   experimentell; T30, T31, T40, T41 und C100 lehnen ab. Die Stufe meldet
   `caps.roi.tier` in `GET /control`.
@@ -231,7 +235,13 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   Glimmens, dass niemand zusieht oder aufnimmt; Heartbeat-Proben im Dunkeln
   sind hörbar (alle 4-12 h). Status `daynight.ir_idle` (`reason`: `disabled`,
   `schedule`, `keepalive`, `no_illuminator`, `white_light`, `hook`), in der
-  WebUI als Karte „IR light when idle“ auf der Day/Night-Seite.
+  WebUI als Karte „IR light when idle“ auf der Day/Night-Seite. Stirbt
+  `timpsd` bei dunkler LED (SIGKILL, OOM, Absturz), startet ihn nichts neu;
+  das `idle` des Hooks (Firmware ab `3af7d99e4`) schaltet die LED aber nach
+  höchstens ~15 min selbst wieder ein – jeder Re-assert (8 s, 16 s, dann alle
+  10 min) verlängert diese Frist, und ist die Platine inzwischen auf Tag, bleibt
+  sie aus. `ir_idle_linger_s` länger als `timelapse.interval_s` wählen, sonst
+  macht jede Aufnahme die LED einmal an.
 * Manueller Betrieb jederzeit über `daynight.enabled = 0` plus
   `image.running_mode` bzw. den WebUI-Umschalter.
 
@@ -527,14 +537,22 @@ wird die WebSocket-Variante (statt CGI-Polling) aktiviert.
   Bewegung, Audio, Aufnahme, Day/Night und Feldinventar, inklusive
   HTML-Report (`scripts/qa_html_report.py`).
 * **Day/Night-Werkzeuge**: `dn-isp-probe.sh`, `dn-isp-report.py`,
-  `dn-replay.py` und ein Regressionskorpus aus 30 aufgezeichneten
-  Realszenarien unter `scripts/dn-scenarios/`.
+  `dn-replay.py` und ein Regressionskorpus aus 54 Szenarien (aufgezeichnete
+  Realfälle und konstruierte Randfälle, 39-54 für Idle-Dark) unter
+  `scripts/dn-scenarios/`.
+* **libimp-Prüfung (seit dem nächsten Release)**: ein `timpsd` für den
+  anderen libimp-Stack (Vendor vs. OpenIMP) beendet sich mit 78/79 und Grund,
+  statt abzustürzen; `timpsd --check-libs` prüft nur das (80 = konnte nicht
+  prüfen), thingino's `S95timps` startet den Daemon bei 78/79 nicht.
 * **Optionale Diagnose-Skripte im Image** (`BR2_PACKAGE_TIMPS_DIAG_TOOLS`,
   Default aus): `timps-selftest`, `timps-logcat-ship`, `timps-dn-isp-log`.
 * Host-Tests für heikle Bausteine: `make test-srtp`, `test-stun`, `test-fmp4`,
   `test-config`, `test-fanqueue`, `test-hub-pool`, `test-hub-idr`,
   `test-auth`, `test-clients`, `test-daynight-sun`, sowie **seit v1.9.28**
-  `test-timelapse-prune` und `test-record-ring`.
+  `test-timelapse-prune` und `test-record-ring`; **seit dem nächsten
+  Release** `test-roi`, `test-dn-idle`, `test-hub-hold`, `test-libimp-check`
+  und die Firmware-Skripttests `scripts/test_irprobe.sh`,
+  `scripts/test_s95timps_preflight.sh`, `scripts/test_webui_idle.js`.
 
 ## Build-Optionen (thingino / Buildroot)
 

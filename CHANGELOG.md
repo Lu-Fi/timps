@@ -13,7 +13,9 @@ semantic versioning.
   `IMP_Encoder_SetChnROI`, live (applied by the encode thread before its next
   frame). timps converts x/y/w/h to the SDK's two inclusive corners, rounds out
   to 16x16 macroblocks, clamps into the picture and clamps qp (absolute 0..51,
-  delta -26..25); H.265 and rotated streams ignore their regions with a WARN.
+  delta -26..25). H.265 and rotated streams ignore their regions: a file value
+  logs one WARN at start, a POST is accepted and persisted but changes nothing
+  and logs nothing (`caps.roi.streams` shows the stream state).
   Device-tested only on T20 with OpenIMP (QP51 block visible, QP15 clean,
   bitrate effect not measured); T10, T20 vendor, T21 (no effect seen) and T23
   are experimental; T30, T31, T40, T41 and C100 refuse the keys.
@@ -29,6 +31,15 @@ semantic versioning.
   states and the FrontCrop state, from the new `src/roi_caps.h`. Both setters
   are weak imports, so a libimp without them reports `unsupported`.
   `make test-roi` covers the validation and the tier matrix of all SoCs.
+- **`caps.daynight`** in `GET /control`: `{available, ir_idle}`, whether this
+  build has day/night and whether `daynight.ir_idle_off` can act on this start
+  (it needs the FrameSource keepalive).
+- **WebUI (firmware): "ROI" and "Crop / zoom" tabs on the overlays page**
+  (`streamer-overlays.html`, `a/roi-crop.js`): up to four regions per stream,
+  moved and resized on the preview, with QP and mode; zoom and position
+  sliders for the crop. Both show the tier from `caps.roi`/`caps.fcrop` and
+  lock on `unsupported`; the ROI tab says when the stream is H.265 or
+  rotated. The OSD tab's arrow-key nudging now acts only in its text pane.
 - **`timpsd` refuses a libimp that does not fit the build** instead of
   crashing on it. Before the config, the lock or any IMP call it opens the
   loaded `libimp.so` and exits **78** when the flavour differs (an OpenIMP build
@@ -40,10 +51,15 @@ semantic versioning.
   vendor-flavour timpsd (USE_OPENIMP=0) or the OpenIMP libimp`. If libimp
   cannot be opened or nothing resolves it warns and starts as before.
   `scripts/check-libimp-required.sh` verifies the table against libimp
-  builds and the IMP headers.
+  builds and the IMP headers; `make test-libimp-check` covers the decision
+  and the dlopen glue. Host-verified only: no device run of the check yet
+  (procedure in `dev_notes/LIBIMP_CHECK_DEVICE_TEST_2026-10.md`).
 - **`timpsd --check-libs`** runs only that check (no config, no lock, no
-  device; exit 0/78/79). thingino's `S95timps` runs it before starting and
-  leaves a mismatched daemon unstarted, logging under tag `timps`.
+  device; exit 0/78/79, and 80 when it could not check). thingino's
+  `S95timps` runs it before starting and leaves a mismatched daemon
+  unstarted, logging under tag `timps`; on any other exit code, 80 included,
+  it logs the first line at `daemon.warn` and starts the daemon
+  (`scripts/test_s95timps_preflight.sh`).
   **`-V`/`--version`** prints the version (`-v` stays verbose).
 - **T41 with the open stack: `image.temper_strength`.** `SetModule_Ratio`
   entry 1 is temporal denoise, visible only at high gain: frame-to-frame noise
@@ -80,7 +96,15 @@ semantic versioning.
   T23/T41) and the firmware's `timps-irprobe` with the new `idle`/`state`
   verbs; without them it reports why in `daynight.ir_idle.reason` and does
   nothing. An AE that does not move without a consumer is detected and the
-  LED handed back.
+  LED handed back. The firmware hook's `idle` arms a 15 min failsafe that
+  timps renews with every re-assert (8 s, 16 s, then every 10 min): if
+  `timpsd` dies while the LED is off, the LED comes back on by itself (not
+  when the board has switched to day meanwhile), but nothing restarts the
+  daemon. Keep `ir_idle_linger_s` longer than `timelapse.interval_s`, or
+  every shot lights the LED once. Host tests: `make test-dn-idle`,
+  `make test-hub-hold`, dn-replay scenarios 39-54 (incl. the restart relight
+  and the re-assert cadence), `scripts/test_irprobe.sh`,
+  `scripts/test_webui_idle.js`.
 - **WebUI (firmware): "IR light when idle" card on the Day / Night page** -
   switch, linger and a status chip (`IR off (idle)`, `not available: …` with
   the fix); shown only for a timps that reports `daynight.ir_idle`.
@@ -116,7 +140,9 @@ semantic versioning.
 - **An OpenIMP-built `timpsd` no longer crashes at start on a vendor libimp**
   (T10/T20/T21): `SetDPC_Strength` and, on T20, `SetDefog_Strength`/
   `SetDRC_Strength` are weak imports; the key logs once and drops out of
-  `caps.image`. `scripts/check-weak-imports.sh` checks a binary against a libimp.
+  `caps.image`. `scripts/check-weak-imports.sh` checks a binary against a
+  libimp, and that the binary has `BIND_NOW` and every weak IMP import an
+  `st_value` of 0 (a MIPS lazy stub would make the NULL check always true).
   The mix itself is now refused at start with exit 78 (see Added).
 - **T23/T41 with the open stack: no FrameSource disable/enable at runtime.**
   A FrameSource stopped and restarted while another channel streams can hang

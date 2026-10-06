@@ -53,7 +53,8 @@ The file path is `/etc/timps.conf` unless `timpsd -c <path>` says otherwise
 (`src/main.c`). The other arguments: `-v` (DEBUG logging, **not** the
 version), `-h`, and **since the next release** `-V`/`--version` and
 `--check-libs` (checks only whether the loaded libimp fits the build, reads no
-config; exit 0, 78 flavour mismatch, 79 missing IMP function — see
+config; exit 0, 78 flavour mismatch, 79 missing IMP function, 80 could not
+check — see
 `docs/ai/troubleshooting.md` §1.11). Any other argument exits 2.
 
 ### 1.2 Column meanings
@@ -861,8 +862,10 @@ Pitfalls:
   WARN. The aligned corners are logged at INFO.
 * **H.264, unrotated streams only.** An H.265 stream (`caps.roi.streams[S]` =
   `h265`) and a 90/270 stream (`rotated`: the encoder input is the rotated frame
-  and how the SDK addresses it is unverified) ignore their regions with one
-  WARN. The coordinates are meant in the picture as the viewer sees it, so a
+  and how the SDK addresses it is unverified) ignore their regions: a file
+  value logs one WARN at start, a POST is answered as accepted and persisted
+  but applies nothing and logs nothing - only `caps.roi.streams[S]` shows it
+  (the WebUI reads it). The coordinates are meant in the picture as the viewer sees it, so a
   future rotated mode needs no new keys.
 * Delta behaviour at the QP limits, the interaction with each rate-control mode
   and with OSD/privacy covers are untested. A bitrate effect has **not** been
@@ -1019,15 +1022,15 @@ tick) **except**:
 | `daynight.probe_confirm_s` | int | `15` | 1..3600 | live | How long the probe trigger condition must hold. |
 | `daynight.heartbeat_s` | int | `14400` (4 h) | 300..604800 | live | Flat re-probe interval while the scene is moving. Deliberately not a multiplying backoff. |
 | `daynight.heartbeat_max_s` | int | `43200` (12 h) | 300..604800 | live | Interval once the scene demonstrably has not moved since the last probe. The automaton takes the smaller of the two when the scene is moving. |
-| `daynight.boot_probe` | int | `1` | 0..1 | takes effect at the next boot | `1` = **every** boot measures before deciding, regardless of the persisted mode: boot into the day pipeline, read against `day_gain`, then assert the result on the board once. A boot that comes up in night with a switchable illuminator (`daynight.irprobe_cmd`) first tries one **silent** probe (LEDs off, no cut-filter click): a clean night (illuminator ratio >= 1.5) ends the measurement with nothing switched; anything else falls back to the day probe described here. `0` = adopt the persisted mode without measuring — **except** when the AE is railed (zero reserve), where it measures anyway. Boot asserts the mode it ends up with on the board either way. |
+| `daynight.boot_probe` | int | `1` | 0..1 | takes effect at the next boot | `1` = **every** boot measures before deciding, regardless of the persisted mode: boot into the day pipeline, read against `day_gain`, then assert the result on the board once. A boot that comes up in night with a switchable illuminator (`daynight.irprobe_cmd`) first tries one **silent** probe (LEDs off, no cut-filter click): a clean night (illuminator ratio >= 2.0, `DN_IR_RATIO_NIGHT`) ends the measurement with nothing switched; anything else falls back to the day probe described here. `0` = adopt the persisted mode without measuring — **except** when the AE is railed (zero reserve), where it measures anyway. Boot asserts the mode it ends up with on the board either way. |
 | `daynight.interval_ms` | int | `2000` | 100..60000 | live | Sample interval. The exposure index needs a `/proc` scrape per tick (integration time has no IMP API). |
 | `daynight.diagnose_thresholds` | int | `0` | 0..1 | live | When probes keep failing and the best day-pipeline reading of that excursion was still clear of `day_gain`, warn that the threshold is unreachable for this scene and name the value to raise it above. It needs **`DN_DIAG_FAILS` = 3 consecutive failed probes** before it fires, and then warns **once per daemon session** (`diag_warned` in `src/daynight.c`) — not once per probe. Off by default anyway, because on a camera that genuinely never sees day it is a WARN nobody asked for. |
 | `daynight.history_s` | int | `0` | 0..172800 (48 h) | live | In-RAM decision-history ring for the WebUI tuning graph, in seconds of retention. `0` = off; nothing is allocated until a sample is pushed. One 16-byte sample per period, so the 48 h ceiling costs ~270 KiB. |
 | `daynight.ir_idle_off` | int | `0` | 0..1 | live | **since the next release.** Idle-Dark: at night, once no picture consumer (video/JPEG hub subscriber: RTSP, WebRTC, fMP4, MJPEG, SRT, snapshot, timelapse, recorder; plus the motion FrameSource pin and a set `jpeg.snapshot_path`) has been present for `ir_idle_linger_s`, switch only the IR illuminator off (IR-cut and ISP stay in night) and decide at the next consumer from the AE reading taken meanwhile. **Only effective with the FrameSource keepalive** (`general.fs_keepalive`, auto = on for OpenIMP T23/T41); otherwise one WARN and `daynight.ir_idle.reason = "keepalive"`. Also needs auto mode (`daynight.mode = auto`), a working `daynight.irprobe_cmd` and a `timps-irprobe` with the `idle`/`state` verbs. What happens: the LED goes off for an 8 s ratio measurement (like the silent probe, but it stays off), then the scene is read without it; the first consumer gets the LED within one hook call (a kick, not the next tick) or, if the scene without the LED already reads below `day_gain` and the hook's `state` confirms the LED is off, a direct switch to day. JPEG grabs (`/snapshot.jpg`, timelapse) right after that wake are held up to ~3.5 s (max 5 s) for the AE; streams are not held, their first 1-4 s are dark or settling. Setting it to 0 by POST, `daynight.enabled = 0`, `mode = schedule` and a stop give the LED back. Status: `daynight.ir_idle` in `GET /control` / `/events`. |
-| `daynight.ir_idle_linger_s` | int | `60` | 0..3600 | live | **since the next release.** How long after the last picture consumer the illuminator may go off; a consumer inside it is not an event (covers 10 s snapshot polling, DESCRIBE→PLAY, the 60 s timelapse). A poll slower than the linger costs one LED on/off pair and one held snapshot per poll. |
+| `daynight.ir_idle_linger_s` | int | `60` | 0..3600 | live | **since the next release.** How long after the last picture consumer the illuminator may go off; a consumer inside it is not an event (covers 10 s snapshot polling and DESCRIBE→PLAY). A poll slower than the linger costs one LED on/off pair and one held snapshot per poll. Keep it **longer than `timelapse.interval_s`**: with both at 60 the linger can run out on the tick before each shot, giving one LED on/off pair per shot (set e.g. 90). |
 | `daynight.switch_cmd` | string[64] | `daynight` | — | **file-only**, `F_NOGET` | Board script, run as `<cmd> day\|night` via `vfork()`+`execlp()` (no shell; `fork()` on v1.9.19). **Unlike `motion.on_motion`, this one *does* search `PATH`** — `execlp`, not `execve` — which is why the bare default `daynight` works. Same for `daynight.irprobe_cmd`. |
 | `daynight.isp_path` | string[128] | `/proc/jz/isp/isp-m0` | — | **file-only**, `F_NOGET` | ISP exposure proc file that is scraped. |
-| `daynight.irprobe_cmd` | string[64] | `timps-irprobe` | — | **file-only**, `F_NOGET` | Run as `<cmd> on\|off`. Empty disables the **silent** probe entirely and every night→day question falls back to the audible IR-cut probe. |
+| `daynight.irprobe_cmd` | string[64] | `timps-irprobe` | — | **file-only**, `F_NOGET` | Run as `<cmd> on\|off` (silent probe) and, for Idle-Dark, `<cmd> idle\|state` (`idle`: LED off with a 15 min failsafe that the 10 min re-assert renews; `state` prints `on`/`off`). Empty disables the **silent** probe entirely and every night→day question falls back to the audible IR-cut probe. |
 | `daynight.trace_path` | string[128] | `""` | — | **file-only**, `F_NOGET` | Opt-in CSV decision-trace recorder, one line per N samples. Size-capped and rotated once, so bounded at 2× the cap. **Must live on tmpfs** (`/tmp`, `/run`) — a LOGW reminds you if the path does not look like tmpfs. |
 
 ### How the decision works (needed to answer tuning questions)
@@ -1154,6 +1157,15 @@ Their effective values are still readable in the `daynight` status object of
     audible one.
   - To turn it off: POST `{"daynight":{"ir_idle_off":0}}`; the LED comes back
     on at once.
+  - If `timpsd` dies while the LED is off (SIGKILL, OOM, crash), nothing in
+    the firmware restarts it. The hook's `idle` arms a 900 s watchdog that
+    timps renews with every re-assert (8 s, 16 s, then every 600 s); without
+    a renewal it relights the LEDs it switched, unless the board script has
+    switched to day since (`/run/thingino/daynight_mode`). `on`, `off` and a
+    newer `idle` replace it, `state` does not. With a hook before that
+    watchdog (thingino `ciao` before `3af7d99e4`) the LED stays off until the
+    next `S95timps start`, whose boot probe relights it.
+  - Keep `ir_idle_linger_s` longer than `timelapse.interval_s` (see the key).
   `reason` in `daynight.ir_idle`: `disabled` (key 0 or `daynight.enabled =
   0`), `schedule` (`daynight.mode = schedule`), `keepalive`, `no_illuminator`
   (no `irprobe_cmd` or the illuminator was retired after failures),
@@ -1469,8 +1481,9 @@ Implications the upstream `Makefile` applies no matter what the package passes:
   `timpsd -c /etc/timps.conf`. PID file `/var/run/timpsd.pid`.
 * **Since the next release** `start` runs `timpsd --check-libs` first and
   does not start the daemon on exit 78/79 (libimp does not fit the build;
-  logged with `logger -t timps -p daemon.err`, returns 1). Any other result,
-  or a `timpsd` without the option, starts as before.
+  logged with `logger -t timps -p daemon.err`, returns 1). Any other result
+  (80 = could not check, logged at `daemon.warn`), or a `timpsd` without the
+  option, starts as before.
 * Commands: **`start | stop | restart | status`**. There is **no `reload`** —
   live reconfiguration is `/control`'s job, and anything restart-required needs
   a full `S95timps restart`.
@@ -1591,10 +1604,10 @@ The key inventory in this file was verified mechanically, not by hand. A script
    index pattern (`video<N>`/`videoN`/`video0`, `osd<S>.<N>`/`osdS.N`/`osd0.0`,
    `privacy<S>.<N>` …, or a leaf name in that section's table).
 
-**Result: 241 canonical config keys documented, 0 missing** (the next
-release adds `image.fcrop_*` and `roi<S>.<N>.*`; the earlier count was 229, quoted
-as 228 because the breakdown had missed `image.colorfx`/`scene` and the
-removal of `osd.vars_file`).
+**Result: 241 canonical config keys documented, 0 missing.** v1.9.33 had 226
+(200 table keys); the next release adds 15: `general.fs_keepalive`,
+`daynight.ir_idle_off`, `daynight.ir_idle_linger_s`, the five `image.fcrop_*`
+and the seven `roi<S>.<N>.*`.
 The breakdown:
 
 * **215** from the `cfg_field` tables — `sensor` 5, `image` 30, `audio` 24,

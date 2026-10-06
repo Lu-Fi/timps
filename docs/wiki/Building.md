@@ -151,6 +151,7 @@ takes the lock or calls into IMP (`src/hal/libimp_check.c`), and exits
 | --- | --- |
 | **78** | Flavour mismatch. OpenIMP is recognised by `OpenIMP_P0_GetState` / `OpenIMP_AVC_Create` / `OpenIMP_Tuning_Create`; no vendor libimp exports an `OpenIMP_*` symbol. |
 | **79** | The libimp lacks one of the 24 functions every start calls (`LIBIMP_REQUIRED` in `src/hal/libimp_check.h`). |
+| **80** | `--check-libs` only: the check could not run (`libimp.so` not openable by name, or none of the 24 names resolves). The daemon itself starts in that case. |
 
 with a log line that names both sides and the remedy, e.g. `libimp mismatch:
 this timpsd is built for OpenIMP (USE_OPENIMP=1) but /usr/lib/libimp.so is the
@@ -161,11 +162,11 @@ resolves, it only warns and starts as before.
 Command line: `timpsd [-c <config>] [-v] [-V|--version] [--check-libs]`.
 `--check-libs` runs only this check (no config, no lock, no device) and prints
 `timpsd: libimp OK (vendor build, /usr/lib/libimp.so)` / exit 0, or one line
-per problem on stderr and 78/79. `-V`/`--version` prints `timps <version>`.
+per problem on stderr and 78/79 (80: could not check). `-V`/`--version` prints `timps <version>`.
 `-v` is verbose logging, not the version. thingino's `S95timps` runs
 `--check-libs` before `start-stop-daemon` and does not start a daemon that
-would exit 78/79 (it logs the lines under tag `timps`); any other result starts
-as before. A dynamic-loader error (a missing `NEEDED` library) happens before
+would exit 78/79 (it logs the lines under tag `timps`); any other result,
+80 included, starts as before. A dynamic-loader error (a missing `NEEDED` library) happens before
 `main()` and is outside what `timpsd` itself can report.
 
 The 24 names are checked offline against every libimp at hand:

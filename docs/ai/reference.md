@@ -1074,15 +1074,17 @@ The flavour is read from the library: OpenIMP exports `OpenIMP_P0_GetState`,
 `OpenIMP_*` symbol. The check fails open: if `libimp.so` cannot be opened or
 none of the 24 names resolves, it logs a warning
 (`dlopen(libimp.so): … - libimp check skipped` /
-`no IMP function resolves in … - libimp check skipped`) and starts as before.
+`no IMP function resolves in … - libimp check skipped`) and starts as before;
+`--check-libs` exits **80** then (could not check).
 
 **The init script runs the same check first.** `S95timps start` runs
 `timpsd --check-libs`; on 78/79 it logs every line with
 `logger -t timps -p daemon.err` (tag **`timps`**), adds
 `timpsd not started (exit 78): libimp does not fit this timpsd build`, prints
 the same to the console, does **not** start the daemon and returns 1. Any other
-result (an older `timpsd` without the option — detected by the string in the
-binary, never by running it — or a loader error) starts as before; a non-zero
+result (80 = could not check, an older `timpsd` without the option — detected
+by the string in the binary, never by running it — or a loader error) starts
+as before; a non-zero
 result with output adds a `daemon.warn` line
 `timpsd --check-libs exited <rc>, starting anyway: <first line>`, which is the
 only place a dynamic-loader error such as `can't load library 'libalog.so'`
@@ -1091,7 +1093,8 @@ itself.
 
 `timpsd --check-libs` can be run by hand: it reads no config, takes no lock and
 opens no device. It prints `timpsd: libimp OK (vendor build, /usr/lib/libimp.so)`
-and exits 0, or the lines above (prefixed `timpsd: `, on stderr) and 78/79.
+and exits 0, or the lines above (prefixed `timpsd: `, on stderr) and 78/79,
+or a `… - libimp check skipped` warning and 80.
 
 **What to tell the user:** the image is mixed — typically a `timpsd` copied
 from another build, or a firmware built with the wrong stack. Flash a

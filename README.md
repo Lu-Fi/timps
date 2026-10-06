@@ -50,15 +50,17 @@ exhaustive config-key reference (`config-keys.md`).
 - **Event push stream** — `GET /events` (SSE): subscribe to `motion` / `daynight` / `stats` instead of polling
 - **Per-stream TrueType OSD** — independent overlay set per stream, placeholders (time, hostname, uptime, fps…), optional text outline/stroke
 - **Grid motion detection** — configurable `IMP_IVS` ROI grid with live per-cell state for a preview overlay
-- **Automatic day/night** — native ISP-brightness detection (replaces thingino's `daynightd`), or force by a fixed time window or real sunrise/sunset for a lat/long
+- **Automatic day/night** — native ISP-brightness detection (replaces thingino's `daynightd`), or force by a fixed time window or real sunrise/sunset for a lat/long; optional Idle-Dark switches only the IR LED off while nobody watches (`daynight.ir_idle_off`, off by default)
 - **Native speaker output** — timps owns `IMP_AO` directly: ONVIF audio backchannel (two-way audio) and a system-sound play queue (WAV/Opus/PCM/G.711), no `/bin/iac` dependency
 - **Local recording & timelapse** — continuous or motion-triggered fragmented-MP4 segments to SD (pre/post-roll, free-space pruning), plus periodic JPEG timelapse capture
 - **Privacy masks** — solid cover rectangles per stream, live-adjustable
+- **Encoder ROI and ISP crop/zoom** — per-region QP on H.264 streams (`roi<S>.<N>.*`) and an ISP FrontCrop window (`image.fcrop_*`), both live; the per-SoC tier is in `caps.roi`/`caps.fcrop` (device-tested on T20/T21 with OpenIMP, experimental or refused elsewhere)
 - **Image rotation** — hardware 90/270 on T31/T40/T41, software 90/270 on T23 and (OpenIMP builds with an OpenIMP that has T1x rotation, sub streams) T10/T20/T21, plus genuine per-channel 180° on T40/T41 (I2D); on other SoCs a 180° flip is `image.hflip`+`image.vflip`
 - **Optional HTTPS/RTSPS (mbedTLS) and MPEG-TS/SRT output**
 - **Optional WebRTC/WHEP** — H.264 (+ G.711) straight into a browser over ICE-lite/DTLS-SRTP, no plugin and no MSE buffering; LAN/VPN only (no NAT traversal)
 - **Authentication** — RTSP Digest, HTTP Digest/Basic (own MD5) + a `/control` token (per-boot + optional remote secret) with CORS
 - **Logging** — leveled logger to stderr and syslog (visible in `logread`)
+- **libimp check** — a `timpsd` built for the other libimp stack (vendor vs OpenIMP) exits 78/79 with a reason instead of crashing; `timpsd --check-libs` runs only that check
 - **Tiny footprint** — small enough for a T10
 
 **Supported SoCs:** T10 · T20 · T21 · T23 · T30 · T31 · T40 · T41 · C100

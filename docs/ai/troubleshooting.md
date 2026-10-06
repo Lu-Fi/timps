@@ -538,14 +538,15 @@ the unknown option). On 78/79 every line goes to syslog with
 `logger -t timps -p daemon.err` and to the console, followed by
 `timpsd not started (exit 78): libimp does not fit this timpsd build`; the
 daemon is **not** started and the script returns 1 (`restart` too). Any other
-exit code starts as before; with output it first logs
+exit code starts as before (including **80**, `--check-libs` could not
+check, see below); with output it first logs
 `timpsd --check-libs exited <rc>, starting anyway: <first line>` at
 `daemon.warn`.
 
 **Confirm:**
 
 ```sh
-timpsd --check-libs; echo $?        # 0 / 78 / 79; reads no config, takes no lock
+timpsd --check-libs; echo $?        # 0 / 78 / 79 / 80; reads no config, takes no lock
 logread | grep -E 'LIBIMP|timps: timpsd'
 ```
 
@@ -562,7 +563,9 @@ report that themselves; the preflight's `daemon.warn` line is where it becomes
 visible, and the daemon is then started as before (and fails the same way).
 The check is also skipped, with a warning, when `libimp.so` cannot be opened
 by name or none of the 24 names resolves (`… - libimp check skipped`), so a
-broken lookup never stops a camera.
+broken lookup never stops a camera: the daemon starts, and `--check-libs`
+(**since the next release**) exits **80** instead of 0 so the preflight's
+`daemon.warn` line carries that warning.
 
 ---
 
@@ -1262,6 +1265,17 @@ back on immediately.
 `no_illuminator`, `white_light`, `hook`. The WebUI's Day / Night page shows
 the same as a chip ("not available: …" with the fix); while that page is
 open its own preview counts as a viewer, so it reads "IR on · watched".
+
+**LED off and no streamer running** (e.g. after `S95timps stop` had to
+SIGKILL a wedged daemon, an OOM kill or a crash while idle-dark): nothing in
+the firmware restarts `timpsd`. Since `timps-irprobe` `3af7d99e4` the hook's
+`idle` arms a 900 s watchdog that every re-assert renews (8 s, 16 s, then
+every 600 s), so the LED comes back on at most ~15 min after the last
+re-assert - unless the board has switched to day since
+(`/run/thingino/daynight_mode`). An older hook leaves it off. Either way,
+`/etc/init.d/S95timps start` brings the streamer back and its boot probe
+decides afresh; `pidof timpsd` and `logread | grep timps` show whether and
+why it stopped.
 
 | Log line (`src/daynight.c`) | Level | Meaning / fix |
 | --- | --- | --- |

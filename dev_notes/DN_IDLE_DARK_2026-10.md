@@ -344,6 +344,49 @@ Commits (local, not pushed):
   `/usr/bin/timps-irprobe`; `ciao` has `cfa79f9f4` and `67fbc42e9` (verbs
   `idle`/`state`), `daynight.irprobe_cmd` defaults to `timps-irprobe`.
 
+## Pre-release fixes (2026-10-06)
+
+From `scratch-builds/review-prerelease.md` (F1-F17). Local, not pushed.
+
+| Repo | Commit | Finding | What |
+| --- | --- | --- | --- |
+| firmware `ciao` | `3af7d99e4` | F2 | `timps-irprobe idle` arms a 900 s watchdog (`IRPROBE_IDLE_WATCHDOG_S`), stamped/nonce-checked like `off`; it stands down when `/run/thingino/daynight_mode` (`DAYNIGHT_MODE_FILE`) says day; a stamp it cannot write refuses `idle` (exit 4) |
+| firmware `ciao` | `7626b49fe` | F5 | `S95timps` comment: exit 80 starts like any other code |
+| firmware `ciao` | `9b5ce76d1` | F10 | `roi-crop.js`: dead "Applies after a streamer restart" note removed |
+| timps | `7324f98` | F3, F2 | dn-replay `led_on_in` and `max_idle_gap_s`; 52 asserts the relight (`led_on_in [305,345]`, `ir_state_at 329 on`), 39/40/45/52 the re-assert cadence (840 s = watchdog - 60 s) |
+| timps | `af0f704` | F2 | `scripts/test_irprobe.sh` 130 checks (watchdog fires, renewal keeps dark, `state` does not renew, `on`/`off` cancel, day stands down, no stamp dir) |
+| timps | `6e5312c` | F5 | `--check-libs` exits 80 when it could not check (daemon unchanged: starts) |
+| timps | `4a16130` | F10 | `CAP_FCROP` `F_RESTART` branch removed (every supported tier is live) |
+| timps | `ce940c0` | F12 | `check-weak-imports.sh` fails (`UNSAFE`) without `BIND_NOW` or with a weak IMP import whose `st_value` is not 0 |
+
+The watchdog: the daemon re-asserts `idle` at +8 s, +16 s and then every
+`DN_IR_IDLE_REASSERT_S` = 600 s while dark, so 900 s leaves 300 s margin. A
+crash or a wedged day/night thread stops the renewal and the LED comes back
+on within 900 s. Every exit of idle-dark the daemon controls already calls
+`on` (wake, hand-back, stop, frozen AE) except a day switch (idle verdict or
+noir wake): there the board script turns the LED off and writes `day` to its
+mode file, which the watchdog checks. A custom `switch_cmd` that does not
+write that file would get the LED relit by day after 900 s (harmless, wrong).
+Up to ~4 sleeping subshells exist at a time (one per `idle` in the last
+900 s).
+
+Mutation checks: the old hook fails 16 of the new irprobe checks, a hook
+without the mode-file check 2; scenario 52 with a hook whose `on` fails and a
+board switch that does not drive the LED (never relit) fails `led@329s` and
+`led-on@305-345s` and passed the old expectations; a sim with
+`DN_IR_IDLE_REASSERT_S` 1000 fails 40 (`idle-gap` 1001 s).
+
+Corpus (sims at scale 60 and 30, each scenario with its own): pass 1 53/54,
+43 failed `led-on-latency` at 1.5 s against the 1.5 s bound while a foreign
+firmware build loaded the host; three reruns of 43 passed (1.1-1.2 s); pass 2
+54/54. Scenario timelines unchanged (52: `7 off, 316 on, 317 off, 326 on,
+333 off`; 40 longest unrenewed idle 600-602 s).
+
+Not done here: F4 stays a documented edge (a POST of ROI keys to an H.265 or
+rotated stream is accepted without effect; only `caps.roi.streams` shows it),
+because `control.c` has no host test; F5's device run is the procedure in
+`dev_notes/LIBIMP_CHECK_DEVICE_TEST_2026-10.md`.
+
 ## Before the default may be switched on
 
 Each on at least one T23 and one T41 (OpenIMP, keepalive auto), plus one
@@ -374,8 +417,10 @@ dual-IR board; results into this note:
 9. **External LED drivers**: `daynight night` from cron/WebUI while idle
    (re-assert, `state` check before every day verdict) - no stuck-on LED,
    no false day.
-10. **Restart/crash with the LED off**: SIGKILL and `S95timps restart` relight
-    within the boot assertion.
+10. **Restart/crash with the LED off**: after a SIGKILL with the LED off and
+    no restart, the hook's idle watchdog relights within 900 s of the last
+    `idle`/re-assert (sleepers: `ps | grep -c '[s]leep 900'`, at most ~4, and
+    their RAM); `S95timps start` then decides afresh through the boot probe.
 11. **LED power** saved per night (current draw on/off) - the benefit side.
 12. **WebUI on a camera**: card states live, save/reload, phone width; with
     the preview stopped the chip reaches "IR off (idle)".

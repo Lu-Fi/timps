@@ -871,9 +871,12 @@ daynight.isp_path       = /proc/jz/isp/isp-m0  # ISP exposure proc file
 # ir_idle_linger_s, switch only the IR illuminator off and decide at the next
 # consumer from what the AE measured meanwhile. Needs the framesource
 # keepalive (general.fs_keepalive; auto = on for OpenIMP T23/T41), otherwise
-# it stays inactive with a warning. Off by default: at 850 nm the glow then
-# shows whether anyone is watching. This release only reports the status
-# (GET /control daynight.ir_idle); the illuminator is not switched yet.
+# it stays inactive with a warning. 1 switches the IR LED off while nobody
+# watches, through irprobe_cmd's "idle" verb (thingino's timps-irprobe; it
+# relights on its own 15 min after timps stops renewing it). Status:
+# GET /control daynight.ir_idle. Off by default: at 850 nm the glow then
+# shows whether anyone is watching. Keep the linger longer than a
+# timelapse.interval_s, or every shot lights the LED once.
 # daynight.ir_idle_off      = 0                # 0 | 1, live
 # daynight.ir_idle_linger_s = 60               # seconds, 0..3600, live
 # Opt-in decision-trace recorder (incident diagnostics / replay harness): one

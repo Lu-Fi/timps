@@ -648,7 +648,9 @@ switch happens. Picture consumers are video and JPEG subscribers (RTSP,
 WebRTC, fMP4, MJPEG, SRT, `/snapshot.jpg`, timelapse, the recorder), motion
 detection's FrameSource and a set `jpeg.snapshot_path`. Audio-only clients do
 not count. A consumer inside the linger is not an event; the linger covers
-10 s snapshot polling, DESCRIBE→PLAY and the 60 s timelapse.
+10 s snapshot polling and DESCRIBE→PLAY. Keep it longer than
+`timelapse.interval_s`: with both at 60 s the linger can run out on the tick
+before each shot, and every shot lights the LED once (set e.g. 90 s).
 
 ### Requirements
 
@@ -657,9 +659,9 @@ not count. A consumer inside the linger is not an event; the linger covers
   consumer leaves and nothing can be measured while idle. Elsewhere it
   needs `general.fs_keepalive = 1` and a restart, untested there.
 * **A switchable illuminator**: `daynight.irprobe_cmd` (default
-  `timps-irprobe`) with the verbs `idle` (LED off, no watchdog) and `state`
-  (prints `on`/`off`). Firmware must ship the new hook (thingino `ciao`
-  from commit `67fbc42e9`, 2026-10). The illuminators it switches are the
+  `timps-irprobe`) with the verbs `idle` (LED off) and `state` (prints
+  `on`/`off`). Firmware must ship the new hook (thingino `ciao` from commit
+  `67fbc42e9`, 2026-10; the failsafe below from `3af7d99e4`). The illuminators it switches are the
   ones ticked in `daynight.controls` (IR 850/940 nm); a ticked **white
   light** makes it refuse, because it would light every reading.
 * **Automatic switching by light level**: `daynight.enabled = 1` and
@@ -686,7 +688,8 @@ indoor cameras the tell does not matter.
 2. **Measuring while dark.** The IR-cut is still open and the LED off, so the
    AE now reads the ambient light without the LED ("noir"). timps keeps that
    reading; the LED is re-asserted off after 8 s, 16 s and then every 10 min
-   in case the board script lit it.
+   in case the board script lit it. Each re-assert also renews the hook's
+   15 min failsafe (step 7).
 3. **Freshness check.** If the exposure has not moved at all in the 8 s after
    the LED went off, the AE is not running without a consumer on this
    SoC/stack. timps logs a WARN, turns the LED back on and does not try
@@ -705,7 +708,14 @@ indoor cameras the tell does not matter.
    wait for the AE for ~3.5 s, at most 5 s. Streams are not held.
 7. **Giving the LED back.** `ir_idle_off = 0`, `daynight.enabled = 0`,
    `mode = schedule`, a failing re-assert and a timps stop all turn the LED
-   on. After a crash with the LED off, the boot assertion relights it.
+   on. If `timpsd` dies while the LED is off (SIGKILL, OOM, a crash),
+   nothing in the firmware restarts it. The hook's `idle` arms a 15 min
+   watchdog that each re-assert renews; once timps stops renewing it, it
+   relights the LED, unless the board has switched to day meanwhile. The
+   picture is therefore dark for at most ~15 min after the last re-assert,
+   and the camera stays without a streamer until `S95timps start`; that
+   start's boot probe then decides afresh. A hook without the watchdog
+   (firmware before `3af7d99e4`) leaves the LED off until that start.
 
 ### What the user sees
 
