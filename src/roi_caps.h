@@ -84,7 +84,7 @@ static inline const char *cap_tier_name(int t)
 #define FCROP_WHY "not investigated on this SoC"
 #endif
 
-/* 1 = /control applies it to the running ISP; 0 = start only (restart). */
+/* every supported tier applies live (caps.fcrop.live) */
 #if FCROP_TIER != CAP_TIER_UNSUPPORTED
 #define FCROP_LIVE 1
 #else
