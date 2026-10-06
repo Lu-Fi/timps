@@ -8,6 +8,22 @@ semantic versioning.
 
 ### Added
 
+- **`timpsd` refuses a libimp that does not fit the build** instead of
+  crashing on it. Before the config, the lock or any IMP call it opens the
+  loaded `libimp.so` and exits **78** when the flavour differs (an OpenIMP build
+  on the vendor libimp or vice versa; OpenIMP is recognised by its
+  `OpenIMP_*` exports) and **79** when one of the 24 IMP functions every start
+  calls is missing (`LIBIMP_REQUIRED` in `src/hal/libimp_check.h`), logging
+  e.g. `libimp mismatch: this timpsd is built for OpenIMP (USE_OPENIMP=1) but
+  /usr/lib/libimp.so is the Ingenic vendor libimp - install the
+  vendor-flavour timpsd (USE_OPENIMP=0) or the OpenIMP libimp`. If libimp
+  cannot be opened or nothing resolves it warns and starts as before.
+  `scripts/check-libimp-required.sh` verifies the table against libimp
+  builds and the IMP headers.
+- **`timpsd --check-libs`** runs only that check (no config, no lock, no
+  device; exit 0/78/79). thingino's `S95timps` runs it before starting and
+  leaves a mismatched daemon unstarted, logging under tag `timps`.
+  **`-V`/`--version`** prints the version (`-v` stays verbose).
 - **T41 with the open stack: `image.temper_strength`.** `SetModule_Ratio`
   entry 1 is temporal denoise, visible only at high gain: frame-to-frame noise
   9.8 at 0 vs 2.5 at 128 (no further change at 255), independent of
@@ -64,6 +80,7 @@ semantic versioning.
   (T10/T20/T21): `SetDPC_Strength` and, on T20, `SetDefog_Strength`/
   `SetDRC_Strength` are weak imports; the key logs once and drops out of
   `caps.image`. `scripts/check-weak-imports.sh` checks a binary against a libimp.
+  The mix itself is now refused at start with exit 78 (see Added).
 - **T23/T41 with the open stack: no FrameSource disable/enable at runtime.**
   A FrameSource stopped and restarted while another channel streams can hang
   these SoCs (T41: 3 of 3 attempts within ~200 ms; a T23 hung in a wake

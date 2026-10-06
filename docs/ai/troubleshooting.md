@@ -34,6 +34,7 @@ Everything else here was read out of this repository at **v1.9.28
 | "No video at all", stream URL just hangs | [§2 Video/encoder](#2-video-and-encoder), [§1 Startup](#1-startup-and-config) |
 | "Daemon isn't running / camera keeps rebooting" | [§1 Startup](#1-startup-and-config) |
 | "It just died / exited on its own", a pasted `/run/timps.crash` | [§1.9 Exit codes and crash artefacts](#19-startup-exit-codes-and-crash-artefacts) |
+| "timpsd is not started", `libimp mismatch` / `libimp lacks` in the log, exit 78/79 | [§1.11 libimp does not fit the build](#111-libimp-does-not-fit-the-build-exit-78--79) |
 | "Black image" / "green image" / "frozen frame" | [§2 Video/encoder](#2-video-and-encoder), [§3 Image/ISP](#3-image--isp--day-night) |
 | "Purple / pink / IR-tinted picture" | [§3 Image/ISP](#3-image--isp--day-night) |
 | "Horizontal bands / flicker under lights" | [§3 Image/ISP](#3-image--isp--day-night) |
@@ -86,16 +87,21 @@ logread | grep -i timps | tail -n 100
 
 `timpsd` writes to syslog because `general.syslog` defaults to on; the init
 script backgrounds the process, so **stderr is discarded** — `logread` is the
-only log. `src/main.c` parses three arguments — `-c <config>`, `-v` (raise the
-level to DEBUG; **up to v1.9.28 it was undone a moment later** by the config
-file's `general.loglevel`, so it only covered the config parse — use
-`general.debug_modules` there) and `-h` (print `timps <version>` plus a
-one-line usage and exit 0). **Anything else is silently ignored**, so a typo'd flag looks like it
-worked. The default config path is `/etc/timps.conf`.
+only log. `src/main.c` parses `-c <config>`, `-v` (raise the level to DEBUG
+— **verbose, not version**: `timpsd -v` starts the daemon, and a second one
+refuses at the lock; **up to v1.9.28 it was undone a moment later** by the
+config file's `general.loglevel`, so it only covered the config parse — use
+`general.debug_modules` there), `-h` (print `timps <version>` plus a one-line
+usage and exit 0), and **since the next release** `-V`/`--version` (print
+`timps <version>`, exit 0) and `--check-libs` (§1.11). **Since v1.9.30** any
+other argument exits **2** with `timps: invalid argument '<arg>'` and the usage
+line; up to v1.9.29 it was silently ignored and the daemon started. The default
+config path is `/etc/timps.conf`.
 
 | Log line (`src/main.c`) | Cause | Fix |
 | --- | --- | --- |
 | `another timpsd instance already holds <path> - refusing to start` | Single-instance lock held. A second instance re-initialising the ISP would corrupt the first one's pipeline, so it refuses. Exit code **1**. | Find and stop the other `timpsd`. Usually a hand-started one plus the init script. |
+| `[LIBIMP] libimp mismatch: …` / `[LIBIMP] libimp lacks …`, or `timpsd not started (exit 78)` under tag `timps` | **Since the next release.** `timpsd` and `libimp.so` belong to different stacks; exit **78**/**79** before config, lock or ISP. | §1.11 |
 | `no HAL backend available` | Binary built without a usable HAL (neither the Ingenic backend nor the sim). | Build problem, not config — rebuild the package. |
 | `HAL init failed - retrying in <N>s` | The **init** stage failed: `IMP_ISP_Open`, `IMP_ISP_AddSensor`, `IMP_ISP_EnableSensor` or `IMP_System_Init`, all inside `isp_init()`. **Retries forever** with exponential backoff 5 → 60 s, and these failures **do not count** toward the start-failure budget. | See §1.2. |
 | `HAL start failed (<n>/10) - unwinding and retrying in <N>s` | The **start** stage failed: framesource/encoder/OSD/bind bring-up in `ing_start()`. This is the only path bounded at `MS_STARTUP_MAX_START_FAILS` = **10**, after which the one-shot reboot fires. | See §1.2. |
@@ -360,6 +366,15 @@ All of this is `src/main.c`.
   through the ordinary teardown and returns 0 — so "the camera stopped serving
   and the daemon exited cleanly" is the expected shape, not a contradiction.
 
+**Exit 2** (since v1.9.30): an unknown command-line argument.
+
+**Exit 78 / 79** (**since the next release**): the libimp does not fit the
+build — 78 flavour mismatch (OpenIMP vs vendor), 79 a required IMP function
+missing. Decided before the config is read, the lock is taken or any IMP call
+is made, so nothing is left behind (no lock, no ISP state); only the
+`start-stop-daemon` pidfile names a dead pid, which `S95timps stop` and
+`status` already handle. §1.11
+
 **Exit 1:**
 
 - The singleton `flock` is held by another `timpsd`.
@@ -430,6 +445,7 @@ inside `libimp` still do not).
 | Sensor not found / ISP init fails | Retries forever, no reboot escalation (§1.1). |
 | Audio bring-up fails | `audio input unavailable`, video continues. §6.1 |
 | A second instance | `another timpsd instance already holds …` + exit 1. |
+| `libimp.so` cannot be opened by name, or none of the required IMP functions resolves | `[LIBIMP]` warning `… - libimp check skipped`; the daemon starts as before (**since the next release**, §1.11). |
 
 ### 1.10 `sensor.fps` — what auto gives you, and what the driver holds
 
@@ -480,6 +496,73 @@ Pitfalls:
   error — at `sensor.fps = 30` on a T31 GC2053 also check
   `image.anti_flicker` (the driver publishes a 25 fps line model at probe, so
   neither 50 nor 60 Hz lands on a true mains period). §3.1
+
+---
+
+### 1.11 libimp does not fit the build (exit 78 / 79)
+
+**Since the next release.** Every `timpsd` is built for one libimp stack:
+`USE_OPENIMP=1` = OpenIMP, the open stack (thingino `BR2_PACKAGE_OPENIMP`,
+branch `aperto`); `USE_OPENIMP=0` = the original Ingenic vendor libimp (every
+other branch; links `-limp -lalog -lsysutils`). A mixed install used to crash
+at the first IMP call that one side lacks (a NULL call: uClibc leaves a
+missing strong import at 0 instead of refusing to load). Now
+`src/hal/libimp_check.c` decides first, through `dlopen("libimp.so")` +
+`dlsym` on that handle:
+
+1. **Flavour:** the library is OpenIMP if it exports any of
+   `OpenIMP_P0_GetState`, `OpenIMP_AVC_Create`, `OpenIMP_Tuning_Create` (all
+   three are in OpenIMP's export map on every SoC; no vendor libimp has any
+   `OpenIMP_*` symbol). Different from the build → exit **78**.
+2. **Required functions:** 24 IMP functions every start calls
+   (`LIBIMP_REQUIRED` in `src/hal/libimp_check.h`: `IMP_System_*`,
+   `IMP_ISP_Open/AddSensor/EnableSensor/EnableTuning/…`,
+   `IMP_FrameSource_CreateChn/SetChnAttr/EnableChn/…`,
+   `IMP_Encoder_CreateGroup/CreateChn/RegisterChn/StartRecvPic/PollingStream/GetStream/ReleaseStream`).
+   One missing → exit **79**.
+
+Messages (daemon: module `LIBIMP`, level E, syslog; `--check-libs`: stderr,
+prefixed `timpsd: `):
+
+- `libimp mismatch: this timpsd is built for OpenIMP (USE_OPENIMP=1) but /usr/lib/libimp.so is the Ingenic vendor libimp - install the vendor-flavour timpsd (USE_OPENIMP=0) or the OpenIMP libimp`
+- `libimp mismatch: this timpsd is built for the Ingenic vendor libimp (USE_OPENIMP=0) but /usr/lib/libimp.so is OpenIMP - install the OpenIMP-flavour timpsd (USE_OPENIMP=1) or the vendor libimp`
+- `libimp lacks <name> - /usr/lib/libimp.so does not fit this timpsd`
+- daemon only, last: `not starting: the libimp does not fit this build (exit <78|79>)`
+
+The path is the one the loader actually used (`dladdr`).
+
+**`S95timps` preflight.** Before `start-stop-daemon`, `S95timps start` runs
+`timpsd --check-libs` — only if the binary contains the string `--check-libs`
+(a `timpsd` older than v1.9.30 would otherwise start as a foreground daemon on
+the unknown option). On 78/79 every line goes to syslog with
+`logger -t timps -p daemon.err` and to the console, followed by
+`timpsd not started (exit 78): libimp does not fit this timpsd build`; the
+daemon is **not** started and the script returns 1 (`restart` too). Any other
+exit code starts as before; with output it first logs
+`timpsd --check-libs exited <rc>, starting anyway: <first line>` at
+`daemon.warn`.
+
+**Confirm:**
+
+```sh
+timpsd --check-libs; echo $?        # 0 / 78 / 79; reads no config, takes no lock
+logread | grep -E 'LIBIMP|timps: timpsd'
+```
+
+**Fix:** the image is mixed — usually a `timpsd` copied over from another
+build, or a firmware built with the other stack. Flash a consistent image, or
+install the `timpsd` built for the libimp on the camera. Do **not** suggest
+`LD_PRELOAD`, copying `libalog.so`, or editing the init script to skip the
+check.
+
+**What it cannot catch.** A dynamic-loader failure happens before `main()` —
+e.g. a vendor-flavour `timpsd` on an image without `libalog.so`
+(`can't load library 'libalog.so'`). Neither the daemon nor `--check-libs` can
+report that themselves; the preflight's `daemon.warn` line is where it becomes
+visible, and the daemon is then started as before (and fails the same way).
+The check is also skipped, with a warning, when `libimp.so` cannot be opened
+by name or none of the 24 names resolves (`… - libimp check skipped`), so a
+broken lookup never stops a camera.
 
 ---
 
@@ -2442,6 +2525,9 @@ mbedTLS.
   with an orphaned, still-exiting `timpsd` and **no pidfile**. If a restart
   leaves the camera dark, stop, wait, and start as two separate commands, or
   reboot.
+- **Since the next release** `start` first runs `timpsd --check-libs` and
+  does not start a daemon whose libimp does not fit (exit 78/79, logged under
+  tag `timps` at `daemon.err`) — §1.11.
 - `/etc/timps.conf` is installed at **build time**; there is no
   `timps.conf.example` and no first-boot seeding, despite what
   `package/timps/README.md` still says.
@@ -2936,6 +3022,23 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | `TRACE` | `%s/%s chn=%d: trace attached` | W | A trace probe attached to a consumer. |
 | `TRACE` | `%s/%s chn=%d %s%s %zuB gap=%lld.%dms age=%lld.%dms send=%lld.%dms (wr=%lld.%dms/%lldw cpu=%lld.%dms)%s` | W | Per-AU trace line. Developer output. |
 | `TRACE` | `%s/%s chn=%d %llds: au=%u slow=%u tx=%lluKiB max gap=%lld.%dms age=%lld.%dms send=%lld.%dms write=%lld.%dms (writes=%lld tot=%lld.%dms)%s` | W | Periodic trace summary. |
+
+### 12.18 `LIBIMP` (`src/hal/libimp_check.c`)
+
+**Since the next release.** Logged at start, before the config is read.
+
+| Message pattern | Level | Meaning | Action |
+| --- | --- | --- | --- |
+| `libimp mismatch: this timpsd is built for OpenIMP (USE_OPENIMP=1) but %s is the Ingenic vendor libimp - install the vendor-flavour timpsd (USE_OPENIMP=0) or the OpenIMP libimp` | E | OpenIMP build on a vendor libimp. Exit 78. | §1.11 |
+| `libimp mismatch: this timpsd is built for the Ingenic vendor libimp (USE_OPENIMP=0) but %s is OpenIMP - install the OpenIMP-flavour timpsd (USE_OPENIMP=1) or the vendor libimp` | E | Vendor build on OpenIMP. Exit 78. | §1.11 |
+| `libimp lacks %s - %s does not fit this timpsd` | E | A required IMP function is missing. Exit 79 (unless a mismatch already set 78). | §1.11 |
+| `not starting: the libimp does not fit this build (exit %d)` | E | Last line before exit 78/79. | §1.11 |
+| `dlopen(libimp.so): %s - libimp check skipped` | W | libimp could not be opened by name; no verdict, the daemon starts. | Harmless; report it. |
+| `no IMP function resolves in %s - libimp check skipped` | W | The lookup found none of the 24 names; no verdict, the daemon starts. | Report it; the start will likely crash. |
+
+Under tag **`timps`** (from `S95timps`, not the daemon):
+`timpsd not started (exit %d): libimp does not fit this timpsd build` (E) and
+`timpsd --check-libs exited %d, starting anyway: %s` (W). §1.11
 
 ---
 

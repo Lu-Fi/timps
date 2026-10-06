@@ -104,7 +104,7 @@ resulting binary is byte-identical to a build that never had the feature.
 | `USE_DAYNIGHT` | **1 (on)** | Builds `src/daynight.c`: the native automatic day/night detection thread. See [Day/Night](Day-Night.md). |
 | `USE_RECORD` | **1 (on)** | Builds `src/record.c`: local SD recording (continuous/motion-triggered fMP4 segments) + the `/control` clip/record endpoints. `USE_RECORD=0` saves ~11 KB. |
 | `USE_TIMELAPSE` | **1 (on)** | Builds `src/timelapse.c`: periodic JPEG capture to SD. `USE_TIMELAPSE=0` saves ~4 KB. |
-| `USE_OPENIMP` | 0 (off) | Built against OpenIMP (the open libimp) instead of the vendor libimp. Selects the OpenIMP capability set: `isp_caps.h` (colorfx/scene on T10/T20/T21/T23/T31, DPC on T10/T20/T21, defog/DRC on T20, `ae_compensation`/sinter/temper and the `GetAeExprInfo` AE reserve on T41), `rotate_caps.h` (FrameSource 90/270 on T10/T20/T21 sub streams, with `USE_ROTATE`), `fs_ref.h` (`general.fs_keepalive` auto = on for T23/T41) and OpenIMP motion v2 in `imp_motion.c` (weakly bound, used only when the libimp exports it). thingino sets it when `BR2_PACKAGE_OPENIMP` is selected. Off = byte-identical to a vendor build. The OpenIMP-only ISP setters (DPC, defog/DRC on T20, colorfx/scene) are weak imports: on a vendor libimp the key logs once, is persisted only and drops out of `caps.image` instead of crashing. Still not a supported mix: this flavour links only `-limp`, and a vendor libimp needs `libalog.so`. `scripts/check-weak-imports.sh <timpsd> <libimp.so>` lists strong imports a libimp lacks. |
+| `USE_OPENIMP` | 0 (off) | Built against OpenIMP (the open libimp) instead of the vendor libimp. Selects the OpenIMP capability set: `isp_caps.h` (colorfx/scene on T10/T20/T21/T23/T31, DPC on T10/T20/T21, defog/DRC on T20, `ae_compensation`/sinter/temper and the `GetAeExprInfo` AE reserve on T41), `rotate_caps.h` (FrameSource 90/270 on T10/T20/T21 sub streams, with `USE_ROTATE`), `fs_ref.h` (`general.fs_keepalive` auto = on for T23/T41) and OpenIMP motion v2 in `imp_motion.c` (weakly bound, used only when the libimp exports it). thingino sets it when `BR2_PACKAGE_OPENIMP` is selected. Off = byte-identical to a vendor build. The OpenIMP-only ISP setters (DPC, defog/DRC on T20, colorfx/scene) are weak imports: on a vendor libimp the key logs once, is persisted only and drops out of `caps.image` instead of crashing. Still not a supported mix: this flavour links only `-limp`, and a vendor libimp needs `libalog.so`; since the next release `timpsd` refuses it at start (exit 78, see [below](#which-libimp-a-binary-needs---check-libs)). `scripts/check-weak-imports.sh <timpsd> <libimp.so>` lists strong imports a libimp lacks. |
 | `USE_FAAC` | 0 (off) | Software AAC audio encoding via `libfaac` (`FAACLIB`, default static `-l:libfaac.a`). Needed for AAC on RTSP/browser preview; without it `audio.codec` should be `pcmu`/`pcma`. |
 | `USE_TLS` | 0 (off) | HTTPS (`http.https`) + RTSPS (`rtsp.tls`, port 322 by default) via mbedTLS (`src/tls.c`). Needs `-lmbedtls`/`-lmbedx509`/`-lmbedcrypto` available; auto-enabled by the thingino package build when `libmbedtls` is linked. |
 | `USE_SRT` | 0 (off) | MPEG-TS over SRT output (`src/srt.c`), needs `libsrt`. Serves either as a listener (`srt.mode=listener`, the default) or as a caller dialling `srt.host` (`srt.mode=caller`) — see [Streaming Protocols](Streaming-Protocols.md#srt-srcsrtc). Because SRT links C++ (`libstdc++`), the final link step switches from `gcc` to `g++` (`LINK_DRV`) when this is on. |
@@ -138,6 +138,49 @@ handled automatically by the Makefile's `USE_AUDIO_OUT` derived variable.
 - `VERSION` is baked into the binary (`timps -h` / the startup log line) via
   `git describe --tags --always --dirty`; the buildroot package overrides
   it with `VERSION=$(TIMPS_VERSION)`.
+
+### Which libimp a binary needs (`--check-libs`)
+
+A target `timpsd` fits exactly one libimp stack: `USE_OPENIMP=1` = OpenIMP
+(thingino `BR2_PACKAGE_OPENIMP`, the `aperto` open stack), `USE_OPENIMP=0` =
+the Ingenic vendor libimp (linked `-limp -lalog -lsysutils`). **Since the next
+release** `timpsd` checks the loaded `libimp.so` before it reads the config,
+takes the lock or calls into IMP (`src/hal/libimp_check.c`), and exits
+
+| Exit | Cause |
+| --- | --- |
+| **78** | Flavour mismatch. OpenIMP is recognised by `OpenIMP_P0_GetState` / `OpenIMP_AVC_Create` / `OpenIMP_Tuning_Create`; no vendor libimp exports an `OpenIMP_*` symbol. |
+| **79** | The libimp lacks one of the 24 functions every start calls (`LIBIMP_REQUIRED` in `src/hal/libimp_check.h`). |
+
+with a log line that names both sides and the remedy, e.g. `libimp mismatch:
+this timpsd is built for OpenIMP (USE_OPENIMP=1) but /usr/lib/libimp.so is the
+Ingenic vendor libimp - install the vendor-flavour timpsd (USE_OPENIMP=0) or
+the OpenIMP libimp`. If `libimp.so` cannot be opened or none of the names
+resolves, it only warns and starts as before.
+
+Command line: `timpsd [-c <config>] [-v] [-V|--version] [--check-libs]`.
+`--check-libs` runs only this check (no config, no lock, no device) and prints
+`timpsd: libimp OK (vendor build, /usr/lib/libimp.so)` / exit 0, or one line
+per problem on stderr and 78/79. `-V`/`--version` prints `timps <version>`.
+`-v` is verbose logging, not the version. thingino's `S95timps` runs
+`--check-libs` before `start-stop-daemon` and does not start a daemon that
+would exit 78/79 (it logs the lines under tag `timps`); any other result starts
+as before. A dynamic-loader error (a missing `NEEDED` library) happens before
+`main()` and is outside what `timpsd` itself can report.
+
+The 24 names are checked offline against every libimp at hand:
+
+```sh
+scripts/check-libimp-required.sh -H                       # IMP headers of every SoC
+scripts/check-libimp-required.sh --expect vendor  <vendor libimp.so>...
+scripts/check-libimp-required.sh --expect openimp <OpenIMP libimp.so>...
+make test-libimp-check                                     # decision + dlopen glue (host)
+scripts/test_s95timps_preflight.sh <thingino>/package/timps/files/S95timps
+```
+
+A new libimp version must pass `check-libimp-required.sh` before it ships, or
+it would be refused with exit 79. The table also compiles against the SoC's IMP
+headers (`sizeof(&fn)`), so a name a header lacks is a build error.
 
 ### Self-test target
 

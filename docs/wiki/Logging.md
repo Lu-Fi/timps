@@ -84,6 +84,7 @@ a row.
 | `SRT` | `srt.c` | 7 | 10 | 3 | 2 | the 10-second key=value `stats:` line (RTT, loss, retransmits, send rate) while a receiver is connected, plus queue-overflow detail and IDR re-requests (the *first* keyframe drop of a session is a WARN) |
 | `spk` | `rtsp/speaker.c` | 0 | 8 | 7 | 0 | — |
 | `MAIN` | `main.c` | 8 | 5 | 8 | 0 | — |
+| `LIBIMP` | `hal/libimp_check.c` | 2 | 2 | 0 | 0 | — (start-up only: the libimp does not fit the build, exit 78/79; see [Building](Building.md#which-libimp-a-binary-needs---check-libs)) |
 | `MOTION` | `hal/imp_motion.c` | 9 | 8 | 5 | 0 | — |
 | `TL` | `timelapse.c` | 4 | 1 | 5 | 0 | — |
 | `HAL_SIM` | `hal/hal_sim.c` | 4 | 2 | 4 | 0 | — |

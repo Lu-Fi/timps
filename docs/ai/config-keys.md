@@ -50,7 +50,11 @@ Overview / architecture doc: `docs/ai/reference.md`.
   below).
 
 The file path is `/etc/timps.conf` unless `timpsd -c <path>` says otherwise
-(`src/main.c`).
+(`src/main.c`). The other arguments: `-v` (DEBUG logging, **not** the
+version), `-h`, and **since the next release** `-V`/`--version` and
+`--check-libs` (checks only whether the loaded libimp fits the build, reads no
+config; exit 0, 78 flavour mismatch, 79 missing IMP function — see
+`docs/ai/troubleshooting.md` §1.11). Any other argument exits 2.
 
 ### 1.2 Column meanings
 
@@ -1329,6 +1333,10 @@ Implications the upstream `Makefile` applies no matter what the package passes:
 
 * Config path is hardcoded: `CONF=/etc/timps.conf`, passed as
   `timpsd -c /etc/timps.conf`. PID file `/var/run/timpsd.pid`.
+* **Since the next release** `start` runs `timpsd --check-libs` first and
+  does not start the daemon on exit 78/79 (libimp does not fit the build;
+  logged with `logger -t timps -p daemon.err`, returns 1). Any other result,
+  or a `timpsd` without the option, starts as before.
 * Commands: **`start | stop | restart | status`**. There is **no `reload`** —
   live reconfiguration is `/control`'s job, and anything restart-required needs
   a full `S95timps restart`.

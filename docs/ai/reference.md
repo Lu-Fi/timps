@@ -59,6 +59,11 @@ libwebsockets, no libschrift. Stripped binary is roughly **360 KB** (mipsel)
   `docs/sdk-feature-gaps.md`.
 - Config file: `/etc/timps.conf`, plain `key = value`
 - Init script: `/etc/init.d/S95timps` (start/stop/restart)
+- Command line: `timpsd [-c <config>] [-v] [-V|--version] [--check-libs]`.
+  `-v` is **verbose** (DEBUG level), not version: it starts the daemon.
+  `-V`/`--version` (**since the next release**) prints `timps <version>` and
+  exits; `--check-libs` (**since the next release**) checks the libimp and
+  exits (§11). An unknown argument exits 2 (since v1.9.30).
 - Per-boot control token: `/run/timps.token`
 - Default HTTP port **8880**, RTSP **554**, RTSPS **322** (when enabled)
 
@@ -1023,18 +1028,65 @@ Distinguish **compiled out** from **misconfigured**:
 | `/events` answers 404 | `events.enabled = 0` or `USE_CONTROL=0` | — |
 | Setting is accepted then reverts after reboot | `not_persisted > 0` in the POST reply (more than 48 changed keys), or a file-only key | Split the request; hand-edit `/etc/timps.conf` for file-only keys |
 | Log: `IMP_ISP_Tuning_Set… not in this libimp - image.… unavailable (persisted only)` | An OpenIMP build (`USE_OPENIMP`) on a vendor libimp, see below | Flash a consistent image |
+| Daemon gone right after start, log: `[LIBIMP] libimp mismatch: …` or `libimp lacks …`, exit **78**/**79** | `timpsd` and `libimp.so` come from different stacks, see below | Flash a consistent image |
 
-**OpenIMP-built `timpsd` on a vendor libimp (mixed install).** Before the next
-release this crashed at start on T10/T20/T21 (a NULL call into
+### `timpsd` exits 78 or 79: the libimp does not fit the build
+
+**Since the next release.** A `timpsd` is built for exactly one libimp stack:
+`USE_OPENIMP=1` for OpenIMP (thingino `BR2_PACKAGE_OPENIMP`, the open stack of
+the `aperto` branch), `USE_OPENIMP=0` for the original Ingenic vendor libimp
+(every other branch, linked with `-limp -lalog -lsysutils`). Before it reads
+the config, takes `/run/timps.lock` or makes any IMP call, `timpsd` asks the
+loaded `libimp.so` (through `dlopen`/`dlsym`, `src/hal/libimp_check.c`):
+
+| Exit | Log line (module `LIBIMP`, level E) | Meaning |
+| --- | --- | --- |
+| **78** | `libimp mismatch: this timpsd is built for OpenIMP (USE_OPENIMP=1) but /usr/lib/libimp.so is the Ingenic vendor libimp - install the vendor-flavour timpsd (USE_OPENIMP=0) or the OpenIMP libimp` | OpenIMP build on a vendor libimp |
+| **78** | `libimp mismatch: this timpsd is built for the Ingenic vendor libimp (USE_OPENIMP=0) but /usr/lib/libimp.so is OpenIMP - install the OpenIMP-flavour timpsd (USE_OPENIMP=1) or the vendor libimp` | vendor build on OpenIMP |
+| **79** | `libimp lacks <IMP_function> - /usr/lib/libimp.so does not fit this timpsd` (one line per name) | The libimp lacks one of 24 functions every start calls (`LIBIMP_REQUIRED` in `src/hal/libimp_check.h`) |
+| — | `not starting: the libimp does not fit this build (exit 78)` | Last daemon log line (78 or 79) |
+
+The flavour is read from the library: OpenIMP exports `OpenIMP_P0_GetState`,
+`OpenIMP_AVC_Create` and `OpenIMP_Tuning_Create`, no vendor libimp exports any
+`OpenIMP_*` symbol. The check fails open: if `libimp.so` cannot be opened or
+none of the 24 names resolves, it logs a warning
+(`dlopen(libimp.so): … - libimp check skipped` /
+`no IMP function resolves in … - libimp check skipped`) and starts as before.
+
+**The init script runs the same check first.** `S95timps start` runs
+`timpsd --check-libs`; on 78/79 it logs every line with
+`logger -t timps -p daemon.err` (tag **`timps`**), adds
+`timpsd not started (exit 78): libimp does not fit this timpsd build`, prints
+the same to the console, does **not** start the daemon and returns 1. Any other
+result (an older `timpsd` without the option — detected by the string in the
+binary, never by running it — or a loader error) starts as before; a non-zero
+result with output adds a `daemon.warn` line
+`timpsd --check-libs exited <rc>, starting anyway: <first line>`, which is the
+only place a dynamic-loader error such as `can't load library 'libalog.so'`
+reaches syslog. A loader error before `main()` cannot be caught by `timpsd`
+itself.
+
+`timpsd --check-libs` can be run by hand: it reads no config, takes no lock and
+opens no device. It prints `timpsd: libimp OK (vendor build, /usr/lib/libimp.so)`
+and exits 0, or the lines above (prefixed `timpsd: `, on stderr) and 78/79.
+
+**What to tell the user:** the image is mixed — typically a `timpsd` copied
+from another build, or a firmware built with the wrong stack. Flash a
+consistent image (or install the `timpsd` built for the libimp that is on the
+camera). Do not suggest `LD_PRELOAD` or copying libraries around.
+
+**OpenIMP-built `timpsd` on a vendor libimp (mixed install), before the next
+release.** It crashed at start on T10/T20/T21 (a NULL call into
 `IMP_ISP_Tuning_SetDPC_Strength`, on T20 also `SetDefog_Strength` /
-`SetDRC_Strength`). Since the next release those setters are weak imports: the
-key logs once, stays persisted only and drops out of `caps.image`. The
-combination is still unsupported: the OpenIMP flavour links only `libimp.so`,
-and a vendor libimp needs `IMP_Log_Get_Option`/`imp_log_fun` from
-`libalog.so`, which nothing then loads (`LD_PRELOAD=/usr/lib/libalog.so` is an
-untested stopgap). The answer is a vendor-flavour build (`USE_OPENIMP=0`,
-linked with `-limp -lalog -lsysutils`). `scripts/check-weak-imports.sh
-<timpsd> <libimp.so>` lists strong imports a given libimp lacks.
+`SetDRC_Strength`). Those setters are weak imports now: the key logs once,
+stays persisted only and drops out of `caps.image` — reachable only when the
+flavour check is skipped. The combination is unsupported either way: the
+OpenIMP flavour links only `libimp.so`, and a vendor libimp needs
+`IMP_Log_Get_Option`/`imp_log_fun` from `libalog.so`, which nothing then
+loads. `scripts/check-weak-imports.sh <timpsd> <libimp.so>` lists strong
+imports a given libimp lacks; `scripts/check-libimp-required.sh
+[--expect vendor|openimp] <libimp.so>…` checks a libimp against the table
+above (`-H`: against the IMP headers of every SoC).
 
 ### Streaming problems
 
