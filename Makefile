@@ -293,7 +293,7 @@ IMPLIBS ?= -l:libimp.a -l:libalog.a -l:libsysutils.a
 # against a distro/buildroot that only ships libfaac.so.
 FAACLIB ?= -l:libfaac.a
 
-.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun test-daynight-read test-timelapse-prune test-record-ring test-fs-rot test-fs-ref test-libimp-check test-dn-idle test-hub-hold
+.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun test-daynight-read test-timelapse-prune test-record-ring test-fs-rot test-fs-ref test-libimp-check test-dn-idle test-hub-hold test-roi
 
 all: target
 
@@ -548,8 +548,28 @@ test-dn-idle:
 	  $(LDFLAGS) -lpthread -o $(BIN)-dnidletest
 	@./$(BIN)-dnidletest; rc=$$?; rm -f $(BIN)-dnidletest; exit $$rc
 
+# Host-only test for the encoder ROI / FrontCrop validation (src/hal/roi_geom.h:
+# macroblock corners, QP ranges, the top,left order), then the tier matrix of
+# src/roi_caps.h per PLATFORM:USE_OPENIMP:roi:fcrop (0 unsupported,
+# 1 experimental, 2 effective, 3 sim). Exit code is the result.
+ROI_MATRIX := T10:0:1:0 T10:1:1:1 T20:0:1:0 T20:1:2:2 T21:0:1:0 T21:1:1:2 \
+              T23:0:1:0 T23:1:1:0 T30:0:0:0 T31:0:0:1 T31:1:0:1 T40:0:0:0 \
+              T40:1:0:0 T41:0:0:0 T41:1:0:0 C100:0:0:0 HOST:0:3:3
+test-roi:
+	$(HOSTCC) $(CFLAGS) -Isrc scripts/test_roi.c -o $(BIN)-roitest
+	@./$(BIN)-roitest; rc=$$?; \
+	 for m in $(ROI_MATRIX); do \
+	   p=$$(echo $$m | cut -d: -f1); o=$$(echo $$m | cut -d: -f2); \
+	   r=$$(echo $$m | cut -d: -f3); f=$$(echo $$m | cut -d: -f4); \
+	   d="-DRT_EXPECT_ROI=$$r -DRT_EXPECT_FCROP=$$f"; [ $$p = HOST ] || d="$$d -DPLATFORM_$$p"; \
+	   [ $$o = 1 ] && d="$$d -DUSE_OPENIMP"; \
+	   $(HOSTCC) $(CFLAGS) -Isrc $$d -DRT_LABEL='"'$$p/$$o'"' scripts/test_roi.c \
+	     -o $(BIN)-roitest && ./$(BIN)-roitest || rc=1; \
+	 done; [ $$rc = 0 ] && echo "test_roi: tier matrix $(words $(ROI_MATRIX)) builds ok"; \
+	 rm -f $(BIN)-roitest; exit $$rc
+
 strip: target
 	$(CROSS_COMPILE)strip $(BIN)
 
 clean:
-	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest $(BIN)-hubidrtest $(BIN)-stuntest $(BIN)-tlprunetest $(BIN)-recringtest $(BIN)-fsrottest $(BIN)-fsreftest $(BIN)-dnidletest $(BIN)-hubholdtest
+	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest $(BIN)-hubidrtest $(BIN)-stuntest $(BIN)-tlprunetest $(BIN)-recringtest $(BIN)-fsrottest $(BIN)-fsreftest $(BIN)-dnidletest $(BIN)-hubholdtest $(BIN)-roitest
