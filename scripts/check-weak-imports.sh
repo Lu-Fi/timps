@@ -7,7 +7,9 @@
 # the given libraries defines. timpsd links with BIND_NOW as a PIE, so such a
 # symbol is not a load error on uClibc: it resolves to 0 and the first call
 # jumps to NULL. Weak imports (OpenIMP extensions, see hal_ingenic.c) are listed
-# for information only - the code NULL-checks them.
+# for information only - the code NULL-checks them. That NULL check only holds
+# with BIND_NOW and st_value 0 on every weak IMP import (a non-zero value is a
+# MIPS lazy stub, whose address is never NULL); both are checked and fail.
 #
 # By default only the libimp namespace (IMP_*, OpenIMP_*, imp_*) is checked, so
 # libc/mbedtls imports need not be passed. -a checks every strong import (pass
@@ -19,7 +21,8 @@
 # OpenIMP-flavour timpsd links only -limp, so on a vendor libimp that gap is a
 # link matter (libalog is not in NEEDED), not something the source can weaken.
 #
-# exit: 0 clean, 1 missing strong imports, 2 usage/tool error.
+# exit: 0 clean, 1 missing strong imports, no BIND_NOW or a weak import with a
+# non-zero st_value, 2 usage/tool error.
 # READELF overrides the readelf binary (default: ${CROSS_COMPILE}readelf, then
 # readelf - any GNU readelf reads MIPS ELF).
 
@@ -28,7 +31,7 @@ while [ $# -gt 0 ]; do
     case $1 in
         -a) all=1 ;;
         -s) strict=1 ;;
-        -h|--help) sed -n '2,25p' "$0"; exit 0 ;;
+        -h|--help) sed -n '2,28p' "$0"; exit 0 ;;
         --) shift; break ;;
         -*) echo "unknown option $1" >&2; exit 2 ;;
         *) break ;;
@@ -55,9 +58,9 @@ export LC_ALL=C
 tmp=$(mktemp -d) || exit 2
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
-# <bind> <name>, versions stripped
+# <U|D> <bind> <name> <value>, versions stripped
 syms() { "$RE" -W --dyn-syms "$1" | awk 'NF>=8 && $1 ~ /:$/ {
-    n=$8; sub(/@.*/,"",n); if (n!="") print ($7=="UND" ? "U" : "D"), $5, n }'; }
+    n=$8; sub(/@.*/,"",n); if (n!="") print ($7=="UND" ? "U" : "D"), $5, n, $2 }'; }
 
 for l in "$@"; do syms "$l" >> "$tmp/libsyms"; done
 [ -s "$tmp/libsyms" ] || { echo "no dynamic symbols in the given libraries" >&2; exit 2; }
@@ -72,12 +75,23 @@ awk '$1=="U" && $2=="GLOBAL" {print $3}' "$tmp/binsyms" | sort -u | pick \
     | comm -23 - "$tmp/def" > "$tmp/strong"
 awk '$1=="U" && $2=="WEAK" {print $3}' "$tmp/binsyms" | sort -u | grep -E "$ns" \
     | comm -23 - "$tmp/def" > "$tmp/weak"
+awk '$1=="U" && $2=="WEAK" && $4 !~ /^0+$/ {print $3, $4}' "$tmp/binsyms" \
+    | grep -E "$ns" > "$tmp/stub"
 sort -u "$tmp/def" "$tmp/bindef" > "$tmp/alldef"
 awk '$1=="U" && $2=="GLOBAL" {print $3}' "$tmp/libsyms" | sort -u | grep -E "$ns" \
     | comm -23 - "$tmp/alldef" > "$tmp/libgap"
 
-rc=0
+rc=0 unsafe=0
 echo "== $(basename "$bin") vs$(for l in "$@"; do printf ' %s' "$(basename "$l")"; done)"
+if "$RE" -W -d "$bin" | grep -Eq '\((BIND_NOW)\)|\(FLAGS\).*BIND_NOW|\(FLAGS_1\).*[[:space:]]NOW'; then
+    echo "BIND_NOW: yes"
+else
+    echo "BIND_NOW: NO (weak imports are not NULL-safe)"; unsafe=1
+fi
+if [ -s "$tmp/stub" ]; then
+    echo "weak imports with a non-zero st_value (lazy stub, address never NULL):"
+    sed 's/^/  /' "$tmp/stub"; unsafe=1
+fi
 if [ -s "$tmp/strong" ]; then
     echo "STRONG imports not defined (NULL call at runtime):"
     sed 's/^/  /' "$tmp/strong"; rc=1
@@ -94,5 +108,7 @@ if [ -s "$tmp/libgap" ]; then
     sed 's/^/  /' "$tmp/libgap"
     [ $strict = 1 ] && rc=1
 fi
-echo "RESULT: $([ $rc = 0 ] && echo clean || echo MISSING)"
+if [ $rc != 0 ]; then echo "RESULT: MISSING"
+elif [ $unsafe = 1 ]; then echo "RESULT: UNSAFE"; rc=1
+else echo "RESULT: clean"; fi
 exit $rc
