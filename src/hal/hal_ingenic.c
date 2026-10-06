@@ -603,6 +603,7 @@ static int fs_teardown(int chn)
     int leaked;
     pthread_mutex_lock(&g_fs_mtx);
     int rc = fsr_teardown(&g_fsr, &g_fs_ops, chn, &leaked);
+    g_fs_enfail[chn] = 0;
     pthread_mutex_unlock(&g_fs_mtx);
     if (leaked)
         LOGW(MOD,"framesource %d: %d reference(s) still held at teardown",
@@ -3785,13 +3786,18 @@ static void *jpeg_thread(void *arg)
                          jc->chn, dbg_jrecover_fails);
                     break;
                 }
+                int kept = fs_kept(jc->fs_chn);
                 LOGE(MOD,"jpeg chn%d: encoder dead after %d consecutive misses - "
-                     "forcing a framesource disable/enable cycle to recover "
-                     "(recovery attempt %d/%d)",
-                     jc->chn, dbg_jpollfail, dbg_jrecover_fails, MS_JPEG_WATCHDOG_MAX_RECOVERIES);
+                     "%s to recover (recovery attempt %d/%d)",
+                     jc->chn, dbg_jpollfail,
+                     kept ? "restarting the encoder (framesource kept alive)"
+                          : "forcing a framesource disable/enable cycle",
+                     dbg_jrecover_fails, MS_JPEG_WATCHDOG_MAX_RECOVERIES);
                 IMP_Encoder_StopRecvPic(jc->chn);
-                fs_unuse(jc->fs_chn);
-                fs_use(jc->fs_chn);
+                if (!kept){
+                    fs_unuse(jc->fs_chn);
+                    fs_use(jc->fs_chn);
+                }
                 if (IMP_Encoder_StartRecvPic(jc->chn)!=0){
                     fs_unuse(jc->fs_chn);   /* fully release; top-of-loop's
                                              * !receiving path fs_use()s fresh */
