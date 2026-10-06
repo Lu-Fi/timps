@@ -114,6 +114,12 @@ run_cases() {
 		ok "crash/loader error -> started, warning"
 	else bad "crash/loader error -> started, warning"; fi
 
+	m3="timpsd: warning: dlopen(libimp.so): libimp.so: cannot open shared object file - libimp check skipped"
+	start new 80 "$m3"
+	if [ $src = 0 ] && has "ssd -S" && has "daemon.warn timpsd --check-libs exited 80, starting anyway: $m3"; then
+		ok "80 (could not check) -> started, warning"
+	else bad "80 (could not check) -> started, warning"; fi
+
 	start new 1 ""
 	if [ $src = 0 ] && has "ssd -S" && ! has "logger"; then
 		ok "rc 1 without output -> started silently"

@@ -117,12 +117,13 @@ int libimp_preflight(int check_only)
     void *h = dlopen(LIBIMP_SONAME, check_only ? RTLD_NOW : RTLD_NOW | RTLD_NOLOAD);
     if (!h) {
         const char *e = dlerror();
-        if (check_only)
-            fprintf(stderr, "timpsd: warning: dlopen(%s): %s\n", LIBIMP_SONAME,
-                    e ? e : "failed");
-        else
-            LOGW(MOD, "dlopen(%s): %s - libimp check skipped", LIBIMP_SONAME,
-                 e ? e : "failed");
+        if (check_only) {
+            fprintf(stderr, "timpsd: warning: dlopen(%s): %s - libimp check "
+                    "skipped\n", LIBIMP_SONAME, e ? e : "failed");
+            return TIMPS_EXIT_LIBIMP_UNCHECKED;
+        }
+        LOGW(MOD, "dlopen(%s): %s - libimp check skipped", LIBIMP_SONAME,
+             e ? e : "failed");
         return 0;
     }
     char libname[160];
@@ -138,6 +139,7 @@ int libimp_preflight(int check_only)
     if (check_only && v == LIBIMP_OK)
         printf("timpsd: libimp OK (%s build, %s)\n",
                built_openimp ? "OpenIMP" : "vendor", libname);
+    if (check_only && v == LIBIMP_SKIPPED) return TIMPS_EXIT_LIBIMP_UNCHECKED;
     int rc = libimp_exit_code(v);
     if (rc && !check_only)
         LOGE(MOD, "not starting: the libimp does not fit this build (exit %d)", rc);

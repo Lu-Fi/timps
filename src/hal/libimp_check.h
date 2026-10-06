@@ -6,6 +6,8 @@
 /* exit codes, also matched by thingino's S95timps preflight */
 #define TIMPS_EXIT_LIBIMP_FLAVOUR 78   /* OpenIMP build on a vendor libimp, or vice versa */
 #define TIMPS_EXIT_LIBIMP_SYMBOL  79   /* libimp lacks a function every start calls */
+/* --check-libs only, the daemon starts: S95timps logs it and starts anyway */
+#define TIMPS_EXIT_LIBIMP_UNCHECKED 80 /* libimp could not be opened or read */
 
 /* Called on every start by every build. Each name must be exported by every
  * supported libimp, vendor and OpenIMP, or the check refuses a working camera:
@@ -42,7 +44,8 @@ int libimp_evaluate(int built_openimp, const char *libname,
 int libimp_exit_code(int verdict);
 
 /* check_only = 1: --check-libs (stderr/stdout only). 0: daemon start (LOGE).
- * Returns 0 (also when the check cannot run) or a TIMPS_EXIT_LIBIMP_* code. */
+ * Returns 0 or a TIMPS_EXIT_LIBIMP_* code; when the check cannot run, 0 for
+ * the daemon and TIMPS_EXIT_LIBIMP_UNCHECKED for --check-libs. */
 int libimp_preflight(int check_only);
 
 #endif

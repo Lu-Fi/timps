@@ -56,6 +56,10 @@ for fl in vendor openimp; do
 		-Isrc $INC "$T/main.c" src/hal/libimp_check.c src/log.c \
 		-L"$T/vendor" -limp -ldl -lpthread -o "$T/h-$fl" || exit 2
 done
+# dlopen fails: the daemon starts, --check-libs says it could not check
+$CC -std=c11 -D_GNU_SOURCE -Wall -Wextra -Wno-unused-parameter -DHAL_INGENIC \
+	-DLIBIMP_SONAME='"libimp-absent.so"' -Isrc $INC "$T/main.c" src/hal/libimp_check.c \
+	src/log.c -L"$T/vendor" -limp -ldl -lpthread -o "$T/h-noopen" || exit 2
 
 pass=0 fail=0
 run() { # want_rc want_text build lib mode
@@ -79,6 +83,8 @@ run 0 "" openimp openimp ""
 run 78 "not starting: the libimp does not fit this build (exit 78)" openimp vendor ""
 run 78 "is OpenIMP - install the OpenIMP-flavour timpsd" vendor openimp ""
 run 79 "not starting: the libimp does not fit this build (exit 79)" vendor nogs ""
+run 80 "libimp check skipped" noopen vendor --check-libs
+run 0 "libimp check skipped" noopen vendor ""
 # the daemon mode logs (syslog + stderr), --check-libs prints only
 out=$(LD_LIBRARY_PATH="$T/vendor" "$T/h-openimp" --check-libs 2>&1)
 case $out in
