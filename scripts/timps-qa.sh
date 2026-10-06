@@ -1533,6 +1533,15 @@ if curlq 8 "$(http_base)/control" -o "$vj" && [ -s "$vj" ]; then
 		*) bad "caps.framesource inconsistent: keepalive=$fs_ka for general.fs_keepalive=$fs_cfg" ;;
 		esac
 	fi
+	# encoder ROI / FrontCrop tiers (roi_caps.h): only "effective" is device-tested
+	for feat in roi fcrop; do
+		tier=$(jget "$vj" caps.$feat.tier)
+		case "$tier" in
+		"") info "/control has no caps.$feat (timpsd predates ROI/FrontCrop)" ;;
+		effective|unsupported|sim) info "caps.$feat: tier=$tier" ;;
+		*) warn "caps.$feat: tier=$tier - the call returns 0 here but its effect is unverified on this SoC" ;;
+		esac
+	done
 else
 	warn "/control unreachable for the version check (see $vj)"
 fi
@@ -5070,6 +5079,7 @@ else
 	TESTED_daynight="day_gain night_gain day_confirm_s boot_probe probe_min_gap_s probe_confirm_s heartbeat_s heartbeat_max_s sun_sunrise_offset_min sun_sunset_offset_min time_night_start time_day_start sun_latitude sun_longitude history_s"
 	TESTED_video="bitrate rotation rc_mode qp min_qp max_qp quality_lvl change_pos i_bias_lvl fluc_lvl gop max_gop profile"
 	TESTED_privacy="enabled x y w h color"
+	TESTED_roi=""
 
 	# ALLOW_<section>: F_CTRL fields DELIBERATELY not round-tripped by 8b, with
 	# why - matching the daynight.switch_cmd/motion.on_motion F_CTRL-exclusion
@@ -5085,7 +5095,9 @@ else
 	# daynight exposure index, so an unattended probe still leaves it alone.
 	# colorfx/scene: OpenIMP-only enums (the driver answers EINVAL for values it
 	# does not know), so 8b's midpoint round-trip would exercise rejection, not the key.
-	ALLOW_image="ae_it_max_us colorfx scene"
+	# fcrop_*: crops the picture of every stream (and stops the T23 pipeline
+	# until reboot, where the daemon refuses it anyway) - not for an unattended probe.
+	ALLOW_image="ae_it_max_us colorfx scene fcrop_enable fcrop_x fcrop_y fcrop_w fcrop_h"
 	ALLOW_audio=""
 	ALLOW_sensor="model i2c_addr fps width height"             # persist-only imaging config - risky to fuzz (all of sensor.*)
 	ALLOW_osd=""
@@ -5127,6 +5139,7 @@ else
 	# (--test-rotation) and records its own gate reason when off.
 	ALLOW_video="enabled codec width height fps buffers rtsp_path"
 	ALLOW_privacy=""
+	ALLOW_roi="enabled x y w h qp qp_mode"                        # encoder QP map, device-tested on T20 only: no unattended probe until the per-SoC test plan in docs/ai/config-keys.md ran
 
 	contains_word() { local n="$1"; shift; local w; for w in "$@"; do [ "$w" = "$n" ] && return 0; done; return 1; }
 
@@ -5141,7 +5154,7 @@ else
 	gated_has()  { grep -q "^$1 $2 "  "$LVG" 2>/dev/null; }
 
 	drift=0; stale=0; total=0; n_post=0; n_gate=0; n_allow=0
-	for sec in image audio sensor osd osd_item motion record timelapse daynight video privacy; do
+	for sec in image audio sensor osd osd_item motion record timelapse daynight video privacy roi; do
 		fields=$(jarr "$fj" "$sec")
 		[ -n "$fields" ] || continue
 		tvar="TESTED_$sec"; avar="ALLOW_$sec"
