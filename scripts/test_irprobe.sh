@@ -18,7 +18,7 @@ TOP=$(mktemp -d)
 trap 'rm -rf "$TOP"' EXIT
 mkdir "$TOP/bin"
 
-# light <type> on|off|gpio; pins in $STUB_PINS, "<type>:<mode>" in $STUB_FAIL fails
+# light <type> on|off|read|gpio; pins in $STUB_PINS, "<type>:<mode>" in $STUB_FAIL fails
 cat >"$TOP/bin/light" <<'EOF'
 #!/bin/sh
 case " $STUB_PINS " in *" $1 "*) pin=1 ;; *) pin= ;; esac
@@ -29,6 +29,11 @@ on | off)
 	case " $STUB_FAIL " in *" $1:$2 "*) exit 1 ;; esac
 	echo "$2" >"$T/state.$1"
 	echo "$1 $2" >>"$T/log"
+	;;
+read)
+	[ -n "$pin" ] || exit 1
+	case " $STUB_FAIL " in *" $1:read "*) exit 1 ;; esac
+	[ "$(cat "$T/state.$1" 2>/dev/null)" = on ] && printf 1 || printf 0
 	;;
 *) exit 1 ;;
 esac
@@ -78,6 +83,21 @@ hook() {
 }
 
 st() { cat "$T/state.$1" 2>/dev/null || echo none; }
+
+# stdout of the hook (the "state" verb)
+out() {
+	THINGINO_CONFIG="$T/cfg" STAMP_DIR="$T" IRPROBE_WATCHDOG_S=${WD:-1} \
+		$SH "$HOOK" "$@" 2>/dev/null
+}
+
+# rc <name> <want> <verb...>
+rc_is() {
+	name=$1 want=$2
+	shift 2
+	hook "$@"
+	rc=$?
+	[ $rc -eq "$want" ] && ok "$name: exit $want" || bad "$name: rc=$rc, want $want"
+}
 
 # expect <name> <type=state...>
 expect() {
@@ -174,6 +194,55 @@ run_cases() {
 	expect "newer off: older watchdog void" ir850=off
 	sleep 1.2
 	expect "newer off: newer watchdog fires" ir850=on
+
+	# idle: off without a watchdog, older watchdogs void
+	setup "ir850"
+	rc_is "idle" 0 idle
+	expect "idle: off" ir850=off
+	[ ! -e "$T/timps-irprobe" ] && ok "idle: no stamp" || bad "idle: stamp written"
+	sleep 2
+	expect "idle: no watchdog relight" ir850=off
+
+	setup "ir850"
+	hook off
+	rc_is "idle after off" 0 idle
+	sleep 2
+	expect "idle after off: older watchdog void" ir850=off
+
+	setup "ir850 ir940"
+	rc_is "dual IR idle" 0 idle
+	expect "dual IR idle: both off" ir850=off ir940=off
+	[ "$(out state)" = off ] && ok "state after idle: off" || bad "state after idle: $(out state)"
+	hook on
+	expect "on after idle" ir850=on ir940=on
+	[ "$(out state)" = on ] && ok "state after on: on" || bad "state after on: $(out state)"
+	echo off >"$T/state.ir850"
+	[ "$(out state)" = on ] && ok "state: one lit counts as on" || bad "state partial: $(out state)"
+
+	setup "ir940 white" white=true
+	rc_is "white enabled" 3 idle
+	expect "white enabled: idle refused, untouched" ir940=on white=on
+	hook off
+	expect "white enabled: off still switches both" ir940=off white=off
+
+	setup "ir940 white"
+	rc_is "white present, not enabled" 0 idle
+	expect "white present, not enabled: IR off, white alone" ir940=off white=on
+
+	setup ""
+	rc_is "no pins idle" 1 idle
+	rc_is "no pins state" 1 state
+
+	setup "ir850 ir940"
+	STUB_FAIL="ir940:off"
+	rc_is "failing idle" 4 idle
+	expect "failing idle: rolled back" ir850=on ir940=on
+	STUB_FAIL=
+
+	setup "ir850"
+	STUB_FAIL="ir850:read"
+	[ "$(out state)" = on ] && ok "state: unreadable counts as on" || bad "state unreadable: $(out state)"
+	STUB_FAIL=
 
 	setup "ir850"
 	hook bogus
