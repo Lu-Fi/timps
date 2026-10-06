@@ -1591,28 +1591,30 @@ The key inventory in this file was verified mechanically, not by hand. A script
    index pattern (`video<N>`/`videoN`/`video0`, `osd<S>.<N>`/`osdS.N`/`osd0.0`,
    `privacy<S>.<N>` …, or a leaf name in that section's table).
 
-**Result: 240 canonical config keys documented, 0 missing** (the next
-release adds `image.fcrop_*` and `roi<S>.<N>.*`; the earlier count was 228).
+**Result: 241 canonical config keys documented, 0 missing** (the next
+release adds `image.fcrop_*` and `roi<S>.<N>.*`; the earlier count was 229, quoted
+as 228 because the breakdown had missed `image.colorfx`/`scene` and the
+removal of `osd.vars_file`).
 The breakdown:
 
-* **214** from the `cfg_field` tables — `sensor` 5, `image` 28, `audio` 24,
+* **215** from the `cfg_field` tables — `sensor` 5, `image` 30, `audio` 24,
   `jpeg` 7, `rtsp` 7, `http` 11, `webrtc` 4, `events` 3, `general` 5, `sim` 4,
-  `srt` 8, `osd` 6, `motion` 9, `record` 10, `timelapse` 6, `daynight` 25,
+  `srt` 8, `osd` 5, `motion` 9, `record` 10, `timelapse` 6, `daynight` 25,
   `video<N>` 25, `osd<S>.<N>` 14, `privacy<S>.<N>` 6, `roi<S>.<N>` 7.
 * **7** handled by explicit code in `set_kv()` outside the tables:
   `general.syslog`, `general.trace`, `general.trace_ms`, `motion.roi_x/y/w/h`.
 * **19** retired or now-constant `daynight.*` names that the loader still
   recognises and warns about (11 removed, 8 turned into fixed constants).
 
-Plus **27 aliases** (§21), all present, and **247 key occurrences extracted from
+Plus **27 aliases** (§21), all present, and **260 key occurrences extracted from
 `timps.conf.example`** (active and commented out), all covered — 0 missing.
 
 Counting notes:
 * Indexed keys are counted **once per pattern**, not per index: the 25
-  `video<N>.*` keys, 14 `osd<S>.<N>.*` keys and 6 `privacy<S>.<N>.*` keys are
-  one entry each. Expanded per index the file would describe
-  25×2 + 14×(2 streams × 8 items + 8 legacy) + 6×(2×4) = far more lines for no
-  extra information.
+  `video<N>.*` keys, 14 `osd<S>.<N>.*` keys, 6 `privacy<S>.<N>.*` keys and
+  7 `roi<S>.<N>.*` keys are one entry each. Expanded per index the file would
+  describe 25×2 + 14×(2 streams × 8 items + 8 legacy) + 6×(2×4) + 7×(2×4) =
+  far more lines for no extra information.
 * `webrtc.*` (4 keys) only exists in a `USE_WEBRTC` build; it is counted because
   the table exists in the source.
 * Limits used for the index ranges, all from `src/config.h`:

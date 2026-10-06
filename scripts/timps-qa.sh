@@ -5112,7 +5112,7 @@ else
 	# they must be a documented exclusion, not eight drift warnings and not a
 	# stale "tested" claim for a probe 8b no longer contains. Their read-only
 	# assertion lives in 8b next to the daynight lv_section call.
-	ALLOW_daynight="enabled interval_ms diagnose_thresholds probe_jump_pct probe_settle_s ref_delay_s ir_ratio_night ir_ratio_day ir_min_headroom boot_settle_s transition_s learn"   # enabled reflects the detection thread's own state (poll lag), not a value to force; interval_ms/diagnose_thresholds change timing or logging rather than a readable decision value; the rest are the 2026-08-22 constants (plus the retired learn), settable only on older firmware
+	ALLOW_daynight="enabled interval_ms diagnose_thresholds probe_jump_pct probe_settle_s ref_delay_s ir_ratio_night ir_ratio_day ir_min_headroom boot_settle_s transition_s learn ir_idle_off ir_idle_linger_s"   # enabled reflects the detection thread's own state (poll lag), not a value to force; interval_ms/diagnose_thresholds change timing or logging rather than a readable decision value; ir_idle_*: Idle-Dark switches the illuminator off while nobody watches and a QA client is itself a consumer, so a round-trip proves nothing (make test-dn-idle and dn-replay 39-54 cover it); the rest are the 2026-08-22 constants (plus the retired learn), settable only on older firmware
 	# video: the exclusion used to be the WHOLE encoder block, justified as
 	# "geometry/codec/identity/routing changes carry restart-crash or
 	# active-session-disruption risk beyond a plain config round-trip". That
