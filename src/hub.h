@@ -266,4 +266,13 @@ typedef void (*hub_grab_hook)(struct fanqueue *q, void *ctx);
 ms_pkt     *hub_grab_jpeg(int src, int wait_ms, int *busy,
                           hub_grab_hook hook, void *hook_ctx);
 
+/* Idle-Dark (daynight.ir_idle_off): the illuminator has just come on for a
+ * consumer and the AE is still settling, so hub_grab_jpeg() discards JPEGs
+ * until this ms_now_us() instant (its deadline grows by the hold, at most
+ * HUB_IMAGE_HOLD_MAX_MS). Streams are never held. 0 = no hold. */
+#ifndef HUB_IMAGE_HOLD_MAX_MS
+#define HUB_IMAGE_HOLD_MAX_MS 5000
+#endif
+void        hub_set_image_ready_at(int64_t us);
+
 #endif

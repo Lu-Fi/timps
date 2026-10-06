@@ -900,8 +900,13 @@ static dn_ir_idle_status g_st_idle = { 0, 0, 0, 0, 0, "disabled" };
 void daynight_watch_kick(void)
 {
     __atomic_store_n(&g_watch_kick, 1, __ATOMIC_RELAXED);
-    if (__atomic_load_n(&g_dni_armed, __ATOMIC_ACQUIRE))
+    if (__atomic_load_n(&g_dni_armed, __ATOMIC_ACQUIRE)) {
+        /* provisional, before the subscriber's first pop; the thread sets
+         * the real one once the hook has run */
+        hub_set_image_ready_at(ms_now_us() +
+            (int64_t)(DN_IR_WAKE_SETTLE_MS + DN_IR_WAKE_HOOK_MS) * 1000);
         ms_stopgate_kick(&g_gate);
+    }
 }
 
 /* "<irprobe_cmd> <verb>": its exit status, -1 if it could not run or was
@@ -3011,6 +3016,8 @@ static void *dn_thread(void *arg)
                     LOGD(MOD, "idle: consumer - ambient %.0f without the "
                               "illuminator is day, switching", (double)s);
                     dni_wake_day = 1; run_now = 1;
+                    hub_set_image_ready_at(ms_now_us() +
+                        (int64_t)(DN_IR_WAKE_SETTLE_MS + DN_IR_WAKE_HOOK_MS) * 1000);
                     if (ir_idle_probe) {
                         ir_verdict_at = 0; ir_idle_probe = 0;
                         d_lit = -1.0f; d_lit_hr = -1; ir_why = NULL;
@@ -3023,6 +3030,9 @@ static void *dn_thread(void *arg)
                 int credit = why == DNI_R_WAKE &&
                              (s > dn->night_gain || dn_clipped(tk_hr));
                 dn_light_on(cmd, 2);
+                if (why == DNI_R_WAKE || why == DNI_R_WAKE_UNSETTLED)
+                    hub_set_image_ready_at(ms_now_us() +
+                                           (int64_t)DN_IR_WAKE_SETTLE_MS * 1000);
                 LOGD(MOD, "idle: illuminator on (%s, exposure %.0f%s)",
                      dni_why_str(why), (double)s,
                      credit ? ", proves night" : "");

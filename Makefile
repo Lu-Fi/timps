@@ -293,7 +293,7 @@ IMPLIBS ?= -l:libimp.a -l:libalog.a -l:libsysutils.a
 # against a distro/buildroot that only ships libfaac.so.
 FAACLIB ?= -l:libfaac.a
 
-.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun test-daynight-read test-timelapse-prune test-record-ring test-fs-rot test-fs-ref test-libimp-check test-dn-idle
+.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun test-daynight-read test-timelapse-prune test-record-ring test-fs-rot test-fs-ref test-libimp-check test-dn-idle test-hub-hold
 
 all: target
 
@@ -475,6 +475,16 @@ test-hub-idr:
 	  -Isrc $(HUBIDRTEST_SRC) $(LDFLAGS) -lpthread -lm -o $(BIN)-hubidrtest
 	@./$(BIN)-hubidrtest; rc=$$?; rm -f $(BIN)-hubidrtest; exit $$rc
 
+# Host-only unit test for the snapshot warm-up hold (src/hub.c,
+# hub_set_image_ready_at): Idle-Dark's first JPEG after the illuminator came
+# on waits for the AE. The cap is shortened so the cases run in a second or
+# two. Needs no hardware and no running daemon; exit code is the test result.
+test-hub-hold:
+	$(HOSTCC) $(CFLAGS) -DMS_VERSION='"$(VERSION)"' -DHUB_IMAGE_HOLD_MAX_MS=500 \
+	  -Isrc scripts/test_hub_hold.c $(filter-out scripts/test_hub_idr.c,$(HUBIDRTEST_SRC)) \
+	  $(LDFLAGS) -lpthread -lm -o $(BIN)-hubholdtest
+	@./$(BIN)-hubholdtest; rc=$$?; rm -f $(BIN)-hubholdtest; exit $$rc
+
 # Host-only test for the ICE-lite STUN layer (src/webrtc/stun.c). The C side
 # is only a hex-in/hex-out harness; the checking happens in Python against
 # hmac/hashlib/zlib, so MESSAGE-INTEGRITY and FINGERPRINT are validated
@@ -542,4 +552,4 @@ strip: target
 	$(CROSS_COMPILE)strip $(BIN)
 
 clean:
-	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest $(BIN)-hubidrtest $(BIN)-stuntest $(BIN)-tlprunetest $(BIN)-recringtest $(BIN)-fsrottest $(BIN)-fsreftest $(BIN)-dnidletest
+	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest $(BIN)-hubidrtest $(BIN)-stuntest $(BIN)-tlprunetest $(BIN)-recringtest $(BIN)-fsrottest $(BIN)-fsreftest $(BIN)-dnidletest $(BIN)-hubholdtest

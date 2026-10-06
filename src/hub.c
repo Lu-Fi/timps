@@ -297,18 +297,39 @@ int hub_pick_jpeg_src(const ms_config *cfg, int chn, int strict)
     return -1;
 }
 
+/* a mutex, not an atomic: 64-bit atomics need libatomic on MIPS32 */
+static pthread_mutex_t g_img_lock = PTHREAD_MUTEX_INITIALIZER;
+static int64_t         g_img_ready_us;
+
+void hub_set_image_ready_at(int64_t us)
+{
+    pthread_mutex_lock(&g_img_lock); g_img_ready_us = us; pthread_mutex_unlock(&g_img_lock);
+}
+
+static int64_t image_hold_until(void)
+{
+    pthread_mutex_lock(&g_img_lock);
+    int64_t r = g_img_ready_us;
+    pthread_mutex_unlock(&g_img_lock);
+    int64_t cap = ms_now_us() + (int64_t)HUB_IMAGE_HOLD_MAX_MS * 1000;
+    return r > cap ? cap : r;
+}
+
 /* pop the next packet, discarding anything that isn't a JPEG (defensive:
  * every hub source publishes exactly one media type in practice, but a
- * subscriber has no other way to be sure) within the remaining deadline. */
-static ms_pkt *jpeg_pop(fanqueue *q, int wait_ms)
+ * subscriber has no other way to be sure) or arrives before not_before,
+ * within the remaining deadline (extended by that hold). */
+static ms_pkt *jpeg_pop(fanqueue *q, int wait_ms, int64_t not_before)
 {
-    int64_t deadline = ms_now_us() + (int64_t)wait_ms*1000;
+    int64_t now = ms_now_us();
+    int64_t deadline = now + (int64_t)wait_ms*1000 +
+                       (not_before > now ? not_before - now : 0);
     for (;;){
         int64_t left_ms = (deadline - ms_now_us())/1000;
         if (left_ms <= 0) return NULL;             /* timed out */
         ms_pkt *p = fanqueue_pop(q,(int)left_ms);
         if (!p) return NULL;                       /* timed out */
-        if (p->media==MS_MEDIA_JPEG) return p;
+        if (p->media==MS_MEDIA_JPEG && ms_now_us() >= not_before) return p;
         pkt_unref(p);
     }
 }
@@ -323,7 +344,9 @@ ms_pkt *hub_grab_jpeg(int src, int wait_ms, int *busy,
     /* make the queue reachable before the first wait, so a shutdown that lands
      * between here and the release below can close it (see hub_grab_hook) */
     if (hook) hook(&q, hook_ctx);
-    ms_pkt *p = jpeg_pop(&q,wait_ms);
+    /* read after the subscribe: its activity callback may have set it */
+    int64_t hold = image_hold_until();
+    ms_pkt *p = jpeg_pop(&q,wait_ms,hold);
     if (!p && fanqueue_closed(&q)) {            /* shutting down: do not start
                                                  * the second half at all */
         if (hook) hook(NULL, hook_ctx);
@@ -341,7 +364,8 @@ ms_pkt *hub_grab_jpeg(int src, int wait_ms, int *busy,
             if (fanqueue_init(&vq,2)!=0) vsrc=-1;
             else if (hub_subscribe(vsrc,&vq)!=0){ fanqueue_free(&vq); vsrc=-1; }
         }
-        p = jpeg_pop(&q, vsrc >= 0 ? wait_ms + HUB_JPEG_COLD_EXTRA_MS : wait_ms);
+        p = jpeg_pop(&q, vsrc >= 0 ? wait_ms + HUB_JPEG_COLD_EXTRA_MS : wait_ms,
+                     hold);
     }
     /* release the helper video subscription FIRST (it was taken last), then
      * the JPEG one; hub_unsubscribe waits out any in-flight publish before
