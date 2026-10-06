@@ -635,6 +635,7 @@ enum {
     T_RECMODE,  /* int: "motion"/"continuous"/number <-> "%d"             */
     T_BCCODEC,  /* int: "pcmu"/"pcma"/"aac"/number   <-> "%d"             */
     T_TRISTATE, /* int: 0/1/2, legacy bool words -> 1 <-> "%d"            */
+    T_AUTOBOOL, /* int: -1 "auto" / 0 off / 1 on, bool words <-> "%d"      */
 };
 
 /* F_NOGET/F_ATOMIC/F_CTRL and the cfg_field struct itself now live in
@@ -961,7 +962,7 @@ static const cfg_field general_fields[] = {   /* + general.syslog in set_kv() */
     F("osd_pool_size",       0, osd_pool_size,       T_INT, 0, 1,1024),
     /* file-only: read once by ing_start, and the edges it avoids are the
      * reason a live toggle would be a bad idea */
-    F("fs_keepalive",        0, fs_keepalive,        T_INT, 0, -1,1),
+    F("fs_keepalive",        0, fs_keepalive,        T_AUTOBOOL, 0, -1,1),
 };
 static const cfg_field sim_fields[] = {
     FS("video0", 0, sim_video0, 0),
@@ -1320,6 +1321,16 @@ static void key_canonical(const char *key, char *out, size_t cap)
     snprintf(out, cap, "%s", key);
 }
 
+/* name the key the way the config file spells it - a bare "tls" does not
+ * say which section's line to go and fix */
+static const char *field_prefix(const cfg_field *f)
+{
+    for (size_t i=0;i<sizeof g_sections/sizeof g_sections[0];i++)
+        if (f >= g_sections[i].fields &&
+            f <  g_sections[i].fields + g_sections[i].nfields)
+            return g_sections[i].prefix;
+    return "";
+}
 /* R4 (review 2026-09-12): the clamp design is right for numeric keys - a
  * nonsense fps must not brick the stream (M11) - but on a TRANSPORT-SECURITY
  * key it fails OPEN and silently: pbool()/pint_cl() turn `http.https =
@@ -1332,17 +1343,10 @@ static void key_canonical(const char *key, char *out, size_t cap)
 static void secval_warn(const cfg_field *f, const char *val, int eff)
 {
     int n;
-    const char *pfx = "";
     if (!(f->flags & F_SECVAL)) return;
     if (pbool(val) || poff(val)) return;            /* understood as on/off */
     if (pint_exact(val,&n) && n>=f->lo && n<=f->hi) return;  /* real number */
-    /* name the key the way the config file spells it - a bare "tls" does not
-     * say which section's line to go and fix */
-    for (size_t i=0;i<sizeof g_sections/sizeof g_sections[0];i++)
-        if (f >= g_sections[i].fields &&
-            f <  g_sections[i].fields + g_sections[i].nfields){
-            pfx = g_sections[i].prefix; break;
-        }
+    const char *pfx = field_prefix(f);
     LOGW(MOD,"%s%s = '%s' is not a valid value and was read as %d - that is "
              "PLAINTEXT, no TLS. Valid: %s",
          pfx, f->name, val, eff,
@@ -1410,6 +1414,18 @@ static void field_set(void *base, const cfg_field *f, const char *val)
         *(int*)p = pbool(val) ? 1 : pint_cl(val,0,2);
         secval_warn(f,val,*(int*)p);
         break;
+    case T_AUTOBOOL: { int n;
+        if      (!strcasecmp(val,"auto")) *(int*)p = -1;
+        else if (pbool(val))              *(int*)p = 1;
+        else if (poff(val))               *(int*)p = 0;
+        else if (pint_exact(val,&n))      *(int*)p = n<f->lo ? f->lo : n>f->hi ? f->hi : n;
+        else {
+            /* pint() would read a word as 0 = off */
+            LOGW(MOD,"%s%s = '%s' is not a valid value, using -1 (auto). "
+                     "Valid: auto, on, off, -1, 0, 1", field_prefix(f), f->name, val);
+            *(int*)p = -1;
+        }
+        break; }
     }
 }
 
@@ -1424,7 +1440,7 @@ static int field_get(const void *base, const cfg_field *f, char *out, size_t cap
     }
     switch (f->type){
     case T_BOOL: case T_INT: case T_CHAN: case T_ROT:
-    case T_RECMODE: case T_BCCODEC: case T_TRISTATE:
+    case T_RECMODE: case T_BCCODEC: case T_TRISTATE: case T_AUTOBOOL:
         snprintf(out,cap,"%d",*(const int*)p); break;
     case T_HEX:    snprintf(out,cap,"0x%08X",*(const uint32_t*)p); break;
     case T_FLT:    snprintf(out,cap,"%g",(double)*(const float*)p); break;
