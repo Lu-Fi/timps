@@ -293,7 +293,7 @@ IMPLIBS ?= -l:libimp.a -l:libalog.a -l:libsysutils.a
 # against a distro/buildroot that only ships libfaac.so.
 FAACLIB ?= -l:libfaac.a
 
-.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun test-daynight-read test-timelapse-prune test-record-ring test-fs-rot test-fs-ref test-libimp-check
+.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun test-daynight-read test-timelapse-prune test-record-ring test-fs-rot test-fs-ref test-libimp-check test-dn-idle
 
 all: target
 
@@ -531,8 +531,15 @@ test-fs-ref:
 	     -o $(BIN)-fsreftest && ./$(BIN)-fsreftest || rc=1; \
 	 done; rm -f $(BIN)-fsreftest; exit $$rc
 
+# Host-only test for the Idle-Dark decision (src/dn_idle.h, virtual clock)
+# and the stop-gate kick (src/util.c). Exit code is the result.
+test-dn-idle:
+	$(HOSTCC) $(CFLAGS) -Isrc scripts/test_dn_idle.c src/util.c src/log.c \
+	  $(LDFLAGS) -lpthread -o $(BIN)-dnidletest
+	@./$(BIN)-dnidletest; rc=$$?; rm -f $(BIN)-dnidletest; exit $$rc
+
 strip: target
 	$(CROSS_COMPILE)strip $(BIN)
 
 clean:
-	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest $(BIN)-hubidrtest $(BIN)-stuntest $(BIN)-tlprunetest $(BIN)-recringtest $(BIN)-fsrottest $(BIN)-fsreftest
+	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest $(BIN)-hubidrtest $(BIN)-stuntest $(BIN)-tlprunetest $(BIN)-recringtest $(BIN)-fsrottest $(BIN)-fsreftest $(BIN)-dnidletest
