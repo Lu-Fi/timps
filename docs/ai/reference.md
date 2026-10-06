@@ -595,7 +595,7 @@ differently-compiled binaries.
 
 | `caps` field | Meaning |
 | --- | --- |
-| `caps.image[]` | The `image.*` keys this SoC actually supports |
+| `caps.image[]` | The `image.*` keys this SoC actually supports. **Since the next release** an OpenIMP-only key whose setter the running libimp does not export is left out (see §11, mixed installs) |
 | `caps.audio[]` | The `audio.*` keys this build/SoC supports |
 | `caps.osd[]` | The OSD item fields that apply **live** (`text,x,y,font_size,color,transparency,outline,outline_color`) |
 | `caps.restart[]` | Restart-only keys: the sections `"video"`/`"sensor"` (except `rtsp_path` and `caps.video_live`), plus — since v1.9.20 — every `F_RESTART` key of `audio.*`/`osd.*` as `"audio.codec"`, `"osd.font_path"`, …. v1.9.19: `["video","sensor","osd.enabled"]` |
@@ -1022,6 +1022,19 @@ Distinguish **compiled out** from **misconfigured**:
 | `/webrtc/whep` answers 503 | `webrtc.enabled = 0`, or all 4 session slots busy | — |
 | `/events` answers 404 | `events.enabled = 0` or `USE_CONTROL=0` | — |
 | Setting is accepted then reverts after reboot | `not_persisted > 0` in the POST reply (more than 48 changed keys), or a file-only key | Split the request; hand-edit `/etc/timps.conf` for file-only keys |
+| Log: `IMP_ISP_Tuning_Set… not in this libimp - image.… unavailable (persisted only)` | An OpenIMP build (`USE_OPENIMP`) on a vendor libimp, see below | Flash a consistent image |
+
+**OpenIMP-built `timpsd` on a vendor libimp (mixed install).** Before the next
+release this crashed at start on T10/T20/T21 (a NULL call into
+`IMP_ISP_Tuning_SetDPC_Strength`, on T20 also `SetDefog_Strength` /
+`SetDRC_Strength`). Since the next release those setters are weak imports: the
+key logs once, stays persisted only and drops out of `caps.image`. The
+combination is still unsupported: the OpenIMP flavour links only `libimp.so`,
+and a vendor libimp needs `IMP_Log_Get_Option`/`imp_log_fun` from
+`libalog.so`, which nothing then loads (`LD_PRELOAD=/usr/lib/libalog.so` is an
+untested stopgap). The answer is a vendor-flavour build (`USE_OPENIMP=0`,
+linked with `-limp -lalog -lsysutils`). `scripts/check-weak-imports.sh
+<timpsd> <libimp.so>` lists strong imports a given libimp lacks.
 
 ### Streaming problems
 

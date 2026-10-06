@@ -60,6 +60,10 @@ semantic versioning.
 
 ### Fixed
 
+- **An OpenIMP-built `timpsd` no longer crashes at start on a vendor libimp**
+  (T10/T20/T21): `SetDPC_Strength` and, on T20, `SetDefog_Strength`/
+  `SetDRC_Strength` are weak imports; the key logs once and drops out of
+  `caps.image`. `scripts/check-weak-imports.sh` checks a binary against a libimp.
 - **T23/T41 with the open stack: no FrameSource disable/enable at runtime.**
   A FrameSource stopped and restarted while another channel streams can hang
   these SoCs (T41: 3 of 3 attempts within ~200 ms; a T23 hung in a wake
