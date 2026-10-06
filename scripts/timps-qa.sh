@@ -6,7 +6,8 @@
 # on SYNCHRONISATION, STABILITY, RELIABILITY and LOAD:
 #
 #   1. Preflight ...... ping, ports, tool detection; stale /run/timps.crash check
-#   1b. Build identity  GET /control "version" (git describe) vs local checkout
+#   1b. Build identity  GET /control "version" (git describe) vs local checkout;
+#                       caps.framesource consistent with general.fs_keepalive
 #   2. Discovery ...... ffprobe every stream (codec/res/fps/audio)
 #   2b. Auth .......... no-auth + wrong-pass must be blocked (RTSP + HTTP surfaces)
 #   2c. Backchannel ... optional ONVIF backchannel: handshake + short PCMU tone
@@ -1521,6 +1522,17 @@ if curlq 8 "$(http_base)/control" -o "$vj" && [ -s "$vj" ]; then
 	else
 		warn "/control reachable but has no \"version\" field (older timpsd build without this check)"
 	fi
+	# general.fs_keepalive: an explicit 0/1 must resolve to itself, auto (-1) to 0 or 1
+	fs_ka=$(jget "$vj" caps.framesource.keepalive)
+	fs_cfg=$(jget "$vj" caps.framesource.cfg)
+	if [ -z "$fs_ka" ] && [ -z "$fs_cfg" ]; then
+		info "/control has no caps.framesource (timpsd predates general.fs_keepalive)"
+	else
+		case "$fs_cfg:$fs_ka" in
+		-1:0|-1:1|0:0|1:1) ok "caps.framesource: keepalive=$fs_ka (general.fs_keepalive=$fs_cfg)" ;;
+		*) bad "caps.framesource inconsistent: keepalive=$fs_ka for general.fs_keepalive=$fs_cfg" ;;
+		esac
+	fi
 else
 	warn "/control unreachable for the version check (see $vj)"
 fi
@@ -2618,7 +2630,8 @@ else
 	# hflip/vflip/running_mode bool, anti_flicker 0..2, core_wb 0..1.
 	# WB gains: the limit is per SoC (255 on T10/T20/T30, 4095 on T21/T23/T31)
 	# and so is unity (128 Q7 vs 256 Q8), so the probe range is 0..256: flip_int
-	# picks 127..129, valid everywhere, unity on Q7 and half gain on Q8.
+	# picks 128 (129 if the gain already is 128), valid everywhere, unity on Q7
+	# and half gain on Q8.
 	# core_wb_mode DOES flip to 1 (manual) during the test, so if a run dies
 	# with the trap defeated (kill -9, network drop) the stranded state is
 	# manual WB at moderate gains - a usable image - instead of the magenta
