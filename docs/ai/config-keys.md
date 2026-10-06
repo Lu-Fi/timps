@@ -352,7 +352,7 @@ way to check.
 | `image.vflip` | bool | `0` | — | all | Global ISP flip (every channel). |
 | `image.hflip` | bool | `0` | — | all | Global ISP flip (every channel). |
 | `image.running_mode` | int | `0` | 0..1 | all | `0` day, `1` night (IR-cut/mono pipeline). |
-| `image.anti_flicker` | int | `2` | 0..2 | all | `0` off, `1` 50 Hz, `2` 60 Hz. |
+| `image.anti_flicker` | int | `1` (**since the next release**; `2` up to v1.9.33) | 0..2 | all | `0` off, `1` 50 Hz, `2` 60 Hz. Live. Pick the mains frequency: `1` in Europe, most of Asia and Africa, Australia; `2` in most of the Americas, South Korea, Taiwan, the Philippines, Saudi Arabia, western Japan. The wrong value lets the AE step the exposure in units of the wrong half-period, which shows as horizontal bands under LED/fluorescent light (a T23 sc2336p on 50 Hz mains: row ripple 1.15 % RMS at `2`, 0.09 % at `1`). The thingino template carries the key explicitly (`2` until the next release, `1` from then on), so an upgraded camera whose `/etc/timps.conf` was ever written (a persisted `POST /control`, a hand edit: the file then lives in the overlay) keeps `2`; a factory reset, a full flash or a never-written file gets `1`. See troubleshooting §3.1. |
 | `image.ae_compensation` | int | `128` | 0..255 | T10 T20 T23 T30 T31 C100, T41 with the open libimp | `ISP_HAS_AECOMP` — **absent on T21** and on T40; on T41 only with OpenIMP, **since v1.9.33** (`AeScenceAttr.AeTargetComp`; measured mean luma 8 / 57 / 98 at 40 / 128 / 230), unsupported with the vendor libimp. |
 | `image.max_again` | int | `160` | 0..255 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_GAINS`; absent on T40/T41. |
 | `image.max_dgain` | int | `80` | 0..255 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_GAINS`. |

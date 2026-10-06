@@ -245,7 +245,9 @@ always wins. T40/T41 and the host sim have no registry, so set them there.
 
 **`image.`** (all 0..255 unless noted, 128 = neutral; all live-applicable)
 `brightness`, `contrast`, `saturation`, `sharpness`, `hue`, `hflip`, `vflip`,
-`anti_flicker` (0 off / 1 = 50 Hz / 2 = 60 Hz), `running_mode` (0 day, 1 night),
+`anti_flicker` (0 off / 1 = 50 Hz / 2 = 60 Hz; default 1 since the next
+release, 2 up to v1.9.33 — match the mains frequency, see
+`troubleshooting.md` §3.1), `running_mode` (0 day, 1 night),
 `ae_compensation`, `max_again` (160), `max_dgain` (80), `sinter_strength`
 (spatial NR), `temper_strength` (temporal NR), `dpc_strength`,
 `defog_strength`, `drc_strength`, `highlight_depress` (0), `backlight_compensation`
@@ -1219,6 +1221,11 @@ There is also a QA harness in the repo:
   text still says "default 0 (off) either way" — that text is stale. Either way
   it does nothing unless `BR2_PACKAGE_TIMPS_OSD_HINTING` compiled the pass in.
   It and `osd.supersample` are POST-able but restart-required.
+- **`image.anti_flicker` default is `1` (50 Hz) since the next release**,
+  `2` (60 Hz) up to v1.9.33. Existing thingino cameras usually still have an
+  explicit `2` in `/etc/timps.conf`, because the shipped template wrote one.
+  Never infer a camera's value from the default: read `GET /control`, and
+  ask which mains frequency the user has (troubleshooting §3.1).
 - **The token header is `X-Timps-Token`** (or `?token=` in a URL). No other
   spelling works — `X-Auth-Token` in particular is not recognized.
 - **The speaker is native `IMP_AO`** — timps owns the audio-output device and

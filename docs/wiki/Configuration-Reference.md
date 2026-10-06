@@ -95,7 +95,7 @@ latch-kick this triggers.
 | `image.hflip` | bool | 0 | 0/1 | Live | all SoCs (via `SetHVFLIP` on T40/T41) | Horizontal flip. Global (all streams). Use with `vflip` for a 180° flip on SoCs without a rotation path. |
 | `image.vflip` | bool | 0 | 0/1 | Live | all SoCs | Vertical flip. Global (all streams). |
 | `image.running_mode` | int | 0 | 0 = day, 1 = night | Live | all SoCs | ISP day/night running mode. Normally driven by the [Day/Night](Day-Night.md) thread's switch script, not set directly by a user. |
-| `image.anti_flicker` | int | 2 | 0 = off, 1 = 50 Hz, 2 = 60 Hz | Live | all SoCs | Anti-flicker (banding) compensation. |
+| `image.anti_flicker` | int | 1 (2 up to 1.9.33) | 0 = off, 1 = 50 Hz, 2 = 60 Hz | Live | all SoCs | Anti-flicker (banding) compensation. Set it to your mains frequency, see below. |
 | `image.ae_compensation` | int | 128 | 0–255 | Live | `ISP_HAS_AECOMP`: all except T21 and T40; T41 only with OpenIMP (since 1.9.33) | AE (auto-exposure) compensation/EV bias. |
 | `image.max_again` | int | 160 | 0–255 | Live | `ISP_HAS_GAINS`: all except T40/T41 | Max analog gain ceiling. |
 | `image.max_dgain` | int | 80 | 0–255 | Live | `ISP_HAS_GAINS` | Max digital gain ceiling. |
@@ -114,9 +114,35 @@ latch-kick this triggers.
 
 ### Picking `image.anti_flicker`
 
-Anti-flicker quantises the AE's exposure time to whole mains half-periods, so
-it puts a **floor** under the exposure. The default `2` (60 Hz) mirrors
-prudynt and raptor; use `1` in 50 Hz regions. Use `0` (off) for a very bright
+Set it to the mains frequency where the camera hangs:
+
+* `1` (50 Hz, the default since the next release): Europe, most of Asia and
+  Africa, Australia.
+* `2` (60 Hz): most of the Americas, South Korea, Taiwan, the Philippines,
+  Saudi Arabia, western Japan (eastern Japan is 50 Hz).
+
+Lamps flicker at twice the mains frequency (100 or 120 Hz). Anti-flicker
+quantises the AE's exposure time to whole half-periods (10 ms at 50 Hz,
+8.33 ms at 60 Hz), so every exposure collects the same light whatever the
+phase. The wrong value steps the exposure in the wrong unit and shows as
+horizontal bands under LED or fluorescent light, rolling at the beat between
+the light and the frame rate (5 Hz at 15 fps on 50 Hz mains). A T23 sc2336p
+on 50 Hz mains measured 1.15 % RMS row ripple at `2` and 0.09 % at `1`.
+
+Up to 1.9.33 the default was `2` (60 Hz, the vendor SDK convention that
+prudynt and raptor also follow), and thingino's shipped `/etc/timps.conf`
+writes the key explicitly. An upgraded camera whose config was ever saved
+therefore stays on `2`. A fresh flash, a factory reset, a config that was
+never saved (it still comes from the image) or one without the key gets `1`.
+In a 60 Hz region, set `2` after such an upgrade or reset:
+
+```sh
+curl -s -X POST http://127.0.0.1:8880/control -d '{"image":{"anti_flicker":2}}'
+```
+
+It applies live and persists to `/etc/timps.conf`.
+
+Anti-flicker puts a **floor** under the exposure. Use `0` (off) for a very bright
 close-up scene whose exposure visibly pulses: there the AE needs an exposure
 below the first node, and it oscillates between honouring the node
 (overexposed) and breaking it.

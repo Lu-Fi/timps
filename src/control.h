@@ -4,7 +4,7 @@
  *
  *   { "image": {"brightness":140,"contrast":128,"saturation":128,
  *               "sharpness":128,"hue":128,"hflip":0,"vflip":0,"running_mode":1,
- *               "anti_flicker":2,"ae_compensation":128,"max_again":160,
+ *               "anti_flicker":1,"ae_compensation":128,"max_again":160,
  *               "max_dgain":80,"sinter_strength":128,"temper_strength":128,
  *               "dpc_strength":128,"defog_strength":128,"drc_strength":128,
  *               "highlight_depress":0,"backlight_compensation":0,"colorfx":0,"scene":0,

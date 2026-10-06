@@ -867,17 +867,67 @@ the OSD items on the substream. Lowering the render quality doesn't help.
 
 ### 3.1 Flicker and banding under artificial light
 
+**Symptom:** horizontal bands under LED or fluorescent light, usually rolling
+slowly up or down the picture; outdoors or in daylight the picture is clean.
+
 `image.anti_flicker` means **0 = off, 1 = 50 Hz, 2 = 60 Hz**
-(`src/hal/hal_ingenic.c`). The built-in default in `src/config.c` is **2**,
-i.e. 60 Hz.
+(`src/hal/hal_ingenic.c`). It must match the mains frequency: lamps flicker
+at twice that (100 or 120 Hz), and anti-flicker makes the AE use exposure
+times that are whole half-periods (10 ms at 50 Hz, 8.33 ms at 60 Hz), so
+every row collects the same light. With the wrong value the AE steps in the
+wrong unit and the bands appear. 50 Hz: Europe, most of Asia and Africa,
+Australia. 60 Hz: most of the Americas, South Korea, Taiwan, the
+Philippines, Saudi Arabia, western Japan.
 
-**So a camera in a 50 Hz country (most of the world outside the Americas)
-ships with the wrong value and shows rolling horizontal bands under LED or
-fluorescent light.** Fix: `image.anti_flicker = 1`. This is live-applicable
-via `POST /control {"image":{"anti_flicker":1}}`.
+**Default:** `1` (50 Hz) **since the next release**; up to v1.9.33 it was `2`
+(60 Hz), and thingino's shipped `/etc/timps.conf` carried an explicit `2`. So:
 
-If banding persists at the correct setting, the light source itself is
-PWM-dimmed at a frequency the AE cannot lock to — no config fixes that.
+* A 50 Hz camera that was set up before the change most likely still has
+  `2` in its file (an upgrade keeps a saved `/etc/timps.conf`) and shows
+  bands. Fix: `1`.
+* A 60 Hz camera that was flashed fresh or reset after the change gets `1`
+  and shows bands. Fix: `2`.
+
+Live, no restart, and persisted:
+`POST /control {"image":{"anti_flicker":1}}` (or `2`).
+
+**Confirm on the camera.** `GET /control` → `image.anti_flicker` is the
+configured value. What the ISP actually uses is in `/proc/jz/isp/isp-m0`
+(T20: `/proc/jz/isp/isp_info`, which prints `ISP Antiflicker : 50` or `60`,
+`0` = off). A T31 dump has (other SoCs and SDKs may format it differently):
+
+```
+ISP OUTPUT FPS : 25 / 1
+SENSOR Integration Time : 104 lines
+SENSOR Max Integration Time : 1410 lines
+Antiflicker : 2
+Antiflicker nodes: 4: step : 295. 591. 886. 1182.
+```
+
+Integration time is in sensor lines. One line lasts about
+`1000 / (fps x max integration time)` ms (here 1000 / (25 x 1410) =
+0.0284 ms), so the first node is 295 x 0.0284 = 8.4 ms: a 60 Hz setting.
+At 50 Hz it would be about 352 lines (10 ms). Under artificial light with
+the right setting, `SENSOR Integration Time` sits on one of the nodes, i.e.
+on a multiple of 10 ms (50 Hz) or 8.33 ms (60 Hz). A value below the first
+node (as above) means the scene is so bright that the AE left the nodes;
+there anti-flicker cannot help (see the wiki's "Picking
+`image.anti_flicker`").
+
+**Interplay with `sensor.fps`.** The frame rate decides how the bands move,
+not whether they appear: they roll at the beat between the light and the
+frame rate, e.g. 5 Hz at 15 fps on 50 Hz mains (7 x 15 - 100), and stand
+still when the frame rate divides the flicker rate (25 fps at 50 Hz, 30 fps
+at 60 Hz). Standing bands are still wrong. The correct setting removes them
+at any rate: a T23 sc2336p on 50 Hz mains went from 1.15 % RMS row ripple at
+`2` (15 fps) to 0.09 % at `1`, at 15 fps and likewise at 25 fps.
+Exception: a driver whose line model does not match `sensor.fps` puts the
+nodes in the wrong place (the GC2053 on T31 at `sensor.fps = 30`, §1.10);
+use `sensor.fps = 25` there.
+
+If banding persists at the correct setting with the integration time on a
+node, the light source itself is PWM-dimmed at a frequency the AE cannot lock
+to — no config fixes that.
 
 ### 3.2 Purple / pink / magenta / IR-tinted picture
 
@@ -2899,7 +2949,7 @@ write instead.**
 
 | # | Wrong | What happens | Correct |
 | --- | --- | --- | --- |
-| 1 | `image.anti_flicker = 2` on 50 Hz mains | 2 means **60 Hz**. Rolling horizontal bands under LED/fluorescent light. This is the **built-in default**, so every camera outside 60 Hz countries ships wrong. | `image.anti_flicker = 1` |
+| 1 | `image.anti_flicker = 2` on 50 Hz mains (or `1` on 60 Hz mains) | 2 means **60 Hz**. Rolling horizontal bands under LED/fluorescent light. Up to v1.9.33 `2` was the built-in default and thingino's template wrote it explicitly, so a 50 Hz camera set up before the next release still has it; since then the default is `1`, which is wrong in 60 Hz regions after a fresh flash or reset. | The mains frequency: `1` = 50 Hz, `2` = 60 Hz (§3.1) |
 | 2 | `image.running_mode = 0` posted by hand to "get colour back" at night | The ISP renders the day pipeline while the IR-cut filter is still out and the IR LEDs are on → **purple/magenta image**. | Let day/night do it, or drive `daynight.switch_cmd` as well. |
 | 3 | `image.brightness = 255` | A blown-out white picture. Usually left behind by an interrupted QA run rather than typed. | `image.brightness = 128` |
 | 4 | `image.wb_rgain = 32767` / `image.wb_bgain = 32767` | A magenta image. Also a classic interrupted-QA leftover. **Since the next release** such values are clamped (255 on T10/T20/T30, 4095 on T21/T23/T31), still far off neutral. Unity is **128** on T10/T20/T30 (Q7) and **256** on T21/T23/T31 (Q8). | Copy `image.wb_live` (the gains AWB uses now), or `image.core_wb_mode = 0` for auto. |

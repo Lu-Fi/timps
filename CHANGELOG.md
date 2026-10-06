@@ -34,6 +34,21 @@ semantic versioning.
 
 ### Changed
 
+- **`image.anti_flicker` now defaults to `1` (50 Hz) instead of `2` (60 Hz).
+  Visible change: in a 60 Hz region (most of the Americas, South Korea,
+  Taiwan, the Philippines, Saudi Arabia, western Japan) a camera that gets the
+  new default shows rolling horizontal bands under LED/fluorescent light
+  until you set `2`:** `POST /control {"image":{"anti_flicker":2}}` (live,
+  persisted), or `image.anti_flicker = 2` in `/etc/timps.conf`. A camera gets
+  `1` from a fresh flash or a factory reset (the thingino template now ships
+  `1`), from an upgrade if its `/etc/timps.conf` was never saved, or from any
+  config without the key. A camera whose config was saved keeps its value, so
+  in a 50 Hz region an existing camera may still have `2` and should be set
+  to `1`. Reason: most
+  of the world is on 50 Hz, and the old default, the vendor SDK convention,
+  let the AE step the exposure in 1/120 s under 100 Hz light: a T23 sc2336p
+  on 50 Hz mains showed 1.15 % RMS row ripple at `2`, 0.09 % at `1`. See
+  troubleshooting §3.1 for how to verify it in `/proc/jz/isp/isp-m0`.
 - **The ISP latch kick no longer disables framesource 0 right away.** After a
   `running_mode` or flip change an idle chn0 still runs 500 ms, but its
   reference is now released through the normal 2 s idle debounce; when chn0

@@ -274,7 +274,7 @@ void config_defaults(ms_config *c)
     /* ISP image defaults (128 = neutral, like the old streamer) */
     ms_image_cfg *im = &c->image;
     im->brightness=128; im->contrast=128; im->saturation=128; im->sharpness=128; im->hue=128;
-    im->vflip=0; im->hflip=0; im->running_mode=0; im->anti_flicker=2; im->ae_compensation=128;
+    im->vflip=0; im->hflip=0; im->running_mode=0; im->anti_flicker=1; im->ae_compensation=128;
     im->max_again=160; im->max_dgain=80;
     im->sinter_strength=128; im->temper_strength=128; im->dpc_strength=128;
     im->defog_strength=128; im->drc_strength=128;
