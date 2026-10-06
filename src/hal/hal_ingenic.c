@@ -16,6 +16,8 @@
 #include "../audio_caps.h"
 #include "../rotate_caps.h"   /* ms_vstream_eff_dims (post-rotation dims) */
 #include "../enc_caps.h"      /* ENC_LIVE_KEYS: live rc keys of this build */
+#include "../roi_caps.h"
+#include "roi_geom.h"
 #include "imp_osd.h"
 #include "imp_motion.h"
 #include "fs_ref.h"
@@ -282,6 +284,7 @@ typedef struct {
                                   * IMP channels exist (M8) so teardown frees
                                   * them even when the thread never started. */
     volatile int run, active, idr_req;
+    volatile int roi_dirty;      /* /control changed this stream's ROI */
     pthread_t thr;
     /* Item-2: T31-only average-bitrate telemetry cache. GetChnAveBitrate needs
      * the just-fetched IMPEncoderStream (see imp_encoder.h), which only the
@@ -1055,6 +1058,211 @@ int hal_isp_key_missing(const char *k)
     return 0;
 }
 #endif
+
+/* ============ encoder ROI / ISP FrontCrop (roi_caps.h) ============
+ * Both setters are bound weak through asm labels: some vendor headers declare
+ * them with their own types, others not at all, and a libimp without them must
+ * report the feature unsupported instead of jumping to NULL. */
+void hal_sensor_size(int *w, int *h)
+{
+    *w = g_isp_sensor_w > 0 ? g_isp_sensor_w : g_hcfg ? g_hcfg->sensor.width : 0;
+    *h = g_isp_sensor_h > 0 ? g_isp_sensor_h : g_hcfg ? g_hcfg->sensor.height : 0;
+}
+
+#if ROI_TIER != CAP_TIER_UNSUPPORTED
+extern int ms_enc_set_roi(int chn, const ms_roi_api *cfg)
+    __asm__("IMP_Encoder_SetChnROI") __attribute__((weak));
+_Static_assert(sizeof(IMPEncoderROICfg) == sizeof(ms_roi_api) &&
+               offsetof(IMPEncoderROICfg, s32Qp) == offsetof(ms_roi_api, qp) &&
+               offsetof(IMPEncoderROICfg, rect) == offsetof(ms_roi_api, x0),
+               "IMPEncoderROICfg differs from ms_roi_api");
+static pthread_mutex_t g_roi_lock = PTHREAD_MUTEX_INITIALIZER;
+static unsigned g_roi_set[MS_MAX_VSTREAM];   /* slots the encoder may hold enabled */
+static unsigned g_roi_said;                  /* streams whose first apply/refusal was logged */
+
+static int roi_si_of(int chn)
+{
+    for (int i = 0; i < MS_MAX_VSTREAM; i++)
+        if (g_cfg_boot.video[i].enabled && g_cfg_boot.video[i].imp_chn == chn) return i;
+    return -1;
+}
+
+/* Every configured slot of the stream onto its encoder. Runs on the encode
+ * thread once StartRecvPic has succeeded (the verified order) and on a
+ * /control change; slots never enabled are left alone, so a camera without
+ * ROI never calls SetChnROI. */
+static void roi_apply(vchan *vc, int live)
+{
+    int si = roi_si_of(vc->chn);
+    if (!ms_enc_set_roi || si < 0) return;
+    int st = roi_stream_state(1, g_cfg_boot.video[si].codec == MS_VC_H265, g_eff_rot[si]);
+    ms_roi_region r[MS_MAX_ROI];
+    config_str_lock();
+    memcpy(r, g_hcfg->roi[si], sizeof r);
+    config_str_unlock();
+    pthread_mutex_lock(&g_roi_lock);
+    int said = !live && (g_roi_said & (1u << si));
+    int on = 0, want = 0;
+    for (int n = 0; n < MS_MAX_ROI; n++) {
+        unsigned bit = 1u << n;
+        want += r[n].enabled;
+        int en = r[n].enabled && st == ROI_ST_OK;
+        if (!en && !(g_roi_set[si] & bit)) continue;
+        ms_roi_api a;
+        int g = roi_build(n, en, r[n].qp_mode, r[n].qp, r[n].x, r[n].y, r[n].w, r[n].h,
+                          vc->w, vc->h, &a);
+        if (g == GEOM_REJECT && !said)
+            LOGW(MOD,"roi%d.%d: %d,%d %dx%d lies outside the %dx%d picture - region off",
+                 si, n, r[n].x, r[n].y, r[n].w, r[n].h, vc->w, vc->h);
+        else if (g == GEOM_ADJUSTED && !said)
+            LOGI(MOD,"roi%d.%d: applied as %d,%d-%d,%d (16 px macroblocks), %s qp %d",
+                 si, n, a.x0, a.y0, a.x1, a.y1, a.rel ? "delta" : "absolute", a.qp);
+        if (!a.en && !(g_roi_set[si] & bit)) continue;
+        int rc = ms_enc_set_roi(vc->chn, &a);
+        if (rc != 0) {
+            LOGW(MOD,"roi%d.%d: SetChnROI chn%d failed (rc=%d)", si, n, vc->chn, rc);
+            continue;
+        }
+        if (a.en) { g_roi_set[si] |= bit; on++; }
+        else g_roi_set[si] &= ~bit;
+    }
+    if (!said && want) {
+        if (st != ROI_ST_OK)
+            LOGW(MOD,"roi%d: stream is %s - encoder ROI needs an unrotated H.264 stream, "
+                 "regions ignored", si, roi_state_name(st));
+        else
+            LOGI(MOD,"roi%d: %d region(s) on encoder chn%d%s", si, on, vc->chn,
+                 ROI_TIER == CAP_TIER_EXPERIMENTAL ?
+                 " (experimental on this SoC: may have no effect)" : "");
+        g_roi_said |= 1u << si;
+    }
+    pthread_mutex_unlock(&g_roi_lock);
+}
+#define roi_start(vc) do { (vc)->roi_dirty = 0; roi_apply((vc), 0); } while (0)
+#define roi_poll(vc)  do { if ((vc)->roi_dirty) { (vc)->roi_dirty = 0; roi_apply((vc), 1); } } while (0)
+#else
+#define roi_start(vc) ((void)0)
+#define roi_poll(vc)  ((void)0)
+#endif
+
+int hal_roi_tier(void)
+{
+#if ROI_TIER != CAP_TIER_UNSUPPORTED
+    if (ms_enc_set_roi) return ROI_TIER;
+#endif
+    return CAP_TIER_UNSUPPORTED;
+}
+
+const char *hal_roi_state(int si)
+{
+    if (si < 0 || si >= MS_MAX_VSTREAM || !g_cfg_boot.video[si].enabled)
+        return roi_state_name(ROI_ST_OFF);
+    if (hal_roi_tier() == CAP_TIER_UNSUPPORTED) return roi_state_name(ROI_ST_UNSUPPORTED);
+    return roi_state_name(roi_stream_state(1, g_cfg_boot.video[si].codec == MS_VC_H265,
+                                           g_eff_rot[si]));
+}
+
+enum { FC_OFF, FC_ON, FC_REJECTED, FC_FAILED };
+static int g_fcrop_state = FC_OFF;
+#if FCROP_TIER != CAP_TIER_UNSUPPORTED
+extern int ms_isp_set_fcrop(ms_fcrop_api *c)
+    __asm__("IMP_ISP_Tuning_SetFrontCrop") __attribute__((weak));
+#if defined(PLATFORM_T23)||defined(PLATFORM_T31)||defined(PLATFORM_C100)
+_Static_assert(sizeof(IMPISPFrontCrop) == sizeof(ms_fcrop_api) &&
+               offsetof(IMPISPFrontCrop, fcrop_top) == offsetof(ms_fcrop_api, top) &&
+               offsetof(IMPISPFrontCrop, fcrop_left) == offsetof(ms_fcrop_api, left),
+               "IMPISPFrontCrop differs from ms_fcrop_api");
+#endif
+static int g_fcrop_set;              /* a window of ours is in the ISP */
+
+/* caller holds g_isp_lock */
+static void fcrop_apply(void)
+{
+    if (!ms_isp_set_fcrop) return;
+    int en, x, y, w, h, sw, sh;
+    config_str_lock();
+    en = g_hcfg->image.fcrop_enable; x = g_hcfg->image.fcrop_x; y = g_hcfg->image.fcrop_y;
+    w = g_hcfg->image.fcrop_w; h = g_hcfg->image.fcrop_h;
+    config_str_unlock();
+    hal_sensor_size(&sw, &sh);
+    ms_fcrop_api a;
+    if (!en) {
+        g_fcrop_state = FC_OFF;
+        if (!g_fcrop_set) return;
+        fcrop_off(sw, sh, &a);
+        int rc = ms_isp_set_fcrop(&a);
+        if (rc) { LOGW(MOD,"image.fcrop: SetFrontCrop(off) failed (rc=%d)", rc);
+                  g_fcrop_state = FC_FAILED; return; }
+        g_fcrop_set = 0;
+        LOGI(MOD,"image.fcrop off: full %dx%d sensor", sw, sh);
+        return;
+    }
+    int g = fcrop_fit(x, y, w, h, sw, sh, &a);
+    if (g == GEOM_REJECT) {
+        LOGW(MOD,"image.fcrop %d,%d %dx%d: needs at least %dx%d inside the %dx%d sensor "
+             "- not applied", x, y, w, h, FCROP_MIN, FCROP_MIN, sw, sh);
+        g_fcrop_state = FC_REJECTED;
+        return;
+    }
+    int rc = ms_isp_set_fcrop(&a);
+    if (rc) {
+        LOGW(MOD,"image.fcrop: SetFrontCrop left %u top %u %ux%u refused (rc=%d): no "
+             "stream can show that window", a.left, a.top, a.width, a.height, rc);
+        g_fcrop_state = FC_FAILED;
+        return;
+    }
+    g_fcrop_set = 1;
+    g_fcrop_state = FC_ON;
+#if defined(PLATFORM_T20)
+    const char *note = " - T20 shows it on downscaled streams only";
+#else
+    const char *note = FCROP_TIER == CAP_TIER_EXPERIMENTAL ? " - experimental on this SoC" : "";
+#endif
+    LOGI(MOD,"image.fcrop: sensor window left %u top %u %ux%u of %dx%d%s%s", a.left, a.top,
+         a.width, a.height, sw, sh, g == GEOM_ADJUSTED ? " (evened/moved inside)" : "", note);
+    for (int s = 0; s < MS_MAX_VSTREAM; s++)
+        for (int n = 0; n < MS_MAX_PRIVACY; n++)
+            if (g_hcfg->privacy[s][n].enabled) {
+                LOGW(MOD,"image.fcrop: privacy masks stay at their stream-frame position "
+                     "while the scene under them moves - check privacy%d.%d", s, n);
+                return;
+            }
+}
+#endif
+
+static void fcrop_boot(void)
+{
+#if FCROP_TIER != CAP_TIER_UNSUPPORTED
+    g_fcrop_set = 0;
+    g_fcrop_state = FC_OFF;
+    if (!g_hcfg->image.fcrop_enable) return;
+    if (!ms_isp_set_fcrop) {
+        LOGW(MOD,"image.fcrop_enable=1 ignored: this libimp has no IMP_ISP_Tuning_SetFrontCrop");
+        return;
+    }
+    pthread_mutex_lock(&g_isp_lock);
+    fcrop_apply();
+    pthread_mutex_unlock(&g_isp_lock);
+#else
+    if (g_hcfg->image.fcrop_enable)
+        LOGW(MOD,"image.fcrop_enable=1 ignored: %s", FCROP_WHY);
+#endif
+}
+
+int hal_fcrop_tier(void)
+{
+#if FCROP_TIER != CAP_TIER_UNSUPPORTED
+    if (ms_isp_set_fcrop) return FCROP_TIER;
+#endif
+    return CAP_TIER_UNSUPPORTED;
+}
+
+const char *hal_fcrop_state(void)
+{
+    static const char *const n[] = { "off", "on", "rejected", "failed" };
+    if (hal_fcrop_tier() == CAP_TIER_UNSUPPORTED) return "unsupported";
+    return n[g_fcrop_state];
+}
 
 #if defined(USE_OPENIMP) && defined(PLATFORM_T41)
 /* read-modify-write one Module_Ratio entry, the others keep what the driver
@@ -2718,10 +2926,12 @@ static void *video_thread(void *arg)
                 dbg_pollfail=0; dbg_recover_fails=0;
                 vc->idr_req=0; IMP_Encoder_RequestIDR(vc->chn);
                 LOGI(MOD,"video chn%d streaming",vc->chn);
+                roi_start(vc);
             }
         }
         /* honor IDR requests from RTSP/HTTP threads here (single-thread IMP) */
         if (vc->idr_req){ vc->idr_req=0; IMP_Encoder_RequestIDR(vc->chn); }
+        roi_poll(vc);
         int pr = IMP_Encoder_PollingStream(vc->chn, g_hcfg->imp_polling_timeout);
         IMPEncoderStream st;
 #if defined(PLATFORM_T40)||defined(PLATFORM_T41)
@@ -2792,6 +3002,7 @@ static void *video_thread(void *arg)
                     if (IMP_Encoder_StartRecvPic(vc->chn)==0){
                         vc->idr_req=0; IMP_Encoder_RequestIDR(vc->chn);
                         dbg_first=0;             /* log the recovered first frame */
+                        roi_start(vc);
                     } else {
                         fs_unuse(vc->chn);        /* fully release; top-of-loop's
                                                     * !receiving path fs_use()s fresh */
@@ -4993,6 +5204,11 @@ static void *audio_thread(void *arg)
  * hflip+vflip collapses to a single fs_kick_chn0() (see fs_kick_chn0). flip is
  * only ever set via /control, which always calls hub_control_commit(). */
 static int g_isp_flip_kick_pending = 0;
+/* ROI streams / FrontCrop touched by the current request (ing_control_commit) */
+static unsigned g_roi_pending;
+#if FCROP_LIVE
+static int g_fcrop_pending;
+#endif
 /* ---- live rate-control apply (ENC_LIVE_KEYS, enc_caps.h) ----------------
  * Everything here is strictly per channel: stream N's key is applied to
  * stream N's own encoder channel and no other. The caller (control.c) has
@@ -5160,6 +5376,24 @@ static int rc_live_apply(int si, const char *k)
 static int ing_control(const char *key, const char *val)
 {
     int v = (int)strtol(val, NULL, 0);
+
+    /* applied once per request in ing_control_commit: x/y/w/h arrive as
+     * separate keys and an intermediate window may be invalid */
+    if (!strncmp(key,"image.fcrop_",12)){
+#if FCROP_LIVE
+        if (hal_fcrop_tier() == CAP_TIER_UNSUPPORTED) return 0;
+        g_fcrop_pending = 1;
+        return 1;
+#else
+        return 0;
+#endif
+    }
+    if (!strncmp(key,"roi",3) && key[3]>='0' && key[3]<'0'+MS_MAX_VSTREAM && key[4]=='.'){
+        int s = key[3]-'0';
+        if (!rc_live_vchan(s) || strcmp(hal_roi_state(s), "ok")) return 0;
+        g_roi_pending |= 1u << s;
+        return 1;
+    }
 
     if (!strncmp(key,"image.",6)){
         /* the control layer already stored the value in g_cfg (config_apply_kv
@@ -5445,6 +5679,21 @@ static void ing_control_commit(void)
         fs_kick_chn0();
         LOGI(MOD,"ISP flip latch kicked (batched, once per request)");
     }
+    /* the encode thread applies it before its next frame */
+    for (int s = 0; s < MS_MAX_VSTREAM; s++)
+        if (g_roi_pending & (1u << s)) {
+            vchan *vc = rc_live_vchan(s);
+            if (vc) vc->roi_dirty = 1;
+        }
+    g_roi_pending = 0;
+#if FCROP_LIVE
+    if (g_fcrop_pending){
+        g_fcrop_pending = 0;
+        pthread_mutex_lock(&g_isp_lock);
+        fcrop_apply();
+        pthread_mutex_unlock(&g_isp_lock);
+    }
+#endif
 }
 #endif
 
@@ -5481,6 +5730,17 @@ static int ing_start(const ms_config *cfg)
 {
     g_nv=0; g_nj=0;
     memset(g_eff_rot, 0, sizeof g_eff_rot);   /* rewritten per stream below */
+#if ROI_TIER != CAP_TIER_UNSUPPORTED
+    memset(g_roi_set, 0, sizeof g_roi_set);   /* fresh encoder channels */
+    g_roi_said = 0;
+#else
+    for (int i=0;i<MS_MAX_VSTREAM;i++)
+        for (int n=0;n<MS_MAX_ROI;n++)
+            if (cfg->video[i].enabled && cfg->roi[i][n].enabled){
+                LOGW(MOD,"roi%d.%d enabled but ignored: %s", i, n, ROI_WHY);
+                i = MS_MAX_VSTREAM; break;
+            }
+#endif
     for (int i=0;i<MS_MAX_VSTREAM;i++){
         if (!cfg->video[i].enabled) continue;
         const ms_vstream_cfg *v=&cfg->video[i];
@@ -5574,7 +5834,7 @@ static int ing_start(const ms_config *cfg)
         vc->fps=v->fps;                          /* Fix 1: nominal frame interval */
         memset(&vc->pts, 0, sizeof vc->pts);     /* reset capture-pts sanitizer */
         vc->og=-1; vc->nbound=0;
-        vc->run=0; vc->active=0; vc->idr_req=0; vc->has_thr=0;
+        vc->run=0; vc->active=0; vc->idr_req=0; vc->has_thr=0; vc->roi_dirty=0;
         vc->ave_valid=0; vc->ave_bitrate=-1.0;   /* Item-2: reset telemetry cache */
 #ifdef ROT_HAS_SW_90
         /* slots are static + reused across start/stop cycles: make sure a
@@ -5704,6 +5964,7 @@ static int ing_start(const ms_config *cfg)
      * first timelapse shot right after start finds it running (no D->E).
      * Must run here (end of ing_start), NOT at the apply_image_tuning() call in
      * isp_init, where fs chn0 does not yet exist. */
+    fcrop_boot();   /* every channel exists: the SDK checks one can show the window */
     fs_kick_chn0();
     /* image.ae_it_max_us is a harder case than the kick above can serve: it
      * needs the write to land while frames are being DELIVERED, and at the end

@@ -12,6 +12,8 @@
 #include "../rotate_caps.h"   /* ms_vstream_eff_dims (post-rotation dims) */
 #include "fs_ref.h"          /* fs_keepalive_resolve */
 #include "../daynight.h"     /* daynight_watch_kick (TIMPS_SIM_WATCH fixture) */
+#include "roi_geom.h"
+#include "../roi_caps.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -335,6 +337,35 @@ int hal_isp_ae_info(hal_isp_ae *out)
     out->again = v[3]; out->again_max = v[4]; out->total_log2_q16 = v[5];
     return 0;
 }
+/* ROI/FrontCrop: nothing is applied on the host; the states run the same
+ * validation the target does so a QA run can see a refusal */
+int hal_roi_tier(void){ return ROI_TIER; }
+int hal_fcrop_tier(void){ return FCROP_TIER; }
+const char *hal_roi_state(int si)
+{
+    if (si < 0 || si >= MS_MAX_VSTREAM) return roi_state_name(ROI_ST_OFF);
+    const ms_vstream_cfg *v = &g_cfg_boot.video[si];
+    return roi_state_name(roi_stream_state(v->enabled, v->codec == MS_VC_H265,
+                                           v->rotation));
+}
+void hal_sensor_size(int *w, int *h)
+{
+    *w = g_cfg_boot.sensor.width  > 0 ? g_cfg_boot.sensor.width  : g_cfg_boot.video[0].width;
+    *h = g_cfg_boot.sensor.height > 0 ? g_cfg_boot.sensor.height : g_cfg_boot.video[0].height;
+}
+const char *hal_fcrop_state(void)
+{
+    int sw, sh, en, x, y, w, h;
+    hal_sensor_size(&sw, &sh);
+    config_str_lock();
+    en = g_cfg.image.fcrop_enable; x = g_cfg.image.fcrop_x; y = g_cfg.image.fcrop_y;
+    w = g_cfg.image.fcrop_w; h = g_cfg.image.fcrop_h;
+    config_str_unlock();
+    ms_fcrop_api a;
+    if (!en) return "off";
+    return fcrop_fit(x, y, w, h, sw, sh, &a) == GEOM_REJECT ? "rejected" : "on";
+}
+
 /* no encoder telemetry on the host sim: caller omits the stats object */
 int hal_enc_stats(int enc_chn, hal_enc_stat *out){ (void)enc_chn; (void)out; return -1; }
 int hal_enc_rc_read(int enc_chn, hal_enc_rc *out){ (void)enc_chn; (void)out; return -1; }

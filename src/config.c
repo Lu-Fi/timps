@@ -7,6 +7,7 @@
 #include "rotate_caps.h"   /* ROT_HAS_90/ROT_HAS_HW_I2D (rotation whitelist) */
 #include "isp_caps.h"      /* ISP_HAS_* (image_fields[]'s F_CAP gating) */
 #include "audio_caps.h"    /* AUDIO_HAS_* (audio_fields[]'s F_CAP gating) */
+#include "roi_caps.h"      /* ROI_TIER/FCROP_TIER (F_NOHW gating) */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -413,6 +414,12 @@ void config_defaults(ms_config *c)
     for (int s=0;s<MS_MAX_VSTREAM;s++)
         for (int i=0;i<MS_MAX_PRIVACY;i++)
             c->privacy[s][i].color=0xFF000000;
+    /* ROI off; an enabled region without a qp lowers QP by 5 */
+    for (int s=0;s<MS_MAX_VSTREAM;s++)
+        for (int i=0;i<MS_MAX_ROI;i++){
+            c->roi[s][i].qp_mode=1;
+            c->roi[s][i].qp=-5;
+        }
 
     /* monitor_stream=1: the sub stream when there is one (IVS runs a frame-diff on
      * the CPU on every SoC here, so its cost scales with the pixels it is fed -
@@ -598,6 +605,16 @@ static const char *privacy_key(const char *key, int *stream, int *item)
     return key+11;
 }
 
+/* "roi<S>.<N>.<field>" -> *stream=S, *item=N, returns the field name */
+static const char *roi_key(const char *key, int *stream, int *item)
+{
+    if (strncmp(key,"roi",3) || key[3]<'0' || key[3]>'0'+MS_MAX_VSTREAM-1 ||
+        key[4]!='.' || key[5]<'0' || key[5]>'0'+MS_MAX_ROI-1 || key[6]!='.')
+        return NULL;
+    *stream = key[3]-'0'; *item = key[5]-'0';
+    return key+7;
+}
+
 /* ------------------------------------------------------------------------
  * Descriptor-driven key tables (B2, review 2026-07-31).
  *
@@ -761,6 +778,13 @@ static const cfg_field sensor_fields[] = {
 #else
 #define CAP_AEITMAX F_NOHW
 #endif
+#if FCROP_TIER == CAP_TIER_UNSUPPORTED
+#define CAP_FCROP F_NOHW
+#elif !FCROP_LIVE
+#define CAP_FCROP F_RESTART
+#else
+#define CAP_FCROP 0
+#endif
 static const cfg_field image_fields[] = {
     F("brightness",             0, brightness,             T_INT, F_CTRL|F_CAP,          0,255),
     F("contrast",               0, contrast,               T_INT, F_CTRL|F_CAP,          0,255),
@@ -794,6 +818,12 @@ static const cfg_field image_fields[] = {
      * is well under that at any usable frame rate; the HAL clamps to the real
      * sensor range anyway, so this only rejects nonsense. */
     F("ae_it_max_us",           0, ae_it_max_us,           T_INT, F_ATOMIC|F_CTRL|CAP_AEITMAX, 0,1000000),
+    /* not F_CAP: caps.fcrop carries the tier, caps.image the ISP sliders */
+    F("fcrop_enable",           0, fcrop_enable,           T_BOOL,F_CTRL|CAP_FCROP,      0,0),
+    F("fcrop_x",                0, fcrop_x,                T_INT, F_CTRL|CAP_FCROP,      0,8192),
+    F("fcrop_y",                0, fcrop_y,                T_INT, F_CTRL|CAP_FCROP,      0,8192),
+    F("fcrop_w",                0, fcrop_w,                T_INT, F_CTRL|CAP_FCROP,      0,8192),
+    F("fcrop_h",                0, fcrop_h,                T_INT, F_CTRL|CAP_FCROP,      0,8192),
 };
 #undef CAP_COLORFX
 #undef CAP_SCENE
@@ -808,6 +838,7 @@ static const cfg_field image_fields[] = {
 #undef CAP_BACKLIGHT
 #undef CAP_WB
 #undef CAP_AEITMAX
+#undef CAP_FCROP
 #undef TT
 
 #define TT ms_audio_cfg
@@ -1241,6 +1272,27 @@ static const cfg_field privacy_fields[] = {
     F("color",   "fill_color", color,   T_HEX,  F_CTRL, 0,0),
 };
 #undef TT
+
+/* roi<S>.<N>.*: live where ROI_TIER allows (the HAL re-applies the stream's
+ * regions at the next frame), F_NOHW elsewhere. The HAL aligns, clamps and
+ * range-checks qp per qp_mode; these bounds only reject nonsense. */
+#if ROI_TIER == CAP_TIER_UNSUPPORTED
+#define CAP_ROI F_NOHW
+#else
+#define CAP_ROI 0
+#endif
+#define TT ms_roi_region
+static const cfg_field roi_fields[] = {
+    F("enabled", 0, enabled, T_BOOL, F_CTRL|CAP_ROI, 0,0),
+    F("x",       0, x,       T_INT,  F_CTRL|CAP_ROI, 0,8192),
+    F("y",       0, y,       T_INT,  F_CTRL|CAP_ROI, 0,8192),
+    F("w",       0, w,       T_INT,  F_CTRL|CAP_ROI, 0,8192),
+    F("h",       0, h,       T_INT,  F_CTRL|CAP_ROI, 0,8192),
+    F("qp",      0, qp,      T_INT,  F_CTRL|CAP_ROI, -51,51),
+    F("qp_mode", 0, qp_mode, T_INT,  F_CTRL|CAP_ROI, 0,1),
+};
+#undef TT
+#undef CAP_ROI
 #undef F
 #undef FS
 
@@ -1492,6 +1544,9 @@ static const cfg_field *field_for_key(const char *key)
     const char *pk = privacy_key(key, &psi, &pii);
     if (pk) return field_find(privacy_fields, NF(privacy_fields), pk);
 
+    const char *rk = roi_key(key, &psi, &pii);
+    if (rk) return field_find(roi_fields, NF(roi_fields), rk);
+
     if (!strncmp(key,"video0.",7) || !strncmp(key,"video1.",7))
         return field_find(video_fields, NF(video_fields), key+7);
 
@@ -1539,6 +1594,14 @@ static void set_kv(ms_config *c, const char *key, const char *val)
         const cfg_field *f = field_find(privacy_fields, NF(privacy_fields), pk);
         if (f) field_set(&c->privacy[psi][pii], f, val);
         else   LOGW(MOD,"unknown privacy key %s", pk);
+        return;
+    }
+
+    const char *rk = roi_key(key, &psi, &pii);
+    if (rk){
+        const cfg_field *f = field_find(roi_fields, NF(roi_fields), rk);
+        if (f) field_set(&c->roi[psi][pii], f, val);
+        else   LOGW(MOD,"unknown roi key %s", rk);
         return;
     }
 
@@ -1819,6 +1882,12 @@ int config_get_kv(const ms_config *c, const char *key, char *out, size_t cap)
     if (pk){
         const cfg_field *f = field_find(privacy_fields, NF(privacy_fields), pk);
         return f ? field_get(&c->privacy[psi][pii], f, out, cap) : 0;
+    }
+
+    const char *rk = roi_key(key, &psi, &pii);
+    if (rk){
+        const cfg_field *f = field_find(roi_fields, NF(roi_fields), rk);
+        return f ? field_get(&c->roi[psi][pii], f, out, cap) : 0;
     }
 
     if (!strncmp(key,"video0.",7) || !strncmp(key,"video1.",7)){
@@ -2424,3 +2493,4 @@ const cfg_field *cfg_fields_daynight(int *n)  { *n = NF(daynight_fields);  retur
 const cfg_field *cfg_fields_general(int *n)   { *n = NF(general_fields);   return general_fields; }
 const cfg_field *cfg_fields_video(int *n)     { *n = NF(video_fields);     return video_fields; }
 const cfg_field *cfg_fields_privacy(int *n)   { *n = NF(privacy_fields);   return privacy_fields; }
+const cfg_field *cfg_fields_roi(int *n)       { *n = NF(roi_fields);       return roi_fields; }

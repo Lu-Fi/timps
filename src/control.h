@@ -217,7 +217,7 @@ int  control_get_json(char *buf, size_t cap);
 /* GET /control?fields=1: the authoritative inventory of every F_CTRL-flagged
  * config field, grouped by section (config.h's cfg_fields_*() accessor
  * names: "image","audio","sensor","osd","osd_item","motion","record",
- * "timelapse","daynight","video","privacy" - the only sections that have any
+ * "timelapse","daynight","video","privacy","roi" - the only sections that have any
  * F_CTRL fields at all; jpeg/rtsp/http/events/general/sim/srt have none).
  * Walks the SAME tables apply_ctrl_fields() uses in control.c - never
  * hand-lists field names a second time, so this can't itself drift from what

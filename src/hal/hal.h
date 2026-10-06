@@ -93,6 +93,17 @@ typedef struct {
 } hal_isp_ae;
 int hal_isp_ae_info(hal_isp_ae *out);
 
+/* Encoder ROI / ISP FrontCrop (roi_caps.h): the CAP_TIER_* this build AND
+ * this libimp allow (a missing weak setter reads UNSUPPORTED), the per-stream
+ * ROI state (roi_state_name()) and the FrontCrop state ("off", "on",
+ * "rejected", "failed", "unsupported"). hal_sensor_size() is the frame the
+ * FrontCrop window lives in. */
+int hal_roi_tier(void);
+const char *hal_roi_state(int si);
+int hal_fcrop_tier(void);
+const char *hal_fcrop_state(void);
+void hal_sensor_size(int *w, int *h);
+
 /* 1 when image.<key> is built in but this libimp lacks its (weak, OpenIMP-only)
  * setter. Defined only where isp_caps.h sets ISP_WEAK_KEYS. */
 int hal_isp_key_missing(const char *key);

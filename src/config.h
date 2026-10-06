@@ -8,6 +8,9 @@
 #define MS_MAX_VSTREAM 2
 #define MS_MAX_OSD     8
 #define MS_MAX_PRIVACY 4
+/* config regions per stream; libimp has 8 slots, 4 keep the key table and
+ * GET /control at the size of the privacy masks */
+#define MS_MAX_ROI     4
 #define MS_MAX_STR     64
 
 enum ms_vcodec { MS_VC_H264=0, MS_VC_H265=1 };
@@ -202,6 +205,10 @@ typedef struct {
      *    rather than inherited. */
     _Atomic int ae_it_max_us;       /* read lock-free per frame by the HAL's AE
                                      * cap supervisor, hence F_ATOMIC */
+    /* ISP FrontCrop (roi_caps.h FCROP_TIER): window in SENSOR pixels, x/y =
+     * left/top like the FrameSource crop; the SDK struct orders top,left.
+     * Every stream scales the window to its own size. */
+    int fcrop_enable, fcrop_x, fcrop_y, fcrop_w, fcrop_h;
 } ms_image_cfg;
 
 /* one OSD overlay: text (with placeholders) or a BGRA logo */
@@ -269,6 +276,16 @@ typedef struct {
     int      x, y, w, h;            /* rect in the stream's frame, pixels */
     uint32_t color;                 /* 0xAARRGGBB fill color */
 } ms_privacy_region;
+
+/* encoder ROI region (roi_caps.h ROI_TIER), H.264 only. Keys roi<S>.<N>.*:
+ * enabled, x, y, w, h (pixels of the encoded stream picture, aligned to 16
+ * by the HAL), qp, qp_mode (0 absolute QP 0..51, 1 delta -26..25). */
+typedef struct {
+    int      enabled;
+    int      x, y, w, h;
+    int      qp;
+    int      qp_mode;
+} ms_roi_region;
 
 /* native automatic day/night detection (thread compiled with -DUSE_DAYNIGHT;
  * keys are always parsed so a config with daynight.* loads warning-free).
@@ -622,6 +639,7 @@ typedef struct {
     ms_jpeg_cfg    jpeg;
     ms_osd_cfg     osd;
     ms_privacy_region privacy[MS_MAX_VSTREAM][MS_MAX_PRIVACY]; /* cover masks */
+    ms_roi_region  roi[MS_MAX_VSTREAM][MS_MAX_ROI];
     ms_motion_cfg  motion;
     ms_record_cfg  record;
     ms_timelapse_cfg timelapse;
@@ -787,5 +805,6 @@ const cfg_field *cfg_fields_daynight(int *n);
 const cfg_field *cfg_fields_general(int *n);
 const cfg_field *cfg_fields_video(int *n);     /* one videoN stream */
 const cfg_field *cfg_fields_privacy(int *n);   /* one privacy region */
+const cfg_field *cfg_fields_roi(int *n);       /* one encoder ROI region */
 
 #endif

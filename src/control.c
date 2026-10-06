@@ -25,6 +25,8 @@
 #include "hal/imp_osd.h"
 #include "hal/hal.h"       /* hal_enc_stats: read-only encoder telemetry */
 #include "isp_caps.h"      /* ISP_WEAK_KEYS */
+#include "roi_caps.h"      /* caps.roi / caps.fcrop tiers */
+#include "hal/roi_geom.h"  /* ROI_* / FCROP_MIN limits */
 #include "util.h"          /* RTSP_MAX_CLIENTS/HTTP_MAX_CLIENTS/EVENTS_MAX_CLIENTS_DEF */
 #include "record.h"
 #include "timelapse.h"
@@ -1047,6 +1049,26 @@ int control_apply_json(const char *json, ctrl_result *res)
         }
     }
 
+    /* roi: {"roi":{"<s>":{"<n>":{enabled,x,y,w,h,qp,qp_mode}}}} -> roi<S>.<N>.*,
+     * applied to the running encoder at its next frame where ROI_TIER allows */
+    sb = find_obj(jb, je, "roi", &se);
+    if (sb){
+        int nroif; const cfg_field *roi_tbl = cfg_fields_roi(&nroif);
+        for (int s=0;s<MS_MAX_VSTREAM;s++){
+            char sidx[4]; snprintf(sidx,sizeof sidx,"%d",s);
+            const char *sse, *ssb = find_obj(sb, se, sidx, &sse);
+            if (!ssb) continue;
+            for (int n=0;n<MS_MAX_ROI;n++){
+                char nidx[4]; snprintf(nidx,sizeof nidx,"%d",n);
+                const char *ne, *nb = find_obj(ssb, sse, nidx, &ne);
+                if (!nb) continue;
+                char pre[16]; snprintf(pre,sizeof pre,"roi%d.%d",s,n);
+                apply_ctrl_fields(&sc, ch, pre, nb, ne, roi_tbl, nroif);
+                ign_scan(&sc, pre, nb, ne, roi_tbl, nroif, NULL);
+            }
+        }
+    }
+
     /* sensor: {"sensor":{"model":"gc2053","fps":25,...}} -> sensor.*
      * (persist-only, applied at the next ISP init) */
     sb = find_obj(jb, je, "sensor", &se);
@@ -1549,6 +1571,23 @@ int control_get_json(char *buf, size_t cap)
         APP("\"privacy\":{\"available\":%d,\"max_regions\":%d},",
             pav, MS_MAX_PRIVACY);
     }
+    /* encoder ROI and ISP FrontCrop: the tier this build AND this libimp
+     * allow (roi_caps.h), so the WebUI and QA can warn on experimental. */
+    {
+        APP("\"roi\":{\"tier\":\"%s\",\"regions\":%d,\"slots\":%d,\"align\":%d,"
+            "\"qp_abs\":[%d,%d],\"qp_delta\":[%d,%d],\"streams\":[",
+            cap_tier_name(hal_roi_tier()), MS_MAX_ROI, ROI_HW_SLOTS, ROI_ALIGN,
+            ROI_QP_ABS_MIN, ROI_QP_ABS_MAX, ROI_QP_DELTA_MIN, ROI_QP_DELTA_MAX);
+        for (int s = 0; s < MS_MAX_VSTREAM; s++)
+            APP("%s\"%s\"", s ? "," : "", hal_roi_state(s));
+        int fsw = 0, fsh = 0;
+        hal_sensor_size(&fsw, &fsh);
+        int ft = hal_fcrop_tier();
+        APP("]},\"fcrop\":{\"tier\":\"%s\",\"live\":%d,\"min\":%d,\"even\":1,"
+            "\"sensor\":[%d,%d],\"state\":\"%s\"},",
+            cap_tier_name(ft), ft != CAP_TIER_UNSUPPORTED && FCROP_LIVE, FCROP_MIN,
+            fsw, fsh, hal_fcrop_state());
+    }
     /* image rotation: the set of values this SoC's build can actually apply
      * (0 always; 90/270 need a real dim-swapping transpose apply path). 180 is
      * only a rotation value on T40/T41 (ROT_HAS_HW_I2D), where it is a genuine
@@ -1706,6 +1745,9 @@ int control_get_json(char *buf, size_t cap)
         img.highlight_depress,img.backlight_compensation,
         img.colorfx,img.scene,
         img.core_wb_mode,img.wb_rgain,img.wb_bgain);
+    APP(",\"fcrop_enable\":%d,\"fcrop_x\":%d,\"fcrop_y\":%d,"
+        "\"fcrop_w\":%d,\"fcrop_h\":%d",
+        img.fcrop_enable, img.fcrop_x, img.fcrop_y, img.fcrop_w, img.fcrop_h);
     {   /* gains AWB applies right now: a manual start that matches auto */
         int wr, wbg;
         if (hal_isp_wb_gains(&wr, &wbg) == 0)
@@ -1864,6 +1906,22 @@ int control_get_json(char *buf, size_t cap)
             APP("%s\"%d\":{\"enabled\":%d,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,"
                 "\"color\":\"0x%08X\"}",
                 n?",":"", n, p->enabled, p->x, p->y, p->w, p->h, p->color);
+        }
+        APP("}");
+    }
+    APP("}");
+    /* encoder ROI regions per stream: roi.<s>.<n>.{enabled,x,y,w,h,qp,qp_mode} */
+    APP(",\"roi\":{");
+    for (int s=0;s<MS_MAX_VSTREAM;s++){
+        APP("%s\"%d\":{", s?",":"", s);
+        for (int n=0;n<MS_MAX_ROI;n++){
+            ms_roi_region r;
+            config_str_lock();
+            r = c->roi[s][n];
+            config_str_unlock();
+            APP("%s\"%d\":{\"enabled\":%d,\"x\":%d,\"y\":%d,\"w\":%d,\"h\":%d,"
+                "\"qp\":%d,\"qp_mode\":%d}",
+                n?",":"", n, r.enabled, r.x, r.y, r.w, r.h, r.qp, r.qp_mode);
         }
         APP("}");
     }
@@ -2136,6 +2194,7 @@ int control_fields_json(char *buf, size_t cap)
     SECFIELDS("daynight",  cfg_fields_daynight);
     SECFIELDS("video",     cfg_fields_video);
     SECFIELDS("privacy",   cfg_fields_privacy);
+    SECFIELDS("roi",       cfg_fields_roi);
     SECFIELDS("general",   cfg_fields_general);
     #undef SECFIELDS
     /* drop the trailing comma left by the last SECFIELDS() - only when the
