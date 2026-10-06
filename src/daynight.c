@@ -203,6 +203,7 @@ enum { DN_DAY = 0, DN_NIGHT = 1, DN_UNKNOWN = -1 };
 static pthread_t   g_thr;
 static ms_stopgate g_gate;
 static int         g_started;
+static dni_state   g_dni;          /* Idle-Dark, detection thread only */
 
 /* latest measurement, shared with control.c via daynight_get_status() */
 static pthread_mutex_t g_st_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -803,12 +804,14 @@ static int dn_reap(pid_t pid, const char *cmd, const char *arg, int timeout_ms)
 /* "<cmd> <arg>" with stdout/stderr on /dev/null. vfork, not fork: copying
  * the whole daemon can ENOMEM on a small board (NEU-01b in imp_motion.c).
  * Its own noinline frame, so the child cannot clobber the caller's locals. */
-static pid_t __attribute__((noinline)) dn_spawn(const char *cmd, const char *arg)
+static pid_t __attribute__((noinline)) dn_spawn(const char *cmd, const char *arg,
+                                                 int outfd)
 {
     pid_t pid = vfork();
     if (pid == 0){
+        if (outfd >= 0) dup2(outfd, 1);
         int nul = open("/dev/null", O_WRONLY);
-        if (nul >= 0){ dup2(nul,1); dup2(nul,2); if (nul>2) close(nul); }
+        if (nul >= 0){ if (outfd < 0) dup2(nul,1); dup2(nul,2); if (nul>2) close(nul); }
         /* The vendor/open libimp keeps its device nodes (/dev/isp-m0, the
          * frame channels) open without O_CLOEXEC, and a board hook may leave a
          * background child behind (timps-irprobe's 60 s watchdog sleeper). An
@@ -841,11 +844,12 @@ static void dn_switch(int mode, const char *why, const char *cmd,
      * shell commands (as root). exec'ing it as a single program with the fixed
      * arg "day"/"night" removes the shell entirely - a malicious value just
      * fails to exec, it cannot inject. */
-    pid_t pid = dn_spawn(cmd, arg);
+    pid_t pid = dn_spawn(cmd, arg, -1);
     if (pid < 0){ LOGW(MOD,"daynight: vfork failed: %s", strerror(errno)); return; }
     int rc = dn_reap(pid, cmd, arg, DN_CMD_TIMEOUT_MS);
     if (rc != 0)
         LOGW(MOD, "'%s %s' failed (rc=%d) - is the script installed?", cmd, arg, rc);
+    dni_note_switch(&g_dni);        /* the board script drives the LED itself */
 }
 
 
@@ -893,39 +897,6 @@ static int g_dni_hook = DNI_HOOK_OK;
 /* Idle-Dark status, under g_st_mu */
 static dn_ir_idle_status g_st_idle = { 0, 0, 0, 0, 0, "disabled" };
 
-/* Status only: watched/linger and why Idle-Dark may not act. */
-static void dn_idle_status_tick(const ms_daynight_cfg *dn, dni_state *dni,
-                                int *warned_ka)
-{
-    dni_in in;
-    memset(&in, 0, sizeof in);
-    in.now_ms    = ms_now_us() / 1000;
-    in.cfg       = dn->ir_idle_off;
-    in.linger_s  = dn->ir_idle_linger_s;
-    in.enabled   = dn->enabled;
-    in.keepalive = hal_fs_keepalive();
-    in.hook      = (!dn->irprobe_cmd[0] || g_ir_unusable) ? DNI_HOOK_NONE : g_dni_hook;
-    in.consumers = hub_image_subs() + hal_image_pinned();
-    in.kicked    = __atomic_exchange_n(&g_watch_kick, 0, __ATOMIC_RELAXED);
-    int watched  = dni_watch(dni, &in);
-    int r        = dni_gate(&in);
-    if (r == DNI_U_KEEPALIVE && !*warned_ka) {
-        LOGW(MOD, "daynight.ir_idle_off=1 needs the framesource keepalive "
-                  "(general.fs_keepalive) - without it nothing is measured "
-                  "while idle; Idle-Dark stays inactive");
-        *warned_ka = 1;
-    }
-    dn_ir_idle_status st = { dn->ir_idle_off ? 1 : 0, r == DNI_OK, dni->dark,
-                             watched, dni_linger_left_s(dni, &in),
-                             dni_unavail_str(r) };
-    pthread_mutex_lock(&g_st_mu);
-    int changed = st.available != g_st_idle.available || st.dark != g_st_idle.dark ||
-                  st.reason != g_st_idle.reason;
-    g_st_idle = st;
-    pthread_mutex_unlock(&g_st_mu);
-    if (changed) events_notify();
-}
-
 void daynight_watch_kick(void)
 {
     __atomic_store_n(&g_watch_kick, 1, __ATOMIC_RELAXED);
@@ -933,13 +904,39 @@ void daynight_watch_kick(void)
         ms_stopgate_kick(&g_gate);
 }
 
+/* "<irprobe_cmd> <verb>": its exit status, -1 if it could not run or was
+ * killed. `out` (optional) gets the start of its stdout. */
+static int dn_irhook(const char *cmd, const char *verb, char *out, size_t outsz)
+{
+    if (!cmd || !cmd[0]) return -1;
+    int pfd[2] = { -1, -1 };
+    if (out) {
+        out[0] = 0;
+        if (pipe(pfd) == 0) {
+            fcntl(pfd[0], F_SETFD, FD_CLOEXEC);
+            fcntl(pfd[1], F_SETFD, FD_CLOEXEC);
+        } else pfd[0] = pfd[1] = -1;
+    }
+    pid_t pid = dn_spawn(cmd, verb, pfd[1]);
+    if (pfd[1] >= 0) close(pfd[1]);
+    int rc = -1;
+    if (pid < 0) LOGW(MOD, "irprobe: vfork failed: %s", strerror(errno));
+    else rc = dn_reap(pid, cmd, verb, DN_IRPROBE_TIMEOUT_MS);
+    if (out && outsz > 1 && pfd[0] >= 0) {
+        /* non-blocking: a background child of the hook may hold the pipe */
+        fcntl(pfd[0], F_SETFL, O_NONBLOCK);
+        ssize_t n = read(pfd[0], out, outsz - 1);
+        out[n > 0 ? n : 0] = 0;
+        close(pfd[0]);
+    }
+    return rc;
+}
+
 static int dn_irprobe(const char *cmd, int on)
 {
     if (!cmd || !cmd[0]) return -1;
     const char *arg = on ? "on" : "off";
-    pid_t pid = dn_spawn(cmd, arg);
-    if (pid < 0) { LOGW(MOD, "irprobe: vfork failed: %s", strerror(errno)); return -1; }
-    int rc = dn_reap(pid, cmd, arg, DN_IRPROBE_TIMEOUT_MS);
+    int rc = dn_irhook(cmd, arg, NULL, 0);
     if (rc != 0)
         LOGW(MOD, "'%s %s' failed (rc=%d) - silent probe unavailable, "
                   "falling back to the IR-cut probe", cmd, arg, rc);
@@ -957,6 +954,69 @@ static void dn_light_on(const char *cmd, int tries)
     LOGW(MOD, "illuminator could not be switched back on after the silent "
               "probe (%d %s) - it may stay off until the next switch",
          tries, tries == 1 ? "try" : "tries");
+}
+
+/* Idle-Dark inputs that do not come from the automaton's own state */
+static void dn_idle_in(dni_in *in, const ms_daynight_cfg *dn, int consume)
+{
+    memset(in, 0, sizeof *in);
+    in->now_ms    = ms_now_us() / 1000;
+    in->cfg       = dn->ir_idle_off;
+    in->linger_s  = dn->ir_idle_linger_s;
+    in->enabled   = dn->enabled;
+    in->auto_mode = dn->mode == DN_MODE_AUTO;
+    in->keepalive = hal_fs_keepalive();
+    in->hook      = (!dn->irprobe_cmd[0] || g_ir_unusable) ? DNI_HOOK_NONE : g_dni_hook;
+    in->consumers = hub_image_subs() + hal_image_pinned();
+    in->kicked    = consume ? __atomic_exchange_n(&g_watch_kick, 0, __ATOMIC_RELAXED)
+                            : __atomic_load_n(&g_watch_kick, __ATOMIC_RELAXED);
+    in->day_gain  = dn->day_gain;
+    in->night_gain = dn->night_gain;
+}
+
+static void dn_idle_status(const dni_in *in, int *warned_ka)
+{
+    int r = dni_gate(in);
+    if (r == DNI_U_KEEPALIVE && !*warned_ka) {
+        LOGW(MOD, "daynight.ir_idle_off=1 needs the framesource keepalive "
+                  "(general.fs_keepalive) - without it nothing is measured "
+                  "while idle; Idle-Dark stays inactive");
+        *warned_ka = 1;
+    }
+    dn_ir_idle_status st = { in->cfg ? 1 : 0, r == DNI_OK, g_dni.dark,
+                             in->consumers > 0 || in->kicked,
+                             dni_linger_left_s(&g_dni, in), dni_unavail_str(r) };
+    pthread_mutex_lock(&g_st_mu);
+    int changed = st.available != g_st_idle.available || st.dark != g_st_idle.dark ||
+                  st.reason != g_st_idle.reason;
+    g_st_idle = st;
+    pthread_mutex_unlock(&g_st_mu);
+    if (changed) events_notify();
+}
+
+/* "<irprobe_cmd> idle": 0 when the illuminator is off. An old hook answers
+ * an unknown verb with 1 (exec'd `light` usage) or 2, a white light in the
+ * set with 3; those end Idle-Dark until re-enabled. Anything else is a
+ * failure, DN_IR_MAX_FAILS in a row end it too. */
+static int dn_idle_hook(const char *cmd, int *fails)
+{
+    int rc = dn_irhook(cmd, "idle", NULL, 0);
+    if (rc == 0) { *fails = 0; return 0; }
+    int was = g_dni_hook;
+    if (rc == 3)
+        g_dni_hook = DNI_HOOK_WHITE;
+    else if (rc == 1 || rc == 2 || ++*fails >= DN_IR_MAX_FAILS)
+        g_dni_hook = DNI_HOOK_OLD;
+    if (g_dni_hook == DNI_HOOK_WHITE && was != DNI_HOOK_WHITE)
+        LOGW(MOD, "'%s idle' refused (white light is among the illuminators "
+                  "daynight.controls switches) - Idle-Dark stays off", cmd);
+    else if (g_dni_hook == DNI_HOOK_OLD && was != DNI_HOOK_OLD)
+        LOGW(MOD, "'%s idle' failed (rc=%d) - the hook has no 'idle' verb "
+                  "(update timps-irprobe) or nothing to switch; Idle-Dark "
+                  "stays off", cmd, rc);
+    else
+        LOGW(MOD, "'%s idle' failed (rc=%d)", cmd, rc);
+    return -1;
 }
 
 /* Set image.running_mode the way a POST /control would (config, persistence and
@@ -988,11 +1048,31 @@ static void dn_set_running_mode(int rm)
  * to schedule, the thread stopping - has to come through here, or a night
  * camera simply stays dark. No-op when no probe is in flight. */
 static void dn_probe_abandon(const char *cmd, int64_t *ir_verdict_at,
-                             float *d_lit, int *d_lit_hr)
+                             float *d_lit, int *d_lit_hr, int *idle_probe)
 {
     if (!*ir_verdict_at) return;
     dn_light_on(cmd, 1);
     *ir_verdict_at = 0; *d_lit = -1.0f; *d_lit_hr = -1;
+    if (*idle_probe) { *idle_probe = 0; g_dni.dark = 0; }
+}
+
+/* An unwatched boot whose silent measurement proved night keeps the LED off:
+ * that probe is the idle entry. "idle" also voids the probe's watchdog. */
+static int dn_idle_boot_dark(const ms_daynight_cfg *dn, int suspend, int *fails,
+                             int64_t dark_at)
+{
+    dni_in in;
+    dn_idle_in(&in, dn, 0);
+    if (suspend || dni_gate(&in) != DNI_OK || in.consumers > 0 || in.kicked ||
+        in.now_ms < g_dni.watched_until)
+        return 0;
+    __atomic_store_n(&g_dni_armed, 1, __ATOMIC_RELEASE);
+    if (dn_idle_hook(dn->irprobe_cmd, fails) != 0) {
+        __atomic_store_n(&g_dni_armed, 0, __ATOMIC_RELEASE);
+        return 0;
+    }
+    dni_enter(&g_dni, dark_at, in.now_ms);
+    return 1;
 }
 
 /* ------------------------------------------------------------------ *
@@ -1357,9 +1437,6 @@ static void dn_trace(const ms_daynight_cfg *dn, int64_t now_ms, int cur,
 
 /* ------------------------------------------------------------------ */
 
-/* block until the interval elapses OR daynight_stop() requests stop */
-static void dn_sleep(int ms) { ms_stopgate_wait(&g_gate, ms); }
-
 static void *dn_thread(void *arg)
 {
     (void)arg;
@@ -1441,9 +1518,20 @@ static void *dn_thread(void *arg)
     int     day_seen    = 0;           /* has day ever been confirmed? */
     int     probe_fails = 0;           /* consecutive probes that found night */
     int     diag_warned = 0;           /* the diagnostic is once per session */
-    dni_state dni;                     /* Idle-Dark (status only so far) */
-    int     dni_warned_ka = 0;
-    memset(&dni, 0, sizeof dni);
+    /* Idle-Dark (g_dni holds its decision state) */
+    int     dni_warned_ka = 0, dni_frozen_warned = 0;
+    int     dni_fails   = 0;           /* consecutive failed "idle" hooks */
+    int     dni_cfg_was = 0;
+    int     dni_suspend = 0;           /* frozen AE: no entry until the next switch */
+    int64_t dni_suspend_ms = 0;
+    int     ir_idle_probe = 0;         /* the silent probe in flight is the idle entry */
+    float   off_gain = -1.0f, off_d = -1.0f;  /* raw reading as the LED went off */
+    int     off_moved   = 0;           /* ... and the AE moved since */
+    float   tk_gain = -1.0f, tk_d = -1.0f;    /* last tick's raw reading */
+    int     tk_hr       = -1;
+    int     kick_wake   = 0;           /* woken by a consumer: idle part only */
+    int64_t tick_end    = 0;
+    memset(&g_dni, 0, sizeof g_dni);
 
     g_int_hwm = 0;                     /* see dn_read(): sensor mode may differ */
     g_ratio_last = -1.0f; g_ratio_miss = 0;
@@ -1527,6 +1615,8 @@ static void *dn_thread(void *arg)
         const ms_daynight_cfg *dn = &dncfg;
         int     interval = dn->interval_ms > 0 ? dn->interval_ms : 2000;
         int64_t now      = ms_now_us() / 1000;
+        /* no sample on a kick: the EMA steps are calibrated on interval_ms */
+        if (kick_wake) goto idle;
 
         /* fire a pending post-switch running-mode re-assert once it comes due,
          * then re-arm until the series is exhausted (see DN_REASSERT_MS). */
@@ -1557,7 +1647,10 @@ static void *dn_thread(void *arg)
         dn_read(dn, &sm);
         float luma = -1.0f;
         { uint32_t al; if (hal_isp_ae_luma(&al) == 0) luma = (float)al; }
-        dn_idle_status_tick(dn, &dni, &dni_warned_ka);
+        tk_gain = sm.gain; tk_d = sm.d; tk_hr = sm.headroom;
+        if ((ir_verdict_at || g_dni.dark) && sm.d > 0.0f &&
+            (sm.gain != off_gain || sm.d != off_d))
+            off_moved = 1;
 
         if (!dn->enabled) {                 /* manual: measure, force nothing */
             was_enabled = 0;
@@ -1567,7 +1660,8 @@ static void *dn_thread(void *arg)
             pre_probe = -1.0f; pre_probe_hr = -1;
             sust_min = win_max = -1.0f; win_at = 0;
             ema_fast = ema_slow = -1.0f; trend_since = 0;
-            dn_probe_abandon(dn->irprobe_cmd, &ir_verdict_at, &d_lit, &d_lit_hr);
+            dn_probe_abandon(dn->irprobe_cmd, &ir_verdict_at, &d_lit, &d_lit_hr,
+                             &ir_idle_probe);
             verify_at = enforce_at = 0; verify_cyc = 0;
             desync_since = 0; desync_warned = 0; readback_untrusted = 0;
             g_probe_req = 0;                /* nothing to serve it here */
@@ -1576,8 +1670,7 @@ static void *dn_thread(void *arg)
             /* manual mode still measures, so the graph still has a series to
              * tune the thresholds against before switching auto back on */
             dn_hist_tick(&sm, luma, DN_UNKNOWN, dn->history_s);
-            dn_sleep(interval);
-            continue;
+            goto idle;
         }
         if (!was_enabled) {                 /* (re)enabled: decide from scratch */
             was_enabled = 1;
@@ -1595,6 +1688,8 @@ static void *dn_thread(void *arg)
             filter_cost = ir_night_at = -1.0f;   /* re-measure from scratch */
             ir_night_ms = 0;
             ir_fails = 0; g_ir_unusable = 0;     /* and re-test the illuminator */
+            ir_idle_probe = 0; dni_suspend = 0;
+            dni_fails = 0; g_dni_hook = DNI_HOOK_OK;
             booted = 0; boot_at = now; boot_deciding = 0; boot_silent = 0;
             warned_noisp = 0; hb_defer_logged = 0; blind_warned = 0;
             LOGI(MOD, "auto day/night enabled");
@@ -1769,7 +1864,8 @@ static void *dn_thread(void *arg)
                         cur = sm.isp; mode_since = now;
                         s = -1.0f; stable_n = 0;
                         trig_since = dark_since = verdict_at = 0;
-                        dn_probe_abandon(dn->irprobe_cmd, &ir_verdict_at, &d_lit, &d_lit_hr);
+                        dn_probe_abandon(dn->irprobe_cmd, &ir_verdict_at, &d_lit, &d_lit_hr,
+                             &ir_idle_probe);
                         boot_silent = 0;
                         ir_verdict_at = 0; d_lit = -1.0f; ir_why = NULL;
                         sust_min = win_max = -1.0f; win_at = 0;
@@ -1809,7 +1905,7 @@ static void *dn_thread(void *arg)
                  * longer reached - a probe armed just before the switch has
                  * to be given its light back here */
                 dn_probe_abandon(dn->irprobe_cmd, &ir_verdict_at,
-                                 &d_lit, &d_lit_hr);
+                                 &d_lit, &d_lit_hr, &ir_idle_probe);
                 time_t wall = time(NULL);
                 int t = dn_cal_target(dn, wall);
                 if (t == DN_UNKNOWN) {
@@ -1838,7 +1934,8 @@ static void *dn_thread(void *arg)
                  * boot again */
                 if (ir_verdict_at &&
                     now >= ir_verdict_at + (int64_t)DN_PROBE_SETTLE_S * 1000) {
-                    dn_probe_abandon(dn->irprobe_cmd, &ir_verdict_at, &d_lit, &d_lit_hr);
+                    dn_probe_abandon(dn->irprobe_cmd, &ir_verdict_at, &d_lit, &d_lit_hr,
+                             &ir_idle_probe);
                     if (boot_silent) { boot_silent = 0; booted = 0; cur = DN_UNKNOWN; }
                 }
                 if (!warned_noisp) {
@@ -2039,11 +2136,68 @@ static void *dn_thread(void *arg)
              * threshold cannot: not "how bright is it" - which varies by a
              * factor of 63 across this fleet at one instant - but "am I making
              * this light, or is the room". */
+            /* (0i) the idle entry's verdict: the same ratio, but nobody is
+             * watching, so the LED stays off and the scene is read without
+             * it ("noir") until a consumer arrives. No audible escalation:
+             * every entry would repeat it. */
+            if (ir_verdict_at && now >= ir_verdict_at && ir_idle_probe) {
+                float d_dark = s, lit = d_lit;
+                int   room   = sm.headroom;
+                float r = (lit > 0.0f && d_dark > 0.0f) ? d_dark / lit : -1.0f;
+                const char *v = "night";
+                ir_verdict_at = 0; ir_idle_probe = 0; d_lit = -1.0f;
+                if (!off_moved && !dn_clipped(d_lit_hr)) {
+                    /* a frozen AE reads r = 1.00, which would pass for a
+                     * lit room: no verdict, light up, and no entry until
+                     * the next switch */
+                    v = "frozen";
+                    dn_light_on(dn->irprobe_cmd, 2);
+                    g_dni.dark = 0;
+                    dni_suspend = 1; dni_suspend_ms = mode_since;
+                    s = -1.0f; stable_n = 0;
+                    if (!dni_frozen_warned++)
+                        LOGW(MOD, "idle: the exposure did not move in %ds "
+                                  "with the illuminator off (%.0f) - the AE "
+                                  "does not run without a consumer here, so "
+                                  "Idle-Dark cannot measure; illuminator back "
+                                  "on until the next switch",
+                             DN_PROBE_SETTLE_S, (double)d_dark);
+                } else if (r > 0.0f && r <= DN_IR_RATIO_DAY &&
+                           room >= DN_IR_MIN_HEADROOM && !dn_clipped(d_lit_hr) &&
+                           !(filter_cost > 0.0f && lit * filter_cost > dn->night_gain)) {
+                    v = "day";
+                    ir_night_at = lit; ir_night_ms = now;
+                    target = DN_DAY;
+                    snprintf(why, sizeof why, "idle: IR ratio %.2f", (double)r);
+                } else {
+                    if (r >= DN_IR_RATIO_NIGHT && !dn_clipped(room)) {
+                        ref = d_dark; ref_due = 0;     /* the noir reference */
+                    }
+                    if (r >= DN_IR_RATIO_NIGHT || dn_clipped(room))
+                        hb_at = dn_hb_next(dn, now);
+                    trig_since = 0;
+                    sust_min = win_max = -1.0f; win_at = 0;
+                    ema_fast = ema_slow = -1.0f; trend_since = 0;
+                }
+                LOGD(MOD, "probe: r=%.2f lit=%.0f dark=%.0f hr=%d "
+                          "verdict=%s mode=night ref=%.0f why=idle lit_hr=%d",
+                     (double)r, (double)lit, (double)d_dark, room, v,
+                     (double)ref, d_lit_hr);
+                ir_why = NULL; d_lit_hr = -1;
+                break;
+            }
+
             if (ir_verdict_at && now >= ir_verdict_at) {
                 float d_dark = s;
                 int   room   = sm.headroom;
                 ir_verdict_at = 0;
-                dn_light_on(dn->irprobe_cmd, 2);     /* light first, judge after */
+                int keep_dark = boot_silent && d_lit > 0.0f && d_dark > 0.0f &&
+                                d_dark / d_lit >= DN_IR_RATIO_NIGHT &&
+                                !dn_clipped(d_lit_hr) &&
+                                dn_idle_boot_dark(dn, dni_suspend, &dni_fails,
+                                    now - (int64_t)DN_PROBE_SETTLE_S * 1000);
+                if (!keep_dark)
+                    dn_light_on(dn->irprobe_cmd, 2); /* light first, judge after */
                 s = -1.0f; stable_n = 0;             /* the reading changes back */
                 float r = (d_lit > 0.0f && d_dark > 0.0f) ? d_dark / d_lit : -1.0f;
                 float boot_lit = d_lit;
@@ -2130,6 +2284,10 @@ static void *dn_thread(void *arg)
                          * dark would - and the board keeps the mode it is in,
                          * with no switch_cmd spent. */
                         ref = d_dark / r; ref_due = 0;
+                        if (keep_dark) {
+                            ref = dn_clipped(room) ? -1.0f : d_dark;
+                            s = d_dark;      /* reading on, without the LED */
+                        }
                         if (!running_mode)
                             dn_set_running_mode(1);
                         LOGI(MOD, "boot: night confirmed by the silent probe "
@@ -2556,6 +2714,9 @@ static void *dn_thread(void *arg)
          * The previous design had only the audible one, which is why nine
          * separate rules existed to ration it. Making the common case free is
          * what let all nine go. */
+        /* while idle-dark a silent probe would divide noir by noir */
+        int was_dark = g_dni.dark;
+        if (was_dark) no_silent = 1;
         if (want_probe && !no_silent && cur == DN_NIGHT && !ir_verdict_at &&
             (now >= silent_hold || requested) &&
             dn->irprobe_cmd[0] && !g_ir_unusable &&
@@ -2564,6 +2725,8 @@ static void *dn_thread(void *arg)
             if (dn_irprobe(dn->irprobe_cmd, 0) == 0) {
                 d_lit = s;
                 d_lit_hr = sm.headroom;
+                ir_idle_probe = 0;
+                off_gain = sm.gain; off_d = sm.d; off_moved = 0;
                 ir_why = probe_why;
                 ir_verdict_at = now + (int64_t)DN_PROBE_SETTLE_S * 1000;
                 LOGD(MOD, "silent probe (%s): illuminator off, reading in %ds "
@@ -2619,7 +2782,8 @@ static void *dn_thread(void *arg)
             LOGD(MOD, "probe (%s): exposure %.0f vs night reference %.0f, "
                       "verdict in %ds", probe_why, (double)s, (double)ref,
                  DN_PROBE_SETTLE_S);
-            pre_probe = (s > 0.0f) ? s : ref;
+            /* a noir level is not the lit night the revert returns to */
+            pre_probe = was_dark ? -1.0f : (s > 0.0f) ? s : ref;
             pre_probe_hr = sm.headroom;
             dn_switch(DN_DAY, probe_why, dn->switch_cmd, s, ref, bar);
             /* The boot measurement charges the ration like any other probe,
@@ -2662,7 +2826,7 @@ static void *dn_thread(void *arg)
             cur = target; mode_since = now;
             s = -1.0f; stable_n = 0;
             trig_since = dark_since = verdict_at = 0;
-            ir_verdict_at = 0; d_lit = -1.0f; ir_why = NULL;
+            ir_verdict_at = 0; d_lit = -1.0f; ir_why = NULL; ir_idle_probe = 0;
             sust_min = win_max = -1.0f; win_at = 0;
             ema_fast = ema_slow = -1.0f; trend_since = 0;
             reassert_left = DN_REASSERT_COUNT;
@@ -2727,7 +2891,88 @@ static void *dn_thread(void *arg)
         dn_status_update(sm.bright, sm.gain, sm.d, luma, cur, st_ref, st_bar,
                          st_desync);
         dn_hist_tick(&sm, luma, cur, dn->history_s);
-        dn_sleep(interval);
+
+    idle: ;
+        /* ---------------- Idle-Dark (dn_idle.h) ---------------------- */
+        {
+            dni_in in;
+            dn_idle_in(&in, dn, 1);
+            if (in.cfg && !dni_cfg_was) { g_dni_hook = DNI_HOOK_OK; dni_fails = 0; }
+            dni_cfg_was = in.cfg;
+            if (dni_suspend && mode_since != dni_suspend_ms) dni_suspend = 0;
+            in.booted        = booted && !boot_silent && !boot_deciding;
+            in.night         = cur == DN_NIGHT;
+            in.mode_since_ms = mode_since;
+            in.busy          = verdict_at || ir_verdict_at || enforce_at || verify_at;
+            in.no_entry      = kick_wake || dni_suspend || !(s > 0.0f && tk_d > 0.0f);
+            in.s             = s;
+            in.stable        = stable_n >= DN_STABLE_N;
+            in.fresh         = off_moved;
+            in.noir_cost     = -1.0f;
+            int why, a = dni_step(&g_dni, &in, &why);
+            const char *cmd = dn->irprobe_cmd;
+            if (a == DNI_LED_OFF && why == DNI_R_IDLE) {
+                /* armed first: a consumer during the hook wakes at once */
+                __atomic_store_n(&g_dni_armed, 1, __ATOMIC_RELEASE);
+                if (dn_idle_hook(cmd, &dni_fails) == 0) {
+                    ir_idle_probe = 1; ir_why = "idle";
+                    d_lit = s; d_lit_hr = tk_hr;
+                    ir_verdict_at = in.now_ms + (int64_t)DN_PROBE_SETTLE_S * 1000;
+                    off_gain = tk_gain; off_d = tk_d; off_moved = 0;
+                    LOGD(MOD, "idle: no consumer for %ds - illuminator off, "
+                              "reading in %ds (lit level %.0f)",
+                         dn->ir_idle_linger_s, DN_PROBE_SETTLE_S, (double)s);
+                    s = -1.0f; stable_n = 0;
+                } else {
+                    g_dni.dark = 0;
+                }
+            } else if (a == DNI_LED_OFF) {
+                /* re-assert: the board script or someone else may have lit it */
+                if (dn_idle_hook(cmd, &dni_fails) != 0) {
+                    g_dni.dark = 0;
+                    a = DNI_LED_ON; why = DNI_R_HANDBACK;
+                }
+            }
+            if (a == DNI_LED_ON) {
+                int credit = why == DNI_R_WAKE &&
+                             (s > dn->night_gain || dn_clipped(tk_hr));
+                dn_light_on(cmd, 2);
+                LOGD(MOD, "idle: illuminator on (%s, exposure %.0f%s)",
+                     dni_why_str(why), (double)s,
+                     credit ? ", proves night" : "");
+                if (ir_idle_probe) {        /* its verdict can wait no longer */
+                    ir_verdict_at = 0; ir_idle_probe = 0;
+                    d_lit = -1.0f; d_lit_hr = -1; ir_why = NULL;
+                }
+                /* the optics changed: as after a switch */
+                s = -1.0f; stable_n = 0;
+                trig_since = 0;
+                sust_min = win_max = -1.0f; win_at = 0;
+                ema_fast = ema_slow = -1.0f; trend_since = 0;
+                if (cur == DN_NIGHT) {
+                    ref = -1.0f; ref_wait_logged = 0;
+                    ref_due = now + (int64_t)DN_REF_DELAY_S * 1000;
+                    if (credit) hb_at = dn_hb_next(dn, now);
+                }
+            }
+            dn_idle_status(&in, &dni_warned_ka);
+            __atomic_store_n(&g_dni_armed, g_dni.dark, __ATOMIC_RELEASE);
+        }
+
+        /* the interval, kickable while dark; a kick resumes the same one */
+        {
+            int     ms = interval;
+            int64_t t  = ms_now_us() / 1000;
+            if (kick_wake) ms = tick_end > t ? (int)(tick_end - t) : 0;
+            else tick_end = t + interval;
+            kick_wake = 0;
+            int armed = __atomic_load_n(&g_dni_armed, __ATOMIC_ACQUIRE);
+            if (armed && __atomic_load_n(&g_watch_kick, __ATOMIC_RELAXED))
+                kick_wake = 1;
+            else if (ms > 0)
+                kick_wake = (armed ? ms_stopgate_wait_kick(&g_gate, ms)
+                                   : ms_stopgate_wait(&g_gate, ms)) == 2;
+        }
     }
     /* shutdown mid-probe: the illuminator is ours to hand back before the
      * only thread that would have done it goes away (dn->* is loop-scoped) */
@@ -2735,7 +2980,8 @@ static void *dn_thread(void *arg)
       config_str_lock();
       memcpy(cmd, g_cfg.daynight.irprobe_cmd, sizeof cmd);
       config_str_unlock();
-      dn_probe_abandon(cmd, &ir_verdict_at, &d_lit, &d_lit_hr); }
+      dn_probe_abandon(cmd, &ir_verdict_at, &d_lit, &d_lit_hr, &ir_idle_probe);
+      if (dni_handback(&g_dni) == DNI_LED_ON) dn_light_on(cmd, 1); }
     LOGI(MOD, "detection thread stopped");
     return NULL;
 }

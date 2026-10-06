@@ -13,12 +13,13 @@
 #define DN_IR_IDLE_REASSERT_S   600   /* a WebUI/cron "daynight night" relights behind our back */
 #define DN_IR_IDLE_REFAST_MS   8000   /* the board script lights in the background, possibly late */
 #define DN_IR_IDLE_REFAST_N       2
+#define DN_IR_WAKE_HOOK_MS     1000   /* budget for the "on" hook before ready_at is known */
 
 enum { DNI_NONE = 0, DNI_LED_OFF, DNI_LED_ON, DNI_WAKE_DAY };
 enum { DNI_R_NONE = 0, DNI_R_IDLE, DNI_R_REASSERT, DNI_R_WAKE,
        DNI_R_WAKE_UNSETTLED, DNI_R_HANDBACK };
 enum { DNI_OK = 0, DNI_U_DISABLED, DNI_U_KEEPALIVE, DNI_U_NO_ILLUM,
-       DNI_U_WHITE, DNI_U_HOOK };
+       DNI_U_WHITE, DNI_U_HOOK, DNI_U_SCHEDULE };
 /* what the illuminator hook can do */
 enum { DNI_HOOK_OK = 0, DNI_HOOK_NONE, DNI_HOOK_OLD, DNI_HOOK_WHITE };
 
@@ -27,12 +28,14 @@ typedef struct {
     int     cfg;            /* daynight.ir_idle_off */
     int     linger_s;       /* daynight.ir_idle_linger_s */
     int     enabled;        /* daynight.enabled */
+    int     auto_mode;      /* daynight.mode = auto */
     int     keepalive;      /* hal_fs_keepalive() */
     int     hook;           /* DNI_HOOK_* */
     int     booted;
     int     night;          /* the decided mode is night */
     int64_t mode_since_ms;
     int     busy;           /* probe, verify or enforce cycle in flight */
+    int     no_entry;       /* no fresh lit reading (a kick wake) or entry suspended */
     int     day_rule;       /* a wake may be answered with day from noir */
     int     consumers;      /* hub_image_subs() + hal_image_pinned() */
     int     kicked;         /* a consumer arrived since the last step */
@@ -55,6 +58,7 @@ typedef struct {
 static inline int dni_gate(const dni_in *in)
 {
     if (!in->cfg || !in->enabled) return DNI_U_DISABLED;
+    if (!in->auto_mode) return DNI_U_SCHEDULE;
     if (!in->keepalive) return DNI_U_KEEPALIVE;
     switch (in->hook) {
     case DNI_HOOK_OK:    return DNI_OK;
@@ -98,6 +102,15 @@ static inline void dni_arm_reassert(dni_state *st, int64_t now)
     else st->reassert_at = now + (int64_t)DN_IR_IDLE_REASSERT_S * 1000;
 }
 
+/* the LED went off for idle at dark_at */
+static inline void dni_enter(dni_state *st, int64_t dark_at, int64_t now)
+{
+    st->dark = 1;
+    st->dark_at = dark_at;
+    st->refast_left = DN_IR_IDLE_REFAST_N;
+    dni_arm_reassert(st, now);
+}
+
 /* One decision per tick or kick. DNI_WAKE_DAY leaves the LED off: the caller
  * confirms the LED state and switches to day, or lights it itself. */
 static inline int dni_step(dni_state *st, const dni_in *in, int *why)
@@ -132,12 +145,9 @@ static inline int dni_step(dni_state *st, const dni_in *in, int *why)
         return DNI_NONE;
     }
     if (watched || now < st->watched_until || !in->booted || in->busy ||
-        now - in->mode_since_ms < (int64_t)DN_TRANSITION_S * 1000)
+        in->no_entry || now - in->mode_since_ms < (int64_t)DN_TRANSITION_S * 1000)
         return DNI_NONE;
-    st->dark = 1;
-    st->dark_at = now;
-    st->refast_left = DN_IR_IDLE_REFAST_N;
-    dni_arm_reassert(st, now);
+    dni_enter(st, now, now);
     *why = DNI_R_IDLE;
     return DNI_LED_OFF;
 }
@@ -161,6 +171,7 @@ static inline const char *dni_unavail_str(int r)
     case DNI_U_NO_ILLUM:  return "no_illuminator";
     case DNI_U_WHITE:     return "white_light";
     case DNI_U_HOOK:      return "hook";
+    case DNI_U_SCHEDULE:  return "schedule";
     default:              return "";
     }
 }

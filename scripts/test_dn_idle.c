@@ -19,7 +19,7 @@ static dni_in base(void)
 {
     dni_in in;
     memset(&in, 0, sizeof in);
-    in.cfg = 1; in.linger_s = 60; in.enabled = 1; in.keepalive = 1;
+    in.cfg = 1; in.linger_s = 60; in.enabled = 1; in.auto_mode = 1; in.keepalive = 1;
     in.hook = DNI_HOOK_OK; in.booted = 1; in.night = 1;
     in.mode_since_ms = -100000;
     in.day_gain = 768.0f; in.night_gain = 4096.0f;
@@ -123,6 +123,7 @@ static void t_gates(void)
         { "no illuminator", NULL, DNI_U_NO_ILLUM },
         { "old hook",       NULL, DNI_U_HOOK },
         { "white light",    NULL, DNI_U_WHITE },
+        { "schedule mode",  NULL, DNI_U_SCHEDULE },
     };
     for (unsigned i = 0; i < sizeof g / sizeof g[0]; i++) {
         dni_state st = {0}; dni_in in = base();
@@ -133,6 +134,7 @@ static void t_gates(void)
         case 3: in.hook = DNI_HOOK_NONE; break;
         case 4: in.hook = DNI_HOOK_OLD; break;
         case 5: in.hook = DNI_HOOK_WHITE; break;
+        case 6: in.auto_mode = 0; break;
         }
         CK(dni_gate(&in) == g[i].want, "%s: gate %d", g[i].n, dni_gate(&in));
         int offs = 0, ons = 0;
@@ -142,6 +144,7 @@ static void t_gates(void)
     dni_in in = base();
     CK(dni_gate(&in) == DNI_OK && !strcmp(dni_unavail_str(DNI_OK), ""), "available");
     CK(!strcmp(dni_unavail_str(DNI_U_KEEPALIVE), "keepalive"), "reason string");
+    CK(!strcmp(dni_unavail_str(DNI_U_SCHEDULE), "schedule"), "schedule reason");
 }
 
 static void t_not_while(void)
@@ -154,6 +157,8 @@ static void t_not_while(void)
     CK(step(&st, &in, 0, &why) == DNI_NONE, "not before boot");
     in = base(); in.busy = 1;
     CK(step(&st, &in, 0, &why) == DNI_NONE, "not mid-probe");
+    in = base(); in.no_entry = 1;
+    CK(step(&st, &in, 0, &why) == DNI_NONE, "not on a kick wake / while suspended");
     in = base(); in.mode_since_ms = -(DN_TRANSITION_S * 1000 - 1);
     CK(step(&st, &in, 0, &why) == DNI_NONE, "not inside the dwell");
     in.mode_since_ms = -(DN_TRANSITION_S * 1000);
@@ -284,6 +289,34 @@ static void t_boot_and_restart(void)
     CK(step(&fresh, &r, 18000 + 60000, &why) == DNI_LED_OFF, "re-entry after the linger");
 }
 
+/* a kick wake has no fresh sample: it may wake, never enter */
+static void t_kick_wake(void)
+{
+    int why;
+    dni_state st = {0}; dni_in in = base();
+    CK(step(&st, &in, 0, &why) == DNI_LED_OFF, "dark");
+    in.no_entry = 1; in.kicked = 1;
+    CK(step(&st, &in, 30500, &why) == DNI_LED_ON && why == DNI_R_WAKE, "kick wake lights");
+    in.kicked = 0;
+    CK(step(&st, &in, 200000, &why) == DNI_NONE, "kick wake past the linger: no entry");
+    in.no_entry = 0;
+    CK(step(&st, &in, 200100, &why) == DNI_LED_OFF, "the next tick enters");
+}
+
+/* the boot probe that proved night is the entry: dark since it began */
+static void t_enter_from_boot(void)
+{
+    int why;
+    dni_state st = {0}; dni_in in = base();
+    dni_enter(&st, 2000, 10000);
+    CK(st.dark && st.dark_at == 2000 && st.refast_left == DN_IR_IDLE_REFAST_N - 1,
+       "entered, fast re-asserts armed");
+    CK(st.reassert_at == 10000 + DN_IR_IDLE_REFAST_MS, "first re-assert from the verdict");
+    in.consumers = 1;
+    CK(step(&st, &in, 12000, &why) == DNI_LED_ON && why == DNI_R_WAKE,
+       "noir valid 10 s after the LED went off");
+}
+
 static void t_stopgate_kick(void)
 {
     ms_stopgate g;
@@ -317,6 +350,8 @@ int main(void)
     t_reassert();
     t_switch_while_idle();
     t_boot_and_restart();
+    t_kick_wake();
+    t_enter_from_boot();
     t_stopgate_kick();
     printf("dn_idle: %d checks, %d failed\n", checks, failures);
     return failures ? 1 : 0;
