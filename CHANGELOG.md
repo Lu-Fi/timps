@@ -47,11 +47,19 @@ semantic versioning.
   `ciao`) reports success without rotating; timps tells the stub apart with a
   0x0 `SetChnRotate` probe at start, and in both cases the stream starts
   unrotated with a warning naming the OpenIMP to upgrade.
-- **`daynight.ir_idle_off` / `daynight.ir_idle_linger_s`** (off / 60 s, live;
-  Idle-Dark: illuminator off at night while nothing needs a picture). Plumbing
-  only for now: the keys, consumer accounting and the `daynight.ir_idle`
-  status in `GET /control`/`/events` (plus `caps.daynight`) exist, but
-  nothing is switched until the day/night automaton is wired up.
+- **Idle-Dark: `daynight.ir_idle_off` / `daynight.ir_idle_linger_s`** (off /
+  60 s, live). At night, once no stream, snapshot, recording or motion
+  detection has needed a picture for the linger, only the IR illuminator goes
+  off (IR-cut and ISP stay in night) and the AE keeps reading the scene
+  without it. The next consumer gets the LED at once, or a direct switch to
+  day when that reading is already below `day_gain` (and the hook confirms
+  the LED is off); `/snapshot.jpg` and timelapse grabs after such a wake wait
+  for the AE (up to 5 s). Off by default (the 850 nm glow going out shows
+  that nobody watches). Needs the FrameSource keepalive (auto on OpenIMP
+  T23/T41) and the firmware's `timps-irprobe` with the new `idle`/`state`
+  verbs; without them it reports why in `daynight.ir_idle.reason` and does
+  nothing. An AE that does not move without a consumer is detected and the
+  LED handed back.
 
 ### Changed
 

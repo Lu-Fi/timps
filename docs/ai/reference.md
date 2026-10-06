@@ -998,14 +998,19 @@ nothing is re-switched. `isp_desync = 1` therefore only stays set in
 reported but not adopted.
 
 **Idle-Dark (`daynight.ir_idle_off`, since the next release, off by default):**
-planned to switch only the IR illuminator off at night while no stream,
-snapshot, recording or motion detection needs a picture, and to decide at the
-next consumer from what the AE measured meanwhile. **In the next release only
-the keys and the status exist; nothing is switched yet.** The status is
-`daynight.ir_idle` in `GET /control` and `/events`:
+switches only the IR illuminator off at night while no stream, snapshot,
+recording or motion detection needs a picture (after
+`daynight.ir_idle_linger_s`, default 60 s); IR-cut and ISP stay in night. The
+AE keeps measuring under the FrameSource keepalive, so the first consumer is
+answered at once: LED on (night) or, when the scene without the LED already
+reads below `day_gain`, a switch to day. Snapshots right after such a wake
+wait up to ~3.5 s for the AE (max 5 s); streams start dark or settling for a
+few seconds. Off: POST `{"daynight":{"ir_idle_off":0}}` (LED back on at once).
+The status is `daynight.ir_idle` in `GET /control` and `/events`:
 `{cfg, available, reason, dark, watched, linger_left_s}`; `reason` is
-`disabled`, `keepalive` (needs `general.fs_keepalive` on, auto only on OpenIMP
-T23/T41), `no_illuminator`, `white_light`, `hook` or empty.
+`disabled`, `schedule`, `keepalive` (needs `general.fs_keepalive` on, auto
+only on OpenIMP T23/T41), `no_illuminator`, `white_light`, `hook` (the
+firmware's `timps-irprobe` lacks the `idle` verb) or empty.
 
 ---
 
@@ -1037,6 +1042,7 @@ Distinguish **compiled out** from **misconfigured**:
 | `/webrtc/whep` answers 404 | Not built | See §8 |
 | `/webrtc/whep` answers 503 | `webrtc.enabled = 0`, or all 4 session slots busy | — |
 | `/events` answers 404 | `events.enabled = 0` or `USE_CONTROL=0` | — |
+| IR LED off at night until someone connects; first seconds of a stream dark, `/snapshot.jpg` slow | `daynight.ir_idle_off = 1` (Idle-Dark), working as designed | `daynight.ir_idle.dark` in `GET /control`; turn it off with POST `{"daynight":{"ir_idle_off":0}}` (LED back on at once) |
 | Setting is accepted then reverts after reboot | `not_persisted > 0` in the POST reply (more than 48 changed keys), or a file-only key | Split the request; hand-edit `/etc/timps.conf` for file-only keys |
 | Log: `IMP_ISP_Tuning_Set… not in this libimp - image.… unavailable (persisted only)` | An OpenIMP build (`USE_OPENIMP`) on a vendor libimp, see below | Flash a consistent image |
 | Daemon gone right after start, log: `[LIBIMP] libimp mismatch: …` or `libimp lacks …`, exit **78**/**79** | `timpsd` and `libimp.so` come from different stacks, see below | Flash a consistent image |

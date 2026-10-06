@@ -923,8 +923,8 @@ tick) **except**:
 | `daynight.interval_ms` | int | `2000` | 100..60000 | live | Sample interval. The exposure index needs a `/proc` scrape per tick (integration time has no IMP API). |
 | `daynight.diagnose_thresholds` | int | `0` | 0..1 | live | When probes keep failing and the best day-pipeline reading of that excursion was still clear of `day_gain`, warn that the threshold is unreachable for this scene and name the value to raise it above. It needs **`DN_DIAG_FAILS` = 3 consecutive failed probes** before it fires, and then warns **once per daemon session** (`diag_warned` in `src/daynight.c`) — not once per probe. Off by default anyway, because on a camera that genuinely never sees day it is a WARN nobody asked for. |
 | `daynight.history_s` | int | `0` | 0..172800 (48 h) | live | In-RAM decision-history ring for the WebUI tuning graph, in seconds of retention. `0` = off; nothing is allocated until a sample is pushed. One 16-byte sample per period, so the 48 h ceiling costs ~270 KiB. |
-| `daynight.ir_idle_off` | int | `0` | 0..1 | live | **since the next release.** Idle-Dark: at night, once no picture consumer (video/JPEG hub subscriber: RTSP, WebRTC, fMP4, MJPEG, SRT, snapshot, timelapse, recorder; plus the motion FrameSource pin and a set `jpeg.snapshot_path`) has been present for `ir_idle_linger_s`, switch only the IR illuminator off (IR-cut and ISP stay in night) and decide at the next consumer from the AE reading taken meanwhile. **Only effective with the FrameSource keepalive** (`general.fs_keepalive`, auto = on for OpenIMP T23/T41); otherwise one WARN and `daynight.ir_idle.reason = "keepalive"`. **In this release the key and the status exist, but nothing is switched yet** (the decision is not wired into the automaton). Status: `daynight.ir_idle` in `GET /control` / `/events`. |
-| `daynight.ir_idle_linger_s` | int | `60` | 0..3600 | live | **since the next release.** How long after the last picture consumer the illuminator may go off; a consumer inside it is not an event (covers 10 s snapshot polling, DESCRIBE→PLAY, the 60 s timelapse). |
+| `daynight.ir_idle_off` | int | `0` | 0..1 | live | **since the next release.** Idle-Dark: at night, once no picture consumer (video/JPEG hub subscriber: RTSP, WebRTC, fMP4, MJPEG, SRT, snapshot, timelapse, recorder; plus the motion FrameSource pin and a set `jpeg.snapshot_path`) has been present for `ir_idle_linger_s`, switch only the IR illuminator off (IR-cut and ISP stay in night) and decide at the next consumer from the AE reading taken meanwhile. **Only effective with the FrameSource keepalive** (`general.fs_keepalive`, auto = on for OpenIMP T23/T41); otherwise one WARN and `daynight.ir_idle.reason = "keepalive"`. Also needs auto mode (`daynight.mode = auto`), a working `daynight.irprobe_cmd` and a `timps-irprobe` with the `idle`/`state` verbs. What happens: the LED goes off for an 8 s ratio measurement (like the silent probe, but it stays off), then the scene is read without it; the first consumer gets the LED within one hook call (a kick, not the next tick) or, if the scene without the LED already reads below `day_gain` and the hook's `state` confirms the LED is off, a direct switch to day. JPEG grabs (`/snapshot.jpg`, timelapse) right after that wake are held up to ~3.5 s (max 5 s) for the AE; streams are not held, their first 1-4 s are dark or settling. Setting it to 0 by POST, `daynight.enabled = 0`, `mode = schedule` and a stop give the LED back. Status: `daynight.ir_idle` in `GET /control` / `/events`. |
+| `daynight.ir_idle_linger_s` | int | `60` | 0..3600 | live | **since the next release.** How long after the last picture consumer the illuminator may go off; a consumer inside it is not an event (covers 10 s snapshot polling, DESCRIBE→PLAY, the 60 s timelapse). A poll slower than the linger costs one LED on/off pair and one held snapshot per poll. |
 | `daynight.switch_cmd` | string[64] | `daynight` | — | **file-only**, `F_NOGET` | Board script, run as `<cmd> day\|night` via `vfork()`+`execlp()` (no shell; `fork()` on v1.9.19). **Unlike `motion.on_motion`, this one *does* search `PATH`** — `execlp`, not `execve` — which is why the bare default `daynight` works. Same for `daynight.irprobe_cmd`. |
 | `daynight.isp_path` | string[128] | `/proc/jz/isp/isp-m0` | — | **file-only**, `F_NOGET` | ISP exposure proc file that is scraped. |
 | `daynight.irprobe_cmd` | string[64] | `timps-irprobe` | — | **file-only**, `F_NOGET` | Run as `<cmd> on\|off`. Empty disables the **silent** probe entirely and every night→day question falls back to the audible IR-cut probe. |
@@ -1027,15 +1027,38 @@ Their effective values are still readable in the `daynight` status object of
 * `{"daynight":{"probe":1}}` over `/control` requests one silent probe on the
   next tick; it is **rejected** if `irprobe_cmd` is empty, so "nothing happened"
   is distinguishable from "the probe ran and found nothing".
-* `daynight.ir_idle_off = 1` (Idle-Dark, **since the next release**): status
-  only so far — the illuminator is not switched in this release. Once it acts,
-  an 850 nm glow that goes out tells an onlooker that nobody watches or
-  records, which is why it is off by default; cameras with a permanent
-  consumer (Frigate/NVR, `record.enabled`, `motion.enabled`,
-  `jpeg.snapshot_path`) never go idle at all. `reason` in
-  `daynight.ir_idle`: `disabled` (key 0 or `daynight.enabled = 0`),
-  `keepalive`, `no_illuminator` (no `irprobe_cmd` or the illuminator was
-  retired after failures), `white_light`, `hook` (board hook too old).
+* `daynight.ir_idle_off = 1` (Idle-Dark, **since the next release**, off by
+  default): at night with no picture consumer for `ir_idle_linger_s` the IR
+  LED is **off**; the IR-cut and the ISP stay in night. What the user sees:
+  the LED (850 nm glow) goes out a minute after the last viewer, a new viewer
+  gets a dark or overexposed first 1-4 s of video while the AE settles on the
+  LED, and `/snapshot.jpg` answers up to ~3.5 s later than usual (it waits for
+  the AE; capped at 5 s). The glow going out also tells an onlooker that
+  nobody watches or records, which is why it is off by default.
+  Pitfalls:
+  - Cameras with a permanent consumer (Frigate/NVR, `record.enabled`,
+    `motion.enabled`, `jpeg.snapshot_path`) never go idle: no effect.
+  - Needs the keepalive (`general.fs_keepalive`; auto only on OpenIMP
+    T23/T41): without it the AE does not run while idle. Untested elsewhere.
+  - If the exposure does not move at all in the 8 s after the LED went off
+    (an AE that stops without a consumer), timps logs a WARN, lights the LED
+    again and does not try again until the next day/night switch.
+  - Needs `timps-irprobe` with the `idle` and `state` verbs (firmware from
+    2026-10 on). An older hook answers `idle` with exit 1/2: one WARN,
+    `reason = "hook"`, the LED is left alone. A white light enabled in
+    `daynight.controls` makes the hook refuse (exit 3): `reason =
+    "white_light"`.
+  - While idle-dark, day comes from the reading without the LED (below
+    `day_gain` for `probe_confirm_s`, with a learnt `noir_cost` veto after one
+    wrong day), not from silent probes; a heartbeat probe in the dark is the
+    audible one.
+  - To turn it off: POST `{"daynight":{"ir_idle_off":0}}`; the LED comes back
+    on at once.
+  `reason` in `daynight.ir_idle`: `disabled` (key 0 or `daynight.enabled =
+  0`), `schedule` (`daynight.mode = schedule`), `keepalive`, `no_illuminator`
+  (no `irprobe_cmd` or the illuminator was retired after failures),
+  `white_light`, `hook` (hook without `idle`, nothing to switch, or repeated
+  failures).
 ---
 
 ## 15. `rtsp.*`

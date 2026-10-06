@@ -1,10 +1,11 @@
 # Idle-Dark (`daynight.ir_idle_off`) - 2026-10
 
-**Status:** stage 1 of 3 landed (plumbing, config/status, pure logic). **No
-behaviour change yet:** nothing switches the illuminator. Design: scratch
-document `dn-idle-ir-design.md` (recommendation "Idle-Dark", commit plan
-C0..C9). C0 (`timps-irprobe` verbs `idle`/`state`, `daynight.controls.*`) is in
-the firmware tree (`cfa79f9f4`, `scripts/test_irprobe.sh`).
+**Status:** stage 2 of 3 landed (C4-C7): Idle-Dark acts when
+`daynight.ir_idle_off = 1` (default 0). Stage 3 (C8, WebUI) is open. Design:
+scratch document `dn-idle-ir-design.md` (recommendation "Idle-Dark", commit
+plan C0..C9). C0 is in the firmware tree: `cfa79f9f4` (every illuminator
+`daynight.controls` enables) and `67fbc42e9` (verbs `idle`/`state`, exit 3/4),
+tested by `scripts/test_irprobe.sh`.
 
 The idea in one paragraph: at night, once nothing has needed a picture for
 `daynight.ir_idle_linger_s`, switch only the IR illuminator off (IR-cut and ISP
@@ -117,25 +118,150 @@ Behaviour of `dni_step()` (what C4 will call), tested in `test_dn_idle.c`:
 * Re-assert after a `switch_cmd night` while idle: re-entry after the 5 s
   dwell, then +8/+16 s, instead of the design's +2/+8/+16 s.
 
-## Open for stage 2 (C4-C7)
+## Idle-Dark stage 2 status
 
-* **C4:** call `dni_step()` from the automaton; idle entry as a silent probe
-  without relight through the `idle` verb (exit 1 → `DNI_HOOK_OLD`, 3 →
-  `DNI_HOOK_WHITE`); wake: arm `g_dni_armed`, switch `dn_sleep()` to
-  `ms_stopgate_wait_kick()` and run only the idle part (no sample) on a kick
-  wake; LED on via `on`, reset `s/stable_n/ref`, trend reseed, heartbeat
-  credit; hand-back on disable, schedule mode change, stop and POST; LED
-  re-assert; the freshness input (gain or integration time moved since LED
-  off); `dni_note_switch()` after every `switch_cmd`.
-* **C5:** noir day rule while idle (`s < day_gain` for `probe_confirm_s`) and
-  on wake (`day_rule = 1` in auto mode), `state` cross-check before a day
-  verdict, `noir_cost` learning and veto, probes escalate to audible while
-  dark.
-* **C6:** `hub_grab_jpeg()` warm-up hold until `ready_at`
-  (`daynight_image_ready_at_us()`), hub test; optional IDR at `ready_at`.
-* **C7:** dn-replay keys (`consumers` → `TIMPS_SIM_WATCH`, `switch_drives_led`,
-  irprobe stub `idle`/`state`, `ir_hook_rc`), assertions and scenarios 39-54.
+Commits (local, not pushed):
 
-Stage 3 (C8): WebUI photosensing switch/linger field/status chip
-(`config-photosensing.html`/`.js` in the firmware tree; `timps.webui.json`
-needs nothing), wiki Day-Night section, `feature-list-de.md`.
+| Repo | Commit | Design | What |
+| --- | --- | --- | --- |
+| firmware `ciao` | `67fbc42e9` | C0 | `timps-irprobe idle` (off, no watchdog, voids older ones; exit 3 with white light in the set, 4 when a switch failed and was rolled back), `state` (prints on/off, unreadable = on) |
+| timps | `c0e929f` | C0 test | `scripts/test_irprobe.sh`: 98 checks (sh + busybox sh) |
+| timps | `d0fc082` | C4 | entry, wake, hand-back, re-assert, freshness check, kickable sleep |
+| timps | `4ba51bd` | C5 | noir day rule (idle and at a wake), `state` check, `noir_cost` |
+| timps | `5e6b619` | C6 | `hub_grab_jpeg()` warm-up hold + `make test-hub-hold` |
+| timps | `ef3c1a8` | C7 | dn-replay keys/assertions, sim fixture kick, scenarios 39-54 |
+
+### Behaviour per path
+
+* **Entry** (`dni_step` → `DNI_LED_OFF`, reason `idle`): night, auto mode,
+  booted, no probe/verify/enforce in flight, 5 s dwell, linger over, a fresh
+  lit reading on this tick. timps arms the kick, runs `<irprobe_cmd> idle`
+  and treats the next 8 s as a silent probe whose verdict does **not**
+  relight: `r >= 2` night (the reference becomes the noir level, heartbeat
+  credit), `r <= 2` with reserve and no `filter_cost`/`noir_cost` veto → day
+  (one click, nobody watches), anything inconclusive stays night and dark
+  (no audible escalation). Exit 1/2 of `idle` → `reason = "hook"`, 3 →
+  `"white_light"`, other failures twice → `"hook"`; reset on re-enable or a
+  0→1 edge of the key.
+* **Boot**: an unwatched boot whose silent measurement proves night calls
+  `idle` instead of `on` (that also voids the probe's 60 s watchdog) and is
+  the entry: LED off from the boot verdict.
+* **While dark**: re-assert `idle` at +8/+16 s and every 600 s. Silent probes
+  are impossible (they would divide noir by noir): heartbeat and operator
+  probes go audible, with the noir level never used as the revert reference.
+  With C5, paths C/T are quiet while the noir reading is fresh.
+* **Wake** (kick from `act_trampoline` → gate kick → idle pass without a
+  sample, or the level at a tick): `on` at once, `hub_set_image_ready_at(now +
+  3500 ms)` (the trampoline already set a provisional `+4500 ms` inside
+  `hub_subscribe`), an in-flight entry verdict is dropped, `s`/`stable_n`/
+  `ref`/trend/sustained-min reset, reference re-anchored after 30 s, heartbeat
+  credit when the noir reading was valid and dark (`> night_gain` or railed).
+* **Hand-back**: gate closes while dark (POST `ir_idle_off = 0`,
+  `daynight.enabled = 0`, `mode = schedule` - new reason `schedule`, keepalive
+  gone, hook unusable) → `on`; stop → `on`; a failing re-assert → `on`; every
+  `switch_cmd` clears `dark` (`dni_note_switch` in `dn_switch`).
+* **Freshness**: the raw gain/exposure at LED-off is remembered; the AE counts
+  as running once either changes. An entry verdict with an unmoved AE (and an
+  unclipped lit reading) is refused: WARN once, LED on, no entry until the
+  next switch. The noir day rule and the wake's day verdict need it too.
+* **Noir day rule** (C5): fresh noir `< day_gain` held `probe_confirm_s`, not
+  vetoed (`noir_cost > 0 && s * noir_cost > night_gain`), and `state` says
+  off → `switch day ("idle ambient …")`. `state` on → INFO, re-assert,
+  re-measure. Path A undoing such a day within `day_confirm_s + 18 s` learns
+  `noir_cost = day / noir`. At a wake (`day_rule = 1`): valid noir below
+  `day_gain`, not vetoed, `state` off → switch to day in an immediate full
+  tick, LED stays off; otherwise LED on. A wake-day the next tick did not
+  switch lights the LED.
+* **Hold** (C6): `hub_grab_jpeg()` reads the ready instant after its
+  subscribe and discards JPEGs until then (deadline extended by the hold,
+  capped at `HUB_IMAGE_HOLD_MAX_MS` = 5000). RTSP/WebRTC/MJPEG/fMP4/DESCRIBE
+  are never held. No IDR at `ready_at` (not trivial: the thread ticks every
+  2 s).
+
+### Tests run for stage 2
+
+* `make test-dn-idle` 90 checks, `make test-hub-hold` 14, every other host
+  test (`test-config`, `-fs-ref`, `-fs-rot`, `-daynight-read`,
+  `-daynight-sun`, `-libimp-check`, `-clients`, `-fmp4`, `-fanqueue`,
+  `-hub-pool`, `-hub-idr`, `-timelapse-prune`, `-record-ring`, `-stun`,
+  `-srtp`, `-auth`), `scripts/test_irprobe.sh` 98,
+  `scripts/test_s95timps_preflight.sh` 16: pass.
+* dn-replay corpus, sims at scale 30 and 60, each scenario with its own:
+  **54/54** (38 old + 16 new). The 38 old ones make the same switches and
+  silent probes as at stage 1 (compared per scenario, timing masked).
+* Mutation checks: wake without `on` → 7 scenarios fail; no freshness check →
+  47 fails (false day at t=39 s, 4 clicks); no kick (tick-only wake) → 6
+  fail on `led_on_within_s`; hold ignored → `test-hub-hold` 4 checks fail.
+* Sim by hand (`http.enabled` in a scenario, POST on loopback):
+  `ir_idle_off` 1→0 relights at once (`reason disabled`), 0→1 goes dark
+  again, `mode = schedule` relights (`reason schedule`), `enabled = 0`
+  relights.
+
+### Scenarios 39-54
+
+39 night first consumer + external LED (state check), 40 unwatched dawn with
+a halogen false day (`noir_cost` learnt, then a real dawn, consumer in day),
+41 twilight band consumer + wake-day, 42/43 snapshot polling 10 s / 120 s,
+44 pinned consumer, 45 unwatched boot (base 31), 46 wake 2-4 s after LED off,
+47 frozen AE, 48 nothing switchable, 49 old hook, 50 white light, 51
+consumer through dusk, 52 SIGKILL restart with the LED off, 53 linger
+boundary, 54 keepalive off. Harness: `consumers` (`TIMPS_SIM_WATCH`; the sim
+fixture kicks like a subscribe), `switch_drives_led`
+(+`switch_led_delay_s`), `ir_hook_rc`, `led_external`, `restart_at`;
+assertions `ir_state_at`, `max_led_toggles`, `led_on_within_s`,
+`max_led_on_unwatched_s` (on `led.log`, written by both stubs).
+
+### Deviations from the design (stage 2)
+
+* Probes in the dark escalate to audible already in C4 (design: C5): without
+  it C4 alone would run silent probes on noir/noir (r = 1, false day).
+* The entry verdict never escalates to the audible probe (design: unclear or
+  unknown reserve → audible, rationed): every re-entry after a switch would
+  repeat it, i.e. a click pair every `probe_min_gap_s` on cameras without
+  ceilings. Undecided stays night and dark; the noir rule and the heartbeat
+  decide later.
+* C5 also quiets paths C/T while the noir reading is fresh (not in the
+  design): otherwise every unwatched dawn costs audible probe pairs before
+  the noir rule fires, which the design's unwatched-dawn case (exactly one switch)
+  excludes.
+* The entry's ratio verdict also honours `noir_cost` (its dark reading IS a
+  noir reading); one false day then teaches both rules.
+* Idle-Dark only in auto mode; `mode = schedule` hands back (new reason
+  `schedule`). The design allowed LED-only idle in schedule mode; the
+  schedule branch abandons every silent probe each tick, so it would need a
+  second entry path for a mode without measurement.
+* `idle` exit 1 counts as "hook" (old hook: the exec'd `light` rejects the
+  verb with 1; a board without lights answers 1 as well), not
+  `no_illuminator`; `no_illuminator` stays for an empty `irprobe_cmd` or a
+  retired illuminator.
+* No IDR request at `ready_at` (optional in the design).
+* Wake/entry/re-assert are LOGD; WARN only for unusable hook, frozen AE and
+  missing keepalive.
+
+### Risks
+
+* Untested on hardware: AE settle after "IR on", hook latency, dusk/dawn
+  behaviour of noir vs the day optics, dual-IR boards.
+* A frozen AE is detected only at entry; one that stops later during a long
+  idle keeps an old noir reading (the day rule then never fires, the
+  heartbeat still does).
+* At 850 nm the LED going out shows that nobody watches or records.
+* Heartbeat probes in the dark are audible (4-12 h).
+* Snapshot latency +3.5 s (max 5 s) after a wake; HA's default timeout is
+  10 s.
+
+### Open for stage 3 (C8) and later
+
+* WebUI (`config-photosensing.html`/`.js` in the firmware tree): switch
+  `daynight.ir_idle_off`, field `daynight.ir_idle_linger_s` (0..3600), status
+  chip from `daynight.ir_idle` (`dark` → "IR off (idle)", `available = 0` →
+  "unavailable: <reason>" with `disabled`, `schedule`, `keepalive`,
+  `no_illuminator`, `white_light`, `hook`), hide the switch when
+  `caps.daynight.ir_idle = 0`, warning text about the 850 nm tell. Wiki
+  Day-Night section, `feature-list-de.md`.
+* On-camera measurements before the default could ever change: dusk and dawn
+  pairs (noir vs day optics, how often `noir_cost` has to learn), AE settle
+  after "IR on" with and without consumer (sets `DN_IR_WAKE_SETTLE_MS`), hook
+  latency of `timps-irprobe on/idle/state`, first-frame luma after a wake
+  (hold length, IDR use), dual-IR boards (both LEDs off with `idle`), real
+  poll cadences of HA/agent-adapter (linger default), LED power.

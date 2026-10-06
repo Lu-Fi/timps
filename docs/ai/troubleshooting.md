@@ -1228,6 +1228,31 @@ platform-gated: `hue`, `ae_compensation`, `max_again`/`max_dgain`,
 
 ---
 
+### 3.9 IR LED off at night until someone connects (Idle-Dark)
+
+**Since the next release**, only with `daynight.ir_idle_off = 1` (off by
+default). Not a fault: once nothing has needed a picture for
+`daynight.ir_idle_linger_s` (60 s), timps switches only the IR LED off and
+keeps the camera in night. `GET /control` shows `daynight.ir_idle.dark = 1`.
+A new viewer gets the LED at once; the first 1-4 s of video are dark or
+settling, and `/snapshot.jpg`/timelapse wait up to ~3.5 s (max 5 s) for the
+AE. Turn it off with POST `{"daynight":{"ir_idle_off":0}}` - the LED comes
+back on immediately.
+
+`daynight.ir_idle.reason` when it does **not** act: `disabled`, `schedule`,
+`keepalive` (no FrameSource keepalive; auto only on OpenIMP T23/T41),
+`no_illuminator`, `white_light`, `hook`.
+
+| Log line (`src/daynight.c`) | Level | Meaning / fix |
+| --- | --- | --- |
+| `daynight.ir_idle_off=1 needs the framesource keepalive (general.fs_keepalive) …` | W | Nothing is measured while idle on this build/SoC; the feature stays off. |
+| `'<cmd> idle' failed (rc=…) - the hook has no 'idle' verb (update timps-irprobe) or nothing to switch; Idle-Dark stays off` | W | Firmware's `timps-irprobe` predates Idle-Dark, or the board has no switchable IR LED. Update the firmware. |
+| `'<cmd> idle' refused (white light is among the illuminators daynight.controls switches) - Idle-Dark stays off` | W | `daynight.controls.white` is on: the white light would light every reading. |
+| `idle: the exposure did not move in 8s with the illuminator off … illuminator back on until the next switch` | W | The AE does not run without a consumer here (keepalive ineffective on this SoC/stack). Idle-Dark pauses until the next day/night switch; leave it off on this camera. |
+| `idle: the illuminator is lit although timps switched it off - not judging day, re-asserting` | I | Someone (WebUI button, cron `daynight night`) lit the LED while idle; timps turns it off again and does not call day on that reading. |
+| `switching to day (idle ambient …)` | I | Day read off the scene without the LED (below `day_gain`), no probe. |
+| `day mode reads …x the idle-dark level here …` | I | One such day was wrong (IR-rich light); the learnt factor vetoes the next one. |
+
 ## 4. Streaming per protocol
 
 Shared facts:
