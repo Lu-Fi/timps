@@ -38,4 +38,27 @@ static inline int fs_rot_check(const fs_rot_env *e, int chn, int w, int h, int f
     return FS_ROT_OK;
 }
 
+/* T1x SetChnRotate is OpenIMP-only and older OpenIMPs stub it: 9cab219
+ * returns 0 for anything without rotating, 6857610..636b6ac return -1 for
+ * 90/270, 6b7f5ae rotates and validates the geometry. A 0x0 probe first
+ * tells the success-returning stub apart; a real implementation refuses it. */
+typedef int (*fs_rot_set_fn)(int chn, int rot, int w, int h);
+
+enum {
+    FS_ROT_SET_OK = 0,
+    FS_ROT_SET_MISSING,
+    FS_ROT_SET_STUB,
+    FS_ROT_SET_REFUSED,
+};
+
+static inline int fs_rot_set(fs_rot_set_fn set, int chn, int rot, int w, int h)
+{
+    if (!set) return FS_ROT_SET_MISSING;
+    if (set(chn, rot, 0, 0) == 0) {
+        set(chn, 0, w, h);
+        return FS_ROT_SET_STUB;
+    }
+    return set(chn, rot, w, h) == 0 ? FS_ROT_SET_OK : FS_ROT_SET_REFUSED;
+}
+
 #endif

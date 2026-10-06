@@ -1798,13 +1798,11 @@ static int isp_init(void)
 #include "fs_rot_env.h"
 #if defined(PLATFORM_T31)
 static const fs_rot_env g_fs_rot_env = FS_ROT_ENV_T31;
-#define FS_SET_ROTATE(c,r,w,h) IMP_FrameSource_SetChnRotate((c),(r),(w),(h))
 #else
 static const fs_rot_env g_fs_rot_env = FS_ROT_ENV_T1X;
 /* Not in the vendor T1x headers; weak so a libimp without it refuses. */
 extern int ms_fs_set_rotate(int chn, int rot, int w, int h)
     __asm__("IMP_FrameSource_SetChnRotate") __attribute__((weak));
-#define FS_SET_ROTATE(c,r,w,h) (ms_fs_set_rotate ? ms_fs_set_rotate((c),(r),(w),(h)) : -1)
 #endif
 /* fs_create() return code: not success and not a hard failure, but "rotation
  * refused/failed for THIS stream - caller should bring it up UNROTATED". Kept
@@ -1981,11 +1979,32 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
          * CreateChn, so no IMP channel exists yet on this path: refuse the
          * rotation for THIS stream and let the caller bring it up UNROTATED,
          * leaving every other stream's bring-up untouched. */
-        if (FS_SET_ROTATE(chn, r90, v->width, v->height) < 0){
+#if defined(PLATFORM_T31)
+        if (IMP_FrameSource_SetChnRotate(chn, r90, v->width, v->height) < 0){
             LOGW(MOD,"video%d: FS-rotate enable (SetChnRotate) failed - disabling "
                      "rotation for this stream, bringing it up UNROTATED", chn);
             return FS_ROT_FALLBACK;
         }
+#else
+        switch (fs_rot_set(ms_fs_set_rotate, chn, r90, v->width, v->height)){
+        case FS_ROT_SET_MISSING:
+            LOGW(MOD,"video%d: libimp has no IMP_FrameSource_SetChnRotate - stream "
+                     "will run UNROTATED (90/270 needs OpenIMP with T1x rotation, "
+                     "6b7f5ae or later)", chn);
+            return FS_ROT_FALLBACK;
+        case FS_ROT_SET_STUB:
+            LOGW(MOD,"video%d: libimp's SetChnRotate accepted a 0x0 picture, so it "
+                     "cannot rotate (OpenIMP stub, e.g. 9cab219) - stream will run "
+                     "UNROTATED; upgrade OpenIMP to one with T1x rotation "
+                     "(6b7f5ae or later)", chn);
+            return FS_ROT_FALLBACK;
+        case FS_ROT_SET_REFUSED:
+            LOGW(MOD,"video%d: SetChnRotate refused %dx%d - stream will run "
+                     "UNROTATED (an OpenIMP without T1x rotation refuses every "
+                     "90/270; it needs 6b7f5ae or later)", chn, v->width, v->height);
+            return FS_ROT_FALLBACK;
+        }
+#endif
         /* CRUCIAL (T31 OSD-on-rotation fix, see docs/T31-OSD-rotation-handoff.md):
          * the whole FS chnAttr stays at the PRE-rotation (landscape) geometry -
          * scaler (line ~444) AND picWidth/picHeight. Only the ENCODER is
