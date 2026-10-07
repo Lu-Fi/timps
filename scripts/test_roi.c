@@ -153,7 +153,7 @@ int main(void)
        cap_tier_name(ROI_TIER), cap_tier_name(RT_EXPECT_ROI));
     CK(FCROP_TIER == RT_EXPECT_FCROP, "FCROP_TIER %s, want %s",
        cap_tier_name(FCROP_TIER), cap_tier_name(RT_EXPECT_FCROP));
-    CK(FCROP_LIVE == (RT_EXPECT_FCROP != CAP_TIER_UNSUPPORTED), "FCROP_LIVE %d", FCROP_LIVE);
+    CK(FCROP_LIVE == RT_EXPECT_FLIVE, "FCROP_LIVE %d, want %d", FCROP_LIVE, RT_EXPECT_FLIVE);
     if (failures) printf("test_roi %-7s FAILED\n", RT_LABEL);
 #else
     printf("test_roi: %d/%d checks passed\n", checks - failures, checks);

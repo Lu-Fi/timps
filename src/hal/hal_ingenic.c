@@ -1132,7 +1132,7 @@ static void roi_apply(vchan *vc, int live)
                  "regions ignored", si, roi_state_name(st));
         else
             LOGI(MOD,"roi%d: %d region(s) on encoder chn%d%s", si, on, vc->chn,
-                 ROI_TIER == CAP_TIER_EXPERIMENTAL ?
+                 hal_roi_tier() == CAP_TIER_EXPERIMENTAL ?
                  " (experimental on this SoC: may have no effect)" : "");
         g_roi_said |= 1u << si;
     }
@@ -1148,9 +1148,15 @@ static void roi_apply(vchan *vc, int live)
 int hal_roi_tier(void)
 {
 #if ROI_TIER != CAP_TIER_UNSUPPORTED
-    if (ms_enc_set_roi) return ROI_TIER;
+    if (!ms_enc_set_roi) return CAP_TIER_UNSUPPORTED;
+#if defined(PLATFORM_T21) && defined(USE_OPENIMP)
+    const char *e = getenv("OPENIMP_T21_ROI");
+    if (e && !strcmp(e, "0")) return CAP_TIER_EXPERIMENTAL;
 #endif
+    return ROI_TIER;
+#else
     return CAP_TIER_UNSUPPORTED;
+#endif
 }
 
 const char *hal_roi_state(int si)
@@ -1174,6 +1180,7 @@ _Static_assert(sizeof(IMPISPFrontCrop) == sizeof(ms_fcrop_api) &&
                "IMPISPFrontCrop differs from ms_fcrop_api");
 #endif
 static int g_fcrop_set;              /* a window of ours is in the ISP */
+static ms_fcrop_api g_fcrop_rej;     /* last -EINVAL window, warned once */
 
 /* caller holds g_isp_lock */
 static void fcrop_apply(void)
@@ -1204,17 +1211,26 @@ static void fcrop_apply(void)
         g_fcrop_state = FC_REJECTED;
         return;
     }
+    errno = 0;
     int rc = ms_isp_set_fcrop(&a);
     if (rc) {
-        LOGW(MOD,"image.fcrop: SetFrontCrop left %u top %u %ux%u refused (rc=%d): no "
-             "stream can show that window", a.left, a.top, a.width, a.height, rc);
-        g_fcrop_state = FC_FAILED;
+        /* -EINVAL: no stream can show the window (T23: below the ch0 size) */
+        int inval = rc == -EINVAL || (rc == -1 && errno == EINVAL);
+        if (!inval || a.left != g_fcrop_rej.left || a.top != g_fcrop_rej.top ||
+            a.width != g_fcrop_rej.width || a.height != g_fcrop_rej.height)
+            LOGW(MOD,"image.fcrop: SetFrontCrop left %u top %u %ux%u refused (rc=%d): no "
+                 "stream can show that window", a.left, a.top, a.width, a.height, rc);
+        if (inval) g_fcrop_rej = a; else memset(&g_fcrop_rej, 0, sizeof a);
+        g_fcrop_state = inval ? FC_REJECTED : FC_FAILED;
         return;
     }
+    memset(&g_fcrop_rej, 0, sizeof g_fcrop_rej);
     g_fcrop_set = 1;
     g_fcrop_state = FC_ON;
 #if defined(PLATFORM_T20)
     const char *note = " - T20 shows it on downscaled streams only";
+#elif defined(PLATFORM_T23)
+    const char *note = " - experimental, needs open-tx-isp 3cf9bdac or newer";
 #else
     const char *note = FCROP_TIER == CAP_TIER_EXPERIMENTAL ? " - experimental on this SoC" : "";
 #endif
