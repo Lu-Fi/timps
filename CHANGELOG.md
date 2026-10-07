@@ -16,16 +16,24 @@ semantic versioning.
   delta -26..25). H.265 and rotated streams ignore their regions: a file value
   logs one WARN at start, a POST is accepted and persisted but changes nothing
   and logs nothing (`caps.roi.streams` shows the stream state).
-  Device-tested only on T20 with OpenIMP (QP51 block visible, QP15 clean,
-  bitrate effect not measured); T10, T20 vendor, T21 (no effect seen) and T23
-  are experimental; T30, T31, T40, T41 and C100 refuse the keys.
+  Device-tested by the OpenIMP maintainer (not by timps) on T10, T20 and T21
+  with OpenIMP (T10: QP51 -25 % bitrate; T20: QP51 block visible, QP15 clean;
+  T21: on by default, libimp env `OPENIMP_T21_ROI=0` turns it off and timps
+  reports experimental); vendor T10/T20/T21 are experimental (T21: no effect
+  seen). T23 refuses the keys (the vendor encoder only stores the region), T31
+  too (OpenIMP's `SetChnRoiAttr`, not wired yet), as do T30, T40, T41 and C100.
 - **ISP FrontCrop: `image.fcrop_enable`/`fcrop_x`/`fcrop_y`/`fcrop_w`/`fcrop_h`**
   (sensor pixels, x/y = left/top; the SDK orders top, left). Evened, moved
   inside the sensor, at least 64x64, applied once per POST and at start.
-  Device-tested only on T20 and T21 with OpenIMP (T20: downscaled streams
-  only); T10 OpenIMP and T31 experimental. **T23 refuses it entirely**, also
-  from the config file: a crop change stops the T23 pipeline until a reboot.
-  T40/T41, T30, C100 and vendor T10/T20/T21 refuse it too.
+  Device-tested by the OpenIMP maintainer on T10, T20 and T21 with OpenIMP
+  (T20: downscaled streams only), live; T31 experimental, live. **T23 with
+  OpenIMP is experimental and start-only** (`caps.fcrop.live` 0, a POST
+  persists and applies at the next restart) and needs open-tx-isp 3cf9bdac or
+  newer: older drivers hung the pipeline on a crop change, and timps cannot
+  detect the driver version. A window the SDK refuses with `-EINVAL` (T23:
+  smaller than the stream-0 size) is `caps.fcrop.state` `rejected` with a
+  single WARN; other errors stay `failed`. Vendor T23, T40/T41, T30, C100 and
+  vendor T10/T20/T21 refuse it.
 - **`caps.roi` / `caps.fcrop`** in `GET /control`: the tier (`effective`,
   `experimental`, `unsupported`, `sim`) this build and libimp allow, ROI stream
   states and the FrontCrop state, from the new `src/roi_caps.h`. Both setters

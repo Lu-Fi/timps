@@ -955,13 +955,13 @@ the OSD items on the substream. Lowering the render quality doesn't help.
 
 | What you see | Meaning |
 | --- | --- |
-| `caps.roi.tier` / `caps.fcrop.tier` = `experimental` | The SDK call returns 0, the effect is unverified on this SoC (T21 ROI: known no effect). Nothing to fix in the config. |
+| `caps.roi.tier` / `caps.fcrop.tier` = `experimental` | The SDK call returns 0, the effect is unverified on this SoC (vendor T10/T20/T21 ROI; T23 OpenIMP and T31 FrontCrop). Nothing to fix in the config. |
 | `unsupported` | Not offered on this SoC/libimp (or the libimp lacks the weak symbol). A POST answers `"unsupported"`; a file value logs `roiS.N enabled but ignored: …` / `image.fcrop_enable=1 ignored: …` once at start. |
 | `caps.roi.streams[S]` = `h265` / `rotated` | ROI needs an unrotated H.264 stream; log `roiS: stream is … - regions ignored`. |
-| `caps.fcrop.state` = `rejected` | timps refused the window (below 64×64, or no sensor size). Log `image.fcrop …: needs at least 64x64 inside the WxH sensor`. |
-| `caps.fcrop.state` = `failed` | The SDK refused it: invalid window or no stream can show it. Log `SetFrontCrop … refused (rc=…)`. |
+| `caps.fcrop.state` = `rejected` | timps refused the window (below 64×64, or no sensor size; log `image.fcrop …: needs at least 64x64 inside the WxH sensor`), or SetFrontCrop returned `-EINVAL` (no stream can show it; T23: window below the stream-0 size), logged once as `SetFrontCrop … refused (rc=…)`, not retried. |
+| `caps.fcrop.state` = `failed` | SetFrontCrop failed with another error. Log `SetFrontCrop … refused (rc=…)`. |
 | T20: crop shows on the substream only | Expected: on T20 only downscaled channels show the FrontCrop window. |
-| T23: crop refused | Deliberate: a crop change stops the T23 pipeline until a reboot (open blocker). Do not work around it. |
+| T23: crop not applied after a POST | Expected: T23 FrontCrop is OpenIMP-only and start-only (`caps.fcrop.live` = 0); the POST persists, `/etc/init.d/S95timps restart` applies it. Needs open-tx-isp 3cf9bdac or newer (older drivers hung on a crop change). Vendor T23: `unsupported`. |
 
 ROI rectangles are logged at INFO as the macroblock corners actually sent
 (`roiS.N: applied as x0,y0-x1,y1`). A crop leaves privacy masks, OSD and ROI at

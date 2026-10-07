@@ -119,17 +119,25 @@ Since the next release, encoder ROI (`roi<S>.<N>.*`) and ISP FrontCrop
 `caps.roi.tier` / `caps.fcrop.tier`: **effective** = device-tested,
 **experimental** = the call exists and returns 0 but the effect is unverified
 (or known absent), **unsupported** = refused. Both setters are bound weak, so a
-libimp without the symbol reports unsupported at run time.
+libimp without the symbol reports unsupported at run time. The OpenIMP tiers
+come from device tests by the OpenIMP maintainer (OpenIMP d03ca24, open-tx-isp
+3cf9bdac), not from timps itself.
 
 | SoC | ROI vendor | ROI OpenIMP | FrontCrop vendor | FrontCrop OpenIMP |
 | --- | --- | --- | --- | --- |
-| T10 | experimental | experimental | unsupported | experimental |
-| T20 | experimental | **effective** | unsupported | **effective** (downscaled streams only) |
-| T21 | experimental (no effect seen) | experimental (no effect) | unsupported | **effective** |
-| T23 | experimental | experimental | unsupported (crop change stops the pipeline) | unsupported (same) |
+| T10 | experimental | **effective** | unsupported | **effective**, live |
+| T20 | experimental | **effective** | unsupported | **effective**, live (downscaled streams only) |
+| T21 | experimental (no effect seen) | **effective** (`OPENIMP_T21_ROI=0` turns it off → experimental) | unsupported | **effective**, live |
+| T23 | unsupported (encoder only stores the region) | unsupported | unsupported (untested) | experimental, **start-only** (needs open-tx-isp 3cf9bdac+) |
 | T30, C100 | unsupported | — | unsupported | — |
-| T31 | unsupported (no ROI call) | unsupported | experimental | experimental |
+| T31 | unsupported | unsupported (OpenIMP `SetChnRoiAttr`, not wired yet) | experimental, live | experimental, live |
 | T40, T41 | unsupported (`SetChnRoiAttr`, not wired) | unsupported | unsupported | unsupported |
+
+T23 FrontCrop: older open-tx-isp drivers hung the pipeline on a crop change,
+and the tier is compile-time, so timps cannot check the driver. A POST is
+persisted and applied at the next `/etc/init.d/S95timps restart`; a window
+smaller than the stream-0 size is refused with `-EINVAL` (one WARN,
+`caps.fcrop.state` = `rejected`).
 
 Raising a tier after a device test is one line in `src/roi_caps.h` plus its
 `ROI_MATRIX` entry in the Makefile (`make test-roi`).

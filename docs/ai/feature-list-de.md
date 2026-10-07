@@ -123,9 +123,13 @@ prudynt-t / raptor.
   (auf einem H.265- oder gedrehten Stream: Dateiwert eine WARN beim Start, ein
   POST wird angenommen und gespeichert, wirkt aber nicht und loggt nichts –
   nur `caps.roi.streams` zeigt es).
-  Auf Hardware getestet nur T20 mit OpenIMP; T10, T20 vendor, T21 und T23
-  experimentell; T30, T31, T40, T41 und C100 lehnen ab. Die Stufe meldet
-  `caps.roi.tier` in `GET /control`.
+  Auf Hardware getestet (vom OpenIMP-Maintainer, nicht von timps) T10, T20
+  und T21 mit OpenIMP (T10: QP51-Region -25 % Bitrate; T21 standardmäßig an,
+  `OPENIMP_T21_ROI=0` in der Umgebung schaltet es ab → experimentell); vendor
+  T10/T20/T21 experimentell. T23 lehnt ab (der Encoder speichert die Region
+  nur), T31 ebenso (OpenIMP hat `SetChnRoiAttr`, in timps noch nicht
+  angebunden), dazu T30, T40, T41 und C100. Die Stufe meldet `caps.roi.tier`
+  in `GET /control`.
 * **Bildrotation (optional, `USE_ROTATE`)** – `videoN.rotation = 0|90|180|270`.
   Hardware-90/270 auf T40/T41 (I2D) und T31 (FrameSource), Software-90/270 auf
   T23 (`USE_SW_ROTATE`, CPU-intensiv, nur H.264). **Seit dem nächsten Release**
@@ -171,11 +175,15 @@ prudynt-t / raptor.
   Szenen, in denen die Automatik zu lange belichtet.
 * **ISP-FrontCrop / Zoom (seit dem nächsten Release)** – `image.fcrop_enable`,
   `fcrop_x/y/w/h` in Sensorpixeln: der ISP liefert nur diesen Ausschnitt,
-  jeder Stream skaliert ihn auf seine Größe (min. 64×64, live). Getestet auf
-  T20 und T21 mit OpenIMP (T20: nur herunterskalierte Streams); T10 OpenIMP
-  und T31 experimentell. **T23 lehnt ab** (auch aus der Datei – ein
-  Crop-Wechsel stoppt die T23-Pipeline bis zum Reboot), ebenso T30, T40/T41,
-  C100 und vendor T10/T20/T21. Stufe und Zustand: `caps.fcrop`.
+  jeder Stream skaliert ihn auf seine Größe (min. 64×64, live). Getestet (vom
+  OpenIMP-Maintainer) auf T10, T20 und T21 mit OpenIMP (T20: nur
+  herunterskalierte Streams); T31 experimentell, live. **T23 mit OpenIMP:
+  experimentell, nur beim Start** – ein POST wird gespeichert und greift erst
+  nach `/etc/init.d/S95timps restart`; braucht open-tx-isp 3cf9bdac oder neuer
+  (ältere Treiber hängten die Pipeline bei einem Crop-Wechsel), ein Fenster
+  kleiner als Stream 0 wird mit `-EINVAL` abgelehnt (`state` `rejected`, eine
+  WARN). Vendor T23, T30, T40/T41, C100 und vendor T10/T20/T21 lehnen ab.
+  Stufe und Zustand: `caps.fcrop`.
 
 ## Day/Night (automatische Tag-/Nachtumschaltung)
 

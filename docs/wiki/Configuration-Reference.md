@@ -156,7 +156,7 @@ settings are correct.
 
 | Key | Type | Default | Range | Live? | Description |
 | --- | --- | --- | --- | --- | --- |
-| `fcrop_enable` | bool | 0 | 0/1 | **Live** where `caps.fcrop.live` | ISP FrontCrop ("zoom"): only the window below reaches the streams; each stream scales it to its own size. |
+| `fcrop_enable` | bool | 0 | 0/1 | **Live** where `caps.fcrop.live`; restart on T23 (OpenIMP) | ISP FrontCrop ("zoom"): only the window below reaches the streams; each stream scales it to its own size. |
 | `fcrop_x` | int | 0 | 0–8192 | as above | Left edge, sensor pixels (unrotated). |
 | `fcrop_y` | int | 0 | 0–8192 | as above | Top edge. |
 | `fcrop_w` | int | 0 | 0–8192 | as above | Width; at least 64. |
@@ -165,10 +165,14 @@ settings are correct.
 x/y/w/h follow the FrameSource crop convention (left, top); the SDK struct
 is ordered top, left and the HAL maps it. timps evens the values, moves the
 window inside the sensor and refuses anything under 64×64; the SDK then
-refuses a window no stream can show (`caps.fcrop.state` = `failed`). Keep the
-stream aspect ratio or the picture is stretched. Device-tested only on T20 and
-T21 with OpenIMP — on T20 only the downscaled streams show the window. T23
-refuses it completely (a crop change stops its pipeline until reboot); see
+refuses a window no stream can show (`-EINVAL`: `caps.fcrop.state` =
+`rejected`, one WARN; any other error: `failed`). Keep the stream aspect ratio
+or the picture is stretched. Device-tested (by the OpenIMP maintainer) on T10,
+T20 and T21 with OpenIMP — on T20 only the downscaled streams show the window.
+T23 with OpenIMP is experimental and start-only: a POST persists and applies at
+the next `/etc/init.d/S95timps restart`; it needs open-tx-isp 3cf9bdac or newer
+(older drivers hung the pipeline on a crop change) and refuses a window smaller
+than the stream-0 size. Vendor T23 refuses the keys. See
 [Platform & SDK Support](Platform-SDK-Support.md#roi-and-frontcrop-tiers) for
 all SoCs. Privacy masks, OSD and ROI regions stay in stream-frame coordinates:
 the scene moves under them.
@@ -442,10 +446,13 @@ its regions when it starts. The SDK rectangle holds two inclusive corners, not
 a width/height, and libimp clips nothing — timps converts and clamps. Only
 unrotated H.264 streams take regions (`caps.roi.streams`); on an H.265 or
 rotated stream a file value logs one WARN at start, while a POST is accepted
-and persisted without any effect or log line. Device-tested only
-on T20 with OpenIMP (a QP51 block is visible, QP15 clean; bitrate effect not
-measured); T10, T20 vendor, T21 (no effect seen) and T23 are experimental,
-everything else refuses the keys. `caps.roi.tier` reports it.
+and persisted without any effect or log line. Device-tested (by the OpenIMP
+maintainer, not timps) on T10, T20 and T21 with OpenIMP (T10: QP51 region
+-25 % bitrate; T21: on by default, `OPENIMP_T21_ROI=0` in the environment turns
+it off and timps reports experimental). Vendor T10/T20/T21 are experimental
+(T21: no effect seen). T23 refuses the keys (the encoder only stores the
+region); T31 ROI exists in OpenIMP as `SetChnRoiAttr` but is not wired yet.
+Everything else refuses the keys. `caps.roi.tier` reports it.
 
 ## `motion.*` — motion detection
 
