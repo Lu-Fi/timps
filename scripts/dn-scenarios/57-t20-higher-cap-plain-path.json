@@ -1,0 +1,35 @@
+{
+  "name": "57-t20-higher-cap-plain-path",
+  "incident": "2026-10-07 negative of scenario 55: a camera whose cap reaches night_gain keeps the plain rule",
+  "description": "The scenario-55 dusk on the same T20 isp_info dump, but with an analog cap of 160 units (32x = 8192, the T31 sample's value). At 87.6 % integration time the index reaches 7174, so night_gain 4096 is reachable and the reachable-maximum rule stays inert: the switch to night comes from the plain `s > night_gain` path, exactly as before, and no warning is logged.",
+  "scale": 60,
+  "duration_s": 1500,
+  "initial_mode": "day",
+  "t20_dump": {"again_max": 160, "idg_max": 32, "it_max": 2246},
+  "config": {
+    "daynight.day_gain": 768,
+    "daynight.night_gain": 4096,
+    "daynight.heartbeat_s": 300,
+    "daynight.heartbeat_max_s": 300
+  },
+  "interp": "log",
+  "noise_pct": 0,
+  "day_gain": [[0, 256], [300, 256], [700, 16384], [1500, 16384]],
+  "day_int_ratio": [[0, 0.05], [300, 0.05], [550, 0.8758], [1500, 0.8758]],
+  "night_gain": [[0, 600], [1500, 600]],
+  "night_gain_noir": [[0, 256], [300, 256], [700, 16384], [1500, 16384]],
+  "night_int_ratio": [[0, 0.05], [300, 0.05], [550, 0.8758], [1500, 0.8758]],
+  "expect": {
+    "mode_at": [[290, "day"], [800, "night"], [1480, "night"]],
+    "max_switches": 2,
+    "monotonicity": "warn",
+    "expect_log": [
+      "switching to night \\(exposure \\d+ > 4096\\)"
+    ],
+    "forbid_log": [
+      "is above the exposure index this camera can reach",
+      "reachable plateau",
+      "switching to day \\((?!boot measure)"
+    ]
+  }
+}

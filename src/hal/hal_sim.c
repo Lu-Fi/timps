@@ -322,7 +322,20 @@ int hal_image_pinned(void) { return sim_watch_count(); }
 int hal_isp_total_gain(uint32_t *gain){ (void)gain; return -1; }
 int hal_isp_wb_gains(int *rgain, int *bgain){ (void)rgain; (void)bgain; return -1; }
 int hal_isp_ae_luma(uint32_t *luma){ (void)luma; return -1; }
-int hal_isp_exposure(hal_isp_expo *out){ (void)out; return -1; }
+/* dn-replay fixture (t20_dump): "it it_max line_us", GetExpr's three fields */
+int hal_isp_exposure(hal_isp_expo *out)
+{
+    const char *p = getenv("TIMPS_SIM_EXPR");
+    FILE *f = (p && out) ? fopen(p, "r") : NULL;
+    if (!f) return -1;
+    unsigned v[3];
+    int n = fscanf(f, "%u %u %u", &v[0], &v[1], &v[2]);
+    fclose(f);
+    if (n != 3) return -1;
+    memset(out, 0, sizeof *out);
+    out->it_lines = v[0]; out->it_max_lines = v[1]; out->line_us = v[2];
+    return 0;
+}
 /* dn-replay fixture: "it it_min it_max again again_max total_log2_q16" */
 int hal_isp_ae_info(hal_isp_ae *out)
 {

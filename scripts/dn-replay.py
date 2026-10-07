@@ -133,6 +133,16 @@ Scenario JSON (all times virtual seconds, all gains IMP [24.8] linear):
                                   unset and the scenario tests the audible
                                   IR-cut path it was written for. Supplying
                                   the curve is what opts a scenario in.
+  t20_dump                      - OPTIONAL {"again_max": 128, "idg_max": 32,
+                                  "it_max": 2246}: serve the T20 isp_info dump
+                                  (SENSOR/ISP gain fields with their MAX
+                                  lines, integration time WITHOUT its
+                                  maximum) plus the sim's GetExpr stand-in
+                                  (TIMPS_SIM_EXPR) with it_max, as on the
+                                  OpenIMP Wyze Pan v1. Served gains are
+                                  clamped to again_max and the ISP digital
+                                  gain stays 0: the AE that stops at its
+                                  analog cap. See scenario 55.
   day_int_ratio / night_int_ratio
                                 - OPTIONAL [[t, ratio], ...] integration-time
                                   ratio (integration/max, 0..1) per pipeline.
@@ -197,6 +207,8 @@ Scenario JSON (all times virtual seconds, all gains IMP [24.8] linear):
     monotonicity                - "enforce"|"warn" (default)|"skip"; see
                                   check_monotonicity()
     expect_log / forbid_log     - regexes the sim log must / must not match
+    expect_log_count            - {"<regex>": n}: the sim log matches it
+                                  exactly n times
     expect_config               - {"<key>": "<value>", ...} the sim's config
                                   file must hold at the end of the run (what
                                   the daemon persisted, e.g. via /control)
@@ -419,7 +431,8 @@ class SimRun:
                  model_illuminator=False, no_ceilings=False,
                  no_max_int=False, watch_reads=False, t41_dump=False,
                  ae_cap=None, switch_drives_led=False, switch_led_delay=0.0,
-                 ir_hook_rc=None, consumers=False):
+                 ir_hook_rc=None, consumers=False, t20=None):
+        self.t20 = t20
         self.no_ceilings = no_ceilings
         self.no_max_int = no_max_int
         self.t41_dump = t41_dump
@@ -431,6 +444,7 @@ class SimRun:
         self.initial_mode = initial_mode          # "day"|"night"
         self.isp = os.path.join(self.dir, "isp-m0")
         self.ae_info = os.path.join(self.dir, "ae-info")
+        self.expr = os.path.join(self.dir, "expr")
         self.switch_log = os.path.join(self.dir, "switch.log")
         self.mode_file = os.path.join(self.dir, "mode.txt")
         self.trace = os.path.join(self.dir, "trace.csv")
@@ -553,6 +567,8 @@ class SimRun:
         "lines" so the served ratio is exact to a part in a thousand."""
         if self.t41_dump:
             return self.serve_t41(gain, isp_mode, ratio)
+        if self.t20:
+            return self.serve_t20(gain, isp_mode, ratio)
         u = gain_to_units(gain)
         tmp = self.isp + ".tmp"
         with open(tmp, "w") as f:
@@ -583,6 +599,37 @@ class SimRun:
                 if not self.no_max_int:
                     f.write("SENSOR Max Integration Time : %d lines\n" % mx)
         os.replace(tmp, self.isp)
+
+    def t20_units(self, gain):
+        return min(gain_to_units(gain), self.t20.get("again_max", 128))
+
+    def serve_t20(self, gain, isp_mode, ratio):
+        """/proc/jz/isp/isp_info of the T20 SDK, plus the GetExpr fixture"""
+        u = self.t20_units(gain)
+        mx = self.t20.get("it_max", 2246)
+        it = max(1, min(mx, int(round(ratio * mx)))) if ratio is not None else 0
+        tmp = self.isp + ".tmp"
+        with open(tmp, "w") as f:
+            f.write("****************** ISP INFO **********************\n")
+            f.write("SENSOR NAME : jxf22\n")
+            if ratio is not None:
+                f.write("SENSOR Integration Time : %d lines\n" % it)
+            f.write("ISP Runing Mode : %s\n" % ("Night" if isp_mode == "night"
+                                                else "Day"))
+            f.write("SENSOR analog gain : %d\n" % u)
+            f.write("MAX SENSOR analog gain : %d\n"
+                    % self.t20.get("again_max", 128))
+            f.write("SENSOR digital gain : 0\n")
+            f.write("MAX SENSOR digital gain : 0\n")
+            f.write("ISP digital gain : 0\n")
+            f.write("MAX ISP digital gain : %d\n" % self.t20.get("idg_max", 32))
+            f.write("ISP AE strategy: AE_SPLIT_BALANCED\n")
+        os.replace(tmp, self.isp)
+        tmp = self.expr + ".tmp"
+        with open(tmp, "w") as f:
+            if ratio is not None:
+                f.write("%d %d 17\n" % (it, mx))
+        os.replace(tmp, self.expr)
 
     def t41_gain(self, gain):
         """the gain a T41 AE can apply: clamped at its cap"""
@@ -630,6 +677,8 @@ class SimRun:
         env = dict(os.environ)
         if self.ae_cap:
             env["TIMPS_SIM_AE_INFO"] = self.ae_info
+        if self.t20:
+            env["TIMPS_SIM_EXPR"] = self.expr
         if self.watch:
             env["TIMPS_SIM_WATCH"] = self.watch
         self.proc = subprocess.Popen([self.binary, "-c", self.conf],
@@ -1111,7 +1160,8 @@ def run_regression(scn, binary, keep=False, scale_override=None):
                  switch_drives_led=bool(scn.get("switch_drives_led")),
                  switch_led_delay=float(scn.get("switch_led_delay_s", 0)),
                  ir_hook_rc=scn.get("ir_hook_rc"),
-                 consumers=consumers is not None)
+                 consumers=consumers is not None,
+                 t20=scn.get("t20_dump"))
 
     def watchers_at(t):
         return sum(1 for a, b in (consumers or []) if a <= t < b)
@@ -1218,6 +1268,7 @@ def run_regression(scn, binary, keep=False, scale_override=None):
             sim.serve(g, m, r)
             # what the machine will actually decide on: the exposure index
             served = (sim.t41_gain(g) if sim.t41_dump
+                      else units_to_gain(sim.t20_units(g)) if sim.t20
                       else units_to_gain(gain_to_units(g)))
             fed.append((t, served * (r if r is not None else 1.0), m))
             time.sleep(step)
@@ -1308,6 +1359,9 @@ def run_regression(scn, binary, keep=False, scale_override=None):
         for rx in exp.get("forbid_log", []):
             rep.check(re.search(rx, logtext) is None, "forbid-log",
                       repr(rx))
+        for rx, n in exp.get("expect_log_count", {}).items():
+            got = len(re.findall(rx, logtext))
+            rep.check(got == n, "log-count", "%r: %d, want %d" % (rx, got, n))
         if exp.get("expect_config"):
             conf = {}
             try:

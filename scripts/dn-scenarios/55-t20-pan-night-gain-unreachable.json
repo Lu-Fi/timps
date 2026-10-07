@@ -1,0 +1,40 @@
+{
+  "name": "55-t20-pan-night-gain-unreachable",
+  "incident": "2026-10-07 Wyze Pan v1 (T20/jxf22, OpenIMP, timps cf968e4): Day all night in a pitch-dark cellar",
+  "description": "The AE stops at its published analog cap (MAX SENSOR analog gain 128 = 16x = 4096) with the ISP digital gain at 0 of 32 and the integration time at 1967 of 2246 lines (87.6 %), so the exposure index plateaus at 4096 x 0.8758 = 3587 - measured on 3528 of 3574 trace samples that night, snapshot mean Y 6.6. `s > night_gain` (4096) can never hold, and the 32 unused ISP digital-gain units count as AE reserve, so the railed path never fires either: the camera stayed in day all night. The dump is the T20 isp_info shape (no SENSOR Max Integration Time; the ratio comes from GetExpr). With the reachable-maximum rule the cap proves 4096 out of reach, and the plateau held at the cap for day_confirm_s switches to night: one switch after the boot measurement, one warning naming the numbers. The night pipeline (IR on) and the illuminator-off reading are modelled, so the heartbeat's silent probes find night without a click.",
+  "scale": 60,
+  "duration_s": 2400,
+  "initial_mode": "day",
+  "t20_dump": {"again_max": 128, "idg_max": 32, "it_max": 2246},
+  "config": {
+    "daynight.day_gain": 768,
+    "daynight.night_gain": 4096,
+    "daynight.heartbeat_s": 300,
+    "daynight.heartbeat_max_s": 300
+  },
+  "interp": "log",
+  "noise_pct": 0,
+  "day_gain": [[0, 256], [300, 256], [700, 8192], [2400, 8192]],
+  "day_int_ratio": [[0, 0.05], [300, 0.05], [550, 0.8758], [2400, 0.8758]],
+  "night_gain": [[0, 600], [2400, 600]],
+  "night_gain_noir": [[0, 256], [300, 256], [700, 8192], [2400, 8192]],
+  "night_int_ratio": [[0, 0.05], [300, 0.05], [550, 0.8758], [2400, 0.8758]],
+  "expect": {
+    "mode_at": [[290, "day"], [630, "day"], [760, "night"], [2380, "night"]],
+    "expected_mode": [[0, "day"], [600, "any"], [760, "night"]],
+    "max_wrong_mode_s": 0,
+    "max_switches": 2,
+    "monotonicity": "warn",
+    "expect_log": [
+      "switching to night \\(exposure 35\\d\\d at its reachable plateau 35\\d\\d\\)",
+      "boot: measured day"
+    ],
+    "expect_log_count": {
+      "daynight\\.night_gain 4096 is above the exposure index this camera can reach \\(~35\\d\\d: analog gain cap 128 x IT 87\\.6 %, ISP digital gain unused\\); using a relative night threshold": 1
+    },
+    "forbid_log": [
+      "switching to day \\((?!boot measure)",
+      "day meter railed"
+    ]
+  }
+}

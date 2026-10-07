@@ -293,7 +293,7 @@ IMPLIBS ?= -l:libimp.a -l:libalog.a -l:libsysutils.a
 # against a distro/buildroot that only ships libfaac.so.
 FAACLIB ?= -l:libfaac.a
 
-.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun test-daynight-read test-timelapse-prune test-record-ring test-fs-rot test-fs-ref test-libimp-check test-dn-idle test-hub-hold test-roi
+.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun test-daynight-read test-timelapse-prune test-record-ring test-fs-rot test-fs-ref test-libimp-check test-dn-idle test-dn-reach test-hub-hold test-roi
 
 all: target
 
@@ -548,6 +548,11 @@ test-dn-idle:
 	  $(LDFLAGS) -lpthread -o $(BIN)-dnidletest
 	@./$(BIN)-dnidletest; rc=$$?; rm -f $(BIN)-dnidletest; exit $$rc
 
+# Host-only test for the reachable-maximum night rule (src/dn_reach.h)
+test-dn-reach:
+	$(HOSTCC) $(CFLAGS) -Isrc scripts/test_dn_reach.c $(LDFLAGS) -lm -o $(BIN)-dnreachtest
+	@./$(BIN)-dnreachtest; rc=$$?; rm -f $(BIN)-dnreachtest; exit $$rc
+
 # Host-only test for the encoder ROI / FrontCrop validation (src/hal/roi_geom.h:
 # macroblock corners, QP ranges, the top,left order), then the tier matrix of
 # src/roi_caps.h per PLATFORM:USE_OPENIMP:roi:fcrop (0 unsupported,
@@ -572,4 +577,4 @@ strip: target
 	$(CROSS_COMPILE)strip $(BIN)
 
 clean:
-	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest $(BIN)-hubidrtest $(BIN)-stuntest $(BIN)-tlprunetest $(BIN)-recringtest $(BIN)-fsrottest $(BIN)-fsreftest $(BIN)-dnidletest $(BIN)-hubholdtest $(BIN)-roitest
+	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest $(BIN)-hubidrtest $(BIN)-stuntest $(BIN)-tlprunetest $(BIN)-recringtest $(BIN)-fsrottest $(BIN)-fsreftest $(BIN)-dnidletest $(BIN)-dnreachtest $(BIN)-hubholdtest $(BIN)-roitest

@@ -15,6 +15,7 @@
  * Compiled only with -DUSE_DAYNIGHT; uses nothing but libc + pthread. */
 #include "daynight.h"
 #include "dn_idle.h"
+#include "dn_reach.h"
 #include "config.h"
 #include "hal/hal.h"   /* hal_isp_total_gain()/hal_isp_exposure(): ISP via IMP */
 #include <stdio.h>     /* snprintf() - needed by the !USE_DAYNIGHT stub too */
@@ -277,6 +278,7 @@ typedef struct {
      * separates that from a genuinely lit room. */
     int   headroom;
     int   isp;     /* mode the ISP itself reports: DN_DAY/DN_NIGHT/DN_UNKNOWN */
+    int   ag, mag, dg, idg;   /* the scrape's gain fields, log2 units; -1 = absent */
 
     /* ---- SHADOW READ, decides nothing (yet) ----------------------------
      * The same integration time and maximum the /proc scrape above supplies,
@@ -355,6 +357,7 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
     o->d = o->gain = o->ratio = o->bright = -1.0f;
     o->headroom = -1;
     o->isp = DN_UNKNOWN;
+    o->ag = o->mag = o->dg = o->idg = -1;
     o->ratio_imp = -1.0f;
     o->imp_it = o->imp_it_max = o->imp_line_us = o->imp_expr_us = 0;
 
@@ -495,6 +498,7 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
 
         if      (!strcasecmp(m, "Day"))   o->isp = DN_DAY;
         else if (!strcasecmp(m, "Night")) o->isp = DN_NIGHT;
+        o->ag = ag; o->mag = mag; o->dg = dg; o->idg = idg;
 
         if (o->gain < 0.0f && tgq >= 0) {
             o->gain = 256.0f * exp2f((float)tgq / 65536.0f);   /* [24.8], 256 = 1x */
@@ -1550,8 +1554,11 @@ static void *dn_thread(void *arg)
     float   tk_gain = -1.0f, tk_d = -1.0f;    /* last tick's raw reading */
     int     tk_hr       = -1;
     int     kick_wake   = 0;           /* woken by a consumer: idle part only */
+    dnr_state dnr;                     /* reachable-maximum rule (dn_reach.h) */
+    int     reach_warned = 0;
     int64_t tick_end    = 0;
     memset(&g_dni, 0, sizeof g_dni);
+    memset(&dnr, 0, sizeof dnr);
 
     g_int_hwm = 0;                     /* see dn_read(): sensor mode may differ */
     g_ratio_last = -1.0f; g_ratio_miss = 0;
@@ -1632,6 +1639,8 @@ static void *dn_thread(void *arg)
         } else {
             gains_warned = 0;   /* re-warn if a later /control write re-inverts */
         }
+        const float night_cfg = dncfg.night_gain;
+        dncfg.night_gain = dnr_night_eff(&dnr, night_cfg, dncfg.day_gain);
         const ms_daynight_cfg *dn = &dncfg;
         int     interval = dn->interval_ms > 0 ? dn->interval_ms : 2000;
         int64_t now      = ms_now_us() / 1000;
@@ -1712,6 +1721,7 @@ static void *dn_thread(void *arg)
             ir_fails = 0; g_ir_unusable = 0;     /* and re-test the illuminator */
             ir_idle_probe = 0; dni_suspend = 0;
             dni_fails = 0; g_dni_hook = DNI_HOOK_OK;
+            memset(&dnr, 0, sizeof dnr);
             booted = 0; boot_at = now; boot_deciding = 0; boot_silent = 0;
             warned_noisp = 0; hb_defer_logged = 0; blind_warned = 0;
             LOGI(MOD, "auto day/night enabled");
@@ -2513,7 +2523,10 @@ static void *dn_thread(void *arg)
                  * spent in the direction that can take itself back.
                  * day_confirm_s still gates, so one AE transient cannot
                  * flip the mode on its own. */
-                if (s > dn->night_gain || dn_clipped(sm.headroom)) {
+                dnr_in ri = { sm.ag, sm.mag, sm.dg, sm.idg, s,
+                              stable_n >= DN_STABLE_N, dn->day_gain, night_cfg };
+                int reach = dnr_dark(&dnr, &ri);
+                if (s > dn->night_gain || dn_clipped(sm.headroom) || reach) {
                     if (!dark_since) dark_since = now;
                 } else dark_since = 0;
                 if (dark_since &&
@@ -2585,10 +2598,30 @@ static void *dn_thread(void *arg)
                     noir_at = -1.0f;
                     noir_ms = 0;
                     target = DN_NIGHT;
-                    if (s > dn->night_gain)
+                    if (s > dn->night_gain) {
                         snprintf(why, sizeof why, "exposure %.0f > %.0f",
                                  (double)s, (double)dn->night_gain);
-                    else
+                    } else if (reach) {
+                        dnr.fired_bar = dnr_bar(&dnr);
+                        snprintf(why, sizeof why,
+                                 "exposure %.0f at its reachable plateau %.0f",
+                                 (double)s, (double)dnr.plat);
+                        if (!reach_warned) {
+                            reach_warned = 1;
+                            float it = sm.ratio > 0.0f ? sm.ratio
+                                     : dnr.plat / dnr_cap_gain(sm.mag);
+                            LOGW(MOD, "daynight.night_gain %.0f is above the "
+                                      "exposure index this camera can reach "
+                                      "(~%.0f: analog gain cap %d x IT %.1f %%, "
+                                      "ISP digital gain unused); using a "
+                                      "relative night threshold (%.0f, %d %% "
+                                      "of that plateau at the cap for "
+                                      "day_confirm_s)",
+                                 (double)night_cfg, (double)dnr.plat, sm.mag,
+                                 (double)(it * 100.0f), (double)dnr.fired_bar,
+                                 DNR_PLAT_PCT);
+                        }
+                    } else
                         snprintf(why, sizeof why,
                                  "day meter railed at %.0f, reserve %d",
                                  (double)s, sm.headroom);
