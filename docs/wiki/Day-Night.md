@@ -112,6 +112,48 @@ on every decision tick — which is what the 2 s default `interval_ms` pays for
 | **B** | heartbeat probe | wall clock only, no sensor | a reference anchored too low, a scene the index cannot read | 2 clicks |
 | **D** | boot | one measurement at `t=0`, then one assertion | the persisted mode is a guess of unbounded age, and the board may be in the other mode | 1 `switch_cmd` if the answer is day, 2 if night |
 
+### When `night_gain` is out of reach (path A)
+
+Path A needs an index above `night_gain`, and the index is gain × ratio with
+the ratio at most 1. An AE that stops at its analog cap and leaves the digital
+gain at 0 therefore tops out at the cap itself, 256·2^(`MAX SENSOR analog
+gain`/32) — 4096 for a cap of 128, exactly the default `night_gain`. Measured
+on one Wyze Pan v1 (T20/jxf22, OpenIMP), one night: analog 128/128, ISP
+digital 0 of 32, integration time 87.6 %, `d` = 3587 on almost every sample —
+the camera stayed in day in a pitch-dark cellar, and the 32 unused digital
+units counted as reserve, so the railed variant of path A did not fire
+either.
+
+**Since the next release**, where the published cap is `<= night_gain`
+(provably out of reach while the digital gain stays unused), path A also
+counts a day tick as dark when the analog gain is at >= 98 % of its cap, the
+ISP and sensor digital gain read 0 and the smoothed index is within 95 % of
+its highest settled value of that stretch at the cap — held `day_confirm_s`
+like the threshold. The plateau bar must clear 1.5 × `day_gain`, or the next
+probe would read the same scene as day and undo it. One WARN per session names
+the numbers. After the first such switch every `night_gain` comparison in
+the loop (the plain day test, the filter-cost and noir vetoes) uses that bar,
+so a ratio verdict cannot chase the rule. Night→day and boot are untouched:
+both read against `day_gain`, which a dark room exceeds. Everywhere the cap is
+above `night_gain`, or the dump has no cap or no `ISP digital gain` line,
+nothing changes. The pure rule is `src/dn_reach.h` (`make test-dn-reach`);
+corpus scenarios 55–59 (59: a lamp makes the silent probe say day while the
+day pipeline stays at the cap — one learning round trip, then the filter-cost
+veto holds night).
+
+The plateau is the highest settled value of the current stretch at the cap,
+not a learnt constant, so one transient cannot raise it for good. The price:
+on an AE that reaches the cap before its integration-time limit, the switch
+comes once the cap has been held `day_confirm_s` with the index not falling
+more than 5 %, possibly before the integration time has topped out (bounded
+below only by the 1.5 × `day_gain` bar).
+
+What is measured: one camera, one night, the stuck-in-day symptom and its
+numbers. What is not: the rule on that camera (pending a field test), why that
+AE stops where it does (OpenIMP), and any camera whose cap is slightly above
+`night_gain` but whose AE stops below it — the cap proves nothing there and
+the old behaviour stays.
+
 The construction rule, and the thing the previous design lacked:
 
 > **A rationing rule may only be applied while the independent trigger it

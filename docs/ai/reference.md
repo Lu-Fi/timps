@@ -987,6 +987,16 @@ best day-pipeline reading was 9.79×) still need an explicit per-camera
 5. `general.debug_modules = daynight` (live over `/control`, no restart) gives
    per-probe lines like `probe: r=1.05 lit=3350 dark=3520 hr=199 verdict=day`.
 
+**Stuck in day all night in a dark room** (the opposite case): the index is
+gain × integration-time ratio, so an AE that stops at its analog cap with the
+digital gain unused can never exceed 256·2^(`MAX SENSOR analog gain`/32) — 4096
+for a cap of 128, the default `night_gain`. Measured on one Wyze Pan v1
+(T20/jxf22, OpenIMP): index 3587 all night. **Since the next release** timps
+detects a cap `<= night_gain` and switches on the plateau at the cap instead,
+with one WARN `daynight.night_gain … is above the exposure index this camera
+can reach …`; on older builds set `night_gain` below the observed index. See
+`config-keys.md` (`night_gain` pitfall) and troubleshooting §3.3.
+
 `daynight.mode = schedule` hands the decision to the calendar outright (no
 sensor, no probes) — a reasonable fallback for a camera whose optics defeat the
 measurement. `daynight.enabled = 0` is full manual (`image.running_mode` or the

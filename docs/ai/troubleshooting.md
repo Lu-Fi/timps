@@ -1075,6 +1075,7 @@ detection idle` — **detection does nothing at all**.
 | --- | --- | --- |
 | `no probe has ever confirmed day (<N> in a row found night): the best day-pipeline exposure seen was <X> but daynight.day_gain is <Y>. Either this scene never gets bright, or the threshold is too strict - raise daynight.day_gain above <X>` | **The single most useful line in the whole day/night system.** It hands you the number to use. | Set `daynight.day_gain` just above the reported best exposure, keeping `night_gain` well above that. |
 | `daynight.day_gain (<a>) is above night_gain (<b>) - the thresholds are swapped; using day<<b> night><a>` | The two thresholds are the wrong way round. timps swaps them and carries on. | `day_gain` must be the **lower** number. |
+| `daynight.night_gain <n> is above the exposure index this camera can reach (~<p>: analog gain cap <c> x IT <i> %, ISP digital gain unused); using a relative night threshold (<b>, 95 % of that plateau at the cap for day_confirm_s)` (**since the next release**) | The AE stops at its analog cap with the digital gain unused, so the index can never exceed `night_gain`; the switch to night came from the plateau rule instead. See "Camera stays in Day all night" below. | Nothing required. To use the plain threshold, set `daynight.night_gain` below `<p>`. |
 | `the ISP dump reports no gain ceilings (MAX SENSOR analog gain / MAX ISP digital gain, or GetAeExprInfo on T41), so the AE reserve is unknown here: a railed meter cannot be told from a dark scene …` | This sensor/ISP build does not expose gain ceilings (on T41 with OpenIMP, **since the next release**, `GetAeExprInfo` failed or reported no gain ceiling). Several safety mechanisms are disabled: railed-boot re-tune, night-reference clipping protection, and ratio probes fall back to the audible IR-cut probe. | Nothing to configure. Expect a *clicking* IR-cut probe instead of a silent one, and accept coarser behaviour. |
 | `the night reference sits at the sensor's gain floor and no integration-time reading is available, so a brightening scene cannot be detected here - the heartbeat carries this camera alone. If this sensor does report SENSOR Integration Time, check daynight.isp_path` | Night→day can only be found by the periodic heartbeat, not by the trend. | Check `daynight.isp_path`; otherwise tune `daynight.heartbeat_s` / `heartbeat_max_s` down for faster (but more disruptive) recovery. |
 | `boot: came up in night (exposure %.0f) - measuring silently first (illuminator off for %ds, no cut-filter click)` | **I** | Boot at night: one silent probe before the audible day probe. Normal. |
@@ -1090,6 +1091,31 @@ detection idle` — **detection does nothing at all**.
 | `'<cmd> <arg>' (pid N) survived SIGKILL - abandoning it. The board hook is stuck in the kernel (I2C/GPIO driver or a dead mount); day/night continues without it` | A kernel-level wedge (I²C, GPIO, or a hung NFS mount inside the script). | Investigate the driver/mount. Day/night keeps running blind. |
 | `daynight: fork failed: …` / `irprobe: fork failed: …` | Out of memory. | See §5.5 / reduce resolution. |
 | `cannot start detection thread` | Thread creation failed at start-up — day/night is off for this run. | Restart; if it recurs, memory pressure. |
+
+#### Camera stays in Day all night in a dark room
+
+Seen on one Wyze Pan v1 (T20/jxf22, OpenIMP), one night: snapshot almost
+black (mean Y 6.6), every other camera in night, this one in day. Check:
+
+1. `cat /proc/jz/isp/isp_info` (T20; `isp-m0` elsewhere): `SENSOR analog
+   gain` equal to `MAX SENSOR analog gain` (128/128), `ISP digital gain : 0`
+   against `MAX ISP digital gain : 32`.
+2. A trace (`daynight.trace_path=/tmp/dn-trace.csv`, §3.6): `cur` = 0 (day),
+   `gain` 4096, `ratio` ~0.876, `d` flat at ~3587 — below `night_gain` 4096
+   on every sample.
+
+The index is gain × integration-time ratio, so an AE that stops at its
+analog cap and never uses the ISP digital gain can never exceed 256·2^(cap/32)
+(4096 for 128). `s > night_gain` is then unreachable, and the 32 unused
+digital units count as AE reserve, so the railed path does not fire either.
+**since the next release** timps detects this (cap `<= night_gain`) and logs
+once `daynight.night_gain 4096 is above the exposure index this camera can
+reach (~3587: analog gain cap 128 x IT 87.6 %, ISP digital gain unused); using
+a relative night threshold (…)`; the switch reads `switching to night
+(exposure 3587 at its reachable plateau 3587)`. Details and limits:
+`config-keys.md`, `daynight.night_gain` pitfall. On an older build, or with a
+`night_gain` between the plateau and the cap, set `daynight.night_gain` below
+the plateau `d` (e.g. 3000 for the Pan) and keep `day_gain` well under it.
 
 ### 3.4 The ISP disagrees with the decided mode
 
@@ -2918,6 +2944,7 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | `the night reference sits at the sensor's gain floor and no integration-time reading is available…` | W | Night→day can only come from the heartbeat. |
 | `no probe has ever confirmed day (%d in a row found night): the best day-pipeline exposure seen was %.0f but daynight.day_gain is %.0f…` | W | **The line that hands you the number.** Raise `daynight.day_gain` above the reported value. |
 | `daynight.day_gain (%.0f) is above night_gain (%.0f) - the thresholds are swapped; using day<%.0f night>%.0f` | W | `day_gain` must be the lower number. |
+| `daynight.night_gain %.0f is above the exposure index this camera can reach (~%.0f: analog gain cap %d x IT %.1f %%, ISP digital gain unused); using a relative night threshold (%.0f, %d %% of that plateau at the cap for day_confirm_s)` | W | **since the next release.** Once per session, at the first switch it causes. The AE stops at its analog cap with the digital gain unused, so `night_gain` can never be exceeded; the plateau rule switched instead. §3.3 "Camera stays in Day all night". |
 | `running_mode=%d never followed the switch to %s - board hook chain (switch_cmd -> color -> POST /control) incomplete, or manual override` | W | The board hook chain is broken. Purple-image territory. §3.2 |
 | `ISP still reports %s %d s after the switch to %s (script and re-asserts all ran) - forcing one transition through %s, the only thing a stuck ISP acts on` | W | Forced transition; usually cures it. |
 | `ISP still reports %s after a forced transition - giving up until the next mode change; the image does not match the decided mode %s` | W | The ISP latch is stuck. Restart. |

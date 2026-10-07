@@ -137,6 +137,18 @@ semantic versioning.
 
 ### Fixed
 
+- **Day/night: a camera whose index cannot reach `night_gain` no longer stays
+  in day all night.** The index is gain × integration-time ratio, so an AE
+  that stops at its analog cap with the digital gain unused tops out at
+  256·2^(cap/32). Measured on one Wyze Pan v1 (T20/jxf22, OpenIMP), one night:
+  cap 128 = 4096 = the default `night_gain`, IT 87.6 %, index 3587 all night,
+  day mode in a pitch-dark cellar. Where the published cap is `<= night_gain`,
+  the analog gain at >= 98 % of it with the digital gain at 0 and the index
+  within 95 % of its plateau at the cap, held `day_confirm_s`, now switches to
+  night, with one WARN per session naming the numbers. Inert where the cap is
+  above `night_gain` or not published; night->day and boot unchanged. Not yet
+  tested on the camera. `src/dn_reach.h`, `make test-dn-reach`, scenarios
+  55-59 (the harness serves a T20 `isp_info` dump and a GetExpr fixture).
 - **An OpenIMP-built `timpsd` no longer crashes at start on a vendor libimp**
   (T10/T20/T21): `SetDPC_Strength` and, on T20, `SetDefog_Strength`/
   `SetDRC_Strength` are weak imports; the key logs once and drops out of

@@ -537,8 +537,9 @@ wird die WebSocket-Variante (statt CGI-Polling) aktiviert.
   Bewegung, Audio, Aufnahme, Day/Night und Feldinventar, inklusive
   HTML-Report (`scripts/qa_html_report.py`).
 * **Day/Night-Werkzeuge**: `dn-isp-probe.sh`, `dn-isp-report.py`,
-  `dn-replay.py` und ein Regressionskorpus aus 54 Szenarien (aufgezeichnete
-  Realfälle und konstruierte Randfälle, 39-54 für Idle-Dark) unter
+  `dn-replay.py` und ein Regressionskorpus aus 59 Szenarien (aufgezeichnete
+  Realfälle und konstruierte Randfälle, 39-54 für Idle-Dark, 55-59 für ein
+  unerreichbares `night_gain` am T20-Analog-Gain-Limit) unter
   `scripts/dn-scenarios/`.
 * **libimp-Prüfung (seit dem nächsten Release)**: ein `timpsd` für den
   anderen libimp-Stack (Vendor vs. OpenIMP) beendet sich mit 78/79 und Grund,

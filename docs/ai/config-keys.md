@@ -1016,8 +1016,8 @@ tick) **except**:
 | `daynight.sun_sunrise_offset_min` | int | `0` | -1440..1440 | live | Minutes added to sunrise before switching to day. |
 | `daynight.sun_sunset_offset_min` | int | `0` | -1440..1440 | live | Minutes added to sunset before switching to night. |
 | `daynight.day_gain` | float | `768` | 1..1000000 | live | **Alias `total_gain_day_threshold`.** Exposure index below this (on the day pipeline) = day. Units are the IMP `[24.8]` linear gain scale, `256` = 1.0×, so 768 = 3×. |
-| `daynight.night_gain` | float | `4096` | 1..1000000 | live | **Alias `total_gain_night_threshold`.** Exposure index above this (while in day) = night. 4096 = 16×. |
-| `daynight.day_confirm_s` | int | `30` | 1..3600 | live | How long the index must stay above `night_gain` before day→night. |
+| `daynight.night_gain` | float | `4096` | 1..1000000 | live | **Alias `total_gain_night_threshold`.** Exposure index above this (while in day) = night. 4096 = 16×. **since the next release**: where the ISP dump's own analog cap (`MAX SENSOR analog gain`, 256·2^(cap/32)) is not above this value and the AE leaves the digital gains at 0, the index can never exceed it; a relative rule then stands in for it (see the pitfall below). |
+| `daynight.day_confirm_s` | int | `30` | 1..3600 | live | How long the index must stay above `night_gain` (or, where `night_gain` is out of reach, on its plateau at the analog cap — see the `night_gain` pitfall) before day→night. |
 | `daynight.probe_min_gap_s` | int | `600` | **60**..86400 | live | No two probes closer than this. **The only bound on the audible IR-cut click rate** — a safety net, not something to switch off. |
 | `daynight.probe_confirm_s` | int | `15` | 1..3600 | live | How long the probe trigger condition must hold. |
 | `daynight.heartbeat_s` | int | `14400` (4 h) | 300..604800 | live | Flat re-probe interval while the scene is moving. Deliberately not a multiplying backoff. |
@@ -1114,6 +1114,33 @@ Their effective values are still readable in the `daynight` status object of
   default is 768 (3×). Genuinely dim rooms (measured up to 9.79×) need an
   explicit per-camera override; turn on `diagnose_thresholds` to be told the
   value to use.
+* **`night_gain` can be out of reach** (handled **since the next release**).
+  The index is gain × integration-time ratio, so with the digital gains unused
+  it can never exceed the published analog cap, 256·2^(`MAX SENSOR analog
+  gain`/32): 4096 for a cap of 128 (jxf22). Measured on one Wyze Pan v1
+  (T20/jxf22, OpenIMP) for one night: the AE stopped at analog 128/128, ISP
+  digital 0 of 32, integration time 87.6 %, index 3587 all night, so `s >
+  4096` never held and the camera stayed in day in a pitch-dark cellar. Where
+  that cap is `<= night_gain`, timps now logs once per session `daynight.night_gain
+  4096 is above the exposure index this camera can reach (~3587: analog gain
+  cap 128 x IT 87.6 %, ISP digital gain unused); using a relative night
+  threshold (3408, 95 % of that plateau at the cap for day_confirm_s)` and
+  treats, in day, the analog gain at >= 98 % of its cap with the ISP and
+  sensor digital gain at 0 and the smoothed index within 95 % of its highest
+  settled value at the cap (the plateau) as dark — held `day_confirm_s`, exactly like
+  `s > night_gain`. The plateau bar must clear 1.5 × `day_gain`, otherwise the
+  rule stays off (a probe would read the same scene below `day_gain` and undo
+  the switch). After it has fired, every `night_gain` comparison of the
+  session (the plain day test, the filter-cost/noir vetoes) uses that bar, so
+  a silent probe cannot chase the rule all night. Night→day is unchanged
+  (probes against `day_gain`); boot is unchanged (it reads against
+  `day_gain`, which a dark room already exceeds). Inert where the cap is above
+  `night_gain` (T31 sample: 160 = 8192), where the dump has no cap or no `ISP
+  digital gain` line (T41 open stack), and where the AE uses digital gain (the
+  vendor-stack T20s rail it, and their railed path already switches). Not
+  covered: a `night_gain` set between the plateau and the cap (e.g. 4000 on the
+  Pan) — the cap still proves nothing there, and the camera behaves as before;
+  set it below the plateau or leave the default.
 * **`image.ae_it_max_us` moves the index** — a camera running it needs its
   `day_gain`/`night_gain` re-checked rather than inherited.
 * `daynight.enabled = 0` does **not** force a mode; it just stops the automaton.
