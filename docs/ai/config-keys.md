@@ -1095,6 +1095,17 @@ maximum and the configured gain cap, `t41_tuning_copy_ae_expr()`). Where
 neither is available the reserve is unknown (`hr=-1` in the probe line) and an
 `r ≈ 1` silent probe escalates to the audible IR-cut probe.
 
+`r ≈ 1` also means "day" only when the light reaches the **day** pipeline.
+Infrared from another camera's illuminator lights the night pipeline (IR-cut
+open) and is removed by the IR-cut filter. **Since the next release** a night
+that a measurement proved (the day→night switch, a probe that found night, a
+silent probe with `r >= 2`, the pegged or filter-cost verdict) stays night
+while the probe's lit level is not below 90 % of the night reference (debug
+line `… is no brighter than the proven night reference …`). An adopted night
+(external switch, `boot_probe=0`) is not proven. Measured on two cameras, one
+night each (Wyze Pan v1 r=1.20, SecuPlug T10 r=1.36, both in a cellar with
+other IR cameras); see the `night_gain` pitfall.
+
 ### Retired `daynight.*` keys
 
 These are **parsed and ignored with one warning each** (not reported as unknown
@@ -1161,6 +1172,25 @@ Their effective values are still readable in the `daynight` status object of
   covered: a `night_gain` set between the plateau and the cap (e.g. 4000 on the
   Pan) — the cap still proves nothing there, and the camera behaves as before;
   set it below the plateau or leave the default.
+  **The Pan itself is that case on the open stack**: open-tx-isp's compact
+  T20 AE writes `isp-m0` with `MAX SENSOR analog gain : 158` (the jxf22
+  maximum) while the AE stops at 128 — derived from the driver source and the
+  probe line's `lit_hr=124`, not read on the camera. The rule did not fire in
+  the 2026-10-07 soak; the camera went to night only through the boot
+  measurement. Until the dump publishes the clamp, set `night_gain` to 3000
+  there.
+* **A silent probe can call a cellar lit by other IR cameras "day"** (fixed
+  **since the next release**, two cameras, one night each). r < 2 only says
+  the camera's own illuminator is not doing the work. Measured on the Pan: day
+  pipeline 3587 at the boot measurement, 28 s later lit 401 / dark 483,
+  r=1.20, day all night; on a SecuPlug T10: r=1.36 → day, back to night a
+  minute later on `exposure 4179 > 4096`, a pair per probe. A night proven by
+  a measurement now stays night unless the lit level is below 90 % of the
+  night reference, and a boot that came up in day anchors the reference from
+  the night pipeline (not from its own day-pipeline level, which made path C
+  fire 20 s into the night). A real lamp and a dawn still switch to day; one
+  try at day remains possible when the reference predates the other cameras'
+  IR.
 * **`image.ae_it_max_us` moves the index** — a camera running it needs its
   `day_gain`/`night_gain` re-checked rather than inherited.
 * `daynight.enabled = 0` does **not** force a mode; it just stops the automaton.

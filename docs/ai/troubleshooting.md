@@ -1117,6 +1117,42 @@ a relative night threshold (…)`; the switch reads `switching to night
 `night_gain` between the plateau and the cap, set `daynight.night_gain` below
 the plateau `d` (e.g. 3000 for the Pan) and keep `day_gain` well under it.
 
+**The plateau rule did not fire on the Pan itself** (soak 2026-10-07, no
+`reachable plateau` line): with the open stack timps reads `isp-m0`, and
+open-tx-isp's compact T20 AE prints the sensor maximum there (`MAX SENSOR
+analog gain : 158` on jxf22, derived from the driver source and the probe
+line's `lit_hr=124`) while the AE stops at 128. 158 puts the cap at 7838, above
+4096, so the rule stays off by design. Check `MAX SENSOR analog gain` against
+the `SENSOR analog gain` the dark scene settles at; if the AE stops below the
+published maximum, use the `night_gain` workaround above.
+
+**Day right after a night switch, via the silent probe.** Look for
+
+```
+switching to night (boot: measured night, exposure 3587)
+night reference 3489, proven by the probe (bar 1745)
+silent probe (brightening): r=1.20 with 114 units of AE reserve - the room supplies the light, not the illuminator
+probe: r=1.20 lit=401 dark=483 hr=114 verdict=day mode=night ref=3489 why=brightening lit_hr=124
+switching to day (IR ratio 1.20)
+```
+
+(Pan, 15:15:58-15:16:26 CEST). r < 2 says the camera's own illuminator is
+not what lights the night pipeline; in a cellar with other IR cameras the
+light is theirs, the IR-cut filter removes it, and the day pipeline is dark.
+Here the boot came up in day, so the reference 3489 was a day-pipeline level
+and path C fired 20 s into the night. Same family, other symptom: a switch
+pair per heartbeat (`switching to day (IR ratio 1.36)`, a minute later
+`switching to night (exposure 4179 > 4096)`, SecuPlug T10). **Since the next
+release** a night proven by a measurement stays night when the lit level is
+not below 90 % of the night reference: `silent probe (heartbeat): r=1.36 but
+the lit level … is no brighter than the proven night reference … - light
+the day pipeline does not see, staying night`, `probe: … verdict=night`; and
+a boot that came up in day anchors the reference from the night pipeline
+30 s later (`night reference 401 (probe bar 200)` instead of `… proven by the
+probe`). A real lamp or a dawn moves the lit level below 90 % and goes to the
+ratio as before. Still possible: one try at day when the reference was
+anchored before the other cameras' IR came on.
+
 ### 3.4 The ISP disagrees with the decided mode
 
 Three escalating warnings, in order:
@@ -2945,6 +2981,7 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | `no probe has ever confirmed day (%d in a row found night): the best day-pipeline exposure seen was %.0f but daynight.day_gain is %.0f…` | W | **The line that hands you the number.** Raise `daynight.day_gain` above the reported value. |
 | `daynight.day_gain (%.0f) is above night_gain (%.0f) - the thresholds are swapped; using day<%.0f night>%.0f` | W | `day_gain` must be the lower number. |
 | `daynight.night_gain %.0f is above the exposure index this camera can reach (~%.0f: analog gain cap %d x IT %.1f %%, ISP digital gain unused); using a relative night threshold (%.0f, %d %% of that plateau at the cap for day_confirm_s)` | W | **since the next release.** Once per session, at the first switch it causes. The AE stops at its analog cap with the digital gain unused, so `night_gain` can never be exceeded; the plateau rule switched instead. §3.3 "Camera stays in Day all night". |
+| `silent probe (%s): r=%.2f but the lit level %.0f is no brighter than the proven night reference %.0f - light the day pipeline does not see, staying night` | D | **since the next release.** r < 2 in a night a measurement proved, at a lit level not below 90 % of the reference: light the IR-cut filter removes (other IR cameras), not day. Normal in a shared cellar. §3.3 "Camera stays in Day all night". |
 | `running_mode=%d never followed the switch to %s - board hook chain (switch_cmd -> color -> POST /control) incomplete, or manual override` | W | The board hook chain is broken. Purple-image territory. §3.2 |
 | `ISP still reports %s %d s after the switch to %s (script and re-asserts all ran) - forcing one transition through %s, the only thing a stuck ISP acts on` | W | Forced transition; usually cures it. |
 | `ISP still reports %s after a forced transition - giving up until the next mode change; the image does not match the decided mode %s` | W | The ISP latch is stuck. Restart. |

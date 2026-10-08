@@ -154,6 +154,69 @@ AE stops where it does (OpenIMP), and any camera whose cap is slightly above
 `night_gain` but whose AE stops below it — the cap proves nothing there and
 the old behaviour stays.
 
+That last case turned out to be the Pan itself. On the open stack the dump
+is `isp-m0`, written by open-tx-isp's compact T20 AE, and in that mode the
+`MAX SENSOR analog gain` line prints the sensor maximum (`attr->max_again >>
+11`, 158 on jxf22) while the AE clamps at its tuning ceiling (128). Derived,
+not read off the camera: the open-tx-isp 3cf9bdac source of the image, and the
+probe line's `lit_hr=124`, which is (158 − 66) + 32 for the analog 66 the
+exposure log shows at that moment (128 would give 94). With 158 the cap is
+7838 > 4096, so the plateau rule never fired in the 2026-10-07 soak (no
+`reachable plateau` line in the central log). Workaround until the dump
+publishes the clamp: `daynight.night_gain` below the plateau, e.g. 3000.
+
+### When the silent probe sees light the day pipeline does not
+
+A silent probe compares the night pipeline (IR-cut open) with and without
+the camera's own illuminator. r ≤ 2 means "the illuminator is not what lights
+this scene" — which is also true when the light is infrared from somewhere
+else: another camera's illuminator in the same cellar. The IR-cut filter
+removes that light, so the day pipeline stays dark. Two cameras, one night
+each (2026-10-07):
+
+- **Wyze Pan v1** (T20/jxf22, OpenIMP): came up in day (`running_mode=0`),
+  the boot measurement read the day pipeline at 3587 and switched to night.
+  20 s later path C fired against a reference of 3489 — the level it had
+  come up with, i.e. a day-pipeline level — the probe read lit 401, dark 483,
+  r = 1.20, and switched to day. The plateau rule (above) was inert, so the
+  camera stayed in day: no DAYNIGHT line for the rest of the night.
+- **SecuPlug SP1** (T10L/jxh42, OpenIMP): `switching to day (IR ratio 1.36)`
+  at 23:17:38, `switching to night (exposure 4179 > 4096)` at 23:18:36 — a
+  switch pair per such probe. (From the field notes; this camera is not in
+  the central syslog, so its probe line is not quoted here.)
+
+**Since the next release** two changes:
+
+1. A night that a measurement proved — path A's switch, a probe that found
+   night (the boot measurement included), a silent probe with r ≥ 2, the
+   pegged or filter-cost verdict — keeps a flag. While it is set, a silent
+   probe's "the room supplies the light" only switches to day if the lit
+   level is measurably brighter than the night reference (below 90 % of it,
+   the heartbeat's `DN_MOVED_MARGIN`). Otherwise: `silent probe (…): r=…
+   but the lit level … is no brighter than the proven night reference … —
+   light the day pipeline does not see, staying night`. A night that was
+   adopted (another tool switched the ISP, `boot_probe=0`) is not proven and
+   keeps the old behaviour, so a night adopted in daylight still ends at the
+   next probe. The filter-cost veto runs first and is unchanged.
+2. When the boot measurement starts from a board that came up in **day**, its
+   pre-level is not used as the night reference (it is the day pipeline's);
+   the reference is anchored from the night pipeline after 30 s, like after
+   any other switch. That removes the immediate path-C probe after such a
+   boot.
+
+Unchanged: a real light (the lit level falls below 90 % of the reference)
+goes to the ratio exactly as before, and so does a dawn — r can only fall
+below 2 once the ambient light outweighs the illuminator, which puts the lit
+level under the reference. Residual: a reference anchored *before* the other
+cameras' illuminators came on is darker than the scene with them, so the
+first probe after that can still try day once; the bounce off `night_gain`
+re-anchors the reference and the next probe is held. On the Pan, a legitimate
+day (cellar lamp on) that ends with the lamp off still has no way back to
+night while the dump publishes 158 (see above). The pure gate is
+`src/dn_proven.h` (`make test-dn-proven`); corpus scenarios 60 (Pan), 61
+(T10), 62 (a lamp still switches to day), 63 (a dawn after a night of held
+probes switches once).
+
 The construction rule, and the thing the previous design lacked:
 
 > **A rationing rule may only be applied while the independent trigger it

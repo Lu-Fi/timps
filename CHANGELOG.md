@@ -145,6 +145,30 @@ semantic versioning.
 
 ### Fixed
 
+- **Day/night: a silent probe no longer calls a cellar lit by other IR
+  cameras "day".** r < 2 only says the camera's own illuminator is not what
+  lights the night pipeline; another camera's IR does that too, and the
+  IR-cut filter removes it. Two cameras, one night each (2026-10-07, soak
+  v1.9.33-50-ga006fca): a Wyze Pan v1 (T20/jxf22, OpenIMP) came up in day,
+  measured night at boot (day pipeline 3587), then path C fired 20 s later
+  against its own day-pipeline level 3489, the probe read lit 401 / dark 483
+  (r=1.20) and it stayed in day all night; a SecuPlug SP1 (T10L/jxh42,
+  OpenIMP) switched to day on r=1.36 and back to night on `exposure 4179 >
+  4096` a minute later. Now a night proven by a measurement stays night while
+  the lit level is not below 90 % of the night reference (debug line `… is no
+  brighter than the proven night reference …`), and a boot that came up in
+  day anchors the reference from the night pipeline after 30 s. A real lamp
+  and a dawn still switch to day (scenarios 62, 63). Not yet run on the two
+  cameras. `src/dn_proven.h`, `make test-dn-proven`, scenarios 60-63;
+  scenarios 21, 22 and 30 now reach their flap/railed paths behind a real
+  brightening (their static shape no longer tries day), 59 accepts the gate
+  line where its thin veto margin misses under host load.
+  Also found: the plateau rule below never fired on that Pan. With the open
+  stack its `isp-m0` publishes `MAX SENSOR analog gain : 158` (open-tx-isp's
+  compact T20 AE prints the sensor maximum) while the AE stops at 128, so the
+  cap is not provably below `night_gain` (derived from the driver source and
+  the probe line's `lit_hr=124`). Workaround there: `daynight.night_gain`
+  3000.
 - **Day/night: a camera whose index cannot reach `night_gain` no longer stays
   in day all night.** The index is gain × integration-time ratio, so an AE
   that stops at its analog cap with the digital gain unused tops out at
