@@ -1,0 +1,32 @@
+{
+  "name": "63-t10-dawn-after-gated-night",
+  "incident": "2026-10-08 positive control of scenario 61: the dawn after a night of gated probes",
+  "description": "The scenario-61 cellar through a long night (heartbeat probes held by the proven-night gate, r=1.36) and then a dawn: from t=2400 daylight takes the day pipeline from 4179 to 200 and the night pipeline from 1000 to 120 (without the illuminator 1360 to 130). Once the lit level falls measurably below the proven reference the gate opens and the ratio decides as before: one switch to day, no flap.",
+  "scale": 60,
+  "duration_s": 3600,
+  "initial_mode": "day",
+  "config": {
+    "daynight.day_gain": 768,
+    "daynight.night_gain": 4096,
+    "daynight.heartbeat_s": 300,
+    "daynight.heartbeat_max_s": 300
+  },
+  "interp": "log",
+  "noise_pct": 2,
+  "day_gain": [[0, 300], [300, 300], [900, 4179], [2400, 4179], [2700, 200], [3600, 200]],
+  "night_gain": [[0, 100], [300, 100], [900, 1000], [2400, 1000], [2700, 120], [3600, 120]],
+  "night_gain_noir": [[0, 105], [300, 105], [900, 1360], [2400, 1360], [2700, 130], [3600, 130]],
+  "expect": {
+    "mode_at": [[290, "day"], [1500, "night"], [2390, "night"], [3000, "day"], [3580, "day"]],
+    "expected_mode": [[0, "day"], [850, "any"], [1000, "night"], [2400, "any"], [2900, "day"]],
+    "max_wrong_mode_s": 0,
+    "max_switches": 3,
+    "monotonicity": "warn",
+    "expect_log_count": {
+      "switching to day \\(IR ratio": 1
+    },
+    "expect_log": [
+      "is no brighter than the proven night reference"
+    ]
+  }
+}

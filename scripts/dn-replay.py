@@ -143,6 +143,13 @@ Scenario JSON (all times virtual seconds, all gains IMP [24.8] linear):
                                   clamped to again_max and the ISP digital
                                   gain stays 0: the AE that stops at its
                                   analog cap. See scenario 55.
+                                  "again_pub": the MAX SENSOR analog gain
+                                  the dump publishes when it is not the
+                                  clamp (open-tx-isp compact AE: the sensor
+                                  maximum, 158 on jxf22, while the AE stops
+                                  at 128); "isp_m0": true also publishes
+                                  SENSOR Max Integration Time, as the open
+                                  stack's isp-m0 does. See scenario 60.
   day_int_ratio / night_int_ratio
                                 - OPTIONAL [[t, ratio], ...] integration-time
                                   ratio (integration/max, 0..1) per pipeline.
@@ -614,11 +621,13 @@ class SimRun:
             f.write("SENSOR NAME : jxf22\n")
             if ratio is not None:
                 f.write("SENSOR Integration Time : %d lines\n" % it)
+                if self.t20.get("isp_m0"):
+                    f.write("SENSOR Max Integration Time : %d lines\n" % mx)
             f.write("ISP Runing Mode : %s\n" % ("Night" if isp_mode == "night"
                                                 else "Day"))
             f.write("SENSOR analog gain : %d\n" % u)
             f.write("MAX SENSOR analog gain : %d\n"
-                    % self.t20.get("again_max", 128))
+                    % self.t20.get("again_pub", self.t20.get("again_max", 128)))
             f.write("SENSOR digital gain : 0\n")
             f.write("MAX SENSOR digital gain : 0\n")
             f.write("ISP digital gain : 0\n")

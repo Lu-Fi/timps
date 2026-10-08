@@ -16,6 +16,7 @@
 #include "daynight.h"
 #include "dn_idle.h"
 #include "dn_reach.h"
+#include "dn_proven.h"
 #include "config.h"
 #include "hal/hal.h"   /* hal_isp_total_gain()/hal_isp_exposure(): ISP via IMP */
 #include <stdio.h>     /* snprintf() - needed by the !USE_DAYNIGHT stub too */
@@ -1555,6 +1556,7 @@ static void *dn_thread(void *arg)
     int     tk_hr       = -1;
     int     kick_wake   = 0;           /* woken by a consumer: idle part only */
     dnr_state dnr;                     /* reachable-maximum rule (dn_reach.h) */
+    int     night_proven = 0;          /* this night rests on a measurement (dn_proven.h) */
     int     reach_warned = 0;
     int64_t tick_end    = 0;
     memset(&g_dni, 0, sizeof g_dni);
@@ -1722,6 +1724,7 @@ static void *dn_thread(void *arg)
             ir_idle_probe = 0; dni_suspend = 0;
             dni_fails = 0; g_dni_hook = DNI_HOOK_OK;
             memset(&dnr, 0, sizeof dnr);
+            night_proven = 0;
             booted = 0; boot_at = now; boot_deciding = 0; boot_silent = 0;
             warned_noisp = 0; hb_defer_logged = 0; blind_warned = 0;
             LOGI(MOD, "auto day/night enabled");
@@ -1803,6 +1806,8 @@ static void *dn_thread(void *arg)
         int   want_probe = 0;
         int   no_silent  = 0;               /* this probe may not go the silent route */
         int   requested  = 0;               /* operator probe: not held by silent_hold */
+        int   proof      = 0;               /* a switch to night here is measured */
+        int   day_level  = 0;               /* the boot pre-level is the day pipeline's */
         const char *probe_why = NULL;
         char  why[80];
         why[0] = 0;
@@ -1894,6 +1899,7 @@ static void *dn_thread(void *arg)
                              (int)((now - desync_since) / 1000),
                              cur == DN_NIGHT ? "night" : "day");
                         cur = sm.isp; mode_since = now;
+                        night_proven = 0;
                         s = -1.0f; stable_n = 0;
                         trig_since = dark_since = verdict_at = 0;
                         dn_probe_abandon(dn->irprobe_cmd, &ir_verdict_at, &d_lit, &d_lit_hr,
@@ -2104,9 +2110,9 @@ static void *dn_thread(void *arg)
                  * through to the audible day probe below, so a lit room, an
                  * unusable ratio or a board whose LEDs were not on at boot
                  * behave exactly as before. */
+                int came = (sm.isp >= 0) ? sm.isp
+                         : (running_mode ? DN_NIGHT : DN_DAY);
                 {
-                    int came = (sm.isp >= 0) ? sm.isp
-                             : (running_mode ? DN_NIGHT : DN_DAY);
                     if (came == DN_NIGHT && dn->irprobe_cmd[0] &&
                         !g_ir_unusable && s > 0.0f &&
                         !dn_clipped(sm.headroom)) {
@@ -2157,6 +2163,12 @@ static void *dn_thread(void *arg)
                  * imprecise but meaningless - is already rejected by
                  * dn_clipped(pre_probe_hr) in the revert branch (scenario
                  * 24). */
+                /* Not when the board came up in day: that is the day
+                 * pipeline's level (Pan: 3489, night pipeline 401), path C
+                 * would fire against it at once, and a reference the night
+                 * never reaches is no proof. The anchor then comes from the
+                 * night pipeline after DN_REF_DELAY_S. */
+                day_level = (came == DN_DAY);
                 want_probe = 1; probe_why = "boot measure";
                 no_silent = 1;
                 break;
@@ -2197,7 +2209,8 @@ static void *dn_thread(void *arg)
                 } else if (r > 0.0f && r <= DN_IR_RATIO_DAY &&
                            room >= DN_IR_MIN_HEADROOM && !dn_clipped(d_lit_hr) &&
                            !(filter_cost > 0.0f && lit * filter_cost > dn->night_gain) &&
-                           !(noir_cost > 0.0f && d_dark * noir_cost > dn->night_gain)) {
+                           !(noir_cost > 0.0f && d_dark * noir_cost > dn->night_gain) &&
+                           !dn_proven_dark(night_proven, ref, lit, DN_MOVED_MARGIN)) {
                     v = "day";
                     ir_night_at = lit; ir_night_ms = now;
                     target = DN_DAY;
@@ -2287,6 +2300,7 @@ static void *dn_thread(void *arg)
                               "scene, staying night",
                          ir_why ? ir_why : "?", (double)r, (double)d_dark,
                          (double)(d_dark / r));
+                    night_proven = 1;
                     /* The reference only ever ratcheted UPWARD, on proof
                      * from a day probe that came back dark. A silent probe
                      * answering "night" at a level below the bar is the same
@@ -2321,6 +2335,7 @@ static void *dn_thread(void *arg)
                             ref = dn_clipped(room) ? -1.0f : d_dark;
                             s = d_dark;      /* reading on, without the LED */
                         }
+                        night_proven = 1;
                         if (!running_mode)
                             dn_set_running_mode(1);
                         LOGI(MOD, "boot: night confirmed by the silent probe "
@@ -2370,6 +2385,7 @@ static void *dn_thread(void *arg)
                              ir_why ? ir_why : "?", (double)r,
                              (double)(lit * filter_cost), (double)filter_cost,
                              (double)dn->night_gain);
+                        night_proven = 1;
                         /* this too is a night verdict below the bar, so the
                          * same lowering rule as the r>=ir_ratio_night branch
                          * applies - without it the jump trigger re-fires
@@ -2387,6 +2403,18 @@ static void *dn_thread(void *arg)
                                               / 100.0f));
                             }
                         }
+                        trig_since = 0;
+                        hb_at = dn_hb_next(dn, now);
+                        sust_min = win_max = -1.0f; win_at = 0;
+                        ema_fast = ema_slow = -1.0f; trend_since = 0;
+                    } else if (dn_proven_dark(night_proven, ref, lit,
+                                              DN_MOVED_MARGIN)) {
+                        LOGD(MOD, "silent probe (%s): r=%.2f but the lit level "
+                                  "%.0f is no brighter than the proven night "
+                                  "reference %.0f - light the day pipeline "
+                                  "does not see, staying night",
+                             ir_why ? ir_why : "?", (double)r, (double)lit,
+                             (double)ref);
                         trig_since = 0;
                         hb_at = dn_hb_next(dn, now);
                         sust_min = win_max = -1.0f; win_at = 0;
@@ -2411,6 +2439,7 @@ static void *dn_thread(void *arg)
                               "AE reserve - the meter is pegged at the dark "
                               "end, which is itself night", 
                          ir_why ? ir_why : "?", (double)r, room);
+                    night_proven = 1;
                     trig_since = 0;
                     hb_at = dn_hb_next(dn, now);
                     sust_min = win_max = -1.0f; win_at = 0;
@@ -2484,7 +2513,7 @@ static void *dn_thread(void *arg)
                         LOGI(MOD, "probe confirmed day: exposure %.0f (< %.0f)",
                              (double)s, (double)bar);
                 } else {
-                    target = DN_NIGHT; force = 1;
+                    target = DN_NIGHT; force = 1; proof = 1;
                     probe_fails++;
                     snprintf(why, sizeof why, "%s, exposure %.0f",
                              boot_deciding ? "boot: measured night"
@@ -2597,7 +2626,7 @@ static void *dn_thread(void *arg)
                     }
                     noir_at = -1.0f;
                     noir_ms = 0;
-                    target = DN_NIGHT;
+                    target = DN_NIGHT; proof = 1;
                     if (s > dn->night_gain) {
                         snprintf(why, sizeof why, "exposure %.0f > %.0f",
                                  (double)s, (double)dn->night_gain);
@@ -2885,7 +2914,7 @@ static void *dn_thread(void *arg)
                       "verdict in %ds", probe_why, (double)s, (double)ref,
                  DN_PROBE_SETTLE_S);
             /* a noir level is not the lit night the revert returns to */
-            pre_probe = was_dark ? -1.0f : (s > 0.0f) ? s : ref;
+            pre_probe = (was_dark || day_level) ? -1.0f : (s > 0.0f) ? s : ref;
             pre_probe_hr = sm.headroom;
             dn_switch(DN_DAY, probe_why, dn->switch_cmd, s, ref, bar);
             /* The boot measurement charges the ration like any other probe,
@@ -2900,6 +2929,7 @@ static void *dn_thread(void *arg)
              * lit scene at 900 unable to ever clear it. That is incident
              * f8a7b21 arriving through a new door. */
             cur = DN_DAY; mode_since = now; last_probe = now;
+            night_proven = 0;
             verdict_at = now + (int64_t)DN_PROBE_SETTLE_S * 1000;
             ir_verdict_at = 0; d_lit = -1.0f; ir_why = NULL;
             trig_since = dark_since = 0; hb_at = 0;
@@ -2926,6 +2956,7 @@ static void *dn_thread(void *arg)
             int reverted = (cur == DN_DAY && target == DN_NIGHT && pre_probe > 0.0f);
             dn_switch(target, why[0] ? why : "?", dn->switch_cmd, s, ref, bar);
             cur = target; mode_since = now;
+            night_proven = target == DN_NIGHT && proof;
             s = -1.0f; stable_n = 0;
             trig_since = dark_since = verdict_at = 0;
             ir_verdict_at = 0; d_lit = -1.0f; ir_why = NULL; ir_idle_probe = 0;

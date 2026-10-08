@@ -1,0 +1,32 @@
+{
+  "name": "62-t10-lamp-goes-day",
+  "incident": "2026-10-08 positive control of scenario 61: a real room light still switches to day",
+  "description": "The scenario-61 cellar after dusk: the gate keeps the heartbeat probes in night, then at t=1800 a lamp lights the room for both pipelines (day 300, night 300 with the illuminator, 306 without, r=1.02). Path C fires on the drop, the lit level is far below the proven reference, the ratio decides as before: day, exactly once, and day stays because the day pipeline reads 300.",
+  "scale": 60,
+  "duration_s": 2400,
+  "initial_mode": "day",
+  "config": {
+    "daynight.day_gain": 768,
+    "daynight.night_gain": 4096,
+    "daynight.heartbeat_s": 300,
+    "daynight.heartbeat_max_s": 300
+  },
+  "interp": "step",
+  "noise_pct": 0,
+  "day_gain": [[0, 300], [600, 4179], [1800, 300], [2400, 300]],
+  "night_gain": [[0, 100], [600, 1000], [1800, 300], [2400, 300]],
+  "night_gain_noir": [[0, 105], [600, 1360], [1800, 306], [2400, 306]],
+  "expect": {
+    "mode_at": [[500, "day"], [1200, "night"], [1790, "night"], [1900, "day"], [2380, "day"]],
+    "expected_mode": [[0, "day"], [600, "any"], [700, "night"], [1800, "any"], [1880, "day"]],
+    "max_wrong_mode_s": 0,
+    "max_switches": 3,
+    "monotonicity": "warn",
+    "expect_log_count": {
+      "switching to day \\(IR ratio": 1
+    },
+    "expect_log": [
+      "is no brighter than the proven night reference"
+    ]
+  }
+}

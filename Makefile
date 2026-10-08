@@ -293,7 +293,7 @@ IMPLIBS ?= -l:libimp.a -l:libalog.a -l:libsysutils.a
 # against a distro/buildroot that only ships libfaac.so.
 FAACLIB ?= -l:libfaac.a
 
-.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun test-daynight-read test-timelapse-prune test-record-ring test-fs-rot test-fs-ref test-libimp-check test-dn-idle test-dn-reach test-hub-hold test-roi
+.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun test-daynight-read test-timelapse-prune test-record-ring test-fs-rot test-fs-ref test-libimp-check test-dn-idle test-dn-reach test-dn-proven test-hub-hold test-roi
 
 all: target
 
@@ -552,6 +552,11 @@ test-dn-idle:
 test-dn-reach:
 	$(HOSTCC) $(CFLAGS) -Isrc scripts/test_dn_reach.c $(LDFLAGS) -lm -o $(BIN)-dnreachtest
 	@./$(BIN)-dnreachtest; rc=$$?; rm -f $(BIN)-dnreachtest; exit $$rc
+
+# Host-only test for the proven-night gate on silent probes (src/dn_proven.h)
+test-dn-proven:
+	$(HOSTCC) $(CFLAGS) -Isrc scripts/test_dn_proven.c $(LDFLAGS) -o $(BIN)-dnproventest
+	@./$(BIN)-dnproventest; rc=$$?; rm -f $(BIN)-dnproventest; exit $$rc
 
 # Host-only test for the encoder ROI / FrontCrop validation (src/hal/roi_geom.h:
 # macroblock corners, QP ranges, the top,left order), then the tier matrix of

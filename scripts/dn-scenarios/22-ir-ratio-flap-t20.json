@@ -1,7 +1,7 @@
 {
   "name": "22-ir-ratio-flap-t20",
   "incident": "2026-08-19 - a T20 cellar camera whose illuminator contributes nothing; the case where the day pipeline reads BETTER than the night one",
-  "description": "The second flap shape, and the one that slipped through the first guard. This board's illuminator does nothing measurable: the silent probe returns r = 1.00 with ample AE reserve, which reads as 'the room supplies the light'. But the day pipeline is not worse here, it is better - 6166 against a night level of 8171 - and still above night_gain, so the absolute rule sends it straight back.\n\nScenario 21 is the same loop with the factor above 1. The first version of the guard only learned when the day reading was HIGHER than the night level, on the assumption that closing the IR-cut filter can only cost light. On this board it does not, the guard never armed, and the camera stayed free to flap - measured at 11 switches in one day before the rebuild.\n\nWhat is learned is not 'what the filter costs' but 'what day mode actually reads here'. That quantity is meaningful in both directions.\n\nRESTATED 2026-08-22 (boot measures before it decides): budget 2 -> 4, the two added drives being the boot measurement pair inside the first 15 s. The flap bound - one pair at t=324/358, not a cycle every probe_confirm_s - is unchanged.",
+  "description": "The second flap shape, and the one that slipped through the first guard. This board's illuminator does nothing measurable: the silent probe returns r = 1.00 with ample AE reserve, which reads as 'the room supplies the light'. But the day pipeline is not worse here, it is better - 6166 against a night level of 8171 - and still above night_gain, so the absolute rule sends it straight back.\n\nScenario 21 is the same loop with the factor above 1. The first version of the guard only learned when the day reading was HIGHER than the night level, on the assumption that closing the IR-cut filter can only cost light. On this board it does not, the guard never armed, and the camera stayed free to flap - measured at 11 switches in one day before the rebuild.\n\nWhat is learned is not 'what the filter costs' but 'what day mode actually reads here'. That quantity is meaningful in both directions.\n\nRESTATED 2026-08-22 (boot measures before it decides): budget 2 -> 4, the two added drives being the boot measurement pair inside the first 15 s. The flap bound - one pair at t=324/358, not a cycle every probe_confirm_s - is unchanged.\n\nRESTATED 2026-10-08 (proven-night gate, dn_proven.h): a silent probe in a night the day pipeline itself proved, at a lit level no brighter than that night's reference, now stays night instead of trying day once - the static shape above produces no exploratory pair any more (that shape is scenario 61, from the SecuPlug T10 field case). To keep this path covered the stimulus now arrives as a real brightening after the night was proven: until t=290 the night pipeline reads 20000 with the illuminator and 60000 without (day 60000); then the original 8171/8171/6166. The one learning pair (0.75x) and the veto follow as before.",
   "scale": 30,
   "duration_s": 1800,
   "initial_mode": "night",
@@ -13,15 +13,58 @@
   },
   "interp": "step",
   "noise_pct": 0,
-  "night_gain": [[0, 8171]],
-  "night_gain_noir": [[0, 8171]],
-  "day_gain": [[0, 6166]],
+  "night_gain": [
+    [
+      0,
+      20000
+    ],
+    [
+      290,
+      8171
+    ]
+  ],
+  "night_gain_noir": [
+    [
+      0,
+      60000
+    ],
+    [
+      290,
+      8171
+    ]
+  ],
+  "day_gain": [
+    [
+      0,
+      60000
+    ],
+    [
+      290,
+      6166
+    ]
+  ],
   "expect": {
-    "expected_mode": [[0, "night"], [30, "any"], [900, "night"]],
+    "expected_mode": [
+      [
+        0,
+        "night"
+      ],
+      [
+        30,
+        "any"
+      ],
+      [
+        900,
+        "night"
+      ]
+    ],
     "max_wrong_mode_s": 300,
     "max_switches": 4,
     "max_ir_probes": 8,
     "monotonicity": "warn",
-    "expect_log": ["day mode reads", "day mode would read"]
+    "expect_log": [
+      "day mode reads",
+      "day mode would read"
+    ]
   }
 }
