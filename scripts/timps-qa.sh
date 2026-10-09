@@ -209,7 +209,7 @@ usage() {
 
 Options (also settable as env vars):
   --cam IP            camera address (required)
-  --profile P         quick | standard | load | soak | drift | longrun  (default: standard)
+  --profile P         quick | standard | load | soak | drift | longrun | openimp  (default: standard)
   --rtsp-user U       --rtsp-pass P    --http-user U   --http-pass P
   --expect-channels N assert audio channel count (e.g. 2 = stereo); FAIL on mismatch
   --main PATH         RTSP main path (default ch0)   --sub PATH (default ch1)
@@ -312,6 +312,10 @@ Profiles:
                       Use this - not 'drift' - to answer "is EVERY stream type
                       still healthy after hours"; 'drift' stays the isolated,
                       contention-free RTSP-only A/V measurement.
+  openimp   ~5 min  : only the opt-in FrontCrop / ROI / OpenIMP-key section
+                      (also: --only openimp). Changes the live picture,
+                      restores it; --include-experimental --allow-restart
+                      --allow-prod, see scripts/timps-qa-openimp.sh
 EOF
 	exit 1
 }
@@ -356,6 +360,7 @@ while [ $# -gt 0 ]; do
 		--test-daynight) TEST_DAYNIGHT=1; shift;;
 		--test-hostile) TEST_HOSTILE=1; shift;;
 		--test-reboot) TEST_REBOOT=1; shift;;
+		--include-experimental|--allow-prod|--allow-restart) OI_FLAGS="${OI_FLAGS:-} $1"; shift;;
 		-h|--help) usage;;
 		*) echo "unknown option: $1" >&2; usage;;
 	esac
@@ -390,6 +395,7 @@ case "$PROFILE" in
 	# protocols DO share one window (that part is concurrent) - it is only the
 	# long-duration SECTIONS that must not stack.
 	longrun)  [ "$LONGRUN_DUR" -gt 0 ] || LONGRUN_DUR=7200;;
+	openimp)  [ -n "$ONLY" ] || ONLY=openimp;;   # scripts/timps-qa-openimp.sh
 	*) echo "unknown profile: $PROFILE" >&2; usage;;
 esac
 
@@ -7375,6 +7381,9 @@ if [ -n "$SSH_TARGET" ] && want 16 ssh; then
 	[ "${q:-0}" -eq 0 ] && ok "agc/ns/high_pass are persist-only (no live 'queued' applies)" \
 		|| warn "${q} 'queued for audio thread' lines - build predates v1.4.5 (buggy deferred path)"
 fi
+
+# never part of an unfiltered run: it zooms and blurs the live picture
+case ",$ONLY," in *,openimp,*|*,oi,*) . "$(dirname "$0")/timps-qa-openimp.sh";; esac
 
 qa_conf_run_restore
 
