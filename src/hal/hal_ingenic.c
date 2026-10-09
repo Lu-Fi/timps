@@ -1296,7 +1296,7 @@ void hal_fcrop_limits(hal_fcrop_lim *o)
     if (g_fcrop_state == FC_ON) o->zoomed = all;
     (void)fit;
 #elif defined(FCROP_DS_ONLY)
-    (void)ow; (void)oh;
+    (void)ow; (void)oh; (void)all;
     int mw = sw, mh = sh;
     for (int i = 0; i < MS_MAX_VSTREAM; i++) {
         const ms_vstream_cfg *v = &g_cfg_boot.video[i];
