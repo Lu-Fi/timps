@@ -4,7 +4,8 @@
 //
 //   node scripts/test_webui_crop.js <path/to/roi-crop.js> [control.json ...]
 //
-// Extracts the pure cropFit/cropDrag/cropFromZoom/zoomFromCrop/cropPct by
+// Extracts the pure cropFit/cropDrag/cropFromZoom/zoomFromCrop/cropPct/
+// cropSelect/cropMax/cropScale by
 // name; each extra argument is a saved GET /control whose caps.fcrop.sensor
 // is used as one more sensor size. Exit 0 = all passed.
 "use strict";
@@ -35,7 +36,7 @@ function body(name) {
   }
   return src.slice(at, i + 1);
 }
-const names = ["cropFit", "cropDrag", "cropFromZoom", "zoomFromCrop", "cropPct"];
+const names = ["cropFit", "cropDrag", "cropFromZoom", "zoomFromCrop", "cropPct", "cropSelect", "cropMax", "cropScale"];
 const G = new Function(names.map(body).join("\n") + "\nreturn {" + names.join(",") + "};")();
 const F = 64;
 
@@ -111,6 +112,46 @@ for (const [sw, sh] of sensors) {
   ok(Math.abs(p.left * bw / 100 * sw / bw - o.x) < 1e-6 && Math.abs(p.height * bh / 100 * sh / bh - o.h) < 1e-6, tag + " pct<->sensor round trip");
   const full = G.cropPct({ x: 0, y: 0, w: sw, h: sh }, sw, sh);
   ok(full.left === 0 && full.top === 0 && full.width === 100 && full.height === 100, tag + " full window = 100%");
+
+  // zoom to selection: stream aspect, grown not cut, reversed drag same result
+  for (const ar of [16 / 9, 4 / 3, sw / sh]) {
+    const at = tag + " ar " + ar.toFixed(2);
+    const r = { x: sw * 0.4, y: sh * 0.3, w: sw * 0.1, h: sh * 0.3 };
+    c = G.cropSelect(r, sw, sh, F, ar);
+    ok(valid(c, sw, sh) && Math.abs(c.w / c.h - ar) < 0.01, at + " select aspect");
+    ok(c.x <= r.x + 2 && c.y <= r.y + 2 && c.x + c.w >= r.x + r.w - 2 && c.y + c.h >= r.y + r.h - 2, at + " select contains");
+    ok(JSON.stringify(G.cropSelect({ x: r.x + r.w, y: r.y + r.h, w: -r.w, h: -r.h }, sw, sh, F, ar)) === JSON.stringify(c), at + " select reversed");
+    c = G.cropSelect({ x: -500, y: -500, w: 3 * sw, h: 3 * sh }, sw, sh, F, ar);
+    ok(valid(c, sw, sh) && (c.w >= sw - 2 || c.h >= sh - 2), at + " select clamps to sensor");
+    for (let i = 0; i < 300; i++) {
+      const s = { x: rnd() * sw, y: rnd() * sh, w: (rnd() - 0.5) * sw, h: (rnd() - 0.5) * sh };
+      const d = G.cropSelect(s, sw, sh, F, ar);
+      const x0 = Math.max(0, Math.min(s.x, s.x + s.w)), x1 = Math.min(sw, Math.max(s.x, s.x + s.w));
+      const y0 = Math.max(0, Math.min(s.y, s.y + s.h)), y1 = Math.min(sh, Math.max(s.y, s.y + s.h));
+      const fits = x1 - x0 <= Math.min(sw, sh * ar) - 4 && y1 - y0 <= Math.min(sh, sw / ar) - 4;
+      ok(valid(d, sw, sh) && (!fits || (d.x <= x0 + 2 && d.y <= y0 + 2 && d.x + d.w >= x1 - 2 && d.y + d.h >= y1 - 2 &&
+        Math.abs(d.w / d.h - ar) < 0.02 + 4 / d.h)), at + " random select " + JSON.stringify(s) + " -> " + JSON.stringify(d));
+    }
+    // max zoom: smallest window, centred on the point, clamped at the edges
+    c = G.cropMax(sw / 2, sh / 2, sw, sh, F, ar);
+    ok(valid(c, sw, sh) && Math.min(c.w, c.h) <= F + 2 && Math.abs(c.x + c.w / 2 - sw / 2) <= 2 && Math.abs(c.y + c.h / 2 - sh / 2) <= 2, at + " max centred");
+    c = G.cropMax(sw, 0, sw, sh, F, ar);
+    ok(valid(c, sw, sh) && c.x + c.w === sw && c.y === 0, at + " max at the corner");
+  }
+}
+
+// min_win from caps (T31 main 1080p on 2560x1440: zoom_max 1.33)
+{
+  const m = [1920, 1080];
+  let c = G.cropMax(2560 / 2, 1440 / 2, 2560, 1440, m, 16 / 9);
+  ok(c.w === 1920 && c.h === 1080 && c.x === 320 && c.y === 180, "min_win 1920x1080 max zoom centred");
+  c = G.cropSelect({ x: 100, y: 100, w: 50, h: 50 }, 2560, 1440, m, 16 / 9);
+  ok(c.w === 1920 && c.h === 1080 && c.x === 0 && c.y === 0, "min_win select grows to the minimum");
+  c = G.cropSelect({ x: 1000, y: 500, w: 200, h: 100 }, 2560, 1440, [640, 360], 16 / 9);
+  ok(c.w === 640 && c.h === 360 && c.x === 780 && c.y === 370, "select small object centred at min_win");
+  ok(G.cropScale({ w: 1920, h: 1080 }, 1920, 1080) === 1, "scale native");
+  ok(G.cropScale({ w: 1280, h: 720 }, 1920, 1080) === 1.5, "scale upscaled 1.5");
+  ok(G.cropScale({ w: 1920, h: 1080 }, 640, 360) < 1, "scale sub stream downscaled");
 }
 
 // caps.fcrop.min_win [w, h] per axis (T31 p=100 on 1080p, T20 sub stream)
