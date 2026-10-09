@@ -5,9 +5,10 @@
 //   node scripts/test_webui_crop.js <path/to/roi-crop.js> [control.json ...]
 //
 // Extracts the pure cropFit/cropDrag/cropFromZoom/zoomFromCrop/cropPct/
-// cropSelect/cropMax/cropScale by
+// cropSelect/cropMax/cropScale/cropEffMin/cropZoomMax/cropNative by
 // name; each extra argument is a saved GET /control whose caps.fcrop.sensor
-// is used as one more sensor size. Exit 0 = all passed.
+// is used as one more sensor size and whose min_win/zoom_max/video sizes are
+// checked against the zoom slider range. Exit 0 = all passed.
 "use strict";
 const fs = require("fs");
 
@@ -36,7 +37,7 @@ function body(name) {
   }
   return src.slice(at, i + 1);
 }
-const names = ["cropFit", "cropDrag", "cropFromZoom", "zoomFromCrop", "cropPct", "cropSelect", "cropMax", "cropScale"];
+const names = ["cropFit", "cropDrag", "cropFromZoom", "zoomFromCrop", "cropPct", "cropSelect", "cropMax", "cropScale", "cropEffMin", "cropZoomMax", "cropNative"];
 const G = new Function(names.map(body).join("\n") + "\nreturn {" + names.join(",") + "};")();
 const F = 64;
 
@@ -52,6 +53,19 @@ process.argv.slice(3).forEach(f => {
   ok(Array.isArray(s) && s[0] > 0 && s[1] > 0, f + ": caps.fcrop.sensor");
   ok(j.caps && j.caps.fcrop && "live" in j.caps.fcrop && "state" in j.caps.fcrop, f + ": caps.fcrop live/state");
   if (s && s[0] > 0) sensors.push(s);
+  const fc = j.caps.fcrop, mn = fc.min_win;
+  if (!Array.isArray(mn)) return;
+  // slider end = the smallest window, not rounded and not capped at 8
+  const em = G.cropEffMin(s[0], s[1], [Math.max(F, mn[0]), Math.max(F, mn[1])], +fc.zoom_max || 8);
+  const zm = G.cropZoomMax(s[0], s[1], em), end = G.cropFromZoom(zm, 0.5, 0.5, s[0], s[1], em);
+  ok(end.w === em[0] && end.h === em[1], f + ": slider end = min_win " + JSON.stringify(end));
+  if (fc.zoom_max) ok(zm >= fc.zoom_max - 1e-9 && zm < fc.zoom_max + 0.01, f + ": slider max " + zm + " vs zoom_max " + fc.zoom_max);
+  const sizes = Object.keys(j.video || {}).map(k => j.video[k]).filter((v, i) => v.enabled !== 0 && (!fc.zoomable || fc.zoomable[i]))
+    .map(v => [v.width, v.height]);
+  const zn = G.cropNative(s[0], s[1], sizes, zm);
+  ok(zn >= 1 && zn <= zm, f + ": native threshold in range " + zn);
+  if (fc.upscale_pct === 0) ok(zm - zn < 0.005, f + ": upscale_pct 0 = crop only");
+  else if (fc.upscale_pct > 0) ok(zm - zn > 0.05, f + ": upscale_pct " + fc.upscale_pct + " has a zoom part");
 });
 
 let seed = 7;
@@ -163,6 +177,37 @@ for (const [mw, mh] of [[960, 540], [640, 360], [1920, 1080]]) {
   ok(c.w >= mw && c.h >= mh && valid(c, sw, sh), tag + " zoom 8 kept at the minimum");
   c = G.cropDrag(G.cropFit({ x: 0, y: 0, w: sw, h: sh }, sw, sh, m), "size", -1e5, -1e5, sw, sh, m);
   ok(c.w >= mw && c.h >= mh && valid(c, sw, sh), tag + " size floor");
+}
+
+// zoom slider range and the native (no upscaling) threshold
+{
+  const sw = 2560, sh = 1440, main = [[1920, 1080], [640, 360]];
+  // T31 upscale_pct 0: min_win = main stream, zoom_max 1.33 -> crop only
+  let em = G.cropEffMin(sw, sh, [1920, 1080], 1.33), zm = G.cropZoomMax(sw, sh, em);
+  ok(em[0] === 1920 && em[1] === 1080 && Math.abs(zm - 4 / 3) < 1e-9, "up0 slider 1..1.333 " + zm);
+  ok(zm - G.cropNative(sw, sh, main, zm) < 0.005, "up0 no zoom part");
+  let c = G.cropFromZoom(zm, 0.5, 0.5, sw, sh, em);
+  ok(c.w === 1920 && c.h === 1080 && G.cropScale(c, 1920, 1080) === 1, "up0 end native 1920x1080");
+  // upscale_pct 100: min_win 960x540, zoom_max 2.66
+  em = G.cropEffMin(sw, sh, [960, 540], 2.66); zm = G.cropZoomMax(sw, sh, em);
+  ok(em[0] === 960 && em[1] === 540 && Math.abs(zm - 8 / 3) < 1e-9, "up100 slider 1..2.667 " + zm);
+  const zn = G.cropNative(sw, sh, main, zm);
+  ok(Math.abs(zn - 4 / 3) < 1e-9, "up100 native at 1.333 " + zn);
+  c = G.cropFromZoom(zm, 0.5, 0.5, sw, sh, em);
+  ok(c.w === 960 && c.h === 540 && G.cropScale(c, 1920, 1080) === 2, "up100 end 960x540 upscaled 2x");
+  c = G.cropFromZoom(zn, 0.5, 0.5, sw, sh, em);
+  ok(c.w === 1920 && G.cropScale(c, 1920, 1080) === 1, "up100 threshold window native");
+  c = G.cropFromZoom(1.8, 0.5, 0.5, sw, sh, em);
+  ok(G.cropScale(c, 1920, 1080) > 1.3 && G.cropScale(c, 640, 360) < 1, "up100 1.8x: main upscaled, sub not");
+  ok(G.cropNative(sw, sh, [[640, 360]], zm) === zm, "sub only zoomed: no zoom part up to 2.667");
+  ok(G.cropNative(sw, sh, [], zm) === zm, "no zoomed stream: threshold at the end");
+  ok(G.cropNative(1920, 1080, [[1920, 1080]], 2) === 1, "stream = sensor: zoom from 1x");
+  // no caps: 64x64 floor, slider ends at 8; zoom_max tighter than min_win wins
+  em = G.cropEffMin(sw, sh, [64, 64], 8);
+  ok(G.cropZoomMax(sw, sh, em) === 8, "no zoom_max: 8x");
+  em = G.cropEffMin(sw, sh, [64, 64], 2.5);
+  ok(em[0] === 1024 && em[1] === 576 && G.cropZoomMax(sw, sh, em) === 2.5, "zoom_max 2.5 below min_win " + em);
+  ok(G.cropZoomMax(sw, sh, [sw, sh]) === 1, "min_win = sensor: no zoom");
 }
 
 console.log((fails ? "FAILED " : "ok ") + (checks - fails) + "/" + checks);
