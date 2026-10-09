@@ -262,6 +262,51 @@ a 2-hour soak run unless `--soak-dur` overrides), `drift` (standard + a
 `soak` and `drift` are deliberately separate: both take hours and run
 serially, so bundling them would silently double a soak run's wall time.
 
+### `--profile openimp`: FrontCrop, encoder ROI and OpenIMP keys
+
+An opt-in section (`scripts/timps-qa-openimp.sh`, sourced by `timps-qa.sh`)
+that checks the **picture**, not just the POST reply. It never runs in an
+unfiltered run; select it with `--profile openimp` (preflight + this section
+only) or `--only openimp` (combinable, e.g. `--only 1b,openimp`):
+
+```sh
+scripts/timps-qa.sh --cam 192.168.10.163 --profile openimp --ssh root@192.168.10.163
+scripts/timps-qa.sh --cam 192.168.10.163 --profile openimp --include-experimental
+```
+
+It reads the tiers from `GET /control` (`caps.roi`, `caps.fcrop`,
+`caps.image`, `caps.framesource`, `caps.daynight`) and decides per feature:
+`effective` = real tests (a missing effect is FAIL), `experimental` = SKIP
+unless `--include-experimental` (then a missing effect is INFO),
+`unsupported` = the POST must be refused (422 `not_supported_on_soc`) and the
+stream must keep running, `sim` (host sim) = round-trips only, missing caps
+(older timps) = SKIP.
+
+| Test | Pass condition |
+| --- | --- |
+| FrontCrop, every enabled stream (`/snapshot.jpg?chn=S`, else an RTSP frame) | crop off → before; centered 50 % window and top-left 50 % window → after. Size unchanged, NCC(after, matching sub-window of before) ≥ 0.85 and ≥ 0.10 above NCC(after, whole before) and NCC(after, the other window). `caps.fcrop.zoomable[S]=0` (T20 main) must keep the full picture. After crop off the full picture is back. `caps.fcrop.state` on/off. `caps.fcrop.live=0` (T23): SKIP; `--allow-restart` checks the persist only. |
+| Encoder ROI, streams with `caps.roi.streams[S]="ok"` | the 16-aligned box (~1/3 × 1/3) with the most texture; median Laplacian energy over 3 I-frames, inside/outside, ON vs OFF (`rel`). qp +20 (capped by `qp_delta_eff`): rel ≤ 0.85; qp −15: rel ≥ 1.05 (no effect = WARN only). GET echo equal, `caps.roi.rejected[S]` unchanged. |
+| OpenIMP-only image keys (`colorfx scene dpc_strength defog_strength drc_strength sinter_strength temper_strength ae_compensation`) | in `caps.image`: POST/GET/restore round-trip; otherwise one POST answers 422. brightness 64→192 and ae_compensation 40→230: mean luma +8 (WARN if not); colorfx 1: saturation ≤ 25 % (SKIP without colour); sinter/temper: temporal noise as INFO. |
+| Rotation (restart-only, never changed) | if `videoN.rotation` is 90/270: `eff_width`/`eff_height` swapped and the stream size (ffprobe) equals them, or the start-up refusal as INFO. |
+| With `--ssh` | `timpsd --check-libs` (libimp flavour), the daynight `hr=` (AE reserve) values from logread as INFO. |
+
+Safety: the touched `image.*` keys, `image.fcrop_*` and the ROI slot used are
+saved first and restored at the end and from the EXIT/INT/TERM trap, then read
+back and compared (a FAIL if they differ). Nothing restart-only is changed and
+the script never restarts timpsd. A target listed in `QA_PROD_CAMS`
+(space/comma list) or whose hostname (via `--ssh`) matches `QA_PROD_RE`
+(default `prod`) is refused without `--allow-prod`.
+
+Limits: the scene must be **static, lit and textured** (a flat wall or night
+IR gives INCONCLUSIVE/SKIP, a moving scene spoils the ROI medians); AE is given
+`OI_SETTLE_MAX` seconds (default 8) per change; the ROI sharpening check needs
+a base QP well above `min_qp`. Metrics: `scripts/qa/openimp_vision.py` (pure
+Python, no numpy; JPEG via ffmpeg), calibrated by
+`python3 scripts/qa/test_openimp_vision.py` (synthetic crops, blur/sharpen,
+and a real libx264 `addroi` encode). Against the sim
+(`--only openimp`) the round-trips run and the picture checks SKIP;
+`OI_SIM_IMAGES=1` runs them anyway as INFO lines (plumbing only).
+
 ### Output
 
 Each run creates `timps-qa-<YYYYMMDD-HHMMSS>/` (or the directory given by
