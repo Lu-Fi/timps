@@ -35,9 +35,11 @@ semantic versioning.
   (libimp refuses `x+w` past the width). Delta -25..25, live without IDR,
   H.264 only, re-applied after every stream start and recycle like T10..T21.
   Bound weak (with `GetChnRoiAttr`): the vendor T31 libimp and OpenIMP builds
-  without it report `unsupported`, as does libimp env `OPENIMP_T31_ROI=0`.
-  Device-tested by the OpenIMP maintainer (claude/t31-roi, claude/roi-qp-clamp
-  fec3e69), host-tested in timps only (`make test-roi`).
+  without it report `unsupported`, as does libimp env `OPENIMP_T31_ROI=0`
+  (stored regions are then not sent).
+  Device-tested by the OpenIMP maintainer (claude/t31-roi d03ca24,
+  claude/roi-qp-clamp fec3e69; neither is on OpenIMP main/next yet, an older
+  OpenIMP reports `unsupported`), host-tested in timps only (`make test-roi`).
 - **ISP FrontCrop: `image.fcrop_enable`/`fcrop_x`/`fcrop_y`/`fcrop_w`/`fcrop_h`**
   (sensor pixels, x/y = left/top; the SDK orders top, left). Evened, moved
   inside the sensor, at least 64x64, applied once per POST and at start.
@@ -174,6 +176,9 @@ semantic versioning.
   and a snapshot never applied it. Such a window now reads
   `caps.fcrop.state` `waiting` and is applied on any framesource start
   (stream, snapshot, motion), not only when an encoder stream starts.
+  Disabled streams do not count as able to show it, the dedicated JPEG
+  channel does. T31 no longer retries a refused or failed window on every
+  stream start (one WARN per window).
 - **ROI: delta -26 produced invalid H.264** (Wyze T20: Intel VA-API refused
   it, VLC/Firefox/Edge smeared below the region; the jump back at the region
   edge is mb_qp_delta +26). Deltas are clamped to -25..25 on every SoC; a
@@ -182,7 +187,9 @@ semantic versioning.
   it stays absolute only while |abs - picture QP| <= 25 for every picture QP
   (FixQP: `videoN.qp`; other modes: `min_qp`..`max_qp`), otherwise it goes out
   as the delta to `videoN.qp` (FixQP) or the middle of the QP window, clamped.
-  A live change of `videoN.qp`/`min_qp`/`max_qp`/`rc_mode` re-maps the regions.
+  A live change of `videoN.qp`/`min_qp`/`max_qp`/`rc_mode` re-maps the regions
+  where the key is live; on T31/C100/T40/T41 `rc_mode`/`qp` are restart-only
+  and count from the next restart.
 - **A main stream smaller than the sensor showed only its top-left corner on
   T10/T20/T21/T30** when `sensor.width/height` were not in the config: the
   driver's `/proc/jz/sensor` size is filled only once the sensor runs, so the

@@ -436,20 +436,27 @@ Prose and pitfalls
   show it, logged once with errno), `waiting` (T10/T20/T21: refused only
   because every stream that could show the window is idle - the driver counts
   an idle stream's channel as unable; applied when one starts, a snapshot
-  included), `failed` (any other SDK error) or `unsupported`. `min_win`: T31/T23 `ceil(out × 100 / (100 + p))` per axis
+  included; disabled streams do not count, the dedicated JPEG channel
+  `jpeg.*` does), `failed` (any other SDK error, logged once per window, no
+  retry until the next POST) or `unsupported`. `min_win`: T31/T23 `ceil(out × 100 / (100 + p))` per axis
   for the largest stream, `p` = open-tx-isp `fcrop_upscale_pct`
   (`/sys/module/tx_isp_t31|t23/parameters/`, reported as `upscale_pct`, -1 if
   absent = no upscaling); T10/T20/T21 the smallest downscaled stream (T10 at
   least 640×360); `zoom_max` = min(sensor/min_win) per axis. `zoomable[S]`:
   the stream can show a window at all (T10/T20/T21: only streams smaller than
   the sensor, so usually only the sub stream); `zoomed[S]`: it shows the
-  current one. A stored window that was refused or is waiting is applied again
-  whenever a framesource starts (stream, snapshot or motion), and re-POSTing an unchanged `image.fcrop_*` value retries it
+  current one. On T10/T20/T21 a stored window that was refused or is waiting
+  is applied again whenever a framesource starts (stream, snapshot or motion);
+  T31 does not retry on a start (its driver judges running channels only, a
+  start cannot make a window acceptable). Re-POSTing an unchanged `image.fcrop_*` value retries it
   while the state is not `on`. Device-tested (by the OpenIMP maintainer)
   on **T10, T20 and T21 with OpenIMP**, live; on **T10/T20 only the downscaled
   streams show the window** (a main stream at sensor resolution keeps the full
   picture; set it below the sensor size to zoom it), T21 shows it on every
-  stream no larger than the window. T31 is `experimental`, live. **T23 with OpenIMP is `experimental` and start-only**
+  stream no larger than the window. T31 is `experimental`, live; without
+  the open-tx-isp `fcrop_upscale_pct` parameter (vendor T31 kernel, older
+  open-tx-isp) `min_win` is the largest stream, so with a main stream at
+  sensor size no window smaller than the sensor is accepted (no zoom). **T23 with OpenIMP is `experimental` and start-only**
   (`caps.fcrop.live` 0; a POST persists and is reported restart-required,
   applied at the next `/etc/init.d/S95timps restart`) and needs open-tx-isp
   3cf9bdac or newer (see the T23 note under the tier table); vendor T23 is
@@ -889,8 +896,11 @@ Pitfalls:
   picture QP: exact under FixQP, one picture late under CBR), otherwise as the
   delta `abs − ref`, clamped to -25..25, with `ref` = `videoN.qp` (FixQP) or
   the middle of the QP window. Example: FixQP 35, abs 5 → delta -25; CBR
-  15..45, abs 15 → delta -15. A live change of `videoN.qp`, `min_qp`,
-  `max_qp` or `rc_mode` re-maps the regions.
+  15..45, abs 15 → delta -15. The rule uses the values the running encoder
+  has: a live change of `videoN.qp`, `min_qp`, `max_qp` or `rc_mode` re-maps
+  the regions where that key is live (T10..T23/T30: all four; T31/C100/T40/T41:
+  `min_qp`/`max_qp` only), a restart-only `rc_mode`/`qp` counts from the
+  next restart.
 * **Macroblocks.** The SDK truncates to 16×16 macroblocks and clips nothing;
   timps rounds the rectangle **outwards** to 16 and clamps it into the picture.
   `p1` is the last pixel of the last macroblock, so it stays inside the
@@ -934,7 +944,7 @@ The OpenIMP tiers come from device tests by the OpenIMP maintainer (OpenIMP
 | T21 | experimental (returns 0, no effect seen) | **effective** (on by default; libimp env `OPENIMP_T21_ROI=0` turns it off, timps then reports `experimental`) | unsupported (no symbol) | **effective** (all streams, 5 runs), live |
 | T23 | unsupported (the vendor encoder only stores the region) | unsupported (same) | unsupported (untested) | experimental, **start-only** (`caps.fcrop.live` 0; needs open-tx-isp 3cf9bdac+) |
 | T30, C100 | unsupported (not investigated) | — | unsupported (not investigated) | — |
-| T31 | unsupported (the 1.1.x libimp has no ROI symbol) | **effective** via `SetChnRoiAttr` (AVPU QP table; libimp env `OPENIMP_T31_ROI=0` turns it off, timps then reports `unsupported`) | experimental, live | experimental, live (the window is taken; OpenIMP lacks the scaler steps, picture effect unproven) |
+| T31 | unsupported (the 1.1.x libimp has no ROI symbol) | **effective** via `SetChnRoiAttr` (AVPU QP table; needs an OpenIMP with d03ca24 and the clamp fec3e69, see below; libimp env `OPENIMP_T31_ROI=0` turns it off, timps then reports `unsupported`) | experimental, live (no zoom without `fcrop_upscale_pct`) | experimental, live (the window is taken; OpenIMP lacks the scaler steps, picture effect unproven) |
 | T40, T41 | unsupported (vendor T41 `SetChnRoiAttr` takes deltas only; not device-tested) | unsupported (OpenIMP T41 ROI experimental, off by default) | unsupported (no FrontCrop; live fs crop stops T41) | unsupported |
 | host sim | sim | | sim | |
 
@@ -943,6 +953,12 @@ only stores the region"; vendor T31 "T31 ROI needs OpenIMP (SetChnRoiAttr);
 the vendor libimp has no ROI"; T40/T41 "T40/T41 SetChnRoiAttr is not
 device-tested, left off". Family B is live without IDR, H.264 only, and with
 no window set the encoder output is bit-identical (OpenIMP maintainer).
+
+**T31 ROI needs a recent OpenIMP.** `IMP_Encoder_SetChnRoiAttr` for T31 is
+OpenIMP d03ca24 (branch `claude/t31-roi`), the mb_qp_delta clamp fec3e69
+(`claude/roi-qp-clamp`); both are in the `claude/agg-34` aggregate, not yet on
+OpenIMP `main`/`next`. A firmware whose OpenIMP pin lacks them (thingino's
+`package/openimp` pins `main`) reports `caps.roi.tier` = `unsupported`.
 
 **T23 FrontCrop (OpenIMP).** Requires open-tx-isp 3cf9bdac or newer: older
 drivers hung the pipeline on a crop change. The tier is compile-time, timps

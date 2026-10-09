@@ -151,6 +151,15 @@ static void t_layout_b(void)
     CK(offsetof(ms_roiwin_api, mode) == 20 && offsetof(ms_roiwin_api, qp) == 24, "mode 20, qp 24");
     CK(sizeof(ms_roiwin_api) == 28, "RoiWin 28 bytes, got %zu", sizeof(ms_roiwin_api));
     CK(sizeof(ms_roiattr_api) == 280, "RoiAttr 280 bytes");
+    ms_roiattr_api a, b;
+    memset(&a, 0, sizeof a);
+    memset(&b, 0xa5, sizeof b);
+    for (int i = 0; i < ROI_B_WINS; i++) b.win[i].enable = 0;
+    a.win[1] = (ms_roiwin_api){ 1, 16, 32, 64, 48, ROI_B_DELTA, -10 };
+    b.win[1] = a.win[1];
+    CK(roiattr_same(&a, &b), "padding and disabled windows ignored");
+    b.win[1].qp = -9;
+    CK(!roiattr_same(&a, &b), "qp differs");
 }
 
 /* x,y,w,h for family B, never past the picture */
@@ -271,6 +280,12 @@ static void t_fcrop_limits(void)
         CK(fcrop_ds_waits(960, 540, 2, vw, vh, none, 1920, 1080), "nothing on: waits");
         CK(!fcrop_ds_waits(960, 540, 2, vw, vh, sub_on, 1920, 1080), "sub on: real refusal");
         CK(!fcrop_ds_waits(600, 340, 2, vw, vh, idle, 1920, 1080), "below every stream: real refusal");
+        const int one_w[2] = { 1920, 0 }, one_h[2] = { 1080, 0 };
+        CK(!fcrop_ds_zooms(960, 540, 0, 0, 1920, 1080), "disabled stream never zooms");
+        CK(!fcrop_ds_waits(960, 540, 2, one_w, one_h, idle, 1920, 1080), "video1 off: real refusal");
+        CK(!fcrop_ds_waits(960, 540, 2, one_w, one_h, none, 1920, 1080), "video1 off, idle: real refusal");
+        const int j_w[3] = { 1920, 0, 640 }, j_h[3] = { 1080, 0, 360 }, j_idle[3] = { 1, 0, 0 };
+        CK(fcrop_ds_waits(960, 540, 3, j_w, j_h, j_idle, 1920, 1080), "idle JPEG channel: waits");
     }
 }
 

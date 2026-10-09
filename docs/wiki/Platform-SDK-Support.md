@@ -130,7 +130,7 @@ come from device tests by the OpenIMP maintainer (OpenIMP d03ca24, open-tx-isp
 | T21 | experimental (no effect seen) | **effective** (`OPENIMP_T21_ROI=0` turns it off → experimental) | unsupported | **effective**, live |
 | T23 | unsupported (encoder only stores the region) | unsupported | unsupported (untested) | experimental, **start-only** (needs open-tx-isp 3cf9bdac+) |
 | T30, C100 | unsupported | — | unsupported | — |
-| T31 | unsupported (no ROI symbol in 1.1.x) | **effective** (`SetChnRoiAttr`; `OPENIMP_T31_ROI=0` → unsupported) | experimental, live | experimental, live (picture effect unproven) |
+| T31 | unsupported (no ROI symbol in 1.1.x) | **effective** (`SetChnRoiAttr`, needs OpenIMP d03ca24 + fec3e69; `OPENIMP_T31_ROI=0` → unsupported) | experimental, live (no zoom without open-tx-isp `fcrop_upscale_pct`) | experimental, live (picture effect unproven) |
 | T40, T41 | unsupported (vendor T41 takes deltas only; not device-tested) | unsupported (T41 experimental, off in libimp) | unsupported | unsupported |
 
 T23 FrontCrop: older open-tx-isp drivers hung the pipeline on a crop change,

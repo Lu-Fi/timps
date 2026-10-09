@@ -128,6 +128,19 @@ typedef struct {
 typedef struct { ms_roiwin_api win[ROI_B_WINS]; } ms_roiattr_api;
 enum { ROI_B_DELTA = 0, ROI_B_FIXED = 1 };
 
+/* field by field: the struct has padding a library may leave untouched */
+static inline int roiattr_same(const ms_roiattr_api *a, const ms_roiattr_api *b)
+{
+    for (int i = 0; i < ROI_B_WINS; i++) {
+        const ms_roiwin_api *p = &a->win[i], *q = &b->win[i];
+        if (p->enable != q->enable) return 0;
+        if (!p->enable) continue;
+        if (p->x != q->x || p->y != q->y || p->w != q->w || p->h != q->h ||
+            p->mode != q->mode || p->qp != q->qp) return 0;
+    }
+    return 1;
+}
+
 /* family B rect: the family-A macroblock corners turned into x/y/w/h, the end
  * clipped to the picture (libimp refuses x+w > width, e.g. the 1088th row) */
 static inline int roi_geom_b(int x, int y, int w, int h, int fw, int fh,
@@ -225,7 +238,7 @@ static inline int fcrop_zoom_x100(int sw, int sh, int mw, int mh)
  * at least its own size (no upscaling) */
 static inline int fcrop_ds_zooms(int ww, int wh, int vw, int vh, int sw, int sh)
 {
-    if (vw >= sw && vh >= sh) return 0;
+    if (vw <= 0 || vh <= 0 || (vw >= sw && vh >= sh)) return 0;
     return ww >= vw && wh >= vh;
 }
 
