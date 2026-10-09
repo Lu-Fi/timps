@@ -3187,6 +3187,7 @@ static void *video_thread(void *arg)
         /* honor IDR requests from RTSP/HTTP threads here (single-thread IMP) */
         if (vc->idr_req){ vc->idr_req=0; IMP_Encoder_RequestIDR(vc->chn); }
         roi_poll(vc);
+        int64_t poll_t0 = ms_now_us();
         int pr = IMP_Encoder_PollingStream(vc->chn, g_hcfg->imp_polling_timeout);
         IMPEncoderStream st;
 #if defined(PLATFORM_T40)||defined(PLATFORM_T41)
@@ -3266,6 +3267,8 @@ static void *video_thread(void *arg)
                     dbg_pollfail=0;
                 }
             }
+            /* a libimp that fails an unregistered channel at once would spin here */
+            if (pr!=0 && ms_now_us() - poll_t0 < 2000) usleep(10000);
             continue;
         }
         dbg_getfail=0;
