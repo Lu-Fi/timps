@@ -1,0 +1,117 @@
+#!/usr/bin/env node
+// Host test for the crop geometry of the firmware's overlays page
+// (thingino-firmware: package/timps/files/www/a/roi-crop.js).
+//
+//   node scripts/test_webui_crop.js <path/to/roi-crop.js> [control.json ...]
+//
+// Extracts the pure cropFit/cropDrag/cropFromZoom/zoomFromCrop/cropPct by
+// name; each extra argument is a saved GET /control whose caps.fcrop.sensor
+// is used as one more sensor size. Exit 0 = all passed.
+"use strict";
+const fs = require("fs");
+
+const js = process.argv[2];
+if (!js || !fs.existsSync(js)) {
+  console.error("usage: node test_webui_crop.js <path/to/roi-crop.js> [control.json ...]");
+  process.exit(2);
+}
+const src = fs.readFileSync(js, "utf8");
+let fails = 0, checks = 0;
+function ok(cond, name) {
+  checks++;
+  if (!cond) { fails++; console.log("FAIL " + name); }
+}
+
+function body(name) {
+  const at = src.indexOf("function " + name + "(");
+  if (at < 0) throw new Error(name + " not found");
+  let i = src.indexOf("{", at), depth = 0, q = null;
+  for (; i < src.length; i++) {
+    const c = src[i];
+    if (q) { if (c === "\\") i++; else if (c === q) q = null; continue; }
+    if (c === '"' || c === "'") q = c;
+    else if (c === "{") depth++;
+    else if (c === "}" && --depth === 0) break;
+  }
+  return src.slice(at, i + 1);
+}
+const names = ["cropFit", "cropDrag", "cropFromZoom", "zoomFromCrop", "cropPct"];
+const G = new Function(names.map(body).join("\n") + "\nreturn {" + names.join(",") + "};")();
+const F = 64;
+
+function valid(c, sw, sh) {
+  return [c.x, c.y, c.w, c.h].every(v => Number.isInteger(v) && v % 2 === 0) &&
+    c.w >= F && c.h >= F && c.x >= 0 && c.y >= 0 && c.x + c.w <= sw && c.y + c.h <= sh;
+}
+
+const sensors = [[1920, 1080], [2560, 1440], [1280, 720], [2304, 1296], [1600, 1200]];
+process.argv.slice(3).forEach(f => {
+  const j = JSON.parse(fs.readFileSync(f, "utf8"));
+  const s = j.caps && j.caps.fcrop && j.caps.fcrop.sensor;
+  ok(Array.isArray(s) && s[0] > 0 && s[1] > 0, f + ": caps.fcrop.sensor");
+  ok(j.caps && j.caps.fcrop && "live" in j.caps.fcrop && "state" in j.caps.fcrop, f + ": caps.fcrop live/state");
+  if (s && s[0] > 0) sensors.push(s);
+});
+
+let seed = 7;
+const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+
+for (const [sw, sh] of sensors) {
+  const tag = sw + "x" + sh;
+  const a = sh / sw;
+  // cropFit
+  ok(JSON.stringify(G.cropFit({ x: -50, y: -9, w: 9999, h: 9999 }, sw, sh, F)) ===
+    JSON.stringify({ x: 0, y: 0, w: sw, h: sh }), tag + " fit clamps to sensor");
+  let c = G.cropFit({ x: sw, y: sh, w: 10, h: 3 }, sw, sh, F);
+  ok(c.w === F && c.h === F && c.x === sw - F && c.y === sh - F, tag + " fit min 64 and inside");
+  c = G.cropFit({ x: 101, y: 33, w: 641, h: 359 }, sw, sh, F);
+  ok(valid(c, sw, sh), tag + " fit even");
+
+  // sliders round trip
+  for (const z of [1, 1.5, 2, 3.7, 8]) {
+    for (const p of [0, 0.25, 0.5, 1]) {
+      c = G.cropFromZoom(z, p, p, sw, sh, F);
+      ok(valid(c, sw, sh), tag + " zoom " + z + " valid");
+      ok(Math.abs(c.h / c.w - a) < 0.02 || c.w === F || c.h === F, tag + " zoom " + z + " keeps aspect");
+      const v = G.zoomFromCrop(c, sw, sh, 8);
+      if (z > 1) ok(Math.abs(v.z - z) < 0.05 && Math.abs(v.px - p * 100) <= 1, tag + " zoom " + z + " round trip");
+    }
+  }
+  const v0 = G.zoomFromCrop({ x: 0, y: 0, w: 0, h: 0 }, sw, sh, 8);
+  ok(v0.z === 1 && v0.px === 50 && v0.py === 50, tag + " empty window = zoom 1 centred");
+
+  // drag move: delta, then clamped at the edges, size unchanged
+  const o = G.cropFromZoom(2, 0.5, 0.5, sw, sh, F);
+  c = G.cropDrag(o, "move", 100, -40, sw, sh, F);
+  ok(c.x === o.x + 100 && c.y === o.y - 40 && c.w === o.w && c.h === o.h, tag + " move delta");
+  c = G.cropDrag(o, "move", 1e5, 1e5, sw, sh, F);
+  ok(c.x === sw - o.w && c.y === sh - o.h && c.w === o.w, tag + " move clamped bottom-right");
+  c = G.cropDrag(o, "move", -1e5, -1e5, sw, sh, F);
+  ok(c.x === 0 && c.y === 0, tag + " move clamped top-left");
+
+  // drag size: aspect kept, top-left fixed, bounded
+  const g = Math.round(sw / 8);
+  c = G.cropDrag(o, "size", g, g * a, sw, sh, F);
+  ok(c.x === o.x && c.y === o.y && Math.abs(c.w - (o.w + g)) <= 2 && Math.abs(c.h / c.w - a) < 0.01, tag + " size grow");
+  c = G.cropDrag(o, "size", 1e5, 0, sw, sh, F);
+  ok(valid(c, sw, sh) && c.x === o.x && c.y === o.y && (c.x + c.w >= sw - 2 || c.y + c.h >= sh - 2), tag + " size capped at sensor");
+  c = G.cropDrag(o, "size", -1e5, -1e5, sw, sh, F);
+  ok(valid(c, sw, sh) && Math.min(c.w, c.h) === F, tag + " size floor 64");
+
+  for (let i = 0; i < 400; i++) {
+    const s = G.cropFit({ x: rnd() * sw, y: rnd() * sh, w: rnd() * sw, h: rnd() * sh }, sw, sh, F);
+    const m = rnd() < 0.5 ? "move" : "size";
+    const d = G.cropDrag(s, m, (rnd() - 0.5) * 2 * sw, (rnd() - 0.5) * 2 * sh, sw, sh, F);
+    ok(valid(s, sw, sh) && valid(d, sw, sh), tag + " random " + m + " " + JSON.stringify(s) + " -> " + JSON.stringify(d));
+  }
+
+  // preview/map mapping: % of the full-sensor surface, px round trip at 390 px
+  const p = G.cropPct(o, sw, sh), bw = 358, bh = bw * a;
+  ok(Math.abs(p.left + p.width / 2 - 50) < 0.2 && Math.abs(p.top + p.height / 2 - 50) < 0.2, tag + " pct centred");
+  ok(Math.abs(p.left * bw / 100 * sw / bw - o.x) < 1e-6 && Math.abs(p.height * bh / 100 * sh / bh - o.h) < 1e-6, tag + " pct<->sensor round trip");
+  const full = G.cropPct({ x: 0, y: 0, w: sw, h: sh }, sw, sh);
+  ok(full.left === 0 && full.top === 0 && full.width === 100 && full.height === 100, tag + " full window = 100%");
+}
+
+console.log((fails ? "FAILED " : "ok ") + (checks - fails) + "/" + checks);
+process.exit(fails ? 1 : 0);
