@@ -232,7 +232,8 @@ class TestRoi(Base):
         self.assertTrue(0.85 < res["rel"] < 0.95, res)
         self.assertEqual(v, "NOEFFECT")
         self.assertEqual(ov.roi_check(off, on, self.RECT, "blur", 20, "cbr")[1], "WARN")
-        self.assertEqual(ov.roi_check(off, on, self.RECT, "blur", 13, "vbr")[1], "WARN")
+        self.assertEqual(ov.roi_check(off, on, self.RECT, "blur", 13, "cbr")[1], "WARN")
+        self.assertIn(ov.roi_check(off, on, self.RECT, "blur", 13, "vbr")[1], ("PASS", "NOEFFECT"))
         self.assertEqual(ov.roi_check(off, on, self.RECT, "blur")[1], "NOEFFECT")
 
     def test_small_delta_no_effect_is_warn(self):
@@ -242,6 +243,15 @@ class TestRoi(Base):
         blurred = self.frames(lambda f: box_blur_rect(f, self.RECT))
         self.assertEqual(ov.roi_check(off, blurred, self.RECT, "sharp", -12)[1], "FAIL")
         self.assertEqual(ov.roi_check(off, blurred, self.RECT, "blur", 13)[1], "PASS")
+
+    def test_small_delta_graded_under_fixqp_vbr(self):
+        off, same = self.frames(), self.frames(n=3)
+        for rc in ("fixqp", "vbr"):
+            self.assertEqual(ov.roi_check(off, same, self.RECT, "blur", 13, rc)[1], "NOEFFECT")
+            self.assertEqual(ov.roi_check(off, same, self.RECT, "sharp", -12, rc)[1], "NOEFFECT")
+        self.assertEqual(ov.roi_check(off, same, self.RECT, "blur", 13, "cbr")[1], "WARN")
+        sharper = self.frames(lambda f: sharpen_rect(f, self.RECT))
+        self.assertEqual(ov.roi_check(off, sharper, self.RECT, "blur", 13, "cbr")[1], "FAIL")
 
     def test_blur_bar(self):
         self.assertAlmostEqual(ov.blur_bar(None), ov.ROI_BLUR)
@@ -322,12 +332,20 @@ class TestMisc(Base):
         self.assertEqual(v, "INCONCLUSIVE", res)
         self.assertEqual(ov.lift_grade(20.0, 200.0, 90.0)[1], "INCONCLUSIVE")
         self.assertEqual(ov.lift_grade(20.0, 200.0, 40.0)[1], "PASS")
+        self.assertEqual(ov.lift_grade(17.5, 218.8, 18.0, 216.0)[1], "PASS")
+        # a light on during the first high grab only
+        self.assertEqual(ov.lift_grade(20.0, 60.0, 21.0, 22.0)[1], "INCONCLUSIVE")
+        self.assertEqual(ov.lift_grade(60.0, 63.0, 59.0, 62.0)[1], "WARN")
 
     def test_cli_lift(self):
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             ov.main(["lift", "--lo", "100", "--hi", "10", "--lo2", "5"])
         self.assertIn("verdict=INCONCLUSIVE", buf.getvalue())
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            ov.main(["lift", "--lo", "20", "--hi", "200", "--lo2", "21", "--hi2", "198"])
+        self.assertIn("verdict=PASS", buf.getvalue())
 
     def test_cli_error_line(self):
         buf = io.StringIO()

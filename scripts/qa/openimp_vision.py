@@ -23,12 +23,14 @@ Thresholds (also in the timps-qa-openimp.sh header):
   ROI_SHARP   1.05  rel sharpness at or above = sharpened
   With --delta the blur bar is 1 - 0.15 * min(|D|, 20) / 20. No measurable
   effect is WARN instead of NOEFFECT when |D| < ROI_SMALL_DELTA (16: the
-  encoder clamps the QP table, T21 +13/-12), or for blur under --rc cbr when
-  rel is within ROI_CBR_BAND (0.10) of the bar (CBR hands the saved bits back).
-  lift: effect = hi - (lo + lo2) / 2 with lo2 measured after hi at the low
-  value again; |lo2 - lo| > max(LIFT_MIN, |hi - lo| / 3) = the scene changed
-  (day/night switch, IR probe) = INCONCLUSIVE; effect >= LIFT_MIN PASS,
-  <= -LIFT_MIN FAIL, else WARN.
+  encoder clamps the QP table, T21 +13/-12) unless --rc is fixqp or vbr, or
+  for blur under --rc cbr when rel is within ROI_CBR_BAND (0.10) of the bar
+  (CBR hands the saved bits back). An effect in the wrong direction is FAIL
+  at any delta.
+  lift: lo, hi, lo2, hi2 in that order; effect = (hi + hi2) / 2 - (lo + lo2) / 2;
+  |lo2 - lo| or |hi2 - hi| > max(LIFT_MIN, |hi - lo| / 3) = the scene changed
+  (day/night switch, IR probe, a light during one grab) = INCONCLUSIVE;
+  effect >= LIFT_MIN PASS, <= -LIFT_MIN FAIL, else WARN. Without --hi2, hi2 = hi.
 """
 import argparse
 import subprocess
@@ -274,7 +276,8 @@ def roi_check(offs, ons, rect, direction, delta=None, rc=None):
                ratio_in=r_in, ratio_out=r_out, rel=rel)
     if off_in < 1.0:
         return res, "INCONCLUSIVE", "region has no texture"
-    small = delta is not None and abs(delta) < ROI_SMALL_DELTA
+    # fixqp/vbr do not hand the bits back: a small delta must still show
+    small = delta is not None and abs(delta) < ROI_SMALL_DELTA and rc not in ("fixqp", "vbr")
     if direction == "blur":
         bar = blur_bar(delta)
         if rel <= bar and r_in < 1.0:
@@ -297,17 +300,20 @@ def roi_check(offs, ons, rect, direction, delta=None, rc=None):
     return res, "NOEFFECT", why
 
 
-def lift_grade(lo, hi, lo2, min_d=LIFT_MIN):
-    eff = hi - (lo + lo2) / 2.0
-    drift = abs(lo2 - lo)
+def lift_grade(lo, hi, lo2, hi2=None, min_d=LIFT_MIN):
+    if hi2 is None:
+        hi2 = hi
+    eff = (hi + hi2) / 2.0 - (lo + lo2) / 2.0
+    drift = max(abs(lo2 - lo), abs(hi2 - hi))
     res = dict(effect=eff, drift=drift)
+    seq = "%.1f -> %.1f -> %.1f -> %.1f" % (lo, hi, lo2, hi2)
     if drift > max(min_d, abs(hi - lo) / 3.0):
-        return res, "INCONCLUSIVE", "scene changed during the test (low value %.1f, then %.1f)" % (lo, lo2)
+        return res, "INCONCLUSIVE", "scene changed during the test (%s)" % seq
     if eff >= min_d:
-        return res, "PASS", "mean luma %.1f -> %.1f -> %.1f (%+.1f >= %g)" % (lo, hi, lo2, eff, min_d)
+        return res, "PASS", "mean luma %s (%+.1f >= %g)" % (seq, eff, min_d)
     if eff <= -min_d:
-        return res, "FAIL", "mean luma FELL %.1f -> %.1f -> %.1f (%+.1f)" % (lo, hi, lo2, eff)
-    return res, "WARN", "no measurable luma change %.1f -> %.1f -> %.1f" % (lo, hi, lo2)
+        return res, "FAIL", "mean luma FELL %s (%+.1f)" % (seq, eff)
+    return res, "WARN", "no measurable luma change %s" % seq
 
 
 def pick_region(img, align=16, frac=0.34):
@@ -380,6 +386,7 @@ def main(argv=None):
     p.add_argument("--lo", type=float, required=True)
     p.add_argument("--hi", type=float, required=True)
     p.add_argument("--lo2", type=float, required=True)
+    p.add_argument("--hi2", type=float)
     p.add_argument("--min", type=float, default=LIFT_MIN)
     p = sp.add_parser("region")
     p.add_argument("--img", required=True)
@@ -403,7 +410,7 @@ def main(argv=None):
                                     a.rect, a.dir, a.delta, a.rc)
             emit(**res, verdict=v, reason=why)
         elif a.cmd == "lift":
-            res, v, why = lift_grade(a.lo, a.hi, a.lo2, a.min)
+            res, v, why = lift_grade(a.lo, a.hi, a.lo2, a.hi2, a.min)
             emit(**res, verdict=v, reason=why)
         elif a.cmd == "region":
             img = load(a.img)

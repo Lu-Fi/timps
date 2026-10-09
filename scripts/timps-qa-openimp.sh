@@ -26,7 +26,8 @@
 #         before) and NCC(after, the other window) by >= 0.10. Streams with
 #         caps.fcrop.zoomable[S]=0 (T20 main) must keep the full picture
 #         (NCC(after, before) >= 0.85). After crop off the full picture must be
-#         back. caps.fcrop.state must read on / off (waiting = WARN). An RTSP
+#         back. caps.fcrop.state must read on / off (waiting = WARN, the
+#         picture check is then SKIPped). An RTSP
 #         consumer is held on every zoomable stream meanwhile: T10/T20/T21
 #         refuse a window while that stream is idle. caps.fcrop.live=0 (T23):
 #         SKIP (start-only); with --allow-restart a persist round-trip only.
@@ -36,16 +37,18 @@
 #         divided by outside (rel). +delta (min(20, qp_delta_eff max)):
 #         rel <= 1 - 0.15*delta/20 = blurred. -delta (max(-15, qp_delta_eff
 #         min)): rel >= 1.05 = sharpened; no measurable sharpening is only
-#         WARN (a stream already near min_qp has nothing to gain), as is no
-#         effect at |delta| < 16 (T21) or weak blur under CBR. The GET echo must
+#         WARN (a stream already near min_qp has nothing to gain; not under
+#         fixqp), as is no effect at |delta| < 16 (T21) unless rc_mode is
+#         fixqp/vbr, or weak blur under CBR. The wrong direction is FAIL at any
+#         delta. The GET echo must
 #         equal the POST and caps.roi.rejected[S] must not grow.
 #   OI-4  OpenIMP-only image keys (colorfx scene dpc_strength defog_strength
 #         drc_strength sinter_strength temper_strength ae_compensation): in
 #         caps.image -> POST/GET/restore round-trip; not in caps -> one POST
 #         must answer 422 not_supported_on_soc. Effects:
-#           brightness 64 -> 192 -> 64: mean luma must rise by >= 8 (WARN if
-#             not, FAIL if it falls; SKIP when the two 64 readings or the
-#             daynight state differ: the scene changed)
+#           brightness 64 -> 192 -> 64 -> 192: mean luma must rise by >= 8
+#             (WARN if not, FAIL if it falls; SKIP when the two 64 or the two
+#             192 readings or the daynight state differ: the scene changed)
 #           colorfx 1 (B/W): saturation <= 25 % of colorfx 0 (FAIL if not;
 #             SKIP when the picture has no colour, e.g. night)
 #           ae_compensation 40 -> 230 -> 40: as brightness
@@ -86,6 +89,7 @@ oi_post() { curl -s -o "$2" -w '%{http_code}' --max-time 12 -u "$HTTP_USER:$HTTP
 oi_get()  { curlq 12 "$(http_base)/control" -o "$1" && [ -s "$1" ]; }
 oi_vis()  { python3 "$OI_VIS" "$@" 2>>"$OI_DIR/vision.err"; }
 oi_kv()   { printf '%s\n' "$1" | tr ' ' '\n' | sed -n "s/^$2=//p" | tr -d '"' | head -1; }
+oi_ints() { local v; for v in "$@"; do case "$v" in ''|*[!0-9]*) return 1;; esac; done; }
 oi_reason() { printf '%s\n' "$1" | sed -n 's/.*reason="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p'; }
 # 422 not_supported_on_soc, or 200 with every posted key in "unsupported"
 oi_refused() { case "$1" in 422) grep -q 'not_supported_on_soc' "$2";; 200) grep -q '"unsupported":\["' "$2";; *) false;; esac; }
@@ -294,19 +298,19 @@ oi_mean_at() {   # <key> <value> -> mean luma (or empty)
 	oi_kv "$(oi_vis stats "$OI_LAST")" mean
 }
 oi_dn_state() { oi_get "$1" && printf '%s/%s' "$(jget "$1" daynight.mode)" "$(jget "$1" daynight.night_baseline)"; }
-oi_lift() {   # <key> <lo> <hi> <restore>: lo, hi, lo again; a moving scene is INCONCLUSIVE
-	local lo hi lo2 r msg dn0 dn1
+oi_lift() {   # <key> <lo> <hi> <restore>: lo, hi, lo, hi; a moving scene is INCONCLUSIVE
+	local lo hi lo2 hi2 r msg dn0 dn1
 	dn0=$(oi_dn_state "$OI_DIR/dn_$1_0.json")
-	lo=$(oi_mean_at "$1" "$2"); hi=$(oi_mean_at "$1" "$3"); lo2=$(oi_mean_at "$1" "$2")
+	lo=$(oi_mean_at "$1" "$2"); hi=$(oi_mean_at "$1" "$3"); lo2=$(oi_mean_at "$1" "$2"); hi2=$(oi_mean_at "$1" "$3")
 	oi_post "{\"image\":{\"$1\":$4}}" /dev/null >/dev/null
 	dn1=$(oi_dn_state "$OI_DIR/dn_$1_1.json")
-	if [ -z "$lo" ] || [ -z "$hi" ] || [ -z "$lo2" ]; then oi_skip "image.$1 effect: no snapshot"; return; fi
+	if [ -z "$lo" ] || [ -z "$hi" ] || [ -z "$lo2" ] || [ -z "$hi2" ]; then oi_skip "image.$1 effect: no snapshot"; return; fi
 	if [ "$dn0" != "$dn1" ]; then
 		oi_skip "image.$1 $2 -> $3: day/night changed during the test (mode/night_baseline $dn0 -> $dn1) - inconclusive"
 		return
 	fi
-	r=$(oi_vis lift --lo "$lo" --hi "$hi" --lo2 "$lo2")
-	msg="image.$1 $2 -> $3 -> $2: $(oi_reason "$r")"
+	r=$(oi_vis lift --lo "$lo" --hi "$hi" --lo2 "$lo2" --hi2 "$hi2")
+	msg="image.$1 $2 -> $3 -> $2 -> $3: $(oi_reason "$r")"
 	case "$(oi_kv "$r" verdict)" in
 		PASS) oi_ok "$msg";;
 		FAIL) oi_soft oi_bad "$msg";;
@@ -392,20 +396,22 @@ else
 			done
 			[ -n "$hs" ] && { info "FrontCrop: holding an RTSP consumer on stream(s)$hs"; sleep 3; }
 			code=$(oi_fc_post 1 "$wx" "$wy" "$ww" "$wh" "$OI_DIR/fc_a.json"); oi_get "$OI_DIR/fc_a_get.json"
-			st=$(jget "$OI_DIR/fc_a_get.json" caps.fcrop.state); rt=""
+			st=$(jget "$OI_DIR/fc_a_get.json" caps.fcrop.state); rt=""; fc_wait=0
 			if [ "$code" = 200 ] && [ "$st" != on ]; then
 				# a re-POST of the unchanged window retries it (the consumer may have been slow to start)
 				sleep 2; code=$(oi_fc_post 1 "$wx" "$wy" "$ww" "$wh" "$OI_DIR/fc_a2.json"); oi_get "$OI_DIR/fc_a2_get.json"
 				st=$(jget "$OI_DIR/fc_a2_get.json" caps.fcrop.state); rt=" (after a retry)"
 			fi
 			if [ "$code" = 200 ] && [ "$st" = on ]; then oi_ok "FrontCrop POST window A: HTTP 200, caps.fcrop.state=on$rt"
-			elif [ "$code" = 200 ] && [ "$st" = waiting ]; then oi_warn "FrontCrop POST window A: state=waiting - no stream that can show it ran (consumer on stream(s)${hs:- none})"
+			elif [ "$code" = 200 ] && [ "$st" = waiting ]; then fc_wait=1; oi_warn "FrontCrop POST window A: state=waiting - no stream that can show it ran (consumer on stream(s)${hs:- none})"
 			else oi_bad "FrontCrop POST window A: HTTP $code, state=$st"; fi
 			code=$(oi_fc_post 0 "$wx" "$wy" "$ww" "$wh" "$OI_DIR/fc_off.json"); oi_get "$OI_DIR/fc_off_get.json"
 			st=$(jget "$OI_DIR/fc_off_get.json" caps.fcrop.state)
 			[ "$st" = off ] && oi_ok "FrontCrop off: caps.fcrop.state=off" || oi_bad "FrontCrop off: state=$st (HTTP $code)"
 			if [ "$OI_VISION" = 0 ]; then
 				oi_skip "FrontCrop picture check: $([ "$OI_SIM" = 1 ] && echo 'sim tier - the sim does not crop' || echo 'no python3')"
+			elif [ "$fc_wait" = 1 ]; then
+				oi_skip "FrontCrop picture check: window A stayed waiting, already reported above"
 			else
 				for s in 0 1; do
 					[ "$(jget "$OI_BASE" "video.$s.enabled")" = 1 ] || continue
@@ -482,6 +488,9 @@ else
 			if ! oi_iframes "$s" "roi${s}_off" "$sc"; then oi_skip "ROI stream $s: could not grab I-frames (see $OI_DIR/ffmpeg_roi.log)"; continue; fi
 			OFF=("${OI_FRAMES[@]}")
 			r=$(oi_vis region --img "${OFF[0]}" --align $((16 / sc)))
+			if ! oi_ints "$(oi_kv "$r" x)" "$(oi_kv "$r" y)" "$(oi_kv "$r" w)" "$(oi_kv "$r" h)"; then
+				oi_skip "ROI stream $s: no textured box ($(oi_reason "$r"))"; continue
+			fi
 			rx=$(( $(oi_kv "$r" x) * sc )); ry=$(( $(oi_kv "$r" y) * sc )); rw=$(( $(oi_kv "$r" w) * sc )); rh=$(( $(oi_kv "$r" h) * sc ))
 			info "ROI stream $s slot $n: textured box ${rx},${ry} ${rw}x${rh} (share $(oi_kv "$r" share) of the frame's detail)"
 		fi
@@ -500,11 +509,13 @@ else
 				[ "$d" = sharp ] && oi_roi_post "$s" "$n" 1 "$rx" "$ry" "$rw" "$rh" "$dneg" /dev/null >/dev/null
 				if ! oi_iframes "$s" "roi${s}_$d" "$sc"; then oi_skip "ROI stream $s $d: could not grab I-frames"; continue; fi
 				qd=$dpos; [ "$d" = sharp ] && qd=$dneg
+				rcm=$(jget "$OI_BASE" "video.$s.rc_mode")
 				r=$(oi_vis roi --off "${OFF[@]}" --on "${OI_FRAMES[@]}" --rect "$((rx/sc)),$((ry/sc)),$((rw/sc)),$((rh/sc))" --dir "$d" \
-					--delta "$qd" --rc "$(jget "$OI_BASE" "video.$s.rc_mode")")
+					--delta "$qd" --rc "$rcm")
 				printf 'stream %s %s: %s\n' "$s" "$d" "$r" >> "$OI_DIR/roi_metrics.txt"
 				v=$(oi_kv "$r" verdict); hint=""
-				[ "$d" = sharp ] && [ "$v" = NOEFFECT ] && [ "$OI_ROI_TIER" = effective ] && { v=WARN; hint=" - base QP may already be near min_qp"; }
+				[ "$d" = sharp ] && [ "$v" = NOEFFECT ] && [ "$OI_ROI_TIER" = effective ] && [ "$rcm" != fixqp ] \
+					&& { v=WARN; hint=" - base QP may already be near min_qp"; }
 				msg="ROI stream $s qp $qd ($d): $(oi_reason "$r") [in $(oi_kv "$r" ratio_in) out $(oi_kv "$r" ratio_out)]"
 				if [ "$v" = WARN ]; then oi_warn "$msg$hint"; else oi_grade "$OI_ROI_TIER" "$v" "$msg"; fi
 			done
