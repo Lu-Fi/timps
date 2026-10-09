@@ -126,10 +126,13 @@ prudynt-t / raptor.
   Auf Hardware getestet (vom OpenIMP-Maintainer, nicht von timps) T10, T20
   und T21 mit OpenIMP (T10: QP51-Region -25 % Bitrate; T21 standardmäßig an,
   `OPENIMP_T21_ROI=0` in der Umgebung schaltet es ab → experimentell); vendor
-  T10/T20/T21 experimentell. T23 lehnt ab (der Encoder speichert die Region
-  nur), T31 ebenso (OpenIMP hat `SetChnRoiAttr`, in timps noch nicht
-  angebunden), dazu T30, T40, T41 und C100. Die Stufe meldet `caps.roi.tier`
-  in `GET /control`.
+  T10/T20/T21 experimentell. **T31 mit OpenIMP** über `SetChnRoiAttr`
+  (vom OpenIMP-Maintainer getestet, in timps nur Host-Tests); vendor T31
+  lehnt ab (kein Symbol). T23 lehnt ab (der Encoder speichert die Region nur),
+  dazu T30, T40, T41 und C100. Delta -25..25 (T21 wirkt nur etwa -12..+13);
+  ein absoluter QP bleibt nur absolut, solange er höchstens 25 vom Bild-QP
+  entfernt ist, sonst wird er als begrenztes Delta gesendet (sonst ungültiges
+  H.264). Stufe und Bereiche meldet `caps.roi` in `GET /control`.
 * **Bildrotation (optional, `USE_ROTATE`)** – `videoN.rotation = 0|90|180|270`.
   Hardware-90/270 auf T40/T41 (I2D) und T31 (FrameSource), Software-90/270 auf
   T23 (`USE_SW_ROTATE`, CPU-intensiv, nur H.264). **Seit dem nächsten Release**
@@ -175,9 +178,12 @@ prudynt-t / raptor.
   Szenen, in denen die Automatik zu lange belichtet.
 * **ISP-FrontCrop / Zoom (seit dem nächsten Release)** – `image.fcrop_enable`,
   `fcrop_x/y/w/h` in Sensorpixeln: der ISP liefert nur diesen Ausschnitt,
-  jeder Stream skaliert ihn auf seine Größe (min. 64×64, live). Getestet (vom
-  OpenIMP-Maintainer) auf T10, T20 und T21 mit OpenIMP (T20: nur
-  herunterskalierte Streams); T31 experimentell, live. **T23 mit OpenIMP:
+  jeder Stream skaliert ihn auf seine Größe (min. 64×64, T10 640×360, live).
+  Getestet (vom OpenIMP-Maintainer) auf T10, T20 und T21 mit OpenIMP (T10/T20:
+  nur herunterskalierte Streams, also meist nur der Sub-Stream; T21: Streams,
+  die ins Fenster passen); T31 experimentell, live (kleinstes Fenster aus
+  `fcrop_upscale_pct` des Treibers). `caps.fcrop` meldet `min_win`,
+  `zoom_max`, `zoomable`/`zoomed` je Stream. **T23 mit OpenIMP:
   experimentell, nur beim Start** – ein POST wird gespeichert und greift erst
   nach `/etc/init.d/S95timps restart`; braucht open-tx-isp 3cf9bdac oder neuer
   (ältere Treiber hängten die Pipeline bei einem Crop-Wechsel), ein Fenster

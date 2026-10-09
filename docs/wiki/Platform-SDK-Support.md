@@ -130,14 +130,21 @@ come from device tests by the OpenIMP maintainer (OpenIMP d03ca24, open-tx-isp
 | T21 | experimental (no effect seen) | **effective** (`OPENIMP_T21_ROI=0` turns it off → experimental) | unsupported | **effective**, live |
 | T23 | unsupported (encoder only stores the region) | unsupported | unsupported (untested) | experimental, **start-only** (needs open-tx-isp 3cf9bdac+) |
 | T30, C100 | unsupported | — | unsupported | — |
-| T31 | unsupported | unsupported (OpenIMP `SetChnRoiAttr`, not wired yet) | experimental, live | experimental, live |
-| T40, T41 | unsupported (`SetChnRoiAttr`, not wired) | unsupported | unsupported | unsupported |
+| T31 | unsupported (no ROI symbol in 1.1.x) | **effective** (`SetChnRoiAttr`; `OPENIMP_T31_ROI=0` → unsupported) | experimental, live | experimental, live (picture effect unproven) |
+| T40, T41 | unsupported (vendor T41 takes deltas only; not device-tested) | unsupported (T41 experimental, off in libimp) | unsupported | unsupported |
 
 T23 FrontCrop: older open-tx-isp drivers hung the pipeline on a crop change,
 and the tier is compile-time, so timps cannot check the driver. A POST is
 persisted and applied at the next `/etc/init.d/S95timps restart`; a window
 smaller than the stream-0 size is refused with `-EINVAL` (one WARN,
 `caps.fcrop.state` = `rejected`).
+
+ROI QP ranges: delta -25..25 everywhere (-26 gave invalid H.264 on T20); T21
+honours only about -12..+13 (`caps.roi.qp_delta_eff`), positive deltas are
+also capped by `max_qp`. An absolute QP is sent as a clamped delta when it is
+more than 25 from a possible picture QP (`caps.roi.abs_window`). T10/T20 crop
+only downscaled (sub) streams; a main stream at sensor size cannot zoom
+there (`caps.fcrop.zoomable`).
 
 Raising a tier after a device test is one line in `src/roi_caps.h` plus its
 `ROI_MATRIX` entry in the Makefile (`make test-roi`).

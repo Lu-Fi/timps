@@ -13,15 +13,26 @@ semantic versioning.
   `IMP_Encoder_SetChnROI`, live (applied by the encode thread before its next
   frame). timps converts x/y/w/h to the SDK's two inclusive corners, rounds out
   to 16x16 macroblocks, clamps into the picture and clamps qp (absolute 0..51,
-  delta -26..25). H.265 and rotated streams ignore their regions: a file value
+  delta -25..25; an absolute QP further than 25 from any picture QP the rate
+  control can produce goes out as a clamped delta, see Fixed). H.265 and rotated streams ignore their regions: a file value
   logs one WARN at start, a POST is accepted and persisted but changes nothing
   and logs nothing (`caps.roi.streams` shows the stream state).
   Device-tested by the OpenIMP maintainer (not by timps) on T10, T20 and T21
   with OpenIMP (T10: QP51 -25 % bitrate; T20: QP51 block visible, QP15 clean;
   T21: on by default, libimp env `OPENIMP_T21_ROI=0` turns it off and timps
   reports experimental); vendor T10/T20/T21 are experimental (T21: no effect
-  seen). T23 refuses the keys (the vendor encoder only stores the region), T31
-  too (OpenIMP's `SetChnRoiAttr`, not wired yet), as do T30, T40, T41 and C100.
+  seen). T23 refuses the keys (the vendor encoder only stores the region), as
+  do vendor T31, T30, T40, T41 and C100.
+- **T31 encoder ROI with OpenIMP** via `IMP_Encoder_SetChnRoiAttr` (the
+  T40/T41-family API: 10 windows in x/y/w/h pixels, `DELTA` or `FIXED_QP`).
+  The four `roi<S>.<N>.*` regions map onto windows 0..3 (4..9 off), one call
+  per apply; the rect is the macroblock-aligned one, clipped to the picture
+  (libimp refuses `x+w` past the width). Delta -25..25, live without IDR,
+  H.264 only, re-applied after every stream start and recycle like T10..T21.
+  Bound weak (with `GetChnRoiAttr`): the vendor T31 libimp and OpenIMP builds
+  without it report `unsupported`, as does libimp env `OPENIMP_T31_ROI=0`.
+  Device-tested by the OpenIMP maintainer (claude/t31-roi, claude/roi-qp-clamp
+  fec3e69), host-tested in timps only (`make test-roi`).
 - **ISP FrontCrop: `image.fcrop_enable`/`fcrop_x`/`fcrop_y`/`fcrop_w`/`fcrop_h`**
   (sensor pixels, x/y = left/top; the SDK orders top, left). Evened, moved
   inside the sensor, at least 64x64, applied once per POST and at start.
@@ -36,7 +47,14 @@ semantic versioning.
   vendor T10/T20/T21 refuse it.
 - **`caps.roi` / `caps.fcrop`** in `GET /control`: the tier (`effective`,
   `experimental`, `unsupported`, `sim`) this build and libimp allow, ROI stream
-  states and the FrontCrop state, from the new `src/roi_caps.h`. Both setters
+  states and the FrontCrop state, from the new `src/roi_caps.h`.
+  `caps.roi` also carries `api` (`chnroi`/`roiattr`), `slots`, `qp_delta`
+  (what is sent), `qp_delta_eff` (what the encoder honours: T21 -12..13),
+  `abs_window` (25) and `rejected` (per-stream bitmask of regions outside the
+  picture); `caps.fcrop` carries `step`, `min_win` [w,h], `zoom_max`,
+  `upscale_pct` (open-tx-isp `fcrop_upscale_pct` on T31/T23, -1 elsewhere),
+  and per-stream `zoomable`/`zoomed` (T10/T20/T21 zoom only downscaled
+  streams). Both setters
   are weak imports, so a libimp without them reports `unsupported`.
   `make test-roi` covers the validation and the tier matrix of all SoCs.
 - **`caps.daynight`** in `GET /control`: `{available, ir_idle}`, whether this
@@ -144,6 +162,35 @@ semantic versioning.
   Set; it is now disabled 2-3 s later.
 
 ### Fixed
+
+- **ROI: delta -26 produced invalid H.264** (Wyze T20: Intel VA-API refused
+  it, VLC/Firefox/Edge smeared below the region; the jump back at the region
+  edge is mb_qp_delta +26). Deltas are clamped to -25..25 on every SoC; a
+  stored -26 is sent as -25. An **absolute ROI QP** made the same jump when it
+  was more than 25 from the picture QP (T10/T20: QP 15 at a base QP of 42):
+  it stays absolute only while |abs - picture QP| <= 25 for every picture QP
+  (FixQP: `videoN.qp`; other modes: `min_qp`..`max_qp`), otherwise it goes out
+  as the delta to `videoN.qp` (FixQP) or the middle of the QP window, clamped.
+  A live change of `videoN.qp`/`min_qp`/`max_qp`/`rc_mode` re-maps the regions.
+- **A main stream smaller than the sensor showed only its top-left corner on
+  T10/T20/T21/T30** when `sensor.width/height` were not in the config: the
+  driver's `/proc/jz/sensor` size is filled only once the sensor runs, so the
+  start-up read found nothing and video0's size stood in for the sensor
+  (FrameSource without scaler, FrontCrop windows in the wrong frame). The HAL
+  now reads the size again after `IMP_ISP_EnableSensor`, before any channel
+  exists; a still-empty value logs a WARN naming `sensor.width/height`.
+- **FrontCrop on T10/T20/T21: a stored window failed at start** (the start
+  apply runs before any downscaled stream exists and the driver refused it)
+  and **re-saving the same window did nothing**. The window is applied again
+  whenever a stream starts while it is not `on`, and a POST of an unchanged
+  `image.fcrop_*` value re-applies (without re-persisting) while the state is
+  `rejected`/`failed`. Refusals there (-1/`-EOPNOTSUPP`) now read `rejected`;
+  the WARN carries errno. At start with `fcrop_enable=0` T10/T20/T21 send the
+  full window once, because older drivers kept the last window across timps
+  restarts (picture zoomed, WebUI off). T10 refuses windows below 640x360 and
+  timps no longer sends them; on T31/T23 a window below the
+  `fcrop_upscale_pct` minimum for the largest stream is refused before the SDK
+  call (an older T31 driver hung on one).
 
 - **Day/night: the plateau rule now sees the analog cap the AE really stops
   at.** open-tx-isp's `isp-m0` publishes the sensor maximum (`MAX SENSOR

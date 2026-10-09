@@ -283,7 +283,7 @@ the POST reply lists them under `deferred`.
 | `sensor.model` | string[64] | *(unset)* → autodetect | — | restart | Sensor driver name, e.g. `gc2053`. |
 | `sensor.i2c_addr` | int | *(unset)* → autodetect | 0..0x7F | restart | Alias `sensor.i2c_address`. Hex (`0x37`) accepted. |
 | `sensor.fps` | int | *(unset)* → autodetect, **capped** | 0..120 | restart | `0` = auto. **since v1.9.19:** the autodetected value is capped at **30** (`SENSOR_AUTO_FPS_CAP` in `src/config.c`); **since v1.9.20** the cap is raised to the fastest *enabled* `videoN.fps` when that is higher, so a stream configured above 30 still gets its frames. An explicit value is used as given. Before v1.9.19 the driver's `max_fps` was taken verbatim. |
-| `sensor.width` | int | *(unset)* → autodetect | 0..8192 | restart | `0` = auto. |
+| `sensor.width` | int | *(unset)* → autodetect | 0..8192 | restart | `0` = auto. On T10/T20/T21/T30 the driver's `/proc/jz/sensor` size is often empty until the sensor runs; since the next release the HAL reads it again after `IMP_ISP_EnableSensor` (before the first channel) instead of keeping video0's size as the sensor size. |
 | `sensor.height` | int | *(unset)* → autodetect | 0..8192 | restart | `0` = auto. |
 
 `config_sensor_finalize()` runs once after load and before the HAL starts:
@@ -428,15 +428,26 @@ Prose and pitfalls
 * **FrontCrop (`image.fcrop_*`, since the next release).** One window for the
   whole ISP, in sensor pixels; the request is applied **once per POST** (after
   all four coordinates arrived) and at start after every channel exists.
-  `GET /control` reports `caps.fcrop` = `{tier, live, min:64, even:1,
-  sensor:[w,h], state}`; `state` is `off`, `on`, `rejected` (timps refused the
-  window: below 64×64 or no sensor size; or SetFrontCrop returned `-EINVAL`,
-  i.e. no stream can show it, logged once), `failed` (the SDK refused it with
-  any other error) or `unsupported`. Device-tested (by the OpenIMP maintainer)
-  on **T10, T20 and T21 with OpenIMP**, live; on **T20 only the downscaled
+  `GET /control` reports `caps.fcrop` = `{tier, live, min:64, even:1, step:2,
+  sensor:[w,h], state, min_win:[w,h], zoom_max, upscale_pct, zoomable:[..],
+  zoomed:[..]}`; `state` is `off`, `on`, `rejected` (timps refused the
+  window: below `min_win`, 64×64 or no sensor size; or SetFrontCrop returned
+  `-EINVAL`/`-EOPNOTSUPP` — on T10/T20/T21 any error — i.e. no stream can
+  show it, logged once with errno), `failed` (any other SDK error) or
+  `unsupported`. `min_win`: T31/T23 `ceil(out × 100 / (100 + p))` per axis
+  for the largest stream, `p` = open-tx-isp `fcrop_upscale_pct`
+  (`/sys/module/tx_isp_t31|t23/parameters/`, reported as `upscale_pct`, -1 if
+  absent = no upscaling); T10/T20/T21 the smallest downscaled stream (T10 at
+  least 640×360); `zoom_max` = min(sensor/min_win) per axis. `zoomable[S]`:
+  the stream can show a window at all (T10/T20/T21: only streams smaller than
+  the sensor, so usually only the sub stream); `zoomed[S]`: it shows the
+  current one. A stored window that was refused is applied again whenever a
+  stream starts, and re-POSTing an unchanged `image.fcrop_*` value retries it
+  while the state is not `on`. Device-tested (by the OpenIMP maintainer)
+  on **T10, T20 and T21 with OpenIMP**, live; on **T10/T20 only the downscaled
   streams show the window** (a main stream at sensor resolution keeps the full
-  picture). T31 is `experimental`, live (Get/Set round-trip only, effect not
-  measured). **T23 with OpenIMP is `experimental` and start-only**
+  picture; set it below the sensor size to zoom it), T21 shows it on every
+  stream no larger than the window. T31 is `experimental`, live. **T23 with OpenIMP is `experimental` and start-only**
   (`caps.fcrop.live` 0; a POST persists and is reported restart-required,
   applied at the next `/etc/init.d/S95timps restart`) and needs open-tx-isp
   3cf9bdac or newer (see the T23 note under the tier table); vendor T23 is
@@ -827,9 +838,11 @@ changing one rebuilds the motion grid live. Dragging a rectangle posts
 
 ## 10a. Encoder ROI — `roi<S>.<N>.*`
 
-**Since the next release.** Per-stream regions with their own QP
-(`IMP_Encoder_SetChnROI`, the T10..T23 SDK API), e.g. a sharper face area or
-a coarser sky. `S` = stream `0..1`, `N` = region `0..3` (`MS_MAX_ROI = 4`; the
+**Since the next release.** Per-stream regions with their own QP, e.g. a
+sharper face area or a coarser sky. Two SDK APIs: family A
+`IMP_Encoder_SetChnROI` (T10..T23, 8 slots, corners) and family B
+`IMP_Encoder_SetChnRoiAttr` (OpenIMP T31, 10 windows, x/y/w/h; regions 0..3
+go to windows 0..3, 4..9 stay off, one call per apply). `S` = stream `0..1`, `N` = region `0..3` (`MS_MAX_ROI = 4`; the
 SDK has 8 slots, timps uses 0..3 to keep the key table and `GET /control` at
 the privacy-mask size). POST shape like privacy:
 
@@ -844,7 +857,7 @@ the privacy-mask size). POST shape like privacy:
 | `y` | int | `0` | 0..8192 | live | |
 | `w` | int | `0` | 0..8192 | live | |
 | `h` | int | `0` | 0..8192 | live | |
-| `qp` | int | `-5` | -51..51 | live | Clamped by the HAL per mode: absolute 0..51, delta -26..25. |
+| `qp` | int | `-5` | -51..51 | live | Clamped by the HAL per mode: absolute 0..51, delta -25..25 (all SoCs). An absolute QP may go out as a delta, see below. |
 | `qp_mode` | int | `1` | 0..1 | live | `0` absolute QP, `1` delta to the frame QP (SDK `bRelatedQp`). |
 
 "live" = the stream's encode thread re-applies all its regions before the next
@@ -854,15 +867,35 @@ it starts. Where `caps.roi.tier` is `unsupported` the keys are capability-gated
 
 Pitfalls:
 
-* **Corners, not sizes.** The SDK `IMPRect` is two inclusive corners `p0/p1`
+* **Corners, not sizes (family A).** The SDK `IMPRect` is two inclusive corners `p0/p1`
   (OpenIMP's header calls the same four ints x/y/width/height but reads them as
-  corners). timps converts: `p0 = (x, y)`, `p1 = (x+w-1, y+h-1)`.
+  corners). timps converts: `p0 = (x, y)`, `p1 = (x+w-1, y+h-1)`. Family B
+  (T31) takes real x/y/w/h: timps takes the aligned corners and sends
+  `w = min(p1.x+1, width) - p0.x` (same for h), because libimp refuses a
+  window past the picture (a 1080p stream's last macroblock row ends at 1088).
+* **QP ranges (measured by the OpenIMP maintainer).** Delta -25..25 on every
+  SoC: -26 made the jump back at the region edge `mb_qp_delta` +26, which is
+  invalid H.264 (T20: Intel VA-API refused it, ffmpeg hid it). T31/T41
+  libimp take -26 but limit it to -25. T21 honours only about -12..+13
+  (`caps.roi.qp_delta_eff`); positive deltas are also capped by `max_qp`.
+* **Absolute QP → delta.** An absolute QP is valid only while
+  |abs − picture QP| ≤ 25 (`caps.roi.abs_window`) for every picture QP the
+  stream can have. timps assumes the picture QP is `videoN.qp` (default 35)
+  under `rc_mode=fixqp` and anything in `min_qp`..`max_qp` (default 15..45)
+  under the other modes. If the rule holds the QP goes out absolute
+  (family B: `FIXED_QP`, which OpenIMP writes as the difference to the last
+  picture QP: exact under FixQP, one picture late under CBR), otherwise as the
+  delta `abs − ref`, clamped to -25..25, with `ref` = `videoN.qp` (FixQP) or
+  the middle of the QP window. Example: FixQP 35, abs 5 → delta -25; CBR
+  15..45, abs 15 → delta -15. A live change of `videoN.qp`, `min_qp`,
+  `max_qp` or `rc_mode` re-maps the regions.
 * **Macroblocks.** The SDK truncates to 16×16 macroblocks and clips nothing;
   timps rounds the rectangle **outwards** to 16 and clamps it into the picture.
   `p1` is the last pixel of the last macroblock, so it stays inside the
   macroblock grid whether libimp treats it as inclusive or exclusive (at worst
   one macroblock short). A region fully outside the picture is turned off with a
-  WARN. The aligned corners are logged at INFO.
+  WARN and shows in `caps.roi.rejected[S]` (bitmask of regions). The aligned
+  corners are logged at INFO.
 * **H.264, unrotated streams only.** An H.265 stream (`caps.roi.streams[S]` =
   `h265`) and a 90/270 stream (`rotated`: the encoder input is the rotated frame
   and how the SDK addresses it is unverified) ignore their regions: a file
@@ -875,9 +908,13 @@ Pitfalls:
   OpenIMP maintainer's T10 test (FixQP, QP51 region: -25 %), not a timps one.
 
 `GET /control`: `roi.<S>.<N>.*` echoes the config; `caps.roi` =
-`{tier, regions:4, slots:8, align:16, qp_abs:[0,51], qp_delta:[-26,25],
-streams:[...]}`, `streams[S]` one of `ok`, `off`, `h265`, `rotated`,
-`unsupported`.
+`{tier, api, regions:4, slots, align:16, qp_abs:[0,51], qp_delta:[-25,25],
+qp_delta_eff:[lo,hi], abs_window:25, streams:[...], rejected:[...]}`.
+`api` is `chnroi` (family A, `slots` 8) or `roiattr` (family B, `slots` 10);
+`qp_delta` is what timps sends, `qp_delta_eff` what the encoder honours (T21
+OpenIMP `[-12,13]`, elsewhere = `qp_delta`); `streams[S]` one of `ok`, `off`,
+`h265`, `rotated`, `unsupported`; `rejected[S]` a bitmask of regions outside
+the picture.
 
 ### Tier table (ROI and FrontCrop, `src/roi_caps.h`)
 
@@ -885,7 +922,8 @@ streams:[...]}`, `streams[S]` one of `ok`, `off`, `h265`, `rotated`,
 effect unverified (or known absent), `unsupported` = refused. Both setters are
 bound weak: a libimp without the symbol reports `unsupported` at run time.
 The OpenIMP tiers come from device tests by the OpenIMP maintainer (OpenIMP
-`claude/t31-roi` d03ca24, open-tx-isp 3cf9bdac), not from timps' own tests.
+`claude/t31-roi` d03ca24, `claude/roi-qp-clamp` fec3e69, open-tx-isp
+3cf9bdac/27dc8be4), not from timps' own tests.
 
 | SoC | ROI, vendor libimp | ROI, OpenIMP | FrontCrop, vendor | FrontCrop, OpenIMP |
 | --- | --- | --- | --- | --- |
@@ -894,15 +932,15 @@ The OpenIMP tiers come from device tests by the OpenIMP maintainer (OpenIMP
 | T21 | experimental (returns 0, no effect seen) | **effective** (on by default; libimp env `OPENIMP_T21_ROI=0` turns it off, timps then reports `experimental`) | unsupported (no symbol) | **effective** (all streams, 5 runs), live |
 | T23 | unsupported (the vendor encoder only stores the region) | unsupported (same) | unsupported (untested) | experimental, **start-only** (`caps.fcrop.live` 0; needs open-tx-isp 3cf9bdac+) |
 | T30, C100 | unsupported (not investigated) | — | unsupported (not investigated) | — |
-| T31 | unsupported | unsupported (OpenIMP has T31 ROI via `SetChnRoiAttr`, not wired in timps) | experimental, live (Get/Set only) | experimental, live (Get/Set only, effect not measured) |
-| T40, T41 | unsupported (`SetChnRoiAttr` API, not wired) | unsupported | unsupported (no FrontCrop; live fs crop stops T41) | unsupported |
+| T31 | unsupported (the 1.1.x libimp has no ROI symbol) | **effective** via `SetChnRoiAttr` (AVPU QP table; libimp env `OPENIMP_T31_ROI=0` turns it off, timps then reports `unsupported`) | experimental, live | experimental, live (the window is taken; OpenIMP lacks the scaler steps, picture effect unproven) |
+| T40, T41 | unsupported (vendor T41 `SetChnRoiAttr` takes deltas only; not device-tested) | unsupported (OpenIMP T41 ROI experimental, off by default) | unsupported (no FrontCrop; live fs crop stops T41) | unsupported |
 | host sim | sim | | sim | |
 
 Refused-key log text (`ROI_WHY`): T23 "no effect on T23: the vendor encoder
-only stores the region"; T31 "T31 ROI goes through SetChnRoiAttr (OpenIMP
-only), not wired yet". OpenIMP's T31 `SetChnRoiAttr` is the T40/T41-family API
-(10 windows, delta -32..31 or absolute 0..51, live, H.264 only); timps has no
-code path for it.
+only stores the region"; vendor T31 "T31 ROI needs OpenIMP (SetChnRoiAttr);
+the vendor libimp has no ROI"; T40/T41 "T40/T41 SetChnRoiAttr is not
+device-tested, left off". Family B is live without IDR, H.264 only, and with
+no window set the encoder output is bit-identical (OpenIMP maintainer).
 
 **T23 FrontCrop (OpenIMP).** Requires open-tx-isp 3cf9bdac or newer: older
 drivers hung the pipeline on a crop change. The tier is compile-time, timps
@@ -1729,12 +1767,12 @@ into support questions.
 | **T21, T23, T31, C100** | The only SoCs with `IMP_ISP_Tuning_GetAeLuma` (`ISP_HAS_AELUMA`), day/night's secondary photosensing metric. | `src/isp_caps.h` |
 | **T20** (old SDK) | The ISP dump is `/proc/jz/isp/isp_info`, not `isp-m0` — `isp-m0` does not exist in that SDK and never will. `daynight.c` carries an explicit fallback list, so `daynight.isp_path` does not have to be changed, and the `is not readable, using … instead` line there is expected (INFO since v1.9.26, a WARN before that). | `src/daynight.c` |
 | **T10** | `jpeg.quality` / `videoN.jpeg_quality` are **never applied** — custom quantization tables are known to degrade JPEG quality on T10, so the SDK default is kept and one WARN is logged. | `src/hal/hal_ingenic.c` |
-| **T10, T20, T21, T30** | No `ISP_HAS_SENSOR_ATTR` (`GetSensorAttr`), so the framesource input geometry comes **only** from `sensor.width`/`sensor.height`. A sensor driver that reports `0x0` cannot be compensated for there. | `src/isp_caps.h` |
+| **T10, T20, T21, T30** | No `ISP_HAS_SENSOR_ATTR` (`GetSensorAttr`), so the framesource input geometry comes from `sensor.width`/`sensor.height` or, when those were auto, from `/proc/jz/sensor` read after `IMP_ISP_EnableSensor` (since the next release). A sensor driver that reports `0x0` even then cannot be compensated for (WARN at start). | `src/isp_caps.h` |
 | **T31 only** | `encoder.<n>.ave_bitrate` appears in `GET /control?stats=1` (`IMP_Encoder_GetChnAveBitrate`). Elsewhere the key is simply absent, not zero. | `src/hal/hal.h`, `src/control.c` |
 | **T41** | No `IMP_Encoder_SetChnAttrRcMode` at all (`ENC_HAS_SETRCMODE` undefined) — only `bitrate` and the QP bounds can be touched live. T40 **does** attempt the live call. | `src/hal/hal_ingenic.c` |
 | **T40, T41** | Flips go through `IMP_ISP_Tuning_SetHVFLIP` instead of `SetISPHflip`/`SetISPVflip`, and `g_sensor.rst_gpio`/`pwdn_gpio`/`power_gpio` are forced to `-1` (the fields are plain `int` in that SDK). | `src/hal/hal_ingenic.c` |
 | **T31/C100 vs T40/T41** | `ENC_HAS_QPIPDELTA` (hence a working `videoN.i_bias_lvl`) is T31/C100 only. | `src/hal/hal_ingenic.c` |
 | **T31** | The `isp_ch0_pre_dequeue_time` one-buffer gate on framechan0 — see `videoN.buffers` in §5. | `src/hal/hal_ingenic.c` |
-| **all** | **Since the next release** encoder ROI and ISP FrontCrop are tiered per SoC and libimp flavour (`caps.roi.tier`, `caps.fcrop.tier`): only OpenIMP T10/T20/T21 ROI and FrontCrop are device-tested (by the OpenIMP maintainer). T23 has no ROI; its FrontCrop is OpenIMP-only, experimental and start-only (needs open-tx-isp 3cf9bdac+). Table in §10a. | `src/roi_caps.h` |
+| **all** | **Since the next release** encoder ROI and ISP FrontCrop are tiered per SoC and libimp flavour (`caps.roi.tier`, `caps.fcrop.tier`): only OpenIMP T10/T20/T21 ROI and FrontCrop and OpenIMP T31 ROI (`SetChnRoiAttr`) are device-tested (by the OpenIMP maintainer). T23 has no ROI; its FrontCrop is OpenIMP-only, experimental and start-only (needs open-tx-isp 3cf9bdac+). Table in §10a. | `src/roi_caps.h` |
 | **T23, T41 with `USE_OPENIMP`** | **Since the next release** `general.fs_keepalive = -1` (the default) resolves to **on**: the FrameSources run from start to stop, so `framesource N disabled (idle)` never appears and day/night kicks are no-ops. Everywhere else it resolves to off. | `src/hal/fs_ref.h` (`FS_KEEPALIVE_AUTO`) |
 | **T23, T41 with `USE_OPENIMP`** | **Since the next release** the only SoCs where `daynight.ir_idle_off` can become available without touching `general.fs_keepalive` (it needs the keepalive). Elsewhere it reports `reason = "keepalive"` unless the keepalive is forced on (untested there). | `src/dn_idle.h`, `src/daynight.c` |
