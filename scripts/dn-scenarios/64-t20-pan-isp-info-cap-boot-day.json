@@ -1,0 +1,122 @@
+{
+  "name": "64-t20-pan-isp-info-cap-boot-day",
+  "incident": "2026-10-09 Wyze Pan v1 (T20/jxf22, open-tx-isp 3cf9bdac, timps ed60eae): boot_probe=0, persisted day, dark room, Day forever",
+  "description": "Device reproduction on cam-wyze-pan: daynight.boot_probe=0 and running_mode=0 persisted, so it adopts day without measuring. The AE stops at analog 128 (4096) with IT 1967/2246, index 3587 constant. The open stack's isp-m0 publishes MAX SENSOR analog gain 158 (the jxf22 maximum, 7838 > night_gain 4096) and kept the reachable-maximum rule inert; isp_info beside it publishes 128, the AE's real cap. With the lower of the two the cap proves 4096 out of reach and the plateau held for day_confirm_s (15 s, as on the Pan) switches to night: the boot assertion of day, one switch to night, one warning naming cap 128.",
+  "scale": 60,
+  "duration_s": 1200,
+  "initial_mode": "day",
+  "config": {
+    "daynight.day_gain": 768,
+    "daynight.night_gain": 4096,
+    "daynight.day_confirm_s": 15,
+    "daynight.boot_probe": 0,
+    "daynight.heartbeat_s": 300,
+    "daynight.heartbeat_max_s": 300
+  },
+  "interp": "log",
+  "noise_pct": 0,
+  "day_gain": [
+    [
+      0,
+      8192
+    ],
+    [
+      1200,
+      8192
+    ]
+  ],
+  "day_int_ratio": [
+    [
+      0,
+      0.8758
+    ],
+    [
+      1200,
+      0.8758
+    ]
+  ],
+  "night_gain": [
+    [
+      0,
+      1067
+    ],
+    [
+      1200,
+      1067
+    ]
+  ],
+  "night_gain_noir": [
+    [
+      0,
+      1300
+    ],
+    [
+      1200,
+      1300
+    ]
+  ],
+  "night_int_ratio": [
+    [
+      0,
+      0.3753
+    ],
+    [
+      1200,
+      0.3753
+    ]
+  ],
+  "t20_dump": {
+    "again_max": 128,
+    "again_pub": 158,
+    "idg_max": 0,
+    "it_max": 2246,
+    "isp_m0": true,
+    "isp_info_max": 128
+  },
+  "expect": {
+    "mode_at": [
+      [
+        5,
+        "day"
+      ],
+      [
+        120,
+        "night"
+      ],
+      [
+        600,
+        "night"
+      ],
+      [
+        1180,
+        "night"
+      ]
+    ],
+    "expected_mode": [
+      [
+        0,
+        "any"
+      ],
+      [
+        120,
+        "night"
+      ]
+    ],
+    "max_wrong_mode_s": 0,
+    "max_switches": 2,
+    "monotonicity": "warn",
+    "expect_log": [
+      "boot: boot_probe=0 - adopting the persisted day",
+      "publishes MAX SENSOR analog gain 158, isp_info 128: using 128",
+      "switching to night \\(exposure 35\\d\\d at its reachable plateau 35\\d\\d\\)"
+    ],
+    "expect_log_count": {
+      "switching to night": 1,
+      "daynight\\.night_gain 4096 is above the exposure index this camera can reach \\(~35\\d\\d: analog gain cap 128 x IT 87\\.6 %, ISP digital gain unused\\); using a relative night threshold": 1
+    },
+    "forbid_log": [
+      "switching to day \\((?!boot)",
+      "day meter railed"
+    ]
+  }
+}

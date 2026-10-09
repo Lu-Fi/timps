@@ -38,6 +38,16 @@ static inline float dnr_cap_gain(int mag)
     return 256.0f * exp2f((float)mag / 32.0f);
 }
 
+/* The analog cap the AE really stops at: the lower of two published maxima.
+ * The open stack's isp-m0 prints the sensor maximum (jxf22: 158 = 7838) while
+ * isp_info beside it prints the AE's own cap (128 = 4096); on the Wyze Pan
+ * the AE stopped at 128 and the 158 kept this rule inert. An absent or
+ * unparsed value (<= 0) leaves `mag` alone. */
+static inline int dnr_mag_min(int mag, int other)
+{
+    return (mag > 0 && other > 0 && other < mag) ? other : mag;
+}
+
 static inline int dnr_unreachable(int mag, float night_gain)
 {
     return mag > 0 && dnr_cap_gain(mag) <= night_gain;

@@ -1120,11 +1120,29 @@ the plateau `d` (e.g. 3000 for the Pan) and keep `day_gain` well under it.
 **The plateau rule did not fire on the Pan itself** (soak 2026-10-07, no
 `reachable plateau` line): with the open stack timps reads `isp-m0`, and
 open-tx-isp's compact T20 AE prints the sensor maximum there (`MAX SENSOR
-analog gain : 158` on jxf22, derived from the driver source and the probe
-line's `lit_hr=124`) while the AE stops at 128. 158 puts the cap at 7838, above
-4096, so the rule stays off by design. Check `MAX SENSOR analog gain` against
-the `SENSOR analog gain` the dark scene settles at; if the AE stops below the
-published maximum, use the `night_gain` workaround above.
+analog gain : 158` on jxf22, `max_again >> 11`) while the AE stops at 128.
+158 puts the cap at 7838, above 4096, so the rule stayed off. Confirmed on
+the device 2026-10-09 (Pan, open-tx-isp 3cf9bdac, timps ed60eae): `isp-m0`
+says 158, `isp_info` on the same camera says `MAX SENSOR analog gain : 128`
+(the AE's cap), the trace showed `d` 3587 constant (gain 4096, ratio 0.8758,
+IT 1967/2246, analog 128) and the camera stayed in day.
+
+Reproduce it in a dark room: `daynight.boot_probe = 0` with the persisted
+`image.running_mode = 0` (day), restart. The boot adopts day without
+measuring (`boot: boot_probe=0 - adopting the persisted day …`), and before
+the fix nothing ends it. With `boot_probe` on, the boot measurement switches
+to night and hides the problem until a day stretch in the dark (e.g. lamp
+off after a lit evening).
+
+**Since the next release** timps reads `isp_info` next to a configured
+`isp-m0` as well (every ~5 min; the cap is static) and uses the lower of the
+two `MAX SENSOR analog gain` values for the plateau rule and the AE reserve.
+Once per process: `/proc/jz/isp/isp-m0 publishes MAX SENSOR analog gain 158,
+isp_info 128: using 128, the cap the AE stops at`; then after `day_confirm_s`
+the WARN above with `analog gain cap 128` and `switching to night (exposure
+3587 at its reachable plateau 3587)`. Without `isp_info`, or with an
+`isp_info` value not below `isp-m0`'s, nothing changes. If neither file
+publishes the cap the AE stops at, use the `night_gain` workaround above.
 
 **Day right after a night switch, via the silent probe.** Look for
 

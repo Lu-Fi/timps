@@ -162,8 +162,23 @@ not read off the camera: the open-tx-isp 3cf9bdac source of the image, and the
 probe line's `lit_hr=124`, which is (158 − 66) + 32 for the analog 66 the
 exposure log shows at that moment (128 would give 94). With 158 the cap is
 7838 > 4096, so the plateau rule never fired in the 2026-10-07 soak (no
-`reachable plateau` line in the central log). Workaround until the dump
-publishes the clamp: `daynight.night_gain` below the plateau, e.g. 3000.
+`reachable plateau` line in the central log).
+
+Confirmed on the device 2026-10-09 (Pan, open-tx-isp 3cf9bdac, timps
+ed60eae): `isp_info` on the same camera publishes `MAX SENSOR analog gain :
+128` — the AE's cap — next to `isp-m0`'s 158. Reproduced with
+`daynight.boot_probe = 0` and a persisted day (`image.running_mode = 0`) in
+the dark: day adopted at boot, `d` 3587 constant, no switch. **Since the next
+release** timps reads that line from `isp_info` beside a configured `isp-m0`
+(cached, re-read every ~5 min) and uses the lower of the two maxima for the
+plateau rule and the AE reserve; it logs once `… publishes MAX SENSOR analog
+gain 158, isp_info 128: using 128 …`. On the Pan the reserve at the cap drops
+from 30 + 32 to 0 + 32 units (the IT stop), still above the 8-unit clip
+limit, so nothing else changes there. Scenario 64 models the reproduction
+(one switch to night after `day_confirm_s`), 65 is its negative control
+(`isp_info` 160: the lower value stays 158, day as before); not yet run on
+the camera. On older builds: `daynight.night_gain` below the plateau, e.g.
+3000.
 
 ### When the silent probe sees light the day pipeline does not
 
@@ -212,7 +227,8 @@ cameras' illuminators came on is darker than the scene with them, so the
 first probe after that can still try day once; the bounce off `night_gain`
 re-anchors the reference and the next probe is held. On the Pan, a legitimate
 day (cellar lamp on) that ends with the lamp off still has no way back to
-night while the dump publishes 158 (see above). The pure gate is
+night while timps reads only `isp-m0`'s 158 (fixed by the `isp_info` read
+above). The pure gate is
 `src/dn_proven.h` (`make test-dn-proven`); corpus scenarios 60 (Pan), 61
 (T10), 62 (a lamp still switches to day), 63 (a dawn after a night of held
 probes switches once).

@@ -353,6 +353,34 @@ static void dn_field_tok(const char *v, char *out, size_t osz)
     out[i] = 0;
 }
 
+/* MAX SENSOR analog gain from the isp_info next to a configured isp-m0, -1
+ * if there is none. The cap is static, so it is re-read only every
+ * DN_ISP_REPROBE_TICKS calls, not on every tick. */
+static int dn_info_mag(const char *isp_path)
+{
+    static int mag = -1;
+    static unsigned age;
+    const char *b = strrchr(isp_path, '/');
+    b = b ? b + 1 : isp_path;
+    if (strcmp(b, "isp-m0")) return -1;
+    if (age++ % DN_ISP_REPROBE_TICKS) return mag;
+    mag = -1;
+    char p[160];
+    int n = snprintf(p, sizeof p, "%.*sisp_info", (int)(b - isp_path), isp_path);
+    if (n < 0 || n >= (int)sizeof p) return mag;
+    FILE *f = fopen(p, "r");
+    if (!f) return mag;
+    char line[256];
+    const char *v;
+    while (fgets(line, sizeof line, f))
+        if ((v = DN_FIELD(line, "MAX SENSOR analog gain :"))) {
+            dn_field_int(v, &mag);
+            break;
+        }
+    fclose(f);
+    return mag;
+}
+
 static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
 {
     o->d = o->gain = o->ratio = o->bright = -1.0f;
@@ -429,12 +457,14 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
      * exactly as before. */
     static unsigned since_reprobe;
     FILE *fp = NULL;
+    int from_cfg = 0;
     if (used && ++since_reprobe < DN_ISP_REPROBE_TICKS)
         fp = fopen(used, "r");
     if (!fp) {
         since_reprobe = 0;
         fp = fopen(dn->isp_path, "r");
         if (fp) {
+            from_cfg = 1;
             used = NULL;                /* the configured path came back */
         } else {
             for (int i = 0; ALT[i] && !fp; i++) {
@@ -496,6 +526,18 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
             if (got == 0x1ffu) break;
         }
         fclose(fp);
+
+        if (from_cfg) {
+            int im = dn_info_mag(dn->isp_path), lo = dnr_mag_min(mag, im);
+            static int said_mag;
+            if (lo != mag && !said_mag) {
+                said_mag = 1;
+                LOGI(MOD, "%s publishes MAX SENSOR analog gain %d, isp_info %d: "
+                          "using %d, the cap the AE stops at",
+                     dn->isp_path, mag, im, lo);
+            }
+            mag = lo;
+        }
 
         if      (!strcasecmp(m, "Day"))   o->isp = DN_DAY;
         else if (!strcasecmp(m, "Night")) o->isp = DN_NIGHT;

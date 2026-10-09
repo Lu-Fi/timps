@@ -145,6 +145,17 @@ semantic versioning.
 
 ### Fixed
 
+- **Day/night: the plateau rule now sees the analog cap the AE really stops
+  at.** open-tx-isp's `isp-m0` publishes the sensor maximum (`MAX SENSOR
+  analog gain : 158` on jxf22) while the AE stops at 128, which `isp_info`
+  on the same camera publishes. Device-confirmed on one Wyze Pan v1
+  (T20/jxf22, open-tx-isp 3cf9bdac, timps ed60eae): with `boot_probe = 0`
+  and a persisted day it stayed in day in the dark, index 3587 constant.
+  timps now also reads that line from `isp_info` beside a configured
+  `isp-m0` (cached, re-read every ~5 min) and uses the lower of the two for
+  the plateau rule and the AE reserve. Scenarios 64 (switches once to night
+  after `day_confirm_s`) and 65 (`isp_info` 160: unchanged); not yet run on
+  the camera.
 - **Day/night: a silent probe no longer calls a cellar lit by other IR
   cameras "day".** r < 2 only says the camera's own illuminator is not what
   lights the night pipeline; another camera's IR does that too, and the
@@ -168,7 +179,7 @@ semantic versioning.
   compact T20 AE prints the sensor maximum) while the AE stops at 128, so the
   cap is not provably below `night_gain` (derived from the driver source and
   the probe line's `lit_hr=124`). Workaround there: `daynight.night_gain`
-  3000.
+  3000 (fixed by the `isp_info` read above).
 - **Day/night: a camera whose index cannot reach `night_gain` no longer stays
   in day all night.** The index is gain × integration-time ratio, so an AE
   that stops at its analog cap with the digital gain unused tops out at

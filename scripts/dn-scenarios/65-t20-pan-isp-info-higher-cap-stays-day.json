@@ -1,0 +1,101 @@
+{
+  "name": "65-t20-pan-isp-info-higher-cap-stays-day",
+  "incident": "negative control for 64",
+  "description": "Scenario 64 with isp_info publishing 160 instead of 128: the lower of the two published maxima is isp-m0's 158 (7838 > night_gain 4096), so the reachable-maximum rule stays inert, as before the fix, and with boot_probe=0 nothing else ends the adopted day. Proves the 64 switch comes from the isp_info cap and that a higher isp_info value never raises the cap.",
+  "scale": 60,
+  "duration_s": 1200,
+  "initial_mode": "day",
+  "config": {
+    "daynight.day_gain": 768,
+    "daynight.night_gain": 4096,
+    "daynight.day_confirm_s": 15,
+    "daynight.boot_probe": 0,
+    "daynight.heartbeat_s": 300,
+    "daynight.heartbeat_max_s": 300
+  },
+  "interp": "log",
+  "noise_pct": 0,
+  "day_gain": [
+    [
+      0,
+      8192
+    ],
+    [
+      1200,
+      8192
+    ]
+  ],
+  "day_int_ratio": [
+    [
+      0,
+      0.8758
+    ],
+    [
+      1200,
+      0.8758
+    ]
+  ],
+  "night_gain": [
+    [
+      0,
+      1067
+    ],
+    [
+      1200,
+      1067
+    ]
+  ],
+  "night_gain_noir": [
+    [
+      0,
+      1300
+    ],
+    [
+      1200,
+      1300
+    ]
+  ],
+  "night_int_ratio": [
+    [
+      0,
+      0.3753
+    ],
+    [
+      1200,
+      0.3753
+    ]
+  ],
+  "t20_dump": {
+    "again_max": 128,
+    "again_pub": 158,
+    "idg_max": 0,
+    "it_max": 2246,
+    "isp_m0": true,
+    "isp_info_max": 160
+  },
+  "expect": {
+    "mode_at": [
+      [
+        5,
+        "day"
+      ],
+      [
+        600,
+        "day"
+      ],
+      [
+        1180,
+        "day"
+      ]
+    ],
+    "max_switches": 1,
+    "expect_log": [
+      "boot: boot_probe=0 - adopting the persisted day"
+    ],
+    "forbid_log": [
+      "switching to night",
+      "at its reachable plateau",
+      "isp_info 160: using"
+    ]
+  }
+}

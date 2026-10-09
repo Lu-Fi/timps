@@ -1172,13 +1172,16 @@ Their effective values are still readable in the `daynight` status object of
   covered: a `night_gain` set between the plateau and the cap (e.g. 4000 on the
   Pan) — the cap still proves nothing there, and the camera behaves as before;
   set it below the plateau or leave the default.
-  **The Pan itself is that case on the open stack**: open-tx-isp's compact
+  **The Pan itself was that case on the open stack**: open-tx-isp's compact
   T20 AE writes `isp-m0` with `MAX SENSOR analog gain : 158` (the jxf22
-  maximum) while the AE stops at 128 — derived from the driver source and the
-  probe line's `lit_hr=124`, not read on the camera. The rule did not fire in
-  the 2026-10-07 soak; the camera went to night only through the boot
-  measurement. Until the dump publishes the clamp, set `night_gain` to 3000
-  there.
+  maximum) while the AE stops at 128; `isp_info` on the same camera says 128
+  (device-confirmed 2026-10-09: with `boot_probe = 0` and a persisted day it
+  stayed in day in the dark, `d` 3587 constant). **Since the next release**
+  timps also reads `MAX SENSOR analog gain` from `isp_info` next to a
+  configured `isp-m0` (re-read every ~5 min) and uses the lower value, for
+  this rule and for the AE reserve (`headroom`): on the Pan 128, so the rule
+  fires (scenario 64; not yet run on the camera). On an older build set
+  `night_gain` to 3000 there.
 * **A silent probe can call a cellar lit by other IR cameras "day"** (fixed
   **since the next release**, two cameras, one night each). r < 2 only says
   the camera's own illuminator is not doing the work. Measured on the Pan: day

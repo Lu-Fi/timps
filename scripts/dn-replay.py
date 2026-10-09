@@ -150,6 +150,11 @@ Scenario JSON (all times virtual seconds, all gains IMP [24.8] linear):
                                   at 128); "isp_m0": true also publishes
                                   SENSOR Max Integration Time, as the open
                                   stack's isp-m0 does. See scenario 60.
+                                  "isp_info_max": also serve isp_info next
+                                  to isp-m0 publishing this MAX SENSOR
+                                  analog gain (open-tx-isp dumps both; on
+                                  the Pan isp_info says 128, the AE's cap,
+                                  while isp-m0 says 158). See scenario 64.
   day_int_ratio / night_int_ratio
                                 - OPTIONAL [[t, ratio], ...] integration-time
                                   ratio (integration/max, 0..1) per pipeline.
@@ -634,6 +639,15 @@ class SimRun:
             f.write("MAX ISP digital gain : %d\n" % self.t20.get("idg_max", 32))
             f.write("ISP AE strategy: AE_SPLIT_BALANCED\n")
         os.replace(tmp, self.isp)
+        if "isp_info_max" in self.t20:
+            info = os.path.join(self.dir, "isp_info")
+            with open(info + ".tmp", "w") as f:
+                f.write("SENSOR analog gain : %d\n" % u)
+                f.write("MAX SENSOR analog gain : %d\n"
+                        % self.t20["isp_info_max"])
+                f.write("MAX SENSOR digital gain : 0\n")
+                f.write("MAX ISP digital gain : 32\n")
+            os.replace(info + ".tmp", info)
         tmp = self.expr + ".tmp"
         with open(tmp, "w") as f:
             if ratio is not None:

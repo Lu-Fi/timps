@@ -30,6 +30,17 @@ static void t_ceiling(void)
     CK(!dnr_unreachable(0, 4096.0f), "cap 0: inactive");
 }
 
+static void t_mag_min(void)
+{
+    CK(dnr_mag_min(158, 128) == 128, "isp_info 128 under isp-m0 158");
+    CK(dnr_mag_min(158, 160) == 158, "a higher isp_info does not raise it");
+    CK(dnr_mag_min(158, -1) == 158, "isp_info absent");
+    CK(dnr_mag_min(158, 0) == 158, "isp_info 0: unusable");
+    CK(dnr_mag_min(-1, 128) == -1, "isp-m0 without a cap stays unknown");
+    CK(dnr_unreachable(dnr_mag_min(158, 128), 4096.0f), "pan: 4096 out of reach");
+    CK(!dnr_unreachable(158, 4096.0f), "158 alone kept the rule inert");
+}
+
 static void t_pan_plateau(void)
 {
     dnr_state st = {0};
@@ -144,6 +155,7 @@ static void t_night_eff(void)
 int main(void)
 {
     t_ceiling();
+    t_mag_min();
     t_pan_plateau();
     t_not_at_cap();
     t_reachable_untouched();

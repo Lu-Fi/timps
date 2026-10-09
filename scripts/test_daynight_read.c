@@ -54,6 +54,24 @@ static const char CLASSIC_DUMP[] =
     "SENSOR Integration Time : 500 lines\n"
     "SENSOR Max Integration Time : 1000 lines\n";
 
+/* the open stack's isp-m0 on the Wyze Pan v1 (T20/jxf22), dark: the sensor
+ * maximum 158 while the AE stops at 128, which isp_info beside it publishes */
+static const char PAN_M0[] =
+    "SENSOR Integration Time : 1967 lines\n"
+    "SENSOR Max Integration Time : 2246 lines\n"
+    "ISP Runing Mode : Day\n"
+    "SENSOR analog gain : 128\n"
+    "MAX SENSOR analog gain : 158\n"
+    "SENSOR digital gain : 0\n"
+    "MAX SENSOR digital gain : 0\n"
+    "ISP digital gain : 0\n"
+    "MAX ISP digital gain : 0\n";
+static const char PAN_INFO[] =
+    "SENSOR analog gain : 128\n"
+    "MAX SENSOR analog gain : 128\n"
+    "MAX SENSOR digital gain : 0\n"
+    "MAX ISP digital gain : 32\n";
+
 static void put(const char *path, const char *txt)
 {
     FILE *f = fopen(path, "w");
@@ -96,6 +114,29 @@ int main(void)
 
     ms_daynight_cfg dn;
     memset(&dn, 0, sizeof dn);
+
+    /* first, so the first isp-m0 read loads the cached isp_info cap */
+    {
+        char dir[] = "/tmp/timps-dnread-pan-XXXXXX", m0[96], info[96];
+        if (!mkdtemp(dir)) { perror("mkdtemp"); return 2; }
+        snprintf(m0, sizeof m0, "%s/isp-m0", dir);
+        snprintf(info, sizeof info, "%s/isp_info", dir);
+        put(m0, PAN_M0);
+        put(info, PAN_INFO);
+        snprintf(dn.isp_path, sizeof dn.isp_path, "%s", m0);
+        /* (128-128) + (0-0) + 32 for IT 1967 < 90 % of 2246 */
+        expect("pan isp-m0 158 + isp_info 128", &dn, 32, 0);
+        unlink(info);
+        expect("pan isp_info removed: cached", &dn, 32, 0);
+        float g, r, d; int hr, cl;
+        for (int i = 0; i < 200; i++) dn_read_test(&dn, &g, &r, &d, &hr, &cl);
+        expect("pan isp_info absent after refresh", &dn, 30 + 32, 0);
+        put(info, "MAX SENSOR analog gain : 160\n");
+        for (int i = 0; i < 200; i++) dn_read_test(&dn, &g, &r, &d, &hr, &cl);
+        expect("pan isp_info 160 does not raise 158", &dn, 30 + 32, 0);
+        unlink(info); unlink(m0); rmdir(dir);
+    }
+
     snprintf(dn.isp_path, sizeof dn.isp_path, "%s", path);
 
     /* parse: it/mit from the Ae* lines, gain from TotalGainDb */
