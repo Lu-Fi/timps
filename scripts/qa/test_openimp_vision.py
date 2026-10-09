@@ -220,6 +220,35 @@ class TestRoi(Base):
                                  self.RECT, "blur")
         self.assertNotEqual(v, "PASS", res)
 
+    def weak(self):
+        def mix(f):
+            g = box_blur_rect(f, self.RECT)
+            return ov.Img(f.w, f.h, [round(0.95 * x + 0.05 * y) for x, y in zip(f.px, g.px)])
+        return self.frames(mix)
+
+    def test_weak_blur_graded_by_delta_and_rc(self):
+        off, on = self.frames(), self.weak()
+        res, v, _ = ov.roi_check(off, on, self.RECT, "blur", 20, "vbr")
+        self.assertTrue(0.85 < res["rel"] < 0.95, res)
+        self.assertEqual(v, "NOEFFECT")
+        self.assertEqual(ov.roi_check(off, on, self.RECT, "blur", 20, "cbr")[1], "WARN")
+        self.assertEqual(ov.roi_check(off, on, self.RECT, "blur", 13, "vbr")[1], "WARN")
+        self.assertEqual(ov.roi_check(off, on, self.RECT, "blur")[1], "NOEFFECT")
+
+    def test_small_delta_no_effect_is_warn(self):
+        off = self.frames()
+        self.assertEqual(ov.roi_check(off, self.frames(n=3), self.RECT, "blur", 13)[1], "WARN")
+        self.assertEqual(ov.roi_check(off, self.frames(n=3), self.RECT, "sharp", -12)[1], "WARN")
+        blurred = self.frames(lambda f: box_blur_rect(f, self.RECT))
+        self.assertEqual(ov.roi_check(off, blurred, self.RECT, "sharp", -12)[1], "FAIL")
+        self.assertEqual(ov.roi_check(off, blurred, self.RECT, "blur", 13)[1], "PASS")
+
+    def test_blur_bar(self):
+        self.assertAlmostEqual(ov.blur_bar(None), ov.ROI_BLUR)
+        self.assertAlmostEqual(ov.blur_bar(20), 0.85)
+        self.assertAlmostEqual(ov.blur_bar(25), 0.85)
+        self.assertAlmostEqual(ov.blur_bar(10), 0.925)
+
     def test_region_picker_finds_texture(self):
         # textured only in the lower-right area, flat elsewhere
         vals = [v if (x >= 352 and y >= 176) else 0.0
@@ -283,6 +312,22 @@ class TestMisc(Base):
         quiet = [to_img(self.vals, W, H, noise=1.0, seed=s) for s in range(3)]
         loud = [to_img(self.vals, W, H, noise=8.0, seed=s) for s in range(3)]
         self.assertLess(ov.tnoise(quiet) * 3, ov.tnoise(loud))
+
+    def test_lift(self):
+        self.assertEqual(ov.lift_grade(17.5, 218.8, 18.0)[1], "PASS")
+        self.assertEqual(ov.lift_grade(69.4, 20.7, 70.1)[1], "FAIL")
+        self.assertEqual(ov.lift_grade(60.0, 63.0, 59.0)[1], "WARN")
+        # cam-garage 2026-10-09: the daynight boot probe switched the IR off mid-test
+        res, v, _ = ov.lift_grade(103.6, 10.3, 6.0)
+        self.assertEqual(v, "INCONCLUSIVE", res)
+        self.assertEqual(ov.lift_grade(20.0, 200.0, 90.0)[1], "INCONCLUSIVE")
+        self.assertEqual(ov.lift_grade(20.0, 200.0, 40.0)[1], "PASS")
+
+    def test_cli_lift(self):
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            ov.main(["lift", "--lo", "100", "--hi", "10", "--lo2", "5"])
+        self.assertIn("verdict=INCONCLUSIVE", buf.getvalue())
 
     def test_cli_error_line(self):
         buf = io.StringIO()
