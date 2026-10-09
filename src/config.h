@@ -137,6 +137,7 @@ typedef struct {
     int      i2c_addr;
     int      fps;
     int      width, height;
+    int      size_guessed;   /* not a key: width/height are the video0 fallback */
 } ms_sensor_cfg;
 
 /* JPEG / MJPEG snapshot stream (the old streamer's "stream2") */
@@ -279,7 +280,8 @@ typedef struct {
 
 /* encoder ROI region (roi_caps.h ROI_TIER), H.264 only. Keys roi<S>.<N>.*:
  * enabled, x, y, w, h (pixels of the encoded stream picture, aligned to 16
- * by the HAL), qp, qp_mode (0 absolute QP 0..51, 1 delta -26..25). */
+ * by the HAL), qp, qp_mode (0 absolute QP 0..51, 1 delta -25..25; the HAL
+ * clamps and may send an absolute QP as a delta, roi_geom.h roi_qp_map). */
 typedef struct {
     int      enabled;
     int      x, y, w, h;
@@ -682,6 +684,7 @@ int  config_load(ms_config *c, const char *path); /* 0 ok, <0 file err (defaults
 /* auto-detect unset sensor.* from /proc/jz/sensor/<X>/ (config wins, then a
  * safe fallback); call once after config_load(), before the HAL starts */
 void config_sensor_finalize(ms_config *c);
+int config_sensor_proc_size(int *w, int *h);
 /* apply a single key=value (same keys as the config file) to c */
 void config_apply_kv(ms_config *c, const char *key, const char *val);
 /* read the current value of a key back as a normalized string (the same form

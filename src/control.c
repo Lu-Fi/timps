@@ -542,7 +542,10 @@ static void timps_apply_setting(ctrl_scratch_t *sc, ctrl_changes *ch, const char
          * a repeat call actually re-asserts the mode, but skip the flash persist
          * (nothing changed) so a client re-posting it every few seconds still
          * cannot hammer the config file. Every other key keeps the plain skip. */
-        if (!strcmp(key,"image.running_mode")){
+        if (!strcmp(key,"image.running_mode") ||
+            (!strncmp(key,"image.fcrop_",12) && strcmp(hal_fcrop_state(),"on") &&
+             strcmp(hal_fcrop_state(),"off"))){
+            /* a refused/failed FrontCrop is retried by re-saving the same window */
             hub_control(key, out);       /* re-assert to the ISP, no re-persist */
             LOGD(MOD,"re-applied %s = %s to HAL (unchanged, not persisted)", key, out);
         } else
@@ -1574,19 +1577,34 @@ int control_get_json(char *buf, size_t cap)
     /* encoder ROI and ISP FrontCrop: the tier this build AND this libimp
      * allow (roi_caps.h), so the WebUI and QA can warn on experimental. */
     {
-        APP("\"roi\":{\"tier\":\"%s\",\"regions\":%d,\"slots\":%d,\"align\":%d,"
-            "\"qp_abs\":[%d,%d],\"qp_delta\":[%d,%d],\"streams\":[",
-            cap_tier_name(hal_roi_tier()), MS_MAX_ROI, ROI_HW_SLOTS, ROI_ALIGN,
-            ROI_QP_ABS_MIN, ROI_QP_ABS_MAX, ROI_QP_DELTA_MIN, ROI_QP_DELTA_MAX);
+        APP("\"roi\":{\"tier\":\"%s\",\"api\":\"%s\",\"regions\":%d,\"slots\":%d,"
+            "\"align\":%d,\"qp_abs\":[%d,%d],\"qp_delta\":[%d,%d],"
+            "\"qp_delta_eff\":[%d,%d],\"abs_window\":%d,\"streams\":[",
+            cap_tier_name(hal_roi_tier()), ROI_API_NAME, MS_MAX_ROI, ROI_SLOTS, ROI_ALIGN,
+            ROI_QP_ABS_MIN, ROI_QP_ABS_MAX, ROI_DMIN, ROI_DMAX,
+            ROI_DEFF_MIN, ROI_DEFF_MAX, ROI_ABS_WINDOW);
         for (int s = 0; s < MS_MAX_VSTREAM; s++)
             APP("%s\"%s\"", s ? "," : "", hal_roi_state(s));
+        APP("],\"rejected\":[");
+        for (int s = 0; s < MS_MAX_VSTREAM; s++)
+            APP("%s%u", s ? "," : "", hal_roi_rejected(s));
         int fsw = 0, fsh = 0;
         hal_sensor_size(&fsw, &fsh);
         int ft = hal_fcrop_tier();
+        hal_fcrop_lim fl;
+        hal_fcrop_limits(&fl);
         APP("]},\"fcrop\":{\"tier\":\"%s\",\"live\":%d,\"min\":%d,\"even\":1,"
-            "\"sensor\":[%d,%d],\"state\":\"%s\"},",
+            "\"step\":2,\"sensor\":[%d,%d],\"state\":\"%s\",\"min_win\":[%d,%d],"
+            "\"zoom_max\":%d.%02d,\"upscale_pct\":%d,\"zoomable\":[",
             cap_tier_name(ft), ft != CAP_TIER_UNSUPPORTED && FCROP_LIVE, FCROP_MIN,
-            fsw, fsh, hal_fcrop_state());
+            fsw, fsh, hal_fcrop_state(), fl.min_w, fl.min_h,
+            fl.zoom_max_x100 / 100, fl.zoom_max_x100 % 100, fl.upscale_pct);
+        for (int s = 0; s < MS_MAX_VSTREAM; s++)
+            APP("%s%d", s ? "," : "", !!(fl.zoomable & (1u << s)));
+        APP("],\"zoomed\":[");
+        for (int s = 0; s < MS_MAX_VSTREAM; s++)
+            APP("%s%d", s ? "," : "", !!(fl.zoomed & (1u << s)));
+        APP("]},");
     }
     /* image rotation: the set of values this SoC's build can actually apply
      * (0 always; 90/270 need a real dim-swapping transpose apply path). 180 is

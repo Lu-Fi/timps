@@ -379,6 +379,32 @@ const char *hal_fcrop_state(void)
     return fcrop_fit(x, y, w, h, sw, sh, &a) == GEOM_REJECT ? "rejected" : "on";
 }
 
+unsigned hal_roi_rejected(int si)
+{
+    if (si < 0 || si >= MS_MAX_VSTREAM) return 0;
+    const ms_vstream_cfg *v = &g_cfg_boot.video[si];
+    unsigned m = 0;
+    for (int n = 0; n < MS_MAX_ROI; n++) {
+        const ms_roi_region *r = &g_cfg.roi[si][n];
+        ms_roi_api a;
+        if (r->enabled && roi_geom(r->x, r->y, r->w, r->h, v->width, v->height, &a) == GEOM_REJECT)
+            m |= 1u << n;
+    }
+    return m;
+}
+void hal_fcrop_limits(hal_fcrop_lim *o)
+{
+    int sw, sh;
+    hal_sensor_size(&sw, &sh);
+    memset(o, 0, sizeof *o);
+    o->upscale_pct = -1;
+    o->min_w = o->min_h = FCROP_MIN;
+    for (int i = 0; i < MS_MAX_VSTREAM; i++)
+        if (g_cfg_boot.video[i].enabled) o->zoomable |= 1u << i;
+    if (!strcmp(hal_fcrop_state(), "on")) o->zoomed = o->zoomable;
+    o->zoom_max_x100 = fcrop_zoom_x100(sw, sh, o->min_w, o->min_h);
+}
+
 /* no encoder telemetry on the host sim: caller omits the stats object */
 int hal_enc_stats(int enc_chn, hal_enc_stat *out){ (void)enc_chn; (void)out; return -1; }
 int hal_enc_rc_read(int enc_chn, hal_enc_rc *out){ (void)enc_chn; (void)out; return -1; }

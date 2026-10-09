@@ -103,6 +103,20 @@ const char *hal_roi_state(int si);
 int hal_fcrop_tier(void);
 const char *hal_fcrop_state(void);
 void hal_sensor_size(int *w, int *h);
+/* bitmask of stream si's ROI regions refused as outside the picture */
+unsigned hal_roi_rejected(int si);
+/* caps.fcrop limits: upscale_pct is the T31/T23 driver's fcrop_upscale_pct
+ * (-1 not applicable or not readable), min_w/min_h the smallest window the
+ * driver takes, zoom_max_x100 the zoom it allows against the full sensor,
+ * zoomable/zoomed per-stream bitmasks (can show a window at all / shows the
+ * current one). */
+typedef struct {
+    int upscale_pct;
+    int min_w, min_h;
+    int zoom_max_x100;
+    unsigned zoomable, zoomed;
+} hal_fcrop_lim;
+void hal_fcrop_limits(hal_fcrop_lim *o);
 
 /* 1 when image.<key> is built in but this libimp lacks its (weak, OpenIMP-only)
  * setter. Defined only where isp_caps.h sets ISP_WEAK_KEYS. */

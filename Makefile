@@ -564,7 +564,7 @@ test-dn-proven:
 # unsupported, 1 experimental, 2 effective, 3 sim). Exit code is the result.
 ROI_MATRIX := T10:0:1:0:0 T10:1:2:2:1 T20:0:1:0:0 T20:1:2:2:1 T21:0:1:0:0 \
               T21:1:2:2:1 T23:0:0:0:0 T23:1:0:1:0 T30:0:0:0:0 T31:0:0:1:1 \
-              T31:1:0:1:1 T40:0:0:0:0 T40:1:0:0:0 T41:0:0:0:0 T41:1:0:0:0 \
+              T31:1:2:1:1 T40:0:0:0:0 T40:1:0:0:0 T41:0:0:0:0 T41:1:0:0:0 \
               C100:0:0:0:0 HOST:0:3:3:1
 test-roi:
 	$(HOSTCC) $(CFLAGS) -Isrc scripts/test_roi.c -o $(BIN)-roitest

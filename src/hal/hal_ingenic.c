@@ -1070,15 +1070,26 @@ void hal_sensor_size(int *w, int *h)
 }
 
 #if ROI_TIER != CAP_TIER_UNSUPPORTED
+#ifdef ROI_FAMILY_B
+extern int ms_enc_set_roiattr(int chn, ms_roiattr_api *attr)
+    __asm__("IMP_Encoder_SetChnRoiAttr") __attribute__((weak));
+extern int ms_enc_get_roiattr(int chn, ms_roiattr_api *attr)
+    __asm__("IMP_Encoder_GetChnRoiAttr") __attribute__((weak));
+#define ROI_SETTER ms_enc_set_roiattr
+#else
 extern int ms_enc_set_roi(int chn, const ms_roi_api *cfg)
     __asm__("IMP_Encoder_SetChnROI") __attribute__((weak));
 _Static_assert(sizeof(IMPEncoderROICfg) == sizeof(ms_roi_api) &&
                offsetof(IMPEncoderROICfg, s32Qp) == offsetof(ms_roi_api, qp) &&
                offsetof(IMPEncoderROICfg, rect) == offsetof(ms_roi_api, x0),
                "IMPEncoderROICfg differs from ms_roi_api");
+#define ROI_SETTER ms_enc_set_roi
+#endif
 static pthread_mutex_t g_roi_lock = PTHREAD_MUTEX_INITIALIZER;
 static unsigned g_roi_set[MS_MAX_VSTREAM];   /* slots the encoder may hold enabled */
+static unsigned g_roi_rej[MS_MAX_VSTREAM];   /* regions outside the picture */
 static unsigned g_roi_said;                  /* streams whose first apply/refusal was logged */
+static void qp_bounds(const ms_vstream_cfg *v, int *qmin, int *qmax);
 
 static int roi_si_of(int chn)
 {
@@ -1087,36 +1098,71 @@ static int roi_si_of(int chn)
     return -1;
 }
 
+/* the picture QP an absolute region QP is judged against (roi_qp_map) */
+static void roi_qpctx(const ms_vstream_cfg *v, ms_roi_qpctx *c)
+{
+    if (v->rc_mode == MS_RC_FIXQP) {
+        c->lo = c->hi = c->ref = v->qp > 0 ? v->qp : 35;
+    } else {
+        qp_bounds(v, &c->lo, &c->hi);
+        c->ref = (c->lo + c->hi) / 2;
+    }
+    c->dmin = ROI_DMIN; c->dmax = ROI_DMAX;
+}
+
 /* Every configured slot of the stream onto its encoder. Runs on the encode
  * thread once StartRecvPic has succeeded (the verified order) and on a
  * /control change; slots never enabled are left alone, so a camera without
- * ROI never calls SetChnROI. */
+ * ROI never calls the setter. */
 static void roi_apply(vchan *vc, int live)
 {
     int si = roi_si_of(vc->chn);
-    if (!ms_enc_set_roi || si < 0) return;
+    if (!ROI_SETTER || si < 0) return;
     int st = roi_stream_state(1, g_cfg_boot.video[si].codec == MS_VC_H265, g_eff_rot[si]);
     ms_roi_region r[MS_MAX_ROI];
+    ms_roi_qpctx qc;
     config_str_lock();
     memcpy(r, g_hcfg->roi[si], sizeof r);
+    roi_qpctx(&g_hcfg->video[si], &qc);
     config_str_unlock();
     pthread_mutex_lock(&g_roi_lock);
     int said = !live && (g_roi_said & (1u << si));
     int on = 0, want = 0;
+    unsigned rej = 0;
+#ifdef ROI_FAMILY_B
+    ms_roiattr_api attr;
+    memset(&attr, 0, sizeof attr);
+    unsigned set = 0;
+#endif
     for (int n = 0; n < MS_MAX_ROI; n++) {
         unsigned bit = 1u << n;
         want += r[n].enabled;
         int en = r[n].enabled && st == ROI_ST_OK;
         if (!en && !(g_roi_set[si] & bit)) continue;
+#ifdef ROI_FAMILY_B
+        ms_roiwin_api *a = &attr.win[n];
+        int g = roi_build_b(en, r[n].qp_mode, r[n].qp, r[n].x, r[n].y, r[n].w, r[n].h,
+                            vc->w, vc->h, &qc, a);
+        if (g == GEOM_ADJUSTED && !said)
+            LOGI(MOD,"roi%d.%d: applied as %u,%u %ux%u (16 px macroblocks), %s qp %d",
+                 si, n, a->x, a->y, a->w, a->h,
+                 a->mode == ROI_B_DELTA ? "delta" : "absolute", a->qp);
+        if (a->enable) set |= bit;
+#else
         ms_roi_api a;
         int g = roi_build(n, en, r[n].qp_mode, r[n].qp, r[n].x, r[n].y, r[n].w, r[n].h,
-                          vc->w, vc->h, &a);
-        if (g == GEOM_REJECT && !said)
-            LOGW(MOD,"roi%d.%d: %d,%d %dx%d lies outside the %dx%d picture - region off",
-                 si, n, r[n].x, r[n].y, r[n].w, r[n].h, vc->w, vc->h);
-        else if (g == GEOM_ADJUSTED && !said)
+                          vc->w, vc->h, &qc, &a);
+        if (g == GEOM_ADJUSTED && !said)
             LOGI(MOD,"roi%d.%d: applied as %d,%d-%d,%d (16 px macroblocks), %s qp %d",
                  si, n, a.x0, a.y0, a.x1, a.y1, a.rel ? "delta" : "absolute", a.qp);
+#endif
+        if (g == GEOM_REJECT) {
+            rej |= bit;
+            if (!said)
+                LOGW(MOD,"roi%d.%d: %d,%d %dx%d lies outside the %dx%d picture - region off",
+                     si, n, r[n].x, r[n].y, r[n].w, r[n].h, vc->w, vc->h);
+        }
+#ifndef ROI_FAMILY_B
         if (!a.en && !(g_roi_set[si] & bit)) continue;
         int rc = ms_enc_set_roi(vc->chn, &a);
         if (rc != 0) {
@@ -1125,7 +1171,25 @@ static void roi_apply(vchan *vc, int live)
         }
         if (a.en) { g_roi_set[si] |= bit; on++; }
         else g_roi_set[si] &= ~bit;
+#endif
     }
+#ifdef ROI_FAMILY_B
+    /* one call carries all ten windows; 4..9 stay disabled */
+    if (set || g_roi_set[si]) {
+        int rc = ms_enc_set_roiattr(vc->chn, &attr);
+        if (rc != 0) {
+            LOGW(MOD,"roi%d: SetChnRoiAttr chn%d failed (rc=%d)", si, vc->chn, rc);
+        } else {
+            g_roi_set[si] = set;
+            on = __builtin_popcount(set);
+            ms_roiattr_api back;
+            if (!said && set && ms_enc_get_roiattr &&
+                ms_enc_get_roiattr(vc->chn, &back) == 0 && memcmp(&back, &attr, sizeof back))
+                LOGW(MOD,"roi%d: GetChnRoiAttr differs from what was set", si);
+        }
+    }
+#endif
+    g_roi_rej[si] = rej;
     if (!said && want) {
         if (st != ROI_ST_OK)
             LOGW(MOD,"roi%d: stream is %s - encoder ROI needs an unrotated H.264 stream, "
@@ -1148,10 +1212,15 @@ static void roi_apply(vchan *vc, int live)
 int hal_roi_tier(void)
 {
 #if ROI_TIER != CAP_TIER_UNSUPPORTED
-    if (!ms_enc_set_roi) return CAP_TIER_UNSUPPORTED;
+    if (!ROI_SETTER) return CAP_TIER_UNSUPPORTED;
 #if defined(PLATFORM_T21) && defined(USE_OPENIMP)
     const char *e = getenv("OPENIMP_T21_ROI");
     if (e && !strcmp(e, "0")) return CAP_TIER_EXPERIMENTAL;
+#endif
+#ifdef ROI_FAMILY_B
+    /* the library then refuses every SetChnRoiAttr */
+    const char *e = getenv("OPENIMP_T31_ROI");
+    if (e && e[0] == '0') return CAP_TIER_UNSUPPORTED;
 #endif
     return ROI_TIER;
 #else
@@ -1168,8 +1237,90 @@ const char *hal_roi_state(int si)
                                            g_eff_rot[si]));
 }
 
+unsigned hal_roi_rejected(int si)
+{
+#if ROI_TIER != CAP_TIER_UNSUPPORTED
+    if (si >= 0 && si < MS_MAX_VSTREAM) return g_roi_rej[si];
+#endif
+    return 0;
+}
+
 enum { FC_OFF, FC_ON, FC_REJECTED, FC_FAILED };
 static int g_fcrop_state = FC_OFF;
+
+#ifdef FCROP_MSCA_PARAM
+/* -1: older open-tx-isp without the guard */
+static int fcrop_upscale_pct(void)
+{
+    int v = -1;
+    FILE *f = fopen(FCROP_MSCA_PARAM, "r");
+    if (f) {
+        if (fscanf(f, "%d", &v) != 1 || v < 0) v = -1;
+        fclose(f);
+    }
+    return v;
+}
+#endif
+
+static void fcrop_cfg(int *en, int *x, int *y, int *w, int *h)
+{
+    config_str_lock();
+    *en = g_hcfg->image.fcrop_enable; *x = g_hcfg->image.fcrop_x; *y = g_hcfg->image.fcrop_y;
+    *w = g_hcfg->image.fcrop_w; *h = g_hcfg->image.fcrop_h;
+    config_str_unlock();
+}
+
+void hal_fcrop_limits(hal_fcrop_lim *o)
+{
+    int sw, sh, en, x, y, w, h;
+    hal_sensor_size(&sw, &sh);
+    memset(o, 0, sizeof *o);
+    o->upscale_pct = -1;
+    o->min_w = o->min_h = FCROP_MIN;
+    unsigned all = 0;
+    int ow = 0, oh = 0;
+    for (int i = 0; i < MS_MAX_VSTREAM; i++) {
+        const ms_vstream_cfg *v = &g_cfg_boot.video[i];
+        if (!v->enabled) continue;
+        all |= 1u << i;
+        if (v->width > ow) ow = v->width;
+        if (v->height > oh) oh = v->height;
+    }
+    fcrop_cfg(&en, &x, &y, &w, &h);
+    ms_fcrop_api win = {0};
+    int fit = en && fcrop_fit(x, y, w, h, sw, sh, &win) != GEOM_REJECT;
+#if defined(FCROP_MSCA_PARAM)
+    o->upscale_pct = fcrop_upscale_pct();
+    fcrop_min_msca(ow, oh, o->upscale_pct, &o->min_w, &o->min_h);
+    o->zoomable = all;
+    if (g_fcrop_state == FC_ON) o->zoomed = all;
+    (void)fit;
+#elif defined(FCROP_DS_ONLY)
+    (void)ow; (void)oh;
+    int mw = sw, mh = sh;
+    for (int i = 0; i < MS_MAX_VSTREAM; i++) {
+        const ms_vstream_cfg *v = &g_cfg_boot.video[i];
+        if (!v->enabled || (v->width >= sw && v->height >= sh)) continue;
+        o->zoomable |= 1u << i;
+        if (v->width * v->height < mw * mh) { mw = v->width; mh = v->height; }
+        if (fit && g_fcrop_state == FC_ON &&
+            fcrop_ds_zooms((int)win.width, (int)win.height, v->width, v->height, sw, sh))
+            o->zoomed |= 1u << i;
+    }
+    o->min_w = mw < FCROP_MIN ? FCROP_MIN : (mw + 1) & ~1;
+    o->min_h = mh < FCROP_MIN ? FCROP_MIN : (mh + 1) & ~1;
+#ifdef FCROP_SOC_MIN_W
+    if (o->min_w < FCROP_SOC_MIN_W) o->min_w = FCROP_SOC_MIN_W;
+    if (o->min_h < FCROP_SOC_MIN_H) o->min_h = FCROP_SOC_MIN_H;
+#endif
+#else
+    (void)ow; (void)oh; (void)fit;
+    o->zoomable = all;
+    if (g_fcrop_state == FC_ON) o->zoomed = all;
+#endif
+    o->zoom_max_x100 = fcrop_zoom_x100(sw, sh, o->min_w, o->min_h);
+}
+
 #if FCROP_TIER != CAP_TIER_UNSUPPORTED
 extern int ms_isp_set_fcrop(ms_fcrop_api *c)
     __asm__("IMP_ISP_Tuning_SetFrontCrop") __attribute__((weak));
@@ -1180,25 +1331,29 @@ _Static_assert(sizeof(IMPISPFrontCrop) == sizeof(ms_fcrop_api) &&
                "IMPISPFrontCrop differs from ms_fcrop_api");
 #endif
 static int g_fcrop_set;              /* a window of ours is in the ISP */
-static ms_fcrop_api g_fcrop_rej;     /* last -EINVAL window, warned once */
+static ms_fcrop_api g_fcrop_rej;     /* last refused window, warned once */
+
+static int fcrop_same(const ms_fcrop_api *a, const ms_fcrop_api *b)
+{
+    return a->left == b->left && a->top == b->top && a->width == b->width &&
+           a->height == b->height;
+}
 
 /* caller holds g_isp_lock */
 static void fcrop_apply(void)
 {
     if (!ms_isp_set_fcrop) return;
     int en, x, y, w, h, sw, sh;
-    config_str_lock();
-    en = g_hcfg->image.fcrop_enable; x = g_hcfg->image.fcrop_x; y = g_hcfg->image.fcrop_y;
-    w = g_hcfg->image.fcrop_w; h = g_hcfg->image.fcrop_h;
-    config_str_unlock();
+    fcrop_cfg(&en, &x, &y, &w, &h);
     hal_sensor_size(&sw, &sh);
     ms_fcrop_api a;
     if (!en) {
         g_fcrop_state = FC_OFF;
         if (!g_fcrop_set) return;
         fcrop_off(sw, sh, &a);
+        errno = 0;
         int rc = ms_isp_set_fcrop(&a);
-        if (rc) { LOGW(MOD,"image.fcrop: SetFrontCrop(off) failed (rc=%d)", rc);
+        if (rc) { LOGW(MOD,"image.fcrop: SetFrontCrop(off) failed (rc=%d errno=%d)", rc, errno);
                   g_fcrop_state = FC_FAILED; return; }
         g_fcrop_set = 0;
         LOGI(MOD,"image.fcrop off: full %dx%d sensor", sw, sh);
@@ -1211,28 +1366,63 @@ static void fcrop_apply(void)
         g_fcrop_state = FC_REJECTED;
         return;
     }
+#ifdef FCROP_SOC_MIN_W
+    if ((int)a.width < FCROP_SOC_MIN_W || (int)a.height < FCROP_SOC_MIN_H) {
+        if (!fcrop_same(&a, &g_fcrop_rej))
+            LOGW(MOD,"image.fcrop %ux%u: below the %dx%d this SoC takes - not applied",
+                 a.width, a.height, FCROP_SOC_MIN_W, FCROP_SOC_MIN_H);
+        g_fcrop_rej = a;
+        g_fcrop_state = FC_REJECTED;
+        return;
+    }
+#endif
+#ifdef FCROP_MSCA_PARAM
+    /* an older driver without the guard hung on a window the MSCA cannot
+     * upscale to; the same rule here keeps it from ever seeing one */
+    {
+        hal_fcrop_lim lim;
+        hal_fcrop_limits(&lim);
+        if ((int)a.width < lim.min_w || (int)a.height < lim.min_h) {
+            if (!fcrop_same(&a, &g_fcrop_rej))
+                LOGW(MOD,"image.fcrop %ux%u: below the %dx%d minimum for the largest stream "
+                     "(fcrop_upscale_pct=%d) - not applied", a.width, a.height,
+                     lim.min_w, lim.min_h, lim.upscale_pct < 0 ? 0 : lim.upscale_pct);
+            g_fcrop_rej = a;
+            g_fcrop_state = FC_REJECTED;
+            return;
+        }
+    }
+#endif
     errno = 0;
     int rc = ms_isp_set_fcrop(&a);
     if (rc) {
+        int e = errno;
+#ifdef FCROP_DS_ONLY
+        /* T10/T20/T21 answer -1 (-EOPNOTSUPP) when no stream fits the window */
+        int refused = 1;
+#else
         /* -EINVAL: no stream can show the window (T23: below the ch0 size) */
-        int inval = rc == -EINVAL || (rc == -1 && errno == EINVAL);
-        if (!inval || a.left != g_fcrop_rej.left || a.top != g_fcrop_rej.top ||
-            a.width != g_fcrop_rej.width || a.height != g_fcrop_rej.height)
-            LOGW(MOD,"image.fcrop: SetFrontCrop left %u top %u %ux%u refused (rc=%d): no "
-                 "stream can show that window", a.left, a.top, a.width, a.height, rc);
-        if (inval) g_fcrop_rej = a; else memset(&g_fcrop_rej, 0, sizeof a);
-        g_fcrop_state = inval ? FC_REJECTED : FC_FAILED;
+        int refused = rc == -EINVAL || rc == -EOPNOTSUPP ||
+                      (rc == -1 && (e == EINVAL || e == EOPNOTSUPP));
+#endif
+        if (!refused || !fcrop_same(&a, &g_fcrop_rej))
+            LOGW(MOD,"image.fcrop: SetFrontCrop left %u top %u %ux%u refused (rc=%d errno=%d): "
+                 "no stream can show that window", a.left, a.top, a.width, a.height, rc, e);
+        if (refused) g_fcrop_rej = a; else memset(&g_fcrop_rej, 0, sizeof a);
+        g_fcrop_state = refused ? FC_REJECTED : FC_FAILED;
         return;
     }
     memset(&g_fcrop_rej, 0, sizeof g_fcrop_rej);
     g_fcrop_set = 1;
     g_fcrop_state = FC_ON;
-#if defined(PLATFORM_T20)
-    const char *note = " - T20 shows it on downscaled streams only";
+#if defined(PLATFORM_T10)||defined(PLATFORM_T20)
+    const char *note = " - shown on downscaled streams only";
+#elif defined(PLATFORM_T21)
+    const char *note = " - shown on streams no larger than the window";
 #elif defined(PLATFORM_T23)
     const char *note = " - experimental, needs open-tx-isp 3cf9bdac or newer";
 #else
-    const char *note = FCROP_TIER == CAP_TIER_EXPERIMENTAL ? " - experimental on this SoC" : "";
+    const char *note = hal_fcrop_tier() == CAP_TIER_EXPERIMENTAL ? " - experimental on this SoC" : "";
 #endif
     LOGI(MOD,"image.fcrop: sensor window left %u top %u %ux%u of %dx%d%s%s", a.left, a.top,
          a.width, a.height, sw, sh, g == GEOM_ADJUSTED ? " (evened/moved inside)" : "", note);
@@ -1251,13 +1441,27 @@ static void fcrop_boot(void)
 #if FCROP_TIER != CAP_TIER_UNSUPPORTED
     g_fcrop_set = 0;
     g_fcrop_state = FC_OFF;
-    if (!g_hcfg->image.fcrop_enable) return;
+    memset(&g_fcrop_rej, 0, sizeof g_fcrop_rej);
     if (!ms_isp_set_fcrop) {
-        LOGW(MOD,"image.fcrop_enable=1 ignored: this libimp has no IMP_ISP_Tuning_SetFrontCrop");
+        if (g_hcfg->image.fcrop_enable)
+            LOGW(MOD,"image.fcrop_enable=1 ignored: this libimp has no IMP_ISP_Tuning_SetFrontCrop");
         return;
     }
     pthread_mutex_lock(&g_isp_lock);
-    fcrop_apply();
+    if (g_hcfg->image.fcrop_enable) {
+        fcrop_apply();
+    }
+#ifdef FCROP_DS_ONLY
+    else {
+        /* an older T10/T20 driver keeps a window across timps restarts */
+        int sw, sh;
+        ms_fcrop_api a;
+        hal_sensor_size(&sw, &sh);
+        fcrop_off(sw, sh, &a);
+        int rc = ms_isp_set_fcrop(&a);
+        LOGD(MOD,"image.fcrop: boot off %dx%d (rc=%d)", sw, sh, rc);
+    }
+#endif
     pthread_mutex_unlock(&g_isp_lock);
 #else
     if (g_hcfg->image.fcrop_enable)
@@ -1265,12 +1469,26 @@ static void fcrop_boot(void)
 #endif
 }
 
+/* A stream started: T10/T20/T21 refuse a window while no stream that can show
+ * it runs, so the boot apply of a stored window fails there; try again. */
+static void fcrop_stream_kick(void)
+{
+#if FCROP_LIVE
+    if (!ms_isp_set_fcrop || g_fcrop_state == FC_ON || !g_hcfg->image.fcrop_enable) return;
+    pthread_mutex_lock(&g_isp_lock);
+    if (g_fcrop_state != FC_ON) fcrop_apply();
+    pthread_mutex_unlock(&g_isp_lock);
+#endif
+}
+
 int hal_fcrop_tier(void)
 {
 #if FCROP_TIER != CAP_TIER_UNSUPPORTED
-    if (ms_isp_set_fcrop) return FCROP_TIER;
-#endif
+    if (!ms_isp_set_fcrop) return CAP_TIER_UNSUPPORTED;
+    return FCROP_TIER;
+#else
     return CAP_TIER_UNSUPPORTED;
+#endif
 }
 
 const char *hal_fcrop_state(void)
@@ -2052,6 +2270,26 @@ static int isp_init(void)
       }
     }
 #endif
+    /* config_sensor_finalize() ran before the sensor did: on T10/T20/T21 the
+     * /proc size was still empty and video0 stood in, which made a 720p main
+     * stream a 1280x720 top-left crop of a 1080p sensor */
+    if (g_isp_sensor_w <= 0 && g_hcfg->sensor.size_guessed) {
+        int pw, ph;
+        if (config_sensor_proc_size(&pw, &ph) == 0) {
+            g_isp_sensor_w = pw; g_isp_sensor_h = ph;
+            LOGI(MOD,"sensor resolution %dx%d (driver, after EnableSensor)", pw, ph);
+            for (int i = 0; i < MS_MAX_VSTREAM; i++) {
+                const ms_vstream_cfg *v = &g_hcfg->video[i];
+                if (v->enabled && (v->width > pw || v->height > ph))
+                    LOGW(MOD,"video%d %dx%d is larger than the %dx%d sensor - set "
+                             "video%d.width/height", i, v->width, v->height, pw, ph, i);
+            }
+        } else {
+            LOGW(MOD,"sensor size unknown (driver /proc empty), assuming video0 %dx%d - "
+                     "set sensor.width/height if a smaller stream shows a crop",
+                 g_hcfg->sensor.width, g_hcfg->sensor.height);
+        }
+    }
 
     config_str_lock();
     LOGI(MOD,"ISP up, sensor=%s fps=%d", g_hcfg->sensor.model, g_hcfg->sensor.fps);
@@ -2943,6 +3181,7 @@ static void *video_thread(void *arg)
                 vc->idr_req=0; IMP_Encoder_RequestIDR(vc->chn);
                 LOGI(MOD,"video chn%d streaming",vc->chn);
                 roi_start(vc);
+                fcrop_stream_kick();
             }
         }
         /* honor IDR requests from RTSP/HTTP threads here (single-thread IMP) */
@@ -5553,6 +5792,11 @@ static int ing_control(const char *key, const char *val)
      * persisted, so "applies on restart" remains true. */
     if (!strncmp(key,"video",5) && key[5]>='0' && key[5]<'0'+MS_MAX_VSTREAM
         && key[6]=='.'){
+        const char *k7 = key+7;
+        /* an absolute ROI QP is mapped against the picture QP (roi_qpctx) */
+        if ((!strcmp(k7,"qp") || !strcmp(k7,"min_qp") || !strcmp(k7,"max_qp") ||
+             !strcmp(k7,"rc_mode")) && !strcmp(hal_roi_state(key[5]-'0'), "ok"))
+            g_roi_pending |= 1u << (key[5]-'0');
         if (rc_key_live(key+7) && rc_live_apply(key[5]-'0', key+7)){
             LOGI(MOD,"control %s applied to the running encoder "
                      "(takes effect at the next IDR/GOP)", key);
@@ -5748,6 +5992,7 @@ static int ing_start(const ms_config *cfg)
     memset(g_eff_rot, 0, sizeof g_eff_rot);   /* rewritten per stream below */
 #if ROI_TIER != CAP_TIER_UNSUPPORTED
     memset(g_roi_set, 0, sizeof g_roi_set);   /* fresh encoder channels */
+    memset(g_roi_rej, 0, sizeof g_roi_rej);
     g_roi_said = 0;
 #else
     for (int i=0;i<MS_MAX_VSTREAM;i++)

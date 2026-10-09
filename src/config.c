@@ -2142,6 +2142,15 @@ static long read_sensor_proc(const char *key, int base)
     return strtol(buf, NULL, base);
 }
 
+/* T10/T20/T21 drivers fill width/height only while the sensor runs */
+int config_sensor_proc_size(int *w, int *h)
+{
+    long pw = read_sensor_proc("width", 10), ph = read_sensor_proc("height", 10);
+    if (pw <= 0 || ph <= 0) return -1;
+    *w = (int)pw; *h = (int)ph;
+    return 0;
+}
+
 /* raptor/prudynt-style sensor auto-detect: fill any sensor.* field left unset
  * (empty/0 - i.e. not given in the config) from the Ingenic kernel sensor
  * registry under /proc/jz/sensor/ (see sensor_proc_prefix() above for the
@@ -2218,6 +2227,7 @@ void config_sensor_finalize(ms_config *c)
      * derive the sensor resolution from the main stream (video0) so a 2K/4MP
      * camera whose driver reports 0 still crops/scales correctly; final safety
      * net is 1080p. */
+    c->sensor.size_guessed = c->sensor.width == 0 || c->sensor.height == 0;
     if (c->sensor.width   == 0)  c->sensor.width  = c->video[0].width  > 0 ? c->video[0].width  : 1920;
     if (c->sensor.height  == 0)  c->sensor.height = c->video[0].height > 0 ? c->video[0].height : 1080;
     if (c->sensor.fps     == 0)  c->sensor.fps    = c->video[0].fps    > 0 ? c->video[0].fps    : 25;

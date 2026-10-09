@@ -32,22 +32,53 @@ static inline const char *cap_tier_name(int t)
 #endif
 
 /* ROI, H.264 only. Device tests by the OpenIMP maintainer, not by timps.
+ * Family A, IMP_Encoder_SetChnROI (8 slots, p0/p1 corners):
  * T10 OpenIMP: QP51 -25 % bitrate, delta -10 x3.7.
  * T20 OpenIMP: QP51 block visible, QP15 clean.
- * T21 OpenIMP: effective by default; OPENIMP_T21_ROI=0 in libimp turns it off.
+ * T21 OpenIMP: effective by default; OPENIMP_T21_ROI=0 in libimp turns it off;
+ * the T21 encoder saturates deltas at about -12..+13.
  * T10/T20/T21 vendor: programs the registers, never seen on a device.
  * T23: no effect, the vendor encoder only stores the region.
- * T31 OpenIMP and T40/T41 use SetChnRoiAttr (10 windows), not wired;
- * T30/C100 not investigated. */
+ * Family B, IMP_Encoder_SetChnRoiAttr (10 windows, x/y/w/h):
+ * T31 OpenIMP: effective (AVPU QP table, device-tested by the OpenIMP
+ * maintainer); OPENIMP_T31_ROI=0 in libimp turns it off.
+ * T31 vendor: the 1.1.x libimp has no ROI symbol.
+ * T40/T41: vendor T41 takes deltas -26..25 only, OpenIMP T41 is experimental
+ * and off by default; family B would fit both, left unsupported until a
+ * device test. T30/C100 not investigated. */
+#if defined(PLATFORM_T31) && defined(USE_OPENIMP)
+#define ROI_FAMILY_B 1
+#endif
 #if !defined(ROI_PLATFORM_KNOWN)
 #define ROI_TIER CAP_TIER_SIM
 #elif defined(USE_OPENIMP) && \
-      (defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21))
+      (defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)|| \
+       defined(PLATFORM_T31))
 #define ROI_TIER CAP_TIER_EFFECTIVE
 #elif defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)
 #define ROI_TIER CAP_TIER_EXPERIMENTAL
 #else
 #define ROI_TIER CAP_TIER_UNSUPPORTED
+#endif
+
+/* caps.roi: the delta range sent, and the range the encoder honours */
+#ifdef ROI_FAMILY_B
+#define ROI_API_NAME   "roiattr"
+#define ROI_SLOTS      ROI_B_WINS
+#define ROI_DMIN       ROI_B_DELTA_MIN
+#define ROI_DMAX       ROI_B_DELTA_MAX
+#else
+#define ROI_API_NAME   "chnroi"
+#define ROI_SLOTS      ROI_HW_SLOTS
+#define ROI_DMIN       ROI_QP_DELTA_MIN
+#define ROI_DMAX       ROI_QP_DELTA_MAX
+#endif
+#if defined(PLATFORM_T21) && defined(USE_OPENIMP)
+#define ROI_DEFF_MIN   (-12)
+#define ROI_DEFF_MAX   13
+#else
+#define ROI_DEFF_MIN   ROI_DMIN
+#define ROI_DEFF_MAX   ROI_DMAX
 #endif
 
 /* FrontCrop, ISP-wide, sensor pixels.
@@ -56,7 +87,13 @@ static inline const char *cap_tier_name(int t)
  * T23 OpenIMP: needs open-tx-isp 3cf9bdac or newer (older drivers hung on a
  * crop change; windows below the ch0 size now fail with -EINVAL). The tier is
  * compile-time and cannot see the driver, so start-only. T23 vendor: untested.
- * T31: Get/Set round-trip only, effect not measured.
+ * T10 OpenIMP: windows below 640x360 fail (-1, errno 122), outside the
+ * sensor -1/EINVAL. T10/T20 show the window on downscaled (sub) streams only.
+ * T23: below the ch0 size -EINVAL unless open-tx-isp fcrop_upscale_pct allows
+ * upscaling (2.0 ok, 2.2 stalled); the driver can go live, timps stays start-only.
+ * T31: the window is taken (with the open-tx-isp guard, 27dc8be4, no hang on
+ * a window the MSCA cannot upscale), but OpenIMP lacks the scaler steps, so
+ * the picture effect is unproven: experimental.
  * T40/T41: not in the SDK, and a live fs1 crop stops frames on T41.
  * T30/C100 not investigated. */
 #if !defined(ROI_PLATFORM_KNOWN)
@@ -70,13 +107,26 @@ static inline const char *cap_tier_name(int t)
 #define FCROP_TIER CAP_TIER_UNSUPPORTED
 #endif
 
+/* how the driver decides which stream shows the window (caps.fcrop) */
+#if defined(PLATFORM_T31)
+#define FCROP_MSCA_PARAM "/sys/module/tx_isp_t31/parameters/fcrop_upscale_pct"
+#elif defined(PLATFORM_T23)
+#define FCROP_MSCA_PARAM "/sys/module/tx_isp_t23/parameters/fcrop_upscale_pct"
+#elif defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)
+#define FCROP_DS_ONLY 1
+#endif
+#if defined(PLATFORM_T10)
+#define FCROP_SOC_MIN_W 640
+#define FCROP_SOC_MIN_H 360
+#endif
+
 /* log text for a configured but refused feature */
 #if defined(PLATFORM_T23)
 #define ROI_WHY "no effect on T23: the vendor encoder only stores the region"
 #elif defined(PLATFORM_T31)
-#define ROI_WHY "T31 ROI goes through SetChnRoiAttr (OpenIMP only), not wired yet"
+#define ROI_WHY "T31 ROI needs OpenIMP (SetChnRoiAttr); the vendor libimp has no ROI"
 #elif defined(PLATFORM_T40)||defined(PLATFORM_T41)
-#define ROI_WHY "T40/T41 use the SetChnRoiAttr API, not wired"
+#define ROI_WHY "T40/T41 SetChnRoiAttr is not device-tested, left off"
 #else
 #define ROI_WHY "not investigated on this SoC"
 #endif
