@@ -264,6 +264,14 @@ static void t_fcrop_limits(void)
     CK(fcrop_ds_zooms(1000, 562, 640, 360, 1920, 1080), "sub stream zooms");
     CK(!fcrop_ds_zooms(1000, 562, 1280, 720, 1920, 1080), "window smaller than the stream");
     CK(!fcrop_ds_zooms(1920, 1080, 1280, 720, 1280, 720), "stream at sensor size never zooms");
+    {
+        const int vw[2] = { 1920, 640 }, vh[2] = { 1080, 360 };
+        const int idle[2] = { 1, 0 }, sub_on[2] = { 0, 1 }, none[2] = { 0, 0 };
+        CK(fcrop_ds_waits(960, 540, 2, vw, vh, idle, 1920, 1080), "sub idle, main on: waits");
+        CK(fcrop_ds_waits(960, 540, 2, vw, vh, none, 1920, 1080), "nothing on: waits");
+        CK(!fcrop_ds_waits(960, 540, 2, vw, vh, sub_on, 1920, 1080), "sub on: real refusal");
+        CK(!fcrop_ds_waits(600, 340, 2, vw, vh, idle, 1920, 1080), "below every stream: real refusal");
+    }
 }
 
 int main(void)

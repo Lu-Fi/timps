@@ -512,6 +512,7 @@ static int isp_apply_image(const char *k);
  * enable edge re-arms it, so the value the edge is known to reset is re-written
  * as soon as the caller's frame loop is actually delivering. */
 static void ae_it_max_arm(void);
+static void fcrop_stream_kick(void);
 /* Re-latch the chn0 state a real EnableChn is suspected to wipe;
  * shared by fs_use()'s enable edge and fs_recycle(). */
 static void fs_edge_relatch(int chn)
@@ -561,7 +562,7 @@ static void fs_use(int chn)
     int r = fsr_use(&g_fsr, &g_fs_ops, chn);
     fs_log_enable(chn, r);
     pthread_mutex_unlock(&g_fs_mtx);
-    if (r == FSR_EDGE) fs_edge_relatch(chn);
+    if (r == FSR_EDGE) { fs_edge_relatch(chn); fcrop_stream_kick(); }
 }
 static void fs_unuse(int chn)
 {
@@ -703,7 +704,7 @@ static void fs_keep_acquire(int chn)
     int r = fsr_keep_acquire(&g_fsr, &g_fs_ops, chn);
     fs_log_enable(chn, r);
     pthread_mutex_unlock(&g_fs_mtx);
-    if (r == FSR_EDGE) fs_edge_relatch(chn);
+    if (r == FSR_EDGE) { fs_edge_relatch(chn); fcrop_stream_kick(); }
 }
 static int fs_kept(int chn)
 {
@@ -1245,7 +1246,7 @@ unsigned hal_roi_rejected(int si)
     return 0;
 }
 
-enum { FC_OFF, FC_ON, FC_REJECTED, FC_FAILED };
+enum { FC_OFF, FC_ON, FC_REJECTED, FC_FAILED, FC_WAITING };
 static int g_fcrop_state = FC_OFF;
 
 #ifdef FCROP_MSCA_PARAM
@@ -1331,6 +1332,7 @@ _Static_assert(sizeof(IMPISPFrontCrop) == sizeof(ms_fcrop_api) &&
                "IMPISPFrontCrop differs from ms_fcrop_api");
 #endif
 static int g_fcrop_set;              /* a window of ours is in the ISP */
+static int g_fcrop_booted;           /* every channel exists */
 static ms_fcrop_api g_fcrop_rej;     /* last refused window, warned once */
 
 static int fcrop_same(const ms_fcrop_api *a, const ms_fcrop_api *b)
@@ -1398,14 +1400,32 @@ static void fcrop_apply(void)
     if (rc) {
         int e = errno;
 #ifdef FCROP_DS_ONLY
-        /* T10/T20/T21 answer -1 (-EOPNOTSUPP) when no stream fits the window */
+        /* T10/T20/T21 answer -1 (-EOPNOTSUPP) when no stream fits the window;
+         * an idle stream's channel counts as not fitting */
         int refused = 1;
+        int vw[MS_MAX_VSTREAM], vh[MS_MAX_VSTREAM], on[MS_MAX_VSTREAM];
+        for (int i = 0; i < MS_MAX_VSTREAM; i++) {
+            const ms_vstream_cfg *v = &g_cfg_boot.video[i];
+            int c = v->imp_chn;
+            vw[i] = v->enabled ? v->width : 0;
+            vh[i] = v->enabled ? v->height : 0;
+            on[i] = c >= 0 && c < MS_FS_MAXCHN &&
+                    __atomic_load_n(&g_fsr.enabled[c], __ATOMIC_RELAXED);
+        }
+        if (fcrop_ds_waits((int)a.width, (int)a.height, MS_MAX_VSTREAM, vw, vh, on, sw, sh)) {
+            if (g_fcrop_state != FC_WAITING || !fcrop_same(&a, &g_fcrop_rej))
+                LOGI(MOD,"image.fcrop: left %u top %u %ux%u waits for a stream that can show it "
+                     "(idle) - applied when it starts", a.left, a.top, a.width, a.height);
+            g_fcrop_rej = a;
+            g_fcrop_state = FC_WAITING;
+            return;
+        }
 #else
         /* -EINVAL: no stream can show the window (T23: below the ch0 size) */
         int refused = rc == -EINVAL || rc == -EOPNOTSUPP ||
                       (rc == -1 && (e == EINVAL || e == EOPNOTSUPP));
 #endif
-        if (!refused || !fcrop_same(&a, &g_fcrop_rej))
+        if (!refused || g_fcrop_state == FC_WAITING || !fcrop_same(&a, &g_fcrop_rej))
             LOGW(MOD,"image.fcrop: SetFrontCrop left %u top %u %ux%u refused (rc=%d errno=%d): "
                  "no stream can show that window", a.left, a.top, a.width, a.height, rc, e);
         if (refused) g_fcrop_rej = a; else memset(&g_fcrop_rej, 0, sizeof a);
@@ -1442,6 +1462,7 @@ static void fcrop_boot(void)
     g_fcrop_set = 0;
     g_fcrop_state = FC_OFF;
     memset(&g_fcrop_rej, 0, sizeof g_fcrop_rej);
+    g_fcrop_booted = 1;
     if (!ms_isp_set_fcrop) {
         if (g_hcfg->image.fcrop_enable)
             LOGW(MOD,"image.fcrop_enable=1 ignored: this libimp has no IMP_ISP_Tuning_SetFrontCrop");
@@ -1469,12 +1490,13 @@ static void fcrop_boot(void)
 #endif
 }
 
-/* A stream started: T10/T20/T21 refuse a window while no stream that can show
- * it runs, so the boot apply of a stored window fails there; try again. */
+/* A framesource or stream started: T10/T20/T21 refuse a window while no
+ * stream that can show it runs (also a snapshot-only one); try again. */
 static void fcrop_stream_kick(void)
 {
 #if FCROP_LIVE
-    if (!ms_isp_set_fcrop || g_fcrop_state == FC_ON || !g_hcfg->image.fcrop_enable) return;
+    if (!ms_isp_set_fcrop || !g_fcrop_booted || g_fcrop_state == FC_ON ||
+        !g_hcfg->image.fcrop_enable) return;
     pthread_mutex_lock(&g_isp_lock);
     if (g_fcrop_state != FC_ON) fcrop_apply();
     pthread_mutex_unlock(&g_isp_lock);
@@ -1493,7 +1515,7 @@ int hal_fcrop_tier(void)
 
 const char *hal_fcrop_state(void)
 {
-    static const char *const n[] = { "off", "on", "rejected", "failed" };
+    static const char *const n[] = { "off", "on", "rejected", "failed", "waiting" };
     if (hal_fcrop_tier() == CAP_TIER_UNSUPPORTED) return "unsupported";
     return n[g_fcrop_state];
 }

@@ -168,6 +168,12 @@ semantic versioning.
 
 ### Fixed
 
+- **FrontCrop on T10/T20/T21 refused while the sub stream was idle**: the
+  driver counts an idle stream's channel as unable to show the window
+  (`-EOPNOTSUPP`), so a POST with no viewer on the sub stream read `rejected`
+  and a snapshot never applied it. Such a window now reads
+  `caps.fcrop.state` `waiting` and is applied on any framesource start
+  (stream, snapshot, motion), not only when an encoder stream starts.
 - **ROI: delta -26 produced invalid H.264** (Wyze T20: Intel VA-API refused
   it, VLC/Firefox/Edge smeared below the region; the jump back at the region
   edge is mb_qp_delta +26). Deltas are clamped to -25..25 on every SoC; a

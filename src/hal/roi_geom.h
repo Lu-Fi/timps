@@ -229,6 +229,21 @@ static inline int fcrop_ds_zooms(int ww, int wh, int vw, int vh, int sw, int sh)
     return ww >= vw && wh >= vh;
 }
 
+/* T10/T20/T21 refused a window: 1 when a stream could show it but none of
+ * those runs (an idle stream's channel counts as unable), so the next
+ * stream start applies it; 0 = a real refusal. */
+static inline int fcrop_ds_waits(int ww, int wh, int n, const int *vw, const int *vh,
+                                 const int *on, int sw, int sh)
+{
+    int fit = 0;
+    for (int i = 0; i < n; i++) {
+        if (!fcrop_ds_zooms(ww, wh, vw[i], vh[i], sw, sh)) continue;
+        if (on[i]) return 0;
+        fit = 1;
+    }
+    return fit;
+}
+
 /* the disable call: full sensor window, en=0 */
 static inline void fcrop_off(int sw, int sh, ms_fcrop_api *o)
 {

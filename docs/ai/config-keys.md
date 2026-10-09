@@ -433,16 +433,18 @@ Prose and pitfalls
   zoomed:[..]}`; `state` is `off`, `on`, `rejected` (timps refused the
   window: below `min_win`, 64×64 or no sensor size; or SetFrontCrop returned
   `-EINVAL`/`-EOPNOTSUPP` — on T10/T20/T21 any error — i.e. no stream can
-  show it, logged once with errno), `failed` (any other SDK error) or
-  `unsupported`. `min_win`: T31/T23 `ceil(out × 100 / (100 + p))` per axis
+  show it, logged once with errno), `waiting` (T10/T20/T21: refused only
+  because every stream that could show the window is idle - the driver counts
+  an idle stream's channel as unable; applied when one starts, a snapshot
+  included), `failed` (any other SDK error) or `unsupported`. `min_win`: T31/T23 `ceil(out × 100 / (100 + p))` per axis
   for the largest stream, `p` = open-tx-isp `fcrop_upscale_pct`
   (`/sys/module/tx_isp_t31|t23/parameters/`, reported as `upscale_pct`, -1 if
   absent = no upscaling); T10/T20/T21 the smallest downscaled stream (T10 at
   least 640×360); `zoom_max` = min(sensor/min_win) per axis. `zoomable[S]`:
   the stream can show a window at all (T10/T20/T21: only streams smaller than
   the sensor, so usually only the sub stream); `zoomed[S]`: it shows the
-  current one. A stored window that was refused is applied again whenever a
-  stream starts, and re-POSTing an unchanged `image.fcrop_*` value retries it
+  current one. A stored window that was refused or is waiting is applied again
+  whenever a framesource starts (stream, snapshot or motion), and re-POSTing an unchanged `image.fcrop_*` value retries it
   while the state is not `on`. Device-tested (by the OpenIMP maintainer)
   on **T10, T20 and T21 with OpenIMP**, live; on **T10/T20 only the downscaled
   streams show the window** (a main stream at sensor resolution keeps the full
