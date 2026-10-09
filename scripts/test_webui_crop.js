@@ -113,5 +113,16 @@ for (const [sw, sh] of sensors) {
   ok(full.left === 0 && full.top === 0 && full.width === 100 && full.height === 100, tag + " full window = 100%");
 }
 
+// caps.fcrop.min_win [w, h] per axis (T31 p=100 on 1080p, T20 sub stream)
+for (const [mw, mh] of [[960, 540], [640, 360], [1920, 1080]]) {
+  const sw = 1920, sh = 1080, m = [mw, mh], tag = "min_win " + mw + "x" + mh;
+  let c = G.cropFit({ x: 0, y: 0, w: 100, h: 100 }, sw, sh, m);
+  ok(c.w === mw && c.h === mh, tag + " fit floor per axis");
+  c = G.cropFromZoom(8, 0.5, 0.5, sw, sh, m);
+  ok(c.w >= mw && c.h >= mh && valid(c, sw, sh), tag + " zoom 8 kept at the minimum");
+  c = G.cropDrag(G.cropFit({ x: 0, y: 0, w: sw, h: sh }, sw, sh, m), "size", -1e5, -1e5, sw, sh, m);
+  ok(c.w >= mw && c.h >= mh && valid(c, sw, sh), tag + " size floor");
+}
+
 console.log((fails ? "FAILED " : "ok ") + (checks - fails) + "/" + checks);
 process.exit(fails ? 1 : 0);

@@ -12,7 +12,9 @@ semantic versioning.
   opt-in section that checks FrontCrop and encoder ROI in the picture (NCC of
   the cropped snapshot against the requested window; Laplacian sharpness inside
   vs outside a ROI box on I-frames) plus the OpenIMP-only image keys, per
-  `caps` tier, with save/restore of every touched setting.
+  `caps` tier, with save/restore of every touched setting. A small effective
+  ROI delta (T21) is graded under `fixqp`/`vbr`, the wrong direction is FAIL
+  at any delta; the brightness/ae_compensation lift needs two high readings.
 - **Encoder ROI: `roi<S>.<N>.*`** (`enabled`, `x`, `y`, `w`, `h`, `qp`,
   `qp_mode`; 4 regions per stream), per-region QP for H.264 via
   `IMP_Encoder_SetChnROI`, live (applied by the encode thread before its next
