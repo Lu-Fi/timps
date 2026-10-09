@@ -5,7 +5,7 @@
 //   node scripts/test_webui_crop.js <path/to/roi-crop.js> [control.json ...]
 //
 // Extracts the pure cropFit/cropDrag/cropFromZoom/zoomFromCrop/cropPct/
-// cropScale/cropEffMin/cropZoomMax/cropNative by
+// cropScale/cropEffMin/cropZoomMax/cropNative/cropDragView/cropZoomAt/cropBackdrop by
 // name; each extra argument is a saved GET /control whose caps.fcrop.sensor
 // is used as one more sensor size and whose min_win/zoom_max/video sizes are
 // checked against the zoom slider range. Exit 0 = all passed.
@@ -37,7 +37,7 @@ function body(name) {
   }
   return src.slice(at, i + 1);
 }
-const names = ["cropFit", "cropDrag", "cropFromZoom", "zoomFromCrop", "cropPct", "cropScale", "cropEffMin", "cropZoomMax", "cropNative"];
+const names = ["cropFit", "cropDrag", "cropFromZoom", "zoomFromCrop", "cropPct", "cropScale", "cropEffMin", "cropZoomMax", "cropNative", "cropDragView", "cropZoomAt", "cropBackdrop"];
 const G = new Function(names.map(body).join("\n") + "\nreturn {" + names.join(",") + "};")();
 const F = 64;
 
@@ -175,6 +175,44 @@ for (const [mw, mh] of [[960, 540], [640, 360], [1920, 1080]]) {
   em = G.cropEffMin(sw, sh, [64, 64], 2.5);
   ok(em[0] === 1024 && em[1] === 576 && G.cropZoomMax(sw, sh, em) === 2.5, "zoom_max 2.5 below min_win " + em);
   ok(G.cropZoomMax(sw, sh, [sw, sh]) === 1, "min_win = sensor: no zoom");
+}
+
+// preview: sensor-aspect view, live cut-out placed at the window in %, drag/wheel mapping, backdrop
+{
+  const sw = 2560, sh = 1440, em = [960, 540], zm = 8 / 3, vw = 375, vh = vw * sh / sw;
+  const c = { x: 1284, y: 714, w: 960, h: 540 }, p = G.cropPct(c, sw, sh);
+  ok(Math.abs(p.left - 50.15625) < 1e-9 && Math.abs(p.top - 49.583333) < 1e-5 && p.width === 37.5 && p.height === 37.5, "img box in % " + JSON.stringify(p));
+  ok(Math.abs(p.width * vw / 100 / (p.height * vh / 100) - 16 / 9) < 1e-9, "img box keeps the window aspect in a sensor-aspect view");
+  let d = G.cropDragView(c, "move", -vw / 4, -vh / 4, vw, vh, sw, sh, em);
+  ok(d.x === 644 && d.y === 354 && d.w === 960, "view drag: quarter view = quarter sensor " + JSON.stringify(d));
+  d = G.cropDragView(c, "move", 1e4, 1e4, vw, vh, sw, sh, em);
+  ok(d.x === sw - 960 && d.y === sh - 540, "view drag clamped");
+  d = G.cropDragView({ x: 600, y: 300, w: 960, h: 540 }, "size", vw / 8, vh / 8, vw, vh, sw, sh, em);
+  ok(d.x === 600 && d.w === 1280 && d.h === 720, "view corner drag grows aspect-locked " + JSON.stringify(d));
+  d = G.cropDragView({ x: 0, y: 0, w: sw, h: sh }, "size", -1e4, -1e4, vw, vh, sw, sh, em);
+  ok(d.w === 960 && d.h === 540, "view corner drag floor = min_win");
+  // mini view (phone overview) maps the same way
+  d = G.cropDragView(c, "move", 10, 0, 107, 60.2, sw, sh, em);
+  ok(Math.abs(d.x - (c.x + 10 * sw / 107)) <= 2, "small view drag scale");
+  const f = { x: 0, y: 0, w: sw, h: sh };
+  d = G.cropZoomAt(f, 2, 0.5, 0.5, sw, sh, em, zm);
+  ok(d.w === 1280 && d.h === 720 && d.x === 640 && d.y === 360, "wheel zoom 2x at centre " + JSON.stringify(d));
+  d = G.cropZoomAt(f, 2, 0, 0, sw, sh, em, zm);
+  ok(d.x === 0 && d.y === 0 && d.w === 1280, "wheel zoom keeps the top-left corner under the pointer");
+  d = G.cropZoomAt(f, 2, 0.75, 0.25, sw, sh, em, zm);
+  ok(Math.abs(d.x + 0.75 * d.w - 0.75 * sw) <= 2 && Math.abs(d.y + 0.25 * d.h - 0.25 * sh) <= 2, "wheel zoom: point under the pointer stays");
+  d = G.cropZoomAt(c, 99, 0.5, 0.5, sw, sh, em, zm);
+  ok(d.w === 960 && d.h === 540, "wheel zoom clamped to the slider end");
+  d = G.cropZoomAt(c, 0.2, 0.5, 0.5, sw, sh, em, zm);
+  ok(d.w === sw && d.h === sh && d.x === 0 && d.y === 0, "wheel zoom out clamped to 1x");
+  d = G.cropZoomAt({ x: 1600, y: 900, w: 960, h: 540 }, 1.5, 1, 1, sw, sh, em, zm);
+  ok(valid(d, sw, sh) && d.x + d.w === sw && d.y + d.h === sh, "wheel zoom out at the corner stays inside " + JSON.stringify(d));
+  for (let i = 0; i < 500; i++) {
+    const s0 = G.cropFromZoom(1 + rnd() * (zm - 1), rnd(), rnd(), sw, sh, em);
+    const z = G.cropZoomAt(s0, 1 + rnd() * 3, rnd(), rnd(), sw, sh, em, zm);
+    ok(valid(z, sw, sh) && z.w >= 960 && z.h >= 540, "random wheel zoom " + JSON.stringify(s0) + " -> " + JSON.stringify(z));
+  }
+  ok(G.cropBackdrop(false, true) === "none" && G.cropBackdrop(true, true) === "frame" && G.cropBackdrop(true, false) === "grid", "backdrop selection");
 }
 
 console.log((fails ? "FAILED " : "ok ") + (checks - fails) + "/" + checks);
