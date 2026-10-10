@@ -1415,8 +1415,12 @@ static void fcrop_apply(void)
         }
     }
 #endif
+    ms_fcrop_api s = a;
+#if FCROP_BEFORE_FLIP
+    fcrop_mirror(&s, g_hcfg->image.hflip, g_hcfg->image.vflip, sw, sh);
+#endif
     errno = 0;
-    int rc = ms_isp_set_fcrop(&a);
+    int rc = ms_isp_set_fcrop(&s);
     if (rc) {
         int e = errno;
 #ifdef FCROP_DS_ONLY
@@ -1472,6 +1476,10 @@ static void fcrop_apply(void)
 #endif
     LOGI(MOD,"image.fcrop: sensor window left %u top %u %ux%u of %dx%d%s%s", a.left, a.top,
          a.width, a.height, sw, sh, g == GEOM_ADJUSTED ? " (evened/moved inside)" : "", note);
+#if FCROP_BEFORE_FLIP
+    if (!fcrop_same(&a, &s))
+        LOGI(MOD,"image.fcrop: flip-mirrored to unflipped left %u top %u", s.left, s.top);
+#endif
     for (int s = 0; s < MS_MAX_VSTREAM; s++)
         for (int n = 0; n < MS_MAX_PRIVACY; n++)
             if (g_hcfg->privacy[s][n].enabled) {
@@ -5753,6 +5761,13 @@ static int ing_control(const char *key, const char *val)
 #endif
         }
         pthread_mutex_unlock(&g_isp_lock);
+#if FCROP_BEFORE_FLIP && FCROP_LIVE
+        if (ok && (!strcmp(k,"hflip") || !strcmp(k,"vflip")) && g_hcfg->image.fcrop_enable) {
+            if (hal_fcrop_live()) g_fcrop_pending = 1;
+            else LOGW(MOD,"image.fcrop: start-only here - the window follows the new flip "
+                      "after a restart");
+        }
+#endif
         if (ok) LOGI(MOD,"control %s=%d", key, v);
         else    LOGD(MOD,"image.%s unsupported on this platform (persisted only)", k);
         /* day/night: the ISP only latches a running-mode change while fs chn0

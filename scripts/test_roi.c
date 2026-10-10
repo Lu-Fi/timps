@@ -313,6 +313,55 @@ static void t_fcrop_rt(void)
     CK(t == CAP_TIER_EXPERIMENTAL && !live, "T23 absent never raises");
 }
 
+static int fc_eq(const ms_fcrop_api *a, const ms_fcrop_api *b)
+{
+    return a->en == b->en && a->left == b->left && a->top == b->top &&
+           a->width == b->width && a->height == b->height;
+}
+
+/* picture <-> unflipped sensor window (FCROP_BEFORE_FLIP) */
+static void t_fcrop_mirror(void)
+{
+    ms_fcrop_api c = { 1, 0, 0, 960, 540 }, d;
+    d = c; fcrop_mirror(&d, 1, 1, 1920, 1080);
+    CK(d.left == 960 && d.top == 540 && d.width == 960 && d.height == 540,
+       "C500 window B -> bottom-right of the sensor, got %u,%u", d.left, d.top);
+    d = c; fcrop_mirror(&d, 1, 0, 1920, 1080);
+    CK(d.left == 960 && d.top == 0, "hflip only mirrors x");
+    d = c; fcrop_mirror(&d, 0, 1, 1920, 1080);
+    CK(d.left == 0 && d.top == 540, "vflip only mirrors y");
+    d = c; fcrop_mirror(&d, 0, 0, 1920, 1080);
+    CK(fc_eq(&d, &c), "no flip: unchanged");
+    ms_fcrop_api a = { 1, 270, 480, 960, 540 };
+    d = a; fcrop_mirror(&d, 1, 1, 1920, 1080);
+    CK(d.left == 480 && d.top == 270, "centred window is its own mirror");
+    ms_fcrop_api f = { 1, 0, 0, 2560, 1440 };
+    d = f; fcrop_mirror(&d, 1, 1, 2560, 1440);
+    CK(d.left == 0 && d.top == 0 && d.width == 2560, "window == sensor stays put");
+    ms_fcrop_api o = { 1, 0, 0, 1920, 1080 };
+    d = o; fcrop_mirror(&d, 1, 1, 1921, 1081);
+    CK(d.left == 0 && d.top == 0, "odd sensor: evened down, got %u,%u", d.left, d.top);
+    int bad = 0;
+    for (int x = -50; x < 2000; x += 37)
+        for (int w = 64; w < 2000; w += 211) {
+            ms_fcrop_api p;
+            if (fcrop_fit(x, x / 2, w, w / 2 + 64, 1920, 1080, &p) == GEOM_REJECT) continue;
+            for (int fl = 0; fl < 4; fl++) {
+                d = p; fcrop_mirror(&d, fl & 1, fl & 2, 1920, 1080);
+                if ((d.left | d.top) & 1 || d.left + d.width > 1920 ||
+                    d.top + d.height > 1080 || d.width != p.width || d.height != p.height) bad++;
+                fcrop_mirror(&d, fl & 1, fl & 2, 1920, 1080);
+                if (!fc_eq(&d, &p)) bad++;
+            }
+        }
+    CK(bad == 0, "%d mirror sweep cases odd, outside or not idempotent", bad);
+#if defined(USE_OPENIMP) && defined(PLATFORM_T23)
+    CK(FCROP_BEFORE_FLIP == 1, "T23 OpenIMP crops before the flip");
+#else
+    CK(FCROP_BEFORE_FLIP == 0, "untested SoC: no mirroring");
+#endif
+}
+
 int main(void)
 {
     t_layout();
@@ -328,6 +377,7 @@ int main(void)
     t_fcrop();
     t_fcrop_limits();
     t_fcrop_rt();
+    t_fcrop_mirror();
 #ifdef RT_EXPECT_ROI
     CK(ROI_TIER == RT_EXPECT_ROI, "ROI_TIER %s, want %s",
        cap_tier_name(ROI_TIER), cap_tier_name(RT_EXPECT_ROI));

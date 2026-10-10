@@ -114,6 +114,14 @@ static inline const char *cap_tier_name(int t)
 #elif defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)
 #define FCROP_DS_ONLY 1
 #endif
+/* 1: the ISP crops in unflipped sensor coordinates and flips afterwards, so
+ * image.fcrop_* (picture coordinates) are mirrored for image.hflip/vflip.
+ * T23 OpenIMP: device-proven (C500, hflip+vflip). Other SoCs/stacks untested. */
+#if defined(USE_OPENIMP) && defined(PLATFORM_T23)
+#define FCROP_BEFORE_FLIP 1
+#else
+#define FCROP_BEFORE_FLIP 0
+#endif
 #if defined(PLATFORM_T10)
 #define FCROP_SOC_MIN_W 640
 #define FCROP_SOC_MIN_H 360
