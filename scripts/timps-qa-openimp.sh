@@ -51,7 +51,8 @@
 #             192 readings or the daynight state differ: the scene changed)
 #           colorfx 1 (B/W): saturation <= 35 % of colorfx 0 (FAIL if not;
 #             SKIP when the picture has no colour, e.g. night)
-#           ae_compensation 40 -> 230 -> 40: as brightness
+#           ae_compensation 40 -> 230 -> 40 -> 230: as brightness, but each
+#             value waits 8 s (AE dead time) and settles up to 40 s
 #           sinter/temper 0 vs 255: temporal noise numbers, INFO only
 #           scene/dpc/defog/drc: round-trip only (no robust metric)
 #   OI-5  rotation (restart-only, never changed here): when videoS.rotation
@@ -66,7 +67,8 @@
 # never restarts timpsd. Targets listed in QA_PROD_CAMS (space/comma list) or
 # whose hostname (via --ssh) matches QA_PROD_RE (default "prod") are refused
 # without --allow-prod. Needs a static, lit, textured scene; AE is given up to
-# OI_SETTLE_MAX seconds (default 8) to settle after each change.
+# OI_SETTLE_MAX seconds (default 8) to settle after each change
+# (ae_compensation: 8 s wait + up to 40 s).
 # OI_SIM_IMAGES=1 runs the image checks against the host sim too (plumbing
 # only: the sim neither crops nor encodes, its verdicts are INFO lines).
 # =============================================================================
@@ -294,6 +296,8 @@ fi
 # image effects (default JPEG channel)
 oi_mean_at() {   # <key> <value> -> mean luma (or empty)
 	oi_post "{\"image\":{\"$1\":$2}}" /dev/null >/dev/null
+	# T31 AE: ~6 s dead time, then ~3 luma/s (local: runs in a $(...) subshell)
+	[ "$1" = ae_compensation ] && { sleep 8; OI_SETTLE_MAX=40; }
 	oi_settle - "isp_$1_$2" >&2 || return 1
 	oi_kv "$(oi_vis stats "$OI_LAST")" mean
 }
