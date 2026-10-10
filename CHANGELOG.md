@@ -58,6 +58,8 @@ _1.10.1 (draft)_
 - HTTP and RTSP log a failing `accept()` (once a minute, with the error),
   e.g. `Too many open files`: before, connections just hung in the backlog
   with nothing in the log.
+- OSD `{hostname}`: a hostname of 128+ characters could be read past its
+  buffer (no NUL guarantee from `gethostname()`).
 
 ## [1.10.0] - 2026-10-11
 

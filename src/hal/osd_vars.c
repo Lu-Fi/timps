@@ -256,7 +256,7 @@ static void resolve(const char *name, char *out, int outsz)
     double fps=g_fps, bitrate=g_bitrate;
     pthread_mutex_unlock(&g_mu);
 
-    if      (!strcmp(name,"hostname")){ char h[128]; if(gethostname(h,sizeof h)!=0)strcpy(h,"camera"); snprintf(out,outsz,"%s",h); }
+    if      (!strcmp(name,"hostname")){ char h[128]; if(gethostname(h,sizeof h)!=0)strcpy(h,"camera"); h[sizeof h-1]=0; snprintf(out,outsz,"%s",h); }
     else if (!strcmp(name,"ip"))       snprintf(out,outsz,"%s",ipbuf);
     else if (!strcmp(name,"mac"))      get_mac(ifn,out,outsz);
     else if (!strcmp(name,"fps"))      snprintf(out,outsz,"%.1f",fps);
