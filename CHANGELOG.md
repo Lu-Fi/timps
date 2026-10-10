@@ -60,6 +60,10 @@ _1.10.1 (draft)_
   with nothing in the log.
 - OSD `{hostname}`: a hostname of 128+ characters could be read past its
   buffer (no NUL guarantee from `gethostname()`).
+- Day/night hooks (`switch_cmd`, `irprobe_cmd`) no longer inherit file
+  descriptors above 1023 (`RLIMIT_NOFILE` > 1024): the child closes every fd
+  the daemon has open, so libimp device fds cannot keep a kernel module
+  busy.
 
 ## [1.10.0] - 2026-10-11
 

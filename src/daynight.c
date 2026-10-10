@@ -38,6 +38,7 @@
 #include <signal.h>    /* SIGKILL: a board hook that wedges is not waited on forever */
 #include <fcntl.h>
 #include <errno.h>
+#include <dirent.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <time.h>
@@ -848,11 +849,28 @@ static int dn_reap(pid_t pid, const char *cmd, const char *arg, int timeout_ms)
 /* run "<switch_cmd> day|night" (the thingino board script: ircut/light/color).
  * The mode change is committed even if the command fails so a missing script
  * warns once per switch instead of retrying every sample. */
+/* highest fd the child closes: every open one (RLIMIT_NOFILE may exceed
+ * 1024) plus a margin for other threads opening more before the vfork. Read
+ * in the parent, opendir() is no call for a vfork child. */
+static int dn_fd_top(void)
+{
+    int top = 1024;
+    DIR *d = opendir("/proc/self/fd");
+    if (!d) return top;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        int fd = atoi(de->d_name);
+        if (fd + 64 > top) top = fd + 64;
+    }
+    closedir(d);
+    return top;
+}
+
 /* "<cmd> <arg>" with stdout/stderr on /dev/null. vfork, not fork: copying
  * the whole daemon can ENOMEM on a small board (NEU-01b in imp_motion.c).
  * Its own noinline frame, so the child cannot clobber the caller's locals. */
-static pid_t __attribute__((noinline)) dn_spawn(const char *cmd, const char *arg,
-                                                 int outfd)
+static pid_t __attribute__((noinline)) dn_vfork_exec(const char *cmd, const char *arg,
+                                                      int outfd, int top)
 {
     pid_t pid = vfork();
     if (pid == 0){
@@ -865,11 +883,16 @@ static pid_t __attribute__((noinline)) dn_spawn(const char *cmd, const char *arg
          * inherited fd keeps the kernel module "busy" after timps has stopped
          * (rmmod tx_isp_*: busy). This child has its own fd table, so closing
          * everything above stderr costs the daemon nothing. */
-        for (int fd = 3; fd < 1024; fd++) close(fd);
+        for (int fd = 3; fd < top; fd++) close(fd);
         execlp(cmd, cmd, arg, (char*)NULL);
         _exit(127);              /* exec failed (script missing / not a program) */
     }
     return pid;
+}
+
+static pid_t dn_spawn(const char *cmd, const char *arg, int outfd)
+{
+    return dn_vfork_exec(cmd, arg, outfd, dn_fd_top());
 }
 
 /* The tail is machine-readable on purpose. Everything in it is already in
