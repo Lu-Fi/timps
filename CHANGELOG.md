@@ -12,6 +12,8 @@ semantic versioning.
   `sensor.video_interface`, `sensor.default_boot`, `sensor.rst_gpio`,
   `sensor.pwdn_gpio` (file-only, restart; unset = unchanged) for boards that
   wire the sensor off I2C adapter 0 / MCLK0 (Eufy S350 / SC830AI).
+  `sensor.video_interface = 1` (MIPI CSI1) exists only on T40; T41 drops it
+  with one WARN.
 - **QA: `scripts/timps-qa.sh --profile openimp`** (or `--only openimp`), an
   opt-in section that checks FrontCrop and encoder ROI in the picture (NCC of
   the cropped snapshot against the requested window; Laplacian sharpness inside

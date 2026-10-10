@@ -68,7 +68,7 @@ trusted, because a mismatching name/i2c address would crash the ISP driver.
 | `sensor.height` | int | *(unset → auto/video0.height, fallback 1080)* | 0–8192 | Restart-only | Sensor native height. |
 | `sensor.i2c_adapter` (alias `i2c_adapter_id`) | int | -1 (unset → 0) | -1–15 | File-only | **T40/T41 only.** I2C adapter the sensor is wired to. |
 | `sensor.mclk` | int | -1 (unset → 0) | -1–2 | File-only | **T40/T41 only.** Sensor clock source, MCLK0/1/2. |
-| `sensor.video_interface` | int | -1 (unset → 0) | -1–2 | File-only | **T40/T41 only.** 0 = MIPI CSI0, 1 = MIPI CSI1, 2 = DVP. |
+| `sensor.video_interface` | int | -1 (unset → 0) | -1–2 | File-only | **T40/T41 only.** 0 = MIPI CSI0, 1 = MIPI CSI1 (T40 only, ignored with a WARN on T41), 2 = DVP. |
 | `sensor.default_boot` | int | -1 (unset → 0) | -1–15 | File-only | **T40/T41 only.** Sensor driver boot setting index. |
 | `sensor.rst_gpio` | int | -1 (none) | -1–255 | File-only | **T40/T41 only.** Sensor reset GPIO number. |
 | `sensor.pwdn_gpio` | int | -1 (none) | -1–255 | File-only | **T40/T41 only.** Sensor power-down GPIO number. |

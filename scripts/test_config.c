@@ -232,6 +232,12 @@ int main(void)
         check("sensor.mclk = 3 (BUTT) dropped", "sensor.mclk = 3\n", "sensor.mclk", "-1");
         check("sensor.video_interface = 0", "sensor.video_interface = 0\n", "sensor.video_interface", "0");
         check("sensor.video_interface = 3 dropped", "sensor.video_interface = 3\n", "sensor.video_interface", "-1");
+        check("sensor.video_interface = 2", "sensor.video_interface = 2\n", "sensor.video_interface", "2");
+#ifdef PLATFORM_T41
+        check("sensor.video_interface = 1 dropped on T41", "sensor.video_interface = 1\n", "sensor.video_interface", "-1");
+#else
+        check("sensor.video_interface = 1", "sensor.video_interface = 1\n", "sensor.video_interface", "1");
+#endif
         check("sensor.default_boot = 4", "sensor.default_boot = 4\n", "sensor.default_boot", "4");
         check("sensor.rst_gpio = 91", "sensor.rst_gpio = 91\n", "sensor.rst_gpio", "91");
         check("sensor.rst_gpio junk dropped", "sensor.rst_gpio = PC27\n", "sensor.rst_gpio", "-1");

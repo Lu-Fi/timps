@@ -1444,6 +1444,14 @@ static void field_set(void *base, const cfg_field *f, const char *val)
                             field_prefix(f), f->name, val, f->lo, f->hi);
                        n = -1;
                    }
+#ifdef PLATFORM_T41
+                   /* the T41 IMPSensorVinType has no CSI1 (1.2.6: CSI0=0, DVP=2) */
+                   else if (n == 1 && !strcmp(f->name,"video_interface")){
+                       LOGW(MOD,"%s%s = 1 (MIPI CSI1) does not exist on T41, ignored",
+                            field_prefix(f), f->name);
+                       n = -1;
+                   }
+#endif
                    *(int*)p = n; break; }
     case T_CHAN: { int v = pint(val);
                    *(int*)p = (v<0 || v>=MS_MAX_VSTREAM) ? 0 : v; break; }
