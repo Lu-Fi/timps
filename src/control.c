@@ -1596,7 +1596,7 @@ int control_get_json(char *buf, size_t cap)
         APP("]},\"fcrop\":{\"tier\":\"%s\",\"live\":%d,\"min\":%d,\"even\":1,"
             "\"step\":2,\"sensor\":[%d,%d],\"state\":\"%s\",\"min_win\":[%d,%d],"
             "\"zoom_max\":%d.%02d,\"upscale_pct\":%d,\"zoomable\":[",
-            cap_tier_name(ft), ft != CAP_TIER_UNSUPPORTED && FCROP_LIVE, FCROP_MIN,
+            cap_tier_name(ft), hal_fcrop_live(), FCROP_MIN,
             fsw, fsh, hal_fcrop_state(), fl.min_w, fl.min_h,
             fl.zoom_max_x100 / 100, fl.zoom_max_x100 % 100, fl.upscale_pct);
         for (int s = 0; s < MS_MAX_VSTREAM; s++)

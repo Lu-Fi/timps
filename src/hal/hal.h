@@ -101,6 +101,8 @@ int hal_isp_ae_info(hal_isp_ae *out);
 int hal_roi_tier(void);
 const char *hal_roi_state(int si);
 int hal_fcrop_tier(void);
+/* caps.fcrop.live: image.fcrop_* applies to the running pipeline */
+int hal_fcrop_live(void);
 const char *hal_fcrop_state(void);
 void hal_sensor_size(int *w, int *h);
 /* bitmask of stream si's ROI regions refused as outside the picture */

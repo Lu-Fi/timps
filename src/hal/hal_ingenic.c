@@ -1465,7 +1465,8 @@ static void fcrop_apply(void)
 #elif defined(PLATFORM_T21)
     const char *note = " - shown on streams no larger than the window";
 #elif defined(PLATFORM_T23)
-    const char *note = " - experimental, needs open-tx-isp 3cf9bdac or newer";
+    const char *note = hal_fcrop_tier() == CAP_TIER_EXPERIMENTAL ?
+        " - experimental, needs open-tx-isp 3cf9bdac or newer" : "";
 #else
     const char *note = hal_fcrop_tier() == CAP_TIER_EXPERIMENTAL ? " - experimental on this SoC" : "";
 #endif
@@ -1529,13 +1530,39 @@ static void fcrop_stream_kick(void)
 #endif
 }
 
+#if FCROP_GATE != FCROP_GATE_NONE
+/* absent-parameter values until ing_init has looked */
+static int g_fcrop_rt = CAP_TIER_EXPERIMENTAL;
+static int g_fcrop_rt_live = FCROP_GATE != FCROP_GATE_T23;
+
+static void fcrop_rt_init(void)
+{
+    int param = access(FCROP_MSCA_PARAM, F_OK) == 0;
+    g_fcrop_rt = fcrop_rt_tier(FCROP_TIER, FCROP_GATE, param, &g_fcrop_rt_live);
+    LOGI(MOD,"image.fcrop: %s, %s (%s %s)", cap_tier_name(g_fcrop_rt),
+         g_fcrop_rt_live ? "live" : "start-only", FCROP_MSCA_PARAM, param ? "present" : "absent");
+}
+#else
+#define g_fcrop_rt      FCROP_TIER
+#define g_fcrop_rt_live FCROP_LIVE
+#endif
+
 int hal_fcrop_tier(void)
 {
 #if FCROP_TIER != CAP_TIER_UNSUPPORTED
     if (!ms_isp_set_fcrop) return CAP_TIER_UNSUPPORTED;
-    return FCROP_TIER;
+    return g_fcrop_rt;
 #else
     return CAP_TIER_UNSUPPORTED;
+#endif
+}
+
+int hal_fcrop_live(void)
+{
+#if FCROP_TIER != CAP_TIER_UNSUPPORTED
+    return hal_fcrop_tier() != CAP_TIER_UNSUPPORTED && g_fcrop_rt_live;
+#else
+    return 0;
 #endif
 }
 
@@ -5687,7 +5714,7 @@ static int ing_control(const char *key, const char *val)
      * separate keys and an intermediate window may be invalid */
     if (!strncmp(key,"image.fcrop_",12)){
 #if FCROP_LIVE
-        if (hal_fcrop_tier() == CAP_TIER_UNSUPPORTED) return 0;
+        if (!hal_fcrop_live()) return 0;
         g_fcrop_pending = 1;
         return 1;
 #else
@@ -6030,6 +6057,9 @@ static void td_report(const char *what)
 static int ing_init(const ms_config *cfg)
 {
     g_hcfg=cfg;
+#if FCROP_GATE != FCROP_GATE_NONE
+    fcrop_rt_init();
+#endif
     int r = isp_init();
 #ifdef USE_CONTROL
     if (r==0){ hub_set_control_cb(ing_control); hub_set_control_commit_cb(ing_control_commit); }

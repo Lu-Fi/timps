@@ -354,6 +354,7 @@ int hal_isp_ae_info(hal_isp_ae *out)
  * validation the target does so a QA run can see a refusal */
 int hal_roi_tier(void){ return ROI_TIER; }
 int hal_fcrop_tier(void){ return FCROP_TIER; }
+int hal_fcrop_live(void){ return FCROP_LIVE; }
 const char *hal_roi_state(int si)
 {
     if (si < 0 || si >= MS_MAX_VSTREAM) return roi_state_name(ROI_ST_OFF);

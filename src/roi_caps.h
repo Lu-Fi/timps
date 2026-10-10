@@ -84,24 +84,23 @@ static inline const char *cap_tier_name(int t)
 /* FrontCrop, ISP-wide, sensor pixels.
  * T10/T20/T21 OpenIMP: device-tested (T20 shows it on downscaled channels only).
  * T10/T20/T21 vendor: no such symbol.
- * T23 OpenIMP: needs open-tx-isp 3cf9bdac or newer (older drivers hung on a
- * crop change; windows below the ch0 size now fail with -EINVAL). The tier is
- * compile-time and cannot see the driver, so start-only. T23 vendor: untested.
  * T10 OpenIMP: windows below 640x360 fail (-1, errno 122), outside the
  * sensor -1/EINVAL. T10/T20 show the window on downscaled (sub) streams only.
- * T23: below the ch0 size -EINVAL unless open-tx-isp fcrop_upscale_pct allows
- * upscaling (2.0 ok, 2.2 stalled); the driver can go live, timps stays start-only.
- * T31: the window is taken (with the open-tx-isp guard, 27dc8be4, no hang on
- * a window the MSCA cannot upscale), but OpenIMP lacks the scaler steps, so
- * the picture effect is unproven: experimental.
+ * T23/T31 OpenIMP: the table is the ceiling, fcrop_rt_tier() lowers it when
+ * the driver lacks fcrop_upscale_pct (open-tx-isp T23 164225e5/25b1d8c7, T31
+ * 27dc8be4, device-tested with b15ef235). Without it T23 hung on a live crop
+ * change: experimental and start-only (needs 3cf9bdac+), T31 experimental.
+ * Every stream must fit the window or be scaled down (below: -EINVAL).
+ * T23 vendor: untested. T31 vendor: experimental.
  * T40/T41: not in the SDK, and a live fs1 crop stops frames on T41.
  * T30/C100 not investigated. */
 #if !defined(ROI_PLATFORM_KNOWN)
 #define FCROP_TIER CAP_TIER_SIM
 #elif defined(USE_OPENIMP) && \
-      (defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21))
+      (defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)|| \
+       defined(PLATFORM_T23)||defined(PLATFORM_T31))
 #define FCROP_TIER CAP_TIER_EFFECTIVE
-#elif (defined(USE_OPENIMP) && defined(PLATFORM_T23)) || defined(PLATFORM_T31)
+#elif defined(PLATFORM_T31)
 #define FCROP_TIER CAP_TIER_EXPERIMENTAL
 #else
 #define FCROP_TIER CAP_TIER_UNSUPPORTED
@@ -140,12 +139,33 @@ static inline const char *cap_tier_name(int t)
 #define FCROP_WHY "not investigated on this SoC"
 #endif
 
-/* caps.fcrop.live; T23 start-only: a live change on a running pipeline is
- * what hung older drivers, and the start apply runs before chn0 streams */
-#if FCROP_TIER != CAP_TIER_UNSUPPORTED && !defined(PLATFORM_T23)
+/* compile-time ceiling of caps.fcrop.live */
+#if FCROP_TIER != CAP_TIER_UNSUPPORTED
 #define FCROP_LIVE 1
 #else
 #define FCROP_LIVE 0
 #endif
+
+/* SoCs whose FrontCrop tier depends on the driver's fcrop_upscale_pct */
+#define FCROP_GATE_NONE 0
+#define FCROP_GATE_T23  1
+#define FCROP_GATE_T31  2
+#if defined(USE_OPENIMP) && defined(PLATFORM_T23)
+#define FCROP_GATE FCROP_GATE_T23
+#elif defined(USE_OPENIMP) && defined(PLATFORM_T31)
+#define FCROP_GATE FCROP_GATE_T31
+#else
+#define FCROP_GATE FCROP_GATE_NONE
+#endif
+
+/* T23 start-only without the parameter: a live change on a running pipeline
+ * is what hung older drivers, and the start apply runs before chn0 streams */
+static inline int fcrop_rt_tier(int tier, int gate, int param, int *live)
+{
+    *live = tier != CAP_TIER_UNSUPPORTED;
+    if (gate == FCROP_GATE_NONE || param || !*live) return tier;
+    if (gate == FCROP_GATE_T23) *live = 0;
+    return CAP_TIER_EXPERIMENTAL;
+}
 
 #endif

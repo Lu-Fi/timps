@@ -289,6 +289,30 @@ static void t_fcrop_limits(void)
     }
 }
 
+/* runtime FrontCrop tier: fcrop_upscale_pct present / absent */
+static void t_fcrop_rt(void)
+{
+    static const int gates[] = { FCROP_GATE_NONE, FCROP_GATE_T23, FCROP_GATE_T31 };
+    int live, t;
+    for (int g = 0; g < 3; g++)
+        for (int p = 0; p < 2; p++) {
+            t = fcrop_rt_tier(CAP_TIER_UNSUPPORTED, gates[g], p, &live);
+            CK(t == CAP_TIER_UNSUPPORTED && !live, "gate %d p %d: unsupported stays off", g, p);
+            t = fcrop_rt_tier(CAP_TIER_EFFECTIVE, gates[g], 1, &live);
+            CK(t == CAP_TIER_EFFECTIVE && live, "gate %d: present keeps the ceiling, live", g);
+        }
+    for (int c = CAP_TIER_EXPERIMENTAL; c <= CAP_TIER_SIM; c++) {
+        t = fcrop_rt_tier(c, FCROP_GATE_NONE, 0, &live);
+        CK(t == c && live, "no gate: tier %d unchanged, live", c);
+    }
+    t = fcrop_rt_tier(CAP_TIER_EFFECTIVE, FCROP_GATE_T23, 0, &live);
+    CK(t == CAP_TIER_EXPERIMENTAL && !live, "T23 absent: experimental, start-only");
+    t = fcrop_rt_tier(CAP_TIER_EFFECTIVE, FCROP_GATE_T31, 0, &live);
+    CK(t == CAP_TIER_EXPERIMENTAL && live, "T31 absent: experimental, live");
+    t = fcrop_rt_tier(CAP_TIER_EXPERIMENTAL, FCROP_GATE_T23, 0, &live);
+    CK(t == CAP_TIER_EXPERIMENTAL && !live, "T23 absent never raises");
+}
+
 int main(void)
 {
     t_layout();
@@ -303,12 +327,21 @@ int main(void)
     t_state();
     t_fcrop();
     t_fcrop_limits();
+    t_fcrop_rt();
 #ifdef RT_EXPECT_ROI
     CK(ROI_TIER == RT_EXPECT_ROI, "ROI_TIER %s, want %s",
        cap_tier_name(ROI_TIER), cap_tier_name(RT_EXPECT_ROI));
     CK(FCROP_TIER == RT_EXPECT_FCROP, "FCROP_TIER %s, want %s",
        cap_tier_name(FCROP_TIER), cap_tier_name(RT_EXPECT_FCROP));
     CK(FCROP_LIVE == RT_EXPECT_FLIVE, "FCROP_LIVE %d, want %d", FCROP_LIVE, RT_EXPECT_FLIVE);
+    {
+        int lv, t = fcrop_rt_tier(FCROP_TIER, FCROP_GATE, 1, &lv);
+        CK(t == RT_EXPECT_FCROP && lv == RT_EXPECT_FLIVE, "param present: %s live %d",
+           cap_tier_name(t), lv);
+        t = fcrop_rt_tier(FCROP_TIER, FCROP_GATE, 0, &lv);
+        CK(t == RT_EXPECT_FCROP_NP && lv == RT_EXPECT_FLIVE_NP, "param absent: %s live %d, want %s %d",
+           cap_tier_name(t), lv, cap_tier_name(RT_EXPECT_FCROP_NP), RT_EXPECT_FLIVE_NP);
+    }
     if (failures) printf("test_roi %-7s FAILED\n", RT_LABEL);
 #else
     printf("test_roi: %d/%d checks passed\n", checks - failures, checks);

@@ -780,7 +780,8 @@ static const cfg_field sensor_fields[] = {
 #endif
 #if FCROP_TIER == CAP_TIER_UNSUPPORTED
 #define CAP_FCROP F_NOHW
-#elif !FCROP_LIVE
+#elif FCROP_GATE == FCROP_GATE_T23
+/* graded only when the HAL answers not-live: a driver without the parameter */
 #define CAP_FCROP F_RESTART
 #else
 #define CAP_FCROP 0
