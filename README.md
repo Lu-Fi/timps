@@ -54,7 +54,7 @@ exhaustive config-key reference (`config-keys.md`).
 - **Native speaker output** — timps owns `IMP_AO` directly: ONVIF audio backchannel (two-way audio) and a system-sound play queue (WAV/Opus/PCM/G.711), no `/bin/iac` dependency
 - **Local recording & timelapse** — continuous or motion-triggered fragmented-MP4 segments to SD (pre/post-roll, free-space pruning), plus periodic JPEG timelapse capture
 - **Privacy masks** — solid cover rectangles per stream, live-adjustable
-- **Encoder ROI and ISP crop/zoom** — per-region QP on H.264 streams (`roi<S>.<N>.*`) and an ISP FrontCrop window (`image.fcrop_*`), both live (T23 crop: start-only); the per-SoC tier is in `caps.roi`/`caps.fcrop` (device-tested on T10/T20/T21 with OpenIMP and T31 ROI with a recent OpenIMP (d03ca24+) by the OpenIMP maintainer, experimental or refused elsewhere)
+- **Encoder ROI and ISP crop/zoom** — per-region QP on H.264 streams (`roi<S>.<N>.*`) and an ISP FrontCrop window (`image.fcrop_*`), both live (T23 crop: start-only on drivers without `fcrop_upscale_pct`); the per-SoC tier is in `caps.roi`/`caps.fcrop` (device-tested on T10/T20/T21 with OpenIMP and T31 ROI with a recent OpenIMP (d03ca24+) by the OpenIMP maintainer, experimental or refused elsewhere)
 - **Image rotation** — hardware 90/270 on T31/T40/T41, software 90/270 on T23 and (OpenIMP builds with an OpenIMP that has T1x rotation, sub streams) T10/T20/T21, plus genuine per-channel 180° on T40/T41 (I2D); on other SoCs a 180° flip is `image.hflip`+`image.vflip`
 - **Optional HTTPS/RTSPS (mbedTLS) and MPEG-TS/SRT output**
 - **Optional WebRTC/WHEP** — H.264 (+ G.711) straight into a browser over ICE-lite/DTLS-SRTP, no plugin and no MSE buffering; LAN/VPN only (no NAT traversal)

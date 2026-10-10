@@ -46,11 +46,13 @@ semantic versioning.
   (sensor pixels, x/y = left/top; the SDK orders top, left). Evened, moved
   inside the sensor, at least 64x64, applied once per POST and at start.
   Device-tested by the OpenIMP maintainer on T10, T20 and T21 with OpenIMP
-  (T20: downscaled streams only), live; T31 experimental, live. **T23 with
-  OpenIMP is experimental and start-only** (`caps.fcrop.live` 0, a POST
-  persists and applies at the next restart) and needs open-tx-isp 3cf9bdac or
-  newer: older drivers hung the pipeline on a crop change, and timps cannot
-  detect the driver version. A window the SDK refuses with `-EINVAL` (T23:
+  (T20: downscaled streams only), live. T23 and T31 with OpenIMP are
+  effective and live when the driver has the open-tx-isp `fcrop_upscale_pct`
+  parameter (T23 164225e5/25b1d8c7, T31 27dc8be4, both in b15ef235), checked
+  once at start; without it T31 is experimental, live, and **T23 experimental
+  and start-only** (`caps.fcrop.live` 0, a POST persists and applies at the
+  next restart; needs open-tx-isp 3cf9bdac+, older drivers hung the pipeline
+  on a crop change). Vendor T31 stays experimental. A window the SDK refuses with `-EINVAL` (T23:
   smaller than the stream-0 size) is `caps.fcrop.state` `rejected` with a
   single WARN; other errors stay `failed`. Vendor T23, T40/T41, T30, C100 and
   vendor T10/T20/T21 refuse it.

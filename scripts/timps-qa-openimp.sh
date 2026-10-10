@@ -29,8 +29,8 @@
 #         back. caps.fcrop.state must read on / off (waiting = WARN, the
 #         picture check is then SKIPped). An RTSP
 #         consumer is held on every zoomable stream meanwhile: T10/T20/T21
-#         refuse a window while that stream is idle. caps.fcrop.live=0 (T23):
-#         SKIP (start-only); with --allow-restart a persist round-trip only.
+#         refuse a window while that stream is idle. caps.fcrop.live=0 (T23
+#         driver without fcrop_upscale_pct): SKIP (start-only); with --allow-restart a persist round-trip only.
 #   OI-3  Encoder ROI, per stream with caps.roi.streams[S]="ok": the aligned
 #         (caps.roi.align) box of ~1/3 x 1/3 with the most texture in an OFF
 #         I-frame. Median Laplacian energy over 3 I-frames OFF vs ON, inside
@@ -383,7 +383,7 @@ else
 					&& oi_ok "FrontCrop start-only: window persisted (HTTP $code); applies after /etc/init.d/S95timps restart - NOT done by this script" \
 					|| oi_bad "FrontCrop start-only: POST HTTP $code, fcrop_w read back $(jget "$OI_DIR/fc_start_get.json" image.fcrop_w)"
 			else
-				oi_skip "FrontCrop: caps.fcrop.live=0 (start-only, T23) - image test needs a restart; --allow-restart checks the persist only"
+				oi_skip "FrontCrop: caps.fcrop.live=0 (start-only, T23 driver without fcrop_upscale_pct) - image test needs a restart; --allow-restart checks the persist only"
 			fi
 		elif [ -z "$sw" ] || [ "${sw:-0}" -le 0 ]; then
 			oi_skip "FrontCrop: caps.fcrop.sensor unknown"

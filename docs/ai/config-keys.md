@@ -374,7 +374,7 @@ way to check.
 | `image.core_wb_mode` | int | `0` | 0..9 (0..8 on T10/T20/T30) | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_WB`. The SDK's `isp_core_wb_mode`: `0` auto, `1` manual (then `wb_rgain`/`wb_bgain` apply), `2` daylight, `3` cloudy, `4` incandescent, `5` fluorescent, `6` twilight, `7` shade, `8` warm fluorescent, `9` custom (T21/T23/T31/C100 only). Before v1.9.30 the range was 0..1, so `2..9` came back as `1`. |
 | `image.wb_rgain` | int | `0` | 0..255 (T10/T20/T30, Q7: 128 = 1.0), 0..4095 (T21/T23/T31, Q8: 256 = 1.0), 0..65535 elsewhere | T10 T20 T21 T23 T30 T31 C100 | Only meaningful with `core_wb_mode=1`. The neutral (1.0) value differs per SoC. **Since the next release** the value is clamped per SoC: T10/T20/T30: the kernel register is 8 bit, wider values are clamped to 255 (up to v1.9.33 they wrapped, 300 -> 44). T21/T23/T31: the register saturates at 4095 (~16x), wider values are clamped to it (up to v1.9.33 accepted up to 65535 and echoed unchanged). |
 | `image.wb_bgain` | int | `0` | 0..255 (T10/T20/T30, Q7: 128 = 1.0), 0..4095 (T21/T23/T31, Q8: 256 = 1.0), 0..65535 elsewhere | T10 T20 T21 T23 T30 T31 C100 | Only meaningful with `core_wb_mode=1`. Same per-SoC limits and scale as `image.wb_rgain`. **since v1.9.21** start value: read-only `image.wb_live.rgain`/`.bgain` in `GET /control` = gains AWB applies now. |
-| `image.fcrop_enable` | bool | `0` | — | see the tier table in §10a | **Since the next release.** ISP FrontCrop ("zoom"): `1` = the ISP delivers only the `fcrop_x/y/w/h` window of the sensor, and every stream scales it to its own size. Live where `caps.fcrop.live` is 1; OpenIMP T23 is start-only (POST persists, restart required); on vendor T23, T40/T41, T30, C100 and vendor T10/T20/T21 a POST answers `"unsupported"` and a file value is ignored with one WARN at start. Not in `caps.image` — `caps.fcrop` carries the tier. |
+| `image.fcrop_enable` | bool | `0` | — | see the tier table in §10a | **Since the next release.** ISP FrontCrop ("zoom"): `1` = the ISP delivers only the `fcrop_x/y/w/h` window of the sensor, and every stream scales it to its own size. Live where `caps.fcrop.live` is 1; OpenIMP T23 is live when the driver has the open-tx-isp `fcrop_upscale_pct` parameter and start-only otherwise (POST persists, restart required); on vendor T23, T40/T41, T30, C100 and vendor T10/T20/T21 a POST answers `"unsupported"` and a file value is ignored with one WARN at start. Not in `caps.image` — `caps.fcrop` carries the tier. |
 | `image.fcrop_x` | int | `0` | 0..8192 | as above | Left edge in **sensor** pixels (unrotated, before any stream scaler), like the FrameSource crop. The SDK struct orders **top before left** — the HAL maps `x`→`fcrop_left`, `y`→`fcrop_top`. |
 | `image.fcrop_y` | int | `0` | 0..8192 | as above | Top edge, sensor pixels. |
 | `image.fcrop_w` | int | `0` | 0..8192 | as above | Window width. The HAL evens x/y/w/h, moves (never shrinks) the window inside the sensor and refuses anything under 64×64 (`state":"rejected"`, WARN). Keep the stream aspect ratio, or every stream is stretched. |
@@ -453,14 +453,16 @@ Prose and pitfalls
   on **T10, T20 and T21 with OpenIMP**, live; on **T10/T20 only the downscaled
   streams show the window** (a main stream at sensor resolution keeps the full
   picture; set it below the sensor size to zoom it), T21 shows it on every
-  stream no larger than the window. T31 is `experimental`, live; without
-  the open-tx-isp `fcrop_upscale_pct` parameter (vendor T31 kernel, older
-  open-tx-isp) `min_win` is the largest stream, so with a main stream at
-  sensor size no window smaller than the sensor is accepted (no zoom). **T23 with OpenIMP is `experimental` and start-only**
-  (`caps.fcrop.live` 0; a POST persists and is reported restart-required,
-  applied at the next `/etc/init.d/S95timps restart`) and needs open-tx-isp
-  3cf9bdac or newer (see the T23 note under the tier table); vendor T23 is
-  `unsupported`. Max zoom is undocumented.
+  stream no larger than the window. **T23 and T31 with OpenIMP** are
+  `effective` and live when the driver has the open-tx-isp `fcrop_upscale_pct`
+  parameter (detected at start, see the T23/T31 note under the tier table).
+  Without it (vendor T31 kernel, older open-tx-isp) T31 is `experimental`,
+  live, and `min_win` is the largest stream, so with a main stream at sensor
+  size no window smaller than the sensor is accepted (no zoom); **T23 is
+  `experimental` and start-only** (`caps.fcrop.live` 0; a POST persists and is
+  reported restart-required, applied at the next `/etc/init.d/S95timps
+  restart`) and needs open-tx-isp 3cf9bdac or newer. Vendor T31 is
+  `experimental`, live; vendor T23 is `unsupported`. Max zoom is undocumented.
   OSD, privacy masks, ROI regions and the motion grid stay in **stream-frame**
   coordinates — the scene moves under them; the HAL logs a WARN when a crop
   is applied while a privacy mask is enabled. Interaction with `hflip`/`vflip`
@@ -935,16 +937,16 @@ effect unverified (or known absent), `unsupported` = refused. Both setters are
 bound weak: a libimp without the symbol reports `unsupported` at run time.
 The OpenIMP tiers come from device tests by the OpenIMP maintainer (OpenIMP
 `claude/t31-roi` d03ca24, `claude/roi-qp-clamp` fec3e69, open-tx-isp
-3cf9bdac/27dc8be4), not from timps' own tests.
+3cf9bdac/27dc8be4/b15ef235), not from timps' own tests.
 
 | SoC | ROI, vendor libimp | ROI, OpenIMP | FrontCrop, vendor | FrontCrop, OpenIMP |
 | --- | --- | --- | --- | --- |
 | T10 | experimental | **effective** (FixQP QP51 -25 % bitrate, delta -10 x3.7) | unsupported (no symbol) | **effective** (17/17 device checks), live |
 | T20 | experimental | **effective** (QP51 block visible, QP15 clean) | unsupported (no symbol) | **effective** (downscaled streams only), live |
 | T21 | experimental (returns 0, no effect seen) | **effective** (on by default; libimp env `OPENIMP_T21_ROI=0` turns it off, timps then reports `experimental`) | unsupported (no symbol) | **effective** (all streams, 5 runs), live |
-| T23 | unsupported (the vendor encoder only stores the region) | unsupported (same) | unsupported (untested) | experimental, **start-only** (`caps.fcrop.live` 0; needs open-tx-isp 3cf9bdac+) |
+| T23 | unsupported (the vendor encoder only stores the region) | unsupported (same) | unsupported (untested) | runtime-detected: **effective**, live with the `fcrop_upscale_pct` parameter (open-tx-isp 164225e5/25b1d8c7, in agg-34 b15ef235); without it experimental, **start-only** (`caps.fcrop.live` 0; needs 3cf9bdac+) |
 | T30, C100 | unsupported (not investigated) | — | unsupported (not investigated) | — |
-| T31 | unsupported (the 1.1.x libimp has no ROI symbol) | **effective** via `SetChnRoiAttr` (AVPU QP table; needs an OpenIMP with d03ca24 and the clamp fec3e69, see below; libimp env `OPENIMP_T31_ROI=0` turns it off, timps then reports `unsupported`) | experimental, live (no zoom without `fcrop_upscale_pct`) | experimental, live (the window is taken; OpenIMP lacks the scaler steps, picture effect unproven) |
+| T31 | unsupported (the 1.1.x libimp has no ROI symbol) | **effective** via `SetChnRoiAttr` (AVPU QP table; needs an OpenIMP with d03ca24 and the clamp fec3e69, see below; libimp env `OPENIMP_T31_ROI=0` turns it off, timps then reports `unsupported`) | experimental, live (no zoom without `fcrop_upscale_pct`) | runtime-detected: **effective**, live with the `fcrop_upscale_pct` parameter (open-tx-isp guard 27dc8be4, in agg-34 b15ef235; zoomed main + sub device-tested); without it experimental, live |
 | T40, T41 | unsupported (vendor T41 `SetChnRoiAttr` takes deltas only; not device-tested) | unsupported (OpenIMP T41 ROI experimental, off by default) | unsupported (no FrontCrop; live fs crop stops T41) | unsupported |
 | host sim | sim | | sim | |
 
@@ -960,20 +962,24 @@ OpenIMP d03ca24 (branch `claude/t31-roi`), the mb_qp_delta clamp fec3e69
 OpenIMP `main`/`next`. A firmware whose OpenIMP pin lacks them (thingino's
 `package/openimp` pins `main`) reports `caps.roi.tier` = `unsupported`.
 
-**T23 FrontCrop (OpenIMP).** Requires open-tx-isp 3cf9bdac or newer: older
-drivers hung the pipeline on a crop change. The tier is compile-time, timps
-cannot see the driver version. With that driver offset windows work, and a
-window smaller than the stream-0 (ch0) size is refused with `-EINVAL`, which
-timps logs as a single WARN and reports as `caps.fcrop.state` = `rejected`
-(no retry). Start-only because the start apply runs before chn0 streams,
-while a live change on a running pipeline is what hung older drivers: a POST
-of `image.fcrop_*` is persisted and reported as restart-required; the window
-applies at the next `/etc/init.d/S95timps restart`.
+**T23/T31 FrontCrop (OpenIMP).** The tier is detected once at start from
+`/sys/module/tx_isp_t23/parameters/fcrop_upscale_pct` (T31: `tx_isp_t31`),
+logged as `image.fcrop: <tier>, live|start-only (<path> present|absent)`. The
+parameter exists only in drivers with the T23 crop-hang fix (open-tx-isp
+164225e5/25b1d8c7) or the T31 MSCA guard (27dc8be4); open-tx-isp b15ef235
+(agg-34) has both. Present: `effective`, live. Every stream must be no larger
+than the window or scaled down (`fcrop_upscale_pct`, default 0 = no
+upscaling); a smaller window is refused with `-EINVAL`, logged once and
+reported as `caps.fcrop.state` = `rejected`. Absent on T23: `experimental`,
+start-only, needs open-tx-isp 3cf9bdac or newer (older drivers hung the
+pipeline on a crop change); the start apply runs before chn0 streams, a POST
+of `image.fcrop_*` is persisted and reported as restart-required and applies
+at the next `/etc/init.d/S95timps restart`. Absent on T31: `experimental`,
+live.
 
 Raising a tier after a device test is one line in `src/roi_caps.h` plus the
 `ROI_MATRIX` expectation in the Makefile (`make test-roi`). Still to verify:
-the picture effect of T23 OpenIMP FrontCrop at start and of T31 FrontCrop,
-T10/T20/T21 vendor ROI, and whether T23 FrontCrop could go live.
+T10/T20/T21 vendor ROI and vendor T31 FrontCrop.
 
 ---
 
@@ -1791,6 +1797,6 @@ into support questions.
 | **T40, T41** | Flips go through `IMP_ISP_Tuning_SetHVFLIP` instead of `SetISPHflip`/`SetISPVflip`, and `g_sensor.rst_gpio`/`pwdn_gpio`/`power_gpio` are forced to `-1` (the fields are plain `int` in that SDK). | `src/hal/hal_ingenic.c` |
 | **T31/C100 vs T40/T41** | `ENC_HAS_QPIPDELTA` (hence a working `videoN.i_bias_lvl`) is T31/C100 only. | `src/hal/hal_ingenic.c` |
 | **T31** | The `isp_ch0_pre_dequeue_time` one-buffer gate on framechan0 — see `videoN.buffers` in §5. | `src/hal/hal_ingenic.c` |
-| **all** | **Since the next release** encoder ROI and ISP FrontCrop are tiered per SoC and libimp flavour (`caps.roi.tier`, `caps.fcrop.tier`): only OpenIMP T10/T20/T21 ROI and FrontCrop and OpenIMP T31 ROI (`SetChnRoiAttr`) are device-tested (by the OpenIMP maintainer). T23 has no ROI; its FrontCrop is OpenIMP-only, experimental and start-only (needs open-tx-isp 3cf9bdac+). Table in §10a. | `src/roi_caps.h` |
+| **all** | **Since the next release** encoder ROI and ISP FrontCrop are tiered per SoC and libimp flavour (`caps.roi.tier`, `caps.fcrop.tier`): only OpenIMP T10/T20/T21 ROI and FrontCrop and OpenIMP T31 ROI (`SetChnRoiAttr`) are device-tested (by the OpenIMP maintainer). T23 has no ROI. T23/T31 OpenIMP FrontCrop is `effective` and live when the driver has `fcrop_upscale_pct` (open-tx-isp b15ef235), otherwise experimental (T23 start-only, needs 3cf9bdac+). Table in §10a. | `src/roi_caps.h` |
 | **T23, T41 with `USE_OPENIMP`** | **Since the next release** `general.fs_keepalive = -1` (the default) resolves to **on**: the FrameSources run from start to stop, so `framesource N disabled (idle)` never appears and day/night kicks are no-ops. Everywhere else it resolves to off. | `src/hal/fs_ref.h` (`FS_KEEPALIVE_AUTO`) |
 | **T23, T41 with `USE_OPENIMP`** | **Since the next release** the only SoCs where `daynight.ir_idle_off` can become available without touching `general.fs_keepalive` (it needs the keepalive). Elsewhere it reports `reason = "keepalive"` unless the keepalive is forced on (untested there). | `src/dn_idle.h`, `src/daynight.c` |

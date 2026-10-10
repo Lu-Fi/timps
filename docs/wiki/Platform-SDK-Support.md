@@ -128,16 +128,19 @@ come from device tests by the OpenIMP maintainer (OpenIMP d03ca24, open-tx-isp
 | T10 | experimental | **effective** | unsupported | **effective**, live |
 | T20 | experimental | **effective** | unsupported | **effective**, live (downscaled streams only) |
 | T21 | experimental (no effect seen) | **effective** (`OPENIMP_T21_ROI=0` turns it off → experimental) | unsupported | **effective**, live |
-| T23 | unsupported (encoder only stores the region) | unsupported | unsupported (untested) | experimental, **start-only** (needs open-tx-isp 3cf9bdac+) |
+| T23 | unsupported (encoder only stores the region) | unsupported | unsupported (untested) | **effective**, live with the driver's `fcrop_upscale_pct` parameter (open-tx-isp b15ef235); otherwise experimental, **start-only** (needs 3cf9bdac+) |
 | T30, C100 | unsupported | — | unsupported | — |
-| T31 | unsupported (no ROI symbol in 1.1.x) | **effective** (`SetChnRoiAttr`, needs OpenIMP d03ca24 + fec3e69; `OPENIMP_T31_ROI=0` → unsupported) | experimental, live (no zoom without open-tx-isp `fcrop_upscale_pct`) | experimental, live (picture effect unproven) |
+| T31 | unsupported (no ROI symbol in 1.1.x) | **effective** (`SetChnRoiAttr`, needs OpenIMP d03ca24 + fec3e69; `OPENIMP_T31_ROI=0` → unsupported) | experimental, live (no zoom without open-tx-isp `fcrop_upscale_pct`) | **effective**, live with the driver's `fcrop_upscale_pct` parameter (open-tx-isp 27dc8be4+); otherwise experimental, live |
 | T40, T41 | unsupported (vendor T41 takes deltas only; not device-tested) | unsupported (T41 experimental, off in libimp) | unsupported | unsupported |
 
-T23 FrontCrop: older open-tx-isp drivers hung the pipeline on a crop change,
-and the tier is compile-time, so timps cannot check the driver. A POST is
-persisted and applied at the next `/etc/init.d/S95timps restart`; a window
-smaller than the stream-0 size is refused with `-EINVAL` (one WARN,
-`caps.fcrop.state` = `rejected`).
+T23/T31 FrontCrop with OpenIMP: timps checks at start for
+`/sys/module/tx_isp_t23|t31/parameters/fcrop_upscale_pct`, which only drivers
+with the T23 crop-hang fix (open-tx-isp 164225e5/25b1d8c7) or the T31 guard
+(27dc8be4) have. Without it, T23 stays start-only (older drivers hung the
+pipeline on a crop change): a POST is persisted and applied at the next
+`/etc/init.d/S95timps restart`. A window smaller than a stream that is not
+scaled down is refused with `-EINVAL` (one WARN, `caps.fcrop.state` =
+`rejected`).
 
 ROI QP ranges: delta -25..25 everywhere (-26 gave invalid H.264 on T20); T21
 honours only about -12..+13 (`caps.roi.qp_delta_eff`), positive deltas are
