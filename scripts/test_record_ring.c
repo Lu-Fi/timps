@@ -20,6 +20,23 @@ extern int     rec_ring_count_test(void);
 
 static int g_fail;
 
+#include "record.h"
+
+static void clip_cap(void)
+{
+    /* 3000 kbps = 391 KB/s with the margin */
+    int a = rec_clip_cap_s(30, 3000, -1, -1);
+    int b = rec_clip_cap_s(30, 3000, 16, 64);   /* 16 MB tmpfs: 8 MB usable */
+    int c = rec_clip_cap_s(30, 3000, 32, 6);    /* 6 MB available */
+    int d = rec_clip_cap_s(6, 3000, 0, 64);     /* /tmp full */
+    int e = rec_clip_cap_s(6, 0, 1, -1);        /* unknown bitrate: 4000 assumed */
+    if (a != 30) { printf("FAIL clip cap unknown: %d\n", a); g_fail = 1; }
+    if (b != 21) { printf("FAIL clip cap 16 MB: want 21 got %d\n", b); g_fail = 1; }
+    if (c != 8)  { printf("FAIL clip cap 6 MB avail: want 8 got %d\n", c); g_fail = 1; }
+    if (d != 0)  { printf("FAIL clip cap /tmp full: %d\n", d); g_fail = 1; }
+    if (e != 1)  { printf("FAIL clip cap 1 MB: want 1 got %d\n", e); g_fail = 1; }
+}
+
 static void push(int64_t pts, int key, int64_t pre_us)
 {
     static const uint8_t b[16];
@@ -58,6 +75,7 @@ int main(void)
     run("gop=15 pre=5s", 15, 400, 5000000);
     run("gop=50 pre=1s", 50, 170, 1000000);
     rec_ring_clear_test();
+    clip_cap();
     if (g_fail) { fprintf(stderr, "FAILED\n"); return 1; }
     printf("all record pre-roll ring tests passed\n");
     return 0;

@@ -64,6 +64,11 @@ _1.10.1 (draft)_
   descriptors above 1023 (`RLIMIT_NOFILE` > 1024): the child closes every fd
   the daemon has open, so libimp device fds cannot keep a kernel module
   busy.
+- On-demand clips (`record.clip`, send2 video) are written to `/tmp`, i.e.
+  RAM: the length is now cut so the clip fits twice into both the free
+  `/tmp` and the available memory (`MemAvailable`, or free + reclaimable
+  cache on 3.10 kernels), and refused with a WARN when not even 1 s fits. A
+  30 s clip at 3-4 Mbit/s (11-15 MB) could OOM a 64 MB board.
 
 ## [1.10.0] - 2026-10-11
 

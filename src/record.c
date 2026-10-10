@@ -146,6 +146,17 @@ static void ring_push(ms_pkt *p, int64_t pre_us)
     }
 }
 
+int rec_clip_cap_s(int seconds, int kbps, long long tmp_free_mb, long long avail_mb)
+{
+    if (kbps <= 0) kbps = 4000;
+    long long per_s = (long long)kbps * 1000 / 8 + 16000;      /* + audio, boxes */
+    long long room = tmp_free_mb;
+    if (avail_mb >= 0 && (room < 0 || avail_mb < room)) room = avail_mb;
+    if (room < 0) return seconds;
+    long long fit = room * 1024 * 1024 / 2 / per_s;
+    return fit < seconds ? (int)fit : seconds;
+}
+
 #ifdef REC_RING_TEST
 /* test-only view of the ring - see scripts/test_record_ring.c */
 void rec_ring_push_test(ms_pkt *p, int64_t pre_us) { ring_push(p, pre_us); }
@@ -1030,6 +1041,26 @@ static int clip_open(const char *path, int *dfd, char *leaf, size_t lcap)
     return fd;
 }
 
+/* MemAvailable, or on pre-3.14 kernels MemFree + Buffers + Cached - Shmem
+ * (tmpfs pages are Cached but cannot be dropped); -1 if unreadable */
+static long long mem_avail_mb(void)
+{
+    FILE *f = fopen("/proc/meminfo", "r");
+    if (!f) return -1;
+    char line[96];
+    long long v, avail = -1, fr = -1, buf = 0, cached = 0, shmem = 0;
+    while (fgets(line, sizeof line, f)) {
+        if      (sscanf(line, "MemAvailable: %lld", &v) == 1) avail = v;
+        else if (sscanf(line, "MemFree: %lld", &v) == 1) fr = v;
+        else if (sscanf(line, "Buffers: %lld", &v) == 1) buf = v;
+        else if (sscanf(line, "Cached: %lld", &v) == 1) cached = v;
+        else if (sscanf(line, "Shmem: %lld", &v) == 1) shmem = v;
+    }
+    fclose(f);
+    if (avail < 0 && fr >= 0) avail = fr + buf + cached - shmem;
+    return avail < 0 ? -1 : avail / 1024;
+}
+
 int record_clip(const char *path, int seconds)
 {
     /* /tmp/ only AND no ".." component: strncmp alone lets "/tmp/../etc/x"
@@ -1049,6 +1080,13 @@ int record_clip(const char *path, int seconds)
     rc_audio=g_rc->record.audio;
     config_str_unlock();
     int chn=rc_channel; if (chn<0||chn>=MS_MAX_VSTREAM) chn=0;
+    int fit = rec_clip_cap_s(seconds, g_cfg_boot.video[chn].bitrate_kbps,
+                             ms_free_mb("/tmp"), mem_avail_mb());
+    if (fit < 1) { LOGW(MOD,"clip %s refused: too little RAM for /tmp", path); return -1; }
+    if (fit < seconds) {
+        LOGW(MOD,"clip %s shortened to %d s (RAM for /tmp)", path, fit);
+        seconds = fit;
+    }
 
     /* one clip at a time: capture runs on the /control HTTP thread and pins an
      * encoder + fanqueue + a tmpfs (RAM) file for its whole duration. Without a

@@ -9,6 +9,9 @@
  * idles until recording is wanted). record_stop() is idempotent. */
 void record_start(const ms_config *cfg);
 void record_stop(void);
+/* clip seconds that fit twice into both the free /tmp (tmpfs = RAM) and the
+ * available memory; -1 inputs are unknown and do not limit; 0 = refuse */
+int  rec_clip_cap_s(int seconds, int kbps, long long tmp_free_mb, long long avail_mb);
 
 #ifdef USE_CONTROL
 typedef struct {
