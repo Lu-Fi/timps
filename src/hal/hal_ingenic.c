@@ -5787,8 +5787,9 @@ static int ing_control(const char *key, const char *val)
         if (ok && (((FCROP_FLIP_MIRROR & 1) && !strcmp(k,"hflip")) ||
                    ((FCROP_FLIP_MIRROR & 2) && !strcmp(k,"vflip"))) && g_hcfg->image.fcrop_enable) {
             if (hal_fcrop_live()) g_fcrop_pending = 1;
-            else LOGW(MOD,"image.fcrop: start-only here - the window follows the new flip "
-                      "after a restart");
+            else if (hal_fcrop_tier() != CAP_TIER_UNSUPPORTED)
+                LOGW(MOD,"image.fcrop: start-only here - the window follows the new flip "
+                     "after a restart");
         }
 #endif
         if (ok) LOGI(MOD,"control %s=%d", key, v);
@@ -6063,7 +6064,8 @@ static void ing_control_commit(void)
         }
     g_roi_pending = 0;
 #if FCROP_LIVE
-    if (g_fcrop_pending){
+    /* before fcrop_boot (a start retry) not every channel exists; boot applies it */
+    if (g_fcrop_pending && g_fcrop_booted){
         g_fcrop_pending = 0;
         pthread_mutex_lock(&g_isp_lock);
         fcrop_apply();
