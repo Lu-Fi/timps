@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "auth.h"
+#include "util.h"
 
 static int failures, checks;
 
@@ -87,8 +88,32 @@ static void t_origin(void)
     CK(!auth_origin_ok("GET / HTTP/1.1\r\nHost: 10.0.0.2\r\nOrigin: null\r\n\r\n"), "null origin");
 }
 
+static int qv(const char *path, const char *name, const char *want)
+{
+    const char *v = ms_qparam(path, name);
+    if (!want) return v == NULL;
+    if (!v) return 0;
+    size_t n = strcspn(v, "&");
+    return n == strlen(want) && !strncmp(v, want, n);
+}
+
+static void t_qparam(void)
+{
+    CK(qv("/snapshot.jpg?chn=1", "chn", "1"), "first parameter");
+    CK(qv("/control?token=abc&chn=2", "chn", "2"), "after &");
+    CK(qv("/control?xtoken=abc", "token", NULL), "not inside another name");
+    CK(qv("/snapshot.jpg?foo=chn=9", "chn", NULL), "not inside a value");
+    CK(qv("/control?fields=1", "fields", "1"), "flag");
+    CK(qv("/control?fields", "fields", NULL), "name without =");
+    CK(qv("/chn=1", "chn", NULL), "path is not the query");
+    CK(qv("/control?a=1&token=", "token", ""), "empty value");
+    CK(qv("/x?a=1&&b=2", "b", "2"), "empty member");
+    CK(qv("/webrtc/whep?chn=x&token=t", "token", "t"), "last parameter");
+}
+
 int main(void)
 {
+    t_qparam();
     t_literals(); t_names(); t_allowed(); t_header_scope(); t_origin();
     printf("http host policy: %d/%d passed\n", checks - failures, checks);
     return failures ? 1 : 0;

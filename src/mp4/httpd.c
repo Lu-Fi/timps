@@ -874,8 +874,8 @@ out:
  * suitable is enabled. */
 static int jpeg_src_from_path(const char *path, const ms_config *cfg)
 {
-    const char *q = strstr(path, "chn=");
-    int chn = q ? atoi(q+4) : -1;
+    const char *q = ms_qparam(path, "chn");
+    int chn = q ? atoi(q) : -1;
     return hub_pick_jpeg_src(cfg, chn, q != NULL);
 }
 
@@ -1206,9 +1206,8 @@ static int http_check_token(const ms_config *cfg, const char *buf, const char *p
 {
     char tok[128];
     if (!http_header(buf, "X-Timps-Token:", tok, sizeof tok)) {
-        const char *q = strstr(path, "token=");
+        const char *q = ms_qparam(path, "token");
         if (!q) return 0;
-        q += 6;
         int i=0;
         while (q[i] && q[i]!='&' && i<(int)sizeof(tok)-1){ tok[i]=q[i]; i++; }
         tok[i]=0;
@@ -1436,10 +1435,10 @@ static void events_stream(hconn *c, const char *path, const char *cors)
 
     /* ?stream= filter: absent = all; present = only the listed types */
     int want_motion = 1, want_dn = 1, want_stats = 1, want_config = 1;
-    const char *f = strstr(path, "stream=");
+    const char *f = ms_qparam(path, "stream");
     if (f){
         char fl[80]; int i = 0;
-        for (f += 7; f[i] && f[i] != '&' && i < (int)sizeof fl - 1; i++) fl[i] = f[i];
+        for (; f[i] && f[i] != '&' && i < (int)sizeof fl - 1; i++) fl[i] = f[i];
         fl[i] = 0;
         want_motion = strstr(fl, "motion")   != NULL;
         want_dn     = strstr(fl, "daynight") != NULL;
@@ -1615,12 +1614,21 @@ out:
 }
 #endif /* USE_CONTROL */
 
+#ifdef USE_CONTROL
+/* ?name=1 */
+static int qflag(const char *path, const char *name)
+{
+    const char *v = ms_qparam(path, name);
+    return v && v[0] == '1';
+}
+#endif
+
 /* extract ?chn=N from the request path; returns def if absent/invalid */
 static int path_chn(const char *path, const ms_config *cfg, int def)
 {
-    const char *q = strstr(path, "chn=");
+    const char *q = ms_qparam(path, "chn");
     /* enabled is restart-only -> boot snapshot (see config.h) */
-    if (q){ int n=atoi(q+4); if(n>=0 && n<MS_MAX_VSTREAM && g_cfg_boot.video[n].enabled) return n; }
+    if (q){ int n=atoi(q); if(n>=0 && n<MS_MAX_VSTREAM && g_cfg_boot.video[n].enabled) return n; }
     return def;
 }
 
@@ -2025,7 +2033,7 @@ static void *conn_thread(void *arg)
             else if (!strncmp(path,"/snapshot.jpg",13))
                 snapshot_jpg(c, jpeg_src_from_path(path, c->cfg));
             else if (!strncmp(path,"/stream.mjpeg",13)||!strncmp(path,"/mjpeg",6)){
-                const char *b=strstr(path,"boundary="); if(b) b+=9;
+                const char *b=ms_qparam(path,"boundary");
                 stream_mjpeg(c, jpeg_src_from_path(path, c->cfg), b);
             }
 #ifdef USE_CONTROL
@@ -2049,11 +2057,8 @@ static void *conn_thread(void *arg)
                      * (see control_fields_json's doc comment in control.h) -
                      * a small, separate document from the main status dump
                      * below, so it gets its own (much smaller) heap buffer
-                     * rather than sharing CONTROL_JSON_CAP. Simple substring
-                     * match on the query string, same convention as chn=/
-                     * token= elsewhere in this file - no full query parser
-                     * in this codebase. */
-                    if (strstr(path, "fields=1")) {
+                     * rather than sharing CONTROL_JSON_CAP. */
+                    if (qflag(path, "fields")) {
                         #define CONTROL_FIELDS_CAP 8192
                         char *fj = (char *)malloc(CONTROL_FIELDS_CAP);
                         if (fj) {
@@ -2073,7 +2078,7 @@ static void *conn_thread(void *arg)
                     }
                     /* GET /control?clients=1: who streams what (clients.h),
                      * for the WebUI's client list. Own buffer like stats=1. */
-                    if (strstr(path, "clients=1")) {
+                    if (qflag(path, "clients")) {
                         char *cj = (char *)malloc(CLIENTS_JSON_CAP);
                         if (cj) {
                             int cn = clients_json(cj, CLIENTS_JSON_CAP);
@@ -2092,7 +2097,7 @@ static void *conn_thread(void *arg)
                      * (control.h). Same own-small-buffer treatment as
                      * fields=1 - the point of the endpoint is to not pay for
                      * the full snapshot on a 5 s poll. */
-                    if (strstr(path, "stats=1")) {
+                    if (qflag(path, "stats")) {
                         #define CONTROL_STATS_CAP 1024
                         char *sj = (char *)malloc(CONTROL_STATS_CAP);
                         if (sj) {
@@ -2114,16 +2119,16 @@ static void *conn_thread(void *arg)
                      * own-small-buffer treatment as fields=1 above - it has
                      * nothing to do with the status dump and sizing them
                      * together would make every plain GET pay for it. */
-                    if (strstr(path, "dn_history=1")) {
+                    if (qflag(path, "dn_history")) {
                         const char *q;
                         unsigned since = 0;
                         int last = 0, max = DN_HISTORY_MAX_ROWS;
-                        if ((q = strstr(path, "since=")))
-                            since = (unsigned)strtoul(q+6, NULL, 10);
-                        if ((q = strstr(path, "last=")))
-                            last = (int)strtol(q+5, NULL, 10);
-                        if ((q = strstr(path, "max=")))
-                            max = (int)strtol(q+4, NULL, 10);
+                        if ((q = ms_qparam(path, "since")))
+                            since = (unsigned)strtoul(q, NULL, 10);
+                        if ((q = ms_qparam(path, "last")))
+                            last = (int)strtol(q, NULL, 10);
+                        if ((q = ms_qparam(path, "max")))
+                            max = (int)strtol(q, NULL, 10);
                         /* worst-case row "[172800,1000000,1000000,255,100,1],"
                          * is 35 B; 48 leaves room and the envelope is small */
                         #define DN_HIST_CAP (DN_HISTORY_MAX_ROWS*48 + 512)
@@ -2514,11 +2519,11 @@ static void *conn_thread(void *arg)
                             inet_ntop(AF_INET,&loc.sin_addr,ip,sizeof ip);
                         /* a malformed ?chn= must not quietly become
                          * webrtc.channel: map it out of range -> 400 */
-                        const char *cq = strstr(path, "chn=");
+                        const char *cq = ms_qparam(path, "chn");
                         int rchn = -1;
                         if (cq) {
-                            long v = (cq[4] >= '0' && cq[4] <= '9')
-                                     ? strtol(cq+4, NULL, 10) : MS_MAX_VSTREAM;
+                            long v = (cq[0] >= '0' && cq[0] <= '9')
+                                     ? strtol(cq, NULL, 10) : MS_MAX_VSTREAM;
                             rchn = v > MS_MAX_VSTREAM ? MS_MAX_VSTREAM : (int)v;
                         }
                         /* The answer carries an fmtp with sprop-parameter-sets

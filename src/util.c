@@ -468,3 +468,16 @@ time_t ms_media_path(char *out, size_t cap, const char *dir, const char *sub,
     snprintf(out, cap, "%s/%s/%s/%s%s", dir, host, sub, rel, ext);
     return t;
 }
+
+const char *ms_qparam(const char *path, const char *name)
+{
+    size_t nlen = strlen(name);
+    const char *q = strchr(path, '?');
+    while (q) {
+        q++;
+        if (!strncmp(q, name, nlen) && q[nlen] == '=')
+            return q + nlen + 1;
+        q = strchr(q, '&');
+    }
+    return NULL;
+}

@@ -46,6 +46,10 @@ _1.10.1 (draft)_
   before. 1.10.0 still cycled it, the edge that hangs these SoCs. Video and
   JPEG watchdogs now take that decision from one host-tested rule
   (`fs_ref.h`), and a kept channel refuses a recycle outright.
+- HTTP query parameters (`token`, `chn`, `stream`, `boundary`,
+  `fields`/`clients`/`stats`/`dn_history`, `since`/`last`/`max`, WHEP `chn`)
+  are matched as whole names after `?` or `&` (one `ms_qparam()` for httpd
+  and `/talk`); `?xtoken=` or `?foo=chn=9` no longer count.
 
 ## [1.10.0] - 2026-10-11
 

@@ -74,27 +74,11 @@ static const int TALK_RATES[] = {8000, 16000, 24000, 32000, 44100, 48000};
  * fills, and that function cannot run here because conn_thread has already
  * consumed the head off the socket. */
 
-/* Read one query parameter out of a request target. Anchored on '?' or '&' so
- * "rate=" cannot be matched inside some other parameter's name or value.
- * Returns the value pointer (into path) or NULL. */
-static const char *qparam(const char *path, const char *name)
-{
-    size_t nlen = strlen(name);
-    const char *q = strchr(path, '?');
-    while (q) {
-        q++;
-        if (!strncmp(q, name, nlen) && q[nlen] == '=')
-            return q + nlen + 1;
-        q = strchr(q, '&');
-    }
-    return NULL;
-}
-
 /* Declared capture rate, or 0 if the client asked for one we do not accept.
  * Absent means 8000: mu-law's native rate and what the reference page sends. */
 static int talk_rate(const char *path)
 {
-    const char *v = qparam(path, "rate");
+    const char *v = ms_qparam(path, "rate");
     if (!v) return 8000;
     int r = atoi(v);
     for (unsigned i = 0; i < sizeof TALK_RATES / sizeof TALK_RATES[0]; i++)
@@ -133,7 +117,7 @@ void talk_ws_serve(int fd, void *tls, const char *head, int head_len,
     if (!rate) {
         /* the value only: the query also carries the auth token, and these
          * logs are shipped off the camera */
-        const char *rv = qparam(path, "rate");
+        const char *rv = ms_qparam(path, "rate");
         int rl = rv ? (int)strcspn(rv, "&") : 0;
         LOGW(MOD, "refused: unsupported rate=%.*s", rl > 16 ? 16 : rl, rv ? rv : "");
         ws_handshake_reject(&io, 400, "Bad Request", "bad rate");

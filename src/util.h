@@ -297,6 +297,10 @@ void ms_json_esc(const char *s, char *out, size_t cap);
  *     that need it (lstat in the pruners, O_NOFOLLOW in record_clip()).
  * Every '..' check in the daemon goes through this one function, so all paths
  * provably share one meaning. */
+/* value of query parameter `name` in a request target, anchored on '?'/'&'
+ * (so "xtoken=" never matches "token="); points into path, ends at '&' or
+ * NUL. NULL when absent. */
+const char *ms_qparam(const char *path, const char *name);
 int ms_has_dotdot(const char *s);
 
 /* dir/name here are runtime-mutable via /control by an authenticated caller;
