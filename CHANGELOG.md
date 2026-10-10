@@ -6,6 +6,18 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.10.0] - 2026-10-11
+
+Encoder ROI (`roi<S>.<N>.*`) and ISP FrontCrop (`image.fcrop_*`) arrive with
+per-SoC tiers (`effective`/`experimental`/`unsupported`) reported in
+`caps.roi`/`caps.fcrop`; the FrontCrop tier on T23/T31 is detected at start
+from the driver. The crop window follows `image.hflip`/`vflip` on OpenIMP.
+T40/T41 boards with the sensor off I2C 0 / MCLK0 (Eufy S350) get `sensor.*`
+wiring keys. Day/night fixes the plateau rule, IR-lit cellars and an
+unreachable `night_gain`, and adds Idle-Dark (off by default). New: the
+`openimp` QA profile, `timpsd --check-libs`, the FrameSource keepalive, and
+the firmware WebUI ROI and Crop / zoom editor.
+
 ### Added
 
 - **T40/T41 sensor wiring keys** `sensor.i2c_adapter`, `sensor.mclk`,
@@ -6741,6 +6753,8 @@ camera before fleet rollout.
   TrueType OSD, motion detection, RTSP-Digest / HTTP-Basic auth. Ingenic
   headers via the `ingenic-headers` submodule.
 
+[Unreleased]: https://github.com/Lu-Fi/timps/compare/v1.10.0...HEAD
+[1.10.0]: https://github.com/Lu-Fi/timps/compare/v1.9.33...v1.10.0
 [1.2.0]: https://github.com/Lu-Fi/timps/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Lu-Fi/timps/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/Lu-Fi/timps/releases/tag/v1.0.0

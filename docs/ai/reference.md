@@ -6,11 +6,11 @@ firmware. Everything here is verified against the `main` branch of
 <https://github.com/Lu-Fi/timps> and against `package/timps/` in a thingino
 firmware tree.
 
-Applies to timps v1.9.33 (source: `main`, 2026-10-05)
+Applies to timps v1.10.0 (source: `main`, 2026-10-11)
 
 A statement marked **since vX** is new in that release — on an older camera
-describe the previous behaviour. Changes listed under `[Unreleased]` in
-`CHANGELOG.md` are marked **since the next release**.
+describe the previous behaviour. Changes listed under `[1.10.0]` in
+`CHANGELOG.md` are marked **since v1.10.0**.
 
 ## Where to find what
 
@@ -61,8 +61,8 @@ libwebsockets, no libschrift. Stripped binary is roughly **360 KB** (mipsel)
 - Init script: `/etc/init.d/S95timps` (start/stop/restart)
 - Command line: `timpsd [-c <config>] [-v] [-V|--version] [--check-libs]`.
   `-v` is **verbose** (DEBUG level), not version: it starts the daemon.
-  `-V`/`--version` (**since the next release**) prints `timps <version>` and
-  exits; `--check-libs` (**since the next release**) checks the libimp and
+  `-V`/`--version` (**since v1.10.0**) prints `timps <version>` and
+  exits; `--check-libs` (**since v1.10.0**) checks the libimp and
   exits (§11). An unknown argument exits 2 (since v1.9.30).
 - Per-boot control token: `/run/timps.token`
 - Default HTTP port **8880**, RTSP **554**, RTSPS **322** (when enabled)
@@ -102,10 +102,10 @@ exclusion:
   `image.*` knobs do not exist there (highlight depress, sinter/temper NR,
   max again/dgain, manual WB, ISP hflip/vflip). Exception: T41 built with
   OpenIMP (`USE_OPENIMP`) has `ae_compensation` and sinter NR (since v1.9.33)
-  and temper NR (since the next release).
+  and temper NR (since v1.10.0).
 - `audio.alc_gain` (analog PGA) exists only on **T21, T31, C100**.
 - Rotation: hardware I2D on **T40/T41**, FrameSource rotate on **T31** and,
-  with OpenIMP only, on **T10/T20/T21** sub streams (since the next release;
+  with OpenIMP only, on **T10/T20/T21** sub streams (since v1.10.0;
   needs an OpenIMP with T1x rotation, see `config-keys.md`),
   software on **T23** (opt-in), none on **T30/C100**.
 - A host build with no `PLATFORM_*` macro (`make sim`) reports every
@@ -206,12 +206,12 @@ ships `rtsp.user`/`rtsp.pass` and `http.user`/`http.pass` all set to
 | --- | --- |
 | `general.` | Log level, per-module debug, syslog, IMP polling timeout, OSD pool size |
 | `sensor.` | Sensor model / I²C address / fps / width / height (all optional — auto-detected from `/proc/jz/sensor/sensor0/`) |
-| `image.` | ISP tuning: brightness, contrast, NR, WB, flips, day/night running mode, FrontCrop window (`image.fcrop_*`, **since the next release**) |
+| `image.` | ISP tuning: brightness, contrast, NR, WB, flips, day/night running mode, FrontCrop window (`image.fcrop_*`, **since v1.10.0**) |
 | `video0.` / `video1.` | Per-stream encoder: codec, geometry, fps, bitrate, rate control, GOP, QP, rotation, RTSP path, piggyback JPEG |
 | `jpeg.` | The dedicated JPEG/MJPEG encoder channel (`/snapshot.jpg`, `/stream.mjpeg`) |
 | `osd.` and `osd<S>.<N>.` | Global OSD settings, and per-stream overlay items |
 | `privacy<S>.<N>.` | Privacy cover rectangles per stream |
-| `roi<S>.<N>.` | Encoder ROI regions (per-region QP) per stream — **since the next release**, tiered per SoC |
+| `roi<S>.<N>.` | Encoder ROI regions (per-region QP) per stream — **since v1.10.0**, tiered per SoC |
 | `audio.` | Mic capture, codecs, DSP, speaker, backchannel, `/talk` |
 | `rtsp.` | RTSP server: enable, port, MTU, credentials, RTSPS |
 | `http.` | HTTP server: enable, port, preview channel, credentials, token, TLS cert paths, `http.https` |
@@ -251,16 +251,16 @@ always wins. T40/T41 and the host sim have no registry, so set them there.
 
 **`image.`** (all 0..255 unless noted, 128 = neutral; all live-applicable)
 `brightness`, `contrast`, `saturation`, `sharpness`, `hue`, `hflip`, `vflip`,
-`anti_flicker` (0 off / 1 = 50 Hz / 2 = 60 Hz; default 1 since the next
-release, 2 up to v1.9.33 — match the mains frequency, see
+`anti_flicker` (0 off / 1 = 50 Hz / 2 = 60 Hz; default 1 since
+v1.10.0, 2 up to v1.9.33 — match the mains frequency, see
 `troubleshooting.md` §3.1), `running_mode` (0 day, 1 night),
 `ae_compensation`, `max_again` (160), `max_dgain` (80), `sinter_strength`
 (spatial NR), `temper_strength` (temporal NR), `dpc_strength`,
 `defog_strength`, `drc_strength`, `highlight_depress` (0), `backlight_compensation`
 (0), `core_wb_mode` (0 = auto), `wb_rgain`, `wb_bgain`, `ae_it_max_us`
 (opt-in cap on AE integration time).
-`wb_rgain`/`wb_bgain` (manual WB, `core_wb_mode = 1`): **since the next
-release** clamped per SoC — 0..255 on T10/T20/T30 (Q7, unity 128), 0..4095 on
+`wb_rgain`/`wb_bgain` (manual WB, `core_wb_mode = 1`): **since
+v1.10.0** clamped per SoC — 0..255 on T10/T20/T30 (Q7, unity 128), 0..4095 on
 T21/T23/T31 (Q8, unity 256), 0..65535 elsewhere.
 **since v1.9.21** `GET /control` also returns read-only
 `image.wb_live` = `{"rgain":R,"bgain":B}`, the gains in effect right now (in
@@ -278,7 +278,7 @@ vendor libimp is safe.
 videoN.enabled   = 1
 videoN.codec     = h264            # h264 | h265
 videoN.width/height/fps          # 1920x1080 / 640x360; unset: a smaller known
-                                  #   sensor size instead (no upscale, since the next release)
+                                  #   sensor size instead (no upscale, since v1.10.0)
 videoN.bitrate   = 3000 / 512      # kbps (meaning differs per SoC, see §7)
 videoN.rc_mode   = cbr             # cbr|vbr|fixqp|smart|capped_vbr|capped_quality
 videoN.gop       = 50
@@ -511,7 +511,7 @@ replayed; a sniffed Basic header can, which is the reason to prefer RTSPS on
 an untrusted segment. Auth is enabled by setting `rtsp.user`/`rtsp.pass`.
 **since v1.9.28** an RTSP connection is closed after **5 rejected logins**, and one
 that has not reached `PLAY` within **60 s** of connecting — not a lockout, a
-client can reconnect. Since the next release a connection that has not
+client can reconnect. Since v1.10.0 a connection that has not
 authenticated within **15 s** is closed too (a player that prompts the user
 for the password has 15 s from connect), each failed Basic/Digest attempt
 (RTSP and HTTP) waits 500 ms before its `401`, and once half the slots are
@@ -601,7 +601,7 @@ differently-compiled binaries.
 
 | `caps` field | Meaning |
 | --- | --- |
-| `caps.image[]` | The `image.*` keys this SoC actually supports. **Since the next release** an OpenIMP-only key whose setter the running libimp does not export is left out (see §11, mixed installs) |
+| `caps.image[]` | The `image.*` keys this SoC actually supports. **Since v1.10.0** an OpenIMP-only key whose setter the running libimp does not export is left out (see §11, mixed installs) |
 | `caps.audio[]` | The `audio.*` keys this build/SoC supports |
 | `caps.osd[]` | The OSD item fields that apply **live** (`text,x,y,font_size,color,transparency,outline,outline_color`) |
 | `caps.restart[]` | Restart-only keys: the sections `"video"`/`"sensor"` (except `rtsp_path` and `caps.video_live`), plus — since v1.9.20 — every `F_RESTART` key of `audio.*`/`osd.*` as `"audio.codec"`, `"osd.font_path"`, …. v1.9.19: `["video","sensor","osd.enabled"]` |
@@ -614,9 +614,9 @@ differently-compiled binaries.
 | `caps.backchannel` | `{available, talk_ws}` — `talk_ws` is the *effective* mode: 0 not served, 1 served TLS-required, 2 served plaintext-ok |
 | `caps.play` | `{available, sounds:[...]}` — enumerates playable files |
 | `caps.webrtc` | `{available, enabled, chn_select}` — same 0/1/2 meaning as `talk_ws`; `chn_select:1` = the POST honours `?chn=N`. **Key absent entirely** when `USE_WEBRTC=0` |
-| `caps.framesource` | `{keepalive, cfg}` — **since the next release.** `keepalive` = 1 when this start resolved `general.fs_keepalive` to on (video FrameSources held enabled until stop), `cfg` = the raw `-1`/`0`/`1`. On the sim it reports the resolution only (no FrameSource there). |
-| `caps.roi` / `caps.fcrop` | **Since the next release.** Encoder ROI and ISP FrontCrop: `tier` = `effective` (device-tested), `experimental` (call returns 0, effect unverified), `unsupported`, or `sim`. `caps.roi` adds `regions`, `align:16`, the QP ranges and `streams[]` (`ok`/`off`/`h265`/`rotated`/`unsupported`); `caps.fcrop` adds `live`, `min:64`, `sensor:[w,h]` and `state` (`off`/`on`/`rejected`/`failed`/`unsupported`). T10/T20/T21 ROI and FrontCrop with OpenIMP are `effective` (device-tested by the OpenIMP maintainer, not by timps); T23/T31 FrontCrop (OpenIMP) is `effective` and live when the driver has `fcrop_upscale_pct`, otherwise `experimental` (T23 with `live` 0, start-only); tier table in config-keys.md §10a. |
-| `caps.daynight` | `{available, ir_idle}` — **since the next release.** `available` = built with `USE_DAYNIGHT`; `ir_idle` = 1 when `daynight.ir_idle_off` could act on this start (it needs the FrameSource keepalive). |
+| `caps.framesource` | `{keepalive, cfg}` — **since v1.10.0.** `keepalive` = 1 when this start resolved `general.fs_keepalive` to on (video FrameSources held enabled until stop), `cfg` = the raw `-1`/`0`/`1`. On the sim it reports the resolution only (no FrameSource there). |
+| `caps.roi` / `caps.fcrop` | **Since v1.10.0.** Encoder ROI and ISP FrontCrop: `tier` = `effective` (device-tested), `experimental` (call returns 0, effect unverified), `unsupported`, or `sim`. `caps.roi` adds `regions`, `align:16`, the QP ranges and `streams[]` (`ok`/`off`/`h265`/`rotated`/`unsupported`); `caps.fcrop` adds `live`, `min:64`, `sensor:[w,h]` and `state` (`off`/`on`/`rejected`/`failed`/`unsupported`). T10/T20/T21 ROI and FrontCrop with OpenIMP are `effective` (device-tested by the OpenIMP maintainer, not by timps); T23/T31 FrontCrop (OpenIMP) is `effective` and live when the driver has `fcrop_upscale_pct`, otherwise `experimental` (T23 with `live` 0, start-only); tier table in config-keys.md §10a. |
+| `caps.daynight` | `{available, ir_idle}` — **since v1.10.0.** `available` = built with `USE_DAYNIGHT`; `ir_idle` = 1 when `daynight.ir_idle_off` could act on this start (it needs the FrameSource keepalive). |
 
 Note the deliberate convention: a key that is **absent** (`caps.rotation`,
 `caps.webrtc`) means "this binary has no such endpoint/feature at all", which
@@ -632,7 +632,7 @@ with it" semantics.
 | --- | --- |
 | `?fields=1` | Inventory of every POST-able config field, grouped by section. Generated from the same tables the POST walks, so it cannot drift. |
 | `?stats=1` | Small object: per-stream `gop`/`profile`/`rc_mode` + `IMP_Encoder_Query` backlog. Exists so a stats card does not poll the whole document. |
-| `?clients=1` | Connected streaming clients: `ip`, `port`, `proto` (`rtsp/udp`, `rtsp/tcp`, `rtsps`, `fmp4`, `mjpeg`, `events`, `webrtc`, `srt`), `chn`, `since_s`, `kbps` (per client, measured at read time), `bytes` (total sent since connect, since 1.9.25), `lat_ms` (sensor capture -> send per client, averaged; all media protocols, -1 for `events`; since v1.9.26), `drops` (media packets dropped on send, today RTSP/UDP on `ENOBUFS`/unreachable; since the next release), `agent` (User-Agent; Frigate sends `FFmpeg Frigate/<ver>`). Snapshots and `/control` itself are not listed. Since 1.9.24. **Since v1.9.26** the log has the same per client: `[CLIENT] + <proto> <ip>:<port> chn=N agent="…"` on connect and `- … after Ns, N bytes` on disconnect (`/events` only at DEBUG) — `logread \| grep CLIENT` answers "who was connected when" after the fact. |
+| `?clients=1` | Connected streaming clients: `ip`, `port`, `proto` (`rtsp/udp`, `rtsp/tcp`, `rtsps`, `fmp4`, `mjpeg`, `events`, `webrtc`, `srt`), `chn`, `since_s`, `kbps` (per client, measured at read time), `bytes` (total sent since connect, since 1.9.25), `lat_ms` (sensor capture -> send per client, averaged; all media protocols, -1 for `events`; since v1.9.26), `drops` (media packets dropped on send, today RTSP/UDP on `ENOBUFS`/unreachable; since v1.10.0), `agent` (User-Agent; Frigate sends `FFmpeg Frigate/<ver>`). Snapshots and `/control` itself are not listed. Since 1.9.24. **Since v1.9.26** the log has the same per client: `[CLIENT] + <proto> <ip>:<port> chn=N agent="…"` on connect and `- … after Ns, N bytes` on disconnect (`/events` only at DEBUG) — `logread \| grep CLIENT` answers "who was connected when" after the fact. |
 | `?dn_history=1[&last=N\|&since=S][&max=N]` | Day/night decision series from the in-RAM ring sized by `daynight.history_s`. Rows are arrays `[t, gain, exposure, luma, bright%, mode]`; ≤600 rows/response, cursor paging via `next`/`head`/`oldest`/`lapped`. |
 
 ### `POST /control`
@@ -721,9 +721,9 @@ Status codes and their `reason` discriminators:
 | --- | --- | --- | --- |
 | 200 | — | At least one known field applied (partial success is still 200) | Check `rejected` and `ignored` |
 | 400 | `not_json` | Body was not one balanced JSON object (also: no `Content-Length`, trailing data) | Client bug |
-| 400 | `body_truncated` | Since the next release: fewer body bytes than `Content-Length` arrived; nothing applied | Resend |
-| 405 | — | Since the next release: a method other than GET/HEAD/POST (OPTIONS is the preflight) | Use POST |
-| 500 | `reply_too_large` | Since the next release: the reply did not fit its buffer; the change was applied | Re-`GET`, report it |
+| 400 | `body_truncated` | Since v1.10.0: fewer body bytes than `Content-Length` arrived; nothing applied | Resend |
+| 405 | — | Since v1.10.0: a method other than GET/HEAD/POST (OPTIONS is the preflight) | Use POST |
+| 500 | `reply_too_large` | Since v1.10.0: the reply did not fit its buffer; the change was applied | Re-`GET`, report it |
 | 422 | `unknown_fields` | Parsed, but **no key this build knows** | Check spelling **and** whether the feature is compiled in (`caps`) — retrying identically will never work |
 | 409 | `values_rejected` | Keys were all known, all values refused | Key names were right, fix the values |
 | 411 | — | `Transfer-Encoding` instead of `Content-Length` | Send a fixed-length body |
@@ -991,7 +991,7 @@ best day-pipeline reading was 9.79×) still need an explicit per-camera
 gain × integration-time ratio, so an AE that stops at its analog cap with the
 digital gain unused can never exceed 256·2^(`MAX SENSOR analog gain`/32) — 4096
 for a cap of 128, the default `night_gain`. Measured on one Wyze Pan v1
-(T20/jxf22, OpenIMP): index 3587 all night. **Since the next release** timps
+(T20/jxf22, OpenIMP): index 3587 all night. **Since v1.10.0** timps
 detects a cap `<= night_gain` and switches on the plateau at the cap instead,
 with one WARN `daynight.night_gain … is above the exposure index this camera
 can reach …`; the cap is the lower `MAX SENSOR analog gain` of `isp-m0` and
@@ -1011,7 +1011,7 @@ nothing is re-switched. `isp_desync = 1` therefore only stays set in
 `daynight.mode = schedule`, where the calendar decides and the mismatch is
 reported but not adopted.
 
-**Idle-Dark (`daynight.ir_idle_off`, since the next release, off by default):**
+**Idle-Dark (`daynight.ir_idle_off`, since v1.10.0, off by default):**
 switches only the IR illuminator off at night while no stream, snapshot,
 recording or motion detection needs a picture (after
 `daynight.ir_idle_linger_s`, default 60 s); IR-cut and ISP stay in night. The
@@ -1067,7 +1067,7 @@ Distinguish **compiled out** from **misconfigured**:
 
 ### `timpsd` exits 78 or 79: the libimp does not fit the build
 
-**Since the next release.** A `timpsd` is built for exactly one libimp stack:
+**Since v1.10.0.** A `timpsd` is built for exactly one libimp stack:
 `USE_OPENIMP=1` for OpenIMP (thingino `BR2_PACKAGE_OPENIMP`, the open stack of
 the `aperto` branch), `USE_OPENIMP=0` for the original Ingenic vendor libimp
 (every other branch, linked with `-limp -lalog -lsysutils`). Before it reads
@@ -1113,8 +1113,8 @@ from another build, or a firmware built with the wrong stack. Flash a
 consistent image (or install the `timpsd` built for the libimp that is on the
 camera). Do not suggest `LD_PRELOAD` or copying libraries around.
 
-**OpenIMP-built `timpsd` on a vendor libimp (mixed install), before the next
-release.** It crashed at start on T10/T20/T21 (a NULL call into
+**OpenIMP-built `timpsd` on a vendor libimp (mixed install), before
+v1.10.0.** It crashed at start on T10/T20/T21 (a NULL call into
 `IMP_ISP_Tuning_SetDPC_Strength`, on T20 also `SetDefog_Strength` /
 `SetDRC_Strength`). Those setters are weak imports now: the key logs once,
 stays persisted only and drops out of `caps.image` — reachable only when the
@@ -1182,7 +1182,7 @@ reported on **T23 builds with OpenIMP/open-tx-isp** and reproduced on **T41**
 another channel kept streaming hangs the SoC. A driver fix is in progress
 upstream of timps.
 
-**What timps does about it (since the next release):**
+**What timps does about it (since v1.10.0):**
 `general.fs_keepalive = -1` (the default) resolves to **on** for `USE_OPENIMP`
 builds on T23 and T41: every video FrameSource is enabled once at start and
 never disabled until the daemon stops, so timelapse shots, snapshots,
@@ -1269,7 +1269,7 @@ the kernel log and escalate.
 - `rotation = 180` is a real per-channel capability **only on T40/T41**.
   Everywhere else use `image.hflip = 1` + `image.vflip = 1`.
 - `90`/`270` do not exist on T30/C100 at all, nor on T10/T20/T21 with the
-  vendor libimp. **Since the next release** T10/T20/T21 OpenIMP builds rotate
+  vendor libimp. **Since v1.10.0** T10/T20/T21 OpenIMP builds rotate
   sub streams (not `video0`; 16-aligned, at most 704x576, e.g. 640x368), but
   only with an OpenIMP that has T1x rotation (commit `6b7f5ae`, branch
   `claude/t1x-rotation`; none of the thingino `ciao` OpenIMP pins has it).
@@ -1289,7 +1289,7 @@ the kernel log and escalate.
 - Rotation is restart-required; the advertised dimensions swap
   (`eff_width`/`eff_height` in `GET /control`).
 
-### ROI and crop/zoom problems (since the next release)
+### ROI and crop/zoom problems (since v1.10.0)
 
 - First read `caps.roi.tier` / `caps.fcrop.tier`. `experimental` means the SDK
   accepts the call but nobody has seen it work on that SoC (vendor T10/T20/T21
@@ -1347,7 +1347,7 @@ There is also a QA harness in the repo:
   text still says "default 0 (off) either way" — that text is stale. Either way
   it does nothing unless `BR2_PACKAGE_TIMPS_OSD_HINTING` compiled the pass in.
   It and `osd.supersample` are POST-able but restart-required.
-- **`image.anti_flicker` default is `1` (50 Hz) since the next release**,
+- **`image.anti_flicker` default is `1` (50 Hz) since v1.10.0**,
   `2` (60 Hz) up to v1.9.33. Existing thingino cameras usually still have an
   explicit `2` in `/etc/timps.conf`, because the shipped template wrote one.
   Never infer a camera's value from the default: read `GET /control`, and

@@ -1,10 +1,10 @@
 # timps configuration keys — complete reference
 
-**Applies to timps v1.9.33 (source: `main`, 2026-10-05).**
+**Applies to timps v1.10.0 (source: `main`, 2026-10-11).**
 
 A statement marked **since vX** is new in that release — on an older camera
 the *previous* behaviour is the one to describe. Changes listed under
-`[Unreleased]` in `CHANGELOG.md` are marked **since the next release**.
+`[1.10.0]` in `CHANGELOG.md` are marked **since v1.10.0**.
 
 Authoritative source: `src/config.c` (the `cfg_field` tables and
 `config_defaults()`), `src/config.h` (struct field sizes and doctrine),
@@ -51,7 +51,7 @@ Overview / architecture doc: `docs/ai/reference.md`.
 
 The file path is `/etc/timps.conf` unless `timpsd -c <path>` says otherwise
 (`src/main.c`). The other arguments: `-v` (DEBUG logging, **not** the
-version), `-h`, and **since the next release** `-V`/`--version` and
+version), `-h`, and **since v1.10.0** `-V`/`--version` and
 `--check-libs` (checks only whether the loaded libimp fits the build, reads no
 config; exit 0, 78 flavour mismatch, 79 missing IMP function, 80 could not
 check — see
@@ -88,7 +88,7 @@ HTTP, verified against `control_apply_json()` (`src/control.c`) and the
 * **Whole sections `control_apply_json()` never walks:** `http.*`, `rtsp.*`,
   `jpeg.*`, `events.*`, `webrtc.*`, `srt.*`, `sim.*`. The POST surface only
   knows `image`, `audio`, `general`, `daynight`, `osd`/`osd<S>`, `video`,
-  `privacy`, `roi` (**since the next release**), `sensor`, `motion`, `record`,
+  `privacy`, `roi` (**since v1.10.0**), `sensor`, `motion`, `record`,
   `timelapse`.
 * **Individual keys inside a walked section that carry no `F_CTRL`:**
   `general.loglevel`, `general.imp_polling_timeout`, `general.osd_pool_size`,
@@ -232,7 +232,7 @@ Section is readable via `GET /control`; only `debug_modules` is POST-able.
 | `general.debug_modules` | string[64] | `""` | — | **live** | Comma-separated module names forced to DEBUG regardless of `loglevel`, e.g. `HAL_ING,DAYNIGHT`. Live on purpose: restarting to enable debugging destroys the state you are trying to observe. |
 | `general.imp_polling_timeout` | int | `500` | 10..10000 | file-only, restart | ms, `IMP_*_PollingStream` timeout. `0` would make the video thread spin and the watchdog `SIGTERM` the daemon seconds after the first client — hence the floor of 10. |
 | `general.osd_pool_size` | int | `1024` | 1..1024 | file-only, restart | KB of IMP OSD pool. 1024 is the T-series maximum; larger is rejected by libimp anyway. |
-| `general.fs_keepalive` | int or word | `-1` | -1..1 | file-only, restart | **since the next release.** `-1` or `auto`, `0` or `off`/`false`/`no`, `1` or `on`/`true`/`yes`; numbers outside -1..1 are clamped, anything else logs a warning and stays auto (`-1`). On: `ing_start()` holds every video FrameSource (and the dedicated `jpeg.*` one) enabled until the daemon stops, so no FrameSource is ever disabled at runtime; encoders stay on-demand. **Auto resolves to on only for `USE_OPENIMP` builds on T23 and T41** (the stacks where a FrameSource disable/enable while the sensor streams can hang the SoC), off on every vendor-libimp build and on T10/T20/T21/T30/T31/T40 with OpenIMP. The resolved value is `caps.framesource.keepalive` in `GET /control` (`caps.framesource.cfg` is the raw value) and the start-up line `framesource keepalive on|off (general.fs_keepalive=N[, auto])`. See pitfalls below and `dev_notes/FS_KEEPALIVE_2026-10.md`. |
+| `general.fs_keepalive` | int or word | `-1` | -1..1 | file-only, restart | **since v1.10.0.** `-1` or `auto`, `0` or `off`/`false`/`no`, `1` or `on`/`true`/`yes`; numbers outside -1..1 are clamped, anything else logs a warning and stays auto (`-1`). On: `ing_start()` holds every video FrameSource (and the dedicated `jpeg.*` one) enabled until the daemon stops, so no FrameSource is ever disabled at runtime; encoders stay on-demand. **Auto resolves to on only for `USE_OPENIMP` builds on T23 and T41** (the stacks where a FrameSource disable/enable while the sensor streams can hang the SoC), off on every vendor-libimp build and on T10/T20/T21/T30/T31/T40 with OpenIMP. The resolved value is `caps.framesource.keepalive` in `GET /control` (`caps.framesource.cfg` is the raw value) and the start-up line `framesource keepalive on|off (general.fs_keepalive=N[, auto])`. See pitfalls below and `dev_notes/FS_KEEPALIVE_2026-10.md`. |
 | `general.syslog` | bool | `1` | — | file-only, restart | **Not a stored field** — handled as a side effect in `set_kv()` (`log_set_syslog()`). Never appears in `GET /control` and cannot be POSTed. `0` = stdout only, no `logread`. |
 | `general.trace` | int (bitmask) | `0` | unclamped | file-only, restart | Developer send-pipeline tracing. Bits: `1` per-AU gap/age/send, `2` per-write timing, `4` fanqueue backlog, `8` periodic summary, `15` = all. **Only does anything in a `USE_TRACE=1` build**; parsed and ignored otherwise. Side-effecting key like `general.syslog`: no table entry, no `F_CTRL`, not in `?fields=1`. |
 | `general.trace_ms` | int | `250` | unclamped | file-only, restart | Report threshold in ms for `general.trace`. Takes effect in file order, so list it **before** `general.trace` if you want the startup banner to print the right threshold (cosmetic only). |
@@ -277,7 +277,7 @@ Pitfalls
 The first five keys are `F_CTRL` (POST-able) but **restart** — they are consumed at
 the next ISP init only. `ing_control()` logs `persisted, applies on restart` and
 the POST reply lists them under `deferred`. The six board-wiring keys below
-them (**since the next release**) are **file-only** (no `F_CTRL`: a wrong bus
+them (**since v1.10.0**) are **file-only** (no `F_CTRL`: a wrong bus
 or pin over HTTP would crash-loop the ISP) and restart-applied; GET `/control`
 shows them read-only in the `sensor` object.
 
@@ -286,7 +286,7 @@ shows them read-only in the `sensor` object.
 | `sensor.model` | string[64] | *(unset)* → autodetect | — | restart | Sensor driver name, e.g. `gc2053`. |
 | `sensor.i2c_addr` | int | *(unset)* → autodetect | 0..0x7F | restart | Alias `sensor.i2c_address`. Hex (`0x37`) accepted. |
 | `sensor.fps` | int | *(unset)* → autodetect, **capped** | 0..120 | restart | `0` = auto. **since v1.9.19:** the autodetected value is capped at **30** (`SENSOR_AUTO_FPS_CAP` in `src/config.c`); **since v1.9.20** the cap is raised to the fastest *enabled* `videoN.fps` when that is higher, so a stream configured above 30 still gets its frames. An explicit value is used as given. Before v1.9.19 the driver's `max_fps` was taken verbatim. |
-| `sensor.width` | int | *(unset)* → autodetect | 0..8192 | restart | `0` = auto. On T10/T20/T21/T30 the driver's `/proc/jz/sensor` size is often empty until the sensor runs; since the next release the HAL reads it again after `IMP_ISP_EnableSensor` (before the first channel) instead of keeping video0's size as the sensor size. |
+| `sensor.width` | int | *(unset)* → autodetect | 0..8192 | restart | `0` = auto. On T10/T20/T21/T30 the driver's `/proc/jz/sensor` size is often empty until the sensor runs; since v1.10.0 the HAL reads it again after `IMP_ISP_EnableSensor` (before the first channel) instead of keeping video0's size as the sensor size. |
 | `sensor.height` | int | *(unset)* → autodetect | 0..8192 | restart | `0` = auto. |
 | `sensor.i2c_adapter` | int | `-1` (unset) | -1..15 | file-only, restart | **T40/T41 only.** `IMPSensorInfo.i2c.i2c_adapter_id`. Alias `sensor.i2c_adapter_id`. Unset leaves libimp's `0`. |
 | `sensor.mclk` | int | `-1` (unset) | -1..2 | file-only, restart | **T40/T41 only.** `IMPSensorMclk`: `0`=MCLK0, `1`=MCLK1, `2`=MCLK2. Unset leaves `0`. |
@@ -394,12 +394,12 @@ way to check.
 | `image.vflip` | bool | `0` | — | all | Global ISP flip (every channel). |
 | `image.hflip` | bool | `0` | — | all | Global ISP flip (every channel). |
 | `image.running_mode` | int | `0` | 0..1 | all | `0` day, `1` night (IR-cut/mono pipeline). |
-| `image.anti_flicker` | int | `1` (**since the next release**; `2` up to v1.9.33) | 0..2 | all | `0` off, `1` 50 Hz, `2` 60 Hz. Live. Pick the mains frequency: `1` in Europe, most of Asia and Africa, Australia; `2` in most of the Americas, South Korea, Taiwan, the Philippines, Saudi Arabia, western Japan. The wrong value lets the AE step the exposure in units of the wrong half-period, which shows as horizontal bands under LED/fluorescent light (a T23 sc2336p on 50 Hz mains: row ripple 1.15 % RMS at `2`, 0.09 % at `1`). The thingino template carries the key explicitly (`2` until the next release, `1` from then on), so an upgraded camera whose `/etc/timps.conf` was ever written (a persisted `POST /control`, a hand edit: the file then lives in the overlay) keeps `2`; a factory reset, a full flash or a never-written file gets `1`. See troubleshooting §3.1. |
+| `image.anti_flicker` | int | `1` (**since v1.10.0**; `2` up to v1.9.33) | 0..2 | all | `0` off, `1` 50 Hz, `2` 60 Hz. Live. Pick the mains frequency: `1` in Europe, most of Asia and Africa, Australia; `2` in most of the Americas, South Korea, Taiwan, the Philippines, Saudi Arabia, western Japan. The wrong value lets the AE step the exposure in units of the wrong half-period, which shows as horizontal bands under LED/fluorescent light (a T23 sc2336p on 50 Hz mains: row ripple 1.15 % RMS at `2`, 0.09 % at `1`). The thingino template carries the key explicitly (`2` up to v1.9.33, `1` since v1.10.0), so an upgraded camera whose `/etc/timps.conf` was ever written (a persisted `POST /control`, a hand edit: the file then lives in the overlay) keeps `2`; a factory reset, a full flash or a never-written file gets `1`. See troubleshooting §3.1. |
 | `image.ae_compensation` | int | `128` | 0..255 | T10 T20 T23 T30 T31 C100, T41 with the open libimp | `ISP_HAS_AECOMP` — **absent on T21** and on T40; on T41 only with OpenIMP, **since v1.9.33** (`AeScenceAttr.AeTargetComp`; measured mean luma 8 / 57 / 98 at 40 / 128 / 230), unsupported with the vendor libimp. |
 | `image.max_again` | int | `160` | 0..255 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_GAINS`; absent on T40/T41. |
 | `image.max_dgain` | int | `80` | 0..255 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_GAINS`. |
 | `image.sinter_strength` | int | `128` | 0..255 | T10 T20 T21 T23 T30 T31 C100, T41 with the open libimp | `ISP_HAS_NR`, spatial NR. T10/T20/T21 with the vendor libimp: accepted but no effect (the vendor firmware renormalises it); acts with the open libimp (OpenIMP; 128 = the vendor picture). **T41**: only with OpenIMP, **since v1.9.33** (Module_Ratio entry 0; image noise 488 / 351 / 216 at 0 / 128 / 255); not on T40. |
-| `image.temper_strength` | int | `128` | 0..255 | T10 T20 T21 T23 T30 T31 C100, T41 with the open libimp | `ISP_HAS_NR`, temporal NR. Same OpenIMP note as `sinter_strength`. **T41**: only with OpenIMP, **since the next release** (Module_Ratio entry 1; v1.9.33 left it unsupported); temporal denoise, visible only at high gain (frame-to-frame noise 9.8 at 0 vs 2.5 at 128), saturates above ~128; independent of `sinter_strength`. |
+| `image.temper_strength` | int | `128` | 0..255 | T10 T20 T21 T23 T30 T31 C100, T41 with the open libimp | `ISP_HAS_NR`, temporal NR. Same OpenIMP note as `sinter_strength`. **T41**: only with OpenIMP, **since v1.10.0** (Module_Ratio entry 1; v1.9.33 left it unsupported); temporal denoise, visible only at high gain (frame-to-frame noise 9.8 at 0 vs 2.5 at 128), saturates above ~128; independent of `sinter_strength`. |
 | `image.dpc_strength` | int | `128` | 0..255 | T23 T31 C100; with `USE_OPENIMP` also T10 T20 T21 | `ISP_HAS_DPC`. |
 | `image.defog_strength` | int | `128` | 0..255 | T23 T31 C100; with `USE_OPENIMP` also T20 | `ISP_HAS_DEFOG`. On T20 (open stack) it is an Iridix floor, not a defog block. |
 | `image.drc_strength` | int | `128` | 0..255 | T21 T23 T31 C100; with `USE_OPENIMP` also T20 | `ISP_HAS_DRC` (WDR). |
@@ -408,9 +408,9 @@ way to check.
 | `image.colorfx` | int | `0` | 0..9 (0 none, 1 B/W, 2 sepia, 3 negative, 9 vivid) | only with `USE_OPENIMP`: T10 T20 T21 T23 T31 | `ISP_HAS_COLORFX`. The vendor SDKs expose the call on some SoCs but their kernels ignore it. The open driver answers `EINVAL` for values it does not know (sepia only on T20): the HAL logs it, the value stays persisted. Not in `caps.image` on vendor builds. |
 | `image.scene` | int | `0` | 0..14 (SDK `IMPISPSceneMode`: 0 auto, 2..9, 11..14; 1 and 10 invalid) | only with `USE_OPENIMP`: T10 T20 T21 T23 T31 | `ISP_HAS_SCENE`. Same notes as `image.colorfx`. |
 | `image.core_wb_mode` | int | `0` | 0..9 (0..8 on T10/T20/T30) | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_WB`. The SDK's `isp_core_wb_mode`: `0` auto, `1` manual (then `wb_rgain`/`wb_bgain` apply), `2` daylight, `3` cloudy, `4` incandescent, `5` fluorescent, `6` twilight, `7` shade, `8` warm fluorescent, `9` custom (T21/T23/T31/C100 only). Before v1.9.30 the range was 0..1, so `2..9` came back as `1`. |
-| `image.wb_rgain` | int | `0` | 0..255 (T10/T20/T30, Q7: 128 = 1.0), 0..4095 (T21/T23/T31, Q8: 256 = 1.0), 0..65535 elsewhere | T10 T20 T21 T23 T30 T31 C100 | Only meaningful with `core_wb_mode=1`. The neutral (1.0) value differs per SoC. **Since the next release** the value is clamped per SoC: T10/T20/T30: the kernel register is 8 bit, wider values are clamped to 255 (up to v1.9.33 they wrapped, 300 -> 44). T21/T23/T31: the register saturates at 4095 (~16x), wider values are clamped to it (up to v1.9.33 accepted up to 65535 and echoed unchanged). |
+| `image.wb_rgain` | int | `0` | 0..255 (T10/T20/T30, Q7: 128 = 1.0), 0..4095 (T21/T23/T31, Q8: 256 = 1.0), 0..65535 elsewhere | T10 T20 T21 T23 T30 T31 C100 | Only meaningful with `core_wb_mode=1`. The neutral (1.0) value differs per SoC. **Since v1.10.0** the value is clamped per SoC: T10/T20/T30: the kernel register is 8 bit, wider values are clamped to 255 (up to v1.9.33 they wrapped, 300 -> 44). T21/T23/T31: the register saturates at 4095 (~16x), wider values are clamped to it (up to v1.9.33 accepted up to 65535 and echoed unchanged). |
 | `image.wb_bgain` | int | `0` | 0..255 (T10/T20/T30, Q7: 128 = 1.0), 0..4095 (T21/T23/T31, Q8: 256 = 1.0), 0..65535 elsewhere | T10 T20 T21 T23 T30 T31 C100 | Only meaningful with `core_wb_mode=1`. Same per-SoC limits and scale as `image.wb_rgain`. **since v1.9.21** start value: read-only `image.wb_live.rgain`/`.bgain` in `GET /control` = gains AWB applies now. |
-| `image.fcrop_enable` | bool | `0` | — | see the tier table in §10a | **Since the next release.** ISP FrontCrop ("zoom"): `1` = the ISP delivers only the `fcrop_x/y/w/h` window of the sensor, and every stream scales it to its own size. Live where `caps.fcrop.live` is 1; OpenIMP T23 is live when the driver has the open-tx-isp `fcrop_upscale_pct` parameter and start-only otherwise (POST persists, restart required); on vendor T23, T40/T41, T30, C100 and vendor T10/T20/T21 a POST answers `"unsupported"` and a file value is ignored with one WARN at start. Not in `caps.image` — `caps.fcrop` carries the tier. |
+| `image.fcrop_enable` | bool | `0` | — | see the tier table in §10a | **Since v1.10.0.** ISP FrontCrop ("zoom"): `1` = the ISP delivers only the `fcrop_x/y/w/h` window of the sensor, and every stream scales it to its own size. Live where `caps.fcrop.live` is 1; OpenIMP T23 is live when the driver has the open-tx-isp `fcrop_upscale_pct` parameter and start-only otherwise (POST persists, restart required); on vendor T23, T40/T41, T30, C100 and vendor T10/T20/T21 a POST answers `"unsupported"` and a file value is ignored with one WARN at start. Not in `caps.image` — `caps.fcrop` carries the tier. |
 | `image.fcrop_x` | int | `0` | 0..8192 | as above | Left edge in sensor-sized **picture** pixels: what the streams show with `image.hflip`/`image.vflip` applied (unrotated, before any stream scaler, sensor resolution). Where the ISP crops before it flips, the HAL mirrors the window per axis: OpenIMP T21/T23/T31 both axes (`x' = sensor_w - x - w` with `image.hflip`, `y' = sensor_h - y - h` with `image.vflip`), OpenIMP T10/T20 only y (x is already picture-oriented). A live change of a mirrored flip re-applies the window (start-only drivers: after a restart); readback, log and persisted values stay picture coordinates. Vendor stacks (vendor T31 included): untested, no mirroring; OpenIMP T10/T20 mirror only y (`FCROP_FLIP_MIRROR` bitmask in `src/roi_caps.h`, bit0 x, bit1 y). The SDK struct orders **top before left** — the HAL maps `x`→`fcrop_left`, `y`→`fcrop_top`. |
 | `image.fcrop_y` | int | `0` | 0..8192 | as above | Top edge, picture pixels (see `fcrop_x` for the flip). |
 | `image.fcrop_w` | int | `0` | 0..8192 | as above | Window width. The HAL evens x/y/w/h, moves (never shrinks) the window inside the sensor and refuses anything under 64×64 (`state":"rejected"`, WARN). Keep the stream aspect ratio, or every stream is stretched. |
@@ -426,7 +426,7 @@ Prose and pitfalls
   latch. The HAL also kicks FrameSource channel 0 after the change, because the
   ISP only latches a running-mode change while chn0 delivers frames (an idle
   chn0 runs 500 ms and then stays on for the 2 s idle debounce; a running chn0
-  is only held on, no wait — **since the next release**), and
+  is only held on, no wait — **since v1.10.0**), and
   re-asserts `hflip`/`vflip` afterwards (a mode switch can reset them on some
   driver combinations).
 * **Do not force `running_mode` when the scene is genuinely dark.** Setting it
@@ -461,7 +461,7 @@ Prose and pitfalls
      re-checked rather than inherited.
 * `image.hflip=1` + `image.vflip=1` is the supported way to get a 180° picture
   on every SoC except T40/T41 (see `videoN.rotation`).
-* **FrontCrop (`image.fcrop_*`, since the next release).** One window for the
+* **FrontCrop (`image.fcrop_*`, since v1.10.0).** One window for the
   whole ISP, in sensor pixels; the request is applied **once per POST** (after
   all four coordinates arrived) and at start after every channel exists.
   `GET /control` reports `caps.fcrop` = `{tier, live, min:64, even:1, step:2,
@@ -530,7 +530,7 @@ internal channel wiring, deliberately not exposed over HTTP.
 | --- | --- | --- | --- | --- | --- |
 | `enabled` | bool | `1` / `1` | — | restart | Restart-only in the strongest sense: all consumers read `g_cfg_boot`, so a live-enabled stream is "servable" but has no publisher and the client just hangs. |
 | `codec` | enum | `h264` / `h264` | `h264`, `h265` (`hevc` = `h265`); anything else → `h264` | restart | **Coerced to `h264` with a warning on T10, T20 and T23.** T10/T20 have no H.265 encoder; T23's SDK marks every H.265 rc struct unsupported, so `IMP_Encoder_CreateChn` fails. The coercion is what keeps that out of the bring-up path: since 1.9.3 a `start()` failure is no longer fatal — it retries up to `MS_STARTUP_MAX_START_FAILS` (10) times and then escalates to one reboot (`src/main.c`), so an uncoerced H.265 on T23 would be a reboot loop rather than a clean exit. |
-| `width` | int | `1920` / `640` | 64..4096 | restart | Unset (neither `width` nor `height` given): a known sensor size that fits inside the default is used instead, so a 1280x720 sensor streams 1280x720 (**since the next release**; before, 1920x1080 upscaled). |
+| `width` | int | `1920` / `640` | 64..4096 | restart | Unset (neither `width` nor `height` given): a known sensor size that fits inside the default is used instead, so a 1280x720 sensor streams 1280x720 (**since v1.10.0**; before, 1920x1080 upscaled). |
 | `height` | int | `1080` / `360` | 64..4096 | restart | See `width`. |
 | `fps` | int | `25` / `25` | 1..120 | restart | Per-channel rate — **this stream only**. It does not set the sensor rate (that is `sensor.fps`) and cannot exceed what `sensor.fps` delivers. Documented explicitly **since v1.9.19**; the behaviour is unchanged. |
 | `bitrate` | int | `3000` / `512` | 16..50000 | **live** on every Ingenic SoC (see below) | **kbps.** |
@@ -593,7 +593,7 @@ hit this — T10, T20 and T23 coerce `codec` to `h264` at parse time.
   * **T31** — libimp FrameSource rotate (`ROT_HAS_FS_ROTATE`). Envelope:
     width and height multiples of 64, at most 1280x704, at most 15 fps.
   * **T10 T20 T21, OpenIMP builds only** (`USE_OPENIMP`, i.e.
-    `BR2_PACKAGE_OPENIMP`), **since the next release** — the same FrameSource
+    `BR2_PACKAGE_OPENIMP`), **since v1.10.0** — the same FrameSource
     rotate, done in software by OpenIMP. Sub stream only: `video0` (IMP
     channel 0) is always refused.
     Width and height must be multiples of 16 (`640x368` works, `640x360` does
@@ -885,7 +885,7 @@ changing one rebuilds the motion grid live. Dragging a rectangle posts
 
 ## 10a. Encoder ROI — `roi<S>.<N>.*`
 
-**Since the next release.** Per-stream regions with their own QP, e.g. a
+**Since v1.10.0.** Per-stream regions with their own QP, e.g. a
 sharper face area or a coarser sky. Two SDK APIs: family A
 `IMP_Encoder_SetChnROI` (T10..T23, 8 slots, corners) and family B
 `IMP_Encoder_SetChnRoiAttr` (OpenIMP T31, 10 windows, x/y/w/h; regions 0..3
@@ -1134,7 +1134,7 @@ tick) **except**:
 | `daynight.sun_sunrise_offset_min` | int | `0` | -1440..1440 | live | Minutes added to sunrise before switching to day. |
 | `daynight.sun_sunset_offset_min` | int | `0` | -1440..1440 | live | Minutes added to sunset before switching to night. |
 | `daynight.day_gain` | float | `768` | 1..1000000 | live | **Alias `total_gain_day_threshold`.** Exposure index below this (on the day pipeline) = day. Units are the IMP `[24.8]` linear gain scale, `256` = 1.0×, so 768 = 3×. |
-| `daynight.night_gain` | float | `4096` | 1..1000000 | live | **Alias `total_gain_night_threshold`.** Exposure index above this (while in day) = night. 4096 = 16×. **since the next release**: where the ISP dump's own analog cap (`MAX SENSOR analog gain`, 256·2^(cap/32)) is not above this value and the AE leaves the digital gains at 0, the index can never exceed it; a relative rule then stands in for it (see the pitfall below). |
+| `daynight.night_gain` | float | `4096` | 1..1000000 | live | **Alias `total_gain_night_threshold`.** Exposure index above this (while in day) = night. 4096 = 16×. **since v1.10.0**: where the ISP dump's own analog cap (`MAX SENSOR analog gain`, 256·2^(cap/32)) is not above this value and the AE leaves the digital gains at 0, the index can never exceed it; a relative rule then stands in for it (see the pitfall below). |
 | `daynight.day_confirm_s` | int | `30` | 1..3600 | live | How long the index must stay above `night_gain` (or, where `night_gain` is out of reach, on its plateau at the analog cap — see the `night_gain` pitfall) before day→night. |
 | `daynight.probe_min_gap_s` | int | `600` | **60**..86400 | live | No two probes closer than this. **The only bound on the audible IR-cut click rate** — a safety net, not something to switch off. |
 | `daynight.probe_confirm_s` | int | `15` | 1..3600 | live | How long the probe trigger condition must hold. |
@@ -1144,8 +1144,8 @@ tick) **except**:
 | `daynight.interval_ms` | int | `2000` | 100..60000 | live | Sample interval. The exposure index needs a `/proc` scrape per tick (integration time has no IMP API). |
 | `daynight.diagnose_thresholds` | int | `0` | 0..1 | live | When probes keep failing and the best day-pipeline reading of that excursion was still clear of `day_gain`, warn that the threshold is unreachable for this scene and name the value to raise it above. It needs **`DN_DIAG_FAILS` = 3 consecutive failed probes** before it fires, and then warns **once per daemon session** (`diag_warned` in `src/daynight.c`) — not once per probe. Off by default anyway, because on a camera that genuinely never sees day it is a WARN nobody asked for. |
 | `daynight.history_s` | int | `0` | 0..172800 (48 h) | live | In-RAM decision-history ring for the WebUI tuning graph, in seconds of retention. `0` = off; nothing is allocated until a sample is pushed. One 16-byte sample per period, so the 48 h ceiling costs ~270 KiB. |
-| `daynight.ir_idle_off` | int | `0` | 0..1 | live | **since the next release.** Idle-Dark: at night, once no picture consumer (video/JPEG hub subscriber: RTSP, WebRTC, fMP4, MJPEG, SRT, snapshot, timelapse, recorder; plus the motion FrameSource pin and a set `jpeg.snapshot_path`) has been present for `ir_idle_linger_s`, switch only the IR illuminator off (IR-cut and ISP stay in night) and decide at the next consumer from the AE reading taken meanwhile. **Only effective with the FrameSource keepalive** (`general.fs_keepalive`, auto = on for OpenIMP T23/T41); otherwise one WARN and `daynight.ir_idle.reason = "keepalive"`. Also needs auto mode (`daynight.mode = auto`), a working `daynight.irprobe_cmd` and a `timps-irprobe` with the `idle`/`state` verbs. What happens: the LED goes off for an 8 s ratio measurement (like the silent probe, but it stays off), then the scene is read without it; the first consumer gets the LED within one hook call (a kick, not the next tick) or, if the scene without the LED already reads below `day_gain` and the hook's `state` confirms the LED is off, a direct switch to day. JPEG grabs (`/snapshot.jpg`, timelapse) right after that wake are held up to ~3.5 s (max 5 s) for the AE; streams are not held, their first 1-4 s are dark or settling. Setting it to 0 by POST, `daynight.enabled = 0`, `mode = schedule` and a stop give the LED back. Status: `daynight.ir_idle` in `GET /control` / `/events`. |
-| `daynight.ir_idle_linger_s` | int | `60` | 0..3600 | live | **since the next release.** How long after the last picture consumer the illuminator may go off; a consumer inside it is not an event (covers 10 s snapshot polling and DESCRIBE→PLAY). A poll slower than the linger costs one LED on/off pair and one held snapshot per poll. Keep it **longer than `timelapse.interval_s`**: with both at 60 the linger can run out on the tick before each shot, giving one LED on/off pair per shot (set e.g. 90). |
+| `daynight.ir_idle_off` | int | `0` | 0..1 | live | **since v1.10.0.** Idle-Dark: at night, once no picture consumer (video/JPEG hub subscriber: RTSP, WebRTC, fMP4, MJPEG, SRT, snapshot, timelapse, recorder; plus the motion FrameSource pin and a set `jpeg.snapshot_path`) has been present for `ir_idle_linger_s`, switch only the IR illuminator off (IR-cut and ISP stay in night) and decide at the next consumer from the AE reading taken meanwhile. **Only effective with the FrameSource keepalive** (`general.fs_keepalive`, auto = on for OpenIMP T23/T41); otherwise one WARN and `daynight.ir_idle.reason = "keepalive"`. Also needs auto mode (`daynight.mode = auto`), a working `daynight.irprobe_cmd` and a `timps-irprobe` with the `idle`/`state` verbs. What happens: the LED goes off for an 8 s ratio measurement (like the silent probe, but it stays off), then the scene is read without it; the first consumer gets the LED within one hook call (a kick, not the next tick) or, if the scene without the LED already reads below `day_gain` and the hook's `state` confirms the LED is off, a direct switch to day. JPEG grabs (`/snapshot.jpg`, timelapse) right after that wake are held up to ~3.5 s (max 5 s) for the AE; streams are not held, their first 1-4 s are dark or settling. Setting it to 0 by POST, `daynight.enabled = 0`, `mode = schedule` and a stop give the LED back. Status: `daynight.ir_idle` in `GET /control` / `/events`. |
+| `daynight.ir_idle_linger_s` | int | `60` | 0..3600 | live | **since v1.10.0.** How long after the last picture consumer the illuminator may go off; a consumer inside it is not an event (covers 10 s snapshot polling and DESCRIBE→PLAY). A poll slower than the linger costs one LED on/off pair and one held snapshot per poll. Keep it **longer than `timelapse.interval_s`**: with both at 60 the linger can run out on the tick before each shot, giving one LED on/off pair per shot (set e.g. 90). |
 | `daynight.switch_cmd` | string[64] | `daynight` | — | **file-only**, `F_NOGET` | Board script, run as `<cmd> day\|night` via `vfork()`+`execlp()` (no shell; `fork()` on v1.9.19). **Unlike `motion.on_motion`, this one *does* search `PATH`** — `execlp`, not `execve` — which is why the bare default `daynight` works. Same for `daynight.irprobe_cmd`. |
 | `daynight.isp_path` | string[128] | `/proc/jz/isp/isp-m0` | — | **file-only**, `F_NOGET` | ISP exposure proc file that is scraped. |
 | `daynight.irprobe_cmd` | string[64] | `timps-irprobe` | — | **file-only**, `F_NOGET` | Run as `<cmd> on\|off` (silent probe) and, for Idle-Dark, `<cmd> idle\|state` (`idle`: LED off with a 15 min failsafe that the 10 min re-assert renews; `state` prints `on`/`off`). Empty disables the **silent** probe entirely and every night→day question falls back to the audible IR-cut probe. |
@@ -1187,7 +1187,7 @@ comes from the ceiling fields of the ISP dump (`MAX SENSOR analog gain` /
 `MAX ISP digital gain`). The open-tx-isp **T41** dump has none (its
 `AeMaxAGain` is the uncapped sensor maximum, which would overstate the reserve
 once a gain cap is set), so on T41 with `USE_OPENIMP` the reserve comes from
-`IMP_ISP_Tuning_GetAeExprInfo` (**since the next release**; `AeMaxAGain` vs
+`IMP_ISP_Tuning_GetAeExprInfo` (**since v1.10.0**; `AeMaxAGain` vs
 `TotalGainDb`; open-tx-isp fills `AeMaxAGain` with the smaller of the sensor
 maximum and the configured gain cap, `t41_tuning_copy_ae_expr()`). Where
 neither is available the reserve is unknown (`hr=-1` in the probe line) and an
@@ -1195,7 +1195,7 @@ neither is available the reserve is unknown (`hr=-1` in the probe line) and an
 
 `r ≈ 1` also means "day" only when the light reaches the **day** pipeline.
 Infrared from another camera's illuminator lights the night pipeline (IR-cut
-open) and is removed by the IR-cut filter. **Since the next release** a night
+open) and is removed by the IR-cut filter. **Since v1.10.0** a night
 that a measurement proved (the day→night switch, a probe that found night, a
 silent probe with `r >= 2`, the pegged or filter-cost verdict) stays night
 while the probe's lit level is not below 90 % of the night reference (debug
@@ -1243,7 +1243,7 @@ Their effective values are still readable in the `daynight` status object of
   default is 768 (3×). Genuinely dim rooms (measured up to 9.79×) need an
   explicit per-camera override; turn on `diagnose_thresholds` to be told the
   value to use.
-* **`night_gain` can be out of reach** (handled **since the next release**).
+* **`night_gain` can be out of reach** (handled **since v1.10.0**).
   The index is gain × integration-time ratio, so with the digital gains unused
   it can never exceed the published analog cap, 256·2^(`MAX SENSOR analog
   gain`/32): 4096 for a cap of 128 (jxf22). Measured on one Wyze Pan v1
@@ -1274,14 +1274,14 @@ Their effective values are still readable in the `daynight` status object of
   T20 AE writes `isp-m0` with `MAX SENSOR analog gain : 158` (the jxf22
   maximum) while the AE stops at 128; `isp_info` on the same camera says 128
   (device-confirmed 2026-10-09: with `boot_probe = 0` and a persisted day it
-  stayed in day in the dark, `d` 3587 constant). **Since the next release**
+  stayed in day in the dark, `d` 3587 constant). **Since v1.10.0**
   timps also reads `MAX SENSOR analog gain` from `isp_info` next to a
   configured `isp-m0` (re-read every ~5 min) and uses the lower value, for
   this rule and for the AE reserve (`headroom`): on the Pan 128, so the rule
   fires (scenario 64; not yet run on the camera). On an older build set
   `night_gain` to 3000 there.
 * **A silent probe can call a cellar lit by other IR cameras "day"** (fixed
-  **since the next release**, two cameras, one night each). r < 2 only says
+  **since v1.10.0**, two cameras, one night each). r < 2 only says
   the camera's own illuminator is not doing the work. Measured on the Pan: day
   pipeline 3587 at the boot measurement, 28 s later lit 401 / dark 483,
   r=1.20, day all night; on a SecuPlug T10: r=1.36 → day, back to night a
@@ -1308,7 +1308,7 @@ Their effective values are still readable in the `daynight` status object of
 * `{"daynight":{"probe":1}}` over `/control` requests one silent probe on the
   next tick; it is **rejected** if `irprobe_cmd` is empty, so "nothing happened"
   is distinguishable from "the probe ran and found nothing".
-* `daynight.ir_idle_off = 1` (Idle-Dark, **since the next release**, off by
+* `daynight.ir_idle_off = 1` (Idle-Dark, **since v1.10.0**, off by
   default): at night with no picture consumer for `ir_idle_linger_s` the IR
   LED is **off**; the IR-cut and the ISP stay in night. What the user sees:
   the LED (850 nm glow) goes out a minute after the last viewer, a new viewer
@@ -1495,6 +1495,7 @@ rather than appending the canonical name next to it.
 | Legacy / alternate spelling | Canonical key |
 | --- | --- |
 | `sensor.i2c_address` | `sensor.i2c_addr` |
+| `sensor.i2c_adapter_id` | `sensor.i2c_adapter` |
 | `rtsp.username` | `rtsp.user` |
 | `rtsp.password` | `rtsp.pass` |
 | `rtsp.tls_enabled` | `rtsp.tls` |
@@ -1657,25 +1658,29 @@ Implications the upstream `Makefile` applies no matter what the package passes:
 
 * Config path is hardcoded: `CONF=/etc/timps.conf`, passed as
   `timpsd -c /etc/timps.conf`. PID file `/var/run/timpsd.pid`.
-* **Since the next release** `start` runs `timpsd --check-libs` first and
+* **Since v1.10.0** `start` runs `timpsd --check-libs` first and
   does not start the daemon on exit 78/79 (libimp does not fit the build;
-  logged with `logger -t timps -p daemon.err`, returns 1). Any other result
-  (80 = could not check, logged at `daemon.warn`), or a `timpsd` without the
-  option, starts as before.
+  each output line and a `timpsd not started (exit N)` line logged with
+  `logger -t timps -p daemon.err`, returns 1). Any other result (80 = could
+  not check, logged at `daemon.warn`) starts as before. A `timpsd` whose
+  binary does not contain the string `--check-libs` is not asked at all
+  (before v1.9.30 an unknown option started the daemon in the foreground).
 * Commands: **`start | stop | restart | status`**. There is **no `reload`** —
   live reconfiguration is `/control`'s job, and anything restart-required needs
   a full `S95timps restart`.
 * `stop` and `restart` wait for the old process to go (`wait_stop()`), because
   IMP/rmem teardown takes a while and starting a new instance too early makes
-  ISP init fail. The loop is **50 iterations of
-  `usleep 100000 2>/dev/null || sleep 1`** — so ~5 s where busybox `usleep`
-  exists, and **50 s where it does not**.
-* **`stop` deletes the pidfile unconditionally**, even when `wait_stop` timed
-  out and printed `timpsd still stopping...`. `restart`'s second `wait_stop`
-  then returns immediately (no pidfile = "gone"), so `start` can land on top of
-  a still-exiting instance and the singleton `flock` becomes the only guard —
-  and it refuses the *new* process, leaving the camera dark. See
-  `docs/ai/troubleshooting.md` §11.6.
+  ISP init fail. `wait_stop()` checks once whether busybox `usleep` works and
+  loops **50 × 100 ms** with it or **5 × `sleep 1`** without it — ~5 s
+  either way. (Firmware before 2026-09-19 looped 50 times over
+  `usleep 100000 2>/dev/null || sleep 1`, i.e. 50 s without `usleep`.)
+* `stop` sends `SIGKILL` when the first `wait_stop` times out (past timpsd's
+  own 3 s shutdown guillotine the process is wedged; the kill releases the
+  `/run/timps.lock` flock), then **removes the pidfile only once the process
+  is really gone**; otherwise it prints `timpsd still stopping...` and keeps
+  it, so `restart`'s second `wait_stop` still waits. (Firmware before
+  2026-09-19 deleted the pidfile unconditionally, and `restart` could land on
+  a still-exiting instance; see `docs/ai/troubleshooting.md` §11.6.)
 * `ensure_tls_certs()` runs before `start`, in this order:
   1. Proceed only if `http.https` is `1`/`2`/`true`/`yes`/`on`, **or**
      `rtsp.tls` is exactly `1`, **or** `webrtc.enabled` is `1` or `2`. (Note the
@@ -1687,7 +1692,8 @@ Implications the upstream `Makefile` applies no matter what the package passes:
   4. Otherwise, if both configured paths differ from the uhttpd pair and
      `/etc/ssl/certs/uhttpd.crt` + `/etc/ssl/private/uhttpd.key` exist,
      **symlink** the configured paths to them (so `:443` and the preview port
-     present the same certificate and one browser trust decision covers both).
+     present the same certificate and one browser trust decision covers both)
+     and log `TLS: sharing the web UI certificate (...)` via `logger -t timps`.
      A symlink, not a copy, because `S02ssl` regenerates uhttpd's cert whenever
      it is missing and a copy would go stale.
      **If either `ln -sf` fails**, *both* paths are removed again (a half-made
@@ -1782,13 +1788,15 @@ The key inventory in this file was verified mechanically, not by hand. A script
    index pattern (`video<N>`/`videoN`/`video0`, `osd<S>.<N>`/`osdS.N`/`osd0.0`,
    `privacy<S>.<N>` …, or a leaf name in that section's table).
 
-**Result: 241 canonical config keys documented, 0 missing.** v1.9.33 had 226
-(200 table keys); the next release adds 15: `general.fs_keepalive`,
-`daynight.ir_idle_off`, `daynight.ir_idle_linger_s`, the five `image.fcrop_*`
-and the seven `roi<S>.<N>.*`.
+**Result: 247 canonical config keys documented, 0 missing.** v1.9.33 had 226
+(200 table keys); v1.10.0 adds 21: `general.fs_keepalive`,
+`daynight.ir_idle_off`, `daynight.ir_idle_linger_s`, the five `image.fcrop_*`,
+the seven `roi<S>.<N>.*` and the six T40/T41 `sensor.*` wiring keys
+(`i2c_adapter`, `mclk`, `video_interface`, `default_boot`, `rst_gpio`,
+`pwdn_gpio`).
 The breakdown:
 
-* **215** from the `cfg_field` tables — `sensor` 5, `image` 30, `audio` 24,
+* **221** from the `cfg_field` tables — `sensor` 11, `image` 30, `audio` 24,
   `jpeg` 7, `rtsp` 7, `http` 11, `webrtc` 4, `events` 3, `general` 5, `sim` 4,
   `srt` 8, `osd` 5, `motion` 9, `record` 10, `timelapse` 6, `daynight` 25,
   `video<N>` 25, `osd<S>.<N>` 14, `privacy<S>.<N>` 6, `roi<S>.<N>` 7.
@@ -1797,7 +1805,7 @@ The breakdown:
 * **19** retired or now-constant `daynight.*` names that the loader still
   recognises and warns about (11 removed, 8 turned into fixed constants).
 
-Plus **27 aliases** (§21), all present, and **260 key occurrences extracted from
+Plus **28 aliases** (§21), all present, and **260 key occurrences extracted from
 `timps.conf.example`** (active and commented out), all covered — 0 missing.
 
 Counting notes:
@@ -1827,12 +1835,12 @@ into support questions.
 | **T21, T23, T31, C100** | The only SoCs with `IMP_ISP_Tuning_GetAeLuma` (`ISP_HAS_AELUMA`), day/night's secondary photosensing metric. | `src/isp_caps.h` |
 | **T20** (old SDK) | The ISP dump is `/proc/jz/isp/isp_info`, not `isp-m0` — `isp-m0` does not exist in that SDK and never will. `daynight.c` carries an explicit fallback list, so `daynight.isp_path` does not have to be changed, and the `is not readable, using … instead` line there is expected (INFO since v1.9.26, a WARN before that). | `src/daynight.c` |
 | **T10** | `jpeg.quality` / `videoN.jpeg_quality` are **never applied** — custom quantization tables are known to degrade JPEG quality on T10, so the SDK default is kept and one WARN is logged. | `src/hal/hal_ingenic.c` |
-| **T10, T20, T21, T30** | No `ISP_HAS_SENSOR_ATTR` (`GetSensorAttr`), so the framesource input geometry comes from `sensor.width`/`sensor.height` or, when those were auto, from `/proc/jz/sensor` read after `IMP_ISP_EnableSensor` (since the next release). A sensor driver that reports `0x0` even then cannot be compensated for (WARN at start). | `src/isp_caps.h` |
+| **T10, T20, T21, T30** | No `ISP_HAS_SENSOR_ATTR` (`GetSensorAttr`), so the framesource input geometry comes from `sensor.width`/`sensor.height` or, when those were auto, from `/proc/jz/sensor` read after `IMP_ISP_EnableSensor` (since v1.10.0). A sensor driver that reports `0x0` even then cannot be compensated for (WARN at start). | `src/isp_caps.h` |
 | **T31 only** | `encoder.<n>.ave_bitrate` appears in `GET /control?stats=1` (`IMP_Encoder_GetChnAveBitrate`). Elsewhere the key is simply absent, not zero. | `src/hal/hal.h`, `src/control.c` |
 | **T41** | No `IMP_Encoder_SetChnAttrRcMode` at all (`ENC_HAS_SETRCMODE` undefined) — only `bitrate` and the QP bounds can be touched live. T40 **does** attempt the live call. | `src/hal/hal_ingenic.c` |
 | **T40, T41** | Flips go through `IMP_ISP_Tuning_SetHVFLIP` instead of `SetISPHflip`/`SetISPVflip`, and `g_sensor.rst_gpio`/`pwdn_gpio`/`power_gpio` are forced to `-1` (the fields are plain `int` in that SDK). | `src/hal/hal_ingenic.c` |
 | **T31/C100 vs T40/T41** | `ENC_HAS_QPIPDELTA` (hence a working `videoN.i_bias_lvl`) is T31/C100 only. | `src/hal/hal_ingenic.c` |
 | **T31** | The `isp_ch0_pre_dequeue_time` one-buffer gate on framechan0 — see `videoN.buffers` in §5. | `src/hal/hal_ingenic.c` |
-| **all** | **Since the next release** encoder ROI and ISP FrontCrop are tiered per SoC and libimp flavour (`caps.roi.tier`, `caps.fcrop.tier`): only OpenIMP T10/T20/T21 ROI and FrontCrop and OpenIMP T31 ROI (`SetChnRoiAttr`) are device-tested (by the OpenIMP maintainer). T23 has no ROI. T23/T31 OpenIMP FrontCrop is `effective` and live when the driver has `fcrop_upscale_pct` (open-tx-isp b15ef235), otherwise experimental (T23 start-only, needs 3cf9bdac+). Table in §10a. | `src/roi_caps.h` |
-| **T23, T41 with `USE_OPENIMP`** | **Since the next release** `general.fs_keepalive = -1` (the default) resolves to **on**: the FrameSources run from start to stop, so `framesource N disabled (idle)` never appears and day/night kicks are no-ops. Everywhere else it resolves to off. | `src/hal/fs_ref.h` (`FS_KEEPALIVE_AUTO`) |
-| **T23, T41 with `USE_OPENIMP`** | **Since the next release** the only SoCs where `daynight.ir_idle_off` can become available without touching `general.fs_keepalive` (it needs the keepalive). Elsewhere it reports `reason = "keepalive"` unless the keepalive is forced on (untested there). | `src/dn_idle.h`, `src/daynight.c` |
+| **all** | **Since v1.10.0** encoder ROI and ISP FrontCrop are tiered per SoC and libimp flavour (`caps.roi.tier`, `caps.fcrop.tier`): only OpenIMP T10/T20/T21 ROI and FrontCrop and OpenIMP T31 ROI (`SetChnRoiAttr`) are device-tested (by the OpenIMP maintainer). T23 has no ROI. T23/T31 OpenIMP FrontCrop is `effective` and live when the driver has `fcrop_upscale_pct` (open-tx-isp b15ef235), otherwise experimental (T23 start-only, needs 3cf9bdac+). Table in §10a. | `src/roi_caps.h` |
+| **T23, T41 with `USE_OPENIMP`** | **Since v1.10.0** `general.fs_keepalive = -1` (the default) resolves to **on**: the FrameSources run from start to stop, so `framesource N disabled (idle)` never appears and day/night kicks are no-ops. Everywhere else it resolves to off. | `src/hal/fs_ref.h` (`FS_KEEPALIVE_AUTO`) |
+| **T23, T41 with `USE_OPENIMP`** | **Since v1.10.0** the only SoCs where `daynight.ir_idle_off` can become available without touching `general.fs_keepalive` (it needs the keepalive). Elsewhere it reports `reason = "keepalive"` unless the keepalive is forced on (untested there). | `src/dn_idle.h`, `src/daynight.c` |

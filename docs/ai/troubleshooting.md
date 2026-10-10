@@ -92,7 +92,7 @@ only log. `src/main.c` parses `-c <config>`, `-v` (raise the level to DEBUG
 refuses at the lock; **up to v1.9.28 it was undone a moment later** by the
 config file's `general.loglevel`, so it only covered the config parse — use
 `general.debug_modules` there), `-h` (print `timps <version>` plus a one-line
-usage and exit 0), and **since the next release** `-V`/`--version` (print
+usage and exit 0), and **since v1.10.0** `-V`/`--version` (print
 `timps <version>`, exit 0) and `--check-libs` (§1.11). **Since v1.9.30** any
 other argument exits **2** with `timps: invalid argument '<arg>'` and the usage
 line; up to v1.9.29 it was silently ignored and the daemon started. The default
@@ -101,7 +101,7 @@ config path is `/etc/timps.conf`.
 | Log line (`src/main.c`) | Cause | Fix |
 | --- | --- | --- |
 | `another timpsd instance already holds <path> - refusing to start` | Single-instance lock held. A second instance re-initialising the ISP would corrupt the first one's pipeline, so it refuses. Exit code **1**. | Find and stop the other `timpsd`. Usually a hand-started one plus the init script. |
-| `[LIBIMP] libimp mismatch: …` / `[LIBIMP] libimp lacks …`, or `timpsd not started (exit 78)` under tag `timps` | **Since the next release.** `timpsd` and `libimp.so` belong to different stacks; exit **78**/**79** before config, lock or ISP. | §1.11 |
+| `[LIBIMP] libimp mismatch: …` / `[LIBIMP] libimp lacks …`, or `timpsd not started (exit 78)` under tag `timps` | **Since v1.10.0.** `timpsd` and `libimp.so` belong to different stacks; exit **78**/**79** before config, lock or ISP. | §1.11 |
 | `no HAL backend available` | Binary built without a usable HAL (neither the Ingenic backend nor the sim). | Build problem, not config — rebuild the package. |
 | `HAL init failed - retrying in <N>s` | The **init** stage failed: `IMP_ISP_Open`, `IMP_ISP_AddSensor`, `IMP_ISP_EnableSensor` or `IMP_System_Init`, all inside `isp_init()`. **Retries forever** with exponential backoff 5 → 60 s, and these failures **do not count** toward the start-failure budget. | See §1.2. |
 | `HAL start failed (<n>/10) - unwinding and retrying in <N>s` | The **start** stage failed: framesource/encoder/OSD/bind bring-up in `ing_start()`. This is the only path bounded at `MS_STARTUP_MAX_START_FAILS` = **10**, after which the one-shot reboot fires. | See §1.2. |
@@ -256,7 +256,7 @@ Consequences worth stating to a user:
 - `videoN.width/height` clamp to 64..4096, `sensor.width/height` to 0..8192.
 - `image.*` knobs clamp to the `imp_isp.h` domains (mostly 0..255;
   `highlight_depress`/`backlight_compensation` 0..10; WB gains per SoC,
-  **since the next release**: 0..255 on T10/T20/T30, 0..4095 on
+  **since v1.10.0**: 0..255 on T10/T20/T30, 0..4095 on
   T21/T23/T31, 0..65535 elsewhere — up to v1.9.33 0..65535 everywhere).
 - `general.fs_keepalive` takes `-1`/`0`/`1` (clamped) or `auto`/`on`/`off`
   (and `true`/`false`/`yes`/`no`); any other word logs a warning and stays
@@ -368,7 +368,7 @@ All of this is `src/main.c`.
 
 **Exit 2** (since v1.9.30): an unknown command-line argument.
 
-**Exit 78 / 79** (**since the next release**): the libimp does not fit the
+**Exit 78 / 79** (**since v1.10.0**): the libimp does not fit the
 build — 78 flavour mismatch (OpenIMP vs vendor), 79 a required IMP function
 missing. Decided before the config is read, the lock is taken or any IMP call
 is made, so nothing is left behind (no lock, no ISP state); only the
@@ -445,7 +445,7 @@ inside `libimp` still do not).
 | Sensor not found / ISP init fails | Retries forever, no reboot escalation (§1.1). |
 | Audio bring-up fails | `audio input unavailable`, video continues. §6.1 |
 | A second instance | `another timpsd instance already holds …` + exit 1. |
-| `libimp.so` cannot be opened by name, or none of the required IMP functions resolves | `[LIBIMP]` warning `… - libimp check skipped`; the daemon starts as before (**since the next release**, §1.11). |
+| `libimp.so` cannot be opened by name, or none of the required IMP functions resolves | `[LIBIMP]` warning `… - libimp check skipped`; the daemon starts as before (**since v1.10.0**, §1.11). |
 
 ### 1.10 `sensor.fps` — what auto gives you, and what the driver holds
 
@@ -501,7 +501,7 @@ Pitfalls:
 
 ### 1.11 libimp does not fit the build (exit 78 / 79)
 
-**Since the next release.** Every `timpsd` is built for one libimp stack:
+**Since v1.10.0.** Every `timpsd` is built for one libimp stack:
 `USE_OPENIMP=1` = OpenIMP, the open stack (thingino `BR2_PACKAGE_OPENIMP`,
 branch `aperto`); `USE_OPENIMP=0` = the original Ingenic vendor libimp (every
 other branch; links `-limp -lalog -lsysutils`). A mixed install used to crash
@@ -564,7 +564,7 @@ visible, and the daemon is then started as before (and fails the same way).
 The check is also skipped, with a warning, when `libimp.so` cannot be opened
 by name or none of the 24 names resolves (`… - libimp check skipped`), so a
 broken lookup never stops a camera: the daemon starts, and `--check-libs`
-(**since the next release**) exits **80** instead of 0 so the preflight's
+(**since v1.10.0**) exits **80** instead of 0 so the preflight's
 `daemon.warn` line carries that warning.
 
 ---
@@ -581,9 +581,9 @@ timps starts the framesource/encoder **when a client attaches** and stops it
   **normal**, not a fault. `framesource 0 enabled` followed 2–3 s later by
   `framesource 0 disabled (idle)` with no client is the ISP latch kick after a
   `running_mode` or flip change (day/night switch, re-assert, probe); **since
-  the next release** the disable comes after the 2 s debounce, before it came
+  v1.10.0** the disable comes after the 2 s debounce, before it came
   500 ms after the enable.
-- **Open-stack T23/T41 (since the next release):** `general.fs_keepalive`
+- **Open-stack T23/T41 (since v1.10.0):** `general.fs_keepalive`
   defaults to on there, so each stream logs `framesource N enabled` once at
   start and `framesource N disabled (idle)` **never** while the daemon runs;
   `video chnN idle` (the encoder) still appears. A `disabled (idle)` line on
@@ -792,7 +792,7 @@ Capability matrix (`src/rotate_caps.h`):
 | T40, T41 | `ROT_HAS_HW_I2D` — true hardware I2D rotate | **Yes**, genuine per-channel |
 | T31 | `ROT_HAS_FS_ROTATE` — libimp FrameSource rotate | No |
 | T23 | `ROT_HAS_SW_90`, **only** with `USE_SW_ROTATE` / `-DMS_ENABLE_SW_ROTATE` | No |
-| T10, T20, T21 | OpenIMP builds only (`ROT_HAS_FS_ROTATE`, **since the next release**): sub streams, 16-aligned, at most 704x576, and only with an OpenIMP that has T1x rotation (`6b7f5ae`); otherwise the stream starts unrotated. Vendor libimp: **No** — coerced to 0 | No |
+| T10, T20, T21 | OpenIMP builds only (`ROT_HAS_FS_ROTATE`, **since v1.10.0**): sub streams, 16-aligned, at most 704x576, and only with an OpenIMP that has T1x rotation (`6b7f5ae`); otherwise the stream starts unrotated. Vendor libimp: **No** — coerced to 0 | No |
 | T30, C100 | **No** — coerced to 0 | No |
 
 On every SoC except T40/T41, `rotation = 180` logs
@@ -822,8 +822,8 @@ and says so:
   this stream, bringing it up UNROTATED`
 - `FS_SetI2dAttr N failed (rotation may stay inactive)`
 
-**T10/T20/T21 FrameSource rotate rejections** (OpenIMP builds, **since the
-next release**) — the stream comes up **unrotated** and says so:
+**T10/T20/T21 FrameSource rotate rejections** (OpenIMP builds, **since
+v1.10.0**) — the stream comes up **unrotated** and says so:
 
 - `videoN: refusing FS-rotate on the main stream (this SoC rotates sub streams
   only, e.g. video1 at 640x368) - stream will run UNROTATED` — `video0` is
@@ -951,7 +951,7 @@ the OSD items on the substream. Lowering the render quality doesn't help.
 
 ### 2.8 ROI regions or crop/zoom have no effect
 
-**Since the next release.** Check `GET /control` first:
+**Since v1.10.0.** Check `GET /control` first:
 
 | What you see | Meaning |
 | --- | --- |
@@ -983,7 +983,7 @@ wrong unit and the bands appear. 50 Hz: Europe, most of Asia and Africa,
 Australia. 60 Hz: most of the Americas, South Korea, Taiwan, the
 Philippines, Saudi Arabia, western Japan.
 
-**Default:** `1` (50 Hz) **since the next release**; up to v1.9.33 it was `2`
+**Default:** `1` (50 Hz) **since v1.10.0**; up to v1.9.33 it was `2`
 (60 Hz), and thingino's shipped `/etc/timps.conf` carried an explicit `2`. So:
 
 * A 50 Hz camera that was set up before the change most likely still has
@@ -1075,8 +1075,8 @@ detection idle` — **detection does nothing at all**.
 | --- | --- | --- |
 | `no probe has ever confirmed day (<N> in a row found night): the best day-pipeline exposure seen was <X> but daynight.day_gain is <Y>. Either this scene never gets bright, or the threshold is too strict - raise daynight.day_gain above <X>` | **The single most useful line in the whole day/night system.** It hands you the number to use. | Set `daynight.day_gain` just above the reported best exposure, keeping `night_gain` well above that. |
 | `daynight.day_gain (<a>) is above night_gain (<b>) - the thresholds are swapped; using day<<b> night><a>` | The two thresholds are the wrong way round. timps swaps them and carries on. | `day_gain` must be the **lower** number. |
-| `daynight.night_gain <n> is above the exposure index this camera can reach (~<p>: analog gain cap <c> x IT <i> %, ISP digital gain unused); using a relative night threshold (<b>, 95 % of that plateau at the cap for day_confirm_s)` (**since the next release**) | The AE stops at its analog cap with the digital gain unused, so the index can never exceed `night_gain`; the switch to night came from the plateau rule instead. See "Camera stays in Day all night" below. | Nothing required. To use the plain threshold, set `daynight.night_gain` below `<p>`. |
-| `the ISP dump reports no gain ceilings (MAX SENSOR analog gain / MAX ISP digital gain, or GetAeExprInfo on T41), so the AE reserve is unknown here: a railed meter cannot be told from a dark scene …` | This sensor/ISP build does not expose gain ceilings (on T41 with OpenIMP, **since the next release**, `GetAeExprInfo` failed or reported no gain ceiling). Several safety mechanisms are disabled: railed-boot re-tune, night-reference clipping protection, and ratio probes fall back to the audible IR-cut probe. | Nothing to configure. Expect a *clicking* IR-cut probe instead of a silent one, and accept coarser behaviour. |
+| `daynight.night_gain <n> is above the exposure index this camera can reach (~<p>: analog gain cap <c> x IT <i> %, ISP digital gain unused); using a relative night threshold (<b>, 95 % of that plateau at the cap for day_confirm_s)` (**since v1.10.0**) | The AE stops at its analog cap with the digital gain unused, so the index can never exceed `night_gain`; the switch to night came from the plateau rule instead. See "Camera stays in Day all night" below. | Nothing required. To use the plain threshold, set `daynight.night_gain` below `<p>`. |
+| `the ISP dump reports no gain ceilings (MAX SENSOR analog gain / MAX ISP digital gain, or GetAeExprInfo on T41), so the AE reserve is unknown here: a railed meter cannot be told from a dark scene …` | This sensor/ISP build does not expose gain ceilings (on T41 with OpenIMP, **since v1.10.0**, `GetAeExprInfo` failed or reported no gain ceiling). Several safety mechanisms are disabled: railed-boot re-tune, night-reference clipping protection, and ratio probes fall back to the audible IR-cut probe. | Nothing to configure. Expect a *clicking* IR-cut probe instead of a silent one, and accept coarser behaviour. |
 | `the night reference sits at the sensor's gain floor and no integration-time reading is available, so a brightening scene cannot be detected here - the heartbeat carries this camera alone. If this sensor does report SENSOR Integration Time, check daynight.isp_path` | Night→day can only be found by the periodic heartbeat, not by the trend. | Check `daynight.isp_path`; otherwise tune `daynight.heartbeat_s` / `heartbeat_max_s` down for faster (but more disruptive) recovery. |
 | `boot: came up in night (exposure %.0f) - measuring silently first (illuminator off for %ds, no cut-filter click)` | **I** | Boot at night: one silent probe before the audible day probe. Normal. |
 | `boot: night confirmed by the silent probe (r=%.2f, night reference %.0f) - nothing switched` | **I** | The boot measurement ended in night without moving the cut filter. |
@@ -1108,7 +1108,7 @@ The index is gain × integration-time ratio, so an AE that stops at its
 analog cap and never uses the ISP digital gain can never exceed 256·2^(cap/32)
 (4096 for 128). `s > night_gain` is then unreachable, and the 32 unused
 digital units count as AE reserve, so the railed path does not fire either.
-**since the next release** timps detects this (cap `<= night_gain`) and logs
+**since v1.10.0** timps detects this (cap `<= night_gain`) and logs
 once `daynight.night_gain 4096 is above the exposure index this camera can
 reach (~3587: analog gain cap 128 x IT 87.6 %, ISP digital gain unused); using
 a relative night threshold (…)`; the switch reads `switching to night
@@ -1134,7 +1134,7 @@ the fix nothing ends it. With `boot_probe` on, the boot measurement switches
 to night and hides the problem until a day stretch in the dark (e.g. lamp
 off after a lit evening).
 
-**Since the next release** timps reads `isp_info` next to a configured
+**Since v1.10.0** timps reads `isp_info` next to a configured
 `isp-m0` as well (every ~5 min; the cap is static) and uses the lower of the
 two `MAX SENSOR analog gain` values for the plateau rule and the AE reserve.
 Once per process: `/proc/jz/isp/isp-m0 publishes MAX SENSOR analog gain 158,
@@ -1160,8 +1160,8 @@ light is theirs, the IR-cut filter removes it, and the day pipeline is dark.
 Here the boot came up in day, so the reference 3489 was a day-pipeline level
 and path C fired 20 s into the night. Same family, other symptom: a switch
 pair per heartbeat (`switching to day (IR ratio 1.36)`, a minute later
-`switching to night (exposure 4179 > 4096)`, SecuPlug T10). **Since the next
-release** a night proven by a measurement stays night when the lit level is
+`switching to night (exposure 4179 > 4096)`, SecuPlug T10). **Since
+v1.10.0** a night proven by a measurement stays night when the lit level is
 not below 90 % of the night reference: `silent probe (heartbeat): r=1.36 but
 the lit level … is no brighter than the proven night reference … - light
 the day pipeline does not see, staying night`, `probe: … verdict=night`; and
@@ -1331,7 +1331,7 @@ platform-gated: `hue`, `ae_compensation`, `max_again`/`max_dgain`,
 
 ### 3.9 IR LED off at night until someone connects (Idle-Dark)
 
-**Since the next release**, only with `daynight.ir_idle_off = 1` (off by
+**Since v1.10.0**, only with `daynight.ir_idle_off = 1` (off by
 default). Not a fault: once nothing has needed a picture for
 `daynight.ir_idle_linger_s` (60 s), timps switches only the IR LED off and
 keeps the camera in night. `GET /control` shows `daynight.ir_idle.dark = 1`.
@@ -1494,7 +1494,7 @@ practically only reachable with an enormous SDP; report it as a bug.
 | --- | --- |
 | `503 Service Unavailable` / `busy`, with `Access-Control-Allow-Origin: *` | `HTTP_MAX_CLIENTS` = **16** concurrent connections. Log (at most once a minute): `connection limit (16) reached, rejecting client <ip> (<n> more suppressed)`; with `, oldest unauthenticated connection dropped` a connection stuck before the auth gate for over 1 s was closed to make room, and a retry gets in. Also, once 8 slots are taken, a peer already holding `HTTP_PREAUTH_PER_PEER` = **4** connections older than 1 s that have not passed the auth gate: `too many unauthenticated connections from one peer, rejecting client <ip>`. Loopback is exempt. **`preview.html` alone holds 3+ slots per open tab** (the media stream plus two SSE subscriptions), so ~5 tabs is the real ceiling. |
 | Connection closed with no bytes at all | Same cap, but on a TLS port where the peer already sent a ClientHello (a plaintext 503 into a TLS handshake looks like a TLS fault); or the 5 s header deadline expired (3 s for the first byte on a TLS-capable port); or (v1.9.27 only) the request line was malformed. |
-| `400 Bad Request` / `bad request` | **since v1.9.28**: the request line could not be parsed (since the next release also: leading whitespace, or a method longer than 7 characters). |
+| `400 Bad Request` / `bad request` | **since v1.9.28**: the request line could not be parsed (since v1.10.0 also: leading whitespace, or a method longer than 7 characters). |
 | `414 URI Too Long` | **since v1.9.28**: the request target is longer than 255 characters (v1.9.27 cut it silently, so e.g. a Digest `uri=` for a long URL never matched). |
 | `403 Forbidden` / `bad origin` on a `POST` | **since v1.9.28**: a Basic/Digest-authenticated POST from a page on another host (CSRF guard). Log: `refused cross-origin POST <path>`. See §8.1. |
 | `404 Not Found` / `no jpeg` on `/snapshot.jpg`, `/stream.mjpeg`, `/mjpeg` | No JPEG source. An explicit `?chn=N` is **strict** — if that stream's `videoN.jpeg` is off you get 404, with no fallback to the other stream. |
@@ -2103,7 +2103,7 @@ Verified in `src/auth.c`, `src/auth.h` and the gate in `src/mp4/httpd.c`:
   credentials on cross-site form posts). Token and loopback requests, and
   clients that send no `Origin` (curl, scripts, NVRs), are unaffected; ports
   are not compared.
-- **No lockout, no 429.** Since the next release every failed Basic/Digest
+- **No lockout, no 429.** Since v1.10.0 every failed Basic/Digest
   attempt (HTTP and RTSP) waits **500 ms** before its `401`, on its own
   connection thread. `auth_fail_note()` otherwise only logs: from the 3rd
   failure, at most one line per minute, forgotten after 10 minutes of quiet. The line reads `<N> failed login
@@ -2647,24 +2647,21 @@ mbedTLS.
   in, runtime-enabled, and dead with
   `webrtc.enabled=1 but no usable DTLS certificate`. **(Read from the
   sources; not confirmed end-to-end on a built image.)**
-- **`wait_stop()` is not always "about 5 seconds".** It loops 50 times over
-  `usleep 100000 2>/dev/null || sleep 1`. Where busybox `usleep` exists that is
-  ~5 s; where it does not, the fallback is `sleep 1` × 50 = **50 s**, and a
-  `S95timps stop` that appears to hang for the better part of a minute is this,
-  not a wedged daemon.
-- **`restart` has a verified defect:** `stop` deletes the pidfile
-  unconditionally, even when its wait loop timed out and printed
-  `timpsd still stopping...`. The `restart` target's
-  second `wait_stop` then returns immediately because the pidfile is already
-  gone — so a slow IMP/rmem teardown is followed straight away by a `start`
-  on top of a still-exiting instance, which is exactly the ISP-init failure
-  the wait was written to prevent. The singleton `flock` is then the only
-  guard, and it refuses the **new** process
-  (`another timpsd instance already holds …`, exit 1), leaving the camera dark
-  with an orphaned, still-exiting `timpsd` and **no pidfile**. If a restart
-  leaves the camera dark, stop, wait, and start as two separate commands, or
-  reboot.
-- **Since the next release** `start` first runs `timpsd --check-libs` and
+- **`wait_stop()` waits ~5 s.** It checks once whether busybox `usleep`
+  works and loops 50 × 100 ms with it, 5 × `sleep 1` without it. Firmware
+  before 2026-09-19 looped 50 times over `usleep 100000 2>/dev/null || sleep 1`,
+  i.e. **50 s** without `usleep`: a `S95timps stop` that hangs for the better
+  part of a minute on such an image is this, not a wedged daemon.
+- **`stop` keeps the pidfile until timpsd is gone.** When the first
+  `wait_stop` times out it sends `SIGKILL` (releasing the `/run/timps.lock`
+  flock) and removes the pidfile only after the process exited; otherwise it
+  prints `timpsd still stopping...` and `restart` keeps waiting. Firmware
+  before 2026-09-19 deleted the pidfile unconditionally, so `restart` could
+  start on top of a still-exiting instance; the singleton `flock` then refused
+  the **new** process (`another timpsd instance already holds …`, exit 1),
+  leaving the camera dark. On such an image, stop, wait, and start as two
+  separate commands, or reboot.
+- **Since v1.10.0** `start` first runs `timpsd --check-libs` and
   does not start a daemon whose libimp does not fit (exit 78/79, logged under
   tag `timps` at `daemon.err`) — §1.11.
 - `/etc/timps.conf` is installed at **build time**; there is no
@@ -2779,7 +2776,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `audio.codec2 '%s' unsupported (pcmu or off) -> off` | W | `audio.codec2` takes `pcmu` or `off` only — deliberately not defaulting to AAC. | `audio.codec2 = pcmu`. |
 | `%s%s = '%s' is not a valid value and was read as %d - that is PLAINTEXT, no TLS. Valid: %s` | W | A typo in `http.https` or `rtsp.tls`. **TLS is off.** | Fix the value (0/1/2). §1.5, §8.4 |
 | `daynight.mode: unknown '%s', keeping auto` | W | Valid: `auto`, `schedule` (plus the legacy `sensor`/`time`/`sun`). | |
-| `%s%s = '%s' is not a valid value, using -1 (auto). Valid: auto, on, off, -1, 0, 1` | W | **since the next release.** `general.fs_keepalive` with a word it does not know; auto applies. | Fix the line. |
+| `%s%s = '%s' is not a valid value, using -1 (auto). Valid: auto, on, off, -1, 0, 1` | W | **since v1.10.0.** `general.fs_keepalive` with a word it does not know; auto applies. | Fix the line. |
 | `unknown osd item key %s` / `unknown privacy key %s` / `unknown video key %s` / `unknown key %s` | W | The key does not exist in this build. **It is dropped.** **since v1.9.28** `unknown key osd.vars_file` is expected on an old config: the key was removed and the path is fixed at `/tmp/timps_osd.vars`. | Check `GET /control?fields=1`; delete an `osd.vars_file` line. |
 | `videoN.max_gop is reserved and IGNORED - the keyframe interval comes from videoN.gop` | W | Compat-only key. | Use `videoN.gop`. §1.6 |
 | `osd.hinting is stored but has no effect in this build (compiled without OSD text autohinting)` | W | Built without `USE_OSD_HINTING`. | §1.6 |
@@ -2800,7 +2797,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `fsync %s failed: %s` / `rename %s -> %s failed` / `fsync dir %s failed: %s` | W | Durability steps of the atomic rewrite failed. A power cut can lose the change. | Check the filesystem. |
 | `config: video%d.imp_chn=%d must equal the stream index (its hub slot) - using %d` | E | **since v1.9.28**. `videoN.imp_chn` doubles as the hub slot; any other value fed another stream's (or the audio) slot. | Remove the key or set it to `N`. |
 | `config: jpeg.imp_chn=%d collides with a video stream's channel - using %d (-1: none free, jpeg disabled)` / `config: video%d.jpeg_chn=%d collides with another encoder channel - using %d (...)` | E | **since v1.9.28**. Two encoders on one channel would fail `start()` into the retry/reboot path; the value was moved. | Fix the channel numbers in the file. |
-| `video%d: %dx%d -> %dx%d (sensor size; set video%d.width/height to override)` | I | **since the next release.** `videoN.width/height` unset and the sensor is smaller than the default: the stream takes the sensor size instead of upscaling. | Set `videoN.width/height` to keep the old size. |
+| `video%d: %dx%d -> %dx%d (sensor size; set video%d.width/height to override)` | I | **since v1.10.0.** `videoN.width/height` unset and the sensor is smaller than the default: the stream takes the sensor size instead of upscaling. | Set `videoN.width/height` to keep the old size. |
 
 ### 12.3 `CTRL` (`src/control.c`)
 
@@ -2832,8 +2829,8 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `framesource %d: EnableChn failed (attempt %d)` | E | **since v1.9.28**. Until v1.9.27 `framesource %d: EnableChn failed%s` (`%s` = ` (retry)`), logged on every attempt. The framesource channel would not enable. Logged on the 1st and every 20th attempt. | See the line above; also §2.2. |
 | `framesource %d: %d reference(s) still held at teardown` | W | Subscriber accounting leak at shutdown. | Report as a bug. |
 | `framesource %d enabled` / `framesource %d disabled (idle)` | I | A real `EnableChn`/`DisableChn` edge. On-demand: per wake (client, snapshot, timelapse shot, latch kick). With `general.fs_keepalive` on: `enabled` once per start, `disabled (idle)` never. | Nothing; see §2.1. |
-| `framesource keepalive %s (general.fs_keepalive=%d%s)` | I | **since the next release.** Once per start: `on`/`off`, the raw value, `, auto` when it was `-1`. | `off` on an open-stack T23/T41 → §2.1. |
-| `framesource %d: no keepalive (software-rotate stream)` | I | **since the next release.** T23 `USE_SW_ROTATE` 90/270 stream: exempt from the keepalive, stays on-demand. | Nothing. |
+| `framesource keepalive %s (general.fs_keepalive=%d%s)` | I | **since v1.10.0.** Once per start: `on`/`off`, the raw value, `, auto` when it was `-1`. | `off` on an open-stack T23/T41 → §2.1. |
+| `framesource %d: no keepalive (software-rotate stream)` | I | **since v1.10.0.** T23 `USE_SW_ROTATE` 90/270 stream: exempt from the keepalive, stays on-demand. | Nothing. |
 | `FS_CreateChn %d` / `FS_SetChnAttr %d failed` | E | Framesource geometry rejected. | Check `videoN.width`/`height` against the sensor. |
 | `FS_SetI2dAttr %d failed (rotation may stay inactive)` | W | T40/T41 belt-and-braces rotation call. | §2.6 |
 | `Encoder_CreateGroup %d failed` / `Encoder_CreateChn %d` / `Encoder_RegisterChn %d to group %d failed` | E | Encoder bring-up failed. | Check resolution, codec and `rc_mode` against the SoC. |
@@ -2863,7 +2860,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `chn%d: %d consecutive forced-recovery cycles never produced a frame - encoder/ISP is not coming back on its own; exiting` | E | **The process exits and nothing restarts it.** | §2.2 |
 | `chn%d: StartRecvPic kept failing for %d attempts - encoder/ISP is not coming back on its own; exiting` | E | **since v1.9.28**. Same give-up, reached when the encoder never even starts (~25 s of failed starts with a client attached). **The process exits and nothing restarts it.** | §2.2 |
 | `jpeg chn%d: PollingStream idle (miss#%d) - encoder emits no frames` | W | Same on the JPEG channel. | |
-| `jpeg chn%d: encoder dead after %d consecutive misses - %s to recover (recovery attempt %d/%d)` | E | JPEG recovery, max 5 (`MS_JPEG_WATCHDOG_MAX_RECOVERIES`). `%s` is `forcing a framesource disable/enable cycle`, or **since the next release** with a kept FrameSource (`general.fs_keepalive` on) `restarting the encoder (framesource kept alive)`. | |
+| `jpeg chn%d: encoder dead after %d consecutive misses - %s to recover (recovery attempt %d/%d)` | E | JPEG recovery, max 5 (`MS_JPEG_WATCHDOG_MAX_RECOVERIES`). `%s` is `forcing a framesource disable/enable cycle`, or **since v1.10.0** with a kept FrameSource (`general.fs_keepalive` on) `restarting the encoder (framesource kept alive)`. | |
 | `jpeg chn%d: no frame %d ms after start - recycling the %s (%d/%d)` | W | The JPEG cold-start recovery (`MS_JPEG_COLD_STALL_US`): `framesource`, or `encoder (framesource kept alive)` with the keepalive on. | §2.2 |
 | `jpeg chn%d: %d consecutive forced-recovery cycles never produced a frame - giving up on this channel (MJPEG/snapshot output disabled until restart)` | E | **JPEG only** is disabled; video survives. | Restart to get snapshots back. |
 | `chn%d: GetStream failed after PollingStream OK (#%d)` / `jpeg chn%d: GetStream failed after PollingStream OK (#%d)` | W | Transient SDK hiccup; 1st and every 20th of a streak. | Ignore unless constant. |
@@ -2894,11 +2891,11 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | --- | --- | --- | --- |
 | `video%d: refusing FS-rotate %dx%d not %d-aligned - stream will run UNROTATED` | W | T31 needs 64-aligned geometry, T10/T20/T21 16-aligned. | §2.6 |
 | `video%d: refusing FS-rotate %dx%d@%d exceeds FS-rotate cap (%s) - stream will run UNROTATED` | W | Past the cap: T31 1280x704 at 15 fps, T10/T20/T21 704x576. | §2.6 |
-| `video%d: refusing FS-rotate on the main stream (this SoC rotates sub streams only, e.g. video1 at 640x368) - stream will run UNROTATED` | W | **since the next release.** T10/T20/T21: `video0` is never rotated. | §2.6 |
+| `video%d: refusing FS-rotate on the main stream (this SoC rotates sub streams only, e.g. video1 at 640x368) - stream will run UNROTATED` | W | **since v1.10.0.** T10/T20/T21: `video0` is never rotated. | §2.6 |
 | `video%d: FS-rotate enable (SetChnRotate) failed - disabling rotation for this stream, bringing it up UNROTATED` | W | T31: the SDK call failed. | §2.6 |
-| `video%d: libimp's SetChnRotate accepted a 0x0 picture, so it cannot rotate (OpenIMP stub, e.g. 9cab219) - stream will run UNROTATED; upgrade OpenIMP to one with T1x rotation (6b7f5ae or later)` | W | **since the next release.** T10/T20/T21: the OpenIMP stubs `SetChnRotate`. | Upgrade OpenIMP or set rotation 0. §2.6 |
-| `video%d: SetChnRotate refused %dx%d - stream will run UNROTATED (an OpenIMP without T1x rotation refuses every 90/270; it needs 6b7f5ae or later)` | W | **since the next release.** T10/T20/T21: this OpenIMP cannot rotate. | §2.6 |
-| `video%d: libimp has no IMP_FrameSource_SetChnRotate - stream will run UNROTATED (90/270 needs OpenIMP with T1x rotation, 6b7f5ae or later)` | W | **since the next release.** T10/T20/T21: no rotate entry point in libimp. | §2.6 |
+| `video%d: libimp's SetChnRotate accepted a 0x0 picture, so it cannot rotate (OpenIMP stub, e.g. 9cab219) - stream will run UNROTATED; upgrade OpenIMP to one with T1x rotation (6b7f5ae or later)` | W | **since v1.10.0.** T10/T20/T21: the OpenIMP stubs `SetChnRotate`. | Upgrade OpenIMP or set rotation 0. §2.6 |
+| `video%d: SetChnRotate refused %dx%d - stream will run UNROTATED (an OpenIMP without T1x rotation refuses every 90/270; it needs 6b7f5ae or later)` | W | **since v1.10.0.** T10/T20/T21: this OpenIMP cannot rotate. | §2.6 |
+| `video%d: libimp has no IMP_FrameSource_SetChnRotate - stream will run UNROTATED (90/270 needs OpenIMP with T1x rotation, 6b7f5ae or later)` | W | **since v1.10.0.** T10/T20/T21: no rotate entry point in libimp. | §2.6 |
 | `video%d: SW rotate at %dx%d@%dfps is CPU-HEAVY on this SoC - strongly consider a substream-class setting (<=704x576, <=15fps)` | W | T23 software rotate; it still runs. Costs ~6 MB and roughly one CPU core. | Use a substream-class size. |
 | `video%d: refusing SW rotate at %dx%d@%dfps (exceeds safe envelope <=704x576 <=15fps) - stream will run UNROTATED` | W | Past the envelope. | §2.6 |
 | `video%d: SW rotate post-rotation width %d unusable for the encoder (needs picWidth%%16==0 and >=256; a 90/270 rotate makes encoder width = source height %d) - refusing rotation, stream will run UNROTATED (use a source HEIGHT that is a multiple of 16 and >=256, e.g. 704x576 -> 576x704)` | W | **The source height becomes the encoder width.** | Use 1280×704, not 1280×720. §2.6 |
@@ -2928,7 +2925,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `image.ae_it_max_us=%d: %d removal writes on a live, delivering pipeline and the AE maximum is still %lu lines, not the sensor mode's %lu - this sensor/ISP is not honouring the removal; retrying slowly` | W | **since v1.9.30**. Writing the uncapped maximum back does not show in the readback. | Restart timps. §3.7 |
 | `image.ae_it_max_us=%d: %d writes on a live, delivering pipeline and the AE maximum is still %lu lines - this sensor/ISP is not honouring the cap; retrying slowly` | W | The sensor ignores it. | Stop raising the value. §3.7 |
 | `image.ae_it_max_us=%d: %lu lines exceeds this SDK's 16-bit field - capping at 65535` | W | **since v1.9.28**. T10/T20/T21/T30 only: the requested cap does not fit the SDK field. | Lower `image.ae_it_max_us`. |
-| `GetModule_Ratio failed - %s not applied` / `SetModule_Ratio(%s=%d) failed (rc=%d)` | W | T41 with OpenIMP: `sinter_strength` (since v1.9.33) or `temper_strength` (**since the next release**) could not be written; the value stays persisted. | Check the OpenIMP/open-tx-isp build. |
+| `GetModule_Ratio failed - %s not applied` / `SetModule_Ratio(%s=%d) failed (rc=%d)` | W | T41 with OpenIMP: `sinter_strength` (since v1.9.33) or `temper_strength` (**since v1.10.0**) could not be written; the value stays persisted. | Check the OpenIMP/open-tx-isp build. |
 
 ### 12.8 `HAL_ING` — audio
 
@@ -2998,8 +2995,8 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | `the night reference sits at the sensor's gain floor and no integration-time reading is available…` | W | Night→day can only come from the heartbeat. |
 | `no probe has ever confirmed day (%d in a row found night): the best day-pipeline exposure seen was %.0f but daynight.day_gain is %.0f…` | W | **The line that hands you the number.** Raise `daynight.day_gain` above the reported value. |
 | `daynight.day_gain (%.0f) is above night_gain (%.0f) - the thresholds are swapped; using day<%.0f night>%.0f` | W | `day_gain` must be the lower number. |
-| `daynight.night_gain %.0f is above the exposure index this camera can reach (~%.0f: analog gain cap %d x IT %.1f %%, ISP digital gain unused); using a relative night threshold (%.0f, %d %% of that plateau at the cap for day_confirm_s)` | W | **since the next release.** Once per session, at the first switch it causes. The AE stops at its analog cap with the digital gain unused, so `night_gain` can never be exceeded; the plateau rule switched instead. §3.3 "Camera stays in Day all night". |
-| `silent probe (%s): r=%.2f but the lit level %.0f is no brighter than the proven night reference %.0f - light the day pipeline does not see, staying night` | D | **since the next release.** r < 2 in a night a measurement proved, at a lit level not below 90 % of the reference: light the IR-cut filter removes (other IR cameras), not day. Normal in a shared cellar. §3.3 "Camera stays in Day all night". |
+| `daynight.night_gain %.0f is above the exposure index this camera can reach (~%.0f: analog gain cap %d x IT %.1f %%, ISP digital gain unused); using a relative night threshold (%.0f, %d %% of that plateau at the cap for day_confirm_s)` | W | **since v1.10.0.** Once per session, at the first switch it causes. The AE stops at its analog cap with the digital gain unused, so `night_gain` can never be exceeded; the plateau rule switched instead. §3.3 "Camera stays in Day all night". |
+| `silent probe (%s): r=%.2f but the lit level %.0f is no brighter than the proven night reference %.0f - light the day pipeline does not see, staying night` | D | **since v1.10.0.** r < 2 in a night a measurement proved, at a lit level not below 90 % of the reference: light the IR-cut filter removes (other IR cameras), not day. Normal in a shared cellar. §3.3 "Camera stays in Day all night". |
 | `running_mode=%d never followed the switch to %s - board hook chain (switch_cmd -> color -> POST /control) incomplete, or manual override` | W | The board hook chain is broken. Purple-image territory. §3.2 |
 | `ISP still reports %s %d s after the switch to %s (script and re-asserts all ran) - forcing one transition through %s, the only thing a stuck ISP acts on` | W | Forced transition; usually cures it. |
 | `ISP still reports %s after a forced transition - giving up until the next mode change; the image does not match the decided mode %s` | W | The ISP latch is stuck. Restart. |
@@ -3166,7 +3163,7 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 
 ### 12.18 `LIBIMP` (`src/hal/libimp_check.c`)
 
-**Since the next release.** Logged at start, before the config is read.
+**Since v1.10.0.** Logged at start, before the config is read.
 
 | Message pattern | Level | Meaning | Action |
 | --- | --- | --- | --- |
@@ -3193,10 +3190,10 @@ write instead.**
 
 | # | Wrong | What happens | Correct |
 | --- | --- | --- | --- |
-| 1 | `image.anti_flicker = 2` on 50 Hz mains (or `1` on 60 Hz mains) | 2 means **60 Hz**. Rolling horizontal bands under LED/fluorescent light. Up to v1.9.33 `2` was the built-in default and thingino's template wrote it explicitly, so a 50 Hz camera set up before the next release still has it; since then the default is `1`, which is wrong in 60 Hz regions after a fresh flash or reset. | The mains frequency: `1` = 50 Hz, `2` = 60 Hz (§3.1) |
+| 1 | `image.anti_flicker = 2` on 50 Hz mains (or `1` on 60 Hz mains) | 2 means **60 Hz**. Rolling horizontal bands under LED/fluorescent light. Up to v1.9.33 `2` was the built-in default and thingino's template wrote it explicitly, so a 50 Hz camera set up before v1.10.0 still has it; since then the default is `1`, which is wrong in 60 Hz regions after a fresh flash or reset. | The mains frequency: `1` = 50 Hz, `2` = 60 Hz (§3.1) |
 | 2 | `image.running_mode = 0` posted by hand to "get colour back" at night | The ISP renders the day pipeline while the IR-cut filter is still out and the IR LEDs are on → **purple/magenta image**. | Let day/night do it, or drive `daynight.switch_cmd` as well. |
 | 3 | `image.brightness = 255` | A blown-out white picture. Usually left behind by an interrupted QA run rather than typed. | `image.brightness = 128` |
-| 4 | `image.wb_rgain = 32767` / `image.wb_bgain = 32767` | A magenta image. Also a classic interrupted-QA leftover. **Since the next release** such values are clamped (255 on T10/T20/T30, 4095 on T21/T23/T31), still far off neutral. Unity is **128** on T10/T20/T30 (Q7) and **256** on T21/T23/T31 (Q8). | Copy `image.wb_live` (the gains AWB uses now), or `image.core_wb_mode = 0` for auto. |
+| 4 | `image.wb_rgain = 32767` / `image.wb_bgain = 32767` | A magenta image. Also a classic interrupted-QA leftover. **Since v1.10.0** such values are clamped (255 on T10/T20/T30, 4095 on T21/T23/T31), still far off neutral. Unity is **128** on T10/T20/T30 (Q7) and **256** on T21/T23/T31 (Q8). | Copy `image.wb_live` (the gains AWB uses now), or `image.core_wb_mode = 0` for auto. |
 | 5 | `image.defog_strength = 200` on a T30 | Accepted, persisted, echoed back — and **ignored**, because the SoC has no defog. | Check `caps.image` first. |
 
 ### Video and encoder

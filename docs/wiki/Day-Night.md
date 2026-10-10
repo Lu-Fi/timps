@@ -124,7 +124,7 @@ the camera stayed in day in a pitch-dark cellar, and the 32 unused digital
 units counted as reserve, so the railed variant of path A did not fire
 either.
 
-**Since the next release**, where the published cap is `<= night_gain`
+**Since v1.10.0**, where the published cap is `<= night_gain`
 (provably out of reach while the digital gain stays unused), path A also
 counts a day tick as dark when the analog gain is at >= 98 % of its cap, the
 ISP and sensor digital gain read 0 and the smoothed index is within 95 % of
@@ -168,8 +168,8 @@ Confirmed on the device 2026-10-09 (Pan, open-tx-isp 3cf9bdac, timps
 ed60eae): `isp_info` on the same camera publishes `MAX SENSOR analog gain :
 128` — the AE's cap — next to `isp-m0`'s 158. Reproduced with
 `daynight.boot_probe = 0` and a persisted day (`image.running_mode = 0`) in
-the dark: day adopted at boot, `d` 3587 constant, no switch. **Since the next
-release** timps reads that line from `isp_info` beside a configured `isp-m0`
+the dark: day adopted at boot, `d` 3587 constant, no switch. **Since
+v1.10.0** timps reads that line from `isp_info` beside a configured `isp-m0`
 (cached, re-read every ~5 min) and uses the lower of the two maxima for the
 plateau rule and the AE reserve; it logs once `… publishes MAX SENSOR analog
 gain 158, isp_info 128: using 128 …`. On the Pan the reserve at the cap drops
@@ -200,7 +200,7 @@ each (2026-10-07):
   switch pair per such probe. (From the field notes; this camera is not in
   the central syslog, so its probe line is not quoted here.)
 
-**Since the next release** two changes:
+**Since v1.10.0** two changes:
 
 1. A night that a measurement proved — path A's switch, a probe that found
    night (the boot measurement included), a silent probe with r ≥ 2, the
@@ -379,7 +379,7 @@ clip protection either. That is announced once per session as a WARN
 hard-coded value would be wrong on one of them). The open-tx-isp T41 dump is
 such a variant: its `AeMaxAGain` is the uncapped sensor maximum, not the AE's
 ceiling, so it is not used. On T41 with the open stack the reserve comes, since
-the next release, from `IMP_ISP_Tuning_GetAeExprInfo` instead (`AeMaxAGain`,
+v1.10.0, from `IMP_ISP_Tuning_GetAeExprInfo` instead (`AeMaxAGain`,
 which open-tx-isp fills with the smaller of sensor maximum and gain cap, against
 `TotalGainDb`, log2 in Q16); integration time adds a stop only while the gain
 is still 1x, because above that the AE sits at its own limit, which can be
@@ -755,7 +755,7 @@ dashboard reads "no probes" where it should read "not logged". The
 
 ## Idle-Dark (IR LED off while nobody watches)
 
-**Since the next release**, off by default: `daynight.ir_idle_off = 1`,
+**Since v1.10.0**, off by default: `daynight.ir_idle_off = 1`,
 `daynight.ir_idle_linger_s` (default 60 s, 0..3600), both live via
 `/control`. WebUI: Day / Night → Settings → "IR light when idle".
 

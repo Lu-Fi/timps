@@ -111,7 +111,7 @@ latch-kick this triggers.
 | `image.max_again` | int | 160 | 0–255 | Live | `ISP_HAS_GAINS`: all except T40/T41 | Max analog gain ceiling. |
 | `image.max_dgain` | int | 80 | 0–255 | Live | `ISP_HAS_GAINS` | Max digital gain ceiling. |
 | `image.sinter_strength` | int | 128 | 0–255 | Live | `ISP_HAS_NR`: all except T40; T41 only with OpenIMP (since 1.9.33) | Spatial noise reduction strength. |
-| `image.temper_strength` | int | 128 | 0–255 | Live | `ISP_HAS_NR`: all except T40; T41 only with OpenIMP (since the next release) | Temporal noise reduction strength; on T41 visible only at high gain. |
+| `image.temper_strength` | int | 128 | 0–255 | Live | `ISP_HAS_NR`: all except T40; T41 only with OpenIMP (since v1.10.0) | Temporal noise reduction strength; on T41 visible only at high gain. |
 | `image.dpc_strength` | int | 128 | 0–255 | Live | `ISP_HAS_DPC`: T23/T31/C100 | Defective pixel correction strength. |
 | `image.defog_strength` | int | 128 | 0–255 | Live | `ISP_HAS_DEFOG`: T23/T31/C100 | Defog strength. |
 | `image.drc_strength` | int | 128 | 0–255 | Live | `ISP_HAS_DRC` (WDR): T21/T23/T31/C100 | Dynamic range compression (WDR) strength. |
@@ -120,14 +120,14 @@ latch-kick this triggers.
 | `image.scene` | int | 0 | 0–14 | Live | Scene preset (SDK `IMPISPSceneMode`). Only with an OpenIMP build (`USE_OPENIMP`). |
 | `image.backlight_compensation` | int | 0 | 0–10 | Live | `ISP_HAS_BACKLIGHT`: T23/T31/C100 | Backlight compensation. |
 | `image.core_wb_mode` | int | 0 | 0–9 (0–8 on T10/T20/T30) | Live | `ISP_HAS_WB`: all except T40/T41 | White balance mode: 0 auto, 1 manual, 2 daylight, 3 cloudy, 4 incandescent, 5 fluorescent, 6 twilight, 7 shade, 8 warm fluorescent, 9 custom. |
-| `image.wb_rgain` | int | 0 | 0–255 (T10/T20/T30), 0–4095 (T21/T23/T31), 0–65535 elsewhere | Live | `ISP_HAS_WB` | Manual WB red gain (used when `core_wb_mode` selects manual). The scale differs per SoC: 128 = 1.0 on T10/T20/T30, 256 = 1.0 on T21/T23/T31. The per-SoC clamp is new in the next release (up to 1.9.33: 0–65535 everywhere, T10/T20/T30 wrapped values above 255). |
+| `image.wb_rgain` | int | 0 | 0–255 (T10/T20/T30), 0–4095 (T21/T23/T31), 0–65535 elsewhere | Live | `ISP_HAS_WB` | Manual WB red gain (used when `core_wb_mode` selects manual). The scale differs per SoC: 128 = 1.0 on T10/T20/T30, 256 = 1.0 on T21/T23/T31. The per-SoC clamp is new in v1.10.0 (up to 1.9.33: 0–65535 everywhere, T10/T20/T30 wrapped values above 255). |
 | `image.wb_bgain` | int | 0 | same as `wb_rgain` | Live | `ISP_HAS_WB` | Manual WB blue gain. Since v1.9.21, `GET /control` reports the gains in effect as read-only `image.wb_live` `{"rgain","bgain"}`, a start value for manual mode that matches auto. |
 
 ### Picking `image.anti_flicker`
 
 Set it to the mains frequency where the camera hangs:
 
-* `1` (50 Hz, the default since the next release): Europe, most of Asia and
+* `1` (50 Hz, the default since v1.10.0): Europe, most of Asia and
   Africa, Australia.
 * `2` (60 Hz): most of the Americas, South Korea, Taiwan, the Philippines,
   Saudi Arabia, western Japan (eastern Japan is 50 Hz).
@@ -163,7 +163,7 @@ probe time, so the ISP scales the nodes by 1.2× and neither `1` nor `2` lands
 on a true mains period; at `sensor.fps = 25` the model is consistent and both
 settings are correct.
 
-### FrontCrop: `image.fcrop_*` (since the next release)
+### FrontCrop: `image.fcrop_*` (since v1.10.0)
 
 | Key | Type | Default | Range | Live? | Description |
 | --- | --- | --- | --- | --- | --- |
@@ -441,7 +441,7 @@ boot — `GET /control`'s `caps.privacy.available` reflects this).
 \* Live only if an OSD group already exists for that stream at boot;
 otherwise the value persists but has no visible effect until restart.
 
-## `roi<S>.<N>.*` — encoder ROI (since the next release)
+## `roi<S>.<N>.*` — encoder ROI (since v1.10.0)
 
 `S` = video stream (0/1), `N` = region slot (0–3, `MS_MAX_ROI`; the SDK has 8,
 timps uses 4). Per-region QP for H.264 via `IMP_Encoder_SetChnROI`. POST as
@@ -587,8 +587,8 @@ diagnostics.
 | `daynight.boot_probe` | int | 1 | 0/1 | **Live** | `1` = boot **measures** before it decides: one probe into the day pipeline, read against `day_gain`, regardless of what was persisted. `0` = adopt the persisted mode without measuring. Either way boot asserts the mode it ends up with on the board exactly once (`switch_cmd`), so a reboot can no longer leave the IR-cut filter and the LEDs in the other mode. Cost: one `switch_cmd` call when the answer is day, two when it is night; on a board that comes up in its reset (day) position the first moves nothing. |
 | `daynight.interval_ms` | int | 2000 | 100–60000 | **Live** | Sample interval. 2 s, not the pre-2026-08-17 500 ms: the exposure index needs the `/proc` scrape every tick and no confirmation window is shorter than 8 s. |
 | `daynight.diagnose_thresholds` | int | 0 | 0/1 | **Live** | Warn once per daemon session — after three consecutive failed probes — when no probe has ever confirmed day and the best day-pipeline reading is still clear of `day_gain`. |
-| `daynight.ir_idle_off` | int | 0 | 0/1 | **Live** | **Since the next release.** Idle-Dark: at night, once no picture consumer has been there for `ir_idle_linger_s`, switch only the IR LED off (IR-cut and ISP stay in night) and decide at the next consumer from the reading taken meanwhile. Needs the FrameSource keepalive (`general.fs_keepalive`, auto on OpenIMP T23/T41), auto mode and a `timps-irprobe` with the `idle`/`state` verbs. Off by default: with 850 nm LEDs the glow going out shows that nobody watches. Status `daynight.ir_idle`; see [Day/Night](Day-Night.md#idle-dark-ir-led-off-while-nobody-watches). |
-| `daynight.ir_idle_linger_s` | int | 60 | 0–3600 | **Live** | **Since the next release.** How long after the last picture consumer the IR LED may go off. A poll slower than this costs one LED on/off pair and one held snapshot per poll; keep it longer than `timelapse.interval_s` (at 60/60 every shot can light the LED once). |
+| `daynight.ir_idle_off` | int | 0 | 0/1 | **Live** | **Since v1.10.0.** Idle-Dark: at night, once no picture consumer has been there for `ir_idle_linger_s`, switch only the IR LED off (IR-cut and ISP stay in night) and decide at the next consumer from the reading taken meanwhile. Needs the FrameSource keepalive (`general.fs_keepalive`, auto on OpenIMP T23/T41), auto mode and a `timps-irprobe` with the `idle`/`state` verbs. Off by default: with 850 nm LEDs the glow going out shows that nobody watches. Status `daynight.ir_idle`; see [Day/Night](Day-Night.md#idle-dark-ir-led-off-while-nobody-watches). |
+| `daynight.ir_idle_linger_s` | int | 60 | 0–3600 | **Live** | **Since v1.10.0.** How long after the last picture consumer the IR LED may go off. A poll slower than this costs one LED on/off pair and one held snapshot per poll; keep it longer than `timelapse.interval_s` (at 60/60 every shot can light the LED once). |
 | `daynight.history_s` | int | 0 (off) | 0–172800 (48h) | **Live** | Seconds of decision history kept in RAM for the WebUI tuning graph, served by `GET /control?dn_history=1`; `0` = off, and at `0` nothing is allocated at all. One 16-byte sample per 10 s, allocated on first push and resized in place when this changes, so 4 h costs 22.5 KB and the 48 h ceiling 270 KB. Anything above the ceiling is clamped (the POST response echoes the clamped value, and the daemon logs the effective size). Opt-in and decoupled from the tuning page's lifetime: the page's "collect in background" switch is the only thing that POSTs it, and it persists like any other key, so an explicit opt-in survives a reboot. With it off the page collects live into the tab over SSE instead; with it on the daemon owns the series, which is what lets the graph show the hours no tab was open (the WebUI is plain HTTP and therefore has no Service Worker to collect with). |
 | `daynight.irprobe_cmd` | string(64) | `timps-irprobe` | — | File-only, not GET-readable | Board script run as `<cmd> on\|off\|idle\|state` to drive the IR illuminator **alone**, without moving the IR-cut filter (`on`/`off` for the silent probe, `idle`/`state` for Idle-Dark). Its presence is what arms the silent probe and the trend path; set it empty to fall back to the audible probe only. Run via `fork`+`execlp`, never a shell. |
 | `daynight.switch_cmd` | string(64) | `daynight` | — | File-only, not GET-readable | Board script run as `<cmd> day\|night` on a switch. |
@@ -670,7 +670,7 @@ hardcode the table into a client — see
 | --- | --- | --- | --- | --- | --- |
 | `video<N>.enabled` | bool | 1 / 1 | 0/1 | Restart-only | Enable this stream. |
 | `video<N>.codec` | enum | `h264` / `h264` | `h264`\|`h265` (aliases `hevc`) | Restart-only | Video codec. H.265 only where the platform's encoder API supports it — see [Platform & SDK Support](Platform-SDK-Support.md). |
-| `video<N>.width` | int | 1920 / 640 | 64–4096 | Restart-only | Encode width (pre-rotation). With neither `width` nor `height` set, a known sensor size that fits inside the default is used instead, so nothing is upscaled (a 1280x720 sensor streams 1280x720; since the next release). |
+| `video<N>.width` | int | 1920 / 640 | 64–4096 | Restart-only | Encode width (pre-rotation). With neither `width` nor `height` set, a known sensor size that fits inside the default is used instead, so nothing is upscaled (a 1280x720 sensor streams 1280x720; since v1.10.0). |
 | `video<N>.height` | int | 1080 / 360 | 64–4096 | Restart-only | Encode height (pre-rotation). Unset: see `width`. |
 | `video<N>.fps` | int | 25 / 25 | 1–120 | Restart-only | Encode frame rate of this stream only. It does **not** set the sensor rate; that is `sensor.fps`. |
 | `video<N>.bitrate` | int | 3000 / 512 | 16–50000 (kbps) | **Mixed** (live on every SoC as of 2026-08-21, see below) | Target bitrate. |
@@ -685,7 +685,7 @@ hardcode the table into a client — see
 | `video<N>.change_pos` | int | 80 / 80 | 50–100 | Restart-only | Classic-SoC VBR/Smart only: percentage of `bitrate` above which the controller starts raising QP. Measured to have no observable effect on a T23 (80/65/50 gave identical output) — treat as unverified rather than a reliable lever. No equivalent on the new API; same one-shot warning as `quality_lvl`. |
 | `video<N>.i_bias_lvl` | int | 0 / 0 | -3–3 | **Mixed** (live on classic SoCs and T31/C100, see below) | I-frame QP bias (negative = more bits on keyframes). Classic SoCs: both CBR and VBR/Smart. New API: wired on T31/C100 via `IMP_Encoder_SetChnQpIPDelta` (readable back as `encoder.<n>.rc.ip_delta`); T40/T41 have no such call and warn once instead. |
 | `video<N>.fluc_lvl` | int | 0 / 0 | 0–4 | Restart-only, H265 only | Classic-SoC H265 CBR/VBR/Smart: bitrate fluctuation allowed relative to the average. No H264 equivalent field, and the T23 SW-rotate path is H264-only so never sees this key. No equivalent on the new API. |
-| `video<N>.rotation` | int | 0 / 0 | `0`\|`90`\|`270` (+`180` on T40/T41 only); legacy `1`/`2` accepted as raw `rotTo90` values | Restart-only, `USE_ROTATE` builds only | Image rotation — see [Platform & SDK Support](Platform-SDK-Support.md) and `docs/rotation.md`. Unsupported values on a given SoC are coerced to `0` with a warning. T10/T20/T21 (OpenIMP builds, since the next release): sub streams only, 16-aligned, ≤704x576, and only with an OpenIMP that has T1x rotation (`6b7f5ae`); otherwise the stream starts unrotated with a warning. |
+| `video<N>.rotation` | int | 0 / 0 | `0`\|`90`\|`270` (+`180` on T40/T41 only); legacy `1`/`2` accepted as raw `rotTo90` values | Restart-only, `USE_ROTATE` builds only | Image rotation — see [Platform & SDK Support](Platform-SDK-Support.md) and `docs/rotation.md`. Unsupported values on a given SoC are coerced to `0` with a warning. T10/T20/T21 (OpenIMP builds, since v1.10.0): sub streams only, 16-aligned, ≤704x576, and only with an OpenIMP that has T1x rotation (`6b7f5ae`); otherwise the stream starts unrotated with a warning. |
 | `video<N>.buffers` | int | 2 / 2 | 1–8 | Restart-only | IMP video buffer count (`nrVBs`). Explicitly setting this makes the HAL trust it as-is instead of applying its own safety clamp. |
 | `video<N>.rtsp_path` | string(64) | `/ch0` / `/ch1` | — | **Live** (documented exception, see above) | RTSP mount path for this stream. |
 | `video<N>.jpeg` (alias `jpeg_enabled`) | bool | 1 / 1 | 0/1 | File-only | Enable a piggyback JPEG encoder sharing this stream's FrameSource (used by `/snapshot.jpg`/`/stream.mjpeg?chn=N` and [timelapse](Recording-Timelapse.md)). |

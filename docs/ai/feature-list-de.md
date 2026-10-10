@@ -11,7 +11,7 @@ prudynt-t / raptor.
   HTTP-Control-API, Streaming-Protocols, Day-Night, Audio, Motion-Detection,
   Recording-Timelapse, Rate-Control-\*, Building, Logging, Testing-QA,
   Platform-SDK-Support)
-* Stand dieses Dokuments: `main`, Version v1.9.33 (2026-10-05);
+* Stand dieses Dokuments: `main`, Version v1.10.0 (2026-10-11);
   gestripptes `timpsd` ca. 410 KB (410 108 Byte: mipsel, T31 mit
   Hersteller-libimp, WebRTC, TLS und Rotation an; Stand `main` 2026-10-06). Mit
   **seit vX** markierte Aussagen sind in diesem Release neu – auf einer
@@ -29,7 +29,7 @@ prudynt-t / raptor.
 * **Zwei Videostreams** (`video0.*` = Haupt-, `video1.*` = Substream), jeweils
   H.264 oder H.265 (`videoN.codec = h264 | h265`), eigene Auflösung, FPS,
   Bitrate und Ratenkontrolle. Ohne `videoN.width/height` gelten 1920x1080 bzw.
-  640x360; **seit dem nächsten Release** wird stattdessen eine kleinere
+  640x360; **seit v1.10.0** wird stattdessen eine kleinere
   bekannte Sensorgröße genommen (ein 1280x720-Sensor streamt 1280x720, kein
   Hochskalieren mehr).
 * **RTP-MTU einstellbar** (`rtsp.mtu`, 548–1472, Default 1200) – überlebt
@@ -65,7 +65,7 @@ prudynt-t / raptor.
 * **On-Demand-Encoding** – jeder Stream (H.264/H.265, Audio, JPEG/MJPEG) wird
   nur erzeugt, solange mindestens ein Client zusieht. Im Leerlauf praktisch
   0 % CPU. Nicht konfigurierbar, das ist das Grundverhalten.
-* **FrameSource-Keepalive** (**seit dem nächsten Release**) –
+* **FrameSource-Keepalive** (**seit v1.10.0**) –
   `general.fs_keepalive` (`-1`/`auto`, `0`/`off`, `1`/`on`; nur per Datei,
   Neustart; ein unbekanntes Wort wird mit Warnung als `auto` gelesen):
   hält die FrameSources von Start bis Stopp an, die Encoder bleiben on-demand.
@@ -117,7 +117,7 @@ prudynt-t / raptor.
   ein IDR an – eine Reconnect-Schleife oder eine `DESCRIBE`-Flut kann so nicht
   mehr jedes Bild zum Keyframe machen.
   Kein Konfigurationsschlüssel.
-* **Encoder-ROI (seit dem nächsten Release)** – `roi<S>.<N>.*` (`enabled`,
+* **Encoder-ROI (seit v1.10.0)** – `roi<S>.<N>.*` (`enabled`,
   `x`, `y`, `w`, `h`, `qp`, `qp_mode`), bis zu 4 Regionen pro Stream mit
   eigenem QP (absolut oder Delta), live, nur H.264 und ungedrehte Streams
   (auf einem H.265- oder gedrehten Stream: Dateiwert eine WARN beim Start, ein
@@ -135,7 +135,7 @@ prudynt-t / raptor.
   H.264). Stufe und Bereiche meldet `caps.roi` in `GET /control`.
 * **Bildrotation (optional, `USE_ROTATE`)** – `videoN.rotation = 0|90|180|270`.
   Hardware-90/270 auf T40/T41 (I2D) und T31 (FrameSource), Software-90/270 auf
-  T23 (`USE_SW_ROTATE`, CPU-intensiv, nur H.264). **Seit dem nächsten Release**
+  T23 (`USE_SW_ROTATE`, CPU-intensiv, nur H.264). **Seit v1.10.0**
   auch FrameSource-Rotation auf T10/T20/T21, nur in OpenIMP-Builds und nur mit
   einem OpenIMP, das T1x-Rotation kann (Commit `6b7f5ae`, Branch
   `claude/t1x-rotation`, in keinem der `ciao`-OpenIMP-Pins), nur Sub-Streams,
@@ -152,11 +152,11 @@ prudynt-t / raptor.
   `max_again`, `max_dgain`, `sinter_strength` / `temper_strength` (räumliche /
   zeitliche Rauschunterdrückung), `dpc_strength`, `defog_strength`,
   `drc_strength`, `highlight_depress`, `backlight_compensation`,
-  `core_wb_mode`, `wb_rgain`, `wb_bgain`. `wb_rgain`/`wb_bgain` sind **seit dem
-  nächsten Release** je SoC begrenzt (0..255 auf T10/T20/T30, Neutral 128;
+  `core_wb_mode`, `wb_rgain`, `wb_bgain`. `wb_rgain`/`wb_bgain` sind **seit
+  v1.10.0** je SoC begrenzt (0..255 auf T10/T20/T30, Neutral 128;
   0..4095 auf T21/T23/T31, Neutral 256). Auf T41 gibt es mit OpenIMP
   `ae_compensation` und `sinter_strength` (seit v1.9.33) sowie
-  `temper_strength` (**seit dem nächsten Release**). *Seit v1.9.21* meldet `GET /control`
+  `temper_strength` (**seit v1.10.0**). *Seit v1.9.21* meldet `GET /control`
   unter `image.wb_live` die aktuell wirksamen WB-Gains (im Auto-Modus das
   AWB-Ergebnis) – ein Wechsel auf manuell damit ändert das Bild nicht.
 * **Kein blindes Setzen**: welche dieser Regler der jeweilige SoC wirklich
@@ -176,7 +176,7 @@ prudynt-t / raptor.
   die Rate *dieses Streams* und setzt nie die Sensorrate.
 * Optionale Deckelung der AE-Integrationszeit (`image.ae_it_max_us`) für
   Szenen, in denen die Automatik zu lange belichtet.
-* **ISP-FrontCrop / Zoom (seit dem nächsten Release)** – `image.fcrop_enable`,
+* **ISP-FrontCrop / Zoom (seit v1.10.0)** – `image.fcrop_enable`,
   `fcrop_x/y/w/h` in Sensorpixeln: der ISP liefert nur diesen Ausschnitt,
   jeder Stream skaliert ihn auf seine Größe (min. 64×64, T10 640×360, live).
   Getestet (vom OpenIMP-Maintainer) auf T10, T20 und T21 mit OpenIMP (T10/T20:
@@ -233,7 +233,7 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   bleibt das 20 s stehen, übernimmt timps ihn und bewertet ihn neu, wie nach
   einem Boot. Nur im Modus `schedule` meldet der Status `isp_desync`, wenn der
   entschiedene Modus und der ISP-Rücklesewert auseinanderlaufen.
-* **Idle-Dark (seit dem nächsten Release, Default aus)** –
+* **Idle-Dark (seit v1.10.0, Default aus)** –
   `daynight.ir_idle_off = 1`: nachts, wenn seit `daynight.ir_idle_linger_s`
   (60 s, 0..3600) kein Stream, Snapshot, Recorder, Timelapse und keine
   Bewegungserkennung ein Bild braucht, schaltet timps **nur die IR-LED** aus;
@@ -529,7 +529,7 @@ wird die WebSocket-Variante (statt CGI-Polling) aktiviert.
   einige `image.*`-Regler entfallen lässt – nachzulesen in `caps.image`.
 * **Audio**: `IMP_AI_SetAlcGain` (`audio.alc_gain`) nur auf T21/T31/C100.
 * **Rotation**: Hardware-I2D auf T40/T41, FrameSource-Rotate auf T31 und
-  (seit dem nächsten Release, nur OpenIMP mit T1x-Rotation, nur Sub-Streams)
+  (seit v1.10.0, nur OpenIMP mit T1x-Rotation, nur Sub-Streams)
   T10/T20/T21, Software auf T23, gar nicht auf T30/C100.
 * **Host-Simulation** ohne Hardware: `make sim` baut `timpsd-sim`, das Dateien
   statt des ISP einspeist (`sim.video0`, `sim.audio`, …) – praktisch für
@@ -555,7 +555,7 @@ wird die WebSocket-Variante (statt CGI-Polling) aktiviert.
   Realfälle und konstruierte Randfälle, 39-54 für Idle-Dark, 55-59 für ein
   unerreichbares `night_gain` am T20-Analog-Gain-Limit) unter
   `scripts/dn-scenarios/`.
-* **libimp-Prüfung (seit dem nächsten Release)**: ein `timpsd` für den
+* **libimp-Prüfung (seit v1.10.0)**: ein `timpsd` für den
   anderen libimp-Stack (Vendor vs. OpenIMP) beendet sich mit 78/79 und Grund,
   statt abzustürzen; `timpsd --check-libs` prüft nur das (80 = konnte nicht
   prüfen), thingino's `S95timps` startet den Daemon bei 78/79 nicht.
@@ -564,8 +564,8 @@ wird die WebSocket-Variante (statt CGI-Polling) aktiviert.
 * Host-Tests für heikle Bausteine: `make test-srtp`, `test-stun`, `test-fmp4`,
   `test-config`, `test-fanqueue`, `test-hub-pool`, `test-hub-idr`,
   `test-auth`, `test-clients`, `test-daynight-sun`, sowie **seit v1.9.28**
-  `test-timelapse-prune` und `test-record-ring`; **seit dem nächsten
-  Release** `test-roi`, `test-dn-idle`, `test-hub-hold`, `test-libimp-check`
+  `test-timelapse-prune` und `test-record-ring`; **seit
+  v1.10.0** `test-roi`, `test-dn-idle`, `test-hub-hold`, `test-libimp-check`
   und die Firmware-Skripttests `scripts/test_irprobe.sh`,
   `scripts/test_s95timps_preflight.sh`, `scripts/test_webui_idle.js`.
 
