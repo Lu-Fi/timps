@@ -274,9 +274,12 @@ Pitfalls
 
 ## 3. `sensor.*`
 
-All five keys are `F_CTRL` (POST-able) but **restart** — they are consumed at
+The first five keys are `F_CTRL` (POST-able) but **restart** — they are consumed at
 the next ISP init only. `ing_control()` logs `persisted, applies on restart` and
-the POST reply lists them under `deferred`.
+the POST reply lists them under `deferred`. The six board-wiring keys below
+them (**since the next release**) are **file-only** (no `F_CTRL`: a wrong bus
+or pin over HTTP would crash-loop the ISP) and restart-applied; GET `/control`
+shows them read-only in the `sensor` object.
 
 | Key | Type | Default | Range | Apply | Notes |
 | --- | --- | --- | --- | --- | --- |
@@ -285,6 +288,12 @@ the POST reply lists them under `deferred`.
 | `sensor.fps` | int | *(unset)* → autodetect, **capped** | 0..120 | restart | `0` = auto. **since v1.9.19:** the autodetected value is capped at **30** (`SENSOR_AUTO_FPS_CAP` in `src/config.c`); **since v1.9.20** the cap is raised to the fastest *enabled* `videoN.fps` when that is higher, so a stream configured above 30 still gets its frames. An explicit value is used as given. Before v1.9.19 the driver's `max_fps` was taken verbatim. |
 | `sensor.width` | int | *(unset)* → autodetect | 0..8192 | restart | `0` = auto. On T10/T20/T21/T30 the driver's `/proc/jz/sensor` size is often empty until the sensor runs; since the next release the HAL reads it again after `IMP_ISP_EnableSensor` (before the first channel) instead of keeping video0's size as the sensor size. |
 | `sensor.height` | int | *(unset)* → autodetect | 0..8192 | restart | `0` = auto. |
+| `sensor.i2c_adapter` | int | `-1` (unset) | -1..15 | file-only, restart | **T40/T41 only.** `IMPSensorInfo.i2c.i2c_adapter_id`. Alias `sensor.i2c_adapter_id`. Unset leaves libimp's `0`. |
+| `sensor.mclk` | int | `-1` (unset) | -1..2 | file-only, restart | **T40/T41 only.** `IMPSensorMclk`: `0`=MCLK0, `1`=MCLK1, `2`=MCLK2. Unset leaves `0`. |
+| `sensor.video_interface` | int | `-1` (unset) | -1..2 | file-only, restart | **T40/T41 only.** `IMPSensorVinType`: `0`=MIPI CSI0, `1`=MIPI CSI1 (T40 header only), `2`=DVP. Unset leaves `0`. |
+| `sensor.default_boot` | int | `-1` (unset) | -1..15 | file-only, restart | **T40/T41 only.** Driver-specific boot setting index (`default_boot`). Unset leaves `0`. |
+| `sensor.rst_gpio` | int | `-1` (none) | -1..255 | file-only, restart | **T40/T41 only.** Sensor reset pin (`GPIO_PC(27)` = `2*32+27` = `91`). `-1`/unset keeps today's forced "no pin". |
+| `sensor.pwdn_gpio` | int | `-1` (none) | -1..255 | file-only, restart | **T40/T41 only.** Sensor power-down pin, as `rst_gpio`. |
 
 `config_sensor_finalize()` runs once after load and before the HAL starts:
 
@@ -307,6 +316,33 @@ the POST reply lists them under `deferred`.
    ISP unchanged.
 3. Remaining unset values get fallbacks: `model=gc2053`, `i2c_addr=0x37`,
    `width`/`height`/`fps` from `video0.*`, final safety net `1920x1080 @25`.
+
+**Board wiring (T40/T41).** `isp_init()` fills `IMPSensorInfo` with only
+name, I2C type/address and (T40/T41) `rst/pwdn/power_gpio = -1`; everything
+else stays `0` (adapter 0, MCLK0, CSI0, boot 0). A board that wires the sensor
+elsewhere fails with `IMP_ISP_AddSensor failed` and a kernel line like
+`chip found @ 0x30 (i2c0) is not an sc830ai chip`. Set the wiring keys from
+the board's thingino `BR2_PACKAGE_THINGINO_RAPTOR_CONF_SENSOR0_*` values. A
+value that is not a number or is out of range is logged and dropped (stays
+unset), never clamped. On other SoCs the keys are parsed but ignored with one
+`WARN` at ISP init. The applied values are logged as
+`sensor bus: i2cA mclkM vin=V boot=B rst=R pwdn=P`.
+
+Example, Eufy S350 (T8416, T40XP, SC830AI 3840x2160 @20):
+
+```
+sensor.model = sc830ai
+sensor.i2c_addr = 0x30
+sensor.i2c_adapter = 1
+sensor.mclk = 1
+sensor.video_interface = 0
+sensor.default_boot = 4
+sensor.rst_gpio = 91
+sensor.pwdn_gpio = -1
+sensor.width = 3840
+sensor.height = 2160
+sensor.fps = 20
+```
 
 Pitfalls
 * `/proc/jz/sensor` is reported not to exist on T40/T41 (and it never does on

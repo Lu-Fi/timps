@@ -66,12 +66,23 @@ trusted, because a mismatching name/i2c address would crash the ISP driver.
 | `sensor.fps` | int | *(unset → driver `max_fps`, capped at 30 or the fastest enabled `video<N>.fps` if higher; else video0.fps, else 25)* | 0–120 | Restart-only | Sensor capture frame rate, applied once at ISP init. The auto value is capped at 30, or at the fastest enabled `video<N>.fps` if that is higher; set it explicitly to go higher. The log line `sensor fps: requested N, driver holds n/d` shows what the driver accepted. Not the same as `video<N>.fps`. |
 | `sensor.width` | int | *(unset → auto/video0.width, fallback 1920)* | 0–8192 | Restart-only | Sensor native width. |
 | `sensor.height` | int | *(unset → auto/video0.height, fallback 1080)* | 0–8192 | Restart-only | Sensor native height. |
+| `sensor.i2c_adapter` (alias `i2c_adapter_id`) | int | -1 (unset → 0) | -1–15 | File-only | **T40/T41 only.** I2C adapter the sensor is wired to. |
+| `sensor.mclk` | int | -1 (unset → 0) | -1–2 | File-only | **T40/T41 only.** Sensor clock source, MCLK0/1/2. |
+| `sensor.video_interface` | int | -1 (unset → 0) | -1–2 | File-only | **T40/T41 only.** 0 = MIPI CSI0, 1 = MIPI CSI1, 2 = DVP. |
+| `sensor.default_boot` | int | -1 (unset → 0) | -1–15 | File-only | **T40/T41 only.** Sensor driver boot setting index. |
+| `sensor.rst_gpio` | int | -1 (none) | -1–255 | File-only | **T40/T41 only.** Sensor reset GPIO number. |
+| `sensor.pwdn_gpio` | int | -1 (none) | -1–255 | File-only | **T40/T41 only.** Sensor power-down GPIO number. |
 
 `sensor.*` **is** accepted by `POST /control` (`{"sensor":{...}}`) for
 persistence — it is listed in `caps.restart` alongside `video`, and a
 changed key comes back in the POST reply's `deferred_keys` — but has
 no live-apply path; the value is written to the config file and takes
-effect at the next ISP init.
+effect at the next ISP init. The six board-wiring keys
+(`i2c_adapter` … `pwdn_gpio`) are the exception: not POST-able, edit
+`/etc/timps.conf` and restart. Use them when `IMP_ISP_AddSensor` fails because
+the board wires the sensor off I2C adapter 0 / MCLK0 / CSI0 (e.g. Eufy S350:
+`i2c_adapter = 1`, `mclk = 1`, `default_boot = 4`, `rst_gpio = 91`). An
+invalid value is logged and dropped; other SoCs ignore them with a warning.
 
 ## `image.*` — ISP tuning
 
