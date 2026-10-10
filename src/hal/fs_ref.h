@@ -63,9 +63,11 @@ static inline int fsr_unuse(fsr_state *s, const fsr_ops *o, int chn)
     return 0;
 }
 
-/* caller checks enabled[] first; returns the EnableChn rc */
+/* caller checks enabled[] first; returns the EnableChn rc, or 1 for a kept
+ * channel, which is never cycled (that edge hangs the T23/T41 open stack) */
 static inline int fsr_recycle(fsr_state *s, const fsr_ops *o, int chn)
 {
+    if (s->keep[chn]) return 1;
     o->disable(chn);
     int rc = o->enable(chn);
     s->enabled[chn] = (rc == 0);
@@ -82,6 +84,18 @@ static inline int fsr_keep_acquire(fsr_state *s, const fsr_ops *o, int chn)
 static inline int fsr_kept(const fsr_state *s, int chn)
 {
     return chn >= 0 && chn < FSR_MAXCHN && s->keep[chn];
+}
+
+/* Watchdog step for an encoder fed by FrameSource chn after `attempt`
+ * consecutive failed cycles: past the budget the caller escalates; a kept
+ * running channel only gets its encoder restarted. */
+enum { FSR_WD_ENCODER = 0, FSR_WD_RECYCLE = 1, FSR_WD_GIVE_UP = 2 };
+
+static inline int fsr_wd_action(const fsr_state *s, int chn, int attempt, int max)
+{
+    if (attempt >= max) return FSR_WD_GIVE_UP;
+    if (fsr_kept(s, chn) && s->enabled[chn]) return FSR_WD_ENCODER;
+    return FSR_WD_RECYCLE;
 }
 
 /* Latch kick on chn0. FSR_EDGE: chn0 was just enabled, the caller lets it run

@@ -1214,11 +1214,12 @@ wait (2 s debounce instead).
    `framesource keepalive on (general.fs_keepalive=-1, auto)` and one
    `framesource N enabled` per stream, then **no** `disabled (idle)` until a
    stop. Still normal: `video chnN idle` (the encoder idles).
-3. Remaining edges with the keepalive on: start/stop, a SW-rotate stream
-   (`framesource N: no keepalive (software-rotate stream)`), and the video
-   watchdog's `forcing a framesource disable/enable cycle` (error path). The
-   JPEG cold-start recycle and the JPEG miss watchdog only restart the encoder
-   (`... (framesource kept alive)`).
+3. Remaining edges with the keepalive on: start/stop and a SW-rotate stream
+   (`framesource N: no keepalive (software-rotate stream)`). The video
+   watchdog (**since v1.10.1**; v1.10.0 still cycled the FrameSource), the
+   JPEG cold-start recycle and the JPEG miss watchdog only restart the
+   encoder (`... (framesource kept alive)`); 5 video cycles without a frame
+   end in the exit + one-shot recovery reboot.
 
 **Switching it:** edit `/etc/timps.conf` (file-only, not POST-able), then
 `/etc/init.d/S95timps restart`. `general.fs_keepalive = 1` turns it on on any

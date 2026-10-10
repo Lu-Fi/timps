@@ -17,6 +17,15 @@ _1.10.1 (draft)_
   DNS aliases (`*` = off). The PNA preflight consents only for a same-host
   `Origin` or a valid token.
 
+### Fixed
+
+- Video watchdog: a kept FrameSource (`general.fs_keepalive`, auto on for
+  open-stack T23/T41) is no longer disabled/enabled; the encoder alone is
+  restarted and 5 failed cycles escalate to the exit + recovery reboot as
+  before. 1.10.0 still cycled it, the edge that hangs these SoCs. Video and
+  JPEG watchdogs now take that decision from one host-tested rule
+  (`fs_ref.h`), and a kept channel refuses a recycle outright.
+
 ## [1.10.0] - 2026-10-11
 
 Encoder ROI (`roi<S>.<N>.*`) and ISP FrontCrop (`image.fcrop_*`) arrive with

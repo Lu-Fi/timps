@@ -583,7 +583,8 @@ static int fs_recycle(int chn)
     pthread_mutex_lock(&g_fs_mtx);
     if (!g_fsr.enabled[chn]) { pthread_mutex_unlock(&g_fs_mtx); return -1; }
     int rc = fsr_recycle(&g_fsr, &g_fs_ops, chn);
-    LOGI(MOD,"framesource %d recycled%s", chn, rc ? " - EnableChn failed" : "");
+    if (rc != 1)
+        LOGI(MOD,"framesource %d recycled%s", chn, rc ? " - EnableChn failed" : "");
     pthread_mutex_unlock(&g_fs_mtx);
     if (rc == 0) fs_edge_relatch(chn);
     return rc ? -1 : 0;
@@ -712,6 +713,13 @@ static int fs_kept(int chn)
     int k = fsr_kept(&g_fsr, chn);
     pthread_mutex_unlock(&g_fs_mtx);
     return k;
+}
+static int fs_wd_action(int chn, int attempt, int max)
+{
+    pthread_mutex_lock(&g_fs_mtx);
+    int a = fsr_wd_action(&g_fsr, chn, attempt, max);
+    pthread_mutex_unlock(&g_fs_mtx);
+    return a;
 }
 
 /* ================= motion detection lifecycle ================= */
@@ -3322,7 +3330,9 @@ static void *video_thread(void *arg)
                 if (dbg_pollfail >= MS_VIDEO_WATCHDOG_ITERS &&
                     ms_now_us() - miss_t0 >= MS_WATCHDOG_MIN_US){
                     dbg_recover_fails++;
-                    if (dbg_recover_fails >= MS_VIDEO_WATCHDOG_MAX_RECOVERIES){
+                    int act = fs_wd_action(vc->chn, dbg_recover_fails,
+                                           MS_VIDEO_WATCHDOG_MAX_RECOVERIES);
+                    if (act == FSR_WD_GIVE_UP){
                         /* N consecutive recovery cycles all reported success
                          * (StartRecvPic==0) yet none ever produced a frame -
                          * the hardware is genuinely gone, not just wedged.
@@ -3349,14 +3359,16 @@ static void *video_thread(void *arg)
                         break;
                     }
                     LOGE(MOD,"chn%d: encoder dead after %d consecutive misses - "
-                         "forcing a framesource disable/enable cycle to recover "
-                         "(recovery attempt %d/%d)",
-                         vc->chn, dbg_pollfail, dbg_recover_fails, MS_VIDEO_WATCHDOG_MAX_RECOVERIES);
+                         "%s to recover (recovery attempt %d/%d)",
+                         vc->chn, dbg_pollfail,
+                         act == FSR_WD_ENCODER ? "restarting the encoder (framesource kept alive)"
+                                               : "forcing a framesource disable/enable cycle",
+                         dbg_recover_fails, MS_VIDEO_WATCHDOG_MAX_RECOVERIES);
                     IMP_Encoder_StopRecvPic(vc->chn);
                     /* fs_recycle() works under a co-holder (motion pin, piggyback
                      * JPEG); the unuse/use pair only when the channel was not
                      * enabled at all (EnableChn had failed, retried by fs_use) */
-                    if (fs_recycle(vc->chn) != 0){
+                    if (act == FSR_WD_RECYCLE && fs_recycle(vc->chn) != 0){
                         fs_unuse(vc->chn);
                         fs_use(vc->chn);
                     }
@@ -4415,7 +4427,9 @@ static void *jpeg_thread(void *arg)
             if (dbg_jpollfail >= MS_JPEG_WATCHDOG_ITERS &&
                 ms_now_us() - jmiss_t0 >= MS_WATCHDOG_MIN_US){
                 dbg_jrecover_fails++;
-                if (dbg_jrecover_fails >= MS_JPEG_WATCHDOG_MAX_RECOVERIES){
+                int act = fs_wd_action(jc->fs_chn, dbg_jrecover_fails,
+                                       MS_JPEG_WATCHDOG_MAX_RECOVERIES);
+                if (act == FSR_WD_GIVE_UP){
                     /* Same reasoning as video_thread's escalation, but give
                      * up on just this channel instead of the whole process
                      * (see MS_JPEG_WATCHDOG_MAX_RECOVERIES above) - mirrors
@@ -4428,15 +4442,16 @@ static void *jpeg_thread(void *arg)
                          jc->chn, dbg_jrecover_fails);
                     break;
                 }
-                int kept = fs_kept(jc->fs_chn);
                 LOGE(MOD,"jpeg chn%d: encoder dead after %d consecutive misses - "
                      "%s to recover (recovery attempt %d/%d)",
                      jc->chn, dbg_jpollfail,
-                     kept ? "restarting the encoder (framesource kept alive)"
-                          : "forcing a framesource disable/enable cycle",
+                     act == FSR_WD_ENCODER ? "restarting the encoder (framesource kept alive)"
+                                           : "forcing a framesource disable/enable cycle",
                      dbg_jrecover_fails, MS_JPEG_WATCHDOG_MAX_RECOVERIES);
                 IMP_Encoder_StopRecvPic(jc->chn);
-                if (!kept){
+                /* unuse/use, not fs_recycle: a co-holder (piggyback video)
+                 * that still gets frames proves the FrameSource healthy */
+                if (act == FSR_WD_RECYCLE){
                     fs_unuse(jc->fs_chn);
                     fs_use(jc->fs_chn);
                 }

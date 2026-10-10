@@ -231,15 +231,90 @@ static void t_keep_enable_fail(void)
     EDGES("E0");
 }
 
-/* the video watchdog's recycle stays a real D+E (error path only) */
+/* a kept channel is never cycled, not even by a watchdog */
 static void t_keep_recycle(void)
 {
     fsr_state s; reset(&s);
     fsr_keep_acquire(&s, &ops, 0);
     fsr_use(&s, &ops, 0);
-    CK(fsr_recycle(&s, &ops, 0) == 0 && s.users[0] == 2, "recycle refcount neutral");
-    EDGES("E0D0E0");
+    CK(fsr_recycle(&s, &ops, 0) == 1 && s.users[0] == 2 && s.enabled[0],
+       "kept recycle refused, state untouched");
+    EDGES("E0");
 }
+
+/* video_thread's watchdog step: the edges one
+ * failed-cycle streak produces up to the escalation */
+static void wd_streak(fsr_state *s, int chn, int max, int *gave_up_at)
+{
+    *gave_up_at = 0;
+    for (int a = 1; a <= max + 1; a++) {
+        int act = fsr_wd_action(s, chn, a, max);
+        if (act == FSR_WD_GIVE_UP) { *gave_up_at = a; break; }
+        if (act == FSR_WD_RECYCLE && (!s->enabled[chn] || fsr_recycle(s, &ops, chn) != 0)) {
+            fsr_unuse(s, &ops, chn);
+            fsr_use(s, &ops, chn);
+        }
+    }
+}
+
+static void t_wd(void)
+{
+    fsr_state s; int g;
+    reset(&s);
+    fsr_use(&s, &ops, 0);                       /* encoder */
+    fsr_use(&s, &ops, 0);                       /* motion pin */
+    edges[0] = 0;
+    CK(fsr_wd_action(&s, 0, 1, 5) == FSR_WD_RECYCLE, "not kept: recycle");
+    wd_streak(&s, 0, 5, &g);
+    CK(g == 5, "gives up at the budget, got %d", g);
+    EDGES("D0E0D0E0D0E0D0E0");
+    CK(s.users[0] == 2 && s.enabled[0], "streak is refcount neutral");
+
+    reset(&s);
+    fsr_keep_acquire(&s, &ops, 1);
+    fsr_use(&s, &ops, 1);
+    edges[0] = 0;
+    CK(fsr_wd_action(&s, 1, 1, 5) == FSR_WD_ENCODER, "kept: encoder only");
+    CK(fsr_wd_action(&s, 1, 4, 5) == FSR_WD_ENCODER, "kept: still encoder only");
+    CK(fsr_wd_action(&s, 1, 5, 5) == FSR_WD_GIVE_UP, "kept: escalates at the budget");
+    wd_streak(&s, 1, 5, &g);
+    CK(g == 5, "kept gives up at the budget, got %d", g);
+    EDGES("");
+
+    /* kept but EnableChn had failed: retrying the enable is no edge on a
+     * running channel */
+    reset(&s);
+    fail_enable = 1;
+    fsr_keep_acquire(&s, &ops, 0);
+    fsr_use(&s, &ops, 0);
+    fail_enable = 0;
+    CK(fsr_wd_action(&s, 0, 1, 5) == FSR_WD_RECYCLE, "kept, off: retry the enable");
+    CK(fsr_recycle(&s, &ops, 0) == 1, "...but never via a D+E");
+    fsr_unuse(&s, &ops, 0);
+    fsr_use(&s, &ops, 0);
+    EDGES("E0");
+    CK(fsr_wd_action(&s, 0, 2, 5) == FSR_WD_ENCODER, "kept, now on: encoder only");
+}
+
+#ifdef FSR_EXPECT_AUTO
+/* per SoC/stack: with general.fs_keepalive = -1 the watchdogs never cycle a
+ * FrameSource where the keepalive is on by default */
+static void t_wd_platform(void)
+{
+    fsr_state s; int g;
+    reset(&s);
+    int keep = fs_keepalive_resolve(-1, FS_KEEPALIVE_AUTO);
+    for (int c = 0; c < 2; c++) {
+        if (keep) fsr_keep_acquire(&s, &ops, c);
+        fsr_use(&s, &ops, c);
+    }
+    edges[0] = 0;
+    wd_streak(&s, 0, 5, &g);
+    CK(g == 5, "escalates at the budget, got %d", g);
+    if (keep) EDGES("");
+    else      EDGES("D0E0D0E0D0E0D0E0");
+}
+#endif
 
 /* teardown: keep released first, no leak warning, exactly one disable each,
  * and a restart (ing_stop -> ing_start) starts from zero */
@@ -296,7 +371,9 @@ int main(void)
     t_keep_recycle();
     t_keep_teardown();
     t_resolve();
+    t_wd();
 #ifdef FSR_EXPECT_AUTO
+    t_wd_platform();
     printf("test_fs_ref %-7s auto=%d: %d/%d checks passed\n", FSR_LABEL,
            FS_KEEPALIVE_AUTO, checks - failures, checks);
 #else

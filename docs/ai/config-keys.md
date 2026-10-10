@@ -232,7 +232,7 @@ Section is readable via `GET /control`; only `debug_modules` is POST-able.
 | `general.debug_modules` | string[64] | `""` | — | **live** | Comma-separated module names forced to DEBUG regardless of `loglevel`, e.g. `HAL_ING,DAYNIGHT`. Live on purpose: restarting to enable debugging destroys the state you are trying to observe. |
 | `general.imp_polling_timeout` | int | `500` | 10..10000 | file-only, restart | ms, `IMP_*_PollingStream` timeout. `0` would make the video thread spin and the watchdog `SIGTERM` the daemon seconds after the first client — hence the floor of 10. |
 | `general.osd_pool_size` | int | `1024` | 1..1024 | file-only, restart | KB of IMP OSD pool. 1024 is the T-series maximum; larger is rejected by libimp anyway. |
-| `general.fs_keepalive` | int or word | `-1` | -1..1 | file-only, restart | **since v1.10.0.** `-1` or `auto`, `0` or `off`/`false`/`no`, `1` or `on`/`true`/`yes`; numbers outside -1..1 are clamped, anything else logs a warning and stays auto (`-1`). On: `ing_start()` holds every video FrameSource (and the dedicated `jpeg.*` one) enabled until the daemon stops, so no FrameSource is ever disabled at runtime; encoders stay on-demand. **Auto resolves to on only for `USE_OPENIMP` builds on T23 and T41** (the stacks where a FrameSource disable/enable while the sensor streams can hang the SoC), off on every vendor-libimp build and on T10/T20/T21/T30/T31/T40 with OpenIMP. The resolved value is `caps.framesource.keepalive` in `GET /control` (`caps.framesource.cfg` is the raw value) and the start-up line `framesource keepalive on|off (general.fs_keepalive=N[, auto])`. See pitfalls below and `dev_notes/FS_KEEPALIVE_2026-10.md`. |
+| `general.fs_keepalive` | int or word | `-1` | -1..1 | file-only, restart | **since v1.10.0.** `-1` or `auto`, `0` or `off`/`false`/`no`, `1` or `on`/`true`/`yes`; numbers outside -1..1 are clamped, anything else logs a warning and stays auto (`-1`). On: `ing_start()` holds every video FrameSource (and the dedicated `jpeg.*` one) enabled until the daemon stops: no FrameSource is disabled at runtime except at start/stop (and on a kept channel whose `EnableChn` failed, which is retried); encoders stay on-demand. **since v1.10.1** this includes the video watchdog, which only restarts the encoder. **Auto resolves to on only for `USE_OPENIMP` builds on T23 and T41** (the stacks where a FrameSource disable/enable while the sensor streams can hang the SoC), off on every vendor-libimp build and on T10/T20/T21/T30/T31/T40 with OpenIMP. The resolved value is `caps.framesource.keepalive` in `GET /control` (`caps.framesource.cfg` is the raw value) and the start-up line `framesource keepalive on|off (general.fs_keepalive=N[, auto])`. See pitfalls below and `dev_notes/FS_KEEPALIVE_2026-10.md`. |
 | `general.syslog` | bool | `1` | — | file-only, restart | **Not a stored field** — handled as a side effect in `set_kv()` (`log_set_syslog()`). Never appears in `GET /control` and cannot be POSTed. `0` = stdout only, no `logread`. |
 | `general.trace` | int (bitmask) | `0` | unclamped | file-only, restart | Developer send-pipeline tracing. Bits: `1` per-AU gap/age/send, `2` per-write timing, `4` fanqueue backlog, `8` periodic summary, `15` = all. **Only does anything in a `USE_TRACE=1` build**; parsed and ignored otherwise. Side-effecting key like `general.syslog`: no table entry, no `F_CTRL`, not in `?fields=1`. |
 | `general.trace_ms` | int | `250` | unclamped | file-only, restart | Report threshold in ms for `general.trace`. Takes effect in file order, so list it **before** `general.trace` if you want the startup banner to print the right threshold (cosmetic only). |
@@ -259,13 +259,14 @@ Pitfalls
   (`video chnN idle` still appears 2 s after the last client), and
   SW-rotate streams (T23 `USE_SW_ROTATE`, 90/270), which are exempt — the log
   says `framesource N: no keepalive (software-rotate stream)`.
-* **Remaining runtime FrameSource edges with the keepalive on:** only the video
-  watchdog's recovery cycle (`chnN: encoder dead after N consecutive misses -
-  forcing a framesource disable/enable cycle`), an error path. The JPEG
-  cold-start recycle and the JPEG miss watchdog become encoder restarts
-  (`recycling the encoder (framesource kept alive)`, `jpeg chnN: encoder dead
-  after N consecutive misses - restarting the encoder (framesource kept alive)
-  to recover`). Start and stop still enable/disable each kept channel once.
+* **Remaining runtime FrameSource edges with the keepalive on:** none
+  **since v1.10.1** (v1.10.0: the video watchdog's recovery cycle). The video
+  watchdog, the JPEG cold-start recycle and the JPEG miss watchdog restart
+  only the encoder (`chnN: encoder dead after N consecutive misses -
+  restarting the encoder (framesource kept alive) to recover`,
+  `recycling the encoder (framesource kept alive)`); after 5 such cycles
+  without a frame the video watchdog escalates as before (exit, one-shot
+  recovery reboot). Start and stop still enable/disable each kept channel once.
 * **Turning it off on T23/T41** (`general.fs_keepalive = 0`) restores the
   on-demand FrameSources, with every timelapse shot, snapshot and day/night kick
   waking chn0 again — the configuration that produced the hangs.
