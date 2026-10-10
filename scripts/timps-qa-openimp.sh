@@ -427,6 +427,11 @@ else
 					oi_settle "$s" "fc${s}_before" || { oi_skip "FrontCrop stream $s: no picture (snapshot ?chn=$s / RTSP)"; continue; }
 					before="$OI_LAST"
 					for w in A B; do
+						rotv=$(jget "$OI_BASE" "video.$s.rotation")
+						if [ "$w" = B ] && [ "$exp" = crop ] && [ -n "$rotv" ] && [ "$rotv" != 0 ]; then
+							oi_skip "FrontCrop stream $s window B: stream rotated $rotv, the corner window is in sensor orientation and not graded"
+							continue
+						fi
 						if [ "$w" = A ]; then win=$WIN_A; alt=$WIN_B; else win=$WIN_B; alt=$WIN_A; fi
 						IFS=, read -r x y ww2 hh2 <<<"$win"
 						oi_fc_post 1 "$x" "$y" "$ww2" "$hh2" /dev/null >/dev/null
