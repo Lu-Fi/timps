@@ -46,6 +46,11 @@ else
 fi
 expect "loopback peer is exempt" 200 "$(code -H 'Host: attacker.example' http://127.0.0.1:18880/control)"
 
+# a /control body must not depend on the header bytes in front of it
+CK=$(head -c 3800 /dev/zero | tr '\0' a)
+expect "POST behind 3.8 KB of cookies" 200 "$(code -H "Cookie: s=$CK" -X POST -d '{"image":{"contrast":120}}' http://127.0.0.1:18880/control)"
+expect "POST body over 8 KB" 413 "$(code -X POST -d "{\"a\":\"$(head -c 9000 /dev/zero | tr '\0' x)\"}" http://127.0.0.1:18880/control)"
+
 # /control persistence: first change written at once, a burst coalesced into
 # one write at the end of the window, restart-required keys and shutdown flush
 L=http://127.0.0.1:18880/control

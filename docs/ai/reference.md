@@ -726,9 +726,10 @@ Response body (same shape whatever the status):
   short.** When one of these flags appears, do not reason from the list —
   re-read the state with `GET /control`.
 
-**Request size limits.** The request line, headers **and** body must fit one
-**4096-byte** connection buffer, so the usable JSON is 4096 minus whatever the
-headers consumed — roughly **3.5 KB** in practice. A larger declared
+**Request size limits.** The request line and headers must fit one
+**4096-byte** connection buffer; **since v1.10.1** the body may be up to
+**8192 bytes** regardless of them (before: 4096 minus the header bytes,
+roughly 3.5 KB, less with big cookies). A larger declared
 `Content-Length` is refused with **`413 Payload Too Large` / `body too large`**
 rather than silently truncated and half-applied. A full OSD or privacy batch
 can reach this; split it. A request using **`Transfer-Encoding`** instead of
@@ -751,7 +752,7 @@ Status codes and their `reason` discriminators:
 | 422 | `unknown_fields` | Parsed, but **no key this build knows** | Check spelling **and** whether the feature is compiled in (`caps`) — retrying identically will never work |
 | 409 | `values_rejected` | Keys were all known, all values refused | Key names were right, fix the values |
 | 411 | — | `Transfer-Encoding` instead of `Content-Length` | Send a fixed-length body |
-| 413 | — | Headers + body exceed the 4096-byte buffer | Split the request |
+| 413 | — | Body over 8192 bytes (since v1.10.1; before: headers + body over 4096) | Split the request |
 | 503 | `oom` | Allocation failure | Retry; not a client error |
 | 503 | `busy` | **since v1.10.1**: another POST has held the apply lock for 10 s (a libimp call that does not return) | Retry later; if it persists the supervisor restarts timps within ~30 s (`a /control request has been inside libimp for N s`) and the one-shot recovery reboot follows |
 | 503 | `shutting_down` | **since v1.9.28**: the daemon is shutting down and no longer accepts POSTs | Not a client error; the next boot will |

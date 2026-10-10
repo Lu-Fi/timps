@@ -50,6 +50,11 @@ _1.10.1 (draft)_
   `fields`/`clients`/`stats`/`dn_history`, `since`/`last`/`max`, WHEP `chn`)
   are matched as whole names after `?` or `&` (one `ms_qparam()` for httpd
   and `/talk`); `?xtoken=` or `?foo=chn=9` no longer count.
+- `/control` POST: the body may be up to 8 KB whatever the headers in front
+  of it; a browser with large cookies on the camera's host could get `413`
+  for a normal settings page before (body limit was 4 KB minus the header
+  bytes). Bodies that do not fit next to the headers are read into the heap
+  like a WHEP offer.
 
 ## [1.10.0] - 2026-10-11
 

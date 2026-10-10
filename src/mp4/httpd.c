@@ -1718,15 +1718,16 @@ static int peek_first_byte(int fd, int wait_ms)
 }
 #endif /* USE_TLS */
 
-#ifdef USE_WEBRTC
+#if defined(USE_WEBRTC) || defined(USE_CONTROL)
 /* Read a request body into the heap instead of the shared 4 KB stack buffer
  * conn_thread parses headers in. A real Chrome/Firefox SDP offer is 2.5-5 KB,
- * so the /control rule ("the body must fit in buf alongside the headers")
- * would 413 every browser. Same bounded-deadline read loop as that path, just
- * targeting a malloc'd buffer. Returns the NUL-terminated body (caller frees)
- * or NULL with *status set to what to answer. */
+ * and a /control body must not depend on how many cookie bytes the browser
+ * sent ahead of it. Same bounded-deadline read loop as the in-buffer path,
+ * just targeting a malloc'd buffer. Returns the NUL-terminated body (caller
+ * frees) or NULL with *status set to what to answer. */
 #define WEBRTC_BODY_MAX 16384
-static char *read_body_heap(hconn *c, const char *buf, int n, const char **status)
+#define CONTROL_BODY_MAX 8192
+static char *read_body_heap(hconn *c, const char *buf, int n, const char **status, int max)
 {
     const char *hdr_end = strstr(buf, "\r\n\r\n");
     if (!hdr_end) { *status = "400 Bad Request"; return NULL; }
@@ -1735,7 +1736,7 @@ static char *read_body_heap(hconn *c, const char *buf, int n, const char **statu
     const char *cl = head_find(buf, body, "Content-Length:");
     int clen = cl ? atoi(cl) : 0;
     if (clen <= 0)               { *status = "411 Length Required";   return NULL; }
-    if (clen > WEBRTC_BODY_MAX)  { *status = "413 Payload Too Large"; return NULL; }
+    if (clen > max)              { *status = "413 Payload Too Large"; return NULL; }
     char *out = (char *)malloc((size_t)clen + 1);
     if (!out) { *status = "503 Service Unavailable"; return NULL; }
     int have = n - (int)(body - buf);
@@ -1760,7 +1761,7 @@ static char *read_body_heap(hconn *c, const char *buf, int n, const char **statu
     out[clen] = 0;
     return out;
 }
-#endif /* USE_WEBRTC */
+#endif
 
 /* "METHOD SP target SP": 0 = ok, -2 = target too long, -1 = malformed (no
  * leading whitespace, no method longer than the buffer spilling into path) */
@@ -1798,6 +1799,7 @@ static int host_allowed(hconn *c, const char *buf)
 static void *conn_thread(void *arg)
 {
     hconn *c = (hconn*)arg;
+    char *heap_body = NULL;       /* a /control body too big for buf */
     /* M-1: registered before the first blocking I/O of this connection (the
      * TLS handshake already is one), so httpd_stop() can reach it from here
      * on. Full registry -> -1 -> every ms_creg_* call below is a no-op. */
@@ -2233,10 +2235,26 @@ static void *conn_thread(void *arg)
                         /* a negative Content-Length (e.g. "-1") used to slip
                          * past this guard entirely (clen > cap is false for
                          * any negative clen against a positive cap) */
-                        if (clen < 0 || clen > cap) {
+                        if (clen < 0 || clen > CONTROL_BODY_MAX) {
                             http_send_ex(c,"413 Payload Too Large","text/plain",cors,
                                         "body too large",14);
                             goto done;
+                        }
+                        /* long headers (cookies) leave too little room in buf */
+                        if (clen > cap) {
+                            const char *st = "400 Bad Request";
+                            heap_body = read_body_heap(c, buf, n, &st, CONTROL_BODY_MAX);
+                            if (!heap_body) {
+                                static const char bt[] = "{\"ok\":false,\"reason\":\"body_truncated\"}";
+                                if (!strncmp(st, "503", 3))
+                                    http_send_ex(c,st,"text/plain",cors,"oom",3);
+                                else
+                                    http_send_ex(c,"400 Bad Request","application/json",cors,
+                                                 bt,(int)sizeof bt - 1);
+                                goto done;
+                            }
+                            body = heap_body;
+                            have = clen;
                         }
                         /* H2: same bounded-deadline poll as the header
                          * phase above - without it a client announcing a
@@ -2507,7 +2525,7 @@ static void *conn_thread(void *arg)
                     http_send_ex(c,"404 Not Found","text/plain",cors,"not found",9);
                 else {
                     const char *st = "400 Bad Request";
-                    char *offer = read_body_heap(c, buf, n, &st);
+                    char *offer = read_body_heap(c, buf, n, &st, WEBRTC_BODY_MAX);
                     if (!offer) {
                         http_send_ex(c,st,"text/plain",cors,"bad offer",9);
                     } else {
@@ -2565,6 +2583,7 @@ static void *conn_thread(void *arg)
             http_send(c,"400 Bad Request","text/plain","bad request",11);
     }
 done:
+    free(heap_body);
 #ifdef USE_TLS
     if (c->tls) ms_tls_close((ms_tls_conn *)c->tls);
 #endif
