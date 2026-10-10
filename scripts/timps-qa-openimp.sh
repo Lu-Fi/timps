@@ -294,7 +294,7 @@ fi
 # image effects (default JPEG channel)
 oi_mean_at() {   # <key> <value> -> mean luma (or empty)
 	oi_post "{\"image\":{\"$1\":$2}}" /dev/null >/dev/null
-	oi_settle - "isp_$1_$2" || return 1
+	oi_settle - "isp_$1_$2" >&2 || return 1
 	oi_kv "$(oi_vis stats "$OI_LAST")" mean
 }
 oi_dn_state() { oi_get "$1" && printf '%s/%s' "$(jget "$1" daynight.mode)" "$(jget "$1" daynight.night_baseline)"; }
@@ -387,6 +387,8 @@ else
 			fi
 		elif [ -z "$sw" ] || [ "${sw:-0}" -le 0 ]; then
 			oi_skip "FrontCrop: caps.fcrop.sensor unknown"
+		elif [ "$ww" -ge "$sw" ] && [ "$wh" -ge "$sh" ]; then
+			oi_skip "FrontCrop: no window smaller than the sensor ${sw}x${sh} is allowed (the largest stream already is the sensor and fcrop_upscale_pct is 0) - nothing to crop"
 		else
 			info "FrontCrop windows (sensor ${sw}x${sh}): A=$WIN_A B=$WIN_B"
 			hs=""
