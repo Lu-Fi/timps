@@ -157,7 +157,7 @@ settings are correct.
 | Key | Type | Default | Range | Live? | Description |
 | --- | --- | --- | --- | --- | --- |
 | `fcrop_enable` | bool | 0 | 0/1 | **Live** where `caps.fcrop.live`; restart on T23 (OpenIMP) without the driver's `fcrop_upscale_pct` parameter | ISP FrontCrop ("zoom"): only the window below reaches the streams; each stream scales it to its own size. |
-| `fcrop_x` | int | 0 | 0–8192 | as above | Left edge, sensor-sized picture pixels (unrotated, as shown with `image.hflip`/`vflip`; OpenIMP T21/T23 mirror x and y for the flips, T10/T20 only y). |
+| `fcrop_x` | int | 0 | 0–8192 | as above | Left edge, sensor-sized picture pixels (unrotated, as shown with `image.hflip`/`vflip`; OpenIMP T21/T23/T31 mirror x and y for the flips, T10/T20 only y). |
 | `fcrop_y` | int | 0 | 0–8192 | as above | Top edge. |
 | `fcrop_w` | int | 0 | 0–8192 | as above | Width; at least 64. |
 | `fcrop_h` | int | 0 | 0–8192 | as above | Height; at least 64. |

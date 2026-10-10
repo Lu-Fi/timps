@@ -117,8 +117,9 @@ static inline const char *cap_tier_name(int t)
 /* the ISP crops in unflipped sensor coordinates on these axes and flips
  * afterwards, so image.fcrop_* (picture coordinates) are mirrored there:
  * bit0 x for image.hflip, bit1 y for image.vflip. Device-proven with
- * hflip+vflip; T31 and the vendor stacks untested or not needed. */
-#if defined(USE_OPENIMP) && (defined(PLATFORM_T21) || defined(PLATFORM_T23))
+ * hflip+vflip (T31 on the Garage, sc4336p); the vendor stacks untested or
+ * not needed. */
+#if defined(USE_OPENIMP) && (defined(PLATFORM_T21) || defined(PLATFORM_T23) || defined(PLATFORM_T31))
 #define FCROP_FLIP_MIRROR 3
 #elif defined(USE_OPENIMP) && (defined(PLATFORM_T10) || defined(PLATFORM_T20))
 #define FCROP_FLIP_MIRROR 2
