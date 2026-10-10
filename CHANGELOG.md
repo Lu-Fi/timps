@@ -174,9 +174,10 @@ semantic versioning.
 
 ### Fixed
 
-- **FrontCrop with flips on OpenIMP T23**: `image.fcrop_x/y` are picture
-  coordinates; the window is mirrored for `image.hflip`/`image.vflip` (the ISP
-  crops before it flips) and re-applied on a live flip change.
+- **FrontCrop with flips on OpenIMP T10/T20/T21/T23**: `image.fcrop_x/y` are
+  picture coordinates; the window is mirrored where the ISP crops before it
+  flips (T21/T23 both axes, T10/T20 only `image.vflip`) and re-applied on a
+  live change of such a flip.
 - **FrontCrop on T10/T20/T21 refused while the sub stream was idle**: the
   driver counts an idle stream's channel as unable to show the window
   (`-EOPNOTSUPP`), so a POST with no viewer on the sub stream read `rejected`
