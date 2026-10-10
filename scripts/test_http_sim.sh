@@ -29,6 +29,7 @@ if [ -n "$IP" ]; then
     U="http://$IP:18880"
     HN=$(hostname)
     expect "Host = IP literal"          200 "$(code -u webuser:webpass "$U/control")"
+    expect "Digest from the nonce's peer" 200 "$(code --digest -u webuser:webpass "$U/control")"
     expect "Host = foreign name"        421 "$(code -u webuser:webpass -H 'Host: attacker.example' "$U/control")"
     expect "foreign name, snapshot"     421 "$(code -H 'Host: attacker.example:18880' "$U/snapshot.jpg?token=simtoken123")"
     expect "foreign name, preflight"    421 "$(code -X OPTIONS -H 'Host: attacker.example' -H 'Origin: http://attacker.example' "$U/control")"

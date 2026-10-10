@@ -16,6 +16,9 @@ _1.10.1 (draft)_
   credentials. New file-only key `http.allowed_hosts` for reverse proxies and
   DNS aliases (`*` = off). The PNA preflight consents only for a same-host
   `Origin` or a valid token.
+- HTTP Digest: a nonce is only accepted from the peer it was issued to (it
+  was stored but never compared), so a sniffed response cannot be replayed
+  from another host within the nonce lifetime.
 
 ### Changed
 

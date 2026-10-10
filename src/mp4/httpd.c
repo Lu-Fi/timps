@@ -1107,7 +1107,7 @@ static void http_new_nonce(char out[33], uint32_t ip)
  * consumes (no-qop) or advances (qop=auth) the entry under the lock.
  * strcmp on the nonce is fine timing-wise: nonces are public values,
  * sent in clear in every 401. */
-static int http_nonce_check(const char *nonce, const char *nc)
+static int http_nonce_check(const char *nonce, const char *nc, uint32_t ip)
 {
     int64_t now = ms_now_us();
     int ok = 0;
@@ -1117,6 +1117,7 @@ static int http_nonce_check(const char *nonce, const char *nc)
         if (!e->n[0]) continue;
         if (now - e->born > HTTP_NONCE_TTL_US) { e->n[0] = 0; continue; }
         if (strcmp(e->n, nonce) != 0) continue;
+        if (e->ip != ip) break;                    /* issued to another peer */
         if (nc && nc[0]) {                         /* qop=auth: nc must grow */
             char *end = NULL;
             uint64_t v = strtoull(nc, &end, 16);
@@ -1139,7 +1140,7 @@ static int http_nonce_check(const char *nonce, const char *nc)
  * (per RFC 7616 3.3 stale MUST only be sent when the creds were right). */
 static int http_check_auth(const ms_config *cfg, const char *buf,
                            const char *method, const char *path,
-                           int *digest_stale)
+                           uint32_t ip, int *digest_stale)
 {
     const char *user = cfg->http_user[0] ? cfg->http_user : cfg->rtsp_user;
     const char *pass = cfg->http_user[0] ? cfg->http_pass : cfg->rtsp_pass;
@@ -1160,7 +1161,7 @@ static int http_check_auth(const ms_config *cfg, const char *buf,
                 if (!auth_http_digest(method, path, line, user, pass,
                                       cn, sizeof cn, nc, sizeof nc))
                     return 0;                      /* wrong user/pass/uri/format */
-                if (http_nonce_check(cn, nc)) return 1;
+                if (http_nonce_check(cn, nc, ip)) return 1;
                 if (digest_stale) *digest_stale = 1;
                 return 0;
             }
@@ -1983,7 +1984,7 @@ static void *conn_thread(void *arg)
              * clients upgrade while plain Basic pollers keep working. */
             int stale = 0;
             if (!c->local && !tok_ok &&
-                !http_check_auth(c->cfg, buf, method, path, &stale)) {
+                !http_check_auth(c->cfg, buf, method, path, c->peer.sin_addr.s_addr, &stale)) {
                 /* only real credential failures feed the rate-limited
                  * brute-force report: a header-less request is the normal
                  * digest first round-trip, a stale nonce a normal retry */
