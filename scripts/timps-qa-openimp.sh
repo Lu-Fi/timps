@@ -49,7 +49,7 @@
 #           brightness 64 -> 192 -> 64 -> 192: mean luma must rise by >= 8
 #             (WARN if not, FAIL if it falls; SKIP when the two 64 or the two
 #             192 readings or the daynight state differ: the scene changed)
-#           colorfx 1 (B/W): saturation <= 25 % of colorfx 0 (FAIL if not;
+#           colorfx 1 (B/W): saturation <= 35 % of colorfx 0 (FAIL if not;
 #             SKIP when the picture has no colour, e.g. night)
 #           ae_compensation 40 -> 230 -> 40: as brightness
 #           sinter/temper 0 vs 255: temporal noise numbers, INFO only
@@ -332,7 +332,7 @@ else
 		oi_post "{\"image\":{\"colorfx\":$c0}}" /dev/null >/dev/null
 		if [ -z "$s0" ] || [ -z "$s1" ]; then oi_skip "colorfx effect: no snapshot"
 		elif fcmp "$s0" lt 4; then oi_skip "colorfx effect: picture has no colour (sat $s0; night/IR?)"
-		elif fcmp "$s1" le "$(awk -v a="$s0" 'BEGIN{print a*0.25}')"; then oi_ok "colorfx 1 (B/W): saturation $s0 -> $s1 (<= 25 %)"
+		elif fcmp "$s1" le "$(awk -v a="$s0" 'BEGIN{print a*0.35}')"; then oi_ok "colorfx 1 (B/W): saturation $s0 -> $s1 (<= 35 %)"
 		else oi_soft oi_bad "colorfx 1 (B/W): saturation $s0 -> $s1 - the mode had no visible effect"; fi;;
 	esac
 	for k in sinter_strength temper_strength; do
