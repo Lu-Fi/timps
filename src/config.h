@@ -138,6 +138,14 @@ typedef struct {
     int      fps;
     int      width, height;
     int      size_guessed;   /* not a key: width/height are the video0 fallback */
+    /* T40/T41 IMPSensorInfo board wiring, file-only; -1 = leave libimp's
+     * zero (or, for the gpios, today's forced -1) */
+    int      i2c_adapter;
+    int      mclk;
+    int      video_interface;
+    int      default_boot;
+    int      rst_gpio;
+    int      pwdn_gpio;
 } ms_sensor_cfg;
 
 /* JPEG / MJPEG snapshot stream (the old streamer's "stream2") */

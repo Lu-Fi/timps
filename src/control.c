@@ -1798,14 +1798,20 @@ int control_get_json(char *buf, size_t cap)
         /* F-03: model is runtime-mutable AND i2c_addr/fps/width/height are
          * POST-able (F-01) - snapshot the string and the numerics together. */
         int s_i2c, s_fps, s_w, s_h;
+        const ms_sensor_cfg *sc = &c->sensor;
         config_str_lock();
         jesc(c->sensor.model, sm, sizeof sm);
         s_i2c = c->sensor.i2c_addr; s_fps = c->sensor.fps;
         s_w = c->sensor.width; s_h = c->sensor.height;
         config_str_unlock();
+        /* the wiring keys are file-only (not POST-able), so never written
+         * after startup */
         APP("\"sensor\":{\"model\":\"%s\",\"i2c_addr\":%d,\"fps\":%d,"
-            "\"width\":%d,\"height\":%d},",
-            sm, s_i2c, s_fps, s_w, s_h);
+            "\"width\":%d,\"height\":%d,\"i2c_adapter\":%d,\"mclk\":%d,"
+            "\"video_interface\":%d,\"default_boot\":%d,\"rst_gpio\":%d,"
+            "\"pwdn_gpio\":%d},",
+            sm, s_i2c, s_fps, s_w, s_h, sc->i2c_adapter, sc->mclk,
+            sc->video_interface, sc->default_boot, sc->rst_gpio, sc->pwdn_gpio);
     }
     /* video streams (persist-first; the ENC_LIVE_KEYS rc subset applies
      * live, see caps.video_live above). codec/rc_mode go through

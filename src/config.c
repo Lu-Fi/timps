@@ -271,6 +271,8 @@ void config_defaults(ms_config *c)
     c->sensor.fps = 0;
     c->sensor.width = 0;
     c->sensor.height = 0;
+    c->sensor.i2c_adapter = c->sensor.mclk = c->sensor.video_interface = -1;
+    c->sensor.default_boot = c->sensor.rst_gpio = c->sensor.pwdn_gpio = -1;
 
     /* ISP image defaults (128 = neutral, like the old streamer) */
     ms_image_cfg *im = &c->image;
@@ -655,6 +657,7 @@ enum {
     T_BCCODEC,  /* int: "pcmu"/"pcma"/"aac"/number   <-> "%d"             */
     T_TRISTATE, /* int: 0/1/2, legacy bool words -> 1 <-> "%d"            */
     T_AUTOBOOL, /* int: -1 "auto" / 0 off / 1 on, bool words <-> "%d"      */
+    T_OPTINT,   /* int: -1 unset; junk/out of lo..hi -> -1 + warning      */
 };
 
 /* F_NOGET/F_ATOMIC/F_CTRL and the cfg_field struct itself now live in
@@ -688,6 +691,14 @@ static const cfg_field sensor_fields[] = {
     F ("fps",       0,             fps,      T_INT, F_CTRL, 0,120),
     F ("width",     0,             width,    T_INT, F_CTRL, 0,8192),
     F ("height",    0,             height,   T_INT, F_CTRL, 0,8192),
+    /* no F_CTRL: a wrong bus/clock/pin over HTTP would crash-loop the ISP.
+     * Ranges: IMPSensorMclk/IMPSensorVinType *_BUTT - 1 (T40 1.3.1). */
+    F ("i2c_adapter",     "i2c_adapter_id", i2c_adapter,     T_OPTINT, 0, -1,15),
+    F ("mclk",            0,                mclk,            T_OPTINT, 0, -1,2),
+    F ("video_interface", 0,                video_interface, T_OPTINT, 0, -1,2),
+    F ("default_boot",    0,                default_boot,    T_OPTINT, 0, -1,15),
+    F ("rst_gpio",        0,                rst_gpio,        T_OPTINT, 0, -1,255),
+    F ("pwdn_gpio",       0,                pwdn_gpio,       T_OPTINT, 0, -1,255),
 };
 #undef TT
 
@@ -1426,6 +1437,14 @@ static void field_set(void *base, const cfg_field *f, const char *val)
     case T_BOOL:   *(int*)p = pbool(val); secval_warn(f,val,*(int*)p); break;
     case T_INT:    *(int*)p = (f->lo < f->hi) ? pint_cl(val,f->lo,f->hi)
                                               : pint(val); break;
+    case T_OPTINT: { int n;
+                   /* clamping a pin/bus number would drive the wrong one */
+                   if (!pint_exact(val,&n) || n < f->lo || n > f->hi){
+                       LOGW(MOD,"%s%s = '%s' invalid (%d..%d), ignored",
+                            field_prefix(f), f->name, val, f->lo, f->hi);
+                       n = -1;
+                   }
+                   *(int*)p = n; break; }
     case T_CHAN: { int v = pint(val);
                    *(int*)p = (v<0 || v>=MS_MAX_VSTREAM) ? 0 : v; break; }
     case T_HEX:    *(uint32_t*)p = phex(val); break;
@@ -1498,6 +1517,7 @@ static int field_get(const void *base, const cfg_field *f, char *out, size_t cap
     switch (f->type){
     case T_BOOL: case T_INT: case T_CHAN: case T_ROT:
     case T_RECMODE: case T_BCCODEC: case T_TRISTATE: case T_AUTOBOOL:
+    case T_OPTINT:
         snprintf(out,cap,"%d",*(const int*)p); break;
     case T_HEX:    snprintf(out,cap,"0x%08X",*(const uint32_t*)p); break;
     case T_FLT:    snprintf(out,cap,"%g",(double)*(const float*)p); break;

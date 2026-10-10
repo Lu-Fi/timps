@@ -220,6 +220,29 @@ int main(void)
                    "sensor.width = 320\nsensor.height = 240\n", 1, 320, 240);
     }
 
+    /* T40/T41 sensor wiring: unset stays -1, a bad value is dropped, never
+     * clamped onto another bus/pin */
+    {
+        check("sensor.i2c_adapter unset", "", "sensor.i2c_adapter", "-1");
+        check("sensor.rst_gpio unset", "", "sensor.rst_gpio", "-1");
+        check("sensor.i2c_adapter = 1", "sensor.i2c_adapter = 1\n", "sensor.i2c_adapter", "1");
+        check("sensor.i2c_adapter_id alias", "sensor.i2c_adapter_id = 2\n", "sensor.i2c_adapter", "2");
+        check("sensor.i2c_adapter = 16 dropped", "sensor.i2c_adapter = 16\n", "sensor.i2c_adapter", "-1");
+        check("sensor.mclk = 1", "sensor.mclk = 1\n", "sensor.mclk", "1");
+        check("sensor.mclk = 3 (BUTT) dropped", "sensor.mclk = 3\n", "sensor.mclk", "-1");
+        check("sensor.video_interface = 0", "sensor.video_interface = 0\n", "sensor.video_interface", "0");
+        check("sensor.video_interface = 3 dropped", "sensor.video_interface = 3\n", "sensor.video_interface", "-1");
+        check("sensor.default_boot = 4", "sensor.default_boot = 4\n", "sensor.default_boot", "4");
+        check("sensor.rst_gpio = 91", "sensor.rst_gpio = 91\n", "sensor.rst_gpio", "91");
+        check("sensor.rst_gpio junk dropped", "sensor.rst_gpio = PC27\n", "sensor.rst_gpio", "-1");
+        check("sensor.pwdn_gpio = -1", "sensor.pwdn_gpio = -1\n", "sensor.pwdn_gpio", "-1");
+        check("sensor.pwdn_gpio = -2 dropped", "sensor.pwdn_gpio = -2\n", "sensor.pwdn_gpio", "-1");
+        check("sensor 4K@20 explicit", "sensor.width = 3840\nsensor.height = 2160\nsensor.fps = 20\n",
+              "sensor.fps", "20");
+        check_dims("4K sensor keeps the 1080p main default",
+                   "sensor.width = 3840\nsensor.height = 2160\nsensor.fps = 20\n", 0, 1920, 1080);
+    }
+
     /* an embedded NUL used to truncate the value silently (strlen) instead
      * of being reported; the line is now dropped as a whole */
     {

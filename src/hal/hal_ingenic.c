@@ -2245,6 +2245,28 @@ static int isp_init(void)
              (int)sizeof(g_sensor.i2c.type)-1, g_hcfg->sensor.model);
     config_str_unlock();
     g_sensor.i2c.addr = g_hcfg->sensor.i2c_addr;
+    {
+        const ms_sensor_cfg *sc = &g_hcfg->sensor;
+#if defined(PLATFORM_T40)||defined(PLATFORM_T41)
+        /* boards that wire the sensor off adapter 0 / MCLK0 / CSI0 (Eufy
+         * S350: i2c1, MCLK1, rst PC27) fail AddSensor with the zero defaults */
+        if (sc->i2c_adapter >= 0)     g_sensor.i2c.i2c_adapter_id = sc->i2c_adapter;
+        if (sc->mclk >= 0)            g_sensor.mclk = (IMPSensorMclk)sc->mclk;
+        if (sc->video_interface >= 0) g_sensor.video_interface = (IMPSensorVinType)sc->video_interface;
+        if (sc->default_boot >= 0)    g_sensor.default_boot = sc->default_boot;
+        if (sc->rst_gpio >= 0)        g_sensor.rst_gpio = sc->rst_gpio;
+        if (sc->pwdn_gpio >= 0)       g_sensor.pwdn_gpio = sc->pwdn_gpio;
+        LOGI(MOD,"sensor bus: i2c%d mclk%d vin=%d boot=%d rst=%d pwdn=%d",
+             (int)g_sensor.i2c.i2c_adapter_id, (int)g_sensor.mclk,
+             (int)g_sensor.video_interface, g_sensor.default_boot,
+             g_sensor.rst_gpio, g_sensor.pwdn_gpio);
+#else
+        if (sc->i2c_adapter >= 0 || sc->mclk >= 0 || sc->video_interface >= 0 ||
+            sc->default_boot >= 0 || sc->rst_gpio >= 0 || sc->pwdn_gpio >= 0)
+            LOGW(MOD,"sensor.i2c_adapter/mclk/video_interface/default_boot/"
+                     "rst_gpio/pwdn_gpio are T40/T41 only - ignored");
+#endif
+    }
 
     /* NOT optional on any SoC, T40/T41 included: on T41 libimp's `pool_size`
      * defaults to 1 BYTE, and that pool IS the IPU's OSD scratch buffer
