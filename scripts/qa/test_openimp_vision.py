@@ -257,6 +257,7 @@ class TestRoi(Base):
         v, why = ov.roi_recheck("NOEFFECT", 0.98, "PASS", 0.80)
         self.assertEqual(v, "PASS")
         self.assertEqual(why, "recheck: first rel 0.98, second rel 0.80")
+        self.assertEqual(ov.roi_recheck("NOEFFECT", 0.98, "NOEFFECT", 0.97)[0], "NOEFFECT")
         self.assertEqual(ov.roi_recheck("FAIL", 0.77, "FAIL", 0.79)[0], "FAIL")
         self.assertEqual(ov.roi_recheck("FAIL", 0.77, "NOEFFECT", 1.00)[0], "NOEFFECT")
         self.assertEqual(ov.roi_recheck("NOEFFECT", 0.98, "WARN", 0.92)[0], "WARN")
@@ -265,6 +266,11 @@ class TestRoi(Base):
             self.assertEqual(v, "FAIL")
             self.assertIn("second rel n/a", why)
 
+    def test_recheck_wrong_direction_not_cleared(self):
+        v, why = ov.roi_recheck("FAIL", 0.77, "PASS", 1.20)
+        self.assertEqual(v, "WARN")
+        self.assertEqual(why, "recheck disagrees: first rel 0.77, second rel 1.20")
+
     def test_recheck_cli(self):
         import contextlib
         import io
@@ -272,7 +278,12 @@ class TestRoi(Base):
         with contextlib.redirect_stdout(out):
             ov.main(["recheck", "--v1", "FAIL", "--rel1", "0.77", "--v2", "PASS", "--rel2", "1.2"])
         self.assertEqual(out.getvalue().strip(),
-                         'verdict=PASS reason="recheck: first rel 0.77, second rel 1.20"')
+                         'verdict=WARN reason="recheck disagrees: first rel 0.77, second rel 1.20"')
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ov.main(["recheck", "--v1", "NOEFFECT", "--rel1", "0.98", "--v2", "PASS", "--rel2", "0.80"])
+        self.assertEqual(out.getvalue().strip(),
+                         'verdict=PASS reason="recheck: first rel 0.98, second rel 0.80"')
         out = io.StringIO()
         with contextlib.redirect_stdout(out):
             ov.main(["recheck", "--v1", "FAIL", "--rel1", "0.77", "--v2", "ERROR", "--rel2", ""])

@@ -303,12 +303,16 @@ def roi_check(offs, ons, rect, direction, delta=None, rc=None):
 
 
 def roi_recheck(v1, rel1, v2, rel2):
-    """Verdict after a recheck: the second measurement, unless it could not grade."""
+    """Verdict after a recheck: the second measurement, unless it could not grade.
+    A pre-IDR first measurement reads NOEFFECT, never the wrong sign, so a FAIL
+    is not cleared by one PASS."""
     def f(x):
         return "n/a" if x is None else "%.2f" % x
     note = "recheck: first rel %s, second rel %s" % (f(rel1), f(rel2))
     if v2 not in ("PASS", "FAIL", "NOEFFECT", "WARN"):
         return v1, note + " (second not gradable, first kept)"
+    if v1 == "FAIL" and v2 == "PASS":
+        return "WARN", "recheck disagrees: first rel %s, second rel %s" % (f(rel1), f(rel2))
     return v2, note
 
 

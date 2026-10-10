@@ -534,7 +534,9 @@ else
 					sleep 1
 					if oi_roi_measure "$s" "$d" "roi${s}_${d}_re" "$qd" "$rcm" " recheck"; then
 						rr=$(oi_vis recheck --v1 "$v" --rel1 "$(oi_kv "$r" rel)" --v2 "$OI_V" --rel2 "$(oi_kv "$OI_R" rel)")
-						[ "$(oi_kv "$rr" verdict)" = "$OI_V" ] && { r=$OI_R; v=$OI_V; hint=$OI_HINT; }
+						rv=$(oi_kv "$rr" verdict)
+						if [ "$rv" = "$OI_V" ]; then r=$OI_R; v=$OI_V; hint=$OI_HINT
+						elif [ "$rv" = WARN ]; then v=WARN; hint=""; fi
 						note=" ($(oi_reason "$rr"))"
 					else note=" (recheck: no I-frames, first measurement kept)"; fi;;
 				esac
