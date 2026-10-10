@@ -11,6 +11,7 @@
 #include <fcntl.h>
 #include <ctype.h>
 #include <pthread.h>
+#include <arpa/inet.h>
 
 int auth_http_basic(const char *value, const char *user, const char *pass)
 {
@@ -344,4 +345,50 @@ int auth_origin_ok(const char *head)
      * construction, so requiring port equality would reject every legitimate
      * same-camera request. Host equality is the property that matters. */
     return oh[0] && hh[0] && !strcasecmp(oh, hh);
+}
+
+/* DNS rebinding: a page on attacker.example whose name re-resolves to this
+ * camera is same-origin to the browser, so Origin checks pass. Only the Host
+ * header still says which name the browser thinks it talks to. IP literals
+ * pass (no DNS involved; NAT/port-forward addresses differ from getsockname),
+ * so do "localhost", the hostname itself and any "<hostname>.<domain>"
+ * (mDNS .local, router DNS), and http.allowed_hosts entries. */
+int auth_host_ok(const char *head, const char *hostname, const char *allowed)
+{
+    char host[256];
+    if (!auth_hdr_get(head, "Host", host, sizeof host) || !host[0])
+        return 1;                                   /* HTTP/1.0, non-browser */
+    if (host[0] == '[') {
+        char *e = strchr(host, ']');
+        struct in6_addr a6;
+        if (!e) return 0;
+        *e = 0;
+        return inet_pton(AF_INET6, host + 1, &a6) == 1;
+    }
+    char *c = strchr(host, ':');
+    if (c) *c = 0;
+    size_t hl = strlen(host);
+    while (hl && host[hl-1] == '.') host[--hl] = 0;
+    if (!hl) return 0;
+    struct in_addr a4;
+    if (inet_pton(AF_INET, host, &a4) == 1) return 1;
+    if (!strcasecmp(host, "localhost")) return 1;
+    size_t nl = hostname ? strlen(hostname) : 0;
+    if (nl && hl >= nl && !strncasecmp(host, hostname, nl) &&
+        (host[nl] == 0 || host[nl] == '.'))
+        return 1;
+    for (const char *p = allowed ? allowed : ""; *p; ) {
+        p += strspn(p, ", \t");
+        size_t el = strcspn(p, ", \t");
+        if (!el) break;
+        if (el == 1 && *p == '*') return 1;
+        if (*p == '.') {                            /* ".example.net": subdomains */
+            if (el > 1 && ((hl >= el && !strncasecmp(host + hl - el, p, el)) ||
+                           (hl == el - 1 && !strncasecmp(host, p + 1, hl))))
+                return 1;
+        } else if (hl == el && !strncasecmp(host, p, el))
+            return 1;
+        p += el;
+    }
+    return 0;
 }

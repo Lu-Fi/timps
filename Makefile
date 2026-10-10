@@ -360,6 +360,19 @@ test-auth:
 	 kill $$simpid 2>/dev/null; wait $$simpid 2>/dev/null; \
 	 exit $$rc
 
+# Host-only test for the DNS-rebinding Host policy and the Origin/Host
+# comparison (src/auth.c: auth_host_ok, auth_origin_ok). Exit code is the result.
+test-http-host:
+	$(HOSTCC) $(CFLAGS) -Isrc scripts/test_http_host.c src/auth.c src/md5.c src/util.c src/log.c \
+	  $(LDFLAGS) -lpthread -o $(BIN)-hosttest
+	@./$(BIN)-hosttest; rc=$$?; rm -f $(BIN)-hosttest; exit $$rc
+
+# Sim run: the Host gate, PNA consent and /control persistence over real
+# sockets (scripts/test_http_sim.sh, its own ports 18554/18880).
+test-http-sim:
+	$(MAKE) sim USE_CONTROL=1
+	@scripts/test_http_sim.sh ./$(BIN)-sim
+
 # Host-only unit test for the config-file line parser (quoting, inline
 # comments, the writer/loader round trip). Links the real src/config.c, needs
 # no hardware and no running daemon; exit code is the test result.
@@ -589,4 +602,4 @@ strip: target
 	$(CROSS_COMPILE)strip $(BIN)
 
 clean:
-	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest $(BIN)-hubidrtest $(BIN)-stuntest $(BIN)-tlprunetest $(BIN)-recringtest $(BIN)-fsrottest $(BIN)-fsreftest $(BIN)-dnidletest $(BIN)-dnreachtest $(BIN)-hubholdtest $(BIN)-roitest
+	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest $(BIN)-hubidrtest $(BIN)-stuntest $(BIN)-tlprunetest $(BIN)-recringtest $(BIN)-fsrottest $(BIN)-fsreftest $(BIN)-dnidletest $(BIN)-dnreachtest $(BIN)-hubholdtest $(BIN)-roitest $(BIN)-hosttest

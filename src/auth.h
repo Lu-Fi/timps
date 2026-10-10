@@ -66,5 +66,10 @@ int  auth_hdr_get(const char *head, const char *name, char *out, int cap);
  * non-browser client), an opaque one fails, otherwise its host must equal
  * the Host header's host. Ports are not compared. Returns 1 if acceptable. */
 int  auth_origin_ok(const char *head);
+/* Host policy against DNS rebinding: absent Host, IP literals, "localhost",
+ * `hostname` and "<hostname>.<anything>" pass, plus the comma/space list
+ * `allowed` (exact names, ".suffix" for a domain, "*" for any). Ports are
+ * ignored. Returns 1 if acceptable. */
+int  auth_host_ok(const char *head, const char *hostname, const char *allowed);
 
 #endif

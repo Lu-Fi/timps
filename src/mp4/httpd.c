@@ -1768,6 +1768,24 @@ static int req_line(const char *b, char *m, size_t mcap, char *t, size_t tcap)
     return 0;
 }
 
+/* DNS-rebinding guard (auth_host_ok); loopback peers are on-device */
+static int host_allowed(hconn *c, const char *buf)
+{
+    char hn[128];
+    if (gethostname(hn, sizeof hn) != 0) hn[0] = 0;
+    hn[sizeof hn - 1] = 0;
+    if (auth_host_ok(buf, hn, c->cfg->http_allowed_hosts)) return 1;
+    static ms_ratelog rl = MS_RATELOG_INIT;
+    unsigned muted;
+    if (ms_ratelog_due(&rl, &muted)) {
+        char h[64] = "";
+        auth_hdr_get(buf, "Host", h, sizeof h);
+        LOGW(MOD,"refused Host \"%s\" (not this camera; add it to "
+                 "http.allowed_hosts for a proxy) (%u more suppressed)", h, muted);
+    }
+    return 0;
+}
+
 static void *conn_thread(void *arg)
 {
     hconn *c = (hconn*)arg;
@@ -1881,6 +1899,8 @@ static void *conn_thread(void *arg)
         int rl = req_line(buf, method, sizeof method, path, sizeof path);
         if (rl == -2)
             http_send(c,"414 URI Too Long","text/plain","uri too long",12);
+        else if (rl == 0 && !c->local && !host_allowed(c, buf))
+            http_send(c,"421 Misdirected Request","text/plain","host not allowed",16);
         else if (rl == 0) {
             /* HEAD = GET semantics with the body suppressed everywhere
              * (http_send_ex + the per-handler checks below) */
@@ -1937,18 +1957,13 @@ static void *conn_thread(void *arg)
                      * form of PNA add Access-Control-Request-Private-Network
                      * when a fetch crosses into a more-private address space,
                      * and refuse the real request unless the preflight
-                     * consents. Consenting is free here: what PNA protects is
-                     * an UNAUTHENTICATED LAN device being driven by a remote
-                     * page through the user's browser, and every endpoint
-                     * behind this preflight still needs the token/Basic/Digest
-                     * (or localhost) gate on the actual request - so this
-                     * grants a browser no reach a curl on the same network
-                     * does not already have. Echoed only when asked for, never
-                     * volunteered: an unprompted opt-in header is noise on
-                     * every other preflight and says nothing true about them. */
+                     * consents. Consent only for the camera's own pages
+                     * (Origin host == Host) or a token holder: a remote page
+                     * with default credentials must not be let in. Echoed
+                     * only when asked for, never volunteered. */
                     const char *pna = "";
                     char pnaq[16];
-                    if (cors_ok &&
+                    if (cors_ok && (tok_ok || auth_origin_ok(buf)) &&
                         http_header(buf, "Access-Control-Request-Private-Network:",
                                     pnaq, sizeof pnaq) && !strcasecmp(pnaq,"true"))
                         pna = "Access-Control-Allow-Private-Network: true\r\n";

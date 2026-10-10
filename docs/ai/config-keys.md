@@ -1386,6 +1386,7 @@ keys are deliberately unreachable over the very endpoint they protect.
 | `http.pass` | string[64] | `""` | — | file-only, restart | Alias `http.password`. |
 | `http.token` | string[64] | `""` | — | file-only, restart | Optional **persistent** remote secret, accepted as a valid `?token=`, for automation. Never written to `token_file`. |
 | `http.token_file` | string[128] | `/run/timps.token` | — | file-only, restart | Where the random per-boot token is published for local privileged readers. `""` = do not write. The configured `http.token` secret is never put here. |
+| `http.allowed_hosts` | string[256] | `""` | — | file-only, restart | **since v1.10.1** Extra `Host` header names the HTTP port answers (DNS-rebinding guard, see below). Comma/space list: `cam.example.net` exact, `.example.net` that domain and its subdomains, `*` any (turns the guard off). Names only, no port. Needed only behind a reverse proxy or a DNS name that does not start with the camera's hostname. |
 | `http.https` | tri-state int | `0` | 0..2 | file-only, restart | Alias `http.tls`. `0` = plain HTTP only. `1` = **both** schemes on the same port, sniffed per connection (`0x16` = a TLS handshake record; every HTTP method starts with a letter). `2` = TLS only, plaintext refused with 426. Legacy `true`/`on`/`yes` parse as `1`. **`F_SECVAL`.** Needs `USE_TLS`. |
 | `http.tls_cert` | string[128] | `/etc/ssl/certs/timps.crt` | — | file-only, restart | PEM certificate. |
 | `http.tls_key` | string[128] | `/etc/ssl/private/timps.key` | — | file-only, restart | PEM private key. |
@@ -1396,6 +1397,13 @@ Important behaviours
   now means "both". An operator who wants the old strict behaviour must say
   `2`. This is the opposite polarity to `audio.talk_ws`, where `1` is the
   *stricter* value.
+* **Host gate (since v1.10.1).** Every non-loopback request whose `Host`
+  header is not an IP literal, `localhost`, the camera's hostname,
+  `<hostname>.<anything>` (`.local`, router DNS) or an `http.allowed_hosts`
+  entry gets `421 host not allowed` (DNS rebinding: a page on a foreign name
+  re-resolved to the camera). Requests without `Host` (HTTP/1.0) pass. The
+  OPTIONS preflight echoes `Access-Control-Allow-Private-Network: true` only
+  for a same-host `Origin` or a valid `?token=`.
 * **TLS fails closed.** If the cert/key cannot be loaded, the HTTP listener is
   not bound at all, so `http.https = 2` without a usable cert takes the whole
   HTTP port down.

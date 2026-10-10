@@ -6,6 +6,17 @@ semantic versioning.
 
 ## [Unreleased]
 
+_1.10.1 (draft)_
+
+### Security
+
+- HTTP: every non-loopback request must name the camera in its `Host`
+  header (IP literal, `localhost`, the hostname, `<hostname>.<domain>`), or
+  it gets `421`. Closes DNS rebinding against `/control` with default
+  credentials. New file-only key `http.allowed_hosts` for reverse proxies and
+  DNS aliases (`*` = off). The PNA preflight consents only for a same-host
+  `Origin` or a valid token.
+
 ## [1.10.0] - 2026-10-11
 
 Encoder ROI (`roi<S>.<N>.*`) and ISP FrontCrop (`image.fcrop_*`) arrive with

@@ -494,8 +494,10 @@ carries no credentials by design). Two details worth knowing:
   `Access-Control-Request-Private-Network: true` (Chrome's PNA, for a page
   hosted off the LAN reaching a LAN device), the preflight echoes
   `Access-Control-Allow-Private-Network: true`. It is echoed **only when
-  asked**, never volunteered. It grants nothing: the real request still has to
-  pass the token/Basic/Digest/loopback gate. On the media paths of an open
+  asked**, never volunteered, and **since v1.10.1** only when the `Origin`
+  host equals the `Host` header's host (the camera's own WebUI) or the URL
+  carries a valid `?token=`: a foreign page is no longer let into the LAN
+  just because the camera still has default credentials. On the media paths of an open
   camera (no `http.user`/`rtsp.user`) neither the PNA grant nor any CORS header
   is sent unless the URL carries a valid `?token=`.
 - The WHEP `201 Created` adds
@@ -546,6 +548,17 @@ from its `Host` header's host is refused with `403 bad origin` (CSRF: browsers
 re-send cached HTTP credentials on cross-site form posts). Token and loopback
 requests, and clients that send no `Origin` (curl, scripts), are unaffected.
 Ports are not compared.
+
+**since v1.10.1** every non-loopback HTTP request is checked against
+DNS rebinding: its `Host` header must be an IP literal (any address, v4 or
+`[v6]`), `localhost`, the camera's hostname, `<hostname>.<anything>`
+(`garage.local`, `garage.fritz.box`) or an entry of the file-only key
+`http.allowed_hosts` (reverse proxies; `*` turns the gate off). Otherwise the
+answer is `421 Misdirected Request` with the body `host not allowed`, and a
+rate-limited WARN names the refused host. Requests without a `Host` header
+pass; `timps-qa.sh` and tools using `http://<ip>:8880` are unaffected. If a
+user reaches the camera by a DNS alias that does not start with its hostname,
+add that name to `http.allowed_hosts` and restart.
 
 Useful shell snippet for a user on the camera or a LAN host:
 
@@ -730,6 +743,7 @@ Status codes and their `reason` discriminators:
 | 413 | — | Headers + body exceed the 4096-byte buffer | Split the request |
 | 503 | `oom` | Allocation failure | Retry; not a client error |
 | 503 | `shutting_down` | **since v1.9.28**: the daemon is shutting down and no longer accepts POSTs | Not a client error; the next boot will |
+| 421 | — (plain-text body `host not allowed`) | **since v1.10.1**: any path, the `Host` header names neither an IP, the camera's hostname nor an `http.allowed_hosts` entry (DNS-rebinding guard) | Use the IP or hostname, or add the name to `http.allowed_hosts` |
 | 403 | — (plain-text body `bad origin`) | **since v1.9.28**: a Basic/Digest-authenticated POST from a page on another host (CSRF guard) | Use the token, or post from the camera's own host |
 
 ### `GET /events` (SSE)

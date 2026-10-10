@@ -613,6 +613,9 @@ typedef struct {
      * ("" = don't write). The configured secret is NEVER written there. */
     char           http_token[MS_MAX_STR];
     char           http_token_file[128];
+    /* extra Host names accepted besides IP literals and the hostname
+     * (reverse proxies; auth_host_ok) - comma list, "*" = any */
+    char           http_allowed_hosts[256];
     /* GET /events SSE push stream (USE_CONTROL builds only; startup
      * settings, deliberately NOT settable via /control) */
     int            events_enabled;      /* 0 = endpoint answers 404 */

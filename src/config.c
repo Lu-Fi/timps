@@ -301,6 +301,7 @@ void config_defaults(ms_config *c)
                                   * chronically weak-WiFi camera) */
     c->http_user[0]=0; c->http_pass[0]=0;
     c->http_token[0]=0;
+    c->http_allowed_hosts[0]=0;
     copystr(c->http_token_file, "/run/timps.token", sizeof c->http_token_file);
     c->events_enabled=1; c->events_stats_ms=2000; c->events_max_clients=8;
     /* optional TLS (USE_TLS builds): off by default */
@@ -960,6 +961,7 @@ static const cfg_field http_fields[] = {
     FS("pass",        "password", http_pass,        0),
     FS("token",       0,          http_token,       0),
     FS("token_file",  0,          http_token_file,  0),
+    FS("allowed_hosts", 0,        http_allowed_hosts, 0),
     /* Tri-state, not a bool (v1.9.11): 0 off, 1 = TLS available on this port
      * ALONGSIDE plain HTTP (the scheme is sniffed per connection, see
      * httpd.c's conn_thread), 2 = TLS only, plaintext refused - which is what
