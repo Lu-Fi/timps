@@ -372,11 +372,18 @@ test-persist-gate:
 	$(HOSTCC) $(CFLAGS) -Isrc scripts/test_persist_gate.c -o $(BIN)-pgtest
 	@./$(BIN)-pgtest; rc=$$?; rm -f $(BIN)-pgtest; exit $$rc
 
-# Sim run: the Host gate, PNA consent and /control persistence over real
-# sockets (scripts/test_http_sim.sh, its own ports 18554/18880).
+# Host-only test for the request-thread hang stamps (src/hang_wd.h)
+test-hang-wd:
+	$(HOSTCC) $(CFLAGS) -Isrc scripts/test_hang_wd.c $(LDFLAGS) -lpthread -o $(BIN)-hwdtest
+	@./$(BIN)-hwdtest; rc=$$?; rm -f $(BIN)-hwdtest; exit $$rc
+
+# Sim run: the Host gate, PNA consent, /control persistence and the wedged-
+# apply supervisor over real sockets (scripts/test_http_sim.sh, its own ports 18554/18880).
 test-http-sim:
 	$(MAKE) sim USE_CONTROL=1
-	@scripts/test_http_sim.sh ./$(BIN)-sim
+	$(MAKE) sim USE_CONTROL=1 BIN=$(BIN)-hang \
+	  SIM_CFLAGS='-DCTL_LOCK_S=2 -DCTL_HANG_S=4 -DMS_STARTUP_REBOOT_MARKER=\"/nonexistent/timps-test.flag\"'
+	@scripts/test_http_sim.sh ./$(BIN)-sim ./$(BIN)-hang-sim; rc=$$?; rm -f $(BIN)-hang-sim; exit $$rc
 
 # Host-only unit test for the config-file line parser (quoting, inline
 # comments, the writer/loader round trip). Links the real src/config.c, needs
@@ -607,4 +614,4 @@ strip: target
 	$(CROSS_COMPILE)strip $(BIN)
 
 clean:
-	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest $(BIN)-hubidrtest $(BIN)-stuntest $(BIN)-tlprunetest $(BIN)-recringtest $(BIN)-fsrottest $(BIN)-fsreftest $(BIN)-dnidletest $(BIN)-dnreachtest $(BIN)-hubholdtest $(BIN)-roitest $(BIN)-hosttest $(BIN)-pgtest
+	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest $(BIN)-hubidrtest $(BIN)-stuntest $(BIN)-tlprunetest $(BIN)-recringtest $(BIN)-fsrottest $(BIN)-fsreftest $(BIN)-dnidletest $(BIN)-dnreachtest $(BIN)-hubholdtest $(BIN)-roitest $(BIN)-hosttest $(BIN)-pgtest $(BIN)-hwdtest

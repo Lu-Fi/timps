@@ -753,6 +753,7 @@ Status codes and their `reason` discriminators:
 | 411 | — | `Transfer-Encoding` instead of `Content-Length` | Send a fixed-length body |
 | 413 | — | Headers + body exceed the 4096-byte buffer | Split the request |
 | 503 | `oom` | Allocation failure | Retry; not a client error |
+| 503 | `busy` | **since v1.10.1**: another POST has held the apply lock for 10 s (a libimp call that does not return) | Retry later; if it persists the supervisor restarts timps within ~30 s (`a /control request has been inside libimp for N s`) and the one-shot recovery reboot follows |
 | 503 | `shutting_down` | **since v1.9.28**: the daemon is shutting down and no longer accepts POSTs | Not a client error; the next boot will |
 | 421 | — (plain-text body `host not allowed`) | **since v1.10.1**: any path, the `Host` header names neither an IP, the camera's hostname nor an `http.allowed_hosts` entry (DNS-rebinding guard) | Use the IP or hostname, or add the name to `http.allowed_hosts` |
 | 403 | — (plain-text body `bad origin`) | **since v1.9.28**: a Basic/Digest-authenticated POST from a page on another host (CSRF guard) | Use the token, or post from the camera's own host |

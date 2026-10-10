@@ -163,7 +163,8 @@ typedef struct {
 
 /* Returns 0 if the body was a JSON object, -1 if it was not parseable at all,
  * -2 on an internal failure (OOM), -3 if control_quiesce() has already been
- * called (shutting down) - none of which is the caller's fault and must not
+ * called (shutting down), -4 if another POST held the apply lock for
+ * CTL_LOCK_S (a wedged libimp call) - none of which is the caller's fault and must not
  * be reported to it as a bad request (httpd.c answers 503 to -2/-3, 400 to
  * -1). res may be NULL; on -2/-3 only its counters are set, not its echo. */
 int control_apply_json(const char *json, ctrl_result *res);

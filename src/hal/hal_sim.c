@@ -194,7 +194,24 @@ static void jpg_start(const char *path, int src, int fps)
     else j->run=0;
 }
 
-static int sim_init(const ms_config *cfg){ (void)cfg; return 0; }
+/* test hook (scripts/test_http_sim.sh): TIMPS_SIM_CONTROL_HANG=<key>:<s>
+ * blocks the /control apply of that key like a wedged libimp call */
+static int sim_control(const char *key, const char *val)
+{
+    (void)val;
+    const char *p = getenv("TIMPS_SIM_CONTROL_HANG");
+    const char *c = p ? strchr(p, ':') : NULL;
+    if (c && (size_t)(c - p) == strlen(key) && !strncmp(p, key, (size_t)(c - p)))
+        sleep((unsigned)atoi(c + 1));
+    return 0;
+}
+
+static int sim_init(const ms_config *cfg)
+{
+    (void)cfg;
+    if (getenv("TIMPS_SIM_CONTROL_HANG")) hub_set_control_cb(sim_control);
+    return 0;
+}
 
 static int sim_watch_count(void)
 {

@@ -30,6 +30,13 @@ _1.10.1 (draft)_
 
 ### Fixed
 
+- `/control`: a libimp call that never returns no longer freezes the API. A
+  POST waits at most 10 s for the one in progress, then gets `503`
+  `"reason":"busy"`; a request thread stuck in an apply or a `GET /control`
+  for 30 s ends timps through the watchdog path (log `a /control request has
+  been inside libimp for N s`, then the one-shot recovery reboot). Checked
+  from the main loop's 1 s tick, no new thread.
+
 - Video watchdog: a kept FrameSource (`general.fs_keepalive`, auto on for
   open-stack T23/T41) is no longer disabled/enabled; the encoder alone is
   restarted and 5 failed cycles escalate to the exit + recovery reboot as

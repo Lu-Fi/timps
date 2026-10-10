@@ -5,7 +5,7 @@
 # Host-gate checks need a non-loopback address (loopback peers are exempt);
 # without one they are skipped. Exit code: 0 = all PASS.
 set -u
-SIM=${1:-./timpsd-sim}
+SIM=${1:-./timpsd-sim}     # $2: a sim built with short CTL_* limits (Makefile)
 D=$(mktemp -d)
 trap 'kill $simpid 2>/dev/null; wait $simpid 2>/dev/null; rm -rf "$D"' EXIT
 CONF=$D/timps.conf
@@ -68,6 +68,34 @@ expect "...and took the pending set along" 15 "$(inconf image.brightness)"
 expect "before shutdown: pending"      1  "$(post '{"image":{"brightness":16}}')"
 kill $simpid; wait $simpid 2>/dev/null
 expect "shutdown flush"                16 "$(inconf image.brightness)"
+
+# wedged libimp call on the apply path (sim hook, short limits, a reboot
+# marker that cannot be created so the escalation never reboots the host)
+HSIM=${2:-}
+if [ -n "$HSIM" ] && [ -x "$HSIM" ]; then
+    sed -i '/^image.brightness/d;/^sensor.fps/d' "$CONF"
+    TIMPS_SIM_CONTROL_HANG=image.hue:20 "$HSIM" -c "$CONF" > "$D/hang.log" 2>&1 &
+    simpid=$!
+    for _ in $(seq 50); do curl -s -o /dev/null $L && break; sleep 0.1; done
+    curl -s -o /dev/null --max-time 30 -X POST "$L" -d '{"image":{"hue":99}}' &
+    hpid=$!
+    sleep 0.5
+    t0=$(date +%s%N)
+    r=$(curl -s -w ' %{http_code}' --max-time 10 -X POST "$L" -d '{"image":{"brightness":17}}')
+    ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+    expect "POST behind a wedged apply: 503" 503 "${r##* }"
+    expect "...reason busy" 1 "$(echo "$r" | grep -c '"reason":"busy"')"
+    expect "...after the lock timeout, not never" 1 "$([ $ms -ge 1500 ] && [ $ms -lt 6000 ] && echo 1 || echo "0 (${ms} ms)")"
+    expect "GET still answers" 200 "$(code $L)"
+    gone=0
+    for _ in $(seq 120); do kill -0 $simpid 2>/dev/null || { gone=1; break; }; sleep 0.1; done
+    expect "supervisor ends the process" 1 "$gone"
+    expect "...and says why" 1 "$(grep -c 'inside libimp for' "$D/hang.log")"
+    expect "...through the watchdog escalation" 1 "$(grep -c 'runtime watchdog exited' "$D/hang.log")"
+    kill $hpid 2>/dev/null; wait $hpid 2>/dev/null
+else
+    sk "wedged-apply supervisor: no hang sim given"
+fi
 
 echo "test_http_sim: PASS=$pass FAIL=$fail SKIP=$skip"
 [ $fail = 0 ]

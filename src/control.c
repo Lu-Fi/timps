@@ -33,6 +33,8 @@
 #include "srt.h"           /* ms_srt_stats for the srt.* status block */
 #include "webrtc/webrtc.h" /* webrtc_available() for caps.webrtc */
 #include "persist_gate.h"
+#include "hang_wd.h"
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -734,6 +736,23 @@ static void ign_scan(ctrl_scratch_t *sc, const char *prefix, const char *s, cons
  * writes against background READERS); this guards apply-vs-apply. */
 static pthread_mutex_t apply_mu = PTHREAD_MUTEX_INITIALIZER;
 static volatile int    g_ctl_closing;
+/* a POST waits this long for apply_mu, then answers 503 busy */
+#ifndef CTL_LOCK_S
+#define CTL_LOCK_S 10
+#endif
+/* a request thread stuck this long (a libimp call that never returns) ends
+ * the process through the watchdog's recovery reboot */
+#ifndef CTL_HANG_S
+#define CTL_HANG_S 30
+#endif
+static hwd g_hwd;
+static int now_s(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return (int)t.tv_sec;
+}
+
 /* live in g_cfg, not yet in the file (rate-limited or failed write), under
  * apply_mu; values kept so a legacy alias key needs no read-back */
 static struct { char key[40]; char val[160]; } g_pend[CTRL_MAX_CHG];
@@ -782,13 +801,25 @@ static int pend_flush(void)
 
 void control_tick(void)
 {
+    static int fired;
+    int age = hwd_oldest(&g_hwd, now_s());
+    if (age >= CTL_HANG_S && !fired) {
+        fired = 1;
+        LOGE(MOD,"a /control request has been inside libimp for %d s - "
+                 "exiting for the recovery restart", age);
+        g_hal_watchdog_gave_up = 1;  /* see hal.h */
+        raise(SIGTERM);
+    }
     if (pthread_mutex_trylock(&apply_mu) != 0) return;   /* a POST will see to it */
     if (pg_due(&g_pg, ms_now_us())) pend_flush();
     pthread_mutex_unlock(&apply_mu);
 }
 
+static volatile int g_apply_stuck;   /* control_quiesce() already waited in vain */
+
 void control_persist_flush(void)
 {
+    if (g_apply_stuck) return;
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
     ts.tv_sec += 1;
@@ -814,8 +845,10 @@ void control_quiesce(int timeout_ms)
     if (pthread_mutex_timedlock(&apply_mu, &ts) == 0) {
         pend_flush();
         pthread_mutex_unlock(&apply_mu);
-    } else
+    } else {
+        g_apply_stuck = 1;
         LOGW(MOD,"a /control POST was still applying at shutdown");
+    }
     /* apply_mu free only means the config mutation itself is done - the
      * connection thread that just ran it still has to serialize and write
      * the HTTP response, and the caller (httpd_stop()) is about to force-
@@ -856,13 +889,26 @@ int control_apply_json(const char *json, ctrl_result *res)
     sc.echo_full = 1; sc.defer_full = 1; sc.ign_full = 1;
     /* hub_control()/hub_control_commit() still run after each field's
      * config_str_unlock(); see apply_mu above. */
-    pthread_mutex_lock(&apply_mu);
+    {
+        struct timespec ts;
+        clock_gettime(CLOCK_REALTIME, &ts);
+        ts.tv_sec += CTL_LOCK_S;
+        if (pthread_mutex_timedlock(&apply_mu, &ts) != 0) {
+            static ms_ratelog rl = MS_RATELOG_INIT;
+            unsigned muted;
+            if (ms_ratelog_due(&rl, &muted))
+                LOGW(MOD,"/control POST refused: another one has held the apply "
+                         "lock for %d s (%u more)", CTL_LOCK_S, muted);
+            return -4;
+        }
+    }
+    int wd = hwd_begin(&g_hwd, now_s());
     /* shutting down: g_hal->stop() is about to destroy what this would touch.
      * -3, not -2: -2 is "allocation failed", a transient server problem the
      * client should just retry; this is a permanent "not on this daemon
      * instance" answer, and conflating the two would blame OOM for a status
      * that has nothing to do with memory. */
-    if (g_ctl_closing){ pthread_mutex_unlock(&apply_mu); return -3; }
+    if (g_ctl_closing){ hwd_end(&g_hwd, wd); pthread_mutex_unlock(&apply_mu); return -3; }
     /* heap, not stack: 48*(40+160) = 9.6 KB is the largest single frame in
      * the daemon's hottest request path (a dragged slider posts often) and
      * this sits under buf[] in conn_thread too - same reasoning as the
@@ -874,7 +920,7 @@ int control_apply_json(const char *json, ctrl_result *res)
      * its problem to fix, and blaming it would send someone auditing a request
      * that was fine. Graded as 503 instead - the honest answer, and the same
      * one every other OOM path in httpd.c gives. */
-    if (!ch) { LOGW(MOD,"control_apply_json: OOM"); pthread_mutex_unlock(&apply_mu); return -2; }
+    if (!ch) { LOGW(MOD,"control_apply_json: OOM"); hwd_end(&g_hwd, wd); pthread_mutex_unlock(&apply_mu); return -2; }
     ch->n = 0;
     char v[160];
     char clip[160]; int clip_secs = -1;     /* -1 = no clip requested */
@@ -1240,6 +1286,7 @@ int control_apply_json(const char *json, ctrl_result *res)
         res->uns_n = sc.uns_n;
     }
     free(ch);
+    hwd_end(&g_hwd, wd);
     pthread_mutex_unlock(&apply_mu);
     if (clip_secs >= 0) {
         /* A COMMAND, not a setting: it never goes through timps_apply_setting,
@@ -1479,7 +1526,27 @@ int control_motion_json(char *buf, size_t cap, const ms_motion_status *st)
     return (int)o;
 }
 
+static int get_json(char *buf, size_t cap);
+static int stats_json(char *buf, size_t cap);
+
+/* both read encoder/ISP state through libimp on the request thread */
 int control_get_json(char *buf, size_t cap)
+{
+    int wd = hwd_begin(&g_hwd, now_s());
+    int n = get_json(buf, cap);
+    hwd_end(&g_hwd, wd);
+    return n;
+}
+
+int control_stats_json(char *buf, size_t cap)
+{
+    int wd = hwd_begin(&g_hwd, now_s());
+    int n = stats_json(buf, cap);
+    hwd_end(&g_hwd, wd);
+    return n;
+}
+
+static int get_json(char *buf, size_t cap)
 {
     const ms_config *c = &g_cfg;
     size_t o = 0;
@@ -2276,7 +2343,7 @@ int control_fields_json(char *buf, size_t cap)
 /* See control.h. Only what the /events "stats" push cannot carry - the rest of
  * the card is already fed live, so polling the full snapshot for it was ~8 KB
  * of wire per 5 s tick per open card. */
-int control_stats_json(char *buf, size_t cap)
+static int stats_json(char *buf, size_t cap)
 {
     const ms_config *c = &g_cfg;
     size_t o = 0;
