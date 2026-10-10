@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # test_http_sim.sh - HTTP behaviour checks against the host sim (make test-http-sim):
-# the DNS-rebinding Host gate, the PNA preflight consent, and /control
-# persistence. Starts its own sim on 18554/18880 with a scratch config.
+# the DNS-rebinding Host gate, the PNA preflight consent, and the rate-limited
+# /control persistence. Starts its own sim on 18554/18880 with a scratch config.
 # Host-gate checks need a non-loopback address (loopback peers are exempt);
 # without one they are skipped. Exit code: 0 = all PASS.
 set -u
@@ -44,6 +44,30 @@ else
     sk "Host gate: no non-loopback IPv4 address"
 fi
 expect "loopback peer is exempt" 200 "$(code -H 'Host: attacker.example' http://127.0.0.1:18880/control)"
+
+# /control persistence: first change written at once, a burst coalesced into
+# one write at the end of the window, restart-required keys and shutdown flush
+L=http://127.0.0.1:18880/control
+post() { curl -s --max-time 5 -X POST "$L" -d "$1" | sed -n 's/.*"pending":\([0-9]*\).*/\1/p'; }
+inconf() { sed -n "s/^$1 *= *//p" "$CONF"; }
+sleep 3.5                                   # clear any window the checks above opened
+expect "single POST: pending"          0  "$(post '{"image":{"brightness":11}}')"
+expect "single POST: in the file"      11 "$(inconf image.brightness)"
+expect "burst POST: pending"           1  "$(post '{"image":{"brightness":12}}')"
+post '{"image":{"brightness":13}}' >/dev/null
+expect "burst: file not yet rewritten" 11 "$(inconf image.brightness)"
+expect "GET persist_pending"           1  "$(curl -s $L | sed -n 's/.*"persist_pending":\([0-9]*\).*/\1/p')"
+sleep 4.5
+expect "burst: last value after the window" 13 "$(inconf image.brightness)"
+expect "GET persist_pending drained"   0  "$(curl -s $L | sed -n 's/.*"persist_pending":\([0-9]*\).*/\1/p')"
+post '{"image":{"brightness":14}}' >/dev/null
+post '{"image":{"brightness":15}}' >/dev/null
+expect "restart-required key: pending" 0  "$(post '{"sensor":{"fps":20}}')"
+expect "restart-required key: in the file" 20 "$(inconf sensor.fps)"
+expect "...and took the pending set along" 15 "$(inconf image.brightness)"
+expect "before shutdown: pending"      1  "$(post '{"image":{"brightness":16}}')"
+kill $simpid; wait $simpid 2>/dev/null
+expect "shutdown flush"                16 "$(inconf image.brightness)"
 
 echo "test_http_sim: PASS=$pass FAIL=$fail SKIP=$skip"
 [ $fail = 0 ]

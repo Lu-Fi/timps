@@ -17,6 +17,17 @@ _1.10.1 (draft)_
   DNS aliases (`*` = off). The PNA preflight consents only for a same-host
   `Origin` or a valid token.
 
+### Changed
+
+- `/control` writes `/etc/timps.conf` at most once per 3 s: the first change
+  after a quiet window is written before the reply as before, later ones are
+  collected and written when the window ends, at shutdown, or at once with a
+  restart-required key. The POST reply gains `pending` (keys queued),
+  `GET /control` gains `persist_pending`; `not_persisted` now also counts a
+  failed write. Slider drags and automations no longer rewrite the flash
+  10-50 times a second. `timps-qa.sh` waits for `persist_pending` 0 before it
+  reads or restores the file.
+
 ### Fixed
 
 - Video watchdog: a kept FrameSource (`general.fs_keepalive`, auto on for

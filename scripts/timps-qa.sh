@@ -887,6 +887,18 @@ sshx() { [ -n "$SSH_TARGET" ] || return 2; ssh $SSH_OPTS "$SSH_TARGET" "$@"; }
 # write config too and left explicit lines, a reformatted image.brightness line
 # and audio.agc behind. With --ssh, snapshot the file once after preflight and
 # put it back byte-identical just before the summary (8b's own restore stays).
+# since v1.10.1 /control changes reach the file rate-limited (GET /control
+# persist_pending): wait for them before reading or replacing it, or a late
+# write lands on top of a restored copy
+qa_wait_persisted() {
+	local i p=""
+	for i in 1 2 3 4 5 6 7 8; do
+		p=$(curlq 5 "$(http_base)/control" 2>/dev/null | sed -n 's/.*"persist_pending":\([0-9]*\).*/\1/p')
+		{ [ -z "$p" ] || [ "$p" = 0 ]; } && return 0
+		sleep 1
+	done
+	warn "/control still reports persist_pending=$p - using /etc/timps.conf anyway"
+}
 QA_CONF_RUN_SNAP=""
 qa_conf_run_snapshot() {
 	[ -n "$SSH_TARGET" ] || return 0
@@ -914,6 +926,7 @@ qa_conf_run_restore() {
 	[ -n "$QA_CONF_RUN_SNAP" ] || return 0
 	local snap="$QA_CONF_RUN_SNAP" cur="$OUTDIR/conf_run_after.conf"
 	QA_CONF_RUN_SNAP=""
+	qa_wait_persisted
 	if ! sshx "cat /etc/timps.conf" > "$cur" 2>/dev/null || [ ! -s "$cur" ]; then
 		warn "/etc/timps.conf: could not read it back at the end of the run - the pre-run copy is at $snap"
 		return 1
@@ -2511,6 +2524,7 @@ else
 		[ -n "${LV_CONF_SNAP:-}" ] || return 0
 		local snap="$LV_CONF_SNAP" cur="$OUTDIR/lv_conf_after.conf" tab added changed
 		LV_CONF_SNAP=""
+		qa_wait_persisted
 		if ! sshx "cat /etc/timps.conf" > "$cur" 2>/dev/null || [ ! -s "$cur" ]; then
 			warn "/etc/timps.conf: could not read it back to undo 8b's config-file changes - the pre-8b copy is at $snap"
 			return 1
@@ -6363,6 +6377,7 @@ else
 			sleep "$rb_wait"
 		fi
 	fi
+	qa_wait_persisted
 	rb_base="$OUTDIR/reboot_before.json"
 	if ! curlq 12 "$(http_base)/control" -o "$rb_base" || [ ! -s "$rb_base" ]; then
 		bad "reboot test: cannot GET the /control baseline - aborting before touching anything"
@@ -6391,6 +6406,7 @@ else
 		code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 12 -u "$HTTP_USER:$HTTP_PASS" \
 			-X POST "$(http_base)/control" -d "$rb_key")
 		sleep 2
+		qa_wait_persisted
 		rb_mid="$OUTDIR/reboot_mid.json"; curlq 12 "$(http_base)/control" -o "$rb_mid"
 		rb_cfg1=$(sshx "md5sum /etc/timps.conf 2>/dev/null | cut -d' ' -f1")
 		if [ "$(jget "$rb_mid" "$rb_path")" != "$rb_val" ]; then

@@ -367,6 +367,11 @@ test-http-host:
 	  $(LDFLAGS) -lpthread -o $(BIN)-hosttest
 	@./$(BIN)-hosttest; rc=$$?; rm -f $(BIN)-hosttest; exit $$rc
 
+# Host-only test for the /control config-write rate limit (src/persist_gate.h)
+test-persist-gate:
+	$(HOSTCC) $(CFLAGS) -Isrc scripts/test_persist_gate.c -o $(BIN)-pgtest
+	@./$(BIN)-pgtest; rc=$$?; rm -f $(BIN)-pgtest; exit $$rc
+
 # Sim run: the Host gate, PNA consent and /control persistence over real
 # sockets (scripts/test_http_sim.sh, its own ports 18554/18880).
 test-http-sim:
@@ -602,4 +607,4 @@ strip: target
 	$(CROSS_COMPILE)strip $(BIN)
 
 clean:
-	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest $(BIN)-hubidrtest $(BIN)-stuntest $(BIN)-tlprunetest $(BIN)-recringtest $(BIN)-fsrottest $(BIN)-fsreftest $(BIN)-dnidletest $(BIN)-dnreachtest $(BIN)-hubholdtest $(BIN)-roitest $(BIN)-hosttest
+	rm -f $(BIN) $(BIN)-sim $(BIN)-cfgtest $(BIN)-fmp4test $(BIN)-fqtest $(BIN)-pooltest $(BIN)-hubidrtest $(BIN)-stuntest $(BIN)-tlprunetest $(BIN)-recringtest $(BIN)-fsrottest $(BIN)-fsreftest $(BIN)-dnidletest $(BIN)-dnreachtest $(BIN)-hubholdtest $(BIN)-roitest $(BIN)-hosttest $(BIN)-pgtest

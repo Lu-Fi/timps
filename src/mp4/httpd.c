@@ -2360,13 +2360,14 @@ static void *conn_thread(void *arg)
                             sizeof cr.uns + 512];
                     int rn = snprintf(rb, sizeof rb,
                         "{\"ok\":%s,\"accepted\":%d,\"changed\":%d,"
-                        "\"rejected\":%d,\"not_persisted\":%d,"
+                        "\"rejected\":%d,\"not_persisted\":%d,\"pending\":%d,"
                         "\"deferred\":%d,\"deferred_keys\":[%s]%s,"
                         "\"ignored\":[%s]%s,"
                         "\"unsupported\":[%s]%s,"
                         "\"applied\":{%s}%s%s%s%s}",
                         (prc==0 && cr.accepted>0) ? "true" : "false",
                         cr.accepted, cr.changed, cr.rejected, cr.not_persisted,
+                        prc==0 ? cr.pending : 0,
                         prc==0 ? cr.deferred : 0,
                         prc==0 ? cr.defer : "",
                         (prc==0 && !cr.defer_full) ? ",\"deferred_truncated\":true" : "",

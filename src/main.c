@@ -19,6 +19,7 @@
 #endif
 #ifdef USE_CONTROL
 #include "auth.h"
+#include "control.h"
 #include <sys/stat.h>
 #endif
 #include <fcntl.h>
@@ -827,7 +828,12 @@ int main(int argc, char **argv)
                        g_cfg.http_port);
     LOGI(MOD,"running.%s%s", rurl, hurl);
 
-    while (g_run) sleep(1);
+    while (g_run) {
+        sleep(1);
+#ifdef USE_CONTROL
+        control_tick();
+#endif
+    }
 
     LOGI(MOD,"shutting down");
     /* first: finalising the open segment is the one step that loses data
@@ -840,6 +846,9 @@ int main(int argc, char **argv)
 #endif
     if (rtsp) rtsp_stop(rtsp);
     if (http) httpd_stop(http);
+#ifdef USE_CONTROL
+    control_persist_flush();       /* no httpd: daynight's own POSTs */
+#endif
 #ifdef USE_WEBRTC
     /* after httpd_stop(), which drains the conn threads - one of them could
      * otherwise still be inside webrtc_whep() when the DTLS context is freed */

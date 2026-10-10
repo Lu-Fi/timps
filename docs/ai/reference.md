@@ -576,13 +576,16 @@ curl -s -H "X-Timps-Token: $T" http://<cam>:8880/control
 Returns the full in-memory config plus read-only status as one JSON document
 (~8 KB). Top-level keys:
 
-`version`, `caps`, `image`, `audio`, `sensor`, `video`, `osd`, `osd0`, `osd1`,
+`version`, `persist_pending`, `caps`, `image`, `audio`, `sensor`, `video`, `osd`, `osd0`, `osd1`,
 `privacy`, `daynight`, `motion`, `encoder`, `queue_drops`, `record`,
 `timelapse`, `srt`, `tls`, `last_errors`.
 
 - `version` is the compiled-in git-describe string of the running binary. This
   is the reliable way to check "did the new firmware actually come up", which a
   flash tool's success message does not prove.
+- `persist_pending` (**since v1.10.1**) — changed keys not yet written to
+  `/etc/timps.conf` (see the rate limit under POST). Wait for `0` before
+  reading or replacing the file.
 - `last_errors` holds the last WARN/ERROR per module — useful when the syslog
   ring has already recycled.
 
@@ -690,7 +693,7 @@ Non-setting **commands** that also go through POST:
 Response body (same shape whatever the status):
 
 ```json
-{"ok":true,"accepted":2,"changed":1,"rejected":0,"not_persisted":0,
+{"ok":true,"accepted":2,"changed":1,"rejected":0,"not_persisted":0,"pending":0,
  "deferred":0,"deferred_keys":[],"ignored":[],
  "applied":{"image.brightness":"255"}}
 ```
@@ -699,9 +702,17 @@ Response body (same shape whatever the status):
   writes, plus commands carried out.
 - `changed` — the subset that differed and was persisted.
 - `rejected` — known keys with refused **values**, plus failed commands.
-- `not_persisted` — applied live but not written, because the request changed
-  more keys than the 48-slot persist list holds. Tell the user to split the
-  request; those values are gone after a reboot.
+- `not_persisted` — applied live but not written: the request changed more
+  keys than the 48-slot persist list holds, or the file write failed (full or
+  read-only `/etc`). Tell the user to split the request or fix `/etc`; those
+  values are gone after a reboot.
+- `pending` (**since v1.10.1**) — changed keys queued for the rate-limited
+  write. timps rewrites `/etc/timps.conf` at most once per 3 s: a change after
+  a quiet 3 s is written before the reply (`pending` 0), further changes
+  inside the window are written together when it ends (≤ ~4 s), at shutdown
+  (`S95timps stop/restart`, `reboot`) and at once when the request carries a
+  restart-required key (`deferred` > 0). Only a power cut inside the window
+  loses them. A dragged slider no longer rewrites the flash on every step.
 - `deferred` / `deferred_keys` — changed keys persisted but not applied to the
   running pipeline this request: `videoN.*`/`sensor.*` (never `rtsp_path`, which
   is live), and since v1.9.20 the restart-only `audio.*`/`osd.*`
@@ -1075,7 +1086,7 @@ Distinguish **compiled out** from **misconfigured**:
 | `/webrtc/whep` answers 503 | `webrtc.enabled = 0`, or all 4 session slots busy | — |
 | `/events` answers 404 | `events.enabled = 0` or `USE_CONTROL=0` | — |
 | IR LED off at night until someone connects; first seconds of a stream dark, `/snapshot.jpg` slow | `daynight.ir_idle_off = 1` (Idle-Dark), working as designed | `daynight.ir_idle.dark` in `GET /control`; turn it off with POST `{"daynight":{"ir_idle_off":0}}` (LED back on at once) |
-| Setting is accepted then reverts after reboot | `not_persisted > 0` in the POST reply (more than 48 changed keys), or a file-only key | Split the request; hand-edit `/etc/timps.conf` for file-only keys |
+| Setting is accepted then reverts after reboot | `not_persisted > 0` in the POST reply (more than 48 changed keys, or a failed write), a file-only key, or (since v1.10.1) a power cut within ~4 s of a `pending` change | Split the request; hand-edit `/etc/timps.conf` for file-only keys; check `persist_pending` is `0` before pulling power |
 | Log: `IMP_ISP_Tuning_Set… not in this libimp - image.… unavailable (persisted only)` | An OpenIMP build (`USE_OPENIMP`) on a vendor libimp, see below | Flash a consistent image |
 | Daemon gone right after start, log: `[LIBIMP] libimp mismatch: …` or `libimp lacks …`, exit **78**/**79** | `timpsd` and `libimp.so` come from different stacks, see below | Flash a consistent image |
 

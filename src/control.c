@@ -32,6 +32,7 @@
 #include "timelapse.h"
 #include "srt.h"           /* ms_srt_stats for the srt.* status block */
 #include "webrtc/webrtc.h" /* webrtc_available() for caps.webrtc */
+#include "persist_gate.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -183,7 +184,7 @@ typedef struct {
  * same per-call isolation across concurrent requests without any TLS. */
 typedef struct {
     /* counters for the ctrl_result the caller gets back; see control.h */
-    int acc, chg, rej, nopersist;
+    int acc, chg, rej, nopersist, pending;
     /* the "applied" echo, built as JSON while the values are in hand. It records a
      * field whenever the CANONICAL stored value differs from what was POSTed - not
      * when the value CHANGED. The two are not the same, and the difference is
@@ -733,9 +734,71 @@ static void ign_scan(ctrl_scratch_t *sc, const char *prefix, const char *s, cons
  * writes against background READERS); this guards apply-vs-apply. */
 static pthread_mutex_t apply_mu = PTHREAD_MUTEX_INITIALIZER;
 static volatile int    g_ctl_closing;
-static char g_unsaved[CTRL_MAX_CHG][40];   /* failed persist, under apply_mu */
-static int  g_unsaved_n;
+/* live in g_cfg, not yet in the file (rate-limited or failed write), under
+ * apply_mu; values kept so a legacy alias key needs no read-back */
+static struct { char key[40]; char val[160]; } g_pend[CTRL_MAX_CHG];
+static volatile int    g_pend_n;
+static pgate           g_pg;
 static volatile int    g_ctl_resp_inflight;   /* see control_response_begin() */
+
+/* 0 = no room */
+static int pend_put(const char *k, const char *v)
+{
+    int i;
+    for (i = 0; i < g_pend_n; i++) if (!strcmp(g_pend[i].key, k)) break;
+    if (i == CTRL_MAX_CHG) return 0;
+    snprintf(g_pend[i].key, sizeof g_pend[i].key, "%s", k);
+    snprintf(g_pend[i].val, sizeof g_pend[i].val, "%s", v);
+    if (i == g_pend_n) g_pend_n++;
+    return 1;
+}
+
+static int pend_has(const char *k)
+{
+    for (int i = 0; i < g_pend_n; i++) if (!strcmp(g_pend[i].key, k)) return 1;
+    return 0;
+}
+
+/* under apply_mu; 0 = everything pending is on disk */
+static int pend_flush(void)
+{
+    if (!g_pend_n || !g_cfg_path || !g_cfg_path[0]) {
+        g_pend_n = 0; g_pg.pending = 0;
+        return 0;
+    }
+    const char *keys[CTRL_MAX_CHG], *vals[CTRL_MAX_CHG];
+    int n = g_pend_n;
+    for (int i = 0; i < n; i++) { keys[i] = g_pend[i].key; vals[i] = g_pend[i].val; }
+    int ok = config_write_keys(g_cfg_path, keys, vals, n) == 0;
+    pg_wrote(&g_pg, ms_now_us(), ok);
+    if (ok) { g_pend_n = 0; return 0; }
+    static ms_ratelog rl = MS_RATELOG_INIT;
+    unsigned muted;
+    if (ms_ratelog_due(&rl, &muted))
+        LOGE(MOD,"%d setting(s) are live but NOT saved to %s (%u more failed writes)",
+             n, g_cfg_path, muted);
+    return -1;
+}
+
+void control_tick(void)
+{
+    if (pthread_mutex_trylock(&apply_mu) != 0) return;   /* a POST will see to it */
+    if (pg_due(&g_pg, ms_now_us())) pend_flush();
+    pthread_mutex_unlock(&apply_mu);
+}
+
+void control_persist_flush(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    ts.tv_sec += 1;
+    if (pthread_mutex_timedlock(&apply_mu, &ts) != 0) {
+        if (g_pend_n) LOGW(MOD,"%d pending setting(s) not saved: a /control POST is stuck", g_pend_n);
+        return;
+    }
+    pend_flush();
+    pthread_mutex_unlock(&apply_mu);
+}
 
 void control_response_begin(void) { __atomic_add_fetch(&g_ctl_resp_inflight, 1, __ATOMIC_SEQ_CST); }
 void control_response_end(void)   { __atomic_sub_fetch(&g_ctl_resp_inflight, 1, __ATOMIC_SEQ_CST); }
@@ -748,9 +811,10 @@ void control_quiesce(int timeout_ms)
     ts.tv_sec  += timeout_ms / 1000;
     ts.tv_nsec += (long)(timeout_ms % 1000) * 1000000L;
     if (ts.tv_nsec >= 1000000000L){ ts.tv_sec++; ts.tv_nsec -= 1000000000L; }
-    if (pthread_mutex_timedlock(&apply_mu, &ts) == 0)
+    if (pthread_mutex_timedlock(&apply_mu, &ts) == 0) {
+        pend_flush();
         pthread_mutex_unlock(&apply_mu);
-    else
+    } else
         LOGW(MOD,"a /control POST was still applying at shutdown");
     /* apply_mu free only means the config mutation itself is done - the
      * connection thread that just ran it still has to serialize and write
@@ -775,7 +839,7 @@ void control_quiesce(int timeout_ms)
 
 int control_apply_json(const char *json, ctrl_result *res)
 {
-    if (res) { res->accepted = res->changed = res->rejected = 0; res->not_persisted = 0;
+    if (res) { res->accepted = res->changed = res->rejected = 0; res->not_persisted = 0; res->pending = 0;
                res->deferred = 0; res->echo[0] = 0; res->echo_full = 1;
                res->defer[0] = 0; res->defer_full = 1;
                res->ign[0] = 0; res->ign_full = 1; res->uns[0] = 0; res->uns_n = 0; }
@@ -1145,49 +1209,26 @@ int control_apply_json(const char *json, ctrl_result *res)
      * changed. */
     hub_control_commit();
 
-    /* persist all changed keys back into the config file */
-    if ((ch->n > 0 || g_unsaved_n > 0) && g_cfg_path && g_cfg_path[0]){
-        /* keys a failed write left unsaved ride along until one succeeds: a
-         * repeat POST of the same value is "unchanged" and adds nothing itself.
-         * One that cannot ride along (no room, or no longer readable - a
-         * legacy osdN.* key once the streams diverged) stays pending. */
-        int left_n = 0;
-        char left[CTRL_MAX_CHG][40];
-        for (int u=0; u<g_unsaved_n; u++){
-            int dup = 0, ok = 0;
-            for (int i=0; i<ch->n && !dup; i++) dup = !strcmp(ch->key[i], g_unsaved[u]);
-            if (dup) continue;
-            if (ch->n < CTRL_MAX_CHG){
-                config_str_lock();
-                ok = config_get_kv(&g_cfg, g_unsaved[u], ch->val[ch->n], sizeof ch->val[0]);
-                config_str_unlock();
-            }
-            if (ok) snprintf(ch->key[ch->n++], sizeof ch->key[0], "%.39s", g_unsaved[u]);
-            else    snprintf(left[left_n++], sizeof left[0], "%.39s", g_unsaved[u]);
+    /* persist: rate-limited (persist_gate.h); restart-required keys at once,
+     * the restart that follows reads the file */
+    if (ch->n > 0 && g_cfg_path && g_cfg_path[0]){
+        int fresh = 0, stored = 0;
+        for (int i=0; i<ch->n; i++) fresh += !pend_has(ch->key[i]);
+        if (g_pend_n + fresh > CTRL_MAX_CHG) pend_flush();
+        for (int i=0; i<ch->n; i++){
+            if (pend_put(ch->key[i], ch->val[i])) stored++;
+            else sc.nopersist++;
         }
-        sc.nopersist += left_n;
-        const char *keys[CTRL_MAX_CHG], *vals[CTRL_MAX_CHG];
-        for (int i=0;i<ch->n;i++){ keys[i]=ch->key[i]; vals[i]=ch->val[i]; }
-        int fail = ch->n > 0 && config_write_keys(g_cfg_path, keys, vals, ch->n) != 0;
-        g_unsaved_n = 0;
-        if (fail){
-            static ms_ratelog rl = MS_RATELOG_INIT;   /* a dragged slider posts often */
-            unsigned muted;
-            if (ms_ratelog_due(&rl, &muted))
-                LOGE(MOD,"%d setting(s) are live but NOT saved to %s (%u more failed writes)",
-                     ch->n, g_cfg_path, muted);
-            sc.nopersist += ch->n;
-            for (int i=0; i<ch->n; i++)
-                snprintf(g_unsaved[g_unsaved_n++], sizeof g_unsaved[0], "%.39s", ch->key[i]);
-        }
-        for (int i=0; i<left_n && g_unsaved_n<CTRL_MAX_CHG; i++)
-            snprintf(g_unsaved[g_unsaved_n++], sizeof g_unsaved[0], "%.39s", left[i]);
-        /* ride-along keys are not this request's: report at most what it carried */
+        int64_t now = ms_now_us();
+        if (pg_post(&g_pg, now, sc.deferred > 0) || pg_due(&g_pg, now)){
+            if (pend_flush() != 0) sc.nopersist += stored;
+        } else sc.pending += stored;
         if (sc.nopersist > sc.acc) sc.nopersist = sc.acc;
     }
     if (res) {
         res->accepted = sc.acc; res->changed = sc.chg; res->rejected = sc.rej;
         res->not_persisted = sc.nopersist;
+        res->pending = sc.pending;
         res->deferred = sc.deferred;
         snprintf(res->echo, sizeof res->echo, "%s", sc.echo);
         res->echo_full = sc.echo_full;
@@ -1460,7 +1501,7 @@ int control_get_json(char *buf, size_t cap)
      * the document (ahead of "caps" - see the note on caps below) since it
      * is fixed, always-present metadata, not part of any capability list a
      * CGI bridge scans into. */
-    APP("{\"version\":\"%s\",", MS_VERSION);
+    APP("{\"version\":\"%s\",\"persist_pending\":%d,", MS_VERSION, g_pend_n);
     /* caps FIRST (of the REST of the document): the CGI bridges scan for the
      * *last* occurrence of a key, which must be the value in the image
      * object below, not the caps name */

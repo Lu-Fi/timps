@@ -115,6 +115,9 @@ typedef struct {
      * keys than the persist list holds. Live now, gone after a reboot - and
      * until this counter existed the caller had no way to learn that. */
     int not_persisted;
+    /* changed keys queued for the rate-limited file write (persist_gate.h):
+     * on disk within PG_WINDOW_US, or at shutdown; lost only on power loss */
+    int pending;
     /* CHANGED videoN.* / sensor.* / F_RESTART fields that were persisted but
      * did NOT reach the running pipeline (hub_control() returned 0): they take
      * effect on the next daemon restart. Subset of `changed` - an unchanged re-post
@@ -167,6 +170,10 @@ int control_apply_json(const char *json, ctrl_result *res);
 /* Shutdown: refuse new POSTs (-2 -> 503) and wait up to timeout_ms for one
  * still applying/persisting, so process exit cannot cut its config write. */
 void control_quiesce(int timeout_ms);
+/* main loop, ~1 s: writes the pending config keys once their window is over */
+void control_tick(void);
+/* write the pending config keys now (shutdown, after the last POST) */
+void control_persist_flush(void);
 /* Bracket the HTTP response write for a successfully applied POST (prc==0),
  * httpd.c only. control_apply_json() returning is not the end of the story:
  * the connection thread still has to serialize and write the response, and
