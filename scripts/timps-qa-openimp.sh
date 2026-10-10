@@ -40,7 +40,8 @@
 #         WARN (a stream already near min_qp has nothing to gain; not under
 #         fixqp), as is no effect at |delta| < 16 (T21) unless rc_mode is
 #         fixqp/vbr, or weak blur under CBR. The wrong direction is FAIL at any
-#         delta. The GET echo must
+#         delta. A FAIL/no-effect is measured once more on a fresh RTSP
+#         connection (new IDR); the second decides. The GET echo must
 #         equal the POST and caps.roi.rejected[S] must not grow.
 #   OI-4  OpenIMP-only image keys (colorfx scene dpc_strength defog_strength
 #         drc_strength sinter_strength temper_strength ae_compensation): in
@@ -465,6 +466,17 @@ oi_iframes() {   # <stream> <tag> <scale> -> OI_FRAMES=(...)
 oi_roi_post() {  # <s> <n> <en> <x> <y> <w> <h> <qp> <out>
 	oi_post "{\"roi\":{\"$1\":{\"$2\":{\"enabled\":$3,\"x\":$4,\"y\":$5,\"w\":$6,\"h\":$7,\"qp\":$8,\"qp_mode\":1}}}}" "$9"
 }
+oi_roi_measure() {  # <s> <dir> <tag> <qp> <rc_mode> [label]; uses OFF rx ry rw rh sc -> OI_R OI_V OI_HINT
+	OI_R=""; OI_V=""; OI_HINT=""
+	oi_iframes "$1" "$3" "$sc" || return 1
+	OI_R=$(oi_vis roi --off "${OFF[@]}" --on "${OI_FRAMES[@]}" --rect "$((rx/sc)),$((ry/sc)),$((rw/sc)),$((rh/sc))" --dir "$2" \
+		--delta "$4" --rc "$5")
+	printf 'stream %s %s%s: %s\n' "$1" "$2" "${6:-}" "$OI_R" >> "$OI_DIR/roi_metrics.txt"
+	OI_V=$(oi_kv "$OI_R" verdict)
+	[ "$2" = sharp ] && [ "$OI_V" = NOEFFECT ] && [ "$OI_ROI_TIER" = effective ] && [ "$5" != fixqp ] \
+		&& { OI_V=WARN; OI_HINT=" - base QP may already be near min_qp"; }
+	return 0
+}
 if [ -z "$OI_ROI_TIER" ]; then
 	oi_skip "ROI: caps.roi absent (timpsd predates it)"
 elif [ "$OI_ROI_TIER" = experimental ] && ! oi_flag --include-experimental; then
@@ -513,16 +525,20 @@ else
 			sleep 1
 			for d in blur sharp; do
 				[ "$d" = sharp ] && oi_roi_post "$s" "$n" 1 "$rx" "$ry" "$rw" "$rh" "$dneg" /dev/null >/dev/null
-				if ! oi_iframes "$s" "roi${s}_$d" "$sc"; then oi_skip "ROI stream $s $d: could not grab I-frames"; continue; fi
 				qd=$dpos; [ "$d" = sharp ] && qd=$dneg
 				rcm=$(jget "$OI_BASE" "video.$s.rc_mode")
-				r=$(oi_vis roi --off "${OFF[@]}" --on "${OI_FRAMES[@]}" --rect "$((rx/sc)),$((ry/sc)),$((rw/sc)),$((rh/sc))" --dir "$d" \
-					--delta "$qd" --rc "$rcm")
-				printf 'stream %s %s: %s\n' "$s" "$d" "$r" >> "$OI_DIR/roi_metrics.txt"
-				v=$(oi_kv "$r" verdict); hint=""
-				[ "$d" = sharp ] && [ "$v" = NOEFFECT ] && [ "$OI_ROI_TIER" = effective ] && [ "$rcm" != fixqp ] \
-					&& { v=WARN; hint=" - base QP may already be near min_qp"; }
-				msg="ROI stream $s qp $qd ($d): $(oi_reason "$r") [in $(oi_kv "$r" ratio_in) out $(oi_kv "$r" ratio_out)]"
+				if ! oi_roi_measure "$s" "$d" "roi${s}_$d" "$qd" "$rcm"; then oi_skip "ROI stream $s $d: could not grab I-frames"; continue; fi
+				r=$OI_R; v=$OI_V; hint=$OI_HINT; note=""
+				# the region applies from the next IDR and CBR noise moves rel: a fresh connection (new IDR) decides
+				case "$v" in FAIL|NOEFFECT)
+					sleep 1
+					if oi_roi_measure "$s" "$d" "roi${s}_${d}_re" "$qd" "$rcm" " recheck"; then
+						rr=$(oi_vis recheck --v1 "$v" --rel1 "$(oi_kv "$r" rel)" --v2 "$OI_V" --rel2 "$(oi_kv "$OI_R" rel)")
+						[ "$(oi_kv "$rr" verdict)" = "$OI_V" ] && { r=$OI_R; v=$OI_V; hint=$OI_HINT; }
+						note=" ($(oi_reason "$rr"))"
+					else note=" (recheck: no I-frames, first measurement kept)"; fi;;
+				esac
+				msg="ROI stream $s qp $qd ($d): $(oi_reason "$r") [in $(oi_kv "$r" ratio_in) out $(oi_kv "$r" ratio_out)]$note"
 				if [ "$v" = WARN ]; then oi_warn "$msg$hint"; else oi_grade "$OI_ROI_TIER" "$v" "$msg"; fi
 			done
 		fi

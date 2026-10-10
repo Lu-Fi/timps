@@ -10,6 +10,7 @@ shell can grep them:
   crop   --before B --after A --win x,y,w,h --sensor W,H [--alt x,y,w,h]
          [--expect crop|full]
   roi    --off F.. --on F.. --rect x,y,w,h --dir blur|sharp [--delta D] [--rc cbr|..]
+  recheck --v1 V --rel1 R --v2 V --rel2 R   final ROI verdict from two measurements
   lift   --lo L --hi H --lo2 L2 [--min 8]   ISP key effect on mean luma
   region --img F [--align 16] [--frac 0.34]
   stats  F                       mean luma, saturation, spatial std
@@ -26,7 +27,8 @@ Thresholds (also in the timps-qa-openimp.sh header):
   encoder clamps the QP table, T21 +13/-12) unless --rc is fixqp or vbr, or
   for blur under --rc cbr when rel is within ROI_CBR_BAND (0.10) of the bar
   (CBR hands the saved bits back). An effect in the wrong direction is FAIL
-  at any delta.
+  at any delta. A FAIL/NOEFFECT is measured once more on a fresh connection
+  (new IDR); the second verdict counts unless it could not grade.
   lift: lo, hi, lo2, hi2 in that order; effect = (hi + hi2) / 2 - (lo + lo2) / 2;
   |lo2 - lo| or |hi2 - hi| > max(LIFT_MIN, |hi - lo| / 3) = the scene changed
   (day/night switch, IR probe, a light during one grab) = INCONCLUSIVE;
@@ -300,6 +302,23 @@ def roi_check(offs, ons, rect, direction, delta=None, rc=None):
     return res, "NOEFFECT", why
 
 
+def roi_recheck(v1, rel1, v2, rel2):
+    """Verdict after a recheck: the second measurement, unless it could not grade."""
+    def f(x):
+        return "n/a" if x is None else "%.2f" % x
+    note = "recheck: first rel %s, second rel %s" % (f(rel1), f(rel2))
+    if v2 not in ("PASS", "FAIL", "NOEFFECT", "WARN"):
+        return v1, note + " (second not gradable, first kept)"
+    return v2, note
+
+
+def opt_float(s):
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
 def lift_grade(lo, hi, lo2, hi2=None, min_d=LIFT_MIN):
     if hi2 is None:
         hi2 = hi
@@ -382,6 +401,11 @@ def main(argv=None):
     p.add_argument("--dir", choices=("blur", "sharp"), required=True)
     p.add_argument("--delta", type=int)
     p.add_argument("--rc")
+    p = sp.add_parser("recheck")
+    p.add_argument("--v1", required=True)
+    p.add_argument("--rel1", type=opt_float)
+    p.add_argument("--v2", required=True)
+    p.add_argument("--rel2", type=opt_float)
     p = sp.add_parser("lift")
     p.add_argument("--lo", type=float, required=True)
     p.add_argument("--hi", type=float, required=True)
@@ -409,6 +433,9 @@ def main(argv=None):
             res, v, why = roi_check([load(f) for f in a.off], [load(f) for f in a.on],
                                     a.rect, a.dir, a.delta, a.rc)
             emit(**res, verdict=v, reason=why)
+        elif a.cmd == "recheck":
+            v, why = roi_recheck(a.v1, a.rel1, a.v2, a.rel2)
+            emit(verdict=v, reason=why)
         elif a.cmd == "lift":
             res, v, why = lift_grade(a.lo, a.hi, a.lo2, a.hi2, a.min)
             emit(**res, verdict=v, reason=why)
