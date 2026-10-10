@@ -319,46 +319,53 @@ static int fc_eq(const ms_fcrop_api *a, const ms_fcrop_api *b)
            a->width == b->width && a->height == b->height;
 }
 
-/* picture <-> unflipped sensor window (FCROP_BEFORE_FLIP) */
+/* picture <-> ISP window per mirrored axis (FCROP_FLIP_MIRROR) */
 static void t_fcrop_mirror(void)
 {
     ms_fcrop_api c = { 1, 0, 0, 960, 540 }, d;
-    d = c; fcrop_mirror(&d, 1, 1, 1920, 1080);
-    CK(d.left == 960 && d.top == 540 && d.width == 960 && d.height == 540,
-       "C500 window B -> bottom-right of the sensor, got %u,%u", d.left, d.top);
-    d = c; fcrop_mirror(&d, 1, 0, 1920, 1080);
-    CK(d.left == 960 && d.top == 0, "hflip only mirrors x");
-    d = c; fcrop_mirror(&d, 0, 1, 1920, 1080);
-    CK(d.left == 0 && d.top == 540, "vflip only mirrors y");
-    d = c; fcrop_mirror(&d, 0, 0, 1920, 1080);
-    CK(fc_eq(&d, &c), "no flip: unchanged");
+    /* QA window B with hflip+vflip: displayed region per mask */
+    static const unsigned exp[4][2] = { { 0, 0 }, { 960, 0 }, { 0, 540 }, { 960, 540 } };
+    for (int m = 0; m < 4; m++) {
+        d = c; fcrop_mirror(&d, m, 1, 1, 1920, 1080);
+        CK(d.left == exp[m][0] && d.top == exp[m][1] && d.width == 960 && d.height == 540,
+           "mask %d window B -> %u,%u, got %u,%u", m, exp[m][0], exp[m][1], d.left, d.top);
+        d = c; fcrop_mirror(&d, m, 1, 0, 1920, 1080);
+        CK(d.left == ((m & 1) ? 960u : 0u) && d.top == 0, "mask %d hflip only: x %u", m, d.left);
+        d = c; fcrop_mirror(&d, m, 0, 1, 1920, 1080);
+        CK(d.left == 0 && d.top == ((m & 2) ? 540u : 0u), "mask %d vflip only: y %u", m, d.top);
+        d = c; fcrop_mirror(&d, m, 0, 0, 1920, 1080);
+        CK(fc_eq(&d, &c), "mask %d no flip: unchanged", m);
+    }
     ms_fcrop_api a = { 1, 270, 480, 960, 540 };
-    d = a; fcrop_mirror(&d, 1, 1, 1920, 1080);
+    d = a; fcrop_mirror(&d, 3, 1, 1, 1920, 1080);
     CK(d.left == 480 && d.top == 270, "centred window is its own mirror");
     ms_fcrop_api f = { 1, 0, 0, 2560, 1440 };
-    d = f; fcrop_mirror(&d, 1, 1, 2560, 1440);
-    CK(d.left == 0 && d.top == 0 && d.width == 2560, "window == sensor stays put");
+    for (int m = 0; m < 4; m++) {
+        d = f; fcrop_mirror(&d, m, 1, 1, 2560, 1440);
+        CK(fc_eq(&d, &f), "mask %d: window == sensor stays put", m);
+    }
     ms_fcrop_api o = { 1, 0, 0, 1920, 1080 };
-    d = o; fcrop_mirror(&d, 1, 1, 1921, 1081);
+    d = o; fcrop_mirror(&d, 3, 1, 1, 1921, 1081);
     CK(d.left == 0 && d.top == 0, "odd sensor: evened down, got %u,%u", d.left, d.top);
     int bad = 0;
     for (int x = -50; x < 2000; x += 37)
         for (int w = 64; w < 2000; w += 211) {
             ms_fcrop_api p;
             if (fcrop_fit(x, x / 2, w, w / 2 + 64, 1920, 1080, &p) == GEOM_REJECT) continue;
-            for (int fl = 0; fl < 4; fl++) {
-                d = p; fcrop_mirror(&d, fl & 1, fl & 2, 1920, 1080);
-                if ((d.left | d.top) & 1 || d.left + d.width > 1920 ||
-                    d.top + d.height > 1080 || d.width != p.width || d.height != p.height) bad++;
-                fcrop_mirror(&d, fl & 1, fl & 2, 1920, 1080);
-                if (!fc_eq(&d, &p)) bad++;
-            }
+            for (int m = 0; m < 4; m++)
+                for (int fl = 0; fl < 4; fl++) {
+                    d = p; fcrop_mirror(&d, m, fl & 1, fl & 2, 1920, 1080);
+                    if ((d.left | d.top) & 1 || d.left + d.width > 1920 ||
+                        d.top + d.height > 1080 || d.width != p.width || d.height != p.height ||
+                        (!(fl & 1 && m & 1) && d.left != p.left) ||
+                        (!(fl & 2 && m & 2) && d.top != p.top)) bad++;
+                    fcrop_mirror(&d, m, fl & 1, fl & 2, 1920, 1080);
+                    if (!fc_eq(&d, &p)) bad++;
+                }
         }
-    CK(bad == 0, "%d mirror sweep cases odd, outside or not idempotent", bad);
-#if defined(USE_OPENIMP) && defined(PLATFORM_T23)
-    CK(FCROP_BEFORE_FLIP == 1, "T23 OpenIMP crops before the flip");
-#else
-    CK(FCROP_BEFORE_FLIP == 0, "untested SoC: no mirroring");
+    CK(bad == 0, "%d mirror sweep cases odd, outside, wrong axis or not idempotent", bad);
+#ifndef RT_EXPECT_FMIRROR
+    CK(FCROP_FLIP_MIRROR == 0, "host build: no mirroring");
 #endif
 }
 
@@ -384,6 +391,8 @@ int main(void)
     CK(FCROP_TIER == RT_EXPECT_FCROP, "FCROP_TIER %s, want %s",
        cap_tier_name(FCROP_TIER), cap_tier_name(RT_EXPECT_FCROP));
     CK(FCROP_LIVE == RT_EXPECT_FLIVE, "FCROP_LIVE %d, want %d", FCROP_LIVE, RT_EXPECT_FLIVE);
+    CK(FCROP_FLIP_MIRROR == RT_EXPECT_FMIRROR, "FCROP_FLIP_MIRROR %d, want %d",
+       FCROP_FLIP_MIRROR, RT_EXPECT_FMIRROR);
     {
         int lv, t = fcrop_rt_tier(FCROP_TIER, FCROP_GATE, 1, &lv);
         CK(t == RT_EXPECT_FCROP && lv == RT_EXPECT_FLIVE, "param present: %s live %d",

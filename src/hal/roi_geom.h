@@ -258,14 +258,15 @@ static inline int fcrop_ds_waits(int ww, int wh, int n, const int *vw, const int
 }
 
 /* picture window (flips applied, what the streams show) <-> sensor window
- * for an ISP that crops before it flips; its own inverse on an even sensor */
-static inline void fcrop_mirror(ms_fcrop_api *a, int hflip, int vflip, int sw, int sh)
+ * on the axes (mask bit0 x, bit1 y) where the ISP crops before it flips;
+ * its own inverse on an even sensor */
+static inline void fcrop_mirror(ms_fcrop_api *a, int mask, int hflip, int vflip, int sw, int sh)
 {
-    if (hflip) {
+    if (hflip && (mask & 1)) {
         long x = (long)sw - a->left - a->width;
         a->left = x < 0 ? 0u : (unsigned)x & ~1u;
     }
-    if (vflip) {
+    if (vflip && (mask & 2)) {
         long y = (long)sh - a->top - a->height;
         a->top = y < 0 ? 0u : (unsigned)y & ~1u;
     }
