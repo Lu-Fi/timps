@@ -2605,7 +2605,10 @@ static void *accept_thread(void *arg)
     while (h->run) {
         struct sockaddr_in peer; socklen_t pl=sizeof peer;
         int fd = net_accept_cloexec(h->lfd,(struct sockaddr*)&peer,&pl);
-        if (fd<0){ if(h->run) usleep(50000); continue; }
+        if (fd<0){
+            if (h->run) { net_accept_warn(MOD, h->cfg->http_port, errno); usleep(50000); }
+            continue;
+        }
         /* H2: bounded I/O - a silent client (or one that stops reading) must
          * time out in recv()/send() instead of pinning this slot's thread
          * forever; streaming clients read continuously and never trip these */

@@ -1,4 +1,6 @@
 #include "net.h"
+#include "log.h"
+#include "util.h"
 #include <sys/socket.h>
 #include <sys/time.h>
 #include <arpa/inet.h>
@@ -77,6 +79,16 @@ int net_accept_cloexec(int lfd, struct sockaddr *sa, socklen_t *sl)
         if (fd >= 0) net_cloexec(fd);
     }
     return fd;
+}
+
+void net_accept_warn(const char *mod, int port, int err)
+{
+    if (err == EINTR || err == ECONNABORTED || err == EAGAIN || err == EWOULDBLOCK)
+        return;
+    static ms_ratelog rl = MS_RATELOG_INIT;
+    unsigned muted;
+    if (ms_ratelog_due(&rl, &muted))
+        LOGW(mod, "accept() on port %d failed: %s (%u more)", port, strerror(err), muted);
 }
 
 int net_listen_tcp(int port, int backlog)

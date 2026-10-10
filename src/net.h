@@ -18,6 +18,9 @@ int  net_listen_tcp(int port, int backlog);      /* returns listening fd or -1 *
 /* accept() with FD_CLOEXEC set atomically (accept4) so forked board scripts
  * (daynight/motion) don't inherit live client sockets; returns fd or -1 */
 int  net_accept_cloexec(int lfd, struct sockaddr *sa, socklen_t *sl);
+/* rate-limited WARN for a failed accept() (EMFILE/ENFILE show nowhere else);
+ * the transient errnos are skipped */
+void net_accept_warn(const char *mod, int port, int err);
 int  net_udp_socket(void);                        /* unbound udp socket */
 int  net_set_nodelay(int fd);
 int  net_set_keepalive(int fd, int idle_s, int intvl_s, int cnt);

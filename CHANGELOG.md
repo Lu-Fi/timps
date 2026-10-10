@@ -55,6 +55,9 @@ _1.10.1 (draft)_
   for a normal settings page before (body limit was 4 KB minus the header
   bytes). Bodies that do not fit next to the headers are read into the heap
   like a WHEP offer.
+- HTTP and RTSP log a failing `accept()` (once a minute, with the error),
+  e.g. `Too many open files`: before, connections just hung in the backlog
+  with nothing in the log.
 
 ## [1.10.0] - 2026-10-11
 

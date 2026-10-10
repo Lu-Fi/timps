@@ -1934,7 +1934,10 @@ static void accept_loop(rtsp_server *sv, int lfd, int port, void *tls_ctx)
     while (sv->run) {
         struct sockaddr_in peer; socklen_t pl=sizeof peer;
         int cfd = net_accept_cloexec(lfd, (struct sockaddr*)&peer, &pl);
-        if (cfd<0){ if(sv->run) usleep(50000); continue; }
+        if (cfd<0){
+            if (sv->run) { net_accept_warn(MOD, port, errno); usleep(50000); }
+            continue;
+        }
         /* H1: bounded control I/O - a client that connects and goes silent
          * (or stops reading) must time out instead of pinning this slot's
          * thread forever in recv()/TLS-handshake/send. Streaming clients
