@@ -203,54 +203,52 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   `D = total_gain × (Integrationszeit / max. Integrationszeit)` – höher =
   dunkler. Dadurch bleibt die Messung auch dann aussagekräftig, wenn `total_gain`
   bei 256 (1×) am Boden liegt.
-* **Asymmetrisches Vorgehen**: Tag→Nacht ist eine ehrliche Messung (IR-Sperrfilter
-  zu, Beleuchtung aus). Nacht→Tag wird *nur* durch eine Probe entschieden, denn
-  nachts misst die Kamera teilweise ihr eigenes IR-Licht.
-* **Stille IR-Probe** (`daynight.irprobe_cmd`, Default `timps-irprobe`, Aufruf
-  als `<cmd> on|off`): IR-Beleuchtung kurz aus, Verhältnis der Messwerte
-  vergleichen – kostet kein Klicken des IR-Cut-Filters. Erst wenn das nicht
-  geht oder mehrdeutig ist, greift die hörbare IR-Cut-Probe.
+* **Asymmetrisches Vorgehen (seit v1.10.1 der einfache Kern)**: Tag→Nacht ist
+  eine ehrliche Messung (IR-Sperrfilter zu, Beleuchtung aus): über
+  `night_gain` oder AE am Anschlag für `day_confirm_s` (30 s, sehr dunkel 6 s).
+  Nachts **schaut** die Kamera: IR-Beleuchtung 8 s aus (ohne Klick), alle
+  45 min und sofort, wenn der IR-beleuchtete Pegel 20 s lang `jump_pct` (20 %)
+  unter dem letzten Blick liegt. Ist die Szene ohne IR hell genug, **prüft**
+  sie mit dem Tagbild (ein Klick): unter `day_gain` bleibt Tag, sonst zurück
+  (zweiter Klick); die nächste Prüfung braucht dann einen dunkleren Blick und
+  wartet 1, 2, 4 … min.
+* **Garantie**: spätestens nach `heartbeat_max_s` (12 h) ohne Tagbild-Messung
+  wird geprüft. Kameras ohne schaltbare IR-LED prüfen bei Halbierung des
+  Nachtpegels und alle `heartbeat_s` (4 h).
 * **Schwellen**: `daynight.day_gain` (Default 768 = 3×, darunter ist Tag) und
   `daynight.night_gain` (Default 4096 = 16×, darüber ist Nacht). Alte Namen
   `total_gain_day_threshold`/`total_gain_night_threshold` funktionieren weiter.
-* **Ökonomie der Proben**: `day_confirm_s` (30), `probe_min_gap_s` (600),
-  `probe_confirm_s` (15), `heartbeat_s` (14400 = 4 h) und `heartbeat_max_s`
-  (43200 = 12 h für Szenen, die sich nachweislich nicht ändern), `boot_probe`,
-  `interval_ms` (2000).
-* **Kalender optional**: `daynight.mode = auto | schedule`, festes Zeitfenster
-  (`time_night_start`/`time_day_start`) oder echter Sonnenauf-/-untergang aus
-  `sun_latitude`/`sun_longitude` mit Offsets. In `auto` plant der Kalender nur
-  die Proben, er entscheidet nicht – das ist der Grund, warum Keller und
-  künstlich beleuchtete Räume weiter funktionieren.
+  `probe_min_gap_s`, `probe_confirm_s`, `boot_probe` und
+  `diagnose_thresholds` sind seit v1.10.1 stillgelegt (eine Warnung je Schlüssel).
+* **Kalender nur für `schedule`**: `daynight.mode = auto | schedule`, festes
+  Zeitfenster (`time_night_start`/`time_day_start`) oder echter Sonnenauf-/
+  -untergang aus `sun_latitude`/`sun_longitude` mit Offsets entscheidet nur im
+  Modus `schedule`.
 * **Umschaltung über Board-Skript**: `daynight.switch_cmd` (Default `daynight`)
   wird als `<cmd> day|night` per `fork()+execlp()` aufgerufen (nie `system()`).
   Das Skript treibt IR-Cut und IR-LEDs und meldet den Modus über
   `POST /control {"image":{"running_mode":0|1}}` zurück.
-* **Diagnose**: `daynight.diagnose_thresholds` warnt nach drei
-  aufeinanderfolgenden fehlgeschlagenen Proben einmal pro Daemon-Lauf, wenn nie
-  eine Probe Tag bestätigt hat; `daynight.trace_path` schreibt (nur auf tmpfs!)
+* **Diagnose**: jede Prüfung loggt `check (…): night, exposure N` – N ist der
+  Tagbild-Wert für `day_gain`; `daynight.trace_path` schreibt (nur auf tmpfs!)
   eine CSV-Entscheidungsspur; `daynight.history_s` (Default 0 = aus, max. 48 h)
   hält eine RAM-Serie, die die WebUI-Tuningkurve über
-  `GET /control?dn_history=1` abruft – auch für Stunden, in denen kein Tab offen
-  war. Ändert jemand den ISP-Modus von außen (`color on/off`, `/control`) und
-  bleibt das 20 s stehen, übernimmt timps ihn und bewertet ihn neu, wie nach
-  einem Boot. Nur im Modus `schedule` meldet der Status `isp_desync`, wenn der
-  entschiedene Modus und der ISP-Rücklesewert auseinanderlaufen.
+  `GET /control?dn_history=1` abruft. Ändert jemand den ISP-Modus von außen,
+  meldet der Status `isp_desync`, bis der Kern das nächste Mal schaltet.
 * **Idle-Dark (seit v1.10.0, Default aus)** –
   `daynight.ir_idle_off = 1`: nachts, wenn seit `daynight.ir_idle_linger_s`
   (60 s, 0..3600) kein Stream, Snapshot, Recorder, Timelapse und keine
   Bewegungserkennung ein Bild braucht, schaltet timps **nur die IR-LED** aus;
   IR-Cut und ISP bleiben in Nacht, es klickt nichts. Die AE misst währenddessen
-  das Umgebungslicht ohne LED weiter. Der erste neue Zuschauer bekommt die LED
-  sofort (Kick, nicht erst der nächste Tick) oder – ist die Szene ohne LED
-  schon unter `day_gain` und meldet der Hook die LED als aus – direkt Tag.
+  das Umgebungslicht ohne LED weiter (ein Blick, der andauert): liegt der Wert
+  30 s unter der Schwelle, prüft sie mit dem Tagbild (ein Klick, niemand sieht
+  zu). Der erste neue Zuschauer bekommt die LED sofort (Kick, nicht erst der
+  nächste Tick).
   Snapshots direkt danach warten bis zu ~3,5 s (max. 5 s) auf die AE, Streams
   sind die ersten 1-4 s dunkel. Voraussetzungen: FrameSource-Keepalive (auto
   nur OpenIMP T23/T41), Modus `auto`, `timps-irprobe` mit den Verben
   `idle`/`state` (Firmware ab 2026-10), kein Weißlicht in
   `daynight.controls`. Warum aus: Bei 850 nm sieht man am Erlöschen des
-  Glimmens, dass niemand zusieht oder aufnimmt; Heartbeat-Proben im Dunkeln
-  sind hörbar (alle 4-12 h). Status `daynight.ir_idle` (`reason`: `disabled`,
+  Glimmens, dass niemand zusieht oder aufnimmt. Status `daynight.ir_idle` (`reason`: `disabled`,
   `schedule`, `keepalive`, `no_illuminator`, `white_light`, `hook`), in der
   WebUI als Karte „IR light when idle“ auf der Day/Night-Seite. Stirbt
   `timpsd` bei dunkler LED (SIGKILL, OOM, Absturz), startet ihn nichts neu;
@@ -554,10 +552,11 @@ wird die WebSocket-Variante (statt CGI-Polling) aktiviert.
   Bewegung, Audio, Aufnahme, Day/Night und Feldinventar, inklusive
   HTML-Report (`scripts/qa_html_report.py`).
 * **Day/Night-Werkzeuge**: `dn-isp-probe.sh`, `dn-isp-report.py`,
-  `dn-replay.py` und ein Regressionskorpus aus 59 Szenarien (aufgezeichnete
-  Realfälle und konstruierte Randfälle, 39-54 für Idle-Dark, 55-59 für ein
-  unerreichbares `night_gain` am T20-Analog-Gain-Limit) unter
-  `scripts/dn-scenarios/`.
+  `dn-replay.py` und **seit v1.10.1** ein Verhaltenskorpus aus Familien ×
+  Kameraprofilen mit Messwerten (`scripts/dn-families/`, `make
+  test-dn-replay`, nur Schranken: Fehlmodus-Zeit, Wechsel, Licht an/aus,
+  kein Pendeln), dazu Modelle von thingino-daynightd und raptor zum
+  Vergleich (`others.py`, `compare.py`).
 * **libimp-Prüfung (seit v1.10.0)**: ein `timpsd` für den
   anderen libimp-Stack (Vendor vs. OpenIMP) beendet sich mit 78/79 und Grund,
   statt abzustürzen; `timpsd --check-libs` prüft nur das (80 = konnte nicht
@@ -568,7 +567,8 @@ wird die WebSocket-Variante (statt CGI-Polling) aktiviert.
   `test-config`, `test-fanqueue`, `test-hub-pool`, `test-hub-idr`,
   `test-auth`, `test-clients`, `test-daynight-sun`, sowie **seit v1.9.28**
   `test-timelapse-prune` und `test-record-ring`; **seit
-  v1.10.0** `test-roi`, `test-dn-idle`, `test-hub-hold`, `test-libimp-check`
+  v1.10.0** `test-roi`, `test-hub-hold`, `test-libimp-check`, **seit
+  v1.10.1** `test-stopgate` und `test-dn-replay`
   und die Firmware-Skripttests `scripts/test_irprobe.sh`,
   `scripts/test_s95timps_preflight.sh`, `scripts/test_webui_idle.js`.
 

@@ -367,11 +367,10 @@ same strftime pattern, `interval_s` 60, `keep_days` 7 (0..3650 **since v1.9.28**
 `<dir>/<hostname>/timelapses/`.
 
 **`daynight.`** — `enabled` 1, `mode` `auto` (|`schedule`), `day_gain` 768,
-`night_gain` 4096, `day_confirm_s` 30, `probe_min_gap_s` 600,
-`probe_confirm_s` 15, `heartbeat_s` 14400, `heartbeat_max_s` 43200,
-`boot_probe` 1, `interval_ms` 2000, `switch_cmd` `daynight`,
-`irprobe_cmd` `timps-irprobe`, `isp_path` `/proc/jz/isp/isp-m0`,
-`diagnose_thresholds` 0, `history_s` 0 (max 172800), `trace_path` (tmpfs only),
+`night_gain` 4096, `day_confirm_s` 30, `jump_pct` 20 (**since v1.10.1**),
+`heartbeat_s` 14400, `heartbeat_max_s` 43200, `interval_ms` 2000,
+`switch_cmd` `daynight`, `irprobe_cmd` `timps-irprobe`, `isp_path`
+`/proc/jz/isp/isp-m0`, `history_s` 0 (max 172800), `trace_path` (tmpfs only),
 plus the optional calendar: `time_night_start` / `time_day_start` (HH:MM),
 `sun_latitude` / `sun_longitude`, `sun_sunrise_offset_min` /
 `sun_sunset_offset_min`.
@@ -386,11 +385,12 @@ key): `general.loglevel`, `general.imp_polling_timeout`,
 **are** POST-able on current `main`, but are restart-required (read once at OSD
 setup), so a POST that "does nothing" there is expected until a restart.
 
-**Removed / now-fixed constants** (a user's old config may still contain them;
-they parse but are ignored, with one warning if the value differs):
-`daynight.probe_jump_pct`, `probe_settle_s`, `ref_delay_s`, `ir_ratio_night`,
-`ir_ratio_day`, `ir_min_headroom`, `boot_settle_s`, `transition_s`, and the
-removed `daynight.learn` / `daynight.state_path`.
+**Retired `daynight.*` keys** (a user's old config may still contain them;
+they parse but are ignored, with one warning each): `probe_min_gap_s`,
+`probe_confirm_s`, `boot_probe`, `diagnose_thresholds` (**since v1.10.1**),
+`probe_jump_pct`, `probe_settle_s`, `ref_delay_s`, `ir_ratio_night`,
+`ir_ratio_day`, `ir_min_headroom`, `boot_settle_s`, `transition_s`, `learn`,
+`state_path` and the older ones listed in `config-keys.md`.
 
 **Aliases that still work**: `videoN.mode` → `rc_mode`, `record.segment` →
 `segment_s`, `osd0.0.stroke` → `outline`,
@@ -687,7 +687,7 @@ Non-setting **commands** that also go through POST:
   clip requested while one is still being written is refused (`clip busy,
   skipped …`, counted in `rejected`). A symlink in **any** component of the
   path is refused, not just in the last one.
-- `{"daynight":{"probe":1}}` — arm one silent IR probe on the next tick;
+- `{"daynight":{"probe":1}}` — arm one look (illuminator off for 8 s) on the next tick;
   **rejected** (not silently ignored) if the camera has no `daynight.irprobe_cmd`
 - `{"speaker":{"play":"chime_1.wav"}}` / `{"speaker":{"stop":1}}` — play queue
   (`USE_PLAY`), file validated against the sounds directory
@@ -977,23 +977,20 @@ Old names `total_gain_day_threshold` / `total_gain_night_threshold` still work.
 
 **The asymmetry** (explain this when a user asks why it "keeps clicking" or
 "won't go back to colour"): in day (IR-cut closed, illuminator off) the reading
-is an honest measure of ambient light, so day→night is a plain measurement. In
-night the camera is partly measuring **its own IR**, so night→day can only be
-decided by a **probe** — switching to the day pipeline, letting the AE settle,
-and judging once. A probe costs an audible IR-cut click, and
-`daynight.probe_min_gap_s` (600 s) is what rations it.
+is an honest measure of ambient light, so day→night is a plain measurement
+(above `night_gain` or the AE at its limit for `day_confirm_s`, 6 s when very
+dark). In night the camera partly measures **its own IR**, so **since v1.10.1**
+it **looks**: illuminator off for 8 s (silent), every 45 min and at once when
+the lit level falls `jump_pct` (20 %) below the last look for 20 s. If the
+scene without the illuminator is below the bar (`day_gain`, ×2 after a jump,
+or a bar learnt from a failed check), it **checks**: switches to the day
+pipeline (one click) and stays day below `day_gain`, else goes back (a second
+click). Failed checks lock further checks out for 1, 2, 4 … min.
 
-**The silent probe:** where the board can toggle its IR illuminator
-independently, `daynight.irprobe_cmd` (default `timps-irprobe`, called as
-`<cmd> on|off`) lets timps ask the cheap question first — illuminator off for a
-few seconds, compare. The ratio is dimensionless so one pair of thresholds fits
-every camera. Clearing `irprobe_cmd` disables both the silent probe and the
-trend path, leaving only the jump trigger and the heartbeat (i.e. more audible
-clicks).
-
-**The heartbeat** is the only bound on how long a wrong "night" can last:
-`heartbeat_s` = 14400 (4 h) while the scene is moving, `heartbeat_max_s` =
-43200 (12 h) once it demonstrably is not.
+**The guarantee:** no day-pipeline reading for `heartbeat_max_s` (12 h) → a
+check regardless of looks or lockouts. Cameras without a switchable
+illuminator (`irprobe_cmd` empty or failing) do not look; they check when the
+night level halves and every `heartbeat_s` (4 h).
 
 **Tuning guidance for a user stuck in night mode during the day:** the
 historical default 300 (1.17×) asserted "day only when the day pipeline needs
@@ -1004,49 +1001,42 @@ best day-pipeline reading was 9.79×) still need an explicit per-camera
 `daynight.day_gain` raise. Steps to give a user:
 
 1. `curl .../control` and read the `daynight` object: `total_gain`, `exposure`,
-   `night_baseline`, `day_trigger`, `day_gain`, `night_gain`, `isp_desync`.
-2. Set `daynight.diagnose_thresholds = 1` — after three consecutive failed
-   probes it warns once per daemon session that no probe has ever confirmed
-   day, and names the value to raise.
-3. Set `daynight.history_s = 14400` (or use the tuning page's "collect in
+   `night_baseline` (night level at the last look), `day_trigger` (the bar a
+   look must read below), `day_gain`, `night_gain`, `isp_desync`. Every check
+   logs `check (<why>): night, exposure N` - N is the day-pipeline reading.
+2. Set `daynight.history_s = 14400` (or use the tuning page's "collect in
    background" switch) and read `GET /control?dn_history=1&last=600`, or use
    the WebUI's `tool-sensor-data` page, to see where the index actually sits.
-4. Raise `daynight.day_gain` toward (but well below) `night_gain` until the day
+3. Raise `daynight.day_gain` toward (but well below) `night_gain` until the day
    reading clears it.
-5. `general.debug_modules = daynight` (live over `/control`, no restart) gives
-   per-probe lines like `probe: r=1.05 lit=3350 dark=3520 hr=199 verdict=day`.
+4. `general.debug_modules = daynight` (live over `/control`, no restart) gives
+   per-look lines like `look (timer): lit 249 dark 284 bar 768 -> check`.
 
 **Stuck in day all night in a dark room** (the opposite case): the index is
 gain × integration-time ratio, so an AE that stops at its analog cap with the
 digital gain unused can never exceed 256·2^(`MAX SENSOR analog gain`/32) — 4096
 for a cap of 128, the default `night_gain`. Measured on one Wyze Pan v1
-(T20/jxf22, OpenIMP): index 3587 all night. **Since v1.10.0** timps
-detects a cap `<= night_gain` and switches on the plateau at the cap instead,
-with one WARN `daynight.night_gain … > reachable ~… (cap …)` (v1.10.0:
-`… is above the exposure index this camera can reach …`); the cap is the lower `MAX SENSOR analog gain` of `isp-m0` and
-the `isp_info` beside it (open-tx-isp: 158 vs 128 on the Pan, the AE stops at
-128). On older builds set `night_gain` below the observed index. See
-`config-keys.md` (`night_gain` pitfall) and troubleshooting §3.3.
+(T20/jxf22, OpenIMP): index 3587 all night. **Since v1.10.1** the AE at its
+limit (analog gain ≥ 98 % of the lower published cap of `isp-m0`/`isp_info`,
+integration time ≥ 80 %, no digital gain) counts as dark like `night_gain`.
 
 `daynight.mode = schedule` hands the decision to the calendar outright (no
-sensor, no probes) — a reasonable fallback for a camera whose optics defeat the
+sensor, no looks) — a reasonable fallback for a camera whose optics defeat the
 measurement. `daynight.enabled = 0` is full manual (`image.running_mode` or the
 WebUI toggle).
 
 An external change of the ISP mode (`color on/off`, a POST of
-`image.running_mode`) that stands for 20 s outside a switch's readback window
-is adopted as the current mode and then judged by the measurement like a boot;
-nothing is re-switched. `isp_desync = 1` therefore only stays set in
-`daynight.mode = schedule`, where the calendar decides and the mismatch is
-reported but not adopted.
+`image.running_mode`) is **not** adopted **since v1.10.1**: `isp_desync = 1`
+reports it, and the engine's next switch (a check or a night switch) brings
+the board back to the decided mode.
 
 **Idle-Dark (`daynight.ir_idle_off`, since v1.10.0, off by default):**
 switches only the IR illuminator off at night while no stream, snapshot,
 recording or motion detection needs a picture (after
 `daynight.ir_idle_linger_s`, default 60 s); IR-cut and ISP stay in night. The
-AE keeps measuring under the FrameSource keepalive, so the first consumer is
-answered at once: LED on (night) or, when the scene without the LED already
-reads below `day_gain`, a switch to day. Snapshots right after such a wake
+AE keeps measuring under the FrameSource keepalive, a look that lasts: a
+reading below the bar for 30 s runs a check (one click, nobody is watching);
+the first consumer gets the LED at once. Snapshots right after such a wake
 wait up to ~3.5 s for the AE (max 5 s); streams start dark or settling for a
 few seconds. Off: POST `{"daynight":{"ir_idle_off":0}}` (LED back on at once).
 The status is `daynight.ir_idle` in `GET /control` and `/events`:

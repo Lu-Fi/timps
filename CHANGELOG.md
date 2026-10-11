@@ -30,6 +30,18 @@ _1.10.1 (draft)_
 
 ### Changed
 
+- Day/night: a new, much smaller decision engine (`dev_notes/dn-redesign.md`).
+  Night→day: a look with the IR illuminator off for 8 s (silent) every 45 min
+  or when the lit level falls `daynight.jump_pct` (new, 20 %) below the last
+  look; a check with the day pipeline (one click) when the look reads bright
+  enough; failed checks lock out for 1, 2, 4 … min; a check anyway after
+  `heartbeat_max_s` without a day reading. Day→night after `day_confirm_s`,
+  6 s when very dark. Lamps after a failed check reach day in ≤ 60 s, light
+  off reaches night in ≤ 40 s, no pendulum, 0.3 % dark night video. Retired
+  (ignored with one warning): `probe_min_gap_s`, `probe_confirm_s`,
+  `boot_probe`, `diagnose_thresholds`; the status object no longer echoes
+  the old constants. `daynight.o` 43 → 22 KB. The 72-scenario corpus is
+  replaced by behaviour families × camera profiles (`make test-dn-replay`).
 - Build: link-time optimisation on by default (`USE_LTO=1`, `-flto=auto` on
   compile and link, also with thingino's `CFLAGS`/`LDFLAGS`): stripped
   `timpsd` 24-28 KB (~6 %) smaller on T10-T41. `USE_LTO=0` gives the previous

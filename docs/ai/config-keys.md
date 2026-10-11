@@ -1132,189 +1132,107 @@ tick) **except**:
 | Key | Type | Default | Range | Apply | Notes |
 | --- | --- | --- | --- | --- | --- |
 | `daynight.enabled` | bool | `1` | — | live | `0` = manual mode; the thread idles and nothing forces the ISP mode. |
-| `daynight.mode` | enum | `auto` | `auto`, `schedule`; legacy `sensor`→auto, `time`/`sun`→schedule. From the **file**, an unknown token logs a warning and falls back to `auto`; from **POST** it is rejected. | live (hand-validated) | `auto` = full automaton (measurement + probes, calendar optional). `schedule` = the calendar decides outright: no sensor, no probes, two IR-cut clicks a day. Only matters when `enabled=1`. |
+| `daynight.mode` | enum | `auto` | `auto`, `schedule`; legacy `sensor`→auto, `time`/`sun`→schedule. From the **file**, an unknown token logs a warning and falls back to `auto`; from **POST** it is rejected. | live (hand-validated) | `auto` = the automaton below (the calendar is not used). `schedule` = the calendar decides outright: no sensor, no looks, two IR-cut clicks a day. Only matters when `enabled=1`. |
 | `daynight.time_night_start` | string[6] | `""` | `"HH:MM"` local, **unvalidated** at parse | live | Night at/after this time. Empty = that edge unset. **since v1.9.28** a window the calendar cannot use (one edge set, a malformed value, or both edges equal) is ignored with one startup WARN, and the sun calendar is used if a location is set. |
 | `daynight.time_day_start` | string[6] | `""` | `"HH:MM"` local, **unvalidated** | live | Day at/after this time. The window may wrap past midnight. |
 | `daynight.sun_latitude` | float | `0.0` | -90..90 | live | Degrees, +N/−S. |
 | `daynight.sun_longitude` | float | `0.0` | -180..180 | live | Degrees, +E/−W. |
 | `daynight.sun_sunrise_offset_min` | int | `0` | -1440..1440 | live | Minutes added to sunrise before switching to day. |
 | `daynight.sun_sunset_offset_min` | int | `0` | -1440..1440 | live | Minutes added to sunset before switching to night. |
-| `daynight.day_gain` | float | `768` | 1..1000000 | live | **Alias `total_gain_day_threshold`.** Exposure index below this (on the day pipeline) = day. Units are the IMP `[24.8]` linear gain scale, `256` = 1.0×, so 768 = 3×. |
-| `daynight.night_gain` | float | `4096` | 1..1000000 | live | **Alias `total_gain_night_threshold`.** Exposure index above this (while in day) = night. 4096 = 16×. **since v1.10.0**: where the ISP dump's own analog cap (`MAX SENSOR analog gain`, 256·2^(cap/32)) is not above this value and the AE leaves the digital gains at 0, the index can never exceed it; a relative rule then stands in for it (see the pitfall below). |
-| `daynight.day_confirm_s` | int | `30` | 1..3600 | live | How long the index must stay above `night_gain` (or, where `night_gain` is out of reach, on its plateau at the analog cap — see the `night_gain` pitfall) before day→night. |
-| `daynight.probe_min_gap_s` | int | `600` | **60**..86400 | live | No two probes closer than this. **The only bound on the audible IR-cut click rate** — a safety net, not something to switch off. |
-| `daynight.probe_confirm_s` | int | `15` | 1..3600 | live | How long the probe trigger condition must hold. |
-| `daynight.heartbeat_s` | int | `14400` (4 h) | 300..604800 | live | Flat re-probe interval while the scene is moving. Deliberately not a multiplying backoff. |
-| `daynight.heartbeat_max_s` | int | `43200` (12 h) | 300..604800 | live | Interval once the scene demonstrably has not moved since the last probe. The automaton takes the smaller of the two when the scene is moving. |
-| `daynight.boot_probe` | int | `1` | 0..1 | takes effect at the next boot | `1` = **every** boot measures before deciding, regardless of the persisted mode: boot into the day pipeline, read against `day_gain`, then assert the result on the board once. A boot that comes up in night with a switchable illuminator (`daynight.irprobe_cmd`) first tries one **silent** probe (LEDs off, no cut-filter click): a clean night (illuminator ratio >= 2.0, `DN_IR_RATIO_NIGHT`) ends the measurement with nothing switched; anything else falls back to the day probe described here. `0` = adopt the persisted mode without measuring — **except** when the AE is railed (zero reserve), where it measures anyway. Boot asserts the mode it ends up with on the board either way. |
+| `daynight.day_gain` | float | `768` | 1..1000000 | live | **Alias `total_gain_day_threshold`.** A check (the day pipeline) below this = day. Units are the IMP `[24.8]` linear gain scale, `256` = 1.0×, so 768 = 3×. It also is the bar a look (the scene without the illuminator) must read below before it asks for a check, until a failed check has set a scene bar. |
+| `daynight.night_gain` | float | `4096` | 1..1000000 | live | **Alias `total_gain_night_threshold`.** Exposure index above this (while in day) = night. 4096 = 16×. Where the AE cannot reach it, the AE at its limit counts as dark too (see below). |
+| `daynight.day_confirm_s` | int | `30` | 1..3600 | live | How long the index must stay above `night_gain` (or the AE at its limit) before day→night. A very dark reading (≥ 2 × `night_gain`, or the AE at its limit) switches after 6 s instead (not within 8 s of the camera's own switch). |
+| `daynight.jump_pct` | int | `20` | 5..70 | live | **since v1.10.1.** At night: when the illuminator-lit level falls this many percent below the level of the last look and stays there 20 s, look at once (new light). Cameras without a switchable illuminator use a fixed 50 % and check. |
+| `daynight.heartbeat_s` | int | `14400` (4 h) | 300..604800 | live | Check interval at night for cameras **without** a switchable illuminator. Also caps the look interval (45 min) of the others. |
+| `daynight.heartbeat_max_s` | int | `43200` (12 h) | 300..604800 | live | The longest night without a day-pipeline reading: then a check runs regardless of looks and lockouts. Bounds a wrong night. |
 | `daynight.interval_ms` | int | `2000` | 100..60000 | live | Sample interval. The exposure index needs a `/proc` scrape per tick (integration time has no IMP API). |
-| `daynight.diagnose_thresholds` | int | `0` | 0..1 | live | When probes keep failing and the best day-pipeline reading of that excursion was still clear of `day_gain`, warn that the threshold is unreachable for this scene and name the value to raise it above. It needs **`DN_DIAG_FAILS` = 3 consecutive failed probes** before it fires, and then warns **once per daemon session** (`diag_warned` in `src/daynight.c`) — not once per probe. Off by default anyway, because on a camera that genuinely never sees day it is a WARN nobody asked for. |
 | `daynight.history_s` | int | `0` | 0..172800 (48 h) | live | In-RAM decision-history ring for the WebUI tuning graph, in seconds of retention. `0` = off; nothing is allocated until a sample is pushed. One 16-byte sample per period, so the 48 h ceiling costs ~270 KiB. |
-| `daynight.ir_idle_off` | int | `0` | 0..1 | live | **since v1.10.0.** Idle-Dark: at night, once no picture consumer (video/JPEG hub subscriber: RTSP, WebRTC, fMP4, MJPEG, SRT, snapshot, timelapse, recorder; plus the motion FrameSource pin and a set `jpeg.snapshot_path`) has been present for `ir_idle_linger_s`, switch only the IR illuminator off (IR-cut and ISP stay in night) and decide at the next consumer from the AE reading taken meanwhile. **Only effective with the FrameSource keepalive** (`general.fs_keepalive`, auto = on for OpenIMP T23/T41); otherwise one WARN and `daynight.ir_idle.reason = "keepalive"`. Also needs auto mode (`daynight.mode = auto`), a working `daynight.irprobe_cmd` and a `timps-irprobe` with the `idle`/`state` verbs. What happens: the LED goes off for an 8 s ratio measurement (like the silent probe, but it stays off), then the scene is read without it; the first consumer gets the LED within one hook call (a kick, not the next tick) or, if the scene without the LED already reads below `day_gain` and the hook's `state` confirms the LED is off, a direct switch to day. JPEG grabs (`/snapshot.jpg`, timelapse) right after that wake are held up to ~3.5 s (max 5 s) for the AE; streams are not held, their first 1-4 s are dark or settling. Setting it to 0 by POST, `daynight.enabled = 0`, `mode = schedule` and a stop give the LED back. Status: `daynight.ir_idle` in `GET /control` / `/events`. |
+| `daynight.ir_idle_off` | int | `0` | 0..1 | live | **since v1.10.0.** Idle-Dark: at night, once no picture consumer (video/JPEG hub subscriber: RTSP, WebRTC, fMP4, MJPEG, SRT, snapshot, timelapse, recorder; plus the motion FrameSource pin and a set `jpeg.snapshot_path`) has been present for `ir_idle_linger_s`, switch only the IR illuminator off (IR-cut and ISP stay in night) and keep reading the scene without it. **Only effective with the FrameSource keepalive** (`general.fs_keepalive`, auto = on for OpenIMP T23/T41); otherwise one WARN and `daynight.ir_idle.reason = "keepalive"`. Also needs auto mode (`daynight.mode = auto`), a working `daynight.irprobe_cmd` and a `timps-irprobe` with the `idle`/`state` verbs. What happens: the LED goes off and the scene is read without it like a look that lasts: below the bar for 30 s → a check (one click, nobody is watching); the first consumer gets the LED within one hook call (a kick, not the next tick). JPEG grabs (`/snapshot.jpg`, timelapse) right after that wake are held up to ~3.5 s (max 5 s) for the AE; streams are not held, their first 1-4 s are dark or settling. Setting it to 0 by POST, `daynight.enabled = 0`, `mode = schedule` and a stop give the LED back. Status: `daynight.ir_idle` in `GET /control` / `/events`. |
 | `daynight.ir_idle_linger_s` | int | `60` | 0..3600 | live | **since v1.10.0.** How long after the last picture consumer the illuminator may go off; a consumer inside it is not an event (covers 10 s snapshot polling and DESCRIBE→PLAY). A poll slower than the linger costs one LED on/off pair and one held snapshot per poll. Keep it **longer than `timelapse.interval_s`**: with both at 60 the linger can run out on the tick before each shot, giving one LED on/off pair per shot (set e.g. 90). |
 | `daynight.switch_cmd` | string[64] | `daynight` | — | **file-only**, `F_NOGET` | Board script, run as `<cmd> day\|night` via `vfork()`+`execlp()` (no shell; `fork()` on v1.9.19). **Unlike `motion.on_motion`, this one *does* search `PATH`** — `execlp`, not `execve` — which is why the bare default `daynight` works. Same for `daynight.irprobe_cmd`. |
 | `daynight.isp_path` | string[128] | `/proc/jz/isp/isp-m0` | — | **file-only**, `F_NOGET` | ISP exposure proc file that is scraped. |
-| `daynight.irprobe_cmd` | string[64] | `timps-irprobe` | — | **file-only**, `F_NOGET` | Run as `<cmd> on\|off` (silent probe) and, for Idle-Dark, `<cmd> idle\|state` (`idle`: LED off with a 15 min failsafe that the 10 min re-assert renews; `state` prints `on`/`off`). Empty disables the **silent** probe entirely and every night→day question falls back to the audible IR-cut probe. |
+| `daynight.irprobe_cmd` | string[64] | `timps-irprobe` | — | **file-only**, `F_NOGET` | Run as `<cmd> on\|off` (a look) and, for Idle-Dark, `<cmd> idle\|state` (`idle`: LED off with a 15 min failsafe that the 10 min re-assert renews; `state` prints `on`/`off`). Empty: no looks; the camera checks like one without a switchable illuminator. Two failures in a row turn looks off for the session. |
 | `daynight.trace_path` | string[128] | `""` | — | **file-only**, `F_NOGET` | Opt-in CSV decision-trace recorder, one line per N samples. Size-capped and rotated once, so bounded at 2× the cap. **Must live on tmpfs** (`/tmp`, `/run`) — a LOGW reminds you if the path does not look like tmpfs. |
 
 ### How the decision works (needed to answer tuning questions)
 
-The metric is the **exposure index**, not bare gain:
+**Since v1.10.1** (simple engine; `dev_notes/dn-redesign.md` has the derivation,
+the behaviour corpus and the comparison with legacy, thingino-daynightd and
+raptor). The metric is the **exposure index**, not bare gain:
 
 ```
 D = total_gain * (integration_time / max_integration_time)
 ```
 
-Higher = darker. In a dark scene the AE has the integration time railed at max,
-so `D == total_gain` and both thresholds keep their historic meaning. In a
-bright scene the gain rails at its `256` (1.0×) floor and the AE shortens the
-exposure instead — which bare gain cannot see at all. When the integration-time
-fields are unreadable, `D` degrades to `total_gain`.
+Higher = darker; when the integration-time fields are unreadable `D` degrades
+to `total_gain`.
 
-Both thresholds are only ever evaluated on the **day** pipeline, the only
-optical path that reports ambient light honestly. Night-pipeline readings are
-used exclusively as a relative change detector.
+* **Day → night**: `D` (the day pipeline) above `night_gain`, or the AE at its
+  limit (no reserve left, or the analog gain at ≥ 98 % of its published cap
+  with the integration time ≥ 80 % and no digital gain), held `day_confirm_s`;
+  6 s when the reading is very dark (≥ 2 × `night_gain` or at the limit).
+* **At night** the reading with the camera's own illuminator means little, so
+  the camera **looks**: illuminator off for 8 s (no click), reading the scene
+  without it. A look runs every 45 min (`heartbeat_s` caps it), at once when
+  the lit level falls `jump_pct` below the last look for 20 s (a lamp), and on
+  `{"daynight":{"probe":1}}`.
+* **Look → check**: if the reading without the illuminator is below the bar —
+  `day_gain`, twice that for a look a jump started, or a scene bar learnt from
+  a failed check — the camera switches to the day pipeline and reads it once
+  (one click): below `day_gain` it stays day, otherwise back to night (a
+  second click).
+* **After a failed check** the next one needs a darker look: the bar becomes
+  `dark × day_gain / day reading`, or `0.85 × dark` when the check read the AE
+  at its limit or above 4 × `night_gain` (the Eufy reads 40960 in the dark
+  without a reported limit). A jump forgets the bar (new light). Checks are
+  locked out for 1, 2, 4 … min after consecutive failures; a day resets it.
+* **Guarantee**: no day-pipeline reading for `heartbeat_max_s` (12 h) → a
+  check, regardless of looks and lockouts.
+* **Without a switchable illuminator** (`irprobe_cmd` empty or failing) the
+  camera does not look: it checks when the night level halves (held 20 s) and
+  every `heartbeat_s` (4 h).
+* **Boot** is a check (one click; two in the dark).
+* **Idle-Dark** (`ir_idle_off`) is a look that lasts while nobody watches.
 
-The **silent probe** briefly switches the IR illuminator off (not the IR-cut
-motor, so no click) and compares:
-
-```
-r = D(illuminator off) / D(illuminator on)
-```
-
-`r >> 1` = the illuminator was doing the work → genuinely night. `r ≈ 1` = the
-room supplies the light → day, whatever the absolute level. This exists because
-genuine daylight measured across a twelve-camera fleet at one instant spanned a
-factor of **63**, so no absolute day threshold can be right everywhere.
-
-`r ≈ 1` only means "day" when the AE still had **reserve** (at least 1/4 stop
-of gain below its ceiling); a railed meter also returns `r ≈ 1`. The reserve
-comes from the ceiling fields of the ISP dump (`MAX SENSOR analog gain` /
-`MAX ISP digital gain`). The open-tx-isp **T41** dump has none (its
-`AeMaxAGain` is the uncapped sensor maximum, which would overstate the reserve
-once a gain cap is set), so on T41 with `USE_OPENIMP` the reserve comes from
-`IMP_ISP_Tuning_GetAeExprInfo` (**since v1.10.0**; `AeMaxAGain` vs
-`TotalGainDb`; open-tx-isp fills `AeMaxAGain` with the smaller of the sensor
-maximum and the configured gain cap, `t41_tuning_copy_ae_expr()`). Where
-neither is available the reserve is unknown (`hr=-1` in the probe line) and an
-`r ≈ 1` silent probe escalates to the audible IR-cut probe.
-
-`r ≈ 1` also means "day" only when the light reaches the **day** pipeline.
-Infrared from another camera's illuminator lights the night pipeline (IR-cut
-open) and is removed by the IR-cut filter. **Since v1.10.0** a night
-that a measurement proved (the day→night switch, a probe that found night, a
-silent probe with `r >= 2`, the pegged or filter-cost verdict) stays night
-while the probe's lit level is not below 90 % of the night reference (debug
-line `… is no brighter than the proven night reference …`). An adopted night
-(external switch, `boot_probe=0`) is not proven. Measured on two cameras, one
-night each (Wyze Pan v1 r=1.20, SecuPlug T10 r=1.36, both in a cellar with
-other IR cameras); see the `night_gain` pitfall.
+Costs: 8 s of dark night video per look (0.3 % of a steady night); clicks per
+day typically 2-6, worst case 28 (11 failed checks by the doubling lockout +
+2 guarantee checks + 2 real switches) plus genuine light changes.
 
 ### Retired `daynight.*` keys
 
-These are **parsed and ignored with one warning each** (not reported as unknown
-keys), because each names a mechanism that no longer exists:
+Parsed and **ignored** with one warning each (`… is retired and IGNORED`), so an
+old config loads without "unknown key" lines:
 
-| Retired key | What the warning says to use instead |
-| --- | --- |
-| `daynight.day_gain_pct` | The adaptive night baseline is gone; night→day is probe-mediated and the probe trigger is a fixed internal constant. |
-| `daynight.baseline_delay_s` | Became the fixed constant `DN_REF_DELAY_S`. |
-| `daynight.boot_settle_max_s` | The settle wait is bounded internally now. |
-| `daynight.boot_stable_pct` | The settle wait is gated on the reading having stopped moving; no tunable. |
-| `daynight.night_reconfirm_s` | Replaced by `daynight.heartbeat_s` / `heartbeat_max_s`. |
-| `daynight.probe_max_skip_s` | The probe skip it bounded no longer exists. |
-| `daynight.threshold_low` | The brightness fallback is no longer a decision path — use `day_gain`/`night_gain`. |
-| `daynight.threshold_high` | Same. |
-| `daynight.hysteresis` | The brightness fallback is no longer a decision path. |
-| `daynight.learn` | The learning subsystem is gone; `diagnose_thresholds` reports an unreachable `day_gain` without touching it. |
-| `daynight.state_path` | Only used by `daynight.learn`. |
-
-A second group became **fixed internal constants** whose value equals the old
-default. They warn **only when the configured value differs** from the constant
-(so a config that never touched them is silent):
-
-`daynight.probe_jump_pct`, `daynight.probe_settle_s`, `daynight.ref_delay_s`,
-`daynight.ir_min_headroom`, `daynight.boot_settle_s`, `daynight.transition_s`,
-`daynight.ir_ratio_night`, `daynight.ir_ratio_day`.
-
-Their effective values are still readable in the `daynight` status object of
-`GET /control` — they are simply no longer per-camera settings.
+`day_gain_pct`, `baseline_delay_s`, `boot_settle_max_s`, `boot_stable_pct`,
+`night_reconfirm_s`, `probe_max_skip_s`, `threshold_low`, `threshold_high`,
+`hysteresis`, `learn`, `state_path`, `probe_jump_pct`, `probe_settle_s`,
+`ref_delay_s`, `ir_min_headroom`, `boot_settle_s`, `transition_s`,
+`ir_ratio_night`, `ir_ratio_day`, and **since v1.10.1** `probe_min_gap_s`
+(replaced by the doubling lockout), `probe_confirm_s` (fixed 20 s jump hold),
+`boot_probe` (every boot checks) and `diagnose_thresholds` (the status shows
+the exposure each check read). The `daynight` status object no longer echoes
+the old constants.
 
 ### `daynight.*` pitfalls
 
-* **`day_gain` too low is the classic failure.** `300` (1.17×) asserted "day
-  only when the day pipeline needs essentially no gain", which indoors is never
-  true — a normally-lit room in daytime needs 2–3×, so the comparison could
-  never come true and the camera sat in night mode in daylight. The current
-  default is 768 (3×). Genuinely dim rooms (measured up to 9.79×) need an
-  explicit per-camera override; turn on `diagnose_thresholds` to be told the
-  value to use.
-* **`night_gain` can be out of reach** (handled **since v1.10.0**).
-  The index is gain × integration-time ratio, so with the digital gains unused
-  it can never exceed the published analog cap, 256·2^(`MAX SENSOR analog
-  gain`/32): 4096 for a cap of 128 (jxf22). Measured on one Wyze Pan v1
-  (T20/jxf22, OpenIMP) for one night: the AE stopped at analog 128/128, ISP
-  digital 0 of 32, integration time 87.6 %, index 3587 all night, so `s >
-  4096` never held and the camera stayed in day in a pitch-dark cellar. Where
-  that cap is `<= night_gain`, timps now logs once per session `daynight.night_gain
-  4096 > reachable ~3587 (cap 128 x IT 87.6%): relative bar 3408 (95%)`
-  (v1.10.0: `… is above the exposure index this camera can reach …`) — the
-  night threshold becomes 95 % of that plateau at the cap for
-  `day_confirm_s` — and
-  treats, in day, the analog gain at >= 98 % of its cap with the ISP and
-  sensor digital gain at 0 and the smoothed index within 95 % of its highest
-  settled value at the cap (the plateau) as dark — held `day_confirm_s`, exactly like
-  `s > night_gain`. The plateau bar must clear 1.5 × `day_gain`, otherwise the
-  rule stays off (a probe would read the same scene below `day_gain` and undo
-  the switch). After it has fired, every `night_gain` comparison of the
-  session (the plain day test, the filter-cost/noir vetoes) uses that bar, so
-  a silent probe cannot chase the rule all night. Night→day is unchanged
-  (probes against `day_gain`); boot is unchanged (it reads against
-  `day_gain`, which a dark room already exceeds). Inert where the cap is above
-  `night_gain` (T31 sample: 160 = 8192), where the dump has no cap or no `ISP
-  digital gain` line (T41 open stack), and where the AE uses digital gain (the
-  vendor-stack T20s rail it, and their railed path already switches). Not
-  covered: a `night_gain` set between the plateau and the cap (e.g. 4000 on the
-  Pan) — the cap still proves nothing there, and the camera behaves as before;
-  set it below the plateau or leave the default.
-  **The Pan itself was that case on the open stack**: open-tx-isp's compact
-  T20 AE writes `isp-m0` with `MAX SENSOR analog gain : 158` (the jxf22
-  maximum) while the AE stops at 128; `isp_info` on the same camera says 128
-  (device-confirmed 2026-10-09: with `boot_probe = 0` and a persisted day it
-  stayed in day in the dark, `d` 3587 constant). **Since v1.10.0**
-  timps also reads `MAX SENSOR analog gain` from `isp_info` next to a
-  configured `isp-m0` (re-read every ~5 min) and uses the lower value, for
-  this rule and for the AE reserve (`headroom`): on the Pan 128, so the rule
-  fires (scenario 64; not yet run on the camera). On an older build set
-  `night_gain` to 3000 there.
-* **A silent probe can call a cellar lit by other IR cameras "day"** (fixed
-  **since v1.10.0**, two cameras, one night each). r < 2 only says
-  the camera's own illuminator is not doing the work. Measured on the Pan: day
-  pipeline 3587 at the boot measurement, 28 s later lit 401 / dark 483,
-  r=1.20, day all night; on a SecuPlug T10: r=1.36 → day, back to night a
-  minute later on `exposure 4179 > 4096`, a pair per probe. A night proven by
-  a measurement now stays night unless the lit level is below 90 % of the
-  night reference, and a boot that came up in day anchors the reference from
-  the night pipeline (not from its own day-pipeline level, which made path C
-  fire 20 s into the night). A real lamp and a dawn still switch to day; one
-  try at day remains possible when the reference predates the other cameras'
-  IR.
+* **Dim but lit rooms stay night.** Day means "the day picture needs less than
+  `day_gain` amplification". A room whose day pipeline reads between
+  `day_gain` and `night_gain` stays in whatever mode it is in; raise
+  `day_gain` for such a camera (measured indoor rooms up to 9.79×).
+* **Lamps without a jump take up to one look interval** (45 min): the Wyze Pan
+  in a cellar with other IR cameras reads the same illuminator-lit level with
+  and without its lamp. `{"daynight":{"probe":1}}` looks at once.
+* **Other cameras' infrared** lights the scene without the illuminator but not
+  the day pipeline: one failed check (two clicks) per light change.
+* **Every boot in the dark costs a click pair.**
 * **`image.ae_it_max_us` moves the index** — a camera running it needs its
   `day_gain`/`night_gain` re-checked rather than inherited.
 * `daynight.enabled = 0` does **not** force a mode; it just stops the automaton.
   Use `image.running_mode` for a manual mode.
-* Setting `time_night_start`/`time_day_start` **or** a non-zero lat/lon switches
-  the calendar source on even in `auto` mode (an explicit time window wins over
-  lat/lon). The window must be two valid, distinct `HH:MM` values to count.
-  **since v1.9.28** a sunrise/sunset offset that pushes an edge across solar
-  midnight is honoured (it was clipped to the current solar day), and the
-  calendar's pull-in of the next heartbeat applies on every re-arm, not only the
-  first one of a night. In `auto` the calendar only schedules probes; in `schedule` it
-  decides outright.
+* The calendar (`time_*`, `sun_*`) is used by `mode = schedule` only.
 * `trace_path` on flash (not tmpfs) wears the flash; that is why it warns.
-* `{"daynight":{"probe":1}}` over `/control` requests one silent probe on the
-  next tick; it is **rejected** if `irprobe_cmd` is empty, so "nothing happened"
-  is distinguishable from "the probe ran and found nothing".
+* `{"daynight":{"probe":1}}` over `/control` requests one look on the next tick;
+  it is **rejected** if `irprobe_cmd` is empty.
 * `daynight.ir_idle_off = 1` (Idle-Dark, **since v1.10.0**, off by
   default): at night with no picture consumer for `ir_idle_linger_s` the IR
   LED is **off**; the IR-cut and the ISP stay in night. What the user sees:
@@ -1327,35 +1245,23 @@ Their effective values are still readable in the `daynight` status object of
   - Cameras with a permanent consumer (Frigate/NVR, `record.enabled`,
     `motion.enabled`, `jpeg.snapshot_path`) never go idle: no effect.
   - Needs the keepalive (`general.fs_keepalive`; auto only on OpenIMP
-    T23/T41): without it the AE does not run while idle. Untested elsewhere.
-  - If the exposure does not move at all in the 8 s after the LED went off
-    (an AE that stops without a consumer), timps logs a WARN, lights the LED
-    again and does not try again until the next day/night switch.
+    T23/T41): without it the AE does not run while idle.
   - Needs `timps-irprobe` with the `idle` and `state` verbs (firmware from
     2026-10 on). An older hook answers `idle` with exit 1/2: one WARN,
     `reason = "hook"`, the LED is left alone. A white light enabled in
     `daynight.controls` makes the hook refuse (exit 3): `reason =
     "white_light"`.
-  - While idle-dark, day comes from the reading without the LED (below
-    `day_gain` for `probe_confirm_s`, with a learnt `noir_cost` veto after one
-    wrong day), not from silent probes; a heartbeat probe in the dark is the
-    audible one.
+  - While idle-dark, a check (one click) runs when the reading without the LED
+    stays below the bar for 30 s; nobody is watching.
   - To turn it off: POST `{"daynight":{"ir_idle_off":0}}`; the LED comes back
     on at once.
-  - If `timpsd` dies while the LED is off (SIGKILL, OOM, crash), nothing in
-    the firmware restarts it. The hook's `idle` arms a 900 s watchdog that
-    timps renews with every re-assert (8 s, 16 s, then every 600 s); without
-    a renewal it relights the LEDs it switched, unless the board script has
-    switched to day since (`/run/thingino/daynight_mode`). `on`, `off` and a
-    newer `idle` replace it, `state` does not. With a hook before that
-    watchdog (thingino `ciao` before `3af7d99e4`) the LED stays off until the
-    next `S95timps start`, whose boot probe relights it.
+  - If `timpsd` dies while the LED is off, the hook's `idle` 900 s watchdog
+    (renewed every 600 s) relights the LEDs.
   - Keep `ir_idle_linger_s` longer than `timelapse.interval_s` (see the key).
   `reason` in `daynight.ir_idle`: `disabled` (key 0 or `daynight.enabled =
   0`), `schedule` (`daynight.mode = schedule`), `keepalive`, `no_illuminator`
-  (no `irprobe_cmd` or the illuminator was retired after failures),
-  `white_light`, `hook` (hook without `idle`, nothing to switch, or repeated
-  failures).
+  (no `irprobe_cmd` or looks were turned off after failures),
+  `white_light`, `hook` (hook without `idle` or nothing to switch).
 ---
 
 ## 15. `rtsp.*`
