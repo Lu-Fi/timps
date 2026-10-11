@@ -1167,6 +1167,14 @@ int control_apply_json(const char *json, ctrl_result *res)
     sb = find_obj(jb, je, "roi", &se);
     if (sb){
         int nroif; const cfg_field *roi_tbl = cfg_fields_roi(&nroif);
+        cfg_field roi_off[8];
+        /* a libimp without the ROI the build allows: refused like F_NOHW */
+        if (hal_roi_tier() == CAP_TIER_UNSUPPORTED &&
+            nroif <= (int)(sizeof roi_off / sizeof *roi_off)){
+            memcpy(roi_off, roi_tbl, (size_t)nroif * sizeof *roi_tbl);
+            for (int i=0;i<nroif;i++) roi_off[i].flags |= F_NOHW;
+            roi_tbl = roi_off;
+        }
         for (int s=0;s<MS_MAX_VSTREAM;s++){
             char sidx[4]; snprintf(sidx,sizeof sidx,"%d",s);
             const char *sse, *ssb = find_obj(sb, se, sidx, &sse);
