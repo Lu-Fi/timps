@@ -6,18 +6,27 @@
 #include <errno.h>
 #include <signal.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
 
 /* sigaltstack() is per thread and a new thread starts without one, so
  * main.c's crash handler could not run on a worker thread's stack overflow -
  * the small worker stacks are where one is plausible. mmap'd, so pages the
  * handler never touches cost no RAM. */
 #define MS_THREAD_ALTSTACK (16*1024)
-typedef struct { void *(*fn)(void *); void *arg; } ms_thr_start;
+typedef struct { void *(*fn)(void *); void *arg; const char *name; } ms_thr_start;
 
 static void *thr_trampoline(void *v)
 {
     ms_thr_start st = *(ms_thr_start *)v;
     free(v);
+    if (st.name) {
+        char n[16];
+        size_t l = strcspn(st.name, "");
+        if (l > 7 && !strcmp(st.name + l - 7, "_thread")) l -= 7;
+        if (l > 15) l = 15;
+        memcpy(n, st.name, l); n[l] = 0;
+        prctl(PR_SET_NAME, n, 0, 0, 0);
+    }
     void *ss_mem = mmap(NULL, MS_THREAD_ALTSTACK, PROT_READ|PROT_WRITE,
                         MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
     if (ss_mem != MAP_FAILED){
@@ -33,11 +42,12 @@ static void *thr_trampoline(void *v)
     return r;
 }
 
-int ms_thread_create(pthread_t *t, size_t stack, void *(*fn)(void *), void *arg)
+int ms_thread_create_n(pthread_t *t, size_t stack, void *(*fn)(void *), void *arg,
+                       const char *name)
 {
     ms_thr_start *st = malloc(sizeof *st);
     if (!st) return ENOMEM;
-    st->fn = fn; st->arg = arg;
+    st->fn = fn; st->arg = arg; st->name = name;
     pthread_attr_t a;
     int r;
     if (pthread_attr_init(&a) != 0) {

@@ -103,7 +103,10 @@ int ms_base64(char *dst, const uint8_t *src, int n);
 /* pthread_create with an explicit stack size; falls back to default
  * attributes if the sized create fails. Returns 0 on success (like
  * pthread_create). Detach handling stays with the caller. */
-int ms_thread_create(pthread_t *t, size_t stack, void *(*fn)(void *), void *arg);
+int ms_thread_create_n(pthread_t *t, size_t stack, void *(*fn)(void *), void *arg,
+                       const char *name);
+/* names the thread after its start function so top -H / ps -T can tell them apart */
+#define ms_thread_create(t, stack, fn, arg) ms_thread_create_n(t, stack, fn, arg, #fn)
 
 /* ---- stop gate (P-02) -----------------------------------------------------
  * A one-shot "sleep until the next interval OR until stop is requested"
