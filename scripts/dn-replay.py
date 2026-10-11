@@ -9,8 +9,9 @@ decision the machine under test makes - and only one is ever observable in
 the field):
 
   (a) REGRESSION replay on synthetic two-pipeline scenarios (the workhorse):
-        ./scripts/dn-replay.py scripts/dn-scenarios/<name>.json
-        ./scripts/dn-replay.py --all scripts/dn-scenarios
+        ./scripts/dn-replay.py <scenario>.json
+        ./scripts/dn-replay.py --all <dir>
+      (scripts/dn-families/run.py generates the scenarios of make test-dn-replay)
       The scenario declares a day-pipeline curve AND a night-pipeline curve;
       the driver serves whichever one the machine's active mode selects
       (fake isp-m0 scrape file + a switch_cmd stub that records every board

@@ -1,0 +1,43 @@
+{
+ "name": "schuppen",
+ "camera": "cam-schuppen, shed",
+ "map": {
+  "kind": "generic"
+ },
+ "curve_src": "lit/dark: IR campaign 2026-08-19 07:40/08:40; day: exposure CSV 2026-08-20 08:58/09:20; night day value and 09:20 lit/dark ASSUMED",
+ "curve": [
+  [
+   0.0,
+   40000,
+   12633,
+   30706
+  ],
+  [
+   0.6,
+   3600,
+   3756,
+   4977
+  ],
+  [
+   0.85,
+   1217,
+   1685,
+   1685
+  ],
+  [
+   1.0,
+   708,
+   900,
+   900
+  ]
+ ],
+ "scenes": {
+  "night": {
+   "lvl": 0.0
+  },
+  "day": {
+   "lvl": 1.0
+  }
+ },
+ "curve_rail": 40000
+}

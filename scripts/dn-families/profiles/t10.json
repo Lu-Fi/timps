@@ -1,0 +1,33 @@
+{
+ "name": "t10",
+ "camera": "SecuPlug T10/jxh42, cellar with other IR cameras",
+ "map": {
+  "kind": "generic"
+ },
+ "scenes": {
+  "day": {
+   "day": 300,
+   "lit": 100,
+   "dark": 105,
+   "src": "scenario 61 (field numbers)"
+  },
+  "foreign_ir": {
+   "day": 4179,
+   "lit": 1000,
+   "dark": 1360,
+   "src": "scenario 61, r 1.36 (field)"
+  },
+  "lamp": {
+   "day": 300,
+   "lit": 300,
+   "dark": 306,
+   "src": "scenario 62"
+  },
+  "dawn_end": {
+   "day": 200,
+   "lit": 120,
+   "dark": 130,
+   "src": "scenario 63"
+  }
+ }
+}
