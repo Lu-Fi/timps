@@ -5340,8 +5340,8 @@ mb_check "array instead of object" '{"image":[1,2,3]}'
 #    so the clamp regression is detectable as data: if the old behaviour
 #    returns, the truncated prefix (which contains the full contrast kv)
 #    gets applied and the re-read exposes it - a 413 status alone could be
-#    faked by an unrelated rejection. Buffer is 4096 (httpd.c conn_thread);
-#    6000 bytes of body clears it whatever the header sizes are.
+#    faked by an unrelated rejection. The cap is CONTROL_BODY_MAX (8192,
+#    httpd.c, since v1.10.1 independent of the header size); 9000 bytes clear it.
 mb6_bf="$OUTDIR/mb6_before.json"; curlq 12 "$(http_base)/control" -o "$mb6_bf"
 mb6_cur=$(jget "$mb6_bf" image.contrast)
 if [ -z "$mb6_cur" ]; then
@@ -5349,13 +5349,13 @@ if [ -z "$mb6_cur" ]; then
 else
 	mb6_new=$(( mb6_cur == 190 ? 60 : 190 ))
 	MB6_PENDING="{\"image\":{\"contrast\":$mb6_cur}}"
-	mb6_pad=$(head -c 6000 /dev/zero | tr '\0' 'A')
+	mb6_pad=$(head -c 9000 /dev/zero | tr '\0' 'A')
 	mb6_code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 8 -u "$HTTP_USER:$HTTP_PASS" \
 		-X POST "$(http_base)/control" -d "{\"image\":{\"contrast\":$mb6_new,\"pad\":\"$mb6_pad\"}}")
 	mb6_af="$OUTDIR/mb6_after.json"; curlq 12 "$(http_base)/control" -o "$mb6_af"
 	mb6_got=$(jget "$mb6_af" image.contrast)
 	if [ "$mb6_code" = "413" ] && [ "$mb6_got" = "$mb6_cur" ]; then
-		ok "oversized body (6000B > 4096B buffer): rejected with 413 and NOTHING of the truncated prefix was applied (contrast still $mb6_got)"
+		ok "oversized body (9000B > 8192B cap): rejected with 413 and NOTHING of the truncated prefix was applied (contrast still $mb6_got)"
 		MB6_PENDING=""
 	elif [ "$mb6_got" != "$mb6_cur" ]; then
 		bad "oversized body: HTTP $mb6_code and the TRUNCATED PREFIX WAS APPLIED (contrast $mb6_cur -> $mb6_got) - the silent-clamp bug httpd.c documents as fixed is back"
