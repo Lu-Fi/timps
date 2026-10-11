@@ -760,103 +760,46 @@ motion.skip_frames    = 5             # analyse every Nth frame: higher = cheape
 # gain rails at its 256 floor and the index keeps falling, which is the range
 # bare gain does not have.
 #
-# The two directions are NOT symmetric, because the two optical paths are not
-# equally trustworthy. In day (IR-cut closed, illuminator off) the reading is
-# an honest measure of ambient light, so day -> night is a plain measurement.
-# In night the camera is partly measuring its own IR, so night -> day is only
-# ever decided by a PROBE: switch to the day pipeline, let the AE settle, judge
-# once. A probe costs an audible IR-cut click, and probe_min_gap_s is the one
-# rule rationing it.
+# Day -> night is a plain measurement: in day (IR-cut closed, illuminator off)
+# the index is an honest measure of ambient light. Night -> day is not, because
+# at night the camera partly measures its own IR. So at night the engine takes a
+# LOOK (illuminator off for ~8 s, no click) and, if the reading without IR looks
+# like day, a CHECK (switch to the day pipeline, one IR-cut click, judge once).
+# A failed check goes back to night (second click) and blocks the next check
+# for 1, 2, 4 ... minutes; day or new light resets that.
 daynight.enabled        = 1                    # 0 = manual mode (WebUI/`/control` only)
-# auto     = the automaton above; the calendar below is optional and only makes
-#            the heartbeat smarter. Works fine with no location data at all.
-# schedule = the calendar decides outright: no sensor, no probes.
+# auto     = the engine above; the calendar below is not used in auto.
+# schedule = the calendar decides outright: no sensor, no looks.
 daynight.mode           = auto                 # auto | schedule
-# The calendar (optional in auto, required in schedule). An explicit time
-# window wins; otherwise a non-zero lat/lon is used; otherwise there is none.
+# The calendar (required in schedule). An explicit time window wins;
+# otherwise a non-zero lat/lon is used.
 # daynight.time_night_start = 19:30            # local HH:MM
 # daynight.time_day_start   = 06:30
 # daynight.sun_latitude          = 0.0         # degrees, -90..90
 # daynight.sun_longitude         = 0.0         # degrees, -180..180
 # daynight.sun_sunrise_offset_min = 0          # minutes added to sunrise -> day
 # daynight.sun_sunset_offset_min  = 0          # minutes added to sunset  -> night
-# The two thresholds. Both are evaluated on the DAY pipeline only. 768 = 3x
-# gain ("day is confirmed when the day pipeline can hold the scene at <= 3x"),
-# 4096 = 16x ("colour is hopeless"). Old names total_gain_day_threshold /
-# total_gain_night_threshold still work.
+# The two thresholds, evaluated on the DAY pipeline. 768 = 3x gain ("day when
+# the day pipeline can hold the scene at <= 3x"), 4096 = 16x. Dim rooms that
+# should still be day need a higher day_gain. Old names
+# total_gain_day_threshold / total_gain_night_threshold still work.
 daynight.day_gain       = 768                  # index below this = day
 daynight.night_gain     = 4096                 # index above this (in day) = night
 daynight.day_confirm_s  = 30                   # how long before day -> night
-# Probe economy. The trigger bar is relative to the night reference - the
-# level at which night was last PROVEN - so "someone turned a light on" is
-# one full stop of new brightening, held for probe_confirm_s. Colour comes
-# back roughly probe_confirm_s + the fixed probe-settle time after the light
-# goes on.
-daynight.probe_min_gap_s = 600                 # never two probes closer than this
-daynight.probe_confirm_s = 15                  # ... and stays there this long
-# probe_jump_pct (50), probe_settle_s (8) and ref_delay_s (30) used to be
-# settable here too. As of the 2026-08-22 config consolidation they are
-# fixed internal constants (DN_PROBE_JUMP_PCT/DN_PROBE_SETTLE_S/
-# DN_REF_DELAY_S in src/daynight.h) - every camera measured wanted the same
-# values. Setting them here still parses but is ignored, with one warning if
-# the value differs from the constant.
-
-# The SILENT probe. Where the board can switch its IR illuminator on its own,
-# the automaton asks the cheap question first: turn the illuminator off for a
-# few seconds and compare. r = index(off) / index(on). A high r means the
-# illuminator was carrying the scene (night); a low one means the room
-# supplies the light (day). The ratio is dimensionless, so one pair of
-# thresholds fits every camera - no absolute level does, genuine daylight
-# spans a factor of 63 across a fleet at one instant.
-#
-# This costs no motor movement at all. The audible IR-cut probe below is the
-# fallback: no irprobe_cmd, no usable reading, or a ratio between the two
-# thresholds. Clearing irprobe_cmd disables the silent probe AND the trend
-# path, leaving the jump trigger and the heartbeat.
-daynight.irprobe_cmd     = timps-irprobe       # run as "<cmd> on|off"; empty = audible probe only
-# ir_ratio_night (2.0), ir_ratio_day (2.0) and ir_min_headroom (8) used to be
-# settable here too. As of the 2026-08-22 config consolidation they are
-# fixed internal constants (DN_IR_RATIO_NIGHT/DN_IR_RATIO_DAY/
-# DN_IR_MIN_HEADROOM in src/daynight.h), re-derived from a twelve-camera
-# dusk-to-dawn campaign that found every camera wanted the same values.
-#
-# A low ratio says the illuminator is not earning its keep. It does NOT say
-# day mode is usable, because switching also closes the IR-cut filter, and in
-# a dim interior that filter alone can cost a factor of three. The automaton
-# measures that factor the first time a ratio verdict is undone by night_gain,
-# then requires the projected day reading to clear night_gain before it will
-# act on a ratio again. Without it a dimly lit room flaps all night. The
-# factor is measured per scene, not configured, and is re-measured after a
-# restart.
-# The heartbeat: a probe regardless of any reading. This is the ONLY bound on
-# how long a wrong night can last, so it is a flat interval and never doubles.
-# A scene that has not moved since the last probe waits heartbeat_max_s instead
-# (nothing new to spend a click on) - a dark closet therefore costs two click
-# pairs a day, and never any at all if it also never changes.
-daynight.heartbeat_s     = 14400               # 4 h while the scene is moving
-daynight.heartbeat_max_s = 43200               # 12 h once it demonstrably is not
-daynight.boot_probe      = 1                   # 1 = measure once at every boot.
-                                               # 0 adopts the persisted mode instead,
-                                               # unless the AE is railed (no headroom),
-                                               # in which case it measures anyway.
-# boot_settle_s (5) used to be settable here too; as of the 2026-08-22 config
-# consolidation it is the fixed DN_BOOT_SETTLE_S constant (src/daynight.h).
-#
-# Learning (daynight.learn/daynight.state_path) was removed outright in the
-# same consolidation: it recorded each confirmed day's brightest reading and
-# could raise day_gain from the median of the last 8, but its own safety
-# clamp (never past night_gain/2) could not raise it far enough for the
-# cameras that actually needed it. daynight.diagnose_thresholds below is
-# what is left - it names the value to raise by hand.
+# A look starts at once when the illuminator-lit night level drops this many
+# percent below the last look and stays there ~20 s (new light), otherwise every
+# 45 min. Lower = weaker lamps are noticed, more looks.
+daynight.jump_pct       = 20                   # 5..70, live
+# Board hook that switches the IR illuminator alone; empty = no looks, the
+# engine then checks every heartbeat_s instead (audible).
+daynight.irprobe_cmd     = timps-irprobe       # run as "<cmd> on|off|idle|state"
+daynight.heartbeat_s     = 14400               # check interval without a switchable IR light
+daynight.heartbeat_max_s = 43200               # longest night without a day check
+# Retired in 1.10.1 (read, ignored, one warning each): probe_min_gap_s,
+# probe_confirm_s, boot_probe, diagnose_thresholds.
 daynight.interval_ms    = 2000                 # sample interval
-# transition_s (5) used to be settable here too; as of the 2026-08-22 config
-# consolidation it is the fixed DN_TRANSITION_S constant (src/daynight.h).
 daynight.switch_cmd     = daynight             # run as "<cmd> day|night"
 daynight.isp_path       = /proc/jz/isp/isp-m0  # ISP exposure proc file
-# Opt-in threshold diagnostic: warn once per daemon session, after three
-# consecutive failed probes, if no probe has ever confirmed day and the best
-# day-pipeline reading is still clear of day_gain.
-# daynight.diagnose_thresholds = 1
 # In-RAM decision history for the WebUI tuning graph (tool-sensor-data), in
 # seconds of retention - 0 = off, ceiling 48 h (172800). One 16-byte sample
 # every 10 s, so 4 h costs 22.5 KB and the ceiling 270 KB, allocated only once
