@@ -51,7 +51,8 @@ Ablation: each mechanism compiled out, the whole family corpus re-run
 | A check without a fresh look learns B from a look 30 s later | lamp_nojump-pan/-eufy |
 | Lockout 1, 2, 4 … min after failed checks | dawn-wohn (9 switches, bound 8) |
 | Guarantee check after `heartbeat_max_s` | blind_look-eufy |
-| Readback: one edge through the other mode | isp_stuck-pan |
+| Readback: one edge through the other mode, held 5 s | isp_stuck-pan |
+| `running_mode` re-asserted twice, 8 s apart, after each switch (not after the boot check) | (hardware lesson; the harness ISP does not react to it) |
 | Idle-Dark as a look that lasts | idle-pan, idle-t10 |
 
 Removed (no family needs them): the IR-ratio verdict and permission, the 60 s
