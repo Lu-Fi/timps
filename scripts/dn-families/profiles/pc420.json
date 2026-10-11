@@ -1,0 +1,27 @@
+{
+ "name": "pc420",
+ "camera": "PC420 T21, cellar",
+ "map": {
+  "kind": "generic"
+ },
+ "scenes": {
+  "cellar": {
+   "day": 8884,
+   "lit": 1600,
+   "dark": 1560,
+   "src": "field 2026-10-11 (T21 .24)"
+  },
+  "fir_short": {
+   "day": 11519,
+   "lit": 364,
+   "dark": 1290,
+   "src": "field 2026-10-11 20:55 (T21 .24)"
+  },
+  "cellar_lamp": {
+   "day": 550,
+   "lit": 380,
+   "dark": 410,
+   "src": "field 2026-10-11 20:42, 20:47 (T21 .24)"
+  }
+ }
+}

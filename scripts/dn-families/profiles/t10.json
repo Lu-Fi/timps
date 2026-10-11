@@ -28,6 +28,24 @@
    "lit": 120,
    "dark": 130,
    "src": "scenario 63"
+  },
+  "cellar": {
+   "day": 4179,
+   "lit": 450,
+   "dark": 535,
+   "src": "field 2026-10-11 (T10 .31)"
+  },
+  "fir_short": {
+   "day": 4179,
+   "lit": 115,
+   "dark": 195,
+   "src": "field 2026-10-11 20:55 (T10 .31)"
+  },
+  "cellar_lamp": {
+   "day": 284,
+   "lit": 225,
+   "dark": 300,
+   "src": "field 2026-10-11 20:47, 21:22 (T10 .31)"
   }
  }
 }

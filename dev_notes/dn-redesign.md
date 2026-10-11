@@ -22,6 +22,9 @@ time in the wrong mode are not. Development history: branch `dev/dn-redesign`.
 > below `day_gain` it stays day, otherwise it goes back to night (a second
 > click) and remembers how much darker the room without infrared has to get
 > before it asks again. A sudden brightening forgets that: it is new light.
+> When the night picture stays darker than at the last look for a minute
+> (the light it was taken under has gone), that darker level becomes the
+> reference and the next look relearns the bar.
 > After failed checks the next one waits 1, 2, 4, 8 … minutes.
 >
 > If no check has seen the day picture for `heartbeat_max_s` (12 h), it checks
@@ -49,6 +52,7 @@ Ablation: each mechanism compiled out, the whole family corpus re-run
 | Scene bar B after a failed check: `dark × day_gain / day` | steady_night-eufy (12 switches, bound 2) |
 | ... `0.85 × dark` when the check read the AE at its limit or above 4 × `night_gain` (Eufy: 40960 without a reported limit) | eufy_dark_bulb |
 | A check without a fresh look learns B from a look 30 s later | lamp_nojump-pan/-eufy |
+| Lit level `jump_pct` above the reference for 60 s → it is the reference, B relearned at the next look | ref_stuck-t10/-pc420 (field 2026-10-11: a short foreign light failed a check, the cellar lamp 30 min later never switched) |
 | Lockout 1, 2, 4 … min after failed checks | dawn-wohn (9 switches, bound 8) |
 | Guarantee check after `heartbeat_max_s` | blind_look-eufy |
 | Readback: one edge through the other mode, held 5 s | isp_stuck-pan |

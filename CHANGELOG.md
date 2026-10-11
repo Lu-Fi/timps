@@ -41,7 +41,8 @@ _1.10.1 (draft)_
 - Day/night: a new, much smaller decision engine (`dev_notes/dn-redesign.md`).
   Night→day: a look with the IR illuminator off for 8 s (silent) every 45 min
   or when the lit level falls `daynight.jump_pct` (new, 20 %) below the last
-  look; a check with the day pipeline (one click) when the look reads bright
+  look (a level that stays as far above it for 60 s becomes the new
+  reference); a check with the day pipeline (one click) when the look reads bright
   enough; failed checks lock out for 1, 2, 4 … min; a check anyway after
   `heartbeat_max_s` without a day reading. Day→night after `day_confirm_s`,
   6 s when very dark. Lamps after a failed check reach day in ≤ 60 s, light

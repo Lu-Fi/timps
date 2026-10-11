@@ -1166,6 +1166,7 @@ enum { S_BOOT = -1, S_DAY = 0, S_NIGHT = 1, S_LOOK = 2, S_CHECK = 3 };
 #define SD_FAR        4.0f      /* a check this many times night_gain counts as railed */
 #define SD_LOCK_MS    60000     /* lockout after the first failed check, doubling */
 #define SD_PAIR_MS    60000     /* a look and the check it asked for */
+#define SD_RISE_MS    60000     /* a darker scene held this long is the new reference */
 #define SD_LOOK_S     2700      /* 8 s every 45 min = 0.30 % of the night */
 
 /* the AE cannot brighten the image any further */
@@ -1220,7 +1221,7 @@ static void *dn_thread(void *arg)
     float   B = -1.0f;              /* <0 unset, 0 learn at the next look, >0 bar */
     int64_t boot_at = ms_now_us() / 1000, due = 0, hold = 0, look_at = 0;
     int64_t day_at = 0, mode_at = 0, N_at = 0, verify_at = 0, quiet = 0, idle_at = 0;
-    int64_t reassert_at = 0, cycle_at = 0;
+    int64_t reassert_at = 0, cycle_at = 0, rise = 0;
     int     reassert_left = 0;
     int64_t lock_until = 0, lock_ms = SD_LOCK_MS;  /* failed checks: 1, 2, 4 ... min */
     const char *why = "boot";
@@ -1358,6 +1359,17 @@ static void *dn_thread(void *arg)
                 jump = now - hold >= SD_JUMP_HOLD_MS;
             } else hold = 0;
             if (jump) B = -1.0f;            /* new light: the bar was for the old one */
+            /* the light A (and B) were taken under is gone: else a lamp
+             * would have to beat that light, and B would still judge for it */
+            if (A > 0.0f && s * jb > A) {
+                if (!rise) rise = now;
+                if (now - rise >= SD_RISE_MS) {
+                    LOGD(MOD, "reference follows the darker scene: %.0f -> %.0f",
+                         (double)A, (double)s);
+                    A = s; rise = 0;
+                    if (B > 0.0f) B = 0.0f;
+                }
+            } else rise = 0;
             if (sd_watched()) quiet = 0;
             else if (!quiet) quiet = now;
             if (irp && dn->ir_idle_off && hal_fs_keepalive() && quiet &&
@@ -1366,7 +1378,7 @@ static void *dn_thread(void *arg)
                 dn_idle_hook(dn->irprobe_cmd, &idle_fails) == 0) {
                 __atomic_store_n(&g_watch_kick, 0, __ATOMIC_RELAXED);
                 sd_arm(1);
-                idle = 1; why = "idle"; L = s; idle_at = now; hold = 0;
+                idle = 1; why = "idle"; L = s; idle_at = now; hold = rise = 0;
                 st = S_LOOK; due = now + DN_PROBE_SETTLE_S * 1000; s = -1.0f; stable = 0;
                 break;
             }
@@ -1452,7 +1464,7 @@ static void *dn_thread(void *arg)
         goto out;
 
     look:
-        L = s;
+        L = s; rise = 0;
         if (dn_irprobe(dn->irprobe_cmd, 0) == 0) {
             ir_fails = 0;
             st = S_LOOK; due = now + DN_PROBE_SETTLE_S * 1000; s = -1.0f; stable = 0;
@@ -1473,7 +1485,7 @@ static void *dn_thread(void *arg)
         goto out;
     night:
         dn_switch(DN_NIGHT, g_why, dn->switch_cmd, s, A, B);
-        cur = st = DN_NIGHT; mode_at = now; hold = 0; s = -1.0f; stable = 0; cycled = 0;
+        cur = st = DN_NIGHT; mode_at = now; hold = rise = 0; s = -1.0f; stable = 0; cycled = 0;
         /* a check without a fresh look learns B from the same scene, soon */
         A = L; look_at = now + (B == 0.0f ? DN_REF_DELAY_S * 1000LL : look_ms);
         verify_at = now + DN_VERIFY_MS;

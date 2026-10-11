@@ -1178,7 +1178,9 @@ to `total_gain`.
   the camera **looks**: illuminator off for 8 s (no click), reading the scene
   without it. A look runs every 45 min (`heartbeat_s` caps it), at once when
   the lit level falls `jump_pct` below the last look for 20 s (a lamp), and on
-  `{"daynight":{"probe":1}}`.
+  `{"daynight":{"probe":1}}`. A lit level that stays `jump_pct` *above* the
+  reference for 60 s (the light of the last look has gone) becomes the
+  reference, and the next look relearns the scene bar.
 * **Look → check**: if the reading without the illuminator is below the bar —
   `day_gain`, twice that for a look a jump started, or a scene bar learnt from
   a failed check — the camera switches to the day pipeline and reads it once

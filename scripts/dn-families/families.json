@@ -1242,6 +1242,87 @@
     "max_wrong_mode_s": 60,
     "max_switches": 1
    }
+  },
+  {
+   "name": "ref_stuck",
+   "title": "a short foreign light fails a check and leaves; the lamp 30 min later: day within 60 s",
+   "duration_s": 4200,
+   "initial_mode": "night",
+   "timelines": {
+    "t10": [
+     [
+      0,
+      "cellar"
+     ],
+     [
+      600,
+      "cellar"
+     ],
+     [
+      601,
+      "fir_short"
+     ],
+     [
+      1200,
+      "fir_short"
+     ],
+     [
+      1201,
+      "cellar"
+     ],
+     [
+      3000,
+      "cellar"
+     ],
+     [
+      3001,
+      "cellar_lamp"
+     ],
+     [
+      4200,
+      "cellar_lamp"
+     ]
+    ],
+    "pc420": [
+     [
+      0,
+      "cellar"
+     ],
+     [
+      600,
+      "cellar"
+     ],
+     [
+      601,
+      "fir_short"
+     ],
+     [
+      1200,
+      "fir_short"
+     ],
+     [
+      1201,
+      "cellar"
+     ],
+     [
+      3000,
+      "cellar"
+     ],
+     [
+      3001,
+      "cellar_lamp"
+     ],
+     [
+      4200,
+      "cellar_lamp"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 60,
+    "max_switches": 6,
+    "max_on_s": 60
+   }
   }
  ]
 }
