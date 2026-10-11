@@ -297,7 +297,7 @@ bit-twiddling is easy to get subtly wrong.
   unencrypted. `srt.streamid` travels in plaintext and is no secret: a
   listener without a passphrase serves video to anyone, whatever
   `rtsp.user`/`http.user` demand. **Since v1.9.28** that
-  combination logs `SRT listener on port N has NO access control …` at
+  combination logs `SRT port N has NO access control - set srt.passphrase (10-79 chars)` at
   start.
 
 Playing back a listener-mode camera:

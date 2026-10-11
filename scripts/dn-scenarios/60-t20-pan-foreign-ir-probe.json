@@ -29,7 +29,7 @@
       "boot: measuring before deciding - persisted running_mode=0",
       "switching to night \\(boot: measured night, exposure 35\\d\\d\\)",
       "night reference 4\\d\\d \\(probe bar",
-      "r=1\\.2\\d but the lit level 4\\d\\d is no brighter than the proven night reference 4\\d\\d"
+      "r=1\\.2\\d but lit 4\\d\\d is no brighter than the proven night reference 4\\d\\d"
     ],
     "forbid_log": [
       "switching to day \\((?!boot measure)",

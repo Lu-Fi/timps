@@ -1790,8 +1790,7 @@ static void set_kv(ms_config *c, const char *key, const char *val)
                 int v = pint(val);
                 if (v != gone_i[i].fixed)
                     LOGW(MOD,"daynight.%s=%s is now a fixed internal constant "
-                             "(%d) and can no longer be tuned per camera - the "
-                             "configured value is being ignored",
+                             "(%d), value ignored",
                          gone_i[i].k, val, gone_i[i].fixed);
                 return;
             }
@@ -1804,8 +1803,7 @@ static void set_kv(ms_config *c, const char *key, const char *val)
                 float v = pflt(val);
                 if (v != gone_f[i].fixed)
                     LOGW(MOD,"daynight.%s=%s is now a fixed internal constant "
-                             "(%g) and can no longer be tuned per camera - the "
-                             "configured value is being ignored",
+                             "(%g), value ignored",
                          gone_f[i].k, val, (double)gone_f[i].fixed);
                 return;
             }
@@ -2465,9 +2463,8 @@ int config_write_keys(const char *path, const char *const *keys,
          * original file is still intact, and the caller's change is simply
          * not persisted (it stays live in g_cfg). */
         if (ferror(in)){
-            LOGE(MOD,"read error on %s (%s) - ABORTING the config rewrite so "
-                     "the truncated copy is not committed over it. The setting "
-                     "is live but NOT persisted; this flash needs attention",
+            LOGE(MOD,"read error on %s (%s) - config rewrite aborted, "
+                     "setting live but NOT persisted",
                  path, strerror(errno));
             fclose(in);
             fclose(out);

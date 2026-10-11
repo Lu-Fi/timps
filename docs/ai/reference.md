@@ -1022,8 +1022,8 @@ digital gain unused can never exceed 256·2^(`MAX SENSOR analog gain`/32) — 40
 for a cap of 128, the default `night_gain`. Measured on one Wyze Pan v1
 (T20/jxf22, OpenIMP): index 3587 all night. **Since v1.10.0** timps
 detects a cap `<= night_gain` and switches on the plateau at the cap instead,
-with one WARN `daynight.night_gain … is above the exposure index this camera
-can reach …`; the cap is the lower `MAX SENSOR analog gain` of `isp-m0` and
+with one WARN `daynight.night_gain … > reachable ~… (cap …)` (v1.10.0:
+`… is above the exposure index this camera can reach …`); the cap is the lower `MAX SENSOR analog gain` of `isp-m0` and
 the `isp_info` beside it (open-tx-isp: 158 vs 128 on the Pan, the AE stops at
 128). On older builds set `night_gain` below the observed index. See
 `config-keys.md` (`night_gain` pitfall) and troubleshooting §3.3.

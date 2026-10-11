@@ -132,8 +132,9 @@ and instead:
   `0` even with `record.enabled=1` or a manual
   `{"record":{"active":1}}` override — the daemon refuses to record
   rather than empty the archive chasing a target it can never hit;
-- one warning is logged (`record.min_free_mb=<N> unreachable (only <F>MB
-  free, <M>MB even if every existing recording were deleted)`), once per
+- one warning is logged (`record.min_free_mb=<N> unreachable (<F>MB free,
+  <M>MB max) - not recording`, `<M>` being the free space if every existing
+  recording were deleted), once per
   bad-value edge rather than once per attempted rotation;
 - the refusal is surfaced through the same `write_errors` / `last_error`
   fields `record_get_status()` uses for a write failure, so `GET

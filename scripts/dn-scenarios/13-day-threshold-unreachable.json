@@ -25,7 +25,7 @@
     "restart_equivalence_s": null,
     "monotonicity": "warn",
     "expect_log": [
-      "no probe has ever confirmed day \\(\\d+ in a row found night\\)",
+      "day never confirmed \\(\\d+ night probes\\)",
       "raise daynight\\.day_gain above \\d+"
     ]
   }

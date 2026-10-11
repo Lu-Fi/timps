@@ -24,7 +24,7 @@
     "monotonicity": "warn",
     "expect_log": [
       "switching to night \\(exposure 4\\d\\d\\d > 4096\\)",
-      "r=1\\.3\\d but the lit level \\d+ is no brighter than the proven night reference"
+      "r=1\\.3\\d but lit \\d+ is no brighter than the proven night reference"
     ],
     "forbid_log": [
       "switching to day \\(IR ratio"

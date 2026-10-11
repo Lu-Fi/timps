@@ -26,8 +26,7 @@ void ms_trace_set(int mask)
     g_trace_mask = mask & MS_TR_ALL;
     if (g_trace_mask)
         LOGW(MOD,"send-pipeline tracing ENABLED (mask=0x%x: %s%s%s%s) "
-                 "threshold=%dms - this is a debug build option, "
-                 "leave it off in normal operation",
+                 "threshold=%dms - debug only",
              g_trace_mask,
              (g_trace_mask & MS_TR_AU) ? "au ":"",
              (g_trace_mask & MS_TR_WR) ? "write ":"",
