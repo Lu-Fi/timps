@@ -53,6 +53,10 @@ int hal_isp_ae_luma(uint32_t *luma);
 /* WB gains in effect (in auto: what AWB currently applies), SetWB's scale.
  * -1 where the SDK has no IMPISPWB (ISP_HAS_WB unset). */
 int hal_isp_wb_gains(int *rgain, int *bgain);
+/* Scene colour from the AWB statistics: global R/G and B/G in a fixed scale
+ * per platform (only the change between two reads counts). 0 ok, <0 when
+ * this libimp has none or the ISP is not up. */
+int hal_isp_awb_ratio(uint32_t *rg, uint32_t *bg);
 
 /* ISP AE exposure readback, straight from IMP_ISP_Tuning_GetExpr (+GetEVAttr).
  *

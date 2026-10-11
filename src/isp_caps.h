@@ -108,6 +108,23 @@
 #endif
 #endif
 
+/* Per-zone AWB statistics for daynight's colour trigger (hal_isp_awb_ratio):
+ *   STATIS  GetAwbStatistics, 15x15 u32 R/G/B   T40 vendor, T41
+ *   ZONE    GetAwbZone, 15x15 u8 means         T23 T31 C100 vendor
+ *   IOCTL   T2X_CID_AWB_ZONE on libimp's fd     T10 T20 OpenIMP
+ * Not: T40 OpenIMP (the open driver's statistics path is a stub), T23/T31
+ * OpenIMP (GetAwbZone took three pointers before openimp e7dadd6, a stack
+ * overrun with one), T10/T20/T21 vendor (no zones; the hist and GOL values
+ * are white-region filtered or the AWB's own estimate). */
+#if (defined(PLATFORM_T40) && !defined(USE_OPENIMP)) || defined(PLATFORM_T41)
+#define ISP_HAS_AWB_STATIS 1
+#elif (defined(PLATFORM_T23) || defined(PLATFORM_T31) || defined(PLATFORM_C100)) && \
+      !defined(USE_OPENIMP)
+#define ISP_HAS_AWB_ZONE 1
+#elif (defined(PLATFORM_T10) || defined(PLATFORM_T20)) && defined(USE_OPENIMP)
+#define ISP_HAS_AWB_ZONE_IOCTL 1
+#endif
+
 /* classic-API-only tunings, absent from the T40/T41 SDK:
  * SetHiLightDepress, SetSinterStrength/SetTemperStrength,
  * SetMaxAgain/SetMaxDgain, SetWB, SetISPHflip/SetISPVflip */

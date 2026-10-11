@@ -507,6 +507,9 @@ void config_defaults(ms_config *c)
     /* 20 %: a lamp moves the illuminator-lit level of the Eufy and Pan by
      * 1.2-1.9x; 12 s headlights stay under the 20 s hold */
     c->daynight.jump_pct=20;
+    /* a 30 % lamp in front of the IR: 4-6 % on the Eufy and the Pan, noise
+     * of an unchanged scene below 0.5 % */
+    c->daynight.color_pct=3;
     /* the look needs a hook that switches the illuminator alone; it arms a
      * 60 s watchdog before switching off and exits non-zero on a board with
      * no switchable illuminator, which turns looks off. Empty = no looks. */
@@ -1121,6 +1124,7 @@ static const cfg_field daynight_fields[] = {
     F ("night_gain", "total_gain_night_threshold", night_gain, T_FLT, F_CTRL, 1,1000000),
     F ("day_confirm_s",              0, day_confirm_s,              T_INT,   F_CTRL, 1,3600),
     F ("jump_pct",                   0, jump_pct,                   T_INT,   F_CTRL, 5,70),
+    F ("color_pct",                  0, color_pct,                  T_INT,   F_CTRL, 0,50),
     F ("heartbeat_s",                0, heartbeat_s,                T_INT,   F_CTRL, 300,604800),
     F ("heartbeat_max_s",            0, heartbeat_max_s,            T_INT,   F_CTRL, 300,604800),
     F ("interval_ms",                0, interval_ms,                T_INT,   F_CTRL, 100,60000),

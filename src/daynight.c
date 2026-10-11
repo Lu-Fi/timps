@@ -106,6 +106,9 @@ static int   g_st_mode       = DN_UNKNOWN;
 static float g_st_ref        = -1.0f;
 static float g_st_bar        = -1.0f;
 static int   g_st_desync     = -1;   /* -1 unknown, 0 in sync, 1 standing */
+enum { DNC_OFF = 0, DNC_ON, DNC_NA };
+static int   g_st_color      = DNC_OFF;
+static float g_st_color_dev  = -1.0f;
 
 static void dn_status_update(float brightness, float gain, float exposure,
                              float luma, int mode, float ref, float bar,
@@ -1170,6 +1173,9 @@ enum { S_BOOT = -1, S_DAY = 0, S_NIGHT = 1, S_LOOK = 2, S_CHECK = 3 };
 #define SD_RISE       1.10f     /* ... starting this far above it (noise stays below) */
 #define SD_B_MIN      0.50f     /* a light that halves the dark reading may ask again */
 #define SD_LOOK_S     2700      /* 8 s every 45 min = 0.30 % of the night */
+#define SD_COLOR_GAP_MS 300000  /* colour looks: 5 min apart, doubling while nothing else looks */
+#define SD_COLOR_FAILS  3       /* failed reads in a row = no colour statistics */
+#define SD_COLOR_PROBES 30      /* reads outside the night until the first success */
 
 /* the AE cannot brighten the image any further */
 static int sd_exhausted(const dn_sample *m)
@@ -1214,6 +1220,29 @@ static void sd_idle_status(const ms_daynight_cfg *dn, int irp, int idle,
     if (changed) events_notify();
 }
 
+static int sd_color(float *rg, float *bg)
+{
+    static int said;
+    uint32_t r = 0, b = 0;
+    int64_t t0 = said ? 0 : ms_now_us();
+    if (hal_isp_awb_ratio(&r, &b) != 0 || !r || !b) return -1;
+    if (!said++)
+        LOGI(MOD, "colour statistics: %lld us per read",
+             (long long)(ms_now_us() - t0));
+    *rg = (float)r; *bg = (float)b;
+    return 0;
+}
+
+static void sd_color_status(const ms_daynight_cfg *dn, int irp, int fails, float dev)
+{
+    int c = !dn->enabled || dn->mode == DN_MODE_SCHEDULE || dn->color_pct <= 0 || !irp
+          ? DNC_OFF : fails >= SD_COLOR_FAILS ? DNC_NA : DNC_ON;
+    pthread_mutex_lock(&g_st_mu);
+    g_st_color = c;
+    g_st_color_dev = c == DNC_ON ? dev : -1.0f;
+    pthread_mutex_unlock(&g_st_mu);
+}
+
 static void *dn_thread(void *arg)
 {
     (void)arg;
@@ -1227,6 +1256,10 @@ static void *dn_thread(void *arg)
     int     reassert_left = 0;
     int64_t lock_until = 0, lock_ms = SD_LOCK_MS;  /* failed checks: 1, 2, 4 ... min */
     const char *why = "boot";
+    /* colour of the lit picture, taken after each look like A */
+    float   Crg = -1.0f, Cbg = -1.0f, cdev = -1.0f;
+    int64_t c_from = 0, chold = 0, c_next = 0, c_gap = SD_COLOR_GAP_MS;
+    int     c_fails = 0, c_seen = 0;
 
     while (!ms_stopgate_stopped(&g_gate)) {
         ms_daynight_cfg c;
@@ -1273,6 +1306,12 @@ static void *dn_thread(void *arg)
             reassert_at = cycle_at = 0; reassert_left = 0;
             desync = cycled = ir_fails = 0; g_ir_unusable = 0;
             LOGI(MOD, "auto day/night enabled (simple engine)");
+        }
+        float rg = -1.0f, bg = -1.0f;
+        if (dn->color_pct > 0 && irp &&
+            (st == S_NIGHT || (!c_seen && c_fails < SD_COLOR_PROBES))) {
+            if (sd_color(&rg, &bg) == 0) { c_seen = 1; c_fails = 0; }
+            else if (c_fails < SD_COLOR_PROBES) c_fails++;
         }
         if (sm.d > 0.0f) {
             s = (s > 0.0f) ? s + (sm.d - s) * DN_ALPHA : sm.d;
@@ -1372,6 +1411,19 @@ static void *dn_thread(void *arg)
                 A = s; rise = 0;
                 if (B > 0.0f) B = 0.0f;
             }
+            /* sign and size differ per sensor: any channel, either way */
+            int cj = 0;
+            cdev = -1.0f;
+            if (rg > 0.0f && Crg < 0.0f && now >= c_from && stable >= DN_STABLE_N) {
+                Crg = rg; Cbg = bg;
+            } else if (rg > 0.0f && Crg > 0.0f) {
+                cdev = 100.0f * fmaxf(fabsf(rg / Crg - 1.0f), fabsf(bg / Cbg - 1.0f));
+                if (cdev > (float)dn->color_pct) {
+                    if (!chold) chold = now;
+                    /* a jump in the making decides: it forgets the bar */
+                    cj = now - chold >= SD_JUMP_HOLD_MS && now >= c_next && !locked && !hold;
+                } else chold = 0;
+            }
             if (sd_watched()) quiet = 0;
             else if (!quiet) quiet = now;
             if (irp && dn->ir_idle_off && hal_fs_keepalive() && quiet &&
@@ -1386,8 +1438,13 @@ static void *dn_thread(void *arg)
             }
             /* a jump waits out a lockout with its old level kept, so it
              * looks the moment the lockout ends */
-            if (irp && ((jump && !locked) || now >= look_at || g_probe_req)) {
-                why = jump ? "jump" : g_probe_req ? "requested" : "timer";
+            if (irp && ((jump && !locked) || cj || now >= look_at || g_probe_req)) {
+                why = jump ? "jump" : cj ? "color" : g_probe_req ? "requested" : "timer";
+                if (why[0] == 'c') {
+                    LOGD(MOD, "colour moved %.1f %%", (double)cdev);
+                    c_next = now + c_gap;
+                    c_gap = c_gap * 2 < look_ms ? c_gap * 2 : look_ms;
+                } else if (why[0] == 't') c_gap = SD_COLOR_GAP_MS;
                 g_probe_req = 0;
                 goto look;
             }
@@ -1489,6 +1546,7 @@ static void *dn_thread(void *arg)
     night:
         dn_switch(DN_NIGHT, g_why, dn->switch_cmd, s, A, B);
         cur = st = DN_NIGHT; mode_at = now; hold = rise = 0; s = -1.0f; stable = 0; cycled = 0;
+        c_gap = SD_COLOR_GAP_MS;
         /* a check without a fresh look learns B from the same scene, soon */
         A = L; look_at = now + (B == 0.0f ? DN_REF_DELAY_S * 1000LL : look_ms);
         verify_at = now + DN_VERIFY_MS;
@@ -1496,11 +1554,16 @@ static void *dn_thread(void *arg)
 
     out:
         if (st != S_NIGHT && st != S_LOOK) g_probe_req = 0;
+        if (st != S_NIGHT || cycled) {
+            Crg = -1.0f; chold = 0; cdev = -1.0f;
+            c_from = now + DN_PROBE_SETTLE_S * 1000;
+        }
         dn_trace(dn, now, cur, &sm, s, A, B > 0.0f ? B : dn->day_gain, due, look_at, -1.0f, -1.0f);
         dn_status_update(sm.bright, sm.gain, sm.d, luma, cur, A,
                          B > 0.0f ? B : dn->day_gain, desync);
     wait:
         sd_idle_status(dn, irp, idle, quiet, now);
+        sd_color_status(dn, irp, c_fails, cdev);
         dn_hist_tick(&sm, luma, cur, dn->history_s);
         if (idle) ms_stopgate_wait_kick(&g_gate, dn->interval_ms > 0 ? dn->interval_ms : 2000);
         else ms_stopgate_wait(&g_gate, dn->interval_ms > 0 ? dn->interval_ms : 2000);
@@ -1570,6 +1633,16 @@ void daynight_get_status(int *enabled, int *mode,
     if (night_ref)  *night_ref  = rf;
     if (probe_bar)  *probe_bar  = pb;
     if (isp_desync) *isp_desync = ds;
+}
+
+const char *daynight_color_state(float *dev)
+{
+    static const char *const n[] = { "off", "on", "unavailable" };
+    pthread_mutex_lock(&g_st_mu);
+    int c = g_st_color;
+    if (dev) *dev = g_st_color_dev;
+    pthread_mutex_unlock(&g_st_mu);
+    return n[c];
 }
 
 void daynight_ir_idle_status(dn_ir_idle_status *o)
@@ -1645,6 +1718,12 @@ int daynight_sun_status(char *sr_hhmm, char *ss_hhmm, size_t cap)
 
 /* no detection thread to arm a probe on */
 int daynight_request_probe(void) { return -1; }
+
+const char *daynight_color_state(float *dev)
+{
+    if (dev) *dev = -1.0f;
+    return "unavailable";
+}
 
 void daynight_watch_kick(void) {}
 

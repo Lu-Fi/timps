@@ -6601,6 +6601,102 @@ int hal_isp_wb_gains(int *rgain, int *bgain)
 #endif
 }
 
+/* Scene colour for daynight's colour trigger (hal.h), Q12 (4096 = 1.0),
+ * from per-zone channel statistics (isp_caps.h). Weak: a libimp without the
+ * call reads unavailable. Measured 2026-10-11 (branch dbg/light-signals): Eufy
+ * T40 vendor GetAwbStatistics, Wyze Pan T20 OpenIMP zone ioctl. */
+#if defined(ISP_HAS_AWB_STATIS) || defined(ISP_HAS_AWB_ZONE)
+static int ms_awb_q12(float sr, float sg, float sb, uint32_t *rg, uint32_t *bg)
+{
+    if (sg <= 0.0f) return -1;
+    *rg = (uint32_t)(4096.0f * sr / sg);
+    *bg = (uint32_t)(4096.0f * sb / sg);
+    return 0;
+}
+#endif
+#if defined(ISP_HAS_AWB_STATIS)
+extern int32_t ms_awb_statis(IMPVI_NUM, IMPISPAWBStatisInfo *)
+    __asm__("IMP_ISP_Tuning_GetAwbStatistics") __attribute__((weak));
+/* slack: a libimp whose struct is larger must not write past it */
+static union { IMPISPAWBStatisInfo v; char pad[sizeof(IMPISPAWBStatisInfo) + 1024]; } g_awb;
+int hal_isp_awb_ratio(uint32_t *rg, uint32_t *bg)
+{
+    if (!ms_awb_statis || ms_awb_statis(IMPVI_MAIN, &g_awb.v) != 0) return -1;
+    float sr = 0, sg = 0, sb = 0;
+    for (int y = 0; y < 15; y++)
+        for (int x = 0; x < 15; x++) {
+            sr += g_awb.v.awb_r.statis[y][x];
+            sg += g_awb.v.awb_g.statis[y][x];
+            sb += g_awb.v.awb_b.statis[y][x];
+        }
+    return ms_awb_q12(sr, sg, sb, rg, bg);
+}
+#elif defined(ISP_HAS_AWB_ZONE)
+extern int ms_awb_zone(IMPISPAWBZone *)
+    __asm__("IMP_ISP_Tuning_GetAwbZone") __attribute__((weak));
+static union { IMPISPAWBZone v; char pad[sizeof(IMPISPAWBZone) + 1024]; } g_awb;
+int hal_isp_awb_ratio(uint32_t *rg, uint32_t *bg)
+{
+    if (!ms_awb_zone || ms_awb_zone(&g_awb.v) != 0) return -1;
+    float sr = 0, sg = 0, sb = 0;
+    for (int i = 0; i < 225; i++) {
+        sr += g_awb.v.zone_r[i]; sg += g_awb.v.zone_g[i]; sb += g_awb.v.zone_b[i];
+    }
+    return ms_awb_q12(sr, sg, sb, rg, bg);
+}
+#elif defined(ISP_HAS_AWB_ZONE_IOCTL)
+#include <sys/ioctl.h>
+/* open-tx-isp T2X_CID_AWB_ZONE: 225 x {r/g, b/g (256 = 1.0), pixels}. The
+ * pinned OpenIMP's GetAwbZone sends a CID the T20 driver rejects, so this
+ * asks libimp's tuning fd directly. */
+#define MS_TISP_TUNING   0xc00c56c6u
+#define MS_T2X_AWB_ZONE  0x8000009
+struct ms_awb_zone { uint16_t rg, bg; uint32_t n; };
+static struct ms_awb_zone g_awbz[225 + 128];
+
+static int ms_is_video0(int fd)
+{
+    char p[32], l[16];
+    snprintf(p, sizeof p, "/proc/self/fd/%d", fd);
+    ssize_t n = readlink(p, l, sizeof l - 1);
+    if (n <= 0) return 0;
+    l[n] = 0;
+    return !strcmp(l, "/dev/video0");
+}
+
+/* libimp opens it at ISP init, among the first fds; a failed scan is not
+ * repeated for 30 calls, so a sample stays far below 1 ms */
+static int ms_tuning_fd(void)
+{
+    static int fd = -1, skip;
+    if (fd >= 0 && ms_is_video0(fd)) return fd;
+    if (skip) { skip--; return -1; }
+    for (fd = 3; fd < 128; fd++)
+        if (ms_is_video0(fd)) return fd;
+    skip = 30;
+    return fd = -1;
+}
+
+int hal_isp_awb_ratio(uint32_t *rg, uint32_t *bg)
+{
+    int fd = ms_tuning_fd();
+    if (fd < 0) return -1;
+    struct { int32_t cmd, subcmd, value; } q = { 1, MS_T2X_AWB_ZONE, (int32_t)(intptr_t)g_awbz };
+    if (ioctl(fd, MS_TISP_TUNING, &q) != 0) return -1;
+    float wr = 0, wb = 0, wn = 0;
+    for (int i = 0; i < 225; i++) {
+        float n = (float)g_awbz[i].n;
+        wr += n * g_awbz[i].rg; wb += n * g_awbz[i].bg; wn += n;
+    }
+    if (wn <= 0.0f) return -1;
+    *rg = (uint32_t)(16.0f * wr / wn);
+    *bg = (uint32_t)(16.0f * wb / wn);
+    return 0;
+}
+#else
+int hal_isp_awb_ratio(uint32_t *rg, uint32_t *bg) { (void)rg; (void)bg; return -1; }
+#endif
+
 int hal_isp_ae_luma(uint32_t *luma)
 {
 #ifdef ISP_HAS_AELUMA

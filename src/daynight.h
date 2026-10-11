@@ -10,7 +10,8 @@
  *                 limit, held day_confirm_s (6 s when it is very dark).
  *   night         now and then the illuminator goes off for 8 s and the
  *                 camera "looks": every 45 min, at once when the night picture
- *                 gets jump_pct brighter, or on a /control request.
+ *                 gets jump_pct brighter or its colour moves color_pct, or on
+ *                 a /control request.
  *   look -> check if the scene without the illuminator looks bright enough,
  *                 the day pipeline is asked once (a check, one click): below
  *                 day_gain it stays day, else back to night, and the next
@@ -100,5 +101,10 @@ typedef struct {
     const char *reason;
 } dn_ir_idle_status;
 void daynight_ir_idle_status(dn_ir_idle_status *o);
+
+/* colour trigger (daynight.color_pct): "on", "off" or "unavailable" (this
+ * libimp gives no white-balance statistics); *dev the colour change since
+ * the last look in %, -1 without a reference */
+const char *daynight_color_state(float *dev);
 
 #endif

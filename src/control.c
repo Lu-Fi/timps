@@ -1457,6 +1457,9 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
     jesc(d->time_day_start, etds, sizeof etds);
     dn_ir_idle_status ii;
     daynight_ir_idle_status(&ii);
+    float cdev;
+    const char *cstate = daynight_color_state(&cdev);
+    if (!isfinite(cdev)) cdev = -1.0f;
     return snprintf(buf, cap,
         "{\"enabled\":%d,\"mode\":%d,\"brightness\":%.1f,\"total_gain\":%.0f,"
         "\"exposure\":%.0f,\"ae_luma\":%.0f,"
@@ -1470,6 +1473,7 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
         "\"day_gain\":%g,\"night_gain\":%g,"
         "\"total_gain_day_threshold\":%g,\"total_gain_night_threshold\":%g,"
         "\"day_confirm_s\":%d,\"jump_pct\":%d,"
+        "\"color_pct\":%d,\"color_trigger\":\"%s\",\"color_dev_pct\":%.1f,"
         "\"heartbeat_s\":%d,\"heartbeat_max_s\":%d,"
         "\"dn_mode\":\"%s\","
         "\"time_night_start\":\"%s\",\"time_day_start\":\"%s\","
@@ -1487,6 +1491,7 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
         (double)d->day_gain, (double)d->night_gain,
         (double)d->day_gain, (double)d->night_gain,
         d->day_confirm_s, d->jump_pct,
+        d->color_pct, cstate, (double)cdev,
         d->heartbeat_s, d->heartbeat_max_s,
         dnmode,
         etns, etds,

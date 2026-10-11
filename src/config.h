@@ -365,6 +365,9 @@ typedef struct {
      * look reads bright enough. irprobe_cmd runs "<cmd> on|off|idle|state"
      * via vfork+execlp, never a shell; empty = no looks, checks only. */
     int      jump_pct;
+    /* ... or when the lit picture's colour (AWB statistics) moves this
+     * many percent from the last look for 20 s, at most every 5 min; 0 off */
+    int      color_pct;
     char     irprobe_cmd[64];
     /* heartbeat_s: check interval of cameras without a switchable
      * illuminator (it also caps the look interval); heartbeat_max_s: the

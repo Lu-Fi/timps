@@ -377,6 +377,16 @@ int hal_isp_exposure(hal_isp_expo *out)
     out->it_lines = v[0]; out->it_max_lines = v[1]; out->line_us = v[2];
     return 0;
 }
+/* dn-replay fixture: "rg bg" of the picture the harness serves */
+int hal_isp_awb_ratio(uint32_t *rg, uint32_t *bg)
+{
+    const char *p = getenv("TIMPS_SIM_AWB");
+    FILE *f = p ? fopen(p, "r") : NULL;
+    if (!f) return -1;
+    int n = fscanf(f, "%u %u", rg, bg);
+    fclose(f);
+    return n == 2 ? 0 : -1;
+}
 /* dn-replay fixture: "it it_min it_max again again_max total_log2_q16" */
 int hal_isp_ae_info(hal_isp_ae *out)
 {
