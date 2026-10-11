@@ -51,6 +51,15 @@ def reading(prof, item):
     return sc["day"], sc["lit"], sc["dark"], bool(sc.get("railed"))
 
 
+def tint(prof, item):
+    """[rg %, bg %] the lamp of a scene adds to the lit night colour"""
+    sc = prof["scenes"].get(item, {}) if isinstance(item, str) else {}
+    if "tint" in sc:
+        return sc["tint"]
+    k = sc.get("lamp", 0)
+    return [k * x for x in prof["color"]["shift"]]
+
+
 def expand(tl):
     """timeline -> [(t, item)] with daylight ramps sampled every STEP s."""
     out = []
@@ -89,8 +98,13 @@ def to_pipe(prof, v, pipe):
 
 def build(fam, pname, prof, day_gain, night_gain):
     pts = expand(fam["timelines"][pname])
-    dg, dr, ng, nr, ko, truth = [], [], [], [], [], []
+    dg, dr, ng, nr, ko, truth, awb = [], [], [], [], [], [], []
+    col = prof.get("color")
     for t, item in pts:
+        if col:
+            d_rg, d_bg = tint(prof, item)
+            awb.append([t, col["base"][0] * (1 + d_rg / 100.0),
+                        col["base"][1] * (1 + d_bg / 100.0)])
         d, l, k, railed = reading(prof, item)
         g, r = to_pipe(prof, d, "day")
         dg.append([t, g]); dr.append([t, r])
@@ -104,7 +118,8 @@ def build(fam, pname, prof, day_gain, night_gain):
     b = fam["bounds"]
     exp = {"expected_mode": truth, "max_wrong_mode_s": b["max_wrong_mode_s"],
            "max_switches": b["max_switches"], "monotonicity": "skip"}
-    for k in ("max_led_on_unwatched_s", "led_on_within_s", "max_ir_probes"):
+    for k in ("max_led_on_unwatched_s", "led_on_within_s", "max_ir_probes",
+              "forbid_log", "expect_log_count"):
         if k in b:
             exp[k] = b[k]
     scn = {"name": "%s-%s" % (fam["name"], pname), "scale": SCALE,
@@ -119,6 +134,9 @@ def build(fam, pname, prof, day_gain, night_gain):
     if any(r is not None for _, r in dr):
         scn["day_int_ratio"] = dr
         scn["night_int_ratio"] = nr
+    if col:
+        scn["awb_lit"] = awb
+        scn["awb_noise_pct"] = col.get("noise_pct", 0)
     if "consumers" in fam:
         scn["consumers"] = fam["consumers"]
     if "isp_sticky" in fam:

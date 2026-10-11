@@ -36,13 +36,15 @@
    "day": 330,
    "lit": 249,
    "dark": 284,
-   "src": "probe 2026-10-10 17:45, exposure CSV 17:46-17:56"
+   "src": "probe 2026-10-10 17:45, exposure CSV 17:46-17:56",
+   "lamp": 1.0
   },
   "lamp_bright": {
    "day": 254,
    "lit": 108,
    "dark": 102,
-   "src": "probe 2026-10-10 21:23, CSV 21:24-21:25"
+   "src": "probe 2026-10-10 21:23, CSV 21:24-21:25",
+   "lamp": 6.0
   },
   "cellar183": {
    "day": 3587,
@@ -82,6 +84,47 @@
    "lit": 123,
    "dark": 105,
    "src": "device test 2026-10-12 07:46 (Wyze Pan, day_gain 100 + bulb 60 %)"
+  },
+  "person": {
+   "day": 3587,
+   "lit": 251,
+   "dark": 823,
+   "railed": true,
+   "tint": [
+    4.0,
+    -5.0
+   ],
+   "src": "dark scene with a person in view: colour ASSUMED (5 %, above color_pct)"
+  },
+  "foreign_ir_weak": {
+   "day": 3587,
+   "lit": 226,
+   "dark": 823,
+   "railed": true,
+   "src": "another camera's IR: lit 10 % brighter (below jump_pct), no colour change ASSUMED"
+  },
+  "person2": {
+   "day": 3587,
+   "lit": 251,
+   "dark": 823,
+   "railed": true,
+   "tint": [
+    -4.0,
+    5.0
+   ],
+   "src": "the person moving: the other way round, ASSUMED"
   }
+ },
+ "color": {
+  "base": [
+   2600,
+   2184
+  ],
+  "shift": [
+   -1.0,
+   5.5
+  ],
+  "noise_pct": 0.7,
+  "src": "dbg/light-signals 2026-10-11: AWB zone ioctl, weighted r/g 162.5 b/g 136.5 (x16), lamp 30 % warm r/g -1 %, b/g +5.5 %, 100 % b/g +29..44 %; unchanged scene +-0.65 %"
  }
 }

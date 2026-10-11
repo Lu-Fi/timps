@@ -15,19 +15,59 @@
    "day": 750,
    "lit": 115,
    "dark": 250,
-   "src": "user 2026-10-11: day 630-880 with the bulb, dark at the low end; lit ASSUMED"
+   "src": "user 2026-10-11: day 630-880 with the bulb, dark at the low end; lit ASSUMED",
+   "lamp": 1.0
   },
   "cellar": {
    "day": 315,
    "lit": 108,
    "dark": 302,
-   "src": "probe 2026-10-10 (lit 108 dark 302), user: day 260-370 with the cellar light"
+   "src": "probe 2026-10-10 (lit 108 dark 302), user: day 260-370 with the cellar light; colour lamp 3 ASSUMED",
+   "lamp": 3.0
   },
   "bulb_blind": {
    "day": 750,
    "lit": 140,
    "dark": 320,
    "src": "bulb where the readings without the day pipeline do not move (inside the user's 250-320 range)"
+  },
+  "person": {
+   "day": 40960,
+   "lit": 140,
+   "dark": 320,
+   "tint": [
+    4.0,
+    -5.0
+   ],
+   "src": "dark scene with a person in view: colour ASSUMED (5 %, above color_pct)"
+  },
+  "foreign_ir_weak": {
+   "day": 40960,
+   "lit": 126,
+   "dark": 320,
+   "src": "another camera's IR: lit 10 % brighter (below jump_pct), no colour change ASSUMED"
+  },
+  "person2": {
+   "day": 40960,
+   "lit": 140,
+   "dark": 320,
+   "tint": [
+    -4.0,
+    5.0
+   ],
+   "src": "the person moving: the other way round, ASSUMED"
   }
+ },
+ "color": {
+  "base": [
+   4428,
+   4657
+  ],
+  "shift": [
+   2.0,
+   -4.0
+  ],
+  "noise_pct": 0.3,
+  "src": "dbg/light-signals 2026-10-11: GetAwbStatistics global r/g 1.081 b/g 1.137 (Q12), lamp 30 % warm r/g +2 %, b/g -4 %, exposure 0 %; unchanged scene +-0.1 %"
  }
 }

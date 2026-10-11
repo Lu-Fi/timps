@@ -156,6 +156,15 @@ Scenario JSON (all times virtual seconds, all gains IMP [24.8] linear):
                                   analog gain (open-tx-isp dumps both; on
                                   the Pan isp_info says 128, the AE's cap,
                                   while isp-m0 says 158). See scenario 64.
+  awb_lit                       - OPTIONAL [[t, rg, bg], ...] (step): the
+                                  AWB colour statistics of the lit night
+                                  picture (TIMPS_SIM_AWB). Without it the
+                                  sim has none (color_trigger
+                                  "unavailable"). The illuminator off and
+                                  the day pipeline serve a far different
+                                  colour, so a reading taken there shows.
+  awb_noise_pct                 - OPTIONAL +-% uniform noise on awb_lit,
+                                  seeded, redrawn every 2 virtual s
   day_int_ratio / night_int_ratio
                                 - OPTIONAL [[t, ratio], ...] integration-time
                                   ratio (integration/max, 0..1) per pipeline.
@@ -371,6 +380,16 @@ def noise_factor(idx, pct, seed=0):
     return 1.0 + (pct / 100.0) * 0.5 * g
 
 
+def noise_unit(k, j, seed=0):
+    """uniform [0,1) for (k, j), reproducible"""
+    x = (k * 0x9E3779B97F4A7C15 + j * 0xBF58476D1CE4E5B9
+         + seed * 0x94D049BB133111EB) & 0xFFFFFFFFFFFFFFFF
+    x ^= x >> 30; x = (x * 0xBF58476D1CE4E5B9) & 0xFFFFFFFFFFFFFFFF
+    x ^= x >> 27; x = (x * 0x94D049BB133111EB) & 0xFFFFFFFFFFFFFFFF
+    x ^= x >> 31
+    return x / float(1 << 64)
+
+
 class IspReads:
     """Counts the daemon's opens of the served isp-m0 file.
 
@@ -444,7 +463,7 @@ class SimRun:
                  model_illuminator=False, no_ceilings=False,
                  no_max_int=False, watch_reads=False, t41_dump=False,
                  ae_cap=None, switch_drives_led=False, switch_led_delay=0.0,
-                 ir_hook_rc=None, consumers=False, t20=None):
+                 ir_hook_rc=None, consumers=False, t20=None, awb=False):
         self.t20 = t20
         self.no_ceilings = no_ceilings
         self.no_max_int = no_max_int
@@ -458,6 +477,7 @@ class SimRun:
         self.isp = os.path.join(self.dir, "isp-m0")
         self.ae_info = os.path.join(self.dir, "ae-info")
         self.expr = os.path.join(self.dir, "expr")
+        self.awb = os.path.join(self.dir, "awb") if awb else None
         self.switch_log = os.path.join(self.dir, "switch.log")
         self.mode_file = os.path.join(self.dir, "mode.txt")
         self.trace = os.path.join(self.dir, "trace.csv")
@@ -613,6 +633,12 @@ class SimRun:
                     f.write("SENSOR Max Integration Time : %d lines\n" % mx)
         os.replace(tmp, self.isp)
 
+    def serve_awb(self, rg, bg):
+        tmp = self.awb + ".tmp"
+        with open(tmp, "w") as f:
+            f.write("%d %d\n" % (max(1, round(rg)), max(1, round(bg))))
+        os.replace(tmp, self.awb)
+
     def t20_units(self, gain):
         return min(gain_to_units(gain), self.t20.get("again_max", 128))
 
@@ -703,6 +729,8 @@ class SimRun:
             env["TIMPS_SIM_AE_INFO"] = self.ae_info
         if self.t20:
             env["TIMPS_SIM_EXPR"] = self.expr
+        if self.awb:
+            env["TIMPS_SIM_AWB"] = self.awb
         if self.watch:
             env["TIMPS_SIM_WATCH"] = self.watch
         self.proc = subprocess.Popen([self.binary, "-c", self.conf],
@@ -1185,7 +1213,8 @@ def run_regression(scn, binary, keep=False, scale_override=None):
                  switch_led_delay=float(scn.get("switch_led_delay_s", 0)),
                  ir_hook_rc=scn.get("ir_hook_rc"),
                  consumers=consumers is not None,
-                 t20=scn.get("t20_dump"))
+                 t20=scn.get("t20_dump"),
+                 awb=bool(scn.get("awb_lit")))
 
     def watchers_at(t):
         return sum(1 for a, b in (consumers or []) if a <= t < b)
@@ -1195,6 +1224,22 @@ def run_regression(scn, binary, keep=False, scale_override=None):
     def ratio_at(mode, t):
         c = scn.get("night_int_ratio" if mode == "night" else "day_int_ratio")
         return None if not c else max(0.0, min(1.0, interp_gain(c, t, "linear")))
+
+    def awb_at(t, mode, ir):
+        rg, bg = scn["awb_lit"][0][1:]
+        for p in scn["awb_lit"]:
+            if t >= p[0]:
+                rg, bg = p[1:]
+        pct = scn.get("awb_noise_pct", 0)
+        if pct:
+            k = int(t // 2)
+            rg *= 1.0 + pct / 100.0 * (2.0 * noise_unit(k, 1) - 1.0)
+            bg *= 1.0 + pct / 100.0 * (2.0 * noise_unit(k, 2) - 1.0)
+        if mode != "night":
+            return rg * 1.3, bg * 0.7
+        if not ir:
+            return rg * 0.8, bg * 1.25
+        return rg, bg
 
     sticky = scn.get("isp_sticky")           # {"stuck": "day"|"night"}
     override = scn.get("isp_override")       # [[t, "day"|"night"|null], ...]
@@ -1290,6 +1335,8 @@ def run_regression(scn, binary, keep=False, scale_override=None):
             g = max(g, 256.0)                # sensor floor, see gain_to_units
             r = ratio_at(m, t)
             sim.serve(g, m, r)
+            if sim.awb:
+                sim.serve_awb(*awb_at(t, m, ir))
             # what the machine will actually decide on: the exposure index
             served = (sim.t41_gain(g) if sim.t41_dump
                       else units_to_gain(sim.t20_units(g)) if sim.t20
