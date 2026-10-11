@@ -207,9 +207,9 @@ each (2026-10-07):
    pegged or filter-cost verdict — keeps a flag. While it is set, a silent
    probe's "the room supplies the light" only switches to day if the lit
    level is measurably brighter than the night reference (below 90 % of it,
-   the heartbeat's `DN_MOVED_MARGIN`). Otherwise: `silent probe (…): r=…
-   but the lit level … is no brighter than the proven night reference … —
-   light the day pipeline does not see, staying night`. A night that was
+   the heartbeat's `DN_MOVED_MARGIN`). Otherwise it stays night — light the day
+   pipeline does not see: `silent probe (…): r=… but lit … is no brighter
+   than the proven night reference …`. A night that was
    adopted (another tool switched the ISP, `boot_probe=0`) is not proven and
    keeps the old behaviour, so a night adopted in daylight still ends at the
    next probe. The filter-cost veto runs first and is unchanged.
@@ -373,7 +373,7 @@ Only the reserve separates that from a genuinely lit room.
 A camera whose ISP dump has no ceiling fields (`MAX SENSOR analog gain` /
 `MAX ISP digital gain`) has no reserve at all — and therefore none of the
 clip protection either. That is announced once per session as a WARN
-("the ISP dump reports no gain ceilings …"), not left to be inferred from
+(`no gain ceilings in the ISP dump - AE reserve is unknown …`), not left to be inferred from
 `hr=-1` in a probe line. Both fleet T20s do publish the ceilings (jxf23:
 32 units ISP digital, jxf22: 45 — same SoC, different sensors, so a
 hard-coded value would be wrong on one of them). The open-tx-isp T41 dump is
@@ -402,8 +402,8 @@ probing cheap) retires with it, leaving the jump trigger (path C) and the
 heartbeat — the fleet's pre-existing behaviour on a board without a working
 `irprobe_cmd`. Not persisted: a restart re-tests it, which is the cheap
 direction to be wrong in. Logged once, at the second failure: `'<cmd>'
-failed N times - retiring the silent probe for this session; the trend
-trigger goes with it, leaving the jump trigger and the heartbeat`.
+failed N times - silent probe retired until restart`; the trend trigger goes
+with it, leaving the jump trigger and the heartbeat.
 
 `POST /control {"daynight":{"probe":1}}` asks for one silent probe on the
 next tick — useful to confirm a camera can see daylight without waiting for
@@ -438,9 +438,7 @@ pass refuses in the log (at `LOGD`, like every per-probe line — see
 [Logging](Logging.md)) and costs nothing:
 
 ```
-silent probe (trend): r=1.27 - the room supplies the light, but day mode
-would read ~11500 (3.27x the night level) against night_gain 4096, staying
-night
+silent probe (trend): r=1.27, but day mode would read ~11500 (3.27x) > night_gain 4096
 ```
 
 **`filter_cost` may be below 1.** The first version of this guard only
@@ -591,7 +589,8 @@ subsumed rather than special-cased.
 **Fallback.** If no usable exposure reading has appeared within
 `DN_STABLE_MAX_MS` of start-up (no ISP file, a wedged `/proc` dump), there is
 nothing to measure. Boot then falls back to the persisted value — and still
-asserts it on the board once — with a `WRN` that says so. Silently behaving
+asserts it on the board once — with a `WRN` that says so (`boot: no
+exposure reading <N>s after start (<path>) - adopting persisted <mode>`). Silently behaving
 like a normal boot is how a stale value acquires authority it never earned.
 
 ## Learning (removed 2026-08-22)

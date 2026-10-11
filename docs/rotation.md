@@ -93,7 +93,7 @@ known OpenIMPs:
 
 | OpenIMP | `SetChnRotate(chn, 90/270, w, h)` on T10/T20/T21 | timps (since v1.10.0) |
 | --- | --- | --- |
-| `9cab219` (thingino `ciao` pin) | stub, returns 0 for any value and rotates nothing | detected, stream starts unrotated: `libimp's SetChnRotate accepted a 0x0 picture, so it cannot rotate …` |
+| `9cab219` (thingino `ciao` pin) | stub, returns 0 for any value and rotates nothing | detected, stream starts unrotated: `SetChnRotate is an OpenIMP stub - UNROTATED …` (v1.10.0: `libimp's SetChnRotate accepted a 0x0 picture …`) |
 | `6857610` (ciao-t20/t21), `0c02f45` (ciao-openstack), `636b6ac` (ciao-t41) | refuses with -1 | stream starts unrotated: `SetChnRotate refused WxH …` |
 | `6b7f5ae` (`claude/t1x-rotation`) | rotates; refuses non-16-aligned, > 704×576 and invalid geometry | rotated |
 | none (vendor libimp linked by mistake) | symbol missing | stream starts unrotated: `libimp has no IMP_FrameSource_SetChnRotate …` |

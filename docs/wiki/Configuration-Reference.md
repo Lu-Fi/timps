@@ -277,7 +277,7 @@ File-only. `USE_SRT` builds only (see [Streaming Protocols](Streaming-Protocols.
 | `srt.channel` | int | 0 | — | File-only | Video stream served over SRT. |
 | `srt.latency_ms` (alias `latency`) | int | 120 | — | File-only | SRT latency (ms). |
 | `srt.streamid` | string | `""` | — | File-only | Listener: required `STREAMID` for a connecting client (`""` = not enforced). Caller: the `STREAMID` timps presents to the receiver. |
-| `srt.passphrase` | string | `""` | — | File-only | AES passphrase for SRT encryption (10–79 chars if set; an invalid passphrase stops SRT — the listener never binds, the caller stops dialling — rather than running unencrypted). `srt.streamid` is plaintext, so without a passphrase a listener serves video to anyone regardless of `rtsp.user`/`http.user`; (since v1.9.28) that combination logs `SRT listener on port N has NO access control …` at start. |
+| `srt.passphrase` | string | `""` | — | File-only | AES passphrase for SRT encryption (10–79 chars if set; an invalid passphrase stops SRT — the listener never binds, the caller stops dialling — rather than running unencrypted). `srt.streamid` is plaintext, so without a passphrase a listener serves video to anyone regardless of `rtsp.user`/`http.user`; (since v1.9.28) that combination logs `SRT port N has NO access control - set srt.passphrase (10-79 chars)` at start. |
 
 ## `http.*` — HTTP server (fMP4/MJPEG/snapshot/control/events)
 

@@ -609,8 +609,9 @@ hit this — T10, T20 and T23 coerce `codec` to `h264` at parse time.
     OpenIMP refuses; a libimp that accepts it is a stub. Outcomes, each with
     the stream starting **unrotated** and a warning:
     * OpenIMP `9cab219` (the thingino `ciao` pin) stubs the call with a plain
-      success → `libimp's SetChnRotate accepted a 0x0 picture, so it cannot
-      rotate`. Without this check (development builds between 1.9.33 and
+      success → `SetChnRotate is an OpenIMP stub - UNROTATED` (until
+      v1.10.0: `libimp's SetChnRotate accepted a 0x0 picture, so it cannot
+      rotate …`). Without this check (development builds between 1.9.33 and
       this fix) the stream came up with swapped encoder dims.
     * OpenIMP `6857610`, `0c02f45`, `636b6ac` refuse 90/270 →
       `SetChnRotate refused WxH`.
@@ -1252,9 +1253,10 @@ Their effective values are still readable in the `daynight` status object of
   digital 0 of 32, integration time 87.6 %, index 3587 all night, so `s >
   4096` never held and the camera stayed in day in a pitch-dark cellar. Where
   that cap is `<= night_gain`, timps now logs once per session `daynight.night_gain
-  4096 is above the exposure index this camera can reach (~3587: analog gain
-  cap 128 x IT 87.6 %, ISP digital gain unused); using a relative night
-  threshold (3408, 95 % of that plateau at the cap for day_confirm_s)` and
+  4096 > reachable ~3587 (cap 128 x IT 87.6%): relative bar 3408 (95%)`
+  (v1.10.0: `… is above the exposure index this camera can reach …`) — the
+  night threshold becomes 95 % of that plateau at the cap for
+  `day_confirm_s` — and
   treats, in day, the analog gain at >= 98 % of its cap with the ISP and
   sensor digital gain at 0 and the smoothed index within 95 % of its highest
   settled value at the cap (the plateau) as dark — held `day_confirm_s`, exactly like
@@ -1475,7 +1477,7 @@ Requires `USE_SRT` (`BR2_PACKAGE_TIMPS_SRT`, default **n**). Whole section is
 | `srt.mode` | string[16] | `listener` | `listener`, `caller`; anything else → listener (validated in `srt.c`, not by the config table) | file-only, restart | `caller` dials out — for cameras behind NAT or on unreliable uplinks. |
 | `srt.host` | string[64] | `""` | — | file-only, restart | Caller mode: remote host/address. |
 | `srt.streamid` | string[64] | `""` | — | file-only, restart | Listener: **required** STREAMID. Caller: STREAMID to present. |
-| `srt.passphrase` | string[64] | `""` | — | file-only, restart | Optional AES passphrase (10..79 chars, else SRT refuses to run); `""` = none. **since v1.9.28** a listener with no passphrase while `rtsp.user`/`http.user` is set logs `SRT listener on port N has NO access control …` at start: it serves video to anyone, whatever the other credentials demand. |
+| `srt.passphrase` | string[64] | `""` | — | file-only, restart | Optional AES passphrase (10..79 chars, else SRT refuses to run); `""` = none. **since v1.9.28** a listener with no passphrase while `rtsp.user`/`http.user` is set logs `SRT port N has NO access control - set srt.passphrase (10-79 chars)` at start: it serves video to anyone, whatever the other credentials demand. |
 
 ---
 

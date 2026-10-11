@@ -26,6 +26,12 @@ _1.10.1 (draft)_
   compile and link, also with thingino's `CFLAGS`/`LDFLAGS`): stripped
   `timpsd` 24-28 KB (~6 %) smaller on T10-T41. `USE_LTO=0` gives the previous
   binary byte for byte.
+- Log: 71 messages longer than 120 characters (mostly day/night and
+  `HAL_ING`) now carry only subject, values, key names and a short hint; the
+  explanations are in the log-message dictionary of
+  `docs/ai/troubleshooting.md`. Log format strings -6.6 KB, `.rodata` -5.7 KB
+  on T31/T20 OpenIMP. Tokens the QA scripts and the replay corpus match stay;
+  the corpus follows the reworded day/night lines.
 - `/control` writes `/etc/timps.conf` at most once per 3 s: the first change
   after a quiet window is written before the reply as before, later ones are
   collected and written when the window ends, at shutdown, or at once with a
