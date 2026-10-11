@@ -38,7 +38,10 @@ static inline const char *cap_tier_name(int t)
  * T21 OpenIMP: effective by default; OPENIMP_T21_ROI=0 in libimp turns it off;
  * the T21 encoder saturates deltas at about -12..+13.
  * T10/T20/T21 vendor: programs the registers, never seen on a device.
- * T23: no effect, the vendor encoder only stores the region.
+ * T23 OpenIMP: effective once the libimp exports OpenIMP_Cap_T23HelixRoi
+ * (OpenIMP c271c07, v2026.10.11-rc1); older ones drop the regions silently,
+ * roi_rt_tier() then reports unsupported. OPENIMP_T23_ROI=0 turns it off.
+ * T23 vendor: no effect, the encoder only stores the region.
  * Family B, IMP_Encoder_SetChnRoiAttr (10 windows, x/y/w/h):
  * T31 OpenIMP: effective (AVPU QP table, device-tested by the OpenIMP
  * maintainer); OPENIMP_T31_ROI=0 in libimp turns it off.
@@ -53,7 +56,7 @@ static inline const char *cap_tier_name(int t)
 #define ROI_TIER CAP_TIER_SIM
 #elif defined(USE_OPENIMP) && \
       (defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)|| \
-       defined(PLATFORM_T31))
+       defined(PLATFORM_T23)||defined(PLATFORM_T31))
 #define ROI_TIER CAP_TIER_EFFECTIVE
 #elif defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)
 #define ROI_TIER CAP_TIER_EXPERIMENTAL
@@ -73,13 +76,27 @@ static inline const char *cap_tier_name(int t)
 #define ROI_DMIN       ROI_QP_DELTA_MIN
 #define ROI_DMAX       ROI_QP_DELTA_MAX
 #endif
-#if defined(PLATFORM_T21) && defined(USE_OPENIMP)
+#if (defined(PLATFORM_T21) || defined(PLATFORM_T23)) && defined(USE_OPENIMP)
 #define ROI_DEFF_MIN   (-12)
 #define ROI_DEFF_MAX   13
 #else
 #define ROI_DEFF_MIN   ROI_DMIN
 #define ROI_DEFF_MAX   ROI_DMAX
 #endif
+
+/* SoCs whose ROI tier depends on a libimp capability marker */
+#define ROI_GATE_NONE 0
+#define ROI_GATE_T23  1
+#if defined(USE_OPENIMP) && defined(PLATFORM_T23)
+#define ROI_GATE ROI_GATE_T23
+#else
+#define ROI_GATE ROI_GATE_NONE
+#endif
+
+static inline int roi_rt_tier(int tier, int gate, int cap)
+{
+    return gate == ROI_GATE_T23 && !cap ? CAP_TIER_UNSUPPORTED : tier;
+}
 
 /* FrontCrop, ISP-wide, sensor pixels.
  * T10/T20/T21 OpenIMP: device-tested (T20 shows it on downscaled channels only).
@@ -132,7 +149,9 @@ static inline const char *cap_tier_name(int t)
 #endif
 
 /* log text for a configured but refused feature */
-#if defined(PLATFORM_T23)
+#if defined(PLATFORM_T23) && defined(USE_OPENIMP)
+#define ROI_WHY "T23 ROI needs OpenIMP v2026.10.11-rc1+ (OpenIMP_Cap_T23HelixRoi), OPENIMP_T23_ROI unset"
+#elif defined(PLATFORM_T23)
 #define ROI_WHY "no effect on T23: the vendor encoder only stores the region"
 #elif defined(PLATFORM_T31)
 #define ROI_WHY "T31 ROI needs OpenIMP (SetChnRoiAttr); the vendor libimp has no ROI"

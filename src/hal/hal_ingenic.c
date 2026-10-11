@@ -1237,10 +1237,20 @@ static void roi_apply(vchan *vc, int live)
 #define roi_poll(vc)  ((void)0)
 #endif
 
+#if ROI_GATE == ROI_GATE_T23
+extern const int OpenIMP_Cap_T23HelixRoi __attribute__((weak));
+#endif
+
 int hal_roi_tier(void)
 {
 #if ROI_TIER != CAP_TIER_UNSUPPORTED
     if (!ROI_SETTER) return CAP_TIER_UNSUPPORTED;
+#if ROI_GATE == ROI_GATE_T23
+    const char *e = getenv("OPENIMP_T23_ROI");
+    if (e && e[0] == '0') return CAP_TIER_UNSUPPORTED;
+    return roi_rt_tier(ROI_TIER, ROI_GATE,
+                       &OpenIMP_Cap_T23HelixRoi && OpenIMP_Cap_T23HelixRoi);
+#endif
 #if defined(PLATFORM_T21) && defined(USE_OPENIMP)
     const char *e = getenv("OPENIMP_T21_ROI");
     if (e && !strcmp(e, "0")) return CAP_TIER_EXPERIMENTAL;
@@ -6108,13 +6118,15 @@ static int ing_start(const ms_config *cfg)
     memset(g_roi_set, 0, sizeof g_roi_set);   /* fresh encoder channels */
     memset(g_roi_rej, 0, sizeof g_roi_rej);
     g_roi_said = 0;
-#else
-    for (int i=0;i<MS_MAX_VSTREAM;i++)
-        for (int n=0;n<MS_MAX_ROI;n++)
-            if (cfg->video[i].enabled && cfg->roi[i][n].enabled){
-                LOGW(MOD,"roi%d.%d enabled but ignored: %s", i, n, ROI_WHY);
-                i = MS_MAX_VSTREAM; break;
-            }
+#endif
+#if ROI_TIER == CAP_TIER_UNSUPPORTED || ROI_GATE != ROI_GATE_NONE
+    if (hal_roi_tier() == CAP_TIER_UNSUPPORTED)
+        for (int i=0;i<MS_MAX_VSTREAM;i++)
+            for (int n=0;n<MS_MAX_ROI;n++)
+                if (cfg->video[i].enabled && cfg->roi[i][n].enabled){
+                    LOGW(MOD,"roi%d.%d enabled but ignored: %s", i, n, ROI_WHY);
+                    i = MS_MAX_VSTREAM; break;
+                }
 #endif
     for (int i=0;i<MS_MAX_VSTREAM;i++){
         if (!cfg->video[i].enabled) continue;

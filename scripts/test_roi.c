@@ -313,6 +313,20 @@ static void t_fcrop_rt(void)
     CK(t == CAP_TIER_EXPERIMENTAL && !live, "T23 absent never raises");
 }
 
+/* runtime ROI tier: libimp capability marker present / absent */
+static void t_roi_rt(void)
+{
+    for (int c = CAP_TIER_UNSUPPORTED; c <= CAP_TIER_SIM; c++)
+        for (int m = 0; m < 2; m++)
+            CK(roi_rt_tier(c, ROI_GATE_NONE, m) == c, "no gate: tier %d unchanged", c);
+    CK(roi_rt_tier(CAP_TIER_EFFECTIVE, ROI_GATE_T23, 1) == CAP_TIER_EFFECTIVE,
+       "T23 marker: effective");
+    CK(roi_rt_tier(CAP_TIER_EFFECTIVE, ROI_GATE_T23, 0) == CAP_TIER_UNSUPPORTED,
+       "T23 no marker: unsupported");
+    CK(roi_rt_tier(CAP_TIER_UNSUPPORTED, ROI_GATE_T23, 1) == CAP_TIER_UNSUPPORTED,
+       "T23 marker never raises");
+}
+
 static int fc_eq(const ms_fcrop_api *a, const ms_fcrop_api *b)
 {
     return a->en == b->en && a->left == b->left && a->top == b->top &&
@@ -385,9 +399,19 @@ int main(void)
     t_fcrop_limits();
     t_fcrop_rt();
     t_fcrop_mirror();
+    t_roi_rt();
 #ifdef RT_EXPECT_ROI
+#ifndef RT_EXPECT_ROI_NM
+#define RT_EXPECT_ROI_NM RT_EXPECT_ROI
+#endif
     CK(ROI_TIER == RT_EXPECT_ROI, "ROI_TIER %s, want %s",
        cap_tier_name(ROI_TIER), cap_tier_name(RT_EXPECT_ROI));
+    CK(roi_rt_tier(ROI_TIER, ROI_GATE, 1) == RT_EXPECT_ROI, "marker present: %s",
+       cap_tier_name(roi_rt_tier(ROI_TIER, ROI_GATE, 1)));
+    CK(roi_rt_tier(ROI_TIER, ROI_GATE, 0) == RT_EXPECT_ROI_NM, "marker absent: %s, want %s",
+       cap_tier_name(roi_rt_tier(ROI_TIER, ROI_GATE, 0)), cap_tier_name(RT_EXPECT_ROI_NM));
+    CK(ROI_DEFF_MIN >= ROI_DMIN && ROI_DEFF_MAX <= ROI_DMAX, "effective delta range %d..%d",
+       ROI_DEFF_MIN, ROI_DEFF_MAX);
     CK(FCROP_TIER == RT_EXPECT_FCROP, "FCROP_TIER %s, want %s",
        cap_tier_name(FCROP_TIER), cap_tier_name(RT_EXPECT_FCROP));
     CK(FCROP_LIVE == RT_EXPECT_FLIVE, "FCROP_LIVE %d, want %d", FCROP_LIVE, RT_EXPECT_FLIVE);
