@@ -64,6 +64,11 @@ static int dn_mag_min(int mag, int other)
 #define DN_STABLE_MAX_MS 120000  /* give up waiting for a sensor that never settles */
 #endif
 /* believe a switch once the ISP shows it, after the board hook chain */
+/* the board hook chain (switch_cmd -> color -> POST /control) is fire-and-
+ * forget and some ISPs take the mode late or fall back: re-drive it twice */
+#define DN_REASSERT_MS    8000
+#define DN_REASSERT_COUNT 2
+#define DN_CYCLE_HOLD_MS  5000   /* the other mode of a readback cycle, held */
 #ifndef DN_VERIFY_MS
 #define DN_VERIFY_MS 18000
 #endif
@@ -1215,6 +1220,8 @@ static void *dn_thread(void *arg)
     float   B = -1.0f;              /* <0 unset, 0 learn at the next look, >0 bar */
     int64_t boot_at = ms_now_us() / 1000, due = 0, hold = 0, look_at = 0;
     int64_t day_at = 0, mode_at = 0, N_at = 0, verify_at = 0, quiet = 0, idle_at = 0;
+    int64_t reassert_at = 0, cycle_at = 0;
+    int     reassert_left = 0;
     int64_t lock_until = 0, lock_ms = SD_LOCK_MS;  /* failed checks: 1, 2, 4 ... min */
     const char *why = "boot";
 
@@ -1260,6 +1267,7 @@ static void *dn_thread(void *arg)
         if (!enabled_was) {
             enabled_was = 1; st = S_BOOT; cur = DN_UNKNOWN; s = A = B = N = -1.0f;
             boot_at = now; hold = verify_at = lock_until = 0; lock_ms = SD_LOCK_MS;
+            reassert_at = cycle_at = 0; reassert_left = 0;
             desync = cycled = ir_fails = 0; g_ir_unusable = 0;
             LOGI(MOD, "auto day/night enabled (simple engine)");
         }
@@ -1269,8 +1277,25 @@ static void *dn_thread(void *arg)
         }
         if (cur == DN_DAY) day_at = now;
 
-        /* the board hook is fire-and-forget: believe a switch once the ISP
-         * shows it, else one real edge through the other mode */
+        if (reassert_at && now >= reassert_at) {
+            hub_control("image.running_mode", rm ? "1" : "0");
+            LOGD(MOD, "re-asserting running_mode=%d after switch (%d left)",
+                 rm ? 1 : 0, reassert_left - 1);
+            if ((cur == DN_NIGHT) != (rm != 0))
+                LOGW(MOD, "running_mode=%d never followed the switch to %s",
+                     rm ? 1 : 0, cur == DN_NIGHT ? "night" : "day");
+            reassert_at = --reassert_left > 0 ? now + DN_REASSERT_MS : 0;
+        }
+
+        /* believe a switch once the ISP shows it, else one real edge through
+         * the other mode, held 5 s; readings meanwhile are of the wrong optics */
+        if (cycle_at) {
+            if (now < cycle_at) goto out;
+            dn_switch(cur, "isp readback", dn->switch_cmd, s, A, B);
+            cycle_at = 0; s = -1.0f; stable = 0;
+            verify_at = now + DN_VERIFY_MS;
+            reassert_left = DN_REASSERT_COUNT; reassert_at = now + DN_REASSERT_MS;
+        }
         if (verify_at && now >= verify_at && st != S_LOOK) {
             verify_at = 0;
             if (sm.isp >= 0 && sm.isp != cur && !cycled) {
@@ -1278,7 +1303,8 @@ static void *dn_thread(void *arg)
                 LOGW(MOD, "ISP did not follow the switch to %s - one cycle",
                      cur == DN_NIGHT ? "night" : "day");
                 dn_switch(!cur, "isp readback", dn->switch_cmd, s, A, B);
-                dn_switch(cur, "isp readback", dn->switch_cmd, s, A, B);
+                cycle_at = now + DN_CYCLE_HOLD_MS;
+                goto out;
             }
         }
         desync = (!verify_at && sm.isp >= 0 && cur >= 0 && sm.isp != cur);
@@ -1441,6 +1467,9 @@ static void *dn_thread(void *arg)
         cur = DN_DAY; st = S_CHECK; mode_at = now; cycled = 0;
         due = now + DN_PROBE_SETTLE_S * 1000; s = -1.0f; stable = 0;
         verify_at = now + DN_VERIFY_MS;
+        /* not at boot: running_mode is still the persisted guess */
+        reassert_left = why[0] == 'b' ? 0 : DN_REASSERT_COUNT;
+        reassert_at = why[0] == 'b' ? 0 : now + DN_REASSERT_MS;
         goto out;
     night:
         dn_switch(DN_NIGHT, g_why, dn->switch_cmd, s, A, B);
@@ -1448,6 +1477,7 @@ static void *dn_thread(void *arg)
         /* a check without a fresh look learns B from the same scene, soon */
         A = L; look_at = now + (B == 0.0f ? DN_REF_DELAY_S * 1000LL : look_ms);
         verify_at = now + DN_VERIFY_MS;
+        reassert_left = DN_REASSERT_COUNT; reassert_at = now + DN_REASSERT_MS;
 
     out:
         if (st != S_NIGHT && st != S_LOOK) g_probe_req = 0;
