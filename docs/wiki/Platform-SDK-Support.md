@@ -128,7 +128,7 @@ come from device tests by the OpenIMP maintainer (OpenIMP d03ca24, open-tx-isp
 | T10 | experimental | **effective** | unsupported | **effective**, live |
 | T20 | experimental | **effective** | unsupported | **effective**, live (downscaled streams only) |
 | T21 | experimental (no effect seen) | **effective** (`OPENIMP_T21_ROI=0` turns it off → experimental) | unsupported | **effective**, live |
-| T23 | unsupported (encoder only stores the region) | unsupported | unsupported (untested) | **effective**, live with the driver's `fcrop_upscale_pct` parameter (open-tx-isp b15ef235); otherwise experimental, **start-only** (needs 3cf9bdac+) |
+| T23 | unsupported (encoder only stores the region) | **effective** when the libimp exports `OpenIMP_Cap_T23HelixRoi` (OpenIMP v2026.10.11-rc1+, since v1.10.1), otherwise unsupported; `OPENIMP_T23_ROI=0` → unsupported | unsupported (untested) | **effective**, live with the driver's `fcrop_upscale_pct` parameter (open-tx-isp b15ef235); otherwise experimental, **start-only** (needs 3cf9bdac+) |
 | T30, C100 | unsupported | — | unsupported | — |
 | T31 | unsupported (no ROI symbol in 1.1.x) | **effective** (`SetChnRoiAttr`, needs OpenIMP d03ca24 + fec3e69; `OPENIMP_T31_ROI=0` → unsupported) | experimental, live (no zoom without open-tx-isp `fcrop_upscale_pct`) | **effective**, live with the driver's `fcrop_upscale_pct` parameter (open-tx-isp 27dc8be4+); otherwise experimental, live |
 | T40, T41 | unsupported (vendor T41 takes deltas only; not device-tested) | unsupported (T41 experimental, off in libimp) | unsupported | unsupported |
@@ -143,7 +143,7 @@ scaled down is refused with `-EINVAL` (one WARN, `caps.fcrop.state` =
 `rejected`).
 
 ROI QP ranges: delta -25..25 everywhere (-26 gave invalid H.264 on T20); T21
-honours only about -12..+13 (`caps.roi.qp_delta_eff`), positive deltas are
+and OpenIMP T23 honour only about -12..+13 (`caps.roi.qp_delta_eff`), positive deltas are
 also capped by `max_qp`. An absolute QP is sent as a clamped delta when it is
 more than 25 from a possible picture QP (`caps.roi.abs_window`). T10/T20 crop
 only downscaled (sub) streams; a main stream at sensor size cannot zoom

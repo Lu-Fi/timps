@@ -633,7 +633,7 @@ differently-compiled binaries.
 | `caps.play` | `{available, sounds:[...]}` — enumerates playable files |
 | `caps.webrtc` | `{available, enabled, chn_select}` — same 0/1/2 meaning as `talk_ws`; `chn_select:1` = the POST honours `?chn=N`. **Key absent entirely** when `USE_WEBRTC=0` |
 | `caps.framesource` | `{keepalive, cfg}` — **since v1.10.0.** `keepalive` = 1 when this start resolved `general.fs_keepalive` to on (video FrameSources held enabled until stop), `cfg` = the raw `-1`/`0`/`1`. On the sim it reports the resolution only (no FrameSource there). |
-| `caps.roi` / `caps.fcrop` | **Since v1.10.0.** Encoder ROI and ISP FrontCrop: `tier` = `effective` (device-tested), `experimental` (call returns 0, effect unverified), `unsupported`, or `sim`. `caps.roi` adds `regions`, `align:16`, the QP ranges and `streams[]` (`ok`/`off`/`h265`/`rotated`/`unsupported`); `caps.fcrop` adds `live`, `min:64`, `sensor:[w,h]` and `state` (`off`/`on`/`rejected`/`failed`/`unsupported`). T10/T20/T21 ROI and FrontCrop with OpenIMP are `effective` (device-tested by the OpenIMP maintainer, not by timps); T23/T31 FrontCrop (OpenIMP) is `effective` and live when the driver has `fcrop_upscale_pct`, otherwise `experimental` (T23 with `live` 0, start-only); tier table in config-keys.md §10a. |
+| `caps.roi` / `caps.fcrop` | **Since v1.10.0.** Encoder ROI and ISP FrontCrop: `tier` = `effective` (device-tested), `experimental` (call returns 0, effect unverified), `unsupported`, or `sim`. `caps.roi` adds `regions`, `align:16`, the QP ranges and `streams[]` (`ok`/`off`/`h265`/`rotated`/`unsupported`); `caps.fcrop` adds `live`, `min:64`, `sensor:[w,h]` and `state` (`off`/`on`/`rejected`/`failed`/`unsupported`). T10/T20/T21 ROI and FrontCrop with OpenIMP are `effective` (device-tested by the OpenIMP maintainer, not by timps); T23 ROI with OpenIMP is `effective` when the libimp exports `OpenIMP_Cap_T23HelixRoi`, else `unsupported` (since v1.10.1); T23/T31 FrontCrop (OpenIMP) is `effective` and live when the driver has `fcrop_upscale_pct`, otherwise `experimental` (T23 with `live` 0, start-only); tier table in config-keys.md §10a. |
 | `caps.daynight` | `{available, ir_idle}` — **since v1.10.0.** `available` = built with `USE_DAYNIGHT`; `ir_idle` = 1 when `daynight.ir_idle_off` could act on this start (it needs the FrameSource keepalive). |
 
 Note the deliberate convention: a key that is **absent** (`caps.rotation`,
@@ -1324,8 +1324,11 @@ the kernel log and escalate.
 - First read `caps.roi.tier` / `caps.fcrop.tier`. `experimental` means the SDK
   accepts the call but nobody has seen it work on that SoC (vendor T10/T20/T21
   ROI; OpenIMP T21 ROI with `OPENIMP_T21_ROI=0` in the environment) — do not
-  promise an effect. T23 ROI is refused (its encoder only stores the region);
-  T31 ROI is not wired (OpenIMP's `SetChnRoiAttr`).
+  promise an effect. Vendor T23 ROI is refused (its encoder only stores the
+  region); **since v1.10.1** OpenIMP T23 ROI is `effective` when the libimp
+  exports `OpenIMP_Cap_T23HelixRoi` (OpenIMP v2026.10.11-rc1 or newer),
+  otherwise `unsupported` and a POST is refused. T31 ROI needs OpenIMP
+  (`SetChnRoiAttr`).
 - ROI regions only act on unrotated H.264 streams (`caps.roi.streams[S]`) and
   are rounded out to 16×16 macroblocks.
 - FrontCrop on **T23** works only with OpenIMP. With a driver that has the

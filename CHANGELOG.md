@@ -20,6 +20,14 @@ _1.10.1 (draft)_
   was stored but never compared), so a sniffed response cannot be replayed
   from another host within the nonce lifetime.
 
+### Added
+
+- Encoder ROI on T23 with OpenIMP: `caps.roi.tier` is `effective` when the
+  libimp exports `OpenIMP_Cap_T23HelixRoi` (OpenIMP c271c07, in
+  v2026.10.11-rc1), `unsupported` with an older libimp (it drops the regions
+  silently) or with `OPENIMP_T23_ROI=0`. Same `SetChnROI` path as T21,
+  `qp_delta_eff` -12..13. Vendor T23 stays `unsupported`.
+
 ### Changed
 
 - Build: link-time optimisation on by default (`USE_LTO=1`, `-flto=auto` on
@@ -43,6 +51,10 @@ _1.10.1 (draft)_
 
 ### Fixed
 
+- `/control`: `roi<S>.<N>.*` POSTs are refused (`"unsupported"`) whenever
+  `caps.roi.tier` is `unsupported` at run time (libimp without the setter,
+  `OPENIMP_T31_ROI=0`), not only in builds without ROI; before, they were
+  accepted and persisted but never applied.
 - `/control`: a libimp call that never returns no longer freezes the API. A
   POST waits at most 10 s for the one in progress, then gets `503`
   `"reason":"busy"`; a request thread stuck in an apply or a `GET /control`

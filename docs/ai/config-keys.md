@@ -925,8 +925,9 @@ Pitfalls:
 * **QP ranges (measured by the OpenIMP maintainer).** Delta -25..25 on every
   SoC: -26 made the jump back at the region edge `mb_qp_delta` +26, which is
   invalid H.264 (T20: Intel VA-API refused it, ffmpeg hid it). T31/T41
-  libimp take -26 but limit it to -25. T21 honours only about -12..+13
-  (`caps.roi.qp_delta_eff`); positive deltas are also capped by `max_qp`.
+  libimp take -26 but limit it to -25. T21 (and OpenIMP T23, since v1.10.1)
+  honours only about -12..+13 (`caps.roi.qp_delta_eff`); positive deltas are
+  also capped by `max_qp`.
 * **Absolute QP → delta.** An absolute QP is valid only while
   |abs − picture QP| ≤ 25 (`caps.roi.abs_window`) for every picture QP the
   stream can have. timps assumes the picture QP is `videoN.qp` (default 35)
@@ -964,7 +965,7 @@ Pitfalls:
 qp_delta_eff:[lo,hi], abs_window:25, streams:[...], rejected:[...]}`.
 `api` is `chnroi` (family A, `slots` 8) or `roiattr` (family B, `slots` 10);
 `qp_delta` is what timps sends, `qp_delta_eff` what the encoder honours (T21
-OpenIMP `[-12,13]`, elsewhere = `qp_delta`); `streams[S]` one of `ok`, `off`,
+OpenIMP and, since v1.10.1, T23 OpenIMP `[-12,13]`, elsewhere = `qp_delta`); `streams[S]` one of `ok`, `off`,
 `h265`, `rotated`, `unsupported`; `rejected[S]` a bitmask of regions outside
 the picture.
 
@@ -973,6 +974,8 @@ the picture.
 `effective` = device-tested, `experimental` = the call exists and returns 0,
 effect unverified (or known absent), `unsupported` = refused. Both setters are
 bound weak: a libimp without the symbol reports `unsupported` at run time.
+**Since v1.10.1** a POST of `roi<S>.<N>.*` is refused (`"unsupported"`) whenever
+the running tier is `unsupported`, not only where the build lacks ROI.
 The OpenIMP tiers come from device tests by the OpenIMP maintainer (OpenIMP
 `claude/t31-roi` d03ca24, `claude/roi-qp-clamp` fec3e69, open-tx-isp
 3cf9bdac/27dc8be4/b15ef235), not from timps' own tests.
@@ -982,14 +985,15 @@ The OpenIMP tiers come from device tests by the OpenIMP maintainer (OpenIMP
 | T10 | experimental | **effective** (FixQP QP51 -25 % bitrate, delta -10 x3.7) | unsupported (no symbol) | **effective** (17/17 device checks), live |
 | T20 | experimental | **effective** (QP51 block visible, QP15 clean) | unsupported (no symbol) | **effective** (downscaled streams only), live |
 | T21 | experimental (returns 0, no effect seen) | **effective** (on by default; libimp env `OPENIMP_T21_ROI=0` turns it off, timps then reports `experimental`) | unsupported (no symbol) | **effective** (all streams, 5 runs), live |
-| T23 | unsupported (the vendor encoder only stores the region) | unsupported (same) | unsupported (untested) | runtime-detected: **effective**, live with the `fcrop_upscale_pct` parameter (open-tx-isp 164225e5/25b1d8c7, in agg-34 b15ef235); without it experimental, **start-only** (`caps.fcrop.live` 0; needs 3cf9bdac+) |
+| T23 | unsupported (the vendor encoder only stores the region) | **since v1.10.1** runtime-detected: **effective** when the libimp exports `OpenIMP_Cap_T23HelixRoi` (OpenIMP c271c07, in v2026.10.11-rc1/agg-35+; regions programmed by the native Helix encoder, device-tested by the OpenIMP maintainer), otherwise `unsupported` (older OpenIMP drops the regions silently); libimp env `OPENIMP_T23_ROI=0` turns it off, timps then reports `unsupported` | unsupported (untested) | runtime-detected: **effective**, live with the `fcrop_upscale_pct` parameter (open-tx-isp 164225e5/25b1d8c7, in agg-34 b15ef235); without it experimental, **start-only** (`caps.fcrop.live` 0; needs 3cf9bdac+) |
 | T30, C100 | unsupported (not investigated) | — | unsupported (not investigated) | — |
 | T31 | unsupported (the 1.1.x libimp has no ROI symbol) | **effective** via `SetChnRoiAttr` (AVPU QP table; needs an OpenIMP with d03ca24 and the clamp fec3e69, see below; libimp env `OPENIMP_T31_ROI=0` turns it off, timps then reports `unsupported`) | experimental, live (no zoom without `fcrop_upscale_pct`) | runtime-detected: **effective**, live with the `fcrop_upscale_pct` parameter (open-tx-isp guard 27dc8be4, in agg-34 b15ef235; zoomed main + sub device-tested); without it experimental, live |
 | T40, T41 | unsupported (vendor T41 `SetChnRoiAttr` takes deltas only; not device-tested) | unsupported (OpenIMP T41 ROI experimental, off by default) | unsupported (no FrontCrop; live fs crop stops T41) | unsupported |
 | host sim | sim | | sim | |
 
-Refused-key log text (`ROI_WHY`): T23 "no effect on T23: the vendor encoder
-only stores the region"; vendor T31 "T31 ROI needs OpenIMP (SetChnRoiAttr);
+Refused-key log text (`ROI_WHY`): vendor T23 "no effect on T23: the vendor
+encoder only stores the region"; OpenIMP T23 without the marker "T23 ROI needs
+OpenIMP v2026.10.11-rc1+ (OpenIMP_Cap_T23HelixRoi), OPENIMP_T23_ROI unset"; vendor T31 "T31 ROI needs OpenIMP (SetChnRoiAttr);
 the vendor libimp has no ROI"; T40/T41 "T40/T41 SetChnRoiAttr is not
 device-tested, left off". Family B is live without IDR, H.264 only, and with
 no window set the encoder output is bit-identical (OpenIMP maintainer).
@@ -1860,6 +1864,6 @@ into support questions.
 | **T40, T41** | Flips go through `IMP_ISP_Tuning_SetHVFLIP` instead of `SetISPHflip`/`SetISPVflip`, and `g_sensor.rst_gpio`/`pwdn_gpio`/`power_gpio` are forced to `-1` (the fields are plain `int` in that SDK). | `src/hal/hal_ingenic.c` |
 | **T31/C100 vs T40/T41** | `ENC_HAS_QPIPDELTA` (hence a working `videoN.i_bias_lvl`) is T31/C100 only. | `src/hal/hal_ingenic.c` |
 | **T31** | The `isp_ch0_pre_dequeue_time` one-buffer gate on framechan0 — see `videoN.buffers` in §5. | `src/hal/hal_ingenic.c` |
-| **all** | **Since v1.10.0** encoder ROI and ISP FrontCrop are tiered per SoC and libimp flavour (`caps.roi.tier`, `caps.fcrop.tier`): only OpenIMP T10/T20/T21 ROI and FrontCrop and OpenIMP T31 ROI (`SetChnRoiAttr`) are device-tested (by the OpenIMP maintainer). T23 has no ROI. T23/T31 OpenIMP FrontCrop is `effective` and live when the driver has `fcrop_upscale_pct` (open-tx-isp b15ef235), otherwise experimental (T23 start-only, needs 3cf9bdac+). Table in §10a. | `src/roi_caps.h` |
+| **all** | **Since v1.10.0** encoder ROI and ISP FrontCrop are tiered per SoC and libimp flavour (`caps.roi.tier`, `caps.fcrop.tier`): only OpenIMP T10/T20/T21 ROI and FrontCrop and OpenIMP T31 ROI (`SetChnRoiAttr`) are device-tested (by the OpenIMP maintainer). T23 has no ROI before v1.10.1; since v1.10.1 OpenIMP T23 ROI is `effective` when the libimp exports `OpenIMP_Cap_T23HelixRoi`. T23/T31 OpenIMP FrontCrop is `effective` and live when the driver has `fcrop_upscale_pct` (open-tx-isp b15ef235), otherwise experimental (T23 start-only, needs 3cf9bdac+). Table in §10a. | `src/roi_caps.h` |
 | **T23, T41 with `USE_OPENIMP`** | **Since v1.10.0** `general.fs_keepalive = -1` (the default) resolves to **on**: the FrameSources run from start to stop, so `framesource N disabled (idle)` never appears and day/night kicks are no-ops. Everywhere else it resolves to off. | `src/hal/fs_ref.h` (`FS_KEEPALIVE_AUTO`) |
 | **T23, T41 with `USE_OPENIMP`** | **Since v1.10.0** the only SoCs where `daynight.ir_idle_off` can become available without touching `general.fs_keepalive` (it needs the keepalive). Elsewhere it reports `reason = "keepalive"` unless the keepalive is forced on (untested there). | `src/dn_idle.h`, `src/daynight.c` |

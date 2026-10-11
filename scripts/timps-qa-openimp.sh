@@ -38,7 +38,7 @@
 #         rel <= 1 - 0.15*delta/20 = blurred. -delta (max(-15, qp_delta_eff
 #         min)): rel >= 1.05 = sharpened; no measurable sharpening is only
 #         WARN (a stream already near min_qp has nothing to gain; not under
-#         fixqp), as is no effect at |delta| < 16 (T21) unless rc_mode is
+#         fixqp), as is no effect at |delta| < 16 (T21, T23) unless rc_mode is
 #         fixqp/vbr, or weak blur under CBR. The wrong direction is FAIL at any
 #         delta. A FAIL/no-effect is measured once more on a fresh RTSP
 #         connection (new IDR); the second decides. The GET echo must

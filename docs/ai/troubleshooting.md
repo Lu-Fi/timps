@@ -958,7 +958,7 @@ the OSD items on the substream. Lowering the render quality doesn't help.
 | What you see | Meaning |
 | --- | --- |
 | `caps.roi.tier` / `caps.fcrop.tier` = `experimental` | The SDK call returns 0, the effect is unverified on this SoC (vendor T10/T20/T21 ROI; vendor T31 FrontCrop, and T23/T31 OpenIMP FrontCrop on a driver without `fcrop_upscale_pct`). Nothing to fix in the config. |
-| `unsupported` | Not offered on this SoC/libimp (or the libimp lacks the weak symbol). A POST answers `"unsupported"`; a file value logs `roiS.N enabled but ignored: …` / `image.fcrop_enable=1 ignored: …` once at start. |
+| `unsupported` | Not offered on this SoC/libimp (or the libimp lacks the weak symbol; OpenIMP T23 ROI since v1.10.1: a libimp without `OpenIMP_Cap_T23HelixRoi`, i.e. older than OpenIMP v2026.10.11-rc1). A POST answers `"unsupported"`; a file value logs `roiS.N enabled but ignored: …` / `image.fcrop_enable=1 ignored: …` once at start. |
 | `caps.roi.streams[S]` = `h265` / `rotated` | ROI needs an unrotated H.264 stream; log `roiS: stream is … - regions ignored`. |
 | `caps.fcrop.state` = `rejected` | timps refused the window (below 64×64, or no sensor size; log `image.fcrop …: needs at least 64x64 inside the WxH sensor`), or SetFrontCrop returned `-EINVAL` (no stream can show it; T23: window below the stream-0 size), logged once as `SetFrontCrop … refused (rc=…)`, not retried. |
 | `caps.fcrop.state` = `failed` | SetFrontCrop failed with another error. Log `SetFrontCrop … refused (rc=…)`. |

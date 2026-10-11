@@ -128,8 +128,11 @@ prudynt-t / raptor.
   `OPENIMP_T21_ROI=0` in der Umgebung schaltet es ab → experimentell); vendor
   T10/T20/T21 experimentell. **T31 mit OpenIMP** über `SetChnRoiAttr`
   (vom OpenIMP-Maintainer getestet, in timps nur Host-Tests); vendor T31
-  lehnt ab (kein Symbol). T23 lehnt ab (der Encoder speichert die Region nur),
-  dazu T30, T40, T41 und C100. Delta -25..25 (T21 wirkt nur etwa -12..+13);
+  lehnt ab (kein Symbol). Vendor T23 lehnt ab (der Encoder speichert die
+  Region nur), dazu T30, T40, T41 und C100. **Seit v1.10.1** ist T23 mit
+  OpenIMP wirksam, wenn die libimp `OpenIMP_Cap_T23HelixRoi` exportiert
+  (OpenIMP v2026.10.11-rc1 oder neuer), sonst abgelehnt. Delta -25..25 (T21
+  und OpenIMP-T23 wirken nur etwa -12..+13);
   ein absoluter QP bleibt nur absolut, solange er höchstens 25 vom Bild-QP
   entfernt ist, sonst wird er als begrenztes Delta gesendet (sonst ungültiges
   H.264). Stufe und Bereiche meldet `caps.roi` in `GET /control`.
