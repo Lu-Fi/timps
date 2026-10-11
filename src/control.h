@@ -103,6 +103,7 @@
 #define CTRL_ECHO_CAP 512
 #define CTRL_DEFER_CAP 1024
 #define CTRL_IGN_CAP 512
+#define CTRL_ERR_CAP 512
 /* longest field name ign_note() will carry; the longest key any table holds is
  * daynight.total_gain_night_threshold's 26-char leaf, so anything near this is
  * already not a field name. */
@@ -159,6 +160,11 @@ typedef struct {
      * not applied, not counted in accepted. JSON array body, prefixed names. */
     char uns[CTRL_IGN_CAP];
     int  uns_n;
+    /* "errors": per key the numeric reason (err_codes.h) it was refused, not
+     * applied, or will not take effect at the next start (videoN.rotation).
+     * JSON object body; err_n counts entries even when err_full is 0. */
+    char err[CTRL_ERR_CAP];
+    int  err_full, err_n;
 } ctrl_result;
 
 /* Returns 0 if the body was a JSON object, -1 if it was not parseable at all,

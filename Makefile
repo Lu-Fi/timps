@@ -384,13 +384,15 @@ test-hang-wd:
 	$(HOSTCC) $(CFLAGS) -Isrc scripts/test_hang_wd.c $(LDFLAGS) -lpthread -o $(BIN)-hwdtest
 	@./$(BIN)-hwdtest; rc=$$?; rm -f $(BIN)-hwdtest; exit $$rc
 
-# Sim run: the Host gate, PNA consent, /control persistence and the wedged-
-# apply supervisor over real sockets (scripts/test_http_sim.sh, its own ports 18554/18880).
+# Sim run: the Host gate, PNA consent, /control persistence, the wedged-
+# apply supervisor and the /control error codes over real sockets (scripts/test_http_sim.sh, its own ports 18554/18880).
 test-http-sim:
 	$(MAKE) sim USE_CONTROL=1
 	$(MAKE) sim USE_CONTROL=1 BIN=$(BIN)-hang \
 	  SIM_CFLAGS='-DCTL_LOCK_S=2 -DCTL_HANG_S=4 -DMS_STARTUP_REBOOT_MARKER=\"/nonexistent/timps-test.flag\"'
-	@scripts/test_http_sim.sh ./$(BIN)-sim ./$(BIN)-hang-sim; rc=$$?; rm -f $(BIN)-hang-sim; exit $$rc
+	$(MAKE) sim USE_CONTROL=1 USE_ROTATE=1 BIN=$(BIN)-rot SIM_CFLAGS='-DSIM_ROT_ENV=FS_ROT_ENV_T1X'
+	@scripts/test_http_sim.sh ./$(BIN)-sim ./$(BIN)-hang-sim ./$(BIN)-rot-sim; rc=$$?; \
+	 rm -f $(BIN)-hang-sim $(BIN)-rot-sim; exit $$rc
 
 # Host-only unit test for the config-file line parser (quoting, inline
 # comments, the writer/loader round trip). Links the real src/config.c, needs

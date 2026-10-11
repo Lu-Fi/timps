@@ -2381,13 +2381,14 @@ static void *conn_thread(void *arg)
                      * silently; only an ALL-unknown body was visible, as 422.
                      * Same overflow contract as applied/deferred_keys. */
                     char rb[sizeof cr.echo + sizeof cr.defer + sizeof cr.ign +
-                            sizeof cr.uns + 512];
+                            sizeof cr.uns + sizeof cr.err + 512];
                     int rn = snprintf(rb, sizeof rb,
                         "{\"ok\":%s,\"accepted\":%d,\"changed\":%d,"
                         "\"rejected\":%d,\"not_persisted\":%d,\"pending\":%d,"
                         "\"deferred\":%d,\"deferred_keys\":[%s]%s,"
                         "\"ignored\":[%s]%s,"
                         "\"unsupported\":[%s]%s,"
+                        "%s%s%s%s"
                         "\"applied\":{%s}%s%s%s%s}",
                         (prc==0 && cr.accepted>0) ? "true" : "false",
                         cr.accepted, cr.changed, cr.rejected, cr.not_persisted,
@@ -2399,6 +2400,10 @@ static void *conn_thread(void *arg)
                         (prc==0 && !cr.ign_full) ? ",\"ignored_truncated\":true" : "",
                         prc==0 ? cr.uns : "",
                         (prc==0 && cr.uns_n>0) ? ",\"unsupported_reason\":\"not supported on this SoC\"" : "",
+                        (prc==0 && cr.err_n>0) ? "\"errors\":{" : "",
+                        prc==0 && cr.err_n>0 ? cr.err : "",
+                        (prc==0 && cr.err_n>0) ? "}," : "",
+                        (prc==0 && cr.err_n>0 && !cr.err_full) ? "\"errors_truncated\":true," : "",
                         prc==0 ? cr.echo : "",
                         (prc==0 && !cr.echo_full) ? ",\"truncated\":true" : "",
                         reason ? ",\"reason\":\"" : "", reason ? reason : "",

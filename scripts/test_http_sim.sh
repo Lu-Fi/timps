@@ -5,7 +5,7 @@
 # Host-gate checks need a non-loopback address (loopback peers are exempt);
 # without one they are skipped. Exit code: 0 = all PASS.
 set -u
-SIM=${1:-./timpsd-sim}     # $2: a sim built with short CTL_* limits (Makefile)
+SIM=${1:-./timpsd-sim}     # $2: a sim built with short CTL_* limits, $3: with SIM_ROT_ENV (Makefile)
 D=$(mktemp -d)
 trap 'kill $simpid 2>/dev/null; wait $simpid 2>/dev/null; rm -rf "$D"' EXIT
 CONF=$D/timps.conf
@@ -101,6 +101,35 @@ if [ -n "$HSIM" ] && [ -x "$HSIM" ]; then
     kill $hpid 2>/dev/null; wait $hpid 2>/dev/null
 else
     sk "wedged-apply supervisor: no hang sim given"
+fi
+
+# /control error codes against a sim that refuses rotations like T10/T20/T21
+# OpenIMP (sub stream only, 16-aligned, <= 704x576)
+RSIM=${3:-}
+if [ -n "$RSIM" ] && [ -x "$RSIM" ]; then
+    sed -i '/^video1.rotation/d;/^video1.width/d;/^video1.height/d' "$CONF"
+    printf 'video1.width = 640\nvideo1.height = 360\nvideo1.rotation = 90\n' >> "$CONF"
+    "$RSIM" -c "$CONF" > "$D/rot.log" 2>&1 &
+    simpid=$!
+    for _ in $(seq 50); do curl -s -o /dev/null $L && break; sleep 0.1; done
+    jget() { python3 -c "import json,sys; j=json.load(sys.stdin); print($1)"; }
+    perr() { curl -s --max-time 5 -X POST "$L" -d "$1" | jget "j.get('errors',{}).get('$2','-')"; }
+    expect "caps.err_v"                      1   "$(curl -s $L | jget "j['caps']['err_v']")"
+    expect "boot: 640x360 refused, state"    203 "$(curl -s $L | jget "j['video']['1']['rotation_state']")"
+    expect "boot: unrotated stream, state"   0   "$(curl -s $L | jget "j['video']['0']['rotation_state']")"
+    expect "POST main-stream rotation"       202 "$(perr '{"video":{"0":{"rotation":90}}}' video0.rotation)"
+    expect "POST 16-aligned sub stream"      -   "$(perr '{"video":{"1":{"height":368}}}' video1.rotation)"
+    expect "POST oversized sub stream"       204 "$(perr '{"video":{"1":{"width":1280,"height":720}}}' video1.rotation)"
+    expect "POST unrelated key: no repeat"   -   "$(perr '{"video":{"1":{"bitrate":600}}}' video1.rotation)"
+    expect "POST rotation 180 (T40/T41 only)" 201 "$(perr '{"video":{"1":{"rotation":180}}}' video1.rotation)"
+    expect "POST rotation 45"                101 "$(perr '{"video":{"1":{"rotation":45}}}' video1.rotation)"
+    expect "POST null value"                 101 "$(perr '{"image":{"brightness":null}}' image.brightness)"
+    expect "POST unknown key"                102 "$(perr '{"image":{"bogus":1}}' image.bogus)"
+    expect "POST file-only key"              103 "$(perr '{"video":{"0":{"imp_chn":0}}}' video0.imp_chn)"
+    expect "clean POST has no errors key"    0   "$(curl -s -X POST $L -d '{"image":{"contrast":121}}' | grep -c '"errors"')"
+    kill $simpid; wait $simpid 2>/dev/null
+else
+    sk "error codes: no rotation sim given"
 fi
 
 echo "test_http_sim: PASS=$pass FAIL=$fail SKIP=$skip"

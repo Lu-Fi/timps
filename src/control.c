@@ -26,6 +26,7 @@
 #include "hal/hal.h"       /* hal_enc_stats: read-only encoder telemetry */
 #include "isp_caps.h"      /* ISP_WEAK_KEYS */
 #include "roi_caps.h"      /* caps.roi / caps.fcrop tiers */
+#include "err_codes.h"
 #include "hal/roi_geom.h"  /* ROI_* / FCROP_MIN limits */
 #include "util.h"          /* RTSP_MAX_CLIENTS/HTTP_MAX_CLIENTS/EVENTS_MAX_CLIENTS_DEF */
 #include "record.h"
@@ -211,7 +212,23 @@ typedef struct {
     int  ign_off, ign_full;
     char uns[CTRL_IGN_CAP];     /* F_NOHW keys carried by the body (names from tables) */
     int  uns_off, uns_n;
+    char err[CTRL_ERR_CAP];     /* "errors" object body: "key":code */
+    int  err_off, err_full, err_n;
 } ctrl_scratch_t;
+
+static void err_add(ctrl_scratch_t *sc, const char *key, int code)
+{
+    sc->err_n++;
+    if (!sc->err_full) return;
+    char ekey[CTRL_IGN_NAME*3+48];
+    ms_json_esc(key, ekey, sizeof ekey);
+    int w = snprintf(sc->err + sc->err_off, sizeof sc->err - (size_t)sc->err_off,
+                     "%s\"%s\":%d", sc->err_off ? "," : "", ekey, code);
+    if (w < 0 || sc->err_off + w >= (int)sizeof sc->err) {
+        sc->err[sc->err_off] = 0; sc->err_full = 0; return;
+    }
+    sc->err_off += w;
+}
 
 static void ign_add(ctrl_scratch_t *sc, const char *key)
 {
@@ -486,11 +503,13 @@ static void timps_apply_setting(ctrl_scratch_t *sc, ctrl_changes *ch, const char
     if (!raw || !strcmp(raw,"null") || !strcmp(raw,"undefined")){
         LOGD(MOD,"ignoring %s = '%s' (not a valid value)", key, raw?raw:"");
         sc->rej++;
+        err_add(sc, key, ERR_VALUE_INVALID);
         return;
     }
     if (!raw[0] && !config_key_is_str(key)){
         LOGD(MOD,"ignoring empty %s (only string fields can be cleared)", key);
         sc->rej++;
+        err_add(sc, key, ERR_VALUE_INVALID);
         return;
     }
     sc->acc++;   /* recognised and about to be applied, changed or not */
@@ -530,7 +549,15 @@ static void timps_apply_setting(ctrl_scratch_t *sc, ctrl_changes *ch, const char
     config_str_unlock();
     const char *out = canon ? after : val;   /* canonical value for consumers */
     /* posted != effective -> the caller needs to know, changed or not */
-    if (strcmp(out, val) != 0) echo_add(sc, key, out);
+    if (strcmp(out, val) != 0) {
+        echo_add(sc, key, out);
+        /* prot() turns a rotation this build cannot apply into 0 */
+        if (key_is_restart_section(key) && !strcmp(key+7,"rotation") && !strcmp(out,"0")) {
+            int r = atoi(val);
+            if (r) err_add(sc, key, (r==1||r==2||r==90||r==180||r==270)
+                                    ? ERR_ROT_UNSUPPORTED : ERR_VALUE_INVALID);
+        }
+    }
     if (known && !strcmp(before, after)){
         /* image.running_mode is a hardware-SYNC command to the ISP, not just a
          * stored value: the ISP's actual day/night state can drift from our
@@ -644,6 +671,7 @@ static void apply_ctrl_fields(ctrl_scratch_t *sc, ctrl_changes *ch, const char *
             if (w > 0 && sc->uns_off + w < (int)sizeof sc->uns) sc->uns_off += w;
             else sc->uns[sc->uns_off] = 0;
             sc->uns_n++;
+            err_add(sc, full, ERR_KEY_NOHW);
             LOGW(MOD,"%s: not supported on this SoC, ignored", full);
             continue;
         }
@@ -692,10 +720,13 @@ static void ign_note(ctrl_scratch_t *sc, const char *prefix, const char *nb, con
     }
     char name[CTRL_IGN_NAME];
     memcpy(name, nb, len); name[len] = 0;
+    int file_only = 0;
     for (int i=0;i<n;i++)
-        if ((tbl[i].flags & F_CTRL) &&
-            (!strcmp(name, tbl[i].name) ||
-             (tbl[i].alias && !strcmp(name, tbl[i].alias)))) return;
+        if (!strcmp(name, tbl[i].name) ||
+            (tbl[i].alias && !strcmp(name, tbl[i].alias))) {
+            if (tbl[i].flags & F_CTRL) return;
+            file_only = 1;
+        }
     for (const char *x = extra; x && *x; ){
         while (*x==' ') x++;
         size_t xl = strcspn(x, " ");
@@ -705,6 +736,7 @@ static void ign_note(ctrl_scratch_t *sc, const char *prefix, const char *nb, con
     char full[CTRL_IGN_NAME+40];
     snprintf(full, sizeof full, "%s.%s", prefix, name);
     ign_add(sc, full);
+    err_add(sc, full, file_only ? ERR_KEY_FILE_ONLY : ERR_KEY_UNKNOWN);
 }
 
 static void ign_scan(ctrl_scratch_t *sc, const char *prefix, const char *s, const char *e,
@@ -875,7 +907,8 @@ int control_apply_json(const char *json, ctrl_result *res)
     if (res) { res->accepted = res->changed = res->rejected = 0; res->not_persisted = 0; res->pending = 0;
                res->deferred = 0; res->echo[0] = 0; res->echo_full = 1;
                res->defer[0] = 0; res->defer_full = 1;
-               res->ign[0] = 0; res->ign_full = 1; res->uns[0] = 0; res->uns_n = 0; }
+               res->ign[0] = 0; res->ign_full = 1; res->uns[0] = 0; res->uns_n = 0;
+               res->err[0] = 0; res->err_full = 1; res->err_n = 0; }
     if (!json || !json[0]) return -1;
     /* Not a JSON object at all - the hand-rolled scanner would simply find
      * nothing and the old code answered 200 to it. Say so instead. Unbalanced
@@ -886,7 +919,7 @@ int control_apply_json(const char *json, ctrl_result *res)
     if (!je || skip_ws(je+1, end) != end) return -1;
     jb++;
     ctrl_scratch_t sc = {0};
-    sc.echo_full = 1; sc.defer_full = 1; sc.ign_full = 1;
+    sc.echo_full = 1; sc.defer_full = 1; sc.ign_full = 1; sc.err_full = 1;
     /* hub_control()/hub_control_commit() still run after each field's
      * config_str_unlock(); see apply_mu above. */
     {
@@ -1128,6 +1161,7 @@ int control_apply_json(const char *json, ctrl_result *res)
     /* video: {"video":{"0":{"bitrate":3500,"codec":"h264",...},"1":{...}}}
      * -> videoN.* (persist-only: the HAL does not reconfigure the running
      * encoder; changes apply on the next restart) */
+    unsigned rot_chk = 0;   /* streams whose rotation envelope this request touched */
     sb = find_obj(jb, je, "video", &se);
     if (sb){
         int nvid; const cfg_field *vid_tbl = cfg_fields_video(&nvid);
@@ -1138,6 +1172,11 @@ int control_apply_json(const char *json, ctrl_result *res)
             char pre[8]; snprintf(pre,sizeof pre,"video%d",i);
             apply_ctrl_fields(&sc, ch, pre, ib, ie, vid_tbl, nvid);
             ign_scan(&sc, pre, ib, ie, vid_tbl, nvid, NULL);
+#ifdef USE_ROTATE
+            static const char *const rk[] = {"rotation","width","height","fps","enabled"};
+            for (unsigned k=0; k<sizeof rk/sizeof rk[0]; k++)
+                if (find_field(ib, ie, rk[k])) { rot_chk |= 1u<<i; break; }
+#endif
         }
     }
 
@@ -1263,6 +1302,22 @@ int control_apply_json(const char *json, ctrl_result *res)
      * changed. */
     hub_control_commit();
 
+#ifdef USE_ROTATE
+    /* rotation is restart-only: say now what the next start will refuse */
+    for (int i=0;i<MS_MAX_VSTREAM;i++){
+        /* numeric fields only, and apply_mu keeps other writers out */
+        const ms_vstream_cfg *vc = &g_cfg.video[i];
+        if (!(rot_chk & (1u<<i)) || !vc->enabled) continue;
+        int rc = hal_rot_check(i, vc);
+        if (rc){
+            char key[20]; snprintf(key, sizeof key, "video%d.rotation", i);
+            err_add(&sc, key, rc);
+        }
+    }
+#else
+    (void)rot_chk;
+#endif
+
     /* persist: rate-limited (persist_gate.h); restart-required keys at once,
      * the restart that follows reads the file */
     if (ch->n > 0 && g_cfg_path && g_cfg_path[0]){
@@ -1292,6 +1347,9 @@ int control_apply_json(const char *json, ctrl_result *res)
         res->ign_full = sc.ign_full;
         snprintf(res->uns, sizeof res->uns, "%s", sc.uns);
         res->uns_n = sc.uns_n;
+        snprintf(res->err, sizeof res->err, "%s", sc.err);
+        res->err_full = sc.err_full;
+        res->err_n = sc.err_n;
     }
     free(ch);
     hwd_end(&g_hwd, wd);
@@ -1580,7 +1638,7 @@ static int get_json(char *buf, size_t cap)
     /* caps FIRST (of the REST of the document): the CGI bridges scan for the
      * *last* occurrence of a key, which must be the value in the image
      * object below, not the caps name */
-    APP("\"caps\":{\"image\":[");
+    APP("\"caps\":{\"err_v\":%d,\"image\":[", ERR_V);
     {
         int nf; const cfg_field *tbl = cfg_fields_image(&nf);
         int first = 1;
@@ -1972,12 +2030,13 @@ static int get_json(char *buf, size_t cap)
             "\"gop\":%d,\"max_gop\":%d,\"profile\":%d,\"qp\":%d,"
             "\"min_qp\":%d,\"max_qp\":%d,\"quality_lvl\":%d,"
             "\"change_pos\":%d,\"i_bias_lvl\":%d,\"fluc_lvl\":%d,"
-            "\"rotation\":%d,\"buffers\":%d,"
+            "\"rotation\":%d,\"rotation_state\":%d,\"buffers\":%d,"
             "\"rtsp_path\":\"%s\"}",
             i?",":"", i, vs->enabled, cod, vs->width, vs->height, ew, eh, vs->fps,
             vs->bitrate_kbps, rc, vs->gop, vs->max_gop, vs->profile,
             vs->qp, vs->min_qp, vs->max_qp, vs->quality_lvl,
-            vs->change_pos, vs->i_bias_lvl, vs->fluc_lvl, vs->rotation, vs->buffers, rp);
+            vs->change_pos, vs->i_bias_lvl, vs->fluc_lvl, vs->rotation,
+            hal_rot_state(i), vs->buffers, rp);
 #else
         /* rotation compiled out: omit eff_width/eff_height and the rotation
          * value is always 0 (prot() coerced it), so eff == raw dims anyway. */
