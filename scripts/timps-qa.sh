@@ -4528,6 +4528,19 @@ else
 		got=$(jget "$OUTDIR/lv_rotation_confirm.json" "$path")
 		[ "$got" = "$want" ]
 	}
+	rot_state_ck() {  # $1=stream $2=rot_probe output of a landscape source
+		lv_get "$OUTDIR/lv_rotation_state.json"
+		local st w h rot
+		st=$(jget "$OUTDIR/lv_rotation_state.json" "video.$1.rotation_state")
+		[ -n "$st" ] || { info "rotation: no video.$1.rotation_state (timps before v1.10.1)"; return; }
+		w=$(echo "$2" | cut -dx -f2); h=$(echo "$2" | cut -dx -f3)
+		rot=0; [ "${w:-0}" -lt "${h:-0}" ] && rot=1
+		if { [ $rot = 1 ] && [ "$st" = 0 ]; } || { [ $rot = 0 ] && [ "$st" != 0 ]; }; then
+			ok "rotation: video$1 rotation_state=$st matches the stream ($2)"
+		else
+			bad "rotation: video$1 rotation_state=$st contradicts the stream ($2)"
+		fi
+	}
 	rot_probe() {  # $1=rtsp path -> prints "codecxWIDTHxHEIGHT" or empty on failure
 		# pidof succeeding only means the process exists, not that the
 		# video pipeline is up yet (on-demand encoder start happens on
@@ -4638,6 +4651,7 @@ else
 							probe0=$(rot_probe "$PATH_MAIN")
 							if [ -n "$probe0" ]; then
 								ok "rotation: daemon survived + streamed video0 @ native res with rotation=90 requested ($probe0)"
+								rot_state_ck 0 "$probe0"
 							else
 								bad "rotation: daemon came up but video0 stream unreachable after rotation=90 at native res"
 							fi
@@ -4654,6 +4668,7 @@ else
 					if rot_apply "{\"video\":{\"1\":{\"rotation\":90,\"width\":704,\"height\":576,\"fps\":10}}}" video.1.rotation 90; then
 						if rot_restart; then
 							probe1=$(rot_probe "$PATH_SUB")
+							[ -n "$probe1" ] && rot_state_ck 1 "$probe1"
 							if echo "$probe1" | grep -q "576x704"; then
 								ok "rotation: video1 at a 16-aligned safe size (704x576@10fps) ACTUALLY rotated ($probe1)"
 							elif [ -n "$probe1" ]; then
