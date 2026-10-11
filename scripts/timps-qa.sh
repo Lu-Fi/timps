@@ -2838,7 +2838,7 @@ else
 	lv_section daynight '{"daynight":' '}' daynight \
 		"day_gain flt 100 900" \
 		"night_gain flt 2000 8000" \
-		"day_confirm_s int 1 120" "jump_pct int 5 70" \
+		"day_confirm_s int 1 120" "jump_pct int 5 70" "color_pct int 0 50" \
 		"heartbeat_s int 300 86400" "heartbeat_max_s int 300 604800" \
 		"sun_sunrise_offset_min int -1440 1440" \
 		"sun_sunset_offset_min int -1440 1440"
@@ -3228,6 +3228,7 @@ else
 	ov_clamp_test image      '{"image":'    '}' image      brightness       -99      0
 	ov_clamp_test image      '{"image":'    '}' image      brightness       9999     255
 	ov_clamp_test daynight   '{"daynight":' '}' daynight   jump_pct         1        5
+	ov_clamp_test daynight   '{"daynight":' '}' daynight   color_pct        99       50
 	ov_clamp_test daynight   '{"daynight":' '}' daynight   heartbeat_max_s  99999999 604800
 
 	# --- video/sensor persist-first sanity: whatever the platform can or cannot
@@ -5079,7 +5080,7 @@ else
 	TESTED_motion="sensitivity monitor_stream enabled hold_ms skip_frames"
 	TESTED_record="segment_s pre_roll_s post_roll_s min_free_mb audio name dir"
 	TESTED_timelapse="interval_s keep_days name dir"
-	TESTED_daynight="day_gain night_gain day_confirm_s jump_pct heartbeat_s heartbeat_max_s sun_sunrise_offset_min sun_sunset_offset_min time_night_start time_day_start sun_latitude sun_longitude history_s"
+	TESTED_daynight="day_gain night_gain day_confirm_s jump_pct color_pct heartbeat_s heartbeat_max_s sun_sunrise_offset_min sun_sunset_offset_min time_night_start time_day_start sun_latitude sun_longitude history_s"
 	TESTED_video="bitrate rotation rc_mode qp min_qp max_qp quality_lvl change_pos i_bias_lvl fluc_lvl gop max_gop profile"
 	TESTED_privacy="enabled x y w h color"
 	TESTED_roi=""
