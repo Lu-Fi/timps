@@ -1,0 +1,1247 @@
+{
+ "comment": "Behaviour families for scripts/dn-families/run.py. Timelines name a scene of the profile or a daylight level {lvl: x} of its curve. Truth is derived from the day-pipeline value of the scene: below day_gain day, above night_gain or railed night, in between either. Bounds, never exact paths.",
+ "families": [
+  {
+   "name": "dusk",
+   "title": "evening: daylight fades",
+   "duration_s": 4200,
+   "initial_mode": "day",
+   "timelines": {
+    "wohn": [
+     [
+      0,
+      {
+       "lvl": 1.0
+      }
+     ],
+     [
+      600,
+      {
+       "lvl": 1.0
+      }
+     ],
+     [
+      3000,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      4200,
+      {
+       "lvl": 0.0
+      }
+     ]
+    ],
+    "t10": [
+     [
+      0,
+      "day"
+     ],
+     [
+      900,
+      "day"
+     ],
+     [
+      901,
+      "foreign_ir"
+     ],
+     [
+      4200,
+      "foreign_ir"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 300,
+    "max_switches": 4,
+    "max_off_s": 300
+   }
+  },
+  {
+   "name": "dawn",
+   "title": "morning: daylight comes",
+   "duration_s": 7200,
+   "initial_mode": "night",
+   "timelines": {
+    "wohn": [
+     [
+      0,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      900,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      4500,
+      {
+       "lvl": 1.0
+      }
+     ],
+     [
+      7200,
+      {
+       "lvl": 1.0
+      }
+     ]
+    ],
+    "schuppen": [
+     [
+      0,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      900,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      4500,
+      {
+       "lvl": 1.0
+      }
+     ],
+     [
+      7200,
+      {
+       "lvl": 1.0
+      }
+     ]
+    ],
+    "t10": [
+     [
+      0,
+      "foreign_ir"
+     ],
+     [
+      1800,
+      "foreign_ir"
+     ],
+     [
+      1801,
+      "dawn_end"
+     ],
+     [
+      7200,
+      "dawn_end"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 1800,
+    "max_switches": 8,
+    "max_on_s": 1800
+   }
+  },
+  {
+   "name": "lamp_jump",
+   "title": "lamp on and off, the lit night level moves a lot",
+   "duration_s": 4200,
+   "initial_mode": "night",
+   "timelines": {
+    "t10": [
+     [
+      0,
+      "foreign_ir"
+     ],
+     [
+      900,
+      "foreign_ir"
+     ],
+     [
+      901,
+      "lamp"
+     ],
+     [
+      2700,
+      "lamp"
+     ],
+     [
+      2701,
+      "foreign_ir"
+     ],
+     [
+      4200,
+      "foreign_ir"
+     ]
+    ],
+    "eufy": [
+     [
+      0,
+      "dark"
+     ],
+     [
+      900,
+      "dark"
+     ],
+     [
+      901,
+      "cellar"
+     ],
+     [
+      2700,
+      "cellar"
+     ],
+     [
+      2701,
+      "dark"
+     ],
+     [
+      4200,
+      "dark"
+     ]
+    ],
+    "shed": [
+     [
+      0,
+      "dark"
+     ],
+     [
+      900,
+      "dark"
+     ],
+     [
+      901,
+      "light"
+     ],
+     [
+      2700,
+      "light"
+     ],
+     [
+      2701,
+      "dark"
+     ],
+     [
+      4200,
+      "dark"
+     ]
+    ],
+    "cam05": [
+     [
+      0,
+      "dark"
+     ],
+     [
+      900,
+      "dark"
+     ],
+     [
+      901,
+      "dimlamp"
+     ],
+     [
+      2700,
+      "dimlamp"
+     ],
+     [
+      2701,
+      "dark"
+     ],
+     [
+      4200,
+      "dark"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 60,
+    "max_switches": 8,
+    "max_on_s": 60,
+    "max_off_s": 40
+   }
+  },
+  {
+   "name": "lamp_nojump",
+   "title": "lamp on and off, the lit night level barely moves",
+   "duration_s": 5400,
+   "initial_mode": "night",
+   "timelines": {
+    "pan": [
+     [
+      0,
+      "dark"
+     ],
+     [
+      900,
+      "dark"
+     ],
+     [
+      901,
+      "lamp"
+     ],
+     [
+      4200,
+      "lamp"
+     ],
+     [
+      4201,
+      "dark"
+     ],
+     [
+      5400,
+      "dark"
+     ]
+    ],
+    "eufy": [
+     [
+      0,
+      "dark"
+     ],
+     [
+      900,
+      "dark"
+     ],
+     [
+      901,
+      "bulb"
+     ],
+     [
+      4200,
+      "bulb"
+     ],
+     [
+      4201,
+      "dark"
+     ],
+     [
+      5400,
+      "dark"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 2760,
+    "max_switches": 8,
+    "max_on_s": 2760,
+    "max_off_s": 40
+   }
+  },
+  {
+   "name": "lamp_again",
+   "title": "lit room goes dark (one failed check), later a lamp that barely moves the lit level",
+   "duration_s": 4800,
+   "initial_mode": "day",
+   "timelines": {
+    "eufy": [
+     [
+      0,
+      "cellar"
+     ],
+     [
+      600,
+      "cellar"
+     ],
+     [
+      601,
+      "dark"
+     ],
+     [
+      2400,
+      "dark"
+     ],
+     [
+      2401,
+      "bulb"
+     ],
+     [
+      4800,
+      "bulb"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 2760,
+    "max_switches": 6,
+    "max_off_s": 40
+   }
+  },
+  {
+   "name": "foreign_ir",
+   "title": "other cameras' infrared lights the night pipeline, the room stays dark",
+   "duration_s": 3600,
+   "initial_mode": "night",
+   "timelines": {
+    "pan": [
+     [
+      0,
+      "dark"
+     ],
+     [
+      600,
+      "dark"
+     ],
+     [
+      601,
+      "foreign_ir"
+     ],
+     [
+      3600,
+      "foreign_ir"
+     ]
+    ],
+    "t10": [
+     [
+      0,
+      "foreign_ir"
+     ],
+     [
+      3600,
+      "foreign_ir"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 60,
+    "max_switches": 6
+   }
+  },
+  {
+   "name": "foreign_ir_lamp",
+   "title": "foreign infrared (a failed check), then a lamp within 400 s: day within 90 s",
+   "duration_s": 3600,
+   "initial_mode": "night",
+   "timelines": {
+    "pan": [
+     [
+      0,
+      "foreign_ir"
+     ],
+     [
+      400,
+      "foreign_ir"
+     ],
+     [
+      401,
+      "lamp_bright"
+     ],
+     [
+      3600,
+      "lamp_bright"
+     ]
+    ],
+    "t10": [
+     [
+      0,
+      "foreign_ir"
+     ],
+     [
+      400,
+      "foreign_ir"
+     ],
+     [
+      401,
+      "lamp"
+     ],
+     [
+      3600,
+      "lamp"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 60,
+    "max_switches": 6,
+    "max_on_s": 60
+   }
+  },
+  {
+   "name": "boot_dark",
+   "title": "restart in a dark scene",
+   "duration_s": 900,
+   "initial_mode": "night",
+   "timelines": {
+    "pan": [
+     [
+      0,
+      "dark"
+     ],
+     [
+      900,
+      "dark"
+     ]
+    ],
+    "eufy": [
+     [
+      0,
+      "dark"
+     ],
+     [
+      900,
+      "dark"
+     ]
+    ],
+    "t41": [
+     [
+      0,
+      "dark"
+     ],
+     [
+      900,
+      "dark"
+     ]
+    ],
+    "wohn": [
+     [
+      0,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      900,
+      {
+       "lvl": 0.0
+      }
+     ]
+    ],
+    "t23": [
+     [
+      0,
+      "railed"
+     ],
+     [
+      900,
+      "railed"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 120,
+    "max_switches": 2
+   }
+  },
+  {
+   "name": "boot_dark_from_day",
+   "title": "restart in a dark scene, persisted day",
+   "duration_s": 900,
+   "initial_mode": "day",
+   "timelines": {
+    "pan": [
+     [
+      0,
+      "dark"
+     ],
+     [
+      900,
+      "dark"
+     ]
+    ],
+    "eufy": [
+     [
+      0,
+      "dark"
+     ],
+     [
+      900,
+      "dark"
+     ]
+    ],
+    "wohn": [
+     [
+      0,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      900,
+      {
+       "lvl": 0.0
+      }
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 120,
+    "max_switches": 2
+   }
+  },
+  {
+   "name": "boot_light",
+   "title": "restart in a lit scene, persisted night",
+   "duration_s": 900,
+   "initial_mode": "night",
+   "timelines": {
+    "pan": [
+     [
+      0,
+      "lamp"
+     ],
+     [
+      900,
+      "lamp"
+     ]
+    ],
+    "eufy": [
+     [
+      0,
+      "cellar"
+     ],
+     [
+      900,
+      "cellar"
+     ]
+    ],
+    "t10": [
+     [
+      0,
+      "lamp"
+     ],
+     [
+      900,
+      "lamp"
+     ]
+    ],
+    "wohn": [
+     [
+      0,
+      {
+       "lvl": 1.0
+      }
+     ],
+     [
+      900,
+      {
+       "lvl": 1.0
+      }
+     ]
+    ],
+    "t23": [
+     [
+      0,
+      "day"
+     ],
+     [
+      900,
+      "day"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 120,
+    "max_switches": 2
+   }
+  },
+  {
+   "name": "plateau",
+   "title": "the AE stops below night_gain: lamp off, day must still end",
+   "duration_s": 2400,
+   "initial_mode": "day",
+   "timelines": {
+    "pan": [
+     [
+      0,
+      "lamp"
+     ],
+     [
+      600,
+      "lamp"
+     ],
+     [
+      601,
+      "dark"
+     ],
+     [
+      2400,
+      "dark"
+     ]
+    ],
+    "t41": [
+     [
+      0,
+      "dark"
+     ],
+     [
+      2400,
+      "dark"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 300,
+    "max_switches": 4,
+    "max_off_s": 40
+   }
+  },
+  {
+   "name": "no_led",
+   "title": "no separately switchable illuminator: lamp and dawn",
+   "duration_s": 6000,
+   "initial_mode": "night",
+   "led": false,
+   "config": {
+    "daynight.heartbeat_s": 1800
+   },
+   "timelines": {
+    "t10": [
+     [
+      0,
+      "foreign_ir"
+     ],
+     [
+      900,
+      "foreign_ir"
+     ],
+     [
+      901,
+      "lamp"
+     ],
+     [
+      6000,
+      "lamp"
+     ]
+    ],
+    "wohn": [
+     [
+      0,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      900,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      4500,
+      {
+       "lvl": 1.0
+      }
+     ],
+     [
+      6000,
+      {
+       "lvl": 1.0
+      }
+     ]
+    ],
+    "pan": [
+     [
+      0,
+      "dark"
+     ],
+     [
+      900,
+      "dark"
+     ],
+     [
+      901,
+      "lamp"
+     ],
+     [
+      6000,
+      "lamp"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 2400,
+    "max_switches": 10
+   }
+  },
+  {
+   "name": "blind_look",
+   "title": "a light only the day pipeline sees: never stuck longer than the guarantee",
+   "duration_s": 4800,
+   "initial_mode": "night",
+   "config": {
+    "daynight.heartbeat_max_s": 1800
+   },
+   "timelines": {
+    "eufy": [
+     [
+      0,
+      "dark"
+     ],
+     [
+      600,
+      "dark"
+     ],
+     [
+      601,
+      "bulb_blind"
+     ],
+     [
+      4800,
+      "bulb_blind"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 2700,
+    "max_switches": 6
+   }
+  },
+  {
+   "name": "idle",
+   "title": "Idle-Dark: nobody watches at night, then someone does",
+   "duration_s": 2400,
+   "initial_mode": "night",
+   "config": {
+    "general.fs_keepalive": 1,
+    "daynight.ir_idle_off": 1,
+    "daynight.ir_idle_linger_s": 60
+   },
+   "consumers": [
+    [
+     0,
+     120
+    ],
+    [
+     1500,
+     1800
+    ]
+   ],
+   "timelines": {
+    "pan": [
+     [
+      0,
+      "dark"
+     ],
+     [
+      2400,
+      "dark"
+     ]
+    ],
+    "t10": [
+     [
+      0,
+      "foreign_ir"
+     ],
+     [
+      2400,
+      "foreign_ir"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 120,
+    "max_switches": 2,
+    "max_led_on_unwatched_s": 240,
+    "led_on_within_s": 5
+   }
+  },
+  {
+   "name": "isp_stuck",
+   "title": "the ISP does not follow the board switch until it sees a real transition",
+   "duration_s": 1200,
+   "initial_mode": "night",
+   "isp_sticky": {
+    "stuck": "night",
+    "from": 100
+   },
+   "timelines": {
+    "pan": [
+     [
+      0,
+      "dark"
+     ],
+     [
+      300,
+      "dark"
+     ],
+     [
+      301,
+      "lamp_bright"
+     ],
+     [
+      1200,
+      "lamp_bright"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 600,
+    "max_switches": 6
+   }
+  },
+  {
+   "name": "steady_night",
+   "title": "four hours of unchanged night: dark time of the looks",
+   "duration_s": 14400,
+   "initial_mode": "night",
+   "timelines": {
+    "pan": [
+     [
+      0,
+      "dark"
+     ],
+     [
+      14400,
+      "dark"
+     ]
+    ],
+    "eufy": [
+     [
+      0,
+      "dark"
+     ],
+     [
+      14400,
+      "dark"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 120,
+    "max_switches": 2,
+    "max_ir_probes": 7
+   }
+  },
+  {
+   "name": "flicker",
+   "title": "a light switched on and off every 2 min for 30 min: no runaway",
+   "duration_s": 3000,
+   "initial_mode": "night",
+   "timelines": {
+    "t10": [
+     [
+      0,
+      "foreign_ir"
+     ],
+     [
+      600,
+      "foreign_ir"
+     ],
+     [
+      601,
+      "lamp"
+     ],
+     [
+      721,
+      "foreign_ir"
+     ],
+     [
+      841,
+      "lamp"
+     ],
+     [
+      961,
+      "foreign_ir"
+     ],
+     [
+      1081,
+      "lamp"
+     ],
+     [
+      1201,
+      "foreign_ir"
+     ],
+     [
+      1321,
+      "lamp"
+     ],
+     [
+      1441,
+      "foreign_ir"
+     ],
+     [
+      1561,
+      "lamp"
+     ],
+     [
+      1681,
+      "foreign_ir"
+     ],
+     [
+      1801,
+      "lamp"
+     ],
+     [
+      1921,
+      "foreign_ir"
+     ],
+     [
+      2041,
+      "lamp"
+     ],
+     [
+      2161,
+      "foreign_ir"
+     ],
+     [
+      2281,
+      "lamp"
+     ],
+     [
+      2401,
+      "foreign_ir"
+     ],
+     [
+      3000,
+      "foreign_ir"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 3000,
+    "max_switches": 20
+   }
+  },
+  {
+   "name": "eufy_dark_bulb",
+   "title": "Eufy: a look in the dark asks, the check reads 40960 (not railed on the device), later a bulb without a jump",
+   "duration_s": 6600,
+   "initial_mode": "day",
+   "timelines": {
+    "eufy": [
+     [
+      0,
+      "cellar"
+     ],
+     [
+      300,
+      "cellar"
+     ],
+     [
+      301,
+      "dark"
+     ],
+     [
+      3300,
+      "dark"
+     ],
+     [
+      3301,
+      "bulb"
+     ],
+     [
+      6600,
+      "bulb"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 2820,
+    "max_switches": 6,
+    "max_on_s": 2820
+   }
+  },
+  {
+   "name": "check_then_light",
+   "title": "light with a jump 60 s after a failed check: day within 60 s",
+   "duration_s": 4240,
+   "initial_mode": "day",
+   "timelines": {
+    "eufy": [
+     [
+      0,
+      "cellar"
+     ],
+     [
+      300,
+      "cellar"
+     ],
+     [
+      301,
+      "dark"
+     ],
+     [
+      3110,
+      "dark"
+     ],
+     [
+      3111,
+      "cellar"
+     ],
+     [
+      4240,
+      "cellar"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 60,
+    "max_switches": 6,
+    "max_on_s": 60
+   }
+  },
+  {
+   "name": "transient",
+   "title": "12 s light bursts (headlights) every 10 min in a dark cellar: no click, few looks",
+   "duration_s": 3600,
+   "initial_mode": "night",
+   "timelines": {
+    "t10": [
+     [
+      0,
+      "foreign_ir"
+     ],
+     [
+      600,
+      "foreign_ir"
+     ],
+     [
+      601,
+      "lamp"
+     ],
+     [
+      613,
+      "lamp"
+     ],
+     [
+      614,
+      "foreign_ir"
+     ],
+     [
+      1200,
+      "foreign_ir"
+     ],
+     [
+      1201,
+      "lamp"
+     ],
+     [
+      1213,
+      "lamp"
+     ],
+     [
+      1214,
+      "foreign_ir"
+     ],
+     [
+      1800,
+      "foreign_ir"
+     ],
+     [
+      1801,
+      "lamp"
+     ],
+     [
+      1813,
+      "lamp"
+     ],
+     [
+      1814,
+      "foreign_ir"
+     ],
+     [
+      2400,
+      "foreign_ir"
+     ],
+     [
+      2401,
+      "lamp"
+     ],
+     [
+      2413,
+      "lamp"
+     ],
+     [
+      2414,
+      "foreign_ir"
+     ],
+     [
+      3000,
+      "foreign_ir"
+     ],
+     [
+      3001,
+      "lamp"
+     ],
+     [
+      3013,
+      "lamp"
+     ],
+     [
+      3014,
+      "foreign_ir"
+     ],
+     [
+      3600,
+      "foreign_ir"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 60,
+    "max_switches": 2
+   }
+  },
+  {
+   "name": "cloud",
+   "title": "daylight with cloud dips (day pipeline up to the middle of the band): no switch",
+   "duration_s": 3600,
+   "initial_mode": "day",
+   "timelines": {
+    "wohn": [
+     [
+      0,
+      {
+       "lvl": 1.0
+      }
+     ],
+     [
+      600,
+      {
+       "lvl": 1.0
+      }
+     ],
+     [
+      601,
+      {
+       "lvl": 0.75
+      }
+     ],
+     [
+      720,
+      {
+       "lvl": 0.75
+      }
+     ],
+     [
+      721,
+      {
+       "lvl": 1.0
+      }
+     ],
+     [
+      1800,
+      {
+       "lvl": 1.0
+      }
+     ],
+     [
+      1801,
+      {
+       "lvl": 0.6
+      }
+     ],
+     [
+      1860,
+      {
+       "lvl": 0.6
+      }
+     ],
+     [
+      1861,
+      {
+       "lvl": 1.0
+      }
+     ],
+     [
+      3600,
+      {
+       "lvl": 1.0
+      }
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 60,
+    "max_switches": 1
+   }
+  }
+ ]
+}

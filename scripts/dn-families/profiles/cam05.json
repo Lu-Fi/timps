@@ -1,0 +1,21 @@
+{
+ "name": "cam05",
+ "camera": "cam-05, dark interior with a dimmed lamp",
+ "map": {
+  "kind": "bare"
+ },
+ "scenes": {
+  "dark": {
+   "day": 30000,
+   "lit": 8000,
+   "dark": 30000,
+   "src": "scenario 21"
+  },
+  "dimlamp": {
+   "day": 11480,
+   "lit": 3514,
+   "dark": 4463,
+   "src": "scenario 21 (measured: 3514 IR-cut open vs 11480 shut)"
+  }
+ }
+}

@@ -1,0 +1,33 @@
+{
+ "name": "eufy",
+ "camera": "Eufy S350, T40, vendor stack, cellar (the dump reports AE reserve at 40960 in the dark: not railed, as on the device)",
+ "map": {
+  "kind": "generic"
+ },
+ "scenes": {
+  "dark": {
+   "day": 40960,
+   "lit": 140,
+   "dark": 320,
+   "src": "user 2026-10-11: dark 250-320, day 40960 in the dark room; lit ASSUMED"
+  },
+  "bulb": {
+   "day": 750,
+   "lit": 115,
+   "dark": 250,
+   "src": "user 2026-10-11: day 630-880 with the bulb, dark at the low end; lit ASSUMED"
+  },
+  "cellar": {
+   "day": 315,
+   "lit": 108,
+   "dark": 302,
+   "src": "probe 2026-10-10 (lit 108 dark 302), user: day 260-370 with the cellar light"
+  },
+  "bulb_blind": {
+   "day": 750,
+   "lit": 140,
+   "dark": 320,
+   "src": "bulb where the readings without the day pipeline do not move (inside the user's 250-320 range)"
+  }
+ }
+}

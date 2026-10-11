@@ -27,7 +27,7 @@ Usage:
   ./scripts/dn-trace2scenario.py --trace private/.../traces/cam-X.csv \\
       --from "22:17:00" --to "22:23:00" --date 2026-08-17 \\
       --name 16-shed-light --incident "operator switched shed light 22:17:29-22:21:55" \\
-      --expect-day "22:17:29..22:21:55" --scale 1 > scripts/dn-scenarios/16-shed-light.json
+      --expect-day "22:17:29..22:21:55" --scale 1 > shed-light.json
 """
 import argparse, datetime as dt, json, sys
 

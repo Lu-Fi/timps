@@ -300,7 +300,7 @@ IMPLIBS ?= -l:libimp.a -l:libalog.a -l:libsysutils.a
 # against a distro/buildroot that only ships libfaac.so.
 FAACLIB ?= -l:libfaac.a
 
-.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun test-daynight-read test-timelapse-prune test-record-ring test-fs-rot test-fs-ref test-libimp-check test-dn-idle test-dn-reach test-dn-proven test-hub-hold test-roi
+.PHONY: all target sim clean strip test-auth test-clients test-config test-fmp4 test-fanqueue test-hub-pool test-hub-idr test-stun test-srtp test-daynight-sun test-daynight-read test-timelapse-prune test-record-ring test-fs-rot test-fs-ref test-libimp-check test-stopgate test-dn-replay test-hub-hold test-roi
 
 all: target
 
@@ -575,22 +575,20 @@ test-fs-ref:
 	     -o $(BIN)-fsreftest && ./$(BIN)-fsreftest || rc=1; \
 	 done; rm -f $(BIN)-fsreftest; exit $$rc
 
-# Host-only test for the Idle-Dark decision (src/dn_idle.h, virtual clock)
-# and the stop-gate kick (src/util.c). Exit code is the result.
-test-dn-idle:
-	$(HOSTCC) $(CFLAGS) -Isrc scripts/test_dn_idle.c src/util.c src/log.c \
-	  $(LDFLAGS) -lpthread -o $(BIN)-dnidletest
-	@./$(BIN)-dnidletest; rc=$$?; rm -f $(BIN)-dnidletest; exit $$rc
+# Host-only test for the stop-gate kick (src/util.c) that wakes the
+# day/night thread for an Idle-Dark consumer. Exit code is the result.
+test-stopgate:
+	$(HOSTCC) $(CFLAGS) -Isrc scripts/test_stopgate.c src/util.c src/log.c \
+	  $(LDFLAGS) -lpthread -o $(BIN)-stopgatetest
+	@./$(BIN)-stopgatetest; rc=$$?; rm -f $(BIN)-stopgatetest; exit $$rc
 
-# Host-only test for the reachable-maximum night rule (src/dn_reach.h)
-test-dn-reach:
-	$(HOSTCC) $(CFLAGS) -Isrc scripts/test_dn_reach.c $(LDFLAGS) -lm -o $(BIN)-dnreachtest
-	@./$(BIN)-dnreachtest; rc=$$?; rm -f $(BIN)-dnreachtest; exit $$rc
-
-# Host-only test for the proven-night gate on silent probes (src/dn_proven.h)
-test-dn-proven:
-	$(HOSTCC) $(CFLAGS) -Isrc scripts/test_dn_proven.c $(LDFLAGS) -o $(BIN)-dnproventest
-	@./$(BIN)-dnproventest; rc=$$?; rm -f $(BIN)-dnproventest; exit $$rc
+# Day/night behaviour families x camera profiles (scripts/dn-families), on the
+# replay harness in parallel; bounds only, no log text. DN_JOBS parallel runs.
+DN_JOBS ?= 8
+test-dn-replay:
+	$(MAKE) -s sim USE_CONTROL=1 BIN=$(BIN)-dnfam SIM_CFLAGS="-DMS_CLOCK_SCALE=60"
+	@python3 scripts/dn-families/run.py --bin ./$(BIN)-dnfam-sim --jobs $(DN_JOBS); \
+	  rc=$$?; rm -f $(BIN)-dnfam-sim; exit $$rc
 
 # Host-only test for the encoder ROI / FrontCrop validation (src/hal/roi_geom.h:
 # macroblock corners, QP ranges, the top,left order), then the tier matrix of

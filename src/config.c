@@ -492,8 +492,8 @@ void config_defaults(ms_config *c)
      * two stops of dead-zone, and the band is not free - every 1x of it is
      * a range where the machine holds its current mode on a reading it
      * cannot classify. 16x is a defensible "colour is hopeless" point.
-     * Per-camera tuning remains the answer for any specific room; enable
-     * daynight.diagnose_thresholds to be told what to set it to.
+     * Per-camera tuning remains the answer for any specific room: the
+     * status shows the exposure each check found.
      *
      * These two numbers survive the 2026-08-17 redesign unchanged in value
      * AND in meaning: the exposure index equals total_gain whenever the AE
@@ -504,69 +504,26 @@ void config_defaults(ms_config *c)
     c->daynight.day_gain=768.0f;
     c->daynight.night_gain=4096.0f;
     c->daynight.day_confirm_s=30;
-    /* Probe economy. 600 s between probes bounds the audible cost at one
-     * click pair per 10 minutes under every combination of triggers; 15 s of
-     * confirm rejects headlights and passing cars while keeping "light on ->
-     * colour" at roughly 25 s end to end (the other half of that number,
-     * probe_jump_pct's 50% and probe_settle_s's 8 s, are now the fixed
-     * DN_PROBE_JUMP_PCT/DN_PROBE_SETTLE_S constants in daynight.h - see there
-     * for why: the 2026-08-22 consolidation found every camera measured
-     * wanted the same values, same as ref_delay_s below and the silent
-     * probe's three fields further down). */
-    c->daynight.probe_min_gap_s=600;
-    c->daynight.probe_confirm_s=15;
-    /* Silent probe OFF by default: it needs a board command that can drive the
-     * illuminator on its own, and a wrong one would leave the scene dark. Set
-     * daynight.irprobe_cmd to enable it.
-     *
-     * ir_ratio_night/ir_ratio_day/ir_min_headroom used to have their own
-     * defaults here (2.0/2.0/8, re-derived 2026-08-19 from a twelve-camera
-     * dusk-to-dawn campaign). All three are now the fixed
-     * DN_IR_RATIO_NIGHT/DN_IR_RATIO_DAY/DN_IR_MIN_HEADROOM constants in
-     * daynight.h, which carries the full campaign writeup. */
-    /* Default ON since 2026-08-19. It was empty because "a wrong command would
-     * leave the scene dark", and that risk is real - the daemon restores the
-     * illuminator after the probe but has no failsafe if it dies inside the 8 s
-     * dark window. The default now points at a helper that arms a detached
-     * 60 s watchdog before switching off, so the light comes back even then,
-     * and that exits non-zero on a board with no switchable illuminator, which
-     * timps logs and skips.
-     *
-     * Leaving it off was costing more than it saved: three cameras sat in night
-     * mode through an entire afternoon because night->day fell back to the
-     * absolute threshold, which cannot separate a dark room from night - the
-     * measured spread of genuine daylight across this fleet is a factor of 63.
-     * The IR ratio settles it in one silent probe. Set to empty to disable. */
+    /* 20 %: a lamp moves the illuminator-lit level of the Eufy and Pan by
+     * 1.2-1.9x; 12 s headlights stay under the 20 s hold */
+    c->daynight.jump_pct=20;
+    /* the look needs a hook that switches the illuminator alone; it arms a
+     * 60 s watchdog before switching off and exits non-zero on a board with
+     * no switchable illuminator, which turns looks off. Empty = no looks. */
     snprintf(c->daynight.irprobe_cmd, sizeof c->daynight.irprobe_cmd,
              "timps-irprobe");
-    /* The heartbeat is the only bound on a wrong night, so it is a flat
-     * interval, never a multiplier: 4 h while the scene is moving, 12 h once
-     * it demonstrably is not. A dark closet therefore costs two click pairs
-     * a day and a camera that sees anything at all costs six - both without
-     * any evidence-gating that could erode the guarantee. */
+    /* no-LED cameras check every 4 h; every camera checks after 12 h of
+     * night without a day-pipeline reading */
     c->daynight.heartbeat_s=14400;
     c->daynight.heartbeat_max_s=43200;
-    /* one probe per boot buys a MEASUREMENT instead of a stale opinion. 0
-     * adopts the persisted mode without measuring - but boot asserts the
-     * mode it ends up with on the board either way, which is the half a
-     * dark-time reboot needs (2026-08-22 IR/ircut desync). */
-    c->daynight.boot_probe=1;
-    /* boot_settle_s used to default to 5 here; now the fixed DN_BOOT_SETTLE_S
-     * constant in daynight.h. */
     /* 2000 ms, not the old 500: the exposure index needs the /proc scrape on
      * every decision tick (the integration time has no IMP API), and no
      * confirmation window in the automaton is shorter than 8 s. This is still
      * well under half the scrape rate the pre-2026-07-31 code ran at. */
     c->daynight.interval_ms=2000;
-    /* transition_s (default 5) and ref_delay_s (default 30) used to be set
-     * here too; both are now the fixed DN_TRANSITION_S/DN_REF_DELAY_S
-     * constants in daynight.h. daynight.learn (default 0) and its
-     * state_path (default /etc/timps-daynight.state) are gone outright, not
-     * hardcoded - see the note above switch_cmd in config.h for why. */
     copystr(c->daynight.switch_cmd,"daynight",sizeof c->daynight.switch_cmd);
     copystr(c->daynight.isp_path,"/proc/jz/isp/isp-m0",sizeof c->daynight.isp_path);
     c->daynight.trace_path[0]=0;   /* trace recorder off by default */
-    c->daynight.diagnose_thresholds=0; /* threshold warns off by default */
     /* Off: a camera nobody is watching must not carry the ring. Collection is
      * opt-in - the tuning page's switch, or this key by hand - and nothing is
      * allocated until a sample is pushed at non-zero. */
@@ -1134,16 +1091,9 @@ static const cfg_field timelapse_fields[] = {
 #define TT ms_daynight_cfg
 /* F3: the numeric keys used to reach the detection thread unclamped via
  * /control (pint/pflt raw). Ranges: lat/lon geographic; sun offsets +-1 day;
- * both thresholds in the IMP [24.8] linear scale (256=1x, defaults 768/4096,
- * cold-start transients ~20000 - 1e6 = ~3900x is far beyond any sensor);
- * probe_min_gap_s is floored at 60 s - this is the ONLY bound on the audible
- * click rate, so it is a safety net rather than something to switch off;
- * heartbeat_s is floored at 300 s and heartbeat_max_s cannot be set below it
- * in practice (the automaton takes the smaller of the two when the scene is
- * moving); interval_ms floor 100 keeps the sampling loop from busy-spinning.
- * (probe_jump_pct and transition_s used to be clamped here too; both are now
- * the fixed DN_PROBE_JUMP_PCT/DN_TRANSITION_S constants in daynight.h and no
- * longer take a runtime value at all.) */
+ * both thresholds in the IMP [24.8] linear scale (256=1x, defaults 768/4096);
+ * heartbeat_s floored at 300 s; interval_ms floor 100 keeps the sampling loop
+ * from busy-spinning. */
 /* Every daynight.* key is F_CTRL (POST-able) EXCEPT:
  *  - mode: POST-able too, but NOT via the generic walker - control.c keeps
  *    hand-written validation for it (reject an unrecognized token outright
@@ -1170,13 +1120,10 @@ static const cfg_field daynight_fields[] = {
     F ("day_gain",   "total_gain_day_threshold",   day_gain,   T_FLT, F_CTRL, 1,1000000),
     F ("night_gain", "total_gain_night_threshold", night_gain, T_FLT, F_CTRL, 1,1000000),
     F ("day_confirm_s",              0, day_confirm_s,              T_INT,   F_CTRL, 1,3600),
-    F ("probe_min_gap_s",            0, probe_min_gap_s,            T_INT,   F_CTRL, 60,86400),
-    F ("probe_confirm_s",            0, probe_confirm_s,            T_INT,   F_CTRL, 1,3600),
+    F ("jump_pct",                   0, jump_pct,                   T_INT,   F_CTRL, 5,70),
     F ("heartbeat_s",                0, heartbeat_s,                T_INT,   F_CTRL, 300,604800),
     F ("heartbeat_max_s",            0, heartbeat_max_s,            T_INT,   F_CTRL, 300,604800),
-    F ("boot_probe",                 0, boot_probe,                 T_INT,   F_CTRL, 0,1),
     F ("interval_ms",                0, interval_ms,                T_INT,   F_CTRL, 100,60000),
-    F ("diagnose_thresholds",        0, diagnose_thresholds,        T_INT,   F_CTRL, 0,1),
     /* 172800 = 48 h, the hard ceiling on what the ring may allocate (270 KiB
      * at 16 B per 10 s sample); 0 = off. */
     F ("history_s",                  0, history_s,                  T_INT,   F_CTRL, 0,172800),
@@ -1730,81 +1677,23 @@ static void set_kv(ms_config *c, const char *key, const char *val)
         }
         /* every other motion.* key: generic table below */
     }
-    /* daynight keys retired by the 2026-08-17 redesign, plus `learn`/
-     * `state_path` retired by the 2026-08-22 consolidation. They are parsed
-     * and IGNORED with one warning each rather than dropped into the generic
-     * "unknown key" line, because every one of them names a mechanism that no
-     * longer exists (adaptive baseline, probe backoff, the brightness
-     * fallback, the learning subsystem) and a bare "unknown key" would read
-     * like a typo. The two gain thresholds are NOT here - they kept their old
-     * names as aliases, so an existing tuning still applies. See
-     * dev_notes/DAYNIGHT_REDESIGN_2026-08-17.md section 7.3 for the full
-     * mapping. */
+    /* daynight keys of earlier engines: parsed and IGNORED with one warning
+     * each, so an old config loads without "unknown key" lines. The two gain
+     * thresholds kept their old names as aliases (see the field table). */
     if (!strncmp(key,"daynight.",9)){
-        static const struct { const char *k, *why; } gone[] = {
-          {"day_gain_pct",     "the adaptive night baseline is gone - night->day "
-                               "is probe-mediated now, and the probe trigger is a "
-                               "fixed internal constant"},
-          {"baseline_delay_s", "the reference-anchor delay it renamed to is now a "
-                               "fixed internal constant (DN_REF_DELAY_S)"},
-          {"boot_settle_max_s","the settle wait is bounded internally now"},
-          {"boot_stable_pct",  "the settle wait is gated on the reading having "
-                               "stopped moving, with no tunable"},
-          {"night_reconfirm_s","replaced by daynight.heartbeat_s / heartbeat_max_s"},
-          {"probe_max_skip_s", "the probe skip it bounded no longer exists"},
-          {"threshold_low",    "the brightness fallback is no longer a decision "
-                               "path - use daynight.day_gain / night_gain"},
-          {"threshold_high",   "the brightness fallback is no longer a decision "
-                               "path - use daynight.day_gain / night_gain"},
-          {"hysteresis",       "the brightness fallback is no longer a decision path"},
-          {"learn",            "the learning subsystem is gone - diagnose_thresholds "
-                               "already reports an unreachable day_gain without "
-                               "touching it automatically"},
-          {"state_path",       "was only used by daynight.learn, which is gone"},
+        static const char *const gone[] = {
+          "day_gain_pct", "baseline_delay_s", "boot_settle_max_s",
+          "boot_stable_pct", "night_reconfirm_s", "probe_max_skip_s",
+          "threshold_low", "threshold_high", "hysteresis", "learn",
+          "state_path", "probe_jump_pct", "probe_settle_s", "ref_delay_s",
+          "ir_min_headroom", "boot_settle_s", "transition_s",
+          "ir_ratio_night", "ir_ratio_day", "probe_min_gap_s",
+          "probe_confirm_s", "boot_probe", "diagnose_thresholds",
         };
         for (size_t i=0;i<sizeof gone/sizeof gone[0];i++)
-            if (!strcmp(key+9, gone[i].k)){
-                LOGW(MOD,"%s is obsolete and IGNORED - %s", key, gone[i].why);
-                return;
-            }
-        /* Eight more keys were turned from per-camera config into fixed
-         * internal constants by the same consolidation (see the DN_* block in
-         * daynight.h) - a different situation from the retirements above,
-         * because the fixed value equals the field's old default: a config
-         * that never touched one of these is unaffected, but a camera that
-         * had explicitly tuned it away from the default would silently start
-         * getting the fleet-wide value instead, with no warning at all if
-         * this stayed silent like `gone[]` above. So each is parsed and
-         * compared against the constant it became, and only warns when they
-         * differ - matching the default is a no-op, not worth a warning. */
-        static const struct { const char *k; int fixed; } gone_i[] = {
-          {"probe_jump_pct",  DN_PROBE_JUMP_PCT},
-          {"probe_settle_s",  DN_PROBE_SETTLE_S},
-          {"ref_delay_s",     DN_REF_DELAY_S},
-          {"ir_min_headroom", DN_IR_MIN_HEADROOM},
-          {"boot_settle_s",   DN_BOOT_SETTLE_S},
-          {"transition_s",    DN_TRANSITION_S},
-        };
-        for (size_t i=0;i<sizeof gone_i/sizeof gone_i[0];i++)
-            if (!strcmp(key+9, gone_i[i].k)){
-                int v = pint(val);
-                if (v != gone_i[i].fixed)
-                    LOGW(MOD,"daynight.%s=%s is now a fixed internal constant "
-                             "(%d), value ignored",
-                         gone_i[i].k, val, gone_i[i].fixed);
-                return;
-            }
-        static const struct { const char *k; float fixed; } gone_f[] = {
-          {"ir_ratio_night", DN_IR_RATIO_NIGHT},
-          {"ir_ratio_day",   DN_IR_RATIO_DAY},
-        };
-        for (size_t i=0;i<sizeof gone_f/sizeof gone_f[0];i++)
-            if (!strcmp(key+9, gone_f[i].k)){
-                float v = pflt(val);
-                if (v != gone_f[i].fixed)
-                    LOGW(MOD,"daynight.%s=%s is now a fixed internal constant "
-                             "(%g), value ignored",
-                         gone_f[i].k, val, (double)gone_f[i].fixed);
+            if (!strcmp(key+9, gone[i])){
+                LOGW(MOD,"%s is retired and IGNORED (day/night engine of "
+                         "1.10.1, see docs/ai/config-keys.md)", key);
                 return;
             }
     }

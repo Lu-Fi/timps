@@ -1,0 +1,48 @@
+{
+ "name": "pan",
+ "camera": "Wyze Pan v1, T20/jxf22, OpenIMP (cam-wyze-pan), windowless cellar with other IR cameras",
+ "harness": {
+  "t20_dump": {
+   "again_max": 128,
+   "again_pub": 158,
+   "isp_info_max": 128,
+   "idg_max": 0,
+   "it_max": 2246,
+   "isp_m0": true
+  }
+ },
+ "map": {
+  "kind": "t20",
+  "cap": 4096,
+  "it_base": 0.3753,
+  "it_cap": 0.8758
+ },
+ "scenes": {
+  "dark": {
+   "day": 3587,
+   "lit": 251,
+   "dark": 823,
+   "railed": true,
+   "src": "probe 2026-10-10 16:27 (r 3.29); day = plateau 3587, logs 13:56/17:56"
+  },
+  "foreign_ir": {
+   "day": 3587,
+   "lit": 401,
+   "dark": 483,
+   "railed": true,
+   "src": "2026-10-07 15:15, src/dn_proven.h"
+  },
+  "lamp": {
+   "day": 330,
+   "lit": 249,
+   "dark": 284,
+   "src": "probe 2026-10-10 17:45, exposure CSV 17:46-17:56"
+  },
+  "lamp_bright": {
+   "day": 254,
+   "lit": 108,
+   "dark": 102,
+   "src": "probe 2026-10-10 21:23, CSV 21:24-21:25"
+  }
+ }
+}

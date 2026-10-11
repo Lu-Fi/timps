@@ -1,5 +1,8 @@
 # Day/Night — Design Notes
 
+> **Superseded twice**: the 2026-08-17 redesign, and in v1.10.1 the simple
+> engine of `dev_notes/dn-redesign.md`.
+
 > **Status: historical, and deliberately kept.** This page analysed the
 > machine as it stood on 2026-08-14 and argued for a targeted restructure
 > *once an executable oracle existed*. That oracle was then built (trace

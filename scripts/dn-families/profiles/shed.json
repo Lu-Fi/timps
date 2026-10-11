@@ -1,0 +1,21 @@
+{
+ "name": "shed",
+ "camera": "outbuilding with a light (legacy campaign)",
+ "map": {
+  "kind": "bare"
+ },
+ "scenes": {
+  "dark": {
+   "day": 16000,
+   "lit": 12160,
+   "dark": 45000,
+   "src": "scenario 19"
+  },
+  "light": {
+   "day": 3700,
+   "lit": 3226,
+   "dark": 3550,
+   "src": "scenario 19 / 16 (measured shed light)"
+  }
+ }
+}

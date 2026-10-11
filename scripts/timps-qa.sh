@@ -186,14 +186,12 @@ TEST_HOSTILE="${TEST_HOSTILE:-0}" # 13b: stalled client must not degrade healthy
 TEST_REBOOT="${TEST_REBOOT:-0}"  # 14c: real reboot, config/binary/version persistence
 
 # How long after a daemon restart the picture is not evidence about anything.
-# daynight.c runs a boot probe on EVERY start (daynight.boot_probe defaults to
-# 1, config.c): it drives the camera into the day pipeline - IR-cut closed, our own
-# illuminator OFF - reads the ambient level, then drives back. In a dark room
-# that is a black frame for the whole window, and any pixel comparison taken
-# inside it compares two black frames.
-# The budget is DN_BOOT_SETTLE_S 5 + DN_PROBE_SETTLE_S 8 + DN_TRANSITION_S 5
-# (daynight.h) plus room for the ISP to confirm the switch back and AE to
-# reconverge. Measured against 192.0.2.21 on 2026-09-02, from the daemon's
+# daynight.c checks on EVERY start: it drives the camera into the day
+# pipeline - IR-cut closed, our own illuminator OFF - reads the ambient level,
+# then drives back. In a dark room that is a black frame for the whole window,
+# and any pixel comparison taken inside it compares two black frames.
+# The budget is DN_BOOT_SETTLE_S 5 + DN_PROBE_SETTLE_S 8 (daynight.h) plus room
+# for the ISP to confirm the switch back and AE to reconverge. Measured against 192.0.2.21 on 2026-09-02, from the daemon's
 # own syslog: thread start 22:05:07, probe out at :13, back to night at :22,
 # ISP confirmed at :24 - so the dark window ran start+6 to start+17 and 30 s
 # clears it with most of a window to spare.
@@ -2832,51 +2830,18 @@ else
 	LV_RESTORE_SOFT=0
 
 	# --- daynight: the detection thread reads these live from config. Test the
-	# thresholds + tunables that are still per-camera settable; "enabled"
-	# reflects the thread's own state (poll lag) so it is left out.
-	# day_gain/night_gain are T_FLT in config.c and are probed as such.
-	#
-	# NOT here any more: probe_jump_pct, probe_settle_s, ref_delay_s,
-	# ir_ratio_night, ir_ratio_day, ir_min_headroom and boot_settle_s became
-	# fixed DN_* constants on 2026-08-22 (daynight.h), and daynight.learn went
-	# away with the learning subsystem. A round-trip probe on any of them is
-	# not a weaker test, it is a FAILING one: POSTed alone the key is a 422,
-	# POSTed alongside valid keys (which is what lv_section does) the request
-	# is a 200 and the key is silently dropped - so the read-back returns the
-	# constant and lv_section reports "not applied". They are asserted
-	# read-only immediately below instead, which is all there is left to
-	# assert about them. ---
+	# thresholds + tunables that are per-camera settable; "enabled" reflects
+	# the thread's own state (poll lag) so it is left out. day_gain/night_gain
+	# are T_FLT in config.c and are probed as such. The keys of earlier
+	# engines (probe_*, ir_ratio_*, boot_probe ...) are retired: a POST of one
+	# is ignored, so they are not probed. ---
 	lv_section daynight '{"daynight":' '}' daynight \
 		"day_gain flt 100 900" \
 		"night_gain flt 2000 8000" \
-		"day_confirm_s int 1 120" "boot_probe int 0 1" \
-		"probe_min_gap_s int 60 3600" "probe_confirm_s int 1 120" \
+		"day_confirm_s int 1 120" "jump_pct int 5 70" \
 		"heartbeat_s int 300 86400" "heartbeat_max_s int 300 604800" \
 		"sun_sunrise_offset_min int -1440 1440" \
 		"sun_sunset_offset_min int -1440 1440"
-
-	# --- daynight fixed constants (2026-08-22 consolidation): read-only, and
-	# GET /control must report the compiled DN_* value for each. control.c
-	# prints these straight from the daynight.h constants, so this catches the
-	# one way they can still go wrong - a value edited in the header without
-	# the status/config-warning side following it, or the reverse. Floats come
-	# through "%g", hence "2" and not "2.0". ---
-	dn_const() {   # <key> <expected>
-		dnc_n=$((dnc_n+1))
-		local got; got=$(jget "$LV_BASE" "daynight.$1")
-		if [ "$got" = "$2" ]; then dnc_ok=$((dnc_ok+1))
-		else bad "daynight.$1: status reports '$got', want the fixed constant '$2' (DN_* in daynight.h vs control.c drift, or the key vanished from the status object)"; fi
-	}
-	dnc_ok=0; dnc_n=0
-	dn_const probe_jump_pct  50
-	dn_const probe_settle_s  8
-	dn_const ref_delay_s     30
-	dn_const ir_ratio_night  2
-	dn_const ir_ratio_day    2
-	dn_const ir_min_headroom 8
-	dn_const boot_settle_s   5
-	dn_const transition_s    5
-	[ "$dnc_ok" = "$dnc_n" ] && ok "daynight fixed constants: all $dnc_n report their compiled DN_* value (50/8/30/2/2/8/5/5) - not per-camera settable since 2026-08-22"
 
 	# --- daynight TIME/SUN path (F-08): the mode enum + the string/float keys the
 	# time/sun modes use. None fit the generic lv_section round-trip - "mode" is
@@ -3262,7 +3227,7 @@ else
 	}
 	ov_clamp_test image      '{"image":'    '}' image      brightness       -99      0
 	ov_clamp_test image      '{"image":'    '}' image      brightness       9999     255
-	ov_clamp_test daynight   '{"daynight":' '}' daynight   probe_min_gap_s  1        60
+	ov_clamp_test daynight   '{"daynight":' '}' daynight   jump_pct         1        5
 	ov_clamp_test daynight   '{"daynight":' '}' daynight   heartbeat_max_s  99999999 604800
 
 	# --- video/sensor persist-first sanity: whatever the platform can or cannot
@@ -4491,8 +4456,8 @@ else
 		# falls through to the return 1 below instead of a false pass.
 		for i in $(seq 1 15); do
 			# Stamp when the fresh daemon first answered. Every restart hands
-			# daynight.c a boot that runs its own probe (boot_probe=1 by
-			# default), and that probe drives the picture through a transient
+			# daynight.c a boot that runs its own check, and that check drives
+			# the picture through a transient
 			# no later section may mistake for a fault - see DN_BOOT_WINDOW_S
 			# and its use in 8f.
 			[ "$(curlq 3 -o /dev/null -w '%{http_code}' "$(http_base)/control")" = "200" ] \
@@ -5111,7 +5076,7 @@ else
 	TESTED_motion="sensitivity monitor_stream enabled hold_ms skip_frames"
 	TESTED_record="segment_s pre_roll_s post_roll_s min_free_mb audio name dir"
 	TESTED_timelapse="interval_s keep_days name dir"
-	TESTED_daynight="day_gain night_gain day_confirm_s boot_probe probe_min_gap_s probe_confirm_s heartbeat_s heartbeat_max_s sun_sunrise_offset_min sun_sunset_offset_min time_night_start time_day_start sun_latitude sun_longitude history_s"
+	TESTED_daynight="day_gain night_gain day_confirm_s jump_pct heartbeat_s heartbeat_max_s sun_sunrise_offset_min sun_sunset_offset_min time_night_start time_day_start sun_latitude sun_longitude history_s"
 	TESTED_video="bitrate rotation rc_mode qp min_qp max_qp quality_lvl change_pos i_bias_lvl fluc_lvl gop max_gop profile"
 	TESTED_privacy="enabled x y w h color"
 	TESTED_roi=""
@@ -5147,7 +5112,7 @@ else
 	# they must be a documented exclusion, not eight drift warnings and not a
 	# stale "tested" claim for a probe 8b no longer contains. Their read-only
 	# assertion lives in 8b next to the daynight lv_section call.
-	ALLOW_daynight="enabled interval_ms diagnose_thresholds probe_jump_pct probe_settle_s ref_delay_s ir_ratio_night ir_ratio_day ir_min_headroom boot_settle_s transition_s learn ir_idle_off ir_idle_linger_s"   # enabled reflects the detection thread's own state (poll lag), not a value to force; interval_ms/diagnose_thresholds change timing or logging rather than a readable decision value; ir_idle_*: Idle-Dark switches the illuminator off while nobody watches and a QA client is itself a consumer, so a round-trip proves nothing (make test-dn-idle and dn-replay 39-54 cover it); the rest are the 2026-08-22 constants (plus the retired learn), settable only on older firmware
+	ALLOW_daynight="enabled interval_ms ir_idle_off ir_idle_linger_s"   # enabled reflects the detection thread's own state (poll lag), not a value to force; interval_ms changes timing rather than a readable decision value; ir_idle_*: Idle-Dark switches the illuminator off while nobody watches and a QA client is itself a consumer, so a round-trip proves nothing (make test-dn-replay, family idle, covers it)
 	# video: the exclusion used to be the WHOLE encoder block, justified as
 	# "geometry/codec/identity/routing changes carry restart-crash or
 	# active-session-disruption risk beyond a plain config round-trip". That
@@ -5499,9 +5464,9 @@ else
 	FL_MIN_SPREAD=12
 	fl_flat() { [ -n "$1" ] && [ "$1" -lt "$FL_MIN_SPREAD" ]; }
 
-	# --- do not measure inside a boot-probe transient ----------------------
+	# --- do not measure inside a boot-check transient ----------------------
 	# 8b's rotation and encoder sub-tests restart the daemon, and every restart
-	# makes daynight.c run its boot probe (boot_probe=1 by default): it drives
+	# makes daynight.c run its boot check: it drives
 	# the camera into the day pipeline with our own illuminator OFF, which in a
 	# dark room is a black picture for the length of DN_BOOT_WINDOW_S. On
 	# 2026-09-02 8f started 4s after 8g's restore-restart returned, both flip

@@ -1,0 +1,22 @@
+{
+ "name": "t23",
+ "camera": "Galayou Y4, T23 (boot defect: AE hard-railed)",
+ "map": {
+  "kind": "bare"
+ },
+ "scenes": {
+  "railed": {
+   "day": 109328,
+   "lit": 262144,
+   "dark": 262144,
+   "railed": true,
+   "src": "scenario 24 (2026-08-21)"
+  },
+  "day": {
+   "day": 700,
+   "lit": 500,
+   "dark": 650,
+   "src": "scenario 24"
+  }
+ }
+}

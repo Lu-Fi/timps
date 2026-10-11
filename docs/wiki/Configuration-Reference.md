@@ -557,6 +557,11 @@ raise the threshold far enough for the cameras that actually needed it —
 `diagnose_thresholds` below is what is left: it names the value to raise by
 hand instead of trying to raise it automatically.
 
+**Retired in v1.10.1** (the simple engine, `dev_notes/dn-redesign.md`;
+parsed, ignored, warned about once): `probe_min_gap_s`, `probe_confirm_s`,
+`boot_probe`, `diagnose_thresholds`, and the eight constants below, which are
+no longer echoed in `GET /control`.
+
 **Fixed 2026-08-22** (config consolidation — no longer settable, but *not*
 removed: each became a `DN_*` constant in `src/daynight.h` and keeps working
 exactly as its old default did): `probe_jump_pct`, `probe_settle_s`,
@@ -564,8 +569,7 @@ exactly as its old default did): `probe_jump_pct`, `probe_settle_s`,
 `boot_settle_s`, `transition_s`. A camera whose config file still sets one of
 these to something other than its fixed value gets one warning naming the
 value now in effect; setting it to the value it already defaulted to is
-silent. All eight are still visible read-only in `GET /control` for
-diagnostics.
+silent.
 
 | Key | Type | Default | Range | Live? | Description |
 | --- | --- | --- | --- | --- | --- |
@@ -579,14 +583,11 @@ diagnostics.
 | `daynight.sun_sunset_offset_min` | int | 0 | -1440–1440 | **Live** | Minutes added to computed sunset. |
 | `daynight.day_gain` | float | 768 | 1–1,000,000 | **Live** | Exposure index below which the **day pipeline** confirms day. 768 = 3× gain: "day is confirmed when the day pipeline can hold the scene at ≤3×". Alias: `total_gain_day_threshold`. |
 | `daynight.night_gain` | float | 4096 | 1–1,000,000 | **Live** | Exposure index above which day ends. 4096 = 16×, "colour is hopeless". Alias: `total_gain_night_threshold`. |
+| `daynight.jump_pct` | int | 20 | 5–70 | **Live** | **since v1.10.1.** At night: the illuminator-lit level this far below the last look for 20 s starts a look at once (new light). |
 | `daynight.day_confirm_s` | int | 30 | 1–3600 | **Live** | How long the index must stay above `night_gain` before day→night. |
-| `daynight.probe_min_gap_s` | int | 600 | 60–86400 | **Live** | Minimum seconds between probes. **This is the only thing rationing the audible IR-cut click**, so the worst-case click rate is a property of the config rather than of interacting heuristics. |
-| `daynight.probe_confirm_s` | int | 15 | 1–3600 | **Live** | …and stays there this long. Long enough to reject headlights, short enough that "light on → colour" is about `probe_confirm_s` + the fixed probe settle time. |
 | `daynight.heartbeat_s` | int | 14400 (4h) | 300–604800 | **Live** | Probe interval while the scene is moving, independent of any reading. Deliberately flat, never doubling: this is the only bound on how long a wrong night can last. |
 | `daynight.heartbeat_max_s` | int | 43200 (12h) | 300–604800 | **Live** | Interval once the scene has demonstrably not moved since the last probe (nothing new to spend a click on) — and the hard ceiling on the deferral. Only applied while the spontaneous trigger can actually see. |
-| `daynight.boot_probe` | int | 1 | 0/1 | **Live** | `1` = boot **measures** before it decides: one probe into the day pipeline, read against `day_gain`, regardless of what was persisted. `0` = adopt the persisted mode without measuring. Either way boot asserts the mode it ends up with on the board exactly once (`switch_cmd`), so a reboot can no longer leave the IR-cut filter and the LEDs in the other mode. Cost: one `switch_cmd` call when the answer is day, two when it is night; on a board that comes up in its reset (day) position the first moves nothing. |
 | `daynight.interval_ms` | int | 2000 | 100–60000 | **Live** | Sample interval. 2 s, not the pre-2026-08-17 500 ms: the exposure index needs the `/proc` scrape every tick and no confirmation window is shorter than 8 s. |
-| `daynight.diagnose_thresholds` | int | 0 | 0/1 | **Live** | Warn once per daemon session — after three consecutive failed probes — when no probe has ever confirmed day and the best day-pipeline reading is still clear of `day_gain`. |
 | `daynight.ir_idle_off` | int | 0 | 0/1 | **Live** | **Since v1.10.0.** Idle-Dark: at night, once no picture consumer has been there for `ir_idle_linger_s`, switch only the IR LED off (IR-cut and ISP stay in night) and decide at the next consumer from the reading taken meanwhile. Needs the FrameSource keepalive (`general.fs_keepalive`, auto on OpenIMP T23/T41), auto mode and a `timps-irprobe` with the `idle`/`state` verbs. Off by default: with 850 nm LEDs the glow going out shows that nobody watches. Status `daynight.ir_idle`; see [Day/Night](Day-Night.md#idle-dark-ir-led-off-while-nobody-watches). |
 | `daynight.ir_idle_linger_s` | int | 60 | 0–3600 | **Live** | **Since v1.10.0.** How long after the last picture consumer the IR LED may go off. A poll slower than this costs one LED on/off pair and one held snapshot per poll; keep it longer than `timelapse.interval_s` (at 60/60 every shot can light the LED once). |
 | `daynight.history_s` | int | 0 (off) | 0–172800 (48h) | **Live** | Seconds of decision history kept in RAM for the WebUI tuning graph, served by `GET /control?dn_history=1`; `0` = off, and at `0` nothing is allocated at all. One 16-byte sample per 10 s, allocated on first push and resized in place when this changes, so 4 h costs 22.5 KB and the 48 h ceiling 270 KB. Anything above the ceiling is clamped (the POST response echoes the clamped value, and the daemon logs the effective size). Opt-in and decoupled from the tuning page's lifetime: the page's "collect in background" switch is the only thing that POSTs it, and it persists like any other key, so an explicit opt-in survives a reboot. With it off the page collects live into the tab over SSE instead; with it on the daemon owns the series, which is what lets the graph show the hours no tab was open (the WebUI is plain HTTP and therefore has no Service Worker to collect with). |

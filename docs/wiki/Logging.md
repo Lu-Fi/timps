@@ -70,7 +70,7 @@ a row.
 
 | module | source | err | warn | info | debug | what its debug output adds |
 |---|---|---:|---:|---:|---:|---|
-| `DAYNIGHT` | `daynight.c` | 1 | 25 | 21 | 15 | every probe: ratio verdict and its branch, the structured `probe: r=… lit=… dark=… hr=… verdict=…` line, exposure vs night reference, illuminator-off readings, ISP readback confirmations |
+| `DAYNIGHT` | `daynight.c` | — | — | — | — | **since v1.10.1** (the counts are of the earlier engine): every look, `look (<why>): lit … dark … bar … -> check\|night` |
 | `HAL_ING` | `hal/hal_ingenic.c` | 44 | 77 | 48 | 10 | encoder/framesource internals, polling and teardown detail, the sensor-fps requested-vs-held readback (`sensor fps: requested N, driver holds n/d, set rc=R`) |
 | `CTRL` | `control.c` | 0 | 4 | 3 | 5 | request/field handling on `/control` |
 | `OSD` | `hal/imp_osd.c` | 4 | 8 | 6 | 3 | overlay placement and region updates |
@@ -117,7 +117,7 @@ its decisions at INFO — you get the switches and the reference changes, but
 not the per-probe numbers the analysis scripts read.
 
 This is deliberate, but the point is *readability*, not bandwidth: at the
-default cadence (`probe_min_gap_s = 600`, `heartbeat_s = 14400`) the demoted
+default cadence (a look every 45 min, `heartbeat_max_s = 43200`) the demoted
 lines amount to a few dozen a day, and a camera that sets `debug_modules`
 ships exactly as many bytes as before the change. On a collector, the bulk of
 the day/night-related traffic is elsewhere entirely — `crond`'s once-a-minute

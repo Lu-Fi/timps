@@ -6,6 +6,20 @@ replacing thingino's separate `daynightd` daemon. Built with
 stub functions report `enabled=0` and fall back to whatever
 `image.running_mode` currently holds.
 
+
+> **Since v1.10.1 the decision engine is new** (`dev_notes/dn-redesign.md`,
+> `docs/ai/config-keys.md` §14). Day→night: the day pipeline above
+> `night_gain` or the AE at its limit for `day_confirm_s` (6 s when very
+> dark). Night: a **look** (IR illuminator off 8 s, silent) every 45 min or
+> when the lit level falls `jump_pct` (20 %) below the last look; a **check**
+> (day pipeline, one click) when the look reads below the bar; failed checks
+> lock out for 1, 2, 4 … min; a check anyway after `heartbeat_max_s` (12 h).
+> Retired: `probe_min_gap_s`, `probe_confirm_s`, `boot_probe`,
+> `diagnose_thresholds`, the IR-ratio verdict, the trend trigger, the night
+> reference ratchet and its vetoes. The sections below that describe probes,
+> the ratio and the heartbeat describe v1.10.0 and earlier; Idle-Dark,
+> `switch_cmd`, the hooks and the calendar still apply.
+
 ## What timps does — and does not — control directly
 
 A single background thread (`dn_thread`) decides day vs. night and, on a

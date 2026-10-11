@@ -20,7 +20,6 @@
 extern int dn_sun_times_test(float lat, float lon, time_t now,
                               time_t *sr, time_t *ss);
 extern int dn_cal_target_test(const ms_daynight_cfg *dn, time_t wall);
-extern int64_t dn_hb_next_test(const ms_daynight_cfg *dn, int64_t now, time_t wall);
 
 static int g_fail;
 
@@ -88,18 +87,6 @@ int main(void)
         if (t != 0) { fprintf(stderr, "FAIL equal edges + location gave %d, want day (sun)\n", t); g_fail = 1; }
         else printf("ok equal time edges fall through to the sun calendar\n");
     }
-    /* every heartbeat re-arm is pulled in to the calendar's dawn */
-    {
-        setenv("TZ", "UTC", 1); tzset();
-        ms_daynight_cfg dn; memset(&dn, 0, sizeof dn);
-        snprintf(dn.time_night_start, sizeof dn.time_night_start, "22:00");
-        snprintf(dn.time_day_start, sizeof dn.time_day_start, "06:00");
-        dn.heartbeat_s = 4 * 3600;
-        int64_t hb = dn_hb_next_test(&dn, 1000, 1782104400);   /* 05:00 UTC */
-        if (hb != 1000 + 3600 * 1000LL) { fprintf(stderr, "FAIL heartbeat at +%llds, want dawn +3600s\n", (long long)(hb - 1000) / 1000); g_fail = 1; }
-        else printf("ok heartbeat pulled in to the 06:00 day edge\n");
-    }
-
     if (g_fail) { fprintf(stderr, "FAILED\n"); return 1; }
     printf("all daynight sun tests passed\n");
     return 0;

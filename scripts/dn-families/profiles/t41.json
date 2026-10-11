@@ -1,0 +1,20 @@
+{
+ "name": "t41",
+ "camera": "Vanhua T55A, T41/GC5603, open-tx-isp",
+ "harness": {
+  "t41_dump": true,
+  "ae_cap_gain": 8192
+ },
+ "map": {
+  "kind": "bare"
+ },
+ "scenes": {
+  "dark": {
+   "day": 8192,
+   "lit": 8192,
+   "dark": 8192,
+   "railed": true,
+   "src": "scenario 37 (2026-10-05): AE railed at its 32x cap in every optical state"
+  }
+ }
+}
