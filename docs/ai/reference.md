@@ -608,6 +608,7 @@ cap — see the POST limits below.)
 | `motion` | `active[]`, `last_ms`, `max_cells`, plus the echoed grid config | **`active[]` is row-major**: index = `row * cols + col`, length `cols * rows`. **`last_ms = -1` means "never"**, not "just now". `max_cells` is the SDK budget, the same number as `caps.motion.max_cells`. With OpenIMP motion v2 (a `USE_OPENIMP` build whose libimp exports `OpenIMP_IVS_MoveGetResultEx`) three more keys appear while its analysis runs: `v2`:1, `suppress` (hold-off reasons: 1 day/night, 2 gain jump, 4 brightness jump, 0 none) and `objects` = `[{id,x0,y0,x1,y1,strength,age}]` in pixels of the monitored stream (strength 0..1000). |
 | `daynight` | `mode` (**int** 0 = day / 1 = night) *and* `dn_mode` (**string**), `brightness` (%), `total_gain`, `exposure`, `ae_luma`, `night_baseline`, `day_trigger`, `sun_computed_sunrise`, `sun_computed_sunset`, … | `total_gain` is the IMP `[24.8]` linear scale (**256 = 1.0×**). **`exposure` is the value the decision actually runs on** — `total_gain` scaled by the AE integration-time ratio, so it equals `total_gain` in a dark scene and drops far below it in a bright one. Quote `exposure`, not `total_gain`, when answering a day/night question; `total_gain` is kept for continuity with existing pages. `night_baseline`/`day_trigger` are `-1` outside night. `sun_computed_*` read `"--:--"` where the sun does not rise or set (polar latitudes). The object also echoes the **frozen internal constants** (`ir_ratio_night`, `ir_ratio_day`, `probe_settle_s`, `ref_delay_s`, `ir_min_headroom`, `boot_settle_s`, `transition_s`, `probe_jump_pct`) — readable, **not settable**. |
 | `last_errors` | `{"<MOD>": {"level","age_s","count","msg"}}` | One entry per module that has logged, with the most recent message and how many times it repeated. Useful once the 64 KB syslog ring has recycled. On v1.9.27 an entry captured before NTP sync shows an `age_s` of ~56 years; **since v1.9.28** ages are monotonic. |
+| `video.<N>.rotation_state` | int | **Since v1.10.1**, `USE_ROTATE` builds. `0` = stream runs as configured at the last start; else the `2xx` code why it runs unrotated (table in [`error-codes.md`](error-codes.md)). Refers to the running pipeline, not to a POSTed-but-not-restarted rotation. |
 | `osd<S>.<N>.type` | `"text"` or `"logo"` | Read back as a **word**, unlike `record.mode` and `audio.backchannel_codec`, which read back as numbers. |
 
 ### The `caps` object — capability announcement
@@ -619,6 +620,7 @@ differently-compiled binaries.
 
 | `caps` field | Meaning |
 | --- | --- |
+| `caps.err_v` | **Since v1.10.1.** Version of the numeric error-code table ([`error-codes.md`](error-codes.md)), currently `1` |
 | `caps.image[]` | The `image.*` keys this SoC actually supports. **Since v1.10.0** an OpenIMP-only key whose setter the running libimp does not export is left out (see §11, mixed installs) |
 | `caps.audio[]` | The `audio.*` keys this build/SoC supports |
 | `caps.osd[]` | The OSD item fields that apply **live** (`text,x,y,font_size,color,transparency,outline,outline_color`) |
@@ -722,6 +724,12 @@ Response body (same shape whatever the status):
 - `ignored` — key names this build did not apply (typo, wrong section, gated
   out, or no write path). Fully prefixed, e.g. `"video1.quality_level"`.
 - `applied` — echo of the **effective** value after clamping.
+- `errors` (**since v1.10.1**) — `{"<key>":<code>}`, **present only when
+  non-empty**: a numeric reason per key that was refused (`101`), unknown
+  (`102`), file-only (`103`), absent on this SoC (`104`), or a
+  `videoN.rotation` this build cannot apply (`201`) or the next start would
+  refuse (`202`..`206`; stored anyway). `errors_truncated: true` = list
+  short. Full table with fixes: [`error-codes.md`](error-codes.md).
 - `truncated` / `deferred_truncated` / `ignored_truncated` — present and `true`
   when the matching list overran its buffer (`applied` 512 B, `deferred_keys`
   1024 B, `ignored` 512 B). **The counts stay exact; only the lists are
@@ -1318,6 +1326,14 @@ the kernel log and escalate.
   is downscaled from the sensor.
 - Rotation is restart-required; the advertised dimensions swap
   (`eff_width`/`eff_height` in `GET /control`).
+- **Since v1.10.1** the refusal is visible without the log:
+  `GET /control` → `video.<N>.rotation_state` is the reason code a stream
+  runs unrotated since the last start (`0` = as configured), and a POST that
+  touches a stream's rotation or geometry answers
+  `"errors":{"videoN.rotation":<code>}` when the next start would refuse it.
+  Codes and fixes: [`error-codes.md`](error-codes.md) (203 = not aligned,
+  204 = too large, 205 = fps, 202 = main stream on T10/T20/T21, 206 = OpenIMP
+  cannot rotate).
 
 ### ROI and crop/zoom problems (since v1.10.0)
 

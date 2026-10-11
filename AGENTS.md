@@ -12,6 +12,8 @@ If you are answering a user's question about timps, read in this order:
 2. [`docs/ai/config-keys.md`](docs/ai/config-keys.md) - every configuration key:
    type, default, range, whether it applies live, needs a restart or is
    file-only, per-SoC limits, pitfalls. Includes the firmware Kconfig symbols.
+   [`docs/ai/error-codes.md`](docs/ai/error-codes.md) - the numeric codes in
+   `/control` answers (`errors`, `rotation_state`) and how to fix each.
 3. [`docs/wiki/`](docs/wiki/Home.md) - the human-oriented wiki. Where it
    disagrees with `docs/ai/config-keys.md` on a default or an apply mode,
    trust `config-keys.md` (checked against `src/config.c`).

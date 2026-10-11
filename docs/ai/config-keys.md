@@ -629,7 +629,10 @@ hit this — T10, T20 and T23 coerce `codec` to `h264` at parse time.
   `refusing FS-rotate ...` warning (on T10/T20/T21 also when the OpenIMP cannot
   rotate, see above); `videoN.rotation` keeps the configured
   value, and `GET /control` shows the running geometry in
-  `videoN.eff_width`/`eff_height` (unswapped).
+  `videoN.eff_width`/`eff_height` (unswapped). **Since v1.10.1**
+  `video.<N>.rotation_state` carries the reason as a code, and a POST that
+  would be refused at the next start says so in
+  `"errors":{"videoN.rotation":<code>}` ([`error-codes.md`](error-codes.md)).
 * **`180` is not a rotation on most SoCs.** On every classic-API SoC it was only
   a global ISP Hflip+Vflip, falsely modelled as per-stream, and was removed —
   it coerces to `0` with a log line telling you to use

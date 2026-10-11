@@ -27,6 +27,14 @@ _1.10.1 (draft)_
   v2026.10.11-rc1), `unsupported` with an older libimp (it drops the regions
   silently) or with `OPENIMP_T23_ROI=0`. Same `SetChnROI` path as T21,
   `qp_delta_eff` -12..13. Vendor T23 stays `unsupported`.
+- `/control` error codes: a POST reply carries `"errors":{"<key>":<code>}`
+  when a key was refused (101), unknown (102), file-only (103), absent on
+  the SoC (104), or a `videoN.rotation` cannot be applied (201) or would be
+  refused at the next start (202 main stream, 203 alignment, 204 size,
+  205 fps, 206 OpenIMP cannot rotate). `GET /control` gains
+  `video.<N>.rotation_state` (why a stream runs unrotated since the last
+  start, until now only a log line) and `caps.err_v`. Table and fixes:
+  `docs/ai/error-codes.md`.
 
 ### Changed
 
