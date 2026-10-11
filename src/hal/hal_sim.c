@@ -14,6 +14,7 @@
 #include "../daynight.h"     /* daynight_watch_kick (TIMPS_SIM_WATCH fixture) */
 #include "roi_geom.h"
 #include "../roi_caps.h"
+#include "fs_rot_env.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -240,6 +241,25 @@ static void *watch_thread(void *arg)
     return NULL;
 }
 
+/* -DSIM_ROT_ENV=FS_ROT_ENV_T1X makes the sim refuse rotations like that SoC */
+static short g_rot_st[MS_MAX_VSTREAM];
+int hal_rot_check(int si, const ms_vstream_cfg *v)
+{
+    (void)si;
+#ifdef SIM_ROT_ENV
+    static const fs_rot_env e = SIM_ROT_ENV;
+    if (v->rotation == 90 || v->rotation == 270)
+        return fs_rot_check(&e, v->imp_chn, v->width, v->height, v->fps);
+#else
+    (void)v;
+#endif
+    return 0;
+}
+int hal_rot_state(int si)
+{
+    return (si >= 0 && si < MS_MAX_VSTREAM) ? g_rot_st[si] : 0;
+}
+
 static int g_sim_keepalive;
 static int sim_start(const ms_config *cfg)
 {
@@ -250,14 +270,18 @@ static int sim_start(const ms_config *cfg)
             g_watch_run = 0;
     }
     g_nvid=0; g_njpg=0; g_epoch=ms_now_us();
+    memset(g_rot_st, 0, sizeof g_rot_st);
     for (int i=0;i<MS_MAX_VSTREAM;i++){
         if (!cfg->video[i].enabled) continue;
+        ms_vstream_cfg lv = cfg->video[i];
+        g_rot_st[i] = (short)hal_rot_check(i, &lv);
+        if (g_rot_st[i]) lv.rotation = 0;
         const char *path = (i==0)?cfg->sim_video0:cfg->sim_video1;
         if (!path[0]) { LOGW(MOD,"sim.video%d not set, skipping",i); continue; }
         sim_vid *v=&g_vid[g_nvid];
         v->src=i; v->chn=i; v->fps=cfg->video[i].fps; v->codec=cfg->video[i].codec;
         strncpy(v->path,path,sizeof v->path-1);
-        int ew, eh; ms_vstream_eff_dims(&cfg->video[i], &ew, &eh);
+        int ew, eh; ms_vstream_eff_dims(&lv, &ew, &eh);
         hub_set_video_params(i,cfg->video[i].codec,ew,eh,cfg->video[i].fps);
         v->run=1; v->active=0;
         /* Found by review: g_nvid used to be incremented unconditionally

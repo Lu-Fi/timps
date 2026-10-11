@@ -120,6 +120,12 @@ typedef struct {
 } hal_fcrop_lim;
 void hal_fcrop_limits(hal_fcrop_lim *o);
 
+/* Rotation refusals as ERR_ROT_* (err_codes.h), 0 = none. hal_rot_state: why
+ * stream si runs unrotated against its request since the last start.
+ * hal_rot_check: what the next start would refuse for v. */
+int hal_rot_state(int si);
+int hal_rot_check(int si, const ms_vstream_cfg *v);
+
 /* 1 when image.<key> is built in but this libimp lacks its (weak, OpenIMP-only)
  * setter. Defined only where isp_caps.h sets ISP_WEAK_KEYS. */
 int hal_isp_key_missing(const char *key);

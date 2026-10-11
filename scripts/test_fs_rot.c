@@ -1,6 +1,8 @@
-/* test_fs_rot.c - host-only test for the FrameSource-rotate safe envelope
- * and the T1x SetChnRotate verification (src/hal/fs_rot_env.h), the decisions
- * fs_create() turns into an UNROTATED fallback. Build/run: make test-fs-rot */
+/* test_fs_rot.c - host-only test for the FrameSource-rotate safe envelope,
+ * the T23 software-rotate envelope and the T1x SetChnRotate verification
+ * (src/hal/fs_rot_env.h): the decisions fs_create()/sw_rot_start() turn into
+ * an UNROTATED fallback, and the ERR_ROT_* code /control reports for them.
+ * Build/run: make test-fs-rot */
 #include <stdio.h>
 #include "hal/fs_rot_env.h"
 
@@ -15,6 +17,16 @@ static void ck(const char *soc, const fs_rot_env *e, int chn, int w, int h,
         failures++;
         printf("  FAIL %s chn%d %dx%d@%d: got %d, want %d\n",
                soc, chn, w, h, fps, got, want);
+    }
+}
+
+static void sw(int ew, int eh, int fps, int want)
+{
+    int got = sw_rot_check(ew, eh, fps);
+    checks++;
+    if (got != want) {
+        failures++;
+        printf("  FAIL T23 sw %dx%d@%d: got %d, want %d\n", ew, eh, fps, got, want);
     }
 }
 
@@ -63,22 +75,41 @@ int main(void)
 {
     const fs_rot_env t31 = FS_ROT_ENV_T31, t1x = FS_ROT_ENV_T1X;
 
-    ck("T1x", &t1x, 1, 640, 368, 15, FS_ROT_OK);
-    ck("T1x", &t1x, 1, 640, 360, 15, FS_ROT_REFUSE_ALIGN);
-    ck("T1x", &t1x, 1, 704, 576, 15, FS_ROT_OK);
-    ck("T1x", &t1x, 1, 704, 576, 30, FS_ROT_OK);          /* no fps cap */
-    ck("T1x", &t1x, 1, 720, 576, 15, FS_ROT_REFUSE_SIZE);
-    ck("T1x", &t1x, 1, 1280, 720, 15, FS_ROT_REFUSE_SIZE);
-    ck("T1x", &t1x, 0, 640, 368, 15, FS_ROT_REFUSE_MAIN);
-    ck("T1x", &t1x, 0, 1920, 1080, 25, FS_ROT_REFUSE_MAIN);
-    ck("T1x", &t1x, 2, 368, 640, 15, FS_ROT_OK);
+    ck("T1x", &t1x, 1, 640, 368, 15, ERR_OK);
+    ck("T1x", &t1x, 1, 640, 360, 15, ERR_ROT_ALIGN);
+    ck("T1x", &t1x, 1, 704, 576, 15, ERR_OK);
+    ck("T1x", &t1x, 1, 704, 576, 30, ERR_OK);          /* no fps cap */
+    ck("T1x", &t1x, 1, 720, 576, 15, ERR_ROT_SIZE);
+    ck("T1x", &t1x, 1, 1280, 720, 15, ERR_ROT_SIZE);
+    ck("T1x", &t1x, 0, 640, 368, 15, ERR_ROT_MAIN);
+    ck("T1x", &t1x, 0, 1920, 1080, 25, ERR_ROT_MAIN);
+    ck("T1x", &t1x, 2, 368, 640, 15, ERR_OK);
 
-    ck("T31", &t31, 0, 1280, 704, 15, FS_ROT_OK);         /* main allowed */
-    ck("T31", &t31, 1, 640, 384, 15, FS_ROT_OK);
-    ck("T31", &t31, 0, 1920, 1088, 15, FS_ROT_REFUSE_SIZE);
-    ck("T31", &t31, 0, 1920, 1080, 25, FS_ROT_REFUSE_ALIGN);
-    ck("T31", &t31, 1, 640, 368, 15, FS_ROT_REFUSE_ALIGN);
-    ck("T31", &t31, 1, 1280, 704, 20, FS_ROT_REFUSE_SIZE);
+    ck("T31", &t31, 0, 1280, 704, 15, ERR_OK);         /* main allowed */
+    ck("T31", &t31, 1, 640, 384, 15, ERR_OK);
+    ck("T31", &t31, 0, 1920, 1088, 15, ERR_ROT_SIZE);
+    ck("T31", &t31, 0, 1920, 1080, 25, ERR_ROT_ALIGN);
+    ck("T31", &t31, 1, 640, 368, 15, ERR_ROT_ALIGN);
+    ck("T31", &t31, 1, 1280, 704, 20, ERR_ROT_FPS);
+    ck("T31", &t31, 1, 1920, 1088, 25, ERR_ROT_SIZE);     /* size before fps */
+
+    /* post-rotation dims */
+    sw(576, 704, 15, ERR_OK);
+    sw(368, 640, 15, ERR_OK);
+    sw(360, 640, 15, ERR_ROT_ALIGN);
+    sw(240, 320, 15, ERR_ROT_SMALL);
+    sw(720, 1280, 15, ERR_ROT_SIZE);
+    sw(576, 704, 20, ERR_ROT_FPS);
+    sw(720, 1280, 25, ERR_ROT_SIZE);
+
+    /* the codes are the documented, stable /control numbers */
+    checks++;
+    if (ERR_ROT_UNSUPPORTED != 201 || ERR_ROT_MAIN != 202 || ERR_ROT_ALIGN != 203 ||
+        ERR_ROT_SIZE != 204 || ERR_ROT_FPS != 205 || ERR_ROT_LIB != 206 ||
+        ERR_ROT_REFUSED != 207 || ERR_ROT_SMALL != 208) {
+        failures++;
+        printf("  FAIL ERR_ROT_* numbering changed\n");
+    }
 
     cs("no symbol", NULL, 1, 1, 640, 368, FS_ROT_SET_MISSING, -1);
     /* the stub is left at rotation 0 */

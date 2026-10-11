@@ -21,6 +21,7 @@
 #include "imp_osd.h"
 #include "imp_motion.h"
 #include "fs_ref.h"
+#include "fs_rot_env.h"
 #include "../rtsp/speaker.h"   /* speaker_set_volume/gain (spk_* live apply) */
 #ifdef ROT_HAS_SW_90
 /* Batch 5 (T23 + USE_SW_ROTATE=1 only): software 90/270 rotate + unbound
@@ -735,8 +736,8 @@ static pthread_mutex_t g_motion_mtx = PTHREAD_MUTEX_INITIALIZER;
 static int g_motion_pin = -1;    /* pinned FS channel while motion runs */
 /* Per-stream rotation ACTUALLY applied at bring-up, as opposed to the
  * requested videoN.rotation. The two differ exactly when a 90/270 request was
- * REFUSED by a rotation safe-envelope check in ing_start (T23 sw_rot_start
- * SW_ROT_FALLBACK, T31 fs_create FS_ROT_FALLBACK) and the stream came up
+ * REFUSED by a rotation safe-envelope check in ing_start (T23 sw_rot_start,
+ * T31/T1x fs_create, both returning a positive ERR_ROT_*) and the stream came up
  * UNROTATED. That refusal decision exists only here in hal_ingenic.c;
  * motion_sync() uses this record to hand IVS an EFFECTIVE copy of the
  * monitored stream's config, so motion geometry always matches the frames
@@ -745,6 +746,8 @@ static int g_motion_pin = -1;    /* pinned FS channel while motion runs */
  * rotation is restart-only (control.c VID_REST), so the value recorded at
  * ing_start stays valid for every later live motion_sync() rebuild. */
 static int g_eff_rot[MS_MAX_VSTREAM];
+/* why g_eff_rot differs from the request (ERR_ROT_*, 0 = it does not) */
+static short g_rot_st[MS_MAX_VSTREAM];
 /* M2: set by ing_control() when a motion.* key or a monitored-stream privacy
  * key changes during a /control request; ing_control_commit() (called once per
  * request via hub_control_commit) does the single motion_sync() rebuild. */
@@ -2421,7 +2424,6 @@ static int isp_init(void)
  * multi-stream pipeline and take the whole daemon down (reproduced live on
  * T31/sc4336p: a 1920x1080@25 rotate request the /control API had accepted
  * and persisted). T10/T20/T21 (OpenIMP only): CPU rotate, sub streams only. */
-#include "fs_rot_env.h"
 #if defined(PLATFORM_T31)
 static const fs_rot_env g_fs_rot_env = FS_ROT_ENV_T31;
 #else
@@ -2429,14 +2431,13 @@ static const fs_rot_env g_fs_rot_env = FS_ROT_ENV_T1X;
 /* Not in the vendor T1x headers; weak so a libimp without it refuses. */
 extern int ms_fs_set_rotate(int chn, int rot, int w, int h)
     __asm__("IMP_FrameSource_SetChnRotate") __attribute__((weak));
+/* a stub or missing SetChnRotate seen at start: no later geometry can rotate */
+static short g_rot_lib;
 #endif
-/* fs_create() return code: not success and not a hard failure, but "rotation
- * refused/failed for THIS stream - caller should bring it up UNROTATED". Kept
- * distinct from -1 (unrecoverable) so unrelated streams and this one (minus the
- * rotation) still come up instead of the whole pipeline aborting. Positive so
- * the shared `fs_create(...)!=0` call sites on other platforms still treat it as
- * an error there (it can only ever be returned under ROT_HAS_FS_ROTATE). */
-#define FS_ROT_FALLBACK 1
+/* fs_create() returns a positive ERR_ROT_* when it refused the rotation for
+ * THIS stream: not success and not a hard failure (-1), the caller brings the
+ * stream up UNROTATED so the rest of the pipeline still comes up. Positive so
+ * the shared `fs_create(...)!=0` call sites still treat it as an error. */
 #endif
 
 #if defined(PLATFORM_T31)
@@ -2578,20 +2579,22 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
         /* CAPS-GATE (Fix 1): refuse outside the envelope before any IMP
          * channel exists and let the caller bring this stream up UNROTATED. */
         const fs_rot_env *e = &g_fs_rot_env;
-        switch (fs_rot_check(e, chn, v->width, v->height, v->fps)){
-        case FS_ROT_REFUSE_MAIN:
+        int rc = fs_rot_check(e, chn, v->width, v->height, v->fps);
+        switch (rc){
+        case ERR_ROT_MAIN:
             LOGW(MOD,"video%d: FS-rotate refused on the main stream (sub "
                      "streams only) - UNROTATED", chn);
-            return FS_ROT_FALLBACK;
-        case FS_ROT_REFUSE_ALIGN:
+            return rc;
+        case ERR_ROT_ALIGN:
             LOGW(MOD,"video%d: refusing FS-rotate %dx%d not %d-aligned - stream "
                      "will run UNROTATED", chn, v->width, v->height, e->align);
-            return FS_ROT_FALLBACK;
-        case FS_ROT_REFUSE_SIZE:
+            return rc;
+        case ERR_ROT_SIZE:
+        case ERR_ROT_FPS:
             LOGW(MOD,"video%d: refusing FS-rotate %dx%d@%d exceeds FS-rotate cap "
                      "(%s) - stream will run UNROTATED",
                  chn, v->width, v->height, v->fps, e->why);
-            return FS_ROT_FALLBACK;
+            return rc;
         }
         /* Args are the PRE-rotation dims per header :575-576, run BEFORE
          * CreateChn (header :581).
@@ -2606,22 +2609,22 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
         if (IMP_FrameSource_SetChnRotate(chn, r90, v->width, v->height) < 0){
             LOGW(MOD,"video%d: FS-rotate enable (SetChnRotate) failed - disabling "
                      "rotation for this stream, bringing it up UNROTATED", chn);
-            return FS_ROT_FALLBACK;
+            return ERR_ROT_REFUSED;
         }
 #else
         switch (fs_rot_set(ms_fs_set_rotate, chn, r90, v->width, v->height)){
         case FS_ROT_SET_MISSING:
             LOGW(MOD,"video%d: libimp has no IMP_FrameSource_SetChnRotate "
                      "- UNROTATED (needs OpenIMP 6b7f5ae+)", chn);
-            return FS_ROT_FALLBACK;
+            return g_rot_lib = ERR_ROT_LIB;
         case FS_ROT_SET_STUB:
             LOGW(MOD,"video%d: SetChnRotate is an OpenIMP stub - UNROTATED "
                      "(needs OpenIMP 6b7f5ae+)", chn);
-            return FS_ROT_FALLBACK;
+            return g_rot_lib = ERR_ROT_LIB;
         case FS_ROT_SET_REFUSED:
             LOGW(MOD,"video%d: SetChnRotate refused %dx%d - UNROTATED (needs "
                      "OpenIMP 6b7f5ae+)", chn, v->width, v->height);
-            return FS_ROT_FALLBACK;
+            return ERR_ROT_REFUSED;
         }
 #endif
         /* CRUCIAL (T31 OSD-on-rotation fix, see docs/T31-OSD-rotation-handoff.md):
@@ -2651,6 +2654,30 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
         LOGW(MOD,"FS_SetI2dAttr %d failed (rotation may stay inactive)",chn);
 #endif
     return 0;
+}
+
+int hal_rot_state(int si)
+{
+    return (si >= 0 && si < MS_MAX_VSTREAM) ? g_rot_st[si] : 0;
+}
+
+/* what the next start would refuse; libimp-level refusals only once seen */
+int hal_rot_check(int si, const ms_vstream_cfg *v)
+{
+    (void)si;
+    if (v->rotation != 90 && v->rotation != 270) return 0;
+#if defined(ROT_HAS_FS_ROTATE)
+    int rc = fs_rot_check(&g_fs_rot_env, v->imp_chn, v->width, v->height, v->fps);
+#if !defined(PLATFORM_T31)
+    if (!rc) rc = ms_fs_set_rotate ? g_rot_lib : ERR_ROT_LIB;
+#endif
+    return rc;
+#elif defined(ROT_HAS_SW_90)
+    int ew, eh; ms_vstream_eff_dims(v, &ew, &eh);
+    return sw_rot_check(ew, eh, v->fps);
+#else
+    return 0;
+#endif
 }
 
 /* ================= encoder ================= */
@@ -4046,20 +4073,16 @@ static void sw_rot_teardown(vchan *vc)
     vc->sw_rot=0;
 }
 
-/* SDK-safe envelope for the single-core software rotate path (substream class).
- * Beyond this the per-frame NV12 transpose + software encode overwhelms the
- * lone MIPS core AND (observed on T23 libimp 1.3.0) IMP_Encoder_YuvInit itself
- * refuses the oversized geometry and fails - which used to abort the entire
- * multi-stream pipeline bring-up and take the whole daemon down. Both the
- * long-standing CPU-HEAVY warning and the enforcement below share these, so the
- * numbers cited in the warning text and the numbers actually enforced can never
- * drift apart. Values match that warning: <=704x576, <=15fps.
+/* SDK-safe envelope for the single-core software rotate path (substream class),
+ * sw_rot_check() in fs_rot_env.h. Beyond <=704x576 <=15fps the per-frame NV12
+ * transpose + software encode overwhelms the lone MIPS core AND (observed on
+ * T23 libimp 1.3.0) IMP_Encoder_YuvInit itself refuses the oversized geometry
+ * and fails - which used to abort the entire multi-stream pipeline bring-up and
+ * take the whole daemon down.
  * NOTE the fps half of this envelope only became real with the cadence gate in
  * sw_rot_thread: it gates on the CONFIGURED fps, and until that gate existed
- * the thread was handed - and processed - the full sensor rate regardless. */
-#define MS_SW_ROT_MAX_PIXELS (704L*576L)
-#define MS_SW_ROT_MAX_FPS    15
-/* Hardware geometry the T23 encoder demands of the ENCODED (post-rotation)
+ * the thread was handed - and processed - the full sensor rate regardless.
+ * Hardware geometry the T23 encoder demands of the ENCODED (post-rotation)
  * frame. IMPEncoderAttr (imp_encoder.h): picWidth "must be 16 aligned,
  * shouldn't less than 256"; picHeight ">= 16". IMP_Encoder_YuvInit feeds its
  * inWidth/inHeight straight into those fields, so a post-rotation width that is
@@ -4067,18 +4090,11 @@ static void sw_rot_teardown(vchan *vc)
  * geometry comfortably inside the CPU envelope above. Confirmed on real T23
  * hardware: a 640x360 substream rotated 90 -> 360x640 fails because 360 is not
  * 16-aligned, while the SAME stream unrotated (encoder width 640) is fine. */
-#define MS_SW_ROT_WIDTH_ALIGN 16
-#define MS_SW_ROT_MIN_WIDTH   256
-/* sw_rot_start return code: not success and not a hard failure, but "rotation
- * refused/failed for THIS stream - caller should bring it up UNROTATED". Kept
- * distinct from -1 (unrecoverable) so unrelated streams and this one (minus the
- * rotation) still come up instead of the whole pipeline aborting. */
-#define SW_ROT_FALLBACK 1
 
 /* bring up one 90/270 stream on the unbound SW-rotate path. On failure all
  * partial state is unwound here and no g_v slot is consumed (the caller's
  * generic fail path then only has to deal with fully-recorded slots).
- * Returns 0 on success, SW_ROT_FALLBACK (>0) when the caller should retry this
+ * Returns 0 on success, a positive ERR_ROT_* when the caller should retry this
  * stream unrotated, or -1 on an unrecoverable failure. */
 static int sw_rot_start(const ms_config *cfg, int i)
 {
@@ -4092,14 +4108,15 @@ static int sw_rot_start(const ms_config *cfg, int i)
      * then REFUSE the rotation (no IMP state has been created yet at this point)
      * and tell the caller to bring this stream up UNROTATED rather than march
      * into a YuvInit call known to fail. */
-    if ((long)ew*eh > MS_SW_ROT_MAX_PIXELS || v->fps > MS_SW_ROT_MAX_FPS){
+    int rc = sw_rot_check(ew, eh, v->fps);
+    if (rc == ERR_ROT_SIZE || rc == ERR_ROT_FPS){
         LOGW(MOD,"video%d: SW rotate at %dx%d@%dfps is CPU-heavy - use "
                  "<=704x576, <=15fps",
              i, ew, eh, v->fps);
         LOGW(MOD,"video%d: refusing SW rotate at %dx%d@%dfps (exceeds safe "
                  "envelope <=704x576 <=15fps) - stream will run UNROTATED",
              i, ew, eh, v->fps);
-        return SW_ROT_FALLBACK;
+        return rc;
     }
     /* CAPS-GATE 2 (hardware geometry, empirically confirmed on T23). The encoder
      * requires the ENCODED (post-rotation) WIDTH to be 16-aligned and >=256
@@ -4110,11 +4127,11 @@ static int sw_rot_start(const ms_config *cfg, int i)
      * rotation rather than march into that failure - bring the stream up
      * UNROTATED (where the encoder width is the source WIDTH, typically aligned).
      * ew == v->height here (eff_dims swaps for 90/270). */
-    if ((ew % MS_SW_ROT_WIDTH_ALIGN) != 0 || ew < MS_SW_ROT_MIN_WIDTH){
+    if (rc){
         LOGW(MOD,"video%d: SW rotate width %d (source height %d) not a "
                  "multiple of 16 >= 256 - UNROTATED",
              i, ew, v->height);
-        return SW_ROT_FALLBACK;
+        return rc;
     }
     if ((v->width|v->height)&1){
         LOGE(MOD,"video%d: SW rotate needs even dims (got %dx%d)",
@@ -4193,7 +4210,7 @@ static int sw_rot_start(const ms_config *cfg, int i)
          * other stream's bring-up untouched. */
         LOGW(MOD,"video%d: SW rotate init failed - disabling rotation for this "
                  "stream, bringing it up UNROTATED",i);
-        return SW_ROT_FALLBACK;
+        return ERR_ROT_REFUSED;
     }
     /* phys-contiguous bounce frame for the encoder input (VbmAlloc, page
      * aligned); VbmV2P yields the physical addr YuvEncode's DMA needs */
@@ -6114,6 +6131,7 @@ static int ing_start(const ms_config *cfg)
 #endif
     g_fcrop_state = FC_OFF;
     memset(g_eff_rot, 0, sizeof g_eff_rot);   /* rewritten per stream below */
+    memset(g_rot_st, 0, sizeof g_rot_st);
 #if ROI_TIER != CAP_TIER_UNSUPPORTED
     memset(g_roi_set, 0, sizeof g_roi_set);   /* fresh encoder channels */
     memset(g_roi_rej, 0, sizeof g_roi_rej);
@@ -6140,7 +6158,8 @@ static int ing_start(const ms_config *cfg)
             int r = sw_rot_start(cfg,i);
             if (r==0){ g_eff_rot[i]=v->rotation; continue; } /* sw-rotate up */
             if (r<0)  goto fail;        /* unrecoverable */
-            /* r==SW_ROT_FALLBACK: rotation refused (envelope) or its init
+            g_rot_st[i] = (short)r;
+            /* r>0: rotation refused (envelope) or its init
              * failed for THIS stream only. Do NOT abort the whole pipeline -
              * fall through and bring this one stream up on the normal bound
              * path UNROTATED. cfg is const, so retarget v at a local copy with
@@ -6156,7 +6175,8 @@ static int ing_start(const ms_config *cfg)
         {
             int r = fs_create(chn,v);
             if (r<0) goto fail;             /* unrecoverable */
-            if (r==FS_ROT_FALLBACK){
+            if (r>0){
+                g_rot_st[i] = (short)r;
                 /* fs_create refused the rotation (outside the safe envelope,
                  * incl. a T1x main stream - Fix 1) or SetChnRotate failed (Fix 2).
                  * Either way no IMP channel was created (SetChnRotate/CreateChn
