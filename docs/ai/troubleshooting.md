@@ -1074,7 +1074,7 @@ at all**.
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | Night all evening in a lit room, `check (…): night, exposure N` in the log | The day pipeline reads above `day_gain`: a dim room. | Raise `daynight.day_gain` above N (well below `night_gain`). |
-| Night although a lamp is on, no look in the log | The lamp did not move the illuminator-lit level by `jump_pct`; the next timer look comes within 45 min. | Wait, lower `jump_pct`, or POST `{"daynight":{"probe":1}}`. |
+| Night although a lamp is on, no look in the log | The lamp did not move the illuminator-lit level by `jump_pct` nor (**since v1.10.2**) its colour by `color_pct` (`color_dev_pct` in `GET /control`), or colour looks are spaced out (5, 10, 20 … min after earlier ones), or `color_trigger` is `"unavailable"` on this SoC; the next timer look comes within 45 min. | Wait, lower `jump_pct` or `color_pct`, or POST `{"daynight":{"probe":1}}`. |
 | `look (…): … -> check` then `check (…): night` every evening | Other cameras' infrared lights the scene without the illuminator; the day pipeline stays dark. One pair per light change, then the bar holds. | Expected; nothing to fix. |
 | Day in a dark room | `night_gain` above what the AE reaches and the AE not at a reported limit. | Lower `night_gain` below the exposure the camera shows in the dark. |
 | Two clicks at every start in the dark | Every boot checks. | Expected. |

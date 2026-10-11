@@ -6,6 +6,23 @@ semantic versioning.
 
 ## [Unreleased]
 
+_1.10.2 (draft)_
+
+### Added
+
+- Day/night: a second look trigger at night. When the colour of the
+  illuminator-lit picture (global R/G or B/G of the ISP's AWB statistics)
+  moves `daynight.color_pct` (new, default 3, 0 = off, live) from its value
+  after the last look for 20 s, the camera looks at once. A weak lamp that
+  hardly brightens the IR-lit picture (Eufy S350 with a 30 % bulb: exposure
+  unchanged, B/G -4 %) now ends the night within about 40 s instead of at
+  the next 45-min look. It only starts a look (8 s dark, no click); colour
+  looks are at least 5 min apart and the gap doubles up to 45 min until a
+  timer look. Per-zone AWB statistics are read on T40 vendor, T41, T23/T31/
+  C100 vendor and T10/T20 OpenIMP; elsewhere `GET /control` reports
+  `daynight.color_trigger: "unavailable"`. New status fields
+  `daynight.color_trigger` and `daynight.color_dev_pct`.
+
 ## [1.10.1] - 2026-10-12
 
 ### Security

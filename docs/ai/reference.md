@@ -368,6 +368,7 @@ same strftime pattern, `interval_s` 60, `keep_days` 7 (0..3650 **since v1.9.28**
 
 **`daynight.`** — `enabled` 1, `mode` `auto` (|`schedule`), `day_gain` 768,
 `night_gain` 4096, `day_confirm_s` 30, `jump_pct` 20 (**since v1.10.1**),
+`color_pct` 3 (**since v1.10.2**, 0 = off),
 `heartbeat_s` 14400, `heartbeat_max_s` 43200, `interval_ms` 2000,
 `switch_cmd` `daynight`, `irprobe_cmd` `timps-irprobe`, `isp_path`
 `/proc/jz/isp/isp-m0`, `history_s` 0 (max 172800), `trace_path` (tmpfs only),
@@ -606,7 +607,7 @@ cap — see the POST limits below.)
 | `timelapse` | `count`, `last_t`, `free_mb`, `last_file` | **since v1.9.28** `free_mb` is refreshed every 10 s by the timelapse thread (`-1` until the first sample), not measured per request. |
 | `record` | `recording`, `write_errors`, `last_error`, `last_error_age_s`, `motion_gate_enabled`, `manual_off`, `bytes`, `free_mb`, `file` | `last_error_age_s = -1` = no error recorded. `manual_off` is the manual stop latch (§6 commands). **since v1.9.28** `free_mb` is refreshed every 10 s by the recorder thread, so a wedged card no longer stalls `GET /control`. |
 | `motion` | `active[]`, `last_ms`, `max_cells`, plus the echoed grid config | **`active[]` is row-major**: index = `row * cols + col`, length `cols * rows`. **`last_ms = -1` means "never"**, not "just now". `max_cells` is the SDK budget, the same number as `caps.motion.max_cells`. With OpenIMP motion v2 (a `USE_OPENIMP` build whose libimp exports `OpenIMP_IVS_MoveGetResultEx`) three more keys appear while its analysis runs: `v2`:1, `suppress` (hold-off reasons: 1 day/night, 2 gain jump, 4 brightness jump, 0 none) and `objects` = `[{id,x0,y0,x1,y1,strength,age}]` in pixels of the monitored stream (strength 0..1000). |
-| `daynight` | `mode` (**int** 0 = day / 1 = night) *and* `dn_mode` (**string**), `brightness` (%), `total_gain`, `exposure`, `ae_luma`, `night_baseline`, `day_trigger`, `sun_computed_sunrise`, `sun_computed_sunset`, … | `total_gain` is the IMP `[24.8]` linear scale (**256 = 1.0×**). **`exposure` is the value the decision actually runs on** — `total_gain` scaled by the AE integration-time ratio, so it equals `total_gain` in a dark scene and drops far below it in a bright one. Quote `exposure`, not `total_gain`, when answering a day/night question; `total_gain` is kept for continuity with existing pages. `night_baseline` is the illuminator-lit night level at the last look (or the darker level it followed after 60 s 10 % above it), `day_trigger` the bar the reading **without** IR must fall below to ask for a day check (since v1.10.1 both are always published; `day_trigger` is at least `day_gain`). `sun_computed_*` read `"--:--"` where the sun does not rise or set (polar latitudes). It also echoes the settable keys (`day_gain`, `night_gain`, `day_confirm_s`, `jump_pct`, `heartbeat_s`, `heartbeat_max_s`, `interval_ms`, the Idle-Dark and calendar keys). The frozen-constant echoes of v1.10.0 (`ir_ratio_*`, `probe_settle_s`, …) are gone with the 1.10.1 engine. |
+| `daynight` | `mode` (**int** 0 = day / 1 = night) *and* `dn_mode` (**string**), `brightness` (%), `total_gain`, `exposure`, `ae_luma`, `night_baseline`, `day_trigger`, `sun_computed_sunrise`, `sun_computed_sunset`, … | `total_gain` is the IMP `[24.8]` linear scale (**256 = 1.0×**). **`exposure` is the value the decision actually runs on** — `total_gain` scaled by the AE integration-time ratio, so it equals `total_gain` in a dark scene and drops far below it in a bright one. Quote `exposure`, not `total_gain`, when answering a day/night question; `total_gain` is kept for continuity with existing pages. `night_baseline` is the illuminator-lit night level at the last look (or the darker level it followed after 60 s 10 % above it), `day_trigger` the bar the reading **without** IR must fall below to ask for a day check (since v1.10.1 both are always published; `day_trigger` is at least `day_gain`). **Since v1.10.2** `color_trigger` (`"on"`, `"off"` = `color_pct` 0, no switchable illuminator, schedule or disabled, `"unavailable"` = this libimp gives no per-zone AWB statistics) and `color_dev_pct` (the lit picture's colour change since the last look in %, `-1` without a reference, e.g. in day or the first seconds after a look) belong to `daynight.color_pct`. `sun_computed_*` read `"--:--"` where the sun does not rise or set (polar latitudes). It also echoes the settable keys (`day_gain`, `night_gain`, `day_confirm_s`, `jump_pct`, `color_pct`, `heartbeat_s`, `heartbeat_max_s`, `interval_ms`, the Idle-Dark and calendar keys). The frozen-constant echoes of v1.10.0 (`ir_ratio_*`, `probe_settle_s`, …) are gone with the 1.10.1 engine. |
 | `last_errors` | `{"<MOD>": {"level","age_s","count","msg"}}` | One entry per module that has logged, with the most recent message and how many times it repeated. Useful once the 64 KB syslog ring has recycled. On v1.9.27 an entry captured before NTP sync shows an `age_s` of ~56 years; **since v1.9.28** ages are monotonic. |
 | `video.<N>.rotation_state` | int | **Since v1.10.1**, `USE_ROTATE` builds. `0` = stream runs as configured at the last start; else the `2xx` code why it runs unrotated (table in [`error-codes.md`](error-codes.md)). Refers to the running pipeline, not to a POSTed-but-not-restarted rotation. |
 | `osd<S>.<N>.type` | `"text"` or `"logo"` | Read back as a **word**, unlike `record.mode` and `audio.backchannel_codec`, which read back as numbers. |
@@ -989,7 +990,9 @@ is an honest measure of ambient light, so day→night is a plain measurement
 (above `night_gain` or the AE at its limit for `day_confirm_s`, 6 s when very
 dark). In night the camera partly measures **its own IR**, so **since v1.10.1**
 it **looks**: illuminator off for 8 s (silent), every 45 min and at once when
-the lit level falls `jump_pct` (20 %) below the last look for 20 s. If the
+the lit level falls `jump_pct` (20 %) below the last look for 20 s
+(**since v1.10.2** also when its colour moves `color_pct`, 3 %, for 20 s: a
+weak lamp that hardly brightens the IR-lit picture). If the
 scene without the illuminator is below the bar (`day_gain`, ×2 after a jump,
 or a bar learnt from a failed check), it **checks**: switches to the day
 pipeline (one click) and stays day below `day_gain`, else goes back (a second
@@ -1020,6 +1023,8 @@ best day-pipeline reading was 9.79×) still need an explicit per-camera
    reading clears it.
 4. `general.debug_modules = daynight` (live over `/control`, no restart) gives
    per-look lines like `look (timer): lit 249 dark 284 bar 768 -> check`.
+   **Since v1.10.2** a lamp that a look should have caught shows in
+   `color_dev_pct`; a look it started logs `look (color)`.
 
 **Stuck in day all night in a dark room** (the opposite case): the index is
 gain × integration-time ratio, so an AE that stops at its analog cap with the

@@ -1146,6 +1146,7 @@ tick) **except**:
 | `daynight.night_gain` | float | `4096` | 1..1000000 | live | **Alias `total_gain_night_threshold`.** Exposure index above this (while in day) = night. 4096 = 16×. Where the AE cannot reach it, the AE at its limit counts as dark too (see below). |
 | `daynight.day_confirm_s` | int | `30` | 1..3600 | live | How long the index must stay above `night_gain` (or the AE at its limit) before day→night. A very dark reading (≥ 2 × `night_gain`, or the AE at its limit) switches after 6 s instead (not within 8 s of the camera's own switch). |
 | `daynight.jump_pct` | int | `20` | 5..70 | live | **since v1.10.1.** At night: when the illuminator-lit level falls this many percent below the level of the last look and stays there 20 s, look at once (new light). Cameras without a switchable illuminator use a fixed 50 % and check. |
+| `daynight.color_pct` | int | `3` | 0..50 | live | **since v1.10.2.** At night: when the colour of the illuminator-lit picture (global R/G or B/G of the ISP's AWB statistics) moves this many percent from its value after the last look and stays there 20 s, look at once. Catches a weak lamp that barely moves the lit level (measured with a 30 % bulb: Eufy B/G −4 % at an unchanged exposure, Wyze Pan B/G +5.5 %; an unchanged scene stays within 0.5 %). Only starts a look (8 s dark, no click); the look decides as always. At most one colour look per 5 min, the gap doubles (10, 20 … up to 45 min) while no timer look happens in between, so a person moving in view costs at most 4 extra looks (32 s dark) in the first hour and then none beyond the 45-min rhythm. `0` = off. Needs a switchable illuminator and a libimp with per-zone AWB statistics: T40 vendor, T41, T23/T31/C100 vendor, T10/T20 OpenIMP; elsewhere `daynight.color_trigger` reads `"unavailable"` and nothing happens. |
 | `daynight.heartbeat_s` | int | `14400` (4 h) | 300..604800 | live | Check interval at night for cameras **without** a switchable illuminator. Also caps the look interval (45 min) of the others. |
 | `daynight.heartbeat_max_s` | int | `43200` (12 h) | 300..604800 | live | The longest night without a day-pipeline reading: then a check runs regardless of looks and lockouts. Bounds a wrong night. |
 | `daynight.interval_ms` | int | `2000` | 100..60000 | live | Sample interval. The exposure index needs a `/proc` scrape per tick (integration time has no IMP API). |
@@ -1177,7 +1178,9 @@ to `total_gain`.
 * **At night** the reading with the camera's own illuminator means little, so
   the camera **looks**: illuminator off for 8 s (no click), reading the scene
   without it. A look runs every 45 min (`heartbeat_s` caps it), at once when
-  the lit level falls `jump_pct` below the last look for 20 s (a lamp), and on
+  the lit level falls `jump_pct` below the last look for 20 s (a lamp), **since
+  v1.10.2** when the lit picture's colour moves `color_pct` from the last look
+  for 20 s (a weak lamp; at most every 5 min, doubling), and on
   `{"daynight":{"probe":1}}`. A lit level that rises 10 % above the
   reference and does not fall back below it for 60 s (the light of the last
   look has gone) becomes the reference, and the next look relearns the scene

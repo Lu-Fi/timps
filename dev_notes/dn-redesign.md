@@ -17,7 +17,9 @@ time in the wrong mode are not. Development history: branch `dev/dn-redesign`.
 > At night it cannot judge the room through its own infrared light. So every
 > 45 minutes, and at once when the night picture gets `jump_pct` (20 %)
 > brighter than at the last look for 20 seconds, it switches its infrared light
-> off for 8 seconds and looks. If the room is bright enough without it, it
+> off for 8 seconds and looks. Since 1.10.2 also when the colour of the night
+> picture changes by `color_pct` (3 %) for 20 seconds: a weak lamp that hardly
+> brightens the infrared picture still tints it. If the room is bright enough without it, it
 > switches to the day picture (one click of the IR-cut filter) and measures:
 > below `day_gain` it stays day, otherwise it goes back to night (a second
 > click) and remembers how much darker the room without infrared has to get
@@ -58,6 +60,10 @@ Ablation: each mechanism compiled out, the whole family corpus re-run
 | Readback: one edge through the other mode, held 5 s | isp_stuck-pan |
 | `running_mode` re-asserted twice, 8 s apart, after each switch (not after the boot check) | (hardware lesson; the harness ISP does not react to it) |
 | Idle-Dark as a look that lasts | idle-pan, idle-t10 |
+| Colour trigger (1.10.2): lit colour `color_pct` off the reference for 20 s → look | lamp_color-pan/-eufy (light on 2699 s, bound 60 s) |
+| ... no colour look while a jump hold runs (the jump forgets the bar, a colour look keeps it) | lamp_jump-eufy (1800 s wrong), check_then_light-eufy (1129 s) |
+| ... at most every 5 min | person-pan/-eufy (27/22 looks, bound 6) |
+| ... gap doubling up to 45 min, reset by a timer look or a switch to night | person-pan/-eufy (8 looks, bound 6) |
 
 Removed (no family needs them): the IR-ratio verdict and permission, the 60 s
 check floor after a jump with `retry_why`, the boot look, desync adoption, the
@@ -78,7 +84,7 @@ Candidates from `dev_notes/DAYNIGHT_FASTSWITCH_FLAPGUARD_2026-10-11.md`:
 - K4 the guarantee never waits behind the lockout: kept, also for no-LED
   cameras.
 
-## 3. Bounds and measurements (`make test-dn-replay`, 45 pairs)
+## 3. Bounds and measurements (`make test-dn-replay`, 45 pairs of 1.10.1; 51 since 1.10.2, see section 8)
 
 | Bound | Measured (new engine) |
 | --- | --- |
@@ -120,8 +126,10 @@ cameras whose AE has reserve and goes day under foreign infrared.
 
 - Dim lit rooms (day pipeline between `day_gain` and `night_gain`) stay in
   their mode; raise `day_gain` per camera.
-- A lamp that does not move the illuminator-lit level waits up to 45 min
-  (Wyze Pan in the cellar); `{"daynight":{"probe":1}}` looks at once.
+- A lamp that moves neither the illuminator-lit level nor (1.10.2) its colour
+  waits up to 45 min, as does one on a SoC without AWB statistics or switched
+  on while colour looks are spaced out; `{"daynight":{"probe":1}}` looks at
+  once.
 - Other cameras' infrared costs one failed check (two clicks) per light change.
 - Every boot in the dark costs a click pair.
 - 8 s of dark night video every 45 min.
@@ -139,7 +147,8 @@ lit / dark triples or daylight curves from logs, the IR campaign of
 values marked), `run.py` (one harness scenario per pair, parallel, behaviour
 only: mode against the truth from the day-pipeline value, longest wrong run,
 switches, light-on/off latency, pendulum, LED timeline), `others.py`,
-`compare.py`. 45 pairs, ~6-8 min with 8 jobs, deterministic (no noise).
+`compare.py`. 45 pairs, ~6-8 min with 8 jobs, deterministic (no noise); since
+1.10.2 24 families, 51 pairs, colour noise seeded per 2 s (section 8).
 
 ## 7. Firmware WebUI changes needed (thingino `package/timps/files/www`)
 
@@ -161,3 +170,54 @@ switches, light-on/off latency, pendulum, LED timeline), `others.py`,
   about "a direct switch to day at the first viewer" no longer applies (a
   check happens while idle instead).
 - `tool-sensor-data.js` (day_gain/night_gain/history_s/interval_ms): no change.
+
+## 8. Colour trigger (1.10.2)
+
+Measured 2026-10-11 (branch `dbg/light-signals`, IR on, night, the HA bulb in
+front of the camera, `scratch-builds/dbglight/dbg-light.csv`): at 30 % the Eufy
+(T40 vendor) keeps its exposure index (221 → 221) while the global B/G of
+`GetAwbStatistics` drops 4 % (R/G +2 %); the Pan (T20 OpenIMP, zone ioctl)
+moves −4..−8 % in exposure and +5..6 % in B/G. At 100 % both move far (B/G
+−36 % / +29..44 %). An unchanged scene stays within 0.5 % (Pan B/G ±0.65 %).
+The sign differs per platform, so the trigger is the larger of |ΔR/G| and
+|ΔB/G| against the reference.
+
+Mechanism (`src/daynight.c`, `dn_thread` S_NIGHT):
+
+- Reference: the first sample in S_NIGHT at least 8 s after leaving any other
+  state (a look, a check, a switch, Idle-Dark) with the AE stable (4 samples).
+  Re-taken after every look, so a lamp that stays on, or a person who stays,
+  becomes the new normal.
+- Trigger: the deviation above `color_pct` for 20 s (the jump hold), not
+  locked out, not while a jump hold runs → a look with `why = "color"`. The
+  look decides as always; a colour look keeps the scene bar B (a jump forgets
+  it), so a person in view cannot buy a failed check where B is learnt.
+- Rate: the next colour look waits `c_gap` (5 min), which doubles after each
+  colour look up to the look interval (45 min) and resets at a timer look or
+  a switch to night.
+- Worst case dark time: under persistent colour churn 4 colour looks in the
+  first hour after a reset (5, 10, 20 min apart: 32 s, 0.9 % of the hour),
+  then one per 45 min in place of the timer look (0.30 %); an adversarial
+  pattern that is quiet at every timer look restarts the doubling: about 5
+  looks per 80 min, ≈ 30 s/h (0.83 %). Never a click by itself.
+- Availability: `hal_isp_awb_ratio()`, Q12 R/G and B/G from per-zone
+  statistics, weak-bound: T40 vendor and T41 (`GetAwbStatistics`, 15×15 u32),
+  T23/T31/C100 vendor (`GetAwbZone`, 15×15 u8 means), T10/T20 OpenIMP
+  (`T2X_CID_AWB_ZONE` ioctl on libimp's `/dev/video0` fd; the pinned OpenIMP's
+  `GetAwbZone` sends a CID the T20 driver rejects). Not: T40 OpenIMP (the open
+  driver's statistics path is a stub), T23/T31 OpenIMP (`GetAwbZone` took
+  three pointers before openimp e7dadd6, which the pin lacks: a stack
+  overrun), T10/T20/T21 vendor (no zones; hist/GOL are white-region filtered
+  or the AWB's own estimate). Read only at night (and up to 30 times before
+  the first success); 3 failures in a row = `color_trigger: "unavailable"`.
+  Only the Eufy and the Pan are measured; the others are unverified.
+- Corpus: profiles `pan`/`eufy` carry `color` (base, shift per unit lamp,
+  noise) and per-scene `lamp`/`tint`; the harness serves `awb_lit` (and far
+  different colours with the LED off or in day, so a reading taken there
+  shows). New families `lamp_color` (day within 32 s), `person` (walk-throughs
+  ignored, 4 rate-limited colour looks, no click), `foreign_ir_color` (another
+  camera's IR, colour unchanged: no colour look). `lamp_nojump` runs with
+  `color_pct = 0` and keeps testing the timer path. 51 pairs, all within
+  bounds; the 45 pairs of 1.10.1 have the same switch and look totals (141 /
+  87); faster light-on: lamp_again-eufy 918 → 31 s, eufy_dark_bulb 2436 →
+  31 s.
