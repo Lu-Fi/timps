@@ -169,7 +169,9 @@ make PLATFORM=T31 CROSS_COMPILE=mipsel-linux-
 make strip PLATFORM=T31 CROSS_COMPILE=mipsel-linux-
 ```
 
-`PLATFORM ∈ {T10 T20 T21 T23 T30 T31 T40 T41 C100}`. IMP headers come from the
+`PLATFORM ∈ {T10 T20 T21 T23 T30 T31 T40 T41 C100}`. Link-time optimisation
+is on by default (`USE_LTO=1`, `-flto=auto`, needs GCC 10+, since v1.10.1);
+`USE_LTO=0` builds per file. IMP headers come from the
 `gtxaspec/ingenic-headers` git submodule under `include/` — a clone without
 `--recurse-submodules` will fail to build (fix: `git submodule update --init`).
 

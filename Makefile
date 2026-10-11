@@ -94,6 +94,8 @@ USE_TRACE     ?= 0          # 1 = compile in src/trace.c, the opt-in send-pipeli
                             #     USE_OSD_HINTING pattern above. Still not a menuconfig
                             #     option either way; turn it on with
                             #     `make USE_TRACE=1 ...` for a debug build only.
+USE_LTO       ?= 1          # 1 = link-time optimisation (-flto on compile and link): whole-program
+                            #     inlining and dead-code removal, ~6 % smaller timpsd. 0 = per-file build.
 HOSTCC        ?= cc
 
 # Vendored Ingenic IMP headers (from gtxaspec/ingenic-headers) live under
@@ -153,6 +155,11 @@ endif
 CC  := $(CROSS_COMPILE)gcc
 CXX := $(CROSS_COMPILE)g++
 BIN := timpsd
+
+# Appended in the recipes, not to CFLAGS/LDFLAGS: thingino passes both on the
+# command line. No archive of our own objects is built, so plain ar is never
+# fed LTO bytecode.
+LTO_FLAGS := $(if $(filter 1,$(USE_LTO)),-flto=auto)
 
 # SRT (libsrt) is C++: compile the C sources to .o with gcc (correct C), then
 # LINK the final binary with g++. A single gcc pass left libstdc++.so.6
@@ -298,7 +305,7 @@ FAACLIB ?= -l:libfaac.a
 all: target
 
 target:
-	$(CC) $(CFLAGS) $(if $(SYSROOT),--sysroot=$(SYSROOT)) \
+	$(CC) $(CFLAGS) $(LTO_FLAGS) $(if $(SYSROOT),--sysroot=$(SYSROOT)) \
 	  $(if $(filter 1,$(USE_FAAC)),-DUSE_FAAC) \
 	  $(if $(filter 1,$(USE_OPENIMP)),-DUSE_OPENIMP) \
 	  $(if $(filter 1,$(USE_CONTROL)),-DUSE_CONTROL) \
@@ -320,16 +327,16 @@ target:
 	  $(if $(filter 1,$(USE_TRACE)),-DUSE_TRACE) \
 	  -DHAL_INGENIC -DPLATFORM_$(PLATFORM) $(PLATFORM_CFLAGS) -DMS_VERSION='"$(VERSION)"' -Isrc -I$(IMP_INC) -I$(IMP_INC)/imp \
 	  -c $(TARGET_ALLSRC)
-	$(LINK_DRV) $(TARGET_OBJS) \
+	$(LINK_DRV) $(TARGET_OBJS) $(LTO_FLAGS) \
 	  $(LDFLAGS) $(CXXRT_LDFLAGS) $(if $(IMP_LIB),-L$(IMP_LIB)) $(IMPLIBS) \
 	  $(if $(filter 1,$(USE_FAAC)),$(FAACLIB)) $(if $(filter 1,$(USE_BC_AAC)),$(HELIXLIB)) \
 	  $(if $(filter 1,$(USE_PLAY_OPUS)),$(OPUSLIB)) \
 	  $(if $(filter 1,$(USE_STREAM_OPUS)),$(OPUS_ENC_LIB)) $(LIBS) -o $(BIN)
 	@rm -f $(TARGET_OBJS)
-	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_OPENIMP=$(USE_OPENIMP) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT) USE_BACKCHANNEL=$(USE_BACKCHANNEL) USE_BC_AAC=$(USE_BC_AAC) USE_BC_WS=$(USE_BC_WS) USE_WEBRTC=$(USE_WEBRTC) USE_PLAY=$(USE_PLAY) USE_PLAY_OPUS=$(USE_PLAY_OPUS) USE_STREAM_OPUS=$(USE_STREAM_OPUS) USE_ROTATE=$(USE_ROTATE) USE_SW_ROTATE=$(USE_SW_ROTATE) USE_OSD_HINTING=$(USE_OSD_HINTING) USE_TRACE=$(USE_TRACE))"
+	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_OPENIMP=$(USE_OPENIMP) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT) USE_BACKCHANNEL=$(USE_BACKCHANNEL) USE_BC_AAC=$(USE_BC_AAC) USE_BC_WS=$(USE_BC_WS) USE_WEBRTC=$(USE_WEBRTC) USE_PLAY=$(USE_PLAY) USE_PLAY_OPUS=$(USE_PLAY_OPUS) USE_STREAM_OPUS=$(USE_STREAM_OPUS) USE_ROTATE=$(USE_ROTATE) USE_SW_ROTATE=$(USE_SW_ROTATE) USE_OSD_HINTING=$(USE_OSD_HINTING) USE_TRACE=$(USE_TRACE) USE_LTO=$(USE_LTO))"
 
 sim:
-	$(HOSTCC) $(CFLAGS) -DMS_VERSION='"$(VERSION)"' $(if $(filter 1,$(USE_CONTROL)),-DUSE_CONTROL) \
+	$(HOSTCC) $(CFLAGS) $(LTO_FLAGS) -DMS_VERSION='"$(VERSION)"' $(if $(filter 1,$(USE_CONTROL)),-DUSE_CONTROL) \
 	  $(if $(filter 1,$(USE_DAYNIGHT)),-DUSE_DAYNIGHT) \
 	  $(if $(filter 1,$(USE_RECORD)),-DUSE_RECORD) \
 	  $(if $(filter 1,$(USE_TIMELAPSE)),-DUSE_TIMELAPSE) \
@@ -338,7 +345,7 @@ sim:
 	  $(if $(filter 1,$(USE_SRT)),-DUSE_SRT) \
 	  $(SIM_CFLAGS) \
 	  -Isrc $(SIM_SRC) $(LDFLAGS) $(if $(filter 1,$(USE_SRT)),-lsrt) -lpthread -lm -o $(BIN)-sim
-	@echo "built $(BIN)-sim (host simulation backend, USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_ROTATE=$(USE_ROTATE) USE_TRACE=$(USE_TRACE) USE_SRT=$(USE_SRT))"
+	@echo "built $(BIN)-sim (host simulation backend, USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_ROTATE=$(USE_ROTATE) USE_TRACE=$(USE_TRACE) USE_SRT=$(USE_SRT) USE_LTO=$(USE_LTO))"
 
 # Self-contained authentication fail-closed test: build the host sim (with
 # /control), start it on unprivileged ports, run scripts/test_auth.sh against

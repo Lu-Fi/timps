@@ -22,6 +22,10 @@ _1.10.1 (draft)_
 
 ### Changed
 
+- Build: link-time optimisation on by default (`USE_LTO=1`, `-flto=auto` on
+  compile and link, also with thingino's `CFLAGS`/`LDFLAGS`): stripped
+  `timpsd` 24-28 KB (~6 %) smaller on T10-T41. `USE_LTO=0` gives the previous
+  binary byte for byte.
 - `/control` writes `/etc/timps.conf` at most once per 3 s: the first change
   after a quiet window is written before the reply as before, later ones are
   collected and written when the window ends, at shutdown, or at once with a

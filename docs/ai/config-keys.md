@@ -1641,6 +1641,14 @@ toolchain config actually supplies them was not checked; read the
 `.config`.)** `HARDEN=0`/`FORTIFY=0` are therefore not the lever here; the
 Buildroot-side symbols are.
 
+**Link-time optimisation (since v1.10.1).** `USE_LTO ?= 1` in the upstream
+`Makefile` appends `-flto=auto` to the compile and the link step inside the
+recipe, so it survives the package's own `CFLAGS`/`LDFLAGS`. `timps.mk` does
+not pass it, so firmware builds get LTO (stripped `timpsd` ~6 % smaller,
+measured 24-28 KB on T10-T41). `USE_LTO=0` restores the per-file build
+byte for byte. Needs GCC 10+ (`-flto=auto`) and a linker with plugin support.
+Weak libimp imports stay weak undefined and keep their NULL checks.
+
 Implications the upstream `Makefile` applies no matter what the package passes:
 `USE_SW_ROTATE=1 ⇒ USE_ROTATE`; `USE_BC_AAC=1 ⇒ USE_BACKCHANNEL`;
 `USE_PLAY_OPUS=1 ⇒ USE_PLAY`; `USE_BC_WS=1 ⇒ USE_BACKCHANNEL + USE_CONTROL`;
