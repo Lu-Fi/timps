@@ -1411,26 +1411,14 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
          * (they are the same config field via the alias). */
         "\"day_gain\":%g,\"night_gain\":%g,"
         "\"total_gain_day_threshold\":%g,\"total_gain_night_threshold\":%g,"
-        "\"day_confirm_s\":%d,"
-        "\"probe_min_gap_s\":%d,\"probe_jump_pct\":%d,"
-        "\"probe_confirm_s\":%d,\"probe_settle_s\":%d,\"ref_delay_s\":%d,"
+        "\"day_confirm_s\":%d,\"jump_pct\":%d,"
         "\"heartbeat_s\":%d,\"heartbeat_max_s\":%d,"
-        /* the silent IR probe's verdict thresholds. Kept in the status for
-         * diagnostics even though the 2026-08-22 consolidation turned all
-         * eight of these (probe_jump_pct..transition_s below) from F_CTRL
-         * config into fixed DN_* constants (daynight.h) - a camera's
-         * effective values are still worth being able to read, they are just
-         * no longer settable per camera, so they come from the constants
-         * rather than from *d now. */
-        "\"ir_ratio_night\":%g,\"ir_ratio_day\":%g,\"ir_min_headroom\":%d,"
-        "\"boot_probe\":%d,\"boot_settle_s\":%d,"
-        "\"diagnose_thresholds\":%d,"
         "\"dn_mode\":\"%s\","
         "\"time_night_start\":\"%s\",\"time_day_start\":\"%s\","
         "\"sun_latitude\":%g,\"sun_longitude\":%g,"
         "\"sun_sunrise_offset_min\":%d,\"sun_sunset_offset_min\":%d,"
         "\"sun_computed_sunrise\":\"%s\",\"sun_computed_sunset\":\"%s\","
-        "\"interval_ms\":%d,\"transition_s\":%d,"
+        "\"interval_ms\":%d,"
         "\"ir_idle_off\":%d,\"ir_idle_linger_s\":%d,"
         "\"ir_idle\":{\"cfg\":%d,\"available\":%d,\"reason\":\"%s\","
         "\"dark\":%d,\"watched\":%d,\"linger_left_s\":%d}}",
@@ -1440,19 +1428,14 @@ int control_daynight_json(char *buf, size_t cap, int enabled, int mode,
         isp_desync,
         (double)d->day_gain, (double)d->night_gain,
         (double)d->day_gain, (double)d->night_gain,
-        d->day_confirm_s,
-        d->probe_min_gap_s, DN_PROBE_JUMP_PCT,
-        d->probe_confirm_s, DN_PROBE_SETTLE_S, DN_REF_DELAY_S,
+        d->day_confirm_s, d->jump_pct,
         d->heartbeat_s, d->heartbeat_max_s,
-        (double)DN_IR_RATIO_NIGHT, (double)DN_IR_RATIO_DAY, DN_IR_MIN_HEADROOM,
-        d->boot_probe, DN_BOOT_SETTLE_S,
-        d->diagnose_thresholds,
         dnmode,
         etns, etds,
         (double)d->sun_latitude, (double)d->sun_longitude,
         d->sun_sunrise_offset_min, d->sun_sunset_offset_min,
         sun_sr, sun_ss,
-        d->interval_ms, DN_TRANSITION_S,
+        d->interval_ms,
         d->ir_idle_off, d->ir_idle_linger_s,
         ii.cfg, ii.available, ii.reason, ii.dark, ii.watched, ii.linger_left_s);
 }

@@ -332,10 +332,9 @@ enum { DN_MODE_AUTO = 0, DN_MODE_SCHEDULE = 1 };
 typedef struct {
     int      enabled;            /* 0 = manual mode (thread idles) */
     int      mode;               /* DN_MODE_AUTO / DN_MODE_SCHEDULE, see above */
-    /* THE CALENDAR. Optional in AUTO (where it only sharpens the heartbeat
-     * schedule), required in SCHEDULE. The source is auto-selected: an
-     * explicit time window wins, else lat/lon if either is non-zero, else
-     * there is no calendar at all and AUTO falls back to the plain heartbeat.
+    /* THE CALENDAR, for SCHEDULE (auto mode does not use it). The source is
+     * auto-selected: an explicit time window wins, else lat/lon if either is
+     * non-zero.
      * A fixed local-clock window: night from time_night_start until
      * time_day_start, may wrap past midnight (night 20:00, day 06:30).
      * Empty = that edge is unset. */
@@ -360,86 +359,19 @@ typedef struct {
     float    day_gain;           /* D below this (day pipeline) = day    */
     float    night_gain;         /* D above this (in day)       = night  */
     int      day_confirm_s;      /* how long D must exceed night_gain    */
-    /* PROBE ECONOMY - one rate limit, one trigger, one safety net. A probe
-     * is the only way from night to day: switch the board to the day
-     * pipeline, wait DN_PROBE_SETTLE_S for the AE, then judge once against
-     * day_gain and either stay or fall straight back. Two things can ask for
-     * one, and probe_min_gap_s bounds the audible cost of both together, so
-     * the worst-case click rate is a property of the configuration rather
-     * than of nine interacting heuristics.
-     *
-     * probe_jump_pct (trigger the probe below this % of the night reference)
-     * and probe_settle_s (AE settle before the verdict) were per-camera
-     * fields here until the 2026-08-22 consolidation - see
-     * DN_PROBE_JUMP_PCT/DN_PROBE_SETTLE_S in daynight.h for why they are now
-     * fixed constants instead. */
-    int      probe_min_gap_s;    /* no two probes closer than this        */
-    int      probe_confirm_s;    /* ... and stays there this long          */
-    /* THE SILENT PROBE (2026-08-18). The IR illuminator is wired to its own
-     * GPIO on every camera measured, independent of the IR-cut motor, so it
-     * can be switched off for a few seconds without an audible click and
-     * without moving anything. That turns the interference into the
-     * measurement:
-     *
-     *     r = D(illuminator off) / D(illuminator on)
-     *
-     * r >> 1  removing the IR made the scene much darker: the illuminator was
-     *         doing the work, so it is genuinely night.
-     * r ~= 1  removing it changed nothing: the room supplies the light, so it
-     *         is day - whatever the absolute level happens to be.
-     *
-     * That last clause is the whole reason this exists. Genuine daylight
-     * measured across this fleet at ONE instant spanned a factor of 63, and a
-     * single camera swung by 4.5x within one overcast morning, so no absolute
-     * day threshold can be right everywhere. Two measured events settle it:
-     * an outbuilding light produced a day-pipeline reading of ~3700 and a
-     * cellar light 1024, both far above any workable default - an absolute
-     * rule calls those lit rooms "night". r is dimensionless and needs no
-     * per-camera calibration.
-     *
-     * irprobe_cmd is run as "<cmd> on|off" via fork+execlp, never a shell,
-     * exactly like switch_cmd. Empty (the default) disables the silent probe
-     * entirely and every night->day question falls back to the audible
-     * IR-cut probe - which is what boards without separate illuminator
-     * control must do.
-     *
-     * The verdict thresholds (ir_ratio_night/ir_ratio_day) and the minimum AE
-     * reserve for the ratio to mean anything (ir_min_headroom) were
-     * per-camera fields here until the 2026-08-22 consolidation, when the
-     * fleet-wide campaign that set them (see DN_IR_RATIO_NIGHT in
-     * daynight.h) showed every camera wanted the same values. A reading
-     * between the two thresholds is not a verdict: it means the ratio could
-     * not answer, and the audible probe decides instead. */
+    /* night -> day: a look (illuminator off for DN_PROBE_SETTLE_S, no
+     * click) every 45 min or at once when the lit night level falls jump_pct
+     * below the last look; a check (the day pipeline, one click) when the
+     * look reads bright enough. irprobe_cmd runs "<cmd> on|off|idle|state"
+     * via vfork+execlp, never a shell; empty = no looks, checks only. */
+    int      jump_pct;
     char     irprobe_cmd[64];
-    /* THE HEARTBEAT - the sensor-independent safety net, and the ONLY bound
-     * on how long a wrong night can last. heartbeat_s applies while the
-     * scene is moving; a scene that has not moved measurably since the last
-     * probe waits heartbeat_max_s instead (there is no new evidence, so
-     * there is nothing to spend a click on). Deliberately NOT a multiplying
-     * backoff: an interval that doubles per failure is exactly how the
-     * previous design turned a bounded guarantee into an unbounded one. */
+    /* heartbeat_s: check interval of cameras without a switchable
+     * illuminator (it also caps the look interval); heartbeat_max_s: the
+     * longest night without a day-pipeline reading before a check. */
     int      heartbeat_s;
     int      heartbeat_max_s;
-    /* Boot: the persisted running_mode is a guess about a scene nobody
-     * measured. If it says day we are already in the honest pipeline and one
-     * reading settles it for free; if it says night, a single probe turns the
-     * guess into a measurement (one IR-cut click per boot). 0 disables that
-     * probe - the first heartbeat then does the same job, later.
-     * boot_settle_s (minimum settle before that first decision) was a field
-     * here until the 2026-08-22 consolidation - see DN_BOOT_SETTLE_S in
-     * daynight.h. */
-    int      boot_probe;
     int      interval_ms;        /* sample interval */
-    /* transition_s (minimum dwell between switches), ref_delay_s (wait after
-     * entering night before anchoring the reference), and the learning
-     * subsystem that used to live here (per-camera `learn`/`state_path`) are
-     * gone as of the 2026-08-22 consolidation: transition_s and ref_delay_s
-     * are now the fixed DN_TRANSITION_S/DN_REF_DELAY_S constants in
-     * daynight.h, and `learn` was removed outright - its own safety clamp
-     * (night_gain/2) could not raise day_gain far enough for the cameras that
-     * actually needed it (private/fleet/camera-fleet.md), so
-     * diagnose_thresholds below is what is left: it tells the operator what
-     * to raise instead of trying to raise it automatically. */
     char     switch_cmd[64];     /* board script, run as "<cmd> day|night" */
     char     isp_path[128];      /* ISP exposure proc file */
     /* Opt-in decision-trace recorder (2026-08-14, the replay harness's
@@ -447,8 +379,8 @@ typedef struct {
      * off (the default: zero cost, nothing written). When set, the detection
      * thread appends one CSV line per DN_TRACE_EVERY samples: monotonic ms,
      * mode, the exposure index and its two inputs (gain and the
-     * integration-time ratio), the smoothed value, the night reference, the
-     * probe bar and the two pending deadlines - i.e. the full evidence AND
+     * integration-time ratio), the smoothed value, the night level, the
+     * look bar and the two pending deadlines - i.e. the full evidence AND
      * scheduling state, which is exactly what every past incident had to be
      * hand-reconstructed from syslog fragments for. The file is size-
      * capped (DN_TRACE_MAX_BYTES, rotated once to <path>.1, so bounded at
@@ -460,19 +392,6 @@ typedef struct {
      * arbitrary-file-write boundary that keeps switch_cmd/isp_path out of
      * the POST surface. */
     char     trace_path[128];
-    /* Opt-in threshold diagnostics (default 0 = off). When a probe fails and
-     * the BEST day-pipeline reading of that excursion was still clear of
-     * day_gain, warn that the threshold is unreachable for this scene and
-     * name the value to raise it above - this is now the only diagnosis of
-     * that failure mode; the `learn` subsystem that used to raise the
-     * threshold automatically is gone (see the note above switch_cmd).
-     *
-     * Off by default deliberately: it is a WARN that repeats once per probe,
-     * forever, until a human edits the config - pure log growth on
-     * flash-backed syslog for a correctly configured camera. Unlike
-     * trace_path it is safe on the /control surface (names no path, writes no
-     * file), so it can be toggled live while investigating. */
-    int      diagnose_thresholds;
     /* In-RAM decision-history ring for the WebUI tuning graph, in seconds of
      * retention (0 = off, ceiling 48 h enforced by the config table's clamp).
      * One 16-byte sample per DN_HIST_PERIOD_S, so the ceiling costs 270 KiB
@@ -485,9 +404,9 @@ typedef struct {
      * the whole point, since the WebUI is served over plain HTTP and so has
      * no Service Worker to collect in the background with. */
     int      history_s;
-    /* Idle-Dark (src/dn_idle.h): at night with no picture consumer for
-     * ir_idle_linger_s, switch only the illuminator off and decide at the
-     * first consumer from what the AE measured meanwhile. Needs the
+    /* Idle-Dark: at night with no picture consumer for
+     * ir_idle_linger_s, switch only the illuminator off and keep reading
+     * the scene without it (a look that lasts). Needs the
      * FrameSource keepalive (otherwise nothing is measured while idle). Off
      * by default: at 850 nm the glow shows whether anyone is watching. */
     int      ir_idle_off;
