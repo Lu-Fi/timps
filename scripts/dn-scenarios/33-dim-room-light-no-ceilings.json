@@ -94,7 +94,7 @@
     "monotonicity": "skip",
     "expect_log": [
       "boot: night confirmed by the silent probe",
-      "AE reserve is unknown - cannot tell a lit room from a railed meter",
+      "AE reserve is unknown - asking the day pipeline",
       "night reference 9\\d\\d, proven by the probe",
       "night reference 4\\d\\d, proven by the probe"
     ]

@@ -58,7 +58,7 @@
     "max_switches": 4,
     "monotonicity": "skip",
     "expect_log": [
-      "AE reserve is unknown - cannot tell a lit room from a railed meter"
+      "AE reserve is unknown - asking the day pipeline"
     ],
     "forbid_log": [
       "the room supplies the light",

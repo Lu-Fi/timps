@@ -30,7 +30,7 @@
       "switching to day \\(IR ratio"
     ],
     "expect_log_count": {
-      "is above the exposure index this camera can reach": 1
+      "night_gain \\d+ > reachable": 1
     },
     "forbid_log": [
       "day meter railed"

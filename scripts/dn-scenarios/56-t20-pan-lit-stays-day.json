@@ -26,7 +26,7 @@
     "max_switches": 1,
     "monotonicity": "warn",
     "forbid_log": [
-      "is above the exposure index this camera can reach",
+      "night_gain \\d+ > reachable",
       "reachable plateau",
       "switching to night"
     ]

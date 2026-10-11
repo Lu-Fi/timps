@@ -26,7 +26,7 @@
     "monotonicity": "warn",
     "expect_log": [
       "no gain ceilings",
-      "AE reserve is unknown - cannot tell a lit room from a railed meter",
+      "AE reserve is unknown - asking the day pipeline",
       "probe confirmed day"
     ],
     "forbid_log": [

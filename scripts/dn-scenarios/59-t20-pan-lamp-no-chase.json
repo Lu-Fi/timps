@@ -26,10 +26,10 @@
     "expect_log": [
       "switching to night \\(exposure 35\\d\\d at its reachable plateau 35\\d\\d\\)",
       "day mode reads \\d+\\.\\d+x the night level here",
-      "the room supplies the light, but day mode would read ~3\\d\\d\\d|is no brighter than the proven night reference"
+      "but day mode would read ~3\\d\\d\\d|is no brighter than the proven night reference"
     ],
     "expect_log_count": {
-      "is above the exposure index this camera can reach": 1
+      "night_gain \\d+ > reachable": 1
     }
   }
 }

@@ -27,7 +27,7 @@
       "switching to night \\(exposure \\d+ > 4096\\)"
     ],
     "forbid_log": [
-      "is above the exposure index this camera can reach",
+      "night_gain \\d+ > reachable",
       "reachable plateau",
       "switching to day \\((?!boot measure)"
     ]

@@ -638,15 +638,13 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
         static int said;
         if (!said && o->imp_it_max > 0) {
             said = 1;
-            LOGI(MOD, "exposure sources: scrape ratio=%.4f (it/max, max %s) | "
-                      "IMP GetExpr ratio=%.4f it=%d max=%d line=%dus (=%dus/%dus)"
-                      "%s%d us | %s",
-                 (double)o->ratio, g_int_hwm > 0 ? "ESTIMATED (high-water)" : "published",
+            LOGI(MOD, "exposure sources: scrape r=%.4f (%s max), GetExpr r=%.4f "
+                      "it=%d/%d line=%dus (%d/%dus), GetEVAttr %dus: %s",
+                 (double)o->ratio, g_int_hwm > 0 ? "estimated" : "published",
                  (double)o->ratio_imp, o->imp_it, o->imp_it_max, o->imp_line_us,
                  o->imp_it * o->imp_line_us, o->imp_it_max * o->imp_line_us,
-                 " GetEVAttr expr_us=", o->imp_expr_us,
-                 g_int_hwm > 0 ? "scrape max is the estimate - IMP now decides"
-                               : "scrape max is real - shadow read only, decides nothing");
+                 o->imp_expr_us,
+                 g_int_hwm > 0 ? "IMP decides" : "shadow read only");
         }
     }
 
@@ -732,13 +730,8 @@ static void dn_ceiling_check(const dn_sample *sm, int *miss, int *warned)
     if (sm->headroom >= 0) { *miss = 0; return; }
     if (*warned || ++*miss < 3) return;
     *warned = 1;
-    LOGW(MOD, "the ISP dump reports no gain ceilings (MAX SENSOR analog "
-              "gain / MAX ISP digital gain, or GetAeExprInfo on T41), so "
-              "the AE reserve is unknown "
-              "here: a railed meter cannot be told from a dark scene, the "
-              "railed-boot re-tune never fires, and the night reference is "
-              "NOT protected against clipped readings. Ratio probes without "
-              "a clear answer fall back to the audible probe on this camera");
+    LOGW(MOD, "no gain ceilings in the ISP dump - AE reserve is unknown, "
+              "unclear ratio probes go audible");
 }
 
 /* Say so, once, when path C is structurally blind on this camera. Called
@@ -752,11 +745,8 @@ static void dn_blind_check(const dn_sample *sm, float ref, int *warned)
 {
     if (*warned || dn_c_sighted(sm, ref)) return;
     *warned = 1;
-    LOGW(MOD, "the night reference sits at the sensor's gain floor and no "
-              "integration-time reading is available, so a brightening scene "
-              "cannot be detected here - the heartbeat carries this camera "
-              "alone. If this sensor does report SENSOR Integration Time, "
-              "check daynight.isp_path");
+    LOGW(MOD, "night reference sits at the sensor's gain floor, no IT "
+              "reading: heartbeat only");
 }
 
 /* ------------------------------------------------------------------ *
@@ -822,9 +812,8 @@ static int dn_reap(pid_t pid, const char *cmd, const char *arg, int timeout_ms)
         }
         if (now >= deadline){
             if (killed){
-                LOGE(MOD, "'%s %s' (pid %d) survived SIGKILL - abandoning it. "
-                          "The board hook is stuck in the kernel (I2C/GPIO "
-                          "driver or a dead mount); day/night continues without it",
+                LOGE(MOD, "'%s %s' (pid %d) survived SIGKILL - abandoned, "
+                          "hook stuck in the kernel",
                      cmd, arg, (int)pid);
                 return -1;
             }
@@ -1054,8 +1043,7 @@ static void dn_idle_status(const dni_in *in, int *warned_ka)
     int r = dni_gate(in);
     if (r == DNI_U_KEEPALIVE && !*warned_ka) {
         LOGW(MOD, "daynight.ir_idle_off=1 needs the framesource keepalive "
-                  "(general.fs_keepalive) - without it nothing is measured "
-                  "while idle; Idle-Dark stays inactive");
+                  "(general.fs_keepalive)");
         *warned_ka = 1;
     }
     dn_ir_idle_status st = { in->cfg ? 1 : 0, r == DNI_OK, g_dni.dark,
@@ -1406,12 +1394,9 @@ static void dn_diag_threshold(const ms_daynight_cfg *dn, int fails,
     if (fails < DN_DIAG_FAILS || !(probe_best > 0.0f)) return;
     if (probe_best <= dn->day_gain * DN_UNREACHABLE) return;
     *warned = 1;
-    LOGW(MOD, "no probe has ever confirmed day (%d in a row found night): the "
-              "best day-pipeline exposure seen was %.0f but daynight.day_gain "
-              "is %.0f. Either this scene never gets bright, or the threshold "
-              "is too strict - raise daynight.day_gain above %.0f (keeping "
-              "night_gain well above that)",
-         fails, (double)probe_best, (double)dn->day_gain, (double)probe_best);
+    LOGW(MOD, "day never confirmed (%d night probes): raise "
+              "daynight.day_gain above %.0f (is %.0f)",
+         fails, (double)probe_best, (double)dn->day_gain);
 }
 
 /* Decimated feed into the /events history ring (events.h), which is what the
@@ -1635,16 +1620,14 @@ static void *dn_thread(void *arg)
       config_str_unlock();
       time_t wall = time(NULL);
       int ck = dn_cal_kind(&dn0, wall);
-      LOGI(MOD, "detection thread started (mode=%s, day<%g night>%g, "
-                "probe: gap %ds jump %d%% confirm %ds settle %ds, "
-                "heartbeat %ds/%ds, calendar=%s, boot_probe=%d, "
-                "interval %dms, dwell %ds, isp=%s, cmd=%s)",
+      LOGI(MOD, "started: mode=%s day<%g night>%g gap %ds confirm %ds "
+                "hb %ds/%ds cal=%s boot_probe=%d poll %dms isp=%s cmd=%s",
            dn0.mode == DN_MODE_SCHEDULE ? "schedule" : "auto",
            (double)dn0.day_gain, (double)dn0.night_gain,
-           dn0.probe_min_gap_s, DN_PROBE_JUMP_PCT, dn0.probe_confirm_s,
-           DN_PROBE_SETTLE_S, dn0.heartbeat_s, dn0.heartbeat_max_s,
-           ck == DN_CAL_TIME ? "time window" : ck == DN_CAL_SUN ? "sun" : "none",
-           dn0.boot_probe, dn0.interval_ms, DN_TRANSITION_S,
+           dn0.probe_min_gap_s, dn0.probe_confirm_s,
+           dn0.heartbeat_s, dn0.heartbeat_max_s,
+           ck == DN_CAL_TIME ? "time" : ck == DN_CAL_SUN ? "sun" : "none",
+           dn0.boot_probe, dn0.interval_ms,
            dn0.isp_path, dn0.switch_cmd);
       if ((dn0.time_night_start[0] || dn0.time_day_start[0]) && ck != DN_CAL_TIME)
           LOGW(MOD, "daynight.time_night_start/time_day_start (\"%s\"/\"%s\") "
@@ -1653,16 +1636,13 @@ static void *dn_thread(void *arg)
                ck == DN_CAL_SUN ? ", the sun calendar is used instead" : "");
       if (ck == DN_CAL_TIME &&
           (dn0.sun_latitude != 0.0f || dn0.sun_longitude != 0.0f))
-          LOGW(MOD, "both a time window (%s..%s) and a location (%g/%g) are "
-                    "configured - the time window wins and the sun settings "
-                    "are ignored. Clear one of the two so the active schedule "
-                    "is not a matter of precedence",
+          LOGW(MOD, "time window (%s..%s) and location (%g/%g) both "
+                    "set - the time window wins",
                dn0.time_night_start, dn0.time_day_start,
                (double)dn0.sun_latitude, (double)dn0.sun_longitude);
       if (dn0.mode == DN_MODE_SCHEDULE && ck == DN_CAL_NONE)
-          LOGW(MOD, "mode=schedule needs a calendar: set daynight.time_night_"
-                    "start/time_day_start, or daynight.sun_latitude/"
-                    "sun_longitude, and make sure the clock is set"); }
+          LOGW(MOD, "mode=schedule needs daynight.time_night_start/"
+                    "time_day_start or daynight.sun_latitude/sun_longitude"); }
 
     while (!ms_stopgate_stopped(&g_gate)) {
         /* M10 whole-struct snapshot (mirrors imp_osd.c refresh_text()): every
@@ -1729,9 +1709,8 @@ static void *dn_thread(void *arg)
                  * WARN-only: re-running switch_cmd here would clobber a
                  * legitimate manual override. */
                 if ((cur == DN_NIGHT && !rm) || (cur == DN_DAY && rm))
-                    LOGW(MOD, "running_mode=%d never followed the switch to %s - "
-                              "board hook chain (switch_cmd -> color -> POST "
-                              "/control) incomplete, or manual override",
+                    LOGW(MOD, "running_mode=%d never followed the switch to %s "
+                              "- hook chain or manual override",
                          rm, cur == DN_NIGHT ? "night" : "day");
             }
             reassert_at = (--reassert_left > 0) ? now + DN_REASSERT_MS : 0;
@@ -1907,9 +1886,7 @@ static void *dn_thread(void *arg)
             } else if (verify_cyc < DN_VERIFY_MAX_CYCLES) {
                 verify_cyc++;
                 LOGW(MOD, "ISP still reports %s %d s after the switch to %s "
-                          "(script and re-asserts all ran) - forcing one "
-                          "transition through %s, the only thing a stuck "
-                          "ISP acts on",
+                          "- forcing one transition through %s",
                      cur == DN_NIGHT ? "Day" : "Night",
                      (int)(DN_VERIFY_MS / 1000),
                      cur == DN_NIGHT ? "night" : "day",
@@ -1919,9 +1896,8 @@ static void *dn_thread(void *arg)
                 enforce_at = now + DN_VERIFY_HOLD_MS;
                 s = -1.0f; stable_n = 0;
             } else {
-                LOGW(MOD, "ISP still reports %s after a forced transition - "
-                          "giving up until the next mode change; the image "
-                          "does not match the decided mode %s",
+                LOGW(MOD, "ISP still %s after forced transition (decided %s) "
+                          "- giving up until the next mode change",
                      cur == DN_NIGHT ? "Day" : "Night",
                      cur == DN_NIGHT ? "night" : "day");
                 readback_untrusted = 1;
@@ -2014,10 +1990,8 @@ static void *dn_thread(void *arg)
                 if (t == DN_UNKNOWN) {
                     if (!warned_nocal) {
                         warned_nocal = 1;
-                        LOGW(MOD, "mode=schedule but no usable calendar "
-                                  "(set daynight.time_night_start/time_day_start "
-                                  "or daynight.sun_latitude/sun_longitude, and "
-                                  "make sure the clock is set) - forcing nothing");
+                        LOGW(MOD, "mode=schedule: no usable calendar or clock "
+                                  "unset - forcing nothing");
                     }
                     break;
                 }
@@ -2059,10 +2033,8 @@ static void *dn_thread(void *arg)
                     force  = 1;
                     snprintf(why, sizeof why, "boot fallback: no reading");
                     hub_control("image.running_mode", running_mode ? "1" : "0");
-                    LOGW(MOD, "boot: no usable exposure reading %ds after "
-                              "start-up (%s) - the boot measurement cannot "
-                              "run, falling back to the persisted %s and "
-                              "asserting it on the board once",
+                    LOGW(MOD, "boot: no exposure reading %ds after start (%s) "
+                              "- adopting persisted %s",
                          (int)(DN_STABLE_MAX_MS / 1000), dn->isp_path,
                          running_mode ? "night" : "day");
                 }
@@ -2131,11 +2103,8 @@ static void *dn_thread(void *arg)
                  * for 25 minutes (2026-08-21). The operator wants to know
                  * that independently of which branch below runs. */
                 if (sm.headroom == 0)
-                    LOGI(MOD, "boot: AE railed with 0 units of reserve - the "
-                              "meter is reading a clip, not a level, and only "
-                              "a real transition re-tunes it (T23 boot "
-                              "defect); the boot measurement is that "
-                              "transition");
+                    LOGI(MOD, "boot: AE railed with 0 units of reserve - "
+                              "measuring via a real transition");
 
                 /* boot_probe=0 now opts out of the MEASUREMENT, not out of
                  * the assertion. The persisted value is taken on trust, as it
@@ -2153,18 +2122,13 @@ static void *dn_thread(void *arg)
                     force  = 1;             /* cur is DN_UNKNOWN: nothing to dwell on */
                     snprintf(why, sizeof why, "boot: persisted, boot_probe=0");
                     hub_control("image.running_mode", running_mode ? "1" : "0");
-                    LOGI(MOD, "boot: boot_probe=0 - adopting the persisted %s "
-                              "without measuring it, and asserting it on the "
-                              "board once so the IR-cut filter and the LEDs "
-                              "cannot sit in the other mode until the next "
-                              "real transition", running_mode ? "night" : "day");
+                    LOGI(MOD, "boot: boot_probe=0 - adopting the persisted %s, "
+                              "asserting it once", running_mode ? "night" : "day");
                     break;
                 }
                 if (!dn->boot_probe)
-                    LOGI(MOD, "boot: measuring anyway despite boot_probe=0 - "
-                              "the railed meter above is a broken instrument, "
-                              "not an unverified mode, and adopting a value "
-                              "read off a rail would be adopting nothing");
+                    LOGI(MOD, "boot: measuring despite boot_probe=0 - the meter "
+                              "is railed");
 
                 /* Came up in NIGHT with an illuminator that can be switched on
                  * its own: ask the cheap question first. One silent probe -
@@ -2206,9 +2170,7 @@ static void *dn_thread(void *arg)
                 sust_min = win_max = -1.0f; win_at = 0;
                 ema_fast = ema_slow = -1.0f; trend_since = 0;
                 LOGI(MOD, "boot: measuring before deciding - persisted "
-                          "running_mode=%d is a hint, not evidence (exposure "
-                          "%.0f in whatever mode we came up in); switching to "
-                          "the day pipeline and reading it in %ds",
+                          "running_mode=%d, exp %.0f, day in %ds",
                      running_mode ? 1 : 0, (double)s, DN_PROBE_SETTLE_S);
                 /* `s` is deliberately KEPT, and becomes the probe's pre_probe
                  * level exactly as a runtime probe's would. Its provenance is
@@ -2265,11 +2227,8 @@ static void *dn_thread(void *arg)
                     dni_suspend = 1; dni_suspend_ms = mode_since;
                     s = -1.0f; stable_n = 0;
                     if (!dni_frozen_warned++)
-                        LOGW(MOD, "idle: the exposure did not move in %ds "
-                                  "with the illuminator off (%.0f) - the AE "
-                                  "does not run without a consumer here, so "
-                                  "Idle-Dark cannot measure; illuminator back "
-                                  "on until the next switch",
+                        LOGW(MOD, "idle: the exposure did not move in %ds with "
+                                  "IR off (%.0f) - illuminator back on",
                              DN_PROBE_SETTLE_S, (double)d_dark);
                 } else if (r > 0.0f && r <= DN_IR_RATIO_DAY &&
                            room >= DN_IR_MIN_HEADROOM && !dn_clipped(d_lit_hr) &&
@@ -2427,8 +2386,7 @@ static void *dn_thread(void *arg)
                      * "night" forever; the day pipeline is the one honest
                      * judge left. */
                     LOGD(MOD, "silent probe (%s): r=%.2f but the AE reserve "
-                              "is unknown - cannot tell a lit room from a "
-                              "railed meter, asking the day pipeline",
+                              "is unknown - asking the day pipeline",
                          ir_why ? ir_why : "?", (double)r);
                     want_probe = 1; probe_why = ir_why ? ir_why : "probe";
                     s = boot_lit;
@@ -2443,10 +2401,8 @@ static void *dn_thread(void *arg)
                     float lit = d_dark / r;
                     if (filter_cost > 0.0f &&
                         lit * filter_cost > dn->night_gain) {
-                        LOGD(MOD, "silent probe (%s): r=%.2f - the room "
-                                  "supplies the light, but day mode would "
-                                  "read ~%.0f (%.2fx the night level) against "
-                                  "night_gain %.0f, staying night",
+                        LOGD(MOD, "silent probe (%s): r=%.2f, but day mode would "
+                                  "read ~%.0f (%.2fx) > night_gain %.0f",
                              ir_why ? ir_why : "?", (double)r,
                              (double)(lit * filter_cost), (double)filter_cost,
                              (double)dn->night_gain);
@@ -2474,10 +2430,8 @@ static void *dn_thread(void *arg)
                         ema_fast = ema_slow = -1.0f; trend_since = 0;
                     } else if (dn_proven_dark(night_proven, ref, lit,
                                               DN_MOVED_MARGIN)) {
-                        LOGD(MOD, "silent probe (%s): r=%.2f but the lit level "
-                                  "%.0f is no brighter than the proven night "
-                                  "reference %.0f - light the day pipeline "
-                                  "does not see, staying night",
+                        LOGD(MOD, "silent probe (%s): r=%.2f but lit %.0f is no "
+                                  "brighter than the proven night reference %.0f",
                              ir_why ? ir_why : "?", (double)r, (double)lit,
                              (double)ref);
                         trig_since = 0;
@@ -2570,10 +2524,8 @@ static void *dn_thread(void *arg)
                     pre_probe_hr = -1;
                     hb_defer_logged = 0;
                     if (boot_deciding)
-                        LOGI(MOD, "boot: measured day - exposure %.0f (< %.0f). "
-                                  "The optics are already there, so the one "
-                                  "switch_cmd this boot owed the board has "
-                                  "been spent", (double)s, (double)bar);
+                        LOGI(MOD, "boot: measured day - exposure %.0f (< %.0f), "
+                                  "board already in day", (double)s, (double)bar);
                     else
                         LOGI(MOD, "probe confirmed day: exposure %.0f (< %.0f)",
                              (double)s, (double)bar);
@@ -2665,15 +2617,11 @@ static void *dn_thread(void *arg)
                              (double)(dn->night_gain / filter_cost));
                     } else if (ir_night_at > 0.0f && dn_clipped(sm.headroom)) {
                         LOGD(MOD, "day level %.0f is a clip (%d units of AE "
-                                  "reserve), not a cost measurement - "
-                                  "filter_cost stays unmeasured, the veto "
-                                  "stays off",
+                                  "reserve) - filter_cost unmeasured",
                              (double)s, sm.headroom);
                     } else if (ir_night_at > 0.0f) {
-                        LOGD(MOD, "night level %.0f from %lldms ago is too "
-                                  "stale to cost this dusk's %.0f against - "
-                                  "filter_cost stays unmeasured, the veto "
-                                  "stays off",
+                        LOGD(MOD, "night level %.0f is %lldms old, too stale for "
+                                  "%.0f - filter_cost unmeasured",
                              (double)ir_night_at,
                              (long long)(now - ir_night_ms), (double)s);
                     }
@@ -2704,13 +2652,9 @@ static void *dn_thread(void *arg)
                             reach_warned = 1;
                             float it = sm.ratio > 0.0f ? sm.ratio
                                      : dnr.plat / dnr_cap_gain(sm.mag);
-                            LOGW(MOD, "daynight.night_gain %.0f is above the "
-                                      "exposure index this camera can reach "
-                                      "(~%.0f: analog gain cap %d x IT %.1f %%, "
-                                      "ISP digital gain unused); using a "
-                                      "relative night threshold (%.0f, %d %% "
-                                      "of that plateau at the cap for "
-                                      "day_confirm_s)",
+                            LOGW(MOD, "daynight.night_gain %.0f > reachable ~%.0f "
+                                      "(cap %d x IT %.1f%%): relative bar "
+                                      "%.0f (%d%%)",
                                  (double)night_cfg, (double)dnr.plat, sm.mag,
                                  (double)(it * 100.0f), (double)dnr.fired_bar,
                                  DNR_PLAT_PCT);
@@ -2761,9 +2705,7 @@ static void *dn_thread(void *arg)
                     if (!ref_wait_logged) {
                         ref_wait_logged = 1;
                         LOGI(MOD, "night reference deferred: only %d units of "
-                                  "AE reserve, so %.0f is a clip, not a level "
-                                  "- waiting for the meter to come off the "
-                                  "rail", sm.headroom, (double)s);
+                                  "AE reserve, %.0f is a clip", sm.headroom, (double)s);
                     }
                 } else {
                     ref = s;
@@ -2882,10 +2824,8 @@ static void *dn_thread(void *arg)
                      * one line that answers "why did no heartbeat probe
                      * run all day" */
                     if (!hb_defer_logged++)
-                        LOGI(MOD, "heartbeat due but nothing has happened "
-                                  "since the last probe (sustained brightest "
-                                  "%.0f, would need %.0f) - deferring, forced "
-                                  "at %ds",
+                        LOGI(MOD, "heartbeat deferred: nothing moved (brightest "
+                                  "%.0f, needs %.0f), forced at %ds",
                              (double)sust_min,
                              (double)(ref * DN_MOVED_MARGIN),
                              dn->heartbeat_max_s);
@@ -2944,9 +2884,8 @@ static void *dn_thread(void *arg)
             dn_irprobe(dn->irprobe_cmd, 1);
             if (++ir_fails >= DN_IR_MAX_FAILS) {
                 g_ir_unusable = 1;
-                LOGW(MOD, "'%s' failed %d times - retiring the silent probe "
-                          "for this session; the trend trigger goes with it, "
-                          "leaving the jump trigger and the heartbeat",
+                LOGW(MOD, "'%s' failed %d times - silent probe retired "
+                          "until restart",
                      dn->irprobe_cmd, ir_fails);
             }
         }
@@ -3040,9 +2979,8 @@ static void *dn_thread(void *arg)
                     ref_due = now + (int64_t)DN_REF_DELAY_S * 1000;
                     ref_wait_logged = 0;
                     LOGI(MOD, "probe found night, but the pre-probe level "
-                              "%.0f had only %d units of AE reserve - the "
-                              "reference stays unset until the meter can "
-                              "answer", (double)pre_probe, pre_probe_hr);
+                              "%.0f had only %d units of AE reserve",
+                         (double)pre_probe, pre_probe_hr);
                 } else if (reverted) {
                     /* A probe that found darkness is a PROOF of night at the
                      * level measured immediately before it. That is the whole

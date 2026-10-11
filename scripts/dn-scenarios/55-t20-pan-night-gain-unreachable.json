@@ -30,7 +30,7 @@
       "boot: measured day"
     ],
     "expect_log_count": {
-      "daynight\\.night_gain 4096 is above the exposure index this camera can reach \\(~35\\d\\d: analog gain cap 128 x IT 87\\.6 %, ISP digital gain unused\\); using a relative night threshold": 1
+      "daynight\\.night_gain 4096 > reachable ~35\\d\\d \\(cap 128 x IT 87\\.6%\\): relative bar": 1
     },
     "forbid_log": [
       "switching to day \\((?!boot measure)",
