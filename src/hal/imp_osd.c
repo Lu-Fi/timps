@@ -490,10 +490,8 @@ int imp_osd_setup(const ms_config *cfg, int stream_idx, int width, int height)
     {
         int rot = g_cfg_boot.video[stream_idx].rotation;   /* A2: restart-only, use boot snapshot */
         if ((rot==90 || rot==270) && height > width && !libimp_is_openimp())
-            LOGW(MOD,"stream %d rotated %d: hardware OSD/privacy limited to the top "
-                     "%d px of the %dx%d frame (libimp picHeight range-check); lower "
-                     "overlays are clamped up. Use a square stream, 180, or ch1 for "
-                     "full coverage.", stream_idx, rot, width, width, height);
+            LOGW(MOD,"stream %d rotated %d: OSD/privacy limited to the top "
+                     "%d px of %dx%d", stream_idx, rot, width, width, height);
     }
 
     if (IMP_OSD_CreateGroup(s->grp)<0){ LOGE(MOD,"CreateGroup %d failed",s->grp); s->used=0; return -1; }

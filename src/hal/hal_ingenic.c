@@ -1821,8 +1821,7 @@ static int isp_apply_image(const char *k)
         if (!mode || (us > 0 && !g_ae_it_cap_lines && !g_ae_it_mode_line_ns)){
             if (!g_ae_it_noref_warned++)
                 LOGW(MOD,"image.ae_it_max_us: GetExpr gave no line/max reference "
-                         "(%s) - cannot convert microseconds to sensor lines, "
-                         "cap not applied (said once; -v shows the raw readings)",
+                         "(%s), cap not applied",
                          !mode ? "no AE maximum from any source"
                                : "zero line time and no sensor fps");
             else
@@ -1882,31 +1881,27 @@ static int isp_apply_image(const char *k)
             g_ae_it_noecho = 0;
         else if (++g_ae_it_noecho >= AE_IT_NOECHO_MAX && !g_ae_it_unverified){
             g_ae_it_unverified = 1;
-            LOGW(MOD,"image.ae_it_max_us: %s never reflected a write (%d writes in "
-                     "a row, still max=%lu lines) - the cap cannot be verified on "
-                     "this SDK; it is written once per change and no longer "
-                     "re-applied by the supervisor", rbsrc, g_ae_it_noecho, rb);
+            LOGW(MOD,"image.ae_it_max_us: %s never reflected a write (%d, "
+                     "max=%lu lines), cap unverified", rbsrc, g_ae_it_noecho, rb);
         }
         if (restore)
-            LOGI(MOD,"image.ae_it_max_us=%d: AE cap %s - wrote back the sensor mode's "
-                     "own maximum of %lu lines (%luus)%s, was capped at %lu lines "
-                     "(%luus); %s now reports max=%lu lines",
+            LOGI(MOD,"image.ae_it_max_us=%d: cap %s, mode max %lu lines "
+                     "(%luus)%s, was %lu (%luus); %s max=%lu",
                  us, again ? "removal re-applied" : "removed",
                  (unsigned long)wr, ae_it_us(wr),
-                 g_ae_it_mode_stale ? " (reference from before a running_mode switch)" : "",
+                 g_ae_it_mode_stale ? " (pre-switch reference)" : "",
                  (unsigned long)g_ae_it_cap_lines, ae_it_us(g_ae_it_cap_lines),
                  rbsrc, rb);
         else {
             uint32_t from = prev ? prev : mode;
-            LOGI(MOD,"image.ae_it_max_us=%d: AE cap %s %lu lines (%luus), was %lu "
-                     "lines (%luus)%s; sensor mode max %lu lines (%luus%s); %s "
-                     "now reports max=%lu lines",
+            LOGI(MOD,"image.ae_it_max_us=%d: cap %s %lu lines (%luus), was %lu "
+                     "(%luus)%s; mode max %lu (%luus%s); %s max=%lu",
                  us, again ? "re-applied at" : !prev ? "set to" :
                      wr > prev ? "raised to" : "lowered to",
                  (unsigned long)wr, ae_it_us(wr),
                  (unsigned long)from, ae_it_us(from),
                  prev ? "" : " uncapped", (unsigned long)mode, ae_it_us(mode),
-                 g_ae_it_line_derived ? ", line time from sensor fps" : "",
+                 g_ae_it_line_derived ? ", line from fps" : "",
                  rbsrc, rb);
         }
         return 1;
@@ -2154,17 +2149,14 @@ static void ae_it_max_check(int64_t now)
         if (g_ae_it_fails >= AE_IT_LOUD_TRIES && !g_ae_it_warned){
             g_ae_it_warned = 1;
             if (want)
-                LOGW(MOD,"image.ae_it_max_us=%d: %d writes on a live, delivering "
-                         "pipeline and the AE maximum is still %lu lines - this "
-                         "sensor/ISP is not honouring the cap; retrying slowly",
-                     us, g_ae_it_fails, (unsigned long)m);
+                LOGW(MOD,"image.ae_it_max_us=%d: AE max still %lu lines after "
+                         "%d writes, cap not honoured",
+                     us, (unsigned long)m, g_ae_it_fails);
             else
-                LOGW(MOD,"image.ae_it_max_us=%d: %d removal writes on a live, "
-                         "delivering pipeline and the AE maximum is still %lu "
-                         "lines, not the sensor mode's %lu - this sensor/ISP is "
-                         "not honouring the removal; retrying slowly",
-                     us, g_ae_it_fails, (unsigned long)m,
-                     (unsigned long)g_ae_it_mode_lines);
+                LOGW(MOD,"image.ae_it_max_us=%d: AE max still %lu lines (mode %lu) "
+                         "after %d removal writes",
+                     us, (unsigned long)m, (unsigned long)g_ae_it_mode_lines,
+                     g_ae_it_fails);
         }
         g_ae_it_next_us = now + (g_ae_it_fails >= AE_IT_LOUD_TRIES
                                  ? AE_IT_SLOW_US : AE_IT_SETTLE_US);
@@ -2398,8 +2390,8 @@ static int isp_init(void)
                              "video%d.width/height", i, v->width, v->height, pw, ph, i);
             }
         } else {
-            LOGW(MOD,"sensor size unknown (driver /proc empty), assuming video0 %dx%d - "
-                     "set sensor.width/height if a smaller stream shows a crop",
+            LOGW(MOD,"sensor size unknown, assuming video0 %dx%d - set "
+                     "sensor.width/height if cropped",
                  g_hcfg->sensor.width, g_hcfg->sensor.height);
         }
     }
@@ -2498,10 +2490,8 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
         int pdq = t31_ch0_pre_dequeue_time();
         if (pdq != 0) {                    /* active, or unknown: stay safe */
             if (v->buffers_explicit)
-                LOGW(MOD,"chn0: explicit buffers=%d but isp_ch0_pre_dequeue_time=%d "
-                     "forces a one-buffer schedule on framechan0 - EnableChn "
-                     "will fail (dmesg: 'one buffer schedule') unless "
-                     "pre-dequeue is disabled at the driver", a.nrVBs, pdq);
+                LOGW(MOD,"chn0: buffers=%d but isp_ch0_pre_dequeue_time=%d forces "
+                     "one buffer - EnableChn will fail", a.nrVBs, pdq);
             else
                 a.nrVBs = 1;
         }
@@ -2580,9 +2570,8 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
         const fs_rot_env *e = &g_fs_rot_env;
         switch (fs_rot_check(e, chn, v->width, v->height, v->fps)){
         case FS_ROT_REFUSE_MAIN:
-            LOGW(MOD,"video%d: refusing FS-rotate on the main stream (this SoC "
-                     "rotates sub streams only, e.g. video1 at 640x368) - stream "
-                     "will run UNROTATED", chn);
+            LOGW(MOD,"video%d: FS-rotate refused on the main stream (sub "
+                     "streams only) - UNROTATED", chn);
             return FS_ROT_FALLBACK;
         case FS_ROT_REFUSE_ALIGN:
             LOGW(MOD,"video%d: refusing FS-rotate %dx%d not %d-aligned - stream "
@@ -2612,20 +2601,16 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
 #else
         switch (fs_rot_set(ms_fs_set_rotate, chn, r90, v->width, v->height)){
         case FS_ROT_SET_MISSING:
-            LOGW(MOD,"video%d: libimp has no IMP_FrameSource_SetChnRotate - stream "
-                     "will run UNROTATED (90/270 needs OpenIMP with T1x rotation, "
-                     "6b7f5ae or later)", chn);
+            LOGW(MOD,"video%d: libimp has no IMP_FrameSource_SetChnRotate "
+                     "- UNROTATED (needs OpenIMP 6b7f5ae+)", chn);
             return FS_ROT_FALLBACK;
         case FS_ROT_SET_STUB:
-            LOGW(MOD,"video%d: libimp's SetChnRotate accepted a 0x0 picture, so it "
-                     "cannot rotate (OpenIMP stub, e.g. 9cab219) - stream will run "
-                     "UNROTATED; upgrade OpenIMP to one with T1x rotation "
-                     "(6b7f5ae or later)", chn);
+            LOGW(MOD,"video%d: SetChnRotate is an OpenIMP stub - UNROTATED "
+                     "(needs OpenIMP 6b7f5ae+)", chn);
             return FS_ROT_FALLBACK;
         case FS_ROT_SET_REFUSED:
-            LOGW(MOD,"video%d: SetChnRotate refused %dx%d - stream will run "
-                     "UNROTATED (an OpenIMP without T1x rotation refuses every "
-                     "90/270; it needs 6b7f5ae or later)", chn, v->width, v->height);
+            LOGW(MOD,"video%d: SetChnRotate refused %dx%d - UNROTATED (needs "
+                     "OpenIMP 6b7f5ae+)", chn, v->width, v->height);
             return FS_ROT_FALLBACK;
         }
 #endif
@@ -2854,11 +2839,9 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
         unsigned long idr_est = (unsigned long)v->bitrate_kbps * 1000UL
                               / (unsigned long)v->fps;
         if (idr_est > (unsigned long)(MS_AU_BUF_MAX / 10 * 8))
-            LOGW(MOD,"encoder chn%d: %d kbps at %d fps implies ~%lu KB "
-                     "keyframes, near or above the %d KB AU buffer - keyframes "
-                     "will be dropped and clients may never get a decodable "
-                     "stream; lower videoN.bitrate or raise MS_AU_BUF_MAX",
-                 v->imp_chn, v->bitrate_kbps, v->fps, idr_est/1024,
+            LOGW(MOD,"encoder chn%d: ~%lu KB IDR at %d kbps/%d fps, AU buffer "
+                     "%d KB - lower videoN.bitrate",
+                 v->imp_chn, idr_est/1024, v->bitrate_kbps, v->fps,
                  MS_AU_BUF_MAX/1024);
     }
     if (IMP_Encoder_SetDefaultParam(&a, prof, rc,
@@ -3278,9 +3261,8 @@ static void *video_thread(void *arg)
                      * this a start that never succeeds retried forever */
                     if ((dbg_startfail % 25) == 0 &&
                         ++dbg_recover_fails >= MS_VIDEO_WATCHDOG_MAX_RECOVERIES){
-                        LOGE(MOD,"chn%d: StartRecvPic kept failing for %d attempts - "
-                             "encoder/ISP is not coming back on its own; exiting "
-                             "(camera needs a manual/scheduled restart)",
+                        LOGE(MOD,"chn%d: StartRecvPic kept failing for %d attempts "
+                             "- exiting",
                              vc->chn, dbg_startfail);
                         g_hal_watchdog_gave_up = 1;  /* see hal.h */
                         raise(SIGTERM);
@@ -3350,9 +3332,8 @@ static void *video_thread(void *arg)
                          * gave_up, see hal.h), so this is no longer a dark
                          * camera forever - only until the one reboot either
                          * fixes it or proves it will not. */
-                        LOGE(MOD,"chn%d: %d consecutive forced-recovery cycles never "
-                             "produced a frame - encoder/ISP is not coming back on its "
-                             "own; exiting (camera needs a manual/scheduled restart)",
+                        LOGE(MOD,"chn%d: %d forced-recovery cycles without a frame "
+                             "- exiting",
                              vc->chn, dbg_recover_fails);
                         g_hal_watchdog_gave_up = 1;  /* see hal.h */
                         raise(SIGTERM);
@@ -4102,8 +4083,8 @@ static int sw_rot_start(const ms_config *cfg, int i)
      * and tell the caller to bring this stream up UNROTATED rather than march
      * into a YuvInit call known to fail. */
     if ((long)ew*eh > MS_SW_ROT_MAX_PIXELS || v->fps > MS_SW_ROT_MAX_FPS){
-        LOGW(MOD,"video%d: SW rotate at %dx%d@%dfps is CPU-HEAVY on this SoC - "
-                 "strongly consider a substream-class setting (<=704x576, <=15fps)",
+        LOGW(MOD,"video%d: SW rotate at %dx%d@%dfps is CPU-heavy - use "
+                 "<=704x576, <=15fps",
              i, ew, eh, v->fps);
         LOGW(MOD,"video%d: refusing SW rotate at %dx%d@%dfps (exceeds safe "
                  "envelope <=704x576 <=15fps) - stream will run UNROTATED",
@@ -4120,11 +4101,8 @@ static int sw_rot_start(const ms_config *cfg, int i)
      * UNROTATED (where the encoder width is the source WIDTH, typically aligned).
      * ew == v->height here (eff_dims swaps for 90/270). */
     if ((ew % MS_SW_ROT_WIDTH_ALIGN) != 0 || ew < MS_SW_ROT_MIN_WIDTH){
-        LOGW(MOD,"video%d: SW rotate post-rotation width %d unusable for the "
-                 "encoder (needs picWidth%%16==0 and >=256; a 90/270 rotate makes "
-                 "encoder width = source height %d) - refusing rotation, stream "
-                 "will run UNROTATED (use a source HEIGHT that is a multiple of "
-                 "16 and >=256, e.g. 704x576 -> 576x704)",
+        LOGW(MOD,"video%d: SW rotate width %d (source height %d) not a "
+                 "multiple of 16 >= 256 - UNROTATED",
              i, ew, v->height);
         return SW_ROT_FALLBACK;
     }
@@ -4267,9 +4245,8 @@ static int sw_rot_start(const ms_config *cfg, int i)
          * 90/270 stream the rotated width is the source HEIGHT, so make the
          * source height a multiple of 32 (e.g. 704, not 720). Disable JPEG
          * rather than fail every frame. */
-        LOGW(MOD,"video%d.jpeg: rotated %dx%d not 32/8-aligned for InputJpege "
-                 "(need width%%32==0, height%%8==0; make source height a "
-                 "multiple of 32, e.g. 704) - JPEG disabled on this stream",
+        LOGW(MOD,"video%d.jpeg: rotated %dx%d not 32/8-aligned for "
+                 "InputJpege - JPEG disabled",
              i, ew, eh);
     } else if (v->jpeg_enabled){
         /* M3: IMP_Encoder_InputJpege takes NO capacity argument - the T23
@@ -4299,10 +4276,8 @@ static int sw_rot_start(const ms_config *cfg, int i)
              * header marks "Not supported at this time". Logging a quality
              * that has no effect makes people tune a knob that is not
              * connected - say so instead. */
-            LOGI(MOD,"video%d.jpeg: standalone JPEG on SW-rotate stream "
-                     "(%dx%d, <=%d fps; jpeg_quality has NO effect on this "
-                     "path - the SoC's InputJpege ignores it) "
-                     "-> /snapshot.jpg /stream.mjpeg",
+            LOGI(MOD,"video%d.jpeg: SW-rotate JPEG %dx%d <=%dfps "
+                     "(jpeg_quality ignored)",
                  i, ew, eh, v->jpeg_fps>0?v->jpeg_fps:5);
         } else
             LOGW(MOD,"video%d.jpeg: no memory for SW-rotate JPEG buf (%u) - "
@@ -4436,9 +4411,8 @@ static void *jpeg_thread(void *arg)
                      * audio_thread's "disable and exit the thread" pattern.
                      * receiving is still 1 here, so falling out of the loop
                      * runs the normal StopRecvPic/fs_unuse epilogue below. */
-                    LOGE(MOD,"jpeg chn%d: %d consecutive forced-recovery cycles never "
-                         "produced a frame - giving up on this channel (MJPEG/snapshot "
-                         "output disabled until restart)",
+                    LOGE(MOD,"jpeg chn%d: %d forced-recovery cycles without a "
+                         "frame - giving up on this channel",
                          jc->chn, dbg_jrecover_fails);
                     break;
                 }
@@ -4653,8 +4627,8 @@ static void jpeg_apply_quality(int chn, int quality)
      * alone) - a custom table there makes JPEG WORSE, not just unconfirmed, so
      * report honestly instead of guessing or (as before) silently dropping it. */
     (void)chn;
-    LOGW(MOD,"jpeg.quality=%d not applied: custom quantization tables are known "
-             "to degrade JPEG quality on T10 (JPEG left at SDK default)", quality);
+    LOGW(MOD,"jpeg.quality=%d not applied on T10, SDK default kept",
+         quality);
 #else
     /* T20/T21/T23/T30: fill the qtable's first 128 bytes - 64 luma then 64
      * chroma, 8-bit, zigzag order (T20's is 256 bytes total; see the comment

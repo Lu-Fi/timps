@@ -298,9 +298,8 @@ static int prune_free(int min_free_mb)
             long long max_recoverable = fm + tree_bytes/(1024*1024);
             if (max_recoverable < min_free_mb){
                 if (!warned){
-                    LOGW(MOD,"record.min_free_mb=%d unreachable (only %lldMB free, "
-                             "%lldMB even if every existing recording were deleted) - "
-                             "refusing to record rather than empty the archive",
+                    LOGW(MOD,"record.min_free_mb=%d unreachable (%lldMB free, "
+                             "%lldMB max) - not recording",
                          min_free_mb,fm,max_recoverable);
                     warned=1;
                 }
@@ -777,9 +776,8 @@ static void *rec_thread(void *arg)
                 if (fps>0){ double ps=(double)RING_CAP/(double)fps; if (ps<cap_s) cap_s=ps; }
                 if ((double)rc.pre_roll_s > cap_s+0.5){
                     preroll_warned=1;
-                    LOGW(MOD,"record.pre_roll_s=%d cannot be held: the pre-roll "
-                             "ring caps at ~%.0fs for ch%d (%d kbps, %d fps, "
-                             "%d packets / %d MB max) - actual pre-roll is shorter",
+                    LOGW(MOD,"record.pre_roll_s=%d not held: ~%.0fs max for "
+                             "ch%d (%d kbps, %d fps, %d pkts/%d MB)",
                          rc.pre_roll_s, cap_s, chn, kbps, fps,
                          RING_CAP, RING_MAX_BYTES/(1024*1024));
                 }

@@ -675,9 +675,8 @@ static void stream_mp4(hconn *c, int chn)
                 LOGD(MOD,"mp4 chn=%d: audio gap is eviction (overflow), not "
                          "a mute - keeping client", chn);
             } else {
-                LOGW(MOD,"mp4 chn=%d: no audio for %llds but video still "
-                         "flowing (muted mid-stream?) - dropping this client "
-                         "so it reconnects video-only", chn,
+                LOGW(MOD,"mp4 chn=%d: no audio for %llds while video flows "
+                         "- dropping client", chn,
                      (long long)(MS_MP4_AUDIO_GAP_US/1000000));
                 pkt_unref(p);
                 break;
@@ -2759,12 +2758,8 @@ httpd *httpd_start(const ms_config *cfg)
     if (cfg->http_https) {
         h->tls_ctx = ms_tls_ctx_new(cfg->http_tls_cert, cfg->http_tls_key);
         if (!h->tls_ctx){
-            LOGE(MOD,"http.https=%d but the TLS context could not be built from "
-                     "cert %s / key %s (see the TLS error above) - REFUSING to "
-                     "serve port %d at all rather than silently downgrading it "
-                     "to plaintext and leaking credentials. Fix or regenerate "
-                     "the cert/key pair, or set http.https=0 to accept plain "
-                     "HTTP deliberately",
+            LOGE(MOD,"http.https=%d: TLS setup failed (cert %s, key %s) - "
+                     "refusing port %d",
                  cfg->http_https, cfg->http_tls_cert, cfg->http_tls_key,
                  cfg->http_port);
             free(h);
@@ -2776,9 +2771,8 @@ httpd *httpd_start(const ms_config *cfg)
      * (the operator cannot fix it without a different binary, and rtsp.c's
      * equivalent warns and carries on) - but it must not be silent either. */
     if (cfg->http_https)
-        LOGE(MOD,"http.https=%d but this build has no USE_TLS - port %d serves "
-                 "PLAIN HTTP and any password or token sent to it goes over "
-                 "the network in the clear", cfg->http_https, cfg->http_port);
+        LOGE(MOD,"http.https=%d but no USE_TLS in this build - port %d "
+                 "serves PLAIN HTTP", cfg->http_https, cfg->http_port);
 #endif
 #ifdef USE_BC_WS
     /* audio.talk_ws=1 means "serve /talk, TLS required". On a port that will
@@ -2792,11 +2786,8 @@ httpd *httpd_start(const ms_config *cfg)
         tls_port = cfg->http_https;
 #endif
         if (cfg->audio.talk_ws == 1 && !tls_port)
-            LOGW(MOD,"audio.talk_ws=1 requires TLS on the http port, but port "
-                     "%d is plaintext%s - /talk stays disabled. Set "
-                     "audio.talk_ws=2 to accept plain ws:// deliberately "
-                     "(the browser then needs a secure-context override to "
-                     "reach its microphone at all)",
+            LOGW(MOD,"audio.talk_ws=1 needs TLS, port %d is plaintext%s - "
+                     "/talk off",
                  cfg->http_port,
 #ifdef USE_TLS
                  " (http.https=0)"
@@ -2885,9 +2876,8 @@ void httpd_stop(httpd *h)
          * so leaking tls_ctx/h on this path trades a crash for a leak the OS
          * reclaims within seconds anyway - the only sane trade this close to
          * exit. */
-        LOGW(MOD,"%d connection thread(s) still live after a %lld ms drain - "
-                 "leaking tls_ctx/h rather than risking a use-after-free "
-                 "on process exit", g_nconn,
+        LOGW(MOD,"%d connection thread(s) still live after a %lld ms "
+                 "drain - leaking tls_ctx/h", g_nconn,
              (long long)((ms_now_us()-drain0)/1000));
         return;
     }

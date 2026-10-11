@@ -267,8 +267,7 @@ static int acquire_singleton_lock(void)
     }
     if (flock(fd, LOCK_EX|LOCK_NB) != 0){
         LOGE(MOD,"another timpsd instance already holds %s - refusing to "
-             "start (a second instance re-initializing the ISP would "
-             "corrupt the running instance's video pipeline)", MS_LOCK_PATH);
+             "start", MS_LOCK_PATH);
         close(fd);
         return -1;
     }
@@ -452,10 +451,8 @@ static int startup_give_up(const char *why)
     alarm(0);
     signal(SIGALRM, SIG_IGN);
     if (access(MS_STARTUP_REBOOT_MARKER, F_OK) == 0){
-        LOGE(MOD,"%s - AGAIN, after the one-shot recovery reboot already tried "
-                 "for this. A real reboot does not fix this board's problem "
-                 "either, so giving up for real (needs manual intervention, "
-                 "not another reboot)", why);
+        LOGE(MOD,"%s - AGAIN after the recovery reboot, giving up "
+                 "(needs manual intervention)", why);
         return 1;
     }
     /* The marker is the ONLY thing that makes this reboot one-shot, so it has
@@ -481,18 +478,13 @@ static int startup_give_up(const char *why)
             marker_err = errno;
     }
     if (marker_err){
-        LOGE(MOD,"%s, but the one-shot reboot marker %s cannot be written "
-                 "(%s) - without it every boot would take this same escalation "
-                 "path and reboot again, i.e. a silent reboot loop, so giving "
-                 "up permanently WITHOUT the escalation reboot. Fix the rootfs "
-                 "(/etc full, or mounted read-only?) to re-enable the one-shot "
-                 "recovery reboot",
+        LOGE(MOD,"%s, but reboot marker %s not writable (%s) - giving "
+                 "up WITHOUT reboot",
              why, MS_STARTUP_REBOOT_MARKER, strerror(marker_err));
         return 1;
     }
-    LOGE(MOD,"%s - escalating to ONE reboot before giving up permanently "
-             "(2026-08-22 T31 precedent: retries alone did not clear whatever "
-             "the board was waiting on, only a real reboot did)", why);
+    LOGE(MOD,"%s - escalating to ONE reboot before giving up "
+             "permanently", why);
     guard_release();
     sync();
     reboot(RB_AUTOBOOT);
@@ -720,9 +712,7 @@ int main(int argc, char **argv)
                  * silently spending a recovery reboot it never got. */
                 else if (errno != ENOENT)
                     LOGW(MOD,"could not clear the startup-reboot marker %s "
-                             "(%s) - it is stale now, and while it sits there "
-                             "a future unrelated start failure will skip its "
-                             "one-shot recovery reboot. Remove it by hand",
+                             "(%s) - remove it by hand",
                          MS_STARTUP_REBOOT_MARKER, strerror(errno));
                 break;
             }

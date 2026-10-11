@@ -238,15 +238,11 @@ static void hs_fail_warn(int r, int fd)
          * origin). Saying "our cert may be expired / our TLS config may be
          * broken" for this sent at least one investigation down the wrong path. */
         if (r == MBEDTLS_ERR_SSL_FATAL_ALERT_MESSAGE)
-            LOGW(MOD, "handshake failed: peer %s sent a fatal alert "
-                      "(-0x%x, %u more suppressed) - the CLIENT rejected our "
-                      "certificate (self-signed, or the name/IP it connected to "
-                      "is not in the cert SAN); our TLS config is not at fault",
+            LOGW(MOD, "handshake failed with %s: fatal alert -0x%x (+%u "
+                      "suppressed) - client rejects our cert",
                  peer, -r, muted);
         else
-            LOGW(MOD, "handshake failed with peer %s (-0x%x, %u more "
-                      "suppressed) - rejected/expired cert or TLS config "
-                      "problem? (mbedtls strerror)",
+            LOGW(MOD, "handshake failed with %s: -0x%x (+%u suppressed)",
                  peer, -r, muted);
         t_last = now;
         muted = 0;
