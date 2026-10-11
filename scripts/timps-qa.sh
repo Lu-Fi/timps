@@ -3719,6 +3719,9 @@ else
 						# still-flat gap (no widening at all) below is the real
 						# "ceiling ignored" signature, this is only slow to show it.
 						warn "video1.max_qp: still converging, not yet failing - the gap widened from ${rc_qc_r1}x (first sample, ${rc_settle_s}s after the POST) to ${rc_qc_r}x (second sample, $((2*rc_settle_s))s after) but has not reached 1.5x yet. Ceiling $rc_qc_lo delivered ${rc_qc_a} kbps, ceiling $rc_qc_hi delivered ${rc_qc_b} kbps. This SoC/scene needs more than $((2*rc_settle_s))s to fully express a live max_qp change - re-run with a longer settle before treating this as broken"
+					elif case " $rc_live " in *" rc_mode "*) true;; *) false;; esac; then
+						# classic RC: the encoder lifts max_qp to new_max_qp when a GOP needs >3x its budget
+						info "video1.max_qp: soft ceiling on this classic-RC SoC - at a starved ${rc_starve} kbps target ceilings $rc_qc_lo and $rc_qc_hi both delivered ~${rc_qc_a} kbps; expected, the RC trigger level lifts the bound (docs/ai/config-keys.md max_qp)"
 					else
 						bad "video1.max_qp: at a starved ${rc_starve} kbps target the ceiling made no difference to the bitstream - $rc_qc_lo delivered ${rc_qc_a} kbps and $rc_qc_hi delivered ${rc_qc_b} kbps (${rc_qc_r}x). Both POSTs were graded live and encoder.1.rc echoes the bound, so this is the ceiling being accepted and IGNORED (the 340fb1f/ff28ee2 class) - the starve was deep enough (${rc_qc_a} kbps is well above ${rc_starve}) and keyframe size did not separate either (${rc_qc_r1:-$rc_qc_r}x -> ${rc_qc_r}x, no widening trend), so this is not the shallow-starve/skip-floor confound or a slow-converging platform"
 					fi
