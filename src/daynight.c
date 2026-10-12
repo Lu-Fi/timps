@@ -1259,6 +1259,7 @@ static void *dn_thread(void *arg)
     const char *why = "boot";
     /* colour of the lit picture, taken after each look like A */
     float   Crg = -1.0f, Cbg = -1.0f, cdev = -1.0f;
+    float   Prg = -1.0f, Pbg = -1.0f;   /* C before a colour look that found night */
     float   rg = -1.0f, bg = -1.0f;
     int64_t c_from = 0, chold = 0, c_next = 0, c_gap = SD_COLOR_GAP_MS, c_rd = 0, c_at = 0;
     int     c_fails = 0, c_seen = 0;
@@ -1415,7 +1416,7 @@ static void *dn_thread(void *arg)
                      (double)A, (double)s);
                 A = s; rise = 0;
                 if (B > 0.0f) B = 0.0f;
-                Crg = -1.0f; chold = 0; c_from = now;
+                Crg = Prg = -1.0f; chold = 0; c_from = now;
             }
             /* sign and size differ per sensor: any channel, either way */
             int cj = 0;
@@ -1425,10 +1426,17 @@ static void *dn_thread(void *arg)
                 cdev = 100.0f * fmaxf(fabsf(rg / Crg - 1.0f), fabsf(bg / Cbg - 1.0f));
                 if (cdev > (float)dn->color_pct) {
                     if (!chold) chold = now;
+                    /* back to the colour a look has just judged night: no look */
+                    if (Prg > 0.0f && now - chold >= SD_JUMP_HOLD_MS &&
+                        200.0f * fmaxf(fabsf(rg / Prg - 1.0f), fabsf(bg / Pbg - 1.0f)) <
+                        (float)dn->color_pct) {
+                        LOGD(MOD, "colour back to the scene before the look");
+                        Crg = rg; Cbg = bg; Prg = -1.0f; chold = 0; cdev = 0.0f;
+                    }
                     /* a jump in the making decides (it forgets the bar); a
                      * darker scene is no new light */
-                    cj = now - chold >= SD_JUMP_HOLD_MS && now >= c_next && !locked &&
-                         !hold && !rise;
+                    cj = chold && now - chold >= SD_JUMP_HOLD_MS && now >= c_next &&
+                         !locked && !hold && !rise;
                 } else chold = 0;
             }
             if (sd_watched()) quiet = 0;
@@ -1439,7 +1447,7 @@ static void *dn_thread(void *arg)
                 dn_idle_hook(dn->irprobe_cmd, &idle_fails) == 0) {
                 __atomic_store_n(&g_watch_kick, 0, __ATOMIC_RELAXED);
                 sd_arm(1);
-                idle = 1; why = "idle"; L = s; idle_at = now; hold = rise = 0;
+                idle = 1; why = "idle"; L = s; idle_at = now; hold = rise = 0; Prg = -1.0f;
                 st = S_LOOK; due = now + DN_PROBE_SETTLE_S * 1000; s = -1.0f; stable = 0;
                 break;
             }
@@ -1534,6 +1542,7 @@ static void *dn_thread(void *arg)
         /* an unsettled level (another camera's look) must not become A;
          * a jump has held 20 s */
         L = stable >= DN_STABLE_N || why[0] == 'j' ? s : A; rise = 0;
+        Prg = why[0] == 'c' ? Crg : -1.0f; Pbg = Cbg;
         if (dn_irprobe(dn->irprobe_cmd, 0) == 0) {
             ir_fails = 0;
             st = S_LOOK; due = now + DN_PROBE_SETTLE_S * 1000; s = -1.0f; stable = 0;
@@ -1544,6 +1553,7 @@ static void *dn_thread(void *arg)
         st = S_NIGHT; look_at = now + look_ms;
         goto out;
     check:
+        Prg = -1.0f;
         dn_switch(DN_DAY, why, dn->switch_cmd, s, A, B);
         cur = DN_DAY; st = S_CHECK; mode_at = now; cycled = 0;
         due = now + DN_PROBE_SETTLE_S * 1000; s = -1.0f; stable = 0;

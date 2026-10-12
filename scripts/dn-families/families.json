@@ -2883,6 +2883,48 @@
     "max_wrong_mode_s": 60,
     "max_switches": 2
    }
+  },
+  {
+   "name": "color_only_lamp",
+   "title": "a lamp that changes the colour only (lit level within 6 %): colour look (night), lamp off: no second look",
+   "duration_s": 3000,
+   "initial_mode": "night",
+   "timelines": {
+    "eufy": [
+     [
+      0,
+      "dark155"
+     ],
+     [
+      600,
+      "dark155"
+     ],
+     [
+      601,
+      "cold30"
+     ],
+     [
+      900,
+      "cold30"
+     ],
+     [
+      901,
+      "dark155"
+     ],
+     [
+      3000,
+      "dark155"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 60,
+    "max_switches": 2,
+    "max_ir_probes": 2,
+    "expect_log_count": {
+     "look \\(color\\)": 1
+    }
+   }
   }
  ]
 }

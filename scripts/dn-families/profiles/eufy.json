@@ -56,6 +56,22 @@
     5.0
    ],
    "src": "the person moving: the other way round, ASSUMED"
+  },
+  "dark155": {
+   "day": 40960,
+   "lit": 155,
+   "dark": 320,
+   "src": "device test 2026-10-12 14:07-14:13 (Eufy, 30 % cold bulb): light off, lit 153-156"
+  },
+  "cold30": {
+   "day": 40960,
+   "lit": 146,
+   "dark": 303,
+   "tint": [
+    -2.0,
+    -4.0
+   ],
+   "src": "device test 2026-10-12 14:07-14:13 (Eufy, 30 % cold bulb): colour 3.7-4.1 %, lit 146, the look said night (dark 303)"
   }
  },
  "color": {
