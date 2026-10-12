@@ -3719,7 +3719,7 @@ else
 						# still-flat gap (no widening at all) below is the real
 						# "ceiling ignored" signature, this is only slow to show it.
 						warn "video1.max_qp: still converging, not yet failing - the gap widened from ${rc_qc_r1}x (first sample, ${rc_settle_s}s after the POST) to ${rc_qc_r}x (second sample, $((2*rc_settle_s))s after) but has not reached 1.5x yet. Ceiling $rc_qc_lo delivered ${rc_qc_a} kbps, ceiling $rc_qc_hi delivered ${rc_qc_b} kbps. This SoC/scene needs more than $((2*rc_settle_s))s to fully express a live max_qp change - re-run with a longer settle before treating this as broken"
-					elif case " $rc_live " in *" rc_mode "*) true;; *) false;; esac; then
+					elif rc_live_has rc_mode; then
 						# classic RC: the encoder lifts max_qp to new_max_qp when a GOP needs >3x its budget
 						info "video1.max_qp: soft ceiling on this classic-RC SoC - at a starved ${rc_starve} kbps target ceilings $rc_qc_lo and $rc_qc_hi both delivered ~${rc_qc_a} kbps; expected, the RC trigger level lifts the bound (docs/ai/config-keys.md max_qp)"
 					else
