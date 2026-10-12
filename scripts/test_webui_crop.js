@@ -5,7 +5,8 @@
 //   node scripts/test_webui_crop.js <path/to/roi-crop.js> [control.json ...]
 //
 // Extracts the pure cropFit/cropDrag/cropFromZoom/zoomFromCrop/cropPct/
-// cropScale/cropEffMin/cropZoomMax/cropNative/cropDragView/cropZoomAt/cropBackdrop by
+// cropScale/cropEffMin/cropZoomMax/cropNative/cropDragView/cropZoomAt/cropBackdrop
+// (and cropMinAt/cropUpMin/cropNeedUp, the automatic upscaling) by
 // name; each extra argument is a saved GET /control whose caps.fcrop.sensor
 // is used as one more sensor size and whose min_win/zoom_max/video sizes are
 // checked against the zoom slider range. Exit 0 = all passed.
@@ -39,6 +40,7 @@ function body(name) {
 }
 const names = ["cropFit", "cropDrag", "cropFromZoom", "zoomFromCrop", "cropPct", "cropScale", "cropEffMin", "cropZoomMax", "cropNative", "cropDragView", "cropZoomAt", "cropBackdrop"];
 if (src.indexOf("function cropToView(") >= 0) names.push("cropRotView", "cropToView", "cropFromView");
+if (src.indexOf("function cropNeedUp(") >= 0) names.push("cropMinAt", "cropUpMin", "cropNeedUp");
 const G = new Function(names.map(body).join("\n") + "\nreturn {" + names.join(",") + "};")();
 const F = 64;
 
@@ -232,6 +234,65 @@ if (G.cropToView) {
     const vw = r % 180 ? sh : sw, vh = r % 180 ? sw : sh, em = r % 180 ? [360, 640] : [640, 360];
     const z = G.cropFromView(G.cropFromZoom(2, 1, 0, vw, vh, em), r, sw, sh);
     ok(valid(z, sw, sh), "view zoom maps to a valid sensor window " + r + " " + JSON.stringify(z));
+  }
+}
+
+// automatic upscaling (T23/T31): smallest window at upscale_max, needed fcrop_upscale_pct
+if (G.cropNeedUp) {
+  // C reference: timps src/hal/roi_geom.h fcrop_min_msca
+  const msca = (o, p) => { p = Math.max(0, p); let v = Math.floor((o * 100 + 100 + p - 1) / (100 + p)); v = (v + 1) & ~1; return Math.max(F, v); };
+  const outs = [[1920, 1080], [2560, 1440], [1280, 720], [2304, 1296], [640, 360], [1600, 1200], [100, 50], [0, 0]];
+  for (const o of outs) for (let p = -1; p <= 100; p++) {
+    const m = G.cropMinAt(o, p);
+    ok(m[0] === msca(o[0], p) && m[1] === msca(o[1], p), "minAt " + o + " p" + p + " = fcrop_min_msca " + m);
+    ok(m[0] % 2 === 0 && m[1] % 2 === 0 && m[0] >= F && m[1] >= F, "minAt even, >= 64 " + o + " p" + p);
+    ok(m[0] * (100 + Math.max(0, p)) >= o[0] * 100 && m[1] * (100 + Math.max(0, p)) >= o[1] * 100, "minAt meets the driver rule " + o + " p" + p);
+  }
+  let m = G.cropMinAt([1920, 1080], 100);
+  ok(m[0] === 960 && m[1] === 540, "1080p p100: 960x540 " + m);
+  m = G.cropMinAt([1920, 1080], 30);
+  ok(m[0] === 1478 && m[1] === 832, "1080p p30: 1478x832 " + m);
+  m = G.cropMinAt([2560, 1440], 50);
+  ok(m[0] === 1708 && m[1] === 960, "1440p p50: 1708x960 " + m);
+
+  // caps.fcrop.min_win at p reproduced: extend to pmax, else keep min_win
+  const out = [1920, 1080], cur = G.cropMinAt(out, 30);
+  m = G.cropUpMin(out, 30, 100, cur);
+  ok(m[0] === 960 && m[1] === 540, "upMin p30 -> pmax 100 " + m);
+  ok(G.cropUpMin(out, 30, 100, [1500, 840]) [0] === 1500, "upMin: other streams than the boot ones keep min_win");
+  ok(G.cropUpMin(out, 100, 100, G.cropMinAt(out, 100))[0] === 960, "upMin at pmax: unchanged");
+  ok(G.cropUpMin(out, 50, -1, G.cropMinAt(out, 50))[0] === G.cropMinAt(out, 50)[0], "upMin pmax -1: unchanged");
+  {
+    const sw = 2560, sh = 1440, em = G.cropUpMin([1920, 1080], 20, 100, G.cropMinAt([1920, 1080], 20));
+    const zm = G.cropZoomMax(sw, sh, em), end = G.cropFromZoom(zm, 0.5, 0.5, sw, sh, em);
+    ok(em[0] === 960 && Math.abs(zm - 8 / 3) < 1e-9 && end.w === 960 && end.h === 540, "slider end at pmax " + zm + " " + JSON.stringify(end));
+    const d = G.cropDragView({ x: 0, y: 0, w: sw, h: sh }, "size", -1e4, -1e4, 375, 211, sw, sh, em);
+    ok(d.w === 960 && d.h === 540, "corner drag floor at pmax " + JSON.stringify(d));
+    const v = G.cropDragView({ x: 0, y: 0, w: sh, h: sw }, "size", -1e4, -1e4, 211, 375, sh, sw, [em[1], em[0]]);
+    ok(v.w === 540 && v.h === 960, "rotated view: floor swapped " + JSON.stringify(v));
+  }
+
+  // needed p: rounded up to 10, capped at pmax, never below p
+  ok(G.cropNeedUp({ w: 1920, h: 1080 }, out, 20, 100) === 20, "need: native window keeps p");
+  ok(G.cropNeedUp({ w: 1600, h: 900 }, out, 10, 100) === 20, "need: 1600x900 -> 20 (needs 20)");
+  ok(G.cropNeedUp({ w: 1598, h: 898 }, out, 10, 100) === 30, "need: 1598x898 -> 30 (needs 21)");
+  ok(G.cropNeedUp({ w: 1280, h: 720 }, out, 10, 100) === 50, "need: 1280x720 -> 50");
+  ok(G.cropNeedUp({ w: 960, h: 540 }, out, 10, 100) === 100, "need: 960x540 -> 100");
+  ok(G.cropNeedUp({ w: 900, h: 500 }, out, 10, 100) === 100, "need: below the pmax window capped at 100");
+  ok(G.cropNeedUp({ w: 1500, h: 1080 }, out, 10, 100) === 30, "need: worst axis wins");
+  ok(G.cropNeedUp({ w: 1500, h: 844 }, out, 35, 100) === 35, "need: p 35 already enough, not rounded up");
+  ok(G.cropNeedUp({ w: 1280, h: 720 }, out, 70, 100) === 70, "need: never lowers p");
+  ok(G.cropNeedUp({ w: 0, h: 0 }, out, 30, 100) === 30, "need: no window keeps p");
+  ok(G.cropNeedUp({ w: 1280, h: 720 }, [0, 0], 10, 100) === 10, "need: no stream keeps p");
+  for (let i = 0; i < 2000; i++) {
+    const o = outs[i % 6], pmax = 100, p0 = 10 * (1 + Math.floor(rnd() * 9));
+    const mn = G.cropMinAt(o, pmax), w = mn[0] + 2 * Math.floor(rnd() * (o[0] - mn[0]) / 2 + 1), h = mn[1] + 2 * Math.floor(rnd() * (o[1] - mn[1]) / 2 + 1);
+    const p = G.cropNeedUp({ w: w, h: h }, o, p0, pmax);
+    ok(p >= p0 && p <= pmax && (p === p0 || p % 10 === 0) && w * (100 + p) >= o[0] * 100 && h * (100 + p) >= o[1] * 100,
+      "random need " + o + " " + w + "x" + h + " p" + p0 + " -> " + p);
+    const a = G.cropMinAt(o, p);
+    ok(a[0] <= w && a[1] <= h, "random need: window passes min_win at the new p " + w + "x" + h + " p" + p);
+    if (p > p0 && p - 10 > p0) ok(w * (90 + p) < o[0] * 100 || h * (90 + p) < o[1] * 100, "random need: one step lower would not do " + w + "x" + h + " p" + p);
   }
 }
 
