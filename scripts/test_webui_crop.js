@@ -38,6 +38,7 @@ function body(name) {
   return src.slice(at, i + 1);
 }
 const names = ["cropFit", "cropDrag", "cropFromZoom", "zoomFromCrop", "cropPct", "cropScale", "cropEffMin", "cropZoomMax", "cropNative", "cropDragView", "cropZoomAt", "cropBackdrop"];
+if (src.indexOf("function cropToView(") >= 0) names.push("cropRotView", "cropToView", "cropFromView");
 const G = new Function(names.map(body).join("\n") + "\nreturn {" + names.join(",") + "};")();
 const F = 64;
 
@@ -213,6 +214,25 @@ for (const [mw, mh] of [[960, 540], [640, 360], [1920, 1080]]) {
     ok(valid(z, sw, sh) && z.w >= 960 && z.h >= 540, "random wheel zoom " + JSON.stringify(s0) + " -> " + JSON.stringify(z));
   }
   ok(G.cropBackdrop(false, true) === "none" && G.cropBackdrop(true, true) === "frame" && G.cropBackdrop(true, false) === "grid", "backdrop selection");
+}
+
+// rotated stream: the view is the rotated sensor, the window stays in sensor coordinates
+if (G.cropToView) {
+  const sw = 1920, sh = 1080, c = { x: 100, y: 50, w: 640, h: 360 };
+  ok(G.cropRotView("t23n", 90) === 90 && G.cropRotView("t41lq", 270) === 270, "rot: T23/T41 90 = clockwise");
+  ok(G.cropRotView("t31x", 90) === 270 && G.cropRotView("t20x", 270) === 90, "rot: T31/T1x 90 = counter-clockwise");
+  ok(G.cropRotView("t40", 180) === 180 && G.cropRotView("t23n", 0) === 0, "rot: 180 and 0");
+  let v = G.cropToView(c, 90, sw, sh);
+  ok(v.x === sh - 50 - 360 && v.y === 100 && v.w === 360 && v.h === 640, "cw: top-left goes to top-right " + JSON.stringify(v));
+  v = G.cropToView(c, 270, sw, sh);
+  ok(v.x === 50 && v.y === sw - 100 - 640 && v.w === 360, "ccw: top-left goes to bottom-left " + JSON.stringify(v));
+  for (const r of [0, 90, 180, 270]) {
+    const b = G.cropFromView(G.cropToView(c, r, sw, sh), r, sw, sh);
+    ok(b.x === c.x && b.y === c.y && b.w === c.w && b.h === c.h, "round trip " + r);
+    const vw = r % 180 ? sh : sw, vh = r % 180 ? sw : sh, em = r % 180 ? [360, 640] : [640, 360];
+    const z = G.cropFromView(G.cropFromZoom(2, 1, 0, vw, vh, em), r, sw, sh);
+    ok(valid(z, sw, sh), "view zoom maps to a valid sensor window " + r + " " + JSON.stringify(z));
+  }
 }
 
 console.log((fails ? "FAILED " : "ok ") + (checks - fails) + "/" + checks);

@@ -259,6 +259,12 @@ int hal_rot_state(int si)
 {
     return (si >= 0 && si < MS_MAX_VSTREAM) ? g_rot_st[si] : 0;
 }
+const char *hal_rot_path(int si)
+{
+    if (si < 0 || si >= MS_MAX_VSTREAM || g_rot_st[si] || !g_cfg_boot.video[si].enabled)
+        return "off";
+    return g_cfg_boot.video[si].rotation ? "hw" : "off";
+}
 
 static int g_sim_keepalive;
 static int sim_start(const ms_config *cfg)

@@ -27,6 +27,10 @@ _1.10.2 (draft)_
   value, live) sets the open-tx-isp `fcrop_upscale_pct` on T23/T31 OpenIMP,
   so a crop window smaller than the stream is upscaled; ceiling in the new
   `caps.fcrop.upscale_max` (100 = 2.0x on both, device-tested). Lowering it re-applies the window or returns to the full sensor.
+- `GET /control`: `video.<N>.rotate_path` (`off`/`sw`/`hw`/`band`, `USE_ROTATE`
+  builds) says how a running stream is rotated, so the WebUI can tell the T23
+  software path (text OSD only, no logo or privacy) and the vendor-libimp top
+  band from a full-frame rotation.
 
 ### Fixed
 

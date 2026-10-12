@@ -117,6 +117,7 @@ if [ -n "$RSIM" ] && [ -x "$RSIM" ]; then
     expect "caps.err_v"                      1   "$(curl -s $L | jget "j['caps']['err_v']")"
     expect "boot: 640x360 refused, state"    203 "$(curl -s $L | jget "j['video']['1']['rotation_state']")"
     expect "boot: unrotated stream, state"   0   "$(curl -s $L | jget "j['video']['0']['rotation_state']")"
+    expect "boot: refused stream, path"      off "$(curl -s $L | jget "j['video']['1']['rotate_path']")"
     expect "POST main-stream rotation"       202 "$(perr '{"video":{"0":{"rotation":90}}}' video0.rotation)"
     expect "POST 16-aligned sub stream"      -   "$(perr '{"video":{"1":{"height":368}}}' video1.rotation)"
     expect "POST oversized sub stream"       204 "$(perr '{"video":{"1":{"width":1280,"height":720}}}' video1.rotation)"
@@ -127,6 +128,15 @@ if [ -n "$RSIM" ] && [ -x "$RSIM" ]; then
     expect "POST unknown key"                102 "$(perr '{"image":{"bogus":1}}' image.bogus)"
     expect "POST file-only key"              103 "$(perr '{"video":{"0":{"imp_chn":0}}}' video0.imp_chn)"
     expect "clean POST has no errors key"    0   "$(curl -s -X POST $L -d '{"image":{"contrast":121}}' | grep -c '"errors"')"
+    kill $simpid; wait $simpid 2>/dev/null
+    sed -i '/^video[01].rotation/d;/^video1.width/d;/^video1.height/d' "$CONF"
+    printf 'video1.width = 640\nvideo1.height = 368\nvideo1.rotation = 90\n' >> "$CONF"
+    "$RSIM" -c "$CONF" > "$D/rot2.log" 2>&1 &
+    simpid=$!
+    for _ in $(seq 50); do curl -s -o /dev/null $L && break; sleep 0.1; done
+    expect "boot: rotated stream, path"      hw  "$(curl -s $L | jget "j['video']['1']['rotate_path']")"
+    expect "...eff_width swapped"            368 "$(curl -s $L | jget "j['video']['1']['eff_width']")"
+    expect "boot: unrotated stream, path"    off "$(curl -s $L | jget "j['video']['0']['rotate_path']")"
     kill $simpid; wait $simpid 2>/dev/null
 else
     sk "error codes: no rotation sim given"

@@ -2709,6 +2709,21 @@ int hal_rot_state(int si)
     return (si >= 0 && si < MS_MAX_VSTREAM) ? g_rot_st[si] : 0;
 }
 
+#ifndef ROT_HAS_SW_90
+extern void OpenIMP_P0_GetState(void) __attribute__((weak));
+#endif
+const char *hal_rot_path(int si)
+{
+    int r = (si >= 0 && si < MS_MAX_VSTREAM) ? g_eff_rot[si] : 0;
+    if (!r) return "off";
+#ifdef ROT_HAS_SW_90
+    return "sw";
+#else
+    /* imp_osd.c osd_band_limited() */
+    return (r == 180 || &OpenIMP_P0_GetState) ? "hw" : "band";
+#endif
+}
+
 /* what the next start would refuse; libimp-level refusals only once seen */
 int hal_rot_check(int si, const ms_vstream_cfg *v)
 {

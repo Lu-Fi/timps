@@ -642,6 +642,13 @@ hit this — T10, T20 and T23 coerce `codec` to `h264` at parse time.
   per-channel hardware I2D rotate, which the global flips cannot replicate.
 * A 90/270 rotation **swaps the effective width/height** for every downstream
   consumer (encoder attrs, OSD, hub, muxers, JPEG piggyback).
+* Overlays on a rotated stream: `osdN.<i>.x/y`, `privacyN.<i>.*` and the
+  motion grid are in the **rotated**
+  `eff_width`×`eff_height` frame on every path. What is drawn depends on the
+  path, reported since v1.10.2 as `video.<N>.rotate_path` in `GET /control`:
+  `sw` (T23) text only, no logo, no privacy covers; `band` (vendor libimp
+  90/270, T31/T40/T41) only the top `eff_width` rows; `hw` (OpenIMP) the whole
+  frame. Encoder ROI ignores rotated streams (`caps.roi.streams[N] = "rotated"`).
 * Legacy `rotation = 1|2` (the raw libimp `rotTo90` enum, as used in
   prudynt/raptor configs) maps to 90/270 and round-trips to the same physical
   direction.

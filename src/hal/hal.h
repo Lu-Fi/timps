@@ -130,6 +130,10 @@ void hal_fcrop_limits(hal_fcrop_lim *o);
  * hal_rot_check: what the next start would refuse for v. */
 int hal_rot_state(int si);
 int hal_rot_check(int si, const ms_vstream_cfg *v);
+/* How the running stream si is rotated: "off", "sw" (T23 software path:
+ * text OSD only), "hw" (OSD/privacy over the whole frame) or "band" (vendor
+ * libimp: OSD/privacy only in the top eff_width rows). */
+const char *hal_rot_path(int si);
 
 /* 1 when image.<key> is built in but this libimp lacks its (weak, OpenIMP-only)
  * setter. Defined only where isp_caps.h sets ISP_WEAK_KEYS. */
