@@ -1,10 +1,10 @@
 # timps configuration keys — complete reference
 
-**Applies to timps v1.10.1 (source: `main`, 2026-10-12).**
+**Applies to timps v1.10.2 (draft, source: `dev/1.10.2`, 2026-10-12).**
 
 A statement marked **since vX** is new in that release — on an older camera
-the *previous* behaviour is the one to describe. Changes listed under
-`[1.10.1]` in `CHANGELOG.md` are marked **since v1.10.0**.
+the *previous* behaviour is the one to describe. Changes in the
+`[Unreleased]` 1.10.2 draft of `CHANGELOG.md` are marked **since v1.10.2**.
 
 Authoritative source: `src/config.c` (the `cfg_field` tables and
 `config_defaults()`), `src/config.h` (struct field sizes and doctrine),
@@ -625,10 +625,13 @@ hit this — T10, T20 and T23 coerce `codec` to `h264` at parse time.
   * **T23** — software NV12 transpose, only with the extra opt-in
     `BR2_PACKAGE_TIMPS_SW_ROTATE` (`-DMS_ENABLE_SW_ROTATE`). Costs real CPU on
     the single-core T23, is H.264 only, and loses hardware OSD/privacy on the
-    rotated stream.
+    rotated stream. Envelope (`src/hal/fs_rot_env.h`): at most 704x576 pixels
+    and 15 fps, the source height (= encoded width) a multiple of 16 and at
+    least 256; snapshot/MJPEG on that stream also need it a multiple of 32
+    (e.g. `704x384` → 384x704; `1280x704` is refused, 204).
   * **T30 C100** — no path at all; 90/270 coerce to `0`.
-* Outside the envelope (T31, T10/T20/T21) the stream starts **unrotated** with a
-  `refusing FS-rotate ...` warning (on T10/T20/T21 also when the OpenIMP cannot
+* Outside the envelope (T31, T10/T20/T21, T23) the stream starts **unrotated** with a
+  `refusing FS-rotate ...` / `refusing SW rotate ...` warning (on T10/T20/T21 also when the OpenIMP cannot
   rotate, see above); `videoN.rotation` keeps the configured
   value, and `GET /control` shows the running geometry in
   `videoN.eff_width`/`eff_height` (unswapped). **Since v1.10.1**
@@ -647,8 +650,8 @@ hit this — T10, T20 and T23 coerce `codec` to `h264` at parse time.
   `eff_width`×`eff_height` frame on every path. What is drawn depends on the
   path, reported since v1.10.2 as `video.<N>.rotate_path` in `GET /control`:
   `sw` (T23) text only, no logo, no privacy covers; `band` (vendor libimp
-  90/270, T31/T40/T41) only the top `eff_width` rows; `hw` (OpenIMP) the whole
-  frame. Encoder ROI ignores rotated streams (`caps.roi.streams[N] = "rotated"`).
+  90/270, T31/T40/T41) only the top `eff_width` rows; `hw` (OpenIMP, and
+  T40/T41 `180`) the whole frame; `off` not rotated (also a refused rotation). Encoder ROI ignores rotated streams (`caps.roi.streams[N] = "rotated"`).
 * Legacy `rotation = 1|2` (the raw libimp `rotTo90` enum, as used in
   prudynt/raptor configs) maps to 90/270 and round-trips to the same physical
   direction.
@@ -1155,7 +1158,7 @@ tick) **except**:
 | `daynight.night_gain` | float | `4096` | 1..1000000 | live | **Alias `total_gain_night_threshold`.** Exposure index above this (while in day) = night. 4096 = 16×. Where the AE cannot reach it, the AE at its limit counts as dark too (see below). |
 | `daynight.day_confirm_s` | int | `30` | 1..3600 | live | How long the index must stay above `night_gain` (or the AE at its limit) before day→night. A very dark reading (≥ 2 × `night_gain`, or the AE at its limit) switches after 6 s instead (not within 8 s of the camera's own switch). |
 | `daynight.jump_pct` | int | `20` | 5..70 | live | **since v1.10.1.** At night: when the illuminator-lit level falls this many percent below the level of the last look and stays there 20 s, look at once (new light). Cameras without a switchable illuminator use a fixed 50 % and check. |
-| `daynight.color_pct` | int | `3` | 0..50 | live | **since v1.10.2.** At night: when the colour of the illuminator-lit picture (global R/G or B/G of the ISP's AWB statistics) moves this many percent from its value after the last look and stays there 20 s, look at once. Catches a weak lamp that barely moves the lit level (measured with a 30 % bulb: Eufy B/G −4 % at an unchanged exposure, Wyze Pan B/G +5.5 %; an unchanged scene stays within 0.5 %). Only starts a look (8 s dark, no click); the look decides as always. At most one colour look per 5 min, the gap doubles (10, 20 … up to 45 min) while no timer look happens in between, so a person moving in view costs at most 4 extra looks (32 s dark) in the first hour and then none beyond the 45-min rhythm. `0` = off. Needs a switchable illuminator and a libimp with per-zone AWB statistics: T40/T41 vendor, T23/T31/C100 vendor, T10/T20 OpenIMP, T23/T31 OpenIMP only with a libimp that exports `OpenIMP_Cap_AwbZone` (agg-38+), T40/T41 OpenIMP only with one that exports `OpenIMP_Cap_AwbStatistics`; elsewhere `daynight.color_trigger` reads `"unavailable"` and nothing happens. |
+| `daynight.color_pct` | int | `3` | 0..50 | live | **since v1.10.2.** At night: when the colour of the illuminator-lit picture (global R/G or B/G of the ISP's AWB statistics) moves this many percent from its value after the last look and stays there 20 s, look at once (log `look (color)`). Read every 5 s at night (after start also outside it, until the first success, at most 30 reads). Catches a weak lamp that barely moves the lit level (measured with a 30 % bulb: Eufy B/G −4 % at an unchanged exposure, Wyze Pan B/G +5.5 %; an unchanged scene stays within 0.5 %). Only starts a look (8 s dark, no click); the look decides as always. At most one colour look per 5 min, the gap doubles (10, 20 … up to 45 min) while no timer look happens in between, so a person moving in view costs at most 4 extra looks (32 s dark) in the first hour and then none beyond the 45-min rhythm. `0` = off. Needs a switchable illuminator and a libimp with per-zone AWB statistics: T40/T41 vendor, T23/T31/C100 vendor, T10/T20 OpenIMP, T23/T31 OpenIMP only with a libimp that exports `OpenIMP_Cap_AwbZone` (agg-38+), T40/T41 OpenIMP only with one that exports `OpenIMP_Cap_AwbStatistics`; elsewhere `daynight.color_trigger` reads `"unavailable"` and nothing happens. Device-tested only on T40 vendor (Eufy) and T20 OpenIMP (Wyze Pan); the other paths are unverified. |
 | `daynight.heartbeat_s` | int | `14400` (4 h) | 300..604800 | live | Check interval at night for cameras **without** a switchable illuminator. Also caps the look interval (45 min) of the others. |
 | `daynight.heartbeat_max_s` | int | `43200` (12 h) | 300..604800 | live | The longest night without a day-pipeline reading: then a check runs regardless of looks and lockouts. Bounds a wrong night. |
 | `daynight.interval_ms` | int | `2000` | 100..60000 | live | Sample interval. The exposure index needs a `/proc` scrape per tick (integration time has no IMP API). |
@@ -1193,7 +1196,13 @@ to `total_gain`.
   `{"daynight":{"probe":1}}`. A lit level that rises 10 % above the
   reference and does not fall back below it for 60 s (the light of the last
   look has gone) becomes the reference, and the next look relearns the scene
-  bar.
+  bar. **Since v1.10.2** a look taken while the lit level was still moving (a
+  lamp coming on, another camera's look; a 20 s jump excepted) sets no
+  reference: the next settled level does, within 60 s. The colour reference
+  is retaken 8 s after every look with the AE settled; no colour look runs
+  while a jump hold runs or the lit level sits above the reference, and after
+  a colour look that found night, the colour back within `color_pct`/2 of its
+  value before that look for 20 s is taken as the new reference, not as light.
 * **Look → check**: if the reading without the illuminator is below the bar —
   `day_gain`, twice that for a look a jump started, or a scene bar learnt from
   a failed check — the camera switches to the day pipeline and reads it once

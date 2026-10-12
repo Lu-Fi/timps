@@ -18,15 +18,20 @@ _1.10.2 (draft)_
   unchanged, B/G -4 %) now ends the night within about 40 s instead of at
   the next 45-min look. It only starts a look (8 s dark, no click); colour
   looks are at least 5 min apart and the gap doubles up to 45 min until a
-  timer look. Per-zone AWB statistics are read on T40/T41/T23/T31/C100
+  timer look. No colour look while the lit scene is darker than the
+  reference; after a colour look that found night, the colour returning to
+  its value before the look is no new light. The statistics are read every
+  5 s at night (43-123 µs per read). Per-zone AWB statistics are read on T40/T41/T23/T31/C100
   vendor, T10/T20 OpenIMP, and on T23/T31 and T40/T41 OpenIMP where the
-  libimp exports `OpenIMP_Cap_AwbZone` / `OpenIMP_Cap_AwbStatistics`; elsewhere `GET /control` reports
-  `daynight.color_trigger: "unavailable"`. New status fields
+  libimp exports `OpenIMP_Cap_AwbZone` / `OpenIMP_Cap_AwbStatistics`;
+  elsewhere `GET /control` reports `daynight.color_trigger: "unavailable"`. New status fields
   `daynight.color_trigger` and `daynight.color_dev_pct`.
 - FrontCrop: `image.fcrop_upscale_pct` (default -1 = leave the driver's
   value, live) sets the open-tx-isp `fcrop_upscale_pct` on T23/T31 OpenIMP,
   so a crop window smaller than the stream is upscaled; ceiling in the new
-  `caps.fcrop.upscale_max` (100 = 2.0x on both, device-tested). Lowering it re-applies the window or returns to the full sensor.
+  `caps.fcrop.upscale_max` (100 = 2.0x on both, device-tested; T31 at 150
+  hard-hangs). Lowering it re-applies the window or returns to the full
+  sensor. Elsewhere a POST answers `"unsupported"` (104).
 - `GET /control`: `video.<N>.rotate_path` (`off`/`sw`/`hw`/`band`, `USE_ROTATE`
   builds) says how a running stream is rotated, so the WebUI can tell the T23
   software path (text OSD only, no logo or privacy) and the vendor-libimp top
@@ -35,6 +40,13 @@ _1.10.2 (draft)_
   available memory, the machine's CPU % and timpsd's own CPU % and RSS, for the
   WebUI stats card. CPU values are tick deltas since the previous sample
   (held at least 2 s), -1 at first.
+
+### Changed
+
+- Day/night: a look taken while the lit level is still moving (a lamp coming
+  on, another camera's look) no longer sets the reference
+  (`night_baseline`); the next settled level after it does, within 60 s. A
+  jump held for 20 s still counts.
 
 ### Fixed
 

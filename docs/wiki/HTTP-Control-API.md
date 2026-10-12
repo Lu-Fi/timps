@@ -109,6 +109,15 @@ build/platform actually supports.
 }
 ```
 
+Read-only leaves worth knowing (full table in `docs/ai/reference.md` §6):
+`video.<N>.eff_width`/`eff_height`, `rotation_state` (why a stream runs
+unrotated, since 1.10.1) and `rotate_path` (since 1.10.2: `off`, `sw` = T23
+software rotate with text OSD only, `band` = vendor libimp 90/270 with
+OSD/privacy only in the top `eff_width` rows, `hw` = whole frame);
+`daynight.exposure`, `night_baseline`, `day_trigger`, `ir_idle`, and since
+1.10.2 `color_trigger` (`on`/`off`/`unavailable`) and `color_dev_pct` (the lit
+picture's colour change since the last look, `-1` without a reference).
+
 ### The `caps` object
 
 `caps` exists so a WebUI can grey out controls this exact build/SoC
@@ -126,7 +135,7 @@ cannot actually apply, instead of hardcoding a feature matrix client-side:
 | `caps.events_max_clients` | Concurrent `/events` (SSE) subscribers before `503 busy`. Unlike the two above this is a **config** key (`events.max_clients`, default 8), so it is per-camera, not per-build. |
 | `caps.motion` | `{"available":0\|1, "max_cells":N}` — whether this build/SDK has the `IMP_IVS` move API, and the compile-time cell budget (`IMP_IVS_MOVE_MAX_ROI_CNT`, 52 on most SDKs, 4 on the old T10/T20 3.9.0 SDK). |
 | `caps.privacy` | `{"available":0\|1, "max_regions":N}` — `available` reflects whether an OSD group actually exists on **any** stream (it only does if OSD or a privacy region was enabled at boot), not a hardcoded 1. |
-| `caps.roi` / `caps.fcrop` | Since v1.10.0. `{"tier":"effective\|experimental\|unsupported\|sim", ...}` for encoder ROI (`regions`, `slots`, `align`, `qp_abs`, `qp_delta`, `streams[]`) and ISP FrontCrop (`live`, `min`, `even`, `sensor:[w,h]`, `state`). See [Platform & SDK Support](Platform-SDK-Support.md#roi-and-frontcrop-tiers). |
+| `caps.roi` / `caps.fcrop` | Since v1.10.0. `{"tier":"effective\|experimental\|unsupported\|sim", ...}` for encoder ROI (`regions`, `slots`, `align`, `qp_abs`, `qp_delta`, `streams[]`) and ISP FrontCrop (`live`, `min`, `even`, `sensor:[w,h]`, `state`, `min_win`, `zoom_max`, `upscale_pct`, and since 1.10.2 `upscale_max` = the ceiling of `image.fcrop_upscale_pct`, -1 where it is unsupported). See [Platform & SDK Support](Platform-SDK-Support.md#roi-and-frontcrop-tiers). |
 | `caps.rotation` | (Only present in `USE_ROTATE` builds.) The ascending array of rotation values this SoC's build can actually apply, e.g. `[0]`, `[0,90,270]`, or `[0,90,180,270]` on T40/T41. See [Platform & SDK Support](Platform-SDK-Support.md). |
 | `caps.record` / `caps.timelapse` | `{"available":0\|1}` per `USE_RECORD`/`USE_TIMELAPSE`. |
 | `caps.backchannel` | `{"available":<bc_available()>,"talk_ws":0\|1\|2}` — `available` is whether the backchannel was actually configured at boot (restart-only master switch — see [Audio](Audio.md)). `talk_ws` is the browser-microphone WebSocket (`/talk`, `USE_BC_WS`) on the *same* backchannel, reported as a second flag rather than a second caps entry because a camera can perfectly well have the RTSP backchannel without it. It is the **resolved verdict**, not the raw `audio.talk_ws` value: `0` = this port would not serve `/talk` at all right now, `1` = served, TLS required, `2` = served, plain `ws://` accepted. `audio.talk_ws=1` on a plaintext port therefore reports `0` (every request would `426`), so a WebUI can gate its talk button on this one number. Nothing here says which scheme to dial: `1` always means `wss://`; for `2` take the scheme from the same `tls` field the media/control URLs use. |
@@ -479,7 +488,7 @@ summary:
 | `image` | `image.*` | Every key accepted and live-applied where the SoC supports it (`caps.image`). |
 | `audio` | `audio.*` | `volume`/`gain`/`alc_gain`/`mute`/`spk_volume`/`spk_gain` live; `spk_enabled`/`aec` take effect at the next speaker (AO) open, `talk_ws` at the next `/talk` request; the rest (codec/samplerate/channels/bitrate/high_pass/agc/ns/force_stereo/backchannel*) persist-only. |
 | `speaker` | not persisted | `{"play":"<file>"}` enqueues a system sound on the play FIFO (validated against `/usr/share/sounds`, no `/` or `..`); `{"stop":1}` stops it. Transient action, `USE_PLAY` only — see [Audio](Audio.md). |
-| `daynight` | `daynight.*` + `{"probe":1}` | `enabled`/`mode`/`time_night_start`/`time_day_start`/the threshold, `jump_pct`, heartbeat and sun-offset numerics plus `interval_ms` are all live (the detection thread polls `g_cfg` directly rather than being pushed through a HAL call); `mode` is validated against `auto`/`schedule` (legacy `sensor`/`time`/`sun` still accepted) before being applied. Eight further numerics — `probe_jump_pct`, `probe_settle_s`, `ref_delay_s`, `ir_ratio_night`, `ir_ratio_day`, `ir_min_headroom`, `boot_settle_s`, `transition_s` — are fixed internal constants as of the 2026-08-22 config consolidation: still readable in the status object for diagnostics, but no longer POST-able. `switch_cmd`/`isp_path`/`trace_path`/`irprobe_cmd` are deliberately **not** POST-able (exec'd command / paths the daemon writes as root, config-file only). `probe` is a command, like `record.clip`: it arms one silent IR probe for the next tick and is rejected (not silently ignored) on a camera with no `daynight.irprobe_cmd` configured or whose silent probe has retired itself for the session — see [Day/Night](Day-Night.md#the-silent-probe). |
+| `daynight` | `daynight.*` + `{"probe":1}` | `enabled`/`mode`/`time_night_start`/`time_day_start`/the threshold, `jump_pct`, `color_pct` (since 1.10.2), heartbeat and sun-offset numerics plus `interval_ms` are all live (the detection thread polls `g_cfg` directly rather than being pushed through a HAL call); `mode` is validated against `auto`/`schedule` (legacy `sensor`/`time`/`sun` still accepted) before being applied. The eight constants of the 2026-08-22 consolidation (`probe_jump_pct`, `probe_settle_s`, `ref_delay_s`, `ir_ratio_night`, `ir_ratio_day`, `ir_min_headroom`, `boot_settle_s`, `transition_s`) are retired since 1.10.1: not POST-able and no longer echoed. `switch_cmd`/`isp_path`/`trace_path`/`irprobe_cmd` are deliberately **not** POST-able (exec'd command / paths the daemon writes as root, config-file only). `probe` is a command, like `record.clip`: it arms one look (IR illuminator off 8 s) for the next tick and is rejected (not silently ignored) on a camera with no `daynight.irprobe_cmd` configured or whose looks have been turned off for the session after two hook failures — see [Day/Night](Day-Night.md). |
 | `osd` (legacy shared form) | `osd.enabled`/`monitor_stream`/`font_path`/`supersample`/`hinting` + `osdN.*` mirrored onto every stream | These osd.* globals are looked for only in the JSON span *before* the first nested item object, so an item's own keys (e.g. an item's `enabled`) are never mistaken for them. `enabled`/`font_path`/`supersample`/`hinting` are restart-required (listed in `caps.restart`, reported in `deferred_keys`); `monitor_stream` applies on the next OSD refresh. Since v1.9.28 the `{placeholder}` source file for OSD text is fixed (`/tmp/timps_osd.vars`) and has no config key at all — not `osd.vars_file` anymore, which used to exist but let a settable path point at `timps.conf` itself (a POSTed `osd.vars_file` now lands in `ignored`). |
 | `osd0`/`osd1` (canonical per-stream form) | `osd<S>.<N>.*` | Applied live via `imp_osd_apply()` for items that already had a region at startup, **except** `type` (text vs. logo): the live re-render dispatch is fixed at region-creation time, so changing an existing item's type persists but needs a restart to actually change what's drawn. `logo`/`logo_w`/`logo_h`/`font_path` (per-item override) are persist-only and not GET-readable. |
 | `video` | `video<N>.*` | Persist-only by default (the encoder/FrameSource is never reconfigured live) **except** `rtsp_path` (always live) and the `caps.video_live` subset (2026-08-21 — bitrate/QP/rc knobs, per SoC; see [Rate Control Parameters](Rate-Control-Parameters.md#live-vs-restart-per-soc)), which reaches the running encoder channel through the calls listed there. Geometry/codec/identity keys (`width`/`height`/`fps`/`codec`/`profile`/`buffers`) and anything `caps.video_live` doesn't list stay restart-bound. |
@@ -568,6 +577,14 @@ curl -N "http://127.0.0.1:8880/events?stream=motion,stats&token=$(cat /run/timps
 (default: all four). Browsers use the query-string token form because
 `EventSource` cannot set custom headers.
 
+Open **one** `/events` connection per page. A browser allows only 6
+HTTP/1.1 connections per host:port; every `EventSource`, `/stream.mp4` and
+`/stream.mjpeg` holds one for its lifetime, so a page with several
+subscriptions (or a few tabs on the same camera) leaves its `/control` and
+snapshot requests stuck as "pending" in the browser. Subscribe once with the
+union of the types (`?stream=motion,daynight,stats`) and dispatch on the
+`event:` name.
+
 ### Wire format
 
 On connect: `retry: 3000` (tells `EventSource` to reconnect after 3s if
@@ -599,5 +616,9 @@ before any change occurs — a subscriber never has to prime itself with a `GET
 subscribes to `?stream=daynight,motion` for those two summaries and polls only
 `?stats=1` for the fields no push carries.)
 
-The thingino WebUI's preview overlay subscribes to `?stream=motion` and
-falls back to 4Hz `/control` polling if `/events` is unavailable.
+The thingino WebUI (firmware pages of 1.10.2) shares one `/events`
+connection per page in `timps-api.js`: it subscribes to the union of the
+types its parts ask for, reopens with a new set when that changes, closes it
+while the tab is hidden and retries with backoff (3 s doubling to 30 s). The
+preview's motion overlay falls back to 4 Hz `/control` polling while
+`/events` is unavailable.

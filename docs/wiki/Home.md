@@ -41,9 +41,10 @@ is the place to start.
 - **Grid-based motion detection** built on the Ingenic IVS ("Intelligent
   Video System") hardware move-detection API.
 - **Automatic day/night switching**, replacing thingino's separate
-  `daynightd` daemon: an `auto` sensor automaton (four independent
-  day/probe/heartbeat/boot paths) with an optional calendar, or a
-  calendar-only `schedule` mode. See [Day/Night](Day-Night.md).
+  `daynightd` daemon: an `auto` sensor automaton (day→night by measurement,
+  at night silent looks with the IR light off, started by a timer, a brighter
+  or, since v1.10.2, a differently coloured lit picture), or a calendar-only
+  `schedule` mode. See [Day/Night](Day-Night.md).
 - **Local recording** (continuous or motion-triggered fMP4 segments to SD)
   and **timelapse** (periodic JPEG capture).
 - **Native speaker output** (`IMP_AO`) for an ONVIF-style two-way audio

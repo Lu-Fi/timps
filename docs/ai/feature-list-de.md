@@ -11,7 +11,7 @@ prudynt-t / raptor.
   HTTP-Control-API, Streaming-Protocols, Day-Night, Audio, Motion-Detection,
   Recording-Timelapse, Rate-Control-\*, Building, Logging, Testing-QA,
   Platform-SDK-Support)
-* Stand dieses Dokuments: `main`, Version v1.10.1 (2026-10-12);
+* Stand dieses Dokuments: `dev/1.10.2`, Version v1.10.2 (Entwurf, 2026-10-12);
   gestripptes `timpsd` ca. 410 KB (410 108 Byte: mipsel, T31 mit
   Hersteller-libimp, WebRTC, TLS und Rotation an; Stand `main` 2026-10-06). Mit
   **seit vX** markierte Aussagen sind in diesem Release neu – auf einer
@@ -145,7 +145,12 @@ prudynt-t / raptor.
   16-aligned, max. 704x576 (z. B. 640x368); auf Hardware noch ungetestet.
   Ein OpenIMP ohne Rotation erkennt timps beim Start, der Stream läuft dann
   ungedreht. Echte per-Kanal-180°-Drehung nur auf T40/T41; sonst stattdessen
-  `image.hflip` + `image.vflip`.
+  `image.hflip` + `image.vflip`. T23: höchstens 704×576 Pixel und 15 fps,
+  Quellhöhe Vielfaches von 16 (für Snapshot/MJPEG von 32), z. B. 704×384 →
+  384×704. **Seit v1.10.2** meldet `GET /control` je Stream
+  `video.<N>.rotate_path`: `off`, `sw` (T23, nur Text-OSD), `band`
+  (Hersteller-libimp 90/270: OSD/Privacy nur in den oberen `eff_width`
+  Zeilen) oder `hw` (ganzes Bild).
 
 ## Bild & ISP-Tuning
 
@@ -184,15 +189,23 @@ prudynt-t / raptor.
   jeder Stream skaliert ihn auf seine Größe (min. 64×64, T10 640×360, live).
   Getestet (vom OpenIMP-Maintainer) auf T10, T20 und T21 mit OpenIMP (T10/T20:
   nur herunterskalierte Streams, also meist nur der Sub-Stream; T21: Streams,
-  die ins Fenster passen); T31 experimentell, live (kleinstes Fenster aus
-  `fcrop_upscale_pct` des Treibers). `caps.fcrop` meldet `min_win`,
-  `zoom_max`, `zoomable`/`zoomed` je Stream. **T23 mit OpenIMP:
-  experimentell, nur beim Start** – ein POST wird gespeichert und greift erst
-  nach `/etc/init.d/S95timps restart`; braucht open-tx-isp 3cf9bdac oder neuer
-  (ältere Treiber hängten die Pipeline bei einem Crop-Wechsel), ein Fenster
-  kleiner als Stream 0 wird mit `-EINVAL` abgelehnt (`state` `rejected`, eine
-  WARN). Vendor T23, T30, T40/T41, C100 und vendor T10/T20/T21 lehnen ab.
-  Stufe und Zustand: `caps.fcrop`.
+  die ins Fenster passen). T23 und T31 mit OpenIMP: wirksam und live, wenn
+  der open-tx-isp-Treiber den Parameter `fcrop_upscale_pct` hat (b15ef235);
+  ohne ihn T31 experimentell und T23 **nur beim Start** (ein POST greift erst
+  nach `/etc/init.d/S95timps restart`, braucht open-tx-isp 3cf9bdac oder
+  neuer). `caps.fcrop` meldet `min_win`, `zoom_max`, `zoomable`/`zoomed` je
+  Stream. Ein Fenster kleiner als ein nicht herunterskalierter Stream wird mit
+  `-EINVAL` abgelehnt (`state` `rejected`, eine WARN). Vendor T23, T30,
+  T40/T41, C100 und vendor T10/T20/T21 lehnen ab. Stufe und Zustand:
+  `caps.fcrop`.
+* **Crop-Hochskalierung (seit v1.10.2)** – `image.fcrop_upscale_pct`
+  (Default -1 = Treiberwert lassen, live, nur T23/T31 mit OpenIMP): der
+  Skalierer darf das Fenster je Achse um so viel Prozent vergrößern, bei 100
+  also ein Fenster bis zur halben Streamgröße. Obergrenze
+  `caps.fcrop.upscale_max` = 100 (auf dem Gerät getestet; T31 hängt bei 150
+  hart). Wird der Wert gesenkt und passt das aktive Fenster nicht mehr, geht
+  der Crop auf den vollen Sensor zurück. Anderswo antwortet ein POST
+  `"unsupported"` (104).
 
 ## Day/Night (automatische Tag-/Nachtumschaltung)
 
@@ -212,6 +225,24 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   sie mit dem Tagbild (ein Klick): unter `day_gain` bleibt Tag, sonst zurück
   (zweiter Klick); die nächste Prüfung braucht dann einen dunkleren Blick und
   wartet 1, 2, 4 … min.
+* **Farb-Auslöser (seit v1.10.2)** – `daynight.color_pct` (Default 3, 0 = aus,
+  0..50, live): ändert sich die Farbe des IR-beleuchteten Bildes (globales R/G
+  oder B/G der AWB-Statistik, alle 5 s gelesen) 20 s lang um so viele Prozent
+  gegenüber dem letzten Blick, schaut die Kamera sofort. So beendet auch eine
+  schwache Lampe, die das IR-Bild kaum aufhellt, die Nacht in etwa 40 s
+  statt erst beim nächsten 45-min-Blick. Farb-Blicke frühestens alle 5 min,
+  der Abstand verdoppelt sich bis 45 min; nie ein Klick allein. Braucht eine
+  schaltbare IR-LED und AWB-Statistik in der libimp (T40/T41, T23/T31/C100
+  Hersteller, T10/T20 OpenIMP, OpenIMP T23/T31/T40/T41 nur mit
+  `OpenIMP_Cap_AwbZone`/`_AwbStatistics`); Status `daynight.color_trigger`
+  (`on`/`off`/`unavailable`) und `color_dev_pct`. Auf dem Gerät getestet nur
+  auf T40 (Hersteller) und T20 (OpenIMP).
+* **Referenz nur aus ruhigem Bild (seit v1.10.2)** – ein Blick, während der
+  beleuchtete Pegel noch wandert (Lampe geht an, Blick einer Nachbarkamera),
+  setzt keine Referenz; das tut der nächste ruhige Pegel (höchstens 60 s).
+* **Hersteller-T21 (seit v1.10.2)** liest `daynight.isp_path` nicht mehr: der
+  Treiber beschädigte beim Lesen den Kernel-Heap. Ein Erkennungs-Thread, der
+  nicht mehr tickt, meldet sich einmal als Fehler im Log.
 * **Garantie**: spätestens nach `heartbeat_max_s` (12 h) ohne Tagbild-Messung
   wird geprüft. Kameras ohne schaltbare IR-LED prüfen bei Halbierung des
   Nachtpegels und alle `heartbeat_s` (4 h).
@@ -463,7 +494,9 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   `409 values_rejected` (Keys richtig, Werte falsch).
 * **Unter-Endpunkte**: `GET /control?fields=1` (Inventar aller POST-baren
   Felder, direkt aus denselben Tabellen erzeugt, die der POST benutzt),
-  `?stats=1` (schlanker Zahlensatz für die Stats-Karte statt des 8-KB-Dokuments),
+  `?stats=1` (schlanker Zahlensatz für die Stats-Karte statt des 8-KB-Dokuments;
+  **seit v1.10.2** mit `system`: Load, Gesamt-/verfügbarer Speicher, CPU % der
+  Maschine und von `timpsd` sowie dessen RSS),
   `?dn_history=1[&last=N|&since=S][&max=N]` (Day/Night-Serie mit Cursor-Paging),
   `?clients=1` (verbundene Clients: IP, Protokoll, Stream, Verbindungsdauer,
   Datenrate, übertragene Summe und Kamera-Latenz (Aufnahme bis Versand)
@@ -475,7 +508,9 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   `?stream=motion,daynight,stats,config`. `motion` und `daynight` senden beim
   Verbinden einmal den vollen Zustand, `stats` tickt alle `events.stats_ms`
   (Default 2000 ms), `config` meldet Änderungen anderer Clients.
-  Keepalive-Ping alle ~12 s, `events.max_clients` (Default 8).
+  Keepalive-Ping alle ~12 s, `events.max_clients` (Default 8). Pro Seite nur
+  **eine** `/events`-Verbindung mit allen Typen öffnen: Browser erlauben 6
+  HTTP/1.1-Verbindungen je Host:Port, danach hängen `/control`-Anfragen.
 * **Alias-Toleranz**: alte Key-Schreibweisen (`video0.mode`, `record.segment`,
   `daynight.total_gain_day_threshold`, `osd0.0.stroke`, das flache
   `{"force_mode":"night"}`) werden weiterhin angenommen und auf den
@@ -502,6 +537,13 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   `tool-record.html` und `tool-timelapse.html` leiten auf die neuen Seiten weiter.
 * Die Vorschauen holen `/stream.mjpeg?chn=N` und `/snapshot.jpg?chn=N` direkt
   vom timps-Port (mit `?token=`), ohne Proxy-CGI.
+* **Seiten zu 1.10.2**: Feld `color_pct` auf der Day/Night-Seite; Schalter und
+  Regler für die Crop-Hochskalierung, gesperrte Crop-Regler ohne Zoom und
+  ausgeblendete Tabs, die der SoC nicht kann; ein Klick korrigiert die
+  Geometrie einer abgelehnten Rotation; die Overlay-Editoren arbeiten im
+  gedrehten Bild und markieren, was ein gedrehter Stream nicht zeigen kann;
+  getrennte CPU- und Speicher-Kacheln mit dem timps-Anteil; eine geteilte
+  `/events`-Verbindung je Seite.
 * Brücken-CGIs unter `/var/www/x/` (`timps-imp.cgi`, `timps-token.cgi`,
   `json-heartbeat.cgi`, `json-recordings.cgi`, `json-timelapse.cgi` …);
   ONVIF-Snapshot-URLs (`/onvif/image.cgi`, `image1.cgi`) zeigen auf timps.
@@ -532,6 +574,9 @@ wird die WebSocket-Variante (statt CGI-Polling) aktiviert.
 * **Rotation**: Hardware-I2D auf T40/T41, FrameSource-Rotate auf T31 und
   (seit v1.10.0, nur OpenIMP mit T1x-Rotation, nur Sub-Streams)
   T10/T20/T21, Software auf T23, gar nicht auf T30/C100.
+* **AWB-Statistik für den Farb-Auslöser (seit v1.10.2)**: T40/T41, T23/T31/C100,
+  T10/T20 mit OpenIMP; nicht auf Hersteller-T10/T20/T21, T21 mit OpenIMP und
+  T30.
 * **Host-Simulation** ohne Hardware: `make sim` baut `timpsd-sim`, das Dateien
   statt des ISP einspeist (`sim.video0`, `sim.audio`, …) – praktisch für
   WebUI- und API-Arbeit am Schreibtisch.

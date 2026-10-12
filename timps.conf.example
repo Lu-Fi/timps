@@ -71,15 +71,20 @@ image.wb_rgain               = 0
 image.wb_bgain               = 0
 # ISP FrontCrop ("zoom"): only this window of the SENSOR (x/y = left/top,
 # unrotated sensor pixels, even, >= 64x64) reaches the streams, each scales it
-# to its own size - keep the stream aspect ratio. Device-tested on T20/T21 with
-# OpenIMP only (T20: downscaled streams only); T10 OpenIMP and T31 experimental;
-# refused on T23 (a crop change stops its pipeline until reboot), T40/T41,
-# T30, C100 and vendor T10/T20/T21. caps.fcrop in GET /control has the tier.
+# to its own size - keep the stream aspect ratio. Effective with OpenIMP on
+# T10/T20/T21 (T20: downscaled streams only) and on T23/T31 with an open-tx-isp
+# that has fcrop_upscale_pct (without it T23 start-only; T31 and vendor T31
+# experimental); refused on vendor T10/T20/T21/T23, T30, T40/T41 and C100.
+# caps.fcrop in GET /control has the tier.
 # image.fcrop_enable = 1
 # image.fcrop_x      = 480
 # image.fcrop_y      = 270
 # image.fcrop_w      = 960
 # image.fcrop_h      = 540
+# T23/T31 OpenIMP only: let the scaler upscale the window by up to N % per axis
+# (100 = a window down to half the stream size). -1 = leave the driver's value.
+# Ceiling caps.fcrop.upscale_max (100); never more, T31 at 150 hard-hangs. Live.
+# image.fcrop_upscale_pct = -1
 
 # ---- SECURITY --------------------------------------------------------------
 # Authentication is OFF while user/pass are empty (the shipped default). Set
@@ -314,11 +319,11 @@ video1.jpeg_chn     = 4
 # image.vflip=1). 90 = clockwise on T23/T40/T41; on T31 and T10/T20/T21, 90 =
 # counter-clockwise instead (kept numerically aligned with prudynt-t/raptor's
 # raw rotation=1|2 config values - see docs/rotation.md "Notes on direction").
-# NOTE: on T31, hardware OSD/privacy currently do NOT work on 90 or 270 when
-# the stream is downscaled from the sensor - see docs/rotation.md "Known
-# limitation". Restart-required (applied at build time of the pipeline). The
-# advertised/recorded dimensions swap for 90/270 (a rotated 1920x1080 becomes
-# 1080x1920). See docs/rotation.md for full detail.
+# NOTE: with the vendor libimp (T31, T40/T41) OSD/privacy on a 90/270 stream
+# only show in the top eff_width rows; GET /control video.N.rotate_path says
+# which path a stream runs. Restart-required (applied at build time of the
+# pipeline). The advertised/recorded dimensions swap for 90/270 (a rotated
+# 1920x1080 becomes 1080x1920). See docs/rotation.md for full detail.
 #
 # OFF BY DEFAULT - must be enabled at build time (menuconfig), like AAC/TLS:
 #   BR2_PACKAGE_TIMPS_ROTATE      -> 90/270 on T31/T40/T41 (+180 on T40/T41),
@@ -327,7 +332,7 @@ video1.jpeg_chn     = 4
 # Without these, 90/180/270 in this file are ignored (coerced to 0 with a warn).
 #
 # What each chip supports:
-#   T40, T41 : 90/180/270 in HARDWARE (I2D) - full fps, OSD+privacy work, any res
+#   T40, T41 : 90/180/270 in HARDWARE (I2D) - full fps, any res
 #   T31      : 90/270 - libimp SOFTWARE rotate: <=1280x704 @ <=15fps,
 #              64-px aligned, extra rmem, no soft-zoom
 #   T10/T20/T21 : 90/270 only in OpenIMP builds, sub streams only (never
@@ -337,9 +342,9 @@ video1.jpeg_chn     = 4
 #              Not yet tested on hardware.
 #   T23      : 90/270 only with SW_ROTATE = CPU transpose + software
 #              H.264 encode. H264 only, SW text-OSD only (no logo/privacy),
-#              substream-class res (~<=704x576 @ <=15fps). Snapshot+MJPEG work,
-#              but JPEG needs the rotated width (= source HEIGHT) %32==0: use
-#              e.g. 1280x704 -> 704x1280, not 1280x720.
+#              <=704x576 pixels @ <=15fps, source HEIGHT %16==0 and >=256.
+#              Snapshot+MJPEG work, but JPEG needs the rotated width (= source
+#              HEIGHT) %32==0: e.g. 704x384 -> 384x704.
 #   T30/C100 : none (no 90/270 primitive)
 #
 # Cost: 180 + HW 90/270 add ~none (binary +<1KB, no runtime cost). The T23 SW
@@ -790,6 +795,11 @@ daynight.day_confirm_s  = 30                   # how long before day -> night
 # percent below the last look and stays there ~20 s (new light), otherwise every
 # 45 min. Lower = weaker lamps are noticed, more looks.
 daynight.jump_pct       = 20                   # 5..70, live
+# ... or when the colour of the lit picture (AWB statistics) moves this many
+# percent for ~20 s: a weak lamp that hardly brightens the IR picture. At most
+# every 5 min, doubling to 45 min. Needs AWB statistics in the libimp
+# (GET /control daynight.color_trigger). 0 = off.
+daynight.color_pct      = 3                    # 0..50, live
 # Board hook that switches the IR illuminator alone; empty = no looks, the
 # engine then checks every heartbeat_s instead (audible).
 daynight.irprobe_cmd     = timps-irprobe       # run as "<cmd> on|off|idle|state"
@@ -799,7 +809,7 @@ daynight.heartbeat_max_s = 43200               # longest night without a day che
 # probe_confirm_s, boot_probe, diagnose_thresholds.
 daynight.interval_ms    = 2000                 # sample interval
 daynight.switch_cmd     = daynight             # run as "<cmd> day|night"
-daynight.isp_path       = /proc/jz/isp/isp-m0  # ISP exposure proc file
+daynight.isp_path       = /proc/jz/isp/isp-m0  # ISP exposure proc file (never read on vendor T21)
 # In-RAM decision history for the WebUI tuning graph (tool-sensor-data), in
 # seconds of retention - 0 = off, ceiling 48 h (172800). One 16-byte sample
 # every 10 s, so 4 h costs 22.5 KB and the ceiling 270 KB, allocated only once

@@ -172,6 +172,7 @@ settings are correct.
 | `fcrop_y` | int | 0 | 0–8192 | as above | Top edge. |
 | `fcrop_w` | int | 0 | 0–8192 | as above | Width; at least 64. |
 | `fcrop_h` | int | 0 | 0–8192 | as above | Height; at least 64. |
+| `fcrop_upscale_pct` | int | -1 | -1–`caps.fcrop.upscale_max` (100) | **Live** | **Since v1.10.2**, T23/T31 OpenIMP with the driver parameter only. Writes the open-tx-isp `fcrop_upscale_pct` so the scaler may upscale the window by up to this many percent per axis (100 = a window down to half the stream size). `-1` = leave the driver's value. Never above 100: T31 at 150 hard-hangs. Elsewhere a POST answers `unsupported` and a file value is ignored with one WARN. |
 
 x/y/w/h follow the FrameSource crop convention (left, top); the SDK struct
 is ordered top, left and the HAL maps it. timps evens the values, moves the
@@ -186,7 +187,8 @@ b15ef235 has it). Without it T31 is experimental and T23 experimental and
 start-only: a POST persists and applies at the next `/etc/init.d/S95timps
 restart`; it needs open-tx-isp 3cf9bdac or newer (older drivers hung the
 pipeline on a crop change). A window smaller than a stream that is not scaled
-down is refused. Vendor T23 refuses the keys. See
+down is refused unless `fcrop_upscale_pct` allows it; lowering that key with
+such a window active returns to the full sensor. Vendor T23 refuses the keys. See
 [Platform & SDK Support](Platform-SDK-Support.md#roi-and-frontcrop-tiers) for
 all SoCs. Privacy masks, OSD and ROI regions stay in stream-frame coordinates:
 the scene moves under them.
@@ -535,8 +537,9 @@ See [Day/Night](Day-Night.md) for the full decision logic. The short version:
 the metric is the **exposure index** (`total_gain × integration_time /
 max_integration_time`, higher = darker — equal to `total_gain` in a dark scene
 and far below it in a bright one); day→night is a direct measurement on the
-honest day pipeline, night→day only ever happens via a **probe**; and the
-calendar, when configured, schedules probes rather than deciding anything.
+honest day pipeline, night→day only ever happens via a **check** of the day
+pipeline, asked for by a **look** (IR illuminator off 8 s, silent); the
+calendar (`time_*`, `sun_*`) is used by `mode = schedule` only.
 
 `switch_cmd`, `isp_path`, `trace_path` and `irprobe_cmd` are **not
 GET-readable** even though they are settable via the config file — each
@@ -552,29 +555,17 @@ aliases and the units and calibration are unchanged.
 
 **Removed 2026-08-22** (config consolidation — parsed, ignored, warned about
 once): the whole `learn`/`state_path` learning subsystem is gone outright.
-Its own safety clamp (never raise `day_gain` past `night_gain/2`) could not
-raise the threshold far enough for the cameras that actually needed it —
-`diagnose_thresholds` below is what is left: it names the value to raise by
-hand instead of trying to raise it automatically.
 
 **Retired in v1.10.1** (the simple engine, `dev_notes/dn-redesign.md`;
-parsed, ignored, warned about once): `probe_min_gap_s`, `probe_confirm_s`,
-`boot_probe`, `diagnose_thresholds`, and the eight constants below, which are
-no longer echoed in `GET /control`.
-
-**Fixed 2026-08-22** (config consolidation — no longer settable, but *not*
-removed: each became a `DN_*` constant in `src/daynight.h` and keeps working
-exactly as its old default did): `probe_jump_pct`, `probe_settle_s`,
-`ref_delay_s`, `ir_ratio_night`, `ir_ratio_day`, `ir_min_headroom`,
-`boot_settle_s`, `transition_s`. A camera whose config file still sets one of
-these to something other than its fixed value gets one warning naming the
-value now in effect; setting it to the value it already defaulted to is
-silent.
+parsed, ignored with one warning each, `… is retired and IGNORED`):
+`probe_min_gap_s`, `probe_confirm_s`, `boot_probe`, `diagnose_thresholds`,
+and the eight constants of the 2026-08-22 consolidation listed at the end of
+this section, which are no longer echoed in `GET /control`.
 
 | Key | Type | Default | Range | Live? | Description |
 | --- | --- | --- | --- | --- | --- |
 | `daynight.enabled` | bool | 1 | 0/1 | **Live** | Auto-detection on/off; `0` = manual (thread still samples but forces nothing). |
-| `daynight.mode` | enum | `auto` | `auto`\|`schedule` | **Live** | `auto` = the sensor automaton (calendar optional). `schedule` = the calendar decides outright, no sensor and no probes. The pre-2026-08-17 tokens still parse: `sensor`→`auto`, `time`/`sun`→`schedule`. |
+| `daynight.mode` | enum | `auto` | `auto`\|`schedule` | **Live** | `auto` = the sensor automaton (the calendar is not used). `schedule` = the calendar decides outright, no sensor and no looks. The pre-2026-08-17 tokens still parse: `sensor`→`auto`, `time`/`sun`→`schedule`. |
 | `daynight.time_night_start` | string(6) | `""` | `"HH:MM"` | **Live** | Calendar: local time night begins. Set together with `time_day_start`; takes precedence over the sun calendar. (since v1.9.28) a window with only one edge set, a malformed value or two equal edges is ignored with a startup warning (and the sun calendar used if a location is set). |
 | `daynight.time_day_start` | string(6) | `""` | `"HH:MM"` | **Live** | Calendar: local time day begins. |
 | `daynight.sun_latitude` | float | 0.0 | -90–90 | **Live** | Sun calendar: latitude. Used when no time window is set and either coordinate is non-zero. |
@@ -584,26 +575,27 @@ silent.
 | `daynight.day_gain` | float | 768 | 1–1,000,000 | **Live** | Exposure index below which the **day pipeline** confirms day. 768 = 3× gain: "day is confirmed when the day pipeline can hold the scene at ≤3×". Alias: `total_gain_day_threshold`. |
 | `daynight.night_gain` | float | 4096 | 1–1,000,000 | **Live** | Exposure index above which day ends. 4096 = 16×, "colour is hopeless". Alias: `total_gain_night_threshold`. |
 | `daynight.jump_pct` | int | 20 | 5–70 | **Live** | **since v1.10.1.** At night: the illuminator-lit level this far below the last look for 20 s starts a look at once (new light). |
-| `daynight.day_confirm_s` | int | 30 | 1–3600 | **Live** | How long the index must stay above `night_gain` before day→night. |
-| `daynight.heartbeat_s` | int | 14400 (4h) | 300–604800 | **Live** | Probe interval while the scene is moving, independent of any reading. Deliberately flat, never doubling: this is the only bound on how long a wrong night can last. |
-| `daynight.heartbeat_max_s` | int | 43200 (12h) | 300–604800 | **Live** | Interval once the scene has demonstrably not moved since the last probe (nothing new to spend a click on) — and the hard ceiling on the deferral. Only applied while the spontaneous trigger can actually see. |
-| `daynight.interval_ms` | int | 2000 | 100–60000 | **Live** | Sample interval. 2 s, not the pre-2026-08-17 500 ms: the exposure index needs the `/proc` scrape every tick and no confirmation window is shorter than 8 s. |
+| `daynight.color_pct` | int | 3 | 0–50 | **Live** | **Since v1.10.2.** At night: the colour of the illuminator-lit picture (global R/G or B/G of the ISP's AWB statistics, read every 5 s) this far from its value after the last look for 20 s starts a look at once — a weak lamp that hardly brightens the IR picture. At most every 5 min, the gap doubling up to 45 min until a timer look; `0` = off. Needs `irprobe_cmd` and a libimp with per-zone AWB statistics; status `daynight.color_trigger` (`on`/`off`/`unavailable`) and `color_dev_pct`. |
+| `daynight.day_confirm_s` | int | 30 | 1–3600 | **Live** | How long the index must stay above `night_gain` (or the AE at its limit) before day→night; 6 s when very dark. |
+| `daynight.heartbeat_s` | int | 14400 (4h) | 300–604800 | **Live** | Check interval at night for cameras **without** a switchable illuminator; also caps the 45-min look interval of the others. |
+| `daynight.heartbeat_max_s` | int | 43200 (12h) | 300–604800 | **Live** | The longest night without a day-pipeline reading: then a check runs regardless of looks and lockouts. |
+| `daynight.interval_ms` | int | 2000 | 100–60000 | **Live** | Sample interval. |
 | `daynight.ir_idle_off` | int | 0 | 0/1 | **Live** | **Since v1.10.0.** Idle-Dark: at night, once no picture consumer has been there for `ir_idle_linger_s`, switch only the IR LED off (IR-cut and ISP stay in night) and decide at the next consumer from the reading taken meanwhile. Needs the FrameSource keepalive (`general.fs_keepalive`, auto on OpenIMP T23/T41), auto mode and a `timps-irprobe` with the `idle`/`state` verbs. Off by default: with 850 nm LEDs the glow going out shows that nobody watches. Status `daynight.ir_idle`; see [Day/Night](Day-Night.md#idle-dark-ir-led-off-while-nobody-watches). |
 | `daynight.ir_idle_linger_s` | int | 60 | 0–3600 | **Live** | **Since v1.10.0.** How long after the last picture consumer the IR LED may go off. A poll slower than this costs one LED on/off pair and one held snapshot per poll; keep it longer than `timelapse.interval_s` (at 60/60 every shot can light the LED once). |
 | `daynight.history_s` | int | 0 (off) | 0–172800 (48h) | **Live** | Seconds of decision history kept in RAM for the WebUI tuning graph, served by `GET /control?dn_history=1`; `0` = off, and at `0` nothing is allocated at all. One 16-byte sample per 10 s, allocated on first push and resized in place when this changes, so 4 h costs 22.5 KB and the 48 h ceiling 270 KB. Anything above the ceiling is clamped (the POST response echoes the clamped value, and the daemon logs the effective size). Opt-in and decoupled from the tuning page's lifetime: the page's "collect in background" switch is the only thing that POSTs it, and it persists like any other key, so an explicit opt-in survives a reboot. With it off the page collects live into the tab over SSE instead; with it on the daemon owns the series, which is what lets the graph show the hours no tab was open (the WebUI is plain HTTP and therefore has no Service Worker to collect with). |
-| `daynight.irprobe_cmd` | string(64) | `timps-irprobe` | — | File-only, not GET-readable | Board script run as `<cmd> on\|off\|idle\|state` to drive the IR illuminator **alone**, without moving the IR-cut filter (`on`/`off` for the silent probe, `idle`/`state` for Idle-Dark). Its presence is what arms the silent probe and the trend path; set it empty to fall back to the audible probe only. Run via `fork`+`execlp`, never a shell. |
+| `daynight.irprobe_cmd` | string(64) | `timps-irprobe` | — | File-only, not GET-readable | Board script run as `<cmd> on\|off\|idle\|state` to drive the IR illuminator **alone**, without moving the IR-cut filter (`on`/`off` for a look, `idle`/`state` for Idle-Dark). Empty = no looks: the camera checks like one without a switchable illuminator (night level halved, `heartbeat_s`). Two failures in a row turn looks off for the session. Run via `fork`+`execlp`, never a shell. |
 | `daynight.switch_cmd` | string(64) | `daynight` | — | File-only, not GET-readable | Board script run as `<cmd> day\|night` on a switch. |
-| `daynight.isp_path` | string(128) | `/proc/jz/isp/isp-m0` | — | File-only, not GET-readable | ISP exposure proc file (gain **and** integration time). |
+| `daynight.isp_path` | string(128) | `/proc/jz/isp/isp-m0` | — | File-only, not GET-readable | ISP exposure proc file (gain **and** integration time). **Since v1.10.2** never read on vendor T21 (that driver corrupts the kernel heap on the proc read); exposure from IMP only there. |
 | `daynight.trace_path` | string(128) | `""` | — | File-only, not GET-readable | Opt-in decision-trace CSV for the replay harness. **tmpfs only**; 1 MB cap, rotated once to `<path>.1`. |
 
-### Fixed internal constants (no longer config, read-only in `GET /control`)
+### Constants of the v1.10.0 engine (historical)
 
 These eight were per-camera `daynight.*` fields until the 2026-08-22
-consolidation; see the "Fixed 2026-08-22" note above. Values are the
-`DN_*` constants in `src/daynight.h`, which also carries the fleet
-measurements each was derived from.
+consolidation, then fixed `DN_*` constants echoed in `GET /control`. Since
+v1.10.1 they are retired: a file value is ignored with one warning, and the
+status no longer echoes them. The table describes the v1.10.0 engine.
 
-| Key (status-only) | Was type | Fixed value | What it did |
+| Key | Was type | Fixed value | What it did |
 | --- | --- | --- | --- |
 | `probe_jump_pct` | int | 50 | Probe when the index falls below this percentage of the *night reference* (the level at which night was last proven). 50 = one full stop of new brightening. |
 | `probe_settle_s` | int | 8 | AE settling on the day pipeline before the probe verdict is taken. One verdict, binary: below `day_gain` it sticks, otherwise it reverts immediately (bypassing `transition_s`). |
@@ -686,7 +678,7 @@ hardcode the table into a client — see
 | `video<N>.change_pos` | int | 80 / 80 | 50–100 | Restart-only | Classic-SoC VBR/Smart only: percentage of `bitrate` above which the controller starts raising QP. Measured to have no observable effect on a T23 (80/65/50 gave identical output) — treat as unverified rather than a reliable lever. No equivalent on the new API; same one-shot warning as `quality_lvl`. |
 | `video<N>.i_bias_lvl` | int | 0 / 0 | -3–3 | **Mixed** (live on classic SoCs and T31/C100, see below) | I-frame QP bias (negative = more bits on keyframes). Classic SoCs: both CBR and VBR/Smart. New API: wired on T31/C100 via `IMP_Encoder_SetChnQpIPDelta` (readable back as `encoder.<n>.rc.ip_delta`); T40/T41 have no such call and warn once instead. |
 | `video<N>.fluc_lvl` | int | 0 / 0 | 0–4 | Restart-only, H265 only | Classic-SoC H265 CBR/VBR/Smart: bitrate fluctuation allowed relative to the average. No H264 equivalent field, and the T23 SW-rotate path is H264-only so never sees this key. No equivalent on the new API. |
-| `video<N>.rotation` | int | 0 / 0 | `0`\|`90`\|`270` (+`180` on T40/T41 only); legacy `1`/`2` accepted as raw `rotTo90` values | Restart-only, `USE_ROTATE` builds only | Image rotation — see [Platform & SDK Support](Platform-SDK-Support.md) and `docs/rotation.md`. Unsupported values on a given SoC are coerced to `0` with a warning. T10/T20/T21 (OpenIMP builds, since v1.10.0): sub streams only, 16-aligned, ≤704x576, and only with an OpenIMP that has T1x rotation (`6b7f5ae`); otherwise the stream starts unrotated with a warning. |
+| `video<N>.rotation` | int | 0 / 0 | `0`\|`90`\|`270` (+`180` on T40/T41 only); legacy `1`/`2` accepted as raw `rotTo90` values | Restart-only, `USE_ROTATE` builds only | Image rotation — see [Platform & SDK Support](Platform-SDK-Support.md) and `docs/rotation.md`. Unsupported values on a given SoC are coerced to `0` with a warning. T10/T20/T21 (OpenIMP builds, since v1.10.0): sub streams only, 16-aligned, ≤704x576, and only with an OpenIMP that has T1x rotation (`6b7f5ae`); otherwise the stream starts unrotated with a warning. `GET /control` reports why a stream runs unrotated in `video.<N>.rotation_state` (since v1.10.1) and how it is rotated in `video.<N>.rotate_path` (`off`/`sw`/`hw`/`band`, since v1.10.2). |
 | `video<N>.buffers` | int | 2 / 2 | 1–8 | Restart-only | IMP video buffer count (`nrVBs`). Explicitly setting this makes the HAL trust it as-is instead of applying its own safety clamp. |
 | `video<N>.rtsp_path` | string(64) | `/ch0` / `/ch1` | — | **Live** (documented exception, see above) | RTSP mount path for this stream. |
 | `video<N>.jpeg` (alias `jpeg_enabled`) | bool | 1 / 1 | 0/1 | File-only | Enable a piggyback JPEG encoder sharing this stream's FrameSource (used by `/snapshot.jpg`/`/stream.mjpeg?chn=N` and [timelapse](Recording-Timelapse.md)). |

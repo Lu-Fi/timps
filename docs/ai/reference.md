@@ -6,11 +6,11 @@ firmware. Everything here is verified against the `main` branch of
 <https://github.com/Lu-Fi/timps> and against `package/timps/` in a thingino
 firmware tree.
 
-Applies to timps v1.10.1 (source: `main`, 2026-10-12)
+Applies to timps v1.10.2 (draft, source: `dev/1.10.2`, 2026-10-12)
 
 A statement marked **since vX** is new in that release — on an older camera
-describe the previous behaviour. Changes listed under `[1.10.1]` in
-`CHANGELOG.md` are marked **since v1.10.0**.
+describe the previous behaviour. Changes in the `[Unreleased]` 1.10.2 draft
+of `CHANGELOG.md` are marked **since v1.10.2**.
 
 ## Where to find what
 
@@ -208,7 +208,7 @@ ships `rtsp.user`/`rtsp.pass` and `http.user`/`http.pass` all set to
 | --- | --- |
 | `general.` | Log level, per-module debug, syslog, IMP polling timeout, OSD pool size |
 | `sensor.` | Sensor model / I²C address / fps / width / height (all optional — auto-detected from `/proc/jz/sensor/sensor0/`) |
-| `image.` | ISP tuning: brightness, contrast, NR, WB, flips, day/night running mode, FrontCrop window (`image.fcrop_*`, **since v1.10.0**) |
+| `image.` | ISP tuning: brightness, contrast, NR, WB, flips, day/night running mode, FrontCrop window (`image.fcrop_*`, **since v1.10.0**; `image.fcrop_upscale_pct` **since v1.10.2**) |
 | `video0.` / `video1.` | Per-stream encoder: codec, geometry, fps, bitrate, rate control, GOP, QP, rotation, RTSP path, piggyback JPEG |
 | `jpeg.` | The dedicated JPEG/MJPEG encoder channel (`/snapshot.jpg`, `/stream.mjpeg`) |
 | `osd.` and `osd<S>.<N>.` | Global OSD settings, and per-stream overlay items |
@@ -260,7 +260,10 @@ v1.10.0, 2 up to v1.9.33 — match the mains frequency, see
 (spatial NR), `temper_strength` (temporal NR), `dpc_strength`,
 `defog_strength`, `drc_strength`, `highlight_depress` (0), `backlight_compensation`
 (0), `core_wb_mode` (0 = auto), `wb_rgain`, `wb_bgain`, `ae_it_max_us`
-(opt-in cap on AE integration time).
+(opt-in cap on AE integration time), `fcrop_enable`/`fcrop_x`/`fcrop_y`/
+`fcrop_w`/`fcrop_h` (FrontCrop window), `fcrop_upscale_pct` (**since
+v1.10.2**, -1 = leave the driver's value, at most `caps.fcrop.upscale_max`;
+T23/T31 OpenIMP only).
 `wb_rgain`/`wb_bgain` (manual WB, `core_wb_mode = 1`): **since
 v1.10.0** clamped per SoC — 0..255 on T10/T20/T30 (Q7, unity 128), 0..4095 on
 T21/T23/T31 (Q8, unity 256), 0..65535 elsewhere.
@@ -637,7 +640,7 @@ differently-compiled binaries.
 | `caps.play` | `{available, sounds:[...]}` — enumerates playable files |
 | `caps.webrtc` | `{available, enabled, chn_select}` — same 0/1/2 meaning as `talk_ws`; `chn_select:1` = the POST honours `?chn=N`. **Key absent entirely** when `USE_WEBRTC=0` |
 | `caps.framesource` | `{keepalive, cfg}` — **since v1.10.0.** `keepalive` = 1 when this start resolved `general.fs_keepalive` to on (video FrameSources held enabled until stop), `cfg` = the raw `-1`/`0`/`1`. On the sim it reports the resolution only (no FrameSource there). |
-| `caps.roi` / `caps.fcrop` | **Since v1.10.0.** Encoder ROI and ISP FrontCrop: `tier` = `effective` (device-tested), `experimental` (call returns 0, effect unverified), `unsupported`, or `sim`. `caps.roi` adds `regions`, `align:16`, the QP ranges and `streams[]` (`ok`/`off`/`h265`/`rotated`/`unsupported`); `caps.fcrop` adds `live`, `min:64`, `sensor:[w,h]` and `state` (`off`/`on`/`rejected`/`failed`/`unsupported`). T10/T20/T21 ROI and FrontCrop with OpenIMP are `effective` (device-tested by the OpenIMP maintainer, not by timps); T23 ROI with OpenIMP is `effective` when the libimp exports `OpenIMP_Cap_T23HelixRoi`, else `unsupported` (since v1.10.1); T23/T31 FrontCrop (OpenIMP) is `effective` and live when the driver has `fcrop_upscale_pct`, otherwise `experimental` (T23 with `live` 0, start-only); tier table in config-keys.md §10a. |
+| `caps.roi` / `caps.fcrop` | **Since v1.10.0.** Encoder ROI and ISP FrontCrop: `tier` = `effective` (device-tested), `experimental` (call returns 0, effect unverified), `unsupported`, or `sim`. `caps.roi` adds `regions`, `align:16`, the QP ranges and `streams[]` (`ok`/`off`/`h265`/`rotated`/`unsupported`); `caps.fcrop` adds `live`, `min:64`, `sensor:[w,h]`, `state` (`off`/`on`/`rejected`/`failed`/`unsupported`), `min_win`, `zoom_max`, `upscale_pct` (the driver's current value) and **since v1.10.2** `upscale_max` (ceiling of `image.fcrop_upscale_pct`: 100 on T23/T31 OpenIMP with the driver parameter, else -1). T10/T20/T21 ROI and FrontCrop with OpenIMP are `effective` (device-tested by the OpenIMP maintainer, not by timps); T23 ROI with OpenIMP is `effective` when the libimp exports `OpenIMP_Cap_T23HelixRoi`, else `unsupported` (since v1.10.1); T23/T31 FrontCrop (OpenIMP) is `effective` and live when the driver has `fcrop_upscale_pct`, otherwise `experimental` (T23 with `live` 0, start-only); tier table in config-keys.md §10a. |
 | `caps.daynight` | `{available, ir_idle}` — **since v1.10.0.** `available` = built with `USE_DAYNIGHT`; `ir_idle` = 1 when `daynight.ir_idle_off` could act on this start (it needs the FrameSource keepalive). |
 
 Note the deliberate convention: a key that is **absent** (`caps.rotation`,
@@ -785,6 +788,15 @@ arrives whenever nothing else has gone out for ~12 s.
 `events.enabled = 0` → the endpoint answers `404`; above `events.max_clients`
 → `503 busy`. Browsers must use `?token=` because `EventSource` cannot set
 headers.
+
+**One `/events` connection per page.** Browsers allow only 6 HTTP/1.1
+connections per host:port, and each SSE subscriber, `/stream.mp4` and
+`/stream.mjpeg` holds one for its lifetime. A page that opens several
+`EventSource`s (or several tabs on the same camera) runs out, and its
+`/control` and `/snapshot.jpg` requests then hang as "pending" in the browser,
+not in timps. Use one connection with the union of the types,
+`/events?stream=motion,daynight,stats`, and dispatch by event type; the
+thingino WebUI does this through `timps-api.js` (firmware pages of 1.10.2).
 
 **`stats` is change-gated, not periodic.** `events.stats_ms` is the *sampling*
 period; an event is emitted only when `stats_changed()` says something moved:
@@ -1094,6 +1106,9 @@ Distinguish **compiled out** from **misconfigured**:
 | `/webrtc/whep` answers 404 | Not built | See §8 |
 | `/webrtc/whep` answers 503 | `webrtc.enabled = 0`, or all 4 session slots busy | — |
 | `/events` answers 404 | `events.enabled = 0` or `USE_CONTROL=0` | — |
+| A WebUI page or own client hangs with requests "pending" | The browser's 6 connections per host:port are held by `/events` and stream connections (§6 `GET /events`) | Close other tabs on the camera; a client uses one `/events?stream=a,b,c` |
+| `daynight.color_trigger` = `"unavailable"` (since v1.10.2) | This libimp gives no per-zone AWB statistics (vendor T10/T20/T21, T21 OpenIMP, T30, or an OpenIMP without `OpenIMP_Cap_AwbZone`/`_AwbStatistics`) | Nothing to fix; lamps are caught by `jump_pct` and the 45-min look. `"off"` = `color_pct` 0, no `irprobe_cmd`, `schedule` or disabled |
+| `image.fcrop_upscale_pct` POST → `"unsupported"` / 104 (since v1.10.2) | Not T23/T31 OpenIMP, or the driver lacks the `fcrop_upscale_pct` parameter (`caps.fcrop.upscale_max` = -1) | — |
 | IR LED off at night until someone connects; first seconds of a stream dark, `/snapshot.jpg` slow | `daynight.ir_idle_off = 1` (Idle-Dark), working as designed | `daynight.ir_idle.dark` in `GET /control`; turn it off with POST `{"daynight":{"ir_idle_off":0}}` (LED back on at once) |
 | Setting is accepted then reverts after reboot | `not_persisted > 0` in the POST reply (more than 48 changed keys, or a failed write), a file-only key, or (since v1.10.1) a power cut within ~4 s of a `pending` change | Split the request; hand-edit `/etc/timps.conf` for file-only keys; check `persist_pending` is `0` before pulling power |
 | Log: `IMP_ISP_Tuning_Set… not in this libimp - image.… unavailable (persisted only)` | An OpenIMP build (`USE_OPENIMP`) on a vendor libimp, see below | Flash a consistent image |
@@ -1313,14 +1328,21 @@ the kernel log and escalate.
   (`accepted a 0x0 picture, so it cannot rotate` = the `9cab219` stub,
   `SetChnRotate refused` = a refusing OpenIMP). Not yet tested on hardware.
 - T23 90/270 needs `USE_SW_ROTATE`: CPU transpose + software H.264 encode,
-  H.264 only, software text OSD only (no logo/privacy), substream-class
-  resolution, and JPEG needs the rotated width (= source height) to be a
-  multiple of 32 — e.g. 1280×704 → 704×1280, not 1280×720.
+  H.264 only, software text OSD only (no logo/privacy), at most 704×576
+  pixels and 15 fps (`204`/`205`), the source height (= rotated width) a
+  multiple of 16 and ≥ 256 (`203`/`208`); snapshot/MJPEG need it a multiple
+  of 32 — e.g. 704×384 → 384×704. 1280×704 is refused (too large).
 - Direction is not uniform: on T23/T40/T41, 90 = clockwise; on T31 and
   T10/T20/T21 (same `SetChnRotate` enum), 90 = counter-clockwise (kept
   numerically aligned with prudynt-t/raptor).
-- On T31, hardware OSD/privacy currently do not work on 90/270 when the stream
-  is downscaled from the sensor.
+- Overlays on a rotated stream (**since v1.10.2** `video.<N>.rotate_path`):
+  OSD, privacy and the motion grid are placed in the rotated
+  `eff_width`×`eff_height` frame. With the vendor libimp at 90/270 (T31, and
+  timps applies the same clamp on vendor T40/T41) hardware OSD/privacy work,
+  but only in the top `eff_width` rows (`band`): on a portrait 704×1280 the
+  top 704 px; lower items are moved up, a square stream is not limited.
+  OpenIMP draws over the whole frame (`hw`); T23 SW rotate is text only
+  (`sw`).
 - Rotation is restart-required; the advertised dimensions swap
   (`eff_width`/`eff_height` in `GET /control`).
 - **Since v1.10.1** the refusal is visible without the log:
@@ -1355,6 +1377,13 @@ the kernel log and escalate.
   64×64) or the SDK returned `-EINVAL` (no stream can show it; on T23 a window
   smaller than the stream-0 size), logged once, no retry; `"failed"` means any
   other SDK error.
+- "The crop window cannot be smaller than the stream" on T23/T31 OpenIMP:
+  **since v1.10.2** `image.fcrop_upscale_pct` (live, -1 = driver value, up to
+  `caps.fcrop.upscale_max` = 100) lets the scaler upscale, so a window down to half the stream size per
+  axis is accepted (`caps.fcrop.min_win` follows). Never above 100: T31 at 150
+  hard-hangs until the hardware watchdog resets the camera. Lowering it with a
+  window that no longer fits drops back to the full sensor (WARN
+  `the active WxH window no longer fits`).
 - A crop does not move privacy masks, OSD or ROI regions: they stay at their
   stream-frame position while the scene moves under them.
 
@@ -1416,6 +1445,17 @@ There is also a QA harness in the repo:
   cost; say it is unmeasured. The default rule (auto = on only for open-stack
   T23/T41) is a deliberate decision, not a capability limit — `1` works on
   every SoC.
+- **`daynight.color_pct` (since v1.10.2) is device-tested only on the Eufy
+  S350 (T40 vendor) and the Wyze Pan (T20 OpenIMP).** The other AWB paths
+  (T23/T31/C100/T41, OpenIMP T23/T31/T40/T41 behind their cap symbols) are
+  code paths, not measurements: do not promise that a weak lamp ends the night
+  there; `color_dev_pct` at night shows whether the colour moves.
+- **Vendor T21 never reads `daynight.isp_path` since v1.10.2** (the vendor
+  driver's proc read corrupted the kernel heap). Advice to "check
+  `/proc/jz/isp/isp-m0`" does not apply to day/night there.
+- **Rotation and overlays:** older text claimed hardware OSD/privacy fail on a
+  rotated T31 stream; that was fixed 2026-07-23. The limit is the top band
+  (`video.<N>.rotate_path` = `band`), see the rotation problems above.
 - When unsure whether a feature exists on a user's camera, say so and ask for
   `GET /control` output rather than guessing. The `caps` object is designed
   exactly for that question.

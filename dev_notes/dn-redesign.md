@@ -212,7 +212,7 @@ Mechanism (`src/daynight.c`, `dn_thread` S_NIGHT):
   `OpenIMP_Cap_AwbStatistics` (weak; older ones had a three-pointer
   `GetAwbZone`, a stack overrun with one, and a stub statistics path on T40).
   Not: T10/T20/T21 vendor (no zones; hist/GOL are white-region filtered or the
-  AWB's own estimate). Read every 5 s, only at night (and up to 30 times
+  AWB's own estimate), T21 OpenIMP, T30. Read every 5 s, only at night (and up to 30 times
   before the first success): the first read took 1.4 ms (Eufy) / 1.7 ms (Pan),
   later ones 43 µs / 123 µs (device tests 2026-10-12); the 20 s hold needs no
   more; 3
