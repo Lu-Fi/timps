@@ -1055,7 +1055,7 @@ this repo — it is a kernel/sensor-driver issue outside `src/`.)**
 First: `daynight.enabled` must be **1**, and `GET /control`'s `daynight`
 object tells you what the machine believes: `exposure` (the index it decides
 on), `night_baseline` (the illuminator-lit level at the last look, or the
-darker level it followed after 60 s `jump_pct` above it),
+darker level it followed after 60 s 10 % above it),
 `day_trigger` (the bar a look must read below to ask for a check).
 
 How it decides (**since v1.10.1**, `config-keys.md` §14): day→night on the

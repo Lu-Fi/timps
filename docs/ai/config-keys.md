@@ -1178,16 +1178,18 @@ to `total_gain`.
   the camera **looks**: illuminator off for 8 s (no click), reading the scene
   without it. A look runs every 45 min (`heartbeat_s` caps it), at once when
   the lit level falls `jump_pct` below the last look for 20 s (a lamp), and on
-  `{"daynight":{"probe":1}}`. A lit level that stays `jump_pct` *above* the
-  reference for 60 s (the light of the last look has gone) becomes the
-  reference, and the next look relearns the scene bar.
+  `{"daynight":{"probe":1}}`. A lit level that rises 10 % above the
+  reference and does not fall back below it for 60 s (the light of the last
+  look has gone) becomes the reference, and the next look relearns the scene
+  bar.
 * **Look → check**: if the reading without the illuminator is below the bar —
   `day_gain`, twice that for a look a jump started, or a scene bar learnt from
   a failed check — the camera switches to the day pipeline and reads it once
   (one click): below `day_gain` it stays day, otherwise back to night (a
   second click).
 * **After a failed check** the next one needs a darker look: the bar becomes
-  `dark × day_gain / day reading`, or `0.85 × dark` when the check read the AE
+  `dark × day_gain / day reading` (at least `0.5 × dark`, so a light that
+  halves the dark reading asks again), or `0.85 × dark` when the check read the AE
   at its limit or above 4 × `night_gain` (the Eufy reads 40960 in the dark
   without a reported limit). A jump forgets the bar (new light). Checks are
   locked out for 1, 2, 4 … min after consecutive failures; a day resets it.

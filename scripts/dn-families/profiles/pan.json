@@ -43,6 +43,45 @@
    "lit": 108,
    "dark": 102,
    "src": "probe 2026-10-10 21:23, CSV 21:24-21:25"
+  },
+  "cellar183": {
+   "day": 3587,
+   "lit": 183,
+   "dark": 196,
+   "railed": true,
+   "src": "device test 2026-10-12 07:46 (Wyze Pan, day_gain 100 + bulb 60 %)"
+  },
+  "cellar181": {
+   "day": 3587,
+   "lit": 181,
+   "dark": 196,
+   "railed": true,
+   "src": "device test 2026-10-12 07:46 (Wyze Pan, day_gain 100 + bulb 60 %)"
+  },
+  "cellar173": {
+   "day": 3587,
+   "lit": 173,
+   "dark": 196,
+   "railed": true,
+   "src": "device test 2026-10-12 07:46 (Wyze Pan, day_gain 100 + bulb 60 %)"
+  },
+  "fir143": {
+   "day": 1732,
+   "lit": 143,
+   "dark": 149,
+   "src": "device test 2026-10-12 07:46 (Wyze Pan, day_gain 100 + bulb 60 %)"
+  },
+  "lamp110": {
+   "day": 80,
+   "lit": 110,
+   "dark": 100,
+   "src": "device test 2026-10-12 07:46 (Wyze Pan, day_gain 100 + bulb 60 %)"
+  },
+  "lamp123": {
+   "day": 80,
+   "lit": 123,
+   "dark": 105,
+   "src": "device test 2026-10-12 07:46 (Wyze Pan, day_gain 100 + bulb 60 %)"
   }
  }
 }

@@ -1167,6 +1167,8 @@ enum { S_BOOT = -1, S_DAY = 0, S_NIGHT = 1, S_LOOK = 2, S_CHECK = 3 };
 #define SD_LOCK_MS    60000     /* lockout after the first failed check, doubling */
 #define SD_PAIR_MS    60000     /* a look and the check it asked for */
 #define SD_RISE_MS    60000     /* a darker scene held this long is the new reference */
+#define SD_RISE       1.10f     /* ... starting this far above it (noise stays below) */
+#define SD_B_MIN      0.50f     /* a light that halves the dark reading may ask again */
 #define SD_LOOK_S     2700      /* 8 s every 45 min = 0.30 % of the night */
 
 /* the AE cannot brighten the image any further */
@@ -1361,15 +1363,15 @@ static void *dn_thread(void *arg)
             if (jump) B = -1.0f;            /* new light: the bar was for the old one */
             /* the light A (and B) were taken under is gone: else a lamp
              * would have to beat that light, and B would still judge for it */
-            if (A > 0.0f && s * jb > A) {
+            if (A > 0.0f && s > A * SD_RISE) {
                 if (!rise) rise = now;
-                if (now - rise >= SD_RISE_MS) {
-                    LOGD(MOD, "reference follows the darker scene: %.0f -> %.0f",
-                         (double)A, (double)s);
-                    A = s; rise = 0;
-                    if (B > 0.0f) B = 0.0f;
-                }
-            } else rise = 0;
+            } else if (s < A) rise = 0;
+            if (rise && now - rise >= SD_RISE_MS) {
+                LOGD(MOD, "reference follows the darker scene: %.0f -> %.0f",
+                     (double)A, (double)s);
+                A = s; rise = 0;
+                if (B > 0.0f) B = 0.0f;
+            }
             if (sd_watched()) quiet = 0;
             else if (!quiet) quiet = now;
             if (irp && dn->ir_idle_off && hal_fs_keepalive() && quiet &&
@@ -1455,6 +1457,7 @@ static void *dn_thread(void *arg)
                 if (B < N * SD_B_REL &&
                     (sd_exhausted(&sm) || s > SD_FAR * dn->night_gain))
                     B = N * SD_B_REL;
+                if (B < N * SD_B_MIN) B = N * SD_B_MIN;
             } else B = 0.0f;
             if (why[0] != 'b') { lock_until = now + lock_ms; lock_ms *= 2; }
             LOGI(MOD, "check (%s): night, exposure %.0f", why, (double)s);

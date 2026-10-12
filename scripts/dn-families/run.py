@@ -238,7 +238,10 @@ def main():
             name = "%s-%s" % (fam["name"], pname)
             if a.only and not re.search(a.only, name):
                 continue
-            scn = build(fam, pname, profs[pname], 768.0, 4096.0)
+            cfg = fam.get("config", {})
+            scn = build(fam, pname, profs[pname],
+                        float(cfg.get("daynight.day_gain", 768.0)),
+                        float(cfg.get("daynight.night_gain", 4096.0)))
             path = os.path.join(tmp, name + ".json")
             json.dump(scn, open(path, "w"))
             jobs.append((name, path))

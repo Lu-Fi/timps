@@ -49,10 +49,10 @@ Ablation: each mechanism compiled out, the whole family corpus re-run
 | Timer look every 45 min | lamp_nojump-pan/-eufy, eufy_dark_bulb |
 | Jump: lit level `jump_pct` below the last look for 20 s → look now, forget the bar | lamp_jump-t10/-eufy, foreign_ir_lamp-pan/-t10, check_then_light, isp_stuck |
 | Look after a jump asks below 2 × `day_gain` | dawn-schuppen (dark reading stays above `day_gain` in daylight) |
-| Scene bar B after a failed check: `dark × day_gain / day` | steady_night-eufy (12 switches, bound 2) |
+| Scene bar B after a failed check: `dark × day_gain / day`, at least `0.5 × dark` | steady_night-eufy (12 switches, bound 2) |
 | ... `0.85 × dark` when the check read the AE at its limit or above 4 × `night_gain` (Eufy: 40960 without a reported limit) | eufy_dark_bulb |
 | A check without a fresh look learns B from a look 30 s later | lamp_nojump-pan/-eufy |
-| Lit level `jump_pct` above the reference for 60 s → it is the reference, B relearned at the next look | ref_stuck-t10/-pc420 (field 2026-10-11: a short foreign light failed a check, the cellar lamp 30 min later never switched) |
+| Lit level 10 % above the reference, not below it for 60 s → it is the reference, B relearned at the next look | ref_stuck-t10/-pc420 (field 2026-10-11: a short foreign light failed a check, the cellar lamp 30 min later never switched); ref_noisy-pan (device test 2026-10-12: the level wobbled 173-181 around the first rule's 179) |
 | Lockout 1, 2, 4 … min after failed checks | dawn-wohn (9 switches, bound 8) |
 | Guarantee check after `heartbeat_max_s` | blind_look-eufy |
 | Readback: one edge through the other mode, held 5 s | isp_stuck-pan |
