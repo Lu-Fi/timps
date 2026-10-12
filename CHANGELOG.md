@@ -6,7 +6,7 @@ semantic versioning.
 
 ## [Unreleased]
 
-_1.10.1 (draft)_
+## [1.10.1] - 2026-10-12
 
 ### Security
 
@@ -6859,7 +6859,8 @@ camera before fleet rollout.
   TrueType OSD, motion detection, RTSP-Digest / HTTP-Basic auth. Ingenic
   headers via the `ingenic-headers` submodule.
 
-[Unreleased]: https://github.com/Lu-Fi/timps/compare/v1.10.0...HEAD
+[Unreleased]: https://github.com/Lu-Fi/timps/compare/v1.10.1...HEAD
+[1.10.1]: https://github.com/Lu-Fi/timps/compare/v1.10.0...v1.10.1
 [1.10.0]: https://github.com/Lu-Fi/timps/compare/v1.9.33...v1.10.0
 [1.2.0]: https://github.com/Lu-Fi/timps/compare/v1.1.0...v1.2.0
 [1.1.0]: https://github.com/Lu-Fi/timps/compare/v1.0.0...v1.1.0

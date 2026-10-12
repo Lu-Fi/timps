@@ -6,10 +6,10 @@ firmware. Everything here is verified against the `main` branch of
 <https://github.com/Lu-Fi/timps> and against `package/timps/` in a thingino
 firmware tree.
 
-Applies to timps v1.10.0 (source: `main`, 2026-10-11)
+Applies to timps v1.10.1 (source: `main`, 2026-10-12)
 
 A statement marked **since vX** is new in that release — on an older camera
-describe the previous behaviour. Changes listed under `[1.10.0]` in
+describe the previous behaviour. Changes listed under `[1.10.1]` in
 `CHANGELOG.md` are marked **since v1.10.0**.
 
 ## Where to find what

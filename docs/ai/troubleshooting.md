@@ -2649,7 +2649,7 @@ module tag that appears in the log line, plus the few `LOGI` lines users
 actually paste (level **I**). Format placeholders (`%d`, `%s`, …) are quoted as
 they appear in the source, so a pasted line can be matched by its fixed prefix.
 
-**since the next release** the long messages are terse: subject, values, key
+**since v1.10.1** the long messages are terse: subject, values, key
 names and a short hint stay in the line, the explanation lives in this table.
 An older build logs a longer wording; match it by its first words or values.
 

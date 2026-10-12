@@ -11,7 +11,7 @@ prudynt-t / raptor.
   HTTP-Control-API, Streaming-Protocols, Day-Night, Audio, Motion-Detection,
   Recording-Timelapse, Rate-Control-\*, Building, Logging, Testing-QA,
   Platform-SDK-Support)
-* Stand dieses Dokuments: `main`, Version v1.10.0 (2026-10-11);
+* Stand dieses Dokuments: `main`, Version v1.10.1 (2026-10-12);
   gestripptes `timpsd` ca. 410 KB (410 108 Byte: mipsel, T31 mit
   Hersteller-libimp, WebRTC, TLS und Rotation an; Stand `main` 2026-10-06). Mit
   **seit vX** markierte Aussagen sind in diesem Release neu – auf einer
