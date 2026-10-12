@@ -31,6 +31,10 @@ _1.10.2 (draft)_
   builds) says how a running stream is rotated, so the WebUI can tell the T23
   software path (text OSD only, no logo or privacy) and the vendor-libimp top
   band from a full-frame rotation.
+- `GET /control?stats=1`: a `system` object with load average, total and
+  available memory, the machine's CPU % and timpsd's own CPU % and RSS, for the
+  WebUI stats card. CPU values are tick deltas since the previous sample
+  (held at least 2 s), -1 at first.
 
 ### Fixed
 

@@ -262,8 +262,12 @@ int  control_fields_json(char *buf, size_t cap);
  * can read either source with the same code:
  *   {"video":{"0":{"gop":..,"profile":..,"rc_mode":".."},..},
  *    "encoder":{"0":{"left_pics":..,"left_stream_bytes":..,
- *                    "left_stream_frames":..[,"ave_bitrate":..]},..}}
- * "video" lists every stream slot; "encoder" omits channels whose query fails
+ *                    "left_stream_frames":..[,"ave_bitrate":..]},..},
+ *    "system":{"ncpu":..,"load":[1,5,15],"mem_total_kb":..,"mem_avail_kb":..,
+ *              "cpu_pct":..,"timps_cpu_pct":..,"timps_rss_kb":..}}
+ * "system" (not in the full snapshot) is read from /proc per request; the two
+ * CPU shares are of the whole machine since the previous sample, -1 at first
+ * (docs/ai/reference.md). "video" lists every stream slot; "encoder" omits channels whose query fails
  * (disabled stream / SW-rotate path / host sim) rather than reporting zeros,
  * and ave_bitrate only appears where the SoC supplies it - same rules as the
  * full snapshot. Returns the byte count like control_get_json, or -1 if

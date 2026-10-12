@@ -324,6 +324,11 @@ int ms_dir_on_rootfs(const char *dir);
 /* free space on the filesystem holding dir, in MB; -1 on error */
 long long ms_free_mb(const char *dir);
 
+/* /proc/meminfo MemTotal and MemAvailable in kB (either pointer may be NULL);
+ * pre-3.14 kernels lack MemAvailable: MemFree + Buffers + Cached - Shmem
+ * (tmpfs pages are Cached but cannot be dropped). -1 where unreadable. */
+void ms_meminfo_kb(long long *total, long long *avail);
+
 /* fopen(path,"r") for a regular file only: a FIFO or device path (these are
  * config-settable) would otherwise block the reader forever. */
 FILE *ms_fopen_regular(const char *path);

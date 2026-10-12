@@ -422,6 +422,27 @@ long long ms_free_mb(const char *dir)
     return (long long)((vf.f_bavail * (unsigned long long)vf.f_frsize) / (1024*1024));
 }
 
+void ms_meminfo_kb(long long *total, long long *avail)
+{
+    long long v, tot = -1, av = -1, fr = -1, buf = 0, cached = 0, shmem = 0;
+    FILE *f = fopen("/proc/meminfo", "r");
+    if (f) {
+        char line[96];
+        while (fgets(line, sizeof line, f)) {
+            if      (sscanf(line, "MemTotal: %lld", &v) == 1) tot = v;
+            else if (sscanf(line, "MemAvailable: %lld", &v) == 1) av = v;
+            else if (sscanf(line, "MemFree: %lld", &v) == 1) fr = v;
+            else if (sscanf(line, "Buffers: %lld", &v) == 1) buf = v;
+            else if (sscanf(line, "Cached: %lld", &v) == 1) cached = v;
+            else if (sscanf(line, "Shmem: %lld", &v) == 1) shmem = v;
+        }
+        fclose(f);
+        if (av < 0 && fr >= 0) av = fr + buf + cached - shmem;
+    }
+    if (total) *total = tot;
+    if (avail) *avail = av;
+}
+
 FILE *ms_fopen_regular(const char *path)
 {
     struct stat st;

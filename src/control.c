@@ -2404,6 +2404,68 @@ int control_fields_json(char *buf, size_t cap)
     return (int)o;
 }
 
+/* "system" CPU shares: tick deltas against the previous sample. A sample is
+ * kept for >= 2 s so concurrent or quick polls cannot shrink the span below
+ * what HZ=100 resolves; one older than 30 s starts over (-1). Read under the
+ * lock so a slower request cannot pair an older sample with a newer base. */
+#define SYS_SPAN_MIN_MS 2000
+#define SYS_SPAN_MAX_MS 30000
+static pthread_mutex_t g_sys_mu = PTHREAD_MUTEX_INITIALIZER;
+static struct {
+    long long t_ms;
+    unsigned long tot, idle, self;      /* mod 2^32: only deltas are used */
+    int cpu, tcpu;
+} g_sys = { 0, 0, 0, 0, -1, -1 };
+
+static int share_pct(unsigned long part, unsigned long whole)
+{
+    if ((long)part < 0) part = 0;
+    if (part > whole) part = whole;
+    return (int)((100 * part + whole / 2) / whole);
+}
+
+static void sys_cpu_pct(int *cpu, int *tcpu)
+{
+    unsigned long long x;
+    unsigned long tot = 0, idle = 0, ut = 0, st = 0;
+    int n = 0, ok = 0;
+    struct timespec ts;
+    pthread_mutex_lock(&g_sys_mu);
+    clock_gettime(CLOCK_MONOTONIC, &ts);
+    long long now = (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+    FILE *f = fopen("/proc/stat", "r");
+    if (f) {
+        if (fscanf(f, "cpu") == 0)
+            for (; n < 8 && fscanf(f, " %llu", &x) == 1; n++) {
+                tot += (unsigned long)x;
+                if (n == 3 || n == 4) idle += (unsigned long)x;
+            }
+        fclose(f);
+    }
+    if (n >= 4 && (f = fopen("/proc/self/stat", "r"))) {
+        char line[512], *p = NULL;
+        if (fgets(line, sizeof line, f)) p = strrchr(line, ')');
+        ok = p && sscanf(p + 1, " %*c %*d %*d %*d %*d %*d %*u %*u %*u %*u %*u"
+                         " %lu %lu", &ut, &st) == 2;
+        fclose(f);
+    }
+    unsigned long self = ut + st, dtot = tot - g_sys.tot;
+    long long dt = now - g_sys.t_ms;
+    if (!ok || !g_sys.t_ms || dt > SYS_SPAN_MAX_MS || (long)dtot <= 0) {
+        g_sys.cpu = g_sys.tcpu = -1;
+        g_sys.t_ms = ok ? now : 0;
+    } else if (dt >= SYS_SPAN_MIN_MS) {
+        g_sys.cpu = 100 - share_pct(idle - g_sys.idle, dtot);
+        g_sys.tcpu = share_pct(self - g_sys.self, dtot);
+        g_sys.t_ms = now;
+    }
+    if (ok && g_sys.t_ms == now) {
+        g_sys.tot = tot; g_sys.idle = idle; g_sys.self = self;
+    }
+    *cpu = g_sys.cpu; *tcpu = g_sys.tcpu;
+    pthread_mutex_unlock(&g_sys_mu);
+}
+
 /* ---------- GET /control?stats=1: the stats card's slow path ------------- */
 /* See control.h. Only what the /events "stats" push cannot carry - the rest of
  * the card is already fed live, so polling the full snapshot for it was ~8 KB
@@ -2443,7 +2505,28 @@ static int stats_json(char *buf, size_t cap)
         APP("}");
         nemit++;
     }
-    APP("}}");
+    double la[3] = { -1, -1, -1 };
+    long long mt, ma;
+    long rss = -1, pg;
+    int cpu, tcpu;
+    FILE *f = fopen("/proc/loadavg", "r");
+    if (f) {
+        if (fscanf(f, "%lf %lf %lf", &la[0], &la[1], &la[2]) != 3)
+            la[0] = la[1] = la[2] = -1;
+        fclose(f);
+    }
+    if ((f = fopen("/proc/self/statm", "r"))) {
+        if (fscanf(f, "%*s %ld", &pg) == 1)
+            rss = pg * (sysconf(_SC_PAGESIZE) / 1024);
+        fclose(f);
+    }
+    ms_meminfo_kb(&mt, &ma);
+    sys_cpu_pct(&cpu, &tcpu);
+    APP("},\"system\":{\"ncpu\":%ld,\"load\":[%.2f,%.2f,%.2f],"
+        "\"mem_total_kb\":%lld,\"mem_avail_kb\":%lld,\"cpu_pct\":%d,"
+        "\"timps_cpu_pct\":%d,\"timps_rss_kb\":%ld}}",
+        sysconf(_SC_NPROCESSORS_ONLN), la[0], la[1], la[2], mt, ma, cpu,
+        tcpu, rss);
     #undef APP
     if (o >= cap){ if (cap) buf[cap-1]=0; return -1; }   /* truncated */
     return (int)o;

@@ -1039,23 +1039,10 @@ static int clip_open(const char *path, int *dfd, char *leaf, size_t lcap)
     return fd;
 }
 
-/* MemAvailable, or on pre-3.14 kernels MemFree + Buffers + Cached - Shmem
- * (tmpfs pages are Cached but cannot be dropped); -1 if unreadable */
 static long long mem_avail_mb(void)
 {
-    FILE *f = fopen("/proc/meminfo", "r");
-    if (!f) return -1;
-    char line[96];
-    long long v, avail = -1, fr = -1, buf = 0, cached = 0, shmem = 0;
-    while (fgets(line, sizeof line, f)) {
-        if      (sscanf(line, "MemAvailable: %lld", &v) == 1) avail = v;
-        else if (sscanf(line, "MemFree: %lld", &v) == 1) fr = v;
-        else if (sscanf(line, "Buffers: %lld", &v) == 1) buf = v;
-        else if (sscanf(line, "Cached: %lld", &v) == 1) cached = v;
-        else if (sscanf(line, "Shmem: %lld", &v) == 1) shmem = v;
-    }
-    fclose(f);
-    if (avail < 0 && fr >= 0) avail = fr + buf + cached - shmem;
+    long long avail;
+    ms_meminfo_kb(NULL, &avail);
     return avail < 0 ? -1 : avail / 1024;
 }
 

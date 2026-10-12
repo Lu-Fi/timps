@@ -56,7 +56,11 @@ expect "POST body over 8 KB" 413 "$(code -X POST -d "{\"a\":\"$(head -c 9000 /de
 L=http://127.0.0.1:18880/control
 post() { curl -s --max-time 5 -X POST "$L" -d "$1" | sed -n 's/.*"pending":\([0-9]*\).*/\1/p'; }
 inconf() { sed -n "s/^$1 *= *//p" "$CONF"; }
+sysf() { curl -s --max-time 5 "$L?stats=1" | python3 -c "import json,sys; s=json.load(sys.stdin)['system']; print($1)"; }
+expect "stats.system first CPU sample" "-1 -1" "$(sysf "s['cpu_pct'], s['timps_cpu_pct']")"
+expect "stats.system mem/load/rss" 1 "$(sysf "int(s['ncpu']>=1 and s['mem_total_kb']>=s['mem_avail_kb']>0 and s['timps_rss_kb']>0 and len(s['load'])==3)")"
 sleep 3.5                                   # clear any window the checks above opened
+expect "stats.system CPU after 3.5 s" 1 "$(sysf "int(0<=s['timps_cpu_pct']<=s['cpu_pct']<=100)")"
 expect "single POST: pending"          0  "$(post '{"image":{"brightness":11}}')"
 expect "single POST: in the file"      11 "$(inconf image.brightness)"
 expect "burst POST: pending"           1  "$(post '{"image":{"brightness":12}}')"

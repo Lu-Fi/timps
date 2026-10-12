@@ -303,8 +303,19 @@ arrive pushed. The contract is "what the stats push can't carry", not "encoder".
 {"video":{"0":{"gop":50,"profile":2,"rc_mode":"cbr"},
           "1":{"gop":50,"profile":0,"rc_mode":"cbr"}},
  "encoder":{"0":{"left_pics":0,"left_stream_bytes":0,
-                 "left_stream_frames":0,"ave_bitrate":1180.0}}}
+                 "left_stream_frames":0,"ave_bitrate":1180.0}},
+ "system":{"ncpu":1,"load":[0.42,0.38,0.30],"mem_total_kb":59640,
+           "mem_avail_kb":27300,"cpu_pct":34,"timps_cpu_pct":12,
+           "timps_rss_kb":10036}}
 ```
+
+`system` (since 1.10.2) is read from `/proc` per request: load average,
+`MemTotal`/`MemAvailable` (pre-3.14 kernels: `MemFree+Buffers+Cached-Shmem`),
+the machine's busy % (`cpu_pct`, all cores together) and timpsd's own share of
+the machine on the same scale (`timps_cpu_pct`), plus its resident set. The CPU
+values are whole-percent tick deltas since the previous sample, which is held
+for at least 2 s; they are `-1` on the first request and after a gap of more
+than 30 s.
 
 `video` lists every stream slot. `encoder` **omits** channels whose query fails
 (disabled stream, SW-rotate path, host sim) rather than reporting zeros, and
