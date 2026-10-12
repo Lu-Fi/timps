@@ -18,8 +18,9 @@ _1.10.2 (draft)_
   unchanged, B/G -4 %) now ends the night within about 40 s instead of at
   the next 45-min look. It only starts a look (8 s dark, no click); colour
   looks are at least 5 min apart and the gap doubles up to 45 min until a
-  timer look. Per-zone AWB statistics are read on T40 vendor, T41, T23/T31/
-  C100 vendor and T10/T20 OpenIMP; elsewhere `GET /control` reports
+  timer look. Per-zone AWB statistics are read on T40/T41/T23/T31/C100
+  vendor, T10/T20 OpenIMP, and on T23/T31 and T40/T41 OpenIMP where the
+  libimp exports `OpenIMP_Cap_AwbZone` / `OpenIMP_Cap_AwbStatistics`; elsewhere `GET /control` reports
   `daynight.color_trigger: "unavailable"`. New status fields
   `daynight.color_trigger` and `daynight.color_dev_pct`.
 

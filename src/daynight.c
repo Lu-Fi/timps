@@ -1176,7 +1176,7 @@ enum { S_BOOT = -1, S_DAY = 0, S_NIGHT = 1, S_LOOK = 2, S_CHECK = 3 };
 #define SD_COLOR_GAP_MS 300000  /* colour looks: 5 min apart, doubling while nothing else looks */
 #define SD_COLOR_FAILS  3       /* failed reads in a row = no colour statistics */
 #define SD_COLOR_PROBES 30      /* reads outside the night until the first success */
-#define SD_COLOR_READ_MS 5000   /* a read costs 1.4-1.7 ms (Eufy, Pan) */
+#define SD_COLOR_READ_MS 5000   /* the first read took 1.4-1.7 ms (Eufy, Pan) */
 
 /* the AE cannot brighten the image any further */
 static int sd_exhausted(const dn_sample *m)

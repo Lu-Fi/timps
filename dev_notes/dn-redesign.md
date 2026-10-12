@@ -203,16 +203,18 @@ Mechanism (`src/daynight.c`, `dn_thread` S_NIGHT):
   pattern that is quiet at every timer look restarts the doubling: about 5
   looks per 80 min, ≈ 30 s/h (0.83 %). Never a click by itself.
 - Availability: `hal_isp_awb_ratio()`, Q12 R/G and B/G from per-zone
-  statistics, weak-bound: T40 vendor and T41 (`GetAwbStatistics`, 15×15 u32),
-  T23/T31/C100 vendor (`GetAwbZone`, 15×15 u8 means), T10/T20 OpenIMP
+  statistics, weak-bound: T40/T41 (`GetAwbStatistics`, 15×15 u32),
+  T23/T31/C100 (`GetAwbZone`, 15×15 u8 means), T10/T20 OpenIMP
   (`T2X_CID_AWB_ZONE` ioctl on libimp's `/dev/video0` fd; the pinned OpenIMP's
-  `GetAwbZone` sends a CID the T20 driver rejects). Not: T40 OpenIMP (the open
-  driver's statistics path is a stub), T23/T31 OpenIMP (`GetAwbZone` took
-  three pointers before openimp e7dadd6, which the pin lacks: a stack
-  overrun), T10/T20/T21 vendor (no zones; hist/GOL are white-region filtered
-  or the AWB's own estimate). Read every 5 s, only at night (and up to 30 times
-  before the first success): one read measured 1.4 ms on the Eufy and 1.7 ms
-  on the Pan (device test 2026-10-12), the 20 s hold needs no more; 3
+  `GetAwbZone` sends a CID the T20 driver rejects). On OpenIMP T23/T31 and
+  T40/T41 only where the libimp exports `OpenIMP_Cap_AwbZone` /
+  `OpenIMP_Cap_AwbStatistics` (weak; older ones had a three-pointer
+  `GetAwbZone`, a stack overrun with one, and a stub statistics path on T40).
+  Not: T10/T20/T21 vendor (no zones; hist/GOL are white-region filtered or the
+  AWB's own estimate). Read every 5 s, only at night (and up to 30 times
+  before the first success): the first read took 1.4 ms (Eufy) / 1.7 ms (Pan),
+  later ones 43 µs / 123 µs (device tests 2026-10-12); the 20 s hold needs no
+  more; 3
   failures in a row = `color_trigger: "unavailable"`.
   Only the Eufy and the Pan are measured; the others are unverified.
 - Corpus: profiles `pan`/`eufy` carry `color` (base, shift per unit lamp,

@@ -6617,11 +6617,17 @@ static int ms_awb_q12(float sr, float sg, float sb, uint32_t *rg, uint32_t *bg)
 #if defined(ISP_HAS_AWB_STATIS)
 extern int32_t ms_awb_statis(IMPVI_NUM, IMPISPAWBStatisInfo *)
     __asm__("IMP_ISP_Tuning_GetAwbStatistics") __attribute__((weak));
+#ifdef USE_OPENIMP
+extern const int OpenIMP_Cap_AwbStatistics __attribute__((weak));
+#define MS_AWB_CAP (&OpenIMP_Cap_AwbStatistics && OpenIMP_Cap_AwbStatistics)
+#else
+#define MS_AWB_CAP 1
+#endif
 /* slack: a libimp whose struct is larger must not write past it */
 static union { IMPISPAWBStatisInfo v; char pad[sizeof(IMPISPAWBStatisInfo) + 1024]; } g_awb;
 int hal_isp_awb_ratio(uint32_t *rg, uint32_t *bg)
 {
-    if (!ms_awb_statis || ms_awb_statis(IMPVI_MAIN, &g_awb.v) != 0) return -1;
+    if (!MS_AWB_CAP || !ms_awb_statis || ms_awb_statis(IMPVI_MAIN, &g_awb.v) != 0) return -1;
     float sr = 0, sg = 0, sb = 0;
     for (int y = 0; y < 15; y++)
         for (int x = 0; x < 15; x++) {
@@ -6632,12 +6638,19 @@ int hal_isp_awb_ratio(uint32_t *rg, uint32_t *bg)
     return ms_awb_q12(sr, sg, sb, rg, bg);
 }
 #elif defined(ISP_HAS_AWB_ZONE)
+_Static_assert(sizeof(IMPISPAWBZone) == 675, "IMPISPAWBZone: 3 x 225 u8");
 extern int ms_awb_zone(IMPISPAWBZone *)
     __asm__("IMP_ISP_Tuning_GetAwbZone") __attribute__((weak));
+#ifdef USE_OPENIMP
+extern const int OpenIMP_Cap_AwbZone __attribute__((weak));
+#define MS_AWB_CAP (&OpenIMP_Cap_AwbZone && OpenIMP_Cap_AwbZone)
+#else
+#define MS_AWB_CAP 1
+#endif
 static union { IMPISPAWBZone v; char pad[sizeof(IMPISPAWBZone) + 1024]; } g_awb;
 int hal_isp_awb_ratio(uint32_t *rg, uint32_t *bg)
 {
-    if (!ms_awb_zone || ms_awb_zone(&g_awb.v) != 0) return -1;
+    if (!MS_AWB_CAP || !ms_awb_zone || ms_awb_zone(&g_awb.v) != 0) return -1;
     float sr = 0, sg = 0, sb = 0;
     for (int i = 0; i < 225; i++) {
         sr += g_awb.v.zone_r[i]; sg += g_awb.v.zone_g[i]; sb += g_awb.v.zone_b[i];
