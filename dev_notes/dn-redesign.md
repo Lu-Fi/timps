@@ -208,8 +208,10 @@ Mechanism (`src/daynight.c`, `dn_thread` S_NIGHT):
   driver's statistics path is a stub), T23/T31 OpenIMP (`GetAwbZone` took
   three pointers before openimp e7dadd6, which the pin lacks: a stack
   overrun), T10/T20/T21 vendor (no zones; hist/GOL are white-region filtered
-  or the AWB's own estimate). Read only at night (and up to 30 times before
-  the first success); 3 failures in a row = `color_trigger: "unavailable"`.
+  or the AWB's own estimate). Read every 5 s, only at night (and up to 30 times
+  before the first success): one read measured 1.4 ms on the Eufy and 1.7 ms
+  on the Pan (device test 2026-10-12), the 20 s hold needs no more; 3
+  failures in a row = `color_trigger: "unavailable"`.
   Only the Eufy and the Pan are measured; the others are unverified.
 - Corpus: profiles `pan`/`eufy` carry `color` (base, shift per unit lamp,
   noise) and per-scene `lamp`/`tint`; the harness serves `awb_lit` (and far

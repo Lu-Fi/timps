@@ -1176,6 +1176,7 @@ enum { S_BOOT = -1, S_DAY = 0, S_NIGHT = 1, S_LOOK = 2, S_CHECK = 3 };
 #define SD_COLOR_GAP_MS 300000  /* colour looks: 5 min apart, doubling while nothing else looks */
 #define SD_COLOR_FAILS  3       /* failed reads in a row = no colour statistics */
 #define SD_COLOR_PROBES 30      /* reads outside the night until the first success */
+#define SD_COLOR_READ_MS 5000   /* a read costs 1.4-1.7 ms (Eufy, Pan) */
 
 /* the AE cannot brighten the image any further */
 static int sd_exhausted(const dn_sample *m)
@@ -1220,15 +1221,15 @@ static void sd_idle_status(const ms_daynight_cfg *dn, int irp, int idle,
     if (changed) events_notify();
 }
 
+/* the first read pays for cold caches: the third one is logged */
 static int sd_color(float *rg, float *bg)
 {
-    static int said;
+    static int n;
     uint32_t r = 0, b = 0;
-    int64_t t0 = said ? 0 : ms_now_us();
+    int64_t t0 = ms_now_us();
     if (hal_isp_awb_ratio(&r, &b) != 0 || !r || !b) return -1;
-    if (!said++)
-        LOGI(MOD, "colour statistics: %lld us per read",
-             (long long)(ms_now_us() - t0));
+    if (++n == 3)
+        LOGI(MOD, "colour statistics: %lld us per read", (long long)(ms_now_us() - t0));
     *rg = (float)r; *bg = (float)b;
     return 0;
 }
@@ -1258,7 +1259,8 @@ static void *dn_thread(void *arg)
     const char *why = "boot";
     /* colour of the lit picture, taken after each look like A */
     float   Crg = -1.0f, Cbg = -1.0f, cdev = -1.0f;
-    int64_t c_from = 0, chold = 0, c_next = 0, c_gap = SD_COLOR_GAP_MS;
+    float   rg = -1.0f, bg = -1.0f;
+    int64_t c_from = 0, chold = 0, c_next = 0, c_gap = SD_COLOR_GAP_MS, c_rd = 0, c_at = 0;
     int     c_fails = 0, c_seen = 0;
 
     while (!ms_stopgate_stopped(&g_gate)) {
@@ -1307,11 +1309,14 @@ static void *dn_thread(void *arg)
             desync = cycled = ir_fails = 0; g_ir_unusable = 0;
             LOGI(MOD, "auto day/night enabled (simple engine)");
         }
-        float rg = -1.0f, bg = -1.0f;
-        if (dn->color_pct > 0 && irp &&
+        if (dn->color_pct > 0 && irp && now >= c_rd &&
             (st == S_NIGHT || (!c_seen && c_fails < SD_COLOR_PROBES))) {
-            if (sd_color(&rg, &bg) == 0) { c_seen = 1; c_fails = 0; }
-            else if (c_fails < SD_COLOR_PROBES) c_fails++;
+            c_rd = now + SD_COLOR_READ_MS;
+            if (sd_color(&rg, &bg) == 0) { c_seen = 1; c_fails = 0; c_at = now; }
+            else {
+                rg = cdev = -1.0f;
+                if (c_fails < SD_COLOR_PROBES) c_fails++;
+            }
         }
         if (sm.d > 0.0f) {
             s = (s > 0.0f) ? s + (sm.d - s) * DN_ALPHA : sm.d;
@@ -1413,8 +1418,7 @@ static void *dn_thread(void *arg)
             }
             /* sign and size differ per sensor: any channel, either way */
             int cj = 0;
-            cdev = -1.0f;
-            if (rg > 0.0f && Crg < 0.0f && now >= c_from && stable >= DN_STABLE_N) {
+            if (rg > 0.0f && Crg < 0.0f && c_at >= c_from && stable >= DN_STABLE_N) {
                 Crg = rg; Cbg = bg;
             } else if (rg > 0.0f && Crg > 0.0f) {
                 cdev = 100.0f * fmaxf(fabsf(rg / Crg - 1.0f), fabsf(bg / Cbg - 1.0f));
@@ -1555,7 +1559,7 @@ static void *dn_thread(void *arg)
     out:
         if (st != S_NIGHT && st != S_LOOK) g_probe_req = 0;
         if (st != S_NIGHT || cycled) {
-            Crg = -1.0f; chold = 0; cdev = -1.0f;
+            rg = Crg = -1.0f; chold = 0; cdev = -1.0f;
             c_from = now + DN_PROBE_SETTLE_S * 1000;
         }
         dn_trace(dn, now, cur, &sm, s, A, B > 0.0f ? B : dn->day_gain, due, look_at, -1.0f, -1.0f);

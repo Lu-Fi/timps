@@ -6664,25 +6664,24 @@ static int ms_is_video0(int fd)
     return !strcmp(l, "/dev/video0");
 }
 
-/* libimp opens it at ISP init, among the first fds; a failed scan is not
- * repeated for 30 calls, so a sample stays far below 1 ms */
+/* libimp opens it at ISP init, among the first fds. Searched once and after
+ * a failed ioctl; a failed search waits 30 calls. */
 static int ms_tuning_fd(void)
 {
-    static int fd = -1, skip;
-    if (fd >= 0 && ms_is_video0(fd)) return fd;
+    static int skip;
     if (skip) { skip--; return -1; }
-    for (fd = 3; fd < 128; fd++)
+    for (int fd = 3; fd < 128; fd++)
         if (ms_is_video0(fd)) return fd;
     skip = 30;
-    return fd = -1;
+    return -1;
 }
 
 int hal_isp_awb_ratio(uint32_t *rg, uint32_t *bg)
 {
-    int fd = ms_tuning_fd();
-    if (fd < 0) return -1;
+    static int fd = -1;
+    if (fd < 0 && (fd = ms_tuning_fd()) < 0) return -1;
     struct { int32_t cmd, subcmd, value; } q = { 1, MS_T2X_AWB_ZONE, (int32_t)(intptr_t)g_awbz };
-    if (ioctl(fd, MS_TISP_TUNING, &q) != 0) return -1;
+    if (ioctl(fd, MS_TISP_TUNING, &q) != 0) { fd = -1; return -1; }
     float wr = 0, wb = 0, wn = 0;
     for (int i = 0; i < 225; i++) {
         float n = (float)g_awbz[i].n;
