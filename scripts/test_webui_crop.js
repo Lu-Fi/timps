@@ -6,7 +6,7 @@
 //
 // Extracts the pure cropFit/cropDrag/cropFromZoom/zoomFromCrop/cropPct/
 // cropScale/cropEffMin/cropZoomMax/cropNative/cropDragView/cropZoomAt/cropBackdrop
-// (and cropMinAt/cropUpMin/cropNeedUp, the automatic upscaling) by
+// (and cropMinAt/cropUpMin/cropNeedUp, the upscaling that follows the window) by
 // name; each extra argument is a saved GET /control whose caps.fcrop.sensor
 // is used as one more sensor size and whose min_win/zoom_max/video sizes are
 // checked against the zoom slider range. Exit 0 = all passed.
@@ -272,27 +272,48 @@ if (G.cropNeedUp) {
     ok(v.w === 540 && v.h === 960, "rotated view: floor swapped " + JSON.stringify(v));
   }
 
-  // needed p: rounded up to 10, capped at pmax, never below p
-  ok(G.cropNeedUp({ w: 1920, h: 1080 }, out, 20, 100) === 20, "need: native window keeps p");
-  ok(G.cropNeedUp({ w: 1600, h: 900 }, out, 10, 100) === 20, "need: 1600x900 -> 20 (needs 20)");
-  ok(G.cropNeedUp({ w: 1598, h: 898 }, out, 10, 100) === 30, "need: 1598x898 -> 30 (needs 21)");
-  ok(G.cropNeedUp({ w: 1280, h: 720 }, out, 10, 100) === 50, "need: 1280x720 -> 50");
-  ok(G.cropNeedUp({ w: 960, h: 540 }, out, 10, 100) === 100, "need: 960x540 -> 100");
-  ok(G.cropNeedUp({ w: 900, h: 500 }, out, 10, 100) === 100, "need: below the pmax window capped at 100");
-  ok(G.cropNeedUp({ w: 1500, h: 1080 }, out, 10, 100) === 30, "need: worst axis wins");
-  ok(G.cropNeedUp({ w: 1500, h: 844 }, out, 35, 100) === 35, "need: p 35 already enough, not rounded up");
-  ok(G.cropNeedUp({ w: 1280, h: 720 }, out, 70, 100) === 70, "need: never lowers p");
-  ok(G.cropNeedUp({ w: 0, h: 0 }, out, 30, 100) === 30, "need: no window keeps p");
-  ok(G.cropNeedUp({ w: 1280, h: 720 }, [0, 0], 10, 100) === 10, "need: no stream keeps p");
+  // p follows the window both ways: needed p rounded up to 10, within 10..pmax
+  ok(G.cropNeedUp({ w: 1920, h: 1080 }, out, 100) === 10, "need: native window -> floor 10");
+  ok(G.cropNeedUp({ w: 2560, h: 1440 }, out, 100) === 10, "need: window above the stream -> floor 10");
+  ok(G.cropNeedUp({ w: 1746, h: 982 }, out, 100) === 10, "need: 1746x982 -> 10 (needs 10)");
+  ok(G.cropNeedUp({ w: 1744, h: 980 }, out, 100) === 20, "need: 1744x980 -> 20 (needs 11)");
+  ok(G.cropNeedUp({ w: 1600, h: 900 }, out, 100) === 20, "need: 1600x900 -> 20 (needs 20)");
+  ok(G.cropNeedUp({ w: 1598, h: 898 }, out, 100) === 30, "need: 1598x898 -> 30 (needs 21)");
+  ok(G.cropNeedUp({ w: 1280, h: 720 }, out, 100) === 50, "need: 1280x720 -> 50");
+  ok(G.cropNeedUp({ w: 960, h: 540 }, out, 100) === 100, "need: 960x540 -> 100");
+  ok(G.cropNeedUp({ w: 900, h: 500 }, out, 100) === 100, "need: below the pmax window capped at 100");
+  ok(G.cropNeedUp({ w: 1500, h: 1080 }, out, 100) === 30, "need: worst axis wins");
+  ok(G.cropNeedUp({ w: 1280, h: 720 }, out, 40) === 40, "need: capped at a lower pmax");
+  ok(G.cropNeedUp({ w: 0, h: 0 }, out, 100) === 10, "need: no window -> floor 10");
+  ok(G.cropNeedUp({ w: 1280, h: 720 }, [0, 0], 100) === 10, "need: no stream -> floor 10");
+  // shrink to the pmax window, then grow back: p comes down step by step
+  {
+    let prev = 100, mono = true;
+    for (let w = 960; w <= 1920; w += 2) {
+      const h = Math.round(w * 9 / 16 / 2) * 2, q = G.cropNeedUp({ w: w, h: h }, out, 100);
+      if (q > prev) mono = false;
+      prev = q;
+      const a = G.cropMinAt(out, q);
+      ok(a[0] <= w && a[1] <= h, "grow " + w + "x" + h + ": window accepted at the lowered p" + q + " (min " + a + ")");
+    }
+    ok(mono && prev === 10, "grow: p falls monotonically to the floor 10");
+  }
+  // boundary windows: exactly the min window of a step keeps that step, accepted
+  for (const o of outs.slice(0, 6)) for (let q = 10; q <= 100; q += 10) {
+    const mn = G.cropMinAt(o, q), r = G.cropNeedUp({ w: mn[0], h: mn[1] }, o, 100);
+    ok(r <= q && G.cropMinAt(o, r)[0] <= mn[0] && G.cropMinAt(o, r)[1] <= mn[1], "boundary " + o + " p" + q + " window " + mn + " -> p" + r + " accepted");
+    const b = G.cropNeedUp({ w: mn[0] + 2, h: mn[1] + 2 }, o, 100);
+    ok(b <= q && G.cropMinAt(o, b)[0] <= mn[0] + 2, "boundary+2 " + o + " p" + q + " -> p" + b + " accepted");
+  }
   for (let i = 0; i < 2000; i++) {
-    const o = outs[i % 6], pmax = 100, p0 = 10 * (1 + Math.floor(rnd() * 9));
+    const o = outs[i % 6], pmax = 100;
     const mn = G.cropMinAt(o, pmax), w = mn[0] + 2 * Math.floor(rnd() * (o[0] - mn[0]) / 2 + 1), h = mn[1] + 2 * Math.floor(rnd() * (o[1] - mn[1]) / 2 + 1);
-    const p = G.cropNeedUp({ w: w, h: h }, o, p0, pmax);
-    ok(p >= p0 && p <= pmax && (p === p0 || p % 10 === 0) && w * (100 + p) >= o[0] * 100 && h * (100 + p) >= o[1] * 100,
-      "random need " + o + " " + w + "x" + h + " p" + p0 + " -> " + p);
+    const p = G.cropNeedUp({ w: w, h: h }, o, pmax);
+    ok(p >= 10 && p <= pmax && p % 10 === 0 && w * (100 + p) >= o[0] * 100 && h * (100 + p) >= o[1] * 100,
+      "random need " + o + " " + w + "x" + h + " -> " + p);
     const a = G.cropMinAt(o, p);
     ok(a[0] <= w && a[1] <= h, "random need: window passes min_win at the new p " + w + "x" + h + " p" + p);
-    if (p > p0 && p - 10 > p0) ok(w * (90 + p) < o[0] * 100 || h * (90 + p) < o[1] * 100, "random need: one step lower would not do " + w + "x" + h + " p" + p);
+    if (p > 10) ok(w * (90 + p) < o[0] * 100 || h * (90 + p) < o[1] * 100, "random need: one step lower would not do " + w + "x" + h + " p" + p);
   }
 }
 
