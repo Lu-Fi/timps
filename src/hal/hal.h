@@ -118,6 +118,7 @@ unsigned hal_roi_rejected(int si);
  * current one). */
 typedef struct {
     int upscale_pct;
+    int upscale_max;   /* image.fcrop_upscale_pct ceiling, -1 unsupported */
     int min_w, min_h;
     int zoom_max_x100;
     unsigned zoomable, zoomed;

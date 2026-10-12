@@ -218,6 +218,7 @@ typedef struct {
      * left/top like the FrameSource crop; the SDK struct orders top,left.
      * Every stream scales the window to its own size. */
     int fcrop_enable, fcrop_x, fcrop_y, fcrop_w, fcrop_h;
+    int fcrop_upscale_pct;          /* -1: leave the driver's value */
 } ms_image_cfg;
 
 /* one OSD overlay: text (with placeholders) or a BGRA logo */

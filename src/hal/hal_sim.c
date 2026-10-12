@@ -449,7 +449,7 @@ void hal_fcrop_limits(hal_fcrop_lim *o)
     int sw, sh;
     hal_sensor_size(&sw, &sh);
     memset(o, 0, sizeof *o);
-    o->upscale_pct = -1;
+    o->upscale_pct = o->upscale_max = -1;
     o->min_w = o->min_h = FCROP_MIN;
     for (int i = 0; i < MS_MAX_VSTREAM; i++)
         if (g_cfg_boot.video[i].enabled) o->zoomable |= 1u << i;

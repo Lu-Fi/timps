@@ -655,6 +655,14 @@ static void timps_apply_setting(ctrl_scratch_t *sc, ctrl_changes *ch, const char
  * names of daynight.day_gain/night_gain), got a 200 back, and nothing was
  * saved. The canonical name still wins when a body carries both, and what is
  * applied/persisted/echoed is always the canonical one. */
+/* the driver parameter is runtime-detected */
+static int fcup_missing(void)
+{
+    hal_fcrop_lim fl;
+    hal_fcrop_limits(&fl);
+    return fl.upscale_max < 0;
+}
+
 static void apply_ctrl_fields(ctrl_scratch_t *sc, ctrl_changes *ch, const char *prefix,
                               const char *s, const char *e,
                               const cfg_field *tbl, int n)
@@ -665,7 +673,8 @@ static void apply_ctrl_fields(ctrl_scratch_t *sc, ctrl_changes *ch, const char *
         if (!get_val(s, e, tbl[i].name, v, sizeof v) &&
             !(tbl[i].alias && get_val(s, e, tbl[i].alias, v, sizeof v))) continue;
         snprintf(full, sizeof full, "%s.%s", prefix, tbl[i].name);
-        if (tbl[i].flags & F_NOHW) {          /* feature absent on this SoC */
+        if ((tbl[i].flags & F_NOHW) ||        /* feature absent on this SoC */
+            (!strcmp(full, "image.fcrop_upscale_pct") && fcup_missing())) {
             int w = snprintf(sc->uns + sc->uns_off, sizeof sc->uns - (size_t)sc->uns_off,
                              "%s\"%s\"", sc->uns_off ? "," : "", full);
             if (w > 0 && sc->uns_off + w < (int)sizeof sc->uns) sc->uns_off += w;
@@ -1757,10 +1766,10 @@ static int get_json(char *buf, size_t cap)
         hal_fcrop_limits(&fl);
         APP("]},\"fcrop\":{\"tier\":\"%s\",\"live\":%d,\"min\":%d,\"even\":1,"
             "\"step\":2,\"sensor\":[%d,%d],\"state\":\"%s\",\"min_win\":[%d,%d],"
-            "\"zoom_max\":%d.%02d,\"upscale_pct\":%d,\"zoomable\":[",
+            "\"zoom_max\":%d.%02d,\"upscale_pct\":%d,\"upscale_max\":%d,\"zoomable\":[",
             cap_tier_name(ft), hal_fcrop_live(), FCROP_MIN,
             fsw, fsh, hal_fcrop_state(), fl.min_w, fl.min_h,
-            fl.zoom_max_x100 / 100, fl.zoom_max_x100 % 100, fl.upscale_pct);
+            fl.zoom_max_x100 / 100, fl.zoom_max_x100 % 100, fl.upscale_pct, fl.upscale_max);
         for (int s = 0; s < MS_MAX_VSTREAM; s++)
             APP("%s%d", s ? "," : "", !!(fl.zoomable & (1u << s)));
         APP("],\"zoomed\":[");
@@ -1926,8 +1935,9 @@ static int get_json(char *buf, size_t cap)
         img.colorfx,img.scene,
         img.core_wb_mode,img.wb_rgain,img.wb_bgain);
     APP(",\"fcrop_enable\":%d,\"fcrop_x\":%d,\"fcrop_y\":%d,"
-        "\"fcrop_w\":%d,\"fcrop_h\":%d",
-        img.fcrop_enable, img.fcrop_x, img.fcrop_y, img.fcrop_w, img.fcrop_h);
+        "\"fcrop_w\":%d,\"fcrop_h\":%d,\"fcrop_upscale_pct\":%d",
+        img.fcrop_enable, img.fcrop_x, img.fcrop_y, img.fcrop_w, img.fcrop_h,
+        img.fcrop_upscale_pct);
     {   /* gains AWB applies right now: a manual start that matches auto */
         int wr, wbg;
         if (hal_isp_wb_gains(&wr, &wbg) == 0)

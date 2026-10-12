@@ -416,6 +416,7 @@ way to check.
 | `image.fcrop_y` | int | `0` | 0..8192 | as above | Top edge, picture pixels (see `fcrop_x` for the flip). |
 | `image.fcrop_w` | int | `0` | 0..8192 | as above | Window width. The HAL evens x/y/w/h, moves (never shrinks) the window inside the sensor and refuses anything under 64×64 (`state":"rejected"`, WARN). Keep the stream aspect ratio, or every stream is stretched. |
 | `image.fcrop_h` | int | `0` | 0..8192 | as above | Window height. |
+| `image.fcrop_upscale_pct` | int | `-1` | -1..`caps.fcrop.upscale_max` | live | **Since v1.10.2.** Sets the open-tx-isp `fcrop_upscale_pct` driver parameter (`/sys/module/tx_isp_t23\|t31/parameters/`): the scaler may upscale a FrontCrop window by this many percent per axis, so a window down to `out × 100 / (100 + p)` is accepted. `-1` = leave the driver's value. Ceiling `caps.fcrop.upscale_max`: OpenIMP T23 100 (device-tested), OpenIMP T31 0 (its MSCA upscale limit is not measured yet; too much stalls every output until a reboot). Written at start before any SetFrontCrop and on every change; lowering it re-applies the window, and a window that no longer fits is refused (`state":"rejected"`) and the crop goes back to the full sensor, never left for the next set-format to drop. Elsewhere (vendor stacks, other SoCs, a driver without the parameter) `caps.fcrop.upscale_max` is -1, a POST answers `"unsupported"` and a file value gets one WARN at start. |
 | `image.ae_it_max_us` | int | `0` | 0..1000000 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_AE_IT_MAX` (T23/T31/C100) or `ISP_HAS_AE_IT_RANGE` (T10/T20/T21/T30). Inert on T40/T41. `0` = no cap: touches nothing if no cap was ever written, otherwise writes the sensor mode's own (remembered, uncapped) AE maximum back (**since v1.9.30**; before that `0` needed a restart). |
 
 Prose and pitfalls
@@ -466,8 +467,9 @@ Prose and pitfalls
   whole ISP, in sensor pixels; the request is applied **once per POST** (after
   all four coordinates arrived) and at start after every channel exists.
   `GET /control` reports `caps.fcrop` = `{tier, live, min:64, even:1, step:2,
-  sensor:[w,h], state, min_win:[w,h], zoom_max, upscale_pct, zoomable:[..],
-  zoomed:[..]}`; `state` is `off`, `on`, `rejected` (timps refused the
+  sensor:[w,h], state, min_win:[w,h], zoom_max, upscale_pct, upscale_max,
+  zoomable:[..], zoomed:[..]}` (`upscale_max` **since v1.10.2**, the
+  ceiling of `image.fcrop_upscale_pct`, -1 unsupported); `state` is `off`, `on`, `rejected` (timps refused the
   window: below `min_win`, 64×64 or no sensor size; or SetFrontCrop returned
   `-EINVAL`/`-EOPNOTSUPP` — on T10/T20/T21 any error — i.e. no stream can
   show it, logged once with errno), `waiting` (T10/T20/T21: refused only
@@ -1014,7 +1016,7 @@ parameter exists only in drivers with the T23 crop-hang fix (open-tx-isp
 164225e5/25b1d8c7) or the T31 MSCA guard (27dc8be4); open-tx-isp b15ef235
 (agg-34) has both. Present: `effective`, live. Every stream must be no larger
 than the window or scaled down (`fcrop_upscale_pct`, default 0 = no
-upscaling); a smaller window is refused with `-EINVAL`, logged once and
+upscaling; **since v1.10.2** set by `image.fcrop_upscale_pct`); a smaller window is refused with `-EINVAL`, logged once and
 reported as `caps.fcrop.state` = `rejected`. Absent on T23: `experimental`,
 start-only, needs open-tx-isp 3cf9bdac or newer (older drivers hung the
 pipeline on a crop change); the start apply runs before chn0 streams, a POST

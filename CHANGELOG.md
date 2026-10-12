@@ -23,6 +23,11 @@ _1.10.2 (draft)_
   libimp exports `OpenIMP_Cap_AwbZone` / `OpenIMP_Cap_AwbStatistics`; elsewhere `GET /control` reports
   `daynight.color_trigger: "unavailable"`. New status fields
   `daynight.color_trigger` and `daynight.color_dev_pct`.
+- FrontCrop: `image.fcrop_upscale_pct` (default -1 = leave the driver's
+  value, live) sets the open-tx-isp `fcrop_upscale_pct` on T23/T31 OpenIMP,
+  so a crop window smaller than the stream is upscaled; ceiling in the new
+  `caps.fcrop.upscale_max` (T23 100, T31 0 until its scaler limit is
+  measured). Lowering it re-applies the window or returns to the full sensor.
 
 ## [1.10.1] - 2026-10-12
 

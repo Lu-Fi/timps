@@ -131,6 +131,13 @@ static inline int roi_rt_tier(int tier, int gate, int cap)
 #elif defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)
 #define FCROP_DS_ONLY 1
 #endif
+/* image.fcrop_upscale_pct ceiling: T23 device-tested to 100; T31's MSCA
+ * limit is not measured and too much stalls every output until a reboot */
+#if defined(USE_OPENIMP) && defined(PLATFORM_T23)
+#define FCROP_UPSCALE_MAX 100
+#elif defined(USE_OPENIMP) && defined(PLATFORM_T31)
+#define FCROP_UPSCALE_MAX 0
+#endif
 /* the ISP crops in unflipped sensor coordinates on these axes and flips
  * afterwards, so image.fcrop_* (picture coordinates) are mirrored there:
  * bit0 x for image.hflip, bit1 y for image.vflip. Device-proven with

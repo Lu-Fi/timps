@@ -1303,6 +1303,24 @@ static int fcrop_upscale_pct(void)
 }
 #endif
 
+#ifdef FCROP_UPSCALE_MAX
+/* write image.fcrop_upscale_pct to the driver; the driver judges every
+ * window and set-format against the value it holds at that moment */
+static void fcrop_upscale_sync(void)
+{
+    int want = g_hcfg->image.fcrop_upscale_pct, cur = fcrop_upscale_pct();
+    if (want < 0 || cur < 0 || hal_fcrop_tier() == CAP_TIER_UNSUPPORTED) return;
+    if (want > FCROP_UPSCALE_MAX) want = FCROP_UPSCALE_MAX;
+    if (want == cur) return;
+    FILE *f = fopen(FCROP_MSCA_PARAM, "w");
+    if (!f || fprintf(f, "%d\n", want) < 0 || fclose(f) != 0) {
+        LOGW(MOD,"image.fcrop_upscale_pct: cannot write %s: %s", FCROP_MSCA_PARAM, strerror(errno));
+        return;
+    }
+    LOGI(MOD,"image.fcrop_upscale_pct: %d -> %d", cur, want);
+}
+#endif
+
 static void fcrop_cfg(int *en, int *x, int *y, int *w, int *h)
 {
     config_str_lock();
@@ -1316,7 +1334,7 @@ void hal_fcrop_limits(hal_fcrop_lim *o)
     int sw, sh, en, x, y, w, h;
     hal_sensor_size(&sw, &sh);
     memset(o, 0, sizeof *o);
-    o->upscale_pct = -1;
+    o->upscale_pct = o->upscale_max = -1;
     o->min_w = o->min_h = FCROP_MIN;
     unsigned all = 0;
     int ow = 0, oh = 0;
@@ -1333,6 +1351,10 @@ void hal_fcrop_limits(hal_fcrop_lim *o)
     int fit = en && fcrop_fit(x, y, w, h, sw, sh, &win) != GEOM_REJECT;
 #if defined(FCROP_MSCA_PARAM)
     o->upscale_pct = fcrop_upscale_pct();
+#ifdef FCROP_UPSCALE_MAX
+    if (o->upscale_pct >= 0 && hal_fcrop_tier() != CAP_TIER_UNSUPPORTED)
+        o->upscale_max = FCROP_UPSCALE_MAX;
+#endif
     fcrop_min_msca(ow, oh, o->upscale_pct, &o->min_w, &o->min_h);
     o->zoomable = all;
     if (g_fcrop_state == FC_ON) o->zoomed = all;
@@ -1373,6 +1395,7 @@ _Static_assert(sizeof(IMPISPFrontCrop) == sizeof(ms_fcrop_api) &&
                "IMPISPFrontCrop differs from ms_fcrop_api");
 #endif
 static int g_fcrop_set;              /* a window of ours is in the ISP */
+static ms_fcrop_api g_fcrop_cur;     /* ... that one, picture coordinates */
 static int g_fcrop_booted;           /* every channel exists */
 static ms_fcrop_api g_fcrop_rej;     /* last refused window, warned once */
 
@@ -1386,6 +1409,9 @@ static int fcrop_same(const ms_fcrop_api *a, const ms_fcrop_api *b)
 static void fcrop_apply(void)
 {
     if (!ms_isp_set_fcrop) return;
+#ifdef FCROP_UPSCALE_MAX
+    fcrop_upscale_sync();
+#endif
     int en, x, y, w, h, sw, sh;
     fcrop_cfg(&en, &x, &y, &w, &h);
     hal_sensor_size(&sw, &sh);
@@ -1432,6 +1458,17 @@ static void fcrop_apply(void)
                      lim.min_w, lim.min_h, lim.upscale_pct < 0 ? 0 : lim.upscale_pct);
             g_fcrop_rej = a;
             g_fcrop_state = FC_REJECTED;
+            /* a lowered fcrop_upscale_pct: the next set-format would drop
+             * the active window anyway, without a word */
+            if (g_fcrop_set && ((int)g_fcrop_cur.width < lim.min_w ||
+                                (int)g_fcrop_cur.height < lim.min_h)) {
+                fcrop_off(sw, sh, &a);
+                if (ms_isp_set_fcrop(&a) == 0) {
+                    g_fcrop_set = 0;
+                    LOGW(MOD,"image.fcrop: the active %ux%u window no longer fits - full %dx%d sensor",
+                         g_fcrop_cur.width, g_fcrop_cur.height, sw, sh);
+                }
+            }
             return;
         }
     }
@@ -1484,6 +1521,7 @@ static void fcrop_apply(void)
     }
     memset(&g_fcrop_rej, 0, sizeof g_fcrop_rej);
     g_fcrop_set = 1;
+    g_fcrop_cur = a;
     g_fcrop_state = FC_ON;
 #if defined(PLATFORM_T10)||defined(PLATFORM_T20)
     const char *note = " - shown on downscaled streams only";
@@ -1513,6 +1551,13 @@ static void fcrop_apply(void)
 
 static void fcrop_boot(void)
 {
+    if (g_hcfg->image.fcrop_upscale_pct >= 0) {
+        hal_fcrop_lim l;
+        hal_fcrop_limits(&l);
+        if (l.upscale_max < 0)
+            LOGW(MOD,"image.fcrop_upscale_pct=%d ignored: no open-tx-isp fcrop_upscale_pct "
+                 "on this camera", g_hcfg->image.fcrop_upscale_pct);
+    }
 #if FCROP_TIER != CAP_TIER_UNSUPPORTED
     g_fcrop_set = 0;
     g_fcrop_state = FC_OFF;
@@ -1524,6 +1569,9 @@ static void fcrop_boot(void)
         return;
     }
     pthread_mutex_lock(&g_isp_lock);
+#ifdef FCROP_UPSCALE_MAX
+    fcrop_upscale_sync();
+#endif
     if (g_hcfg->image.fcrop_enable) {
         fcrop_apply();
     }

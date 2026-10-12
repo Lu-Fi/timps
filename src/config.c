@@ -287,6 +287,7 @@ void config_defaults(ms_config *c)
     /* opt-in: 0 leaves the sensor mode's own AE maximum untouched, i.e. the
      * exact behaviour every camera had before the key existed */
     im->ae_it_max_us=0;
+    im->fcrop_upscale_pct=-1;
 
     c->rtsp_enabled = 1; c->rtsp_port = 554; c->rtsp_user[0]=0; c->rtsp_pass[0]=0;
     /* 1200 (WebRTC's choice) leaves room for WireGuard/OpenVPN/PPPoE/IPv6
@@ -750,6 +751,13 @@ static const cfg_field sensor_fields[] = {
 #else
 #define CAP_AEITMAX F_NOHW
 #endif
+#ifdef FCROP_UPSCALE_MAX
+#define CAP_FCUP 0
+#define FCUP_MAX FCROP_UPSCALE_MAX
+#else
+#define CAP_FCUP F_NOHW
+#define FCUP_MAX 100
+#endif
 #if FCROP_TIER == CAP_TIER_UNSUPPORTED
 #define CAP_FCROP F_NOHW
 #elif FCROP_GATE == FCROP_GATE_T23
@@ -797,6 +805,7 @@ static const cfg_field image_fields[] = {
     F("fcrop_y",                0, fcrop_y,                T_INT, F_CTRL|CAP_FCROP,      0,8192),
     F("fcrop_w",                0, fcrop_w,                T_INT, F_CTRL|CAP_FCROP,      0,8192),
     F("fcrop_h",                0, fcrop_h,                T_INT, F_CTRL|CAP_FCROP,      0,8192),
+    F("fcrop_upscale_pct",      0, fcrop_upscale_pct,      T_INT, F_CTRL|CAP_FCUP,       -1,FCUP_MAX),
 };
 #undef CAP_COLORFX
 #undef CAP_SCENE
@@ -812,6 +821,8 @@ static const cfg_field image_fields[] = {
 #undef CAP_WB
 #undef CAP_AEITMAX
 #undef CAP_FCROP
+#undef CAP_FCUP
+#undef FCUP_MAX
 #undef TT
 
 #define TT ms_audio_cfg
