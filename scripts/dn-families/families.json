@@ -2803,6 +2803,86 @@
      "look \\(color\\)"
     ]
    }
+  },
+  {
+   "name": "color_lamp_off",
+   "title": "a weak lamp starts a colour look (night), goes off 5 min later: no further look before the timer",
+   "duration_s": 3000,
+   "initial_mode": "night",
+   "timelines": {
+    "pan": [
+     [
+      0,
+      "cellar124"
+     ],
+     [
+      600,
+      "cellar124"
+     ],
+     [
+      601,
+      "dim10"
+     ],
+     [
+      900,
+      "dim10"
+     ],
+     [
+      901,
+      "cellar124"
+     ],
+     [
+      3000,
+      "cellar124"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 60,
+    "max_switches": 2,
+    "max_ir_probes": 2,
+    "expect_log_count": {
+     "look \\(color\\)": 1
+    }
+   }
+  },
+  {
+   "name": "neighbour_look",
+   "title": "a neighbour camera's look (its IR off 8 s) at the moment of the own look: no check",
+   "duration_s": 900,
+   "initial_mode": "night",
+   "timelines": {
+    "pan": [
+     [
+      0,
+      "nbr_on"
+     ],
+     [
+      36,
+      "nbr_on"
+     ],
+     [
+      37,
+      "nbr_off"
+     ],
+     [
+      45,
+      "nbr_off"
+     ],
+     [
+      46,
+      "nbr_on"
+     ],
+     [
+      900,
+      "nbr_on"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 60,
+    "max_switches": 2
+   }
   }
  ]
 }

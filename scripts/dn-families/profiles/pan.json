@@ -113,6 +113,32 @@
     5.0
    ],
    "src": "the person moving: the other way round, ASSUMED"
+  },
+  "cellar124": {
+   "day": 3587,
+   "lit": 124,
+   "dark": 196,
+   "railed": true,
+   "src": "device test 2026-10-12 12:41-13:07 (Pan, 10 % cold bulb, Eufy as neighbour): light off"
+  },
+  "dim10": {
+   "day": 1121,
+   "lit": 104,
+   "dark": 180,
+   "lamp": 0.75,
+   "src": "device test 2026-10-12 12:41-13:07 (Pan, 10 % cold bulb): colour 4.0 %, the look said night (dark 180 ASSUMED above the bar 167), check reads 1121"
+  },
+  "nbr_on": {
+   "day": 1121,
+   "lit": 106,
+   "dark": 113,
+   "src": "device test 2026-10-12 12:41-13:07 (Pan, 10 % cold bulb, Eufy as neighbour): both cameras' IR on"
+  },
+  "nbr_off": {
+   "day": 1121,
+   "lit": 180,
+   "dark": 113,
+   "src": "device test 2026-10-12 12:41-13:07 (Pan, 10 % cold bulb, Eufy as neighbour): the neighbour's look, lit 137 measured, 180 ASSUMED so the contaminated EMA clears jump_pct"
   }
  },
  "color": {

@@ -1415,6 +1415,7 @@ static void *dn_thread(void *arg)
                      (double)A, (double)s);
                 A = s; rise = 0;
                 if (B > 0.0f) B = 0.0f;
+                Crg = -1.0f; chold = 0; c_from = now;
             }
             /* sign and size differ per sensor: any channel, either way */
             int cj = 0;
@@ -1424,8 +1425,10 @@ static void *dn_thread(void *arg)
                 cdev = 100.0f * fmaxf(fabsf(rg / Crg - 1.0f), fabsf(bg / Cbg - 1.0f));
                 if (cdev > (float)dn->color_pct) {
                     if (!chold) chold = now;
-                    /* a jump in the making decides: it forgets the bar */
-                    cj = now - chold >= SD_JUMP_HOLD_MS && now >= c_next && !locked && !hold;
+                    /* a jump in the making decides (it forgets the bar); a
+                     * darker scene is no new light */
+                    cj = now - chold >= SD_JUMP_HOLD_MS && now >= c_next && !locked &&
+                         !hold && !rise;
                 } else chold = 0;
             }
             if (sd_watched()) quiet = 0;
@@ -1528,7 +1531,9 @@ static void *dn_thread(void *arg)
         goto out;
 
     look:
-        L = s; rise = 0;
+        /* an unsettled level (another camera's look) must not become A;
+         * a jump has held 20 s */
+        L = stable >= DN_STABLE_N || why[0] == 'j' ? s : A; rise = 0;
         if (dn_irprobe(dn->irprobe_cmd, 0) == 0) {
             ir_fails = 0;
             st = S_LOOK; due = now + DN_PROBE_SETTLE_S * 1000; s = -1.0f; stable = 0;
