@@ -32,6 +32,11 @@
 
 #define MOD "DAYNIGHT"
 
+/* the vendor T21 blob corrupts the kernel heap on an isp-m0 read */
+#if defined(PLATFORM_T21) && !defined(USE_OPENIMP)
+#define DN_NO_SCRAPE 1
+#endif
+
 enum { DN_DAY = 0, DN_NIGHT = 1, DN_UNKNOWN = -1 };
 
 /* Idle-Dark timing and what the illuminator hook answers to "idle" */
@@ -95,6 +100,7 @@ static int dn_mag_min(int mag, int other)
 static pthread_t   g_thr;
 static ms_stopgate g_gate;
 static int         g_started;
+static int         g_tick_s;      /* monotonic s of the last tick */
 
 /* latest measurement, shared with control.c via daynight_get_status() */
 static pthread_mutex_t g_st_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -336,6 +342,15 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
      * the IMP API and every field only the scrape can provide (integration
      * time, and before the redesign the brightness fallback) was simply never
      * read. */
+    FILE *fp = NULL;
+    int from_cfg = 0;
+#ifdef DN_NO_SCRAPE
+    static int said_ns;
+    if (!said_ns++)
+        LOGI(MOD, "%s is not read on the vendor T21 driver (its proc read corrupts "
+                  "the kernel heap): exposure from IMP only", dn->isp_path);
+    if (o->ratio_imp > 0.0f) o->ratio = o->ratio_imp;
+#else
     static const char *const ALT[] = { "/proc/jz/isp/isp_info", NULL };
     static const char *used;            /* single-caller: the detection thread */
     /* Once a fallback is known to work, open THAT first. Probing the
@@ -348,8 +363,6 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
      * day. Where the configured path is right this whole dance costs nothing,
      * exactly as before. */
     static unsigned since_reprobe;
-    FILE *fp = NULL;
-    int from_cfg = 0;
     if (used && ++since_reprobe < DN_ISP_REPROBE_TICKS)
         fp = fopen(used, "r");
     if (!fp) {
@@ -372,6 +385,7 @@ static void dn_read(const ms_daynight_cfg *dn, dn_sample *o)
             }
         }
     }
+#endif
     if (fp) {
         char line[256];
         int it = -1, mit = -1, ag = -1, dg = -1, idg = -1, cb = -1;
@@ -1280,6 +1294,7 @@ static void *dn_thread(void *arg)
         }
         const ms_daynight_cfg *dn = &c;
         int64_t now = ms_now_us() / 1000;
+        __atomic_store_n(&g_tick_s, (int)(now / 1000), __ATOMIC_RELAXED);
         int64_t look_ms = (int64_t)(dn->heartbeat_s < SD_LOOK_S ? dn->heartbeat_s : SD_LOOK_S) * 1000;
         int irp = dn->irprobe_cmd[0] && !g_ir_unusable;
         int locked = now < lock_until;
@@ -1612,6 +1627,23 @@ void daynight_start(void)
         return;
     }
     g_started = 1;
+}
+
+/* a hook is bounded (10 s), a kernel oops in a proc read is not */
+void daynight_check_alive(void)
+{
+    static int said;
+    int t = __atomic_load_n(&g_tick_s, __ATOMIC_RELAXED);
+    if (!g_started || !t || said) return;
+    config_str_lock();
+    int lim = g_cfg.daynight.interval_ms / 100;
+    config_str_unlock();
+    if (lim < 60) lim = 60;
+    int idle = (int)(ms_now_us() / 1000000) - t;
+    if (idle > lim) {
+        said = 1;
+        LOGE(MOD, "detection thread silent for %d s - day/night does not switch", idle);
+    }
 }
 
 void daynight_stop(void)

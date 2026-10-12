@@ -29,6 +29,14 @@ _1.10.2 (draft)_
   `caps.fcrop.upscale_max` (T23 100, T31 0 until its scaler limit is
   measured). Lowering it re-applies the window or returns to the full sensor.
 
+### Fixed
+
+- Day/night on vendor T21 no longer reads `daynight.isp_path`: the vendor
+  tx-isp-t21 driver corrupts the kernel heap on that proc read, and an oops
+  killed the day/night thread. Exposure comes from IMP only there.
+- A day/night thread that stops ticking (no tick for 10 x `interval_ms`, at
+  least 60 s) is logged as an error once.
+
 ## [1.10.1] - 2026-10-12
 
 ### Security

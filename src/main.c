@@ -823,6 +823,9 @@ int main(int argc, char **argv)
 #ifdef USE_CONTROL
         control_tick();
 #endif
+#ifdef USE_DAYNIGHT
+        daynight_check_alive();
+#endif
     }
 
     LOGI(MOD,"shutting down");

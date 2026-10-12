@@ -39,6 +39,8 @@
 #ifdef USE_DAYNIGHT
 void daynight_start(void);
 void daynight_stop(void);
+/* main loop, once a second: one error when the detection thread stopped ticking */
+void daynight_check_alive(void);
 #endif
 
 /* Ask for a look on the next tick. Returns 0 if it was armed, -1 if this
