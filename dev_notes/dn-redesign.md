@@ -84,7 +84,7 @@ Candidates from `dev_notes/DAYNIGHT_FASTSWITCH_FLAPGUARD_2026-10-11.md`:
 - K4 the guarantee never waits behind the lockout: kept, also for no-LED
   cameras.
 
-## 3. Bounds and measurements (`make test-dn-replay`, 45 pairs of 1.10.1; 51 since 1.10.2, see section 8)
+## 3. Bounds and measurements (`make test-dn-replay`, 45 pairs; 1.10.1 shipped 48, 1.10.2 has 54, see section 8)
 
 | Bound | Measured (new engine) |
 | --- | --- |
@@ -148,7 +148,7 @@ values marked), `run.py` (one harness scenario per pair, parallel, behaviour
 only: mode against the truth from the day-pipeline value, longest wrong run,
 switches, light-on/off latency, pendulum, LED timeline), `others.py`,
 `compare.py`. 45 pairs, ~6-8 min with 8 jobs, deterministic (no noise); since
-1.10.2 24 families, 51 pairs, colour noise seeded per 2 s (section 8).
+1.10.2 26 families, 54 pairs, colour noise seeded per 2 s (section 8).
 
 ## 7. Firmware WebUI changes needed (thingino `package/timps/files/www`)
 
@@ -217,7 +217,7 @@ Mechanism (`src/daynight.c`, `dn_thread` S_NIGHT):
   shows). New families `lamp_color` (day within 32 s), `person` (walk-throughs
   ignored, 4 rate-limited colour looks, no click), `foreign_ir_color` (another
   camera's IR, colour unchanged: no colour look). `lamp_nojump` runs with
-  `color_pct = 0` and keeps testing the timer path. 51 pairs, all within
-  bounds; the 45 pairs of 1.10.1 have the same switch and look totals (141 /
-  87); faster light-on: lamp_again-eufy 918 → 31 s, eufy_dark_bulb 2436 →
-  31 s.
+  `color_pct = 0` and keeps testing the timer path. 54 pairs, all within
+  bounds; the 48 pairs of v1.10.1 keep their switch total (154) and looks
+  98 → 96 (one look less in dawn-wohn/-schuppen, timing); faster light-on:
+  lamp_again-eufy 919 → 31 s, eufy_dark_bulb 2438 → 32 s.
