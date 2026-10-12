@@ -1169,6 +1169,7 @@ enum { S_BOOT = -1, S_DAY = 0, S_NIGHT = 1, S_LOOK = 2, S_CHECK = 3 };
 #define SD_FAR        4.0f      /* a check this many times night_gain counts as railed */
 #define SD_LOCK_MS    60000     /* lockout after the first failed check, doubling */
 #define SD_PAIR_MS    60000     /* a look and the check it asked for */
+#define SD_REF_MAX_MS 60000     /* an unsettled scene after a look: A by then */
 #define SD_RISE_MS    60000     /* a darker scene held this long is the new reference */
 #define SD_RISE       1.10f     /* ... starting this far above it (noise stays below) */
 #define SD_B_MIN      0.50f     /* a light that halves the dark reading may ask again */
@@ -1253,7 +1254,7 @@ static void *dn_thread(void *arg)
     float   B = -1.0f;              /* <0 unset, 0 learn at the next look, >0 bar */
     int64_t boot_at = ms_now_us() / 1000, due = 0, hold = 0, look_at = 0;
     int64_t day_at = 0, mode_at = 0, N_at = 0, verify_at = 0, quiet = 0, idle_at = 0;
-    int64_t reassert_at = 0, cycle_at = 0, rise = 0;
+    int64_t reassert_at = 0, cycle_at = 0, rise = 0, a_by = 0;
     int     reassert_left = 0;
     int64_t lock_until = 0, lock_ms = SD_LOCK_MS;  /* failed checks: 1, 2, 4 ... min */
     const char *why = "boot";
@@ -1306,7 +1307,7 @@ static void *dn_thread(void *arg)
         if (!enabled_was) {
             enabled_was = 1; st = S_BOOT; cur = DN_UNKNOWN; s = A = B = N = -1.0f;
             boot_at = now; hold = verify_at = lock_until = 0; lock_ms = SD_LOCK_MS;
-            reassert_at = cycle_at = 0; reassert_left = 0;
+            reassert_at = cycle_at = a_by = 0; reassert_left = 0;
             desync = cycled = ir_fails = 0; g_ir_unusable = 0;
             LOGI(MOD, "auto day/night enabled (simple engine)");
         }
@@ -1396,9 +1397,11 @@ static void *dn_thread(void *arg)
             break;
         case S_NIGHT: {
             if (cycled) break;
-            if (A < 0.0f && now - mode_at >= DN_REF_DELAY_S * 1000 &&
-                stable >= DN_STABLE_N && !sd_exhausted(&sm))
-                A = s;
+            if (A < 0.0f && s > 0.0f && !sd_exhausted(&sm) &&
+                ((now - mode_at >= DN_REF_DELAY_S * 1000 && stable >= DN_STABLE_N) ||
+                 (a_by && now >= a_by))) {
+                A = s; a_by = 0;
+            }
             int jump = 0;
             float jb = irp ? 1.0f - (float)dn->jump_pct / 100.0f : SD_JUMP_CHECK;
             if (A > 0.0f && s > 0.0f && s < A * jb) {
@@ -1508,6 +1511,7 @@ static void *dn_thread(void *arg)
                 goto check;
             st = S_NIGHT; hold = 0;
             if (!(ask && why[0] == 'j')) A = L;
+            a_by = A < 0.0f ? now + SD_REF_MAX_MS : 0;
             look_at = ask ? lock_until : now + look_ms;
             break;
         }
@@ -1539,9 +1543,10 @@ static void *dn_thread(void *arg)
         goto out;
 
     look:
-        /* an unsettled level (another camera's look) must not become A;
-         * a jump has held 20 s */
-        L = stable >= DN_STABLE_N || why[0] == 'j' ? s : A; rise = 0;
+        /* an unsettled level (a lamp coming on, another camera's look) is
+         * no reference: the look judges the change, the next settled level
+         * after it becomes A. A jump has held 20 s. */
+        L = stable >= DN_STABLE_N || why[0] == 'j' ? s : -1.0f; rise = 0;
         Prg = why[0] == 'c' ? Crg : -1.0f; Pbg = Cbg;
         if (dn_irprobe(dn->irprobe_cmd, 0) == 0) {
             ir_fails = 0;
@@ -1567,7 +1572,7 @@ static void *dn_thread(void *arg)
         cur = st = DN_NIGHT; mode_at = now; hold = rise = 0; s = -1.0f; stable = 0; cycled = 0;
         c_gap = SD_COLOR_GAP_MS;
         /* a check without a fresh look learns B from the same scene, soon */
-        A = L; look_at = now + (B == 0.0f ? DN_REF_DELAY_S * 1000LL : look_ms);
+        A = L; a_by = 0; look_at = now + (B == 0.0f ? DN_REF_DELAY_S * 1000LL : look_ms);
         verify_at = now + DN_VERIFY_MS;
         reassert_left = DN_REASSERT_COUNT; reassert_at = now + DN_REASSERT_MS;
 

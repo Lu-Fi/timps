@@ -66,7 +66,7 @@ Ablation: each mechanism compiled out, the whole family corpus re-run
 | ... gap doubling up to 45 min, reset by a timer look or a switch to night | person-pan/-eufy (8 looks, bound 6) |
 | ... no colour look while the lit level sits above A, the colour reference retaken when A follows the darker scene | color_lamp_off-pan (2 colour looks, want 1) |
 | ... after a colour look that found night, the colour back within `color_pct`/2 of the reference before it for 20 s becomes the reference, no look | color_only_lamp-eufy (2 colour looks, want 1) |
-| The pre-look level becomes A only if it was settled (or a jump held it 20 s) | neighbour_look-pan (4 switches, bound 2); without the jump exception ref_stuck-t10/-pc420 (7, bound 6) |
+| The pre-look level becomes A only if it was settled (or a jump held it 20 s); else the next settled level after the look (60 s at most), no jump hold before | neighbour_look-pan (4 switches, bound 2); keeping the old A instead: lamp_color_jump-pan (4 switches, 3 looks); without the jump exception ref_stuck-t10/-pc420 (7, bound 6) |
 
 Removed (no family needs them): the IR-ratio verdict and permission, the 60 s
 check floor after a jump with `retry_why`, the boot look, desync adoption, the
@@ -87,7 +87,7 @@ Candidates from `dev_notes/DAYNIGHT_FASTSWITCH_FLAPGUARD_2026-10-11.md`:
 - K4 the guarantee never waits behind the lockout: kept, also for no-LED
   cameras.
 
-## 3. Bounds and measurements (`make test-dn-replay`, 45 pairs; 1.10.1 shipped 48, 1.10.2 has 57, see section 8)
+## 3. Bounds and measurements (`make test-dn-replay`, 45 pairs; 1.10.1 shipped 48, 1.10.2 has 58, see section 8)
 
 | Bound | Measured (new engine) |
 | --- | --- |
@@ -151,7 +151,7 @@ values marked), `run.py` (one harness scenario per pair, parallel, behaviour
 only: mode against the truth from the day-pipeline value, longest wrong run,
 switches, light-on/off latency, pendulum, LED timeline), `others.py`,
 `compare.py`. 45 pairs, ~6-8 min with 8 jobs, deterministic (no noise); since
-1.10.2 29 families, 57 pairs, colour noise seeded per 2 s (section 8).
+1.10.2 30 families, 58 pairs, colour noise seeded per 2 s (section 8).
 
 ## 7. Firmware WebUI changes needed (thingino `package/timps/files/www`)
 
@@ -228,8 +228,10 @@ Mechanism (`src/daynight.c`, `dn_thread` S_NIGHT):
   of 2026-10-12: `color_lamp_off` (a weak lamp's colour look, the lamp off 5
   min later: no second colour look) and `neighbour_look` (the neighbour's IR
   off 8 s at the own look: no check), `color_only_lamp` (Eufy: a lamp that
-  moves only the colour, colour look, lamp off: no second look). 57 pairs,
-  all within
+  moves only the colour, colour look, lamp off: no second look),
+  `lamp_color_jump` (Pan: a lamp moves colour and lit level -26 % while a
+  neighbour's look interrupts the jump hold: one colour look, no jump look,
+  no check). 58 pairs, all within
   bounds; the 48 pairs of v1.10.1 keep their switch total (154) and looks
   98 → 96 (one look less in dawn-wohn/-schuppen, timing); faster light-on:
   lamp_again-eufy 919 → 31 s, eufy_dark_bulb 2438 → 32 s.

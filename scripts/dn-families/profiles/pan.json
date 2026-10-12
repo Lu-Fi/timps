@@ -139,6 +139,27 @@
    "lit": 180,
    "dark": 113,
    "src": "device test 2026-10-12 12:41-13:07 (Pan, 10 % cold bulb, Eufy as neighbour): the neighbour's look, lit 137 measured, 180 ASSUMED so the contaminated EMA clears jump_pct"
+  },
+  "lit114": {
+   "day": 3587,
+   "lit": 114,
+   "dark": 170,
+   "railed": true,
+   "src": "device test 2026-10-12 14:37 (Pan, 30 % cold bulb, the Eufy's look overlapping): before the lamp, timer look lit 114; dark 170 ASSUMED (bar 144 below the lamp's 152)"
+  },
+  "cold30": {
+   "day": 1121,
+   "lit": 84,
+   "dark": 152,
+   "lamp": 1.5,
+   "src": "device test 2026-10-12 14:37 (Pan, 30 % cold bulb, the Eufy's look overlapping): lit 84 (-26 %), colour 8.4 %, colour look dark 152 -> night; day 1121 ASSUMED (check said night)"
+  },
+  "cold30_nbr": {
+   "day": 1121,
+   "lit": 140,
+   "dark": 152,
+   "lamp": 1.5,
+   "src": "device test 2026-10-12 14:37 (Pan, 30 % cold bulb, the Eufy's look overlapping): the lamp while the neighbour's IR is off, lit ASSUMED"
   }
  },
  "color": {

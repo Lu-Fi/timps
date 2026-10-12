@@ -2925,6 +2925,56 @@
      "look \\(color\\)": 1
     }
    }
+  },
+  {
+   "name": "lamp_color_jump",
+   "title": "a lamp moves colour and lit level (-26 %) while a neighbour's look interrupts the jump hold: one colour look, no jump look, no check",
+   "duration_s": 2400,
+   "initial_mode": "night",
+   "timelines": {
+    "pan": [
+     [
+      0,
+      "lit114"
+     ],
+     [
+      600,
+      "lit114"
+     ],
+     [
+      601,
+      "cold30"
+     ],
+     [
+      611,
+      "cold30"
+     ],
+     [
+      612,
+      "cold30_nbr"
+     ],
+     [
+      629,
+      "cold30_nbr"
+     ],
+     [
+      630,
+      "cold30"
+     ],
+     [
+      2400,
+      "cold30"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 60,
+    "max_switches": 2,
+    "max_ir_probes": 2,
+    "expect_log_count": {
+     "look \\(color\\)": 1
+    }
+   }
   }
  ]
 }
