@@ -1213,7 +1213,8 @@ to `total_gain`.
   halves the dark reading asks again), or `0.85 × dark` when the check read the AE
   at its limit or above 4 × `night_gain` (the Eufy reads 40960 in the dark
   without a reported limit). A jump forgets the bar (new light). Checks are
-  locked out for 1, 2, 4 … min after consecutive failures; a day resets it.
+  locked out for 1, 2, 4, 8, 16 min after consecutive failures, then 16 min
+  each (**since v1.10.2**, before: doubling without limit); a day resets it.
 * **Guarantee**: no day-pipeline reading for `heartbeat_max_s` (12 h) → a
   check, regardless of looks and lockouts.
 * **Without a switchable illuminator** (`irprobe_cmd` empty or failing) the

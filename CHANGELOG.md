@@ -50,6 +50,11 @@ _1.10.2 (draft)_
 
 ### Fixed
 
+- Day/night: the check lockout after failed checks stops doubling at 16 min
+  (1, 2, 4, 8, 16, 16 ... min). A T10 among other IR cameras had grown it past
+  an hour and stayed in night while its neighbours switched to day. A look
+  that predicts day during a lockout now logs `-> locked (N s)` instead of
+  `-> check`.
 - Day/night on vendor T21 no longer reads `daynight.isp_path`: the vendor
   tx-isp-t21 driver corrupts the kernel heap on that proc read, and an oops
   killed the day/night thread. Exposure comes from IMP only there.

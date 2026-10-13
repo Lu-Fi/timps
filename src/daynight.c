@@ -1182,6 +1182,7 @@ enum { S_BOOT = -1, S_DAY = 0, S_NIGHT = 1, S_LOOK = 2, S_CHECK = 3 };
 #define SD_B_REL      0.85f     /* after a railed check: look again below this share */
 #define SD_FAR        4.0f      /* a check this many times night_gain counts as railed */
 #define SD_LOCK_MS    60000     /* lockout after the first failed check, doubling */
+#define SD_LOCK_MAX_MS 960000   /* ... up to 16 min: a fooled look clicks 4x/h at most */
 #define SD_PAIR_MS    60000     /* a look and the check it asked for */
 #define SD_REF_MAX_MS 60000     /* an unsettled scene after a look: A by then */
 #define SD_RISE_MS    60000     /* a darker scene held this long is the new reference */
@@ -1270,7 +1271,7 @@ static void *dn_thread(void *arg)
     int64_t day_at = 0, mode_at = 0, N_at = 0, verify_at = 0, quiet = 0, idle_at = 0;
     int64_t reassert_at = 0, cycle_at = 0, rise = 0, a_by = 0;
     int     reassert_left = 0;
-    int64_t lock_until = 0, lock_ms = SD_LOCK_MS;  /* failed checks: 1, 2, 4 ... min */
+    int64_t lock_until = 0, lock_ms = SD_LOCK_MS;  /* failed checks: 1, 2, 4 ... 16 min */
     const char *why = "boot";
     /* colour of the lit picture, taken after each look like A */
     float   Crg = -1.0f, Cbg = -1.0f, cdev = -1.0f;
@@ -1520,8 +1521,13 @@ static void *dn_thread(void *arg)
             }
             dn_light_on(dn->irprobe_cmd, 2);
             s = -1.0f; stable = 0;
-            LOGD(MOD, "look (%s): lit %.0f dark %.0f bar %.0f -> %s", why,
-                 (double)L, (double)N, (double)bar, ask ? "check" : "night");
+            if (ask && locked)
+                LOGD(MOD, "look (%s): lit %.0f dark %.0f bar %.0f -> locked (%lld s)",
+                     why, (double)L, (double)N, (double)bar,
+                     (long long)((lock_until - now + 999) / 1000));
+            else
+                LOGD(MOD, "look (%s): lit %.0f dark %.0f bar %.0f -> %s", why,
+                     (double)L, (double)N, (double)bar, ask ? "check" : "night");
             if (ask && !locked)
                 goto check;
             st = S_NIGHT; hold = 0;
@@ -1550,7 +1556,10 @@ static void *dn_thread(void *arg)
                     B = N * SD_B_REL;
                 if (B < N * SD_B_MIN) B = N * SD_B_MIN;
             } else B = 0.0f;
-            if (why[0] != 'b') { lock_until = now + lock_ms; lock_ms *= 2; }
+            if (why[0] != 'b') {
+                lock_until = now + lock_ms;
+                if (lock_ms < SD_LOCK_MAX_MS) lock_ms *= 2;
+            }
             LOGI(MOD, "check (%s): night, exposure %.0f", why, (double)s);
             snprintf(g_why, sizeof g_why, "check found night, exposure %.0f", (double)s);
             goto night;
