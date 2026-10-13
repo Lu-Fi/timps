@@ -43,6 +43,60 @@
   },
   "day": {
    "lvl": 1.0
+  },
+  "ev1441": {
+   "day": 2167,
+   "lit": 1225,
+   "dark": 1441,
+   "src": "cam-wohn evening 2026-10-12: look dark 1441, check 2167; lit ASSUMED 0.85 x dark"
+  },
+  "ev531": {
+   "day": 883,
+   "lit": 451,
+   "dark": 531,
+   "src": "cam-wohn evening 2026-10-12: look dark 531, check 883; lit ASSUMED 0.85 x dark"
+  },
+  "ev281": {
+   "day": 497,
+   "lit": 239,
+   "dark": 281,
+   "src": "cam-wohn evening 2026-10-12: look dark 281, check 497; lit ASSUMED 0.85 x dark"
+  },
+  "ev567": {
+   "day": 790,
+   "lit": 482,
+   "dark": 567,
+   "src": "cam-wohn evening 2026-10-12: look dark 567, check 790; lit ASSUMED 0.85 x dark"
+  },
+  "ev703": {
+   "day": 1249,
+   "lit": 598,
+   "dark": 703,
+   "src": "cam-wohn evening 2026-10-12: look dark 703, check 1249; lit ASSUMED 0.85 x dark"
+  },
+  "ev613": {
+   "day": 1138,
+   "lit": 521,
+   "dark": 613,
+   "src": "cam-wohn evening 2026-10-12: look dark 613, check 1138; lit ASSUMED 0.85 x dark"
+  },
+  "ev1058": {
+   "day": 1929,
+   "lit": 899,
+   "dark": 1058,
+   "src": "cam-wohn evening 2026-10-12: look dark 1058, check 1929; lit ASSUMED 0.85 x dark"
+  },
+  "ev1409": {
+   "day": 2584,
+   "lit": 1198,
+   "dark": 1409,
+   "src": "cam-wohn evening 2026-10-12: look dark 1409, check 2584; lit ASSUMED 0.85 x dark"
+  },
+  "ev1128": {
+   "day": 2213,
+   "lit": 959,
+   "dark": 1128,
+   "src": "cam-wohn evening 2026-10-12: look dark 1128, check 2213; lit ASSUMED 0.85 x dark"
   }
  },
  "curve_rail": 16000

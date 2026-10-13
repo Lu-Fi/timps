@@ -1193,6 +1193,11 @@ enum { S_BOOT = -1, S_DAY = 0, S_NIGHT = 1, S_LOOK = 2, S_CHECK = 3 };
 #define SD_COLOR_FAILS  3       /* failed reads in a row = no colour statistics */
 #define SD_COLOR_PROBES 30      /* reads outside the night until the first success */
 #define SD_COLOR_READ_MS 5000   /* the first read took 1.4-1.7 ms (Eufy, Pan) */
+#define SD_K_N        5         /* check/look pairs kept for k */
+#define SD_K_MIN      0.70f
+#define SD_K_MAX      2.00f     /* foreign IR reads 4-20: a lamp after it must still ask */
+#define SD_F_N        4         /* failed checks kept for the jump bar */
+#define SD_F_REL      0.90f
 
 /* the AE cannot brighten the image any further */
 static int sd_exhausted(const dn_sample *m)
@@ -1200,6 +1205,35 @@ static int sd_exhausted(const dn_sample *m)
     if (dn_clipped(m->headroom)) return 1;
     return m->mag > 0 && m->ag * 100 >= m->mag * 98 && m->dg <= 0 &&
            m->idg <= 0 && m->ratio >= 0.8f;
+}
+
+/* k = check / look dark: the IR-cut filter and the light source, 1.0-2.0
+ * on the fleet. Median of the last pairs (the lower middle), so one
+ * outlier does not move it. */
+static float sd_k_add(float *h, int *n, float r)
+{
+    float t[SD_K_N];
+    r = r < SD_K_MIN ? SD_K_MIN : r > SD_K_MAX ? SD_K_MAX : r;
+    memmove(h + 1, h, (SD_K_N - 1) * sizeof *h);
+    h[0] = r;
+    if (*n < SD_K_N) (*n)++;
+    for (int i = 0; i < *n; i++) {
+        int j = i;
+        for (; j > 0 && t[j - 1] > h[i]; j--) t[j] = t[j - 1];
+        t[j] = h[i];
+    }
+    return t[(*n - 1) / 2];
+}
+
+/* A jump forgets B but not what failed: a look as dark as a failed one (the
+ * same lamp, the neighbours' IR again) does not ask again; day_gain / k is
+ * the floor. Nothing failed yet: 2 x day_gain, the shed reads k 0.7-0.8. */
+static float sd_jump_bar(float dg, float k, const float *f, int fn)
+{
+    float b = 2.0f * dg;
+    for (int i = 0; i < fn; i++)
+        if (SD_F_REL * f[i] < b) b = SD_F_REL * f[i];
+    return b > dg / k ? b : dg / k;
 }
 
 static int sd_watched(void)
@@ -1267,6 +1301,9 @@ static void *dn_thread(void *arg)
     int     stable = 0, cycled = 0, idle = 0, idle_fails = 0, desync = 0;
     float   s = -1.0f, A = -1.0f, L = -1.0f, N = -1.0f;
     float   B = -1.0f;              /* <0 unset, 0 learn at the next look, >0 bar */
+    float   K = 1.0f, Kh[SD_K_N], Nk = -1.0f;  /* survives a jump, unlike B */
+    float   F[SD_F_N];              /* dark readings of failed checks */
+    int     Kn = 0, Fn = 0;
     int64_t boot_at = ms_now_us() / 1000, due = 0, hold = 0, look_at = 0;
     int64_t day_at = 0, mode_at = 0, N_at = 0, verify_at = 0, quiet = 0, idle_at = 0;
     int64_t reassert_at = 0, cycle_at = 0, rise = 0, a_by = 0;
@@ -1507,10 +1544,10 @@ static void *dn_thread(void *arg)
             if (now < due || s <= 0.0f) break;
             N = s; N_at = now;
             int ok = !dn_clipped(sm.headroom);
+            Nk = ok ? N : -1.0f;
             if (ok && B == 0.0f) B = N * SD_B_REL;
-            /* new light may be read darker without the LED than by day */
-            float bar = B > 0.0f ? B : dn->day_gain *
-                        (why[0] == 'j' ? 2.0f : 1.0f);
+            float bar = B > 0.0f ? B : why[0] != 'j' ? dn->day_gain :
+                        sd_jump_bar(dn->day_gain, K, F, Fn);
             int ask = ok && N < bar;
             if (idle) {
                 if (!ask) { hold = 0; break; }
@@ -1522,12 +1559,12 @@ static void *dn_thread(void *arg)
             dn_light_on(dn->irprobe_cmd, 2);
             s = -1.0f; stable = 0;
             if (ask && locked)
-                LOGD(MOD, "look (%s): lit %.0f dark %.0f bar %.0f -> locked (%lld s)",
-                     why, (double)L, (double)N, (double)bar,
+                LOGD(MOD, "look (%s): lit %.0f dark %.0f bar %.0f k %.2f -> locked (%lld s)",
+                     why, (double)L, (double)N, (double)bar, (double)K,
                      (long long)((lock_until - now + 999) / 1000));
             else
-                LOGD(MOD, "look (%s): lit %.0f dark %.0f bar %.0f -> %s", why,
-                     (double)L, (double)N, (double)bar, ask ? "check" : "night");
+                LOGD(MOD, "look (%s): lit %.0f dark %.0f bar %.0f k %.2f -> %s", why,
+                     (double)L, (double)N, (double)bar, (double)K, ask ? "check" : "night");
             if (ask && !locked)
                 goto check;
             st = S_NIGHT; hold = 0;
@@ -1539,6 +1576,23 @@ static void *dn_thread(void *arg)
         case S_CHECK:
             if (now < due) break;
             if (sm.isp >= 0 && sm.isp != DN_DAY && now < due + DN_VERIFY_MS) break;
+            /* an exhausted check only understates k: kept */
+            if (Nk > 0.0f && now - N_at < SD_PAIR_MS && !dn_clipped(sm.headroom) &&
+                s <= SD_FAR * dn->night_gain) {
+                K = sd_k_add(Kh, &Kn, s / Nk);
+                int j = 0;
+                if (s < dn->day_gain) {
+                    /* a darker look gave day: those failures were other light */
+                    for (int i = 0; i < Fn; i++) if (F[i] > Nk) F[j++] = F[i];
+                    Fn = j;
+                } else {
+                    if (Fn == SD_F_N) memmove(F, F + 1, --Fn * sizeof *F);
+                    F[Fn++] = Nk;
+                }
+                LOGD(MOD, "k %.2f (pair %.0f -> %.0f), jump bar %.0f", (double)K,
+                     (double)Nk, (double)s, (double)sd_jump_bar(dn->day_gain, K, F, Fn));
+            }
+            Nk = -1.0f;
             if (s < dn->day_gain) {
                 st = S_DAY; B = -1.0f; hold = 0; mode_at = now;
                 lock_until = 0; lock_ms = SD_LOCK_MS;

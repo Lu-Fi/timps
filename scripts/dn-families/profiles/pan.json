@@ -160,6 +160,18 @@
    "dark": 152,
    "lamp": 1.5,
    "src": "device test 2026-10-12 14:37 (Pan, 30 % cold bulb, the Eufy's look overlapping): the lamp while the neighbour's IR is off, lit ASSUMED"
+  },
+  "dim_k15": {
+   "day": 135,
+   "lit": 150,
+   "dark": 90,
+   "src": "basement-style dim lamp, k 1.5 (check/look dark), ASSUMED from the device-test ratios"
+  },
+  "lamp100": {
+   "day": 65,
+   "lit": 60,
+   "dark": 37,
+   "src": "device test 2026-10-12 (Pan, 100 % bulb): look dark 37, check 65; lit ASSUMED"
   }
  },
  "color": {

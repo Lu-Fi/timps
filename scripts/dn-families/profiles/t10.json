@@ -46,6 +46,53 @@
    "lit": 225,
    "dark": 300,
    "src": "field 2026-10-11 20:47, 21:22 (T10 .31)"
+  },
+  "nbr_off": {
+   "day": 4179,
+   "lit": 900,
+   "dark": 1300,
+   "railed": true,
+   "src": "field 2026-10-12/13 night (T10 .31, basement, 5 other IR cameras): neighbours' IR off, ASSUMED"
+  },
+  "nbr478": {
+   "day": 4179,
+   "lit": 375,
+   "dark": 478,
+   "railed": true,
+   "src": "field 2026-10-12/13 night (T10 .31, basement, 5 other IR cameras): look dark 478 (lit 364/386), check 4179 AE exhausted"
+  },
+  "nbr508": {
+   "day": 4179,
+   "lit": 380,
+   "dark": 508,
+   "railed": true,
+   "src": "field 2026-10-12/13 night (T10 .31, basement, 5 other IR cameras): look dark 508, check 4179"
+  },
+  "nbr650": {
+   "day": 4179,
+   "lit": 380,
+   "dark": 650,
+   "railed": true,
+   "src": "field 2026-10-12/13 night (T10 .31, basement, 5 other IR cameras): look dark 570..745, check 4179; lit ASSUMED"
+  },
+  "nbr900": {
+   "day": 4179,
+   "lit": 600,
+   "dark": 900,
+   "railed": true,
+   "src": "field 2026-10-12/13 night (T10 .31, basement, 5 other IR cameras): look dark 896/917, check 4179; lit ASSUMED"
+  },
+  "nbr242": {
+   "day": 2619,
+   "lit": 200,
+   "dark": 242,
+   "src": "field 2026-10-12/13 night (T10 .31, basement, 5 other IR cameras): look dark 242, check 2619; lit ASSUMED"
+  },
+  "ceiling": {
+   "day": 333,
+   "lit": 180,
+   "dark": 231,
+   "src": "field 2026-10-12/13 night (T10 .31, basement, 5 other IR cameras): morning ceiling light: look dark 231, check 333 (also 207->327, 167->351, 241->299); lit ASSUMED"
   }
  }
 }
