@@ -118,7 +118,11 @@ typedef IMPEncoderCHNStat IMPEncoderChnStat;
 #define MS_JPEG_BUF_MIN (96*1024)
 #endif
 #ifndef MS_JPEG_BUF_MAX
+#if defined(PLATFORM_T40) || defined(PLATFORM_T41)
+#define MS_JPEG_BUF_MAX (4*1024*1024)   /* 4K q75 needs 1.6-3.3 MB */
+#else
 #define MS_JPEG_BUF_MAX (1024*1024)
+#endif
 #endif
 /* Audio input buffering. The Ingenic AI delivers a frame only once usrFrmDepth
  * frames are cached, so this depth IS the audio latency (depth x 40 ms). It was
