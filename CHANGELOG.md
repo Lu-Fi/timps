@@ -55,6 +55,9 @@ _1.10.2 (draft)_
   an hour and stayed in night while its neighbours switched to day. A look
   that predicts day during a lockout now logs `-> locked (N s)` instead of
   `-> check`.
+- `daynight.trace_path` rotates to `<path>.1` past 256 KB instead of 1 MB:
+  at about 32 KB/h the trace on `/tmp` now holds at most 512 KB of RAM
+  (before 2 MB) on 36-42 MB cameras.
 - Day/night on vendor T21 no longer reads `daynight.isp_path`: the vendor
   tx-isp-t21 driver corrupts the kernel heap on that proc read, and an oops
   killed the day/night thread. Exposure comes from IMP only there.

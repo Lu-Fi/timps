@@ -586,7 +586,7 @@ this section, which are no longer echoed in `GET /control`.
 | `daynight.irprobe_cmd` | string(64) | `timps-irprobe` | — | File-only, not GET-readable | Board script run as `<cmd> on\|off\|idle\|state` to drive the IR illuminator **alone**, without moving the IR-cut filter (`on`/`off` for a look, `idle`/`state` for Idle-Dark). Empty = no looks: the camera checks like one without a switchable illuminator (night level halved, `heartbeat_s`). Two failures in a row turn looks off for the session. Run via `fork`+`execlp`, never a shell. |
 | `daynight.switch_cmd` | string(64) | `daynight` | — | File-only, not GET-readable | Board script run as `<cmd> day\|night` on a switch. |
 | `daynight.isp_path` | string(128) | `/proc/jz/isp/isp-m0` | — | File-only, not GET-readable | ISP exposure proc file (gain **and** integration time). **Since v1.10.2** never read on vendor T21 (that driver corrupts the kernel heap on the proc read); exposure from IMP only there. |
-| `daynight.trace_path` | string(128) | `""` | — | File-only, not GET-readable | Opt-in decision-trace CSV for the replay harness. **tmpfs only**; 1 MB cap, rotated once to `<path>.1`. |
+| `daynight.trace_path` | string(128) | `""` | — | File-only, not GET-readable | Opt-in decision-trace CSV for the replay harness. **tmpfs only**; 256 KB cap (since 1.10.2, before 1 MB), rotated once to `<path>.1`. |
 
 ### Constants of the v1.10.0 engine (historical)
 

@@ -94,7 +94,7 @@ static int dn_mag_min(int mag, int other)
 #define DN_TRACE_EVERY 5         /* one line per N samples (10 s at 2 s) */
 #endif
 #ifndef DN_TRACE_MAX_BYTES
-#define DN_TRACE_MAX_BYTES (1<<20)   /* rotate once past 1 MB - tmpfs, see config.h */
+#define DN_TRACE_MAX_BYTES (256<<10) /* rotate once past 256 KB - tmpfs RAM, see config.h */
 #endif
 
 static pthread_t   g_thr;
