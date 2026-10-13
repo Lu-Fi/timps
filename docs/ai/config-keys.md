@@ -1204,10 +1204,21 @@ to `total_gain`.
   a colour look that found night, the colour back within `color_pct`/2 of its
   value before that look for 20 s is taken as the new reference, not as light.
 * **Look → check**: if the reading without the illuminator is below the bar —
-  `day_gain`, twice that for a look a jump started, or a scene bar learnt from
-  a failed check — the camera switches to the day pipeline and reads it once
-  (one click): below `day_gain` it stays day, otherwise back to night (a
+  `day_gain`, the jump bar for a look a jump started, or a scene bar learnt
+  from a failed check — the camera switches to the day pipeline and reads it
+  once (one click): below `day_gain` it stays day, otherwise back to night (a
   second click).
+* **Jump bar** (**since v1.10.2**; before: always 2 × `day_gain`): every
+  look→check pair teaches `k` = check reading / dark look reading (median of
+  the last 5, clamped 0.7..2; the fleet reads 1.0-2.0 under lamps, 4-20 under
+  other cameras' infrared). The camera also keeps the dark readings of the
+  last 4 failed checks; a check that finds day drops those at or below its own
+  dark reading. A jump look asks below 0.9 × the lowest kept failed dark
+  reading, at most 2 × `day_gain`, at least `day_gain / k`. So the same lamp,
+  TV or neighbouring infrared does not cost a click pair at every jump, while
+  a brighter light still asks. Nothing failed yet (after boot): 2 × `day_gain`.
+  `k` and the failures survive jumps and day, not a restart; the `look (...)`
+  debug line logs `k`.
 * **After a failed check** the next one needs a darker look: the bar becomes
   `dark × day_gain / day reading` (at least `0.5 × dark`, so a light that
   halves the dark reading asks again), or `0.85 × dark` when the check read the AE

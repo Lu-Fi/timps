@@ -47,6 +47,17 @@ _1.10.2 (draft)_
   on, another camera's look) no longer sets the reference
   (`night_baseline`); the next settled level after it does, within 60 s. A
   jump held for 20 s still counts.
+- Day/night: a look started by a jump no longer asks below a fixed
+  2 × `day_gain`. Every look→check pair teaches `k` (check reading / dark
+  look reading, median of the last 5, 0.7..2), and the dark readings of the
+  last 4 failed checks are kept across jumps. A jump look now asks below
+  0.9 × the lowest failed dark reading (at most 2 × `day_gain`, at least
+  `day_gain / k`). Evening lamps and a TV in a living room (cam-wohn: the
+  check read 1.4-1.9 × the look) cost a click pair at every jump, about 8 per
+  evening; neighbouring cameras' infrared did the same all night on a T10
+  in a basement. Now about 2 per evening or night, and a brighter light
+  (the morning ceiling light, a 100 % lamp) still asks. `k` is logged in the
+  `look (...)` debug line.
 
 ### Fixed
 

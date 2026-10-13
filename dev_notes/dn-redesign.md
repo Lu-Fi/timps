@@ -24,6 +24,8 @@ time in the wrong mode are not. Development history: branch `dev/dn-redesign`.
 > below `day_gain` it stays day, otherwise it goes back to night (a second
 > click) and remembers how much darker the room without infrared has to get
 > before it asks again. A sudden brightening forgets that: it is new light.
+> Since 1.10.2 it keeps how dark the failed looks were: the same lamp or the
+> neighbours' infrared coming back does not ask again, a brighter light does.
 > When the night picture stays darker than at the last look for a minute
 > (the light it was taken under has gone), that darker level becomes the
 > reference and the next look relearns the bar.
@@ -50,7 +52,8 @@ Ablation: each mechanism compiled out, the whole family corpus re-run
 | ... 6 s when very dark (K1) | (user wish; light off 33 s → 9 s where deep) |
 | Timer look every 45 min | lamp_nojump-pan/-eufy, eufy_dark_bulb |
 | Jump: lit level `jump_pct` below the last look for 20 s → look now, forget the bar | lamp_jump-t10/-eufy, foreign_ir_lamp-pan/-t10, check_then_light, isp_stuck |
-| Look after a jump asks below 2 × `day_gain` | dawn-schuppen (dark reading stays above `day_gain` in daylight) |
+| Look after a jump asks below 2 × `day_gain` while nothing failed | dawn-schuppen (dark reading stays above `day_gain` in daylight, k 0.7-0.8); ref_noisy-pan (k 0.8 at `day_gain` 100) |
+| ... then below 0.9 × the lowest kept failed dark reading, at least `day_gain / k` (1.10.2, section 9) | living_room_evening-wohn (20 switches, bound 8), basement_foreign_ir-t10 (25, bound 7), basement_k15-pan (8, bound 6) |
 | Scene bar B after a failed check: `dark × day_gain / day`, at least `0.5 × dark` | steady_night-eufy (12 switches, bound 2) |
 | ... `0.85 × dark` when the check read the AE at its limit or above 4 × `night_gain` (Eufy: 40960 without a reported limit) | eufy_dark_bulb |
 | A check without a fresh look learns B from a look 30 s later | lamp_nojump-pan/-eufy |
@@ -151,7 +154,8 @@ values marked), `run.py` (one harness scenario per pair, parallel, behaviour
 only: mode against the truth from the day-pipeline value, longest wrong run,
 switches, light-on/off latency, pendulum, LED timeline), `others.py`,
 `compare.py`. 45 pairs, ~6-8 min with 8 jobs, deterministic (no noise); since
-1.10.2 30 families, 58 pairs, colour noise seeded per 2 s (section 8).
+1.10.2 33 families, 62 pairs, colour noise seeded per 2 s (section 8), the
+jump-bar families of section 9.
 
 ## 7. Firmware WebUI changes needed (thingino `package/timps/files/www`)
 
@@ -235,3 +239,61 @@ Mechanism (`src/daynight.c`, `dn_thread` S_NIGHT):
   bounds; the 48 pairs of v1.10.1 keep their switch total (154) and looks
   98 → 96 (one look less in dawn-wohn/-schuppen, timing); faster light-on:
   lamp_again-eufy 919 → 31 s, eufy_dark_bulb 2438 → 32 s.
+
+## 9. Jump bar: k and the failed looks (1.10.2)
+
+Field, night 2026-10-12/13. cam-wohn / cam-wohn-ofen (living room, day_gain
+768): evening lamps and the TV switch on and off, every jump forgot B and the
+look asked below 2 × `day_gain` (1536), about 8 failed checks (click pairs)
+per evening per camera. The check read **higher** than the IR-off look, not
+lower as the 2× assumed (look dark → check): cam-wohn 1441→2167, 531→883,
+281→497 (day), 567→790, 703→1249, 613→1138, 1058→1929, 1409→2584,
+1128→2213; cam-wohn-ofen 957→935 … 1333→1526 (k 0.95-1.18). T10 .31 (basement,
+5 other IR cameras): the neighbours' IR kept the look at dark 478 (lit
+364/386), every check read 4179 (AE exhausted); pairs 478→4179 (×6),
+570..745→4179, 508→4179, 896→4179, 917→4179, 242→2619; the morning ceiling
+light 231→333, 207→327, 167→351, 241→299.
+
+k = check / look dark is the IR-cut filter and the light source: 1.0-2.0
+under lamps and daylight, 4-20 under foreign IR, 0.7-0.8 in the shed by day
+(dawn-schuppen) and 0.8-0.95 for some cellar lamps (ref_stuck-t10 field
+300→284, ref_noisy-pan). No single k serves all: `day_gain / k` with k learnt
+from foreign IR (clamped 3) misses the cellar lamp of ref_stuck-t10 (300 > 256)
+and the lamp of ref_noisy-pan (100 > 33), and 1 × `day_gain` before learning
+misses dawn-schuppen (2760 s) and ref_noisy-pan. Tried and rejected: k alone
+with 1× default, clamp 0.7..3 (3 existing pairs fail).
+
+What `src/daynight.c` does (`sd_k_add`, `sd_jump_bar`):
+
+- Every look→check pair (look not clipped, check not clipped and at most
+  4 × `night_gain`; an exhausted check only understates k and counts) adds
+  k to the last 5; K = their median (the lower middle), clamped 0.7..2.
+- A failed pair keeps its dark reading (last 4). A check that finds day
+  drops the kept failures at or below its own dark reading (a darker look
+  gave day: they were other light).
+- A jump look (B forgotten) asks below `max(day_gain / K, min(2 × day_gain,
+  0.9 × lowest kept failure))`. Nothing failed: 2 × `day_gain` as before.
+  The failures stop the same lamp / the neighbours' IR from asking again;
+  `day_gain / K` (≥ 384 at 768) keeps a low failure (242) from blocking the
+  morning light (231). B, timer and colour looks, lockout, boot unchanged.
+- Kept across jumps, light changes and day; reset only by a restart. Logged:
+  `look (...): ... bar N k K`, and `k K (pair N -> S), jump bar X` after each
+  pair. Not in `/control`.
+
+Families (`make test-dn-replay`): `living_room_evening` (wohn, the 9 cam-wohn
+pairs as lamp/TV scenes between real night, the 281→497 lamp is day),
+`basement_k15` (pan, `day_gain` 100: a dim lamp 90→135 twice, then the
+100 % lamp 37→65), `basement_foreign_ir` (t10, the .31 night: nbr_off ↔
+478/650/508/900/242 jumps every 30 min, then the ceiling light). Failed
+checks include the boot check:
+
+| pair | old switches / failed | new switches / failed | light on |
+| --- | --- | --- | --- |
+| living_room_evening-wohn | 20 / 9 | 8 / 3 | 31 s, unchanged |
+| basement_foreign_ir-t10 | 25 / 12 | 7 / 3 | 33 → 34 s |
+| basement_k15-pan | 8 / 3 | 6 / 2 | 33 → 32 s |
+
+The 59 existing pairs: switches 197, failed checks 67, looks 129 before and
+after, all within bounds; latencies differ by 1-4 s (sim timing).
+Whole corpus 62 pairs: switches 250 → 218, failed checks 91 → 75, looks 156.
+Cost: .text +864 B (t31o), +800 B (t20o).
