@@ -43,6 +43,8 @@ _1.10.2 (draft)_
 
 ### Changed
 
+- Day/night: with a working colour trigger the timer look runs every 6 h instead of 45 min (about 6 instead of 16 dark 8 s looks per night); jump and colour looks still react at once. Without colour statistics it stays at 45 min.
+
 - Day/night: a look taken while the lit level is still moving (a lamp coming
   on, another camera's look) no longer sets the reference
   (`night_baseline`); the next settled level after it does, within 60 s. A

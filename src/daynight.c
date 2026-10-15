@@ -1201,6 +1201,7 @@ enum { S_BOOT = -1, S_DAY = 0, S_NIGHT = 1, S_LOOK = 2, S_CHECK = 3 };
 #define SD_RISE       1.10f     /* ... starting this far above it (noise stays below) */
 #define SD_B_MIN      0.50f     /* a light that halves the dark reading may ask again */
 #define SD_LOOK_S     2700      /* 8 s every 45 min = 0.30 % of the night */
+#define SD_LOOK_COLOR_S 21600   /* jump + colour watch the night: the timer is a backstop */
 #define SD_COLOR_GAP_MS 300000  /* colour looks: 5 min apart, doubling while nothing else looks */
 #define SD_COLOR_FAILS  3       /* failed reads in a row = no colour statistics */
 #define SD_COLOR_PROBES 30      /* reads outside the night until the first success */
@@ -1352,6 +1353,8 @@ static void *dn_thread(void *arg)
         }
         int64_t look_ms = (int64_t)(dn->heartbeat_s < SD_LOOK_S ? dn->heartbeat_s : SD_LOOK_S) * 1000;
         int irp = dn->irprobe_cmd[0] && !g_ir_unusable;
+        if (dn->color_pct > 0 && irp && c_seen && c_fails < SD_COLOR_PROBES)
+            look_ms = SD_LOOK_COLOR_S * 1000LL;
         int locked = now < lock_until;
         dn_sample sm;
         dn_read(dn, &sm);
@@ -1531,7 +1534,7 @@ static void *dn_thread(void *arg)
                 if (why[0] == 'c') {
                     LOGD(MOD, "colour moved %.1f %%", (double)cdev);
                     c_next = now + c_gap;
-                    c_gap = c_gap * 2 < look_ms ? c_gap * 2 : look_ms;
+                    c_gap = c_gap * 2 < SD_LOOK_S * 1000LL ? c_gap * 2 : SD_LOOK_S * 1000LL;
                 } else if (why[0] == 't') c_gap = SD_COLOR_GAP_MS;
                 g_probe_req = 0;
                 goto look;
