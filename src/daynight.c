@@ -733,6 +733,14 @@ static pid_t dn_spawn(const char *cmd, const char *arg, int outfd)
  * the surrounding prose, but the dashboards count these lines with a grep,
  * and a reworded sentence would empty them silently - the same failure the
  * exposure series had when it stopped without saying so. */
+/* after an IR or IR-cut edge the AE ramps for ~1 s and starved P-frames
+ * ghost the old picture until the next I-frame: key once the ramp is over */
+static volatile int64_t g_idr_due;
+static void dn_idr_soon(void)
+{
+    __atomic_store_n(&g_idr_due, ms_now_us() / 1000 + 800, __ATOMIC_RELAXED);
+}
+
 static void dn_switch(int mode, const char *why, const char *cmd,
                       float s, float ref, float bar)
 {
@@ -753,6 +761,8 @@ static void dn_switch(int mode, const char *why, const char *cmd,
     int rc = dn_reap(pid, cmd, arg, DN_CMD_TIMEOUT_MS);
     if (rc != 0)
         LOGW(MOD, "'%s %s' failed (rc=%d) - is the script installed?", cmd, arg, rc);
+    else
+        dn_idr_soon();
 }
 
 
@@ -840,6 +850,8 @@ static int dn_irprobe(const char *cmd, int on)
     int rc = dn_irhook(cmd, arg, NULL, 0);
     if (rc != 0)
         LOGW(MOD, "'%s %s' failed (rc=%d)", cmd, arg, rc);
+    else
+        dn_idr_soon();
     return rc == 0 ? 0 : -1;
 }
 
@@ -1333,6 +1345,11 @@ static void *dn_thread(void *arg)
         const ms_daynight_cfg *dn = &c;
         int64_t now = ms_now_us() / 1000;
         __atomic_store_n(&g_tick_s, (int)(now / 1000), __ATOMIC_RELAXED);
+        int64_t idr = __atomic_load_n(&g_idr_due, __ATOMIC_RELAXED);
+        if (idr && now >= idr) {
+            __atomic_store_n(&g_idr_due, 0, __ATOMIC_RELAXED);
+            for (int v = 0; v < MS_MAX_VSTREAM; v++) hub_request_idr(v);
+        }
         int64_t look_ms = (int64_t)(dn->heartbeat_s < SD_LOOK_S ? dn->heartbeat_s : SD_LOOK_S) * 1000;
         int irp = dn->irprobe_cmd[0] && !g_ir_unusable;
         int locked = now < lock_until;
