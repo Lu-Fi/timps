@@ -126,12 +126,17 @@ static inline int roi_rt_tier(int tier, int gate, int cap)
  * channel's next enable, so its encode thread restarts the framesource with
  * the encoder stopped (device-tested on T41 ch0, also under fs_keepalive).
  * The start window is set before the first enable. No upscaling.
- * T40 OpenIMP: the driver refuses AutoZoom (-EOPNOTSUPP).
+ * T40 OpenIMP: AutoZoom from OpenIMP fce128a / open T40 driver a85bffc7,
+ * live on a running channel up to 4K, no restart (OpenIMP maintainer).
  * T30/C100 not investigated. */
 #if defined(PLATFORM_T41) && defined(USE_OPENIMP)
 #define FCROP_AUTOZOOM 1
 #define FCROP_AZ_LIVE_W 768
 #define FCROP_AZ_LIVE_H 432
+#elif defined(PLATFORM_T40) && defined(USE_OPENIMP)
+#define FCROP_AUTOZOOM 1
+#define FCROP_AZ_LIVE_W 8192
+#define FCROP_AZ_LIVE_H 8192
 #endif
 #if !defined(ROI_PLATFORM_KNOWN)
 #define FCROP_TIER CAP_TIER_SIM
@@ -188,10 +193,8 @@ static inline int roi_rt_tier(int tier, int gate, int cap)
 #endif
 #if defined(PLATFORM_T23)
 #define FCROP_WHY "T23 FrontCrop needs OpenIMP (vendor build untested; older drivers hung on a crop change)"
-#elif defined(PLATFORM_T41)
-#define FCROP_WHY "T41 crop needs OpenIMP AutoZoom (OpenIMP_Cap_AutoZoom)"
-#elif defined(PLATFORM_T40)
-#define FCROP_WHY "the T40 SDK has no FrontCrop and the T40 driver no AutoZoom"
+#elif defined(PLATFORM_T40)||defined(PLATFORM_T41)
+#define FCROP_WHY "T40/T41 crop needs OpenIMP AutoZoom (OpenIMP_Cap_AutoZoom)"
 #elif defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)
 #define FCROP_WHY "FrontCrop is an OpenIMP extension on this SoC"
 #else

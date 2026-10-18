@@ -14,11 +14,12 @@ _1.10.3 (draft)_
   `OpenIMP_Cap_EncRoi`. Regions are sent as QP deltas. On T41 the encoder
   ignores them under FixQP; such a stream reports `caps.roi.streams[N]` =
   `"fixqp"` and the WebUI shows the ROI editor inactive with the reason.
-- Crop (`image.fcrop_*`) on T41 with OpenIMP through the ISP AutoZoom:
+- Crop (`image.fcrop_*`) on T40/T41 with OpenIMP through the ISP AutoZoom:
   experimental, runtime-detected through `OpenIMP_Cap_AutoZoom`. Live on
   every stream: up to 768x432 at once, a larger one restarts its
   framesource with the encoder stopped (about 45 ms gap, new keyframe). No
-  upscaling. T40 stays unsupported.
+  upscaling. T40 with OpenIMP takes the same path (live up to 4K, no
+  restart); not yet device-tested with timps.
 - `caps.fcrop.restart`: per stream, 1 = it takes the current window only at
   the next timps start. `caps.fcrop.api`: `frontcrop` or `autozoom`.
 
