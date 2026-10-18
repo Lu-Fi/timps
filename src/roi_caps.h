@@ -123,9 +123,9 @@ static inline int roi_rt_tier(int tier, int gate, int cap)
  * T41 OpenIMP: IMP_ISP_Tuning_SetAutoZoom instead (per FS channel, sensor
  * pixels), once the libimp exports OpenIMP_Cap_AutoZoom. Live on outputs up
  * to FCROP_AZ_LIVE_W x FCROP_AZ_LIVE_H; the driver defers a larger one to the
- * channel's next enable: recycled when idle-capable, with fs_keepalive (the
- * T41 OpenIMP default, its edges are unproven) at the next timps start. The
- * start window is set before the first enable. No upscaling.
+ * channel's next enable, so its encode thread restarts the framesource with
+ * the encoder stopped (device-tested on T41 ch0, also under fs_keepalive).
+ * The start window is set before the first enable. No upscaling.
  * T40 OpenIMP: the driver refuses AutoZoom (-EOPNOTSUPP).
  * T30/C100 not investigated. */
 #if defined(PLATFORM_T41) && defined(USE_OPENIMP)

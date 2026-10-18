@@ -290,6 +290,7 @@ typedef struct {
                                   * them even when the thread never started. */
     volatile int run, active, idr_req;
     volatile int roi_dirty;      /* /control changed this stream's ROI */
+    volatile int az_cycle;       /* T41 AutoZoom: the window waits for a framesource edge */
     pthread_t thr;
     /* Item-2: T31-only average-bitrate telemetry cache. GetChnAveBitrate needs
      * the just-fetched IMPEncoderStream (see imp_encoder.h), which only the
@@ -1490,19 +1491,52 @@ static void fcrop_recycle_now(void)
     for (int ch = 0; ch < 3; ch++) {
         unsigned b = 1u << ch;
         if (!(m & b)) continue;
-        if (fs_kept(ch)) {
-            g_az_stale |= b;
-            LOGW(MOD,"image.fcrop: framesource %d (%dx%d) is kept running (general.fs_keepalive) "
-                 "and takes the AutoZoom window only at a timps restart", ch, g_fs_ow[ch], g_fs_oh[ch]);
-            continue;
-        }
-        if (fs_recycle(ch) == 0) {
-            g_az_on = (g_az_on & ~b) | (g_az_want & b);
-            LOGI(MOD,"image.fcrop: framesource %d restarted for the AutoZoom window", ch);
+        vchan *vc = NULL;
+        for (int k = 0; k < g_nv; k++)
+            if (g_v[k].chn == ch && g_v[k].has_thr) vc = &g_v[k];
+        if (vc) {
+            __atomic_or_fetch(&g_az_stale, b, __ATOMIC_RELAXED);
+            vc->az_cycle = 1;   /* an idle thread re-polls within 1 s */
+        } else if (fs_kept(ch)) {
+            __atomic_or_fetch(&g_az_stale, b, __ATOMIC_RELAXED);
+            LOGW(MOD,"image.fcrop: framesource %d (%dx%d) is kept running and takes the "
+                 "AutoZoom window only at a timps restart", ch, g_fs_ow[ch], g_fs_oh[ch]);
         } else {
+            fs_recycle(ch);
             g_az_on = (g_az_on & ~b) | (g_az_want & b);
-            LOGI(MOD,"image.fcrop: framesource %d had stopped, takes the window at its next start", ch);
         }
+    }
+}
+
+/* Encode thread: the deferred window needs one Disable+Enable, also on a
+ * kept framesource. Encoder stopped around it, as device-tested on T41 ch0
+ * (10 cycles, open-tx-isp 95f86744); everywhere else keepalive avoids edges. */
+static void fcrop_az_cycle(vchan *vc, int receiving)
+{
+    int ch = vc->chn;
+    unsigned b = 1u << ch;
+    vc->az_cycle = 0;
+    if (receiving) IMP_Encoder_StopRecvPic(ch);
+    pthread_mutex_lock(&g_fs_mtx);
+    int rc = -1;
+    if (g_fsr.enabled[ch]) {
+        g_fs_ops.disable(ch);
+        rc = g_fs_ops.enable(ch);
+        g_fsr.enabled[ch] = rc == 0;
+    }
+    pthread_mutex_unlock(&g_fs_mtx);
+    if (rc == 0) fs_edge_relatch(ch);
+    if (receiving && IMP_Encoder_StartRecvPic(ch) == 0) {
+        vc->idr_req = 0;
+        IMP_Encoder_RequestIDR(ch);
+    }
+    if (rc == 0) {
+        __atomic_and_fetch(&g_az_stale, ~b, __ATOMIC_RELAXED);
+        g_az_on = (g_az_on & ~b) | (g_az_want & b);
+        LOGI(MOD,"image.fcrop: framesource %d restarted for the AutoZoom window", ch);
+    } else {
+        LOGW(MOD,"image.fcrop: framesource %d restart for the AutoZoom window failed "
+             "- it applies at the next timps start", ch);
     }
 }
 #else
@@ -3450,6 +3484,9 @@ static void *video_thread(void *arg)
         }
 #endif
     while (vc->run) {
+#ifdef FCROP_AUTOZOOM
+        if (vc->az_cycle) fcrop_az_cycle(vc, receiving);
+#endif
         /* on-demand: encode while there are consumers. The hub subscriber
          * count is the truth source (level, not edge), so a racing stale
          * "inactive" flag can never stop a stream that still has clients. */
