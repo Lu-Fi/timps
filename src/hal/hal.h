@@ -115,13 +115,14 @@ unsigned hal_roi_rejected(int si);
  * (-1 not applicable or not readable), min_w/min_h the smallest window the
  * driver takes, zoom_max_x100 the zoom it allows against the full sensor,
  * zoomable/zoomed per-stream bitmasks (can show a window at all / shows the
- * current one). */
+ * current one), restart: streams that take the current window only at the
+ * next timps start (T41 AutoZoom on a kept large framesource). */
 typedef struct {
     int upscale_pct;
     int upscale_max;   /* image.fcrop_upscale_pct ceiling, -1 unsupported */
     int min_w, min_h;
     int zoom_max_x100;
-    unsigned zoomable, zoomed;
+    unsigned zoomable, zoomed, restart;
 } hal_fcrop_lim;
 void hal_fcrop_limits(hal_fcrop_lim *o);
 

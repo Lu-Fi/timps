@@ -594,13 +594,14 @@ test-dn-replay:
 # macroblock corners, QP ranges, the top,left order), then the tier matrix of
 # src/roi_caps.h per PLATFORM:USE_OPENIMP:roi:fcrop:fcrop_live (tiers 0
 # unsupported, 1 experimental, 2 effective, 3 sim). Exit code is the result.
-# SoC:openimp:roi:fcrop:live, then fcrop:live without fcrop_upscale_pct, then
+# SoC:openimp:roi:fcrop:live, then fcrop:live without fcrop_upscale_pct (T41:
+# without OpenIMP_Cap_AutoZoom), then
 # the FCROP_FLIP_MIRROR axis mask, then (optional) roi without the libimp
 # ROI capability marker
 ROI_MATRIX := T10:0:1:0:0:0:0:0 T10:1:2:2:1:2:1:2 T20:0:1:0:0:0:0:0 T20:1:2:2:1:2:1:2 \
               T21:0:1:0:0:0:0:0 T21:1:2:2:1:2:1:3 T23:0:0:0:0:0:0:0 T23:1:2:2:1:1:0:3:0 \
               T30:0:0:0:0:0:0:0 T31:0:0:1:1:1:1:0 T31:1:2:2:1:1:1:3 T40:0:0:0:0:0:0:0 \
-              T40:1:0:0:0:0:0:0 T41:0:0:0:0:0:0:0 T41:1:0:0:0:0:0:0 C100:0:0:0:0:0:0:0 \
+              T40:1:1:0:0:0:0:0:0 T41:0:0:0:0:0:0:0 T41:1:1:1:1:0:0:0:0 C100:0:0:0:0:0:0:0 \
               HOST:0:3:3:1:3:1:0
 test-roi:
 	$(HOSTCC) $(CFLAGS) -Isrc scripts/test_roi.c -o $(BIN)-roitest

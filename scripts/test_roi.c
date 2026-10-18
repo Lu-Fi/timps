@@ -212,6 +212,7 @@ static void t_state(void)
     CK(roi_stream_state(1, 1, 0) == ROI_ST_H265, "h265 refused");
     CK(roi_stream_state(1, 0, 90) == ROI_ST_ROTATED, "rotated refused");
     CK(!strcmp(roi_state_name(ROI_ST_ROTATED), "rotated"), "name");
+    CK(!strcmp(roi_state_name(ROI_ST_FIXQP), "fixqp"), "fixqp name");
 }
 
 /* FrontCrop: x->left, y->top (the API order is top,left) */
@@ -311,6 +312,10 @@ static void t_fcrop_rt(void)
     CK(t == CAP_TIER_EXPERIMENTAL && live, "T31 absent: experimental, live");
     t = fcrop_rt_tier(CAP_TIER_EXPERIMENTAL, FCROP_GATE_T23, 0, &live);
     CK(t == CAP_TIER_EXPERIMENTAL && !live, "T23 absent never raises");
+    t = fcrop_rt_tier(CAP_TIER_EXPERIMENTAL, FCROP_GATE_AZ, 1, &live);
+    CK(t == CAP_TIER_EXPERIMENTAL && live, "AZ marker: experimental, live");
+    t = fcrop_rt_tier(CAP_TIER_EXPERIMENTAL, FCROP_GATE_AZ, 0, &live);
+    CK(t == CAP_TIER_UNSUPPORTED && !live, "AZ no marker: unsupported");
 }
 
 /* runtime ROI tier: libimp capability marker present / absent */
@@ -325,6 +330,10 @@ static void t_roi_rt(void)
        "T23 no marker: unsupported");
     CK(roi_rt_tier(CAP_TIER_UNSUPPORTED, ROI_GATE_T23, 1) == CAP_TIER_UNSUPPORTED,
        "T23 marker never raises");
+    CK(roi_rt_tier(CAP_TIER_EXPERIMENTAL, ROI_GATE_CAP, 1) == CAP_TIER_EXPERIMENTAL,
+       "cap marker: tier kept");
+    CK(roi_rt_tier(CAP_TIER_EXPERIMENTAL, ROI_GATE_CAP, 0) == CAP_TIER_UNSUPPORTED,
+       "cap marker absent: unsupported");
 }
 
 static int fc_eq(const ms_fcrop_api *a, const ms_fcrop_api *b)

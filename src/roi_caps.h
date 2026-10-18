@@ -46,11 +46,17 @@ static inline const char *cap_tier_name(int t)
  * T31 OpenIMP: effective (AVPU QP table, device-tested by the OpenIMP
  * maintainer); OPENIMP_T31_ROI=0 in libimp turns it off.
  * T31 vendor: the 1.1.x libimp has no ROI symbol.
- * T40/T41: vendor T41 takes deltas -26..25 only, OpenIMP T41 is experimental
- * and off by default; family B would fit both, left unsupported until a
- * device test. T30/C100 not investigated. */
-#if defined(PLATFORM_T31) && defined(USE_OPENIMP)
+ * T40/T41 OpenIMP: device-tested by the OpenIMP maintainer once the libimp
+ * exports OpenIMP_Cap_EncRoi (bit 0); T41 only under CBR/VBR (bit 1), FixQP
+ * shows no effect. Deltas only: the SDK declares absolute QP unsupported.
+ * OPENIMP_T40_ROI=0 / OPENIMP_T41_ROI=0 in libimp turn it off.
+ * T40/T41 vendor: deltas -26..25 only, never device-tested.
+ * T30/C100 not investigated. */
+#if (defined(PLATFORM_T31)||defined(PLATFORM_T40)||defined(PLATFORM_T41)) && defined(USE_OPENIMP)
 #define ROI_FAMILY_B 1
+#endif
+#if (defined(PLATFORM_T40)||defined(PLATFORM_T41)) && defined(USE_OPENIMP)
+#define ROI_B_DELTA_ONLY 1
 #endif
 #if !defined(ROI_PLATFORM_KNOWN)
 #define ROI_TIER CAP_TIER_SIM
@@ -58,7 +64,8 @@ static inline const char *cap_tier_name(int t)
       (defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)|| \
        defined(PLATFORM_T23)||defined(PLATFORM_T31))
 #define ROI_TIER CAP_TIER_EFFECTIVE
-#elif defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)
+#elif defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)|| \
+      (defined(USE_OPENIMP) && (defined(PLATFORM_T40)||defined(PLATFORM_T41)))
 #define ROI_TIER CAP_TIER_EXPERIMENTAL
 #else
 #define ROI_TIER CAP_TIER_UNSUPPORTED
@@ -87,15 +94,18 @@ static inline const char *cap_tier_name(int t)
 /* SoCs whose ROI tier depends on a libimp capability marker */
 #define ROI_GATE_NONE 0
 #define ROI_GATE_T23  1
+#define ROI_GATE_CAP  2   /* T40/T41: OpenIMP_Cap_EncRoi bit 0 */
 #if defined(USE_OPENIMP) && defined(PLATFORM_T23)
 #define ROI_GATE ROI_GATE_T23
+#elif defined(USE_OPENIMP) && (defined(PLATFORM_T40)||defined(PLATFORM_T41))
+#define ROI_GATE ROI_GATE_CAP
 #else
 #define ROI_GATE ROI_GATE_NONE
 #endif
 
 static inline int roi_rt_tier(int tier, int gate, int cap)
 {
-    return gate == ROI_GATE_T23 && !cap ? CAP_TIER_UNSUPPORTED : tier;
+    return gate != ROI_GATE_NONE && !cap ? CAP_TIER_UNSUPPORTED : tier;
 }
 
 /* FrontCrop, ISP-wide, sensor pixels.
@@ -109,15 +119,27 @@ static inline int roi_rt_tier(int tier, int gate, int cap)
  * change: experimental and start-only (needs 3cf9bdac+), T31 experimental.
  * Every stream must fit the window or be scaled down (below: -EINVAL).
  * T23 vendor: untested. T31 vendor: experimental.
- * T40/T41: not in the SDK, and a live fs1 crop stops frames on T41.
+ * T40/T41: no FrontCrop in the SDK, and a live fs1 crop stops frames on T41.
+ * T41 OpenIMP: IMP_ISP_Tuning_SetAutoZoom instead (per FS channel, sensor
+ * pixels), once the libimp exports OpenIMP_Cap_AutoZoom. Live on outputs up
+ * to FCROP_AZ_LIVE_W x FCROP_AZ_LIVE_H; the driver defers a larger one to the
+ * channel's next enable: recycled when idle-capable, with fs_keepalive (the
+ * T41 OpenIMP default, its edges are unproven) at the next timps start. The
+ * start window is set before the first enable. No upscaling.
+ * T40 OpenIMP: the driver refuses AutoZoom (-EOPNOTSUPP).
  * T30/C100 not investigated. */
+#if defined(PLATFORM_T41) && defined(USE_OPENIMP)
+#define FCROP_AUTOZOOM 1
+#define FCROP_AZ_LIVE_W 768
+#define FCROP_AZ_LIVE_H 432
+#endif
 #if !defined(ROI_PLATFORM_KNOWN)
 #define FCROP_TIER CAP_TIER_SIM
 #elif defined(USE_OPENIMP) && \
       (defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)|| \
        defined(PLATFORM_T23)||defined(PLATFORM_T31))
 #define FCROP_TIER CAP_TIER_EFFECTIVE
-#elif defined(PLATFORM_T31)
+#elif defined(PLATFORM_T31) || defined(FCROP_AUTOZOOM)
 #define FCROP_TIER CAP_TIER_EXPERIMENTAL
 #else
 #define FCROP_TIER CAP_TIER_UNSUPPORTED
@@ -160,14 +182,16 @@ static inline int roi_rt_tier(int tier, int gate, int cap)
 #elif defined(PLATFORM_T31)
 #define ROI_WHY "T31 ROI needs OpenIMP (SetChnRoiAttr); the vendor libimp has no ROI"
 #elif defined(PLATFORM_T40)||defined(PLATFORM_T41)
-#define ROI_WHY "T40/T41 SetChnRoiAttr is not device-tested, left off"
+#define ROI_WHY "T40/T41 ROI needs OpenIMP with OpenIMP_Cap_EncRoi (SetChnRoiAttr)"
 #else
 #define ROI_WHY "not investigated on this SoC"
 #endif
 #if defined(PLATFORM_T23)
 #define FCROP_WHY "T23 FrontCrop needs OpenIMP (vendor build untested; older drivers hung on a crop change)"
-#elif defined(PLATFORM_T40)||defined(PLATFORM_T41)
-#define FCROP_WHY "the T40/T41 SDK has no FrontCrop"
+#elif defined(PLATFORM_T41)
+#define FCROP_WHY "T41 crop needs OpenIMP AutoZoom (OpenIMP_Cap_AutoZoom)"
+#elif defined(PLATFORM_T40)
+#define FCROP_WHY "the T40 SDK has no FrontCrop and the T40 driver no AutoZoom"
 #elif defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)
 #define FCROP_WHY "FrontCrop is an OpenIMP extension on this SoC"
 #else
@@ -185,7 +209,10 @@ static inline int roi_rt_tier(int tier, int gate, int cap)
 #define FCROP_GATE_NONE 0
 #define FCROP_GATE_T23  1
 #define FCROP_GATE_T31  2
-#if defined(USE_OPENIMP) && defined(PLATFORM_T23)
+#define FCROP_GATE_AZ   3   /* T41: OpenIMP_Cap_AutoZoom */
+#if defined(FCROP_AUTOZOOM)
+#define FCROP_GATE FCROP_GATE_AZ
+#elif defined(USE_OPENIMP) && defined(PLATFORM_T23)
 #define FCROP_GATE FCROP_GATE_T23
 #elif defined(USE_OPENIMP) && defined(PLATFORM_T31)
 #define FCROP_GATE FCROP_GATE_T31
@@ -194,10 +221,12 @@ static inline int roi_rt_tier(int tier, int gate, int cap)
 #endif
 
 /* T23 start-only without the parameter: a live change on a running pipeline
- * is what hung older drivers, and the start apply runs before chn0 streams */
+ * is what hung older drivers, and the start apply runs before chn0 streams.
+ * AZ: param is the libimp capability marker, without it nothing works. */
 static inline int fcrop_rt_tier(int tier, int gate, int param, int *live)
 {
     *live = tier != CAP_TIER_UNSUPPORTED;
+    if (gate == FCROP_GATE_AZ && !param) { *live = 0; return CAP_TIER_UNSUPPORTED; }
     if (gate == FCROP_GATE_NONE || param || !*live) return tier;
     if (gate == FCROP_GATE_T23) *live = 0;
     return CAP_TIER_EXPERIMENTAL;

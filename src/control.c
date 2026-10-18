@@ -1775,6 +1775,9 @@ static int get_json(char *buf, size_t cap)
         APP("],\"zoomed\":[");
         for (int s = 0; s < MS_MAX_VSTREAM; s++)
             APP("%s%d", s ? "," : "", !!(fl.zoomed & (1u << s)));
+        APP("],\"restart\":[");
+        for (int s = 0; s < MS_MAX_VSTREAM; s++)
+            APP("%s%d", s ? "," : "", !!(fl.restart & (1u << s)));
         APP("]},");
     }
     /* image rotation: the set of values this SoC's build can actually apply

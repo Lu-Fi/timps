@@ -1106,6 +1106,16 @@ static unsigned g_roi_set[MS_MAX_VSTREAM];   /* slots the encoder may hold enabl
 static unsigned g_roi_rej[MS_MAX_VSTREAM];   /* regions outside the picture */
 static unsigned g_roi_said;                  /* streams whose first apply/refusal was logged */
 static void qp_bounds(const ms_vstream_cfg *v, int *qmin, int *qmax);
+#if ROI_GATE == ROI_GATE_CAP
+extern const int OpenIMP_Cap_EncRoi __attribute__((weak));
+#define ROI_CAP_BITS (&OpenIMP_Cap_EncRoi ? OpenIMP_Cap_EncRoi : 0)
+#else
+#define ROI_CAP_BITS 0
+#endif
+static int roi_fixqp_blind(const ms_vstream_cfg *v)
+{
+    return (ROI_CAP_BITS & 2) && v->rc_mode == MS_RC_FIXQP;
+}
 
 static int roi_si_of(int chn)
 {
@@ -1158,6 +1168,7 @@ static void roi_apply(vchan *vc, int live)
     memcpy(r, g_hcfg->roi[si], sizeof r);
     roi_rc_view(&rv, &g_hcfg->video[si]);
     config_str_unlock();
+    if (st == ROI_ST_OK && roi_fixqp_blind(&rv)) st = ROI_ST_FIXQP;
     roi_qpctx(&rv, &qc);
     pthread_mutex_lock(&g_roi_lock);
     int said = !live && (g_roi_said & (1u << si));
@@ -1175,7 +1186,11 @@ static void roi_apply(vchan *vc, int live)
         if (!en && !(g_roi_set[si] & bit)) continue;
 #ifdef ROI_FAMILY_B
         ms_roiwin_api *a = &attr.win[n];
-        int g = roi_build_b(en, r[n].qp_mode, r[n].qp, r[n].x, r[n].y, r[n].w, r[n].h,
+        int rel = r[n].qp_mode, q = r[n].qp;
+#ifdef ROI_B_DELTA_ONLY
+        if (!rel) { q = roi_clampi(q, ROI_QP_ABS_MIN, ROI_QP_ABS_MAX) - qc.ref; rel = 1; }
+#endif
+        int g = roi_build_b(en, rel, q, r[n].x, r[n].y, r[n].w, r[n].h,
                             vc->w, vc->h, &qc, a);
         if (g == GEOM_ADJUSTED && !said)
             LOGI(MOD,"roi%d.%d: applied as %u,%u %ux%u (16 px macroblocks), %s qp %d",
@@ -1226,7 +1241,10 @@ static void roi_apply(vchan *vc, int live)
 #endif
     g_roi_rej[si] = rej;
     if (!said && want) {
-        if (st != ROI_ST_OK)
+        if (st == ROI_ST_FIXQP)
+            LOGW(MOD,"roi%d: the encoder ignores ROI under FixQP on this SoC - use cbr or vbr, "
+                 "regions ignored", si);
+        else if (st != ROI_ST_OK)
             LOGW(MOD,"roi%d: stream is %s - encoder ROI needs an unrotated H.264 stream, "
                  "regions ignored", si, roi_state_name(st));
         else
@@ -1264,8 +1282,17 @@ int hal_roi_tier(void)
 #endif
 #ifdef ROI_FAMILY_B
     /* the library then refuses every SetChnRoiAttr */
+#if defined(PLATFORM_T40)
+    const char *e = getenv("OPENIMP_T40_ROI");
+#elif defined(PLATFORM_T41)
+    const char *e = getenv("OPENIMP_T41_ROI");
+#else
     const char *e = getenv("OPENIMP_T31_ROI");
+#endif
     if (e && e[0] == '0') return CAP_TIER_UNSUPPORTED;
+#endif
+#if ROI_GATE == ROI_GATE_CAP
+    return roi_rt_tier(ROI_TIER, ROI_GATE, ROI_CAP_BITS & 1);
 #endif
     return ROI_TIER;
 #else
@@ -1278,8 +1305,17 @@ const char *hal_roi_state(int si)
     if (si < 0 || si >= MS_MAX_VSTREAM || !g_cfg_boot.video[si].enabled)
         return roi_state_name(ROI_ST_OFF);
     if (hal_roi_tier() == CAP_TIER_UNSUPPORTED) return roi_state_name(ROI_ST_UNSUPPORTED);
-    return roi_state_name(roi_stream_state(1, g_cfg_boot.video[si].codec == MS_VC_H265,
-                                           g_eff_rot[si]));
+    int st = roi_stream_state(1, g_cfg_boot.video[si].codec == MS_VC_H265, g_eff_rot[si]);
+#if ROI_TIER != CAP_TIER_UNSUPPORTED
+    if (st == ROI_ST_OK) {
+        ms_vstream_cfg rv = g_cfg_boot.video[si];
+        config_str_lock();
+        roi_rc_view(&rv, &g_hcfg->video[si]);
+        config_str_unlock();
+        if (roi_fixqp_blind(&rv)) st = ROI_ST_FIXQP;
+    }
+#endif
+    return roi_state_name(st);
 }
 
 unsigned hal_roi_rejected(int si)
@@ -1292,6 +1328,11 @@ unsigned hal_roi_rejected(int si)
 
 enum { FC_OFF, FC_ON, FC_REJECTED, FC_FAILED, FC_WAITING };
 static int g_fcrop_state = FC_OFF;
+#ifdef FCROP_AUTOZOOM
+static unsigned g_az_on;             /* framesources that show a window */
+static unsigned g_az_want;           /* ... once the deferred ones restart */
+static unsigned g_az_stale;          /* kept ones waiting for a timps restart */
+#endif
 
 #ifdef FCROP_MSCA_PARAM
 /* -1: older open-tx-isp without the guard */
@@ -1381,6 +1422,17 @@ void hal_fcrop_limits(hal_fcrop_lim *o)
     if (o->min_w < FCROP_SOC_MIN_W) o->min_w = FCROP_SOC_MIN_W;
     if (o->min_h < FCROP_SOC_MIN_H) o->min_h = FCROP_SOC_MIN_H;
 #endif
+#elif defined(FCROP_AUTOZOOM)
+    (void)fit;
+    fcrop_min_msca(ow, oh, 0, &o->min_w, &o->min_h);
+    o->zoomable = all;
+    for (int i = 0; i < MS_MAX_VSTREAM; i++) {
+        int c = g_cfg_boot.video[i].imp_chn;
+        if ((all & (1u << i)) && c >= 0 && c < 3 && (g_az_on & (1u << c)))
+            o->zoomed |= 1u << i;
+        if ((all & (1u << i)) && c >= 0 && c < 3 && (g_az_stale & (1u << c)))
+            o->restart |= 1u << i;
+    }
 #else
     (void)ow; (void)oh; (void)fit;
     o->zoomable = all;
@@ -1390,6 +1442,70 @@ void hal_fcrop_limits(hal_fcrop_lim *o)
 }
 
 #if FCROP_TIER != CAP_TIER_UNSUPPORTED
+#ifdef FCROP_AUTOZOOM
+typedef struct { int32_t en[3], left[3], top[3], w[3], h[3]; } ms_azoom_api;
+_Static_assert(sizeof(IMPISPAutoZoom) == sizeof(ms_azoom_api) &&
+               offsetof(IMPISPAutoZoom, zoom_left) == offsetof(ms_azoom_api, left) &&
+               offsetof(IMPISPAutoZoom, zoom_height) == offsetof(ms_azoom_api, h),
+               "IMPISPAutoZoom differs from ms_azoom_api");
+extern int ms_isp_set_azoom(int num, ms_azoom_api *z)
+    __asm__("IMP_ISP_Tuning_SetAutoZoom") __attribute__((weak));
+extern const int OpenIMP_Cap_AutoZoom __attribute__((weak));
+#define FCROP_SETTER ms_isp_set_azoom
+#define FCROP_API "SetAutoZoom"
+static int g_fs_ow[MS_FS_MAXCHN], g_fs_oh[MS_FS_MAXCHN];
+static unsigned g_fcrop_recycle;     /* running channels whose window the driver deferred */
+
+/* one window on every framesource; caller holds g_isp_lock */
+static int fcrop_set(ms_fcrop_api *c)
+{
+    ms_azoom_api z;
+    memset(&z, 0, sizeof z);
+    unsigned rec = 0;
+    for (int ch = 0; ch < 3 && ch < MS_FS_MAXCHN; ch++) {
+        if (g_fs_ow[ch] <= 0) continue;
+        z.en[ch] = c->en; z.left[ch] = (int32_t)c->left; z.top[ch] = (int32_t)c->top;
+        z.w[ch] = (int32_t)c->width; z.h[ch] = (int32_t)c->height;
+        if ((g_fs_ow[ch] > FCROP_AZ_LIVE_W || g_fs_oh[ch] > FCROP_AZ_LIVE_H) &&
+            __atomic_load_n(&g_fsr.enabled[ch], __ATOMIC_RELAXED))
+            rec |= 1u << ch;
+    }
+    int rc = ms_isp_set_azoom(0, &z);
+    if (rc == 0) {
+        unsigned want = 0;
+        for (int ch = 0; ch < 3 && ch < MS_FS_MAXCHN; ch++)
+            if (g_fs_ow[ch] > 0 && c->en) want |= 1u << ch;
+        g_az_want = want;
+        g_az_on = (g_az_on & rec) | (want & ~rec);
+        g_az_stale &= rec;
+        if (rec) __atomic_or_fetch(&g_fcrop_recycle, rec, __ATOMIC_RELAXED);
+    }
+    return rc;
+}
+
+/* outside g_isp_lock: fs_recycle re-latches the flip under it */
+static void fcrop_recycle_now(void)
+{
+    unsigned m = __atomic_exchange_n(&g_fcrop_recycle, 0, __ATOMIC_RELAXED);
+    for (int ch = 0; ch < 3; ch++) {
+        unsigned b = 1u << ch;
+        if (!(m & b)) continue;
+        if (fs_kept(ch)) {
+            g_az_stale |= b;
+            LOGW(MOD,"image.fcrop: framesource %d (%dx%d) is kept running (general.fs_keepalive) "
+                 "and takes the AutoZoom window only at a timps restart", ch, g_fs_ow[ch], g_fs_oh[ch]);
+            continue;
+        }
+        if (fs_recycle(ch) == 0) {
+            g_az_on = (g_az_on & ~b) | (g_az_want & b);
+            LOGI(MOD,"image.fcrop: framesource %d restarted for the AutoZoom window", ch);
+        } else {
+            g_az_on = (g_az_on & ~b) | (g_az_want & b);
+            LOGI(MOD,"image.fcrop: framesource %d had stopped, takes the window at its next start", ch);
+        }
+    }
+}
+#else
 extern int ms_isp_set_fcrop(ms_fcrop_api *c)
     __asm__("IMP_ISP_Tuning_SetFrontCrop") __attribute__((weak));
 #if defined(PLATFORM_T23)||defined(PLATFORM_T31)||defined(PLATFORM_C100)
@@ -1397,6 +1513,10 @@ _Static_assert(sizeof(IMPISPFrontCrop) == sizeof(ms_fcrop_api) &&
                offsetof(IMPISPFrontCrop, fcrop_top) == offsetof(ms_fcrop_api, top) &&
                offsetof(IMPISPFrontCrop, fcrop_left) == offsetof(ms_fcrop_api, left),
                "IMPISPFrontCrop differs from ms_fcrop_api");
+#endif
+#define FCROP_SETTER ms_isp_set_fcrop
+#define FCROP_API "SetFrontCrop"
+#define fcrop_set(c) ms_isp_set_fcrop(c)
 #endif
 static int g_fcrop_set;              /* a window of ours is in the ISP */
 static ms_fcrop_api g_fcrop_cur;     /* ... that one, picture coordinates */
@@ -1412,7 +1532,7 @@ static int fcrop_same(const ms_fcrop_api *a, const ms_fcrop_api *b)
 /* caller holds g_isp_lock */
 static void fcrop_apply(void)
 {
-    if (!ms_isp_set_fcrop) return;
+    if (!FCROP_SETTER) return;
 #ifdef FCROP_UPSCALE_MAX
     fcrop_upscale_sync();
 #endif
@@ -1425,8 +1545,8 @@ static void fcrop_apply(void)
         if (!g_fcrop_set) return;
         fcrop_off(sw, sh, &a);
         errno = 0;
-        int rc = ms_isp_set_fcrop(&a);
-        if (rc) { LOGW(MOD,"image.fcrop: SetFrontCrop(off) failed (rc=%d errno=%d)", rc, errno);
+        int rc = fcrop_set(&a);
+        if (rc) { LOGW(MOD,"image.fcrop: " FCROP_API "(off) failed (rc=%d errno=%d)", rc, errno);
                   g_fcrop_state = FC_FAILED; return; }
         g_fcrop_set = 0;
         LOGI(MOD,"image.fcrop off: full %dx%d sensor", sw, sh);
@@ -1449,7 +1569,7 @@ static void fcrop_apply(void)
         return;
     }
 #endif
-#ifdef FCROP_MSCA_PARAM
+#if defined(FCROP_MSCA_PARAM) || defined(FCROP_AUTOZOOM)
     /* an older driver without the guard hung on a window the MSCA cannot
      * upscale to; the same rule here keeps it from ever seeing one */
     {
@@ -1467,7 +1587,7 @@ static void fcrop_apply(void)
             if (g_fcrop_set && ((int)g_fcrop_cur.width < lim.min_w ||
                                 (int)g_fcrop_cur.height < lim.min_h)) {
                 fcrop_off(sw, sh, &a);
-                if (ms_isp_set_fcrop(&a) == 0) {
+                if (fcrop_set(&a) == 0) {
                     g_fcrop_set = 0;
                     LOGW(MOD,"image.fcrop: the active %ux%u window no longer fits - full %dx%d sensor",
                          g_fcrop_cur.width, g_fcrop_cur.height, sw, sh);
@@ -1482,7 +1602,7 @@ static void fcrop_apply(void)
     fcrop_mirror(&s, FCROP_FLIP_MIRROR, g_hcfg->image.hflip, g_hcfg->image.vflip, sw, sh);
 #endif
     errno = 0;
-    int rc = ms_isp_set_fcrop(&s);
+    int rc = fcrop_set(&s);
     if (rc) {
         int e = errno;
 #ifdef FCROP_DS_ONLY
@@ -1516,7 +1636,7 @@ static void fcrop_apply(void)
 #endif
         int st = refused ? FC_REJECTED : FC_FAILED;
         if (g_fcrop_state != st || !fcrop_same(&a, &g_fcrop_rej))
-            LOGW(MOD,"image.fcrop: SetFrontCrop left %u top %u %ux%u %s (rc=%d errno=%d)",
+            LOGW(MOD,"image.fcrop: " FCROP_API " left %u top %u %ux%u %s (rc=%d errno=%d)",
                  a.left, a.top, a.width, a.height,
                  refused ? "refused: no stream can show that window" : "failed", rc, e);
         g_fcrop_rej = a;
@@ -1567,9 +1687,10 @@ static void fcrop_boot(void)
     g_fcrop_state = FC_OFF;
     memset(&g_fcrop_rej, 0, sizeof g_fcrop_rej);
     g_fcrop_booted = 1;
-    if (!ms_isp_set_fcrop) {
+    if (!FCROP_SETTER || hal_fcrop_tier() == CAP_TIER_UNSUPPORTED) {
         if (g_hcfg->image.fcrop_enable)
-            LOGW(MOD,"image.fcrop_enable=1 ignored: this libimp has no IMP_ISP_Tuning_SetFrontCrop");
+            LOGW(MOD,"image.fcrop_enable=1 ignored: %s", FCROP_SETTER ? FCROP_WHY :
+                 "this libimp has no IMP_ISP_Tuning_" FCROP_API);
         return;
     }
     pthread_mutex_lock(&g_isp_lock);
@@ -1586,7 +1707,7 @@ static void fcrop_boot(void)
         ms_fcrop_api a;
         hal_sensor_size(&sw, &sh);
         fcrop_off(sw, sh, &a);
-        int rc = ms_isp_set_fcrop(&a);
+        int rc = fcrop_set(&a);
         LOGD(MOD,"image.fcrop: boot off %dx%d (rc=%d)", sw, sh, rc);
     }
 #endif
@@ -1603,7 +1724,7 @@ static void fcrop_boot(void)
 static void fcrop_stream_kick(void)
 {
 #if FCROP_LIVE && defined(FCROP_DS_ONLY)
-    if (!ms_isp_set_fcrop || !g_fcrop_booted || !g_hcfg->image.fcrop_enable ||
+    if (!FCROP_SETTER || !g_fcrop_booted || !g_hcfg->image.fcrop_enable ||
         (g_fcrop_state != FC_WAITING && g_fcrop_state != FC_REJECTED)) return;
     pthread_mutex_lock(&g_isp_lock);
     if (g_fcrop_state == FC_WAITING || g_fcrop_state == FC_REJECTED) fcrop_apply();
@@ -1618,10 +1739,16 @@ static int g_fcrop_rt_live = FCROP_GATE != FCROP_GATE_T23;
 
 static void fcrop_rt_init(void)
 {
+#ifdef FCROP_AUTOZOOM
+    int param = &OpenIMP_Cap_AutoZoom && OpenIMP_Cap_AutoZoom;
+    const char *what = "OpenIMP_Cap_AutoZoom";
+#else
     int param = access(FCROP_MSCA_PARAM, F_OK) == 0;
+    const char *what = FCROP_MSCA_PARAM;
+#endif
     g_fcrop_rt = fcrop_rt_tier(FCROP_TIER, FCROP_GATE, param, &g_fcrop_rt_live);
     LOGI(MOD,"image.fcrop: %s, %s (%s %s)", cap_tier_name(g_fcrop_rt),
-         g_fcrop_rt_live ? "live" : "start-only", FCROP_MSCA_PARAM, param ? "present" : "absent");
+         g_fcrop_rt_live ? "live" : "start-only", what, param ? "present" : "absent");
 }
 #else
 #define g_fcrop_rt      FCROP_TIER
@@ -1631,7 +1758,7 @@ static void fcrop_rt_init(void)
 int hal_fcrop_tier(void)
 {
 #if FCROP_TIER != CAP_TIER_UNSUPPORTED
-    if (!ms_isp_set_fcrop) return CAP_TIER_UNSUPPORTED;
+    if (!FCROP_SETTER) return CAP_TIER_UNSUPPORTED;
     return g_fcrop_rt;
 #else
     return CAP_TIER_UNSUPPORTED;
@@ -2525,6 +2652,9 @@ static int t31_ch0_pre_dequeue_time(void)
 /* ================= framesource ================= */
 static int fs_create(int chn, const ms_vstream_cfg *v)
 {
+#ifdef FCROP_AUTOZOOM
+    if (chn >= 0 && chn < MS_FS_MAXCHN) { g_fs_ow[chn] = v->width; g_fs_oh[chn] = v->height; }
+#endif
     IMPFSChnAttr a; memset(&a,0,sizeof a);
     a.pixFmt = PIX_FMT_NV12;
     a.outFrmRateNum = v->fps; a.outFrmRateDen = 1;
@@ -6153,6 +6283,9 @@ static void ing_control_commit(void)
         pthread_mutex_lock(&g_isp_lock);
         fcrop_apply();
         pthread_mutex_unlock(&g_isp_lock);
+#ifdef FCROP_AUTOZOOM
+        fcrop_recycle_now();
+#endif
     }
 #endif
 }
@@ -6404,6 +6537,10 @@ static int ing_start(const ms_config *cfg)
      * jpeg_setup unwinds its own partial state on failure */
     if (cfg->jpeg.enabled && jpeg_setup(cfg)!=0)
         LOGW(MOD,"dedicated JPEG channel unavailable");
+#ifdef FCROP_AUTOZOOM
+    /* before the first enable: a running large channel would defer it */
+    fcrop_boot();
+#endif
     /* Before motion and the boot kick, so those become plain ref bumps and
      * every framesource sees exactly one enable edge per start. */
     g_fs_keepalive = fs_keepalive_resolve(cfg->fs_keepalive, FS_KEEPALIVE_AUTO);
@@ -6438,7 +6575,9 @@ static int ing_start(const ms_config *cfg)
      * first timelapse shot right after start finds it running (no D->E).
      * Must run here (end of ing_start), NOT at the apply_image_tuning() call in
      * isp_init, where fs chn0 does not yet exist. */
+#ifndef FCROP_AUTOZOOM
     fcrop_boot();   /* every channel exists: the SDK checks one can show the window */
+#endif
     fs_kick_chn0();
     /* image.ae_it_max_us is a harder case than the kick above can serve: it
      * needs the write to land while frames are being DELIVERED, and at the end

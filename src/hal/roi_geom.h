@@ -172,12 +172,14 @@ static inline int roi_build_b(int en, int rel, int qp, int x, int y, int w, int 
 }
 
 /* per-stream ROI state as GET /control reports it */
-enum { ROI_ST_OK = 0, ROI_ST_OFF, ROI_ST_H265, ROI_ST_ROTATED, ROI_ST_UNSUPPORTED };
+/* fixqp: the encoder ignores the regions under FixQP (T41 OpenIMP) */
+enum { ROI_ST_OK = 0, ROI_ST_OFF, ROI_ST_H265, ROI_ST_ROTATED, ROI_ST_UNSUPPORTED,
+       ROI_ST_FIXQP };
 
 static inline const char *roi_state_name(int s)
 {
-    static const char *const n[] = { "ok", "off", "h265", "rotated", "unsupported" };
-    return (s >= 0 && s <= ROI_ST_UNSUPPORTED) ? n[s] : "unsupported";
+    static const char *const n[] = { "ok", "off", "h265", "rotated", "unsupported", "fixqp" };
+    return (s >= 0 && s <= ROI_ST_FIXQP) ? n[s] : "unsupported";
 }
 
 /* Rotated streams are refused: the encoder input is the rotated frame and
