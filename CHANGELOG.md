@@ -20,7 +20,7 @@ _1.10.3 (draft)_
   framesource with the encoder stopped (about 45 ms gap, new keyframe). No
   upscaling. T40 stays unsupported.
 - `caps.fcrop.restart`: per stream, 1 = it takes the current window only at
-  the next timps start.
+  the next timps start. `caps.fcrop.api`: `frontcrop` or `autozoom`.
 
 _1.10.2 (draft)_
 

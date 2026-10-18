@@ -198,6 +198,13 @@ static inline int roi_rt_tier(int tier, int gate, int cap)
 #define FCROP_WHY "not investigated on this SoC"
 #endif
 
+/* caps.fcrop.api: the ISP call behind image.fcrop_* */
+#ifdef FCROP_AUTOZOOM
+#define FCROP_API_NAME "autozoom"
+#else
+#define FCROP_API_NAME "frontcrop"
+#endif
+
 /* compile-time ceiling of caps.fcrop.live */
 #if FCROP_TIER != CAP_TIER_UNSUPPORTED
 #define FCROP_LIVE 1

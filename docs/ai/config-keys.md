@@ -466,9 +466,9 @@ Prose and pitfalls
 * **FrontCrop (`image.fcrop_*`, since v1.10.0).** One window for the
   whole ISP, in sensor pixels; the request is applied **once per POST** (after
   all four coordinates arrived) and at start after every channel exists.
-  `GET /control` reports `caps.fcrop` = `{tier, live, min:64, even:1, step:2,
+  `GET /control` reports `caps.fcrop` = `{tier, api, live, min:64, even:1, step:2,
   sensor:[w,h], state, min_win:[w,h], zoom_max, upscale_pct, upscale_max,
-  zoomable:[..], zoomed:[..], restart:[..]}` (`upscale_max` **since v1.10.2**, `restart` **since v1.10.3**, the
+  zoomable:[..], zoomed:[..], restart:[..]}` (`upscale_max` **since v1.10.2**, `api` and `restart` **since v1.10.3**; `api` is `frontcrop` or, on T41 OpenIMP, `autozoom`; `upscale_max` is the
   ceiling of `image.fcrop_upscale_pct`, -1 unsupported); `state` is `off`, `on`, `rejected` (timps refused the
   window: below `min_win`, 64×64 or no sensor size; or SetFrontCrop returned
   `-EINVAL`/`-EOPNOTSUPP` — on T10/T20/T21 any error — i.e. no stream can

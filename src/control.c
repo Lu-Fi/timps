@@ -1764,7 +1764,7 @@ static int get_json(char *buf, size_t cap)
         int ft = hal_fcrop_tier();
         hal_fcrop_lim fl;
         hal_fcrop_limits(&fl);
-        APP("]},\"fcrop\":{\"tier\":\"%s\",\"live\":%d,\"min\":%d,\"even\":1,"
+        APP("]},\"fcrop\":{\"tier\":\"%s\",\"api\":\"" FCROP_API_NAME "\",\"live\":%d,\"min\":%d,\"even\":1,"
             "\"step\":2,\"sensor\":[%d,%d],\"state\":\"%s\",\"min_win\":[%d,%d],"
             "\"zoom_max\":%d.%02d,\"upscale_pct\":%d,\"upscale_max\":%d,\"zoomable\":[",
             cap_tier_name(ft), hal_fcrop_live(), FCROP_MIN,
