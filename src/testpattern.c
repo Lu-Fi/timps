@@ -13,6 +13,7 @@
 #define TP_TICK_MS  100
 #define TP_GRACE_MS 1500   /* motion reported this long after an object ends still counts */
 #define TP_SCRIPT   "/tmp/timps-tp-events"
+#define TP_WARMUP_MS 5000  /* the switch itself is a whole-frame change */
 
 /* default motion test: one moving 32 px object every 6 s, each in another
  * cell of the 8 x 6 grid (motion v2 learns a spot that repeats), away from
@@ -70,7 +71,7 @@ static void *tp_eval_thread(void *a)
     unsigned char prev[MOTION_STATUS_MAX], om[MOTION_STATUS_MAX];
     memset(prev, 0, sizeof prev);
     int prev_obj = 0, open = 0, hit = 0, k = -1, cx = 0, cy = 0;
-    int64_t t_obj = 0, t_end = -1000000;
+    int64_t t_obj = 0, t_end = -1000000, t_go = now_ms() + TP_WARMUP_MS;
     while (g_run) {
         hal_tp_state st;
         ms_motion_status ms;
@@ -87,7 +88,7 @@ static void *tp_eval_thread(void *a)
         if (ok && (g_scripted ? k < TP_NOBJ : !st.scripted)) obj_cells(&ms, cx, cy, om);
         else memset(om, 1, sizeof om);
         int rise_in = 0, rise_out = 0;
-        if (ms.enabled)
+        if (ms.enabled && t >= t_go)
             for (int i = 0; i < n; i++)
                 if (ms.active[i] && !prev[i]) {
                     if (om[i]) rise_in = 1; else rise_out = 1;
