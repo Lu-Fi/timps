@@ -2938,6 +2938,9 @@ int hal_tp_get(hal_tp_state *o)
     o->frames = s.frames;
     o->objects_shown = s.objects_shown;
     o->objects_active = s.objects_active;
+    o->obj_cell_x = (int)s.params.obj_cell_x;
+    o->obj_cell_y = (int)s.params.obj_cell_y;
+    o->scripted = s.params.script[0] != 0 || !s.params.obj_size;
     return 0;
 }
 

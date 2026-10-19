@@ -22,10 +22,32 @@ static uint64_t g_lat_sum;
 
 static int64_t now_ms(void) { return ms_now_us() / 1000; }
 
+/* motion grid cells overlapping cell (cx,cy) of the pattern's 8 x 6 grid */
+static void obj_cells(const ms_motion_status *ms, int cx, int cy, unsigned char *m)
+{
+    memset(m, 0, MOTION_STATUS_MAX);
+    for (int r = 0; r < ms->rows; r++)
+        for (int c = 0; c < ms->cols; c++) {
+            int i = r * ms->cols + c;
+            if (i >= MOTION_STATUS_MAX) return;
+            /* overlap of [c/cols,(c+1)/cols) with [cx/8,(cx+1)/8) etc., cross-multiplied */
+            int ox = c * 8 < (cx + 1) * ms->cols && cx * ms->cols < (c + 1) * 8;
+            int oy = r * 6 < (cy + 1) * ms->rows && cy * ms->rows < (r + 1) * 6;
+            m[i] = ox && oy;
+        }
+}
+
+/* An object counts as detected when one of the motion cells over its grid
+ * cell turns active while it is shown (or up to TP_GRACE_MS after). Cells
+ * that stay active (frame counter, OSD clock) never make an edge, so they
+ * neither hit nor raise false alarms. A rising cell elsewhere while no
+ * object is up is a false alarm. Scripted objects fall back to any cell. */
 static void *tp_eval_thread(void *a)
 {
     (void)a;
-    int prev_obj = 0, prev_any = 0, open = 0, hit = 0;
+    unsigned char prev[MOTION_STATUS_MAX], om[MOTION_STATUS_MAX];
+    memset(prev, 0, sizeof prev);
+    int prev_obj = 0, open = 0, hit = 0;
     int64_t t_obj = 0, t_end = -1000000;
     while (g_run) {
         hal_tp_state st;
@@ -34,7 +56,15 @@ static void *tp_eval_thread(void *a)
         motion_get_status(&ms);
         int64_t t = now_ms();
         int obj = ok && st.objects_active > 0;
-        int any = ms.enabled && ms.any;
+        int n = ms.cells < MOTION_STATUS_MAX ? ms.cells : MOTION_STATUS_MAX;
+        if (ok && !st.scripted) obj_cells(&ms, st.obj_cell_x, st.obj_cell_y, om);
+        else memset(om, 1, sizeof om);
+        int rise_in = 0, rise_out = 0;
+        if (ms.enabled)
+            for (int i = 0; i < n; i++)
+                if (ms.active[i] && !prev[i]) {
+                    if (om[i]) rise_in = 1; else rise_out = 1;
+                }
         pthread_mutex_lock(&g_tp_mtx);
         g_ev.motion = ms.enabled;
         if (obj && !prev_obj) {
@@ -43,24 +73,24 @@ static void *tp_eval_thread(void *a)
         } else if (!obj && prev_obj) {
             t_end = t;
         }
-        if (any && !prev_any) {
-            if ((obj || t - t_end < TP_GRACE_MS) && open && !hit) {
-                unsigned lat = (unsigned)(t - t_obj);
-                hit = 1;
-                g_ev.hits++;
-                g_lat_sum += lat;
-                g_ev.lat_avg_ms = (unsigned)(g_lat_sum / g_ev.hits);
-                if (lat > g_ev.lat_max_ms) g_ev.lat_max_ms = lat;
-            } else if (!obj && t - t_end >= TP_GRACE_MS) {
-                g_ev.false_alarms++;
-            }
+        int live = obj || t - t_end < TP_GRACE_MS;
+        if (rise_in && open && !hit && live) {
+            unsigned lat = (unsigned)(t - t_obj);
+            hit = 1;
+            g_ev.hits++;
+            g_lat_sum += lat;
+            g_ev.lat_avg_ms = (unsigned)(g_lat_sum / g_ev.hits);
+            if (lat > g_ev.lat_max_ms) g_ev.lat_max_ms = lat;
+        } else if ((rise_out || rise_in) && !live) {
+            g_ev.false_alarms++;
         }
-        if (open && !obj && t - t_end >= TP_GRACE_MS) {
+        if (open && !live) {
             if (!hit) g_ev.misses++;
             open = 0;
         }
         pthread_mutex_unlock(&g_tp_mtx);
-        prev_obj = obj; prev_any = any;
+        prev_obj = obj;
+        for (int i = 0; i < n; i++) prev[i] = ms.enabled && ms.active[i];
         usleep(TP_TICK_MS * 1000);
     }
     return NULL;

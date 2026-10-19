@@ -141,6 +141,8 @@ typedef struct {
     int mode;
     uint64_t frames, objects_shown;
     unsigned objects_active;
+    int obj_cell_x, obj_cell_y;   /* built-in object cell in the 8 x 6 grid */
+    int scripted;                 /* objects come from a script file */
 } hal_tp_state;
 int hal_tp_available(void);
 int hal_tp_set(int mode, const hal_tp_params *p);   /* p NULL: keep parameters */

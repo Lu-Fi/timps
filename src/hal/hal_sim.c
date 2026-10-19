@@ -273,6 +273,7 @@ int hal_tp_get(hal_tp_state *o)
     o->frames = g_sim_tp_mode ? (uint64_t)(ms / 40) : 0;
     o->objects_shown = g_sim_tp_mode == 3 ? (uint64_t)(ms / 6000 + 1) : 0;
     o->objects_active = g_sim_tp_mode == 3 && ms % 6000 < 3000;
+    o->obj_cell_x = 1; o->obj_cell_y = 1; o->scripted = 0;
     return 0;
 }
 int hal_rot_state(int si)
