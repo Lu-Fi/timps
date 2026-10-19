@@ -68,6 +68,10 @@ static int dn_mag_min(int mag, int other)
 #ifndef DN_STABLE_MAX_MS
 #define DN_STABLE_MAX_MS 120000  /* give up waiting for a sensor that never settles */
 #endif
+/* boot check: a noisy dark AE may never hold DN_STABLE_PCT, and the boot
+ * guess (day) shows black meanwhile; far above day_gain it cannot be day */
+#define DN_BOOT_WAIT_MS 30000
+#define DN_BOOT_DARK    4.0f
 /* believe a switch once the ISP shows it, after the board hook chain */
 /* the board hook chain (switch_cmd -> color -> POST /control) is fire-and-
  * forget and some ISPs take the mode late or fall back: re-drive it twice */
@@ -1311,7 +1315,7 @@ static void *dn_thread(void *arg)
 {
     (void)arg;
     int     st = S_BOOT, cur = DN_UNKNOWN, enabled_was = 0, ir_fails = 0;
-    int     stable = 0, cycled = 0, idle = 0, idle_fails = 0, desync = 0;
+    int     stable = 0, dark_n = 0, cycled = 0, idle = 0, idle_fails = 0, desync = 0;
     float   s = -1.0f, A = -1.0f, L = -1.0f, N = -1.0f;
     float   B = -1.0f;              /* <0 unset, 0 learn at the next look, >0 bar */
     float   K = 1.0f, Kh[SD_K_N], Nk = -1.0f;  /* survives a jump, unlike B */
@@ -1381,7 +1385,7 @@ static void *dn_thread(void *arg)
             enabled_was = 1; st = S_BOOT; cur = DN_UNKNOWN; s = A = B = N = -1.0f;
             boot_at = now; hold = verify_at = lock_until = 0; lock_ms = SD_LOCK_MS;
             reassert_at = cycle_at = a_by = 0; reassert_left = 0;
-            desync = cycled = ir_fails = 0; g_ir_unusable = 0;
+            desync = cycled = ir_fails = dark_n = stable = 0; g_ir_unusable = 0;
             LOGI(MOD, "auto day/night enabled (simple engine)");
         }
         if (dn->color_pct > 0 && irp && now >= c_rd &&
@@ -1396,6 +1400,7 @@ static void *dn_thread(void *arg)
         if (sm.d > 0.0f) {
             s = (s > 0.0f) ? s + (sm.d - s) * DN_ALPHA : sm.d;
             stable = (fabsf(sm.d - s) < s * DN_STABLE_PCT) ? stable + 1 : 0;
+            dark_n = sm.d > DN_BOOT_DARK * dn->day_gain ? dark_n + 1 : 0;
         }
         if (cur == DN_DAY) day_at = now;
 
@@ -1449,7 +1454,8 @@ static void *dn_thread(void *arg)
         switch (st) {
         case S_BOOT:
             if (now - boot_at < DN_BOOT_SETTLE_S * 1000 ||
-                (stable < DN_STABLE_N && now - boot_at < DN_STABLE_MAX_MS))
+                (stable < DN_STABLE_N && dark_n < DN_STABLE_N &&
+                 now - boot_at < DN_BOOT_WAIT_MS))
                 break;
             why = "boot"; L = -1.0f;
             goto check;

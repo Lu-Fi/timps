@@ -67,6 +67,11 @@ _1.10.2 (draft)_
 
 ### Changed
 
+- Day/night: the boot check no longer waits up to 2 min for a steady
+  exposure. When the first four readings are all above 4x `day_gain` it
+  checks at once; otherwise it waits at most 30 s. An open-stack T31 in a
+  dark garage showed a black day picture for 2 min after every start.
+
 - Day/night: with a working colour trigger the timer look runs every 6 h instead of 45 min (about 6 instead of 16 dark 8 s looks per night); jump and colour looks still react at once. Without colour statistics it stays at 45 min.
 
 - Day/night: a look taken while the lit level is still moving (a lamp coming
