@@ -2173,11 +2173,12 @@ static int get_json(char *buf, size_t cap)
     {
         tp_status tp;
         tp_get_status(&tp);
-        APP(",\"testpattern\":{\"mode\":%d,\"ae_hold\":%d,\"awb_hold\":%d,"
+        APP(",\"testpattern\":{\"mode\":%d,\"pending\":%d,\"refused\":%d,"
+            "\"ae_hold\":%d,\"awb_hold\":%d,"
             "\"frames\":%llu,\"objects_shown\":%llu,"
             "\"objects_active\":%u,\"eval\":{\"motion\":%d,\"objects\":%u,\"hits\":%u,"
             "\"misses\":%u,\"false_alarms\":%u,\"lat_avg_ms\":%u,\"lat_max_ms\":%u}}",
-            tp.mode, tp.ae_hold, tp.awb_hold, (unsigned long long)tp.frames, (unsigned long long)tp.objects_shown,
+            tp.mode, tp.pending, tp.refused, tp.ae_hold, tp.awb_hold, (unsigned long long)tp.frames, (unsigned long long)tp.objects_shown,
             tp.objects_active, tp.motion, tp.objects, tp.hits, tp.misses, tp.false_alarms,
             tp.lat_avg_ms, tp.lat_max_ms);
     }

@@ -14,6 +14,8 @@
 #define TP_GRACE_MS 1500   /* motion reported this long after an object ends still counts */
 #define TP_SCRIPT   "/tmp/timps-tp-events"
 #define TP_WARMUP_MS 5000  /* the switch itself is a whole-frame change */
+#define TP_S4_SETTLE_MS 3000   /* AE after the switch to day, before mode 4 freezes it */
+#define TP_S4_MAX_MS   15000
 
 /* default motion test: one moving 32 px object every 6 s, each in another
  * cell of the 8 x 6 grid (motion v2 learns a spot that repeats), away from
@@ -24,6 +26,11 @@ static const unsigned char k_cells[][2] = {
 };
 #define TP_NOBJ ((int)(sizeof k_cells / sizeof k_cells[0]))
 static int g_scripted;
+static int g_pending, g_refused;
+static pthread_t g_s4;
+static int g_s4_on;
+static volatile int g_s4_run;
+static hal_tp_params g_s4_hp;
 
 static pthread_mutex_t g_tp_mtx = PTHREAD_MUTEX_INITIALIZER;
 static tp_status g_ev;
@@ -124,6 +131,53 @@ static void *tp_eval_thread(void *a)
     return NULL;
 }
 
+static int dn_is_day(void)
+{
+    int en = 0, m = 0, ds = -1;
+    float b, g, e, l, r, pb;
+    daynight_get_status(&en, &m, &b, &g, &e, &l, &r, &pb, &ds);
+    return m == 0;
+}
+
+/* mode 4 freezes AE at the moment it starts: let the day switch and AE
+ * settle first, or the pattern comes out with the night gain */
+static void *tp_s4_thread(void *a)
+{
+    (void)a;
+    int64_t t0 = now_ms(), day_at = 0;
+    while (g_s4_run && now_ms() - t0 < TP_S4_MAX_MS) {
+        if (dn_is_day()) { if (!day_at) day_at = now_ms(); }
+        else day_at = 0;
+        if (day_at && now_ms() - day_at >= TP_S4_SETTLE_MS) break;
+        usleep(100 * 1000);
+    }
+    if (!g_s4_run) return NULL;
+    int rc = hal_tp_set(TP_SENSOR, &g_s4_hp);
+    pthread_mutex_lock(&g_tp_mtx);
+    g_pending = 0;
+    if (rc == 0) {
+        memset(&g_ev, 0, sizeof g_ev);
+        g_mode = TP_SENSOR;
+    } else {
+        g_refused = TP_SENSOR;
+    }
+    int back_off = rc != 0 && g_mode == TP_OFF;
+    pthread_mutex_unlock(&g_tp_mtx);
+    if (back_off) daynight_hold(0);
+    if (rc == 0) LOGI(MOD, "test pattern mode 4 (sensor) after %lld ms", (long long)(now_ms() - t0));
+    else LOGW(MOD, "test pattern mode 4 refused by libimp (no sensor table entry or register access failed)");
+    return NULL;
+}
+
+static void s4_stop(void)
+{
+    if (!g_s4_on) return;
+    g_s4_run = 0;
+    pthread_join(g_s4, NULL);
+    g_s4_on = 0;
+    g_pending = 0;
+}
+
 static void eval_stop(void)
 {
     if (!g_thr_on) return;
@@ -146,10 +200,24 @@ int tp_set(int mode, const tp_params *p)
     int scripted = mode == TP_MOTION && hp.obj_size <= 0 && hp.obj_cell_x < 0 && hp.obj_cell_y < 0 &&
                    tp_write_script() == 0;
     if (scripted) hp.script = TP_SCRIPT;
+    s4_stop();
     eval_stop();
+    g_refused = 0;
     if (mode != TP_OFF) daynight_hold(1);
+    if (mode == TP_SENSOR) {
+        if (g_mode != TP_OFF && g_mode != TP_SENSOR) hal_tp_set(TP_OFF, NULL);
+        pthread_mutex_lock(&g_tp_mtx);
+        if (g_mode != TP_SENSOR) g_mode = TP_OFF;
+        g_pending = 1;
+        pthread_mutex_unlock(&g_tp_mtx);
+        g_s4_hp = hp;
+        g_s4_run = 1;
+        if (ms_thread_create(&g_s4, MS_STACK_UTIL, tp_s4_thread, NULL) == 0) { g_s4_on = 1; return 0; }
+        g_s4_run = 0; g_pending = 0;
+    }
     if (hal_tp_set(mode, &hp) != 0) {
         LOGW(MOD, "test pattern mode %d refused by libimp", mode);
+        g_refused = mode;
         if (g_mode == TP_OFF) daynight_hold(0);
         return -1;
     }
@@ -174,6 +242,8 @@ void tp_get_status(tp_status *o)
     pthread_mutex_lock(&g_tp_mtx);
     *o = g_ev;
     o->mode = g_mode;
+    o->pending = g_pending;
+    o->refused = g_refused;
     pthread_mutex_unlock(&g_tp_mtx);
     o->available = hal_tp_available();
     o->sensor = o->available &&
@@ -191,6 +261,7 @@ void tp_get_status(tp_status *o)
 
 void tp_stop(void)
 {
+    s4_stop();
     eval_stop();
     if (g_mode != TP_OFF && hal_tp_available()) hal_tp_set(TP_OFF, NULL);
     g_mode = TP_OFF;

@@ -86,6 +86,8 @@ expect "testpattern object counted"     1  "$(tpf "int(d['testpattern']['eval'][
 expect "testpattern mode 9 refused"     0  "$(acc '{"testpattern":{"mode":9}}')"
 expect "testpattern sensor caps"        simsensor "$(tpf "d['caps']['testpattern']['sensor_name']")"
 expect "testpattern mode 4 accepted"    1  "$(acc '{"testpattern":{"mode":4,"ae_hold":1,"awb_hold":0}}')"
+expect "testpattern mode 4 waits for day" 1 "$(tpf "d['testpattern']['pending']")"
+sleep 4
 expect "testpattern mode 4 running"     4  "$(tpf "d['testpattern']['mode']")"
 expect "testpattern off accepted"       1  "$(acc '{"testpattern":{"mode":0}}')"
 expect "testpattern off"                0  "$(tpf "d['testpattern']['mode']")"

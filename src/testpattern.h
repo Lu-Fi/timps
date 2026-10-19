@@ -24,6 +24,8 @@ typedef struct {
     const char *sensor_desc;
     int      ae_hold, awb_hold;
     int      mode;
+    int      pending;            /* mode 4 waits for day mode to settle */
+    int      refused;            /* last mode the libimp refused, 0 = none */
     uint64_t frames;
     uint64_t objects_shown;
     unsigned objects_active;
