@@ -20,6 +20,10 @@ _1.10.3 (draft)_
   framesource with the encoder stopped (about 45 ms gap, new keyframe). No
   upscaling. T40 with OpenIMP takes the same path (live up to 4K, no
   restart); not yet device-tested with timps.
+- T40/T41 rotation follows the vendor I2D semantics: the framesource stays
+  unrotated, only the encoder gets the swapped size; 180 is a real I2D
+  rotate. With OpenIMP it needs `OpenIMP_Cap_I2dRotate`, otherwise rotation
+  is refused (`caps.rotation` = `[0]`). Width/height must be multiples of 8.
 - `caps.fcrop.restart`: per stream, 1 = it takes the current window only at
   the next timps start. `caps.fcrop.api`: `frontcrop` or `autozoom`.
 

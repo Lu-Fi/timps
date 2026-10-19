@@ -130,6 +130,8 @@ void hal_fcrop_limits(hal_fcrop_lim *o);
  * stream si runs unrotated against its request since the last start.
  * hal_rot_check: what the next start would refuse for v. */
 int hal_rot_state(int si);
+/* 0: the libimp cannot rotate (T40/T41 OpenIMP without I2D) */
+int hal_rot_hw_ok(void);
 int hal_rot_check(int si, const ms_vstream_cfg *v);
 /* How the running stream si is rotated: "off", "sw" (T23 software path:
  * text OSD only), "hw" (OSD/privacy over the whole frame) or "band" (vendor

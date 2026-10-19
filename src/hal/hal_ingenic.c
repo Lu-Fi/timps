@@ -2761,26 +2761,21 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
      * Batch 2 deliberately leaves T40/T41 un-XORed for exactly this); 90/270 is
      * a real rotate with swapped FS output dims. */
     if (v->rotation!=0){
-        a.i2dattr.i2d_enable = 1;
-        if (v->rotation==180){
-            /* per-channel 180 = Hflip + Vflip (flip + mirror) */
-            a.i2dattr.flip_enable = 1;
-            a.i2dattr.mirr_enable = 1;
-        } else { /* 90 or 270 */
-            a.i2dattr.rotate_enable = 1;
-            /* ON-DEVICE VERIFY (no T40/T41 hardware here): rotate_angle units are
-             * UNDOCUMENTED in the header. This sets DEGREES {90,270}; if on-device
-             * the output is unrotated or CreateChn rejects the attr, try the enum
-             * form {1,2,3}. */
-            a.i2dattr.rotate_angle = v->rotation;
-            /* FS output picture is post-rotation (swapped); the scaler stays at
-             * the pre-rotation geometry set above. Which of picWidth/picHeight
-             * vs scaler is pre- vs post-rotation is underdocumented - this
-             * mirrors the T31 split (swap picWidth/picHeight, keep scaler).
-             * ON-DEVICE VERIFY: if stride-garbled/green frames or SetChnAttr
-             * rejects, flip that one knob. */
-            a.picWidth = v->height; a.picHeight = v->width;
+        if (!hal_rot_hw_ok()) {
+            LOGW(MOD,"chn%d: rotation %d refused: this OpenIMP has no I2D rotate "
+                 "(OpenIMP_Cap_I2dRotate)", chn, v->rotation);
+            return ERR_ROT_LIB;
         }
+        if ((v->width | v->height) & 7) {
+            LOGW(MOD,"chn%d: rotation %d refused: %dx%d is not a multiple of 8",
+                 chn, v->rotation, v->width, v->height);
+            return ERR_ROT_ALIGN;
+        }
+        /* angle in degrees; picWidth/picHeight stay the pre-rotation size,
+         * only the encoder gets the swapped one (vendor + OpenIMP semantics) */
+        a.i2dattr.i2d_enable = 1;
+        a.i2dattr.rotate_enable = 1;
+        a.i2dattr.rotate_angle = v->rotation;
     }
 #endif
 #ifdef ROT_HAS_FS_ROTATE
@@ -2870,6 +2865,19 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
         LOGW(MOD,"FS_SetI2dAttr %d failed (rotation may stay inactive)",chn);
 #endif
     return 0;
+}
+
+#if defined(ROT_HAS_HW_I2D) && defined(USE_OPENIMP)
+extern const int OpenIMP_Cap_I2dRotate __attribute__((weak));
+#endif
+/* an OpenIMP without the marker accepts the I2D attr and does not rotate */
+int hal_rot_hw_ok(void)
+{
+#if defined(ROT_HAS_HW_I2D) && defined(USE_OPENIMP)
+    return &OpenIMP_Cap_I2dRotate && OpenIMP_Cap_I2dRotate;
+#else
+    return 1;
+#endif
 }
 
 int hal_rot_state(int si)
@@ -6407,7 +6415,7 @@ static int ing_start(const ms_config *cfg)
         }
 #endif
         int chn=v->imp_chn, grp=v->imp_chn;
-#ifdef ROT_HAS_FS_ROTATE
+#if defined(ROT_HAS_FS_ROTATE) || defined(ROT_HAS_HW_I2D)
         ms_vstream_cfg flv;   /* local UNROTATED fallback copy (cfg is const) */
         {
             int r = fs_create(chn,v);

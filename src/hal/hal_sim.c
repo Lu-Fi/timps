@@ -255,6 +255,7 @@ int hal_rot_check(int si, const ms_vstream_cfg *v)
 #endif
     return 0;
 }
+int hal_rot_hw_ok(void) { return 1; }
 int hal_rot_state(int si)
 {
     return (si >= 0 && si < MS_MAX_VSTREAM) ? g_rot_st[si] : 0;

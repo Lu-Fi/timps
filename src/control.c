@@ -1791,7 +1791,8 @@ static int get_json(char *buf, size_t cap)
      * ([0,90,180,270] on T40/T41, [0,90,270] where only 90/270 exist, [0]
      * where nothing does). */
 #ifdef USE_ROTATE
-    APP("\"rotation\":[0"
+    if (!hal_rot_hw_ok()) APP("\"rotation\":[0],");
+    else APP("\"rotation\":[0"
 #ifdef ROT_HAS_90
         ",90"
 #endif

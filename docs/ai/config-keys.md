@@ -594,7 +594,13 @@ hit this — T10, T20 and T23 coerce `codec` to `h264` at parse time.
   `prot()` coerces every non-zero rotation to `0`. `GET /control` then omits the
   `caps.rotation` key entirely.
 * With `USE_ROTATE`, 90/270 need a real transpose path:
-  * **T40/T41** — hardware I2D (`ROT_HAS_HW_I2D`).
+  * **T40/T41** — hardware I2D (`ROT_HAS_HW_I2D`), 90/180/270 per stream.
+    **Since v1.10.3** the framesource stays at the unrotated size and only the
+    encoder gets the swapped one (vendor and OpenIMP semantics); width and
+    height must be multiples of 8 (else `ERR_ROT_ALIGN`, stream unrotated).
+    With OpenIMP it needs a libimp that exports `OpenIMP_Cap_I2dRotate`
+    (OpenIMP next 30f88d5); without it `caps.rotation` is `[0]` and a
+    configured rotation is refused with `ERR_ROT_LIB`.
   * **T31** — libimp FrameSource rotate (`ROT_HAS_FS_ROTATE`). Envelope:
     width and height multiples of 64, at most 1280x704, at most 15 fps.
   * **T10 T20 T21, OpenIMP builds only** (`USE_OPENIMP`, i.e.
