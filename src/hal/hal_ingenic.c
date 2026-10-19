@@ -2880,6 +2880,67 @@ int hal_rot_hw_ok(void)
 #endif
 }
 
+/* include/openimp_testpattern.h, ABI 1: size-prefixed, fields only appended */
+typedef struct {
+    uint32_t size, step, logo;
+    int32_t  noise;
+    uint32_t obj_size;
+    int32_t  obj_contrast;
+    uint32_t obj_speed, obj_cell_x, obj_cell_y, obj_on_ms, obj_period_ms;
+    char     script[128];
+} ms_tp_params;
+typedef struct {
+    uint32_t size, abi;
+    int32_t  mode;
+    uint32_t reserved;
+    uint64_t frames, objects_shown;
+    uint32_t objects_active, pad;
+    ms_tp_params params;
+} ms_tp_state;
+extern int ms_tp_set(int mode, const ms_tp_params *p)
+    __asm__("OpenIMP_TestPattern_Set") __attribute__((weak));
+extern int ms_tp_get(ms_tp_state *s)
+    __asm__("OpenIMP_TestPattern_Get") __attribute__((weak));
+extern const int OpenIMP_Cap_TestPattern __attribute__((weak));
+
+int hal_tp_available(void)
+{
+    return ms_tp_set && ms_tp_get && &OpenIMP_Cap_TestPattern && OpenIMP_Cap_TestPattern;
+}
+
+int hal_tp_set(int mode, const hal_tp_params *p)
+{
+    if (!hal_tp_available()) return -1;
+    if (!p) return ms_tp_set(mode, NULL);
+    ms_tp_state cur;
+    memset(&cur, 0, sizeof cur);
+    cur.size = sizeof cur;
+    if (ms_tp_get(&cur) != 0) return -1;
+    ms_tp_params q = cur.params;
+    q.size = sizeof q;
+    if (p->obj_size >= 0)  q.obj_size = (uint32_t)p->obj_size;
+    if (p->obj_contrast)   q.obj_contrast = p->obj_contrast;
+    if (p->obj_speed >= 0) q.obj_speed = (uint32_t)p->obj_speed;
+    if (p->obj_cell_x >= 0) q.obj_cell_x = (uint32_t)p->obj_cell_x;
+    if (p->obj_cell_y >= 0) q.obj_cell_y = (uint32_t)p->obj_cell_y;
+    if (mode == 3 && !q.obj_size && !q.script[0]) q.obj_size = 64;
+    return ms_tp_set(mode, &q);
+}
+
+int hal_tp_get(hal_tp_state *o)
+{
+    if (!hal_tp_available()) return -1;
+    ms_tp_state s;
+    memset(&s, 0, sizeof s);
+    s.size = sizeof s;
+    if (ms_tp_get(&s) != 0) return -1;
+    o->mode = s.mode;
+    o->frames = s.frames;
+    o->objects_shown = s.objects_shown;
+    o->objects_active = s.objects_active;
+    return 0;
+}
+
 int hal_rot_state(int si)
 {
     return (si >= 0 && si < MS_MAX_VSTREAM) ? g_rot_st[si] : 0;

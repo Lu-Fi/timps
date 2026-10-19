@@ -774,6 +774,22 @@ Status codes and their `reason` discriminators:
 | 421 | — (plain-text body `host not allowed`) | **since v1.10.1**: any path, the `Host` header names neither an IP, the camera's hostname nor an `http.allowed_hosts` entry (DNS-rebinding guard) | Use the IP or hostname, or add the name to `http.allowed_hosts` |
 | 403 | — (plain-text body `bad origin`) | **since v1.9.28**: a Basic/Digest-authenticated POST from a page on another host (CSRF guard) | Use the token, or post from the camera's own host |
 
+#### Test pattern (since v1.10.3)
+
+`{"testpattern":{"mode":0|1|2|3, "obj_size":N, "obj_contrast":N, "obj_speed":N, "obj_cell_x":N, "obj_cell_y":N}}`
+switches the OpenIMP test pattern: 0 off, 1 static pattern (ramps,
+checkerboard, colour bars, logo), 2 moving square + frame counter, 3 motion
+test (objects in an 8x6 grid). A command, never persisted. Only where the
+libimp exports `OpenIMP_Cap_TestPattern` (`caps.testpattern.available`);
+elsewhere it is rejected. While a pattern runs, day/night is held in day mode
+(IR-cut in, illuminator off) and starts over with its boot check when it is
+switched off. `GET /control` reports `testpattern` = `{mode, frames,
+objects_shown, objects_active, eval:{motion, objects, hits, misses,
+false_alarms, lat_avg_ms, lat_max_ms}}`; in mode 3 every object appearance is
+matched against the motion detection (needs `motion.enabled`): a motion edge
+while an object is visible or up to 1.5 s after it is a hit, one without an
+object a false alarm, an object without one a miss.
+
 ### `GET /events` (SSE)
 
 ```sh

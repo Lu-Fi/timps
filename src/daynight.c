@@ -788,6 +788,9 @@ static volatile int g_probe_req = 0;
  * re-tests) and the camera checks like one without a switchable LED. */
 static volatile int g_ir_unusable = 0;
 
+static volatile int g_dn_hold;
+void daynight_hold(int on) { __atomic_store_n(&g_dn_hold, on != 0, __ATOMIC_RELAXED); }
+
 int daynight_request_probe(void)
 {
     if (!g_cfg.daynight.irprobe_cmd[0] || g_ir_unusable) return -1;
@@ -1365,6 +1368,16 @@ static void *dn_thread(void *arg)
         float luma = -1.0f;
         { uint32_t al; if (hal_isp_ae_luma(&al) == 0) luma = (float)al; }
 
+        if (__atomic_load_n(&g_dn_hold, __ATOMIC_RELAXED)) {
+            if (st == S_LOOK) dn_light_on(dn->irprobe_cmd, 2);
+            enabled_was = 0; st = S_BOOT; idle = 0; g_probe_req = 0; sd_arm(0);
+            if (cur != DN_DAY) {
+                dn_switch(DN_DAY, "test pattern", dn->switch_cmd, -1, -1, -1);
+                cur = DN_DAY;
+            }
+            dn_status_update(sm.bright, sm.gain, sm.d, luma, cur, -1, -1, -1);
+            goto wait;
+        }
         if (!dn->enabled || dn->mode == DN_MODE_SCHEDULE) {
             if (st == S_LOOK) dn_light_on(dn->irprobe_cmd, 2);
             enabled_was = 0; st = S_BOOT; idle = 0; g_probe_req = 0; sd_arm(0);
@@ -1863,6 +1876,7 @@ int daynight_sun_status(char *sr_hhmm, char *ss_hhmm, size_t cap)
 
 /* no detection thread to arm a probe on */
 int daynight_request_probe(void) { return -1; }
+void daynight_hold(int on) { (void)on; }
 
 const char *daynight_color_state(float *dev)
 {

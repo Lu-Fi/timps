@@ -181,9 +181,9 @@ BASE := src/util.c src/log.c src/config.c src/frame.c src/fanqueue.c src/net.c \
         $(if $(filter 1,$(USE_TRACE)),src/trace.c)
 
 TARGET_SRC := $(BASE) src/hal/osd_text.c src/hal/msttf.c src/hal/osd_vars.c src/hal/hal_ingenic.c src/hal/libimp_check.c \
-              src/hal/imp_osd.c src/hal/imp_motion.c src/control.c src/events.c src/daynight.c \
+              src/hal/imp_osd.c src/hal/imp_motion.c src/control.c src/events.c src/daynight.c src/testpattern.c \
               $(if $(filter 1,$(USE_SW_ROTATE)),src/hal/nv12_rot.c)
-SIM_SRC    := $(BASE) src/hal/osd_text.c src/hal/hal_sim.c src/hal/libimp_check.c src/hal/imp_motion.c src/control.c src/events.c src/daynight.c
+SIM_SRC    := $(BASE) src/hal/osd_text.c src/hal/hal_sim.c src/hal/libimp_check.c src/hal/imp_motion.c src/control.c src/events.c src/daynight.c src/testpattern.c
 
 # full target source list (+ optional tls.c) and the .o names (unique basenames)
 # for the compile-then-link two-step

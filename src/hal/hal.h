@@ -132,6 +132,19 @@ void hal_fcrop_limits(hal_fcrop_lim *o);
 int hal_rot_state(int si);
 /* 0: the libimp cannot rotate (T40/T41 OpenIMP without I2D) */
 int hal_rot_hw_ok(void);
+
+/* OpenIMP test pattern (OpenIMP_TestPattern_Set/Get); -1 fields = default */
+typedef struct {
+    int obj_size, obj_contrast, obj_speed, obj_cell_x, obj_cell_y;
+} hal_tp_params;
+typedef struct {
+    int mode;
+    uint64_t frames, objects_shown;
+    unsigned objects_active;
+} hal_tp_state;
+int hal_tp_available(void);
+int hal_tp_set(int mode, const hal_tp_params *p);   /* p NULL: keep parameters */
+int hal_tp_get(hal_tp_state *o);
 int hal_rot_check(int si, const ms_vstream_cfg *v);
 /* How the running stream si is rotated: "off", "sw" (T23 software path:
  * text OSD only), "hw" (OSD/privacy over the whole frame) or "band" (vendor

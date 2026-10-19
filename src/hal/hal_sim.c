@@ -256,6 +256,25 @@ int hal_rot_check(int si, const ms_vstream_cfg *v)
     return 0;
 }
 int hal_rot_hw_ok(void) { return 1; }
+static int g_sim_tp_mode;
+static int64_t g_sim_tp_at;
+int hal_tp_available(void) { return 1; }
+int hal_tp_set(int mode, const hal_tp_params *p)
+{
+    (void)p;
+    if (mode < 0 || mode > 3) return -1;
+    g_sim_tp_mode = mode; g_sim_tp_at = ms_now_us();
+    return 0;
+}
+int hal_tp_get(hal_tp_state *o)
+{
+    int64_t ms = (ms_now_us() - g_sim_tp_at) / 1000;
+    o->mode = g_sim_tp_mode;
+    o->frames = g_sim_tp_mode ? (uint64_t)(ms / 40) : 0;
+    o->objects_shown = g_sim_tp_mode == 3 ? (uint64_t)(ms / 6000 + 1) : 0;
+    o->objects_active = g_sim_tp_mode == 3 && ms % 6000 < 3000;
+    return 0;
+}
 int hal_rot_state(int si)
 {
     return (si >= 0 && si < MS_MAX_VSTREAM) ? g_rot_st[si] : 0;

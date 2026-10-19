@@ -26,6 +26,7 @@
 #include "hal/hal.h"       /* hal_enc_stats: read-only encoder telemetry */
 #include "isp_caps.h"      /* ISP_WEAK_KEYS */
 #include "roi_caps.h"      /* caps.roi / caps.fcrop tiers */
+#include "testpattern.h"
 #include "err_codes.h"
 #include "hal/roi_geom.h"  /* ROI_* / FCROP_MIN limits */
 #include "util.h"          /* RTSP_MAX_CLIENTS/HTTP_MAX_CLIENTS/EVENTS_MAX_CLIENTS_DEF */
@@ -1037,6 +1038,24 @@ int control_apply_json(const char *json, ctrl_result *res)
     }
 #endif
 
+    /* {"testpattern":{"mode":0..3,"obj_size":..,...}}: a command, never persisted */
+    sb = find_obj(jb, je, "testpattern", &se);
+    if (sb){
+        if (get_val(sb, se, "mode", v, sizeof v)){
+            tp_params tp = { -1, 0, -1, -1, -1 };
+            char w[32];
+            if (get_val(sb, se, "obj_size", w, sizeof w))     tp.obj_size = atoi(w);
+            if (get_val(sb, se, "obj_contrast", w, sizeof w)) tp.obj_contrast = atoi(w);
+            if (get_val(sb, se, "obj_speed", w, sizeof w))    tp.obj_speed = atoi(w);
+            if (get_val(sb, se, "obj_cell_x", w, sizeof w))   tp.obj_cell_x = atoi(w);
+            if (get_val(sb, se, "obj_cell_y", w, sizeof w))   tp.obj_cell_y = atoi(w);
+            if (tp_set(atoi(v), &tp) == 0) sc.acc++;
+            else sc.rej++;
+        }
+        ign_scan(&sc, "testpattern", sb, se, NULL, 0,
+                 "mode obj_size obj_contrast obj_speed obj_cell_x obj_cell_y");
+    }
+
     {   /* general: only F_CTRL fields are reachable, which today means
          * debug_modules alone - loglevel stays file-only. Live matters here:
          * turning debugging on by restarting destroys the state one is trying
@@ -1904,6 +1923,7 @@ static int get_json(char *buf, size_t cap)
 #else
     APP("\"daynight\":{\"available\":0,\"ir_idle\":0},");
 #endif
+    APP("\"testpattern\":{\"available\":%d},", tp_available());
 #ifdef USE_TIMELAPSE
     APP("\"timelapse\":{\"available\":1}},");
 #else
@@ -2139,6 +2159,16 @@ static int get_json(char *buf, size_t cap)
                                         dn_en, dn_mode, dn_b, dn_tg, dn_ex,
                                         dn_lu, dn_rf, dn_pb, dn_ds);
         if (_dn>0) o += (size_t)_dn;
+    }
+    {
+        tp_status tp;
+        tp_get_status(&tp);
+        APP(",\"testpattern\":{\"mode\":%d,\"frames\":%llu,\"objects_shown\":%llu,"
+            "\"objects_active\":%u,\"eval\":{\"motion\":%d,\"objects\":%u,\"hits\":%u,"
+            "\"misses\":%u,\"false_alarms\":%u,\"lat_avg_ms\":%u,\"lat_max_ms\":%u}}",
+            tp.mode, (unsigned long long)tp.frames, (unsigned long long)tp.objects_shown,
+            tp.objects_active, tp.motion, tp.objects, tp.hits, tp.misses, tp.false_alarms,
+            tp.lat_avg_ms, tp.lat_max_ms);
     }
     {   /* read-only motion status; shape/docs in control_motion_json above
          * (shared with the /events push) */

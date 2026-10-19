@@ -49,6 +49,10 @@ void daynight_check_alive(void);
  * below: control.c's probe command must not need its own USE_DAYNIGHT guard. */
 int  daynight_request_probe(void);
 
+/* Test pattern: 1 = hold day (IR-cut in, illuminator off, engine paused),
+ * 0 = release, the engine starts over with its boot check. */
+void daynight_hold(int on);
+
 /* Latest day/night measurement for GET /control (always linkable: without
  * USE_DAYNIGHT a stub answers "unknown"). Values:
  *   enabled     0/1  auto detection on (always 0 without USE_DAYNIGHT)

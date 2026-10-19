@@ -76,6 +76,16 @@ expect "restart-required key: pending" 0  "$(post '{"sensor":{"fps":20}}')"
 expect "restart-required key: in the file" 20 "$(inconf sensor.fps)"
 expect "...and took the pending set along" 15 "$(inconf image.brightness)"
 expect "before shutdown: pending"      1  "$(post '{"image":{"brightness":16}}')"
+tpf() { curl -s --max-time 5 "$L" | python3 -c "import json,sys; d=json.load(sys.stdin); print($1)"; }
+acc() { curl -s --max-time 5 -X POST "$L" -d "$1" | sed -n 's/.*"accepted":\([0-9]*\).*/\1/p'; }
+expect "testpattern caps"               1  "$(tpf "d['caps']['testpattern']['available']")"
+expect "testpattern mode 3 accepted"    1  "$(acc '{"testpattern":{"mode":3,"obj_size":48}}')"
+expect "testpattern mode 3 running"     3  "$(tpf "d['testpattern']['mode']")"
+sleep 1
+expect "testpattern object counted"     1  "$(tpf "int(d['testpattern']['eval']['objects']>=1)")"
+expect "testpattern mode 9 refused"     0  "$(acc '{"testpattern":{"mode":9}}')"
+expect "testpattern off accepted"       1  "$(acc '{"testpattern":{"mode":0}}')"
+expect "testpattern off"                0  "$(tpf "d['testpattern']['mode']")"
 kill $simpid; wait $simpid 2>/dev/null
 expect "shutdown flush"                16 "$(inconf image.brightness)"
 

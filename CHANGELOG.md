@@ -27,6 +27,10 @@ _1.10.3 (draft)_
 - T40: RTSP and fMP4 clients wait up to 5 s (was 2 s) for the first
   parameter sets; the open T40 driver needs about 3.3 s from start to the
   first frame.
+- Test pattern (OpenIMP `OpenIMP_Cap_TestPattern`): `{"testpattern":{"mode":0..3}}`
+  in `/control`, buttons on the WebUI preview page. Day/night is held in day
+  mode while it runs; mode 3 scores the motion detection (hits, misses,
+  false alarms, detection delay).
 - `caps.fcrop.restart`: per stream, 1 = it takes the current window only at
   the next timps start. `caps.fcrop.api`: `frontcrop` or `autozoom`.
 
