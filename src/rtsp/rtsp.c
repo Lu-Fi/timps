@@ -1008,7 +1008,7 @@ static int handle_request(session *s, char *req)
         if (!vready) {
             fanqueue wq; int winit = fanqueue_init(&wq, 4) == 0;
             int wsub = winit && hub_subscribe(vchn, &wq) == 0;
-            for (int i=0;i<200 && !vready && !g_rtsp_stopping;i++){
+            for (int i=0;i<HUB_VPARAM_WAIT_MS/10 && !vready && !g_rtsp_stopping;i++){
                 vparam vp;
                 if (hub_get_vparam(vchn,&vp) && vparam_ready(&vp)) { vready=1; break; }
                 usleep(10000);

@@ -270,6 +270,13 @@ ms_pkt     *hub_grab_jpeg(int src, int wait_ms, int *busy,
  * consumer and the AE is still settling, so hub_grab_jpeg() discards JPEGs
  * until this ms_now_us() instant (its deadline grows by the hold, at most
  * HUB_IMAGE_HOLD_MAX_MS). Streams are never held. 0 = no hold. */
+/* how long a new client waits for SPS/PPS: the open T40 driver needs ~3.3 s
+ * from start to the first frame (OpenIMP maintainer, 2026-10-19) */
+#if defined(PLATFORM_T40)
+#define HUB_VPARAM_WAIT_MS 5000
+#else
+#define HUB_VPARAM_WAIT_MS 2000
+#endif
 #ifndef HUB_IMAGE_HOLD_MAX_MS
 #define HUB_IMAGE_HOLD_MAX_MS 5000
 #endif

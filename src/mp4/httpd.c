@@ -513,10 +513,10 @@ static void stream_mp4(hconn *c, int chn)
     mux.height = eh;
     mux.fps    = g_cfg_boot.video[chn].fps;
     int ok=0;
-    /* the fanqueue_closed() test is what makes this 2 s wait interruptible:
+    /* the fanqueue_closed() test is what makes this wait interruptible:
      * without it a client that connected just as the daemon started shutting
      * down would sit here sleeping past the whole teardown (M-1). */
-    for (int i=0;i<200 && !fanqueue_closed(&q);i++){
+    for (int i=0;i<HUB_VPARAM_WAIT_MS/10 && !fanqueue_closed(&q);i++){
         vparam vp;
         if (hub_get_vparam(chn,&vp) && vparam_ready(&vp)){ mux.vp=vp; mux.vp_ready=1; ok=1; break; }
         usleep(10000);

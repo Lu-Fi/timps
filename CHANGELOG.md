@@ -24,6 +24,9 @@ _1.10.3 (draft)_
   unrotated, only the encoder gets the swapped size; 180 is a real I2D
   rotate. With OpenIMP it needs `OpenIMP_Cap_I2dRotate`, otherwise rotation
   is refused (`caps.rotation` = `[0]`). Width/height must be multiples of 8.
+- T40: RTSP and fMP4 clients wait up to 5 s (was 2 s) for the first
+  parameter sets; the open T40 driver needs about 3.3 s from start to the
+  first frame.
 - `caps.fcrop.restart`: per stream, 1 = it takes the current window only at
   the next timps start. `caps.fcrop.api`: `frontcrop` or `autozoom`.
 
