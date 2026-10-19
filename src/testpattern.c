@@ -7,10 +7,22 @@
 #include <pthread.h>
 #include <string.h>
 #include <unistd.h>
+#include <stdio.h>
 
 #define MOD "TESTPAT"
 #define TP_TICK_MS  100
 #define TP_GRACE_MS 1500   /* motion reported this long after an object ends still counts */
+#define TP_SCRIPT   "/tmp/timps-tp-events"
+
+/* default motion test: one moving 32 px object every 6 s, each in another
+ * cell of the 8 x 6 grid (motion v2 learns a spot that repeats), away from
+ * the frame counter (top left) and the centred logo */
+static const unsigned char k_cells[][2] = {
+    {1,1},{6,1},{1,4},{6,4},{2,1},{5,1},{2,4},{5,4},
+    {1,2},{6,2},{1,3},{6,3},{0,5},{7,5},{7,1},{0,3},
+};
+#define TP_NOBJ ((int)(sizeof k_cells / sizeof k_cells[0]))
+static int g_scripted;
 
 static pthread_mutex_t g_tp_mtx = PTHREAD_MUTEX_INITIALIZER;
 static tp_status g_ev;
@@ -42,12 +54,22 @@ static void obj_cells(const ms_motion_status *ms, int cx, int cy, unsigned char 
  * that stay active (frame counter, OSD clock) never make an edge, so they
  * neither hit nor raise false alarms. A rising cell elsewhere while no
  * object is up is a false alarm. Scripted objects fall back to any cell. */
+static int tp_write_script(void)
+{
+    FILE *f = fopen(TP_SCRIPT, "w");
+    if (!f) return -1;
+    for (int i = 0; i < TP_NOBJ; i++)
+        fprintf(f, "t=%d cell=%d,%d size=32 contrast=40 dur=3 speed=40\n",
+                6 + 6 * i, k_cells[i][0], k_cells[i][1]);
+    return fclose(f) == 0 ? 0 : -1;
+}
+
 static void *tp_eval_thread(void *a)
 {
     (void)a;
     unsigned char prev[MOTION_STATUS_MAX], om[MOTION_STATUS_MAX];
     memset(prev, 0, sizeof prev);
-    int prev_obj = 0, open = 0, hit = 0;
+    int prev_obj = 0, open = 0, hit = 0, k = -1, cx = 0, cy = 0;
     int64_t t_obj = 0, t_end = -1000000;
     while (g_run) {
         hal_tp_state st;
@@ -57,7 +79,12 @@ static void *tp_eval_thread(void *a)
         int64_t t = now_ms();
         int obj = ok && st.objects_active > 0;
         int n = ms.cells < MOTION_STATUS_MAX ? ms.cells : MOTION_STATUS_MAX;
-        if (ok && !st.scripted) obj_cells(&ms, st.obj_cell_x, st.obj_cell_y, om);
+        if (obj && !prev_obj) {
+            k++;
+            if (g_scripted && k < TP_NOBJ) { cx = k_cells[k][0]; cy = k_cells[k][1]; }
+            else { cx = st.obj_cell_x; cy = st.obj_cell_y; }
+        }
+        if (ok && (g_scripted ? k < TP_NOBJ : !st.scripted)) obj_cells(&ms, cx, cy, om);
         else memset(om, 1, sizeof om);
         int rise_in = 0, rise_out = 0;
         if (ms.enabled)
@@ -109,11 +136,14 @@ int tp_available(void) { return hal_tp_available(); }
 int tp_set(int mode, const tp_params *p)
 {
     if (mode < TP_OFF || mode > TP_MOTION || !hal_tp_available()) return -1;
-    hal_tp_params hp = { -1, 0, -1, -1, -1 };
+    hal_tp_params hp = { -1, 0, -1, -1, -1, NULL };
     if (p) {
         hp.obj_size = p->obj_size; hp.obj_contrast = p->obj_contrast;
         hp.obj_speed = p->obj_speed; hp.obj_cell_x = p->obj_cell_x; hp.obj_cell_y = p->obj_cell_y;
     }
+    int scripted = mode == TP_MOTION && hp.obj_size <= 0 && hp.obj_cell_x < 0 && hp.obj_cell_y < 0 &&
+                   tp_write_script() == 0;
+    if (scripted) hp.script = TP_SCRIPT;
     eval_stop();
     if (mode != TP_OFF) daynight_hold(1);
     if (hal_tp_set(mode, &hp) != 0) {
@@ -126,6 +156,7 @@ int tp_set(int mode, const tp_params *p)
     memset(&g_ev, 0, sizeof g_ev);
     g_lat_sum = 0;
     g_mode = mode;
+    g_scripted = scripted;
     pthread_mutex_unlock(&g_tp_mtx);
     if (mode == TP_MOTION) {
         g_run = 1;

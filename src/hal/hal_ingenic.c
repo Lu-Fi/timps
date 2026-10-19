@@ -2923,7 +2923,16 @@ int hal_tp_set(int mode, const hal_tp_params *p)
     if (p->obj_speed >= 0) q.obj_speed = (uint32_t)p->obj_speed;
     if (p->obj_cell_x >= 0) q.obj_cell_x = (uint32_t)p->obj_cell_x;
     if (p->obj_cell_y >= 0) q.obj_cell_y = (uint32_t)p->obj_cell_y;
-    if (mode == 3 && !q.obj_size && !q.script[0]) q.obj_size = 64;
+    if (p->script) {
+        snprintf(q.script, sizeof q.script, "%s", p->script);
+        q.obj_size = 0;
+    } else q.script[0] = 0;
+    /* motion v2 ignores objects that only appear (lamp guard): move them,
+     * 24-40 px is what it detects reliably at sense 2 (OpenIMP 2026-10-19) */
+    if (mode == 3 && !q.script[0]) {
+        if (!q.obj_size) q.obj_size = 32;
+        if (p->obj_speed < 0 && !q.obj_speed) q.obj_speed = 60;
+    }
     return ms_tp_set(mode, &q);
 }
 

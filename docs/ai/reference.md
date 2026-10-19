@@ -786,9 +786,15 @@ elsewhere it is rejected. While a pattern runs, day/night is held in day mode
 switched off. `GET /control` reports `testpattern` = `{mode, frames,
 objects_shown, objects_active, eval:{motion, objects, hits, misses,
 false_alarms, lat_avg_ms, lat_max_ms}}`; in mode 3 every object appearance is
-matched against the motion detection (needs `motion.enabled`): a motion edge
-while an object is visible or up to 1.5 s after it is a hit, one without an
-object a false alarm, an object without one a miss.
+matched against the motion detection (needs `motion.enabled`): a motion cell
+over the object's grid cell turning active while it is shown or up to 1.5 s
+after is a hit, a rising cell while no object is up a false alarm, an object
+without one a miss; cells that stay active (frame counter, OSD clock) count
+for nothing. Without object parameters mode 3 runs timps' own script: 16
+moving 32 px objects, one every 6 s, each in another cell (OpenIMP motion v2
+ignores objects that only appear, and learns a spot that repeats); the score
+is complete after about 100 s. Measured on a T23 with OpenIMP: 15/16
+detected, 0 false alarms, about 1.1 s delay.
 
 ### `GET /events` (SSE)
 

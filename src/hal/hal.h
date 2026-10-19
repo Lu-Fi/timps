@@ -136,6 +136,7 @@ int hal_rot_hw_ok(void);
 /* OpenIMP test pattern (OpenIMP_TestPattern_Set/Get); -1 fields = default */
 typedef struct {
     int obj_size, obj_contrast, obj_speed, obj_cell_x, obj_cell_y;
+    const char *script;   /* mode 3 object script, NULL = built-in object */
 } hal_tp_params;
 typedef struct {
     int mode;
