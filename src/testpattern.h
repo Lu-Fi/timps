@@ -3,20 +3,26 @@
 #include <stdint.h>
 
 /* OpenIMP test pattern (OpenIMP_Cap_TestPattern): 0 off, 1 static pattern,
- * 2 moving square + frame counter, 3 motion test with scripted objects.
+ * 2 moving square + frame counter, 3 motion test with scripted objects,
+ * 4 the sensor's own pattern through the whole ISP (AE/AWB hold options).
  * While a pattern runs, day/night is held in day mode. In mode 3 every
  * object appearance is matched against the motion detection. */
-enum { TP_OFF = 0, TP_PATTERN = 1, TP_MOVING = 2, TP_MOTION = 3 };
+enum { TP_OFF = 0, TP_PATTERN = 1, TP_MOVING = 2, TP_MOTION = 3, TP_SENSOR = 4 };
 
 typedef struct {
     int obj_size;        /* mode 3: px of a 640 px wide frame, 0 = default */
     int obj_contrast;    /* -200..200, 0 = default */
     int obj_speed;       /* px/s, -1 = default */
     int obj_cell_x, obj_cell_y;  /* -1 = default */
+    int ae_hold, awb_hold;       /* mode 4, -1 = default */
 } tp_params;
 
 typedef struct {
     int      available;
+    int      sensor;             /* mode 4 possible */
+    char     sensor_name[32];
+    const char *sensor_desc;
+    int      ae_hold, awb_hold;
     int      mode;
     uint64_t frames;
     uint64_t objects_shown;

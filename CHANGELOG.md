@@ -31,6 +31,8 @@ _1.10.3 (draft)_
   in `/control`, buttons on the WebUI preview page. Day/night is held in day
   mode while it runs; mode 3 scores the motion detection (hits, misses,
   false alarms, detection delay).
+  Mode 4 shows the sensor's own test pattern through the whole ISP, with
+  AE/AWB hold switches (`caps.testpattern.sensor`).
 - `caps.fcrop.restart`: per stream, 1 = it takes the current window only at
   the next timps start. `caps.fcrop.api`: `frontcrop` or `autozoom`.
 

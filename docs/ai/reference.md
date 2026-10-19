@@ -776,10 +776,14 @@ Status codes and their `reason` discriminators:
 
 #### Test pattern (since v1.10.3)
 
-`{"testpattern":{"mode":0|1|2|3, "obj_size":N, "obj_contrast":N, "obj_speed":N, "obj_cell_x":N, "obj_cell_y":N}}`
+`{"testpattern":{"mode":0..4, "obj_size":N, "obj_contrast":N, "obj_speed":N, "obj_cell_x":N, "obj_cell_y":N, "ae_hold":0|1, "awb_hold":0|1}}`
 switches the OpenIMP test pattern: 0 off, 1 static pattern (ramps,
 checkerboard, colour bars, logo), 2 moving square + frame counter, 3 motion
-test (objects in an 8x6 grid). A command, never persisted. Only where the
+test (objects in an 8x6 grid), 4 the sensor's own test pattern through the
+whole ISP (OpenIMP next 736b0f7+; `ae_hold` 1 = AE frozen while it runs,
+default; `awb_hold` 1 = fixed WB gains; both restored on leaving).
+`caps.testpattern.sensor` = 1 (with `sensor_name`, `sensor_desc`) when the
+running sensor has a table entry; otherwise mode 4 is rejected. A command, never persisted. Only where the
 libimp exports `OpenIMP_Cap_TestPattern` (`caps.testpattern.available`);
 elsewhere it is rejected. While a pattern runs, day/night is held in day mode
 (IR-cut in, illuminator off) and starts over with its boot check when it is

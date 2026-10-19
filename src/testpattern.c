@@ -136,11 +136,12 @@ int tp_available(void) { return hal_tp_available(); }
 
 int tp_set(int mode, const tp_params *p)
 {
-    if (mode < TP_OFF || mode > TP_MOTION || !hal_tp_available()) return -1;
-    hal_tp_params hp = { -1, 0, -1, -1, -1, NULL };
+    if (mode < TP_OFF || mode > TP_SENSOR || !hal_tp_available()) return -1;
+    hal_tp_params hp = { -1, 0, -1, -1, -1, NULL, -1, -1 };
     if (p) {
         hp.obj_size = p->obj_size; hp.obj_contrast = p->obj_contrast;
         hp.obj_speed = p->obj_speed; hp.obj_cell_x = p->obj_cell_x; hp.obj_cell_y = p->obj_cell_y;
+        hp.ae_hold = p->ae_hold; hp.awb_hold = p->awb_hold;
     }
     int scripted = mode == TP_MOTION && hp.obj_size <= 0 && hp.obj_cell_x < 0 && hp.obj_cell_y < 0 &&
                    tp_write_script() == 0;
@@ -175,9 +176,13 @@ void tp_get_status(tp_status *o)
     o->mode = g_mode;
     pthread_mutex_unlock(&g_tp_mtx);
     o->available = hal_tp_available();
+    o->sensor = o->available &&
+                hal_tp_sensor(o->sensor_name, sizeof o->sensor_name, &o->sensor_desc) == 0;
     hal_tp_state st;
     if (o->available && hal_tp_get(&st) == 0) {
         o->mode = st.mode;
+        o->ae_hold = st.ae_hold;
+        o->awb_hold = st.awb_hold;
         o->frames = st.frames;
         o->objects_shown = st.objects_shown;
         o->objects_active = st.objects_active;

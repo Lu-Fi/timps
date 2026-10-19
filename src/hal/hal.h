@@ -137,6 +137,7 @@ int hal_rot_hw_ok(void);
 typedef struct {
     int obj_size, obj_contrast, obj_speed, obj_cell_x, obj_cell_y;
     const char *script;   /* mode 3 object script, NULL = built-in object */
+    int ae_hold, awb_hold;   /* mode 4, -1 = default */
 } hal_tp_params;
 typedef struct {
     int mode;
@@ -144,10 +145,13 @@ typedef struct {
     unsigned objects_active;
     int obj_cell_x, obj_cell_y;   /* built-in object cell in the 8 x 6 grid */
     int scripted;                 /* objects come from a script file */
+    int ae_hold, awb_hold;
 } hal_tp_state;
 int hal_tp_available(void);
 int hal_tp_set(int mode, const hal_tp_params *p);   /* p NULL: keep parameters */
 int hal_tp_get(hal_tp_state *o);
+/* mode 4: the running sensor has a built-in pattern; name/desc may be NULL */
+int hal_tp_sensor(char *name, size_t cap, const char **desc);
 int hal_rot_check(int si, const ms_vstream_cfg *v);
 /* How the running stream si is rotated: "off", "sw" (T23 software path:
  * text OSD only), "hw" (OSD/privacy over the whole frame) or "band" (vendor

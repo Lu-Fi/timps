@@ -2888,6 +2888,7 @@ typedef struct {
     int32_t  obj_contrast;
     uint32_t obj_speed, obj_cell_x, obj_cell_y, obj_on_ms, obj_period_ms;
     char     script[128];
+    uint32_t ae_hold, awb_hold;   /* mode 4 */
 } ms_tp_params;
 typedef struct {
     uint32_t size, abi;
@@ -2902,6 +2903,8 @@ extern int ms_tp_set(int mode, const ms_tp_params *p)
 extern int ms_tp_get(ms_tp_state *s)
     __asm__("OpenIMP_TestPattern_Get") __attribute__((weak));
 extern const int OpenIMP_Cap_TestPattern __attribute__((weak));
+extern int ms_tp_sensor(char name[32], uint32_t *reg, uint32_t *mask, const char **desc)
+    __asm__("OpenIMP_TestPattern_SensorInfo") __attribute__((weak));
 
 int hal_tp_available(void)
 {
@@ -2923,6 +2926,8 @@ int hal_tp_set(int mode, const hal_tp_params *p)
     if (p->obj_speed >= 0) q.obj_speed = (uint32_t)p->obj_speed;
     if (p->obj_cell_x >= 0) q.obj_cell_x = (uint32_t)p->obj_cell_x;
     if (p->obj_cell_y >= 0) q.obj_cell_y = (uint32_t)p->obj_cell_y;
+    if (p->ae_hold >= 0)  q.ae_hold = (uint32_t)p->ae_hold;
+    if (p->awb_hold >= 0) q.awb_hold = (uint32_t)p->awb_hold;
     if (p->script) {
         snprintf(q.script, sizeof q.script, "%s", p->script);
         q.obj_size = 0;
@@ -2950,6 +2955,18 @@ int hal_tp_get(hal_tp_state *o)
     o->obj_cell_x = (int)s.params.obj_cell_x;
     o->obj_cell_y = (int)s.params.obj_cell_y;
     o->scripted = s.params.script[0] != 0 || !s.params.obj_size;
+    o->ae_hold = (int)s.params.ae_hold;
+    o->awb_hold = (int)s.params.awb_hold;
+    return 0;
+}
+
+int hal_tp_sensor(char *name, size_t cap, const char **desc)
+{
+    char n[32] = "";
+    const char *d = NULL;
+    if (!hal_tp_available() || !ms_tp_sensor || ms_tp_sensor(n, NULL, NULL, &d) != 0) return -1;
+    if (name && cap) snprintf(name, cap, "%s", n);
+    if (desc) *desc = d;
     return 0;
 }
 

@@ -1042,18 +1042,20 @@ int control_apply_json(const char *json, ctrl_result *res)
     sb = find_obj(jb, je, "testpattern", &se);
     if (sb){
         if (get_val(sb, se, "mode", v, sizeof v)){
-            tp_params tp = { -1, 0, -1, -1, -1 };
+            tp_params tp = { -1, 0, -1, -1, -1, -1, -1 };
             char w[32];
             if (get_val(sb, se, "obj_size", w, sizeof w))     tp.obj_size = atoi(w);
             if (get_val(sb, se, "obj_contrast", w, sizeof w)) tp.obj_contrast = atoi(w);
             if (get_val(sb, se, "obj_speed", w, sizeof w))    tp.obj_speed = atoi(w);
             if (get_val(sb, se, "obj_cell_x", w, sizeof w))   tp.obj_cell_x = atoi(w);
             if (get_val(sb, se, "obj_cell_y", w, sizeof w))   tp.obj_cell_y = atoi(w);
+            if (get_val(sb, se, "ae_hold", w, sizeof w))      tp.ae_hold = atoi(w) != 0;
+            if (get_val(sb, se, "awb_hold", w, sizeof w))     tp.awb_hold = atoi(w) != 0;
             if (tp_set(atoi(v), &tp) == 0) sc.acc++;
             else sc.rej++;
         }
         ign_scan(&sc, "testpattern", sb, se, NULL, 0,
-                 "mode obj_size obj_contrast obj_speed obj_cell_x obj_cell_y");
+                 "mode obj_size obj_contrast obj_speed obj_cell_x obj_cell_y ae_hold awb_hold");
     }
 
     {   /* general: only F_CTRL fields are reachable, which today means
@@ -1923,7 +1925,15 @@ static int get_json(char *buf, size_t cap)
 #else
     APP("\"daynight\":{\"available\":0,\"ir_idle\":0},");
 #endif
-    APP("\"testpattern\":{\"available\":%d},", tp_available());
+    {
+        tp_status ts;
+        tp_get_status(&ts);
+        char sn[sizeof ts.sensor_name * 3], sd[96];
+        jesc(ts.sensor_name, sn, sizeof sn);
+        jesc(ts.sensor_desc ? ts.sensor_desc : "", sd, sizeof sd);
+        APP("\"testpattern\":{\"available\":%d,\"sensor\":%d,\"sensor_name\":\"%s\","
+            "\"sensor_desc\":\"%s\"},", ts.available, ts.sensor, sn, sd);
+    }
 #ifdef USE_TIMELAPSE
     APP("\"timelapse\":{\"available\":1}},");
 #else
@@ -2163,10 +2173,11 @@ static int get_json(char *buf, size_t cap)
     {
         tp_status tp;
         tp_get_status(&tp);
-        APP(",\"testpattern\":{\"mode\":%d,\"frames\":%llu,\"objects_shown\":%llu,"
+        APP(",\"testpattern\":{\"mode\":%d,\"ae_hold\":%d,\"awb_hold\":%d,"
+            "\"frames\":%llu,\"objects_shown\":%llu,"
             "\"objects_active\":%u,\"eval\":{\"motion\":%d,\"objects\":%u,\"hits\":%u,"
             "\"misses\":%u,\"false_alarms\":%u,\"lat_avg_ms\":%u,\"lat_max_ms\":%u}}",
-            tp.mode, (unsigned long long)tp.frames, (unsigned long long)tp.objects_shown,
+            tp.mode, tp.ae_hold, tp.awb_hold, (unsigned long long)tp.frames, (unsigned long long)tp.objects_shown,
             tp.objects_active, tp.motion, tp.objects, tp.hits, tp.misses, tp.false_alarms,
             tp.lat_avg_ms, tp.lat_max_ms);
     }
