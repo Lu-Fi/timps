@@ -1660,10 +1660,11 @@ Implications the upstream `Makefile` applies no matter what the package passes:
   a still-exiting instance; see `docs/ai/troubleshooting.md` §11.6.)
 * `ensure_tls_certs()` runs before `start`, in this order:
   1. Proceed only if `http.https` is `1`/`2`/`true`/`yes`/`on`, **or**
-     `rtsp.tls` is exactly `1`, **or** `webrtc.enabled` is `1` or `2`. (Note the
-     asymmetry: `http.https` accepts word forms, `rtsp.tls` is an exact `"1"`
-     string compare.)
-  2. If either `http.tls_cert` or `http.tls_key` is empty, do nothing.
+     `rtsp.tls` is exactly `1`, **or** `webrtc.enabled` is `1`, `2` or unset (timps
+     defaults it to `2`). (Note the asymmetry: `http.https` accepts word forms,
+     `rtsp.tls` is an exact `"1"` string compare.)
+  2. An unset `http.tls_cert` / `http.tls_key` means the timps defaults
+     `/etc/ssl/certs/timps.crt` / `/etc/ssl/private/timps.key`.
   3. If both files already exist and are non-empty, do nothing — an
      operator-supplied cert is never second-guessed.
   4. Otherwise, if both configured paths differ from the uhttpd pair and
