@@ -14,7 +14,7 @@ stub functions report `enabled=0` and fall back to whatever
 > when the lit level falls `jump_pct` (20 %) below the last look; a **check**
 > (day pipeline, one click) when the look reads below the bar; failed checks
 > lock out for 1, 2, 4 … min; a check anyway after `heartbeat_max_s` (12 h).
-> **Since v1.10.2** a look also starts when the colour of the lit picture
+> **Since v1.11.0** a look also starts when the colour of the lit picture
 > (AWB statistics) moves `color_pct` (3 %) from the last look for 20 s — a
 > weak lamp that barely brightens the IR picture (at most every 5 min,
 > doubling to 45 min; status `color_trigger`, `color_dev_pct`); a look taken
@@ -121,7 +121,7 @@ signal across the whole range.
 Both fields come from the `daynight.isp_path` scrape, so that scrape now runs
 on every decision tick — which is what the 2 s default `interval_ms` pays for
 (the gain half still prefers `IMP_ISP_Tuning_GetTotalGain` where available).
-**Since v1.10.2** vendor T21 skips the scrape (the vendor tx-isp-t21 driver
+**Since v1.11.0** vendor T21 skips the scrape (the vendor tx-isp-t21 driver
 corrupts the kernel heap on that proc read; an oops killed the day/night
 thread) and takes the integration-time ratio from `IMP_ISP_Tuning_GetExpr`.
 
@@ -916,7 +916,7 @@ back on at once and the key is persisted.
 | `POST /control {"daynight":{"mode":"schedule",...}}` | Switches decision source; validated against `auto`/`schedule` (and the legacy `sensor`/`time`/`sun` spellings) before being applied. |
 | `POST /control {"image":{"running_mode":1}}` | Manually forces the ISP mode (what the board switch script itself calls). Re-posting the *same* value still re-drives the ISP (see [HTTP /control API Reference](HTTP-Control-API.md)) — necessary precisely because of the latch quirk above. |
 | `POST /control {"daynight":{"probe":1}}` | Arms one look (IR illuminator off 8 s) for the next tick, without waiting for a jump, a colour change or the 45-min timer. A command, not a setting — counted in `accepted`/`rejected` like `record.clip`. Rejected when there is no `daynight.irprobe_cmd` configured or looks were turned off for the session after two hook failures. |
-| `GET /control` `"daynight"` object | Read-only status: `enabled`, `mode` (0 day/1 night), `brightness` (%), `total_gain` (IMP `[24.8]` linear), **`exposure`** (the index the decision actually runs on — plot this one when diagnosing), `ae_luma`, `night_baseline` (the illuminator-lit level at the last look) and `day_trigger` (the bar a look must read below to ask for a check; both always published since v1.10.1), since v1.10.2 `color_trigger` (`on`, `off` = `color_pct` 0 / no `irprobe_cmd` / schedule / disabled, `unavailable` = no AWB statistics in this libimp) and `color_dev_pct` (colour change of the lit picture since the last look in %, `-1` without a reference), the configured keys, the Idle-Dark state `ir_idle` (`cfg`, `available`, `reason`, `dark`, `watched`, `linger_left_s`, see above), and — always — today's computed `sun_computed_sunrise`/`sun_computed_sunset`. |
+| `GET /control` `"daynight"` object | Read-only status: `enabled`, `mode` (0 day/1 night), `brightness` (%), `total_gain` (IMP `[24.8]` linear), **`exposure`** (the index the decision actually runs on — plot this one when diagnosing), `ae_luma`, `night_baseline` (the illuminator-lit level at the last look) and `day_trigger` (the bar a look must read below to ask for a check; both always published since v1.10.1), since v1.11.0 `color_trigger` (`on`, `off` = `color_pct` 0 / no `irprobe_cmd` / schedule / disabled, `unavailable` = no AWB statistics in this libimp) and `color_dev_pct` (colour change of the lit picture since the last look in %, `-1` without a reference), the configured keys, the Idle-Dark state `ir_idle` (`cfg`, `available`, `reason`, `dark`, `watched`, `linger_left_s`, see above), and — always — today's computed `sun_computed_sunrise`/`sun_computed_sunset`. |
 | `GET /events?stream=daynight` | Pushes the same status object on connect and then whenever mode flips, brightness moves ≥1%, or gain moves ≥5% relative (or ≥8 absolute near zero) — see [HTTP /control API Reference](HTTP-Control-API.md#event-types). |
 | `GET /control?dn_history=1` | The decision series (gain, exposure index, `ae_luma`, brightness, mode, one sample per 10 s) out of the in-RAM ring `daynight.history_s` sizes — off by default. Unlike the SSE stream this keeps accumulating with no client connected, which is what lets the WebUI tuning graph plot hours nobody was watching. Cursor-paged; see [HTTP /control API Reference](HTTP-Control-API.md#dn_history1). |
 

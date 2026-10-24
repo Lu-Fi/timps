@@ -1,10 +1,10 @@
 # timps configuration keys — complete reference
 
-**Applies to timps v1.10.2 (draft, source: `dev/1.10.2`, 2026-10-12).**
+**Applies to timps v1.11.0 (2026-10-25).**
 
 A statement marked **since vX** is new in that release — on an older camera
-the *previous* behaviour is the one to describe. Changes in the
-`[Unreleased]` 1.10.2 draft of `CHANGELOG.md` are marked **since v1.10.2**.
+the *previous* behaviour is the one to describe. Changes of v1.11.0 in `CHANGELOG.md` are marked
+**since v1.11.0**.
 
 Authoritative source: `src/config.c` (the `cfg_field` tables and
 `config_defaults()`), `src/config.h` (struct field sizes and doctrine),
@@ -401,9 +401,9 @@ way to check.
 | `image.max_dgain` | int | `80` | 0..255 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_GAINS`. |
 | `image.sinter_strength` | int | `128` | 0..255 | T10 T20 T21 T23 T30 T31 C100, T41 with the open libimp | `ISP_HAS_NR`, spatial NR. T10/T20/T21 with the vendor libimp: accepted but no effect (the vendor firmware renormalises it); acts with the open libimp (OpenIMP; 128 = the vendor picture). **T41**: only with OpenIMP, **since v1.9.33** (Module_Ratio entry 0; image noise 488 / 351 / 216 at 0 / 128 / 255); not on T40. |
 | `image.temper_strength` | int | `128` | 0..255 | T10 T20 T21 T23 T30 T31 C100, T41 with the open libimp | `ISP_HAS_NR`, temporal NR. Same OpenIMP note as `sinter_strength`. **T41**: only with OpenIMP, **since v1.10.0** (Module_Ratio entry 1; v1.9.33 left it unsupported); temporal denoise, visible only at high gain (frame-to-frame noise 9.8 at 0 vs 2.5 at 128), saturates above ~128; independent of `sinter_strength`. |
-| `image.dpc_strength` | int | `128` | 0..255 | T23 T31 C100; with `USE_OPENIMP` also T10 T20 T21 T41 | `ISP_HAS_DPC`. T41: ISP module ratio 3 (since v1.10.3). |
+| `image.dpc_strength` | int | `128` | 0..255 | T23 T31 C100; with `USE_OPENIMP` also T10 T20 T21 T41 | `ISP_HAS_DPC`. T41: ISP module ratio 3 (since v1.11.0). |
 | `image.defog_strength` | int | `128` | 0..255 | T23 T31 C100; with `USE_OPENIMP` also T20 | `ISP_HAS_DEFOG`. On T20 (open stack) it is an Iridix floor, not a defog block. |
-| `image.drc_strength` | int | `128` | 0..255 | T21 T23 T31 C100; with `USE_OPENIMP` also T20 T41 | `ISP_HAS_DRC` (WDR). T41: ISP module ratio 2 (since v1.10.3). |
+| `image.drc_strength` | int | `128` | 0..255 | T21 T23 T31 C100; with `USE_OPENIMP` also T20 T41 | `ISP_HAS_DRC` (WDR). T41: ISP module ratio 2 (since v1.11.0). |
 | `image.highlight_depress` | int | `0` | **0..10** | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_HILIGHT`. Note the 0..10 domain, not 0..255. |
 | `image.backlight_compensation` | int | `0` | **0..10** | T23 T31 C100 | `ISP_HAS_BACKLIGHT`. |
 | `image.colorfx` | int | `0` | 0..9 (0 none, 1 B/W, 2 sepia, 3 negative, 9 vivid) | only with `USE_OPENIMP`: T10 T20 T21 T23 T31 | `ISP_HAS_COLORFX`. The vendor SDKs expose the call on some SoCs but their kernels ignore it. The open driver answers `EINVAL` for values it does not know (sepia only on T20): the HAL logs it, the value stays persisted. Not in `caps.image` on vendor builds. |
@@ -416,7 +416,7 @@ way to check.
 | `image.fcrop_y` | int | `0` | 0..8192 | as above | Top edge, picture pixels (see `fcrop_x` for the flip). |
 | `image.fcrop_w` | int | `0` | 0..8192 | as above | Window width. The HAL evens x/y/w/h, moves (never shrinks) the window inside the sensor and refuses anything under 64×64 (`state":"rejected"`, WARN). Keep the stream aspect ratio, or every stream is stretched. |
 | `image.fcrop_h` | int | `0` | 0..8192 | as above | Window height. |
-| `image.fcrop_upscale_pct` | int | `-1` | -1..`caps.fcrop.upscale_max` | live | **Since v1.10.2.** Sets the open-tx-isp `fcrop_upscale_pct` driver parameter (`/sys/module/tx_isp_t23\|t31/parameters/`): the scaler may upscale a FrontCrop window by this many percent per axis, so a window down to `out × 100 / (100 + p)` is accepted. `-1` = leave the driver's value. Ceiling `caps.fcrop.upscale_max`: OpenIMP T23 and T31 100 (2.0×, device-tested; T31 at 150 hard-hangs every output until the hardware watchdog resets the camera, open-tx-isp clamps at 100 from agg-38). Written at start before any SetFrontCrop and on every change; lowering it re-applies the window, and a window that no longer fits is refused (`state":"rejected"`) and the crop goes back to the full sensor, never left for the next set-format to drop. Elsewhere (vendor stacks, other SoCs, a driver without the parameter) `caps.fcrop.upscale_max` is -1, a POST answers `"unsupported"` and a file value gets one WARN at start. |
+| `image.fcrop_upscale_pct` | int | `-1` | -1..`caps.fcrop.upscale_max` | live | **Since v1.11.0.** Sets the open-tx-isp `fcrop_upscale_pct` driver parameter (`/sys/module/tx_isp_t23\|t31/parameters/`): the scaler may upscale a FrontCrop window by this many percent per axis, so a window down to `out × 100 / (100 + p)` is accepted. `-1` = leave the driver's value. Ceiling `caps.fcrop.upscale_max`: OpenIMP T23 and T31 100 (2.0×, device-tested; T31 at 150 hard-hangs every output until the hardware watchdog resets the camera, open-tx-isp clamps at 100 from agg-38). Written at start before any SetFrontCrop and on every change; lowering it re-applies the window, and a window that no longer fits is refused (`state":"rejected"`) and the crop goes back to the full sensor, never left for the next set-format to drop. Elsewhere (vendor stacks, other SoCs, a driver without the parameter) `caps.fcrop.upscale_max` is -1, a POST answers `"unsupported"` and a file value gets one WARN at start. |
 | `image.ae_it_max_us` | int | `0` | 0..1000000 | T10 T20 T21 T23 T30 T31 C100 | `ISP_HAS_AE_IT_MAX` (T23/T31/C100) or `ISP_HAS_AE_IT_RANGE` (T10/T20/T21/T30). Inert on T40/T41. `0` = no cap: touches nothing if no cap was ever written, otherwise writes the sensor mode's own (remembered, uncapped) AE maximum back (**since v1.9.30**; before that `0` needed a restart). |
 
 Prose and pitfalls
@@ -468,7 +468,7 @@ Prose and pitfalls
   all four coordinates arrived) and at start after every channel exists.
   `GET /control` reports `caps.fcrop` = `{tier, api, live, min:64, even:1, step:2,
   sensor:[w,h], state, min_win:[w,h], zoom_max, upscale_pct, upscale_max,
-  zoomable:[..], zoomed:[..], restart:[..]}` (`upscale_max` **since v1.10.2**, `api` and `restart` **since v1.10.3**; `api` is `frontcrop` or, on T40/T41 OpenIMP, `autozoom`; `upscale_max` is the
+  zoomable:[..], zoomed:[..], restart:[..]}` (`upscale_max` **since v1.11.0**, `api` and `restart` **since v1.11.0**; `api` is `frontcrop` or, on T40/T41 OpenIMP, `autozoom`; `upscale_max` is the
   ceiling of `image.fcrop_upscale_pct`, -1 unsupported); `state` is `off`, `on`, `rejected` (timps refused the
   window: below `min_win`, 64×64 or no sensor size; or SetFrontCrop returned
   `-EINVAL`/`-EOPNOTSUPP` — on T10/T20/T21 any error — i.e. no stream can
@@ -595,7 +595,7 @@ hit this — T10, T20 and T23 coerce `codec` to `h264` at parse time.
   `caps.rotation` key entirely.
 * With `USE_ROTATE`, 90/270 need a real transpose path:
   * **T40/T41** — hardware I2D (`ROT_HAS_HW_I2D`), 90/180/270 per stream.
-    **Since v1.10.3** the framesource stays at the unrotated size and only the
+    **Since v1.11.0** the framesource stays at the unrotated size and only the
     encoder gets the swapped one (vendor and OpenIMP semantics); width and
     height must be multiples of 8 (else `ERR_ROT_ALIGN`, stream unrotated).
     With OpenIMP it needs a libimp that exports `OpenIMP_Cap_I2dRotate`
@@ -656,7 +656,7 @@ hit this — T10, T20 and T23 coerce `codec` to `h264` at parse time.
 * Overlays on a rotated stream: `osdN.<i>.x/y`, `privacyN.<i>.*` and the
   motion grid are in the **rotated**
   `eff_width`×`eff_height` frame on every path. What is drawn depends on the
-  path, reported since v1.10.2 as `video.<N>.rotate_path` in `GET /control`:
+  path, reported since v1.11.0 as `video.<N>.rotate_path` in `GET /control`:
   `sw` (T23) text only, no logo, no privacy covers; `band` (vendor libimp
   90/270, T31/T40/T41) only the top `eff_width` rows; `hw` (OpenIMP, and
   T40/T41 `180`) the whole frame; `off` not rotated (also a refused rotation). Encoder ROI ignores rotated streams (`caps.roi.streams[N] = "rotated"`).
@@ -1011,7 +1011,7 @@ The OpenIMP tiers come from device tests by the OpenIMP maintainer (OpenIMP
 | T23 | unsupported (the vendor encoder only stores the region) | **since v1.10.1** runtime-detected: **effective** when the libimp exports `OpenIMP_Cap_T23HelixRoi` (OpenIMP c271c07, in v2026.10.11-rc1/agg-35+; regions programmed by the native Helix encoder, device-tested by the OpenIMP maintainer), otherwise `unsupported` (older OpenIMP drops the regions silently); libimp env `OPENIMP_T23_ROI=0` turns it off, timps then reports `unsupported` | unsupported (untested) | runtime-detected: **effective**, live with the `fcrop_upscale_pct` parameter (open-tx-isp 164225e5/25b1d8c7, in agg-34 b15ef235); without it experimental, **start-only** (`caps.fcrop.live` 0; needs 3cf9bdac+) |
 | T30, C100 | unsupported (not investigated) | — | unsupported (not investigated) | — |
 | T31 | unsupported (the 1.1.x libimp has no ROI symbol) | **effective** via `SetChnRoiAttr` (AVPU QP table; needs an OpenIMP with d03ca24 and the clamp fec3e69, see below; libimp env `OPENIMP_T31_ROI=0` turns it off, timps then reports `unsupported`) | experimental, live (no zoom without `fcrop_upscale_pct`) | runtime-detected: **effective**, live with the `fcrop_upscale_pct` parameter (open-tx-isp guard 27dc8be4, in agg-34 b15ef235; zoomed main + sub device-tested); without it experimental, live |
-| T40, T41 | unsupported (vendor T41 `SetChnRoiAttr` takes deltas only; not device-tested) | **since v1.10.3** runtime-detected: **experimental** via `SetChnRoiAttr` when the libimp exports `OpenIMP_Cap_EncRoi` (OpenIMP `claude/roi-autozoom` 0f6dfd2, device-tested by the OpenIMP maintainer), otherwise `unsupported`. Deltas only: an absolute `qp` is sent as a delta against the picture QP. T41 libimp before OpenIMP 958f7f3 (`OpenIMP_Cap_EncRoi` bit 1): no effect under FixQP, so a FixQP stream reports `caps.roi.streams[N]` = `"fixqp"` and its regions are not sent; use `cbr`/`vbr`. From 958f7f3 (value 1) FixQP works too. libimp env `OPENIMP_T40_ROI=0` / `OPENIMP_T41_ROI=0` turns it off, timps then reports `unsupported` | unsupported (no FrontCrop; live fs crop stops T41) | T41 **since v1.10.3**: runtime-detected **experimental** via `IMP_ISP_Tuning_SetAutoZoom` when the libimp exports `OpenIMP_Cap_AutoZoom`, otherwise `unsupported`; same window on every framesource, no upscaling (the window must be at least the largest stream), live on every stream: up to the driver's envelope at once (`/sys/module/tx_isp_t41/parameters/t41_msca_live_max_w/h`, 1920x1080 since open-tx-isp 9fc513c8, 768x432 when unreadable), a larger running stream restarts its framesource with the encoder stopped (~45 ms gap, new keyframe; device-tested on T41 ch0, also with `general.fs_keepalive`); if that restart fails, `caps.fcrop.restart[N]` = 1 and a WARN say the stream takes the window at the next timps start, the WebUI shows a note; flip untested. T40 **since v1.10.3**: the same AutoZoom path (OpenIMP fce128a, open T40 driver a85bffc7), live on every stream up to 4K without a framesource restart; not yet device-tested with timps |
+| T40, T41 | unsupported (vendor T41 `SetChnRoiAttr` takes deltas only; not device-tested) | **since v1.11.0** runtime-detected: **experimental** via `SetChnRoiAttr` when the libimp exports `OpenIMP_Cap_EncRoi` (OpenIMP `claude/roi-autozoom` 0f6dfd2, device-tested by the OpenIMP maintainer), otherwise `unsupported`. Deltas only: an absolute `qp` is sent as a delta against the picture QP. T41 libimp before OpenIMP 958f7f3 (`OpenIMP_Cap_EncRoi` bit 1): no effect under FixQP, so a FixQP stream reports `caps.roi.streams[N]` = `"fixqp"` and its regions are not sent; use `cbr`/`vbr`. From 958f7f3 (value 1) FixQP works too. libimp env `OPENIMP_T40_ROI=0` / `OPENIMP_T41_ROI=0` turns it off, timps then reports `unsupported` | unsupported (no FrontCrop; live fs crop stops T41) | T41 **since v1.11.0**: runtime-detected **experimental** via `IMP_ISP_Tuning_SetAutoZoom` when the libimp exports `OpenIMP_Cap_AutoZoom`, otherwise `unsupported`; same window on every framesource, no upscaling (the window must be at least the largest stream), live on every stream: up to the driver's envelope at once (`/sys/module/tx_isp_t41/parameters/t41_msca_live_max_w/h`, 1920x1080 since open-tx-isp 9fc513c8, 768x432 when unreadable), a larger running stream restarts its framesource with the encoder stopped (~45 ms gap, new keyframe; device-tested on T41 ch0, also with `general.fs_keepalive`); if that restart fails, `caps.fcrop.restart[N]` = 1 and a WARN say the stream takes the window at the next timps start, the WebUI shows a note; flip untested. T40 **since v1.11.0**: the same AutoZoom path (OpenIMP fce128a, open T40 driver a85bffc7), live on every stream up to 4K without a framesource restart; not yet device-tested with timps |
 | host sim | sim | | sim | |
 
 Refused-key log text (`ROI_WHY`): vendor T23 "no effect on T23: the vendor
@@ -1034,7 +1034,7 @@ parameter exists only in drivers with the T23 crop-hang fix (open-tx-isp
 164225e5/25b1d8c7) or the T31 MSCA guard (27dc8be4); open-tx-isp b15ef235
 (agg-34) has both. Present: `effective`, live. Every stream must be no larger
 than the window or scaled down (`fcrop_upscale_pct`, default 0 = no
-upscaling; **since v1.10.2** set by `image.fcrop_upscale_pct`); a smaller window is refused with `-EINVAL`, logged once and
+upscaling; **since v1.11.0** set by `image.fcrop_upscale_pct`); a smaller window is refused with `-EINVAL`, logged once and
 reported as `caps.fcrop.state` = `rejected`. Absent on T23: `experimental`,
 start-only, needs open-tx-isp 3cf9bdac or newer (older drivers hung the
 pipeline on a crop change); the start apply runs before chn0 streams, a POST
@@ -1166,17 +1166,17 @@ tick) **except**:
 | `daynight.night_gain` | float | `4096` | 1..1000000 | live | **Alias `total_gain_night_threshold`.** Exposure index above this (while in day) = night. 4096 = 16×. Where the AE cannot reach it, the AE at its limit counts as dark too (see below). |
 | `daynight.day_confirm_s` | int | `30` | 1..3600 | live | How long the index must stay above `night_gain` (or the AE at its limit) before day→night. A very dark reading (≥ 2 × `night_gain`, or the AE at its limit) switches after 6 s instead (not within 8 s of the camera's own switch). |
 | `daynight.jump_pct` | int | `20` | 5..70 | live | **since v1.10.1.** At night: when the illuminator-lit level falls this many percent below the level of the last look and stays there 20 s, look at once (new light). Cameras without a switchable illuminator use a fixed 50 % and check. |
-| `daynight.color_pct` | int | `3` | 0..50 | live | **since v1.10.2.** At night: when the colour of the illuminator-lit picture (global R/G or B/G of the ISP's AWB statistics) moves this many percent from its value after the last look and stays there 20 s, look at once (log `look (color)`). Read every 5 s at night (after start also outside it, until the first success, at most 30 reads). Catches a weak lamp that barely moves the lit level (measured with a 30 % bulb: Eufy B/G −4 % at an unchanged exposure, Wyze Pan B/G +5.5 %; an unchanged scene stays within 0.5 %). Only starts a look (8 s dark, no click); the look decides as always. At most one colour look per 5 min, the gap doubles (10, 20 … up to 45 min) while no timer look happens in between, so a person moving in view costs at most 4 extra looks (32 s dark) in the first hour and then none beyond the 45-min rhythm. `0` = off. Needs a switchable illuminator and a libimp with per-zone AWB statistics: T40/T41 vendor, T23/T31/C100 vendor, T10/T20 OpenIMP, T23/T31 OpenIMP only with a libimp that exports `OpenIMP_Cap_AwbZone` (agg-38+), T40/T41 OpenIMP only with one that exports `OpenIMP_Cap_AwbStatistics`; elsewhere `daynight.color_trigger` reads `"unavailable"` and nothing happens. Device-tested only on T40 vendor (Eufy) and T20 OpenIMP (Wyze Pan); the other paths are unverified. |
-| `daynight.heartbeat_s` | int | `14400` (4 h) | 300..604800 | live | Check interval at night for cameras **without** a switchable illuminator. Also caps the look interval (45 min) of the others. **Since v1.10.2** a camera whose colour trigger works (`daynight.color_trigger` "on") looks only every 6 h: jump and colour watch the night, the timer is a backstop. Colour-look gaps still stop at 45 min. |
+| `daynight.color_pct` | int | `3` | 0..50 | live | **since v1.11.0.** At night: when the colour of the illuminator-lit picture (global R/G or B/G of the ISP's AWB statistics) moves this many percent from its value after the last look and stays there 20 s, look at once (log `look (color)`). Read every 5 s at night (after start also outside it, until the first success, at most 30 reads). Catches a weak lamp that barely moves the lit level (measured with a 30 % bulb: Eufy B/G −4 % at an unchanged exposure, Wyze Pan B/G +5.5 %; an unchanged scene stays within 0.5 %). Only starts a look (8 s dark, no click); the look decides as always. At most one colour look per 5 min, the gap doubles (10, 20 … up to 45 min) while no timer look happens in between, so a person moving in view costs at most 4 extra looks (32 s dark) in the first hour and then none beyond the 45-min rhythm. `0` = off. Needs a switchable illuminator and a libimp with per-zone AWB statistics: T40/T41 vendor, T23/T31/C100 vendor, T10/T20 OpenIMP, T23/T31 OpenIMP only with a libimp that exports `OpenIMP_Cap_AwbZone` (agg-38+), T40/T41 OpenIMP only with one that exports `OpenIMP_Cap_AwbStatistics`; elsewhere `daynight.color_trigger` reads `"unavailable"` and nothing happens. Device-tested only on T40 vendor (Eufy) and T20 OpenIMP (Wyze Pan); the other paths are unverified. |
+| `daynight.heartbeat_s` | int | `14400` (4 h) | 300..604800 | live | Check interval at night for cameras **without** a switchable illuminator. Also caps the look interval (45 min) of the others. **Since v1.11.0** a camera whose colour trigger works (`daynight.color_trigger` "on") looks only every 6 h: jump and colour watch the night, the timer is a backstop. Colour-look gaps still stop at 45 min. |
 | `daynight.heartbeat_max_s` | int | `43200` (12 h) | 300..604800 | live | The longest night without a day-pipeline reading: then a check runs regardless of looks and lockouts. Bounds a wrong night. |
 | `daynight.interval_ms` | int | `2000` | 100..60000 | live | Sample interval. The exposure index needs a `/proc` scrape per tick (integration time has no IMP API). |
 | `daynight.history_s` | int | `0` | 0..172800 (48 h) | live | In-RAM decision-history ring for the WebUI tuning graph, in seconds of retention. `0` = off; nothing is allocated until a sample is pushed. One 16-byte sample per period, so the 48 h ceiling costs ~270 KiB. |
 | `daynight.ir_idle_off` | int | `0` | 0..1 | live | **since v1.10.0.** Idle-Dark: at night, once no picture consumer (video/JPEG hub subscriber: RTSP, WebRTC, fMP4, MJPEG, SRT, snapshot, timelapse, recorder; plus the motion FrameSource pin and a set `jpeg.snapshot_path`) has been present for `ir_idle_linger_s`, switch only the IR illuminator off (IR-cut and ISP stay in night) and keep reading the scene without it. **Only effective with the FrameSource keepalive** (`general.fs_keepalive`, auto = on for OpenIMP T23/T41); otherwise one WARN and `daynight.ir_idle.reason = "keepalive"`. Also needs auto mode (`daynight.mode = auto`), a working `daynight.irprobe_cmd` and a `timps-irprobe` with the `idle`/`state` verbs. What happens: the LED goes off and the scene is read without it like a look that lasts: below the bar for 30 s → a check (one click, nobody is watching); the first consumer gets the LED within one hook call (a kick, not the next tick). JPEG grabs (`/snapshot.jpg`, timelapse) right after that wake are held up to ~3.5 s (max 5 s) for the AE; streams are not held, their first 1-4 s are dark or settling. Setting it to 0 by POST, `daynight.enabled = 0`, `mode = schedule` and a stop give the LED back. Status: `daynight.ir_idle` in `GET /control` / `/events`. |
 | `daynight.ir_idle_linger_s` | int | `60` | 0..3600 | live | **since v1.10.0.** How long after the last picture consumer the illuminator may go off; a consumer inside it is not an event (covers 10 s snapshot polling and DESCRIBE→PLAY). A poll slower than the linger costs one LED on/off pair and one held snapshot per poll. Keep it **longer than `timelapse.interval_s`**: with both at 60 the linger can run out on the tick before each shot, giving one LED on/off pair per shot (set e.g. 90). |
 | `daynight.switch_cmd` | string[64] | `daynight` | — | **file-only**, `F_NOGET` | Board script, run as `<cmd> day\|night` via `vfork()`+`execlp()` (no shell; `fork()` on v1.9.19). **Unlike `motion.on_motion`, this one *does* search `PATH`** — `execlp`, not `execve` — which is why the bare default `daynight` works. Same for `daynight.irprobe_cmd`. |
-| `daynight.isp_path` | string[128] | `/proc/jz/isp/isp-m0` | — | **file-only**, `F_NOGET` | ISP exposure proc file that is scraped. **Since v1.10.2** never read on vendor T21 (libimp 1.0.33 with the vendor tx-isp-t21): that driver corrupts the kernel heap on a proc read (an oops killed the day/night thread on a PC420); the exposure comes from IMP only (`GetTotalGain`, `GetExpr`), logged once at start. The ISP mode readback and the AE-limit test from the dump are then unavailable there. |
+| `daynight.isp_path` | string[128] | `/proc/jz/isp/isp-m0` | — | **file-only**, `F_NOGET` | ISP exposure proc file that is scraped. **Since v1.11.0** never read on vendor T21 (libimp 1.0.33 with the vendor tx-isp-t21): that driver corrupts the kernel heap on a proc read (an oops killed the day/night thread on a PC420); the exposure comes from IMP only (`GetTotalGain`, `GetExpr`), logged once at start. The ISP mode readback and the AE-limit test from the dump are then unavailable there. |
 | `daynight.irprobe_cmd` | string[64] | `timps-irprobe` | — | **file-only**, `F_NOGET` | Run as `<cmd> on\|off` (a look) and, for Idle-Dark, `<cmd> idle\|state` (`idle`: LED off with a 15 min failsafe that the 10 min re-assert renews; `state` prints `on`/`off`). Empty: no looks; the camera checks like one without a switchable illuminator. Two failures in a row turn looks off for the session. |
-| `daynight.trace_path` | string[128] | `""` | — | **file-only**, `F_NOGET` | Opt-in CSV decision-trace recorder, one line per N samples (about 32 KB/h). Past 256 KB (**since v1.10.2**, before: 1 MB) it is rotated once to `<path>.1` (the old `.1` is overwritten), so it never holds more than 512 KB of RAM. **Must live on tmpfs** (`/tmp`, `/run`) — a LOGW reminds you if the path does not look like tmpfs. |
+| `daynight.trace_path` | string[128] | `""` | — | **file-only**, `F_NOGET` | Opt-in CSV decision-trace recorder, one line per N samples (about 32 KB/h). Past 256 KB (**since v1.11.0**, before: 1 MB) it is rotated once to `<path>.1` (the old `.1` is overwritten), so it never holds more than 512 KB of RAM. **Must live on tmpfs** (`/tmp`, `/run`) — a LOGW reminds you if the path does not look like tmpfs. |
 
 ### How the decision works (needed to answer tuning questions)
 
@@ -1199,12 +1199,12 @@ to `total_gain`.
   the camera **looks**: illuminator off for 8 s (no click), reading the scene
   without it. A look runs every 45 min (`heartbeat_s` caps it), at once when
   the lit level falls `jump_pct` below the last look for 20 s (a lamp), **since
-  v1.10.2** when the lit picture's colour moves `color_pct` from the last look
+  v1.11.0** when the lit picture's colour moves `color_pct` from the last look
   for 20 s (a weak lamp; at most every 5 min, doubling), and on
   `{"daynight":{"probe":1}}`. A lit level that rises 10 % above the
   reference and does not fall back below it for 60 s (the light of the last
   look has gone) becomes the reference, and the next look relearns the scene
-  bar. **Since v1.10.2** a look taken while the lit level was still moving (a
+  bar. **Since v1.11.0** a look taken while the lit level was still moving (a
   lamp coming on, another camera's look; a 20 s jump excepted) sets no
   reference: the next settled level does, within 60 s. The colour reference
   is retaken 8 s after every look with the AE settled; no colour look runs
@@ -1216,7 +1216,7 @@ to `total_gain`.
   from a failed check — the camera switches to the day pipeline and reads it
   once (one click): below `day_gain` it stays day, otherwise back to night (a
   second click).
-* **Jump bar** (**since v1.10.2**; before: always 2 × `day_gain`): every
+* **Jump bar** (**since v1.11.0**; before: always 2 × `day_gain`): every
   look→check pair teaches `k` = check reading / dark look reading (median of
   the last 5, clamped 0.7..2; the fleet reads 1.0-2.0 under lamps, 4-20 under
   other cameras' infrared). The camera also keeps the dark readings of the
@@ -1233,7 +1233,7 @@ to `total_gain`.
   at its limit or above 4 × `night_gain` (the Eufy reads 40960 in the dark
   without a reported limit). A jump forgets the bar (new light). Checks are
   locked out for 1, 2, 4, 8, 16 min after consecutive failures, then 16 min
-  each (**since v1.10.2**, before: doubling without limit); a day resets it.
+  each (**since v1.11.0**, before: doubling without limit); a day resets it.
 * **Guarantee**: no day-pipeline reading for `heartbeat_max_s` (12 h) → a
   check, regardless of looks and lockouts.
 * **Without a switchable illuminator** (`irprobe_cmd` empty or failing) the

@@ -110,7 +110,7 @@ host sim. Rotation direction conventions are **not** uniform across
 platforms (T23 and T40/T41: 90° = clockwise; T31 and T10/T20/T21: 90° = counter-clockwise,
 kept that way specifically for numeric compatibility with prudynt-t's raw
 `rotTo90` enum values) — see `docs/rotation.md` for the full rationale and
-on-device test history. Since v1.10.2 `GET /control` reports the path of a
+on-device test history. Since v1.11.0 `GET /control` reports the path of a
 running stream in `video.<N>.rotate_path` (`off`, `sw`, `band`, `hw`).
 
 ## ROI and FrontCrop tiers
@@ -141,7 +141,7 @@ with the T23 crop-hang fix (open-tx-isp 164225e5/25b1d8c7) or the T31 guard
 pipeline on a crop change): a POST is persisted and applied at the next
 `/etc/init.d/S95timps restart`. A window smaller than a stream that is not
 scaled down is refused with `-EINVAL` (one WARN, `caps.fcrop.state` =
-`rejected`). Since v1.10.2 `image.fcrop_upscale_pct` (live) writes that
+`rejected`). Since v1.11.0 `image.fcrop_upscale_pct` (live) writes that
 parameter, so the scaler may upscale a window down to half the stream size;
 the ceiling `caps.fcrop.upscale_max` is 100 on both (device-tested; T31 at
 150 hard-hangs until the hardware watchdog resets the camera) and -1 on every
@@ -149,7 +149,7 @@ other SoC/libimp.
 
 ## Day/night colour statistics
 
-The colour trigger of v1.10.2 (`daynight.color_pct`) reads per-zone AWB
+The colour trigger of v1.11.0 (`daynight.color_pct`) reads per-zone AWB
 statistics: `GetAwbStatistics` on T40/T41, `GetAwbZone` on T23/T31/C100, and
 on T10/T20 with OpenIMP a tuning ioctl on libimp's `/dev/video0` fd. With
 OpenIMP on T23/T31 and T40/T41 only where the libimp exports

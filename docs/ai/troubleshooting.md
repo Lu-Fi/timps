@@ -872,7 +872,7 @@ v1.10.0**) — the stream comes up **unrotated** and says so:
   the SoC's `InputJpege` ignores `videoN.jpeg_quality`.
 
 **Rotation is restart-required** and the advertised dimensions swap
-(`eff_width`/`eff_height` in `GET /control`). **Since v1.10.2**
+(`eff_width`/`eff_height` in `GET /control`). **Since v1.11.0**
 `video.<N>.rotate_path` says how the running stream is rotated: `off`, `sw`
 (T23: text OSD only), `band` (vendor libimp 90/270: OSD/privacy only in the
 top `eff_width` rows), `hw` (whole frame).
@@ -888,7 +888,7 @@ privacy regions, `MS_MAX_STR` = 64 bytes per string field.
 | `osd stream N item M: rendered WxH exceeds usable WxH - skipped (reduce font_size/text length)` | The rendered text does not fit. Shorten it or lower `osd<S>.<N>.font_size`. **since v1.9.28** logged at most once per 60 s per item, and that text is not rendered again until it or the item's style changes (v1.9.27 re-rasterized and re-warned every tick). |
 | `logo <path> (WxH) exceeds usable WxH - skipped` | Logo bigger than the frame. |
 | `logo <path> not loaded` | File missing/unreadable/not a supported bitmap — **since v1.9.28** or not a regular file: a FIFO or device path for a logo, font or the vars file is refused instead of blocking the OSD thread (or, for `font_path`, startup) forever. |
-| `stream N rotated D: OSD/privacy limited to the top P px of WxH` | **Vendor-libimp 90/270 streams (T31; timps applies the same clamp on vendor T40/T41): OSD/privacy only work in a top band** (`video.<N>.rotate_path` = `band` since v1.10.2); lower overlays are clamped up. This is a libimp `picHeight` range-check, not something timps can widen. Use a square stream, an unrotated stream for the overlay, or OpenIMP (whole frame). |
+| `stream N rotated D: OSD/privacy limited to the top P px of WxH` | **Vendor-libimp 90/270 streams (T31; timps applies the same clamp on vendor T40/T41): OSD/privacy only work in a top band** (`video.<N>.rotate_path` = `band` since v1.11.0); lower overlays are clamped up. This is a libimp `picHeight` range-check, not something timps can widen. Use a square stream, an unrotated stream for the overlay, or OpenIMP (whole frame). |
 | `osd stream N item M: CreateRgn failed (region pool exhausted?)` / `osd stream N privacy M: CreateRgn failed` | The SDK's region pool ran out. Reduce the number of overlays/masks. |
 | `IMP_OSD_SetPoolSize(N KB) failed - OSD overlays may not composite` | The OSD memory pool could not be sized at ISP init. |
 | `IMP_OSD_RegisterRgn(rgnN,grpM) failed - this overlay will stay invisible` | The region exists but is not attached. |
@@ -955,7 +955,7 @@ the OSD items on the substream. Lowering the render quality doesn't help.
 | `caps.fcrop.state` = `rejected` | timps refused the window (below 64×64, or no sensor size; log `image.fcrop …: needs at least 64x64 inside the WxH sensor`), or SetFrontCrop returned `-EINVAL` (no stream can show it; T23: window below the stream-0 size), logged once as `SetFrontCrop … refused (rc=…)`, not retried. |
 | `caps.fcrop.state` = `failed` | SetFrontCrop failed with another error. Log `SetFrontCrop … refused (rc=…)`. |
 | T20: crop shows on the substream only | Expected: on T20 only downscaled channels show the FrontCrop window. |
-| T23/T31 OpenIMP: a window smaller than the stream is `rejected` | The driver's `fcrop_upscale_pct` is 0 (no upscaling). **Since v1.10.2** set `image.fcrop_upscale_pct` (live, at most `caps.fcrop.upscale_max` = 100); log `image.fcrop_upscale_pct: A -> B`. Never higher: T31 at 150 hard-hangs. |
+| T23/T31 OpenIMP: a window smaller than the stream is `rejected` | The driver's `fcrop_upscale_pct` is 0 (no upscaling). **Since v1.11.0** set `image.fcrop_upscale_pct` (live, at most `caps.fcrop.upscale_max` = 100); log `image.fcrop_upscale_pct: A -> B`. Never higher: T31 at 150 hard-hangs. |
 | `image.fcrop_upscale_pct` answers `"unsupported"` (104) | `caps.fcrop.upscale_max` = -1: not T23/T31 OpenIMP, or the driver has no `fcrop_upscale_pct` parameter. A file value logs `image.fcrop_upscale_pct=N ignored: …` at start. |
 | T23: crop not applied after a POST | Expected when `caps.fcrop.live` = 0: the driver lacks `fcrop_upscale_pct` (open-tx-isp older than 164225e5/25b1d8c7), so T23 FrontCrop is start-only; the POST persists, `/etc/init.d/S95timps restart` applies it. Needs open-tx-isp 3cf9bdac or newer (older drivers hung on a crop change). Vendor T23: `unsupported`. |
 
@@ -1074,7 +1074,7 @@ The decision inputs come from an ISP dump file, `daynight.isp_path`. If it
 is unreadable but a known alternative works (T20: `isp_info`) you get the
 INFO line `<path> is not readable, using <other> instead` — harmless. Worse is
 `no exposure reading from <path> - detection idle` — **detection does nothing
-at all**. **Since v1.10.2** vendor T21 never reads it (the vendor driver
+at all**. **Since v1.11.0** vendor T21 never reads it (the vendor driver
 corrupts the kernel heap on that proc read): INFO `<path> is not read on the
 vendor T21 driver …: exposure from IMP only`, expected. A detection thread
 that stops ticking (e.g. after a kernel oops in a proc read) logs one ERROR,
@@ -1084,16 +1084,16 @@ brings it back.
 | Symptom | Cause | Fix |
 | --- | --- | --- |
 | Night all evening in a lit room, `check (…): night, exposure N` in the log | The day pipeline reads above `day_gain`: a dim room. | Raise `daynight.day_gain` above N (well below `night_gain`). |
-| Night although a lamp is on, no look in the log | The lamp did not move the illuminator-lit level by `jump_pct` nor (**since v1.10.2**) its colour by `color_pct` (`color_dev_pct` in `GET /control`), or colour looks are spaced out (5, 10, 20 … min after earlier ones), or `color_trigger` is `"unavailable"` on this SoC; the next timer look comes within 45 min. | Wait, lower `jump_pct` or `color_pct`, or POST `{"daynight":{"probe":1}}`. |
+| Night although a lamp is on, no look in the log | The lamp did not move the illuminator-lit level by `jump_pct` nor (**since v1.11.0**) its colour by `color_pct` (`color_dev_pct` in `GET /control`), or colour looks are spaced out (5, 10, 20 … min after earlier ones), or `color_trigger` is `"unavailable"` on this SoC; the next timer look comes within 45 min. | Wait, lower `jump_pct` or `color_pct`, or POST `{"daynight":{"probe":1}}`. |
 | `look (…): … -> check` then `check (…): night` every evening | Other cameras' infrared lights the scene without the illuminator; the day pipeline stays dark. One pair per light change, then the bar holds. | Expected; nothing to fix. |
 | Day in a dark room | `night_gain` above what the AE reaches and the AE not at a reported limit. | Lower `night_gain` below the exposure the camera shows in the dark. |
 | Two clicks at every start in the dark | Every boot checks. | Expected. |
 
 | Log line (`src/daynight.c`) | Level | Meaning |
 | --- | --- | --- |
-| `look (<why>): lit L dark D bar B -> check\|night\|locked (N s)` | D | A look: `why` = `timer`, `jump`, `requested`, `idle`, **since v1.10.2** `color`. **Since v1.10.2** `locked (N s)`: the look predicts day but a lockout after failed checks holds the check back N s more (before: `-> check` with no check). |
-| `colour moved N %` / `colour back to the scene before the look` | D | **Since v1.10.2.** The `color_pct` trigger fired / the colour returned after a colour look that found night (new reference, no look). |
-| `colour statistics: N us per read` | I | **Since v1.10.2.** Logged once (third read): the AWB statistics work on this camera. |
+| `look (<why>): lit L dark D bar B -> check\|night\|locked (N s)` | D | A look: `why` = `timer`, `jump`, `requested`, `idle`, **since v1.11.0** `color`. **Since v1.11.0** `locked (N s)`: the look predicts day but a lockout after failed checks holds the check back N s more (before: `-> check` with no check). |
+| `colour moved N %` / `colour back to the scene before the look` | D | **Since v1.11.0.** The `color_pct` trigger fired / the colour returned after a colour look that found night (new reference, no look). |
+| `colour statistics: N us per read` | I | **Since v1.11.0.** Logged once (third read): the AWB statistics work on this camera. |
 | `check (<why>): day, exposure E < G` / `check (<why>): night, exposure E` | I | The day pipeline's verdict. `why` adds `boot`, `guarantee`. |
 | `switching to day\|night (<why>): <cmd> …` | I | The board drive; the tail is machine-readable. |
 | `daynight.day_gain A is above night_gain B - swapped` | W | `day_gain` must be the lower number. |
@@ -2853,9 +2853,9 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `image.ae_it_max_us=%d: AE max still %lu lines (mode %lu) after %d removal writes` | W | **since v1.9.30**. Writing the uncapped maximum back does not show in the readback. | Restart timps. §3.7 |
 | `image.ae_it_max_us=%d: AE max still %lu lines after %d writes, cap not honoured` | W | The sensor ignores it. | Stop raising the value. §3.7 |
 | `image.ae_it_max_us=%d: %lu lines exceeds this SDK's 16-bit field - capping at 65535` | W | **since v1.9.28**. T10/T20/T21/T30 only: the requested cap does not fit the SDK field. | Lower `image.ae_it_max_us`. |
-| `image.fcrop_upscale_pct=%d ignored: no open-tx-isp fcrop_upscale_pct on this camera` | W | **Since v1.10.2.** A file value where `caps.fcrop.upscale_max` is -1. | Remove the key. §2.8 |
-| `image.fcrop_upscale_pct: cannot write %s: %s` | W | **Since v1.10.2.** The driver parameter could not be written; the driver keeps its value. | Check the open-tx-isp module. §2.8 |
-| `image.fcrop: the active %ux%u window no longer fits - full %dx%d sensor` | W | **Since v1.10.2.** A lowered `image.fcrop_upscale_pct` made the active window too small; the crop is off until a window that fits. | Raise the key or enlarge the window. §2.8 |
+| `image.fcrop_upscale_pct=%d ignored: no open-tx-isp fcrop_upscale_pct on this camera` | W | **Since v1.11.0.** A file value where `caps.fcrop.upscale_max` is -1. | Remove the key. §2.8 |
+| `image.fcrop_upscale_pct: cannot write %s: %s` | W | **Since v1.11.0.** The driver parameter could not be written; the driver keeps its value. | Check the open-tx-isp module. §2.8 |
+| `image.fcrop: the active %ux%u window no longer fits - full %dx%d sensor` | W | **Since v1.11.0.** A lowered `image.fcrop_upscale_pct` made the active window too small; the crop is off until a window that fits. | Raise the key or enlarge the window. §2.8 |
 | `GetModule_Ratio failed - %s not applied` / `SetModule_Ratio(%s=%d) failed (rc=%d)` | W | T41 with OpenIMP: `sinter_strength` (since v1.9.33) or `temper_strength` (**since v1.10.0**) could not be written; the value stays persisted. | Check the OpenIMP/open-tx-isp build. |
 
 ### 12.8 `HAL_ING` — audio
@@ -2939,8 +2939,8 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | `cannot open trace_path %s: %s - tracing disabled until the path changes` | W | Bad path. |
 | `trace rotate %s -> %s failed: %s` | W | Trace file rotation failed. |
 | `cannot start detection thread` | W | Day/night is off for this run. |
-| `detection thread silent for %d s - day/night does not switch` | E | **Since v1.10.2.** No tick for 10 × `interval_ms` (at least 60 s), logged once; usually a kernel oops in a proc read. Restart timps, read `dmesg`. |
-| `%s is not read on the vendor T21 driver (its proc read corrupts the kernel heap): exposure from IMP only` | I | **Since v1.10.2**, vendor T21 only. Expected. |
+| `detection thread silent for %d s - day/night does not switch` | E | **Since v1.11.0.** No tick for 10 × `interval_ms` (at least 60 s), logged once; usually a kernel oops in a proc read. Restart timps, read `dmesg`. |
+| `%s is not read on the vendor T21 driver (its proc read corrupts the kernel heap): exposure from IMP only` | I | **Since v1.11.0**, vendor T21 only. Expected. |
 
 ### 12.12 `RTSP` (`src/rtsp/rtsp.c`)
 

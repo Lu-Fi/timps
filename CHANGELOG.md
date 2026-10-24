@@ -6,7 +6,7 @@ semantic versioning.
 
 ## [Unreleased]
 
-_1.10.3 (draft)_
+## [1.11.0] - 2026-10-25
 
 ### Added
 
@@ -21,8 +21,8 @@ _1.10.3 (draft)_
   every stream up to the driver's envelope at once (1920x1080 with
   open-tx-isp 9fc513c8, read from `t41_msca_live_max_w/h`; 768x432 with
   older drivers), a larger one restarts its framesource with the encoder
-  stopped (about 45 ms gap, new keyframe). No upscaling. T40 with OpenIMP takes the same path (live up to 4K, no
-  restart); not yet device-tested with timps.
+  stopped (about 45 ms gap, new keyframe). No upscaling. T40 with OpenIMP
+  takes the same path (live up to 4K, no restart).
 - T40/T41 rotation follows the vendor I2D semantics: the framesource stays
   unrotated, only the encoder gets the swapped size; 180 is a real I2D
   rotate. With OpenIMP it needs `OpenIMP_Cap_I2dRotate`, otherwise rotation
@@ -32,9 +32,6 @@ _1.10.3 (draft)_
 - `/control` `encoder.<N>.telemetry` on T40/T41 with OpenIMP
   (`OpenIMP_Encoder_GetTelemetry`): frames, bytes, IDR count, delivered fps
   and kbit/s, average and maximum encode time.
-- Day/night: light that creeps in (dawn with daylight infrared, a fire)
-  asks again only once the k of the failed check predicts day; a sudden
-  light still asks at once. Replay: a bedroom dawn 7 -> 3 failed checks.
 - T40: RTSP and fMP4 clients wait up to 5 s (was 2 s) for the first
   parameter sets; the open T40 driver needs about 3.3 s from start to the
   first frame.
@@ -46,11 +43,6 @@ _1.10.3 (draft)_
   AE/AWB hold switches (`caps.testpattern.sensor`).
 - `caps.fcrop.restart`: per stream, 1 = it takes the current window only at
   the next timps start. `caps.fcrop.api`: `frontcrop` or `autozoom`.
-
-_1.10.2 (draft)_
-
-### Added
-
 - Day/night: a second look trigger at night. When the colour of the
   illuminator-lit picture (global R/G or B/G of the ISP's AWB statistics)
   moves `daynight.color_pct` (new, default 3, 0 = off, live) from its value
@@ -88,9 +80,7 @@ _1.10.2 (draft)_
   exposure. When the first four readings are all above 4x `day_gain` it
   checks at once; otherwise it waits at most 30 s. An open-stack T31 in a
   dark garage showed a black day picture for 2 min after every start.
-
 - Day/night: with a working colour trigger the timer look runs every 6 h instead of 45 min (about 6 instead of 16 dark 8 s looks per night); jump and colour looks still react at once. Without colour statistics it stays at 45 min.
-
 - Day/night: a look taken while the lit level is still moving (a lamp coming
   on, another camera's look) no longer sets the reference
   (`night_baseline`); the next settled level after it does, within 60 s. A
@@ -106,6 +96,12 @@ _1.10.2 (draft)_
   in a basement. Now about 2 per evening or night, and a brighter light
   (the morning ceiling light, a 100 % lamp) still asks. `k` is logged in the
   `look (...)` debug line.
+- Day/night: light that creeps in (dawn with daylight infrared, a fire)
+  asks again only once the k of the failed check predicts day; a sudden
+  light still asks at once. A bedroom dawn on replay: 7 -> 3 failed checks.
+- Day/night: every stream gets a keyframe 0.8 s after an IR or IR-cut
+  switch, once the AE has settled; before, starved P-frames showed the old
+  picture until the next GOP keyframe.
 
 ### Fixed
 
@@ -122,6 +118,8 @@ _1.10.2 (draft)_
   killed the day/night thread. Exposure comes from IMP only there.
 - A day/night thread that stops ticking (no tick for 10 x `interval_ms`, at
   least 60 s) is logged as an error once.
+- T40/T41: 4K JPEG snapshots larger than 1 MiB were dropped; the JPEG
+  buffer cap is 4 MiB there (a 4K frame at q75 is 1.6-3.3 MB).
 
 ## [1.10.1] - 2026-10-12
 

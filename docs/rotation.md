@@ -7,7 +7,7 @@ enum), 90 rotates counter-clockwise** (kept for
 consistency with prudynt-t/raptor's raw `rotation=1|2` config values, see
 "Notes on direction" below). Hardware OSD/privacy work on a rotated T31
 stream since 2026-07-23, confined to a top band on a non-square stream; see
-"OSD/privacy on 90/270-rotated T31 streams" below. **Since v1.10.2**
+"OSD/privacy on 90/270-rotated T31 streams" below. **Since v1.11.0**
 `GET /control` reports how each running stream is rotated in
 `video.<N>.rotate_path`: `off` (not rotated, also a refused rotation), `sw`
 (T23 software path: text OSD only), `band` (vendor libimp 90/270: OSD/privacy

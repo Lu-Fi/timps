@@ -70,7 +70,7 @@ a row.
 
 | module | source | err | warn | info | debug | what its debug output adds |
 |---|---|---:|---:|---:|---:|---|
-| `DAYNIGHT` | `daynight.c` | — | — | — | — | **since v1.10.1** (the counts are of the earlier engine): every look, `look (<why>): lit … dark … bar … -> check\|night`; since v1.10.2 `why` can be `color`, and `-> locked (N s)` when a lockout after failed checks holds the check back, with `colour moved N %` / `colour back to the scene before the look` |
+| `DAYNIGHT` | `daynight.c` | — | — | — | — | **since v1.10.1** (the counts are of the earlier engine): every look, `look (<why>): lit … dark … bar … -> check\|night`; since v1.11.0 `why` can be `color`, and `-> locked (N s)` when a lockout after failed checks holds the check back, with `colour moved N %` / `colour back to the scene before the look` |
 | `HAL_ING` | `hal/hal_ingenic.c` | 44 | 77 | 48 | 10 | encoder/framesource internals, polling and teardown detail, the sensor-fps requested-vs-held readback (`sensor fps: requested N, driver holds n/d, set rc=R`) |
 | `CTRL` | `control.c` | 0 | 4 | 3 | 5 | request/field handling on `/control` |
 | `OSD` | `hal/imp_osd.c` | 4 | 8 | 6 | 3 | overlay placement and region updates |

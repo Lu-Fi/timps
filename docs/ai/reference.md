@@ -6,11 +6,11 @@ firmware. Everything here is verified against the `main` branch of
 <https://github.com/Lu-Fi/timps> and against `package/timps/` in a thingino
 firmware tree.
 
-Applies to timps v1.10.2 (draft, source: `dev/1.10.2`, 2026-10-12)
+Applies to timps v1.11.0 (2026-10-25)
 
 A statement marked **since vX** is new in that release — on an older camera
-describe the previous behaviour. Changes in the `[Unreleased]` 1.10.2 draft
-of `CHANGELOG.md` are marked **since v1.10.2**.
+describe the previous behaviour. Changes of v1.11.0 in `CHANGELOG.md` are marked
+**since v1.11.0**.
 
 ## Where to find what
 
@@ -208,7 +208,7 @@ ships `rtsp.user`/`rtsp.pass` and `http.user`/`http.pass` all set to
 | --- | --- |
 | `general.` | Log level, per-module debug, syslog, IMP polling timeout, OSD pool size |
 | `sensor.` | Sensor model / I²C address / fps / width / height (all optional — auto-detected from `/proc/jz/sensor/sensor0/`) |
-| `image.` | ISP tuning: brightness, contrast, NR, WB, flips, day/night running mode, FrontCrop window (`image.fcrop_*`, **since v1.10.0**; `image.fcrop_upscale_pct` **since v1.10.2**) |
+| `image.` | ISP tuning: brightness, contrast, NR, WB, flips, day/night running mode, FrontCrop window (`image.fcrop_*`, **since v1.10.0**; `image.fcrop_upscale_pct` **since v1.11.0**) |
 | `video0.` / `video1.` | Per-stream encoder: codec, geometry, fps, bitrate, rate control, GOP, QP, rotation, RTSP path, piggyback JPEG |
 | `jpeg.` | The dedicated JPEG/MJPEG encoder channel (`/snapshot.jpg`, `/stream.mjpeg`) |
 | `osd.` and `osd<S>.<N>.` | Global OSD settings, and per-stream overlay items |
@@ -262,7 +262,7 @@ v1.10.0, 2 up to v1.9.33 — match the mains frequency, see
 (0), `core_wb_mode` (0 = auto), `wb_rgain`, `wb_bgain`, `ae_it_max_us`
 (opt-in cap on AE integration time), `fcrop_enable`/`fcrop_x`/`fcrop_y`/
 `fcrop_w`/`fcrop_h` (FrontCrop window), `fcrop_upscale_pct` (**since
-v1.10.2**, -1 = leave the driver's value, at most `caps.fcrop.upscale_max`;
+v1.11.0**, -1 = leave the driver's value, at most `caps.fcrop.upscale_max`;
 T23/T31 OpenIMP only).
 `wb_rgain`/`wb_bgain` (manual WB, `core_wb_mode = 1`): **since
 v1.10.0** clamped per SoC — 0..255 on T10/T20/T30 (Q7, unity 128), 0..4095 on
@@ -371,7 +371,7 @@ same strftime pattern, `interval_s` 60, `keep_days` 7 (0..3650 **since v1.9.28**
 
 **`daynight.`** — `enabled` 1, `mode` `auto` (|`schedule`), `day_gain` 768,
 `night_gain` 4096, `day_confirm_s` 30, `jump_pct` 20 (**since v1.10.1**),
-`color_pct` 3 (**since v1.10.2**, 0 = off),
+`color_pct` 3 (**since v1.11.0**, 0 = off),
 `heartbeat_s` 14400, `heartbeat_max_s` 43200, `interval_ms` 2000,
 `switch_cmd` `daynight`, `irprobe_cmd` `timps-irprobe`, `isp_path`
 `/proc/jz/isp/isp-m0`, `history_s` 0 (max 172800), `trace_path` (tmpfs only),
@@ -610,10 +610,10 @@ cap — see the POST limits below.)
 | `timelapse` | `count`, `last_t`, `free_mb`, `last_file` | **since v1.9.28** `free_mb` is refreshed every 10 s by the timelapse thread (`-1` until the first sample), not measured per request. |
 | `record` | `recording`, `write_errors`, `last_error`, `last_error_age_s`, `motion_gate_enabled`, `manual_off`, `bytes`, `free_mb`, `file` | `last_error_age_s = -1` = no error recorded. `manual_off` is the manual stop latch (§6 commands). **since v1.9.28** `free_mb` is refreshed every 10 s by the recorder thread, so a wedged card no longer stalls `GET /control`. |
 | `motion` | `active[]`, `last_ms`, `max_cells`, plus the echoed grid config | **`active[]` is row-major**: index = `row * cols + col`, length `cols * rows`. **`last_ms = -1` means "never"**, not "just now". `max_cells` is the SDK budget, the same number as `caps.motion.max_cells`. With OpenIMP motion v2 (a `USE_OPENIMP` build whose libimp exports `OpenIMP_IVS_MoveGetResultEx`) three more keys appear while its analysis runs: `v2`:1, `suppress` (hold-off reasons: 1 day/night, 2 gain jump, 4 brightness jump, 0 none) and `objects` = `[{id,x0,y0,x1,y1,strength,age}]` in pixels of the monitored stream (strength 0..1000). |
-| `daynight` | `mode` (**int** 0 = day / 1 = night) *and* `dn_mode` (**string**), `brightness` (%), `total_gain`, `exposure`, `ae_luma`, `night_baseline`, `day_trigger`, `sun_computed_sunrise`, `sun_computed_sunset`, … | `total_gain` is the IMP `[24.8]` linear scale (**256 = 1.0×**). **`exposure` is the value the decision actually runs on** — `total_gain` scaled by the AE integration-time ratio, so it equals `total_gain` in a dark scene and drops far below it in a bright one. Quote `exposure`, not `total_gain`, when answering a day/night question; `total_gain` is kept for continuity with existing pages. `night_baseline` is the illuminator-lit night level at the last look (or the darker level it followed after 60 s 10 % above it), `day_trigger` the bar the reading **without** IR must fall below to ask for a day check (since v1.10.1 both are always published; `day_trigger` is at least `day_gain`). **Since v1.10.2** `color_trigger` (`"on"`, `"off"` = `color_pct` 0, no switchable illuminator, schedule or disabled, `"unavailable"` = this libimp gives no per-zone AWB statistics) and `color_dev_pct` (the lit picture's colour change since the last look in %, `-1` without a reference, e.g. in day or the first seconds after a look) belong to `daynight.color_pct`. `sun_computed_*` read `"--:--"` where the sun does not rise or set (polar latitudes). It also echoes the settable keys (`day_gain`, `night_gain`, `day_confirm_s`, `jump_pct`, `color_pct`, `heartbeat_s`, `heartbeat_max_s`, `interval_ms`, the Idle-Dark and calendar keys). The frozen-constant echoes of v1.10.0 (`ir_ratio_*`, `probe_settle_s`, …) are gone with the 1.10.1 engine. |
+| `daynight` | `mode` (**int** 0 = day / 1 = night) *and* `dn_mode` (**string**), `brightness` (%), `total_gain`, `exposure`, `ae_luma`, `night_baseline`, `day_trigger`, `sun_computed_sunrise`, `sun_computed_sunset`, … | `total_gain` is the IMP `[24.8]` linear scale (**256 = 1.0×**). **`exposure` is the value the decision actually runs on** — `total_gain` scaled by the AE integration-time ratio, so it equals `total_gain` in a dark scene and drops far below it in a bright one. Quote `exposure`, not `total_gain`, when answering a day/night question; `total_gain` is kept for continuity with existing pages. `night_baseline` is the illuminator-lit night level at the last look (or the darker level it followed after 60 s 10 % above it), `day_trigger` the bar the reading **without** IR must fall below to ask for a day check (since v1.10.1 both are always published; `day_trigger` is at least `day_gain`). **Since v1.11.0** `color_trigger` (`"on"`, `"off"` = `color_pct` 0, no switchable illuminator, schedule or disabled, `"unavailable"` = this libimp gives no per-zone AWB statistics) and `color_dev_pct` (the lit picture's colour change since the last look in %, `-1` without a reference, e.g. in day or the first seconds after a look) belong to `daynight.color_pct`. `sun_computed_*` read `"--:--"` where the sun does not rise or set (polar latitudes). It also echoes the settable keys (`day_gain`, `night_gain`, `day_confirm_s`, `jump_pct`, `color_pct`, `heartbeat_s`, `heartbeat_max_s`, `interval_ms`, the Idle-Dark and calendar keys). The frozen-constant echoes of v1.10.0 (`ir_ratio_*`, `probe_settle_s`, …) are gone with the 1.10.1 engine. |
 | `last_errors` | `{"<MOD>": {"level","age_s","count","msg"}}` | One entry per module that has logged, with the most recent message and how many times it repeated. Useful once the 64 KB syslog ring has recycled. On v1.9.27 an entry captured before NTP sync shows an `age_s` of ~56 years; **since v1.9.28** ages are monotonic. |
 | `video.<N>.rotation_state` | int | **Since v1.10.1**, `USE_ROTATE` builds. `0` = stream runs as configured at the last start; else the `2xx` code why it runs unrotated (table in [`error-codes.md`](error-codes.md)). Refers to the running pipeline, not to a POSTed-but-not-restarted rotation. |
-| `video.<N>.rotate_path` | string | **Since v1.10.2**, `USE_ROTATE` builds. How the running stream is rotated, i.e. in which frame overlays live: `"off"` = not rotated (also a refused rotation); `"sw"` = T23 software rotate: text OSD only, in the rotated `eff_width`×`eff_height` frame, no logo, no privacy covers, snapshot/MJPEG only when `eff_width` is a multiple of 32 and `eff_height` of 8; `"hw"` = OSD/privacy over the whole rotated frame (OpenIMP, and T40/T41 `180`); `"band"` = vendor libimp 90/270: OSD/privacy in rotated coordinates but only within the top `eff_width` rows (lower ones are moved up). OSD, privacy and the motion grid always use `eff_width`×`eff_height` coordinates. Absent = timps before 1.10.2. |
+| `video.<N>.rotate_path` | string | **Since v1.11.0**, `USE_ROTATE` builds. How the running stream is rotated, i.e. in which frame overlays live: `"off"` = not rotated (also a refused rotation); `"sw"` = T23 software rotate: text OSD only, in the rotated `eff_width`×`eff_height` frame, no logo, no privacy covers, snapshot/MJPEG only when `eff_width` is a multiple of 32 and `eff_height` of 8; `"hw"` = OSD/privacy over the whole rotated frame (OpenIMP, and T40/T41 `180`); `"band"` = vendor libimp 90/270: OSD/privacy in rotated coordinates but only within the top `eff_width` rows (lower ones are moved up). OSD, privacy and the motion grid always use `eff_width`×`eff_height` coordinates. Absent = timps before 1.11.0. |
 | `osd<S>.<N>.type` | `"text"` or `"logo"` | Read back as a **word**, unlike `record.mode` and `audio.backchannel_codec`, which read back as numbers. |
 
 ### The `caps` object — capability announcement
@@ -640,7 +640,7 @@ differently-compiled binaries.
 | `caps.play` | `{available, sounds:[...]}` — enumerates playable files |
 | `caps.webrtc` | `{available, enabled, chn_select}` — same 0/1/2 meaning as `talk_ws`; `chn_select:1` = the POST honours `?chn=N`. **Key absent entirely** when `USE_WEBRTC=0` |
 | `caps.framesource` | `{keepalive, cfg}` — **since v1.10.0.** `keepalive` = 1 when this start resolved `general.fs_keepalive` to on (video FrameSources held enabled until stop), `cfg` = the raw `-1`/`0`/`1`. On the sim it reports the resolution only (no FrameSource there). |
-| `caps.roi` / `caps.fcrop` | **Since v1.10.0.** Encoder ROI and ISP FrontCrop: `tier` = `effective` (device-tested), `experimental` (call returns 0, effect unverified), `unsupported`, or `sim`. `caps.roi` adds `regions`, `align:16`, the QP ranges and `streams[]` (`ok`/`off`/`h265`/`rotated`/`unsupported`); `caps.fcrop` adds `live`, `min:64`, `sensor:[w,h]`, `state` (`off`/`on`/`rejected`/`failed`/`unsupported`), `min_win`, `zoom_max`, `upscale_pct` (the driver's current value) and **since v1.10.2** `upscale_max` (ceiling of `image.fcrop_upscale_pct`: 100 on T23/T31 OpenIMP with the driver parameter, else -1). T10/T20/T21 ROI and FrontCrop with OpenIMP are `effective` (device-tested by the OpenIMP maintainer, not by timps); T23 ROI with OpenIMP is `effective` when the libimp exports `OpenIMP_Cap_T23HelixRoi`, else `unsupported` (since v1.10.1); T23/T31 FrontCrop (OpenIMP) is `effective` and live when the driver has `fcrop_upscale_pct`, otherwise `experimental` (T23 with `live` 0, start-only); tier table in config-keys.md §10a. |
+| `caps.roi` / `caps.fcrop` | **Since v1.10.0.** Encoder ROI and ISP FrontCrop: `tier` = `effective` (device-tested), `experimental` (call returns 0, effect unverified), `unsupported`, or `sim`. `caps.roi` adds `regions`, `align:16`, the QP ranges and `streams[]` (`ok`/`off`/`h265`/`rotated`/`unsupported`); `caps.fcrop` adds `live`, `min:64`, `sensor:[w,h]`, `state` (`off`/`on`/`rejected`/`failed`/`unsupported`), `min_win`, `zoom_max`, `upscale_pct` (the driver's current value) and **since v1.11.0** `upscale_max` (ceiling of `image.fcrop_upscale_pct`: 100 on T23/T31 OpenIMP with the driver parameter, else -1). T10/T20/T21 ROI and FrontCrop with OpenIMP are `effective` (device-tested by the OpenIMP maintainer, not by timps); T23 ROI with OpenIMP is `effective` when the libimp exports `OpenIMP_Cap_T23HelixRoi`, else `unsupported` (since v1.10.1); T23/T31 FrontCrop (OpenIMP) is `effective` and live when the driver has `fcrop_upscale_pct`, otherwise `experimental` (T23 with `live` 0, start-only); tier table in config-keys.md §10a. |
 | `caps.daynight` | `{available, ir_idle}` — **since v1.10.0.** `available` = built with `USE_DAYNIGHT`; `ir_idle` = 1 when `daynight.ir_idle_off` could act on this start (it needs the FrameSource keepalive). |
 
 Note the deliberate convention: a key that is **absent** (`caps.rotation`,
@@ -656,7 +656,7 @@ with it" semantics.
 | Query | Returns |
 | --- | --- |
 | `?fields=1` | Inventory of every POST-able config field, grouped by section. Generated from the same tables the POST walks, so it cannot drift. |
-| `?stats=1` | Small object: per-stream `gop`/`profile`/`rc_mode` + `IMP_Encoder_Query` backlog. Exists so a stats card does not poll the whole document. **Since 1.10.2** also `system`: `ncpu`, `load` (`/proc/loadavg` 1/5/15 min), `mem_total_kb` / `mem_avail_kb` (`MemAvailable`, or `MemFree+Buffers+Cached-Shmem` on pre-3.14 kernels), `cpu_pct` (whole machine busy %, all cores together) and `timps_cpu_pct` (timpsd's own share of the whole machine on the same scale, so it is ≤ `cpu_pct`; `top` per-core % = this × `ncpu`), `timps_rss_kb` (resident set). The two CPU values are integer `/proc/stat` tick deltas since the previous sample (HZ=100: ~0.5 % steps on one core over 2 s): a sample is held for at least 2 s, so concurrent or quicker polls get the same value; `-1` on the first request and after a gap over 30 s. Computed on request, no thread. |
+| `?stats=1` | Small object: per-stream `gop`/`profile`/`rc_mode` + `IMP_Encoder_Query` backlog. Exists so a stats card does not poll the whole document. **Since 1.11.0** also `system`: `ncpu`, `load` (`/proc/loadavg` 1/5/15 min), `mem_total_kb` / `mem_avail_kb` (`MemAvailable`, or `MemFree+Buffers+Cached-Shmem` on pre-3.14 kernels), `cpu_pct` (whole machine busy %, all cores together) and `timps_cpu_pct` (timpsd's own share of the whole machine on the same scale, so it is ≤ `cpu_pct`; `top` per-core % = this × `ncpu`), `timps_rss_kb` (resident set). The two CPU values are integer `/proc/stat` tick deltas since the previous sample (HZ=100: ~0.5 % steps on one core over 2 s): a sample is held for at least 2 s, so concurrent or quicker polls get the same value; `-1` on the first request and after a gap over 30 s. Computed on request, no thread. |
 | `?clients=1` | Connected streaming clients: `ip`, `port`, `proto` (`rtsp/udp`, `rtsp/tcp`, `rtsps`, `fmp4`, `mjpeg`, `events`, `webrtc`, `srt`), `chn`, `since_s`, `kbps` (per client, measured at read time), `bytes` (total sent since connect, since 1.9.25), `lat_ms` (sensor capture -> send per client, averaged; all media protocols, -1 for `events`; since v1.9.26), `drops` (media packets dropped on send, today RTSP/UDP on `ENOBUFS`/unreachable; since v1.10.0), `agent` (User-Agent; Frigate sends `FFmpeg Frigate/<ver>`). Snapshots and `/control` itself are not listed. Since 1.9.24. **Since v1.9.26** the log has the same per client: `[CLIENT] + <proto> <ip>:<port> chn=N agent="…"` on connect and `- … after Ns, N bytes` on disconnect (`/events` only at DEBUG) — `logread \| grep CLIENT` answers "who was connected when" after the fact. |
 | `?dn_history=1[&last=N\|&since=S][&max=N]` | Day/night decision series from the in-RAM ring sized by `daynight.history_s`. Rows are arrays `[t, gain, exposure, luma, bright%, mode]`; ≤600 rows/response, cursor paging via `next`/`head`/`oldest`/`lapped`. |
 
@@ -774,7 +774,7 @@ Status codes and their `reason` discriminators:
 | 421 | — (plain-text body `host not allowed`) | **since v1.10.1**: any path, the `Host` header names neither an IP, the camera's hostname nor an `http.allowed_hosts` entry (DNS-rebinding guard) | Use the IP or hostname, or add the name to `http.allowed_hosts` |
 | 403 | — (plain-text body `bad origin`) | **since v1.9.28**: a Basic/Digest-authenticated POST from a page on another host (CSRF guard) | Use the token, or post from the camera's own host |
 
-#### Test pattern (since v1.10.3)
+#### Test pattern (since v1.11.0)
 
 `{"testpattern":{"mode":0..4, "obj_size":N, "obj_contrast":N, "obj_speed":N, "obj_cell_x":N, "obj_cell_y":N, "ae_hold":0|1, "awb_hold":0|1}}`
 switches the OpenIMP test pattern: 0 off, 1 static pattern (ramps,
@@ -822,7 +822,7 @@ connections per host:port, and each SSE subscriber, `/stream.mp4` and
 `/control` and `/snapshot.jpg` requests then hang as "pending" in the browser,
 not in timps. Use one connection with the union of the types,
 `/events?stream=motion,daynight,stats`, and dispatch by event type; the
-thingino WebUI does this through `timps-api.js` (firmware pages of 1.10.2).
+thingino WebUI does this through `timps-api.js` (firmware pages of 1.11.0).
 
 **`stats` is change-gated, not periodic.** `events.stats_ms` is the *sampling*
 period; an event is emitted only when `stats_changed()` says something moved:
@@ -1030,7 +1030,7 @@ is an honest measure of ambient light, so day→night is a plain measurement
 dark). In night the camera partly measures **its own IR**, so **since v1.10.1**
 it **looks**: illuminator off for 8 s (silent), every 45 min and at once when
 the lit level falls `jump_pct` (20 %) below the last look for 20 s
-(**since v1.10.2** also when its colour moves `color_pct`, 3 %, for 20 s: a
+(**since v1.11.0** also when its colour moves `color_pct`, 3 %, for 20 s: a
 weak lamp that hardly brightens the IR-lit picture). If the
 scene without the illuminator is below the bar (`day_gain`, ×2 after a jump,
 or a bar learnt from a failed check), it **checks**: switches to the day
@@ -1062,7 +1062,7 @@ best day-pipeline reading was 9.79×) still need an explicit per-camera
    reading clears it.
 4. `general.debug_modules = daynight` (live over `/control`, no restart) gives
    per-look lines like `look (timer): lit 249 dark 284 bar 768 -> check`.
-   **Since v1.10.2** a lamp that a look should have caught shows in
+   **Since v1.11.0** a lamp that a look should have caught shows in
    `color_dev_pct`; a look it started logs `look (color)`.
 
 **Stuck in day all night in a dark room** (the opposite case): the index is
@@ -1133,8 +1133,8 @@ Distinguish **compiled out** from **misconfigured**:
 | `/webrtc/whep` answers 503 | `webrtc.enabled = 0`, or all 4 session slots busy | — |
 | `/events` answers 404 | `events.enabled = 0` or `USE_CONTROL=0` | — |
 | A WebUI page or own client hangs with requests "pending" | The browser's 6 connections per host:port are held by `/events` and stream connections (§6 `GET /events`) | Close other tabs on the camera; a client uses one `/events?stream=a,b,c` |
-| `daynight.color_trigger` = `"unavailable"` (since v1.10.2) | This libimp gives no per-zone AWB statistics (vendor T10/T20/T21, T21 OpenIMP, T30, or an OpenIMP without `OpenIMP_Cap_AwbZone`/`_AwbStatistics`) | Nothing to fix; lamps are caught by `jump_pct` and the 45-min look. `"off"` = `color_pct` 0, no `irprobe_cmd`, `schedule` or disabled |
-| `image.fcrop_upscale_pct` POST → `"unsupported"` / 104 (since v1.10.2) | Not T23/T31 OpenIMP, or the driver lacks the `fcrop_upscale_pct` parameter (`caps.fcrop.upscale_max` = -1) | — |
+| `daynight.color_trigger` = `"unavailable"` (since v1.11.0) | This libimp gives no per-zone AWB statistics (vendor T10/T20/T21, T21 OpenIMP, T30, or an OpenIMP without `OpenIMP_Cap_AwbZone`/`_AwbStatistics`) | Nothing to fix; lamps are caught by `jump_pct` and the 45-min look. `"off"` = `color_pct` 0, no `irprobe_cmd`, `schedule` or disabled |
+| `image.fcrop_upscale_pct` POST → `"unsupported"` / 104 (since v1.11.0) | Not T23/T31 OpenIMP, or the driver lacks the `fcrop_upscale_pct` parameter (`caps.fcrop.upscale_max` = -1) | — |
 | IR LED off at night until someone connects; first seconds of a stream dark, `/snapshot.jpg` slow | `daynight.ir_idle_off = 1` (Idle-Dark), working as designed | `daynight.ir_idle.dark` in `GET /control`; turn it off with POST `{"daynight":{"ir_idle_off":0}}` (LED back on at once) |
 | Setting is accepted then reverts after reboot | `not_persisted > 0` in the POST reply (more than 48 changed keys, or a failed write), a file-only key, or (since v1.10.1) a power cut within ~4 s of a `pending` change | Split the request; hand-edit `/etc/timps.conf` for file-only keys; check `persist_pending` is `0` before pulling power |
 | Log: `IMP_ISP_Tuning_Set… not in this libimp - image.… unavailable (persisted only)` | An OpenIMP build (`USE_OPENIMP`) on a vendor libimp, see below | Flash a consistent image |
@@ -1361,7 +1361,7 @@ the kernel log and escalate.
 - Direction is not uniform: on T23/T40/T41, 90 = clockwise; on T31 and
   T10/T20/T21 (same `SetChnRotate` enum), 90 = counter-clockwise (kept
   numerically aligned with prudynt-t/raptor).
-- Overlays on a rotated stream (**since v1.10.2** `video.<N>.rotate_path`):
+- Overlays on a rotated stream (**since v1.11.0** `video.<N>.rotate_path`):
   OSD, privacy and the motion grid are placed in the rotated
   `eff_width`×`eff_height` frame. With the vendor libimp at 90/270 (T31, and
   timps applies the same clamp on vendor T40/T41) hardware OSD/privacy work,
@@ -1404,7 +1404,7 @@ the kernel log and escalate.
   smaller than the stream-0 size), logged once, no retry; `"failed"` means any
   other SDK error.
 - "The crop window cannot be smaller than the stream" on T23/T31 OpenIMP:
-  **since v1.10.2** `image.fcrop_upscale_pct` (live, -1 = driver value, up to
+  **since v1.11.0** `image.fcrop_upscale_pct` (live, -1 = driver value, up to
   `caps.fcrop.upscale_max` = 100) lets the scaler upscale, so a window down to half the stream size per
   axis is accepted (`caps.fcrop.min_win` follows). Never above 100: T31 at 150
   hard-hangs until the hardware watchdog resets the camera. Lowering it with a
@@ -1471,12 +1471,12 @@ There is also a QA harness in the repo:
   cost; say it is unmeasured. The default rule (auto = on only for open-stack
   T23/T41) is a deliberate decision, not a capability limit — `1` works on
   every SoC.
-- **`daynight.color_pct` (since v1.10.2) is device-tested only on the Eufy
+- **`daynight.color_pct` (since v1.11.0) is device-tested only on the Eufy
   S350 (T40 vendor) and the Wyze Pan (T20 OpenIMP).** The other AWB paths
   (T23/T31/C100/T41, OpenIMP T23/T31/T40/T41 behind their cap symbols) are
   code paths, not measurements: do not promise that a weak lamp ends the night
   there; `color_dev_pct` at night shows whether the colour moves.
-- **Vendor T21 never reads `daynight.isp_path` since v1.10.2** (the vendor
+- **Vendor T21 never reads `daynight.isp_path` since v1.11.0** (the vendor
   driver's proc read corrupted the kernel heap). Advice to "check
   `/proc/jz/isp/isp-m0`" does not apply to day/night there.
 - **Rotation and overlays:** older text claimed hardware OSD/privacy fail on a

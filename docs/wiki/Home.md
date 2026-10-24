@@ -43,7 +43,7 @@ is the place to start.
 - **Automatic day/night switching**, replacing thingino's separate
   `daynightd` daemon: an `auto` sensor automaton (day→night by measurement,
   at night silent looks with the IR light off, started by a timer, a brighter
-  or, since v1.10.2, a differently coloured lit picture), or a calendar-only
+  or, since v1.11.0, a differently coloured lit picture), or a calendar-only
   `schedule` mode. See [Day/Night](Day-Night.md).
 - **Local recording** (continuous or motion-triggered fMP4 segments to SD)
   and **timelapse** (periodic JPEG capture).

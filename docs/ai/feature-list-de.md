@@ -11,7 +11,7 @@ prudynt-t / raptor.
   HTTP-Control-API, Streaming-Protocols, Day-Night, Audio, Motion-Detection,
   Recording-Timelapse, Rate-Control-\*, Building, Logging, Testing-QA,
   Platform-SDK-Support)
-* Stand dieses Dokuments: `dev/1.10.2`, Version v1.10.2 (Entwurf, 2026-10-12);
+* Stand dieses Dokuments: Version v1.11.0 (2026-10-25);
   gestripptes `timpsd` ca. 410 KB (410 108 Byte: mipsel, T31 mit
   Hersteller-libimp, WebRTC, TLS und Rotation an; Stand `main` 2026-10-06). Mit
   **seit vX** markierte Aussagen sind in diesem Release neu – auf einer
@@ -95,7 +95,10 @@ prudynt-t / raptor.
 * **Encoder-Telemetrie** in `GET /control` unter `encoder.<n>` – inklusive
   `encoder.<n>.rc`: das, was der Encoder wirklich hält (Rückleseweg über
   `IMP_Encoder_GetChnAttrRcMode`), getrennt von der konfigurierten Sollgröße.
-  Dazu Backlog-Zähler und `queue_drops` je Stream.
+  Dazu Backlog-Zähler und `queue_drops` je Stream. **Seit v1.11.0** auf
+  T40/T41 mit OpenIMP zusätzlich `encoder.<n>.telemetry` (Frames, Bytes,
+  IDR-Anzahl, fps, kbit/s, mittlere und maximale Encode-Zeit; die WebUI-Vorschau
+  zeigt Encode-Zeit und Keyframes).
 * **Nachvollziehbare Queue-Überläufe** (*seit v1.9.19*):
   `queue_drops` zählt Verwürfe in der Warteschlange eines *Konsumenten*. Eine
   Sammelmeldung nennt jetzt höchstens einmal pro 60 s je (Konsumentenart,
@@ -129,7 +132,8 @@ prudynt-t / raptor.
   T10/T20/T21 experimentell. **T31 mit OpenIMP** über `SetChnRoiAttr`
   (vom OpenIMP-Maintainer getestet, in timps nur Host-Tests); vendor T31
   lehnt ab (kein Symbol). Vendor T23 lehnt ab (der Encoder speichert die
-  Region nur), dazu T30, T40, T41 und C100. **Seit v1.10.1** ist T23 mit
+  Region nur), dazu T30 und C100. **Seit v1.11.0** T40/T41 mit OpenIMP
+  experimentell (`OpenIMP_Cap_EncRoi`, nur QP-Deltas). **Seit v1.10.1** ist T23 mit
   OpenIMP wirksam, wenn die libimp `OpenIMP_Cap_T23HelixRoi` exportiert
   (OpenIMP v2026.10.11-rc1 oder neuer), sonst abgelehnt. Delta -25..25 (T21
   und OpenIMP-T23 wirken nur etwa -12..+13);
@@ -147,7 +151,7 @@ prudynt-t / raptor.
   ungedreht. Echte per-Kanal-180°-Drehung nur auf T40/T41; sonst stattdessen
   `image.hflip` + `image.vflip`. T23: höchstens 704×576 Pixel und 15 fps,
   Quellhöhe Vielfaches von 16 (für Snapshot/MJPEG von 32), z. B. 704×384 →
-  384×704. **Seit v1.10.2** meldet `GET /control` je Stream
+  384×704. **Seit v1.11.0** meldet `GET /control` je Stream
   `video.<N>.rotate_path`: `off`, `sw` (T23, nur Text-OSD), `band`
   (Hersteller-libimp 90/270: OSD/Privacy nur in den oberen `eff_width`
   Zeilen) oder `hw` (ganzes Bild).
@@ -198,7 +202,7 @@ prudynt-t / raptor.
   `-EINVAL` abgelehnt (`state` `rejected`, eine WARN). Vendor T23, T30,
   T40/T41, C100 und vendor T10/T20/T21 lehnen ab. Stufe und Zustand:
   `caps.fcrop`.
-* **Crop-Hochskalierung (seit v1.10.2)** – `image.fcrop_upscale_pct`
+* **Crop-Hochskalierung (seit v1.11.0)** – `image.fcrop_upscale_pct`
   (Default -1 = Treiberwert lassen, live, nur T23/T31 mit OpenIMP): der
   Skalierer darf das Fenster je Achse um so viel Prozent vergrößern, bei 100
   also ein Fenster bis zur halben Streamgröße. Obergrenze
@@ -206,6 +210,19 @@ prudynt-t / raptor.
   hart). Wird der Wert gesenkt und passt das aktive Fenster nicht mehr, geht
   der Crop auf den vollen Sensor zurück. Anderswo antwortet ein POST
   `"unsupported"` (104).
+
+* **Crop auf T40/T41 (seit v1.11.0)** – mit OpenIMP über die ISP-AutoZoom
+  (`OpenIMP_Cap_AutoZoom`), experimentell, ohne Hochskalierung. T41 live bis
+  zur Grenze des Treibers (1920x1080 mit aktuellem open-tx-isp, sonst
+  768x432), größere Streams starten ihre Framesource kurz neu; T40 live bis 4K.
+* **DRC/DPC auf T41 (seit v1.11.0)** – `image.drc_strength` und
+  `image.dpc_strength` mit OpenIMP (ISP-Modulanteile 2/3, 128 = Herstellerbild),
+  live.
+* **Testbild (seit v1.11.0)** – mit OpenIMP (`OpenIMP_Cap_TestPattern`)
+  `{"testpattern":{"mode":0..4}}` und Knöpfe auf der WebUI-Vorschau:
+  statisches Muster, bewegtes Quadrat, Bewegungstest mit Auswertung (Treffer,
+  Fehlalarme, Verzögerung), Sensor-Testbild durch den ganzen ISP. Tag/Nacht
+  bleibt währenddessen auf Tag.
 
 ## Day/Night (automatische Tag-/Nachtumschaltung)
 
@@ -224,8 +241,10 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   unter dem letzten Blick liegt. Ist die Szene ohne IR hell genug, **prüft**
   sie mit dem Tagbild (ein Klick): unter `day_gain` bleibt Tag, sonst zurück
   (zweiter Klick); die nächste Prüfung braucht dann einen dunkleren Blick und
-  wartet 1, 2, 4 … min.
-* **Farb-Auslöser (seit v1.10.2)** – `daynight.color_pct` (Default 3, 0 = aus,
+  wartet 1, 2, 4 … min. **Seit v1.11.0** fragt Licht, das langsam kommt
+  (Dämmerung mit Tageslicht-IR, ein Kaminfeuer), erst wieder, wenn das k der
+  gescheiterten Prüfung Tag vorhersagt; plötzliches Licht fragt weiter sofort.
+* **Farb-Auslöser (seit v1.11.0)** – `daynight.color_pct` (Default 3, 0 = aus,
   0..50, live): ändert sich die Farbe des IR-beleuchteten Bildes (globales R/G
   oder B/G der AWB-Statistik, alle 5 s gelesen) 20 s lang um so viele Prozent
   gegenüber dem letzten Blick, schaut die Kamera sofort. So beendet auch eine
@@ -237,10 +256,10 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   `OpenIMP_Cap_AwbZone`/`_AwbStatistics`); Status `daynight.color_trigger`
   (`on`/`off`/`unavailable`) und `color_dev_pct`. Auf dem Gerät getestet nur
   auf T40 (Hersteller) und T20 (OpenIMP).
-* **Referenz nur aus ruhigem Bild (seit v1.10.2)** – ein Blick, während der
+* **Referenz nur aus ruhigem Bild (seit v1.11.0)** – ein Blick, während der
   beleuchtete Pegel noch wandert (Lampe geht an, Blick einer Nachbarkamera),
   setzt keine Referenz; das tut der nächste ruhige Pegel (höchstens 60 s).
-* **Hersteller-T21 (seit v1.10.2)** liest `daynight.isp_path` nicht mehr: der
+* **Hersteller-T21 (seit v1.11.0)** liest `daynight.isp_path` nicht mehr: der
   Treiber beschädigte beim Lesen den Kernel-Heap. Ein Erkennungs-Thread, der
   nicht mehr tickt, meldet sich einmal als Fehler im Log.
 * **Garantie**: spätestens nach `heartbeat_max_s` (12 h) ohne Tagbild-Messung
@@ -495,7 +514,7 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
 * **Unter-Endpunkte**: `GET /control?fields=1` (Inventar aller POST-baren
   Felder, direkt aus denselben Tabellen erzeugt, die der POST benutzt),
   `?stats=1` (schlanker Zahlensatz für die Stats-Karte statt des 8-KB-Dokuments;
-  **seit v1.10.2** mit `system`: Load, Gesamt-/verfügbarer Speicher, CPU % der
+  **seit v1.11.0** mit `system`: Load, Gesamt-/verfügbarer Speicher, CPU % der
   Maschine und von `timpsd` sowie dessen RSS),
   `?dn_history=1[&last=N|&since=S][&max=N]` (Day/Night-Serie mit Cursor-Paging),
   `?clients=1` (verbundene Clients: IP, Protokoll, Stream, Verbindungsdauer,
@@ -537,7 +556,7 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   `tool-record.html` und `tool-timelapse.html` leiten auf die neuen Seiten weiter.
 * Die Vorschauen holen `/stream.mjpeg?chn=N` und `/snapshot.jpg?chn=N` direkt
   vom timps-Port (mit `?token=`), ohne Proxy-CGI.
-* **Seiten zu 1.10.2**: Feld `color_pct` auf der Day/Night-Seite; Schalter und
+* **Seiten zu 1.11.0**: Feld `color_pct` auf der Day/Night-Seite; Schalter und
   Regler für die Crop-Hochskalierung, gesperrte Crop-Regler ohne Zoom und
   ausgeblendete Tabs, die der SoC nicht kann; ein Klick korrigiert die
   Geometrie einer abgelehnten Rotation; die Overlay-Editoren arbeiten im
@@ -574,7 +593,7 @@ wird die WebSocket-Variante (statt CGI-Polling) aktiviert.
 * **Rotation**: Hardware-I2D auf T40/T41, FrameSource-Rotate auf T31 und
   (seit v1.10.0, nur OpenIMP mit T1x-Rotation, nur Sub-Streams)
   T10/T20/T21, Software auf T23, gar nicht auf T30/C100.
-* **AWB-Statistik für den Farb-Auslöser (seit v1.10.2)**: T40/T41, T23/T31/C100,
+* **AWB-Statistik für den Farb-Auslöser (seit v1.11.0)**: T40/T41, T23/T31/C100,
   T10/T20 mit OpenIMP; nicht auf Hersteller-T10/T20/T21, T21 mit OpenIMP und
   T30.
 * **Host-Simulation** ohne Hardware: `make sim` baut `timpsd-sim`, das Dateien

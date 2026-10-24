@@ -229,7 +229,7 @@ is an honest measure of ambient light, so day→night is a plain measurement,
 while in night the camera is partly measuring its own illuminator, so
 night→day is only ever decided by checking the day pipeline, asked for by a
 silent look with the IR light off (every 45 min, or at once when the lit
-picture gets brighter or, since 1.10.2, changes colour). A calendar (fixed
+picture gets brighter or, since 1.11.0, changes colour). A calendar (fixed
 window or real sunrise/sunset for a lat/long) is used only by
 `daynight.mode=schedule`, which hands it the decision outright. See
 [Day/Night](docs/wiki/Day-Night.md).
