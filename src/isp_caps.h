@@ -14,6 +14,7 @@
  *   SetBacklightComp/SetDefog_Strength/
  *   SetDPC_Strength                      -> T23 T31 C100
  *   SetDRC_Strength (WDR)                -> T21 T23 T31 C100
+ *   (T41 OpenIMP: DRC/DPC as Module_Ratio entries, see below)
  *   SetHiLightDepress, SetSinter/Temper,
  *   SetMaxAgain/SetMaxDgain, SetWB,
  *   SetISPHflip/SetISPVflip              -> T10 T20 T21 T23 T30 T31 C100
@@ -86,11 +87,15 @@
  * vendor picture (measured: AE target 18/58/89 mean luma at 30/128/230, sinter
  * noise 488/351/216 at 0/128/255). Temper is temporal NR, visible only at high
  * gain: frame-to-frame std 9.8 at 0 vs 2.5 at 128, saturating above 128.
- * ISP_HAS_NR only gates the keys here, the classic setters stay behind
- * !ISP_NEW_TUNING_API. HLC/BLC, DRC, DPC and defog are not wired. */
+ * drc/dpc_strength are entries 2/3 (OpenIMP 2026-10-24, read back and with a
+ * measured effect; 128 = vendor). ISP_HAS_NR/DRC/DPC only gate the keys here,
+ * the classic setters stay behind !ISP_NEW_TUNING_API. HLC/BLC and defog
+ * are not wired. */
 #if defined(PLATFORM_T41)
 #define ISP_HAS_AECOMP 1
 #define ISP_HAS_NR 1
+#define ISP_HAS_DRC 1
+#define ISP_HAS_DPC 1
 /* IMP_ISP_Tuning_GetAeExprInfo: the AE gain ceiling incl. a configured cap,
  * which the /proc dump does not show; daynight's AE reserve */
 #define ISP_HAS_AE_EXPR_INFO 1

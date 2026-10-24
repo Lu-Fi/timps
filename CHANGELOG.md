@@ -11,19 +11,30 @@ _1.10.3 (draft)_
 ### Added
 
 - Encoder ROI on T40/T41 with OpenIMP: experimental, runtime-detected through
-  `OpenIMP_Cap_EncRoi`. Regions are sent as QP deltas. On T41 the encoder
-  ignores them under FixQP; such a stream reports `caps.roi.streams[N]` =
-  `"fixqp"` and the WebUI shows the ROI editor inactive with the reason.
+  `OpenIMP_Cap_EncRoi`. Regions are sent as QP deltas. With a T41 libimp
+  older than OpenIMP 958f7f3 the encoder ignores them under FixQP; such a
+  stream reports `caps.roi.streams[N]` = `"fixqp"` and the WebUI shows the
+  ROI editor inactive with the reason. From 958f7f3 FixQP streams take
+  regions too.
 - Crop (`image.fcrop_*`) on T40/T41 with OpenIMP through the ISP AutoZoom:
   experimental, runtime-detected through `OpenIMP_Cap_AutoZoom`. Live on
-  every stream: up to 768x432 at once, a larger one restarts its
-  framesource with the encoder stopped (about 45 ms gap, new keyframe). No
-  upscaling. T40 with OpenIMP takes the same path (live up to 4K, no
+  every stream up to the driver's envelope at once (1920x1080 with
+  open-tx-isp 9fc513c8, read from `t41_msca_live_max_w/h`; 768x432 with
+  older drivers), a larger one restarts its framesource with the encoder
+  stopped (about 45 ms gap, new keyframe). No upscaling. T40 with OpenIMP takes the same path (live up to 4K, no
   restart); not yet device-tested with timps.
 - T40/T41 rotation follows the vendor I2D semantics: the framesource stays
   unrotated, only the encoder gets the swapped size; 180 is a real I2D
   rotate. With OpenIMP it needs `OpenIMP_Cap_I2dRotate`, otherwise rotation
   is refused (`caps.rotation` = `[0]`). Width/height must be multiples of 8.
+- T41 with OpenIMP: `image.drc_strength` and `image.dpc_strength` (ISP
+  module ratios 2/3, 0..255, 128 = vendor picture), live.
+- `/control` `encoder.<N>.telemetry` on T40/T41 with OpenIMP
+  (`OpenIMP_Encoder_GetTelemetry`): frames, bytes, IDR count, delivered fps
+  and kbit/s, average and maximum encode time.
+- Day/night: light that creeps in (dawn with daylight infrared, a fire)
+  asks again only once the k of the failed check predicts day; a sudden
+  light still asks at once. Replay: a bedroom dawn 7 -> 3 failed checks.
 - T40: RTSP and fMP4 clients wait up to 5 s (was 2 s) for the first
   parameter sets; the open T40 driver needs about 3.3 s from start to the
   first frame.

@@ -2212,6 +2212,13 @@ static int get_json(char *buf, size_t cap)
                 es.cur_packs, es.work_done, es.au_drops);
             if (es.ave_bitrate >= 0.0)
                 APP(",\"ave_bitrate\":%.1f", es.ave_bitrate);
+            if (es.tel)
+                APP(",\"telemetry\":{\"frames\":%llu,\"bytes\":%llu,\"idr\":%llu,"
+                    "\"fps\":%u.%02u,\"kbps\":%u,\"encode_us_avg\":%u,"
+                    "\"encode_us_max\":%u}",
+                    es.tel_frames, es.tel_bytes, es.tel_idr, es.tel_fps_x100 / 100,
+                    es.tel_fps_x100 % 100, es.tel_kbps, es.tel_enc_us_avg,
+                    es.tel_enc_us_max);
             {   /* "rc": what the encoder ACTUALLY holds right now
                  * (IMP_Encoder_GetChnAttrRcMode readback, hal.h) -
                  * deliberately separate from the CONFIGURED videoN.* block

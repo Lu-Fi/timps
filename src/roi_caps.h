@@ -47,8 +47,9 @@ static inline const char *cap_tier_name(int t)
  * maintainer); OPENIMP_T31_ROI=0 in libimp turns it off.
  * T31 vendor: the 1.1.x libimp has no ROI symbol.
  * T40/T41 OpenIMP: device-tested by the OpenIMP maintainer once the libimp
- * exports OpenIMP_Cap_EncRoi (bit 0); T41 only under CBR/VBR (bit 1), FixQP
- * shows no effect. Deltas only: the SDK declares absolute QP unsupported.
+ * exports OpenIMP_Cap_EncRoi (bit 0); bit 1 marks a libimp whose ROI has no
+ * effect under FixQP (T41 before OpenIMP 958f7f3, which exports 1). Deltas
+ * only: the SDK declares absolute QP unsupported.
  * OPENIMP_T40_ROI=0 / OPENIMP_T41_ROI=0 in libimp turn it off.
  * T40/T41 vendor: deltas -26..25 only, never device-tested.
  * T30/C100 not investigated. */
@@ -122,7 +123,9 @@ static inline int roi_rt_tier(int tier, int gate, int cap)
  * T40/T41: no FrontCrop in the SDK, and a live fs1 crop stops frames on T41.
  * T41 OpenIMP: IMP_ISP_Tuning_SetAutoZoom instead (per FS channel, sensor
  * pixels), once the libimp exports OpenIMP_Cap_AutoZoom. Live on outputs up
- * to FCROP_AZ_LIVE_W x FCROP_AZ_LIVE_H; the driver defers a larger one to the
+ * to the driver's envelope (FCROP_AZ_LIVE_PARAM, 1920x1080 since open-tx-isp
+ * 9fc513c8; FCROP_AZ_LIVE_W x FCROP_AZ_LIVE_H when unreadable); the driver
+ * defers a larger one to the
  * channel's next enable, so its encode thread restarts the framesource with
  * the encoder stopped (device-tested on T41 ch0, also under fs_keepalive).
  * The start window is set before the first enable. No upscaling.
@@ -133,6 +136,7 @@ static inline int roi_rt_tier(int tier, int gate, int cap)
 #define FCROP_AUTOZOOM 1
 #define FCROP_AZ_LIVE_W 768
 #define FCROP_AZ_LIVE_H 432
+#define FCROP_AZ_LIVE_PARAM "/sys/module/tx_isp_t41/parameters/t41_msca_live_max_"
 #elif defined(PLATFORM_T40) && defined(USE_OPENIMP)
 #define FCROP_AUTOZOOM 1
 #define FCROP_AZ_LIVE_W 8192

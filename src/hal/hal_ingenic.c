@@ -1456,6 +1456,23 @@ extern const int OpenIMP_Cap_AutoZoom __attribute__((weak));
 #define FCROP_API "SetAutoZoom"
 static int g_fs_ow[MS_FS_MAXCHN], g_fs_oh[MS_FS_MAXCHN];
 static unsigned g_fcrop_recycle;     /* running channels whose window the driver deferred */
+static int g_az_live_w = FCROP_AZ_LIVE_W, g_az_live_h = FCROP_AZ_LIVE_H;
+
+#ifdef FCROP_AZ_LIVE_PARAM
+static void fcrop_az_live_read(void)
+{
+    int v[2] = { -1, -1 };
+    for (int i = 0; i < 2; i++) {
+        FILE *f = fopen(i ? FCROP_AZ_LIVE_PARAM "h" : FCROP_AZ_LIVE_PARAM "w", "r");
+        if (!f) return;
+        if (fscanf(f, "%d", &v[i]) != 1) v[i] = -1;
+        fclose(f);
+    }
+    if (v[0] <= 0 || v[1] <= 0 || v[0] > 8192 || v[1] > 8192) return;
+    g_az_live_w = v[0]; g_az_live_h = v[1];
+    LOGI(MOD,"AutoZoom live on outputs up to %dx%d (driver)", v[0], v[1]);
+}
+#endif
 
 /* one window on every framesource; caller holds g_isp_lock */
 static int fcrop_set(ms_fcrop_api *c)
@@ -1467,7 +1484,7 @@ static int fcrop_set(ms_fcrop_api *c)
         if (g_fs_ow[ch] <= 0) continue;
         z.en[ch] = c->en; z.left[ch] = (int32_t)c->left; z.top[ch] = (int32_t)c->top;
         z.w[ch] = (int32_t)c->width; z.h[ch] = (int32_t)c->height;
-        if ((g_fs_ow[ch] > FCROP_AZ_LIVE_W || g_fs_oh[ch] > FCROP_AZ_LIVE_H) &&
+        if ((g_fs_ow[ch] > g_az_live_w || g_fs_oh[ch] > g_az_live_h) &&
             __atomic_load_n(&g_fsr.enabled[ch], __ATOMIC_RELAXED))
             rec |= 1u << ch;
     }
@@ -1717,6 +1734,9 @@ static void fcrop_boot(void)
                  "on this camera", g_hcfg->image.fcrop_upscale_pct);
     }
 #if FCROP_TIER != CAP_TIER_UNSUPPORTED
+#ifdef FCROP_AZ_LIVE_PARAM
+    fcrop_az_live_read();
+#endif
     g_fcrop_set = 0;
     g_fcrop_state = FC_OFF;
     memset(&g_fcrop_rej, 0, sizeof g_fcrop_rej);
@@ -1912,6 +1932,16 @@ static int isp_apply_image(const char *k)
     if (!strcmp(k,"temper_strength")){
         static int touched;
         t41_set_module_ratio(IMP_ISP_MODULE_TEMPER,k,im->temper_strength,&touched);
+        return 1;
+    }
+    if (!strcmp(k,"drc_strength")){
+        static int touched;
+        t41_set_module_ratio(IMP_ISP_MODULE_DRC,k,im->drc_strength,&touched);
+        return 1;
+    }
+    if (!strcmp(k,"dpc_strength")){
+        static int touched;
+        t41_set_module_ratio(IMP_ISP_MODULE_DPC,k,im->dpc_strength,&touched);
         return 1;
     }
 #endif
@@ -7130,6 +7160,16 @@ int hal_isp_ae_info(hal_isp_ae *out)
  * stream) or the SW-rotate path that has no encoder channel. On T31 the average
  * bitrate cached by the encode thread (GetChnAveBitrate) is attached too; on
  * every other platform, and before the first frame flows, ave_bitrate is <0. */
+#if defined(USE_OPENIMP) && (defined(PLATFORM_T40) || defined(PLATFORM_T41))
+/* include/openimp/openimp_encoder_telemetry.h (OpenIMP 2026-10-24) */
+typedef struct {
+    uint64_t frames, bytes, idr_frames;
+    uint32_t last_frame_bytes, encode_us_last, encode_us_avg, encode_us_max;
+    uint32_t fps_x100, avg_kbps, encoding;
+} ms_enc_telemetry;
+extern int OpenIMP_Encoder_GetTelemetry(int, ms_enc_telemetry *) __attribute__((weak));
+#endif
+
 int hal_enc_stats(int enc_chn, hal_enc_stat *out)
 {
     if (!out) return -1;
@@ -7143,6 +7183,16 @@ int hal_enc_stats(int enc_chn, hal_enc_stat *out)
     out->work_done          = s.work_done;
     out->ave_bitrate        = -1.0;
     out->au_drops           = 0;
+    out->tel                = 0;
+#if defined(USE_OPENIMP) && (defined(PLATFORM_T40) || defined(PLATFORM_T41))
+    ms_enc_telemetry t;
+    if (OpenIMP_Encoder_GetTelemetry && OpenIMP_Encoder_GetTelemetry(enc_chn, &t) == 0) {
+        out->tel = 1;
+        out->tel_frames = t.frames; out->tel_bytes = t.bytes; out->tel_idr = t.idr_frames;
+        out->tel_fps_x100 = t.fps_x100; out->tel_kbps = t.avg_kbps;
+        out->tel_enc_us_avg = t.encode_us_avg; out->tel_enc_us_max = t.encode_us_max;
+    }
+#endif
     for (int i=0;i<g_nv;i++)
         if (g_v[i].chn == enc_chn){
             out->au_drops = g_v[i].au_drops;

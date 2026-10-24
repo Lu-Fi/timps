@@ -183,6 +183,10 @@ typedef struct {
                                   * the events behind the throttled "dropping
                                   * frame" log, previously invisible between
                                   * every 20th line */
+    int      tel;                /* 1: the fields below are filled
+                                  * (OpenIMP_Encoder_GetTelemetry, T40/T41) */
+    unsigned long long tel_frames, tel_bytes, tel_idr;
+    unsigned tel_fps_x100, tel_kbps, tel_enc_us_avg, tel_enc_us_max;
 } hal_enc_stat;
 int hal_enc_stats(int enc_chn, hal_enc_stat *out);
 
