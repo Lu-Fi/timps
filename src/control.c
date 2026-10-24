@@ -2555,6 +2555,9 @@ static int stats_json(char *buf, size_t cap)
             es.left_stream_frames);
         if (es.ave_bitrate >= 0.0)
             APP(",\"ave_bitrate\":%.1f", es.ave_bitrate);
+        if (es.tel)
+            APP(",\"idr\":%llu,\"encode_us_avg\":%u,\"encode_us_max\":%u",
+                es.tel_idr, es.tel_enc_us_avg, es.tel_enc_us_max);
         APP("}");
         nemit++;
     }
