@@ -1218,6 +1218,11 @@ enum { S_BOOT = -1, S_DAY = 0, S_NIGHT = 1, S_LOOK = 2, S_CHECK = 3 };
 #define SD_K_MAX      2.00f     /* foreign IR reads 4-20: a lamp after it must still ask */
 #define SD_F_N        4         /* failed checks kept for the jump bar */
 #define SD_F_REL      0.90f
+#define SD_KF_MS      3600000   /* a failed check's k judges the looks after it this long */
+#define SD_KF_MIN     0.70f     /* ... unless a light brings the dark reading below this share */
+#define SD_KF_GONE    2.0f      /* the lit level this far above the failed look: that light left */
+#define SD_RAMP       0.85f     /* a jump within this of the level a minute before crept in */
+#define SD_RAMP_N     7         /* lit levels kept, 10 s apart */
 
 /* the AE cannot brighten the image any further */
 static int sd_exhausted(const dn_sample *m)
@@ -1324,6 +1329,10 @@ static void *dn_thread(void *arg)
     float   K = 1.0f, Kh[SD_K_N], Nk = -1.0f;  /* survives a jump, unlike B */
     float   F[SD_F_N];              /* dark readings of failed checks */
     int     Kn = 0, Fn = 0;
+    float   Kf = -1.0f, Nf = -1.0f, Lf = -1.0f; /* k, dark and lit of the last failed check */
+    int64_t Kf_at = 0, r_at = 0;
+    float   R[SD_RAMP_N] = { 0 }, Rj = 0.0f;
+    int     ramp = 0;
     int64_t boot_at = ms_now_us() / 1000, due = 0, hold = 0, look_at = 0;
     int64_t day_at = 0, mode_at = 0, N_at = 0, verify_at = 0, quiet = 0, idle_at = 0;
     int64_t reassert_at = 0, cycle_at = 0, rise = 0, a_by = 0;
@@ -1496,11 +1505,17 @@ static void *dn_thread(void *arg)
             }
             int jump = 0;
             float jb = irp ? 1.0f - (float)dn->jump_pct / 100.0f : SD_JUMP_CHECK;
+            if (now - r_at >= 10000) {
+                memmove(R + 1, R, (SD_RAMP_N - 1) * sizeof *R);
+                R[0] = s > 0.0f ? s : 0.0f; r_at = now;
+            }
             if (A > 0.0f && s > 0.0f && s < A * jb) {
-                if (!hold) hold = now;
+                if (!hold) { hold = now; Rj = R[SD_RAMP_N - 1]; }
                 jump = now - hold >= SD_JUMP_HOLD_MS;
             } else hold = 0;
+            ramp = jump && Rj > 0.0f && s > Rj * SD_RAMP;
             if (jump) B = -1.0f;            /* new light: the bar was for the old one */
+            if (Kf > 0.0f && Lf > 0.0f && s > Lf * SD_KF_GONE) Kf = -1.0f;
             /* the light A (and B) were taken under is gone: else a lamp
              * would have to beat that light, and B would still judge for it */
             if (A > 0.0f && s > A * SD_RISE) {
@@ -1587,6 +1602,14 @@ static void *dn_thread(void *arg)
             if (ok && B == 0.0f) B = N * SD_B_REL;
             float bar = B > 0.0f ? B : why[0] != 'j' ? dn->day_gain :
                         sd_jump_bar(dn->day_gain, K, F, Fn);
+            /* dawn and fire creep in, a jump at a time: ask once the failed
+             * light's k predicts day; a sudden light also when it pulls the
+             * dark reading well below the failed one */
+            if (Kf > 0.0f && now - Kf_at < SD_KF_MS) {
+                float kb = ramp && why[0] == 'j' ? dn->day_gain / Kf :
+                           fmaxf(dn->day_gain / Kf, Nf * SD_KF_MIN);
+                if (kb < bar) bar = kb;
+            }
             int ask = ok && N < bar;
             if (idle) {
                 if (!ask) { hold = 0; break; }
@@ -1633,7 +1656,7 @@ static void *dn_thread(void *arg)
             }
             Nk = -1.0f;
             if (s < dn->day_gain) {
-                st = S_DAY; B = -1.0f; hold = 0; mode_at = now;
+                st = S_DAY; B = -1.0f; Kf = -1.0f; hold = 0; mode_at = now;
                 lock_until = 0; lock_ms = SD_LOCK_MS;
                 LOGI(MOD, "check (%s): day, exposure %.0f < %.0f", why,
                      (double)s, (double)dn->day_gain);
@@ -1648,6 +1671,7 @@ static void *dn_thread(void *arg)
                     (sd_exhausted(&sm) || s > SD_FAR * dn->night_gain))
                     B = N * SD_B_REL;
                 if (B < N * SD_B_MIN) B = N * SD_B_MIN;
+                Kf = s / N; Nf = N; Lf = L; Kf_at = now;
             } else B = 0.0f;
             if (why[0] != 'b') {
                 lock_until = now + lock_ms;

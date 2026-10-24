@@ -1,0 +1,17 @@
+{
+ "name": "ofen",
+ "camera": "cam-wohn-ofen, living room by the stove: the fire lights the night pipeline (k 11-38)",
+ "map": {"kind": "generic"},
+ "scenes": {
+  "night": {"day": 22806, "lit": 1700, "dark": 22806, "railed": true, "src": "2026-10-24 06:01 timer look, checks rail at 22806"},
+  "f1": {"day": 22806, "lit": 1295, "dark": 3882, "railed": true, "src": "21:47 look; day ASSUMED rail"},
+  "f2": {"day": 16000, "lit": 959, "dark": 1420, "src": "21:48 look; day ASSUMED"},
+  "f3": {"day": 13000, "lit": 743, "dark": 1174, "src": "21:50 look; day ASSUMED"},
+  "f4": {"day": 10385, "lit": 608, "dark": 922, "src": "21:53 look + check"},
+  "f5": {"day": 12000, "lit": 654, "dark": 1142, "src": "22:05 look; day ASSUMED"},
+  "f6": {"day": 16000, "lit": 886, "dark": 1590, "src": "22:11 look; day ASSUMED"},
+  "f7": {"day": 10226, "lit": 648, "dark": 925, "src": "22:13 look + check"},
+  "f8": {"day": 22806, "lit": 603, "dark": 880, "railed": true, "src": "23:52 look + check (rail)"},
+  "f9": {"day": 22484, "lit": 436, "dark": 593, "src": "00:00 look + check"}
+ }
+}

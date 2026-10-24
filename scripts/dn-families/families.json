@@ -3633,6 +3633,184 @@
     "max_switches": 7,
     "max_on_s": 60
    }
+  },
+  {
+   "name": "dawn_ir",
+   "title": "dawn with daylight infrared (k 4-5): the steps of the ramp do not each cost a failed check",
+   "duration_s": 7200,
+   "initial_mode": "night",
+   "config": {
+    "daynight.day_gain": 2000
+   },
+   "timelines": {
+    "sz": [
+     [
+      0,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      900,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      5400,
+      {
+       "lvl": 1.0
+      }
+     ],
+     [
+      7200,
+      {
+       "lvl": 1.0
+      }
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 1800,
+    "max_switches": 7
+   }
+  },
+  {
+   "name": "fire",
+   "title": "a stove fire lights the night pipeline in sudden steps for hours (k 11-38): each step asks like a lamp (guard of today's count)",
+   "duration_s": 9600,
+   "initial_mode": "night",
+   "config": {
+    "daynight.day_gain": 2000
+   },
+   "timelines": {
+    "ofen": [
+     [
+      0,
+      "night"
+     ],
+     [
+      419,
+      "night"
+     ],
+     [
+      420,
+      "f1"
+     ],
+     [
+      518,
+      "f1"
+     ],
+     [
+      519,
+      "f2"
+     ],
+     [
+      618,
+      "f2"
+     ],
+     [
+      619,
+      "f3"
+     ],
+     [
+      779,
+      "f3"
+     ],
+     [
+      780,
+      "f4"
+     ],
+     [
+      1499,
+      "f4"
+     ],
+     [
+      1500,
+      "f5"
+     ],
+     [
+      1859,
+      "f5"
+     ],
+     [
+      1860,
+      "f6"
+     ],
+     [
+      1979,
+      "f6"
+     ],
+     [
+      1980,
+      "f7"
+     ],
+     [
+      3599,
+      "f7"
+     ],
+     [
+      3600,
+      "f6"
+     ],
+     [
+      4799,
+      "f6"
+     ],
+     [
+      4800,
+      "night"
+     ],
+     [
+      7799,
+      "night"
+     ],
+     [
+      7800,
+      "f1"
+     ],
+     [
+      7869,
+      "f1"
+     ],
+     [
+      7870,
+      "f2"
+     ],
+     [
+      7919,
+      "f2"
+     ],
+     [
+      7920,
+      "f8"
+     ],
+     [
+      8399,
+      "f8"
+     ],
+     [
+      8400,
+      "f9"
+     ],
+     [
+      9299,
+      "f9"
+     ],
+     [
+      9300,
+      "night"
+     ],
+     [
+      9600,
+      "night"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 60,
+    "max_switches": 12
+   }
   }
  ]
 }

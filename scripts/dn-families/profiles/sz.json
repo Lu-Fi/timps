@@ -1,0 +1,20 @@
+{
+ "name": "sz",
+ "camera": "cam-sz, bedroom, dawn through the window (daylight infrared: k 4-5)",
+ "map": {"kind": "generic"},
+ "curve_src": "looks and checks on 2026-10-24 08:01-09:15 (syslog); lvl = minutes after 08:00 / 75; day at 08:01/08:11 ASSUMED 4 x dark; night from 23:43",
+ "curve": [
+  [0.0, 46336, 4581, 41772],
+  [0.01, 37000, 3527, 9354],
+  [0.15, 19700, 2898, 4924],
+  [0.2, 2735, 1818, 2190],
+  [0.253, 3620, 1399, 1615],
+  [0.333, 6142, 1098, 1245],
+  [0.4, 3924, 865, 966],
+  [0.533, 3946, 686, 750],
+  [0.787, 2459, 591, 615],
+  [1.0, 1513, 304, 300]
+ ],
+ "curve_rail": 46336,
+ "scenes": {"night": {"lvl": 0.0}, "day": {"lvl": 1.0}}
+}
