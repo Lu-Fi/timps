@@ -7161,8 +7161,10 @@ int hal_isp_ae_info(hal_isp_ae *out)
  * bitrate cached by the encode thread (GetChnAveBitrate) is attached too; on
  * every other platform, and before the first frame flows, ave_bitrate is <0. */
 #if defined(USE_OPENIMP) && (defined(PLATFORM_T40) || defined(PLATFORM_T41))
-/* include/openimp/openimp_encoder_telemetry.h (OpenIMP 2026-10-24) */
+/* include/openimp/openimp_encoder_telemetry.h, version 1 (OpenIMP 0f83744).
+ * A pre-0f83744 libimp writes frames over size/version: version != 1. */
 typedef struct {
+    uint32_t size, version;
     uint64_t frames, bytes, idr_frames;
     uint32_t last_frame_bytes, encode_us_last, encode_us_avg, encode_us_max;
     uint32_t fps_x100, avg_kbps, encoding;
@@ -7186,7 +7188,10 @@ int hal_enc_stats(int enc_chn, hal_enc_stat *out)
     out->tel                = 0;
 #if defined(USE_OPENIMP) && (defined(PLATFORM_T40) || defined(PLATFORM_T41))
     ms_enc_telemetry t;
-    if (OpenIMP_Encoder_GetTelemetry && OpenIMP_Encoder_GetTelemetry(enc_chn, &t) == 0) {
+    memset(&t, 0, sizeof t);
+    t.size = sizeof t;
+    if (OpenIMP_Encoder_GetTelemetry && OpenIMP_Encoder_GetTelemetry(enc_chn, &t) == 0 &&
+        t.version == 1 && t.size >= offsetof(ms_enc_telemetry, encoding)) {
         out->tel = 1;
         out->tel_frames = t.frames; out->tel_bytes = t.bytes; out->tel_idr = t.idr_frames;
         out->tel_fps_x100 = t.fps_x100; out->tel_kbps = t.avg_kbps;
