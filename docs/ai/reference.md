@@ -239,7 +239,7 @@ general.debug_modules       =        # comma list, max 8; raises those modules t
 general.syslog              = 1      # also log to syslog (visible in `logread`)
 general.imp_polling_timeout = 500    # ms
 general.osd_pool_size       = 1024   # KB
-general.fs_keepalive        = -1     # -1/auto (on: open-stack T23/T40/T41), 0/off, 1/on; restart
+general.fs_keepalive        = 1      # 1/on (default since v1.11.2), -1/auto (on: open-stack T23/T40/T41), 0/off; restart
 ```
 Module tags for `debug_modules`: `MAIN CONFIG CTRL DAYNIGHT HAL_ING HTTP HUB
 MOTION OSD REC RTSP SRT TL HAL_SIM TLS AAC bc spk TRACE WEBRTC talk events
@@ -1263,7 +1263,8 @@ another channel kept streaming hangs the SoC. A driver fix is in progress
 upstream of timps.
 
 **What timps does about it (since v1.10.0):**
-`general.fs_keepalive = -1` (the default) resolves to **on** for `USE_OPENIMP`
+`general.fs_keepalive = -1` (`auto`, the default until v1.11.1; **since v1.11.2
+the default is `1`, on everywhere**) resolves to **on** for `USE_OPENIMP`
 builds on T23 and T41: every video FrameSource is enabled once at start and
 never disabled until the daemon stops, so timelapse shots, snapshots,
 day/night kicks and client churn no longer touch it. Encoders stay
@@ -1288,8 +1289,8 @@ wait (2 s debounce instead).
    end in the exit + one-shot recovery reboot.
 
 **Switching it:** edit `/etc/timps.conf` (file-only, not POST-able), then
-`/etc/init.d/S95timps restart`. `general.fs_keepalive = 1` turns it on on any
-other SoC — an opt-in: its idle CPU/heat/power cost is unmeasured and it keeps
+`/etc/init.d/S95timps restart`. `general.fs_keepalive = 1` (the default since
+v1.11.2) keeps it on on every SoC; its idle CPU/heat/power cost is unmeasured and it keeps
 ~6.3 MB (1080p FS0) + ~0.7 MB (640×360 FS1) of rmem allocated permanently
 (peak unchanged). `general.fs_keepalive = 0` turns it off on T23/T40/T41 —
 only to diagnose, since that brings the hang pattern back.

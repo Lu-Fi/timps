@@ -188,7 +188,7 @@ interval), every snapshot poll, every day/night switch and its two
 re-asserts, the boot kick followed a few ms later by the first timelapse shot.
 
 `general.fs_keepalive` (`-1`/`auto`, `0`/`off`, `1`/`on`; file-only, restart;
-since v1.10.0)
+since v1.10.0, default `1` since v1.11.2)
 removes them: `ing_start()` takes one reference on every video stream's
 FrameSource and on the dedicated `jpeg.*` one, after all channels exist and
 before motion and the boot kick, and `fs_teardown()` releases it at stop. The

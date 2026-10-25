@@ -261,7 +261,7 @@ void config_defaults(ms_config *c)
     c->debug_modules[0] = 0;
     c->imp_polling_timeout = 500;
     c->osd_pool_size = 1024;   /* max on T-series; holds small OSD regions */
-    c->fs_keepalive = -1;
+    c->fs_keepalive = 1;
 
     /* sensor.* start UNSET so config_sensor_finalize() can auto-detect them
      * from /proc/jz/sensor/<X>/ (raptor/prudynt style); a config value or,

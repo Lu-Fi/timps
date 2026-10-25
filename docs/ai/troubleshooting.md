@@ -573,8 +573,8 @@ timps starts the framesource/encoder **when a client attaches** and stops it
   `running_mode` or flip change (day/night switch, re-assert, probe); **since
   v1.10.0** the disable comes after the 2 s debounce, before it came
   500 ms after the enable.
-- **Open-stack T23/T40/T41 (since v1.10.0):** `general.fs_keepalive`
-  defaults to on there, so each stream logs `framesource N enabled` once at
+- **Open-stack T23/T40/T41 (since v1.10.0), every SoC since v1.11.2:**
+  `general.fs_keepalive` defaults to on there, so each stream logs `framesource N enabled` once at
   start and `framesource N disabled (idle)` **never** while the daemon runs;
   `video chnN idle` (the encoder) still appears. A `disabled (idle)` line on
   such a camera means the keepalive is off — check `caps.framesource` and

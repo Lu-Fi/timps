@@ -169,7 +169,9 @@ Raising a tier after a device test is one line in `src/roi_caps.h` plus its
 
 ## FrameSource keepalive default
 
-`general.fs_keepalive = -1` (the default) resolves per build, from
+Since v1.11.2 the default is `general.fs_keepalive = 1`: every build keeps
+its FrameSources running from start to stop. `-1` (`auto`, the default
+before) resolves per build, from
 `FS_KEEPALIVE_AUTO` in `src/hal/fs_ref.h`:
 
 | Build | Auto resolves to | Why |
@@ -180,7 +182,7 @@ Raising a tier after a device test is one line in `src/roi_caps.h` plus its
 | T10, T20, T21, T30, T31 with `USE_OPENIMP` | off | No hang known; idle cost of a 24/7 FrameSource unmeasured on these (mostly small-RAM) SoCs. |
 | Every vendor-libimp build (incl. T23, T41) | off | Same; the vendor T41 has not been tested for the fault. |
 
-`general.fs_keepalive = 1` turns it on anywhere (opt-in), `0` turns it off
+`general.fs_keepalive = 1` (the default) turns it on anywhere, `0` turns it off
 anywhere. See [Architecture](Architecture.md#framesource-keepalive-generalfs_keepalive).
 
 ## Where to go deeper

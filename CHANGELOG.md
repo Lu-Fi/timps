@@ -6,6 +6,16 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- `general.fs_keepalive` defaults to `1` on every SoC: the FrameSources run
+  from start to stop, so the AE (and with it day/night) keeps working while
+  nobody watches, and no FrameSource edge happens at runtime. `-1`/`auto`
+  keeps the old per-build rule (on for OpenIMP T23/T40/T41 only), `0` turns
+  it off. Cost: the FrameSource buffers stay allocated (about 6.3 MB rmem for
+  a 1080p main stream plus 0.7 MB for a 640x360 substream; the peak with
+  clients on every stream is unchanged).
+
 ## [1.11.1] - 2026-10-25
 
 ### Added

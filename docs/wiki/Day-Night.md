@@ -820,8 +820,8 @@ before each shot, and every shot lights the LED once (set e.g. 90 s).
 
 ### Requirements
 
-* **FrameSource keepalive** (`general.fs_keepalive`; auto = on only for
-  OpenIMP builds on T23 and T41). Without it the AE stops when the last
+* **FrameSource keepalive** (`general.fs_keepalive`; on by default since
+  v1.11.2, `auto` = on only for OpenIMP builds on T23/T40/T41). Without it the AE stops when the last
   consumer leaves and nothing can be measured while idle. Elsewhere it
   needs `general.fs_keepalive = 1` and a restart, untested there.
 * **A switchable illuminator**: `daynight.irprobe_cmd` (default

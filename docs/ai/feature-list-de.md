@@ -66,7 +66,8 @@ prudynt-t / raptor.
   nur erzeugt, solange mindestens ein Client zusieht. Im Leerlauf praktisch
   0 % CPU. Nicht konfigurierbar, das ist das Grundverhalten.
 * **FrameSource-Keepalive** (**seit v1.10.0**) –
-  `general.fs_keepalive` (`-1`/`auto`, `0`/`off`, `1`/`on`; nur per Datei,
+  `general.fs_keepalive` (`-1`/`auto`, `0`/`off`, `1`/`on`, **seit v1.11.2
+  Standard `1`**; nur per Datei,
   Neustart; ein unbekanntes Wort wird mit Warnung als `auto` gelesen):
   hält die FrameSources von Start bis Stopp an, die Encoder bleiben on-demand.
   Auto = an nur bei OpenIMP-Builds auf T23 und T41, wo ein FrameSource-
