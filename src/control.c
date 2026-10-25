@@ -1038,7 +1038,7 @@ int control_apply_json(const char *json, ctrl_result *res)
     }
 #endif
 
-    /* {"testpattern":{"mode":0..3,"obj_size":..,...}}: a command, never persisted */
+    /* {"testpattern":{"mode":0..5,"obj_size":..,...}}: a command, never persisted */
     sb = find_obj(jb, je, "testpattern", &se);
     if (sb){
         if (get_val(sb, se, "mode", v, sizeof v)){
@@ -1932,7 +1932,8 @@ static int get_json(char *buf, size_t cap)
         jesc(ts.sensor_name, sn, sizeof sn);
         jesc(ts.sensor_desc ? ts.sensor_desc : "", sd, sizeof sd);
         APP("\"testpattern\":{\"available\":%d,\"sensor\":%d,\"sensor_name\":\"%s\","
-            "\"sensor_desc\":\"%s\"},", ts.available, ts.sensor, sn, sd);
+            "\"sensor_desc\":\"%s\",\"isp_mid\":%d},", ts.available, ts.sensor, sn, sd,
+            ts.isp_mid);
     }
 #ifdef USE_TIMELAPSE
     APP("\"timelapse\":{\"available\":1}},");

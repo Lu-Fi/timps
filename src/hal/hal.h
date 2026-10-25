@@ -150,6 +150,9 @@ typedef struct {
 int hal_tp_available(void);
 int hal_tp_set(int mode, const hal_tp_params *p);   /* p NULL: keep parameters */
 int hal_tp_get(hal_tp_state *o);
+/* 1: the libimp can run this mode now (OpenIMP_TestPattern_Supported); 0 also
+ * when the libimp lacks the query */
+int hal_tp_supported(int mode);
 /* mode 4: the running sensor has a built-in pattern; name/desc may be NULL */
 int hal_tp_sensor(char *name, size_t cap, const char **desc);
 int hal_rot_check(int si, const ms_vstream_cfg *v);

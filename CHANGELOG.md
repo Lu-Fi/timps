@@ -6,6 +6,14 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- Test pattern mode 5 (`{"testpattern":{"mode":5}}`): a still pattern written
+  into the middle of the ISP, after sharpening, where the libimp reports it
+  through `OpenIMP_TestPattern_Supported(5)` (`caps.testpattern.isp_mid`;
+  OpenIMP c5fedf2a+, T23 so far). The WebUI shows it as the ISP stage of the
+  test pattern banner.
+
 ## [1.11.0] - 2026-10-25
 
 ### Added

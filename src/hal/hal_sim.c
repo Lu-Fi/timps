@@ -262,7 +262,7 @@ int hal_tp_available(void) { return 1; }
 int hal_tp_set(int mode, const hal_tp_params *p)
 {
     (void)p;
-    if (mode < 0 || mode > 4) return -1;
+    if (mode < 0 || mode > 5) return -1;
     g_sim_tp_mode = mode; g_sim_tp_at = ms_now_us();
     return 0;
 }
@@ -277,6 +277,7 @@ int hal_tp_get(hal_tp_state *o)
     o->ae_hold = 1; o->awb_hold = 0;
     return 0;
 }
+int hal_tp_supported(int mode) { return mode >= 0 && mode <= 5; }
 int hal_tp_sensor(char *name, size_t cap, const char **desc)
 {
     if (name && cap) snprintf(name, cap, "%s", "simsensor");

@@ -4,10 +4,12 @@
 
 /* OpenIMP test pattern (OpenIMP_Cap_TestPattern): 0 off, 1 static pattern,
  * 2 moving square + frame counter, 3 motion test with scripted objects,
- * 4 the sensor's own pattern through the whole ISP (AE/AWB hold options).
+ * 4 the sensor's own pattern through the whole ISP (AE/AWB hold options),
+ * 5 a still pattern written into the middle of the ISP (after sharpening;
+ * OpenIMP_TestPattern_Supported(5), T23 so far).
  * While a pattern runs, day/night is held in day mode. In mode 3 every
  * object appearance is matched against the motion detection. */
-enum { TP_OFF = 0, TP_PATTERN = 1, TP_MOVING = 2, TP_MOTION = 3, TP_SENSOR = 4 };
+enum { TP_OFF = 0, TP_PATTERN = 1, TP_MOVING = 2, TP_MOTION = 3, TP_SENSOR = 4, TP_ISP_MID = 5 };
 
 typedef struct {
     int obj_size;        /* mode 3: px of a 640 px wide frame, 0 = default */
@@ -20,6 +22,7 @@ typedef struct {
 typedef struct {
     int      available;
     int      sensor;             /* mode 4 possible */
+    int      isp_mid;            /* mode 5 possible */
     char     sensor_name[32];
     const char *sensor_desc;
     int      ae_hold, awb_hold;

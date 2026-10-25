@@ -238,7 +238,11 @@ camera picture: `0` off, `1` static pattern, `2` moving square with a frame
 counter, `3` motion test (scripted moving objects, scored against the motion
 detection: `testpattern.eval` hits/misses/false alarms/delay), `4` the sensor's
 own pattern through the ISP (`caps.testpattern.sensor`, optional `ae_hold` /
-`awb_hold`; it waits until day mode has settled, `testpattern.pending`).
+`awb_hold`; it waits until day mode has settled, `testpattern.pending`), `5`
+(since v1.11.1) a still pattern written into the middle of the ISP, after
+sharpening, so colour processing, scaler and encoder handle it and the OSD is
+drawn on top (`caps.testpattern.isp_mid`, from `OpenIMP_TestPattern_Supported(5)`;
+T23 so far).
 Day/night is held in day mode while a pattern runs. Not persisted.
 
 ### The `encoder.<n>.rc` object — what the encoder actually holds

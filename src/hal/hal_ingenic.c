@@ -2943,10 +2943,17 @@ extern int ms_tp_get(ms_tp_state *s)
 extern const int OpenIMP_Cap_TestPattern __attribute__((weak));
 extern int ms_tp_sensor(char name[32], uint32_t *reg, uint32_t *mask, const char **desc)
     __asm__("OpenIMP_TestPattern_SensorInfo") __attribute__((weak));
+extern int ms_tp_supported(int mode)
+    __asm__("OpenIMP_TestPattern_Supported") __attribute__((weak));
 
 int hal_tp_available(void)
 {
     return ms_tp_set && ms_tp_get && &OpenIMP_Cap_TestPattern && OpenIMP_Cap_TestPattern;
+}
+
+int hal_tp_supported(int mode)
+{
+    return hal_tp_available() && ms_tp_supported && ms_tp_supported(mode) == 1;
 }
 
 int hal_tp_set(int mode, const hal_tp_params *p)
