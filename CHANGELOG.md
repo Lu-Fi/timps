@@ -16,6 +16,15 @@ semantic versioning.
   a 1080p main stream plus 0.7 MB for a 640x360 substream; the peak with
   clients on every stream is unchanged).
 
+### Fixed
+
+- T40/T41 with OpenIMP: the JPEG thread no longer polls the encoder during
+  the 2 s idle linger after a snapshot. OpenIMP encodes JPEG in software
+  inside `PollingStream` (~0.15 s per 1080p frame), so every snapshot cost
+  about ten discarded encodes. Measured on a T41 with one snapshot every
+  10 s: JPEG thread 21 % -> 3 % of a core, snapshot latency unchanged
+  (0.2 s).
+
 ## [1.11.1] - 2026-10-25
 
 ### Added

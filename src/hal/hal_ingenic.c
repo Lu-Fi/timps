@@ -88,6 +88,11 @@ typedef IMPEncoderCHNStat IMPEncoderChnStat;
 #ifndef MS_IDLE_STOP_US
 #define MS_IDLE_STOP_US 2000000   /* 2 s */
 #endif
+/* OpenIMP T40/T41 encode JPEG in software inside PollingStream (~0.15 s per
+ * 1080p frame): polling through the idle-stop linger only burns CPU */
+#if defined(USE_OPENIMP) && (defined(PLATFORM_T40) || defined(PLATFORM_T41))
+#define JPEG_ENCODES_IN_POLL 1
+#endif
 /* jpeg.snapshot_path periodic file-snapshot cadence (M8): without this, a
  * configured snapshot path alone pins jwant=true in jpeg_thread forever, so
  * the JPEG pipeline (framesource + HW encoder) runs 24/7 and rewrites the
@@ -4751,6 +4756,10 @@ static void *jpeg_thread(void *arg)
                 receiving=0; idle_since=0;
                 continue;
             }
+#ifdef JPEG_ENCODES_IN_POLL
+            act_wait(act_ready_jchan, jc);
+            continue;
+#endif
         } else idle_since = 0;
         if (!receiving){
             fs_use(jc->fs_chn);
