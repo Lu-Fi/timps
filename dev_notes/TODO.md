@@ -50,6 +50,11 @@ Thresholds: cam-sz day_gain 3000 / night_gain 6000, cam-wohn-ofen 3500 /
   keepalive off.
 - Test pattern mode 5 needs OpenIMP c5fedf2a+ (T23 only so far); mode 4 on
   T21 jxf23 accepted but never visible (OpenIMP TODO D).
+- OpenIMP T40/T41 JPEG reuse: when the codec skips a picture (busy, rmem
+  short) OpenIMP delivers the last JPEG again if it is at most 5 s old, with
+  the current timestamp; a snapshot can then be the previous one. Not changed
+  by the linger fix (ff4b6b0). Asked OpenIMP for a marker on reused streams
+  (low priority) so timps can wait for a fresh frame.
 - Learned dawn (user idea): no silent look before the average dark duration
   of the last days; learned-k jump bar partly done (creeping light, 8403ea8).
 
