@@ -87,15 +87,16 @@
  * vendor picture (measured: AE target 18/58/89 mean luma at 30/128/230, sinter
  * noise 488/351/216 at 0/128/255). Temper is temporal NR, visible only at high
  * gain: frame-to-frame std 9.8 at 0 vs 2.5 at 128, saturating above 128.
- * drc/dpc_strength are entries 2/3 (OpenIMP 2026-10-24, read back and with a
- * measured effect; 128 = vendor). ISP_HAS_NR/DRC/DPC only gate the keys here,
- * the classic setters stay behind !ISP_NEW_TUNING_API. HLC/BLC and defog
- * are not wired. */
+ * drc/dpc/defog_strength are entries 2/3/4 (OpenIMP 2026-10-24/25, read back
+ * and with a measured effect; 128 = vendor). ISP_HAS_NR/DRC/DPC/DEFOG only
+ * gate the keys here, the classic setters stay behind !ISP_NEW_TUNING_API.
+ * HLC/BLC are not wired. */
 #if defined(PLATFORM_T41)
 #define ISP_HAS_AECOMP 1
 #define ISP_HAS_NR 1
 #define ISP_HAS_DRC 1
 #define ISP_HAS_DPC 1
+#define ISP_HAS_DEFOG 1
 /* IMP_ISP_Tuning_GetAeExprInfo: the AE gain ceiling incl. a configured cap,
  * which the /proc dump does not show; daynight's AE reserve */
 #define ISP_HAS_AE_EXPR_INFO 1

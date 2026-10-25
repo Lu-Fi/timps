@@ -140,7 +140,7 @@ cannot actually apply, instead of hardcoding a feature matrix client-side:
 | `caps.record` / `caps.timelapse` | `{"available":0\|1}` per `USE_RECORD`/`USE_TIMELAPSE`. |
 | `caps.backchannel` | `{"available":<bc_available()>,"talk_ws":0\|1\|2}` — `available` is whether the backchannel was actually configured at boot (restart-only master switch — see [Audio](Audio.md)). `talk_ws` is the browser-microphone WebSocket (`/talk`, `USE_BC_WS`) on the *same* backchannel, reported as a second flag rather than a second caps entry because a camera can perfectly well have the RTSP backchannel without it. It is the **resolved verdict**, not the raw `audio.talk_ws` value: `0` = this port would not serve `/talk` at all right now, `1` = served, TLS required, `2` = served, plain `ws://` accepted. `audio.talk_ws=1` on a plaintext port therefore reports `0` (every request would `426`), so a WebUI can gate its talk button on this one number. Nothing here says which scheme to dial: `1` always means `wss://`; for `2` take the scheme from the same `tls` field the media/control URLs use. |
 | `caps.webrtc` | (Only present in `USE_WEBRTC` builds — the key's **absence** is how a client tells "no WHEP endpoint here" from "compiled in but turned off", which an `{"available":0}` alone could not say.) `{"available":0\|1, "enabled":0\|1\|2}`. `available` folds compile-time and runtime state like `caps.backchannel`'s does: the shared DTLS context only exists once `webrtc_start()` built it. `enabled` is the **resolved** signalling requirement, not the raw `webrtc.enabled`, with the same 0/1/2 meaning as `caps.backchannel.talk_ws`: `0` = `/webrtc/whep` would refuse a POST right now, `1` = served but TLS is required for it, `2` = served and a plaintext POST is accepted. `webrtc.enabled=1` on a port with no TLS configured therefore reports `2`, because the endpoint only `426`s a downgrade, never a deployment choice. Added 1.9.17; before it a client had to `GET` the POST-only endpoint and read its `404`/`503`/`426`/`405`. `"chn_select":1` (added 1.9.23) says `POST /webrtc/whep?chn=N` picks the stream; an older daemon ignores `?chn=` and sends `webrtc.channel`. |
-| `caps.framesource` | `{"keepalive":0\|1, "cfg":-1\|0\|1}` — `keepalive` is `general.fs_keepalive` as resolved at start (1 = every video FrameSource is held enabled until the daemon stops; auto = on only for OpenIMP builds on T23/T41), `cfg` the raw config value. Read-only; the key is file-only and restart-bound. See [Architecture](Architecture.md#framesource-keepalive-generalfs_keepalive). |
+| `caps.framesource` | `{"keepalive":0\|1, "cfg":-1\|0\|1}` — `keepalive` is `general.fs_keepalive` as resolved at start (1 = every video FrameSource is held enabled until the daemon stops; auto = on only for OpenIMP builds on T23/T40/T41), `cfg` the raw config value. Read-only; the key is file-only and restart-bound. See [Architecture](Architecture.md#framesource-keepalive-generalfs_keepalive). |
 | `caps.daynight` | `{"available":0\|1, "ir_idle":0\|1}` — `available` per `USE_DAYNIGHT`; `ir_idle` = 1 when `daynight.ir_idle_off` could act on this start (it needs the FrameSource keepalive). The runtime state is `daynight.ir_idle` in the status object (`dark` = the illuminator is off because nobody watches). |
 | `caps.play` | `{"available":0\|1, "sounds":[...]}` — the play queue, with `sounds` live-enumerated from `/usr/share/sounds` (`.wav`/`.ulaw` always; `.opus` only when `USE_PLAY_OPUS` was actually compiled in, capped at 96 entries to bound the JSON response size). |
 
@@ -219,6 +219,27 @@ A channel whose query fails — a disabled stream, the T23 SW-rotate path
 (which has no bound encoder channel/group at all), or the host
 simulation backend — is **omitted** from the object entirely rather than
 reported with misleading zeros.
+
+### `encoder.<n>.telemetry` — OpenIMP encoder counters (since v1.11.0)
+
+On T40/T41 with an OpenIMP libimp that exports `OpenIMP_Encoder_GetTelemetry`
+(versioned struct, OpenIMP 0f83744+), each `encoder.<n>` entry also carries
+`"telemetry":{"frames","bytes","idr","fps","kbps","encode_us_avg","encode_us_max"}`,
+cumulative since the encoder channel was created; `fps`/`kbps` are averages
+from the first to the last delivered frame. `?stats=1` carries `idr`,
+`encode_us_avg` and `encode_us_max` per stream (the WebUI preview shows the
+encode time). Elsewhere the fields are absent.
+
+### Test pattern — `{"testpattern":{...}}` (since v1.11.0)
+
+With an OpenIMP libimp that exports `OpenIMP_Cap_TestPattern`
+(`caps.testpattern.available`), `POST {"testpattern":{"mode":N}}` replaces the
+camera picture: `0` off, `1` static pattern, `2` moving square with a frame
+counter, `3` motion test (scripted moving objects, scored against the motion
+detection: `testpattern.eval` hits/misses/false alarms/delay), `4` the sensor's
+own pattern through the ISP (`caps.testpattern.sensor`, optional `ae_hold` /
+`awb_hold`; it waits until day mode has settled, `testpattern.pending`).
+Day/night is held in day mode while a pattern runs. Not persisted.
 
 ### The `encoder.<n>.rc` object — what the encoder actually holds
 

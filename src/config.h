@@ -494,7 +494,7 @@ typedef struct {
     char           debug_modules[64];
     int            imp_polling_timeout;
     int            osd_pool_size;
-    /* -1 auto (on for the open stack on T23/T41), 0 off, 1 on: ing_start
+    /* -1 auto (on for the open stack on T23/T40/T41), 0 off, 1 on: ing_start
      * holds a reference on every video FrameSource until ing_stop, so the
      * running daemon never disables one. Restart-only. */
     int            fs_keepalive;

@@ -198,7 +198,7 @@ The **encoders stay on-demand** (`StartRecvPic`/`StopRecvPic` with the same
 2 s debounce), which is the model prudynt-t and raptor use for the
 FrameSource, minus their always-running video encoders.
 
-* **Auto** resolves to on for `USE_OPENIMP` builds on T23 and T41 only. Vendor
+* **Auto** resolves to on for `USE_OPENIMP` builds on T23, T40 and T41 only. Vendor
   libimp builds and T10/T20/T21/T30/T31/T40 with OpenIMP keep the on-demand
   FrameSource: no hang is known there, and the cost of a FrameSource that runs
   24/7 (CPU in libimp's workers, OSD blending, DDR bandwidth, heat, the ~6.3 MB

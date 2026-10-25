@@ -239,7 +239,7 @@ general.debug_modules       =        # comma list, max 8; raises those modules t
 general.syslog              = 1      # also log to syslog (visible in `logread`)
 general.imp_polling_timeout = 500    # ms
 general.osd_pool_size       = 1024   # KB
-general.fs_keepalive        = -1     # -1/auto (on: open-stack T23/T41), 0/off, 1/on; restart
+general.fs_keepalive        = -1     # -1/auto (on: open-stack T23/T40/T41), 0/off, 1/on; restart
 ```
 Module tags for `debug_modules`: `MAIN CONFIG CTRL DAYNIGHT HAL_ING HTTP HUB
 MOTION OSD REC RTSP SRT TL HAL_SIM TLS AAC bc spk TRACE WEBRTC talk events
@@ -1268,7 +1268,7 @@ wait (2 s debounce instead).
 
 **Check:**
 1. `GET /control` → `caps.framesource`: `{"keepalive":1,"cfg":-1}` on an
-   open-stack T23/T41 with the default. `keepalive:0` there means the key was
+   open-stack T23/T40/T41 with the default. `keepalive:0` there means the key was
    set to `0` (or `off`/`false`/`no`). An unknown word logs `is not a valid
    value, using -1 (auto)`.
 2. `logread | grep 'framesource'`: once per start
@@ -1286,7 +1286,7 @@ wait (2 s debounce instead).
 `/etc/init.d/S95timps restart`. `general.fs_keepalive = 1` turns it on on any
 other SoC — an opt-in: its idle CPU/heat/power cost is unmeasured and it keeps
 ~6.3 MB (1080p FS0) + ~0.7 MB (640×360 FS1) of rmem allocated permanently
-(peak unchanged). `general.fs_keepalive = 0` turns it off on T23/T41 —
+(peak unchanged). `general.fs_keepalive = 0` turns it off on T23/T40/T41 —
 only to diagnose, since that brings the hang pattern back.
 
 A hang on a **vendor** (non-OpenIMP) build, or with the keepalive confirmed on,

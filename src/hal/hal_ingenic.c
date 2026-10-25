@@ -1849,7 +1849,10 @@ static void t41_set_module_ratio(IMPISPModuleRatioArrayList m, const char *key,
     r.ratio_attr[m].en = IMPISP_TUNING_OPS_MODE_ENABLE;
     r.ratio_attr[m].ratio = (uint8_t)v;
     int rc = IMP_ISP_Tuning_SetModule_Ratio(IMPVI_MAIN,&r);
-    if (rc) LOGW(MOD,"SetModule_Ratio(%s=%d) failed (rc=%d)", key, v, rc);
+    /* OpenIMP answers a non-neutral defog ratio with an error word but
+     * applies it, so the way back to 128 must not be skipped */
+    if (m == IMP_ISP_MODULE_DEFOG) *touched = 1;
+    else if (rc) LOGW(MOD,"SetModule_Ratio(%s=%d) failed (rc=%d)", key, v, rc);
     else *touched = 1;
 }
 #endif
@@ -1942,6 +1945,11 @@ static int isp_apply_image(const char *k)
     if (!strcmp(k,"dpc_strength")){
         static int touched;
         t41_set_module_ratio(IMP_ISP_MODULE_DPC,k,im->dpc_strength,&touched);
+        return 1;
+    }
+    if (!strcmp(k,"defog_strength")){
+        static int touched;
+        t41_set_module_ratio(IMP_ISP_MODULE_DEFOG,k,im->defog_strength,&touched);
         return 1;
     }
 #endif

@@ -573,7 +573,7 @@ timps starts the framesource/encoder **when a client attaches** and stops it
   `running_mode` or flip change (day/night switch, re-assert, probe); **since
   v1.10.0** the disable comes after the 2 s debounce, before it came
   500 ms after the enable.
-- **Open-stack T23/T41 (since v1.10.0):** `general.fs_keepalive`
+- **Open-stack T23/T40/T41 (since v1.10.0):** `general.fs_keepalive`
   defaults to on there, so each stream logs `framesource N enabled` once at
   start and `framesource N disabled (idle)` **never** while the daemon runs;
   `video chnN idle` (the encoder) still appears. A `disabled (idle)` line on
@@ -1269,7 +1269,7 @@ AE. Turn it off with POST `{"daynight":{"ir_idle_off":0}}` - the LED comes
 back on immediately.
 
 `daynight.ir_idle.reason` when it does **not** act: `disabled`, `schedule`,
-`keepalive` (no FrameSource keepalive; auto only on OpenIMP T23/T41),
+`keepalive` (no FrameSource keepalive; auto only on OpenIMP T23/T40/T41),
 `no_illuminator`, `white_light`, `hook`. The WebUI's Day / Night page shows
 the same as a chip ("not available: …" with the fix); while that page is
 open its own preview counts as a viewer, so it reads "IR on · watched".
@@ -2757,7 +2757,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `framesource %d: EnableChn failed (attempt %d)` | E | **since v1.9.28**. Until v1.9.27 `framesource %d: EnableChn failed%s` (`%s` = ` (retry)`), logged on every attempt. The framesource channel would not enable. Logged on the 1st and every 20th attempt. | See the line above; also §2.2. |
 | `framesource %d: %d reference(s) still held at teardown` | W | Subscriber accounting leak at shutdown. | Report as a bug. |
 | `framesource %d enabled` / `framesource %d disabled (idle)` | I | A real `EnableChn`/`DisableChn` edge. On-demand: per wake (client, snapshot, timelapse shot, latch kick). With `general.fs_keepalive` on: `enabled` once per start, `disabled (idle)` never. | Nothing; see §2.1. |
-| `framesource keepalive %s (general.fs_keepalive=%d%s)` | I | **since v1.10.0.** Once per start: `on`/`off`, the raw value, `, auto` when it was `-1`. | `off` on an open-stack T23/T41 → §2.1. |
+| `framesource keepalive %s (general.fs_keepalive=%d%s)` | I | **since v1.10.0.** Once per start: `on`/`off`, the raw value, `, auto` when it was `-1`. | `off` on an open-stack T23/T40/T41 → §2.1. |
 | `framesource %d: no keepalive (software-rotate stream)` | I | **since v1.10.0.** T23 `USE_SW_ROTATE` 90/270 stream: exempt from the keepalive, stays on-demand. | Nothing. |
 | `FS_CreateChn %d` / `FS_SetChnAttr %d failed` | E | Framesource geometry rejected. | Check `videoN.width`/`height` against the sensor. |
 | `FS_SetI2dAttr %d failed (rotation may stay inactive)` | W | T40/T41 belt-and-braces rotation call. | §2.6 |

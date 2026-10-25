@@ -20,9 +20,11 @@ typedef struct {
 } fsr_state;
 
 /* general.fs_keepalive = -1 resolves to this: on where FrameSource edges are
- * known to hang the SoC (open stack T23/T41), off where the cost of a
+ * known to hang the SoC (open stack T23/T41) or the AE stops without frames
+ * (open stack T40: day/night read a frozen exposure), off where the cost of a
  * permanently running FrameSource is unmeasured. */
-#if defined(USE_OPENIMP) && (defined(PLATFORM_T23) || defined(PLATFORM_T41))
+#if defined(USE_OPENIMP) && (defined(PLATFORM_T23) || defined(PLATFORM_T40) || \
+                             defined(PLATFORM_T41))
 #define FS_KEEPALIVE_AUTO 1
 #else
 #define FS_KEEPALIVE_AUTO 0

@@ -60,8 +60,8 @@ for the full per-key table. Summary:
 | --- | --- |
 | Brightness/contrast/saturation/sharpness, anti-flicker, running-mode, sensor FPS | All SoCs |
 | Hue (`SetBcshHue`) | T23, T31, T40, T41, C100 |
-| Backlight comp / defog / DPC strength | T23, T31, C100 |
-| DRC / WDR strength | T21, T23, T31, C100 |
+| Backlight comp / defog / DPC strength | T23, T31, C100; defog and DPC also on T41 with OpenIMP (ISP module ratios 4/3, since v1.11.0) |
+| DRC / WDR strength | T21, T23, T31, C100; T41 with OpenIMP (module ratio 2, since v1.11.0) |
 | Highlight depress, sinter/temper NR, max analog/digital gain, manual WB, ISP-level hflip/vflip | All **except** T40/T41 (`ISP_NEW_TUNING_API`); sinter NR (since 1.9.33) and temper NR (since v1.10.0) on T41 with OpenIMP |
 | AE compensation | All except T21 and T40; T41 with OpenIMP (since 1.9.33) |
 | AE average luminance (`GetAeLuma`, secondary day/night metric) | T21, T23, T31, C100 |
@@ -132,7 +132,7 @@ come from device tests by the OpenIMP maintainer (OpenIMP d03ca24, open-tx-isp
 | T23 | unsupported (encoder only stores the region) | **effective** when the libimp exports `OpenIMP_Cap_T23HelixRoi` (OpenIMP v2026.10.11-rc1+, since v1.10.1), otherwise unsupported; `OPENIMP_T23_ROI=0` → unsupported | unsupported (untested) | **effective**, live with the driver's `fcrop_upscale_pct` parameter (open-tx-isp b15ef235); otherwise experimental, **start-only** (needs 3cf9bdac+) |
 | T30, C100 | unsupported | — | unsupported | — |
 | T31 | unsupported (no ROI symbol in 1.1.x) | **effective** (`SetChnRoiAttr`, needs OpenIMP d03ca24 + fec3e69; `OPENIMP_T31_ROI=0` → unsupported) | experimental, live (no zoom without open-tx-isp `fcrop_upscale_pct`) | **effective**, live with the driver's `fcrop_upscale_pct` parameter (open-tx-isp 27dc8be4+); otherwise experimental, live |
-| T40, T41 | unsupported (vendor T41 takes deltas only; not device-tested) | unsupported (T41 experimental, off in libimp) | unsupported | unsupported |
+| T40, T41 | unsupported (vendor T41 takes deltas only; not device-tested) | **experimental** since v1.11.0 when the libimp exports `OpenIMP_Cap_EncRoi` (QP deltas only; a T41 libimp before OpenIMP 958f7f3 ignores regions under FixQP: `caps.roi.streams[N]` = `"fixqp"`) | unsupported | **experimental** since v1.11.0 through `IMP_ISP_Tuning_SetAutoZoom` when the libimp exports `OpenIMP_Cap_AutoZoom` (`caps.fcrop.api` = `autozoom`, no upscaling); T41 live up to the driver envelope (`t41_msca_live_max_w/h`, 1920x1080 on current open-tx-isp, 768x432 before), a larger stream restarts its FrameSource (~45 ms, new keyframe); T40 live up to 4K |
 
 T23/T31 FrontCrop with OpenIMP: timps checks at start for
 `/sys/module/tx_isp_t23|t31/parameters/fcrop_upscale_pct`, which only drivers
@@ -176,7 +176,8 @@ Raising a tier after a device test is one line in `src/roi_caps.h` plus its
 | --- | --- | --- |
 | T23 with `USE_OPENIMP` | **on** | FrameSource disable/enable edges while streaming hung a T23 on the open stack. |
 | T41 with `USE_OPENIMP` | **on** | Reproduced hang (3/3): one channel stopped and restarted within ~200 ms while the other ran. |
-| T10, T20, T21, T30, T31, T40 with `USE_OPENIMP` | off | No hang known; idle cost of a 24/7 FrameSource unmeasured on these (mostly small-RAM) SoCs. |
+| T40 with `USE_OPENIMP` (since v1.11.0) | **on** | Without frames the open T40 driver runs no AE, so day/night read a frozen exposure. |
+| T10, T20, T21, T30, T31 with `USE_OPENIMP` | off | No hang known; idle cost of a 24/7 FrameSource unmeasured on these (mostly small-RAM) SoCs. |
 | Every vendor-libimp build (incl. T23, T41) | off | Same; the vendor T41 has not been tested for the fault. |
 
 `general.fs_keepalive = 1` turns it on anywhere (opt-in), `0` turns it off

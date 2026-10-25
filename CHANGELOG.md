@@ -27,8 +27,9 @@ semantic versioning.
   unrotated, only the encoder gets the swapped size; 180 is a real I2D
   rotate. With OpenIMP it needs `OpenIMP_Cap_I2dRotate`, otherwise rotation
   is refused (`caps.rotation` = `[0]`). Width/height must be multiples of 8.
-- T41 with OpenIMP: `image.drc_strength` and `image.dpc_strength` (ISP
-  module ratios 2/3, 0..255, 128 = vendor picture), live.
+- T41 with OpenIMP: `image.drc_strength`, `image.dpc_strength` and
+  `image.defog_strength` (ISP module ratios 2/3/4, 0..255, 128 = vendor
+  picture), live.
 - `/control` `encoder.<N>.telemetry` on T40/T41 with OpenIMP
   (`OpenIMP_Encoder_GetTelemetry`): frames, bytes, IDR count, delivered fps
   and kbit/s, average and maximum encode time.
@@ -76,6 +77,9 @@ semantic versioning.
 
 ### Changed
 
+- T40 with OpenIMP: `general.fs_keepalive` auto is on, like T23/T41. Without
+  frames the open T40 driver runs no AE, so day/night read a frozen exposure
+  while nobody watched.
 - Day/night: the boot check no longer waits up to 2 min for a steady
   exposure. When the first four readings are all above 4x `day_gain` it
   checks at once; otherwise it waits at most 30 s. An open-stack T31 in a

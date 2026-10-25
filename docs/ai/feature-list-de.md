@@ -215,9 +215,9 @@ prudynt-t / raptor.
   (`OpenIMP_Cap_AutoZoom`), experimentell, ohne Hochskalierung. T41 live bis
   zur Grenze des Treibers (1920x1080 mit aktuellem open-tx-isp, sonst
   768x432), größere Streams starten ihre Framesource kurz neu; T40 live bis 4K.
-* **DRC/DPC auf T41 (seit v1.11.0)** – `image.drc_strength` und
-  `image.dpc_strength` mit OpenIMP (ISP-Modulanteile 2/3, 128 = Herstellerbild),
-  live.
+* **DRC/DPC/Defog auf T41 (seit v1.11.0)** – `image.drc_strength`,
+  `image.dpc_strength` und `image.defog_strength` mit OpenIMP
+  (ISP-Modulanteile 2/3/4, 128 = Herstellerbild), live.
 * **Testbild (seit v1.11.0)** – mit OpenIMP (`OpenIMP_Cap_TestPattern`)
   `{"testpattern":{"mode":0..4}}` und Knöpfe auf der WebUI-Vorschau:
   statisches Muster, bewegtes Quadrat, Bewegungstest mit Auswertung (Treffer,
@@ -295,7 +295,7 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   nächste Tick).
   Snapshots direkt danach warten bis zu ~3,5 s (max. 5 s) auf die AE, Streams
   sind die ersten 1-4 s dunkel. Voraussetzungen: FrameSource-Keepalive (auto
-  nur OpenIMP T23/T41), Modus `auto`, `timps-irprobe` mit den Verben
+  nur OpenIMP T23/T40/T41), Modus `auto`, `timps-irprobe` mit den Verben
   `idle`/`state` (Firmware ab 2026-10), kein Weißlicht in
   `daynight.controls`. Warum aus: Bei 850 nm sieht man am Erlöschen des
   Glimmens, dass niemand zusieht oder aufnimmt. Status `daynight.ir_idle` (`reason`: `disabled`,

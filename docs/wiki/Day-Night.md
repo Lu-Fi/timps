@@ -629,6 +629,29 @@ than kept as dead weight. `daynight.diagnose_thresholds` covers the same
 failure mode today: it names the value to raise `day_gain` above instead of
 trying to raise it automatically.
 
+## Changes in v1.11.0
+
+* **Jump bar from what failed.** Every look → check pair teaches `k` (day
+  reading / dark look reading); the dark readings of the last failed checks
+  are kept across jumps. A jump look asks again only below 0.9 × the lowest
+  failed dark reading (at most 2 × `day_gain`, at least `day_gain / k`).
+* **Light that creeps in** (dawn with daylight infrared, k 4-5; a fire) asks
+  again within 60 min of a failed check only once that check's `k` predicts
+  day; a sudden light (a lamp: the level moved more than 15 % within the
+  minute before the jump) still asks at once when it pulls the dark reading
+  below 70 % of the failed one. Measured: a bedroom dawn went from 6 to 3
+  failed checks.
+* **A check's "day" must hold.** "Night" is final at once; "day" only once the
+  reading has stayed below `day_gain` for 10 s after the settle time. The open
+  T40 driver reported the night-side exposure for about 14 s after the switch,
+  so a dark check read "day" and the camera sat in day mode with its
+  illuminator off, setting off every IR camera next to it.
+* **Colour trigger** (`daynight.color_pct`): a colour change of the lit
+  picture starts a look; with it working, the timer look runs every 6 h.
+* **Boot check** at once when clearly dark, otherwise after at most 30 s.
+* A keyframe 0.8 s after every IR or IR-cut switch; day/night is held in day
+  while an OpenIMP test pattern runs.
+
 ## Anti-flapping guards
 
 Three, all unchanged from the pre-redesign machinery, which the design notes
@@ -892,7 +915,7 @@ use it at all (keepalive).
 | --- | --- | --- |
 | `disabled` | `ir_idle_off = 0` (`cfg` 0), or `daynight.enabled = 0` | turn the switch / automatic switching on |
 | `schedule` | `daynight.mode = schedule` | "Decided by: Light level" (`mode = auto`) |
-| `keepalive` | no FrameSource keepalive on this start (one WARN) | `general.fs_keepalive` (auto on OpenIMP T23/T41; elsewhere `1` + restart, untested) |
+| `keepalive` | no FrameSource keepalive on this start (one WARN) | `general.fs_keepalive` (auto on OpenIMP T23/T40/T41; elsewhere `1` + restart, untested) |
 | `no_illuminator` | `daynight.irprobe_cmd` empty, or the illuminator was retired after two failed switches | set the hook, tick IR 850/940 nm, check the board's IR GPIOs; a restart re-tests |
 | `white_light` | the hook refused `idle` (exit 3): white light is in `daynight.controls` | untick "White light" |
 | `hook` | `idle` exit 1/2 (hook without the verb, nothing switchable) or repeated failures | update the firmware's `timps-irprobe`; switching the key off and on retries |
