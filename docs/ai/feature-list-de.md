@@ -11,7 +11,7 @@ prudynt-t / raptor.
   HTTP-Control-API, Streaming-Protocols, Day-Night, Audio, Motion-Detection,
   Recording-Timelapse, Rate-Control-\*, Building, Logging, Testing-QA,
   Platform-SDK-Support)
-* Stand dieses Dokuments: Version v1.11.0 (2026-10-25);
+* Stand dieses Dokuments: Version v1.11.1 (2026-10-25);
   gestripptes `timpsd` ca. 410 KB (410 108 Byte: mipsel, T31 mit
   Hersteller-libimp, WebRTC, TLS und Rotation an; Stand `main` 2026-10-06). Mit
   **seit vX** markierte Aussagen sind in diesem Release neu – auf einer
@@ -221,8 +221,11 @@ prudynt-t / raptor.
 * **Testbild (seit v1.11.0)** – mit OpenIMP (`OpenIMP_Cap_TestPattern`)
   `{"testpattern":{"mode":0..4}}` und Knöpfe auf der WebUI-Vorschau:
   statisches Muster, bewegtes Quadrat, Bewegungstest mit Auswertung (Treffer,
-  Fehlalarme, Verzögerung), Sensor-Testbild durch den ganzen ISP. Tag/Nacht
-  bleibt währenddessen auf Tag.
+  Fehlalarme, Verzögerung), Sensor-Testbild durch den ganzen ISP; **seit
+  v1.11.1** Modus 5, ein Standbild mitten im ISP (nach der Schärfung, T23 mit
+  OpenIMP c5fedf2a+, `caps.testpattern.isp_mid`). Die WebUI zeigt alles als
+  Pipeline-Banner Sensor → ISP → Encoder → IVS. Tag/Nacht bleibt währenddessen
+  auf Tag.
 
 ## Day/Night (automatische Tag-/Nachtumschaltung)
 

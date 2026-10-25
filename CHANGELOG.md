@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.11.1] - 2026-10-25
+
 ### Added
 
 - Test pattern mode 5 (`{"testpattern":{"mode":5}}`): a still pattern written

@@ -1,10 +1,10 @@
 # timps configuration keys — complete reference
 
-**Applies to timps v1.11.0 (2026-10-25).**
+**Applies to timps v1.11.1 (2026-10-25).**
 
 A statement marked **since vX** is new in that release — on an older camera
-the *previous* behaviour is the one to describe. Changes of v1.11.0 in `CHANGELOG.md` are marked
-**since v1.11.0**.
+the *previous* behaviour is the one to describe. Changes of v1.11.0 and v1.11.1 in `CHANGELOG.md` are marked
+**since v1.11.0** / **since v1.11.1**.
 
 Authoritative source: `src/config.c` (the `cfg_field` tables and
 `config_defaults()`), `src/config.h` (struct field sizes and doctrine),

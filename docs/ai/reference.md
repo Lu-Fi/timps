@@ -6,11 +6,11 @@ firmware. Everything here is verified against the `main` branch of
 <https://github.com/Lu-Fi/timps> and against `package/timps/` in a thingino
 firmware tree.
 
-Applies to timps v1.11.0 (2026-10-25)
+Applies to timps v1.11.1 (2026-10-25)
 
 A statement marked **since vX** is new in that release — on an older camera
-describe the previous behaviour. Changes of v1.11.0 in `CHANGELOG.md` are marked
-**since v1.11.0**.
+describe the previous behaviour. Changes of v1.11.0 and v1.11.1 in `CHANGELOG.md` are marked
+**since v1.11.0** / **since v1.11.1**.
 
 ## Where to find what
 
@@ -776,12 +776,17 @@ Status codes and their `reason` discriminators:
 
 #### Test pattern (since v1.11.0)
 
-`{"testpattern":{"mode":0..4, "obj_size":N, "obj_contrast":N, "obj_speed":N, "obj_cell_x":N, "obj_cell_y":N, "ae_hold":0|1, "awb_hold":0|1}}`
+`{"testpattern":{"mode":0..5, "obj_size":N, "obj_contrast":N, "obj_speed":N, "obj_cell_x":N, "obj_cell_y":N, "ae_hold":0|1, "awb_hold":0|1}}`
 switches the OpenIMP test pattern: 0 off, 1 static pattern (ramps,
 checkerboard, colour bars, logo), 2 moving square + frame counter, 3 motion
 test (objects in an 8x6 grid), 4 the sensor's own test pattern through the
 whole ISP (OpenIMP next 736b0f7+; `ae_hold` 1 = AE frozen while it runs,
-default; `awb_hold` 1 = fixed WB gains; both restored on leaving).
+default; `awb_hold` 1 = fixed WB gains; both restored on leaving), 5
+(**since v1.11.1**) a still pattern written into the middle of the ISP, after
+sharpening, so colour processing, scaler and encoder handle it and the OSD is
+drawn on top: only where `OpenIMP_TestPattern_Supported(5)` says so
+(`caps.testpattern.isp_mid` = 1; OpenIMP c5fedf2a+, T23 so far), otherwise
+rejected.
 `caps.testpattern.sensor` = 1 (with `sensor_name`, `sensor_desc`) when the
 running sensor has a table entry; otherwise mode 4 is rejected. A command, never persisted. Only where the
 libimp exports `OpenIMP_Cap_TestPattern` (`caps.testpattern.available`);

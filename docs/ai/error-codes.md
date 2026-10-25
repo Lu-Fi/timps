@@ -1,6 +1,6 @@
 # timps `/control` error codes
 
-**Applies to timps v1.11.0.** All of it is
+**Applies to timps v1.11.1.** All of it is
 **since v1.10.1**; older builds have no `errors` object, no
 `rotation_state` and no `caps.err_v`. 1.11.0 adds no code (`caps.err_v`
 stays `1`).
