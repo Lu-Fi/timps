@@ -243,7 +243,10 @@ own pattern through the ISP (`caps.testpattern.sensor`, optional `ae_hold` /
 sharpening, so colour processing, scaler and encoder handle it and the OSD is
 drawn on top (`caps.testpattern.isp_mid`, from `OpenIMP_TestPattern_Supported(5)`;
 T23 so far).
-Day/night is held in day mode while a pattern runs. Not persisted.
+Day/night is held in day mode while a pattern runs. Not persisted. The
+thingino WebUI shows it as a pipeline banner on the preview page (Sensor →
+ISP → Encoder → IVS, one button per stage), behind a toolbar toggle that is
+off by default and always shown while a pattern runs.
 
 ### The `encoder.<n>.rc` object — what the encoder actually holds
 

@@ -3,6 +3,56 @@
 Working list. Newest block first; each entry says what is established and what
 is still guesswork, so nobody has to re-derive it.
 
+## STATE 2026-10-25: v1.11.0 + v1.11.1 released; what is open after them
+
+**Released:** v1.11.0 (f36c42c) and v1.11.1 (ec28a53, test pattern mode 5).
+Firmware PRs themactep/thingino-firmware#1873 (ciao) and #1874 (aperto) pin
+v1.11.1 and carry the WebUI (test pattern banner behind a toolbar toggle).
+Not merged. Runbook: `dev_notes/RELEASE_v1.11.0.md`.
+
+**Unreleased on `dev/1.11.2` (user: no release yet):** `general.fs_keepalive`
+defaults to `1` on every SoC (655dba3). The fleet already runs it through
+`/etc/timps.conf` on all 19 cameras.
+
+**Fleet (2026-10-25):** agg46 = timps 75de87f (v1.11.0 minus T41 defog, T40
+keepalive auto and docs), OpenIMP 7c30aa99, open-tx-isp 1bf4549d.
+`general.fs_keepalive = 1` set live and in the thingino-user per-IP overlays;
+.31 (T10) and .24 (T21) have no per-IP overlay `timps.conf`, so a flash
+would drop it there (OpenIMP session asked to add it in their build).
+Thresholds: cam-sz day_gain 3000 / night_gain 6000, cam-wohn-ofen 3500 /
+8000 (ofen switched day -> night four times on a dim afternoon at 4096).
+
+**OPEN:**
+- Fleet-night verdict for v1.11.x (agg46): check boots, hangs, flapping.
+  cam-wohn (.33) hung once at 02:54 on agg43 (watchdog reset, no pstore);
+  OpenIMP plans netconsole/ramoops for it.
+- T40 (Eufy): exposure read 554 at 8 s, 22117 at 22 s after night -> day.
+  timps side done (a check's day verdict must hold 10 s, 75de87f; keepalive
+  on, f36c42c). Driver side in open-tx-isp next: AE fed from ch1 when ch0
+  idles (7458b67e), AWB1 kept on through the night (6d63667b, fixes the grey
+  day after night -> day), false rc=1 of SetISPRunningMode (f18148ff). None
+  in an image yet; the Eufy needs a new image with timps v1.11.1.
+- Basement test bench: all test cameras stand on one shelf facing the same
+  wall, so every illuminator change is a jump for the others. The Eufy's IR
+  is the strongest (own IR on 386, off 716). Day/night counts there are no
+  measure for a real room.
+- `daynight` (firmware script): its `color` POST fails while timpsd is down
+  (restart gap) and the ISP stays in the mono bank with the IR-cut in day
+  position until timps' own boot check. Options: retry in `color`, or timps
+  re-asserts running_mode after its boot check too (it does not, by design,
+  `reassert_left = 0` for 'b'). User decision pending.
+- IR-cut / illuminator plausibility: no position feedback exists. Possible
+  warning from existing readings (night look: lit ~ dark means IR has no
+  effect; day: an IR blink changing the day reading means the filter is out).
+  Backlog.
+- Generic day/night on keepalive=0 (hold the FrameSource briefly before
+  looks/checks): moot with the new default 1, keep only if someone turns the
+  keepalive off.
+- Test pattern mode 5 needs OpenIMP c5fedf2a+ (T23 only so far); mode 4 on
+  T21 jxf23 accepted but never visible (OpenIMP TODO D).
+- Learned dawn (user idea): no silent look before the average dark duration
+  of the last days; learned-k jump bar partly done (creeping light, 8403ea8).
+
 ## RESOLVED: day mode with no exit - cam-07 stuck in day, railed dark, for 88 minutes; the day->night rule assumed the day pipeline can read above night_gain, and on this camera it cannot
 
 Found 2026-08-28 evening, the direct follow-on of the night_gain=7000 change
