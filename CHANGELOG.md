@@ -118,6 +118,12 @@ semantic versioning.
   killed the day/night thread. Exposure comes from IMP only there.
 - A day/night thread that stops ticking (no tick for 10 x `interval_ms`, at
   least 60 s) is logged as an error once.
+- Day/night: a check takes "day" only once the reading has stayed below
+  `day_gain` for 10 s after the settle time; "night" is still final at once.
+  The open T40 driver reported the night-side exposure for about 14 s after
+  the switch, so a check in the dark read "day" and the camera sat in day
+  mode with its illuminator off, which also set off every IR camera next to
+  it.
 - T40/T41: 4K JPEG snapshots larger than 1 MiB were dropped; the JPEG
   buffer cap is 4 MiB there (a 4K frame at q75 is 1.6-3.3 MB).
 

@@ -111,6 +111,11 @@ Scenario JSON (all times virtual seconds, all gains IMP [24.8] linear):
                                   runtime defect can occur. The field
                                   incident was a runtime transition, so this
                                   is also the more faithful model.
+  day_lag_s                     - OPTIONAL seconds: after a switch to day the
+                                  exposure keeps reading the last night-side
+                                  value this long (T40 open driver: 554 read
+                                  8 s after the switch, 22117 at 22 s; Eufy
+                                  2026-10-25).
   isp_override                  - OPTIONAL [[t, "day"|"night"|null], ...]:
                                   from t on, the served "ISP Runing Mode"
                                   (and pipeline) is FORCED to the given mode
@@ -1242,6 +1247,8 @@ def run_regression(scn, binary, keep=False, scale_override=None):
         return rg, bg
 
     sticky = scn.get("isp_sticky")           # {"stuck": "day"|"night"}
+    day_lag = float(scn.get("day_lag_s", 0))
+    last_night_g = None
     override = scn.get("isp_override")       # [[t, "day"|"night"|null], ...]
 
     def override_at(t):
@@ -1334,6 +1341,12 @@ def run_regression(scn, binary, keep=False, scale_override=None):
             g = interp_gain(curve, t, interp) * noise_factor(nidx, noise, nseed)
             g = max(g, 256.0)                # sensor floor, see gain_to_units
             r = ratio_at(m, t)
+            if m == "night":
+                last_night_g = (g, r)
+            elif day_lag and last_night_g is not None:
+                sw = sim.switches()
+                if sw and sw[-1][1] == "day" and t - sw[-1][0] < day_lag:
+                    g, r = last_night_g
             sim.serve(g, m, r)
             if sim.awb:
                 sim.serve_awb(*awb_at(t, m, ir))

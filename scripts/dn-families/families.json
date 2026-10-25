@@ -3811,6 +3811,56 @@
     "max_wrong_mode_s": 60,
     "max_switches": 12
    }
+  },
+  {
+   "name": "stale_check",
+   "title": "T40: after the switch to day the exposure reads the night value for 14 s (Eufy 2026-10-25): a dark check must not turn into day",
+   "duration_s": 3600,
+   "initial_mode": "night",
+   "day_lag_s": 14,
+   "timelines": {
+    "eufy": [
+     [
+      0,
+      "shelf_dim"
+     ],
+     [
+      600,
+      "shelf_dim"
+     ],
+     [
+      601,
+      "shelf"
+     ],
+     [
+      1800,
+      "shelf"
+     ],
+     [
+      1801,
+      "shelf_dim"
+     ],
+     [
+      2400,
+      "shelf_dim"
+     ],
+     [
+      2401,
+      "shelf"
+     ],
+     [
+      3600,
+      "shelf"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 60,
+    "max_switches": 6,
+    "forbid_log": [
+     "check \\([a-z]+\\): day"
+    ]
+   }
   }
  ]
 }

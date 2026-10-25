@@ -141,6 +141,8 @@ def build(fam, pname, prof, day_gain, night_gain):
         scn["consumers"] = fam["consumers"]
     if "isp_sticky" in fam:
         scn["isp_sticky"] = fam["isp_sticky"]
+    if "day_lag_s" in fam:
+        scn["day_lag_s"] = fam["day_lag_s"]
     scn["bounds_extra"] = {k: b[k] for k in ("max_on_s", "max_off_s") if k in b}
     scn.update(prof.get("harness", {}))
     return scn

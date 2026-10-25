@@ -72,6 +72,20 @@
     -4.0
    ],
    "src": "device test 2026-10-12 14:07-14:13 (Eufy, 30 % cold bulb): colour 3.7-4.1 %, lit 146, the look said night (dark 303)"
+  },
+  "shelf_dim": {
+   "day": 32766,
+   "lit": 1024,
+   "dark": 1200,
+   "railed": true,
+   "src": "basement shelf at night 2026-10-25, the Eufy's own IR outweighed: lit/dark ASSUMED from the 1024 reference"
+  },
+  "shelf": {
+   "day": 32766,
+   "lit": 386,
+   "dark": 600,
+   "railed": true,
+   "src": "basement shelf at night 2026-10-25: own IR on 386, off 512-716 (the neighbours' IR), IR-cut closed 32766; checks read 554-716"
   }
  },
  "color": {

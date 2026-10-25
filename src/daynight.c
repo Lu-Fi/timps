@@ -1220,6 +1220,7 @@ enum { S_BOOT = -1, S_DAY = 0, S_NIGHT = 1, S_LOOK = 2, S_CHECK = 3 };
 #define SD_F_REL      0.90f
 #define SD_KF_MS      3600000   /* a failed check's k judges the looks after it this long */
 #define SD_KF_MIN     0.70f     /* ... unless a light brings the dark reading below this share */
+#define SD_DAY_HOLD_MS 10000   /* a check's day reading must hold this long */
 #define SD_KF_GONE    2.0f      /* the lit level this far above the failed look: that light left */
 #define SD_RAMP       0.85f     /* a jump within this of the level a minute before crept in */
 #define SD_RAMP_N     7         /* lit levels kept, 10 s apart */
@@ -1638,6 +1639,10 @@ static void *dn_thread(void *arg)
         case S_CHECK:
             if (now < due) break;
             if (sm.isp >= 0 && sm.isp != DN_DAY && now < due + DN_VERIFY_MS) break;
+            /* the AE can still report the night side after the switch (T40:
+             * 554 at 8 s, 22117 at 22 s): night is final at once, day only
+             * once it held */
+            if (s < dn->day_gain && now < due + SD_DAY_HOLD_MS) break;
             /* an exhausted check only understates k: kept */
             if (Nk > 0.0f && now - N_at < SD_PAIR_MS && !dn_clipped(sm.headroom) &&
                 s <= SD_FAR * dn->night_gain) {
