@@ -3861,6 +3861,36 @@
      "check \\([a-z]+\\): day"
     ]
    }
+  },
+  {
+   "name": "shelf_lamp",
+   "title": "a lamp comes on while the neighbours' infrared goes off: the lit picture gets darker but changes colour (basement shelf 2026-10-26): day by a colour look",
+   "duration_s": 2700,
+   "initial_mode": "night",
+   "timelines": {
+    "eufy": [
+     [
+      0,
+      "shelf_nbr"
+     ],
+     [
+      900,
+      "shelf_nbr"
+     ],
+     [
+      901,
+      "shelf_lamp"
+     ],
+     [
+      2700,
+      "shelf_lamp"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 180,
+    "max_switches": 4
+   }
   }
  ]
 }

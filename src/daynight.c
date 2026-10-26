@@ -1527,6 +1527,16 @@ static void *dn_thread(void *arg)
                      (double)A, (double)s);
                 A = s; rise = 0;
                 if (B > 0.0f) B = 0.0f;
+                /* darker but differently coloured: a lamp while other
+                 * cameras' infrared went off. Look, do not adopt it. */
+                if (irp && Crg > 0.0f && cdev > (float)dn->color_pct && !locked && now >= c_next) {
+                    LOGD(MOD, "colour moved %.1f %% while the scene got darker", (double)cdev);
+                    B = -1.0f;              /* new light: judge it by day_gain */
+                    c_next = now + c_gap;
+                    c_gap = c_gap * 2 < SD_LOOK_S * 1000LL ? c_gap * 2 : SD_LOOK_S * 1000LL;
+                    why = "color"; g_probe_req = 0;
+                    goto look;
+                }
                 Crg = Prg = -1.0f; chold = 0; c_from = now;
             }
             /* sign and size differ per sensor: any channel, either way */

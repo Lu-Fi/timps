@@ -16,6 +16,12 @@ semantic versioning.
   a 1080p main stream plus 0.7 MB for a 640x360 substream; the peak with
   clients on every stream is unchanged).
 
+- Day/night: when the lit night picture gets darker while its colour moves
+  beyond `daynight.color_pct`, timps starts a colour look instead of taking
+  the darker scene as the new reference. A lamp coming on while other
+  cameras' infrared goes off (several IR cameras facing one room) left a
+  camera in night until the 6 h timer; replay `shelf_lamp`: day after 72 s.
+
 ### Fixed
 
 - T40/T41 with OpenIMP: the JPEG thread no longer polls the encoder during

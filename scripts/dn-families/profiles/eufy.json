@@ -86,6 +86,20 @@
    "dark": 600,
    "railed": true,
    "src": "basement shelf at night 2026-10-25: own IR on 386, off 512-716 (the neighbours' IR), IR-cut closed 32766; checks read 554-716"
+  },
+  "shelf_nbr": {
+   "day": 32766,
+   "lit": 295,
+   "dark": 600,
+   "railed": true,
+   "src": "basement shelf at night 2026-10-26, neighbours' IR on, room dark (lit 295)"
+  },
+  "shelf_lamp": {
+   "day": 600,
+   "lit": 405,
+   "dark": 520,
+   "lamp": 3.0,
+   "src": "2026-10-26 ~13:00: room light on, the neighbours switch to day and their IR goes off: the Eufy's lit picture gets darker (295 -> 405) while the colour moves; day value and dark ASSUMED"
   }
  },
  "color": {
