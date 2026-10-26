@@ -28,7 +28,11 @@ Thresholds: cam-sz day_gain 3000 / night_gain 6000, cam-wohn-ofen 3500 /
   OpenIMP plans netconsole/ramoops for it.
 - T40 (Eufy): exposure read 554 at 8 s, 22117 at 22 s after night -> day.
   timps side done (a check's day verdict must hold 10 s, 75de87f; keepalive
-  on, f36c42c). Driver side in open-tx-isp next: AE fed from ch1 when ch0
+  on, f36c42c). CORRECTION 2026-10-26: keepalive alone does NOT keep the
+  open T40 AE running: with no consumer no frame is dequeued, the AE gets
+  0 samples (OpenIMP measurement). The 25.10. "exposure kept updating" was
+  measured right after snapshots, so it proved nothing. Driver fix pending
+  (AE on the ISP interrupt like the vendor). Driver side in open-tx-isp next: AE fed from ch1 when ch0
   idles (7458b67e), AWB1 kept on through the night (6d63667b, fixes the grey
   day after night -> day), false rc=1 of SetISPRunningMode (f18148ff). None
   in an image yet; the Eufy needs a new image with timps v1.11.1.
