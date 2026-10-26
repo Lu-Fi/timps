@@ -55,6 +55,13 @@ Thresholds: cam-sz day_gain 3000 / night_gain 6000, cam-wohn-ofen 3500 /
   the current timestamp; a snapshot can then be the previous one. Not changed
   by the linger fix (ff4b6b0). Asked OpenIMP for a marker on reused streams
   (low priority) so timps can wait for a fresh frame.
+- New OpenIMP APIs (next, 2026-10-26), not used yet:
+  `OpenIMP_Encoder_StreamIsReused(chn, stream)` (7cf41472; 1 = re-delivered
+  JPEG, only on Helix T20/T21/T30 and T31 HW JPEG, always 0 on T40/T41; weak)
+  so a snapshot could wait for a fresh picture; fallback frame for T40/T41
+  (f9972506, default off, `OpenIMP_Cap_FallbackFrame`,
+  `OpenIMP_FrameSource_SetFallback/GetFallback`): a "NO SENSOR SIGNAL" picture
+  after 2 s without frames, status could go to `/control` and the WebUI.
 - Learned dawn (user idea): no silent look before the average dark duration
   of the last days; learned-k jump bar partly done (creeping light, 8403ea8).
 
