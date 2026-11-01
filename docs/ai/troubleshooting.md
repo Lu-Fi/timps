@@ -1068,7 +1068,7 @@ day pipeline above `night_gain` or the AE at its limit for `day_confirm_s`
 (6 s when very dark); at night a **look** (illuminator off 8 s, silent) every
 45 min or when the lit level falls `jump_pct` below the last look; a
 **check** (day pipeline, one click) when the look reads below the bar; a
-check anyway after `heartbeat_max_s` (12 h) without a day reading.
+check anyway after `heartbeat_max_s` (18 h) without a day reading.
 
 The decision inputs come from an ISP dump file, `daynight.isp_path`. If it
 is unreadable but a known alternative works (T20: `isp_info`) you get the

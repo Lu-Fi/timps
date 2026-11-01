@@ -1207,6 +1207,7 @@ enum { S_BOOT = -1, S_DAY = 0, S_NIGHT = 1, S_LOOK = 2, S_CHECK = 3 };
 #define SD_RISE_MS    60000     /* a darker scene held this long is the new reference */
 #define SD_RISE       1.10f     /* ... starting this far above it (noise stays below) */
 #define SD_B_MIN      0.50f     /* a light that halves the dark reading may ask again */
+#define SD_NEAR       4.0f      /* a look asks only where k puts the check this near day_gain */
 #define SD_LOOK_S     2700      /* 8 s every 45 min = 0.30 % of the night */
 #define SD_LOOK_COLOR_S 21600   /* jump + colour watch the night: the timer is a backstop */
 #define SD_COLOR_GAP_MS 300000  /* colour looks: 5 min apart, doubling while nothing else looks */
@@ -1621,6 +1622,9 @@ static void *dn_thread(void *arg)
                            fmaxf(dn->day_gain / Kf, Nf * SD_KF_MIN);
                 if (kb < bar) bar = kb;
             }
+            /* a bar relative to a railed check knows nothing of the distance
+             * to day: dawn moved the colour at 19x day_gain (cam-vorne) */
+            if (bar > SD_NEAR * dn->day_gain / K) bar = SD_NEAR * dn->day_gain / K;
             int ask = ok && N < bar;
             if (idle) {
                 if (!ask) { hold = 0; break; }

@@ -1,0 +1,95 @@
+{
+ "name": "vorne",
+ "camera": "cam-vorne, outdoor, T23N",
+ "map": {
+  "kind": "generic"
+ },
+ "curve_src": "cam-vorne dawn 2026-10-31 05:34-07:21 (syslog looks/checks); day values between checks interpolated (ASSUMED); lvl = time 06:40 -> 07:25",
+ "curve_rail": 100000,
+ "curve": [
+  [
+   0.0,
+   131072,
+   5569,
+   131072
+  ],
+  [
+   0.1,
+   80000,
+   5002,
+   37984
+  ],
+  [
+   0.2,
+   32376,
+   4253,
+   14376
+  ],
+  [
+   0.3,
+   15000,
+   3242,
+   6661
+  ],
+  [
+   0.4,
+   8000,
+   2507,
+   3883
+  ],
+  [
+   0.45,
+   5000,
+   1940,
+   2409
+  ],
+  [
+   0.55,
+   3000,
+   1487,
+   1755
+  ],
+  [
+   0.6,
+   2200,
+   1145,
+   1297
+  ],
+  [
+   0.67,
+   1545,
+   950,
+   1000
+  ],
+  [
+   1.0,
+   328,
+   300,
+   300
+  ]
+ ],
+ "color": {
+  "base": [
+   2600,
+   2184
+  ],
+  "shift": [
+   0.0,
+   0.0
+  ],
+  "dawn": [
+   0.0,
+   30.0
+  ],
+  "noise_pct": 0.5,
+  "src": "cam-vorne 2026-10-31: colour moved 3.2-3.4 % every 5 min from 06:45 (b/g ASSUMED)"
+ },
+ "scenes": {
+  "night": {
+   "lvl": 0.0
+  },
+  "day": {
+   "lvl": 1.0
+  }
+ }
+}

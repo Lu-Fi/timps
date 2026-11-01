@@ -266,7 +266,7 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
 * **Hersteller-T21 (seit v1.11.0)** liest `daynight.isp_path` nicht mehr: der
   Treiber beschädigte beim Lesen den Kernel-Heap. Ein Erkennungs-Thread, der
   nicht mehr tickt, meldet sich einmal als Fehler im Log.
-* **Garantie**: spätestens nach `heartbeat_max_s` (12 h) ohne Tagbild-Messung
+* **Garantie**: spätestens nach `heartbeat_max_s` (18 h) ohne Tagbild-Messung
   wird geprüft. Kameras ohne schaltbare IR-LED prüfen bei Halbierung des
   Nachtpegels und alle `heartbeat_s` (4 h).
 * **Schwellen**: `daynight.day_gain` (Default 768 = 3×, darunter ist Tag) und

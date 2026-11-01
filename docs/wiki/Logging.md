@@ -117,7 +117,7 @@ its decisions at INFO — you get the switches and the reference changes, but
 not the per-probe numbers the analysis scripts read.
 
 This is deliberate, but the point is *readability*, not bandwidth: at the
-default cadence (a look every 45 min, `heartbeat_max_s = 43200`) the demoted
+default cadence (a look every 45 min, `heartbeat_max_s = 64800`) the demoted
 lines amount to a few dozen a day, and a camera that sets `debug_modules`
 ships exactly as many bytes as before the change. On a collector, the bulk of
 the day/night-related traffic is elsewhere entirely — `crond`'s once-a-minute

@@ -13,7 +13,7 @@ stub functions report `enabled=0` and fall back to whatever
 > dark). Night: a **look** (IR illuminator off 8 s, silent) every 45 min or
 > when the lit level falls `jump_pct` (20 %) below the last look; a **check**
 > (day pipeline, one click) when the look reads below the bar; failed checks
-> lock out for 1, 2, 4 … min; a check anyway after `heartbeat_max_s` (12 h).
+> lock out for 1, 2, 4 … min; a check anyway after `heartbeat_max_s` (18 h).
 > **Since v1.11.0** a look also starts when the colour of the lit picture
 > (AWB statistics) moves `color_pct` (3 %) from the last look for 20 s — a
 > weak lamp that barely brightens the IR picture (at most every 5 min,
@@ -629,6 +629,15 @@ than kept as dead weight. `daynight.diagnose_thresholds` covers the same
 failure mode today: it names the value to raise `day_gain` above instead of
 trying to raise it automatically.
 
+## Changes in v1.11.2
+
+* **Looks ask only near day.** Whatever the bar, a look asks for a check only
+  when `k × dark` is within 4 × `day_gain`. After a railed check the bar was
+  `0.85 × dark`, which says nothing about the distance to day: at dawn the
+  colour trigger asked at 19 × `day_gain` and each look cost a click pair.
+* **`heartbeat_max_s` 18 h** (was 12 h): a winter night is longer than 12 h,
+  so the guarantee check failed every morning before dawn on every camera.
+
 ## Changes in v1.11.0
 
 * **Jump bar from what failed.** Every look → check pair teaches `k` (day
@@ -900,7 +909,7 @@ indoor cameras the tell does not matter.
 * First-snapshot delay after every wake; a poll slower than the linger pays
   one LED on/off pair and one held snapshot per poll.
 * **Heartbeat probes in the dark are audible** (every `heartbeat_s` /
-  `heartbeat_max_s`, 4-12 h by default): a silent probe cannot work while
+  `heartbeat_max_s`, 4-18 h by default): a silent probe cannot work while
   the LED is already off, so the heartbeat uses the IR-cut probe.
 * Cameras with a permanent consumer (Frigate/NVR, `record.enabled`,
   `motion.enabled`, `jpeg.snapshot_path`) never go idle: no effect, no cost.

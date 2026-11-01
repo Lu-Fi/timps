@@ -372,7 +372,7 @@ same strftime pattern, `interval_s` 60, `keep_days` 7 (0..3650 **since v1.9.28**
 **`daynight.`** — `enabled` 1, `mode` `auto` (|`schedule`), `day_gain` 768,
 `night_gain` 4096, `day_confirm_s` 30, `jump_pct` 20 (**since v1.10.1**),
 `color_pct` 3 (**since v1.11.0**, 0 = off),
-`heartbeat_s` 14400, `heartbeat_max_s` 43200, `interval_ms` 2000,
+`heartbeat_s` 14400, `heartbeat_max_s` 64800, `interval_ms` 2000,
 `switch_cmd` `daynight`, `irprobe_cmd` `timps-irprobe`, `isp_path`
 `/proc/jz/isp/isp-m0`, `history_s` 0 (max 172800), `trace_path` (tmpfs only),
 plus the optional calendar: `time_night_start` / `time_day_start` (HH:MM),
@@ -1042,7 +1042,7 @@ or a bar learnt from a failed check), it **checks**: switches to the day
 pipeline (one click) and stays day below `day_gain`, else goes back (a second
 click). Failed checks lock further checks out for 1, 2, 4 … min.
 
-**The guarantee:** no day-pipeline reading for `heartbeat_max_s` (12 h) → a
+**The guarantee:** no day-pipeline reading for `heartbeat_max_s` (18 h) → a
 check regardless of looks or lockouts. Cameras without a switchable
 illuminator (`irprobe_cmd` empty or failing) do not look; they check when the
 night level halves and every `heartbeat_s` (4 h).

@@ -804,7 +804,7 @@ daynight.color_pct      = 3                    # 0..50, live
 # engine then checks every heartbeat_s instead (audible).
 daynight.irprobe_cmd     = timps-irprobe       # run as "<cmd> on|off|idle|state"
 daynight.heartbeat_s     = 14400               # check interval without a switchable IR light
-daynight.heartbeat_max_s = 43200               # longest night without a day check
+daynight.heartbeat_max_s = 64800               # longest night without a day check
 # Retired in 1.10.1 (read, ignored, one warning each): probe_min_gap_s,
 # probe_confirm_s, boot_probe, diagnose_thresholds.
 daynight.interval_ms    = 2000                 # sample interval

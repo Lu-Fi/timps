@@ -516,10 +516,10 @@ void config_defaults(ms_config *c)
      * no switchable illuminator, which turns looks off. Empty = no looks. */
     snprintf(c->daynight.irprobe_cmd, sizeof c->daynight.irprobe_cmd,
              "timps-irprobe");
-    /* no-LED cameras check every 4 h; every camera checks after 12 h of
+    /* no-LED cameras check every 4 h; every camera checks after 18 h of
      * night without a day-pipeline reading */
     c->daynight.heartbeat_s=14400;
-    c->daynight.heartbeat_max_s=43200;
+    c->daynight.heartbeat_max_s=64800;
     /* 2000 ms, not the old 500: the exposure index needs the /proc scrape on
      * every decision tick (the integration time has no IMP API), and no
      * confirmation window in the automaton is shorter than 8 s. This is still

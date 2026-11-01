@@ -3891,6 +3891,44 @@
     "max_wrong_mode_s": 180,
     "max_switches": 4
    }
+  },
+  {
+   "name": "dawn_color_rail",
+   "title": "dawn after a railed night: the colour drifts long before the check can read day; no colour look may ask while the dark reading is far from day (boot check pair + one failed check + day)",
+   "duration_s": 5400,
+   "initial_mode": "night",
+   "timelines": {
+    "vorne": [
+     [
+      0,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      600,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      3300,
+      {
+       "lvl": 1.0
+      }
+     ],
+     [
+      5400,
+      {
+       "lvl": 1.0
+      }
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 1800,
+    "max_switches": 5
+   }
   }
  ]
 }

@@ -16,6 +16,15 @@ semantic versioning.
   a 1080p main stream plus 0.7 MB for a 640x360 substream; the peak with
   clients on every stream is unchanged).
 
+- `daynight.heartbeat_max_s` defaults to `64800` (18 h, was 12 h). A winter
+  night is longer than 12 h, so the guarantee check ran before dawn on every
+  camera every morning and always found night (one click pair each).
+
+- Day/night: a look asks for a check only where `k × dark` is within
+  4 × `day_gain`. After a railed check the bar was `0.85 × dark`, blind to
+  the distance to day; at dawn colour looks asked at 19 × `day_gain` and
+  each cost a click pair (fleet: 1-2 per camera and morning).
+
 - Day/night: when the lit night picture gets darker while its colour moves
   beyond `daynight.color_pct`, timps starts a colour look instead of taking
   the darker scene as the new reference. A lamp coming on while other

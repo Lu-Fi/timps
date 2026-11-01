@@ -53,7 +53,9 @@ def reading(prof, item):
 
 def tint(prof, item):
     """[rg %, bg %] the lamp of a scene adds to the lit night colour"""
-    sc = prof["scenes"].get(item, {}) if isinstance(item, str) else {}
+    if isinstance(item, dict):
+        return [item["lvl"] * x for x in prof["color"].get("dawn", [0.0, 0.0])]
+    sc = prof["scenes"].get(item, {})
     if "tint" in sc:
         return sc["tint"]
     k = sc.get("lamp", 0)
