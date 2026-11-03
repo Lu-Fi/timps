@@ -392,6 +392,8 @@ static const hal_backend g_sim = {
 
 const hal_backend *hal_get(void){ return &g_sim; }
 int hal_fs_keepalive(void){ return g_sim_keepalive; }
+int hal_fs_fallback_available(void) { return 0; }
+int hal_fs_fallback(int fs_chn, hal_fs_fallback_st *o){ (void)fs_chn; (void)o; return -1; }
 int hal_image_pinned(void) { return sim_watch_count(); }
 
 /* no ISP on the host: daynight uses its proc-scrape / brightness fallback */

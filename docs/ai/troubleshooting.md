@@ -591,6 +591,8 @@ timps starts the framesource/encoder **when a client attaches** and stops it
 | Log (`src/hal/hal_ingenic.c`) | Meaning | Action |
 | --- | --- | --- |
 | `chnN: PollingStream idle (rc=…, miss#N) - encoder emits no frames` | The encoder produced nothing for a full watchdog window (`MS_VIDEO_WATCHDOG_ITERS` = 10). | Occasional single misses self-heal. Repeats mean the ISP/encoder is wedged. |
+| `framesource N: no sensor signal for N ms - OpenIMP delivers fallback frames` | **Since v1.11.2**, T40/T41 with OpenIMP only. The sensor (or ISP) stopped; OpenIMP now feeds the encoder a "NO SENSOR SIGNAL" test picture, so the stream stays up and the video watchdog never fires. Logged once per outage by the stream's video thread (checked every second while it streams); `caps.framesource.fallback.chn.<N>.active` = 1. | Check the sensor cable/driver (`dmesg`). The stream needs no action; it switches back by itself. |
+| `framesource N: sensor signal back, fallback frames stopped (N generated)` | **Since v1.11.2.** The first real frame after a fallback. | Nothing. Frequent pairs = a flaky sensor link. |
 | `chnN: encoder dead after N consecutive misses - forcing a framesource disable/enable cycle to recover (recovery attempt n/5)` | Automatic recovery, bounded at `MS_VIDEO_WATCHDOG_MAX_RECOVERIES` = **5**. | Watch whether it recovers. |
 | `chnN: N forced-recovery cycles without a frame - exiting` | The encoder/ISP is not coming back on its own. Gave up; the **process exits**. It does so by `raise(SIGTERM)`, i.e. through the ordinary shutdown path — so it **exits 0** with `shutting down` … `teardown complete - exiting`, and the pidfile `start-stop-daemon -m` wrote is **left behind**. A stale `/var/run/timpsd.pid` after a watchdog give-up is therefore expected, and `S95timps status` will report a pid that no longer exists. | **Nothing restarts it.** See the warning below. If it recurs, this is an SDK/board problem — collect `dmesg`. |
 
@@ -2758,6 +2760,8 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `framesource %d: %d reference(s) still held at teardown` | W | Subscriber accounting leak at shutdown. | Report as a bug. |
 | `framesource %d enabled` / `framesource %d disabled (idle)` | I | A real `EnableChn`/`DisableChn` edge. On-demand: per wake (client, snapshot, timelapse shot, latch kick). With `general.fs_keepalive` on: `enabled` once per start, `disabled (idle)` never. | Nothing; see §2.1. |
 | `framesource keepalive %s (general.fs_keepalive=%d%s)` | I | **since v1.10.0.** Once per start: `on`/`off`, the raw value, `, auto` when it was `-1`. | `off` on an open-stack T23/T40/T41 → §2.1. |
+| `framesource %d: no sensor signal for %u ms - OpenIMP delivers fallback frames` | W | **since v1.11.2.** T40/T41 OpenIMP: sensor stopped, the libimp generates "NO SENSOR SIGNAL" frames; once per outage. | §2.2 |
+| `framesource %d: sensor signal back, fallback frames stopped (%u generated)` | I | **since v1.11.2.** Real frames again. | Nothing. |
 | `framesource %d: no keepalive (software-rotate stream)` | I | **since v1.10.0.** T23 `USE_SW_ROTATE` 90/270 stream: exempt from the keepalive, stays on-demand. | Nothing. |
 | `FS_CreateChn %d` / `FS_SetChnAttr %d failed` | E | Framesource geometry rejected. | Check `videoN.width`/`height` against the sensor. |
 | `FS_SetI2dAttr %d failed (rotation may stay inactive)` | W | T40/T41 belt-and-braces rotation call. | §2.6 |

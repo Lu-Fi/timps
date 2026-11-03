@@ -1916,8 +1916,27 @@ static int get_json(char *buf, size_t cap)
 #endif
     /* general.fs_keepalive: "keepalive" is what start() resolved (1 = every
      * video framesource held enabled until stop), "cfg" the raw -1/0/1 */
-    APP("\"framesource\":{\"keepalive\":%d,\"cfg\":%d},",
+    APP("\"framesource\":{\"keepalive\":%d,\"cfg\":%d,",
         hal_fs_keepalive(), c->fs_keepalive);
+    {   /* per video framesource channel (= videoN.imp_chn) */
+        int fav = hal_fs_fallback_available();
+        APP("\"fallback\":{\"available\":%d", fav);
+        if (fav) {
+            int n = 0;
+            APP(",\"chn\":{");
+            for (int i=0;i<MS_MAX_VSTREAM;i++){
+                hal_fs_fallback_st fb;
+                if (!g_cfg_boot.video[i].enabled ||
+                    hal_fs_fallback(g_cfg_boot.video[i].imp_chn, &fb) != 0) continue;
+                APP("%s\"%d\":{\"enabled\":%d,\"active\":%d,\"generated\":%u,"
+                    "\"activations\":%u,\"last_real_age_ms\":%u}",
+                    n++ ? "," : "", g_cfg_boot.video[i].imp_chn, fb.enabled,
+                    fb.active, fb.generated, fb.activations, fb.last_real_age_ms);
+            }
+            APP("}");
+        }
+        APP("}},");
+    }
     /* ir_idle: daynight.ir_idle_off can act on this build/start (it needs
      * the keepalive); daynight.ir_idle.reason says why not at runtime */
 #ifdef USE_DAYNIGHT

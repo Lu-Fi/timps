@@ -3618,6 +3618,48 @@ static int64_t pts_sanitize(pts_sanitizer *s, int64_t hw_us, int64_t now_us,
  * 2x margin while still rejecting garbage far tighter than video's 1 s. */
 #define PTS_SKEW_AUDIO_US 500000LL
 
+#if defined(USE_OPENIMP) && (defined(PLATFORM_T40) || defined(PLATFORM_T41))
+#define FS_FALLBACK_API 1
+/* include/openimp_fallback.h, OPENIMP_FALLBACK_ABI 1 */
+typedef struct {
+    uint32_t size, enabled, active;
+    int32_t  error;
+    uint32_t timeout_ms, generated, activations, last_real_age_ms;
+} ms_fs_fallback;
+extern int OpenIMP_FrameSource_GetFallback(int, ms_fs_fallback *) __attribute__((weak));
+extern const int OpenIMP_Cap_FallbackFrame __attribute__((weak));
+static int fs_fallback_api(void)
+{
+    return OpenIMP_FrameSource_GetFallback && &OpenIMP_Cap_FallbackFrame &&
+           OpenIMP_Cap_FallbackFrame;
+}
+static int fs_fallback_get(int chn, ms_fs_fallback *s)
+{
+    memset(s, 0, sizeof *s);
+    s->size = sizeof *s;
+    return fs_fallback_api() ? OpenIMP_FrameSource_GetFallback(chn, s) : -1;
+}
+/* video threads only: each owns its framesource's slot */
+static int     g_fs_fb_active[MS_FS_MAXCHN];
+static int64_t g_fs_fb_next[MS_FS_MAXCHN];
+static void fs_fallback_poll(int chn)
+{
+    if (chn < 0 || chn >= MS_FS_MAXCHN) return;
+    int64_t now = ms_now_us();
+    if (now < g_fs_fb_next[chn]) return;
+    g_fs_fb_next[chn] = now + 1000000;
+    ms_fs_fallback s;
+    if (fs_fallback_get(chn, &s) != 0) return;
+    if (s.active && !g_fs_fb_active[chn])
+        LOGW(MOD,"framesource %d: no sensor signal for %u ms - OpenIMP delivers "
+                 "fallback frames", chn, s.last_real_age_ms);
+    else if (!s.active && g_fs_fb_active[chn])
+        LOGI(MOD,"framesource %d: sensor signal back, fallback frames stopped "
+                 "(%u generated)", chn, s.generated);
+    g_fs_fb_active[chn] = s.active ? 1 : 0;
+}
+#endif
+
 static void *video_thread(void *arg)
 {
     vchan *vc = (vchan*)arg;
@@ -3717,6 +3759,9 @@ static void *video_thread(void *arg)
         /* honor IDR requests from RTSP/HTTP threads here (single-thread IMP) */
         if (vc->idr_req){ vc->idr_req=0; IMP_Encoder_RequestIDR(vc->chn); }
         roi_poll(vc);
+#ifdef FS_FALLBACK_API
+        fs_fallback_poll(vc->chn);
+#endif
         int64_t poll_t0 = ms_now_us();
         int pr = IMP_Encoder_PollingStream(vc->chn, g_hcfg->imp_polling_timeout);
         IMPEncoderStream st;
@@ -7010,6 +7055,32 @@ static const hal_backend g_ingenic = {
 const hal_backend *hal_get(void){ return &g_ingenic; }
 
 int hal_fs_keepalive(void) { return g_fs_keepalive; }
+
+int hal_fs_fallback_available(void)
+{
+#ifdef FS_FALLBACK_API
+    return fs_fallback_api();
+#else
+    return 0;
+#endif
+}
+
+int hal_fs_fallback(int fs_chn, hal_fs_fallback_st *o)
+{
+#ifdef FS_FALLBACK_API
+    ms_fs_fallback s;
+    if (!o || fs_fallback_get(fs_chn, &s) != 0) return -1;
+    o->enabled = s.enabled ? 1 : 0;
+    o->active = s.active ? 1 : 0;
+    o->generated = s.generated;
+    o->activations = s.activations;
+    o->last_real_age_ms = s.last_real_age_ms;
+    return 0;
+#else
+    (void)fs_chn; (void)o;
+    return -1;
+#endif
+}
 
 /* g_motion_mtx is held across a whole IVS rebuild, so it is not taken here */
 int hal_image_pinned(void)
