@@ -2263,6 +2263,12 @@ static int get_json(char *buf, size_t cap)
         }
         APP("}");
     }
+    {
+        unsigned jr, js;
+        int jav = hal_jpeg_reuse(&jr, &js);
+        APP(",\"jpeg_reuse\":{\"available\":%d,\"reused\":%u,\"skipped\":%u}",
+            jav, jr, js);
+    }
     {   /* cumulative fanqueue overflow events per video stream, summed over
          * all consumers (RTSP/fMP4/record/WebRTC/SRT) - hub_count_drops().
          * Nonzero and climbing = some client is behind and the shared encoder

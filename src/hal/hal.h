@@ -197,6 +197,11 @@ int hal_enc_stats(int enc_chn, hal_enc_stat *out);
  * (classic SoCs; OpenIMP T40/T41 without OpenIMP_Cap_CappedRc) */
 int hal_enc_capped_rc(void);
 
+/* JPEG pictures OpenIMP re-delivered (encoder busy) and how many of them were
+ * not published, summed over all JPEG channels. Returns 1 when the libimp
+ * exports OpenIMP_Encoder_StreamIsReused, else 0 (counts stay 0). */
+int hal_jpeg_reuse(unsigned *reused, unsigned *skipped);
+
 /* Read-only rate-control attributes the encoder ACTUALLY holds for one
  * channel, from IMP_Encoder_GetChnAttrRcMode (present on every supported
  * SoC). This is the missing diagnostic for the whole rc-key family: timps

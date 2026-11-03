@@ -232,6 +232,12 @@ typedef IMPEncoderCHNStat IMPEncoderChnStat;
 #ifndef MS_JPEG_WATCHDOG_MAX_RECOVERIES
 #define MS_JPEG_WATCHDOG_MAX_RECOVERIES 5
 #endif
+/* OpenIMP re-delivers the last JPEG (up to 5 s old, current timestamp) while
+ * the encoder is busy. Skipping it lets a snapshot grab wait for a fresh one;
+ * every (N+1)th in a row still goes out so MJPEG never stalls. */
+#ifndef MS_JPEG_REUSE_SKIP
+#define MS_JPEG_REUSE_SKIP 4
+#endif
 
 static IMPSensorInfo    g_sensor;
 static const ms_config *g_hcfg;
@@ -395,6 +401,7 @@ typedef struct {
     int          snapshot;   /* periodic file snapshot (dedicated chn only) */
     int          has_thr;    /* pthread_create succeeded: join in stop (M8) */
     int64_t      last_snapshot_us; /* ms_now_us() of the last file write (M8) */
+    unsigned     reused, reuse_skipped; /* OpenIMP_Encoder_StreamIsReused */
     volatile int run, active;
     pthread_t    thr;
 } jchan;
@@ -4714,6 +4721,22 @@ static int sw_rot_start(const ms_config *cfg, int i)
 #endif /* ROT_HAS_SW_90 */
 
 /* ================= JPEG / MJPEG ================= */
+#ifdef USE_OPENIMP
+extern int OpenIMP_Encoder_StreamIsReused(int, const IMPEncoderStream *) __attribute__((weak));
+#endif
+int hal_jpeg_reuse(unsigned *reused, unsigned *skipped)
+{
+    unsigned r = 0, s = 0;
+    for (int k=0;k<g_nj;k++){ r += g_j[k].reused; s += g_j[k].reuse_skipped; }
+    if (reused) *reused = r;
+    if (skipped) *skipped = s;
+#ifdef USE_OPENIMP
+    return OpenIMP_Encoder_StreamIsReused ? 1 : 0;
+#else
+    return 0;
+#endif
+}
+
 static void *jpeg_thread(void *arg)
 {
     jchan *jc = (jchan*)arg;
@@ -4731,6 +4754,9 @@ static void *jpeg_thread(void *arg)
     int64_t cold_since=0;              /* StartRecvPic time until the first frame */
     int64_t jmiss_t0=0;                /* first miss of the current streak */
     int cold_recycles=0;
+#ifdef USE_OPENIMP
+    int reuse_run=0;
+#endif
     int64_t next=0, idle_since=0;
     int64_t period = 1000000/(jc->fps>0?jc->fps:5);
     while (jc->run) {
@@ -4871,6 +4897,19 @@ static void *jpeg_thread(void *arg)
             continue;
         }
         dbg_jgetfail=0;
+#ifdef USE_OPENIMP
+        if (OpenIMP_Encoder_StreamIsReused &&
+            OpenIMP_Encoder_StreamIsReused(jc->chn, &st) == 1){
+            jc->reused++;
+            if (reuse_run < MS_JPEG_REUSE_SKIP){
+                reuse_run++;
+                jc->reuse_skipped++;
+                IMP_Encoder_ReleaseStream(jc->chn,&st);
+                continue;
+            }
+        }
+        reuse_run = 0;
+#endif
         /* idle-stop linger: drain the encoder, but a frame nobody receives is
          * not worth a pool buffer and a full-frame copy. Re-checked here so a
          * subscriber that arrived during the poll still gets this frame. */
@@ -5126,6 +5165,7 @@ static void jpeg_chan_start(int chn, int fs_chn, int src, int w, int h,
     jc->chn=chn; jc->fs_chn=fs_chn; jc->src=src; jc->w=w; jc->h=h;
     jc->fps=fps>0?fps:5; jc->snapshot=snapshot;
     jc->last_snapshot_us=0;  /* due immediately: first loop iteration takes one */
+    jc->reused=0; jc->reuse_skipped=0;
     jc->run=1; jc->active=0; jc->has_thr=0;
     if (ms_thread_create(&jc->thr,MS_STACK_STREAM,jpeg_thread,jc)!=0){
         /* keep the slot (the IMP channel exists and must be destroyed in

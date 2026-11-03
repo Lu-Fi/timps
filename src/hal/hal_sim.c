@@ -496,3 +496,9 @@ void hal_fcrop_limits(hal_fcrop_lim *o)
 int hal_enc_stats(int enc_chn, hal_enc_stat *out){ (void)enc_chn; (void)out; return -1; }
 int hal_enc_rc_read(int enc_chn, hal_enc_rc *out){ (void)enc_chn; (void)out; return -1; }
 int hal_enc_capped_rc(void) { return 1; }
+int hal_jpeg_reuse(unsigned *reused, unsigned *skipped)
+{
+    if (reused) *reused = 0;
+    if (skipped) *skipped = 0;
+    return 0;
+}

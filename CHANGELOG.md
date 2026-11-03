@@ -18,6 +18,11 @@ semantic versioning.
   `capped_quality` really run capped, `0` when they run as VBR (classic SoCs,
   OpenIMP T40/T41 without `OpenIMP_Cap_CappedRc`). Report only.
 
+- OpenIMP: a JPEG the library re-delivers while its encoder is busy
+  (`OpenIMP_Encoder_StreamIsReused`) is no longer published as a new picture,
+  up to 4 in a row, so `/snapshot.jpg` waits for a fresh one. Counted in
+  `jpeg_reuse` (`available`, `reused`, `skipped`) in `GET /control`.
+
 ### Changed
 
 - `general.fs_keepalive` defaults to `1` on every SoC: the FrameSources run
