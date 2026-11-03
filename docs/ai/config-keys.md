@@ -1240,6 +1240,11 @@ to `total_gain`.
   A `0.85 × dark` bar after a railed check said nothing about the distance
   to day: at dawn colour looks asked at 19 × `day_gain` and each cost a
   click pair.
+* **Darker but recoloured** (**since v1.11.2**): when the lit night picture
+  gets darker while its colour moves beyond `color_pct`, a colour look runs
+  instead of taking the darker scene as the new reference (a lamp coming on
+  while other cameras' infrared in the room goes off). Log (debug):
+  `colour moved N % while the scene got darker`.
 * **Guarantee**: no day-pipeline reading for `heartbeat_max_s` (18 h) → a
   check, regardless of looks and lockouts.
 * **Without a switchable illuminator** (`irprobe_cmd` empty or failing) the

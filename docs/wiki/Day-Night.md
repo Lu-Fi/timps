@@ -635,6 +635,11 @@ trying to raise it automatically.
   when `k × dark` is within 4 × `day_gain`. After a railed check the bar was
   `0.85 × dark`, which says nothing about the distance to day: at dawn the
   colour trigger asked at 19 × `day_gain` and each look cost a click pair.
+* **A darker but recoloured scene looks.** When the lit night picture gets
+  darker while its colour moves beyond `color_pct`, timps starts a colour
+  look instead of adopting the darker scene. A lamp switched on while other
+  cameras' infrared in the room went off left a camera in night until the
+  6 h timer.
 * **`heartbeat_max_s` 18 h** (was 12 h): a winter night is longer than 12 h,
   so the guarantee check failed every morning before dawn on every camera.
 
