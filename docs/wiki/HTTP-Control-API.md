@@ -249,6 +249,17 @@ thingino WebUI shows it as a pipeline banner on the preview page (Sensor →
 ISP → Encoder → IVS, one button per stage), behind a toolbar toggle that is
 off by default and always shown while a pattern runs.
 
+### `jpeg_reuse` — JPEGs OpenIMP only repeated (since v1.11.2)
+
+`"jpeg_reuse":{"available","reused","skipped"}`. `available` is 1 on an
+OpenIMP build whose libimp exports `OpenIMP_Encoder_StreamIsReused`. While the
+JPEG encoder is busy (or rmem is short) OpenIMP hands out the channel's last
+picture again; `reused` counts those since start, summed over all JPEG
+channels. timps holds back up to 4 of them in a row (`skipped`), so
+`/snapshot.jpg` waits for a fresh picture; the 5th goes out so MJPEG never
+stalls. A steadily climbing `reused` means the video encoders starve the JPEG
+path (lower `jpeg_fps` or the JPEG resolution). Always 0 on vendor libimp.
+
 ### The `encoder.<n>.rc` object — what the encoder actually holds
 
 Each `encoder.<n>` entry can carry an additional `"rc"` sub-object,

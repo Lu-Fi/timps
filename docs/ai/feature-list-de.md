@@ -42,7 +42,9 @@ prudynt-t / raptor.
   (Frigate, Aufnahme, weitere Zuschauer) bleiben unberührt.
 * **JPEG & MJPEG** – `/snapshot.jpg` und `/stream.mjpeg` (`jpeg.enabled`,
   `jpeg.width/height/quality/fps/imp_chn`), optional zusätzlich als Datei
-  (`jpeg.snapshot_path`).
+  (`jpeg.snapshot_path`). **Seit v1.11.2** veröffentlicht timps mit OpenIMP
+  kein JPEG, das die Bibliothek bei ausgelastetem Encoder nur wiederholt
+  (höchstens 4 in Folge, Zähler `jpeg_reuse` in `GET /control`).
 * **JPEG in Stream-Auflösung** – ein zusätzlicher JPEG-Encoder kann auf jedem
   Videostream mitlaufen (`video0.jpeg = true`, `videoN.jpeg_quality/_fps/_chn`)
   und wird über `/snapshot.jpg?chn=N` bzw. `/stream.mjpeg?chn=N` abgerufen –
@@ -80,9 +82,15 @@ prudynt-t / raptor.
 
 * **Ratenkontrollmodi** `videoN.rc_mode = cbr | vbr | fixqp | smart |
   capped_vbr | capped_quality`, dazu `bitrate`, `gop`, `profile` (0 Baseline,
-  1 Main, 2 High), `qp`, `min_qp`, `max_qp`, `buffers`.
+  1 Main, 2 High), `qp`, `min_qp`, `max_qp`, `buffers`. `caps.capped_rc`
+  (**seit v1.11.2**) sagt, ob `capped_*` wirklich gedeckelt läuft (`1`) oder
+  als VBR (`0`).
 * **Klassische SoC-Ratenkontrolle (T10–T30)** zusätzlich über `quality_lvl`
   (0–7), `change_pos` (50–100), `i_bias_lvl` (−3…3) und `fluc_lvl` (nur H.265).
+* **T20-Makroblock-Ratenkontrolle** `videoN.mbrc` (**seit v1.11.2**, Default
+  `0`, Neustart): Hersteller-libimp und OpenIMP haben sie sonst an; bei
+  1080p15 kostete sie den Streamer ~35 % statt ~7 % CPU. Aus = etwas gröberes
+  erstes Schlüsselbild bei niedriger Bitrate.
 * **Live-Anwendung eines Teils der Encoder-Keys** ohne Neustart, je nach SoC:
   T10–T30 `rc_mode/bitrate/qp/min_qp/max_qp/quality_lvl/change_pos/i_bias_lvl`;
   T31/C100 `bitrate/min_qp/max_qp/i_bias_lvl`; T40 `bitrate/min_qp/max_qp`;
