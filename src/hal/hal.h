@@ -33,16 +33,6 @@ const hal_backend *hal_get(void);
  * held enabled until stop(). The sim reports the resolution, it has no FS. */
 int hal_fs_keepalive(void);
 
-/* OpenIMP fallback frames (T40/T41: "NO SENSOR SIGNAL" pictures while the
- * sensor delivers nothing). available: the libimp has the API. */
-typedef struct {
-    int      enabled, active;
-    unsigned generated, activations, last_real_age_ms;
-} hal_fs_fallback_st;
-int hal_fs_fallback_available(void);
-/* 0 and *o filled, -1 unavailable or the read failed */
-int hal_fs_fallback(int fs_chn, hal_fs_fallback_st *o);
-
 /* Picture consumers that do not go through the hub: the motion pin and a
  * configured jpeg.snapshot_path (counted for good, its grab is periodic).
  * Lock-free, so the day/night thread can poll it every tick. The sim reads

@@ -18,11 +18,6 @@ semantic versioning.
   `capped_quality` really run capped, `0` when they run as VBR (classic SoCs,
   OpenIMP T40/T41 without `OpenIMP_Cap_CappedRc`). Report only.
 
-- T40/T41 with OpenIMP: `caps.framesource.fallback` in `GET /control`
-  reports whether OpenIMP's "NO SENSOR SIGNAL" fallback frames are armed and
-  active per video FrameSource; the video thread logs a WARN when they start
-  and an INFO when real frames return.
-
 - OpenIMP: a JPEG the library re-delivers while its encoder is busy
   (`OpenIMP_Encoder_StreamIsReused`) is no longer published as a new picture,
   up to 4 in a row, so `/snapshot.jpg` waits for a fresh one. Counted in
