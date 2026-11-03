@@ -539,7 +539,7 @@ internal channel wiring, deliberately not exposed over HTTP.
 | `height` | int | `1080` / `360` | 64..4096 | restart | See `width`. |
 | `fps` | int | `25` / `25` | 1..120 | restart | Per-channel rate — **this stream only**. It does not set the sensor rate (that is `sensor.fps`) and cannot exceed what `sensor.fps` delivers. Documented explicitly **since v1.9.19**; the behaviour is unchanged. |
 | `bitrate` | int | `3000` / `512` | 16..50000 | **live** on every Ingenic SoC (see below) | **kbps.** |
-| `rc_mode` | enum | `cbr` / `cbr` | `cbr`, `vbr`, `fixqp`, `smart`, `capped_vbr`, `capped_quality`; anything else → `cbr` | live on classic SoCs, restart on T31/C100/T40/T41 | Alias: `mode`. |
+| `rc_mode` | enum | `cbr` / `cbr` | `cbr`, `vbr`, `fixqp`, `smart`, `capped_vbr`, `capped_quality`; anything else → `cbr` | live on classic SoCs, restart on T31/C100/T40/T41 | Alias: `mode`. `capped_vbr`/`capped_quality` run as `vbr` on classic SoCs (one WARN); whether they really run capped on this build is `caps.capped_rc` in `GET /control` (**since v1.11.2**; OpenIMP T40/T41: only with `OpenIMP_Cap_CappedRc`). |
 | `gop` | int | `50` / `50` | 1..1000 | restart | The real keyframe interval (`rcAttr.maxGop` / `gopAttr.uGopLength`). |
 | `max_gop` | int | `60` / `60` | 1..1000 | **no effect** | **RESERVED and IGNORED.** No HAL consumes it; the keyframe interval comes from `gop`. A non-zero value logs one WARN per session. Parsed, clamped, persisted and echoed purely for compatibility. |
 | `profile` | int | `2` / `2` | 0..2 | restart | `0` baseline, `1` main, `2` high. |

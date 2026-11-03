@@ -14,6 +14,10 @@ semantic versioning.
   timps now turns it off (the first IDR at low bitrate comes out coarser).
   Reported as `video.<N>.mbrc` in `GET /control`.
 
+- `caps.capped_rc` in `GET /control`: `1` when `rc_mode` `capped_vbr`/
+  `capped_quality` really run capped, `0` when they run as VBR (classic SoCs,
+  OpenIMP T40/T41 without `OpenIMP_Cap_CappedRc`). Report only.
+
 ### Changed
 
 - `general.fs_keepalive` defaults to `1` on every SoC: the FrameSources run

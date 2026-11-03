@@ -1721,7 +1721,7 @@ static int get_json(char *buf, size_t cap)
             APP("%s\"%s\"", li?",":"", lk[li]);
     }
 #endif
-    APP("],");
+    APP("],\"capped_rc\":%d,", hal_enc_capped_rc());
     /* Concurrent-client ceilings. These are REFUSAL points - RTSP answers 503
      * and drops, HTTP and /events answer 503 "busy" - and until now a client
      * had no way at all to learn them short of opening connections until one

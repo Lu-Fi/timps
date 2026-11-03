@@ -193,6 +193,10 @@ typedef struct {
 } hal_enc_stat;
 int hal_enc_stats(int enc_chn, hal_enc_stat *out);
 
+/* 1: rc_mode capped_vbr/capped_quality run capped; 0: they run as plain VBR
+ * (classic SoCs; OpenIMP T40/T41 without OpenIMP_Cap_CappedRc) */
+int hal_enc_capped_rc(void);
+
 /* Read-only rate-control attributes the encoder ACTUALLY holds for one
  * channel, from IMP_Encoder_GetChnAttrRcMode (present on every supported
  * SoC). This is the missing diagnostic for the whole rc-key family: timps

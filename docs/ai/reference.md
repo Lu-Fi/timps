@@ -632,6 +632,7 @@ differently-compiled binaries.
 | `caps.osd[]` | The OSD item fields that apply **live** (`text,x,y,font_size,color,transparency,outline,outline_color`) |
 | `caps.restart[]` | Restart-only keys: the sections `"video"`/`"sensor"` (except `rtsp_path` and `caps.video_live`), plus — since v1.9.20 — every `F_RESTART` key of `audio.*`/`osd.*` as `"audio.codec"`, `"osd.font_path"`, …. v1.9.19: `["video","sensor","osd.enabled"]` |
 | `caps.video_live[]` | The `videoN.*` keys this build can push to a running encoder |
+| `caps.capped_rc` | **Since v1.11.2.** `1` = `rc_mode` `capped_vbr`/`capped_quality` run as capped modes (vendor T31/C100/T40/T41, OpenIMP T31, OpenIMP T40/T41 exporting `OpenIMP_Cap_CappedRc`); `0` = they run as plain VBR (classic SoCs T10–T30, OpenIMP T40/T41 without the symbol). Report only, nothing changes. On an OpenIMP T40/T41 build started on a vendor libimp it reads `0` although the vendor runs them capped. Sim: `1` |
 | `caps.rtsp_max_clients` / `http_max_clients` / `events_max_clients` | Concurrent-client ceilings (refusal points: RTSP, HTTP and events all answer `503`) |
 | `caps.motion` | `{available, max_cells}` — `available` = build has the IMP_IVS move API |
 | `caps.privacy` | `{available, max_regions}` — `available` reflects whether an OSD group actually exists in the running pipeline |

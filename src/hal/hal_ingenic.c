@@ -7205,6 +7205,21 @@ typedef struct {
 extern int OpenIMP_Encoder_GetTelemetry(int, ms_enc_telemetry *) __attribute__((weak));
 #endif
 
+#if defined(USE_OPENIMP) && (defined(PLATFORM_T40) || defined(PLATFORM_T41))
+/* older OpenIMP builds ran the capped modes on the VBR controller */
+extern const int OpenIMP_Cap_CappedRc __attribute__((weak));
+#endif
+int hal_enc_capped_rc(void)
+{
+#if !defined(ENC_NEW_API)
+    return 0;
+#elif defined(USE_OPENIMP) && (defined(PLATFORM_T40) || defined(PLATFORM_T41))
+    return &OpenIMP_Cap_CappedRc && OpenIMP_Cap_CappedRc;
+#else
+    return 1;
+#endif
+}
+
 int hal_enc_stats(int enc_chn, hal_enc_stat *out)
 {
     if (!out) return -1;
