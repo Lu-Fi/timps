@@ -413,6 +413,11 @@ video0.max_qp    = 45
 #   fluc_lvl     0..4   H265 only (ignored for h264 - the H264 rc structs have
 #                       no such field). Allowed bitrate fluctuation relative to
 #                       the average. Default 0 = the previous hardcoded value.
+#   mbrc         0|1    T20 only (ignored elsewhere), restart. Macroblock QP
+#                       control: 1 gives a finer first IDR at low bitrate but
+#                       costs much CPU (1080p15: ~35 % vs ~7 % of the streamer).
+#                       The vendor libimp and OpenIMP run it on unless told
+#                       otherwise; timps turns it off by default.
 #
 # Effect caveats, measured on a T23 (see the dev notes): the classic
 # controller is QUALITY-seeking - it encodes the best quality min_qp allows
@@ -427,6 +432,7 @@ video0.max_qp    = 45
 #video0.change_pos  = 80
 #video0.i_bias_lvl  = 0
 #video0.fluc_lvl    = 0
+#video0.mbrc        = 0
 video0.rotation  = 0         # 0|90|180|270 - build-gated & SoC-dependent (see block above)
 video0.buffers   = 2
 video0.rtsp_path = /ch0

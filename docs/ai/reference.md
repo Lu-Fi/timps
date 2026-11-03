@@ -292,6 +292,7 @@ videoN.qp        = 35              # fixqp only
 videoN.min_qp    = 20
 videoN.max_qp    = 45
 videoN.quality_lvl / change_pos / i_bias_lvl / fluc_lvl   # classic SoCs only
+videoN.mbrc      = 0               # T20 only, restart: macroblock QP control (CPU-heavy)
 videoN.rotation  = 0               # needs USE_ROTATE
 videoN.buffers   = 2
 videoN.rtsp_path = /ch0 | /ch1

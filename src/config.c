@@ -342,6 +342,7 @@ void config_defaults(ms_config *c)
         /* the values the classic rc fills used as literals before these became
          * config keys, so an unset config keeps the previous encoder behaviour */
         v->quality_lvl=2; v->change_pos=80; v->i_bias_lvl=0; v->fluc_lvl=0;
+        v->mbrc=0;
         v->rotation=0; v->buffers=2; v->imp_chn=i;
         /* piggyback JPEG encoder: on by default (snapshot.jpg/MJPEG preview
          * and the thingino WebUI thumbnail both expect it to just work).
@@ -1186,6 +1187,7 @@ static const cfg_field video_fields[] = {
     F ("change_pos",   0,              change_pos,   T_INT,   F_CTRL,  50,100),
     F ("i_bias_lvl",   0,              i_bias_lvl,   T_INT,   F_CTRL,  -3,3),
     F ("fluc_lvl",     0,              fluc_lvl,     T_INT,   F_CTRL,  0,4),      /* H265 only; H264 rc structs have no flucLvl */
+    F ("mbrc",         0,              mbrc,         T_BOOL,  F_CTRL,  0,0),      /* T20 only */
     F ("rotation",     0,              rotation,     T_ROT,   F_CTRL,  0,0),
     F ("buffers",      0,              buffers,      T_INT,   F_CTRL,  1,8),
     FS("rtsp_path",    0,              rtsp_path,    F_CTRL),

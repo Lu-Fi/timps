@@ -6,6 +6,14 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Added
+
+- `videoN.mbrc` (T20, default `0`, restart): macroblock QP control via
+  `IMP_Encoder_SetMbRC`. The vendor libimp and OpenIMP run it on unless told
+  otherwise; at 1080p15 it raised the streamer from ~7 % to ~35 % CPU, so
+  timps now turns it off (the first IDR at low bitrate comes out coarser).
+  Reported as `video.<N>.mbrc` in `GET /control`.
+
 ### Changed
 
 - `general.fs_keepalive` defaults to `1` on every SoC: the FrameSources run

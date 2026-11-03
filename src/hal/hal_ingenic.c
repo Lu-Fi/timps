@@ -3194,6 +3194,9 @@ static void classic_rc_fill(IMPEncoderAttrRcMode *m, const ms_vstream_cfg *v)
 }
 #endif /* !ENC_NEW_API */
 
+#if defined(PLATFORM_T20)
+extern int IMP_Encoder_SetMbRC(int encChn, int bEnable) __attribute__((weak));
+#endif
 static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
 {
     IMPEncoderChnAttr a; memset(&a,0,sizeof a);
@@ -3354,6 +3357,12 @@ static int enc_create(int chn, int grp, const ms_vstream_cfg *v)
         LOGW(MOD,"Encoder_SetChnQpIPDelta %d (%d) failed - using SDK default",
              chn, v->i_bias_lvl);
 #endif
+#endif
+#if defined(PLATFORM_T20)
+    /* vendor and OpenIMP run the macroblock QP table unless told otherwise;
+     * at 1080p it multiplies the streamer's CPU load */
+    if (IMP_Encoder_SetMbRC && IMP_Encoder_SetMbRC(chn, v->mbrc ? 1 : 0) != 0)
+        LOGW(MOD,"Encoder_SetMbRC %d (%d) failed", chn, v->mbrc ? 1 : 0);
 #endif
     return 0;
 }
