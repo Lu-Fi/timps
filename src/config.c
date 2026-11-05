@@ -184,7 +184,9 @@ static int  pvcodec(const char *v){
  * so as well), so IMP_Encoder_CreateChn fails, ing_start() returns -1 and
  * main() exits - one config line takes the WHOLE daemon down instead of
  * costing one stream. Coerce and warn, exactly as T10/T20 already do. */
-#if defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T23)
+/* T30 OpenIMP has no H.265 encoder path yet (CreateChn rejects PT_H265). */
+#if defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T23)|| \
+    (defined(PLATFORM_T30) && defined(USE_OPENIMP))
     if (c==MS_VC_H265){ LOGW(MOD,"codec h265 unsupported on this SoC -> h264"); c=MS_VC_H264; }
 #endif
     return c;
