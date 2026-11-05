@@ -52,7 +52,8 @@ static inline const char *cap_tier_name(int t)
  * only: the SDK declares absolute QP unsupported.
  * OPENIMP_T40_ROI=0 / OPENIMP_T41_ROI=0 in libimp turn it off.
  * T40/T41 vendor: deltas -26..25 only, never device-tested.
- * T30/C100 not investigated. */
+ * T30 OpenIMP: family A, effective (OpenIMP 03dd0ce3, device-tested by the
+ * OpenIMP maintainer). T30 vendor and C100 not investigated. */
 #if (defined(PLATFORM_T31)||defined(PLATFORM_T40)||defined(PLATFORM_T41)) && defined(USE_OPENIMP)
 #define ROI_FAMILY_B 1
 #endif
@@ -63,7 +64,7 @@ static inline const char *cap_tier_name(int t)
 #define ROI_TIER CAP_TIER_SIM
 #elif defined(USE_OPENIMP) && \
       (defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)|| \
-       defined(PLATFORM_T23)||defined(PLATFORM_T31))
+       defined(PLATFORM_T23)||defined(PLATFORM_T30)||defined(PLATFORM_T31))
 #define ROI_TIER CAP_TIER_EFFECTIVE
 #elif defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)|| \
       (defined(USE_OPENIMP) && (defined(PLATFORM_T40)||defined(PLATFORM_T41)))

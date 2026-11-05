@@ -72,10 +72,14 @@
 /* IMP_ISP_Tuning_SetColorfxMode / SetSceneMode act on the open stack (the
  * vendor kernels ignore them); hal_ingenic.c binds them through weak symbols,
  * so no header prototype is involved. Device-tested: colorfx on T20 T21 T23
- * T31, scene on T20 T21 T23 (T10 and T30 per the open-stack matrix). */
+ * T30 T31, scene on T20 T21 T23 (T10 per the open-stack matrix). */
 #if defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)|| \
     defined(PLATFORM_T23)||defined(PLATFORM_T30)||defined(PLATFORM_T31)
 #define ISP_HAS_COLORFX 1
+#endif
+/* T30: SetSceneMode returns 0 but changes nothing, on the stock kernel too */
+#if defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)|| \
+    defined(PLATFORM_T23)||defined(PLATFORM_T31)
 #define ISP_HAS_SCENE 1
 #endif
 #if defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)
@@ -100,6 +104,16 @@
 /* IMP_ISP_Tuning_GetAeExprInfo: the AE gain ceiling incl. a configured cap,
  * which the /proc dump does not show; daynight's AE reserve */
 #define ISP_HAS_AE_EXPR_INFO 1
+#endif
+/* T30 (vendor 1.0.5 API, both stacks): sinter/temper/DPC take a 50..150 %
+ * ratio of the bank default, mapped from 0..255 with 128 = 100 %;
+ * dpc_strength is SetDPStrength, drc_strength is RawDRC (manual strength,
+ * 0 = off), defog_strength maps onto the four AntiFog modes. */
+#if defined(PLATFORM_T30)
+#define ISP_T30_RATIO 1
+#define ISP_HAS_DPC 1
+#define ISP_HAS_DRC 1
+#define ISP_HAS_DEFOG 1
 #endif
 /* T40: ae_compensation as on T41; max_again is AeExprInfo.AeMaxAGain
  * (linear x1024). Both setters are in the vendor and the OpenIMP libimp. */

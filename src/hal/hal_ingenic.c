@@ -1061,6 +1061,14 @@ extern int ms_isp_dpc_set(uint32_t ratio) __asm__("IMP_ISP_Tuning_SetDPC_Strengt
 extern int ms_isp_defog_set(uint8_t *ratio) __asm__("IMP_ISP_Tuning_SetDefog_Strength") __attribute__((weak));
 extern int ms_isp_drc_set(uint32_t ratio)   __asm__("IMP_ISP_Tuning_SetDRC_Strength")   __attribute__((weak));
 #endif
+#ifdef ISP_T30_RATIO
+/* 0..255 with 128 = default onto the T30 50..150 % ratio */
+static uint32_t t30_ratio(int v)
+{
+    return v <= 128 ? 50u + (uint32_t)v * 50u / 128u
+                    : 100u + (uint32_t)(v - 128) * 50u / 127u;
+}
+#endif
 #ifdef ISP_WEAK_KEYS
 static int isp_sym_missing(int *said, const char *sym, const char *k)
 {
@@ -2043,10 +2051,17 @@ static int isp_apply_image(const char *k)
     }
     if (!strcmp(k,"max_again")){ IMP_ISP_Tuning_SetMaxAgain((uint32_t)im->max_again); return 1; }
     if (!strcmp(k,"max_dgain")){ IMP_ISP_Tuning_SetMaxDgain((uint32_t)im->max_dgain); return 1; }
+#ifdef ISP_T30_RATIO
+    if (!strcmp(k,"sinter_strength")){ IMP_ISP_Tuning_SetSinterStrength(t30_ratio(im->sinter_strength)); return 1; }
+    if (!strcmp(k,"temper_strength")){ IMP_ISP_Tuning_SetTemperStrength(t30_ratio(im->temper_strength)); return 1; }
+#else
     if (!strcmp(k,"sinter_strength")){ IMP_ISP_Tuning_SetSinterStrength((uint32_t)im->sinter_strength); return 1; }
     if (!strcmp(k,"temper_strength")){ IMP_ISP_Tuning_SetTemperStrength((uint32_t)im->temper_strength); return 1; }
+#endif
     if (!strcmp(k,"dpc_strength")){
-#if defined(ISP_WEAK_DPC)
+#if defined(ISP_T30_RATIO)
+        IMP_ISP_Tuning_SetDPStrength(t30_ratio(im->dpc_strength)); return 1;
+#elif defined(ISP_WEAK_DPC)
         static int said;
         if (!ms_isp_dpc_set) return isp_sym_missing(&said,"IMP_ISP_Tuning_SetDPC_Strength",k);
         ms_isp_dpc_set((uint32_t)im->dpc_strength); return 1;
@@ -2057,7 +2072,18 @@ static int isp_apply_image(const char *k)
 #endif
     }
     if (!strcmp(k,"defog_strength")){
-#if defined(ISP_WEAK_DEFOG_DRC)
+#if defined(ISP_T30_RATIO)
+        /* write-only modes; 128 and below is off, the vendor start */
+        static int touched;
+        int d = im->defog_strength;
+        if (d == 128 && !touched) return 1;
+        IMPISPAntiFogAttr a = d <= 128 ? ANTIFOG_DISABLE : d <= 170 ? ANTIFOG_WEAK
+                            : d <= 212 ? ANTIFOG_MEDIUM : ANTIFOG_STRONG;
+        int rc = IMP_ISP_Tuning_SetAntiFogAttr(a);
+        if (rc) LOGW(MOD,"SetAntiFogAttr(%d) failed (rc=%d)", (int)a, rc);
+        else touched = 1;
+        return 1;
+#elif defined(ISP_WEAK_DEFOG_DRC)
         static int said;
         if (!ms_isp_defog_set) return isp_sym_missing(&said,"IMP_ISP_Tuning_SetDefog_Strength",k);
         uint8_t d=(uint8_t)im->defog_strength;
@@ -2070,7 +2096,22 @@ static int isp_apply_image(const char *k)
 #endif
     }
     if (!strcmp(k,"drc_strength")){
-#if defined(ISP_WEAK_DEFOG_DRC)
+#if defined(ISP_T30_RATIO)
+        /* 128 puts back the attributes read before the first change */
+        static int touched;
+        static IMPISPDrcAttr orig;
+        int v = im->drc_strength;
+        if (v == 128 && !touched) return 1;
+        if (!touched && IMP_ISP_Tuning_GetRawDRC(&orig) != 0){
+            LOGW(MOD,"GetRawDRC failed - drc_strength not applied"); return 1; }
+        IMPISPDrcAttr a = orig;
+        if (v == 0) a.mode = IMPISP_DRC_DISABLE;
+        else if (v != 128){ a.mode = IMPISP_DRC_MANUAL; a.drc_strength = (unsigned char)v; }
+        int rc = IMP_ISP_Tuning_SetRawDRC(&a);
+        if (rc) LOGW(MOD,"SetRawDRC(drc_strength=%d) failed (rc=%d)", v, rc);
+        else touched = 1;
+        return 1;
+#elif defined(ISP_WEAK_DEFOG_DRC)
         static int said;
         if (!ms_isp_drc_set) return isp_sym_missing(&said,"IMP_ISP_Tuning_SetDRC_Strength",k);
         ms_isp_drc_set((uint32_t)im->drc_strength); return 1;
@@ -2216,6 +2257,9 @@ static int isp_apply_image(const char *k)
      * daemon keeps running. */
     if (!strcmp(k,"colorfx") || !strcmp(k,"scene")){
         int is_cfx = !strcmp(k,"colorfx");
+#ifndef ISP_HAS_SCENE
+        if (!is_cfx) return 0;
+#endif
         int val = is_cfx ? im->colorfx : im->scene;
         int (*fn)(int) = is_cfx ? ms_isp_colorfx_set : ms_isp_scene_set;
         if (!fn){
