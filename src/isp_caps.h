@@ -101,6 +101,12 @@
  * which the /proc dump does not show; daynight's AE reserve */
 #define ISP_HAS_AE_EXPR_INFO 1
 #endif
+/* T40: ae_compensation as on T41; max_again is AeExprInfo.AeMaxAGain
+ * (linear x1024). Both setters are in the vendor and the OpenIMP libimp. */
+#if defined(PLATFORM_T40)
+#define ISP_HAS_AECOMP 1
+#define ISP_HAS_AE_MAX_AGAIN 1
+#endif
 #if defined(PLATFORM_T20)
 #define ISP_HAS_DEFOG 1
 #define ISP_HAS_DRC 1

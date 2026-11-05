@@ -107,8 +107,8 @@ latch-kick this triggers.
 | `image.vflip` | bool | 0 | 0/1 | Live | all SoCs | Vertical flip. Global (all streams). |
 | `image.running_mode` | int | 0 | 0 = day, 1 = night | Live | all SoCs | ISP day/night running mode. Normally driven by the [Day/Night](Day-Night.md) thread's switch script, not set directly by a user. |
 | `image.anti_flicker` | int | 1 (2 up to 1.9.33) | 0 = off, 1 = 50 Hz, 2 = 60 Hz | Live | all SoCs | Anti-flicker (banding) compensation. Set it to your mains frequency, see below. |
-| `image.ae_compensation` | int | 128 | 0–255 | Live | `ISP_HAS_AECOMP`: all except T21 and T40; T41 only with OpenIMP (since 1.9.33) | AE (auto-exposure) compensation/EV bias. |
-| `image.max_again` | int | 160 | 0–255 | Live | `ISP_HAS_GAINS`: all except T40/T41 | Max analog gain ceiling. |
+| `image.ae_compensation` | int | 128 | 0–255 | Live | `ISP_HAS_AECOMP`: all except T21; T41 only with OpenIMP (since 1.9.33); T40 since 1.11.2 | AE (auto-exposure) compensation/EV bias. |
+| `image.max_again` | int | 160 | 0–255 | Live | `ISP_HAS_GAINS`: all except T41; T40 since 1.11.2 | Max analog gain ceiling. |
 | `image.max_dgain` | int | 80 | 0–255 | Live | `ISP_HAS_GAINS` | Max digital gain ceiling. |
 | `image.sinter_strength` | int | 128 | 0–255 | Live | `ISP_HAS_NR`: all except T40; T41 only with OpenIMP (since 1.9.33) | Spatial noise reduction strength. |
 | `image.temper_strength` | int | 128 | 0–255 | Live | `ISP_HAS_NR`: all except T40; T41 only with OpenIMP (since v1.10.0) | Temporal noise reduction strength; on T41 visible only at high gain. |

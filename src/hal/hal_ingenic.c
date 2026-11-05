@@ -1922,9 +1922,9 @@ static int isp_apply_image(const char *k)
                      im->running_mode?"night":"day", rc);
         return 1;
     }
-#if defined(USE_OPENIMP) && defined(PLATFORM_T41)
     /* read-modify-write of structs the stack fills in: a value still at its
-     * 128 default is left alone until something else was written */
+     * default is left alone until something else was written */
+#if defined(PLATFORM_T40) || (defined(USE_OPENIMP) && defined(PLATFORM_T41))
     if (!strcmp(k,"ae_compensation")){
         static int touched;
         if (im->ae_compensation == 128 && !touched) return 1;
@@ -1939,6 +1939,31 @@ static int isp_apply_image(const char *k)
         else touched = 1;
         return 1;
     }
+#endif
+#ifdef ISP_HAS_AE_MAX_AGAIN
+    /* max_again is log2 x32 as on the classic SoCs; 160 = the stack's own ceiling */
+    if (!strcmp(k,"max_again")){
+        static int touched;
+        if (im->max_again == 160 && !touched) return 1;
+        IMPISPAEExprInfo e; memset(&e,0,sizeof e);
+        if (IMP_ISP_Tuning_GetAeExprInfo(IMPVI_MAIN,&e) != 0){
+            LOGW(MOD,"GetAeExprInfo failed - max_again not applied"); return 1; }
+        e.AeMaxAGainMode = im->max_again == 160 ? IMPISP_TUNING_OPS_TYPE_AUTO
+                                                : IMPISP_TUNING_OPS_TYPE_MANUAL;
+        float g = 1024.0f;
+        for (int i = 0; i < im->max_again; i++) g *= 1.0218971f;  /* 2^(1/32) */
+        e.AeMaxAGain = (uint32_t)(g + 0.5f);
+        int rc = IMP_ISP_Tuning_SetAeExprInfo(IMPVI_MAIN,&e);
+        if (rc) { LOGW(MOD,"SetAeExprInfo(max_again=%d) failed (rc=%d)", im->max_again, rc); return 1; }
+        touched = 1;
+        memset(&e,0,sizeof e);
+        if (IMP_ISP_Tuning_GetAeExprInfo(IMPVI_MAIN,&e) == 0)
+            LOGI(MOD,"max_again=%d: AE analog gain ceiling %u (x1024), mode %d",
+                 im->max_again, e.AeMaxAGain, (int)e.AeMaxAGainMode);
+        return 1;
+    }
+#endif
+#if defined(USE_OPENIMP) && defined(PLATFORM_T41)
     if (!strcmp(k,"sinter_strength")){
         static int touched;
         t41_set_module_ratio(IMP_ISP_MODULE_SINTER,k,im->sinter_strength,&touched);

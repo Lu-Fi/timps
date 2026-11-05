@@ -8,6 +8,10 @@ semantic versioning.
 
 ### Added
 
+- T40: `image.ae_compensation` (AE target, as on T41) and `image.max_again`
+  (AE analog gain ceiling, 1024 × 2^(value/32)), live, with the vendor and the
+  OpenIMP libimp.
+
 - `videoN.mbrc` (T20, default `0`, restart): macroblock QP control via
   `IMP_Encoder_SetMbRC`. The vendor libimp and OpenIMP run it on unless told
   otherwise; at 1080p15 it raised the streamer from ~7 % to ~35 % CPU, so

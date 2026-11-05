@@ -690,6 +690,11 @@ static const cfg_field sensor_fields[] = {
 #else
 #define CAP_GAINS F_NOHW
 #endif
+#if defined(ISP_HAS_GAINS) || defined(ISP_HAS_AE_MAX_AGAIN)
+#define CAP_MAXAG F_CAP
+#else
+#define CAP_MAXAG F_NOHW
+#endif
 #ifdef ISP_HAS_NR
 #define CAP_NR F_CAP
 #else
@@ -778,7 +783,7 @@ static const cfg_field image_fields[] = {
     F("running_mode",           0, running_mode,           T_INT, F_CTRL|F_CAP,          0,1),   /* F-09 */
     F("anti_flicker",           0, anti_flicker,           T_INT, F_CTRL|F_CAP,          0,2),   /* F-09 */
     F("ae_compensation",        0, ae_compensation,        T_INT, F_CTRL|CAP_AECOMP,     0,255),
-    F("max_again",              0, max_again,              T_INT, F_CTRL|CAP_GAINS,      0,255),
+    F("max_again",              0, max_again,              T_INT, F_CTRL|CAP_MAXAG,      0,255),
     F("max_dgain",              0, max_dgain,              T_INT, F_CTRL|CAP_GAINS,      0,255),
     F("sinter_strength",        0, sinter_strength,        T_INT, F_CTRL|CAP_NR,         0,255),
     F("temper_strength",        0, temper_strength,        T_INT, F_CTRL|CAP_NR,         0,255),
@@ -813,6 +818,7 @@ static const cfg_field image_fields[] = {
 #undef CAP_HUE
 #undef CAP_AECOMP
 #undef CAP_GAINS
+#undef CAP_MAXAG
 #undef CAP_NR
 #undef CAP_DPC
 #undef CAP_DEFOG
