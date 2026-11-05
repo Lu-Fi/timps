@@ -2757,15 +2757,52 @@ static int isp_init(void)
  * T31/sc4336p: a 1920x1080@25 rotate request the /control API had accepted
  * and persisted). T10/T20/T21 (OpenIMP only): CPU rotate, sub streams only. */
 #if defined(PLATFORM_T31)
-static const fs_rot_env g_fs_rot_env = FS_ROT_ENV_T31;
+static const fs_rot_env g_fs_rot_tab = FS_ROT_ENV_T31;
 #else
-static const fs_rot_env g_fs_rot_env = FS_ROT_ENV_T1X;
+static const fs_rot_env g_fs_rot_tab = FS_ROT_ENV_T1X;
 /* Not in the vendor T1x headers; weak so a libimp without it refuses. */
 extern int ms_fs_set_rotate(int chn, int rot, int w, int h)
     __asm__("IMP_FrameSource_SetChnRotate") __attribute__((weak));
 /* a stub or missing SetChnRotate seen at start: no later geometry can rotate */
 static short g_rot_lib;
 #endif
+#ifdef USE_OPENIMP
+/* OpenIMP: a SetChnRotate that really rotates here, and its per-channel limits */
+extern const int OpenIMP_Cap_FsRotate __attribute__((weak));
+extern int OpenIMP_FS_RotateLimits(int chn, int *max_w, int *max_h, int *max_fps,
+                                   int *align) __attribute__((weak));
+#endif
+static inline int fs_rot_marker(void)
+{
+#ifdef USE_OPENIMP
+    return &OpenIMP_Cap_FsRotate && OpenIMP_Cap_FsRotate;
+#else
+    return 0;
+#endif
+}
+/* the table above, or what the libimp reports for this channel */
+static inline fs_rot_env fs_rot_env_for(int chn)
+{
+    fs_rot_env e = g_fs_rot_tab;
+#ifdef USE_OPENIMP
+    int w = 0, h = 0, fps = 0, al = 0;
+    if (!OpenIMP_FS_RotateLimits) return e;
+    if (OpenIMP_FS_RotateLimits(chn, &w, &h, &fps, &al) != 0 || w <= 0 || h <= 0){
+        e.sub_only = chn == 0;
+        e.max_pixels = chn == 0 ? e.max_pixels : 0;
+        e.why = "this OpenIMP does not rotate this channel";
+        return e;
+    }
+    e.align = al > 0 ? al : 1;
+    e.max_pixels = (long)w * h;
+    e.max_fps = fps;
+    e.sub_only = 0;
+    e.why = "the limits this OpenIMP reports";
+#else
+    (void)chn;
+#endif
+    return e;
+}
 /* fs_create() returns a positive ERR_ROT_* when it refused the rotation for
  * THIS stream: not success and not a hard failure (-1), the caller brings the
  * stream up UNROTATED so the rest of the pipeline still comes up. Positive so
@@ -2908,7 +2945,7 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
         uint8_t r90 = (v->rotation==90) ? 1 : 2;
         /* CAPS-GATE (Fix 1): refuse outside the envelope before any IMP
          * channel exists and let the caller bring this stream up UNROTATED. */
-        const fs_rot_env *e = &g_fs_rot_env;
+        const fs_rot_env env = fs_rot_env_for(chn), *e = &env;
         int rc = fs_rot_check(e, chn, v->width, v->height, v->fps);
         switch (rc){
         case ERR_ROT_MAIN:
@@ -2942,7 +2979,10 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
             return ERR_ROT_REFUSED;
         }
 #else
-        switch (fs_rot_set(ms_fs_set_rotate, chn, r90, v->width, v->height)){
+        int st = fs_rot_marker() && ms_fs_set_rotate
+            ? (ms_fs_set_rotate(chn, r90, v->width, v->height) == 0 ? FS_ROT_SET_OK : FS_ROT_SET_REFUSED)
+            : fs_rot_set(ms_fs_set_rotate, chn, r90, v->width, v->height);
+        switch (st){
         case FS_ROT_SET_MISSING:
             LOGW(MOD,"video%d: libimp has no IMP_FrameSource_SetChnRotate "
                      "- UNROTATED (needs OpenIMP 6b7f5ae+)", chn);
@@ -3122,7 +3162,8 @@ int hal_rot_check(int si, const ms_vstream_cfg *v)
     (void)si;
     if (v->rotation != 90 && v->rotation != 270) return 0;
 #if defined(ROT_HAS_FS_ROTATE)
-    int rc = fs_rot_check(&g_fs_rot_env, v->imp_chn, v->width, v->height, v->fps);
+    const fs_rot_env e = fs_rot_env_for(v->imp_chn);
+    int rc = fs_rot_check(&e, v->imp_chn, v->width, v->height, v->fps);
 #if !defined(PLATFORM_T31)
     if (!rc) rc = ms_fs_set_rotate ? g_rot_lib : ERR_ROT_LIB;
 #endif

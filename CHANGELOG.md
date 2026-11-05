@@ -8,6 +8,19 @@ semantic versioning.
 
 ### Added
 
+- T30: FrameSource rotation 90/270 with OpenIMP (`videoN.rotation`), the same
+  path as T10/T20/T21; it needs an OpenIMP whose T30 `SetChnRotate` rotates.
+  OpenIMP's `OpenIMP_Cap_FsRotate` / `OpenIMP_FS_RotateLimits`, where exported,
+  replace the stub probe and the built-in size table on every SoC with this
+  path.
+
+- T30 ISP: `colorfx` (OpenIMP), `dpc_strength` (SetDPStrength),
+  `drc_strength` (RawDRC, 0 = off), `defog_strength` (AntiFog modes) and
+  encoder ROI (OpenIMP). `sinter_strength`, `temper_strength` and
+  `dpc_strength` now map 0..255 onto the T30's 50..150 % (128 = 100 %, the
+  vendor picture; before, 128 was written as 128 %). `scene` stays off on T30
+  (the call is a no-op there).
+
 - T40: `image.ae_compensation` (AE target, as on T41) and `image.max_again`
   (AE analog gain ceiling, 1024 × 2^(value/32)), live, with the vendor and the
   OpenIMP libimp.
@@ -53,6 +66,9 @@ semantic versioning.
   camera in night until the 6 h timer; replay `shelf_lamp`: day after 72 s.
 
 ### Fixed
+
+- T30 with OpenIMP: `videoN.codec = h265` now falls back to h264; before,
+  the encoder channel failed and timpsd exited.
 
 - T40/T41 with OpenIMP: the JPEG thread no longer polls the encoder during
   the 2 s idle linger after a snapshot. OpenIMP encodes JPEG in software

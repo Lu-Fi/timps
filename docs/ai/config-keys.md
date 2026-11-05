@@ -631,6 +631,17 @@ hit this — T10, T20 and T23 coerce `codec` to `h264` at parse time.
     With a rotating OpenIMP the probe makes OpenIMP print one line on stderr,
     `[FS] SetChnRotate chN: unsupported rotTo90=M 0x0`; that is expected.
     **Not yet tested on hardware.** Vendor-libimp T10/T20/T21 builds have no path.
+  * **T30, OpenIMP builds only**, **since v1.11.2** — the same FrameSource
+    rotate path. The T30 has no rotate hardware and the vendor T30 libimp no
+    `SetChnRotate`; it needs an OpenIMP whose T30 `SetChnRotate` really
+    rotates (not in OpenIMP `next` yet). Until then the stream starts
+    unrotated with `ERR_ROT_LIB` / `ERR_ROT_REFUSED`. Envelope as T10/T20/T21
+    unless the libimp reports its own (below).
+  * **OpenIMP limits (all FrameSource-rotate SoCs), since v1.11.2**: a libimp
+    exporting `OpenIMP_Cap_FsRotate` (non-zero) is taken as rotating, without
+    the 0x0 probe; one exporting `OpenIMP_FS_RotateLimits(chn, &w, &h, &fps,
+    &align)` sets the envelope per channel (pixels w*h, fps, alignment; a
+    non-zero return or 0x0 refuses that channel). Both are bound weak.
   * **T23** — software NV12 transpose, only with the extra opt-in
     `BR2_PACKAGE_TIMPS_SW_ROTATE` (`-DMS_ENABLE_SW_ROTATE`). Costs real CPU on
     the single-core T23, is H.264 only, and loses hardware OSD/privacy on the

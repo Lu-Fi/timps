@@ -33,9 +33,10 @@
 /* 90/270 apply paths - each enabled by the batch that implements it:
  *   ROT_HAS_HW_I2D    (T40/T41, Batch 3) - true HW I2D rotate
  *   ROT_HAS_FS_ROTATE (T31, Batch 4)     - libimp FrameSource software rotate;
- *     also T10/T20/T21 with USE_OPENIMP (the vendor T1x libimp has no
- *     SetChnRotate), sub streams only; fs_create() verifies at run time
- *     that the OpenIMP really rotates (hal/fs_rot_env.h)
+ *     also T10/T20/T21/T30 with USE_OPENIMP (their vendor libimp has no
+ *     SetChnRotate); OpenIMP_Cap_FsRotate marks a libimp that really
+ *     rotates, OpenIMP_FS_RotateLimits reports the envelope, else
+ *     fs_create() probes for a stub and uses the table (hal/fs_rot_env.h)
  *   ROT_HAS_SW_90     (T23 + -DMS_ENABLE_SW_ROTATE, Batch 5) - own NV12
  *     transpose + libimp's unbound YuvEncode API (hal_ingenic.c sw_rot path)
  * On the host sim (no PLATFORM_* -> !ROT_PLATFORM_KNOWN) enable 90 so the
@@ -44,7 +45,8 @@
 #define ROT_HAS_HW_I2D 1
 #endif
 #if defined(PLATFORM_T31) || (defined(USE_OPENIMP) && \
-    (defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)))
+    (defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)|| \
+     defined(PLATFORM_T30)))
 #define ROT_HAS_FS_ROTATE 1
 #endif
 /* T23 (Batch 5): 90/270 in SOFTWARE (CPU transpose per frame, then the unbound
