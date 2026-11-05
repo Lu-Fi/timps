@@ -72,9 +72,9 @@
 /* IMP_ISP_Tuning_SetColorfxMode / SetSceneMode act on the open stack (the
  * vendor kernels ignore them); hal_ingenic.c binds them through weak symbols,
  * so no header prototype is involved. Device-tested: colorfx on T20 T21 T23
- * T31, scene on T20 T21 T23 (T10 per the open-stack matrix). */
+ * T31, scene on T20 T21 T23 (T10 and T30 per the open-stack matrix). */
 #if defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)|| \
-    defined(PLATFORM_T23)||defined(PLATFORM_T31)
+    defined(PLATFORM_T23)||defined(PLATFORM_T30)||defined(PLATFORM_T31)
 #define ISP_HAS_COLORFX 1
 #define ISP_HAS_SCENE 1
 #endif
