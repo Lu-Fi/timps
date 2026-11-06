@@ -6,11 +6,11 @@ firmware. Everything here is verified against the `main` branch of
 <https://github.com/Lu-Fi/timps> and against `package/timps/` in a thingino
 firmware tree.
 
-Applies to timps v1.11.1 (2026-10-25)
+Applies to timps v1.11.2
 
 A statement marked **since vX** is new in that release — on an older camera
-describe the previous behaviour. Changes of v1.11.0 and v1.11.1 in `CHANGELOG.md` are marked
-**since v1.11.0** / **since v1.11.1**.
+describe the previous behaviour. Changes of v1.11.0, v1.11.1 and v1.11.2 in `CHANGELOG.md` are marked
+**since v1.11.0** / **since v1.11.1** / **since v1.11.2**.
 
 ## Where to find what
 
@@ -102,12 +102,20 @@ exclusion:
   `image.*` knobs do not exist there (highlight depress, sinter/temper NR,
   max again/dgain, manual WB, ISP hflip/vflip). Exception: T41 built with
   OpenIMP (`USE_OPENIMP`) has `ae_compensation` and sinter NR (since v1.9.33)
-  and temper NR (since v1.10.0).
+  and temper NR (since v1.10.0). T40 has `ae_compensation` and `max_again`
+  since v1.11.2, with the vendor and the OpenIMP libimp.
+- T30 (since v1.11.2, vendor and OpenIMP libimp): `sinter_strength`,
+  `temper_strength` and `dpc_strength` map 0..255 onto 50..150 % (128 = 100 %),
+  `drc_strength` (RawDRC, 0 = off) and `defog_strength` (AntiFog modes);
+  `colorfx` only with OpenIMP; no `scene`, no `hue`. Encoder ROI is
+  `effective` on T30 with OpenIMP. H.265 on T30: vendor as configured,
+  OpenIMP only with `OpenIMP_Cap_H265` (else h264 with a WARN).
 - `audio.alc_gain` (analog PGA) exists only on **T21, T31, C100**.
 - Rotation: hardware I2D on **T40/T41**, FrameSource rotate on **T31** and,
-  with OpenIMP only, on **T10/T20/T21** sub streams (since v1.10.0;
-  needs an OpenIMP with T1x rotation, see `config-keys.md`),
-  software on **T23** (opt-in), none on **T30/C100**.
+  with OpenIMP only, on **T10/T20/T21** sub streams (since v1.10.0) and on
+  **T23/T30** (since v1.11.2); each needs an OpenIMP that rotates on that
+  SoC, see `config-keys.md`. None on **C100** or with the vendor libimp on
+  T10/T20/T21/T23/T30.
 - A host build with no `PLATFORM_*` macro (`make sim`) reports every
   capability, so the WebUI can be exercised without hardware.
 
@@ -145,7 +153,6 @@ variable. **If a feature is compiled out, no config key can turn it on.**
 | `BR2_PACKAGE_TIMPS_PLAY` | `USE_PLAY` | n | System-sound play queue + `/usr/sbin/play` (FIFO at `/run/timps/audio_out`). WAV/PCM16/G.711. |
 | `BR2_PACKAGE_TIMPS_PLAY_OPUS` | `USE_PLAY_OPUS` | n | Ogg-Opus decode in the play queue (opusfile). Needed for thingino's stock `.opus` sounds. |
 | `BR2_PACKAGE_TIMPS_ROTATE` | `USE_ROTATE` | n | `videoN.rotation`. Off → rotation values are coerced to 0 with a warning, and `caps.rotation` is absent. |
-| `BR2_PACKAGE_TIMPS_SW_ROTATE` | `USE_SW_ROTATE` | n | **Obsolete since v1.11.2**: only implies `USE_ROTATE`. T23 rotates through OpenIMP (`USE_ROTATE` + `USE_OPENIMP`). |
 | `BR2_PACKAGE_TIMPS_OSD_HINTING` | `USE_OSD_HINTING` | n | Compiles the OSD geometric autohinting pass (~2 KB). |
 | `BR2_PACKAGE_TIMPS_DIAG_TOOLS` | — | n | Installs `timps-selftest`, `timps-logcat-ship`, `timps-dn-isp-log`. |
 | `BR2_PACKAGE_TIMPS_DROP_LIBSTDCPP` | — | n | Target-finalize hook that removes `libstdc++.so.6` when nothing links it (flash saving on small rootfs). |
@@ -612,10 +619,10 @@ cap — see the POST limits below.)
 | `timelapse` | `count`, `last_t`, `free_mb`, `last_file` | **since v1.9.28** `free_mb` is refreshed every 10 s by the timelapse thread (`-1` until the first sample), not measured per request. |
 | `record` | `recording`, `write_errors`, `last_error`, `last_error_age_s`, `motion_gate_enabled`, `manual_off`, `bytes`, `free_mb`, `file` | `last_error_age_s = -1` = no error recorded. `manual_off` is the manual stop latch (§6 commands). **since v1.9.28** `free_mb` is refreshed every 10 s by the recorder thread, so a wedged card no longer stalls `GET /control`. |
 | `motion` | `active[]`, `last_ms`, `max_cells`, plus the echoed grid config | **`active[]` is row-major**: index = `row * cols + col`, length `cols * rows`. **`last_ms = -1` means "never"**, not "just now". `max_cells` is the SDK budget, the same number as `caps.motion.max_cells`. With OpenIMP motion v2 (a `USE_OPENIMP` build whose libimp exports `OpenIMP_IVS_MoveGetResultEx`) three more keys appear while its analysis runs: `v2`:1, `suppress` (hold-off reasons: 1 day/night, 2 gain jump, 4 brightness jump, 0 none) and `objects` = `[{id,x0,y0,x1,y1,strength,age}]` in pixels of the monitored stream (strength 0..1000). |
-| `daynight` | `mode` (**int** 0 = day / 1 = night) *and* `dn_mode` (**string**), `brightness` (%), `total_gain`, `exposure`, `ae_luma`, `night_baseline`, `day_trigger`, `sun_computed_sunrise`, `sun_computed_sunset`, … | `total_gain` is the IMP `[24.8]` linear scale (**256 = 1.0×**). **`exposure` is the value the decision actually runs on** — `total_gain` scaled by the AE integration-time ratio, so it equals `total_gain` in a dark scene and drops far below it in a bright one. Quote `exposure`, not `total_gain`, when answering a day/night question; `total_gain` is kept for continuity with existing pages. `night_baseline` is the illuminator-lit night level at the last look (or the darker level it followed after 60 s 10 % above it), `day_trigger` the bar the reading **without** IR must fall below to ask for a day check (since v1.10.1 both are always published; `day_trigger` is at least `day_gain`). **Since v1.11.0** `color_trigger` (`"on"`, `"off"` = `color_pct` 0, no switchable illuminator, schedule or disabled, `"unavailable"` = this libimp gives no per-zone AWB statistics) and `color_dev_pct` (the lit picture's colour change since the last look in %, `-1` without a reference, e.g. in day or the first seconds after a look) belong to `daynight.color_pct`. `sun_computed_*` read `"--:--"` where the sun does not rise or set (polar latitudes). It also echoes the settable keys (`day_gain`, `night_gain`, `day_confirm_s`, `jump_pct`, `color_pct`, `heartbeat_s`, `heartbeat_max_s`, `interval_ms`, the Idle-Dark and calendar keys). The frozen-constant echoes of v1.10.0 (`ir_ratio_*`, `probe_settle_s`, …) are gone with the 1.10.1 engine. |
+| `daynight` | `mode` (**int** 0 = day / 1 = night) *and* `dn_mode` (**string**), `brightness` (%), `total_gain`, `exposure`, `ae_luma`, `night_baseline`, `day_trigger`, `sun_computed_sunrise`, `sun_computed_sunset`, … | `total_gain` is the IMP `[24.8]` linear scale (**256 = 1.0×**). **`exposure` is the value the decision actually runs on** — `total_gain` scaled by the AE integration-time ratio, so it equals `total_gain` in a dark scene and drops far below it in a bright one. Quote `exposure`, not `total_gain`, when answering a day/night question; `total_gain` is kept for continuity with existing pages. `night_baseline` is the illuminator-lit night level at the last look (or the darker level it followed after 60 s 10 % above it), `day_trigger` the bar the reading **without** IR must fall below to ask for a day check (since v1.10.1 both are always published). **Since v1.11.2** `day_trigger` is the bar actually used, after the near-day rule and `k`, so it can be below `day_gain`. **Since v1.11.0** `color_trigger` (`"on"`, `"off"` = `color_pct` 0, no switchable illuminator, schedule or disabled, `"unavailable"` = this libimp gives no per-zone AWB statistics) and `color_dev_pct` (the lit picture's colour change since the last look in %, `-1` without a reference, e.g. in day or the first seconds after a look) belong to `daynight.color_pct`. `sun_computed_*` read `"--:--"` where the sun does not rise or set (polar latitudes). It also echoes the settable keys (`day_gain`, `night_gain`, `day_confirm_s`, `jump_pct`, `color_pct`, `heartbeat_s`, `heartbeat_max_s`, `interval_ms`, the Idle-Dark and calendar keys). The frozen-constant echoes of v1.10.0 (`ir_ratio_*`, `probe_settle_s`, …) are gone with the 1.10.1 engine. |
 | `last_errors` | `{"<MOD>": {"level","age_s","count","msg"}}` | One entry per module that has logged, with the most recent message and how many times it repeated. Useful once the 64 KB syslog ring has recycled. On v1.9.27 an entry captured before NTP sync shows an `age_s` of ~56 years; **since v1.9.28** ages are monotonic. |
 | `video.<N>.rotation_state` | int | **Since v1.10.1**, `USE_ROTATE` builds. `0` = stream runs as configured at the last start; else the `2xx` code why it runs unrotated (table in [`error-codes.md`](error-codes.md)). Refers to the running pipeline, not to a POSTed-but-not-restarted rotation. |
-| `video.<N>.rotate_path` | string | **Since v1.11.0**, `USE_ROTATE` builds. How the running stream is rotated, i.e. in which frame overlays live: `"off"` = not rotated (also a refused rotation); `"hw"` = OSD/privacy over the whole rotated frame (OpenIMP, and T40/T41 `180`); `"band"` = vendor libimp 90/270: OSD/privacy in rotated coordinates but only within the top `eff_width` rows (lower ones are moved up). OSD, privacy and the motion grid always use `eff_width`×`eff_height` coordinates. Absent = timps before 1.11.0. Until v1.11.2 also `"sw"` (the removed T23 software rotate). |
+| `video.<N>.rotate_path` | string | **Since v1.11.0**, `USE_ROTATE` builds. How the running stream is rotated, i.e. in which frame overlays live: `"off"` = not rotated (also a refused rotation); `"hw"` = OSD/privacy over the whole rotated frame (OpenIMP, and T40/T41 `180`); `"band"` = vendor libimp 90/270: OSD/privacy in rotated coordinates but only within the top `eff_width` rows (lower ones are moved up). OSD, privacy and the motion grid always use `eff_width`×`eff_height` coordinates. Absent = timps before 1.11.0. `"sw"` (the removed T23 software rotate) only from timps ≤ 1.11.1. |
 | `osd<S>.<N>.type` | `"text"` or `"logo"` | Read back as a **word**, unlike `record.mode` and `audio.backchannel_codec`, which read back as numbers. |
 
 ### The `caps` object — capability announcement
@@ -643,7 +650,7 @@ differently-compiled binaries.
 | `caps.play` | `{available, sounds:[...]}` — enumerates playable files |
 | `caps.webrtc` | `{available, enabled, chn_select}` — same 0/1/2 meaning as `talk_ws`; `chn_select:1` = the POST honours `?chn=N`. **Key absent entirely** when `USE_WEBRTC=0` |
 | `caps.framesource` | `{keepalive, cfg}` — **since v1.10.0.** `keepalive` = 1 when this start resolved `general.fs_keepalive` to on (video FrameSources held enabled until stop), `cfg` = the raw `-1`/`0`/`1`. On the sim it reports the resolution only (no FrameSource there). |
-| `caps.roi` / `caps.fcrop` | **Since v1.10.0.** Encoder ROI and ISP FrontCrop: `tier` = `effective` (device-tested), `experimental` (call returns 0, effect unverified), `unsupported`, or `sim`. `caps.roi` adds `regions`, `align:16`, the QP ranges and `streams[]` (`ok`/`off`/`h265`/`rotated`/`unsupported`); `caps.fcrop` adds `live`, `min:64`, `sensor:[w,h]`, `state` (`off`/`on`/`rejected`/`failed`/`unsupported`), `min_win`, `zoom_max`, `upscale_pct` (the driver's current value) and **since v1.11.0** `upscale_max` (ceiling of `image.fcrop_upscale_pct`: 100 on T23/T31 OpenIMP with the driver parameter, else -1). T10/T20/T21 ROI and FrontCrop with OpenIMP are `effective` (device-tested by the OpenIMP maintainer, not by timps); T23 ROI with OpenIMP is `effective` when the libimp exports `OpenIMP_Cap_T23HelixRoi`, else `unsupported` (since v1.10.1); T23/T31 FrontCrop (OpenIMP) is `effective` and live when the driver has `fcrop_upscale_pct`, otherwise `experimental` (T23 with `live` 0, start-only); tier table in config-keys.md §10a. |
+| `caps.roi` / `caps.fcrop` | **Since v1.10.0.** Encoder ROI and ISP FrontCrop: `tier` = `effective` (device-tested), `experimental` (call returns 0, effect unverified), `unsupported`, or `sim`. `caps.roi` adds `regions`, `align:16`, the QP ranges and `streams[]` (`ok`/`off`/`h265`/`rotated`/`unsupported`); `caps.fcrop` adds `live`, `min:64`, `sensor:[w,h]`, `state` (`off`/`on`/`rejected`/`failed`/`unsupported`), `min_win`, `zoom_max`, `upscale_pct` (the driver's current value) and **since v1.11.0** `upscale_max` (ceiling of `image.fcrop_upscale_pct`: 100 on T23/T31 OpenIMP with the driver parameter, else -1). T10/T20/T21 ROI and FrontCrop and, **since v1.11.2**, T30 ROI with OpenIMP are `effective` (device-tested by the OpenIMP maintainer, not by timps); T23 ROI with OpenIMP is `effective` when the libimp exports `OpenIMP_Cap_T23HelixRoi`, else `unsupported` (since v1.10.1); T23/T31 FrontCrop (OpenIMP) is `effective` and live when the driver has `fcrop_upscale_pct`, otherwise `experimental` (T23 with `live` 0, start-only); tier table in config-keys.md §10a. |
 | `caps.daynight` | `{available, ir_idle}` — **since v1.10.0.** `available` = built with `USE_DAYNIGHT`; `ir_idle` = 1 when `daynight.ir_idle_off` could act on this start (it needs the FrameSource keepalive). |
 
 Note the deliberate convention: a key that is **absent** (`caps.rotation`,
@@ -890,7 +897,7 @@ Live-applicable rate-control keys by SoC (the rest need a restart):
 
 | SoC | Live keys |
 | --- | --- |
-| T10–T30 (incl. T23) | `rc_mode`, `bitrate`, `qp`, `min_qp`, `max_qp`, `quality_lvl`, `change_pos`, `i_bias_lvl` (H.264 streams only) |
+| T10–T30 (incl. T23) | `rc_mode`, `bitrate`, `qp`, `min_qp`, `max_qp`, `quality_lvl`, `change_pos`, `i_bias_lvl` (H.264 streams; on T30 also H.265 streams **since v1.11.2**, vendor and OpenIMP; T21 H.265 stays restart-bound) |
 | T31 / C100 | `bitrate`, `min_qp`, `max_qp`, `i_bias_lvl` |
 | T40 | `bitrate`, `min_qp`, `max_qp` |
 | T41 | `bitrate`, `min_qp`, `max_qp` |
@@ -1102,8 +1109,8 @@ wait up to ~3.5 s for the AE (max 5 s); streams start dark or settling for a
 few seconds. Off: POST `{"daynight":{"ir_idle_off":0}}` (LED back on at once).
 The status is `daynight.ir_idle` in `GET /control` and `/events`:
 `{cfg, available, reason, dark, watched, linger_left_s}`; `reason` is
-`disabled`, `schedule`, `keepalive` (needs `general.fs_keepalive` on, auto
-only on OpenIMP T23/T41), `no_illuminator`, `white_light`, `hook` (the
+`disabled`, `schedule`, `keepalive` (needs `general.fs_keepalive` on: the
+default `1` since v1.11.2; auto is on only for OpenIMP T23/T40/T41), `no_illuminator`, `white_light`, `hook` (the
 firmware's `timps-irprobe` lacks the `idle` verb) or empty. WebUI: Day / Night
 → Settings → card "IR light when idle" (switch, linger, status chip; hidden
 on a timps without `ir_idle`, and while `caps.daynight.ir_idle = 0` unless
@@ -1268,7 +1275,7 @@ upstream of timps.
 **What timps does about it (since v1.10.0):**
 `general.fs_keepalive = -1` (`auto`, the default until v1.11.1; **since v1.11.2
 the default is `1`, on everywhere**) resolves to **on** for `USE_OPENIMP`
-builds on T23 and T41: every video FrameSource is enabled once at start and
+builds on T23, T40 and T41: every video FrameSource is enabled once at start and
 never disabled until the daemon stops, so timelapse shots, snapshots,
 day/night kicks and client churn no longer touch it. Encoders stay
 on-demand. On every other SoC/stack auto is **off**. Separately, on all SoCs
@@ -1276,16 +1283,18 @@ the day/night/flip latch kick no longer disables chn0 right after its 500 ms
 wait (2 s debounce instead).
 
 **Check:**
-1. `GET /control` → `caps.framesource`: `{"keepalive":1,"cfg":-1}` on an
-   open-stack T23/T40/T41 with the default. `keepalive:0` there means the key was
-   set to `0` (or `off`/`false`/`no`). An unknown word logs `is not a valid
-   value, using -1 (auto)`.
+1. `GET /control` → `caps.framesource`: `{"keepalive":1,"cfg":1}` with the
+   default (since v1.11.2; `"cfg":-1` on v1.10.0-v1.11.1). `keepalive:0` means
+   the key was set to `0` (or `off`/`false`/`no`), or it runs auto
+   (`"cfg":-1`) outside open-stack T23/T40/T41. An unknown word logs `is not
+   a valid value, using -1 (auto)`, so a typo can turn the keepalive off.
 2. `logread | grep 'framesource'`: once per start
-   `framesource keepalive on (general.fs_keepalive=-1, auto)` and one
+   `framesource keepalive on (general.fs_keepalive=1)` (with auto:
+   `general.fs_keepalive=-1, auto`) and one
    `framesource N enabled` per stream, then **no** `disabled (idle)` until a
    stop. Still normal: `video chnN idle` (the encoder idles).
-3. Remaining edges with the keepalive on: start/stop (until v1.11.2 also a
-   T23 SW-rotate stream). The video
+3. Remaining edges with the keepalive on: start/stop (up to v1.11.1 also a
+   T23 software-rotated stream). The video
    watchdog (**since v1.10.1**; v1.10.0 still cycled the FrameSource), the
    JPEG cold-start recycle and the JPEG miss watchdog only restart the
    encoder (`... (framesource kept alive)`); 5 video cycles without a frame
@@ -1356,18 +1365,20 @@ the kernel log and escalate.
 - `90`/`270` do not exist on C100 at all, nor on T10/T20/T21/T23/T30 with
   the vendor libimp. **Since v1.11.2** T23 and T30 OpenIMP builds rotate
   through the same FrameSource path as T10/T20/T21 (needs OpenIMP `next`
-  `17082ed3` or later; T23 704x576, T30 1280x720, align 16, from
+  `17082ed3` or later; current limits T23 and T30 1280x720, align 16, from
   `OpenIMP_FS_RotateLimits`); OSD, privacy and motion stay on the rotated
   stream. **Since v1.10.0** T10/T20/T21 OpenIMP builds rotate
-  sub streams (not `video0`; 16-aligned, at most 704x576, e.g. 640x368), but
-  only with an OpenIMP that has T1x rotation (commit `6b7f5ae`, branch
-  `claude/t1x-rotation`; none of the thingino `ciao` OpenIMP pins has it).
-  Any other OpenIMP: the stream starts unrotated with a warning naming the
-  reason
-  (`accepted a 0x0 picture, so it cannot rotate` = the `9cab219` stub,
-  `SetChnRotate refused` = a refusing OpenIMP). Not yet tested on hardware.
-- `USE_SW_ROTATE` (the T23 CPU-transpose path) was removed in v1.11.2; the
-  knob now only implies `USE_ROTATE`.
+  sub streams (not `video0`; 16-aligned, at most 704x576, e.g. 640x368,
+  whatever the libimp reports), but only with an OpenIMP that rotates on
+  T1x (first in commit `6b7f5ae`; the older thingino `ciao` OpenIMP pins
+  do not). Any other OpenIMP: the stream starts unrotated with a warning
+  naming the reason (`SetChnRotate is an OpenIMP stub` = the `9cab219`
+  stub, `SetChnRotate refused` = a refusing OpenIMP). Not yet tested on
+  hardware.
+- The T23 CPU-transpose path and its `USE_SW_ROTATE` knob were removed in
+  v1.11.2. The FrameSource rotate turns `90` the other way (counter-clockwise;
+  the software path turned it clockwise): a T23 configured with `90` needs
+  `270` now, and the other way round.
 - Direction is not uniform: on T40/T41, 90 = clockwise; on T31 and
   T10/T20/T21/T23/T30 (same `SetChnRotate` enum), 90 = counter-clockwise (kept
   numerically aligned with prudynt-t/raptor).
@@ -1477,9 +1488,9 @@ There is also a QA harness in the repo:
   FrameSource running but no encoder consumer, that AE statistics stay fresh
   in that state (so day/night measures without a client), the FS1 rmem
   (~0.7 MB, arithmetic), and every CPU/heat/power figure. Do not quote a CPU
-  cost; say it is unmeasured. The default rule (auto = on only for open-stack
-  T23/T41) is a deliberate decision, not a capability limit — `1` works on
-  every SoC.
+  cost; say it is unmeasured. Up to v1.11.1 the default was auto (on only for
+  open-stack T23/T40/T41), a deliberate decision, not a capability limit;
+  **since v1.11.2** the default is `1` on every SoC.
 - **`daynight.color_pct` (since v1.11.0) is device-tested only on the Eufy
   S350 (T40 vendor) and the Wyze Pan (T20 OpenIMP).** The other AWB paths
   (T23/T31/C100/T41, OpenIMP T23/T31/T40/T41 behind their cap symbols) are

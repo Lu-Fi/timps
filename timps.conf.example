@@ -16,13 +16,15 @@ general.syslog              = 1      # 1 = also log to syslog so messages show u
                                      #     0 = stderr only (foreground / host sim)
 general.imp_polling_timeout = 500    # ms, encoder poll timeout
 general.osd_pool_size       = 1024   # KB, IMP OSD pool (this is the default)
-# FrameSource keepalive: -1 auto (on only for the open stack on T23/T41, where
-# a FrameSource disable/enable while the sensor streams can hang the SoC),
-# 0 off (FrameSources run only while something consumes), 1 on (opt-in
-# elsewhere; idle CPU/heat/rmem cost unmeasured). auto/on/off are accepted
-# too; an unknown word warns and stays auto. Restart to apply.
-# GET /control: caps.framesource.
-# general.fs_keepalive      = -1
+# FrameSource keepalive: 1 on (the default since v1.11.2: FrameSources run
+# from start to stop, encoders stay on-demand; idle CPU/heat cost unmeasured,
+# ~6.3 MB rmem for a 1080p main stream stays allocated), 0 off (FrameSources
+# run only while something consumes), -1 auto (the default up to v1.11.1: on
+# only for OpenIMP T23/T40/T41, where a FrameSource disable/enable while the
+# sensor streams can hang the SoC or stop the AE). auto/on/off are accepted
+# too; an unknown word warns and runs auto, so a typo turns the keepalive
+# OFF on every other SoC. Restart to apply. GET /control: caps.framesource.
+# general.fs_keepalive      = 1
 
 # ---- sensor ----
 # OPTIONAL: leave any of these out (or empty/0) and timps auto-detects it from
@@ -328,7 +330,6 @@ video1.jpeg_chn     = 4
 # OFF BY DEFAULT - must be enabled at build time (menuconfig), like AAC/TLS:
 #   BR2_PACKAGE_TIMPS_ROTATE      -> 90/270 on T31/T40/T41 (+180 on T40/T41),
 #                                    T10/T20/T21/T23/T30 with OpenIMP
-#   (BR2_PACKAGE_TIMPS_SW_ROTATE is obsolete since v1.11.2)
 # Without it, 90/180/270 in this file are ignored (coerced to 0 with a warn).
 #
 # What each chip supports:
@@ -336,15 +337,16 @@ video1.jpeg_chn     = 4
 #   T31      : 90/270 - libimp SOFTWARE rotate: <=1280x704 @ <=15fps,
 #              64-px aligned, extra rmem, no soft-zoom
 #   T10/T20/T21 : 90/270 only in OpenIMP builds, sub streams only (never
-#              video0), 16-px aligned (640x368, not 640x360), <=704x576, and
-#              only with an OpenIMP that has T1x rotation (commit 6b7f5ae);
-#              any other OpenIMP: the stream starts unrotated with a warning.
-#              Not yet tested on hardware.
+#              video0), 16-px aligned (640x368, not 640x360), <=704x576 even
+#              if the libimp reports more, and only with an OpenIMP that
+#              rotates on T1x; any other OpenIMP: the stream starts unrotated
+#              with a warning. Not yet tested on hardware.
 #   T23, T30 : 90/270 only in OpenIMP builds (since v1.11.2, OpenIMP next
 #              17082ed3 or later), same FrameSource rotate as T10/T20/T21;
 #              OSD, privacy and motion stay on the rotated stream. Limits
-#              come from OpenIMP: T23 <=704x576, T30 <=1280x720, 16-px aligned.
-#              Vendor libimp: none.
+#              come from OpenIMP (now <=1280x720, 16-px aligned, every
+#              stream). Vendor libimp: none. T23: 90 turns the other way than
+#              the old software rotate (<= v1.11.1) - swap 90/270.
 #   C100     : none (no 90/270 primitive)
 #
 # Cost: 180 + HW 90/270 add ~none (binary +<1KB, no runtime cost).
@@ -355,7 +357,10 @@ video1.jpeg_chn     = 4
 # applied to the RUNNING encoder (per channel, effective at the next IDR/GOP)
 # where the SoC's SDK allows it:
 #   T10..T30 (incl. T23): rc_mode, bitrate, qp, min_qp, max_qp, quality_lvl,
-#                         change_pos, i_bias_lvl   (H264 streams only)
+#                         change_pos, i_bias_lvl   (H264 streams; on T30 also
+#                         H265 streams since v1.11.2; T21 H265: restart)
+# codec h265: not on T10/T20/T23 (-> h264); T30 with OpenIMP only when the
+# libimp exports OpenIMP_Cap_H265 (else -> h264 with a warning).
 #   T31/C100:             bitrate, min_qp, max_qp, i_bias_lvl
 #   T40:                  bitrate, min_qp, max_qp
 #   T41:                  bitrate, min_qp, max_qp
@@ -683,8 +688,10 @@ osd1.0.outline_color = 0xFF000000
 # Up to 4 regions per stream (roi<S>.<N>, N 0..3), H.264 and unrotated streams
 # only. x/y/w/h in the stream's pixels, rounded outwards to 16x16 macroblocks.
 # qp_mode 1 = delta to the frame QP (-26..25), 0 = absolute QP (0..51).
-# Device-tested on T20 with OpenIMP only; T10/T20 vendor/T21/T23 experimental
-# (T21: no effect seen), T30/T31/T40/T41/C100 refused. caps.roi has the tier.
+# Effective with OpenIMP on T10/T20/T21/T30/T31 and on T23 with
+# OpenIMP_Cap_T23HelixRoi (device-tested by the OpenIMP maintainer);
+# experimental on vendor T10/T20/T21 and OpenIMP T40/T41 (OpenIMP_Cap_EncRoi);
+# refused on vendor T23/T30/T31/T40/T41 and C100. caps.roi has the tier.
 # roi0.0.enabled = 1
 # roi0.0.x       = 640
 # roi0.0.y       = 320
@@ -827,7 +834,7 @@ daynight.isp_path       = /proc/jz/isp/isp-m0  # ISP exposure proc file (never r
 # timelapse, recording, motion detection, jpeg.snapshot_path) for
 # ir_idle_linger_s, switch only the IR illuminator off and decide at the next
 # consumer from what the AE measured meanwhile. Needs the framesource
-# keepalive (general.fs_keepalive; auto = on for OpenIMP T23/T41), otherwise
+# keepalive (general.fs_keepalive, default 1 since v1.11.2), otherwise
 # it stays inactive with a warning. 1 switches the IR LED off while nobody
 # watches, through irprobe_cmd's "idle" verb (thingino's timps-irprobe; it
 # relights on its own 15 min after timps stops renewing it). Status:

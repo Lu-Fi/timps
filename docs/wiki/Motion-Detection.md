@@ -166,7 +166,7 @@ post-rotation ("effective") dimensions (`ms_vstream_eff_dims()`), the same
 space the WebUI overlay and privacy masks use. A rotation refused at start
 leaves the stream and the grid unrotated.
 
-Until v1.11.2 T23 had a timps-own software rotate (`USE_SW_ROTATE`) where
+Up to v1.11.1 T23 had a timps-own software rotate where
 IVS saw the unrotated frame and each grid cell was inverse-mapped into
 sensor coordinates. That path and its mapping were removed; T23 now rotates
 through OpenIMP like T10/T20/T21.

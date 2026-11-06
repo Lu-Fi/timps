@@ -28,7 +28,10 @@ prudynt-t / raptor.
   (`video0.rtsp_path = /ch0`, `video1.rtsp_path = /ch1`).
 * **Zwei Videostreams** (`video0.*` = Haupt-, `video1.*` = Substream), jeweils
   H.264 oder H.265 (`videoN.codec = h264 | h265`), eigene Auflösung, FPS,
-  Bitrate und Ratenkontrolle. Ohne `videoN.width/height` gelten 1920x1080 bzw.
+  Bitrate und Ratenkontrolle. H.265 nicht auf T10/T20/T23 (dort wird es zu
+  H.264). **T30 (seit v1.11.2)**: mit Hersteller-libimp wie konfiguriert, mit
+  OpenIMP nur, wenn die libimp `OpenIMP_Cap_H265` exportiert, sonst H.264
+  mit einer WARN. Ohne `videoN.width/height` gelten 1920x1080 bzw.
   640x360; **seit v1.10.0** wird stattdessen eine kleinere
   bekannte Sensorgröße genommen (ein 1280x720-Sensor streamt 1280x720, kein
   Hochskalieren mehr).
@@ -70,12 +73,14 @@ prudynt-t / raptor.
 * **FrameSource-Keepalive** (**seit v1.10.0**) –
   `general.fs_keepalive` (`-1`/`auto`, `0`/`off`, `1`/`on`, **seit v1.11.2
   Standard `1`**; nur per Datei,
-  Neustart; ein unbekanntes Wort wird mit Warnung als `auto` gelesen):
+  Neustart; ein unbekanntes Wort wird mit Warnung als `auto` gelesen, ein
+  Tippfehler schaltet den Keepalive also außer auf OpenIMP T23/T40/T41 **aus**):
   hält die FrameSources von Start bis Stopp an, die Encoder bleiben on-demand.
-  Auto = an nur bei OpenIMP-Builds auf T23 und T41, wo ein FrameSource-
-  Disable/Enable bei laufendem Sensor den SoC aufhängen kann; sonst aus, weil
-  die Leerlaufkosten (CPU, Wärme, ~6,3 MB rmem für einen 1080p-Hauptstream)
-  dort nicht gemessen sind. Wirksamer Wert: `caps.framesource` in
+  Auto (bis v1.11.1 der Standard) = an nur bei OpenIMP-Builds auf T23, T40
+  und T41 (T23/T41: ein FrameSource-Disable/Enable bei laufendem Sensor kann
+  den SoC aufhängen; T40: ohne Bilder steht die AE); sonst aus. Kosten
+  von `1`: ~6,3 MB rmem für einen 1080p-Hauptstream bleiben belegt, CPU und
+  Wärme sind nicht gemessen. Wirksamer Wert: `caps.framesource` in
   `GET /control`.
 
 ## Encoder & Ratenkontrolle
@@ -87,6 +92,9 @@ prudynt-t / raptor.
   als VBR (`0`).
 * **Klassische SoC-Ratenkontrolle (T10–T30)** zusätzlich über `quality_lvl`
   (0–7), `change_pos` (50–100), `i_bias_lvl` (−3…3) und `fluc_lvl` (nur H.265).
+  Live auf H.264-Streams; **seit v1.11.2** auf T30 auch auf H.265-Streams
+  (Hersteller-libimp und OpenIMP; `fluc_lvl`, `fps`, `gop` und `codec` bleiben
+  Neustart-Keys). Auf T21 bleibt H.265 neustartgebunden.
 * **T20-Makroblock-Ratenkontrolle** `videoN.mbrc` (**seit v1.11.2**, Default
   `0`, Neustart): Hersteller-libimp und OpenIMP haben sie sonst an; bei
   1080p15 kostete sie den Streamer ~35 % statt ~7 % CPU. Aus = etwas gröberes
@@ -141,7 +149,9 @@ prudynt-t / raptor.
   T10/T20/T21 experimentell. **T31 mit OpenIMP** über `SetChnRoiAttr`
   (vom OpenIMP-Maintainer getestet, in timps nur Host-Tests); vendor T31
   lehnt ab (kein Symbol). Vendor T23 lehnt ab (der Encoder speichert die
-  Region nur), dazu T30 und C100. **Seit v1.11.0** T40/T41 mit OpenIMP
+  Region nur), dazu vendor T30 und C100. **Seit v1.11.2** ist T30 mit OpenIMP
+  wirksam (Familie A, `IMP_Encoder_SetChnROI`, OpenIMP 03dd0ce3, vom
+  OpenIMP-Maintainer getestet). **Seit v1.11.0** T40/T41 mit OpenIMP
   experimentell (`OpenIMP_Cap_EncRoi`, nur QP-Deltas). **Seit v1.10.1** ist T23 mit
   OpenIMP wirksam, wenn die libimp `OpenIMP_Cap_T23HelixRoi` exportiert
   (OpenIMP v2026.10.11-rc1 oder neuer), sonst abgelehnt. Delta -25..25 (T21
@@ -152,15 +162,20 @@ prudynt-t / raptor.
 * **Bildrotation (optional, `USE_ROTATE`)** – `videoN.rotation = 0|90|180|270`.
   Hardware-90/270 auf T40/T41 (I2D) und T31 (FrameSource). **Seit v1.10.0**
   auch FrameSource-Rotation auf T10/T20/T21, nur in OpenIMP-Builds und nur mit
-  einem OpenIMP, das T1x-Rotation kann (Commit `6b7f5ae`, Branch
-  `claude/t1x-rotation`, in keinem der `ciao`-OpenIMP-Pins), nur Sub-Streams,
-  16-aligned, max. 704x576 (z. B. 640x368); auf Hardware noch ungetestet.
+  einem OpenIMP, das auf T1x dreht (zuerst Commit `6b7f5ae`), nur Sub-Streams,
+  16-aligned, max. 704x576 (z. B. 640x368), auch wenn die libimp mehr meldet;
+  auf Hardware noch ungetestet.
   Ein OpenIMP ohne Rotation erkennt timps beim Start, der Stream läuft dann
-  ungedreht. **Seit v1.11.2** dreht auch T23 (und T30) über denselben
-  FrameSource-Pfad, nur in OpenIMP-Builds (OpenIMP `next` `17082ed3` oder
-  neuer); OSD, Privacy-Masken und Bewegungserkennung bleiben auf dem
-  gedrehten Stream. Der frühere timps-eigene Software-Pfad für T23
-  (`USE_SW_ROTATE`) ist entfernt; T23 mit Hersteller-libimp dreht nicht.
+  ungedreht. **Seit v1.11.2** drehen auch T23 und T30 über denselben
+  FrameSource-Pfad (`IMP_FrameSource_SetChnRotate`), nur in OpenIMP-Builds
+  (OpenIMP `next` `17082ed3` oder neuer); die Grenzen meldet OpenIMP über
+  `OpenIMP_FS_RotateLimits` (derzeit T23 und T30 1280x720, Ausrichtung 16).
+  OSD, Privacy-Masken und Bewegungserkennung bleiben auf dem gedrehten
+  Stream. Der frühere timps-eigene Software-Pfad für T23 und sein Schalter
+  `USE_SW_ROTATE` sind entfernt; T23 mit Hersteller-libimp dreht nicht.
+  **Achtung T23**: der alte Software-Pfad drehte 90 im Uhrzeigersinn, der
+  FrameSource-Pfad dreht 90 gegen den Uhrzeigersinn – eine T23 mit
+  `rotation = 90` braucht jetzt `270` (und umgekehrt).
   Echte per-Kanal-180°-Drehung nur auf T40/T41; sonst stattdessen
   `image.hflip` + `image.vflip`. **Seit v1.11.0** meldet `GET /control` je
   Stream `video.<N>.rotate_path`: `off`, `band`
@@ -179,7 +194,19 @@ prudynt-t / raptor.
   v1.10.0** je SoC begrenzt (0..255 auf T10/T20/T30, Neutral 128;
   0..4095 auf T21/T23/T31, Neutral 256). Auf T41 gibt es mit OpenIMP
   `ae_compensation` und `sinter_strength` (seit v1.9.33) sowie
-  `temper_strength` (**seit v1.10.0**). *Seit v1.9.21* meldet `GET /control`
+  `temper_strength` (**seit v1.10.0**). **Seit v1.11.2** hat T40
+  `ae_compensation` (AE-Ziel wie auf T41) und `max_again` (Obergrenze der
+  analogen AE-Verstärkung, 1024 × 2^(Wert/32)), mit Hersteller- und
+  OpenIMP-libimp.
+* **T30-ISP (seit v1.11.2, Hersteller- und OpenIMP-libimp)**:
+  `sinter_strength`, `temper_strength` und `dpc_strength` bilden 0..255 auf
+  die 50..150 % des T30 ab (128 = 100 %, das Herstellerbild; vorher wurde 128
+  als 128 % geschrieben), `dpc_strength` über `SetDPStrength`;
+  `drc_strength` über `Get/SetRawDRC` (0 = aus, 128 = die vor der ersten
+  Änderung gelesenen Werte, sonst manuelle Stärke); `defog_strength` über
+  `SetAntiFogAttr` (bis 128 aus, 129–170 schwach, 171–212 mittel, ab 213
+  stark). `colorfx` nur mit OpenIMP; `scene` gibt es auf T30 nicht (der Aufruf
+  wirkt dort nicht), `hue` ebenfalls nicht. *Seit v1.9.21* meldet `GET /control`
   unter `image.wb_live` die aktuell wirksamen WB-Gains (im Auto-Modus das
   AWB-Ergebnis) – ein Wechsel auf manuell damit ändert das Bild nicht.
 * **Kein blindes Setzen**: welche dieser Regler der jeweilige SoC wirklich
@@ -270,6 +297,18 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   `OpenIMP_Cap_AwbZone`/`_AwbStatistics`); Status `daynight.color_trigger`
   (`on`/`off`/`unavailable`) und `color_dev_pct`. Auf dem Gerät getestet nur
   auf T40 (Hersteller) und T20 (OpenIMP).
+* **Nur nahe am Tag prüfen (seit v1.11.2)** – ein Blick fragt nur dann nach
+  einer Prüfung mit dem Tagbild, wenn `k × dunkel` höchstens 4 × `day_gain`
+  beträgt. Vorher fragten Farb-Blicke in der Dämmerung schon bei 19 ×
+  `day_gain` und kosteten je ein Klickpaar. `daynight.day_trigger` meldet
+  jetzt die tatsächlich benutzte Schwelle und kann daher unter `day_gain`
+  liegen.
+* **Dunkler, aber andere Farbe (seit v1.11.2)** – wird das IR-beleuchtete
+  Bild dunkler und bleibt seine Farbe dabei 20 s lang um mehr als
+  `color_pct` verschoben (eine Lampe geht an, während das Infrarot anderer
+  Kameras im Raum ausgeht), startet die Kamera einen Farb-Blick. Den dunkleren
+  Belichtungswert übernimmt sie als Referenz, die Farbreferenz behält sie für
+  den Blick. Vorher blieb so eine Kamera bis zum 6-h-Takt in Nacht.
 * **Referenz nur aus ruhigem Bild (seit v1.11.0)** – ein Blick, während der
   beleuchtete Pegel noch wandert (Lampe geht an, Blick einer Nachbarkamera),
   setzt keine Referenz; das tut der nächste ruhige Pegel (höchstens 60 s).
@@ -308,8 +347,8 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   zu). Der erste neue Zuschauer bekommt die LED sofort (Kick, nicht erst der
   nächste Tick).
   Snapshots direkt danach warten bis zu ~3,5 s (max. 5 s) auf die AE, Streams
-  sind die ersten 1-4 s dunkel. Voraussetzungen: FrameSource-Keepalive (auto
-  nur OpenIMP T23/T40/T41), Modus `auto`, `timps-irprobe` mit den Verben
+  sind die ersten 1-4 s dunkel. Voraussetzungen: FrameSource-Keepalive
+  (seit v1.11.2 Standard `1`; auto nur OpenIMP T23/T40/T41), Modus `auto`, `timps-irprobe` mit den Verben
   `idle`/`state` (Firmware ab 2026-10), kein Weißlicht in
   `daynight.controls`. Warum aus: Bei 850 nm sieht man am Erlöschen des
   Glimmens, dass niemand zusieht oder aufnimmt. Status `daynight.ir_idle` (`reason`: `disabled`,
@@ -604,9 +643,10 @@ wird die WebSocket-Variante (statt CGI-Polling) aktiviert.
 * **ISP-Tuning-API** weicht nur auf T40/T41 ab (`ISP_NEW_TUNING_API`), was dort
   einige `image.*`-Regler entfallen lässt – nachzulesen in `caps.image`.
 * **Audio**: `IMP_AI_SetAlcGain` (`audio.alc_gain`) nur auf T21/T31/C100.
-* **Rotation**: Hardware-I2D auf T40/T41, FrameSource-Rotate auf T31 und
-  (seit v1.10.0, nur OpenIMP mit T1x-Rotation, nur Sub-Streams)
-  T10/T20/T21, Software auf T23, gar nicht auf T30/C100.
+* **Rotation**: Hardware-I2D auf T40/T41, FrameSource-Rotate auf T31 und,
+  nur mit OpenIMP, auf T10/T20/T21 (seit v1.10.0, nur Sub-Streams) sowie
+  T23/T30 (seit v1.11.2); gar nicht auf C100 und mit Hersteller-libimp auf
+  T10/T20/T21/T23/T30.
 * **AWB-Statistik für den Farb-Auslöser (seit v1.11.0)**: T40/T41, T23/T31/C100,
   T10/T20 mit OpenIMP; nicht auf Hersteller-T10/T20/T21, T21 mit OpenIMP und
   T30.
@@ -673,7 +713,6 @@ Paket: `package/timps` – Auswahl über *Streamer Packages → Streamer → tim
 | `BR2_PACKAGE_TIMPS_PLAY` | `USE_PLAY` | n | System-Sound-Queue + `/usr/sbin/play` |
 | `BR2_PACKAGE_TIMPS_PLAY_OPUS` | `USE_PLAY_OPUS` | n | Ogg-Opus im Play-Queue (opusfile) |
 | `BR2_PACKAGE_TIMPS_ROTATE` | `USE_ROTATE` | n | Bildrotation |
-| `BR2_PACKAGE_TIMPS_SW_ROTATE` | `USE_SW_ROTATE` | n | Obsolet seit v1.11.2, schaltet nur `USE_ROTATE` ein |
 | `BR2_PACKAGE_TIMPS_OSD_HINTING` | `USE_OSD_HINTING` | n | OSD-Autohinting (~2 KB) |
 
 Dazu die Sammeloption **„Audio backchannel preset"** (MANUAL / FULL / MINIMAL),

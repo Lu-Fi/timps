@@ -156,9 +156,9 @@ int hal_tp_supported(int mode);
 /* mode 4: the running sensor has a built-in pattern; name/desc may be NULL */
 int hal_tp_sensor(char *name, size_t cap, const char **desc);
 int hal_rot_check(int si, const ms_vstream_cfg *v);
-/* How the running stream si is rotated: "off", "sw" (T23 software path:
- * text OSD only), "hw" (OSD/privacy over the whole frame) or "band" (vendor
- * libimp: OSD/privacy only in the top eff_width rows). */
+/* How the running stream si is rotated: "off", "hw" (OSD/privacy over the
+ * whole frame) or "band" (vendor libimp: OSD/privacy only in the top
+ * eff_width rows). */
 const char *hal_rot_path(int si);
 
 /* 1 when image.<key> is built in but this libimp lacks its (weak, OpenIMP-only)

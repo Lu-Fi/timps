@@ -9,17 +9,27 @@ semantic versioning.
 ### Added
 
 - T30: FrameSource rotation 90/270 with OpenIMP (`videoN.rotation`), the same
-  path as T10/T20/T21; it needs an OpenIMP whose T30 `SetChnRotate` rotates.
-  OpenIMP's `OpenIMP_Cap_FsRotate` / `OpenIMP_FS_RotateLimits`, where exported,
-  replace the stub probe and the built-in size table on every SoC with this
-  path.
+  path as T10/T20/T21; it needs an OpenIMP whose T30 `SetChnRotate` rotates
+  (OpenIMP `next` `17082ed3` or later). OpenIMP's `OpenIMP_Cap_FsRotate` /
+  `OpenIMP_FS_RotateLimits`, where exported, replace the stub probe and the
+  built-in size table on every SoC with this path (T10/T20/T21: never beyond
+  timps' own envelope, see Changed). Current OpenIMP limits, the same for
+  every channel, no fps cap: T31 4096x4096 align 2, T10/T20/T21 704x576
+  align 16, T23 and T30 1280x720 align 16.
 
-- T30 ISP: `colorfx` (OpenIMP), `dpc_strength` (SetDPStrength),
-  `drc_strength` (RawDRC, 0 = off), `defog_strength` (AntiFog modes) and
-  encoder ROI (OpenIMP). `sinter_strength`, `temper_strength` and
-  `dpc_strength` now map 0..255 onto the T30's 50..150 % (128 = 100 %, the
-  vendor picture; before, 128 was written as 128 %). `scene` stays off on T30
-  (the call is a no-op there).
+- T30 ISP, with the vendor and the OpenIMP libimp: `dpc_strength`
+  (`SetDPStrength`), `drc_strength` (`Get/SetRawDRC`: `0` = off, `128` =
+  the attributes read before the first change, other values a manual
+  strength) and `defog_strength` (`SetAntiFogAttr`: up to 128 off, 129-170
+  weak, 171-212 medium, 213+ strong). `sinter_strength`, `temper_strength`
+  and `dpc_strength` map 0..255 onto the T30's 50..150 % (128 = 100 %, the
+  vendor picture; before, 128 was written as 128 %). `colorfx` on T30 with
+  OpenIMP only. `scene` stays off on T30 (the call is a no-op there); no
+  `hue` on T30.
+
+- T30 encoder ROI with OpenIMP: family A (`IMP_Encoder_SetChnROI`),
+  `effective` (OpenIMP 03dd0ce3, device-tested by the OpenIMP maintainer).
+  Vendor T30 stays `unsupported`.
 
 - T40: `image.ae_compensation` (AE target, as on T41) and `image.max_again`
   (AE analog gain ceiling, 1024 × 2^(value/32)), live, with the vendor and the
@@ -37,8 +47,10 @@ semantic versioning.
 
 - OpenIMP: a JPEG the library re-delivers while its encoder is busy
   (`OpenIMP_Encoder_StreamIsReused`) is no longer published as a new picture,
-  up to 4 in a row, so `/snapshot.jpg` waits for a fresh one. Counted in
-  `jpeg_reuse` (`available`, `reused`, `skipped`) in `GET /control`.
+  up to 4 in a row and only within 1 s of the last delivered JPEG, so
+  `/snapshot.jpg` waits for a fresh one but never more than 1 s. The skip run
+  resets when the JPEG channel stops. Counted in `jpeg_reuse` (`available`,
+  `reused`, `skipped`) in `GET /control`.
 
 ### Changed
 
@@ -46,9 +58,11 @@ semantic versioning.
   from start to stop, so the AE (and with it day/night) keeps working while
   nobody watches, and no FrameSource edge happens at runtime. `-1`/`auto`
   keeps the old per-build rule (on for OpenIMP T23/T40/T41 only), `0` turns
-  it off. Cost: the FrameSource buffers stay allocated (about 6.3 MB rmem for
-  a 1080p main stream plus 0.7 MB for a 640x360 substream; the peak with
-  clients on every stream is unchanged).
+  it off. An invalid word still parses as `-1`/auto, so with the new default
+  a typo turns the keepalive off on every other SoC. Cost: the FrameSource
+  buffers stay allocated (about 6.3 MB rmem for a 1080p main stream plus
+  0.7 MB for a 640x360 substream; the peak with clients on every stream is
+  unchanged).
 
 - `daynight.heartbeat_max_s` defaults to `64800` (18 h, was 12 h). A winter
   night is longer than 12 h, so the guarantee check ran before dawn on every
@@ -58,25 +72,54 @@ semantic versioning.
   4 × `day_gain`. After a railed check the bar was `0.85 × dark`, blind to
   the distance to day; at dawn colour looks asked at 19 × `day_gain` and
   each cost a click pair (fleet: 1-2 per camera and morning).
+  `daynight.day_trigger` now publishes the bar actually used (clamped by
+  this rule and `k`), so it can be below `day_gain`.
 
 - Day/night: when the lit night picture gets darker while its colour moves
-  beyond `daynight.color_pct`, timps starts a colour look instead of taking
-  the darker scene as the new reference. A lamp coming on while other
-  cameras' infrared goes off (several IR cameras facing one room) left a
-  camera in night until the 6 h timer; replay `shelf_lamp`: day after 72 s.
+  beyond `daynight.color_pct`, timps still takes the darker exposure as the
+  new reference but keeps the colour reference and starts a colour look,
+  once the colour change has held for 20 s (as for a colour jump, not one
+  tick). A lamp coming on while other cameras' infrared goes off (several IR
+  cameras facing one room) left a camera in night until the 6 h timer;
+  replay `shelf_lamp`: day after 72 s.
+
+- T40 day/night: while an `image.max_again` cap is set, the AE gain ceiling
+  comes from `IMP_ISP_Tuning_GetAeExprInfo`; the `/proc` reading overstates
+  the AE reserve under a cap.
+
+- T30 H.265: the live rc keys (`rc_mode`, `bitrate`, `qp`, `min_qp`,
+  `max_qp`, `quality_lvl`, `change_pos`, `i_bias_lvl`) apply at once on a
+  T30 H.265 stream, with the vendor and the OpenIMP
+  libimp. T21 H.265 stays restart-bound; `fps`, `gop` and `codec` stay
+  restart keys.
 
 - T23: rotation 90/270 now goes through OpenIMP's
   `IMP_FrameSource_SetChnRotate` like T10/T20/T21 (OSD, privacy and motion
-  stay on the rotated stream). The timps-own software path (`USE_SW_ROTATE`,
-  CPU transpose + unbound YUV encode) is removed; `USE_SW_ROTATE=1` now only
-  implies `USE_ROTATE`. T23 with the vendor libimp has no rotation.
+  stay on the rotated stream). The timps-own software path (CPU transpose +
+  unbound YUV encode) is removed, and with it the `USE_SW_ROTATE` make knob
+  and `BR2_PACKAGE_TIMPS_SW_ROTATE`. T23 with the vendor libimp has no
+  rotation. **The direction changes**: the software path turned 90
+  clockwise, `SetChnRotate` turns 90 counter-clockwise (`rotTo90` 1, as on
+  every other SoC), so a T23 configured with `rotation = 90` must change to
+  `270` (and the other way round).
+
+- `video.<N>.rotate_path` never reports `"sw"` any more (`off`/`hw`/`band`);
+  error 208 `ERR_ROT_SMALL` is unused.
+
+- T10/T20/T21 rotation stays within timps' own envelope (sub stream only,
+  at most 704x576, align 16) even if the libimp reports more (OpenIMP before
+  2c9cd7b5 reported 4096x4096 align 2 there). An alignment from
+  `OpenIMP_FS_RotateLimits` that is not a power of two is rounded up to the
+  next power of two. The refusal lines no longer name OpenIMP `6b7f5ae`:
+  `... - UNROTATED (needs an OpenIMP that rotates on this SoC)`, and
+  `SetChnRotate refused WxH - UNROTATED` without a suffix.
 
 ### Fixed
 
 - T30 with OpenIMP: `videoN.codec = h265` needs a libimp that exports
-  `OpenIMP_Cap_H265` and otherwise falls back to h264; before, the encoder
-  channel failed and timpsd exited. Live rc changes on a T30 H.265 stream
-  apply at once instead of waiting for a restart.
+  `OpenIMP_Cap_H265` (OpenIMP `next` `8913304e` or later) and otherwise falls back to h264 with a WARN; before,
+  the encoder channel failed and timpsd exited. The vendor T30 libimp takes
+  h265 as configured.
 
 - T40/T41 with OpenIMP: the JPEG thread no longer polls the encoder during
   the 2 s idle linger after a snapshot. OpenIMP encodes JPEG in software

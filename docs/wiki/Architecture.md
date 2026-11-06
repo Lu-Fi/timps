@@ -198,21 +198,24 @@ The **encoders stay on-demand** (`StartRecvPic`/`StopRecvPic` with the same
 2 s debounce), which is the model prudynt-t and raptor use for the
 FrameSource, minus their always-running video encoders.
 
-* **Auto** resolves to on for `USE_OPENIMP` builds on T23, T40 and T41 only. Vendor
-  libimp builds and T10/T20/T21/T30/T31/T40 with OpenIMP keep the on-demand
-  FrameSource: no hang is known there, and the cost of a FrameSource that runs
-  24/7 (CPU in libimp's workers, OSD blending, DDR bandwidth, heat, the ~6.3 MB
-  + ~0.7 MB of rmem pools held instead of released) has not been measured.
-  `1` is the opt-in there.
-* **Exempt:** none since v1.11.2 (until then T23 SW-rotate streams, a path
-  that was removed).
+* **Default `1`** (since v1.11.2): every build keeps its FrameSources from
+  start to stop. The cost of a FrameSource that runs 24/7 (CPU in libimp's
+  workers, OSD blending, DDR bandwidth, heat, the ~6.3 MB + ~0.7 MB of rmem
+  pools held instead of released) has not been measured.
+* **Auto** (`-1`, the default up to v1.11.1) resolves to on for `USE_OPENIMP`
+  builds on T23, T40 and T41 only. Vendor libimp builds and T10/T20/T21/T30/T31
+  with OpenIMP then keep the on-demand FrameSource: no hang is known there.
+  An unknown word parses as auto, so with the default `1` a typo turns the
+  keepalive **off** on those builds.
+* **Exempt:** none since v1.11.2 (up to v1.11.1 the T23 software-rotated
+  streams, a path that was removed).
 * **JPEG recovery:** with the FrameSource kept, the open-stack T23 JPEG
   cold-start recovery and the JPEG miss watchdog restart only the encoder,
   never the FrameSource.
 * **Left:** one enable per channel at start, one disable at stop, and the video
   watchdog's recovery cycle (an error path).
-* **Visible:** `framesource keepalive on (general.fs_keepalive=-1, auto)` at
-  start, `framesource N enabled` once per stream, no `framesource N disabled
+* **Visible:** `framesource keepalive on (general.fs_keepalive=1)` at
+  start (with auto: `general.fs_keepalive=-1, auto`), `framesource N enabled` once per stream, no `framesource N disabled
   (idle)` afterwards; `caps.framesource` in `GET /control`.
 
 The full reasoning, the evidence and the open measurements are in

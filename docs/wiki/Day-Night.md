@@ -732,8 +732,9 @@ that changed `hflip`/`vflip`, the HAL makes sure FrameSource channel 0 runs:
   disabled about 2–3 s after the kick instead of right after the 500 ms.
 - **chn0 already running** (a client, the motion pin or a previous kick): no
   edge and no wait.
-- **chn0 kept alive** (`general.fs_keepalive`, the default on open-stack
-  T23/T41): the kick does nothing at all; chn0 has been running since start,
+- **chn0 kept alive** (`general.fs_keepalive`, default `1` on every SoC since
+  v1.11.2; up to v1.11.1 the default auto was on only on open-stack
+  T23/T40/T41): the kick does nothing at all; chn0 has been running since start,
   so the Set latches on the next frames (assumed, not yet measured on that
   stack). The kick only takes (or
   extends) the same 2 s hold, so the channel cannot idle-stop before the Set
@@ -836,8 +837,9 @@ before each shot, and every shot lights the LED once (set e.g. 90 s).
 
 * **FrameSource keepalive** (`general.fs_keepalive`; on by default since
   v1.11.2, `auto` = on only for OpenIMP builds on T23/T40/T41). Without it the AE stops when the last
-  consumer leaves and nothing can be measured while idle. Elsewhere it
-  needs `general.fs_keepalive = 1` and a restart, untested there.
+  consumer leaves and nothing can be measured while idle. With `0`, or with
+  auto (also a misspelt value) on other SoCs, it is off; Idle-Dark is
+  untested outside OpenIMP T23/T40/T41.
 * **A switchable illuminator**: `daynight.irprobe_cmd` (default
   `timps-irprobe`) with the verbs `idle` (LED off) and `state` (prints
   `on`/`off`). Firmware must ship the new hook (thingino `ciao` from commit
@@ -929,7 +931,7 @@ use it at all (keepalive).
 | --- | --- | --- |
 | `disabled` | `ir_idle_off = 0` (`cfg` 0), or `daynight.enabled = 0` | turn the switch / automatic switching on |
 | `schedule` | `daynight.mode = schedule` | "Decided by: Light level" (`mode = auto`) |
-| `keepalive` | no FrameSource keepalive on this start (one WARN) | `general.fs_keepalive` (auto on OpenIMP T23/T40/T41; elsewhere `1` + restart, untested) |
+| `keepalive` | no FrameSource keepalive on this start (one WARN) | `general.fs_keepalive = 1` (the default since v1.11.2; check for `0` or a typo, which parses as auto: on only for OpenIMP T23/T40/T41) + restart |
 | `no_illuminator` | `daynight.irprobe_cmd` empty, or the illuminator was retired after two failed switches | set the hook, tick IR 850/940 nm, check the board's IR GPIOs; a restart re-tests |
 | `white_light` | the hook refused `idle` (exit 3): white light is in `daynight.controls` | untick "White light" |
 | `hook` | `idle` exit 1/2 (hook without the verb, nothing switchable) or repeated failures | update the firmware's `timps-irprobe`; switching the key off and on retries |

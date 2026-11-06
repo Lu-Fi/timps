@@ -60,10 +60,12 @@ for the full per-key table. Summary:
 | --- | --- |
 | Brightness/contrast/saturation/sharpness, anti-flicker, running-mode, sensor FPS | All SoCs |
 | Hue (`SetBcshHue`) | T23, T31, T40, T41, C100 |
-| Backlight comp / defog / DPC strength | T23, T31, C100; defog and DPC also on T41 with OpenIMP (ISP module ratios 4/3, since v1.11.0) |
-| DRC / WDR strength | T21, T23, T31, C100; T41 with OpenIMP (module ratio 2, since v1.11.0) |
-| Highlight depress, sinter/temper NR, max analog/digital gain, manual WB, ISP-level hflip/vflip | All **except** T40/T41 (`ISP_NEW_TUNING_API`); sinter NR (since 1.9.33) and temper NR (since v1.10.0) on T41 with OpenIMP |
-| AE compensation | All except T21 and T40; T41 with OpenIMP (since 1.9.33) |
+| Backlight comp / defog / DPC strength | T23, T31, C100; defog and DPC also on T30 (since v1.11.2, vendor and OpenIMP) and on T41 with OpenIMP (ISP module ratios 4/3, since v1.11.0); backlight not on T30 |
+| DRC / WDR strength | T21, T23, T31, C100; T30 (since v1.11.2, vendor and OpenIMP); T41 with OpenIMP (module ratio 2, since v1.11.0) |
+| T30 ISP keys (since v1.11.2, vendor and OpenIMP libimp) | `sinter_strength`/`temper_strength`/`dpc_strength` map 0..255 onto the T30's 50..150 % (128 = 100 %, the vendor picture), `dpc_strength` via `SetDPStrength`; `drc_strength` via `Get/SetRawDRC` (0 = off, 128 = restore the attributes read before the first change, else manual strength); `defog_strength` via `SetAntiFogAttr` (≤128 off, 129–170 weak, 171–212 medium, 213+ strong). No hue on T30 |
+| Colour effect (`colorfx`) / scene preset (`scene`) | OpenIMP only: colorfx on T10, T20, T21, T23, T30 (since v1.11.2), T31; scene on T10, T20, T21, T23, T31 (not T30: the call is a no-op there) |
+| Highlight depress, sinter/temper NR, max analog/digital gain, manual WB, ISP-level hflip/vflip | All **except** T40/T41 (`ISP_NEW_TUNING_API`); sinter NR (since 1.9.33) and temper NR (since v1.10.0) on T41 with OpenIMP; max analog gain on T40 since v1.11.2 (vendor and OpenIMP, `AeExprInfo.AeMaxAGain`) |
+| AE compensation | All except T21; T40 since v1.11.2 (vendor and OpenIMP); T41 with OpenIMP (since 1.9.33) |
 | AE average luminance (`GetAeLuma`, secondary day/night metric) | T21, T23, T31, C100 |
 | Real sensor-attr readback (`GetSensorAttr`) | T23, T31, T32, T33, T40, T41, C100 (absent on T10/T20/T21/T30) |
 
@@ -100,7 +102,7 @@ lives in `docs/rotation.md`; the tiers are:
 | Tier | Macro | Platforms | Mechanism |
 | --- | --- | --- | --- |
 | No rotation primitive | *(none)* | C100; T10, T20, T21, T23, T30 with the vendor libimp | `rotation` accepts only `0`; any 90/180/270 request is coerced to 0 with a warning. |
-| FrameSource software rotate | `ROT_HAS_FS_ROTATE` | T31; T10, T20, T21, T23, T30 with OpenIMP | `IMP_FrameSource_SetChnRotate` — rotation happens inside libimp, not visible to the rest of timps as "software," but still not true hardware. Hardware OSD/privacy overlays work on rotated 90/270 streams (fixed 2026-07-23) but are confined to a top-band region on non-square rotated streams due to an OSD coordinate range-check quirk (vendor libimp only). On T10/T20/T21 (OpenIMP only, since v1.10.0, not yet tested on hardware): sub streams only, 16-aligned, at most 704x576; `video0` and anything larger start unrotated. Needs an OpenIMP with T1x rotation (commit `6b7f5ae`, branch `claude/t1x-rotation`, not in OpenIMP `next` or any thingino `ciao` OpenIMP pin); timps probes `SetChnRotate` with a 0x0 picture at start and brings the stream up unrotated when the OpenIMP stubs (`9cab219`, returns success without rotating) or refuses (`6857610`, `0c02f45`, `636b6ac`) it. Since v1.11.2 T23 and T30 OpenIMP builds use the same path (OpenIMP `next` `17082ed3` or later); an OpenIMP exporting `OpenIMP_Cap_FsRotate` skips the 0x0 probe, and `OpenIMP_FS_RotateLimits` sets the envelope per channel (T23 704x576, T30 1280x720, align 16). The timps-own T23 software path (`USE_SW_ROTATE`) was removed in v1.11.2. |
+| FrameSource software rotate | `ROT_HAS_FS_ROTATE` | T31; T10, T20, T21, T23, T30 with OpenIMP | `IMP_FrameSource_SetChnRotate` — rotation happens inside libimp, not visible to the rest of timps as "software," but still not true hardware. Hardware OSD/privacy overlays work on rotated 90/270 streams (fixed 2026-07-23) but are confined to a top-band region on non-square rotated streams due to an OSD coordinate range-check quirk (vendor libimp only). On T10/T20/T21 (OpenIMP only, since v1.10.0, not yet tested on hardware): sub streams only, 16-aligned, at most 704x576, whatever the libimp reports; `video0` and anything larger start unrotated. Every OpenIMP SoC needs an OpenIMP that rotates there (T1x first in commit `6b7f5ae`); without `OpenIMP_Cap_FsRotate` timps probes `SetChnRotate` with a 0x0 picture at start and brings the stream up unrotated when the OpenIMP stubs (`9cab219`, returns success without rotating) or refuses (`6857610`, `0c02f45`, `636b6ac`) it. Since v1.11.2 T23 and T30 OpenIMP builds use the same path (OpenIMP `next` `17082ed3` or later); an OpenIMP exporting `OpenIMP_Cap_FsRotate` skips the 0x0 probe, and `OpenIMP_FS_RotateLimits` sets the envelope per channel (current OpenIMP: T31 4096x4096 align 2; T10/T20/T21 704x576, T23 and T30 1280x720, align 16; no fps cap). The timps-own T23 software path was removed in v1.11.2, together with its `USE_SW_ROTATE` knob. |
 | True hardware I2D rotate | `ROT_HAS_HW_I2D` | T40, T41 | The dedicated I2D hardware block. Full framerate, all resolutions. With the vendor libimp timps applies the same top-band OSD/privacy clamp on 90/270 as on T31 (`video.<N>.rotate_path` = `band`; whether this libimp needs it is not verified on hardware); OpenIMP and `180` draw over the whole frame. The only tier where `rotation=180` is a real, distinct, **per-channel** capability (elsewhere, 180 was removed as a redundant, incorrectly-per-stream-modeled *global* ISP flip — use `image.hflip`+`image.vflip` instead, which is always available independent of `USE_ROTATE`). |
 
 `ROT_HAS_90` (gating whether 90/270 are accepted at all) is defined
@@ -110,7 +112,7 @@ platforms (T40/T41: 90° = clockwise; T31 and T10/T20/T21/T23/T30: 90° = counte
 kept that way specifically for numeric compatibility with prudynt-t's raw
 `rotTo90` enum values) — see `docs/rotation.md` for the full rationale and
 on-device test history. Since v1.11.0 `GET /control` reports the path of a
-running stream in `video.<N>.rotate_path` (`off`, `band`, `hw`; `sw` until v1.11.2).
+running stream in `video.<N>.rotate_path` (`off`, `band`, `hw`; `sw` only from timps ≤ 1.11.1).
 
 ## ROI and FrontCrop tiers
 
@@ -129,7 +131,8 @@ come from device tests by the OpenIMP maintainer (OpenIMP d03ca24, open-tx-isp
 | T20 | experimental | **effective** | unsupported | **effective**, live (downscaled streams only) |
 | T21 | experimental (no effect seen) | **effective** (`OPENIMP_T21_ROI=0` turns it off → experimental) | unsupported | **effective**, live |
 | T23 | unsupported (encoder only stores the region) | **effective** when the libimp exports `OpenIMP_Cap_T23HelixRoi` (OpenIMP v2026.10.11-rc1+, since v1.10.1), otherwise unsupported; `OPENIMP_T23_ROI=0` → unsupported | unsupported (untested) | **effective**, live with the driver's `fcrop_upscale_pct` parameter (open-tx-isp b15ef235); otherwise experimental, **start-only** (needs 3cf9bdac+) |
-| T30, C100 | unsupported | — | unsupported | — |
+| T30 | unsupported | **effective** since v1.11.2 (family A `IMP_Encoder_SetChnROI`, OpenIMP 03dd0ce3) | unsupported | unsupported |
+| C100 | unsupported | — | unsupported | — |
 | T31 | unsupported (no ROI symbol in 1.1.x) | **effective** (`SetChnRoiAttr`, needs OpenIMP d03ca24 + fec3e69; `OPENIMP_T31_ROI=0` → unsupported) | experimental, live (no zoom without open-tx-isp `fcrop_upscale_pct`) | **effective**, live with the driver's `fcrop_upscale_pct` parameter (open-tx-isp 27dc8be4+); otherwise experimental, live |
 | T40, T41 | unsupported (vendor T41 takes deltas only; not device-tested) | **experimental** since v1.11.0 when the libimp exports `OpenIMP_Cap_EncRoi` (QP deltas only; a T41 libimp before OpenIMP 958f7f3 ignores regions under FixQP: `caps.roi.streams[N]` = `"fixqp"`) | unsupported | **experimental** since v1.11.0 through `IMP_ISP_Tuning_SetAutoZoom` when the libimp exports `OpenIMP_Cap_AutoZoom` (`caps.fcrop.api` = `autozoom`, no upscaling); T41 live up to the driver envelope (`t41_msca_live_max_w/h`, 1920x1080 on current open-tx-isp, 768x432 before), a larger stream restarts its FrameSource (~45 ms, new keyframe); T40 live up to 4K |
 
@@ -182,7 +185,8 @@ before) resolves per build, from
 | Every vendor-libimp build (incl. T23, T41) | off | Same; the vendor T41 has not been tested for the fault. |
 
 `general.fs_keepalive = 1` (the default) turns it on anywhere, `0` turns it off
-anywhere. See [Architecture](Architecture.md#framesource-keepalive-generalfs_keepalive).
+anywhere. An unknown word parses as auto, so a typo turns the keepalive off on
+every "off" build above. See [Architecture](Architecture.md#framesource-keepalive-generalfs_keepalive).
 
 ## Where to go deeper
 

@@ -71,15 +71,21 @@ running build's own list is `caps.video_live` — see
 [HTTP Control API](HTTP-Control-API.md#the-caps-object). Query that instead
 of hardcoding this table into a client.
 
-| Key | Classic H.264 (T10–T30, T23) | Classic H.265 (T21/T30) | T31 / C100 | T40 | T41 |
+| Key | Classic H.264 (T10–T30, T23) | Classic H.265 (T21 / T30) | T31 / C100 | T40 | T41 |
 | --- | --- | --- | --- | --- | --- |
-| `bitrate` | Live | Restart | Live | Live | Live |
-| `rc_mode` | Live (full rc-struct re-fill in one call) | Restart | Restart — no direct mode setter | Restart | Restart — SDK has no rc-mode setter at all |
-| `qp` (fixqp initial QP) | Live under `fixqp` only, Restart otherwise (see below) | Restart | Restart (see below) | Restart (see below) | Restart |
-| `min_qp` / `max_qp` | Live | Restart | Live | Live | Live |
-| `quality_lvl` / `change_pos` | Live | Restart | No effect | No effect | No effect |
-| `i_bias_lvl` | Live | Restart | Live | No effect (no `SetChnQpIPDelta`) | No effect (no `SetChnQpIPDelta`) |
-| `fluc_lvl` | Restart-only (H.265-only field; classic live-apply is H.264-only) | Restart | No effect | No effect | No effect |
+| `bitrate` | Live | Restart / Live | Live | Live | Live |
+| `rc_mode` | Live (full rc-struct re-fill in one call) | Restart / Live | Restart — no direct mode setter | Restart | Restart — SDK has no rc-mode setter at all |
+| `qp` (fixqp initial QP) | Live under `fixqp` only, Restart otherwise (see below) | Restart / Live under `fixqp` only | Restart (see below) | Restart (see below) | Restart |
+| `min_qp` / `max_qp` | Live | Restart / Live | Live | Live | Live |
+| `quality_lvl` / `change_pos` | Live | Restart / Live | No effect | No effect | No effect |
+| `i_bias_lvl` | Live | Restart / Live | Live | No effect (no `SetChnQpIPDelta`) | No effect (no `SetChnQpIPDelta`) |
+| `fluc_lvl` | Restart-only (H.265-only field) | Restart / Restart (the live re-fill keeps the boot value) | No effect | No effect | No effect |
+
+T30 H.265 is live **since v1.11.2**, with the vendor and the OpenIMP libimp.
+`fps`, `gop` and `codec` stay restart keys on every SoC. With OpenIMP, a T30
+needs a libimp that exports `OpenIMP_Cap_H265` for `codec = h265`; otherwise
+the stream is coerced to h264 with a WARN. The vendor T30 libimp takes h265
+as configured.
 
 `qp` was listed Live on T31/C100/T40 until 2026-08-22 and is not. Measured
 on cam-01 (T31X, substream in `fixqp`): the live POST is graded
@@ -110,16 +116,17 @@ side, no candidate replacement call is needed here: the classic
 just needs to run *in* `fixqp` for the `qp` field within it to matter, which
 the gate now correctly requires.
 
-H.264-only on the classic path because `IMP_Encoder_SetChnAttrRcMode`'s
-full-struct re-fill is only proven safe for the H.264 union layout; an
-H.265 channel on T21/T30 stays restart-bound no matter which key changed
+H.264-only on the classic path except on T30: `IMP_Encoder_SetChnAttrRcMode`'s
+full-struct re-fill is only proven safe for the H.264 union layout on T21, so
+an H.265 channel there stays restart-bound no matter which key changed
 (graded per-request at runtime, not expressible as a static per-key
-capability — hence no `ENC_LIVE_KEYS` distinction for it). The host
+capability — hence no `ENC_LIVE_KEYS` distinction for it). Since v1.11.2 the
+T30 libimp (vendor and OpenIMP) takes the H.265 union live. The host
 simulator has no live path at all — `caps.video_live` is always empty
 there.
 
 **Hardware verification status**: wired and cross-build clean on every
-platform (T23, T23N, T20X, T31, T31X, T23+`USE_SW_ROTATE` (that path was removed in v1.11.2); T40/T41
+platform (T23, T23N, T20X, T31, T31X, T23 with the old software rotate (removed in v1.11.2); T40/T41
 compile-checked, not link-tested — their vendor libs need an fp64 toolchain
 this repo does not ship). As of 2026-08-22, real hardware measurement on a
 T31 fleet has confirmed: `bitrate`/`min_qp`/`max_qp` genuinely bind on the
