@@ -19,7 +19,8 @@ typedef struct {
     "<=1280x704, <=15fps; past it libimp software-rotates and the oversized " \
     "geometry fails Encoder bring-up" }
 /* T10/T20/T21 OpenIMP: CPU rotate; the encoder reads NV12 with pitch = width
- * and chroma after ALIGN16(height), hence 16; OpenIMP refuses > 704x576. */
+ * and chroma after ALIGN16(height), hence 16; OpenIMP refuses > 704x576.
+ * T23/T30 OpenIMP fall back to it when the libimp reports no limits. */
 #define FS_ROT_ENV_T1X { 16, 704L*576L, 0, 1, \
     "<=704x576 pixels, OpenIMP software rotate is sub-stream only" }
 

@@ -69,12 +69,8 @@ USE_ROTATE    ?= 0          # 1 = image rotation feature (real 90/270 transpose:
                             #     value (use image.hflip+image.vflip). Default off = no
                             #     ROT_HAS_* macros defined, so all rotation code compiles
                             #     out (byte-identical build).
-USE_SW_ROTATE ?= 0          # obsolete: T23 rotates in OpenIMP now; 1 only implies USE_ROTATE
 # The implications below use `override`: a plain := is ignored for a variable
 # given on the make command line, which is how thingino passes every USE_*.
-ifeq ($(USE_SW_ROTATE),1)
-override USE_ROTATE := 1
-endif
 USE_OSD_HINTING ?= 0        # 1 = compile in the opt-in geometric OSD-text autohinter
                             #     (autohint_glyph() and friends in src/hal/msttf.c).
                             #     Still gated at runtime by the osd.hinting config key

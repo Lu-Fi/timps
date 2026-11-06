@@ -105,6 +105,19 @@
  * which the /proc dump does not show; daynight's AE reserve */
 #define ISP_HAS_AE_EXPR_INFO 1
 #endif
+#if defined(PLATFORM_T20)
+#define ISP_HAS_DEFOG 1
+#define ISP_HAS_DRC 1
+#define ISP_WEAK_DEFOG_DRC 1
+#endif
+/* image.* keys whose setter may be absent at run time (GET /control asks
+ * hal_isp_key_missing() before listing them in caps.image) */
+#if defined(ISP_HAS_COLORFX)||defined(ISP_HAS_SCENE)||defined(ISP_WEAK_DPC)|| \
+    defined(ISP_WEAK_DEFOG_DRC)
+#define ISP_WEAK_KEYS 1
+#endif
+#endif
+
 /* T30 (vendor 1.0.5 API, both stacks): sinter/temper/DPC take a 50..150 %
  * ratio of the bank default, mapped from 0..255 with 128 = 100 %;
  * dpc_strength is SetDPStrength, drc_strength is RawDRC (manual strength,
@@ -120,18 +133,8 @@
 #if defined(PLATFORM_T40)
 #define ISP_HAS_AECOMP 1
 #define ISP_HAS_AE_MAX_AGAIN 1
-#endif
-#if defined(PLATFORM_T20)
-#define ISP_HAS_DEFOG 1
-#define ISP_HAS_DRC 1
-#define ISP_WEAK_DEFOG_DRC 1
-#endif
-/* image.* keys whose setter may be absent at run time (GET /control asks
- * hal_isp_key_missing() before listing them in caps.image) */
-#if defined(ISP_HAS_COLORFX)||defined(ISP_HAS_SCENE)||defined(ISP_WEAK_DPC)|| \
-    defined(ISP_WEAK_DEFOG_DRC)
-#define ISP_WEAK_KEYS 1
-#endif
+/* read only while a max_again cap is set: /proc then overstates the reserve */
+#define ISP_HAS_AE_EXPR_INFO 1
 #endif
 
 /* Per-zone AWB statistics for daynight's colour trigger (hal_isp_awb_ratio):

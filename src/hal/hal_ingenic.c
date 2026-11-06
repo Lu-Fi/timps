@@ -1804,6 +1804,9 @@ static void t41_set_module_ratio(IMPISPModuleRatioArrayList m, const char *key,
  * The per-SoC guards come from ../isp_caps.h - keep them in sync with the
  * caps.image list control.c reports. Callers serialize ISP access (g_isp_lock
  * for live control; init is single-threaded). */
+#ifdef ISP_HAS_AE_MAX_AGAIN
+static int g_ae_agcap;      /* a max_again cap is in force */
+#endif
 static int isp_apply_image(const char *k)
 {
 #if defined(NO_TUNINGS)
@@ -1885,6 +1888,7 @@ static int isp_apply_image(const char *k)
         int rc = IMP_ISP_Tuning_SetAeExprInfo(IMPVI_MAIN,&e);
         if (rc) { LOGW(MOD,"SetAeExprInfo(max_again=%d) failed (rc=%d)", im->max_again, rc); return 1; }
         touched = 1;
+        __atomic_store_n(&g_ae_agcap, im->max_again != 160, __ATOMIC_RELAXED);
         memset(&e,0,sizeof e);
         if (IMP_ISP_Tuning_GetAeExprInfo(IMPVI_MAIN,&e) == 0)
             LOGI(MOD,"max_again=%d: AE analog gain ceiling %u (x1024), mode %d",
@@ -2676,7 +2680,8 @@ static int isp_init(void)
  * downstream Encoder_CreateChn into a failure that used to abort the ENTIRE
  * multi-stream pipeline and take the whole daemon down (reproduced live on
  * T31/sc4336p: a 1920x1080@25 rotate request the /control API had accepted
- * and persisted). T10/T20/T21 (OpenIMP only): CPU rotate, sub streams only. */
+ * and persisted). T10/T20/T21/T23/T30 (OpenIMP only): CPU rotate; the table
+ * below applies unless the libimp reports its own limits (T1x: never above). */
 #if defined(PLATFORM_T31)
 static const fs_rot_env g_fs_rot_tab = FS_ROT_ENV_T31;
 #else
@@ -2714,11 +2719,20 @@ static inline fs_rot_env fs_rot_env_for(int chn)
         e.why = "this OpenIMP does not rotate this channel";
         return e;
     }
-    e.align = al > 0 ? al : 1;
+    int a2 = 1;
+    while (a2 < al && a2 < 4096) a2 <<= 1;      /* fs_rot_check masks with align-1 */
+    e.align = a2;
     e.max_pixels = (long)w * h;
     e.max_fps = fps;
     e.sub_only = 0;
     e.why = "the limits this OpenIMP reports";
+#if defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T21)
+    /* OpenIMP before 2c9cd7b5 reported 4096x4096 align 2 on T10/T20 */
+    if (e.max_pixels > g_fs_rot_tab.max_pixels) e.max_pixels = g_fs_rot_tab.max_pixels;
+    if (e.align < g_fs_rot_tab.align) e.align = g_fs_rot_tab.align;
+    e.sub_only = g_fs_rot_tab.sub_only;
+    e.why = g_fs_rot_tab.why;
+#endif
 #else
     (void)chn;
 #endif
@@ -2856,7 +2870,7 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
     }
 #endif
 #ifdef ROT_HAS_FS_ROTATE
-    /* T31 (Batch 4), T10/T20/T21 OpenIMP: FrameSource 90/270 rotate.
+    /* T31 (Batch 4), T10/T20/T21/T23/T30 OpenIMP: FrameSource 90/270 rotate.
      * IMP_FrameSource_SetChnRotate's rotTo90 arg is an ENUM {0=off,1=90 CCW,
      * 2=90 CW} (imp_framesource.h:574-576), NOT raw degrees. */
     if (v->rotation==90 || v->rotation==270){
@@ -2906,15 +2920,15 @@ static int fs_create(int chn, const ms_vstream_cfg *v)
         switch (st){
         case FS_ROT_SET_MISSING:
             LOGW(MOD,"video%d: libimp has no IMP_FrameSource_SetChnRotate "
-                     "- UNROTATED (needs OpenIMP 6b7f5ae+)", chn);
+                     "- UNROTATED (needs an OpenIMP that rotates on this SoC)", chn);
             return g_rot_lib = ERR_ROT_LIB;
         case FS_ROT_SET_STUB:
             LOGW(MOD,"video%d: SetChnRotate is an OpenIMP stub - UNROTATED "
-                     "(needs OpenIMP 6b7f5ae+)", chn);
+                     "(needs an OpenIMP that rotates on this SoC)", chn);
             return g_rot_lib = ERR_ROT_LIB;
         case FS_ROT_SET_REFUSED:
-            LOGW(MOD,"video%d: SetChnRotate refused %dx%d - UNROTATED (needs "
-                     "OpenIMP 6b7f5ae+)", chn, v->width, v->height);
+            LOGW(MOD,"video%d: SetChnRotate refused %dx%d - UNROTATED",
+                 chn, v->width, v->height);
             return ERR_ROT_REFUSED;
         }
 #endif
@@ -3974,6 +3988,7 @@ static void *jpeg_thread(void *arg)
     int cold_recycles=0;
 #ifdef USE_OPENIMP
     int reuse_run=0;
+    int64_t last_fresh=0;              /* last JPEG handed on */
 #endif
     int64_t next=0, idle_since=0;
     int64_t period = 1000000/(jc->fps>0?jc->fps:5);
@@ -4004,6 +4019,9 @@ static void *jpeg_thread(void *arg)
             if (idle_since==0) idle_since = nowi;
             if (nowi - idle_since >= MS_IDLE_STOP_US) {
                 IMP_Encoder_StopRecvPic(jc->chn);
+#ifdef USE_OPENIMP
+                reuse_run = 0;
+#endif
                 fs_unuse(jc->fs_chn);         /* stop the frame flow entirely */
                 hub_pool_trim(jc->src);       /* R-01, see video_thread */
                 receiving=0; idle_since=0;
@@ -4053,6 +4071,9 @@ static void *jpeg_thread(void *arg)
                      cold_recycles+1, MS_JPEG_COLD_RECYCLES);
                 cold_recycles++;
                 IMP_Encoder_StopRecvPic(jc->chn);
+#ifdef USE_OPENIMP
+                reuse_run = 0;
+#endif
                 if (!kept && fs_recycle(jc->fs_chn) != 0){
                     fs_unuse(jc->fs_chn);
                     fs_use(jc->fs_chn);
@@ -4089,6 +4110,9 @@ static void *jpeg_thread(void *arg)
                                            : "forcing a framesource disable/enable cycle",
                      dbg_jrecover_fails, MS_JPEG_WATCHDOG_MAX_RECOVERIES);
                 IMP_Encoder_StopRecvPic(jc->chn);
+#ifdef USE_OPENIMP
+                reuse_run = 0;
+#endif
                 /* unuse/use, not fs_recycle: a co-holder (piggyback video)
                  * that still gets frames proves the FrameSource healthy */
                 if (act == FSR_WD_RECYCLE){
@@ -4119,7 +4143,8 @@ static void *jpeg_thread(void *arg)
         if (OpenIMP_Encoder_StreamIsReused &&
             OpenIMP_Encoder_StreamIsReused(jc->chn, &st) == 1){
             jc->reused++;
-            if (reuse_run < MS_JPEG_REUSE_SKIP){
+            /* a skip may delay a snapshot by one period, never past 1 s */
+            if (reuse_run < MS_JPEG_REUSE_SKIP && ms_now_us() - last_fresh < 1000000){
                 reuse_run++;
                 jc->reuse_skipped++;
                 IMP_Encoder_ReleaseStream(jc->chn,&st);
@@ -4127,6 +4152,7 @@ static void *jpeg_thread(void *arg)
             }
         }
         reuse_run = 0;
+        last_fresh = ms_now_us();
 #endif
         /* idle-stop linger: drain the encoder, but a frame nobody receives is
          * not worth a pool buffer and a full-frame copy. Re-checked here so a
@@ -6368,7 +6394,11 @@ int hal_isp_exposure(hal_isp_expo *out)
 
 #ifdef ISP_HAS_AE_EXPR_INFO
 /* open-tx-isp tx_isp_tuning_t41_ae_expr_pack() fills these offsets */
+#if defined(PLATFORM_T40)
+_Static_assert(sizeof(IMPISPAEExprInfo) == 220, "IMPISPAEExprInfo size");
+#else
 _Static_assert(sizeof(IMPISPAEExprInfo) == 232, "IMPISPAEExprInfo size");
+#endif
 _Static_assert(offsetof(IMPISPAEExprInfo, AeIntegrationTime) == 24, "AeIntegrationTime");
 _Static_assert(offsetof(IMPISPAEExprInfo, AeAGain) == 28, "AeAGain");
 _Static_assert(offsetof(IMPISPAEExprInfo, AeMinIntegrationTime) == 72, "AeMinIntegrationTime");
@@ -6380,6 +6410,9 @@ int hal_isp_ae_info(hal_isp_ae *out)
 {
 #ifdef ISP_HAS_AE_EXPR_INFO
     if (!out) return -1;
+#if defined(PLATFORM_T40)
+    if (!__atomic_load_n(&g_ae_agcap, __ATOMIC_RELAXED)) return -1;
+#endif
     IMPISPAEExprInfo e; memset(&e,0,sizeof e);
     if (IMP_ISP_Tuning_GetAeExprInfo(IMPVI_MAIN,&e) != 0 || e.AeMaxAGain < 1024)
         return -1;
@@ -6398,7 +6431,7 @@ int hal_isp_ae_info(hal_isp_ae *out)
 /* Item-2: read-only encoder queue/buffer telemetry via IMP_Encoder_Query (all
  * 9 platforms). Fills *out and returns 0 on success; <0 (caller omits the
  * stats) when the query fails - e.g. a channel that doesn't exist (disabled
- * stream) or the SW-rotate path that has no encoder channel. On T31 the average
+ * stream). On T31 the average
  * bitrate cached by the encode thread (GetChnAveBitrate) is attached too; on
  * every other platform, and before the first frame flows, ave_bitrate is <0. */
 #if defined(USE_OPENIMP) && (defined(PLATFORM_T40) || defined(PLATFORM_T41))

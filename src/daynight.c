@@ -1328,6 +1328,7 @@ static void *dn_thread(void *arg)
     int     stable = 0, dark_n = 0, cycled = 0, idle = 0, idle_fails = 0, desync = 0;
     float   s = -1.0f, A = -1.0f, L = -1.0f, N = -1.0f;
     float   B = -1.0f;              /* <0 unset, 0 learn at the next look, >0 bar */
+    float   ubar = -1.0f;           /* the bar last used, published as day_trigger */
     float   K = 1.0f, Kh[SD_K_N], Nk = -1.0f;  /* survives a jump, unlike B */
     float   F[SD_F_N];              /* dark readings of failed checks */
     int     Kn = 0, Fn = 0;
@@ -1530,7 +1531,8 @@ static void *dn_thread(void *arg)
                 if (B > 0.0f) B = 0.0f;
                 /* darker but differently coloured: a lamp while other
                  * cameras' infrared went off. Look, do not adopt it. */
-                if (irp && Crg > 0.0f && cdev > (float)dn->color_pct && !locked && now >= c_next) {
+                if (irp && Crg > 0.0f && cdev > (float)dn->color_pct && chold &&
+                    now - chold >= SD_JUMP_HOLD_MS && !locked && now >= c_next) {
                     LOGD(MOD, "colour moved %.1f %% while the scene got darker", (double)cdev);
                     B = -1.0f;              /* new light: judge it by day_gain */
                     c_next = now + c_gap;
@@ -1625,6 +1627,7 @@ static void *dn_thread(void *arg)
             /* a bar relative to a railed check knows nothing of the distance
              * to day: dawn moved the colour at 19x day_gain (cam-vorne) */
             if (bar > SD_NEAR * dn->day_gain / K) bar = SD_NEAR * dn->day_gain / K;
+            ubar = bar;
             int ask = ok && N < bar;
             if (idle) {
                 if (!ask) { hold = 0; break; }
@@ -1741,10 +1744,11 @@ static void *dn_thread(void *arg)
         if (st != S_NIGHT || cycled) {
             rg = Crg = -1.0f; chold = 0; cdev = -1.0f;
             c_from = now + DN_PROBE_SETTLE_S * 1000;
+            ubar = -1.0f;
         }
         dn_trace(dn, now, cur, &sm, s, A, B > 0.0f ? B : dn->day_gain, due, look_at, -1.0f, -1.0f);
         dn_status_update(sm.bright, sm.gain, sm.d, luma, cur, A,
-                         B > 0.0f ? B : dn->day_gain, desync);
+                         ubar > 0.0f ? ubar : B > 0.0f ? B : dn->day_gain, desync);
     wait:
         sd_idle_status(dn, irp, idle, quiet, now);
         sd_color_status(dn, irp, c_fails, cdev);
