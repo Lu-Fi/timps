@@ -5293,9 +5293,11 @@ static int rc_live_apply(int si, const char *k)
      * key re-derives the complete block from g_cfg via the same fill
      * enc_create used - the encoder never sees a half-updated struct, and
      * this includes a live rc_mode switch (the header supports FIXQP/CBR/
-     * VBR/SMART). H264 only: T23's header (en+zh) marks the call H264-only;
-     * T21/T30 say "H264 and H265" but stay refused here until hardware
-     * confirms it (dev_notes/TODO.md), so any H265 stream is restart-bound. */
+     * VBR/SMART). H264 only except on T30: T23's header (en+zh) marks the call
+     * H264-only; T21 says "H264 and H265" but stays refused here until
+     * hardware confirms it, so an H265 stream there is restart-bound. The
+     * T30 libimp (vendor and OpenIMP) takes the H265 union too. */
+#if !defined(PLATFORM_T30)
     if (v->codec==MS_VC_H265){
         static int warned_h265_live = 0;
         if (!warned_h265_live){
@@ -5305,6 +5307,7 @@ static int rc_live_apply(int si, const char *k)
         }
         return 0;
     }
+#endif
     /* qp only feeds attrFixQp.iInitialQP, a union member the encoder ignores
      * outside fixqp - the whole-union refill below "succeeds" either way, so
      * without this gate a qp POST under cbr/vbr/smart would be graded live

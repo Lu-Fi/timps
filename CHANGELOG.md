@@ -73,8 +73,10 @@ semantic versioning.
 
 ### Fixed
 
-- T30 with OpenIMP: `videoN.codec = h265` now falls back to h264; before,
-  the encoder channel failed and timpsd exited.
+- T30 with OpenIMP: `videoN.codec = h265` needs a libimp that exports
+  `OpenIMP_Cap_H265` and otherwise falls back to h264; before, the encoder
+  channel failed and timpsd exited. Live rc changes on a T30 H.265 stream
+  apply at once instead of waiting for a restart.
 
 - T40/T41 with OpenIMP: the JPEG thread no longer polls the encoder during
   the 2 s idle linger after a snapshot. OpenIMP encodes JPEG in software

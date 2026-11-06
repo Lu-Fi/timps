@@ -177,6 +177,10 @@ static uint32_t phex(const char *v){ return (uint32_t)strtoul(v, NULL, 0); }
  * its isH265/rtp_send_h265/keyframe logic off the config value and streams the
  * H.264 bytes mislabelled as H.265, which breaks players. Coerce to h264 with a
  * warning instead of letting that mismatch surface downstream. */
+#if defined(PLATFORM_T30) && defined(USE_OPENIMP)
+/* set by an OpenIMP whose T30 encoder takes PT_H265 */
+extern const int OpenIMP_Cap_H265 __attribute__((weak));
+#endif
 static int  pvcodec(const char *v){
     int c = (!strcasecmp(v,"h265")||!strcasecmp(v,"hevc")) ? MS_VC_H265 : MS_VC_H264;
 /* T23 belongs here too: its vendored SDK marks every H.265 rc struct as
@@ -184,10 +188,13 @@ static int  pvcodec(const char *v){
  * so as well), so IMP_Encoder_CreateChn fails, ing_start() returns -1 and
  * main() exits - one config line takes the WHOLE daemon down instead of
  * costing one stream. Coerce and warn, exactly as T10/T20 already do. */
-/* T30 OpenIMP has no H.265 encoder path yet (CreateChn rejects PT_H265). */
-#if defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T23)|| \
-    (defined(PLATFORM_T30) && defined(USE_OPENIMP))
+#if defined(PLATFORM_T10)||defined(PLATFORM_T20)||defined(PLATFORM_T23)
     if (c==MS_VC_H265){ LOGW(MOD,"codec h265 unsupported on this SoC -> h264"); c=MS_VC_H264; }
+#elif defined(PLATFORM_T30) && defined(USE_OPENIMP)
+    if (c==MS_VC_H265 && !(&OpenIMP_Cap_H265 && OpenIMP_Cap_H265)){
+        LOGW(MOD,"codec h265 needs an OpenIMP with T30 H.265 (OpenIMP_Cap_H265) -> h264");
+        c=MS_VC_H264;
+    }
 #endif
     return c;
 }
