@@ -156,60 +156,20 @@ window):
 All four values are daemon-computed numerics with no attacker-controlled
 content, so passing them via `setenv()` introduces no injection surface.
 
-## The T23 software-rotation coordinate caveat
+## Motion on rotated streams
 
-This is the subtlest part of the motion subsystem and is worth
-understanding precisely if you're debugging a rotated T23 stream's motion
-grid.
+Every 90/270 path rotates *inside* the framesource
+(`IMP_FrameSource_SetChnRotate` on T31 and on OpenIMP T10/T20/T21/T23/T30,
+the I2D block on T40/T41). IVS is bound downstream of the framesource, so it
+sees the **already-rotated** frame, and the grid is laid out over the
+post-rotation ("effective") dimensions (`ms_vstream_eff_dims()`), the same
+space the WebUI overlay and privacy masks use. A rotation refused at start
+leaves the stream and the grid unrotated.
 
-On **T31/T40/T41's hardware rotation path**, and with no rotation at all,
-`IMP_FrameSource_SetChnRotate`/the I2D block rotates *inside* the
-framesource, so IVS — bound downstream of the framesource — genuinely
-sees the **already-rotated** frame. In that case the grid is built
-straightforwardly over the post-rotation ("effective") dimensions
-(`ms_vstream_eff_dims()`).
-
-On **T23 with `USE_SW_ROTATE`** (see [Platform & SDK Support](Platform-SDK-Support.md)),
-rotation instead happens entirely in **software**, downstream of
-`IMP_FrameSource_GetFrame`, inside the HAL's dedicated software-rotate
-encode thread. IVS is bound directly to the **pre-rotation** framesource
-output and never sees a rotated frame at all — it only ever sees the raw
-sensor-orientation image.
-
-The grid the user configures (and the WebUI overlay draws) is always in
-**displayed** (post-rotation) space — the space the viewer actually
-watches. `imp_motion.c` reconciles this by taking an entirely different
-branch when building the IVS ROI list on this path:
-
-1. Lay the `cols`×`rows` grid out over the **displayed** frame dimensions
-   (`dW = h, dH = w` — the swap of the raw sensor dims, since a 90/270
-   rotation swaps width and height).
-2. For each displayed cell, **inverse-map** its rectangle into the
-   corresponding rectangle in the pre-rotation source frame, using the
-   exact inverse of the software rotator's (`nv12_rotate90()`) forward
-   transform:
-   - 90° (CW): `src.x = disp.y`, `src.y = (h-1) - disp.x`
-   - 270° (CCW): `src.x = (w-1) - disp.y`, `src.y = disp.x`
-3. That inverse-mapped rectangle — in real, unrotated sensor coordinates
-   — is what actually gets registered as the `IMP_IVS_MoveParam.roiRect`
-   for IVS to watch.
-4. The ROI-to-cell-index table (`g_roi_cell[]`) still records the
-   **displayed** row-major cell index, so when IVS reports motion in a
-   given ROI slot, it is correctly attributed to the cell the user sees
-   on screen — not the cell's position in the raw sensor orientation.
-5. Privacy-mask exclusion is likewise tested in **displayed** coordinates
-   (matching where the user actually configured their privacy rectangles
-   and consistent with the non-rotated path).
-
-In short: on the T23 software path, IVS itself always operates on
-unrotated sensor coordinates (there's no way to make it do otherwise on
-this SoC/SDK combination), but the grid geometry, ROI placement, and
-status reporting are all transformed so that from the outside — the
-config file, the WebUI overlay, `/control`, `/events` — the grid behaves
-exactly as if it were laid directly over the frame the viewer sees. This
-is a deliberate, tested fix (tagged "M1" in the code) for what would
-otherwise be a grid that silently watches the wrong part of the rotated
-image.
+Until v1.11.2 T23 had a timps-own software rotate (`USE_SW_ROTATE`) where
+IVS saw the unrotated frame and each grid cell was inverse-mapped into
+sensor coordinates. That path and its mapping were removed; T23 now rotates
+through OpenIMP like T10/T20/T21.
 
 See [Platform & SDK Support](Platform-SDK-Support.md) and
 `docs/rotation.md` for the rest of the rotation feature's platform-by-

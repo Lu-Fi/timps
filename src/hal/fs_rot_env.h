@@ -33,23 +33,6 @@ static inline int fs_rot_check(const fs_rot_env *e, int chn, int w, int h, int f
     return ERR_OK;
 }
 
-/* T23 software rotate (USE_SW_ROTATE), on the post-rotation dims: the single
- * core manages <=704x576 <=15fps, and IMP_Encoder_YuvInit refuses an encoded
- * width that is not 16-aligned or below 256. */
-#define MS_SW_ROT_MAX_PIXELS  (704L*576L)
-#define MS_SW_ROT_MAX_FPS     15
-#define MS_SW_ROT_WIDTH_ALIGN 16
-#define MS_SW_ROT_MIN_WIDTH   256
-
-static inline int sw_rot_check(int ew, int eh, int fps)
-{
-    if ((long)ew * eh > MS_SW_ROT_MAX_PIXELS) return ERR_ROT_SIZE;
-    if (fps > MS_SW_ROT_MAX_FPS) return ERR_ROT_FPS;
-    if (ew % MS_SW_ROT_WIDTH_ALIGN) return ERR_ROT_ALIGN;
-    if (ew < MS_SW_ROT_MIN_WIDTH) return ERR_ROT_SMALL;
-    return ERR_OK;
-}
-
 /* T1x SetChnRotate is OpenIMP-only and older OpenIMPs stub it: 9cab219
  * returns 0 for anything without rotating, 6857610..636b6ac return -1 for
  * 90/270, 6b7f5ae rotates and validates the geometry. A 0x0 probe first

@@ -1,6 +1,6 @@
 /* test_fs_rot.c - host-only test for the FrameSource-rotate safe envelope,
- * the T23 software-rotate envelope and the T1x SetChnRotate verification
- * (src/hal/fs_rot_env.h): the decisions fs_create()/sw_rot_start() turn into
+ * and the T1x SetChnRotate verification (src/hal/fs_rot_env.h): the
+ * decisions fs_create() turns into
  * an UNROTATED fallback, and the ERR_ROT_* code /control reports for them.
  * Build/run: make test-fs-rot */
 #include <stdio.h>
@@ -17,16 +17,6 @@ static void ck(const char *soc, const fs_rot_env *e, int chn, int w, int h,
         failures++;
         printf("  FAIL %s chn%d %dx%d@%d: got %d, want %d\n",
                soc, chn, w, h, fps, got, want);
-    }
-}
-
-static void sw(int ew, int eh, int fps, int want)
-{
-    int got = sw_rot_check(ew, eh, fps);
-    checks++;
-    if (got != want) {
-        failures++;
-        printf("  FAIL T23 sw %dx%d@%d: got %d, want %d\n", ew, eh, fps, got, want);
     }
 }
 
@@ -92,15 +82,6 @@ int main(void)
     ck("T31", &t31, 1, 640, 368, 15, ERR_ROT_ALIGN);
     ck("T31", &t31, 1, 1280, 704, 20, ERR_ROT_FPS);
     ck("T31", &t31, 1, 1920, 1088, 25, ERR_ROT_SIZE);     /* size before fps */
-
-    /* post-rotation dims */
-    sw(576, 704, 15, ERR_OK);
-    sw(368, 640, 15, ERR_OK);
-    sw(360, 640, 15, ERR_ROT_ALIGN);
-    sw(240, 320, 15, ERR_ROT_SMALL);
-    sw(720, 1280, 15, ERR_ROT_SIZE);
-    sw(576, 704, 20, ERR_ROT_FPS);
-    sw(720, 1280, 25, ERR_ROT_SIZE);
 
     /* the codes are the documented, stable /control numbers */
     checks++;

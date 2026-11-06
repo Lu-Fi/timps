@@ -150,18 +150,20 @@ prudynt-t / raptor.
   entfernt ist, sonst wird er als begrenztes Delta gesendet (sonst ungültiges
   H.264). Stufe und Bereiche meldet `caps.roi` in `GET /control`.
 * **Bildrotation (optional, `USE_ROTATE`)** – `videoN.rotation = 0|90|180|270`.
-  Hardware-90/270 auf T40/T41 (I2D) und T31 (FrameSource), Software-90/270 auf
-  T23 (`USE_SW_ROTATE`, CPU-intensiv, nur H.264). **Seit v1.10.0**
+  Hardware-90/270 auf T40/T41 (I2D) und T31 (FrameSource). **Seit v1.10.0**
   auch FrameSource-Rotation auf T10/T20/T21, nur in OpenIMP-Builds und nur mit
   einem OpenIMP, das T1x-Rotation kann (Commit `6b7f5ae`, Branch
   `claude/t1x-rotation`, in keinem der `ciao`-OpenIMP-Pins), nur Sub-Streams,
   16-aligned, max. 704x576 (z. B. 640x368); auf Hardware noch ungetestet.
   Ein OpenIMP ohne Rotation erkennt timps beim Start, der Stream läuft dann
-  ungedreht. Echte per-Kanal-180°-Drehung nur auf T40/T41; sonst stattdessen
-  `image.hflip` + `image.vflip`. T23: höchstens 704×576 Pixel und 15 fps,
-  Quellhöhe Vielfaches von 16 (für Snapshot/MJPEG von 32), z. B. 704×384 →
-  384×704. **Seit v1.11.0** meldet `GET /control` je Stream
-  `video.<N>.rotate_path`: `off`, `sw` (T23, nur Text-OSD), `band`
+  ungedreht. **Seit v1.11.2** dreht auch T23 (und T30) über denselben
+  FrameSource-Pfad, nur in OpenIMP-Builds (OpenIMP `next` `17082ed3` oder
+  neuer); OSD, Privacy-Masken und Bewegungserkennung bleiben auf dem
+  gedrehten Stream. Der frühere timps-eigene Software-Pfad für T23
+  (`USE_SW_ROTATE`) ist entfernt; T23 mit Hersteller-libimp dreht nicht.
+  Echte per-Kanal-180°-Drehung nur auf T40/T41; sonst stattdessen
+  `image.hflip` + `image.vflip`. **Seit v1.11.0** meldet `GET /control` je
+  Stream `video.<N>.rotate_path`: `off`, `band`
   (Hersteller-libimp 90/270: OSD/Privacy nur in den oberen `eff_width`
   Zeilen) oder `hw` (ganzes Bild).
 
@@ -671,7 +673,7 @@ Paket: `package/timps` – Auswahl über *Streamer Packages → Streamer → tim
 | `BR2_PACKAGE_TIMPS_PLAY` | `USE_PLAY` | n | System-Sound-Queue + `/usr/sbin/play` |
 | `BR2_PACKAGE_TIMPS_PLAY_OPUS` | `USE_PLAY_OPUS` | n | Ogg-Opus im Play-Queue (opusfile) |
 | `BR2_PACKAGE_TIMPS_ROTATE` | `USE_ROTATE` | n | Bildrotation |
-| `BR2_PACKAGE_TIMPS_SW_ROTATE` | `USE_SW_ROTATE` | n | Software-90/270 auf T23 |
+| `BR2_PACKAGE_TIMPS_SW_ROTATE` | `USE_SW_ROTATE` | n | Obsolet seit v1.11.2, schaltet nur `USE_ROTATE` ein |
 | `BR2_PACKAGE_TIMPS_OSD_HINTING` | `USE_OSD_HINTING` | n | OSD-Autohinting (~2 KB) |
 
 Dazu die Sammeloption **„Audio backchannel preset"** (MANUAL / FULL / MINIMAL),

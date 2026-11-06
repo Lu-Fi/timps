@@ -783,9 +783,8 @@ Capability matrix (`src/rotate_caps.h`):
 | --- | --- | --- |
 | T40, T41 | `ROT_HAS_HW_I2D` — true hardware I2D rotate | **Yes**, genuine per-channel |
 | T31 | `ROT_HAS_FS_ROTATE` — libimp FrameSource rotate | No |
-| T23 | `ROT_HAS_SW_90`, **only** with `USE_SW_ROTATE` / `-DMS_ENABLE_SW_ROTATE` | No |
-| T10, T20, T21 | OpenIMP builds only (`ROT_HAS_FS_ROTATE`, **since v1.10.0**): sub streams, 16-aligned, at most 704x576, and only with an OpenIMP that has T1x rotation (`6b7f5ae`); otherwise the stream starts unrotated. Vendor libimp: **No** — coerced to 0 | No |
-| T30, C100 | **No** — coerced to 0 | No |
+| T10, T20, T21, T23, T30 | OpenIMP builds only (`ROT_HAS_FS_ROTATE`; T10/T20/T21 **since v1.10.0**, T23/T30 **since v1.11.2**): 16-aligned, at most 704x576 (T30 1280x720), and only with an OpenIMP that rotates (T1x `6b7f5ae`; T23/T30 OpenIMP `next` `17082ed3`+); otherwise the stream starts unrotated. Without `OpenIMP_FS_RotateLimits` sub streams only. Vendor libimp: **No** — coerced to 0 | No |
+| C100 | **No** — coerced to 0 | No |
 
 On every SoC except T40/T41, `rotation = 180` logs
 `rotation 180 unsupported on this SoC -> 0 (use image.hflip+image.vflip)`.
@@ -838,44 +837,20 @@ v1.10.0**) — the stream comes up **unrotated** and says so:
   `[FS] SetChnRotate chN: unsupported rotTo90=M 0x0` once per rotated stream
   start — the 0x0 check above, expected with a rotating OpenIMP.
 
-**T23 software rotate** (`MS_SW_ROT_MAX_PIXELS` = 704×576,
-`MS_SW_ROT_MAX_FPS` = 15, `MS_SW_ROT_WIDTH_ALIGN` = 16,
-`MS_SW_ROT_MIN_WIDTH` = 256):
-
-- `videoN: SW rotate at WxH@Ffps is CPU-heavy - use <=704x576, <=15fps` —
-  a warning, it still runs; a substream-class setting is strongly advised.
-- `videoN: refusing SW rotate at WxH@Ffps (exceeds safe envelope …) - stream
-  will run UNROTATED` — past the envelope, refused.
-- `videoN: SW rotate width W (source height H) not a multiple of 16 >= 256 -
-  UNROTATED` — the classic trap: **the source height becomes the encoder
-  width** after a 90/270 rotate, and the encoder needs `picWidth % 16 == 0`
-  and ≥ 256. Use a source height that is a multiple of 16 and ≥ 256, e.g.
-  704x576 → 576x704. Note the check order in `sw_rot_start()`: the **envelope**
-  test (`ew × eh > 704×576`, or `fps > 15`) runs *first*, so on T23 a 1280-wide
-  stream is refused before the alignment test is ever reached — and 1280×704 is
-  refused too (901 120 px ≫ 405 504). A working T23 rotate is a
-  substream-class source whose **height** is a multiple of 16 and ≥ 256, e.g.
-  **704×576 → 576×704** or 640×512 → 512×640. (640×360 fails the alignment
-  test: 360 % 16 ≠ 0.)
-- `videoN.jpeg: rotated WxH not 32/8-aligned for InputJpege - JPEG disabled`
-  — JPEG needs a *stricter* alignment than the encoder: width % 32 == 0 and
-  height % 8 == 0, so make the source height a multiple of 32 (e.g. 704).
-- `sw-rot chnN: VbmAlloc N failed (rmem exhausted?)` — out of reserved video
-  memory. Lower the resolution or free a stream.
-- `sw-rot streamN: OSD item N is a logo - not composited on the SW-rotate
-  path (text only)` and `sw-rot streamN: software OSD active (… no privacy
-  covers)` — **on the T23 software-rotate path there is no logo overlay and
-  no privacy mask at all**, only software text, and its coordinates are in
-  *rotated* frame space.
-- `videoN.jpeg: SW-rotate JPEG WxH <=Ffps (jpeg_quality ignored)` — the
-  standalone JPEG for `/snapshot.jpg` and `/stream.mjpeg` on this stream;
-  the SoC's `InputJpege` ignores `videoN.jpeg_quality`.
+**T23 and T30** (OpenIMP builds, **since v1.11.2**) use the same
+FrameSource rotate and print the same lines. An OpenIMP exporting
+`OpenIMP_FS_RotateLimits` sets the envelope per channel (T23 704x576, T30
+1280x720, align 16; the cap text then reads `the limits this OpenIMP
+reports`); with `OpenIMP_Cap_FsRotate` the 0x0 check is skipped. Until
+v1.11.2 T23 had a timps-own software rotate (`USE_SW_ROTATE`); its log lines
+(`SW rotate at ...`, `refusing SW rotate ...`, `sw-rot ...`) no longer
+exist.
 
 **Rotation is restart-required** and the advertised dimensions swap
 (`eff_width`/`eff_height` in `GET /control`). **Since v1.11.0**
-`video.<N>.rotate_path` says how the running stream is rotated: `off`, `sw`
-(T23: text OSD only), `band` (vendor libimp 90/270: OSD/privacy only in the
-top `eff_width` rows), `hw` (whole frame).
+`video.<N>.rotate_path` says how the running stream is rotated: `off`,
+`band` (vendor libimp 90/270: OSD/privacy only in the top `eff_width` rows),
+`hw` (whole frame; `sw` until v1.11.2 for the removed T23 software rotate).
 
 ### 2.7 OSD and privacy masks
 
@@ -911,12 +886,6 @@ item was enabled at boot**, but it **pre-creates all four privacy regions**
   `CreateRgn` failed. `caps.privacy.available` reports `0` in exactly that
   case. The fix is to enable one privacy region (or OSD) in the file and
   restart **once**; after that every mask is live.
-
-**T23 software-rotated streams:** on v1.9.27 that path scaled `font_size` by
-stream height / 1080 (minimum 12 px); **since v1.9.28** it is absolute pixels like
-everywhere else, so text on a rotated sub-1080 stream gets bigger after the
-upgrade and may need a smaller `font_size`. A live style edit (size, colour,
-outline) now re-renders there even when the text is unchanged.
 
 **Key spelling:** the canonical config key is `osd<S>.<N>.<field>`, dots
 throughout — `osd0.0.enabled`, `osd1.3.font_size` (`osd_key()` in
@@ -1735,9 +1704,6 @@ These are the lines that mean *the board is out of RAM*, not that a feature
 is misconfigured:
 
 `no memory for AU packet`, `no memory for JPEG packet`,
-`sw-rot chnN: no memory for YuvEncode out buf`,
-`videoN.jpeg: no memory for SW-rotate JPEG buf`,
-`sw-rot chnN: VbmAlloc <N> failed (rmem exhausted?)`,
 `control_apply_json: OOM`, `daynight history: cannot allocate <N> samples,
 keeping <M>`, `daynight: fork failed`, `irprobe: fork failed`,
 `on_motion: cannot launch '<cmd>': <e> - motion event dropped (the hook
@@ -1746,7 +1712,7 @@ itself is fine; the board is out of memory)`, `dropped a corrupt … fragment
 
 Levers, in order of effect: lower `videoN.width`/`height`, lower
 `videoN.buffers` (1..8), disable the second stream, disable JPEG on a
-stream, drop `daynight.history_s`, turn off software rotation.
+stream, drop `daynight.history_s`.
 
 ---
 
@@ -2387,7 +2353,7 @@ the **package defaults** (which differ from the bare `Makefile` defaults):
 | `…_WEBRTC` | y (needs TLS + CONTROL) | `USE_WEBRTC` | `/webrtc/whep` |
 | `…_SRT` | **n** | `USE_SRT` | SRT output |
 | `…_ROTATE` | **n** | `USE_ROTATE` | **all** rotation; `caps.rotation` is omitted entirely |
-| `…_SW_ROTATE` | **n** (needs ROTATE) | `USE_SW_ROTATE` | T23 software 90/270 |
+| `…_SW_ROTATE` | **n** (needs ROTATE) | `USE_SW_ROTATE` | obsolete since v1.11.2, only implies ROTATE |
 | `…_OSD_HINTING` | **n** | `USE_OSD_HINTING` | OSD autohinting (~2.1 KB) |
 | `…_BACKCHANNEL` | **n** | `USE_BACKCHANNEL` | ONVIF backchannel, and the AO pipeline |
 | `…_BC_AAC` | **n** | `USE_BC_AAC` | AAC backchannel decode |
@@ -2758,13 +2724,12 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `framesource %d: %d reference(s) still held at teardown` | W | Subscriber accounting leak at shutdown. | Report as a bug. |
 | `framesource %d enabled` / `framesource %d disabled (idle)` | I | A real `EnableChn`/`DisableChn` edge. On-demand: per wake (client, snapshot, timelapse shot, latch kick). With `general.fs_keepalive` on: `enabled` once per start, `disabled (idle)` never. | Nothing; see §2.1. |
 | `framesource keepalive %s (general.fs_keepalive=%d%s)` | I | **since v1.10.0.** Once per start: `on`/`off`, the raw value, `, auto` when it was `-1`. | `off` on an open-stack T23/T40/T41 → §2.1. |
-| `framesource %d: no keepalive (software-rotate stream)` | I | **since v1.10.0.** T23 `USE_SW_ROTATE` 90/270 stream: exempt from the keepalive, stays on-demand. | Nothing. |
 | `FS_CreateChn %d` / `FS_SetChnAttr %d failed` | E | Framesource geometry rejected. | Check `videoN.width`/`height` against the sensor. |
 | `FS_SetI2dAttr %d failed (rotation may stay inactive)` | W | T40/T41 belt-and-braces rotation call. | §2.6 |
 | `Encoder_CreateGroup %d failed` / `Encoder_CreateChn %d` / `Encoder_RegisterChn %d to group %d failed` | E | Encoder bring-up failed. | Check resolution, codec and `rc_mode` against the SoC. |
 | `IMP_Encoder_SetDefaultParam(chn%d) failed - the attr struct below is only partly filled; CreateChn will likely reject it` | W | Precedes a `CreateChn` failure. | Same. |
 | `Bind fs%d->osd%d failed` / `Bind osd%d->enc%d failed` / `Bind fs%d->enc%d failed` / `JPEG Bind fs%d->enc%d failed` | E | Pipeline binding failed. | §2.2 |
-| `video chn%d thread create failed` / `audio thread create failed` / `jpeg chn%d thread create failed (channel kept for teardown)` / `sw-rot chn%d thread create failed` | E | Out of memory or thread limits. | §5.5 |
+| `video chn%d thread create failed` / `audio thread create failed` / `jpeg chn%d thread create failed (channel kept for teardown)` | E | Out of memory or thread limits. | §5.5 |
 | `video pipeline bring-up failed - tearing down partial state` | E | The summary line; the real cause is the LOGE above it. | §2.2 |
 | `%s: %d IMP call(s) failed (first: %s) - the next start may fail ISP init` | W | Teardown did not fully clean up. | Expect a rocky next start; a reboot cures it. |
 | `dedicated JPEG channel unavailable` | W | The standalone JPEG channel could not be created. | Use `videoN.jpeg` instead of `jpeg.enabled`. |
@@ -2817,30 +2782,13 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 
 | Message pattern | Level | Meaning | Action |
 | --- | --- | --- | --- |
-| `video%d: refusing FS-rotate %dx%d not %d-aligned - stream will run UNROTATED` | W | T31 needs 64-aligned geometry, T10/T20/T21 16-aligned. | §2.6 |
-| `video%d: refusing FS-rotate %dx%d@%d exceeds FS-rotate cap (%s) - stream will run UNROTATED` | W | Past the cap: T31 1280x704 at 15 fps, T10/T20/T21 704x576. | §2.6 |
-| `video%d: FS-rotate refused on the main stream (sub streams only) - UNROTATED` | W | **since v1.10.0.** T10/T20/T21: `video0` is never rotated. | §2.6 |
+| `video%d: refusing FS-rotate %dx%d not %d-aligned - stream will run UNROTATED` | W | T31 needs 64-aligned geometry, T10/T20/T21/T23/T30 16-aligned (or the alignment the OpenIMP reports). | §2.6 |
+| `video%d: refusing FS-rotate %dx%d@%d exceeds FS-rotate cap (%s) - stream will run UNROTATED` | W | Past the cap: T31 1280x704 at 15 fps, T10/T20/T21/T23 704x576, T30 1280x720 (OpenIMP limits). | §2.6 |
+| `video%d: FS-rotate refused on the main stream (sub streams only) - UNROTATED` | W | **since v1.10.0.** T10/T20/T21 (and T23/T30): `video0` is not rotated unless the OpenIMP reports limits for it. | §2.6 |
 | `video%d: FS-rotate enable (SetChnRotate) failed - disabling rotation for this stream, bringing it up UNROTATED` | W | T31: the SDK call failed. | §2.6 |
-| `video%d: SetChnRotate is an OpenIMP stub - UNROTATED (needs OpenIMP 6b7f5ae+)` | W | **since v1.10.0.** T10/T20/T21: the OpenIMP stubs `SetChnRotate`. | Upgrade OpenIMP or set rotation 0. §2.6 |
-| `video%d: SetChnRotate refused %dx%d - UNROTATED (needs OpenIMP 6b7f5ae+)` | W | **since v1.10.0.** T10/T20/T21: this OpenIMP cannot rotate. | §2.6 |
-| `video%d: libimp has no IMP_FrameSource_SetChnRotate - UNROTATED (needs OpenIMP 6b7f5ae+)` | W | **since v1.10.0.** T10/T20/T21: no rotate entry point in libimp. | §2.6 |
-| `video%d: SW rotate at %dx%d@%dfps is CPU-heavy - use <=704x576, <=15fps` | W | T23 software rotate; it still runs. Costs ~6 MB and roughly one CPU core. | Use a substream-class size. |
-| `video%d: refusing SW rotate at %dx%d@%dfps (exceeds safe envelope <=704x576 <=15fps) - stream will run UNROTATED` | W | Past the envelope. | §2.6 |
-| `video%d: SW rotate width %d (source height %d) not a multiple of 16 >= 256 - UNROTATED` | W | **The source height becomes the encoder width.** | Use 1280×704, not 1280×720. §2.6 |
-| `video%d: SW rotate needs even dims (got %dx%d)` | E | Odd width or height. | |
-| `sw-rot chn%d: IMP_Encoder_YuvInit %dx%d failed` | E | The unbound encoder would not initialise. | |
-| `video%d: SW rotate init failed - disabling rotation for this stream, bringing it up UNROTATED` | W | Summary of the above. | |
-| `sw-rot chn%d: VbmAlloc %u failed (rmem exhausted?)` | E | Out of reserved video memory. | §5.5 |
-| `sw-rot chn%d: VbmV2P failed` | E | Virtual→physical mapping failed. | |
-| `sw-rot chn%d: no memory for YuvEncode out buf (%u)` | E | OOM. | §5.5 |
-| `sw-rot chn%d: SetFrameDepth failed` | W | Frame depth could not be set. | |
-| `sw-rot chn%d: GetFrame delivered nothing (miss#%d)` | W | No frame from the framesource. | |
-| `sw-rot chn%d: YuvEncode failed (miss#%d)` | W | The software encode failed. | |
-| `sw-rot chn%d: JPEG (%d) exceeds buf (%u) - dropped` | W | JPEG over the (deliberately oversized) buffer. | |
-| `sw-rot stream %d: OSD item %d is a logo - not composited on the SW-rotate path (text only)` | W | **No logos on the T23 SW-rotate path.** Also no privacy masks. | Move the logo to the unrotated stream. |
-| `sw-rot stream %d item %d: rendered %dx%d exceeds frame %dx%d - skipped` | W | Text too big for the rotated frame; coordinates are in **rotated** space. **since v1.9.28** at most once per 60 s per item (v1.9.27: every frame). `font_size` is absolute px here now too (§2.7). | Lower `font_size` or shorten the text. |
-| `video%d.jpeg: rotated %dx%d not 32/8-aligned for InputJpege - JPEG disabled` | W | JPEG needs stricter alignment than the encoder. | §2.6 |
-| `video%d.jpeg: no memory for SW-rotate JPEG buf (%u) - JPEG disabled on this stream` | W | OOM. | §5.5 |
+| `video%d: SetChnRotate is an OpenIMP stub - UNROTATED (needs OpenIMP 6b7f5ae+)` | W | **since v1.10.0.** T10/T20/T21 (since v1.11.2 also T23/T30): the OpenIMP stubs `SetChnRotate`. | Upgrade OpenIMP or set rotation 0. §2.6 |
+| `video%d: SetChnRotate refused %dx%d - UNROTATED (needs OpenIMP 6b7f5ae+)` | W | **since v1.10.0.** T10/T20/T21 (since v1.11.2 also T23/T30): this OpenIMP cannot rotate. | §2.6 |
+| `video%d: libimp has no IMP_FrameSource_SetChnRotate - UNROTATED (needs OpenIMP 6b7f5ae+)` | W | **since v1.10.0.** T10/T20/T21 (since v1.11.2 also T23/T30): no rotate entry point in libimp. | §2.6 |
 
 ### 12.7 `HAL_ING` — image / AE
 
@@ -3123,7 +3071,7 @@ write instead.**
 | --- | --- | --- | --- |
 | 6 | `video0.rotation = 180` on anything but T40/T41 | Coerced to 0 with a warning. | `image.hflip = 1` + `image.vflip = 1` |
 | 7 | `video0.rotation = 1` (meaning "true") | `1` is the legacy libimp enum for **90°**. | `0` to disable. |
-| 8 | `video0.rotation = 90` at `1280x720` on a T23 SW-rotate build | Refused by the **pixel envelope** (`ew × eh > 704×576`), which is checked *before* the alignment rule — stream runs **unrotated**. (720 *is* a multiple of 16; alignment is not the problem, and `1280x704` is refused for the same envelope reason.) | A substream-class source whose **height** is a multiple of 16 and ≥ 256: `704x576` → `576x704`. |
+| 8 | `video0.rotation = 90` at `1280x720` on T23 (OpenIMP) | Over the 704×576 pixel cap (or `video0` refused when the OpenIMP reports no limits) — stream runs **unrotated**. Vendor-libimp T23 builds have no rotation at all (**since v1.11.2**). | Rotate a sub stream with 16-aligned dims, e.g. `640x368`. |
 | 9 | `video0.rotation = 90` with `1920x1080@25` on T31 | Exceeds the vendor FS-rotate cap (≤1280×704, ≤15 fps) → **unrotated**. | Rotate the substream, or drop to 1280×704 @15. |
 | 10 | `video0.codec = h265` on T10/T20/T23 | Coerced to `h264` — deliberately, because before v1.8.1 it streamed H.264 **mislabelled as H.265** and broke players. | `h264` |
 | 11 | `video0.bitrate = 25000` at `fps = 25` | ~1 MB keyframes against a 1 MB AU buffer → **every keyframe dropped, no client ever decodes**. The warning fires above **~839 × fps kbps**, i.e. ~21 Mbps at 25 fps. | Anything under that; 3000–4096 kbps at 25 fps is the fleet norm. |

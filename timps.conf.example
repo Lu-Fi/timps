@@ -316,8 +316,8 @@ video1.jpeg_chn     = 4
 
 # ---- image rotation (videoN.rotation) -------------------------------------
 # 0 | 90 | 270, plus 180 on T40/T41 only (elsewhere use image.hflip=1 +
-# image.vflip=1). 90 = clockwise on T23/T40/T41; on T31 and T10/T20/T21, 90 =
-# counter-clockwise instead (kept numerically aligned with prudynt-t/raptor's
+# image.vflip=1). 90 = clockwise on T40/T41; on T31 and T10/T20/T21/T23/T30,
+# 90 = counter-clockwise instead (kept numerically aligned with prudynt-t/raptor's
 # raw rotation=1|2 config values - see docs/rotation.md "Notes on direction").
 # NOTE: with the vendor libimp (T31, T40/T41) OSD/privacy on a 90/270 stream
 # only show in the top eff_width rows; GET /control video.N.rotate_path says
@@ -327,9 +327,9 @@ video1.jpeg_chn     = 4
 #
 # OFF BY DEFAULT - must be enabled at build time (menuconfig), like AAC/TLS:
 #   BR2_PACKAGE_TIMPS_ROTATE      -> 90/270 on T31/T40/T41 (+180 on T40/T41),
-#                                    T10/T20/T21 sub streams with OpenIMP
-#   BR2_PACKAGE_TIMPS_SW_ROTATE   -> software 90/270 on T23 (needs the above)
-# Without these, 90/180/270 in this file are ignored (coerced to 0 with a warn).
+#                                    T10/T20/T21/T23/T30 with OpenIMP
+#   (BR2_PACKAGE_TIMPS_SW_ROTATE is obsolete since v1.11.2)
+# Without it, 90/180/270 in this file are ignored (coerced to 0 with a warn).
 #
 # What each chip supports:
 #   T40, T41 : 90/180/270 in HARDWARE (I2D) - full fps, any res
@@ -340,16 +340,14 @@ video1.jpeg_chn     = 4
 #              only with an OpenIMP that has T1x rotation (commit 6b7f5ae);
 #              any other OpenIMP: the stream starts unrotated with a warning.
 #              Not yet tested on hardware.
-#   T23      : 90/270 only with SW_ROTATE = CPU transpose + software
-#              H.264 encode. H264 only, SW text-OSD only (no logo/privacy),
-#              <=704x576 pixels @ <=15fps, source HEIGHT %16==0 and >=256.
-#              Snapshot+MJPEG work, but JPEG needs the rotated width (= source
-#              HEIGHT) %32==0: e.g. 704x384 -> 384x704.
-#   T30/C100 : none (no 90/270 primitive)
+#   T23, T30 : 90/270 only in OpenIMP builds (since v1.11.2, OpenIMP next
+#              17082ed3 or later), same FrameSource rotate as T10/T20/T21;
+#              OSD, privacy and motion stay on the rotated stream. Limits
+#              come from OpenIMP: T23 <=704x576, T30 <=1280x720, 16-px aligned.
+#              Vendor libimp: none.
+#   C100     : none (no 90/270 primitive)
 #
-# Cost: 180 + HW 90/270 add ~none (binary +<1KB, no runtime cost). The T23 SW
-# path adds ~7KB binary AND ~6MB of frame buffers + ~1 CPU core per rotated
-# 720x1280 stream - hence the substream-class recommendation.
+# Cost: 180 + HW 90/270 add ~none (binary +<1KB, no runtime cost).
 
 # ---- live vs restart (videoN.* via POST /control) --------------------------
 # Every videoN.* key is stored and persisted immediately. Geometry/codec/fps

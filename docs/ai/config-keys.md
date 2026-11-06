@@ -256,9 +256,9 @@ Pitfalls
   without an encoder consumer are **unmeasured** on every SoC. On T10/T20/T21/
   T30/T31/T40 and on vendor builds `1` is an explicit opt-in on that basis.
 * **What is still on-demand with the keepalive on:** the encoders
-  (`video chnN idle` still appears 2 s after the last client), and
-  SW-rotate streams (T23 `USE_SW_ROTATE`, 90/270), which are exempt — the log
-  says `framesource N: no keepalive (software-rotate stream)`.
+  (`video chnN idle` still appears 2 s after the last client). Until v1.11.2
+  T23 SW-rotate streams were exempt as well
+  (`framesource N: no keepalive (software-rotate stream)`); that path is gone.
 * **Remaining runtime FrameSource edges with the keepalive on:** none
   **since v1.10.1** (v1.10.0: the video watchdog's recovery cycle). The video
   watchdog, the JPEG cold-start recycle and the JPEG miss watchdog restart
@@ -634,24 +634,30 @@ hit this — T10, T20 and T23 coerce `codec` to `h264` at parse time.
   * **T30, OpenIMP builds only**, **since v1.11.2** — the same FrameSource
     rotate path. The T30 has no rotate hardware and the vendor T30 libimp no
     `SetChnRotate`; it needs an OpenIMP whose T30 `SetChnRotate` really
-    rotates (not in OpenIMP `next` yet). Until then the stream starts
-    unrotated with `ERR_ROT_LIB` / `ERR_ROT_REFUSED`. Envelope as T10/T20/T21
-    unless the libimp reports its own (below).
+    rotates (OpenIMP `next` `17082ed3` or later). With an older OpenIMP the
+    stream starts unrotated with `ERR_ROT_LIB` / `ERR_ROT_REFUSED`. Envelope
+    as T10/T20/T21 unless the libimp reports its own (below).
   * **OpenIMP limits (all FrameSource-rotate SoCs), since v1.11.2**: a libimp
     exporting `OpenIMP_Cap_FsRotate` (non-zero) is taken as rotating, without
     the 0x0 probe; one exporting `OpenIMP_FS_RotateLimits(chn, &w, &h, &fps,
     &align)` sets the envelope per channel (pixels w*h, fps, alignment; a
     non-zero return or 0x0 refuses that channel). Both are bound weak.
-  * **T23** — software NV12 transpose, only with the extra opt-in
-    `BR2_PACKAGE_TIMPS_SW_ROTATE` (`-DMS_ENABLE_SW_ROTATE`). Costs real CPU on
-    the single-core T23, is H.264 only, and loses hardware OSD/privacy on the
-    rotated stream. Envelope (`src/hal/fs_rot_env.h`): at most 704x576 pixels
-    and 15 fps, the source height (= encoded width) a multiple of 16 and at
-    least 256; snapshot/MJPEG on that stream also need it a multiple of 32
-    (e.g. `704x384` → 384x704; `1280x704` is refused, 204).
-  * **T30 C100** — no path at all; 90/270 coerce to `0`.
-* Outside the envelope (T31, T10/T20/T21, T23) the stream starts **unrotated** with a
-  `refusing FS-rotate ...` / `refusing SW rotate ...` warning (on T10/T20/T21 also when the OpenIMP cannot
+    Current OpenIMP limits: T31 4096x4096, align 2; T10/T20/T21/T23 704x576,
+    align 16; T30 1280x720, align 16; no fps cap. Marker and limits need
+    OpenIMP `next` `17082ed3` or later (`2bb28bc7`); without them timps keeps
+    the built-in tables and the 0x0 stub probe.
+  * **T23, OpenIMP builds only**, **since v1.11.2** — the same FrameSource
+    rotate as T10/T20/T21 (OpenIMP T23 rotate commit `4738c802`). OSD,
+    privacy masks, IVS/motion and the encoder see the rotated frame; hardware
+    OSD is kept. The vendor T23 libimp has no `SetChnRotate`, so a
+    vendor-libimp T23 build has no rotation: 90/270 coerce to `0`
+    (`ERR_ROT_UNSUPPORTED`). Until v1.11.2 T23 had a timps-own software path
+    (`USE_SW_ROTATE`, CPU NV12 transpose + unbound YUV encode, H.264 only,
+    text OSD only); it was removed.
+  * **C100** — no path at all; 90/270 coerce to `0`. T30 with the vendor
+    libimp likewise.
+* Outside the envelope (T31, T10/T20/T21/T23/T30) the stream starts **unrotated** with a
+  `refusing FS-rotate ...` warning (with OpenIMP also when it cannot
   rotate, see above); `videoN.rotation` keeps the configured
   value, and `GET /control` shows the running geometry in
   `videoN.eff_width`/`eff_height` (unswapped). **Since v1.10.1**
@@ -669,7 +675,7 @@ hit this — T10, T20 and T23 coerce `codec` to `h264` at parse time.
   motion grid are in the **rotated**
   `eff_width`×`eff_height` frame on every path. What is drawn depends on the
   path, reported since v1.11.0 as `video.<N>.rotate_path` in `GET /control`:
-  `sw` (T23) text only, no logo, no privacy covers; `band` (vendor libimp
+  `band` (vendor libimp
   90/270, T31/T40/T41) only the top `eff_width` rows; `hw` (OpenIMP, and
   T40/T41 `180`) the whole frame; `off` not rotated (also a refused rotation). Encoder ROI ignores rotated streams (`caps.roi.streams[N] = "rotated"`).
 * Legacy `rotation = 1|2` (the raw libimp `rotTo90` enum, as used in
@@ -1565,7 +1571,7 @@ Every one maps to `USE_<X>=$(if $(BR2_PACKAGE_TIMPS_<X>),1,0)` in
 | `BR2_PACKAGE_TIMPS_SRT` | **n** *(no `default` line at all)* | selects `BR2_PACKAGE_LIBSRT` | `-DUSE_SRT` | MPEG-TS over SRT | No SRT listener/caller; `srt.*` keys are inert. |
 | `BR2_PACKAGE_TIMPS_OSD_HINTING` | **n** | — | `-DUSE_OSD_HINTING` | Geometric OSD-text autohinter in the TTF rasterizer (~2.1 KB) | `osd.hinting` is the textbook "parses but does nothing": accepted, clamped, persisted, echoed, no visual change. `config.c` logs one WARN per session saying so. |
 | `BR2_PACKAGE_TIMPS_ROTATE` | **n** | — | `-DUSE_ROTATE` | The whole rotation feature | **Byte-identical build.** `videoN.rotation` coerces every non-zero value to `0`; `caps.rotation` is omitted. |
-| `BR2_PACKAGE_TIMPS_SW_ROTATE` | **n** | depends on `TIMPS_ROTATE` | **`-DMS_ENABLE_SW_ROTATE`** (the one symbol whose define does not follow the `USE_*` pattern) | Software NV12 transpose on T23 (`ROT_HAS_SW_90`, gated `PLATFORM_T23 && MS_ENABLE_SW_ROTATE`) | On T23, 90/270 has no path and coerces to `0`. Irrelevant on other SoCs. |
+| `BR2_PACKAGE_TIMPS_SW_ROTATE` | **n** | depends on `TIMPS_ROTATE` | none (obsolete) | **Removed in v1.11.2.** `USE_SW_ROTATE=1` only implies `USE_ROTATE`. T23 rotates through OpenIMP's FrameSource rotate (`USE_ROTATE` + `USE_OPENIMP`). | No effect. |
 | `BR2_PACKAGE_TIMPS_BACKCHANNEL` | **n** | — | `-DUSE_BACKCHANNEL` | ONVIF audio backchannel via native `IMP_AO` (no external `/bin/iac`); G.711 decode is pure C. Uncomments `audio.backchannel = 1` in the shipped config. | No talk-back; `audio.backchannel` inert; `caps.backchannel.available = 0`. |
 | `BR2_PACKAGE_TIMPS_BC_AAC` | **n** | depends on `TIMPS_BACKCHANNEL`; selects `BR2_PACKAGE_LIBHELIX_AAC` | `-DUSE_BC_AAC` (forces `USE_BACKCHANNEL`) | AAC backchannel decode | Backchannel accepts G.711 only; an ONVIF client offering `mpeg4-generic` AAC is rejected. |
 | `BR2_PACKAGE_TIMPS_BC_WS` | **y if `BR2_PACKAGE_TIMPS_TLS`**, else n | depends on `TIMPS_BACKCHANNEL` **and** `TIMPS_CONTROL` | `-DUSE_BC_WS` (forces both) | `/talk` WebSocket: browser mic → G.711 in an AudioWorklet → the same `IMP_AO` path (~8 KB, no new library). Uncomments `audio.talk_ws = 1` (only the strict value 1, never 2). | `wss://<cam>:<http_port>/talk` not served; the backchannel is reachable only from an ONVIF client or NVR. |
@@ -1632,7 +1638,8 @@ byte for byte. Needs GCC 10+ (`-flto=auto`) and a linker with plugin support.
 Weak libimp imports stay weak undefined and keep their NULL checks.
 
 Implications the upstream `Makefile` applies no matter what the package passes:
-`USE_SW_ROTATE=1 ⇒ USE_ROTATE`; `USE_BC_AAC=1 ⇒ USE_BACKCHANNEL`;
+`USE_SW_ROTATE=1 ⇒ USE_ROTATE` (obsolete knob, nothing else);
+`USE_BC_AAC=1 ⇒ USE_BACKCHANNEL`;
 `USE_PLAY_OPUS=1 ⇒ USE_PLAY`; `USE_BC_WS=1 ⇒ USE_BACKCHANNEL + USE_CONTROL`;
 `USE_WEBRTC=1 ⇒ USE_TLS + USE_CONTROL`;
 `USE_BACKCHANNEL=1 or USE_PLAY=1 ⇒ USE_AUDIO_OUT`.

@@ -65,6 +65,12 @@ semantic versioning.
   cameras' infrared goes off (several IR cameras facing one room) left a
   camera in night until the 6 h timer; replay `shelf_lamp`: day after 72 s.
 
+- T23: rotation 90/270 now goes through OpenIMP's
+  `IMP_FrameSource_SetChnRotate` like T10/T20/T21 (OSD, privacy and motion
+  stay on the rotated stream). The timps-own software path (`USE_SW_ROTATE`,
+  CPU transpose + unbound YUV encode) is removed; `USE_SW_ROTATE=1` now only
+  implies `USE_ROTATE`. T23 with the vendor libimp has no rotation.
+
 ### Fixed
 
 - T30 with OpenIMP: `videoN.codec = h265` now falls back to h264; before,

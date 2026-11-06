@@ -293,8 +293,7 @@ static void refresh_text(osd_stream *s, osd_region *rg)
     /* runtime-disabled via /control: nothing to draw. Checked HERE, off the
      * under-lock snapshot, so the updater loop (osd_thread) never has to read
      * .enabled lock-free - that plain-int read raced the /control writer (C11
-     * UB), same class as audio.mute. Matches the sw-rotate path's own
-     * post-snapshot it.enabled check in hal_ingenic.c. */
+     * UB), same class as audio.mute. */
     if (!it.enabled) return;
     char txt[256];
     osd_expand(it.text, txt, sizeof txt);

@@ -119,7 +119,7 @@ simulator has no live path at all — `caps.video_live` is always empty
 there.
 
 **Hardware verification status**: wired and cross-build clean on every
-platform (T23, T23N, T20X, T31, T31X, T23+`USE_SW_ROTATE`; T40/T41
+platform (T23, T23N, T20X, T31, T31X, T23+`USE_SW_ROTATE` (that path was removed in v1.11.2); T40/T41
 compile-checked, not link-tested — their vendor libs need an fp64 toolchain
 this repo does not ship). As of 2026-08-22, real hardware measurement on a
 T31 fleet has confirmed: `bitrate`/`min_qp`/`max_qp` genuinely bind on the

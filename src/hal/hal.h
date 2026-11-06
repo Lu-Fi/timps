@@ -217,7 +217,7 @@ int hal_jpeg_reuse(unsigned *reused, unsigned *skipped);
  * whatever unit the SDK stores internally - NOT verified to be kbps; that
  * open question is one of the things this readback exists to answer.
  * Returns 0 on success, <0 when the channel has no queryable encoder
- * (disabled stream, T23 sw-rotate path, host sim). */
+ * (disabled stream, host sim). */
 #define HAL_RC_UNSET (-1000000)
 typedef struct {
     char mode[16];               /* rc mode held, timps token spelling */

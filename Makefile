@@ -69,10 +69,7 @@ USE_ROTATE    ?= 0          # 1 = image rotation feature (real 90/270 transpose:
                             #     value (use image.hflip+image.vflip). Default off = no
                             #     ROT_HAS_* macros defined, so all rotation code compiles
                             #     out (byte-identical build).
-USE_SW_ROTATE ?= 0          # 1 = opt-in software 90/270 rotation on T23 (CPU transpose +
-                            #     unbound YuvEncode; no HW OSD/privacy on rotated streams).
-                            #     Only effective with PLATFORM=T23; default off = byte-identical build.
-                            #     Implies USE_ROTATE (the SW path is part of the rotation feature).
+USE_SW_ROTATE ?= 0          # obsolete: T23 rotates in OpenIMP now; 1 only implies USE_ROTATE
 # The implications below use `override`: a plain := is ignored for a variable
 # given on the make command line, which is how thingino passes every USE_*.
 ifeq ($(USE_SW_ROTATE),1)
@@ -181,8 +178,7 @@ BASE := src/util.c src/log.c src/config.c src/frame.c src/fanqueue.c src/net.c \
         $(if $(filter 1,$(USE_TRACE)),src/trace.c)
 
 TARGET_SRC := $(BASE) src/hal/osd_text.c src/hal/msttf.c src/hal/osd_vars.c src/hal/hal_ingenic.c src/hal/libimp_check.c \
-              src/hal/imp_osd.c src/hal/imp_motion.c src/control.c src/events.c src/daynight.c src/testpattern.c \
-              $(if $(filter 1,$(USE_SW_ROTATE)),src/hal/nv12_rot.c)
+              src/hal/imp_osd.c src/hal/imp_motion.c src/control.c src/events.c src/daynight.c src/testpattern.c
 SIM_SRC    := $(BASE) src/hal/osd_text.c src/hal/hal_sim.c src/hal/libimp_check.c src/hal/imp_motion.c src/control.c src/events.c src/daynight.c src/testpattern.c
 
 # full target source list (+ optional tls.c) and the .o names (unique basenames)
@@ -322,7 +318,6 @@ target:
 	  $(if $(filter 1,$(USE_PLAY_OPUS)),-DUSE_PLAY_OPUS $(if $(OPUS_INC),-I$(OPUS_INC) -I$(OPUS_INC)/opus)) \
 	  $(if $(filter 1,$(USE_STREAM_OPUS)),-DUSE_STREAM_OPUS $(if $(OPUS_INC),-I$(OPUS_INC))) \
 	  $(if $(filter 1,$(USE_ROTATE)),-DUSE_ROTATE) \
-	  $(if $(filter 1,$(USE_SW_ROTATE)),-DMS_ENABLE_SW_ROTATE) \
 	  $(if $(filter 1,$(USE_OSD_HINTING)),-DUSE_OSD_HINTING) \
 	  $(if $(filter 1,$(USE_TRACE)),-DUSE_TRACE) \
 	  -DHAL_INGENIC -DPLATFORM_$(PLATFORM) $(PLATFORM_CFLAGS) -DMS_VERSION='"$(VERSION)"' -Isrc -I$(IMP_INC) -I$(IMP_INC)/imp \
@@ -333,7 +328,7 @@ target:
 	  $(if $(filter 1,$(USE_PLAY_OPUS)),$(OPUSLIB)) \
 	  $(if $(filter 1,$(USE_STREAM_OPUS)),$(OPUS_ENC_LIB)) $(LIBS) -o $(BIN)
 	@rm -f $(TARGET_OBJS)
-	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_OPENIMP=$(USE_OPENIMP) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT) USE_BACKCHANNEL=$(USE_BACKCHANNEL) USE_BC_AAC=$(USE_BC_AAC) USE_BC_WS=$(USE_BC_WS) USE_WEBRTC=$(USE_WEBRTC) USE_PLAY=$(USE_PLAY) USE_PLAY_OPUS=$(USE_PLAY_OPUS) USE_STREAM_OPUS=$(USE_STREAM_OPUS) USE_ROTATE=$(USE_ROTATE) USE_SW_ROTATE=$(USE_SW_ROTATE) USE_OSD_HINTING=$(USE_OSD_HINTING) USE_TRACE=$(USE_TRACE) USE_LTO=$(USE_LTO))"
+	@echo "built $(BIN) for $(PLATFORM) (USE_FAAC=$(USE_FAAC) USE_OPENIMP=$(USE_OPENIMP) USE_CONTROL=$(USE_CONTROL) USE_DAYNIGHT=$(USE_DAYNIGHT) USE_RECORD=$(USE_RECORD) USE_TIMELAPSE=$(USE_TIMELAPSE) USE_TLS=$(USE_TLS) USE_SRT=$(USE_SRT) USE_BACKCHANNEL=$(USE_BACKCHANNEL) USE_BC_AAC=$(USE_BC_AAC) USE_BC_WS=$(USE_BC_WS) USE_WEBRTC=$(USE_WEBRTC) USE_PLAY=$(USE_PLAY) USE_PLAY_OPUS=$(USE_PLAY_OPUS) USE_STREAM_OPUS=$(USE_STREAM_OPUS) USE_ROTATE=$(USE_ROTATE) USE_OSD_HINTING=$(USE_OSD_HINTING) USE_TRACE=$(USE_TRACE) USE_LTO=$(USE_LTO))"
 
 sim:
 	$(HOSTCC) $(CFLAGS) $(LTO_FLAGS) -DMS_VERSION='"$(VERSION)"' $(if $(filter 1,$(USE_CONTROL)),-DUSE_CONTROL) \

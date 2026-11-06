@@ -99,19 +99,18 @@ lives in `docs/rotation.md`; the tiers are:
 
 | Tier | Macro | Platforms | Mechanism |
 | --- | --- | --- | --- |
-| No rotation primitive | *(none)* | T30, C100; T10, T20, T21 with the vendor libimp | `rotation` accepts only `0`; any 90/180/270 request is coerced to 0 with a warning. |
-| Software 90/270 (opt-in) | `ROT_HAS_SW_90` | T23 (needs `USE_SW_ROTATE=1`) | CPU NV12 transpose per frame + libimp's unbound `IMP_Encoder_YuvEncode` path. Real CPU cost on the single core, H.264-only, software text-OSD only (no logos/privacy covers on the rotated stream), and the [motion grid](Motion-Detection.md#the-t23-software-rotation-coordinate-caveat) needs an explicit coordinate-mapping fix since IVS itself still sees the pre-rotation frame. |
-| FrameSource software rotate | `ROT_HAS_FS_ROTATE` | T31; T10, T20, T21 with OpenIMP | `IMP_FrameSource_SetChnRotate` — rotation happens inside libimp, not visible to the rest of timps as "software," but still not true hardware. Hardware OSD/privacy overlays work on rotated 90/270 streams (fixed 2026-07-23) but are confined to a top-band region on non-square rotated streams due to an OSD coordinate range-check quirk (vendor libimp only). On T10/T20/T21 (OpenIMP only, since v1.10.0, not yet tested on hardware): sub streams only, 16-aligned, at most 704x576; `video0` and anything larger start unrotated. Needs an OpenIMP with T1x rotation (commit `6b7f5ae`, branch `claude/t1x-rotation`, not in OpenIMP `next` or any thingino `ciao` OpenIMP pin); timps probes `SetChnRotate` with a 0x0 picture at start and brings the stream up unrotated when the OpenIMP stubs (`9cab219`, returns success without rotating) or refuses (`6857610`, `0c02f45`, `636b6ac`) it. |
+| No rotation primitive | *(none)* | C100; T10, T20, T21, T23, T30 with the vendor libimp | `rotation` accepts only `0`; any 90/180/270 request is coerced to 0 with a warning. |
+| FrameSource software rotate | `ROT_HAS_FS_ROTATE` | T31; T10, T20, T21, T23, T30 with OpenIMP | `IMP_FrameSource_SetChnRotate` — rotation happens inside libimp, not visible to the rest of timps as "software," but still not true hardware. Hardware OSD/privacy overlays work on rotated 90/270 streams (fixed 2026-07-23) but are confined to a top-band region on non-square rotated streams due to an OSD coordinate range-check quirk (vendor libimp only). On T10/T20/T21 (OpenIMP only, since v1.10.0, not yet tested on hardware): sub streams only, 16-aligned, at most 704x576; `video0` and anything larger start unrotated. Needs an OpenIMP with T1x rotation (commit `6b7f5ae`, branch `claude/t1x-rotation`, not in OpenIMP `next` or any thingino `ciao` OpenIMP pin); timps probes `SetChnRotate` with a 0x0 picture at start and brings the stream up unrotated when the OpenIMP stubs (`9cab219`, returns success without rotating) or refuses (`6857610`, `0c02f45`, `636b6ac`) it. Since v1.11.2 T23 and T30 OpenIMP builds use the same path (OpenIMP `next` `17082ed3` or later); an OpenIMP exporting `OpenIMP_Cap_FsRotate` skips the 0x0 probe, and `OpenIMP_FS_RotateLimits` sets the envelope per channel (T23 704x576, T30 1280x720, align 16). The timps-own T23 software path (`USE_SW_ROTATE`) was removed in v1.11.2. |
 | True hardware I2D rotate | `ROT_HAS_HW_I2D` | T40, T41 | The dedicated I2D hardware block. Full framerate, all resolutions. With the vendor libimp timps applies the same top-band OSD/privacy clamp on 90/270 as on T31 (`video.<N>.rotate_path` = `band`; whether this libimp needs it is not verified on hardware); OpenIMP and `180` draw over the whole frame. The only tier where `rotation=180` is a real, distinct, **per-channel** capability (elsewhere, 180 was removed as a redundant, incorrectly-per-stream-modeled *global* ISP flip — use `image.hflip`+`image.vflip` instead, which is always available independent of `USE_ROTATE`). |
 
 `ROT_HAS_90` (gating whether 90/270 are accepted at all) is defined
-whenever any of the three apply-path macros above is active, or on the
+whenever either apply-path macro above is active, or on the
 host sim. Rotation direction conventions are **not** uniform across
-platforms (T23 and T40/T41: 90° = clockwise; T31 and T10/T20/T21: 90° = counter-clockwise,
+platforms (T40/T41: 90° = clockwise; T31 and T10/T20/T21/T23/T30: 90° = counter-clockwise,
 kept that way specifically for numeric compatibility with prudynt-t's raw
 `rotTo90` enum values) — see `docs/rotation.md` for the full rationale and
 on-device test history. Since v1.11.0 `GET /control` reports the path of a
-running stream in `video.<N>.rotate_path` (`off`, `sw`, `band`, `hw`).
+running stream in `video.<N>.rotate_path` (`off`, `band`, `hw`; `sw` until v1.11.2).
 
 ## ROI and FrontCrop tiers
 

@@ -51,7 +51,8 @@ is the place to start.
   backchannel and a system-sound play queue — no external `/bin/iac`/`play`
   helper needed.
 - **Privacy masks**, **per-stream TrueType OSD overlays**, and **image
-  rotation** (hardware 90/270/180 on some SoCs, software 90/270 on others).
+  rotation** (hardware 90/270/180 on T40/T41, FrameSource 90/270 on T31 and
+  on OpenIMP T10/T20/T21/T23/T30).
 - **Authentication**: RTSP Digest, HTTP Basic, and a token mechanism for the
   HTTP media/API endpoints, with a localhost bypass for on-device UIs.
 
@@ -72,7 +73,7 @@ availability) and links to the deeper `docs/sdk-feature-gaps.md` and
 | [Configuration Reference](Configuration-Reference.md) | Every `timps.conf` key, grouped by section, with type/default/range and live-vs-restart-only classification |
 | [HTTP /control API Reference](HTTP-Control-API.md) | The `/control` GET/POST JSON API, authentication, the `caps` capability object, and the `/events` SSE stream |
 | [Streaming Protocols](Streaming-Protocols.md) | RTSP, HTTP fMP4, MJPEG, snapshot and SRT — ports, transports, codecs, and client-compatibility notes |
-| [Motion Detection](Motion-Detection.md) | The IVS grid model, sensitivity mapping, the `on_motion` hook, and the T23 software-rotation coordinate caveat |
+| [Motion Detection](Motion-Detection.md) | The IVS grid model, sensitivity mapping, the `on_motion` hook, and the motion grid on rotated streams |
 | [Recording & Timelapse](Recording-Timelapse.md) | Continuous/motion-triggered SD recording with pre/post-roll, segment rotation, and periodic JPEG timelapse capture |
 | [Rate Control and Bandwidth: T23 vs T31](Rate-Control-Bandwidth.md) | Why the classic and new-generation encoder rate controllers use such different bandwidth for the same settings — a rate target vs. scene-content-adaptive quality |
 | [Rate Control Parameters](Rate-Control-Parameters.md) | Every rate-control field (`bitrate`, `rc_mode`, `quality_lvl`, `change_pos`, `i_bias_lvl`, ...): range, per-SoC support, and cost — measured vs. header-derived |

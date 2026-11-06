@@ -111,9 +111,10 @@ build/platform actually supports.
 
 Read-only leaves worth knowing (full table in `docs/ai/reference.md` §6):
 `video.<N>.eff_width`/`eff_height`, `rotation_state` (why a stream runs
-unrotated, since 1.10.1) and `rotate_path` (since 1.11.0: `off`, `sw` = T23
-software rotate with text OSD only, `band` = vendor libimp 90/270 with
-OSD/privacy only in the top `eff_width` rows, `hw` = whole frame);
+unrotated, since 1.10.1) and `rotate_path` (since 1.11.0: `off`, `band` =
+vendor libimp 90/270 with OSD/privacy only in the top `eff_width` rows,
+`hw` = whole frame; until 1.11.2 also `sw` = the removed T23 software
+rotate);
 `daynight.exposure`, `night_baseline`, `day_trigger`, `ir_idle`, and since
 1.11.0 `color_trigger` (`on`/`off`/`unavailable`) and `color_dev_pct` (the lit
 picture's colour change since the last look, `-1` without a reference).
@@ -216,9 +217,8 @@ comes straight from `IMP_Encoder_Query` (available on all 9 platforms):
 | `work_done` | `0` = still running, `1` = not running. |
 | `ave_bitrate` | **T31 only**, and only once at least one frame has flowed: the running average bitrate from `IMP_Encoder_GetChnAveBitrate` (a T31-exclusive call that needs the just-fetched stream buffer, so it's computed and cached by the encode thread itself rather than queried directly from the `/control` handler, which would otherwise steal packets from the streaming loop). |
 
-A channel whose query fails — a disabled stream, the T23 SW-rotate path
-(which has no bound encoder channel/group at all), or the host
-simulation backend — is **omitted** from the object entirely rather than
+A channel whose query fails — a disabled stream or the host simulation
+backend — is **omitted** from the object entirely rather than
 reported with misleading zeros.
 
 ### `encoder.<n>.telemetry` — OpenIMP encoder counters (since v1.11.0)
@@ -367,7 +367,7 @@ for at least 2 s; they are `-1` on the first request and after a gap of more
 than 30 s.
 
 `video` lists every stream slot. `encoder` **omits** channels whose query fails
-(disabled stream, SW-rotate path, host sim) rather than reporting zeros, and
+(disabled stream, host sim) rather than reporting zeros, and
 `ave_bitrate` appears only where the SoC supplies it — the same rules the full
 snapshot's `encoder` object follows. The shape mirrors the corresponding
 sub-objects of the snapshot, so a client can read either source with one code
@@ -404,7 +404,7 @@ not listed.
   than the others on the same stream. RTSP, WebRTC, MJPEG and SRT take the
   time before the send call, fMP4 after it (so a blocking TCP write counts
   there). `-1` for `events` and before the first frame. Where no capture
-  timestamp exists (SW-rotate on T23, the simulator) only the queue part is
+  timestamp exists (the simulator) only the queue part is
   counted.
 - `agent` is the request's `User-Agent`, truncated to 159 characters, `""`
   when the client sent none. Since v1.9.28 control bytes and

@@ -50,8 +50,8 @@ typedef struct {
  * the fall-back-to-0 already applied); mv = the EFFECTIVE config of that stream
  * - i.e. the geometry/rotation the video pipeline is ACTUALLY running with, not
  * the raw requested cfg->video[mon]. The two differ exactly when a 90/270
- * rotation request was refused by a safe-envelope check at bring-up (T23
- * sw_rot_start, T31 fs_create FS_ROT_FALLBACK) and the stream came up
+ * rotation request was refused by the safe-envelope check in fs_create at
+ * bring-up and the stream came up
  * UNROTATED; the caller (hal_ingenic.c motion_sync) owns that knowledge. Same
  * caller-passes-effective-config pattern as hal_ingenic.c's jpeg_attach(). */
 int  imp_motion_start(const ms_config *cfg, const ms_vstream_cfg *mv,

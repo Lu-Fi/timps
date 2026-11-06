@@ -169,7 +169,7 @@ The ISP latch kick (`fs_kick_chn0()`, see
 holds one more chn0 reference. It goes through the same debounce: the
 reference is kept for `MS_IDLE_STOP_US` after the kick and released by
 whichever producer loop is idle next (`fs_kick_reap()`, called by every idle
-video, SW-rotate and JPEG loop before it blocks; an idle loop wakes at least
+video and JPEG loop before it blocks; an idle loop wakes at least
 once a second, so the stream-0 loop releases it within about a second once
 it is idle itself), never right after the kick. While every loop streams,
 the reference waits for the next idle pass; chn0 then runs anyway. The
@@ -204,9 +204,8 @@ FrameSource, minus their always-running video encoders.
   24/7 (CPU in libimp's workers, OSD blending, DDR bandwidth, heat, the ~6.3 MB
   + ~0.7 MB of rmem pools held instead of released) has not been measured.
   `1` is the opt-in there.
-* **Exempt:** T23 SW-rotate streams (90/270, `USE_SW_ROTATE`) — their
-  unbound `GetFrame` path has never run with an enabled FrameSource and no
-  reader.
+* **Exempt:** none since v1.11.2 (until then T23 SW-rotate streams, a path
+  that was removed).
 * **JPEG recovery:** with the FrameSource kept, the open-stack T23 JPEG
   cold-start recovery and the JPEG miss watchdog restart only the encoder,
   never the FrameSource.

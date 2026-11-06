@@ -145,7 +145,7 @@ variable. **If a feature is compiled out, no config key can turn it on.**
 | `BR2_PACKAGE_TIMPS_PLAY` | `USE_PLAY` | n | System-sound play queue + `/usr/sbin/play` (FIFO at `/run/timps/audio_out`). WAV/PCM16/G.711. |
 | `BR2_PACKAGE_TIMPS_PLAY_OPUS` | `USE_PLAY_OPUS` | n | Ogg-Opus decode in the play queue (opusfile). Needed for thingino's stock `.opus` sounds. |
 | `BR2_PACKAGE_TIMPS_ROTATE` | `USE_ROTATE` | n | `videoN.rotation`. Off → rotation values are coerced to 0 with a warning, and `caps.rotation` is absent. |
-| `BR2_PACKAGE_TIMPS_SW_ROTATE` | `USE_SW_ROTATE` | n | Software 90/270 on T23. Depends on ROTATE. |
+| `BR2_PACKAGE_TIMPS_SW_ROTATE` | `USE_SW_ROTATE` | n | **Obsolete since v1.11.2**: only implies `USE_ROTATE`. T23 rotates through OpenIMP (`USE_ROTATE` + `USE_OPENIMP`). |
 | `BR2_PACKAGE_TIMPS_OSD_HINTING` | `USE_OSD_HINTING` | n | Compiles the OSD geometric autohinting pass (~2 KB). |
 | `BR2_PACKAGE_TIMPS_DIAG_TOOLS` | — | n | Installs `timps-selftest`, `timps-logcat-ship`, `timps-dn-isp-log`. |
 | `BR2_PACKAGE_TIMPS_DROP_LIBSTDCPP` | — | n | Target-finalize hook that removes `libstdc++.so.6` when nothing links it (flash saving on small rootfs). |
@@ -605,7 +605,7 @@ cap — see the POST limits below.)
 
 | Object | Leaves | Notes |
 | --- | --- | --- |
-| `encoder.<N>` | `registered`, `left_pics`, `left_stream_bytes`, `left_stream_frames`, `cur_packs`, `work_done`, `au_drops`, `ave_bitrate` **on T31 only**, and `telemetry` (`frames`, `bytes`, `idr`, `fps`, `kbps`, `encode_us_avg`, `encode_us_max`) **on T40/T41 with OpenIMP** (`OpenIMP_Encoder_GetTelemetry`, cumulative since the channel was created) | Straight from `IMP_Encoder_Query`. A channel whose query fails (stream disabled, SW-rotate path, host sim) is **omitted entirely** rather than reported as zeros. **`au_drops` = producer-side drops** (oversized AU, pool OOM in the encode thread) — the only exact count, since the log throttles those to every 20th event. Distinct from the top-level **`queue_drops[]`, which counts consumer-queue evictions.** |
+| `encoder.<N>` | `registered`, `left_pics`, `left_stream_bytes`, `left_stream_frames`, `cur_packs`, `work_done`, `au_drops`, `ave_bitrate` **on T31 only**, and `telemetry` (`frames`, `bytes`, `idr`, `fps`, `kbps`, `encode_us_avg`, `encode_us_max`) **on T40/T41 with OpenIMP** (`OpenIMP_Encoder_GetTelemetry`, cumulative since the channel was created) | Straight from `IMP_Encoder_Query`. A channel whose query fails (stream disabled, host sim) is **omitted entirely** rather than reported as zeros. **`au_drops` = producer-side drops** (oversized AU, pool OOM in the encode thread) — the only exact count, since the log throttles those to every 20th event. Distinct from the top-level **`queue_drops[]`, which counts consumer-queue evictions.** |
 | `encoder.<N>.rc` | `rc_mode`, then whichever of `bitrate`, `max_bitrate`, `qp`, `min_qp`, `max_qp`, `i_bias_lvl`, `change_pos`, `quality_lvl`, `static_time`, `frm_qp_step`, `gop_qp_step`, `adaptive_mode`, `gop_relation`, `fluc_lvl`, `ip_delta`, `pb_delta`, `max_psnr`, `rc_options`, `max_picture_size` the current mode and SDK actually carry | What the encoder **holds right now**, read back from `IMP_Encoder_GetChnAttrRcMode` — deliberately separate from the configured `videoN.*` block so written and held values can be compared. Fields the mode/API does not carry are omitted, not zeroed. On new-API SoCs `bitrate`/`max_bitrate` are raw SDK values (**unit unverified**). Frozen on a camera with no client attached (see §4). |
 | `jpeg_reuse` | `available`, `reused`, `skipped` | **Since v1.11.2.** `available` = 1 on a `USE_OPENIMP` build whose libimp exports `OpenIMP_Encoder_StreamIsReused`. While the JPEG encoder is busy (or rmem is short) OpenIMP hands out the channel's last picture again (up to 5 s old, current timestamp); `reused` counts those, summed over all JPEG channels since start. timps does not publish up to 4 of them in a row (`skipped`), so `/snapshot.jpg` waits for a fresh picture; the 5th goes out so MJPEG never stalls. `reused` climbing steadily = the JPEG path is starved by the video encoders (lower `jpeg_fps` / resolution). Always 0 on vendor libimp. |
 | `srt` | `enabled`, `port`, `channel`, `mode` (`listener`/`caller`), `connected`, `stats_age_s`, `rtt_ms`, `bw_mbps`, `rate_mbps`, `retrans`, `loss`, `drop` | **`stats_age_s = -1` means no receiver has been connected long enough for a sample** — the other numbers are then meaningless, not zero-valued facts. |
@@ -615,7 +615,7 @@ cap — see the POST limits below.)
 | `daynight` | `mode` (**int** 0 = day / 1 = night) *and* `dn_mode` (**string**), `brightness` (%), `total_gain`, `exposure`, `ae_luma`, `night_baseline`, `day_trigger`, `sun_computed_sunrise`, `sun_computed_sunset`, … | `total_gain` is the IMP `[24.8]` linear scale (**256 = 1.0×**). **`exposure` is the value the decision actually runs on** — `total_gain` scaled by the AE integration-time ratio, so it equals `total_gain` in a dark scene and drops far below it in a bright one. Quote `exposure`, not `total_gain`, when answering a day/night question; `total_gain` is kept for continuity with existing pages. `night_baseline` is the illuminator-lit night level at the last look (or the darker level it followed after 60 s 10 % above it), `day_trigger` the bar the reading **without** IR must fall below to ask for a day check (since v1.10.1 both are always published; `day_trigger` is at least `day_gain`). **Since v1.11.0** `color_trigger` (`"on"`, `"off"` = `color_pct` 0, no switchable illuminator, schedule or disabled, `"unavailable"` = this libimp gives no per-zone AWB statistics) and `color_dev_pct` (the lit picture's colour change since the last look in %, `-1` without a reference, e.g. in day or the first seconds after a look) belong to `daynight.color_pct`. `sun_computed_*` read `"--:--"` where the sun does not rise or set (polar latitudes). It also echoes the settable keys (`day_gain`, `night_gain`, `day_confirm_s`, `jump_pct`, `color_pct`, `heartbeat_s`, `heartbeat_max_s`, `interval_ms`, the Idle-Dark and calendar keys). The frozen-constant echoes of v1.10.0 (`ir_ratio_*`, `probe_settle_s`, …) are gone with the 1.10.1 engine. |
 | `last_errors` | `{"<MOD>": {"level","age_s","count","msg"}}` | One entry per module that has logged, with the most recent message and how many times it repeated. Useful once the 64 KB syslog ring has recycled. On v1.9.27 an entry captured before NTP sync shows an `age_s` of ~56 years; **since v1.9.28** ages are monotonic. |
 | `video.<N>.rotation_state` | int | **Since v1.10.1**, `USE_ROTATE` builds. `0` = stream runs as configured at the last start; else the `2xx` code why it runs unrotated (table in [`error-codes.md`](error-codes.md)). Refers to the running pipeline, not to a POSTed-but-not-restarted rotation. |
-| `video.<N>.rotate_path` | string | **Since v1.11.0**, `USE_ROTATE` builds. How the running stream is rotated, i.e. in which frame overlays live: `"off"` = not rotated (also a refused rotation); `"sw"` = T23 software rotate: text OSD only, in the rotated `eff_width`×`eff_height` frame, no logo, no privacy covers, snapshot/MJPEG only when `eff_width` is a multiple of 32 and `eff_height` of 8; `"hw"` = OSD/privacy over the whole rotated frame (OpenIMP, and T40/T41 `180`); `"band"` = vendor libimp 90/270: OSD/privacy in rotated coordinates but only within the top `eff_width` rows (lower ones are moved up). OSD, privacy and the motion grid always use `eff_width`×`eff_height` coordinates. Absent = timps before 1.11.0. |
+| `video.<N>.rotate_path` | string | **Since v1.11.0**, `USE_ROTATE` builds. How the running stream is rotated, i.e. in which frame overlays live: `"off"` = not rotated (also a refused rotation); `"hw"` = OSD/privacy over the whole rotated frame (OpenIMP, and T40/T41 `180`); `"band"` = vendor libimp 90/270: OSD/privacy in rotated coordinates but only within the top `eff_width` rows (lower ones are moved up). OSD, privacy and the motion grid always use `eff_width`×`eff_height` coordinates. Absent = timps before 1.11.0. Until v1.11.2 also `"sw"` (the removed T23 software rotate). |
 | `osd<S>.<N>.type` | `"text"` or `"logo"` | Read back as a **word**, unlike `record.mode` and `audio.backchannel_codec`, which read back as numbers. |
 
 ### The `caps` object — capability announcement
@@ -1284,8 +1284,8 @@ wait (2 s debounce instead).
    `framesource keepalive on (general.fs_keepalive=-1, auto)` and one
    `framesource N enabled` per stream, then **no** `disabled (idle)` until a
    stop. Still normal: `video chnN idle` (the encoder idles).
-3. Remaining edges with the keepalive on: start/stop and a SW-rotate stream
-   (`framesource N: no keepalive (software-rotate stream)`). The video
+3. Remaining edges with the keepalive on: start/stop (until v1.11.2 also a
+   T23 SW-rotate stream). The video
    watchdog (**since v1.10.1**; v1.10.0 still cycled the FrameSource), the
    JPEG cold-start recycle and the JPEG miss watchdog only restart the
    encoder (`... (framesource kept alive)`); 5 video cycles without a frame
@@ -1353,8 +1353,12 @@ the kernel log and escalate.
   `videoN.rotation` is coerced to 0 with a warning.
 - `rotation = 180` is a real per-channel capability **only on T40/T41**.
   Everywhere else use `image.hflip = 1` + `image.vflip = 1`.
-- `90`/`270` do not exist on T30/C100 at all, nor on T10/T20/T21 with the
-  vendor libimp. **Since v1.10.0** T10/T20/T21 OpenIMP builds rotate
+- `90`/`270` do not exist on C100 at all, nor on T10/T20/T21/T23/T30 with
+  the vendor libimp. **Since v1.11.2** T23 and T30 OpenIMP builds rotate
+  through the same FrameSource path as T10/T20/T21 (needs OpenIMP `next`
+  `17082ed3` or later; T23 704x576, T30 1280x720, align 16, from
+  `OpenIMP_FS_RotateLimits`); OSD, privacy and motion stay on the rotated
+  stream. **Since v1.10.0** T10/T20/T21 OpenIMP builds rotate
   sub streams (not `video0`; 16-aligned, at most 704x576, e.g. 640x368), but
   only with an OpenIMP that has T1x rotation (commit `6b7f5ae`, branch
   `claude/t1x-rotation`; none of the thingino `ciao` OpenIMP pins has it).
@@ -1362,13 +1366,10 @@ the kernel log and escalate.
   reason
   (`accepted a 0x0 picture, so it cannot rotate` = the `9cab219` stub,
   `SetChnRotate refused` = a refusing OpenIMP). Not yet tested on hardware.
-- T23 90/270 needs `USE_SW_ROTATE`: CPU transpose + software H.264 encode,
-  H.264 only, software text OSD only (no logo/privacy), at most 704×576
-  pixels and 15 fps (`204`/`205`), the source height (= rotated width) a
-  multiple of 16 and ≥ 256 (`203`/`208`); snapshot/MJPEG need it a multiple
-  of 32 — e.g. 704×384 → 384×704. 1280×704 is refused (too large).
-- Direction is not uniform: on T23/T40/T41, 90 = clockwise; on T31 and
-  T10/T20/T21 (same `SetChnRotate` enum), 90 = counter-clockwise (kept
+- `USE_SW_ROTATE` (the T23 CPU-transpose path) was removed in v1.11.2; the
+  knob now only implies `USE_ROTATE`.
+- Direction is not uniform: on T40/T41, 90 = clockwise; on T31 and
+  T10/T20/T21/T23/T30 (same `SetChnRotate` enum), 90 = counter-clockwise (kept
   numerically aligned with prudynt-t/raptor).
 - Overlays on a rotated stream (**since v1.11.0** `video.<N>.rotate_path`):
   OSD, privacy and the motion grid are placed in the rotated
@@ -1376,8 +1377,7 @@ the kernel log and escalate.
   timps applies the same clamp on vendor T40/T41) hardware OSD/privacy work,
   but only in the top `eff_width` rows (`band`): on a portrait 704×1280 the
   top 704 px; lower items are moved up, a square stream is not limited.
-  OpenIMP draws over the whole frame (`hw`); T23 SW rotate is text only
-  (`sw`).
+  OpenIMP draws over the whole frame (`hw`).
 - Rotation is restart-required; the advertised dimensions swap
   (`eff_width`/`eff_height` in `GET /control`).
 - **Since v1.10.1** the refusal is visible without the log:

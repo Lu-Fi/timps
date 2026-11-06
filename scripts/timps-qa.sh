@@ -4529,8 +4529,8 @@ else
 	# video0.rotation is persist-only like bitrate above, AND SoC-gated:
 	# caps.rotation is only present when this build has USE_ROTATE compiled
 	# in, and only lists the degree values this SoC's rotation path actually
-	# supports (0 always; 90/270 need a dim-swapping apply path - T31/T40/T41
-	# hardware or T23 USE_SW_ROTATE; 180 an ISP flip). A build without
+	# supports (0 always; 90/270 need a dim-swapping apply path - the
+	# framesource rotate or T40/T41 I2D; 180 an ISP flip). A build without
 	# rotation support simply omits the key - that is not a failure, so this
 	# skips cleanly rather than reporting FAIL on unsupported hardware.
 	if [ "$TEST_ROTATION" = "1" ]; then

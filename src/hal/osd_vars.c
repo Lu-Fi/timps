@@ -12,13 +12,10 @@
 #include <sys/socket.h>
 #include <pthread.h>
 
-/* Every static in this file is shared state. Two producers reach it
- * concurrently: imp_osd.c's OSD updater thread and, on T23 with software
- * rotation, one sw_rot_thread per rotated channel - a mixed config runs both
- * at once, and each expands placeholders on its own cadence. The doubles are
- * torn reads on 32-bit MIPS; the cached[]/last_us pairs can be read mid-update
- * (a half-written string, or a TTL stamp that belongs to the other thread's
- * sample). One mutex covers the lot: the protected regions are a string copy
+/* Every static in this file is shared state that more than one thread can
+ * reach. The doubles are torn reads on 32-bit MIPS; the cached[]/last_us
+ * pairs can be read mid-update (a half-written string, or a TTL stamp that
+ * belongs to another thread's sample). One mutex covers the lot: the protected regions are a string copy
  * or a once-per-second /proc read, never a call back out of this file - see
  * resolve(), which copies the interface names out before using them so the
  * get_*() helpers below never re-enter the lock. */

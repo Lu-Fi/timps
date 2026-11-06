@@ -63,9 +63,8 @@ typedef struct pkt_pool {
      * themselves over keep_cap (see pkt_pool_get). That second rule is what
      * keeps cap ~= len on every published packet: fanqueue's FQ_MAX_BYTES /
      * record.c's RING_MAX_BYTES budgets account ->len, so a small frame carried
-     * in an IDR-sized buffer would be memory the backstops cannot see - the
-     * exact hazard hal_ingenic.c's sw-rotate publish path is documented to
-     * avoid. pkt_pool_trim() releases the slot when a producer goes idle. */
+     * in an IDR-sized buffer would be memory the backstops cannot see.
+     * pkt_pool_trim() releases the slot when a producer goes idle. */
     ms_pkt         *big;
 } pkt_pool;
 
