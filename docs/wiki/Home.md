@@ -30,7 +30,7 @@ is the place to start.
   caller dialling out to `srt.host` (`srt.mode=caller`).
 - **On-demand encoding** — a stream's encoder only runs while at least one
   client is subscribed; idle streams cost ~0% CPU. The FrameSources stay
-  running from start to stop by default since v1.11.2 (before: open-stack
+  running from start to stop by default since v1.12.0 (before: open-stack
   T23/T40/T41 only; `general.fs_keepalive`), see
   [Architecture](Architecture.md#framesource-keepalive-generalfs_keepalive).
 - **Live control API** (`/control`, `USE_CONTROL`) — read and change ISP

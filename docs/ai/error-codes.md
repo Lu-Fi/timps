@@ -1,9 +1,9 @@
 # timps `/control` error codes
 
-**Applies to timps v1.11.2.** All of it is
+**Applies to timps v1.12.0.** All of it is
 **since v1.10.1**; older builds have no `errors` object, no
-`rotation_state` and no `caps.err_v`. 1.11.0 to 1.11.2 add no code (`caps.err_v`
-stays `1`); 1.11.2 retires 208.
+`rotation_state` and no `caps.err_v`. 1.11.0 to 1.12.0 add no code (`caps.err_v`
+stays `1`); 1.12.0 retires 208.
 
 Source: `src/err_codes.h` (the numbers), `src/control.c` (where a POST
 reports them), `src/hal/fs_rot_env.h` (the rotation envelopes). The WebUI
@@ -45,8 +45,8 @@ unrelated `bitrate` change does not repeat it.
 | 204 | `ERR_ROT_SIZE` | Picture too large. T31: at most 1280x704 pixels. T10/T20/T21: at most 704x576 pixels, whatever the libimp reports. T23/T30: the OpenIMP limits (currently 1280x720), 704x576 without them. Also a channel the OpenIMP reports no limits for. | Lower `videoN.width`/`videoN.height`. |
 | 205 | `ERR_ROT_FPS` | Frame rate too high. T31: at most 15 fps (`videoN.fps`). The OpenIMP FrameSource rotate (T10/T20/T21/T23/T30) has no fps limit. | `videoN.fps` ≤ 15. |
 | 206 | `ERR_ROT_LIB` | T10/T20/T21/T23/T30: the libimp cannot rotate - no `IMP_FrameSource_SetChnRotate`, or the OpenIMP stub that accepts it without rotating (thingino `ciao` pin `9cab219`). In a POST only after a start has seen it. | An OpenIMP that rotates on this SoC: T1x first in `6b7f5ae`, T23/T30 OpenIMP `next` `17082ed3` or later. |
-| 207 | `ERR_ROT_REFUSED` | libimp refused the rotation at start (only in `rotation_state`): T31 `SetChnRotate` failed, or an OpenIMP refused the geometry (T1x `6857610`, `0c02f45`, `636b6ac` refuse every 90/270). Until v1.11.2 also a failed T23 `IMP_Encoder_YuvInit`. | Read the `video<N>:` WARN line in `logread`; try a smaller, aligned sub-stream geometry; on T1x upgrade OpenIMP. |
-| 208 | `ERR_ROT_SMALL` | Unused since v1.11.2 (was: the removed T23 software rotate, source height below 256). The number stays reserved. | — |
+| 207 | `ERR_ROT_REFUSED` | libimp refused the rotation at start (only in `rotation_state`): T31 `SetChnRotate` failed, or an OpenIMP refused the geometry (T1x `6857610`, `0c02f45`, `636b6ac` refuse every 90/270). Until v1.12.0 also a failed T23 `IMP_Encoder_YuvInit`. | Read the `video<N>:` WARN line in `logread`; try a smaller, aligned sub-stream geometry; on T1x upgrade OpenIMP. |
+| 208 | `ERR_ROT_SMALL` | Unused since v1.12.0 (was: the removed T23 software rotate, source height below 256). The number stays reserved. | — |
 
 Reserved, no codes yet: **3xx** FrontCrop (`image.fcrop_*`, see
 `caps.fcrop.state`), **4xx** encoder ROI (see `caps.roi.rejected`), **5xx**

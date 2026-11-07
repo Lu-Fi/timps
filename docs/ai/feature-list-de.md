@@ -29,7 +29,7 @@ prudynt-t / raptor.
 * **Zwei Videostreams** (`video0.*` = Haupt-, `video1.*` = Substream), jeweils
   H.264 oder H.265 (`videoN.codec = h264 | h265`), eigene Auflösung, FPS,
   Bitrate und Ratenkontrolle. H.265 nicht auf T10/T20/T23 (dort wird es zu
-  H.264). **T30 (seit v1.11.2)**: mit Hersteller-libimp wie konfiguriert, mit
+  H.264). **T30 (seit v1.12.0)**: mit Hersteller-libimp wie konfiguriert, mit
   OpenIMP nur, wenn die libimp `OpenIMP_Cap_H265` exportiert, sonst H.264
   mit einer WARN. Ohne `videoN.width/height` gelten 1920x1080 bzw.
   640x360; **seit v1.10.0** wird stattdessen eine kleinere
@@ -45,7 +45,7 @@ prudynt-t / raptor.
   (Frigate, Aufnahme, weitere Zuschauer) bleiben unberührt.
 * **JPEG & MJPEG** – `/snapshot.jpg` und `/stream.mjpeg` (`jpeg.enabled`,
   `jpeg.width/height/quality/fps/imp_chn`), optional zusätzlich als Datei
-  (`jpeg.snapshot_path`). **Seit v1.11.2** veröffentlicht timps mit OpenIMP
+  (`jpeg.snapshot_path`). **Seit v1.12.0** veröffentlicht timps mit OpenIMP
   kein JPEG, das die Bibliothek bei ausgelastetem Encoder nur wiederholt
   (höchstens 4 in Folge, Zähler `jpeg_reuse` in `GET /control`).
 * **JPEG in Stream-Auflösung** – ein zusätzlicher JPEG-Encoder kann auf jedem
@@ -71,7 +71,7 @@ prudynt-t / raptor.
   nur erzeugt, solange mindestens ein Client zusieht. Im Leerlauf praktisch
   0 % CPU. Nicht konfigurierbar, das ist das Grundverhalten.
 * **FrameSource-Keepalive** (**seit v1.10.0**) –
-  `general.fs_keepalive` (`-1`/`auto`, `0`/`off`, `1`/`on`, **seit v1.11.2
+  `general.fs_keepalive` (`-1`/`auto`, `0`/`off`, `1`/`on`, **seit v1.12.0
   Standard `1`**; nur per Datei,
   Neustart; ein unbekanntes Wort wird mit Warnung als `auto` gelesen, ein
   Tippfehler schaltet den Keepalive also außer auf OpenIMP T23/T40/T41 **aus**):
@@ -88,14 +88,14 @@ prudynt-t / raptor.
 * **Ratenkontrollmodi** `videoN.rc_mode = cbr | vbr | fixqp | smart |
   capped_vbr | capped_quality`, dazu `bitrate`, `gop`, `profile` (0 Baseline,
   1 Main, 2 High), `qp`, `min_qp`, `max_qp`, `buffers`. `caps.capped_rc`
-  (**seit v1.11.2**) sagt, ob `capped_*` wirklich gedeckelt läuft (`1`) oder
+  (**seit v1.12.0**) sagt, ob `capped_*` wirklich gedeckelt läuft (`1`) oder
   als VBR (`0`).
 * **Klassische SoC-Ratenkontrolle (T10–T30)** zusätzlich über `quality_lvl`
   (0–7), `change_pos` (50–100), `i_bias_lvl` (−3…3) und `fluc_lvl` (nur H.265).
-  Live auf H.264-Streams; **seit v1.11.2** auf T30 auch auf H.265-Streams
+  Live auf H.264-Streams; **seit v1.12.0** auf T30 auch auf H.265-Streams
   (Hersteller-libimp und OpenIMP; `fluc_lvl`, `fps`, `gop` und `codec` bleiben
   Neustart-Keys). Auf T21 bleibt H.265 neustartgebunden.
-* **T20-Makroblock-Ratenkontrolle** `videoN.mbrc` (**seit v1.11.2**, Default
+* **T20-Makroblock-Ratenkontrolle** `videoN.mbrc` (**seit v1.12.0**, Default
   `0`, Neustart): Hersteller-libimp und OpenIMP haben sie sonst an; bei
   1080p15 kostete sie den Streamer ~35 % statt ~7 % CPU. Aus = etwas gröberes
   erstes Schlüsselbild bei niedriger Bitrate.
@@ -149,7 +149,7 @@ prudynt-t / raptor.
   T10/T20/T21 experimentell. **T31 mit OpenIMP** über `SetChnRoiAttr`
   (vom OpenIMP-Maintainer getestet, in timps nur Host-Tests); vendor T31
   lehnt ab (kein Symbol). Vendor T23 lehnt ab (der Encoder speichert die
-  Region nur), dazu vendor T30 und C100. **Seit v1.11.2** ist T30 mit OpenIMP
+  Region nur), dazu vendor T30 und C100. **Seit v1.12.0** ist T30 mit OpenIMP
   wirksam (Familie A, `IMP_Encoder_SetChnROI`, OpenIMP 03dd0ce3, vom
   OpenIMP-Maintainer getestet). **Seit v1.11.0** T40/T41 mit OpenIMP
   experimentell (`OpenIMP_Cap_EncRoi`, nur QP-Deltas). **Seit v1.10.1** ist T23 mit
@@ -166,7 +166,7 @@ prudynt-t / raptor.
   16-aligned, max. 704x576 (z. B. 640x368), auch wenn die libimp mehr meldet;
   auf Hardware noch ungetestet.
   Ein OpenIMP ohne Rotation erkennt timps beim Start, der Stream läuft dann
-  ungedreht. **Seit v1.11.2** drehen auch T23 und T30 über denselben
+  ungedreht. **Seit v1.12.0** drehen auch T23 und T30 über denselben
   FrameSource-Pfad (`IMP_FrameSource_SetChnRotate`), nur in OpenIMP-Builds
   (OpenIMP `next` `17082ed3` oder neuer); die Grenzen meldet OpenIMP über
   `OpenIMP_FS_RotateLimits` (derzeit T23 und T30 1280x720, Ausrichtung 16).
@@ -194,11 +194,11 @@ prudynt-t / raptor.
   v1.10.0** je SoC begrenzt (0..255 auf T10/T20/T30, Neutral 128;
   0..4095 auf T21/T23/T31, Neutral 256). Auf T41 gibt es mit OpenIMP
   `ae_compensation` und `sinter_strength` (seit v1.9.33) sowie
-  `temper_strength` (**seit v1.10.0**). **Seit v1.11.2** hat T40
+  `temper_strength` (**seit v1.10.0**). **Seit v1.12.0** hat T40
   `ae_compensation` (AE-Ziel wie auf T41) und `max_again` (Obergrenze der
   analogen AE-Verstärkung, 1024 × 2^(Wert/32)), mit Hersteller- und
   OpenIMP-libimp.
-* **T30-ISP (seit v1.11.2, Hersteller- und OpenIMP-libimp)**:
+* **T30-ISP (seit v1.12.0, Hersteller- und OpenIMP-libimp)**:
   `sinter_strength`, `temper_strength` und `dpc_strength` bilden 0..255 auf
   die 50..150 % des T30 ab (128 = 100 %, das Herstellerbild; vorher wurde 128
   als 128 % geschrieben), `dpc_strength` über `SetDPStrength`;
@@ -297,13 +297,13 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   `OpenIMP_Cap_AwbZone`/`_AwbStatistics`); Status `daynight.color_trigger`
   (`on`/`off`/`unavailable`) und `color_dev_pct`. Auf dem Gerät getestet nur
   auf T40 (Hersteller) und T20 (OpenIMP).
-* **Nur nahe am Tag prüfen (seit v1.11.2)** – ein Blick fragt nur dann nach
+* **Nur nahe am Tag prüfen (seit v1.12.0)** – ein Blick fragt nur dann nach
   einer Prüfung mit dem Tagbild, wenn `k × dunkel` höchstens 4 × `day_gain`
   beträgt. Vorher fragten Farb-Blicke in der Dämmerung schon bei 19 ×
   `day_gain` und kosteten je ein Klickpaar. `daynight.day_trigger` meldet
   jetzt die tatsächlich benutzte Schwelle und kann daher unter `day_gain`
   liegen.
-* **Dunkler, aber andere Farbe (seit v1.11.2)** – wird das IR-beleuchtete
+* **Dunkler, aber andere Farbe (seit v1.12.0)** – wird das IR-beleuchtete
   Bild dunkler und bleibt seine Farbe dabei 20 s lang um mehr als
   `color_pct` verschoben (eine Lampe geht an, während das Infrarot anderer
   Kameras im Raum ausgeht), startet die Kamera einen Farb-Blick. Den dunkleren
@@ -348,7 +348,7 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   nächste Tick).
   Snapshots direkt danach warten bis zu ~3,5 s (max. 5 s) auf die AE, Streams
   sind die ersten 1-4 s dunkel. Voraussetzungen: FrameSource-Keepalive
-  (seit v1.11.2 Standard `1`; auto nur OpenIMP T23/T40/T41), Modus `auto`, `timps-irprobe` mit den Verben
+  (seit v1.12.0 Standard `1`; auto nur OpenIMP T23/T40/T41), Modus `auto`, `timps-irprobe` mit den Verben
   `idle`/`state` (Firmware ab 2026-10), kein Weißlicht in
   `daynight.controls`. Warum aus: Bei 850 nm sieht man am Erlöschen des
   Glimmens, dass niemand zusieht oder aufnimmt. Status `daynight.ir_idle` (`reason`: `disabled`,
@@ -645,7 +645,7 @@ wird die WebSocket-Variante (statt CGI-Polling) aktiviert.
 * **Audio**: `IMP_AI_SetAlcGain` (`audio.alc_gain`) nur auf T21/T31/C100.
 * **Rotation**: Hardware-I2D auf T40/T41, FrameSource-Rotate auf T31 und,
   nur mit OpenIMP, auf T10/T20/T21 (seit v1.10.0, nur Sub-Streams) sowie
-  T23/T30 (seit v1.11.2); gar nicht auf C100 und mit Hersteller-libimp auf
+  T23/T30 (seit v1.12.0); gar nicht auf C100 und mit Hersteller-libimp auf
   T10/T20/T21/T23/T30.
 * **AWB-Statistik für den Farb-Auslöser (seit v1.11.0)**: T40/T41, T23/T31/C100,
   T10/T20 mit OpenIMP; nicht auf Hersteller-T10/T20/T21, T21 mit OpenIMP und

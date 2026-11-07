@@ -16,7 +16,7 @@ general.syslog              = 1      # 1 = also log to syslog so messages show u
                                      #     0 = stderr only (foreground / host sim)
 general.imp_polling_timeout = 500    # ms, encoder poll timeout
 general.osd_pool_size       = 1024   # KB, IMP OSD pool (this is the default)
-# FrameSource keepalive: 1 on (the default since v1.11.2: FrameSources run
+# FrameSource keepalive: 1 on (the default since v1.12.0: FrameSources run
 # from start to stop, encoders stay on-demand; idle CPU/heat cost unmeasured,
 # ~6.3 MB rmem for a 1080p main stream stays allocated), 0 off (FrameSources
 # run only while something consumes), -1 auto (the default up to v1.11.1: on
@@ -341,7 +341,7 @@ video1.jpeg_chn     = 4
 #              if the libimp reports more, and only with an OpenIMP that
 #              rotates on T1x; any other OpenIMP: the stream starts unrotated
 #              with a warning. Not yet tested on hardware.
-#   T23, T30 : 90/270 only in OpenIMP builds (since v1.11.2, OpenIMP next
+#   T23, T30 : 90/270 only in OpenIMP builds (since v1.12.0, OpenIMP next
 #              17082ed3 or later), same FrameSource rotate as T10/T20/T21;
 #              OSD, privacy and motion stay on the rotated stream. Limits
 #              come from OpenIMP (now <=1280x720, 16-px aligned, every
@@ -358,7 +358,7 @@ video1.jpeg_chn     = 4
 # where the SoC's SDK allows it:
 #   T10..T30 (incl. T23): rc_mode, bitrate, qp, min_qp, max_qp, quality_lvl,
 #                         change_pos, i_bias_lvl   (H264 streams; on T30 also
-#                         H265 streams since v1.11.2; T21 H265: restart)
+#                         H265 streams since v1.12.0; T21 H265: restart)
 # codec h265: not on T10/T20/T23 (-> h264); T30 with OpenIMP only when the
 # libimp exports OpenIMP_Cap_H265 (else -> h264 with a warning).
 #   T31/C100:             bitrate, min_qp, max_qp, i_bias_lvl
@@ -834,7 +834,7 @@ daynight.isp_path       = /proc/jz/isp/isp-m0  # ISP exposure proc file (never r
 # timelapse, recording, motion detection, jpeg.snapshot_path) for
 # ir_idle_linger_s, switch only the IR illuminator off and decide at the next
 # consumer from what the AE measured meanwhile. Needs the framesource
-# keepalive (general.fs_keepalive, default 1 since v1.11.2), otherwise
+# keepalive (general.fs_keepalive, default 1 since v1.12.0), otherwise
 # it stays inactive with a warning. 1 switches the IR LED off while nobody
 # watches, through irprobe_cmd's "idle" verb (thingino's timps-irprobe; it
 # relights on its own 15 min after timps stops renewing it). Status:

@@ -188,7 +188,7 @@ interval), every snapshot poll, every day/night switch and its two
 re-asserts, the boot kick followed a few ms later by the first timelapse shot.
 
 `general.fs_keepalive` (`-1`/`auto`, `0`/`off`, `1`/`on`; file-only, restart;
-since v1.10.0, default `1` since v1.11.2)
+since v1.10.0, default `1` since v1.12.0)
 removes them: `ing_start()` takes one reference on every video stream's
 FrameSource and on the dedicated `jpeg.*` one, after all channels exist and
 before motion and the boot kick, and `fs_teardown()` releases it at stop. The
@@ -198,7 +198,7 @@ The **encoders stay on-demand** (`StartRecvPic`/`StopRecvPic` with the same
 2 s debounce), which is the model prudynt-t and raptor use for the
 FrameSource, minus their always-running video encoders.
 
-* **Default `1`** (since v1.11.2): every build keeps its FrameSources from
+* **Default `1`** (since v1.12.0): every build keeps its FrameSources from
   start to stop. The cost of a FrameSource that runs 24/7 (CPU in libimp's
   workers, OSD blending, DDR bandwidth, heat, the ~6.3 MB + ~0.7 MB of rmem
   pools held instead of released) has not been measured.
@@ -207,7 +207,7 @@ FrameSource, minus their always-running video encoders.
   with OpenIMP then keep the on-demand FrameSource: no hang is known there.
   An unknown word parses as auto, so with the default `1` a typo turns the
   keepalive **off** on those builds.
-* **Exempt:** none since v1.11.2 (up to v1.11.1 the T23 software-rotated
+* **Exempt:** none since v1.12.0 (up to v1.11.1 the T23 software-rotated
   streams, a path that was removed).
 * **JPEG recovery:** with the FrameSource kept, the open-stack T23 JPEG
   cold-start recovery and the JPEG miss watchdog restart only the encoder,

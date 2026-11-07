@@ -261,7 +261,7 @@ Consequences worth stating to a user:
   T21/T23/T31, 0..65535 elsewhere — up to v1.9.33 0..65535 everywhere).
 - `general.fs_keepalive` takes `-1`/`0`/`1` (clamped) or `auto`/`on`/`off`
   (and `true`/`false`/`yes`/`no`); any other word logs a warning and becomes
-  `-1` (auto). **Since v1.11.2** the default is `1`, so a typo turns the
+  `-1` (auto). **Since v1.12.0** the default is `1`, so a typo turns the
   keepalive **off** on every SoC except OpenIMP T23/T40/T41.
 - `motion.cols`/`motion.rows` clamp so that `cols × rows ≤ MOTION_CELL_LIMIT`
   (`src/motion_caps.h`; 52 on most SDKs, **4** on the old T10/T20 3.9.0 SDK).
@@ -574,7 +574,7 @@ timps starts the framesource/encoder **when a client attaches** and stops it
   `running_mode` or flip change (day/night switch, re-assert, probe); **since
   v1.10.0** the disable comes after the 2 s debounce, before it came
   500 ms after the enable.
-- **Open-stack T23/T40/T41 (since v1.10.0), every SoC since v1.11.2:**
+- **Open-stack T23/T40/T41 (since v1.10.0), every SoC since v1.12.0:**
   `general.fs_keepalive` defaults to on there, so each stream logs `framesource N enabled` once at
   start and `framesource N disabled (idle)` **never** while the daemon runs;
   `video chnN idle` (the encoder) still appears. A `disabled (idle)` line on
@@ -785,7 +785,7 @@ Capability matrix (`src/rotate_caps.h`):
 | --- | --- | --- |
 | T40, T41 | `ROT_HAS_HW_I2D` — true hardware I2D rotate | **Yes**, genuine per-channel |
 | T31 | `ROT_HAS_FS_ROTATE` — libimp FrameSource rotate | No |
-| T10, T20, T21, T23, T30 | OpenIMP builds only (`ROT_HAS_FS_ROTATE`; T10/T20/T21 **since v1.10.0**, T23/T30 **since v1.11.2**), and only with an OpenIMP that rotates on that SoC (T1x first in `6b7f5ae`; T23/T30 OpenIMP `next` `17082ed3`+); otherwise the stream starts unrotated. T10/T20/T21: sub streams only, 16-aligned, at most 704x576, whatever the libimp reports. T23/T30: the limits from `OpenIMP_FS_RotateLimits` (currently 1280x720, align 16, every channel); without them as T10/T20/T21. Vendor libimp: **No** — coerced to 0 | No |
+| T10, T20, T21, T23, T30 | OpenIMP builds only (`ROT_HAS_FS_ROTATE`; T10/T20/T21 **since v1.10.0**, T23/T30 **since v1.12.0**), and only with an OpenIMP that rotates on that SoC (T1x first in `6b7f5ae`; T23/T30 OpenIMP `next` `17082ed3`+); otherwise the stream starts unrotated. T10/T20/T21: sub streams only, 16-aligned, at most 704x576, whatever the libimp reports. T23/T30: the limits from `OpenIMP_FS_RotateLimits` (currently 1280x720, align 16, every channel); without them as T10/T20/T21. Vendor libimp: **No** — coerced to 0 | No |
 | C100 | **No** — coerced to 0 | No |
 
 On every SoC except T40/T41, `rotation = 180` logs
@@ -800,7 +800,7 @@ lands on the same physical direction it did there.
 
 **Direction is not uniform.** On T40/T41, 90 = clockwise; on T31 and
 T10/T20/T21/T23/T30, 90 = counter-clockwise (kept numerically aligned with
-prudynt-t/raptor). **T23 changed in v1.11.2**: the removed software rotate
+prudynt-t/raptor). **T23 changed in v1.12.0**: the removed software rotate
 turned 90 clockwise, the OpenIMP FrameSource rotate turns it
 counter-clockwise. A T23 whose picture is upside down after the upgrade
 needs `90` and `270` swapped.
@@ -819,7 +819,7 @@ and says so:
 - `FS_SetI2dAttr N failed (rotation may stay inactive)`
 
 **T10/T20/T21 FrameSource rotate rejections** (OpenIMP builds, **since
-v1.10.0**) — the stream comes up **unrotated** and says so. **Since v1.11.2**
+v1.10.0**) — the stream comes up **unrotated** and says so. **Since v1.12.0**
 timps keeps T10/T20/T21 in this envelope even when the libimp reports more
 (OpenIMP before `2c9cd7b5` reported 4096x4096, align 2), so the cap text
 stays `<=704x576 pixels, ...`:
@@ -848,7 +848,7 @@ stays `<=704x576 pixels, ...`:
   `[FS] SetChnRotate chN: unsupported rotTo90=M 0x0` once per rotated stream
   start — the 0x0 check above, expected with a rotating OpenIMP.
 
-**T23 and T30** (OpenIMP builds, **since v1.11.2**) use the same
+**T23 and T30** (OpenIMP builds, **since v1.12.0**) use the same
 FrameSource rotate and print the same lines. An OpenIMP exporting
 `OpenIMP_FS_RotateLimits` sets the envelope per channel (current OpenIMP:
 T23 and T30 1280x720, align 16, the same for every channel, no fps cap; an
@@ -1075,8 +1075,8 @@ brings it back.
 
 | Log line (`src/daynight.c`) | Level | Meaning |
 | --- | --- | --- |
-| `look (<why>): lit L dark D bar B -> check\|night\|locked (N s)` | D | A look: `why` = `timer`, `jump`, `requested`, `idle`, **since v1.11.0** `color`, **since v1.11.2** `near` (a creep close to the bar). **Since v1.11.0** `locked (N s)`: the look predicts day but a lockout after failed checks holds the check back N s more (before: `-> check` with no check). |
-| `look (<why>) skipped: lit L, bar B` | D | **Since v1.11.2.** The lit level is already above the bar, so the look could only find night: the illuminator stays on and L becomes the reference. |
+| `look (<why>): lit L dark D bar B -> check\|night\|locked (N s)` | D | A look: `why` = `timer`, `jump`, `requested`, `idle`, **since v1.11.0** `color`, **since v1.12.0** `near` (a creep close to the bar). **Since v1.11.0** `locked (N s)`: the look predicts day but a lockout after failed checks holds the check back N s more (before: `-> check` with no check). |
+| `look (<why>) skipped: lit L, bar B` | D | **Since v1.12.0.** The lit level is already above the bar, so the look could only find night: the illuminator stays on and L becomes the reference. |
 | `colour moved N %` / `colour back to the scene before the look` | D | **Since v1.11.0.** The `color_pct` trigger fired / the colour returned after a colour look that found night (new reference, no look). |
 | `colour statistics: N us per read` | I | **Since v1.11.0.** Logged once (third read): the AWB statistics work on this camera. |
 | `check (<why>): day, exposure E < G` / `check (<why>): night, exposure E` | I | The day pipeline's verdict. `why` adds `boot`, `guarantee`. |
@@ -1255,7 +1255,7 @@ back on immediately.
 
 `daynight.ir_idle.reason` when it does **not** act: `disabled`, `schedule`,
 `keepalive` (no FrameSource keepalive: `general.fs_keepalive = 0`, or auto,
-which is on only for OpenIMP T23/T40/T41; the default is `1` since v1.11.2),
+which is on only for OpenIMP T23/T40/T41; the default is `1` since v1.12.0),
 `no_illuminator`, `white_light`, `hook`. The WebUI's Day / Night page shows
 the same as a chip ("not available: …" with the fix); while that page is
 open its own preview counts as a viewer, so it reads "IR on · watched".
@@ -2685,11 +2685,11 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `rotation %d unsupported on this SoC -> 0` | W | No 90/270 path here, or `USE_ROTATE` is off. | §2.6 |
 | `rotation 180 unsupported on this SoC -> 0 (use image.hflip+image.vflip)` | W | 180 is real only on T40/T41. | `image.hflip = 1` + `image.vflip = 1`. |
 | `codec h265 unsupported on this SoC -> h264` | W | T10/T20/T23 have no H.265 encoder (T23: the SDK marks every H.265 rc struct unsupported). Coerced at parse time so the read-back matches what is emitted. | Use `h264`. |
-| `codec h265 needs an OpenIMP with T30 H.265 (OpenIMP_Cap_H265) -> h264` | W | **since v1.11.2.** T30 with OpenIMP: the libimp does not export `OpenIMP_Cap_H265`, so the stream runs H.264. The vendor T30 libimp takes h265 as configured. | Use `h264`, or an OpenIMP with T30 H.265. |
+| `codec h265 needs an OpenIMP with T30 H.265 (OpenIMP_Cap_H265) -> h264` | W | **since v1.12.0.** T30 with OpenIMP: the libimp does not export `OpenIMP_Cap_H265`, so the stream runs H.264. The vendor T30 libimp takes h265 as configured. | Use `h264`, or an OpenIMP with T30 H.265. |
 | `audio.codec2 '%s' unsupported (pcmu or off) -> off` | W | `audio.codec2` takes `pcmu` or `off` only — deliberately not defaulting to AAC. | `audio.codec2 = pcmu`. |
 | `%s%s = '%s' is not a valid value and was read as %d - that is PLAINTEXT, no TLS. Valid: %s` | W | A typo in `http.https` or `rtsp.tls`. **TLS is off.** | Fix the value (0/1/2). §1.5, §8.4 |
 | `daynight.mode: unknown '%s', keeping auto` | W | Valid: `auto`, `schedule` (plus the legacy `sensor`/`time`/`sun`). | |
-| `%s%s = '%s' is not a valid value, using -1 (auto). Valid: auto, on, off, -1, 0, 1` | W | **since v1.10.0.** `general.fs_keepalive` with a word it does not know; auto applies. **Since v1.11.2** (default `1`) that turns the keepalive off on every SoC except OpenIMP T23/T40/T41. | Fix the line. |
+| `%s%s = '%s' is not a valid value, using -1 (auto). Valid: auto, on, off, -1, 0, 1` | W | **since v1.10.0.** `general.fs_keepalive` with a word it does not know; auto applies. **Since v1.12.0** (default `1`) that turns the keepalive off on every SoC except OpenIMP T23/T40/T41. | Fix the line. |
 | `unknown osd item key %s` / `unknown privacy key %s` / `unknown video key %s` / `unknown key %s` | W | The key does not exist in this build. **It is dropped.** **since v1.9.28** `unknown key osd.vars_file` is expected on an old config: the key was removed and the path is fixed at `/tmp/timps_osd.vars`. | Check `GET /control?fields=1`; delete an `osd.vars_file` line. |
 | `videoN.max_gop is reserved and IGNORED - the keyframe interval comes from videoN.gop` | W | Compat-only key. | Use `videoN.gop`. §1.6 |
 | `osd.hinting is stored but has no effect in this build (compiled without OSD text autohinting)` | W | Built without `USE_OSD_HINTING`. | §1.6 |
@@ -2740,7 +2740,7 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `framesource %d: EnableChn failed (attempt %d)` | E | **since v1.9.28**. Until v1.9.27 `framesource %d: EnableChn failed%s` (`%s` = ` (retry)`), logged on every attempt. The framesource channel would not enable. Logged on the 1st and every 20th attempt. | See the line above; also §2.2. |
 | `framesource %d: %d reference(s) still held at teardown` | W | Subscriber accounting leak at shutdown. | Report as a bug. |
 | `framesource %d enabled` / `framesource %d disabled (idle)` | I | A real `EnableChn`/`DisableChn` edge. On-demand: per wake (client, snapshot, timelapse shot, latch kick). With `general.fs_keepalive` on: `enabled` once per start, `disabled (idle)` never. | Nothing; see §2.1. |
-| `framesource keepalive %s (general.fs_keepalive=%d%s)` | I | **since v1.10.0.** Once per start: `on`/`off`, the raw value, `, auto` when it was `-1`. With the default (since v1.11.2): `on (general.fs_keepalive=1)`. | `off` without `general.fs_keepalive = 0` in the file → a typo (auto) or an explicit `-1`; §2.1. |
+| `framesource keepalive %s (general.fs_keepalive=%d%s)` | I | **since v1.10.0.** Once per start: `on`/`off`, the raw value, `, auto` when it was `-1`. With the default (since v1.12.0): `on (general.fs_keepalive=1)`. | `off` without `general.fs_keepalive = 0` in the file → a typo (auto) or an explicit `-1`; §2.1. |
 | `FS_CreateChn %d` / `FS_SetChnAttr %d failed` | E | Framesource geometry rejected. | Check `videoN.width`/`height` against the sensor. |
 | `FS_SetI2dAttr %d failed (rotation may stay inactive)` | W | T40/T41 belt-and-braces rotation call. | §2.6 |
 | `Encoder_CreateGroup %d failed` / `Encoder_CreateChn %d` / `Encoder_RegisterChn %d to group %d failed` | E | Encoder bring-up failed. | Check resolution, codec and `rc_mode` against the SoC. |
@@ -2781,8 +2781,8 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `snapshot %s: %s` | W | Writing the periodic snapshot file failed. | Check `jpeg.snapshot_path`. |
 | `jpeg.quality=%d not applied on T10, SDK default kept` | W | T10 special case, mirroring prudynt-t: custom quantization tables are known to degrade JPEG quality there. | Nothing to do. |
 | `IMP_Encoder_SetJpegeQl(chn%d,q%d) failed (JPEG left at default)` | W | The quantization table was rejected. | |
-| `live rc change on an H265 stream: the classic SDK's SetChnAttrRcMode is H264-only - applies on restart` | W | **H.265 rate control is restart-only on T21** (once per start). **Since v1.11.2** a T30 H.265 stream takes live rc keys at once and never logs this. | Restart. §2.5 |
-| `Encoder_SetMbRC %d (%d) failed` | W | **since v1.11.2.** T20: the libimp refused `videoN.mbrc` for this channel (channel, value); the encoder keeps the libimp default (on). | Check the libimp; the stream still runs. |
+| `live rc change on an H265 stream: the classic SDK's SetChnAttrRcMode is H264-only - applies on restart` | W | **H.265 rate control is restart-only on T21** (once per start). **Since v1.12.0** a T30 H.265 stream takes live rc keys at once and never logs this. | Restart. §2.5 |
+| `Encoder_SetMbRC %d (%d) failed` | W | **since v1.12.0.** T20: the libimp refused `videoN.mbrc` for this channel (channel, value); the encoder keeps the libimp default (on). | Check the libimp; the stream still runs. |
 | `SetChnAttrRcMode chn%d failed - value applies on restart` | W | Live rc refused. | §2.5 |
 | `SetChnBitRate chn%d failed - value applies on restart` | W | Live bitrate refused. | §2.5 |
 | `SetChnQpBounds chn%d failed - value applies on restart` | W | Live QP bounds refused. | §2.5 |
@@ -2804,9 +2804,9 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `video%d: refusing FS-rotate %dx%d@%d exceeds FS-rotate cap (%s) - stream will run UNROTATED` | W | Past the cap: T31 1280x704 at 15 fps; T10/T20/T21 704x576 whatever the libimp reports; T23/T30 the OpenIMP limits (`the limits this OpenIMP reports`, currently 1280x720), 704x576 without them. `this OpenIMP does not rotate this channel` = the OpenIMP reports no limits for it. | §2.6 |
 | `video%d: FS-rotate refused on the main stream (sub streams only) - UNROTATED` | W | **since v1.10.0.** T10/T20/T21: `video0` is never rotated. T23/T30: not unless the OpenIMP reports limits for it. | §2.6 |
 | `video%d: FS-rotate enable (SetChnRotate) failed - disabling rotation for this stream, bringing it up UNROTATED` | W | T31: the SDK call failed. | §2.6 |
-| `video%d: SetChnRotate is an OpenIMP stub - UNROTATED (needs an OpenIMP that rotates on this SoC)` | W | **since v1.10.0** (up to v1.11.1 ending in `(needs OpenIMP 6b7f5ae+)`). T10/T20/T21 (since v1.11.2 also T23/T30): the OpenIMP stubs `SetChnRotate`. | Upgrade OpenIMP or set rotation 0. §2.6 |
-| `video%d: SetChnRotate refused %dx%d - UNROTATED` | W | **since v1.10.0** (up to v1.11.1 ending in `(needs OpenIMP 6b7f5ae+)`). T10/T20/T21 (since v1.11.2 also T23/T30): the OpenIMP refused this geometry, or cannot rotate at all. | §2.6 |
-| `video%d: libimp has no IMP_FrameSource_SetChnRotate - UNROTATED (needs an OpenIMP that rotates on this SoC)` | W | **since v1.10.0** (up to v1.11.1 ending in `(needs OpenIMP 6b7f5ae+)`). T10/T20/T21 (since v1.11.2 also T23/T30): no rotate entry point in libimp. | §2.6 |
+| `video%d: SetChnRotate is an OpenIMP stub - UNROTATED (needs an OpenIMP that rotates on this SoC)` | W | **since v1.10.0** (up to v1.11.1 ending in `(needs OpenIMP 6b7f5ae+)`). T10/T20/T21 (since v1.12.0 also T23/T30): the OpenIMP stubs `SetChnRotate`. | Upgrade OpenIMP or set rotation 0. §2.6 |
+| `video%d: SetChnRotate refused %dx%d - UNROTATED` | W | **since v1.10.0** (up to v1.11.1 ending in `(needs OpenIMP 6b7f5ae+)`). T10/T20/T21 (since v1.12.0 also T23/T30): the OpenIMP refused this geometry, or cannot rotate at all. | §2.6 |
+| `video%d: libimp has no IMP_FrameSource_SetChnRotate - UNROTATED (needs an OpenIMP that rotates on this SoC)` | W | **since v1.10.0** (up to v1.11.1 ending in `(needs OpenIMP 6b7f5ae+)`). T10/T20/T21 (since v1.12.0 also T23/T30): no rotate entry point in libimp. | §2.6 |
 
 ### 12.7 `HAL_ING` — image / AE
 
@@ -2822,13 +2822,13 @@ curl -s -X POST -H "X-Timps-Token: $T" http://<cam>:8880/control \
 | `image.fcrop_upscale_pct=%d ignored: no open-tx-isp fcrop_upscale_pct on this camera` | W | **Since v1.11.0.** A file value where `caps.fcrop.upscale_max` is -1. | Remove the key. §2.8 |
 | `image.fcrop_upscale_pct: cannot write %s: %s` | W | **Since v1.11.0.** The driver parameter could not be written; the driver keeps its value. | Check the open-tx-isp module. §2.8 |
 | `image.fcrop: the active %ux%u window no longer fits - full %dx%d sensor` | W | **Since v1.11.0.** A lowered `image.fcrop_upscale_pct` made the active window too small; the crop is off until a window that fits. | Raise the key or enlarge the window. §2.8 |
-| `GetAeScenceAttr failed - ae_compensation not applied` / `SetAeScenceAttr(ae_compensation=%d) failed (rc=%d)` | W | T40 (**since v1.11.2**, vendor and OpenIMP) and T41 with OpenIMP: `image.ae_compensation` could not be read or written; the value stays persisted. | Check the libimp. |
-| `GetAeExprInfo failed - max_again not applied` | W | **since v1.11.2.** T40: the AE attributes could not be read, so `image.max_again` was not written. | Check the libimp. |
-| `SetAeExprInfo(max_again=%d) failed (rc=%d)` | W | **since v1.11.2.** T40: the AE analog gain ceiling was refused; the value stays persisted. | Check the libimp. |
-| `max_again=%d: AE analog gain ceiling %u (x1024), mode %d` | I | **since v1.11.2.** T40: the ceiling read back after a write (`1024 × 2^(value/32)`; mode 0 = auto, i.e. `160`, the stack's own ceiling; 1 = manual). | Nothing. |
-| `SetAntiFogAttr(%d) failed (rc=%d)` | W | **since v1.11.2.** T30: `image.defog_strength` was refused (`%d` is the SDK AntiFog mode: 0 off, 1 strong, 2 medium, 3 weak). | Check the libimp. |
-| `GetRawDRC failed - drc_strength not applied` | W | **since v1.11.2.** T30: the DRC attributes could not be read before the first change, so `image.drc_strength` was not written. | Check the libimp. |
-| `SetRawDRC(drc_strength=%d) failed (rc=%d)` | W | **since v1.11.2.** T30: `image.drc_strength` was refused; the value stays persisted. | Check the libimp. |
+| `GetAeScenceAttr failed - ae_compensation not applied` / `SetAeScenceAttr(ae_compensation=%d) failed (rc=%d)` | W | T40 (**since v1.12.0**, vendor and OpenIMP) and T41 with OpenIMP: `image.ae_compensation` could not be read or written; the value stays persisted. | Check the libimp. |
+| `GetAeExprInfo failed - max_again not applied` | W | **since v1.12.0.** T40: the AE attributes could not be read, so `image.max_again` was not written. | Check the libimp. |
+| `SetAeExprInfo(max_again=%d) failed (rc=%d)` | W | **since v1.12.0.** T40: the AE analog gain ceiling was refused; the value stays persisted. | Check the libimp. |
+| `max_again=%d: AE analog gain ceiling %u (x1024), mode %d` | I | **since v1.12.0.** T40: the ceiling read back after a write (`1024 × 2^(value/32)`; mode 0 = auto, i.e. `160`, the stack's own ceiling; 1 = manual). | Nothing. |
+| `SetAntiFogAttr(%d) failed (rc=%d)` | W | **since v1.12.0.** T30: `image.defog_strength` was refused (`%d` is the SDK AntiFog mode: 0 off, 1 strong, 2 medium, 3 weak). | Check the libimp. |
+| `GetRawDRC failed - drc_strength not applied` | W | **since v1.12.0.** T30: the DRC attributes could not be read before the first change, so `image.drc_strength` was not written. | Check the libimp. |
+| `SetRawDRC(drc_strength=%d) failed (rc=%d)` | W | **since v1.12.0.** T30: `image.drc_strength` was refused; the value stays persisted. | Check the libimp. |
 | `GetModule_Ratio failed - %s not applied` / `SetModule_Ratio(%s=%d) failed (rc=%d)` | W | T41 with OpenIMP: `sinter_strength` (since v1.9.33) or `temper_strength` (**since v1.10.0**) could not be written; the value stays persisted. | Check the OpenIMP/open-tx-isp build. |
 
 ### 12.8 `HAL_ING` — audio
@@ -3096,7 +3096,7 @@ write instead.**
 | --- | --- | --- | --- |
 | 6 | `video0.rotation = 180` on anything but T40/T41 | Coerced to 0 with a warning. | `image.hflip = 1` + `image.vflip = 1` |
 | 7 | `video0.rotation = 1` (meaning "true") | `1` is the legacy libimp enum for **90°**. | `0` to disable. |
-| 8 | `video0.rotation = 90` at `1280x720` on T23 (OpenIMP) | Over the 704×576 pixel cap (or `video0` refused when the OpenIMP reports no limits) — stream runs **unrotated**. Vendor-libimp T23 builds have no rotation at all (**since v1.11.2**). | Rotate a sub stream with 16-aligned dims, e.g. `640x368`. |
+| 8 | `video0.rotation = 90` at `1280x720` on T23 (OpenIMP) | Over the 704×576 pixel cap (or `video0` refused when the OpenIMP reports no limits) — stream runs **unrotated**. Vendor-libimp T23 builds have no rotation at all (**since v1.12.0**). | Rotate a sub stream with 16-aligned dims, e.g. `640x368`. |
 | 9 | `video0.rotation = 90` with `1920x1080@25` on T31 | Exceeds the vendor FS-rotate cap (≤1280×704, ≤15 fps) → **unrotated**. | Rotate the substream, or drop to 1280×704 @15. |
 | 10 | `video0.codec = h265` on T10/T20/T23 | Coerced to `h264` — deliberately, because before v1.8.1 it streamed H.264 **mislabelled as H.265** and broke players. | `h264` |
 | 11 | `video0.bitrate = 25000` at `fps = 25` | ~1 MB keyframes against a 1 MB AU buffer → **every keyframe dropped, no client ever decodes**. The warning fires above **~839 × fps kbps**, i.e. ~21 Mbps at 25 fps. | Anything under that; 3000–4096 kbps at 25 fps is the fleet norm. |
