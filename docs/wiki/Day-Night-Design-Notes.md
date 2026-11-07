@@ -732,3 +732,49 @@ would replace `DN_HOLD_REF_LEAD` with the thing that constant is standing in
 for. Do that when the hold is next opened, not before: the proxy is measured,
 bounded on both sides and has a negative control, which is more than the
 subsystem's last four constants started with.
+
+## v1.12.0 dawn
+
+The 1.10.1 engine wasted the dawn: the fleet logs of 125 mornings show 1276
+morning looks and 238 failed morning checks (click pairs), about 10 looks
+and 1.9 failed checks per camera and morning. The first failed check per dawn measures `k` (`Kf`); the
+rest were spent not using it. Changes in `src/daynight.c` (`a7721cb`):
+
+* **Skip a look that cannot find day**: without the illuminator the scene
+  reads no brighter, so a jump, colour or near look with lit × 0.9 ≥ bar is
+  not run; the lit level becomes the reference. Timer and requested looks,
+  and a look that only learns the bar, always run. 640 of the 1276 morning
+  looks sat above the bar.
+* **Creep or lamp by a 10 s step** (more than 15 % between two 10 s samples
+  is a lamp), replacing the 15 %-over-a-minute ramp test that dawn jumps
+  failed. A creeping look, also a colour look, gets the jump bar and
+  `day_gain / Kf`.
+* **Near-bar look**: last dark reading × lit / reference under 0.95 × bar
+  starts a look without a `jump_pct` step (cam-wohn 2026-11-07: a 0.5 % miss
+  at 08:21, then night until 09:21 although the scene would have read day
+  from 08:25).
+* **No lamp as the reference after a check**: a settled level `jump_pct`
+  brighter than the lit level before the check keeps the earlier reference.
+* Two one-line safety fixes: a railed check does not set `Kf`, and a check
+  under 1.5 × `day_gain` waits the 10 s hold (the AE still settling).
+
+Measured: replay corpus 77 pairs, 0 failed (six new families and profiles
+from the measured 2026-11-07 dawns of cam-wohn and cam-schuppen); a fleet
+what-if over 121 mornings: failed morning checks 178 → 94, day on average
+5 min later, about half of the morning looks skipped.
+
+Deliberately not done:
+
+* **The K cap stays 2.** It protects lamps after nights under foreign IR; a
+  second "creep K" would help only the first check after a restart, and `k`
+  drifts 20-40 % within one morning anyway.
+* **`Kf` stays 1 h.** Six expiries in 125 mornings against outlier `Kf`
+  values that would block for the rest of the morning; 3 h or the whole
+  morning bought 3 failed checks.
+* **No persisted or per-camera `k`.** It varies 1.5-2× per camera across
+  mornings, and a stale value is a new stuck mode that only a restart clears.
+* **No prior `k` before the first check.** −84 % failed checks on paper, +1 h
+  of night in the low-k rooms, where one lamp decides day.
+
+Report, with the field numbers, traces and the rejected variants:
+`dev_notes/DAWN_FABLE_REPORT_2026-11-07.md`.

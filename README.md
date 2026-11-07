@@ -43,9 +43,9 @@ exhaustive config-key reference (`config-keys.md`).
 ## Features
 
 - **Pure C**, only `libimp` + pthread (optional `libfaac` for AAC) — no heavyweight dependencies
-- **RTSP** — H.264 / H.265 video, AAC / G.711 audio
+- **RTSP** — H.264 / H.265 video, AAC / G.711 audio (T30 H.265 with OpenIMP needs a libimp exporting `OpenIMP_Cap_H265`, else h264)
 - **Browser preview** — fragmented-MP4 over MSE, plus JPEG snapshot & MJPEG
-- **On-demand encoding** — a stream is only encoded while a client is watching (idle ≈ 0 % CPU)
+- **On-demand encoding** — a stream is only encoded while a client is watching (idle ≈ 0 % CPU); since v1.12.0 the FrameSources keep running by default (`general.fs_keepalive = 1`), so the AE and day/night work while nobody watches
 - **Live control API** — `POST`/`GET /control`: change ISP image, audio, OSD, encoder/sensor & motion live and persist them; per-SoC capability reporting (`caps.*`)
 - **Event push stream** — `GET /events` (SSE): subscribe to `motion` / `daynight` / `stats` instead of polling
 - **Per-stream TrueType OSD** — independent overlay set per stream, placeholders (time, hostname, uptime, fps…), optional text outline/stroke
@@ -54,9 +54,9 @@ exhaustive config-key reference (`config-keys.md`).
 - **Native speaker output** — timps owns `IMP_AO` directly: ONVIF audio backchannel (two-way audio) and a system-sound play queue (WAV/Opus/PCM/G.711), no `/bin/iac` dependency
 - **Local recording & timelapse** — continuous or motion-triggered fragmented-MP4 segments to SD (pre/post-roll, free-space pruning), plus periodic JPEG timelapse capture
 - **Privacy masks** — solid cover rectangles per stream, live-adjustable
-- **Encoder ROI and ISP crop/zoom** — per-region QP on H.264 streams (`roi<S>.<N>.*`) and an ISP FrontCrop window (`image.fcrop_*`), both live (T23 crop: start-only on drivers without `fcrop_upscale_pct`); the per-SoC tier is in `caps.roi`/`caps.fcrop` (device-tested on T10/T20/T21 with OpenIMP, T31 ROI with a recent OpenIMP (d03ca24+) and T23 ROI with OpenIMP v2026.10.11-rc1+ by the OpenIMP maintainer; since v1.11.0 also T40/T41 with OpenIMP, crop through the ISP AutoZoom; experimental or refused elsewhere)
+- **Encoder ROI and ISP crop/zoom** — per-region QP on H.264 streams (`roi<S>.<N>.*`) and an ISP FrontCrop window (`image.fcrop_*`), both live (T23 crop: start-only on drivers without `fcrop_upscale_pct`); the per-SoC tier is in `caps.roi`/`caps.fcrop` (device-tested on T10/T20/T21 with OpenIMP, T31 ROI with a recent OpenIMP (d03ca24+) and T23 ROI with OpenIMP v2026.10.11-rc1+ by the OpenIMP maintainer; since v1.11.0 also T40/T41 with OpenIMP, crop through the ISP AutoZoom; since v1.12.0 T30 ROI with OpenIMP; experimental or refused elsewhere)
 - **Test pattern** (OpenIMP) — synthetic picture, moving objects scored against the motion detection, or the sensor's own pattern, from `/control` or the WebUI preview (since v1.11.0)
-- **Image rotation** — hardware 90/270 on T31/T40/T41, software 90/270 on T23 and (OpenIMP builds with an OpenIMP that has T1x rotation, sub streams) T10/T20/T21, plus genuine per-channel 180° on T40/T41 (I2D); on other SoCs a 180° flip is `image.hflip`+`image.vflip`
+- **Image rotation** — 90/270 on T31 (libimp) and T40/T41 (hardware I2D, plus genuine per-channel 180°); with OpenIMP on T10/T20/T21/T23/T30 through `IMP_FrameSource_SetChnRotate`, within OpenIMP's limits (`OpenIMP_Cap_FsRotate`). T23 with the vendor libimp has no rotation, and since v1.12.0 a T23 `90` turns the other way (see [CHANGELOG](CHANGELOG.md)); on other SoCs a 180° flip is `image.hflip`+`image.vflip`
 - **Optional HTTPS/RTSPS (mbedTLS) and MPEG-TS/SRT output**
 - **Optional WebRTC/WHEP** — H.264 (+ G.711) straight into a browser over ICE-lite/DTLS-SRTP, no plugin and no MSE buffering; LAN/VPN only (no NAT traversal)
 - **Authentication** — RTSP Digest, HTTP Digest/Basic (own MD5) + a `/control` token (per-boot + optional remote secret) with CORS
@@ -165,7 +165,6 @@ paths.
 | `USE_PLAY` | system-sound play queue (`/usr/sbin/play` protocol via a FIFO), native `IMP_AO`. Off by default |
 | `USE_PLAY_OPUS` | also decode Ogg-Opus in the play queue (needs `opusfile`); WAV/PCM/G.711 always work without it |
 | `USE_ROTATE` | image rotation (`videoN.rotation = 0\|90\|270`, plus `180` on T40/T41). Off by default |
-| `USE_SW_ROTATE` | software 90/270 rotation on SoCs without a hardware path (T23); needs `USE_ROTATE` |
 | `USE_TLS` | HTTPS (`http.https`) + RTSPS (`rtsp.tls`) via mbedTLS. Auto-enabled when `libmbedtls` is linked |
 | `USE_SRT` | MPEG-TS over SRT output, listener (`srt.mode=listener`, default) or caller (`srt.mode=caller`). Auto-enabled when `libsrt` is linked |
 | `USE_WEBRTC` | WHEP endpoint (`/webrtc/whep`): ICE-lite + DTLS-SRTP, H.264 video + optional G.711 audio. Off by default; implies `USE_TLS`+`USE_CONTROL` and needs an mbedTLS with `MBEDTLS_SSL_DTLS_SRTP`. LAN/VPN only — see [WebRTC / WHEP](#webrtc--whep-webrtcwhep) |
@@ -351,11 +350,17 @@ by default (as long as OSD or a privacy region was on at startup). Details:
 ### Image rotation
 
 `videoN.rotation = 0|90|270` (plus `180` on T40/T41), `USE_ROTATE` (off by
-default, restart-required). Hardware 90/270 on T31/T40/T41; software 90/270
-(`USE_SW_ROTATE`) on T23 at the cost of CPU and H.264-only encoding; with
-`USE_OPENIMP`, 90/270 on T10/T20/T21 sub streams (16-aligned, at most 704x576)
-when the OpenIMP has T1x rotation (commit `6b7f5ae`; with any other OpenIMP the
-stream starts unrotated).
+default, restart-required). 90/270 on T31 (libimp FrameSource rotate) and
+T40/T41 (hardware I2D). With `USE_OPENIMP`, 90/270 on T10/T20/T21/T23/T30
+through `IMP_FrameSource_SetChnRotate`, a software rotate inside OpenIMP,
+within the limits OpenIMP reports (`OpenIMP_Cap_FsRotate` /
+`OpenIMP_FS_RotateLimits`: currently T23/T30 1280x720, T10/T20/T21 sub
+streams up to 704x576, 16-aligned); with an OpenIMP that cannot rotate the
+stream starts unrotated. T23 with the vendor libimp has no rotation. **Since
+v1.12.0** the timps-own T23 software rotate and `USE_SW_ROTATE` are gone, and a
+T23 `rotation = 90` turns counter-clockwise as on T31 and the other OpenIMP
+SoCs: change it to
+`270` (and the other way round), see [CHANGELOG](CHANGELOG.md).
 `rotation=180` is a genuine per-channel capability **only on T40/T41** (I2D);
 on every other SoC it's redundant with a global ISP flip and is coerced to 0
 there — use `image.hflip=1` + `image.vflip=1` instead. Full per-SoC matrix,

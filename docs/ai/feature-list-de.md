@@ -309,6 +309,16 @@ deaktiviert `S97daynightd`, wenn `USE_DAYNIGHT` an ist).
   Kameras im Raum ausgeht), startet die Kamera einen Farb-Blick. Den dunkleren
   Belichtungswert übernimmt sie als Referenz, die Farbreferenz behält sie für
   den Blick. Vorher blieb so eine Kamera bis zum 6-h-Takt in Nacht.
+* **Morgendämmerung (seit v1.12.0)** – ein Blick, dessen beleuchteter Pegel
+  schon an der Schwelle liegt (beleuchtet × 0,9 ≥ Schwelle), entfällt
+  (`look (<why>) skipped`), die IR-Beleuchtung bleibt an; Timer- und
+  angeforderte Blicke laufen immer. Licht ohne 10-s-Sprung über 15 % gilt als
+  schleichend und wird mit der Sprung-Schwelle und dem k der letzten
+  gescheiterten Prüfung bewertet, auch bei Farb-Blicken; nahe der Schwelle
+  schaut die Kamera auch ohne `jump_pct`-Sprung (`look (near)`). Eine Lampe
+  direkt nach einer Prüfung wird nicht mehr Nacht-Referenz. Flotten-Rechnung
+  über 121 Morgen: gescheiterte Prüfungen 178 → 94, Tag im Mittel 5 min
+  später, etwa die Hälfte der Morgen-Blicke entfällt.
 * **Referenz nur aus ruhigem Bild (seit v1.11.0)** – ein Blick, während der
   beleuchtete Pegel noch wandert (Lampe geht an, Blick einer Nachbarkamera),
   setzt keine Referenz; das tut der nächste ruhige Pegel (höchstens 60 s).

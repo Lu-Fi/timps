@@ -1053,6 +1053,10 @@ day pipeline above `night_gain` or the AE at its limit for `day_confirm_s`
 45 min or when the lit level falls `jump_pct` below the last look; a
 **check** (day pipeline, one click) when the look reads below the bar; a
 check anyway after `heartbeat_max_s` (18 h) without a day reading.
+**Since v1.12.0** a look that cannot find day (lit × 0.9 at or above the bar)
+is skipped, and a creeping light (no 10 s step of more than 15 %) is judged
+with the jump bar and a failed check's `k`; near the bar it looks without a
+`jump_pct` step (`look (near)`).
 
 The decision inputs come from an ISP dump file, `daynight.isp_path`. If it
 is unreadable but a known alternative works (T20: `isp_info`) you get the
@@ -1072,11 +1076,15 @@ brings it back.
 | `look (…): … -> check` then `check (…): night` every evening | Other cameras' infrared lights the scene without the illuminator; the day pipeline stays dark. One pair per light change, then the bar holds. | Expected; nothing to fix. |
 | Day in a dark room | `night_gain` above what the AE reaches and the AE not at a reported limit. | Lower `night_gain` below the exposure the camera shows in the dark. |
 | Two clicks at every start in the dark | Every boot checks. | Expected. |
+| Several `check (…): night` (click pairs) every morning at dawn | Daylight creeps in: each look reads below a bar the day pipeline does not yet meet. **Since v1.12.0** a creep is judged with the failed check's `k` for 1 h, a railed check no longer sets that `k`, and a check under 1.5 × `day_gain` waits 10 s for the AE (fleet what-if: failed morning checks 178 → 94 over 121 mornings). | Update to v1.12.0. If the checks still read just above `day_gain`, raise `day_gain`. |
+| Many `look (…) skipped: lit L, bar B` lines at dawn (**since v1.12.0**) | The lit level sits at or above the bar, so the dark reading could not beat it; the look is skipped, the illuminator stays on and the timer starts over. About half of the morning looks in the fleet. | Expected. Timer and requested looks still run; `{"daynight":{"probe":1}}` forces one. |
+| Day comes later at dawn than with v1.11.x | Fewer failed checks cost minutes: on average 5 min later in the fleet what-if. A creep near the bar looks by itself (`look (near)`). | Expected. Raise `day_gain` only if the day picture is already good while the checks read just above it. |
+| A lamp switched on right after a failed check: no look, camera stays in night | Before v1.12.0 the lamp-lit level could become the night reference, so the lamp was no jump. **Since v1.12.0** a level `jump_pct` brighter than the one before the check is not adopted; the lamp jumps and looks. | Update to v1.12.0, or POST `{"daynight":{"probe":1}}`. |
 
 | Log line (`src/daynight.c`) | Level | Meaning |
 | --- | --- | --- |
-| `look (<why>): lit L dark D bar B -> check\|night\|locked (N s)` | D | A look: `why` = `timer`, `jump`, `requested`, `idle`, **since v1.11.0** `color`, **since v1.12.0** `near` (a creep close to the bar). **Since v1.11.0** `locked (N s)`: the look predicts day but a lockout after failed checks holds the check back N s more (before: `-> check` with no check). |
-| `look (<why>) skipped: lit L, bar B` | D | **Since v1.12.0.** The lit level is already above the bar, so the look could only find night: the illuminator stays on and L becomes the reference. |
+| `look (<why>): lit L dark D bar B k K -> check\|night\|locked (N s)` | D | A look: `why` = `timer`, `jump`, `requested`, `idle`, **since v1.11.0** `color`, **since v1.12.0** `near` (a creep close to the bar). **Since v1.11.0** `locked (N s)`: the look predicts day but a lockout after failed checks holds the check back N s more (before: `-> check` with no check). |
+| `look (<why>) skipped: lit L, bar B` | D | **Since v1.12.0.** L × 0.9 is at or above the bar, so the look could only find night: the illuminator stays on, L becomes the reference and the timer starts over. Never for `timer`/`requested`, nor for a look that only learns the bar. |
 | `colour moved N %` / `colour back to the scene before the look` | D | **Since v1.11.0.** The `color_pct` trigger fired / the colour returned after a colour look that found night (new reference, no look). |
 | `colour statistics: N us per read` | I | **Since v1.11.0.** Logged once (third read): the AWB statistics work on this camera. |
 | `check (<why>): day, exposure E < G` / `check (<why>): night, exposure E` | I | The day pipeline's verdict. `why` adds `boot`, `guarantee`. |
@@ -2896,7 +2904,8 @@ Every one of these is discussed in §3.3–§3.6; the table is the index.
 | `%s is not readable, using %s instead` | I | The configured ISP dump path does not exist; the known alternative is in use. Normal on T20. |
 | `no exposure reading from %s - detection idle` | W | **Detection does nothing at all.** Check `daynight.isp_path`. |
 | `daynight.day_gain %.0f is above night_gain %.0f - swapped` | W | `day_gain` must be the lower number. |
-| `look (%s): lit %.0f dark %.0f bar %.0f -> %s` | D | A look and whether it asks for a check. |
+| `look (%s): lit %.0f dark %.0f bar %.0f k %.2f -> %s` | D | A look and whether it asks for a check. |
+| `look (%s) skipped: lit %.0f, bar %.0f` | D | **Since v1.12.0.** A look that could not find day, not run (§3.3). |
 | `check (%s): day, exposure %.0f < %.0f` / `check (%s): night, exposure %.0f` | I | The day pipeline's verdict; the exposure is what `day_gain` is compared with. |
 | `ISP did not follow the switch to %s - one cycle` | W | The ISP latch; one real transition. §3.4 |
 | `boot: no exposure reading - asserting the persisted %s` | W | No measurement at boot. |

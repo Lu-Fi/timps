@@ -1198,11 +1198,11 @@ tick) **except**:
 | `daynight.sun_longitude` | float | `0.0` | -180..180 | live | Degrees, +E/−W. |
 | `daynight.sun_sunrise_offset_min` | int | `0` | -1440..1440 | live | Minutes added to sunrise before switching to day. |
 | `daynight.sun_sunset_offset_min` | int | `0` | -1440..1440 | live | Minutes added to sunset before switching to night. |
-| `daynight.day_gain` | float | `768` | 1..1000000 | live | **Alias `total_gain_day_threshold`.** A check (the day pipeline) below this = day. Units are the IMP `[24.8]` linear gain scale, `256` = 1.0×, so 768 = 3×. It also is the bar a look (the scene without the illuminator) must read below before it asks for a check, until a failed check has set a scene bar. |
+| `daynight.day_gain` | float | `768` | 1..1000000 | live | **Alias `total_gain_day_threshold`.** A check (the day pipeline) below this = day. Units are the IMP `[24.8]` linear gain scale, `256` = 1.0×, so 768 = 3×. It also is the bar a look (the scene without the illuminator) must read below before it asks for a check, until a failed check has set a scene bar (jump and, **since v1.12.0**, creeping looks use the jump bar instead; see the rules below). |
 | `daynight.night_gain` | float | `4096` | 1..1000000 | live | **Alias `total_gain_night_threshold`.** Exposure index above this (while in day) = night. 4096 = 16×. Where the AE cannot reach it, the AE at its limit counts as dark too (see below). |
 | `daynight.day_confirm_s` | int | `30` | 1..3600 | live | How long the index must stay above `night_gain` (or the AE at its limit) before day→night. A very dark reading (≥ 2 × `night_gain`, or the AE at its limit) switches after 6 s instead (not within 8 s of the camera's own switch). |
-| `daynight.jump_pct` | int | `20` | 5..70 | live | **since v1.10.1.** At night: when the illuminator-lit level falls this many percent below the level of the last look and stays there 20 s, look at once (new light). Cameras without a switchable illuminator use a fixed 50 % and check. |
-| `daynight.color_pct` | int | `3` | 0..50 | live | **since v1.11.0.** At night: when the colour of the illuminator-lit picture (global R/G or B/G of the ISP's AWB statistics) moves this many percent from its value after the last look and stays there 20 s, look at once (log `look (color)`). Read every 5 s at night (after start also outside it, until the first success, at most 30 reads). Catches a weak lamp that barely moves the lit level (measured with a 30 % bulb: Eufy B/G −4 % at an unchanged exposure, Wyze Pan B/G +5.5 %; an unchanged scene stays within 0.5 %). Only starts a look (8 s dark, no click); the look decides as always. At most one colour look per 5 min, the gap doubles (10, 20 … up to 45 min) while no timer look happens in between, so a person moving in view costs at most 4 extra looks (32 s dark) in the first hour and then none beyond the 45-min rhythm. `0` = off. Needs a switchable illuminator and a libimp with per-zone AWB statistics: T40/T41 vendor, T23/T31/C100 vendor, T10/T20 OpenIMP, T23/T31 OpenIMP only with a libimp that exports `OpenIMP_Cap_AwbZone` (agg-38+), T40/T41 OpenIMP only with one that exports `OpenIMP_Cap_AwbStatistics`; elsewhere `daynight.color_trigger` reads `"unavailable"` and nothing happens. Device-tested only on T40 vendor (Eufy) and T20 OpenIMP (Wyze Pan); the other paths are unverified. |
+| `daynight.jump_pct` | int | `20` | 5..70 | live | **since v1.10.1.** At night: when the illuminator-lit level falls this many percent below the level of the last look and stays there 20 s, look at once (new light). Cameras without a switchable illuminator use a fixed 50 % and check. **Since v1.12.0** a creep near the bar also looks without this step (`look (near)`), and a jump look whose lit level already sits at the bar is skipped (see the rules below). |
+| `daynight.color_pct` | int | `3` | 0..50 | live | **since v1.11.0.** At night: when the colour of the illuminator-lit picture (global R/G or B/G of the ISP's AWB statistics) moves this many percent from its value after the last look and stays there 20 s, look at once (log `look (color)`). Read every 5 s at night (after start also outside it, until the first success, at most 30 reads). Catches a weak lamp that barely moves the lit level (measured with a 30 % bulb: Eufy B/G −4 % at an unchanged exposure, Wyze Pan B/G +5.5 %; an unchanged scene stays within 0.5 %). Only starts a look (8 s dark, no click); the look decides as always. At most one colour look per 5 min, the gap doubles (10, 20 … up to 45 min) while no timer look happens in between, so a person moving in view costs at most 4 extra looks (32 s dark) in the first hour and then none beyond the 45-min rhythm. `0` = off. Needs a switchable illuminator and a libimp with per-zone AWB statistics: T40/T41 vendor, T23/T31/C100 vendor, T10/T20 OpenIMP, T23/T31 OpenIMP only with a libimp that exports `OpenIMP_Cap_AwbZone` (agg-38+), T40/T41 OpenIMP only with one that exports `OpenIMP_Cap_AwbStatistics`; elsewhere `daynight.color_trigger` reads `"unavailable"` and nothing happens. Device-tested only on T40 vendor (Eufy) and T20 OpenIMP (Wyze Pan); the other paths are unverified. **Since v1.12.0** a colour look whose lit level already sits at the bar is skipped (`look (color) skipped`), and one while the lit level is below the reference without a 10 s step is judged as a creep (jump bar), not with `day_gain`. |
 | `daynight.heartbeat_s` | int | `14400` (4 h) | 300..604800 | live | Check interval at night for cameras **without** a switchable illuminator. Also caps the look interval (45 min) of the others. **Since v1.11.0** a camera whose colour trigger works (`daynight.color_trigger` "on") looks only every 6 h: jump and colour watch the night, the timer is a backstop. Colour-look gaps still stop at 45 min. |
 | `daynight.heartbeat_max_s` | int | `64800` (18 h) | 300..604800 | live | The longest night without a day-pipeline reading: then a check runs regardless of looks and lockouts. Bounds a wrong night. **Since v1.12.0** 18 h; before 43200 (12 h), shorter than a winter night, so the guarantee check failed every morning before dawn (one click pair per camera). |
 | `daynight.interval_ms` | int | `2000` | 100..60000 | live | Sample interval. The exposure index needs a `/proc` scrape per tick (integration time has no IMP API). |
@@ -1236,7 +1236,8 @@ to `total_gain`.
   without it. A look runs every 45 min (`heartbeat_s` caps it), at once when
   the lit level falls `jump_pct` below the last look for 20 s (a lamp), **since
   v1.11.0** when the lit picture's colour moves `color_pct` from the last look
-  for 20 s (a weak lamp; at most every 5 min, doubling), and on
+  for 20 s (a weak lamp; at most every 5 min, doubling), **since v1.12.0**
+  near the bar (`look (near)`, below), and on
   `{"daynight":{"probe":1}}`. A lit level that rises 10 % above the
   reference and does not fall back below it for 60 s (the light of the last
   look has gone) becomes the reference, and the next look relearns the scene
@@ -1248,8 +1249,9 @@ to `total_gain`.
   a colour look that found night, the colour back within `color_pct`/2 of its
   value before that look for 20 s is taken as the new reference, not as light.
 * **Look → check**: if the reading without the illuminator is below the bar —
-  `day_gain`, the jump bar for a look a jump started, or a scene bar learnt
-  from a failed check — the camera switches to the day pipeline and reads it
+  `day_gain`, the jump bar for a look a jump or (**since v1.12.0**) a creep
+  started, or a scene bar learnt from a failed check — the camera switches
+  to the day pipeline and reads it
   once (one click): below `day_gain` it stays day, otherwise back to night (a
   second click).
 * **Jump bar** (**since v1.11.0**; before: always 2 × `day_gain`): every
@@ -1281,6 +1283,39 @@ to `total_gain`.
   reference; only the colour reference is kept for the look (a lamp coming on
   while other cameras' infrared in the room goes off). Log (debug):
   `colour moved N % while the scene got darker`.
+* **Creep or lamp** (**since v1.12.0**): a lamp steps the lit level by more
+  than 15 % from one 10 s sample to the next (the last 60 s are kept);
+  otherwise the light creeps (dawn, a fire). A creeping look (jump, near, or
+  a colour look while the lit level is below the reference) is judged with
+  the jump bar and, within 1 h of a failed check, with `day_gain / k` of that
+  check; a lamp look within that hour asks below the larger of `day_gain / k`
+  and 0.7 × the failed dark reading. Before: only a jump whose level had moved
+  less than 15 % in the minute before got `day_gain / k`, and colour looks
+  used `day_gain`.
+* **Skip a look that cannot find day** (**since v1.12.0**): without the
+  illuminator the scene reads no brighter, so when lit × 0.9 ≥ the bar the
+  look (`jump`, `color`, `near`) is skipped: the illuminator stays on, the lit
+  level becomes the reference, the colour reference is retaken and the timer
+  starts over. Log (debug): `look (<why>) skipped: lit L, bar B`. Timer and
+  requested looks are never skipped, nor a look that only learns the bar
+  (after a check without a look of its own, e.g. boot or guarantee).
+* **Near-bar look** (**since v1.12.0**): when the last look's dark reading ×
+  the current lit level / the reference predicts a dark reading under 0.95 ×
+  the creep bar, a look runs after the 20 s hold, without a `jump_pct` step
+  (`look (near)`). A dark reading that was under the lit one, or already
+  under the bar, predicts nothing.
+* **No lamp as the reference after a check** (**since v1.12.0**): when the
+  reference is taken from the next settled level after a check (also at
+  boot, and through the look that learns the check's bar) and that level is
+  `jump_pct` brighter than the lit level before the check, the earlier level
+  stays the reference, so the lamp is a jump.
+* **A check's day must hold** (**since v1.11.0**): night is final at once,
+  day only once the reading stays below `day_gain` 10 s after the settle.
+  **Since v1.12.0** a reading under 1.5 × `day_gain` also waits these 10 s
+  before it is called night (the AE is still settling).
+* **A railed check sets no `k`** (**since v1.12.0**): a check with the AE at
+  its limit or above 4 × `night_gain` no longer sets the failed check's `k`
+  used by the creep rule.
 * **Guarantee**: no day-pipeline reading for `heartbeat_max_s` (18 h) → a
   check, regardless of looks and lockouts.
 * **Without a switchable illuminator** (`irprobe_cmd` empty or failing) the

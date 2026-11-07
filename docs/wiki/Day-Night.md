@@ -20,6 +20,12 @@ stub functions report `enabled=0` and fall back to whatever
 > doubling to 45 min; status `color_trigger`, `color_dev_pct`); a look taken
 > while the lit level is still moving sets no reference, the next settled
 > level does; vendor T21 no longer reads `isp_path`.
+> **Since v1.12.0** (dawn): a look whose lit level already sits at the bar
+> (lit × 0.9 ≥ bar) is skipped, the illuminator stays on; a creeping light
+> (no 10 s step of more than 15 %) is judged with the jump bar and a failed
+> check's `k`; near the bar a creep looks once the last dark reading predicts
+> day (`look (near)`); a lamp lit right after a check is not taken as the
+> night reference.
 > Retired: `probe_min_gap_s`, `probe_confirm_s`, `boot_probe`,
 > `diagnose_thresholds`, the IR-ratio verdict, the trend trigger, the night
 > reference ratchet and its vetoes. The sections below that describe probes,
@@ -642,6 +648,41 @@ trying to raise it automatically.
   6 h timer.
 * **`heartbeat_max_s` 18 h** (was 12 h): a winter night is longer than 12 h,
   so the guarantee check failed every morning before dawn on every camera.
+* **Looks that cannot find day are skipped.** Without the illuminator the
+  scene reads no brighter, so when the lit level × 0.9 is already at or above
+  the bar the look is skipped: the illuminator stays on, the lit level
+  becomes the reference and the timer starts over. Log (debug):
+  `look (<why>) skipped: lit L, bar B`. Timer and requested looks are never
+  skipped, nor a look that only learns the bar (after a check without a
+  look of its own, such as the boot or guarantee check).
+* **Creep or lamp from a 10 s step.** A lamp steps the lit level by more than
+  15 % from one 10 s sample to the next (within the last minute); otherwise
+  the light creeps (dawn, a fire). A creeping look, also a colour look while
+  the lit level is below the reference (brighter), is judged with the jump
+  bar and, within 1 h of a failed check, with `day_gain / k` of that check.
+  Before, only a creeping jump got the failed check's `k`, and colour looks
+  used `day_gain`.
+* **Near-bar look.** A creep close to the bar moves less than `jump_pct`
+  before the dark reading would beat it. When the last look's dark reading
+  scaled by the lit level now (dark × lit / reference) predicts a dark reading
+  under 0.95 × the bar, a look runs after the usual 20 s hold (`look (near)`).
+  cam-wohn lost 60 min of day to this on 2026-11-07.
+* **No lamp as the reference after a check.** When the night reference is
+  taken from the next settled level after a check (also at boot, and through
+  the look that learns the check's bar) and that level is `jump_pct` brighter
+  than the lit level before the check, it is not adopted: the earlier level
+  stays the reference, so the lamp is a jump and looks.
+* **A near miss waits for the AE.** A check that reads under 1.5 × `day_gain`
+  waits the 10 s day hold before it is called night (the AE is still
+  settling); before, only a day reading waited.
+* **A railed check sets no `k`.** A check with the AE at its limit or above
+  4 × `night_gain` says nothing about `k` and no longer sets the failed
+  check's `k` for the next hour.
+* **Measured**: replay corpus 77 pairs, 0 failed (six new families and
+  profiles from the measured 2026-11-07 dawns of cam-wohn and cam-schuppen);
+  a fleet what-if over 121 mornings: failed morning checks 178 → 94, day on
+  average 5 min later, about half of the morning looks skipped. Background:
+  [Day-Night Design Notes](Day-Night-Design-Notes.md#v1120-dawn).
 
 ## Changes in v1.11.0
 
@@ -654,7 +695,8 @@ trying to raise it automatically.
   day; a sudden light (a lamp: the level moved more than 15 % within the
   minute before the jump) still asks at once when it pulls the dark reading
   below 70 % of the failed one. Measured: a bedroom dawn went from 6 to 3
-  failed checks.
+  failed checks. (v1.12.0 tells creep from lamp by a 10 s step instead, see
+  above.)
 * **A check's "day" must hold.** "Night" is final at once; "day" only once the
   reading has stayed below `day_gain` for 10 s after the settle time. The open
   T40 driver reported the night-side exposure for about 14 s after the switch,

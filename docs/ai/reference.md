@@ -1047,10 +1047,22 @@ it **looks**: illuminator off for 8 s (silent), every 45 min and at once when
 the lit level falls `jump_pct` (20 %) below the last look for 20 s
 (**since v1.11.0** also when its colour moves `color_pct`, 3 %, for 20 s: a
 weak lamp that hardly brightens the IR-lit picture). If the
-scene without the illuminator is below the bar (`day_gain`, ×2 after a jump,
-or a bar learnt from a failed check), it **checks**: switches to the day
-pipeline (one click) and stays day below `day_gain`, else goes back (a second
-click). Failed checks lock further checks out for 1, 2, 4 … min.
+scene without the illuminator is below the bar (`day_gain`, the jump bar
+learnt from failed checks after a jump, or a bar learnt from a failed check),
+it **checks**: switches to the day pipeline (one click) and stays day below
+`day_gain`, else goes back (a second click). Failed checks lock further checks
+out for 1, 2, 4 … min.
+
+**At dawn (since v1.12.0):** a look whose lit level already sits at the bar
+(lit × 0.9 ≥ bar) is skipped (`look (<why>) skipped: lit L, bar B`): the
+illuminator stays on and the lit level becomes the reference; timer and
+requested looks always run. A light without a 10 s step of more than 15 %
+creeps (dawn, a fire) and is judged with the jump bar and, within 1 h of a
+failed check, that check's `k`, also when the colour started the look. Near
+the bar a creep looks once the last dark reading predicts day (`look (near)`),
+without a `jump_pct` step. A check reading under 1.5 × `day_gain` waits 10 s
+before it is called night. Fleet what-if over 121 mornings: failed morning
+checks 178 → 94, day on average 5 min later. Rules: `config-keys.md` §14.
 
 **The guarantee:** no day-pipeline reading for `heartbeat_max_s` (18 h) → a
 check regardless of looks or lockouts. Cameras without a switchable
@@ -1078,7 +1090,9 @@ best day-pipeline reading was 9.79×) still need an explicit per-camera
 4. `general.debug_modules = daynight` (live over `/control`, no restart) gives
    per-look lines like `look (timer): lit 249 dark 284 bar 768 -> check`.
    **Since v1.11.0** a lamp that a look should have caught shows in
-   `color_dev_pct`; a look it started logs `look (color)`.
+   `color_dev_pct`; a look it started logs `look (color)`. **Since v1.12.0**
+   `look (<why>) skipped: lit L, bar B` is a look that could not find day
+   (expected at dawn), `look (near)` one a creep close to the bar started.
 
 **Stuck in day all night in a dark room** (the opposite case): the index is
 gain × integration-time ratio, so an AE that stops at its analog cap with the

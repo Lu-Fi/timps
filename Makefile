@@ -63,9 +63,9 @@ USE_STREAM_OPUS ?= 0        # 1 = offer Opus as an RTSP/RTP streaming audio code
                             #     USE_PLAY_OPUS (local .opus playback). Default off = no opus stream
                             #     code compiled in and "opus" is not an accepted audio.codec value.
 OPUS_ENC_LIB  ?= -lopus     # link flag for the libopus encoder (USE_STREAM_OPUS)
-USE_ROTATE    ?= 0          # 1 = image rotation feature (real 90/270 transpose: HW on
-                            #     T40/T41 + T31, T10/T20/T21 sub streams with USE_OPENIMP
-                            #     and an OpenIMP with T1x rotation, opt-in SW on T23). 180 is NOT a rotation
+USE_ROTATE    ?= 0          # 1 = image rotation feature (real 90/270 transpose: I2D on
+                            #     T40/T41, libimp FrameSource on T31, and with USE_OPENIMP
+                            #     T10/T20/T21/T23/T30 through OpenIMP SetChnRotate). 180 is NOT a rotation
                             #     value (use image.hflip+image.vflip). Default off = no
                             #     ROT_HAS_* macros defined, so all rotation code compiles
                             #     out (byte-identical build).
