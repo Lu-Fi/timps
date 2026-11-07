@@ -3929,6 +3929,281 @@
     "max_wrong_mode_s": 1800,
     "max_switches": 5
    }
+  },
+  {
+   "name": "dawn_slow",
+   "title": "slow winter dawn (3 h): after the first failed check the rest of the ramp must not cost one failed check per step",
+   "duration_s": 13500,
+   "initial_mode": "night",
+   "timelines": {
+    "wohn": [
+     [
+      0,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      900,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      11700,
+      {
+       "lvl": 1.0
+      }
+     ],
+     [
+      13500,
+      {
+       "lvl": 1.0
+      }
+     ]
+    ],
+    "schuppen": [
+     [
+      0,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      900,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      11700,
+      {
+       "lvl": 1.0
+      }
+     ],
+     [
+      13500,
+      {
+       "lvl": 1.0
+      }
+     ]
+    ],
+    "sz": [
+     [
+      0,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      900,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      11700,
+      {
+       "lvl": 1.0
+      }
+     ],
+     [
+      13500,
+      {
+       "lvl": 1.0
+      }
+     ]
+    ],
+    "vorne": [
+     [
+      0,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      900,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      11700,
+      {
+       "lvl": 1.0
+      }
+     ],
+     [
+      13500,
+      {
+       "lvl": 1.0
+      }
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 3600,
+    "max_switches": 9
+   }
+  },
+  {
+   "name": "dawn_field",
+   "title": "dawn as the fleet logged it (wohn 11-06: k 2.9-3.6; wintergarten 11-06: 40 min, k 4.3-1.9): few looks, at most two failed checks",
+   "duration_s": 12000,
+   "initial_mode": "night",
+   "timelines": {
+    "wohnw": [
+     [
+      0,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      900,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      9480,
+      {
+       "lvl": 1.0
+      }
+     ],
+     [
+      12000,
+      {
+       "lvl": 1.0
+      }
+     ]
+    ],
+    "wgarten": [
+     [
+      0,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      900,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      3276,
+      {
+       "lvl": 1.0
+      }
+     ],
+     [
+      12000,
+      {
+       "lvl": 1.0
+      }
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 1800,
+    "max_switches": 7
+   }
+  },
+  {
+   "name": "lamp_after_boot",
+   "title": "a lamp 20 s after the boot check found night: the lamp must not become the reference (light box 2026-11): day within 2 min",
+   "duration_s": 1800,
+   "initial_mode": "night",
+   "timelines": {
+    "pan": [
+     [
+      0,
+      "dark"
+     ],
+     [
+      40,
+      "dark"
+     ],
+     [
+      41,
+      "lamp_bright"
+     ],
+     [
+      1800,
+      "lamp_bright"
+     ]
+    ],
+    "eufy": [
+     [
+      0,
+      "dark"
+     ],
+     [
+      40,
+      "dark"
+     ],
+     [
+      41,
+      "cellar"
+     ],
+     [
+      1800,
+      "cellar"
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 150,
+    "max_switches": 4,
+    "max_on_s": 120
+   }
+  },
+  {
+   "name": "dawn_trace",
+   "title": "measured dawn traces 2026-11-07: cam-wohn (3 checks, 13 looks, day 09:21 after a cloud; day 08:25 was possible) and cam-schuppen at the user's new day_gain 1500; the sim starts cold (k 1, bar 2 x day_gain), the camera had k 2 from the night before: one failed check more than the camera",
+   "duration_s": 13200,
+   "initial_mode": "night",
+   "timelines": {
+    "wohn1107": [
+     [
+      0,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      11700,
+      {
+       "lvl": 1.0
+      }
+     ],
+     [
+      13200,
+      {
+       "lvl": 1.0
+      }
+     ]
+    ],
+    "schuppen1107": [
+     [
+      0,
+      {
+       "lvl": 0.0
+      }
+     ],
+     [
+      13200,
+      {
+       "lvl": 1.0
+      }
+     ]
+    ]
+   },
+   "bounds": {
+    "max_wrong_mode_s": 3600,
+    "max_switches": 10
+   }
   }
  ]
 }

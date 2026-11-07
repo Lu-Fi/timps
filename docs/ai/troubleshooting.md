@@ -1075,7 +1075,8 @@ brings it back.
 
 | Log line (`src/daynight.c`) | Level | Meaning |
 | --- | --- | --- |
-| `look (<why>): lit L dark D bar B -> check\|night\|locked (N s)` | D | A look: `why` = `timer`, `jump`, `requested`, `idle`, **since v1.11.0** `color`. **Since v1.11.0** `locked (N s)`: the look predicts day but a lockout after failed checks holds the check back N s more (before: `-> check` with no check). |
+| `look (<why>): lit L dark D bar B -> check\|night\|locked (N s)` | D | A look: `why` = `timer`, `jump`, `requested`, `idle`, **since v1.11.0** `color`, **since v1.11.2** `near` (a creep close to the bar). **Since v1.11.0** `locked (N s)`: the look predicts day but a lockout after failed checks holds the check back N s more (before: `-> check` with no check). |
+| `look (<why>) skipped: lit L, bar B` | D | **Since v1.11.2.** The lit level is already above the bar, so the look could only find night: the illuminator stays on and L becomes the reference. |
 | `colour moved N %` / `colour back to the scene before the look` | D | **Since v1.11.0.** The `color_pct` trigger fired / the colour returned after a colour look that found night (new reference, no look). |
 | `colour statistics: N us per read` | I | **Since v1.11.0.** Logged once (third read): the AWB statistics work on this camera. |
 | `check (<why>): day, exposure E < G` / `check (<why>): night, exposure E` | I | The day pipeline's verdict. `why` adds `boot`, `guarantee`. |

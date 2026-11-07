@@ -1220,10 +1220,13 @@ enum { S_BOOT = -1, S_DAY = 0, S_NIGHT = 1, S_LOOK = 2, S_CHECK = 3 };
 #define SD_F_N        4         /* failed checks kept for the jump bar */
 #define SD_F_REL      0.90f
 #define SD_KF_MS      3600000   /* a failed check's k judges the looks after it this long */
+#define SD_SKIP       0.90f     /* the dark reading is at least this share of the lit one */
+#define SD_NEAR_REL   0.95f     /* a creep looks once the predicted dark reading is this far under the bar */
 #define SD_KF_MIN     0.70f     /* ... unless a light brings the dark reading below this share */
 #define SD_DAY_HOLD_MS 10000   /* a check's day reading must hold this long */
+#define SD_NEAR_MISS  1.50f     /* ... and a night reading this close to day_gain waits as long (AE still settling) */
 #define SD_KF_GONE    2.0f      /* the lit level this far above the failed look: that light left */
-#define SD_RAMP       0.85f     /* a jump within this of the level a minute before crept in */
+#define SD_STEP       0.85f     /* a 10 s drop below this share is a lamp, not a creep */
 #define SD_RAMP_N     7         /* lit levels kept, 10 s apart */
 
 /* the AE cannot brighten the image any further */
@@ -1261,6 +1264,37 @@ static float sd_jump_bar(float dg, float k, const float *f, int fn)
     for (int i = 0; i < fn; i++)
         if (SD_F_REL * f[i] < b) b = SD_F_REL * f[i];
     return b > dg / k ? b : dg / k;
+}
+
+/* a lamp steps the lit level within one 10 s sample; dawn, even through a
+ * conservatory, moves it a few percent */
+static int sd_stepped(const float *R)
+{
+    for (int i = 0; i + 1 < SD_RAMP_N; i++)
+        if (R[i] > 0.0f && R[i + 1] > 0.0f && R[i] < R[i + 1] * SD_STEP) return 1;
+    return 0;
+}
+
+/* the bar a look's dark reading must beat to ask for a check; a creeping
+ * light (dawn, fire) is judged like a jump whatever woke the look */
+static float sd_look_bar(const ms_daynight_cfg *dn, const char *why, float B,
+                         float K, const float *F, int Fn, float Kf, int64_t Kf_age,
+                         float Nf, int creep)
+{
+    float bar = B > 0.0f ? B : why[0] != 'j' && !creep ? dn->day_gain :
+                sd_jump_bar(dn->day_gain, K, F, Fn);
+    /* dawn and fire creep in, a jump at a time: ask once the failed
+     * light's k predicts day; a sudden light also when it pulls the
+     * dark reading well below the failed one */
+    if (Kf > 0.0f && Kf_age < SD_KF_MS) {
+        float kb = creep ? dn->day_gain / Kf :
+                   fmaxf(dn->day_gain / Kf, Nf * SD_KF_MIN);
+        if (kb < bar) bar = kb;
+    }
+    /* a bar relative to a railed check knows nothing of the distance
+     * to day: dawn moved the colour at 19x day_gain (cam-vorne) */
+    if (bar > SD_NEAR * dn->day_gain / K) bar = SD_NEAR * dn->day_gain / K;
+    return bar;
 }
 
 static int sd_watched(void)
@@ -1334,8 +1368,9 @@ static void *dn_thread(void *arg)
     int     Kn = 0, Fn = 0;
     float   Kf = -1.0f, Nf = -1.0f, Lf = -1.0f; /* k, dark and lit of the last failed check */
     int64_t Kf_at = 0, r_at = 0;
-    float   R[SD_RAMP_N] = { 0 }, Rj = 0.0f;
-    int     ramp = 0;
+    float   R[SD_RAMP_N] = { 0 }, Lq = -1.0f;   /* Lq: the lit level before the last check, until a look judges the scene */
+    float   Nq = -1.0f;             /* the last look's dark reading: with A, what the lit level predicts */
+    int     creep = 0;
     int64_t boot_at = ms_now_us() / 1000, due = 0, hold = 0, look_at = 0;
     int64_t day_at = 0, mode_at = 0, N_at = 0, verify_at = 0, quiet = 0, idle_at = 0;
     int64_t reassert_at = 0, cycle_at = 0, rise = 0, a_by = 0;
@@ -1407,7 +1442,7 @@ static void *dn_thread(void *arg)
             goto wait;
         }
         if (!enabled_was) {
-            enabled_was = 1; st = S_BOOT; cur = DN_UNKNOWN; s = A = B = N = -1.0f;
+            enabled_was = 1; st = S_BOOT; cur = DN_UNKNOWN; s = A = B = N = Nq = -1.0f;
             boot_at = now; hold = verify_at = lock_until = 0; lock_ms = SD_LOCK_MS;
             reassert_at = cycle_at = a_by = 0; reassert_left = 0;
             desync = cycled = ir_fails = dark_n = stable = 0; g_ir_unusable = 0;
@@ -1485,6 +1520,7 @@ static void *dn_thread(void *arg)
             why = "boot"; L = -1.0f;
             goto check;
         case S_DAY:
+            Lq = -1.0f;
             /* the raw reading starts the hold, so the smoother's lag does not add to it */
             if (sm.d > dn->night_gain || s > dn->night_gain ||
                 sd_exhausted(&sm)) {
@@ -1501,23 +1537,33 @@ static void *dn_thread(void *arg)
             break;
         case S_NIGHT: {
             if (cycled) break;
+            int jump = 0;
+            float jb = irp ? 1.0f - (float)dn->jump_pct / 100.0f : SD_JUMP_CHECK;
+            /* a lamp lit within the settle after a look or a check is no
+             * reference: the level before them is, so the lamp jumps */
             if (A < 0.0f && s > 0.0f && !sd_exhausted(&sm) &&
                 ((now - mode_at >= DN_REF_DELAY_S * 1000 && stable >= DN_STABLE_N) ||
                  (a_by && now >= a_by))) {
-                A = s; a_by = 0;
+                A = Lq > 0.0f && s < Lq * jb ? Lq : s; a_by = 0;
             }
-            int jump = 0;
-            float jb = irp ? 1.0f - (float)dn->jump_pct / 100.0f : SD_JUMP_CHECK;
             if (now - r_at >= 10000) {
                 memmove(R + 1, R, (SD_RAMP_N - 1) * sizeof *R);
                 R[0] = s > 0.0f ? s : 0.0f; r_at = now;
             }
-            if (A > 0.0f && s > 0.0f && s < A * jb) {
-                if (!hold) { hold = now; Rj = R[SD_RAMP_N - 1]; }
+            /* near the bar a creep moves less than jump_pct before the dark
+             * reading would beat it (cam-wohn 2026-11-07: 60 min lost) */
+            float nb = Nq > 0.0f && A > 0.0f && B != 0.0f ? SD_NEAR_REL *
+                       sd_look_bar(dn, "near", B, K, F, Fn, Kf, now - Kf_at, Nf, 1) : 0.0f;
+            /* a stale dark reading (under the lit one, or already under the
+             * bar when that look judged) predicts nothing */
+            int near = nb > 0.0f && s > 0.0f && Nq >= nb && Nq >= A * SD_NEAR_REL &&
+                       s * Nq / A < nb;
+            int step = A > 0.0f && s > 0.0f && s < A * jb;
+            if (step || near) {
+                if (!hold) hold = now;
                 jump = now - hold >= SD_JUMP_HOLD_MS;
             } else hold = 0;
-            ramp = jump && Rj > 0.0f && s > Rj * SD_RAMP;
-            if (jump) B = -1.0f;            /* new light: the bar was for the old one */
+            if (jump && step) B = -1.0f;    /* new light: the bar was for the old one */
             if (Kf > 0.0f && Lf > 0.0f && s > Lf * SD_KF_GONE) Kf = -1.0f;
             /* the light A (and B) were taken under is gone: else a lamp
              * would have to beat that light, and B would still judge for it */
@@ -1527,7 +1573,7 @@ static void *dn_thread(void *arg)
             if (rise && now - rise >= SD_RISE_MS) {
                 LOGD(MOD, "reference follows the darker scene: %.0f -> %.0f",
                      (double)A, (double)s);
-                A = s; rise = 0;
+                A = s; rise = 0; Nq = -1.0f;
                 if (B > 0.0f) B = 0.0f;
                 /* darker but differently coloured: a lamp while other
                  * cameras' infrared went off. Look, do not adopt it. */
@@ -1578,13 +1624,24 @@ static void *dn_thread(void *arg)
             /* a jump waits out a lockout with its old level kept, so it
              * looks the moment the lockout ends */
             if (irp && ((jump && !locked) || cj || now >= look_at || g_probe_req)) {
-                why = jump ? "jump" : cj ? "color" : g_probe_req ? "requested" : "timer";
+                why = jump ? (step ? "jump" : "near") : cj ? "color" :
+                      g_probe_req ? "requested" : "timer";
+                creep = (jump || (cj && s < A)) && !sd_stepped(R);
                 if (why[0] == 'c') {
                     LOGD(MOD, "colour moved %.1f %%", (double)cdev);
                     c_next = now + c_gap;
                     c_gap = c_gap * 2 < SD_LOOK_S * 1000LL ? c_gap * 2 : SD_LOOK_S * 1000LL;
                 } else if (why[0] == 't') c_gap = SD_COLOR_GAP_MS;
                 g_probe_req = 0;
+                /* without the illuminator the scene reads no brighter: a
+                 * look that cannot get below the bar would only blink */
+                if (why[0] != 't' && why[0] != 'r' && B != 0.0f && s * SD_SKIP >=
+                    (ubar = sd_look_bar(dn, why, B, K, F, Fn, Kf, now - Kf_at, Nf, creep))) {
+                    LOGD(MOD, "look (%s) skipped: lit %.0f, bar %.0f", why, (double)s, (double)ubar);
+                    A = s; a_by = 0; hold = rise = 0; look_at = now + look_ms;
+                    Crg = Prg = -1.0f; chold = 0; cdev = -1.0f; c_from = now;
+                    break;
+                }
                 goto look;
             }
             if (!irp && jump && !locked) { why = "jump"; L = s; goto check; }
@@ -1612,21 +1669,11 @@ static void *dn_thread(void *arg)
             if (now < due || s <= 0.0f) break;
             N = s; N_at = now;
             int ok = !dn_clipped(sm.headroom);
+            if (ok) Nq = N;
             Nk = ok ? N : -1.0f;
-            if (ok && B == 0.0f) B = N * SD_B_REL;
-            float bar = B > 0.0f ? B : why[0] != 'j' ? dn->day_gain :
-                        sd_jump_bar(dn->day_gain, K, F, Fn);
-            /* dawn and fire creep in, a jump at a time: ask once the failed
-             * light's k predicts day; a sudden light also when it pulls the
-             * dark reading well below the failed one */
-            if (Kf > 0.0f && now - Kf_at < SD_KF_MS) {
-                float kb = ramp && why[0] == 'j' ? dn->day_gain / Kf :
-                           fmaxf(dn->day_gain / Kf, Nf * SD_KF_MIN);
-                if (kb < bar) bar = kb;
-            }
-            /* a bar relative to a railed check knows nothing of the distance
-             * to day: dawn moved the colour at 19x day_gain (cam-vorne) */
-            if (bar > SD_NEAR * dn->day_gain / K) bar = SD_NEAR * dn->day_gain / K;
+            int learn = ok && B == 0.0f;    /* this look only learns the bar: it judges nothing */
+            if (learn) B = N * SD_B_REL;
+            float bar = sd_look_bar(dn, why, B, K, F, Fn, Kf, now - Kf_at, Nf, creep);
             ubar = bar;
             int ask = ok && N < bar;
             if (idle) {
@@ -1648,6 +1695,7 @@ static void *dn_thread(void *arg)
             if (ask && !locked)
                 goto check;
             st = S_NIGHT; hold = 0;
+            if (!learn) Lq = -1.0f;
             if (!(ask && why[0] == 'j')) A = L;
             a_by = A < 0.0f ? now + SD_REF_MAX_MS : 0;
             look_at = ask ? lock_until : now + look_ms;
@@ -1659,7 +1707,7 @@ static void *dn_thread(void *arg)
             /* the AE can still report the night side after the switch (T40:
              * 554 at 8 s, 22117 at 22 s): night is final at once, day only
              * once it held */
-            if (s < dn->day_gain && now < due + SD_DAY_HOLD_MS) break;
+            if (s < SD_NEAR_MISS * dn->day_gain && now < due + SD_DAY_HOLD_MS) break;
             /* an exhausted check only understates k: kept */
             if (Nk > 0.0f && now - N_at < SD_PAIR_MS && !dn_clipped(sm.headroom) &&
                 s <= SD_FAR * dn->night_gain) {
@@ -1678,7 +1726,7 @@ static void *dn_thread(void *arg)
             }
             Nk = -1.0f;
             if (s < dn->day_gain) {
-                st = S_DAY; B = -1.0f; Kf = -1.0f; hold = 0; mode_at = now;
+                st = S_DAY; B = -1.0f; Kf = Nq = -1.0f; hold = 0; mode_at = now;
                 lock_until = 0; lock_ms = SD_LOCK_MS;
                 LOGI(MOD, "check (%s): day, exposure %.0f < %.0f", why,
                      (double)s, (double)dn->day_gain);
@@ -1693,7 +1741,10 @@ static void *dn_thread(void *arg)
                     (sd_exhausted(&sm) || s > SD_FAR * dn->night_gain))
                     B = N * SD_B_REL;
                 if (B < N * SD_B_MIN) B = N * SD_B_MIN;
-                Kf = s / N; Nf = N; Lf = L; Kf_at = now;
+                /* a railed check says nothing about k */
+                if (s <= SD_FAR * dn->night_gain && !sd_exhausted(&sm)) {
+                    Kf = s / N; Nf = N; Lf = L; Kf_at = now;
+                }
             } else B = 0.0f;
             if (why[0] != 'b') {
                 lock_until = now + lock_ms;
@@ -1721,7 +1772,7 @@ static void *dn_thread(void *arg)
         st = S_NIGHT; look_at = now + look_ms;
         goto out;
     check:
-        Prg = -1.0f;
+        Prg = -1.0f; Lq = why[0] == 'b' ? (rm ? s : -1.0f) : L;
         dn_switch(DN_DAY, why, dn->switch_cmd, s, A, B);
         cur = DN_DAY; st = S_CHECK; mode_at = now; cycled = 0;
         due = now + DN_PROBE_SETTLE_S * 1000; s = -1.0f; stable = 0;

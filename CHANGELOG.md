@@ -54,6 +54,19 @@ semantic versioning.
 
 ### Changed
 
+- Day/night at dawn: fewer IR looks and failed checks. A look whose lit
+  level already sits above the bar is skipped (`look (<why>) skipped`), since
+  the scene without the illuminator reads no brighter; this removes about half
+  of the morning looks in the fleet logs. A creeping light (no 10 s step of
+  more than 15 %) is judged with the jump bar and a failed check's k, also
+  when the colour woke the look. Near the bar a creep looks once the last
+  dark reading predicts day (`look (near)`). A lamp lit within the settle
+  after a check is no longer adopted as the night reference. A check reading
+  under 1.5 x `day_gain` waits the 10 s hold before it is called night, and a
+  railed check no longer sets k. Replay corpus 77 pairs (six new from the
+  measured 2026-11-07 dawns); fleet what-if over 121 mornings: failed checks
+  178 -> 94, day on average 5 min later.
+
 - `general.fs_keepalive` defaults to `1` on every SoC: the FrameSources run
   from start to stop, so the AE (and with it day/night) keeps working while
   nobody watches, and no FrameSource edge happens at runtime. `-1`/`auto`
