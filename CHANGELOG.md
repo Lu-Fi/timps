@@ -6,6 +6,8 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.12.0] - 2026-11-07
+
 ### Added
 
 - T30: FrameSource rotation 90/270 with OpenIMP (`videoN.rotation`), the same
@@ -7129,7 +7131,10 @@ camera before fleet rollout.
   TrueType OSD, motion detection, RTSP-Digest / HTTP-Basic auth. Ingenic
   headers via the `ingenic-headers` submodule.
 
-[Unreleased]: https://github.com/Lu-Fi/timps/compare/v1.10.1...HEAD
+[Unreleased]: https://github.com/Lu-Fi/timps/compare/v1.12.0...HEAD
+[1.12.0]: https://github.com/Lu-Fi/timps/compare/v1.11.1...v1.12.0
+[1.11.1]: https://github.com/Lu-Fi/timps/compare/v1.11.0...v1.11.1
+[1.11.0]: https://github.com/Lu-Fi/timps/compare/v1.10.1...v1.11.0
 [1.10.1]: https://github.com/Lu-Fi/timps/compare/v1.10.0...v1.10.1
 [1.10.0]: https://github.com/Lu-Fi/timps/compare/v1.9.33...v1.10.0
 [1.2.0]: https://github.com/Lu-Fi/timps/compare/v1.1.0...v1.2.0
