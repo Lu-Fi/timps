@@ -20,6 +20,7 @@ describe the previous behaviour. Changes of v1.11.0, v1.11.1 and v1.12.0 in `CHA
 | "What does this log line mean?" / "Why is the camera doing X?" | **`docs/ai/troubleshooting.md`** — log dictionary, error/status codes, misconfiguration gallery, and a "what NOT to advise" list of plausible-but-wrong answers. |
 | Feature background and design rationale | **`docs/wiki/`** — the human wiki (`Configuration-Reference.md`, `Day-Night.md`, `Audio.md`, `Motion-Detection.md`, `Rate-Control-*.md`, …). |
 | Everything else — what timps is, how it is built and gated, how to answer a user | this file. |
+| OpenIMP or open-tx-isp itself (vendor vs open per SoC, open-stack-only features, env vars, module parameters) | the open stack's own assistant docs: [OpenIMP `AGENTS.md`](https://github.com/Lu-Fi/openimp/blob/next/AGENTS.md), [OpenIMP `docs/ai/`](https://github.com/Lu-Fi/openimp/tree/next/docs/ai), [open-tx-isp `AGENTS.md`](https://github.com/Lu-Fi/open-tx-isp/blob/next/AGENTS.md); live state in the [feature matrix](https://lu-fi.github.io/openimp/feature-matrix.html). |
 
 If this file and `config-keys.md` disagree about a key, `config-keys.md` wins;
 if either disagrees with the source, the source wins.

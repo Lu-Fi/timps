@@ -30,6 +30,14 @@ If you are answering a user's question about timps, read in this order:
    disagrees with `docs/ai/config-keys.md` on a default or an apply mode,
    trust `config-keys.md` (checked against `src/config.c`).
 4. [`docs/ai/feature-list.md`](docs/ai/feature-list.md) - feature overview.
+5. The open camera stack timps runs on, when the question is about OpenIMP or
+   the open-tx-isp kernel driver (vendor vs open per SoC, open-stack-only
+   features, env vars, module parameters):
+   [OpenIMP `AGENTS.md`](https://github.com/Lu-Fi/openimp/blob/next/AGENTS.md) and
+   [OpenIMP `docs/ai/`](https://github.com/Lu-Fi/openimp/tree/next/docs/ai),
+   [open-tx-isp `AGENTS.md`](https://github.com/Lu-Fi/open-tx-isp/blob/next/AGENTS.md).
+   Their live feature matrix (https://lu-fi.github.io/openimp/feature-matrix.html)
+   wins over any copied OpenIMP state in the timps docs.
 
 Rules that avoid wrong answers:
 
