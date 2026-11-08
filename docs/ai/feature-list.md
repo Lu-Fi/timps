@@ -1,10 +1,14 @@
 # timps - feature overview
 
-**timps** ("Tiny IMP Streamer") is a lean RTSP/fMP4/MJPEG streamer for
+**timps** ("Tiny IMP Streamer") is an RTSP/fMP4/MJPEG streamer for
 IP cameras with an Ingenic SoC running [thingino](https://github.com/themactep/thingino-firmware).
-It is written in plain C directly on top of the vendor library `libimp` – without
+It is written in plain C directly on top of `libimp` (the Ingenic vendor
+library or OpenIMP, chosen when the image is built) – without
 live555, libconfig, libwebsockets or libschrift – and is an alternative to
-prudynt-t / raptor.
+prudynt-t / raptor. Each feature below carries an *Availability* line (SoCs,
+libimp, build option); features that need OpenIMP are collected under "Only
+with OpenIMP", and "When timps is not the best choice" lists what timps does
+not do.
 
 * Source code: <https://github.com/Lu-Fi/timps>
 * Documentation: `docs/wiki/` in the repo (Home, Architecture, Configuration-Reference,
@@ -26,6 +30,7 @@ prudynt-t / raptor.
 * **RTSP server (own implementation, no live555)** – video + audio,
   `rtsp.enabled`, `rtsp.port` (default 554). Paths are freely selectable per stream
   (`video0.rtsp_path = /ch0`, `video1.rtsp_path = /ch1`).
+  *Availability:* all SoCs, vendor libimp and OpenIMP.
 * **Two video streams** (`video0.*` = main stream, `video1.*` = sub-stream), each
   H.264 or H.265 (`videoN.codec = h264 | h265`), with its own resolution, FPS,
   bitrate and rate control. H.265 not on T10/T20/T23 (there it becomes
@@ -35,23 +40,32 @@ prudynt-t / raptor.
   640x360 apply; **since v1.10.0** a smaller
   known sensor size is taken instead (a 1280x720 sensor streams 1280x720, no
   more upscaling).
+  *Availability:* all SoCs, vendor libimp and OpenIMP; H.265 not on T10/T20/T23, on T30
+  with OpenIMP only with `OpenIMP_Cap_H265`.
 * **Adjustable RTP MTU** (`rtsp.mtu`, 548–1472, default 1200) – survives
   WireGuard/OpenVPN/PPPoE paths without IP fragmentation.
+  *Availability:* all SoCs, vendor libimp and OpenIMP.
 * **Browser preview via fragmented MP4 (MSE)** – `http://<ip>:8880/`
   or `/stream.mp4`, including sound. Stream selectable via `http.preview_chn`.
+  *Availability:* all SoCs, vendor libimp and OpenIMP.
 * **Adaptive frame dropping per fMP4 client** (`http.adaptive_drop = 1`):
   a slow client alone freezes on its last frame and rejoins cleanly at the
   next keyframe – the encoder and other subscribers
   (Frigate, recording, other viewers) are unaffected.
+  *Availability:* all SoCs, vendor libimp and OpenIMP.
 * **JPEG & MJPEG** – `/snapshot.jpg` and `/stream.mjpeg` (`jpeg.enabled`,
   `jpeg.width/height/quality/fps/imp_chn`), optionally also as a file
   (`jpeg.snapshot_path`). **Since v1.12.0** timps with OpenIMP does not
   publish a JPEG that the library only repeats while the encoder is busy
   (at most 4 in a row, counter `jpeg_reuse` in `GET /control`).
+  *Availability:* all SoCs, vendor libimp and OpenIMP; T10 keeps the SDK JPEG quality
+  (`jpeg.quality` is not applied); the repeat skip is OpenIMP only
+  (`OpenIMP_Encoder_StreamIsReused`).
 * **JPEG at stream resolution** – an additional JPEG encoder can run alongside any
   video stream (`video0.jpeg = true`, `videoN.jpeg_quality/_fps/_chn`)
   and is fetched via `/snapshot.jpg?chn=N` or `/stream.mjpeg?chn=N` –
   without extra rmem, because the framesource is shared.
+  *Availability:* all SoCs, vendor libimp and OpenIMP; T10 ignores `videoN.jpeg_quality`.
 * **WebRTC / WHEP (optional, `USE_WEBRTC`)** – `POST /webrtc/whep` takes the
   browser's SDP offer and answers as an ICE-lite peer;
   DTLS-SRTP (`SRTP_AES128_CM_HMAC_SHA1_80`), H.264 video plus G.711 audio,
@@ -61,15 +75,20 @@ prudynt-t / raptor.
   At most 4 concurrent sessions. Deliberate limits: LAN/VPN only (a
   single host candidate, no STUN/TURN, no IPv6), no Opus/AAC/H.265,
   no NACK/FEC, no congestion control.
+  *Availability:* all SoCs, vendor libimp and OpenIMP; build option `USE_WEBRTC`
+  (Kconfig default y, needs TLS and CONTROL).
 * **SRT output (optional, `USE_SRT`)** – MPEG-TS over SRT, as listener
   (`srt.mode = listener`, default, `ffplay srt://<ip>:9000`) or as caller
   (`srt.mode = caller` + `srt.host`, for cameras behind NAT, with its own
   reconnect backoff 1 s→30 s). Further keys: `srt.port`, `srt.channel`,
   `srt.latency_ms`, `srt.streamid`, `srt.passphrase`. Link statistics (RTT,
   loss, retransmits) every 10 s in the log and under `srt` in `GET /control`.
+  *Availability:* all SoCs, vendor libimp and OpenIMP; build option `USE_SRT` (Kconfig
+  default n).
 * **On-demand encoding** – each stream (H.264/H.265, audio, JPEG/MJPEG) is
   only produced while at least one client is watching. Practically
   0 % CPU when idle. Not configurable, this is the basic behaviour.
+  *Availability:* all SoCs, vendor libimp and OpenIMP.
 * **FrameSource keepalive** (**since v1.10.0**) –
   `general.fs_keepalive` (`-1`/`auto`, `0`/`off`, `1`/`on`, **since v1.12.0
   default `1`**; file only,
@@ -82,6 +101,8 @@ prudynt-t / raptor.
   of `1`: ~6.3 MB rmem for a 1080p main stream stays allocated, CPU and
   heat are not measured. Effective value: `caps.framesource` in
   `GET /control`.
+  *Availability:* all SoCs, vendor libimp and OpenIMP; `auto` resolves to on only for
+  OpenIMP T23/T40/T41.
 
 ## Encoder & rate control
 
@@ -90,15 +111,22 @@ prudynt-t / raptor.
   1 Main, 2 High), `qp`, `min_qp`, `max_qp`, `buffers`. `caps.capped_rc`
   (**since v1.12.0**) says whether `capped_*` really runs capped (`1`) or
   as VBR (`0`).
+  *Availability:* all SoCs, vendor libimp and OpenIMP. `capped_*` run capped on
+  T31/C100 and vendor T40/T41, on OpenIMP T40/T41 only with
+  `OpenIMP_Cap_CappedRc`; T10/T20/T21/T23/T30 run them as VBR.
 * **Classic SoC rate control (T10–T30)** additionally via `quality_lvl`
   (0–7), `change_pos` (50–100), `i_bias_lvl` (−3…3) and `fluc_lvl` (H.265 only).
   Live on H.264 streams; **since v1.12.0** on T30 also on H.265 streams
   (vendor libimp and OpenIMP; `fluc_lvl`, `fps`, `gop` and `codec` remain
   restart keys). On T21, H.265 stays restart-bound.
+  *Availability:* T10, T20, T21, T23, T30, vendor libimp and OpenIMP;
+  `quality_lvl`, `change_pos` and `fluc_lvl` have no effect on
+  T31/C100/T40/T41, `i_bias_lvl` also works on T31/C100.
 * **T20 macroblock rate control** `videoN.mbrc` (**since v1.12.0**, default
   `0`, restart): vendor libimp and OpenIMP otherwise have it on; at
   1080p15 it cost the streamer ~35 % instead of ~7 % CPU. Off = a somewhat coarser
   first keyframe at low bitrate.
+  *Availability:* T20 only, vendor libimp and OpenIMP.
 * **Live application of part of the encoder keys** without restart, depending on SoC:
   T10–T30 `rc_mode/bitrate/qp/min_qp/max_qp/quality_lvl/change_pos/i_bias_lvl`;
   T31/C100 `bitrate/min_qp/max_qp/i_bias_lvl`; T40 `bitrate/min_qp/max_qp`;
@@ -109,6 +137,8 @@ prudynt-t / raptor.
   What this build can do live is in
   `caps.video_live`; what did *not* go live per request is listed in the POST answer
   under `deferred_keys`.
+  *Availability:* all SoCs, vendor libimp and OpenIMP; the live key set per SoC as
+  listed above.
 * **Encoder telemetry** in `GET /control` under `encoder.<n>` – including
   `encoder.<n>.rc`: what the encoder really holds (read-back path via
   `IMP_Encoder_GetChnAttrRcMode`), separate from the configured target.
@@ -116,6 +146,8 @@ prudynt-t / raptor.
   on T40/T41 with OpenIMP additionally `encoder.<n>.telemetry` (frames, bytes,
   IDR count, fps, kbit/s, mean and maximum encode time; the WebUI preview
   shows encode time and keyframes).
+  *Availability:* all SoCs, vendor libimp and OpenIMP; `encoder.<n>.telemetry` OpenIMP
+  T40/T41 only; `ave_bitrate` T31 only.
 * **Traceable queue overflows** (*since v1.9.19*):
   `queue_drops` counts discards in the queue of a *consumer*. A
   summary message now also names the kind at most once per 60 s per (consumer kind,
@@ -137,6 +169,7 @@ prudynt-t / raptor.
   – so a reconnect loop or a `DESCRIBE` flood can no longer
   turn every frame into a keyframe.
   No configuration key.
+  *Availability:* all SoCs, vendor libimp and OpenIMP.
 * **Encoder ROI (since v1.10.0)** – `roi<S>.<N>.*` (`enabled`,
   `x`, `y`, `w`, `h`, `qp`, `qp_mode`), up to 4 regions per stream with
   their own QP (absolute or delta), live, H.264 and unrotated streams only
@@ -159,6 +192,10 @@ prudynt-t / raptor.
   an absolute QP stays absolute only as long as it is at most 25 away from the frame QP,
   otherwise it is sent as a clamped delta (otherwise invalid
   H.264). Tier and ranges are reported by `caps.roi` in `GET /control`.
+  *Availability:* `effective` on OpenIMP T10/T20/T21/T30/T31 and on OpenIMP T23 with
+  `OpenIMP_Cap_T23HelixRoi`; `experimental` on vendor T10/T20/T21 and on
+  OpenIMP T40/T41 with `OpenIMP_Cap_EncRoi`; not on vendor T23/T30/T31/T40/T41
+  and not on C100.
 * **Image rotation (optional, `USE_ROTATE`)** – `videoN.rotation = 0|90|180|270`.
   Hardware 90/270 on T40/T41 (I2D) and T31 (FrameSource). **Since v1.10.0**
   also FrameSource rotation on T10/T20/T21, only in OpenIMP builds and only with
@@ -181,10 +218,13 @@ prudynt-t / raptor.
   stream `video.<N>.rotate_path`: `off`, `band`
   (vendor libimp 90/270: OSD/privacy only in the top `eff_width`
   rows) or `hw` (whole image).
+  *Availability:* build option `USE_ROTATE` (Kconfig default n). T40/T41 (OpenIMP: only
+  with `OpenIMP_Cap_I2dRotate`) and T31 with both libimps; T10/T20/T21/T23/T30
+  OpenIMP only; not on C100.
 
 ## Image & ISP tuning
 
-* Full ISP tuning via `image.*`, all settable live and persistent:
+* ISP tuning via `image.*`, settable live and persistent where the SoC has the control:
   `brightness`, `contrast`, `saturation`, `sharpness`, `hue`, `hflip`, `vflip`,
   `anti_flicker`, `running_mode` (day/night pipeline), `ae_compensation`,
   `max_again`, `max_dgain`, `sinter_strength` / `temper_strength` (spatial /
@@ -198,6 +238,22 @@ prudynt-t / raptor.
   `ae_compensation` (AE target as on T41) and `max_again` (upper limit of the
   analogue AE gain, 1024 × 2^(value/32)), with vendor and
   OpenIMP libimp.
+  *Availability:* per key (vendor libimp and OpenIMP unless marked; `caps.image` on the
+  camera is the live list):
+  - all SoCs: `brightness`, `contrast`, `saturation`, `sharpness`, `hflip`,
+    `vflip`, `anti_flicker`, `running_mode`;
+  - `hue`: T23, T31, T40, T41, C100;
+  - `ae_compensation`: all but T21 and T41; T41 OpenIMP only;
+  - `max_again`: all but T41; `max_dgain`: all but T40/T41;
+  - `sinter_strength`, `temper_strength`: all but T40/T41; T41 OpenIMP only;
+  - `dpc_strength`: T23, T30, T31, C100; T10/T20/T21/T41 OpenIMP only;
+  - `defog_strength`: T23, T30, T31, C100; T20/T41 OpenIMP only;
+  - `drc_strength`: T21, T23, T30, T31, C100; T20/T41 OpenIMP only;
+  - `highlight_depress`, `core_wb_mode`, `wb_rgain`, `wb_bgain`: all but
+    T40/T41;
+  - `backlight_compensation`: T23, T31, C100;
+  - `colorfx`: OpenIMP only, T10/T20/T21/T23/T30/T31; `scene`: OpenIMP only,
+    T10/T20/T21/T23/T31.
 * **T30 ISP (since v1.12.0, vendor and OpenIMP libimp)**:
   `sinter_strength`, `temper_strength` and `dpc_strength` map 0..255 onto
   the T30's 50..150 % (128 = 100 %, the vendor image; previously 128 was
@@ -209,9 +265,16 @@ prudynt-t / raptor.
   has no effect there), `hue` neither. *Since v1.9.21* `GET /control` reports
   under `image.wb_live` the currently effective WB gains (in auto mode the
   AWB result) – switching to manual with them does not change the image.
+  *Availability:* T30 only, vendor libimp and OpenIMP (`colorfx` OpenIMP only);
+  `image.wb_live` on all SoCs but T40/T41.
 * **No blind setting**: which of these controls the given SoC really
   supports is reported by `caps.image` in `GET /control` – the WebUI greys out the rest.
-  Unsupported values are stored anyway.
+  A POST of a key this SoC cannot drive answers `"unsupported"` (code 104)
+  and is neither applied nor persisted; a value already in the file is read
+  and skipped. Exception: an OpenIMP-only key whose setter the running libimp
+  does not export is persisted only (log `… not in this libimp - image.…
+  unavailable (persisted only)`).
+  *Availability:* all SoCs, vendor libimp and OpenIMP.
 * **Sensor auto-detection** – `sensor.model/i2c_addr/fps/width/height` may
   be missing; timps then reads them from the kernel registry
   `/proc/jz/sensor/sensor0/`. One configuration file thus fits many
@@ -224,8 +287,11 @@ prudynt-t / raptor.
   read back and logged: `sensor fps: requested N, driver holds n/d,
   set rc=R` (WARN if the driver holds something else). `videoN.fps` is only
   the rate of *this stream* and never sets the sensor rate.
+  *Availability:* all SoCs, vendor libimp and OpenIMP.
 * Optional cap on the AE integration time (`image.ae_it_max_us`) for
   scenes in which the automatic exposes too long.
+  *Availability:* T10, T20, T21, T23, T30, T31, C100, vendor libimp and OpenIMP; not on
+  T40/T41.
 * **ISP FrontCrop / zoom (since v1.10.0)** – `image.fcrop_enable`,
   `fcrop_x/y/w/h` in sensor pixels: the ISP delivers only this window,
   each stream scales it to its size (min. 64×64, T10 640×360, live).
@@ -240,6 +306,10 @@ prudynt-t / raptor.
   `-EINVAL` (`state` `rejected`, a WARN). Vendor T23, T30,
   T40/T41, C100 and vendor T10/T20/T21 refuse. Tier and state:
   `caps.fcrop`.
+  *Availability:* `effective` on OpenIMP T10/T20/T21 and on OpenIMP T23/T31 with the
+  driver parameter; `experimental` on OpenIMP T23/T31 without it and on
+  vendor T31; T40/T41 see the AutoZoom item below; not on vendor
+  T10/T20/T21/T23, T30, C100.
 * **Crop upscaling (since v1.11.0)** – `image.fcrop_upscale_pct`
   (default -1 = leave the driver value, live, only T23/T31 with OpenIMP): the
   scaler may enlarge the window per axis by this many percent, so at 100
@@ -248,14 +318,17 @@ prudynt-t / raptor.
   150). If the value is lowered and the active window no longer fits,
   the crop falls back to the full sensor. Elsewhere a POST answers
   `"unsupported"` (104).
+  *Availability:* OpenIMP T23/T31 only.
 
 * **Crop on T40/T41 (since v1.11.0)** – with OpenIMP via the ISP AutoZoom
   (`OpenIMP_Cap_AutoZoom`), experimental, without upscaling. T41 live up
   to the driver's limit (1920x1080 with current open-tx-isp, otherwise
   768x432), larger streams briefly restart their framesource; T40 live up to 4K.
+  *Availability:* OpenIMP T40/T41 only (`OpenIMP_Cap_AutoZoom`), tier `experimental`.
 * **DRC/DPC/defog on T41 (since v1.11.0)** – `image.drc_strength`,
   `image.dpc_strength` and `image.defog_strength` with OpenIMP
   (ISP module shares 2/3/4, 128 = vendor image), live.
+  *Availability:* OpenIMP T41 only.
 * **Test pattern (since v1.11.0)** – with OpenIMP (`OpenIMP_Cap_TestPattern`)
   `{"testpattern":{"mode":0..4}}` and buttons on the WebUI preview:
   static pattern, moving square, motion test with evaluation (hits,
@@ -264,6 +337,9 @@ prudynt-t / raptor.
   OpenIMP c5fedf2a+, `caps.testpattern.isp_mid`). The WebUI shows all of this as a
   pipeline banner sensor → ISP → encoder → IVS. Day/night stays
   on day meanwhile.
+  *Availability:* OpenIMP only, on any SoC whose libimp exports `OpenIMP_Cap_TestPattern`
+  (`caps.testpattern.available`); mode 4 needs a sensor table entry
+  (`caps.testpattern.sensor`), mode 5 `caps.testpattern.isp_mid`.
 
 ## Day/Night (automatic day/night switching)
 
@@ -274,6 +350,9 @@ disables `S97daynightd` when `USE_DAYNIGHT` is on).
   `D = total_gain × (integration time / max. integration time)` – higher =
   darker. This keeps the measurement meaningful even when `total_gain`
   sits at the floor at 256 (1×).
+  *Availability:* all SoCs, vendor libimp and OpenIMP; build option `USE_DAYNIGHT`
+  (Kconfig default y). T40/T41 read the exposure from the ISP `/proc`
+  dump only (no IMP cross-check).
 * **Asymmetric approach (since v1.10.1 the simple core)**: day→night is
   an honest measurement (IR-cut filter closed, illuminator off): above
   `night_gain` or AE at its limit for `day_confirm_s` (30 s, very dark 6 s).
@@ -285,6 +364,9 @@ disables `S97daynightd` when `USE_DAYNIGHT` is on).
   waits 1, 2, 4 … min. **Since v1.11.0** light that comes slowly
   (dawn with daylight IR, a fireplace) only asks again when the k of the
   failed check predicts day; sudden light still asks at once.
+  *Availability:* all SoCs, vendor libimp and OpenIMP; build option `USE_DAYNIGHT`
+  (Kconfig default y); looks need a switchable IR LED
+  (`daynight.irprobe_cmd`), see the guarantee item for cameras without one.
 * **Colour trigger (since v1.11.0)** – `daynight.color_pct` (default 3, 0 = off,
   0..50, live): if the colour of the IR-lit image (global R/G
   or B/G of the AWB statistics, read every 5 s) changes by this many percent for 20 s
@@ -297,17 +379,22 @@ disables `S97daynightd` when `USE_DAYNIGHT` is on).
   `OpenIMP_Cap_AwbZone`/`_AwbStatistics`); status `daynight.color_trigger`
   (`on`/`off`/`unavailable`) and `color_dev_pct`. Tested on the device only
   on T40 (vendor) and T20 (OpenIMP).
+  *Availability:* as listed above; elsewhere `daynight.color_trigger` reads
+  `unavailable`.
 * **Check only close to day (since v1.12.0)** – a look only asks for
   a check with the day image if `k × dark` is at most 4 × `day_gain`.
   Previously colour looks at dusk already asked at 19 ×
   `day_gain` and each cost a pair of clicks. `daynight.day_trigger` now reports
   the threshold actually used and can therefore be below `day_gain`.
+  *Availability:* all SoCs, vendor libimp and OpenIMP; build option `USE_DAYNIGHT`
+  (Kconfig default y).
 * **Darker, but a different colour (since v1.12.0)** – if the IR-lit
   image gets darker while its colour stays shifted by more than
   `color_pct` for 20 s (a lamp goes on while the infrared of other
   cameras in the room goes off), the camera starts a colour look. It takes the darker
   exposure value as reference and keeps the colour reference for
   the look. Previously such a camera stayed in night until the 6 h cycle.
+  *Availability:* where the colour trigger is available (colour trigger item).
 * **Dawn (since v1.12.0)** – a look whose lit level
   already sits at the threshold (lit × 0.9 ≥ threshold) is skipped
   (`look (<why>) skipped`), the IR illuminator stays on; timer and
@@ -318,34 +405,50 @@ disables `S97daynightd` when `USE_DAYNIGHT` is on).
   right after a check no longer becomes the night reference. Fleet calculation
   over 121 mornings: failed checks 178 → 94, day on average 5 min
   later, about half of the morning looks are skipped.
+  *Availability:* all SoCs, vendor libimp and OpenIMP; build option `USE_DAYNIGHT`
+  (Kconfig default y); needs a switchable IR LED.
 * **Reference only from a steady image (since v1.11.0)** – a look while the
   lit level is still moving (a lamp goes on, a neighbouring camera's look)
   sets no reference; the next steady level does that (at most 60 s).
+  *Availability:* all SoCs, vendor libimp and OpenIMP; build option `USE_DAYNIGHT`
+  (Kconfig default y); needs a switchable IR LED.
 * **Vendor T21 (since v1.11.0)** no longer reads `daynight.isp_path`: the
   driver corrupted the kernel heap while reading. A detection thread that
   stops ticking reports itself once as an error in the log.
+  *Availability:* the `isp_path` change: T21 with the vendor libimp only; the thread
+  error: all SoCs.
 * **Guarantee**: after `heartbeat_max_s` (18 h) without a day-image measurement at the latest,
   a check is made. Cameras without a switchable IR LED check when the
   night level halves and every `heartbeat_s` (4 h).
+  *Availability:* all SoCs, vendor libimp and OpenIMP; build option `USE_DAYNIGHT`
+  (Kconfig default y).
 * **Thresholds**: `daynight.day_gain` (default 768 = 3×, below it is day) and
   `daynight.night_gain` (default 4096 = 16×, above it is night). Old names
   `total_gain_day_threshold`/`total_gain_night_threshold` still work.
   `probe_min_gap_s`, `probe_confirm_s`, `boot_probe` and
   `diagnose_thresholds` are retired since v1.10.1 (one warning per key).
+  *Availability:* all SoCs, vendor libimp and OpenIMP; build option `USE_DAYNIGHT`
+  (Kconfig default y).
 * **Calendar only for `schedule`**: `daynight.mode = auto | schedule`, a fixed
   time window (`time_night_start`/`time_day_start`) or real sunrise/
   sunset from `sun_latitude`/`sun_longitude` with offsets decides only in
   `schedule` mode.
+  *Availability:* all SoCs, vendor libimp and OpenIMP; build option `USE_DAYNIGHT`
+  (Kconfig default y).
 * **Switching via board script**: `daynight.switch_cmd` (default `daynight`)
   is called as `<cmd> day|night` via `fork()+execlp()` (never `system()`).
   The script drives the IR-cut and IR LEDs and reports the mode back via
   `POST /control {"image":{"running_mode":0|1}}`.
+  *Availability:* all SoCs, vendor libimp and OpenIMP; build option `USE_DAYNIGHT`
+  (Kconfig default y).
 * **Diagnostics**: every check logs `check (…): night, exposure N` – N is the
   day-image value for `day_gain`; `daynight.trace_path` writes (on tmpfs only!)
   a CSV decision trace; `daynight.history_s` (default 0 = off, max. 48 h)
   keeps a RAM series that the WebUI tuning curve fetches via
   `GET /control?dn_history=1`. If someone changes the ISP mode from outside,
   the status reports `isp_desync` until the core switches the next time.
+  *Availability:* all SoCs, vendor libimp and OpenIMP; build option `USE_DAYNIGHT`
+  (Kconfig default y); `dn_history` needs `USE_CONTROL`.
 * **Idle-Dark (since v1.10.0, default off)** –
   `daynight.ir_idle_off = 1`: at night, when for `daynight.ir_idle_linger_s`
   (60 s, 0..3600) no stream, snapshot, recorder, timelapse and no
@@ -369,10 +472,19 @@ disables `S97daynightd` when `USE_DAYNIGHT` is on).
   10 min) extends this deadline, and if the board has meanwhile gone to day, it stays
   off. Choose `ir_idle_linger_s` longer than `timelapse.interval_s`, otherwise
   every capture turns the LED on once.
+  *Availability:* all SoCs, vendor libimp and OpenIMP; build option `USE_DAYNIGHT`
+  (Kconfig default y); needs the FrameSource keepalive
+  and `timps-irprobe` with `idle`/`state`. Untested outside OpenIMP
+  T23/T40/T41 (`config-keys.md` §24).
 * Manual operation at any time via `daynight.enabled = 0` plus
   `image.running_mode` or the WebUI toggle.
+  *Availability:* all SoCs, vendor libimp and OpenIMP.
 
 ## Motion detection
+
+*Availability (every item in this section):* all SoCs, vendor libimp and
+OpenIMP (IMP_IVS move API); the cell budget differs per SDK
+(`caps.motion.max_cells`); `/events` needs `USE_CONTROL`.
 
 * **Grid of IMP_IVS move ROIs** over the frame of `motion.monitor_stream`;
   `motion.cols` × `motion.rows` cells report motion individually – the WebUI builds
@@ -394,6 +506,10 @@ disables `S97daynightd` when `USE_DAYNIGHT` is on).
   `GET /events?stream=motion` (32-entry ring with a cursor per connection).
 
 ## Recording & timelapse
+
+*Availability (every item in this section):* all SoCs, vendor libimp and
+OpenIMP; recording needs `USE_RECORD`, timelapse `USE_TIMELAPSE` (both Kconfig
+default y); the `/control` actions need `USE_CONTROL`.
 
 * **Local recording** (`USE_RECORD`) as fragmented MP4 on the SD card:
   `record.enabled`, `record.channel`, `record.mode = continuous | motion`,
@@ -442,35 +558,56 @@ disables `S97daynightd` when `USE_DAYNIGHT` is on).
   (AAC via libfaac, Opus via `USE_STREAM_OPUS`, RFC 7587).
   `audio.samplerate` (8000–96000, default 16000), `audio.bitrate`,
   `audio.channels` (1 mono, 2 = simulated dual-mono stereo, AAC only).
+  *Availability:* all SoCs, vendor libimp and OpenIMP; AAC needs `USE_FAAC` (Kconfig
+  default y), Opus `USE_STREAM_OPUS` (default n).
 * **Second G.711 encode for WebRTC** – `audio.codec2 = pcmu` encodes the same
   PCM a second time onto its own hub source, so that a WHEP session gets sound
   while RTSP, fMP4 preview and recording stay on the AAC primary stream.
+  *Availability:* all SoCs, vendor libimp and OpenIMP; default `pcmu` only in
+  `USE_WEBRTC` builds, otherwise off.
 * **Microphone chain live**: `audio.volume`, `audio.gain`, `audio.alc_gain`
   (analogue PGA, T21/T31/C100 only), `audio.mute`. Effective only at the next start
   (despite being POST-able): `high_pass` (default on), `agc`,
   `agc_target_dbfs`, `agc_compression_db`, `ns` – libimp would otherwise pull its
   own record thread out from under itself.
+  *Availability:* all SoCs, vendor libimp and OpenIMP; `audio.alc_gain` T21/T31/C100
+  only.
 * **Speaker natively via IMP_AO** – timps owns the output device itself,
   no external `/bin/iac`. `audio.spk_enabled`, `audio.spk_volume`,
   `audio.spk_gain`.
+  *Availability:* all SoCs, vendor libimp and OpenIMP; only in builds with
+  `USE_BACKCHANNEL` or `USE_PLAY` (both Kconfig default n).
 * **ONVIF audio backchannel** (`USE_BACKCHANNEL`): an RTSP client speaks onto
   the camera speaker. `audio.backchannel`, `audio.backchannel_codec =
   pcmu | pcma | aac` (AAC needs `USE_BC_AAC` / libhelix-aac),
   `audio.backchannel_rate`. Exactly one speaker at a time.
+  *Availability:* all SoCs, vendor libimp and OpenIMP; `USE_BACKCHANNEL` (Kconfig
+  default n), AAC `USE_BC_AAC` (default n).
 * **Browser intercom `/talk`** (`USE_BC_WS`): RFC 6455 WebSocket,
   browser microphone → camera speaker, G.711 µ-law in 20 ms frames.
   `audio.talk_ws` has three values: 0 off, 1 only over TLS (`wss://`),
   2 also over `ws://`.
+  *Availability:* all SoCs, vendor libimp and OpenIMP; `USE_BC_WS` (Kconfig default y on
+  TLS builds).
 * **Echo cancellation** `audio.aec = 1` (takes effect at the next AO open, only
   useful when microphone and speaker run at the same time).
+  *Availability:* builds with `USE_BACKCHANNEL` or `USE_PLAY`; whether this SoC offers
+  it: `caps.audio` in `GET /control`.
 * **System sound queue** (`USE_PLAY`): FIFO at `/run/timps/audio_out` with
   the same `PLAY`/`STOP` protocol that prudynt/raptor's `/usr/sbin/play`
   speaks – Wi-Fi captive portal announcements, update chime, Home Assistant TTS.
   WAV, raw PCM16 and G.711 always; Ogg Opus with `USE_PLAY_OPUS`.
   Playback via `POST /control {"speaker":{"play":"chime_1.wav"}}`, the
   available files are listed in `caps.play.sounds`.
+  *Availability:* all SoCs, vendor libimp and OpenIMP; `USE_PLAY` (Kconfig default n),
+  Ogg Opus `USE_PLAY_OPUS` (default n).
 
 ## OSD & privacy
+
+*Availability (every item in this section):* all SoCs, vendor libimp and
+OpenIMP; `osd.hinting` acts only with `USE_OSD_HINTING` (Kconfig default n).
+On a stream rotated 90/270 with the vendor libimp, overlays and privacy masks
+cover only the top band (`video.<N>.rotate_path` = `band`).
 
 * **Own TrueType rasterizer** (no libschrift), up to 8 overlays
   **per video stream**: keys `osd<S>.<N>.<field>` (e.g. `osd0.0.text`,
@@ -501,6 +638,10 @@ disables `S97daynightd` when `USE_DAYNIGHT` is on).
   movable live. Availability is reported by `caps.privacy`.
 
 ## Network & security
+
+*Availability (every item in this section):* all SoCs, vendor libimp and
+OpenIMP; TLS needs `USE_TLS` (Kconfig default y), the token, CORS and CSRF
+rules of `/control`/`/events` need `USE_CONTROL`, SRT needs `USE_SRT`.
 
 * **RTSP digest auth** (`rtsp.user`/`rtsp.pass`) and **HTTP digest/basic**
   (`http.user`/`http.pass`, falls back to the RTSP credentials) – own
@@ -554,6 +695,11 @@ disables `S97daynightd` when `USE_DAYNIGHT` is on).
 
 ## API & control
 
+*Availability (every item in this section):* all SoCs, vendor libimp and
+OpenIMP; build option `USE_CONTROL` (Kconfig default y). What a given build
+supports is in `caps`; OpenIMP-only parts are listed under "Only with
+OpenIMP" below.
+
 * **`GET /control`** – one JSON document with the complete current state:
   `version` (git describe of the binary), `caps`, `image`, `audio`, `sensor`,
   `video`, `osd`/`osd0`/`osd1`, `privacy`, `daynight`, `motion`, `encoder`,
@@ -601,6 +747,10 @@ disables `S97daynightd` when `USE_DAYNIGHT` is on).
 
 ## WebUI integration (thingino)
 
+*Availability (every item in this section):* thingino images with the WebUI;
+the plugin is installed only with `BR2_PACKAGE_TIMPS_CONTROL`. Pages hide or
+grey out what `caps` does not list.
+
 * timps is a **plugin of the thingino WebUI**: `timps.webui.json` ends up under
   `/var/www/a/plugins/`, the pages and scripts are installed into the
   WebUI tree during the firmware build (about 45 files).
@@ -641,6 +791,8 @@ CGIs are installed from the timps package when `thingino-motors` and timps
 are selected together, and on builds with `BR2_PACKAGE_THINGINO_MOTORS_WS`
 the WebSocket variant (instead of CGI polling) is enabled.
 
+*Availability:* images with `thingino-motors`; timps adds the UI only.
+
 ## Platform support
 
 * **SoCs**: T10, T20, T21, T23, T30, T31, T40, T41, C100.
@@ -662,7 +814,16 @@ the WebSocket variant (instead of CGI polling) is enabled.
   instead of the ISP (`sim.video0`, `sim.audio`, …) – handy for
   WebUI and API work at the desk.
 
+This list is the v1.12.0 state and changes per release. On a camera the live
+answer is `GET /control` `caps`; per-SoC overview:
+[`docs/wiki/Platform-SDK-Support.md`](../wiki/Platform-SDK-Support.md);
+OpenIMP state: <https://lu-fi.github.io/openimp/feature-matrix.html>.
+
 ## Operation, logging & diagnostics
+
+*Availability (every item in this section):* all SoCs, vendor libimp and
+OpenIMP; the QA, day/night and host-test tools run on a build host, not on
+the camera; the diagnostic scripts need `BR2_PACKAGE_TIMPS_DIAG_TOOLS`.
 
 * **Tiered logging**: `general.loglevel` (0 err … 3 debug) plus
   `general.debug_modules` – a list of names (MAIN, CONFIG, CTRL, DAYNIGHT,
@@ -732,6 +893,81 @@ Direct cross-compiling without a firmware tree is also possible:
 `make PLATFORM=T31 CROSS_COMPILE=mipsel-linux-` (the IMP headers come as a
 git submodule from `gtxaspec/ingenic-headers`).
 
+## Only with OpenIMP
+
+These need an image built with OpenIMP, the open libimp (thingino
+`BR2_PACKAGE_OPENIMP`, which builds `timpsd` with `USE_OPENIMP=1`). A vendor
+libimp never exports an `OpenIMP_*` symbol, so a vendor image cannot offer
+them. Check the stack with `timpsd --check-libs`. Most rows also need a
+recent enough OpenIMP: timps binds the calls and markers weak and reports the
+feature unavailable at run time when the libimp lacks them. Live state:
+`GET /control` `caps`, and <https://lu-fi.github.io/openimp/feature-matrix.html>.
+
+| Feature | SoCs | Default | How to enable | Since |
+| --- | --- | --- | --- | --- |
+| FrameSource rotation 90/270 | T10/T20/T21 (sub stream only, at most 704x576, align 16; not yet tested on hardware); T23/T30 (the limits OpenIMP reports, 1280x720 align 16 in v1.12.0; without them sub stream only, 704x576) | off (`videoN.rotation = 0`) | build with `BR2_PACKAGE_TIMPS_ROTATE` (default n), an OpenIMP that rotates on the SoC, `videoN.rotation = 90` or `270`; restart | v1.10.0 (T10/T20/T21), v1.12.0 (T23/T30) |
+| Encoder ROI, tier `effective` | T10/T20/T21/T30/T31; T23 with `OpenIMP_Cap_T23HelixRoi`; T40/T41 only `experimental`, with `OpenIMP_Cap_EncRoi` | off (`roi<S>.<N>.enabled = 0`) | `roi<S>.<N>.*`, live POST; H.264 and unrotated streams only | v1.10.0; T23 v1.10.1; T40/T41 v1.11.0; T30 v1.12.0 |
+| ISP FrontCrop (zoom), tier `effective` | T10/T20/T21; T23/T31 when the open-tx-isp driver has `fcrop_upscale_pct` (otherwise `experimental`, T23 start-only) | off (`image.fcrop_enable = 0`) | `image.fcrop_enable` and `image.fcrop_x/y/w/h`, live POST | v1.10.0 |
+| Crop upscaling | T23/T31 | `image.fcrop_upscale_pct = -1` (driver value) | live POST, at most `caps.fcrop.upscale_max` | v1.11.0 |
+| Crop via ISP AutoZoom, tier `experimental` | T40/T41 with `OpenIMP_Cap_AutoZoom` | off | `image.fcrop_*`, live POST | v1.11.0 |
+| `image.colorfx` | T10/T20/T21/T23/T31; T30 | `0` (none) | live POST | v1.9.30; T30 v1.12.0 |
+| `image.scene` | T10/T20/T21/T23/T31 | `0` (auto) | live POST | v1.9.30 |
+| Extra ISP strengths | `image.dpc_strength` T10/T20/T21; `image.defog_strength`, `image.drc_strength` T20 | `128` | live POST | v1.9.30 |
+| T41 ISP keys | `image.ae_compensation`, `image.sinter_strength`, `image.temper_strength`, `image.drc_strength`, `image.dpc_strength`, `image.defog_strength` | `128` | live POST | v1.9.33 (AE, sinter), v1.10.0 (temper), v1.11.0 (DRC/DPC/defog) |
+| Test pattern | any SoC whose libimp exports `OpenIMP_Cap_TestPattern`; mode 5 T23 (OpenIMP c5fedf2a+) | off (mode 0) | `POST /control {"testpattern":{"mode":N}}`, never persisted | v1.11.0; mode 5 v1.11.1 |
+| Encoder telemetry `encoder.<n>.telemetry` | T40/T41 with `OpenIMP_Encoder_GetTelemetry` | reported when available | read `GET /control` | v1.11.0 |
+| JPEG repeat skip (`jpeg_reuse`) | any SoC whose libimp exports `OpenIMP_Encoder_StreamIsReused` | on, not configurable | — | v1.12.0 |
+| Colour trigger on T10/T20 (AWB zone ioctl) | T10/T20 | `daynight.color_pct = 3` | live POST | v1.11.0 |
+| Overlays on the whole rotated frame (`rotate_path` = `hw`) | wherever OpenIMP rotates 90/270 | automatic | — | reported since v1.11.0 |
+
+Not OpenIMP-only, but tied to an OpenIMP marker when the build is OpenIMP:
+H.265 on T30 (`OpenIMP_Cap_H265`), capped rate control on T40/T41
+(`OpenIMP_Cap_CappedRc`), I2D rotation on T40/T41 (`OpenIMP_Cap_I2dRotate`),
+AWB statistics for the colour trigger on T23/T31/T40/T41
+(`OpenIMP_Cap_AwbZone`/`_AwbStatistics`). The vendor libimp has these without
+a marker.
+
+## When timps is not the best choice
+
+Say so plainly when one of these matches the user's need. Each point is
+backed by this file, the other `docs/ai/` files or the source.
+
+* **SoC not in the list.** timps builds for T10, T20, T21, T23, T30, T31, T40,
+  T41 and C100 only (`Makefile` `PLATFORM`; the thingino package excludes
+  A1). For any other SoC use a streamer that supports it (prudynt-t, raptor;
+  check their own documentation).
+* **Browser viewing from outside the LAN.** WebRTC is LAN/VPN only: one host
+  candidate, no STUN/TURN, no IPv6, no NACK/FEC, no congestion control, at most
+  4 sessions, H.264 and G.711 only. Use a VPN, RTSP, or SRT in caller mode
+  (`USE_SRT`, Kconfig default n).
+* **More than two video streams.** `MS_MAX_VSTREAM = 2`; `video2.*` is an
+  unknown key.
+* **Pan/tilt.** timps drives no motors; that is `thingino-motors`.
+* **Dual-sensor cameras.** No supported dual-sensor mode (only an unshipped,
+  hardware-unverified prototype on a development branch).
+* **Rotation on C100, or 90/270 with the vendor libimp on T10/T20/T21/T23/T30.**
+  Not available; 180 is a per-stream rotation only on T40/T41 (elsewhere
+  `image.hflip` + `image.vflip`, which flip every stream). The T10/T20/T21
+  OpenIMP path is not yet tested on hardware.
+* **Effective ROI or crop with the vendor libimp.** Vendor T10/T20/T21 ROI and
+  vendor T31 crop are `experimental`, every other vendor case is
+  `unsupported`. The `effective` tiers were device-tested by the OpenIMP
+  maintainer, not by timps.
+* **Vendor or OpenIMP.** The OpenIMP image gives the features above, but
+  several need a recent OpenIMP marker, and the T23/T41 open-stack hang
+  (`reference.md` §11) is mitigated by `general.fs_keepalive`, not proven
+  fixed (no soak result, the driver fix is upstream). A camera that needs none
+  of the OpenIMP-only features avoids that dependency with the vendor libimp
+  image.
+* **Unmeasured things.** The CPU/heat/power cost of `general.fs_keepalive = 1`
+  is unmeasured; the colour trigger is device-tested only on T40 (vendor) and
+  T20 (OpenIMP); Idle-Dark is untested outside OpenIMP T23/T40/T41. Do not
+  promise results there.
+* **"Better than prudynt-t / raptor".** These docs contain no CPU, latency or
+  image-quality measurement against another streamer. Describe feature and
+  config differences (`reference.md` §1), never a general "faster" or
+  "better".
+
 ## Where to find what
 
 This file is a feature overview, not a lookup table. For details:
@@ -746,3 +982,81 @@ This file is a feature overview, not a lookup table. For details:
 * **`docs/ai/troubleshooting.md`** – log dictionary, status and error codes,
   typical misconfigurations and a list of plausible-sounding but
   wrong answers.
+
+## Example questions and answers
+
+Answered only from these docs. Each names the exact key and whether it is a
+POST or a restart.
+
+**Q: Can I watch my camera over WebRTC from outside my home network?**
+A: No. The WHEP endpoint is LAN/VPN only (one host candidate, no STUN/TURN, no
+IPv6); timps cannot traverse NAT for a browser. Use a VPN into the LAN, or SRT
+in caller mode: `srt.mode = caller` plus `srt.host`, in a build with
+`USE_SRT` (Kconfig default n). `srt.*` is file-only: edit `/etc/timps.conf`,
+then `/etc/init.d/S95timps restart`.
+
+**Q: Does timps run on my T33 camera?**
+A: No. timps builds only for T10, T20, T21, T23, T30, T31, T40, T41 and C100.
+Use a streamer that supports the T33 (prudynt-t or raptor; check their docs,
+these docs make no claim about them).
+
+**Q: I set `videoN.rotation = 90` on a T23 (or T30) and the picture is not
+rotated.**
+A: Rotation on T23/T30 exists since v1.12.0, only in a build with
+`USE_ROTATE` (`BR2_PACKAGE_TIMPS_ROTATE`, default n) and only with OpenIMP:
+the vendor libimp has no `SetChnRotate`, so a vendor build turns 90/270 into
+`0`. With OpenIMP it needs an OpenIMP whose `SetChnRotate` really rotates
+(T30: OpenIMP `next` `17082ed3` or later); the stream must fit the limits
+OpenIMP reports (1280x720, align 16 in v1.12.0; without them: sub stream only,
+at most 704x576). `videoN.rotation` is a restart key: the POST persists it,
+then `/etc/init.d/S95timps restart`, then read `video.<N>.rotation_state`
+(`0` = as configured, else a code in `error-codes.md`). A T23 that used `90`
+before v1.12.0 now needs `270`. For 180 use `image.hflip = 1` and
+`image.vflip = 1` (live POST).
+
+**Q: At dawn my camera clicks several times and then stays in night mode.**
+A: Each click pair is a failed check: the day picture still reads above
+`daynight.day_gain` (log `check (…): night, exposure N`). v1.12.0 judges
+creeping light with the k of the failed check and skips looks that cannot
+find day (`look (<why>) skipped: lit L, bar B` is expected); in the fleet
+what-if failed morning checks fell from 178 to 94 and day came on average
+5 min later. If the day picture is already good while N sits just above
+`daynight.day_gain`, raise `daynight.day_gain` above N, well below
+`daynight.night_gain`: live POST `{"daynight":{"day_gain":<value>}}`, no
+restart. `{"daynight":{"probe":1}}` forces a look. Do not force
+`image.running_mode` while it is dark: the ISP then renders colour while the
+IR-cut filter is out (purple cast, `troubleshooting.md` §3.2).
+
+**Q: Which libimp does my camera use, and what do I lose with the vendor one?**
+A: `timpsd --check-libs` prints `libimp OK (vendor build, …)` or
+`(OpenIMP build, …)`. With the vendor libimp there is no `effective` ROI
+(vendor T10/T20/T21 `experimental`), no FrontCrop (vendor T31
+`experimental`), no rotation on T10/T20/T21/T23/T30, no `image.colorfx` or
+`image.scene`, and none of the other rows of "Only with OpenIMP". The stack is
+chosen when the image is built (`BR2_PACKAGE_OPENIMP`): no key, POST or
+restart switches it, and a `timpsd` from the other stack exits 78 and is not
+started. Several OpenIMP features also need a recent OpenIMP; check
+`GET /control` `caps` after flashing.
+
+**Q: I POSTed `{"video":{"0":{"bitrate":2000,"fps":15}}}`; the bitrate changed
+at once, the frame rate did not.**
+A: `videoN.bitrate` is live on every Ingenic SoC. `videoN.fps` is a restart
+key: the POST persists it and lists it in `deferred_keys`; it takes effect
+after `/etc/init.d/S95timps restart`. `videoN.fps` is the stream rate only;
+the sensor rate is `sensor.fps`, also a restart key. Keys such as `rtsp.port`
+or `http.https` cannot be POSTed at all (file-only): edit `/etc/timps.conf`
+and restart.
+
+**Q: Encoder ROI does nothing on my T31.**
+A: The vendor T31 libimp has no ROI call, so `caps.roi.tier` is
+`unsupported` and a POST of `roi<S>.<N>.*` answers `"unsupported"` (code
+104). With an OpenIMP image T31 ROI is `effective` (`SetChnRoiAttr`), live
+POST, H.264 and unrotated streams only. If ROI is a must on a vendor T31,
+timps cannot provide it.
+
+**Q: Is timps faster or lighter than prudynt-t?**
+A: These docs have no CPU, latency or image-quality measurement against
+prudynt-t or raptor, so do not claim either. What is documented: config and
+feature differences (`reference.md` §1) and timps' own numbers, such as the
+stripped `timpsd` size at the top of this file. For a real comparison,
+measure both on the same camera.

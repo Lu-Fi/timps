@@ -6,6 +6,10 @@ semantic versioning.
 
 ## [Unreleased]
 
+### Changed
+
+- AI docs: honesty rule, per-feature availability, example Q&A, bug-report checklist, config-key check script
+
 ## [1.12.0] - 2026-11-07
 
 ### Added

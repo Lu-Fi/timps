@@ -119,6 +119,11 @@ exclusion:
 - A host build with no `PLATFORM_*` macro (`make sim`) reports every
   capability, so the WebUI can be exercised without hardware.
 
+This list is the v1.12.0 state and changes per release. On a camera the live
+answer is `GET /control` `caps`; per-SoC overview:
+[`docs/wiki/Platform-SDK-Support.md`](../wiki/Platform-SDK-Support.md); OpenIMP
+state: <https://lu-fi.github.io/openimp/feature-matrix.html>.
+
 ---
 
 ## 2. Enabling and building timps
@@ -653,6 +658,10 @@ differently-compiled binaries.
 | `caps.roi` / `caps.fcrop` | **Since v1.10.0.** Encoder ROI and ISP FrontCrop: `tier` = `effective` (device-tested), `experimental` (call returns 0, effect unverified), `unsupported`, or `sim`. `caps.roi` adds `regions`, `align:16`, the QP ranges and `streams[]` (`ok`/`off`/`h265`/`rotated`/`unsupported`); `caps.fcrop` adds `live`, `min:64`, `sensor:[w,h]`, `state` (`off`/`on`/`rejected`/`failed`/`unsupported`), `min_win`, `zoom_max`, `upscale_pct` (the driver's current value) and **since v1.11.0** `upscale_max` (ceiling of `image.fcrop_upscale_pct`: 100 on T23/T31 OpenIMP with the driver parameter, else -1). T10/T20/T21 ROI and FrontCrop and, **since v1.12.0**, T30 ROI with OpenIMP are `effective` (device-tested by the OpenIMP maintainer, not by timps); T23 ROI with OpenIMP is `effective` when the libimp exports `OpenIMP_Cap_T23HelixRoi`, else `unsupported` (since v1.10.1); T23/T31 FrontCrop (OpenIMP) is `effective` and live when the driver has `fcrop_upscale_pct`, otherwise `experimental` (T23 with `live` 0, start-only); tier table in config-keys.md §10a. |
 | `caps.daynight` | `{available, ir_idle}` — **since v1.10.0.** `available` = built with `USE_DAYNIGHT`; `ir_idle` = 1 when `daynight.ir_idle_off` could act on this start (it needs the FrameSource keepalive). |
 
+The tier and SoC notes in this table are the v1.12.0 state; the `caps` of the
+running camera always win, and the OpenIMP side is tracked at
+<https://lu-fi.github.io/openimp/feature-matrix.html>.
+
 Note the deliberate convention: a key that is **absent** (`caps.rotation`,
 `caps.webrtc`) means "this binary has no such endpoint/feature at all", which
 `{"available":0}` could not distinguish from "compiled in but switched off".
@@ -667,7 +676,7 @@ with it" semantics.
 | --- | --- |
 | `?fields=1` | Inventory of every POST-able config field, grouped by section. Generated from the same tables the POST walks, so it cannot drift. |
 | `?stats=1` | Small object: per-stream `gop`/`profile`/`rc_mode` + `IMP_Encoder_Query` backlog. Exists so a stats card does not poll the whole document. **Since 1.11.0** also `system`: `ncpu`, `load` (`/proc/loadavg` 1/5/15 min), `mem_total_kb` / `mem_avail_kb` (`MemAvailable`, or `MemFree+Buffers+Cached-Shmem` on pre-3.14 kernels), `cpu_pct` (whole machine busy %, all cores together) and `timps_cpu_pct` (timpsd's own share of the whole machine on the same scale, so it is ≤ `cpu_pct`; `top` per-core % = this × `ncpu`), `timps_rss_kb` (resident set). The two CPU values are integer `/proc/stat` tick deltas since the previous sample (HZ=100: ~0.5 % steps on one core over 2 s): a sample is held for at least 2 s, so concurrent or quicker polls get the same value; `-1` on the first request and after a gap over 30 s. Computed on request, no thread. |
-| `?clients=1` | Connected streaming clients: `ip`, `port`, `proto` (`rtsp/udp`, `rtsp/tcp`, `rtsps`, `fmp4`, `mjpeg`, `events`, `webrtc`, `srt`), `chn`, `since_s`, `kbps` (per client, measured at read time), `bytes` (total sent since connect, since 1.9.25), `lat_ms` (sensor capture -> send per client, averaged; all media protocols, -1 for `events`; since v1.9.26), `drops` (media packets dropped on send, today RTSP/UDP on `ENOBUFS`/unreachable; since v1.10.0), `agent` (User-Agent; Frigate sends `FFmpeg Frigate/<ver>`). Snapshots and `/control` itself are not listed. Since 1.9.24. **Since v1.9.26** the log has the same per client: `[CLIENT] + <proto> <ip>:<port> chn=N agent="…"` on connect and `- … after Ns, N bytes` on disconnect (`/events` only at DEBUG) — `logread \| grep CLIENT` answers "who was connected when" after the fact. |
+| `?clients=1` | Connected streaming clients: `ip`, `port`, `proto` (`rtsp/udp`, `rtsp/tcp`, `rtsps`, `fmp4`, `mjpeg`, `events`, `webrtc`, `srt`), `chn`, `since_s`, `kbps` (per client, measured at read time), `bytes` (total sent since connect, since 1.9.25), `lat_ms` (sensor capture -> send per client, averaged; all media protocols, -1 for `events`; since v1.9.26), `drops` (media packets dropped on send; as of v1.12.0 only RTSP/UDP counts them, on `ENOBUFS`/unreachable; since v1.10.0), `agent` (User-Agent; Frigate sends `FFmpeg Frigate/<ver>`). Snapshots and `/control` itself are not listed. Since 1.9.24. **Since v1.9.26** the log has the same per client: `[CLIENT] + <proto> <ip>:<port> chn=N agent="…"` on connect and `- … after Ns, N bytes` on disconnect (`/events` only at DEBUG) — `logread \| grep CLIENT` answers "who was connected when" after the fact. |
 | `?dn_history=1[&last=N\|&since=S][&max=N]` | Day/night decision series from the in-RAM ring sized by `daynight.history_s`. Rows are arrays `[t, gain, exposure, luma, bright%, mode]`; ≤600 rows/response, cursor paging via `next`/`head`/`oldest`/`lapped`. |
 
 ### `POST /control`

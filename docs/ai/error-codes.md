@@ -6,8 +6,11 @@
 stays `1`); 1.12.0 retires 208.
 
 Source: `src/err_codes.h` (the numbers), `src/control.c` (where a POST
-reports them), `src/hal/fs_rot_env.h` (the rotation envelopes). The WebUI
-text for each code is in thingino-firmware
+reports them), `src/hal/fs_rot_env.h` (the rotation envelopes). The OpenIMP
+rotation limits quoted below change with OpenIMP releases; on a camera,
+`caps.rotation` and `video.<N>.rotation_state` in `GET /control` are the live
+answer, and <https://lu-fi.github.io/openimp/feature-matrix.html> tracks
+OpenIMP. The WebUI text for each code is in thingino-firmware
 `package/timps/files/www/a/timps-errors.js`.
 
 ## Where codes appear

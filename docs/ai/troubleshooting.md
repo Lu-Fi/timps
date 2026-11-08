@@ -12,7 +12,8 @@ Companion to `docs/ai/reference.md` (what timps *is*) and
    dictionary** — it covers every `LOGE`/`LOGW` string in `src/`.
 3. Always confirm build and version first: `GET /control` → `version`,
    `caps.*`, `*.available`. Most "it doesn't work" reports are
-   *compiled out*, not misconfigured.
+   *compiled out*, not misconfigured. The section after this one lists the
+   commands and a bug-report checklist.
 4. Quote key names exactly. A wrong key name sends the user on a dead end,
    and `POST /control` silently lists unknown names under `ignored`.
 5. Entries marked **(unverified)** are inference, vendor documentation or a
@@ -24,6 +25,44 @@ Companion to `docs/ai/reference.md` (what timps *is*) and
 Everything else here was read out of this repository at **v1.9.28
 (2026-09-28)**; a statement marked **since v1.9.28** is new in that release
 (on an older camera the previous behaviour applies). Source files are named; line numbers deliberately are not.
+
+---
+
+## What runs on this camera, and a bug-report checklist
+
+Added for v1.12.0. Ask for these before diagnosing anything; most reports are
+a different build, a different libimp or a different streamer.
+
+### How to tell what runs
+
+| Question | Command | What it tells |
+| --- | --- | --- |
+| Which timps binary? | `timpsd -V` (or `--version`) | Prints `timps <version>` (the `git describe` string the binary was built from) and exits; starts no daemon (`src/main.c`). `-v` is **not** the version: it starts the daemon with DEBUG logging. |
+| What does the running daemon say? | `curl -s http://127.0.0.1:8880/control` | `version` (same string, from the process that actually runs) and `caps` (what this build can do on this SoC with this libimp). A `-V` that differs from `version` means the daemon was not restarted after an update. |
+| Vendor libimp or OpenIMP? | `timpsd --check-libs; echo $?` | `timpsd: libimp OK (vendor build, <lib>)` or `(OpenIMP build, <lib>)` and exit 0; 78 = binary and libimp are from different stacks, 79 = a required IMP function is missing, 80 = could not check (§1.11). Reads no config and takes no lock, so it is safe while the daemon runs. |
+| Which firmware image? | `grep -E '^(BUILD_ID\|SOC\|IMAGE_ID)=' /etc/os-release` | thingino writes `BUILD_ID="<branch>+<commit>, <build time>"`, plus the SoC family and the image (board) name. |
+
+A timps version alone does not identify a build: the `USE_*` options and the
+libimp flavour differ per image. Branch on `caps`, never on the version.
+
+### Bug-report checklist
+
+Collect, then open an issue at <https://github.com/Lu-Fi/timps/issues>:
+
+1. timps version: `timpsd -V` and `version` from `GET /control`.
+2. Image: `BUILD_ID` from `/etc/os-release`.
+3. SoC and sensor: `SOC` from `/etc/os-release`, `sensor.model` from
+   `GET /control`.
+4. Which libimp: the `timpsd --check-libs` line (vendor or OpenIMP).
+5. The relevant `/etc/timps.conf` keys, exact names and values (remove
+   `*.pass`, `http.token` and `srt.passphrase`).
+6. The log: `logread | grep -E 'timpsd|libimp'` (the init script logs with
+   the tag `timps`; `grep timps` catches both).
+7. The full `GET /control` answer (`caps`, `last_errors`, the section of the
+   feature).
+8. What was expected and what was seen, with the time it happened.
+
+For the meaning of a pasted log line use §12; do not repeat it here.
 
 ---
 
@@ -65,6 +104,7 @@ Everything else here was read out of this repository at **v1.9.28
 | "It worked on prudynt" | `docs/ai/reference.md` §1 — different daemon, different config file |
 | "The snapshot button / heartbeat / restart button is broken" | [§16 Shipped scripts and CGIs](#16-shipped-scripts-cgis-and-helpers), [§9 WebUI](#9-webui-and-plugins) |
 | "What does `/usr/sbin/<x>` do?" / a shipped script misbehaves | [§16 Shipped scripts and CGIs](#16-shipped-scripts-cgis-and-helpers) |
+| "Which version / build / libimp is this?", a bug report | [What runs on this camera](#what-runs-on-this-camera-and-a-bug-report-checklist) |
 | A pasted log line | [§12 Log dictionary](#12-log-message-dictionary) |
 | A config file that "looks right" | [§13 Misconfiguration gallery](#13-misconfiguration-gallery) |
 
@@ -787,6 +827,11 @@ Capability matrix (`src/rotate_caps.h`):
 | T31 | `ROT_HAS_FS_ROTATE` — libimp FrameSource rotate | No |
 | T10, T20, T21, T23, T30 | OpenIMP builds only (`ROT_HAS_FS_ROTATE`; T10/T20/T21 **since v1.10.0**, T23/T30 **since v1.12.0**), and only with an OpenIMP that rotates on that SoC (T1x first in `6b7f5ae`; T23/T30 OpenIMP `next` `17082ed3`+); otherwise the stream starts unrotated. T10/T20/T21: sub streams only, 16-aligned, at most 704x576, whatever the libimp reports. T23/T30: the limits from `OpenIMP_FS_RotateLimits` (currently 1280x720, align 16, every channel); without them as T10/T20/T21. Vendor libimp: **No** — coerced to 0 | No |
 | C100 | **No** — coerced to 0 | No |
+
+This matrix is the v1.12.0 state. On a camera `caps.rotation` and
+`video.<N>.rotation_state` in `GET /control` are the live answer; see also
+[`docs/wiki/Platform-SDK-Support.md`](../wiki/Platform-SDK-Support.md) and,
+for OpenIMP, <https://lu-fi.github.io/openimp/feature-matrix.html>.
 
 On every SoC except T40/T41, `rotation = 180` logs
 `rotation 180 unsupported on this SoC -> 0 (use image.hflip+image.vflip)`.

@@ -270,8 +270,8 @@ unfiltered run; select it with `--profile openimp` (preflight + this section
 only) or `--only openimp` (combinable, e.g. `--only 1b,openimp`):
 
 ```sh
-scripts/timps-qa.sh --cam 192.168.10.163 --profile openimp --ssh root@192.168.10.163
-scripts/timps-qa.sh --cam 192.168.10.163 --profile openimp --include-experimental
+scripts/timps-qa.sh --cam <camera-ip> --profile openimp --ssh root@<camera-ip>
+scripts/timps-qa.sh --cam <camera-ip> --profile openimp --include-experimental
 ```
 
 It reads the tiers from `GET /control` (`caps.roi`, `caps.fcrop`,

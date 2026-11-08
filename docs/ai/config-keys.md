@@ -297,7 +297,7 @@ shows them read-only in the `sensor` object.
 | `sensor.mclk` | int | `-1` (unset) | -1..2 | file-only, restart | **T40/T41 only.** `IMPSensorMclk`: `0`=MCLK0, `1`=MCLK1, `2`=MCLK2. Unset leaves `0`. |
 | `sensor.video_interface` | int | `-1` (unset) | -1..2 | file-only, restart | **T40/T41 only.** `IMPSensorVinType`: `0`=MIPI CSI0, `1`=MIPI CSI1 (T40 only: the T41 header has no CSI1, a `1` there is dropped to `-1` with one WARN), `2`=DVP. Unset leaves `0`. |
 | `sensor.default_boot` | int | `-1` (unset) | -1..15 | file-only, restart | **T40/T41 only.** Driver-specific boot setting index (`default_boot`). Unset leaves `0`. |
-| `sensor.rst_gpio` | int | `-1` (none) | -1..255 | file-only, restart | **T40/T41 only.** Sensor reset pin (`GPIO_PC(27)` = `2*32+27` = `91`). `-1`/unset keeps today's forced "no pin". |
+| `sensor.rst_gpio` | int | `-1` (none) | -1..255 | file-only, restart | **T40/T41 only.** Sensor reset pin (`GPIO_PC(27)` = `2*32+27` = `91`). `-1`/unset keeps the forced "no pin" of the releases before v1.10.0. |
 | `sensor.pwdn_gpio` | int | `-1` (none) | -1..255 | file-only, restart | **T40/T41 only.** Sensor power-down pin, as `rst_gpio`. |
 
 `config_sensor_finalize()` runs once after load and before the HAL starts:
@@ -1037,6 +1037,10 @@ the running tier is `unsupported`, not only where the build lacks ROI.
 The OpenIMP tiers come from device tests by the OpenIMP maintainer (OpenIMP
 `claude/t31-roi` d03ca24, `claude/roi-qp-clamp` fec3e69, open-tx-isp
 3cf9bdac/27dc8be4/b15ef235), not from timps' own tests.
+The tiers move with OpenIMP releases. On a camera the live answer is
+`GET /control` `caps`; per-SoC overview:
+[`docs/wiki/Platform-SDK-Support.md`](../wiki/Platform-SDK-Support.md); OpenIMP
+state: <https://lu-fi.github.io/openimp/feature-matrix.html>.
 
 | SoC | ROI, vendor libimp | ROI, OpenIMP | FrontCrop, vendor | FrontCrop, OpenIMP |
 | --- | --- | --- | --- | --- |
@@ -1830,8 +1834,10 @@ next to `USE_WEBRTC` says the runtime key is "gated at runtime by
 
 ## 23. Coverage check
 
-The key inventory in this file was verified mechanically, not by hand. A script
-(`/tmp/timps-keycheck.py`, outside the repo) parses `src/config.c` directly:
+The key inventory in this file was verified mechanically, not by hand.
+`scripts/check-config-keys.sh` (POSIX sh + python3, no other dependencies)
+parses `src/config.c` directly and exits 1 when a key is missing on either
+side; run it after adding or renaming a key:
 
 1. It extracts every `static const cfg_field <name>_fields[] = { … }` table and
    every `F(...)` / `FS(...)` entry inside it (name + alias), mapping each table
@@ -1841,14 +1847,16 @@ The key inventory in this file was verified mechanically, not by hand. A script
 2. It adds the keys handled by explicit code in `set_kv()` outside the tables:
    `general.syslog`, `general.trace`, `general.trace_ms`, the four deprecated
    `motion.roi_*`, and the retired/now-constant `daynight.*` names extracted
-   from the `gone[]`, `gone_i[]` and `gone_f[]` arrays.
+   from the `gone[]` array.
 3. It extracts every `key = value` line from `timps.conf.example`, including
    commented-out ones.
-4. It checks each key appears literally in this file, or matches a documented
-   index pattern (`video<N>`/`videoN`/`video0`, `osd<S>.<N>`/`osdS.N`/`osd0.0`,
-   `privacy<S>.<N>` …, or a leaf name in that section's table).
+4. It reads the documented keys from the first column of the `| Key | Type …`
+   tables (a leaf name in an indexed section gets that section's pattern,
+   e.g. `mbrc` in §5 → `video<N>.mbrc`), the retired names in §14 and the
+   alias table in §21, and reports both directions: keys missing here and keys
+   documented here but not in the source.
 
-**Result (v1.12.0): 252 canonical config keys documented, 0 missing.** v1.9.33 had 226
+**Result (v1.12.0, `scripts/check-config-keys.sh`): 252 canonical config keys documented, 0 missing, 0 extra.** v1.9.33 had 226
 (200 table keys); v1.10.0 adds 21: `general.fs_keepalive`,
 `daynight.ir_idle_off`, `daynight.ir_idle_linger_s`, the five `image.fcrop_*`,
 the seven `roi<S>.<N>.*` and the six T40/T41 `sensor.*` wiring keys
@@ -1888,7 +1896,10 @@ Counting notes:
 
 The `*_caps.h` matrices in §4, §5 and §5's `video_live` table cover which keys
 apply. These are the *behavioural* differences behind them — the ones that turn
-into support questions.
+into support questions. This table is the v1.12.0 state. On a camera the live
+answer is `GET /control` `caps`; per-SoC overview:
+[`docs/wiki/Platform-SDK-Support.md`](../wiki/Platform-SDK-Support.md); OpenIMP
+state: <https://lu-fi.github.io/openimp/feature-matrix.html>.
 
 | SoC(s) | Difference | Where |
 | --- | --- | --- |

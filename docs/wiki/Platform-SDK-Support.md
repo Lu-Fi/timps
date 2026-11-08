@@ -7,6 +7,9 @@ exhaustive per-function availability matrix already maintained in
 `docs/sdk-feature-gaps.md`, or the rotation deep-dive in
 `docs/rotation.md` — read those two documents directly for full depth.
 
+What a given camera can do is reported live by `GET /control` (`caps`); for
+the OpenIMP side see <https://lu-fi.github.io/openimp/feature-matrix.html>.
+
 ## SDK headers per platform
 
 The vendored Ingenic IMP headers (from the
