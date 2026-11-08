@@ -1,6 +1,6 @@
 # timps configuration keys — complete reference
 
-**Applies to timps v1.12.0.**
+**Applies to timps v1.12.0 (source: `main`, 2026-11-07).**
 
 A statement marked **since vX** is new in that release — on an older camera
 the *previous* behaviour is the one to describe. Changes of v1.11.0, v1.11.1 and v1.12.0 in `CHANGELOG.md` are marked

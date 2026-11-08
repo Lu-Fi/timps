@@ -19,8 +19,7 @@ If you are answering a user's question about timps, read in this order:
 3. [`docs/wiki/`](docs/wiki/Home.md) - the human-oriented wiki. Where it
    disagrees with `docs/ai/config-keys.md` on a default or an apply mode,
    trust `config-keys.md` (checked against `src/config.c`).
-4. [`docs/ai/feature-list-de.md`](docs/ai/feature-list-de.md) - German feature
-   overview.
+4. [`docs/ai/feature-list.md`](docs/ai/feature-list.md) - feature overview.
 
 Rules that avoid wrong answers:
 

@@ -46,8 +46,8 @@ if [ "$CHECK" = 1 ]; then
 		say "docs/ai/config-keys.md: header"
 	grep -q "Applies to timps v$VERSION (source: \`main\`, $DATE)" docs/ai/reference.md ||
 		say "docs/ai/reference.md: header"
-	grep -q "Version v$VERSION ($DATE)" docs/ai/feature-list-de.md ||
-		say "docs/ai/feature-list-de.md: header"
+	grep -q "Applies to timps v$VERSION ($DATE)" docs/ai/feature-list.md ||
+		say "docs/ai/feature-list.md: header"
 	# shellcheck disable=SC2086
 	left=$(perl -CSD -Mutf8 -0ne 'while (/(?:the\s+next\s+(?:release|version)|dem\s+n\x{e4}chsten\s+Release|`\[Unreleased\]`\s+in\s+`CHANGELOG)/gi) { my $l = 1 + (substr($_, 0, $-[0]) =~ tr/\n//); print "$ARGV:$l\n" }' $DOCS)
 	[ -z "$left" ] || say "markers:
@@ -82,8 +82,8 @@ V="$VERSION" B="$base" U="$REPO_URL" perl -0pi -e '
 # doc headers
 V="$VERSION" D="$DATE" perl -pi -e 's/Applies to timps v[0-9][0-9A-Za-z.+-]* \(source: `main`, [0-9-]+\)/Applies to timps v$ENV{V} (source: `main`, $ENV{D})/' \
 	docs/ai/config-keys.md docs/ai/reference.md
-V="$VERSION" D="$DATE" perl -pi -e 's/Version v[0-9][0-9A-Za-z.+-]* \([0-9-]+\);/Version v$ENV{V} ($ENV{D});/' \
-	docs/ai/feature-list-de.md
+V="$VERSION" D="$DATE" perl -pi -e 's/Applies to timps v[0-9][0-9A-Za-z.+-]* \([0-9-]+\);/Applies to timps v$ENV{V} ($ENV{D});/' \
+	docs/ai/feature-list.md
 
 # markers; a line break inside the phrase is kept in front of the version
 # shellcheck disable=SC2086
