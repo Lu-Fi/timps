@@ -353,7 +353,7 @@ by default (as long as OSD or a privacy region was on at startup). Details:
 ### Image rotation
 
 `videoN.rotation = 0|90|270` (plus `180` on T40/T41), restart-required.
-Always built since the next release (up to v1.12.0 the build option
+Always built since v1.12.1 (up to v1.12.0 the build option
 `USE_ROTATE`, off by default). 90/270 on T31 (libimp FrameSource rotate) and
 T40/T41 (hardware I2D). With `USE_OPENIMP`, 90/270 on T10/T20/T21/T23/T30
 through `IMP_FrameSource_SetChnRotate`, a software rotate inside OpenIMP,

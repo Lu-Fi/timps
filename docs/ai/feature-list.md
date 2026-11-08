@@ -15,7 +15,7 @@ not do.
   HTTP-Control-API, Streaming-Protocols, Day-Night, Audio, Motion-Detection,
   Recording-Timelapse, Rate-Control-\*, Building, Logging, Testing-QA,
   Platform-SDK-Support)
-* Applies to timps v1.12.0 (2026-11-07);
+* Applies to timps v1.12.1 (2026-11-08);
   stripped `timpsd` about 410 KB (410 108 bytes: mipsel, T31 with
   vendor libimp, WebRTC, TLS and rotation on; state of `main` 2026-10-06).
   Statements marked **since vX** are new in that release – on a
@@ -218,7 +218,7 @@ not do.
   stream `video.<N>.rotate_path`: `off`, `band`
   (vendor libimp 90/270: OSD/privacy only in the top `eff_width`
   rows) or `hw` (whole image).
-  *Availability:* always built since the next release (up to v1.12.0 the build
+  *Availability:* always built since v1.12.1 (up to v1.12.0 the build
   option `USE_ROTATE`, Kconfig default n). T40/T41 (OpenIMP: only
   with `OpenIMP_Cap_I2dRotate`) and T31 with both libimps; T10/T20/T21/T23/T30
   OpenIMP only; not on C100.
@@ -1004,7 +1004,7 @@ these docs make no claim about them).
 rotated.**
 A: Rotation on T23/T30 exists since v1.12.0 and only with OpenIMP (in v1.12.0
 also only in a build with `USE_ROTATE`, `BR2_PACKAGE_TIMPS_ROTATE`, default n;
-always built since the next release):
+always built since v1.12.1):
 the vendor libimp has no `SetChnRotate`, so a vendor build turns 90/270 into
 `0`. With OpenIMP it needs an OpenIMP whose `SetChnRotate` really rotates
 (T30: OpenIMP `next` `17082ed3` or later); the stream must fit the limits

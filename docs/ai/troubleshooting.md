@@ -814,7 +814,7 @@ are restart-required. Restart: `/etc/init.d/S95timps restart`.
 
 ### 2.6 Rotation
 
-Rotation is always built since the next release (up to v1.12.0 it was the
+Rotation is always built since v1.12.1 (up to v1.12.0 it was the
 build option `USE_ROTATE`, off by default). On an SoC without an apply path
 no `ROT_HAS_*` macro is defined (`src/rotate_caps.h`) and `config.c`'s
 `prot()` coerces every non-zero `videoN.rotation` to 0, logging
@@ -2432,8 +2432,8 @@ the **package defaults** (which differ from the bare `Makefile` defaults):
 | `…_STREAM_OPUS` | **n** | `USE_STREAM_OPUS` | Opus as an RTSP codec |
 | `…_DIAG_TOOLS` | **n** | — | `/usr/bin/timps-{selftest,logcat-ship,dn-isp-log}` |
 
-`…_ROTATE` (`USE_ROTATE`, default n) existed up to v1.12.0; since the next
-release rotation is always built.
+`…_ROTATE` (`USE_ROTATE`, default n) existed up to v1.12.0; since
+v1.12.1 rotation is always built.
 
 `USE_TRACE` has **no Kconfig symbol on purpose** — it is
 `make … TIMPS_TRACE=1 rebuild-timps` only, and the daemon announces it

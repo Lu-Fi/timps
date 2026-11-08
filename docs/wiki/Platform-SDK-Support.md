@@ -98,7 +98,7 @@ See [Motion Detection](Motion-Detection.md).
 
 ## Rotation capability tiers
 
-Image rotation (`videoN.rotation`; always built since the next release, up to
+Image rotation (`videoN.rotation`; always built since v1.12.1, up to
 v1.12.0 the build option `USE_ROTATE`, off by default) has the
 most platform-fragmented capability story in the codebase — full detail
 lives in `docs/rotation.md`; the tiers are:

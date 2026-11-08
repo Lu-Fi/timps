@@ -6,6 +6,15 @@ semantic versioning.
 
 ## [Unreleased]
 
+## [1.12.1] - 2026-11-08
+
+### Added
+
+- Project page at <https://lu-fi.github.io/timps/> and the wiki as a
+  searchable docs site at <https://lu-fi.github.io/timps/docs/>, both built
+  from the repository (`site/`, `mkdocs.yml`, `scripts/build-docs.sh`) by
+  GitHub Pages; README and wiki home link them.
+
 ### Changed
 
 - Image rotation is always built: the `USE_ROTATE` build option is gone, and
@@ -15,7 +24,11 @@ semantic versioning.
   compressed) per SoC. The thingino option `BR2_PACKAGE_TIMPS_ROTATE` goes away
   with the package update to this release.
 
-- AI docs: honesty rule, per-feature availability, example Q&A, bug-report checklist, config-key check script
+- AI docs: English only (the German feature overview became
+  `docs/ai/feature-list.md`), an honesty rule, per-feature availability,
+  example Q&A, a bug-report checklist, links to the OpenIMP and open-tx-isp
+  assistant docs, and `scripts/check-config-keys.sh` (config keys in
+  `src/config.c` vs `docs/ai/config-keys.md`).
 
 ## [1.12.0] - 2026-11-07
 
@@ -7142,7 +7155,8 @@ camera before fleet rollout.
   TrueType OSD, motion detection, RTSP-Digest / HTTP-Basic auth. Ingenic
   headers via the `ingenic-headers` submodule.
 
-[Unreleased]: https://github.com/Lu-Fi/timps/compare/v1.12.0...HEAD
+[Unreleased]: https://github.com/Lu-Fi/timps/compare/v1.12.1...HEAD
+[1.12.1]: https://github.com/Lu-Fi/timps/compare/v1.12.0...v1.12.1
 [1.12.0]: https://github.com/Lu-Fi/timps/compare/v1.11.1...v1.12.0
 [1.11.1]: https://github.com/Lu-Fi/timps/compare/v1.11.0...v1.11.1
 [1.11.0]: https://github.com/Lu-Fi/timps/compare/v1.10.1...v1.11.0

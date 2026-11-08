@@ -35,7 +35,7 @@ rotated 1920×1080 stream is advertised and recorded as 1080×1920.
 
 ## Enabling it
 
-**Since the next release** rotation is always built, on every SoC; nothing to
+**Since v1.12.1** rotation is always built, on every SoC; nothing to
 select at build time. `videoN.rotation` still defaults to `0`. An SoC without
 a 90/270 path (C100; T10/T20/T21/T23/T30 with the vendor libimp) coerces
 90/180/270 to `0`, and `caps.rotation` is then `[0]`.
@@ -53,7 +53,7 @@ v1.12.0 removed the path and both knobs; T23 rotates through OpenIMP.
 
 Binary (code, measured as object `.text`; MIPS target ≈ 1.2–1.4× these host figures):
 
-- Always built since the next release: about +1.1 to +2.8 KB code and +0.5
+- Always built since v1.12.1: about +1.1 to +2.8 KB code and +0.5
   to +1.3 KB xz-compressed per SoC (target binaries, against a build without
   `USE_ROTATE`). On an SoC with no 90/270 path it adds nothing usable.
 - T10/T20/T21 with OpenIMP: the rotation runs inside OpenIMP (one heap

@@ -129,7 +129,7 @@ footer .wrap { display: flex; gap: 16px; flex-wrap: wrap; justify-content: space
       <strong>Ingenic SoC IP cameras</strong>. Pure C, built straight on <code>libimp</code>, with a live JSON
       control API, native day/night and motion detection. One of the streamer choices in
       <a href="https://github.com/themactep/thingino-firmware">thingino</a> firmware.</p>
-    <span class="pill">Newest release <b id="rel">v1.12.0</b> <span id="reldate">2026-11-07</span></span>
+    <span class="pill">Newest release <b id="rel">v1.12.1</b> <span id="reldate">2026-11-08</span></span>
     <div class="btns">
       <a class="btn primary" href="https://github.com/Lu-Fi/timps/releases/latest">Download / release notes</a>
       <a class="btn" href="docs/">Docs</a>
@@ -182,15 +182,17 @@ footer .wrap { display: flex; gap: 16px; flex-wrap: wrap; justify-content: space
   </section>
 
   <section id="new">
-    <h2>What's new in v1.12.0</h2>
-    <p class="sub">Released 2026-11-07. Full list in the <a href="https://github.com/Lu-Fi/timps/blob/main/CHANGELOG.md">changelog</a>.</p>
+    <h2>What's new</h2>
+    <p class="sub">v1.12.1 released 2026-11-08, v1.12.0 on 2026-11-07. Full list in the <a href="https://github.com/Lu-Fi/timps/blob/main/CHANGELOG.md">changelog</a>.</p>
     <div class="news">
       <ul>
-        <li><strong>Full T30 support:</strong> rotation 90/270 for doorbells, H.265 and live rate control with OpenIMP, ISP keys (DPC, RawDRC, antifog, noise reduction) and encoder ROI.</li>
-        <li><strong>One rotation path:</strong> T10/T20/T21/T23/T30 rotate through OpenIMP's frame source; the old T23 software rotate is gone (a T23 <code>rotation = 90</code> now turns the other way).</li>
-        <li><strong>T40:</strong> <code>image.ae_compensation</code> and <code>image.max_again</code>, on the vendor and the OpenIMP libimp.</li>
-        <li><strong>Calmer dawns:</strong> day/night skips IR looks that cannot find day and judges a creeping light with what the last check measured: about half the morning IR looks and fewer failed day checks.</li>
-        <li><strong>Always-on frame sources:</strong> <code>general.fs_keepalive</code> defaults to 1, so exposure and day/night keep working while nobody watches.</li>
+        <li><strong>v1.12.1 - rotation always available:</strong> no build option any more; <code>videoN.rotation</code> still defaults to 0, and the WebUI offers the angles the camera can do.</li>
+        <li><strong>v1.12.1 - docs:</strong> this page and a <a href="docs/">searchable docs site</a>; the assistant docs are English only, with an honesty rule and per-feature availability.</li>
+        <li><strong>v1.12.0 - full T30 support:</strong> rotation 90/270 for doorbells, H.265 and live rate control with OpenIMP, ISP keys (DPC, RawDRC, antifog, noise reduction) and encoder ROI.</li>
+        <li><strong>v1.12.0 - one rotation path:</strong> T10/T20/T21/T23/T30 rotate through OpenIMP's frame source; the old T23 software rotate is gone (a T23 <code>rotation = 90</code> now turns the other way).</li>
+        <li><strong>v1.12.0 - T40:</strong> <code>image.ae_compensation</code> and <code>image.max_again</code>, on the vendor and the OpenIMP libimp.</li>
+        <li><strong>v1.12.0 - calmer dawns:</strong> day/night skips IR looks that cannot find day and judges a creeping light with what the last check measured: about half the morning IR looks and fewer failed day checks.</li>
+        <li><strong>v1.12.0 - always-on frame sources:</strong> <code>general.fs_keepalive</code> defaults to 1, so exposure and day/night keep working while nobody watches.</li>
       </ul>
     </div>
   </section>

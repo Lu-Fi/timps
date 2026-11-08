@@ -117,7 +117,7 @@ resulting binary is byte-identical to a build that never had the feature.
 | `USE_OSD_HINTING` | 0 (off) | Compile in the opt-in geometric OSD-text autohinter (`autohint_glyph()` and friends in `src/hal/msttf.c`). Still gated at runtime by the `osd.hinting` config key either way; off measures ~2.1 KB smaller `.text` (T31/GCC 16.1.0/`-Os`) and makes `osd.hinting=1` in `timps.conf` accepted but a no-op. |
 | `USE_TRACE` | 0 (off) | **Developer tool, not for production images.** Compiles in `src/trace.c`, the opt-in send-pipeline latency instrumentation (see `src/trace.h`). Off means `trace.c` is not compiled at all, `ms_trace_on()` and friends become static-false inline stubs the compiler dead-code-eliminates at `-Os`, and `general.trace`/`general.trace_ms` in `timps.conf` are accepted but a no-op — the same pattern as `USE_OSD_HINTING`. Deliberately **not** a menuconfig option (see below); turn it on with `make USE_TRACE=1 ...` for a debug build. |
 
-Image rotation (`videoN.rotation`) is always built since the next release. Up
+Image rotation (`videoN.rotation`) is always built since v1.12.1. Up
 to v1.12.0 it was the build option `USE_ROTATE` (Kconfig
 `BR2_PACKAGE_TIMPS_ROTATE`, off by default). See [Platform & SDK
 Support](Platform-SDK-Support.md) and `docs/rotation.md`.

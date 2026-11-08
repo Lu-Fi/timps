@@ -6,7 +6,7 @@ firmware. Everything here is verified against the `main` branch of
 <https://github.com/Lu-Fi/timps> and against `package/timps/` in a thingino
 firmware tree.
 
-Applies to timps v1.12.0 (source: `main`, 2026-11-07)
+Applies to timps v1.12.1 (source: `main`, 2026-11-08)
 
 A statement marked **since vX** is new in that release — on an older camera
 describe the previous behaviour. Changes of v1.11.0, v1.11.1 and v1.12.0 in `CHANGELOG.md` are marked
@@ -163,7 +163,7 @@ variable. **If a feature is compiled out, no config key can turn it on.**
 | `BR2_PACKAGE_TIMPS_DROP_LIBSTDCPP` | — | n | Target-finalize hook that removes `libstdc++.so.6` when nothing links it (flash saving on small rootfs). |
 
 Up to v1.12.0 there was also `BR2_PACKAGE_TIMPS_ROTATE` (`USE_ROTATE`, default
-n) for `videoN.rotation`; since the next release rotation is always built.
+n) for `videoN.rotation`; since v1.12.1 rotation is always built.
 
 There is also an **"Audio backchannel preset"** choice bundling the
 interdependent audio knobs:
@@ -652,7 +652,7 @@ differently-compiled binaries.
 | `caps.rtsp_max_clients` / `http_max_clients` / `events_max_clients` | Concurrent-client ceilings (refusal points: RTSP, HTTP and events all answer `503`) |
 | `caps.motion` | `{available, max_cells}` — `available` = build has the IMP_IVS move API |
 | `caps.privacy` | `{available, max_regions}` — `available` reflects whether an OSD group actually exists in the running pipeline |
-| `caps.rotation[]` | Applicable rotation values, e.g. `[0,90,180,270]`; `[0]` on an SoC without a rotate path. Always present since the next release; up to v1.12.0 absent when `USE_ROTATE=0` |
+| `caps.rotation[]` | Applicable rotation values, e.g. `[0,90,180,270]`; `[0]` on an SoC without a rotate path. Always present since v1.12.1; up to v1.12.0 absent when `USE_ROTATE=0` |
 | `caps.record` / `caps.timelapse` | `{available: 0|1}` |
 | `caps.backchannel` | `{available, talk_ws}` — `talk_ws` is the *effective* mode: 0 not served, 1 served TLS-required, 2 served plaintext-ok |
 | `caps.play` | `{available, sounds:[...]}` — enumerates playable files |
@@ -1167,7 +1167,7 @@ Distinguish **compiled out** from **misconfigured**:
 | `POST /control` returns `422 unknown_fields` | The key does not exist in this build | `GET /control?fields=1`, and the relevant `caps.*` |
 | Key accepted (`200`) but nothing happens | Restart-required key, or live path unavailable | `caps.restart`, `caps.video_live`, the POST reply's `deferred_keys` |
 | `caps.webrtc` missing entirely | `USE_WEBRTC` = 0 | Rebuild with the Kconfig option |
-| `caps.rotation` missing entirely | timps up to v1.12.0 built without `USE_ROTATE` (always built since the next release) | Update timps |
+| `caps.rotation` missing entirely | timps up to v1.12.0 built without `USE_ROTATE` (always built since v1.12.1) | Update timps |
 | `record.available = 0` | `USE_RECORD` = 0 | Rebuild with `BR2_PACKAGE_TIMPS_RECORD` |
 | `tls.available = 0` but `http.https = 1` in the config | Binary has no mbedTLS | Rebuild with `BR2_PACKAGE_TIMPS_TLS` |
 | `/talk` answers 426 | `audio.talk_ws = 1` on a plaintext port | Either enable `http.https`, or set `audio.talk_ws = 2` (understanding that mic audio and the token then cross the network in clear) |
@@ -1385,7 +1385,7 @@ the kernel log and escalate.
 
 ### Rotation problems
 
-- Rotation is always built since the next release; up to v1.12.0 it was the
+- Rotation is always built since v1.12.1; up to v1.12.0 it was the
   build option `USE_ROTATE`, **off by default**, and without it any non-zero
   `videoN.rotation` was coerced to 0 with a warning.
 - `rotation = 180` is a real per-channel capability **only on T40/T41**.

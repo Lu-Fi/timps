@@ -18,7 +18,7 @@ OpenIMP. The WebUI text for each code is in thingino-firmware
 | Place | Shape | Meaning |
 | --- | --- | --- |
 | `POST /control` reply | `"errors":{"video1.rotation":204,"image.bogus":102}` | One entry per key that was refused, not applied, or will not take effect at the next start. **Present only when there is at least one entry**; a clean POST has no `errors` key at all. `errors_truncated: true` = the object overran its 512-byte buffer (the other lists keep their own counts). |
-| `GET /control` → `video.<N>.rotation_state` | int | `0` = the stream runs as configured at the **last start** (also when it is not rotated). Anything else = the `2xx` code why it runs **unrotated** although `videoN.rotation` asks for 90/270. Always present since the next release (like `eff_width`); up to v1.12.0 only in `USE_ROTATE` builds. Its companion `video.<N>.rotate_path` (**since v1.11.0**, `off`/`hw`/`band`; `sw` only from timps ≤ 1.11.1) says how a running stream is rotated, not why. |
+| `GET /control` → `video.<N>.rotation_state` | int | `0` = the stream runs as configured at the **last start** (also when it is not rotated). Anything else = the `2xx` code why it runs **unrotated** although `videoN.rotation` asks for 90/270. Always present since v1.12.1 (like `eff_width`); up to v1.12.0 only in `USE_ROTATE` builds. Its companion `video.<N>.rotate_path` (**since v1.11.0**, `off`/`hw`/`band`; `sw` only from timps ≤ 1.11.1) says how a running stream is rotated, not why. |
 | `GET /control` → `caps.err_v` | int | Version of this table, currently `1`. A client that meets a code it has no text for, or an `err_v` above the one it knows, should show the number. |
 
 `errors` sits next to `rejected`, `ignored`, `unsupported` and

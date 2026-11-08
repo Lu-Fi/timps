@@ -1,6 +1,6 @@
 # timps configuration keys — complete reference
 
-**Applies to timps v1.12.0 (source: `main`, 2026-11-07).**
+**Applies to timps v1.12.1 (source: `main`, 2026-11-08).**
 
 A statement marked **since vX** is new in that release — on an older camera
 the *previous* behaviour is the one to describe. Changes of v1.11.0, v1.11.1 and v1.12.0 in `CHANGELOG.md` are marked
@@ -596,7 +596,7 @@ hit this — T10, T20 and T23 coerce `codec` to `h264` at parse time.
 
 ### `rotation` in detail (`src/rotate_caps.h`)
 
-* **Since the next release** rotation is always built; up to v1.12.0 it was a
+* **Since v1.12.1** rotation is always built; up to v1.12.0 it was a
   build option (`USE_ROTATE`, Kconfig `BR2_PACKAGE_TIMPS_ROTATE`, default `n`)
   and without it `caps.rotation` was omitted. An SoC without an apply path
   defines no `ROT_HAS_*` macro, and `prot()` coerces every non-zero rotation to
@@ -1637,7 +1637,7 @@ Every one maps to `USE_<X>=$(if $(BR2_PACKAGE_TIMPS_<X>),1,0)` in
 | `BR2_PACKAGE_TIMPS_PLAY_OPUS` | **n** | depends on `TIMPS_PLAY`; selects `BR2_PACKAGE_OPUSFILE` | `-DUSE_PLAY_OPUS` (forces `USE_PLAY`) | Ogg-Opus decode in the play queue | Play queue is WAV/PCM only; thingino's shipped `/usr/share/sounds/*.opus` will not play. |
 
 `BR2_PACKAGE_TIMPS_ROTATE` (`-DUSE_ROTATE`, default `n`) existed up to v1.12.0;
-since the next release rotation is always built and the symbol goes away with
+since v1.12.1 rotation is always built and the symbol goes away with
 the next timps package update.
 
 ### 22.3 Audio backchannel preset (a Kconfig `choice`)
